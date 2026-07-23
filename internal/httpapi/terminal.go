@@ -8,9 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
-	"net/url"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -81,17 +79,12 @@ func (h terminalHandler) open(
 		writeError(c, http.StatusBadRequest, "invalid_terminal_request", terminalservice.ErrInvalidRequest.Error())
 		return
 	}
-	if !terminalOriginAllowed(c.Request) {
-		h.logger.Warn("拒绝来源不匹配的终端连接", "operation", "terminal_origin", "request_id", requestIDFrom(c), "host", c.Request.Host)
-		writeError(c, http.StatusForbidden, "origin_mismatch", "请求来源校验失败")
-		return
-	}
-
 	upgrader := websocket.Upgrader{
 		HandshakeTimeout:  10 * time.Second,
 		Subprotocols:      []string{terminalSubprotocol},
 		EnableCompression: false,
-		CheckOrigin:       terminalOriginAllowed,
+		// 产品允许跨来源接入，终端安全边界由登录会话、权限校验和审计保证。
+		CheckOrigin: func(*http.Request) bool { return true },
 	}
 	connection, err := upgrader.Upgrade(c.Writer, c.Request, nil)
 	if err != nil {
@@ -343,18 +336,6 @@ func requestedSubprotocol(request *http.Request) bool {
 		}
 	}
 	return false
-}
-
-func terminalOriginAllowed(request *http.Request) bool {
-	if strings.EqualFold(request.Header.Get("Sec-Fetch-Site"), "cross-site") {
-		return false
-	}
-	origin := request.Header.Get("Origin")
-	if origin == "" {
-		return true
-	}
-	parsed, err := url.Parse(origin)
-	return err == nil && parsed.Host != "" && strings.EqualFold(parsed.Host, request.Host)
 }
 
 func isExpectedTerminalClose(err error) bool {

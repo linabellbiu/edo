@@ -69,7 +69,6 @@ func NewRouter(deps Dependencies) *gin.Engine {
 
 	health := healthHandler{database: deps.Database, redis: deps.Redis, nats: deps.NATS, logger: deps.Logger}
 	api := router.Group("/api/v1")
-	api.Use(sameOrigin(deps.Logger))
 	api.GET("/health/live", health.live)
 	api.GET("/health/ready", health.ready)
 	authAPI := api.Group("/auth")

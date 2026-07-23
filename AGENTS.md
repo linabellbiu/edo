@@ -10,6 +10,7 @@
 - 保留 Kubernetes Pod 和 Docker 容器内的交互式终端；浏览器通过 WebSocket 连接 Go 后端，由后端使用 Kubernetes Exec 或 Docker Exec API 桥接输入、输出和终端尺寸变更。
 - 保留 Docker 和 Kubernetes 部署能力，优先通过 Docker API、BuildKit 和 Kubernetes API 实现，不依赖交互式服务器登录。
 - 保留 WebSocket，用于 Pod/容器交互式终端、实时发布日志、构建日志、任务输出和站内通知；仅删除宿主机 Web SSH 通道。
+- HTTP API 和终端 WebSocket 不执行 Origin、Host 或 `Sec-Fetch-Site` 同源限制，允许跨来源接入；仍必须保留登录会话、权限校验、终端子协议校验和操作审计。
 - 使用 NATS JetStream 作为消息队列，用于任务投递、持久化、消费确认、失败重投和消费者组；不得再使用 Redis List 充当任务队列。
 - 所有 JetStream Consumer 必须配置有限的最大投递次数，禁止无限重试；配置中的 `max_attempts` 包含首次执行，默认最多执行 4 次（首次执行加 3 次重试），耗尽后写入死信主题并将数据库任务标记为失败。
 - 重试必须区分可重试错误和永久错误：临时网络故障、超时、限流等可以按退避策略重试；参数错误、权限拒绝、配置缺失、签名失败等必须立即终止，不得消耗后续重试次数。
@@ -27,3 +28,21 @@
 - 决策应以高级运维工程实践为依据，优先保证最小权限、操作审计、幂等执行、并发安全、超时取消、失败重试、灰度发布、健康检查、回滚能力、资源隔离、可观测性和灾难恢复。
 - 功能调整必须记录调整原因、行为变化、兼容性影响和数据迁移方式；不得静默改变关键发布语义。
 - 涉及删除数据、降低安全边界、不可逆迁移或改变外部系统状态的操作，仍须明确目标并遵守破坏性操作安全规范。
+
+
+<claude-mem-context>
+# Memory Context
+
+# claude-mem status
+
+This project has no memory yet. The current session will seed it; subsequent sessions will receive auto-injected context for relevant past work.
+
+Memory injection starts on your second session in a project.
+
+`/learn-codebase` is available if the user wants to front-load the entire repo into memory in a single pass (~5 minutes on a typical repo, optional). Otherwise memory builds passively as work happens.
+
+Live activity: http://localhost:37701
+How it works: `/how-it-works`
+
+This message disappears once the first observation lands.
+</claude-mem-context>

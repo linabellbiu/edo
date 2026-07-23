@@ -88,23 +88,12 @@ func TestTerminalBridgeCarriesInputOutputAndResize(t *testing.T) {
 	}
 }
 
-func TestTerminalOriginAndSubprotocolValidation(t *testing.T) {
-	request := &http.Request{Host: "zrt.example.com", Header: make(http.Header)}
-	request.Header.Set("Origin", "https://zrt.example.com")
+func TestTerminalSubprotocolValidation(t *testing.T) {
+	request := &http.Request{Header: make(http.Header)}
 	request.Header.Set("Sec-WebSocket-Protocol", terminalSubprotocol)
-	if !terminalOriginAllowed(request) || !requestedSubprotocol(request) {
-		t.Fatal("同源且协议正确的终端请求被拒绝")
+	if !requestedSubprotocol(request) {
+		t.Fatal("正确的终端子协议被拒绝")
 	}
-	request.Header.Set("Origin", "https://attacker.example.com")
-	if terminalOriginAllowed(request) {
-		t.Fatal("跨源终端请求未被拒绝")
-	}
-	request.Header.Set("Origin", "https://zrt.example.com")
-	request.Header.Set("Sec-Fetch-Site", "cross-site")
-	if terminalOriginAllowed(request) {
-		t.Fatal("浏览器标记为跨站的终端请求未被拒绝")
-	}
-	request.Header.Del("Sec-Fetch-Site")
 	request.Header.Set("Sec-WebSocket-Protocol", "other")
 	if requestedSubprotocol(request) {
 		t.Fatal("错误的终端子协议未被拒绝")

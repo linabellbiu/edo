@@ -1,4 +1,5 @@
-name: zrt
+# 开发依赖使用独立项目名，避免覆盖 docker-compose.yml 启动的完整 ZRT 服务。
+name: zrt-dev
 
 services:
   redis:

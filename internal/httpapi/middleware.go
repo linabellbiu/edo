@@ -4,9 +4,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
-	"net/url"
 	"runtime/debug"
-	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -15,36 +13,6 @@ import (
 	"zrt/internal/audit"
 	"zrt/internal/model"
 )
-
-func sameOrigin(logger *slog.Logger) gin.HandlerFunc {
-	return func(c *gin.Context) {
-		if c.Request.Method == http.MethodGet || c.Request.Method == http.MethodHead || c.Request.Method == http.MethodOptions {
-			c.Next()
-			return
-		}
-		if strings.EqualFold(c.GetHeader("Sec-Fetch-Site"), "cross-site") {
-			logger.Warn("拒绝跨站状态变更请求", "operation", "csrf_check", "request_id", requestIDFrom(c), "host", c.Request.Host)
-			c.AbortWithStatusJSON(http.StatusForbidden, errorResponse{
-				Code: "cross_site_request_denied", Message: "跨站请求已被拒绝", RequestID: requestIDFrom(c),
-			})
-			return
-		}
-		origin := c.GetHeader("Origin")
-		if origin == "" {
-			c.Next()
-			return
-		}
-		parsed, err := url.Parse(origin)
-		if err != nil || parsed.Host == "" || !strings.EqualFold(parsed.Host, c.Request.Host) {
-			logger.Warn("拒绝来源不匹配的状态变更请求", "operation", "csrf_origin", "request_id", requestIDFrom(c), "host", c.Request.Host)
-			c.AbortWithStatusJSON(http.StatusForbidden, errorResponse{
-				Code: "origin_mismatch", Message: "请求来源校验失败", RequestID: requestIDFrom(c),
-			})
-			return
-		}
-		c.Next()
-	}
-}
 
 const requestIDKey = "request_id"
 const auditResourceIDKey = "audit_resource_id"

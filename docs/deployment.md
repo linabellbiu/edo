@@ -32,6 +32,8 @@ kubectl apply -k deploy/kubernetes
 
 Ingress 示例位于 `deploy/kubernetes/ingress.example.yaml`，为长连接设置了两小时代理超时。生产环境必须配置 TLS，否则 Secure Cookie 无法工作。
 
+ZRT 按产品约定不校验 HTTP API 和终端 WebSocket 的 `Origin`、`Host` 或 `Sec-Fetch-Site`，跨来源请求会直接进入登录与权限校验。部署时必须通过 HTTPS、强密码、最小权限和网络访问控制保护服务；反向代理仍建议让前端与 API 使用同一站点，避免扩大浏览器会话的攻击面。
+
 ## 数据库 DSN 示例
 
 ```text
