@@ -5,15 +5,14 @@
 ZRT 由同一个 Go 二进制和一个 React 静态站点组成：
 
 - `zrt migrate`：显式执行数据库结构迁移。
-- `zrt server`：提供 Gin API、React 静态资源与 WebSocket 终端。
-- `zrt worker`：消费 NATS JetStream 任务，运行监控与定时调度扫描器。
+- `zrt server`：在一个 Go 进程内提供 Gin API、React 静态资源与 WebSocket 终端，并通过 Goroutine 消费 NATS JetStream 任务、投递 Outbox、运行监控与定时调度扫描器。
 - `web/`：React 19、TypeScript 和 Vite 前端。
 
-API 与 Worker 共享数据库、Redis、NATS 和同一份 `ZRT_SECRETS_KEY`。服务启动只验证迁移版本，不会静默修改生产表结构。
+ZRT 主进程中的 HTTP 与后台协程共享数据库、Redis、NATS 和同一份 `ZRT_SECRETS_KEY`。任一关键后台协程异常退出都会使主进程安全退出，由容器编排系统整体重启，避免出现 API 正常但任务停止的半失效状态。服务启动只验证迁移版本，不会静默修改生产表结构。
 
 ## 数据库
 
-默认 SQLite 适合单机和试用；多个 API/Worker 实例应使用 PostgreSQL 或 MySQL。SQLite 固定单连接并启用 WAL、外键和 busy timeout，不应通过网络文件系统在多主机间共享数据库文件。
+默认 SQLite 适合单机和试用；运行多个 ZRT 实例时应使用 PostgreSQL 或 MySQL。SQLite 固定单连接并启用 WAL、外键和 busy timeout，不应通过网络文件系统在多主机间共享数据库文件。
 
 所有模型通过同一组版本化 GORM 迁移在 SQLite、PostgreSQL、MySQL 上创建。CI 使用实际 PostgreSQL 和 MySQL 服务重复执行迁移，以验证幂等性。
 
@@ -29,7 +28,7 @@ Redis 不再用 List 充当任务队列。项目使用 go-redis/v9；这里的 v
 
 ## NATS 与有限重试
 
-任务记录和 Outbox 事件在一个数据库事务中创建。Publisher 使用 JetStream 消息 ID 去重后投递，Worker 显式 Ack、Nak 或 Term。
+任务记录和 Outbox 事件在一个数据库事务中创建。进程内 Publisher 使用 JetStream 消息 ID 去重后投递，后台任务协程显式 Ack、Nak 或 Term。
 
 - `max_attempts` 包含首次执行，默认值为 4，即最多重试 3 次。
 - 临时网络故障、超时和限流按退避策略重试。

@@ -13,6 +13,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -76,14 +77,12 @@ func run() error {
 		return runMigrate(ctx, cfg, logger)
 	case "server":
 		return runServer(ctx, cfg, logger)
-	case "worker":
-		return runWorker(ctx, cfg, logger)
 	case "admin":
 		return runAdmin(ctx, cfg, logger, os.Args[2:])
 	case "legacy-import":
 		return runLegacyImport(ctx, cfg, logger, os.Args[2:])
 	default:
-		return fmt.Errorf("未知启动命令 %q，可用命令: server、worker、migrate、admin、legacy-import、version", command)
+		return fmt.Errorf("未知启动命令 %q，可用命令: server、migrate、admin、legacy-import、version", command)
 	}
 }
 
@@ -358,19 +357,14 @@ func runMigrate(ctx context.Context, cfg config.Config, logger *slog.Logger) err
 }
 
 func runServer(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
-	resources, err := bootstrap.Open(ctx, cfg, logger)
+	serviceCtx, cancelService := context.WithCancel(ctx)
+	defer cancelService()
+	resources, err := bootstrap.Open(serviceCtx, cfg, logger)
 	if err != nil {
 		logger.Error("初始化服务依赖失败", "operation", "server_bootstrap", "err", err)
 		return errors.New("服务依赖初始化失败")
 	}
 	defer resources.Close()
-	// 默认单机模式由 API 进程投递 Outbox；独立 Worker 可用于后续横向扩容。
-	publisher := outbox.New(resources.Database, resources.NATS, logger, cfg.NATS.MaxAttempts)
-	go func() {
-		if err := publisher.Run(ctx); err != nil {
-			logger.Error("API 进程的 Outbox Publisher 退出", "operation", "server_outbox", "err", err)
-		}
-	}()
 	accounts := account.NewService(resources.Database)
 	accessService := access.NewService(resources.Database)
 	auditService := audit.NewService(resources.Database)
@@ -400,6 +394,14 @@ func runServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 	monitorService := monitor.NewService(resources.Database, secretManager, notificationService, nil, cfg.NATS.MaxAttempts, logger)
 	schedulerService := scheduler.NewService(resources.Database, notificationService, cfg.NATS.MaxAttempts, logger)
 	taskService := task.NewService(resources.Database, cfg.NATS.MaxAttempts)
+	taskWorker, err := newBackgroundTaskWorker(
+		resources, cfg, logger, repositoryService, deploymentService,
+		notificationService, monitorService, schedulerService,
+	)
+	if err != nil {
+		logger.Error("初始化后台任务服务失败", "operation", "server_background_bootstrap", "err", err)
+		return errors.New("后台任务服务初始化失败")
+	}
 
 	router := httpapi.NewRouter(httpapi.Dependencies{
 		Environment:    cfg.Environment,
@@ -435,54 +437,102 @@ func runServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 		IdleTimeout:       cfg.Server.IdleTimeout,
 		MaxHeaderBytes:    1 << 20,
 	}
-	errCh := make(chan error, 1)
+
+	// HTTP、任务消费者、Outbox、监控和调度共享同一个取消信号，确保单进程一致启停。
+	backgroundErrCh := make(chan error, 1)
+	var background sync.WaitGroup
+	startBackground := func(operation string, run func() error) {
+		background.Add(1)
+		go func() {
+			defer background.Done()
+			if err := run(); err != nil {
+				if serviceCtx.Err() != nil {
+					logger.Warn("后台协程停止时返回错误", "operation", operation, "err", err)
+					return
+				}
+				logger.Error("关键后台协程异常退出", "operation", operation, "err", err)
+				select {
+				case backgroundErrCh <- err:
+				default:
+				}
+			}
+		}()
+	}
+	publisher := outbox.New(resources.Database, resources.NATS, logger, cfg.NATS.MaxAttempts)
+	startBackground("server_outbox", func() error { return publisher.Run(serviceCtx) })
+	startBackground("server_task_consumer", func() error { return taskWorker.Run(serviceCtx) })
+	startBackground("server_monitor_scanner", func() error {
+		monitorService.Run(serviceCtx, cfg.Scheduler.PollInterval)
+		return nil
+	})
+	startBackground("server_scheduler_scanner", func() error {
+		schedulerService.Run(serviceCtx, cfg.Scheduler.PollInterval)
+		return nil
+	})
+
+	httpErrCh := make(chan error, 1)
 	go func() {
 		logger.Info("ZRT HTTP 服务已启动", "operation", "http_listen", "address", cfg.Server.Address)
-		errCh <- server.ListenAndServe()
+		httpErrCh <- server.ListenAndServe()
 	}()
+	logger.Info("ZRT 后台任务协程已启动", "operation", "server_background_start", "concurrency", cfg.Worker.Concurrency)
 
+	var resultErr error
 	select {
 	case <-ctx.Done():
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), cfg.Server.ShutdownTimeout)
-		defer cancel()
-		if err := server.Shutdown(shutdownCtx); err != nil {
-			logger.Error("HTTP 服务优雅退出失败", "operation", "http_shutdown", "err", err)
-			return errors.New("HTTP 服务退出失败")
+	case err := <-httpErrCh:
+		if !errors.Is(err, http.ErrServerClosed) {
+			logger.Error("HTTP 服务监听失败", "operation", "http_listen", "address", cfg.Server.Address, "err", err)
+			resultErr = errors.New("HTTP 服务启动失败")
 		}
-		logger.Info("ZRT HTTP 服务已停止", "operation", "http_shutdown")
-		return nil
-	case err := <-errCh:
-		if errors.Is(err, http.ErrServerClosed) {
-			return nil
-		}
-		logger.Error("HTTP 服务监听失败", "operation", "http_listen", "address", cfg.Server.Address, "err", err)
-		return errors.New("HTTP 服务启动失败")
+	case <-backgroundErrCh:
+		resultErr = errors.New("后台任务服务异常退出")
 	}
+
+	// 先广播取消信号停止接收新任务，再关闭 HTTP，并等待在途任务在配置上限内结束。
+	cancelService()
+	shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), cfg.Server.ShutdownTimeout)
+	if err := server.Shutdown(shutdownCtx); err != nil {
+		logger.Error("HTTP 服务优雅退出失败", "operation", "http_shutdown", "err", err)
+		if resultErr == nil {
+			resultErr = errors.New("HTTP 服务退出失败")
+		}
+	}
+	cancelShutdown()
+
+	backgroundDone := make(chan struct{})
+	go func() {
+		background.Wait()
+		close(backgroundDone)
+	}()
+	waitTimer := time.NewTimer(cfg.Worker.ShutdownTimeout + cfg.Server.ShutdownTimeout)
+	defer waitTimer.Stop()
+	select {
+	case <-backgroundDone:
+	case <-waitTimer.C:
+		logger.Error("等待后台协程退出超时", "operation", "server_background_shutdown")
+		if resultErr == nil {
+			resultErr = errors.New("后台任务服务退出超时")
+		}
+	}
+	logger.Info("ZRT 服务已停止", "operation", "server_shutdown", "time", time.Now().UTC())
+	return resultErr
 }
 
-func runWorker(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
-	resources, err := bootstrap.Open(ctx, cfg, logger)
-	if err != nil {
-		logger.Error("初始化 Worker 依赖失败", "operation", "worker_bootstrap", "err", err)
-		return errors.New("Worker 依赖初始化失败")
-	}
-	defer resources.Close()
-	logger.Info("ZRT Worker 已启动", "operation", "worker_start")
-	publisher := outbox.New(resources.Database, resources.NATS, logger, cfg.NATS.MaxAttempts)
-	go func() {
-		if err := publisher.Run(ctx); err != nil {
-			logger.Error("Worker 的 Outbox Publisher 退出", "operation", "worker_outbox", "err", err)
-		}
-	}()
+func newBackgroundTaskWorker(
+	resources *bootstrap.Resources,
+	cfg config.Config,
+	logger *slog.Logger,
+	repositoryService *repository.Service,
+	deploymentService *deployment.Service,
+	notificationService *notification.Service,
+	monitorService *monitor.Service,
+	schedulerService *scheduler.Service,
+) (*worker.Worker, error) {
 	registry := worker.NewRegistry()
 	if err := registry.Register("system.noop", func(context.Context, task.Message) error { return nil }); err != nil {
 		logger.Error("注册内置任务处理器失败", "operation", "worker_register", "kind", "system.noop", "err", err)
-		return errors.New("Worker 初始化失败")
-	}
-	repositoryService, err := newRepositoryService(resources.Database, cfg)
-	if err != nil {
-		logger.Error("初始化 Worker 代码仓库服务失败", "operation", "worker_repository_bootstrap", "err", err)
-		return errors.New("Worker 初始化失败")
+		return nil, errors.New("后台任务初始化失败")
 	}
 	if err := registry.Register("repository.webhook", func(ctx context.Context, message task.Message) error {
 		if err := repositoryService.ProcessWebhookTask(ctx, message.Payload); err != nil {
@@ -494,19 +544,8 @@ func runWorker(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 		return nil
 	}); err != nil {
 		logger.Error("注册 Webhook 任务处理器失败", "operation", "worker_register", "kind", "repository.webhook", "err", err)
-		return errors.New("Worker 初始化失败")
+		return nil, errors.New("后台任务初始化失败")
 	}
-	secretManager, err := secret.New(cfg.Secrets.Key)
-	if err != nil {
-		logger.Error("初始化 Worker 基础设施密钥管理器失败", "operation", "worker_cluster_secret_bootstrap", "err", err)
-		return errors.New("Worker 初始化失败")
-	}
-	dockerService := dockerengine.NewService(resources.Database, secretManager, cfg.Runtime)
-	kubernetesService := kube.NewService(resources.Database, secretManager, cfg.Runtime)
-	deploymentService := deployment.NewService(resources.Database, dockerService, kubernetesService, logger)
-	notificationService := notification.NewService(resources.Database, secretManager, nil, cfg.NATS.MaxAttempts)
-	monitorService := monitor.NewService(resources.Database, secretManager, notificationService, nil, cfg.NATS.MaxAttempts, logger)
-	schedulerService := scheduler.NewService(resources.Database, notificationService, cfg.NATS.MaxAttempts, logger)
 	registerDeployment := func(kind string) error {
 		return registry.Register(kind, func(ctx context.Context, message task.Message) error {
 			var payload deployment.TaskPayload
@@ -525,7 +564,7 @@ func runWorker(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 	for _, kind := range []string{"deploy.runtime", "rollback.runtime"} {
 		if err := registerDeployment(kind); err != nil {
 			logger.Error("注册发布任务处理器失败", "operation", "worker_register", "kind", kind, "err", err)
-			return errors.New("Worker 初始化失败")
+			return nil, errors.New("后台任务初始化失败")
 		}
 	}
 	if err := registry.Register("notification.dispatch", func(ctx context.Context, message task.Message) error {
@@ -549,7 +588,7 @@ func runWorker(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 		return nil
 	}); err != nil {
 		logger.Error("注册通知任务处理器失败", "operation", "worker_register", "kind", "notification.dispatch", "err", err)
-		return errors.New("Worker 初始化失败")
+		return nil, errors.New("后台任务初始化失败")
 	}
 	if err := registry.Register("monitor.check", func(ctx context.Context, message task.Message) error {
 		var payload monitor.TaskPayload
@@ -567,7 +606,7 @@ func runWorker(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 		return nil
 	}); err != nil {
 		logger.Error("注册监控任务处理器失败", "operation", "worker_register", "kind", "monitor.check", "err", err)
-		return errors.New("Worker 初始化失败")
+		return nil, errors.New("后台任务初始化失败")
 	}
 	if err := registry.Register("scheduler.execute", func(ctx context.Context, message task.Message) error {
 		var payload scheduler.TaskPayload
@@ -584,17 +623,9 @@ func runWorker(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 		return nil
 	}); err != nil {
 		logger.Error("注册定时任务处理器失败", "operation", "worker_register", "kind", "scheduler.execute", "err", err)
-		return errors.New("Worker 初始化失败")
+		return nil, errors.New("后台任务初始化失败")
 	}
-	go monitorService.Run(ctx, cfg.Scheduler.PollInterval)
-	go schedulerService.Run(ctx, cfg.Scheduler.PollInterval)
-	taskWorker := worker.New(resources.Database, resources.NATS, registry, logger, cfg.NATS, cfg.Worker)
-	if err := taskWorker.Run(ctx); err != nil {
-		logger.Error("任务 Worker 运行失败", "operation", "worker_run", "err", err)
-		return errors.New("Worker 运行失败")
-	}
-	logger.Info("ZRT Worker 已停止", "operation", "worker_stop", "time", time.Now().UTC())
-	return nil
+	return worker.New(resources.Database, resources.NATS, registry, logger, cfg.NATS, cfg.Worker), nil
 }
 
 func newRepositoryService(db *gorm.DB, cfg config.Config) (*repository.Service, error) {

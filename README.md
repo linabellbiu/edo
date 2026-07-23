@@ -26,11 +26,10 @@ go run ./cmd/zrt admin create --username admin --nickname 管理员
 npm ci --prefix web
 ```
 
-分别启动 API、Worker 和前端开发服务器：
+分别启动 ZRT 服务和前端开发服务器。`server` 会使用 Go Goroutine 同时运行 API 与后台任务：
 
 ```bash
 go run ./cmd/zrt server
-go run ./cmd/zrt worker
 npm run dev --prefix web
 ```
 

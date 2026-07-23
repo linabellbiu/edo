@@ -22,6 +22,7 @@ spec:
         runAsGroup: 10001
         fsGroup: 10001
       initContainers:
+        # 数据库迁移成功后，Kubernetes 才会启动 ZRT 主容器。
         - name: migrate
           image: ghcr.io/example/zrt:latest
           args: ["migrate"]
@@ -35,7 +36,8 @@ spec:
           volumeMounts:
             - { name: tmp, mountPath: /tmp }
       containers:
-        - name: api
+        # 单个 Go 进程同时提供 HTTP/WebSocket，并用 Goroutine 运行后台任务。
+        - name: zrt
           image: ghcr.io/example/zrt:latest
           args: ["server"]
           ports:
@@ -53,23 +55,9 @@ spec:
             periodSeconds: 20
             timeoutSeconds: 3
           resources:
-            requests: { cpu: 100m, memory: 128Mi }
-            limits: { cpu: "1", memory: 512Mi }
-          securityContext:
-            allowPrivilegeEscalation: false
-            readOnlyRootFilesystem: true
-            capabilities: { drop: ["ALL"] }
-          volumeMounts:
-            - { name: tmp, mountPath: /tmp }
-        - name: worker
-          image: ghcr.io/example/zrt:latest
-          args: ["worker"]
-          envFrom:
-            - configMapRef: { name: zrt-config }
-            - secretRef: { name: zrt-secrets }
-          resources:
-            requests: { cpu: 100m, memory: 128Mi }
-            limits: { cpu: "2", memory: 768Mi }
+            # 资源额度同时覆盖 API、NATS 消费、发布、监控和调度任务。
+            requests: { cpu: 200m, memory: 256Mi }
+            limits: { cpu: "2", memory: 1Gi }
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
@@ -80,4 +68,5 @@ spec:
         - name: tmp
           emptyDir:
             sizeLimit: 256Mi
-      terminationGracePeriodSeconds: 40
+      # 覆盖 HTTP 与后台任务配置的优雅停机上限，避免在途任务被强制终止。
+      terminationGracePeriodSeconds: 70

@@ -1,4 +1,4 @@
-.PHONY: deps-up deps-down migrate server worker web test build
+.PHONY: deps-up deps-down migrate server web test build
 
 deps-up:
 	docker compose -f deploy/compose.dev.yml up -d
@@ -11,9 +11,6 @@ migrate:
 
 server:
 	go run ./cmd/zrt server
-
-worker:
-	go run ./cmd/zrt worker
 
 web:
 	npm --prefix web run dev
