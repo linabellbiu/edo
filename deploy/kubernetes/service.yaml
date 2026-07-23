@@ -1,0 +1,12 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: zrt
+  namespace: zrt
+spec:
+  selector:
+    app.kubernetes.io/name: zrt
+  ports:
+    - name: http
+      port: 80
+      targetPort: http

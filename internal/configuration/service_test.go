@@ -1,0 +1,110 @@
+package configuration
+
+import (
+	"context"
+	"encoding/base64"
+	"errors"
+	"io"
+	"log/slog"
+	"testing"
+	"time"
+
+	"zrt/internal/config"
+	"zrt/internal/database"
+	"zrt/internal/model"
+	"zrt/internal/secret"
+)
+
+func TestSecretConfigurationIsEncryptedAndNeverReturned(t *testing.T) {
+	service := newConfigurationTestService(t)
+	secretValue := "postgres://user:password@database/zrt"
+	created, err := service.Create(context.Background(), "admin", Input{
+		Namespace: "payment", Environment: model.EnvironmentProduction,
+		Key: "DATABASE_URL", Value: &secretValue, IsSecret: true,
+	})
+	if err != nil {
+		t.Fatalf("创建密钥配置失败: %v", err)
+	}
+	if created.Value != nil || !created.IsSecret || !created.HasValue {
+		t.Fatalf("密钥配置被 API 回显或状态错误: %+v", created)
+	}
+	var stored model.Configuration
+	if err := service.db.First(&stored, "id = ?", created.ID).Error; err != nil {
+		t.Fatalf("读取密钥配置失败: %v", err)
+	}
+	if stored.Value != "" || stored.SecretCiphertext == "" || stored.SecretCiphertext == secretValue {
+		t.Fatal("密钥配置未正确加密")
+	}
+	resolved, err := service.Resolve(context.Background(), "payment", model.EnvironmentProduction)
+	if err != nil {
+		t.Fatalf("解析密钥配置失败: %v", err)
+	}
+	if resolved["DATABASE_URL"] != secretValue {
+		t.Fatal("解析后的密钥配置内容错误")
+	}
+}
+
+func TestConfigurationVersionAndEnvironmentOverride(t *testing.T) {
+	service := newConfigurationTestService(t)
+	globalValue := "30"
+	global, err := service.Create(context.Background(), "admin", Input{
+		Namespace: "checkout", Environment: model.EnvironmentGlobal,
+		Key: "REQUEST_TIMEOUT", Value: &globalValue,
+	})
+	if err != nil {
+		t.Fatalf("创建全局配置失败: %v", err)
+	}
+	productionValue := "60"
+	production, err := service.Create(context.Background(), "admin", Input{
+		Namespace: "checkout", Environment: model.EnvironmentProduction,
+		Key: "REQUEST_TIMEOUT", Value: &productionValue,
+	})
+	if err != nil {
+		t.Fatalf("创建生产配置失败: %v", err)
+	}
+	resolved, err := service.Resolve(context.Background(), "checkout", model.EnvironmentProduction)
+	if err != nil || resolved["REQUEST_TIMEOUT"] != "60" {
+		t.Fatalf("环境配置未覆盖全局配置: values=%v err=%v", resolved, err)
+	}
+	newValue := "90"
+	if _, err := service.Update(context.Background(), production.ID, "operator", UpdateInput{
+		Value: &newValue, ExpectedVersion: 99,
+	}); !errors.Is(err, ErrVersionConflict) {
+		t.Fatalf("过期配置版本未被拒绝: %v", err)
+	}
+	updated, err := service.Update(context.Background(), production.ID, "operator", UpdateInput{
+		Value: &newValue, ExpectedVersion: production.Version,
+	})
+	if err != nil || updated.Version != 2 || updated.Value == nil || *updated.Value != "90" {
+		t.Fatalf("更新配置失败: configuration=%+v err=%v", updated, err)
+	}
+	revisions, err := service.Revisions(context.Background(), production.ID, 10)
+	if err != nil || len(revisions) != 2 || revisions[0].Version != 2 {
+		t.Fatalf("配置修订记录错误: revisions=%+v err=%v", revisions, err)
+	}
+	if global.Version != 1 {
+		t.Fatal("全局配置版本被意外修改")
+	}
+}
+
+func newConfigurationTestService(t *testing.T) *Service {
+	t.Helper()
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	db, err := database.Open(context.Background(), config.Database{
+		Driver: "sqlite", DSN: "file:" + t.Name() + "?mode=memory&cache=shared",
+		MaxOpenConns: 1, MaxIdleConns: 1, ConnMaxLifetime: time.Minute,
+	}, logger)
+	if err != nil {
+		t.Fatalf("打开配置测试数据库失败: %v", err)
+	}
+	t.Cleanup(func() { _ = database.Close(db) })
+	if err := database.Migrate(context.Background(), db); err != nil {
+		t.Fatalf("迁移配置测试数据库失败: %v", err)
+	}
+	key := base64.StdEncoding.EncodeToString([]byte("0123456789abcdef0123456789abcdef"))
+	secretManager, err := secret.New(key)
+	if err != nil {
+		t.Fatalf("初始化配置测试密钥失败: %v", err)
+	}
+	return NewService(db, secretManager)
+}

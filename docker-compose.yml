@@ -1,0 +1,147 @@
+name: zrt
+
+x-zrt-environment: &zrt-environment
+  ZRT_ENV: production
+  ZRT_LOG_LEVEL: ${ZRT_LOG_LEVEL:-info}
+  ZRT_SERVER_ADDRESS: :8080
+  ZRT_WEB_ROOT: /app/web
+  ZRT_AUTH_COOKIE_SECURE: ${ZRT_AUTH_COOKIE_SECURE:-false}
+  ZRT_DATABASE_DRIVER: ${ZRT_DATABASE_DRIVER:-sqlite}
+  ZRT_DATABASE_DSN: ${ZRT_DATABASE_DSN:-/app/data/zrt.db}
+  ZRT_DATABASE_MAX_OPEN_CONNS: ${ZRT_DATABASE_MAX_OPEN_CONNS:-25}
+  ZRT_DATABASE_MAX_IDLE_CONNS: ${ZRT_DATABASE_MAX_IDLE_CONNS:-5}
+  ZRT_REDIS_URL: ${ZRT_REDIS_URL:-redis://redis:6379/0}
+  ZRT_REDIS_KEY_PREFIX: ${ZRT_REDIS_KEY_PREFIX:-zrt:}
+  ZRT_NATS_URL: ${ZRT_NATS_URL:-nats://nats:4222}
+  ZRT_NATS_STREAM: ${ZRT_NATS_STREAM:-zrt_tasks}
+  ZRT_NATS_DEAD_STREAM: ${ZRT_NATS_DEAD_STREAM:-zrt_dead}
+  ZRT_NATS_SUBJECT_PREFIX: ${ZRT_NATS_SUBJECT_PREFIX:-zrt.task}
+  ZRT_NATS_DEAD_SUBJECT: ${ZRT_NATS_DEAD_SUBJECT:-zrt.dead.task.v1}
+  ZRT_NATS_MAX_ATTEMPTS: ${ZRT_NATS_MAX_ATTEMPTS:-4}
+  ZRT_NATS_MAX_AGE: ${ZRT_NATS_MAX_AGE:-168h}
+  ZRT_NATS_MAX_BYTES: ${ZRT_NATS_MAX_BYTES:-536870912}
+  ZRT_NATS_DEAD_MAX_BYTES: ${ZRT_NATS_DEAD_MAX_BYTES:-268435456}
+  ZRT_NATS_REPLICAS: ${ZRT_NATS_REPLICAS:-1}
+  ZRT_WORKER_CONCURRENCY: ${ZRT_WORKER_CONCURRENCY:-8}
+  ZRT_WORKER_TASK_TIMEOUT: ${ZRT_WORKER_TASK_TIMEOUT:-30m}
+  ZRT_WORKER_LEASE_DURATION: ${ZRT_WORKER_LEASE_DURATION:-45s}
+  ZRT_WORKER_SHUTDOWN_TIMEOUT: ${ZRT_WORKER_SHUTDOWN_TIMEOUT:-30s}
+  ZRT_SCHEDULER_POLL_INTERVAL: ${ZRT_SCHEDULER_POLL_INTERVAL:-15s}
+  ZRT_SECRETS_KEY: ${ZRT_SECRETS_KEY:?请设置 32 字节随机密钥的 Base64}
+
+x-zrt-runtime: &zrt-runtime
+  image: ${ZRT_IMAGE:-zrt:local}
+  environment: *zrt-environment
+  init: true
+  read_only: true
+  security_opt:
+    - no-new-privileges:true
+  tmpfs:
+    - /tmp:size=256m,mode=1777
+  volumes:
+    - zrt-data:/app/data
+  networks:
+    - zrt
+  logging:
+    driver: json-file
+    options:
+      max-size: 10m
+      max-file: "5"
+
+services:
+  migrate:
+    <<: *zrt-runtime
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        ZRT_VERSION: ${ZRT_VERSION:-dev}
+    command: ["migrate"]
+    restart: "on-failure:5"
+
+  api:
+    <<: *zrt-runtime
+    command: ["server"]
+    ports:
+      - "127.0.0.1:${ZRT_HTTP_PORT:-8080}:8080"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+      nats:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://127.0.0.1:8080/api/v1/health/ready"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    stop_grace_period: 20s
+    restart: unless-stopped
+
+  worker:
+    <<: *zrt-runtime
+    command: ["worker"]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+      nats:
+        condition: service_healthy
+    stop_grace_period: 40s
+    restart: unless-stopped
+
+  redis:
+    image: redis:7.4.9-alpine
+    command: ["redis-server", "--appendonly", "yes", "--appendfsync", "everysec", "--save", "60", "1000"]
+    init: true
+    security_opt:
+      - no-new-privileges:true
+    volumes:
+      - zrt-redis:/data
+    networks:
+      - zrt
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+    restart: unless-stopped
+
+  nats:
+    image: nats:2.12.12-alpine
+    command: ["--jetstream", "--store_dir", "/data", "--http_port", "8222"]
+    init: true
+    security_opt:
+      - no-new-privileges:true
+    volumes:
+      - zrt-nats:/data
+    networks:
+      - zrt
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8222/healthz?js-enabled-only=true"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+    restart: unless-stopped
+
+networks:
+  zrt:
+    driver: bridge
+
+volumes:
+  zrt-data:
+  zrt-redis:
+  zrt-nats:

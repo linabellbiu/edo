@@ -1,0 +1,30 @@
+name: zrt
+
+services:
+  redis:
+    image: redis:7.4.9-alpine
+    command: ["redis-server", "--appendonly", "yes", "--save", "60", "1000"]
+    ports:
+      - "127.0.0.1:6379:6379"
+    volumes:
+      - zrt-redis:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 3s
+      timeout: 2s
+      retries: 10
+    restart: unless-stopped
+
+  nats:
+    image: nats:2.12.12-alpine
+    command: ["--jetstream", "--store_dir", "/data", "--http_port", "8222"]
+    ports:
+      - "127.0.0.1:4222:4222"
+      - "127.0.0.1:8222:8222"
+    volumes:
+      - zrt-nats:/data
+    restart: unless-stopped
+
+volumes:
+  zrt-redis:
+  zrt-nats:

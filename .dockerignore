@@ -1,0 +1,10 @@
+.git
+.history
+.idea
+.vscode
+bin
+data
+web/dist
+web/node_modules
+*.db
+*.log

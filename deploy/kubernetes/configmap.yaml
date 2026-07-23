@@ -1,0 +1,19 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: zrt-config
+  namespace: zrt
+data:
+  ZRT_ENV: production
+  ZRT_LOG_LEVEL: info
+  ZRT_SERVER_ADDRESS: :8080
+  ZRT_WEB_ROOT: /app/web
+  ZRT_DATABASE_DRIVER: postgres
+  ZRT_AUTH_COOKIE_SECURE: "true"
+  ZRT_NATS_STREAM: zrt_tasks
+  ZRT_NATS_DEAD_STREAM: zrt_dead
+  ZRT_NATS_MAX_ATTEMPTS: "4"
+  ZRT_NATS_MAX_BYTES: "536870912"
+  ZRT_NATS_DEAD_MAX_BYTES: "268435456"
+  ZRT_WORKER_CONCURRENCY: "8"
+  ZRT_SCHEDULER_POLL_INTERVAL: 15s

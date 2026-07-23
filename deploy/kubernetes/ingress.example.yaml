@@ -1,0 +1,23 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: zrt
+  namespace: zrt
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "7200"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "7200"
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts: [zrt.example.com]
+      secretName: zrt-tls
+  rules:
+    - host: zrt.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: zrt
+                port: { number: 80 }
