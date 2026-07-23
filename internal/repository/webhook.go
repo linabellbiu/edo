@@ -36,12 +36,29 @@ type webhookPayload struct {
 	Ref         string `json:"ref"`
 	After       string `json:"after"`
 	CheckoutSHA string `json:"checkout_sha"`
+	Action      string `json:"action"`
+	ObjectKind  string `json:"object_kind"`
 	HeadCommit  *struct {
 		Message string `json:"message"`
 	} `json:"head_commit"`
 	Commits []struct {
 		Message string `json:"message"`
 	} `json:"commits"`
+	PullRequest *struct {
+		Head struct {
+			SHA string `json:"sha"`
+		} `json:"head"`
+		Base struct {
+			Ref string `json:"ref"`
+		} `json:"base"`
+	} `json:"pull_request"`
+	ObjectAttributes *struct {
+		Action       string `json:"action"`
+		TargetBranch string `json:"target_branch"`
+		LastCommit   struct {
+			ID string `json:"id"`
+		} `json:"last_commit"`
+	} `json:"object_attributes"`
 }
 
 func (s *Service) HandleWebhook(
@@ -66,25 +83,39 @@ func (s *Service) HandleWebhook(
 	}
 
 	eventName := providerEventName(repository.Provider, headers)
-	if !supportedPushEvent(repository.Provider, eventName) {
-		return WebhookResult{}, ErrUnsupportedEvent
-	}
 	var payload webhookPayload
 	if err := json.Unmarshal(body, &payload); err != nil {
 		return WebhookResult{}, ErrUnsupportedEvent
 	}
 	eventType := ""
-	switch {
-	case strings.HasPrefix(payload.Ref, "refs/heads/"):
-		eventType = "branch_push"
-	case strings.HasPrefix(payload.Ref, "refs/tags/"):
-		eventType = "tag_push"
-	default:
+	commitSHA := ""
+	if supportedPushEvent(repository.Provider, eventName) {
+		switch {
+		case strings.HasPrefix(payload.Ref, "refs/heads/"):
+			eventType = "branch_push"
+		case strings.HasPrefix(payload.Ref, "refs/tags/"):
+			eventType = "tag_push"
+		default:
+			return WebhookResult{}, ErrUnsupportedEvent
+		}
+		commitSHA = payload.After
+		if commitSHA == "" {
+			commitSHA = payload.CheckoutSHA
+		}
+	} else if supportedPullRequestEvent(repository.Provider, eventName) {
+		eventType = "pull_request"
+		if payload.PullRequest != nil {
+			payload.Ref = "refs/heads/" + strings.TrimSpace(payload.PullRequest.Base.Ref)
+			commitSHA = payload.PullRequest.Head.SHA
+		} else if payload.ObjectAttributes != nil {
+			payload.Ref = "refs/heads/" + strings.TrimSpace(payload.ObjectAttributes.TargetBranch)
+			commitSHA = payload.ObjectAttributes.LastCommit.ID
+		}
+		if payload.Ref == "refs/heads/" || commitSHA == "" {
+			return WebhookResult{}, ErrUnsupportedEvent
+		}
+	} else {
 		return WebhookResult{}, ErrUnsupportedEvent
-	}
-	commitSHA := payload.After
-	if commitSHA == "" {
-		commitSHA = payload.CheckoutSHA
 	}
 	if allZeroSHA(commitSHA) {
 		commitSHA = ""
@@ -237,6 +268,20 @@ func supportedPushEvent(provider model.GitProvider, event string) bool {
 		return event == "push hook" || event == "tag push hook"
 	case model.GitProviderGitee:
 		return event == "push hook" || event == "push_hooks" || event == "push"
+	default:
+		return false
+	}
+}
+
+func supportedPullRequestEvent(provider model.GitProvider, event string) bool {
+	event = strings.ToLower(strings.TrimSpace(event))
+	switch provider {
+	case model.GitProviderGitHub, model.GitProviderGitea, model.GitProviderGeneric:
+		return event == "pull_request"
+	case model.GitProviderGitLab:
+		return event == "merge request hook"
+	case model.GitProviderGitee:
+		return event == "merge request hook" || event == "merge_request_hooks" || event == "pull_request"
 	default:
 		return false
 	}

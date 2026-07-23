@@ -31,12 +31,14 @@ import (
 	"zrt/internal/deployment"
 	"zrt/internal/dockerengine"
 	"zrt/internal/httpapi"
+	"zrt/internal/identity"
 	"zrt/internal/kube"
 	"zrt/internal/legacyimport"
 	"zrt/internal/logging"
 	"zrt/internal/monitor"
 	"zrt/internal/notification"
 	"zrt/internal/outbox"
+	"zrt/internal/pipeline"
 	"zrt/internal/repository"
 	"zrt/internal/scheduler"
 	"zrt/internal/secret"
@@ -366,6 +368,14 @@ func runServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 	}
 	defer resources.Close()
 	accounts := account.NewService(resources.Database)
+	initialAdmin, created, err := accounts.EnsureInitialAdmin(serviceCtx)
+	if err != nil {
+		logger.Error("初始化管理员账户失败", "operation", "account_bootstrap", "err", err)
+		return errors.New("管理员账户初始化失败")
+	}
+	if created {
+		logger.Info("初始化管理员账户已创建", "operation", "account_bootstrap", "user_id", initialAdmin.ID, "username", initialAdmin.Username)
+	}
 	accessService := access.NewService(resources.Database)
 	auditService := audit.NewService(resources.Database)
 	sessions := auth.NewSessionStore(resources.Redis, cfg.Auth.SessionTTL)
@@ -385,6 +395,8 @@ func runServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 		logger.Error("初始化基础设施密钥管理器失败", "operation", "cluster_secret_bootstrap", "err", err)
 		return errors.New("容器与集群服务初始化失败")
 	}
+	identityService := identity.NewService(resources.Database, resources.Redis, secretManager, accounts, loginService, limiter)
+	pipelineService := pipeline.NewService(resources.Database, repositoryService, secretManager)
 	dockerService := dockerengine.NewService(resources.Database, secretManager, cfg.Runtime)
 	kubernetesService := kube.NewService(resources.Database, secretManager, cfg.Runtime)
 	deploymentService := deployment.NewService(resources.Database, dockerService, kubernetesService, logger)
@@ -395,7 +407,7 @@ func runServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 	schedulerService := scheduler.NewService(resources.Database, notificationService, cfg.NATS.MaxAttempts, logger)
 	taskService := task.NewService(resources.Database, cfg.NATS.MaxAttempts)
 	taskWorker, err := newBackgroundTaskWorker(
-		resources, cfg, logger, repositoryService, deploymentService,
+		resources, cfg, logger, repositoryService, pipelineService, deploymentService,
 		notificationService, monitorService, schedulerService,
 	)
 	if err != nil {
@@ -417,7 +429,9 @@ func runServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 		Sessions:       sessions,
 		Access:         accessService,
 		Audits:         auditService,
+		Identities:     identityService,
 		Repositories:   repositoryService,
+		Pipelines:      pipelineService,
 		Docker:         dockerService,
 		Kubernetes:     kubernetesService,
 		Deployments:    deploymentService,
@@ -461,6 +475,10 @@ func runServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 	publisher := outbox.New(resources.Database, resources.NATS, logger, cfg.NATS.MaxAttempts)
 	startBackground("server_outbox", func() error { return publisher.Run(serviceCtx) })
 	startBackground("server_task_consumer", func() error { return taskWorker.Run(serviceCtx) })
+	startBackground("server_application_watcher", func() error {
+		pipelineService.RunWatcher(serviceCtx, cfg.Scheduler.PollInterval)
+		return nil
+	})
 	startBackground("server_monitor_scanner", func() error {
 		monitorService.Run(serviceCtx, cfg.Scheduler.PollInterval)
 		return nil
@@ -524,6 +542,7 @@ func newBackgroundTaskWorker(
 	cfg config.Config,
 	logger *slog.Logger,
 	repositoryService *repository.Service,
+	pipelineService *pipeline.Service,
 	deploymentService *deployment.Service,
 	notificationService *notification.Service,
 	monitorService *monitor.Service,
@@ -540,6 +559,13 @@ func newBackgroundTaskWorker(
 				return worker.NewPermanentError("invalid_webhook_task", repository.ErrInvalidTaskPayload.Error(), err)
 			}
 			return worker.NewRetryableError("webhook_database_unavailable", "Webhook 事件处理暂时失败", err)
+		}
+		var payload repository.WebhookTaskPayload
+		if err := json.Unmarshal(message.Payload, &payload); err != nil {
+			return worker.NewPermanentError("invalid_webhook_task", repository.ErrInvalidTaskPayload.Error(), err)
+		}
+		if err := pipelineService.HandleRepositoryEvent(ctx, payload); err != nil {
+			return worker.NewRetryableError("application_webhook_update_failed", "应用监听状态暂时更新失败", err)
 		}
 		return nil
 	}); err != nil {

@@ -1,70 +1,43 @@
-# ZRT 单机部署入口。默认使用 SQLite，并启动一个 ZRT 服务、Redis 和 NATS JetStream。
+# ZRT 单机部署：应用、Redis、NATS 一起启动，数据保存在 Docker Volume 中。
 name: zrt
 
-# Compose 的 x- 扩展字段不会生成容器；这里集中定义三个 ZRT 进程共用的环境变量。
+# migrate 和 api 共用这组环境变量。这里仅保留容器部署必须指定的内容，
+# 重试次数、任务超时、Stream 容量等默认值统一放在 Go 配置中维护。
 x-zrt-environment: &zrt-environment
   ZRT_ENV: production
-  ZRT_LOG_LEVEL: ${ZRT_LOG_LEVEL:-info}
-  ZRT_SERVER_ADDRESS: :8080
-  ZRT_WEB_ROOT: /app/web
-  # 直接通过本机 HTTP 访问时保持 false；接入 HTTPS 反向代理后必须设置为 true。
-  ZRT_AUTH_COOKIE_SECURE: ${ZRT_AUTH_COOKIE_SECURE:-false}
 
-  # 默认将 SQLite 文件写入持久化卷；可通过环境变量切换为 PostgreSQL 或 MySQL。
-  ZRT_DATABASE_DRIVER: ${ZRT_DATABASE_DRIVER:-sqlite}
-  ZRT_DATABASE_DSN: ${ZRT_DATABASE_DSN:-/app/data/zrt.db}
-  ZRT_DATABASE_MAX_OPEN_CONNS: ${ZRT_DATABASE_MAX_OPEN_CONNS:-25}
-  ZRT_DATABASE_MAX_IDLE_CONNS: ${ZRT_DATABASE_MAX_IDLE_CONNS:-5}
+  # 当前端通过 http://127.0.0.1:8080 访问时必须为 false。
+  # 配置 HTTPS 反向代理后改为 true。
+  ZRT_AUTH_COOKIE_SECURE: "false"
 
-  # Redis 只保存登录会话、限流和短期状态，不作为任务队列。
-  ZRT_REDIS_URL: ${ZRT_REDIS_URL:-redis://redis:6379/0}
-  ZRT_REDIS_KEY_PREFIX: ${ZRT_REDIS_KEY_PREFIX:-zrt:}
+  # SQLite 数据库保存在 zrt-data 卷中。
+  ZRT_DATABASE_DRIVER: sqlite
+  ZRT_DATABASE_DSN: /app/data/zrt.db
 
-  # NATS JetStream 负责持久化任务、消费确认、有限重试和死信。
-  ZRT_NATS_URL: ${ZRT_NATS_URL:-nats://nats:4222}
-  ZRT_NATS_STREAM: ${ZRT_NATS_STREAM:-zrt_tasks}
-  ZRT_NATS_DEAD_STREAM: ${ZRT_NATS_DEAD_STREAM:-zrt_dead}
-  ZRT_NATS_SUBJECT_PREFIX: ${ZRT_NATS_SUBJECT_PREFIX:-zrt.task}
-  ZRT_NATS_DEAD_SUBJECT: ${ZRT_NATS_DEAD_SUBJECT:-zrt.dead.task.v1}
-  # 包含首次执行：4 表示首次执行失败后最多再重试 3 次，禁止无限重试。
-  ZRT_NATS_MAX_ATTEMPTS: ${ZRT_NATS_MAX_ATTEMPTS:-4}
-  ZRT_NATS_MAX_AGE: ${ZRT_NATS_MAX_AGE:-168h}
-  # 限制任务与死信 Stream 的磁盘占用，单位为字节。
-  ZRT_NATS_MAX_BYTES: ${ZRT_NATS_MAX_BYTES:-536870912}
-  ZRT_NATS_DEAD_MAX_BYTES: ${ZRT_NATS_DEAD_MAX_BYTES:-268435456}
-  ZRT_NATS_REPLICAS: ${ZRT_NATS_REPLICAS:-1}
+  # redis 和 nats 是下面的 Compose 服务名，只在容器网络内使用。
+  ZRT_REDIS_URL: redis://redis:6379/0
+  ZRT_NATS_URL: nats://nats:4222
 
-  # server 进程内后台任务协程的并发、单任务超时、租约与优雅停机时间。
-  ZRT_WORKER_CONCURRENCY: ${ZRT_WORKER_CONCURRENCY:-8}
-  ZRT_WORKER_TASK_TIMEOUT: ${ZRT_WORKER_TASK_TIMEOUT:-30m}
-  ZRT_WORKER_LEASE_DURATION: ${ZRT_WORKER_LEASE_DURATION:-45s}
-  ZRT_WORKER_SHUTDOWN_TIMEOUT: ${ZRT_WORKER_SHUTDOWN_TIMEOUT:-30s}
-  ZRT_SCHEDULER_POLL_INTERVAL: ${ZRT_SCHEDULER_POLL_INTERVAL:-15s}
-  # 用于加密仓库凭据、kubeconfig 等敏感数据；未设置时 Compose 会拒绝启动。
-  ZRT_SECRETS_KEY: ${ZRT_SECRETS_KEY:?请设置 32 字节随机密钥的 Base64}
+  # 请在 .env 中设置。该密钥用于加密登录方式、仓库凭据和 kubeconfig。
+  ZRT_SECRETS_KEY: ${ZRT_SECRETS_KEY:?请先在 .env 中设置 ZRT_SECRETS_KEY}
 
-# ZRT 进程的公共运行模板，由 migrate 和 api 通过 YAML 锚点继承。
+# migrate 和 api 共用同一个镜像、数据卷和安全设置。
 x-zrt-runtime: &zrt-runtime
-  # 可指定已发布镜像；未设置时使用本地构建的 zrt:local。
   image: ${ZRT_IMAGE:-zrt:local}
-  # ZRT 镜像来自当前项目或显式指定的标签，不尝试从公共仓库拉取同名镜像。
   pull_policy: never
   environment: *zrt-environment
-  # 轻量 init 负责转发停止信号并回收僵尸进程。
   init: true
-  # 根文件系统只读；需要持久化的内容只能写入 /app/data 数据卷。
+  # 容器根目录只读，并禁止进程提权。
   read_only: true
-  # 禁止容器内进程通过 setuid 等方式获取额外权限。
   security_opt:
     - no-new-privileges:true
-  # Git 临时密钥等短期文件只写入内存，不进入镜像或持久化卷。
+  # 临时文件只写入内存，不进入镜像或数据卷。
   tmpfs:
     - /tmp:size=256m,mode=1777
   volumes:
     - zrt-data:/app/data
   networks:
     - zrt
-  # 限制 Docker json-file 日志大小，防止长期运行占满宿主机磁盘。
   logging:
     driver: json-file
     options:
@@ -72,27 +45,25 @@ x-zrt-runtime: &zrt-runtime
       max-file: "5"
 
 services:
-  # 一次性数据库迁移任务。成功退出后 ZRT 主服务才允许启动。
+  # 一次性数据库迁移。迁移成功后 api 才会启动。
   migrate:
     <<: *zrt-runtime
-    # 只在此处声明构建，主服务复用同一个镜像标签。
     build:
       context: .
       dockerfile: Dockerfile
       args:
         ZRT_VERSION: ${ZRT_VERSION:-dev}
     command: ["migrate"]
-    # 数据库暂时不可用时最多重新执行 5 次，不会无限重试。
+    # 数据库临时不可用时最多重启 5 次。
     restart: "on-failure:5"
 
-  # 单个 ZRT 主进程：同时运行 Gin、React、WebSocket、NATS 消费、监控与调度协程。
+  # ZRT 主服务。HTTP、WebSocket 和后台任务都在这个进程中运行。
+  # 默认每项任务最多执行 4 次；任务 Stream 上限 512 MiB，死信 Stream 上限 256 MiB。
   api:
     <<: *zrt-runtime
     command: ["server"]
-    # 默认只监听本机，生产环境应通过启用 HTTPS/WebSocket 的反向代理暴露。
     ports:
       - "127.0.0.1:${ZRT_HTTP_PORT:-8080}:8080"
-    # 等待迁移成功以及 Redis、NATS 健康，避免主进程在依赖未就绪时启动失败。
     depends_on:
       migrate:
         condition: service_completed_successfully
@@ -106,14 +77,12 @@ services:
       timeout: 5s
       retries: 5
       start_period: 10s
-    # 同时为 HTTP/WebSocket 和后台在途任务预留优雅退出时间。
     stop_grace_period: 70s
     restart: unless-stopped
 
-  # Redis 持久化登录会话与限流状态；不向宿主机开放端口。
+  # Redis 保存登录会话、限流状态和短期缓存。
   redis:
     image: redis:7.4.9-alpine
-    # AOF 每秒刷盘，并保留定期 RDB 快照。
     command: ["redis-server", "--appendonly", "yes", "--appendfsync", "everysec", "--save", "60", "1000"]
     init: true
     security_opt:
@@ -134,10 +103,9 @@ services:
         max-file: "3"
     restart: unless-stopped
 
-  # NATS JetStream 持久化任务消息和死信；不向宿主机开放客户端端口。
+  # NATS JetStream 保存任务消息和死信。数据目录必须持久化。
   nats:
     image: nats:2.12.12-alpine
-    # 8222 监控端口仅用于容器网络内的健康检查，没有映射到宿主机。
     command: ["--jetstream", "--store_dir", "/data", "--http_port", "8222"]
     init: true
     security_opt:
@@ -158,12 +126,12 @@ services:
         max-file: "3"
     restart: unless-stopped
 
-# 所有服务通过独立桥接网络按服务名互相访问。
 networks:
   zrt:
     driver: bridge
 
-# 删除容器不会删除这些命名卷；如需清空数据，必须显式执行 docker compose down -v。
+# docker compose down 不会删除这些卷。
+# docker compose down -v 会删除数据库和消息数据，执行前先备份。
 volumes:
   zrt-data:
   zrt-redis:

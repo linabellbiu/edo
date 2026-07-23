@@ -1,8 +1,9 @@
-import { type FormEvent, useState } from 'react'
+import { type FormEvent, useEffect, useMemo, useState } from 'react'
 import axios from 'axios'
 import { useLocation, useNavigate, useSearchParams } from 'react-router-dom'
 
 import { useAuthStore } from '@/stores/auth'
+import { getLoginProviders, type LoginProvider } from '@/api/client'
 
 interface APIError {
   code?: string
@@ -11,11 +12,12 @@ interface APIError {
 }
 
 function safeRedirect(value: string | null): string {
-  return value?.startsWith('/') && !value.startsWith('//') ? value : '/'
+  return value?.startsWith('/') && !value.startsWith('//') && !value.includes('\\') ? value : '/'
 }
 
 export default function LoginView() {
   const login = useAuthStore((state) => state.login)
+  const loginLDAP = useAuthStore((state) => state.loginLDAP)
   const [searchParams] = useSearchParams()
   const location = useLocation()
   const navigate = useNavigate()
@@ -23,7 +25,15 @@ export default function LoginView() {
   const [password, setPassword] = useState('')
   const [loading, setLoading] = useState(false)
   const [errorMessage, setErrorMessage] = useState('')
+  const [providers, setProviders] = useState<LoginProvider[]>([])
+  const [credentialProvider, setCredentialProvider] = useState('local')
   const unavailable = searchParams.get('reason') === 'unavailable'
+  const ldapProviders = useMemo(() => providers.filter((provider) => provider.type === 'ldap'), [providers])
+  const oauthProviders = useMemo(() => providers.filter((provider) => provider.type !== 'ldap'), [providers])
+
+  useEffect(() => {
+    void getLoginProviders().then(setProviders).catch(() => setProviders([]))
+  }, [])
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
@@ -35,7 +45,8 @@ export default function LoginView() {
     setLoading(true)
     setErrorMessage('')
     try {
-      await login(username, password)
+      if (credentialProvider === 'local') await login(username, password)
+      else await loginLDAP(credentialProvider, username, password)
       navigate(safeRedirect(searchParams.get('redirect')), { replace: true })
     } catch (error) {
       if (axios.isAxiosError<APIError>(error)) {
@@ -48,6 +59,13 @@ export default function LoginView() {
     }
   }
 
+  const externalErrorMessages: Record<string, string> = {
+    cancelled: '你取消了外部账号授权。', expired: '登录请求已过期，请重新选择登录方式。',
+    not_bound: '这个账号尚未绑定，请联系管理员。', email_unverified: '请先在身份平台验证邮箱。', failed: '外部登录失败，请重试。',
+  }
+  const externalError = searchParams.get('external_error')
+  const returnTo = safeRedirect(searchParams.get('redirect'))
+
   return (
     <main className="login-page" key={location.key}>
       <section className="login-brand-panel">
@@ -56,21 +74,21 @@ export default function LoginView() {
           <strong>ZRT</strong>
         </div>
         <div className="login-copy">
-          <p className="eyebrow">CONTAINER OPERATIONS PLATFORM</p>
-          <h1>让每一次发布<br />都有依据，也有退路。</h1>
-          <p>面向 Docker 与 Kubernetes 的发布、审计和运行控制平台。</p>
+          <p className="eyebrow">持续交付，从这里开始</p>
+          <h1>把代码、构建和发布，<br />清清楚楚地串起来。</h1>
+          <p>用一套简单明了的流程，管理应用从代码变更到上线的每一步。</p>
         </div>
         <div className="login-foundation">
-          <span>Go</span><span>NATS JetStream</span><span>Redis</span><span>Kubernetes</span>
+          <span>流程清晰</span><span>变更可追踪</span><span>失败可回滚</span>
         </div>
       </section>
 
       <section className="login-form-panel">
         <form className="login-form" onSubmit={submit}>
           <div>
-            <p className="section-label">SECURE ACCESS</p>
+            <p className="section-label">欢迎回来</p>
             <h2>登录 ZRT</h2>
-            <p className="form-description">会话凭据仅保存在安全 Cookie 中，不写入浏览器本地存储。</p>
+            <p className="form-description">使用你的 ZRT 账户继续。</p>
           </div>
 
           {unavailable && (
@@ -79,6 +97,12 @@ export default function LoginView() {
             </div>
           )}
           {errorMessage && <div className="form-alert error" role="alert">{errorMessage}</div>}
+          {externalError && <div className="form-alert error" role="alert">{externalErrorMessages[externalError] || externalErrorMessages.failed}</div>}
+
+          {ldapProviders.length > 0 && <div className="credential-tabs" role="tablist" aria-label="账号来源">
+            <button className={credentialProvider === 'local' ? 'active' : ''} type="button" onClick={() => setCredentialProvider('local')}>ZRT 账号</button>
+            {ldapProviders.map((provider) => <button className={credentialProvider === provider.id ? 'active' : ''} key={provider.id} type="button" onClick={() => setCredentialProvider(provider.id)}>{provider.display_name}</button>)}
+          </div>}
 
           <label>
             <span>用户名</span>
@@ -107,8 +131,16 @@ export default function LoginView() {
           <button className="login-button" type="submit" disabled={loading}>
             {loading ? '正在验证…' : '登录控制台'}
           </button>
+          {oauthProviders.length > 0 && <div className="external-login">
+            <div className="login-divider"><span>或者使用</span></div>
+            <div className="external-login-grid">{oauthProviders.map((provider) => (
+              <button key={provider.id} type="button" onClick={() => window.location.assign(`/api/v1/auth/oauth/${encodeURIComponent(provider.id)}/start?return_to=${encodeURIComponent(returnTo)}`)}>
+                <span className={`provider-logo ${provider.type}`}>{provider.type === 'generic_oauth' ? 'O' : provider.display_name.slice(0, 1)}</span>{provider.display_name}
+              </button>
+            ))}</div>
+          </div>}
         </form>
-        <p className="login-footer">ZRT · 所有关键操作均应经过权限校验与审计</p>
+        <p className="login-footer">ZRT · 让交付更简单</p>
       </section>
     </main>
   )

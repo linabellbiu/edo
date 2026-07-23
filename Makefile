@@ -1,7 +1,13 @@
-.PHONY: deps-up deps-down migrate server web test build
+.PHONY: dev-up dev-down deps-up deps-down migrate server web test build
+
+dev-up:
+	docker compose -f deploy/compose.dev.yml up --build
+
+dev-down:
+	docker compose -f deploy/compose.dev.yml down
 
 deps-up:
-	docker compose -f deploy/compose.dev.yml up -d
+	docker compose -f deploy/compose.dev.yml up -d redis nats
 
 deps-down:
 	docker compose -f deploy/compose.dev.yml down

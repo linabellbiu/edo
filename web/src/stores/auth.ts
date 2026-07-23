@@ -4,6 +4,7 @@ import { create } from 'zustand'
 import {
   getCurrentUser,
   login as loginRequest,
+  loginLDAP as loginLDAPRequest,
   logout as logoutRequest,
   type User,
 } from '@/api/client'
@@ -14,6 +15,7 @@ interface AuthState {
   loadFailed: boolean
   ensureLoaded: () => Promise<void>
   login: (username: string, password: string) => Promise<void>
+  loginLDAP: (providerID: string, username: string, password: string) => Promise<void>
   logout: () => Promise<void>
 }
 
@@ -48,6 +50,11 @@ export const useAuthStore = create<AuthState>((set, get) => ({
 
   login: async (username, password) => {
     const user = await loginRequest(username, password)
+    set({ user, loaded: true, loadFailed: false })
+  },
+
+  loginLDAP: async (providerID, username, password) => {
+    const user = await loginLDAPRequest(providerID, username, password)
     set({ user, loaded: true, loadFailed: false })
   },
 

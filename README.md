@@ -9,10 +9,15 @@ ZRT 是面向 Docker 与 Kubernetes 的运维、发布和可观测平台，使�
 - Redis 保存登录会话、限流和短期状态；不承担任务队列职责。
 - NATS JetStream 持久化任务、显式确认和死信，默认最多执行 4 次，发布与回滚默认只执行 1 次。
 - 通用 Git，以及 GitHub、GitLab、Gitea、Gitee 仓库和 Webhook。
+- 应用可同时配置 dev、test、pre、prod 环境，每个环境分别选择分支、Pull、Push、PR、Tag、发布方案和发布目标。
+- 发布计划使用可缩放、可拖动的节点画布；代码触发、人工接测、审核和部署节点可以自由连接，也可以直接套用 dev → test → pre → prod 或 test → prod 模板。
+- 每个应用单独决定发布计划是否需要审核；开启后，生产部署的所有路径都必须经过审核节点，申请人不能审核自己的计划。
+- 构建方案支持脚本和 Dockerfile，发布方案支持脚本、Helm、Docker Compose 和 Docker；代码变化、环境晋级、审核与部署就绪状态会保存为流水线记录。
 - Docker API 与 Kubernetes API 发布、健康等待、生产审批和回滚。
 - Docker 容器与 Kubernetes Pod 的 WebSocket 交互终端；不提供宿主机 SSH 登录和远程文件管理。
 - 配置中心、Webhook 通知、HTTP 监控、安全白名单定时任务、任务中心。
 - Argon2id、Redis 不透明会话、RBAC、操作审计、加密凭据与安全错误边界。
+- 本地账户、LDAP、通用 OAuth，以及飞书、Google、GitHub、GitLab 登录。
 
 ## 本地开发
 
@@ -20,20 +25,14 @@ ZRT 是面向 Docker 与 Kubernetes 的运维、发布和可观测平台，使�
 
 ```bash
 cp .env.example .env
-docker compose -f deploy/compose.dev.yml up -d
-go run ./cmd/zrt migrate
-go run ./cmd/zrt admin create --username admin --nickname 管理员
-npm ci --prefix web
+docker compose -f deploy/compose.dev.yml up --build
 ```
 
-分别启动 ZRT 服务和前端开发服务器。`server` 会使用 Go Goroutine 同时运行 API 与后台任务：
+首次启动服务且账户库为空时会自动创建管理员账户 `admin`，初始密码为 `123456`；该账户登录后不会被强制修改密码。已有任意账户的数据库不会补建或覆盖默认管理员。普通新建账户仍须使用至少 12 位密码。
 
-```bash
-go run ./cmd/zrt server
-npm run dev --prefix web
-```
+Compose 会先运行一次性 `migrate`，成功后启动 Go 后端，后端健康后再启动 Vite 前端；Redis 和 NATS JetStream 也由同一命令启动。浏览器访问 `http://127.0.0.1:5173`，前端会通过容器网络把 API 和 WebSocket 请求代理到后端。修改 Go 代码后重新执行带 `--build` 的启动命令即可重建后端；前端源码通过挂载提供给 Vite。停止环境执行 `docker compose -f deploy/compose.dev.yml down`，该命令不会删除业务数据。
 
-浏览器访问 `http://127.0.0.1:5173`。Vite 会把 API 和 WebSocket 请求代理到 `http://127.0.0.1:8080`。
+登录后可在“平台管理 → 登录方式”中接入 LDAP 或 OAuth。开发 Compose 自带一份仅供本机使用的加密密钥；多人共享、测试和生产环境必须在 `.env` 中设置自己的 `ZRT_SECRETS_KEY`，否则不同环境会错误地共用密钥。
 
 ## 构建与测试
 

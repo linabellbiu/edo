@@ -93,6 +93,92 @@ var migrations = []migration{
 			return tx.AutoMigrate(&model.User{})
 		},
 	},
+	{
+		version: "202607230013",
+		up: func(tx *gorm.DB) error {
+			return tx.AutoMigrate(
+				&model.BuildPlan{}, &model.ImageRegistry{}, &model.ReleasePlan{},
+				&model.Application{}, &model.PipelineRun{},
+			)
+		},
+	},
+	{
+		version: "202607230014",
+		up: func(tx *gorm.DB) error {
+			return tx.AutoMigrate(&model.IdentityProvider{}, &model.ExternalIdentity{})
+		},
+	},
+	{
+		version: "202607230015",
+		up: func(tx *gorm.DB) error {
+			if err := tx.AutoMigrate(
+				&model.Application{}, &model.ApplicationEnvironment{},
+				&model.ReleaseWorkflow{}, &model.PipelineRun{}, &model.PipelineRunApproval{},
+			); err != nil {
+				return err
+			}
+			return backfillApplicationEnvironments(tx)
+		},
+	},
+	{
+		version: "202607230016",
+		up: func(tx *gorm.DB) error {
+			return dropOptionalDeliveryConstraints(tx)
+		},
+	},
+}
+
+func dropOptionalDeliveryConstraints(tx *gorm.DB) error {
+	constraints := []struct {
+		model any
+		names []string
+	}{
+		{&model.Application{}, []string{"BuildPlan", "ImageRegistry", "ReleasePlan", "DeploymentTarget"}},
+		{&model.ApplicationEnvironment{}, []string{"ReleasePlan", "DeploymentTarget"}},
+	}
+	for _, item := range constraints {
+		for _, name := range item.names {
+			if tx.Migrator().HasConstraint(item.model, name) {
+				if err := tx.Migrator().DropConstraint(item.model, name); err != nil {
+					return err
+				}
+			}
+		}
+	}
+	return nil
+}
+
+func backfillApplicationEnvironments(tx *gorm.DB) error {
+	var applications []model.Application
+	if err := tx.Find(&applications).Error; err != nil {
+		return err
+	}
+	for i := range applications {
+		var count int64
+		if err := tx.Model(&model.ApplicationEnvironment{}).
+			Where("application_id = ?", applications[i].ID).Count(&count).Error; err != nil {
+			return err
+		}
+		if count > 0 {
+			continue
+		}
+		now := time.Now().UTC()
+		environment := model.ApplicationEnvironment{
+			ID: applications[i].ID + "-dev", ApplicationID: applications[i].ID,
+			Key: "dev", Name: "开发环境", Branch: applications[i].Branch,
+			PollEnabled: applications[i].PollEnabled, WatchPush: applications[i].WatchPush,
+			WatchPullRequest: applications[i].WatchPullRequest, WatchTags: applications[i].WatchTags,
+			TagPattern: applications[i].TagPattern, ReleasePlanID: applications[i].ReleasePlanID,
+			DeploymentTargetID: applications[i].DeploymentTargetID,
+			LastObservedRef:    applications[i].LastObservedRef,
+			LastObservedCommit: applications[i].LastObservedCommit,
+			LastCheckedAt:      applications[i].LastCheckedAt, CreatedAt: now, UpdatedAt: now,
+		}
+		if err := tx.Create(&environment).Error; err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func Migrate(ctx context.Context, db *gorm.DB) error {

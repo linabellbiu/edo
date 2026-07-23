@@ -13,8 +13,13 @@ const (
 	PermissionRoleRead           = "role.read"
 	PermissionRoleManage         = "role.manage"
 	PermissionAuditRead          = "audit.read"
+	PermissionIdentityRead       = "identity.read"
+	PermissionIdentityManage     = "identity.manage"
 	PermissionRepositoryRead     = "repository.read"
 	PermissionRepositoryManage   = "repository.manage"
+	PermissionDeliveryRead       = "delivery.read"
+	PermissionDeliveryManage     = "delivery.manage"
+	PermissionDeliveryRun        = "delivery.run"
 	PermissionDeploymentRead     = "deployment.read"
 	PermissionDeploymentManage   = "deployment.manage"
 	PermissionDeploymentRun      = "deployment.run"
@@ -41,8 +46,13 @@ var catalog = []Permission{
 	{PermissionRoleRead, "身份与权限", "查看角色和权限"},
 	{PermissionRoleManage, "身份与权限", "创建、修改和删除角色"},
 	{PermissionAuditRead, "审计", "查看操作审计日志"},
+	{PermissionIdentityRead, "身份与权限", "查看登录方式"},
+	{PermissionIdentityManage, "身份与权限", "配置和启停登录方式"},
 	{PermissionRepositoryRead, "代码仓库", "查看代码仓库"},
 	{PermissionRepositoryManage, "代码仓库", "配置代码仓库和 Webhook"},
+	{PermissionDeliveryRead, "持续交付", "查看应用、方案和流水线"},
+	{PermissionDeliveryManage, "持续交付", "管理应用、构建、镜像和发布方案"},
+	{PermissionDeliveryRun, "持续交付", "检查代码更新并准备流水线"},
 	{PermissionDeploymentRead, "发布", "查看发布记录"},
 	{PermissionDeploymentManage, "发布", "管理发布目标"},
 	{PermissionDeploymentRun, "发布", "发起发布和回滚"},

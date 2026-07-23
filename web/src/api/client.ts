@@ -20,6 +20,12 @@ interface UserResponse {
   user: User
 }
 
+export interface LoginProvider {
+  id: string
+  type: 'ldap' | 'generic_oauth' | 'feishu' | 'google' | 'github' | 'gitlab'
+  display_name: string
+}
+
 const client = axios.create({
   baseURL: '/api/v1',
   timeout: 10_000,
@@ -36,6 +42,16 @@ export async function getReadyStatus(): Promise<ReadyResponse> {
 export async function login(username: string, password: string): Promise<User> {
   const response = await client.post<UserResponse>('/auth/login', { username, password })
   return response.data.user
+}
+
+export async function loginLDAP(providerID: string, username: string, password: string): Promise<User> {
+  const response = await client.post<UserResponse>(`/auth/ldap/${encodeURIComponent(providerID)}/login`, { username, password })
+  return response.data.user
+}
+
+export async function getLoginProviders(): Promise<LoginProvider[]> {
+  const response = await client.get<{ providers: LoginProvider[] }>('/auth/providers')
+  return response.data.providers
 }
 
 export async function getCurrentUser(): Promise<User> {

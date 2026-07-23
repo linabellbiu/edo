@@ -38,7 +38,9 @@ func TestSQLiteMigrationIsIdempotent(t *testing.T) {
 		!db.Migrator().HasTable(&model.Configuration{}) || !db.Migrator().HasTable(&model.ConfigurationRevision{}) ||
 		!db.Migrator().HasTable(&model.NotificationChannel{}) || !db.Migrator().HasTable(&model.Notification{}) ||
 		!db.Migrator().HasTable(&model.ScheduledTask{}) || !db.Migrator().HasTable(&model.MonitorRule{}) ||
-		!db.Migrator().HasTable(&model.MonitorCheck{}) {
+		!db.Migrator().HasTable(&model.MonitorCheck{}) || !db.Migrator().HasTable(&model.Application{}) ||
+		!db.Migrator().HasTable(&model.BuildPlan{}) || !db.Migrator().HasTable(&model.ImageRegistry{}) ||
+		!db.Migrator().HasTable(&model.ReleasePlan{}) || !db.Migrator().HasTable(&model.PipelineRun{}) {
 		t.Fatal("核心任务表未创建")
 	}
 }
@@ -76,7 +78,8 @@ func TestExternalDatabaseMigration(t *testing.T) {
 				t.Fatalf("验证 %s 迁移失败: %v", test.name, err)
 			}
 			if !db.Migrator().HasTable(&model.User{}) || !db.Migrator().HasTable(&model.DeploymentRecord{}) ||
-				!db.Migrator().HasTable(&model.MonitorCheck{}) {
+				!db.Migrator().HasTable(&model.MonitorCheck{}) || !db.Migrator().HasTable(&model.Application{}) ||
+				!db.Migrator().HasTable(&model.PipelineRun{}) {
 				t.Fatalf("%s 核心表不完整", test.name)
 			}
 		})

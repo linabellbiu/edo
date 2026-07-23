@@ -84,7 +84,17 @@ func makeDialector(cfg config.Database) (gorm.Dialector, error) {
 }
 
 func sqliteDSN(dsn string) (string, error) {
-	if dsn == ":memory:" || strings.HasPrefix(dsn, "file:") {
+	if dsn == ":memory:" {
+		return dsn, nil
+	}
+	if strings.HasPrefix(dsn, "file:") {
+		separator := "?"
+		if strings.Contains(dsn, "?") {
+			separator = "&"
+		}
+		if !strings.Contains(dsn, "_foreign_keys=") {
+			dsn += separator + "_foreign_keys=on&_busy_timeout=5000"
+		}
 		return dsn, nil
 	}
 	dir := filepath.Dir(dsn)

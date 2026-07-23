@@ -3,9 +3,9 @@ import { useEffect } from 'react'
 import { useSystemStore } from '@/stores/system'
 
 const services = [
-  { key: 'database', name: '数据库', detail: 'SQLite / PostgreSQL / MySQL' },
-  { key: 'redis', name: 'Redis', detail: '缓存、锁与实时状态' },
-  { key: 'nats', name: 'NATS JetStream', detail: '持久化任务消息队列' },
+  { key: 'database', name: '数据服务', detail: '数据读写与状态保存' },
+  { key: 'redis', name: '缓存服务', detail: '登录会话与协同状态' },
+  { key: 'nats', name: '任务服务', detail: '后台任务与失败重试' },
 ] as const
 
 export default function OverviewView() {
@@ -30,12 +30,12 @@ export default function OverviewView() {
     <section className="overview">
       <div className="hero-panel">
         <div>
-          <span className="section-label">SYSTEM READINESS</span>
-          <h2>{healthy ? '核心服务运行正常' : '正在检查运行环境'}</h2>
-          <p>Go 服务通过独立探针检查数据库、Redis 与 NATS JetStream，不以进程存活代替服务可用。</p>
+          <span className="section-label">平台状态</span>
+          <h2>{healthy ? '一切运行正常' : '正在检查运行状态'}</h2>
+          <p>{healthy ? '现在可以继续管理应用、构建方案和发布流程。' : 'ZRT 正在确认各项基础服务是否可用。'}</p>
         </div>
         <div className={`health-orb${healthy ? ' healthy' : ''}`}>
-          <span>{healthy ? 'READY' : 'CHECK'}</span>
+          <span>{healthy ? '正常' : '检查中'}</span>
         </div>
       </div>
 
@@ -48,7 +48,7 @@ export default function OverviewView() {
             <article key={service.key} className="service-card">
               <div className="service-head">
                 <span className={`status-light ${status}`} />
-                <span className="status-text">{status}</span>
+                <span className="status-text">{status === 'ok' ? '正常' : status === 'unknown' ? '待检查' : '异常'}</span>
               </div>
               <h3>{service.name}</h3>
               <p>{service.detail}</p>
@@ -59,16 +59,16 @@ export default function OverviewView() {
 
       <div className="foundation-panel">
         <div>
-          <span className="section-label">OPERATIONS FOUNDATION</span>
-          <h2>平台能力</h2>
+          <span className="section-label">交付保障</span>
+          <h2>每一步都有记录</h2>
         </div>
         <div className="foundation-list">
-          <span>Gin API</span>
-          <span>GORM 多数据库</span>
-          <span>容器与 Pod 终端</span>
-          <span>有限重试</span>
-          <span>Transactional Outbox</span>
-          <span>结构化日志</span>
+          <span>代码变更监听</span>
+          <span>流程自由组合</span>
+          <span>生产发布审批</span>
+          <span>操作全程审计</span>
+          <span>失败快速回滚</span>
+          <span>任务有限重试</span>
         </div>
         <button className="refresh-button" type="button" disabled={loading} onClick={() => void refresh()}>
           {loading ? '检查中…' : '重新检查'}

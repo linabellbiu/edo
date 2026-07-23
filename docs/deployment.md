@@ -9,11 +9,9 @@ export ZRT_SECRETS_KEY="$(openssl rand -base64 32)"
 docker compose up -d --build
 ```
 
-默认只监听 `127.0.0.1:8080`，应由启用 HTTPS 和 WebSocket Upgrade 的反向代理对外提供服务。首次启动后创建管理员：
+默认只监听 `127.0.0.1:8080`，应由启用 HTTPS 和 WebSocket Upgrade 的反向代理对外提供服务。首次启动服务且账户库为空时会自动创建管理员账户 `admin`，初始密码为 `123456`，且登录后不会强制修改密码。已有任意账户的数据库不会补建或覆盖该账户，普通新建账户的 12 位密码要求保持不变。
 
-```bash
-docker compose run --rm api admin create --username admin --nickname 管理员
-```
+这一行为用于提供可直接登录的统一初始化环境。升级已有数据库时不会修改现有账户、密码或会话；旧数据导入仍可在首次启动服务前写入空账户库，全新部署无需额外账户迁移步骤。公开或生产部署应通过网络访问控制限制登录入口，并按实际安全要求主动重置默认密码。
 
 Compose 默认使用持久化 SQLite Volume，适合单机。需要横向扩容 ZRT 实例时，将 `ZRT_DATABASE_DRIVER` 和 `ZRT_DATABASE_DSN` 改为 PostgreSQL 或 MySQL，并使用高可用 Redis 与 NATS JetStream。每个实例都是包含 API 和后台任务 Goroutine 的完整单进程服务。
 

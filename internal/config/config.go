@@ -10,8 +10,22 @@ import (
 )
 
 const (
-	DefaultMaxAttempts = 4
-	maxAllowedAttempts = 20
+	DefaultMaxAttempts       = 4
+	maxAllowedAttempts       = 20
+	defaultNATSURL           = "nats://127.0.0.1:4222"
+	defaultNATSStream        = "zrt_tasks"
+	defaultNATSDeadStream    = "zrt_dead"
+	defaultNATSSubjectPrefix = "zrt.task"
+	defaultNATSDeadSubject   = "zrt.dead.task.v1"
+	defaultNATSMaxAge        = 7 * 24 * time.Hour
+	defaultNATSMaxBytes      = 512 * 1024 * 1024
+	defaultNATSDeadMaxBytes  = 256 * 1024 * 1024
+	defaultNATSReplicas      = 1
+	defaultWorkerConcurrency = 8
+	defaultWorkerTaskTimeout = 30 * time.Minute
+	defaultWorkerLease       = 45 * time.Second
+	defaultWorkerShutdown    = 30 * time.Second
+	defaultSchedulerPoll     = 15 * time.Second
 )
 
 type Config struct {
@@ -138,23 +152,23 @@ func Load() (Config, error) {
 			Timeout:   envDuration("ZRT_REDIS_TIMEOUT", 3*time.Second),
 		},
 		NATS: NATS{
-			URL:           env("ZRT_NATS_URL", "nats://127.0.0.1:4222"),
-			Stream:        env("ZRT_NATS_STREAM", "zrt_tasks"),
-			DeadStream:    env("ZRT_NATS_DEAD_STREAM", "zrt_dead"),
-			SubjectPrefix: env("ZRT_NATS_SUBJECT_PREFIX", "zrt.task"),
-			DeadSubject:   env("ZRT_NATS_DEAD_SUBJECT", "zrt.dead.task.v1"),
+			URL:           env("ZRT_NATS_URL", defaultNATSURL),
+			Stream:        env("ZRT_NATS_STREAM", defaultNATSStream),
+			DeadStream:    env("ZRT_NATS_DEAD_STREAM", defaultNATSDeadStream),
+			SubjectPrefix: env("ZRT_NATS_SUBJECT_PREFIX", defaultNATSSubjectPrefix),
+			DeadSubject:   env("ZRT_NATS_DEAD_SUBJECT", defaultNATSDeadSubject),
 			MaxAttempts:   envInt("ZRT_NATS_MAX_ATTEMPTS", DefaultMaxAttempts),
 			Timeout:       envDuration("ZRT_NATS_TIMEOUT", 5*time.Second),
-			MaxAge:        envDuration("ZRT_NATS_MAX_AGE", 7*24*time.Hour),
-			MaxBytes:      envInt64("ZRT_NATS_MAX_BYTES", 512*1024*1024),
-			DeadMaxBytes:  envInt64("ZRT_NATS_DEAD_MAX_BYTES", 256*1024*1024),
-			Replicas:      envInt("ZRT_NATS_REPLICAS", 1),
+			MaxAge:        envDuration("ZRT_NATS_MAX_AGE", defaultNATSMaxAge),
+			MaxBytes:      envInt64("ZRT_NATS_MAX_BYTES", defaultNATSMaxBytes),
+			DeadMaxBytes:  envInt64("ZRT_NATS_DEAD_MAX_BYTES", defaultNATSDeadMaxBytes),
+			Replicas:      envInt("ZRT_NATS_REPLICAS", defaultNATSReplicas),
 		},
 		Worker: Worker{
-			Concurrency:     envInt("ZRT_WORKER_CONCURRENCY", 8),
-			TaskTimeout:     envDuration("ZRT_WORKER_TASK_TIMEOUT", 30*time.Minute),
-			LeaseDuration:   envDuration("ZRT_WORKER_LEASE_DURATION", 45*time.Second),
-			ShutdownTimeout: envDuration("ZRT_WORKER_SHUTDOWN_TIMEOUT", 30*time.Second),
+			Concurrency:     envInt("ZRT_WORKER_CONCURRENCY", defaultWorkerConcurrency),
+			TaskTimeout:     envDuration("ZRT_WORKER_TASK_TIMEOUT", defaultWorkerTaskTimeout),
+			LeaseDuration:   envDuration("ZRT_WORKER_LEASE_DURATION", defaultWorkerLease),
+			ShutdownTimeout: envDuration("ZRT_WORKER_SHUTDOWN_TIMEOUT", defaultWorkerShutdown),
 		},
 		Secrets: Secrets{Key: env("ZRT_SECRETS_KEY", "")},
 		Git: Git{
@@ -166,7 +180,7 @@ func Load() (Config, error) {
 			RequestTimeout:      envDuration("ZRT_RUNTIME_REQUEST_TIMEOUT", 30*time.Second),
 			TerminalMaxDuration: envDuration("ZRT_RUNTIME_TERMINAL_MAX_DURATION", 2*time.Hour),
 		},
-		Scheduler: Scheduler{PollInterval: envDuration("ZRT_SCHEDULER_POLL_INTERVAL", 15*time.Second)},
+		Scheduler: Scheduler{PollInterval: envDuration("ZRT_SCHEDULER_POLL_INTERVAL", defaultSchedulerPoll)},
 	}
 
 	if cfg.Database.Driver == "sqlite" {

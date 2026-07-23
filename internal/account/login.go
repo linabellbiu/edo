@@ -103,6 +103,25 @@ func (s *LoginService) Login(ctx context.Context, username, password, clientIP s
 	return LoginResult{User: user, Token: token, ExpiresAt: session.ExpiresAt}, nil
 }
 
+// CreateSession 为已经由 LDAP 或 OAuth 验证过身份的用户创建同一类 ZRT 会话。
+func (s *LoginService) CreateSession(ctx context.Context, user *model.User, clientIP, method string) (LoginResult, error) {
+	if user == nil || !user.IsActive {
+		return LoginResult{}, ErrAccountDisabled
+	}
+	token, session, err := s.sessions.Create(ctx, user.ID, user.AuthVersion)
+	if err != nil {
+		s.logger.Error("创建外部登录会话失败", "operation", "auth_external_session", "user_id", user.ID, "method", method, "err", err)
+		return LoginResult{}, ErrLoginUnavailable
+	}
+	now := time.Now().UTC()
+	if err := s.accounts.MarkLogin(ctx, user.ID, now); err != nil {
+		s.logger.Error("更新外部登录时间失败", "operation", "auth_external_mark", "user_id", user.ID, "method", method, "err", err)
+	}
+	user.LastLoginAt = &now
+	s.logger.Info("外部身份登录成功", "operation", "auth_external_login", "user_id", user.ID, "method", method, "client_ip", clientIP)
+	return LoginResult{User: user, Token: token, ExpiresAt: session.ExpiresAt}, nil
+}
+
 func (s *LoginService) loginFailure(ctx context.Context, username, clientIP, reason string) error {
 	if err := s.limiter.RecordFailure(ctx, username, clientIP); err != nil {
 		s.logger.Error("记录登录失败次数失败", "operation", "auth_login_failure_record", "identity", loginIdentity(username, clientIP), "err", err)

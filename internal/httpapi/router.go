@@ -18,9 +18,11 @@ import (
 	"zrt/internal/configuration"
 	"zrt/internal/deployment"
 	"zrt/internal/dockerengine"
+	"zrt/internal/identity"
 	"zrt/internal/kube"
 	"zrt/internal/monitor"
 	"zrt/internal/notification"
+	"zrt/internal/pipeline"
 	"zrt/internal/repository"
 	"zrt/internal/scheduler"
 	"zrt/internal/task"
@@ -41,7 +43,9 @@ type Dependencies struct {
 	Sessions       *auth.SessionStore
 	Access         *access.Service
 	Audits         *audit.Service
+	Identities     *identity.Service
 	Repositories   *repository.Service
+	Pipelines      *pipeline.Service
 	Docker         *dockerengine.Service
 	Kubernetes     *kube.Service
 	Deployments    *deployment.Service
@@ -73,8 +77,13 @@ func NewRouter(deps Dependencies) *gin.Engine {
 	api.GET("/health/ready", health.ready)
 	authAPI := api.Group("/auth")
 	authHandler := authHandler{login: deps.Login, sessions: deps.Sessions, access: deps.Access, config: deps.AuthConfig, logger: deps.Logger}
+	identityAPI := identityHandler{service: deps.Identities, auth: authHandler, audits: deps.Audits, logger: deps.Logger}
 	authAPI.POST("/login", auditAction(deps.Audits, deps.Logger, "auth.login", "session"), authHandler.handleLogin)
 	authAPI.POST("/logout", auditAction(deps.Audits, deps.Logger, "auth.logout", "session"), authHandler.handleLogout)
+	authAPI.GET("/providers", identityAPI.listPublic)
+	authAPI.POST("/ldap/:id/login", auditAction(deps.Audits, deps.Logger, "auth.ldap.login", "session"), identityAPI.loginLDAP)
+	authAPI.GET("/oauth/:id/start", identityAPI.startOAuth)
+	authAPI.GET("/oauth/:id/callback", identityAPI.callbackOAuth)
 	repositoryAPI := repositoryHandler{service: deps.Repositories, logger: deps.Logger}
 	api.POST("/webhooks/git/:id", repositoryAPI.webhook)
 
@@ -99,6 +108,10 @@ func NewRouter(deps Dependencies) *gin.Engine {
 	protected.PATCH("/users/:id/status", auditAction(deps.Audits, deps.Logger, "user.status.update", "user"), requirePermission(deps.Access, deps.Logger, access.PermissionUserManage), accessAPI.setUserStatus)
 	protected.PUT("/users/:id/roles", auditAction(deps.Audits, deps.Logger, "user.roles.update", "user"), requirePermission(deps.Access, deps.Logger, access.PermissionUserManage), accessAPI.setUserRoles)
 	protected.GET("/audit-logs", requirePermission(deps.Access, deps.Logger, access.PermissionAuditRead), accessAPI.listAuditLogs)
+	protected.GET("/identity-providers", requirePermission(deps.Access, deps.Logger, access.PermissionIdentityRead), identityAPI.list)
+	protected.POST("/identity-providers", auditAction(deps.Audits, deps.Logger, "identity_provider.create", "identity_provider"), requirePermission(deps.Access, deps.Logger, access.PermissionIdentityManage), identityAPI.create)
+	protected.PUT("/identity-providers/:id", auditAction(deps.Audits, deps.Logger, "identity_provider.update", "identity_provider"), requirePermission(deps.Access, deps.Logger, access.PermissionIdentityManage), identityAPI.update)
+	protected.PATCH("/identity-providers/:id/status", auditAction(deps.Audits, deps.Logger, "identity_provider.status.update", "identity_provider"), requirePermission(deps.Access, deps.Logger, access.PermissionIdentityManage), identityAPI.setStatus)
 
 	protected.GET("/repositories", requirePermission(deps.Access, deps.Logger, access.PermissionRepositoryRead), repositoryAPI.list)
 	protected.POST("/repositories", auditAction(deps.Audits, deps.Logger, "repository.create", "repository"), requirePermission(deps.Access, deps.Logger, access.PermissionRepositoryManage), repositoryAPI.create)
@@ -106,6 +119,26 @@ func NewRouter(deps Dependencies) *gin.Engine {
 	protected.PATCH("/repositories/:id/status", auditAction(deps.Audits, deps.Logger, "repository.status.update", "repository"), requirePermission(deps.Access, deps.Logger, access.PermissionRepositoryManage), repositoryAPI.setStatus)
 	protected.POST("/repositories/:id/test", auditAction(deps.Audits, deps.Logger, "repository.test", "repository"), requirePermission(deps.Access, deps.Logger, access.PermissionRepositoryManage), repositoryAPI.testConnection)
 	protected.GET("/repositories/:id/webhook-deliveries", requirePermission(deps.Access, deps.Logger, access.PermissionRepositoryRead), repositoryAPI.listDeliveries)
+
+	pipelineAPI := pipelineHandler{service: deps.Pipelines, logger: deps.Logger}
+	protected.GET("/applications", requirePermission(deps.Access, deps.Logger, access.PermissionDeliveryRead), pipelineAPI.listApplications)
+	protected.POST("/applications", auditAction(deps.Audits, deps.Logger, "application.create", "application"), requirePermission(deps.Access, deps.Logger, access.PermissionDeliveryManage), pipelineAPI.createApplication)
+	protected.PUT("/applications/:id", auditAction(deps.Audits, deps.Logger, "application.update", "application"), requirePermission(deps.Access, deps.Logger, access.PermissionDeliveryManage), pipelineAPI.updateApplication)
+	protected.PATCH("/applications/:id/status", auditAction(deps.Audits, deps.Logger, "application.status.update", "application"), requirePermission(deps.Access, deps.Logger, access.PermissionDeliveryManage), pipelineAPI.setApplicationStatus)
+	protected.POST("/applications/:id/sync", auditAction(deps.Audits, deps.Logger, "application.sync", "application"), requirePermission(deps.Access, deps.Logger, access.PermissionDeliveryRun), pipelineAPI.syncApplication)
+	protected.POST("/applications/:id/pipeline-runs", auditAction(deps.Audits, deps.Logger, "pipeline.prepare", "pipeline_run"), requirePermission(deps.Access, deps.Logger, access.PermissionDeliveryRun), pipelineAPI.prepareRun)
+	protected.GET("/applications/:id/workflow", requirePermission(deps.Access, deps.Logger, access.PermissionDeliveryRead), pipelineAPI.getWorkflow)
+	protected.POST("/applications/:id/workflow/validate", requirePermission(deps.Access, deps.Logger, access.PermissionDeliveryRead), pipelineAPI.validateWorkflow)
+	protected.PUT("/applications/:id/workflow", auditAction(deps.Audits, deps.Logger, "workflow.update", "release_workflow"), requirePermission(deps.Access, deps.Logger, access.PermissionDeliveryManage), pipelineAPI.saveWorkflow)
+	protected.GET("/build-plans", requirePermission(deps.Access, deps.Logger, access.PermissionDeliveryRead), pipelineAPI.listBuildPlans)
+	protected.POST("/build-plans", auditAction(deps.Audits, deps.Logger, "build_plan.create", "build_plan"), requirePermission(deps.Access, deps.Logger, access.PermissionDeliveryManage), pipelineAPI.createBuildPlan)
+	protected.GET("/image-registries", requirePermission(deps.Access, deps.Logger, access.PermissionDeliveryRead), pipelineAPI.listRegistries)
+	protected.POST("/image-registries", auditAction(deps.Audits, deps.Logger, "image_registry.create", "image_registry"), requirePermission(deps.Access, deps.Logger, access.PermissionDeliveryManage), pipelineAPI.createRegistry)
+	protected.GET("/release-plans", requirePermission(deps.Access, deps.Logger, access.PermissionDeliveryRead), pipelineAPI.listReleasePlans)
+	protected.POST("/release-plans", auditAction(deps.Audits, deps.Logger, "release_plan.create", "release_plan"), requirePermission(deps.Access, deps.Logger, access.PermissionDeliveryManage), pipelineAPI.createReleasePlan)
+	protected.GET("/pipeline-runs", requirePermission(deps.Access, deps.Logger, access.PermissionDeliveryRead), pipelineAPI.listRuns)
+	protected.POST("/pipeline-runs/:id/advance", auditAction(deps.Audits, deps.Logger, "workflow_run.advance", "pipeline_run"), requirePermission(deps.Access, deps.Logger, access.PermissionDeliveryRun), pipelineAPI.advanceRun)
+	protected.POST("/pipeline-runs/:id/approve", auditAction(deps.Audits, deps.Logger, "workflow_run.approve", "pipeline_run"), requirePermission(deps.Access, deps.Logger, access.PermissionDeploymentReview), pipelineAPI.approveRun)
 
 	clusterAPI := clusterHandler{docker: deps.Docker, kube: deps.Kubernetes, logger: deps.Logger}
 	protected.GET("/docker/endpoints", requirePermission(deps.Access, deps.Logger, access.PermissionClusterRead), clusterAPI.listDockerEndpoints)

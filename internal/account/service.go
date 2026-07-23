@@ -18,6 +18,11 @@ import (
 
 var usernamePattern = regexp.MustCompile(`^[a-z][a-z0-9_.-]{2,31}$`)
 
+const (
+	initialAdminUsername = "admin"
+	initialAdminPassword = "123456"
+)
+
 var (
 	ErrInvalidUser        = errors.New("用户信息无效")
 	ErrInvalidPassword    = errors.New("密码格式无效")
@@ -31,6 +36,45 @@ type Service struct {
 }
 
 func NewService(db *gorm.DB) *Service { return &Service{db: db} }
+
+// EnsureInitialAdmin 仅在账户表为空时创建产品约定的默认管理员。
+// 默认口令有意不经过普通账户的 12 位密码校验，也不设置强制改密状态。
+func (s *Service) EnsureInitialAdmin(ctx context.Context) (*model.User, bool, error) {
+	var count int64
+	if err := s.db.WithContext(ctx).Model(&model.User{}).Count(&count).Error; err != nil {
+		return nil, false, fmt.Errorf("检查初始化账户失败: %w", err)
+	}
+	if count > 0 {
+		return nil, false, nil
+	}
+
+	passwordHash, err := auth.HashPassword(initialAdminPassword)
+	if err != nil {
+		return nil, false, fmt.Errorf("生成初始化账户密码摘要失败: %w", err)
+	}
+	var created *model.User
+	err = s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Model(&model.User{}).Count(&count).Error; err != nil {
+			return fmt.Errorf("再次检查初始化账户失败: %w", err)
+		}
+		if count > 0 {
+			return nil
+		}
+		now := time.Now().UTC()
+		created = &model.User{
+			ID: uuid.NewString(), Username: initialAdminUsername, Nickname: "管理员", PasswordHash: passwordHash,
+			IsActive: true, IsSuperuser: true, AuthVersion: 1, CreatedAt: now, UpdatedAt: now,
+		}
+		if err := tx.Create(created).Error; err != nil {
+			return fmt.Errorf("创建初始化账户失败: %w", err)
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, false, err
+	}
+	return created, created != nil, nil
+}
 
 func (s *Service) CreateAdmin(ctx context.Context, username, nickname, password string) (*model.User, error) {
 	return s.create(ctx, username, nickname, password, true)
