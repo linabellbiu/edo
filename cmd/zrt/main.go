@@ -27,8 +27,10 @@ import (
 	"zrt/internal/bootstrap"
 	"zrt/internal/config"
 	"zrt/internal/configuration"
+	"zrt/internal/credential"
 	"zrt/internal/database"
 	"zrt/internal/deployment"
+	dnsmanager "zrt/internal/dns"
 	"zrt/internal/dockerengine"
 	"zrt/internal/httpapi"
 	"zrt/internal/identity"
@@ -376,7 +378,16 @@ func runServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 	if created {
 		logger.Info("初始化管理员账户已创建", "operation", "account_bootstrap", "user_id", initialAdmin.ID, "username", initialAdmin.Username)
 	}
-	accessService := access.NewService(resources.Database)
+	accessService, err := access.NewDistributedService(
+		resources.Database,
+		resources.Redis.Client(),
+		resources.Redis.Key("casbin", "policy"),
+		logger,
+	)
+	if err != nil {
+		logger.Error("初始化 Casbin 权限服务失败", "operation", "rbac_bootstrap", "err", err)
+		return errors.New("权限服务初始化失败")
+	}
 	auditService := audit.NewService(resources.Database)
 	sessions := auth.NewSessionStore(resources.Redis, cfg.Auth.SessionTTL)
 	limiter := auth.NewLoginRateLimiter(resources.Redis, cfg.Auth.LoginMaxFailure, cfg.Auth.LoginWindow)
@@ -385,15 +396,17 @@ func runServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 		logger.Error("初始化登录服务失败", "operation", "auth_bootstrap", "err", err)
 		return errors.New("登录服务初始化失败")
 	}
-	repositoryService, err := newRepositoryService(resources.Database, cfg)
+	secretManager, err := secret.New(cfg.Secrets.Key)
+	if err != nil {
+		logger.Error("初始化基础设施密钥管理器失败", "operation", "secret_bootstrap", "err", err)
+		return errors.New("密钥服务初始化失败")
+	}
+	credentialService := credential.NewService(resources.Database, secretManager)
+	dnsService := dnsmanager.NewService(resources.Database, secretManager, dnsmanager.NewRegistry())
+	repositoryService, err := newRepositoryService(resources.Database, cfg, secretManager, credentialService)
 	if err != nil {
 		logger.Error("初始化代码仓库服务失败", "operation", "repository_bootstrap", "err", err)
 		return errors.New("代码仓库服务初始化失败")
-	}
-	secretManager, err := secret.New(cfg.Secrets.Key)
-	if err != nil {
-		logger.Error("初始化基础设施密钥管理器失败", "operation", "cluster_secret_bootstrap", "err", err)
-		return errors.New("容器与集群服务初始化失败")
 	}
 	identityService := identity.NewService(resources.Database, resources.Redis, secretManager, accounts, loginService, limiter)
 	pipelineService := pipeline.NewService(resources.Database, repositoryService, secretManager)
@@ -437,6 +450,8 @@ func runServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 		Deployments:    deploymentService,
 		Terminal:       terminalService,
 		Configurations: configurationService,
+		Credentials:    credentialService,
+		DNS:            dnsService,
 		Notifications:  notificationService,
 		Monitors:       monitorService,
 		Scheduler:      schedulerService,
@@ -654,12 +669,8 @@ func newBackgroundTaskWorker(
 	return worker.New(resources.Database, resources.NATS, registry, logger, cfg.NATS, cfg.Worker), nil
 }
 
-func newRepositoryService(db *gorm.DB, cfg config.Config) (*repository.Service, error) {
-	secretManager, err := secret.New(cfg.Secrets.Key)
-	if err != nil {
-		return nil, err
-	}
+func newRepositoryService(db *gorm.DB, cfg config.Config, secretManager *secret.Manager, credentialService *credential.Service) (*repository.Service, error) {
 	return repository.NewService(
-		db, secretManager, repository.NewGitClient(cfg.Git), cfg.NATS.MaxAttempts,
+		db, secretManager, credentialService, repository.NewGitClient(cfg.Git), cfg.NATS.MaxAttempts,
 	), nil
 }

@@ -15,7 +15,7 @@ RUN CGO_ENABLED=1 go build -trimpath -ldflags="-s -w -X main.version=${ZRT_VERSI
 
 FROM debian:bookworm-slim
 RUN apt-get -o Acquire::Retries=5 update \
-    && apt-get -o Acquire::Retries=5 install -y --no-install-recommends ca-certificates curl git openssh-client tzdata \
+    && apt-get -o Acquire::Retries=5 install -y --no-install-recommends ca-certificates curl tzdata \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd --gid 10001 zrt \
     && useradd --uid 10001 --gid zrt --no-create-home --home-dir /app --shell /usr/sbin/nologin zrt \

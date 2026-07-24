@@ -313,7 +313,7 @@ func (s *Service) normalizeApplication(ctx context.Context, input ApplicationInp
 		return input, ErrInvalidApplication
 	}
 	if input.PollIntervalSeconds == 0 {
-		input.PollIntervalSeconds = 60
+		input.PollIntervalSeconds = 3
 	}
 	if input.WatchTags && input.TagPattern != "" {
 		if _, err := path.Match(input.TagPattern, "v1.0.0"); err != nil {
@@ -399,7 +399,7 @@ func (s *Service) normalizeApplication(ctx context.Context, input ApplicationInp
 	if len(input.Environments) > 4 {
 		return input, ErrInvalidApplication
 	}
-	if !hasTrigger || (hasPull && (input.PollIntervalSeconds < 15 || input.PollIntervalSeconds > 86400)) {
+	if !hasTrigger || (hasPull && !validPollIntervalSeconds(input.PollIntervalSeconds)) {
 		return input, ErrInvalidApplication
 	}
 	primary := input.Environments[0]
@@ -842,9 +842,7 @@ func (s *Service) HandleRepositoryEvent(ctx context.Context, input repository.We
 }
 
 func (s *Service) RunWatcher(ctx context.Context, scanInterval time.Duration) {
-	if scanInterval < 5*time.Second {
-		scanInterval = 15 * time.Second
-	}
+	scanInterval = pullWatcherScanInterval(scanInterval)
 	s.scanDueApplications(ctx)
 	ticker := time.NewTicker(scanInterval)
 	defer ticker.Stop()
@@ -856,6 +854,23 @@ func (s *Service) RunWatcher(ctx context.Context, scanInterval time.Duration) {
 			s.scanDueApplications(ctx)
 		}
 	}
+}
+
+func validPollIntervalSeconds(value int) bool {
+	switch value {
+	case 3, 5, 10, 60:
+		return true
+	default:
+		return false
+	}
+}
+
+func pullWatcherScanInterval(configured time.Duration) time.Duration {
+	const maximumScanInterval = 3 * time.Second
+	if configured <= 0 || configured > maximumScanInterval {
+		return maximumScanInterval
+	}
+	return configured
 }
 
 func (s *Service) scanDueApplications(ctx context.Context) {

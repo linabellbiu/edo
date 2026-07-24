@@ -3,6 +3,7 @@ import { useSearchParams } from 'react-router-dom'
 
 import client from '@/api/client'
 import { apiErrorMessage } from '@/api/resources'
+import ResourceSelectField from '@/components/ResourceSelectField'
 import { useAuthStore } from '@/stores/auth'
 
 type NodeType = 'trigger' | 'manual' | 'approval' | 'deploy'
@@ -140,6 +141,7 @@ export default function ReleaseWorkflowView() {
   const dragRef = useRef<{ pointerID: number; nodeID: string; startX: number; startY: number; originX: number; originY: number } | null>(null)
 
   const publicMode = !applicationID
+  const createMode = searchParams.get('create') === '1'
   const application = useMemo(() => applications.find((item) => item.id === applicationID), [applicationID, applications])
   const editorApplication = publicMode ? publicCanvasApplication : application
   const selectedNode = useMemo(() => nodes.find((item) => item.id === selectedNodeID), [nodes, selectedNodeID])
@@ -158,7 +160,7 @@ export default function ReleaseWorkflowView() {
       setReleasePlans(planResult.data.release_plans)
       setTargets(targetResult.data.targets)
       setTemplates(templateResult.data.workflow_templates)
-      if (!applicationID && !templateID && templateResult.data.workflow_templates.length > 0) {
+      if (!applicationID && !templateID && !createMode && templateResult.data.workflow_templates.length > 0) {
         const id = templateResult.data.workflow_templates[0].id
         setTemplateID(id)
         setSearchParams({ template: id }, { replace: true })
@@ -168,7 +170,7 @@ export default function ReleaseWorkflowView() {
     } finally {
       setLoading(false)
     }
-  }, [applicationID, setSearchParams, templateID])
+  }, [applicationID, createMode, setSearchParams, templateID])
 
   const loadWorkflow = useCallback(async (id: string) => {
     setLoading(true)
@@ -503,8 +505,8 @@ export default function ReleaseWorkflowView() {
               {(selectedNode.config.events || []).includes('tag') && <label>Tag 规则<input value={selectedNode.config.tag_pattern || ''} disabled={!canManage} onChange={(event) => updateNode(selectedNode.id, (node) => ({ ...node, config: { ...node.config, tag_pattern: event.target.value } }))} placeholder="v*" /></label>}
             </>}
             {selectedNode.type === 'deploy' && <>
-              <label>发布方案<select value={selectedNode.config.release_plan_id || ''} disabled={!canManage} onChange={(event) => updateNode(selectedNode.id, (node) => ({ ...node, config: { ...node.config, release_plan_id: event.target.value } }))}><option value="">请选择</option>{releasePlans.filter((item) => item.is_active).map((item) => <option key={item.id} value={item.id}>{item.name} · {item.kind}</option>)}</select></label>
-              <label>发布目标<select value={selectedNode.config.deployment_target_id || ''} disabled={!canManage} onChange={(event) => updateNode(selectedNode.id, (node) => ({ ...node, config: { ...node.config, deployment_target_id: event.target.value } }))}><option value="">请选择</option>{targets.filter((item) => item.is_active).map((item) => <option key={item.id} value={item.id}>{item.name} · {item.environment}</option>)}</select></label>
+              <ResourceSelectField id="workflow-release-plan" label="发布方案" createLabel="发布方案" createTo={canManage ? '/release-plans?create=1' : undefined} value={selectedNode.config.release_plan_id || ''} disabled={!canManage} onChange={(event) => updateNode(selectedNode.id, (node) => ({ ...node, config: { ...node.config, release_plan_id: event.target.value } }))}><option value="">请选择</option>{releasePlans.filter((item) => item.is_active).map((item) => <option key={item.id} value={item.id}>{item.name} · {item.kind}</option>)}</ResourceSelectField>
+              <ResourceSelectField id="workflow-deployment-target" label="发布目标" createLabel="发布目标" createTo={canManage ? '/deployments?create=1' : undefined} value={selectedNode.config.deployment_target_id || ''} disabled={!canManage} onChange={(event) => updateNode(selectedNode.id, (node) => ({ ...node, config: { ...node.config, deployment_target_id: event.target.value } }))}><option value="">请选择</option>{targets.filter((item) => item.is_active).map((item) => <option key={item.id} value={item.id}>{item.name} · {item.environment}</option>)}</ResourceSelectField>
             </>}
             {(selectedNode.type === 'manual' || selectedNode.type === 'approval') && <label>说明<textarea rows={4} value={selectedNode.config.description || ''} disabled={!canManage} onChange={(event) => updateNode(selectedNode.id, (node) => ({ ...node, config: { ...node.config, description: event.target.value } }))} /></label>}
           </div>

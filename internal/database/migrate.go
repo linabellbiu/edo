@@ -134,6 +134,20 @@ var migrations = []migration{
 			)
 		},
 	},
+	{
+		version: "202607240018",
+		up: func(tx *gorm.DB) error {
+			return tx.AutoMigrate(
+				&model.UserPermission{}, &model.GitCredential{}, &model.GitRepository{},
+			)
+		},
+	},
+	{
+		version: "202607240019",
+		up: func(tx *gorm.DB) error {
+			return tx.AutoMigrate(&model.DNSProviderAccount{}, &model.DNSDomain{})
+		},
+	},
 }
 
 func dropOptionalDeliveryConstraints(tx *gorm.DB) error {

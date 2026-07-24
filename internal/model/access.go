@@ -33,6 +33,24 @@ type UserRole struct {
 
 func (UserRole) TableName() string { return "user_roles" }
 
+type PermissionEffect string
+
+const (
+	PermissionAllow PermissionEffect = "allow"
+	PermissionDeny  PermissionEffect = "deny"
+)
+
+// UserPermission 是角色权限之外的用户级例外；显式拒绝优先于角色授权。
+type UserPermission struct {
+	UserID     string           `gorm:"type:varchar(36);primaryKey;index"`
+	Permission string           `gorm:"type:varchar(96);primaryKey;index"`
+	Effect     PermissionEffect `gorm:"type:varchar(8);not null;index"`
+	CreatedAt  time.Time        `gorm:"not null"`
+	UpdatedAt  time.Time        `gorm:"not null"`
+}
+
+func (UserPermission) TableName() string { return "user_permissions" }
+
 type AuditResult string
 
 const (

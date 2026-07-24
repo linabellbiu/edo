@@ -209,6 +209,35 @@ func requirePermission(accessService *access.Service, logger *slog.Logger, permi
 	}
 }
 
+func requireAnyPermission(accessService *access.Service, logger *slog.Logger, permissions ...string) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		user, ok := currentUser(c)
+		if !ok {
+			logger.Error("权限校验缺少当前用户", "operation", "permission_any_context", "request_id", requestIDFrom(c))
+			writeInternalError(c)
+			c.Abort()
+			return
+		}
+		for _, permission := range permissions {
+			allowed, err := accessService.HasPermission(c.Request.Context(), user, permission)
+			if err != nil {
+				logger.Error("查询用户权限失败", "operation", "permission_any_check", "request_id", requestIDFrom(c), "user_id", user.ID, "permission", permission, "err", err)
+				writeInternalError(c)
+				c.Abort()
+				return
+			}
+			if allowed {
+				c.Next()
+				return
+			}
+		}
+		logger.Warn("用户缺少任一所需权限", "operation", "permission_any_denied", "request_id", requestIDFrom(c), "user_id", user.ID, "permissions", permissions)
+		c.AbortWithStatusJSON(http.StatusForbidden, errorResponse{
+			Code: "permission_denied", Message: "没有执行此操作的权限", RequestID: requestIDFrom(c),
+		})
+	}
+}
+
 func unauthorized(c *gin.Context) {
 	c.AbortWithStatusJSON(http.StatusUnauthorized, errorResponse{
 		Code: "authentication_required", Message: "请先登录", RequestID: requestIDFrom(c),

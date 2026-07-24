@@ -4,13 +4,18 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"regexp"
 	"sort"
 	"strings"
 	"time"
 	"unicode/utf8"
 
+	"github.com/casbin/casbin/v3"
+	"github.com/casbin/casbin/v3/persist"
+	rediswatcher "github.com/casbin/redis-watcher/v2"
 	"github.com/google/uuid"
+	"github.com/redis/go-redis/v9"
 	"gorm.io/gorm"
 
 	"zrt/internal/account"
@@ -18,12 +23,14 @@ import (
 )
 
 var (
-	ErrInvalidRole       = errors.New("角色信息无效")
-	ErrRoleNameExists    = errors.New("角色标识已存在")
-	ErrRoleNotFound      = errors.New("角色不存在")
-	ErrRoleInUse         = errors.New("角色仍被用户使用，不能删除")
-	ErrInvalidPermission = errors.New("角色包含未知权限")
-	ErrInvalidUserRoles  = errors.New("用户角色配置无效")
+	ErrInvalidRole            = errors.New("角色信息无效")
+	ErrRoleNameExists         = errors.New("角色标识已存在")
+	ErrRoleNotFound           = errors.New("角色不存在")
+	ErrRoleInUse              = errors.New("角色仍被用户使用，不能删除")
+	ErrInvalidPermission      = errors.New("角色包含未知权限")
+	ErrInvalidUserRoles       = errors.New("用户角色配置无效")
+	ErrInvalidUserPermissions = errors.New("用户权限覆盖配置无效")
+	ErrPolicySync             = errors.New("权限策略同步失败，请稍后重试")
 )
 
 var roleNamePattern = regexp.MustCompile(`^[a-z][a-z0-9_.-]{2,63}$`)
@@ -40,11 +47,64 @@ type RoleInput struct {
 	Permissions []string
 }
 
-type Service struct {
-	db *gorm.DB
+type UserPermissionOverrides struct {
+	Allow []string `json:"allow"`
+	Deny  []string `json:"deny"`
 }
 
-func NewService(db *gorm.DB) *Service { return &Service{db: db} }
+type Service struct {
+	db       *gorm.DB
+	enforcer *casbin.SyncedEnforcer
+	watcher  persist.Watcher
+	logger   *slog.Logger
+}
+
+func NewService(db *gorm.DB) (*Service, error) {
+	authorizationModel, err := newAuthorizationModel()
+	if err != nil {
+		return nil, err
+	}
+	enforcer, err := casbin.NewSyncedEnforcer(authorizationModel, &policyAdapter{db: db})
+	if err != nil {
+		return nil, fmt.Errorf("初始化 Casbin 权限引擎失败: %w", err)
+	}
+	enforcer.EnableAutoSave(false)
+	return &Service{db: db, enforcer: enforcer, logger: slog.Default()}, nil
+}
+
+func NewDistributedService(
+	db *gorm.DB,
+	redisClient redis.UniversalClient,
+	channel string,
+	logger *slog.Logger,
+) (*Service, error) {
+	service, err := NewService(db)
+	if err != nil {
+		return nil, err
+	}
+	if logger != nil {
+		service.logger = logger
+	}
+	watcher, err := rediswatcher.NewWatcher("", rediswatcher.WatcherOptions{
+		SubClient:  redisClient,
+		PubClient:  redisClient,
+		Channel:    channel,
+		IgnoreSelf: true,
+		OptionalUpdateCallback: func(string) {
+			if err := service.enforcer.LoadPolicy(); err != nil {
+				service.logger.Error("重新加载 Casbin 权限策略失败", "operation", "rbac_policy_reload", "err", err)
+			}
+		},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("初始化 Casbin Redis 策略同步失败: %w", err)
+	}
+	service.watcher = watcher
+	if err := service.enforcer.SetWatcher(watcher); err != nil {
+		return nil, fmt.Errorf("绑定 Casbin Redis 策略同步失败: %w", err)
+	}
+	return service, nil
+}
 
 func (s *Service) HasPermission(ctx context.Context, user *model.User, permission string) (bool, error) {
 	if user == nil || !IsKnown(permission) {
@@ -53,15 +113,14 @@ func (s *Service) HasPermission(ctx context.Context, user *model.User, permissio
 	if user.IsSuperuser {
 		return true, nil
 	}
-	var count int64
-	err := s.db.WithContext(ctx).Table("user_roles AS ur").
-		Joins("JOIN role_permissions AS rp ON rp.role_id = ur.role_id").
-		Where("ur.user_id = ? AND rp.permission = ?", user.ID, permission).
-		Limit(1).Count(&count).Error
-	if err != nil {
-		return false, fmt.Errorf("查询用户权限失败: %w", err)
+	if err := ctx.Err(); err != nil {
+		return false, err
 	}
-	return count > 0, nil
+	allowed, err := s.enforcer.Enforce(userSubject(user.ID), permission)
+	if err != nil {
+		return false, fmt.Errorf("执行 Casbin 权限判定失败: %w", err)
+	}
+	return allowed, nil
 }
 
 func (s *Service) UserPermissions(ctx context.Context, user *model.User) ([]string, error) {
@@ -71,13 +130,20 @@ func (s *Service) UserPermissions(ctx context.Context, user *model.User) ([]stri
 	if user.IsSuperuser {
 		return []string{"*"}, nil
 	}
-	var permissions []string
-	err := s.db.WithContext(ctx).Table("user_roles AS ur").Distinct("rp.permission").
-		Joins("JOIN role_permissions AS rp ON rp.role_id = ur.role_id").
-		Where("ur.user_id = ?", user.ID).Order("rp.permission ASC").Pluck("rp.permission", &permissions).Error
-	if err != nil {
-		return nil, fmt.Errorf("查询用户权限列表失败: %w", err)
+	if err := ctx.Err(); err != nil {
+		return nil, err
 	}
+	permissions := make([]string, 0, len(catalog))
+	for _, item := range catalog {
+		allowed, err := s.enforcer.Enforce(userSubject(user.ID), item.Code)
+		if err != nil {
+			return nil, fmt.Errorf("计算 Casbin 有效权限失败: %w", err)
+		}
+		if allowed {
+			permissions = append(permissions, item.Code)
+		}
+	}
+	sort.Strings(permissions)
 	return permissions, nil
 }
 
@@ -118,6 +184,9 @@ func (s *Service) CreateRole(ctx context.Context, input RoleInput) (*RoleWithPer
 		}
 		return nil, fmt.Errorf("创建角色失败: %w", err)
 	}
+	if err := s.syncPolicy("role_create"); err != nil {
+		return nil, err
+	}
 	return &RoleWithPermissions{Role: role, Permissions: input.Permissions}, nil
 }
 
@@ -149,6 +218,9 @@ func (s *Service) UpdateRole(ctx context.Context, roleID string, input RoleInput
 			return nil, fmt.Errorf("更新角色失败: %w", err)
 		}
 	}
+	if err := s.syncPolicy("role_update"); err != nil {
+		return nil, err
+	}
 	role.Name = input.Name
 	role.DisplayName = input.DisplayName
 	role.Description = input.Description
@@ -157,7 +229,7 @@ func (s *Service) UpdateRole(ctx context.Context, roleID string, input RoleInput
 }
 
 func (s *Service) DeleteRole(ctx context.Context, roleID string) error {
-	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	if err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var role model.Role
 		if err := tx.First(&role, "id = ?", roleID).Error; err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -179,12 +251,15 @@ func (s *Service) DeleteRole(ctx context.Context, roleID string) error {
 			return fmt.Errorf("删除角色失败: %w", err)
 		}
 		return nil
-	})
+	}); err != nil {
+		return err
+	}
+	return s.syncPolicy("role_delete")
 }
 
 func (s *Service) SetUserRoles(ctx context.Context, userID string, roleIDs []string) error {
 	roleIDs = uniqueSorted(roleIDs)
-	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	if err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var userCount int64
 		if err := tx.Model(&model.User{}).Where("id = ?", userID).Count(&userCount).Error; err != nil {
 			return fmt.Errorf("查询用户失败: %w", err)
@@ -215,7 +290,73 @@ func (s *Service) SetUserRoles(ctx context.Context, userID string, roleIDs []str
 			}
 		}
 		return nil
-	})
+	}); err != nil {
+		return err
+	}
+	return s.syncPolicy("user_roles_update")
+}
+
+func (s *Service) SetUserPermissions(ctx context.Context, userID string, overrides UserPermissionOverrides) error {
+	overrides.Allow = uniqueSorted(overrides.Allow)
+	overrides.Deny = uniqueSorted(overrides.Deny)
+	seen := make(map[string]struct{}, len(overrides.Allow)+len(overrides.Deny))
+	for _, permission := range append(append([]string{}, overrides.Allow...), overrides.Deny...) {
+		if !IsKnown(permission) {
+			return ErrInvalidUserPermissions
+		}
+		if _, exists := seen[permission]; exists {
+			return ErrInvalidUserPermissions
+		}
+		seen[permission] = struct{}{}
+	}
+	if err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var user model.User
+		if err := tx.First(&user, "id = ?", userID).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return ErrInvalidUserPermissions
+			}
+			return fmt.Errorf("查询用户失败: %w", err)
+		}
+		if user.IsSuperuser {
+			return ErrInvalidUserPermissions
+		}
+		if err := tx.Where("user_id = ?", userID).Delete(&model.UserPermission{}).Error; err != nil {
+			return fmt.Errorf("清理用户权限覆盖失败: %w", err)
+		}
+		now := time.Now().UTC()
+		items := make([]model.UserPermission, 0, len(overrides.Allow)+len(overrides.Deny))
+		for _, permission := range overrides.Allow {
+			items = append(items, model.UserPermission{UserID: userID, Permission: permission, Effect: model.PermissionAllow, CreatedAt: now, UpdatedAt: now})
+		}
+		for _, permission := range overrides.Deny {
+			items = append(items, model.UserPermission{UserID: userID, Permission: permission, Effect: model.PermissionDeny, CreatedAt: now, UpdatedAt: now})
+		}
+		if len(items) > 0 {
+			if err := tx.Create(&items).Error; err != nil {
+				return fmt.Errorf("保存用户权限覆盖失败: %w", err)
+			}
+		}
+		return nil
+	}); err != nil {
+		return err
+	}
+	return s.syncPolicy("user_permissions_update")
+}
+
+func (s *Service) UserPermissionOverrides(ctx context.Context, userID string) (UserPermissionOverrides, error) {
+	var items []model.UserPermission
+	if err := s.db.WithContext(ctx).Where("user_id = ?", userID).Order("permission ASC").Find(&items).Error; err != nil {
+		return UserPermissionOverrides{}, fmt.Errorf("查询用户权限覆盖失败: %w", err)
+	}
+	result := UserPermissionOverrides{Allow: []string{}, Deny: []string{}}
+	for _, item := range items {
+		if item.Effect == model.PermissionAllow {
+			result.Allow = append(result.Allow, item.Permission)
+		} else if item.Effect == model.PermissionDeny {
+			result.Deny = append(result.Deny, item.Permission)
+		}
+	}
+	return result, nil
 }
 
 func (s *Service) ValidateRoleIDs(ctx context.Context, roleIDs []string) error {
@@ -270,6 +411,9 @@ func (s *Service) CreateUser(
 	if err != nil {
 		return nil, err
 	}
+	if err := s.syncPolicy("user_create"); err != nil {
+		return nil, err
+	}
 	return user, nil
 }
 
@@ -320,6 +464,20 @@ func replacePermissions(tx *gorm.DB, roleID string, permissions []string, now ti
 		return nil
 	}
 	return tx.Create(&items).Error
+}
+
+func (s *Service) syncPolicy(operation string) error {
+	if err := s.enforcer.LoadPolicy(); err != nil {
+		s.logger.Error("重新加载 Casbin 权限策略失败", "operation", operation, "err", err)
+		return ErrPolicySync
+	}
+	if s.watcher != nil {
+		if err := s.watcher.Update(); err != nil {
+			s.logger.Error("发布 Casbin 权限策略变更失败", "operation", operation, "err", err)
+			return ErrPolicySync
+		}
+	}
+	return nil
 }
 
 func uniqueSorted(values []string) []string {

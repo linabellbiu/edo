@@ -97,7 +97,7 @@ type Application struct {
 	RepositoryID           string                   `gorm:"type:varchar(36);not null;index" json:"repository_id"`
 	Branch                 string                   `gorm:"type:varchar(255);not null" json:"branch"`
 	PollEnabled            bool                     `gorm:"not null;default:true;index" json:"poll_enabled"`
-	PollIntervalSeconds    int                      `gorm:"not null;default:60" json:"poll_interval_seconds"`
+	PollIntervalSeconds    int                      `gorm:"not null;default:3" json:"poll_interval_seconds"`
 	WatchPush              bool                     `gorm:"not null;default:true" json:"watch_push"`
 	WatchPullRequest       bool                     `gorm:"not null;default:false" json:"watch_pull_request"`
 	WatchTags              bool                     `gorm:"not null;default:false" json:"watch_tags"`

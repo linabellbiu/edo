@@ -37,6 +37,11 @@ type setUserRolesRequest struct {
 	RoleIDs []string `json:"role_ids" binding:"max=100,dive,max=36"`
 }
 
+type setUserPermissionsRequest struct {
+	Allow []string `json:"allow" binding:"max=100,dive,max=96"`
+	Deny  []string `json:"deny" binding:"max=100,dive,max=96"`
+}
+
 type roleRequest struct {
 	Name        string   `json:"name" binding:"required,max=64"`
 	DisplayName string   `json:"display_name" binding:"required,max=64"`
@@ -46,8 +51,10 @@ type roleRequest struct {
 
 type managedUserResponse struct {
 	userResponse
-	IsActive bool     `json:"is_active"`
-	RoleIDs  []string `json:"role_ids"`
+	IsActive             bool                           `json:"is_active"`
+	RoleIDs              []string                       `json:"role_ids"`
+	PermissionOverrides  access.UserPermissionOverrides `json:"permission_overrides"`
+	EffectivePermissions []string                       `json:"effective_permissions"`
 }
 
 func (h accessHandler) listUsers(c *gin.Context) {
@@ -67,8 +74,21 @@ func (h accessHandler) listUsers(c *gin.Context) {
 			writeInternalError(c)
 			return
 		}
+		overrides, err := h.access.UserPermissionOverrides(c.Request.Context(), users[i].ID)
+		if err != nil {
+			h.logger.Error("查询用户权限覆盖失败", "operation", "user_list_permissions", "request_id", requestIDFrom(c), "user_id", users[i].ID, "err", err)
+			writeInternalError(c)
+			return
+		}
+		effective, err := h.access.UserPermissions(c.Request.Context(), &users[i])
+		if err != nil {
+			h.logger.Error("查询用户有效权限失败", "operation", "user_list_effective_permissions", "request_id", requestIDFrom(c), "user_id", users[i].ID, "err", err)
+			writeInternalError(c)
+			return
+		}
 		result = append(result, managedUserResponse{
 			userResponse: toUserResponse(&users[i]), IsActive: users[i].IsActive, RoleIDs: roleIDs,
+			PermissionOverrides: overrides, EffectivePermissions: effective,
 		})
 	}
 	c.JSON(http.StatusOK, gin.H{"users": result})
@@ -101,6 +121,7 @@ func (h accessHandler) createUser(c *gin.Context) {
 	setAuditResourceID(c, user.ID)
 	c.JSON(http.StatusCreated, gin.H{"user": managedUserResponse{
 		userResponse: toUserResponse(user), IsActive: user.IsActive, RoleIDs: request.RoleIDs,
+		PermissionOverrides: access.UserPermissionOverrides{Allow: []string{}, Deny: []string{}}, EffectivePermissions: []string{},
 	}})
 }
 
@@ -158,6 +179,27 @@ func (h accessHandler) setUserRoles(c *gin.Context) {
 		h.logger.Warn("配置用户角色失败", "operation", "user_roles", "request_id", requestIDFrom(c), "user_id", user.ID, "err", err)
 		if errors.Is(err, access.ErrInvalidUserRoles) {
 			writeError(c, http.StatusBadRequest, "invalid_roles", access.ErrInvalidUserRoles.Error())
+		} else {
+			writeInternalError(c)
+		}
+		return
+	}
+	c.Status(http.StatusNoContent)
+}
+
+func (h accessHandler) setUserPermissions(c *gin.Context) {
+	var request setUserPermissionsRequest
+	if err := c.ShouldBindJSON(&request); err != nil {
+		h.logger.Warn("配置用户权限请求参数无效", "operation", "user_permissions_bind", "request_id", requestIDFrom(c), "user_id", c.Param("id"), "err", err)
+		writeError(c, http.StatusBadRequest, "invalid_request", access.ErrInvalidUserPermissions.Error())
+		return
+	}
+	if err := h.access.SetUserPermissions(c.Request.Context(), c.Param("id"), access.UserPermissionOverrides{
+		Allow: request.Allow, Deny: request.Deny,
+	}); err != nil {
+		h.logger.Warn("配置用户权限失败", "operation", "user_permissions", "request_id", requestIDFrom(c), "user_id", c.Param("id"), "err", err)
+		if errors.Is(err, access.ErrInvalidUserPermissions) {
+			writeError(c, http.StatusBadRequest, "invalid_user_permissions", access.ErrInvalidUserPermissions.Error())
 		} else {
 			writeInternalError(c)
 		}

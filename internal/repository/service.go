@@ -14,6 +14,7 @@ import (
 	"github.com/google/uuid"
 	"gorm.io/gorm"
 
+	"zrt/internal/credential"
 	"zrt/internal/model"
 	"zrt/internal/secret"
 )
@@ -41,6 +42,7 @@ type Input struct {
 	AuthType          model.GitAuthType
 	Username          string
 	Credential        *string
+	CredentialID      *string
 	WebhookEnabled    bool
 	RegenerateWebhook bool
 	AllowInsecureHTTP bool
@@ -49,12 +51,17 @@ type Input struct {
 type Service struct {
 	db                 *gorm.DB
 	secrets            *secret.Manager
-	git                *GitClient
+	git                refLister
+	credentials        *credential.Service
 	defaultMaxAttempts int
 }
 
-func NewService(db *gorm.DB, secrets *secret.Manager, git *GitClient, defaultMaxAttempts int) *Service {
-	return &Service{db: db, secrets: secrets, git: git, defaultMaxAttempts: defaultMaxAttempts}
+type refLister interface {
+	ListRefs(context.Context, model.GitRepository, string) (RefResult, error)
+}
+
+func NewService(db *gorm.DB, secrets *secret.Manager, credentials *credential.Service, git refLister, defaultMaxAttempts int) *Service {
+	return &Service{db: db, secrets: secrets, credentials: credentials, git: git, defaultMaxAttempts: defaultMaxAttempts}
 }
 
 func (s *Service) List(ctx context.Context) ([]model.GitRepository, error) {
@@ -90,7 +97,7 @@ func (s *Service) ListDeliveries(ctx context.Context, repositoryID string, limit
 
 func (s *Service) Create(ctx context.Context, actorID string, input Input) (*model.GitRepository, string, error) {
 	id := uuid.NewString()
-	normalized, err := s.normalizeInput(id, nil, input)
+	normalized, err := s.normalizeInput(ctx, actorID, id, nil, input)
 	if err != nil {
 		return nil, "", err
 	}
@@ -99,6 +106,7 @@ func (s *Service) Create(ctx context.Context, actorID string, input Input) (*mod
 		ID: id, Name: normalized.Name, Provider: normalized.Provider,
 		CloneURL: normalized.CloneURL, DefaultBranch: normalized.DefaultBranch,
 		AuthType: normalized.AuthType, Username: normalized.Username,
+		CredentialID:            normalized.credentialID,
 		CredentialCiphertext:    normalized.credentialCiphertext,
 		WebhookSecretCiphertext: normalized.webhookCiphertext,
 		WebhookEnabled:          normalized.WebhookEnabled, AllowInsecureHTTP: normalized.AllowInsecureHTTP,
@@ -113,12 +121,12 @@ func (s *Service) Create(ctx context.Context, actorID string, input Input) (*mod
 	return repository, normalized.webhookPlaintext, nil
 }
 
-func (s *Service) Update(ctx context.Context, id string, input Input) (*model.GitRepository, string, error) {
+func (s *Service) Update(ctx context.Context, actorID, id string, input Input) (*model.GitRepository, string, error) {
 	existing, err := s.Find(ctx, id)
 	if err != nil {
 		return nil, "", err
 	}
-	normalized, err := s.normalizeInput(id, existing, input)
+	normalized, err := s.normalizeInput(ctx, actorID, id, existing, input)
 	if err != nil {
 		return nil, "", err
 	}
@@ -127,6 +135,7 @@ func (s *Service) Update(ctx context.Context, id string, input Input) (*model.Gi
 		"name": normalized.Name, "provider": normalized.Provider,
 		"clone_url": normalized.CloneURL, "default_branch": normalized.DefaultBranch,
 		"auth_type": normalized.AuthType, "username": normalized.Username,
+		"credential_id":             normalized.credentialID,
 		"credential_ciphertext":     normalized.credentialCiphertext,
 		"webhook_secret_ciphertext": normalized.webhookCiphertext,
 		"webhook_enabled":           normalized.WebhookEnabled,
@@ -144,6 +153,7 @@ func (s *Service) Update(ctx context.Context, id string, input Input) (*model.Gi
 	existing.DefaultBranch = normalized.DefaultBranch
 	existing.AuthType = normalized.AuthType
 	existing.Username = normalized.Username
+	existing.CredentialID = normalized.credentialID
 	existing.CredentialCiphertext = normalized.credentialCiphertext
 	existing.WebhookSecretCiphertext = normalized.webhookCiphertext
 	existing.WebhookEnabled = normalized.WebhookEnabled
@@ -173,23 +183,117 @@ func (s *Service) TestConnection(ctx context.Context, id string) (RefResult, err
 		return RefResult{}, ErrRepositoryNotFound
 	}
 	credential := ""
-	if repository.CredentialCiphertext != "" {
-		credential, err = s.secrets.Decrypt(repository.CredentialCiphertext, credentialAAD(repository.ID))
-		if err != nil {
-			return RefResult{}, fmt.Errorf("解密代码仓库凭据失败: %w", err)
-		}
+	credential, err = s.resolveCredential(ctx, repository)
+	if err != nil {
+		return RefResult{}, err
 	}
 	return s.git.ListRefs(ctx, *repository, credential)
 }
 
+// TestInput 使用尚未保存的仓库配置执行只读远端查询，不会持久化地址或凭据。
+func (s *Service) TestInput(ctx context.Context, actorID string, input Input) (RefResult, error) {
+	input.Username = strings.TrimSpace(input.Username)
+	if !validProvider(input.Provider) || !validAuthType(input.AuthType) || utf8.RuneCountInString(input.Username) > 255 {
+		return RefResult{}, ErrInvalidRepository
+	}
+	cloneURL, err := validateCloneURL(input.CloneURL, input.AllowInsecureHTTP)
+	if err != nil {
+		return RefResult{}, err
+	}
+
+	credentialValue := ""
+	switch input.AuthType {
+	case model.GitAuthNone:
+		input.Username = ""
+	case model.GitAuthToken, model.GitAuthSSHKey:
+		if input.CredentialID != nil {
+			selectedID := strings.TrimSpace(*input.CredentialID)
+			if selectedID == "" || input.Credential != nil || s.credentials == nil {
+				return RefResult{}, ErrInvalidCredential
+			}
+			selected, err := s.credentials.FindOwned(ctx, actorID, selectedID)
+			if err != nil || selected.AuthType != input.AuthType || !credentialProviderCompatible(selected.Provider, input.Provider) {
+				return RefResult{}, ErrInvalidCredential
+			}
+			credentialValue, err = s.credentials.RevealOwned(ctx, actorID, selectedID)
+			if err != nil {
+				return RefResult{}, fmt.Errorf("读取代码仓库测试凭据失败: %w", err)
+			}
+			if input.Username == "" {
+				input.Username = selected.Username
+			}
+		} else {
+			if input.Credential == nil {
+				return RefResult{}, ErrInvalidCredential
+			}
+			credentialValue = strings.TrimSpace(*input.Credential)
+			if credentialValue == "" || len(credentialValue) > 64*1024 ||
+				(input.AuthType == model.GitAuthSSHKey && !strings.Contains(credentialValue, "PRIVATE KEY")) {
+				return RefResult{}, ErrInvalidCredential
+			}
+		}
+	default:
+		return RefResult{}, ErrInvalidCredential
+	}
+
+	return s.git.ListRefs(ctx, model.GitRepository{
+		Provider: input.Provider, CloneURL: cloneURL, AuthType: input.AuthType, Username: input.Username,
+	}, credentialValue)
+}
+
+func (s *Service) RevealWebhookSecret(ctx context.Context, id string) (string, error) {
+	repository, err := s.Find(ctx, id)
+	if err != nil {
+		return "", err
+	}
+	if !repository.WebhookEnabled || repository.WebhookSecretCiphertext == "" {
+		return "", ErrWebhookDisabled
+	}
+	plaintext, err := s.secrets.Decrypt(repository.WebhookSecretCiphertext, webhookAAD(repository.ID))
+	if err != nil {
+		return "", fmt.Errorf("解密 Webhook 密钥失败: %w", err)
+	}
+	return plaintext, nil
+}
+
+func (s *Service) CredentialIDForUser(ctx context.Context, userID string, repository *model.GitRepository) *string {
+	if repository.CredentialID == nil || *repository.CredentialID == "" || s.credentials == nil {
+		return nil
+	}
+	if _, err := s.credentials.FindOwned(ctx, userID, *repository.CredentialID); err != nil {
+		return nil
+	}
+	id := *repository.CredentialID
+	return &id
+}
+
+func (s *Service) resolveCredential(ctx context.Context, repository *model.GitRepository) (string, error) {
+	if repository.CredentialID != nil && *repository.CredentialID != "" {
+		_, plaintext, err := s.credentials.Resolve(ctx, *repository.CredentialID)
+		if err != nil {
+			return "", fmt.Errorf("读取代码仓库引用令牌失败: %w", err)
+		}
+		return plaintext, nil
+	}
+	if repository.CredentialCiphertext == "" {
+		return "", nil
+	}
+	plaintext, err := s.secrets.Decrypt(repository.CredentialCiphertext, credentialAAD(repository.ID))
+	if err != nil {
+		return "", fmt.Errorf("解密代码仓库凭据失败: %w", err)
+	}
+	return plaintext, nil
+}
+
 type normalizedInput struct {
 	Input
+	credentialID         *string
 	credentialCiphertext string
 	webhookCiphertext    string
 	webhookPlaintext     string
 }
 
-func (s *Service) normalizeInput(id string, existing *model.GitRepository, input Input) (normalizedInput, error) {
+func (s *Service) normalizeInput(ctx context.Context, actorID, id string, existing *model.GitRepository, input Input) (normalizedInput, error) {
 	input.Name = strings.TrimSpace(input.Name)
 	input.DefaultBranch = strings.TrimSpace(input.DefaultBranch)
 	input.Username = strings.TrimSpace(input.Username)
@@ -203,13 +307,30 @@ func (s *Service) normalizeInput(id string, existing *model.GitRepository, input
 	}
 	input.CloneURL = cloneURL
 
+	var credentialID *string
 	credentialCiphertext := ""
 	if existing != nil {
+		credentialID = existing.CredentialID
 		credentialCiphertext = existing.CredentialCiphertext
 	}
 	if input.AuthType == model.GitAuthNone {
+		credentialID = nil
 		credentialCiphertext = ""
 		input.Username = ""
+	} else if input.CredentialID != nil {
+		selectedID := strings.TrimSpace(*input.CredentialID)
+		if selectedID == "" || input.Credential != nil || s.credentials == nil {
+			return normalizedInput{}, ErrInvalidCredential
+		}
+		selected, err := s.credentials.FindOwned(ctx, actorID, selectedID)
+		if err != nil || selected.AuthType != input.AuthType || !credentialProviderCompatible(selected.Provider, input.Provider) {
+			return normalizedInput{}, ErrInvalidCredential
+		}
+		credentialID = &selected.ID
+		credentialCiphertext = ""
+		if input.Username == "" {
+			input.Username = selected.Username
+		}
 	} else if input.Credential != nil {
 		credential := strings.TrimSpace(*input.Credential)
 		if credential == "" || len(credential) > 64*1024 {
@@ -222,10 +343,11 @@ func (s *Service) normalizeInput(id string, existing *model.GitRepository, input
 		if err != nil {
 			return normalizedInput{}, fmt.Errorf("加密代码仓库凭据失败: %w", err)
 		}
+		credentialID = nil
 	} else if existing != nil && existing.AuthType != input.AuthType {
 		return normalizedInput{}, ErrInvalidCredential
 	}
-	if input.AuthType != model.GitAuthNone && credentialCiphertext == "" {
+	if input.AuthType != model.GitAuthNone && credentialCiphertext == "" && credentialID == nil {
 		return normalizedInput{}, ErrInvalidCredential
 	}
 
@@ -246,9 +368,13 @@ func (s *Service) normalizeInput(id string, existing *model.GitRepository, input
 		}
 	}
 	return normalizedInput{
-		Input: input, credentialCiphertext: credentialCiphertext,
+		Input: input, credentialID: credentialID, credentialCiphertext: credentialCiphertext,
 		webhookCiphertext: webhookCiphertext, webhookPlaintext: webhookPlaintext,
 	}, nil
+}
+
+func credentialProviderCompatible(saved, repository model.GitProvider) bool {
+	return saved == model.GitProviderGeneric || repository == model.GitProviderGeneric || saved == repository
 }
 
 func validProvider(provider model.GitProvider) bool {

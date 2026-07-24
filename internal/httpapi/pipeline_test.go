@@ -55,3 +55,25 @@ func TestApplicationRequestAcceptsPublicWorkflowTemplate(t *testing.T) {
 		t.Fatalf("公共发布计划未正确解析: %+v", request)
 	}
 }
+
+func TestApplicationRequestRestrictsPullCheckInterval(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	for _, interval := range []string{"3", "5", "10", "60"} {
+		context, _ := gin.CreateTestContext(httptest.NewRecorder())
+		payload := `{"name":"Pull 检查间隔","repository_id":"637a764b-e79e-41a2-8dd4-cc038479ebee","poll_interval_seconds":` + interval + `}`
+		context.Request = httptest.NewRequest("POST", "/api/v1/applications", strings.NewReader(payload))
+		context.Request.Header.Set("Content-Type", "application/json")
+		var request applicationRequest
+		if err := context.ShouldBindJSON(&request); err != nil {
+			t.Fatalf("Pull 检查间隔 %s 秒不应被拒绝: %v", interval, err)
+		}
+	}
+
+	context, _ := gin.CreateTestContext(httptest.NewRecorder())
+	context.Request = httptest.NewRequest("POST", "/api/v1/applications", strings.NewReader(`{"name":"无效间隔","repository_id":"637a764b-e79e-41a2-8dd4-cc038479ebee","poll_interval_seconds":30}`))
+	context.Request.Header.Set("Content-Type", "application/json")
+	var request applicationRequest
+	if err := context.ShouldBindJSON(&request); err == nil {
+		t.Fatal("未拒绝设置项之外的 Pull 检查间隔")
+	}
+}

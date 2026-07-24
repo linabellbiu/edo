@@ -28,6 +28,7 @@ type GitRepository struct {
 	DefaultBranch           string      `gorm:"type:varchar(255);not null;default:''"`
 	AuthType                GitAuthType `gorm:"type:varchar(16);not null"`
 	Username                string      `gorm:"type:varchar(255);not null;default:''"`
+	CredentialID            *string     `gorm:"type:varchar(36);index"`
 	CredentialCiphertext    string      `gorm:"type:text;not null"`
 	WebhookSecretCiphertext string      `gorm:"type:text;not null"`
 	WebhookEnabled          bool        `gorm:"not null;default:false;index"`

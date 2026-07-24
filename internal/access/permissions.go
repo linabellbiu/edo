@@ -7,36 +7,41 @@ type Permission struct {
 }
 
 const (
-	PermissionSystemRead         = "system.read"
-	PermissionUserRead           = "user.read"
-	PermissionUserManage         = "user.manage"
-	PermissionRoleRead           = "role.read"
-	PermissionRoleManage         = "role.manage"
-	PermissionAuditRead          = "audit.read"
-	PermissionIdentityRead       = "identity.read"
-	PermissionIdentityManage     = "identity.manage"
-	PermissionRepositoryRead     = "repository.read"
-	PermissionRepositoryManage   = "repository.manage"
-	PermissionDeliveryRead       = "delivery.read"
-	PermissionDeliveryManage     = "delivery.manage"
-	PermissionDeliveryRun        = "delivery.run"
-	PermissionDeploymentRead     = "deployment.read"
-	PermissionDeploymentManage   = "deployment.manage"
-	PermissionDeploymentRun      = "deployment.run"
-	PermissionDeploymentReview   = "deployment.review"
-	PermissionClusterRead        = "cluster.read"
-	PermissionClusterManage      = "cluster.manage"
-	PermissionTerminalOpen       = "terminal.open"
-	PermissionTaskRead           = "task.read"
-	PermissionTaskManage         = "task.manage"
-	PermissionConfigRead         = "config.read"
-	PermissionConfigManage       = "config.manage"
-	PermissionNotificationRead   = "notification.read"
-	PermissionNotificationManage = "notification.manage"
-	PermissionMonitorRead        = "monitor.read"
-	PermissionMonitorManage      = "monitor.manage"
-	PermissionSchedulerRead      = "scheduler.read"
-	PermissionSchedulerManage    = "scheduler.manage"
+	PermissionSystemRead           = "system.read"
+	PermissionUserRead             = "user.read"
+	PermissionUserManage           = "user.manage"
+	PermissionRoleRead             = "role.read"
+	PermissionRoleManage           = "role.manage"
+	PermissionAuditRead            = "audit.read"
+	PermissionIdentityRead         = "identity.read"
+	PermissionIdentityManage       = "identity.manage"
+	PermissionRepositoryRead       = "repository.read"
+	PermissionRepositoryManage     = "repository.manage"
+	PermissionRepositorySecretRead = "repository.secret.read"
+	PermissionCredentialRead       = "credential.read"
+	PermissionCredentialManage     = "credential.manage"
+	PermissionDNSRead              = "dns.read"
+	PermissionDNSManage            = "dns.manage"
+	PermissionDeliveryRead         = "delivery.read"
+	PermissionDeliveryManage       = "delivery.manage"
+	PermissionDeliveryRun          = "delivery.run"
+	PermissionDeploymentRead       = "deployment.read"
+	PermissionDeploymentManage     = "deployment.manage"
+	PermissionDeploymentRun        = "deployment.run"
+	PermissionDeploymentReview     = "deployment.review"
+	PermissionClusterRead          = "cluster.read"
+	PermissionClusterManage        = "cluster.manage"
+	PermissionTerminalOpen         = "terminal.open"
+	PermissionTaskRead             = "task.read"
+	PermissionTaskManage           = "task.manage"
+	PermissionConfigRead           = "config.read"
+	PermissionConfigManage         = "config.manage"
+	PermissionNotificationRead     = "notification.read"
+	PermissionNotificationManage   = "notification.manage"
+	PermissionMonitorRead          = "monitor.read"
+	PermissionMonitorManage        = "monitor.manage"
+	PermissionSchedulerRead        = "scheduler.read"
+	PermissionSchedulerManage      = "scheduler.manage"
 )
 
 var catalog = []Permission{
@@ -50,6 +55,11 @@ var catalog = []Permission{
 	{PermissionIdentityManage, "身份与权限", "配置和启停登录方式"},
 	{PermissionRepositoryRead, "代码仓库", "查看代码仓库"},
 	{PermissionRepositoryManage, "代码仓库", "配置代码仓库和 Webhook"},
+	{PermissionRepositorySecretRead, "代码仓库", "查看代码仓库 Webhook 签名密钥"},
+	{PermissionCredentialRead, "个人令牌", "查看本人保存的 Git 令牌"},
+	{PermissionCredentialManage, "个人令牌", "创建、修改和删除本人 Git 令牌"},
+	{PermissionDNSRead, "域名解析", "查看域名、DNS 厂商账号和解析记录"},
+	{PermissionDNSManage, "域名解析", "管理 DNS 厂商账号、域名和解析记录"},
 	{PermissionDeliveryRead, "持续交付", "查看应用、方案和流水线"},
 	{PermissionDeliveryManage, "持续交付", "管理应用、构建、镜像和发布方案"},
 	{PermissionDeliveryRun, "持续交付", "检查代码更新并准备流水线"},

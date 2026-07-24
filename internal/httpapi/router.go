@@ -16,7 +16,9 @@ import (
 	"zrt/internal/auth"
 	"zrt/internal/config"
 	"zrt/internal/configuration"
+	"zrt/internal/credential"
 	"zrt/internal/deployment"
+	dnsmanager "zrt/internal/dns"
 	"zrt/internal/dockerengine"
 	"zrt/internal/identity"
 	"zrt/internal/kube"
@@ -51,6 +53,8 @@ type Dependencies struct {
 	Deployments    *deployment.Service
 	Terminal       *terminal.Service
 	Configurations *configuration.Service
+	Credentials    *credential.Service
+	DNS            *dnsmanager.Service
 	Notifications  *notification.Service
 	Monitors       *monitor.Service
 	Scheduler      *scheduler.Service
@@ -84,7 +88,7 @@ func NewRouter(deps Dependencies) *gin.Engine {
 	authAPI.POST("/ldap/:id/login", auditAction(deps.Audits, deps.Logger, "auth.ldap.login", "session"), identityAPI.loginLDAP)
 	authAPI.GET("/oauth/:id/start", identityAPI.startOAuth)
 	authAPI.GET("/oauth/:id/callback", identityAPI.callbackOAuth)
-	repositoryAPI := repositoryHandler{service: deps.Repositories, logger: deps.Logger}
+	repositoryAPI := repositoryHandler{service: deps.Repositories, access: deps.Access, logger: deps.Logger}
 	api.POST("/webhooks/git/:id", repositoryAPI.webhook)
 
 	protected := api.Group("")
@@ -95,19 +99,43 @@ func NewRouter(deps Dependencies) *gin.Engine {
 	})
 
 	accessAPI := accessHandler{accounts: deps.Accounts, access: deps.Access, audits: deps.Audits, logger: deps.Logger}
-	protected.GET("/permissions", requirePermission(deps.Access, deps.Logger, access.PermissionRoleRead), func(c *gin.Context) {
+	protected.GET("/permissions", requireAnyPermission(deps.Access, deps.Logger, access.PermissionRoleRead, access.PermissionRoleManage, access.PermissionUserManage), func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"permissions": access.Catalog()})
 	})
-	protected.GET("/roles", requirePermission(deps.Access, deps.Logger, access.PermissionRoleRead), accessAPI.listRoles)
+	protected.GET("/roles", requireAnyPermission(deps.Access, deps.Logger, access.PermissionRoleRead, access.PermissionRoleManage, access.PermissionUserManage), accessAPI.listRoles)
 	protected.POST("/roles", auditAction(deps.Audits, deps.Logger, "role.create", "role"), requirePermission(deps.Access, deps.Logger, access.PermissionRoleManage), accessAPI.createRole)
 	protected.PUT("/roles/:id", auditAction(deps.Audits, deps.Logger, "role.update", "role"), requirePermission(deps.Access, deps.Logger, access.PermissionRoleManage), accessAPI.updateRole)
 	protected.DELETE("/roles/:id", auditAction(deps.Audits, deps.Logger, "role.delete", "role"), requirePermission(deps.Access, deps.Logger, access.PermissionRoleManage), accessAPI.deleteRole)
 
-	protected.GET("/users", requirePermission(deps.Access, deps.Logger, access.PermissionUserRead), accessAPI.listUsers)
+	protected.GET("/users", requireAnyPermission(deps.Access, deps.Logger, access.PermissionUserRead, access.PermissionUserManage), accessAPI.listUsers)
 	protected.POST("/users", auditAction(deps.Audits, deps.Logger, "user.create", "user"), requirePermission(deps.Access, deps.Logger, access.PermissionUserManage), accessAPI.createUser)
 	protected.PATCH("/users/:id/status", auditAction(deps.Audits, deps.Logger, "user.status.update", "user"), requirePermission(deps.Access, deps.Logger, access.PermissionUserManage), accessAPI.setUserStatus)
 	protected.PUT("/users/:id/roles", auditAction(deps.Audits, deps.Logger, "user.roles.update", "user"), requirePermission(deps.Access, deps.Logger, access.PermissionUserManage), accessAPI.setUserRoles)
+	protected.PUT("/users/:id/permissions", auditAction(deps.Audits, deps.Logger, "user.permissions.update", "user"), requirePermission(deps.Access, deps.Logger, access.PermissionUserManage), accessAPI.setUserPermissions)
 	protected.GET("/audit-logs", requirePermission(deps.Access, deps.Logger, access.PermissionAuditRead), accessAPI.listAuditLogs)
+	credentialAPI := credentialHandler{service: deps.Credentials, logger: deps.Logger}
+	protected.GET("/git-credentials", requirePermission(deps.Access, deps.Logger, access.PermissionCredentialRead), credentialAPI.list)
+	protected.POST("/git-credentials", auditAction(deps.Audits, deps.Logger, "credential.create", "git_credential"), requirePermission(deps.Access, deps.Logger, access.PermissionCredentialManage), credentialAPI.create)
+	protected.PUT("/git-credentials/:id", auditAction(deps.Audits, deps.Logger, "credential.update", "git_credential"), requirePermission(deps.Access, deps.Logger, access.PermissionCredentialManage), credentialAPI.update)
+	protected.DELETE("/git-credentials/:id", auditAction(deps.Audits, deps.Logger, "credential.delete", "git_credential"), requirePermission(deps.Access, deps.Logger, access.PermissionCredentialManage), credentialAPI.remove)
+	protected.GET("/git-credentials/:id/secret", auditAction(deps.Audits, deps.Logger, "credential.reveal", "git_credential"), requirePermission(deps.Access, deps.Logger, access.PermissionCredentialRead), credentialAPI.reveal)
+	dnsAPI := dnsHandler{service: deps.DNS, logger: deps.Logger}
+	protected.GET("/dns/providers", requirePermission(deps.Access, deps.Logger, access.PermissionDNSRead), dnsAPI.listProviders)
+	protected.GET("/dns/accounts", requirePermission(deps.Access, deps.Logger, access.PermissionDNSRead), dnsAPI.listAccounts)
+	protected.POST("/dns/accounts", auditAction(deps.Audits, deps.Logger, "dns.account.create", "dns_provider_account"), requirePermission(deps.Access, deps.Logger, access.PermissionDNSManage), dnsAPI.createAccount)
+	protected.PUT("/dns/accounts/:id", auditAction(deps.Audits, deps.Logger, "dns.account.update", "dns_provider_account"), requirePermission(deps.Access, deps.Logger, access.PermissionDNSManage), dnsAPI.updateAccount)
+	protected.PATCH("/dns/accounts/:id/status", auditAction(deps.Audits, deps.Logger, "dns.account.status.update", "dns_provider_account"), requirePermission(deps.Access, deps.Logger, access.PermissionDNSManage), dnsAPI.setAccountStatus)
+	protected.DELETE("/dns/accounts/:id", auditAction(deps.Audits, deps.Logger, "dns.account.delete", "dns_provider_account"), requirePermission(deps.Access, deps.Logger, access.PermissionDNSManage), dnsAPI.deleteAccount)
+	protected.GET("/dns/domains", requirePermission(deps.Access, deps.Logger, access.PermissionDNSRead), dnsAPI.listDomains)
+	protected.POST("/dns/domains", auditAction(deps.Audits, deps.Logger, "dns.domain.create", "dns_domain"), requirePermission(deps.Access, deps.Logger, access.PermissionDNSManage), dnsAPI.createDomain)
+	protected.PUT("/dns/domains/:id", auditAction(deps.Audits, deps.Logger, "dns.domain.update", "dns_domain"), requirePermission(deps.Access, deps.Logger, access.PermissionDNSManage), dnsAPI.updateDomain)
+	protected.PATCH("/dns/domains/:id/status", auditAction(deps.Audits, deps.Logger, "dns.domain.status.update", "dns_domain"), requirePermission(deps.Access, deps.Logger, access.PermissionDNSManage), dnsAPI.setDomainStatus)
+	protected.DELETE("/dns/domains/:id", auditAction(deps.Audits, deps.Logger, "dns.domain.delete", "dns_domain"), requirePermission(deps.Access, deps.Logger, access.PermissionDNSManage), dnsAPI.deleteDomain)
+	protected.POST("/dns/domains/:id/test", auditAction(deps.Audits, deps.Logger, "dns.domain.test", "dns_domain"), requirePermission(deps.Access, deps.Logger, access.PermissionDNSManage), dnsAPI.testDomain)
+	protected.GET("/dns/domains/:id/records", requirePermission(deps.Access, deps.Logger, access.PermissionDNSRead), dnsAPI.listRecords)
+	protected.POST("/dns/domains/:id/records", auditAction(deps.Audits, deps.Logger, "dns.record.create", "dns_record"), requirePermission(deps.Access, deps.Logger, access.PermissionDNSManage), dnsAPI.createRecord)
+	protected.PUT("/dns/domains/:id/records/:record_id", auditAction(deps.Audits, deps.Logger, "dns.record.update", "dns_record"), requirePermission(deps.Access, deps.Logger, access.PermissionDNSManage), dnsAPI.updateRecord)
+	protected.DELETE("/dns/domains/:id/records/:record_id", auditAction(deps.Audits, deps.Logger, "dns.record.delete", "dns_record"), requirePermission(deps.Access, deps.Logger, access.PermissionDNSManage), dnsAPI.deleteRecord)
 	protected.GET("/identity-providers", requirePermission(deps.Access, deps.Logger, access.PermissionIdentityRead), identityAPI.list)
 	protected.POST("/identity-providers", auditAction(deps.Audits, deps.Logger, "identity_provider.create", "identity_provider"), requirePermission(deps.Access, deps.Logger, access.PermissionIdentityManage), identityAPI.create)
 	protected.PUT("/identity-providers/:id", auditAction(deps.Audits, deps.Logger, "identity_provider.update", "identity_provider"), requirePermission(deps.Access, deps.Logger, access.PermissionIdentityManage), identityAPI.update)
@@ -115,10 +143,12 @@ func NewRouter(deps Dependencies) *gin.Engine {
 
 	protected.GET("/repositories", requirePermission(deps.Access, deps.Logger, access.PermissionRepositoryRead), repositoryAPI.list)
 	protected.POST("/repositories", auditAction(deps.Audits, deps.Logger, "repository.create", "repository"), requirePermission(deps.Access, deps.Logger, access.PermissionRepositoryManage), repositoryAPI.create)
+	protected.POST("/repositories/test", auditAction(deps.Audits, deps.Logger, "repository.test", "repository"), requirePermission(deps.Access, deps.Logger, access.PermissionRepositoryManage), repositoryAPI.testInput)
 	protected.PUT("/repositories/:id", auditAction(deps.Audits, deps.Logger, "repository.update", "repository"), requirePermission(deps.Access, deps.Logger, access.PermissionRepositoryManage), repositoryAPI.update)
 	protected.PATCH("/repositories/:id/status", auditAction(deps.Audits, deps.Logger, "repository.status.update", "repository"), requirePermission(deps.Access, deps.Logger, access.PermissionRepositoryManage), repositoryAPI.setStatus)
 	protected.POST("/repositories/:id/test", auditAction(deps.Audits, deps.Logger, "repository.test", "repository"), requirePermission(deps.Access, deps.Logger, access.PermissionRepositoryManage), repositoryAPI.testConnection)
 	protected.GET("/repositories/:id/webhook-deliveries", requirePermission(deps.Access, deps.Logger, access.PermissionRepositoryRead), repositoryAPI.listDeliveries)
+	protected.GET("/repositories/:id/webhook", auditAction(deps.Audits, deps.Logger, "repository.webhook.reveal", "repository"), requirePermission(deps.Access, deps.Logger, access.PermissionRepositorySecretRead), repositoryAPI.webhookConfiguration)
 
 	pipelineAPI := pipelineHandler{service: deps.Pipelines, logger: deps.Logger}
 	protected.GET("/applications", requirePermission(deps.Access, deps.Logger, access.PermissionDeliveryRead), pipelineAPI.listApplications)

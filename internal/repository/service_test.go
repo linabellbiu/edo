@@ -17,6 +17,7 @@ import (
 	"gorm.io/gorm"
 
 	"zrt/internal/config"
+	"zrt/internal/credential"
 	"zrt/internal/database"
 	"zrt/internal/model"
 	"zrt/internal/secret"
@@ -58,6 +59,39 @@ func TestRepositorySecretsAreEncryptedAndURLsAreValidated(t *testing.T) {
 	})
 	if !errors.Is(err, ErrInsecureRepository) {
 		t.Fatalf("未确认的不安全 HTTP 仓库未被拒绝: %v", err)
+	}
+}
+
+func TestRepositoryUsesOwnedCredentialAndWebhookCanBeRevealed(t *testing.T) {
+	service, _ := newRepositoryTestService(t)
+	token := "saved-provider-token"
+	saved, err := service.credentials.Create(context.Background(), "user-a", credential.Input{
+		Name: "GitHub 生产令牌", Provider: model.GitProviderGitHub, AuthType: model.GitAuthToken, Secret: &token,
+	})
+	if err != nil {
+		t.Fatalf("创建个人令牌失败: %v", err)
+	}
+	repo, generated, err := service.Create(context.Background(), "user-a", Input{
+		Name: "owned-token-repository", Provider: model.GitProviderGitHub,
+		CloneURL: "https://github.com/example/project.git", AuthType: model.GitAuthToken,
+		CredentialID: &saved.ID, WebhookEnabled: true,
+	})
+	if err != nil {
+		t.Fatalf("引用个人令牌创建仓库失败: %v", err)
+	}
+	if repo.CredentialID == nil || *repo.CredentialID != saved.ID || repo.CredentialCiphertext != "" {
+		t.Fatalf("仓库未正确引用个人令牌: %+v", repo)
+	}
+	revealed, err := service.RevealWebhookSecret(context.Background(), repo.ID)
+	if err != nil || revealed != generated {
+		t.Fatalf("Webhook 密钥无法重复读取: generated=%q revealed=%q err=%v", generated, revealed, err)
+	}
+	_, _, err = service.Create(context.Background(), "user-b", Input{
+		Name: "foreign-token-repository", Provider: model.GitProviderGitHub,
+		CloneURL: "https://github.com/example/other.git", AuthType: model.GitAuthToken, CredentialID: &saved.ID,
+	})
+	if !errors.Is(err, ErrInvalidCredential) {
+		t.Fatalf("其他用户引用非本人令牌未被拒绝: %v", err)
 	}
 }
 
@@ -158,6 +192,34 @@ func TestProcessWebhookTaskIsIdempotent(t *testing.T) {
 	}
 }
 
+func TestRepositoryInputCanBeTestedWithoutSaving(t *testing.T) {
+	service, db := newRepositoryTestService(t)
+	service.git = staticRefLister{result: RefResult{
+		Branches: []GitRef{{Name: "main", SHA: "0123456789012345678901234567890123456789"}},
+		Tags:     []GitRef{{Name: "v1.0.0", SHA: "abcdefabcdefabcdefabcdefabcdefabcdefabcd"}},
+	}}
+
+	result, err := service.TestInput(context.Background(), "admin", Input{
+		Provider: model.GitProviderGeneric, CloneURL: "https://git.example.com/team/api.git", AuthType: model.GitAuthNone,
+	})
+	if err != nil {
+		t.Fatalf("测试未保存仓库失败: %v", err)
+	}
+	if len(result.Branches) != 1 || result.Branches[0].Name != "main" || len(result.Tags) != 1 || result.Tags[0].Name != "v1.0.0" {
+		t.Fatalf("未正确读取未保存仓库的引用: %+v", result)
+	}
+	var count int64
+	if err := db.Model(&model.GitRepository{}).Count(&count).Error; err != nil || count != 0 {
+		t.Fatalf("测试仓库连接不应写入数据库: count=%d err=%v", count, err)
+	}
+
+	if _, err := service.TestInput(context.Background(), "admin", Input{
+		Provider: model.GitProviderGitHub, CloneURL: "https://github.example.com/team/api.git", AuthType: model.GitAuthToken,
+	}); !errors.Is(err, ErrInvalidCredential) {
+		t.Fatalf("缺少令牌的仓库测试未被拒绝: %v", err)
+	}
+}
+
 func newRepositoryTestService(t *testing.T) (*Service, *gorm.DB) {
 	t.Helper()
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
@@ -177,7 +239,17 @@ func newRepositoryTestService(t *testing.T) (*Service, *gorm.DB) {
 	if err != nil {
 		t.Fatalf("初始化仓库测试密钥失败: %v", err)
 	}
-	return NewService(db, secretManager, NewGitClient(config.Git{Command: "git", Timeout: time.Second}), 4), db
+	credentialService := credential.NewService(db, secretManager)
+	return NewService(db, secretManager, credentialService, NewGitClient(config.Git{Timeout: time.Second}), 4), db
+}
+
+type staticRefLister struct {
+	result RefResult
+	err    error
+}
+
+func (s staticRefLister) ListRefs(context.Context, model.GitRepository, string) (RefResult, error) {
+	return s.result, s.err
 }
 
 func sign(body []byte, secret string) string {

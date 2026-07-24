@@ -1,15 +1,26 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 
 import client from '@/api/client'
 import { apiErrorMessage } from '@/api/resources'
+import ResourceSelectField from '@/components/ResourceSelectField'
 import { useAuthStore } from '@/stores/auth'
 
 type Section = 'applications' | 'repositories' | 'build-plans' | 'image-registries' | 'release-plans' | 'pipelines'
 
 interface Repository {
   id: string; name: string; provider: string; clone_url: string; default_branch: string
-  webhook_enabled: boolean; webhook_url?: string; is_active: boolean
+  webhook_enabled: boolean; webhook_url?: string; webhook_secret?: string; is_active: boolean
+  has_credential?: boolean; credential_id?: string
+}
+interface GitCredential {
+  id: string; name: string; provider: string; auth_type: 'token' | 'ssh_key'; username?: string; secret_hint: string
+}
+interface GitRef { name: string; sha: string }
+interface RepositoryRefResult { branches: GitRef[]; tags: GitRef[] }
+interface RepositoryCheck {
+  status: 'checking' | 'success' | 'error'
+  message: string
 }
 interface BuildPlan {
   id: string; name: string; kind: string; description: string; dockerfile_path?: string
@@ -67,7 +78,7 @@ const defaultEnvironments: Array<ApplicationEnvironment & { enabled: boolean }> 
 function initialApplicationForm() {
   return {
     name: '', description: '', repository_id: '', branch: 'dev', poll_enabled: true,
-    poll_interval_seconds: 60, watch_push: true, watch_pull_request: false,
+    poll_interval_seconds: 3, watch_push: true, watch_pull_request: false,
     watch_tags: false, tag_pattern: 'v*', build_plan_id: '', image_registry_id: '',
     release_plan_id: '', deployment_target_id: '', release_approval_enabled: true,
     workflow_template_id: '',
@@ -86,6 +97,29 @@ function kindLabel(value: string) {
   return ({ script: '脚本', dockerfile: 'Dockerfile', helm: 'Helm', compose: 'Docker Compose', docker: 'Docker', generic: '通用', harbor: 'Harbor', docker_hub: 'Docker Hub' } as Record<string, string>)[value] || value
 }
 
+function credentialCompatible(item: GitCredential, provider: string, authType: string) {
+  return item.auth_type === authType && (item.provider === 'generic' || provider === 'generic' || item.provider === provider)
+}
+
+function repositoryCheckMessage(result: RepositoryRefResult, defaultBranch: string) {
+  const branches = result.branches ?? []
+  const tags = result.tags ?? []
+  let message = branches.length === 0 && tags.length === 0
+    ? '连接成功，仓库当前没有分支或标签。'
+    : `读取到 ${branches.length} 个分支、${tags.length} 个标签。`
+  if (defaultBranch && !branches.some((branch) => branch.name === defaultBranch)) {
+    message += ` 未找到默认分支 ${defaultBranch}。`
+  }
+  return message
+}
+
+function RepositoryCheckResult({ check }: { check: RepositoryCheck }) {
+  return <div className={`repository-check repository-check-${check.status}`} role={check.status === 'error' ? 'alert' : 'status'} aria-live="polite">
+    <span className="repository-check-dot" aria-hidden="true" />
+    <div><strong>{check.status === 'checking' ? '正在测试仓库' : check.status === 'success' ? '仓库可读取' : '仓库不可读取'}</strong><small>{check.message}</small></div>
+  </div>
+}
+
 function StatusPill({ value }: { value: string }) {
   const label = ({ idle: '等待检查', checking: '检查中', synced: '已同步', changed: '发现更新', failed: '检查失败', detected: '发现变更', ready: '等待部署', blocked: '配置不完整', awaiting_approval: '等待审核', running: '流程进行中', succeeded: '已完成', canceled: '已取消' } as Record<string, string>)[value] || value
   return <span className={`status-pill status-${value}`}>{label}</span>
@@ -101,16 +135,21 @@ function FormActions({ submitting, editing, onCancel }: { submitting: boolean; e
 
 export default function DevOpsView({ section }: { section: Section }) {
 	const navigate = useNavigate()
+  const [searchParams, setSearchParams] = useSearchParams()
   const user = useAuthStore((state) => state.user)
   const canManageDelivery = Boolean(user?.is_superuser || user?.permissions.includes('delivery.manage'))
   const canRun = Boolean(user?.is_superuser || user?.permissions.includes('delivery.run'))
 	const canReview = Boolean(user?.is_superuser || user?.permissions.includes('deployment.review'))
   const canManageRepository = Boolean(user?.is_superuser || user?.permissions.includes('repository.manage'))
+  const canReadRepositorySecret = Boolean(user?.is_superuser || user?.permissions.includes('repository.secret.read'))
+  const canReadCredential = Boolean(user?.is_superuser || user?.permissions.includes('credential.read'))
+  const canManageCredential = Boolean(user?.is_superuser || user?.permissions.includes('credential.manage'))
   const canReadDelivery = Boolean(user?.is_superuser || user?.permissions.includes('delivery.read'))
   const canReadRepository = Boolean(user?.is_superuser || user?.permissions.includes('repository.read'))
   const canReadDeployment = Boolean(user?.is_superuser || user?.permissions.includes('deployment.read'))
   const [applications, setApplications] = useState<Application[]>([])
   const [repositories, setRepositories] = useState<Repository[]>([])
+  const [credentials, setCredentials] = useState<GitCredential[]>([])
   const [buildPlans, setBuildPlans] = useState<BuildPlan[]>([])
   const [registries, setRegistries] = useState<ImageRegistry[]>([])
   const [releasePlans, setReleasePlans] = useState<ReleasePlan[]>([])
@@ -123,12 +162,19 @@ export default function DevOpsView({ section }: { section: Section }) {
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState('')
   const [webhookSetup, setWebhookSetup] = useState<{ url: string; secret: string } | null>(null)
+  const [repositoryChecks, setRepositoryChecks] = useState<Record<string, RepositoryCheck>>({})
+  const [repositoryFormCheck, setRepositoryFormCheck] = useState<RepositoryCheck | null>(null)
   const [applicationForm, setApplicationForm] = useState(initialApplicationForm)
-  const [repositoryForm, setRepositoryForm] = useState({ name: '', provider: 'github', clone_url: '', default_branch: 'main', auth_type: 'none', username: '', credential: '', webhook_enabled: true, allow_insecure_http: false })
+  const [repositoryForm, setRepositoryForm] = useState({
+    name: '', provider: 'github', clone_url: '', default_branch: 'main', auth_type: 'none', username: '',
+    credential_mode: 'saved', credential_id: '', credential_name: '', credential_secret: '',
+    webhook_enabled: true, allow_insecure_http: false,
+  })
   const [buildForm, setBuildForm] = useState({ name: '', kind: 'dockerfile', description: '', script: '', dockerfile_path: 'Dockerfile', context_path: '.', artifact_path: '', timeout_seconds: 1800 })
   const [registryForm, setRegistryForm] = useState({ name: '', provider: 'harbor', endpoint: 'https://', namespace: '', username: '', credential: '', allow_insecure_http: false })
   const [releaseForm, setReleaseForm] = useState({ name: '', kind: 'helm', description: '', script: '', helm_chart: '', helm_values: '', compose_file: 'docker-compose.yml', service_name: '', timeout_seconds: 600 })
   const copy = sectionCopy[section]
+  const canCreate = section === 'repositories' ? canManageRepository : section !== 'pipelines' && canManageDelivery
 
   const refresh = useCallback(async () => {
     setLoading(true)
@@ -136,6 +182,9 @@ export default function DevOpsView({ section }: { section: Section }) {
     try {
       const repositoryRequest = canReadRepository
         ? client.get<{ repositories: Repository[] }>('/repositories')
+        : Promise.resolve(null)
+      const credentialRequest = canReadCredential
+        ? client.get<{ credentials: GitCredential[] }>('/git-credentials')
         : Promise.resolve(null)
       const targetRequest = canReadDeployment
         ? client.get<{ targets: DeploymentTarget[] }>('/deployment-targets')
@@ -158,9 +207,10 @@ export default function DevOpsView({ section }: { section: Section }) {
       const workflowTemplateRequest = canReadDelivery
         ? client.get<{ workflow_templates: WorkflowTemplate[] }>('/workflow-templates')
         : Promise.resolve(null)
-      const [appResult, repoResult, buildResult, registryResult, releaseResult, targetResult, runResult, workflowTemplateResult] = await Promise.all([
+      const [appResult, repoResult, credentialResult, buildResult, registryResult, releaseResult, targetResult, runResult, workflowTemplateResult] = await Promise.all([
         applicationRequest,
         repositoryRequest,
+        credentialRequest,
         buildRequest,
         registryRequest,
         releaseRequest,
@@ -170,6 +220,7 @@ export default function DevOpsView({ section }: { section: Section }) {
       ])
       setApplications(appResult?.data.applications || [])
       setRepositories(repoResult?.data.repositories || [])
+      setCredentials(credentialResult?.data.credentials || [])
       setBuildPlans(buildResult?.data.build_plans || [])
       setRegistries(registryResult?.data.image_registries || [])
       setReleasePlans(releaseResult?.data.release_plans || [])
@@ -181,9 +232,18 @@ export default function DevOpsView({ section }: { section: Section }) {
     } finally {
       setLoading(false)
     }
-  }, [canReadDelivery, canReadDeployment, canReadRepository])
+  }, [canReadCredential, canReadDelivery, canReadDeployment, canReadRepository])
 
   useEffect(() => { void refresh() }, [refresh])
+  useEffect(() => { setRepositoryFormCheck(null) }, [repositoryForm])
+  useEffect(() => {
+    if (searchParams.get('create') !== '1' || !canCreate) return
+    setFormOpen(true)
+    const next = new URLSearchParams(searchParams)
+    next.delete('create')
+    setSearchParams(next, { replace: true })
+    window.scrollTo({ top: 0, behavior: 'smooth' })
+  }, [canCreate, searchParams, setSearchParams])
 
   const counts = useMemo(() => ({
     configured: applications.filter((item) => item.build_plan_id && item.image_registry_id && item.workflow?.is_active).length,
@@ -275,13 +335,28 @@ export default function DevOpsView({ section }: { section: Section }) {
     setSubmitting(true)
     setError('')
     try {
+      let credentialID = repositoryForm.auth_type === 'none' ? '' : repositoryForm.credential_id
+      if (repositoryForm.auth_type !== 'none' && repositoryForm.credential_mode === 'new') {
+        const saved = await client.post<{ credential: GitCredential }>('/git-credentials', {
+          name: repositoryForm.credential_name,
+          provider: repositoryForm.provider,
+          auth_type: repositoryForm.auth_type,
+          username: repositoryForm.username,
+          secret: repositoryForm.credential_secret,
+        })
+        credentialID = saved.data.credential.id
+      }
       const result = await client.post<{ repository: Repository; webhook_secret?: string }>('/repositories', {
-        ...repositoryForm, credential: repositoryForm.credential || null, regenerate_webhook: false,
+        name: repositoryForm.name, provider: repositoryForm.provider, clone_url: repositoryForm.clone_url,
+        default_branch: repositoryForm.default_branch, auth_type: repositoryForm.auth_type,
+        username: repositoryForm.username, credential_id: credentialID || null,
+        webhook_enabled: repositoryForm.webhook_enabled,
+        allow_insecure_http: repositoryForm.allow_insecure_http, regenerate_webhook: false,
       })
       if (result.data.webhook_secret) {
         setWebhookSetup({ url: result.data.repository.webhook_url || `/api/v1/webhooks/git/${result.data.repository.id}`, secret: result.data.webhook_secret })
       }
-      setRepositoryForm({ ...repositoryForm, name: '', clone_url: '', credential: '' })
+      setRepositoryForm({ ...repositoryForm, name: '', clone_url: '', credential_id: '', credential_name: '', credential_secret: '' })
       closeForm()
       await refresh()
     } catch (submitError) {
@@ -291,7 +366,56 @@ export default function DevOpsView({ section }: { section: Section }) {
     }
   }
 
-  const canCreate = section === 'repositories' ? canManageRepository : section !== 'pipelines' && canManageDelivery
+  async function showWebhook(repository: Repository) {
+    setError('')
+    try {
+      const response = await client.get<{ webhook_url: string; webhook_secret: string }>(`/repositories/${repository.id}/webhook`)
+      setWebhookSetup({ url: response.data.webhook_url, secret: response.data.webhook_secret })
+      window.scrollTo({ top: 0, behavior: 'smooth' })
+    } catch (requestError) {
+      setError(apiErrorMessage(requestError))
+    }
+  }
+
+  async function testRepository(repository: Repository) {
+    setRepositoryChecks((checks) => ({
+      ...checks,
+      [repository.id]: { status: 'checking', message: '正在读取远端分支和标签…' },
+    }))
+    try {
+      const result = await client.post<RepositoryRefResult>(`/repositories/${repository.id}/test`, undefined, { timeout: 35_000 })
+      setRepositoryChecks((checks) => ({
+        ...checks,
+        [repository.id]: { status: 'success', message: repositoryCheckMessage(result.data, repository.default_branch) },
+      }))
+    } catch (testError) {
+      setRepositoryChecks((checks) => ({
+        ...checks,
+        [repository.id]: { status: 'error', message: apiErrorMessage(testError) },
+      }))
+    }
+  }
+
+  async function testRepositoryForm() {
+    setRepositoryFormCheck({ status: 'checking', message: '正在读取远端分支和标签…' })
+    try {
+      const result = await client.post<RepositoryRefResult>('/repositories/test', {
+        name: repositoryForm.name, provider: repositoryForm.provider, clone_url: repositoryForm.clone_url,
+        default_branch: repositoryForm.default_branch, auth_type: repositoryForm.auth_type,
+        username: repositoryForm.username,
+        credential_id: repositoryForm.credential_mode === 'saved' ? repositoryForm.credential_id || null : null,
+        credential: repositoryForm.credential_mode === 'new' ? repositoryForm.credential_secret || null : null,
+        webhook_enabled: repositoryForm.webhook_enabled,
+        allow_insecure_http: repositoryForm.allow_insecure_http, regenerate_webhook: false,
+      }, { timeout: 35_000 })
+      setRepositoryFormCheck({
+        status: 'success',
+        message: repositoryCheckMessage(result.data, repositoryForm.default_branch),
+      })
+    } catch (testError) {
+      setRepositoryFormCheck({ status: 'error', message: apiErrorMessage(testError) })
+    }
+  }
 
   return <section className="devops-page page-enter">
     <div className="page-heading modern-heading">
@@ -312,21 +436,21 @@ export default function DevOpsView({ section }: { section: Section }) {
     {error && <div className="form-alert error system-alert" role="alert">{error}</div>}
 
     {section === 'repositories' && webhookSetup && <div className="webhook-setup modern-card" role="status">
-      <div><strong>Webhook 已创建</strong><p>密钥只显示这一次，请现在复制到代码托管平台。</p></div>
+      <div><strong>Webhook 配置</strong><p>可随时从仓库卡片重新查看；请只提供给对应代码托管平台。</p></div>
       <dl><div><dt>回调地址</dt><dd>{webhookSetup.url}</dd></div><div><dt>签名密钥</dt><dd>{webhookSetup.secret}</dd></div></dl>
-      <button type="button" onClick={() => setWebhookSetup(null)}>我已保存</button>
+      <button type="button" onClick={() => setWebhookSetup(null)}>关闭</button>
     </div>}
 
     {formOpen && section === 'applications' && <form className="create-sheet application-sheet" onSubmit={(event) => { event.preventDefault(); void submitApplication() }}>
       <div className="sheet-header"><div><h3>{editingID ? '配置应用' : '创建应用'}</h3><p>选择公共发布计划后，环境、分支和发布路径会从画布复制到应用。</p></div><button type="button" onClick={closeForm}>×</button></div>
       <div className="form-grid">
         <label>应用名称<input required value={applicationForm.name} onChange={(e) => setApplicationForm({ ...applicationForm, name: e.target.value })} placeholder="例如：订单服务" /></label>
-        <label>代码仓库<select required value={applicationForm.repository_id} onChange={(e) => setApplicationForm({ ...applicationForm, repository_id: e.target.value })}><option value="">请选择仓库</option>{repositories.filter((item) => item.is_active).map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
+        <ResourceSelectField id="application-repository" label="代码仓库" createLabel="代码仓库" createTo={canManageRepository ? '/repositories?create=1' : undefined} required value={applicationForm.repository_id} onChange={(event) => setApplicationForm({ ...applicationForm, repository_id: event.target.value })}><option value="">请选择仓库</option>{repositories.filter((item) => item.is_active).map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</ResourceSelectField>
         <label className="span-2">说明<input value={applicationForm.description} onChange={(e) => setApplicationForm({ ...applicationForm, description: e.target.value })} placeholder="这个应用负责什么" /></label>
-        <label>构建方案<select value={applicationForm.build_plan_id} onChange={(e) => setApplicationForm({ ...applicationForm, build_plan_id: e.target.value })}><option value="">暂不绑定</option>{buildPlans.filter((item) => item.is_active).map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
-        <label>镜像仓库<select value={applicationForm.image_registry_id} onChange={(e) => setApplicationForm({ ...applicationForm, image_registry_id: e.target.value })}><option value="">暂不绑定</option>{registries.filter((item) => item.is_active).map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
-        <label className="span-2">公共发布计划<select required={!editingID} value={applicationForm.workflow_template_id} onChange={(e) => setApplicationForm({ ...applicationForm, workflow_template_id: e.target.value })}><option value="">{editingID ? '保留应用当前自定义计划' : '请选择发布计划'}</option>{workflowTemplates.filter((item) => item.is_active).map((item) => <option key={item.id} value={item.id}>{item.name} · 第 {item.revision} 版</option>)}</select><small className="field-help">环境、监听分支、触发事件和部署节点都在发布计划画布中配置。</small></label>
-        <label>Pull 检查间隔<select value={applicationForm.poll_interval_seconds} onChange={(e) => setApplicationForm({ ...applicationForm, poll_interval_seconds: Number(e.target.value) })}><option value={30}>30 秒</option><option value={60}>1 分钟</option><option value={300}>5 分钟</option><option value={900}>15 分钟</option></select></label>
+        <ResourceSelectField id="application-build-plan" label="构建方案" createLabel="构建方案" createTo={canManageDelivery ? '/build-plans?create=1' : undefined} value={applicationForm.build_plan_id} onChange={(event) => setApplicationForm({ ...applicationForm, build_plan_id: event.target.value })}><option value="">暂不绑定</option>{buildPlans.filter((item) => item.is_active).map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</ResourceSelectField>
+        <ResourceSelectField id="application-image-registry" label="镜像仓库" createLabel="镜像仓库" createTo={canManageDelivery ? '/image-registries?create=1' : undefined} value={applicationForm.image_registry_id} onChange={(event) => setApplicationForm({ ...applicationForm, image_registry_id: event.target.value })}><option value="">暂不绑定</option>{registries.filter((item) => item.is_active).map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</ResourceSelectField>
+        <ResourceSelectField id="application-workflow-template" label="公共发布计划" createLabel="公共发布计划" createTo={canManageDelivery ? '/release-workflows?create=1' : undefined} wrapperClassName="span-2" help="环境、监听分支、触发事件和部署节点都在发布计划画布中配置。" required={!editingID} value={applicationForm.workflow_template_id} onChange={(event) => setApplicationForm({ ...applicationForm, workflow_template_id: event.target.value })}><option value="">{editingID ? '保留应用当前自定义计划' : '请选择发布计划'}</option>{workflowTemplates.filter((item) => item.is_active).map((item) => <option key={item.id} value={item.id}>{item.name} · 第 {item.revision} 版</option>)}</ResourceSelectField>
+        <label>Pull 检查间隔<select value={applicationForm.poll_interval_seconds} onChange={(e) => setApplicationForm({ ...applicationForm, poll_interval_seconds: Number(e.target.value) })}><option value={3}>3 秒</option><option value={5}>5 秒</option><option value={10}>10 秒</option><option value={60}>1 分钟</option></select></label>
       </div>
       <div className="form-block"><span className="form-block-title">发布计划审核</span><div className="approval-choice">
         <label className={applicationForm.release_approval_enabled ? 'selected' : ''}><input type="radio" name="release-approval" checked={applicationForm.release_approval_enabled} onChange={() => setApplicationForm({ ...applicationForm, release_approval_enabled: true })} /><span><strong>需要审核</strong><small>生产部署的每条路径都必须经过审核节点，申请人不能审核自己。</small></span></label>
@@ -337,7 +461,29 @@ export default function DevOpsView({ section }: { section: Section }) {
 
     {formOpen && section === 'repositories' && <form className="create-sheet" onSubmit={(event) => { event.preventDefault(); void submitRepository() }}>
       <div className="sheet-header"><div><h3>添加代码仓库</h3><p>支持普通 Git、GitHub、GitLab、Gitea 和 Gitee。</p></div><button type="button" onClick={closeForm}>×</button></div>
-      <div className="form-grid"><label>名称<input required value={repositoryForm.name} onChange={(e) => setRepositoryForm({ ...repositoryForm, name: e.target.value })} /></label><label>平台<select value={repositoryForm.provider} onChange={(e) => setRepositoryForm({ ...repositoryForm, provider: e.target.value })}><option value="github">GitHub</option><option value="gitlab">GitLab</option><option value="gitea">Gitea</option><option value="gitee">Gitee</option><option value="generic">普通 Git</option></select></label><label className="span-2">Clone 地址<input required value={repositoryForm.clone_url} onChange={(e) => setRepositoryForm({ ...repositoryForm, clone_url: e.target.value })} placeholder="https://git.example.com/team/project.git" /></label><label>默认分支<input value={repositoryForm.default_branch} onChange={(e) => setRepositoryForm({ ...repositoryForm, default_branch: e.target.value })} /></label><label>认证方式<select value={repositoryForm.auth_type} onChange={(e) => setRepositoryForm({ ...repositoryForm, auth_type: e.target.value })}><option value="none">无需认证</option><option value="token">Token</option><option value="ssh_key">SSH 私钥</option></select></label>{repositoryForm.auth_type !== 'none' && <><label>用户名<input value={repositoryForm.username} onChange={(e) => setRepositoryForm({ ...repositoryForm, username: e.target.value })} /></label><label>凭据<input type="password" required value={repositoryForm.credential} onChange={(e) => setRepositoryForm({ ...repositoryForm, credential: e.target.value })} /></label></>}</div><label className="simple-check"><input type="checkbox" checked={repositoryForm.webhook_enabled} onChange={(e) => setRepositoryForm({ ...repositoryForm, webhook_enabled: e.target.checked })} />启用 Webhook</label><FormActions submitting={submitting} onCancel={closeForm} />
+      <div className="form-grid">
+        <label>名称<input required value={repositoryForm.name} onChange={(event) => setRepositoryForm({ ...repositoryForm, name: event.target.value })} /></label>
+        <label>平台<select value={repositoryForm.provider} onChange={(event) => setRepositoryForm({ ...repositoryForm, provider: event.target.value, credential_id: '' })}><option value="github">GitHub</option><option value="gitlab">GitLab</option><option value="gitea">Gitea</option><option value="gitee">Gitee</option><option value="generic">普通 Git</option></select></label>
+        <label className="span-2">Clone 地址<input required value={repositoryForm.clone_url} onChange={(event) => setRepositoryForm({ ...repositoryForm, clone_url: event.target.value })} placeholder="https://git.example.com/team/project.git" /></label>
+        <label>默认分支<input value={repositoryForm.default_branch} onChange={(event) => setRepositoryForm({ ...repositoryForm, default_branch: event.target.value })} /></label>
+        <label>认证方式<select value={repositoryForm.auth_type} onChange={(event) => setRepositoryForm({ ...repositoryForm, auth_type: event.target.value, credential_id: '', credential_secret: '' })}><option value="none">无需认证</option><option value="token">访问令牌</option><option value="ssh_key">SSH 私钥</option></select></label>
+        {repositoryForm.auth_type !== 'none' && <div className="span-2 repository-credential-block">
+          <div className="credential-mode-tabs">
+            <button type="button" className={repositoryForm.credential_mode === 'saved' ? 'active' : ''} onClick={() => setRepositoryForm({ ...repositoryForm, credential_mode: 'saved' })}>选择我的令牌</button>
+            {canManageCredential && <button type="button" className={repositoryForm.credential_mode === 'new' ? 'active' : ''} onClick={() => setRepositoryForm({ ...repositoryForm, credential_mode: 'new' })}>新建并保存</button>}
+          </div>
+          {repositoryForm.credential_mode === 'saved' ? canReadCredential ? <div className="form-grid compact-grid">
+            <label className="span-2">已保存令牌<select required value={repositoryForm.credential_id} onChange={(event) => { const selected = credentials.find((item) => item.id === event.target.value); setRepositoryForm({ ...repositoryForm, credential_id: event.target.value, username: selected?.username || repositoryForm.username }) }}><option value="">请选择</option>{credentials.filter((item) => credentialCompatible(item, repositoryForm.provider, repositoryForm.auth_type)).map((item) => <option key={item.id} value={item.id}>{item.name} · {item.secret_hint}</option>)}</select></label>
+          </div> : <p className="credential-permission-hint">当前角色没有查看个人令牌的权限，请联系管理员授权。</p> : <div className="form-grid compact-grid">
+            <label>令牌名称<input required value={repositoryForm.credential_name} onChange={(event) => setRepositoryForm({ ...repositoryForm, credential_name: event.target.value })} placeholder="例如：GitHub 生产账号" /></label>
+            <label>用户名<input value={repositoryForm.username} onChange={(event) => setRepositoryForm({ ...repositoryForm, username: event.target.value })} /></label>
+            <label className="span-2">{repositoryForm.auth_type === 'token' ? '令牌' : 'SSH 私钥'}<textarea required rows={repositoryForm.auth_type === 'ssh_key' ? 8 : 3} value={repositoryForm.credential_secret} onChange={(event) => setRepositoryForm({ ...repositoryForm, credential_secret: event.target.value })} /></label>
+          </div>}
+        </div>}
+      </div>
+      <label className="simple-check"><input type="checkbox" checked={repositoryForm.webhook_enabled} onChange={(event) => setRepositoryForm({ ...repositoryForm, webhook_enabled: event.target.checked })} />启用 Webhook</label>
+      {repositoryFormCheck && <RepositoryCheckResult check={repositoryFormCheck} />}
+      <div className="form-actions"><button className="secondary-button" type="button" onClick={closeForm}>取消</button><button className="secondary-button" type="button" disabled={submitting || repositoryFormCheck?.status === 'checking'} onClick={(event) => { if (event.currentTarget.form?.reportValidity()) void testRepositoryForm() }}>{repositoryFormCheck?.status === 'checking' ? '测试中…' : '测试'}</button><button className="primary-button" type="submit" disabled={submitting || repositoryFormCheck?.status === 'checking'}>{submitting ? '保存中…' : '创建'}</button></div>
     </form>}
 
     {formOpen && section === 'build-plans' && <form className="create-sheet" onSubmit={(event) => { event.preventDefault(); void submit('/build-plans', buildForm, () => setBuildForm({ ...buildForm, name: '', description: '', script: '' })) }}>
@@ -361,7 +507,24 @@ export default function DevOpsView({ section }: { section: Section }) {
       <div className="card-actions"><button type="button" onClick={() => editApplication(application)}>配置</button><button type="button" onClick={() => navigate(`/release-workflows?application=${application.id}`)}>发布计划</button>{canRun && <><button type="button" onClick={() => void action(`/applications/${application.id}/sync`)}>检查更新</button><button className="accent-action" type="button" onClick={() => void action(`/applications/${application.id}/pipeline-runs`)}>启动流程</button></>}</div>
     </article>)}{!loading && applications.length === 0 && <EmptyState title="还没有应用" description="创建第一个应用，把仓库、构建和发布流程连接起来。" />}</div>}
 
-    {section === 'repositories' && <div className="resource-card-grid">{repositories.map((item) => <article className="resource-card modern-card" key={item.id}><div className="resource-icon git-icon">⌁</div><div><div className="card-title-line"><h3>{item.name}</h3><span>{item.provider}</span></div><p className="resource-url">{item.clone_url}</p><div className="meta-row"><span>默认分支 {item.default_branch || '—'}</span><span>{item.webhook_enabled ? 'Webhook 已开启' : '仅 Pull'}</span></div></div></article>)}{!loading && repositories.length === 0 && <EmptyState title="还没有代码仓库" description="添加仓库后才能创建应用。" />}</div>}
+    {section === 'repositories' && <div className="resource-card-grid">{repositories.map((item) => {
+      const check = repositoryChecks[item.id]
+      return <article className="resource-card repository-card modern-card" key={item.id}>
+        <div className="resource-icon git-icon">⌁</div>
+        <div className="repository-card-main">
+          <div className="card-title-line"><h3>{item.name}</h3><span>{item.provider}</span></div>
+          <p className="resource-url" title={item.clone_url}>{item.clone_url}</p>
+          <div className="meta-row"><span>默认分支 {item.default_branch || '—'}</span><span>{item.webhook_enabled ? 'Webhook 已开启' : '仅 Pull'}</span></div>
+          {check && <RepositoryCheckResult check={check} />}
+          {(canManageRepository || (item.webhook_enabled && canReadRepositorySecret)) && <div className="card-actions repository-actions">
+            {canManageRepository && <button type="button" disabled={!item.is_active || check?.status === 'checking'} title={item.is_active ? '使用当前凭据读取远端分支和标签' : '仓库已停用'} onClick={() => void testRepository(item)}>
+              {check?.status === 'checking' ? '测试中…' : '测试'}
+            </button>}
+            {item.webhook_enabled && canReadRepositorySecret && <button type="button" onClick={() => void showWebhook(item)}>查看 Webhook</button>}
+          </div>}
+        </div>
+      </article>
+    })}{!loading && repositories.length === 0 && <EmptyState title="还没有代码仓库" description="添加仓库后才能创建应用。" />}</div>}
 
     {section === 'build-plans' && <div className="resource-card-grid">{buildPlans.map((item) => <article className="resource-card modern-card" key={item.id}><div className="resource-icon build-icon">◇</div><div><div className="card-title-line"><h3>{item.name}</h3><span>{kindLabel(item.kind)}</span></div><p>{item.description || (item.kind === 'dockerfile' ? item.dockerfile_path : '自定义打包脚本')}</p><div className="meta-row"><span>上下文 {item.context_path}</span><span>超时 {item.timeout_seconds} 秒</span></div></div></article>)}{!loading && buildPlans.length === 0 && <EmptyState title="还没有构建方案" description="创建脚本或 Dockerfile 构建方案。" />}</div>}
 

@@ -13,6 +13,28 @@ func TestLoadRejectsExplicitEmptyDatabaseConfig(t *testing.T) {
 	}
 }
 
+func TestLoadParsesTypedEnvironmentValues(t *testing.T) {
+	t.Setenv("ZRT_ENV", "production")
+	t.Setenv("ZRT_AUTH_COOKIE_SECURE", "")
+	t.Setenv("ZRT_SERVER_READ_TIMEOUT", "23s")
+	t.Setenv("ZRT_NATS_MAX_ATTEMPTS", "6")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("解析类型化环境变量失败: %v", err)
+	}
+	if !cfg.Auth.CookieSecure || cfg.Server.ReadTimeout != 23*time.Second || cfg.NATS.MaxAttempts != 6 {
+		t.Fatalf("类型化环境变量结果错误: secure=%v timeout=%s attempts=%d",
+			cfg.Auth.CookieSecure, cfg.Server.ReadTimeout, cfg.NATS.MaxAttempts)
+	}
+}
+
+func TestLoadRejectsInvalidBoolean(t *testing.T) {
+	t.Setenv("ZRT_AUTH_COOKIE_SECURE", "invalid")
+	if _, err := Load(); err == nil {
+		t.Fatal("非法布尔环境变量必须返回错误")
+	}
+}
+
 func TestValidateSupportedDatabases(t *testing.T) {
 	for _, driver := range []string{"sqlite", "postgres", "mysql"} {
 		cfg := validConfig()
@@ -67,7 +89,7 @@ func validConfig() Config {
 			Concurrency: 1, TaskTimeout: time.Minute,
 			LeaseDuration: 30 * time.Second, ShutdownTimeout: time.Second,
 		},
-		Git: Git{Command: "git", Timeout: time.Second},
+		Git: Git{Timeout: time.Second},
 		Runtime: Runtime{
 			ConnectTimeout: time.Second, RequestTimeout: time.Second,
 			TerminalMaxDuration: time.Hour,

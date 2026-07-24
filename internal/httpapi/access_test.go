@@ -41,6 +41,14 @@ func TestRBACAndAuditAPI(t *testing.T) {
 	if userResponse.Code != http.StatusCreated {
 		t.Fatalf("创建普通用户失败: status=%d body=%s", userResponse.Code, userResponse.Body.String())
 	}
+	var userPayload struct {
+		User struct {
+			ID string `json:"id"`
+		} `json:"user"`
+	}
+	if err := json.Unmarshal(userResponse.Body.Bytes(), &userPayload); err != nil || userPayload.User.ID == "" {
+		t.Fatalf("解析用户响应失败: payload=%+v err=%v", userPayload, err)
+	}
 
 	readerLogin := performJSONRequest(t, router, http.MethodPost, "/api/v1/auth/login", map[string]string{
 		"username": "reader", "password": "correct horse battery staple",
@@ -59,6 +67,20 @@ func TestRBACAndAuditAPI(t *testing.T) {
 	}, readerCookie)
 	if denied.Code != http.StatusForbidden {
 		t.Fatalf("越权创建角色未被拒绝: status=%d body=%s", denied.Code, denied.Body.String())
+	}
+	override := performJSONRequest(t, router, http.MethodPut, "/api/v1/users/"+userPayload.User.ID+"/permissions", map[string]any{
+		"allow": []string{"role.read"}, "deny": []string{"user.read"},
+	}, adminCookie)
+	if override.Code != http.StatusNoContent {
+		t.Fatalf("配置用户权限覆盖失败: status=%d body=%s", override.Code, override.Body.String())
+	}
+	users = performJSONRequest(t, router, http.MethodGet, "/api/v1/users", nil, readerCookie)
+	if users.Code != http.StatusForbidden {
+		t.Fatalf("显式拒绝未覆盖角色授权: status=%d body=%s", users.Code, users.Body.String())
+	}
+	roles := performJSONRequest(t, router, http.MethodGet, "/api/v1/roles", nil, readerCookie)
+	if roles.Code != http.StatusOK {
+		t.Fatalf("用户级额外授权未生效: status=%d body=%s", roles.Code, roles.Body.String())
 	}
 
 	audits := performJSONRequest(t, router, http.MethodGet, "/api/v1/audit-logs", nil, adminCookie)

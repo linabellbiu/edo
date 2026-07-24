@@ -4,9 +4,10 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"strconv"
 	"strings"
 	"time"
+
+	"github.com/caarlos0/env/v11"
 )
 
 const (
@@ -29,8 +30,8 @@ const (
 )
 
 type Config struct {
-	Environment string
-	LogLevel    string
+	Environment string `env:"ZRT_ENV"`
+	LogLevel    string `env:"ZRT_LOG_LEVEL"`
 	Server      Server
 	Auth        Auth
 	Database    Database
@@ -44,144 +45,165 @@ type Config struct {
 }
 
 type Auth struct {
-	SessionTTL      time.Duration
-	CookieName      string
-	CookieSecure    bool
-	LoginMaxFailure int
-	LoginWindow     time.Duration
+	SessionTTL      time.Duration `env:"ZRT_AUTH_SESSION_TTL"`
+	CookieName      string        `env:"ZRT_AUTH_COOKIE_NAME"`
+	CookieSecure    bool          `env:"ZRT_AUTH_COOKIE_SECURE"`
+	LoginMaxFailure int           `env:"ZRT_AUTH_LOGIN_MAX_FAILURE"`
+	LoginWindow     time.Duration `env:"ZRT_AUTH_LOGIN_WINDOW"`
 }
 
 type Server struct {
-	Address         string
-	WebRoot         string
-	ReadTimeout     time.Duration
-	WriteTimeout    time.Duration
-	IdleTimeout     time.Duration
-	ShutdownTimeout time.Duration
+	Address         string        `env:"ZRT_SERVER_ADDRESS"`
+	WebRoot         string        `env:"ZRT_WEB_ROOT"`
+	ReadTimeout     time.Duration `env:"ZRT_SERVER_READ_TIMEOUT"`
+	WriteTimeout    time.Duration `env:"ZRT_SERVER_WRITE_TIMEOUT"`
+	IdleTimeout     time.Duration `env:"ZRT_SERVER_IDLE_TIMEOUT"`
+	ShutdownTimeout time.Duration `env:"ZRT_SERVER_SHUTDOWN_TIMEOUT"`
 }
 
 type Database struct {
-	Driver          string
-	DSN             string
-	MaxOpenConns    int
-	MaxIdleConns    int
-	ConnMaxLifetime time.Duration
+	Driver          string        `env:"ZRT_DATABASE_DRIVER"`
+	DSN             string        `env:"ZRT_DATABASE_DSN"`
+	MaxOpenConns    int           `env:"ZRT_DATABASE_MAX_OPEN_CONNS"`
+	MaxIdleConns    int           `env:"ZRT_DATABASE_MAX_IDLE_CONNS"`
+	ConnMaxLifetime time.Duration `env:"ZRT_DATABASE_CONN_MAX_LIFETIME"`
 }
 
 type Redis struct {
-	URL       string
-	KeyPrefix string
-	Timeout   time.Duration
+	URL       string        `env:"ZRT_REDIS_URL"`
+	KeyPrefix string        `env:"ZRT_REDIS_KEY_PREFIX"`
+	Timeout   time.Duration `env:"ZRT_REDIS_TIMEOUT"`
 }
 
 type NATS struct {
-	URL           string
-	Stream        string
-	DeadStream    string
-	SubjectPrefix string
-	DeadSubject   string
-	MaxAttempts   int
-	Timeout       time.Duration
-	MaxAge        time.Duration
-	MaxBytes      int64
-	DeadMaxBytes  int64
-	Replicas      int
+	URL           string        `env:"ZRT_NATS_URL"`
+	Stream        string        `env:"ZRT_NATS_STREAM"`
+	DeadStream    string        `env:"ZRT_NATS_DEAD_STREAM"`
+	SubjectPrefix string        `env:"ZRT_NATS_SUBJECT_PREFIX"`
+	DeadSubject   string        `env:"ZRT_NATS_DEAD_SUBJECT"`
+	MaxAttempts   int           `env:"ZRT_NATS_MAX_ATTEMPTS"`
+	Timeout       time.Duration `env:"ZRT_NATS_TIMEOUT"`
+	MaxAge        time.Duration `env:"ZRT_NATS_MAX_AGE"`
+	MaxBytes      int64         `env:"ZRT_NATS_MAX_BYTES"`
+	DeadMaxBytes  int64         `env:"ZRT_NATS_DEAD_MAX_BYTES"`
+	Replicas      int           `env:"ZRT_NATS_REPLICAS"`
 }
 
 type Worker struct {
-	Concurrency     int
-	TaskTimeout     time.Duration
-	LeaseDuration   time.Duration
-	ShutdownTimeout time.Duration
+	Concurrency     int           `env:"ZRT_WORKER_CONCURRENCY"`
+	TaskTimeout     time.Duration `env:"ZRT_WORKER_TASK_TIMEOUT"`
+	LeaseDuration   time.Duration `env:"ZRT_WORKER_LEASE_DURATION"`
+	ShutdownTimeout time.Duration `env:"ZRT_WORKER_SHUTDOWN_TIMEOUT"`
 }
 
 type Secrets struct {
-	Key string
+	Key string `env:"ZRT_SECRETS_KEY"`
 }
 
 type Git struct {
-	Command        string
-	Timeout        time.Duration
-	KnownHostsFile string
+	Timeout        time.Duration `env:"ZRT_GIT_TIMEOUT"`
+	KnownHostsFile string        `env:"ZRT_GIT_KNOWN_HOSTS_FILE"`
 }
 
 type Runtime struct {
-	ConnectTimeout      time.Duration
-	RequestTimeout      time.Duration
-	TerminalMaxDuration time.Duration
+	ConnectTimeout      time.Duration `env:"ZRT_RUNTIME_CONNECT_TIMEOUT"`
+	RequestTimeout      time.Duration `env:"ZRT_RUNTIME_REQUEST_TIMEOUT"`
+	TerminalMaxDuration time.Duration `env:"ZRT_RUNTIME_TERMINAL_MAX_DURATION"`
 }
 
 type Scheduler struct {
-	PollInterval time.Duration
+	PollInterval time.Duration `env:"ZRT_SCHEDULER_POLL_INTERVAL"`
 }
 
 func Load() (Config, error) {
-	environment := env("ZRT_ENV", "development")
-	cookieSecure, err := envBool("ZRT_AUTH_COOKIE_SECURE", environment == "production")
-	if err != nil {
+	if err := rejectExplicitEmptyValues(
+		"ZRT_AUTH_COOKIE_NAME",
+		"ZRT_DATABASE_DRIVER",
+		"ZRT_DATABASE_DSN",
+		"ZRT_REDIS_URL",
+		"ZRT_REDIS_KEY_PREFIX",
+		"ZRT_NATS_URL",
+		"ZRT_NATS_STREAM",
+		"ZRT_NATS_DEAD_STREAM",
+		"ZRT_NATS_SUBJECT_PREFIX",
+		"ZRT_NATS_DEAD_SUBJECT",
+	); err != nil {
 		return Config{}, err
+	}
+	probe := struct {
+		Environment string `env:"ZRT_ENV" envDefault:"development"`
+	}{}
+	if err := env.Parse(&probe); err != nil {
+		return Config{}, fmt.Errorf("读取运行环境配置失败: %w", err)
+	}
+	environment := strings.TrimSpace(probe.Environment)
+	if environment == "" {
+		environment = "development"
 	}
 	cfg := Config{
 		Environment: environment,
-		LogLevel:    env("ZRT_LOG_LEVEL", "info"),
+		LogLevel:    "info",
 		Server: Server{
-			Address:         env("ZRT_SERVER_ADDRESS", ":8080"),
-			WebRoot:         env("ZRT_WEB_ROOT", "web/dist"),
-			ReadTimeout:     envDuration("ZRT_SERVER_READ_TIMEOUT", 15*time.Second),
-			WriteTimeout:    envDuration("ZRT_SERVER_WRITE_TIMEOUT", 30*time.Second),
-			IdleTimeout:     envDuration("ZRT_SERVER_IDLE_TIMEOUT", 60*time.Second),
-			ShutdownTimeout: envDuration("ZRT_SERVER_SHUTDOWN_TIMEOUT", 15*time.Second),
+			Address:         ":8080",
+			WebRoot:         "web/dist",
+			ReadTimeout:     15 * time.Second,
+			WriteTimeout:    30 * time.Second,
+			IdleTimeout:     60 * time.Second,
+			ShutdownTimeout: 15 * time.Second,
 		},
 		Auth: Auth{
-			SessionTTL:      envDuration("ZRT_AUTH_SESSION_TTL", 8*time.Hour),
-			CookieName:      env("ZRT_AUTH_COOKIE_NAME", "zrt_session"),
-			CookieSecure:    cookieSecure,
-			LoginMaxFailure: envInt("ZRT_AUTH_LOGIN_MAX_FAILURE", 5),
-			LoginWindow:     envDuration("ZRT_AUTH_LOGIN_WINDOW", 15*time.Minute),
+			SessionTTL:      8 * time.Hour,
+			CookieName:      "zrt_session",
+			CookieSecure:    environment == "production",
+			LoginMaxFailure: 5,
+			LoginWindow:     15 * time.Minute,
 		},
 		Database: Database{
-			Driver:          strings.ToLower(env("ZRT_DATABASE_DRIVER", "sqlite")),
-			DSN:             env("ZRT_DATABASE_DSN", "data/zrt.db"),
-			MaxOpenConns:    envInt("ZRT_DATABASE_MAX_OPEN_CONNS", 25),
-			MaxIdleConns:    envInt("ZRT_DATABASE_MAX_IDLE_CONNS", 5),
-			ConnMaxLifetime: envDuration("ZRT_DATABASE_CONN_MAX_LIFETIME", time.Hour),
+			Driver:          "sqlite",
+			DSN:             "data/zrt.db",
+			MaxOpenConns:    25,
+			MaxIdleConns:    5,
+			ConnMaxLifetime: time.Hour,
 		},
 		Redis: Redis{
-			URL:       env("ZRT_REDIS_URL", "redis://127.0.0.1:6379/0"),
-			KeyPrefix: env("ZRT_REDIS_KEY_PREFIX", "zrt:"),
-			Timeout:   envDuration("ZRT_REDIS_TIMEOUT", 3*time.Second),
+			URL:       "redis://127.0.0.1:6379/0",
+			KeyPrefix: "zrt:",
+			Timeout:   3 * time.Second,
 		},
 		NATS: NATS{
-			URL:           env("ZRT_NATS_URL", defaultNATSURL),
-			Stream:        env("ZRT_NATS_STREAM", defaultNATSStream),
-			DeadStream:    env("ZRT_NATS_DEAD_STREAM", defaultNATSDeadStream),
-			SubjectPrefix: env("ZRT_NATS_SUBJECT_PREFIX", defaultNATSSubjectPrefix),
-			DeadSubject:   env("ZRT_NATS_DEAD_SUBJECT", defaultNATSDeadSubject),
-			MaxAttempts:   envInt("ZRT_NATS_MAX_ATTEMPTS", DefaultMaxAttempts),
-			Timeout:       envDuration("ZRT_NATS_TIMEOUT", 5*time.Second),
-			MaxAge:        envDuration("ZRT_NATS_MAX_AGE", defaultNATSMaxAge),
-			MaxBytes:      envInt64("ZRT_NATS_MAX_BYTES", defaultNATSMaxBytes),
-			DeadMaxBytes:  envInt64("ZRT_NATS_DEAD_MAX_BYTES", defaultNATSDeadMaxBytes),
-			Replicas:      envInt("ZRT_NATS_REPLICAS", defaultNATSReplicas),
+			URL:           defaultNATSURL,
+			Stream:        defaultNATSStream,
+			DeadStream:    defaultNATSDeadStream,
+			SubjectPrefix: defaultNATSSubjectPrefix,
+			DeadSubject:   defaultNATSDeadSubject,
+			MaxAttempts:   DefaultMaxAttempts,
+			Timeout:       5 * time.Second,
+			MaxAge:        defaultNATSMaxAge,
+			MaxBytes:      defaultNATSMaxBytes,
+			DeadMaxBytes:  defaultNATSDeadMaxBytes,
+			Replicas:      defaultNATSReplicas,
 		},
 		Worker: Worker{
-			Concurrency:     envInt("ZRT_WORKER_CONCURRENCY", defaultWorkerConcurrency),
-			TaskTimeout:     envDuration("ZRT_WORKER_TASK_TIMEOUT", defaultWorkerTaskTimeout),
-			LeaseDuration:   envDuration("ZRT_WORKER_LEASE_DURATION", defaultWorkerLease),
-			ShutdownTimeout: envDuration("ZRT_WORKER_SHUTDOWN_TIMEOUT", defaultWorkerShutdown),
+			Concurrency:     defaultWorkerConcurrency,
+			TaskTimeout:     defaultWorkerTaskTimeout,
+			LeaseDuration:   defaultWorkerLease,
+			ShutdownTimeout: defaultWorkerShutdown,
 		},
-		Secrets: Secrets{Key: env("ZRT_SECRETS_KEY", "")},
+		Secrets: Secrets{},
 		Git: Git{
-			Command: env("ZRT_GIT_COMMAND", "git"), Timeout: envDuration("ZRT_GIT_TIMEOUT", 30*time.Second),
-			KnownHostsFile: env("ZRT_GIT_KNOWN_HOSTS_FILE", ""),
+			Timeout: 30 * time.Second,
 		},
 		Runtime: Runtime{
-			ConnectTimeout:      envDuration("ZRT_RUNTIME_CONNECT_TIMEOUT", 10*time.Second),
-			RequestTimeout:      envDuration("ZRT_RUNTIME_REQUEST_TIMEOUT", 30*time.Second),
-			TerminalMaxDuration: envDuration("ZRT_RUNTIME_TERMINAL_MAX_DURATION", 2*time.Hour),
+			ConnectTimeout:      10 * time.Second,
+			RequestTimeout:      30 * time.Second,
+			TerminalMaxDuration: 2 * time.Hour,
 		},
-		Scheduler: Scheduler{PollInterval: envDuration("ZRT_SCHEDULER_POLL_INTERVAL", defaultSchedulerPoll)},
+		Scheduler: Scheduler{PollInterval: defaultSchedulerPoll},
 	}
+	if err := env.Parse(&cfg); err != nil {
+		return Config{}, fmt.Errorf("读取 ZRT 环境变量失败: %w", err)
+	}
+	cfg.normalizeStrings()
 
 	if cfg.Database.Driver == "sqlite" {
 		cfg.Database.MaxOpenConns = 1
@@ -191,6 +213,15 @@ func Load() (Config, error) {
 		return Config{}, err
 	}
 	return cfg, nil
+}
+
+func rejectExplicitEmptyValues(keys ...string) error {
+	for _, key := range keys {
+		if value, exists := os.LookupEnv(key); exists && strings.TrimSpace(value) == "" {
+			return fmt.Errorf("环境变量 %s 不能为空", key)
+		}
+	}
+	return nil
 }
 
 func (c Config) Validate() error {
@@ -248,8 +279,8 @@ func (c Config) Validate() error {
 	if c.Worker.TaskTimeout <= 0 || c.Worker.LeaseDuration < 15*time.Second || c.Worker.ShutdownTimeout <= 0 {
 		return errors.New("Worker 超时或租约配置无效")
 	}
-	if c.Git.Command == "" || c.Git.Timeout <= 0 {
-		return errors.New("Git 命令或超时配置无效")
+	if c.Git.Timeout <= 0 {
+		return errors.New("Git 查询超时配置无效")
 	}
 	if c.Runtime.ConnectTimeout <= 0 || c.Runtime.RequestTimeout <= 0 ||
 		c.Runtime.TerminalMaxDuration < time.Minute || c.Runtime.TerminalMaxDuration > 24*time.Hour {
@@ -261,57 +292,21 @@ func (c Config) Validate() error {
 	return nil
 }
 
-func env(key, fallback string) string {
-	if value, ok := os.LookupEnv(key); ok {
-		return strings.TrimSpace(value)
-	}
-	return fallback
-}
-
-func envInt(key string, fallback int) int {
-	value, ok := os.LookupEnv(key)
-	if !ok || strings.TrimSpace(value) == "" {
-		return fallback
-	}
-	parsed, err := strconv.Atoi(value)
-	if err != nil {
-		return -1
-	}
-	return parsed
-}
-
-func envInt64(key string, fallback int64) int64 {
-	value, ok := os.LookupEnv(key)
-	if !ok || strings.TrimSpace(value) == "" {
-		return fallback
-	}
-	parsed, err := strconv.ParseInt(value, 10, 64)
-	if err != nil {
-		return -1
-	}
-	return parsed
-}
-
-func envDuration(key string, fallback time.Duration) time.Duration {
-	value, ok := os.LookupEnv(key)
-	if !ok || strings.TrimSpace(value) == "" {
-		return fallback
-	}
-	parsed, err := time.ParseDuration(value)
-	if err != nil {
-		return -1
-	}
-	return parsed
-}
-
-func envBool(key string, fallback bool) (bool, error) {
-	value, ok := os.LookupEnv(key)
-	if !ok || strings.TrimSpace(value) == "" {
-		return fallback, nil
-	}
-	parsed, err := strconv.ParseBool(value)
-	if err != nil {
-		return false, fmt.Errorf("环境变量 %s 必须是布尔值", key)
-	}
-	return parsed, nil
+func (c *Config) normalizeStrings() {
+	c.Environment = strings.TrimSpace(c.Environment)
+	c.LogLevel = strings.TrimSpace(c.LogLevel)
+	c.Server.Address = strings.TrimSpace(c.Server.Address)
+	c.Server.WebRoot = strings.TrimSpace(c.Server.WebRoot)
+	c.Auth.CookieName = strings.TrimSpace(c.Auth.CookieName)
+	c.Database.Driver = strings.ToLower(strings.TrimSpace(c.Database.Driver))
+	c.Database.DSN = strings.TrimSpace(c.Database.DSN)
+	c.Redis.URL = strings.TrimSpace(c.Redis.URL)
+	c.Redis.KeyPrefix = strings.TrimSpace(c.Redis.KeyPrefix)
+	c.NATS.URL = strings.TrimSpace(c.NATS.URL)
+	c.NATS.Stream = strings.TrimSpace(c.NATS.Stream)
+	c.NATS.DeadStream = strings.TrimSpace(c.NATS.DeadStream)
+	c.NATS.SubjectPrefix = strings.TrimSpace(c.NATS.SubjectPrefix)
+	c.NATS.DeadSubject = strings.TrimSpace(c.NATS.DeadSubject)
+	c.Secrets.Key = strings.TrimSpace(c.Secrets.Key)
+	c.Git.KnownHostsFile = strings.TrimSpace(c.Git.KnownHostsFile)
 }

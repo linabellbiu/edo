@@ -1,12 +1,15 @@
 import { useCallback, useEffect, useState } from 'react'
+import { useSearchParams } from 'react-router-dom'
 
 import client from '@/api/client'
 import { apiErrorMessage, getResources, postResource, type ResourceRecord } from '@/api/resources'
 import JsonCreatePanel from '@/components/JsonCreatePanel'
+import ResourceSelectField from '@/components/ResourceSelectField'
 import ResourceTable from '@/components/ResourceTable'
 import { useAuthStore } from '@/stores/auth'
 
 export default function DeploymentView() {
+  const [searchParams, setSearchParams] = useSearchParams()
   const user = useAuthStore((state) => state.user)
   const allowed = (permission: string) => Boolean(user?.is_superuser || user?.permissions.includes(permission))
   const [targets, setTargets] = useState<ResourceRecord[]>([])
@@ -32,6 +35,12 @@ export default function DeploymentView() {
   }, [])
 
   useEffect(() => { void refresh() }, [refresh])
+  useEffect(() => {
+    if (searchParams.get('create') !== '1') return
+    const next = new URLSearchParams(searchParams)
+    next.delete('create')
+    setSearchParams(next, { replace: true })
+  }, [searchParams, setSearchParams])
 
   async function requestDeployment(event: React.FormEvent) {
     event.preventDefault()
@@ -67,9 +76,9 @@ export default function DeploymentView() {
       {error && <div className="form-alert error system-alert">{error}</div>}
       {allowed('deployment.run') && (
         <form className="inline-form" onSubmit={(event) => void requestDeployment(event)}>
-          <label>发布目标<select value={targetID} onChange={(event) => setTargetID(event.target.value)} required>
+          <ResourceSelectField id="deployment-target" label="发布目标" createLabel="发布目标" createTo={allowed('deployment.manage') ? '/deployments?create=1' : undefined} value={targetID} onChange={(event) => setTargetID(event.target.value)} required>
             {targets.filter((target) => target.is_active).map((target) => <option key={String(target.id)} value={String(target.id)}>{String(target.name)} · {String(target.environment)}</option>)}
-          </select></label>
+          </ResourceSelectField>
           <label className="grow">镜像<input value={image} onChange={(event) => setImage(event.target.value)} placeholder="registry.example.com/team/app:version；生产环境请使用 @sha256:…" required /></label>
           <button className="primary-button" disabled={submitting || !targetID} type="submit">{submitting ? '提交中…' : '发起发布'}</button>
         </form>
@@ -93,7 +102,7 @@ export default function DeploymentView() {
           { key: 'rollout_timeout', label: '超时(秒)' }, { key: 'is_active', label: '启用' },
         ]} /></div>
       </div>
-      {allowed('deployment.manage') && <JsonCreatePanel title="发布目标" endpoint="/deployment-targets" example={{
+      {allowed('deployment.manage') && <JsonCreatePanel title="发布目标" endpoint="/deployment-targets" initialOpen={searchParams.get('create') === '1'} anchorID="create-deployment-target" example={{
         name: 'production-api', platform: 'kubernetes', environment: 'production', runtime_id: '请替换为集群或 Docker 连接 ID',
         namespace: 'default', workload_name: 'api', container_name: 'api', rollout_timeout: 300,
       }} onCreated={() => void refresh()} />}

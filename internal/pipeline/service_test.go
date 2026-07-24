@@ -12,6 +12,7 @@ import (
 	"gorm.io/gorm"
 
 	"zrt/internal/config"
+	"zrt/internal/credential"
 	"zrt/internal/database"
 	"zrt/internal/model"
 	"zrt/internal/repository"
@@ -127,6 +128,33 @@ func TestRepositoryEventsFollowApplicationTriggers(t *testing.T) {
 	}
 	if stored.LastObservedCommit != "commit-pr" || stored.SyncStatus != model.ApplicationSyncChanged {
 		t.Fatalf("应用没有保存最后一次代码变化: %+v", stored)
+	}
+}
+
+func TestApplicationPullCheckInterval(t *testing.T) {
+	service, _, _, repositoryID := newPipelineTestService(t)
+	ctx := context.Background()
+
+	application, err := service.CreateApplication(ctx, "admin", ApplicationInput{
+		Name: "默认 Pull 间隔", RepositoryID: repositoryID, PollEnabled: true, WatchPush: true,
+	})
+	if err != nil {
+		t.Fatalf("使用默认 Pull 检查间隔创建应用失败: %v", err)
+	}
+	if application.PollIntervalSeconds != 3 {
+		t.Fatalf("默认 Pull 检查间隔错误: got=%d want=3", application.PollIntervalSeconds)
+	}
+
+	for _, interval := range []int{3, 5, 10, 60} {
+		if !validPollIntervalSeconds(interval) {
+			t.Fatalf("设置项中的 Pull 检查间隔被拒绝: %d", interval)
+		}
+	}
+	if validPollIntervalSeconds(30) {
+		t.Fatal("未拒绝设置项之外的 Pull 检查间隔")
+	}
+	if got := pullWatcherScanInterval(15 * time.Second); got != 3*time.Second {
+		t.Fatalf("Pull 检查扫描精度错误: got=%s want=3s", got)
 	}
 }
 
@@ -331,7 +359,7 @@ func newPipelineTestService(t *testing.T) (*Service, *gorm.DB, *secret.Manager, 
 		t.Fatalf("初始化流水线测试密钥失败: %v", err)
 	}
 	repositoryService := repository.NewService(
-		db, secretManager, repository.NewGitClient(config.Git{Command: "git", Timeout: time.Second}), 4,
+		db, secretManager, credential.NewService(db, secretManager), repository.NewGitClient(config.Git{Timeout: time.Second}), 4,
 	)
 	repo, _, err := repositoryService.Create(context.Background(), "admin", repository.Input{
 		Name: "pipeline-repository", Provider: model.GitProviderGeneric,

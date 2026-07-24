@@ -9,6 +9,9 @@ ZRT 是面向 Docker 与 Kubernetes 的运维、发布和可观测平台，使�
 - Redis 保存登录会话、限流和短期状态；不承担任务队列职责。
 - NATS JetStream 持久化任务、显式确认和死信，默认最多执行 4 次，发布与回滚默认只执行 1 次。
 - 通用 Git，以及 GitHub、GitLab、Gitea、Gitee 仓库和 Webhook。
+- 个人 Git 令牌库按用户隔离并加密保存；创建仓库时可选择已有令牌或直接创建并保存新令牌。
+- Webhook 签名密钥可按独立权限重复查看，所有查看操作都会写入审计日志。
+- 域名解析统一接入 Cloudflare、阿里云 DNS、腾讯云 DNSPod、AWS Route 53、华为云、Azure、Google Cloud、DigitalOcean、Gandi、GoDaddy、Namecheap、Hetzner、PowerDNS 和 RFC 2136；厂商凭据加密保存，解析变更受独立权限与审计控制。
 - 应用可同时配置 dev、test、pre、prod 环境，每个环境分别选择分支、Pull、Push、PR、Tag、发布方案和发布目标。
 - 公共发布计划使用类似 ComfyUI 的可缩放、可拖动无限画布；环境、分支、代码事件、人工接测、审核、发布方案和发布目标都在节点中配置，并可自由连线。
 - 创建应用时直接选择已启用的公共发布计划。ZRT 会复制当时的计划版本和环境配置，之后修改公共计划不会影响正在运行的应用。
@@ -17,12 +20,12 @@ ZRT 是面向 Docker 与 Kubernetes 的运维、发布和可观测平台，使�
 - Docker API 与 Kubernetes API 发布、健康等待、生产审批和回滚。
 - Docker 容器与 Kubernetes Pod 的 WebSocket 交互终端；不提供宿主机 SSH 登录和远程文件管理。
 - 配置中心、Webhook 通知、HTTP 监控、安全白名单定时任务、任务中心。
-- Argon2id、Redis 不透明会话、RBAC、操作审计、加密凭据与安全错误边界。
+- Argon2id、Redis 不透明会话、Casbin RBAC、操作审计、加密凭据与安全错误边界；角色权限可叠加用户级允许或拒绝规则。
 - 本地账户、LDAP、通用 OAuth，以及飞书、Google、GitHub、GitLab 登录。
 
 ## 本地开发
 
-需要 Go 1.26.5 或更新的安全补丁版本、Node.js 24、Docker 和 Git。
+需要 Go 1.26.5 或更新的安全补丁版本、Node.js 24 和 Docker。
 
 ```bash
 cp .env.example .env
@@ -51,7 +54,7 @@ make build
 - 生产环境必须设置 `ZRT_SECRETS_KEY`；生成方式：`openssl rand -base64 32`。
 - 生产入口应使用 HTTPS，并设置 `ZRT_AUTH_COOKIE_SECURE=true`。
 
-详细步骤见 [部署说明](docs/deployment.md)，架构与安全取舍见 [架构说明](docs/refactor.md)。
+详细步骤见 [部署说明](docs/deployment.md)，架构与安全取舍见 [架构说明](docs/refactor.md)，通用能力的复用与保留理由见 [第三方依赖决策](docs/dependencies.md)。
 
 ## 从旧版迁移
 

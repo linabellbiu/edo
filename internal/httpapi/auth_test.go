@@ -3,6 +3,7 @@ package httpapi
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"io"
 	"log/slog"
@@ -20,7 +21,10 @@ import (
 	"zrt/internal/auth"
 	"zrt/internal/cache"
 	"zrt/internal/config"
+	"zrt/internal/credential"
 	"zrt/internal/database"
+	"zrt/internal/repository"
+	"zrt/internal/secret"
 )
 
 type healthyDependency struct{}
@@ -71,8 +75,20 @@ func newAuthTestRouter(t *testing.T) (*gin.Engine, func()) {
 		t.Fatalf("迁移测试数据库失败: %v", err)
 	}
 	accounts := account.NewService(db)
-	accessService := access.NewService(db)
+	accessService, err := access.NewService(db)
+	if err != nil {
+		t.Fatalf("初始化 Casbin 权限服务失败: %v", err)
+	}
 	auditService := audit.NewService(db)
+	secretManager, err := secret.New(base64.StdEncoding.EncodeToString([]byte("0123456789abcdef0123456789abcdef")))
+	if err != nil {
+		t.Fatalf("初始化测试密钥管理器失败: %v", err)
+	}
+	credentialService := credential.NewService(db, secretManager)
+	repositoryService := repository.NewService(
+		db, secretManager, credentialService,
+		repository.NewGitClient(config.Git{Timeout: time.Second}), 4,
+	)
 	if _, err := accounts.CreateAdmin(context.Background(), "admin", "管理员", "correct horse battery staple"); err != nil {
 		t.Fatalf("创建测试管理员失败: %v", err)
 	}
@@ -98,6 +114,7 @@ func newAuthTestRouter(t *testing.T) (*gin.Engine, func()) {
 		Logger: logger, Version: "test", AuthConfig: authConfig,
 		Accounts: accounts, Login: login, Sessions: sessions,
 		Access: accessService, Audits: auditService,
+		Credentials: credentialService, Repositories: repositoryService,
 	})
 	return router, func() {
 		_ = redisClient.Close()

@@ -3,6 +3,8 @@ package repository
 import (
 	"errors"
 	"testing"
+
+	"github.com/go-git/go-git/v5/plumbing"
 )
 
 func TestValidateCloneURL(t *testing.T) {
@@ -29,10 +31,15 @@ func TestValidateCloneURL(t *testing.T) {
 	}
 }
 
-func TestParseRefs(t *testing.T) {
-	result := parseRefs("0123456789012345678901234567890123456789\trefs/heads/main\n" +
-		"abcdefabcdefabcdefabcdefabcdefabcdefabcd\trefs/tags/v1.0.0\n")
+func TestRefsToResult(t *testing.T) {
+	result, err := refsToResult([]*plumbing.Reference{
+		plumbing.NewHashReference(plumbing.NewBranchReferenceName("main"), plumbing.NewHash("0123456789012345678901234567890123456789")),
+		plumbing.NewHashReference(plumbing.NewTagReferenceName("v1.0.0"), plumbing.NewHash("abcdefabcdefabcdefabcdefabcdefabcdefabcd")),
+	})
+	if err != nil {
+		t.Fatalf("转换 Git 引用失败: %v", err)
+	}
 	if len(result.Branches) != 1 || result.Branches[0].Name != "main" || len(result.Tags) != 1 || result.Tags[0].Name != "v1.0.0" {
-		t.Fatalf("解析 Git 引用失败: %+v", result)
+		t.Fatalf("转换 Git 引用失败: %+v", result)
 	}
 }

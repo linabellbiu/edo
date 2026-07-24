@@ -23,7 +23,7 @@ type applicationRequest struct {
 	RepositoryID           string                          `json:"repository_id" binding:"required,max=36"`
 	Branch                 string                          `json:"branch" binding:"max=255"`
 	PollEnabled            bool                            `json:"poll_enabled"`
-	PollIntervalSeconds    int                             `json:"poll_interval_seconds" binding:"omitempty,min=15,max=86400"`
+	PollIntervalSeconds    int                             `json:"poll_interval_seconds" binding:"omitempty,oneof=3 5 10 60"`
 	WatchPush              bool                            `json:"watch_push"`
 	WatchPullRequest       bool                            `json:"watch_pull_request"`
 	WatchTags              bool                            `json:"watch_tags"`
