@@ -73,21 +73,42 @@ type WorkflowViewport struct {
 }
 
 type ReleaseWorkflow struct {
-	ID            string           `gorm:"type:varchar(36);primaryKey" json:"id"`
-	ApplicationID string           `gorm:"type:varchar(36);not null;uniqueIndex" json:"application_id"`
-	Name          string           `gorm:"type:varchar(128);not null" json:"name"`
-	Revision      uint64           `gorm:"not null;default:1" json:"revision"`
-	IsActive      bool             `gorm:"not null;default:false;index" json:"is_active"`
-	Nodes         []WorkflowNode   `gorm:"serializer:json;type:text;not null" json:"nodes"`
-	Edges         []WorkflowEdge   `gorm:"serializer:json;type:text;not null" json:"edges"`
-	Viewport      WorkflowViewport `gorm:"serializer:json;type:text;not null" json:"viewport"`
-	CreatedBy     string           `gorm:"type:varchar(36);not null;index" json:"created_by"`
-	UpdatedBy     string           `gorm:"type:varchar(36);not null;index" json:"updated_by"`
-	CreatedAt     time.Time        `gorm:"not null" json:"created_at"`
-	UpdatedAt     time.Time        `gorm:"not null" json:"updated_at"`
+	ID                       string           `gorm:"type:varchar(36);primaryKey" json:"id"`
+	ApplicationID            string           `gorm:"type:varchar(36);not null;uniqueIndex" json:"application_id"`
+	WorkflowTemplateID       string           `gorm:"type:varchar(36);not null;default:'';index" json:"workflow_template_id,omitempty"`
+	WorkflowTemplateRevision uint64           `gorm:"not null;default:0" json:"workflow_template_revision,omitempty"`
+	Name                     string           `gorm:"type:varchar(128);not null" json:"name"`
+	Revision                 uint64           `gorm:"not null;default:1" json:"revision"`
+	IsActive                 bool             `gorm:"not null;default:false;index" json:"is_active"`
+	Nodes                    []WorkflowNode   `gorm:"serializer:json;type:text;not null" json:"nodes"`
+	Edges                    []WorkflowEdge   `gorm:"serializer:json;type:text;not null" json:"edges"`
+	Viewport                 WorkflowViewport `gorm:"serializer:json;type:text;not null" json:"viewport"`
+	CreatedBy                string           `gorm:"type:varchar(36);not null;index" json:"created_by"`
+	UpdatedBy                string           `gorm:"type:varchar(36);not null;index" json:"updated_by"`
+	CreatedAt                time.Time        `gorm:"not null" json:"created_at"`
+	UpdatedAt                time.Time        `gorm:"not null" json:"updated_at"`
 }
 
 func (ReleaseWorkflow) TableName() string { return "release_workflows" }
+
+// ReleaseWorkflowTemplate 是可以被多个应用复用的公共发布计划。
+// 应用选择模板时会复制一份快照，模板后续修改不会改变正在运行的应用。
+type ReleaseWorkflowTemplate struct {
+	ID          string           `gorm:"type:varchar(36);primaryKey" json:"id"`
+	Name        string           `gorm:"type:varchar(128);not null;uniqueIndex" json:"name"`
+	Description string           `gorm:"type:varchar(500);not null;default:''" json:"description"`
+	Revision    uint64           `gorm:"not null;default:1" json:"revision"`
+	IsActive    bool             `gorm:"not null;default:false;index" json:"is_active"`
+	Nodes       []WorkflowNode   `gorm:"serializer:json;type:text;not null" json:"nodes"`
+	Edges       []WorkflowEdge   `gorm:"serializer:json;type:text;not null" json:"edges"`
+	Viewport    WorkflowViewport `gorm:"serializer:json;type:text;not null" json:"viewport"`
+	CreatedBy   string           `gorm:"type:varchar(36);not null;index" json:"created_by"`
+	UpdatedBy   string           `gorm:"type:varchar(36);not null;index" json:"updated_by"`
+	CreatedAt   time.Time        `gorm:"not null" json:"created_at"`
+	UpdatedAt   time.Time        `gorm:"not null" json:"updated_at"`
+}
+
+func (ReleaseWorkflowTemplate) TableName() string { return "release_workflow_templates" }
 
 type PipelineRunApproval struct {
 	ID            string    `gorm:"type:varchar(36);primaryKey" json:"id"`

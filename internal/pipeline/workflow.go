@@ -162,7 +162,10 @@ func (s *Service) ensureWorkflow(ctx context.Context, application *model.Applica
 		return application.Workflow, nil
 	}
 	now := time.Now().UTC()
-	workflow := defaultWorkflow(application, application.Environments, application.CreatedBy, now)
+	workflow, err := s.newApplicationWorkflow(ctx, application, application.CreatedBy, now)
+	if err != nil {
+		return nil, err
+	}
 	if err := s.db.WithContext(ctx).Create(workflow).Error; err != nil {
 		if !errors.Is(err, gorm.ErrDuplicatedKey) {
 			return nil, fmt.Errorf("创建默认发布计划失败: %w", err)

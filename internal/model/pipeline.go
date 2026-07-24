@@ -106,6 +106,7 @@ type Application struct {
 	ImageRegistryID        string                   `gorm:"type:varchar(36);not null;default:'';index" json:"image_registry_id,omitempty"`
 	ReleasePlanID          string                   `gorm:"type:varchar(36);not null;default:'';index" json:"release_plan_id,omitempty"`
 	DeploymentTargetID     string                   `gorm:"type:varchar(36);not null;default:'';index" json:"deployment_target_id,omitempty"`
+	WorkflowTemplateID     string                   `gorm:"type:varchar(36);not null;default:'';index" json:"workflow_template_id,omitempty"`
 	ReleaseApprovalEnabled bool                     `gorm:"not null;default:true" json:"release_approval_enabled"`
 	LastObservedRef        string                   `gorm:"type:varchar(512);not null;default:''" json:"last_observed_ref,omitempty"`
 	LastObservedCommit     string                   `gorm:"type:varchar(64);not null;default:''" json:"last_observed_commit,omitempty"`
@@ -121,6 +122,7 @@ type Application struct {
 	ImageRegistry          *ImageRegistry           `gorm:"foreignKey:ImageRegistryID;-:migration" json:"image_registry,omitempty"`
 	ReleasePlan            *ReleasePlan             `gorm:"foreignKey:ReleasePlanID;-:migration" json:"release_plan,omitempty"`
 	DeploymentTarget       *DeploymentTarget        `gorm:"foreignKey:DeploymentTargetID;-:migration" json:"deployment_target,omitempty"`
+	WorkflowTemplate       *ReleaseWorkflowTemplate `gorm:"foreignKey:WorkflowTemplateID;-:migration" json:"workflow_template,omitempty"`
 	Environments           []ApplicationEnvironment `gorm:"foreignKey:ApplicationID" json:"environments,omitempty"`
 	Workflow               *ReleaseWorkflow         `gorm:"foreignKey:ApplicationID" json:"workflow,omitempty"`
 }

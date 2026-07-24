@@ -20,16 +20,17 @@ import (
 )
 
 var (
-	ErrInvalidApplication  = errors.New("应用配置无效")
-	ErrApplicationExists   = errors.New("应用名称已存在")
-	ErrApplicationNotFound = errors.New("应用不存在")
-	ErrInvalidBuildPlan    = errors.New("构建方案配置无效")
-	ErrBuildPlanExists     = errors.New("构建方案名称已存在")
-	ErrInvalidRegistry     = errors.New("镜像仓库配置无效")
-	ErrRegistryExists      = errors.New("镜像仓库名称已存在")
-	ErrInvalidReleasePlan  = errors.New("发布方案配置无效")
-	ErrReleasePlanExists   = errors.New("发布方案名称已存在")
-	ErrPipelineIncomplete  = errors.New("应用尚未绑定完整的构建与发布流程")
+	ErrInvalidApplication       = errors.New("应用配置无效")
+	ErrApplicationExists        = errors.New("应用名称已存在")
+	ErrApplicationNotFound      = errors.New("应用不存在")
+	ErrInvalidBuildPlan         = errors.New("构建方案配置无效")
+	ErrBuildPlanExists          = errors.New("构建方案名称已存在")
+	ErrInvalidRegistry          = errors.New("镜像仓库配置无效")
+	ErrRegistryExists           = errors.New("镜像仓库名称已存在")
+	ErrInvalidReleasePlan       = errors.New("发布方案配置无效")
+	ErrReleasePlanExists        = errors.New("发布方案名称已存在")
+	ErrWorkflowTemplateNotFound = errors.New("公共发布计划不存在或未启用")
+	ErrPipelineIncomplete       = errors.New("应用尚未绑定完整的构建与发布流程")
 )
 
 var resourceNamePattern = regexp.MustCompile(`^[A-Za-z0-9\p{Han}][A-Za-z0-9\p{Han}_. -]{0,127}$`)
@@ -49,6 +50,7 @@ type ApplicationInput struct {
 	ImageRegistryID        string
 	ReleasePlanID          string
 	DeploymentTargetID     string
+	WorkflowTemplateID     string
 	ReleaseApprovalEnabled bool
 	Environments           []EnvironmentInput
 }
@@ -115,6 +117,7 @@ func (s *Service) ListApplications(ctx context.Context) ([]model.Application, er
 	err := s.db.WithContext(ctx).
 		Preload("Repository").Preload("BuildPlan").Preload("ImageRegistry").
 		Preload("ReleasePlan").Preload("DeploymentTarget").
+		Preload("WorkflowTemplate").
 		Preload("Environments", func(db *gorm.DB) *gorm.DB { return db.Order("sort_order ASC") }).
 		Preload("Environments.ReleasePlan").Preload("Environments.DeploymentTarget").
 		Preload("Workflow").
@@ -130,6 +133,7 @@ func (s *Service) FindApplication(ctx context.Context, id string) (*model.Applic
 	err := s.db.WithContext(ctx).
 		Preload("Repository").Preload("BuildPlan").Preload("ImageRegistry").
 		Preload("ReleasePlan").Preload("DeploymentTarget").
+		Preload("WorkflowTemplate").
 		Preload("Environments", func(db *gorm.DB) *gorm.DB { return db.Order("sort_order ASC") }).
 		Preload("Environments.ReleasePlan").Preload("Environments.DeploymentTarget").
 		Preload("Workflow").
@@ -157,19 +161,25 @@ func (s *Service) CreateApplication(ctx context.Context, actorID string, input A
 		WatchTags: input.WatchTags, TagPattern: input.TagPattern,
 		BuildPlanID: input.BuildPlanID, ImageRegistryID: input.ImageRegistryID,
 		ReleasePlanID: input.ReleasePlanID, DeploymentTargetID: input.DeploymentTargetID,
+		WorkflowTemplateID:     input.WorkflowTemplateID,
 		ReleaseApprovalEnabled: input.ReleaseApprovalEnabled,
 		SyncStatus:             model.ApplicationSyncIdle, IsActive: true,
 		CreatedBy: actorID, CreatedAt: now, UpdatedAt: now,
 	}
+	environments := buildEnvironmentModels(application.ID, input.Environments, now)
+	application.Environments = environments
+	workflow, err := s.newApplicationWorkflow(ctx, application, actorID, now)
+	if err != nil {
+		return nil, err
+	}
+	application.Environments = nil
 	if err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if err := tx.Create(application).Error; err != nil {
 			return err
 		}
-		environments := buildEnvironmentModels(application.ID, input.Environments, now)
 		if err := tx.Create(&environments).Error; err != nil {
 			return err
 		}
-		workflow := defaultWorkflow(application, environments, actorID, now)
 		return tx.Create(workflow).Error
 	}); err != nil {
 		if errors.Is(err, gorm.ErrDuplicatedKey) {
@@ -185,9 +195,18 @@ func (s *Service) UpdateApplication(ctx context.Context, id string, input Applic
 	if err != nil {
 		return nil, err
 	}
+	requestedTemplateID := strings.TrimSpace(input.WorkflowTemplateID)
+	reuseTemplateSnapshot := existing.WorkflowTemplateID != "" && (requestedTemplateID == "" || requestedTemplateID == existing.WorkflowTemplateID)
+	if reuseTemplateSnapshot {
+		input.WorkflowTemplateID = ""
+		input.Environments = environmentModelInputs(existing.Environments)
+	}
 	input, err = s.normalizeApplication(ctx, input)
 	if err != nil {
 		return nil, err
+	}
+	if reuseTemplateSnapshot {
+		input.WorkflowTemplateID = existing.WorkflowTemplateID
 	}
 	updates := map[string]any{
 		"name": input.Name, "description": input.Description, "repository_id": input.RepositoryID,
@@ -197,6 +216,7 @@ func (s *Service) UpdateApplication(ctx context.Context, id string, input Applic
 		"tag_pattern": input.TagPattern, "build_plan_id": input.BuildPlanID,
 		"image_registry_id": input.ImageRegistryID, "release_plan_id": input.ReleasePlanID,
 		"deployment_target_id":     input.DeploymentTargetID,
+		"workflow_template_id":     input.WorkflowTemplateID,
 		"release_approval_enabled": input.ReleaseApprovalEnabled, "updated_at": time.Now().UTC(),
 	}
 	if existing.RepositoryID != input.RepositoryID || existing.Branch != input.Branch {
@@ -206,12 +226,30 @@ func (s *Service) UpdateApplication(ctx context.Context, id string, input Applic
 		updates["sync_message"] = ""
 		updates["last_checked_at"] = nil
 	}
+	var replacementWorkflow *model.ReleaseWorkflow
+	if existing.WorkflowTemplateID != input.WorkflowTemplateID && input.WorkflowTemplateID != "" {
+		updated := *existing
+		updated.Name = input.Name
+		updated.WorkflowTemplateID = input.WorkflowTemplateID
+		updated.ReleaseApprovalEnabled = input.ReleaseApprovalEnabled
+		updated.Environments = buildEnvironmentModels(existing.ID, input.Environments, time.Now().UTC())
+		replacementWorkflow, err = s.newApplicationWorkflow(ctx, &updated, existing.CreatedBy, time.Now().UTC())
+		if err != nil {
+			return nil, err
+		}
+	}
 	if err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if err := tx.Model(existing).Updates(updates).Error; err != nil {
 			return err
 		}
 		if err := saveApplicationEnvironments(tx, existing, input.Environments, time.Now().UTC()); err != nil {
 			return err
+		}
+		if replacementWorkflow != nil {
+			if err := tx.Where("application_id = ?", existing.ID).Delete(&model.ReleaseWorkflow{}).Error; err != nil {
+				return err
+			}
+			return tx.Create(replacementWorkflow).Error
 		}
 		if workflowInputsChanged(existing, input) {
 			return tx.Model(&model.ReleaseWorkflow{}).Where("application_id = ?", existing.ID).
@@ -249,6 +287,14 @@ func (s *Service) normalizeApplication(ctx context.Context, input ApplicationInp
 	input.ImageRegistryID = strings.TrimSpace(input.ImageRegistryID)
 	input.ReleasePlanID = strings.TrimSpace(input.ReleasePlanID)
 	input.DeploymentTargetID = strings.TrimSpace(input.DeploymentTargetID)
+	input.WorkflowTemplateID = strings.TrimSpace(input.WorkflowTemplateID)
+	if input.WorkflowTemplateID != "" {
+		var template model.ReleaseWorkflowTemplate
+		if err := s.db.WithContext(ctx).First(&template, "id = ? AND is_active = ?", input.WorkflowTemplateID, true).Error; err != nil {
+			return input, ErrWorkflowTemplateNotFound
+		}
+		input.Environments = workflowTemplateEnvironmentInputs(template.Nodes)
+	}
 	legacyInput := len(input.Environments) == 0
 	if legacyInput {
 		input.Environments = []EnvironmentInput{{
@@ -384,6 +430,20 @@ func buildEnvironmentModels(applicationID string, inputs []EnvironmentInput, now
 	return result
 }
 
+func environmentModelInputs(environments []model.ApplicationEnvironment) []EnvironmentInput {
+	result := make([]EnvironmentInput, 0, len(environments))
+	for i := range environments {
+		result = append(result, EnvironmentInput{
+			Key: environments[i].Key, Name: environments[i].Name, Branch: environments[i].Branch,
+			PollEnabled: environments[i].PollEnabled, WatchPush: environments[i].WatchPush,
+			WatchPullRequest: environments[i].WatchPullRequest, WatchTags: environments[i].WatchTags,
+			TagPattern: environments[i].TagPattern, ReleasePlanID: environments[i].ReleasePlanID,
+			DeploymentTargetID: environments[i].DeploymentTargetID, SortOrder: environments[i].SortOrder,
+		})
+	}
+	return result
+}
+
 func saveApplicationEnvironments(tx *gorm.DB, application *model.Application, inputs []EnvironmentInput, now time.Time) error {
 	existingByKey := make(map[string]model.ApplicationEnvironment, len(application.Environments))
 	for i := range application.Environments {
@@ -426,7 +486,7 @@ func defaultEnvironmentBranch(key, fallback string) string {
 }
 
 func workflowInputsChanged(existing *model.Application, input ApplicationInput) bool {
-	if existing.ReleaseApprovalEnabled != input.ReleaseApprovalEnabled || len(existing.Environments) != len(input.Environments) {
+	if existing.WorkflowTemplateID != input.WorkflowTemplateID || existing.ReleaseApprovalEnabled != input.ReleaseApprovalEnabled || len(existing.Environments) != len(input.Environments) {
 		return true
 	}
 	for i := range input.Environments {

@@ -34,3 +34,24 @@ func TestApplicationRequestAcceptsMultipleEnvironments(t *testing.T) {
 		t.Fatalf("多环境触发方式解析错误: %+v", request.Environments)
 	}
 }
+
+func TestApplicationRequestAcceptsPublicWorkflowTemplate(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	context, _ := gin.CreateTestContext(httptest.NewRecorder())
+	payload := `{
+		"name":"选择公共发布计划",
+		"repository_id":"637a764b-e79e-41a2-8dd4-cc038479ebee",
+		"workflow_template_id":"dd448d0b-df10-45c2-9436-42ee44817399",
+		"poll_interval_seconds":60,
+		"release_approval_enabled":true
+	}`
+	context.Request = httptest.NewRequest("POST", "/api/v1/applications", strings.NewReader(payload))
+	context.Request.Header.Set("Content-Type", "application/json")
+	var request applicationRequest
+	if err := context.ShouldBindJSON(&request); err != nil {
+		t.Fatalf("公共发布计划选择不应被拒绝: %v", err)
+	}
+	if request.WorkflowTemplateID != "dd448d0b-df10-45c2-9436-42ee44817399" {
+		t.Fatalf("公共发布计划未正确解析: %+v", request)
+	}
+}

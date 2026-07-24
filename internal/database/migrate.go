@@ -126,6 +126,14 @@ var migrations = []migration{
 			return dropOptionalDeliveryConstraints(tx)
 		},
 	},
+	{
+		version: "202607240017",
+		up: func(tx *gorm.DB) error {
+			return tx.AutoMigrate(
+				&model.ReleaseWorkflowTemplate{}, &model.Application{}, &model.ReleaseWorkflow{},
+			)
+		},
+	},
 }
 
 func dropOptionalDeliveryConstraints(tx *gorm.DB) error {

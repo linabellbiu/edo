@@ -24,6 +24,7 @@ interface ReleasePlan {
   compose_file?: string; service_name?: string; timeout_seconds: number; is_active: boolean
 }
 interface DeploymentTarget { id: string; name: string; environment: string; platform: string; is_active: boolean }
+interface WorkflowTemplate { id: string; name: string; description: string; revision: number; is_active: boolean }
 interface ApplicationEnvironment {
   id?: string; key: 'dev' | 'test' | 'pre' | 'prod'; name: string; branch: string
   poll_enabled: boolean; watch_push: boolean; watch_pull_request: boolean; watch_tags: boolean
@@ -38,6 +39,7 @@ interface Application {
   is_active: boolean; repository?: Repository; build_plan?: BuildPlan; image_registry?: ImageRegistry
   release_plan?: ReleasePlan; deployment_target?: DeploymentTarget
   release_approval_enabled: boolean; environments?: ApplicationEnvironment[]
+  workflow_template_id?: string; workflow_template?: WorkflowTemplate
   workflow?: { id: string; is_active: boolean; revision: number }
 }
 interface PipelineRun {
@@ -68,6 +70,7 @@ function initialApplicationForm() {
     poll_interval_seconds: 60, watch_push: true, watch_pull_request: false,
     watch_tags: false, tag_pattern: 'v*', build_plan_id: '', image_registry_id: '',
     release_plan_id: '', deployment_target_id: '', release_approval_enabled: true,
+    workflow_template_id: '',
     environments: defaultEnvironments.map((item) => ({ ...item })),
   }
 }
@@ -112,6 +115,7 @@ export default function DevOpsView({ section }: { section: Section }) {
   const [registries, setRegistries] = useState<ImageRegistry[]>([])
   const [releasePlans, setReleasePlans] = useState<ReleasePlan[]>([])
   const [targets, setTargets] = useState<DeploymentTarget[]>([])
+  const [workflowTemplates, setWorkflowTemplates] = useState<WorkflowTemplate[]>([])
   const [runs, setRuns] = useState<PipelineRun[]>([])
   const [formOpen, setFormOpen] = useState(false)
   const [editingID, setEditingID] = useState('')
@@ -151,7 +155,10 @@ export default function DevOpsView({ section }: { section: Section }) {
       const runRequest = canReadDelivery
         ? client.get<{ pipeline_runs: PipelineRun[] }>('/pipeline-runs')
         : Promise.resolve(null)
-      const [appResult, repoResult, buildResult, registryResult, releaseResult, targetResult, runResult] = await Promise.all([
+      const workflowTemplateRequest = canReadDelivery
+        ? client.get<{ workflow_templates: WorkflowTemplate[] }>('/workflow-templates')
+        : Promise.resolve(null)
+      const [appResult, repoResult, buildResult, registryResult, releaseResult, targetResult, runResult, workflowTemplateResult] = await Promise.all([
         applicationRequest,
         repositoryRequest,
         buildRequest,
@@ -159,6 +166,7 @@ export default function DevOpsView({ section }: { section: Section }) {
         releaseRequest,
         targetRequest,
         runRequest,
+        workflowTemplateRequest,
       ])
       setApplications(appResult?.data.applications || [])
       setRepositories(repoResult?.data.repositories || [])
@@ -167,6 +175,7 @@ export default function DevOpsView({ section }: { section: Section }) {
       setReleasePlans(releaseResult?.data.release_plans || [])
       setTargets(targetResult?.data.targets || [])
       setRuns(runResult?.data.pipeline_runs || [])
+      setWorkflowTemplates(workflowTemplateResult?.data.workflow_templates || [])
     } catch (loadError) {
       setError(apiErrorMessage(loadError))
     } finally {
@@ -203,17 +212,11 @@ export default function DevOpsView({ section }: { section: Section }) {
       image_registry_id: application.image_registry_id || '', release_plan_id: application.release_plan_id || '',
       deployment_target_id: application.deployment_target_id || '',
 	  release_approval_enabled: application.release_approval_enabled,
+	  workflow_template_id: application.workflow_template_id || '',
 	  environments,
     })
     setFormOpen(true)
     window.scrollTo({ top: 0, behavior: 'smooth' })
-  }
-
-  function updateEnvironment(key: ApplicationEnvironment['key'], updates: Partial<ApplicationEnvironment & { enabled: boolean }>) {
-	setApplicationForm((current) => ({
-	  ...current,
-	  environments: current.environments.map((environment) => environment.key === key ? { ...environment, ...updates } : environment),
-	}))
   }
 
   async function submitApplication() {
@@ -221,7 +224,7 @@ export default function DevOpsView({ section }: { section: Section }) {
 	const primary = enabledEnvironments[0]
 	await submit(editingID ? `/applications/${editingID}` : '/applications', {
 	  ...applicationForm,
-	  environments: enabledEnvironments,
+	  environments: applicationForm.workflow_template_id ? [] : enabledEnvironments,
 	  branch: primary?.branch || applicationForm.branch,
 	  poll_enabled: primary?.poll_enabled || false,
 	  watch_push: primary?.watch_push || false,
@@ -315,33 +318,21 @@ export default function DevOpsView({ section }: { section: Section }) {
     </div>}
 
     {formOpen && section === 'applications' && <form className="create-sheet application-sheet" onSubmit={(event) => { event.preventDefault(); void submitApplication() }}>
-      <div className="sheet-header"><div><h3>{editingID ? '配置应用' : '创建应用'}</h3><p>先确定环境和审核规则，创建后再到发布计划画布调整节点和连线。</p></div><button type="button" onClick={closeForm}>×</button></div>
+      <div className="sheet-header"><div><h3>{editingID ? '配置应用' : '创建应用'}</h3><p>选择公共发布计划后，环境、分支和发布路径会从画布复制到应用。</p></div><button type="button" onClick={closeForm}>×</button></div>
       <div className="form-grid">
         <label>应用名称<input required value={applicationForm.name} onChange={(e) => setApplicationForm({ ...applicationForm, name: e.target.value })} placeholder="例如：订单服务" /></label>
         <label>代码仓库<select required value={applicationForm.repository_id} onChange={(e) => setApplicationForm({ ...applicationForm, repository_id: e.target.value })}><option value="">请选择仓库</option>{repositories.filter((item) => item.is_active).map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
         <label className="span-2">说明<input value={applicationForm.description} onChange={(e) => setApplicationForm({ ...applicationForm, description: e.target.value })} placeholder="这个应用负责什么" /></label>
         <label>构建方案<select value={applicationForm.build_plan_id} onChange={(e) => setApplicationForm({ ...applicationForm, build_plan_id: e.target.value })}><option value="">暂不绑定</option>{buildPlans.filter((item) => item.is_active).map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
         <label>镜像仓库<select value={applicationForm.image_registry_id} onChange={(e) => setApplicationForm({ ...applicationForm, image_registry_id: e.target.value })}><option value="">暂不绑定</option>{registries.filter((item) => item.is_active).map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
+        <label className="span-2">公共发布计划<select required={!editingID} value={applicationForm.workflow_template_id} onChange={(e) => setApplicationForm({ ...applicationForm, workflow_template_id: e.target.value })}><option value="">{editingID ? '保留应用当前自定义计划' : '请选择发布计划'}</option>{workflowTemplates.filter((item) => item.is_active).map((item) => <option key={item.id} value={item.id}>{item.name} · 第 {item.revision} 版</option>)}</select><small className="field-help">环境、监听分支、触发事件和部署节点都在发布计划画布中配置。</small></label>
         <label>Pull 检查间隔<select value={applicationForm.poll_interval_seconds} onChange={(e) => setApplicationForm({ ...applicationForm, poll_interval_seconds: Number(e.target.value) })}><option value={30}>30 秒</option><option value={60}>1 分钟</option><option value={300}>5 分钟</option><option value={900}>15 分钟</option></select></label>
       </div>
       <div className="form-block"><span className="form-block-title">发布计划审核</span><div className="approval-choice">
         <label className={applicationForm.release_approval_enabled ? 'selected' : ''}><input type="radio" name="release-approval" checked={applicationForm.release_approval_enabled} onChange={() => setApplicationForm({ ...applicationForm, release_approval_enabled: true })} /><span><strong>需要审核</strong><small>生产部署的每条路径都必须经过审核节点，申请人不能审核自己。</small></span></label>
         <label className={!applicationForm.release_approval_enabled ? 'selected' : ''}><input type="radio" name="release-approval" checked={!applicationForm.release_approval_enabled} onChange={() => setApplicationForm({ ...applicationForm, release_approval_enabled: false })} /><span><strong>关闭审核</strong><small>审核节点不再阻塞流程，适合内部开发或已由外部系统审批的应用。</small></span></label>
       </div></div>
-      <div className="form-block"><span className="form-block-title">应用环境</span><p className="form-block-help">环境可以少选，例如只启用 test 和 prod。创建后的默认连线可在发布计划里自由调整。</p><div className="environment-config-grid">
-        {applicationForm.environments.map((environment) => <article className={`environment-config-card${environment.enabled ? ' enabled' : ''}`} key={environment.key}>
-          <div className="environment-card-head"><label><input type="checkbox" checked={environment.enabled} onChange={(e) => updateEnvironment(environment.key, { enabled: e.target.checked })} /><span><strong>{environment.name}</strong><small>{environment.key}</small></span></label><b>{environment.enabled ? '已启用' : '未启用'}</b></div>
-          {environment.enabled && <div className="environment-fields">
-            <label>监听分支<input required value={environment.branch} onChange={(e) => updateEnvironment(environment.key, { branch: e.target.value })} placeholder="main 或 release/*" /></label>
-            <fieldset><legend>触发方式</legend>{[
-              ['poll_enabled', 'Pull'], ['watch_push', 'Push'], ['watch_pull_request', 'PR'], ['watch_tags', 'Tag'],
-            ].map(([field, label]) => <label key={field}><input type="checkbox" checked={Boolean(environment[field as keyof ApplicationEnvironment])} onChange={(e) => updateEnvironment(environment.key, { [field]: e.target.checked } as Partial<ApplicationEnvironment>)} />{label}</label>)}</fieldset>
-            {environment.watch_tags && <label>Tag 规则<input value={environment.tag_pattern} onChange={(e) => updateEnvironment(environment.key, { tag_pattern: e.target.value })} placeholder="v*" /></label>}
-            <label>发布方案<select value={environment.release_plan_id || ''} onChange={(e) => updateEnvironment(environment.key, { release_plan_id: e.target.value })}><option value="">稍后配置</option>{releasePlans.filter((item) => item.is_active).map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
-            <label>发布目标<select value={environment.deployment_target_id || ''} onChange={(e) => updateEnvironment(environment.key, { deployment_target_id: e.target.value })}><option value="">稍后配置</option>{targets.filter((item) => item.is_active).map((item) => <option key={item.id} value={item.id}>{item.name} · {item.environment}</option>)}</select></label>
-          </div>}
-        </article>)}
-      </div></div><FormActions submitting={submitting} editing={Boolean(editingID)} onCancel={closeForm} />
+      <FormActions submitting={submitting} editing={Boolean(editingID)} onCancel={closeForm} />
     </form>}
 
     {formOpen && section === 'repositories' && <form className="create-sheet" onSubmit={(event) => { event.preventDefault(); void submitRepository() }}>
@@ -366,7 +357,7 @@ export default function DevOpsView({ section }: { section: Section }) {
       <p className="card-description">{application.description || '暂未填写应用说明'}</p>
       <div className="commit-row"><div><span>当前版本</span><strong>{shortSHA(application.last_observed_commit)}</strong></div><div><span>最后检查</span><strong>{formatTime(application.last_checked_at)}</strong></div></div>
       <div className="application-environments">{(application.environments || []).map((environment) => <span key={environment.key}>{environment.key}<small>{environment.branch}</small></span>)}</div>
-      <div className="pipeline-flow compact-flow"><span className={application.repository ? 'complete' : ''}>代码</span><i>›</i><span className={application.build_plan ? 'complete' : ''}>构建</span><i>›</i><span className={application.image_registry ? 'complete' : ''}>镜像</span><i>›</i><span className={application.workflow?.is_active ? 'complete' : ''}>{application.workflow?.is_active ? '计划已启用' : '计划草稿'}</span><span className={application.release_approval_enabled ? 'review-on' : ''}>{application.release_approval_enabled ? '需审核' : '免审核'}</span></div>
+      <div className="pipeline-flow compact-flow"><span className={application.repository ? 'complete' : ''}>代码</span><i>›</i><span className={application.build_plan ? 'complete' : ''}>构建</span><i>›</i><span className={application.image_registry ? 'complete' : ''}>镜像</span><i>›</i><span className={application.workflow?.is_active ? 'complete' : ''}>{application.workflow_template?.name || (application.workflow?.is_active ? '应用计划' : '计划草稿')}</span><span className={application.release_approval_enabled ? 'review-on' : ''}>{application.release_approval_enabled ? '需审核' : '免审核'}</span></div>
       <div className="card-actions"><button type="button" onClick={() => editApplication(application)}>配置</button><button type="button" onClick={() => navigate(`/release-workflows?application=${application.id}`)}>发布计划</button>{canRun && <><button type="button" onClick={() => void action(`/applications/${application.id}/sync`)}>检查更新</button><button className="accent-action" type="button" onClick={() => void action(`/applications/${application.id}/pipeline-runs`)}>启动流程</button></>}</div>
     </article>)}{!loading && applications.length === 0 && <EmptyState title="还没有应用" description="创建第一个应用，把仓库、构建和发布流程连接起来。" />}</div>}
 

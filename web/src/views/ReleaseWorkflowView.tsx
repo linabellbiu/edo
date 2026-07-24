@@ -27,11 +27,13 @@ interface WorkflowNode {
 }
 interface WorkflowEdge { id: string; source: string; target: string; label?: string }
 interface Workflow {
-  id: string; application_id: string; name: string; revision: number; is_active: boolean
+  id: string; application_id?: string; name: string; description?: string; revision: number; is_active: boolean
   nodes: WorkflowNode[]; edges: WorkflowEdge[]; viewport: { x: number; y: number; zoom: number }
 }
+interface WorkflowTemplate extends Workflow { description: string }
 interface WorkflowIssue { code: string; message: string; node_id?: string; edge_id?: string }
 interface WorkflowResponse { workflow: Workflow; valid: boolean; issues: WorkflowIssue[] }
+interface WorkflowTemplateResponse { workflow_template: WorkflowTemplate; valid: boolean; issues: WorkflowIssue[] }
 
 const nodeCopy: Record<NodeType, { label: string; hint: string; icon: string }> = {
   trigger: { label: '代码触发', hint: '监听分支、Push、PR 或 Tag', icon: '⌁' },
@@ -42,6 +44,18 @@ const nodeCopy: Record<NodeType, { label: string; hint: string; icon: string }> 
 
 const environmentLabel: Record<EnvironmentKey, string> = {
   dev: '开发环境', test: '测试环境', pre: '预发布环境', prod: '生产环境',
+}
+
+const canvasEnvironments: ApplicationEnvironment[] = [
+  { id: 'dev', key: 'dev', name: '开发环境', branch: 'dev', poll_enabled: true, watch_push: true, watch_pull_request: false, watch_tags: false, tag_pattern: 'v*', sort_order: 0 },
+  { id: 'test', key: 'test', name: '测试环境', branch: 'test', poll_enabled: false, watch_push: true, watch_pull_request: true, watch_tags: false, tag_pattern: 'v*', sort_order: 1 },
+  { id: 'pre', key: 'pre', name: '预发布环境', branch: 'main', poll_enabled: false, watch_push: true, watch_pull_request: true, watch_tags: false, tag_pattern: 'v*', sort_order: 2 },
+  { id: 'prod', key: 'prod', name: '生产环境', branch: 'release', poll_enabled: false, watch_push: false, watch_pull_request: false, watch_tags: true, tag_pattern: 'v*', sort_order: 3 },
+]
+
+const publicCanvasApplication: Application = {
+  id: 'public-template', name: '公共发布计划', release_approval_enabled: true,
+  environments: canvasEnvironments,
 }
 
 function uid(prefix: string) {
@@ -104,9 +118,11 @@ export default function ReleaseWorkflowView() {
   const canManage = Boolean(user?.is_superuser || user?.permissions.includes('delivery.manage'))
   const [searchParams, setSearchParams] = useSearchParams()
   const [applications, setApplications] = useState<Application[]>([])
+  const [templates, setTemplates] = useState<WorkflowTemplate[]>([])
   const [releasePlans, setReleasePlans] = useState<ReleasePlan[]>([])
   const [targets, setTargets] = useState<DeploymentTarget[]>([])
   const [applicationID, setApplicationID] = useState(searchParams.get('application') || '')
+  const [templateID, setTemplateID] = useState(searchParams.get('template') || '')
   const [workflow, setWorkflow] = useState<Workflow | null>(null)
   const [nodes, setNodes] = useState<WorkflowNode[]>([])
   const [edges, setEdges] = useState<WorkflowEdge[]>([])
@@ -123,32 +139,36 @@ export default function ReleaseWorkflowView() {
   const panRef = useRef<{ pointerID: number; startX: number; startY: number; originX: number; originY: number } | null>(null)
   const dragRef = useRef<{ pointerID: number; nodeID: string; startX: number; startY: number; originX: number; originY: number } | null>(null)
 
+  const publicMode = !applicationID
   const application = useMemo(() => applications.find((item) => item.id === applicationID), [applicationID, applications])
+  const editorApplication = publicMode ? publicCanvasApplication : application
   const selectedNode = useMemo(() => nodes.find((item) => item.id === selectedNodeID), [nodes, selectedNodeID])
 
   const loadResources = useCallback(async () => {
     setLoading(true)
     setError('')
     try {
-      const [applicationResult, planResult, targetResult] = await Promise.all([
+      const [applicationResult, planResult, targetResult, templateResult] = await Promise.all([
         client.get<{ applications: Application[] }>('/applications'),
         client.get<{ release_plans: ReleasePlan[] }>('/release-plans'),
         client.get<{ targets: DeploymentTarget[] }>('/deployment-targets'),
+        client.get<{ workflow_templates: WorkflowTemplate[] }>('/workflow-templates'),
       ])
       setApplications(applicationResult.data.applications)
       setReleasePlans(planResult.data.release_plans)
       setTargets(targetResult.data.targets)
-      if (!applicationID && applicationResult.data.applications.length > 0) {
-        const id = applicationResult.data.applications[0].id
-        setApplicationID(id)
-        setSearchParams({ application: id }, { replace: true })
+      setTemplates(templateResult.data.workflow_templates)
+      if (!applicationID && !templateID && templateResult.data.workflow_templates.length > 0) {
+        const id = templateResult.data.workflow_templates[0].id
+        setTemplateID(id)
+        setSearchParams({ template: id }, { replace: true })
       }
     } catch (loadError) {
       setError(apiErrorMessage(loadError))
     } finally {
       setLoading(false)
     }
-  }, [applicationID, setSearchParams])
+  }, [applicationID, setSearchParams, templateID])
 
   const loadWorkflow = useCallback(async (id: string) => {
     setLoading(true)
@@ -170,12 +190,41 @@ export default function ReleaseWorkflowView() {
     }
   }, [])
 
+  const loadTemplate = useCallback(async (id: string) => {
+    setLoading(true)
+    setError('')
+    setMessage('')
+    try {
+      const result = await client.get<WorkflowTemplateResponse>(`/workflow-templates/${id}`)
+      setWorkflow(result.data.workflow_template)
+      setNodes(result.data.workflow_template.nodes || [])
+      setEdges(result.data.workflow_template.edges || [])
+      setViewport(result.data.workflow_template.viewport || { x: 60, y: 40, zoom: 0.85 })
+      setIssues(result.data.issues || [])
+      setSelectedNodeID('')
+      setDirty(false)
+    } catch (loadError) {
+      setError(apiErrorMessage(loadError))
+    } finally {
+      setLoading(false)
+    }
+  }, [])
+
   useEffect(() => { void loadResources() }, [loadResources])
-  useEffect(() => { if (applicationID) void loadWorkflow(applicationID) }, [applicationID, loadWorkflow])
+  useEffect(() => {
+    if (applicationID) void loadWorkflow(applicationID)
+    else if (templateID) void loadTemplate(templateID)
+    else setWorkflow(null)
+  }, [applicationID, loadTemplate, loadWorkflow, templateID])
 
   function chooseApplication(id: string) {
     setApplicationID(id)
     setSearchParams({ application: id }, { replace: true })
+  }
+
+  function chooseTemplate(id: string) {
+    setTemplateID(id)
+    setSearchParams(id ? { template: id } : {}, { replace: true })
   }
 
   function updateNode(id: string, update: (node: WorkflowNode) => WorkflowNode) {
@@ -184,9 +233,9 @@ export default function ReleaseWorkflowView() {
   }
 
   function addNode(type: NodeType) {
-    if (!application || !canvasRef.current) return
+    if (!editorApplication || !canvasRef.current) return
     const rect = canvasRef.current.getBoundingClientRect()
-    const environment = application.environments[0]
+    const environment = editorApplication.environments[0]
     const id = uid(type)
     const position = {
       x: (rect.width / 2 - viewport.x) / viewport.zoom - 110,
@@ -231,8 +280,8 @@ export default function ReleaseWorkflowView() {
   }
 
   function applyTemplate(compact: boolean) {
-    if (!application) return
-    const template = createTemplate(application, compact)
+    if (!editorApplication) return
+    const template = createTemplate(editorApplication, compact)
     setNodes(template.nodes)
     setEdges(template.edges)
     setViewport({ x: 60, y: 45, zoom: compact ? 1 : 0.72 })
@@ -242,13 +291,14 @@ export default function ReleaseWorkflowView() {
   }
 
   async function validate() {
-    if (!applicationID || !workflow) return
+    if (!workflow || (publicMode ? !templateID : !applicationID)) return
     setError('')
     setMessage('')
     try {
-      const result = await client.post<WorkflowResponse>(`/applications/${applicationID}/workflow/validate`, {
-        name: workflow.name, revision: workflow.revision, activate: false, nodes, edges, viewport,
-      })
+      const payload = { name: workflow.name, description: workflow.description || '', revision: workflow.revision, activate: false, nodes, edges, viewport }
+      const result = publicMode
+        ? await client.post<WorkflowTemplateResponse>('/workflow-templates/validate', payload)
+        : await client.post<WorkflowResponse>(`/applications/${applicationID}/workflow/validate`, payload)
       setIssues(result.data.issues || [])
       setMessage(result.data.valid ? '检查通过，可以启用这份发布计划。' : `发现 ${result.data.issues.length} 个问题。`)
     } catch (validateError) {
@@ -257,24 +307,54 @@ export default function ReleaseWorkflowView() {
   }
 
   async function save(activate: boolean) {
-    if (!applicationID || !workflow) return
+    if (!workflow || (publicMode ? !templateID : !applicationID)) return
     setSaving(true)
     setError('')
     setMessage('')
     try {
-      const result = await client.put<WorkflowResponse>(`/applications/${applicationID}/workflow`, {
-        name: workflow.name, revision: workflow.revision, activate, nodes, edges, viewport,
-      })
-      setWorkflow(result.data.workflow)
-      setNodes(result.data.workflow.nodes)
-      setEdges(result.data.workflow.edges)
+      const payload = { name: workflow.name, description: workflow.description || '', revision: workflow.revision, activate, nodes, edges, viewport }
+      const result = publicMode
+        ? await client.put<WorkflowTemplateResponse>(`/workflow-templates/${templateID}`, payload)
+        : await client.put<WorkflowResponse>(`/applications/${applicationID}/workflow`, payload)
+      const saved = publicMode ? (result.data as WorkflowTemplateResponse).workflow_template : (result.data as WorkflowResponse).workflow
+      setWorkflow(saved)
+      setNodes(saved.nodes)
+      setEdges(saved.edges)
       setIssues(result.data.issues || [])
       setDirty(false)
-      setMessage(activate ? '发布计划已启用，新的代码事件会按这张图进入流程。' : '草稿已保存，当前不会触发新的发布流程。')
+      setMessage(activate ? (publicMode ? '公共发布计划已启用，创建应用时可以直接选择。' : '应用发布计划已启用，新的代码事件会按这张图进入流程。') : '草稿已保存，当前不会触发新的发布流程。')
+      if (publicMode) {
+        setTemplates((current) => current.map((item) => item.id === saved.id ? saved as WorkflowTemplate : item))
+      }
     } catch (saveError) {
       const response = (saveError as { response?: { data?: { issues?: WorkflowIssue[] } } }).response?.data
       if (response?.issues) setIssues(response.issues)
       setError(apiErrorMessage(saveError))
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  async function createPublicTemplate() {
+    if (!canManage) return
+    const graph = createTemplate(publicCanvasApplication, false)
+    setSaving(true)
+    setError('')
+    try {
+      const now = new Date()
+      const name = `新发布计划 ${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')} ${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`
+      const result = await client.post<WorkflowTemplateResponse>('/workflow-templates', {
+        name, description: '在无限画布中配置环境、触发条件和部署路径。', revision: 0,
+        activate: false, nodes: graph.nodes, edges: graph.edges,
+        viewport: { x: 60, y: 45, zoom: 0.72 },
+      })
+      const created = result.data.workflow_template
+      setTemplates((current) => [...current, created])
+      setTemplateID(created.id)
+      setSearchParams({ template: created.id }, { replace: true })
+      setMessage('已创建一张公共发布计划草稿，请直接在画布上调整。')
+    } catch (createError) {
+      setError(apiErrorMessage(createError))
     } finally {
       setSaving(false)
     }
@@ -343,13 +423,19 @@ export default function ReleaseWorkflowView() {
     if (dragRef.current?.pointerID === event.pointerId) dragRef.current = null
   }
 
-  if (loading && applications.length === 0) return <div className="loading-panel">正在准备发布计划…</div>
+  if (loading && applications.length === 0 && templates.length === 0) return <div className="loading-panel">正在准备发布计划…</div>
 
   return <section className="workflow-page page-enter">
     <div className="workflow-heading">
-      <div><span className="section-label">持续交付</span><h2>发布计划</h2><p>用节点和连线定义代码从哪个环境进入、何时接测、是否审核，以及最后部署到哪里。</p></div>
+      <div><span className="section-label">持续交付</span><h2>{publicMode ? '公共发布计划' : '应用发布计划'}</h2><p>{publicMode ? '像 ComfyUI 一样直接在无限画布上配置环境、触发条件和部署路径，创建应用时直接选择。' : '这是应用从公共计划复制出的独立流程，可以按应用单独调整。'}</p></div>
       <div className="workflow-heading-actions">
-        <label>应用<select value={applicationID} onChange={(event) => chooseApplication(event.target.value)}>{applications.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
+        {publicMode ? <>
+          <label>公共计划<select value={templateID} onChange={(event) => chooseTemplate(event.target.value)}><option value="">请选择</option>{templates.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
+          {canManage && <button className="primary-button" type="button" disabled={saving} onClick={() => void createPublicTemplate()}>＋ 新建计划</button>}
+        </> : <>
+          <label>应用<select value={applicationID} onChange={(event) => chooseApplication(event.target.value)}>{applications.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
+          <button type="button" onClick={() => { setApplicationID(''); setSearchParams({}, { replace: true }) }}>公共计划</button>
+        </>}
         {workflow && <span className={`workflow-state ${workflow.is_active ? 'active' : ''}`}>{workflow.is_active ? '已启用' : '草稿'}</span>}
         {dirty && <span className="unsaved-state">未保存</span>}
       </div>
@@ -358,7 +444,9 @@ export default function ReleaseWorkflowView() {
     {error && <div className="form-alert error system-alert" role="alert">{error}</div>}
     {message && <div className="form-alert system-alert" role="status">{message}</div>}
 
-    {!application || !workflow ? <div className="modern-empty workflow-empty"><h3>先创建应用</h3><p>应用创建后会自动生成一份可编辑的发布计划。</p></div> : <div className="workflow-studio">
+    {workflow && publicMode && <div className="workflow-meta-bar"><label>计划名称<input value={workflow.name} disabled={!canManage} onChange={(event) => { setWorkflow({ ...workflow, name: event.target.value }); setDirty(true) }} /></label><label>说明<input value={workflow.description || ''} disabled={!canManage} onChange={(event) => { setWorkflow({ ...workflow, description: event.target.value }); setDirty(true) }} placeholder="这张发布计划适用于哪些应用" /></label><span>应用选择后会复制第 {workflow.revision} 版</span></div>}
+
+    {!editorApplication || !workflow ? <div className="modern-empty workflow-empty"><h3>{publicMode ? '创建第一张公共发布计划' : '没有可编辑的应用计划'}</h3><p>{publicMode ? '点击“新建计划”后直接在无限画布中拖动、连线和配置节点。' : '请先创建应用并选择一张公共发布计划。'}</p>{publicMode && canManage && <button className="primary-button" type="button" onClick={() => void createPublicTemplate()}>＋ 新建发布计划</button>}</div> : <div className="workflow-studio">
       <aside className="workflow-palette">
         <div><strong>节点</strong><span>点击添加到画布</span></div>
         {(Object.keys(nodeCopy) as NodeType[]).map((type) => <button key={type} type="button" onClick={() => addNode(type)} disabled={!canManage}>
@@ -408,7 +496,7 @@ export default function ReleaseWorkflowView() {
           <div className="inspector-title"><div><span>{nodeCopy[selectedNode.type].label}</span><h3>{selectedNode.name}</h3></div>{canManage && <button type="button" onClick={() => removeNode(selectedNode.id)}>删除</button>}</div>
           <div className="inspector-fields">
             <label>节点名称<input value={selectedNode.name} disabled={!canManage} onChange={(event) => updateNode(selectedNode.id, (node) => ({ ...node, name: event.target.value }))} /></label>
-            <label>所属环境<select value={selectedNode.config.environment || ''} disabled={!canManage} onChange={(event) => updateNode(selectedNode.id, (node) => ({ ...node, config: { ...node.config, environment: event.target.value as EnvironmentKey } }))}><option value="">通用节点</option>{application.environments.map((item) => <option key={item.key} value={item.key}>{item.name}</option>)}</select></label>
+            <label>所属环境<select value={selectedNode.config.environment || ''} disabled={!canManage} onChange={(event) => updateNode(selectedNode.id, (node) => ({ ...node, config: { ...node.config, environment: event.target.value as EnvironmentKey } }))}><option value="">通用节点</option>{editorApplication.environments.map((item) => <option key={item.key} value={item.key}>{item.name}</option>)}</select></label>
             {selectedNode.type === 'trigger' && <>
               <label>监听分支<input value={selectedNode.config.branch || ''} disabled={!canManage} onChange={(event) => updateNode(selectedNode.id, (node) => ({ ...node, config: { ...node.config, branch: event.target.value } }))} placeholder="main 或 release/*" /></label>
               <fieldset><legend>触发事件</legend>{['pull', 'push', 'pr', 'tag'].map((eventName) => <label key={eventName}><input type="checkbox" disabled={!canManage} checked={(selectedNode.config.events || []).includes(eventName)} onChange={(event) => updateNode(selectedNode.id, (node) => ({ ...node, config: { ...node.config, events: event.target.checked ? [...(node.config.events || []), eventName] : (node.config.events || []).filter((item) => item !== eventName) } }))} />{eventName === 'pull' ? 'Pull 定时检查' : eventName.toUpperCase()}</label>)}</fieldset>

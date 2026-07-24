@@ -32,6 +32,7 @@ type applicationRequest struct {
 	ImageRegistryID        string                          `json:"image_registry_id" binding:"max=36"`
 	ReleasePlanID          string                          `json:"release_plan_id" binding:"max=36"`
 	DeploymentTargetID     string                          `json:"deployment_target_id" binding:"max=36"`
+	WorkflowTemplateID     string                          `json:"workflow_template_id" binding:"max=36"`
 	ReleaseApprovalEnabled bool                            `json:"release_approval_enabled"`
 	Environments           []applicationEnvironmentRequest `json:"environments" binding:"omitempty,max=4,dive"`
 }
@@ -57,6 +58,16 @@ type workflowRequest struct {
 	Nodes    []model.WorkflowNode   `json:"nodes" binding:"max=200"`
 	Edges    []model.WorkflowEdge   `json:"edges" binding:"max=400"`
 	Viewport model.WorkflowViewport `json:"viewport"`
+}
+
+type workflowTemplateRequest struct {
+	Name        string                 `json:"name" binding:"required,max=128"`
+	Description string                 `json:"description" binding:"max=500"`
+	Revision    uint64                 `json:"revision"`
+	Activate    bool                   `json:"activate"`
+	Nodes       []model.WorkflowNode   `json:"nodes" binding:"max=200"`
+	Edges       []model.WorkflowEdge   `json:"edges" binding:"max=400"`
+	Viewport    model.WorkflowViewport `json:"viewport"`
 }
 
 type advanceRunRequest struct {
@@ -223,6 +234,78 @@ func (h pipelineHandler) saveWorkflow(c *gin.Context) {
 	c.JSON(http.StatusOK, result)
 }
 
+func (h pipelineHandler) listWorkflowTemplates(c *gin.Context) {
+	templates, err := h.service.ListWorkflowTemplates(c.Request.Context())
+	if err != nil {
+		h.writeError(c, "workflow_template_list", err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"workflow_templates": templates})
+}
+
+func (h pipelineHandler) getWorkflowTemplate(c *gin.Context) {
+	result, err := h.service.GetWorkflowTemplate(c.Request.Context(), c.Param("id"))
+	if err != nil {
+		h.writeError(c, "workflow_template_get", err)
+		return
+	}
+	c.JSON(http.StatusOK, result)
+}
+
+func (h pipelineHandler) validateWorkflowTemplate(c *gin.Context) {
+	var request workflowTemplateRequest
+	if err := c.ShouldBindJSON(&request); err != nil {
+		writeError(c, http.StatusBadRequest, "invalid_workflow_template", pipeline.ErrInvalidWorkflow.Error())
+		return
+	}
+	result, err := h.service.ValidateWorkflowTemplate(c.Request.Context(), toWorkflowTemplateInput(request))
+	if err != nil {
+		h.writeError(c, "workflow_template_validate", err)
+		return
+	}
+	c.JSON(http.StatusOK, result)
+}
+
+func (h pipelineHandler) createWorkflowTemplate(c *gin.Context) {
+	var request workflowTemplateRequest
+	if err := c.ShouldBindJSON(&request); err != nil {
+		writeError(c, http.StatusBadRequest, "invalid_workflow_template", pipeline.ErrInvalidWorkflow.Error())
+		return
+	}
+	actor, _ := currentUser(c)
+	result, err := h.service.CreateWorkflowTemplate(c.Request.Context(), actor.ID, toWorkflowTemplateInput(request))
+	if errors.Is(err, pipeline.ErrInvalidWorkflow) && result != nil {
+		c.JSON(http.StatusUnprocessableEntity, gin.H{"code": "invalid_workflow_template", "message": err.Error(), "workflow_template": result.WorkflowTemplate, "valid": false, "issues": result.Issues, "request_id": requestIDFrom(c)})
+		return
+	}
+	if err != nil {
+		h.writeError(c, "workflow_template_create", err)
+		return
+	}
+	setAuditResourceID(c, result.WorkflowTemplate.ID)
+	c.JSON(http.StatusCreated, result)
+}
+
+func (h pipelineHandler) saveWorkflowTemplate(c *gin.Context) {
+	var request workflowTemplateRequest
+	if err := c.ShouldBindJSON(&request); err != nil {
+		writeError(c, http.StatusBadRequest, "invalid_workflow_template", pipeline.ErrInvalidWorkflow.Error())
+		return
+	}
+	actor, _ := currentUser(c)
+	result, err := h.service.SaveWorkflowTemplate(c.Request.Context(), c.Param("id"), actor.ID, toWorkflowTemplateInput(request))
+	if errors.Is(err, pipeline.ErrInvalidWorkflow) && result != nil {
+		c.JSON(http.StatusUnprocessableEntity, gin.H{"code": "invalid_workflow_template", "message": err.Error(), "workflow_template": result.WorkflowTemplate, "valid": false, "issues": result.Issues, "request_id": requestIDFrom(c)})
+		return
+	}
+	if err != nil {
+		h.writeError(c, "workflow_template_save", err)
+		return
+	}
+	setAuditResourceID(c, result.WorkflowTemplate.ID)
+	c.JSON(http.StatusOK, result)
+}
+
 func (h pipelineHandler) advanceRun(c *gin.Context) {
 	var request advanceRunRequest
 	if err := c.ShouldBindJSON(&request); err != nil {
@@ -357,13 +440,14 @@ func (h pipelineHandler) writeError(c *gin.Context, operation string, err error)
 		errors.Is(err, pipeline.ErrInvalidWorkflow):
 		writeError(c, http.StatusBadRequest, "invalid_delivery_config", err.Error())
 	case errors.Is(err, pipeline.ErrApplicationExists), errors.Is(err, pipeline.ErrBuildPlanExists),
-		errors.Is(err, pipeline.ErrRegistryExists), errors.Is(err, pipeline.ErrReleasePlanExists):
+		errors.Is(err, pipeline.ErrRegistryExists), errors.Is(err, pipeline.ErrReleasePlanExists),
+		errors.Is(err, pipeline.ErrWorkflowTemplateExists):
 		writeError(c, http.StatusConflict, "delivery_config_exists", err.Error())
 	case errors.Is(err, pipeline.ErrApplicationNotFound):
 		writeError(c, http.StatusNotFound, "application_not_found", err.Error())
-	case errors.Is(err, pipeline.ErrWorkflowNotFound):
+	case errors.Is(err, pipeline.ErrWorkflowNotFound), errors.Is(err, pipeline.ErrWorkflowTemplateNotFound):
 		writeError(c, http.StatusNotFound, "workflow_not_found", err.Error())
-	case errors.Is(err, pipeline.ErrWorkflowRevisionConflict):
+	case errors.Is(err, pipeline.ErrWorkflowRevisionConflict), errors.Is(err, pipeline.ErrWorkflowTemplateRevisionConflict):
 		writeError(c, http.StatusConflict, "workflow_revision_conflict", err.Error())
 	case errors.Is(err, pipeline.ErrWorkflowNotActive), errors.Is(err, pipeline.ErrInvalidWorkflowTransition),
 		errors.Is(err, pipeline.ErrWorkflowApprovalRequired), errors.Is(err, pipeline.ErrWorkflowSelfApproval):
@@ -382,8 +466,19 @@ func toApplicationInput(request applicationRequest) pipeline.ApplicationInput {
 		TagPattern: request.TagPattern, BuildPlanID: request.BuildPlanID,
 		ImageRegistryID: request.ImageRegistryID, ReleasePlanID: request.ReleasePlanID,
 		DeploymentTargetID:     request.DeploymentTargetID,
+		WorkflowTemplateID:     request.WorkflowTemplateID,
 		ReleaseApprovalEnabled: request.ReleaseApprovalEnabled,
 		Environments:           toEnvironmentInputs(request.Environments),
+	}
+}
+
+func toWorkflowTemplateInput(request workflowTemplateRequest) pipeline.WorkflowTemplateInput {
+	return pipeline.WorkflowTemplateInput{
+		Description: request.Description,
+		WorkflowInput: pipeline.WorkflowInput{
+			Name: request.Name, Revision: request.Revision, Activate: request.Activate,
+			Nodes: request.Nodes, Edges: request.Edges, Viewport: request.Viewport,
+		},
 	}
 }
 

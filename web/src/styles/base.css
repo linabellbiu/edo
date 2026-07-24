@@ -424,6 +424,12 @@ button:disabled { cursor: wait; opacity: .56; transform: none !important; }
 .workflow-state, .unsaved-state { display: inline-flex; min-height: 34px; align-items: center; padding: 0 10px; border-radius: 10px; color: #8a93a2; background: #eef0f3; font-size: 9px; font-weight: 650; }
 .workflow-state.active { color: #18785a; background: #e9f8f1; }
 .unsaved-state { color: #a96808; background: #fff4df; }
+.workflow-meta-bar { display: grid; grid-template-columns: minmax(220px,.7fr) minmax(320px,1.3fr) auto; align-items: end; gap: 12px; margin: 0 0 14px; padding: 13px 15px; border: 1px solid #e1e5eb; border-radius: 15px; background: #fff; }
+.workflow-meta-bar label { display: grid; gap: 6px; color: #7e8796; font-size: 9px; }
+.workflow-meta-bar input { width: 100%; height: 37px; padding: 0 11px; border: 1px solid #dfe4eb; border-radius: 10px; outline: none; color: #354155; background: #fbfcfd; font-size: 11px; }
+.workflow-meta-bar input:focus { border-color: #8caff8; box-shadow: 0 0 0 3px rgb(71 118 230 / 10%); }
+.workflow-meta-bar > span { padding-bottom: 10px; color: #939ba8; font-size: 9px; white-space: nowrap; }
+.field-help { display: block; margin-top: 6px; color: #939dab; font-size: 9px; font-weight: 400; line-height: 1.45; }
 .workflow-empty { margin-top: 20px; }
 .workflow-studio { display: grid; height: max(680px,calc(100vh - 190px)); min-height: 0; grid-template-columns: 210px minmax(460px,1fr) 278px; overflow: hidden; border: 1px solid #dfe3e9; border-radius: 20px; background: #fff; box-shadow: 0 20px 50px rgb(34 48 74 / 8%); }
 .workflow-palette, .workflow-inspector { min-height: 0; padding: 17px; overflow-y: auto; background: #fbfcfd; }
@@ -529,6 +535,8 @@ button:disabled { cursor: wait; opacity: .56; transform: none !important; }
   .identity-provider-card { grid-template-columns: 40px minmax(0,1fr) auto; }
   .identity-provider-card .card-actions { grid-column: 2 / -1; justify-content: flex-start; }
 	.workflow-heading { align-items: flex-start; flex-direction: column; }
+	.workflow-meta-bar { grid-template-columns: 1fr; }
+	.workflow-meta-bar > span { padding-bottom: 0; }
 	.workflow-studio { height: auto; min-height: 800px; grid-template-columns: 1fr; grid-template-rows: auto 650px auto; }
 	.workflow-palette { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 7px; border-right: 0; border-bottom: 1px solid #e6e9ee; }
 	.workflow-palette > div:first-child, .workflow-palette > .palette-divider, .workflow-palette > .palette-divider + div { display: none; }
