@@ -380,17 +380,26 @@ func (h pipelineHandler) createRegistry(c *gin.Context) {
 		return
 	}
 	actor, _ := currentUser(c)
-	registry, err := h.service.CreateRegistry(c.Request.Context(), actor.ID, pipeline.RegistryInput{
-		Name: request.Name, Provider: request.Provider, Endpoint: request.Endpoint,
-		Namespace: request.Namespace, Username: request.Username, Credential: request.Credential,
-		AllowInsecureHTTP: request.AllowInsecureHTTP,
-	})
+	registry, err := h.service.CreateRegistry(c.Request.Context(), actor.ID, toRegistryInput(request))
 	if err != nil {
 		h.writeError(c, "image_registry_create", err)
 		return
 	}
 	setAuditResourceID(c, registry.ID)
 	c.JSON(http.StatusCreated, gin.H{"image_registry": imageRegistryResponse{ImageRegistry: *registry, HasCredential: registry.CredentialCiphertext != ""}})
+}
+
+func (h pipelineHandler) testRegistry(c *gin.Context) {
+	var request registryRequest
+	if err := c.ShouldBindJSON(&request); err != nil {
+		writeError(c, http.StatusBadRequest, "invalid_image_registry", pipeline.ErrInvalidRegistry.Error())
+		return
+	}
+	if err := h.service.TestRegistry(c.Request.Context(), toRegistryInput(request)); err != nil {
+		h.writeError(c, "image_registry_test", err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"message": "镜像仓库登录成功"})
 }
 
 func (h pipelineHandler) listReleasePlans(c *gin.Context) {
@@ -435,8 +444,16 @@ func (h pipelineHandler) listRuns(c *gin.Context) {
 func (h pipelineHandler) writeError(c *gin.Context, operation string, err error) {
 	h.logger.Warn("持续交付操作失败", "operation", operation, "request_id", requestIDFrom(c), "resource_id", c.Param("id"), "err", err)
 	switch {
+	case errors.Is(err, pipeline.ErrRegistryLoginFailed):
+		writeError(c, http.StatusUnprocessableEntity, "image_registry_login_failed", pipeline.ErrRegistryLoginFailed.Error())
+	case errors.Is(err, pipeline.ErrRegistryConnectionFailed):
+		writeError(c, http.StatusBadGateway, "image_registry_connection_failed", pipeline.ErrRegistryConnectionFailed.Error())
 	case errors.Is(err, pipeline.ErrInvalidApplication), errors.Is(err, pipeline.ErrInvalidBuildPlan),
-		errors.Is(err, pipeline.ErrInvalidRegistry), errors.Is(err, pipeline.ErrInvalidReleasePlan),
+		errors.Is(err, pipeline.ErrInvalidRegistry), errors.Is(err, pipeline.ErrInvalidRegistryName),
+		errors.Is(err, pipeline.ErrInvalidRegistryProvider), errors.Is(err, pipeline.ErrInvalidRegistryEndpoint),
+		errors.Is(err, pipeline.ErrInsecureRegistryEndpoint), errors.Is(err, pipeline.ErrInvalidRegistryNamespace),
+		errors.Is(err, pipeline.ErrInvalidRegistryUsername), errors.Is(err, pipeline.ErrInvalidRegistrySecret),
+		errors.Is(err, pipeline.ErrInvalidReleasePlan),
 		errors.Is(err, pipeline.ErrInvalidWorkflow):
 		writeError(c, http.StatusBadRequest, "invalid_delivery_config", err.Error())
 	case errors.Is(err, pipeline.ErrApplicationExists), errors.Is(err, pipeline.ErrBuildPlanExists),
@@ -454,6 +471,14 @@ func (h pipelineHandler) writeError(c *gin.Context, operation string, err error)
 		writeError(c, http.StatusConflict, "workflow_transition_denied", err.Error())
 	default:
 		writeInternalError(c)
+	}
+}
+
+func toRegistryInput(request registryRequest) pipeline.RegistryInput {
+	return pipeline.RegistryInput{
+		Name: request.Name, Provider: request.Provider, Endpoint: request.Endpoint,
+		Namespace: request.Namespace, Username: request.Username, Credential: request.Credential,
+		AllowInsecureHTTP: request.AllowInsecureHTTP,
 	}
 }
 

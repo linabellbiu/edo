@@ -212,6 +212,8 @@ button:disabled { cursor: wait; opacity: .56; transform: none !important; }
 .choice-card small { color: var(--muted); font-size: 10px; }
 .compact-field { width: min(360px,100%); margin-top: 12px; }
 .simple-check { display: flex; margin-top: 16px; align-items: center; gap: 8px; color: #5f697a; font-size: 12px; }
+.form-grid .registry-insecure-check { display: flex; align-items: center; gap: 8px; color: #aa6b13; }
+.form-grid .registry-insecure-check input { width: 15px; min-width: 15px; height: 15px; padding: 0; }
 .form-actions { display: flex; justify-content: flex-end; gap: 9px; margin-top: 22px; }
 
 .application-grid, .resource-card-grid { display: grid; margin-top: 22px; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 16px; }

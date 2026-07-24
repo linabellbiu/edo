@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 
 import client from '@/api/client'
@@ -120,6 +120,13 @@ function RepositoryCheckResult({ check }: { check: RepositoryCheck }) {
   </div>
 }
 
+function RegistryCheckResult({ check }: { check: RepositoryCheck }) {
+  return <div className={`repository-check repository-check-${check.status}`} role={check.status === 'error' ? 'alert' : 'status'} aria-live="polite">
+    <span className="repository-check-dot" aria-hidden="true" />
+    <div><strong>{check.status === 'checking' ? '正在登录镜像仓库' : check.status === 'success' ? '登录成功' : '登录失败'}</strong><small>{check.message}</small></div>
+  </div>
+}
+
 function StatusPill({ value }: { value: string }) {
   const label = ({ idle: '等待检查', checking: '检查中', synced: '已同步', changed: '发现更新', failed: '检查失败', detected: '发现变更', ready: '等待部署', blocked: '配置不完整', awaiting_approval: '等待审核', running: '流程进行中', succeeded: '已完成', canceled: '已取消' } as Record<string, string>)[value] || value
   return <span className={`status-pill status-${value}`}>{label}</span>
@@ -164,6 +171,8 @@ export default function DevOpsView({ section }: { section: Section }) {
   const [webhookSetup, setWebhookSetup] = useState<{ url: string; secret: string } | null>(null)
   const [repositoryChecks, setRepositoryChecks] = useState<Record<string, RepositoryCheck>>({})
   const [repositoryFormCheck, setRepositoryFormCheck] = useState<RepositoryCheck | null>(null)
+  const [registryFormCheck, setRegistryFormCheck] = useState<RepositoryCheck | null>(null)
+  const registryTestSequence = useRef(0)
   const [applicationForm, setApplicationForm] = useState(initialApplicationForm)
   const [repositoryForm, setRepositoryForm] = useState({
     name: '', provider: 'github', clone_url: '', default_branch: 'main', auth_type: 'none', username: '',
@@ -237,6 +246,10 @@ export default function DevOpsView({ section }: { section: Section }) {
   useEffect(() => { void refresh() }, [refresh])
   useEffect(() => { setRepositoryFormCheck(null) }, [repositoryForm])
   useEffect(() => {
+    registryTestSequence.current += 1
+    setRegistryFormCheck(null)
+  }, [registryForm])
+  useEffect(() => {
     if (searchParams.get('create') !== '1' || !canCreate) return
     setFormOpen(true)
     const next = new URLSearchParams(searchParams)
@@ -251,6 +264,8 @@ export default function DevOpsView({ section }: { section: Section }) {
   }), [applications])
 
   function closeForm() {
+	registryTestSequence.current += 1
+	setRegistryFormCheck(null)
     setFormOpen(false)
     setEditingID('')
     setApplicationForm(initialApplicationForm())
@@ -417,6 +432,23 @@ export default function DevOpsView({ section }: { section: Section }) {
     }
   }
 
+  async function testRegistryForm() {
+    const testSequence = ++registryTestSequence.current
+    setError('')
+    setRegistryFormCheck({ status: 'checking', message: '正在验证 Registry 地址和登录凭据…' })
+    try {
+      const result = await client.post<{ message: string }>('/image-registries/test', {
+        ...registryForm,
+        credential: registryForm.credential || null,
+      }, { timeout: 20_000 })
+      if (testSequence !== registryTestSequence.current) return
+      setRegistryFormCheck({ status: 'success', message: `${result.data.message}，当前配置尚未保存。` })
+    } catch (testError) {
+      if (testSequence !== registryTestSequence.current) return
+      setRegistryFormCheck({ status: 'error', message: apiErrorMessage(testError) })
+    }
+  }
+
   return <section className="devops-page page-enter">
     <div className="page-heading modern-heading">
       <div><span className="section-label">持续交付</span><h2>{copy.title}</h2><p>{copy.description}</p></div>
@@ -491,7 +523,26 @@ export default function DevOpsView({ section }: { section: Section }) {
     </form>}
 
     {formOpen && section === 'image-registries' && <form className="create-sheet" onSubmit={(event) => { event.preventDefault(); void submit('/image-registries', { ...registryForm, credential: registryForm.credential || null }, () => setRegistryForm({ ...registryForm, name: '', credential: '' })) }}>
-      <div className="sheet-header"><div><h3>添加镜像仓库</h3><p>凭据会加密保存，接口不会返回原文。</p></div><button type="button" onClick={closeForm}>×</button></div><div className="form-grid"><label>名称<input required value={registryForm.name} onChange={(e) => setRegistryForm({ ...registryForm, name: e.target.value })} /></label><label>类型<select value={registryForm.provider} onChange={(e) => setRegistryForm({ ...registryForm, provider: e.target.value })}><option value="harbor">Harbor</option><option value="docker_hub">Docker Hub</option><option value="generic">通用 Registry</option></select></label><label className="span-2">仓库地址<input required value={registryForm.endpoint} onChange={(e) => setRegistryForm({ ...registryForm, endpoint: e.target.value })} /></label><label>命名空间<input value={registryForm.namespace} onChange={(e) => setRegistryForm({ ...registryForm, namespace: e.target.value })} /></label><label>用户名<input value={registryForm.username} onChange={(e) => setRegistryForm({ ...registryForm, username: e.target.value })} /></label><label className="span-2">密码或 Token<input type="password" value={registryForm.credential} onChange={(e) => setRegistryForm({ ...registryForm, credential: e.target.value })} /></label></div><FormActions submitting={submitting} onCancel={closeForm} />
+      <div className="sheet-header"><div><h3>添加镜像仓库</h3><p>凭据会加密保存，接口不会返回原文。</p></div><button type="button" onClick={closeForm}>×</button></div>
+      <div className="form-grid">
+        <label>名称
+          <input required maxLength={128} value={registryForm.name} onChange={(e) => setRegistryForm({ ...registryForm, name: e.target.value })} placeholder="例如：UCloud 生产仓库" />
+          <small className="field-help">仅用于 ZRT 中识别，也可以填写 host/namespace。</small>
+        </label>
+        <label>类型<select value={registryForm.provider} onChange={(e) => setRegistryForm({ ...registryForm, provider: e.target.value })}><option value="harbor">Harbor</option><option value="docker_hub">Docker Hub</option><option value="generic">通用 Registry</option></select></label>
+        <label className="span-2">Registry 地址
+          <input required type="url" maxLength={1024} value={registryForm.endpoint} onChange={(e) => setRegistryForm({ ...registryForm, endpoint: e.target.value })} placeholder="https://uhub.service.ucloud.cn" />
+          <small className="field-help">填写协议和 Registry 主机，不要包含用户名、密码、查询参数或镜像 Tag。</small>
+        </label>
+        <label>命名空间
+          <input maxLength={255} value={registryForm.namespace} onChange={(e) => setRegistryForm({ ...registryForm, namespace: e.target.value })} placeholder="例如：zrt-application 或 team/project" />
+        </label>
+        <label>用户名<input maxLength={255} value={registryForm.username} onChange={(e) => setRegistryForm({ ...registryForm, username: e.target.value })} autoComplete="username" /></label>
+        <label className="span-2">密码或 Token<input type="password" value={registryForm.credential} onChange={(e) => setRegistryForm({ ...registryForm, credential: e.target.value })} autoComplete="new-password" /></label>
+        <label className="span-2 registry-insecure-check"><input type="checkbox" checked={registryForm.allow_insecure_http} onChange={(e) => setRegistryForm({ ...registryForm, allow_insecure_http: e.target.checked })} />允许 HTTP（仅用于可信内网测试环境）</label>
+      </div>
+      {registryFormCheck && <RegistryCheckResult check={registryFormCheck} />}
+      <div className="form-actions"><button className="secondary-button" type="button" onClick={closeForm}>取消</button><button className="secondary-button" type="button" disabled={submitting || registryFormCheck?.status === 'checking'} onClick={(event) => { if (event.currentTarget.form?.reportValidity()) void testRegistryForm() }}>{registryFormCheck?.status === 'checking' ? '测试中…' : '测试'}</button><button className="primary-button" type="submit" disabled={submitting || registryFormCheck?.status === 'checking'}>{submitting ? '保存中…' : '创建'}</button></div>
     </form>}
 
     {formOpen && section === 'release-plans' && <form className="create-sheet" onSubmit={(event) => { event.preventDefault(); void submit('/release-plans', releaseForm, () => setReleaseForm({ ...releaseForm, name: '', description: '', script: '', helm_chart: '', helm_values: '', service_name: '' })) }}>

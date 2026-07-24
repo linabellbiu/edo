@@ -11,6 +11,7 @@
 | 密码摘要 | `github.com/matthewhartstonge/argon2` | Apache-2.0、持续维护、兼容标准 Argon2id PHC 格式 | 固定 Argon2id v1.3，并在计算前限制内存、迭代、并发、盐和摘要长度 |
 | RBAC 判定 | `github.com/casbin/casbin/v3` | 成熟的 RBAC 模型、角色继承和 deny-override 判定 | 权限目录、超级管理员边界、个人密钥所有权和管理接口 |
 | RBAC 多实例同步 | `github.com/casbin/redis-watcher/v2` | 使用现有 go-redis/v9 客户端广播策略失效事件 | GORM 表仍是唯一数据源；本实例先重载策略，再通知其他实例 |
+| OCI 镜像仓库认证 | `github.com/regclient/regclient` | 成熟实现 OCI Distribution API、Basic/Bearer 认证挑战和 Registry 兼容处理 | 地址与 HTTP 安全校验、请求超时、权限审计、凭据加密和安全错误文案 |
 
 `go-git` 替换外部 `git ls-remote` 后，运行镜像不再安装 `git` 和 `openssh-client`，SSH 私钥也不再写入临时文件。已有 Argon2id PHC 摘要不需要迁移。
 

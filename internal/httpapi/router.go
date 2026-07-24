@@ -169,6 +169,7 @@ func NewRouter(deps Dependencies) *gin.Engine {
 	protected.POST("/build-plans", auditAction(deps.Audits, deps.Logger, "build_plan.create", "build_plan"), requirePermission(deps.Access, deps.Logger, access.PermissionDeliveryManage), pipelineAPI.createBuildPlan)
 	protected.GET("/image-registries", requirePermission(deps.Access, deps.Logger, access.PermissionDeliveryRead), pipelineAPI.listRegistries)
 	protected.POST("/image-registries", auditAction(deps.Audits, deps.Logger, "image_registry.create", "image_registry"), requirePermission(deps.Access, deps.Logger, access.PermissionDeliveryManage), pipelineAPI.createRegistry)
+	protected.POST("/image-registries/test", auditAction(deps.Audits, deps.Logger, "image_registry.test", "image_registry"), requirePermission(deps.Access, deps.Logger, access.PermissionDeliveryManage), pipelineAPI.testRegistry)
 	protected.GET("/release-plans", requirePermission(deps.Access, deps.Logger, access.PermissionDeliveryRead), pipelineAPI.listReleasePlans)
 	protected.POST("/release-plans", auditAction(deps.Audits, deps.Logger, "release_plan.create", "release_plan"), requirePermission(deps.Access, deps.Logger, access.PermissionDeliveryManage), pipelineAPI.createReleasePlan)
 	protected.GET("/pipeline-runs", requirePermission(deps.Access, deps.Logger, access.PermissionDeliveryRead), pipelineAPI.listRuns)

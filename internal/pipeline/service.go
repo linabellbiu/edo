@@ -11,7 +11,13 @@ import (
 	"time"
 	"unicode/utf8"
 
+	distributionreference "github.com/distribution/reference"
 	"github.com/google/uuid"
+	"github.com/regclient/regclient"
+	registryconfig "github.com/regclient/regclient/config"
+	"github.com/regclient/regclient/scheme/reg"
+	registryerrors "github.com/regclient/regclient/types/errs"
+	registryreference "github.com/regclient/regclient/types/ref"
 	"gorm.io/gorm"
 
 	"zrt/internal/model"
@@ -26,6 +32,15 @@ var (
 	ErrInvalidBuildPlan         = errors.New("构建方案配置无效")
 	ErrBuildPlanExists          = errors.New("构建方案名称已存在")
 	ErrInvalidRegistry          = errors.New("镜像仓库配置无效")
+	ErrInvalidRegistryName      = errors.New("镜像仓库名称格式无效")
+	ErrInvalidRegistryProvider  = errors.New("镜像仓库类型无效")
+	ErrInvalidRegistryEndpoint  = errors.New("镜像仓库地址格式无效")
+	ErrInsecureRegistryEndpoint = errors.New("HTTP 镜像仓库需要显式允许不安全连接")
+	ErrInvalidRegistryNamespace = errors.New("镜像仓库命名空间格式无效")
+	ErrInvalidRegistryUsername  = errors.New("镜像仓库用户名过长")
+	ErrInvalidRegistrySecret    = errors.New("镜像仓库密码或 Token 过长")
+	ErrRegistryLoginFailed      = errors.New("镜像仓库登录失败，请检查用户名和密码或 Token")
+	ErrRegistryConnectionFailed = errors.New("无法连接镜像仓库，请检查地址和网络")
 	ErrRegistryExists           = errors.New("镜像仓库名称已存在")
 	ErrInvalidReleasePlan       = errors.New("发布方案配置无效")
 	ErrReleasePlanExists        = errors.New("发布方案名称已存在")
@@ -34,6 +49,9 @@ var (
 )
 
 var resourceNamePattern = regexp.MustCompile(`^[A-Za-z0-9\p{Han}][A-Za-z0-9\p{Han}_. -]{0,127}$`)
+
+// 镜像仓库名称是显示标签，也允许管理员直接使用 host/namespace 形式命名。
+var registryNamePattern = regexp.MustCompile(`^[A-Za-z0-9\p{Han}][A-Za-z0-9\p{Han}_. /:-]{0,127}$`)
 
 type ApplicationInput struct {
 	Name                   string
@@ -557,19 +575,13 @@ func (s *Service) ListRegistries(ctx context.Context) ([]model.ImageRegistry, er
 }
 
 func (s *Service) CreateRegistry(ctx context.Context, actorID string, input RegistryInput) (*model.ImageRegistry, error) {
-	input.Name, input.Endpoint = strings.TrimSpace(input.Name), strings.TrimSpace(input.Endpoint)
-	input.Namespace, input.Username = strings.Trim(strings.TrimSpace(input.Namespace), "/"), strings.TrimSpace(input.Username)
-	if !validResourceName(input.Name) || !validRegistryProvider(input.Provider) || utf8.RuneCountInString(input.Namespace) > 255 ||
-		utf8.RuneCountInString(input.Username) > 255 {
-		return nil, ErrInvalidRegistry
-	}
-	parsed, err := url.Parse(input.Endpoint)
-	if err != nil || parsed.Host == "" || (parsed.Scheme != "https" && !(parsed.Scheme == "http" && input.AllowInsecureHTTP)) {
-		return nil, ErrInvalidRegistry
+	input, parsed, err := normalizeRegistryInput(input)
+	if err != nil {
+		return nil, err
 	}
 	credentialCiphertext := ""
-	if input.Credential != nil && strings.TrimSpace(*input.Credential) != "" {
-		credentialCiphertext, err = s.secrets.Encrypt(strings.TrimSpace(*input.Credential), []byte("image_registry:"+input.Name+":credential"))
+	if input.Credential != nil && *input.Credential != "" {
+		credentialCiphertext, err = s.secrets.Encrypt(*input.Credential, []byte("image_registry:"+input.Name+":credential"))
 		if err != nil {
 			return nil, fmt.Errorf("加密镜像仓库凭据失败: %w", err)
 		}
@@ -587,6 +599,78 @@ func (s *Service) CreateRegistry(ctx context.Context, actorID string, input Regi
 		return nil, fmt.Errorf("创建镜像仓库失败: %w", err)
 	}
 	return registry, nil
+}
+
+// TestRegistry 使用与创建相同的配置校验，但不会持久化配置或凭据。
+func (s *Service) TestRegistry(ctx context.Context, input RegistryInput) error {
+	input, parsed, err := normalizeRegistryInput(input)
+	if err != nil {
+		return err
+	}
+	tlsConfig := registryconfig.TLSEnabled
+	if parsed.Scheme == "http" {
+		tlsConfig = registryconfig.TLSDisabled
+	}
+	credential := ""
+	if input.Credential != nil {
+		credential = *input.Credential
+	}
+	host := registryconfig.HostNewName(parsed.Host)
+	host.TLS = tlsConfig
+	host.PathPrefix = strings.Trim(parsed.Path, "/")
+	host.User = input.Username
+	if input.Username == "" {
+		host.Token = credential
+	} else {
+		host.Pass = credential
+	}
+	reference, err := registryreference.NewHost(host.Name)
+	if err != nil {
+		return ErrInvalidRegistryEndpoint
+	}
+	testContext, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	client := regclient.New(
+		regclient.WithConfigHost(*host),
+		regclient.WithRegOpts(reg.WithDelay(100*time.Millisecond, 500*time.Millisecond), reg.WithRetryLimit(1)),
+		regclient.WithUserAgent("zrt"),
+	)
+	if _, err := client.Ping(testContext, reference); err != nil {
+		if errors.Is(err, registryerrors.ErrHTTPUnauthorized) || errors.Is(err, registryerrors.ErrNoLogin) {
+			return fmt.Errorf("%w: %v", ErrRegistryLoginFailed, err)
+		}
+		return fmt.Errorf("%w: %v", ErrRegistryConnectionFailed, err)
+	}
+	return nil
+}
+
+func normalizeRegistryInput(input RegistryInput) (RegistryInput, *url.URL, error) {
+	input.Name, input.Endpoint = strings.TrimSpace(input.Name), strings.TrimSpace(input.Endpoint)
+	input.Namespace, input.Username = strings.Trim(strings.TrimSpace(input.Namespace), "/"), strings.TrimSpace(input.Username)
+	if !registryNamePattern.MatchString(input.Name) {
+		return input, nil, ErrInvalidRegistryName
+	}
+	if !validRegistryProvider(input.Provider) {
+		return input, nil, ErrInvalidRegistryProvider
+	}
+	if !validRegistryNamespace(input.Namespace) {
+		return input, nil, ErrInvalidRegistryNamespace
+	}
+	if utf8.RuneCountInString(input.Username) > 255 {
+		return input, nil, ErrInvalidRegistryUsername
+	}
+	parsed, err := url.Parse(input.Endpoint)
+	if err != nil || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" ||
+		(parsed.Scheme != "https" && parsed.Scheme != "http") {
+		return input, nil, ErrInvalidRegistryEndpoint
+	}
+	if parsed.Scheme == "http" && !input.AllowInsecureHTTP {
+		return input, nil, ErrInsecureRegistryEndpoint
+	}
+	if input.Credential != nil && len(*input.Credential) > 64*1024 {
+		return input, nil, ErrInvalidRegistrySecret
+	}
+	return input, parsed, nil
 }
 
 func (s *Service) ListReleasePlans(ctx context.Context) ([]model.ReleasePlan, error) {
@@ -929,6 +1013,14 @@ func validResourceName(name string) bool { return resourceNamePattern.MatchStrin
 
 func validRegistryProvider(provider model.RegistryProvider) bool {
 	return provider == model.RegistryGeneric || provider == model.RegistryHarbor || provider == model.RegistryDockerHub
+}
+
+func validRegistryNamespace(namespace string) bool {
+	if namespace == "" {
+		return true
+	}
+	_, err := distributionreference.ParseNamed("registry.invalid/" + namespace)
+	return err == nil
 }
 
 func matchTag(pattern, tag string) bool {

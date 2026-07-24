@@ -6,6 +6,8 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
@@ -87,6 +89,114 @@ func TestResourcesCanBeBoundAndPrepared(t *testing.T) {
 	ready, err := service.PrepareRun(ctx, application.ID, "admin")
 	if err != nil || ready.Status != model.PipelineRunReady || ready.Stage != "configured" {
 		t.Fatalf("完整绑定的流水线未进入就绪状态: run=%+v err=%v", ready, err)
+	}
+}
+
+func TestCreateRegistryAcceptsRepositoryStyleDisplayName(t *testing.T) {
+	service, _, secretManager, _ := newPipelineTestService(t)
+	credential := " ucloud-registry-token "
+	registry, err := service.CreateRegistry(context.Background(), "admin", RegistryInput{
+		Name:       "uhub.service.ucloud.cn/zrt-application",
+		Provider:   model.RegistryGeneric,
+		Endpoint:   "https://uhub.service.ucloud.cn",
+		Namespace:  "zrt-application",
+		Username:   "852519822@qq.com",
+		Credential: &credential,
+	})
+	if err != nil {
+		t.Fatalf("合法的 UCloud 镜像仓库配置不应被拒绝: %v", err)
+	}
+	if registry.Name != "uhub.service.ucloud.cn/zrt-application" ||
+		registry.Endpoint != "https://uhub.service.ucloud.cn" || registry.Namespace != "zrt-application" {
+		t.Fatalf("镜像仓库配置保存错误: %+v", registry)
+	}
+	plaintext, err := secretManager.Decrypt(registry.CredentialCiphertext, []byte("image_registry:"+registry.Name+":credential"))
+	if err != nil || plaintext != credential {
+		t.Fatalf("镜像仓库凭据不应被静默修改: plaintext=%q err=%v", plaintext, err)
+	}
+}
+
+func TestCreateRegistryReturnsFieldSpecificValidationErrors(t *testing.T) {
+	service, _, _, _ := newPipelineTestService(t)
+	tests := []struct {
+		name  string
+		input RegistryInput
+		want  error
+	}{
+		{
+			name:  "名称",
+			input: RegistryInput{Name: "?", Provider: model.RegistryGeneric, Endpoint: "https://registry.example.com"},
+			want:  ErrInvalidRegistryName,
+		},
+		{
+			name:  "类型",
+			input: RegistryInput{Name: "测试仓库", Provider: "unknown", Endpoint: "https://registry.example.com"},
+			want:  ErrInvalidRegistryProvider,
+		},
+		{
+			name:  "地址",
+			input: RegistryInput{Name: "测试仓库", Provider: model.RegistryGeneric, Endpoint: "https://user:password@registry.example.com"},
+			want:  ErrInvalidRegistryEndpoint,
+		},
+		{
+			name:  "HTTP",
+			input: RegistryInput{Name: "测试仓库", Provider: model.RegistryGeneric, Endpoint: "http://registry.example.com"},
+			want:  ErrInsecureRegistryEndpoint,
+		},
+		{
+			name:  "命名空间",
+			input: RegistryInput{Name: "测试仓库", Provider: model.RegistryGeneric, Endpoint: "https://registry.example.com", Namespace: "Upper/Project"},
+			want:  ErrInvalidRegistryNamespace,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if _, err := service.CreateRegistry(context.Background(), "admin", test.input); !errors.Is(err, test.want) {
+				t.Fatalf("镜像仓库字段错误不明确: want=%v err=%v", test.want, err)
+			}
+		})
+	}
+}
+
+func TestRegistryLoginUsesOCIAuthentication(t *testing.T) {
+	const username = "robot$zrt"
+	const password = "registry-token"
+	registryServer := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != "/v2/" {
+			http.NotFound(response, request)
+			return
+		}
+		actualUser, actualPassword, ok := request.BasicAuth()
+		if !ok || actualUser != username || actualPassword != password {
+			response.Header().Set("WWW-Authenticate", `Basic realm="ZRT test registry"`)
+			response.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		response.Header().Set("Docker-Distribution-API-Version", "registry/2.0")
+		response.WriteHeader(http.StatusOK)
+	}))
+	defer registryServer.Close()
+
+	service, db, _, _ := newPipelineTestService(t)
+	credential := password
+	input := RegistryInput{
+		Name: "测试镜像仓库", Provider: model.RegistryGeneric, Endpoint: registryServer.URL,
+		Username: username, Credential: &credential, AllowInsecureHTTP: true,
+	}
+	if err := service.TestRegistry(context.Background(), input); err != nil {
+		t.Fatalf("正确凭据未通过 OCI 登录测试: %v", err)
+	}
+	wrongCredential := "wrong-token"
+	input.Credential = &wrongCredential
+	if err := service.TestRegistry(context.Background(), input); !errors.Is(err, ErrRegistryLoginFailed) {
+		t.Fatalf("错误凭据未被识别为登录失败: %v", err)
+	}
+	var count int64
+	if err := db.Model(&model.ImageRegistry{}).Count(&count).Error; err != nil {
+		t.Fatalf("查询镜像仓库记录失败: %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("登录测试不应保存镜像仓库: got=%d", count)
 	}
 }
 
