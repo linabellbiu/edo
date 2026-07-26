@@ -6,11 +6,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"time"
 
 	"github.com/joho/godotenv"
 )
@@ -195,7 +197,13 @@ func startDevelopment(ctx context.Context, runServer, runWeb bool) error {
 		fmt.Println("ZRT 后端：http://127.0.0.1:8080")
 		fmt.Println("ZRT Web：http://127.0.0.1:5173")
 		return runLocalServices(ctx, []localService{
-			{name: "后端", executable: "go", args: []string{"run", "./cmd/zrt", "server"}},
+			{
+				name:         "后端",
+				executable:   "go",
+				args:         []string{"run", "./cmd/zrt", "server"},
+				readyURL:     "http://127.0.0.1:8080/api/v1/health/ready",
+				readyTimeout: 90 * time.Second,
+			},
 			{name: "Web", executable: npmExecutable(), args: []string{"--prefix", "web", "start"}},
 		})
 	}
@@ -296,9 +304,11 @@ func ensureWebDependencies(ctx context.Context) error {
 }
 
 type localService struct {
-	name       string
-	executable string
-	args       []string
+	name         string
+	executable   string
+	args         []string
+	readyURL     string
+	readyTimeout time.Duration
 }
 
 type localServiceResult struct {
@@ -327,6 +337,33 @@ func runLocalServices(ctx context.Context, services []localService) error {
 		go func(name string, command *exec.Cmd) {
 			results <- localServiceResult{name: name, err: command.Wait()}
 		}(service.name, command)
+
+		if service.readyURL == "" {
+			continue
+		}
+		fmt.Printf("等待%s就绪...\n", service.name)
+		stopped, err := waitForLocalServiceReady(runCtx, service, results)
+		if stopped != nil || err != nil {
+			cancel()
+			remaining := started
+			if stopped != nil {
+				remaining--
+			}
+			for range remaining {
+				<-results
+			}
+			if ctx.Err() != nil {
+				return nil
+			}
+			if stopped != nil {
+				if stopped.err == nil {
+					return fmt.Errorf("%s进程在就绪前退出", stopped.name)
+				}
+				return fmt.Errorf("%s进程在就绪前退出: %w", stopped.name, stopped.err)
+			}
+			return err
+		}
+		fmt.Printf("%s已就绪，继续启动其他服务\n", service.name)
 	}
 
 	first := <-results
@@ -341,6 +378,51 @@ func runLocalServices(ctx context.Context, services []localService) error {
 		return nil
 	}
 	return fmt.Errorf("%s进程退出: %w", first.name, first.err)
+}
+
+func waitForLocalServiceReady(
+	ctx context.Context,
+	service localService,
+	results <-chan localServiceResult,
+) (*localServiceResult, error) {
+	timeout := service.readyTimeout
+	if timeout <= 0 {
+		timeout = 90 * time.Second
+	}
+	readyCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	client := &http.Client{Timeout: time.Second}
+	ticker := time.NewTicker(250 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		if localServiceIsReady(readyCtx, client, service.readyURL) {
+			return nil, nil
+		}
+		select {
+		case result := <-results:
+			return &result, nil
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-readyCtx.Done():
+			return nil, fmt.Errorf("等待%s就绪超时（%s）", service.name, timeout)
+		case <-ticker.C:
+		}
+	}
+}
+
+func localServiceIsReady(ctx context.Context, client *http.Client, readyURL string) bool {
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, readyURL, nil)
+	if err != nil {
+		return false
+	}
+	response, err := client.Do(request)
+	if err != nil {
+		return false
+	}
+	response.Body.Close()
+	return response.StatusCode >= http.StatusOK && response.StatusCode < http.StatusMultipleChoices
 }
 
 func runCommand(ctx context.Context, executable string, args ...string) error {
