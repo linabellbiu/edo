@@ -42,6 +42,8 @@ mage start
 
 只启动一个组件时增加 `--server` 或 `--web`，例如 `mage start --server`、`mage start --web`、`mage start --dev --server` 和 `mage start --dev --web`。不指定组件或同时指定两个组件时，后端和 Web 会一起启动。
 
+执行 `mage help` 可查看中文命令总览，执行 `mage start --help` 可查看启动参数说明。
+
 需要完全使用容器时执行 `mage start --docker`。该模式会在后台启动 Redis、NATS、迁移任务、后端和 Web；停止环境执行 `docker compose -f deploy/compose.dev.yml down`，该命令不会删除业务数据。`--dev` 和 `--docker` 不能同时使用。
 
 登录后可在“平台管理 → 登录方式”中接入 LDAP 或 OAuth。开发 Compose 自带一份仅供本机使用的加密密钥；多人共享、测试和生产环境必须在 `.env` 中设置自己的 `ZRT_SECRETS_KEY`，否则不同环境会错误地共用密钥。

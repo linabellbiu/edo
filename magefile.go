@@ -41,6 +41,21 @@ func Start(ctx context.Context) error {
 	return finishStart(startBuilt(ctx, runServer, runWeb), options.provided)
 }
 
+// Help 显示 ZRT 常用开发和启动命令。
+func Help() {
+	fmt.Println(`ZRT Mage 命令
+
+mage start                       构建后端和 Web，由 Go 提供页面
+mage start --server              只启动后端
+mage start --web                 只启动 Web
+mage start --dev                 开发模式，同时运行 go run 和 npm start
+mage start --dev --server        开发模式，只运行后端
+mage start --dev --web           开发模式，只运行 Web
+mage start --docker              使用 Docker Compose 启动完整环境
+mage start --help                查看 start 参数说明
+mage -l                          查看全部 Mage 任务`)
+}
+
 type startOptions struct {
 	dev      bool
 	docker   bool
