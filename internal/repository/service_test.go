@@ -89,6 +89,61 @@ func TestRepositoryNameSupportsChinese(t *testing.T) {
 	}
 }
 
+func TestRepositoryCanBeUpdatedAndDeletedWhenUnused(t *testing.T) {
+	service, db := newRepositoryTestService(t)
+	repo, _, err := service.Create(context.Background(), "admin", Input{
+		Name: "待修改仓库", Provider: model.GitProviderGeneric,
+		CloneURL: "https://git.example.com/team/old.git", AuthType: model.GitAuthNone,
+	})
+	if err != nil {
+		t.Fatalf("创建待修改仓库失败: %v", err)
+	}
+	updated, webhookSecret, err := service.Update(context.Background(), "admin", repo.ID, Input{
+		Name: "已修改仓库", Provider: model.GitProviderGitea,
+		CloneURL: "https://git.example.com/team/new.git", DefaultBranch: "develop",
+		AuthType: model.GitAuthNone, WebhookEnabled: true,
+	})
+	if err != nil {
+		t.Fatalf("修改代码仓库失败: %v", err)
+	}
+	if updated.Name != "已修改仓库" || updated.Provider != model.GitProviderGitea ||
+		updated.CloneURL != "https://git.example.com/team/new.git" || updated.DefaultBranch != "develop" || webhookSecret == "" {
+		t.Fatalf("修改后的代码仓库内容不正确: %+v", updated)
+	}
+
+	delivery := model.GitWebhookDelivery{
+		ID: "delivery-delete", RepositoryID: repo.ID, DeliveryID: "provider-delete", EventType: "push",
+		Ref: "refs/heads/develop", PayloadHash: "hash", Status: model.WebhookProcessed, ReceivedAt: time.Now().UTC(),
+	}
+	if err := db.Create(&delivery).Error; err != nil {
+		t.Fatalf("创建 Webhook 投递记录失败: %v", err)
+	}
+	now := time.Now().UTC()
+	application := model.Application{
+		ID: "application-delete", Name: "引用仓库的应用", RepositoryID: repo.ID, Branch: "develop",
+		SyncStatus: model.ApplicationSyncIdle, CreatedBy: "admin", CreatedAt: now, UpdatedAt: now,
+	}
+	if err := db.Create(&application).Error; err != nil {
+		t.Fatalf("创建仓库引用失败: %v", err)
+	}
+	if err := service.Delete(context.Background(), repo.ID); !errors.Is(err, ErrRepositoryInUse) {
+		t.Fatalf("使用中的代码仓库未阻止删除: %v", err)
+	}
+	if err := db.Delete(&application).Error; err != nil {
+		t.Fatalf("清理仓库引用失败: %v", err)
+	}
+	if err := service.Delete(context.Background(), repo.ID); err != nil {
+		t.Fatalf("删除未使用的代码仓库失败: %v", err)
+	}
+	var deliveryCount int64
+	if err := db.Model(&model.GitWebhookDelivery{}).Where("repository_id = ?", repo.ID).Count(&deliveryCount).Error; err != nil || deliveryCount != 0 {
+		t.Fatalf("删除仓库后仍有 Webhook 投递记录: count=%d err=%v", deliveryCount, err)
+	}
+	if err := service.Delete(context.Background(), repo.ID); !errors.Is(err, ErrRepositoryNotFound) {
+		t.Fatalf("重复删除仓库未返回不存在: %v", err)
+	}
+}
+
 func TestRepositoryUsesOwnedCredentialAndWebhookCanBeRevealed(t *testing.T) {
 	service, _ := newRepositoryTestService(t)
 	token := "saved-provider-token"

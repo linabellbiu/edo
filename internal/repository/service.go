@@ -25,6 +25,7 @@ var (
 	ErrInsecureRepository    = errors.New("HTTP 仓库默认不允许，请显式确认不安全连接")
 	ErrRepositoryExists      = errors.New("代码仓库名称已存在")
 	ErrRepositoryNotFound    = errors.New("代码仓库不存在")
+	ErrRepositoryInUse       = errors.New("代码仓库正在被应用使用，不能删除")
 	ErrInvalidCredential     = errors.New("代码仓库凭据配置无效")
 	ErrKnownHostsRequired    = errors.New("SSH 仓库必须配置可信 known_hosts 文件")
 	ErrWebhookDisabled       = errors.New("代码仓库 Webhook 未启用")
@@ -173,6 +174,33 @@ func (s *Service) SetActive(ctx context.Context, id string, active bool) error {
 		return ErrRepositoryNotFound
 	}
 	return nil
+}
+
+func (s *Service) Delete(ctx context.Context, id string) error {
+	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var existing model.GitRepository
+		if err := tx.First(&existing, "id = ?", id).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return ErrRepositoryNotFound
+			}
+			return fmt.Errorf("查询待删除代码仓库失败: %w", err)
+		}
+
+		var references int64
+		if err := tx.Model(&model.Application{}).Where("repository_id = ?", id).Count(&references).Error; err != nil {
+			return fmt.Errorf("检查代码仓库使用状态失败: %w", err)
+		}
+		if references > 0 {
+			return ErrRepositoryInUse
+		}
+		if err := tx.Where("repository_id = ?", id).Delete(&model.GitWebhookDelivery{}).Error; err != nil {
+			return fmt.Errorf("清理代码仓库 Webhook 投递记录失败: %w", err)
+		}
+		if err := tx.Delete(&existing).Error; err != nil {
+			return fmt.Errorf("删除代码仓库失败: %w", err)
+		}
+		return nil
+	})
 }
 
 func (s *Service) TestConnection(ctx context.Context, id string) (RefResult, error) {

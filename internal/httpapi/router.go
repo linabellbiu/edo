@@ -145,6 +145,7 @@ func NewRouter(deps Dependencies) *gin.Engine {
 	protected.POST("/repositories", auditAction(deps.Audits, deps.Logger, "repository.create", "repository"), requirePermission(deps.Access, deps.Logger, access.PermissionRepositoryManage), repositoryAPI.create)
 	protected.POST("/repositories/test", auditAction(deps.Audits, deps.Logger, "repository.test", "repository"), requirePermission(deps.Access, deps.Logger, access.PermissionRepositoryManage), repositoryAPI.testInput)
 	protected.PUT("/repositories/:id", auditAction(deps.Audits, deps.Logger, "repository.update", "repository"), requirePermission(deps.Access, deps.Logger, access.PermissionRepositoryManage), repositoryAPI.update)
+	protected.DELETE("/repositories/:id", auditAction(deps.Audits, deps.Logger, "repository.delete", "repository"), requirePermission(deps.Access, deps.Logger, access.PermissionRepositoryManage), repositoryAPI.delete)
 	protected.PATCH("/repositories/:id/status", auditAction(deps.Audits, deps.Logger, "repository.status.update", "repository"), requirePermission(deps.Access, deps.Logger, access.PermissionRepositoryManage), repositoryAPI.setStatus)
 	protected.POST("/repositories/:id/test", auditAction(deps.Audits, deps.Logger, "repository.test", "repository"), requirePermission(deps.Access, deps.Logger, access.PermissionRepositoryManage), repositoryAPI.testConnection)
 	protected.GET("/repositories/:id/webhook-deliveries", requirePermission(deps.Access, deps.Logger, access.PermissionRepositoryRead), repositoryAPI.listDeliveries)

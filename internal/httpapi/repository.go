@@ -117,6 +117,14 @@ func (h repositoryHandler) update(c *gin.Context) {
 	c.JSON(http.StatusOK, response)
 }
 
+func (h repositoryHandler) delete(c *gin.Context) {
+	if err := h.service.Delete(c.Request.Context(), c.Param("id")); err != nil {
+		h.writeServiceError(c, "repository_delete", err)
+		return
+	}
+	c.Status(http.StatusNoContent)
+}
+
 func (h repositoryHandler) webhookConfiguration(c *gin.Context) {
 	plaintext, err := h.service.RevealWebhookSecret(c.Request.Context(), c.Param("id"))
 	if err != nil {
@@ -257,6 +265,8 @@ func (h repositoryHandler) writeServiceError(c *gin.Context, operation string, e
 		writeError(c, http.StatusConflict, "repository_exists", repository.ErrRepositoryExists.Error())
 	case errors.Is(err, repository.ErrRepositoryNotFound):
 		writeError(c, http.StatusNotFound, "repository_not_found", repository.ErrRepositoryNotFound.Error())
+	case errors.Is(err, repository.ErrRepositoryInUse):
+		writeError(c, http.StatusConflict, "repository_in_use", repository.ErrRepositoryInUse.Error())
 	case errors.Is(err, repository.ErrWebhookDisabled):
 		writeError(c, http.StatusNotFound, "webhook_not_found", repository.ErrWebhookDisabled.Error())
 	case errors.Is(err, secret.ErrUnavailable):
