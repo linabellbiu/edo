@@ -814,9 +814,11 @@ func (s *Service) SyncApplication(ctx context.Context, applicationID, trigger st
 	}
 	pollSources := applicationPollSources(application)
 	if len(pollSources) == 0 {
-		err = fmt.Errorf("应用没有启用 Pull 监听节点")
-		s.markSyncFailure(ctx, application.ID, err)
-		return application, nil, err
+		message := "仓库可读取；当前流水线由 Push、PR 或 Tag 事件触发"
+		if err := s.markSyncReadable(ctx, application, now, message); err != nil {
+			return application, nil, err
+		}
+		return application, nil, nil
 	}
 	environmentByKey := make(map[string]*model.ApplicationEnvironment, len(application.Environments))
 	for i := range application.Environments {
@@ -861,9 +863,11 @@ func (s *Service) SyncApplication(ctx context.Context, applicationID, trigger st
 		lastRun = run
 	}
 	if !found {
-		err = fmt.Errorf("仓库中不存在流水线监听的分支或标签")
-		s.markSyncFailure(ctx, application.ID, err)
-		return application, nil, err
+		message = "仓库可读取；未找到流水线配置的分支或标签"
+		if err := s.markSyncReadable(ctx, application, now, message); err != nil {
+			return application, nil, err
+		}
+		return application, nil, nil
 	}
 	updates := map[string]any{
 		"last_observed_ref":    application.LastObservedRef,
@@ -995,6 +999,19 @@ func (s *Service) markSyncFailure(ctx context.Context, applicationID string, syn
 		"sync_status": model.ApplicationSyncFailed, "sync_message": message,
 		"last_checked_at": now, "updated_at": now,
 	}).Error
+}
+
+func (s *Service) markSyncReadable(ctx context.Context, application *model.Application, now time.Time, message string) error {
+	if err := s.db.WithContext(ctx).Model(&model.Application{}).Where("id = ?", application.ID).Updates(map[string]any{
+		"sync_status": model.ApplicationSyncSynced, "sync_message": message,
+		"last_checked_at": now, "updated_at": now,
+	}).Error; err != nil {
+		return fmt.Errorf("更新应用检查状态失败: %w", err)
+	}
+	application.SyncStatus = model.ApplicationSyncSynced
+	application.SyncMessage = message
+	application.LastCheckedAt = &now
+	return nil
 }
 
 func selectObservedRef(application *model.Application, refs repository.RefResult) (string, string) {
