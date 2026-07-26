@@ -239,6 +239,11 @@ func buildBackend(ctx context.Context, embedWeb bool) (string, error) {
 	if err := os.MkdirAll("bin", 0o755); err != nil {
 		return "", fmt.Errorf("创建 bin 目录失败: %w", err)
 	}
+	if embedWeb {
+		if err := prepareEmbeddedWebAssets(); err != nil {
+			return "", err
+		}
+	}
 	binary := filepath.Join("bin", "zrt")
 	if runtime.GOOS == "windows" {
 		binary += ".exe"
@@ -256,6 +261,22 @@ func buildBackend(ctx context.Context, embedWeb bool) (string, error) {
 		return "", fmt.Errorf("解析 ZRT 后端路径失败: %w", err)
 	}
 	return absolute, nil
+}
+
+func prepareEmbeddedWebAssets() error {
+	source := filepath.Join("web", "dist")
+	target := filepath.Join("internal", "webui", "dist")
+	return copyEmbeddedWebAssets(source, target)
+}
+
+func copyEmbeddedWebAssets(source, target string) error {
+	if err := os.RemoveAll(target); err != nil {
+		return fmt.Errorf("清理内嵌 Web 资源失败: %w", err)
+	}
+	if err := os.CopyFS(target, os.DirFS(source)); err != nil {
+		return fmt.Errorf("准备内嵌 Web 资源失败: %w", err)
+	}
+	return nil
 }
 
 func ensureWebDependencies(ctx context.Context) error {

@@ -18,7 +18,7 @@ RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w -X main.version=${ZRT_VERSI
 
 # 正式镜像把 Web 产物编进二进制，运行层不再保存另一份静态文件。
 FROM go-source AS go-release-builder
-COPY --from=web-builder /src/web/dist/ ./web/dist/
+COPY --from=web-builder /src/web/dist/ ./internal/webui/dist/
 ARG ZRT_VERSION=dev
 RUN CGO_ENABLED=0 go build -tags=zrt_web -trimpath -ldflags="-s -w -X main.version=${ZRT_VERSION}" -o /out/zrt ./cmd/zrt
 

@@ -2,7 +2,11 @@
 
 package main
 
-import "testing"
+import (
+	"os"
+	"path/filepath"
+	"testing"
+)
 
 func TestParseStartOptions(t *testing.T) {
 	options, err := parseStartOptions([]string{"--dev", "--server"})
@@ -41,5 +45,36 @@ func TestSelectedComponents(t *testing.T) {
 				t.Fatalf("selectedComponents() = (%t, %t), want (%t, %t)", gotServer, gotWeb, test.wantServer, test.wantWeb)
 			}
 		})
+	}
+}
+
+func TestCopyEmbeddedWebAssets(t *testing.T) {
+	root := t.TempDir()
+	source := filepath.Join(root, "source")
+	target := filepath.Join(root, "target")
+	if err := os.MkdirAll(filepath.Join(source, "assets"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(target, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(source, "index.html"), []byte("ZRT"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(source, "assets", "app.js"), []byte("app"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(target, "stale.js"), []byte("stale"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := copyEmbeddedWebAssets(source, target); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(target, "assets", "app.js")); err != nil {
+		t.Fatalf("内嵌资源未复制: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(target, "stale.js")); !os.IsNotExist(err) {
+		t.Fatalf("旧的内嵌资源未清理: %v", err)
 	}
 }

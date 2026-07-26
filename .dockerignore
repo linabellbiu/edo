@@ -4,6 +4,7 @@
 .vscode
 bin
 data
+internal/webui/dist
 web/dist
 web/node_modules
 *.db

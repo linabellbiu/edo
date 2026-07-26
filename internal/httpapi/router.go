@@ -30,7 +30,7 @@ import (
 	"zrt/internal/scheduler"
 	"zrt/internal/task"
 	"zrt/internal/terminal"
-	webui "zrt/web"
+	"zrt/internal/webui"
 )
 
 type Dependencies struct {
