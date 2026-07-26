@@ -38,9 +38,9 @@ mage start
 
 `mage start` 会读取 `.env`，依次构建 Go 后端和 Web、执行数据库迁移，最后只运行 ZRT Go 二进制，由 Go 同时提供 API 和构建后的 Web，访问地址为 `http://127.0.0.1:8080`。
 
-开发时执行 `mage start --dev`，它会先迁移数据库，再通过 `go run` 和 `npm start` 同时运行后端与 Vite Web，访问地址为 `http://127.0.0.1:5173`。两种本机模式都需要已有可用的 Redis 与 NATS，首次运行缺少 Web 依赖时会自动执行 `npm ci`。
+开发时执行 `mage start --dev`。Mage 会先通过 `deploy/compose.dev.yml` 启动 Redis 和 NATS，等待健康检查通过，再迁移 `.env` 指定的数据库，最后通过 `go run` 和 `npm start` 同时运行后端与 Vite Web，访问地址为 `http://127.0.0.1:5173`。依赖容器在 Mage 退出后继续运行，执行 `docker compose -f deploy/compose.dev.yml stop redis nats` 可以停止它们。首次运行缺少 Web 依赖时会自动执行 `npm ci`。
 
-只启动一个组件时增加 `--server` 或 `--web`，例如 `mage start --server`、`mage start --web`、`mage start --dev --server` 和 `mage start --dev --web`。不指定组件或同时指定两个组件时，后端和 Web 会一起启动。
+只启动一个组件时增加 `--server` 或 `--web`，例如 `mage start --server`、`mage start --web`、`mage start --dev --server` 和 `mage start --dev --web`。不指定组件或同时指定两个组件时，后端和 Web 会一起启动。开发模式包含后端时会自动启动依赖并迁移数据库；仅运行 Web 时不会启动不需要的后端依赖。
 
 执行 `mage help` 可查看中文命令总览，执行 `mage start --help` 可查看启动参数说明。
 

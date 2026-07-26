@@ -48,7 +48,7 @@ func Help() {
 mage start                       构建后端和 Web，由 Go 提供页面
 mage start --server              只启动后端
 mage start --web                 只启动 Web
-mage start --dev                 开发模式，同时运行 go run 和 npm start
+mage start --dev                 启动开发依赖和迁移，再运行 go run 与 npm start
 mage start --dev --server        开发模式，只运行后端
 mage start --dev --web           开发模式，只运行 Web
 mage start --docker              使用 Docker Compose 启动完整环境
@@ -107,7 +107,7 @@ func printStartHelp() {
 	fmt.Println(`用法：mage start [--dev | --docker] [--server | --web]
 
 不指定参数时，构建后端和 Web，再由 ZRT 后端提供页面。
---dev     使用 go run 和 npm start 开发运行
+--dev     启动 Redis、NATS 和迁移，再使用 go run 与 npm start 开发运行
 --docker  使用 Docker Compose 启动
 --server  只启动后端
 --web     只启动 Web`)
@@ -174,6 +174,9 @@ func startBuilt(ctx context.Context, runServer, runWeb bool) error {
 
 func startDevelopment(ctx context.Context, runServer, runWeb bool) error {
 	if runServer {
+		if err := startDevelopmentDependencies(ctx); err != nil {
+			return err
+		}
 		if err := os.Setenv("ZRT_WEB_ROOT", ""); err != nil {
 			return fmt.Errorf("设置开发环境 Web 目录失败: %w", err)
 		}
@@ -200,6 +203,27 @@ func startDevelopment(ctx context.Context, runServer, runWeb bool) error {
 	}
 	fmt.Println("ZRT Web：http://127.0.0.1:5173")
 	return runCommand(ctx, npmExecutable(), "--prefix", "web", "start")
+}
+
+func startDevelopmentDependencies(ctx context.Context) error {
+	fmt.Println("启动开发依赖：Redis、NATS JetStream")
+	if err := runCommand(
+		ctx,
+		"docker",
+		"compose",
+		"-f",
+		"deploy/compose.dev.yml",
+		"up",
+		"-d",
+		"--wait",
+		"--wait-timeout",
+		"60",
+		"redis",
+		"nats",
+	); err != nil {
+		return fmt.Errorf("启动开发依赖失败: %w", err)
+	}
+	return nil
 }
 
 func buildBackend(ctx context.Context) (string, error) {
