@@ -3,14 +3,6 @@
 dev-up:
 	docker compose -f deploy/compose.dev.yml up --build
 
-dev-down:
-	docker compose -f deploy/compose.dev.yml down
-
-deps-up:
-	docker compose -f deploy/compose.dev.yml up -d redis nats
-
-deps-down:
-	docker compose -f deploy/compose.dev.yml down
 
 migrate:
 	go run ./cmd/zrt migrate
@@ -20,11 +12,6 @@ server:
 
 web:
 	npm --prefix web run dev
-
-test:
-	go test ./...
-	go vet ./...
-	npm --prefix web run build
 
 build:
 	mkdir -p bin
