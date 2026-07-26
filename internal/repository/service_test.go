@@ -62,6 +62,33 @@ func TestRepositorySecretsAreEncryptedAndURLsAreValidated(t *testing.T) {
 	}
 }
 
+func TestRepositoryNameSupportsChinese(t *testing.T) {
+	service, _ := newRepositoryTestService(t)
+	service.git = staticRefLister{result: RefResult{Branches: []GitRef{{Name: "main"}}}}
+	input := Input{
+		Name: "我的", Provider: model.GitProviderGitea,
+		CloneURL: "https://git.example.com/team/project.git", AuthType: model.GitAuthNone,
+	}
+	if _, err := service.TestInput(context.Background(), "admin", input); err != nil {
+		t.Fatalf("连接测试不应拒绝中文仓库名称: %v", err)
+	}
+	repo, _, err := service.Create(context.Background(), "admin", input)
+	if err != nil {
+		t.Fatalf("创建仓库不应拒绝中文名称: %v", err)
+	}
+	if repo.Name != "我的" {
+		t.Fatalf("中文仓库名称未正确保存: %+v", repo)
+	}
+
+	input.Name = "错误/名称"
+	if _, err := service.TestInput(context.Background(), "admin", input); !errors.Is(err, ErrInvalidRepositoryName) {
+		t.Fatalf("连接测试应返回明确的仓库名称错误: %v", err)
+	}
+	if _, _, err := service.Create(context.Background(), "admin", input); !errors.Is(err, ErrInvalidRepositoryName) {
+		t.Fatalf("创建仓库应返回相同的名称错误: %v", err)
+	}
+}
+
 func TestRepositoryUsesOwnedCredentialAndWebhookCanBeRevealed(t *testing.T) {
 	service, _ := newRepositoryTestService(t)
 	token := "saved-provider-token"
@@ -200,7 +227,7 @@ func TestRepositoryInputCanBeTestedWithoutSaving(t *testing.T) {
 	}}
 
 	result, err := service.TestInput(context.Background(), "admin", Input{
-		Provider: model.GitProviderGeneric, CloneURL: "https://git.example.com/team/api.git", AuthType: model.GitAuthNone,
+		Name: "临时仓库", Provider: model.GitProviderGeneric, CloneURL: "https://git.example.com/team/api.git", AuthType: model.GitAuthNone,
 	})
 	if err != nil {
 		t.Fatalf("测试未保存仓库失败: %v", err)
@@ -214,7 +241,7 @@ func TestRepositoryInputCanBeTestedWithoutSaving(t *testing.T) {
 	}
 
 	if _, err := service.TestInput(context.Background(), "admin", Input{
-		Provider: model.GitProviderGitHub, CloneURL: "https://github.example.com/team/api.git", AuthType: model.GitAuthToken,
+		Name: "令牌仓库", Provider: model.GitProviderGitHub, CloneURL: "https://github.example.com/team/api.git", AuthType: model.GitAuthToken,
 	}); !errors.Is(err, ErrInvalidCredential) {
 		t.Fatalf("缺少令牌的仓库测试未被拒绝: %v", err)
 	}

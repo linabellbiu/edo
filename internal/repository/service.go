@@ -20,19 +20,20 @@ import (
 )
 
 var (
-	ErrInvalidRepository  = errors.New("代码仓库配置无效")
-	ErrInsecureRepository = errors.New("HTTP 仓库默认不允许，请显式确认不安全连接")
-	ErrRepositoryExists   = errors.New("代码仓库名称已存在")
-	ErrRepositoryNotFound = errors.New("代码仓库不存在")
-	ErrInvalidCredential  = errors.New("代码仓库凭据配置无效")
-	ErrKnownHostsRequired = errors.New("SSH 仓库必须配置可信 known_hosts 文件")
-	ErrWebhookDisabled    = errors.New("代码仓库 Webhook 未启用")
-	ErrInvalidSignature   = errors.New("Webhook 签名校验失败")
-	ErrUnsupportedEvent   = errors.New("Webhook 事件类型不受支持")
-	ErrInvalidTaskPayload = errors.New("Webhook 任务参数无效")
+	ErrInvalidRepository     = errors.New("代码仓库配置无效")
+	ErrInvalidRepositoryName = errors.New("仓库名称只能包含中文、英文、数字、空格、点、下划线或短横线")
+	ErrInsecureRepository    = errors.New("HTTP 仓库默认不允许，请显式确认不安全连接")
+	ErrRepositoryExists      = errors.New("代码仓库名称已存在")
+	ErrRepositoryNotFound    = errors.New("代码仓库不存在")
+	ErrInvalidCredential     = errors.New("代码仓库凭据配置无效")
+	ErrKnownHostsRequired    = errors.New("SSH 仓库必须配置可信 known_hosts 文件")
+	ErrWebhookDisabled       = errors.New("代码仓库 Webhook 未启用")
+	ErrInvalidSignature      = errors.New("Webhook 签名校验失败")
+	ErrUnsupportedEvent      = errors.New("Webhook 事件类型不受支持")
+	ErrInvalidTaskPayload    = errors.New("Webhook 任务参数无效")
 )
 
-var repositoryNamePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_. -]{1,127}$`)
+var repositoryNamePattern = regexp.MustCompile(`^[A-Za-z0-9\p{Han}][A-Za-z0-9\p{Han}_. -]{0,127}$`)
 
 type Input struct {
 	Name              string
@@ -192,9 +193,8 @@ func (s *Service) TestConnection(ctx context.Context, id string) (RefResult, err
 
 // TestInput 使用尚未保存的仓库配置执行只读远端查询，不会持久化地址或凭据。
 func (s *Service) TestInput(ctx context.Context, actorID string, input Input) (RefResult, error) {
-	input.Username = strings.TrimSpace(input.Username)
-	if !validProvider(input.Provider) || !validAuthType(input.AuthType) || utf8.RuneCountInString(input.Username) > 255 {
-		return RefResult{}, ErrInvalidRepository
+	if err := normalizeRepositoryFields(&input); err != nil {
+		return RefResult{}, err
 	}
 	cloneURL, err := validateCloneURL(input.CloneURL, input.AllowInsecureHTTP)
 	if err != nil {
@@ -294,12 +294,8 @@ type normalizedInput struct {
 }
 
 func (s *Service) normalizeInput(ctx context.Context, actorID, id string, existing *model.GitRepository, input Input) (normalizedInput, error) {
-	input.Name = strings.TrimSpace(input.Name)
-	input.DefaultBranch = strings.TrimSpace(input.DefaultBranch)
-	input.Username = strings.TrimSpace(input.Username)
-	if !repositoryNamePattern.MatchString(input.Name) || utf8.RuneCountInString(input.DefaultBranch) > 255 ||
-		utf8.RuneCountInString(input.Username) > 255 || !validProvider(input.Provider) || !validAuthType(input.AuthType) {
-		return normalizedInput{}, ErrInvalidRepository
+	if err := normalizeRepositoryFields(&input); err != nil {
+		return normalizedInput{}, err
 	}
 	cloneURL, err := validateCloneURL(input.CloneURL, input.AllowInsecureHTTP)
 	if err != nil {
@@ -371,6 +367,20 @@ func (s *Service) normalizeInput(ctx context.Context, actorID, id string, existi
 		Input: input, credentialID: credentialID, credentialCiphertext: credentialCiphertext,
 		webhookCiphertext: webhookCiphertext, webhookPlaintext: webhookPlaintext,
 	}, nil
+}
+
+func normalizeRepositoryFields(input *Input) error {
+	input.Name = strings.TrimSpace(input.Name)
+	input.DefaultBranch = strings.TrimSpace(input.DefaultBranch)
+	input.Username = strings.TrimSpace(input.Username)
+	if !repositoryNamePattern.MatchString(input.Name) {
+		return ErrInvalidRepositoryName
+	}
+	if utf8.RuneCountInString(input.DefaultBranch) > 255 || utf8.RuneCountInString(input.Username) > 255 ||
+		!validProvider(input.Provider) || !validAuthType(input.AuthType) {
+		return ErrInvalidRepository
+	}
+	return nil
 }
 
 func credentialProviderCompatible(saved, repository model.GitProvider) bool {

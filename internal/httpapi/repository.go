@@ -186,6 +186,8 @@ func (h repositoryHandler) testInput(c *gin.Context) {
 func (h repositoryHandler) writeTestError(c *gin.Context, operation string, err error) {
 	h.logger.Error("测试代码仓库连接失败", "operation", operation, "request_id", requestIDFrom(c), "repository_id", c.Param("id"), "err", err)
 	switch {
+	case errors.Is(err, repository.ErrInvalidRepositoryName):
+		writeError(c, http.StatusBadRequest, "invalid_repository_name", repository.ErrInvalidRepositoryName.Error())
 	case errors.Is(err, repository.ErrInvalidRepository):
 		writeError(c, http.StatusBadRequest, "invalid_repository", repository.ErrInvalidRepository.Error())
 	case errors.Is(err, repository.ErrInsecureRepository):
@@ -243,6 +245,8 @@ func (h repositoryHandler) webhook(c *gin.Context) {
 func (h repositoryHandler) writeServiceError(c *gin.Context, operation string, err error) {
 	h.logger.Warn("代码仓库操作失败", "operation", operation, "request_id", requestIDFrom(c), "repository_id", c.Param("id"), "err", err)
 	switch {
+	case errors.Is(err, repository.ErrInvalidRepositoryName):
+		writeError(c, http.StatusBadRequest, "invalid_repository_name", repository.ErrInvalidRepositoryName.Error())
 	case errors.Is(err, repository.ErrInvalidRepository):
 		writeError(c, http.StatusBadRequest, "invalid_repository", repository.ErrInvalidRepository.Error())
 	case errors.Is(err, repository.ErrInsecureRepository):

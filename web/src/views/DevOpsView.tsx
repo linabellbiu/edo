@@ -494,7 +494,7 @@ export default function DevOpsView({ section }: { section: Section }) {
     {formOpen && section === 'repositories' && <form className="create-sheet" onSubmit={(event) => { event.preventDefault(); void submitRepository() }}>
       <div className="sheet-header"><div><h3>添加代码仓库</h3><p>支持普通 Git、GitHub、GitLab、Gitea 和 Gitee。</p></div><button type="button" onClick={closeForm}>×</button></div>
       <div className="form-grid">
-        <label>名称<input required value={repositoryForm.name} onChange={(event) => setRepositoryForm({ ...repositoryForm, name: event.target.value })} /></label>
+        <label>名称<input required maxLength={128} value={repositoryForm.name} onChange={(event) => setRepositoryForm({ ...repositoryForm, name: event.target.value })} /><small className="field-help">支持中文、英文、数字、空格、点、下划线和短横线。</small></label>
         <label>平台<select value={repositoryForm.provider} onChange={(event) => setRepositoryForm({ ...repositoryForm, provider: event.target.value, credential_id: '' })}><option value="github">GitHub</option><option value="gitlab">GitLab</option><option value="gitea">Gitea</option><option value="gitee">Gitee</option><option value="generic">普通 Git</option></select></label>
         <label className="span-2">Clone 地址<input required value={repositoryForm.clone_url} onChange={(event) => setRepositoryForm({ ...repositoryForm, clone_url: event.target.value })} placeholder="https://git.example.com/team/project.git" /></label>
         <label>默认分支<input value={repositoryForm.default_branch} onChange={(event) => setRepositoryForm({ ...repositoryForm, default_branch: event.target.value })} /></label>
