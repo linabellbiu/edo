@@ -11,7 +11,7 @@ COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
 ARG ZRT_VERSION=dev
-RUN CGO_ENABLED=1 go build -trimpath -ldflags="-s -w -X main.version=${ZRT_VERSION}" -o /out/zrt ./cmd/zrt
+RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w -X main.version=${ZRT_VERSION}" -o /out/zrt ./cmd/zrt
 
 FROM debian:bookworm-slim
 RUN apt-get -o Acquire::Retries=5 update \

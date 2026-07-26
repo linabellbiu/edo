@@ -4,15 +4,17 @@ import (
 	"context"
 	"encoding/base64"
 	"errors"
+	"log/slog"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/libdns/libdns"
-	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 
+	"zrt/internal/config"
+	"zrt/internal/database"
 	"zrt/internal/model"
 	"zrt/internal/secret"
 )
@@ -280,10 +282,17 @@ func newDNSTestService(t *testing.T) (*Service, *gorm.DB, *fakeDNSProvider) {
 
 func newDNSTestServiceForProvider(t *testing.T, providerCode model.DNSProvider) (*Service, *gorm.DB, *fakeDNSProvider) {
 	t.Helper()
-	db, err := gorm.Open(sqlite.Open("file:"+t.Name()+"?mode=memory&cache=shared"), &gorm.Config{TranslateError: true})
+	db, err := database.Open(context.Background(), config.Database{
+		Driver:          "sqlite",
+		DSN:             "file:" + t.Name() + "?mode=memory&cache=shared",
+		MaxOpenConns:    1,
+		MaxIdleConns:    1,
+		ConnMaxLifetime: time.Minute,
+	}, slog.Default())
 	if err != nil {
 		t.Fatalf("打开测试数据库失败: %v", err)
 	}
+	t.Cleanup(func() { _ = database.Close(db) })
 	if err := db.AutoMigrate(&model.DNSProviderAccount{}, &model.DNSDomain{}); err != nil {
 		t.Fatalf("初始化 DNS 测试表失败: %v", err)
 	}

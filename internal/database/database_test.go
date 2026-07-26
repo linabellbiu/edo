@@ -2,10 +2,13 @@ package database
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"os"
 	"testing"
 	"time"
+
+	"gorm.io/gorm"
 
 	"zrt/internal/config"
 	"zrt/internal/model"
@@ -44,6 +47,42 @@ func TestSQLiteMigrationIsIdempotent(t *testing.T) {
 		!db.Migrator().HasTable(&model.UserPermission{}) || !db.Migrator().HasTable(&model.GitCredential{}) ||
 		!db.Migrator().HasTable(&model.DNSProviderAccount{}) || !db.Migrator().HasTable(&model.DNSDomain{}) {
 		t.Fatal("核心任务表未创建")
+	}
+}
+
+func TestSQLiteUsesPureGoDriver(t *testing.T) {
+	db, err := Open(context.Background(), config.Database{
+		Driver:          "sqlite",
+		DSN:             ":memory:",
+		MaxOpenConns:    1,
+		MaxIdleConns:    1,
+		ConnMaxLifetime: time.Minute,
+	}, slog.Default())
+	if err != nil {
+		t.Fatalf("打开 SQLite 失败: %v", err)
+	}
+	defer Close(db)
+
+	var foreignKeys int
+	if err := db.Raw("PRAGMA foreign_keys").Scan(&foreignKeys).Error; err != nil {
+		t.Fatalf("读取 foreign_keys 失败: %v", err)
+	}
+	if foreignKeys != 1 {
+		t.Fatalf("foreign_keys = %d, want 1", foreignKeys)
+	}
+
+	type uniqueRecord struct {
+		ID   uint
+		Name string `gorm:"uniqueIndex"`
+	}
+	if err := db.AutoMigrate(&uniqueRecord{}); err != nil {
+		t.Fatalf("创建测试表失败: %v", err)
+	}
+	if err := db.Create(&uniqueRecord{Name: "same"}).Error; err != nil {
+		t.Fatalf("写入测试数据失败: %v", err)
+	}
+	if err := db.Create(&uniqueRecord{Name: "same"}).Error; !errors.Is(err, gorm.ErrDuplicatedKey) {
+		t.Fatalf("重复键错误未转换: %v", err)
 	}
 }
 

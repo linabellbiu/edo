@@ -2,6 +2,7 @@ package database
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -13,9 +14,10 @@ import (
 
 	"gorm.io/driver/mysql"
 	"gorm.io/driver/postgres"
-	"gorm.io/driver/sqlite"
+	gormsqlite "gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 	gormlogger "gorm.io/gorm/logger"
+	moderncsqlite "modernc.org/sqlite"
 
 	"zrt/internal/config"
 )
@@ -73,7 +75,9 @@ func makeDialector(cfg config.Database) (gorm.Dialector, error) {
 		if err != nil {
 			return nil, err
 		}
-		return sqlite.Open(dsn), nil
+		return pureGoSQLiteDialector{
+			Dialector: &gormsqlite.Dialector{DriverName: "sqlite", DSN: dsn},
+		}, nil
 	case "postgres":
 		return postgres.Open(cfg.DSN), nil
 	case "mysql":
@@ -83,25 +87,58 @@ func makeDialector(cfg config.Database) (gorm.Dialector, error) {
 	}
 }
 
+type pureGoSQLiteDialector struct {
+	*gormsqlite.Dialector
+}
+
+func (pureGoSQLiteDialector) Translate(err error) error {
+	var sqliteErr *moderncsqlite.Error
+	if !errors.As(err, &sqliteErr) {
+		return err
+	}
+	switch sqliteErr.Code() {
+	case 1555, 2067:
+		return gorm.ErrDuplicatedKey
+	case 787:
+		return gorm.ErrForeignKeyViolated
+	default:
+		return err
+	}
+}
+
 func sqliteDSN(dsn string) (string, error) {
 	if dsn == ":memory:" {
-		return dsn, nil
+		return dsn + "?_pragma=foreign_keys(1)&_pragma=busy_timeout(5000)", nil
 	}
 	if strings.HasPrefix(dsn, "file:") {
-		separator := "?"
-		if strings.Contains(dsn, "?") {
-			separator = "&"
-		}
-		if !strings.Contains(dsn, "_foreign_keys=") {
-			dsn += separator + "_foreign_keys=on&_busy_timeout=5000"
-		}
-		return dsn, nil
+		return appendSQLitePragmas(dsn, false), nil
 	}
 	dir := filepath.Dir(dsn)
 	if err := os.MkdirAll(dir, 0o750); err != nil {
 		return "", fmt.Errorf("创建 SQLite 数据目录失败: %w", err)
 	}
-	return "file:" + dsn + "?_foreign_keys=on&_busy_timeout=5000&_journal_mode=WAL", nil
+	return appendSQLitePragmas("file:"+dsn, true), nil
+}
+
+func appendSQLitePragmas(dsn string, wal bool) string {
+	separator := "?"
+	if strings.Contains(dsn, "?") {
+		separator = "&"
+	}
+	pragmas := make([]string, 0, 3)
+	if !strings.Contains(dsn, "_pragma=foreign_keys") {
+		pragmas = append(pragmas, "_pragma=foreign_keys(1)")
+	}
+	if !strings.Contains(dsn, "_pragma=busy_timeout") {
+		pragmas = append(pragmas, "_pragma=busy_timeout(5000)")
+	}
+	if wal && !strings.Contains(dsn, "_pragma=journal_mode") {
+		pragmas = append(pragmas, "_pragma=journal_mode(WAL)")
+	}
+	if len(pragmas) == 0 {
+		return dsn
+	}
+	return dsn + separator + strings.Join(pragmas, "&")
 }
 
 type logWriter struct {
