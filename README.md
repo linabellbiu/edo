@@ -30,12 +30,19 @@ ZRT 是面向 Docker 与 Kubernetes 的运维、发布和可观测平台，使�
 
 ```bash
 cp .env.example .env
-docker compose -f deploy/compose.dev.yml up --build
+go install github.com/magefile/mage@v1.17.2
+mage start
 ```
 
 首次启动服务且账户库为空时会自动创建管理员账户 `admin`，初始密码为 `123456`；该账户登录后不会被强制修改密码。已有任意账户的数据库不会补建或覆盖默认管理员。普通新建账户仍须使用至少 12 位密码。
 
-Compose 会先运行一次性 `migrate`，成功后启动 Go 后端，后端健康后再启动 Vite 前端；Redis 和 NATS JetStream 也由同一命令启动。浏览器访问 `http://127.0.0.1:5173`，前端会通过容器网络把 API 和 WebSocket 请求代理到后端。修改 Go 代码后重新执行带 `--build` 的启动命令即可重建后端；前端源码通过挂载提供给 Vite。停止环境执行 `docker compose -f deploy/compose.dev.yml down`，该命令不会删除业务数据。
+`mage start` 会读取 `.env`，依次构建 Go 后端和 Web、执行数据库迁移，最后只运行 ZRT Go 二进制，由 Go 同时提供 API 和构建后的 Web，访问地址为 `http://127.0.0.1:8080`。
+
+开发时执行 `mage start --dev`，它会先迁移数据库，再通过 `go run` 和 `npm start` 同时运行后端与 Vite Web，访问地址为 `http://127.0.0.1:5173`。两种本机模式都需要已有可用的 Redis 与 NATS，首次运行缺少 Web 依赖时会自动执行 `npm ci`。
+
+只启动一个组件时增加 `--server` 或 `--web`，例如 `mage start --server`、`mage start --web`、`mage start --dev --server` 和 `mage start --dev --web`。不指定组件或同时指定两个组件时，后端和 Web 会一起启动。
+
+需要完全使用容器时执行 `mage start --docker`。该模式会在后台启动 Redis、NATS、迁移任务、后端和 Web；停止环境执行 `docker compose -f deploy/compose.dev.yml down`，该命令不会删除业务数据。`--dev` 和 `--docker` 不能同时使用。
 
 登录后可在“平台管理 → 登录方式”中接入 LDAP 或 OAuth。开发 Compose 自带一份仅供本机使用的加密密钥；多人共享、测试和生产环境必须在 `.env` 中设置自己的 `ZRT_SECRETS_KEY`，否则不同环境会错误地共用密钥。
 
