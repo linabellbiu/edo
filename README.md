@@ -12,11 +12,11 @@ ZRT 是面向 Docker 与 Kubernetes 的运维、发布和可观测平台，使�
 - 个人 Git 令牌库按用户隔离并加密保存；创建仓库时可选择已有令牌或直接创建并保存新令牌。
 - Webhook 签名密钥可按独立权限重复查看，所有查看操作都会写入审计日志。
 - 域名解析统一接入 Cloudflare、阿里云 DNS、腾讯云 DNSPod、AWS Route 53、华为云、Azure、Google Cloud、DigitalOcean、Gandi、GoDaddy、Namecheap、Hetzner、PowerDNS 和 RFC 2136；厂商凭据加密保存，解析变更受独立权限与审计控制。
-- 应用可同时配置 dev、test、pre、prod 环境，每个环境分别选择分支、Pull、Push、PR、Tag、发布方案和发布目标。
-- 公共发布计划使用类似 ComfyUI 的可缩放、可拖动无限画布；环境、分支、代码事件、人工接测、审核、发布方案和发布目标都在节点中配置，并可自由连线。
+- 应用可同时配置 dev、test、pre、prod 环境，每个环境分别选择分支、Pull、Push、PR、Tag、部署方案和发布目标。
+- 公共发布计划先在列表中统一管理，再进入类似 ComfyUI 的可缩放、可拖动画布编辑；环境、分支、代码事件、人工接测、审核、部署方案和发布目标都在节点中配置，并可自由连线。
 - 创建应用时直接选择已启用的公共发布计划。ZRT 会复制当时的计划版本和环境配置，之后修改公共计划不会影响正在运行的应用。
 - 每个应用单独决定发布计划是否需要审核；开启后，生产部署的所有路径都必须经过审核节点，申请人不能审核自己的计划。
-- 构建方案支持脚本和 Dockerfile，发布方案支持脚本、Helm、Docker Compose 和 Docker；代码变化、环境晋级、审核与部署就绪状态会保存为流水线记录。
+- 构建方案支持脚本和 Dockerfile，部署方案支持脚本、Helm、Docker Compose 和 Docker；代码变化、环境晋级、审核与部署就绪状态会保存为流水线记录。
 - Docker API 与 Kubernetes API 发布、健康等待、生产审批和回滚。
 - Docker 容器与 Kubernetes Pod 的 WebSocket 交互终端；不提供宿主机 SSH 登录和远程文件管理。
 - 配置中心、Webhook 通知、HTTP 监控、安全白名单定时任务、任务中心。

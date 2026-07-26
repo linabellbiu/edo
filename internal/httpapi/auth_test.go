@@ -23,6 +23,7 @@ import (
 	"zrt/internal/config"
 	"zrt/internal/credential"
 	"zrt/internal/database"
+	"zrt/internal/pipeline"
 	"zrt/internal/repository"
 	"zrt/internal/secret"
 )
@@ -89,6 +90,7 @@ func newAuthTestRouter(t *testing.T) (*gin.Engine, func()) {
 		db, secretManager, credentialService,
 		repository.NewGitClient(config.Git{Timeout: time.Second}), 4,
 	)
+	pipelineService := pipeline.NewService(db, repositoryService, secretManager)
 	if _, err := accounts.CreateAdmin(context.Background(), "admin", "管理员", "correct horse battery staple"); err != nil {
 		t.Fatalf("创建测试管理员失败: %v", err)
 	}
@@ -114,7 +116,7 @@ func newAuthTestRouter(t *testing.T) (*gin.Engine, func()) {
 		Logger: logger, Version: "test", AuthConfig: authConfig,
 		Accounts: accounts, Login: login, Sessions: sessions,
 		Access: accessService, Audits: auditService,
-		Credentials: credentialService, Repositories: repositoryService,
+		Credentials: credentialService, Repositories: repositoryService, Pipelines: pipelineService,
 	})
 	return router, func() {
 		_ = redisClient.Close()

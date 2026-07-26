@@ -95,7 +95,7 @@ type registryRequest struct {
 	AllowInsecureHTTP bool                   `json:"allow_insecure_http"`
 }
 
-type releasePlanRequest struct {
+type deploymentPlanRequest struct {
 	Name           string                `json:"name" binding:"required,max=128"`
 	Kind           model.ReleasePlanKind `json:"kind" binding:"required,max=16"`
 	Description    string                `json:"description" binding:"max=500"`
@@ -402,6 +402,36 @@ func (h pipelineHandler) testRegistry(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": "镜像仓库登录成功"})
 }
 
+func (h pipelineHandler) listDeploymentPlans(c *gin.Context) {
+	plans, err := h.service.ListReleasePlans(c.Request.Context())
+	if err != nil {
+		h.writeError(c, "deployment_plan_list", err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"deployment_plans": plans})
+}
+
+func (h pipelineHandler) createDeploymentPlan(c *gin.Context) {
+	var request deploymentPlanRequest
+	if err := c.ShouldBindJSON(&request); err != nil {
+		writeError(c, http.StatusBadRequest, "invalid_deployment_plan", pipeline.ErrInvalidReleasePlan.Error())
+		return
+	}
+	actor, _ := currentUser(c)
+	plan, err := h.service.CreateReleasePlan(c.Request.Context(), actor.ID, pipeline.ReleasePlanInput{
+		Name: request.Name, Kind: request.Kind, Description: request.Description, Script: request.Script,
+		HelmChart: request.HelmChart, HelmValues: request.HelmValues, ComposeFile: request.ComposeFile,
+		ServiceName: request.ServiceName, TimeoutSeconds: request.TimeoutSeconds,
+	})
+	if err != nil {
+		h.writeError(c, "deployment_plan_create", err)
+		return
+	}
+	setAuditResourceID(c, plan.ID)
+	c.JSON(http.StatusCreated, gin.H{"deployment_plan": plan})
+}
+
+// 旧接口仅用于兼容升级前的客户端，新代码统一使用 deployment-plans。
 func (h pipelineHandler) listReleasePlans(c *gin.Context) {
 	plans, err := h.service.ListReleasePlans(c.Request.Context())
 	if err != nil {
@@ -412,7 +442,7 @@ func (h pipelineHandler) listReleasePlans(c *gin.Context) {
 }
 
 func (h pipelineHandler) createReleasePlan(c *gin.Context) {
-	var request releasePlanRequest
+	var request deploymentPlanRequest
 	if err := c.ShouldBindJSON(&request); err != nil {
 		writeError(c, http.StatusBadRequest, "invalid_release_plan", pipeline.ErrInvalidReleasePlan.Error())
 		return

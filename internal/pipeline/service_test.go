@@ -51,7 +51,7 @@ func TestResourcesCanBeBoundAndPrepared(t *testing.T) {
 		Name: "Helm 发布", Kind: model.ReleasePlanHelm, HelmChart: "deploy/chart",
 	})
 	if err != nil {
-		t.Fatalf("创建发布方案失败: %v", err)
+		t.Fatalf("创建部署方案失败: %v", err)
 	}
 	target := model.DeploymentTarget{
 		ID: "target-1", Name: "测试环境", Platform: model.DeploymentKubernetes,
@@ -275,7 +275,7 @@ func TestReleaseWorkflowRequiresIndependentApproval(t *testing.T) {
 		Name: "workflow-helm", Kind: model.ReleasePlanHelm, HelmChart: "deploy/chart",
 	})
 	if err != nil {
-		t.Fatalf("创建发布方案失败: %v", err)
+		t.Fatalf("创建部署方案失败: %v", err)
 	}
 	now := time.Now().UTC()
 	testTarget := model.DeploymentTarget{
@@ -373,7 +373,7 @@ func TestPublicWorkflowTemplateIsCopiedWhenApplicationIsCreated(t *testing.T) {
 		Name: "公共模板 Helm", Kind: model.ReleasePlanHelm, HelmChart: "deploy/chart",
 	})
 	if err != nil {
-		t.Fatalf("创建发布方案失败: %v", err)
+		t.Fatalf("创建部署方案失败: %v", err)
 	}
 	now := time.Now().UTC()
 	testTarget := model.DeploymentTarget{

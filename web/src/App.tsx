@@ -21,6 +21,7 @@ const IdentityProvidersView = lazy(() => import('@/views/IdentityProvidersView')
 const CredentialView = lazy(() => import('@/views/CredentialView'))
 const AccessView = lazy(() => import('@/views/AccessView'))
 const DomainView = lazy(() => import('@/views/DomainView'))
+const ReleaseWorkflowListView = lazy(() => import('@/views/ReleaseWorkflowListView'))
 const ReleaseWorkflowView = lazy(() => import('@/views/ReleaseWorkflowView'))
 
 type IconName = 'home' | 'app' | 'git' | 'key' | 'build' | 'registry' | 'release' | 'pipeline' | 'cloud' | 'globe' | 'ops' | 'shield'
@@ -38,7 +39,7 @@ const navigationGroups = [
       { label: '我的令牌', path: '/credentials', permissions: ['credential.read'], icon: 'key' as IconName },
       { label: '构建方案', path: '/build-plans', permissions: ['delivery.read'], icon: 'build' as IconName },
       { label: '镜像仓库', path: '/image-registries', permissions: ['delivery.read'], icon: 'registry' as IconName },
-      { label: '发布方案', path: '/release-plans', permissions: ['delivery.read'], icon: 'release' as IconName },
+      { label: '部署方案', path: '/deployment-plans', permissions: ['delivery.read'], icon: 'release' as IconName },
 	  { label: '发布计划', path: '/release-workflows', permissions: ['delivery.read'], icon: 'pipeline' as IconName },
       { label: '流水线', path: '/pipelines', permissions: ['delivery.read'], icon: 'pipeline' as IconName },
       { label: '发布记录', path: '/deployments', permissions: ['deployment.read'], icon: 'release' as IconName },
@@ -60,8 +61,8 @@ const pageTitles: Record<string, string> = {
   '/': '概览', '/applications': '应用', '/repositories': '代码仓库', '/build-plans': '构建方案',
   '/credentials': '我的 Git 令牌',
   '/domains': '域名解析',
-  '/image-registries': '镜像仓库', '/release-plans': '发布方案', '/pipelines': '流水线',
-	'/release-workflows': '发布计划',
+  '/image-registries': '镜像仓库', '/deployment-plans': '部署方案', '/pipelines': '流水线',
+	'/release-workflows': '发布计划', '/release-workflows/editor': '编辑发布计划',
   '/deployments': '发布记录', '/infrastructure': '容器与集群', '/operations': '运维中心', '/access': '身份与审计', '/identity-providers': '登录方式',
 }
 
@@ -94,6 +95,11 @@ function ProtectedRoute() {
     return <Navigate to={`/login?redirect=${redirect}`} replace />
   }
   return <Outlet />
+}
+
+function DeploymentPlansRedirect() {
+  const location = useLocation()
+  return <Navigate to={`/deployment-plans${location.search}`} replace />
 }
 
 function AppShell() {
@@ -164,8 +170,10 @@ function AppRoutes() {
         <Route path="domains" element={<DomainView />} />
         <Route path="build-plans" element={<DevOpsView section="build-plans" />} />
         <Route path="image-registries" element={<DevOpsView section="image-registries" />} />
-        <Route path="release-plans" element={<DevOpsView section="release-plans" />} />
-		<Route path="release-workflows" element={<ReleaseWorkflowView />} />
+        <Route path="deployment-plans" element={<DevOpsView section="deployment-plans" />} />
+        <Route path="release-plans" element={<DeploymentPlansRedirect />} />
+		<Route path="release-workflows" element={<ReleaseWorkflowListView />} />
+		<Route path="release-workflows/editor" element={<ReleaseWorkflowView />} />
         <Route path="pipelines" element={<DevOpsView section="pipelines" />} />
         <Route path="deployments" element={<DeploymentView />} />
         <Route path="infrastructure" element={<InfrastructureView />} />

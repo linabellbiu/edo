@@ -61,7 +61,7 @@ var catalog = []Permission{
 	{PermissionDNSRead, "域名解析", "查看域名、DNS 厂商账号和解析记录"},
 	{PermissionDNSManage, "域名解析", "管理 DNS 厂商账号、域名和解析记录"},
 	{PermissionDeliveryRead, "持续交付", "查看应用、方案和流水线"},
-	{PermissionDeliveryManage, "持续交付", "管理应用、构建、镜像和发布方案"},
+	{PermissionDeliveryManage, "持续交付", "管理应用、构建、镜像和部署方案"},
 	{PermissionDeliveryRun, "持续交付", "检查代码更新并准备流水线"},
 	{PermissionDeploymentRead, "发布", "查看发布记录"},
 	{PermissionDeploymentManage, "发布", "管理发布目标"},

@@ -6,7 +6,7 @@ import { apiErrorMessage } from '@/api/resources'
 import ResourceSelectField from '@/components/ResourceSelectField'
 import { useAuthStore } from '@/stores/auth'
 
-type Section = 'applications' | 'repositories' | 'build-plans' | 'image-registries' | 'release-plans' | 'pipelines'
+type Section = 'applications' | 'repositories' | 'build-plans' | 'image-registries' | 'deployment-plans' | 'pipelines'
 
 interface Repository {
   id: string; name: string; provider: string; clone_url: string; default_branch: string
@@ -31,7 +31,7 @@ interface ImageRegistry {
   id: string; name: string; provider: string; endpoint: string; namespace: string
   has_credential: boolean; is_active: boolean
 }
-interface ReleasePlan {
+interface DeploymentPlan {
   id: string; name: string; kind: string; description: string; helm_chart?: string
   compose_file?: string; service_name?: string; timeout_seconds: number; is_active: boolean
 }
@@ -49,7 +49,7 @@ interface Application {
   release_plan_id?: string; deployment_target_id?: string; last_observed_ref?: string
   last_observed_commit?: string; sync_status: string; sync_message?: string; last_checked_at?: string
   is_active: boolean; repository?: Repository; build_plan?: BuildPlan; image_registry?: ImageRegistry
-  release_plan?: ReleasePlan; deployment_target?: DeploymentTarget
+  release_plan?: DeploymentPlan; deployment_target?: DeploymentTarget
   release_approval_enabled: boolean; environments?: ApplicationEnvironment[]
   workflow_template_id?: string; workflow_template?: WorkflowTemplate
   workflow?: { id: string; is_active: boolean; revision: number }
@@ -65,7 +65,7 @@ const sectionCopy: Record<Section, { title: string; description: string }> = {
   repositories: { title: '代码仓库', description: '统一管理 Git 仓库地址、认证方式和 Webhook。' },
   'build-plans': { title: '构建方案', description: '保存可复用的打包脚本或 Dockerfile 构建配置。' },
   'image-registries': { title: '镜像仓库', description: '管理 Harbor、Docker Hub 或其他兼容 Registry。' },
-  'release-plans': { title: '发布方案', description: '为脚本、Helm、Docker Compose 或 Docker 创建发布模板。' },
+  'deployment-plans': { title: '部署方案', description: '定义部署节点如何通过 Helm、Docker Compose、Docker 或受控脚本执行。' },
   pipelines: { title: '流水线', description: '查看代码变更以及应用的流程配置状态。' },
 }
 
@@ -168,7 +168,7 @@ export default function DevOpsView({ section }: { section: Section }) {
   const [credentials, setCredentials] = useState<GitCredential[]>([])
   const [buildPlans, setBuildPlans] = useState<BuildPlan[]>([])
   const [registries, setRegistries] = useState<ImageRegistry[]>([])
-  const [releasePlans, setReleasePlans] = useState<ReleasePlan[]>([])
+  const [deploymentPlans, setDeploymentPlans] = useState<DeploymentPlan[]>([])
   const [targets, setTargets] = useState<DeploymentTarget[]>([])
   const [workflowTemplates, setWorkflowTemplates] = useState<WorkflowTemplate[]>([])
   const [runs, setRuns] = useState<PipelineRun[]>([])
@@ -186,7 +186,7 @@ export default function DevOpsView({ section }: { section: Section }) {
   const [repositoryForm, setRepositoryForm] = useState(initialRepositoryForm)
   const [buildForm, setBuildForm] = useState({ name: '', kind: 'dockerfile', description: '', script: '', dockerfile_path: 'Dockerfile', context_path: '.', artifact_path: '', timeout_seconds: 1800 })
   const [registryForm, setRegistryForm] = useState({ name: '', provider: 'harbor', endpoint: 'https://', namespace: '', username: '', credential: '', allow_insecure_http: false })
-  const [releaseForm, setReleaseForm] = useState({ name: '', kind: 'helm', description: '', script: '', helm_chart: '', helm_values: '', compose_file: 'docker-compose.yml', service_name: '', timeout_seconds: 600 })
+  const [deploymentForm, setDeploymentForm] = useState({ name: '', kind: 'helm', description: '', script: '', helm_chart: '', helm_values: '', compose_file: 'docker-compose.yml', service_name: '', timeout_seconds: 600 })
   const copy = sectionCopy[section]
   const canCreate = section === 'repositories' ? canManageRepository : section !== 'pipelines' && canManageDelivery
 
@@ -212,8 +212,8 @@ export default function DevOpsView({ section }: { section: Section }) {
       const registryRequest = canReadDelivery
         ? client.get<{ image_registries: ImageRegistry[] }>('/image-registries')
         : Promise.resolve(null)
-      const releaseRequest = canReadDelivery
-        ? client.get<{ release_plans: ReleasePlan[] }>('/release-plans')
+      const deploymentPlanRequest = canReadDelivery
+        ? client.get<{ deployment_plans: DeploymentPlan[] }>('/deployment-plans')
         : Promise.resolve(null)
       const runRequest = canReadDelivery
         ? client.get<{ pipeline_runs: PipelineRun[] }>('/pipeline-runs')
@@ -221,13 +221,13 @@ export default function DevOpsView({ section }: { section: Section }) {
       const workflowTemplateRequest = canReadDelivery
         ? client.get<{ workflow_templates: WorkflowTemplate[] }>('/workflow-templates')
         : Promise.resolve(null)
-      const [appResult, repoResult, credentialResult, buildResult, registryResult, releaseResult, targetResult, runResult, workflowTemplateResult] = await Promise.all([
+      const [appResult, repoResult, credentialResult, buildResult, registryResult, deploymentPlanResult, targetResult, runResult, workflowTemplateResult] = await Promise.all([
         applicationRequest,
         repositoryRequest,
         credentialRequest,
         buildRequest,
         registryRequest,
-        releaseRequest,
+        deploymentPlanRequest,
         targetRequest,
         runRequest,
         workflowTemplateRequest,
@@ -237,7 +237,7 @@ export default function DevOpsView({ section }: { section: Section }) {
       setCredentials(credentialResult?.data.credentials || [])
       setBuildPlans(buildResult?.data.build_plans || [])
       setRegistries(registryResult?.data.image_registries || [])
-      setReleasePlans(releaseResult?.data.release_plans || [])
+      setDeploymentPlans(deploymentPlanResult?.data.deployment_plans || [])
       setTargets(targetResult?.data.targets || [])
       setRuns(runResult?.data.pipeline_runs || [])
       setWorkflowTemplates(workflowTemplateResult?.data.workflow_templates || [])
@@ -546,7 +546,7 @@ export default function DevOpsView({ section }: { section: Section }) {
         <label className="span-2">说明<input value={applicationForm.description} onChange={(e) => setApplicationForm({ ...applicationForm, description: e.target.value })} placeholder="这个应用负责什么" /></label>
         <ResourceSelectField id="application-build-plan" label="构建方案" createLabel="构建方案" createTo={canManageDelivery ? '/build-plans?create=1' : undefined} value={applicationForm.build_plan_id} onChange={(event) => setApplicationForm({ ...applicationForm, build_plan_id: event.target.value })}><option value="">暂不绑定</option>{buildPlans.filter((item) => item.is_active).map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</ResourceSelectField>
         <ResourceSelectField id="application-image-registry" label="镜像仓库" createLabel="镜像仓库" createTo={canManageDelivery ? '/image-registries?create=1' : undefined} value={applicationForm.image_registry_id} onChange={(event) => setApplicationForm({ ...applicationForm, image_registry_id: event.target.value })}><option value="">暂不绑定</option>{registries.filter((item) => item.is_active).map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</ResourceSelectField>
-        <ResourceSelectField id="application-workflow-template" label="公共发布计划" createLabel="公共发布计划" createTo={canManageDelivery ? '/release-workflows?create=1' : undefined} wrapperClassName="span-2" help="环境、监听分支、触发事件和部署节点都在发布计划画布中配置。" required={!editingID} value={applicationForm.workflow_template_id} onChange={(event) => setApplicationForm({ ...applicationForm, workflow_template_id: event.target.value })}><option value="">{editingID ? '保留应用当前自定义计划' : '请选择发布计划'}</option>{workflowTemplates.filter((item) => item.is_active).map((item) => <option key={item.id} value={item.id}>{item.name} · 第 {item.revision} 版</option>)}</ResourceSelectField>
+        <ResourceSelectField id="application-workflow-template" label="公共发布计划" createLabel="公共发布计划" createTo={canManageDelivery ? '/release-workflows/editor?create=1' : undefined} wrapperClassName="span-2" help="环境、监听分支、触发事件和部署节点都在发布计划画布中配置。" required={!editingID} value={applicationForm.workflow_template_id} onChange={(event) => setApplicationForm({ ...applicationForm, workflow_template_id: event.target.value })}><option value="">{editingID ? '保留应用当前自定义计划' : '请选择发布计划'}</option>{workflowTemplates.filter((item) => item.is_active).map((item) => <option key={item.id} value={item.id}>{item.name} · 第 {item.revision} 版</option>)}</ResourceSelectField>
         <label>Pull 检查间隔<select value={applicationForm.poll_interval_seconds} onChange={(e) => setApplicationForm({ ...applicationForm, poll_interval_seconds: Number(e.target.value) })}><option value={3}>3 秒</option><option value={5}>5 秒</option><option value={10}>10 秒</option><option value={60}>1 分钟</option></select></label>
       </div>
       <div className="form-block"><span className="form-block-title">发布计划审核</span><div className="approval-choice">
@@ -611,8 +611,8 @@ export default function DevOpsView({ section }: { section: Section }) {
       <div className="form-actions"><button className="secondary-button" type="button" onClick={closeForm}>取消</button><button className="secondary-button" type="button" disabled={submitting || registryFormCheck?.status === 'checking'} onClick={(event) => { if (event.currentTarget.form?.reportValidity()) void testRegistryForm() }}>{registryFormCheck?.status === 'checking' ? '测试中…' : '测试'}</button><button className="primary-button" type="submit" disabled={submitting || registryFormCheck?.status === 'checking'}>{submitting ? '保存中…' : '创建'}</button></div>
     </form>}
 
-    {formOpen && section === 'release-plans' && <form className="create-sheet" onSubmit={(event) => { event.preventDefault(); void submit('/release-plans', releaseForm, () => setReleaseForm({ ...releaseForm, name: '', description: '', script: '', helm_chart: '', helm_values: '', service_name: '' })) }}>
-      <div className="sheet-header"><div><h3>创建发布方案</h3><p>选择一种清晰、可审计的发布方式。</p></div><button type="button" onClick={closeForm}>×</button></div><div className="form-grid"><label>名称<input required value={releaseForm.name} onChange={(e) => setReleaseForm({ ...releaseForm, name: e.target.value })} /></label><label>发布方式<select value={releaseForm.kind} onChange={(e) => setReleaseForm({ ...releaseForm, kind: e.target.value })}><option value="helm">Helm</option><option value="compose">Docker Compose</option><option value="docker">Docker</option><option value="script">自定义脚本</option></select></label><label className="span-2">说明<input value={releaseForm.description} onChange={(e) => setReleaseForm({ ...releaseForm, description: e.target.value })} /></label>{releaseForm.kind === 'helm' && <><label className="span-2">Chart 路径<input required value={releaseForm.helm_chart} onChange={(e) => setReleaseForm({ ...releaseForm, helm_chart: e.target.value })} placeholder="deploy/chart" /></label><label className="span-2">Values 覆盖<textarea rows={6} value={releaseForm.helm_values} onChange={(e) => setReleaseForm({ ...releaseForm, helm_values: e.target.value })} /></label></>}{releaseForm.kind === 'compose' && <label className="span-2">Compose 文件<input required value={releaseForm.compose_file} onChange={(e) => setReleaseForm({ ...releaseForm, compose_file: e.target.value })} /></label>}{releaseForm.kind === 'docker' && <label className="span-2">容器服务名<input required value={releaseForm.service_name} onChange={(e) => setReleaseForm({ ...releaseForm, service_name: e.target.value })} /></label>}{releaseForm.kind === 'script' && <label className="span-2">发布脚本<textarea required rows={8} value={releaseForm.script} onChange={(e) => setReleaseForm({ ...releaseForm, script: e.target.value })} /></label>}<label>超时时间（秒）<input type="number" min={30} max={3600} value={releaseForm.timeout_seconds} onChange={(e) => setReleaseForm({ ...releaseForm, timeout_seconds: Number(e.target.value) })} /></label></div><FormActions submitting={submitting} onCancel={closeForm} />
+    {formOpen && section === 'deployment-plans' && <form className="create-sheet" onSubmit={(event) => { event.preventDefault(); void submit('/deployment-plans', deploymentForm, () => setDeploymentForm({ ...deploymentForm, name: '', description: '', script: '', helm_chart: '', helm_values: '', service_name: '' })) }}>
+      <div className="sheet-header"><div><h3>创建部署方案</h3><p>选择一种清晰、可审计的部署方式。</p></div><button type="button" onClick={closeForm}>×</button></div><div className="form-grid"><label>名称<input required value={deploymentForm.name} onChange={(e) => setDeploymentForm({ ...deploymentForm, name: e.target.value })} /></label><label>部署方式<select value={deploymentForm.kind} onChange={(e) => setDeploymentForm({ ...deploymentForm, kind: e.target.value })}><option value="helm">Helm</option><option value="compose">Docker Compose</option><option value="docker">Docker</option><option value="script">自定义脚本</option></select></label><label className="span-2">说明<input value={deploymentForm.description} onChange={(e) => setDeploymentForm({ ...deploymentForm, description: e.target.value })} /></label>{deploymentForm.kind === 'helm' && <><label className="span-2">Chart 路径<input required value={deploymentForm.helm_chart} onChange={(e) => setDeploymentForm({ ...deploymentForm, helm_chart: e.target.value })} placeholder="deploy/chart" /></label><label className="span-2">Values 覆盖<textarea rows={6} value={deploymentForm.helm_values} onChange={(e) => setDeploymentForm({ ...deploymentForm, helm_values: e.target.value })} /></label></>}{deploymentForm.kind === 'compose' && <label className="span-2">Compose 文件<input required value={deploymentForm.compose_file} onChange={(e) => setDeploymentForm({ ...deploymentForm, compose_file: e.target.value })} /></label>}{deploymentForm.kind === 'docker' && <label className="span-2">容器服务名<input required value={deploymentForm.service_name} onChange={(e) => setDeploymentForm({ ...deploymentForm, service_name: e.target.value })} /></label>}{deploymentForm.kind === 'script' && <label className="span-2">部署脚本<textarea required rows={8} value={deploymentForm.script} onChange={(e) => setDeploymentForm({ ...deploymentForm, script: e.target.value })} /></label>}<label>超时时间（秒）<input type="number" min={30} max={3600} value={deploymentForm.timeout_seconds} onChange={(e) => setDeploymentForm({ ...deploymentForm, timeout_seconds: Number(e.target.value) })} /></label></div><FormActions submitting={submitting} onCancel={closeForm} />
     </form>}
 
     {section === 'applications' && <div className="application-grid">{applications.map((application) => <article className="application-card" key={application.id}>
@@ -621,7 +621,7 @@ export default function DevOpsView({ section }: { section: Section }) {
       <div className="commit-row"><div><span>当前版本</span><strong>{shortSHA(application.last_observed_commit)}</strong></div><div><span>最后检查</span><strong>{formatTime(application.last_checked_at)}</strong></div></div>
       <div className="application-environments">{(application.environments || []).map((environment) => <span key={environment.key}>{environment.key}<small>{environment.branch}</small></span>)}</div>
       <div className="pipeline-flow compact-flow"><span className={application.repository ? 'complete' : ''}>代码</span><i>›</i><span className={application.build_plan ? 'complete' : ''}>构建</span><i>›</i><span className={application.image_registry ? 'complete' : ''}>镜像</span><i>›</i><span className={application.workflow?.is_active ? 'complete' : ''}>{application.workflow_template?.name || (application.workflow?.is_active ? '应用计划' : '计划草稿')}</span><span className={application.release_approval_enabled ? 'review-on' : ''}>{application.release_approval_enabled ? '需审核' : '免审核'}</span></div>
-      <div className="card-actions"><button type="button" onClick={() => editApplication(application)}>配置</button><button type="button" onClick={() => navigate(`/release-workflows?application=${application.id}`)}>发布计划</button>{canRun && <><button type="button" onClick={() => void action(`/applications/${application.id}/sync`)}>检查更新</button><button className="accent-action" type="button" onClick={() => void action(`/applications/${application.id}/pipeline-runs`)}>启动流程</button></>}</div>
+      <div className="card-actions"><button type="button" onClick={() => editApplication(application)}>配置</button><button type="button" onClick={() => navigate(`/release-workflows/editor?application=${application.id}`)}>发布计划</button>{canRun && <><button type="button" onClick={() => void action(`/applications/${application.id}/sync`)}>检查更新</button><button className="accent-action" type="button" onClick={() => void action(`/applications/${application.id}/pipeline-runs`)}>启动流程</button></>}</div>
     </article>)}{!loading && applications.length === 0 && <EmptyState title="还没有应用" description="创建第一个应用，把仓库、构建和发布流程连接起来。" />}</div>}
 
     {section === 'repositories' && <div className="resource-card-grid">{repositories.map((item) => {
@@ -649,7 +649,7 @@ export default function DevOpsView({ section }: { section: Section }) {
 
     {section === 'image-registries' && <div className="resource-card-grid">{registries.map((item) => <article className="resource-card modern-card" key={item.id}><div className="resource-icon registry-icon">▱</div><div><div className="card-title-line"><h3>{item.name}</h3><span>{kindLabel(item.provider)}</span></div><p className="resource-url">{item.endpoint}</p><div className="meta-row"><span>{item.namespace || '根命名空间'}</span><span>{item.has_credential ? '凭据已配置' : '匿名访问'}</span></div></div></article>)}{!loading && registries.length === 0 && <EmptyState title="还没有镜像仓库" description="添加用于推送构建镜像的 Registry。" />}</div>}
 
-    {section === 'release-plans' && <div className="resource-card-grid">{releasePlans.map((item) => <article className="resource-card modern-card" key={item.id}><div className="resource-icon release-icon">↗</div><div><div className="card-title-line"><h3>{item.name}</h3><span>{kindLabel(item.kind)}</span></div><p>{item.description || item.helm_chart || item.compose_file || item.service_name || '自定义发布脚本'}</p><div className="meta-row"><span>超时 {item.timeout_seconds} 秒</span><span>已启用</span></div></div></article>)}{!loading && releasePlans.length === 0 && <EmptyState title="还没有发布方案" description="创建 Helm、Compose、Docker 或脚本发布模板。" />}</div>}
+    {section === 'deployment-plans' && <div className="resource-card-grid">{deploymentPlans.map((item) => <article className="resource-card modern-card" key={item.id}><div className="resource-icon release-icon">↗</div><div><div className="card-title-line"><h3>{item.name}</h3><span>{kindLabel(item.kind)}</span></div><p>{item.description || item.helm_chart || item.compose_file || item.service_name || '自定义部署脚本'}</p><div className="meta-row"><span>超时 {item.timeout_seconds} 秒</span><span>已启用</span></div></div></article>)}{!loading && deploymentPlans.length === 0 && <EmptyState title="还没有部署方案" description="创建 Helm、Compose、Docker 或脚本部署模板。" />}</div>}
 
     {section === 'pipelines' && <div className="pipeline-list">{runs.map((run) => <article className="pipeline-run" key={run.id}><div className="run-status-dot" /><div className="run-main"><div className="card-title-line"><h3>{run.application?.name || run.application_id}</h3><StatusPill value={run.status} /></div><div className="run-details"><span>{run.environment || '未进入环境'}</span><span>{run.trigger}</span><span>{run.ref || '尚无代码引用'}</span><span>{shortSHA(run.commit_sha)}</span></div><p>{run.message || '代码变更已记录'}</p>{run.current_node_id && <div className="run-actions">{run.status === 'awaiting_approval' && canReview && <button type="button" onClick={() => void runAction(`/pipeline-runs/${run.id}/approve`)}>通过审核</button>}{run.status !== 'awaiting_approval' && run.status !== 'succeeded' && canRun && <button type="button" onClick={() => void runAction(`/pipeline-runs/${run.id}/advance`, { target_node_id: '' })}>{run.status === 'ready' ? '完成部署并继续' : '推进下一步'}</button>}</div>}</div><time>{formatTime(run.created_at)}</time></article>)}{!loading && runs.length === 0 && <EmptyState title="还没有流水线记录" description="应用检测到代码变化后会显示在这里。" />}</div>}
   </section>

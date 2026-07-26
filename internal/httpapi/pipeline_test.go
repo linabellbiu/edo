@@ -1,12 +1,45 @@
 package httpapi
 
 import (
+	"encoding/json"
+	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 
 	"github.com/gin-gonic/gin"
 )
+
+func TestDeploymentPlanAPIKeepsLegacyDataCompatible(t *testing.T) {
+	router, closeTest := newAuthTestRouter(t)
+	defer closeTest()
+
+	login := performJSONRequest(t, router, http.MethodPost, "/api/v1/auth/login", map[string]string{
+		"username": "admin", "password": "correct horse battery staple",
+	}, nil)
+	adminCookie := login.Result().Cookies()[0]
+	created := performJSONRequest(t, router, http.MethodPost, "/api/v1/deployment-plans", map[string]any{
+		"name": "测试 Helm 部署", "kind": "helm", "helm_chart": "deploy/chart", "timeout_seconds": 600,
+	}, adminCookie)
+	var createdPayload struct {
+		DeploymentPlan struct {
+			ID   string `json:"id"`
+			Name string `json:"name"`
+		} `json:"deployment_plan"`
+	}
+	if created.Code != http.StatusCreated || json.Unmarshal(created.Body.Bytes(), &createdPayload) != nil || createdPayload.DeploymentPlan.ID == "" {
+		t.Fatalf("创建部署方案失败: status=%d body=%s", created.Code, created.Body.String())
+	}
+
+	listed := performJSONRequest(t, router, http.MethodGet, "/api/v1/deployment-plans", nil, adminCookie)
+	if listed.Code != http.StatusOK || !strings.Contains(listed.Body.String(), `"deployment_plans"`) || !strings.Contains(listed.Body.String(), createdPayload.DeploymentPlan.ID) {
+		t.Fatalf("标准部署方案接口未返回已有数据: status=%d body=%s", listed.Code, listed.Body.String())
+	}
+	legacy := performJSONRequest(t, router, http.MethodGet, "/api/v1/release-plans", nil, adminCookie)
+	if legacy.Code != http.StatusOK || !strings.Contains(legacy.Body.String(), `"release_plans"`) || !strings.Contains(legacy.Body.String(), createdPayload.DeploymentPlan.ID) {
+		t.Fatalf("旧接口未保持数据兼容: status=%d body=%s", legacy.Code, legacy.Body.String())
+	}
+}
 
 func TestApplicationRequestAcceptsMultipleEnvironments(t *testing.T) {
 	gin.SetMode(gin.TestMode)

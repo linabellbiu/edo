@@ -42,8 +42,8 @@ var (
 	ErrRegistryLoginFailed      = errors.New("镜像仓库登录失败，请检查用户名和密码或 Token")
 	ErrRegistryConnectionFailed = errors.New("无法连接镜像仓库，请检查地址和网络")
 	ErrRegistryExists           = errors.New("镜像仓库名称已存在")
-	ErrInvalidReleasePlan       = errors.New("发布方案配置无效")
-	ErrReleasePlanExists        = errors.New("发布方案名称已存在")
+	ErrInvalidReleasePlan       = errors.New("部署方案配置无效")
+	ErrReleasePlanExists        = errors.New("部署方案名称已存在")
 	ErrWorkflowTemplateNotFound = errors.New("公共发布计划不存在或未启用")
 	ErrPipelineIncomplete       = errors.New("应用尚未绑定完整的构建与发布流程")
 )
@@ -676,7 +676,7 @@ func normalizeRegistryInput(input RegistryInput) (RegistryInput, *url.URL, error
 func (s *Service) ListReleasePlans(ctx context.Context) ([]model.ReleasePlan, error) {
 	var plans []model.ReleasePlan
 	if err := s.db.WithContext(ctx).Order("name ASC").Find(&plans).Error; err != nil {
-		return nil, fmt.Errorf("查询发布方案失败: %w", err)
+		return nil, fmt.Errorf("查询部署方案失败: %w", err)
 	}
 	return plans, nil
 }
@@ -707,7 +707,7 @@ func (s *Service) CreateReleasePlan(ctx context.Context, actorID string, input R
 		if errors.Is(err, gorm.ErrDuplicatedKey) {
 			return nil, ErrReleasePlanExists
 		}
-		return nil, fmt.Errorf("创建发布方案失败: %w", err)
+		return nil, fmt.Errorf("创建部署方案失败: %w", err)
 	}
 	return plan, nil
 }

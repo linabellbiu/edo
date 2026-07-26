@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { useSearchParams } from 'react-router-dom'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 
 import client from '@/api/client'
 import { apiErrorMessage } from '@/api/resources'
@@ -17,7 +17,7 @@ interface ApplicationEnvironment {
 interface Application {
   id: string; name: string; release_approval_enabled: boolean; environments: ApplicationEnvironment[]
 }
-interface ReleasePlan { id: string; name: string; kind: string; is_active: boolean }
+interface DeploymentPlan { id: string; name: string; kind: string; is_active: boolean }
 interface DeploymentTarget { id: string; name: string; environment: string; is_active: boolean }
 interface WorkflowNode {
   id: string; type: NodeType; name: string; position: { x: number; y: number }
@@ -40,7 +40,7 @@ const nodeCopy: Record<NodeType, { label: string; hint: string; icon: string }> 
   trigger: { label: '代码触发', hint: '监听分支、Push、PR 或 Tag', icon: '⌁' },
   manual: { label: '人工放行', hint: '主动接测后进入下一环境', icon: '✓' },
   approval: { label: '发布审核', hint: '由其他成员确认发布', icon: '◎' },
-  deploy: { label: '部署', hint: '执行绑定的发布方案', icon: '↗' },
+  deploy: { label: '部署', hint: '执行绑定的部署方案', icon: '↗' },
 }
 
 const environmentLabel: Record<EnvironmentKey, string> = {
@@ -115,12 +115,13 @@ function nodeColor(type: NodeType) {
 }
 
 export default function ReleaseWorkflowView() {
+  const navigate = useNavigate()
   const user = useAuthStore((state) => state.user)
   const canManage = Boolean(user?.is_superuser || user?.permissions.includes('delivery.manage'))
   const [searchParams, setSearchParams] = useSearchParams()
   const [applications, setApplications] = useState<Application[]>([])
   const [templates, setTemplates] = useState<WorkflowTemplate[]>([])
-  const [releasePlans, setReleasePlans] = useState<ReleasePlan[]>([])
+  const [deploymentPlans, setDeploymentPlans] = useState<DeploymentPlan[]>([])
   const [targets, setTargets] = useState<DeploymentTarget[]>([])
   const [applicationID, setApplicationID] = useState(searchParams.get('application') || '')
   const [templateID, setTemplateID] = useState(searchParams.get('template') || '')
@@ -139,6 +140,7 @@ export default function ReleaseWorkflowView() {
   const canvasRef = useRef<HTMLDivElement>(null)
   const panRef = useRef<{ pointerID: number; startX: number; startY: number; originX: number; originY: number } | null>(null)
   const dragRef = useRef<{ pointerID: number; nodeID: string; startX: number; startY: number; originX: number; originY: number } | null>(null)
+  const createRequestedRef = useRef(false)
 
   const publicMode = !applicationID
   const createMode = searchParams.get('create') === '1'
@@ -152,12 +154,12 @@ export default function ReleaseWorkflowView() {
     try {
       const [applicationResult, planResult, targetResult, templateResult] = await Promise.all([
         client.get<{ applications: Application[] }>('/applications'),
-        client.get<{ release_plans: ReleasePlan[] }>('/release-plans'),
+        client.get<{ deployment_plans: DeploymentPlan[] }>('/deployment-plans'),
         client.get<{ targets: DeploymentTarget[] }>('/deployment-targets'),
         client.get<{ workflow_templates: WorkflowTemplate[] }>('/workflow-templates'),
       ])
       setApplications(applicationResult.data.applications)
-      setReleasePlans(planResult.data.release_plans)
+      setDeploymentPlans(planResult.data.deployment_plans)
       setTargets(targetResult.data.targets)
       setTemplates(templateResult.data.workflow_templates)
       if (!applicationID && !templateID && !createMode && templateResult.data.workflow_templates.length > 0) {
@@ -218,6 +220,11 @@ export default function ReleaseWorkflowView() {
     else if (templateID) void loadTemplate(templateID)
     else setWorkflow(null)
   }, [applicationID, loadTemplate, loadWorkflow, templateID])
+  useEffect(() => {
+    if (!createMode || !canManage || loading || workflow || createRequestedRef.current) return
+    createRequestedRef.current = true
+    void createPublicTemplate()
+  }, [canManage, createMode, loading, workflow])
 
   function chooseApplication(id: string) {
     setApplicationID(id)
@@ -356,6 +363,7 @@ export default function ReleaseWorkflowView() {
       setSearchParams({ template: created.id }, { replace: true })
       setMessage('已创建一张公共发布计划草稿，请直接在画布上调整。')
     } catch (createError) {
+      createRequestedRef.current = false
       setError(apiErrorMessage(createError))
     } finally {
       setSaving(false)
@@ -428,15 +436,15 @@ export default function ReleaseWorkflowView() {
   if (loading && applications.length === 0 && templates.length === 0) return <div className="loading-panel">正在准备发布计划…</div>
 
   return <section className="workflow-page page-enter">
-    <div className="workflow-heading">
-      <div><span className="section-label">持续交付</span><h2>{publicMode ? '公共发布计划' : '应用发布计划'}</h2><p>{publicMode ? '像 ComfyUI 一样直接在无限画布上配置环境、触发条件和部署路径，创建应用时直接选择。' : '这是应用从公共计划复制出的独立流程，可以按应用单独调整。'}</p></div>
+    <div className="workflow-controls">
+      <button className="workflow-back-button" type="button" onClick={() => navigate(publicMode ? '/release-workflows' : '/applications')}>← {publicMode ? '发布计划列表' : '应用列表'}</button>
       <div className="workflow-heading-actions">
         {publicMode ? <>
           <label>公共计划<select value={templateID} onChange={(event) => chooseTemplate(event.target.value)}><option value="">请选择</option>{templates.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
           {canManage && <button className="primary-button" type="button" disabled={saving} onClick={() => void createPublicTemplate()}>＋ 新建计划</button>}
         </> : <>
           <label>应用<select value={applicationID} onChange={(event) => chooseApplication(event.target.value)}>{applications.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
-          <button type="button" onClick={() => { setApplicationID(''); setSearchParams({}, { replace: true }) }}>公共计划</button>
+          <button type="button" onClick={() => navigate('/release-workflows')}>公共计划</button>
         </>}
         {workflow && <span className={`workflow-state ${workflow.is_active ? 'active' : ''}`}>{workflow.is_active ? '已启用' : '草稿'}</span>}
         {dirty && <span className="unsaved-state">未保存</span>}
@@ -482,7 +490,7 @@ export default function ReleaseWorkflowView() {
               <button className="node-port input-port" type="button" aria-label="连接到这个节点" onClick={(event) => { event.stopPropagation(); connectTo(node.id) }} />
               <div className="workflow-node-head"><i>{nodeCopy[node.type].icon}</i><span>{nodeCopy[node.type].label}</span><b>{node.config.environment || '通用'}</b></div>
               <h3>{node.name}</h3>
-              <p>{node.type === 'trigger' ? `${node.config.branch || '未配置分支'} · ${(node.config.events || []).join(' / ') || '未选择事件'}` : node.type === 'deploy' ? `${releasePlans.find((item) => item.id === node.config.release_plan_id)?.name || '未绑定发布方案'} · ${targets.find((item) => item.id === node.config.deployment_target_id)?.name || '未绑定目标'}` : node.config.description || nodeCopy[node.type].hint}</p>
+              <p>{node.type === 'trigger' ? `${node.config.branch || '未配置分支'} · ${(node.config.events || []).join(' / ') || '未选择事件'}` : node.type === 'deploy' ? `${deploymentPlans.find((item) => item.id === node.config.release_plan_id)?.name || '未绑定部署方案'} · ${targets.find((item) => item.id === node.config.deployment_target_id)?.name || '未绑定目标'}` : node.config.description || nodeCopy[node.type].hint}</p>
               <button className={`node-port output-port${connectingFrom === node.id ? ' active' : ''}`} type="button" aria-label="从这个节点开始连接" onClick={(event) => { event.stopPropagation(); setConnectingFrom((current) => current === node.id ? '' : node.id) }} />
             </article>)}
           </div>
@@ -505,7 +513,7 @@ export default function ReleaseWorkflowView() {
               {(selectedNode.config.events || []).includes('tag') && <label>Tag 规则<input value={selectedNode.config.tag_pattern || ''} disabled={!canManage} onChange={(event) => updateNode(selectedNode.id, (node) => ({ ...node, config: { ...node.config, tag_pattern: event.target.value } }))} placeholder="v*" /></label>}
             </>}
             {selectedNode.type === 'deploy' && <>
-              <ResourceSelectField id="workflow-release-plan" label="发布方案" createLabel="发布方案" createTo={canManage ? '/release-plans?create=1' : undefined} value={selectedNode.config.release_plan_id || ''} disabled={!canManage} onChange={(event) => updateNode(selectedNode.id, (node) => ({ ...node, config: { ...node.config, release_plan_id: event.target.value } }))}><option value="">请选择</option>{releasePlans.filter((item) => item.is_active).map((item) => <option key={item.id} value={item.id}>{item.name} · {item.kind}</option>)}</ResourceSelectField>
+              <ResourceSelectField id="workflow-deployment-plan" label="部署方案" createLabel="部署方案" createTo={canManage ? '/deployment-plans?create=1' : undefined} value={selectedNode.config.release_plan_id || ''} disabled={!canManage} onChange={(event) => updateNode(selectedNode.id, (node) => ({ ...node, config: { ...node.config, release_plan_id: event.target.value } }))}><option value="">请选择</option>{deploymentPlans.filter((item) => item.is_active).map((item) => <option key={item.id} value={item.id}>{item.name} · {item.kind}</option>)}</ResourceSelectField>
               <ResourceSelectField id="workflow-deployment-target" label="发布目标" createLabel="发布目标" createTo={canManage ? '/deployments?create=1' : undefined} value={selectedNode.config.deployment_target_id || ''} disabled={!canManage} onChange={(event) => updateNode(selectedNode.id, (node) => ({ ...node, config: { ...node.config, deployment_target_id: event.target.value } }))}><option value="">请选择</option>{targets.filter((item) => item.is_active).map((item) => <option key={item.id} value={item.id}>{item.name} · {item.environment}</option>)}</ResourceSelectField>
             </>}
             {(selectedNode.type === 'manual' || selectedNode.type === 'approval') && <label>说明<textarea rows={4} value={selectedNode.config.description || ''} disabled={!canManage} onChange={(event) => updateNode(selectedNode.id, (node) => ({ ...node, config: { ...node.config, description: event.target.value } }))} /></label>}

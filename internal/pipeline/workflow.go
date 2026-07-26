@@ -342,7 +342,7 @@ func (s *Service) validateWorkflow(ctx context.Context, application *model.Appli
 				issues = append(issues, WorkflowIssue{Code: "invalid_environment", Message: "部署节点没有绑定已启用的环境", NodeID: node.ID})
 			}
 			if !s.activeResourceExists(ctx, &model.ReleasePlan{}, node.Config.ReleasePlanID) {
-				issues = append(issues, WorkflowIssue{Code: "missing_release_plan", Message: "部署节点需要绑定可用的发布方案", NodeID: node.ID})
+				issues = append(issues, WorkflowIssue{Code: "missing_release_plan", Message: "部署节点需要绑定可用的部署方案", NodeID: node.ID})
 			}
 			target, targetOK := s.activeDeploymentTarget(ctx, node.Config.DeploymentTargetID)
 			if !targetOK {
@@ -720,7 +720,7 @@ func (s *Service) AdvanceRun(ctx context.Context, runID, actorID, targetNodeID s
 		status, message = model.PipelineRunAwaitingApproval, "等待其他成员审核"
 	}
 	if target.Type == model.WorkflowNodeDeploy {
-		status, message = model.PipelineRunReady, "已到达部署节点，等待执行发布方案"
+		status, message = model.PipelineRunReady, "已到达部署节点，等待执行部署方案"
 	}
 	now := time.Now().UTC()
 	updates := map[string]any{
