@@ -35,7 +35,8 @@ x-zrt-runtime: &zrt-runtime
   tmpfs:
     - /tmp:size=256m,mode=1777
   volumes:
-    - zrt-data:/app/data
+    # 直接保存到仓库 data 目录，便于备份并与本机运行共享 SQLite。
+    - ./data:/app/data
   networks:
     - zrt
   logging:
@@ -88,7 +89,7 @@ services:
     security_opt:
       - no-new-privileges:true
     volumes:
-      - zrt-redis:/data
+      - ./data/redis:/data
     networks:
       - zrt
     healthcheck:
@@ -111,7 +112,7 @@ services:
     security_opt:
       - no-new-privileges:true
     volumes:
-      - zrt-nats:/data
+      - ./data/nats:/data
     networks:
       - zrt
     healthcheck:
@@ -130,9 +131,5 @@ networks:
   zrt:
     driver: bridge
 
-# docker compose down 不会删除这些卷。
-# docker compose down -v 会删除数据库和消息数据，执行前先备份。
-volumes:
-  zrt-data:
-  zrt-redis:
-  zrt-nats:
+# SQLite、Redis 和 NATS 都保存在仓库 data 目录；docker compose down 不会删除这些文件。
+# 不要直接清空 data 目录，升级、迁移或重建环境前先完整备份。

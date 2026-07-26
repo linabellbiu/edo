@@ -47,7 +47,9 @@ mage start
 
 Windows 使用 `zrt.exe migrate` 和 `zrt.exe`。单文件只包含 ZRT 后端和 Web，Redis、NATS 以及 `.env` 中配置的外部数据库仍需单独提供；使用默认 SQLite 时，数据库文件会写入 `data/zrt.db`。
 
-开发时执行 `mage start --dev`。Mage 会先通过 `deploy/compose.dev.yml` 启动 Redis 和 NATS，等待健康检查通过，自动执行数据库迁移，再通过 `go run` 和 `npm start` 同时运行后端与 Vite Web。开发页面地址为 `http://127.0.0.1:5173`，源码修改后不需要重新构建单文件程序。依赖容器在 Mage 退出后继续运行，执行 `docker compose -f deploy/compose.dev.yml stop redis nats` 可以停止它们。首次运行缺少 Web 依赖时会自动执行 `npm ci`。
+开发时执行 `mage start --dev`。Mage 会先通过 `deploy/compose.dev.yml` 启动 Redis 和 NATS，等待健康检查通过，再在本机执行数据库迁移、`go run` 和 `npm start`。开发页面地址为 `http://127.0.0.1:5173`，Go 后端不构建镜像，前端继续使用 Vite 热更新。
+
+SQLite 固定保存在仓库的 `data/zrt.db`，Redis 和 NATS 分别保存在 `data/redis`、`data/nats`。`mage start --dev`、`mage start --docker` 和根目录 Compose 使用同一组文件，切换启动方式不会换库。依赖容器在 Mage 退出后继续运行，执行 `docker compose -f deploy/compose.dev.yml stop redis nats` 可以停止它们。首次运行缺少本机 Web 依赖时会自动执行 `npm ci`。不要直接删除 `data` 目录。
 
 只迁移 `.env` 指定的数据库时执行：
 

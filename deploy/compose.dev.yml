@@ -29,8 +29,8 @@ x-zrt-go: &zrt-go
   security_opt:
     - no-new-privileges:true
   volumes:
-    # migrate 与 api 必须共享同一个 SQLite 持久卷；源码变化通过 --build 重建镜像。
-    - zrt-data:/app/data
+    # 与本机 go run 共用仓库 data 目录，切换启动方式不会连接到另一份 SQLite。
+    - ../data:/app/data
   networks:
     - zrt
 
@@ -104,7 +104,7 @@ services:
     security_opt:
       - no-new-privileges:true
     volumes:
-      - zrt-redis:/data
+      - ../data/redis:/data
     ports:
       - "127.0.0.1:${ZRT_REDIS_PORT:-6379}:6379"
     healthcheck:
@@ -124,7 +124,7 @@ services:
     security_opt:
       - no-new-privileges:true
     volumes:
-      - zrt-nats:/data
+      - ../data/nats:/data
     ports:
       - "127.0.0.1:${ZRT_NATS_PORT:-4222}:4222"
       - "127.0.0.1:${ZRT_NATS_MONITOR_PORT:-8222}:8222"
@@ -142,10 +142,8 @@ networks:
   zrt:
     driver: bridge
 
-# 持久卷保存业务数据、Redis/NATS 状态和依赖缓存；docker compose down 不会删除它们。
-# 只有显式执行 docker compose down -v 才会清空，其中 zrt-data 包含不可恢复的业务数据。
+# SQLite、Redis 和 NATS 数据都保存在仓库 data 目录，删除容器不会删除这些文件。
+# data 目录不得直接清空；升级、迁移或重建环境前先完整备份。
 volumes:
-  zrt-data:
-  zrt-redis:
-  zrt-nats:
+  # node_modules 只是 Linux 容器依赖缓存，不包含 ZRT 业务数据。
   zrt-web-node-modules:
