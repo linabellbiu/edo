@@ -298,7 +298,7 @@ func (s *Service) validateWorkflow(ctx context.Context, application *model.Appli
 	nodeByID := make(map[string]model.WorkflowNode, len(nodes))
 	indegree := make(map[string]int, len(nodes))
 	outgoing := make(map[string][]string, len(nodes))
-	deployCount, triggerCount := 0, 0
+	deployCount, sourceCount := 0, 0
 	environments := make(map[string]model.ApplicationEnvironment, len(application.Environments))
 	for i := range application.Environments {
 		environments[application.Environments[i].Key] = application.Environments[i]
@@ -313,7 +313,7 @@ func (s *Service) validateWorkflow(ctx context.Context, application *model.Appli
 		indegree[node.ID] = 0
 		switch node.Type {
 		case model.WorkflowNodeTrigger:
-			triggerCount++
+			sourceCount++
 			if _, ok := environments[node.Config.Environment]; !ok {
 				issues = append(issues, WorkflowIssue{Code: "invalid_environment", Message: "触发节点没有绑定已启用的环境", NodeID: node.ID})
 			}
@@ -331,6 +331,13 @@ func (s *Service) validateWorkflow(ctx context.Context, application *model.Appli
 			if node.Config.TagPattern != "" {
 				if _, err := path.Match(node.Config.TagPattern, "v1.0.0"); err != nil {
 					issues = append(issues, WorkflowIssue{Code: "invalid_tag_pattern", Message: "Tag 匹配规则无效", NodeID: node.ID})
+				}
+			}
+		case model.WorkflowNodeManualRelease:
+			sourceCount++
+			if node.Config.Environment != "" {
+				if _, ok := environments[node.Config.Environment]; !ok {
+					issues = append(issues, WorkflowIssue{Code: "invalid_environment", Message: "手动发布节点没有绑定已启用的环境", NodeID: node.ID})
 				}
 			}
 		case model.WorkflowNodeManual, model.WorkflowNodeApproval:
@@ -351,8 +358,8 @@ func (s *Service) validateWorkflow(ctx context.Context, application *model.Appli
 			issues = append(issues, WorkflowIssue{Code: "invalid_node_type", Message: "节点类型无效", NodeID: node.ID})
 		}
 	}
-	if triggerCount == 0 {
-		issues = append(issues, WorkflowIssue{Code: "missing_trigger", Message: "流水线至少需要一个代码触发节点"})
+	if sourceCount == 0 {
+		issues = append(issues, WorkflowIssue{Code: "missing_trigger", Message: "流水线至少需要一个代码触发或手动发布节点"})
 	}
 	if deployCount == 0 {
 		issues = append(issues, WorkflowIssue{Code: "missing_deploy", Message: "流水线至少需要一个部署节点"})
@@ -407,13 +414,13 @@ func (s *Service) validateWorkflow(ctx context.Context, application *model.Appli
 		issues = append(issues, WorkflowIssue{Code: "cycle", Message: "流水线不能形成循环连线"})
 	}
 	for id, node := range nodeByID {
-		if node.Type == model.WorkflowNodeTrigger && indegree[id] > 0 {
-			issues = append(issues, WorkflowIssue{Code: "trigger_has_upstream", Message: "代码触发节点不能有上游连线", NodeID: id})
+		if workflowSourceNode(node.Type) && indegree[id] > 0 {
+			issues = append(issues, WorkflowIssue{Code: "trigger_has_upstream", Message: "代码触发和手动发布节点不能有上游连线", NodeID: id})
 		}
 		if len(outgoing[id]) == 0 && node.Type != model.WorkflowNodeDeploy {
 			issues = append(issues, WorkflowIssue{Code: "invalid_terminal", Message: "流程的最后一个节点必须是部署节点", NodeID: id})
 		}
-		if node.Type != model.WorkflowNodeTrigger && indegree[id] == 0 {
+		if !workflowSourceNode(node.Type) && indegree[id] == 0 {
 			issues = append(issues, WorkflowIssue{Code: "unreachable_node", Message: "节点没有上游入口", NodeID: id})
 		}
 	}
@@ -431,7 +438,7 @@ func approvalPathIssues(nodes map[string]model.WorkflowNode, outgoing map[string
 	}
 	queue := make([]state, 0)
 	for id, node := range nodes {
-		if node.Type == model.WorkflowNodeTrigger {
+		if workflowSourceNode(node.Type) {
 			queue = append(queue, state{id: id})
 		}
 	}
@@ -453,6 +460,10 @@ func approvalPathIssues(nodes map[string]model.WorkflowNode, outgoing map[string
 		}
 	}
 	return issues
+}
+
+func workflowSourceNode(nodeType model.WorkflowNodeType) bool {
+	return nodeType == model.WorkflowNodeTrigger || nodeType == model.WorkflowNodeManualRelease
 }
 
 func uniqueIssues(issues []WorkflowIssue) []WorkflowIssue {

@@ -18,15 +18,40 @@ var (
 	ErrManualCommitNotFound = errors.New("所选 Commit 不存在或对应分支、Tag 已经变化，请重新选择")
 )
 
-func (s *Service) ListApplicationRefs(ctx context.Context, applicationID string) (repository.RefResult, error) {
-	application, err := s.FindApplication(ctx, applicationID)
-	if err != nil {
-		return repository.RefResult{}, err
-	}
-	return s.repositories.TestConnection(ctx, application.RepositoryID)
+type ManualRunSource struct {
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	Environment string `json:"environment,omitempty"`
 }
 
-func (s *Service) ExecuteRun(ctx context.Context, runID, actorID, ref, commitSHA string) (*model.PipelineRun, error) {
+type ManualRunOptions struct {
+	Branches      []repository.GitRef `json:"branches"`
+	Tags          []repository.GitRef `json:"tags"`
+	ManualSources []ManualRunSource   `json:"manual_sources"`
+}
+
+func (s *Service) ListApplicationRefs(ctx context.Context, applicationID string) (ManualRunOptions, error) {
+	application, err := s.FindApplication(ctx, applicationID)
+	if err != nil {
+		return ManualRunOptions{}, err
+	}
+	refs, err := s.repositories.TestConnection(ctx, application.RepositoryID)
+	if err != nil {
+		return ManualRunOptions{}, err
+	}
+	options := ManualRunOptions{Branches: refs.Branches, Tags: refs.Tags}
+	if application.Workflow != nil {
+		for i := range application.Workflow.Nodes {
+			node := application.Workflow.Nodes[i]
+			if node.Type == model.WorkflowNodeManualRelease {
+				options.ManualSources = append(options.ManualSources, ManualRunSource{ID: node.ID, Name: node.Name, Environment: node.Config.Environment})
+			}
+		}
+	}
+	return options, nil
+}
+
+func (s *Service) ExecuteRun(ctx context.Context, runID, actorID, ref, commitSHA, sourceNodeID string) (*model.PipelineRun, error) {
 	var run model.PipelineRun
 	if err := s.db.WithContext(ctx).First(&run, "id = ?", runID).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -59,7 +84,7 @@ func (s *Service) ExecuteRun(ctx context.Context, runID, actorID, ref, commitSHA
 	if application.Workflow == nil || !application.Workflow.IsActive {
 		return nil, ErrWorkflowNotActive
 	}
-	source := manualWorkflowSource(application.Workflow, ref)
+	source := manualWorkflowSource(application.Workflow, ref, strings.TrimSpace(sourceNodeID))
 	if source == nil {
 		return nil, ErrInvalidWorkflow
 	}
@@ -114,7 +139,22 @@ func remoteRefContainsCommit(refs repository.RefResult, ref, commitSHA string) b
 	return false
 }
 
-func manualWorkflowSource(workflow *model.ReleaseWorkflow, ref string) *model.WorkflowNode {
+func manualWorkflowSource(workflow *model.ReleaseWorkflow, ref, sourceNodeID string) *model.WorkflowNode {
+	if sourceNodeID != "" {
+		for i := range workflow.Nodes {
+			node := &workflow.Nodes[i]
+			if node.ID == sourceNodeID && node.Type == model.WorkflowNodeManualRelease {
+				return node
+			}
+		}
+		return nil
+	}
+	for i := range workflow.Nodes {
+		node := &workflow.Nodes[i]
+		if node.Type == model.WorkflowNodeManualRelease {
+			return node
+		}
+	}
 	var fallback *model.WorkflowNode
 	for i := range workflow.Nodes {
 		node := &workflow.Nodes[i]

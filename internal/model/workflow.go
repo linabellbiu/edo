@@ -30,10 +30,11 @@ func (ApplicationEnvironment) TableName() string { return "application_environme
 type WorkflowNodeType string
 
 const (
-	WorkflowNodeTrigger  WorkflowNodeType = "trigger"
-	WorkflowNodeManual   WorkflowNodeType = "manual"
-	WorkflowNodeApproval WorkflowNodeType = "approval"
-	WorkflowNodeDeploy   WorkflowNodeType = "deploy"
+	WorkflowNodeTrigger       WorkflowNodeType = "trigger"
+	WorkflowNodeManualRelease WorkflowNodeType = "manual_release"
+	WorkflowNodeManual        WorkflowNodeType = "manual"
+	WorkflowNodeApproval      WorkflowNodeType = "approval"
+	WorkflowNodeDeploy        WorkflowNodeType = "deploy"
 )
 
 type WorkflowPosition struct {

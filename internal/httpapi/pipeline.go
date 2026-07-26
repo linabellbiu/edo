@@ -75,8 +75,9 @@ type advanceRunRequest struct {
 }
 
 type executeRunRequest struct {
-	Ref       string `json:"ref" binding:"max=512"`
-	CommitSHA string `json:"commit_sha" binding:"max=64"`
+	Ref          string `json:"ref" binding:"max=512"`
+	CommitSHA    string `json:"commit_sha" binding:"max=64"`
+	SourceNodeID string `json:"source_node_id" binding:"max=64"`
 }
 
 type buildPlanRequest struct {
@@ -357,7 +358,7 @@ func (h pipelineHandler) executeRun(c *gin.Context) {
 		}
 	}
 	actor, _ := currentUser(c)
-	run, err := h.service.ExecuteRun(c.Request.Context(), c.Param("id"), actor.ID, request.Ref, request.CommitSHA)
+	run, err := h.service.ExecuteRun(c.Request.Context(), c.Param("id"), actor.ID, request.Ref, request.CommitSHA, request.SourceNodeID)
 	if err != nil {
 		h.writeError(c, "workflow_run_execute", err)
 		return

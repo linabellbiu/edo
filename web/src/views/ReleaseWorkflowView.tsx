@@ -6,7 +6,7 @@ import { apiErrorMessage } from '@/api/resources'
 import ResourceSelectField from '@/components/ResourceSelectField'
 import { useAuthStore } from '@/stores/auth'
 
-type NodeType = 'trigger' | 'manual' | 'approval' | 'deploy'
+type NodeType = 'trigger' | 'manual_release' | 'manual' | 'approval' | 'deploy'
 type EnvironmentKey = 'dev' | 'test' | 'pre' | 'prod'
 
 interface ApplicationEnvironment {
@@ -37,6 +37,7 @@ interface WorkflowTemplateResponse { workflow_template: WorkflowTemplate; valid:
 
 const nodeCopy: Record<NodeType, { label: string; hint: string; icon: string }> = {
   trigger: { label: '代码触发', hint: '监听分支、Push、PR 或 Tag', icon: '⌁' },
+  manual_release: { label: '手动发布', hint: '选择 Commit 后从这里开始', icon: '▶' },
   manual: { label: '人工放行', hint: '主动接测后进入下一环境', icon: '✓' },
   approval: { label: '发布审核', hint: '由其他成员确认发布', icon: '◎' },
   deploy: { label: '部署', hint: '执行绑定的部署方案', icon: '↗' },
@@ -110,7 +111,7 @@ function createTemplate(application: Application, compact = false) {
 }
 
 function nodeColor(type: NodeType) {
-  return ({ trigger: '#4776e6', manual: '#a66bd8', approval: '#d88732', deploy: '#20a57a' } as Record<NodeType, string>)[type]
+  return ({ trigger: '#4776e6', manual_release: '#675bd8', manual: '#a66bd8', approval: '#d88732', deploy: '#20a57a' } as Record<NodeType, string>)[type]
 }
 
 export default function ReleaseWorkflowView() {
@@ -482,11 +483,11 @@ export default function ReleaseWorkflowView() {
               })}
             </svg>
             {nodes.map((node) => <article key={node.id} className={`workflow-node node-${node.type}${selectedNodeID === node.id ? ' selected' : ''}`} style={{ left: node.position.x, top: node.position.y, '--node-color': nodeColor(node.type) } as React.CSSProperties} onPointerDown={(event) => startNodeDrag(event, node)} onPointerMove={moveNode} onPointerUp={endNodeDrag} onPointerCancel={endNodeDrag} onClick={(event) => { event.stopPropagation(); setSelectedNodeID(node.id) }}>
-              <button className="node-port input-port" type="button" aria-label="连接到这个节点" onClick={(event) => { event.stopPropagation(); connectTo(node.id) }} />
+              {node.type !== 'trigger' && node.type !== 'manual_release' && <button className="node-port input-port" type="button" aria-label="连接到这个节点" onClick={(event) => { event.stopPropagation(); connectTo(node.id) }} />}
               <div className="workflow-node-head"><i>{nodeCopy[node.type].icon}</i><span>{nodeCopy[node.type].label}</span><b>{node.config.environment || '通用'}</b></div>
               <h3>{node.name}</h3>
               <p>{node.type === 'trigger' ? `${node.config.branch || '未配置分支'} · ${(node.config.events || []).join(' / ') || '未选择事件'}` : node.type === 'deploy' ? deploymentPlans.find((item) => item.id === node.config.release_plan_id)?.name || '未绑定部署方案' : node.config.description || nodeCopy[node.type].hint}</p>
-              <button className={`node-port output-port${connectingFrom === node.id ? ' active' : ''}`} type="button" aria-label="从这个节点开始连接" onClick={(event) => { event.stopPropagation(); setConnectingFrom((current) => current === node.id ? '' : node.id) }} />
+              {node.type !== 'deploy' && <button className={`node-port output-port${connectingFrom === node.id ? ' active' : ''}`} type="button" aria-label="从这个节点开始连接" onClick={(event) => { event.stopPropagation(); setConnectingFrom((current) => current === node.id ? '' : node.id) }} />}
             </article>)}
           </div>
         </div>
@@ -510,7 +511,7 @@ export default function ReleaseWorkflowView() {
             {selectedNode.type === 'deploy' && <>
               <ResourceSelectField id="workflow-deployment-plan" label="部署方案" createLabel="部署方案" createTo={canManage ? '/deployment-plans?create=1' : undefined} value={selectedNode.config.release_plan_id || ''} disabled={!canManage} onChange={(event) => updateNode(selectedNode.id, (node) => ({ ...node, config: { ...node.config, release_plan_id: event.target.value } }))}><option value="">请选择</option>{deploymentPlans.filter((item) => item.is_active).map((item) => <option key={item.id} value={item.id}>{item.name} · {item.kind}</option>)}</ResourceSelectField>
             </>}
-            {(selectedNode.type === 'manual' || selectedNode.type === 'approval') && <label>说明<textarea rows={4} value={selectedNode.config.description || ''} disabled={!canManage} onChange={(event) => updateNode(selectedNode.id, (node) => ({ ...node, config: { ...node.config, description: event.target.value } }))} /></label>}
+            {(selectedNode.type === 'manual_release' || selectedNode.type === 'manual' || selectedNode.type === 'approval') && <label>说明<textarea rows={4} value={selectedNode.config.description || ''} disabled={!canManage} onChange={(event) => updateNode(selectedNode.id, (node) => ({ ...node, config: { ...node.config, description: event.target.value } }))} placeholder={selectedNode.type === 'manual_release' ? '例如：由发布负责人选择代码版本后启动' : undefined} /></label>}
           </div>
           <div className="connection-list"><strong>连线</strong>{edges.filter((edge) => edge.source === selectedNode.id || edge.target === selectedNode.id).map((edge) => {
             const otherID = edge.source === selectedNode.id ? edge.target : edge.source

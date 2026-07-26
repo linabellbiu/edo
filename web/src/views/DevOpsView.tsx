@@ -19,7 +19,8 @@ interface GitCredential {
   id: string; name: string; provider: string; auth_type: 'token' | 'ssh_key'; username?: string; secret_hint: string
 }
 interface GitRef { name: string; sha: string }
-interface RepositoryRefResult { branches: GitRef[]; tags: GitRef[] }
+interface ManualRunSource { id: string; name: string; environment?: string }
+interface RepositoryRefResult { branches: GitRef[]; tags: GitRef[]; manual_sources?: ManualRunSource[] }
 interface CommitOption { ref: string; name: string; sha: string; kind: 'branch' | 'tag' }
 interface RepositoryCheck {
   status: 'checking' | 'success' | 'error'
@@ -198,7 +199,7 @@ export default function DevOpsView({ section }: { section: Section }) {
   const [repositoryChecks, setRepositoryChecks] = useState<Record<string, RepositoryCheck>>({})
   const [repositoryFormCheck, setRepositoryFormCheck] = useState<RepositoryCheck | null>(null)
   const [registryFormCheck, setRegistryFormCheck] = useState<RepositoryCheck | null>(null)
-  const [commitPicker, setCommitPicker] = useState<{ run: PipelineRun; options: CommitOption[]; selectedRef: string; loading: boolean } | null>(null)
+  const [commitPicker, setCommitPicker] = useState<{ run: PipelineRun; options: CommitOption[]; sources: ManualRunSource[]; selectedRef: string; selectedSourceID: string; loading: boolean } | null>(null)
   const [commitSubmitting, setCommitSubmitting] = useState(false)
   const registryTestSequence = useRef(0)
   const [applicationForm, setApplicationForm] = useState(initialApplicationForm)
@@ -475,7 +476,7 @@ export default function DevOpsView({ section }: { section: Section }) {
 
   async function openCommitPicker(run: PipelineRun) {
 	setError('')
-	setCommitPicker({ run, options: [], selectedRef: '', loading: true })
+	setCommitPicker({ run, options: [], sources: [], selectedRef: '', selectedSourceID: '', loading: true })
 	try {
 	  const response = await client.get<RepositoryRefResult>(`/applications/${run.application_id}/repository-refs`, { timeout: 35_000 })
 	  const options: CommitOption[] = [
@@ -485,7 +486,8 @@ export default function DevOpsView({ section }: { section: Section }) {
 	  const application = applications.find((item) => item.id === run.application_id) || run.application
 	  const preferredRef = application?.branch ? `refs/heads/${application.branch}` : ''
 	  const selectedRef = options.some((item) => item.ref === preferredRef) ? preferredRef : options[0]?.ref || ''
-	  setCommitPicker((current) => current?.run.id === run.id ? { run, options, selectedRef, loading: false } : current)
+	  const sources = response.data.manual_sources || []
+	  setCommitPicker((current) => current?.run.id === run.id ? { run, options, sources, selectedRef, selectedSourceID: sources[0]?.id || '', loading: false } : current)
 	} catch (requestError) {
 	  setCommitPicker(null)
 	  setError(apiErrorMessage(requestError))
@@ -507,7 +509,7 @@ export default function DevOpsView({ section }: { section: Section }) {
 	setCommitSubmitting(true)
 	setError('')
 	try {
-	  await client.post(`/pipeline-runs/${commitPicker.run.id}/execute`, { ref: selected.ref, commit_sha: selected.sha })
+	  await client.post(`/pipeline-runs/${commitPicker.run.id}/execute`, { ref: selected.ref, commit_sha: selected.sha, source_node_id: commitPicker.selectedSourceID })
 	  setCommitPicker(null)
 	  await refresh()
 	} catch (requestError) {
@@ -789,6 +791,7 @@ export default function DevOpsView({ section }: { section: Section }) {
         <header><div><span>手动执行</span><h3 id="commit-picker-title">选择发布的 Commit</h3><p>{commitPicker.run.application?.name || applications.find((item) => item.id === commitPicker.run.application_id)?.name || '当前应用'}</p></div><button type="button" disabled={commitSubmitting} onClick={() => setCommitPicker(null)} aria-label="关闭">×</button></header>
         <div className="commit-picker-body">
           {commitPicker.loading ? <div className="commit-picker-empty">正在读取远程分支和 Tag…</div> : commitPicker.options.length === 0 ? <div className="commit-picker-empty">仓库可以访问，但没有可选择的分支或 Tag。</div> : <>
+			{commitPicker.sources.length > 0 && <label>发布入口<select value={commitPicker.selectedSourceID} onChange={(event) => setCommitPicker({ ...commitPicker, selectedSourceID: event.target.value })}>{commitPicker.sources.map((source) => <option key={source.id} value={source.id}>{source.name}{source.environment ? ` · ${source.environment.toUpperCase()}` : ''}</option>)}</select></label>}
             <label>代码版本<select autoFocus value={commitPicker.selectedRef} onChange={(event) => setCommitPicker({ ...commitPicker, selectedRef: event.target.value })}>
               <optgroup label="分支">{commitPicker.options.filter((item) => item.kind === 'branch').map((item) => <option key={item.ref} value={item.ref}>{item.name} · {shortSHA(item.sha)}</option>)}</optgroup>
               <optgroup label="Tag">{commitPicker.options.filter((item) => item.kind === 'tag').map((item) => <option key={item.ref} value={item.ref}>{item.name} · {shortSHA(item.sha)}</option>)}</optgroup>
