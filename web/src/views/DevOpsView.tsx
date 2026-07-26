@@ -20,6 +20,7 @@ interface GitCredential {
 }
 interface GitRef { name: string; sha: string }
 interface RepositoryRefResult { branches: GitRef[]; tags: GitRef[] }
+interface CommitOption { ref: string; name: string; sha: string; kind: 'branch' | 'tag' }
 interface RepositoryCheck {
   status: 'checking' | 'success' | 'error'
   message: string
@@ -142,6 +143,21 @@ function StatusPill({ value }: { value: string }) {
   return <span className={`status-pill status-${value}`}>{label}</span>
 }
 
+function blockedRunReasons(run: PipelineRun, application?: Application) {
+  if (run.status !== 'blocked') return []
+  const reasons: string[] = []
+  if (!application?.repository_id) reasons.push('未绑定代码仓库。')
+  if (!run.commit_sha) reasons.push('尚未选择代码版本：点击“执行”，从远程分支或 Tag 中选择 Commit。')
+  if (application && !application.workflow?.is_active) {
+    if (!application.build_plan_id) reasons.push('未绑定构建方案。')
+    if (!application.image_registry_id) reasons.push('未绑定镜像仓库。')
+    if (!application.release_plan_id) reasons.push('未绑定部署方案。')
+    reasons.push('应用流水线尚未启用，或仍有节点配置问题。')
+  }
+  if (reasons.length === 0) reasons.push(run.message || '应用的构建或发布配置不完整。')
+  return [...new Set(reasons)]
+}
+
 function EmptyState({ title, description }: { title: string; description: string }) {
   return <div className="empty-state modern-empty"><span className="empty-icon">＋</span><h3>{title}</h3><p>{description}</p></div>
 }
@@ -182,6 +198,8 @@ export default function DevOpsView({ section }: { section: Section }) {
   const [repositoryChecks, setRepositoryChecks] = useState<Record<string, RepositoryCheck>>({})
   const [repositoryFormCheck, setRepositoryFormCheck] = useState<RepositoryCheck | null>(null)
   const [registryFormCheck, setRegistryFormCheck] = useState<RepositoryCheck | null>(null)
+  const [commitPicker, setCommitPicker] = useState<{ run: PipelineRun; options: CommitOption[]; selectedRef: string; loading: boolean } | null>(null)
+  const [commitSubmitting, setCommitSubmitting] = useState(false)
   const registryTestSequence = useRef(0)
   const [applicationForm, setApplicationForm] = useState(initialApplicationForm)
   const [repositoryForm, setRepositoryForm] = useState(initialRepositoryForm)
@@ -266,6 +284,16 @@ export default function DevOpsView({ section }: { section: Section }) {
     setSearchParams(next, { replace: true })
     window.scrollTo({ top: 0, behavior: 'smooth' })
   }, [canCreate, searchParams, section, setSearchParams])
+  useEffect(() => {
+    const applicationToEdit = searchParams.get('edit')
+    if (section !== 'applications' || !canManageDelivery || !applicationToEdit) return
+    const application = applications.find((item) => item.id === applicationToEdit)
+    if (!application) return
+    editApplication(application)
+    const next = new URLSearchParams(searchParams)
+    next.delete('edit')
+    setSearchParams(next, { replace: true })
+  }, [applications, canManageDelivery, searchParams, section, setSearchParams])
 
   const counts = useMemo(() => ({
     configured: applications.filter((item) => item.build_plan_id && item.image_registry_id && item.workflow?.is_active).length,
@@ -443,6 +471,63 @@ export default function DevOpsView({ section }: { section: Section }) {
     } catch (requestError) {
       setError(apiErrorMessage(requestError))
     }
+  }
+
+  async function openCommitPicker(run: PipelineRun) {
+	setError('')
+	setCommitPicker({ run, options: [], selectedRef: '', loading: true })
+	try {
+	  const response = await client.get<RepositoryRefResult>(`/applications/${run.application_id}/repository-refs`, { timeout: 35_000 })
+	  const options: CommitOption[] = [
+		...(response.data.branches || []).map((item) => ({ ref: `refs/heads/${item.name}`, name: item.name, sha: item.sha, kind: 'branch' as const })),
+		...(response.data.tags || []).map((item) => ({ ref: `refs/tags/${item.name}`, name: item.name, sha: item.sha, kind: 'tag' as const })),
+	  ]
+	  const application = applications.find((item) => item.id === run.application_id) || run.application
+	  const preferredRef = application?.branch ? `refs/heads/${application.branch}` : ''
+	  const selectedRef = options.some((item) => item.ref === preferredRef) ? preferredRef : options[0]?.ref || ''
+	  setCommitPicker((current) => current?.run.id === run.id ? { run, options, selectedRef, loading: false } : current)
+	} catch (requestError) {
+	  setCommitPicker(null)
+	  setError(apiErrorMessage(requestError))
+	}
+  }
+
+  async function executePipelineRun(run: PipelineRun) {
+	if (!run.commit_sha) {
+	  await openCommitPicker(run)
+	  return
+	}
+	await runAction(`/pipeline-runs/${run.id}/execute`)
+  }
+
+  async function confirmCommitExecution() {
+	if (!commitPicker) return
+	const selected = commitPicker.options.find((item) => item.ref === commitPicker.selectedRef)
+	if (!selected) return
+	setCommitSubmitting(true)
+	setError('')
+	try {
+	  await client.post(`/pipeline-runs/${commitPicker.run.id}/execute`, { ref: selected.ref, commit_sha: selected.sha })
+	  setCommitPicker(null)
+	  await refresh()
+	} catch (requestError) {
+	  setError(apiErrorMessage(requestError))
+	} finally {
+	  setCommitSubmitting(false)
+	}
+  }
+
+  async function deletePipelineRun(run: PipelineRun) {
+	const applicationName = applications.find((item) => item.id === run.application_id)?.name || run.application?.name || run.application_id
+	if (!window.confirm(`确认删除“${applicationName}”的这条发布计划？\n\n发布计划删除后无法恢复；独立的发布记录不会被删除。`)) return
+	setError('')
+	try {
+	  await client.delete(`/pipeline-runs/${run.id}`)
+	  await refresh()
+	} catch (deleteError) {
+	  setError(apiErrorMessage(deleteError))
+	  await refresh()
+	}
   }
 
   async function deleteRepository(repository: Repository) {
@@ -670,12 +755,49 @@ export default function DevOpsView({ section }: { section: Section }) {
 
     {section === 'deployment-plans' && <div className="resource-card-grid">{deploymentPlans.map((item) => <article className="resource-card modern-card" key={item.id}><div className="resource-icon release-icon">↗</div><div><div className="card-title-line"><h3>{item.name}</h3><span>{kindLabel(item.kind)}</span></div><p>{item.description || item.helm_chart || item.compose_file || item.service_name || '自定义部署脚本'}</p><div className="meta-row"><span>超时 {item.timeout_seconds} 秒</span><span>已启用</span></div></div></article>)}{!loading && deploymentPlans.length === 0 && <EmptyState title="还没有部署方案" description="创建 Helm、Compose、Docker 或脚本部署模板。" />}</div>}
 
-    {section === 'release-plans' && releaseView === 'plans' && <div className="pipeline-list">{runs.map((run) => <article className="pipeline-run" key={run.id}><div className="run-status-dot" /><div className="run-main"><div className="card-title-line"><h3>{run.application?.name || run.application_id}</h3><StatusPill value={run.status} /></div><div className="run-details"><span>{run.environment || '未进入环境'}</span><span>{run.trigger === 'manual' ? '手动创建' : run.trigger}</span><span>{run.ref || '尚无代码引用'}</span><span>{shortSHA(run.commit_sha)}</span></div><p>{run.message || '发布计划已创建'}</p><div className="run-details"><span>关联流水线：{run.application?.workflow_template?.name || '应用流水线'}{run.workflow_revision ? ` · 第 ${run.workflow_revision} 版` : ''}</span><span>{run.approval_required ? '需要审核' : '无需审核'}</span>{run.current_node_id && <span>当前节点：{run.current_node_id}</span>}</div><div className="run-actions"><button type="button" onClick={() => navigate(`/pipeline-plans/editor?application=${run.application_id}`)}>查看流水线</button>{run.current_node_id && run.status === 'awaiting_approval' && canReview && <button type="button" onClick={() => void runAction(`/pipeline-runs/${run.id}/approve`)}>通过审核</button>}{run.current_node_id && run.status !== 'awaiting_approval' && run.status !== 'succeeded' && canRun && <button type="button" onClick={() => void runAction(`/pipeline-runs/${run.id}/advance`, { target_node_id: '' })}>{run.status === 'ready' ? '完成部署并继续' : '推进下一步'}</button>}</div></div><time>{formatTime(run.created_at)}</time></article>)}{!loading && runs.length === 0 && <EmptyState title="还没有发布计划" description="请从应用页面创建；代码事件触发的计划也会显示在这里。" />}</div>}
+    {section === 'release-plans' && releaseView === 'plans' && <div className="pipeline-list">{runs.map((run) => {
+      const application = applications.find((item) => item.id === run.application_id) || run.application
+      const blockers = blockedRunReasons(run, application)
+      return <article className={`pipeline-run${run.status === 'blocked' ? ' pipeline-run-blocked' : ''}`} key={run.id}>
+        <div className="run-status-dot" />
+        <div className="run-main">
+          <div className="card-title-line"><h3>{application?.name || run.application_id}</h3><StatusPill value={run.status} /></div>
+          <div className="run-details"><span>{run.environment || '未进入环境'}</span><span>{run.trigger === 'manual' ? '手动创建' : run.trigger}</span><span>{run.ref || '尚无代码引用'}</span><span>{shortSHA(run.commit_sha)}</span></div>
+          {blockers.length > 0 ? <div className="run-blockers" role="alert"><strong>这条发布计划不能继续，还缺少：</strong><ul>{blockers.map((reason) => <li key={reason}>{reason}</li>)}</ul></div> : <p>{run.message || '发布计划已创建'}</p>}
+          <div className="run-details"><span>关联流水线：{application?.workflow_template?.name || '应用流水线'}{run.workflow_revision ? ` · 第 ${run.workflow_revision} 版` : ''}</span><span>{run.approval_required ? '需要审核' : '无需审核'}</span>{run.current_node_id && <span>当前节点：{run.current_node_id}</span>}</div>
+          <div className="run-actions">
+            {run.status === 'blocked' && !run.commit_sha && canRun && <button className="accent-action" type="button" onClick={() => void openCommitPicker(run)}>执行</button>}
+            {run.status === 'blocked' && application && canManageDelivery && <button type="button" onClick={() => navigate(`/applications?edit=${run.application_id}`)}>配置应用</button>}
+            <button type="button" onClick={() => navigate(`/pipeline-plans/editor?application=${run.application_id}`)}>查看流水线</button>
+            {run.current_node_id && run.status === 'awaiting_approval' && canReview && <button type="button" onClick={() => void runAction(`/pipeline-runs/${run.id}/approve`)}>通过审核</button>}
+            {run.current_node_id && run.status !== 'blocked' && run.status !== 'awaiting_approval' && run.status !== 'succeeded' && canRun && <button className="accent-action" type="button" onClick={() => void executePipelineRun(run)}>{run.status === 'detected' ? '执行' : run.status === 'ready' ? '执行部署' : '继续执行'}</button>}
+            {run.status !== 'running' && run.status !== 'awaiting_approval' && canManageDelivery && <button className="danger-action" type="button" onClick={() => void deletePipelineRun(run)}>删除</button>}
+          </div>
+        </div>
+        <time>{formatTime(run.created_at)}</time>
+      </article>
+    })}{!loading && runs.length === 0 && <EmptyState title="还没有发布计划" description="请从应用页面创建；代码事件触发的计划也会显示在这里。" />}</div>}
 
     {section === 'release-plans' && releaseView === 'records' && canReadDeployment && <div className="resource-section release-records-readonly"><div className="section-heading"><h3>发布记录</h3><span>{deployments.length} 条 · 只读</span></div><div className="resource-panel"><ResourceTable rows={deployments} emptyText="还没有发布记录" columns={[
       { key: 'environment', label: '环境' }, { key: 'operation', label: '操作' }, { key: 'image', label: '镜像' },
       { key: 'status', label: '状态' }, { key: 'requested_by', label: '申请人' }, { key: 'approved_by', label: '审核人' },
       { key: 'error_message', label: '失败原因' }, { key: 'warning_message', label: '告警' }, { key: 'created_at', label: '时间' },
     ]} /></div></div>}
+
+    {commitPicker && <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !commitSubmitting) setCommitPicker(null) }}>
+      <div className="commit-picker-modal" role="dialog" aria-modal="true" aria-labelledby="commit-picker-title">
+        <header><div><span>手动执行</span><h3 id="commit-picker-title">选择发布的 Commit</h3><p>{commitPicker.run.application?.name || applications.find((item) => item.id === commitPicker.run.application_id)?.name || '当前应用'}</p></div><button type="button" disabled={commitSubmitting} onClick={() => setCommitPicker(null)} aria-label="关闭">×</button></header>
+        <div className="commit-picker-body">
+          {commitPicker.loading ? <div className="commit-picker-empty">正在读取远程分支和 Tag…</div> : commitPicker.options.length === 0 ? <div className="commit-picker-empty">仓库可以访问，但没有可选择的分支或 Tag。</div> : <>
+            <label>代码版本<select autoFocus value={commitPicker.selectedRef} onChange={(event) => setCommitPicker({ ...commitPicker, selectedRef: event.target.value })}>
+              <optgroup label="分支">{commitPicker.options.filter((item) => item.kind === 'branch').map((item) => <option key={item.ref} value={item.ref}>{item.name} · {shortSHA(item.sha)}</option>)}</optgroup>
+              <optgroup label="Tag">{commitPicker.options.filter((item) => item.kind === 'tag').map((item) => <option key={item.ref} value={item.ref}>{item.name} · {shortSHA(item.sha)}</option>)}</optgroup>
+            </select></label>
+            {commitPicker.options.find((item) => item.ref === commitPicker.selectedRef) && <div className="commit-picker-sha"><span>Commit SHA</span><code>{commitPicker.options.find((item) => item.ref === commitPicker.selectedRef)?.sha}</code></div>}
+          </>}
+        </div>
+        <footer><button className="secondary-button" type="button" disabled={commitSubmitting} onClick={() => setCommitPicker(null)}>取消</button><button className="primary-button" type="button" disabled={commitPicker.loading || !commitPicker.selectedRef || commitSubmitting} onClick={() => void confirmCommitExecution()}>{commitSubmitting ? '执行中…' : '确认并执行'}</button></footer>
+      </div>
+    </div>}
   </section>
 }

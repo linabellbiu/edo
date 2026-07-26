@@ -74,6 +74,11 @@ type advanceRunRequest struct {
 	TargetNodeID string `json:"target_node_id" binding:"max=64"`
 }
 
+type executeRunRequest struct {
+	Ref       string `json:"ref" binding:"max=512"`
+	CommitSHA string `json:"commit_sha" binding:"max=64"`
+}
+
 type buildPlanRequest struct {
 	Name           string              `json:"name" binding:"required,max=128"`
 	Kind           model.BuildPlanKind `json:"kind" binding:"required,max=16"`
@@ -173,6 +178,15 @@ func (h pipelineHandler) syncApplication(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"application": application, "pipeline_run": run})
 }
 
+func (h pipelineHandler) listApplicationRefs(c *gin.Context) {
+	refs, err := h.service.ListApplicationRefs(c.Request.Context(), c.Param("id"))
+	if err != nil {
+		h.writeError(c, "application_refs", err)
+		return
+	}
+	c.JSON(http.StatusOK, refs)
+}
+
 func (h pipelineHandler) prepareRun(c *gin.Context) {
 	actor, _ := currentUser(c)
 	run, err := h.service.PrepareRun(c.Request.Context(), c.Param("id"), actor.ID)
@@ -181,7 +195,11 @@ func (h pipelineHandler) prepareRun(c *gin.Context) {
 		return
 	}
 	if errors.Is(err, pipeline.ErrPipelineIncomplete) {
-		c.JSON(http.StatusConflict, gin.H{"code": "pipeline_incomplete", "message": err.Error(), "pipeline_run": run, "request_id": requestIDFrom(c)})
+		message := err.Error()
+		if run != nil && run.Message != "" {
+			message = run.Message
+		}
+		c.JSON(http.StatusConflict, gin.H{"code": "pipeline_incomplete", "message": message, "pipeline_run": run, "request_id": requestIDFrom(c)})
 		return
 	}
 	setAuditResourceID(c, run.ID)
@@ -328,6 +346,33 @@ func (h pipelineHandler) advanceRun(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"pipeline_run": run})
+}
+
+func (h pipelineHandler) executeRun(c *gin.Context) {
+	var request executeRunRequest
+	if c.Request.ContentLength > 0 {
+		if err := c.ShouldBindJSON(&request); err != nil {
+			writeError(c, http.StatusBadRequest, "invalid_manual_commit", pipeline.ErrManualCommitRequired.Error())
+			return
+		}
+	}
+	actor, _ := currentUser(c)
+	run, err := h.service.ExecuteRun(c.Request.Context(), c.Param("id"), actor.ID, request.Ref, request.CommitSHA)
+	if err != nil {
+		h.writeError(c, "workflow_run_execute", err)
+		return
+	}
+	setAuditResourceID(c, run.ID)
+	c.JSON(http.StatusOK, gin.H{"pipeline_run": run})
+}
+
+func (h pipelineHandler) deleteRun(c *gin.Context) {
+	if err := h.service.DeleteRun(c.Request.Context(), c.Param("id")); err != nil {
+		h.writeError(c, "pipeline_run_delete", err)
+		return
+	}
+	setAuditResourceID(c, c.Param("id"))
+	c.Status(http.StatusNoContent)
 }
 
 func (h pipelineHandler) approveRun(c *gin.Context) {
@@ -503,12 +548,19 @@ func (h pipelineHandler) writeError(c *gin.Context, operation string, err error)
 		writeError(c, http.StatusNotFound, "application_not_found", err.Error())
 	case errors.Is(err, pipeline.ErrWorkflowNotFound), errors.Is(err, pipeline.ErrWorkflowTemplateNotFound):
 		writeError(c, http.StatusNotFound, "workflow_not_found", err.Error())
+	case errors.Is(err, pipeline.ErrPipelineRunNotFound):
+		writeError(c, http.StatusNotFound, "pipeline_run_not_found", err.Error())
+	case errors.Is(err, pipeline.ErrManualCommitRequired):
+		writeError(c, http.StatusBadRequest, "manual_commit_required", err.Error())
+	case errors.Is(err, pipeline.ErrManualCommitNotFound):
+		writeError(c, http.StatusConflict, "manual_commit_changed", err.Error())
 	case errors.Is(err, pipeline.ErrWorkflowRevisionConflict), errors.Is(err, pipeline.ErrWorkflowTemplateRevisionConflict):
 		writeError(c, http.StatusConflict, "workflow_revision_conflict", err.Error())
 	case errors.Is(err, pipeline.ErrWorkflowTemplateInUse):
 		writeError(c, http.StatusConflict, "workflow_template_in_use", err.Error())
 	case errors.Is(err, pipeline.ErrWorkflowNotActive), errors.Is(err, pipeline.ErrInvalidWorkflowTransition),
-		errors.Is(err, pipeline.ErrWorkflowApprovalRequired), errors.Is(err, pipeline.ErrWorkflowSelfApproval):
+		errors.Is(err, pipeline.ErrWorkflowApprovalRequired), errors.Is(err, pipeline.ErrWorkflowSelfApproval),
+		errors.Is(err, pipeline.ErrPipelineRunDeleteForbidden):
 		writeError(c, http.StatusConflict, "workflow_transition_denied", err.Error())
 	default:
 		writeInternalError(c)

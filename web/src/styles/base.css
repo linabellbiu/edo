@@ -282,6 +282,12 @@ button:disabled { cursor: wait; opacity: .56; transform: none !important; }
 .run-details span:last-child { border: 0; }
 .run-main p { margin: 8px 0 0; color: var(--muted); font-size: 11px; }
 .pipeline-run time { color: #9aa2b1; font-size: 10px; }
+.pipeline-run-blocked { border-color: #f1d5da; }
+.pipeline-run-blocked .run-status-dot { background: #d14b64; box-shadow: 0 0 0 5px rgb(209 75 100 / 10%); }
+.run-blockers { margin-top: 12px; padding: 11px 13px; border: 1px solid #f1d5da; border-radius: 10px; color: #8f3144; background: #fff6f7; }
+.run-blockers strong { display: block; font-size: 12px; }
+.run-blockers ul { display: grid; gap: 4px; margin: 7px 0 0; padding-left: 18px; }
+.run-blockers li { font-size: 12px; line-height: 1.55; }
 
 .modern-empty { grid-column: 1 / -1; display: grid; min-height: 260px; place-items: center; align-content: center; border: 1px dashed #d8dde6; border-radius: 18px; background: rgb(255 255 255 / 55%); }
 .modern-empty .empty-icon { display: grid; width: 42px; height: 42px; place-items: center; border-radius: 14px; color: var(--primary); background: var(--primary-soft); font-size: 21px; }
@@ -394,6 +400,20 @@ button:disabled { cursor: wait; opacity: .56; transform: none !important; }
 .terminal-modal header { display: flex; min-height: 66px; align-items: center; justify-content: space-between; padding: 12px 18px; border-bottom: 1px solid var(--border); }
 .terminal-modal h3 { margin: 0; font-size: 14px; }
 .terminal-modal header button { min-height: 34px; padding: 0 11px; border-radius: 10px; color: #667184; background: #f2f4f7; cursor: pointer; }
+.commit-picker-modal { width: min(560px,100%); overflow: hidden; border: 1px solid #dce2ec; border-radius: 20px; background: #fff; box-shadow: 0 28px 90px rgb(30 42 65 / 22%); animation: sheet-in 220ms cubic-bezier(.2,.8,.2,1) both; }
+.commit-picker-modal header { display: flex; align-items: flex-start; justify-content: space-between; padding: 22px 24px 18px; border-bottom: 1px solid var(--border); }
+.commit-picker-modal header span { color: var(--primary); font-size: 10px; font-weight: 700; }
+.commit-picker-modal header h3 { margin: 5px 0 0; font-size: 18px; }
+.commit-picker-modal header p { margin: 5px 0 0; color: var(--muted); font-size: 11px; }
+.commit-picker-modal header button { width: 32px; height: 32px; border-radius: 9px; color: #7a8495; background: #f2f4f7; cursor: pointer; font-size: 18px; }
+.commit-picker-body { display: grid; min-height: 150px; gap: 16px; padding: 22px 24px; }
+.commit-picker-body label { display: grid; gap: 8px; color: #536078; font-size: 11px; font-weight: 650; }
+.commit-picker-body select { width: 100%; min-height: 44px; padding: 0 12px; border: 1px solid #d8e0ed; border-radius: 11px; color: #243149; background: #fff; }
+.commit-picker-sha { display: grid; gap: 7px; padding: 12px 14px; border-radius: 11px; background: #f5f7fb; }
+.commit-picker-sha span { color: var(--muted); font-size: 10px; }
+.commit-picker-sha code { overflow: hidden; color: #34435d; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.commit-picker-empty { display: grid; min-height: 105px; place-items: center; color: var(--muted); font-size: 12px; }
+.commit-picker-modal footer { display: flex; justify-content: flex-end; gap: 9px; padding: 16px 24px 20px; border-top: 1px solid var(--border); }
 .terminal-canvas { height: calc(100% - 66px); padding: 12px; background: #0b111b; }
 .terminal-canvas .xterm { height: 100%; }
 
@@ -495,6 +515,8 @@ button:disabled { cursor: wait; opacity: .56; transform: none !important; }
 .pipeline-flow .review-on { color: #a96808; background: #fff4df; }
 .run-actions { display: flex; gap: 7px; margin-top: 10px; }
 .run-actions button { min-height: 31px; padding: 0 10px; border-radius: 9px; color: var(--primary-strong); background: var(--primary-soft); cursor: pointer; font-size: 9px; }
+.run-actions .accent-action { color: #fff; background: var(--primary); }
+.run-actions .danger-action { color: #b64458; border: 1px solid #f0d5da; background: #fff6f7; }
 .status-awaiting_approval { color: #a96808; background: #fff4df; }
 .status-running { color: #416dcc; background: #edf3ff; }
 .status-succeeded { color: #16815a; background: #eaf8f2; }

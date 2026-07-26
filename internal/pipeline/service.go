@@ -746,8 +746,11 @@ func (s *Service) PrepareRun(ctx context.Context, applicationID, actorID string)
 				break
 			}
 		}
-		if source == nil || application.LastObservedCommit == "" {
-			return s.createBlockedRun(ctx, application, actorID)
+		if source == nil {
+			return s.createBlockedRun(ctx, application, actorID, "应用流水线缺少代码触发节点，请修正并重新启用流水线")
+		}
+		if application.LastObservedCommit == "" {
+			return s.createBlockedRun(ctx, application, actorID, "尚未获取代码版本，请检查仓库并确认触发节点能匹配远端分支或 Tag")
 		}
 		now := time.Now().UTC()
 		run, err := newWorkflowRun(
@@ -764,7 +767,7 @@ func (s *Service) PrepareRun(ctx context.Context, applicationID, actorID string)
 	}
 	status, message := model.PipelineRunReady, "构建与发布配置已就绪"
 	if !pipelineComplete(application) {
-		status, message = model.PipelineRunBlocked, ErrPipelineIncomplete.Error()
+		status, message = model.PipelineRunBlocked, pipelineIncompleteMessage(application)
 	}
 	now := time.Now().UTC()
 	run := &model.PipelineRun{
@@ -782,12 +785,12 @@ func (s *Service) PrepareRun(ctx context.Context, applicationID, actorID string)
 	return run, nil
 }
 
-func (s *Service) createBlockedRun(ctx context.Context, application *model.Application, actorID string) (*model.PipelineRun, error) {
+func (s *Service) createBlockedRun(ctx context.Context, application *model.Application, actorID, message string) (*model.PipelineRun, error) {
 	now := time.Now().UTC()
 	run := &model.PipelineRun{
 		ID: uuid.NewString(), ApplicationID: application.ID, Trigger: "manual",
 		Ref: application.LastObservedRef, CommitSHA: application.LastObservedCommit,
-		Status: model.PipelineRunBlocked, Stage: "configured", Message: ErrPipelineIncomplete.Error(),
+		Status: model.PipelineRunBlocked, Stage: "configured", Message: message,
 		CreatedBy: actorID, CreatedAt: now, UpdatedAt: now,
 	}
 	if err := s.db.WithContext(ctx).Create(run).Error; err != nil {
@@ -1034,6 +1037,26 @@ func pipelineComplete(application *model.Application) bool {
 	return application.BuildPlanID != "" && application.ImageRegistryID != "" &&
 		application.ReleasePlanID != "" &&
 		application.LastObservedCommit != ""
+}
+
+func pipelineIncompleteMessage(application *model.Application) string {
+	missing := make([]string, 0, 4)
+	if application.BuildPlanID == "" {
+		missing = append(missing, "构建方案")
+	}
+	if application.ImageRegistryID == "" {
+		missing = append(missing, "镜像仓库")
+	}
+	if application.ReleasePlanID == "" {
+		missing = append(missing, "部署方案")
+	}
+	if application.LastObservedCommit == "" {
+		missing = append(missing, "代码版本")
+	}
+	if len(missing) == 0 {
+		return ErrPipelineIncomplete.Error()
+	}
+	return "缺少：" + strings.Join(missing, "、")
 }
 
 func validResourceName(name string) bool { return resourceNamePattern.MatchString(name) }

@@ -81,6 +81,12 @@ func TestResourcesCanBeBoundAndPrepared(t *testing.T) {
 	if err != ErrPipelineIncomplete || blocked.Status != model.PipelineRunBlocked {
 		t.Fatalf("未观察到代码版本时流水线应被阻止: run=%+v err=%v", blocked, err)
 	}
+	if blocked.Message != "缺少：代码版本" {
+		t.Fatalf("阻塞原因应明确指出缺少代码版本: %q", blocked.Message)
+	}
+	if err := service.DeleteRun(ctx, blocked.ID); err != nil {
+		t.Fatalf("删除未执行的阻塞计划失败: %v", err)
+	}
 	if err := db.Model(&model.Application{}).Where("id = ?", application.ID).Updates(map[string]any{
 		"last_observed_ref": "refs/heads/main", "last_observed_commit": "0123456789012345678901234567890123456789",
 	}).Error; err != nil {
@@ -89,6 +95,14 @@ func TestResourcesCanBeBoundAndPrepared(t *testing.T) {
 	ready, err := service.PrepareRun(ctx, application.ID, "admin")
 	if err != nil || ready.Status != model.PipelineRunReady || ready.Stage != "configured" {
 		t.Fatalf("完整绑定的流水线未进入就绪状态: run=%+v err=%v", ready, err)
+	}
+}
+
+func TestPipelineIncompleteMessageListsEveryMissingItem(t *testing.T) {
+	application := &model.Application{BuildPlanID: "build-1"}
+	message := pipelineIncompleteMessage(application)
+	if message != "缺少：镜像仓库、部署方案、代码版本" {
+		t.Fatalf("阻塞原因没有列出全部缺失项: %q", message)
 	}
 }
 
@@ -346,6 +360,9 @@ func TestReleaseWorkflowRequiresIndependentApproval(t *testing.T) {
 	run, err = service.ApproveRun(ctx, run.ID, "reviewer")
 	if err != nil || run.Status != model.PipelineRunRunning {
 		t.Fatalf("其他成员未能通过审核: run=%+v err=%v", run, err)
+	}
+	if err := service.DeleteRun(ctx, run.ID); !errors.Is(err, ErrPipelineRunDeleteForbidden) {
+		t.Fatalf("执行中的发布计划不应允许删除: %v", err)
 	}
 	run, err = service.AdvanceRun(ctx, run.ID, "reviewer", "")
 	if err != nil || run.CurrentNodeID != "deploy-prod" || run.Status != model.PipelineRunReady {

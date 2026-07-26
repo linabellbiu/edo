@@ -14,19 +14,22 @@ import (
 
 	"github.com/google/uuid"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
 	"zrt/internal/model"
 	"zrt/internal/repository"
 )
 
 var (
-	ErrInvalidWorkflow           = errors.New("流水线配置存在错误，请先修正节点和连线")
-	ErrWorkflowNotFound          = errors.New("应用流水线不存在")
-	ErrWorkflowRevisionConflict  = errors.New("应用流水线已被其他人修改，请刷新后再保存")
-	ErrWorkflowNotActive         = errors.New("应用流水线尚未启用")
-	ErrInvalidWorkflowTransition = errors.New("当前节点不能这样推进")
-	ErrWorkflowApprovalRequired  = errors.New("该发布计划需要先完成审核")
-	ErrWorkflowSelfApproval      = errors.New("发布申请人不能审核自己的发布计划")
+	ErrInvalidWorkflow            = errors.New("流水线配置存在错误，请先修正节点和连线")
+	ErrWorkflowNotFound           = errors.New("应用流水线不存在")
+	ErrWorkflowRevisionConflict   = errors.New("应用流水线已被其他人修改，请刷新后再保存")
+	ErrWorkflowNotActive          = errors.New("应用流水线尚未启用")
+	ErrInvalidWorkflowTransition  = errors.New("当前节点不能这样推进")
+	ErrWorkflowApprovalRequired   = errors.New("该发布计划需要先完成审核")
+	ErrWorkflowSelfApproval       = errors.New("发布申请人不能审核自己的发布计划")
+	ErrPipelineRunNotFound        = errors.New("发布计划不存在")
+	ErrPipelineRunDeleteForbidden = errors.New("执行中或等待审核的发布计划不能删除")
 )
 
 type WorkflowInput struct {
@@ -625,6 +628,28 @@ func parseWorkflowSnapshot(run *model.PipelineRun) (*workflowSnapshot, error) {
 		return nil, ErrInvalidWorkflowTransition
 	}
 	return &snapshot, nil
+}
+
+func (s *Service) DeleteRun(ctx context.Context, runID string) error {
+	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var run model.PipelineRun
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&run, "id = ?", runID).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return ErrPipelineRunNotFound
+			}
+			return fmt.Errorf("读取发布计划失败: %w", err)
+		}
+		if run.Status == model.PipelineRunRunning || run.Status == model.PipelineRunAwaitingApproval {
+			return ErrPipelineRunDeleteForbidden
+		}
+		if err := tx.Where("pipeline_run_id = ?", run.ID).Delete(&model.PipelineRunApproval{}).Error; err != nil {
+			return fmt.Errorf("删除发布计划审核记录失败: %w", err)
+		}
+		if err := tx.Delete(&run).Error; err != nil {
+			return fmt.Errorf("删除发布计划失败: %w", err)
+		}
+		return nil
+	})
 }
 
 func (s *Service) AdvanceRun(ctx context.Context, runID, actorID, targetNodeID string) (*model.PipelineRun, error) {
