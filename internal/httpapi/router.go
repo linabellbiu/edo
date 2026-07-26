@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"database/sql"
+	"io/fs"
 	"log/slog"
 	"net/http"
 	"os"
@@ -29,6 +30,7 @@ import (
 	"zrt/internal/scheduler"
 	"zrt/internal/task"
 	"zrt/internal/terminal"
+	webui "zrt/web"
 )
 
 type Dependencies struct {
@@ -246,8 +248,8 @@ func NewRouter(deps Dependencies) *gin.Engine {
 	protected.POST("/tasks/:id/retry", auditAction(deps.Audits, deps.Logger, "task.retry", "task"), requirePermission(deps.Access, deps.Logger, access.PermissionTaskManage), taskAPI.retry)
 	webIndex := installWebUI(router, deps.WebRoot, deps.Logger)
 	router.NoRoute(func(c *gin.Context) {
-		if webIndex != "" && c.Request.Method == http.MethodGet && !strings.HasPrefix(c.Request.URL.Path, "/api/") {
-			c.File(webIndex)
+		if webIndex != nil && c.Request.Method == http.MethodGet && !strings.HasPrefix(c.Request.URL.Path, "/api/") {
+			webIndex(c)
 			return
 		}
 		c.JSON(http.StatusNotFound, errorResponse{
@@ -257,25 +259,43 @@ func NewRouter(deps Dependencies) *gin.Engine {
 	return router
 }
 
-func installWebUI(router *gin.Engine, webRoot string, logger *slog.Logger) string {
-	if strings.TrimSpace(webRoot) == "" {
-		return ""
+func installWebUI(router *gin.Engine, webRoot string, logger *slog.Logger) gin.HandlerFunc {
+	if strings.TrimSpace(webRoot) != "" {
+		root, err := filepath.Abs(webRoot)
+		if err != nil {
+			logger.Warn("Web 前端目录无效", "operation", "webui_path", "err", err)
+		} else {
+			index := filepath.Join(root, "index.html")
+			if info, err := os.Stat(index); err == nil && info.Mode().IsRegular() {
+				assets := filepath.Join(root, "assets")
+				if info, err := os.Stat(assets); err == nil && info.IsDir() {
+					router.StaticFS("/assets", http.Dir(assets))
+				}
+				handler := func(c *gin.Context) { c.File(index) }
+				router.GET("/", handler)
+				logger.Info("ZRT Web 前端已启用", "operation", "webui_enabled", "web_root", root)
+				return handler
+			}
+		}
 	}
-	root, err := filepath.Abs(webRoot)
+
+	embedded := webui.Files()
+	if embedded == nil {
+		logger.Info("未发现已构建的 Web 前端，API 将独立运行", "operation", "webui_disabled")
+		return nil
+	}
+	index, err := fs.ReadFile(embedded, "index.html")
 	if err != nil {
-		logger.Warn("Web 前端目录无效", "operation", "webui_path", "err", err)
-		return ""
+		logger.Error("读取内嵌 Web 前端失败", "operation", "webui_embed", "err", err)
+		return nil
 	}
-	index := filepath.Join(root, "index.html")
-	if info, err := os.Stat(index); err != nil || !info.Mode().IsRegular() {
-		logger.Info("未发现已构建的 Web 前端，API 将独立运行", "operation", "webui_disabled", "web_root", root)
-		return ""
+	if assets, err := fs.Sub(embedded, "assets"); err == nil {
+		router.StaticFS("/assets", http.FS(assets))
 	}
-	assets := filepath.Join(root, "assets")
-	if info, err := os.Stat(assets); err == nil && info.IsDir() {
-		router.StaticFS("/assets", http.Dir(assets))
+	handler := func(c *gin.Context) {
+		c.Data(http.StatusOK, "text/html; charset=utf-8", index)
 	}
-	router.GET("/", func(c *gin.Context) { c.File(index) })
-	logger.Info("ZRT Web 前端已启用", "operation", "webui_enabled", "web_root", root)
-	return index
+	router.GET("/", handler)
+	logger.Info("ZRT 内嵌 Web 前端已启用", "operation", "webui_enabled", "web_root", "embedded")
+	return handler
 }

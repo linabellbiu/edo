@@ -36,9 +36,26 @@ mage start
 
 首次启动服务且账户库为空时会自动创建管理员账户 `admin`，初始密码为 `123456`；该账户登录后不会被强制修改密码。已有任意账户的数据库不会补建或覆盖默认管理员。普通新建账户仍须使用至少 12 位密码。
 
-`mage start` 会读取 `.env`，依次构建 Go 后端和 Web、执行数据库迁移，最后只运行 ZRT Go 二进制，由 Go 同时提供 API 和构建后的 Web，访问地址为 `http://127.0.0.1:8080`。
+`mage start` 会读取 `.env`，构建 Web，并把页面资源嵌入 `bin/zrt`（Windows 为 `bin/zrt.exe`），然后迁移数据库并启动这个二进制。运行时不需要 `web/dist`、Node.js 或 Nginx，API 和页面都使用 `http://127.0.0.1:8080`。
 
-开发时执行 `mage start --dev`。Mage 会先通过 `deploy/compose.dev.yml` 启动 Redis 和 NATS，等待健康检查通过，再迁移 `.env` 指定的数据库，最后通过 `go run` 和 `npm start` 同时运行后端与 Vite Web，访问地址为 `http://127.0.0.1:5173`。依赖容器在 Mage 退出后继续运行，执行 `docker compose -f deploy/compose.dev.yml stop redis nats` 可以停止它们。首次运行缺少 Web 依赖时会自动执行 `npm ci`。
+构建后的程序可以单独复制到其他机器。新数据库先迁移，再启动服务：
+
+```bash
+./zrt migrate
+./zrt
+```
+
+Windows 使用 `zrt.exe migrate` 和 `zrt.exe`。单文件只包含 ZRT 后端和 Web，Redis、NATS 以及 `.env` 中配置的外部数据库仍需单独提供；使用默认 SQLite 时，数据库文件会写入 `data/zrt.db`。
+
+开发时执行 `mage start --dev`。Mage 会先通过 `deploy/compose.dev.yml` 启动 Redis 和 NATS，等待健康检查通过，自动执行数据库迁移，再通过 `go run` 和 `npm start` 同时运行后端与 Vite Web。开发页面地址为 `http://127.0.0.1:5173`，源码修改后不需要重新构建单文件程序。依赖容器在 Mage 退出后继续运行，执行 `docker compose -f deploy/compose.dev.yml stop redis nats` 可以停止它们。首次运行缺少 Web 依赖时会自动执行 `npm ci`。
+
+只迁移 `.env` 指定的数据库时执行：
+
+```bash
+mage migrate
+```
+
+该命令不启动 Redis、NATS、后端或 Web。`mage start` 和包含后端的 `mage start --dev` 已经自动执行迁移，不需要再手工运行。
 
 只启动一个组件时增加 `--server` 或 `--web`，例如 `mage start --server`、`mage start --web`、`mage start --dev --server` 和 `mage start --dev --web`。不指定组件或同时指定两个组件时，后端和 Web 会一起启动。开发模式包含后端时会自动启动依赖并迁移数据库；仅运行 Web 时不会启动不需要的后端依赖。
 

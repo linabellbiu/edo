@@ -45,15 +45,24 @@ func Start(ctx context.Context) error {
 func Help() {
 	fmt.Println(`ZRT Mage 命令
 
-mage start                       构建后端和 Web，由 Go 提供页面
+mage start                       构建内嵌 Web 的单文件程序并启动
 mage start --server              只启动后端
 mage start --web                 只启动 Web
 mage start --dev                 启动开发依赖和迁移，再运行 go run 与 npm start
 mage start --dev --server        开发模式，只运行后端
 mage start --dev --web           开发模式，只运行 Web
 mage start --docker              使用 Docker Compose 启动完整环境
+mage migrate                     迁移 .env 指定的数据库
 mage start --help                查看 start 参数说明
 mage -l                          查看全部 Mage 任务`)
+}
+
+// Migrate 迁移 .env 指定的数据库，不启动其他服务。
+func Migrate(ctx context.Context) error {
+	if err := loadEnvironment(); err != nil {
+		return err
+	}
+	return migrateFromSource(ctx)
 }
 
 type startOptions struct {
@@ -106,7 +115,7 @@ func parseStartOptions(args []string) (startOptions, error) {
 func printStartHelp() {
 	fmt.Println(`用法：mage start [--dev | --docker] [--server | --web]
 
-不指定参数时，构建后端和 Web，再由 ZRT 后端提供页面。
+不指定参数时，构建内嵌 Web 的单文件程序，迁移数据库后启动。
 --dev     启动 Redis、NATS 和迁移，再使用 go run 与 npm start 开发运行
 --docker  使用 Docker Compose 启动
 --server  只启动后端
@@ -131,14 +140,6 @@ func startDocker(ctx context.Context, runServer, runWeb bool) error {
 }
 
 func startBuilt(ctx context.Context, runServer, runWeb bool) error {
-	backend := ""
-	if runServer {
-		var err error
-		backend, err = buildBackend(ctx)
-		if err != nil {
-			return err
-		}
-	}
 	if runWeb {
 		if err := ensureWebDependencies(ctx); err != nil {
 			return err
@@ -147,15 +148,16 @@ func startBuilt(ctx context.Context, runServer, runWeb bool) error {
 			return fmt.Errorf("构建 Web 失败: %w", err)
 		}
 	}
+	backend := ""
 	if runServer {
-		webRoot := ""
-		if runWeb {
-			webRoot = strings.TrimSpace(os.Getenv("ZRT_WEB_ROOT"))
-			if webRoot == "" {
-				webRoot = filepath.Join("web", "dist")
-			}
+		var err error
+		backend, err = buildBackend(ctx, runWeb)
+		if err != nil {
+			return err
 		}
-		if err := os.Setenv("ZRT_WEB_ROOT", webRoot); err != nil {
+	}
+	if runServer {
+		if err := os.Setenv("ZRT_WEB_ROOT", ""); err != nil {
 			return fmt.Errorf("设置 Web 目录失败: %w", err)
 		}
 		if err := runCommand(ctx, backend, "migrate"); err != nil {
@@ -180,8 +182,8 @@ func startDevelopment(ctx context.Context, runServer, runWeb bool) error {
 		if err := os.Setenv("ZRT_WEB_ROOT", ""); err != nil {
 			return fmt.Errorf("设置开发环境 Web 目录失败: %w", err)
 		}
-		if err := runCommand(ctx, "go", "run", "./cmd/zrt", "migrate"); err != nil {
-			return fmt.Errorf("数据库迁移失败: %w", err)
+		if err := migrateFromSource(ctx); err != nil {
+			return err
 		}
 	}
 	if runWeb {
@@ -205,6 +207,13 @@ func startDevelopment(ctx context.Context, runServer, runWeb bool) error {
 	return runCommand(ctx, npmExecutable(), "--prefix", "web", "start")
 }
 
+func migrateFromSource(ctx context.Context) error {
+	if err := runCommand(ctx, "go", "run", "./cmd/zrt", "migrate"); err != nil {
+		return fmt.Errorf("数据库迁移失败: %w", err)
+	}
+	return nil
+}
+
 func startDevelopmentDependencies(ctx context.Context) error {
 	fmt.Println("启动开发依赖：Redis、NATS JetStream")
 	if err := runCommand(
@@ -226,7 +235,7 @@ func startDevelopmentDependencies(ctx context.Context) error {
 	return nil
 }
 
-func buildBackend(ctx context.Context) (string, error) {
+func buildBackend(ctx context.Context, embedWeb bool) (string, error) {
 	if err := os.MkdirAll("bin", 0o755); err != nil {
 		return "", fmt.Errorf("创建 bin 目录失败: %w", err)
 	}
@@ -234,7 +243,12 @@ func buildBackend(ctx context.Context) (string, error) {
 	if runtime.GOOS == "windows" {
 		binary += ".exe"
 	}
-	if err := runCommand(ctx, "go", "build", "-trimpath", "-o", binary, "./cmd/zrt"); err != nil {
+	args := []string{"build", "-trimpath"}
+	if embedWeb {
+		args = append(args, "-tags", "zrt_web")
+	}
+	args = append(args, "-o", binary, "./cmd/zrt")
+	if err := runCommand(ctx, "go", args...); err != nil {
 		return "", fmt.Errorf("构建 ZRT 后端失败: %w", err)
 	}
 	absolute, err := filepath.Abs(binary)
