@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -50,6 +51,38 @@ func TestSelectedComponents(t *testing.T) {
 				t.Fatalf("selectedComponents() = (%t, %t), want (%t, %t)", gotServer, gotWeb, test.wantServer, test.wantWeb)
 			}
 		})
+	}
+}
+
+func TestSetDevelopmentSecretsKeyUsesComposeDefault(t *testing.T) {
+	t.Setenv("ZRT_SECRETS_KEY", "")
+	if err := setDevelopmentSecretsKey(); err != nil {
+		t.Fatal(err)
+	}
+	if got := os.Getenv("ZRT_SECRETS_KEY"); got != developmentSecretsKey {
+		t.Fatalf("开发密钥 = %q, want %q", got, developmentSecretsKey)
+	}
+}
+
+func TestSetDevelopmentSecretsKeyPreservesExplicitValue(t *testing.T) {
+	const configured = "user-configured-key"
+	t.Setenv("ZRT_SECRETS_KEY", configured)
+	if err := setDevelopmentSecretsKey(); err != nil {
+		t.Fatal(err)
+	}
+	if got := os.Getenv("ZRT_SECRETS_KEY"); got != configured {
+		t.Fatalf("显式配置被覆盖: %q", got)
+	}
+}
+
+func TestDevelopmentSecretsKeyMatchesCompose(t *testing.T) {
+	content, err := os.ReadFile(filepath.Join("deploy", "compose.dev.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	expected := "${ZRT_SECRETS_KEY:-" + developmentSecretsKey + "}"
+	if !strings.Contains(string(content), expected) {
+		t.Fatal("Mage 与开发 Compose 的默认加密密钥不一致")
 	}
 }
 

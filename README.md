@@ -65,7 +65,7 @@ mage migrate
 
 需要完全使用容器时执行 `mage start --docker`。该模式会在后台启动 Redis、NATS、迁移任务、后端和 Web；停止环境执行 `docker compose -f deploy/compose.dev.yml down`，该命令不会删除业务数据。`--dev` 和 `--docker` 不能同时使用。
 
-登录后可在“平台管理 → 登录方式”中接入 LDAP 或 OAuth。开发 Compose 自带一份仅供本机使用的加密密钥；多人共享、测试和生产环境必须在 `.env` 中设置自己的 `ZRT_SECRETS_KEY`，否则不同环境会错误地共用密钥。
+登录后可在“平台管理 → 登录方式”中接入 LDAP 或 OAuth。`mage start --dev` 与开发 Compose 使用同一份本机开发密钥，切换启动方式后仍能读取已有凭据；多人共享、测试和生产环境必须在 `.env` 中设置自己的 `ZRT_SECRETS_KEY`，不能继续使用开发密钥。
 
 ## 构建与测试
 

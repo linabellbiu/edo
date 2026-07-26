@@ -17,6 +17,8 @@ import (
 	"github.com/joho/godotenv"
 )
 
+const developmentSecretsKey = "b97MuZYq2cdfHG+Hy2hjRvh0yerPm2MF9rHRe0KXVQg="
+
 // Start 启动 ZRT；可使用 --dev、--docker、--server 和 --web 调整启动方式。
 func Start(ctx context.Context) error {
 	options, err := readStartOptions()
@@ -178,6 +180,9 @@ func startBuilt(ctx context.Context, runServer, runWeb bool) error {
 
 func startDevelopment(ctx context.Context, runServer, runWeb bool) error {
 	if runServer {
+		if err := setDevelopmentSecretsKey(); err != nil {
+			return err
+		}
 		if err := startDevelopmentDependencies(ctx); err != nil {
 			return err
 		}
@@ -213,6 +218,16 @@ func startDevelopment(ctx context.Context, runServer, runWeb bool) error {
 	}
 	fmt.Println("ZRT Web：http://127.0.0.1:5173")
 	return runCommand(ctx, npmExecutable(), "--prefix", "web", "start")
+}
+
+func setDevelopmentSecretsKey() error {
+	if strings.TrimSpace(os.Getenv("ZRT_SECRETS_KEY")) != "" {
+		return nil
+	}
+	if err := os.Setenv("ZRT_SECRETS_KEY", developmentSecretsKey); err != nil {
+		return fmt.Errorf("设置开发环境加密密钥失败: %w", err)
+	}
+	return nil
 }
 
 func migrateFromSource(ctx context.Context) error {
