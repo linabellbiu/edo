@@ -15,8 +15,9 @@ import (
 )
 
 var (
-	ErrWorkflowTemplateExists           = errors.New("公共发布计划名称已存在")
-	ErrWorkflowTemplateRevisionConflict = errors.New("公共发布计划已被其他人修改，请刷新后再保存")
+	ErrWorkflowTemplateExists           = errors.New("流水线方案名称已存在")
+	ErrWorkflowTemplateRevisionConflict = errors.New("流水线方案已被其他人修改，请刷新后再保存")
+	ErrWorkflowTemplateInUse            = errors.New("流水线方案仍被应用使用，不能删除")
 )
 
 type WorkflowTemplateInput struct {
@@ -33,7 +34,7 @@ type WorkflowTemplateResult struct {
 func (s *Service) ListWorkflowTemplates(ctx context.Context) ([]model.ReleaseWorkflowTemplate, error) {
 	var templates []model.ReleaseWorkflowTemplate
 	if err := s.db.WithContext(ctx).Order("name ASC").Find(&templates).Error; err != nil {
-		return nil, fmt.Errorf("查询公共发布计划失败: %w", err)
+		return nil, fmt.Errorf("查询流水线方案失败: %w", err)
 	}
 	return templates, nil
 }
@@ -44,7 +45,7 @@ func (s *Service) GetWorkflowTemplate(ctx context.Context, id string) (*Workflow
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, ErrWorkflowTemplateNotFound
 		}
-		return nil, fmt.Errorf("读取公共发布计划失败: %w", err)
+		return nil, fmt.Errorf("读取流水线方案失败: %w", err)
 	}
 	issues := s.validateWorkflowTemplate(ctx, template.Nodes, template.Edges)
 	return &WorkflowTemplateResult{WorkflowTemplate: &template, Valid: len(issues) == 0, Issues: issues}, nil
@@ -83,7 +84,7 @@ func (s *Service) CreateWorkflowTemplate(ctx context.Context, actorID string, in
 		if errors.Is(err, gorm.ErrDuplicatedKey) {
 			return nil, ErrWorkflowTemplateExists
 		}
-		return nil, fmt.Errorf("创建公共发布计划失败: %w", err)
+		return nil, fmt.Errorf("创建流水线方案失败: %w", err)
 	}
 	return &WorkflowTemplateResult{WorkflowTemplate: template, Valid: len(issues) == 0, Issues: issues}, nil
 }
@@ -138,6 +139,32 @@ func (s *Service) SaveWorkflowTemplate(ctx context.Context, id, actorID string, 
 		return nil, err
 	}
 	return &WorkflowTemplateResult{WorkflowTemplate: &saved, Valid: len(issues) == 0, Issues: issues}, nil
+}
+
+func (s *Service) DeleteWorkflowTemplate(ctx context.Context, id string) error {
+	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var template model.ReleaseWorkflowTemplate
+		if err := tx.First(&template, "id = ?", id).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return ErrWorkflowTemplateNotFound
+			}
+			return err
+		}
+		var applicationCount, workflowCount int64
+		if err := tx.Model(&model.Application{}).Where("workflow_template_id = ?", id).Count(&applicationCount).Error; err != nil {
+			return err
+		}
+		if err := tx.Model(&model.ReleaseWorkflow{}).Where("workflow_template_id = ?", id).Count(&workflowCount).Error; err != nil {
+			return err
+		}
+		if applicationCount > 0 || workflowCount > 0 {
+			return ErrWorkflowTemplateInUse
+		}
+		if err := tx.Delete(&template).Error; err != nil {
+			return fmt.Errorf("删除流水线方案失败: %w", err)
+		}
+		return nil
+	})
 }
 
 func sanitizeWorkflowTemplateInput(input *WorkflowTemplateInput) error {

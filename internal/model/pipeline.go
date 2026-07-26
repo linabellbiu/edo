@@ -158,6 +158,7 @@ type PipelineRun struct {
 	CreatedBy        string            `gorm:"type:varchar(36);not null;default:'';index" json:"created_by,omitempty"`
 	ApprovedBy       *string           `gorm:"type:varchar(36);index" json:"approved_by,omitempty"`
 	ApprovedAt       *time.Time        `json:"approved_at,omitempty"`
+	ApprovalRequired bool              `gorm:"-" json:"approval_required"`
 	CreatedAt        time.Time         `gorm:"not null;index" json:"created_at"`
 	UpdatedAt        time.Time         `gorm:"not null" json:"updated_at"`
 	Application      Application       `gorm:"foreignKey:ApplicationID" json:"application,omitempty"`

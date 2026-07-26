@@ -20,10 +20,10 @@ import (
 )
 
 var (
-	ErrInvalidWorkflow           = errors.New("发布计划存在错误，请先修正节点和连线")
-	ErrWorkflowNotFound          = errors.New("发布计划不存在")
-	ErrWorkflowRevisionConflict  = errors.New("发布计划已被其他人修改，请刷新后再保存")
-	ErrWorkflowNotActive         = errors.New("发布计划尚未启用")
+	ErrInvalidWorkflow           = errors.New("流水线配置存在错误，请先修正节点和连线")
+	ErrWorkflowNotFound          = errors.New("应用流水线不存在")
+	ErrWorkflowRevisionConflict  = errors.New("应用流水线已被其他人修改，请刷新后再保存")
+	ErrWorkflowNotActive         = errors.New("应用流水线尚未启用")
 	ErrInvalidWorkflowTransition = errors.New("当前节点不能这样推进")
 	ErrWorkflowApprovalRequired  = errors.New("该发布计划需要先完成审核")
 	ErrWorkflowSelfApproval      = errors.New("发布申请人不能审核自己的发布计划")
@@ -168,10 +168,10 @@ func (s *Service) ensureWorkflow(ctx context.Context, application *model.Applica
 	}
 	if err := s.db.WithContext(ctx).Create(workflow).Error; err != nil {
 		if !errors.Is(err, gorm.ErrDuplicatedKey) {
-			return nil, fmt.Errorf("创建默认发布计划失败: %w", err)
+			return nil, fmt.Errorf("创建默认应用流水线失败: %w", err)
 		}
 		if err := s.db.WithContext(ctx).First(workflow, "application_id = ?", application.ID).Error; err != nil {
-			return nil, fmt.Errorf("读取发布计划失败: %w", err)
+			return nil, fmt.Errorf("读取应用流水线失败: %w", err)
 		}
 	}
 	return workflow, nil
@@ -232,7 +232,7 @@ func defaultWorkflow(application *model.Application, environments []model.Applic
 		)
 	}
 	return &model.ReleaseWorkflow{
-		ID: uuid.NewString(), ApplicationID: application.ID, Name: application.Name + "发布计划",
+		ID: uuid.NewString(), ApplicationID: application.ID, Name: application.Name + "流水线",
 		Revision: 1, IsActive: false, Nodes: nodes, Edges: edges,
 		Viewport:  model.WorkflowViewport{X: 60, Y: 40, Zoom: 0.85},
 		CreatedBy: actorID, UpdatedBy: actorID, CreatedAt: now, UpdatedAt: now,
@@ -344,21 +344,15 @@ func (s *Service) validateWorkflow(ctx context.Context, application *model.Appli
 			if !s.activeResourceExists(ctx, &model.ReleasePlan{}, node.Config.ReleasePlanID) {
 				issues = append(issues, WorkflowIssue{Code: "missing_release_plan", Message: "部署节点需要绑定可用的部署方案", NodeID: node.ID})
 			}
-			target, targetOK := s.activeDeploymentTarget(ctx, node.Config.DeploymentTargetID)
-			if !targetOK {
-				issues = append(issues, WorkflowIssue{Code: "missing_deployment_target", Message: "部署节点需要绑定可用的发布目标", NodeID: node.ID})
-			} else if !targetMatchesEnvironment(target.Environment, node.Config.Environment) {
-				issues = append(issues, WorkflowIssue{Code: "deployment_target_mismatch", Message: "发布目标与节点环境不匹配", NodeID: node.ID})
-			}
 		default:
 			issues = append(issues, WorkflowIssue{Code: "invalid_node_type", Message: "节点类型无效", NodeID: node.ID})
 		}
 	}
 	if triggerCount == 0 {
-		issues = append(issues, WorkflowIssue{Code: "missing_trigger", Message: "发布计划至少需要一个代码触发节点"})
+		issues = append(issues, WorkflowIssue{Code: "missing_trigger", Message: "流水线至少需要一个代码触发节点"})
 	}
 	if deployCount == 0 {
-		issues = append(issues, WorkflowIssue{Code: "missing_deploy", Message: "发布计划至少需要一个部署节点"})
+		issues = append(issues, WorkflowIssue{Code: "missing_deploy", Message: "流水线至少需要一个部署节点"})
 	}
 	edgePairs := make(map[string]struct{}, len(edges))
 	edgeIDs := make(map[string]struct{}, len(edges))
@@ -407,7 +401,7 @@ func (s *Service) validateWorkflow(ctx context.Context, application *model.Appli
 		}
 	}
 	if visited != len(nodeByID) {
-		issues = append(issues, WorkflowIssue{Code: "cycle", Message: "发布计划不能形成循环连线"})
+		issues = append(issues, WorkflowIssue{Code: "cycle", Message: "流水线不能形成循环连线"})
 	}
 	for id, node := range nodeByID {
 		if node.Type == model.WorkflowNodeTrigger && indegree[id] > 0 {
@@ -480,25 +474,6 @@ func (s *Service) activeResourceExists(ctx context.Context, target any, id strin
 	return s.db.WithContext(ctx).Model(target).Where("id = ? AND is_active = ?", id, true).Count(&count).Error == nil && count == 1
 }
 
-func (s *Service) activeDeploymentTarget(ctx context.Context, id string) (*model.DeploymentTarget, bool) {
-	if id == "" {
-		return nil, false
-	}
-	var target model.DeploymentTarget
-	if err := s.db.WithContext(ctx).First(&target, "id = ? AND is_active = ?", id, true).Error; err != nil {
-		return nil, false
-	}
-	return &target, true
-}
-
-func targetMatchesEnvironment(target model.EnvironmentType, workflowEnvironment string) bool {
-	expected := map[string]model.EnvironmentType{
-		"dev": model.EnvironmentDevelopment, "test": model.EnvironmentStaging,
-		"pre": model.EnvironmentStaging, "prod": model.EnvironmentProduction,
-	}[workflowEnvironment]
-	return expected != "" && target == expected
-}
-
 func containsEvent(events []string, expected string) bool {
 	for _, event := range events {
 		if event == expected {
@@ -511,7 +486,7 @@ func containsEvent(events []string, expected string) bool {
 func workflowSnapshotJSON(workflow *model.ReleaseWorkflow, approvalEnabled bool) (string, error) {
 	data, err := json.Marshal(workflowSnapshot{Nodes: workflow.Nodes, Edges: workflow.Edges, ApprovalEnabled: approvalEnabled})
 	if err != nil {
-		return "", fmt.Errorf("保存发布计划快照失败: %w", err)
+		return "", fmt.Errorf("保存流水线快照失败: %w", err)
 	}
 	return string(data), nil
 }
@@ -527,7 +502,8 @@ func newWorkflowRun(application *model.Application, workflow *model.ReleaseWorkf
 		Stage: string(node.Type), Environment: node.Config.Environment,
 		WorkflowID: workflow.ID, WorkflowRevision: workflow.Revision,
 		CurrentNodeID: node.ID, WorkflowSnapshot: snapshot,
-		Message: message, CreatedBy: actorID, CreatedAt: now, UpdatedAt: now,
+		ApprovalRequired: application.ReleaseApprovalEnabled,
+		Message:          message, CreatedBy: actorID, CreatedAt: now, UpdatedAt: now,
 	}, nil
 }
 

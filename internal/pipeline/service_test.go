@@ -324,6 +324,13 @@ func TestReleaseWorkflowRequiresIndependentApproval(t *testing.T) {
 	if err != nil || run.CurrentNodeID != "trigger-test" {
 		t.Fatalf("发布计划没有从测试触发节点启动: run=%+v err=%v", run, err)
 	}
+	if !run.ApprovalRequired {
+		t.Fatalf("发布计划没有保存应用的审核要求: %+v", run)
+	}
+	listedRuns, err := service.ListRuns(ctx, 10)
+	if err != nil || len(listedRuns) == 0 || !listedRuns[0].ApprovalRequired {
+		t.Fatalf("发布计划列表没有从流水线快照还原审核要求: runs=%+v err=%v", listedRuns, err)
+	}
 	for _, expectedNode := range []string{"deploy-test", "promote-prod", "approval-prod"} {
 		run, err = service.AdvanceRun(ctx, run.ID, "admin", "")
 		if err != nil || run.CurrentNodeID != expectedNode {
@@ -393,10 +400,10 @@ func TestPublicWorkflowTemplateIsCopiedWhenApplicationIsCreated(t *testing.T) {
 	}
 	nodes := []model.WorkflowNode{
 		{ID: "trigger-test", Type: model.WorkflowNodeTrigger, Name: "测试分支", Position: model.WorkflowPosition{X: 80, Y: 80}, Config: model.WorkflowNodeConfig{Environment: "test", Branch: "test", Events: []string{"push", "pr"}}},
-		{ID: "deploy-test", Type: model.WorkflowNodeDeploy, Name: "部署测试", Position: model.WorkflowPosition{X: 360, Y: 80}, Config: model.WorkflowNodeConfig{Environment: "test", ReleasePlanID: releasePlan.ID, DeploymentTargetID: testTarget.ID}},
+		{ID: "deploy-test", Type: model.WorkflowNodeDeploy, Name: "部署测试", Position: model.WorkflowPosition{X: 360, Y: 80}, Config: model.WorkflowNodeConfig{Environment: "test", ReleasePlanID: releasePlan.ID}},
 		{ID: "promote-prod", Type: model.WorkflowNodeManual, Name: "放行生产", Position: model.WorkflowPosition{X: 640, Y: 80}, Config: model.WorkflowNodeConfig{Environment: "prod"}},
 		{ID: "approve-prod", Type: model.WorkflowNodeApproval, Name: "生产审核", Position: model.WorkflowPosition{X: 920, Y: 80}, Config: model.WorkflowNodeConfig{Environment: "prod"}},
-		{ID: "deploy-prod", Type: model.WorkflowNodeDeploy, Name: "部署生产", Position: model.WorkflowPosition{X: 1200, Y: 80}, Config: model.WorkflowNodeConfig{Environment: "prod", ReleasePlanID: releasePlan.ID, DeploymentTargetID: prodTarget.ID}},
+		{ID: "deploy-prod", Type: model.WorkflowNodeDeploy, Name: "部署生产", Position: model.WorkflowPosition{X: 1200, Y: 80}, Config: model.WorkflowNodeConfig{Environment: "prod", ReleasePlanID: releasePlan.ID}},
 	}
 	edges := []model.WorkflowEdge{
 		{ID: "edge-1", Source: "trigger-test", Target: "deploy-test"},
@@ -446,6 +453,22 @@ func TestPublicWorkflowTemplateIsCopiedWhenApplicationIsCreated(t *testing.T) {
 	stored, err := service.GetWorkflow(ctx, application.ID)
 	if err != nil || stored.Workflow.Nodes[0].Name != "测试分支" || stored.Workflow.WorkflowTemplateRevision != 1 {
 		t.Fatalf("模板更新不应静默改变应用快照: workflow=%+v err=%v", stored, err)
+	}
+	if err := service.DeleteWorkflowTemplate(ctx, templateResult.WorkflowTemplate.ID); !errors.Is(err, ErrWorkflowTemplateInUse) {
+		t.Fatalf("仍被应用使用的流水线方案不应允许删除: %v", err)
+	}
+	unused, err := service.CreateWorkflowTemplate(ctx, "admin", WorkflowTemplateInput{
+		Description:   "可删除的未使用方案",
+		WorkflowInput: WorkflowInput{Name: "未使用流水线方案", Nodes: nodes, Edges: edges, Viewport: model.WorkflowViewport{Zoom: 0.8}},
+	})
+	if err != nil {
+		t.Fatalf("创建未使用流水线方案失败: %v", err)
+	}
+	if err := service.DeleteWorkflowTemplate(ctx, unused.WorkflowTemplate.ID); err != nil {
+		t.Fatalf("删除未使用流水线方案失败: %v", err)
+	}
+	if _, err := service.GetWorkflowTemplate(ctx, unused.WorkflowTemplate.ID); !errors.Is(err, ErrWorkflowTemplateNotFound) {
+		t.Fatalf("已删除的流水线方案仍可读取: %v", err)
 	}
 }
 

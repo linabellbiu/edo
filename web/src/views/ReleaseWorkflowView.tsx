@@ -18,7 +18,6 @@ interface Application {
   id: string; name: string; release_approval_enabled: boolean; environments: ApplicationEnvironment[]
 }
 interface DeploymentPlan { id: string; name: string; kind: string; is_active: boolean }
-interface DeploymentTarget { id: string; name: string; environment: string; is_active: boolean }
 interface WorkflowNode {
   id: string; type: NodeType; name: string; position: { x: number; y: number }
   config: {
@@ -55,7 +54,7 @@ const canvasEnvironments: ApplicationEnvironment[] = [
 ]
 
 const publicCanvasApplication: Application = {
-  id: 'public-template', name: '公共发布计划', release_approval_enabled: true,
+  id: 'public-template', name: '流水线方案', release_approval_enabled: true,
   environments: canvasEnvironments,
 }
 
@@ -86,7 +85,7 @@ function createTemplate(application: Application, compact = false) {
     const deployID = `deploy-${environment.key}`
     nodes.push(
       { id: triggerID, type: 'trigger', name: `${environment.name}代码`, position: { x, y: 70 }, config: { environment: environment.key, branch: environment.branch, events: triggerEvents(environment), tag_pattern: environment.tag_pattern } },
-      { id: deployID, type: 'deploy', name: `部署到${environment.name}`, position: { x, y: 350 }, config: { environment: environment.key, release_plan_id: environment.release_plan_id, deployment_target_id: environment.deployment_target_id } },
+      { id: deployID, type: 'deploy', name: `部署到${environment.name}`, position: { x, y: 350 }, config: { environment: environment.key, release_plan_id: environment.release_plan_id } },
     )
     entryIDs.set(environment.key, deployID)
     deployIDs.push(deployID)
@@ -122,7 +121,6 @@ export default function ReleaseWorkflowView() {
   const [applications, setApplications] = useState<Application[]>([])
   const [templates, setTemplates] = useState<WorkflowTemplate[]>([])
   const [deploymentPlans, setDeploymentPlans] = useState<DeploymentPlan[]>([])
-  const [targets, setTargets] = useState<DeploymentTarget[]>([])
   const [applicationID, setApplicationID] = useState(searchParams.get('application') || '')
   const [templateID, setTemplateID] = useState(searchParams.get('template') || '')
   const [workflow, setWorkflow] = useState<Workflow | null>(null)
@@ -152,15 +150,13 @@ export default function ReleaseWorkflowView() {
     setLoading(true)
     setError('')
     try {
-      const [applicationResult, planResult, targetResult, templateResult] = await Promise.all([
+      const [applicationResult, planResult, templateResult] = await Promise.all([
         client.get<{ applications: Application[] }>('/applications'),
         client.get<{ deployment_plans: DeploymentPlan[] }>('/deployment-plans'),
-        client.get<{ targets: DeploymentTarget[] }>('/deployment-targets'),
         client.get<{ workflow_templates: WorkflowTemplate[] }>('/workflow-templates'),
       ])
       setApplications(applicationResult.data.applications)
       setDeploymentPlans(planResult.data.deployment_plans)
-      setTargets(targetResult.data.targets)
       setTemplates(templateResult.data.workflow_templates)
       if (!applicationID && !templateID && !createMode && templateResult.data.workflow_templates.length > 0) {
         const id = templateResult.data.workflow_templates[0].id
@@ -256,7 +252,6 @@ export default function ReleaseWorkflowView() {
         environment: environment?.key, branch: type === 'trigger' ? environment?.branch : undefined,
         events: type === 'trigger' ? ['push'] : undefined,
         release_plan_id: type === 'deploy' ? environment?.release_plan_id : undefined,
-        deployment_target_id: type === 'deploy' ? environment?.deployment_target_id : undefined,
       },
     }
     setNodes((current) => [...current, node])
@@ -309,7 +304,7 @@ export default function ReleaseWorkflowView() {
         ? await client.post<WorkflowTemplateResponse>('/workflow-templates/validate', payload)
         : await client.post<WorkflowResponse>(`/applications/${applicationID}/workflow/validate`, payload)
       setIssues(result.data.issues || [])
-      setMessage(result.data.valid ? '检查通过，可以启用这份发布计划。' : `发现 ${result.data.issues.length} 个问题。`)
+      setMessage(result.data.valid ? `检查通过，可以启用这份${publicMode ? '流水线方案' : '应用流水线'}。` : `发现 ${result.data.issues.length} 个问题。`)
     } catch (validateError) {
       setError(apiErrorMessage(validateError))
     }
@@ -331,7 +326,7 @@ export default function ReleaseWorkflowView() {
       setEdges(saved.edges)
       setIssues(result.data.issues || [])
       setDirty(false)
-      setMessage(activate ? (publicMode ? '公共发布计划已启用，创建应用时可以直接选择。' : '应用发布计划已启用，新的代码事件会按这张图进入流程。') : '草稿已保存，当前不会触发新的发布流程。')
+      setMessage(activate ? (publicMode ? '流水线方案已启用，创建应用时可以直接选择。' : '应用流水线已启用，新的发布计划会按这张图执行。') : '草稿已保存，当前不会生成新的发布计划。')
       if (publicMode) {
         setTemplates((current) => current.map((item) => item.id === saved.id ? saved as WorkflowTemplate : item))
       }
@@ -351,7 +346,7 @@ export default function ReleaseWorkflowView() {
     setError('')
     try {
       const now = new Date()
-      const name = `新发布计划 ${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')} ${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`
+      const name = `新流水线方案 ${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')} ${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`
       const result = await client.post<WorkflowTemplateResponse>('/workflow-templates', {
         name, description: '在无限画布中配置环境、触发条件和部署路径。', revision: 0,
         activate: false, nodes: graph.nodes, edges: graph.edges,
@@ -361,7 +356,7 @@ export default function ReleaseWorkflowView() {
       setTemplates((current) => [...current, created])
       setTemplateID(created.id)
       setSearchParams({ template: created.id }, { replace: true })
-      setMessage('已创建一张公共发布计划草稿，请直接在画布上调整。')
+      setMessage('已创建一份流水线方案草稿，请直接在无限画布上调整。')
     } catch (createError) {
       createRequestedRef.current = false
       setError(apiErrorMessage(createError))
@@ -433,18 +428,18 @@ export default function ReleaseWorkflowView() {
     if (dragRef.current?.pointerID === event.pointerId) dragRef.current = null
   }
 
-  if (loading && applications.length === 0 && templates.length === 0) return <div className="loading-panel">正在准备发布计划…</div>
+  if (loading && applications.length === 0 && templates.length === 0) return <div className="loading-panel">正在准备流水线方案…</div>
 
   return <section className="workflow-page page-enter">
     <div className="workflow-controls">
-      <button className="workflow-back-button" type="button" onClick={() => navigate(publicMode ? '/release-workflows' : '/applications')}>← {publicMode ? '发布计划列表' : '应用列表'}</button>
+      <button className="workflow-back-button" type="button" onClick={() => navigate(publicMode ? '/pipeline-plans' : '/applications')}>← {publicMode ? '流水线方案列表' : '应用列表'}</button>
       <div className="workflow-heading-actions">
         {publicMode ? <>
-          <label>公共计划<select value={templateID} onChange={(event) => chooseTemplate(event.target.value)}><option value="">请选择</option>{templates.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
-          {canManage && <button className="primary-button" type="button" disabled={saving} onClick={() => void createPublicTemplate()}>＋ 新建计划</button>}
+          <label>流水线方案<select value={templateID} onChange={(event) => chooseTemplate(event.target.value)}><option value="">请选择</option>{templates.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
+          {canManage && <button className="primary-button" type="button" disabled={saving} onClick={() => void createPublicTemplate()}>＋ 新建方案</button>}
         </> : <>
           <label>应用<select value={applicationID} onChange={(event) => chooseApplication(event.target.value)}>{applications.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
-          <button type="button" onClick={() => navigate('/release-workflows')}>公共计划</button>
+          <button type="button" onClick={() => navigate('/pipeline-plans')}>流水线方案</button>
         </>}
         {workflow && <span className={`workflow-state ${workflow.is_active ? 'active' : ''}`}>{workflow.is_active ? '已启用' : '草稿'}</span>}
         {dirty && <span className="unsaved-state">未保存</span>}
@@ -454,9 +449,9 @@ export default function ReleaseWorkflowView() {
     {error && <div className="form-alert error system-alert" role="alert">{error}</div>}
     {message && <div className="form-alert system-alert" role="status">{message}</div>}
 
-    {workflow && publicMode && <div className="workflow-meta-bar"><label>计划名称<input value={workflow.name} disabled={!canManage} onChange={(event) => { setWorkflow({ ...workflow, name: event.target.value }); setDirty(true) }} /></label><label>说明<input value={workflow.description || ''} disabled={!canManage} onChange={(event) => { setWorkflow({ ...workflow, description: event.target.value }); setDirty(true) }} placeholder="这张发布计划适用于哪些应用" /></label><span>应用选择后会复制第 {workflow.revision} 版</span></div>}
+    {workflow && publicMode && <div className="workflow-meta-bar"><label>方案名称<input value={workflow.name} disabled={!canManage} onChange={(event) => { setWorkflow({ ...workflow, name: event.target.value }); setDirty(true) }} /></label><label>说明<input value={workflow.description || ''} disabled={!canManage} onChange={(event) => { setWorkflow({ ...workflow, description: event.target.value }); setDirty(true) }} placeholder="这份流水线方案适用于哪些应用" /></label><span>应用选择后会复制第 {workflow.revision} 版</span></div>}
 
-    {!editorApplication || !workflow ? <div className="modern-empty workflow-empty"><h3>{publicMode ? '创建第一张公共发布计划' : '没有可编辑的应用计划'}</h3><p>{publicMode ? '点击“新建计划”后直接在无限画布中拖动、连线和配置节点。' : '请先创建应用并选择一张公共发布计划。'}</p>{publicMode && canManage && <button className="primary-button" type="button" onClick={() => void createPublicTemplate()}>＋ 新建发布计划</button>}</div> : <div className="workflow-studio">
+    {!editorApplication || !workflow ? <div className="modern-empty workflow-empty"><h3>{publicMode ? '创建第一份流水线方案' : '没有可编辑的应用流水线'}</h3><p>{publicMode ? '点击“新建方案”后直接在无限画布中拖动、连线和配置节点。' : '请先创建应用并选择一份流水线方案。'}</p>{publicMode && canManage && <button className="primary-button" type="button" onClick={() => void createPublicTemplate()}>＋ 新建流水线方案</button>}</div> : <div className="workflow-studio">
       <aside className="workflow-palette">
         <div><strong>节点</strong><span>点击添加到画布</span></div>
         {(Object.keys(nodeCopy) as NodeType[]).map((type) => <button key={type} type="button" onClick={() => addNode(type)} disabled={!canManage}>
@@ -490,19 +485,19 @@ export default function ReleaseWorkflowView() {
               <button className="node-port input-port" type="button" aria-label="连接到这个节点" onClick={(event) => { event.stopPropagation(); connectTo(node.id) }} />
               <div className="workflow-node-head"><i>{nodeCopy[node.type].icon}</i><span>{nodeCopy[node.type].label}</span><b>{node.config.environment || '通用'}</b></div>
               <h3>{node.name}</h3>
-              <p>{node.type === 'trigger' ? `${node.config.branch || '未配置分支'} · ${(node.config.events || []).join(' / ') || '未选择事件'}` : node.type === 'deploy' ? `${deploymentPlans.find((item) => item.id === node.config.release_plan_id)?.name || '未绑定部署方案'} · ${targets.find((item) => item.id === node.config.deployment_target_id)?.name || '未绑定目标'}` : node.config.description || nodeCopy[node.type].hint}</p>
+              <p>{node.type === 'trigger' ? `${node.config.branch || '未配置分支'} · ${(node.config.events || []).join(' / ') || '未选择事件'}` : node.type === 'deploy' ? deploymentPlans.find((item) => item.id === node.config.release_plan_id)?.name || '未绑定部署方案' : node.config.description || nodeCopy[node.type].hint}</p>
               <button className={`node-port output-port${connectingFrom === node.id ? ' active' : ''}`} type="button" aria-label="从这个节点开始连接" onClick={(event) => { event.stopPropagation(); setConnectingFrom((current) => current === node.id ? '' : node.id) }} />
             </article>)}
           </div>
         </div>
         <div className="canvas-actions">
           <div>{issues.length > 0 ? <button className="issue-count" type="button" onClick={() => setSelectedNodeID(issues.find((item) => item.node_id)?.node_id || '')}>{issues.length} 个问题</button> : <span className="valid-state">结构检查通过</span>}</div>
-          <div><button type="button" onClick={() => void validate()}>检查计划</button>{canManage && <><button type="button" disabled={saving} onClick={() => void save(false)}>保存草稿</button><button className="primary-button" type="button" disabled={saving} onClick={() => void save(true)}>{saving ? '保存中…' : '启用计划'}</button></>}</div>
+          <div><button type="button" onClick={() => void validate()}>检查流水线</button>{canManage && <><button type="button" disabled={saving} onClick={() => void save(false)}>保存草稿</button><button className="primary-button" type="button" disabled={saving} onClick={() => void save(true)}>{saving ? '保存中…' : publicMode ? '启用方案' : '启用流水线'}</button></>}</div>
         </div>
       </div>
 
       <aside className="workflow-inspector">
-        {!selectedNode ? <div className="inspector-empty"><span>⌘</span><h3>选择一个节点</h3><p>在这里配置环境、分支、触发事件和发布目标。</p>{issues.length > 0 && <ul>{issues.slice(0, 6).map((issue, index) => <li key={`${issue.code}-${index}`}>{issue.message}</li>)}</ul>}</div> : <>
+        {!selectedNode ? <div className="inspector-empty"><span>⌘</span><h3>选择一个节点</h3><p>在这里配置环境、分支、触发事件和部署方案。</p>{issues.length > 0 && <ul>{issues.slice(0, 6).map((issue, index) => <li key={`${issue.code}-${index}`}>{issue.message}</li>)}</ul>}</div> : <>
           <div className="inspector-title"><div><span>{nodeCopy[selectedNode.type].label}</span><h3>{selectedNode.name}</h3></div>{canManage && <button type="button" onClick={() => removeNode(selectedNode.id)}>删除</button>}</div>
           <div className="inspector-fields">
             <label>节点名称<input value={selectedNode.name} disabled={!canManage} onChange={(event) => updateNode(selectedNode.id, (node) => ({ ...node, name: event.target.value }))} /></label>
@@ -514,7 +509,6 @@ export default function ReleaseWorkflowView() {
             </>}
             {selectedNode.type === 'deploy' && <>
               <ResourceSelectField id="workflow-deployment-plan" label="部署方案" createLabel="部署方案" createTo={canManage ? '/deployment-plans?create=1' : undefined} value={selectedNode.config.release_plan_id || ''} disabled={!canManage} onChange={(event) => updateNode(selectedNode.id, (node) => ({ ...node, config: { ...node.config, release_plan_id: event.target.value } }))}><option value="">请选择</option>{deploymentPlans.filter((item) => item.is_active).map((item) => <option key={item.id} value={item.id}>{item.name} · {item.kind}</option>)}</ResourceSelectField>
-              <ResourceSelectField id="workflow-deployment-target" label="发布目标" createLabel="发布目标" createTo={canManage ? '/deployments?create=1' : undefined} value={selectedNode.config.deployment_target_id || ''} disabled={!canManage} onChange={(event) => updateNode(selectedNode.id, (node) => ({ ...node, config: { ...node.config, deployment_target_id: event.target.value } }))}><option value="">请选择</option>{targets.filter((item) => item.is_active).map((item) => <option key={item.id} value={item.id}>{item.name} · {item.environment}</option>)}</ResourceSelectField>
             </>}
             {(selectedNode.type === 'manual' || selectedNode.type === 'approval') && <label>说明<textarea rows={4} value={selectedNode.config.description || ''} disabled={!canManage} onChange={(event) => updateNode(selectedNode.id, (node) => ({ ...node, config: { ...node.config, description: event.target.value } }))} /></label>}
           </div>

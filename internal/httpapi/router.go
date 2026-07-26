@@ -166,6 +166,7 @@ func NewRouter(deps Dependencies) *gin.Engine {
 	protected.POST("/workflow-templates/validate", requirePermission(deps.Access, deps.Logger, access.PermissionDeliveryRead), pipelineAPI.validateWorkflowTemplate)
 	protected.GET("/workflow-templates/:id", requirePermission(deps.Access, deps.Logger, access.PermissionDeliveryRead), pipelineAPI.getWorkflowTemplate)
 	protected.PUT("/workflow-templates/:id", auditAction(deps.Audits, deps.Logger, "workflow_template.update", "release_workflow_template"), requirePermission(deps.Access, deps.Logger, access.PermissionDeliveryManage), pipelineAPI.saveWorkflowTemplate)
+	protected.DELETE("/workflow-templates/:id", auditAction(deps.Audits, deps.Logger, "workflow_template.delete", "release_workflow_template"), requirePermission(deps.Access, deps.Logger, access.PermissionDeliveryManage), pipelineAPI.deleteWorkflowTemplate)
 	protected.GET("/build-plans", requirePermission(deps.Access, deps.Logger, access.PermissionDeliveryRead), pipelineAPI.listBuildPlans)
 	protected.POST("/build-plans", auditAction(deps.Audits, deps.Logger, "build_plan.create", "build_plan"), requirePermission(deps.Access, deps.Logger, access.PermissionDeliveryManage), pipelineAPI.createBuildPlan)
 	protected.GET("/image-registries", requirePermission(deps.Access, deps.Logger, access.PermissionDeliveryRead), pipelineAPI.listRegistries)

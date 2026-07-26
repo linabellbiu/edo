@@ -64,7 +64,7 @@ export default function ReleaseWorkflowListView() {
 
   useEffect(() => {
     if (legacyEditorQuery) {
-      navigate(`/release-workflows/editor?${searchParams.toString()}`, { replace: true })
+      navigate(`/pipeline-plans/editor?${searchParams.toString()}`, { replace: true })
       return
     }
     void refresh()
@@ -113,7 +113,7 @@ export default function ReleaseWorkflowListView() {
         edges: template.edges,
         viewport: template.viewport,
       })
-      navigate(`/release-workflows/editor?template=${result.data.workflow_template.id}`)
+      navigate(`/pipeline-plans/editor?template=${result.data.workflow_template.id}`)
     } catch (copyError) {
       setError(apiErrorMessage(copyError))
     } finally {
@@ -121,35 +121,55 @@ export default function ReleaseWorkflowListView() {
     }
   }
 
-  if (legacyEditorQuery) return <div className="loading-panel">正在打开发布计划…</div>
-  if (loading && templates.length === 0) return <div className="loading-panel">正在读取发布计划…</div>
+  async function remove(template: WorkflowTemplate) {
+	const applicationsUsingTemplate = usageCount.get(template.id) || 0
+	if (applicationsUsingTemplate > 0) {
+	  setError(`“${template.name}”仍被 ${applicationsUsingTemplate} 个应用使用，请先为这些应用更换流水线方案。`)
+	  return
+	}
+	if (!window.confirm(`确认删除流水线方案“${template.name}”？\n\n删除后无法恢复。`)) return
+	setBusyID(template.id)
+	setError('')
+	try {
+	  await client.delete(`/workflow-templates/${template.id}`)
+	  await refresh()
+	} catch (deleteError) {
+	  setError(apiErrorMessage(deleteError))
+	} finally {
+	  setBusyID('')
+	}
+  }
+
+  if (legacyEditorQuery) return <div className="loading-panel">正在打开流水线方案…</div>
+  if (loading && templates.length === 0) return <div className="loading-panel">正在读取流水线方案…</div>
 
   return <section className="workflow-list-page page-enter">
     <div className="workflow-list-toolbar">
-      <div><strong>{templates.length}</strong><span>份公共计划</span><small>应用选择计划时会复制当时的完整版本。</small></div>
-      {canManage && <button className="primary-button" type="button" onClick={() => navigate('/release-workflows/editor?create=1')}>＋ 新建发布计划</button>}
+      <div><strong>{templates.length}</strong><span>份流水线方案</span><small>应用选择方案时会复制当时的完整版本。</small></div>
+      {canManage && <button className="primary-button" type="button" onClick={() => navigate('/pipeline-plans/editor?create=1')}>＋ 新建流水线方案</button>}
     </div>
 
     {error && <div className="form-alert error" role="alert">{error}</div>}
 
     {templates.length > 0 ? <div className="workflow-plan-table">
-      <div className="workflow-plan-table-head" aria-hidden="true"><span>发布计划</span><span>状态</span><span>版本</span><span>流程规模</span><span>使用应用</span><span>更新时间</span><span>操作</span></div>
+      <div className="workflow-plan-table-head" aria-hidden="true"><span>流水线方案</span><span>状态</span><span>版本</span><span>流程规模</span><span>使用应用</span><span>更新时间</span><span>操作</span></div>
       {templates.map((template) => <article className="workflow-plan-row" key={template.id}>
-        <div className="workflow-plan-name"><span className="workflow-plan-icon">⌘</span><div><h3>{template.name}</h3><p>{template.description || '暂未填写计划说明'}</p></div></div>
+        <div className="workflow-plan-name"><span className="workflow-plan-icon">⌘</span><div><h3>{template.name}</h3><p>{template.description || '暂未填写方案说明'}</p></div></div>
         <div data-label="状态"><span className={`workflow-plan-state${template.is_active ? ' active' : ''}`}>{template.is_active ? '已启用' : '草稿'}</span></div>
         <div data-label="版本">第 {template.revision} 版</div>
         <div data-label="流程规模">{template.nodes.length} 个节点 · {template.edges.length} 条连线</div>
         <div data-label="使用应用">{usageCount.get(template.id) || 0} 个</div>
         <time data-label="更新时间">{formatTime(template.updated_at)}</time>
         <div className="workflow-plan-actions">
-          <button type="button" onClick={() => navigate(`/release-workflows/editor?template=${template.id}`)}>编辑</button>
+          <button type="button" onClick={() => navigate(`/pipeline-plans/editor?template=${template.id}`)}>编辑</button>
           {canManage && <button type="button" disabled={busyID === template.id} onClick={() => void duplicate(template)}>复制</button>}
           {canManage && <button type="button" disabled={busyID === template.id} onClick={() => void setActive(template, !template.is_active)}>{template.is_active ? '停用' : '启用'}</button>}
+          {canManage && <button className="danger-action" type="button" disabled={busyID === template.id} onClick={() => void remove(template)}>删除</button>}
         </div>
       </article>)}
     </div> : <div className="workflow-list-empty">
-      <span>⌘</span><h2>还没有发布计划</h2><p>创建第一份公共计划，再到画布中配置环境流转、审核和部署节点。</p>
-      {canManage && <button className="primary-button" type="button" onClick={() => navigate('/release-workflows/editor?create=1')}>＋ 新建发布计划</button>}
+      <span>⌘</span><h2>还没有流水线方案</h2><p>创建第一份方案，再到无限画布中配置环境流转、审核和部署节点。</p>
+      {canManage && <button className="primary-button" type="button" onClick={() => navigate('/pipeline-plans/editor?create=1')}>＋ 新建流水线方案</button>}
     </div>}
   </section>
 }

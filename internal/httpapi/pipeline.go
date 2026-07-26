@@ -306,6 +306,15 @@ func (h pipelineHandler) saveWorkflowTemplate(c *gin.Context) {
 	c.JSON(http.StatusOK, result)
 }
 
+func (h pipelineHandler) deleteWorkflowTemplate(c *gin.Context) {
+	if err := h.service.DeleteWorkflowTemplate(c.Request.Context(), c.Param("id")); err != nil {
+		h.writeError(c, "workflow_template_delete", err)
+		return
+	}
+	setAuditResourceID(c, c.Param("id"))
+	c.Status(http.StatusNoContent)
+}
+
 func (h pipelineHandler) advanceRun(c *gin.Context) {
 	var request advanceRunRequest
 	if err := c.ShouldBindJSON(&request); err != nil {
@@ -496,6 +505,8 @@ func (h pipelineHandler) writeError(c *gin.Context, operation string, err error)
 		writeError(c, http.StatusNotFound, "workflow_not_found", err.Error())
 	case errors.Is(err, pipeline.ErrWorkflowRevisionConflict), errors.Is(err, pipeline.ErrWorkflowTemplateRevisionConflict):
 		writeError(c, http.StatusConflict, "workflow_revision_conflict", err.Error())
+	case errors.Is(err, pipeline.ErrWorkflowTemplateInUse):
+		writeError(c, http.StatusConflict, "workflow_template_in_use", err.Error())
 	case errors.Is(err, pipeline.ErrWorkflowNotActive), errors.Is(err, pipeline.ErrInvalidWorkflowTransition),
 		errors.Is(err, pipeline.ErrWorkflowApprovalRequired), errors.Is(err, pipeline.ErrWorkflowSelfApproval):
 		writeError(c, http.StatusConflict, "workflow_transition_denied", err.Error())

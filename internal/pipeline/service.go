@@ -2,6 +2,7 @@ package pipeline
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/url"
@@ -44,7 +45,7 @@ var (
 	ErrRegistryExists           = errors.New("镜像仓库名称已存在")
 	ErrInvalidReleasePlan       = errors.New("部署方案配置无效")
 	ErrReleasePlanExists        = errors.New("部署方案名称已存在")
-	ErrWorkflowTemplateNotFound = errors.New("公共发布计划不存在或未启用")
+	ErrWorkflowTemplateNotFound = errors.New("流水线方案不存在或未启用")
 	ErrPipelineIncomplete       = errors.New("应用尚未绑定完整的构建与发布流程")
 )
 
@@ -717,8 +718,17 @@ func (s *Service) ListRuns(ctx context.Context, limit int) ([]model.PipelineRun,
 		limit = 50
 	}
 	var runs []model.PipelineRun
-	if err := s.db.WithContext(ctx).Preload("Application").Order("created_at DESC").Limit(limit).Find(&runs).Error; err != nil {
-		return nil, fmt.Errorf("查询流水线记录失败: %w", err)
+	if err := s.db.WithContext(ctx).Preload("Application").Preload("Application.WorkflowTemplate").Order("created_at DESC").Limit(limit).Find(&runs).Error; err != nil {
+		return nil, fmt.Errorf("查询发布计划失败: %w", err)
+	}
+	for i := range runs {
+		if runs[i].WorkflowSnapshot == "" {
+			continue
+		}
+		var snapshot workflowSnapshot
+		if json.Unmarshal([]byte(runs[i].WorkflowSnapshot), &snapshot) == nil {
+			runs[i].ApprovalRequired = snapshot.ApprovalEnabled
+		}
 	}
 	return runs, nil
 }
@@ -748,7 +758,7 @@ func (s *Service) PrepareRun(ctx context.Context, applicationID, actorID string)
 			return nil, err
 		}
 		if err := s.db.WithContext(ctx).Create(run).Error; err != nil {
-			return nil, fmt.Errorf("创建发布计划运行记录失败: %w", err)
+			return nil, fmt.Errorf("创建发布计划失败: %w", err)
 		}
 		return run, nil
 	}
@@ -764,7 +774,7 @@ func (s *Service) PrepareRun(ctx context.Context, applicationID, actorID string)
 		CreatedAt: now, UpdatedAt: now,
 	}
 	if err := s.db.WithContext(ctx).Create(run).Error; err != nil {
-		return nil, fmt.Errorf("创建流水线记录失败: %w", err)
+		return nil, fmt.Errorf("创建发布计划失败: %w", err)
 	}
 	if status == model.PipelineRunBlocked {
 		return run, ErrPipelineIncomplete
@@ -781,7 +791,7 @@ func (s *Service) createBlockedRun(ctx context.Context, application *model.Appli
 		CreatedBy: actorID, CreatedAt: now, UpdatedAt: now,
 	}
 	if err := s.db.WithContext(ctx).Create(run).Error; err != nil {
-		return nil, fmt.Errorf("创建流水线记录失败: %w", err)
+		return nil, fmt.Errorf("创建发布计划失败: %w", err)
 	}
 	return run, ErrPipelineIncomplete
 }
@@ -851,7 +861,7 @@ func (s *Service) SyncApplication(ctx context.Context, applicationID, trigger st
 		lastRun = run
 	}
 	if !found {
-		err = fmt.Errorf("仓库中不存在发布计划监听的分支或标签")
+		err = fmt.Errorf("仓库中不存在流水线监听的分支或标签")
 		s.markSyncFailure(ctx, application.ID, err)
 		return application, nil, err
 	}
@@ -1005,7 +1015,7 @@ func selectObservedRef(application *model.Application, refs repository.RefResult
 
 func pipelineComplete(application *model.Application) bool {
 	return application.BuildPlanID != "" && application.ImageRegistryID != "" &&
-		application.ReleasePlanID != "" && application.DeploymentTargetID != "" &&
+		application.ReleasePlanID != "" &&
 		application.LastObservedCommit != ""
 }
 
