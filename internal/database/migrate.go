@@ -2,6 +2,7 @@ package database
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"time"
 
@@ -98,7 +99,7 @@ var migrations = []migration{
 		version: "202607230013",
 		up: func(tx *gorm.DB) error {
 			return tx.AutoMigrate(
-				&model.BuildPlan{}, &model.ImageRegistry{}, &model.ReleasePlan{},
+				&model.BuildPlan{}, &model.ImageRegistry{}, &model.DeploymentPlan{},
 				&model.Application{}, &model.PipelineRun{},
 			)
 		},
@@ -161,6 +162,178 @@ var migrations = []migration{
 			return backfillApplicationRepositories(tx)
 		},
 	},
+	{
+		version: "202607270021",
+		up:      migrateReleasePlanning,
+	},
+	{
+		version: "202607270022",
+		up:      migrateDeploymentEnvironmentFields,
+	},
+	{
+		version: "202607270023",
+		up:      migratePipelineExecutionFields,
+	},
+	{
+		version: "202607270024",
+		up: func(tx *gorm.DB) error {
+			return tx.AutoMigrate(&model.PipelineRun{})
+		},
+	},
+}
+
+func migratePipelineExecutionFields(tx *gorm.DB) error {
+	if err := tx.AutoMigrate(&model.PipelineRun{}, &model.PipelineRunRepository{}, &model.DeploymentRecord{}); err != nil {
+		return err
+	}
+	if err := backfillPipelineRunRegistries(tx); err != nil {
+		return err
+	}
+	if err := backfillApplicationWorkflowTargets(tx); err != nil {
+		return err
+	}
+	// 旧实现只推进节点状态，从未创建发布记录；不能继续把这类历史记录展示为真实发布成功。
+	return tx.Model(&model.PipelineRun{}).
+		Where("status = ? AND current_node_id <> '' AND deployment_id = ''", model.PipelineRunSucceeded).
+		Updates(map[string]any{
+			"status": model.PipelineRunFailed, "stage": "execution_missing",
+			"message": "历史流水线未执行真实构建和发布，请重新运行", "updated_at": time.Now().UTC(),
+		}).Error
+}
+
+func backfillPipelineRunRegistries(tx *gorm.DB) error {
+	var rows []struct {
+		ID              string
+		ImageRegistryID string
+	}
+	if err := tx.Table("pipeline_run_repositories AS component").
+		Select("component.id, application.image_registry_id").
+		Joins("JOIN pipeline_runs AS run ON run.id = component.pipeline_run_id").
+		Joins("JOIN applications AS application ON application.id = run.application_id").
+		Where("component.image_registry_id = '' AND application.image_registry_id <> ''").
+		Scan(&rows).Error; err != nil {
+		return err
+	}
+	for i := range rows {
+		if err := tx.Model(&model.PipelineRunRepository{}).Where("id = ?", rows[i].ID).
+			Update("image_registry_id", rows[i].ImageRegistryID).Error; err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func backfillApplicationWorkflowTargets(tx *gorm.DB) error {
+	if !tx.Migrator().HasTable(&model.ReleaseWorkflow{}) || !tx.Migrator().HasTable(&model.ReleaseWorkflowTemplate{}) {
+		return nil
+	}
+	var workflows []model.ReleaseWorkflow
+	if err := tx.Where("workflow_template_id <> ''").Find(&workflows).Error; err != nil {
+		return err
+	}
+	for i := range workflows {
+		workflow := &workflows[i]
+		var template model.ReleaseWorkflowTemplate
+		if err := tx.First(&template, "id = ?", workflow.WorkflowTemplateID).Error; err != nil {
+			if err == gorm.ErrRecordNotFound {
+				continue
+			}
+			return err
+		}
+		templateNodes := make(map[string]model.WorkflowNode, len(template.Nodes))
+		for j := range template.Nodes {
+			templateNodes[template.Nodes[j].ID] = template.Nodes[j]
+		}
+		changed := false
+		for j := range workflow.Nodes {
+			node := &workflow.Nodes[j]
+			if node.Type != model.WorkflowNodeDeploy || node.Config.DeploymentTargetID != "" {
+				continue
+			}
+			templateNode, ok := templateNodes[node.ID]
+			if !ok || templateNode.Config.DeploymentTargetID == "" {
+				continue
+			}
+			node.Config.DeploymentTargetID = templateNode.Config.DeploymentTargetID
+			changed = true
+			if err := tx.Model(&model.ApplicationEnvironment{}).
+				Where("application_id = ? AND key = ? AND deployment_target_id = ''", workflow.ApplicationID, node.Config.Environment).
+				Update("deployment_target_id", node.Config.DeploymentTargetID).Error; err != nil {
+				return err
+			}
+		}
+		if !changed {
+			continue
+		}
+		workflow.Revision++
+		workflow.WorkflowTemplateRevision = template.Revision
+		workflow.UpdatedAt = time.Now().UTC()
+		nodes, err := json.Marshal(workflow.Nodes)
+		if err != nil {
+			return fmt.Errorf("序列化应用流水线迁移数据失败: %w", err)
+		}
+		if err := tx.Model(workflow).Updates(map[string]any{
+			"nodes": string(nodes), "revision": workflow.Revision,
+			"workflow_template_revision": workflow.WorkflowTemplateRevision,
+			"updated_at":                 workflow.UpdatedAt,
+		}).Error; err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func migrateDeploymentEnvironmentFields(tx *gorm.DB) error {
+	// 仅补新增字段，避免 SQLite 因历史字段类型差异重建整表。
+	columns := []struct {
+		model any
+		field string
+	}{
+		{&model.DockerEndpoint{}, "SSHCredentialCiphertext"},
+		{&model.DockerEndpoint{}, "SSHHostKeyFingerprint"},
+		{&model.DeploymentTarget{}, "Description"},
+	}
+	for _, column := range columns {
+		if tx.Migrator().HasColumn(column.model, column.field) {
+			continue
+		}
+		if err := tx.Migrator().AddColumn(column.model, column.field); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func migrateReleasePlanning(tx *gorm.DB) error {
+	if tx.Migrator().HasTable("release_plans") && !tx.Migrator().HasTable("deployment_plans") {
+		if err := tx.Migrator().RenameTable("release_plans", "deployment_plans"); err != nil {
+			return err
+		}
+		// PostgreSQL 和 SQLite 改表名后会保留旧索引名；先同步索引名，避免新发布计划表创建同名索引失败。
+		for _, suffix := range []string{"name", "kind", "is_active", "created_by"} {
+			oldName, newName := "idx_release_plans_"+suffix, "idx_deployment_plans_"+suffix
+			if !tx.Migrator().HasIndex("deployment_plans", oldName) {
+				continue
+			}
+			if tx.Migrator().HasIndex("deployment_plans", newName) {
+				if err := tx.Migrator().DropIndex("deployment_plans", oldName); err != nil {
+					return err
+				}
+				continue
+			}
+			if err := tx.Migrator().RenameIndex("deployment_plans", oldName, newName); err != nil {
+				return err
+			}
+		}
+	}
+	if err := tx.AutoMigrate(
+		&model.DeploymentPlan{}, &model.Application{}, &model.ApplicationEnvironment{},
+		&model.PipelineRunRepository{}, &model.ReleasePlan{}, &model.ReleaseGroup{},
+		&model.ReleaseGroupApplication{}, &model.ReleaseGroupDependency{},
+	); err != nil {
+		return err
+	}
+	return moveRepositoryPlansToApplications(tx)
 }
 
 func backfillApplicationRepositories(tx *gorm.DB) error {
@@ -188,20 +361,6 @@ func backfillApplicationRepositories(tx *gorm.DB) error {
 				CreatedAt: now, UpdatedAt: now,
 			}
 			if err := tx.Create(&link).Error; err != nil {
-				return err
-			}
-		}
-		if application.BuildPlanID != "" {
-			if err := tx.Model(&model.GitRepository{}).
-				Where("id = ? AND build_plan_id = ?", application.RepositoryID, "").
-				Update("build_plan_id", application.BuildPlanID).Error; err != nil {
-				return err
-			}
-		}
-		if application.ReleasePlanID != "" {
-			if err := tx.Model(&model.GitRepository{}).
-				Where("id = ? AND release_plan_id = ?", application.RepositoryID, "").
-				Update("release_plan_id", application.ReleasePlanID).Error; err != nil {
 				return err
 			}
 		}
@@ -237,8 +396,9 @@ func backfillApplicationRepositories(tx *gorm.DB) error {
 		component := model.PipelineRunRepository{
 			ID: uuid.NewString(), PipelineRunID: run.ID, RepositoryID: application.RepositoryID,
 			SortOrder: 0, Ref: run.Ref, CommitSHA: run.CommitSHA,
-			BuildPlanID: application.BuildPlanID, ReleasePlanID: application.ReleasePlanID,
-			Status: status, CreatedAt: run.CreatedAt, UpdatedAt: run.UpdatedAt,
+			BuildPlanID: application.BuildPlanID, ImageRegistryID: application.ImageRegistryID,
+			DeploymentPlanID: application.DeploymentPlanID,
+			Status:           status, CreatedAt: run.CreatedAt, UpdatedAt: run.UpdatedAt,
 		}
 		if err := tx.Create(&component).Error; err != nil {
 			return err
@@ -252,8 +412,8 @@ func dropOptionalDeliveryConstraints(tx *gorm.DB) error {
 		model any
 		names []string
 	}{
-		{&model.Application{}, []string{"BuildPlan", "ImageRegistry", "ReleasePlan", "DeploymentTarget"}},
-		{&model.ApplicationEnvironment{}, []string{"ReleasePlan", "DeploymentTarget"}},
+		{&model.Application{}, []string{"BuildPlan", "ImageRegistry", "DeploymentPlan", "DeploymentTarget"}},
+		{&model.ApplicationEnvironment{}, []string{"DeploymentPlan", "DeploymentTarget"}},
 	}
 	for _, item := range constraints {
 		for _, name := range item.names {
@@ -287,13 +447,45 @@ func backfillApplicationEnvironments(tx *gorm.DB) error {
 			Key: "dev", Name: "开发环境", Branch: applications[i].Branch,
 			PollEnabled: applications[i].PollEnabled, WatchPush: applications[i].WatchPush,
 			WatchPullRequest: applications[i].WatchPullRequest, WatchTags: applications[i].WatchTags,
-			TagPattern: applications[i].TagPattern, ReleasePlanID: applications[i].ReleasePlanID,
+			TagPattern: applications[i].TagPattern, DeploymentPlanID: applications[i].DeploymentPlanID,
 			DeploymentTargetID: applications[i].DeploymentTargetID,
 			LastObservedRef:    applications[i].LastObservedRef,
 			LastObservedCommit: applications[i].LastObservedCommit,
 			LastCheckedAt:      applications[i].LastCheckedAt, CreatedAt: now, UpdatedAt: now,
 		}
 		if err := tx.Create(&environment).Error; err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func moveRepositoryPlansToApplications(tx *gorm.DB) error {
+	if !tx.Migrator().HasColumn("git_repositories", "build_plan_id") &&
+		!tx.Migrator().HasColumn("git_repositories", "release_plan_id") {
+		return nil
+	}
+	type legacyRepositoryPlan struct {
+		ID               string `gorm:"column:id"`
+		BuildPlanID      string `gorm:"column:build_plan_id"`
+		DeploymentPlanID string `gorm:"column:release_plan_id"`
+	}
+	var legacy []legacyRepositoryPlan
+	if err := tx.Table("git_repositories").Select("id", "build_plan_id", "release_plan_id").Scan(&legacy).Error; err != nil {
+		return err
+	}
+	for _, repository := range legacy {
+		updates := map[string]any{}
+		if repository.BuildPlanID != "" {
+			updates["build_plan_id"] = gorm.Expr("CASE WHEN build_plan_id = '' THEN ? ELSE build_plan_id END", repository.BuildPlanID)
+		}
+		if repository.DeploymentPlanID != "" {
+			updates["release_plan_id"] = gorm.Expr("CASE WHEN release_plan_id = '' THEN ? ELSE release_plan_id END", repository.DeploymentPlanID)
+		}
+		if len(updates) == 0 {
+			continue
+		}
+		if err := tx.Model(&model.Application{}).Where("repository_id = ?", repository.ID).Updates(updates).Error; err != nil {
 			return err
 		}
 	}

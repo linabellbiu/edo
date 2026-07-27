@@ -1,7 +1,9 @@
 import { lazy, Suspense, useCallback, useEffect, useState } from 'react'
+import { useSearchParams } from 'react-router-dom'
 
 import client from '@/api/client'
 import { apiErrorMessage, getResources, type ResourceRecord } from '@/api/resources'
+import DockerSSHForm from '@/components/DockerSSHForm'
 import JsonCreatePanel from '@/components/JsonCreatePanel'
 import ResourceTable from '@/components/ResourceTable'
 import { useAuthStore } from '@/stores/auth'
@@ -11,6 +13,7 @@ const TerminalModal = lazy(() => import('@/components/TerminalModal'))
 interface TerminalTarget { title: string; path: string }
 
 export default function InfrastructureView() {
+  const [searchParams] = useSearchParams()
   const user = useAuthStore((state) => state.user)
   const allowed = (permission: string) => Boolean(user?.is_superuser || user?.permissions.includes(permission))
   const [dockerEndpoints, setDockerEndpoints] = useState<ResourceRecord[]>([])
@@ -62,13 +65,13 @@ export default function InfrastructureView() {
 
   return (
     <section className="management-page">
-      <div className="page-heading"><div><span className="section-label">CONTAINER RUNTIMES</span><h2>容器与集群</h2><p>仅通过 Docker/Kubernetes API 管理资源，不提供宿主机 SSH 登录。</p></div><button className="refresh-button" type="button" onClick={() => void refresh()}>刷新</button></div>
+      <div className="page-heading"><div><span className="section-label">CONTAINER RUNTIMES</span><h2>容器与集群</h2><p>Docker 主机通过 SSH 地址、端口和密码或私钥连接；发布时在目标主机执行受控的 docker pull，不提供宿主机交互终端。</p></div><button className="refresh-button" type="button" onClick={() => void refresh()}>刷新</button></div>
       {error && <div className="form-alert error system-alert">{error}</div>}
       <div className="resource-section"><div className="section-heading"><h3>Docker 连接</h3><span>{dockerEndpoints.length} 个</span></div>
         <div className="resource-panel"><ResourceTable rows={dockerEndpoints} columns={[
-          { key: 'name', label: '名称' }, { key: 'host', label: '地址' }, { key: 'tls_configured', label: 'mTLS' }, { key: 'is_active', label: '启用' },
+          { key: 'name', label: '名称' }, { key: 'host', label: 'SSH 地址' }, { key: 'ssh_configured', label: '凭据' }, { key: 'is_active', label: '启用' },
         ]} actions={(row) => allowed('cluster.manage') && <button type="button" onClick={() => void ping(`/docker/endpoints/${String(row.id)}/ping`)}>检查</button>} /></div>
-        {allowed('cluster.manage') && <JsonCreatePanel title="Docker 连接" endpoint="/docker/endpoints" example={{ name: 'local-docker', host: 'unix:///var/run/docker.sock', tls: null }} onCreated={() => void refresh()} />}
+        {allowed('cluster.manage') && <DockerSSHForm initialOpen={searchParams.get('create') === 'docker' || searchParams.get('create') === 'ssh'} onCreated={() => void refresh()} />}
       </div>
       <div className="resource-section"><div className="section-heading"><h3>Kubernetes 集群</h3><span>{clusters.length} 个</span></div>
         <div className="resource-panel"><ResourceTable rows={clusters} columns={[

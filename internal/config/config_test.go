@@ -61,6 +61,14 @@ func TestValidateRejectsInvalidStreamCapacity(t *testing.T) {
 	}
 }
 
+func TestValidateRejectsInvalidDockerBuilderHost(t *testing.T) {
+	cfg := validConfig()
+	cfg.Runtime.DockerBuilderHost = "ssh://builder.example.com"
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("非 Docker API 地址不应作为 Docker-in-Docker 构建节点")
+	}
+}
+
 func validConfig() Config {
 	return Config{
 		Server: Server{
@@ -92,7 +100,7 @@ func validConfig() Config {
 		Git: Git{Timeout: time.Second},
 		Runtime: Runtime{
 			ConnectTimeout: time.Second, RequestTimeout: time.Second,
-			TerminalMaxDuration: time.Hour,
+			TerminalMaxDuration: time.Hour, DockerBuilderHost: "tcp://docker-builder:2375",
 		},
 		Scheduler: Scheduler{PollInterval: 15 * time.Second},
 	}

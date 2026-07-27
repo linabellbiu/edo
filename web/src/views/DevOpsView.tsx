@@ -14,17 +14,14 @@ interface Repository {
   webhook_enabled: boolean; webhook_url?: string; webhook_secret?: string; is_active: boolean
   auth_type: 'none' | 'token' | 'ssh_key'; username?: string; allow_insecure_http: boolean
   has_credential?: boolean; credential_id?: string
-  build_plan_id?: string; release_plan_id?: string; build_plan?: BuildPlan; release_plan?: DeploymentPlan
 }
 interface GitCredential {
   id: string; name: string; provider: string; auth_type: 'token' | 'ssh_key'; username?: string; secret_hint: string
 }
 interface GitRef { name: string; sha: string }
 interface ManualRunSource { id: string; name: string; environment?: string }
-interface ManualRunRepositoryOptions { repository_id: string; name: string; sort_order: number; branches: GitRef[]; tags: GitRef[] }
-interface RepositoryRefResult { branches: GitRef[]; tags: GitRef[]; manual_sources?: ManualRunSource[]; repositories?: ManualRunRepositoryOptions[] }
+interface RepositoryRefResult { branches: GitRef[]; tags: GitRef[]; manual_sources?: ManualRunSource[] }
 interface CommitOption { ref: string; name: string; sha: string; kind: 'branch' | 'tag' }
-interface CommitPickerRepository { repositoryID: string; name: string; options: CommitOption[]; selectedRef: string; sortOrder: number }
 interface RepositoryCheck {
   status: 'checking' | 'success' | 'error'
   message: string
@@ -45,59 +42,66 @@ interface WorkflowTemplate { id: string; name: string; description: string; revi
 interface ApplicationEnvironment {
   id?: string; key: 'dev' | 'test' | 'pre' | 'prod'; name: string; branch: string
   poll_enabled: boolean; watch_push: boolean; watch_pull_request: boolean; watch_tags: boolean
-  tag_pattern: string; release_plan_id?: string; deployment_target_id?: string; sort_order: number
+  tag_pattern: string; deployment_plan_id?: string; deployment_target_id?: string; sort_order: number
 }
 interface Application {
   id: string; name: string; description: string; repository_id: string; branch: string
   poll_enabled: boolean; poll_interval_seconds: number; watch_push: boolean; watch_pull_request: boolean
   watch_tags: boolean; tag_pattern: string; build_plan_id?: string; image_registry_id?: string
-  release_plan_id?: string; deployment_target_id?: string; last_observed_ref?: string
+  deployment_plan_id?: string; deployment_target_id?: string; last_observed_ref?: string
   last_observed_commit?: string; sync_status: string; sync_message?: string; last_checked_at?: string
   is_active: boolean; repository?: Repository; build_plan?: BuildPlan; image_registry?: ImageRegistry
-  release_plan?: DeploymentPlan
+  deployment_plan?: DeploymentPlan
   release_approval_enabled: boolean; environments?: ApplicationEnvironment[]
   workflow_template_id?: string; workflow_template?: WorkflowTemplate
   workflow?: { id: string; is_active: boolean; revision: number }
-  repository_ordered: boolean; repositories: ApplicationRepository[]
-}
-interface ApplicationRepository {
-  id: string; repository_id: string; sort_order: number; repository: Repository
-  last_observed_ref?: string; last_observed_commit?: string; last_checked_at?: string
 }
 interface PipelineRunRepository {
   id: string; repository_id: string; sort_order: number; ref?: string; commit_sha?: string
-  build_plan_id?: string; release_plan_id?: string; status: string; repository: Repository
+  build_plan_id?: string; deployment_plan_id?: string; status: string; repository: Repository
 }
 interface PipelineRun {
   id: string; application_id: string; trigger: string; ref: string; commit_sha: string
   status: string; stage: string; message?: string; created_at: string; application?: Application
   environment?: string; current_node_id?: string; approved_by?: string
   workflow_id?: string; workflow_revision?: number; approval_required?: boolean
-  repository_ordered: boolean; repositories?: PipelineRunRepository[]
+  retry_of_id?: string; execution_job_id?: string; deployment_id?: string; image?: string
+  repositories?: PipelineRunRepository[]
+}
+interface ReleaseGroupApplication { id: string; application_id: string; sort_order: number; application: Application }
+interface ReleaseGroupDependency { release_group_id: string; depends_on_group_id: string }
+interface ReleaseGroup {
+  id: string; release_plan_id: string; name: string; mode: 'parallel' | 'sequential'
+  failure_policy: 'stop' | 'continue'; sort_order: number
+  applications: ReleaseGroupApplication[]; dependencies: ReleaseGroupDependency[]
+}
+interface ReleasePlan {
+  id: string; name: string; version: string; description: string
+  status: 'draft' | 'active' | 'completed' | 'canceled'; created_at: string; groups: ReleaseGroup[]
 }
 
 const sectionCopy: Record<Section, { title: string; description: string }> = {
-  applications: { title: '应用', description: '组合一个或多个代码仓库，并配置并行或顺序发布。' },
-  repositories: { title: '代码仓库', description: '统一管理 Git 连接，以及仓库自己的构建和部署方案。' },
+  applications: { title: '应用', description: '一个应用对应一个代码仓库，并维护自己的构建、部署和流水线配置。' },
+  repositories: { title: '代码仓库', description: '统一管理 Git 连接、个人令牌和 Webhook。构建与部署方案由应用选择。' },
   'build-plans': { title: '构建方案', description: '保存可复用的打包脚本或 Dockerfile 构建配置。' },
   'image-registries': { title: '镜像仓库', description: '管理 Harbor、Docker Hub 或其他兼容 Registry。' },
   'deployment-plans': { title: '部署方案', description: '定义部署节点如何通过 Helm、Docker Compose、Docker 或受控脚本执行。' },
-  'release-plans': { title: '发布计划', description: '集中查看发布计划和只读发布记录；计划关联应用流水线与审核要求。' },
+  'release-plans': { title: '发布计划', description: '按迭代、版本或发布列车组织发布组，并编排多个应用。' },
 }
 
 const defaultEnvironments: Array<ApplicationEnvironment & { enabled: boolean }> = [
-  { key: 'dev', name: '开发环境', branch: 'dev', enabled: true, poll_enabled: true, watch_push: true, watch_pull_request: false, watch_tags: false, tag_pattern: 'v*', release_plan_id: '', deployment_target_id: '', sort_order: 0 },
-  { key: 'test', name: '测试环境', branch: 'test', enabled: true, poll_enabled: false, watch_push: true, watch_pull_request: true, watch_tags: false, tag_pattern: 'v*', release_plan_id: '', deployment_target_id: '', sort_order: 1 },
-  { key: 'pre', name: '预发布环境', branch: 'main', enabled: true, poll_enabled: false, watch_push: true, watch_pull_request: true, watch_tags: false, tag_pattern: 'v*', release_plan_id: '', deployment_target_id: '', sort_order: 2 },
-  { key: 'prod', name: '生产环境', branch: 'release', enabled: true, poll_enabled: false, watch_push: false, watch_pull_request: false, watch_tags: true, tag_pattern: 'v*', release_plan_id: '', deployment_target_id: '', sort_order: 3 },
+  { key: 'dev', name: '开发环境', branch: 'dev', enabled: true, poll_enabled: true, watch_push: true, watch_pull_request: false, watch_tags: false, tag_pattern: 'v*', deployment_plan_id: '', deployment_target_id: '', sort_order: 0 },
+  { key: 'test', name: '测试环境', branch: 'test', enabled: true, poll_enabled: false, watch_push: true, watch_pull_request: true, watch_tags: false, tag_pattern: 'v*', deployment_plan_id: '', deployment_target_id: '', sort_order: 1 },
+  { key: 'pre', name: '预发布环境', branch: 'main', enabled: true, poll_enabled: false, watch_push: true, watch_pull_request: true, watch_tags: false, tag_pattern: 'v*', deployment_plan_id: '', deployment_target_id: '', sort_order: 2 },
+  { key: 'prod', name: '生产环境', branch: 'release', enabled: true, poll_enabled: false, watch_push: false, watch_pull_request: false, watch_tags: true, tag_pattern: 'v*', deployment_plan_id: '', deployment_target_id: '', sort_order: 3 },
 ]
 
 function initialApplicationForm() {
   return {
-    name: '', description: '', repository_id: '', repository_ids: [] as string[], repository_ordered: false, branch: 'dev', poll_enabled: true,
+    name: '', description: '', repository_id: '', branch: 'dev', poll_enabled: true,
     poll_interval_seconds: 3, watch_push: true, watch_pull_request: false,
-    watch_tags: false, tag_pattern: 'v*', image_registry_id: '',
-    release_plan_id: '', deployment_target_id: '', release_approval_enabled: true,
+    watch_tags: false, tag_pattern: 'v*', build_plan_id: '', image_registry_id: '',
+    deployment_plan_id: '', deployment_target_id: '', release_approval_enabled: true,
     workflow_template_id: '',
     environments: defaultEnvironments.map((item) => ({ ...item })),
   }
@@ -107,7 +111,7 @@ function initialRepositoryForm() {
   return {
     name: '', provider: 'github', clone_url: '', default_branch: 'main', auth_type: 'none', username: '',
     credential_mode: 'saved', credential_id: '', credential_name: '', credential_secret: '',
-    webhook_enabled: true, allow_insecure_http: false, build_plan_id: '', release_plan_id: '',
+    webhook_enabled: true, allow_insecure_http: false,
   }
 }
 
@@ -153,23 +157,26 @@ function RegistryCheckResult({ check }: { check: RepositoryCheck }) {
 }
 
 function StatusPill({ value }: { value: string }) {
-  const label = ({ idle: '等待检查', checking: '检查中', synced: '已同步', changed: '发现更新', failed: '检查失败', detected: '发现变更', ready: '等待部署', blocked: '配置不完整', awaiting_approval: '等待审核', running: '流程进行中', succeeded: '已完成', canceled: '已取消' } as Record<string, string>)[value] || value
+  const label = ({ draft: '草稿', active: '已启用', completed: '已完成', idle: '等待检查', checking: '检查中', synced: '已同步', changed: '发现更新', failed: '失败', detected: '发现变更', ready: '等待部署', blocked: '配置不完整', awaiting_approval: '等待审核', running: '正在执行', succeeded: '发布成功', canceled: '已取消' } as Record<string, string>)[value] || value
   return <span className={`status-pill status-${value}`}>{label}</span>
 }
 
 function blockedRunReasons(run: PipelineRun, application?: Application) {
   if (run.status !== 'blocked') return []
   const reasons: string[] = []
-  if (!application?.repositories?.length && !application?.repository_id) reasons.push('未绑定代码仓库。')
-  if (!run.commit_sha) reasons.push('尚未选择代码版本：点击“执行”，为每个仓库选择 Commit。')
-  if (application && !application.workflow?.is_active) {
-    const incomplete = (application.repositories || []).filter((item) => !item.repository.build_plan_id || !item.repository.release_plan_id)
-    if (incomplete.length > 0) reasons.push(`仓库缺少构建或部署方案：${incomplete.map((item) => item.repository.name).join('、')}。`)
-    if (!application.image_registry_id) reasons.push('未绑定镜像仓库。')
-    reasons.push('应用流水线尚未启用，或仍有节点配置问题。')
+  if (!application?.repository_id) reasons.push('未绑定代码仓库。')
+  if (!run.commit_sha) reasons.push('尚未选择代码版本：点击“选择版本”，选择仓库 Commit。')
+  if (application) {
+    if (!application.build_plan_id) reasons.push('应用未绑定构建方案。')
+    if (!application.deployment_plan_id) reasons.push('应用未绑定部署方案。')
+    if (!application.workflow?.is_active) reasons.push('应用流水线尚未启用，或仍有节点配置问题。')
   }
   if (reasons.length === 0) reasons.push(run.message || '应用的构建或发布配置不完整。')
   return [...new Set(reasons)]
+}
+
+function applicationCanExecute(application?: Application) {
+	return Boolean(application?.repository_id && application.build_plan_id && application.deployment_plan_id && application.workflow?.is_active)
 }
 
 function EmptyState({ title, description }: { title: string; description: string }) {
@@ -189,12 +196,12 @@ const deploymentMethodHelp: Record<string, { title: string; description: string;
   compose: {
     title: 'Docker Compose 部署',
     description: '用于由 Compose 文件统一管理的一组容器，服务名称从 Compose 文件的 services 段读取。',
-    items: ['Compose 文件填写仓库内的相对路径，例如 deploy/compose.prod.yml。', '选择这种方式时不需要再填写 Docker 工作负载名称。', '镜像版本应由发布计划传入，不建议硬编码固定 Tag。'],
+    items: ['Compose 文件填写仓库内的相对路径，例如 deploy/compose.prod.yml。', '选择这种方式时不需要再填写 Docker 工作负载名称。', '镜像版本应由流水线运行传入，不建议硬编码固定 Tag。'],
   },
   docker: {
     title: 'Docker 部署',
     description: '用于标识由 Docker 方式管理的单个容器或 Docker Service，不是镜像名称。',
-    items: ['填写稳定的逻辑名称，例如 order-api、zrt-api 或 web-prod。', '不要填写镜像地址、Tag、容器 ID、端口、服务器 IP 或域名。', '如果实际由 docker compose 管理，请改选“Docker Compose”。', '当前版本只保存此标识；流水线到达部署节点后仍等待受控部署执行器，不会直接修改容器。'],
+    items: ['填写稳定的容器名称，例如 order-api、zrt-api 或 web-prod。', '不要填写镜像地址、Tag、容器 ID、端口、服务器 IP 或域名。', '如果实际由 docker compose 管理，请改选“Docker Compose”。', '流水线发布时会在所选 SSH 主机拉取不可变镜像，并以受控方式替换这个容器。'],
   },
   script: {
     title: '自定义脚本部署',
@@ -233,6 +240,7 @@ export default function DevOpsView({ section }: { section: Section }) {
   const [buildPlans, setBuildPlans] = useState<BuildPlan[]>([])
   const [registries, setRegistries] = useState<ImageRegistry[]>([])
   const [deploymentPlans, setDeploymentPlans] = useState<DeploymentPlan[]>([])
+  const [releasePlans, setReleasePlans] = useState<ReleasePlan[]>([])
   const [workflowTemplates, setWorkflowTemplates] = useState<WorkflowTemplate[]>([])
   const [runs, setRuns] = useState<PipelineRun[]>([])
   const [deployments, setDeployments] = useState<ResourceRecord[]>([])
@@ -240,12 +248,13 @@ export default function DevOpsView({ section }: { section: Section }) {
   const [editingID, setEditingID] = useState('')
   const [loading, setLoading] = useState(true)
   const [submitting, setSubmitting] = useState(false)
+  const [retryingRunID, setRetryingRunID] = useState('')
   const [error, setError] = useState('')
   const [webhookSetup, setWebhookSetup] = useState<{ url: string; secret: string } | null>(null)
   const [repositoryChecks, setRepositoryChecks] = useState<Record<string, RepositoryCheck>>({})
   const [repositoryFormCheck, setRepositoryFormCheck] = useState<RepositoryCheck | null>(null)
   const [registryFormCheck, setRegistryFormCheck] = useState<RepositoryCheck | null>(null)
-  const [commitPicker, setCommitPicker] = useState<{ run: PipelineRun; repositories: CommitPickerRepository[]; sources: ManualRunSource[]; selectedSourceID: string; loading: boolean } | null>(null)
+  const [commitPicker, setCommitPicker] = useState<{ run: PipelineRun; repositoryName: string; options: CommitOption[]; selectedRef: string; sources: ManualRunSource[]; selectedSourceID: string; loading: boolean } | null>(null)
   const [commitSubmitting, setCommitSubmitting] = useState(false)
   const registryTestSequence = useRef(0)
   const [applicationForm, setApplicationForm] = useState(initialApplicationForm)
@@ -253,9 +262,12 @@ export default function DevOpsView({ section }: { section: Section }) {
   const [buildForm, setBuildForm] = useState({ name: '', kind: 'dockerfile', description: '', script: '', dockerfile_path: 'Dockerfile', context_path: '.', artifact_path: '', timeout_seconds: 1800 })
   const [registryForm, setRegistryForm] = useState({ name: '', provider: 'harbor', endpoint: 'https://', namespace: '', username: '', credential: '', allow_insecure_http: false })
   const [deploymentForm, setDeploymentForm] = useState({ name: '', kind: 'helm', description: '', script: '', helm_chart: '', helm_values: '', compose_file: 'docker-compose.yml', service_name: '', timeout_seconds: 600 })
+  const [releasePlanForm, setReleasePlanForm] = useState({ name: '', version: '', description: '' })
+  const [groupEditor, setGroupEditor] = useState<{ planID: string; groupID: string; name: string; mode: 'parallel' | 'sequential'; failure_policy: 'stop' | 'continue'; application_ids: string[]; depends_on_group_ids: string[] } | null>(null)
   const copy = sectionCopy[section]
-  const releaseView = canReadDeployment && (searchParams.get('view') === 'records' || !canReadDelivery) ? 'records' : 'plans'
-  const canCreate = section === 'repositories' ? canManageRepository : section !== 'release-plans' && canManageDelivery
+  const requestedReleaseView = searchParams.get('view')
+  const releaseView = canReadDeployment && (requestedReleaseView === 'records' || !canReadDelivery) ? 'records' : requestedReleaseView === 'runs' ? 'runs' : 'plans'
+  const canCreate = section === 'repositories' ? canManageRepository : canManageDelivery
 
   const refresh = useCallback(async () => {
     setLoading(true)
@@ -285,10 +297,13 @@ export default function DevOpsView({ section }: { section: Section }) {
       const runRequest = canReadDelivery
         ? client.get<{ pipeline_runs: PipelineRun[] }>('/pipeline-runs')
         : Promise.resolve(null)
+      const releasePlanRequest = canReadDelivery
+        ? client.get<{ release_plans: ReleasePlan[] }>('/release-plans')
+        : Promise.resolve(null)
       const workflowTemplateRequest = canReadDelivery
         ? client.get<{ workflow_templates: WorkflowTemplate[] }>('/workflow-templates')
         : Promise.resolve(null)
-      const [appResult, repoResult, credentialResult, buildResult, registryResult, deploymentPlanResult, deploymentRecordResult, runResult, workflowTemplateResult] = await Promise.all([
+      const [appResult, repoResult, credentialResult, buildResult, registryResult, deploymentPlanResult, deploymentRecordResult, runResult, releasePlanResult, workflowTemplateResult] = await Promise.all([
         applicationRequest,
         repositoryRequest,
         credentialRequest,
@@ -297,6 +312,7 @@ export default function DevOpsView({ section }: { section: Section }) {
         deploymentPlanRequest,
         deploymentRecordRequest,
         runRequest,
+        releasePlanRequest,
         workflowTemplateRequest,
       ])
       setApplications(appResult?.data.applications || [])
@@ -307,6 +323,7 @@ export default function DevOpsView({ section }: { section: Section }) {
       setDeploymentPlans(deploymentPlanResult?.data.deployment_plans || [])
       setDeployments(deploymentRecordResult?.data.deployments || [])
       setRuns(runResult?.data.pipeline_runs || [])
+      setReleasePlans(releasePlanResult?.data.release_plans || [])
       setWorkflowTemplates(workflowTemplateResult?.data.workflow_templates || [])
     } catch (loadError) {
       setError(apiErrorMessage(loadError))
@@ -316,6 +333,19 @@ export default function DevOpsView({ section }: { section: Section }) {
   }, [canReadCredential, canReadDelivery, canReadDeployment, canReadRepository])
 
   useEffect(() => { void refresh() }, [refresh])
+  useEffect(() => {
+    if (section !== 'release-plans' || releaseView !== 'runs' || !runs.some((run) => run.status === 'running')) return
+    const timer = window.setInterval(() => {
+      void Promise.all([
+        client.get<{ pipeline_runs: PipelineRun[] }>('/pipeline-runs'),
+        canReadDeployment ? client.get<{ deployments: ResourceRecord[] }>('/deployments') : Promise.resolve(null),
+      ]).then(([runResult, deploymentResult]) => {
+        setRuns(runResult.data.pipeline_runs || [])
+        if (deploymentResult) setDeployments(deploymentResult.data.deployments || [])
+      }).catch(() => undefined)
+    }, 2000)
+    return () => window.clearInterval(timer)
+  }, [canReadDeployment, releaseView, runs, section])
   useEffect(() => { setRepositoryFormCheck(null) }, [repositoryForm])
   useEffect(() => {
     registryTestSequence.current += 1
@@ -343,7 +373,7 @@ export default function DevOpsView({ section }: { section: Section }) {
   }, [applications, canManageDelivery, searchParams, section, setSearchParams])
 
   const counts = useMemo(() => ({
-    configured: applications.filter((item) => (item.repositories || []).length > 0 && item.repositories.every((link) => link.repository.build_plan_id && link.repository.release_plan_id) && item.image_registry_id && item.workflow?.is_active).length,
+    configured: applications.filter((item) => item.repository_id && item.build_plan_id && item.deployment_plan_id && item.workflow?.is_active).length,
     changed: applications.filter((item) => item.sync_status === 'changed').length,
   }), [applications])
 
@@ -354,6 +384,7 @@ export default function DevOpsView({ section }: { section: Section }) {
     setEditingID('')
     setApplicationForm(initialApplicationForm())
     setRepositoryForm(initialRepositoryForm())
+    setReleasePlanForm({ name: '', version: '', description: '' })
     setError('')
   }
 
@@ -380,17 +411,14 @@ export default function DevOpsView({ section }: { section: Section }) {
 	  const stored = application.environments?.find((item) => item.key === fallback.key)
 	  return stored ? { ...fallback, ...stored, enabled: true } : { ...fallback, enabled: false }
 	})
-    const repositoryIDs = (application.repositories || []).map((item) => item.repository_id)
     setEditingID(application.id)
     setApplicationForm({
       name: application.name, description: application.description || '', repository_id: application.repository_id,
-      repository_ids: repositoryIDs.length > 0 ? repositoryIDs : [application.repository_id].filter(Boolean),
-      repository_ordered: application.repository_ordered || false,
       branch: application.branch, poll_enabled: application.poll_enabled,
       poll_interval_seconds: application.poll_interval_seconds, watch_push: application.watch_push,
       watch_pull_request: application.watch_pull_request, watch_tags: application.watch_tags,
       tag_pattern: application.tag_pattern || 'v*',
-      image_registry_id: application.image_registry_id || '', release_plan_id: application.release_plan_id || '',
+      build_plan_id: application.build_plan_id || '', image_registry_id: application.image_registry_id || '', deployment_plan_id: application.deployment_plan_id || '',
       deployment_target_id: application.deployment_target_id || '',
 	  release_approval_enabled: application.release_approval_enabled,
 	  workflow_template_id: application.workflow_template_id || '',
@@ -414,44 +442,21 @@ export default function DevOpsView({ section }: { section: Section }) {
       credential_id: repository.credential_id || '',
       webhook_enabled: repository.webhook_enabled,
       allow_insecure_http: repository.allow_insecure_http,
-      build_plan_id: repository.build_plan_id || '',
-      release_plan_id: repository.release_plan_id || '',
     })
     setRepositoryFormCheck(null)
     setFormOpen(true)
     window.scrollTo({ top: 0, behavior: 'smooth' })
   }
 
-  function addApplicationRepository(repositoryID: string) {
-    if (!repositoryID || applicationForm.repository_ids.includes(repositoryID)) return
-    setApplicationForm({ ...applicationForm, repository_ids: [...applicationForm.repository_ids, repositoryID] })
-  }
-
-  function removeApplicationRepository(repositoryID: string) {
-    setApplicationForm({ ...applicationForm, repository_ids: applicationForm.repository_ids.filter((id) => id !== repositoryID) })
-  }
-
-  function moveApplicationRepository(index: number, direction: -1 | 1) {
-    const target = index + direction
-    if (target < 0 || target >= applicationForm.repository_ids.length) return
-    const next = [...applicationForm.repository_ids]
-    const current = next[index]
-    next[index] = next[target]
-    next[target] = current
-    setApplicationForm({ ...applicationForm, repository_ids: next })
-  }
-
   async function submitApplication() {
-	if (applicationForm.repository_ids.length === 0) {
-	  setError('请至少选择一个代码仓库')
+	if (!applicationForm.repository_id) {
+	  setError('请选择代码仓库')
 	  return
 	}
 	const enabledEnvironments = applicationForm.environments.filter((item) => item.enabled).map(({ enabled: _enabled, id: _id, ...item }) => item)
 	const primary = enabledEnvironments[0]
 	await submit(editingID ? `/applications/${editingID}` : '/applications', {
 	  ...applicationForm,
-	  repository_id: applicationForm.repository_ids[0] || '',
-	  repositories: applicationForm.repository_ids.map((repositoryID, index) => ({ repository_id: repositoryID, sort_order: index })),
 	  environments: applicationForm.workflow_template_id ? [] : enabledEnvironments,
 	  branch: primary?.branch || applicationForm.branch,
 	  poll_enabled: primary?.poll_enabled || false,
@@ -483,20 +488,92 @@ export default function DevOpsView({ section }: { section: Section }) {
       await client.post(endpoint, undefined, { timeout: 35_000 })
       await refresh()
     } catch (actionError) {
-      setError(apiErrorMessage(actionError))
+      const message = apiErrorMessage(actionError)
       await refresh()
+      setError(message)
     }
   }
 
-  async function createReleasePlan(applicationID: string) {
+  async function createPipelineRun(applicationID: string) {
 	setError('')
 	try {
 	  await client.post(`/applications/${applicationID}/pipeline-runs`)
-	  navigate('/release-plans')
+	  navigate('/release-plans?view=runs')
 	} catch (actionError) {
-	  setError(apiErrorMessage(actionError))
+	  const message = apiErrorMessage(actionError)
 	  await refresh()
+	  setError(message)
 	}
+  }
+
+  function openGroupEditor(plan: ReleasePlan, group?: ReleaseGroup) {
+    setGroupEditor({
+      planID: plan.id,
+      groupID: group?.id || '',
+      name: group?.name || '',
+      mode: group?.mode || 'parallel',
+      failure_policy: group?.failure_policy || 'stop',
+      application_ids: group?.applications?.map((item) => item.application_id) || [],
+      depends_on_group_ids: group?.dependencies?.map((item) => item.depends_on_group_id) || [],
+    })
+  }
+
+  async function saveReleaseGroup() {
+    if (!groupEditor) return
+    setSubmitting(true)
+    setError('')
+    try {
+      const endpoint = `/release-plans/${groupEditor.planID}/groups${groupEditor.groupID ? `/${groupEditor.groupID}` : ''}`
+      const payload = {
+        name: groupEditor.name,
+        mode: groupEditor.mode,
+        failure_policy: groupEditor.failure_policy,
+        application_ids: groupEditor.application_ids,
+        depends_on_group_ids: groupEditor.depends_on_group_ids,
+      }
+      if (groupEditor.groupID) await client.put(endpoint, payload)
+      else await client.post(endpoint, payload)
+      setGroupEditor(null)
+      await refresh()
+    } catch (saveError) {
+      setError(apiErrorMessage(saveError))
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  async function deleteReleaseGroup(plan: ReleasePlan, group: ReleaseGroup) {
+    if (!window.confirm(`确认删除发布组“${group.name}”？`)) return
+    setError('')
+    try {
+      await client.delete(`/release-plans/${plan.id}/groups/${group.id}`)
+      setGroupEditor((current) => current?.groupID === group.id ? null : current)
+      await refresh()
+    } catch (deleteError) {
+      setError(apiErrorMessage(deleteError))
+    }
+  }
+
+  async function activateReleasePlan(plan: ReleasePlan) {
+    setError('')
+    try {
+      await client.put(`/release-plans/${plan.id}`, { name: plan.name, version: plan.version, description: plan.description, status: 'active' })
+      await refresh()
+    } catch (updateError) {
+      setError(apiErrorMessage(updateError))
+    }
+  }
+
+  async function deleteReleasePlan(plan: ReleasePlan) {
+    if (!window.confirm(`确认删除发布计划“${plan.name}”？`)) return
+    setError('')
+    try {
+      await client.delete(`/release-plans/${plan.id}`)
+      setGroupEditor((current) => current?.planID === plan.id ? null : current)
+      await refresh()
+    } catch (deleteError) {
+      setError(apiErrorMessage(deleteError))
+    }
   }
 
   async function runAction(endpoint: string, payload: unknown = undefined) {
@@ -505,8 +582,9 @@ export default function DevOpsView({ section }: { section: Section }) {
 	  await client.post(endpoint, payload)
 	  await refresh()
 	} catch (actionError) {
-	  setError(apiErrorMessage(actionError))
+	  const message = apiErrorMessage(actionError)
 	  await refresh()
+	  setError(message)
 	}
   }
 
@@ -531,8 +609,6 @@ export default function DevOpsView({ section }: { section: Section }) {
         username: repositoryForm.username, credential_id: credentialID || null,
         webhook_enabled: repositoryForm.webhook_enabled,
         allow_insecure_http: repositoryForm.allow_insecure_http, regenerate_webhook: false,
-        build_plan_id: repositoryForm.build_plan_id,
-        release_plan_id: repositoryForm.release_plan_id,
       }
       const result = editingID
         ? await client.put<{ repository: Repository; webhook_secret?: string }>(`/repositories/${editingID}`, payload)
@@ -562,25 +638,21 @@ export default function DevOpsView({ section }: { section: Section }) {
 
   async function openCommitPicker(run: PipelineRun) {
 	setError('')
-	setCommitPicker({ run, repositories: [], sources: [], selectedSourceID: '', loading: true })
+	const application = applications.find((item) => item.id === run.application_id) || run.application
+	setCommitPicker({ run, repositoryName: application?.repository?.name || '代码仓库', options: [], selectedRef: '', sources: [], selectedSourceID: '', loading: true })
 	try {
 	  const response = await client.get<RepositoryRefResult>(`/applications/${run.application_id}/repository-refs`, { timeout: 35_000 })
-	  const application = applications.find((item) => item.id === run.application_id) || run.application
-	  const remoteRepositories = response.data.repositories?.length ? response.data.repositories : [{
-		repository_id: application?.repository_id || '', name: application?.repository?.name || '代码仓库', sort_order: 0,
-		branches: response.data.branches || [], tags: response.data.tags || [],
-	  }]
-	  const pickerRepositories = remoteRepositories.map((remote) => {
-		const options: CommitOption[] = [
-		  ...(remote.branches || []).map((item) => ({ ref: `refs/heads/${item.name}`, name: item.name, sha: item.sha, kind: 'branch' as const })),
-		  ...(remote.tags || []).map((item) => ({ ref: `refs/tags/${item.name}`, name: item.name, sha: item.sha, kind: 'tag' as const })),
-		]
-		const repository = repositories.find((item) => item.id === remote.repository_id)
-		const preferredRef = `refs/heads/${repository?.default_branch || application?.branch || 'main'}`
-		return { repositoryID: remote.repository_id, name: remote.name, options, selectedRef: options.some((item) => item.ref === preferredRef) ? preferredRef : options[0]?.ref || '', sortOrder: remote.sort_order }
-	  })
+	  const options: CommitOption[] = [
+		...(response.data.branches || []).map((item) => ({ ref: `refs/heads/${item.name}`, name: item.name, sha: item.sha, kind: 'branch' as const })),
+		...(response.data.tags || []).map((item) => ({ ref: `refs/tags/${item.name}`, name: item.name, sha: item.sha, kind: 'tag' as const })),
+	  ]
+	  const preferredRef = `refs/heads/${application?.repository?.default_branch || application?.branch || 'main'}`
 	  const sources = response.data.manual_sources || []
-	  setCommitPicker((current) => current?.run.id === run.id ? { run, repositories: pickerRepositories, sources, selectedSourceID: sources[0]?.id || '', loading: false } : current)
+	  setCommitPicker((current) => current?.run.id === run.id ? {
+		run, repositoryName: application?.repository?.name || '代码仓库', options,
+		selectedRef: options.some((item) => item.ref === preferredRef) ? preferredRef : options[0]?.ref || '',
+		sources, selectedSourceID: sources[0]?.id || '', loading: false,
+	  } : current)
 	} catch (requestError) {
 	  setCommitPicker(null)
 	  setError(apiErrorMessage(requestError))
@@ -595,17 +667,27 @@ export default function DevOpsView({ section }: { section: Section }) {
 	await runAction(`/pipeline-runs/${run.id}/execute`)
   }
 
+  async function retryPipelineRun(run: PipelineRun) {
+    setRetryingRunID(run.id)
+    setError('')
+    try {
+      await client.post(`/pipeline-runs/${run.id}/retry`)
+      await refresh()
+    } catch (requestError) {
+      setError(apiErrorMessage(requestError))
+    } finally {
+      setRetryingRunID('')
+    }
+  }
+
   async function confirmCommitExecution() {
 	if (!commitPicker) return
-	const selections = commitPicker.repositories.map((repository) => {
-	  const selected = repository.options.find((item) => item.ref === repository.selectedRef)
-	  return selected ? { repository_id: repository.repositoryID, ref: selected.ref, commit_sha: selected.sha } : null
-	})
-	if (selections.some((item) => item === null)) return
+	const selected = commitPicker.options.find((item) => item.ref === commitPicker.selectedRef)
+	if (!selected) return
 	setCommitSubmitting(true)
 	setError('')
 	try {
-	  await client.post(`/pipeline-runs/${commitPicker.run.id}/execute`, { repositories: selections, source_node_id: commitPicker.selectedSourceID })
+	  await client.post(`/pipeline-runs/${commitPicker.run.id}/execute`, { ref: selected.ref, commit_sha: selected.sha, source_node_id: commitPicker.selectedSourceID })
 	  setCommitPicker(null)
 	  await refresh()
 	} catch (requestError) {
@@ -617,7 +699,7 @@ export default function DevOpsView({ section }: { section: Section }) {
 
   async function deletePipelineRun(run: PipelineRun) {
 	const applicationName = applications.find((item) => item.id === run.application_id)?.name || run.application?.name || run.application_id
-	if (!window.confirm(`确认删除“${applicationName}”的这条发布计划？\n\n发布计划删除后无法恢复；独立的发布记录不会被删除。`)) return
+	if (!window.confirm(`确认删除“${applicationName}”的这次流水线运行？\n\n运行数据删除后无法恢复；独立的发布记录不会被删除。`)) return
 	setError('')
 	try {
 	  await client.delete(`/pipeline-runs/${run.id}`)
@@ -715,8 +797,7 @@ export default function DevOpsView({ section }: { section: Section }) {
       <div><span className="section-label">持续交付</span><h2>{copy.title}</h2><p>{copy.description}</p></div>
       <div className="heading-actions">
         <button className="icon-button" type="button" onClick={() => void refresh()} disabled={loading} aria-label="刷新">↻</button>
-        {canCreate && section !== 'applications' && <button className="primary-button" type="button" onClick={toggleCreateForm}>＋ 创建{copy.title.replace('代码', '')}</button>}
-        {section === 'release-plans' && releaseView === 'plans' && canRun && <button className="primary-button" type="button" onClick={() => navigate('/applications')}>＋ 从应用创建</button>}
+        {canCreate && section !== 'applications' && (section !== 'release-plans' || releaseView === 'plans') && <button className="primary-button" type="button" onClick={toggleCreateForm}>＋ 创建{copy.title.replace('代码', '')}</button>}
       </div>
     </div>
 
@@ -728,6 +809,7 @@ export default function DevOpsView({ section }: { section: Section }) {
 
     {section === 'release-plans' && <div className="release-view-tabs" role="tablist" aria-label="发布数据">
       {canReadDelivery && <button type="button" role="tab" aria-selected={releaseView === 'plans'} className={releaseView === 'plans' ? 'active' : ''} onClick={() => { const next = new URLSearchParams(searchParams); next.delete('view'); setSearchParams(next) }}>发布计划</button>}
+      {canReadDelivery && <button type="button" role="tab" aria-selected={releaseView === 'runs'} className={releaseView === 'runs' ? 'active' : ''} onClick={() => { const next = new URLSearchParams(searchParams); next.set('view', 'runs'); setSearchParams(next) }}>流水线运行</button>}
       {canReadDeployment && <button type="button" role="tab" aria-selected={releaseView === 'records'} className={releaseView === 'records' ? 'active' : ''} onClick={() => { const next = new URLSearchParams(searchParams); next.set('view', 'records'); setSearchParams(next) }}>发布记录</button>}
     </div>}
 
@@ -751,21 +833,10 @@ export default function DevOpsView({ section }: { section: Section }) {
       <div className="form-grid">
         <label>应用名称<input required value={applicationForm.name} onChange={(e) => setApplicationForm({ ...applicationForm, name: e.target.value })} placeholder="例如：订单服务" /></label>
         <label>说明<input value={applicationForm.description} onChange={(e) => setApplicationForm({ ...applicationForm, description: e.target.value })} placeholder="这个应用负责什么" /></label>
-        <div className="span-2 application-repository-picker">
-          <div className="repository-picker-title"><div><strong>代码仓库</strong><span>构建和部署方案由仓库自身提供</span></div>{canManageRepository && <button type="button" onClick={() => navigate('/repositories?create=1')} aria-label="创建代码仓库">＋</button>}</div>
-          <div className="repository-add-row"><select value="" onChange={(event) => addApplicationRepository(event.target.value)}><option value="">＋ 添加仓库</option>{repositories.filter((item) => item.is_active && !applicationForm.repository_ids.includes(item.id)).map((item) => <option key={item.id} value={item.id}>{item.name}{!item.build_plan_id || !item.release_plan_id ? ' · 配置不完整' : ''}</option>)}</select></div>
-          {applicationForm.repository_ids.length === 0 ? <p className="repository-picker-empty">至少添加一个仓库。</p> : <div className="selected-repositories">{applicationForm.repository_ids.map((repositoryID, index) => {
-            const repository = repositories.find((item) => item.id === repositoryID)
-            if (!repository) return null
-            return <div key={repositoryID} className={!repository.build_plan_id || !repository.release_plan_id ? 'incomplete' : ''}>
-              <span className="repository-sequence">{applicationForm.repository_ordered ? index + 1 : '•'}</span>
-              <div><strong>{repository.name}</strong><small>构建：{repository.build_plan?.name || '未配置'} · 部署：{repository.release_plan?.name || '未配置'}</small></div>
-              <div className="repository-order-actions">{applicationForm.repository_ordered && <><button type="button" disabled={index === 0} onClick={() => moveApplicationRepository(index, -1)} aria-label={`上移 ${repository.name}`}>↑</button><button type="button" disabled={index === applicationForm.repository_ids.length - 1} onClick={() => moveApplicationRepository(index, 1)} aria-label={`下移 ${repository.name}`}>↓</button></>}<button type="button" onClick={() => removeApplicationRepository(repositoryID)} aria-label={`移除 ${repository.name}`}>×</button></div>
-            </div>
-          })}</div>}
-          <div className="repository-order-mode"><label className={!applicationForm.repository_ordered ? 'selected' : ''}><input type="radio" name="repository-order" checked={!applicationForm.repository_ordered} onChange={() => setApplicationForm({ ...applicationForm, repository_ordered: false })} /><span><strong>无序发布</strong><small>默认，各仓库互不等待</small></span></label><label className={applicationForm.repository_ordered ? 'selected' : ''}><input type="radio" name="repository-order" checked={applicationForm.repository_ordered} onChange={() => setApplicationForm({ ...applicationForm, repository_ordered: true })} /><span><strong>顺序发布</strong><small>按上面的 1、2、3 依次执行</small></span></label></div>
-        </div>
-        <ResourceSelectField id="application-image-registry" label="镜像仓库" createLabel="镜像仓库" createTo={canManageDelivery ? '/image-registries?create=1' : undefined} value={applicationForm.image_registry_id} onChange={(event) => setApplicationForm({ ...applicationForm, image_registry_id: event.target.value })}><option value="">暂不绑定</option>{registries.filter((item) => item.is_active).map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</ResourceSelectField>
+        <ResourceSelectField id="application-repository" label="代码仓库" createLabel="代码仓库" createTo={canManageRepository ? '/repositories?create=1' : undefined} wrapperClassName="span-2" help="一个应用只对应一个代码仓库；构建方案和部署方案由应用维护。" required value={applicationForm.repository_id} onChange={(event) => setApplicationForm({ ...applicationForm, repository_id: event.target.value })}><option value="">请选择代码仓库</option>{repositories.filter((item) => item.is_active).map((item) => <option key={item.id} value={item.id}>{item.name} · {item.default_branch || '未设置默认分支'}</option>)}</ResourceSelectField>
+        <ResourceSelectField id="application-build-plan" label="构建方案" createLabel="构建方案" createTo={canManageDelivery ? '/build-plans?create=1' : undefined} required value={applicationForm.build_plan_id} onChange={(event) => setApplicationForm({ ...applicationForm, build_plan_id: event.target.value })}><option value="">请选择构建方案</option>{buildPlans.filter((item) => item.is_active).map((item) => <option key={item.id} value={item.id}>{item.name} · {kindLabel(item.kind)}</option>)}</ResourceSelectField>
+        <ResourceSelectField id="application-deployment-plan" label="部署方案" createLabel="部署方案" createTo={canManageDelivery ? '/deployment-plans?create=1' : undefined} required value={applicationForm.deployment_plan_id} onChange={(event) => setApplicationForm({ ...applicationForm, deployment_plan_id: event.target.value })}><option value="">请选择部署方案</option>{deploymentPlans.filter((item) => item.is_active).map((item) => <option key={item.id} value={item.id}>{item.name} · {kindLabel(item.kind)}</option>)}</ResourceSelectField>
+        <ResourceSelectField id="application-image-registry" label="镜像仓库" createLabel="镜像仓库" createTo={canManageDelivery ? '/image-registries?create=1' : undefined} help="可选；镜像统一由 Docker-in-Docker 构建。未绑定时通过 SSH 将 docker save 流加载到 Docker 主机；Kubernetes 发布仍需镜像仓库。" value={applicationForm.image_registry_id} onChange={(event) => setApplicationForm({ ...applicationForm, image_registry_id: event.target.value })}><option value="">不绑定（SSH 传输本地镜像）</option>{registries.filter((item) => item.is_active).map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</ResourceSelectField>
         <ResourceSelectField id="application-workflow-template" label="流水线方案" createLabel="流水线方案" createTo={canManageDelivery ? '/pipeline-plans/editor?create=1' : undefined} wrapperClassName="span-2" help="环境、监听分支、触发事件和部署节点都在无限画布中配置。" required={!editingID} value={applicationForm.workflow_template_id} onChange={(event) => setApplicationForm({ ...applicationForm, workflow_template_id: event.target.value })}><option value="">{editingID ? '保留应用当前自定义流水线' : '请选择流水线方案'}</option>{workflowTemplates.filter((item) => item.is_active).map((item) => <option key={item.id} value={item.id}>{item.name} · 第 {item.revision} 版</option>)}</ResourceSelectField>
         <label>Pull 检查间隔<select value={applicationForm.poll_interval_seconds} onChange={(e) => setApplicationForm({ ...applicationForm, poll_interval_seconds: Number(e.target.value) })}><option value={3}>3 秒</option><option value={5}>5 秒</option><option value={10}>10 秒</option><option value={60}>1 分钟</option></select></label>
       </div>
@@ -784,8 +855,6 @@ export default function DevOpsView({ section }: { section: Section }) {
         <label className="span-2">Clone 地址<input required value={repositoryForm.clone_url} onChange={(event) => setRepositoryForm({ ...repositoryForm, clone_url: event.target.value })} placeholder="https://git.example.com/team/project.git" /></label>
         <label>默认分支<input value={repositoryForm.default_branch} onChange={(event) => setRepositoryForm({ ...repositoryForm, default_branch: event.target.value })} /></label>
         <label>认证方式<select value={repositoryForm.auth_type} onChange={(event) => setRepositoryForm({ ...repositoryForm, auth_type: event.target.value, credential_mode: 'saved', credential_id: '', credential_secret: '' })}><option value="none">无需认证</option><option value="token">访问令牌</option><option value="ssh_key">SSH 私钥</option></select></label>
-        <ResourceSelectField id="repository-build-plan" label="构建方案" createLabel="构建方案" createTo={canManageDelivery ? '/build-plans?create=1' : undefined} required value={repositoryForm.build_plan_id} onChange={(event) => setRepositoryForm({ ...repositoryForm, build_plan_id: event.target.value })}><option value="">请选择构建方案</option>{buildPlans.filter((item) => item.is_active).map((item) => <option key={item.id} value={item.id}>{item.name} · {kindLabel(item.kind)}</option>)}</ResourceSelectField>
-        <ResourceSelectField id="repository-release-plan" label="部署方案" createLabel="部署方案" createTo={canManageDelivery ? '/deployment-plans?create=1' : undefined} required value={repositoryForm.release_plan_id} onChange={(event) => setRepositoryForm({ ...repositoryForm, release_plan_id: event.target.value })}><option value="">请选择部署方案</option>{deploymentPlans.filter((item) => item.is_active).map((item) => <option key={item.id} value={item.id}>{item.name} · {kindLabel(item.kind)}</option>)}</ResourceSelectField>
         {repositoryForm.auth_type !== 'none' && <div className="span-2 repository-credential-block">
           <div className="credential-mode-tabs">
             {repositoryForm.credential_mode === 'existing' && <button type="button" className="active">保留现有凭据</button>}
@@ -837,13 +906,23 @@ export default function DevOpsView({ section }: { section: Section }) {
       <div className="sheet-header"><div><h3>创建部署方案</h3><p>选择一种清晰、可审计的部署方式；切换方式后可查看对应填写说明。</p></div><button type="button" onClick={closeForm}>×</button></div><div className="form-grid"><label>名称<input required value={deploymentForm.name} onChange={(e) => setDeploymentForm({ ...deploymentForm, name: e.target.value })} placeholder="例如：生产环境 Docker 部署" /></label><label>部署方式<select value={deploymentForm.kind} onChange={(e) => setDeploymentForm({ ...deploymentForm, kind: e.target.value })}><option value="helm">Helm</option><option value="compose">Docker Compose</option><option value="docker">Docker</option><option value="script">自定义脚本</option></select></label><label className="span-2">说明<input value={deploymentForm.description} onChange={(e) => setDeploymentForm({ ...deploymentForm, description: e.target.value })} placeholder="说明适用的应用、环境和用途" /></label><DeploymentMethodHelp kind={deploymentForm.kind} />{deploymentForm.kind === 'helm' && <><label className="span-2">Chart 路径<input required value={deploymentForm.helm_chart} onChange={(e) => setDeploymentForm({ ...deploymentForm, helm_chart: e.target.value })} placeholder="deploy/chart" /><small className="field-help">代码仓库中的相对目录，不是本机绝对路径或 Chart 仓库 URL。</small></label><label className="span-2">Values 覆盖<textarea rows={6} value={deploymentForm.helm_values} onChange={(e) => setDeploymentForm({ ...deploymentForm, helm_values: e.target.value })} placeholder={'replicaCount: 2\nresources:\n  limits:\n    cpu: 500m'} /><small className="field-help">可选的 YAML 覆盖内容，请勿填写明文凭据。</small></label></>}{deploymentForm.kind === 'compose' && <label className="span-2">Compose 文件<input required value={deploymentForm.compose_file} onChange={(e) => setDeploymentForm({ ...deploymentForm, compose_file: e.target.value })} placeholder="deploy/compose.prod.yml" /><small className="field-help">填写代码仓库内的相对文件路径，服务名称由文件中的 services 配置决定。</small></label>}{deploymentForm.kind === 'docker' && <label className="span-2">Docker 工作负载名称<input required maxLength={255} aria-describedby="docker-workload-help" value={deploymentForm.service_name} onChange={(e) => setDeploymentForm({ ...deploymentForm, service_name: e.target.value })} placeholder="例如：order-api" /><small className="field-help" id="docker-workload-help">填写容器或 Docker Service 的稳定逻辑名称；不要填写镜像地址、容器 ID、端口或服务器地址。</small></label>}{deploymentForm.kind === 'script' && <label className="span-2">部署脚本<textarea required rows={8} value={deploymentForm.script} onChange={(e) => setDeploymentForm({ ...deploymentForm, script: e.target.value })} placeholder={'set -e\n# 在受控执行器中执行部署步骤'} /><small className="field-help">脚本应可重复执行、无需交互，并通过退出码明确表示成功或失败。</small></label>}<label>超时时间（秒）<input type="number" min={30} max={3600} value={deploymentForm.timeout_seconds} onChange={(e) => setDeploymentForm({ ...deploymentForm, timeout_seconds: Number(e.target.value) })} /><small className="field-help">允许范围 30–3600 秒，超时后任务会停止并记录失败。</small></label></div><FormActions submitting={submitting} onCancel={closeForm} />
     </form>}
 
+    {formOpen && section === 'release-plans' && <form className="create-sheet" onSubmit={(event) => { event.preventDefault(); void submit('/release-plans', releasePlanForm, () => setReleasePlanForm({ name: '', version: '', description: '' })) }}>
+      <div className="sheet-header"><div><h3>创建发布计划</h3><p>发布计划表示一次迭代、版本或发布列车，创建后在计划内部添加发布组。</p></div><button type="button" onClick={closeForm}>×</button></div>
+      <div className="form-grid">
+        <label>计划名称<input required maxLength={128} value={releasePlanForm.name} onChange={(event) => setReleasePlanForm({ ...releasePlanForm, name: event.target.value })} placeholder="例如：八月版本发布" /></label>
+        <label>版本<input required maxLength={64} pattern="[A-Za-z0-9][A-Za-z0-9._/-]*" value={releasePlanForm.version} onChange={(event) => setReleasePlanForm({ ...releasePlanForm, version: event.target.value })} placeholder="2026.08" /></label>
+        <label className="span-2">说明<input maxLength={500} value={releasePlanForm.description} onChange={(event) => setReleasePlanForm({ ...releasePlanForm, description: event.target.value })} placeholder="本次迭代包含的范围和发布目标" /></label>
+      </div>
+      <FormActions submitting={submitting} onCancel={closeForm} />
+    </form>}
+
     {section === 'applications' && !formOpen && <div className="application-grid">{applications.map((application) => <article className="application-card" key={application.id}>
-      <div className="card-top"><div className="app-identity"><span className="app-symbol">{application.name.slice(0, 1)}</span><div><h3>{application.name}</h3><p>{(application.repositories || []).map((item) => item.repository.name).join('、') || application.repository?.name || '未找到仓库'} · {application.repository_ordered ? '顺序发布' : '无序发布'}</p></div></div><StatusPill value={application.sync_status} /></div>
+      <div className="card-top"><div className="app-identity"><span className="app-symbol">{application.name.slice(0, 1)}</span><div><h3>{application.name}</h3><p>{application.repository?.name || '未找到仓库'}</p></div></div><StatusPill value={application.sync_status} /></div>
       <p className="card-description">{application.description || '暂未填写应用说明'}</p>
       <div className="commit-row"><div><span>当前版本</span><strong>{shortSHA(application.last_observed_commit)}</strong></div><div><span>最后检查</span><strong>{formatTime(application.last_checked_at)}</strong></div></div>
       <div className="application-environments">{(application.environments || []).map((environment) => <span key={environment.key}>{environment.key}<small>{environment.branch}</small></span>)}</div>
-      <div className="pipeline-flow compact-flow"><span className={(application.repositories || []).length > 0 ? 'complete' : ''}>{(application.repositories || []).length || 1} 个仓库</span><i>›</i><span className={(application.repositories || []).length > 0 && (application.repositories || []).every((item) => item.repository.build_plan_id && item.repository.release_plan_id) ? 'complete' : ''}>仓库方案</span><i>›</i><span className={application.image_registry ? 'complete' : ''}>镜像</span><i>›</i><span className={application.workflow?.is_active ? 'complete' : ''}>{application.workflow_template?.name || (application.workflow?.is_active ? '应用流水线' : '流水线草稿')}</span><span className={application.release_approval_enabled ? 'review-on' : ''}>{application.release_approval_enabled ? '需审核' : '免审核'}</span></div>
-      <div className="card-actions"><button type="button" onClick={() => editApplication(application)}>配置</button><button type="button" onClick={() => navigate(`/pipeline-plans/editor?application=${application.id}`)}>应用流水线</button>{canRun && <><button type="button" onClick={() => void action(`/applications/${application.id}/sync`)}>检查更新</button><button className="accent-action" type="button" onClick={() => void createReleasePlan(application.id)}>创建发布计划</button></>}</div>
+      <div className="pipeline-flow compact-flow"><span className={application.repository_id ? 'complete' : ''}>代码仓库</span><i>›</i><span className={application.build_plan_id && application.deployment_plan_id ? 'complete' : ''}>应用方案</span><i>›</i><span className="complete">{application.image_registry ? '构建并推送' : 'DinD 构建并 SSH 传输'}</span><i>›</i><span className={application.workflow?.is_active ? 'complete' : ''}>{application.workflow_template?.name || (application.workflow?.is_active ? '应用流水线' : '流水线草稿')}</span><span className={application.release_approval_enabled ? 'review-on' : ''}>{application.release_approval_enabled ? '需审核' : '免审核'}</span></div>
+      <div className="card-actions"><button type="button" onClick={() => editApplication(application)}>配置</button><button type="button" onClick={() => navigate(`/pipeline-plans/editor?application=${application.id}`)}>应用流水线</button>{canRun && <><button type="button" onClick={() => void action(`/applications/${application.id}/sync`)}>检查更新</button><button className="accent-action" type="button" onClick={() => void createPipelineRun(application.id)}>手动执行</button></>}</div>
     </article>)}{!loading && applications.length === 0 && <EmptyState title="还没有应用" description="创建第一个应用，把仓库、构建和发布流程连接起来。" />}</div>}
 
     {section === 'repositories' && <div className="resource-card-grid">{repositories.map((item) => {
@@ -854,7 +933,6 @@ export default function DevOpsView({ section }: { section: Section }) {
           <div className="card-title-line"><h3>{item.name}</h3><span>{item.provider}</span></div>
           <p className="resource-url" title={item.clone_url}>{item.clone_url}</p>
           <div className="meta-row"><span>默认分支 {item.default_branch || '—'}</span><span>{item.webhook_enabled ? 'Webhook 已开启' : '仅 Pull'}</span></div>
-          <div className="repository-plan-row"><span>构建：{item.build_plan?.name || '未配置'}</span><span>部署：{item.release_plan?.name || '未配置'}</span></div>
           {check && <RepositoryCheckResult check={check} />}
           {(canManageRepository || (item.webhook_enabled && canReadRepositorySecret)) && <div className="card-actions repository-actions">
             {canManageRepository && <button type="button" onClick={() => editRepository(item)}>修改</button>}
@@ -874,29 +952,59 @@ export default function DevOpsView({ section }: { section: Section }) {
 
     {section === 'deployment-plans' && <div className="resource-card-grid">{deploymentPlans.map((item) => <article className="resource-card modern-card" key={item.id}><div className="resource-icon release-icon">↗</div><div><div className="card-title-line"><h3>{item.name}</h3><span>{kindLabel(item.kind)}</span></div><p>{item.description || item.helm_chart || item.compose_file || item.service_name || '自定义部署脚本'}</p><div className="meta-row"><span>超时 {item.timeout_seconds} 秒</span><span>已启用</span></div></div></article>)}{!loading && deploymentPlans.length === 0 && <EmptyState title="还没有部署方案" description="创建 Helm、Compose、Docker 或脚本部署模板。" />}</div>}
 
-    {section === 'release-plans' && releaseView === 'plans' && <div className="pipeline-list">{runs.map((run) => {
+    {section === 'release-plans' && releaseView === 'plans' && <div className="release-plan-grid">{releasePlans.map((plan) => <article className="release-plan-card" key={plan.id}>
+      <header>
+        <div><span className="release-plan-version">{plan.version}</span><h3>{plan.name}</h3><p>{plan.description || '暂未填写本次迭代的发布范围。'}</p></div>
+        <StatusPill value={plan.status} />
+      </header>
+      <div className="release-group-list">{(plan.groups || []).map((group) => {
+        const dependencyNames = (group.dependencies || []).map((dependency) => plan.groups.find((item) => item.id === dependency.depends_on_group_id)?.name).filter(Boolean)
+        return <section className="release-group-card" key={group.id}>
+          <div className="release-group-heading"><div><strong>{group.name}</strong><span>{group.mode === 'parallel' ? '组内并行' : '组内串行'} · {group.failure_policy === 'stop' ? '失败即停止' : '失败后继续'}</span></div>{canManageDelivery && <div><button type="button" onClick={() => openGroupEditor(plan, group)}>编辑</button><button className="danger-action" type="button" onClick={() => void deleteReleaseGroup(plan, group)}>删除</button></div>}</div>
+          <div className="release-group-applications">{(group.applications || []).map((item, index) => <span key={item.id}>{group.mode === 'sequential' ? `${index + 1}. ` : ''}{item.application?.name || item.application_id}</span>)}</div>
+          {dependencyNames.length > 0 && <small>依赖发布组：{dependencyNames.join('、')}</small>}
+        </section>
+      })}{(plan.groups || []).length === 0 && <p className="release-group-empty">还没有发布组，请添加需要一起发布的应用。</p>}</div>
+      {groupEditor?.planID === plan.id && <div className="release-group-editor">
+        <div className="release-group-editor-heading"><strong>{groupEditor.groupID ? '编辑发布组' : '添加发布组'}</strong><button type="button" onClick={() => setGroupEditor(null)} aria-label="关闭发布组编辑">×</button></div>
+        <div className="form-grid">
+          <label>发布组名称<input required maxLength={128} value={groupEditor.name} onChange={(event) => setGroupEditor({ ...groupEditor, name: event.target.value })} placeholder="例如：核心服务" /></label>
+          <label>组内执行方式<select value={groupEditor.mode} onChange={(event) => setGroupEditor({ ...groupEditor, mode: event.target.value as 'parallel' | 'sequential' })}><option value="parallel">并行</option><option value="sequential">串行</option></select></label>
+          <label>失败策略<select value={groupEditor.failure_policy} onChange={(event) => setGroupEditor({ ...groupEditor, failure_policy: event.target.value as 'stop' | 'continue' })}><option value="stop">停止本计划后续执行</option><option value="continue">记录失败并继续</option></select></label>
+          <fieldset className="span-2 release-group-options"><legend>应用</legend>{applications.filter((application) => application.is_active).map((application) => <label key={application.id}><input type="checkbox" checked={groupEditor.application_ids.includes(application.id)} onChange={(event) => setGroupEditor({ ...groupEditor, application_ids: event.target.checked ? [...groupEditor.application_ids, application.id] : groupEditor.application_ids.filter((id) => id !== application.id) })} />{application.name}</label>)}</fieldset>
+          {(plan.groups || []).some((group) => group.id !== groupEditor.groupID) && <fieldset className="span-2 release-group-options"><legend>前置发布组</legend>{plan.groups.filter((group) => group.id !== groupEditor.groupID).map((group) => <label key={group.id}><input type="checkbox" checked={groupEditor.depends_on_group_ids.includes(group.id)} onChange={(event) => setGroupEditor({ ...groupEditor, depends_on_group_ids: event.target.checked ? [...groupEditor.depends_on_group_ids, group.id] : groupEditor.depends_on_group_ids.filter((id) => id !== group.id) })} />{group.name}</label>)}</fieldset>}
+        </div>
+        <div className="form-actions"><button className="secondary-button" type="button" onClick={() => setGroupEditor(null)}>取消</button><button className="primary-button" type="button" disabled={submitting || !groupEditor.name.trim() || groupEditor.application_ids.length === 0} onClick={() => void saveReleaseGroup()}>{submitting ? '保存中…' : '保存发布组'}</button></div>
+      </div>}
+      <footer><span>创建于 {formatTime(plan.created_at)}</span>{canManageDelivery && <div><button type="button" onClick={() => openGroupEditor(plan)}>＋ 添加发布组</button>{plan.status === 'draft' && <button className="accent-action" type="button" disabled={(plan.groups || []).length === 0} onClick={() => void activateReleasePlan(plan)}>启用计划</button>}{plan.status === 'draft' && <button className="danger-action" type="button" onClick={() => void deleteReleasePlan(plan)}>删除</button>}</div>}</footer>
+    </article>)}{!loading && releasePlans.length === 0 && <EmptyState title="还没有发布计划" description="创建一次迭代、版本或发布列车，再在计划中添加发布组。" />}</div>}
+
+    {section === 'release-plans' && releaseView === 'runs' && <div className="pipeline-list">{runs.map((run) => {
       const application = applications.find((item) => item.id === run.application_id) || run.application
       const blockers = blockedRunReasons(run, application)
-      return <article className={`pipeline-run${run.status === 'blocked' ? ' pipeline-run-blocked' : ''}`} key={run.id}>
+      return <article className={`pipeline-run${run.status === 'blocked' || run.status === 'failed' ? ' pipeline-run-blocked' : ''}`} key={run.id}>
         <div className="run-status-dot" />
         <div className="run-main">
           <div className="card-title-line"><h3>{application?.name || run.application_id}</h3><StatusPill value={run.status} /></div>
-          <div className="run-details"><span>{run.environment || '未进入环境'}</span><span>{run.trigger === 'manual' ? '手动创建' : run.trigger}</span><span>{run.ref || '尚无代码引用'}</span><span>{shortSHA(run.commit_sha)}</span></div>
-          {(run.repositories || []).length > 0 && <div className="run-repository-list">{(run.repositories || []).map((item, index) => <div key={item.id}><span>{run.repository_ordered ? index + 1 : '•'}</span><strong>{item.repository?.name || item.repository_id}</strong><small>{item.ref || '待选择版本'}{item.commit_sha ? ` · ${shortSHA(item.commit_sha)}` : ''}</small></div>)}</div>}
-          {blockers.length > 0 ? <div className="run-blockers" role="alert"><strong>这条发布计划不能继续，还缺少：</strong><ul>{blockers.map((reason) => <li key={reason}>{reason}</li>)}</ul></div> : <p>{run.message || '发布计划已创建'}</p>}
+          <div className="run-details"><span>{run.environment || '未进入环境'}</span><span>{run.trigger === 'manual' ? '手动创建' : run.trigger === 'retry' ? '重新执行' : run.trigger}</span><span>{run.ref || '尚无代码引用'}</span><span>{shortSHA(run.commit_sha)}</span>{run.retry_of_id && <span>来源运行：{shortSHA(run.retry_of_id)}</span>}</div>
+          {(run.repositories || []).length > 0 && <div className="run-repository-list">{(run.repositories || []).map((item) => <div key={item.id}><strong>{item.repository?.name || item.repository_id}</strong><small>{item.ref || '待选择版本'}{item.commit_sha ? ` · ${shortSHA(item.commit_sha)}` : ''}</small></div>)}</div>}
+          {blockers.length > 0 ? <div className="run-blockers" role="alert"><strong>这次流水线运行不能继续，还缺少：</strong><ul>{blockers.map((reason) => <li key={reason}>{reason}</li>)}</ul></div> : <p>{run.message || '流水线运行已创建'}</p>}
+          {run.image && <div className="run-details"><span>镜像：{run.image}</span>{run.deployment_id && <span>发布记录：{run.deployment_id}</span>}</div>}
           <div className="run-details"><span>关联流水线：{application?.workflow_template?.name || '应用流水线'}{run.workflow_revision ? ` · 第 ${run.workflow_revision} 版` : ''}</span><span>{run.approval_required ? '需要审核' : '无需审核'}</span>{run.current_node_id && <span>当前节点：{run.current_node_id}</span>}</div>
           <div className="run-actions">
-            {run.status === 'blocked' && !run.commit_sha && canRun && <button className="accent-action" type="button" onClick={() => void openCommitPicker(run)}>执行</button>}
-            {run.status === 'blocked' && application && canManageDelivery && <button type="button" onClick={() => navigate(`/applications?edit=${run.application_id}`)}>配置应用</button>}
+            {run.status === 'blocked' && !run.commit_sha && application?.repository_id && canRun && <button className="accent-action" type="button" onClick={() => void openCommitPicker(run)}>选择版本</button>}
+            {run.status === 'blocked' && Boolean(run.commit_sha) && applicationCanExecute(application) && canRun && <button className="accent-action" type="button" onClick={() => void executePipelineRun(run)}>执行</button>}
+            {run.status === 'failed' && run.commit_sha && canRun && <button className="accent-action" type="button" disabled={retryingRunID === run.id} onClick={() => void retryPipelineRun(run)}>{retryingRunID === run.id ? '正在重新执行…' : '重新执行'}</button>}
+            {(run.status === 'blocked' || run.status === 'failed') && application && canManageDelivery && <button type="button" onClick={() => navigate(`/applications?edit=${run.application_id}`)}>配置应用</button>}
             <button type="button" onClick={() => navigate(`/pipeline-plans/editor?application=${run.application_id}`)}>查看流水线</button>
             {run.current_node_id && run.status === 'awaiting_approval' && canReview && <button type="button" onClick={() => void runAction(`/pipeline-runs/${run.id}/approve`)}>通过审核</button>}
-            {run.current_node_id && run.status !== 'blocked' && run.status !== 'awaiting_approval' && run.status !== 'succeeded' && canRun && <button className="accent-action" type="button" onClick={() => void executePipelineRun(run)}>{run.status === 'detected' ? '执行' : run.status === 'ready' ? '执行部署' : '继续执行'}</button>}
+            {run.current_node_id && (run.status === 'detected' || run.status === 'ready') && canRun && <button className="accent-action" type="button" onClick={() => void executePipelineRun(run)}>{run.status === 'detected' ? '执行' : run.stage === 'deploy_succeeded' ? '进入下一节点' : '执行部署'}</button>}
             {canManageDelivery && <button className="danger-action" type="button" onClick={() => void deletePipelineRun(run)}>删除</button>}
           </div>
         </div>
         <time>{formatTime(run.created_at)}</time>
       </article>
-    })}{!loading && runs.length === 0 && <EmptyState title="还没有发布计划" description="请从应用页面创建；代码事件触发的计划也会显示在这里。" />}</div>}
+    })}{!loading && runs.length === 0 && <EmptyState title="还没有流水线运行" description="可在应用页面手动执行，代码事件触发的运行也会显示在这里。" />}</div>}
 
     {section === 'release-plans' && releaseView === 'records' && canReadDeployment && <div className="resource-section release-records-readonly"><div className="section-heading"><h3>发布记录</h3><span>{deployments.length} 条 · 只读</span></div><div className="resource-panel"><ResourceTable rows={deployments} emptyText="还没有发布记录" columns={[
       { key: 'environment', label: '环境' }, { key: 'operation', label: '操作' }, { key: 'image', label: '镜像' },
@@ -908,15 +1016,15 @@ export default function DevOpsView({ section }: { section: Section }) {
       <div className="commit-picker-modal" role="dialog" aria-modal="true" aria-labelledby="commit-picker-title">
         <header><div><span>手动执行</span><h3 id="commit-picker-title">选择发布的 Commit</h3><p>{commitPicker.run.application?.name || applications.find((item) => item.id === commitPicker.run.application_id)?.name || '当前应用'}</p></div><button type="button" disabled={commitSubmitting} onClick={() => setCommitPicker(null)} aria-label="关闭">×</button></header>
         <div className="commit-picker-body">
-          {commitPicker.loading ? <div className="commit-picker-empty">正在读取各仓库的远程分支和 Tag…</div> : commitPicker.repositories.length === 0 ? <div className="commit-picker-empty">应用没有可发布的代码仓库。</div> : <>
+          {commitPicker.loading ? <div className="commit-picker-empty">正在读取远程分支和 Tag…</div> : commitPicker.options.length === 0 ? <div className="commit-picker-empty">代码仓库没有可选择的分支或 Tag。</div> : <>
 			{commitPicker.sources.length > 0 && <label>发布入口<select value={commitPicker.selectedSourceID} onChange={(event) => setCommitPicker({ ...commitPicker, selectedSourceID: event.target.value })}>{commitPicker.sources.map((source) => <option key={source.id} value={source.id}>{source.name}{source.environment ? ` · ${source.environment.toUpperCase()}` : ''}</option>)}</select></label>}
-            <div className="commit-repository-list">{commitPicker.repositories.map((repository, index) => {
-              const selected = repository.options.find((item) => item.ref === repository.selectedRef)
-              return <section key={repository.repositoryID} className="commit-repository-item"><div><span>{commitPicker.run.repository_ordered ? index + 1 : '•'}</span><strong>{repository.name}</strong><small>{commitPicker.run.repository_ordered ? '按顺序发布' : '无序发布'}</small></div>{repository.options.length === 0 ? <p>仓库没有可选择的分支或 Tag。</p> : <><label>代码版本<select autoFocus={index === 0} value={repository.selectedRef} onChange={(event) => setCommitPicker({ ...commitPicker, repositories: commitPicker.repositories.map((item) => item.repositoryID === repository.repositoryID ? { ...item, selectedRef: event.target.value } : item) })}><optgroup label="分支">{repository.options.filter((item) => item.kind === 'branch').map((item) => <option key={item.ref} value={item.ref}>{item.name} · {shortSHA(item.sha)}</option>)}</optgroup><optgroup label="Tag">{repository.options.filter((item) => item.kind === 'tag').map((item) => <option key={item.ref} value={item.ref}>{item.name} · {shortSHA(item.sha)}</option>)}</optgroup></select></label>{selected && <div className="commit-picker-sha"><span>Commit SHA</span><code>{selected.sha}</code></div>}</>}</section>
-            })}</div>
+            <div className="commit-repository-list">{(() => {
+              const selected = commitPicker.options.find((item) => item.ref === commitPicker.selectedRef)
+              return <section className="commit-repository-item"><div><strong>{commitPicker.repositoryName}</strong></div><label>代码版本<select autoFocus value={commitPicker.selectedRef} onChange={(event) => setCommitPicker({ ...commitPicker, selectedRef: event.target.value })}><optgroup label="分支">{commitPicker.options.filter((item) => item.kind === 'branch').map((item) => <option key={item.ref} value={item.ref}>{item.name} · {shortSHA(item.sha)}</option>)}</optgroup><optgroup label="Tag">{commitPicker.options.filter((item) => item.kind === 'tag').map((item) => <option key={item.ref} value={item.ref}>{item.name} · {shortSHA(item.sha)}</option>)}</optgroup></select></label>{selected && <div className="commit-picker-sha"><span>Commit SHA</span><code>{selected.sha}</code></div>}</section>
+            })()}</div>
           </>}
         </div>
-        <footer><button className="secondary-button" type="button" disabled={commitSubmitting} onClick={() => setCommitPicker(null)}>取消</button><button className="primary-button" type="button" disabled={commitPicker.loading || commitPicker.repositories.some((item) => !item.selectedRef) || commitSubmitting} onClick={() => void confirmCommitExecution()}>{commitSubmitting ? '执行中…' : '确认并执行'}</button></footer>
+        <footer><button className="secondary-button" type="button" disabled={commitSubmitting} onClick={() => setCommitPicker(null)}>取消</button><button className="primary-button" type="button" disabled={commitPicker.loading || !commitPicker.selectedRef || commitSubmitting} onClick={() => void confirmCommitExecution()}>{commitSubmitting ? '执行中…' : '确认并执行'}</button></footer>
       </div>
     </div>}
   </section>

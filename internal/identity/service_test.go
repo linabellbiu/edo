@@ -20,6 +20,7 @@ import (
 	"zrt/internal/auth"
 	"zrt/internal/cache"
 	"zrt/internal/config"
+	"zrt/internal/configuration"
 	"zrt/internal/database"
 	"zrt/internal/model"
 	"zrt/internal/secret"
@@ -142,7 +143,8 @@ func newIdentityTestService(t *testing.T) (*Service, *gorm.DB, func()) {
 	}
 	accounts := account.NewService(db)
 	sessions := auth.NewSessionStore(redisClient, time.Hour)
-	limiter := auth.NewLoginRateLimiter(redisClient, 3, time.Minute)
+	configurationService := configuration.NewService(db, secretManager)
+	limiter := auth.NewLoginRateLimiter(redisClient, 3, time.Minute, configurationService)
 	login, err := account.NewLoginService(accounts, sessions, limiter, logger)
 	if err != nil {
 		t.Fatalf("初始化登录服务失败: %v", err)

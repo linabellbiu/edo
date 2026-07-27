@@ -62,6 +62,22 @@ func TestProductionDeploymentRequiresDigestAndSeparateApproval(t *testing.T) {
 	}
 }
 
+func TestPipelinePreparedLocalImageUsesVerifiedImageID(t *testing.T) {
+	target := &model.DeploymentTarget{Platform: model.DeploymentDocker, Environment: model.EnvironmentProduction}
+	image := "zrt.local/order-api:abcdef123456-12345678"
+	imageID := "sha256:" + strings.Repeat("b", 64)
+	if normalized, err := validatePipelineImage(image, imageID, target); err != nil || normalized != image {
+		t.Fatalf("流水线已经校验的本地镜像应允许用于生产发布: image=%q err=%v", normalized, err)
+	}
+	if _, err := validatePipelineImage(image, "", target); !errors.Is(err, ErrImmutableImageRequired) {
+		t.Fatalf("未携带镜像 ID 的本地标签不能绕过生产不可变检查: %v", err)
+	}
+	target.Platform = model.DeploymentKubernetes
+	if _, err := validatePipelineImage(image, imageID, target); !errors.Is(err, ErrInvalidImage) {
+		t.Fatalf("Kubernetes 不应接受只存在于 Docker 主机的本地镜像: %v", err)
+	}
+}
+
 func TestDeploymentUsesApprovedTargetSnapshot(t *testing.T) {
 	service, _, endpointID := newDeploymentTestService(t)
 	target, err := service.CreateTarget(context.Background(), "admin", TargetInput{
@@ -89,6 +105,21 @@ func TestDeploymentUsesApprovedTargetSnapshot(t *testing.T) {
 	}
 	if stored.WorkloadName != "api-v1" || stored.RolloutTimeout != 120 {
 		t.Fatalf("发布目标快照被后续修改污染: %+v", stored)
+	}
+}
+
+func TestDeploymentEnvironmentSupportsCustomChineseName(t *testing.T) {
+	service, _, endpointID := newDeploymentTestService(t)
+	target, err := service.CreateTarget(context.Background(), "admin", TargetInput{
+		Name: "华东客户演示", Description: "上海机房的演示环境",
+		Platform: model.DeploymentDocker, Environment: model.EnvironmentStaging,
+		RuntimeID: endpointID, WorkloadName: "demo-api", RolloutTimeout: 120,
+	})
+	if err != nil {
+		t.Fatalf("创建自定义发布环境失败: %v", err)
+	}
+	if target.Name != "华东客户演示" || target.Description != "上海机房的演示环境" {
+		t.Fatalf("发布环境名称或说明保存错误: %+v", target)
 	}
 }
 

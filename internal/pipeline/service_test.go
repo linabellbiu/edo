@@ -47,8 +47,8 @@ func TestResourcesCanBeBoundAndPrepared(t *testing.T) {
 	if err != nil || plaintext != credential {
 		t.Fatalf("镜像仓库凭据无法解密: plaintext=%q err=%v", plaintext, err)
 	}
-	releasePlan, err := service.CreateReleasePlan(ctx, "admin", ReleasePlanInput{
-		Name: "Helm 发布", Kind: model.ReleasePlanHelm, HelmChart: "deploy/chart",
+	deploymentPlan, err := service.CreateDeploymentPlan(ctx, "admin", DeploymentPlanInput{
+		Name: "Helm 发布", Kind: model.DeploymentPlanHelm, HelmChart: "deploy/chart",
 	})
 	if err != nil {
 		t.Fatalf("创建部署方案失败: %v", err)
@@ -67,14 +67,17 @@ func TestResourcesCanBeBoundAndPrepared(t *testing.T) {
 		Name: "订单服务", RepositoryID: repositoryID, Branch: "main",
 		PollEnabled: true, PollIntervalSeconds: 60, WatchPush: true,
 		BuildPlanID: buildPlan.ID, ImageRegistryID: registry.ID,
-		ReleasePlanID: releasePlan.ID, DeploymentTargetID: target.ID,
+		DeploymentPlanID: deploymentPlan.ID, DeploymentTargetID: target.ID,
 	})
 	if err != nil {
 		t.Fatalf("创建应用失败: %v", err)
 	}
 	if application.Repository.ID != repositoryID || application.BuildPlan == nil ||
-		application.ImageRegistry == nil || application.ReleasePlan == nil || application.DeploymentTarget == nil {
+		application.ImageRegistry == nil || application.DeploymentPlan == nil || application.DeploymentTarget == nil {
 		t.Fatalf("应用资源关联没有完整加载: %+v", application)
+	}
+	if len(application.Environments) != 1 || application.Environments[0].DeploymentPlanID != deploymentPlan.ID {
+		t.Fatalf("环境没有使用应用级部署方案: %+v", application.Environments)
 	}
 
 	blocked, err := service.PrepareRun(ctx, application.ID, "admin")
@@ -83,6 +86,10 @@ func TestResourcesCanBeBoundAndPrepared(t *testing.T) {
 	}
 	if blocked.Message != "缺少：代码版本" {
 		t.Fatalf("阻塞原因应明确指出缺少代码版本: %q", blocked.Message)
+	}
+	if len(blocked.Repositories) != 1 || blocked.Repositories[0].BuildPlanID != buildPlan.ID ||
+		blocked.Repositories[0].DeploymentPlanID != deploymentPlan.ID {
+		t.Fatalf("流水线运行没有保存应用方案快照: %+v", blocked.Repositories)
 	}
 	if err := service.DeleteRun(ctx, blocked.ID); err != nil {
 		t.Fatalf("删除未执行的阻塞计划失败: %v", err)
@@ -96,12 +103,24 @@ func TestResourcesCanBeBoundAndPrepared(t *testing.T) {
 	if err != nil || ready.Status != model.PipelineRunReady || ready.Stage != "configured" {
 		t.Fatalf("完整绑定的流水线未进入就绪状态: run=%+v err=%v", ready, err)
 	}
+	updated, err := service.UpdateApplication(ctx, application.ID, ApplicationInput{
+		Name: application.Name, RepositoryID: repositoryID, Branch: application.Branch,
+		PollEnabled: true, PollIntervalSeconds: 60, WatchPush: true,
+		BuildPlanID: buildPlan.ID, ImageRegistrySet: true,
+		DeploymentPlanID: deploymentPlan.ID, DeploymentTargetID: target.ID,
+	})
+	if err != nil {
+		t.Fatalf("解绑镜像仓库失败: %v", err)
+	}
+	if updated.ImageRegistryID != "" || updated.ImageRegistry != nil {
+		t.Fatalf("显式选择不绑定时仍保留了镜像仓库: %+v", updated)
+	}
 }
 
 func TestPipelineIncompleteMessageListsEveryMissingItem(t *testing.T) {
 	application := &model.Application{BuildPlanID: "build-1"}
 	message := pipelineIncompleteMessage(application)
-	if message != "缺少：镜像仓库、部署方案、代码版本" {
+	if message != "缺少：代码仓库、部署方案、代码版本" {
 		t.Fatalf("阻塞原因没有列出全部缺失项: %q", message)
 	}
 }
@@ -285,8 +304,20 @@ func TestApplicationPullCheckInterval(t *testing.T) {
 func TestReleaseWorkflowRequiresIndependentApproval(t *testing.T) {
 	service, db, _, repositoryID := newPipelineTestService(t)
 	ctx := context.Background()
-	releasePlan, err := service.CreateReleasePlan(ctx, "admin", ReleasePlanInput{
-		Name: "workflow-helm", Kind: model.ReleasePlanHelm, HelmChart: "deploy/chart",
+	buildPlan, err := service.CreateBuildPlan(ctx, "admin", BuildPlanInput{
+		Name: "workflow-build", Kind: model.BuildPlanDockerfile, DockerfilePath: "Dockerfile", ContextPath: ".",
+	})
+	if err != nil {
+		t.Fatalf("创建构建方案失败: %v", err)
+	}
+	registry, err := service.CreateRegistry(ctx, "admin", RegistryInput{
+		Name: "workflow-registry", Provider: model.RegistryGeneric, Endpoint: "https://registry.example.com", Namespace: "zrt",
+	})
+	if err != nil {
+		t.Fatalf("创建镜像仓库失败: %v", err)
+	}
+	deploymentPlan, err := service.CreateDeploymentPlan(ctx, "admin", DeploymentPlanInput{
+		Name: "workflow-helm", Kind: model.DeploymentPlanHelm, HelmChart: "deploy/chart",
 	})
 	if err != nil {
 		t.Fatalf("创建部署方案失败: %v", err)
@@ -309,9 +340,10 @@ func TestReleaseWorkflowRequiresIndependentApproval(t *testing.T) {
 	}
 	application, err := service.CreateApplication(ctx, "admin", ApplicationInput{
 		Name: "审批流程应用", RepositoryID: repositoryID, ReleaseApprovalEnabled: true,
+		BuildPlanID: buildPlan.ID, ImageRegistryID: registry.ID, DeploymentPlanID: deploymentPlan.ID,
 		Environments: []EnvironmentInput{
-			{Key: "test", Name: "测试环境", Branch: "test", WatchPush: true, WatchPullRequest: true, ReleasePlanID: releasePlan.ID, DeploymentTargetID: testTarget.ID},
-			{Key: "prod", Name: "生产环境", Branch: "release", WatchTags: true, TagPattern: "v*", ReleasePlanID: releasePlan.ID, DeploymentTargetID: prodTarget.ID},
+			{Key: "test", Name: "测试环境", Branch: "test", WatchPush: true, WatchPullRequest: true, DeploymentPlanID: deploymentPlan.ID, DeploymentTargetID: testTarget.ID},
+			{Key: "prod", Name: "生产环境", Branch: "release", WatchTags: true, TagPattern: "v*", DeploymentPlanID: deploymentPlan.ID, DeploymentTargetID: prodTarget.ID},
 		},
 	})
 	if err != nil {
@@ -319,7 +351,7 @@ func TestReleaseWorkflowRequiresIndependentApproval(t *testing.T) {
 	}
 	workflowResult, err := service.GetWorkflow(ctx, application.ID)
 	if err != nil || !workflowResult.Valid {
-		t.Fatalf("默认发布计划应当有效: result=%+v err=%v", workflowResult, err)
+		t.Fatalf("默认应用流水线应当有效: result=%+v err=%v", workflowResult, err)
 	}
 	workflowResult, err = service.SaveWorkflow(ctx, application.ID, "admin", WorkflowInput{
 		Name: workflowResult.Workflow.Name, Revision: workflowResult.Workflow.Revision, Activate: true,
@@ -327,7 +359,7 @@ func TestReleaseWorkflowRequiresIndependentApproval(t *testing.T) {
 		Viewport: workflowResult.Workflow.Viewport,
 	})
 	if err != nil || !workflowResult.Workflow.IsActive {
-		t.Fatalf("发布计划未能启用: result=%+v err=%v", workflowResult, err)
+		t.Fatalf("应用流水线未能启用: result=%+v err=%v", workflowResult, err)
 	}
 	if err := db.Model(&model.Application{}).Where("id = ?", application.ID).Updates(map[string]any{
 		"last_observed_ref": "refs/heads/test", "last_observed_commit": "0123456789012345678901234567890123456789",
@@ -336,47 +368,59 @@ func TestReleaseWorkflowRequiresIndependentApproval(t *testing.T) {
 	}
 	run, err := service.PrepareRun(ctx, application.ID, "admin")
 	if err != nil || run.CurrentNodeID != "trigger-test" {
-		t.Fatalf("发布计划没有从测试触发节点启动: run=%+v err=%v", run, err)
+		t.Fatalf("流水线运行没有从测试触发节点启动: run=%+v err=%v", run, err)
 	}
 	if !run.ApprovalRequired {
-		t.Fatalf("发布计划没有保存应用的审核要求: %+v", run)
+		t.Fatalf("流水线运行没有保存应用的审核要求: %+v", run)
 	}
 	listedRuns, err := service.ListRuns(ctx, 10)
 	if err != nil || len(listedRuns) == 0 || !listedRuns[0].ApprovalRequired {
-		t.Fatalf("发布计划列表没有从流水线快照还原审核要求: runs=%+v err=%v", listedRuns, err)
+		t.Fatalf("流水线运行列表没有从流水线快照还原审核要求: runs=%+v err=%v", listedRuns, err)
 	}
-	for _, expectedNode := range []string{"deploy-test", "promote-prod", "approval-prod"} {
+	run, err = service.AdvanceRun(ctx, run.ID, "admin", "")
+	if err != nil || run.CurrentNodeID != "deploy-test" || run.Status != model.PipelineRunRunning {
+		t.Fatalf("流水线运行没有提交测试部署任务: run=%+v err=%v", run, err)
+	}
+	if err := db.Model(&model.PipelineRun{}).Where("id = ?", run.ID).Updates(map[string]any{"status": model.PipelineRunReady, "stage": "deploy_succeeded"}).Error; err != nil {
+		t.Fatal(err)
+	}
+	run.Status, run.Stage = model.PipelineRunReady, "deploy_succeeded"
+	for _, expectedNode := range []string{"promote-prod", "approval-prod"} {
 		run, err = service.AdvanceRun(ctx, run.ID, "admin", "")
 		if err != nil || run.CurrentNodeID != expectedNode {
-			t.Fatalf("发布计划没有进入节点 %s: run=%+v err=%v", expectedNode, run, err)
+			t.Fatalf("流水线运行没有进入节点 %s: run=%+v err=%v", expectedNode, run, err)
 		}
 	}
 	if run.Status != model.PipelineRunAwaitingApproval {
 		t.Fatalf("生产发布没有等待审核: %+v", run)
 	}
 	if _, err := service.ApproveRun(ctx, run.ID, "admin"); !errors.Is(err, ErrWorkflowSelfApproval) {
-		t.Fatalf("申请人不应能审核自己的发布计划: %v", err)
+		t.Fatalf("申请人不应能审核自己的流水线运行: %v", err)
 	}
 	run, err = service.ApproveRun(ctx, run.ID, "reviewer")
 	if err != nil || run.Status != model.PipelineRunRunning {
 		t.Fatalf("其他成员未能通过审核: run=%+v err=%v", run, err)
 	}
 	run, err = service.AdvanceRun(ctx, run.ID, "reviewer", "")
-	if err != nil || run.CurrentNodeID != "deploy-prod" || run.Status != model.PipelineRunReady {
+	if err != nil || run.CurrentNodeID != "deploy-prod" || run.Status != model.PipelineRunRunning {
 		t.Fatalf("审核后未能进入生产部署: run=%+v err=%v", run, err)
 	}
+	if err := db.Model(&model.PipelineRun{}).Where("id = ?", run.ID).Updates(map[string]any{"status": model.PipelineRunReady, "stage": "deploy_succeeded"}).Error; err != nil {
+		t.Fatal(err)
+	}
+	run.Status, run.Stage = model.PipelineRunReady, "deploy_succeeded"
 	run, err = service.AdvanceRun(ctx, run.ID, "reviewer", "")
 	if err != nil || run.Status != model.PipelineRunSucceeded {
-		t.Fatalf("发布计划未能完成: run=%+v err=%v", run, err)
+		t.Fatalf("流水线运行未能完成: run=%+v err=%v", run, err)
 	}
 	if err := db.Model(&model.PipelineRun{}).Where("id = ?", run.ID).Update("status", model.PipelineRunRunning).Error; err != nil {
 		t.Fatal(err)
 	}
 	if err := service.DeleteRun(ctx, run.ID); err != nil {
-		t.Fatalf("执行中的发布计划也应该可以删除: %v", err)
+		t.Fatalf("执行中的流水线运行也应该可以删除: %v", err)
 	}
 	if err := db.First(&model.PipelineRun{}, "id = ?", run.ID).Error; !errors.Is(err, gorm.ErrRecordNotFound) {
-		t.Fatalf("发布计划没有删除: %v", err)
+		t.Fatalf("流水线运行没有删除: %v", err)
 	}
 	if err := db.Model(&model.ApplicationEnvironment{}).
 		Where("application_id = ? AND key = ?", application.ID, "test").
@@ -387,8 +431,8 @@ func TestReleaseWorkflowRequiresIndependentApproval(t *testing.T) {
 		Name: application.Name, Description: "只修改应用说明", RepositoryID: repositoryID,
 		ReleaseApprovalEnabled: true,
 		Environments: []EnvironmentInput{
-			{Key: "test", Name: "测试环境", Branch: "test", WatchPush: true, WatchPullRequest: true, ReleasePlanID: releasePlan.ID, DeploymentTargetID: testTarget.ID},
-			{Key: "prod", Name: "生产环境", Branch: "release", WatchTags: true, TagPattern: "v*", ReleasePlanID: releasePlan.ID, DeploymentTargetID: prodTarget.ID},
+			{Key: "test", Name: "测试环境", Branch: "test", WatchPush: true, WatchPullRequest: true, DeploymentPlanID: deploymentPlan.ID, DeploymentTargetID: testTarget.ID},
+			{Key: "prod", Name: "生产环境", Branch: "release", WatchTags: true, TagPattern: "v*", DeploymentPlanID: deploymentPlan.ID, DeploymentTargetID: prodTarget.ID},
 		},
 	})
 	if err != nil || updated.Workflow == nil || !updated.Workflow.IsActive || updated.Environments[0].LastObservedCommit != "preserved-commit" {
@@ -399,8 +443,8 @@ func TestReleaseWorkflowRequiresIndependentApproval(t *testing.T) {
 func TestPublicWorkflowTemplateIsCopiedWhenApplicationIsCreated(t *testing.T) {
 	service, db, _, repositoryID := newPipelineTestService(t)
 	ctx := context.Background()
-	releasePlan, err := service.CreateReleasePlan(ctx, "admin", ReleasePlanInput{
-		Name: "公共模板 Helm", Kind: model.ReleasePlanHelm, HelmChart: "deploy/chart",
+	deploymentPlan, err := service.CreateDeploymentPlan(ctx, "admin", DeploymentPlanInput{
+		Name: "公共模板 Helm", Kind: model.DeploymentPlanHelm, HelmChart: "deploy/chart",
 	})
 	if err != nil {
 		t.Fatalf("创建部署方案失败: %v", err)
@@ -423,10 +467,10 @@ func TestPublicWorkflowTemplateIsCopiedWhenApplicationIsCreated(t *testing.T) {
 	}
 	nodes := []model.WorkflowNode{
 		{ID: "trigger-test", Type: model.WorkflowNodeTrigger, Name: "测试分支", Position: model.WorkflowPosition{X: 80, Y: 80}, Config: model.WorkflowNodeConfig{Environment: "test", Branch: "test", Events: []string{"push", "pr"}}},
-		{ID: "deploy-test", Type: model.WorkflowNodeDeploy, Name: "部署测试", Position: model.WorkflowPosition{X: 360, Y: 80}, Config: model.WorkflowNodeConfig{Environment: "test", ReleasePlanID: releasePlan.ID}},
+		{ID: "deploy-test", Type: model.WorkflowNodeDeploy, Name: "部署测试", Position: model.WorkflowPosition{X: 360, Y: 80}, Config: model.WorkflowNodeConfig{Environment: "test", DeploymentPlanID: deploymentPlan.ID, DeploymentTargetID: testTarget.ID}},
 		{ID: "promote-prod", Type: model.WorkflowNodeManual, Name: "放行生产", Position: model.WorkflowPosition{X: 640, Y: 80}, Config: model.WorkflowNodeConfig{Environment: "prod"}},
 		{ID: "approve-prod", Type: model.WorkflowNodeApproval, Name: "生产审核", Position: model.WorkflowPosition{X: 920, Y: 80}, Config: model.WorkflowNodeConfig{Environment: "prod"}},
-		{ID: "deploy-prod", Type: model.WorkflowNodeDeploy, Name: "部署生产", Position: model.WorkflowPosition{X: 1200, Y: 80}, Config: model.WorkflowNodeConfig{Environment: "prod", ReleasePlanID: releasePlan.ID}},
+		{ID: "deploy-prod", Type: model.WorkflowNodeDeploy, Name: "部署生产", Position: model.WorkflowPosition{X: 1200, Y: 80}, Config: model.WorkflowNodeConfig{Environment: "prod", DeploymentPlanID: deploymentPlan.ID, DeploymentTargetID: prodTarget.ID}},
 	}
 	edges := []model.WorkflowEdge{
 		{ID: "edge-1", Source: "trigger-test", Target: "deploy-test"},
@@ -439,18 +483,18 @@ func TestPublicWorkflowTemplateIsCopiedWhenApplicationIsCreated(t *testing.T) {
 		WorkflowInput: WorkflowInput{Name: "测试到生产", Activate: true, Nodes: nodes, Edges: edges, Viewport: model.WorkflowViewport{Zoom: 0.8}},
 	})
 	if err != nil || !templateResult.Valid || !templateResult.WorkflowTemplate.IsActive {
-		t.Fatalf("公共发布计划未能启用: result=%+v err=%v", templateResult, err)
+		t.Fatalf("公共流水线方案未能启用: result=%+v err=%v", templateResult, err)
 	}
 	application, err := service.CreateApplication(ctx, "admin", ApplicationInput{
 		Name: "使用公共计划的应用", RepositoryID: repositoryID, PollIntervalSeconds: 60,
 		WorkflowTemplateID: templateResult.WorkflowTemplate.ID, ReleaseApprovalEnabled: true,
 	})
 	if err != nil {
-		t.Fatalf("使用公共发布计划创建应用失败: %v", err)
+		t.Fatalf("使用公共流水线方案创建应用失败: %v", err)
 	}
 	if application.WorkflowTemplate == nil || application.Workflow == nil || !application.Workflow.IsActive ||
 		application.Workflow.WorkflowTemplateRevision != 1 || len(application.Environments) != 2 {
-		t.Fatalf("应用没有完整复制公共发布计划: %+v", application)
+		t.Fatalf("应用没有完整复制公共流水线方案: %+v", application)
 	}
 	if application.Environments[0].Key != "test" || application.Environments[0].Branch != "test" || !application.Environments[0].WatchPullRequest {
 		t.Fatalf("应用环境没有从画布节点生成: %+v", application.Environments)
@@ -462,7 +506,7 @@ func TestPublicWorkflowTemplateIsCopiedWhenApplicationIsCreated(t *testing.T) {
 		Description:   "模板第二版",
 		WorkflowInput: WorkflowInput{Name: "测试到生产", Revision: 1, Activate: true, Nodes: updatedNodes, Edges: updatedEdges, Viewport: model.WorkflowViewport{Zoom: 0.8}},
 	}); err != nil {
-		t.Fatalf("更新公共发布计划失败: %v", err)
+		t.Fatalf("更新公共流水线方案失败: %v", err)
 	}
 	updatedApplication, err := service.UpdateApplication(ctx, application.ID, ApplicationInput{
 		Name: application.Name, Description: "只修改应用说明", RepositoryID: repositoryID,

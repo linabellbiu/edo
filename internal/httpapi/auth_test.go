@@ -108,7 +108,7 @@ func newAuthTestRouter(t *testing.T) (*gin.Engine, func()) {
 		SessionTTL: time.Hour, CookieName: "zrt_session", LoginMaxFailure: 3, LoginWindow: time.Minute,
 	}
 	sessions := auth.NewSessionStore(redisClient, authConfig.SessionTTL)
-	limiter := auth.NewLoginRateLimiter(redisClient, authConfig.LoginMaxFailure, authConfig.LoginWindow)
+	limiter := auth.NewLoginRateLimiter(redisClient, authConfig.LoginMaxFailure, authConfig.LoginWindow, configurationService)
 	login, err := account.NewLoginService(accounts, sessions, limiter, logger)
 	if err != nil {
 		t.Fatalf("初始化登录服务失败: %v", err)
@@ -117,7 +117,7 @@ func newAuthTestRouter(t *testing.T) (*gin.Engine, func()) {
 	router := NewRouter(Dependencies{
 		Environment: "test", Database: sqlDB, Redis: healthyDependency{}, NATS: healthyDependency{},
 		Logger: logger, Version: "test", AuthConfig: authConfig,
-		Accounts: accounts, Login: login, Sessions: sessions,
+		Accounts: accounts, Login: login, LoginLimiter: limiter, Sessions: sessions,
 		Access: accessService, Audits: auditService,
 		Credentials: credentialService, Repositories: repositoryService, Pipelines: pipelineService,
 		Configurations: configurationService,

@@ -19,6 +19,27 @@ func (s *Service) DeployContainer(
 	endpointID, containerName, image, deploymentID string,
 	timeout time.Duration,
 ) (string, error, error) {
+	return s.deployContainer(ctx, endpointID, containerName, image, "", deploymentID, timeout)
+}
+
+// DeployPreparedContainer 发布已经由流水线构建在目标 Docker daemon 中的镜像。
+// expectedImageID 防止唯一标签在构建和发布之间被替换。
+func (s *Service) DeployPreparedContainer(
+	ctx context.Context,
+	endpointID, containerName, image, expectedImageID, deploymentID string,
+	timeout time.Duration,
+) (string, error, error) {
+	if !IsZRTLocalImage(image) || !IsValidImageID(expectedImageID) {
+		return "", nil, errors.New("待发布的本地 Docker 镜像无效")
+	}
+	return s.deployContainer(ctx, endpointID, containerName, image, expectedImageID, deploymentID, timeout)
+}
+
+func (s *Service) deployContainer(
+	ctx context.Context,
+	endpointID, containerName, image, expectedImageID, deploymentID string,
+	timeout time.Duration,
+) (string, error, error) {
 	apiClient, err := s.Client(ctx, endpointID)
 	if err != nil {
 		return "", nil, err
@@ -27,12 +48,28 @@ func (s *Service) DeployContainer(
 	deployContext, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	pull, err := apiClient.ImagePull(deployContext, image, client.ImagePullOptions{})
-	if err != nil {
-		return "", nil, fmt.Errorf("拉取 Docker 镜像失败: %w", err)
-	}
-	if err := pull.Wait(deployContext); err != nil {
-		return "", nil, fmt.Errorf("等待 Docker 镜像拉取完成失败: %w", err)
+	if expectedImageID != "" || IsZRTLocalImage(image) {
+		localImage, err := apiClient.ImageInspect(deployContext, image)
+		if err != nil {
+			return "", nil, fmt.Errorf("目标主机上找不到流水线构建的本地镜像: %w", err)
+		}
+		if expectedImageID != "" && localImage.ID != expectedImageID {
+			return "", nil, errors.New("目标主机上的本地镜像与流水线构建结果不一致")
+		}
+	} else {
+		pulledWithSSH, err := s.pullImageWithSSH(deployContext, endpointID, image)
+		if err != nil {
+			return "", nil, err
+		}
+		if !pulledWithSSH {
+			pull, err := apiClient.ImagePull(deployContext, image, client.ImagePullOptions{})
+			if err != nil {
+				return "", nil, fmt.Errorf("拉取 Docker 镜像失败: %w", err)
+			}
+			if err := pull.Wait(deployContext); err != nil {
+				return "", nil, fmt.Errorf("等待 Docker 镜像拉取完成失败: %w", err)
+			}
+		}
 	}
 
 	inspect, err := apiClient.ContainerInspect(deployContext, containerName, client.ContainerInspectOptions{})

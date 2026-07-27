@@ -13,7 +13,7 @@ type ApplicationEnvironment struct {
 	WatchPullRequest   bool              `gorm:"not null;default:false" json:"watch_pull_request"`
 	WatchTags          bool              `gorm:"not null;default:false" json:"watch_tags"`
 	TagPattern         string            `gorm:"type:varchar(255);not null;default:''" json:"tag_pattern"`
-	ReleasePlanID      string            `gorm:"type:varchar(36);not null;default:'';index" json:"release_plan_id,omitempty"`
+	DeploymentPlanID   string            `gorm:"column:release_plan_id;type:varchar(36);not null;default:'';index" json:"deployment_plan_id,omitempty"`
 	DeploymentTargetID string            `gorm:"type:varchar(36);not null;default:'';index" json:"deployment_target_id,omitempty"`
 	SortOrder          int               `gorm:"not null;default:0" json:"sort_order"`
 	LastObservedRef    string            `gorm:"type:varchar(512);not null;default:''" json:"last_observed_ref,omitempty"`
@@ -21,7 +21,7 @@ type ApplicationEnvironment struct {
 	LastCheckedAt      *time.Time        `json:"last_checked_at,omitempty"`
 	CreatedAt          time.Time         `gorm:"not null" json:"created_at"`
 	UpdatedAt          time.Time         `gorm:"not null" json:"updated_at"`
-	ReleasePlan        *ReleasePlan      `gorm:"foreignKey:ReleasePlanID;-:migration" json:"release_plan,omitempty"`
+	DeploymentPlan     *DeploymentPlan   `gorm:"foreignKey:DeploymentPlanID;-:migration" json:"deployment_plan,omitempty"`
 	DeploymentTarget   *DeploymentTarget `gorm:"foreignKey:DeploymentTargetID;-:migration" json:"deployment_target,omitempty"`
 }
 
@@ -47,7 +47,7 @@ type WorkflowNodeConfig struct {
 	Branch             string   `json:"branch,omitempty"`
 	Events             []string `json:"events,omitempty"`
 	TagPattern         string   `json:"tag_pattern,omitempty"`
-	ReleasePlanID      string   `json:"release_plan_id,omitempty"`
+	DeploymentPlanID   string   `json:"deployment_plan_id,omitempty"`
 	DeploymentTargetID string   `json:"deployment_target_id,omitempty"`
 	Description        string   `json:"description,omitempty"`
 }

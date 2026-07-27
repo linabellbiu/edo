@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect } from 'react'
+import { lazy, Suspense, useEffect, useRef, useState } from 'react'
 import {
   Navigate,
   NavLink,
@@ -16,11 +16,11 @@ import OverviewView from '@/views/OverviewView'
 const DevOpsView = lazy(() => import('@/views/DevOpsView'))
 const InfrastructureView = lazy(() => import('@/views/InfrastructureView'))
 const ManagementView = lazy(() => import('@/views/ManagementView'))
-const IdentityProvidersView = lazy(() => import('@/views/IdentityProvidersView'))
 const CredentialView = lazy(() => import('@/views/CredentialView'))
 const AccessView = lazy(() => import('@/views/AccessView'))
 const DomainView = lazy(() => import('@/views/DomainView'))
 const SettingsView = lazy(() => import('@/views/SettingsView'))
+const EnvironmentView = lazy(() => import('@/views/EnvironmentView'))
 const PipelinePlanListView = lazy(() => import('@/views/ReleaseWorkflowListView'))
 const PipelinePlanView = lazy(() => import('@/views/ReleaseWorkflowView'))
 
@@ -40,6 +40,7 @@ const navigationGroups = [
       { label: '构建方案', path: '/build-plans', permissions: ['delivery.read'], icon: 'build' as IconName },
       { label: '镜像仓库', path: '/image-registries', permissions: ['delivery.read'], icon: 'registry' as IconName },
       { label: '部署方案', path: '/deployment-plans', permissions: ['delivery.read'], icon: 'release' as IconName },
+	  { label: '环境管理', path: '/environments', permissions: ['deployment.read'], icon: 'cloud' as IconName },
 	  { label: '流水线方案', path: '/pipeline-plans', permissions: ['delivery.read'], icon: 'pipeline' as IconName },
       { label: '发布计划', path: '/release-plans', permissions: ['delivery.read', 'deployment.read'], icon: 'release' as IconName },
     ],
@@ -50,9 +51,8 @@ const navigationGroups = [
       { label: '域名解析', path: '/domains', permissions: ['dns.read'], icon: 'globe' as IconName },
       { label: '容器与集群', path: '/infrastructure', permissions: ['cluster.read', 'terminal.open'], icon: 'cloud' as IconName },
       { label: '运维中心', path: '/operations', permissions: ['task.read', 'monitor.read', 'notification.read', 'scheduler.read', 'config.read'], icon: 'ops' as IconName },
-      { label: '系统设置', path: '/settings', permissions: ['config.read'], icon: 'settings' as IconName },
+      { label: '系统设置', path: '/settings', permissions: ['config.read', 'identity.read'], icon: 'settings' as IconName },
       { label: '身份与审计', path: '/access', permissions: ['user.read', 'user.manage', 'role.read', 'role.manage', 'audit.read'], icon: 'shield' as IconName },
-      { label: '登录方式', path: '/identity-providers', permissions: ['identity.read'], icon: 'shield' as IconName },
     ],
   },
 ]
@@ -62,8 +62,45 @@ const pageTitles: Record<string, string> = {
   '/credentials': '我的 Git 令牌',
   '/domains': '域名解析',
   '/image-registries': '镜像仓库', '/deployment-plans': '部署方案', '/release-plans': '发布计划',
+	'/environments': '环境管理',
 	'/pipeline-plans': '流水线方案', '/pipeline-plans/editor': '编辑流水线方案',
   '/infrastructure': '容器与集群', '/operations': '运维中心', '/settings': '系统设置', '/access': '身份与审计', '/identity-providers': '登录方式',
+}
+
+interface PageTab {
+  key: string
+  label: string
+  path: string
+}
+
+const overviewTab: PageTab = { key: '/', label: '概览', path: '/' }
+const redirectPaths = new Set(['/release-workflows', '/release-workflows/editor', '/pipelines', '/deployments', '/identity-providers'])
+
+function loadPageTabs(storageKey: string): PageTab[] {
+  try {
+    const stored = JSON.parse(sessionStorage.getItem(storageKey) || '[]') as PageTab[]
+    const valid = stored.filter((item) => item && typeof item.key === 'string' && item.key.startsWith('/') && typeof item.path === 'string' && item.path.startsWith('/') && typeof item.label === 'string')
+    return [overviewTab, ...valid.filter((item, index) => item.key !== '/' && valid.findIndex((candidate) => candidate.key === item.key) === index)]
+  } catch {
+    return [overviewTab]
+  }
+}
+
+function savePageTabs(storageKey: string, tabs: PageTab[]) {
+  try {
+    sessionStorage.setItem(storageKey, JSON.stringify(tabs))
+  } catch {
+    // 浏览器禁用会话存储时，标签栏仍可在当前页面生命周期内使用。
+  }
+}
+
+function currentPageTab(pathname: string, search: string): PageTab | null {
+  if (redirectPaths.has(pathname)) return null
+  return {
+    key: pathname,
+    label: pageTitles[pathname] || '控制台',
+    path: `${pathname}${search}`,
+  }
 }
 
 function NavIcon({ name }: { name: IconName }) {
@@ -112,16 +149,53 @@ function DeploymentRecordsRedirect() {
   return <Navigate to="/release-plans?view=records" replace />
 }
 
+function IdentityProvidersRedirect() {
+  return <Navigate to="/settings?section=login-methods" replace />
+}
+
 function AppShell() {
   const user = useAuthStore((state) => state.user)
   const logout = useAuthStore((state) => state.logout)
   const navigate = useNavigate()
   const location = useLocation()
+  const pageTabsStorageKey = `zrt.page-tabs.${user?.id || 'unknown'}`
+  const [pageTabs, setPageTabs] = useState<PageTab[]>(() => loadPageTabs(pageTabsStorageKey))
+  const activePageTabRef = useRef<HTMLDivElement>(null)
   const allowed = (permissions: string[]) => Boolean(user?.is_superuser || permissions.some((permission) => user?.permissions.includes(permission)))
 
+  useEffect(() => {
+    const current = currentPageTab(location.pathname, location.search)
+    if (!current) return
+    setPageTabs((tabs) => {
+      const existing = tabs.findIndex((tab) => tab.key === current.key)
+      const next = existing >= 0
+        ? tabs.map((tab, index) => index === existing ? current : tab)
+        : [...tabs, current]
+      const normalized = next.some((tab) => tab.key === '/') ? next : [overviewTab, ...next]
+      savePageTabs(pageTabsStorageKey, normalized)
+      return normalized
+    })
+  }, [location.pathname, location.search, pageTabsStorageKey])
+
+  useEffect(() => {
+    activePageTabRef.current?.scrollIntoView({ block: 'nearest', inline: 'nearest' })
+  }, [location.pathname, pageTabs.length])
+
   async function handleLogout() {
+    sessionStorage.removeItem(pageTabsStorageKey)
     await logout()
     navigate('/login', { replace: true })
+  }
+
+  function closePageTab(key: string) {
+    if (key === '/') return
+    const closingIndex = pageTabs.findIndex((tab) => tab.key === key)
+    const remaining = pageTabs.filter((tab) => tab.key !== key)
+    setPageTabs(remaining)
+    savePageTabs(pageTabsStorageKey, remaining)
+    if (key !== location.pathname) return
+    const target = remaining[Math.max(0, Math.min(closingIndex - 1, remaining.length - 1))] || overviewTab
+    navigate(target.path)
   }
 
   return (
@@ -146,7 +220,7 @@ function AppShell() {
         <div className="sidebar-footer"><span className="environment-dot" />服务运行中</div>
       </aside>
 
-      <main className="main-content">
+      <main className={`main-content${location.pathname === '/pipeline-plans/editor' ? ' workflow-main' : ''}`}>
         <header className="topbar">
           <div><p className="eyebrow">ZRT</p><h1>{pageTitles[location.pathname] || '控制台'}</h1></div>
           <button className="operator" type="button" onClick={() => void handleLogout()}>
@@ -155,6 +229,17 @@ function AppShell() {
             <span className="logout-label">退出</span>
           </button>
         </header>
+        <nav className="page-tab-bar" aria-label="已访问页面">
+          <div className="page-tabs" role="tablist">
+            {pageTabs.map((tab) => {
+              const active = tab.key === location.pathname
+              return <div ref={active ? activePageTabRef : undefined} className={`page-tab${active ? ' active' : ''}`} key={tab.key}>
+                <button className="page-tab-link" type="button" role="tab" aria-selected={active} title={tab.label} onClick={() => navigate(tab.path)}>{tab.label}</button>
+                {tab.key !== '/' && <button className="page-tab-close" type="button" aria-label={`关闭${tab.label}`} title={`关闭${tab.label}`} onClick={() => closePageTab(tab.key)}>×</button>}
+              </div>
+            })}
+          </div>
+        </nav>
         <Outlet />
       </main>
     </div>
@@ -181,6 +266,7 @@ function AppRoutes() {
         <Route path="build-plans" element={<DevOpsView section="build-plans" />} />
         <Route path="image-registries" element={<DevOpsView section="image-registries" />} />
         <Route path="deployment-plans" element={<DevOpsView section="deployment-plans" />} />
+		<Route path="environments" element={<EnvironmentView />} />
 		<Route path="pipeline-plans" element={<PipelinePlanListView />} />
 		<Route path="pipeline-plans/editor" element={<PipelinePlanView />} />
         <Route path="release-plans" element={<DevOpsView section="release-plans" />} />
@@ -192,7 +278,7 @@ function AppRoutes() {
         <Route path="operations" element={<ManagementView section="operations" />} />
         <Route path="settings" element={<SettingsView />} />
         <Route path="access" element={<AccessView />} />
-        <Route path="identity-providers" element={<IdentityProvidersView />} />
+        <Route path="identity-providers" element={<IdentityProvidersRedirect />} />
       </Route>
     </Route>
     <Route path="*" element={<Navigate to="/" replace />} />

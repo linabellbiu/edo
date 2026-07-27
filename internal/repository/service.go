@@ -50,8 +50,6 @@ type Input struct {
 	WebhookEnabled    bool
 	RegenerateWebhook bool
 	AllowInsecureHTTP bool
-	BuildPlanID       string
-	ReleasePlanID     string
 }
 
 type Service struct {
@@ -65,6 +63,10 @@ type Service struct {
 
 type refLister interface {
 	ListRefs(context.Context, model.GitRepository, string) (RefResult, error)
+}
+
+type checkoutClient interface {
+	Checkout(context.Context, model.GitRepository, string, string, string, string) error
 }
 
 type webhookGate interface {
@@ -89,7 +91,7 @@ func NewService(db *gorm.DB, secrets *secret.Manager, credentials *credential.Se
 
 func (s *Service) List(ctx context.Context) ([]model.GitRepository, error) {
 	var repositories []model.GitRepository
-	if err := s.db.WithContext(ctx).Preload("BuildPlan").Preload("ReleasePlan").Order("name ASC").Find(&repositories).Error; err != nil {
+	if err := s.db.WithContext(ctx).Order("name ASC").Find(&repositories).Error; err != nil {
 		return nil, fmt.Errorf("查询代码仓库失败: %w", err)
 	}
 	return repositories, nil
@@ -97,7 +99,7 @@ func (s *Service) List(ctx context.Context) ([]model.GitRepository, error) {
 
 func (s *Service) Find(ctx context.Context, id string) (*model.GitRepository, error) {
 	var repository model.GitRepository
-	if err := s.db.WithContext(ctx).Preload("BuildPlan").Preload("ReleasePlan").First(&repository, "id = ?", id).Error; err != nil {
+	if err := s.db.WithContext(ctx).First(&repository, "id = ?", id).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, ErrRepositoryNotFound
 		}
@@ -133,7 +135,6 @@ func (s *Service) Create(ctx context.Context, actorID string, input Input) (*mod
 		CredentialCiphertext:    normalized.credentialCiphertext,
 		WebhookSecretCiphertext: normalized.webhookCiphertext,
 		WebhookEnabled:          normalized.WebhookEnabled, AllowInsecureHTTP: normalized.AllowInsecureHTTP,
-		BuildPlanID: normalized.BuildPlanID, ReleasePlanID: normalized.ReleasePlanID,
 		IsActive: true, CreatedBy: actorID, CreatedAt: now, UpdatedAt: now,
 	}
 	if err := s.db.WithContext(ctx).Create(repository).Error; err != nil {
@@ -164,7 +165,6 @@ func (s *Service) Update(ctx context.Context, actorID, id string, input Input) (
 		"webhook_secret_ciphertext": normalized.webhookCiphertext,
 		"webhook_enabled":           normalized.WebhookEnabled,
 		"allow_insecure_http":       normalized.AllowInsecureHTTP, "updated_at": now,
-		"build_plan_id": normalized.BuildPlanID, "release_plan_id": normalized.ReleasePlanID,
 	}
 	if err := s.db.WithContext(ctx).Model(existing).Updates(updates).Error; err != nil {
 		if errors.Is(err, gorm.ErrDuplicatedKey) {
@@ -183,8 +183,6 @@ func (s *Service) Update(ctx context.Context, actorID, id string, input Input) (
 	existing.WebhookSecretCiphertext = normalized.webhookCiphertext
 	existing.WebhookEnabled = normalized.WebhookEnabled
 	existing.AllowInsecureHTTP = normalized.AllowInsecureHTTP
-	existing.BuildPlanID = normalized.BuildPlanID
-	existing.ReleasePlanID = normalized.ReleasePlanID
 	existing.UpdatedAt = now
 	return existing, normalized.webhookPlaintext, nil
 }
@@ -245,6 +243,25 @@ func (s *Service) TestConnection(ctx context.Context, id string) (RefResult, err
 		return RefResult{}, err
 	}
 	return s.git.ListRefs(ctx, *repository, credential)
+}
+
+func (s *Service) Checkout(ctx context.Context, id, ref, commitSHA, destination string) error {
+	repository, err := s.Find(ctx, id)
+	if err != nil {
+		return err
+	}
+	if !repository.IsActive {
+		return ErrRepositoryNotFound
+	}
+	client, ok := s.git.(checkoutClient)
+	if !ok {
+		return errors.New("当前 Git 客户端不支持检出代码")
+	}
+	credential, err := s.resolveCredential(ctx, repository)
+	if err != nil {
+		return err
+	}
+	return client.Checkout(ctx, *repository, credential, ref, commitSHA, destination)
 }
 
 // TestInput 使用尚未保存的仓库配置执行只读远端查询，不会持久化地址或凭据。
@@ -358,19 +375,6 @@ func (s *Service) normalizeInput(ctx context.Context, actorID, id string, existi
 		return normalizedInput{}, err
 	}
 	input.CloneURL = cloneURL
-	for _, resource := range []struct {
-		id    string
-		model any
-	}{{input.BuildPlanID, &model.BuildPlan{}}, {input.ReleasePlanID, &model.ReleasePlan{}}} {
-		if resource.id == "" {
-			continue
-		}
-		var count int64
-		if err := s.db.WithContext(ctx).Model(resource.model).Where("id = ? AND is_active = ?", resource.id, true).Count(&count).Error; err != nil || count != 1 {
-			return normalizedInput{}, ErrInvalidRepository
-		}
-	}
-
 	var credentialID *string
 	credentialCiphertext := ""
 	if existing != nil {
@@ -441,8 +445,6 @@ func normalizeRepositoryFields(input *Input) error {
 	input.Name = strings.TrimSpace(input.Name)
 	input.DefaultBranch = strings.TrimSpace(input.DefaultBranch)
 	input.Username = strings.TrimSpace(input.Username)
-	input.BuildPlanID = strings.TrimSpace(input.BuildPlanID)
-	input.ReleasePlanID = strings.TrimSpace(input.ReleasePlanID)
 	if !repositoryNamePattern.MatchString(input.Name) {
 		return ErrInvalidRepositoryName
 	}

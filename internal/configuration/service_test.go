@@ -115,14 +115,46 @@ func TestExternalGitWebhookSettingDefaultsOffAndUsesOptimisticVersion(t *testing
 	}
 }
 
+func TestLoginLockoutSettingDefaultsOffAndUsesOptimisticVersion(t *testing.T) {
+	service := newConfigurationTestService(t)
+
+	initial, err := service.GetLoginLockoutSettings(context.Background())
+	if err != nil || initial.Enabled || initial.Version != 0 {
+		t.Fatalf("登录锁定默认状态错误: settings=%+v err=%v", initial, err)
+	}
+	if enabled, err := service.LoginLockoutEnabled(context.Background()); err != nil || enabled {
+		t.Fatalf("缺少设置时登录锁定未保持关闭: enabled=%v err=%v", enabled, err)
+	}
+
+	enabled, err := service.UpdateLoginLockoutSettings(context.Background(), "admin", true, 0)
+	if err != nil || !enabled.Enabled || enabled.Version != 1 {
+		t.Fatalf("启用登录锁定失败: settings=%+v err=%v", enabled, err)
+	}
+	if _, err := service.UpdateLoginLockoutSettings(context.Background(), "admin", false, 0); !errors.Is(err, ErrVersionConflict) {
+		t.Fatalf("过期设置版本未被拒绝: %v", err)
+	}
+	disabled, err := service.UpdateLoginLockoutSettings(context.Background(), "admin", false, enabled.Version)
+	if err != nil || disabled.Enabled || disabled.Version != 2 {
+		t.Fatalf("关闭登录锁定失败: settings=%+v err=%v", disabled, err)
+	}
+	revisions, err := service.Revisions(context.Background(), systemConfigurationID(t, service, loginLockoutSettingKey), 10)
+	if err != nil || len(revisions) != 2 || revisions[0].Version != 2 {
+		t.Fatalf("登录锁定设置修订记录错误: revisions=%+v err=%v", revisions, err)
+	}
+}
+
 func externalGitWebhookConfigurationID(t *testing.T, service *Service) string {
+	return systemConfigurationID(t, service, externalGitWebhookSettingKey)
+}
+
+func systemConfigurationID(t *testing.T, service *Service, key string) string {
 	t.Helper()
 	var item model.Configuration
 	if err := service.db.Where(
 		"namespace = ? AND environment = ? AND key = ?",
-		systemNamespace, model.EnvironmentGlobal, externalGitWebhookSettingKey,
+		systemNamespace, model.EnvironmentGlobal, key,
 	).First(&item).Error; err != nil {
-		t.Fatalf("读取外部 Git Webhook 配置失败: %v", err)
+		t.Fatalf("读取系统设置配置失败: %v", err)
 	}
 	return item.ID
 }

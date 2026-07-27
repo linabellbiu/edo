@@ -59,6 +59,67 @@ func TestExternalGitWebhookCanBeEnabledFromSettings(t *testing.T) {
 	}
 }
 
+func TestLoginLockoutDefaultsOffAndCanBeEnabledFromSettings(t *testing.T) {
+	router, closeTest := newAuthTestRouter(t)
+	defer closeTest()
+
+	for range 3 {
+		failed := performJSONRequest(t, router, http.MethodPost, "/api/v1/auth/login", map[string]string{
+			"username": "admin", "password": "wrong password",
+		}, nil)
+		if failed.Code != http.StatusUnauthorized {
+			t.Fatalf("默认关闭时错误密码响应异常: status=%d body=%s", failed.Code, failed.Body.String())
+		}
+	}
+	login := performJSONRequest(t, router, http.MethodPost, "/api/v1/auth/login", map[string]string{
+		"username": "admin", "password": "correct horse battery staple",
+	}, nil)
+	if login.Code != http.StatusOK {
+		t.Fatalf("默认关闭时不应锁定登录: status=%d body=%s", login.Code, login.Body.String())
+	}
+	adminCookie := login.Result().Cookies()[0]
+
+	current := performJSONRequest(t, router, http.MethodGet, "/api/v1/settings/login-lockout", nil, adminCookie)
+	if current.Code != http.StatusOK || !bytes.Contains(current.Body.Bytes(), []byte(`"enabled":false`)) ||
+		!bytes.Contains(current.Body.Bytes(), []byte(`"max_failures":3`)) {
+		t.Fatalf("登录锁定默认设置错误: status=%d body=%s", current.Code, current.Body.String())
+	}
+	enabled := performJSONRequest(t, router, http.MethodPut, "/api/v1/settings/login-lockout", map[string]any{
+		"enabled": true, "expected_version": 0,
+	}, adminCookie)
+	if enabled.Code != http.StatusOK || !bytes.Contains(enabled.Body.Bytes(), []byte(`"enabled":true`)) {
+		t.Fatalf("启用登录锁定失败: status=%d body=%s", enabled.Code, enabled.Body.String())
+	}
+
+	for range 3 {
+		failed := performJSONRequest(t, router, http.MethodPost, "/api/v1/auth/login", map[string]string{
+			"username": "admin", "password": "wrong password",
+		}, nil)
+		if failed.Code != http.StatusUnauthorized {
+			t.Fatalf("启用后错误密码响应异常: status=%d body=%s", failed.Code, failed.Body.String())
+		}
+	}
+	blocked := performJSONRequest(t, router, http.MethodPost, "/api/v1/auth/login", map[string]string{
+		"username": "admin", "password": "correct horse battery staple",
+	}, nil)
+	if blocked.Code != http.StatusTooManyRequests {
+		t.Fatalf("达到阈值后未锁定登录: status=%d body=%s", blocked.Code, blocked.Body.String())
+	}
+
+	disabled := performJSONRequest(t, router, http.MethodPut, "/api/v1/settings/login-lockout", map[string]any{
+		"enabled": false, "expected_version": 1,
+	}, adminCookie)
+	if disabled.Code != http.StatusOK {
+		t.Fatalf("关闭登录锁定失败: status=%d body=%s", disabled.Code, disabled.Body.String())
+	}
+	unblocked := performJSONRequest(t, router, http.MethodPost, "/api/v1/auth/login", map[string]string{
+		"username": "admin", "password": "correct horse battery staple",
+	}, nil)
+	if unblocked.Code != http.StatusOK {
+		t.Fatalf("关闭后登录仍被锁定: status=%d body=%s", unblocked.Code, unblocked.Body.String())
+	}
+}
+
 func performGenericWebhookRequest(
 	t *testing.T,
 	handler http.Handler,

@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -31,9 +32,12 @@ var (
 	ErrEndpointNotFound = errors.New("Docker 连接不存在")
 	ErrTLSRequired      = errors.New("远程 Docker API 必须启用双向 TLS")
 	ErrInvalidTLS       = errors.New("Docker TLS 证书配置无效")
+	ErrSSHRequired      = errors.New("SSH Docker 连接必须提供密码或私钥，并先完成连接测试")
+	ErrInvalidSSH       = errors.New("SSH Docker 连接配置无效")
+	ErrSSHUnreachable   = errors.New("无法通过 SSH 连接 Docker，请检查地址、端口、用户名和凭据")
 )
 
-var endpointNamePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_. -]{1,127}$`)
+var endpointNamePattern = regexp.MustCompile(`^[\p{L}\p{N}][\p{L}\p{N}_. -]{0,127}$`)
 
 type TLSBundle struct {
 	CA         string `json:"ca"`
@@ -41,10 +45,18 @@ type TLSBundle struct {
 	ClientKey  string `json:"client_key"`
 }
 
+type SSHBundle struct {
+	PrivateKey string `json:"private_key"`
+	Passphrase string `json:"passphrase,omitempty"`
+	Password   string `json:"password,omitempty"`
+}
+
 type Input struct {
-	Name string
-	Host string
-	TLS  *TLSBundle
+	Name                  string
+	Host                  string
+	TLS                   *TLSBundle
+	SSH                   *SSHBundle
+	SSHHostKeyFingerprint string
 }
 
 type Container struct {
@@ -89,13 +101,14 @@ func (s *Service) Find(ctx context.Context, id string) (*model.DockerEndpoint, e
 
 func (s *Service) Create(ctx context.Context, actorID string, input Input) (*model.DockerEndpoint, error) {
 	id := uuid.NewString()
-	name, host, encryptedTLS, err := s.normalize(id, nil, input)
+	name, host, encryptedTLS, encryptedSSH, sshFingerprint, err := s.normalize(id, nil, input)
 	if err != nil {
 		return nil, err
 	}
 	now := time.Now().UTC()
 	endpoint := &model.DockerEndpoint{
 		ID: id, Name: name, Host: host, TLSCiphertext: encryptedTLS,
+		SSHCredentialCiphertext: encryptedSSH, SSHHostKeyFingerprint: sshFingerprint,
 		IsActive: true, CreatedBy: actorID, CreatedAt: now, UpdatedAt: now,
 	}
 	if err := s.db.WithContext(ctx).Create(endpoint).Error; err != nil {
@@ -112,20 +125,24 @@ func (s *Service) Update(ctx context.Context, id string, input Input) (*model.Do
 	if err != nil {
 		return nil, err
 	}
-	name, host, encryptedTLS, err := s.normalize(id, existing, input)
+	name, host, encryptedTLS, encryptedSSH, sshFingerprint, err := s.normalize(id, existing, input)
 	if err != nil {
 		return nil, err
 	}
 	now := time.Now().UTC()
 	if err := s.db.WithContext(ctx).Model(existing).Updates(map[string]any{
-		"name": name, "host": host, "tls_ciphertext": encryptedTLS, "updated_at": now,
+		"name": name, "host": host, "tls_ciphertext": encryptedTLS,
+		"ssh_credential_ciphertext": encryptedSSH, "ssh_host_key_fingerprint": sshFingerprint,
+		"updated_at": now,
 	}).Error; err != nil {
 		if errors.Is(err, gorm.ErrDuplicatedKey) {
 			return nil, ErrEndpointExists
 		}
 		return nil, fmt.Errorf("更新 Docker 连接失败: %w", err)
 	}
-	existing.Name, existing.Host, existing.TLSCiphertext, existing.UpdatedAt = name, host, encryptedTLS, now
+	existing.Name, existing.Host, existing.TLSCiphertext = name, host, encryptedTLS
+	existing.SSHCredentialCiphertext, existing.SSHHostKeyFingerprint = encryptedSSH, sshFingerprint
+	existing.UpdatedAt = now
 	return existing, nil
 }
 
@@ -190,6 +207,27 @@ func (s *Service) Client(ctx context.Context, id string) (*client.Client, error)
 		DialContext:  (&net.Dialer{Timeout: s.config.ConnectTimeout, KeepAlive: 30 * time.Second}).DialContext,
 		MaxIdleConns: 6, IdleConnTimeout: 30 * time.Second,
 	}
+	dockerHost := endpoint.Host
+	var sshDialer *sshDockerDialer
+	parsedHost, err := url.Parse(endpoint.Host)
+	if err != nil {
+		return nil, ErrInvalidEndpoint
+	}
+	if parsedHost.Scheme == "ssh" {
+		value, err := s.secrets.Decrypt(endpoint.SSHCredentialCiphertext, sshAAD(endpoint.ID))
+		if err != nil {
+			return nil, fmt.Errorf("解密 Docker SSH 凭据失败: %w", err)
+		}
+		var bundle SSHBundle
+		if err := json.Unmarshal([]byte(value), &bundle); err != nil {
+			return nil, fmt.Errorf("解析 Docker SSH 凭据失败: %w", err)
+		}
+		sshDialer, err = newSSHDockerDialer(endpoint.Host, bundle, endpoint.SSHHostKeyFingerprint, s.config.ConnectTimeout)
+		if err != nil {
+			return nil, err
+		}
+		dockerHost = "tcp://docker"
+	}
 	if endpoint.TLSCiphertext != "" {
 		value, err := s.secrets.Decrypt(endpoint.TLSCiphertext, tlsAAD(endpoint.ID))
 		if err != nil {
@@ -206,63 +244,138 @@ func (s *Service) Client(ctx context.Context, id string) (*client.Client, error)
 		transport.TLSClientConfig = tlsConfig
 	}
 	httpClient := &http.Client{Transport: transport, Timeout: s.config.RequestTimeout, CheckRedirect: client.CheckRedirect}
-	apiClient, err := client.New(
-		client.WithHTTPClient(httpClient), client.WithHost(endpoint.Host),
+	options := []client.Opt{
+		client.WithHTTPClient(httpClient), client.WithHost(dockerHost),
 		client.WithUserAgent("zrt"), client.WithTimeout(s.config.RequestTimeout),
-	)
+	}
+	if sshDialer != nil {
+		options = append(options, client.WithDialContext(sshDialer.DialContext))
+	}
+	apiClient, err := client.New(options...)
 	if err != nil {
 		return nil, fmt.Errorf("初始化 Docker API 客户端失败: %w", err)
 	}
 	return apiClient, nil
 }
 
-func (s *Service) normalize(id string, existing *model.DockerEndpoint, input Input) (string, string, string, error) {
+// BuilderClient 只连接由 ZRT 管理的 Docker-in-Docker 构建节点，不复用任何发布目标连接。
+func (s *Service) BuilderClient() (*client.Client, error) {
+	host := strings.TrimSpace(s.config.DockerBuilderHost)
+	if host == "" {
+		return nil, errors.New("Docker-in-Docker 构建节点未配置")
+	}
+	apiClient, err := client.New(
+		client.WithHost(host),
+		client.WithTimeout(s.config.RequestTimeout),
+		client.WithUserAgent("zrt-builder"),
+		client.WithAPIVersionNegotiation(),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("初始化 Docker-in-Docker 构建客户端失败: %w", err)
+	}
+	return apiClient, nil
+}
+
+// PingBuilder 检查独立构建节点，供就绪探针和故障诊断使用。
+func (s *Service) PingBuilder(ctx context.Context) error {
+	apiClient, err := s.BuilderClient()
+	if err != nil {
+		return err
+	}
+	defer apiClient.Close()
+	if _, err := apiClient.Ping(ctx, client.PingOptions{NegotiateAPIVersion: true}); err != nil {
+		return fmt.Errorf("Docker-in-Docker 构建节点健康检查失败: %w", err)
+	}
+	return nil
+}
+
+func (s *Service) normalize(id string, existing *model.DockerEndpoint, input Input) (string, string, string, string, string, error) {
 	name := strings.TrimSpace(input.Name)
 	host := strings.TrimSpace(input.Host)
 	if !endpointNamePattern.MatchString(name) || utf8.RuneCountInString(host) > 1024 {
-		return "", "", "", ErrInvalidEndpoint
+		return "", "", "", "", "", ErrInvalidEndpoint
 	}
 	parsed, err := url.Parse(host)
-	if err != nil || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
-		return "", "", "", ErrInvalidEndpoint
+	if err != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
+		return "", "", "", "", "", ErrInvalidEndpoint
 	}
 	switch parsed.Scheme {
 	case "unix":
-		if parsed.Host != "" || !filepath.IsAbs(parsed.Path) || parsed.Path == "/" {
-			return "", "", "", ErrInvalidEndpoint
+		if parsed.User != nil || parsed.Host != "" || !filepath.IsAbs(parsed.Path) || parsed.Path == "/" {
+			return "", "", "", "", "", ErrInvalidEndpoint
 		}
 	case "tcp":
-		if parsed.Host == "" || parsed.Path != "" {
-			return "", "", "", ErrInvalidEndpoint
+		if parsed.User != nil || parsed.Host == "" || parsed.Path != "" {
+			return "", "", "", "", "", ErrInvalidEndpoint
+		}
+	case "ssh":
+		if parsed.User == nil || parsed.User.Username() == "" || parsed.Hostname() == "" || (parsed.Path != "" && parsed.Path != "/") {
+			return "", "", "", "", "", ErrInvalidSSH
+		}
+		if _, hasPassword := parsed.User.Password(); hasPassword {
+			return "", "", "", "", "", ErrInvalidSSH
+		}
+		if port := parsed.Port(); port != "" {
+			value, err := strconv.ParseUint(port, 10, 16)
+			if err != nil || value == 0 {
+				return "", "", "", "", "", ErrInvalidSSH
+			}
 		}
 	default:
-		return "", "", "", ErrInvalidEndpoint
+		return "", "", "", "", "", ErrInvalidEndpoint
 	}
 
 	encryptedTLS := ""
+	encryptedSSH := ""
+	sshFingerprint := strings.TrimSpace(input.SSHHostKeyFingerprint)
 	if existing != nil {
 		encryptedTLS = existing.TLSCiphertext
+		encryptedSSH = existing.SSHCredentialCiphertext
+		if sshFingerprint == "" {
+			sshFingerprint = existing.SSHHostKeyFingerprint
+		}
 	}
 	if input.TLS != nil {
 		if _, err := makeTLSConfig(host, *input.TLS); err != nil {
-			return "", "", "", err
+			return "", "", "", "", "", err
 		}
 		payload, err := json.Marshal(input.TLS)
 		if err != nil {
-			return "", "", "", fmt.Errorf("序列化 Docker TLS 配置失败: %w", err)
+			return "", "", "", "", "", fmt.Errorf("序列化 Docker TLS 配置失败: %w", err)
 		}
 		encryptedTLS, err = s.secrets.Encrypt(string(payload), tlsAAD(id))
 		if err != nil {
-			return "", "", "", fmt.Errorf("加密 Docker TLS 配置失败: %w", err)
+			return "", "", "", "", "", fmt.Errorf("加密 Docker TLS 配置失败: %w", err)
+		}
+	}
+	if input.SSH != nil {
+		if _, err := sshAuthMethods(*input.SSH); err != nil {
+			return "", "", "", "", "", err
+		}
+		payload, err := json.Marshal(input.SSH)
+		if err != nil {
+			return "", "", "", "", "", fmt.Errorf("序列化 Docker SSH 配置失败: %w", err)
+		}
+		encryptedSSH, err = s.secrets.Encrypt(string(payload), sshAAD(id))
+		if err != nil {
+			return "", "", "", "", "", fmt.Errorf("加密 Docker SSH 配置失败: %w", err)
 		}
 	}
 	if parsed.Scheme == "tcp" && encryptedTLS == "" {
-		return "", "", "", ErrTLSRequired
+		return "", "", "", "", "", ErrTLSRequired
 	}
-	if parsed.Scheme == "unix" {
+	if parsed.Scheme == "ssh" {
+		encryptedTLS = ""
+		if encryptedSSH == "" || !validSSHFingerprint(sshFingerprint) {
+			return "", "", "", "", "", ErrSSHRequired
+		}
+	} else {
+		encryptedSSH, sshFingerprint = "", ""
+	}
+	if parsed.Scheme == "unix" || parsed.Scheme == "ssh" {
 		encryptedTLS = ""
 	}
-	return name, host, encryptedTLS, nil
+	return name, host, encryptedTLS, encryptedSSH, sshFingerprint, nil
 }
 
 func makeTLSConfig(host string, bundle TLSBundle) (*tls.Config, error) {
@@ -285,3 +398,5 @@ func makeTLSConfig(host string, bundle TLSBundle) (*tls.Config, error) {
 }
 
 func tlsAAD(id string) []byte { return []byte("docker_endpoint:" + id + ":tls") }
+
+func sshAAD(id string) []byte { return []byte("docker_endpoint:" + id + ":ssh") }

@@ -21,6 +21,7 @@ const (
 type DeploymentTarget struct {
 	ID             string             `gorm:"type:varchar(36);primaryKey" json:"id"`
 	Name           string             `gorm:"type:varchar(128);not null;uniqueIndex" json:"name"`
+	Description    string             `gorm:"type:varchar(500);not null;default:''" json:"description"`
 	Platform       DeploymentPlatform `gorm:"type:varchar(16);not null;index" json:"platform"`
 	Environment    EnvironmentType    `gorm:"type:varchar(16);not null;index" json:"environment"`
 	RuntimeID      string             `gorm:"type:varchar(36);not null;index" json:"runtime_id"`
@@ -56,6 +57,8 @@ const (
 
 type DeploymentRecord struct {
 	ID             string              `gorm:"type:varchar(36);primaryKey" json:"id"`
+	PipelineRunID  string              `gorm:"type:varchar(36);not null;default:'';index" json:"pipeline_run_id,omitempty"`
+	WorkflowNodeID string              `gorm:"type:varchar(64);not null;default:'';index" json:"workflow_node_id,omitempty"`
 	TargetID       string              `gorm:"type:varchar(36);not null;index" json:"target_id"`
 	TargetName     string              `gorm:"type:varchar(128);not null" json:"target_name"`
 	Platform       DeploymentPlatform  `gorm:"type:varchar(16);not null;index" json:"platform"`

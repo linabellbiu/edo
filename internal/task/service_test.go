@@ -16,6 +16,16 @@ func TestDeploymentDoesNotRetryWithoutIdempotency(t *testing.T) {
 	}
 }
 
+func TestPipelineDeploymentDoesNotRetryWithoutIdempotency(t *testing.T) {
+	attempts, err := normalizeMaxAttempts(CreateInput{Kind: "pipeline.deploy", MaxAttempts: 4}, config.DefaultMaxAttempts)
+	if err != nil {
+		t.Fatalf("计算流水线发布重试次数失败: %v", err)
+	}
+	if attempts != 1 {
+		t.Fatalf("包含构建和发布副作用的流水线任务不应自动重试，得到 %d", attempts)
+	}
+}
+
 func TestIdempotentTaskUsesFiniteRetryLimit(t *testing.T) {
 	attempts, err := normalizeMaxAttempts(CreateInput{Kind: "build.image", Idempotent: true}, config.DefaultMaxAttempts)
 	if err != nil {

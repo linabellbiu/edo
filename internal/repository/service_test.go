@@ -90,45 +90,6 @@ func TestRepositoryNameSupportsChinese(t *testing.T) {
 	}
 }
 
-func TestRepositoryStoresBuildAndDeploymentPlans(t *testing.T) {
-	service, db := newRepositoryTestService(t)
-	now := time.Now().UTC()
-	buildPlan := model.BuildPlan{
-		ID: "repository-build-plan", Name: "仓库构建", Kind: model.BuildPlanDockerfile,
-		DockerfilePath: "Dockerfile", IsActive: true, CreatedBy: "admin", CreatedAt: now, UpdatedAt: now,
-	}
-	releasePlan := model.ReleasePlan{
-		ID: "repository-release-plan", Name: "仓库部署", Kind: model.ReleasePlanDocker,
-		ServiceName: "api", IsActive: true, CreatedBy: "admin", CreatedAt: now, UpdatedAt: now,
-	}
-	if err := db.Create(&buildPlan).Error; err != nil {
-		t.Fatal(err)
-	}
-	if err := db.Create(&releasePlan).Error; err != nil {
-		t.Fatal(err)
-	}
-	repo, _, err := service.Create(context.Background(), "admin", Input{
-		Name: "绑定方案的仓库", Provider: model.GitProviderGeneric,
-		CloneURL: "https://git.example.com/team/plans.git", AuthType: model.GitAuthNone,
-		BuildPlanID: buildPlan.ID, ReleasePlanID: releasePlan.ID,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	loaded, err := service.Find(context.Background(), repo.ID)
-	if err != nil || loaded.BuildPlan == nil || loaded.ReleasePlan == nil ||
-		loaded.BuildPlan.ID != buildPlan.ID || loaded.ReleasePlan.ID != releasePlan.ID {
-		t.Fatalf("仓库没有完整加载构建和部署方案: repository=%+v err=%v", loaded, err)
-	}
-	if _, _, err := service.Update(context.Background(), "admin", repo.ID, Input{
-		Name: repo.Name, Provider: repo.Provider, CloneURL: repo.CloneURL,
-		DefaultBranch: repo.DefaultBranch, AuthType: repo.AuthType,
-		BuildPlanID: "missing-plan", ReleasePlanID: releasePlan.ID,
-	}); !errors.Is(err, ErrInvalidRepository) {
-		t.Fatalf("仓库引用不存在的方案时未被拒绝: %v", err)
-	}
-}
-
 func TestRepositoryCanBeUpdatedAndDeletedWhenUnused(t *testing.T) {
 	service, db := newRepositoryTestService(t)
 	repo, _, err := service.Create(context.Background(), "admin", Input{

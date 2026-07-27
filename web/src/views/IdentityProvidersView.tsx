@@ -91,7 +91,7 @@ function toForm(provider: Provider): ProviderForm {
   return { ...provider, client_secret: '', ldap_bind_password: '' }
 }
 
-export default function IdentityProvidersView() {
+export default function IdentityProvidersView({ embedded = false }: { embedded?: boolean }) {
   const canManage = useAuthStore((state) => Boolean(state.user?.is_superuser || state.user?.permissions.includes('identity.manage')))
   const [providers, setProviders] = useState<Provider[]>([])
   const [roles, setRoles] = useState<Role[]>([])
@@ -177,9 +177,9 @@ export default function IdentityProvidersView() {
   const isLDAP = form.type === 'ldap'
 
   return (
-    <section className="management-page identity-page">
+    <section className={`${embedded ? 'settings-identity-section' : 'management-page'} identity-page`}>
       <div className="page-heading">
-        <div><span className="section-label">身份与权限</span><h2>登录方式</h2><p>接入企业目录或常用账号，让团队使用熟悉的身份登录 ZRT。</p></div>
+        <div><span className="section-label">登录安全</span><h2>登录方式</h2><p>接入企业目录或常用账号，让团队使用熟悉的身份登录 ZRT。</p></div>
         {canManage && <button className="primary-button" type="button" onClick={startCreate}>添加登录方式</button>}
       </div>
       {error && <div className="form-alert error system-alert">{error}</div>}

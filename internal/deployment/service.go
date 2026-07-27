@@ -21,9 +21,9 @@ import (
 )
 
 var (
-	ErrInvalidTarget          = errors.New("发布目标配置无效")
-	ErrTargetExists           = errors.New("发布目标名称已存在")
-	ErrTargetNotFound         = errors.New("发布目标不存在")
+	ErrInvalidTarget          = errors.New("发布环境配置无效")
+	ErrTargetExists           = errors.New("发布环境名称已存在")
+	ErrTargetNotFound         = errors.New("发布环境不存在")
 	ErrInvalidImage           = errors.New("容器镜像引用无效")
 	ErrImmutableImageRequired = errors.New("生产环境必须使用带摘要的不可变镜像")
 	ErrDeploymentNotFound     = errors.New("发布记录不存在")
@@ -33,11 +33,12 @@ var (
 	ErrRollbackUnavailable    = errors.New("该发布记录没有可回滚的上一镜像")
 )
 
-var targetNamePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_. -]{1,127}$`)
+var targetNamePattern = regexp.MustCompile(`^[\p{L}\p{N}][\p{L}\p{N}_. -]{0,127}$`)
 var workloadNamePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]{0,252}$`)
 
 type TargetInput struct {
 	Name           string
+	Description    string
 	Platform       model.DeploymentPlatform
 	Environment    model.EnvironmentType
 	RuntimeID      string
@@ -48,8 +49,12 @@ type TargetInput struct {
 }
 
 type RequestInput struct {
-	TargetID string
-	Image    string
+	TargetID        string
+	Image           string
+	ExpectedImageID string
+	PipelineRunID   string
+	WorkflowNodeID  string
+	ApprovedBy      string
 }
 
 type TaskPayload struct {
@@ -85,7 +90,8 @@ func (s *Service) CreateTarget(ctx context.Context, actorID string, input Target
 	}
 	now := time.Now().UTC()
 	target := &model.DeploymentTarget{
-		ID: uuid.NewString(), Name: input.Name, Platform: input.Platform, Environment: input.Environment,
+		ID: uuid.NewString(), Name: input.Name, Description: input.Description,
+		Platform: input.Platform, Environment: input.Environment,
 		RuntimeID: input.RuntimeID, Namespace: input.Namespace, WorkloadName: input.WorkloadName,
 		ContainerName: input.ContainerName, RolloutTimeout: input.RolloutTimeout,
 		IsActive: true, CreatedBy: actorID, CreatedAt: now, UpdatedAt: now,
@@ -113,7 +119,8 @@ func (s *Service) UpdateTarget(ctx context.Context, id string, input TargetInput
 	}
 	now := time.Now().UTC()
 	if err := s.db.WithContext(ctx).Model(&existing).Updates(map[string]any{
-		"name": input.Name, "platform": input.Platform, "environment": input.Environment,
+		"name": input.Name, "description": input.Description,
+		"platform": input.Platform, "environment": input.Environment,
 		"runtime_id": input.RuntimeID, "namespace": input.Namespace,
 		"workload_name": input.WorkloadName, "container_name": input.ContainerName,
 		"rollout_timeout": input.RolloutTimeout, "updated_at": now,
@@ -123,7 +130,8 @@ func (s *Service) UpdateTarget(ctx context.Context, id string, input TargetInput
 		}
 		return nil, fmt.Errorf("更新发布目标失败: %w", err)
 	}
-	existing.Name, existing.Platform, existing.Environment = input.Name, input.Platform, input.Environment
+	existing.Name, existing.Description = input.Name, input.Description
+	existing.Platform, existing.Environment = input.Platform, input.Environment
 	existing.RuntimeID, existing.Namespace = input.RuntimeID, input.Namespace
 	existing.WorkloadName, existing.ContainerName = input.WorkloadName, input.ContainerName
 	existing.RolloutTimeout, existing.UpdatedAt = input.RolloutTimeout, now
@@ -168,7 +176,8 @@ func (s *Service) Request(ctx context.Context, actorID string, input RequestInpu
 		status = model.DeploymentAwaitingApproval
 	}
 	record := &model.DeploymentRecord{
-		ID: uuid.NewString(), TargetID: target.ID, Operation: model.DeploymentRelease,
+		ID: uuid.NewString(), PipelineRunID: input.PipelineRunID, WorkflowNodeID: input.WorkflowNodeID,
+		TargetID: target.ID, Operation: model.DeploymentRelease,
 		Image: image, Status: status, RequestedBy: actorID, CreatedAt: now, UpdatedAt: now,
 	}
 	applyTargetSnapshot(record, target)
@@ -183,6 +192,41 @@ func (s *Service) Request(ctx context.Context, actorID string, input RequestInpu
 	})
 	if err != nil {
 		return nil, fmt.Errorf("创建发布申请失败: %w", err)
+	}
+	return record, nil
+}
+
+// RequestAndRun 用于已经通过流水线审核的单次执行任务。发布任务自身不自动重试，避免重复产生外部副作用。
+func (s *Service) RequestAndRun(ctx context.Context, actorID string, input RequestInput) (*model.DeploymentRecord, error) {
+	target, err := s.findTarget(ctx, input.TargetID)
+	if err != nil {
+		return nil, err
+	}
+	image, err := validatePipelineImage(input.Image, input.ExpectedImageID, target)
+	if err != nil {
+		return nil, err
+	}
+	if target.Environment == model.EnvironmentProduction && input.ApprovedBy == "" {
+		return nil, ErrApprovalRequired
+	}
+	now := time.Now().UTC()
+	record := &model.DeploymentRecord{
+		ID: uuid.NewString(), PipelineRunID: input.PipelineRunID, WorkflowNodeID: input.WorkflowNodeID,
+		TargetID: target.ID, Operation: model.DeploymentRelease, Image: image,
+		Status: model.DeploymentQueued, RequestedBy: actorID, CreatedAt: now, UpdatedAt: now,
+	}
+	if input.ApprovedBy != "" {
+		record.ApprovedBy, record.ApprovedAt = &input.ApprovedBy, &now
+	}
+	applyTargetSnapshot(record, target)
+	if err := s.db.WithContext(ctx).Create(record).Error; err != nil {
+		return nil, fmt.Errorf("创建流水线发布记录失败: %w", err)
+	}
+	if err := s.run(ctx, record.ID, input.ExpectedImageID); err != nil {
+		return record, err
+	}
+	if err := s.db.WithContext(ctx).First(record, "id = ?", record.ID).Error; err != nil {
+		return nil, fmt.Errorf("读取流水线发布结果失败: %w", err)
 	}
 	return record, nil
 }
@@ -255,6 +299,10 @@ func (s *Service) Rollback(ctx context.Context, sourceID, actorID string) (*mode
 }
 
 func (s *Service) Run(ctx context.Context, deploymentID string) error {
+	return s.run(ctx, deploymentID, "")
+}
+
+func (s *Service) run(ctx context.Context, deploymentID, expectedImageID string) error {
 	now := time.Now().UTC()
 	result := s.db.WithContext(ctx).Model(&model.DeploymentRecord{}).
 		Where("id = ? AND status = ?", deploymentID, model.DeploymentQueued).
@@ -283,9 +331,15 @@ func (s *Service) Run(ctx context.Context, deploymentID string) error {
 	var err error
 	switch record.Platform {
 	case model.DeploymentDocker:
-		previousImage, warning, err = s.docker.DeployContainer(
-			ctx, record.RuntimeID, record.WorkloadName, record.Image, record.ID, timeout,
-		)
+		if expectedImageID == "" {
+			previousImage, warning, err = s.docker.DeployContainer(
+				ctx, record.RuntimeID, record.WorkloadName, record.Image, record.ID, timeout,
+			)
+		} else {
+			previousImage, warning, err = s.docker.DeployPreparedContainer(
+				ctx, record.RuntimeID, record.WorkloadName, record.Image, expectedImageID, record.ID, timeout,
+			)
+		}
 	case model.DeploymentKubernetes:
 		previousImage, err = s.kube.DeployImage(
 			ctx, record.RuntimeID, record.Namespace, record.WorkloadName,
@@ -339,6 +393,7 @@ func (s *Service) findTarget(ctx context.Context, id string) (*model.DeploymentT
 
 func (s *Service) normalizeTarget(ctx context.Context, input TargetInput) (TargetInput, error) {
 	input.Name = strings.TrimSpace(input.Name)
+	input.Description = strings.TrimSpace(input.Description)
 	input.RuntimeID = strings.TrimSpace(input.RuntimeID)
 	input.Namespace = strings.TrimSpace(input.Namespace)
 	input.WorkloadName = strings.TrimSpace(input.WorkloadName)
@@ -346,7 +401,7 @@ func (s *Service) normalizeTarget(ctx context.Context, input TargetInput) (Targe
 	if input.RolloutTimeout == 0 {
 		input.RolloutTimeout = 300
 	}
-	if !targetNamePattern.MatchString(input.Name) || input.RuntimeID == "" ||
+	if !targetNamePattern.MatchString(input.Name) || len([]rune(input.Description)) > 500 || input.RuntimeID == "" ||
 		input.RolloutTimeout < 30 || input.RolloutTimeout > 3600 || !validEnvironment(input.Environment) {
 		return TargetInput{}, ErrInvalidTarget
 	}
@@ -429,6 +484,17 @@ func validateImage(value string, immutable bool) (string, error) {
 		}
 	}
 	return reference.FamiliarString(named), nil
+}
+
+func validatePipelineImage(value, expectedImageID string, target *model.DeploymentTarget) (string, error) {
+	expectedImageID = strings.TrimSpace(expectedImageID)
+	if expectedImageID == "" {
+		return validateImage(value, target.Environment == model.EnvironmentProduction)
+	}
+	if target.Platform != model.DeploymentDocker || !dockerengine.IsZRTLocalImage(value) || !dockerengine.IsValidImageID(expectedImageID) {
+		return "", ErrInvalidImage
+	}
+	return validateImage(value, false)
 }
 
 func validEnvironment(environment model.EnvironmentType) bool {

@@ -22,9 +22,11 @@ type clusterHandler struct {
 }
 
 type dockerEndpointRequest struct {
-	Name string                  `json:"name" binding:"required,max=128"`
-	Host string                  `json:"host" binding:"required,max=1024"`
-	TLS  *dockerengine.TLSBundle `json:"tls"`
+	Name                  string                  `json:"name" binding:"required,max=128"`
+	Host                  string                  `json:"host" binding:"required,max=1024"`
+	TLS                   *dockerengine.TLSBundle `json:"tls"`
+	SSH                   *dockerengine.SSHBundle `json:"ssh"`
+	SSHHostKeyFingerprint string                  `json:"ssh_host_key_fingerprint" binding:"max=128"`
 }
 
 type runtimeStatusRequest struct {
@@ -32,14 +34,16 @@ type runtimeStatusRequest struct {
 }
 
 type dockerEndpointResponse struct {
-	ID            string    `json:"id"`
-	Name          string    `json:"name"`
-	Host          string    `json:"host"`
-	TLSConfigured bool      `json:"tls_configured"`
-	IsActive      bool      `json:"is_active"`
-	CreatedBy     string    `json:"created_by"`
-	CreatedAt     time.Time `json:"created_at"`
-	UpdatedAt     time.Time `json:"updated_at"`
+	ID                    string    `json:"id"`
+	Name                  string    `json:"name"`
+	Host                  string    `json:"host"`
+	TLSConfigured         bool      `json:"tls_configured"`
+	SSHConfigured         bool      `json:"ssh_configured"`
+	SSHHostKeyFingerprint string    `json:"ssh_host_key_fingerprint,omitempty"`
+	IsActive              bool      `json:"is_active"`
+	CreatedBy             string    `json:"created_by"`
+	CreatedAt             time.Time `json:"created_at"`
+	UpdatedAt             time.Time `json:"updated_at"`
 }
 
 type kubernetesClusterRequest struct {
@@ -84,13 +88,34 @@ func (h clusterHandler) createDockerEndpoint(c *gin.Context) {
 		return
 	}
 	actor, _ := currentUser(c)
-	endpoint, err := h.docker.Create(c.Request.Context(), actor.ID, dockerengine.Input{Name: request.Name, Host: request.Host, TLS: request.TLS})
+	endpoint, err := h.docker.Create(c.Request.Context(), actor.ID, toDockerInput(request))
 	if err != nil {
 		h.writeDockerError(c, "docker_endpoint_create", err)
 		return
 	}
 	setAuditResourceID(c, endpoint.ID)
 	c.JSON(http.StatusCreated, gin.H{"endpoint": toDockerEndpointResponse(endpoint)})
+}
+
+func (h clusterHandler) testDockerSSH(c *gin.Context) {
+	var request dockerEndpointRequest
+	if err := c.ShouldBindJSON(&request); err != nil {
+		h.logger.Warn("测试 Docker SSH 参数无效", "operation", "docker_ssh_test_bind", "request_id", requestIDFrom(c), "err", err)
+		writeError(c, http.StatusBadRequest, "invalid_request", dockerengine.ErrInvalidSSH.Error())
+		return
+	}
+	result, err := h.docker.TestSSH(c.Request.Context(), toDockerInput(request))
+	if err != nil {
+		h.logger.Warn("Docker SSH 连接测试失败", "operation", "docker_ssh_test", "request_id", requestIDFrom(c), "err", err)
+		switch {
+		case errors.Is(err, dockerengine.ErrInvalidSSH):
+			writeError(c, http.StatusBadRequest, "invalid_docker_ssh", dockerengine.ErrInvalidSSH.Error())
+		default:
+			writeError(c, http.StatusBadGateway, "docker_ssh_unreachable", dockerengine.ErrSSHUnreachable.Error())
+		}
+		return
+	}
+	c.JSON(http.StatusOK, result)
 }
 
 func (h clusterHandler) updateDockerEndpoint(c *gin.Context) {
@@ -100,7 +125,7 @@ func (h clusterHandler) updateDockerEndpoint(c *gin.Context) {
 		writeError(c, http.StatusBadRequest, "invalid_request", dockerengine.ErrInvalidEndpoint.Error())
 		return
 	}
-	endpoint, err := h.docker.Update(c.Request.Context(), c.Param("id"), dockerengine.Input{Name: request.Name, Host: request.Host, TLS: request.TLS})
+	endpoint, err := h.docker.Update(c.Request.Context(), c.Param("id"), toDockerInput(request))
 	if err != nil {
 		h.writeDockerError(c, "docker_endpoint_update", err)
 		return
@@ -261,6 +286,12 @@ func (h clusterHandler) writeDockerError(c *gin.Context, operation string, err e
 		writeError(c, http.StatusBadRequest, "docker_tls_required", dockerengine.ErrTLSRequired.Error())
 	case errors.Is(err, dockerengine.ErrInvalidTLS):
 		writeError(c, http.StatusBadRequest, "invalid_docker_tls", dockerengine.ErrInvalidTLS.Error())
+	case errors.Is(err, dockerengine.ErrSSHRequired):
+		writeError(c, http.StatusBadRequest, "docker_ssh_required", dockerengine.ErrSSHRequired.Error())
+	case errors.Is(err, dockerengine.ErrInvalidSSH):
+		writeError(c, http.StatusBadRequest, "invalid_docker_ssh", dockerengine.ErrInvalidSSH.Error())
+	case errors.Is(err, dockerengine.ErrSSHUnreachable):
+		writeError(c, http.StatusBadGateway, "docker_ssh_unreachable", dockerengine.ErrSSHUnreachable.Error())
 	case errors.Is(err, dockerengine.ErrEndpointExists):
 		writeError(c, http.StatusConflict, "docker_endpoint_exists", dockerengine.ErrEndpointExists.Error())
 	case errors.Is(err, dockerengine.ErrEndpointNotFound):
@@ -306,8 +337,16 @@ func (h clusterHandler) writeKubernetesReadError(c *gin.Context, operation strin
 func toDockerEndpointResponse(endpoint *model.DockerEndpoint) dockerEndpointResponse {
 	return dockerEndpointResponse{
 		ID: endpoint.ID, Name: endpoint.Name, Host: endpoint.Host,
-		TLSConfigured: endpoint.TLSCiphertext != "", IsActive: endpoint.IsActive,
+		TLSConfigured: endpoint.TLSCiphertext != "", SSHConfigured: endpoint.SSHCredentialCiphertext != "",
+		SSHHostKeyFingerprint: endpoint.SSHHostKeyFingerprint, IsActive: endpoint.IsActive,
 		CreatedBy: endpoint.CreatedBy, CreatedAt: endpoint.CreatedAt, UpdatedAt: endpoint.UpdatedAt,
+	}
+}
+
+func toDockerInput(request dockerEndpointRequest) dockerengine.Input {
+	return dockerengine.Input{
+		Name: request.Name, Host: request.Host, TLS: request.TLS, SSH: request.SSH,
+		SSHHostKeyFingerprint: request.SSHHostKeyFingerprint,
 	}
 }
 

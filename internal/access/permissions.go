@@ -64,7 +64,7 @@ var catalog = []Permission{
 	{PermissionDeliveryManage, "持续交付", "管理应用、构建、镜像和部署方案"},
 	{PermissionDeliveryRun, "持续交付", "检查代码更新并创建、推进发布计划"},
 	{PermissionDeploymentRead, "发布", "查看发布记录"},
-	{PermissionDeploymentManage, "发布", "管理发布目标"},
+	{PermissionDeploymentManage, "发布", "管理发布环境"},
 	{PermissionDeploymentRun, "发布", "发起发布和回滚"},
 	{PermissionDeploymentReview, "发布", "审批生产发布"},
 	{PermissionClusterRead, "容器与集群", "查看 Docker 与 Kubernetes 资源"},

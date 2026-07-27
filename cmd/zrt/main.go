@@ -389,21 +389,21 @@ func runServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 		return errors.New("权限服务初始化失败")
 	}
 	auditService := audit.NewService(resources.Database)
-	sessions := auth.NewSessionStore(resources.Redis, cfg.Auth.SessionTTL)
-	limiter := auth.NewLoginRateLimiter(resources.Redis, cfg.Auth.LoginMaxFailure, cfg.Auth.LoginWindow)
-	loginService, err := account.NewLoginService(accounts, sessions, limiter, logger)
-	if err != nil {
-		logger.Error("初始化登录服务失败", "operation", "auth_bootstrap", "err", err)
-		return errors.New("登录服务初始化失败")
-	}
 	secretManager, err := secret.New(cfg.Secrets.Key)
 	if err != nil {
 		logger.Error("初始化基础设施密钥管理器失败", "operation", "secret_bootstrap", "err", err)
 		return errors.New("密钥服务初始化失败")
 	}
+	configurationService := configuration.NewService(resources.Database, secretManager)
+	sessions := auth.NewSessionStore(resources.Redis, cfg.Auth.SessionTTL)
+	limiter := auth.NewLoginRateLimiter(resources.Redis, cfg.Auth.LoginMaxFailure, cfg.Auth.LoginWindow, configurationService)
+	loginService, err := account.NewLoginService(accounts, sessions, limiter, logger)
+	if err != nil {
+		logger.Error("初始化登录服务失败", "operation", "auth_bootstrap", "err", err)
+		return errors.New("登录服务初始化失败")
+	}
 	credentialService := credential.NewService(resources.Database, secretManager)
 	dnsService := dnsmanager.NewService(resources.Database, secretManager, dnsmanager.NewRegistry())
-	configurationService := configuration.NewService(resources.Database, secretManager)
 	repositoryService, err := newRepositoryService(resources.Database, cfg, secretManager, credentialService, configurationService)
 	if err != nil {
 		logger.Error("初始化代码仓库服务失败", "operation", "repository_bootstrap", "err", err)
@@ -414,6 +414,7 @@ func runServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 	dockerService := dockerengine.NewService(resources.Database, secretManager, cfg.Runtime)
 	kubernetesService := kube.NewService(resources.Database, secretManager, cfg.Runtime)
 	deploymentService := deployment.NewService(resources.Database, dockerService, kubernetesService, logger)
+	pipelineService.ConfigureExecution(dockerService, deploymentService, logger)
 	terminalService := terminal.NewService(dockerService, kubernetesService, cfg.Runtime.TerminalMaxDuration)
 	notificationService := notification.NewService(resources.Database, secretManager, nil, cfg.NATS.MaxAttempts)
 	monitorService := monitor.NewService(resources.Database, secretManager, notificationService, nil, cfg.NATS.MaxAttempts, logger)
@@ -439,6 +440,7 @@ func runServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 		AuthConfig:     cfg.Auth,
 		Accounts:       accounts,
 		Login:          loginService,
+		LoginLimiter:   limiter,
 		Sessions:       sessions,
 		Access:         accessService,
 		Audits:         auditService,
@@ -585,6 +587,22 @@ func newBackgroundTaskWorker(
 		return nil
 	}); err != nil {
 		logger.Error("注册 Webhook 任务处理器失败", "operation", "worker_register", "kind", "repository.webhook", "err", err)
+		return nil, errors.New("后台任务初始化失败")
+	}
+	if err := registry.Register("pipeline.deploy", func(ctx context.Context, message task.Message) error {
+		var payload pipeline.DeployTaskPayload
+		if err := json.Unmarshal(message.Payload, &payload); err != nil {
+			return worker.NewPermanentError("invalid_pipeline_deploy_task", "流水线执行任务参数无效", err)
+		}
+		if payload.PipelineRunID == "" || payload.WorkflowNodeID == "" {
+			return worker.NewPermanentError("invalid_pipeline_deploy_task", "流水线执行任务参数无效", errors.New("流水线运行或节点为空"))
+		}
+		if err := pipelineService.ExecuteDeployTask(ctx, payload, message.JobID); err != nil {
+			return worker.NewPermanentError("pipeline_deploy_failed", "流水线真实构建或发布失败", err)
+		}
+		return nil
+	}); err != nil {
+		logger.Error("注册流水线执行任务处理器失败", "operation", "worker_register", "kind", "pipeline.deploy", "err", err)
 		return nil, errors.New("后台任务初始化失败")
 	}
 	registerDeployment := func(kind string) error {

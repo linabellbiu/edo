@@ -131,5 +131,5 @@ func normalizeMaxAttempts(input CreateInput, fallback int) (int, error) {
 }
 
 func hasExternalSideEffects(kind string) bool {
-	return strings.HasPrefix(kind, "deploy.") || strings.HasPrefix(kind, "rollback.")
+	return kind == "pipeline.deploy" || strings.HasPrefix(kind, "deploy.") || strings.HasPrefix(kind, "rollback.")
 }

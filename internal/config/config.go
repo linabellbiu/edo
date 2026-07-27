@@ -3,6 +3,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -109,6 +110,7 @@ type Runtime struct {
 	ConnectTimeout      time.Duration `env:"ZRT_RUNTIME_CONNECT_TIMEOUT"`
 	RequestTimeout      time.Duration `env:"ZRT_RUNTIME_REQUEST_TIMEOUT"`
 	TerminalMaxDuration time.Duration `env:"ZRT_RUNTIME_TERMINAL_MAX_DURATION"`
+	DockerBuilderHost   string        `env:"ZRT_DOCKER_BUILDER_HOST"`
 }
 
 type Scheduler struct {
@@ -127,6 +129,7 @@ func Load() (Config, error) {
 		"ZRT_NATS_DEAD_STREAM",
 		"ZRT_NATS_SUBJECT_PREFIX",
 		"ZRT_NATS_DEAD_SUBJECT",
+		"ZRT_DOCKER_BUILDER_HOST",
 	); err != nil {
 		return Config{}, err
 	}
@@ -197,6 +200,7 @@ func Load() (Config, error) {
 			ConnectTimeout:      10 * time.Second,
 			RequestTimeout:      30 * time.Second,
 			TerminalMaxDuration: 2 * time.Hour,
+			DockerBuilderHost:   "tcp://127.0.0.1:2375",
 		},
 		Scheduler: Scheduler{PollInterval: defaultSchedulerPoll},
 	}
@@ -286,6 +290,9 @@ func (c Config) Validate() error {
 		c.Runtime.TerminalMaxDuration < time.Minute || c.Runtime.TerminalMaxDuration > 24*time.Hour {
 		return errors.New("容器运行时连接或请求超时配置无效")
 	}
+	if !validDockerBuilderHost(c.Runtime.DockerBuilderHost) {
+		return errors.New("Docker-in-Docker 构建节点地址无效")
+	}
 	if c.Scheduler.PollInterval < time.Second || c.Scheduler.PollInterval > time.Minute {
 		return errors.New("定时任务扫描间隔必须在 1 秒到 1 分钟之间")
 	}
@@ -309,4 +316,20 @@ func (c *Config) normalizeStrings() {
 	c.NATS.DeadSubject = strings.TrimSpace(c.NATS.DeadSubject)
 	c.Secrets.Key = strings.TrimSpace(c.Secrets.Key)
 	c.Git.KnownHostsFile = strings.TrimSpace(c.Git.KnownHostsFile)
+	c.Runtime.DockerBuilderHost = strings.TrimSpace(c.Runtime.DockerBuilderHost)
+}
+
+func validDockerBuilderHost(value string) bool {
+	parsed, err := url.Parse(strings.TrimSpace(value))
+	if err != nil || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
+		return false
+	}
+	switch parsed.Scheme {
+	case "tcp":
+		return parsed.Host != "" && parsed.Path == ""
+	case "unix":
+		return parsed.Host == "" && strings.HasPrefix(parsed.Path, "/") && parsed.Path != "/"
+	default:
+		return false
+	}
 }

@@ -10,7 +10,7 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-func TestDeploymentPlanAPIKeepsLegacyDataCompatible(t *testing.T) {
+func TestDeploymentPlansAndReleasePlansAreSeparateResources(t *testing.T) {
 	router, closeTest := newAuthTestRouter(t)
 	defer closeTest()
 
@@ -35,9 +35,21 @@ func TestDeploymentPlanAPIKeepsLegacyDataCompatible(t *testing.T) {
 	if listed.Code != http.StatusOK || !strings.Contains(listed.Body.String(), `"deployment_plans"`) || !strings.Contains(listed.Body.String(), createdPayload.DeploymentPlan.ID) {
 		t.Fatalf("标准部署方案接口未返回已有数据: status=%d body=%s", listed.Code, listed.Body.String())
 	}
-	legacy := performJSONRequest(t, router, http.MethodGet, "/api/v1/release-plans", nil, adminCookie)
-	if legacy.Code != http.StatusOK || !strings.Contains(legacy.Body.String(), `"release_plans"`) || !strings.Contains(legacy.Body.String(), createdPayload.DeploymentPlan.ID) {
-		t.Fatalf("旧接口未保持数据兼容: status=%d body=%s", legacy.Code, legacy.Body.String())
+	releaseCreated := performJSONRequest(t, router, http.MethodPost, "/api/v1/release-plans", map[string]any{
+		"name": "七月发布列车", "version": "2026.07", "description": "一次迭代发布",
+	}, adminCookie)
+	var releasePayload struct {
+		ReleasePlan struct {
+			ID      string `json:"id"`
+			Version string `json:"version"`
+		} `json:"release_plan"`
+	}
+	if releaseCreated.Code != http.StatusCreated || json.Unmarshal(releaseCreated.Body.Bytes(), &releasePayload) != nil || releasePayload.ReleasePlan.ID == "" {
+		t.Fatalf("创建发布计划失败: status=%d body=%s", releaseCreated.Code, releaseCreated.Body.String())
+	}
+	releases := performJSONRequest(t, router, http.MethodGet, "/api/v1/release-plans", nil, adminCookie)
+	if releases.Code != http.StatusOK || !strings.Contains(releases.Body.String(), releasePayload.ReleasePlan.ID) || strings.Contains(releases.Body.String(), createdPayload.DeploymentPlan.ID) {
+		t.Fatalf("发布计划和部署方案没有正确分离: status=%d body=%s", releases.Code, releases.Body.String())
 	}
 }
 
@@ -45,7 +57,7 @@ func TestApplicationRequestAcceptsMultipleEnvironments(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	context, _ := gin.CreateTestContext(httptest.NewRecorder())
 	payload := `{
-		"name":"发布计划界面验收",
+		"name":"流水线界面验收",
 		"repository_id":"637a764b-e79e-41a2-8dd4-cc038479ebee",
 		"poll_interval_seconds":60,
 		"release_approval_enabled":true,
@@ -72,7 +84,7 @@ func TestApplicationRequestAcceptsPublicWorkflowTemplate(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	context, _ := gin.CreateTestContext(httptest.NewRecorder())
 	payload := `{
-		"name":"选择公共发布计划",
+		"name":"选择公共流水线方案",
 		"repository_id":"637a764b-e79e-41a2-8dd4-cc038479ebee",
 		"workflow_template_id":"dd448d0b-df10-45c2-9436-42ee44817399",
 		"poll_interval_seconds":60,
@@ -82,10 +94,10 @@ func TestApplicationRequestAcceptsPublicWorkflowTemplate(t *testing.T) {
 	context.Request.Header.Set("Content-Type", "application/json")
 	var request applicationRequest
 	if err := context.ShouldBindJSON(&request); err != nil {
-		t.Fatalf("公共发布计划选择不应被拒绝: %v", err)
+		t.Fatalf("公共流水线方案选择不应被拒绝: %v", err)
 	}
 	if request.WorkflowTemplateID != "dd448d0b-df10-45c2-9436-42ee44817399" {
-		t.Fatalf("公共发布计划未正确解析: %+v", request)
+		t.Fatalf("公共流水线方案未正确解析: %+v", request)
 	}
 }
 

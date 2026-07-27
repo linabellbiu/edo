@@ -15,6 +15,8 @@ x-zrt-environment: &zrt-environment
   # redis 和 nats 是本文件中的容器服务名；其余容量、重试和超时采用 Go 代码内默认值。
   ZRT_REDIS_URL: redis://redis:6379/0
   ZRT_NATS_URL: nats://nats:4222
+  # 所有镜像统一在隔离的 Docker-in-Docker 服务中构建，禁止借用发布目标主机进行构建。
+  ZRT_DOCKER_BUILDER_HOST: tcp://docker-builder:2375
   # 仅供本机开发的默认加密密钥；共享或生产环境必须通过 .env 覆盖，不能继续使用此值。
   ZRT_SECRETS_KEY: ${ZRT_SECRETS_KEY:-b97MuZYq2cdfHG+Hy2hjRvh0yerPm2MF9rHRe0KXVQg=}
 
@@ -54,6 +56,8 @@ services:
         condition: service_healthy
       nats:
         condition: service_healthy
+      docker-builder:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "curl", "--fail", "--silent", "http://127.0.0.1:8080/api/v1/health/ready"]
       interval: 5s
@@ -62,6 +66,9 @@ services:
       # 首次启动需初始化数据库连接和 JetStream，预留时间避免前端过早启动。
       start_period: 30s
     stop_grace_period: 70s
+    networks:
+      - zrt
+      - zrt-builder
     restart: unless-stopped
 
   # Vite 开发前端通过服务名 api 转发 API 与 WebSocket，并在后端健康后启动。
@@ -94,6 +101,28 @@ services:
       start_period: 10s
     networks:
       - zrt
+    restart: unless-stopped
+
+  # 独立 Docker-in-Docker 构建节点：保留 BuildKit 图层缓存，不挂载宿主机 Docker Socket。
+  # privileged 是 DinD 启动内部 dockerd 的必要权限；它只加入内部网络，不向宿主机暴露 2375。
+  docker-builder:
+    image: docker:28.3.3-dind
+    privileged: true
+    environment:
+      # 2375 只在隔离网络内开放；关闭自动 TLS 避免在开发环境分发客户端证书。
+      DOCKER_TLS_CERTDIR: ""
+    command: ["--host=tcp://0.0.0.0:2375", "--host=unix:///var/run/docker.sock", "--tls=false", "--storage-driver=overlay2"]
+    volumes:
+      # 保存基础镜像和构建图层；docker compose down 不会清除此缓存。
+      - zrt-builder-data:/var/lib/docker
+    networks:
+      - zrt-builder
+    healthcheck:
+      test: ["CMD", "docker", "info"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+      start_period: 15s
     restart: unless-stopped
 
   # Redis 保存会话、限流和短期状态，不承担任务队列职责。
@@ -141,9 +170,14 @@ services:
 networks:
   zrt:
     driver: bridge
+  # 构建节点不映射宿主机端口；只有同网络的 api 能调用 Docker API，同时允许拉取基础镜像。
+  zrt-builder:
+    driver: bridge
 
 # SQLite、Redis 和 NATS 数据都保存在仓库 data 目录，删除容器不会删除这些文件。
 # data 目录不得直接清空；升级、迁移或重建环境前先完整备份。
 volumes:
   # node_modules 只是 Linux 容器依赖缓存，不包含 ZRT 业务数据。
   zrt-web-node-modules:
+  # 仅保存 DinD 镜像层和 BuildKit 缓存，可以在磁盘紧张时单独删除后重新构建。
+  zrt-builder-data:

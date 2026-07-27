@@ -3,15 +3,16 @@ import { useNavigate, useSearchParams } from 'react-router-dom'
 
 import client from '@/api/client'
 import { apiErrorMessage } from '@/api/resources'
+import ResourceSelectField from '@/components/ResourceSelectField'
 import { useAuthStore } from '@/stores/auth'
 
 type NodeType = 'trigger' | 'manual_release' | 'manual' | 'approval' | 'deploy'
-type EnvironmentKey = 'dev' | 'test' | 'pre' | 'prod'
+type EnvironmentKey = string
 
 interface ApplicationEnvironment {
   id: string; key: EnvironmentKey; name: string; branch: string; poll_enabled: boolean
   watch_push: boolean; watch_pull_request: boolean; watch_tags: boolean; tag_pattern: string
-  release_plan_id?: string; deployment_target_id?: string; sort_order: number
+  deployment_plan_id?: string; deployment_target_id?: string; sort_order: number
 }
 interface Application {
   id: string; name: string; release_approval_enabled: boolean; environments: ApplicationEnvironment[]
@@ -20,7 +21,7 @@ interface WorkflowNode {
   id: string; type: NodeType; name: string; position: { x: number; y: number }
   config: {
     environment?: EnvironmentKey; branch?: string; events?: string[]; tag_pattern?: string
-    release_plan_id?: string; deployment_target_id?: string; description?: string
+    deployment_plan_id?: string; deployment_target_id?: string; description?: string
   }
 }
 interface WorkflowEdge { id: string; source: string; target: string; label?: string }
@@ -32,17 +33,14 @@ interface WorkflowTemplate extends Workflow { description: string }
 interface WorkflowIssue { code: string; message: string; node_id?: string; edge_id?: string }
 interface WorkflowResponse { workflow: Workflow; valid: boolean; issues: WorkflowIssue[] }
 interface WorkflowTemplateResponse { workflow_template: WorkflowTemplate; valid: boolean; issues: WorkflowIssue[] }
+interface DeploymentEnvironment { id: string; name: string; platform: 'docker' | 'kubernetes'; environment: string; is_active: boolean }
 
 const nodeCopy: Record<NodeType, { label: string; hint: string; icon: string }> = {
   trigger: { label: '代码触发', hint: '监听分支、Push、PR 或 Tag', icon: '⌁' },
   manual_release: { label: '手动发布', hint: '选择 Commit 后从这里开始', icon: '▶' },
   manual: { label: '人工放行', hint: '主动接测后进入下一环境', icon: '✓' },
   approval: { label: '发布审核', hint: '由其他成员确认发布', icon: '◎' },
-  deploy: { label: '部署', hint: '执行各代码仓库绑定的部署方案', icon: '↗' },
-}
-
-const environmentLabel: Record<EnvironmentKey, string> = {
-  dev: '开发环境', test: '测试环境', pre: '预发布环境', prod: '生产环境',
+  deploy: { label: '部署', hint: '执行应用绑定的部署方案', icon: '↗' },
 }
 
 const canvasEnvironments: ApplicationEnvironment[] = [
@@ -66,6 +64,16 @@ function triggerEvents(environment: ApplicationEnvironment) {
     environment.poll_enabled && 'pull', environment.watch_push && 'push',
     environment.watch_pull_request && 'pr', environment.watch_tags && 'tag',
   ].filter(Boolean) as string[]
+}
+
+function summarizeIssues(items: WorkflowIssue[], graphNodes: WorkflowNode[]) {
+  const messages = items.slice(0, 3).map((issue) => {
+    const node = graphNodes.find((item) => item.id === issue.node_id)
+    if (!node || issue.message.includes(node.name)) return issue.message
+    return `${node.name}：${issue.message}`
+  })
+  if (items.length > messages.length) messages.push(`另有 ${items.length - messages.length} 个问题`)
+  return messages.join('；')
 }
 
 function createTemplate(application: Application, compact = false) {
@@ -116,9 +124,11 @@ export default function ReleaseWorkflowView() {
   const navigate = useNavigate()
   const user = useAuthStore((state) => state.user)
   const canManage = Boolean(user?.is_superuser || user?.permissions.includes('delivery.manage'))
+  const canReadDeployment = Boolean(user?.is_superuser || user?.permissions.includes('deployment.read'))
   const [searchParams, setSearchParams] = useSearchParams()
   const [applications, setApplications] = useState<Application[]>([])
   const [templates, setTemplates] = useState<WorkflowTemplate[]>([])
+  const [deploymentEnvironments, setDeploymentEnvironments] = useState<DeploymentEnvironment[]>([])
   const [applicationID, setApplicationID] = useState(searchParams.get('application') || '')
   const [templateID, setTemplateID] = useState(searchParams.get('template') || '')
   const [workflow, setWorkflow] = useState<Workflow | null>(null)
@@ -149,12 +159,14 @@ export default function ReleaseWorkflowView() {
     setLoading(true)
     setError('')
     try {
-      const [applicationResult, templateResult] = await Promise.all([
+      const [applicationResult, templateResult, environmentResult] = await Promise.all([
         client.get<{ applications: Application[] }>('/applications'),
         client.get<{ workflow_templates: WorkflowTemplate[] }>('/workflow-templates'),
+        canReadDeployment ? client.get<{ environments: DeploymentEnvironment[] }>('/environments') : Promise.resolve(null),
       ])
       setApplications(applicationResult.data.applications)
       setTemplates(templateResult.data.workflow_templates)
+      setDeploymentEnvironments(environmentResult?.data.environments || [])
       if (!applicationID && !templateID && !createMode && templateResult.data.workflow_templates.length > 0) {
         const id = templateResult.data.workflow_templates[0].id
         setTemplateID(id)
@@ -165,7 +177,7 @@ export default function ReleaseWorkflowView() {
     } finally {
       setLoading(false)
     }
-  }, [applicationID, createMode, setSearchParams, templateID])
+  }, [applicationID, canReadDeployment, createMode, setSearchParams, templateID])
 
   const loadWorkflow = useCallback(async (id: string) => {
     setLoading(true)
@@ -231,6 +243,9 @@ export default function ReleaseWorkflowView() {
 
   function updateNode(id: string, update: (node: WorkflowNode) => WorkflowNode) {
     setNodes((current) => current.map((node) => node.id === id ? update(node) : node))
+    setIssues((current) => current.filter((issue) => issue.node_id !== id))
+    setError('')
+    setMessage('')
     setDirty(true)
   }
 
@@ -300,7 +315,9 @@ export default function ReleaseWorkflowView() {
         ? await client.post<WorkflowTemplateResponse>('/workflow-templates/validate', payload)
         : await client.post<WorkflowResponse>(`/applications/${applicationID}/workflow/validate`, payload)
       setIssues(result.data.issues || [])
-      setMessage(result.data.valid ? `检查通过，可以启用这份${publicMode ? '流水线方案' : '应用流水线'}。` : `发现 ${result.data.issues.length} 个问题。`)
+      setMessage(result.data.valid
+        ? `检查通过，可以启用这份${publicMode ? '流水线方案' : '应用流水线'}。`
+        : `发现 ${result.data.issues.length} 个问题：${summarizeIssues(result.data.issues, nodes)}`)
     } catch (validateError) {
       setError(apiErrorMessage(validateError))
     }
@@ -323,14 +340,20 @@ export default function ReleaseWorkflowView() {
       setEdges(saved.edges)
       setIssues(result.data.issues || [])
       setDirty(false)
-      setMessage(activate ? (publicMode ? '流水线方案已启用，创建应用时可以直接选择。' : '应用流水线已启用，新的发布计划会按这张图执行。') : '草稿已保存，当前不会生成新的发布计划。')
+      setMessage(activate ? (publicMode ? '流水线方案已启用，创建应用时可以直接选择。' : '应用流水线已启用，新的流水线运行会按这张图执行。') : '草稿已保存，当前不会生成新的流水线运行。')
       if (publicMode) {
         setTemplates((current) => current.map((item) => item.id === saved.id ? saved as WorkflowTemplate : item))
       }
     } catch (saveError) {
       const response = (saveError as { response?: { data?: { issues?: WorkflowIssue[] } } }).response?.data
-      if (response?.issues) setIssues(response.issues)
-      setError(apiErrorMessage(saveError))
+      if (response?.issues?.length) {
+        setIssues(response.issues)
+        const firstNodeIssue = response.issues.find((issue) => issue.node_id)
+        if (firstNodeIssue?.node_id) setSelectedNodeID(firstNodeIssue.node_id)
+        setError(`${activate ? '无法启用' : '无法保存'}：${summarizeIssues(response.issues, nodes)}`)
+      } else {
+        setError(apiErrorMessage(saveError))
+      }
     } finally {
       savingRef.current = false
       setSaving(false)
@@ -388,20 +411,30 @@ export default function ReleaseWorkflowView() {
     setDirty(true)
   }
 
-  function handleWheel(event: React.WheelEvent<HTMLDivElement>) {
-    event.preventDefault()
-    const rect = event.currentTarget.getBoundingClientRect()
-    const pointerX = event.clientX - rect.left
-    const pointerY = event.clientY - rect.top
-    const worldX = (pointerX - viewport.x) / viewport.zoom
-    const worldY = (pointerY - viewport.y) / viewport.zoom
-    const zoom = Math.max(0.2, Math.min(2, viewport.zoom * (event.deltaY > 0 ? 0.9 : 1.1)))
-    setViewport({ x: pointerX - worldX * zoom, y: pointerY - worldY * zoom, zoom })
-    setDirty(true)
-  }
+  useEffect(() => {
+    const canvas = canvasRef.current
+    if (!canvas || !workflow) return
+    const handleWheel = (event: WheelEvent) => {
+      event.preventDefault()
+      event.stopPropagation()
+      const rect = canvas.getBoundingClientRect()
+      const pointerX = event.clientX - rect.left
+      const pointerY = event.clientY - rect.top
+      setViewport((current) => {
+        const worldX = (pointerX - current.x) / current.zoom
+        const worldY = (pointerY - current.y) / current.zoom
+        const zoom = Math.max(0.2, Math.min(2, current.zoom * (event.deltaY > 0 ? 0.9 : 1.1)))
+        return { x: pointerX - worldX * zoom, y: pointerY - worldY * zoom, zoom }
+      })
+      setDirty(true)
+    }
+    canvas.addEventListener('wheel', handleWheel, { passive: false })
+    return () => canvas.removeEventListener('wheel', handleWheel)
+  }, [workflow])
 
   function startPan(event: React.PointerEvent<HTMLDivElement>) {
     if ((event.target as HTMLElement).closest('.workflow-node')) return
+    event.preventDefault()
     event.currentTarget.setPointerCapture(event.pointerId)
     panRef.current = { pointerID: event.pointerId, startX: event.clientX, startY: event.clientY, originX: viewport.x, originY: viewport.y }
   }
@@ -409,6 +442,7 @@ export default function ReleaseWorkflowView() {
   function movePan(event: React.PointerEvent<HTMLDivElement>) {
     const pan = panRef.current
     if (!pan || pan.pointerID !== event.pointerId) return
+    event.preventDefault()
     setViewport((current) => ({ ...current, x: pan.originX + event.clientX - pan.startX, y: pan.originY + event.clientY - pan.startY }))
   }
 
@@ -421,6 +455,7 @@ export default function ReleaseWorkflowView() {
 
   function startNodeDrag(event: React.PointerEvent<HTMLElement>, node: WorkflowNode) {
     if ((event.target as HTMLElement).closest('.node-port, button, input, select')) return
+    event.preventDefault()
     event.stopPropagation()
     event.currentTarget.setPointerCapture(event.pointerId)
     dragRef.current = { pointerID: event.pointerId, nodeID: node.id, startX: event.clientX, startY: event.clientY, originX: node.position.x, originY: node.position.y }
@@ -430,6 +465,7 @@ export default function ReleaseWorkflowView() {
   function moveNode(event: React.PointerEvent<HTMLElement>) {
     const drag = dragRef.current
     if (!drag || drag.pointerID !== event.pointerId) return
+    event.preventDefault()
     const x = drag.originX + (event.clientX - drag.startX) / viewport.zoom
     const y = drag.originY + (event.clientY - drag.startY) / viewport.zoom
     updateNode(drag.nodeID, (node) => ({ ...node, position: { x, y } }))
@@ -443,7 +479,6 @@ export default function ReleaseWorkflowView() {
 
   return <section className="workflow-page page-enter">
     <div className="workflow-controls">
-      <button className="workflow-back-button" type="button" onClick={() => navigate(publicMode ? '/pipeline-plans' : '/applications')}>← {publicMode ? '流水线方案列表' : '应用列表'}</button>
       <div className="workflow-heading-actions">
         {publicMode ? <>
           <label>流水线方案<select value={templateID} onChange={(event) => chooseTemplate(event.target.value)}><option value="">请选择</option>{templates.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
@@ -479,7 +514,7 @@ export default function ReleaseWorkflowView() {
           <span>{connectingFrom ? '请选择下一个节点的左侧入口' : '拖动画布移动，滚轮缩放，节点从右侧连到左侧'}</span>
           <div><button type="button" onClick={() => setViewport((current) => ({ ...current, zoom: Math.max(.2, current.zoom - .1) }))}>−</button><b>{Math.round(viewport.zoom * 100)}%</b><button type="button" onClick={() => setViewport((current) => ({ ...current, zoom: Math.min(2, current.zoom + .1) }))}>＋</button><button type="button" onClick={fitCanvas}>适合画布</button></div>
         </div>
-        <div ref={canvasRef} className={`workflow-canvas${connectingFrom ? ' connecting' : ''}`} style={{ backgroundPosition: `${viewport.x}px ${viewport.y}px`, backgroundSize: `${24 * viewport.zoom}px ${24 * viewport.zoom}px` }} onWheel={handleWheel} onPointerDown={startPan} onPointerMove={movePan} onPointerUp={endPan} onPointerCancel={endPan}>
+        <div ref={canvasRef} className={`workflow-canvas${connectingFrom ? ' connecting' : ''}`} style={{ backgroundPosition: `${viewport.x}px ${viewport.y}px`, backgroundSize: `${24 * viewport.zoom}px ${24 * viewport.zoom}px` }} onPointerDown={startPan} onPointerMove={movePan} onPointerUp={endPan} onPointerCancel={endPan}>
           <div className="workflow-world" style={{ transform: `translate(${viewport.x}px, ${viewport.y}px) scale(${viewport.zoom})` }}>
             <svg className="workflow-edges" aria-hidden="true">
               {edges.map((edge) => {
@@ -492,11 +527,11 @@ export default function ReleaseWorkflowView() {
                 return <path key={edge.id} d={`M ${sx} ${sy} C ${sx + bend} ${sy}, ${tx - bend} ${ty}, ${tx} ${ty}`} />
               })}
             </svg>
-            {nodes.map((node) => <article key={node.id} className={`workflow-node node-${node.type}${selectedNodeID === node.id ? ' selected' : ''}`} style={{ left: node.position.x, top: node.position.y, '--node-color': nodeColor(node.type) } as React.CSSProperties} onPointerDown={(event) => startNodeDrag(event, node)} onPointerMove={moveNode} onPointerUp={endNodeDrag} onPointerCancel={endNodeDrag} onClick={(event) => { event.stopPropagation(); setSelectedNodeID(node.id) }}>
+            {nodes.map((node) => <article key={node.id} className={`workflow-node node-${node.type}${selectedNodeID === node.id ? ' selected' : ''}${issues.some((issue) => issue.node_id === node.id) ? ' has-issue' : ''}`} style={{ left: node.position.x, top: node.position.y, '--node-color': nodeColor(node.type) } as React.CSSProperties} onPointerDown={(event) => startNodeDrag(event, node)} onPointerMove={moveNode} onPointerUp={endNodeDrag} onPointerCancel={endNodeDrag} onClick={(event) => { event.stopPropagation(); setSelectedNodeID(node.id) }}>
               {node.type !== 'trigger' && node.type !== 'manual_release' && <button className="node-port input-port" type="button" aria-label="连接到这个节点" onClick={(event) => { event.stopPropagation(); connectTo(node.id) }} />}
               <div className="workflow-node-head"><i>{nodeCopy[node.type].icon}</i><span>{nodeCopy[node.type].label}</span><b>{node.config.environment || '通用'}</b></div>
               <h3>{node.name}</h3>
-              <p>{node.type === 'trigger' ? `${node.config.branch || '未配置分支'} · ${(node.config.events || []).join(' / ') || '未选择事件'}` : node.type === 'deploy' ? '使用代码仓库绑定的部署方案' : node.config.description || nodeCopy[node.type].hint}</p>
+              <p>{node.type === 'trigger' ? `${node.config.branch || '未配置分支'} · ${(node.config.events || []).join(' / ') || '未选择事件'}` : node.type === 'deploy' ? deploymentEnvironments.find((item) => item.id === node.config.deployment_target_id)?.name || '未选择发布环境' : node.config.description || nodeCopy[node.type].hint}</p>
               {node.type !== 'deploy' && <button className={`node-port output-port${connectingFrom === node.id ? ' active' : ''}`} type="button" aria-label="从这个节点开始连接" onClick={(event) => { event.stopPropagation(); setConnectingFrom((current) => current === node.id ? '' : node.id) }} />}
             </article>)}
           </div>
@@ -512,14 +547,15 @@ export default function ReleaseWorkflowView() {
           <div className="inspector-title"><div><span>{nodeCopy[selectedNode.type].label}</span><h3>{selectedNode.name}</h3></div>{canManage && <button type="button" onClick={() => removeNode(selectedNode.id)}>删除</button>}</div>
           <div className="inspector-fields">
             <label>节点名称<input value={selectedNode.name} disabled={!canManage} onChange={(event) => updateNode(selectedNode.id, (node) => ({ ...node, name: event.target.value }))} /></label>
-            <label>所属环境<select value={selectedNode.config.environment || ''} disabled={!canManage} onChange={(event) => updateNode(selectedNode.id, (node) => ({ ...node, config: { ...node.config, environment: event.target.value as EnvironmentKey } }))}><option value="">通用节点</option>{editorApplication.environments.map((item) => <option key={item.key} value={item.key}>{item.name}</option>)}</select></label>
+            <label>流程阶段<select value={selectedNode.config.environment || ''} disabled={!canManage} onChange={(event) => updateNode(selectedNode.id, (node) => ({ ...node, config: { ...node.config, environment: event.target.value } }))}><option value="">通用节点</option>{editorApplication.environments.map((item) => <option key={item.key} value={item.key}>{item.name}</option>)}</select></label>
             {selectedNode.type === 'trigger' && <>
               <label>监听分支<input value={selectedNode.config.branch || ''} disabled={!canManage} onChange={(event) => updateNode(selectedNode.id, (node) => ({ ...node, config: { ...node.config, branch: event.target.value } }))} placeholder="main 或 release/*" /></label>
               <fieldset><legend>触发事件</legend>{['pull', 'push', 'pr', 'tag'].map((eventName) => <label key={eventName}><input type="checkbox" disabled={!canManage} checked={(selectedNode.config.events || []).includes(eventName)} onChange={(event) => updateNode(selectedNode.id, (node) => ({ ...node, config: { ...node.config, events: event.target.checked ? [...(node.config.events || []), eventName] : (node.config.events || []).filter((item) => item !== eventName) } }))} />{eventName === 'pull' ? 'Pull 定时检查' : eventName.toUpperCase()}</label>)}</fieldset>
               {(selectedNode.config.events || []).includes('tag') && <label>Tag 规则<input value={selectedNode.config.tag_pattern || ''} disabled={!canManage} onChange={(event) => updateNode(selectedNode.id, (node) => ({ ...node, config: { ...node.config, tag_pattern: event.target.value } }))} placeholder="v*" /></label>}
             </>}
             {selectedNode.type === 'deploy' && <>
-              <p className="field-note">构建方案和部署方案在代码仓库中维护；应用流水线只决定何时进入这个部署节点。</p>
+              <ResourceSelectField label="发布环境" createLabel="发布环境" createTo={canManage ? '/environments?create=1' : undefined} createTarget="_blank" required value={selectedNode.config.deployment_target_id || ''} disabled={!canManage || !canReadDeployment} onChange={(event) => updateNode(selectedNode.id, (node) => ({ ...node, config: { ...node.config, deployment_target_id: event.target.value } }))}><option value="">请选择发布环境</option>{deploymentEnvironments.filter((item) => item.is_active).map((item) => <option key={item.id} value={item.id}>{item.name} · {item.platform === 'kubernetes' ? 'Kubernetes' : 'Docker'}</option>)}</ResourceSelectField>
+              <p className="field-note">构建方案和部署方案在应用中维护；这里决定镜像最终发布到哪个 Docker 或 Kubernetes 环境。</p>
             </>}
             {(selectedNode.type === 'manual_release' || selectedNode.type === 'manual' || selectedNode.type === 'approval') && <label>说明<textarea rows={4} value={selectedNode.config.description || ''} disabled={!canManage} onChange={(event) => updateNode(selectedNode.id, (node) => ({ ...node, config: { ...node.config, description: event.target.value } }))} placeholder={selectedNode.type === 'manual_release' ? '例如：由发布负责人选择代码版本后启动' : undefined} /></label>}
           </div>

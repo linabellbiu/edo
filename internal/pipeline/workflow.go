@@ -18,6 +18,7 @@ import (
 
 	"zrt/internal/model"
 	"zrt/internal/repository"
+	"zrt/internal/task"
 )
 
 var (
@@ -26,9 +27,10 @@ var (
 	ErrWorkflowRevisionConflict  = errors.New("应用流水线已被其他人修改，请刷新后再保存")
 	ErrWorkflowNotActive         = errors.New("应用流水线尚未启用")
 	ErrInvalidWorkflowTransition = errors.New("当前节点不能这样推进")
-	ErrWorkflowApprovalRequired  = errors.New("该发布计划需要先完成审核")
-	ErrWorkflowSelfApproval      = errors.New("发布申请人不能审核自己的发布计划")
-	ErrPipelineRunNotFound       = errors.New("发布计划不存在")
+	ErrWorkflowApprovalRequired  = errors.New("该流水线运行需要先完成审核")
+	ErrWorkflowSelfApproval      = errors.New("执行申请人不能审核自己的流水线运行")
+	ErrPipelineRunNotFound       = errors.New("流水线运行不存在")
+	ErrPipelineRunNotRetryable   = errors.New("只有失败的流水线运行可以重新执行")
 )
 
 type WorkflowInput struct {
@@ -195,7 +197,7 @@ func defaultWorkflow(application *model.Application, environments []model.Applic
 				Environment: environment.Key, Branch: environment.Branch, Events: events, TagPattern: environment.TagPattern,
 			}},
 			model.WorkflowNode{ID: deployID, Type: model.WorkflowNodeDeploy, Name: "部署到" + environment.Name, Position: model.WorkflowPosition{X: x, Y: 350}, Config: model.WorkflowNodeConfig{
-				Environment: environment.Key, ReleasePlanID: environment.ReleasePlanID,
+				Environment: environment.Key, DeploymentPlanID: application.DeploymentPlanID,
 				DeploymentTargetID: environment.DeploymentTargetID,
 			}},
 		)
@@ -272,7 +274,7 @@ func sanitizeWorkflowInput(input *WorkflowInput) error {
 		input.Nodes[i].Config.Environment = strings.ToLower(strings.TrimSpace(input.Nodes[i].Config.Environment))
 		input.Nodes[i].Config.Branch = strings.TrimSpace(input.Nodes[i].Config.Branch)
 		input.Nodes[i].Config.TagPattern = strings.TrimSpace(input.Nodes[i].Config.TagPattern)
-		input.Nodes[i].Config.ReleasePlanID = strings.TrimSpace(input.Nodes[i].Config.ReleasePlanID)
+		input.Nodes[i].Config.DeploymentPlanID = strings.TrimSpace(input.Nodes[i].Config.DeploymentPlanID)
 		input.Nodes[i].Config.DeploymentTargetID = strings.TrimSpace(input.Nodes[i].Config.DeploymentTargetID)
 		input.Nodes[i].Config.Description = strings.TrimSpace(input.Nodes[i].Config.Description)
 		if input.Nodes[i].ID == "" || len(input.Nodes[i].ID) > 64 || input.Nodes[i].Name == "" || utf8.RuneCountInString(input.Nodes[i].Name) > 128 ||
@@ -292,7 +294,7 @@ func sanitizeWorkflowInput(input *WorkflowInput) error {
 	return nil
 }
 
-func (s *Service) validateWorkflow(_ context.Context, application *model.Application, nodes []model.WorkflowNode, edges []model.WorkflowEdge) []WorkflowIssue {
+func (s *Service) validateWorkflow(ctx context.Context, application *model.Application, nodes []model.WorkflowNode, edges []model.WorkflowEdge) []WorkflowIssue {
 	issues := make([]WorkflowIssue, 0)
 	nodeByID := make(map[string]model.WorkflowNode, len(nodes))
 	indegree := make(map[string]int, len(nodes))
@@ -301,6 +303,22 @@ func (s *Service) validateWorkflow(_ context.Context, application *model.Applica
 	environments := make(map[string]model.ApplicationEnvironment, len(application.Environments))
 	for i := range application.Environments {
 		environments[application.Environments[i].Key] = application.Environments[i]
+	}
+	targetIDs := make([]string, 0)
+	for i := range nodes {
+		if nodes[i].Type == model.WorkflowNodeDeploy && nodes[i].Config.DeploymentTargetID != "" {
+			targetIDs = append(targetIDs, nodes[i].Config.DeploymentTargetID)
+		}
+	}
+	activeTargets := make(map[string]model.EnvironmentType, len(targetIDs))
+	if len(targetIDs) > 0 {
+		var targets []model.DeploymentTarget
+		if err := s.db.WithContext(ctx).Model(&model.DeploymentTarget{}).
+			Select("id", "environment").Where("id IN ? AND is_active = ?", targetIDs, true).Find(&targets).Error; err == nil {
+			for i := range targets {
+				activeTargets[targets[i].ID] = targets[i].Environment
+			}
+		}
 	}
 	for i := range nodes {
 		node := nodes[i]
@@ -348,7 +366,10 @@ func (s *Service) validateWorkflow(_ context.Context, application *model.Applica
 		case model.WorkflowNodeDeploy:
 			deployCount++
 			if _, ok := environments[node.Config.Environment]; !ok {
-				issues = append(issues, WorkflowIssue{Code: "invalid_environment", Message: "部署节点没有绑定已启用的环境", NodeID: node.ID})
+				issues = append(issues, WorkflowIssue{Code: "invalid_environment", Message: fmt.Sprintf("部署节点“%s”没有绑定已启用的流程阶段", node.Name), NodeID: node.ID})
+			}
+			if _, ok := activeTargets[node.Config.DeploymentTargetID]; !ok {
+				issues = append(issues, WorkflowIssue{Code: "missing_deployment_environment", Message: fmt.Sprintf("部署节点“%s”没有选择可用的发布环境", node.Name), NodeID: node.ID})
 			}
 		default:
 			issues = append(issues, WorkflowIssue{Code: "invalid_node_type", Message: "节点类型无效", NodeID: node.ID})
@@ -421,12 +442,12 @@ func (s *Service) validateWorkflow(_ context.Context, application *model.Applica
 		}
 	}
 	if application.ReleaseApprovalEnabled && visited == len(nodeByID) {
-		issues = append(issues, approvalPathIssues(nodeByID, outgoing)...)
+		issues = append(issues, approvalPathIssues(nodeByID, outgoing, activeTargets)...)
 	}
 	return uniqueIssues(issues)
 }
 
-func approvalPathIssues(nodes map[string]model.WorkflowNode, outgoing map[string][]string) []WorkflowIssue {
+func approvalPathIssues(nodes map[string]model.WorkflowNode, outgoing map[string][]string, targets map[string]model.EnvironmentType) []WorkflowIssue {
 	issues := make([]WorkflowIssue, 0)
 	type state struct {
 		id       string
@@ -448,7 +469,7 @@ func approvalPathIssues(nodes map[string]model.WorkflowNode, outgoing map[string
 		seen[current] = struct{}{}
 		node := nodes[current.id]
 		approved := current.approved || node.Type == model.WorkflowNodeApproval
-		if node.Type == model.WorkflowNodeDeploy && node.Config.Environment == "prod" && !approved {
+		if node.Type == model.WorkflowNodeDeploy && targets[node.Config.DeploymentTargetID] == model.EnvironmentProduction && !approved {
 			issues = append(issues, WorkflowIssue{Code: "approval_required", Message: "生产部署的每条路径都必须经过审核节点", NodeID: node.ID})
 		}
 		for _, target := range outgoing[current.id] {
@@ -504,9 +525,8 @@ func newWorkflowRun(application *model.Application, workflow *model.ReleaseWorkf
 		Stage: string(node.Type), Environment: node.Config.Environment,
 		WorkflowID: workflow.ID, WorkflowRevision: workflow.Revision,
 		CurrentNodeID: node.ID, WorkflowSnapshot: snapshot,
-		ApprovalRequired:  application.ReleaseApprovalEnabled,
-		RepositoryOrdered: application.RepositoryOrdered,
-		Message:           message, CreatedBy: actorID, CreatedAt: now, UpdatedAt: now,
+		ApprovalRequired: application.ReleaseApprovalEnabled,
+		Message:          message, CreatedBy: actorID, CreatedAt: now, UpdatedAt: now,
 	}, nil
 }
 
@@ -618,8 +638,7 @@ func (s *Service) runFromSource(application *model.Application, source model.Wor
 		ID: uuid.NewString(), ApplicationID: application.ID, Trigger: trigger,
 		Ref: ref, CommitSHA: commitSHA, Status: model.PipelineRunDetected,
 		Stage: "source", Environment: source.Config.Environment,
-		RepositoryOrdered: application.RepositoryOrdered,
-		Message:           message, CreatedBy: actorID, CreatedAt: now, UpdatedAt: now,
+		Message: message, CreatedBy: actorID, CreatedAt: now, UpdatedAt: now,
 	}, nil
 }
 
@@ -638,19 +657,70 @@ func (s *Service) DeleteRun(ctx context.Context, runID string) error {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
 				return ErrPipelineRunNotFound
 			}
-			return fmt.Errorf("读取发布计划失败: %w", err)
+			return fmt.Errorf("读取流水线运行失败: %w", err)
 		}
 		if err := tx.Where("pipeline_run_id = ?", run.ID).Delete(&model.PipelineRunApproval{}).Error; err != nil {
-			return fmt.Errorf("删除发布计划审核记录失败: %w", err)
+			return fmt.Errorf("删除流水线运行审核记录失败: %w", err)
 		}
 		if err := tx.Where("pipeline_run_id = ?", run.ID).Delete(&model.PipelineRunRepository{}).Error; err != nil {
-			return fmt.Errorf("删除发布计划仓库快照失败: %w", err)
+			return fmt.Errorf("删除流水线运行仓库快照失败: %w", err)
 		}
 		if err := tx.Delete(&run).Error; err != nil {
-			return fmt.Errorf("删除发布计划失败: %w", err)
+			return fmt.Errorf("删除流水线运行失败: %w", err)
 		}
 		return nil
 	})
+}
+
+// RetryRun 保留失败记录，并使用相同代码版本和应用当前有效配置创建一条新的可审计运行。
+func (s *Service) RetryRun(ctx context.Context, runID, actorID string) (*model.PipelineRun, error) {
+	var failed model.PipelineRun
+	if err := s.db.WithContext(ctx).First(&failed, "id = ?", runID).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, ErrPipelineRunNotFound
+		}
+		return nil, fmt.Errorf("读取待重新执行的流水线运行失败: %w", err)
+	}
+	if failed.Status != model.PipelineRunFailed {
+		return nil, ErrPipelineRunNotRetryable
+	}
+	if failed.Ref == "" || failed.CommitSHA == "" {
+		return nil, ErrManualCommitRequired
+	}
+	application, err := s.FindApplication(ctx, failed.ApplicationID)
+	if err != nil {
+		return nil, err
+	}
+	if !application.IsActive || !pipelineExecutionConfigured(application) {
+		return nil, fmt.Errorf("%w：%s", ErrPipelineIncomplete, pipelineExecutionIncompleteMessage(application))
+	}
+	if application.Workflow == nil || !application.Workflow.IsActive {
+		return nil, ErrWorkflowNotActive
+	}
+	source := retryWorkflowSource(application.Workflow, &failed)
+	if source == nil {
+		return nil, ErrInvalidWorkflow
+	}
+	now := time.Now().UTC()
+	run, err := newWorkflowRun(
+		application, application.Workflow, *source, "retry", failed.Ref, failed.CommitSHA,
+		actorID, "重新执行失败运行 "+failed.ID, now,
+	)
+	if err != nil {
+		return nil, err
+	}
+	run.RetryOfID = failed.ID
+	components := pipelineRunRepositories(application, run.ID, run.Ref, run.CommitSHA, now)
+	if err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Create(run).Error; err != nil {
+			return err
+		}
+		return tx.Create(&components).Error
+	}); err != nil {
+		return nil, fmt.Errorf("创建重新执行的流水线运行失败: %w", err)
+	}
+	run.Repositories = components
+	return s.AdvanceRun(ctx, run.ID, actorID, "")
 }
 
 func (s *Service) AdvanceRun(ctx context.Context, runID, actorID, targetNodeID string) (*model.PipelineRun, error) {
@@ -683,6 +753,12 @@ func (s *Service) AdvanceRun(ctx context.Context, runID, actorID, targetNodeID s
 			return nil, ErrWorkflowApprovalRequired
 		}
 	}
+	if current.Type == model.WorkflowNodeDeploy && run.Stage != "deploy_succeeded" {
+		if run.Status == model.PipelineRunRunning {
+			return nil, ErrPipelineExecutionRunning
+		}
+		return s.enqueueDeployExecution(ctx, &run, current)
+	}
 	targets := make([]string, 0)
 	for i := range snapshot.Edges {
 		if snapshot.Edges[i].Source == current.ID {
@@ -690,14 +766,14 @@ func (s *Service) AdvanceRun(ctx context.Context, runID, actorID, targetNodeID s
 		}
 	}
 	if len(targets) == 0 {
-		if current.Type != model.WorkflowNodeDeploy {
+		if current.Type != model.WorkflowNodeDeploy || run.Stage != "deploy_succeeded" {
 			return nil, ErrInvalidWorkflowTransition
 		}
 		now := time.Now().UTC()
 		if err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 			if err := tx.Model(&run).Updates(map[string]any{
 				"status": model.PipelineRunSucceeded, "stage": "completed",
-				"message": "发布计划已完成", "updated_at": now,
+				"message": "真实发布成功，流水线运行已完成", "updated_at": now,
 			}).Error; err != nil {
 				return err
 			}
@@ -706,7 +782,7 @@ func (s *Service) AdvanceRun(ctx context.Context, runID, actorID, targetNodeID s
 		}); err != nil {
 			return nil, err
 		}
-		run.Status, run.Stage, run.Message, run.UpdatedAt = model.PipelineRunSucceeded, "completed", "发布计划已完成", now
+		run.Status, run.Stage, run.Message, run.UpdatedAt = model.PipelineRunSucceeded, "completed", "真实发布成功，流水线运行已完成", now
 		return &run, nil
 	}
 	if targetNodeID == "" && len(targets) == 1 {
@@ -728,7 +804,8 @@ func (s *Service) AdvanceRun(ctx context.Context, runID, actorID, targetNodeID s
 		status, message = model.PipelineRunAwaitingApproval, "等待其他成员审核"
 	}
 	if target.Type == model.WorkflowNodeDeploy {
-		status, message = model.PipelineRunReady, "已到达部署节点，等待执行部署方案"
+		run.CurrentNodeID, run.Environment = target.ID, target.Config.Environment
+		return s.enqueueDeployExecution(ctx, &run, target)
 	}
 	now := time.Now().UTC()
 	updates := map[string]any{
@@ -742,6 +819,54 @@ func (s *Service) AdvanceRun(ctx context.Context, runID, actorID, targetNodeID s
 	run.Stage, run.Message, run.UpdatedAt = stage, message, now
 	_ = actorID
 	return &run, nil
+}
+
+func (s *Service) enqueueDeployExecution(ctx context.Context, run *model.PipelineRun, node model.WorkflowNode) (*model.PipelineRun, error) {
+	if node.Config.DeploymentTargetID == "" {
+		message := "部署节点“" + node.Name + "”没有配置发布环境，流水线没有执行"
+		if err := s.failExecution(ctx, run.ID, message, ErrPipelineExecutionConfig); err != nil && !errors.Is(err, ErrPipelineExecutionConfig) {
+			return nil, err
+		}
+		run.Status, run.Stage, run.Message = model.PipelineRunFailed, "failed", message
+		run.UpdatedAt = time.Now().UTC()
+		return run, nil
+	}
+	now := time.Now().UTC()
+	var jobID string
+	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		job, err := task.NewService(tx, 1).Create(ctx, task.CreateInput{
+			Kind: "pipeline.deploy", Subject: "zrt.task.pipeline.deploy",
+			Payload:        DeployTaskPayload{PipelineRunID: run.ID, WorkflowNodeID: node.ID},
+			IdempotencyKey: "pipeline:" + run.ID + ":deploy:" + node.ID,
+			MaxAttempts:    1, Idempotent: false,
+		})
+		if err != nil {
+			return err
+		}
+		jobID = job.ID
+		result := tx.Model(&model.PipelineRun{}).Where("id = ? AND status <> ?", run.ID, model.PipelineRunSucceeded).
+			Updates(map[string]any{
+				"current_node_id": node.ID, "environment": node.Config.Environment,
+				"status": model.PipelineRunRunning, "stage": "queued",
+				"execution_job_id": job.ID, "deployment_id": "", "image": "",
+				"message": "真实构建与发布任务已提交", "updated_at": now,
+			})
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected != 1 {
+			return ErrInvalidWorkflowTransition
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	run.CurrentNodeID, run.Environment = node.ID, node.Config.Environment
+	run.Status, run.Stage = model.PipelineRunRunning, "queued"
+	run.ExecutionJobID, run.DeploymentID, run.Image = jobID, "", ""
+	run.Message, run.UpdatedAt = "真实构建与发布任务已提交", now
+	return run, nil
 }
 
 func (s *Service) ApproveRun(ctx context.Context, runID, actorID string) (*model.PipelineRun, error) {

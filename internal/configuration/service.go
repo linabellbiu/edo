@@ -30,6 +30,7 @@ var keyPattern = regexp.MustCompile(`^[A-Z_][A-Z0-9_]{0,127}$`)
 const (
 	systemNamespace              = "zrt"
 	externalGitWebhookSettingKey = "EXTERNAL_GIT_WEBHOOK_ENABLED"
+	loginLockoutSettingKey       = "LOGIN_LOCKOUT_ENABLED"
 )
 
 type Input struct {
@@ -78,6 +79,16 @@ type RevisionView struct {
 type ExternalGitWebhookSettings struct {
 	Enabled bool `json:"enabled"`
 	Version int  `json:"version"`
+}
+
+type LoginLockoutSettings struct {
+	Enabled bool `json:"enabled"`
+	Version int  `json:"version"`
+}
+
+type systemBooleanSettings struct {
+	Enabled bool
+	Version int
 }
 
 type Service struct {
@@ -303,28 +314,8 @@ func (s *Service) ExternalGitWebhookEnabled(ctx context.Context) (bool, error) {
 }
 
 func (s *Service) GetExternalGitWebhookSettings(ctx context.Context) (ExternalGitWebhookSettings, error) {
-	var item model.Configuration
-	err := s.db.WithContext(ctx).Where(
-		"namespace = ? AND environment = ? AND key = ?",
-		systemNamespace, model.EnvironmentGlobal, externalGitWebhookSettingKey,
-	).First(&item).Error
-	if errors.Is(err, gorm.ErrRecordNotFound) {
-		return ExternalGitWebhookSettings{}, nil
-	}
-	if err != nil {
-		return ExternalGitWebhookSettings{}, fmt.Errorf("读取外部 Git Webhook 设置失败: %w", err)
-	}
-	if !item.IsActive {
-		return ExternalGitWebhookSettings{Version: item.Version}, nil
-	}
-	if item.IsSecret || item.SecretCiphertext != "" {
-		return ExternalGitWebhookSettings{}, ErrInvalidConfiguration
-	}
-	enabled, err := strconv.ParseBool(strings.TrimSpace(item.Value))
-	if err != nil {
-		return ExternalGitWebhookSettings{}, ErrInvalidConfiguration
-	}
-	return ExternalGitWebhookSettings{Enabled: enabled, Version: item.Version}, nil
+	settings, err := s.getSystemBooleanSettings(ctx, externalGitWebhookSettingKey, "外部 Git Webhook")
+	return ExternalGitWebhookSettings(settings), err
 }
 
 func (s *Service) UpdateExternalGitWebhookSettings(
@@ -333,8 +324,67 @@ func (s *Service) UpdateExternalGitWebhookSettings(
 	enabled bool,
 	expectedVersion int,
 ) (ExternalGitWebhookSettings, error) {
+	settings, err := s.updateSystemBooleanSettings(ctx, actorID, externalGitWebhookSettingKey, "外部 Git Webhook", enabled, expectedVersion)
+	return ExternalGitWebhookSettings(settings), err
+}
+
+// LoginLockoutEnabled 供登录入口读取动态开关；配置缺失时默认关闭。
+func (s *Service) LoginLockoutEnabled(ctx context.Context) (bool, error) {
+	settings, err := s.GetLoginLockoutSettings(ctx)
+	if err != nil {
+		return false, err
+	}
+	return settings.Enabled, nil
+}
+
+func (s *Service) GetLoginLockoutSettings(ctx context.Context) (LoginLockoutSettings, error) {
+	settings, err := s.getSystemBooleanSettings(ctx, loginLockoutSettingKey, "登录锁定")
+	return LoginLockoutSettings(settings), err
+}
+
+func (s *Service) UpdateLoginLockoutSettings(
+	ctx context.Context,
+	actorID string,
+	enabled bool,
+	expectedVersion int,
+) (LoginLockoutSettings, error) {
+	settings, err := s.updateSystemBooleanSettings(ctx, actorID, loginLockoutSettingKey, "登录锁定", enabled, expectedVersion)
+	return LoginLockoutSettings(settings), err
+}
+
+func (s *Service) getSystemBooleanSettings(ctx context.Context, key, label string) (systemBooleanSettings, error) {
+	var item model.Configuration
+	err := s.db.WithContext(ctx).Where(
+		"namespace = ? AND environment = ? AND key = ?",
+		systemNamespace, model.EnvironmentGlobal, key,
+	).First(&item).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return systemBooleanSettings{}, nil
+	}
+	if err != nil {
+		return systemBooleanSettings{}, fmt.Errorf("读取%s设置失败: %w", label, err)
+	}
+	if !item.IsActive {
+		return systemBooleanSettings{Version: item.Version}, nil
+	}
+	if item.IsSecret || item.SecretCiphertext != "" {
+		return systemBooleanSettings{}, ErrInvalidConfiguration
+	}
+	enabled, err := strconv.ParseBool(strings.TrimSpace(item.Value))
+	if err != nil {
+		return systemBooleanSettings{}, ErrInvalidConfiguration
+	}
+	return systemBooleanSettings{Enabled: enabled, Version: item.Version}, nil
+}
+
+func (s *Service) updateSystemBooleanSettings(
+	ctx context.Context,
+	actorID, key, label string,
+	enabled bool,
+	expectedVersion int,
+) (systemBooleanSettings, error) {
 	if expectedVersion < 0 {
-		return ExternalGitWebhookSettings{}, ErrInvalidConfiguration
+		return systemBooleanSettings{}, ErrInvalidConfiguration
 	}
 	value := strconv.FormatBool(enabled)
 	var updated model.Configuration
@@ -342,7 +392,7 @@ func (s *Service) UpdateExternalGitWebhookSettings(
 		var current model.Configuration
 		err := tx.Where(
 			"namespace = ? AND environment = ? AND key = ?",
-			systemNamespace, model.EnvironmentGlobal, externalGitWebhookSettingKey,
+			systemNamespace, model.EnvironmentGlobal, key,
 		).First(&current).Error
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			if expectedVersion != 0 {
@@ -351,7 +401,7 @@ func (s *Service) UpdateExternalGitWebhookSettings(
 			now := time.Now().UTC()
 			current = model.Configuration{
 				ID: uuid.NewString(), Namespace: systemNamespace, Environment: model.EnvironmentGlobal,
-				Key: externalGitWebhookSettingKey, Value: value, Version: 1, IsActive: true,
+				Key: key, Value: value, Version: 1, IsActive: true,
 				CreatedBy: actorID, UpdatedBy: actorID, CreatedAt: now, UpdatedAt: now,
 			}
 			if err := tx.Create(&current).Error; err != nil {
@@ -396,11 +446,11 @@ func (s *Service) UpdateExternalGitWebhookSettings(
 	})
 	if err != nil {
 		if errors.Is(err, ErrVersionConflict) || errors.Is(err, ErrInvalidConfiguration) {
-			return ExternalGitWebhookSettings{}, err
+			return systemBooleanSettings{}, err
 		}
-		return ExternalGitWebhookSettings{}, fmt.Errorf("更新外部 Git Webhook 设置失败: %w", err)
+		return systemBooleanSettings{}, fmt.Errorf("更新%s设置失败: %w", label, err)
 	}
-	return ExternalGitWebhookSettings{Enabled: enabled, Version: updated.Version}, nil
+	return systemBooleanSettings{Enabled: enabled, Version: updated.Version}, nil
 }
 
 func normalizeInput(input Input) (Input, error) {

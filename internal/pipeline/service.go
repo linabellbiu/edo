@@ -5,10 +5,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/url"
 	"path"
 	"regexp"
-	"sort"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -22,6 +22,8 @@ import (
 	registryreference "github.com/regclient/regclient/types/ref"
 	"gorm.io/gorm"
 
+	"zrt/internal/deployment"
+	"zrt/internal/dockerengine"
 	"zrt/internal/model"
 	"zrt/internal/repository"
 	"zrt/internal/secret"
@@ -44,8 +46,8 @@ var (
 	ErrRegistryLoginFailed      = errors.New("镜像仓库登录失败，请检查用户名和密码或 Token")
 	ErrRegistryConnectionFailed = errors.New("无法连接镜像仓库，请检查地址和网络")
 	ErrRegistryExists           = errors.New("镜像仓库名称已存在")
-	ErrInvalidReleasePlan       = errors.New("部署方案配置无效")
-	ErrReleasePlanExists        = errors.New("部署方案名称已存在")
+	ErrInvalidDeploymentPlan    = errors.New("部署方案配置无效")
+	ErrDeploymentPlanExists     = errors.New("部署方案名称已存在")
 	ErrWorkflowTemplateNotFound = errors.New("流水线方案不存在或未启用")
 	ErrPipelineIncomplete       = errors.New("应用尚未绑定完整的构建与发布流程")
 )
@@ -68,18 +70,12 @@ type ApplicationInput struct {
 	TagPattern             string
 	BuildPlanID            string
 	ImageRegistryID        string
-	ReleasePlanID          string
+	ImageRegistrySet       bool
+	DeploymentPlanID       string
 	DeploymentTargetID     string
 	WorkflowTemplateID     string
 	ReleaseApprovalEnabled bool
 	Environments           []EnvironmentInput
-	RepositoryOrdered      bool
-	Repositories           []ApplicationRepositoryInput
-}
-
-type ApplicationRepositoryInput struct {
-	RepositoryID string
-	SortOrder    int
 }
 
 type EnvironmentInput struct {
@@ -91,7 +87,7 @@ type EnvironmentInput struct {
 	WatchPullRequest   bool
 	WatchTags          bool
 	TagPattern         string
-	ReleasePlanID      string
+	DeploymentPlanID   string
 	DeploymentTargetID string
 	SortOrder          int
 }
@@ -117,9 +113,9 @@ type RegistryInput struct {
 	AllowInsecureHTTP bool
 }
 
-type ReleasePlanInput struct {
+type DeploymentPlanInput struct {
 	Name           string
-	Kind           model.ReleasePlanKind
+	Kind           model.DeploymentPlanKind
 	Description    string
 	Script         string
 	HelmChart      string
@@ -133,24 +129,34 @@ type Service struct {
 	db           *gorm.DB
 	repositories *repository.Service
 	secrets      *secret.Manager
+	docker       *dockerengine.Service
+	deployments  *deployment.Service
+	logger       *slog.Logger
 }
 
 func NewService(db *gorm.DB, repositories *repository.Service, secrets *secret.Manager) *Service {
-	return &Service{db: db, repositories: repositories, secrets: secrets}
+	return &Service{db: db, repositories: repositories, secrets: secrets, logger: slog.Default()}
+}
+
+func (s *Service) ConfigureExecution(docker *dockerengine.Service, deployments *deployment.Service, logger *slog.Logger) {
+	s.docker, s.deployments = docker, deployments
+	if logger != nil {
+		s.logger = logger
+	}
 }
 
 func (s *Service) ListApplications(ctx context.Context) ([]model.Application, error) {
 	var applications []model.Application
 	err := s.db.WithContext(ctx).
 		Preload("Repository").Preload("BuildPlan").Preload("ImageRegistry").
-		Preload("ReleasePlan").Preload("DeploymentTarget").
+		Preload("DeploymentPlan").Preload("DeploymentTarget").
 		Preload("WorkflowTemplate").
 		Preload("Environments", func(db *gorm.DB) *gorm.DB { return db.Order("sort_order ASC") }).
-		Preload("Environments.ReleasePlan").Preload("Environments.DeploymentTarget").
+		Preload("Environments.DeploymentPlan").Preload("Environments.DeploymentTarget").
 		Preload("Workflow").
 		Preload("Repositories", func(db *gorm.DB) *gorm.DB { return db.Order("sort_order ASC") }).
 		Preload("Repositories.Observations").
-		Preload("Repositories.Repository").Preload("Repositories.Repository.BuildPlan").Preload("Repositories.Repository.ReleasePlan").
+		Preload("Repositories.Repository").
 		Order("name ASC").Find(&applications).Error
 	if err != nil {
 		return nil, fmt.Errorf("查询应用失败: %w", err)
@@ -162,14 +168,14 @@ func (s *Service) FindApplication(ctx context.Context, id string) (*model.Applic
 	var application model.Application
 	err := s.db.WithContext(ctx).
 		Preload("Repository").Preload("BuildPlan").Preload("ImageRegistry").
-		Preload("ReleasePlan").Preload("DeploymentTarget").
+		Preload("DeploymentPlan").Preload("DeploymentTarget").
 		Preload("WorkflowTemplate").
 		Preload("Environments", func(db *gorm.DB) *gorm.DB { return db.Order("sort_order ASC") }).
-		Preload("Environments.ReleasePlan").Preload("Environments.DeploymentTarget").
+		Preload("Environments.DeploymentPlan").Preload("Environments.DeploymentTarget").
 		Preload("Workflow").
 		Preload("Repositories", func(db *gorm.DB) *gorm.DB { return db.Order("sort_order ASC") }).
 		Preload("Repositories.Observations").
-		Preload("Repositories.Repository").Preload("Repositories.Repository.BuildPlan").Preload("Repositories.Repository.ReleasePlan").
+		Preload("Repositories.Repository").
 		First(&application, "id = ?", id).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return nil, ErrApplicationNotFound
@@ -193,15 +199,14 @@ func (s *Service) CreateApplication(ctx context.Context, actorID string, input A
 		WatchPush: input.WatchPush, WatchPullRequest: input.WatchPullRequest,
 		WatchTags: input.WatchTags, TagPattern: input.TagPattern,
 		BuildPlanID: input.BuildPlanID, ImageRegistryID: input.ImageRegistryID,
-		ReleasePlanID: input.ReleasePlanID, DeploymentTargetID: input.DeploymentTargetID,
+		DeploymentPlanID: input.DeploymentPlanID, DeploymentTargetID: input.DeploymentTargetID,
 		WorkflowTemplateID:     input.WorkflowTemplateID,
 		ReleaseApprovalEnabled: input.ReleaseApprovalEnabled,
-		RepositoryOrdered:      input.RepositoryOrdered,
 		SyncStatus:             model.ApplicationSyncIdle, IsActive: true,
 		CreatedBy: actorID, CreatedAt: now, UpdatedAt: now,
 	}
 	environments := buildEnvironmentModels(application.ID, input.Environments, now)
-	repositories := buildApplicationRepositoryModels(application.ID, input.Repositories, now)
+	repositoryLink := buildApplicationRepositoryModel(application.ID, input.RepositoryID, now)
 	application.Environments = environments
 	workflow, err := s.newApplicationWorkflow(ctx, application, actorID, now)
 	if err != nil {
@@ -215,7 +220,7 @@ func (s *Service) CreateApplication(ctx context.Context, actorID string, input A
 		if err := tx.Create(&environments).Error; err != nil {
 			return err
 		}
-		if err := tx.Create(&repositories).Error; err != nil {
+		if err := tx.Create(&repositoryLink).Error; err != nil {
 			return err
 		}
 		return tx.Create(workflow).Error
@@ -232,6 +237,19 @@ func (s *Service) UpdateApplication(ctx context.Context, id string, input Applic
 	existing, err := s.FindApplication(ctx, id)
 	if err != nil {
 		return nil, err
+	}
+	// 旧版更新请求不会回传应用级方案。保留已有绑定，避免只改说明时意外清空可执行配置。
+	if strings.TrimSpace(input.BuildPlanID) == "" {
+		input.BuildPlanID = existing.BuildPlanID
+	}
+	if !input.ImageRegistrySet && strings.TrimSpace(input.ImageRegistryID) == "" {
+		input.ImageRegistryID = existing.ImageRegistryID
+	}
+	if strings.TrimSpace(input.DeploymentPlanID) == "" {
+		input.DeploymentPlanID = existing.DeploymentPlanID
+	}
+	if strings.TrimSpace(input.DeploymentTargetID) == "" {
+		input.DeploymentTargetID = existing.DeploymentTargetID
 	}
 	requestedTemplateID := strings.TrimSpace(input.WorkflowTemplateID)
 	reuseTemplateSnapshot := existing.WorkflowTemplateID != "" && (requestedTemplateID == "" || requestedTemplateID == existing.WorkflowTemplateID)
@@ -252,11 +270,10 @@ func (s *Service) UpdateApplication(ctx context.Context, id string, input Applic
 		"poll_interval_seconds": input.PollIntervalSeconds, "watch_push": input.WatchPush,
 		"watch_pull_request": input.WatchPullRequest, "watch_tags": input.WatchTags,
 		"tag_pattern": input.TagPattern, "build_plan_id": input.BuildPlanID,
-		"image_registry_id": input.ImageRegistryID, "release_plan_id": input.ReleasePlanID,
+		"image_registry_id": input.ImageRegistryID, "release_plan_id": input.DeploymentPlanID,
 		"deployment_target_id":     input.DeploymentTargetID,
 		"workflow_template_id":     input.WorkflowTemplateID,
 		"release_approval_enabled": input.ReleaseApprovalEnabled, "updated_at": time.Now().UTC(),
-		"repository_ordered": input.RepositoryOrdered,
 	}
 	if existing.RepositoryID != input.RepositoryID || existing.Branch != input.Branch {
 		updates["last_observed_ref"] = ""
@@ -278,13 +295,13 @@ func (s *Service) UpdateApplication(ctx context.Context, id string, input Applic
 		}
 	}
 	if err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		if err := tx.Model(existing).Updates(updates).Error; err != nil {
+		if err := tx.Model(&model.Application{}).Where("id = ?", existing.ID).Updates(updates).Error; err != nil {
 			return err
 		}
 		if err := saveApplicationEnvironments(tx, existing, input.Environments, time.Now().UTC()); err != nil {
 			return err
 		}
-		if err := saveApplicationRepositories(tx, existing, input.Repositories, time.Now().UTC()); err != nil {
+		if err := saveApplicationRepository(tx, existing, input.RepositoryID, time.Now().UTC()); err != nil {
 			return err
 		}
 		if replacementWorkflow != nil {
@@ -327,36 +344,16 @@ func (s *Service) normalizeApplication(ctx context.Context, input ApplicationInp
 	input.TagPattern = strings.TrimSpace(input.TagPattern)
 	input.BuildPlanID = strings.TrimSpace(input.BuildPlanID)
 	input.ImageRegistryID = strings.TrimSpace(input.ImageRegistryID)
-	input.ReleasePlanID = strings.TrimSpace(input.ReleasePlanID)
+	input.DeploymentPlanID = strings.TrimSpace(input.DeploymentPlanID)
 	input.DeploymentTargetID = strings.TrimSpace(input.DeploymentTargetID)
 	input.WorkflowTemplateID = strings.TrimSpace(input.WorkflowTemplateID)
-	if len(input.Repositories) == 0 && input.RepositoryID != "" {
-		input.Repositories = []ApplicationRepositoryInput{{RepositoryID: input.RepositoryID}}
-	}
-	if len(input.Repositories) == 0 || len(input.Repositories) > 50 {
+	if input.RepositoryID == "" {
 		return input, ErrInvalidApplication
 	}
-	for i := range input.Repositories {
-		input.Repositories[i].RepositoryID = strings.TrimSpace(input.Repositories[i].RepositoryID)
+	var activeRepository model.GitRepository
+	if err := s.db.WithContext(ctx).First(&activeRepository, "id = ? AND is_active = ?", input.RepositoryID, true).Error; err != nil {
+		return input, ErrInvalidApplication
 	}
-	sort.SliceStable(input.Repositories, func(i, j int) bool { return input.Repositories[i].SortOrder < input.Repositories[j].SortOrder })
-	seenRepositories := make(map[string]struct{}, len(input.Repositories))
-	for i := range input.Repositories {
-		item := &input.Repositories[i]
-		if item.RepositoryID == "" {
-			return input, ErrInvalidApplication
-		}
-		if _, exists := seenRepositories[item.RepositoryID]; exists {
-			return input, ErrInvalidApplication
-		}
-		seenRepositories[item.RepositoryID] = struct{}{}
-		item.SortOrder = i
-		var repository model.GitRepository
-		if err := s.db.WithContext(ctx).First(&repository, "id = ? AND is_active = ?", item.RepositoryID, true).Error; err != nil {
-			return input, ErrInvalidApplication
-		}
-	}
-	input.RepositoryID = input.Repositories[0].RepositoryID
 	if input.WorkflowTemplateID != "" {
 		var template model.ReleaseWorkflowTemplate
 		if err := s.db.WithContext(ctx).First(&template, "id = ? AND is_active = ?", input.WorkflowTemplateID, true).Error; err != nil {
@@ -370,7 +367,7 @@ func (s *Service) normalizeApplication(ctx context.Context, input ApplicationInp
 			Key: "dev", Name: "开发环境", Branch: input.Branch,
 			PollEnabled: input.PollEnabled, WatchPush: input.WatchPush,
 			WatchPullRequest: input.WatchPullRequest, WatchTags: input.WatchTags,
-			TagPattern: input.TagPattern, ReleasePlanID: input.ReleasePlanID,
+			TagPattern: input.TagPattern, DeploymentPlanID: input.DeploymentPlanID,
 			DeploymentTargetID: input.DeploymentTargetID,
 		}}
 	}
@@ -405,7 +402,7 @@ func (s *Service) normalizeApplication(ctx context.Context, input ApplicationInp
 	}{
 		{input.BuildPlanID, &model.BuildPlan{}},
 		{input.ImageRegistryID, &model.ImageRegistry{}},
-		{input.ReleasePlanID, &model.ReleasePlan{}},
+		{input.DeploymentPlanID, &model.DeploymentPlan{}},
 		{input.DeploymentTargetID, &model.DeploymentTarget{}},
 	}
 	for _, check := range checks {
@@ -425,7 +422,8 @@ func (s *Service) normalizeApplication(ctx context.Context, input ApplicationInp
 		environment.Name = strings.TrimSpace(environment.Name)
 		environment.Branch = strings.TrimSpace(environment.Branch)
 		environment.TagPattern = strings.TrimSpace(environment.TagPattern)
-		environment.ReleasePlanID = strings.TrimSpace(environment.ReleasePlanID)
+		// 部署方案属于应用。环境表继续保留旧字段用于无损迁移，但不能形成第二套配置来源。
+		environment.DeploymentPlanID = input.DeploymentPlanID
 		environment.DeploymentTargetID = strings.TrimSpace(environment.DeploymentTargetID)
 		if _, exists := seenEnvironments[environment.Key]; exists || !validEnvironmentKey(environment.Key) {
 			return input, ErrInvalidApplication
@@ -455,7 +453,7 @@ func (s *Service) normalizeApplication(ctx context.Context, input ApplicationInp
 		for _, check := range []struct {
 			id    string
 			model any
-		}{{environment.ReleasePlanID, &model.ReleasePlan{}}, {environment.DeploymentTargetID, &model.DeploymentTarget{}}} {
+		}{{environment.DeploymentPlanID, &model.DeploymentPlan{}}, {environment.DeploymentTargetID, &model.DeploymentTarget{}}} {
 			if check.id == "" {
 				continue
 			}
@@ -475,9 +473,6 @@ func (s *Service) normalizeApplication(ctx context.Context, input ApplicationInp
 	input.Branch, input.PollEnabled = primary.Branch, primary.PollEnabled
 	input.WatchPush, input.WatchPullRequest = primary.WatchPush, primary.WatchPullRequest
 	input.WatchTags, input.TagPattern = primary.WatchTags, primary.TagPattern
-	if input.ReleasePlanID == "" {
-		input.ReleasePlanID = primary.ReleasePlanID
-	}
 	if input.DeploymentTargetID == "" {
 		input.DeploymentTargetID = primary.DeploymentTargetID
 	}
@@ -492,65 +487,29 @@ func buildEnvironmentModels(applicationID string, inputs []EnvironmentInput, now
 			Name: inputs[i].Name, Branch: inputs[i].Branch, PollEnabled: inputs[i].PollEnabled,
 			WatchPush: inputs[i].WatchPush, WatchPullRequest: inputs[i].WatchPullRequest,
 			WatchTags: inputs[i].WatchTags, TagPattern: inputs[i].TagPattern,
-			ReleasePlanID: inputs[i].ReleasePlanID, DeploymentTargetID: inputs[i].DeploymentTargetID,
+			DeploymentPlanID: inputs[i].DeploymentPlanID, DeploymentTargetID: inputs[i].DeploymentTargetID,
 			SortOrder: i, CreatedAt: now, UpdatedAt: now,
 		})
 	}
 	return result
 }
 
-func buildApplicationRepositoryModels(applicationID string, inputs []ApplicationRepositoryInput, now time.Time) []model.ApplicationRepository {
-	result := make([]model.ApplicationRepository, 0, len(inputs))
-	for i := range inputs {
-		result = append(result, model.ApplicationRepository{
-			ID: uuid.NewString(), ApplicationID: applicationID, RepositoryID: inputs[i].RepositoryID,
-			SortOrder: i, CreatedAt: now, UpdatedAt: now,
-		})
+func buildApplicationRepositoryModel(applicationID, repositoryID string, now time.Time) model.ApplicationRepository {
+	return model.ApplicationRepository{
+		ID: uuid.NewString(), ApplicationID: applicationID, RepositoryID: repositoryID,
+		SortOrder: 0, CreatedAt: now, UpdatedAt: now,
 	}
-	return result
 }
 
-func saveApplicationRepositories(tx *gorm.DB, application *model.Application, inputs []ApplicationRepositoryInput, now time.Time) error {
-	existingByRepository := make(map[string]model.ApplicationRepository, len(application.Repositories))
+func saveApplicationRepository(tx *gorm.DB, application *model.Application, repositoryID string, now time.Time) error {
 	for i := range application.Repositories {
-		existingByRepository[application.Repositories[i].RepositoryID] = application.Repositories[i]
-	}
-	repositories := buildApplicationRepositoryModels(application.ID, inputs, now)
-	kept := make(map[string]struct{}, len(repositories))
-	for i := range repositories {
-		kept[repositories[i].RepositoryID] = struct{}{}
-		if existing, ok := existingByRepository[repositories[i].RepositoryID]; ok {
-			repositories[i].ID = existing.ID
-			repositories[i].CreatedAt = existing.CreatedAt
-			repositories[i].LastObservedRef = existing.LastObservedRef
-			repositories[i].LastObservedCommit = existing.LastObservedCommit
-			repositories[i].LastCheckedAt = existing.LastCheckedAt
+		if application.Repositories[i].RepositoryID == repositoryID {
+			return tx.Model(&model.ApplicationRepository{}).Where("id = ?", application.Repositories[i].ID).
+				Updates(map[string]any{"sort_order": 0, "updated_at": now}).Error
 		}
 	}
-	for repositoryID, existing := range existingByRepository {
-		if _, ok := kept[repositoryID]; ok {
-			continue
-		}
-		if err := tx.Where("application_repository_id = ?", existing.ID).Delete(&model.ApplicationRepositoryObservation{}).Error; err != nil {
-			return err
-		}
-		if err := tx.Delete(&existing).Error; err != nil {
-			return err
-		}
-	}
-	for i := range repositories {
-		if _, exists := existingByRepository[repositories[i].RepositoryID]; exists {
-			if err := tx.Model(&model.ApplicationRepository{}).Where("id = ?", repositories[i].ID).
-				Updates(map[string]any{"sort_order": repositories[i].SortOrder, "updated_at": now}).Error; err != nil {
-				return err
-			}
-			continue
-		}
-		if err := tx.Create(&repositories[i]).Error; err != nil {
-			return err
-		}
-	}
-	return nil
+	repository := buildApplicationRepositoryModel(application.ID, repositoryID, now)
+	return tx.Create(&repository).Error
 }
 
 func environmentModelInputs(environments []model.ApplicationEnvironment) []EnvironmentInput {
@@ -560,7 +519,7 @@ func environmentModelInputs(environments []model.ApplicationEnvironment) []Envir
 			Key: environments[i].Key, Name: environments[i].Name, Branch: environments[i].Branch,
 			PollEnabled: environments[i].PollEnabled, WatchPush: environments[i].WatchPush,
 			WatchPullRequest: environments[i].WatchPullRequest, WatchTags: environments[i].WatchTags,
-			TagPattern: environments[i].TagPattern, ReleasePlanID: environments[i].ReleasePlanID,
+			TagPattern: environments[i].TagPattern, DeploymentPlanID: environments[i].DeploymentPlanID,
 			DeploymentTargetID: environments[i].DeploymentTargetID, SortOrder: environments[i].SortOrder,
 		})
 	}
@@ -624,7 +583,7 @@ func workflowInputsChanged(existing *model.Application, input ApplicationInput) 
 		if found == nil || found.Branch != current.Branch || found.PollEnabled != current.PollEnabled ||
 			found.WatchPush != current.WatchPush || found.WatchPullRequest != current.WatchPullRequest ||
 			found.WatchTags != current.WatchTags || found.TagPattern != current.TagPattern ||
-			found.ReleasePlanID != current.ReleasePlanID || found.DeploymentTargetID != current.DeploymentTargetID {
+			found.DeploymentPlanID != current.DeploymentPlanID || found.DeploymentTargetID != current.DeploymentTargetID {
 			return true
 		}
 	}
@@ -778,31 +737,31 @@ func normalizeRegistryInput(input RegistryInput) (RegistryInput, *url.URL, error
 	return input, parsed, nil
 }
 
-func (s *Service) ListReleasePlans(ctx context.Context) ([]model.ReleasePlan, error) {
-	var plans []model.ReleasePlan
+func (s *Service) ListDeploymentPlans(ctx context.Context) ([]model.DeploymentPlan, error) {
+	var plans []model.DeploymentPlan
 	if err := s.db.WithContext(ctx).Order("name ASC").Find(&plans).Error; err != nil {
 		return nil, fmt.Errorf("查询部署方案失败: %w", err)
 	}
 	return plans, nil
 }
 
-func (s *Service) CreateReleasePlan(ctx context.Context, actorID string, input ReleasePlanInput) (*model.ReleasePlan, error) {
+func (s *Service) CreateDeploymentPlan(ctx context.Context, actorID string, input DeploymentPlanInput) (*model.DeploymentPlan, error) {
 	input.Name, input.Description = strings.TrimSpace(input.Name), strings.TrimSpace(input.Description)
 	input.Script, input.HelmChart = strings.TrimSpace(input.Script), strings.TrimSpace(input.HelmChart)
 	input.ComposeFile, input.ServiceName = strings.TrimSpace(input.ComposeFile), strings.TrimSpace(input.ServiceName)
 	if input.TimeoutSeconds == 0 {
 		input.TimeoutSeconds = 600
 	}
-	validKind := (input.Kind == model.ReleasePlanScript && input.Script != "") ||
-		(input.Kind == model.ReleasePlanHelm && input.HelmChart != "") ||
-		(input.Kind == model.ReleasePlanCompose && input.ComposeFile != "") ||
-		(input.Kind == model.ReleasePlanDocker && input.ServiceName != "")
+	validKind := (input.Kind == model.DeploymentPlanScript && input.Script != "") ||
+		(input.Kind == model.DeploymentPlanHelm && input.HelmChart != "") ||
+		(input.Kind == model.DeploymentPlanCompose && input.ComposeFile != "") ||
+		(input.Kind == model.DeploymentPlanDocker && input.ServiceName != "")
 	if !validResourceName(input.Name) || !validKind || input.TimeoutSeconds < 30 || input.TimeoutSeconds > 3600 ||
 		len(input.Script) > 256*1024 || len(input.HelmValues) > 512*1024 || utf8.RuneCountInString(input.Description) > 500 {
-		return nil, ErrInvalidReleasePlan
+		return nil, ErrInvalidDeploymentPlan
 	}
 	now := time.Now().UTC()
-	plan := &model.ReleasePlan{
+	plan := &model.DeploymentPlan{
 		ID: uuid.NewString(), Name: input.Name, Kind: input.Kind, Description: input.Description,
 		Script: input.Script, HelmChart: input.HelmChart, HelmValues: input.HelmValues,
 		ComposeFile: input.ComposeFile, ServiceName: input.ServiceName, TimeoutSeconds: input.TimeoutSeconds,
@@ -810,7 +769,7 @@ func (s *Service) CreateReleasePlan(ctx context.Context, actorID string, input R
 	}
 	if err := s.db.WithContext(ctx).Create(plan).Error; err != nil {
 		if errors.Is(err, gorm.ErrDuplicatedKey) {
-			return nil, ErrReleasePlanExists
+			return nil, ErrDeploymentPlanExists
 		}
 		return nil, fmt.Errorf("创建部署方案失败: %w", err)
 	}
@@ -825,9 +784,9 @@ func (s *Service) ListRuns(ctx context.Context, limit int) ([]model.PipelineRun,
 	if err := s.db.WithContext(ctx).
 		Preload("Application").Preload("Application.WorkflowTemplate").
 		Preload("Repositories", func(db *gorm.DB) *gorm.DB { return db.Order("sort_order ASC") }).
-		Preload("Repositories.Repository").Preload("Repositories.BuildPlan").Preload("Repositories.ReleasePlan").
+		Preload("Repositories.Repository").Preload("Repositories.BuildPlan").Preload("Repositories.DeploymentPlan").
 		Order("created_at DESC").Limit(limit).Find(&runs).Error; err != nil {
-		return nil, fmt.Errorf("查询发布计划失败: %w", err)
+		return nil, fmt.Errorf("查询流水线运行失败: %w", err)
 	}
 	for i := range runs {
 		if runs[i].WorkflowSnapshot == "" {
@@ -846,6 +805,9 @@ func (s *Service) PrepareRun(ctx context.Context, applicationID, actorID string)
 	if err != nil {
 		return nil, err
 	}
+	if !pipelineExecutionConfigured(application) {
+		return s.createBlockedRun(ctx, application, actorID, pipelineExecutionIncompleteMessage(application))
+	}
 	if application.Workflow != nil && application.Workflow.IsActive {
 		var source *model.WorkflowNode
 		manualSource := false
@@ -862,7 +824,7 @@ func (s *Service) PrepareRun(ctx context.Context, applicationID, actorID string)
 		if source == nil {
 			return s.createBlockedRun(ctx, application, actorID, "应用流水线缺少代码触发或手动发布节点，请修正并重新启用流水线")
 		}
-		if manualSource || len(applicationRepositoryLinks(application)) > 1 {
+		if manualSource {
 			return s.createManualSelectionRun(ctx, application, actorID)
 		}
 		if application.LastObservedCommit == "" {
@@ -871,7 +833,7 @@ func (s *Service) PrepareRun(ctx context.Context, applicationID, actorID string)
 		now := time.Now().UTC()
 		run, err := newWorkflowRun(
 			application, application.Workflow, *source, "manual", application.LastObservedRef,
-			application.LastObservedCommit, actorID, "发布计划已启动", now,
+			application.LastObservedCommit, actorID, "流水线运行已启动", now,
 		)
 		if err != nil {
 			return nil, err
@@ -884,7 +846,7 @@ func (s *Service) PrepareRun(ctx context.Context, applicationID, actorID string)
 			}
 			return tx.Create(&component).Error
 		}); err != nil {
-			return nil, fmt.Errorf("创建发布计划失败: %w", err)
+			return nil, fmt.Errorf("创建流水线运行失败: %w", err)
 		}
 		run.Repositories = []model.PipelineRunRepository{component}
 		return run, nil
@@ -898,14 +860,9 @@ func (s *Service) PrepareRun(ctx context.Context, applicationID, actorID string)
 		ID: uuid.NewString(), ApplicationID: application.ID, Trigger: "manual",
 		Ref: application.LastObservedRef, CommitSHA: application.LastObservedCommit,
 		Status: status, Stage: "configured", Message: message, CreatedBy: actorID,
-		RepositoryOrdered: application.RepositoryOrdered,
-		CreatedAt:         now, UpdatedAt: now,
+		CreatedAt: now, UpdatedAt: now,
 	}
-	selections := make([]ManualCommitSelection, 0)
-	if application.LastObservedCommit != "" {
-		selections = append(selections, ManualCommitSelection{RepositoryID: application.RepositoryID, Ref: application.LastObservedRef, CommitSHA: application.LastObservedCommit})
-	}
-	components := pipelineRunRepositories(application, run.ID, selections, now)
+	components := pipelineRunRepositories(application, run.ID, application.LastObservedRef, application.LastObservedCommit, now)
 	for i := range components {
 		if components[i].CommitSHA == "" {
 			components[i].Status = model.PipelineRunRepositoryPending
@@ -917,7 +874,7 @@ func (s *Service) PrepareRun(ctx context.Context, applicationID, actorID string)
 		}
 		return tx.Create(&components).Error
 	}); err != nil {
-		return nil, fmt.Errorf("创建发布计划失败: %w", err)
+		return nil, fmt.Errorf("创建流水线运行失败: %w", err)
 	}
 	run.Repositories = components
 	if status == model.PipelineRunBlocked {
@@ -944,10 +901,9 @@ func (s *Service) createPendingRun(ctx context.Context, application *model.Appli
 		ID: uuid.NewString(), ApplicationID: application.ID, Trigger: "manual",
 		Ref: "", CommitSHA: "",
 		Status: model.PipelineRunBlocked, Stage: "configured", Message: message,
-		RepositoryOrdered: application.RepositoryOrdered,
-		CreatedBy:         actorID, CreatedAt: now, UpdatedAt: now,
+		CreatedBy: actorID, CreatedAt: now, UpdatedAt: now,
 	}
-	components := pipelineRunRepositories(application, run.ID, nil, now)
+	components := pipelineRunRepositories(application, run.ID, "", "", now)
 	for i := range components {
 		components[i].Status = model.PipelineRunRepositoryPending
 	}
@@ -957,7 +913,7 @@ func (s *Service) createPendingRun(ctx context.Context, application *model.Appli
 		}
 		return tx.Create(&components).Error
 	}); err != nil {
-		return nil, fmt.Errorf("创建发布计划失败: %w", err)
+		return nil, fmt.Errorf("创建流水线运行失败: %w", err)
 	}
 	run.Repositories = components
 	return run, nil
@@ -1092,19 +1048,11 @@ func (s *Service) createObservedRun(ctx context.Context, application *model.Appl
 }
 
 func pipelineRunRepositoryForLink(application *model.Application, runID string, link model.ApplicationRepository, ref, commit string, now time.Time) model.PipelineRunRepository {
-	buildPlanID, releasePlanID := link.Repository.BuildPlanID, link.Repository.ReleasePlanID
-	if len(applicationRepositoryLinks(application)) == 1 {
-		if buildPlanID == "" {
-			buildPlanID = application.BuildPlanID
-		}
-		if releasePlanID == "" {
-			releasePlanID = application.ReleasePlanID
-		}
-	}
 	return model.PipelineRunRepository{
 		ID: uuid.NewString(), PipelineRunID: runID, RepositoryID: link.RepositoryID,
-		SortOrder: link.SortOrder, Ref: ref, CommitSHA: commit, BuildPlanID: buildPlanID,
-		ReleasePlanID: releasePlanID, Status: model.PipelineRunRepositoryReady,
+		SortOrder: link.SortOrder, Ref: ref, CommitSHA: commit, BuildPlanID: application.BuildPlanID,
+		ImageRegistryID: application.ImageRegistryID, DeploymentPlanID: application.DeploymentPlanID,
+		Status:    model.PipelineRunRepositoryReady,
 		CreatedAt: now, UpdatedAt: now,
 	}
 }
@@ -1119,7 +1067,7 @@ func (s *Service) HandleRepositoryEvent(ctx context.Context, input repository.We
 		if err != nil {
 			return err
 		}
-		if !application.IsActive {
+		if !application.IsActive || application.RepositoryID != input.RepositoryID {
 			continue
 		}
 		var applicationRepository *model.ApplicationRepository
@@ -1295,22 +1243,40 @@ func selectObservedRef(application *model.Application, refs repository.RefResult
 }
 
 func pipelineComplete(application *model.Application) bool {
-	return applicationRepositoriesComplete(application) && application.ImageRegistryID != "" && application.LastObservedCommit != ""
+	return pipelineExecutionConfigured(application) && application.LastObservedCommit != ""
+}
+
+func pipelineExecutionConfigured(application *model.Application) bool {
+	return applicationRepositoriesComplete(application) && application.BuildPlanID != "" &&
+		application.DeploymentPlanID != ""
+}
+
+func pipelineExecutionIncompleteMessage(application *model.Application) string {
+	missing := make([]string, 0, 4)
+	if !applicationRepositoriesComplete(application) {
+		missing = append(missing, "代码仓库")
+	}
+	if application.BuildPlanID == "" {
+		missing = append(missing, "构建方案")
+	}
+	if application.DeploymentPlanID == "" {
+		missing = append(missing, "部署方案")
+	}
+	if len(missing) == 0 {
+		return ErrPipelineIncomplete.Error()
+	}
+	return "流水线不会执行：缺少" + strings.Join(missing, "、")
 }
 
 func pipelineIncompleteMessage(application *model.Application) string {
 	missing := make([]string, 0, 4)
-	if len(application.Repositories) == 0 {
-		if application.BuildPlanID == "" {
-			missing = append(missing, "构建方案")
-		}
-	} else if !applicationRepositoriesComplete(application) {
-		missing = append(missing, "仓库的构建方案或部署方案")
+	if application.BuildPlanID == "" {
+		missing = append(missing, "构建方案")
 	}
-	if application.ImageRegistryID == "" {
-		missing = append(missing, "镜像仓库")
+	if !applicationRepositoriesComplete(application) {
+		missing = append(missing, "代码仓库")
 	}
-	if len(application.Repositories) == 0 && application.ReleasePlanID == "" {
+	if application.DeploymentPlanID == "" {
 		missing = append(missing, "部署方案")
 	}
 	if application.LastObservedCommit == "" {
@@ -1323,25 +1289,7 @@ func pipelineIncompleteMessage(application *model.Application) string {
 }
 
 func applicationRepositoriesComplete(application *model.Application) bool {
-	if len(application.Repositories) == 0 {
-		return application.BuildPlanID != "" && application.ReleasePlanID != ""
-	}
-	for i := range application.Repositories {
-		repository := application.Repositories[i].Repository
-		buildPlanID, releasePlanID := repository.BuildPlanID, repository.ReleasePlanID
-		if len(application.Repositories) == 1 {
-			if buildPlanID == "" {
-				buildPlanID = application.BuildPlanID
-			}
-			if releasePlanID == "" {
-				releasePlanID = application.ReleasePlanID
-			}
-		}
-		if repository.ID == "" || buildPlanID == "" || releasePlanID == "" {
-			return false
-		}
-	}
-	return true
+	return application.RepositoryID != "" && application.Repository.ID != ""
 }
 
 func validResourceName(name string) bool { return resourceNamePattern.MatchString(name) }

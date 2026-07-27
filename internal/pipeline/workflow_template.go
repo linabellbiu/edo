@@ -182,8 +182,8 @@ func (s *Service) validateWorkflowTemplate(ctx context.Context, nodes []model.Wo
 
 func workflowTemplateEnvironments(nodes []model.WorkflowNode) []model.ApplicationEnvironment {
 	type environmentConfig struct {
-		branch, tagPattern, releasePlanID, deploymentTargetID string
-		poll, push, pullRequest, tags                         bool
+		branch, tagPattern, deploymentPlanID, deploymentTargetID string
+		poll, push, pullRequest, tags                            bool
 	}
 	configs := make(map[string]*environmentConfig, 4)
 	for i := range nodes {
@@ -209,8 +209,8 @@ func workflowTemplateEnvironments(nodes []model.WorkflowNode) []model.Applicatio
 			config.pullRequest = config.pullRequest || containsEvent(nodes[i].Config.Events, "pr")
 			config.tags = config.tags || containsEvent(nodes[i].Config.Events, "tag")
 		case model.WorkflowNodeDeploy:
-			if config.releasePlanID == "" {
-				config.releasePlanID = nodes[i].Config.ReleasePlanID
+			if config.deploymentPlanID == "" {
+				config.deploymentPlanID = nodes[i].Config.DeploymentPlanID
 			}
 			if config.deploymentTargetID == "" {
 				config.deploymentTargetID = nodes[i].Config.DeploymentTargetID
@@ -232,7 +232,7 @@ func workflowTemplateEnvironments(nodes []model.WorkflowNode) []model.Applicatio
 			Key: key, Name: environmentName(key), Branch: branch,
 			PollEnabled: config.poll, WatchPush: config.push, WatchPullRequest: config.pullRequest,
 			WatchTags: config.tags, TagPattern: config.tagPattern,
-			ReleasePlanID: config.releasePlanID, DeploymentTargetID: config.deploymentTargetID,
+			DeploymentPlanID: config.deploymentPlanID, DeploymentTargetID: config.deploymentTargetID,
 			SortOrder: order,
 		})
 	}
@@ -247,7 +247,7 @@ func workflowTemplateEnvironmentInputs(nodes []model.WorkflowNode) []Environment
 			Key: environments[i].Key, Name: environments[i].Name, Branch: environments[i].Branch,
 			PollEnabled: environments[i].PollEnabled, WatchPush: environments[i].WatchPush,
 			WatchPullRequest: environments[i].WatchPullRequest, WatchTags: environments[i].WatchTags,
-			TagPattern: environments[i].TagPattern, ReleasePlanID: environments[i].ReleasePlanID,
+			TagPattern: environments[i].TagPattern, DeploymentPlanID: environments[i].DeploymentPlanID,
 			DeploymentTargetID: environments[i].DeploymentTargetID, SortOrder: environments[i].SortOrder,
 		})
 	}

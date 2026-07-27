@@ -2,7 +2,11 @@ package dockerengine
 
 import (
 	"context"
+	"crypto/ed25519"
+	"crypto/rand"
+	"crypto/x509"
 	"encoding/base64"
+	"encoding/pem"
 	"errors"
 	"io"
 	"log/slog"
@@ -41,5 +45,29 @@ func TestDockerEndpointSecurityDefaults(t *testing.T) {
 	_, err = service.Create(ctx, "admin", Input{Name: "bad-scheme", Host: "http://docker.example.com:2375"})
 	if !errors.Is(err, ErrInvalidEndpoint) {
 		t.Fatalf("不受支持的 Docker URL 未被拒绝: %v", err)
+	}
+	_, privateKey, _ := ed25519.GenerateKey(rand.Reader)
+	encodedKey, _ := x509.MarshalPKCS8PrivateKey(privateKey)
+	privateKeyPEM := string(pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: encodedKey}))
+	sshEndpoint, err := service.Create(ctx, "admin", Input{
+		Name: "ssh-docker", Host: "ssh://deploy@docker.example.com:22",
+		SSH: &SSHBundle{PrivateKey: privateKeyPEM}, SSHHostKeyFingerprint: "SHA256:" + base64.RawStdEncoding.EncodeToString(make([]byte, 32)),
+	})
+	if err != nil || sshEndpoint.SSHCredentialCiphertext == "" || sshEndpoint.SSHCredentialCiphertext == privateKeyPEM {
+		t.Fatalf("创建 SSH Docker 连接失败: endpoint=%+v err=%v", sshEndpoint, err)
+	}
+	_, err = service.Create(ctx, "admin", Input{
+		Name: "ssh-without-fingerprint", Host: "ssh://deploy@docker.example.com",
+		SSH: &SSHBundle{PrivateKey: privateKeyPEM},
+	})
+	if !errors.Is(err, ErrSSHRequired) {
+		t.Fatalf("缺少主机指纹的 SSH Docker 连接未被拒绝: %v", err)
+	}
+	_, err = service.Create(ctx, "admin", Input{
+		Name: "ssh-invalid-port", Host: "ssh://deploy@docker.example.com:0",
+		SSH: &SSHBundle{PrivateKey: privateKeyPEM}, SSHHostKeyFingerprint: "SHA256:" + base64.RawStdEncoding.EncodeToString(make([]byte, 32)),
+	})
+	if !errors.Is(err, ErrInvalidSSH) {
+		t.Fatalf("无效 SSH 端口未被拒绝: %v", err)
 	}
 }

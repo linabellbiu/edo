@@ -102,6 +102,42 @@ func (c *GitClient) ListRefs(
 	return refsToResult(refs)
 }
 
+func (c *GitClient) Checkout(
+	ctx context.Context,
+	repository model.GitRepository,
+	credential, ref, commitSHA, destination string,
+) error {
+	checkoutContext, cancel := context.WithTimeout(ctx, c.config.Timeout)
+	defer cancel()
+	auth, err := c.authMethod(repository, credential)
+	if err != nil {
+		return err
+	}
+	referenceName := plumbing.ReferenceName(strings.TrimSpace(ref))
+	if !referenceName.IsBranch() && !referenceName.IsTag() {
+		return errors.New("Git 引用格式无效")
+	}
+	hash := plumbing.NewHash(strings.TrimSpace(commitSHA))
+	if hash.IsZero() {
+		return errors.New("Git Commit 格式无效")
+	}
+	cloned, err := git.PlainCloneContext(checkoutContext, destination, false, &git.CloneOptions{
+		URL: repository.CloneURL, Auth: auth, ReferenceName: referenceName,
+		SingleBranch: true, Depth: 1, NoCheckout: true, Tags: git.AllTags,
+	})
+	if err != nil {
+		return fmt.Errorf("拉取 Git 代码失败: %w", err)
+	}
+	worktree, err := cloned.Worktree()
+	if err != nil {
+		return fmt.Errorf("打开 Git 工作区失败: %w", err)
+	}
+	if err := worktree.Checkout(&git.CheckoutOptions{Hash: hash, Force: true}); err != nil {
+		return fmt.Errorf("检出 Git Commit 失败: %w", err)
+	}
+	return nil
+}
+
 func (c *GitClient) authMethod(repository model.GitRepository, credential string) (transport.AuthMethod, error) {
 	switch repository.AuthType {
 	case model.GitAuthNone:

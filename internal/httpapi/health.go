@@ -14,10 +14,15 @@ type Pinger interface {
 	Ping(context.Context) error
 }
 
+type builderPinger interface {
+	PingBuilder(context.Context) error
+}
+
 type healthHandler struct {
 	database *sql.DB
 	redis    Pinger
 	nats     Pinger
+	builder  builderPinger
 	logger   *slog.Logger
 }
 
@@ -30,6 +35,7 @@ func (h healthHandler) ready(c *gin.Context) {
 		"database": "ok",
 		"redis":    "ok",
 		"nats":     "ok",
+		"builder":  "ok",
 	}
 	failed := false
 	checkCtx, cancel := context.WithTimeout(c.Request.Context(), 3*time.Second)
@@ -49,6 +55,13 @@ func (h healthHandler) ready(c *gin.Context) {
 		failed = true
 		checks["nats"] = "failed"
 		h.logFailure(c, "nats", err)
+	}
+	if h.builder != nil {
+		if err := h.builder.PingBuilder(checkCtx); err != nil {
+			failed = true
+			checks["builder"] = "failed"
+			h.logFailure(c, "builder", err)
+		}
 	}
 	if failed {
 		c.JSON(http.StatusServiceUnavailable, gin.H{
