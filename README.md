@@ -8,11 +8,12 @@ ZRT 是面向 Docker 与 Kubernetes 的运维、发布和可观测平台，使�
 - React、TypeScript、Vite、React Router、Zustand。
 - Redis 保存登录会话、限流和短期状态；不承担任务队列职责。
 - NATS JetStream 持久化任务、显式确认和死信，默认最多执行 4 次，发布与回滚默认只执行 1 次。
-- 通用 Git，以及 GitHub、GitLab、Gitea、Gitee 仓库和 Webhook。
+- 通用 Git，以及 GitHub、GitLab、Gitea、Gitee 仓库和 Webhook；外部 Webhook API 默认关闭，由管理员在系统设置中显式开启。
 - 个人 Git 令牌库按用户隔离并加密保存；创建仓库时可选择已有令牌或直接创建并保存新令牌。
 - Webhook 签名密钥可按独立权限重复查看，所有查看操作都会写入审计日志。
 - 域名解析统一接入 Cloudflare、阿里云 DNS、腾讯云 DNSPod、AWS Route 53、华为云、Azure、Google Cloud、DigitalOcean、Gandi、GoDaddy、Namecheap、Hetzner、PowerDNS 和 RFC 2136；厂商凭据加密保存，解析变更受独立权限与审计控制。
-- 应用可同时配置 dev、test、pre、prod 环境，每个环境分别选择分支、Pull、Push、PR、Tag 和部署方案。
+- 应用可以组合多个代码仓库，默认无序发布，也可调整顺序后依次发布；构建和部署方案绑定在仓库上，应用只负责组合发布流程。
+- 应用可同时配置 dev、test、pre、prod 环境，每个环境分别选择分支以及 Pull、Push、PR、Tag 触发规则。
 - 流水线方案先在列表中统一管理，再进入类似 ComfyUI 的可缩放、可拖动无限画布编辑；环境、分支、代码事件、人工接测、审核和部署方案都在节点中配置，并可自由连线。未被应用使用的方案可以删除，使用中的方案受引用保护。
 - 创建应用时选择已启用的流水线方案。ZRT 会复制当时的方案版本成为应用流水线，之后修改公共方案不会影响已有应用。
 - 每个应用单独决定发布是否需要审核；每条发布计划关联启动时的应用流水线快照，开启审核后生产部署的所有路径都必须经过审核节点，申请人不能审核自己的计划。

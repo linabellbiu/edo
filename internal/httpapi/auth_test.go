@@ -21,6 +21,7 @@ import (
 	"zrt/internal/auth"
 	"zrt/internal/cache"
 	"zrt/internal/config"
+	"zrt/internal/configuration"
 	"zrt/internal/credential"
 	"zrt/internal/database"
 	"zrt/internal/pipeline"
@@ -86,9 +87,11 @@ func newAuthTestRouter(t *testing.T) (*gin.Engine, func()) {
 		t.Fatalf("初始化测试密钥管理器失败: %v", err)
 	}
 	credentialService := credential.NewService(db, secretManager)
+	configurationService := configuration.NewService(db, secretManager)
 	repositoryService := repository.NewService(
 		db, secretManager, credentialService,
 		repository.NewGitClient(config.Git{Timeout: time.Second}), 4,
+		repository.WithWebhookGate(configurationService),
 	)
 	pipelineService := pipeline.NewService(db, repositoryService, secretManager)
 	if _, err := accounts.CreateAdmin(context.Background(), "admin", "管理员", "correct horse battery staple"); err != nil {
@@ -117,6 +120,7 @@ func newAuthTestRouter(t *testing.T) (*gin.Engine, func()) {
 		Accounts: accounts, Login: login, Sessions: sessions,
 		Access: accessService, Audits: auditService,
 		Credentials: credentialService, Repositories: repositoryService, Pipelines: pipelineService,
+		Configurations: configurationService,
 	})
 	return router, func() {
 		_ = redisClient.Close()

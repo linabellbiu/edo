@@ -20,10 +20,11 @@ const IdentityProvidersView = lazy(() => import('@/views/IdentityProvidersView')
 const CredentialView = lazy(() => import('@/views/CredentialView'))
 const AccessView = lazy(() => import('@/views/AccessView'))
 const DomainView = lazy(() => import('@/views/DomainView'))
+const SettingsView = lazy(() => import('@/views/SettingsView'))
 const PipelinePlanListView = lazy(() => import('@/views/ReleaseWorkflowListView'))
 const PipelinePlanView = lazy(() => import('@/views/ReleaseWorkflowView'))
 
-type IconName = 'home' | 'app' | 'git' | 'key' | 'build' | 'registry' | 'release' | 'pipeline' | 'cloud' | 'globe' | 'ops' | 'shield'
+type IconName = 'home' | 'app' | 'git' | 'key' | 'build' | 'registry' | 'release' | 'pipeline' | 'cloud' | 'globe' | 'ops' | 'shield' | 'settings'
 
 const navigationGroups = [
   {
@@ -49,6 +50,7 @@ const navigationGroups = [
       { label: '域名解析', path: '/domains', permissions: ['dns.read'], icon: 'globe' as IconName },
       { label: '容器与集群', path: '/infrastructure', permissions: ['cluster.read', 'terminal.open'], icon: 'cloud' as IconName },
       { label: '运维中心', path: '/operations', permissions: ['task.read', 'monitor.read', 'notification.read', 'scheduler.read', 'config.read'], icon: 'ops' as IconName },
+      { label: '系统设置', path: '/settings', permissions: ['config.read'], icon: 'settings' as IconName },
       { label: '身份与审计', path: '/access', permissions: ['user.read', 'user.manage', 'role.read', 'role.manage', 'audit.read'], icon: 'shield' as IconName },
       { label: '登录方式', path: '/identity-providers', permissions: ['identity.read'], icon: 'shield' as IconName },
     ],
@@ -61,7 +63,7 @@ const pageTitles: Record<string, string> = {
   '/domains': '域名解析',
   '/image-registries': '镜像仓库', '/deployment-plans': '部署方案', '/release-plans': '发布计划',
 	'/pipeline-plans': '流水线方案', '/pipeline-plans/editor': '编辑流水线方案',
-  '/infrastructure': '容器与集群', '/operations': '运维中心', '/access': '身份与审计', '/identity-providers': '登录方式',
+  '/infrastructure': '容器与集群', '/operations': '运维中心', '/settings': '系统设置', '/access': '身份与审计', '/identity-providers': '登录方式',
 }
 
 function NavIcon({ name }: { name: IconName }) {
@@ -77,6 +79,7 @@ function NavIcon({ name }: { name: IconName }) {
     cloud: <><path d="M6 18h11a4 4 0 0 0 .7-7.9A6 6 0 0 0 6.3 8.4 4.8 4.8 0 0 0 6 18Z" /></>,
     globe: <><circle cx="12" cy="12" r="9" /><path d="M3 12h18M12 3a15 15 0 0 1 0 18M12 3a15 15 0 0 0 0 18" /></>,
     ops: <><circle cx="12" cy="12" r="3" /><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1-2.8 2.8-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.6v.2h-4V21a1.7 1.7 0 0 0-1-1.6 1.7 1.7 0 0 0-1.9.3l-.1.1L4.2 17l.1-.1a1.7 1.7 0 0 0 .3-1.9A1.7 1.7 0 0 0 3 14H2.8v-4H3a1.7 1.7 0 0 0 1.6-1 1.7 1.7 0 0 0-.3-1.9L4.2 7 7 4.2l.1.1A1.7 1.7 0 0 0 9 4.6 1.7 1.7 0 0 0 10 3v-.2h4V3a1.7 1.7 0 0 0 1 1.6 1.7 1.7 0 0 0 1.9-.3l.1-.1L19.8 7l-.1.1a1.7 1.7 0 0 0-.3 1.9 1.7 1.7 0 0 0 1.6 1h.2v4H21a1.7 1.7 0 0 0-1.6 1Z" /></>,
+    settings: <><circle cx="12" cy="12" r="3" /><path d="M12 3v2M12 19v2M3 12h2M19 12h2M5.6 5.6 7 7M17 17l1.4 1.4M18.4 5.6 17 7M7 17l-1.4 1.4" /><circle cx="12" cy="12" r="7" /></>,
     shield: <><path d="M12 3 4.5 6v5c0 4.8 3 8.2 7.5 10 4.5-1.8 7.5-5.2 7.5-10V6z" /><path d="m9 12 2 2 4-4" /></>,
   }
   return <svg className="nav-icon" viewBox="0 0 24 24" aria-hidden="true">{paths[name]}</svg>
@@ -187,6 +190,7 @@ function AppRoutes() {
         <Route path="deployments" element={<DeploymentRecordsRedirect />} />
         <Route path="infrastructure" element={<InfrastructureView />} />
         <Route path="operations" element={<ManagementView section="operations" />} />
+        <Route path="settings" element={<SettingsView />} />
         <Route path="access" element={<AccessView />} />
         <Route path="identity-providers" element={<IdentityProvidersView />} />
       </Route>

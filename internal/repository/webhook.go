@@ -67,6 +67,16 @@ func (s *Service) HandleWebhook(
 	headers http.Header,
 	body []byte,
 ) (WebhookResult, error) {
+	if s.webhookGate == nil {
+		return WebhookResult{}, ErrExternalWebhookDisabled
+	}
+	enabled, err := s.webhookGate.ExternalGitWebhookEnabled(ctx)
+	if err != nil {
+		return WebhookResult{}, fmt.Errorf("%w: %v", ErrWebhookUnavailable, err)
+	}
+	if !enabled {
+		return WebhookResult{}, ErrExternalWebhookDisabled
+	}
 	repository, err := s.Find(ctx, repositoryID)
 	if err != nil {
 		return WebhookResult{}, err

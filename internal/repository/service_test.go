@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -86,6 +87,45 @@ func TestRepositoryNameSupportsChinese(t *testing.T) {
 	}
 	if _, _, err := service.Create(context.Background(), "admin", input); !errors.Is(err, ErrInvalidRepositoryName) {
 		t.Fatalf("创建仓库应返回相同的名称错误: %v", err)
+	}
+}
+
+func TestRepositoryStoresBuildAndDeploymentPlans(t *testing.T) {
+	service, db := newRepositoryTestService(t)
+	now := time.Now().UTC()
+	buildPlan := model.BuildPlan{
+		ID: "repository-build-plan", Name: "仓库构建", Kind: model.BuildPlanDockerfile,
+		DockerfilePath: "Dockerfile", IsActive: true, CreatedBy: "admin", CreatedAt: now, UpdatedAt: now,
+	}
+	releasePlan := model.ReleasePlan{
+		ID: "repository-release-plan", Name: "仓库部署", Kind: model.ReleasePlanDocker,
+		ServiceName: "api", IsActive: true, CreatedBy: "admin", CreatedAt: now, UpdatedAt: now,
+	}
+	if err := db.Create(&buildPlan).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&releasePlan).Error; err != nil {
+		t.Fatal(err)
+	}
+	repo, _, err := service.Create(context.Background(), "admin", Input{
+		Name: "绑定方案的仓库", Provider: model.GitProviderGeneric,
+		CloneURL: "https://git.example.com/team/plans.git", AuthType: model.GitAuthNone,
+		BuildPlanID: buildPlan.ID, ReleasePlanID: releasePlan.ID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := service.Find(context.Background(), repo.ID)
+	if err != nil || loaded.BuildPlan == nil || loaded.ReleasePlan == nil ||
+		loaded.BuildPlan.ID != buildPlan.ID || loaded.ReleasePlan.ID != releasePlan.ID {
+		t.Fatalf("仓库没有完整加载构建和部署方案: repository=%+v err=%v", loaded, err)
+	}
+	if _, _, err := service.Update(context.Background(), "admin", repo.ID, Input{
+		Name: repo.Name, Provider: repo.Provider, CloneURL: repo.CloneURL,
+		DefaultBranch: repo.DefaultBranch, AuthType: repo.AuthType,
+		BuildPlanID: "missing-plan", ReleasePlanID: releasePlan.ID,
+	}); !errors.Is(err, ErrInvalidRepository) {
+		t.Fatalf("仓库引用不存在的方案时未被拒绝: %v", err)
 	}
 }
 
@@ -255,6 +295,81 @@ func TestWebhookProvidersSignatureAndDeduplication(t *testing.T) {
 	}
 }
 
+func TestGenericWebhookNormalizesCommonGitEvents(t *testing.T) {
+	service, _ := newRepositoryTestService(t)
+	repo, webhookSecret, err := service.Create(context.Background(), "admin", Input{
+		Name: "generic-events", Provider: model.GitProviderGeneric,
+		CloneURL: "https://git.example.com/team/events.git", AuthType: model.GitAuthNone,
+		WebhookEnabled: true,
+	})
+	if err != nil {
+		t.Fatalf("创建通用 Webhook 仓库失败: %v", err)
+	}
+
+	tests := []struct {
+		name       string
+		event      string
+		body       string
+		wantType   string
+		wantRef    string
+		wantCommit string
+	}{
+		{
+			name: "branch push", event: "push",
+			body:     `{"ref":"refs/heads/main","after":"1111111111111111111111111111111111111111"}`,
+			wantType: "branch_push", wantRef: "refs/heads/main", wantCommit: "1111111111111111111111111111111111111111",
+		},
+		{
+			name: "tag push", event: "push",
+			body:     `{"ref":"refs/tags/v1.2.3","after":"2222222222222222222222222222222222222222"}`,
+			wantType: "tag_push", wantRef: "refs/tags/v1.2.3", wantCommit: "2222222222222222222222222222222222222222",
+		},
+		{
+			name: "pull request", event: "pull_request",
+			body:     `{"pull_request":{"head":{"sha":"3333333333333333333333333333333333333333"},"base":{"ref":"release"}}}`,
+			wantType: "pull_request", wantRef: "refs/heads/release", wantCommit: "3333333333333333333333333333333333333333",
+		},
+	}
+	for index, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			body := []byte(tt.body)
+			headers := make(http.Header)
+			headers.Set("X-ZRT-Event", tt.event)
+			headers.Set("X-ZRT-Delivery", fmt.Sprintf("common-event-%d", index))
+			headers.Set("X-ZRT-Signature-256", "sha256="+sign(body, webhookSecret))
+
+			result, err := service.HandleWebhook(context.Background(), repo.ID, headers, body)
+			if err != nil {
+				t.Fatalf("处理通用 Webhook 事件失败: %v", err)
+			}
+			if result.Delivery.EventType != tt.wantType || result.Delivery.Ref != tt.wantRef || result.Delivery.CommitSHA != tt.wantCommit {
+				t.Fatalf("事件归一化结果错误: %+v", result.Delivery)
+			}
+		})
+	}
+}
+
+func TestWebhookRequiresGlobalFeatureGate(t *testing.T) {
+	service, _ := newRepositoryTestService(t)
+	repo, _, err := service.Create(context.Background(), "admin", Input{
+		Name: "gated-webhook", Provider: model.GitProviderGeneric,
+		CloneURL: "https://git.example.com/team/gated.git", AuthType: model.GitAuthNone,
+		WebhookEnabled: true,
+	})
+	if err != nil {
+		t.Fatalf("创建测试仓库失败: %v", err)
+	}
+
+	service.webhookGate = staticWebhookGate{}
+	if _, err := service.HandleWebhook(context.Background(), repo.ID, http.Header{}, []byte(`{}`)); !errors.Is(err, ErrExternalWebhookDisabled) {
+		t.Fatalf("全局开关关闭时 Webhook 未被拒绝: %v", err)
+	}
+	service.webhookGate = staticWebhookGate{err: errors.New("database unavailable")}
+	if _, err := service.HandleWebhook(context.Background(), repo.ID, http.Header{}, []byte(`{}`)); !errors.Is(err, ErrWebhookUnavailable) {
+		t.Fatalf("全局开关读取失败时 Webhook 未安全失败: %v", err)
+	}
+}
+
 func TestProcessWebhookTaskIsIdempotent(t *testing.T) {
 	service, db := newRepositoryTestService(t)
 	now := time.Now().UTC()
@@ -322,7 +437,19 @@ func newRepositoryTestService(t *testing.T) (*Service, *gorm.DB) {
 		t.Fatalf("初始化仓库测试密钥失败: %v", err)
 	}
 	credentialService := credential.NewService(db, secretManager)
-	return NewService(db, secretManager, credentialService, NewGitClient(config.Git{Timeout: time.Second}), 4), db
+	return NewService(
+		db, secretManager, credentialService, NewGitClient(config.Git{Timeout: time.Second}), 4,
+		WithWebhookGate(staticWebhookGate{enabled: true}),
+	), db
+}
+
+type staticWebhookGate struct {
+	enabled bool
+	err     error
+}
+
+func (s staticWebhookGate) ExternalGitWebhookEnabled(context.Context) (bool, error) {
+	return s.enabled, s.err
 }
 
 type staticRefLister struct {

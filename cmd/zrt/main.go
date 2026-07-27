@@ -403,7 +403,8 @@ func runServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 	}
 	credentialService := credential.NewService(resources.Database, secretManager)
 	dnsService := dnsmanager.NewService(resources.Database, secretManager, dnsmanager.NewRegistry())
-	repositoryService, err := newRepositoryService(resources.Database, cfg, secretManager, credentialService)
+	configurationService := configuration.NewService(resources.Database, secretManager)
+	repositoryService, err := newRepositoryService(resources.Database, cfg, secretManager, credentialService, configurationService)
 	if err != nil {
 		logger.Error("初始化代码仓库服务失败", "operation", "repository_bootstrap", "err", err)
 		return errors.New("代码仓库服务初始化失败")
@@ -414,7 +415,6 @@ func runServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 	kubernetesService := kube.NewService(resources.Database, secretManager, cfg.Runtime)
 	deploymentService := deployment.NewService(resources.Database, dockerService, kubernetesService, logger)
 	terminalService := terminal.NewService(dockerService, kubernetesService, cfg.Runtime.TerminalMaxDuration)
-	configurationService := configuration.NewService(resources.Database, secretManager)
 	notificationService := notification.NewService(resources.Database, secretManager, nil, cfg.NATS.MaxAttempts)
 	monitorService := monitor.NewService(resources.Database, secretManager, notificationService, nil, cfg.NATS.MaxAttempts, logger)
 	schedulerService := scheduler.NewService(resources.Database, notificationService, cfg.NATS.MaxAttempts, logger)
@@ -669,8 +669,15 @@ func newBackgroundTaskWorker(
 	return worker.New(resources.Database, resources.NATS, registry, logger, cfg.NATS, cfg.Worker), nil
 }
 
-func newRepositoryService(db *gorm.DB, cfg config.Config, secretManager *secret.Manager, credentialService *credential.Service) (*repository.Service, error) {
+func newRepositoryService(
+	db *gorm.DB,
+	cfg config.Config,
+	secretManager *secret.Manager,
+	credentialService *credential.Service,
+	configurationService *configuration.Service,
+) (*repository.Service, error) {
 	return repository.NewService(
 		db, secretManager, credentialService, repository.NewGitClient(cfg.Git), cfg.NATS.MaxAttempts,
+		repository.WithWebhookGate(configurationService),
 	), nil
 }

@@ -20,18 +20,20 @@ import (
 )
 
 var (
-	ErrInvalidRepository     = errors.New("代码仓库配置无效")
-	ErrInvalidRepositoryName = errors.New("仓库名称只能包含中文、英文、数字、空格、点、下划线或短横线")
-	ErrInsecureRepository    = errors.New("HTTP 仓库默认不允许，请显式确认不安全连接")
-	ErrRepositoryExists      = errors.New("代码仓库名称已存在")
-	ErrRepositoryNotFound    = errors.New("代码仓库不存在")
-	ErrRepositoryInUse       = errors.New("代码仓库正在被应用使用，不能删除")
-	ErrInvalidCredential     = errors.New("代码仓库凭据配置无效")
-	ErrKnownHostsRequired    = errors.New("SSH 仓库必须配置可信 known_hosts 文件")
-	ErrWebhookDisabled       = errors.New("代码仓库 Webhook 未启用")
-	ErrInvalidSignature      = errors.New("Webhook 签名校验失败")
-	ErrUnsupportedEvent      = errors.New("Webhook 事件类型不受支持")
-	ErrInvalidTaskPayload    = errors.New("Webhook 任务参数无效")
+	ErrInvalidRepository       = errors.New("代码仓库配置无效")
+	ErrInvalidRepositoryName   = errors.New("仓库名称只能包含中文、英文、数字、空格、点、下划线或短横线")
+	ErrInsecureRepository      = errors.New("HTTP 仓库默认不允许，请显式确认不安全连接")
+	ErrRepositoryExists        = errors.New("代码仓库名称已存在")
+	ErrRepositoryNotFound      = errors.New("代码仓库不存在")
+	ErrRepositoryInUse         = errors.New("代码仓库正在被应用使用，不能删除")
+	ErrInvalidCredential       = errors.New("代码仓库凭据配置无效")
+	ErrKnownHostsRequired      = errors.New("SSH 仓库必须配置可信 known_hosts 文件")
+	ErrExternalWebhookDisabled = errors.New("外部 Git Webhook API 未启用")
+	ErrWebhookUnavailable      = errors.New("Git Webhook 服务暂不可用")
+	ErrWebhookDisabled         = errors.New("代码仓库 Webhook 未启用")
+	ErrInvalidSignature        = errors.New("Webhook 签名校验失败")
+	ErrUnsupportedEvent        = errors.New("Webhook 事件类型不受支持")
+	ErrInvalidTaskPayload      = errors.New("Webhook 任务参数无效")
 )
 
 var repositoryNamePattern = regexp.MustCompile(`^[A-Za-z0-9\p{Han}][A-Za-z0-9\p{Han}_. -]{0,127}$`)
@@ -48,6 +50,8 @@ type Input struct {
 	WebhookEnabled    bool
 	RegenerateWebhook bool
 	AllowInsecureHTTP bool
+	BuildPlanID       string
+	ReleasePlanID     string
 }
 
 type Service struct {
@@ -55,6 +59,7 @@ type Service struct {
 	secrets            *secret.Manager
 	git                refLister
 	credentials        *credential.Service
+	webhookGate        webhookGate
 	defaultMaxAttempts int
 }
 
@@ -62,13 +67,29 @@ type refLister interface {
 	ListRefs(context.Context, model.GitRepository, string) (RefResult, error)
 }
 
-func NewService(db *gorm.DB, secrets *secret.Manager, credentials *credential.Service, git refLister, defaultMaxAttempts int) *Service {
-	return &Service{db: db, secrets: secrets, credentials: credentials, git: git, defaultMaxAttempts: defaultMaxAttempts}
+type webhookGate interface {
+	ExternalGitWebhookEnabled(context.Context) (bool, error)
+}
+
+type Option func(*Service)
+
+func WithWebhookGate(gate webhookGate) Option {
+	return func(service *Service) {
+		service.webhookGate = gate
+	}
+}
+
+func NewService(db *gorm.DB, secrets *secret.Manager, credentials *credential.Service, git refLister, defaultMaxAttempts int, options ...Option) *Service {
+	service := &Service{db: db, secrets: secrets, credentials: credentials, git: git, defaultMaxAttempts: defaultMaxAttempts}
+	for _, option := range options {
+		option(service)
+	}
+	return service
 }
 
 func (s *Service) List(ctx context.Context) ([]model.GitRepository, error) {
 	var repositories []model.GitRepository
-	if err := s.db.WithContext(ctx).Order("name ASC").Find(&repositories).Error; err != nil {
+	if err := s.db.WithContext(ctx).Preload("BuildPlan").Preload("ReleasePlan").Order("name ASC").Find(&repositories).Error; err != nil {
 		return nil, fmt.Errorf("查询代码仓库失败: %w", err)
 	}
 	return repositories, nil
@@ -76,7 +97,7 @@ func (s *Service) List(ctx context.Context) ([]model.GitRepository, error) {
 
 func (s *Service) Find(ctx context.Context, id string) (*model.GitRepository, error) {
 	var repository model.GitRepository
-	if err := s.db.WithContext(ctx).First(&repository, "id = ?", id).Error; err != nil {
+	if err := s.db.WithContext(ctx).Preload("BuildPlan").Preload("ReleasePlan").First(&repository, "id = ?", id).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, ErrRepositoryNotFound
 		}
@@ -112,6 +133,7 @@ func (s *Service) Create(ctx context.Context, actorID string, input Input) (*mod
 		CredentialCiphertext:    normalized.credentialCiphertext,
 		WebhookSecretCiphertext: normalized.webhookCiphertext,
 		WebhookEnabled:          normalized.WebhookEnabled, AllowInsecureHTTP: normalized.AllowInsecureHTTP,
+		BuildPlanID: normalized.BuildPlanID, ReleasePlanID: normalized.ReleasePlanID,
 		IsActive: true, CreatedBy: actorID, CreatedAt: now, UpdatedAt: now,
 	}
 	if err := s.db.WithContext(ctx).Create(repository).Error; err != nil {
@@ -142,6 +164,7 @@ func (s *Service) Update(ctx context.Context, actorID, id string, input Input) (
 		"webhook_secret_ciphertext": normalized.webhookCiphertext,
 		"webhook_enabled":           normalized.WebhookEnabled,
 		"allow_insecure_http":       normalized.AllowInsecureHTTP, "updated_at": now,
+		"build_plan_id": normalized.BuildPlanID, "release_plan_id": normalized.ReleasePlanID,
 	}
 	if err := s.db.WithContext(ctx).Model(existing).Updates(updates).Error; err != nil {
 		if errors.Is(err, gorm.ErrDuplicatedKey) {
@@ -160,6 +183,8 @@ func (s *Service) Update(ctx context.Context, actorID, id string, input Input) (
 	existing.WebhookSecretCiphertext = normalized.webhookCiphertext
 	existing.WebhookEnabled = normalized.WebhookEnabled
 	existing.AllowInsecureHTTP = normalized.AllowInsecureHTTP
+	existing.BuildPlanID = normalized.BuildPlanID
+	existing.ReleasePlanID = normalized.ReleasePlanID
 	existing.UpdatedAt = now
 	return existing, normalized.webhookPlaintext, nil
 }
@@ -186,11 +211,14 @@ func (s *Service) Delete(ctx context.Context, id string) error {
 			return fmt.Errorf("查询待删除代码仓库失败: %w", err)
 		}
 
-		var references int64
-		if err := tx.Model(&model.Application{}).Where("repository_id = ?", id).Count(&references).Error; err != nil {
+		var legacyReferences, references int64
+		if err := tx.Model(&model.Application{}).Where("repository_id = ?", id).Count(&legacyReferences).Error; err != nil {
 			return fmt.Errorf("检查代码仓库使用状态失败: %w", err)
 		}
-		if references > 0 {
+		if err := tx.Model(&model.ApplicationRepository{}).Where("repository_id = ?", id).Count(&references).Error; err != nil {
+			return fmt.Errorf("检查代码仓库关联状态失败: %w", err)
+		}
+		if legacyReferences > 0 || references > 0 {
 			return ErrRepositoryInUse
 		}
 		if err := tx.Where("repository_id = ?", id).Delete(&model.GitWebhookDelivery{}).Error; err != nil {
@@ -330,6 +358,18 @@ func (s *Service) normalizeInput(ctx context.Context, actorID, id string, existi
 		return normalizedInput{}, err
 	}
 	input.CloneURL = cloneURL
+	for _, resource := range []struct {
+		id    string
+		model any
+	}{{input.BuildPlanID, &model.BuildPlan{}}, {input.ReleasePlanID, &model.ReleasePlan{}}} {
+		if resource.id == "" {
+			continue
+		}
+		var count int64
+		if err := s.db.WithContext(ctx).Model(resource.model).Where("id = ? AND is_active = ?", resource.id, true).Count(&count).Error; err != nil || count != 1 {
+			return normalizedInput{}, ErrInvalidRepository
+		}
+	}
 
 	var credentialID *string
 	credentialCiphertext := ""
@@ -401,6 +441,8 @@ func normalizeRepositoryFields(input *Input) error {
 	input.Name = strings.TrimSpace(input.Name)
 	input.DefaultBranch = strings.TrimSpace(input.DefaultBranch)
 	input.Username = strings.TrimSpace(input.Username)
+	input.BuildPlanID = strings.TrimSpace(input.BuildPlanID)
+	input.ReleasePlanID = strings.TrimSpace(input.ReleasePlanID)
 	if !repositoryNamePattern.MatchString(input.Name) {
 		return ErrInvalidRepositoryName
 	}

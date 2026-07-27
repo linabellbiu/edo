@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"path"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -72,6 +73,13 @@ type ApplicationInput struct {
 	WorkflowTemplateID     string
 	ReleaseApprovalEnabled bool
 	Environments           []EnvironmentInput
+	RepositoryOrdered      bool
+	Repositories           []ApplicationRepositoryInput
+}
+
+type ApplicationRepositoryInput struct {
+	RepositoryID string
+	SortOrder    int
 }
 
 type EnvironmentInput struct {
@@ -140,6 +148,9 @@ func (s *Service) ListApplications(ctx context.Context) ([]model.Application, er
 		Preload("Environments", func(db *gorm.DB) *gorm.DB { return db.Order("sort_order ASC") }).
 		Preload("Environments.ReleasePlan").Preload("Environments.DeploymentTarget").
 		Preload("Workflow").
+		Preload("Repositories", func(db *gorm.DB) *gorm.DB { return db.Order("sort_order ASC") }).
+		Preload("Repositories.Observations").
+		Preload("Repositories.Repository").Preload("Repositories.Repository.BuildPlan").Preload("Repositories.Repository.ReleasePlan").
 		Order("name ASC").Find(&applications).Error
 	if err != nil {
 		return nil, fmt.Errorf("查询应用失败: %w", err)
@@ -156,6 +167,9 @@ func (s *Service) FindApplication(ctx context.Context, id string) (*model.Applic
 		Preload("Environments", func(db *gorm.DB) *gorm.DB { return db.Order("sort_order ASC") }).
 		Preload("Environments.ReleasePlan").Preload("Environments.DeploymentTarget").
 		Preload("Workflow").
+		Preload("Repositories", func(db *gorm.DB) *gorm.DB { return db.Order("sort_order ASC") }).
+		Preload("Repositories.Observations").
+		Preload("Repositories.Repository").Preload("Repositories.Repository.BuildPlan").Preload("Repositories.Repository.ReleasePlan").
 		First(&application, "id = ?", id).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return nil, ErrApplicationNotFound
@@ -182,10 +196,12 @@ func (s *Service) CreateApplication(ctx context.Context, actorID string, input A
 		ReleasePlanID: input.ReleasePlanID, DeploymentTargetID: input.DeploymentTargetID,
 		WorkflowTemplateID:     input.WorkflowTemplateID,
 		ReleaseApprovalEnabled: input.ReleaseApprovalEnabled,
+		RepositoryOrdered:      input.RepositoryOrdered,
 		SyncStatus:             model.ApplicationSyncIdle, IsActive: true,
 		CreatedBy: actorID, CreatedAt: now, UpdatedAt: now,
 	}
 	environments := buildEnvironmentModels(application.ID, input.Environments, now)
+	repositories := buildApplicationRepositoryModels(application.ID, input.Repositories, now)
 	application.Environments = environments
 	workflow, err := s.newApplicationWorkflow(ctx, application, actorID, now)
 	if err != nil {
@@ -197,6 +213,9 @@ func (s *Service) CreateApplication(ctx context.Context, actorID string, input A
 			return err
 		}
 		if err := tx.Create(&environments).Error; err != nil {
+			return err
+		}
+		if err := tx.Create(&repositories).Error; err != nil {
 			return err
 		}
 		return tx.Create(workflow).Error
@@ -237,6 +256,7 @@ func (s *Service) UpdateApplication(ctx context.Context, id string, input Applic
 		"deployment_target_id":     input.DeploymentTargetID,
 		"workflow_template_id":     input.WorkflowTemplateID,
 		"release_approval_enabled": input.ReleaseApprovalEnabled, "updated_at": time.Now().UTC(),
+		"repository_ordered": input.RepositoryOrdered,
 	}
 	if existing.RepositoryID != input.RepositoryID || existing.Branch != input.Branch {
 		updates["last_observed_ref"] = ""
@@ -262,6 +282,9 @@ func (s *Service) UpdateApplication(ctx context.Context, id string, input Applic
 			return err
 		}
 		if err := saveApplicationEnvironments(tx, existing, input.Environments, time.Now().UTC()); err != nil {
+			return err
+		}
+		if err := saveApplicationRepositories(tx, existing, input.Repositories, time.Now().UTC()); err != nil {
 			return err
 		}
 		if replacementWorkflow != nil {
@@ -307,6 +330,33 @@ func (s *Service) normalizeApplication(ctx context.Context, input ApplicationInp
 	input.ReleasePlanID = strings.TrimSpace(input.ReleasePlanID)
 	input.DeploymentTargetID = strings.TrimSpace(input.DeploymentTargetID)
 	input.WorkflowTemplateID = strings.TrimSpace(input.WorkflowTemplateID)
+	if len(input.Repositories) == 0 && input.RepositoryID != "" {
+		input.Repositories = []ApplicationRepositoryInput{{RepositoryID: input.RepositoryID}}
+	}
+	if len(input.Repositories) == 0 || len(input.Repositories) > 50 {
+		return input, ErrInvalidApplication
+	}
+	for i := range input.Repositories {
+		input.Repositories[i].RepositoryID = strings.TrimSpace(input.Repositories[i].RepositoryID)
+	}
+	sort.SliceStable(input.Repositories, func(i, j int) bool { return input.Repositories[i].SortOrder < input.Repositories[j].SortOrder })
+	seenRepositories := make(map[string]struct{}, len(input.Repositories))
+	for i := range input.Repositories {
+		item := &input.Repositories[i]
+		if item.RepositoryID == "" {
+			return input, ErrInvalidApplication
+		}
+		if _, exists := seenRepositories[item.RepositoryID]; exists {
+			return input, ErrInvalidApplication
+		}
+		seenRepositories[item.RepositoryID] = struct{}{}
+		item.SortOrder = i
+		var repository model.GitRepository
+		if err := s.db.WithContext(ctx).First(&repository, "id = ? AND is_active = ?", item.RepositoryID, true).Error; err != nil {
+			return input, ErrInvalidApplication
+		}
+	}
+	input.RepositoryID = input.Repositories[0].RepositoryID
 	if input.WorkflowTemplateID != "" {
 		var template model.ReleaseWorkflowTemplate
 		if err := s.db.WithContext(ctx).First(&template, "id = ? AND is_active = ?", input.WorkflowTemplateID, true).Error; err != nil {
@@ -447,6 +497,60 @@ func buildEnvironmentModels(applicationID string, inputs []EnvironmentInput, now
 		})
 	}
 	return result
+}
+
+func buildApplicationRepositoryModels(applicationID string, inputs []ApplicationRepositoryInput, now time.Time) []model.ApplicationRepository {
+	result := make([]model.ApplicationRepository, 0, len(inputs))
+	for i := range inputs {
+		result = append(result, model.ApplicationRepository{
+			ID: uuid.NewString(), ApplicationID: applicationID, RepositoryID: inputs[i].RepositoryID,
+			SortOrder: i, CreatedAt: now, UpdatedAt: now,
+		})
+	}
+	return result
+}
+
+func saveApplicationRepositories(tx *gorm.DB, application *model.Application, inputs []ApplicationRepositoryInput, now time.Time) error {
+	existingByRepository := make(map[string]model.ApplicationRepository, len(application.Repositories))
+	for i := range application.Repositories {
+		existingByRepository[application.Repositories[i].RepositoryID] = application.Repositories[i]
+	}
+	repositories := buildApplicationRepositoryModels(application.ID, inputs, now)
+	kept := make(map[string]struct{}, len(repositories))
+	for i := range repositories {
+		kept[repositories[i].RepositoryID] = struct{}{}
+		if existing, ok := existingByRepository[repositories[i].RepositoryID]; ok {
+			repositories[i].ID = existing.ID
+			repositories[i].CreatedAt = existing.CreatedAt
+			repositories[i].LastObservedRef = existing.LastObservedRef
+			repositories[i].LastObservedCommit = existing.LastObservedCommit
+			repositories[i].LastCheckedAt = existing.LastCheckedAt
+		}
+	}
+	for repositoryID, existing := range existingByRepository {
+		if _, ok := kept[repositoryID]; ok {
+			continue
+		}
+		if err := tx.Where("application_repository_id = ?", existing.ID).Delete(&model.ApplicationRepositoryObservation{}).Error; err != nil {
+			return err
+		}
+		if err := tx.Delete(&existing).Error; err != nil {
+			return err
+		}
+	}
+	for i := range repositories {
+		if _, exists := existingByRepository[repositories[i].RepositoryID]; exists {
+			if err := tx.Model(&model.ApplicationRepository{}).Where("id = ?", repositories[i].ID).
+				Updates(map[string]any{"sort_order": repositories[i].SortOrder, "updated_at": now}).Error; err != nil {
+				return err
+			}
+			continue
+		}
+		if err := tx.Create(&repositories[i]).Error; err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func environmentModelInputs(environments []model.ApplicationEnvironment) []EnvironmentInput {
@@ -718,7 +822,11 @@ func (s *Service) ListRuns(ctx context.Context, limit int) ([]model.PipelineRun,
 		limit = 50
 	}
 	var runs []model.PipelineRun
-	if err := s.db.WithContext(ctx).Preload("Application").Preload("Application.WorkflowTemplate").Order("created_at DESC").Limit(limit).Find(&runs).Error; err != nil {
+	if err := s.db.WithContext(ctx).
+		Preload("Application").Preload("Application.WorkflowTemplate").
+		Preload("Repositories", func(db *gorm.DB) *gorm.DB { return db.Order("sort_order ASC") }).
+		Preload("Repositories.Repository").Preload("Repositories.BuildPlan").Preload("Repositories.ReleasePlan").
+		Order("created_at DESC").Limit(limit).Find(&runs).Error; err != nil {
 		return nil, fmt.Errorf("查询发布计划失败: %w", err)
 	}
 	for i := range runs {
@@ -740,14 +848,22 @@ func (s *Service) PrepareRun(ctx context.Context, applicationID, actorID string)
 	}
 	if application.Workflow != nil && application.Workflow.IsActive {
 		var source *model.WorkflowNode
+		manualSource := false
 		for i := range application.Workflow.Nodes {
-			if application.Workflow.Nodes[i].Type == model.WorkflowNodeTrigger {
+			if application.Workflow.Nodes[i].Type == model.WorkflowNodeManualRelease {
 				source = &application.Workflow.Nodes[i]
+				manualSource = true
 				break
+			}
+			if source == nil && application.Workflow.Nodes[i].Type == model.WorkflowNodeTrigger {
+				source = &application.Workflow.Nodes[i]
 			}
 		}
 		if source == nil {
-			return s.createBlockedRun(ctx, application, actorID, "应用流水线缺少代码触发节点，请修正并重新启用流水线")
+			return s.createBlockedRun(ctx, application, actorID, "应用流水线缺少代码触发或手动发布节点，请修正并重新启用流水线")
+		}
+		if manualSource || len(applicationRepositoryLinks(application)) > 1 {
+			return s.createManualSelectionRun(ctx, application, actorID)
 		}
 		if application.LastObservedCommit == "" {
 			return s.createBlockedRun(ctx, application, actorID, "尚未获取代码版本，请检查仓库并确认触发节点能匹配远端分支或 Tag")
@@ -760,9 +876,17 @@ func (s *Service) PrepareRun(ctx context.Context, applicationID, actorID string)
 		if err != nil {
 			return nil, err
 		}
-		if err := s.db.WithContext(ctx).Create(run).Error; err != nil {
+		links := applicationRepositoryLinks(application)
+		component := pipelineRunRepositoryForLink(application, run.ID, links[0], run.Ref, run.CommitSHA, now)
+		if err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+			if err := tx.Create(run).Error; err != nil {
+				return err
+			}
+			return tx.Create(&component).Error
+		}); err != nil {
 			return nil, fmt.Errorf("创建发布计划失败: %w", err)
 		}
+		run.Repositories = []model.PipelineRunRepository{component}
 		return run, nil
 	}
 	status, message := model.PipelineRunReady, "构建与发布配置已就绪"
@@ -774,11 +898,28 @@ func (s *Service) PrepareRun(ctx context.Context, applicationID, actorID string)
 		ID: uuid.NewString(), ApplicationID: application.ID, Trigger: "manual",
 		Ref: application.LastObservedRef, CommitSHA: application.LastObservedCommit,
 		Status: status, Stage: "configured", Message: message, CreatedBy: actorID,
-		CreatedAt: now, UpdatedAt: now,
+		RepositoryOrdered: application.RepositoryOrdered,
+		CreatedAt:         now, UpdatedAt: now,
 	}
-	if err := s.db.WithContext(ctx).Create(run).Error; err != nil {
+	selections := make([]ManualCommitSelection, 0)
+	if application.LastObservedCommit != "" {
+		selections = append(selections, ManualCommitSelection{RepositoryID: application.RepositoryID, Ref: application.LastObservedRef, CommitSHA: application.LastObservedCommit})
+	}
+	components := pipelineRunRepositories(application, run.ID, selections, now)
+	for i := range components {
+		if components[i].CommitSHA == "" {
+			components[i].Status = model.PipelineRunRepositoryPending
+		}
+	}
+	if err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Create(run).Error; err != nil {
+			return err
+		}
+		return tx.Create(&components).Error
+	}); err != nil {
 		return nil, fmt.Errorf("创建发布计划失败: %w", err)
 	}
+	run.Repositories = components
 	if status == model.PipelineRunBlocked {
 		return run, ErrPipelineIncomplete
 	}
@@ -786,17 +927,40 @@ func (s *Service) PrepareRun(ctx context.Context, applicationID, actorID string)
 }
 
 func (s *Service) createBlockedRun(ctx context.Context, application *model.Application, actorID, message string) (*model.PipelineRun, error) {
+	run, err := s.createPendingRun(ctx, application, actorID, message)
+	if err != nil {
+		return nil, err
+	}
+	return run, ErrPipelineIncomplete
+}
+
+func (s *Service) createManualSelectionRun(ctx context.Context, application *model.Application, actorID string) (*model.PipelineRun, error) {
+	return s.createPendingRun(ctx, application, actorID, "请选择每个代码仓库要发布的 Commit")
+}
+
+func (s *Service) createPendingRun(ctx context.Context, application *model.Application, actorID, message string) (*model.PipelineRun, error) {
 	now := time.Now().UTC()
 	run := &model.PipelineRun{
 		ID: uuid.NewString(), ApplicationID: application.ID, Trigger: "manual",
-		Ref: application.LastObservedRef, CommitSHA: application.LastObservedCommit,
+		Ref: "", CommitSHA: "",
 		Status: model.PipelineRunBlocked, Stage: "configured", Message: message,
-		CreatedBy: actorID, CreatedAt: now, UpdatedAt: now,
+		RepositoryOrdered: application.RepositoryOrdered,
+		CreatedBy:         actorID, CreatedAt: now, UpdatedAt: now,
 	}
-	if err := s.db.WithContext(ctx).Create(run).Error; err != nil {
+	components := pipelineRunRepositories(application, run.ID, nil, now)
+	for i := range components {
+		components[i].Status = model.PipelineRunRepositoryPending
+	}
+	if err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Create(run).Error; err != nil {
+			return err
+		}
+		return tx.Create(&components).Error
+	}); err != nil {
 		return nil, fmt.Errorf("创建发布计划失败: %w", err)
 	}
-	return run, ErrPipelineIncomplete
+	run.Repositories = components
+	return run, nil
 }
 
 func (s *Service) SyncApplication(ctx context.Context, applicationID, trigger string) (*model.Application, *model.PipelineRun, error) {
@@ -810,18 +974,10 @@ func (s *Service) SyncApplication(ctx context.Context, applicationID, trigger st
 	now := time.Now().UTC()
 	_ = s.db.WithContext(ctx).Model(&model.Application{}).Where("id = ?", application.ID).
 		Updates(map[string]any{"sync_status": model.ApplicationSyncChecking, "sync_message": "", "updated_at": now}).Error
-	refs, err := s.repositories.TestConnection(ctx, application.RepositoryID)
-	if err != nil {
-		s.markSyncFailure(ctx, application.ID, err)
-		return application, nil, err
-	}
 	pollSources := applicationPollSources(application)
-	if len(pollSources) == 0 {
-		message := "仓库可读取；当前流水线由 Push、PR 或 Tag 事件触发"
-		if err := s.markSyncReadable(ctx, application, now, message); err != nil {
-			return application, nil, err
-		}
-		return application, nil, nil
+	links := applicationRepositoryLinks(application)
+	if len(links) == 0 {
+		return application, nil, ErrInvalidApplication
 	}
 	environmentByKey := make(map[string]*model.ApplicationEnvironment, len(application.Environments))
 	for i := range application.Environments {
@@ -830,43 +986,75 @@ func (s *Service) SyncApplication(ctx context.Context, applicationID, trigger st
 	status, message := model.ApplicationSyncSynced, "代码已是最新状态"
 	var lastRun *model.PipelineRun
 	found := false
-	for _, source := range pollSources {
-		ref, commit := selectWorkflowRef(source, refs)
-		if commit == "" {
+	for linkIndex := range links {
+		link := &links[linkIndex]
+		refs, err := s.repositories.TestConnection(ctx, link.RepositoryID)
+		if err != nil {
+			s.markSyncFailure(ctx, application.ID, err)
+			return application, nil, fmt.Errorf("读取仓库“%s”失败: %w", link.Repository.Name, err)
+		}
+		if len(pollSources) == 0 {
 			continue
 		}
-		found = true
-		environment := environmentByKey[source.Config.Environment]
-		previousCommit := ""
-		if environment != nil {
-			previousCommit = environment.LastObservedCommit
+		observedByEnvironment := make(map[string]model.ApplicationRepositoryObservation, len(link.Observations))
+		for i := range link.Observations {
+			observedByEnvironment[link.Observations[i].Environment] = link.Observations[i]
 		}
-		changed := previousCommit != "" && previousCommit != commit
-		if environment != nil {
-			if err := s.db.WithContext(ctx).Model(&model.ApplicationEnvironment{}).Where("id = ?", environment.ID).Updates(map[string]any{
-				"last_observed_ref": ref, "last_observed_commit": commit,
-				"last_checked_at": now, "updated_at": now,
-			}).Error; err != nil {
-				return application, nil, fmt.Errorf("更新环境监听状态失败: %w", err)
+		for _, source := range pollSources {
+			ref, commit := selectWorkflowRef(source, refs)
+			if commit == "" {
+				continue
 			}
-			environment.LastObservedRef, environment.LastObservedCommit, environment.LastCheckedAt = ref, commit, &now
+			found = true
+			observation, exists := observedByEnvironment[source.Config.Environment]
+			changed := exists && observation.CommitSHA != "" && observation.CommitSHA != commit
+			if !exists {
+				observation = model.ApplicationRepositoryObservation{
+					ID: uuid.NewString(), ApplicationRepositoryID: link.ID, Environment: source.Config.Environment,
+					CreatedAt: now,
+				}
+			}
+			observation.Ref, observation.CommitSHA, observation.LastCheckedAt, observation.UpdatedAt = ref, commit, &now, now
+			if err := s.db.WithContext(ctx).Save(&observation).Error; err != nil {
+				return application, nil, fmt.Errorf("更新仓库环境监听状态失败: %w", err)
+			}
+			observedByEnvironment[source.Config.Environment] = observation
+			link.LastObservedRef, link.LastObservedCommit, link.LastCheckedAt = ref, commit, &now
+			if err := s.db.WithContext(ctx).Model(&model.ApplicationRepository{}).Where("id = ?", link.ID).Updates(map[string]any{
+				"last_observed_ref": ref, "last_observed_commit": commit, "last_checked_at": now, "updated_at": now,
+			}).Error; err != nil {
+				return application, nil, fmt.Errorf("更新应用仓库监听状态失败: %w", err)
+			}
+			if linkIndex == 0 {
+				application.LastObservedRef, application.LastObservedCommit = ref, commit
+				if environment := environmentByKey[source.Config.Environment]; environment != nil {
+					if err := s.db.WithContext(ctx).Model(environment).Updates(map[string]any{
+						"last_observed_ref": ref, "last_observed_commit": commit, "last_checked_at": now, "updated_at": now,
+					}).Error; err != nil {
+						return application, nil, fmt.Errorf("更新环境监听状态失败: %w", err)
+					}
+				}
+			}
+			if !changed {
+				continue
+			}
+			status, message = model.ApplicationSyncChanged, "检测到新的代码版本"
+			run, createErr := s.createObservedRun(ctx, application, *link, source, trigger, ref, commit, message, now)
+			if createErr != nil {
+				return application, nil, createErr
+			}
+			lastRun = run
 		}
-		application.LastObservedRef, application.LastObservedCommit = ref, commit
-		if !changed {
-			continue
+	}
+	if len(pollSources) == 0 {
+		message = "所有仓库均可读取；当前流水线由 Push、PR 或 Tag 事件触发"
+		if err := s.markSyncReadable(ctx, application, now, message); err != nil {
+			return application, nil, err
 		}
-		status, message = model.ApplicationSyncChanged, "检测到新的代码版本"
-		run, createErr := s.runFromSource(application, source, trigger, ref, commit, "", message, now)
-		if createErr != nil {
-			return application, nil, createErr
-		}
-		if err := s.db.WithContext(ctx).Create(run).Error; err != nil {
-			return application, nil, fmt.Errorf("记录代码变更失败: %w", err)
-		}
-		lastRun = run
+		return application, nil, nil
 	}
 	if !found {
-		message = "仓库可读取；未找到流水线配置的分支或标签"
+		message = "所有仓库均可读取；未找到流水线配置的分支或标签"
 		if err := s.markSyncReadable(ctx, application, now, message); err != nil {
 			return application, nil, err
 		}
@@ -885,15 +1073,64 @@ func (s *Service) SyncApplication(ctx context.Context, applicationID, trigger st
 	return application, lastRun, nil
 }
 
+func (s *Service) createObservedRun(ctx context.Context, application *model.Application, link model.ApplicationRepository, source model.WorkflowNode, trigger, ref, commit, message string, now time.Time) (*model.PipelineRun, error) {
+	run, err := s.runFromSource(application, source, trigger, ref, commit, "", message, now)
+	if err != nil {
+		return nil, err
+	}
+	component := pipelineRunRepositoryForLink(application, run.ID, link, ref, commit, now)
+	if err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Create(run).Error; err != nil {
+			return err
+		}
+		return tx.Create(&component).Error
+	}); err != nil {
+		return nil, fmt.Errorf("记录代码变更失败: %w", err)
+	}
+	run.Repositories = []model.PipelineRunRepository{component}
+	return run, nil
+}
+
+func pipelineRunRepositoryForLink(application *model.Application, runID string, link model.ApplicationRepository, ref, commit string, now time.Time) model.PipelineRunRepository {
+	buildPlanID, releasePlanID := link.Repository.BuildPlanID, link.Repository.ReleasePlanID
+	if len(applicationRepositoryLinks(application)) == 1 {
+		if buildPlanID == "" {
+			buildPlanID = application.BuildPlanID
+		}
+		if releasePlanID == "" {
+			releasePlanID = application.ReleasePlanID
+		}
+	}
+	return model.PipelineRunRepository{
+		ID: uuid.NewString(), PipelineRunID: runID, RepositoryID: link.RepositoryID,
+		SortOrder: link.SortOrder, Ref: ref, CommitSHA: commit, BuildPlanID: buildPlanID,
+		ReleasePlanID: releasePlanID, Status: model.PipelineRunRepositoryReady,
+		CreatedAt: now, UpdatedAt: now,
+	}
+}
+
 func (s *Service) HandleRepositoryEvent(ctx context.Context, input repository.WebhookTaskPayload) error {
-	var applications []model.Application
-	if err := s.db.WithContext(ctx).Where("repository_id = ? AND is_active = ?", input.RepositoryID, true).Find(&applications).Error; err != nil {
+	var linked []model.ApplicationRepository
+	if err := s.db.WithContext(ctx).Where("repository_id = ?", input.RepositoryID).Find(&linked).Error; err != nil {
 		return fmt.Errorf("查询 Webhook 关联应用失败: %w", err)
 	}
-	for i := range applications {
-		application, err := s.FindApplication(ctx, applications[i].ID)
+	for i := range linked {
+		application, err := s.FindApplication(ctx, linked[i].ApplicationID)
 		if err != nil {
 			return err
+		}
+		if !application.IsActive {
+			continue
+		}
+		var applicationRepository *model.ApplicationRepository
+		for j := range application.Repositories {
+			if application.Repositories[j].RepositoryID == input.RepositoryID {
+				applicationRepository = &application.Repositories[j]
+				break
+			}
+		}
+		if applicationRepository == nil {
+			continue
 		}
 		event := workflowEventName(input.EventType)
 		sources := applicationEventSources(application, event, input.Ref)
@@ -902,24 +1139,44 @@ func (s *Service) HandleRepositoryEvent(ctx context.Context, input repository.We
 		}
 		now := time.Now().UTC()
 		if err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-			if err := tx.Model(&model.Application{}).Where("id = ?", application.ID).Updates(map[string]any{
-				"last_observed_ref": input.Ref, "last_observed_commit": input.CommitSHA,
+			applicationUpdates := map[string]any{
 				"last_checked_at": now, "sync_status": model.ApplicationSyncChanged,
 				"sync_message": "Webhook 检测到新的代码版本", "updated_at": now,
+			}
+			if applicationRepository.SortOrder == 0 {
+				applicationUpdates["last_observed_ref"] = input.Ref
+				applicationUpdates["last_observed_commit"] = input.CommitSHA
+			}
+			if err := tx.Model(&model.Application{}).Where("id = ?", application.ID).Updates(applicationUpdates).Error; err != nil {
+				return err
+			}
+			if err := tx.Model(&model.ApplicationRepository{}).Where("id = ?", applicationRepository.ID).Updates(map[string]any{
+				"last_observed_ref": input.Ref, "last_observed_commit": input.CommitSHA,
+				"last_checked_at": now, "updated_at": now,
 			}).Error; err != nil {
 				return err
 			}
 			for _, source := range sources {
-				var environment model.ApplicationEnvironment
-				err := tx.First(&environment, "application_id = ? AND key = ?", application.ID, source.Config.Environment).Error
+				var observation model.ApplicationRepositoryObservation
+				err := tx.First(&observation, "application_repository_id = ? AND environment = ?", applicationRepository.ID, source.Config.Environment).Error
 				if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
 					return err
 				}
-				if err == nil && environment.LastObservedCommit == input.CommitSHA {
+				if err == nil && observation.CommitSHA == input.CommitSHA {
 					continue
 				}
-				if err == nil {
-					if err := tx.Model(&environment).Updates(map[string]any{
+				if errors.Is(err, gorm.ErrRecordNotFound) {
+					observation = model.ApplicationRepositoryObservation{
+						ID: uuid.NewString(), ApplicationRepositoryID: applicationRepository.ID,
+						Environment: source.Config.Environment, CreatedAt: now,
+					}
+				}
+				observation.Ref, observation.CommitSHA, observation.LastCheckedAt, observation.UpdatedAt = input.Ref, input.CommitSHA, &now, now
+				if err := tx.Save(&observation).Error; err != nil {
+					return err
+				}
+				if applicationRepository.SortOrder == 0 {
+					if err := tx.Model(&model.ApplicationEnvironment{}).Where("application_id = ? AND key = ?", application.ID, source.Config.Environment).Updates(map[string]any{
 						"last_observed_ref": input.Ref, "last_observed_commit": input.CommitSHA,
 						"last_checked_at": now, "updated_at": now,
 					}).Error; err != nil {
@@ -931,6 +1188,10 @@ func (s *Service) HandleRepositoryEvent(ctx context.Context, input repository.We
 					return err
 				}
 				if err := tx.Create(run).Error; err != nil {
+					return err
+				}
+				component := pipelineRunRepositoryForLink(application, run.ID, *applicationRepository, input.Ref, input.CommitSHA, now)
+				if err := tx.Create(&component).Error; err != nil {
 					return err
 				}
 			}
@@ -1034,20 +1295,22 @@ func selectObservedRef(application *model.Application, refs repository.RefResult
 }
 
 func pipelineComplete(application *model.Application) bool {
-	return application.BuildPlanID != "" && application.ImageRegistryID != "" &&
-		application.ReleasePlanID != "" &&
-		application.LastObservedCommit != ""
+	return applicationRepositoriesComplete(application) && application.ImageRegistryID != "" && application.LastObservedCommit != ""
 }
 
 func pipelineIncompleteMessage(application *model.Application) string {
 	missing := make([]string, 0, 4)
-	if application.BuildPlanID == "" {
-		missing = append(missing, "构建方案")
+	if len(application.Repositories) == 0 {
+		if application.BuildPlanID == "" {
+			missing = append(missing, "构建方案")
+		}
+	} else if !applicationRepositoriesComplete(application) {
+		missing = append(missing, "仓库的构建方案或部署方案")
 	}
 	if application.ImageRegistryID == "" {
 		missing = append(missing, "镜像仓库")
 	}
-	if application.ReleasePlanID == "" {
+	if len(application.Repositories) == 0 && application.ReleasePlanID == "" {
 		missing = append(missing, "部署方案")
 	}
 	if application.LastObservedCommit == "" {
@@ -1057,6 +1320,28 @@ func pipelineIncompleteMessage(application *model.Application) string {
 		return ErrPipelineIncomplete.Error()
 	}
 	return "缺少：" + strings.Join(missing, "、")
+}
+
+func applicationRepositoriesComplete(application *model.Application) bool {
+	if len(application.Repositories) == 0 {
+		return application.BuildPlanID != "" && application.ReleasePlanID != ""
+	}
+	for i := range application.Repositories {
+		repository := application.Repositories[i].Repository
+		buildPlanID, releasePlanID := repository.BuildPlanID, repository.ReleasePlanID
+		if len(application.Repositories) == 1 {
+			if buildPlanID == "" {
+				buildPlanID = application.BuildPlanID
+			}
+			if releasePlanID == "" {
+				releasePlanID = application.ReleasePlanID
+			}
+		}
+		if repository.ID == "" || buildPlanID == "" || releasePlanID == "" {
+			return false
+		}
+	}
+	return true
 }
 
 func validResourceName(name string) bool { return resourceNamePattern.MatchString(name) }

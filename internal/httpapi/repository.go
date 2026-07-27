@@ -36,6 +36,8 @@ type repositoryRequest struct {
 	WebhookEnabled    bool              `json:"webhook_enabled"`
 	RegenerateWebhook bool              `json:"regenerate_webhook"`
 	AllowInsecureHTTP bool              `json:"allow_insecure_http"`
+	BuildPlanID       string            `json:"build_plan_id" binding:"max=36"`
+	ReleasePlanID     string            `json:"release_plan_id" binding:"max=36"`
 }
 
 type repositoryStatusRequest struct {
@@ -43,22 +45,26 @@ type repositoryStatusRequest struct {
 }
 
 type repositoryResponse struct {
-	ID                string            `json:"id"`
-	Name              string            `json:"name"`
-	Provider          model.GitProvider `json:"provider"`
-	CloneURL          string            `json:"clone_url"`
-	DefaultBranch     string            `json:"default_branch"`
-	AuthType          model.GitAuthType `json:"auth_type"`
-	Username          string            `json:"username,omitempty"`
-	HasCredential     bool              `json:"has_credential"`
-	CredentialID      *string           `json:"credential_id,omitempty"`
-	WebhookEnabled    bool              `json:"webhook_enabled"`
-	WebhookURL        string            `json:"webhook_url"`
-	AllowInsecureHTTP bool              `json:"allow_insecure_http"`
-	IsActive          bool              `json:"is_active"`
-	CreatedBy         string            `json:"created_by"`
-	CreatedAt         string            `json:"created_at"`
-	UpdatedAt         string            `json:"updated_at"`
+	ID                string             `json:"id"`
+	Name              string             `json:"name"`
+	Provider          model.GitProvider  `json:"provider"`
+	CloneURL          string             `json:"clone_url"`
+	DefaultBranch     string             `json:"default_branch"`
+	AuthType          model.GitAuthType  `json:"auth_type"`
+	Username          string             `json:"username,omitempty"`
+	HasCredential     bool               `json:"has_credential"`
+	CredentialID      *string            `json:"credential_id,omitempty"`
+	WebhookEnabled    bool               `json:"webhook_enabled"`
+	WebhookURL        string             `json:"webhook_url"`
+	AllowInsecureHTTP bool               `json:"allow_insecure_http"`
+	BuildPlanID       string             `json:"build_plan_id,omitempty"`
+	ReleasePlanID     string             `json:"release_plan_id,omitempty"`
+	BuildPlan         *model.BuildPlan   `json:"build_plan,omitempty"`
+	ReleasePlan       *model.ReleasePlan `json:"release_plan,omitempty"`
+	IsActive          bool               `json:"is_active"`
+	CreatedBy         string             `json:"created_by"`
+	CreatedAt         string             `json:"created_at"`
+	UpdatedAt         string             `json:"updated_at"`
 }
 
 func (h repositoryHandler) list(c *gin.Context) {
@@ -234,12 +240,14 @@ func (h repositoryHandler) webhook(c *gin.Context) {
 	if err != nil {
 		h.logger.Warn("处理 Git Webhook 失败", "operation", "repository_webhook", "request_id", requestIDFrom(c), "repository_id", c.Param("id"), "err", err)
 		switch {
-		case errors.Is(err, repository.ErrRepositoryNotFound), errors.Is(err, repository.ErrWebhookDisabled):
+		case errors.Is(err, repository.ErrRepositoryNotFound), errors.Is(err, repository.ErrWebhookDisabled), errors.Is(err, repository.ErrExternalWebhookDisabled):
 			writeError(c, http.StatusNotFound, "webhook_not_found", "Webhook 不存在或未启用")
 		case errors.Is(err, repository.ErrInvalidSignature):
 			writeError(c, http.StatusUnauthorized, "invalid_webhook_signature", repository.ErrInvalidSignature.Error())
 		case errors.Is(err, repository.ErrUnsupportedEvent):
 			c.Status(http.StatusNoContent)
+		case errors.Is(err, repository.ErrWebhookUnavailable):
+			writeError(c, http.StatusServiceUnavailable, "webhook_unavailable", repository.ErrWebhookUnavailable.Error())
 		default:
 			writeInternalError(c)
 		}
@@ -283,7 +291,8 @@ func toRepositoryInput(request repositoryRequest) repository.Input {
 		Username: request.Username, Credential: request.Credential,
 		CredentialID:   request.CredentialID,
 		WebhookEnabled: request.WebhookEnabled, RegenerateWebhook: request.RegenerateWebhook,
-		AllowInsecureHTTP: request.AllowInsecureHTTP,
+		AllowInsecureHTTP: request.AllowInsecureHTTP, BuildPlanID: request.BuildPlanID,
+		ReleasePlanID: request.ReleasePlanID,
 	}
 }
 
@@ -294,7 +303,9 @@ func (h repositoryHandler) toRepositoryResponse(c *gin.Context, actorID string, 
 		HasCredential: repo.CredentialCiphertext != "" || repo.CredentialID != nil,
 		CredentialID:  h.service.CredentialIDForUser(c.Request.Context(), actorID, repo), WebhookEnabled: repo.WebhookEnabled,
 		WebhookURL:        "/api/v1/webhooks/git/" + repo.ID,
-		AllowInsecureHTTP: repo.AllowInsecureHTTP, IsActive: repo.IsActive,
+		AllowInsecureHTTP: repo.AllowInsecureHTTP, BuildPlanID: repo.BuildPlanID,
+		ReleasePlanID: repo.ReleasePlanID, BuildPlan: repo.BuildPlan, ReleasePlan: repo.ReleasePlan,
+		IsActive:  repo.IsActive,
 		CreatedBy: repo.CreatedBy, CreatedAt: repo.CreatedAt.Format(time.RFC3339Nano), UpdatedAt: repo.UpdatedAt.Format(time.RFC3339Nano),
 	}
 }

@@ -21,15 +21,14 @@ import (
 )
 
 var (
-	ErrInvalidWorkflow            = errors.New("流水线配置存在错误，请先修正节点和连线")
-	ErrWorkflowNotFound           = errors.New("应用流水线不存在")
-	ErrWorkflowRevisionConflict   = errors.New("应用流水线已被其他人修改，请刷新后再保存")
-	ErrWorkflowNotActive          = errors.New("应用流水线尚未启用")
-	ErrInvalidWorkflowTransition  = errors.New("当前节点不能这样推进")
-	ErrWorkflowApprovalRequired   = errors.New("该发布计划需要先完成审核")
-	ErrWorkflowSelfApproval       = errors.New("发布申请人不能审核自己的发布计划")
-	ErrPipelineRunNotFound        = errors.New("发布计划不存在")
-	ErrPipelineRunDeleteForbidden = errors.New("执行中或等待审核的发布计划不能删除")
+	ErrInvalidWorkflow           = errors.New("流水线配置存在错误，请先修正节点和连线")
+	ErrWorkflowNotFound          = errors.New("应用流水线不存在")
+	ErrWorkflowRevisionConflict  = errors.New("应用流水线已被其他人修改，请刷新后再保存")
+	ErrWorkflowNotActive         = errors.New("应用流水线尚未启用")
+	ErrInvalidWorkflowTransition = errors.New("当前节点不能这样推进")
+	ErrWorkflowApprovalRequired  = errors.New("该发布计划需要先完成审核")
+	ErrWorkflowSelfApproval      = errors.New("发布申请人不能审核自己的发布计划")
+	ErrPipelineRunNotFound       = errors.New("发布计划不存在")
 )
 
 type WorkflowInput struct {
@@ -293,7 +292,7 @@ func sanitizeWorkflowInput(input *WorkflowInput) error {
 	return nil
 }
 
-func (s *Service) validateWorkflow(ctx context.Context, application *model.Application, nodes []model.WorkflowNode, edges []model.WorkflowEdge) []WorkflowIssue {
+func (s *Service) validateWorkflow(_ context.Context, application *model.Application, nodes []model.WorkflowNode, edges []model.WorkflowEdge) []WorkflowIssue {
 	issues := make([]WorkflowIssue, 0)
 	nodeByID := make(map[string]model.WorkflowNode, len(nodes))
 	indegree := make(map[string]int, len(nodes))
@@ -350,9 +349,6 @@ func (s *Service) validateWorkflow(ctx context.Context, application *model.Appli
 			deployCount++
 			if _, ok := environments[node.Config.Environment]; !ok {
 				issues = append(issues, WorkflowIssue{Code: "invalid_environment", Message: "部署节点没有绑定已启用的环境", NodeID: node.ID})
-			}
-			if !s.activeResourceExists(ctx, &model.ReleasePlan{}, node.Config.ReleasePlanID) {
-				issues = append(issues, WorkflowIssue{Code: "missing_release_plan", Message: "部署节点需要绑定可用的部署方案", NodeID: node.ID})
 			}
 		default:
 			issues = append(issues, WorkflowIssue{Code: "invalid_node_type", Message: "节点类型无效", NodeID: node.ID})
@@ -480,14 +476,6 @@ func uniqueIssues(issues []WorkflowIssue) []WorkflowIssue {
 	return result
 }
 
-func (s *Service) activeResourceExists(ctx context.Context, target any, id string) bool {
-	if id == "" {
-		return false
-	}
-	var count int64
-	return s.db.WithContext(ctx).Model(target).Where("id = ? AND is_active = ?", id, true).Count(&count).Error == nil && count == 1
-}
-
 func containsEvent(events []string, expected string) bool {
 	for _, event := range events {
 		if event == expected {
@@ -516,8 +504,9 @@ func newWorkflowRun(application *model.Application, workflow *model.ReleaseWorkf
 		Stage: string(node.Type), Environment: node.Config.Environment,
 		WorkflowID: workflow.ID, WorkflowRevision: workflow.Revision,
 		CurrentNodeID: node.ID, WorkflowSnapshot: snapshot,
-		ApprovalRequired: application.ReleaseApprovalEnabled,
-		Message:          message, CreatedBy: actorID, CreatedAt: now, UpdatedAt: now,
+		ApprovalRequired:  application.ReleaseApprovalEnabled,
+		RepositoryOrdered: application.RepositoryOrdered,
+		Message:           message, CreatedBy: actorID, CreatedAt: now, UpdatedAt: now,
 	}, nil
 }
 
@@ -629,7 +618,8 @@ func (s *Service) runFromSource(application *model.Application, source model.Wor
 		ID: uuid.NewString(), ApplicationID: application.ID, Trigger: trigger,
 		Ref: ref, CommitSHA: commitSHA, Status: model.PipelineRunDetected,
 		Stage: "source", Environment: source.Config.Environment,
-		Message: message, CreatedBy: actorID, CreatedAt: now, UpdatedAt: now,
+		RepositoryOrdered: application.RepositoryOrdered,
+		Message:           message, CreatedBy: actorID, CreatedAt: now, UpdatedAt: now,
 	}, nil
 }
 
@@ -650,11 +640,11 @@ func (s *Service) DeleteRun(ctx context.Context, runID string) error {
 			}
 			return fmt.Errorf("读取发布计划失败: %w", err)
 		}
-		if run.Status == model.PipelineRunRunning || run.Status == model.PipelineRunAwaitingApproval {
-			return ErrPipelineRunDeleteForbidden
-		}
 		if err := tx.Where("pipeline_run_id = ?", run.ID).Delete(&model.PipelineRunApproval{}).Error; err != nil {
 			return fmt.Errorf("删除发布计划审核记录失败: %w", err)
+		}
+		if err := tx.Where("pipeline_run_id = ?", run.ID).Delete(&model.PipelineRunRepository{}).Error; err != nil {
+			return fmt.Errorf("删除发布计划仓库快照失败: %w", err)
 		}
 		if err := tx.Delete(&run).Error; err != nil {
 			return fmt.Errorf("删除发布计划失败: %w", err)
@@ -704,10 +694,16 @@ func (s *Service) AdvanceRun(ctx context.Context, runID, actorID, targetNodeID s
 			return nil, ErrInvalidWorkflowTransition
 		}
 		now := time.Now().UTC()
-		if err := s.db.WithContext(ctx).Model(&run).Updates(map[string]any{
-			"status": model.PipelineRunSucceeded, "stage": "completed",
-			"message": "发布计划已完成", "updated_at": now,
-		}).Error; err != nil {
+		if err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+			if err := tx.Model(&run).Updates(map[string]any{
+				"status": model.PipelineRunSucceeded, "stage": "completed",
+				"message": "发布计划已完成", "updated_at": now,
+			}).Error; err != nil {
+				return err
+			}
+			return tx.Model(&model.PipelineRunRepository{}).Where("pipeline_run_id = ?", run.ID).
+				Updates(map[string]any{"status": model.PipelineRunRepositorySucceeded, "updated_at": now}).Error
+		}); err != nil {
 			return nil, err
 		}
 		run.Status, run.Stage, run.Message, run.UpdatedAt = model.PipelineRunSucceeded, "completed", "发布计划已完成", now

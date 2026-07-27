@@ -46,7 +46,7 @@ func TestSyncApplicationAcceptsReadableRepositoryWithoutPullNode(t *testing.T) {
 	if run != nil {
 		t.Fatalf("没有 Pull 节点时不应创建发布计划: %+v", run)
 	}
-	if application.SyncStatus != model.ApplicationSyncSynced || application.SyncMessage != "仓库可读取；当前流水线由 Push、PR 或 Tag 事件触发" {
+	if application.SyncStatus != model.ApplicationSyncSynced || application.SyncMessage != "所有仓库均可读取；当前流水线由 Push、PR 或 Tag 事件触发" {
 		t.Fatalf("仓库检查状态错误: %+v", application)
 	}
 }
@@ -77,7 +77,7 @@ func TestSyncApplicationAcceptsReadableRepositoryWithoutMatchingRef(t *testing.T
 	if run != nil {
 		t.Fatalf("未匹配引用时不应创建发布计划: %+v", run)
 	}
-	if application.SyncStatus != model.ApplicationSyncSynced || application.SyncMessage != "仓库可读取；未找到流水线配置的分支或标签" {
+	if application.SyncStatus != model.ApplicationSyncSynced || application.SyncMessage != "所有仓库均可读取；未找到流水线配置的分支或标签" {
 		t.Fatalf("仓库检查状态错误: %+v", application)
 	}
 }

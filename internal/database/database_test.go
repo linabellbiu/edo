@@ -44,6 +44,8 @@ func TestSQLiteMigrationIsIdempotent(t *testing.T) {
 		!db.Migrator().HasTable(&model.MonitorCheck{}) || !db.Migrator().HasTable(&model.Application{}) ||
 		!db.Migrator().HasTable(&model.BuildPlan{}) || !db.Migrator().HasTable(&model.ImageRegistry{}) ||
 		!db.Migrator().HasTable(&model.ReleasePlan{}) || !db.Migrator().HasTable(&model.PipelineRun{}) ||
+		!db.Migrator().HasTable(&model.ApplicationRepository{}) || !db.Migrator().HasTable(&model.ApplicationRepositoryObservation{}) ||
+		!db.Migrator().HasTable(&model.PipelineRunRepository{}) ||
 		!db.Migrator().HasTable(&model.UserPermission{}) || !db.Migrator().HasTable(&model.GitCredential{}) ||
 		!db.Migrator().HasTable(&model.DNSProviderAccount{}) || !db.Migrator().HasTable(&model.DNSDomain{}) {
 		t.Fatal("核心任务表未创建")

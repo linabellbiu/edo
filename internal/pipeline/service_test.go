@@ -361,9 +361,6 @@ func TestReleaseWorkflowRequiresIndependentApproval(t *testing.T) {
 	if err != nil || run.Status != model.PipelineRunRunning {
 		t.Fatalf("其他成员未能通过审核: run=%+v err=%v", run, err)
 	}
-	if err := service.DeleteRun(ctx, run.ID); !errors.Is(err, ErrPipelineRunDeleteForbidden) {
-		t.Fatalf("执行中的发布计划不应允许删除: %v", err)
-	}
 	run, err = service.AdvanceRun(ctx, run.ID, "reviewer", "")
 	if err != nil || run.CurrentNodeID != "deploy-prod" || run.Status != model.PipelineRunReady {
 		t.Fatalf("审核后未能进入生产部署: run=%+v err=%v", run, err)
@@ -371,6 +368,15 @@ func TestReleaseWorkflowRequiresIndependentApproval(t *testing.T) {
 	run, err = service.AdvanceRun(ctx, run.ID, "reviewer", "")
 	if err != nil || run.Status != model.PipelineRunSucceeded {
 		t.Fatalf("发布计划未能完成: run=%+v err=%v", run, err)
+	}
+	if err := db.Model(&model.PipelineRun{}).Where("id = ?", run.ID).Update("status", model.PipelineRunRunning).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := service.DeleteRun(ctx, run.ID); err != nil {
+		t.Fatalf("执行中的发布计划也应该可以删除: %v", err)
+	}
+	if err := db.First(&model.PipelineRun{}, "id = ?", run.ID).Error; !errors.Is(err, gorm.ErrRecordNotFound) {
+		t.Fatalf("发布计划没有删除: %v", err)
 	}
 	if err := db.Model(&model.ApplicationEnvironment{}).
 		Where("application_id = ? AND key = ?", application.ID, "test").

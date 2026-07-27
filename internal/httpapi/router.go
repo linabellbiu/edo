@@ -218,6 +218,9 @@ func NewRouter(deps Dependencies) *gin.Engine {
 	protected.GET("/terminals/kubernetes/:cluster_id/namespaces/:namespace/pods/:pod/containers/:container/ws", requirePermission(deps.Access, deps.Logger, access.PermissionTerminalOpen), terminalAPI.kubernetes)
 
 	configurationAPI := configurationHandler{service: deps.Configurations, logger: deps.Logger}
+	settingsAPI := settingsHandler{service: deps.Configurations, logger: deps.Logger}
+	protected.GET("/settings/external-git-webhook", requirePermission(deps.Access, deps.Logger, access.PermissionConfigRead), settingsAPI.externalGitWebhook)
+	protected.PUT("/settings/external-git-webhook", auditAction(deps.Audits, deps.Logger, "settings.git_webhook.update", "settings"), requirePermission(deps.Access, deps.Logger, access.PermissionConfigManage), settingsAPI.updateExternalGitWebhook)
 	protected.GET("/configurations", requirePermission(deps.Access, deps.Logger, access.PermissionConfigRead), configurationAPI.list)
 	protected.POST("/configurations", auditAction(deps.Audits, deps.Logger, "configuration.create", "configuration"), requirePermission(deps.Access, deps.Logger, access.PermissionConfigManage), configurationAPI.create)
 	protected.PUT("/configurations/:id", auditAction(deps.Audits, deps.Logger, "configuration.update", "configuration"), requirePermission(deps.Access, deps.Logger, access.PermissionConfigManage), configurationAPI.update)

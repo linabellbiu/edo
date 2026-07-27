@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -25,6 +26,11 @@ var (
 
 var namespacePattern = regexp.MustCompile(`^[a-z][a-z0-9_-]{1,63}$`)
 var keyPattern = regexp.MustCompile(`^[A-Z_][A-Z0-9_]{0,127}$`)
+
+const (
+	systemNamespace              = "zrt"
+	externalGitWebhookSettingKey = "EXTERNAL_GIT_WEBHOOK_ENABLED"
+)
 
 type Input struct {
 	Namespace   string
@@ -67,6 +73,11 @@ type RevisionView struct {
 	IsActive    bool                  `json:"is_active"`
 	ChangedBy   string                `json:"changed_by"`
 	CreatedAt   time.Time             `json:"created_at"`
+}
+
+type ExternalGitWebhookSettings struct {
+	Enabled bool `json:"enabled"`
+	Version int  `json:"version"`
 }
 
 type Service struct {
@@ -279,6 +290,117 @@ func (s *Service) Resolve(ctx context.Context, namespace string, environment mod
 		}
 	}
 	return result, nil
+}
+
+// ExternalGitWebhookEnabled 实现仓库 Webhook 的全局安全开关。配置缺失时保持关闭，
+// 避免新安装或升级后在管理员未确认公网入口前直接暴露接收端点。
+func (s *Service) ExternalGitWebhookEnabled(ctx context.Context) (bool, error) {
+	settings, err := s.GetExternalGitWebhookSettings(ctx)
+	if err != nil {
+		return false, err
+	}
+	return settings.Enabled, nil
+}
+
+func (s *Service) GetExternalGitWebhookSettings(ctx context.Context) (ExternalGitWebhookSettings, error) {
+	var item model.Configuration
+	err := s.db.WithContext(ctx).Where(
+		"namespace = ? AND environment = ? AND key = ?",
+		systemNamespace, model.EnvironmentGlobal, externalGitWebhookSettingKey,
+	).First(&item).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return ExternalGitWebhookSettings{}, nil
+	}
+	if err != nil {
+		return ExternalGitWebhookSettings{}, fmt.Errorf("读取外部 Git Webhook 设置失败: %w", err)
+	}
+	if !item.IsActive {
+		return ExternalGitWebhookSettings{Version: item.Version}, nil
+	}
+	if item.IsSecret || item.SecretCiphertext != "" {
+		return ExternalGitWebhookSettings{}, ErrInvalidConfiguration
+	}
+	enabled, err := strconv.ParseBool(strings.TrimSpace(item.Value))
+	if err != nil {
+		return ExternalGitWebhookSettings{}, ErrInvalidConfiguration
+	}
+	return ExternalGitWebhookSettings{Enabled: enabled, Version: item.Version}, nil
+}
+
+func (s *Service) UpdateExternalGitWebhookSettings(
+	ctx context.Context,
+	actorID string,
+	enabled bool,
+	expectedVersion int,
+) (ExternalGitWebhookSettings, error) {
+	if expectedVersion < 0 {
+		return ExternalGitWebhookSettings{}, ErrInvalidConfiguration
+	}
+	value := strconv.FormatBool(enabled)
+	var updated model.Configuration
+	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var current model.Configuration
+		err := tx.Where(
+			"namespace = ? AND environment = ? AND key = ?",
+			systemNamespace, model.EnvironmentGlobal, externalGitWebhookSettingKey,
+		).First(&current).Error
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			if expectedVersion != 0 {
+				return ErrVersionConflict
+			}
+			now := time.Now().UTC()
+			current = model.Configuration{
+				ID: uuid.NewString(), Namespace: systemNamespace, Environment: model.EnvironmentGlobal,
+				Key: externalGitWebhookSettingKey, Value: value, Version: 1, IsActive: true,
+				CreatedBy: actorID, UpdatedBy: actorID, CreatedAt: now, UpdatedAt: now,
+			}
+			if err := tx.Create(&current).Error; err != nil {
+				if errors.Is(err, gorm.ErrDuplicatedKey) {
+					return ErrVersionConflict
+				}
+				return err
+			}
+			if err := tx.Create(revisionFrom(&current, actorID)).Error; err != nil {
+				return err
+			}
+			updated = current
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if current.Version != expectedVersion {
+			return ErrVersionConflict
+		}
+		now := time.Now().UTC()
+		nextVersion := current.Version + 1
+		result := tx.Model(&model.Configuration{}).
+			Where("id = ? AND version = ?", current.ID, current.Version).
+			Updates(map[string]any{
+				"value": value, "secret_ciphertext": "", "is_secret": false, "is_active": true,
+				"version": nextVersion, "updated_by": actorID, "updated_at": now,
+			})
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected != 1 {
+			return ErrVersionConflict
+		}
+		current.Value, current.SecretCiphertext, current.IsSecret, current.IsActive = value, "", false, true
+		current.Version, current.UpdatedBy, current.UpdatedAt = nextVersion, actorID, now
+		if err := tx.Create(revisionFrom(&current, actorID)).Error; err != nil {
+			return err
+		}
+		updated = current
+		return nil
+	})
+	if err != nil {
+		if errors.Is(err, ErrVersionConflict) || errors.Is(err, ErrInvalidConfiguration) {
+			return ExternalGitWebhookSettings{}, err
+		}
+		return ExternalGitWebhookSettings{}, fmt.Errorf("更新外部 Git Webhook 设置失败: %w", err)
+	}
+	return ExternalGitWebhookSettings{Enabled: enabled, Version: updated.Version}, nil
 }
 
 func normalizeInput(input Input) (Input, error) {

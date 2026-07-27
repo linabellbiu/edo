@@ -20,7 +20,9 @@ type pipelineHandler struct {
 type applicationRequest struct {
 	Name                   string                          `json:"name" binding:"required,max=128"`
 	Description            string                          `json:"description" binding:"max=500"`
-	RepositoryID           string                          `json:"repository_id" binding:"required,max=36"`
+	RepositoryID           string                          `json:"repository_id" binding:"max=36"`
+	RepositoryOrdered      bool                            `json:"repository_ordered"`
+	Repositories           []applicationRepositoryRequest  `json:"repositories" binding:"omitempty,max=50,dive"`
 	Branch                 string                          `json:"branch" binding:"max=255"`
 	PollEnabled            bool                            `json:"poll_enabled"`
 	PollIntervalSeconds    int                             `json:"poll_interval_seconds" binding:"omitempty,oneof=3 5 10 60"`
@@ -35,6 +37,11 @@ type applicationRequest struct {
 	WorkflowTemplateID     string                          `json:"workflow_template_id" binding:"max=36"`
 	ReleaseApprovalEnabled bool                            `json:"release_approval_enabled"`
 	Environments           []applicationEnvironmentRequest `json:"environments" binding:"omitempty,max=4,dive"`
+}
+
+type applicationRepositoryRequest struct {
+	RepositoryID string `json:"repository_id" binding:"required,max=36"`
+	SortOrder    int    `json:"sort_order" binding:"min=0,max=49"`
 }
 
 type applicationEnvironmentRequest struct {
@@ -75,9 +82,16 @@ type advanceRunRequest struct {
 }
 
 type executeRunRequest struct {
-	Ref          string `json:"ref" binding:"max=512"`
-	CommitSHA    string `json:"commit_sha" binding:"max=64"`
-	SourceNodeID string `json:"source_node_id" binding:"max=64"`
+	Ref          string                `json:"ref" binding:"max=512"`
+	CommitSHA    string                `json:"commit_sha" binding:"max=64"`
+	SourceNodeID string                `json:"source_node_id" binding:"max=64"`
+	Repositories []manualCommitRequest `json:"repositories" binding:"omitempty,max=50,dive"`
+}
+
+type manualCommitRequest struct {
+	RepositoryID string `json:"repository_id" binding:"required,max=36"`
+	Ref          string `json:"ref" binding:"required,max=512"`
+	CommitSHA    string `json:"commit_sha" binding:"required,max=64"`
 }
 
 type buildPlanRequest struct {
@@ -358,13 +372,26 @@ func (h pipelineHandler) executeRun(c *gin.Context) {
 		}
 	}
 	actor, _ := currentUser(c)
-	run, err := h.service.ExecuteRun(c.Request.Context(), c.Param("id"), actor.ID, request.Ref, request.CommitSHA, request.SourceNodeID)
+	run, err := h.service.ExecuteRun(
+		c.Request.Context(), c.Param("id"), actor.ID, request.Ref, request.CommitSHA,
+		request.SourceNodeID, toManualCommitSelections(request.Repositories),
+	)
 	if err != nil {
 		h.writeError(c, "workflow_run_execute", err)
 		return
 	}
 	setAuditResourceID(c, run.ID)
 	c.JSON(http.StatusOK, gin.H{"pipeline_run": run})
+}
+
+func toManualCommitSelections(requests []manualCommitRequest) []pipeline.ManualCommitSelection {
+	result := make([]pipeline.ManualCommitSelection, 0, len(requests))
+	for i := range requests {
+		result = append(result, pipeline.ManualCommitSelection{
+			RepositoryID: requests[i].RepositoryID, Ref: requests[i].Ref, CommitSHA: requests[i].CommitSHA,
+		})
+	}
+	return result
 }
 
 func (h pipelineHandler) deleteRun(c *gin.Context) {
@@ -560,8 +587,7 @@ func (h pipelineHandler) writeError(c *gin.Context, operation string, err error)
 	case errors.Is(err, pipeline.ErrWorkflowTemplateInUse):
 		writeError(c, http.StatusConflict, "workflow_template_in_use", err.Error())
 	case errors.Is(err, pipeline.ErrWorkflowNotActive), errors.Is(err, pipeline.ErrInvalidWorkflowTransition),
-		errors.Is(err, pipeline.ErrWorkflowApprovalRequired), errors.Is(err, pipeline.ErrWorkflowSelfApproval),
-		errors.Is(err, pipeline.ErrPipelineRunDeleteForbidden):
+		errors.Is(err, pipeline.ErrWorkflowApprovalRequired), errors.Is(err, pipeline.ErrWorkflowSelfApproval):
 		writeError(c, http.StatusConflict, "workflow_transition_denied", err.Error())
 	default:
 		writeInternalError(c)
@@ -588,7 +614,19 @@ func toApplicationInput(request applicationRequest) pipeline.ApplicationInput {
 		WorkflowTemplateID:     request.WorkflowTemplateID,
 		ReleaseApprovalEnabled: request.ReleaseApprovalEnabled,
 		Environments:           toEnvironmentInputs(request.Environments),
+		RepositoryOrdered:      request.RepositoryOrdered,
+		Repositories:           toApplicationRepositoryInputs(request.Repositories),
 	}
+}
+
+func toApplicationRepositoryInputs(requests []applicationRepositoryRequest) []pipeline.ApplicationRepositoryInput {
+	result := make([]pipeline.ApplicationRepositoryInput, 0, len(requests))
+	for i := range requests {
+		result = append(result, pipeline.ApplicationRepositoryInput{
+			RepositoryID: requests[i].RepositoryID, SortOrder: requests[i].SortOrder,
+		})
+	}
+	return result
 }
 
 func toWorkflowTemplateInput(request workflowTemplateRequest) pipeline.WorkflowTemplateInput {

@@ -3,7 +3,6 @@ import { useNavigate, useSearchParams } from 'react-router-dom'
 
 import client from '@/api/client'
 import { apiErrorMessage } from '@/api/resources'
-import ResourceSelectField from '@/components/ResourceSelectField'
 import { useAuthStore } from '@/stores/auth'
 
 type NodeType = 'trigger' | 'manual_release' | 'manual' | 'approval' | 'deploy'
@@ -17,7 +16,6 @@ interface ApplicationEnvironment {
 interface Application {
   id: string; name: string; release_approval_enabled: boolean; environments: ApplicationEnvironment[]
 }
-interface DeploymentPlan { id: string; name: string; kind: string; is_active: boolean }
 interface WorkflowNode {
   id: string; type: NodeType; name: string; position: { x: number; y: number }
   config: {
@@ -40,7 +38,7 @@ const nodeCopy: Record<NodeType, { label: string; hint: string; icon: string }> 
   manual_release: { label: '手动发布', hint: '选择 Commit 后从这里开始', icon: '▶' },
   manual: { label: '人工放行', hint: '主动接测后进入下一环境', icon: '✓' },
   approval: { label: '发布审核', hint: '由其他成员确认发布', icon: '◎' },
-  deploy: { label: '部署', hint: '执行绑定的部署方案', icon: '↗' },
+  deploy: { label: '部署', hint: '执行各代码仓库绑定的部署方案', icon: '↗' },
 }
 
 const environmentLabel: Record<EnvironmentKey, string> = {
@@ -86,7 +84,7 @@ function createTemplate(application: Application, compact = false) {
     const deployID = `deploy-${environment.key}`
     nodes.push(
       { id: triggerID, type: 'trigger', name: `${environment.name}代码`, position: { x, y: 70 }, config: { environment: environment.key, branch: environment.branch, events: triggerEvents(environment), tag_pattern: environment.tag_pattern } },
-      { id: deployID, type: 'deploy', name: `部署到${environment.name}`, position: { x, y: 350 }, config: { environment: environment.key, release_plan_id: environment.release_plan_id } },
+      { id: deployID, type: 'deploy', name: `部署到${environment.name}`, position: { x, y: 350 }, config: { environment: environment.key } },
     )
     entryIDs.set(environment.key, deployID)
     deployIDs.push(deployID)
@@ -121,7 +119,6 @@ export default function ReleaseWorkflowView() {
   const [searchParams, setSearchParams] = useSearchParams()
   const [applications, setApplications] = useState<Application[]>([])
   const [templates, setTemplates] = useState<WorkflowTemplate[]>([])
-  const [deploymentPlans, setDeploymentPlans] = useState<DeploymentPlan[]>([])
   const [applicationID, setApplicationID] = useState(searchParams.get('application') || '')
   const [templateID, setTemplateID] = useState(searchParams.get('template') || '')
   const [workflow, setWorkflow] = useState<Workflow | null>(null)
@@ -136,6 +133,7 @@ export default function ReleaseWorkflowView() {
   const [dirty, setDirty] = useState(false)
   const [message, setMessage] = useState('')
   const [error, setError] = useState('')
+  const savingRef = useRef(false)
   const canvasRef = useRef<HTMLDivElement>(null)
   const panRef = useRef<{ pointerID: number; startX: number; startY: number; originX: number; originY: number } | null>(null)
   const dragRef = useRef<{ pointerID: number; nodeID: string; startX: number; startY: number; originX: number; originY: number } | null>(null)
@@ -151,13 +149,11 @@ export default function ReleaseWorkflowView() {
     setLoading(true)
     setError('')
     try {
-      const [applicationResult, planResult, templateResult] = await Promise.all([
+      const [applicationResult, templateResult] = await Promise.all([
         client.get<{ applications: Application[] }>('/applications'),
-        client.get<{ deployment_plans: DeploymentPlan[] }>('/deployment-plans'),
         client.get<{ workflow_templates: WorkflowTemplate[] }>('/workflow-templates'),
       ])
       setApplications(applicationResult.data.applications)
-      setDeploymentPlans(planResult.data.deployment_plans)
       setTemplates(templateResult.data.workflow_templates)
       if (!applicationID && !templateID && !createMode && templateResult.data.workflow_templates.length > 0) {
         const id = templateResult.data.workflow_templates[0].id
@@ -252,7 +248,6 @@ export default function ReleaseWorkflowView() {
       config: {
         environment: environment?.key, branch: type === 'trigger' ? environment?.branch : undefined,
         events: type === 'trigger' ? ['push'] : undefined,
-        release_plan_id: type === 'deploy' ? environment?.release_plan_id : undefined,
       },
     }
     setNodes((current) => [...current, node])
@@ -311,8 +306,9 @@ export default function ReleaseWorkflowView() {
     }
   }
 
-  async function save(activate: boolean) {
-    if (!workflow || (publicMode ? !templateID : !applicationID)) return
+  const save = useCallback(async (activate: boolean) => {
+    if (savingRef.current || !workflow || (publicMode ? !templateID : !applicationID)) return
+    savingRef.current = true
     setSaving(true)
     setError('')
     setMessage('')
@@ -336,9 +332,23 @@ export default function ReleaseWorkflowView() {
       if (response?.issues) setIssues(response.issues)
       setError(apiErrorMessage(saveError))
     } finally {
+      savingRef.current = false
       setSaving(false)
     }
-  }
+  }, [applicationID, edges, nodes, publicMode, templateID, viewport, workflow])
+
+  useEffect(() => {
+    function handleSaveShortcut(event: KeyboardEvent) {
+      if (event.key.toLowerCase() !== 's' || (!event.ctrlKey && !event.metaKey) || event.altKey) return
+      if (!canManage) return
+      event.preventDefault()
+      if (event.repeat) return
+      void save(false)
+    }
+
+    window.addEventListener('keydown', handleSaveShortcut)
+    return () => window.removeEventListener('keydown', handleSaveShortcut)
+  }, [canManage, save])
 
   async function createPublicTemplate() {
     if (!canManage) return
@@ -486,14 +496,14 @@ export default function ReleaseWorkflowView() {
               {node.type !== 'trigger' && node.type !== 'manual_release' && <button className="node-port input-port" type="button" aria-label="连接到这个节点" onClick={(event) => { event.stopPropagation(); connectTo(node.id) }} />}
               <div className="workflow-node-head"><i>{nodeCopy[node.type].icon}</i><span>{nodeCopy[node.type].label}</span><b>{node.config.environment || '通用'}</b></div>
               <h3>{node.name}</h3>
-              <p>{node.type === 'trigger' ? `${node.config.branch || '未配置分支'} · ${(node.config.events || []).join(' / ') || '未选择事件'}` : node.type === 'deploy' ? deploymentPlans.find((item) => item.id === node.config.release_plan_id)?.name || '未绑定部署方案' : node.config.description || nodeCopy[node.type].hint}</p>
+              <p>{node.type === 'trigger' ? `${node.config.branch || '未配置分支'} · ${(node.config.events || []).join(' / ') || '未选择事件'}` : node.type === 'deploy' ? '使用代码仓库绑定的部署方案' : node.config.description || nodeCopy[node.type].hint}</p>
               {node.type !== 'deploy' && <button className={`node-port output-port${connectingFrom === node.id ? ' active' : ''}`} type="button" aria-label="从这个节点开始连接" onClick={(event) => { event.stopPropagation(); setConnectingFrom((current) => current === node.id ? '' : node.id) }} />}
             </article>)}
           </div>
         </div>
         <div className="canvas-actions">
           <div>{issues.length > 0 ? <button className="issue-count" type="button" onClick={() => setSelectedNodeID(issues.find((item) => item.node_id)?.node_id || '')}>{issues.length} 个问题</button> : <span className="valid-state">结构检查通过</span>}</div>
-          <div><button type="button" onClick={() => void validate()}>检查流水线</button>{canManage && <><button type="button" disabled={saving} onClick={() => void save(false)}>保存草稿</button><button className="primary-button" type="button" disabled={saving} onClick={() => void save(true)}>{saving ? '保存中…' : publicMode ? '启用方案' : '启用流水线'}</button></>}</div>
+          <div><button type="button" onClick={() => void validate()}>检查流水线</button>{canManage && <><button type="button" disabled={saving} aria-keyshortcuts="Control+S Meta+S" title="保存草稿（Windows/Linux：Ctrl + S，macOS：Command + S）" onClick={() => void save(false)}>保存草稿 <span aria-hidden="true">Ctrl / ⌘ + S</span></button><button className="primary-button" type="button" disabled={saving} onClick={() => void save(true)}>{saving ? '保存中…' : publicMode ? '启用方案' : '启用流水线'}</button></>}</div>
         </div>
       </div>
 
@@ -509,7 +519,7 @@ export default function ReleaseWorkflowView() {
               {(selectedNode.config.events || []).includes('tag') && <label>Tag 规则<input value={selectedNode.config.tag_pattern || ''} disabled={!canManage} onChange={(event) => updateNode(selectedNode.id, (node) => ({ ...node, config: { ...node.config, tag_pattern: event.target.value } }))} placeholder="v*" /></label>}
             </>}
             {selectedNode.type === 'deploy' && <>
-              <ResourceSelectField id="workflow-deployment-plan" label="部署方案" createLabel="部署方案" createTo={canManage ? '/deployment-plans?create=1' : undefined} value={selectedNode.config.release_plan_id || ''} disabled={!canManage} onChange={(event) => updateNode(selectedNode.id, (node) => ({ ...node, config: { ...node.config, release_plan_id: event.target.value } }))}><option value="">请选择</option>{deploymentPlans.filter((item) => item.is_active).map((item) => <option key={item.id} value={item.id}>{item.name} · {item.kind}</option>)}</ResourceSelectField>
+              <p className="field-note">构建方案和部署方案在代码仓库中维护；应用流水线只决定何时进入这个部署节点。</p>
             </>}
             {(selectedNode.type === 'manual_release' || selectedNode.type === 'manual' || selectedNode.type === 'approval') && <label>说明<textarea rows={4} value={selectedNode.config.description || ''} disabled={!canManage} onChange={(event) => updateNode(selectedNode.id, (node) => ({ ...node, config: { ...node.config, description: event.target.value } }))} placeholder={selectedNode.type === 'manual_release' ? '例如：由发布负责人选择代码版本后启动' : undefined} /></label>}
           </div>

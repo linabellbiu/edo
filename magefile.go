@@ -271,7 +271,8 @@ func buildBackend(ctx context.Context, embedWeb bool) (string, error) {
 	if runtime.GOOS == "windows" {
 		binary += ".exe"
 	}
-	args := []string{"build", "-trimpath"}
+	// 本地单文件构建与容器发布构建保持一致，移除生产运行不需要的符号表和 DWARF 调试信息。
+	args := []string{"build", "-trimpath", "-ldflags", "-s -w"}
 	if embedWeb {
 		args = append(args, "-tags", "zrt_web")
 	}

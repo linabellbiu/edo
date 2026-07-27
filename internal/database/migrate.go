@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/google/uuid"
 	"gorm.io/gorm"
 
 	"zrt/internal/model"
@@ -148,6 +149,102 @@ var migrations = []migration{
 			return tx.AutoMigrate(&model.DNSProviderAccount{}, &model.DNSDomain{})
 		},
 	},
+	{
+		version: "202607270020",
+		up: func(tx *gorm.DB) error {
+			if err := tx.AutoMigrate(
+				&model.GitRepository{}, &model.Application{}, &model.ApplicationRepository{}, &model.ApplicationRepositoryObservation{},
+				&model.PipelineRun{}, &model.PipelineRunRepository{},
+			); err != nil {
+				return err
+			}
+			return backfillApplicationRepositories(tx)
+		},
+	},
+}
+
+func backfillApplicationRepositories(tx *gorm.DB) error {
+	var applications []model.Application
+	if err := tx.Find(&applications).Error; err != nil {
+		return err
+	}
+	now := time.Now().UTC()
+	for i := range applications {
+		application := applications[i]
+		if application.RepositoryID == "" {
+			continue
+		}
+		var count int64
+		if err := tx.Model(&model.ApplicationRepository{}).
+			Where("application_id = ? AND repository_id = ?", application.ID, application.RepositoryID).
+			Count(&count).Error; err != nil {
+			return err
+		}
+		if count == 0 {
+			link := model.ApplicationRepository{
+				ID: uuid.NewString(), ApplicationID: application.ID, RepositoryID: application.RepositoryID,
+				SortOrder: 0, LastObservedRef: application.LastObservedRef,
+				LastObservedCommit: application.LastObservedCommit, LastCheckedAt: application.LastCheckedAt,
+				CreatedAt: now, UpdatedAt: now,
+			}
+			if err := tx.Create(&link).Error; err != nil {
+				return err
+			}
+		}
+		if application.BuildPlanID != "" {
+			if err := tx.Model(&model.GitRepository{}).
+				Where("id = ? AND build_plan_id = ?", application.RepositoryID, "").
+				Update("build_plan_id", application.BuildPlanID).Error; err != nil {
+				return err
+			}
+		}
+		if application.ReleasePlanID != "" {
+			if err := tx.Model(&model.GitRepository{}).
+				Where("id = ? AND release_plan_id = ?", application.RepositoryID, "").
+				Update("release_plan_id", application.ReleasePlanID).Error; err != nil {
+				return err
+			}
+		}
+	}
+
+	var runs []model.PipelineRun
+	if err := tx.Find(&runs).Error; err != nil {
+		return err
+	}
+	for i := range runs {
+		run := runs[i]
+		var count int64
+		if err := tx.Model(&model.PipelineRunRepository{}).Where("pipeline_run_id = ?", run.ID).Count(&count).Error; err != nil {
+			return err
+		}
+		if count > 0 {
+			continue
+		}
+		var application model.Application
+		if err := tx.First(&application, "id = ?", run.ApplicationID).Error; err != nil {
+			if err == gorm.ErrRecordNotFound {
+				continue
+			}
+			return err
+		}
+		if application.RepositoryID == "" {
+			continue
+		}
+		status := model.PipelineRunRepositoryPending
+		if run.CommitSHA != "" {
+			status = model.PipelineRunRepositoryReady
+		}
+		component := model.PipelineRunRepository{
+			ID: uuid.NewString(), PipelineRunID: run.ID, RepositoryID: application.RepositoryID,
+			SortOrder: 0, Ref: run.Ref, CommitSHA: run.CommitSHA,
+			BuildPlanID: application.BuildPlanID, ReleasePlanID: application.ReleasePlanID,
+			Status: status, CreatedAt: run.CreatedAt, UpdatedAt: run.UpdatedAt,
+		}
+		if err := tx.Create(&component).Error; err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func dropOptionalDeliveryConstraints(tx *gorm.DB) error {
