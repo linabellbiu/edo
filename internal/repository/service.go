@@ -69,6 +69,14 @@ type checkoutClient interface {
 	Checkout(context.Context, model.GitRepository, string, string, string, string) error
 }
 
+type commitMessageClient interface {
+	CommitMessage(context.Context, model.GitRepository, string, string, string) (string, error)
+}
+
+type historicalCommitMessageClient interface {
+	HistoricalCommitMessage(context.Context, model.GitRepository, string, string, string) (string, error)
+}
+
 type webhookGate interface {
 	ExternalGitWebhookEnabled(context.Context) (bool, error)
 }
@@ -245,6 +253,41 @@ func (s *Service) TestConnection(ctx context.Context, id string) (RefResult, err
 	return s.git.ListRefs(ctx, *repository, credential)
 }
 
+// PollState 返回后台监听所需的全部远端状态。分支和 Tag 使用 Git 协议读取；
+// PR 优先使用托管平台 API 补全源分支和目标分支，通用 Git 则使用服务端公开的 PR Ref。
+func (s *Service) PollState(ctx context.Context, id string, includePullRequests bool) (RefResult, error) {
+	repository, err := s.Find(ctx, id)
+	if err != nil {
+		return RefResult{}, err
+	}
+	if !repository.IsActive {
+		return RefResult{}, ErrRepositoryNotFound
+	}
+	credential, err := s.resolveCredential(ctx, repository)
+	if err != nil {
+		return RefResult{}, err
+	}
+	result, err := s.git.ListRefs(ctx, *repository, credential)
+	if err != nil || !includePullRequests || repository.Provider == model.GitProviderGeneric {
+		return result, err
+	}
+	lister, ok := s.git.(pullRequestLister)
+	if !ok {
+		return result, errors.New("当前 Git 客户端不支持查询 PR")
+	}
+	pullRequests, err := lister.ListPullRequests(ctx, *repository, credential)
+	if err != nil {
+		// 部分平台会同时通过 Git 协议公开 PR Ref；API 不可用时仍可继续检测，
+		// 但没有目标分支元数据的 Ref 只能按源分支匹配。
+		if len(result.PullRequests) > 0 {
+			return result, nil
+		}
+		return RefResult{}, err
+	}
+	result.PullRequests = pullRequests
+	return result, nil
+}
+
 func (s *Service) Checkout(ctx context.Context, id, ref, commitSHA, destination string) error {
 	repository, err := s.Find(ctx, id)
 	if err != nil {
@@ -262,6 +305,40 @@ func (s *Service) Checkout(ctx context.Context, id, ref, commitSHA, destination 
 		return err
 	}
 	return client.Checkout(ctx, *repository, credential, ref, commitSHA, destination)
+}
+
+func (s *Service) CommitMessage(ctx context.Context, id, ref, commitSHA string) (string, error) {
+	return s.commitMessage(ctx, id, ref, commitSHA, false)
+}
+
+func (s *Service) HistoricalCommitMessage(ctx context.Context, id, ref, commitSHA string) (string, error) {
+	return s.commitMessage(ctx, id, ref, commitSHA, true)
+}
+
+func (s *Service) commitMessage(ctx context.Context, id, ref, commitSHA string, historical bool) (string, error) {
+	repository, err := s.Find(ctx, id)
+	if err != nil {
+		return "", err
+	}
+	if !repository.IsActive {
+		return "", ErrRepositoryNotFound
+	}
+	credential, err := s.resolveCredential(ctx, repository)
+	if err != nil {
+		return "", err
+	}
+	if historical {
+		client, ok := s.git.(historicalCommitMessageClient)
+		if !ok {
+			return "", nil
+		}
+		return client.HistoricalCommitMessage(ctx, *repository, credential, ref, commitSHA)
+	}
+	client, ok := s.git.(commitMessageClient)
+	if !ok {
+		return "", nil
+	}
+	return client.CommitMessage(ctx, *repository, credential, ref, commitSHA)
 }
 
 // TestInput 使用尚未保存的仓库配置执行只读远端查询，不会持久化地址或凭据。

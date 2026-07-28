@@ -9,6 +9,8 @@ import (
 	"fmt"
 	"log/slog"
 	"runtime/debug"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -22,7 +24,7 @@ import (
 	"zrt/internal/task"
 )
 
-const durableName = "zrt_worker_v1"
+const ConsumerName = "zrt_worker_v1"
 
 type queueMessage interface {
 	Metadata() (*jetstream.MsgMetadata, error)
@@ -35,13 +37,29 @@ type queueMessage interface {
 }
 
 type Worker struct {
-	db       *gorm.DB
-	messages *messaging.NATS
-	registry *Registry
-	logger   *slog.Logger
-	nats     config.NATS
-	config   config.Worker
-	ownerID  string
+	db        *gorm.DB
+	messages  *messaging.NATS
+	registry  *Registry
+	logger    *slog.Logger
+	nats      config.NATS
+	config    config.Worker
+	ownerID   string
+	active    atomic.Int64
+	executed  atomic.Uint64
+	succeeded atomic.Uint64
+	failed    atomic.Uint64
+	retried   atomic.Uint64
+}
+
+type RuntimeStats struct {
+	Instances int    `json:"instances"`
+	Consumer  string `json:"consumer"`
+	Capacity  int    `json:"capacity"`
+	Active    int64  `json:"active"`
+	Executed  uint64 `json:"executed"`
+	Succeeded uint64 `json:"succeeded"`
+	Failed    uint64 `json:"failed"`
+	Retried   uint64 `json:"retried"`
 }
 
 type deadLetter struct {
@@ -74,37 +92,83 @@ func New(
 
 func (w *Worker) Run(ctx context.Context) error {
 	consumer, err := w.messages.EnsureConsumer(
-		ctx, durableName, w.nats.SubjectPrefix+".>", w.nats.MaxAttempts,
+		ctx, ConsumerName, w.nats.SubjectPrefix+".>", w.nats.MaxAttempts,
 	)
 	if err != nil {
 		return fmt.Errorf("初始化任务 Consumer 失败: %w", err)
 	}
+	executionCtx, cancelExecutions := context.WithCancel(context.WithoutCancel(ctx))
+	defer cancelExecutions()
+	workQueue := make(chan queueMessage)
+	processorsDone := w.startProcessors(executionCtx, workQueue)
 	consumeContext, err := consumer.Consume(
-		func(message jetstream.Msg) { w.process(ctx, message) },
+		func(message jetstream.Msg) {
+			select {
+			case workQueue <- message:
+			case <-ctx.Done():
+				w.nak(message, 5*time.Second, "shutdown")
+			}
+		},
 		jetstream.PullMaxMessages(w.config.Concurrency),
 		jetstream.ConsumeErrHandler(func(_ jetstream.ConsumeContext, err error) {
-			w.logger.Error("NATS Consumer 接收消息失败", "operation", "worker_consume", "consumer", durableName, "err", err)
+			w.logger.Error("NATS Consumer 接收消息失败", "operation", "worker_consume", "consumer", ConsumerName, "err", err)
 		}),
 	)
 	if err != nil {
+		close(workQueue)
+		<-processorsDone
 		return fmt.Errorf("启动任务 Consumer 失败: %w", err)
 	}
 
 	select {
 	case <-ctx.Done():
 		consumeContext.Drain()
-		shutdownTimer := time.NewTimer(w.config.ShutdownTimeout)
-		defer shutdownTimer.Stop()
+		shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), w.config.ShutdownTimeout)
+		defer cancelShutdown()
 		select {
 		case <-consumeContext.Closed():
-			return nil
-		case <-shutdownTimer.C:
+		case <-shutdownCtx.Done():
 			consumeContext.Stop()
+			cancelExecutions()
+			return errors.New("Worker 等待任务退出超时")
+		}
+		close(workQueue)
+		select {
+		case <-processorsDone:
+			return nil
+		case <-shutdownCtx.Done():
+			cancelExecutions()
 			return errors.New("Worker 等待任务退出超时")
 		}
 	case <-consumeContext.Closed():
+		close(workQueue)
+		cancelExecutions()
+		select {
+		case <-processorsDone:
+		case <-time.After(w.config.ShutdownTimeout):
+			return errors.New("NATS Consumer 停止后仍有任务未退出")
+		}
 		return errors.New("NATS Consumer 意外停止")
 	}
+}
+
+func (w *Worker) startProcessors(ctx context.Context, workQueue <-chan queueMessage) <-chan struct{} {
+	done := make(chan struct{})
+	var processors sync.WaitGroup
+	processors.Add(w.config.Concurrency)
+	for range w.config.Concurrency {
+		go func() {
+			defer processors.Done()
+			for message := range workQueue {
+				w.process(ctx, message)
+			}
+		}()
+	}
+	go func() {
+		processors.Wait()
+		close(done)
+	}()
+	return done
 }
 
 func (w *Worker) process(runContext context.Context, message queueMessage) {
@@ -164,7 +228,10 @@ func (w *Worker) process(runContext context.Context, message queueMessage) {
 	taskContext, cancel := context.WithTimeout(runContext, w.config.TaskTimeout)
 	heartbeatDone := make(chan struct{})
 	go w.heartbeat(taskContext, message, taskMessage.JobID, heartbeatDone)
+	w.active.Add(1)
+	w.executed.Add(1)
 	executionErr := w.invoke(taskContext, handler, taskMessage)
+	w.active.Add(-1)
 	cancel()
 	<-heartbeatDone
 
@@ -174,13 +241,16 @@ func (w *Worker) process(runContext context.Context, message queueMessage) {
 			w.nak(message, retryDelay(attempt), "finish_success")
 			return
 		}
+		w.succeeded.Add(1)
 		w.ack(message, taskMessage.JobID)
 		return
 	}
 
+	w.failed.Add(1)
 	code, publicMessage, retryable := classifyError(executionErr)
 	w.logger.Error("任务执行失败", "operation", "worker_execute", "job_id", taskMessage.JobID, "kind", taskMessage.Kind, "attempt", attempt, "max_attempts", job.MaxAttempts, "retryable", retryable, "err", executionErr)
 	if retryable && attempt < job.MaxAttempts {
+		w.retried.Add(1)
 		if err := w.scheduleRetry(context.WithoutCancel(runContext), taskMessage.JobID, code, publicMessage); err != nil {
 			w.logger.Error("记录任务重试状态失败", "operation", "worker_retry_state", "job_id", taskMessage.JobID, "attempt", attempt, "err", err)
 		}
@@ -188,6 +258,19 @@ func (w *Worker) process(runContext context.Context, message queueMessage) {
 		return
 	}
 	w.finishFailure(context.WithoutCancel(runContext), message, taskMessage, attempt, code, publicMessage)
+}
+
+func (w *Worker) RuntimeStats() RuntimeStats {
+	return RuntimeStats{
+		Instances: 1,
+		Consumer:  ConsumerName,
+		Capacity:  w.config.Concurrency,
+		Active:    w.active.Load(),
+		Executed:  w.executed.Load(),
+		Succeeded: w.succeeded.Load(),
+		Failed:    w.failed.Load(),
+		Retried:   w.retried.Load(),
+	}
 }
 
 func (w *Worker) claim(ctx context.Context, message task.Message, attempt int) (model.Job, bool, error) {

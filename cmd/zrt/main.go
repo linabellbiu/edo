@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -17,6 +18,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/bsm/redislock"
 	"golang.org/x/term"
 	"gorm.io/gorm"
 
@@ -37,6 +39,7 @@ import (
 	"zrt/internal/kube"
 	"zrt/internal/legacyimport"
 	"zrt/internal/logging"
+	"zrt/internal/logretention"
 	"zrt/internal/monitor"
 	"zrt/internal/notification"
 	"zrt/internal/outbox"
@@ -44,6 +47,7 @@ import (
 	"zrt/internal/repository"
 	"zrt/internal/scheduler"
 	"zrt/internal/secret"
+	"zrt/internal/systemmetrics"
 	"zrt/internal/task"
 	"zrt/internal/terminal"
 	"zrt/internal/worker"
@@ -361,6 +365,15 @@ func runMigrate(ctx context.Context, cfg config.Config, logger *slog.Logger) err
 }
 
 func runServer(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
+	// 先占用监听地址，再初始化数据库、消息队列和后台消费者。端口冲突时应立即退出，
+	// 避免启动一半后产生一串 context canceled 的连带错误。
+	listener, err := net.Listen("tcp", cfg.Server.Address)
+	if err != nil {
+		logger.Error("HTTP 服务绑定端口失败", "operation", "http_listen", "address", cfg.Server.Address, "err", err)
+		return errors.New("HTTP 服务启动失败")
+	}
+	defer listener.Close()
+
 	serviceCtx, cancelService := context.WithCancel(ctx)
 	defer cancelService()
 	resources, err := bootstrap.Open(serviceCtx, cfg, logger)
@@ -395,6 +408,8 @@ func runServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 		return errors.New("密钥服务初始化失败")
 	}
 	configurationService := configuration.NewService(resources.Database, secretManager)
+	logRetentionService := logretention.NewService(resources.Database, configurationService, logger)
+	databaseTransferService := database.NewTransferService(serviceCtx, resources.Database, cfg.Database.Driver, logger)
 	sessions := auth.NewSessionStore(resources.Redis, cfg.Auth.SessionTTL)
 	limiter := auth.NewLoginRateLimiter(resources.Redis, cfg.Auth.LoginMaxFailure, cfg.Auth.LoginWindow, configurationService)
 	loginService, err := account.NewLoginService(accounts, sessions, limiter, logger)
@@ -413,7 +428,14 @@ func runServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 	pipelineService := pipeline.NewService(resources.Database, repositoryService, secretManager)
 	dockerService := dockerengine.NewService(resources.Database, secretManager, cfg.Runtime)
 	kubernetesService := kube.NewService(resources.Database, secretManager, cfg.Runtime)
-	deploymentService := deployment.NewService(resources.Database, dockerService, kubernetesService, logger)
+	deploymentService := deployment.NewService(
+		resources.Database,
+		dockerService,
+		kubernetesService,
+		redislock.New(resources.Redis.Client()),
+		resources.Redis.Key("lock", "deployment"),
+		logger,
+	)
 	pipelineService.ConfigureExecution(dockerService, deploymentService, logger)
 	terminalService := terminal.NewService(dockerService, kubernetesService, cfg.Runtime.TerminalMaxDuration)
 	notificationService := notification.NewService(resources.Database, secretManager, nil, cfg.NATS.MaxAttempts)
@@ -428,36 +450,40 @@ func runServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 		logger.Error("初始化后台任务服务失败", "operation", "server_background_bootstrap", "err", err)
 		return errors.New("后台任务服务初始化失败")
 	}
+	systemMetricsService := systemmetrics.New(resources.Database, resources.SQL, taskWorker, resources.NATS, logger)
 
 	router := httpapi.NewRouter(httpapi.Dependencies{
-		Environment:    cfg.Environment,
-		Database:       resources.SQL,
-		Redis:          resources.Redis,
-		NATS:           resources.NATS,
-		Logger:         logger,
-		Version:        version,
-		WebRoot:        cfg.Server.WebRoot,
-		AuthConfig:     cfg.Auth,
-		Accounts:       accounts,
-		Login:          loginService,
-		LoginLimiter:   limiter,
-		Sessions:       sessions,
-		Access:         accessService,
-		Audits:         auditService,
-		Identities:     identityService,
-		Repositories:   repositoryService,
-		Pipelines:      pipelineService,
-		Docker:         dockerService,
-		Kubernetes:     kubernetesService,
-		Deployments:    deploymentService,
-		Terminal:       terminalService,
-		Configurations: configurationService,
-		Credentials:    credentialService,
-		DNS:            dnsService,
-		Notifications:  notificationService,
-		Monitors:       monitorService,
-		Scheduler:      schedulerService,
-		Tasks:          taskService,
+		Environment:      cfg.Environment,
+		Database:         resources.SQL,
+		Redis:            resources.Redis,
+		NATS:             resources.NATS,
+		Logger:           logger,
+		Version:          version,
+		WebRoot:          cfg.Server.WebRoot,
+		AuthConfig:       cfg.Auth,
+		Accounts:         accounts,
+		Login:            loginService,
+		LoginLimiter:     limiter,
+		Sessions:         sessions,
+		Access:           accessService,
+		Audits:           auditService,
+		Identities:       identityService,
+		Repositories:     repositoryService,
+		Pipelines:        pipelineService,
+		Docker:           dockerService,
+		Kubernetes:       kubernetesService,
+		Deployments:      deploymentService,
+		Terminal:         terminalService,
+		Configurations:   configurationService,
+		Credentials:      credentialService,
+		DNS:              dnsService,
+		Notifications:    notificationService,
+		Monitors:         monitorService,
+		Scheduler:        schedulerService,
+		Tasks:            taskService,
+		SystemMetrics:    systemMetricsService,
+		LogRetention:     logRetentionService,
+		DatabaseTransfer: databaseTransferService,
 	})
 	server := &http.Server{
 		Addr:              cfg.Server.Address,
@@ -496,6 +522,12 @@ func runServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 		pipelineService.RunWatcher(serviceCtx, cfg.Scheduler.PollInterval)
 		return nil
 	})
+	startBackground("server_pipeline_commit_backfill", func() error {
+		if err := pipelineService.BackfillCommitMessages(serviceCtx, 50); err != nil {
+			logger.Warn("补全历史流水线提交说明失败", "operation", "pipeline_commit_backfill", "err", err)
+		}
+		return nil
+	})
 	startBackground("server_monitor_scanner", func() error {
 		monitorService.Run(serviceCtx, cfg.Scheduler.PollInterval)
 		return nil
@@ -504,12 +536,13 @@ func runServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 		schedulerService.Run(serviceCtx, cfg.Scheduler.PollInterval)
 		return nil
 	})
+	startBackground("server_log_retention", func() error { return logRetentionService.Run(serviceCtx) })
 
 	httpErrCh := make(chan error, 1)
 	go func() {
-		logger.Info("ZRT HTTP 服务已启动", "operation", "http_listen", "address", cfg.Server.Address)
-		httpErrCh <- server.ListenAndServe()
+		httpErrCh <- server.Serve(listener)
 	}()
+	logger.Info("ZRT HTTP 服务已启动", "operation", "http_listen", "address", listener.Addr().String())
 	logger.Info("ZRT 后台任务协程已启动", "operation", "server_background_start", "concurrency", cfg.Worker.Concurrency)
 
 	var resultErr error

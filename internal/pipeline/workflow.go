@@ -145,6 +145,7 @@ func (s *Service) SaveWorkflow(ctx context.Context, applicationID, actorID strin
 			Updates(map[string]any{
 				"name": input.Name, "nodes": string(nodesJSON), "edges": string(edgesJSON),
 				"viewport": string(viewportJSON), "is_active": input.Activate,
+				"workflow_template_id": "", "workflow_template_revision": 0,
 				"revision": existing.Revision + 1, "updated_by": actorID, "updated_at": now,
 			})
 		if result.Error != nil {
@@ -152,6 +153,12 @@ func (s *Service) SaveWorkflow(ctx context.Context, applicationID, actorID strin
 		}
 		if result.RowsAffected != 1 {
 			return ErrWorkflowRevisionConflict
+		}
+		if existing.WorkflowTemplateID != "" {
+			if err := tx.Model(&model.Application{}).Where("id = ?", application.ID).
+				Updates(map[string]any{"workflow_template_id": "", "updated_at": now}).Error; err != nil {
+				return err
+			}
 		}
 		return tx.First(&saved, "id = ?", existing.ID).Error
 	})
@@ -203,21 +210,6 @@ func defaultWorkflow(application *model.Application, environments []model.Applic
 		)
 		entryIDs[environment.Key] = deployID
 		deployIDs = append(deployIDs, deployID)
-	}
-	if application.ReleaseApprovalEnabled {
-		for i := range environments {
-			if environments[i].Key != "prod" {
-				continue
-			}
-			approvalID := "approval-prod"
-			nodes = append(nodes, model.WorkflowNode{
-				ID: approvalID, Type: model.WorkflowNodeApproval, Name: "生产发布审核",
-				Position: model.WorkflowPosition{X: 120 + float64(i)*440, Y: 220},
-				Config:   model.WorkflowNodeConfig{Environment: "prod", Description: "由发布申请人之外的成员审核"},
-			})
-			entryIDs["prod"] = approvalID
-			edges = append(edges, model.WorkflowEdge{ID: uuid.NewString(), Source: approvalID, Target: "deploy-prod"})
-		}
 	}
 	for i := range environments {
 		edges = append(edges, model.WorkflowEdge{ID: uuid.NewString(), Source: "trigger-" + environments[i].Key, Target: entryIDs[environments[i].Key]})
@@ -310,13 +302,13 @@ func (s *Service) validateWorkflow(ctx context.Context, application *model.Appli
 			targetIDs = append(targetIDs, nodes[i].Config.DeploymentTargetID)
 		}
 	}
-	activeTargets := make(map[string]model.EnvironmentType, len(targetIDs))
+	activeTargets := make(map[string]struct{}, len(targetIDs))
 	if len(targetIDs) > 0 {
 		var targets []model.DeploymentTarget
 		if err := s.db.WithContext(ctx).Model(&model.DeploymentTarget{}).
-			Select("id", "environment").Where("id IN ? AND is_active = ?", targetIDs, true).Find(&targets).Error; err == nil {
+			Select("id").Where("id IN ? AND is_active = ?", targetIDs, true).Find(&targets).Error; err == nil {
 			for i := range targets {
-				activeTargets[targets[i].ID] = targets[i].Environment
+				activeTargets[targets[i].ID] = struct{}{}
 			}
 		}
 	}
@@ -441,42 +433,7 @@ func (s *Service) validateWorkflow(ctx context.Context, application *model.Appli
 			issues = append(issues, WorkflowIssue{Code: "unreachable_node", Message: "节点没有上游入口", NodeID: id})
 		}
 	}
-	if application.ReleaseApprovalEnabled && visited == len(nodeByID) {
-		issues = append(issues, approvalPathIssues(nodeByID, outgoing, activeTargets)...)
-	}
 	return uniqueIssues(issues)
-}
-
-func approvalPathIssues(nodes map[string]model.WorkflowNode, outgoing map[string][]string, targets map[string]model.EnvironmentType) []WorkflowIssue {
-	issues := make([]WorkflowIssue, 0)
-	type state struct {
-		id       string
-		approved bool
-	}
-	queue := make([]state, 0)
-	for id, node := range nodes {
-		if workflowSourceNode(node.Type) {
-			queue = append(queue, state{id: id})
-		}
-	}
-	seen := make(map[state]struct{})
-	for len(queue) > 0 {
-		current := queue[0]
-		queue = queue[1:]
-		if _, ok := seen[current]; ok {
-			continue
-		}
-		seen[current] = struct{}{}
-		node := nodes[current.id]
-		approved := current.approved || node.Type == model.WorkflowNodeApproval
-		if node.Type == model.WorkflowNodeDeploy && targets[node.Config.DeploymentTargetID] == model.EnvironmentProduction && !approved {
-			issues = append(issues, WorkflowIssue{Code: "approval_required", Message: "生产部署的每条路径都必须经过审核节点", NodeID: node.ID})
-		}
-		for _, target := range outgoing[current.id] {
-			queue = append(queue, state{id: target, approved: approved})
-		}
-	}
-	return issues
 }
 
 func workflowSourceNode(nodeType model.WorkflowNodeType) bool {
@@ -506,8 +463,20 @@ func containsEvent(events []string, expected string) bool {
 	return false
 }
 
-func workflowSnapshotJSON(workflow *model.ReleaseWorkflow, approvalEnabled bool) (string, error) {
-	data, err := json.Marshal(workflowSnapshot{Nodes: workflow.Nodes, Edges: workflow.Edges, ApprovalEnabled: approvalEnabled})
+func workflowHasApprovalNode(nodes []model.WorkflowNode) bool {
+	for i := range nodes {
+		if nodes[i].Type == model.WorkflowNodeApproval {
+			return true
+		}
+	}
+	return false
+}
+
+func workflowSnapshotJSON(workflow *model.ReleaseWorkflow) (string, error) {
+	data, err := json.Marshal(workflowSnapshot{
+		Nodes: workflow.Nodes, Edges: workflow.Edges,
+		ApprovalEnabled: workflowHasApprovalNode(workflow.Nodes),
+	})
 	if err != nil {
 		return "", fmt.Errorf("保存流水线快照失败: %w", err)
 	}
@@ -515,7 +484,8 @@ func workflowSnapshotJSON(workflow *model.ReleaseWorkflow, approvalEnabled bool)
 }
 
 func newWorkflowRun(application *model.Application, workflow *model.ReleaseWorkflow, node model.WorkflowNode, trigger, ref, commitSHA, actorID, message string, now time.Time) (*model.PipelineRun, error) {
-	snapshot, err := workflowSnapshotJSON(workflow, application.ReleaseApprovalEnabled)
+	approvalRequired := workflowHasApprovalNode(workflow.Nodes)
+	snapshot, err := workflowSnapshotJSON(workflow)
 	if err != nil {
 		return nil, err
 	}
@@ -525,7 +495,7 @@ func newWorkflowRun(application *model.Application, workflow *model.ReleaseWorkf
 		Stage: string(node.Type), Environment: node.Config.Environment,
 		WorkflowID: workflow.ID, WorkflowRevision: workflow.Revision,
 		CurrentNodeID: node.ID, WorkflowSnapshot: snapshot,
-		ApprovalRequired: application.ReleaseApprovalEnabled,
+		ApprovalRequired: approvalRequired,
 		Message:          message, CreatedBy: actorID, CreatedAt: now, UpdatedAt: now,
 	}, nil
 }
@@ -560,7 +530,11 @@ func applicationPollSources(application *model.Application) []model.WorkflowNode
 		result := make([]model.WorkflowNode, 0)
 		for i := range application.Workflow.Nodes {
 			node := application.Workflow.Nodes[i]
-			if node.Type == model.WorkflowNodeTrigger && containsEvent(node.Config.Events, "pull") {
+			// Push 和 Tag 描述的是远端引用发生了什么变化，不限定变化必须由 Webhook 告知。
+			// ZRT 主动读取远端引用，Webhook 只保留为可选的低延迟通道。
+			if node.Type == model.WorkflowNodeTrigger &&
+				(containsEvent(node.Config.Events, "pull") || containsEvent(node.Config.Events, "push") ||
+					containsEvent(node.Config.Events, "pr") || containsEvent(node.Config.Events, "tag")) {
 				result = append(result, node)
 			}
 		}
@@ -569,7 +543,7 @@ func applicationPollSources(application *model.Application) []model.WorkflowNode
 	result := make([]model.WorkflowNode, 0, len(application.Environments))
 	for i := range application.Environments {
 		environment := application.Environments[i]
-		if !environment.PollEnabled {
+		if !environment.PollEnabled && !environment.WatchPush && !environment.WatchPullRequest && !environment.WatchTags {
 			continue
 		}
 		result = append(result, model.WorkflowNode{
@@ -614,20 +588,62 @@ func workflowEventName(repositoryEvent string) string {
 	return map[string]string{"branch_push": "push", "pull_request": "pr", "tag_push": "tag"}[repositoryEvent]
 }
 
-func selectWorkflowRef(source model.WorkflowNode, refs repository.RefResult) (string, string) {
-	if containsEvent(source.Config.Events, "tag") && source.Config.TagPattern != "" {
-		for i := len(refs.Tags) - 1; i >= 0; i-- {
-			if matchTag(source.Config.TagPattern, refs.Tags[i].Name) {
-				return "refs/tags/" + refs.Tags[i].Name, refs.Tags[i].SHA
+type workflowPollCandidate struct {
+	Event  string
+	Ref    string
+	Commit string
+}
+
+func workflowPollCandidates(source model.WorkflowNode, refs repository.RefResult) []workflowPollCandidate {
+	result := make([]workflowPollCandidate, 0)
+	// pull 是旧版本“定时拉取”的兼容标识，与分支变更使用同一个游标，避免重复运行。
+	if containsEvent(source.Config.Events, "pull") || containsEvent(source.Config.Events, "push") {
+		for i := range refs.Branches {
+			if matched, err := path.Match(source.Config.Branch, refs.Branches[i].Name); err == nil && matched {
+				result = append(result, workflowPollCandidate{
+					Event: "push", Ref: "refs/heads/" + refs.Branches[i].Name, Commit: refs.Branches[i].SHA,
+				})
 			}
 		}
 	}
-	for i := range refs.Branches {
-		if matched, err := path.Match(source.Config.Branch, refs.Branches[i].Name); err == nil && matched {
-			return "refs/heads/" + refs.Branches[i].Name, refs.Branches[i].SHA
+	if containsEvent(source.Config.Events, "pr") {
+		for i := range refs.PullRequests {
+			pullRequest := refs.PullRequests[i]
+			branch := pullRequest.TargetBranch
+			if branch == "" {
+				branch = pullRequest.SourceBranch
+			}
+			if branch == "" {
+				branch = branchForCommit(refs.Branches, pullRequest.SHA)
+			}
+			if matched, err := path.Match(source.Config.Branch, branch); err == nil && matched {
+				result = append(result, workflowPollCandidate{Event: "pr", Ref: pullRequest.Ref, Commit: pullRequest.SHA})
+			}
 		}
 	}
-	return "", ""
+	if containsEvent(source.Config.Events, "tag") {
+		for i := range refs.Tags {
+			if matchTag(source.Config.TagPattern, refs.Tags[i].Name) {
+				result = append(result, workflowPollCandidate{
+					Event: "tag", Ref: "refs/tags/" + refs.Tags[i].Name, Commit: refs.Tags[i].SHA,
+				})
+			}
+		}
+	}
+	return result
+}
+
+func branchForCommit(branches []repository.GitRef, commit string) string {
+	for i := range branches {
+		if branches[i].SHA == commit {
+			return branches[i].Name
+		}
+	}
+	return ""
+}
+
+func polledRunTrigger(event string) string {
+	return map[string]string{"push": "poll_push", "pr": "poll_pr", "tag": "poll_tag"}[event]
 }
 
 func (s *Service) runFromSource(application *model.Application, source model.WorkflowNode, trigger, ref, commitSHA, actorID, message string, now time.Time) (*model.PipelineRun, error) {
@@ -647,6 +663,7 @@ func parseWorkflowSnapshot(run *model.PipelineRun) (*workflowSnapshot, error) {
 	if run.WorkflowSnapshot == "" || json.Unmarshal([]byte(run.WorkflowSnapshot), &snapshot) != nil {
 		return nil, ErrInvalidWorkflowTransition
 	}
+	snapshot.ApprovalEnabled = workflowHasApprovalNode(snapshot.Nodes)
 	return &snapshot, nil
 }
 
@@ -661,6 +678,9 @@ func (s *Service) DeleteRun(ctx context.Context, runID string) error {
 		}
 		if err := tx.Where("pipeline_run_id = ?", run.ID).Delete(&model.PipelineRunApproval{}).Error; err != nil {
 			return fmt.Errorf("删除流水线运行审核记录失败: %w", err)
+		}
+		if err := tx.Where("pipeline_run_id = ?", run.ID).Delete(&model.PipelineRunLog{}).Error; err != nil {
+			return fmt.Errorf("删除流水线运行日志失败: %w", err)
 		}
 		if err := tx.Where("pipeline_run_id = ?", run.ID).Delete(&model.PipelineRunRepository{}).Error; err != nil {
 			return fmt.Errorf("删除流水线运行仓库快照失败: %w", err)
@@ -710,6 +730,7 @@ func (s *Service) RetryRun(ctx context.Context, runID, actorID string) (*model.P
 		return nil, err
 	}
 	run.RetryOfID = failed.ID
+	run.CommitMessage = failed.CommitMessage
 	components := pipelineRunRepositories(application, run.ID, run.Ref, run.CommitSHA, now)
 	if err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if err := tx.Create(run).Error; err != nil {
@@ -770,10 +791,11 @@ func (s *Service) AdvanceRun(ctx context.Context, runID, actorID, targetNodeID s
 			return nil, ErrInvalidWorkflowTransition
 		}
 		now := time.Now().UTC()
+		message := "当前节点：" + current.Name + "；状态：已完成"
 		if err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 			if err := tx.Model(&run).Updates(map[string]any{
 				"status": model.PipelineRunSucceeded, "stage": "completed",
-				"message": "真实发布成功，流水线运行已完成", "updated_at": now,
+				"message": message, "updated_at": now,
 			}).Error; err != nil {
 				return err
 			}
@@ -782,7 +804,7 @@ func (s *Service) AdvanceRun(ctx context.Context, runID, actorID, targetNodeID s
 		}); err != nil {
 			return nil, err
 		}
-		run.Status, run.Stage, run.Message, run.UpdatedAt = model.PipelineRunSucceeded, "completed", "真实发布成功，流水线运行已完成", now
+		run.Status, run.Stage, run.Message, run.UpdatedAt = model.PipelineRunSucceeded, "completed", message, now
 		return &run, nil
 	}
 	if targetNodeID == "" && len(targets) == 1 {
@@ -849,7 +871,7 @@ func (s *Service) enqueueDeployExecution(ctx context.Context, run *model.Pipelin
 				"current_node_id": node.ID, "environment": node.Config.Environment,
 				"status": model.PipelineRunRunning, "stage": "queued",
 				"execution_job_id": job.ID, "deployment_id": "", "image": "",
-				"message": "真实构建与发布任务已提交", "updated_at": now,
+				"message": "当前节点：" + node.Name + "；状态：等待执行", "updated_at": now,
 			})
 		if result.Error != nil {
 			return result.Error
@@ -865,7 +887,7 @@ func (s *Service) enqueueDeployExecution(ctx context.Context, run *model.Pipelin
 	run.CurrentNodeID, run.Environment = node.ID, node.Config.Environment
 	run.Status, run.Stage = model.PipelineRunRunning, "queued"
 	run.ExecutionJobID, run.DeploymentID, run.Image = jobID, "", ""
-	run.Message, run.UpdatedAt = "真实构建与发布任务已提交", now
+	run.Message, run.UpdatedAt = "当前节点："+node.Name+"；状态：等待执行", now
 	return run, nil
 }
 
@@ -907,7 +929,7 @@ func (s *Service) ApproveRun(ctx context.Context, runID, actorID string) (*model
 			Where("id = ? AND status = ?", run.ID, model.PipelineRunAwaitingApproval).
 			Updates(map[string]any{
 				"status": model.PipelineRunRunning, "approved_by": actorID, "approved_at": now,
-				"message": "审核已通过，可以继续推进", "updated_at": now,
+				"message": "审核通过", "updated_at": now,
 			})
 		if result.Error != nil {
 			return result.Error
@@ -916,11 +938,18 @@ func (s *Service) ApproveRun(ctx context.Context, runID, actorID string) (*model
 			return ErrInvalidWorkflowTransition
 		}
 		run.Status, run.ApprovedBy, run.ApprovedAt = model.PipelineRunRunning, &actorID, &now
-		run.Message, run.UpdatedAt = "审核已通过，可以继续推进", now
+		run.Message, run.UpdatedAt = "审核通过", now
 		return nil
 	})
 	if err != nil {
 		return nil, err
 	}
-	return &run, nil
+	advanceContext, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+	defer cancel()
+	advanced, err := s.AdvanceRun(advanceContext, run.ID, actorID, "")
+	if err == nil {
+		return advanced, nil
+	}
+	cause := fmt.Errorf("审核节点 %s 通过后自动推进失败: %w", run.CurrentNodeID, err)
+	return nil, s.failExecution(advanceContext, run.ID, "审核通过后未能进入下一节点", cause)
 }

@@ -18,23 +18,22 @@ type pipelineHandler struct {
 }
 
 type applicationRequest struct {
-	Name                   string                          `json:"name" binding:"required,max=128"`
-	Description            string                          `json:"description" binding:"max=500"`
-	RepositoryID           string                          `json:"repository_id" binding:"required,max=36"`
-	Branch                 string                          `json:"branch" binding:"max=255"`
-	PollEnabled            bool                            `json:"poll_enabled"`
-	PollIntervalSeconds    int                             `json:"poll_interval_seconds" binding:"omitempty,oneof=3 5 10 60"`
-	WatchPush              bool                            `json:"watch_push"`
-	WatchPullRequest       bool                            `json:"watch_pull_request"`
-	WatchTags              bool                            `json:"watch_tags"`
-	TagPattern             string                          `json:"tag_pattern" binding:"max=255"`
-	BuildPlanID            string                          `json:"build_plan_id" binding:"max=36"`
-	ImageRegistryID        *string                         `json:"image_registry_id" binding:"omitempty,max=36"`
-	DeploymentPlanID       string                          `json:"deployment_plan_id" binding:"max=36"`
-	DeploymentTargetID     string                          `json:"deployment_target_id" binding:"max=36"`
-	WorkflowTemplateID     string                          `json:"workflow_template_id" binding:"max=36"`
-	ReleaseApprovalEnabled bool                            `json:"release_approval_enabled"`
-	Environments           []applicationEnvironmentRequest `json:"environments" binding:"omitempty,max=4,dive"`
+	Name                string                          `json:"name" binding:"required,max=128"`
+	Description         string                          `json:"description" binding:"max=500"`
+	RepositoryID        string                          `json:"repository_id" binding:"required,max=36"`
+	Branch              string                          `json:"branch" binding:"max=255"`
+	PollEnabled         bool                            `json:"poll_enabled"`
+	PollIntervalSeconds int                             `json:"poll_interval_seconds" binding:"omitempty,oneof=3 5 10 60"`
+	WatchPush           bool                            `json:"watch_push"`
+	WatchPullRequest    bool                            `json:"watch_pull_request"`
+	WatchTags           bool                            `json:"watch_tags"`
+	TagPattern          string                          `json:"tag_pattern" binding:"max=255"`
+	BuildPlanID         string                          `json:"build_plan_id" binding:"max=36"`
+	ImageRegistryID     *string                         `json:"image_registry_id" binding:"omitempty,max=36"`
+	DeploymentPlanID    string                          `json:"deployment_plan_id" binding:"max=36"`
+	DeploymentTargetID  string                          `json:"deployment_target_id" binding:"max=36"`
+	WorkflowTemplateID  string                          `json:"workflow_template_id" binding:"max=36"`
+	Environments        []applicationEnvironmentRequest `json:"environments" binding:"omitempty,max=4,dive"`
 }
 
 type applicationEnvironmentRequest struct {
@@ -500,6 +499,26 @@ func (h pipelineHandler) createDeploymentPlan(c *gin.Context) {
 	c.JSON(http.StatusCreated, gin.H{"deployment_plan": plan})
 }
 
+func (h pipelineHandler) updateDeploymentPlan(c *gin.Context) {
+	var request deploymentPlanRequest
+	if err := c.ShouldBindJSON(&request); err != nil {
+		h.logger.Warn("更新部署方案参数无效", "operation", "deployment_plan_update_bind", "request_id", requestIDFrom(c), "deployment_plan_id", c.Param("id"), "err", err)
+		writeError(c, http.StatusBadRequest, "invalid_deployment_plan", pipeline.ErrInvalidDeploymentPlan.Error())
+		return
+	}
+	plan, err := h.service.UpdateDeploymentPlan(c.Request.Context(), c.Param("id"), pipeline.DeploymentPlanInput{
+		Name: request.Name, Kind: request.Kind, Description: request.Description, Script: request.Script,
+		HelmChart: request.HelmChart, HelmValues: request.HelmValues, ComposeFile: request.ComposeFile,
+		ServiceName: request.ServiceName, TimeoutSeconds: request.TimeoutSeconds,
+	})
+	if err != nil {
+		h.writeError(c, "deployment_plan_update", err)
+		return
+	}
+	setAuditResourceID(c, plan.ID)
+	c.JSON(http.StatusOK, gin.H{"deployment_plan": plan})
+}
+
 func (h pipelineHandler) listRuns(c *gin.Context) {
 	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "50"))
 	runs, err := h.service.ListRuns(c.Request.Context(), limit)
@@ -539,6 +558,8 @@ func (h pipelineHandler) writeError(c *gin.Context, operation string, err error)
 		writeError(c, http.StatusConflict, "delivery_config_exists", err.Error())
 	case errors.Is(err, pipeline.ErrApplicationNotFound):
 		writeError(c, http.StatusNotFound, "application_not_found", err.Error())
+	case errors.Is(err, pipeline.ErrDeploymentPlanNotFound):
+		writeError(c, http.StatusNotFound, "deployment_plan_not_found", err.Error())
 	case errors.Is(err, pipeline.ErrWorkflowNotFound), errors.Is(err, pipeline.ErrWorkflowTemplateNotFound):
 		writeError(c, http.StatusNotFound, "workflow_not_found", err.Error())
 	case errors.Is(err, pipeline.ErrPipelineRunNotFound):
@@ -589,11 +610,10 @@ func toApplicationInput(request applicationRequest) pipeline.ApplicationInput {
 		WatchPullRequest: request.WatchPullRequest, WatchTags: request.WatchTags,
 		TagPattern: request.TagPattern, BuildPlanID: request.BuildPlanID,
 		ImageRegistryID: imageRegistryID, ImageRegistrySet: request.ImageRegistryID != nil,
-		DeploymentPlanID:       request.DeploymentPlanID,
-		DeploymentTargetID:     request.DeploymentTargetID,
-		WorkflowTemplateID:     request.WorkflowTemplateID,
-		ReleaseApprovalEnabled: request.ReleaseApprovalEnabled,
-		Environments:           toEnvironmentInputs(request.Environments),
+		DeploymentPlanID:   request.DeploymentPlanID,
+		DeploymentTargetID: request.DeploymentTargetID,
+		WorkflowTemplateID: request.WorkflowTemplateID,
+		Environments:       toEnvironmentInputs(request.Environments),
 	}
 }
 

@@ -2,6 +2,7 @@ package account
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"testing"
 	"time"
@@ -33,6 +34,35 @@ func TestEnsureInitialAdmin(t *testing.T) {
 	again, created, err := service.EnsureInitialAdmin(context.Background())
 	if err != nil || created || again != nil {
 		t.Fatalf("重复初始化不应创建账户: created=%v admin=%+v err=%v", created, again, err)
+	}
+}
+
+func TestChangePasswordVerifiesCurrentPasswordAndInvalidatesSessions(t *testing.T) {
+	db := openAccountTestDatabase(t, "change-password")
+	service := NewService(db)
+	user, err := service.CreateUser(context.Background(), "operator", "运维人员", "old-password-123")
+	if err != nil {
+		t.Fatalf("创建测试用户失败: %v", err)
+	}
+	if err := service.ChangePassword(context.Background(), user.ID, "wrong-password", "new-password-456"); !errors.Is(err, ErrCurrentPassword) {
+		t.Fatalf("错误的当前密码未被拒绝: %v", err)
+	}
+	if err := service.ChangePassword(context.Background(), user.ID, "old-password-123", "old-password-123"); !errors.Is(err, ErrPasswordUnchanged) {
+		t.Fatalf("重复使用旧密码未被拒绝: %v", err)
+	}
+	if err := service.ChangePassword(context.Background(), user.ID, "old-password-123", "new-password-456"); err != nil {
+		t.Fatalf("修改密码失败: %v", err)
+	}
+	updated, err := service.FindByID(context.Background(), user.ID)
+	if err != nil {
+		t.Fatalf("读取修改后用户失败: %v", err)
+	}
+	if updated.AuthVersion != user.AuthVersion+1 {
+		t.Fatalf("认证版本未递增: got %d want %d", updated.AuthVersion, user.AuthVersion+1)
+	}
+	matched, err := auth.ComparePassword("new-password-456", updated.PasswordHash)
+	if err != nil || !matched {
+		t.Fatalf("新密码无法通过校验: matched=%v err=%v", matched, err)
 	}
 }
 

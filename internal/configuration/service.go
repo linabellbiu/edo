@@ -2,6 +2,7 @@ package configuration
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"regexp"
@@ -31,6 +32,9 @@ const (
 	systemNamespace              = "zrt"
 	externalGitWebhookSettingKey = "EXTERNAL_GIT_WEBHOOK_ENABLED"
 	loginLockoutSettingKey       = "LOGIN_LOCKOUT_ENABLED"
+	logRetentionSettingKey       = "LOG_RETENTION_SETTINGS"
+	defaultPipelineLogDays       = 30
+	defaultAuditLogDays          = 180
 )
 
 type Input struct {
@@ -84,6 +88,19 @@ type ExternalGitWebhookSettings struct {
 type LoginLockoutSettings struct {
 	Enabled bool `json:"enabled"`
 	Version int  `json:"version"`
+}
+
+type LogRetentionSettings struct {
+	Enabled         bool `json:"enabled"`
+	PipelineLogDays int  `json:"pipeline_log_days"`
+	AuditLogDays    int  `json:"audit_log_days"`
+	Version         int  `json:"version"`
+}
+
+type logRetentionValue struct {
+	Enabled         bool `json:"enabled"`
+	PipelineLogDays int  `json:"pipeline_log_days"`
+	AuditLogDays    int  `json:"audit_log_days"`
 }
 
 type systemBooleanSettings struct {
@@ -350,6 +367,121 @@ func (s *Service) UpdateLoginLockoutSettings(
 ) (LoginLockoutSettings, error) {
 	settings, err := s.updateSystemBooleanSettings(ctx, actorID, loginLockoutSettingKey, "登录锁定", enabled, expectedVersion)
 	return LoginLockoutSettings(settings), err
+}
+
+// GetLogRetentionSettings 在尚未配置时返回安全的建议值，但默认不启用自动删除。
+// 这避免升级后在管理员未确认保留周期前清理历史记录。
+func (s *Service) GetLogRetentionSettings(ctx context.Context) (LogRetentionSettings, error) {
+	defaults := LogRetentionSettings{PipelineLogDays: defaultPipelineLogDays, AuditLogDays: defaultAuditLogDays}
+	var item model.Configuration
+	err := s.db.WithContext(ctx).Where(
+		"namespace = ? AND environment = ? AND key = ?",
+		systemNamespace, model.EnvironmentGlobal, logRetentionSettingKey,
+	).First(&item).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return defaults, nil
+	}
+	if err != nil {
+		return LogRetentionSettings{}, fmt.Errorf("读取日志保留设置失败: %w", err)
+	}
+	if item.IsSecret || item.SecretCiphertext != "" || !item.IsActive {
+		return LogRetentionSettings{}, ErrInvalidConfiguration
+	}
+	var value logRetentionValue
+	if err := json.Unmarshal([]byte(item.Value), &value); err != nil || !validLogRetention(value) {
+		return LogRetentionSettings{}, ErrInvalidConfiguration
+	}
+	return LogRetentionSettings{
+		Enabled: value.Enabled, PipelineLogDays: value.PipelineLogDays,
+		AuditLogDays: value.AuditLogDays, Version: item.Version,
+	}, nil
+}
+
+func (s *Service) UpdateLogRetentionSettings(
+	ctx context.Context,
+	actorID string,
+	enabled bool,
+	pipelineLogDays, auditLogDays, expectedVersion int,
+) (LogRetentionSettings, error) {
+	value := logRetentionValue{Enabled: enabled, PipelineLogDays: pipelineLogDays, AuditLogDays: auditLogDays}
+	if expectedVersion < 0 || !validLogRetention(value) {
+		return LogRetentionSettings{}, ErrInvalidConfiguration
+	}
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		return LogRetentionSettings{}, fmt.Errorf("序列化日志保留设置失败: %w", err)
+	}
+	var updated model.Configuration
+	err = s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var current model.Configuration
+		err := tx.Where(
+			"namespace = ? AND environment = ? AND key = ?",
+			systemNamespace, model.EnvironmentGlobal, logRetentionSettingKey,
+		).First(&current).Error
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			if expectedVersion != 0 {
+				return ErrVersionConflict
+			}
+			now := time.Now().UTC()
+			current = model.Configuration{
+				ID: uuid.NewString(), Namespace: systemNamespace, Environment: model.EnvironmentGlobal,
+				Key: logRetentionSettingKey, Value: string(encoded), Version: 1, IsActive: true,
+				CreatedBy: actorID, UpdatedBy: actorID, CreatedAt: now, UpdatedAt: now,
+			}
+			if err := tx.Create(&current).Error; err != nil {
+				if errors.Is(err, gorm.ErrDuplicatedKey) {
+					return ErrVersionConflict
+				}
+				return err
+			}
+			if err := tx.Create(revisionFrom(&current, actorID)).Error; err != nil {
+				return err
+			}
+			updated = current
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if current.Version != expectedVersion {
+			return ErrVersionConflict
+		}
+		now := time.Now().UTC()
+		nextVersion := current.Version + 1
+		result := tx.Model(&model.Configuration{}).Where("id = ? AND version = ?", current.ID, current.Version).
+			Updates(map[string]any{
+				"value": string(encoded), "secret_ciphertext": "", "is_secret": false,
+				"is_active": true, "version": nextVersion, "updated_by": actorID, "updated_at": now,
+			})
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected != 1 {
+			return ErrVersionConflict
+		}
+		current.Value, current.SecretCiphertext, current.IsSecret, current.IsActive = string(encoded), "", false, true
+		current.Version, current.UpdatedBy, current.UpdatedAt = nextVersion, actorID, now
+		if err := tx.Create(revisionFrom(&current, actorID)).Error; err != nil {
+			return err
+		}
+		updated = current
+		return nil
+	})
+	if err != nil {
+		if errors.Is(err, ErrVersionConflict) || errors.Is(err, ErrInvalidConfiguration) {
+			return LogRetentionSettings{}, err
+		}
+		return LogRetentionSettings{}, fmt.Errorf("更新日志保留设置失败: %w", err)
+	}
+	return LogRetentionSettings{
+		Enabled: enabled, PipelineLogDays: pipelineLogDays,
+		AuditLogDays: auditLogDays, Version: updated.Version,
+	}, nil
+}
+
+func validLogRetention(value logRetentionValue) bool {
+	return value.PipelineLogDays >= 1 && value.PipelineLogDays <= 3650 &&
+		value.AuditLogDays >= 1 && value.AuditLogDays <= 3650
 }
 
 func (s *Service) getSystemBooleanSettings(ctx context.Context, key, label string) (systemBooleanSettings, error) {

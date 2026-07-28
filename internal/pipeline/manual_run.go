@@ -90,15 +90,22 @@ func (s *Service) ExecuteRun(ctx context.Context, runID, actorID, ref, commitSHA
 	if sourceNodeID != "" && (application.Workflow == nil || manualWorkflowSource(application.Workflow, ref, sourceNodeID) == nil) {
 		return nil, ErrInvalidWorkflow
 	}
+	commitMessage := run.CommitMessage
+	if commitMessage == "" {
+		links := applicationRepositoryLinks(application)
+		if len(links) > 0 {
+			commitMessage = s.resolveCommitMessage(ctx, links[0].RepositoryID, ref, commitSHA)
+		}
+	}
 	if !pipelineExecutionConfigured(application) {
 		if run.CommitSHA != "" {
 			return nil, ErrPipelineIncomplete
 		}
-		return s.saveBlockedManualSelection(ctx, &run, application, ref, commitSHA, sourceNodeID, pipelineExecutionIncompleteMessage(application))
+		return s.saveBlockedManualSelection(ctx, &run, application, ref, commitSHA, commitMessage, sourceNodeID, pipelineExecutionIncompleteMessage(application))
 	}
 	if application.Workflow == nil || !application.Workflow.IsActive {
 		if run.CommitSHA == "" {
-			return s.saveBlockedManualSelection(ctx, &run, application, ref, commitSHA, sourceNodeID, "已选择代码版本；应用流水线尚未启用")
+			return s.saveBlockedManualSelection(ctx, &run, application, ref, commitSHA, commitMessage, sourceNodeID, "已选择代码版本；应用流水线尚未启用")
 		}
 		return nil, ErrWorkflowNotActive
 	}
@@ -120,12 +127,13 @@ func (s *Service) ExecuteRun(ctx context.Context, runID, actorID, ref, commitSHA
 		return nil, err
 	}
 	prepared.ID = run.ID
+	prepared.CommitMessage = commitMessage
 	components := pipelineRunRepositories(application, run.ID, ref, commitSHA, now)
 	err = s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		result := tx.Model(&model.PipelineRun{}).
 			Where("id = ? AND status = ? AND commit_sha = ?", run.ID, model.PipelineRunBlocked, run.CommitSHA).
 			Updates(map[string]any{
-				"trigger": prepared.Trigger, "ref": prepared.Ref, "commit_sha": prepared.CommitSHA,
+				"trigger": prepared.Trigger, "ref": prepared.Ref, "commit_sha": prepared.CommitSHA, "commit_message": prepared.CommitMessage,
 				"status": prepared.Status, "stage": prepared.Stage, "environment": prepared.Environment,
 				"workflow_id": prepared.WorkflowID, "workflow_revision": prepared.WorkflowRevision,
 				"current_node_id": prepared.CurrentNodeID, "workflow_snapshot": prepared.WorkflowSnapshot,
@@ -153,7 +161,7 @@ func (s *Service) saveBlockedManualSelection(
 	ctx context.Context,
 	run *model.PipelineRun,
 	application *model.Application,
-	ref, commitSHA, sourceNodeID, message string,
+	ref, commitSHA, commitMessage, sourceNodeID, message string,
 ) (*model.PipelineRun, error) {
 	now := time.Now().UTC()
 	components := pipelineRunRepositories(application, run.ID, ref, commitSHA, now)
@@ -164,7 +172,7 @@ func (s *Service) saveBlockedManualSelection(
 		result := tx.Model(&model.PipelineRun{}).
 			Where("id = ? AND status = ? AND commit_sha = ?", run.ID, model.PipelineRunBlocked, "").
 			Updates(map[string]any{
-				"trigger": "manual", "ref": ref, "commit_sha": commitSHA,
+				"trigger": "manual", "ref": ref, "commit_sha": commitSHA, "commit_message": commitMessage,
 				"status": model.PipelineRunBlocked, "stage": "configured", "environment": "",
 				"workflow_id": "", "workflow_revision": 0, "current_node_id": sourceNodeID,
 				"workflow_snapshot": "", "message": message, "updated_at": now,
@@ -186,6 +194,7 @@ func (s *Service) saveBlockedManualSelection(
 	run.Trigger = "manual"
 	run.Ref = ref
 	run.CommitSHA = commitSHA
+	run.CommitMessage = commitMessage
 	run.Status = model.PipelineRunBlocked
 	run.Stage = "configured"
 	run.Environment = ""

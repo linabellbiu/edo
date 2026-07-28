@@ -63,6 +63,47 @@ func TestLoginMeAndLogout(t *testing.T) {
 	}
 }
 
+func TestChangePasswordInvalidatesCurrentSession(t *testing.T) {
+	router, closeTest := newAuthTestRouter(t)
+	defer closeTest()
+
+	login := performJSONRequest(t, router, http.MethodPost, "/api/v1/auth/login", map[string]string{
+		"username": "admin", "password": "correct horse battery staple",
+	}, nil)
+	if login.Code != http.StatusOK {
+		t.Fatalf("登录失败: status=%d body=%s", login.Code, login.Body.String())
+	}
+	cookie := login.Result().Cookies()[0]
+	wrong := performJSONRequest(t, router, http.MethodPut, "/api/v1/auth/password", map[string]string{
+		"current_password": "wrong password", "new_password": "new correct password 123",
+	}, cookie)
+	if wrong.Code != http.StatusBadRequest {
+		t.Fatalf("错误的当前密码未被拒绝: status=%d body=%s", wrong.Code, wrong.Body.String())
+	}
+	changed := performJSONRequest(t, router, http.MethodPut, "/api/v1/auth/password", map[string]string{
+		"current_password": "correct horse battery staple", "new_password": "new correct password 123",
+	}, cookie)
+	if changed.Code != http.StatusOK {
+		t.Fatalf("修改密码失败: status=%d body=%s", changed.Code, changed.Body.String())
+	}
+	me := performJSONRequest(t, router, http.MethodGet, "/api/v1/auth/me", nil, cookie)
+	if me.Code != http.StatusUnauthorized {
+		t.Fatalf("修改密码后旧会话仍有效: status=%d", me.Code)
+	}
+	oldLogin := performJSONRequest(t, router, http.MethodPost, "/api/v1/auth/login", map[string]string{
+		"username": "admin", "password": "correct horse battery staple",
+	}, nil)
+	if oldLogin.Code != http.StatusUnauthorized {
+		t.Fatalf("旧密码仍可登录: status=%d", oldLogin.Code)
+	}
+	newLogin := performJSONRequest(t, router, http.MethodPost, "/api/v1/auth/login", map[string]string{
+		"username": "admin", "password": "new correct password 123",
+	}, nil)
+	if newLogin.Code != http.StatusOK {
+		t.Fatalf("新密码无法登录: status=%d body=%s", newLogin.Code, newLogin.Body.String())
+	}
+}
+
 func newAuthTestRouter(t *testing.T) (*gin.Engine, func()) {
 	t.Helper()
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))

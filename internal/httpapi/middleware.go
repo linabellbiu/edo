@@ -11,6 +11,7 @@ import (
 	"github.com/google/uuid"
 
 	"zrt/internal/audit"
+	"zrt/internal/database"
 	"zrt/internal/model"
 )
 
@@ -74,6 +75,19 @@ func securityHeaders() gin.HandlerFunc {
 		c.Header("X-Frame-Options", "DENY")
 		c.Header("Referrer-Policy", "same-origin")
 		c.Next()
+	}
+}
+
+func databaseTransferGuard(service *database.TransferService, logger *slog.Logger) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if service == nil || !service.InProgress() || c.Request.Method == http.MethodGet || c.Request.Method == http.MethodHead || c.Request.Method == http.MethodOptions {
+			c.Next()
+			return
+		}
+		logger.Warn("数据库迁移期间拒绝写请求", "operation", "database_transfer_write_guard", "request_id", requestIDFrom(c), "method", c.Request.Method, "path", c.Request.URL.Path)
+		c.AbortWithStatusJSON(http.StatusServiceUnavailable, errorResponse{
+			Code: "database_transfer_in_progress", Message: "数据库迁移中，暂停执行写操作", RequestID: requestIDFrom(c),
+		})
 	}
 }
 

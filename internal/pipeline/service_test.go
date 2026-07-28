@@ -8,9 +8,12 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"testing"
 	"time"
 
+	git "github.com/go-git/go-git/v5"
+	"github.com/go-git/go-git/v5/plumbing/object"
 	"gorm.io/gorm"
 
 	"zrt/internal/config"
@@ -247,7 +250,7 @@ func TestRepositoryEventsFollowApplicationTriggers(t *testing.T) {
 
 	events := []repository.WebhookTaskPayload{
 		{RepositoryID: repositoryID, EventType: "branch_push", Ref: "refs/heads/feature", CommitSHA: "skip-feature"},
-		{RepositoryID: repositoryID, EventType: "branch_push", Ref: "refs/heads/main", CommitSHA: "commit-main"},
+		{RepositoryID: repositoryID, EventType: "branch_push", Ref: "refs/heads/main", CommitSHA: "commit-main", Message: "修复支付回调\n\n补充异常分支测试"},
 		{RepositoryID: repositoryID, EventType: "branch_push", Ref: "refs/heads/main", CommitSHA: "commit-main"},
 		{RepositoryID: repositoryID, EventType: "tag_push", Ref: "refs/tags/nightly", CommitSHA: "skip-tag"},
 		{RepositoryID: repositoryID, EventType: "tag_push", Ref: "refs/tags/v1.0.0", CommitSHA: "commit-tag"},
@@ -265,6 +268,10 @@ func TestRepositoryEventsFollowApplicationTriggers(t *testing.T) {
 	if count != 3 {
 		t.Fatalf("触发规则生成了错误的流水线记录数: got=%d want=3", count)
 	}
+	var mainRun model.PipelineRun
+	if err := db.First(&mainRun, "application_id = ? AND commit_sha = ?", application.ID, "commit-main").Error; err != nil || mainRun.CommitMessage != "修复支付回调" {
+		t.Fatalf("Webhook 提交说明没有保存到流水线运行: run=%+v err=%v", mainRun, err)
+	}
 	var stored model.Application
 	if err := db.First(&stored, "id = ?", application.ID).Error; err != nil {
 		t.Fatalf("查询应用失败: %v", err)
@@ -274,34 +281,107 @@ func TestRepositoryEventsFollowApplicationTriggers(t *testing.T) {
 	}
 }
 
-func TestApplicationPullCheckInterval(t *testing.T) {
+func TestBackfillCommitMessages(t *testing.T) {
+	service, db, _, repositoryID := newPipelineTestService(t)
+	ctx := context.Background()
+	repositoryPath := t.TempDir()
+	local, err := git.PlainInit(repositoryPath, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(repositoryPath+"/README.md", []byte("ZRT\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	worktree, err := local.Worktree()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := worktree.Add("README.md"); err != nil {
+		t.Fatal(err)
+	}
+	hash, err := worktree.Commit("补齐历史提交说明\n\n提交正文", &git.CommitOptions{Author: &object.Signature{
+		Name: "ZRT Test", Email: "zrt@example.com", When: time.Now().UTC(),
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(repositoryPath+"/README.md", []byte("ZRT pipeline\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := worktree.Add("README.md"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := worktree.Commit("当前提交", &git.CommitOptions{Author: &object.Signature{
+		Name: "ZRT Test", Email: "zrt@example.com", When: time.Now().UTC().Add(time.Second),
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Model(&model.GitRepository{}).Where("id = ?", repositoryID).Update("clone_url", repositoryPath).Error; err != nil {
+		t.Fatal(err)
+	}
+	application, err := service.CreateApplication(ctx, "admin", ApplicationInput{
+		Name: "历史应用", RepositoryID: repositoryID, Branch: "master",
+		PollEnabled: true, PollIntervalSeconds: 60, WatchPush: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	run := model.PipelineRun{
+		ID: "historical-run", ApplicationID: application.ID, Trigger: "poll",
+		Ref: "refs/heads/master", CommitSHA: hash.String(), Status: model.PipelineRunDetected,
+		Stage: "detected", CreatedBy: "system", CreatedAt: now, UpdatedAt: now,
+	}
+	component := model.PipelineRunRepository{
+		ID: "historical-component", PipelineRunID: run.ID, RepositoryID: repositoryID,
+		Ref: run.Ref, CommitSHA: run.CommitSHA, Status: model.PipelineRunRepositoryPending,
+		CreatedAt: now, UpdatedAt: now,
+	}
+	if err := db.Create(&run).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&component).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := service.BackfillCommitMessages(ctx, 10); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.First(&run, "id = ?", run.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if run.CommitMessage != "补齐历史提交说明" {
+		t.Fatalf("历史提交说明未补齐: %q", run.CommitMessage)
+	}
+}
+
+func TestApplicationRepositoryCheckInterval(t *testing.T) {
 	service, _, _, repositoryID := newPipelineTestService(t)
 	ctx := context.Background()
 
 	application, err := service.CreateApplication(ctx, "admin", ApplicationInput{
-		Name: "默认 Pull 间隔", RepositoryID: repositoryID, PollEnabled: true, WatchPush: true,
+		Name: "默认仓库检查间隔", RepositoryID: repositoryID, PollEnabled: true, WatchPush: true,
 	})
 	if err != nil {
-		t.Fatalf("使用默认 Pull 检查间隔创建应用失败: %v", err)
+		t.Fatalf("使用默认仓库检查间隔创建应用失败: %v", err)
 	}
 	if application.PollIntervalSeconds != 3 {
-		t.Fatalf("默认 Pull 检查间隔错误: got=%d want=3", application.PollIntervalSeconds)
+		t.Fatalf("默认仓库检查间隔错误: got=%d want=3", application.PollIntervalSeconds)
 	}
 
 	for _, interval := range []int{3, 5, 10, 60} {
 		if !validPollIntervalSeconds(interval) {
-			t.Fatalf("设置项中的 Pull 检查间隔被拒绝: %d", interval)
+			t.Fatalf("设置项中的仓库检查间隔被拒绝: %d", interval)
 		}
 	}
 	if validPollIntervalSeconds(30) {
-		t.Fatal("未拒绝设置项之外的 Pull 检查间隔")
+		t.Fatal("未拒绝设置项之外的仓库检查间隔")
 	}
-	if got := pullWatcherScanInterval(15 * time.Second); got != 3*time.Second {
-		t.Fatalf("Pull 检查扫描精度错误: got=%s want=3s", got)
+	if got := repositoryWatcherScanInterval(15 * time.Second); got != 3*time.Second {
+		t.Fatalf("仓库检查扫描精度错误: got=%s want=3s", got)
 	}
 }
 
-func TestReleaseWorkflowRequiresIndependentApproval(t *testing.T) {
+func TestReleaseWorkflowUsesOnlyExplicitApprovalNodes(t *testing.T) {
 	service, db, _, repositoryID := newPipelineTestService(t)
 	ctx := context.Background()
 	buildPlan, err := service.CreateBuildPlan(ctx, "admin", BuildPlanInput{
@@ -339,7 +419,7 @@ func TestReleaseWorkflowRequiresIndependentApproval(t *testing.T) {
 		t.Fatalf("创建发布目标失败: %v", err)
 	}
 	application, err := service.CreateApplication(ctx, "admin", ApplicationInput{
-		Name: "审批流程应用", RepositoryID: repositoryID, ReleaseApprovalEnabled: true,
+		Name: "画布流程应用", RepositoryID: repositoryID,
 		BuildPlanID: buildPlan.ID, ImageRegistryID: registry.ID, DeploymentPlanID: deploymentPlan.ID,
 		Environments: []EnvironmentInput{
 			{Key: "test", Name: "测试环境", Branch: "test", WatchPush: true, WatchPullRequest: true, DeploymentPlanID: deploymentPlan.ID, DeploymentTargetID: testTarget.ID},
@@ -347,7 +427,7 @@ func TestReleaseWorkflowRequiresIndependentApproval(t *testing.T) {
 		},
 	})
 	if err != nil {
-		t.Fatalf("创建带审核的应用失败: %v", err)
+		t.Fatalf("创建应用失败: %v", err)
 	}
 	workflowResult, err := service.GetWorkflow(ctx, application.ID)
 	if err != nil || !workflowResult.Valid {
@@ -370,12 +450,12 @@ func TestReleaseWorkflowRequiresIndependentApproval(t *testing.T) {
 	if err != nil || run.CurrentNodeID != "trigger-test" {
 		t.Fatalf("流水线运行没有从测试触发节点启动: run=%+v err=%v", run, err)
 	}
-	if !run.ApprovalRequired {
-		t.Fatalf("流水线运行没有保存应用的审核要求: %+v", run)
+	if run.ApprovalRequired {
+		t.Fatalf("默认流水线不应按生产环境隐式增加审核要求: %+v", run)
 	}
 	listedRuns, err := service.ListRuns(ctx, 10)
-	if err != nil || len(listedRuns) == 0 || !listedRuns[0].ApprovalRequired {
-		t.Fatalf("流水线运行列表没有从流水线快照还原审核要求: runs=%+v err=%v", listedRuns, err)
+	if err != nil || len(listedRuns) == 0 || listedRuns[0].ApprovalRequired || listedRuns[0].CurrentNodeName == "" {
+		t.Fatalf("流水线运行列表错误地增加了审核要求: runs=%+v err=%v", listedRuns, err)
 	}
 	run, err = service.AdvanceRun(ctx, run.ID, "admin", "")
 	if err != nil || run.CurrentNodeID != "deploy-test" || run.Status != model.PipelineRunRunning {
@@ -385,25 +465,14 @@ func TestReleaseWorkflowRequiresIndependentApproval(t *testing.T) {
 		t.Fatal(err)
 	}
 	run.Status, run.Stage = model.PipelineRunReady, "deploy_succeeded"
-	for _, expectedNode := range []string{"promote-prod", "approval-prod"} {
+	for _, expectedNode := range []string{"promote-prod", "deploy-prod"} {
 		run, err = service.AdvanceRun(ctx, run.ID, "admin", "")
 		if err != nil || run.CurrentNodeID != expectedNode {
 			t.Fatalf("流水线运行没有进入节点 %s: run=%+v err=%v", expectedNode, run, err)
 		}
 	}
-	if run.Status != model.PipelineRunAwaitingApproval {
-		t.Fatalf("生产发布没有等待审核: %+v", run)
-	}
-	if _, err := service.ApproveRun(ctx, run.ID, "admin"); !errors.Is(err, ErrWorkflowSelfApproval) {
-		t.Fatalf("申请人不应能审核自己的流水线运行: %v", err)
-	}
-	run, err = service.ApproveRun(ctx, run.ID, "reviewer")
-	if err != nil || run.Status != model.PipelineRunRunning {
-		t.Fatalf("其他成员未能通过审核: run=%+v err=%v", run, err)
-	}
-	run, err = service.AdvanceRun(ctx, run.ID, "reviewer", "")
-	if err != nil || run.CurrentNodeID != "deploy-prod" || run.Status != model.PipelineRunRunning {
-		t.Fatalf("审核后未能进入生产部署: run=%+v err=%v", run, err)
+	if run.Status != model.PipelineRunRunning {
+		t.Fatalf("生产部署被环境级别隐式拦截: %+v", run)
 	}
 	if err := db.Model(&model.PipelineRun{}).Where("id = ?", run.ID).Updates(map[string]any{"status": model.PipelineRunReady, "stage": "deploy_succeeded"}).Error; err != nil {
 		t.Fatal(err)
@@ -429,7 +498,6 @@ func TestReleaseWorkflowRequiresIndependentApproval(t *testing.T) {
 	}
 	updated, err := service.UpdateApplication(ctx, application.ID, ApplicationInput{
 		Name: application.Name, Description: "只修改应用说明", RepositoryID: repositoryID,
-		ReleaseApprovalEnabled: true,
 		Environments: []EnvironmentInput{
 			{Key: "test", Name: "测试环境", Branch: "test", WatchPush: true, WatchPullRequest: true, DeploymentPlanID: deploymentPlan.ID, DeploymentTargetID: testTarget.ID},
 			{Key: "prod", Name: "生产环境", Branch: "release", WatchTags: true, TagPattern: "v*", DeploymentPlanID: deploymentPlan.ID, DeploymentTargetID: prodTarget.ID},
@@ -440,7 +508,7 @@ func TestReleaseWorkflowRequiresIndependentApproval(t *testing.T) {
 	}
 }
 
-func TestPublicWorkflowTemplateIsCopiedWhenApplicationIsCreated(t *testing.T) {
+func TestPublicWorkflowTemplateSyncsLinkedApplications(t *testing.T) {
 	service, db, _, repositoryID := newPipelineTestService(t)
 	ctx := context.Background()
 	deploymentPlan, err := service.CreateDeploymentPlan(ctx, "admin", DeploymentPlanInput{
@@ -487,14 +555,14 @@ func TestPublicWorkflowTemplateIsCopiedWhenApplicationIsCreated(t *testing.T) {
 	}
 	application, err := service.CreateApplication(ctx, "admin", ApplicationInput{
 		Name: "使用公共计划的应用", RepositoryID: repositoryID, PollIntervalSeconds: 60,
-		WorkflowTemplateID: templateResult.WorkflowTemplate.ID, ReleaseApprovalEnabled: true,
+		WorkflowTemplateID: templateResult.WorkflowTemplate.ID,
 	})
 	if err != nil {
 		t.Fatalf("使用公共流水线方案创建应用失败: %v", err)
 	}
 	if application.WorkflowTemplate == nil || application.Workflow == nil || !application.Workflow.IsActive ||
 		application.Workflow.WorkflowTemplateRevision != 1 || len(application.Environments) != 2 {
-		t.Fatalf("应用没有完整复制公共流水线方案: %+v", application)
+		t.Fatalf("应用没有完整关联流水线方案: %+v", application)
 	}
 	if application.Environments[0].Key != "test" || application.Environments[0].Branch != "test" || !application.Environments[0].WatchPullRequest {
 		t.Fatalf("应用环境没有从画布节点生成: %+v", application.Environments)
@@ -508,21 +576,54 @@ func TestPublicWorkflowTemplateIsCopiedWhenApplicationIsCreated(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("更新公共流水线方案失败: %v", err)
 	}
+	stored, err := service.GetWorkflow(ctx, application.ID)
+	if err != nil || stored.Workflow.Nodes[0].Name != "修改后的测试触发" || stored.Workflow.WorkflowTemplateRevision != 2 {
+		t.Fatalf("启用方案的新版本没有同步到关联应用: workflow=%+v err=%v", stored, err)
+	}
 	updatedApplication, err := service.UpdateApplication(ctx, application.ID, ApplicationInput{
 		Name: application.Name, Description: "只修改应用说明", RepositoryID: repositoryID,
 		PollIntervalSeconds: 60, WorkflowTemplateID: templateResult.WorkflowTemplate.ID,
-		ReleaseApprovalEnabled: true,
 	})
 	if err != nil || updatedApplication.Workflow == nil || !updatedApplication.Workflow.IsActive ||
 		updatedApplication.Environments[0].Branch != "test" {
-		t.Fatalf("修改应用不应重新套用公共计划的新版本: application=%+v err=%v", updatedApplication, err)
+		t.Fatalf("修改应用说明不应停用关联流水线: application=%+v err=%v", updatedApplication, err)
 	}
-	stored, err := service.GetWorkflow(ctx, application.ID)
-	if err != nil || stored.Workflow.Nodes[0].Name != "测试分支" || stored.Workflow.WorkflowTemplateRevision != 1 {
-		t.Fatalf("模板更新不应静默改变应用快照: workflow=%+v err=%v", stored, err)
+	stored, err = service.GetWorkflow(ctx, application.ID)
+	if err != nil || stored.Workflow.Nodes[0].Name != "修改后的测试触发" || stored.Workflow.WorkflowTemplateRevision != 2 {
+		t.Fatalf("修改应用说明不应回退已经同步的流水线: workflow=%+v err=%v", stored, err)
 	}
 	if err := service.DeleteWorkflowTemplate(ctx, templateResult.WorkflowTemplate.ID); !errors.Is(err, ErrWorkflowTemplateInUse) {
 		t.Fatalf("仍被应用使用的流水线方案不应允许删除: %v", err)
+	}
+
+	customNodes, customEdges := cloneWorkflowGraph(stored.Workflow.Nodes, stored.Workflow.Edges)
+	customNodes[0].Name = "应用自定义触发"
+	custom, err := service.SaveWorkflow(ctx, application.ID, "admin", WorkflowInput{
+		Name: stored.Workflow.Name, Revision: stored.Workflow.Revision, Activate: true,
+		Nodes: customNodes, Edges: customEdges, Viewport: stored.Workflow.Viewport,
+	})
+	if err != nil || custom.Workflow.WorkflowTemplateID != "" || custom.Workflow.WorkflowTemplateRevision != 0 {
+		t.Fatalf("单独修改应用流水线后没有解除方案关联: workflow=%+v err=%v", custom, err)
+	}
+	var detached model.Application
+	if err := db.First(&detached, "id = ?", application.ID).Error; err != nil || detached.WorkflowTemplateID != "" {
+		t.Fatalf("应用仍然引用已经解除关联的流水线方案: application=%+v err=%v", detached, err)
+	}
+
+	thirdNodes, thirdEdges := cloneWorkflowGraph(updatedNodes, updatedEdges)
+	thirdNodes[0].Name = "方案第三版触发"
+	if _, err := service.SaveWorkflowTemplate(ctx, templateResult.WorkflowTemplate.ID, "admin", WorkflowTemplateInput{
+		Description:   "模板第三版",
+		WorkflowInput: WorkflowInput{Name: "测试到生产", Revision: 2, Activate: true, Nodes: thirdNodes, Edges: thirdEdges, Viewport: model.WorkflowViewport{Zoom: 0.8}},
+	}); err != nil {
+		t.Fatalf("更新解除关联后的流水线方案失败: %v", err)
+	}
+	stored, err = service.GetWorkflow(ctx, application.ID)
+	if err != nil || stored.Workflow.Nodes[0].Name != "应用自定义触发" {
+		t.Fatalf("方案更新覆盖了应用的自定义流水线: workflow=%+v err=%v", stored, err)
+	}
+	if err := service.DeleteWorkflowTemplate(ctx, templateResult.WorkflowTemplate.ID); err != nil {
+		t.Fatalf("解除全部应用关联后仍不能删除流水线方案: %v", err)
 	}
 	unused, err := service.CreateWorkflowTemplate(ctx, "admin", WorkflowTemplateInput{
 		Description:   "可删除的未使用方案",

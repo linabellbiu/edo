@@ -21,6 +21,7 @@ const currentUserKey = "current_user"
 
 type authHandler struct {
 	login    *account.LoginService
+	accounts *account.Service
 	sessions *auth.SessionStore
 	access   *access.Service
 	config   config.Auth
@@ -30,6 +31,11 @@ type authHandler struct {
 type loginRequest struct {
 	Username string `json:"username" binding:"required,max=32"`
 	Password string `json:"password" binding:"required,max=512"`
+}
+
+type changePasswordRequest struct {
+	CurrentPassword string `json:"current_password" binding:"required,max=512"`
+	NewPassword     string `json:"new_password" binding:"required,max=512"`
 }
 
 type userResponse struct {
@@ -104,6 +110,42 @@ func (h authHandler) handleMe(c *gin.Context) {
 	response := toUserResponse(user)
 	response.Permissions = permissions
 	c.JSON(http.StatusOK, gin.H{"user": response})
+}
+
+func (h authHandler) handleChangePassword(c *gin.Context) {
+	var request changePasswordRequest
+	if err := c.ShouldBindJSON(&request); err != nil {
+		h.logger.Warn("修改密码请求参数无效", "operation", "auth_password_bind", "request_id", requestIDFrom(c), "err", err)
+		writeError(c, http.StatusBadRequest, "invalid_password_request", "请输入当前密码和新密码")
+		return
+	}
+	user, ok := currentUser(c)
+	if !ok {
+		h.logger.Error("修改密码时缺少当前用户", "operation", "auth_password_context", "request_id", requestIDFrom(c))
+		writeInternalError(c)
+		return
+	}
+	if err := h.accounts.ChangePassword(c.Request.Context(), user.ID, request.CurrentPassword, request.NewPassword); err != nil {
+		h.logger.Warn("修改当前用户密码失败", "operation", "auth_password_change", "request_id", requestIDFrom(c), "user_id", user.ID, "err", err)
+		switch {
+		case errors.Is(err, account.ErrCurrentPassword):
+			writeError(c, http.StatusBadRequest, "current_password_incorrect", account.ErrCurrentPassword.Error())
+		case errors.Is(err, account.ErrInvalidPassword), errors.Is(err, account.ErrPasswordUnchanged):
+			writeError(c, http.StatusBadRequest, "invalid_new_password", err.Error())
+		case errors.Is(err, account.ErrUserNotFound):
+			unauthorized(c)
+		default:
+			writeInternalError(c)
+		}
+		return
+	}
+	if token, err := c.Cookie(h.config.CookieName); err == nil {
+		if err := h.sessions.Delete(c.Request.Context(), token); err != nil {
+			h.logger.Error("修改密码后删除当前会话失败", "operation", "auth_password_session_delete", "request_id", requestIDFrom(c), "user_id", user.ID, "err", err)
+		}
+	}
+	h.clearSessionCookie(c)
+	c.JSON(http.StatusOK, gin.H{"message": "密码已修改，请重新登录", "reauthentication_required": true})
 }
 
 func (h authHandler) writeLoginError(c *gin.Context, err error) {
@@ -235,6 +277,26 @@ func requireAnyPermission(accessService *access.Service, logger *slog.Logger, pe
 		c.AbortWithStatusJSON(http.StatusForbidden, errorResponse{
 			Code: "permission_denied", Message: "没有执行此操作的权限", RequestID: requestIDFrom(c),
 		})
+	}
+}
+
+func requireSuperuser(logger *slog.Logger) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		user, ok := currentUser(c)
+		if !ok {
+			logger.Error("超级管理员校验缺少当前用户", "operation", "superuser_context", "request_id", requestIDFrom(c))
+			writeInternalError(c)
+			c.Abort()
+			return
+		}
+		if !user.IsSuperuser {
+			logger.Warn("非超级管理员访问受限操作", "operation", "superuser_denied", "request_id", requestIDFrom(c), "user_id", user.ID, "path", c.Request.URL.Path)
+			c.AbortWithStatusJSON(http.StatusForbidden, errorResponse{
+				Code: "superuser_required", Message: "该操作仅允许超级管理员执行", RequestID: requestIDFrom(c),
+			})
+			return
+		}
+		c.Next()
 	}
 }
 

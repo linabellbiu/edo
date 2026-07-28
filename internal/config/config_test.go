@@ -65,7 +65,18 @@ func TestValidateRejectsInvalidDockerBuilderHost(t *testing.T) {
 	cfg := validConfig()
 	cfg.Runtime.DockerBuilderHost = "ssh://builder.example.com"
 	if err := cfg.Validate(); err == nil {
-		t.Fatal("非 Docker API 地址不应作为 Docker-in-Docker 构建节点")
+		t.Fatal("非 Docker API 地址不应作为 Docker 构建运行时")
+	}
+}
+
+func TestLoadUsesLocalDockerByDefault(t *testing.T) {
+	t.Setenv("ZRT_DOCKER_BUILDER_HOST", "")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("加载本地 Docker 默认配置失败: %v", err)
+	}
+	if cfg.Runtime.DockerBuilderHost != "" {
+		t.Fatalf("二进制默认不应指向 DinD: %q", cfg.Runtime.DockerBuilderHost)
 	}
 }
 

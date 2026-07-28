@@ -93,7 +93,7 @@ type ReleaseWorkflow struct {
 func (ReleaseWorkflow) TableName() string { return "release_workflows" }
 
 // ReleaseWorkflowTemplate 是可以被多个应用复用的流水线方案。
-// 应用选择方案时会复制一份应用流水线，方案后续修改不会改变已有应用。
+// 已关联的应用跟随启用版本；直接修改应用流水线时解除关联，保留独立配置。
 type ReleaseWorkflowTemplate struct {
 	ID          string           `gorm:"type:varchar(36);primaryKey" json:"id"`
 	Name        string           `gorm:"type:varchar(128);not null;uniqueIndex" json:"name"`

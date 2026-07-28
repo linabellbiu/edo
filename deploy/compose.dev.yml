@@ -15,7 +15,7 @@ x-zrt-environment: &zrt-environment
   # redis 和 nats 是本文件中的容器服务名；其余容量、重试和超时采用 Go 代码内默认值。
   ZRT_REDIS_URL: redis://redis:6379/0
   ZRT_NATS_URL: nats://nats:4222
-  # 所有镜像统一在隔离的 Docker-in-Docker 服务中构建，禁止借用发布目标主机进行构建。
+  # 容器内的 ZRT 无法直接使用宿主机 Docker，因此显式连接隔离的 Docker-in-Docker 构建节点。
   ZRT_DOCKER_BUILDER_HOST: tcp://docker-builder:2375
   # 仅供本机开发的默认加密密钥；共享或生产环境必须通过 .env 覆盖，不能继续使用此值。
   ZRT_SECRETS_KEY: ${ZRT_SECRETS_KEY:-b97MuZYq2cdfHG+Hy2hjRvh0yerPm2MF9rHRe0KXVQg=}
@@ -103,7 +103,7 @@ services:
       - zrt
     restart: unless-stopped
 
-  # 独立 Docker-in-Docker 构建节点：保留 BuildKit 图层缓存，不挂载宿主机 Docker Socket。
+  # Compose 部署专用的 Docker-in-Docker 构建节点：保留 BuildKit 图层缓存，不挂载宿主机 Docker Socket。
   # privileged 是 DinD 启动内部 dockerd 的必要权限；它只加入内部网络，不向宿主机暴露 2375。
   docker-builder:
     image: docker:28.3.3-dind

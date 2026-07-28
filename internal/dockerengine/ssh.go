@@ -231,52 +231,53 @@ func (s *Service) pullImageWithSSH(ctx context.Context, endpointID, image string
 	return true, nil
 }
 
-func (s *Service) loadImageToSSH(ctx context.Context, endpointID, image, expectedImageID string, archive io.Reader) error {
+func (s *Service) loadImageToSSH(ctx context.Context, endpointID, image string, archive io.Reader) (string, error) {
 	endpoint, err := s.Find(ctx, endpointID)
 	if err != nil {
-		return err
+		return "", err
 	}
 	parsed, err := url.Parse(endpoint.Host)
 	if err != nil || parsed.Scheme != "ssh" {
-		return errors.New("本地镜像只能传输到 Docker SSH 主机")
+		return "", errors.New("本地镜像只能传输到 Docker SSH 主机")
 	}
 	value, err := s.secrets.Decrypt(endpoint.SSHCredentialCiphertext, sshAAD(endpoint.ID))
 	if err != nil {
-		return fmt.Errorf("解密 Docker SSH 凭据失败: %w", err)
+		return "", fmt.Errorf("解密 Docker SSH 凭据失败: %w", err)
 	}
 	var bundle SSHBundle
 	if err := json.Unmarshal([]byte(value), &bundle); err != nil {
-		return fmt.Errorf("解析 Docker SSH 凭据失败: %w", err)
+		return "", fmt.Errorf("解析 Docker SSH 凭据失败: %w", err)
 	}
 	connector, err := newSSHConnector(endpoint.Host, bundle, endpoint.SSHHostKeyFingerprint, s.config.ConnectTimeout)
 	if err != nil {
-		return err
+		return "", err
 	}
-	return loadImageWithSSH(ctx, connector, image, expectedImageID, archive)
+	return loadImageWithSSH(ctx, connector, image, archive)
 }
 
-func loadImageWithSSH(ctx context.Context, connector *sshConnector, image, expectedImageID string, archive io.Reader) error {
-	if connector == nil || archive == nil || !IsZRTLocalImage(image) || !IsValidImageID(expectedImageID) {
-		return errors.New("待加载的 Docker 镜像无效")
+func loadImageWithSSH(ctx context.Context, connector *sshConnector, image string, archive io.Reader) (string, error) {
+	if connector == nil || archive == nil || !IsZRTLocalImage(image) {
+		return "", errors.New("待加载的 Docker 镜像无效")
 	}
 	client, err := connector.connectPinned(ctx)
 	if err != nil {
-		return fmt.Errorf("连接 Docker SSH 主机失败: %w", err)
+		return "", fmt.Errorf("连接 Docker SSH 主机失败: %w", err)
 	}
 	defer client.Close()
 	loadOutput := &limitedOutput{remaining: 1024}
 	if err := runSSHCommandWithInput(ctx, client, "docker image load --quiet", archive, loadOutput); err != nil {
-		return fmt.Errorf("通过 SSH 加载 Docker 镜像失败: %w", err)
+		return "", fmt.Errorf("通过 SSH 加载 Docker 镜像失败: %w", err)
 	}
 	inspectOutput := &limitedOutput{remaining: 256}
 	inspectCommand := "docker image inspect --format '{{.Id}}' " + shellQuote(image)
 	if err := runSSHCommand(ctx, client, inspectCommand, inspectOutput); err != nil {
-		return fmt.Errorf("校验 SSH 主机上的 Docker 镜像失败: %w", err)
+		return "", fmt.Errorf("校验 SSH 主机上的 Docker 镜像失败: %w", err)
 	}
-	if strings.TrimSpace(inspectOutput.String()) != expectedImageID {
-		return errors.New("SSH 主机加载的镜像与 Docker-in-Docker 构建结果不一致")
+	targetImageID := strings.TrimSpace(inspectOutput.String())
+	if !IsValidImageID(targetImageID) {
+		return "", errors.New("Docker SSH 主机没有返回可验证的镜像 ID")
 	}
-	return nil
+	return targetImageID, nil
 }
 
 func dockerPullCommand(image string) (string, error) {

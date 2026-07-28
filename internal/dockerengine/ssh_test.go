@@ -55,10 +55,15 @@ func TestLoadImageWithSSHStreamsArchiveAndVerifiesImageID(t *testing.T) {
 		t.Fatal(err)
 	}
 	image := "zrt.local/order-api:abcdef123456-12345678"
-	imageID := "sha256:" + strings.Repeat("a", 64)
+	sourceImageID := "sha256:" + strings.Repeat("b", 64)
+	targetImageID := "sha256:" + strings.Repeat("a", 64)
 	archive := "docker-save-archive"
-	if err := loadImageWithSSH(context.Background(), connector, image, imageID, strings.NewReader(archive)); err != nil {
+	loadedImageID, err := loadImageWithSSH(context.Background(), connector, image, strings.NewReader(archive))
+	if err != nil {
 		t.Fatalf("通过 SSH 加载镜像失败: %v", err)
+	}
+	if loadedImageID != targetImageID || loadedImageID == sourceImageID {
+		t.Fatalf("没有返回目标 Docker daemon 的镜像 ID: %s", loadedImageID)
 	}
 	if command := <-commands; command != "docker image load --quiet" {
 		t.Fatalf("镜像导入命令错误: %s", command)

@@ -276,12 +276,88 @@ func TestWorkflowAllowsManualReleaseAsOnlySource(t *testing.T) {
 	application := &model.Application{Environments: []model.ApplicationEnvironment{{Key: "prod", Name: "生产环境"}}}
 	nodes := []model.WorkflowNode{
 		{ID: "manual-prod", Type: model.WorkflowNodeManualRelease, Name: "手动发布", Config: model.WorkflowNodeConfig{Environment: "prod"}},
+		{ID: "approval-prod", Type: model.WorkflowNodeApproval, Name: "生产发布审核", Config: model.WorkflowNodeConfig{Environment: "prod"}},
 		{ID: "deploy-prod", Type: model.WorkflowNodeDeploy, Name: "部署生产", Config: model.WorkflowNodeConfig{Environment: "prod", DeploymentPlanID: deploymentPlan.ID, DeploymentTargetID: target.ID}},
 	}
-	edges := []model.WorkflowEdge{{ID: "edge-manual-deploy", Source: "manual-prod", Target: "deploy-prod"}}
+	edges := []model.WorkflowEdge{
+		{ID: "edge-manual-approval", Source: "manual-prod", Target: "approval-prod"},
+		{ID: "edge-approval-deploy", Source: "approval-prod", Target: "deploy-prod"},
+	}
 
 	if issues := service.validateWorkflow(ctx, application, nodes, edges); len(issues) != 0 {
 		t.Fatalf("只包含手动发布入口的流水线应该有效: %+v", issues)
+	}
+}
+
+func TestProductionWorkflowDoesNotRequireImplicitApprovalNode(t *testing.T) {
+	service, db, _, _ := newPipelineTestService(t)
+	now := time.Now().UTC()
+	target := model.DeploymentTarget{
+		ID: "production-without-approval", Name: "生产环境", Platform: model.DeploymentDocker,
+		Environment: model.EnvironmentProduction, RuntimeID: "docker-1", WorkloadName: "zrt-api",
+		RolloutTimeout: 300, IsActive: true, CreatedBy: "admin", CreatedAt: now, UpdatedAt: now,
+	}
+	if err := db.Create(&target).Error; err != nil {
+		t.Fatal(err)
+	}
+	application := &model.Application{Environments: []model.ApplicationEnvironment{{Key: "prod", Name: "生产环境"}}}
+	nodes := []model.WorkflowNode{
+		{ID: "manual-prod", Type: model.WorkflowNodeManualRelease, Name: "手动发布", Config: model.WorkflowNodeConfig{Environment: "prod"}},
+		{ID: "deploy-prod", Type: model.WorkflowNodeDeploy, Name: "部署生产", Config: model.WorkflowNodeConfig{Environment: "prod", DeploymentTargetID: target.ID}},
+	}
+	edges := []model.WorkflowEdge{{ID: "edge-manual-deploy", Source: "manual-prod", Target: "deploy-prod"}}
+
+	issues := service.validateWorkflow(context.Background(), application, nodes, edges)
+	if len(issues) != 0 {
+		t.Fatalf("没有审核节点的生产发布路径应由画布配置决定: %+v", issues)
+	}
+}
+
+func TestExplicitApprovalNodeControlsWorkflowRun(t *testing.T) {
+	service, db, _, repositoryID := newPipelineTestService(t)
+	application := createManualRunTestApplication(t, service, db, repositoryID, "明确审核节点")
+	var target model.DeploymentTarget
+	if err := db.First(&target, "id = ?", "target-明确审核节点").Error; err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	workflow := &model.ReleaseWorkflow{
+		ID: "explicit-approval-workflow",
+		Nodes: []model.WorkflowNode{
+			{ID: "manual", Type: model.WorkflowNodeManualRelease, Name: "手动发布"},
+			{ID: "approval", Type: model.WorkflowNodeApproval, Name: "负责人审核"},
+			{ID: "deploy", Type: model.WorkflowNodeDeploy, Name: "执行部署", Config: model.WorkflowNodeConfig{
+				Environment: "dev", DeploymentPlanID: application.DeploymentPlanID, DeploymentTargetID: target.ID,
+			}},
+		},
+		Edges: []model.WorkflowEdge{
+			{ID: "manual-approval", Source: "manual", Target: "approval"},
+			{ID: "approval-deploy", Source: "approval", Target: "deploy"},
+		},
+	}
+	run, err := newWorkflowRun(
+		application, workflow, workflow.Nodes[0],
+		"manual", "refs/heads/main", strings.Repeat("a", 40), "requester", "手动执行", now,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(run).Error; err != nil {
+		t.Fatal(err)
+	}
+	run, err = service.AdvanceRun(context.Background(), run.ID, "requester", "")
+	if err != nil || run.CurrentNodeID != "approval" || run.Status != model.PipelineRunAwaitingApproval {
+		t.Fatalf("明确配置的审核节点没有拦截流水线: run=%+v err=%v", run, err)
+	}
+	if _, err := service.ApproveRun(context.Background(), run.ID, "requester"); !errors.Is(err, ErrWorkflowSelfApproval) {
+		t.Fatalf("审核节点没有阻止申请人自审: %v", err)
+	}
+	run, err = service.ApproveRun(context.Background(), run.ID, "reviewer")
+	if err != nil || run.Status != model.PipelineRunRunning || run.CurrentNodeID != "deploy" || run.Stage != "queued" || run.ExecutionJobID == "" {
+		t.Fatalf("审核通过后没有自动进入部署节点: run=%+v err=%v", run, err)
+	}
+	if run.ApprovedBy == nil || *run.ApprovedBy != "reviewer" {
+		t.Fatalf("审核节点没有记录审核人: %+v", run)
 	}
 }
 

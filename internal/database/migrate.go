@@ -180,6 +180,83 @@ var migrations = []migration{
 			return tx.AutoMigrate(&model.PipelineRun{})
 		},
 	},
+	{
+		version: "202607270025",
+		up: func(tx *gorm.DB) error {
+			return tx.AutoMigrate(&model.PipelineRunLog{})
+		},
+	},
+	{
+		version: "202607270026",
+		up: func(tx *gorm.DB) error {
+			return tx.AutoMigrate(&model.ReleaseGroupApplication{})
+		},
+	},
+	{
+		version: "202607270027",
+		up:      migrateRepositoryObservationWatchKeys,
+	},
+	{
+		version: "202607280028",
+		up: func(tx *gorm.DB) error {
+			return tx.AutoMigrate(&model.PipelineRun{})
+		},
+	},
+	{
+		version: "202607280029",
+		up:      migrateDeploymentApprovalsToWorkflow,
+	},
+}
+
+func migrateDeploymentApprovalsToWorkflow(tx *gorm.DB) error {
+	if !tx.Migrator().HasTable(&model.DeploymentRecord{}) {
+		return nil
+	}
+	now := time.Now().UTC()
+	// 环境级隐式审批已取消。旧记录不能自动放行，否则升级本身会触发外部发布副作用。
+	return tx.Model(&model.DeploymentRecord{}).
+		Where("status = ?", model.DeploymentAwaitingApproval).
+		Updates(map[string]any{
+			"status": model.DeploymentCanceled, "error_code": "legacy_environment_approval_removed",
+			"error_message": "历史待审批发布已取消，请重新执行", "finished_at": now, "updated_at": now,
+		}).Error
+}
+
+func migrateRepositoryObservationWatchKeys(tx *gorm.DB) error {
+	// 旧表按环境保存一个游标，无法同时监听同一环境下的多个自定义分支、PR 和 Tag。
+	// 先移除旧唯一索引，再增加按触发节点、事件和具体 Ref 生成的监听键。
+	if !tx.Migrator().HasTable(&model.ApplicationRepositoryObservation{}) {
+		return tx.AutoMigrate(&model.ApplicationRepositoryObservation{})
+	}
+	if tx.Migrator().HasIndex(&model.ApplicationRepositoryObservation{}, "idx_repository_environment") {
+		if err := tx.Migrator().DropIndex(&model.ApplicationRepositoryObservation{}, "idx_repository_environment"); err != nil {
+			return err
+		}
+	}
+	for _, field := range []string{"WatchKey", "SourceNodeID", "Event"} {
+		if !tx.Migrator().HasColumn(&model.ApplicationRepositoryObservation{}, field) {
+			if err := tx.Migrator().AddColumn(&model.ApplicationRepositoryObservation{}, field); err != nil {
+				return err
+			}
+		}
+	}
+	var observations []model.ApplicationRepositoryObservation
+	if err := tx.Find(&observations).Error; err != nil {
+		return err
+	}
+	for i := range observations {
+		if observations[i].WatchKey != "" {
+			continue
+		}
+		// 保留旧观察记录用于升级后的基线兼容；首次扫描会将它绑定到准确的监听键。
+		if err := tx.Model(&observations[i]).Update("watch_key", "legacy:"+observations[i].ID).Error; err != nil {
+			return err
+		}
+	}
+	if !tx.Migrator().HasIndex(&model.ApplicationRepositoryObservation{}, "idx_repository_watch") {
+		return tx.Migrator().CreateIndex(&model.ApplicationRepositoryObservation{}, "idx_repository_watch")
+	}
+	return nil
 }
 
 func migratePipelineExecutionFields(tx *gorm.DB) error {
@@ -284,12 +361,14 @@ func backfillApplicationWorkflowTargets(tx *gorm.DB) error {
 }
 
 func migrateDeploymentEnvironmentFields(tx *gorm.DB) error {
+	if err := migrateDockerSSHCredentialColumn(tx); err != nil {
+		return err
+	}
 	// 仅补新增字段，避免 SQLite 因历史字段类型差异重建整表。
 	columns := []struct {
 		model any
 		field string
 	}{
-		{&model.DockerEndpoint{}, "SSHCredentialCiphertext"},
 		{&model.DockerEndpoint{}, "SSHHostKeyFingerprint"},
 		{&model.DeploymentTarget{}, "Description"},
 	}
@@ -302,6 +381,39 @@ func migrateDeploymentEnvironmentFields(tx *gorm.DB) error {
 		}
 	}
 	return nil
+}
+
+func migrateDockerSSHCredentialColumn(tx *gorm.DB) error {
+	const column = "ssh_credential_ciphertext"
+	if !tx.Migrator().HasColumn(&model.DockerEndpoint{}, column) {
+		switch tx.Dialector.Name() {
+		case "sqlite":
+			// SQLite 给已有表新增非空列时必须提供默认值；该默认值仅属于旧库升级结构。
+			return tx.Exec("ALTER TABLE docker_endpoints ADD COLUMN ssh_credential_ciphertext text NOT NULL DEFAULT ''").Error
+		case "mysql", "postgres":
+			// 先允许 NULL，避免已有连接记录导致新增非空列失败，随后统一回填并收紧约束。
+			if err := tx.Exec("ALTER TABLE docker_endpoints ADD COLUMN ssh_credential_ciphertext text NULL").Error; err != nil {
+				return err
+			}
+		default:
+			return tx.Migrator().AddColumn(&model.DockerEndpoint{}, "SSHCredentialCiphertext")
+		}
+	}
+
+	switch tx.Dialector.Name() {
+	case "mysql":
+		if err := tx.Exec("UPDATE docker_endpoints SET ssh_credential_ciphertext = '' WHERE ssh_credential_ciphertext IS NULL").Error; err != nil {
+			return err
+		}
+		return tx.Exec("ALTER TABLE docker_endpoints MODIFY COLUMN ssh_credential_ciphertext text NOT NULL").Error
+	case "postgres":
+		if err := tx.Exec("UPDATE docker_endpoints SET ssh_credential_ciphertext = '' WHERE ssh_credential_ciphertext IS NULL").Error; err != nil {
+			return err
+		}
+		return tx.Exec("ALTER TABLE docker_endpoints ALTER COLUMN ssh_credential_ciphertext SET NOT NULL").Error
+	default:
+		return nil
+	}
 }
 
 func migrateReleasePlanning(tx *gorm.DB) error {

@@ -1,3 +1,5 @@
+FROM docker:28.3.3-cli AS docker-cli
+
 FROM node:24.16.0-bookworm-slim AS web-builder
 WORKDIR /src/web
 COPY web/package.json web/package-lock.json ./
@@ -7,6 +9,9 @@ RUN npm run build
 
 FROM golang:1.26.5-bookworm AS go-source
 WORKDIR /src
+# Buildx 负责与 Docker-in-Docker 中的 BuildKit 建立双向 session；仅调用 HTTP build API 无法传输上下文和认证。
+COPY --from=docker-cli /usr/local/bin/docker /usr/local/bin/docker
+COPY --from=docker-cli /usr/local/libexec/docker/cli-plugins/docker-buildx /usr/local/libexec/docker/cli-plugins/docker-buildx
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
@@ -23,6 +28,8 @@ ARG ZRT_VERSION=dev
 RUN CGO_ENABLED=0 go build -tags=zrt_web -trimpath -ldflags="-s -w -X main.version=${ZRT_VERSION}" -o /out/zrt ./cmd/zrt
 
 FROM debian:bookworm-slim
+COPY --from=docker-cli /usr/local/bin/docker /usr/local/bin/docker
+COPY --from=docker-cli /usr/local/libexec/docker/cli-plugins/docker-buildx /usr/local/libexec/docker/cli-plugins/docker-buildx
 RUN apt-get -o Acquire::Retries=5 update \
     && apt-get -o Acquire::Retries=5 install -y --no-install-recommends ca-certificates curl tzdata \
     && rm -rf /var/lib/apt/lists/* \

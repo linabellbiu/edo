@@ -109,8 +109,11 @@ func (ApplicationRepository) TableName() string { return "application_repositori
 
 type ApplicationRepositoryObservation struct {
 	ID                      string     `gorm:"type:varchar(36);primaryKey" json:"id"`
-	ApplicationRepositoryID string     `gorm:"type:varchar(36);not null;index;uniqueIndex:idx_repository_environment,priority:1" json:"application_repository_id"`
-	Environment             string     `gorm:"type:varchar(16);not null;index;uniqueIndex:idx_repository_environment,priority:2" json:"environment"`
+	ApplicationRepositoryID string     `gorm:"type:varchar(36);not null;index;uniqueIndex:idx_repository_watch,priority:1" json:"application_repository_id"`
+	WatchKey                string     `gorm:"type:varchar(64);not null;default:'';index;uniqueIndex:idx_repository_watch,priority:2" json:"watch_key"`
+	SourceNodeID            string     `gorm:"type:varchar(64);not null;default:'';index" json:"source_node_id,omitempty"`
+	Event                   string     `gorm:"type:varchar(16);not null;default:'';index" json:"event,omitempty"`
+	Environment             string     `gorm:"type:varchar(16);not null;index" json:"environment"`
 	Ref                     string     `gorm:"type:varchar(512);not null;default:''" json:"ref,omitempty"`
 	CommitSHA               string     `gorm:"type:varchar(64);not null;default:''" json:"commit_sha,omitempty"`
 	LastCheckedAt           *time.Time `json:"last_checked_at,omitempty"`
@@ -139,7 +142,7 @@ type Application struct {
 	DeploymentPlanID       string                   `gorm:"column:release_plan_id;type:varchar(36);not null;default:'';index" json:"deployment_plan_id,omitempty"`
 	DeploymentTargetID     string                   `gorm:"type:varchar(36);not null;default:'';index" json:"deployment_target_id,omitempty"`
 	WorkflowTemplateID     string                   `gorm:"type:varchar(36);not null;default:'';index" json:"workflow_template_id,omitempty"`
-	ReleaseApprovalEnabled bool                     `gorm:"not null;default:true" json:"release_approval_enabled"`
+	ReleaseApprovalEnabled bool                     `gorm:"not null;default:true" json:"-"`
 	LastObservedRef        string                   `gorm:"type:varchar(512);not null;default:''" json:"last_observed_ref,omitempty"`
 	LastObservedCommit     string                   `gorm:"type:varchar(64);not null;default:''" json:"last_observed_commit,omitempty"`
 	SyncStatus             ApplicationSyncStatus    `gorm:"type:varchar(16);not null;index" json:"sync_status"`
@@ -181,6 +184,7 @@ type PipelineRun struct {
 	Trigger          string                  `gorm:"type:varchar(24);not null;index" json:"trigger"`
 	Ref              string                  `gorm:"type:varchar(512);not null" json:"ref"`
 	CommitSHA        string                  `gorm:"type:varchar(64);not null" json:"commit_sha"`
+	CommitMessage    string                  `gorm:"type:varchar(255);not null;default:''" json:"commit_message,omitempty"`
 	Status           PipelineRunStatus       `gorm:"type:varchar(16);not null;index" json:"status"`
 	Stage            string                  `gorm:"type:varchar(32);not null" json:"stage"`
 	Environment      string                  `gorm:"type:varchar(16);not null;default:'';index" json:"environment,omitempty"`
@@ -197,6 +201,7 @@ type PipelineRun struct {
 	ApprovedBy       *string                 `gorm:"type:varchar(36);index" json:"approved_by,omitempty"`
 	ApprovedAt       *time.Time              `json:"approved_at,omitempty"`
 	ApprovalRequired bool                    `gorm:"-" json:"approval_required"`
+	CurrentNodeName  string                  `gorm:"-" json:"current_node_name,omitempty"`
 	CreatedAt        time.Time               `gorm:"not null;index" json:"created_at"`
 	UpdatedAt        time.Time               `gorm:"not null" json:"updated_at"`
 	Application      Application             `gorm:"foreignKey:ApplicationID" json:"application,omitempty"`
@@ -204,6 +209,19 @@ type PipelineRun struct {
 }
 
 func (PipelineRun) TableName() string { return "pipeline_runs" }
+
+// PipelineRunLog 是流水线运行的追加式日志。自增 ID 同时作为跨数据库兼容的游标，
+// WebSocket 重连时可以从最后一条继续读取，避免重复或遗漏构建输出。
+type PipelineRunLog struct {
+	ID            uint64    `gorm:"primaryKey;autoIncrement;index:idx_pipeline_run_log_cursor,priority:2" json:"id"`
+	PipelineRunID string    `gorm:"type:varchar(36);not null;index:idx_pipeline_run_log_cursor,priority:1" json:"pipeline_run_id"`
+	Stage         string    `gorm:"type:varchar(32);not null;default:'';index" json:"stage"`
+	Level         string    `gorm:"type:varchar(16);not null;default:'info'" json:"level"`
+	Message       string    `gorm:"type:text;not null" json:"message"`
+	CreatedAt     time.Time `gorm:"not null;index" json:"created_at"`
+}
+
+func (PipelineRunLog) TableName() string { return "pipeline_run_logs" }
 
 type PipelineRunRepositoryStatus string
 

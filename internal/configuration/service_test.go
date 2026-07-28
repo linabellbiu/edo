@@ -143,6 +143,24 @@ func TestLoginLockoutSettingDefaultsOffAndUsesOptimisticVersion(t *testing.T) {
 	}
 }
 
+func TestLogRetentionSettingsDefaultDisabledAndValidateRange(t *testing.T) {
+	service := newConfigurationTestService(t)
+	settings, err := service.GetLogRetentionSettings(context.Background())
+	if err != nil || settings.Enabled || settings.PipelineLogDays != 30 || settings.AuditLogDays != 180 || settings.Version != 0 {
+		t.Fatalf("日志保留默认设置错误: settings=%+v err=%v", settings, err)
+	}
+	if _, err := service.UpdateLogRetentionSettings(context.Background(), "admin", true, 0, 180, 0); !errors.Is(err, ErrInvalidConfiguration) {
+		t.Fatalf("无效保留天数未被拒绝: %v", err)
+	}
+	updated, err := service.UpdateLogRetentionSettings(context.Background(), "admin", true, 45, 365, 0)
+	if err != nil || !updated.Enabled || updated.PipelineLogDays != 45 || updated.AuditLogDays != 365 || updated.Version != 1 {
+		t.Fatalf("保存日志保留设置失败: settings=%+v err=%v", updated, err)
+	}
+	if _, err := service.UpdateLogRetentionSettings(context.Background(), "admin", false, 30, 180, 0); !errors.Is(err, ErrVersionConflict) {
+		t.Fatalf("过期日志设置版本未被拒绝: %v", err)
+	}
+}
+
 func externalGitWebhookConfigurationID(t *testing.T, service *Service) string {
 	return systemConfigurationID(t, service, externalGitWebhookSettingKey)
 }

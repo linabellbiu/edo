@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/bsm/redislock"
 	"github.com/distribution/reference"
 	"github.com/google/uuid"
 	"gorm.io/gorm"
@@ -27,8 +28,6 @@ var (
 	ErrInvalidImage           = errors.New("容器镜像引用无效")
 	ErrImmutableImageRequired = errors.New("生产环境必须使用带摘要的不可变镜像")
 	ErrDeploymentNotFound     = errors.New("发布记录不存在")
-	ErrApprovalRequired       = errors.New("生产发布需要审批")
-	ErrSelfApproval           = errors.New("发布申请人不能审批自己的生产发布")
 	ErrInvalidDeploymentState = errors.New("发布记录当前状态不允许此操作")
 	ErrRollbackUnavailable    = errors.New("该发布记录没有可回滚的上一镜像")
 )
@@ -62,17 +61,33 @@ type TaskPayload struct {
 }
 
 type Service struct {
-	db     *gorm.DB
-	docker *dockerengine.Service
-	kube   *kube.Service
-	logger *slog.Logger
+	db            *gorm.DB
+	docker        *dockerengine.Service
+	kube          *kube.Service
+	locks         *redislock.Client
+	lockKeyPrefix string
+	logger        *slog.Logger
 }
 
-func NewService(db *gorm.DB, docker *dockerengine.Service, kubeService *kube.Service, logger *slog.Logger) *Service {
+func NewService(
+	db *gorm.DB,
+	docker *dockerengine.Service,
+	kubeService *kube.Service,
+	locks *redislock.Client,
+	lockKeyPrefix string,
+	logger *slog.Logger,
+) *Service {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &Service{db: db, docker: docker, kube: kubeService, logger: logger}
+	return &Service{
+		db:            db,
+		docker:        docker,
+		kube:          kubeService,
+		locks:         locks,
+		lockKeyPrefix: strings.TrimSuffix(strings.TrimSpace(lockKeyPrefix), ":"),
+		logger:        logger,
+	}
 }
 
 func (s *Service) ListTargets(ctx context.Context) ([]model.DeploymentTarget, error) {
@@ -171,24 +186,17 @@ func (s *Service) Request(ctx context.Context, actorID string, input RequestInpu
 		return nil, err
 	}
 	now := time.Now().UTC()
-	status := model.DeploymentQueued
-	if target.Environment == model.EnvironmentProduction {
-		status = model.DeploymentAwaitingApproval
-	}
 	record := &model.DeploymentRecord{
 		ID: uuid.NewString(), PipelineRunID: input.PipelineRunID, WorkflowNodeID: input.WorkflowNodeID,
 		TargetID: target.ID, Operation: model.DeploymentRelease,
-		Image: image, Status: status, RequestedBy: actorID, CreatedAt: now, UpdatedAt: now,
+		Image: image, Status: model.DeploymentQueued, RequestedBy: actorID, CreatedAt: now, UpdatedAt: now,
 	}
 	applyTargetSnapshot(record, target)
 	err = s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if err := tx.Create(record).Error; err != nil {
 			return err
 		}
-		if status == model.DeploymentQueued {
-			return s.enqueue(ctx, tx, record, "deploy.runtime")
-		}
-		return nil
+		return s.enqueue(ctx, tx, record, "deploy.runtime")
 	})
 	if err != nil {
 		return nil, fmt.Errorf("创建发布申请失败: %w", err)
@@ -196,7 +204,8 @@ func (s *Service) Request(ctx context.Context, actorID string, input RequestInpu
 	return record, nil
 }
 
-// RequestAndRun 用于已经通过流水线审核的单次执行任务。发布任务自身不自动重试，避免重复产生外部副作用。
+// RequestAndRun 用于流水线部署节点的单次执行任务。审核人仅在上游实际经过审核节点时作为审计快照写入。
+// 发布任务自身不自动重试，避免重复产生外部副作用。
 func (s *Service) RequestAndRun(ctx context.Context, actorID string, input RequestInput) (*model.DeploymentRecord, error) {
 	target, err := s.findTarget(ctx, input.TargetID)
 	if err != nil {
@@ -205,9 +214,6 @@ func (s *Service) RequestAndRun(ctx context.Context, actorID string, input Reque
 	image, err := validatePipelineImage(input.Image, input.ExpectedImageID, target)
 	if err != nil {
 		return nil, err
-	}
-	if target.Environment == model.EnvironmentProduction && input.ApprovedBy == "" {
-		return nil, ErrApprovalRequired
 	}
 	now := time.Now().UTC()
 	record := &model.DeploymentRecord{
@@ -229,43 +235,6 @@ func (s *Service) RequestAndRun(ctx context.Context, actorID string, input Reque
 		return nil, fmt.Errorf("读取流水线发布结果失败: %w", err)
 	}
 	return record, nil
-}
-
-func (s *Service) Approve(ctx context.Context, deploymentID, actorID string) (*model.DeploymentRecord, error) {
-	var record model.DeploymentRecord
-	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		if err := tx.First(&record, "id = ?", deploymentID).Error; err != nil {
-			if errors.Is(err, gorm.ErrRecordNotFound) {
-				return ErrDeploymentNotFound
-			}
-			return err
-		}
-		if record.Status != model.DeploymentAwaitingApproval {
-			return ErrInvalidDeploymentState
-		}
-		if record.RequestedBy == actorID {
-			return ErrSelfApproval
-		}
-		now := time.Now().UTC()
-		result := tx.Model(&model.DeploymentRecord{}).
-			Where("id = ? AND status = ?", record.ID, model.DeploymentAwaitingApproval).
-			Updates(map[string]any{
-				"status": model.DeploymentQueued, "approved_by": actorID,
-				"approved_at": now, "updated_at": now,
-			})
-		if result.Error != nil {
-			return result.Error
-		}
-		if result.RowsAffected != 1 {
-			return ErrInvalidDeploymentState
-		}
-		record.Status, record.ApprovedBy, record.ApprovedAt, record.UpdatedAt = model.DeploymentQueued, &actorID, &now, now
-		return s.enqueue(ctx, tx, &record, "deploy.runtime")
-	})
-	if err != nil {
-		return nil, err
-	}
-	return &record, nil
 }
 
 func (s *Service) Rollback(ctx context.Context, sourceID, actorID string) (*model.DeploymentRecord, error) {
@@ -303,6 +272,29 @@ func (s *Service) Run(ctx context.Context, deploymentID string) error {
 }
 
 func (s *Service) run(ctx context.Context, deploymentID, expectedImageID string) error {
+	var record model.DeploymentRecord
+	if err := s.db.WithContext(ctx).First(&record, "id = ?", deploymentID).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return ErrDeploymentNotFound
+		}
+		return fmt.Errorf("读取待执行发布记录失败: %w", err)
+	}
+	lock, err := s.acquireTargetLock(ctx, &record)
+	if err != nil {
+		internalErr := fmt.Errorf("获取发布环境并发锁失败: %w", err)
+		s.logger.Error("获取发布环境并发锁失败", "operation", "deployment_lock", "deployment_id", deploymentID, "target_id", record.TargetID, "err", err)
+		return s.markFailed(ctx, deploymentID, "deployment_lock_failed", "等待发布环境可用失败，请稍后重试", internalErr, "")
+	}
+	if lock != nil {
+		defer func() {
+			releaseCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+			defer cancel()
+			if err := lock.Release(releaseCtx); err != nil && !errors.Is(err, redislock.ErrLockNotHeld) {
+				s.logger.Error("释放发布环境并发锁失败", "operation", "deployment_unlock", "deployment_id", deploymentID, "target_id", record.TargetID, "err", err)
+			}
+		}()
+	}
+
 	now := time.Now().UTC()
 	result := s.db.WithContext(ctx).Model(&model.DeploymentRecord{}).
 		Where("id = ? AND status = ?", deploymentID, model.DeploymentQueued).
@@ -321,14 +313,12 @@ func (s *Service) run(ctx context.Context, deploymentID, expectedImageID string)
 		return ErrInvalidDeploymentState
 	}
 
-	var record model.DeploymentRecord
 	if err := s.db.WithContext(ctx).First(&record, "id = ?", deploymentID).Error; err != nil {
 		return s.markFailed(ctx, deploymentID, "deployment_record_missing", "发布记录读取失败", err, "")
 	}
 	timeout := time.Duration(record.RolloutTimeout) * time.Second
 	var previousImage string
 	var warning error
-	var err error
 	switch record.Platform {
 	case model.DeploymentDocker:
 		if expectedImageID == "" {
@@ -366,6 +356,28 @@ func (s *Service) run(ctx context.Context, deploymentID, expectedImageID string)
 		return fmt.Errorf("记录发布成功状态失败: %w", err)
 	}
 	return nil
+}
+
+func (s *Service) acquireTargetLock(ctx context.Context, record *model.DeploymentRecord) (*redislock.Lock, error) {
+	if s.locks == nil {
+		return nil, nil
+	}
+	if record == nil || record.TargetID == "" || s.lockKeyPrefix == "" {
+		return nil, ErrInvalidTarget
+	}
+	rolloutTimeout := time.Duration(record.RolloutTimeout) * time.Second
+	if rolloutTimeout < 30*time.Second {
+		rolloutTimeout = 30 * time.Second
+	}
+	return s.locks.Obtain(
+		ctx,
+		s.lockKeyPrefix+":"+record.TargetID,
+		rolloutTimeout+2*time.Minute,
+		&redislock.Options{
+			RetryStrategy: redislock.ExponentialBackoff(50*time.Millisecond, time.Second),
+			Metadata:      record.ID,
+		},
+	)
 }
 
 func (s *Service) enqueue(ctx context.Context, tx *gorm.DB, record *model.DeploymentRecord, kind string) error {

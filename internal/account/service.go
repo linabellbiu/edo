@@ -26,6 +26,8 @@ const (
 var (
 	ErrInvalidUser        = errors.New("用户信息无效")
 	ErrInvalidPassword    = errors.New("密码格式无效")
+	ErrCurrentPassword    = errors.New("当前密码不正确")
+	ErrPasswordUnchanged  = errors.New("新密码不能与当前密码相同")
 	ErrUsernameExists     = errors.New("用户名已存在")
 	ErrUserNotFound       = errors.New("用户不存在")
 	ErrSuperuserImmutable = errors.New("不能通过接口修改超级管理员状态")
@@ -202,6 +204,58 @@ func (s *Service) ResetPassword(ctx context.Context, username, password string) 
 		return nil, fmt.Errorf("读取密码重置结果失败: %w", err)
 	}
 	return &user, nil
+}
+
+// ChangePassword 只允许用户修改自己的本地密码。修改成功后递增认证版本，
+// 使其他设备和当前设备的旧会话统一失效。
+func (s *Service) ChangePassword(ctx context.Context, userID, currentPassword, newPassword string) error {
+	if strings.TrimSpace(userID) == "" || currentPassword == "" {
+		return ErrCurrentPassword
+	}
+	if err := ValidatePassword(newPassword); err != nil {
+		return err
+	}
+
+	var user model.User
+	if err := s.db.WithContext(ctx).First(&user, "id = ?", userID).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return ErrUserNotFound
+		}
+		return fmt.Errorf("读取当前用户失败: %w", err)
+	}
+	matched, err := auth.ComparePassword(currentPassword, user.PasswordHash)
+	if err != nil {
+		return fmt.Errorf("校验当前密码失败: %w", err)
+	}
+	if !matched {
+		return ErrCurrentPassword
+	}
+	matched, err = auth.ComparePassword(newPassword, user.PasswordHash)
+	if err != nil {
+		return fmt.Errorf("校验新密码失败: %w", err)
+	}
+	if matched {
+		return ErrPasswordUnchanged
+	}
+	passwordHash, err := auth.HashPassword(newPassword)
+	if err != nil {
+		return fmt.Errorf("生成新密码摘要失败: %w", err)
+	}
+	now := time.Now().UTC()
+	result := s.db.WithContext(ctx).Model(&model.User{}).
+		Where("id = ? AND auth_version = ?", user.ID, user.AuthVersion).
+		Updates(map[string]any{
+			"password_hash": passwordHash,
+			"auth_version":  gorm.Expr("auth_version + ?", 1),
+			"updated_at":    now,
+		})
+	if result.Error != nil {
+		return fmt.Errorf("修改当前用户密码失败: %w", result.Error)
+	}
+	if result.RowsAffected != 1 {
+		return errors.New("用户信息已发生变化，请重新登录后再试")
+	}
+	return nil
 }
 
 func ValidatePassword(password string) error {

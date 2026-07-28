@@ -7,7 +7,7 @@ type DockerEndpoint struct {
 	Name                    string    `gorm:"type:varchar(128);not null;uniqueIndex"`
 	Host                    string    `gorm:"type:varchar(1024);not null"`
 	TLSCiphertext           string    `gorm:"type:text;not null"`
-	SSHCredentialCiphertext string    `gorm:"type:text;not null;default:''"`
+	SSHCredentialCiphertext string    `gorm:"type:text;not null"`
 	SSHHostKeyFingerprint   string    `gorm:"type:varchar(128);not null;default:''"`
 	IsActive                bool      `gorm:"not null;default:true;index"`
 	CreatedBy               string    `gorm:"type:varchar(36);not null;index"`

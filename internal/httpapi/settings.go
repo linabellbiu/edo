@@ -10,13 +10,87 @@ import (
 	"zrt/internal/auth"
 	"zrt/internal/config"
 	"zrt/internal/configuration"
+	"zrt/internal/database"
+	"zrt/internal/logretention"
 )
 
 type settingsHandler struct {
 	service      *configuration.Service
 	loginLimiter *auth.LoginRateLimiter
 	authConfig   config.Auth
+	retention    *logretention.Service
+	migration    *database.TransferService
 	logger       *slog.Logger
+}
+
+type databaseMigrationRequest struct {
+	Driver       string `json:"driver" binding:"required,oneof=mysql postgres"`
+	DSN          string `json:"dsn" binding:"required,max=4096"`
+	TestToken    string `json:"test_token"`
+	Confirmation string `json:"confirmation"`
+}
+
+func (h settingsHandler) databaseMigrationStatus(c *gin.Context) {
+	if h.migration == nil {
+		h.logger.Error("数据库迁移服务未初始化", "operation", "database_transfer_status", "request_id", requestIDFrom(c))
+		writeInternalError(c)
+		return
+	}
+	c.JSON(http.StatusOK, h.migration.Status())
+}
+
+func (h settingsHandler) testDatabaseMigration(c *gin.Context) {
+	var request databaseMigrationRequest
+	if err := c.ShouldBindJSON(&request); err != nil {
+		h.logger.Warn("目标数据库测试参数无效", "operation", "database_transfer_test_bind", "request_id", requestIDFrom(c), "err", err)
+		writeError(c, http.StatusBadRequest, "invalid_database_target", database.ErrInvalidTarget.Error())
+		return
+	}
+	result, err := h.migration.TestTarget(c.Request.Context(), database.TransferTarget{Driver: request.Driver, DSN: request.DSN})
+	if err != nil {
+		h.logger.Warn("测试目标数据库失败", "operation", "database_transfer_test", "request_id", requestIDFrom(c), "driver", request.Driver, "err", err)
+		switch {
+		case errors.Is(err, database.ErrTransferUnsupported):
+			writeError(c, http.StatusConflict, "database_transfer_unsupported", database.ErrTransferUnsupported.Error())
+		case errors.Is(err, database.ErrTargetNotEmpty):
+			writeError(c, http.StatusConflict, "database_target_not_empty", database.ErrTargetNotEmpty.Error())
+		case errors.Is(err, database.ErrInvalidTarget):
+			writeError(c, http.StatusBadRequest, "invalid_database_target", database.ErrInvalidTarget.Error())
+		default:
+			writeError(c, http.StatusBadGateway, "database_target_unavailable", "无法连接目标数据库，请检查地址、账号、密码和网络")
+		}
+		return
+	}
+	c.JSON(http.StatusOK, result)
+}
+
+func (h settingsHandler) startDatabaseMigration(c *gin.Context) {
+	var request databaseMigrationRequest
+	if err := c.ShouldBindJSON(&request); err != nil {
+		h.logger.Warn("启动数据库迁移参数无效", "operation", "database_transfer_start_bind", "request_id", requestIDFrom(c), "err", err)
+		writeError(c, http.StatusBadRequest, "invalid_database_target", database.ErrInvalidTarget.Error())
+		return
+	}
+	status, err := h.migration.Start(
+		database.TransferTarget{Driver: request.Driver, DSN: request.DSN},
+		request.TestToken,
+		request.Confirmation,
+	)
+	if err != nil {
+		h.logger.Warn("启动数据库迁移失败", "operation", "database_transfer_start", "request_id", requestIDFrom(c), "driver", request.Driver, "err", err)
+		switch {
+		case errors.Is(err, database.ErrTransferUnsupported), errors.Is(err, database.ErrActiveJobs), errors.Is(err, database.ErrTransferRunning):
+			writeError(c, http.StatusConflict, "database_transfer_unavailable", err.Error())
+		case errors.Is(err, database.ErrTargetTestRequired):
+			writeError(c, http.StatusPreconditionFailed, "database_target_test_required", err.Error())
+		case errors.Is(err, database.ErrInvalidTarget):
+			writeError(c, http.StatusBadRequest, "invalid_database_target", database.ErrInvalidTarget.Error())
+		default:
+			writeInternalError(c)
+		}
+		return
+	}
+	c.JSON(http.StatusAccepted, status)
 }
 
 func (h settingsHandler) loginLockout(c *gin.Context) {
@@ -71,6 +145,69 @@ func (h settingsHandler) loginLockoutResponse(settings configuration.LoginLockou
 type booleanSettingUpdateRequest struct {
 	Enabled         *bool `json:"enabled" binding:"required"`
 	ExpectedVersion int   `json:"expected_version" binding:"min=0"`
+}
+
+type logRetentionUpdateRequest struct {
+	Enabled         *bool `json:"enabled" binding:"required"`
+	PipelineLogDays int   `json:"pipeline_log_days" binding:"required,min=1,max=3650"`
+	AuditLogDays    int   `json:"audit_log_days" binding:"required,min=1,max=3650"`
+	ExpectedVersion int   `json:"expected_version" binding:"min=0"`
+}
+
+func (h settingsHandler) logRetention(c *gin.Context) {
+	settings, err := h.service.GetLogRetentionSettings(c.Request.Context())
+	if err != nil {
+		h.logger.Error("读取日志保留设置失败", "operation", "settings_log_retention_read", "request_id", requestIDFrom(c), "err", err)
+		writeInternalError(c)
+		return
+	}
+	c.JSON(http.StatusOK, settings)
+}
+
+func (h settingsHandler) updateLogRetention(c *gin.Context) {
+	var request logRetentionUpdateRequest
+	if err := c.ShouldBindJSON(&request); err != nil || request.Enabled == nil {
+		h.logger.Warn("修改日志保留设置参数无效", "operation", "settings_log_retention_bind", "request_id", requestIDFrom(c), "err", err)
+		writeError(c, http.StatusBadRequest, "invalid_settings", "日志保留时间必须在 1 到 3650 天之间")
+		return
+	}
+	actor, _ := currentUser(c)
+	settings, err := h.service.UpdateLogRetentionSettings(
+		c.Request.Context(), actor.ID, *request.Enabled,
+		request.PipelineLogDays, request.AuditLogDays, request.ExpectedVersion,
+	)
+	if err != nil {
+		h.logger.Warn("修改日志保留设置失败", "operation", "settings_log_retention_update", "request_id", requestIDFrom(c), "user_id", actor.ID, "err", err)
+		switch {
+		case errors.Is(err, configuration.ErrInvalidConfiguration):
+			writeError(c, http.StatusBadRequest, "invalid_settings", "日志保留设置无效")
+		case errors.Is(err, configuration.ErrVersionConflict):
+			writeError(c, http.StatusConflict, "settings_version_conflict", configuration.ErrVersionConflict.Error())
+		default:
+			writeInternalError(c)
+		}
+		return
+	}
+	c.JSON(http.StatusOK, settings)
+}
+
+func (h settingsHandler) cleanupLogs(c *gin.Context) {
+	if h.retention == nil {
+		h.logger.Error("日志保留服务未初始化", "operation", "settings_log_cleanup", "request_id", requestIDFrom(c))
+		writeInternalError(c)
+		return
+	}
+	report, err := h.retention.Cleanup(c.Request.Context())
+	if err != nil {
+		h.logger.Error("手动清理过期日志失败", "operation", "settings_log_cleanup", "request_id", requestIDFrom(c), "err", err)
+		writeInternalError(c)
+		return
+	}
+	if !report.Enabled {
+		writeError(c, http.StatusConflict, "log_retention_disabled", "请先启用自动日志清理并保存设置")
+		return
+	}
+	c.JSON(http.StatusOK, report)
 }
 
 func (h settingsHandler) externalGitWebhook(c *gin.Context) {

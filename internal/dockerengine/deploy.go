@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/containerd/errdefs"
 	"github.com/moby/moby/api/types/container"
 	"github.com/moby/moby/api/types/network"
 	"github.com/moby/moby/client"
@@ -74,6 +75,9 @@ func (s *Service) deployContainer(
 
 	inspect, err := apiClient.ContainerInspect(deployContext, containerName, client.ContainerInspectOptions{})
 	if err != nil {
+		if errdefs.IsNotFound(err) {
+			return createInitialContainer(deployContext, apiClient, containerName, image, deploymentID)
+		}
 		return "", nil, fmt.Errorf("读取待更新 Docker 容器失败: %w", err)
 	}
 	if inspect.Container.Config == nil || inspect.Container.HostConfig == nil {
@@ -153,6 +157,48 @@ func (s *Service) deployContainer(
 	newCreated = false
 	oldStopped = false
 	return previousImage, nil, nil
+}
+
+func createInitialContainer(
+	ctx context.Context,
+	apiClient *client.Client,
+	containerName, image, deploymentID string,
+) (string, error, error) {
+	configuration, hostConfiguration := initialContainerConfig(image, deploymentID)
+	created, err := apiClient.ContainerCreate(ctx, client.ContainerCreateOptions{
+		Config: configuration, HostConfig: hostConfiguration, Name: strings.TrimPrefix(containerName, "/"),
+	})
+	if err != nil {
+		return "", nil, fmt.Errorf("创建首个 Docker 容器失败: %w", err)
+	}
+	removeCreated := true
+	defer func() {
+		if removeCreated {
+			cleanupContext, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+			defer cancel()
+			_, _ = apiClient.ContainerRemove(cleanupContext, created.ID, client.ContainerRemoveOptions{Force: true})
+		}
+	}()
+	if _, err := apiClient.ContainerStart(ctx, created.ID, client.ContainerStartOptions{}); err != nil {
+		return "", nil, fmt.Errorf("启动首个 Docker 容器失败: %w", err)
+	}
+	if err := waitContainerHealthy(ctx, apiClient, created.ID); err != nil {
+		return "", nil, err
+	}
+	removeCreated = false
+	return "", nil, nil
+}
+
+func initialContainerConfig(image, deploymentID string) (*container.Config, *container.HostConfig) {
+	return &container.Config{
+			Image: image,
+			Labels: map[string]string{
+				"zrt.deployment.id": deploymentID,
+				"zrt.managed":       "true",
+			},
+		}, &container.HostConfig{
+			RestartPolicy: container.RestartPolicy{Name: container.RestartPolicyUnlessStopped},
+		}
 }
 
 func sanitizedNetworkingConfig(settings *container.NetworkSettings) *network.NetworkingConfig {

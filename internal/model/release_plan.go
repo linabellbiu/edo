@@ -11,7 +11,8 @@ const (
 	ReleasePlanCanceled  ReleasePlanStatus = "canceled"
 )
 
-// ReleasePlan 表示一次迭代、版本或发布列车。具体应用编排由计划内的发布组描述。
+// ReleasePlan 表示一次人工组织的批量发布。Name 和 Version 保留给历史数据及内部唯一标识，
+// 新建计划由服务端生成，用户只需要填写 Description。
 type ReleasePlan struct {
 	ID          string            `gorm:"type:varchar(36);primaryKey" json:"id"`
 	Name        string            `gorm:"type:varchar(128);not null" json:"name"`
@@ -41,6 +42,13 @@ const (
 	ReleaseGroupContinue      ReleaseGroupFailurePolicy = "continue"
 )
 
+type ReleaseApplicationSourceType string
+
+const (
+	ReleaseApplicationSourceBranch ReleaseApplicationSourceType = "branch"
+	ReleaseApplicationSourceCommit ReleaseApplicationSourceType = "commit"
+)
+
 // ReleaseGroup 编排一组应用。同组应用按 Mode 并行或串行执行，组间依赖单独保存。
 type ReleaseGroup struct {
 	ID            string                    `gorm:"type:varchar(36);primaryKey" json:"id"`
@@ -58,12 +66,15 @@ type ReleaseGroup struct {
 func (ReleaseGroup) TableName() string { return "release_groups" }
 
 type ReleaseGroupApplication struct {
-	ID             string      `gorm:"type:varchar(36);primaryKey" json:"id"`
-	ReleaseGroupID string      `gorm:"type:varchar(36);not null;index;uniqueIndex:idx_release_group_application,priority:1" json:"release_group_id"`
-	ApplicationID  string      `gorm:"type:varchar(36);not null;index;uniqueIndex:idx_release_group_application,priority:2" json:"application_id"`
-	SortOrder      int         `gorm:"not null;default:0;index" json:"sort_order"`
-	CreatedAt      time.Time   `gorm:"not null" json:"created_at"`
-	Application    Application `gorm:"foreignKey:ApplicationID" json:"application"`
+	ID             string                       `gorm:"type:varchar(36);primaryKey" json:"id"`
+	ReleaseGroupID string                       `gorm:"type:varchar(36);not null;index;uniqueIndex:idx_release_group_application,priority:1" json:"release_group_id"`
+	ApplicationID  string                       `gorm:"type:varchar(36);not null;index;uniqueIndex:idx_release_group_application,priority:2" json:"application_id"`
+	ManualDeploy   bool                         `gorm:"not null;default:false" json:"manual_deploy"`
+	SourceType     ReleaseApplicationSourceType `gorm:"type:varchar(16);not null;default:''" json:"source_type,omitempty"`
+	SourceValue    string                       `gorm:"type:varchar(255);not null;default:''" json:"source_value,omitempty"`
+	SortOrder      int                          `gorm:"not null;default:0;index" json:"sort_order"`
+	CreatedAt      time.Time                    `gorm:"not null" json:"created_at"`
+	Application    Application                  `gorm:"foreignKey:ApplicationID" json:"application"`
 }
 
 func (ReleaseGroupApplication) TableName() string { return "release_group_applications" }

@@ -45,14 +45,20 @@ func TestSQLiteMigrationIsIdempotent(t *testing.T) {
 		!db.Migrator().HasTable(&model.BuildPlan{}) || !db.Migrator().HasTable(&model.ImageRegistry{}) ||
 		!db.Migrator().HasTable(&model.DeploymentPlan{}) || !db.Migrator().HasTable(&model.ReleasePlan{}) ||
 		!db.Migrator().HasTable(&model.ReleaseGroup{}) || !db.Migrator().HasTable(&model.PipelineRun{}) ||
+		!db.Migrator().HasTable(&model.PipelineRunLog{}) ||
 		!db.Migrator().HasTable(&model.ApplicationRepository{}) || !db.Migrator().HasTable(&model.ApplicationRepositoryObservation{}) ||
 		!db.Migrator().HasTable(&model.PipelineRunRepository{}) ||
-			!db.Migrator().HasTable(&model.UserPermission{}) || !db.Migrator().HasTable(&model.GitCredential{}) ||
-			!db.Migrator().HasTable(&model.DNSProviderAccount{}) || !db.Migrator().HasTable(&model.DNSDomain{}) {
+		!db.Migrator().HasTable(&model.UserPermission{}) || !db.Migrator().HasTable(&model.GitCredential{}) ||
+		!db.Migrator().HasTable(&model.DNSProviderAccount{}) || !db.Migrator().HasTable(&model.DNSDomain{}) {
 		t.Fatal("核心任务表未创建")
 	}
 	if !db.Migrator().HasColumn(&model.PipelineRun{}, "retry_of_id") {
 		t.Fatal("流水线重新执行来源字段未创建")
+	}
+	if !db.Migrator().HasColumn(&model.ReleaseGroupApplication{}, "manual_deploy") ||
+		!db.Migrator().HasColumn(&model.ReleaseGroupApplication{}, "source_type") ||
+		!db.Migrator().HasColumn(&model.ReleaseGroupApplication{}, "source_value") {
+		t.Fatal("发布计划应用的手动版本来源字段未创建")
 	}
 }
 
@@ -375,5 +381,101 @@ func TestExternalDatabaseMigration(t *testing.T) {
 				t.Fatalf("%s 核心表不完整", test.name)
 			}
 		})
+	}
+}
+
+type legacyRepositoryObservation struct {
+	ID                      string `gorm:"type:varchar(36);primaryKey"`
+	ApplicationRepositoryID string `gorm:"type:varchar(36);not null;uniqueIndex:idx_repository_environment,priority:1"`
+	Environment             string `gorm:"type:varchar(16);not null;uniqueIndex:idx_repository_environment,priority:2"`
+	Ref                     string `gorm:"type:varchar(512);not null;default:''"`
+	CommitSHA               string `gorm:"type:varchar(64);not null;default:''"`
+	LastCheckedAt           *time.Time
+	CreatedAt               time.Time `gorm:"not null"`
+	UpdatedAt               time.Time `gorm:"not null"`
+}
+
+func (legacyRepositoryObservation) TableName() string {
+	return "application_repository_observations"
+}
+
+func TestRepositoryObservationMigrationSupportsMultipleCustomRefs(t *testing.T) {
+	db, err := Open(context.Background(), config.Database{
+		Driver: "sqlite", DSN: "file:repository_observation_upgrade?mode=memory&cache=shared",
+		MaxOpenConns: 1, MaxIdleConns: 1, ConnMaxLifetime: time.Minute,
+	}, slog.Default())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer Close(db)
+	if err := db.AutoMigrate(&legacyRepositoryObservation{}); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	for _, observation := range []legacyRepositoryObservation{
+		{ID: "legacy-test", ApplicationRepositoryID: "app-repo", Environment: "test", Ref: "refs/heads/test", CommitSHA: "test-1", CreatedAt: now, UpdatedAt: now},
+		{ID: "legacy-prod", ApplicationRepositoryID: "app-repo", Environment: "prod", Ref: "refs/heads/main", CommitSHA: "main-1", CreatedAt: now, UpdatedAt: now},
+	} {
+		if err := db.Create(&observation).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := migrateRepositoryObservationWatchKeys(db); err != nil {
+		t.Fatalf("迁移仓库监听游标失败: %v", err)
+	}
+	if db.Migrator().HasIndex(&model.ApplicationRepositoryObservation{}, "idx_repository_environment") ||
+		!db.Migrator().HasIndex(&model.ApplicationRepositoryObservation{}, "idx_repository_watch") {
+		t.Fatal("仓库监听游标唯一索引没有完成迁移")
+	}
+	var migrated []model.ApplicationRepositoryObservation
+	if err := db.Order("id ASC").Find(&migrated).Error; err != nil || len(migrated) != 2 {
+		t.Fatalf("读取迁移后的监听游标失败: observations=%+v err=%v", migrated, err)
+	}
+	for i := range migrated {
+		if migrated[i].WatchKey != "legacy:"+migrated[i].ID {
+			t.Fatalf("旧监听游标没有保留为兼容基线: %+v", migrated[i])
+		}
+	}
+	additional := model.ApplicationRepositoryObservation{
+		ID: "custom-test-pr", ApplicationRepositoryID: "app-repo", WatchKey: "custom-pr-key",
+		SourceNodeID: "trigger-custom", Event: "pr", Environment: "test", Ref: "refs/pull/8/head",
+		CommitSHA: "pr-1", CreatedAt: now, UpdatedAt: now,
+	}
+	if err := db.Create(&additional).Error; err != nil {
+		t.Fatalf("同一环境不能保存独立 PR 游标: %v", err)
+	}
+}
+
+func TestDeploymentApprovalMigrationCancelsLegacyPendingRecords(t *testing.T) {
+	db, err := Open(context.Background(), config.Database{
+		Driver: "sqlite", DSN: "file:deployment_approval_upgrade?mode=memory&cache=shared",
+		MaxOpenConns: 1, MaxIdleConns: 1, ConnMaxLifetime: time.Minute,
+	}, slog.Default())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer Close(db)
+	if err := db.AutoMigrate(&model.DeploymentRecord{}); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	record := model.DeploymentRecord{
+		ID: "legacy-awaiting-approval", TargetID: "production-target", TargetName: "生产环境",
+		Platform: model.DeploymentDocker, Environment: model.EnvironmentProduction,
+		RuntimeID: "docker-1", WorkloadName: "api", RolloutTimeout: 300,
+		Operation: model.DeploymentRelease, Image: "registry.example.com/api@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		Status: model.DeploymentAwaitingApproval, RequestedBy: "operator", CreatedAt: now, UpdatedAt: now,
+	}
+	if err := db.Create(&record).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := migrateDeploymentApprovalsToWorkflow(db); err != nil {
+		t.Fatalf("迁移历史待审批发布失败: %v", err)
+	}
+	if err := db.First(&record, "id = ?", record.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if record.Status != model.DeploymentCanceled || record.ErrorCode != "legacy_environment_approval_removed" || record.FinishedAt == nil {
+		t.Fatalf("历史待审批记录没有安全取消: %+v", record)
 	}
 }

@@ -30,6 +30,7 @@ type WebhookTaskPayload struct {
 	EventType    string `json:"event_type"`
 	Ref          string `json:"ref"`
 	CommitSHA    string `json:"commit_sha"`
+	Message      string `json:"message,omitempty"`
 }
 
 type webhookPayload struct {
@@ -164,7 +165,7 @@ func (s *Service) HandleWebhook(
 			Kind: "repository.webhook", Subject: "zrt.task.repository.webhook",
 			Payload: WebhookTaskPayload{
 				DeliveryID: delivery.ID, RepositoryID: repository.ID,
-				EventType: eventType, Ref: delivery.Ref, CommitSHA: delivery.CommitSHA,
+				EventType: eventType, Ref: delivery.Ref, CommitSHA: delivery.CommitSHA, Message: delivery.Message,
 			},
 			IdempotencyKey: webhookIdempotencyKey(repository.ID, deliveryID), Idempotent: true,
 		})

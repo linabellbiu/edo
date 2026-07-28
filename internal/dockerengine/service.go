@@ -20,6 +20,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/moby/moby/client"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
 	"zrt/internal/config"
 	"zrt/internal/model"
@@ -38,6 +39,12 @@ var (
 )
 
 var endpointNamePattern = regexp.MustCompile(`^[\p{L}\p{N}][\p{L}\p{N}_. -]{0,127}$`)
+
+const (
+	LocalEndpointID          = "zrt-local-docker"
+	localEndpointHost        = "builder://local"
+	defaultLocalEndpointName = "本地 Docker"
+)
 
 type TLSBundle struct {
 	CA         string `json:"ca"`
@@ -82,13 +89,24 @@ func NewService(db *gorm.DB, secrets *secret.Manager, cfg config.Runtime) *Servi
 
 func (s *Service) List(ctx context.Context) ([]model.DockerEndpoint, error) {
 	var endpoints []model.DockerEndpoint
-	if err := s.db.WithContext(ctx).Order("name ASC").Find(&endpoints).Error; err != nil {
+	if err := s.db.WithContext(ctx).Where("id <> ?", LocalEndpointID).Order("name ASC").Find(&endpoints).Error; err != nil {
 		return nil, fmt.Errorf("查询 Docker 连接失败: %w", err)
 	}
-	return endpoints, nil
+	local, err := s.localEndpoint(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return append([]model.DockerEndpoint{local}, endpoints...), nil
 }
 
 func (s *Service) Find(ctx context.Context, id string) (*model.DockerEndpoint, error) {
+	if IsLocalEndpointID(id) {
+		endpoint, err := s.localEndpoint(ctx)
+		if err != nil {
+			return nil, err
+		}
+		return &endpoint, nil
+	}
 	var endpoint model.DockerEndpoint
 	if err := s.db.WithContext(ctx).First(&endpoint, "id = ?", id).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -121,6 +139,9 @@ func (s *Service) Create(ctx context.Context, actorID string, input Input) (*mod
 }
 
 func (s *Service) Update(ctx context.Context, id string, input Input) (*model.DockerEndpoint, error) {
+	if IsLocalEndpointID(id) {
+		return s.Rename(ctx, id, input.Name)
+	}
 	existing, err := s.Find(ctx, id)
 	if err != nil {
 		return nil, err
@@ -146,7 +167,51 @@ func (s *Service) Update(ctx context.Context, id string, input Input) (*model.Do
 	return existing, nil
 }
 
+func (s *Service) Rename(ctx context.Context, id, value string) (*model.DockerEndpoint, error) {
+	name := strings.TrimSpace(value)
+	if !endpointNamePattern.MatchString(name) {
+		return nil, ErrInvalidEndpoint
+	}
+	if IsLocalEndpointID(id) {
+		now := time.Now().UTC()
+		endpoint := model.DockerEndpoint{
+			ID: LocalEndpointID, Name: name, Host: localEndpointHost, IsActive: true,
+			CreatedBy: "system", CreatedAt: now, UpdatedAt: now,
+		}
+		if err := s.db.WithContext(ctx).Clauses(clause.OnConflict{
+			Columns:   []clause.Column{{Name: "id"}},
+			DoUpdates: clause.AssignmentColumns([]string{"name", "host", "is_active", "updated_at"}),
+		}).Create(&endpoint).Error; err != nil {
+			if errors.Is(err, gorm.ErrDuplicatedKey) {
+				return nil, ErrEndpointExists
+			}
+			return nil, fmt.Errorf("更新本地 Docker 连接名称失败: %w", err)
+		}
+		updated, err := s.localEndpoint(ctx)
+		if err != nil {
+			return nil, err
+		}
+		return &updated, nil
+	}
+
+	result := s.db.WithContext(ctx).Model(&model.DockerEndpoint{}).Where("id = ?", id).
+		Updates(map[string]any{"name": name, "updated_at": time.Now().UTC()})
+	if result.Error != nil {
+		if errors.Is(result.Error, gorm.ErrDuplicatedKey) {
+			return nil, ErrEndpointExists
+		}
+		return nil, fmt.Errorf("更新 Docker 连接名称失败: %w", result.Error)
+	}
+	if result.RowsAffected != 1 {
+		return nil, ErrEndpointNotFound
+	}
+	return s.Find(ctx, id)
+}
+
 func (s *Service) SetActive(ctx context.Context, id string, active bool) error {
+	if IsLocalEndpointID(id) {
+		return ErrInvalidEndpoint
+	}
 	result := s.db.WithContext(ctx).Model(&model.DockerEndpoint{}).Where("id = ?", id).
 		Updates(map[string]any{"is_active": active, "updated_at": time.Now().UTC()})
 	if result.Error != nil {
@@ -203,6 +268,9 @@ func (s *Service) Client(ctx context.Context, id string) (*client.Client, error)
 	if !endpoint.IsActive {
 		return nil, ErrEndpointNotFound
 	}
+	if IsLocalEndpointID(endpoint.ID) {
+		return s.BuilderClient()
+	}
 	transport := &http.Transport{
 		DialContext:  (&net.Dialer{Timeout: s.config.ConnectTimeout, KeepAlive: 30 * time.Second}).DialContext,
 		MaxIdleConns: 6, IdleConnTimeout: 30 * time.Second,
@@ -258,25 +326,49 @@ func (s *Service) Client(ctx context.Context, id string) (*client.Client, error)
 	return apiClient, nil
 }
 
-// BuilderClient 只连接由 ZRT 管理的 Docker-in-Docker 构建节点，不复用任何发布目标连接。
+func IsLocalEndpointID(id string) bool {
+	return strings.TrimSpace(id) == LocalEndpointID
+}
+
+func (s *Service) localEndpoint(ctx context.Context) (model.DockerEndpoint, error) {
+	endpoint := model.DockerEndpoint{
+		ID: LocalEndpointID, Name: defaultLocalEndpointName, Host: localEndpointHost,
+		IsActive: true, CreatedBy: "system",
+	}
+	var saved model.DockerEndpoint
+	if err := s.db.WithContext(ctx).First(&saved, "id = ?", LocalEndpointID).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return endpoint, nil
+		}
+		return model.DockerEndpoint{}, fmt.Errorf("读取本地 Docker 连接名称失败: %w", err)
+	}
+	endpoint.Name = saved.Name
+	endpoint.CreatedAt, endpoint.UpdatedAt = saved.CreatedAt, saved.UpdatedAt
+	return endpoint, nil
+}
+
+// BuilderClient 连接当前 ZRT 实例的构建运行时。本地二进制使用宿主机 Docker，
+// Compose 通过 ZRT_DOCKER_BUILDER_HOST 显式连接隔离的 Docker-in-Docker。
 func (s *Service) BuilderClient() (*client.Client, error) {
 	host := strings.TrimSpace(s.config.DockerBuilderHost)
-	if host == "" {
-		return nil, errors.New("Docker-in-Docker 构建节点未配置")
-	}
-	apiClient, err := client.New(
-		client.WithHost(host),
+	options := []client.Opt{
 		client.WithTimeout(s.config.RequestTimeout),
 		client.WithUserAgent("zrt-builder"),
 		client.WithAPIVersionNegotiation(),
-	)
+	}
+	if host == "" {
+		options = append([]client.Opt{client.FromEnv}, options...)
+	} else {
+		options = append([]client.Opt{client.WithHost(host)}, options...)
+	}
+	apiClient, err := client.New(options...)
 	if err != nil {
-		return nil, fmt.Errorf("初始化 Docker-in-Docker 构建客户端失败: %w", err)
+		return nil, fmt.Errorf("初始化 Docker 构建客户端失败: %w", err)
 	}
 	return apiClient, nil
 }
 
-// PingBuilder 检查独立构建节点，供就绪探针和故障诊断使用。
+// PingBuilder 检查当前构建运行时，供就绪探针和故障诊断使用。
 func (s *Service) PingBuilder(ctx context.Context) error {
 	apiClient, err := s.BuilderClient()
 	if err != nil {
@@ -284,7 +376,7 @@ func (s *Service) PingBuilder(ctx context.Context) error {
 	}
 	defer apiClient.Close()
 	if _, err := apiClient.Ping(ctx, client.PingOptions{NegotiateAPIVersion: true}); err != nil {
-		return fmt.Errorf("Docker-in-Docker 构建节点健康检查失败: %w", err)
+		return fmt.Errorf("Docker 构建运行时健康检查失败: %w", err)
 	}
 	return nil
 }

@@ -10,6 +10,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/google/uuid"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
@@ -18,23 +19,33 @@ import (
 )
 
 var (
-	ErrInvalidReleasePlan     = errors.New("发布计划配置无效")
-	ErrReleasePlanExists      = errors.New("发布版本已存在")
-	ErrReleasePlanNotFound    = errors.New("发布计划不存在")
-	ErrReleasePlanNotEditable = errors.New("当前状态的发布计划不能修改")
-	ErrInvalidReleaseGroup    = errors.New("发布组配置无效")
-	ErrReleaseGroupExists     = errors.New("发布组名称已存在")
-	ErrReleaseGroupNotFound   = errors.New("发布组不存在")
-	ErrReleaseGroupDependency = errors.New("发布组依赖不能形成循环")
+	ErrInvalidReleasePlan         = errors.New("发布计划配置无效")
+	ErrReleasePlanExists          = errors.New("发布版本已存在")
+	ErrReleasePlanNotFound        = errors.New("发布计划不存在")
+	ErrReleasePlanNotEditable     = errors.New("当前状态的发布计划不能修改")
+	ErrInvalidReleaseGroup        = errors.New("发布组配置无效")
+	ErrReleaseGroupExists         = errors.New("发布组名称已存在")
+	ErrReleaseGroupNotFound       = errors.New("发布组不存在")
+	ErrReleaseGroupDependency     = errors.New("发布组依赖不能形成循环")
+	errInvalidReleaseApplications = errors.New("发布应用配置无效")
 )
 
 var releaseVersionPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._/-]{0,63}$`)
+var releaseCommitPattern = regexp.MustCompile(`^(?:[0-9a-f]{40}|[0-9a-f]{64})$`)
+
+type ReleaseApplicationInput struct {
+	ApplicationID string
+	ManualDeploy  bool
+	SourceType    model.ReleaseApplicationSourceType
+	SourceValue   string
+}
 
 type ReleasePlanInput struct {
-	Name        string
-	Version     string
-	Description string
-	Status      model.ReleasePlanStatus
+	Name         string
+	Version      string
+	Description  string
+	Status       model.ReleasePlanStatus
+	Applications []ReleaseApplicationInput
 }
 
 type ReleaseGroupInput struct {
@@ -42,6 +53,7 @@ type ReleaseGroupInput struct {
 	Mode              model.ReleaseGroupMode
 	FailurePolicy     model.ReleaseGroupFailurePolicy
 	ApplicationIDs    []string
+	Applications      []ReleaseApplicationInput
 	DependsOnGroupIDs []string
 }
 
@@ -72,22 +84,51 @@ func releasePlanQuery(db *gorm.DB) *gorm.DB {
 }
 
 func (s *Service) CreateReleasePlan(ctx context.Context, actorID string, input ReleasePlanInput) (*model.ReleasePlan, error) {
+	planID := uuid.NewString()
+	if strings.TrimSpace(input.Name) == "" {
+		input.Name = "发布计划-" + planID[:8]
+	}
+	if strings.TrimSpace(input.Version) == "" {
+		input.Version = "plan-" + planID
+	}
 	input, err := normalizeReleasePlanInput(input, true)
 	if err != nil {
 		return nil, err
 	}
+	input.Applications, err = s.normalizeReleaseApplications(ctx, input.Applications)
+	if err != nil {
+		if errors.Is(err, errInvalidReleaseApplications) {
+			return nil, ErrInvalidReleasePlan
+		}
+		return nil, fmt.Errorf("检查发布计划应用失败: %w", err)
+	}
 	now := time.Now().UTC()
 	plan := &model.ReleasePlan{
-		ID: uuid.NewString(), Name: input.Name, Version: input.Version, Description: input.Description,
+		ID: planID, Name: input.Name, Version: input.Version, Description: input.Description,
 		Status: input.Status, CreatedBy: actorID, UpdatedBy: actorID, CreatedAt: now, UpdatedAt: now,
 	}
-	if err := s.db.WithContext(ctx).Create(plan).Error; err != nil {
+	err = s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Create(plan).Error; err != nil {
+			return err
+		}
+		group := model.ReleaseGroup{
+			ID: uuid.NewString(), ReleasePlanID: plan.ID, Name: "默认发布组",
+			Mode: model.ReleaseGroupParallel, FailurePolicy: model.ReleaseGroupStopOnFailure,
+			SortOrder: 0, CreatedAt: now, UpdatedAt: now,
+		}
+		if err := tx.Create(&group).Error; err != nil {
+			return err
+		}
+		applications := releaseGroupApplicationModels(group.ID, input.Applications, now)
+		return tx.Create(&applications).Error
+	})
+	if err != nil {
 		if errors.Is(err, gorm.ErrDuplicatedKey) {
 			return nil, ErrReleasePlanExists
 		}
 		return nil, fmt.Errorf("创建发布计划失败: %w", err)
 	}
-	return plan, nil
+	return s.FindReleasePlan(ctx, plan.ID)
 }
 
 func (s *Service) UpdateReleasePlan(ctx context.Context, id, actorID string, input ReleasePlanInput) (*model.ReleasePlan, error) {
@@ -135,6 +176,7 @@ func normalizeReleasePlanInput(input ReleasePlanInput, creating bool) (ReleasePl
 		validStatus = false
 	}
 	if !validResourceName(input.Name) || !releaseVersionPattern.MatchString(input.Version) ||
+		(creating && input.Description == "") ||
 		utf8.RuneCountInString(input.Description) > 500 || !validStatus {
 		return input, ErrInvalidReleasePlan
 	}
@@ -233,12 +275,7 @@ func (s *Service) saveReleaseGroup(ctx context.Context, planID, groupID string, 
 				return err
 			}
 		}
-		applications := make([]model.ReleaseGroupApplication, 0, len(input.ApplicationIDs))
-		for i, applicationID := range input.ApplicationIDs {
-			applications = append(applications, model.ReleaseGroupApplication{
-				ID: uuid.NewString(), ReleaseGroupID: group.ID, ApplicationID: applicationID, SortOrder: i, CreatedAt: now,
-			})
-		}
+		applications := releaseGroupApplicationModels(group.ID, input.Applications, now)
 		if err := tx.Create(&applications).Error; err != nil {
 			return err
 		}
@@ -284,23 +321,29 @@ func (s *Service) normalizeReleaseGroupInput(ctx context.Context, planID, groupI
 	}
 	if !validResourceName(input.Name) ||
 		(input.Mode != model.ReleaseGroupParallel && input.Mode != model.ReleaseGroupSequential) ||
-		(input.FailurePolicy != model.ReleaseGroupStopOnFailure && input.FailurePolicy != model.ReleaseGroupContinue) ||
-		len(input.ApplicationIDs) == 0 || len(input.ApplicationIDs) > 50 {
+		(input.FailurePolicy != model.ReleaseGroupStopOnFailure && input.FailurePolicy != model.ReleaseGroupContinue) {
 		return input, ErrInvalidReleaseGroup
 	}
-	input.ApplicationIDs = uniqueTrimmedIDs(input.ApplicationIDs)
+	if len(input.Applications) == 0 {
+		input.ApplicationIDs = uniqueTrimmedIDs(input.ApplicationIDs)
+		input.Applications = make([]ReleaseApplicationInput, 0, len(input.ApplicationIDs))
+		for _, applicationID := range input.ApplicationIDs {
+			input.Applications = append(input.Applications, ReleaseApplicationInput{ApplicationID: applicationID})
+		}
+	}
+	var err error
+	input.Applications, err = s.normalizeReleaseApplications(ctx, input.Applications)
+	if err != nil {
+		if errors.Is(err, errInvalidReleaseApplications) {
+			return input, ErrInvalidReleaseGroup
+		}
+		return input, err
+	}
+	input.ApplicationIDs = make([]string, 0, len(input.Applications))
+	for _, application := range input.Applications {
+		input.ApplicationIDs = append(input.ApplicationIDs, application.ApplicationID)
+	}
 	input.DependsOnGroupIDs = uniqueTrimmedIDs(input.DependsOnGroupIDs)
-	if len(input.ApplicationIDs) == 0 || len(input.ApplicationIDs) > 50 {
-		return input, ErrInvalidReleaseGroup
-	}
-	var applicationCount int64
-	if err := s.db.WithContext(ctx).Model(&model.Application{}).
-		Where("id IN ? AND is_active = ?", input.ApplicationIDs, true).Count(&applicationCount).Error; err != nil {
-		return input, fmt.Errorf("检查发布组应用失败: %w", err)
-	}
-	if applicationCount != int64(len(input.ApplicationIDs)) {
-		return input, ErrInvalidReleaseGroup
-	}
 	if len(input.DependsOnGroupIDs) > 0 {
 		for _, dependencyID := range input.DependsOnGroupIDs {
 			if dependencyID == groupID {
@@ -317,6 +360,69 @@ func (s *Service) normalizeReleaseGroupInput(ctx context.Context, planID, groupI
 		}
 	}
 	return input, nil
+}
+
+func (s *Service) normalizeReleaseApplications(ctx context.Context, inputs []ReleaseApplicationInput) ([]ReleaseApplicationInput, error) {
+	if len(inputs) == 0 || len(inputs) > 50 {
+		return nil, errInvalidReleaseApplications
+	}
+	seen := make(map[string]struct{}, len(inputs))
+	result := make([]ReleaseApplicationInput, 0, len(inputs))
+	for _, input := range inputs {
+		input.ApplicationID = strings.TrimSpace(input.ApplicationID)
+		if input.ApplicationID == "" {
+			return nil, errInvalidReleaseApplications
+		}
+		if _, exists := seen[input.ApplicationID]; exists {
+			return nil, errInvalidReleaseApplications
+		}
+		seen[input.ApplicationID] = struct{}{}
+		input.SourceValue = strings.TrimSpace(input.SourceValue)
+		if !input.ManualDeploy {
+			input.SourceType, input.SourceValue = "", ""
+		} else {
+			switch input.SourceType {
+			case model.ReleaseApplicationSourceBranch:
+				input.SourceValue = strings.TrimPrefix(input.SourceValue, "refs/heads/")
+				if plumbing.NewBranchReferenceName(input.SourceValue).Validate() != nil {
+					return nil, errInvalidReleaseApplications
+				}
+			case model.ReleaseApplicationSourceCommit:
+				input.SourceValue = strings.ToLower(input.SourceValue)
+				if !releaseCommitPattern.MatchString(input.SourceValue) {
+					return nil, errInvalidReleaseApplications
+				}
+			default:
+				return nil, errInvalidReleaseApplications
+			}
+		}
+		result = append(result, input)
+	}
+	applicationIDs := make([]string, 0, len(result))
+	for _, input := range result {
+		applicationIDs = append(applicationIDs, input.ApplicationID)
+	}
+	var applicationCount int64
+	if err := s.db.WithContext(ctx).Model(&model.Application{}).
+		Where("id IN ? AND is_active = ?", applicationIDs, true).Count(&applicationCount).Error; err != nil {
+		return nil, fmt.Errorf("检查发布组应用失败: %w", err)
+	}
+	if applicationCount != int64(len(applicationIDs)) {
+		return nil, errInvalidReleaseApplications
+	}
+	return result, nil
+}
+
+func releaseGroupApplicationModels(groupID string, inputs []ReleaseApplicationInput, now time.Time) []model.ReleaseGroupApplication {
+	applications := make([]model.ReleaseGroupApplication, 0, len(inputs))
+	for i, input := range inputs {
+		applications = append(applications, model.ReleaseGroupApplication{
+			ID: uuid.NewString(), ReleaseGroupID: groupID, ApplicationID: input.ApplicationID,
+			ManualDeploy: input.ManualDeploy, SourceType: input.SourceType, SourceValue: input.SourceValue,
+			SortOrder: i, CreatedAt: now,
+		})
+	}
+	return applications
 }
 
 func uniqueTrimmedIDs(values []string) []string {

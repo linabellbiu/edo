@@ -10,17 +10,26 @@ import (
 )
 
 type releasePlanRequest struct {
-	Name        string                  `json:"name" binding:"required,max=128"`
-	Version     string                  `json:"version" binding:"required,max=64"`
-	Description string                  `json:"description" binding:"max=500"`
-	Status      model.ReleasePlanStatus `json:"status" binding:"omitempty,max=16"`
+	Name         string                      `json:"name" binding:"max=128"`
+	Version      string                      `json:"version" binding:"max=64"`
+	Description  string                      `json:"description" binding:"max=500"`
+	Status       model.ReleasePlanStatus     `json:"status" binding:"omitempty,max=16"`
+	Applications []releaseApplicationRequest `json:"applications" binding:"omitempty,max=50,dive"`
+}
+
+type releaseApplicationRequest struct {
+	ApplicationID string                             `json:"application_id" binding:"required,max=36"`
+	ManualDeploy  bool                               `json:"manual_deploy"`
+	SourceType    model.ReleaseApplicationSourceType `json:"source_type" binding:"omitempty,oneof=branch commit"`
+	SourceValue   string                             `json:"source_value" binding:"max=255"`
 }
 
 type releaseGroupRequest struct {
 	Name              string                          `json:"name" binding:"required,max=128"`
 	Mode              model.ReleaseGroupMode          `json:"mode" binding:"omitempty,max=16"`
 	FailurePolicy     model.ReleaseGroupFailurePolicy `json:"failure_policy" binding:"omitempty,max=16"`
-	ApplicationIDs    []string                        `json:"application_ids" binding:"required,min=1,max=50,dive,max=36"`
+	ApplicationIDs    []string                        `json:"application_ids" binding:"omitempty,max=50,dive,max=36"`
+	Applications      []releaseApplicationRequest     `json:"applications" binding:"omitempty,max=50,dive"`
 	DependsOnGroupIDs []string                        `json:"depends_on_group_ids" binding:"omitempty,max=50,dive,max=36"`
 }
 
@@ -45,12 +54,19 @@ func (h pipelineHandler) getReleasePlan(c *gin.Context) {
 func (h pipelineHandler) createReleasePlan(c *gin.Context) {
 	var request releasePlanRequest
 	if err := c.ShouldBindJSON(&request); err != nil {
+		h.logger.Warn("发布计划请求格式无效", "operation", "release_plan_bind", "request_id", requestIDFrom(c), "err", err)
+		writeError(c, http.StatusBadRequest, "invalid_release_plan", pipeline.ErrInvalidReleasePlan.Error())
+		return
+	}
+	if len(request.Applications) == 0 {
+		h.logger.Warn("创建发布计划未选择应用", "operation", "release_plan_create_validate", "request_id", requestIDFrom(c))
 		writeError(c, http.StatusBadRequest, "invalid_release_plan", pipeline.ErrInvalidReleasePlan.Error())
 		return
 	}
 	actor, _ := currentUser(c)
 	plan, err := h.service.CreateReleasePlan(c.Request.Context(), actor.ID, pipeline.ReleasePlanInput{
 		Name: request.Name, Version: request.Version, Description: request.Description, Status: request.Status,
+		Applications: toReleaseApplicationInputs(request.Applications),
 	})
 	if err != nil {
 		h.writeError(c, "release_plan_create", err)
@@ -63,6 +79,7 @@ func (h pipelineHandler) createReleasePlan(c *gin.Context) {
 func (h pipelineHandler) updateReleasePlan(c *gin.Context) {
 	var request releasePlanRequest
 	if err := c.ShouldBindJSON(&request); err != nil {
+		h.logger.Warn("更新发布计划请求格式无效", "operation", "release_plan_update_bind", "request_id", requestIDFrom(c), "release_plan_id", c.Param("id"), "err", err)
 		writeError(c, http.StatusBadRequest, "invalid_release_plan", pipeline.ErrInvalidReleasePlan.Error())
 		return
 	}
@@ -96,12 +113,14 @@ func (h pipelineHandler) updateReleaseGroup(c *gin.Context) {
 func (h pipelineHandler) saveReleaseGroup(c *gin.Context, groupID string) {
 	var request releaseGroupRequest
 	if err := c.ShouldBindJSON(&request); err != nil {
+		h.logger.Warn("发布组请求格式无效", "operation", "release_group_bind", "request_id", requestIDFrom(c), "release_plan_id", c.Param("id"), "err", err)
 		writeError(c, http.StatusBadRequest, "invalid_release_group", pipeline.ErrInvalidReleaseGroup.Error())
 		return
 	}
 	input := pipeline.ReleaseGroupInput{
 		Name: request.Name, Mode: request.Mode, FailurePolicy: request.FailurePolicy,
-		ApplicationIDs: request.ApplicationIDs, DependsOnGroupIDs: request.DependsOnGroupIDs,
+		ApplicationIDs: request.ApplicationIDs, Applications: toReleaseApplicationInputs(request.Applications),
+		DependsOnGroupIDs: request.DependsOnGroupIDs,
 	}
 	var (
 		plan *model.ReleasePlan
@@ -122,6 +141,17 @@ func (h pipelineHandler) saveReleaseGroup(c *gin.Context, groupID string) {
 		status = http.StatusCreated
 	}
 	c.JSON(status, gin.H{"release_plan": plan})
+}
+
+func toReleaseApplicationInputs(requests []releaseApplicationRequest) []pipeline.ReleaseApplicationInput {
+	result := make([]pipeline.ReleaseApplicationInput, 0, len(requests))
+	for _, request := range requests {
+		result = append(result, pipeline.ReleaseApplicationInput{
+			ApplicationID: request.ApplicationID, ManualDeploy: request.ManualDeploy,
+			SourceType: request.SourceType, SourceValue: request.SourceValue,
+		})
+	}
+	return result
 }
 
 func (h pipelineHandler) deleteReleaseGroup(c *gin.Context) {

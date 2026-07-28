@@ -91,6 +91,90 @@ func TestWorkerRetriesThenWritesDeadLetter(t *testing.T) {
 	if deadCount != 1 {
 		t.Fatalf("死信 Outbox 数量错误: %d", deadCount)
 	}
+	stats := worker.RuntimeStats()
+	if stats.Active != 0 || stats.Executed != 2 || stats.Failed != 2 || stats.Retried != 1 {
+		t.Fatalf("Worker 运行统计错误: %+v", stats)
+	}
+}
+
+func TestWorkerReportsActiveExecution(t *testing.T) {
+	db := openWorkerTestDB(t, "worker_active")
+	registry := NewRegistry()
+	started := make(chan struct{})
+	release := make(chan struct{})
+	if err := registry.Register("system.wait", func(context.Context, task.Message) error {
+		close(started)
+		<-release
+		return nil
+	}); err != nil {
+		t.Fatalf("注册任务处理器失败: %v", err)
+	}
+	_, message := createWorkerTestJob(t, db, "system.wait", 1)
+	taskWorker := newTestWorker(db, registry)
+	done := make(chan struct{})
+	go func() {
+		taskWorker.process(context.Background(), message)
+		close(done)
+	}()
+
+	<-started
+	stats := taskWorker.RuntimeStats()
+	if stats.Instances != 1 || stats.Capacity != 1 || stats.Active != 1 || stats.Executed != 1 {
+		t.Fatalf("执行中的 Worker 统计错误: %+v", stats)
+	}
+	close(release)
+	<-done
+	stats = taskWorker.RuntimeStats()
+	if stats.Active != 0 || stats.Succeeded != 1 {
+		t.Fatalf("执行完成后的 Worker 统计错误: %+v", stats)
+	}
+}
+
+func TestWorkerProcessorsExecuteTasksConcurrently(t *testing.T) {
+	db := openWorkerTestDB(t, "worker_concurrency")
+	registry := NewRegistry()
+	started := make(chan struct{}, 2)
+	release := make(chan struct{})
+	if err := registry.Register("system.parallel", func(context.Context, task.Message) error {
+		started <- struct{}{}
+		<-release
+		return nil
+	}); err != nil {
+		t.Fatalf("注册并行任务处理器失败: %v", err)
+	}
+	_, first := createWorkerTestJob(t, db, "system.parallel", 1)
+	_, second := createWorkerTestJob(t, db, "system.parallel", 1)
+	taskWorker := newTestWorker(db, registry)
+	taskWorker.config.Concurrency = 2
+	workQueue := make(chan queueMessage)
+	processorsDone := taskWorker.startProcessors(context.Background(), workQueue)
+
+	go func() {
+		workQueue <- first
+		workQueue <- second
+		close(workQueue)
+	}()
+	for range 2 {
+		select {
+		case <-started:
+		case <-time.After(2 * time.Second):
+			close(release)
+			t.Fatal("两个 Worker 没有并行开始执行任务")
+		}
+	}
+	if stats := taskWorker.RuntimeStats(); stats.Active != 2 || stats.Capacity != 2 {
+		close(release)
+		t.Fatalf("并行执行统计错误: %+v", stats)
+	}
+	close(release)
+	select {
+	case <-processorsDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("并行任务没有正常退出")
+	}
+	if stats := taskWorker.RuntimeStats(); stats.Succeeded != 2 || stats.Active != 0 {
+		t.Fatalf("并行任务完成统计错误: %+v", stats)
+	}
 }
 
 func openWorkerTestDB(t *testing.T, name string) *gorm.DB {

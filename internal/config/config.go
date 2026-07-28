@@ -129,7 +129,6 @@ func Load() (Config, error) {
 		"ZRT_NATS_DEAD_STREAM",
 		"ZRT_NATS_SUBJECT_PREFIX",
 		"ZRT_NATS_DEAD_SUBJECT",
-		"ZRT_DOCKER_BUILDER_HOST",
 	); err != nil {
 		return Config{}, err
 	}
@@ -200,7 +199,6 @@ func Load() (Config, error) {
 			ConnectTimeout:      10 * time.Second,
 			RequestTimeout:      30 * time.Second,
 			TerminalMaxDuration: 2 * time.Hour,
-			DockerBuilderHost:   "tcp://127.0.0.1:2375",
 		},
 		Scheduler: Scheduler{PollInterval: defaultSchedulerPoll},
 	}
@@ -291,7 +289,7 @@ func (c Config) Validate() error {
 		return errors.New("容器运行时连接或请求超时配置无效")
 	}
 	if !validDockerBuilderHost(c.Runtime.DockerBuilderHost) {
-		return errors.New("Docker-in-Docker 构建节点地址无效")
+		return errors.New("Docker 构建运行时地址无效")
 	}
 	if c.Scheduler.PollInterval < time.Second || c.Scheduler.PollInterval > time.Minute {
 		return errors.New("定时任务扫描间隔必须在 1 秒到 1 分钟之间")
@@ -320,7 +318,12 @@ func (c *Config) normalizeStrings() {
 }
 
 func validDockerBuilderHost(value string) bool {
-	parsed, err := url.Parse(strings.TrimSpace(value))
+	value = strings.TrimSpace(value)
+	if value == "" {
+		// 未配置时使用当前进程可访问的宿主机 Docker；Compose 会显式指向 DinD。
+		return true
+	}
+	parsed, err := url.Parse(value)
 	if err != nil || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
 		return false
 	}

@@ -10,6 +10,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/alicebob/miniredis/v2"
+	"github.com/bsm/redislock"
+	"github.com/redis/go-redis/v9"
 	"gorm.io/gorm"
 
 	"zrt/internal/config"
@@ -20,7 +23,7 @@ import (
 	"zrt/internal/secret"
 )
 
-func TestProductionDeploymentRequiresDigestAndSeparateApproval(t *testing.T) {
+func TestProductionDeploymentQueuesWithoutImplicitApproval(t *testing.T) {
 	service, db, endpointID := newDeploymentTestService(t)
 	target, err := service.CreateTarget(context.Background(), "admin", TargetInput{
 		Name: "production-api", Platform: model.DeploymentDocker, Environment: model.EnvironmentProduction,
@@ -38,23 +41,13 @@ func TestProductionDeploymentRequiresDigestAndSeparateApproval(t *testing.T) {
 	digestImage := "registry.example.com/team/api@sha256:" + strings.Repeat("a", 64)
 	record, err := service.Request(context.Background(), "requester", RequestInput{TargetID: target.ID, Image: digestImage})
 	if err != nil {
-		t.Fatalf("创建生产发布申请失败: %v", err)
+		t.Fatalf("创建生产发布任务失败: %v", err)
 	}
-	if record.Status != model.DeploymentAwaitingApproval || record.WorkloadName != "production-api" || record.JobID != "" {
-		t.Fatalf("生产发布申请状态或快照错误: %+v", record)
-	}
-	if _, err := service.Approve(context.Background(), record.ID, "requester"); !errors.Is(err, ErrSelfApproval) {
-		t.Fatalf("生产发布自审批未被拒绝: %v", err)
-	}
-	approved, err := service.Approve(context.Background(), record.ID, "reviewer")
-	if err != nil {
-		t.Fatalf("审批生产发布失败: %v", err)
-	}
-	if approved.Status != model.DeploymentQueued || approved.JobID == "" || approved.ApprovedBy == nil || *approved.ApprovedBy != "reviewer" {
-		t.Fatalf("生产发布审批结果错误: %+v", approved)
+	if record.Status != model.DeploymentQueued || record.WorkloadName != "production-api" || record.JobID == "" || record.ApprovedBy != nil {
+		t.Fatalf("生产环境不应隐式增加审批状态: %+v", record)
 	}
 	var job model.Job
-	if err := db.First(&job, "id = ?", approved.JobID).Error; err != nil {
+	if err := db.First(&job, "id = ?", record.JobID).Error; err != nil {
 		t.Fatalf("读取生产发布任务失败: %v", err)
 	}
 	if job.MaxAttempts != 1 {
@@ -123,6 +116,37 @@ func TestDeploymentEnvironmentSupportsCustomChineseName(t *testing.T) {
 	}
 }
 
+func TestTargetLockSerializesSameEnvironmentOnly(t *testing.T) {
+	redisServer := miniredis.RunT(t)
+	redisClient := redis.NewClient(&redis.Options{Addr: redisServer.Addr()})
+	t.Cleanup(func() { _ = redisClient.Close() })
+	service := &Service{locks: redislock.New(redisClient), lockKeyPrefix: "zrt:test:deployment"}
+	first := &model.DeploymentRecord{ID: "deployment-1", TargetID: "target-a", RolloutTimeout: 30}
+	firstLock, err := service.acquireTargetLock(context.Background(), first)
+	if err != nil {
+		t.Fatalf("获取首个发布环境锁失败: %v", err)
+	}
+	defer firstLock.Release(context.Background())
+
+	waitCtx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
+	defer cancel()
+	if _, err := service.acquireTargetLock(waitCtx, &model.DeploymentRecord{
+		ID: "deployment-2", TargetID: "target-a", RolloutTimeout: 30,
+	}); err == nil {
+		t.Fatal("同一发布环境不应同时获得两个锁")
+	}
+
+	otherLock, err := service.acquireTargetLock(context.Background(), &model.DeploymentRecord{
+		ID: "deployment-3", TargetID: "target-b", RolloutTimeout: 30,
+	})
+	if err != nil {
+		t.Fatalf("不同发布环境应允许并行: %v", err)
+	}
+	if err := otherLock.Release(context.Background()); err != nil {
+		t.Fatalf("释放其他发布环境锁失败: %v", err)
+	}
+}
+
 func newDeploymentTestService(t *testing.T) (*Service, *gorm.DB, string) {
 	t.Helper()
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
@@ -152,5 +176,5 @@ func newDeploymentTestService(t *testing.T) (*Service, *gorm.DB, string) {
 	if err := db.Create(&endpoint).Error; err != nil {
 		t.Fatalf("创建测试 Docker 连接失败: %v", err)
 	}
-	return NewService(db, dockerService, kubeService, logger), db, endpoint.ID
+	return NewService(db, dockerService, kubeService, nil, "", logger), db, endpoint.ID
 }

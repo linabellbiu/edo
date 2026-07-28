@@ -32,11 +32,35 @@ func TestDockerEndpointSecurityDefaults(t *testing.T) {
 		t.Fatalf("迁移 Docker 测试数据库失败: %v", err)
 	}
 	manager, _ := secret.New(base64.StdEncoding.EncodeToString([]byte("0123456789abcdef0123456789abcdef")))
-	service := NewService(db, manager, config.Runtime{ConnectTimeout: time.Second, RequestTimeout: time.Second})
+	service := NewService(db, manager, config.Runtime{
+		ConnectTimeout: time.Second, RequestTimeout: time.Second,
+		DockerBuilderHost: "tcp://docker-builder:2375",
+	})
+
+	localEndpoint, err := service.Find(ctx, LocalEndpointID)
+	if err != nil || !localEndpoint.IsActive || localEndpoint.Host != localEndpointHost || localEndpoint.SSHCredentialCiphertext != "" {
+		t.Fatalf("内置本地 Docker 连接无效: endpoint=%+v err=%v", localEndpoint, err)
+	}
+	endpoints, err := service.List(ctx)
+	if err != nil || len(endpoints) != 1 || endpoints[0].ID != LocalEndpointID {
+		t.Fatalf("Docker 连接列表没有包含内置本地目标: endpoints=%+v err=%v", endpoints, err)
+	}
+	renamedLocal, err := service.Rename(ctx, LocalEndpointID, "开发机 Docker")
+	if err != nil || renamedLocal.Name != "开发机 Docker" || renamedLocal.Host != localEndpointHost {
+		t.Fatalf("修改本地 Docker 连接名称失败: endpoint=%+v err=%v", renamedLocal, err)
+	}
+	persistedLocal, err := service.Find(ctx, LocalEndpointID)
+	if err != nil || persistedLocal.Name != "开发机 Docker" || persistedLocal.Host != localEndpointHost {
+		t.Fatalf("本地 Docker 连接名称未持久化: endpoint=%+v err=%v", persistedLocal, err)
+	}
 
 	endpoint, err := service.Create(ctx, "admin", Input{Name: "local-docker", Host: "unix:///var/run/docker.sock"})
 	if err != nil || endpoint.TLSCiphertext != "" {
 		t.Fatalf("创建本地 Docker Socket 失败: endpoint=%+v err=%v", endpoint, err)
+	}
+	renamedEndpoint, err := service.Rename(ctx, endpoint.ID, "开发 Docker Socket")
+	if err != nil || renamedEndpoint.Name != "开发 Docker Socket" || renamedEndpoint.Host != endpoint.Host {
+		t.Fatalf("修改 Docker 连接名称影响了连接配置: endpoint=%+v err=%v", renamedEndpoint, err)
 	}
 	_, err = service.Create(ctx, "admin", Input{Name: "unsafe-remote", Host: "tcp://docker.example.com:2375"})
 	if !errors.Is(err, ErrTLSRequired) {

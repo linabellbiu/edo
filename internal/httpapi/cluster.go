@@ -33,10 +33,15 @@ type runtimeStatusRequest struct {
 	Active *bool `json:"active" binding:"required"`
 }
 
+type runtimeNameRequest struct {
+	Name string `json:"name" binding:"required,max=128"`
+}
+
 type dockerEndpointResponse struct {
 	ID                    string    `json:"id"`
 	Name                  string    `json:"name"`
 	Host                  string    `json:"host"`
+	Local                 bool      `json:"local"`
 	TLSConfigured         bool      `json:"tls_configured"`
 	SSHConfigured         bool      `json:"ssh_configured"`
 	SSHHostKeyFingerprint string    `json:"ssh_host_key_fingerprint,omitempty"`
@@ -128,6 +133,21 @@ func (h clusterHandler) updateDockerEndpoint(c *gin.Context) {
 	endpoint, err := h.docker.Update(c.Request.Context(), c.Param("id"), toDockerInput(request))
 	if err != nil {
 		h.writeDockerError(c, "docker_endpoint_update", err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"endpoint": toDockerEndpointResponse(endpoint)})
+}
+
+func (h clusterHandler) renameDockerEndpoint(c *gin.Context) {
+	var request runtimeNameRequest
+	if err := c.ShouldBindJSON(&request); err != nil {
+		h.logger.Warn("修改 Docker 连接名称参数无效", "operation", "docker_endpoint_rename_bind", "request_id", requestIDFrom(c), "endpoint_id", c.Param("id"), "err", err)
+		writeError(c, http.StatusBadRequest, "invalid_request", dockerengine.ErrInvalidEndpoint.Error())
+		return
+	}
+	endpoint, err := h.docker.Rename(c.Request.Context(), c.Param("id"), request.Name)
+	if err != nil {
+		h.writeDockerError(c, "docker_endpoint_rename", err)
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"endpoint": toDockerEndpointResponse(endpoint)})
@@ -337,6 +357,7 @@ func (h clusterHandler) writeKubernetesReadError(c *gin.Context, operation strin
 func toDockerEndpointResponse(endpoint *model.DockerEndpoint) dockerEndpointResponse {
 	return dockerEndpointResponse{
 		ID: endpoint.ID, Name: endpoint.Name, Host: endpoint.Host,
+		Local:         dockerengine.IsLocalEndpointID(endpoint.ID),
 		TLSConfigured: endpoint.TLSCiphertext != "", SSHConfigured: endpoint.SSHCredentialCiphertext != "",
 		SSHHostKeyFingerprint: endpoint.SSHHostKeyFingerprint, IsActive: endpoint.IsActive,
 		CreatedBy: endpoint.CreatedBy, CreatedAt: endpoint.CreatedAt, UpdatedAt: endpoint.UpdatedAt,

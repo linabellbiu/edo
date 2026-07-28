@@ -2,6 +2,7 @@ package pipeline
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -48,6 +49,7 @@ var (
 	ErrRegistryExists           = errors.New("镜像仓库名称已存在")
 	ErrInvalidDeploymentPlan    = errors.New("部署方案配置无效")
 	ErrDeploymentPlanExists     = errors.New("部署方案名称已存在")
+	ErrDeploymentPlanNotFound   = errors.New("部署方案不存在")
 	ErrWorkflowTemplateNotFound = errors.New("流水线方案不存在或未启用")
 	ErrPipelineIncomplete       = errors.New("应用尚未绑定完整的构建与发布流程")
 )
@@ -58,24 +60,23 @@ var resourceNamePattern = regexp.MustCompile(`^[A-Za-z0-9\p{Han}][A-Za-z0-9\p{Ha
 var registryNamePattern = regexp.MustCompile(`^[A-Za-z0-9\p{Han}][A-Za-z0-9\p{Han}_. /:-]{0,127}$`)
 
 type ApplicationInput struct {
-	Name                   string
-	Description            string
-	RepositoryID           string
-	Branch                 string
-	PollEnabled            bool
-	PollIntervalSeconds    int
-	WatchPush              bool
-	WatchPullRequest       bool
-	WatchTags              bool
-	TagPattern             string
-	BuildPlanID            string
-	ImageRegistryID        string
-	ImageRegistrySet       bool
-	DeploymentPlanID       string
-	DeploymentTargetID     string
-	WorkflowTemplateID     string
-	ReleaseApprovalEnabled bool
-	Environments           []EnvironmentInput
+	Name                string
+	Description         string
+	RepositoryID        string
+	Branch              string
+	PollEnabled         bool
+	PollIntervalSeconds int
+	WatchPush           bool
+	WatchPullRequest    bool
+	WatchTags           bool
+	TagPattern          string
+	BuildPlanID         string
+	ImageRegistryID     string
+	ImageRegistrySet    bool
+	DeploymentPlanID    string
+	DeploymentTargetID  string
+	WorkflowTemplateID  string
+	Environments        []EnvironmentInput
 }
 
 type EnvironmentInput struct {
@@ -200,9 +201,8 @@ func (s *Service) CreateApplication(ctx context.Context, actorID string, input A
 		WatchTags: input.WatchTags, TagPattern: input.TagPattern,
 		BuildPlanID: input.BuildPlanID, ImageRegistryID: input.ImageRegistryID,
 		DeploymentPlanID: input.DeploymentPlanID, DeploymentTargetID: input.DeploymentTargetID,
-		WorkflowTemplateID:     input.WorkflowTemplateID,
-		ReleaseApprovalEnabled: input.ReleaseApprovalEnabled,
-		SyncStatus:             model.ApplicationSyncIdle, IsActive: true,
+		WorkflowTemplateID: input.WorkflowTemplateID,
+		SyncStatus:         model.ApplicationSyncIdle, IsActive: true,
 		CreatedBy: actorID, CreatedAt: now, UpdatedAt: now,
 	}
 	environments := buildEnvironmentModels(application.ID, input.Environments, now)
@@ -271,9 +271,9 @@ func (s *Service) UpdateApplication(ctx context.Context, id string, input Applic
 		"watch_pull_request": input.WatchPullRequest, "watch_tags": input.WatchTags,
 		"tag_pattern": input.TagPattern, "build_plan_id": input.BuildPlanID,
 		"image_registry_id": input.ImageRegistryID, "release_plan_id": input.DeploymentPlanID,
-		"deployment_target_id":     input.DeploymentTargetID,
-		"workflow_template_id":     input.WorkflowTemplateID,
-		"release_approval_enabled": input.ReleaseApprovalEnabled, "updated_at": time.Now().UTC(),
+		"deployment_target_id": input.DeploymentTargetID,
+		"workflow_template_id": input.WorkflowTemplateID,
+		"updated_at":           time.Now().UTC(),
 	}
 	if existing.RepositoryID != input.RepositoryID || existing.Branch != input.Branch {
 		updates["last_observed_ref"] = ""
@@ -287,7 +287,6 @@ func (s *Service) UpdateApplication(ctx context.Context, id string, input Applic
 		updated := *existing
 		updated.Name = input.Name
 		updated.WorkflowTemplateID = input.WorkflowTemplateID
-		updated.ReleaseApprovalEnabled = input.ReleaseApprovalEnabled
 		updated.Environments = buildEnvironmentModels(existing.ID, input.Environments, time.Now().UTC())
 		replacementWorkflow, err = s.newApplicationWorkflow(ctx, &updated, existing.CreatedBy, time.Now().UTC())
 		if err != nil {
@@ -310,7 +309,7 @@ func (s *Service) UpdateApplication(ctx context.Context, id string, input Applic
 			}
 			return tx.Create(replacementWorkflow).Error
 		}
-		if workflowInputsChanged(existing, input) {
+		if !reuseTemplateSnapshot && workflowInputsChanged(existing, input) {
 			return tx.Model(&model.ReleaseWorkflow{}).Where("application_id = ?", existing.ID).
 				Updates(map[string]any{"is_active": false, "updated_at": time.Now().UTC()}).Error
 		}
@@ -415,7 +414,7 @@ func (s *Service) normalizeApplication(ctx context.Context, input ApplicationInp
 		}
 	}
 	seenEnvironments := make(map[string]struct{}, len(input.Environments))
-	hasTrigger, hasPull := false, false
+	hasTrigger, hasPollableSource := false, false
 	for i := range input.Environments {
 		environment := &input.Environments[i]
 		environment.Key = strings.ToLower(strings.TrimSpace(environment.Key))
@@ -447,8 +446,8 @@ func (s *Service) normalizeApplication(ctx context.Context, input ApplicationInp
 		if environment.PollEnabled || environment.WatchPush || environment.WatchPullRequest || environment.WatchTags {
 			hasTrigger = true
 		}
-		if environment.PollEnabled {
-			hasPull = true
+		if environment.PollEnabled || environment.WatchPush || environment.WatchPullRequest || environment.WatchTags {
+			hasPollableSource = true
 		}
 		for _, check := range []struct {
 			id    string
@@ -466,7 +465,7 @@ func (s *Service) normalizeApplication(ctx context.Context, input ApplicationInp
 	if len(input.Environments) > 4 {
 		return input, ErrInvalidApplication
 	}
-	if !hasTrigger || (hasPull && !validPollIntervalSeconds(input.PollIntervalSeconds)) {
+	if !hasTrigger || (hasPollableSource && !validPollIntervalSeconds(input.PollIntervalSeconds)) {
 		return input, ErrInvalidApplication
 	}
 	primary := input.Environments[0]
@@ -568,7 +567,7 @@ func defaultEnvironmentBranch(key, fallback string) string {
 }
 
 func workflowInputsChanged(existing *model.Application, input ApplicationInput) bool {
-	if existing.WorkflowTemplateID != input.WorkflowTemplateID || existing.ReleaseApprovalEnabled != input.ReleaseApprovalEnabled || len(existing.Environments) != len(input.Environments) {
+	if existing.WorkflowTemplateID != input.WorkflowTemplateID || len(existing.Environments) != len(input.Environments) {
 		return true
 	}
 	for i := range input.Environments {
@@ -745,7 +744,7 @@ func (s *Service) ListDeploymentPlans(ctx context.Context) ([]model.DeploymentPl
 	return plans, nil
 }
 
-func (s *Service) CreateDeploymentPlan(ctx context.Context, actorID string, input DeploymentPlanInput) (*model.DeploymentPlan, error) {
+func normalizeDeploymentPlanInput(input DeploymentPlanInput) (DeploymentPlanInput, error) {
 	input.Name, input.Description = strings.TrimSpace(input.Name), strings.TrimSpace(input.Description)
 	input.Script, input.HelmChart = strings.TrimSpace(input.Script), strings.TrimSpace(input.HelmChart)
 	input.ComposeFile, input.ServiceName = strings.TrimSpace(input.ComposeFile), strings.TrimSpace(input.ServiceName)
@@ -758,7 +757,25 @@ func (s *Service) CreateDeploymentPlan(ctx context.Context, actorID string, inpu
 		(input.Kind == model.DeploymentPlanDocker && input.ServiceName != "")
 	if !validResourceName(input.Name) || !validKind || input.TimeoutSeconds < 30 || input.TimeoutSeconds > 3600 ||
 		len(input.Script) > 256*1024 || len(input.HelmValues) > 512*1024 || utf8.RuneCountInString(input.Description) > 500 {
-		return nil, ErrInvalidDeploymentPlan
+		return input, ErrInvalidDeploymentPlan
+	}
+	switch input.Kind {
+	case model.DeploymentPlanScript:
+		input.HelmChart, input.HelmValues, input.ComposeFile, input.ServiceName = "", "", "", ""
+	case model.DeploymentPlanHelm:
+		input.Script, input.ComposeFile, input.ServiceName = "", "", ""
+	case model.DeploymentPlanCompose:
+		input.Script, input.HelmChart, input.HelmValues, input.ServiceName = "", "", "", ""
+	case model.DeploymentPlanDocker:
+		input.Script, input.HelmChart, input.HelmValues, input.ComposeFile = "", "", "", ""
+	}
+	return input, nil
+}
+
+func (s *Service) CreateDeploymentPlan(ctx context.Context, actorID string, input DeploymentPlanInput) (*model.DeploymentPlan, error) {
+	input, err := normalizeDeploymentPlanInput(input)
+	if err != nil {
+		return nil, err
 	}
 	now := time.Now().UTC()
 	plan := &model.DeploymentPlan{
@@ -774,6 +791,31 @@ func (s *Service) CreateDeploymentPlan(ctx context.Context, actorID string, inpu
 		return nil, fmt.Errorf("创建部署方案失败: %w", err)
 	}
 	return plan, nil
+}
+
+func (s *Service) UpdateDeploymentPlan(ctx context.Context, id string, input DeploymentPlanInput) (*model.DeploymentPlan, error) {
+	input, err := normalizeDeploymentPlanInput(input)
+	if err != nil {
+		return nil, err
+	}
+	var plan model.DeploymentPlan
+	if err := s.db.WithContext(ctx).First(&plan, "id = ?", strings.TrimSpace(id)).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, ErrDeploymentPlanNotFound
+		}
+		return nil, fmt.Errorf("查询部署方案失败: %w", err)
+	}
+	plan.Name, plan.Kind, plan.Description = input.Name, input.Kind, input.Description
+	plan.Script, plan.HelmChart, plan.HelmValues = input.Script, input.HelmChart, input.HelmValues
+	plan.ComposeFile, plan.ServiceName = input.ComposeFile, input.ServiceName
+	plan.TimeoutSeconds, plan.UpdatedAt = input.TimeoutSeconds, time.Now().UTC()
+	if err := s.db.WithContext(ctx).Save(&plan).Error; err != nil {
+		if errors.Is(err, gorm.ErrDuplicatedKey) {
+			return nil, ErrDeploymentPlanExists
+		}
+		return nil, fmt.Errorf("更新部署方案失败: %w", err)
+	}
+	return &plan, nil
 }
 
 func (s *Service) ListRuns(ctx context.Context, limit int) ([]model.PipelineRun, error) {
@@ -794,10 +836,53 @@ func (s *Service) ListRuns(ctx context.Context, limit int) ([]model.PipelineRun,
 		}
 		var snapshot workflowSnapshot
 		if json.Unmarshal([]byte(runs[i].WorkflowSnapshot), &snapshot) == nil {
+			snapshot.ApprovalEnabled = workflowHasApprovalNode(snapshot.Nodes)
 			runs[i].ApprovalRequired = snapshot.ApprovalEnabled
+			for _, node := range snapshot.Nodes {
+				if node.ID == runs[i].CurrentNodeID {
+					runs[i].CurrentNodeName = node.Name
+					break
+				}
+			}
 		}
 	}
 	return runs, nil
+}
+
+// BackfillCommitMessages 为升级前创建的运行补齐提交标题。失败的仓库留待下次启动重试，
+// 不影响 HTTP 服务和流水线消费者启动。
+func (s *Service) BackfillCommitMessages(ctx context.Context, limit int) error {
+	if limit < 1 || limit > 200 {
+		limit = 50
+	}
+	var runs []model.PipelineRun
+	if err := s.db.WithContext(ctx).
+		Preload("Repositories", func(db *gorm.DB) *gorm.DB { return db.Order("sort_order ASC") }).
+		Where("commit_message = ? AND commit_sha <> ?", "", "").
+		Order("created_at DESC").Limit(limit).Find(&runs).Error; err != nil {
+		return fmt.Errorf("查询待补全提交说明的流水线运行失败: %w", err)
+	}
+	for i := range runs {
+		if len(runs[i].Repositories) == 0 {
+			continue
+		}
+		message, err := s.repositories.HistoricalCommitMessage(ctx, runs[i].Repositories[0].RepositoryID, runs[i].Ref, runs[i].CommitSHA)
+		if err != nil {
+			s.logger.Warn("读取历史流水线提交说明失败", "operation", "pipeline_commit_backfill", "repository_id", runs[i].Repositories[0].RepositoryID, "ref", runs[i].Ref, "commit_sha", runs[i].CommitSHA, "err", err)
+			continue
+		}
+		message = strings.TrimSpace(message)
+		if message == "" {
+			continue
+		}
+		result := s.db.WithContext(ctx).Model(&model.PipelineRun{}).
+			Where("id = ? AND commit_message = ?", runs[i].ID, "").
+			Update("commit_message", message)
+		if result.Error != nil {
+			return fmt.Errorf("补全流水线提交说明失败: %w", result.Error)
+		}
+	}
+	return nil
 }
 
 func (s *Service) PrepareRun(ctx context.Context, applicationID, actorID string) (*model.PipelineRun, error) {
@@ -839,6 +924,7 @@ func (s *Service) PrepareRun(ctx context.Context, applicationID, actorID string)
 			return nil, err
 		}
 		links := applicationRepositoryLinks(application)
+		run.CommitMessage = s.resolveCommitMessage(ctx, links[0].RepositoryID, run.Ref, run.CommitSHA)
 		component := pipelineRunRepositoryForLink(application, run.ID, links[0], run.Ref, run.CommitSHA, now)
 		if err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 			if err := tx.Create(run).Error; err != nil {
@@ -861,6 +947,10 @@ func (s *Service) PrepareRun(ctx context.Context, applicationID, actorID string)
 		Ref: application.LastObservedRef, CommitSHA: application.LastObservedCommit,
 		Status: status, Stage: "configured", Message: message, CreatedBy: actorID,
 		CreatedAt: now, UpdatedAt: now,
+	}
+	links := applicationRepositoryLinks(application)
+	if len(links) > 0 {
+		run.CommitMessage = s.resolveCommitMessage(ctx, links[0].RepositoryID, run.Ref, run.CommitSHA)
 	}
 	components := pipelineRunRepositories(application, run.ID, application.LastObservedRef, application.LastObservedCommit, now)
 	for i := range components {
@@ -942,9 +1032,17 @@ func (s *Service) SyncApplication(ctx context.Context, applicationID, trigger st
 	status, message := model.ApplicationSyncSynced, "代码已是最新状态"
 	var lastRun *model.PipelineRun
 	found := false
+	configurationChanged := applicationConfigurationChangedSinceLastCheck(application)
+	includePullRequests := false
+	for i := range pollSources {
+		if containsEvent(pollSources[i].Config.Events, "pr") {
+			includePullRequests = true
+			break
+		}
+	}
 	for linkIndex := range links {
 		link := &links[linkIndex]
-		refs, err := s.repositories.TestConnection(ctx, link.RepositoryID)
+		refs, err := s.repositories.PollState(ctx, link.RepositoryID, includePullRequests)
 		if err != nil {
 			s.markSyncFailure(ctx, application.ID, err)
 			return application, nil, fmt.Errorf("读取仓库“%s”失败: %w", link.Repository.Name, err)
@@ -952,65 +1050,107 @@ func (s *Service) SyncApplication(ctx context.Context, applicationID, trigger st
 		if len(pollSources) == 0 {
 			continue
 		}
-		observedByEnvironment := make(map[string]model.ApplicationRepositoryObservation, len(link.Observations))
+		linkHadBaseline := link.LastCheckedAt != nil || application.LastCheckedAt != nil
+		observedByWatchKey := make(map[string]model.ApplicationRepositoryObservation, len(link.Observations))
+		observedByEventRef := make(map[string]model.ApplicationRepositoryObservation, len(link.Observations))
+		legacyObservations := make([]model.ApplicationRepositoryObservation, 0)
 		for i := range link.Observations {
-			observedByEnvironment[link.Observations[i].Environment] = link.Observations[i]
-		}
-		for _, source := range pollSources {
-			ref, commit := selectWorkflowRef(source, refs)
-			if commit == "" {
+			observation := link.Observations[i]
+			if strings.HasPrefix(observation.WatchKey, "legacy:") || observation.WatchKey == "" {
+				legacyObservations = append(legacyObservations, observation)
 				continue
 			}
-			found = true
-			observation, exists := observedByEnvironment[source.Config.Environment]
-			changed := exists && observation.CommitSHA != "" && observation.CommitSHA != commit
-			if !exists {
-				observation = model.ApplicationRepositoryObservation{
-					ID: uuid.NewString(), ApplicationRepositoryID: link.ID, Environment: source.Config.Environment,
-					CreatedAt: now,
+			observedByWatchKey[observation.WatchKey] = observation
+			observedByEventRef[observationEventRefKey(observation.Event, observation.Ref)] = observation
+		}
+		seenWatchKeys := make([]string, 0)
+		sourceNodeIDs := make([]string, 0, len(pollSources))
+		for _, source := range pollSources {
+			sourceNodeIDs = append(sourceNodeIDs, source.ID)
+			for _, candidate := range workflowPollCandidates(source, refs) {
+				if candidate.Commit == "" {
+					continue
 				}
-			}
-			observation.Ref, observation.CommitSHA, observation.LastCheckedAt, observation.UpdatedAt = ref, commit, &now, now
-			if err := s.db.WithContext(ctx).Save(&observation).Error; err != nil {
-				return application, nil, fmt.Errorf("更新仓库环境监听状态失败: %w", err)
-			}
-			observedByEnvironment[source.Config.Environment] = observation
-			link.LastObservedRef, link.LastObservedCommit, link.LastCheckedAt = ref, commit, &now
-			if err := s.db.WithContext(ctx).Model(&model.ApplicationRepository{}).Where("id = ?", link.ID).Updates(map[string]any{
-				"last_observed_ref": ref, "last_observed_commit": commit, "last_checked_at": now, "updated_at": now,
-			}).Error; err != nil {
-				return application, nil, fmt.Errorf("更新应用仓库监听状态失败: %w", err)
-			}
-			if linkIndex == 0 {
-				application.LastObservedRef, application.LastObservedCommit = ref, commit
-				if environment := environmentByKey[source.Config.Environment]; environment != nil {
-					if err := s.db.WithContext(ctx).Model(environment).Updates(map[string]any{
-						"last_observed_ref": ref, "last_observed_commit": commit, "last_checked_at": now, "updated_at": now,
-					}).Error; err != nil {
-						return application, nil, fmt.Errorf("更新环境监听状态失败: %w", err)
+				found = true
+				watchKey := repositoryObservationWatchKey(source.ID, candidate.Event, candidate.Ref)
+				seenWatchKeys = append(seenWatchKeys, watchKey)
+				observation, exists := observedByWatchKey[watchKey]
+				if !exists {
+					observation, exists = takeLegacyObservation(&legacyObservations, source.Config.Environment, candidate.Ref)
+				}
+				if !exists {
+					if _, sameRefExists := observedByEventRef[observationEventRefKey(candidate.Event, candidate.Ref)]; sameRefExists {
+						// 新增、复制或切换触发节点时，已有 Ref 只建立该节点自己的基线，
+						// 不能因为节点 ID 变化而重复发布同一个 Commit。
+						observation = model.ApplicationRepositoryObservation{
+							ID: uuid.NewString(), ApplicationRepositoryID: link.ID, CreatedAt: now,
+						}
+						exists = true
 					}
 				}
+				changed := exists && observation.CommitSHA != "" && observation.CommitSHA != candidate.Commit
+				if !exists && linkHadBaseline && !configurationChanged {
+					// 完成过基线后出现的新分支、Tag 或 PR 都是新的远端事件。
+					changed = true
+				}
+				if !exists {
+					observation = model.ApplicationRepositoryObservation{
+						ID: uuid.NewString(), ApplicationRepositoryID: link.ID, CreatedAt: now,
+					}
+				}
+				observation.WatchKey, observation.SourceNodeID = watchKey, source.ID
+				observation.Event, observation.Environment = candidate.Event, source.Config.Environment
+				observation.Ref, observation.CommitSHA = candidate.Ref, candidate.Commit
+				observation.LastCheckedAt, observation.UpdatedAt = &now, now
+				if err := s.db.WithContext(ctx).Save(&observation).Error; err != nil {
+					return application, nil, fmt.Errorf("更新仓库监听状态失败: %w", err)
+				}
+				observedByWatchKey[watchKey] = observation
+				observedByEventRef[observationEventRefKey(candidate.Event, candidate.Ref)] = observation
+				link.LastObservedRef, link.LastObservedCommit, link.LastCheckedAt = candidate.Ref, candidate.Commit, &now
+				if err := s.db.WithContext(ctx).Model(&model.ApplicationRepository{}).Where("id = ?", link.ID).Updates(map[string]any{
+					"last_observed_ref": candidate.Ref, "last_observed_commit": candidate.Commit, "last_checked_at": now, "updated_at": now,
+				}).Error; err != nil {
+					return application, nil, fmt.Errorf("更新应用仓库监听状态失败: %w", err)
+				}
+				if linkIndex == 0 {
+					application.LastObservedRef, application.LastObservedCommit = candidate.Ref, candidate.Commit
+					if environment := environmentByKey[source.Config.Environment]; environment != nil {
+						if err := s.db.WithContext(ctx).Model(environment).Updates(map[string]any{
+							"last_observed_ref": candidate.Ref, "last_observed_commit": candidate.Commit, "last_checked_at": now, "updated_at": now,
+						}).Error; err != nil {
+							return application, nil, fmt.Errorf("更新环境监听状态失败: %w", err)
+						}
+					}
+				}
+				if !changed {
+					continue
+				}
+				status, message = model.ApplicationSyncChanged, pollChangeMessage(candidate.Event)
+				run, createErr := s.createObservedRun(ctx, application, *link, source, polledRunTrigger(candidate.Event), candidate.Ref, candidate.Commit, message, now)
+				if createErr != nil {
+					return application, nil, createErr
+				}
+				lastRun = run
 			}
-			if !changed {
-				continue
-			}
-			status, message = model.ApplicationSyncChanged, "检测到新的代码版本"
-			run, createErr := s.createObservedRun(ctx, application, *link, source, trigger, ref, commit, message, now)
-			if createErr != nil {
-				return application, nil, createErr
-			}
-			lastRun = run
+		}
+		stale := s.db.WithContext(ctx).Where("application_repository_id = ? AND source_node_id IN ?", link.ID, sourceNodeIDs)
+		if len(seenWatchKeys) > 0 {
+			stale = stale.Where("watch_key NOT IN ?", seenWatchKeys)
+		}
+		if err := stale.Delete(&model.ApplicationRepositoryObservation{}).Error; err != nil {
+			return application, nil, fmt.Errorf("清理失效仓库监听状态失败: %w", err)
 		}
 	}
 	if len(pollSources) == 0 {
-		message = "所有仓库均可读取；当前流水线由 Push、PR 或 Tag 事件触发"
+		message = "所有仓库均可读取；当前流水线没有可定时检查的分支、PR 或 Tag 节点"
 		if err := s.markSyncReadable(ctx, application, now, message); err != nil {
 			return application, nil, err
 		}
 		return application, nil, nil
 	}
 	if !found {
-		message = "所有仓库均可读取；未找到流水线配置的分支或标签"
+		message = "所有仓库均可读取；未找到流水线配置的分支、PR 或 Tag"
 		if err := s.markSyncReadable(ctx, application, now, message); err != nil {
 			return application, nil, err
 		}
@@ -1029,11 +1169,62 @@ func (s *Service) SyncApplication(ctx context.Context, applicationID, trigger st
 	return application, lastRun, nil
 }
 
+func repositoryObservationWatchKey(sourceNodeID, event, ref string) string {
+	digest := sha256.Sum256([]byte(sourceNodeID + "\x00" + event + "\x00" + ref))
+	return fmt.Sprintf("%x", digest[:])
+}
+
+func observationEventRefKey(event, ref string) string {
+	return event + "\x00" + ref
+}
+
+func applicationConfigurationChangedSinceLastCheck(application *model.Application) bool {
+	if application.LastCheckedAt == nil {
+		return false
+	}
+	if application.UpdatedAt.After(*application.LastCheckedAt) {
+		return true
+	}
+	return application.Workflow != nil && application.Workflow.UpdatedAt.After(*application.LastCheckedAt)
+}
+
+func takeLegacyObservation(observations *[]model.ApplicationRepositoryObservation, environment, ref string) (model.ApplicationRepositoryObservation, bool) {
+	for i := range *observations {
+		observation := (*observations)[i]
+		if observation.ID != "" && observation.Environment == environment && observation.Ref == ref {
+			(*observations)[i].ID = ""
+			return observation, true
+		}
+	}
+	return model.ApplicationRepositoryObservation{}, false
+}
+
+func pollChangeMessage(event string) string {
+	return map[string]string{
+		"push": "定时检查检测到分支变更",
+		"pr":   "定时检查检测到 PR 变更",
+		"tag":  "定时检查检测到新 Tag",
+	}[event]
+}
+
+func (s *Service) resolveCommitMessage(ctx context.Context, repositoryID, ref, commitSHA string) string {
+	if repositoryID == "" || ref == "" || commitSHA == "" {
+		return ""
+	}
+	message, err := s.repositories.CommitMessage(ctx, repositoryID, ref, commitSHA)
+	if err != nil {
+		s.logger.Warn("读取流水线提交说明失败", "operation", "pipeline_commit_message", "repository_id", repositoryID, "ref", ref, "commit_sha", commitSHA, "err", err)
+		return ""
+	}
+	return strings.TrimSpace(message)
+}
+
 func (s *Service) createObservedRun(ctx context.Context, application *model.Application, link model.ApplicationRepository, source model.WorkflowNode, trigger, ref, commit, message string, now time.Time) (*model.PipelineRun, error) {
-	run, err := s.runFromSource(application, source, trigger, ref, commit, "", message, now)
+	run, err := s.runFromSource(application, source, trigger, ref, commit, "system", message, now)
 	if err != nil {
 		return nil, err
 	}
+	run.CommitMessage = s.resolveCommitMessage(ctx, link.RepositoryID, ref, commit)
 	component := pipelineRunRepositoryForLink(application, run.ID, link, ref, commit, now)
 	if err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if err := tx.Create(run).Error; err != nil {
@@ -1044,7 +1235,16 @@ func (s *Service) createObservedRun(ctx context.Context, application *model.Appl
 		return nil, fmt.Errorf("记录代码变更失败: %w", err)
 	}
 	run.Repositories = []model.PipelineRunRepository{component}
-	return run, nil
+	if application.Workflow == nil || !application.Workflow.IsActive {
+		return run, nil
+	}
+	advanced, err := s.AdvanceRun(ctx, run.ID, "system", "")
+	if err == nil {
+		return advanced, nil
+	}
+	const failureMessage = "检测到代码变化，但自动执行流水线失败"
+	_ = s.failExecution(ctx, run.ID, failureMessage, err)
+	return nil, fmt.Errorf("自动执行流水线失败: %w", err)
 }
 
 func pipelineRunRepositoryForLink(application *model.Application, runID string, link model.ApplicationRepository, ref, commit string, now time.Time) model.PipelineRunRepository {
@@ -1106,7 +1306,8 @@ func (s *Service) HandleRepositoryEvent(ctx context.Context, input repository.We
 			}
 			for _, source := range sources {
 				var observation model.ApplicationRepositoryObservation
-				err := tx.First(&observation, "application_repository_id = ? AND environment = ?", applicationRepository.ID, source.Config.Environment).Error
+				watchKey := repositoryObservationWatchKey(source.ID, event, input.Ref)
+				err := tx.First(&observation, "application_repository_id = ? AND watch_key = ?", applicationRepository.ID, watchKey).Error
 				if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
 					return err
 				}
@@ -1116,9 +1317,11 @@ func (s *Service) HandleRepositoryEvent(ctx context.Context, input repository.We
 				if errors.Is(err, gorm.ErrRecordNotFound) {
 					observation = model.ApplicationRepositoryObservation{
 						ID: uuid.NewString(), ApplicationRepositoryID: applicationRepository.ID,
+						WatchKey: watchKey, SourceNodeID: source.ID, Event: event,
 						Environment: source.Config.Environment, CreatedAt: now,
 					}
 				}
+				observation.WatchKey, observation.SourceNodeID, observation.Event = watchKey, source.ID, event
 				observation.Ref, observation.CommitSHA, observation.LastCheckedAt, observation.UpdatedAt = input.Ref, input.CommitSHA, &now, now
 				if err := tx.Save(&observation).Error; err != nil {
 					return err
@@ -1135,6 +1338,7 @@ func (s *Service) HandleRepositoryEvent(ctx context.Context, input repository.We
 				if err != nil {
 					return err
 				}
+				run.CommitMessage = strings.TrimSpace(strings.SplitN(input.Message, "\n", 2)[0])
 				if err := tx.Create(run).Error; err != nil {
 					return err
 				}
@@ -1152,7 +1356,7 @@ func (s *Service) HandleRepositoryEvent(ctx context.Context, input repository.We
 }
 
 func (s *Service) RunWatcher(ctx context.Context, scanInterval time.Duration) {
-	scanInterval = pullWatcherScanInterval(scanInterval)
+	scanInterval = repositoryWatcherScanInterval(scanInterval)
 	s.scanDueApplications(ctx)
 	ticker := time.NewTicker(scanInterval)
 	defer ticker.Stop()
@@ -1175,7 +1379,7 @@ func validPollIntervalSeconds(value int) bool {
 	}
 }
 
-func pullWatcherScanInterval(configured time.Duration) time.Duration {
+func repositoryWatcherScanInterval(configured time.Duration) time.Duration {
 	const maximumScanInterval = 3 * time.Second
 	if configured <= 0 || configured > maximumScanInterval {
 		return maximumScanInterval
@@ -1194,7 +1398,9 @@ func (s *Service) scanDueApplications(ctx context.Context) {
 		if application.LastCheckedAt != nil && now.Sub(*application.LastCheckedAt) < time.Duration(application.PollIntervalSeconds)*time.Second {
 			continue
 		}
-		_, _, _ = s.SyncApplication(ctx, application.ID, "poll")
+		if _, _, err := s.SyncApplication(ctx, application.ID, "poll"); err != nil && s.logger != nil {
+			s.logger.Error("定时检查应用代码失败", "operation", "pipeline_poll", "application_id", application.ID, "err", err)
+		}
 		if ctx.Err() != nil {
 			return
 		}

@@ -89,8 +89,9 @@ services:
       - zrt-builder
     restart: unless-stopped
 
-  # 独立 Docker-in-Docker 构建节点。未绑定镜像仓库时，api 会将 docker save 流经 SSH
-  # 传给目标主机的 docker load；绑定仓库时则由这里直接 push。
+  # 独立 Docker-in-Docker 构建节点。未绑定镜像仓库且发布到远程 Docker 时，api 会将
+  # docker save 流经 SSH 传给目标主机的 docker load；本地目标直接使用这里的镜像。
+  # 绑定仓库时由这里直接 push。
   # privileged 仅授予这个隔离容器，不挂载宿主机 Docker Socket。
   docker-builder:
     image: docker:28.3.3-dind

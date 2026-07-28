@@ -10,12 +10,13 @@ import (
 	"io"
 	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	distributionreference "github.com/distribution/reference"
-	"github.com/moby/moby/api/types/build"
 	registrytypes "github.com/moby/moby/api/types/registry"
 	"github.com/moby/moby/client"
 	"github.com/moby/patternmatcher"
@@ -36,6 +37,7 @@ func (s *Service) BuildAndPush(
 	contextDirectory, dockerfile, image string,
 	registry RegistryAuth,
 	timeout time.Duration,
+	output io.Writer,
 ) (string, error, error) {
 	apiClient, err := s.BuilderClient()
 	if err != nil {
@@ -70,19 +72,7 @@ func (s *Service) BuildAndPush(
 	} else if err := cachePull.Wait(buildContextTimeout); err != nil {
 		cacheWarning = fmt.Errorf("拉取远程构建缓存失败: %w", err)
 	}
-	inlineCache := "1"
-	result, err := apiClient.ImageBuild(buildContextTimeout, buildContext, client.ImageBuildOptions{
-		Tags: []string{image, cacheImage}, Dockerfile: filepath.ToSlash(dockerfile),
-		PullParent: true, Remove: true, ForceRemove: true,
-		Version:     build.BuilderBuildKit,
-		AuthConfigs: map[string]registrytypes.AuthConfig{registry.Host: authConfig},
-		CacheFrom:   []string{cacheImage},
-		BuildArgs:   map[string]*string{"BUILDKIT_INLINE_CACHE": &inlineCache},
-	})
-	if err != nil {
-		return "", cacheWarning, fmt.Errorf("提交 Docker 镜像构建失败: %w", err)
-	}
-	if err := waitImageBuild(buildContextTimeout, result.Body); err != nil {
+	if err := s.runBuildx(buildContextTimeout, buildContext, dockerfile, []string{image, cacheImage}, cacheImage, registry, output); err != nil {
 		return "", cacheWarning, err
 	}
 
@@ -111,11 +101,12 @@ func (s *Service) BuildAndPush(
 	return "", cacheWarning, errors.New("镜像仓库没有返回可验证的镜像摘要")
 }
 
-// BuildLocal 在独立 Docker-in-Docker 构建节点中构建镜像，并返回内容寻址的镜像 ID。
+// BuildLocal 在当前构建运行时中构建镜像，并返回内容寻址的镜像 ID。
 func (s *Service) BuildLocal(
 	ctx context.Context,
 	contextDirectory, dockerfile, image string,
 	timeout time.Duration,
+	output io.Writer,
 ) (string, error) {
 	if !IsZRTLocalImage(image) {
 		return "", errors.New("本地构建镜像名称无效")
@@ -141,18 +132,7 @@ func (s *Service) BuildLocal(
 	if err != nil {
 		return "", err
 	}
-	inlineCache := "1"
-	result, err := apiClient.ImageBuild(buildContextTimeout, buildContext, client.ImageBuildOptions{
-		Tags: []string{image, cacheImage}, Dockerfile: filepath.ToSlash(dockerfile),
-		PullParent: true, Remove: true, ForceRemove: true,
-		Version:   build.BuilderBuildKit,
-		CacheFrom: []string{cacheImage},
-		BuildArgs: map[string]*string{"BUILDKIT_INLINE_CACHE": &inlineCache},
-	})
-	if err != nil {
-		return "", fmt.Errorf("提交 Docker 本地镜像构建失败: %w", err)
-	}
-	if err := waitImageBuild(buildContextTimeout, result.Body); err != nil {
+	if err := s.runBuildx(buildContextTimeout, buildContext, dockerfile, []string{image, cacheImage}, "", RegistryAuth{}, output); err != nil {
 		return "", err
 	}
 	inspect, err := apiClient.ImageInspect(buildContextTimeout, image)
@@ -165,35 +145,44 @@ func (s *Service) BuildLocal(
 	return inspect.ID, nil
 }
 
-// TransferImageToSSH 将 Docker-in-Docker 中的镜像以 docker save 流传给目标 SSH 主机的 docker load。
-// 传输全程不落盘，加载完成后再按镜像 ID 校验，避免只信任可变标签。
+// TransferImageToSSH 将构建运行时中的镜像以 docker save 流传给目标 SSH 主机的 docker load。
+// 导出前校验源镜像 ID，加载后返回目标 Docker daemon 分配的镜像 ID，供部署前再次校验。
+// 不同 Docker 版本可能会规范化镜像配置中的空字段，因此两端镜像 ID 不保证相同。
 func (s *Service) TransferImageToSSH(
 	ctx context.Context,
-	endpointID, image, expectedImageID string,
+	endpointID, image, sourceImageID string,
 	timeout time.Duration,
-) error {
-	if !IsZRTLocalImage(image) || !IsValidImageID(expectedImageID) {
-		return errors.New("待传输的本地 Docker 镜像无效")
+) (string, error) {
+	if !IsZRTLocalImage(image) || !IsValidImageID(sourceImageID) {
+		return "", errors.New("待传输的本地 Docker 镜像无效")
 	}
 	apiClient, err := s.BuilderClient()
 	if err != nil {
-		return err
+		return "", err
 	}
 	defer apiClient.Close()
 	transferContext, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
+	inspect, err := apiClient.ImageInspect(transferContext, image)
+	if err != nil {
+		return "", fmt.Errorf("读取待传输的本地 Docker 镜像失败: %w", err)
+	}
+	if inspect.ID != sourceImageID {
+		return "", errors.New("待传输的本地 Docker 镜像已发生变化")
+	}
 	archive, err := apiClient.ImageSave(transferContext, []string{image})
 	if err != nil {
-		return fmt.Errorf("从 Docker-in-Docker 导出镜像失败: %w", err)
+		return "", fmt.Errorf("从 Docker 构建运行时导出镜像失败: %w", err)
 	}
 	defer archive.Close()
-	if err := s.loadImageToSSH(transferContext, endpointID, image, expectedImageID, archive); err != nil {
-		return err
+	targetImageID, err := s.loadImageToSSH(transferContext, endpointID, image, archive)
+	if err != nil {
+		return "", err
 	}
-	return nil
+	return targetImageID, nil
 }
 
-// IsZRTLocalImage 判断镜像是否属于仅在 Docker SSH 目标主机保存的本地命名空间。
+// IsZRTLocalImage 判断镜像是否属于本地 Docker 或 Docker SSH 目标保存的本地命名空间。
 func IsZRTLocalImage(value string) bool {
 	named, err := distributionreference.ParseNormalizedNamed(strings.TrimSpace(value))
 	return err == nil && distributionreference.Domain(named) == "zrt.local"
@@ -242,29 +231,202 @@ func encodeRegistryAuth(config registrytypes.AuthConfig) (string, error) {
 	return base64.URLEncoding.EncodeToString(payload), nil
 }
 
-func waitImageBuild(ctx context.Context, body io.ReadCloser) error {
-	defer body.Close()
-	decoder := json.NewDecoder(body)
-	for {
-		var message struct {
-			Error       string `json:"error"`
-			ErrorDetail *struct {
-				Message string `json:"message"`
-			} `json:"errorDetail"`
+func (s *Service) runBuildx(
+	ctx context.Context,
+	buildContext io.Reader,
+	dockerfile string,
+	tags []string,
+	cacheFrom string,
+	registry RegistryAuth,
+	output io.Writer,
+) error {
+	if _, err := exec.LookPath("docker"); err != nil {
+		return errors.New("Docker CLI 未安装，无法执行 BuildKit 构建")
+	}
+	configDirectory := ""
+	if registry.Credential != "" {
+		var err error
+		configDirectory, err = writeDockerCLIConfig(registry)
+		if err != nil {
+			return err
 		}
-		if err := decoder.Decode(&message); err != nil {
-			if errors.Is(err, io.EOF) {
-				return nil
+		defer os.RemoveAll(configDirectory)
+	}
+
+	builder := ""
+	if strings.TrimSpace(s.config.DockerBuilderHost) != "" {
+		builder = "default"
+	}
+	arguments := dockerBuildxArguments(dockerfile, tags, cacheFrom, builder)
+	// 每个任务都有独立检出目录、构建上下文、认证目录和不可重复镜像标签；
+	// 这里不设置进程级锁，让 BuildKit 按 Worker 并发数并行调度构建。
+	command := exec.CommandContext(ctx, "docker", arguments...)
+	command.Env = dockerBuildEnvironment(s.config.DockerBuilderHost, configDirectory)
+	command.Stdin = buildContext
+	diagnostic := &tailBuffer{limit: 16 * 1024}
+	commandOutput := io.Writer(diagnostic)
+	if output != nil {
+		commandOutput = io.MultiWriter(diagnostic, output)
+	}
+	command.Stdout = commandOutput
+	command.Stderr = commandOutput
+	if err := command.Run(); err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return fmt.Errorf("Docker 镜像构建超时或被取消: %w", ctxErr)
+		}
+		message := strings.TrimSpace(diagnostic.String())
+		if message == "" {
+			return fmt.Errorf("Docker 镜像构建失败: %w", err)
+		}
+		// BuildKit 输出只进入后端错误日志；流水线对外仍返回稳定、安全的中文提示。
+		return fmt.Errorf("Docker 镜像构建失败: %w: %s", err, message)
+	}
+	return nil
+}
+
+func dockerBuildxArguments(dockerfile string, tags []string, cacheFrom, builder string) []string {
+	arguments := []string{
+		"buildx", "build", "--progress", "plain", "--pull", "--load",
+	}
+	if builder != "" {
+		arguments = append(arguments, "--builder", builder)
+	}
+	arguments = append(arguments,
+		"--file", filepath.ToSlash(dockerfile), "--build-arg", "BUILDKIT_INLINE_CACHE=1",
+	)
+	for _, tag := range tags {
+		arguments = append(arguments, "--tag", tag)
+	}
+	if cacheFrom != "" {
+		arguments = append(arguments, "--cache-from", cacheFrom)
+	}
+	return append(arguments, "-")
+}
+
+func dockerBuildEnvironment(host, configDirectory string) []string {
+	environment := make([]string, 0, len(os.Environ())+3)
+	host = strings.TrimSpace(host)
+	configDirectory = strings.TrimSpace(configDirectory)
+	for _, value := range os.Environ() {
+		name, _, _ := strings.Cut(value, "=")
+		switch strings.ToUpper(name) {
+		case "DOCKER_BUILDKIT":
+			continue
+		case "DOCKER_HOST", "DOCKER_CONTEXT":
+			if host != "" {
+				continue
 			}
-			return fmt.Errorf("读取 Docker 构建结果失败: %w", err)
+		case "DOCKER_CONFIG":
+			if configDirectory != "" {
+				continue
+			}
 		}
-		if message.Error != "" || (message.ErrorDetail != nil && message.ErrorDetail.Message != "") {
-			return errors.New("Docker 镜像构建失败")
+		environment = append(environment, value)
+	}
+	if host != "" {
+		environment = append(environment, "DOCKER_HOST="+host)
+	}
+	if configDirectory != "" {
+		environment = append(environment, "DOCKER_CONFIG="+configDirectory)
+	}
+	return append(environment, "DOCKER_BUILDKIT=1")
+}
+
+func writeDockerCLIConfig(registry RegistryAuth) (string, error) {
+	directory, err := os.MkdirTemp("", "zrt-docker-config-*")
+	if err != nil {
+		return "", fmt.Errorf("创建 Docker 临时认证目录失败: %w", err)
+	}
+	removeDirectory := true
+	defer func() {
+		if removeDirectory {
+			_ = os.RemoveAll(directory)
 		}
-		if err := ctx.Err(); err != nil {
-			return fmt.Errorf("Docker 镜像构建超时: %w", err)
+	}()
+	type authEntry struct {
+		Auth          string `json:"auth,omitempty"`
+		IdentityToken string `json:"identitytoken,omitempty"`
+	}
+	configuration := struct {
+		Auths               map[string]authEntry `json:"auths,omitempty"`
+		CLIPluginsExtraDirs []string             `json:"cliPluginsExtraDirs,omitempty"`
+	}{
+		Auths:               make(map[string]authEntry),
+		CLIPluginsExtraDirs: dockerCLIPluginDirectories(),
+	}
+	if registry.Credential != "" {
+		entry := authEntry{}
+		if registry.Username == "" {
+			entry.IdentityToken = registry.Credential
+		} else {
+			entry.Auth = base64.StdEncoding.EncodeToString([]byte(registry.Username + ":" + registry.Credential))
+		}
+		for _, address := range []string{strings.TrimSpace(registry.ServerAddress), strings.TrimSpace(registry.Host)} {
+			if address != "" {
+				configuration.Auths[address] = entry
+			}
 		}
 	}
+	payload, err := json.Marshal(configuration)
+	if err != nil {
+		return "", fmt.Errorf("编码 Docker 临时认证配置失败: %w", err)
+	}
+	if err := os.WriteFile(filepath.Join(directory, "config.json"), payload, 0o600); err != nil {
+		return "", fmt.Errorf("写入 Docker 临时认证配置失败: %w", err)
+	}
+	removeDirectory = false
+	return directory, nil
+}
+
+func dockerCLIPluginDirectories() []string {
+	candidates := []string{
+		"/usr/local/libexec/docker/cli-plugins",
+		"/usr/local/lib/docker/cli-plugins",
+		"/usr/libexec/docker/cli-plugins",
+		"/usr/lib/docker/cli-plugins",
+	}
+	if home, err := os.UserHomeDir(); err == nil {
+		candidates = append(candidates, filepath.Join(home, ".docker", "cli-plugins"))
+	}
+	if executable, err := exec.LookPath("docker"); err == nil {
+		candidates = append(candidates, filepath.Join(filepath.Dir(executable), "cli-plugins"))
+	}
+	result := make([]string, 0, len(candidates))
+	seen := make(map[string]struct{}, len(candidates))
+	for _, candidate := range candidates {
+		candidate = filepath.Clean(candidate)
+		if _, exists := seen[candidate]; exists {
+			continue
+		}
+		if info, err := os.Stat(candidate); err != nil || !info.IsDir() {
+			continue
+		}
+		seen[candidate] = struct{}{}
+		result = append(result, candidate)
+	}
+	return result
+}
+
+type tailBuffer struct {
+	mutex sync.Mutex
+	data  []byte
+	limit int
+}
+
+func (b *tailBuffer) Write(value []byte) (int, error) {
+	b.mutex.Lock()
+	defer b.mutex.Unlock()
+	b.data = append(b.data, value...)
+	if len(b.data) > b.limit {
+		b.data = append([]byte(nil), b.data[len(b.data)-b.limit:]...)
+	}
+	return len(value), nil
+}
+
+func (b *tailBuffer) String() string {
+	b.mutex.Lock()
+	defer b.mutex.Unlock()
+	return string(b.data)
 }
 
 func createBuildContext(root, dockerfile string) (*os.File, error) {

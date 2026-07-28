@@ -133,12 +133,80 @@ func (s *Service) SaveWorkflowTemplate(ctx context.Context, id, actorID string, 
 		if result.RowsAffected != 1 {
 			return ErrWorkflowTemplateRevisionConflict
 		}
-		return tx.First(&saved, "id = ?", id).Error
+		if err := tx.First(&saved, "id = ?", id).Error; err != nil {
+			return err
+		}
+		if saved.IsActive {
+			return syncLinkedApplicationWorkflows(tx, &saved, actorID, now)
+		}
+		return nil
 	})
 	if err != nil {
+		if s.logger != nil && !errors.Is(err, ErrWorkflowTemplateRevisionConflict) && !errors.Is(err, ErrWorkflowTemplateExists) {
+			s.logger.Error("同步流水线方案失败", "operation", "workflow_template_sync", "workflow_template_id", id, "err", err)
+		}
 		return nil, err
 	}
 	return &WorkflowTemplateResult{WorkflowTemplate: &saved, Valid: len(issues) == 0, Issues: issues}, nil
+}
+
+func syncLinkedApplicationWorkflows(tx *gorm.DB, template *model.ReleaseWorkflowTemplate, actorID string, now time.Time) error {
+	var workflows []model.ReleaseWorkflow
+	if err := tx.Where("workflow_template_id = ?", template.ID).Find(&workflows).Error; err != nil {
+		return err
+	}
+	if len(workflows) == 0 {
+		return nil
+	}
+
+	nodesJSON, err := json.Marshal(template.Nodes)
+	if err != nil {
+		return err
+	}
+	edgesJSON, err := json.Marshal(template.Edges)
+	if err != nil {
+		return err
+	}
+	viewportJSON, err := json.Marshal(template.Viewport)
+	if err != nil {
+		return err
+	}
+	environments := workflowTemplateEnvironmentInputs(template.Nodes)
+	for i := range workflows {
+		var application model.Application
+		if err := tx.Preload("Environments").First(&application, "id = ?", workflows[i].ApplicationID).Error; err != nil {
+			return err
+		}
+		if err := saveApplicationEnvironments(tx, &application, environments, now); err != nil {
+			return err
+		}
+		if len(environments) > 0 {
+			primary := environments[0]
+			if err := tx.Model(&model.Application{}).Where("id = ?", application.ID).Updates(map[string]any{
+				"branch": primary.Branch, "poll_enabled": primary.PollEnabled,
+				"watch_push": primary.WatchPush, "watch_pull_request": primary.WatchPullRequest,
+				"watch_tags": primary.WatchTags, "tag_pattern": primary.TagPattern,
+				"updated_at": now,
+			}).Error; err != nil {
+				return err
+			}
+		}
+		result := tx.Model(&model.ReleaseWorkflow{}).
+			Where("id = ? AND revision = ?", workflows[i].ID, workflows[i].Revision).
+			Updates(map[string]any{
+				"name":  application.Name + " · " + template.Name,
+				"nodes": string(nodesJSON), "edges": string(edgesJSON), "viewport": string(viewportJSON),
+				"workflow_template_revision": template.Revision,
+				"revision":                   workflows[i].Revision + 1, "updated_by": actorID, "updated_at": now,
+			})
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected != 1 {
+			return ErrWorkflowRevisionConflict
+		}
+	}
+	return nil
 }
 
 func (s *Service) DeleteWorkflowTemplate(ctx context.Context, id string) error {

@@ -19,6 +19,19 @@ type NATS struct {
 	logger *slog.Logger
 }
 
+type QueueStats struct {
+	Connected       bool   `json:"connected"`
+	StoredMessages  uint64 `json:"stored_messages"`
+	StoredBytes     uint64 `json:"stored_bytes"`
+	Consumers       int    `json:"consumers"`
+	PendingMessages uint64 `json:"pending_messages"`
+	AckPending      int    `json:"ack_pending"`
+	Redelivered     int    `json:"redelivered"`
+	WaitingPulls    int    `json:"waiting_pulls"`
+	DeadMessages    uint64 `json:"dead_messages"`
+	DeadBytes       uint64 `json:"dead_bytes"`
+}
+
 func Open(ctx context.Context, cfg config.NATS, logger *slog.Logger) (*NATS, error) {
 	conn, err := nats.Connect(
 		cfg.URL,
@@ -128,6 +141,50 @@ func (n *NATS) Ping(ctx context.Context) error {
 		return fmt.Errorf("JetStream 健康检查失败: %w", err)
 	}
 	return nil
+}
+
+func (n *NATS) QueueStats(ctx context.Context, consumerName string) (QueueStats, error) {
+	stats := QueueStats{Connected: n.conn.IsConnected()}
+	if !stats.Connected {
+		return stats, fmt.Errorf("NATS 连接当前不可用")
+	}
+
+	stream, err := n.js.Stream(ctx, n.config.Stream)
+	if err != nil {
+		return stats, fmt.Errorf("读取 NATS 任务 Stream 失败: %w", err)
+	}
+	streamInfo, err := stream.Info(ctx)
+	if err != nil {
+		return stats, fmt.Errorf("读取 NATS 任务 Stream 状态失败: %w", err)
+	}
+	stats.StoredMessages = streamInfo.State.Msgs
+	stats.StoredBytes = streamInfo.State.Bytes
+	stats.Consumers = streamInfo.State.Consumers
+
+	consumer, err := stream.Consumer(ctx, consumerName)
+	if err != nil {
+		return stats, fmt.Errorf("读取 NATS Consumer 失败: %w", err)
+	}
+	consumerInfo, err := consumer.Info(ctx)
+	if err != nil {
+		return stats, fmt.Errorf("读取 NATS Consumer 状态失败: %w", err)
+	}
+	stats.PendingMessages = consumerInfo.NumPending
+	stats.AckPending = consumerInfo.NumAckPending
+	stats.Redelivered = consumerInfo.NumRedelivered
+	stats.WaitingPulls = consumerInfo.NumWaiting
+
+	deadStream, err := n.js.Stream(ctx, n.config.DeadStream)
+	if err != nil {
+		return stats, fmt.Errorf("读取 NATS 死信 Stream 失败: %w", err)
+	}
+	deadInfo, err := deadStream.Info(ctx)
+	if err != nil {
+		return stats, fmt.Errorf("读取 NATS 死信 Stream 状态失败: %w", err)
+	}
+	stats.DeadMessages = deadInfo.State.Msgs
+	stats.DeadBytes = deadInfo.State.Bytes
+	return stats, nil
 }
 
 func (n *NATS) Close() error {

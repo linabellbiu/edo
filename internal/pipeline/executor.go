@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"net/url"
 	"os"
 	"path"
@@ -54,6 +55,7 @@ func (s *Service) ExecuteDeployTask(ctx context.Context, payload DeployTaskPaylo
 		}
 		return s.failExecution(ctx, payload.PipelineRunID, "流水线执行配置不完整，请检查应用、构建方案和发布环境", err)
 	}
+	s.appendRunLog(ctx, prepared.run.ID, "start", "info", "流水线开始执行："+prepared.run.Ref+" · "+prepared.run.CommitSHA)
 	checkoutDirectory, err := os.MkdirTemp("", "zrt-pipeline-checkout-*")
 	if err != nil {
 		return s.failExecution(ctx, prepared.run.ID, "准备构建工作区失败，请稍后重试", err)
@@ -73,10 +75,16 @@ func (s *Service) ExecuteDeployTask(ctx context.Context, payload DeployTaskPaylo
 	}
 	image, expectedImageID, buildMessage, err := s.buildExecutionImage(ctx, prepared, contextDirectory, dockerfile)
 	if err != nil {
-		return s.failExecution(ctx, prepared.run.ID, "镜像构建或传输失败，请检查任务日志、构建方案和发布环境", err)
+		message := executionImageFailureMessage(
+			prepared.run.Stage,
+			prepared.target.Name,
+			prepared.component.ImageRegistryID != "",
+			err,
+		)
+		return s.failExecution(ctx, prepared.run.ID, message, err)
 	}
 
-	approvedBy, err := s.executionApproval(ctx, prepared)
+	approvedBy, err := s.latestExecutionApproval(ctx, prepared.run.ID)
 	if err != nil {
 		return s.failExecution(ctx, prepared.run.ID, err.Error(), err)
 	}
@@ -91,6 +99,20 @@ func (s *Service) ExecuteDeployTask(ctx context.Context, payload DeployTaskPaylo
 		return s.failExecution(ctx, prepared.run.ID, "发布执行失败，请检查目标环境和发布记录", err)
 	}
 	return s.completeExecution(ctx, prepared, record)
+}
+
+func executionImageFailureMessage(stage, targetName string, pushesToRegistry bool, cause error) string {
+	if stage == "transfer" {
+		var timeoutError net.Error
+		if errors.Is(cause, context.DeadlineExceeded) || (errors.As(cause, &timeoutError) && timeoutError.Timeout()) {
+			return "无法连接发布环境“" + targetName + "”，SSH 连接超时"
+		}
+		return "镜像传输到发布环境“" + targetName + "”失败，请检查 SSH 和 Docker"
+	}
+	if pushesToRegistry {
+		return "镜像构建或推送失败，请检查任务日志、构建方案和镜像仓库"
+	}
+	return "镜像构建失败，请检查任务日志和构建方案"
 }
 
 func (s *Service) loadExecution(ctx context.Context, payload DeployTaskPayload, jobID string) (*executionContext, error) {
@@ -153,8 +175,8 @@ func (s *Service) loadExecution(ctx context.Context, payload DeployTaskPayload, 
 			return nil, err
 		}
 		parsed, err := url.Parse(endpoint.Host)
-		if err != nil || parsed.Scheme != "ssh" {
-			return nil, errors.New("未绑定镜像仓库时发布环境必须使用 Docker SSH 主机")
+		if err != nil || (parsed.Scheme != "ssh" && !dockerengine.IsLocalEndpointID(endpoint.ID)) {
+			return nil, errors.New("未绑定镜像仓库时发布环境必须使用本地 Docker 或 Docker SSH 主机")
 		}
 	}
 	return result, nil
@@ -166,27 +188,33 @@ func (s *Service) buildExecutionImage(
 	contextDirectory, dockerfile string,
 ) (string, string, string, error) {
 	timeout := time.Duration(prepared.buildPlan.TimeoutSeconds) * time.Second
+	buildOutput := s.newBuildLogWriter(ctx, prepared.run.ID, "build")
+	defer buildOutput.Close()
 	if prepared.component.ImageRegistryID == "" {
 		image, err := localExecutionImage(prepared)
 		if err != nil {
 			return "", "", "", err
 		}
-		if err := s.updateExecutionPhase(ctx, &prepared.run, "build", "正在 Docker-in-Docker 构建节点构建本地镜像 "+image); err != nil {
+		if err := s.updateExecutionPhase(ctx, &prepared.run, "build", "正在 Docker 构建运行时构建本地镜像 "+image); err != nil {
 			return "", "", "", err
 		}
 		imageID, err := s.docker.BuildLocal(
-			ctx, contextDirectory, dockerfile, image, timeout,
+			ctx, contextDirectory, dockerfile, image, timeout, buildOutput,
 		)
 		if err != nil {
 			return "", "", "", err
 		}
+		if dockerengine.IsLocalEndpointID(prepared.target.RuntimeID) {
+			return image, imageID, "本地镜像已在 Docker 构建运行时构建并校验", nil
+		}
 		if err := s.updateExecutionPhase(ctx, &prepared.run, "transfer", "正在通过 SSH 将本地镜像传输到“"+prepared.target.Name+"”"); err != nil {
 			return "", "", "", err
 		}
-		if err := s.docker.TransferImageToSSH(ctx, prepared.target.RuntimeID, image, imageID, timeout); err != nil {
+		targetImageID, err := s.docker.TransferImageToSSH(ctx, prepared.target.RuntimeID, image, imageID, timeout)
+		if err != nil {
 			return "", "", "", err
 		}
-		return image, imageID, "本地镜像已构建、传输并校验", nil
+		return image, targetImageID, "本地镜像已构建、传输并校验", nil
 	}
 
 	image, registryAuth, err := s.executionImage(ctx, prepared)
@@ -197,7 +225,7 @@ func (s *Service) buildExecutionImage(
 		return "", "", "", err
 	}
 	digest, cacheWarning, err := s.docker.BuildAndPush(
-		ctx, contextDirectory, dockerfile, image, registryAuth, timeout,
+		ctx, contextDirectory, dockerfile, image, registryAuth, timeout, buildOutput,
 	)
 	if err != nil {
 		return "", "", "", err
@@ -300,17 +328,11 @@ func executionImageName(application model.Application) (string, error) {
 	return "app-" + applicationID, nil
 }
 
-func (s *Service) executionApproval(ctx context.Context, prepared *executionContext) (string, error) {
-	if prepared.target.Environment != model.EnvironmentProduction {
-		return "", nil
-	}
-	if !prepared.snapshot.ApprovalEnabled {
-		return "", deployment.ErrApprovalRequired
-	}
+func (s *Service) latestExecutionApproval(ctx context.Context, runID string) (string, error) {
 	var approval model.PipelineRunApproval
-	if err := s.db.WithContext(ctx).Where("pipeline_run_id = ?", prepared.run.ID).Order("approved_at DESC").First(&approval).Error; err != nil {
+	if err := s.db.WithContext(ctx).Where("pipeline_run_id = ?", runID).Order("approved_at DESC").First(&approval).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return "", deployment.ErrApprovalRequired
+			return "", nil
 		}
 		return "", err
 	}
@@ -329,6 +351,7 @@ func (s *Service) updateExecutionPhase(ctx context.Context, run *model.PipelineR
 		return ErrInvalidWorkflowTransition
 	}
 	run.Stage, run.Message, run.UpdatedAt = stage, message, now
+	s.appendRunLog(ctx, run.ID, stage, "info", message)
 	return nil
 }
 
@@ -340,14 +363,15 @@ func (s *Service) completeExecution(ctx context.Context, prepared *executionCont
 			break
 		}
 	}
-	status, stage, message := model.PipelineRunReady, "deploy_succeeded", "“"+prepared.node.Name+"”发布成功，可以继续下一节点"
+	message := "当前节点：" + prepared.node.Name + "；状态：已完成"
+	status, stage := model.PipelineRunReady, "deploy_succeeded"
 	componentStatus := model.PipelineRunRepositoryReady
 	if !hasNext {
-		status, stage, message = model.PipelineRunSucceeded, "completed", "真实发布成功，流水线运行已完成"
+		status, stage = model.PipelineRunSucceeded, "completed"
 		componentStatus = model.PipelineRunRepositorySucceeded
 	}
 	now := time.Now().UTC()
-	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		result := tx.Model(&model.PipelineRun{}).
 			Where("id = ? AND execution_job_id = ? AND status = ?", prepared.run.ID, prepared.run.ExecutionJobID, model.PipelineRunRunning).
 			Updates(map[string]any{
@@ -363,6 +387,10 @@ func (s *Service) completeExecution(ctx context.Context, prepared *executionCont
 		return tx.Model(&model.PipelineRunRepository{}).Where("pipeline_run_id = ?", prepared.run.ID).
 			Updates(map[string]any{"status": componentStatus, "updated_at": now}).Error
 	})
+	if err == nil {
+		s.appendRunLog(ctx, prepared.run.ID, stage, "success", message)
+	}
+	return err
 }
 
 func (s *Service) failExecution(ctx context.Context, runID, message string, cause error) error {
@@ -372,6 +400,7 @@ func (s *Service) failExecution(ctx context.Context, runID, message string, caus
 	now := time.Now().UTC()
 	updateContext, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 	defer cancel()
+	s.appendRunLog(updateContext, runID, "failed", "error", message)
 	if err := s.db.WithContext(updateContext).Transaction(func(tx *gorm.DB) error {
 		if err := tx.Model(&model.PipelineRun{}).Where("id = ? AND status <> ?", runID, model.PipelineRunSucceeded).
 			Updates(map[string]any{"status": model.PipelineRunFailed, "stage": "failed", "message": message, "updated_at": now}).Error; err != nil {

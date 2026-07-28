@@ -144,6 +144,11 @@ func startDocker(ctx context.Context, runServer, runWeb bool) error {
 }
 
 func startBuilt(ctx context.Context, runServer, runWeb bool) error {
+	if runServer {
+		if err := useHostDockerBuilder(); err != nil {
+			return err
+		}
+	}
 	if runWeb {
 		if err := ensureWebDependencies(ctx); err != nil {
 			return err
@@ -238,6 +243,26 @@ func migrateFromSource(ctx context.Context) error {
 }
 
 func startDevelopmentDependencies(ctx context.Context) error {
+	// 之前通过 --docker 启动的 api/web 不会被 compose up redis nats 自动停止，会与本机
+	// go run 竞争同一 NATS Consumer，并发访问同一 SQLite 文件。开发模式必须先收敛为单后端。
+	if err := runCommand(
+		ctx,
+		"docker",
+		"compose",
+		"-f",
+		"deploy/compose.dev.yml",
+		"stop",
+		"api",
+		"web",
+		"docker-builder",
+	); err != nil {
+		return fmt.Errorf("停止遗留的容器后端失败: %w", err)
+	}
+
+	// 宿主机开发直接使用当前 Docker CLI/daemon；DinD 只属于 Compose 内的容器后端。
+	if err := useHostDockerBuilder(); err != nil {
+		return err
+	}
 	fmt.Println("启动开发依赖：Redis、NATS JetStream")
 	if err := runCommand(
 		ctx,
@@ -254,6 +279,13 @@ func startDevelopmentDependencies(ctx context.Context) error {
 		"nats",
 	); err != nil {
 		return fmt.Errorf("启动开发依赖失败: %w", err)
+	}
+	return nil
+}
+
+func useHostDockerBuilder() error {
+	if err := os.Unsetenv("ZRT_DOCKER_BUILDER_HOST"); err != nil {
+		return fmt.Errorf("切换到宿主机 Docker 构建运行时失败: %w", err)
 	}
 	return nil
 }

@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -88,5 +89,94 @@ func TestZRTLocalImageAndImageIDValidation(t *testing.T) {
 	validID := "sha256:" + strings.Repeat("a", 64)
 	if !IsValidImageID(validID) || IsValidImageID("sha256:"+strings.Repeat("g", 64)) || IsValidImageID("sha256:short") {
 		t.Fatal("Docker 镜像 ID 校验结果错误")
+	}
+}
+
+func TestDockerBuildxArgumentsUseSessionCapableBuilder(t *testing.T) {
+	arguments := dockerBuildxArguments("deploy/Dockerfile", []string{"zrt.local/app:commit", "zrt.local/app:zrt-cache"}, "", "default")
+	for _, expected := range []string{"buildx", "build", "--load", "--file", "deploy/Dockerfile", "zrt.local/app:commit"} {
+		if !slices.Contains(arguments, expected) {
+			t.Fatalf("Buildx 参数缺少 %q: %v", expected, arguments)
+		}
+	}
+	if arguments[len(arguments)-1] != "-" {
+		t.Fatalf("构建上下文没有通过标准输入传入: %v", arguments)
+	}
+	if !slices.Contains(arguments, "default") {
+		t.Fatalf("显式 Docker API 构建没有选择默认 Builder: %v", arguments)
+	}
+
+	local := dockerBuildxArguments("Dockerfile", []string{"zrt.local/app:local"}, "", "")
+	if slices.Contains(local, "--builder") {
+		t.Fatalf("本地构建不应覆盖当前 Docker Context/Builder: %v", local)
+	}
+}
+
+func TestWriteDockerCLIConfigProtectsRegistryCredential(t *testing.T) {
+	directory, err := writeDockerCLIConfig(RegistryAuth{
+		ServerAddress: "https://registry.example.com", Host: "registry.example.com",
+		Username: "builder", Credential: "private-token",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(directory)
+	path := filepath.Join(directory, "config.json")
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Fatalf("Docker 临时认证配置权限不安全: %o", info.Mode().Perm())
+	}
+	payload, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(payload), "private-token") || !strings.Contains(string(payload), `"auths"`) {
+		t.Fatalf("Docker 临时认证配置格式不正确: %s", payload)
+	}
+}
+
+func TestDockerBuildEnvironmentSelectsLocalOrConfiguredRuntime(t *testing.T) {
+	t.Setenv("DOCKER_HOST", "unix:///host/docker.sock")
+	t.Setenv("DOCKER_CONTEXT", "desktop-linux")
+	t.Setenv("DOCKER_CONFIG", "/host/docker-config")
+
+	local := environmentValues(dockerBuildEnvironment("", ""))
+	if local["DOCKER_HOST"] != "unix:///host/docker.sock" || local["DOCKER_CONTEXT"] != "desktop-linux" ||
+		local["DOCKER_CONFIG"] != "/host/docker-config" {
+		t.Fatalf("本地构建没有保留宿主机 Docker 环境: %+v", local)
+	}
+
+	container := environmentValues(dockerBuildEnvironment("tcp://docker-builder:2375", "/tmp/zrt-docker-config"))
+	if container["DOCKER_HOST"] != "tcp://docker-builder:2375" || container["DOCKER_CONFIG"] != "/tmp/zrt-docker-config" {
+		t.Fatalf("容器构建没有使用显式 DinD: %+v", container)
+	}
+	if _, exists := container["DOCKER_CONTEXT"]; exists {
+		t.Fatalf("显式 DinD 不应继承宿主机 Docker Context: %+v", container)
+	}
+	if container["DOCKER_BUILDKIT"] != "1" {
+		t.Fatalf("构建必须启用 BuildKit: %+v", container)
+	}
+}
+
+func environmentValues(values []string) map[string]string {
+	result := make(map[string]string, len(values))
+	for _, value := range values {
+		name, content, found := strings.Cut(value, "=")
+		if found {
+			result[name] = content
+		}
+	}
+	return result
+}
+
+func TestTailBufferKeepsLatestBuildDiagnostic(t *testing.T) {
+	buffer := &tailBuffer{limit: 12}
+	_, _ = buffer.Write([]byte("old-output\n"))
+	_, _ = buffer.Write([]byte("final-error"))
+	if buffer.String() != "\nfinal-error" {
+		t.Fatalf("没有保留最新构建诊断: %q", buffer.String())
 	}
 }

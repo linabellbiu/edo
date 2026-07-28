@@ -174,16 +174,6 @@ func (h deploymentHandler) request(c *gin.Context) {
 	c.JSON(http.StatusCreated, gin.H{"deployment": record})
 }
 
-func (h deploymentHandler) approve(c *gin.Context) {
-	actor, _ := currentUser(c)
-	record, err := h.service.Approve(c.Request.Context(), c.Param("id"), actor.ID)
-	if err != nil {
-		h.writeDeploymentError(c, "deployment_approve", err)
-		return
-	}
-	c.JSON(http.StatusOK, gin.H{"deployment": record})
-}
-
 func (h deploymentHandler) rollback(c *gin.Context) {
 	actor, _ := currentUser(c)
 	record, err := h.service.Rollback(c.Request.Context(), c.Param("id"), actor.ID)
@@ -220,8 +210,6 @@ func (h deploymentHandler) writeDeploymentError(c *gin.Context, operation string
 		writeError(c, http.StatusBadRequest, "immutable_image_required", deployment.ErrImmutableImageRequired.Error())
 	case errors.Is(err, deployment.ErrDeploymentNotFound):
 		writeError(c, http.StatusNotFound, "deployment_not_found", deployment.ErrDeploymentNotFound.Error())
-	case errors.Is(err, deployment.ErrSelfApproval):
-		writeError(c, http.StatusConflict, "self_approval_denied", deployment.ErrSelfApproval.Error())
 	case errors.Is(err, deployment.ErrInvalidDeploymentState):
 		writeError(c, http.StatusConflict, "invalid_deployment_state", deployment.ErrInvalidDeploymentState.Error())
 	case errors.Is(err, deployment.ErrRollbackUnavailable):
