@@ -1,32 +1,249 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue'
 import { message } from 'ant-design-vue'
-import { Boxes, CloudCog, Plus, RefreshCw } from 'lucide-vue-next'
+import { Boxes, Pencil, Plus, RefreshCw, Server } from 'lucide-vue-next'
+import { useRouter } from 'vue-router'
 
 import client from '@/api/client'
-import { apiErrorMessage, type ResourceRecord } from '@/api/resources'
+import {
+  listEnvironments,
+  listHosts,
+  type InfrastructureEnvironment,
+  type InfrastructureHost,
+} from '@/api/infrastructure'
+import { apiErrorMessage } from '@/api/resources'
 import PageToolbar from '@/components/PageToolbar.vue'
+import RuntimeBrandIcon from '@/components/RuntimeBrandIcon.vue'
 import { useAuthStore } from '@/stores/auth'
 
-type Platform='docker'|'kubernetes';type Level='development'|'staging'|'production'
-interface Environment extends ResourceRecord{id:string;name:string;description:string;platform:Platform;environment:Level;runtime_id:string;namespace:string;workload_name:string;container_name:string;rollout_timeout:number;is_active:boolean}
-interface Runtime{id:string;name:string;host?:string;api_server?:string;default_namespace?:string;local?:boolean;is_active:boolean}
-const auth=useAuthStore(),items=ref<Environment[]>([]),docker=ref<Runtime[]>([]),clusters=ref<Runtime[]>([]),selectedID=ref(''),formOpen=ref(false),editingID=ref(''),loading=ref(false),saving=ref(false),testing=ref(false)
-const form=reactive({name:'',description:'',platform:'docker' as Platform,environment:'development' as Level,runtime_id:'',namespace:'default',workload_name:'',container_name:'',rollout_timeout:300})
-const selected=computed(()=>items.value.find(item=>item.id===selectedID.value));const runtimeOptions=computed(()=>(form.platform==='docker'?docker.value:clusters.value).filter(item=>item.is_active).map(item=>({value:item.id,label:`${item.name} · ${item.local?'本地 Docker':item.host||item.api_server||'集群内连接'}`})))
-const levelNames:Record<Level,string>={development:'开发',staging:'测试 / 预发布',production:'生产'}
-function reset(){Object.assign(form,{name:'',description:'',platform:'docker',environment:'development',runtime_id:'',namespace:'default',workload_name:'',container_name:'',rollout_timeout:300});editingID.value=''}
-async function refresh(){loading.value=true;try{const [a,b,c]=await Promise.all([client.get<{environments:Environment[]}>('/environments'),auth.canAny(['cluster.read'])?client.get<{endpoints:Runtime[]}>('/docker/endpoints'):null,auth.canAny(['cluster.read'])?client.get<{clusters:Runtime[]}>('/kubernetes/clusters'):null]);items.value=a.data.environments;docker.value=b?.data.endpoints||[];clusters.value=c?.data.clusters||[];if(!items.value.some(item=>item.id===selectedID.value))selectedID.value=items.value[0]?.id||''}catch(error){message.error(apiErrorMessage(error))}finally{loading.value=false}}
-function create(){reset();formOpen.value=true}
-function edit(item:Environment){Object.assign(form,{name:item.name,description:item.description||'',platform:item.platform,environment:item.environment,runtime_id:item.runtime_id,namespace:item.namespace||'default',workload_name:item.workload_name,container_name:item.container_name||'',rollout_timeout:item.rollout_timeout});editingID.value=item.id;formOpen.value=true}
-async function test(){if(!form.runtime_id){message.error('请选择发布连接');return}testing.value=true;try{await client.post(form.platform==='docker'?`/docker/endpoints/${form.runtime_id}/ping`:`/kubernetes/clusters/${form.runtime_id}/ping`);message.success('连接测试成功')}catch(error){message.error(apiErrorMessage(error))}finally{testing.value=false}}
-async function save(){saving.value=true;try{const payload={...form,namespace:form.platform==='kubernetes'?form.namespace:'',container_name:form.platform==='kubernetes'?form.container_name:''};const result=editingID.value?await client.put<{environment:Environment}>(`/environments/${editingID.value}`,payload):await client.post<{environment:Environment}>('/environments',payload);selectedID.value=result.data.environment.id;message.success(editingID.value?'环境配置已更新':'环境已创建');formOpen.value=false;reset();await refresh()}catch(error){message.error(apiErrorMessage(error))}finally{saving.value=false}}
-async function toggle(item:Environment){try{await client.patch(`/environments/${item.id}/status`,{active:!item.is_active});await refresh()}catch(error){message.error(apiErrorMessage(error))}}
+const auth = useAuthStore()
+const router = useRouter()
+const environments = ref<InfrastructureEnvironment[]>([])
+const hosts = ref<InfrastructureHost[]>([])
+const selectedID = ref('')
+const formOpen = ref(false)
+const editingID = ref('')
+const loading = ref(false)
+const saving = ref(false)
+const form = reactive({ name: '', description: '', host_ids: [] as string[] })
+
+const selected = computed(() => environments.value.find(item => item.id === selectedID.value))
+const environmentNames = computed(() => new Map(environments.value.map(item => [item.id, item.name])))
+const hostOptions = computed(() => hosts.value
+  .map(host => {
+    const assignedElsewhere = Boolean(host.environment_id && host.environment_id !== editingID.value)
+    const capabilities = host.capabilities.map(item => capabilityName(item.kind)).join(' + ') || '未配置能力'
+    return {
+      value: host.id,
+      label: assignedElsewhere
+        ? `${host.name} · 已属于 ${environmentNames.value.get(host.environment_id!) || '其他环境'}`
+        : `${host.name} · ${host.is_builtin ? '本地 · ' : ''}${capabilities}`,
+      disabled: assignedElsewhere || !host.is_active,
+    }
+  }))
+
+async function refresh() {
+  loading.value = true
+  try {
+    const [environmentItems, hostItems] = await Promise.all([listEnvironments(), listHosts()])
+    environments.value = environmentItems
+    hosts.value = hostItems
+    if (!environments.value.some(item => item.id === selectedID.value)) selectedID.value = environments.value[0]?.id ?? ''
+  } catch (error) {
+    message.error(apiErrorMessage(error))
+  } finally {
+    loading.value = false
+  }
+}
+
+function reset() {
+  Object.assign(form, { name: '', description: '', host_ids: [] })
+  editingID.value = ''
+}
+
+function create() {
+  reset()
+  formOpen.value = true
+}
+
+function edit(environment: InfrastructureEnvironment) {
+  editingID.value = environment.id
+  Object.assign(form, {
+    name: environment.name,
+    description: environment.description || '',
+    host_ids: environment.hosts.map(host => host.id),
+  })
+  formOpen.value = true
+}
+
+async function save() {
+  if (!form.name.trim()) {
+    message.error('请输入环境名称')
+    return
+  }
+  saving.value = true
+  try {
+    const payload = { ...form, name: form.name.trim(), description: form.description.trim() }
+    const response = editingID.value
+      ? await client.put<{ environment: InfrastructureEnvironment }>(`/environments/${editingID.value}`, payload)
+      : await client.post<{ environment: InfrastructureEnvironment }>('/environments', payload)
+    selectedID.value = response.data.environment.id
+    message.success(editingID.value ? '环境已更新' : '环境已创建')
+    formOpen.value = false
+    reset()
+    await refresh()
+  } catch (error) {
+    message.error(apiErrorMessage(error))
+  } finally {
+    saving.value = false
+  }
+}
+
+async function toggle(environment: InfrastructureEnvironment) {
+  try {
+    await client.patch(`/environments/${environment.id}/status`, { active: !environment.is_active })
+    await refresh()
+  } catch (error) {
+    message.error(apiErrorMessage(error))
+  }
+}
+
+function createHost() {
+  formOpen.value = false
+  void router.push({ path: '/hosts', query: { create: '1' } })
+}
+
+function capabilityLabel(host: InfrastructureHost) {
+  return host.capabilities.map(item => capabilityName(item.kind)).join(' + ') || '未配置能力'
+}
+
+function capabilityName(kind: InfrastructureHost['capabilities'][number]['kind']) {
+  if (kind === 'ssh') return 'SSH 命令部署'
+  if (kind === 'docker') return 'Docker'
+  if (kind === 'local_exec') return '直接终端执行'
+  return 'Kubernetes'
+}
+
 onMounted(refresh)
 </script>
 
-<template><section><PageToolbar description="维护真实的发布目标。选择左侧环境后查看发布位置和工作负载，创建与编辑时列表始终保留。"><a-button :loading="loading" @click="refresh"><RefreshCw :size="15"/>刷新</a-button><a-button v-if="auth.canAny(['deployment.manage'])" type="primary" @click="create"><Plus :size="15"/>创建环境</a-button></PageToolbar><div class="master-detail vben-card"><aside><header><strong>环境列表</strong><small>{{ items.length }} 个发布目标</small></header><button v-for="item in items" :key="item.id" :class="{active:selectedID===item.id}" @click="selectedID=item.id"><component :is="item.platform==='docker'?Boxes:CloudCog"/><span><strong>{{ item.name }}</strong><small>{{ levelNames[item.environment] }} · {{ item.platform==='docker'?'Docker':'Kubernetes' }}</small></span><i :class="{inactive:!item.is_active}"/></button><a-empty v-if="!items.length&&!loading" :image="null" description="还没有发布环境"/></aside><main v-if="selected"><header class="detail-header"><div><span>{{ selected.platform==='docker'?'Docker 发布环境':'Kubernetes 发布环境' }}</span><h3>{{ selected.name }}</h3><p>{{ selected.description||'尚未填写环境说明' }}</p></div><div><a-tag :color="selected.is_active?'success':'default'">{{ selected.is_active?'已启用':'已停用' }}</a-tag><a-button v-if="auth.canAny(['deployment.manage'])" @click="edit(selected)">编辑</a-button><a-button v-if="auth.canAny(['deployment.manage'])" @click="toggle(selected)">{{ selected.is_active?'停用':'启用' }}</a-button></div></header><a-descriptions bordered :column="2"><a-descriptions-item label="环境级别">{{ levelNames[selected.environment] }}</a-descriptions-item><a-descriptions-item label="发布类型">{{ selected.platform==='docker'?'Docker':'Kubernetes' }}</a-descriptions-item><a-descriptions-item label="工作负载">{{ selected.workload_name||'未配置' }}</a-descriptions-item><a-descriptions-item label="发布超时">{{ selected.rollout_timeout }} 秒</a-descriptions-item><a-descriptions-item v-if="selected.platform==='kubernetes'" label="命名空间">{{ selected.namespace }}</a-descriptions-item><a-descriptions-item v-if="selected.platform==='kubernetes'" label="容器名称">{{ selected.container_name }}</a-descriptions-item></a-descriptions></main><div v-else class="empty-panel"><a-empty description="选择或创建发布环境"/></div></div>
-<a-drawer v-model:open="formOpen" :title="editingID?'编辑环境':'创建环境'" width="620"><a-form layout="vertical"><div class="form-grid"><a-form-item label="环境名称" required><a-input v-model:value="form.name"/></a-form-item><a-form-item label="环境级别"><a-select v-model:value="form.environment" :options="Object.entries(levelNames).map(([value,label])=>({value,label}))"/></a-form-item><a-form-item class="span-2" label="说明"><a-input v-model:value="form.description"/></a-form-item><a-form-item label="发布类型"><a-select v-model:value="form.platform" :options="[{value:'docker',label:'Docker'},{value:'kubernetes',label:'Kubernetes'}]" @change="form.runtime_id=''"/></a-form-item><a-form-item label="运行时连接" required><a-select v-model:value="form.runtime_id" :options="runtimeOptions"/></a-form-item><a-form-item v-if="form.platform==='kubernetes'" label="命名空间"><a-input v-model:value="form.namespace"/></a-form-item><a-form-item label="工作负载名称" required><a-input v-model:value="form.workload_name"/></a-form-item><a-form-item v-if="form.platform==='kubernetes'" label="容器名称"><a-input v-model:value="form.container_name"/></a-form-item><a-form-item label="发布超时（秒）"><a-input-number v-model:value="form.rollout_timeout" :min="30" :max="3600"/></a-form-item></div><div class="drawer-actions"><a-button :loading="testing" @click="test">测试连接</a-button><a-button type="primary" :loading="saving" @click="save">保存</a-button></div></a-form></a-drawer></section></template>
+<template>
+  <section>
+    <PageToolbar description="环境是可自定义的基础设施分组，用来明确主机归属；命令部署和运行时能力统一在“主机与集群”中维护。">
+      <a-button :loading="loading" @click="refresh"><RefreshCw :size="15" />刷新</a-button>
+      <a-button v-if="auth.canAny(['deployment.manage'])" type="primary" @click="create"><Plus :size="15" />创建环境</a-button>
+    </PageToolbar>
 
-<style scoped>.master-detail{display:grid;min-height:560px;grid-template-columns:270px 1fr;overflow:hidden}.master-detail>aside{border-right:1px solid var(--zrt-border);background:var(--zrt-surface-soft)}aside>header{display:flex;align-items:center;justify-content:space-between;padding:16px;border-bottom:1px solid var(--zrt-border)}aside>header small{color:var(--zrt-muted)}aside>button{display:grid;width:calc(100% - 12px);min-height:58px;align-items:center;grid-template-columns:25px 1fr 8px;gap:9px;margin:6px;padding:8px 10px;border:0;border-radius:6px;background:transparent;cursor:pointer;text-align:left}aside>button:hover,aside>button.active{background:var(--zrt-primary-soft)}aside>button svg{width:19px;color:var(--zrt-primary)}aside>button span strong,aside>button span small{display:block}aside>button span small{color:var(--zrt-muted);font-size:11px}aside>button i{width:7px;height:7px;border-radius:50%;background:#28b66e}aside>button i.inactive{background:#a8adb7}.master-detail>main{padding:24px}.detail-header{display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:24px}.detail-header h3,.detail-header p{margin:0}.detail-header p,.detail-header span{color:var(--zrt-muted)}.detail-header>div:last-child{display:flex;align-items:center;gap:8px}.form-grid{display:grid;grid-template-columns:1fr 1fr;gap:0 14px}.span-2{grid-column:1/-1}.drawer-actions{display:flex;justify-content:flex-end;gap:8px}@media(max-width:760px){.master-detail{grid-template-columns:1fr}.master-detail>aside{max-height:260px;border-right:0;border-bottom:1px solid var(--zrt-border)}.form-grid{grid-template-columns:1fr}.span-2{grid-column:auto}.detail-header{gap:12px;flex-direction:column}}
+    <div class="environment-layout vben-card">
+      <aside class="environment-list">
+        <header>
+          <div><strong>环境</strong><small>自定义基础设施分组</small></div>
+          <span>{{ environments.length }}</span>
+        </header>
+        <div class="environment-list-scroll">
+          <button
+            v-for="environment in environments"
+            :key="environment.id"
+            :class="{ active: selectedID === environment.id }"
+            @click="selectedID = environment.id"
+          >
+            <span class="environment-icon"><Boxes /></span>
+            <span>
+              <strong>{{ environment.name }}</strong>
+              <small>{{ environment.hosts.length }} 台主机</small>
+            </span>
+            <i :class="{ inactive: !environment.is_active }" />
+          </button>
+          <a-empty v-if="!environments.length && !loading" description="还没有环境" />
+        </div>
+      </aside>
+
+      <main v-if="selected" class="environment-detail">
+        <header class="detail-header">
+          <div>
+            <span>基础设施环境</span>
+            <h3>{{ selected.name }}</h3>
+            <p>{{ selected.description || '尚未填写说明' }}</p>
+          </div>
+          <div class="detail-actions">
+            <a-tag :color="selected.is_active ? 'success' : 'default'">{{ selected.is_active ? '已启用' : '已停用' }}</a-tag>
+            <a-button v-if="auth.canAny(['deployment.manage'])" @click="edit(selected)"><Pencil :size="14" />编辑</a-button>
+            <a-button v-if="auth.canAny(['deployment.manage'])" @click="toggle(selected)">{{ selected.is_active ? '停用' : '启用' }}</a-button>
+          </div>
+        </header>
+
+        <div class="environment-summary">
+          <div><Server /><span><small>主机数量</small><strong>{{ selected.hosts.length }}</strong></span></div>
+          <div><Boxes /><span><small>主机能力</small><strong>{{ selected.hosts.reduce((total, host) => total + host.capabilities.length, 0) }}</strong></span></div>
+        </div>
+
+        <section class="assigned-hosts">
+          <header>
+            <div><h4>所属主机</h4><p>一台主机在同一时刻只归属一个环境。</p></div>
+            <a-button v-if="auth.canAny(['deployment.manage'])" size="small" @click="edit(selected)">调整主机</a-button>
+          </header>
+          <div class="host-grid">
+            <article v-for="host in selected.hosts" :key="host.id">
+              <span class="host-status" :class="{ inactive: !host.is_active }" />
+              <div class="host-main">
+                <strong>{{ host.name }}</strong>
+                <small>{{ host.is_builtin ? '本地' : `${host.address}:${host.ssh_port} · ${host.ssh_username}` }}</small>
+              </div>
+              <div class="host-runtime-icons">
+                <span v-for="capability in host.capabilities" :key="capability.kind" :title="capabilityName(capability.kind)">
+                  <RuntimeBrandIcon :kind="capability.kind" />
+                </span>
+              </div>
+              <small class="capability-label">{{ capabilityLabel(host) }}</small>
+            </article>
+            <a-empty v-if="!selected.hosts.length" description="该环境还没有主机" />
+          </div>
+        </section>
+      </main>
+      <div v-else class="empty-panel"><a-empty description="选择或创建环境" /></div>
+    </div>
+
+    <a-drawer v-model:open="formOpen" :title="editingID ? '编辑环境' : '创建环境'" width="600">
+      <a-form layout="vertical">
+        <div class="form-grid">
+          <a-form-item class="span-2" label="环境名称" required>
+            <a-input v-model:value="form.name" placeholder="例如：上海测试、海外生产" />
+          </a-form-item>
+          <a-form-item class="span-2" label="说明">
+            <a-textarea v-model:value="form.description" :rows="3" placeholder="说明该环境的用途、区域或约束" />
+          </a-form-item>
+          <a-form-item class="span-2" label="所属主机（可多选）">
+            <div class="relation-select">
+              <a-select
+                v-model:value="form.host_ids"
+                mode="multiple"
+                allow-clear
+                placeholder="选择一个或多个主机"
+                :options="hostOptions"
+              />
+              <a-button
+                v-if="auth.canAny(['cluster.manage'])"
+                class="create-relation"
+                aria-label="添加主机"
+                title="添加主机"
+                @click="createHost"
+              ><Plus :size="16" /></a-button>
+            </div>
+            <div class="field-hint host-selection-hint">
+              <span>一个环境可以包含多台主机；已属于其他环境的主机需要先从原环境移除。</span>
+              <strong>已选 {{ form.host_ids.length }} 台</strong>
+            </div>
+            <div class="field-hint">Kubernetes 集群仍作为独立资源接入。</div>
+          </a-form-item>
+        </div>
+      </a-form>
+      <template #footer>
+        <div class="drawer-actions"><a-button @click="formOpen = false">取消</a-button><a-button type="primary" :loading="saving" @click="save">保存</a-button></div>
+      </template>
+    </a-drawer>
+  </section>
+</template>
+
+<style scoped>
+.environment-layout{display:grid;min-height:590px;grid-template-columns:290px minmax(0,1fr);overflow:hidden}.environment-list{border-right:1px solid var(--zrt-border);background:var(--zrt-surface-soft)}.environment-list>header{display:flex;height:64px;align-items:center;justify-content:space-between;padding:0 16px}.environment-list>header strong,.environment-list>header small{display:block}.environment-list>header small{margin-top:2px;color:var(--zrt-muted);font-size:12px}.environment-list>header>span{min-width:27px;padding:3px 8px;border-radius:999px;color:var(--zrt-muted);background:var(--zrt-surface);text-align:center}.environment-list-scroll{max-height:calc(100vh - 230px);overflow-y:auto;padding:0 8px 10px}.environment-list-scroll>button{display:grid;width:100%;min-height:68px;align-items:center;grid-template-columns:38px minmax(0,1fr) 8px;gap:10px;margin:3px 0;padding:9px 10px;border:0;border-radius:10px;background:transparent;cursor:pointer;text-align:left}.environment-list-scroll>button:hover{background:var(--zrt-surface)}.environment-list-scroll>button.active{background:var(--zrt-primary-soft);box-shadow:inset 3px 0 var(--zrt-primary)}.environment-list-scroll>button span:nth-child(2){min-width:0}.environment-list-scroll>button strong,.environment-list-scroll>button small{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.environment-list-scroll>button small{margin-top:3px;color:var(--zrt-muted);font-size:12px}.environment-icon{display:grid;width:38px;height:38px;place-items:center;border-radius:11px;color:#4f6ef7;background:var(--zrt-surface)}.environment-icon svg{width:19px}.environment-list-scroll>button i{width:8px;height:8px;border-radius:50%;background:#28b66e}.environment-list-scroll>button i.inactive{background:#a8adb7}.environment-detail{min-width:0;padding:24px}.detail-header{display:flex;align-items:flex-start;justify-content:space-between;gap:20px}.detail-header>div:first-child>span,.detail-header p{color:var(--zrt-muted)}.detail-header h3{margin:3px 0 1px;font-size:22px}.detail-header p{margin:0}.detail-actions{display:flex;align-items:center;gap:8px}.environment-summary{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;margin-top:24px}.environment-summary>div{display:flex;align-items:center;gap:12px;padding:15px;border:1px solid var(--zrt-border);border-radius:11px;background:var(--zrt-surface-soft)}.environment-summary svg{width:21px;color:var(--zrt-primary)}.environment-summary small,.environment-summary strong{display:block}.environment-summary small{color:var(--zrt-muted)}.environment-summary strong{font-size:18px}.assigned-hosts{margin-top:28px}.assigned-hosts>header{display:flex;align-items:flex-start;justify-content:space-between}.assigned-hosts h4,.assigned-hosts p{margin:0}.assigned-hosts p{margin-top:3px;color:var(--zrt-muted)}.host-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;margin-top:14px}.host-grid article{display:grid;min-height:86px;align-items:center;grid-template-columns:9px minmax(0,1fr) auto;gap:10px;padding:14px;border:1px solid var(--zrt-border);border-radius:12px;background:var(--zrt-surface-soft)}.host-status{width:8px;height:8px;border-radius:50%;background:#28b66e}.host-status.inactive{background:#a8adb7}.host-main{min-width:0}.host-main strong,.host-main small{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.host-main small,.capability-label{color:var(--zrt-muted)}.host-runtime-icons{display:flex;gap:5px}.host-runtime-icons span{display:grid;width:28px;height:28px;place-items:center;border-radius:8px;background:var(--zrt-surface)}.host-runtime-icons :deep(svg){width:18px;height:18px}.capability-label{grid-column:2/-1;font-size:12px}.form-grid{display:grid;grid-template-columns:1fr 1fr;gap:0 14px}.span-2{grid-column:1/-1}.relation-select{display:flex;gap:8px}.relation-select>.ant-select{min-width:0;flex:1}.create-relation{width:34px;flex:0 0 34px;padding:0}.field-hint{margin-top:6px;color:var(--zrt-muted);font-size:12px}.host-selection-hint{display:flex;align-items:flex-start;justify-content:space-between;gap:12px}.host-selection-hint strong{flex:0 0 auto;color:var(--zrt-text);font-weight:600}@media(max-width:900px){.environment-layout{grid-template-columns:1fr}.environment-list{max-height:270px;border-right:0;border-bottom:1px solid var(--zrt-border)}.environment-list-scroll{max-height:200px}.environment-summary,.host-grid{grid-template-columns:1fr}}@media(max-width:640px){.environment-detail{padding:16px}.detail-header{flex-direction:column}.form-grid{grid-template-columns:1fr}.span-2{grid-column:auto}.host-selection-hint{flex-direction:column;gap:3px}}
 </style>

@@ -161,6 +161,28 @@ func TestLogRetentionSettingsDefaultDisabledAndValidateRange(t *testing.T) {
 	}
 }
 
+func TestRuntimeLoggingSettingsUseStartupDefaultsAndOptimisticVersion(t *testing.T) {
+	service := newConfigurationTestService(t)
+	settings, err := service.GetRuntimeLoggingSettings(context.Background(), "warn", true)
+	if err != nil || settings.Level != "warn" || !settings.HTTPAccessEnabled || settings.Version != 0 {
+		t.Fatalf("运行日志启动默认值错误: settings=%+v err=%v", settings, err)
+	}
+	if _, err := service.UpdateRuntimeLoggingSettings(context.Background(), "admin", "verbose", false, 0); !errors.Is(err, ErrInvalidConfiguration) {
+		t.Fatalf("无效日志级别未被拒绝: %v", err)
+	}
+	updated, err := service.UpdateRuntimeLoggingSettings(context.Background(), "admin", "error", false, 0)
+	if err != nil || updated.Level != "error" || updated.HTTPAccessEnabled || updated.Version != 1 {
+		t.Fatalf("保存运行日志设置失败: settings=%+v err=%v", updated, err)
+	}
+	if _, err := service.UpdateRuntimeLoggingSettings(context.Background(), "admin", "info", true, 0); !errors.Is(err, ErrVersionConflict) {
+		t.Fatalf("过期运行日志设置版本未被拒绝: %v", err)
+	}
+	persisted, err := service.GetRuntimeLoggingSettings(context.Background(), "debug", true)
+	if err != nil || persisted != updated {
+		t.Fatalf("运行日志设置未持久化: settings=%+v err=%v", persisted, err)
+	}
+}
+
 func externalGitWebhookConfigurationID(t *testing.T, service *Service) string {
 	return systemConfigurationID(t, service, externalGitWebhookSettingKey)
 }

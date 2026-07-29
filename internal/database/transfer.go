@@ -274,7 +274,19 @@ func ensureEmptyTransferTarget(db *gorm.DB) error {
 			continue
 		}
 		var count int64
-		if err := db.Table(table).Limit(1).Count(&count).Error; err != nil {
+		query := db.Table(table)
+		switch table {
+		case model.Host{}.TableName():
+			query = query.Where("id <> ?", model.BuiltinLocalHostID)
+		case model.HostCapability{}.TableName():
+			query = query.Where(
+				"host_id <> ? OR kind <> ? OR runtime_id <> ?",
+				model.BuiltinLocalHostID,
+				model.HostCapabilityDocker,
+				"zrt-local-docker",
+			)
+		}
+		if err := query.Limit(1).Count(&count).Error; err != nil {
 			return fmt.Errorf("检查目标数据表 %s 失败: %w", table, err)
 		}
 		if count > 0 {
@@ -327,6 +339,15 @@ func copyDatabaseSnapshot(
 
 	return source.WithContext(ctx).Transaction(func(snapshot *gorm.DB) error {
 		return target.WithContext(ctx).Transaction(func(destination *gorm.DB) error {
+			// 新库迁移会创建内置本地主机。复制前先移除这两条确定性的种子记录，
+			// 由源库快照恢复，避免主键冲突，也不会把真实业务数据误判为空库。
+			if err := destination.Where("host_id = ?", model.BuiltinLocalHostID).
+				Delete(&model.HostCapability{}).Error; err != nil {
+				return fmt.Errorf("清理目标库内置主机能力失败: %w", err)
+			}
+			if err := destination.Delete(&model.Host{}, "id = ?", model.BuiltinLocalHostID).Error; err != nil {
+				return fmt.Errorf("清理目标库内置主机失败: %w", err)
+			}
 			var copiedRows int64
 			for index, table := range tables {
 				rows, err := copyTable(snapshot, destination, table, targetDriver)
@@ -481,9 +502,9 @@ var orderedTransferTables = []string{
 	"dns_provider_accounts", "dns_domains",
 	"build_plans", "image_registries", "deployment_plans", "release_workflow_templates",
 	"git_repositories", "git_webhook_deliveries",
-	"docker_endpoints", "kubernetes_clusters", "deployment_targets",
+	"environments", "hosts", "docker_endpoints", "kubernetes_clusters", "host_capabilities", "deployment_targets",
 	"applications", "application_environments", "application_repositories", "application_repository_observations", "release_workflows",
-	"release_plans", "release_groups", "release_group_applications", "release_group_dependencies",
+	"release_plans", "release_groups", "release_group_applications", "release_group_dependencies", "release_plan_executions", "release_plan_execution_items",
 	"pipeline_runs", "pipeline_run_repositories", "pipeline_run_approvals", "pipeline_run_logs", "deployment_records",
 	"notification_channels", "notifications", "scheduled_tasks", "monitor_rules", "monitor_checks",
 	"jobs", "outbox_events",

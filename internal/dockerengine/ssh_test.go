@@ -35,9 +35,33 @@ func TestSSHConnectionWithPasswordAndDockerCheck(t *testing.T) {
 	}
 }
 
+func TestSSHConnectionReusesSSHPasswordForSudo(t *testing.T) {
+	address, fingerprint, commands := startDockerSSHPasswordSudoTestServer(t, "secret")
+	service := &Service{config: config.Runtime{ConnectTimeout: time.Second, RequestTimeout: 2 * time.Second}}
+	result, err := service.TestSSH(context.Background(), Input{
+		Name: "测试 Docker", Host: "ssh://deploy@" + address,
+		SSH: &SSHBundle{Password: "secret", UseSudo: true},
+	})
+	if err != nil {
+		t.Fatalf("sudo 密码方式测试 Docker SSH 失败: %v", err)
+	}
+	if result.Fingerprint != fingerprint || result.DockerVersion != "27.1.1" {
+		t.Fatalf("Docker SSH sudo 测试结果错误: %+v", result)
+	}
+	if command := <-commands; command != "sudo -n -- docker version --format '{{.Server.Version}}'" {
+		t.Fatalf("连接测试没有先检测免密 sudo: %s", command)
+	}
+	if command := <-commands; command != "sudo -S -p '' -- docker version --format '{{.Server.Version}}'" {
+		t.Fatalf("连接测试没有通过 sudo 执行 Docker: %s", command)
+	}
+}
+
 func TestSSHAuthenticationAndDockerPullCommandValidation(t *testing.T) {
 	if _, err := sshAuthMethods(SSHBundle{Password: "secret", PrivateKey: "key"}); !errors.Is(err, ErrInvalidSSH) {
 		t.Fatalf("同时提供密码和私钥未被拒绝: %v", err)
+	}
+	if _, err := sshAuthMethods(SSHBundle{Password: "secret", UseSudo: true, SudoPassword: "bad\npassword"}); !errors.Is(err, ErrInvalidSSH) {
+		t.Fatalf("包含换行的 sudo 密码未被拒绝: %v", err)
 	}
 	command, err := dockerPullCommand("registry.example.com/team/api:2026.07")
 	if err != nil || command != "docker pull --quiet 'registry.example.com/team/api:2026.07'" {
@@ -58,35 +82,52 @@ func TestLoadImageWithSSHStreamsArchiveAndVerifiesImageID(t *testing.T) {
 	sourceImageID := "sha256:" + strings.Repeat("b", 64)
 	targetImageID := "sha256:" + strings.Repeat("a", 64)
 	archive := "docker-save-archive"
-	loadedImageID, err := loadImageWithSSH(context.Background(), connector, image, strings.NewReader(archive))
+	bundle := SSHBundle{Password: "secret", UseSudo: true}
+	loadedImageID, err := loadImageWithSSH(context.Background(), connector, bundle, image, strings.NewReader(archive))
 	if err != nil {
 		t.Fatalf("通过 SSH 加载镜像失败: %v", err)
 	}
 	if loadedImageID != targetImageID || loadedImageID == sourceImageID {
 		t.Fatalf("没有返回目标 Docker daemon 的镜像 ID: %s", loadedImageID)
 	}
-	if command := <-commands; command != "docker image load --quiet" {
+	if command := <-commands; command != "sudo -n -- docker version --format '{{.Server.Version}}'" {
+		t.Fatalf("镜像导入前没有检测免密 sudo: %s", command)
+	}
+	if command := <-commands; command != "sudo -S -p '' -- docker image load --quiet" {
 		t.Fatalf("镜像导入命令错误: %s", command)
 	}
 	if uploaded := <-uploads; string(uploaded) != archive {
 		t.Fatalf("docker save 流没有完整传输: %q", uploaded)
 	}
-	expectedInspect := "docker image inspect --format '{{.Id}}' '" + image + "'"
+	expectedInspect := "sudo -S -p '' -- docker image inspect --format '{{.Id}}' '" + image + "'"
 	if command := <-commands; command != expectedInspect {
 		t.Fatalf("镜像校验命令错误: %s", command)
 	}
 }
 
+func TestDockerSSHCommandSupportsPasswordlessSudo(t *testing.T) {
+	mode := dockerSSHCommandMode{prefix: "sudo -n -- "}
+	command, input := mode.prepare("docker info", nil)
+	if command != "sudo -n -- docker info" || input != nil {
+		t.Fatalf("免密 sudo 命令错误: command=%q input=%v", command, input)
+	}
+}
+
 func startDockerSSHTestServer(t *testing.T, password string) (string, string, <-chan string) {
-	address, fingerprint, commands, _ := startDockerSSHTestServerWithUploads(t, password)
+	address, fingerprint, commands, _ := startDockerSSHTestServerWithUploads(t, password, false)
+	return address, fingerprint, commands
+}
+
+func startDockerSSHPasswordSudoTestServer(t *testing.T, password string) (string, string, <-chan string) {
+	address, fingerprint, commands, _ := startDockerSSHTestServerWithUploads(t, password, true)
 	return address, fingerprint, commands
 }
 
 func startDockerSSHImageLoadTestServer(t *testing.T, password string) (string, string, <-chan string, <-chan []byte) {
-	return startDockerSSHTestServerWithUploads(t, password)
+	return startDockerSSHTestServerWithUploads(t, password, true)
 }
 
-func startDockerSSHTestServerWithUploads(t *testing.T, password string) (string, string, <-chan string, <-chan []byte) {
+func startDockerSSHTestServerWithUploads(t *testing.T, password string, sudoPasswordRequired bool) (string, string, <-chan string, <-chan []byte) {
 	t.Helper()
 	_, privateKey, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
@@ -118,13 +159,20 @@ func startDockerSSHTestServerWithUploads(t *testing.T, password string) (string,
 			if acceptErr != nil {
 				return
 			}
-			go serveDockerSSHTestConnection(connection, serverConfig, commands, uploads)
+			go serveDockerSSHTestConnection(connection, serverConfig, password, sudoPasswordRequired, commands, uploads)
 		}
 	}()
 	return listener.Addr().String(), ssh.FingerprintSHA256(signer.PublicKey()), commands, uploads
 }
 
-func serveDockerSSHTestConnection(connection net.Conn, config *ssh.ServerConfig, commands chan<- string, uploads chan<- []byte) {
+func serveDockerSSHTestConnection(
+	connection net.Conn,
+	config *ssh.ServerConfig,
+	sudoPassword string,
+	sudoPasswordRequired bool,
+	commands chan<- string,
+	uploads chan<- []byte,
+) {
 	serverConnection, channels, requests, err := ssh.NewServerConn(connection, config)
 	if err != nil {
 		_ = connection.Close()
@@ -156,22 +204,50 @@ func serveDockerSSHTestConnection(connection net.Conn, config *ssh.ServerConfig,
 				commands <- payload.Command
 				_ = request.Reply(true, nil)
 				status := uint32(1)
+				command := payload.Command
+				var commandInput []byte
+				inputRead := false
+				if strings.HasPrefix(command, "sudo -S -p '' -- ") {
+					value, readErr := io.ReadAll(channel)
+					passwordLine := sudoPassword + "\n"
+					if readErr != nil || !strings.HasPrefix(string(value), passwordLine) {
+						_, _ = io.WriteString(channel.Stderr(), "sudo 认证失败")
+						_, _ = channel.SendRequest("exit-status", false, ssh.Marshal(struct{ Status uint32 }{status}))
+						return
+					}
+					commandInput = value[len(passwordLine):]
+					inputRead = true
+					command = strings.TrimPrefix(command, "sudo -S -p '' -- ")
+				} else if strings.HasPrefix(command, "sudo -n -- ") {
+					if sudoPasswordRequired {
+						_, _ = io.WriteString(channel.Stderr(), "sudo 需要密码")
+						_, _ = channel.SendRequest("exit-status", false, ssh.Marshal(struct{ Status uint32 }{status}))
+						return
+					}
+					command = strings.TrimPrefix(command, "sudo -n -- ")
+				}
 				switch {
-				case payload.Command == "docker version --format '{{.Server.Version}}'":
+				case command == "docker version --format '{{.Server.Version}}'":
 					_, _ = io.WriteString(channel, "27.1.1\n")
 					status = 0
-				case payload.Command == "docker image load --quiet":
-					value, readErr := io.ReadAll(channel)
-					if readErr == nil {
-						uploads <- value
+				case command == "docker image load --quiet":
+					if !inputRead {
+						var readErr error
+						commandInput, readErr = io.ReadAll(channel)
+						if readErr != nil {
+							break
+						}
+					}
+					if commandInput != nil {
+						uploads <- commandInput
 						_, _ = io.WriteString(channel, "Loaded image\n")
 						status = 0
 					}
-				case strings.HasPrefix(payload.Command, "docker image inspect --format '{{.Id}}' "):
+				case strings.HasPrefix(command, "docker image inspect --format '{{.Id}}' "):
 					_, _ = io.WriteString(channel, "sha256:"+strings.Repeat("a", 64)+"\n")
 					status = 0
 				default:
-					_, _ = io.WriteString(channel.Stderr(), fmt.Sprintf("不支持的命令: %s", strings.TrimSpace(payload.Command)))
+					_, _ = io.WriteString(channel.Stderr(), fmt.Sprintf("不支持的命令: %s", strings.TrimSpace(command)))
 				}
 				_, _ = channel.SendRequest("exit-status", false, ssh.Marshal(struct{ Status uint32 }{status}))
 				return

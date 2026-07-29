@@ -66,6 +66,19 @@ button { color: inherit; }
 .breadcrumb-label { display: inline-flex; align-items: center; gap: 6px; }
 .breadcrumb-label svg { color: var(--zrt-muted); stroke-width: 1.8; }
 .breadcrumb-label.current { color: var(--zrt-text); }
+.breadcrumb-history { display: flex; height: 30px; align-items: stretch; margin: 0 3px; overflow: hidden; border: 1px solid var(--zrt-border); border-radius: 7px; background: var(--zrt-surface); }
+.breadcrumb-history > button, .breadcrumb-history .ant-dropdown-trigger { display: grid; width: 28px; place-items: center; padding: 0; border: 0; color: var(--zrt-muted); background: transparent; cursor: pointer; }
+.breadcrumb-history .ant-dropdown-trigger { width: 18px; border-left: 1px solid var(--zrt-border); }
+.breadcrumb-history button:hover:not(:disabled) { color: var(--zrt-primary); background: var(--zrt-surface-soft); }
+.breadcrumb-history button:disabled { cursor: default; opacity: .38; }
+.breadcrumb-history svg { width: 15px; height: 15px; }
+.navigation-history-menu { min-width: 236px; max-width: 340px; }
+.navigation-history-item { display: grid; align-items: center; grid-template-columns: 18px minmax(0,1fr); gap: 9px; }
+.navigation-history-item > svg { width: 16px; color: var(--zrt-muted); }
+.navigation-history-item > span { min-width: 0; }
+.navigation-history-item strong, .navigation-history-item small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.navigation-history-item strong { color: var(--zrt-text); font-size: 13px; font-weight: 600; }
+.navigation-history-item small { margin-top: 1px; color: var(--zrt-muted); font-size: 10px; }
 .desktop-collapse, .mobile-menu-button, .icon-button, .tabs-extra { display: grid; width: 34px; height: 34px; place-items: center; padding: 0; border: 0; border-radius: 6px; color: var(--zrt-muted); background: transparent; cursor: pointer; }
 .desktop-collapse:hover, .mobile-menu-button:hover, .icon-button:hover, .tabs-extra:hover { color: var(--zrt-primary); background: var(--zrt-surface-soft); }
 .desktop-collapse svg, .mobile-menu-button svg, .icon-button svg { width: 18px; height: 18px; stroke-width: 1.8; }

@@ -34,12 +34,15 @@ import (
 	"zrt/internal/deployment"
 	dnsmanager "zrt/internal/dns"
 	"zrt/internal/dockerengine"
+	environmentmanager "zrt/internal/environment"
+	hostmanager "zrt/internal/host"
 	"zrt/internal/httpapi"
 	"zrt/internal/identity"
 	"zrt/internal/kube"
 	"zrt/internal/legacyimport"
 	"zrt/internal/logging"
 	"zrt/internal/logretention"
+	"zrt/internal/model"
 	"zrt/internal/monitor"
 	"zrt/internal/notification"
 	"zrt/internal/outbox"
@@ -47,6 +50,7 @@ import (
 	"zrt/internal/repository"
 	"zrt/internal/scheduler"
 	"zrt/internal/secret"
+	"zrt/internal/sshdeploy"
 	"zrt/internal/systemmetrics"
 	"zrt/internal/task"
 	"zrt/internal/terminal"
@@ -68,7 +72,7 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("加载配置失败: %w", err)
 	}
-	logger := logging.New(cfg.LogLevel)
+	logger, runtimeLogs := logging.NewRuntime(cfg.LogLevel)
 	command := "server"
 	if len(os.Args) > 1 {
 		command = os.Args[1]
@@ -84,7 +88,7 @@ func run() error {
 	case "migrate":
 		return runMigrate(ctx, cfg, logger)
 	case "server":
-		return runServer(ctx, cfg, logger)
+		return runServer(ctx, cfg, logger, runtimeLogs)
 	case "admin":
 		return runAdmin(ctx, cfg, logger, os.Args[2:])
 	case "legacy-import":
@@ -364,7 +368,7 @@ func runMigrate(ctx context.Context, cfg config.Config, logger *slog.Logger) err
 	return nil
 }
 
-func runServer(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
+func runServer(ctx context.Context, cfg config.Config, logger *slog.Logger, runtimeLogs *logging.RuntimeController) error {
 	// 先占用监听地址，再初始化数据库、消息队列和后台消费者。端口冲突时应立即退出，
 	// 避免启动一半后产生一串 context canceled 的连带错误。
 	listener, err := net.Listen("tcp", cfg.Server.Address)
@@ -408,6 +412,12 @@ func runServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 		return errors.New("密钥服务初始化失败")
 	}
 	configurationService := configuration.NewService(resources.Database, secretManager)
+	runtimeLogSettings, err := configurationService.GetRuntimeLoggingSettings(serviceCtx, cfg.LogLevel, true)
+	if err != nil {
+		logger.Error("读取运行日志设置失败，继续使用启动配置", "operation", "runtime_logging_bootstrap", "err", err)
+	} else if err := runtimeLogs.Apply(runtimeLogSettings.Level, runtimeLogSettings.HTTPAccessEnabled); err != nil {
+		logger.Error("应用运行日志设置失败，继续使用启动配置", "operation", "runtime_logging_bootstrap", "err", err)
+	}
 	logRetentionService := logretention.NewService(resources.Database, configurationService, logger)
 	databaseTransferService := database.NewTransferService(serviceCtx, resources.Database, cfg.Database.Driver, logger)
 	sessions := auth.NewSessionStore(resources.Redis, cfg.Auth.SessionTTL)
@@ -428,10 +438,17 @@ func runServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 	pipelineService := pipeline.NewService(resources.Database, repositoryService, secretManager)
 	dockerService := dockerengine.NewService(resources.Database, secretManager, cfg.Runtime)
 	kubernetesService := kube.NewService(resources.Database, secretManager, cfg.Runtime)
+	sshDeploymentService := sshdeploy.NewService(resources.Database, secretManager, cfg.Runtime)
+	hostService := hostmanager.NewService(resources.Database, secretManager, dockerService, kubernetesService)
+	if err := hostService.RefreshLocalCapabilities(serviceCtx); err != nil {
+		logger.Warn("刷新本地主机能力失败", "operation", "local_host_capability_refresh", "err", err)
+	}
+	environmentService := environmentmanager.NewService(resources.Database)
 	deploymentService := deployment.NewService(
 		resources.Database,
 		dockerService,
 		kubernetesService,
+		sshDeploymentService,
 		redislock.New(resources.Redis.Client()),
 		resources.Redis.Key("lock", "deployment"),
 		logger,
@@ -458,6 +475,7 @@ func runServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 		Redis:            resources.Redis,
 		NATS:             resources.NATS,
 		Logger:           logger,
+		RuntimeLogs:      runtimeLogs,
 		Version:          version,
 		WebRoot:          cfg.Server.WebRoot,
 		AuthConfig:       cfg.Auth,
@@ -472,6 +490,8 @@ func runServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 		Pipelines:        pipelineService,
 		Docker:           dockerService,
 		Kubernetes:       kubernetesService,
+		Hosts:            hostService,
+		Environments:     environmentService,
 		Deployments:      deploymentService,
 		Terminal:         terminalService,
 		Configurations:   configurationService,
@@ -522,6 +542,10 @@ func runServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 		pipelineService.RunWatcher(serviceCtx, cfg.Scheduler.PollInterval)
 		return nil
 	})
+	startBackground("server_release_plan_reconciler", func() error {
+		pipelineService.RunReleasePlanExecutionReconciler(serviceCtx, time.Second)
+		return nil
+	})
 	startBackground("server_pipeline_commit_backfill", func() error {
 		if err := pipelineService.BackfillCommitMessages(serviceCtx, 50); err != nil {
 			logger.Warn("补全历史流水线提交说明失败", "operation", "pipeline_commit_backfill", "err", err)
@@ -535,6 +559,70 @@ func runServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 	startBackground("server_scheduler_scanner", func() error {
 		schedulerService.Run(serviceCtx, cfg.Scheduler.PollInterval)
 		return nil
+	})
+	startBackground("server_host_runtime_monitor", func() error {
+		type refreshResult struct {
+			changes []hostmanager.RuntimeStatusChange
+			err     error
+		}
+		ticker := time.NewTicker(time.Second)
+		defer ticker.Stop()
+		results := make(chan refreshResult, 4)
+		refreshSlots := make(chan struct{}, 4)
+		var refreshes sync.WaitGroup
+		scheduleRefresh := func() {
+			select {
+			case refreshSlots <- struct{}{}:
+			case <-serviceCtx.Done():
+				return
+			default:
+				return
+			}
+			refreshes.Add(1)
+			go func() {
+				defer refreshes.Done()
+				defer func() { <-refreshSlots }()
+				changes, err := hostService.RefreshRuntimeStatuses(serviceCtx)
+				select {
+				case results <- refreshResult{changes: changes, err: err}:
+				case <-serviceCtx.Done():
+				}
+			}()
+		}
+		scheduleRefresh()
+		statusReadFailed := false
+		for {
+			select {
+			case result := <-results:
+				if result.err != nil {
+					if serviceCtx.Err() != nil {
+						refreshes.Wait()
+						return nil
+					}
+					if !statusReadFailed {
+						logger.Warn("刷新主机运行时状态失败", "operation", "host_runtime_status_refresh", "err", result.err)
+					}
+					statusReadFailed = true
+				} else {
+					if statusReadFailed {
+						logger.Info("主机运行时状态刷新已恢复", "operation", "host_runtime_status_refresh")
+					}
+					statusReadFailed = false
+				}
+				for _, change := range result.changes {
+					if change.Status == model.HostCapabilityUnreachable {
+						logger.Warn("主机运行时连接失败", "operation", "host_runtime_probe", "host_id", change.HostID, "capability", change.Kind, "err", change.Err)
+					} else {
+						logger.Info("主机运行时连接正常", "operation", "host_runtime_probe", "host_id", change.HostID, "capability", change.Kind)
+					}
+				}
+			case <-ticker.C:
+				scheduleRefresh()
+			case <-serviceCtx.Done():
+				refreshes.Wait()
+				return nil
+			}
+		}
 	})
 	startBackground("server_log_retention", func() error { return logRetentionService.Run(serviceCtx) })
 

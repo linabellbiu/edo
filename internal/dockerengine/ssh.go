@@ -3,20 +3,19 @@ package dockerengine
 import (
 	"bytes"
 	"context"
-	"encoding/base64"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net"
 	"net/url"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/distribution/reference"
 	"golang.org/x/crypto/ssh"
+
+	"zrt/internal/sshclient"
 )
 
 type SSHTestResult struct {
@@ -24,52 +23,30 @@ type SSHTestResult struct {
 	DockerVersion string `json:"docker_version"`
 }
 
+type SSHConnectionTestResult struct {
+	Fingerprint string `json:"fingerprint"`
+}
+
 type sshConnector struct {
-	address     string
-	username    string
-	auth        []ssh.AuthMethod
-	fingerprint string
-	timeout     time.Duration
+	inner *sshclient.Connector
 }
 
 type sshDockerDialer struct {
 	connector *sshConnector
+	bundle    SSHBundle
+}
+
+type dockerSSHCommandMode struct {
+	prefix   string
+	password string
 }
 
 func newSSHConnector(host string, bundle SSHBundle, fingerprint string, timeout time.Duration) (*sshConnector, error) {
-	parsed, err := url.Parse(host)
-	if err != nil || parsed.Scheme != "ssh" || parsed.User == nil || parsed.User.Username() == "" || parsed.Hostname() == "" ||
-		(parsed.Path != "" && parsed.Path != "/") || parsed.RawQuery != "" || parsed.Fragment != "" {
-		return nil, ErrInvalidSSH
-	}
-	if _, hasPassword := parsed.User.Password(); hasPassword {
-		return nil, ErrInvalidSSH
-	}
-	if port := parsed.Port(); port != "" {
-		value, err := strconv.ParseUint(port, 10, 16)
-		if err != nil || value == 0 {
-			return nil, ErrInvalidSSH
-		}
-	}
-	auth, err := sshAuthMethods(bundle)
+	connector, err := sshclient.NewConnector(host, sshClientBundle(bundle), fingerprint, timeout)
 	if err != nil {
-		return nil, err
-	}
-	address := parsed.Host
-	if parsed.Port() == "" {
-		address = net.JoinHostPort(parsed.Hostname(), "22")
-	}
-	if timeout <= 0 {
-		timeout = 10 * time.Second
-	}
-	fingerprint = strings.TrimSpace(fingerprint)
-	if fingerprint != "" && !validSSHFingerprint(fingerprint) {
 		return nil, ErrInvalidSSH
 	}
-	return &sshConnector{
-		address: address, username: parsed.User.Username(), auth: auth,
-		fingerprint: fingerprint, timeout: timeout,
-	}, nil
+	return &sshConnector{inner: connector}, nil
 }
 
 func newSSHDockerDialer(host string, bundle SSHBundle, fingerprint string, timeout time.Duration) (*sshDockerDialer, error) {
@@ -80,42 +57,19 @@ func newSSHDockerDialer(host string, bundle SSHBundle, fingerprint string, timeo
 	if err != nil {
 		return nil, err
 	}
-	return &sshDockerDialer{connector: connector}, nil
+	return &sshDockerDialer{connector: connector, bundle: bundle}, nil
 }
 
 func sshAuthMethods(bundle SSHBundle) ([]ssh.AuthMethod, error) {
-	hasPassword := bundle.Password != ""
-	hasPrivateKey := strings.TrimSpace(bundle.PrivateKey) != ""
-	if hasPassword == hasPrivateKey {
+	methods, err := sshclient.AuthMethods(sshClientBundle(bundle))
+	if err != nil {
 		return nil, ErrInvalidSSH
 	}
-	if hasPassword {
-		if bundle.Passphrase != "" {
-			return nil, ErrInvalidSSH
-		}
-		return []ssh.AuthMethod{ssh.Password(bundle.Password)}, nil
-	}
-	signer, err := parseSSHSigner(bundle)
-	if err != nil {
-		return nil, err
-	}
-	return []ssh.AuthMethod{ssh.PublicKeys(signer)}, nil
+	return methods, nil
 }
 
 func parseSSHSigner(bundle SSHBundle) (ssh.Signer, error) {
-	privateKey := []byte(strings.TrimSpace(bundle.PrivateKey))
-	if len(privateKey) == 0 {
-		return nil, ErrInvalidSSH
-	}
-	var (
-		signer ssh.Signer
-		err    error
-	)
-	if bundle.Passphrase == "" {
-		signer, err = ssh.ParsePrivateKey(privateKey)
-	} else {
-		signer, err = ssh.ParsePrivateKeyWithPassphrase(privateKey, []byte(bundle.Passphrase))
-	}
+	signer, err := sshclient.ParseSigner(sshClientBundle(bundle))
 	if err != nil {
 		return nil, ErrInvalidSSH
 	}
@@ -123,76 +77,95 @@ func parseSSHSigner(bundle SSHBundle) (ssh.Signer, error) {
 }
 
 func validSSHFingerprint(value string) bool {
-	value = strings.TrimSpace(value)
-	if !strings.HasPrefix(value, "SHA256:") || strings.ContainsAny(value, " \t\r\n") {
-		return false
-	}
-	digest, err := base64.RawStdEncoding.DecodeString(strings.TrimPrefix(value, "SHA256:"))
-	return err == nil && len(digest) == 32
+	return sshclient.ValidFingerprint(value)
 }
 
 func (c *sshConnector) connect(ctx context.Context, callback ssh.HostKeyCallback) (*ssh.Client, error) {
-	raw, err := (&net.Dialer{Timeout: c.timeout, KeepAlive: 30 * time.Second}).DialContext(ctx, "tcp", c.address)
-	if err != nil {
-		return nil, err
-	}
-	handshakeDeadline := time.Now().Add(c.timeout)
-	if deadline, ok := ctx.Deadline(); ok && deadline.Before(handshakeDeadline) {
-		handshakeDeadline = deadline
-	}
-	_ = raw.SetDeadline(handshakeDeadline)
-	config := &ssh.ClientConfig{
-		User: c.username, Auth: c.auth, HostKeyCallback: callback, Timeout: c.timeout,
-	}
-	clientConnection, channels, requests, err := ssh.NewClientConn(raw, c.address, config)
-	if err != nil {
-		_ = raw.Close()
-		return nil, err
-	}
-	_ = raw.SetDeadline(time.Time{})
-	return ssh.NewClient(clientConnection, channels, requests), nil
+	return c.inner.Connect(ctx, callback)
 }
 
 func (c *sshConnector) connectPinned(ctx context.Context) (*ssh.Client, error) {
-	if !validSSHFingerprint(c.fingerprint) {
-		return nil, ErrInvalidSSH
+	return c.inner.ConnectPinned(ctx)
+}
+
+func sshClientBundle(bundle SSHBundle) sshclient.Bundle {
+	return sshclient.Bundle{
+		PrivateKey: bundle.PrivateKey, Passphrase: bundle.Passphrase, Password: bundle.Password,
+		UseSudo: bundle.UseSudo, SudoPassword: bundle.SudoPassword,
 	}
-	return c.connect(ctx, func(_ string, _ net.Addr, key ssh.PublicKey) error {
-		if ssh.FingerprintSHA256(key) != c.fingerprint {
-			return errors.New("SSH 主机指纹不匹配")
-		}
-		return nil
-	})
 }
 
 func (s *Service) TestSSH(ctx context.Context, input Input) (SSHTestResult, error) {
 	if input.SSH == nil {
 		return SSHTestResult{}, ErrInvalidSSH
 	}
-	connector, err := newSSHConnector(strings.TrimSpace(input.Host), *input.SSH, "", s.config.ConnectTimeout)
+	fingerprint := strings.TrimSpace(input.SSHHostKeyFingerprint)
+	connector, err := newSSHConnector(strings.TrimSpace(input.Host), *input.SSH, fingerprint, s.config.ConnectTimeout)
 	if err != nil {
 		return SSHTestResult{}, err
 	}
 	testContext, cancel := context.WithTimeout(ctx, s.config.RequestTimeout)
 	defer cancel()
-	fingerprint := ""
-	client, err := connector.connect(testContext, func(_ string, _ net.Addr, key ssh.PublicKey) error {
-		fingerprint = ssh.FingerprintSHA256(key)
-		return nil
-	})
+	client, err := connectForSSHTest(testContext, connector, &fingerprint)
 	if err != nil {
 		return SSHTestResult{}, fmt.Errorf("%w: %v", ErrSSHUnreachable, err)
 	}
 	defer client.Close()
 	output := &limitedOutput{remaining: 256}
-	if err := runSSHCommand(testContext, client, "docker version --format '{{.Server.Version}}'", output); err != nil {
-		return SSHTestResult{}, fmt.Errorf("%w: %v", ErrSSHUnreachable, err)
+	commandError := &limitedOutput{remaining: 512}
+	mode, err := resolveDockerSSHCommandMode(testContext, client, *input.SSH)
+	if err != nil {
+		return SSHTestResult{}, fmt.Errorf("%w: %v", ErrSSHDockerDenied, err)
+	}
+	command, commandInput := mode.prepare("docker version --format '{{.Server.Version}}'", nil)
+	if err := runSSHCommandWithStreams(testContext, client, command, commandInput, output, commandError); err != nil {
+		if detail := strings.TrimSpace(commandError.String()); detail != "" {
+			return SSHTestResult{}, fmt.Errorf("%w: %v: %s", ErrSSHDockerDenied, err, detail)
+		}
+		return SSHTestResult{}, fmt.Errorf("%w: %v", ErrSSHDockerDenied, err)
 	}
 	dockerVersion := strings.TrimSpace(output.String())
 	if !validSSHFingerprint(fingerprint) || dockerVersion == "" {
-		return SSHTestResult{}, ErrSSHUnreachable
+		return SSHTestResult{}, ErrSSHDockerDenied
 	}
 	return SSHTestResult{Fingerprint: fingerprint, DockerVersion: dockerVersion}, nil
+}
+
+// TestSSHConnection 只验证 SSH 登录并读取主机指纹，不开放任何宿主机命令。
+// Docker 能力仍必须通过 TestSSH 的固定 docker version 命令单独验证。
+func (s *Service) TestSSHConnection(ctx context.Context, input Input) (SSHConnectionTestResult, error) {
+	if input.SSH == nil {
+		return SSHConnectionTestResult{}, ErrInvalidSSH
+	}
+	fingerprint := strings.TrimSpace(input.SSHHostKeyFingerprint)
+	connector, err := newSSHConnector(strings.TrimSpace(input.Host), *input.SSH, fingerprint, s.config.ConnectTimeout)
+	if err != nil {
+		return SSHConnectionTestResult{}, err
+	}
+	testContext, cancel := context.WithTimeout(ctx, s.config.RequestTimeout)
+	defer cancel()
+	client, err := connectForSSHTest(testContext, connector, &fingerprint)
+	if err != nil {
+		return SSHConnectionTestResult{}, fmt.Errorf("%w: %v", ErrSSHUnreachable, err)
+	}
+	_ = client.Close()
+	if !validSSHFingerprint(fingerprint) {
+		return SSHConnectionTestResult{}, ErrSSHUnreachable
+	}
+	return SSHConnectionTestResult{Fingerprint: fingerprint}, nil
+}
+
+func connectForSSHTest(ctx context.Context, connector *sshConnector, fingerprint *string) (*ssh.Client, error) {
+	if connector == nil || fingerprint == nil {
+		return nil, ErrInvalidSSH
+	}
+	if *fingerprint != "" {
+		return connector.connectPinned(ctx)
+	}
+	return connector.connect(ctx, func(_ string, _ net.Addr, key ssh.PublicKey) error {
+		*fingerprint = ssh.FingerprintSHA256(key)
+		return nil
+	})
 }
 
 func (s *Service) pullImageWithSSH(ctx context.Context, endpointID, image string) (bool, error) {
@@ -204,15 +177,11 @@ func (s *Service) pullImageWithSSH(ctx context.Context, endpointID, image string
 	if err != nil || parsed.Scheme != "ssh" {
 		return false, nil
 	}
-	value, err := s.secrets.Decrypt(endpoint.SSHCredentialCiphertext, sshAAD(endpoint.ID))
+	host, bundle, fingerprint, err := s.sshConfiguration(ctx, endpoint)
 	if err != nil {
-		return true, fmt.Errorf("解密 Docker SSH 凭据失败: %w", err)
+		return true, err
 	}
-	var bundle SSHBundle
-	if err := json.Unmarshal([]byte(value), &bundle); err != nil {
-		return true, fmt.Errorf("解析 Docker SSH 凭据失败: %w", err)
-	}
-	connector, err := newSSHConnector(endpoint.Host, bundle, endpoint.SSHHostKeyFingerprint, s.config.ConnectTimeout)
+	connector, err := newSSHConnector(host, bundle, fingerprint, s.config.ConnectTimeout)
 	if err != nil {
 		return true, err
 	}
@@ -225,7 +194,12 @@ func (s *Service) pullImageWithSSH(ctx context.Context, endpointID, image string
 	if err != nil {
 		return true, err
 	}
-	if err := runSSHCommand(ctx, client, command, io.Discard); err != nil {
+	mode, err := resolveDockerSSHCommandMode(ctx, client, bundle)
+	if err != nil {
+		return true, fmt.Errorf("检查远程 Docker sudo 权限失败: %w", err)
+	}
+	command, commandInput := mode.prepare(command, nil)
+	if err := runSSHCommandWithInput(ctx, client, command, commandInput, io.Discard); err != nil {
 		return true, fmt.Errorf("远程执行 docker pull 失败: %w", err)
 	}
 	return true, nil
@@ -240,22 +214,18 @@ func (s *Service) loadImageToSSH(ctx context.Context, endpointID, image string, 
 	if err != nil || parsed.Scheme != "ssh" {
 		return "", errors.New("本地镜像只能传输到 Docker SSH 主机")
 	}
-	value, err := s.secrets.Decrypt(endpoint.SSHCredentialCiphertext, sshAAD(endpoint.ID))
-	if err != nil {
-		return "", fmt.Errorf("解密 Docker SSH 凭据失败: %w", err)
-	}
-	var bundle SSHBundle
-	if err := json.Unmarshal([]byte(value), &bundle); err != nil {
-		return "", fmt.Errorf("解析 Docker SSH 凭据失败: %w", err)
-	}
-	connector, err := newSSHConnector(endpoint.Host, bundle, endpoint.SSHHostKeyFingerprint, s.config.ConnectTimeout)
+	host, bundle, fingerprint, err := s.sshConfiguration(ctx, endpoint)
 	if err != nil {
 		return "", err
 	}
-	return loadImageWithSSH(ctx, connector, image, archive)
+	connector, err := newSSHConnector(host, bundle, fingerprint, s.config.ConnectTimeout)
+	if err != nil {
+		return "", err
+	}
+	return loadImageWithSSH(ctx, connector, bundle, image, archive)
 }
 
-func loadImageWithSSH(ctx context.Context, connector *sshConnector, image string, archive io.Reader) (string, error) {
+func loadImageWithSSH(ctx context.Context, connector *sshConnector, bundle SSHBundle, image string, archive io.Reader) (string, error) {
 	if connector == nil || archive == nil || !IsZRTLocalImage(image) {
 		return "", errors.New("待加载的 Docker 镜像无效")
 	}
@@ -264,13 +234,19 @@ func loadImageWithSSH(ctx context.Context, connector *sshConnector, image string
 		return "", fmt.Errorf("连接 Docker SSH 主机失败: %w", err)
 	}
 	defer client.Close()
+	mode, err := resolveDockerSSHCommandMode(ctx, client, bundle)
+	if err != nil {
+		return "", fmt.Errorf("检查远程 Docker sudo 权限失败: %w", err)
+	}
 	loadOutput := &limitedOutput{remaining: 1024}
-	if err := runSSHCommandWithInput(ctx, client, "docker image load --quiet", archive, loadOutput); err != nil {
+	loadCommand, loadInput := mode.prepare("docker image load --quiet", archive)
+	if err := runSSHCommandWithInput(ctx, client, loadCommand, loadInput, loadOutput); err != nil {
 		return "", fmt.Errorf("通过 SSH 加载 Docker 镜像失败: %w", err)
 	}
 	inspectOutput := &limitedOutput{remaining: 256}
 	inspectCommand := "docker image inspect --format '{{.Id}}' " + shellQuote(image)
-	if err := runSSHCommand(ctx, client, inspectCommand, inspectOutput); err != nil {
+	inspectCommand, inspectInput := mode.prepare(inspectCommand, nil)
+	if err := runSSHCommandWithInput(ctx, client, inspectCommand, inspectInput, inspectOutput); err != nil {
 		return "", fmt.Errorf("校验 SSH 主机上的 Docker 镜像失败: %w", err)
 	}
 	targetImageID := strings.TrimSpace(inspectOutput.String())
@@ -292,18 +268,61 @@ func shellQuote(value string) string {
 	return "'" + strings.ReplaceAll(value, "'", "'\"'\"'") + "'"
 }
 
+func resolveDockerSSHCommandMode(ctx context.Context, client *ssh.Client, bundle SSHBundle) (dockerSSHCommandMode, error) {
+	if !bundle.UseSudo {
+		return dockerSSHCommandMode{}, nil
+	}
+	probe := "sudo -n -- docker version --format '{{.Server.Version}}'"
+	if err := runSSHCommand(ctx, client, probe, io.Discard); err == nil {
+		return dockerSSHCommandMode{prefix: "sudo -n -- "}, nil
+	}
+	password := bundle.SudoPassword
+	if password == "" {
+		password = bundle.Password
+	}
+	if password == "" {
+		return dockerSSHCommandMode{}, errors.New("远程用户未配置免密 sudo")
+	}
+	return dockerSSHCommandMode{prefix: "sudo -S -p '' -- ", password: password}, nil
+}
+
+func (mode dockerSSHCommandMode) prepare(command string, input io.Reader) (string, io.Reader) {
+	if mode.prefix == "" {
+		return command, input
+	}
+	if mode.password == "" {
+		return mode.prefix + command, input
+	}
+	password := strings.NewReader(mode.password + "\n")
+	if input == nil {
+		return mode.prefix + command, password
+	}
+	return mode.prefix + command, io.MultiReader(password, input)
+}
+
 func runSSHCommand(ctx context.Context, client *ssh.Client, command string, output io.Writer) error {
 	return runSSHCommandWithInput(ctx, client, command, nil, output)
 }
 
 func runSSHCommandWithInput(ctx context.Context, client *ssh.Client, command string, input io.Reader, output io.Writer) error {
+	return runSSHCommandWithStreams(ctx, client, command, input, output, output)
+}
+
+func runSSHCommandWithStreams(
+	ctx context.Context,
+	client *ssh.Client,
+	command string,
+	input io.Reader,
+	stdout io.Writer,
+	stderr io.Writer,
+) error {
 	session, err := client.NewSession()
 	if err != nil {
 		return err
 	}
 	defer session.Close()
-	session.Stdout = output
-	session.Stderr = output
+	session.Stdout = stdout
+	session.Stderr = stderr
 	if input != nil {
 		session.Stdin = input
 	}
@@ -327,6 +346,11 @@ func (d *sshDockerDialer) DialContext(ctx context.Context, _, _ string) (net.Con
 	if err != nil {
 		return nil, err
 	}
+	mode, err := resolveDockerSSHCommandMode(ctx, client, d.bundle)
+	if err != nil {
+		_ = client.Close()
+		return nil, err
+	}
 	session, err := client.NewSession()
 	if err != nil {
 		_ = client.Close()
@@ -345,10 +369,18 @@ func (d *sshDockerDialer) DialContext(ctx context.Context, _, _ string) (net.Con
 		return nil, err
 	}
 	session.Stderr = io.Discard
-	if err := session.Start("docker system dial-stdio"); err != nil {
+	command, commandInput := mode.prepare("docker system dial-stdio", nil)
+	if err := session.Start(command); err != nil {
 		_ = session.Close()
 		_ = client.Close()
 		return nil, err
+	}
+	if commandInput != nil {
+		if _, err := io.Copy(stdin, commandInput); err != nil {
+			_ = session.Close()
+			_ = client.Close()
+			return nil, err
+		}
 	}
 	return &sshDockerConn{client: client, session: session, reader: stdout, writer: stdin}, nil
 }

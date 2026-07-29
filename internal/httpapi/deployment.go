@@ -18,15 +18,16 @@ type deploymentHandler struct {
 }
 
 type deploymentTargetRequest struct {
-	Name           string                   `json:"name" binding:"required,max=128"`
-	Description    string                   `json:"description" binding:"max=500"`
-	Platform       model.DeploymentPlatform `json:"platform" binding:"required,max=16"`
-	Environment    model.EnvironmentType    `json:"environment" binding:"required,max=16"`
-	RuntimeID      string                   `json:"runtime_id" binding:"required,max=36"`
-	Namespace      string                   `json:"namespace" binding:"max=253"`
-	WorkloadName   string                   `json:"workload_name" binding:"required,max=253"`
-	ContainerName  string                   `json:"container_name" binding:"max=253"`
-	RolloutTimeout int                      `json:"rollout_timeout" binding:"omitempty,min=30,max=3600"`
+	Name             string                   `json:"name" binding:"required,max=128"`
+	Description      string                   `json:"description" binding:"max=500"`
+	Platform         model.DeploymentPlatform `json:"platform" binding:"required,max=16"`
+	HostID           string                   `json:"host_id" binding:"max=36"`
+	RuntimeID        string                   `json:"runtime_id" binding:"max=36"`
+	WorkingDirectory string                   `json:"working_directory" binding:"max=1024"`
+	Namespace        string                   `json:"namespace" binding:"max=253"`
+	WorkloadName     string                   `json:"workload_name" binding:"max=253"`
+	ContainerName    string                   `json:"container_name" binding:"max=253"`
+	RolloutTimeout   int                      `json:"rollout_timeout" binding:"omitempty,min=30,max=3600"`
 }
 
 type deploymentRequest struct {
@@ -42,16 +43,6 @@ func (h deploymentHandler) listTargets(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"targets": targets})
-}
-
-func (h deploymentHandler) listEnvironments(c *gin.Context) {
-	environments, err := h.service.ListTargets(c.Request.Context())
-	if err != nil {
-		h.logger.Error("查询环境失败", "operation", "environment_list", "request_id", requestIDFrom(c), "err", err)
-		writeInternalError(c)
-		return
-	}
-	c.JSON(http.StatusOK, gin.H{"environments": environments})
 }
 
 func (h deploymentHandler) createTarget(c *gin.Context) {
@@ -71,23 +62,6 @@ func (h deploymentHandler) createTarget(c *gin.Context) {
 	c.JSON(http.StatusCreated, gin.H{"target": target})
 }
 
-func (h deploymentHandler) createEnvironment(c *gin.Context) {
-	var request deploymentTargetRequest
-	if err := c.ShouldBindJSON(&request); err != nil {
-		h.logger.Warn("创建环境参数无效", "operation", "environment_create_bind", "request_id", requestIDFrom(c), "err", err)
-		writeError(c, http.StatusBadRequest, "invalid_request", deployment.ErrInvalidTarget.Error())
-		return
-	}
-	actor, _ := currentUser(c)
-	environment, err := h.service.CreateTarget(c.Request.Context(), actor.ID, toDeploymentTargetInput(request))
-	if err != nil {
-		h.writeTargetError(c, "environment_create", err)
-		return
-	}
-	setAuditResourceID(c, environment.ID)
-	c.JSON(http.StatusCreated, gin.H{"environment": environment})
-}
-
 func (h deploymentHandler) updateTarget(c *gin.Context) {
 	var request deploymentTargetRequest
 	if err := c.ShouldBindJSON(&request); err != nil {
@@ -103,44 +77,15 @@ func (h deploymentHandler) updateTarget(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"target": target})
 }
 
-func (h deploymentHandler) updateEnvironment(c *gin.Context) {
-	var request deploymentTargetRequest
-	if err := c.ShouldBindJSON(&request); err != nil {
-		h.logger.Warn("更新环境参数无效", "operation", "environment_update_bind", "request_id", requestIDFrom(c), "environment_id", c.Param("id"), "err", err)
-		writeError(c, http.StatusBadRequest, "invalid_request", deployment.ErrInvalidTarget.Error())
-		return
-	}
-	environment, err := h.service.UpdateTarget(c.Request.Context(), c.Param("id"), toDeploymentTargetInput(request))
-	if err != nil {
-		h.writeTargetError(c, "environment_update", err)
-		return
-	}
-	c.JSON(http.StatusOK, gin.H{"environment": environment})
-}
-
 func (h deploymentHandler) setTargetStatus(c *gin.Context) {
 	var request runtimeStatusRequest
 	if err := c.ShouldBindJSON(&request); err != nil || request.Active == nil {
 		h.logger.Warn("修改发布目标状态参数无效", "operation", "deployment_target_status_bind", "request_id", requestIDFrom(c), "target_id", c.Param("id"), "err", err)
-		writeError(c, http.StatusBadRequest, "invalid_request", "发布目标状态格式无效")
+		writeError(c, http.StatusBadRequest, "invalid_request", "部署配置状态格式无效")
 		return
 	}
 	if err := h.service.SetTargetActive(c.Request.Context(), c.Param("id"), *request.Active); err != nil {
 		h.writeTargetError(c, "deployment_target_status", err)
-		return
-	}
-	c.Status(http.StatusNoContent)
-}
-
-func (h deploymentHandler) setEnvironmentStatus(c *gin.Context) {
-	var request runtimeStatusRequest
-	if err := c.ShouldBindJSON(&request); err != nil || request.Active == nil {
-		h.logger.Warn("修改环境状态参数无效", "operation", "environment_status_bind", "request_id", requestIDFrom(c), "environment_id", c.Param("id"), "err", err)
-		writeError(c, http.StatusBadRequest, "invalid_request", "环境状态格式无效")
-		return
-	}
-	if err := h.service.SetTargetActive(c.Request.Context(), c.Param("id"), *request.Active); err != nil {
-		h.writeTargetError(c, "environment_status", err)
 		return
 	}
 	c.Status(http.StatusNoContent)
@@ -214,6 +159,8 @@ func (h deploymentHandler) writeDeploymentError(c *gin.Context, operation string
 		writeError(c, http.StatusConflict, "invalid_deployment_state", deployment.ErrInvalidDeploymentState.Error())
 	case errors.Is(err, deployment.ErrRollbackUnavailable):
 		writeError(c, http.StatusConflict, "rollback_unavailable", deployment.ErrRollbackUnavailable.Error())
+	case errors.Is(err, deployment.ErrCommandPipelineRequired):
+		writeError(c, http.StatusConflict, "ssh_command_pipeline_required", deployment.ErrCommandPipelineRequired.Error())
 	default:
 		writeInternalError(c)
 	}
@@ -222,8 +169,9 @@ func (h deploymentHandler) writeDeploymentError(c *gin.Context, operation string
 func toDeploymentTargetInput(request deploymentTargetRequest) deployment.TargetInput {
 	return deployment.TargetInput{
 		Name: request.Name, Description: request.Description,
-		Platform: request.Platform, Environment: request.Environment,
-		RuntimeID: request.RuntimeID, Namespace: request.Namespace,
+		Platform: request.Platform,
+		HostID:   request.HostID, RuntimeID: request.RuntimeID, WorkingDirectory: request.WorkingDirectory,
+		Namespace:    request.Namespace,
 		WorkloadName: request.WorkloadName, ContainerName: request.ContainerName,
 		RolloutTimeout: request.RolloutTimeout,
 	}

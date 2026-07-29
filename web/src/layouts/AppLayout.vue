@@ -3,7 +3,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
 import {
-  Bell, ChevronLeft, Command, Expand, Languages, LockKeyhole, LogOut,
+  Bell, ChevronDown, ChevronLeft, Command, Expand, Languages, LockKeyhole, LogOut,
   Maximize2, Menu, Moon, PanelLeftClose, PanelLeftOpen, RefreshCw, Search,
   Pin, Settings, Sun, X,
 } from 'lucide-vue-next'
@@ -43,6 +43,8 @@ const selectedKeys = computed(() => {
 })
 
 const currentNavItem = computed(() => flatNavigation().find((candidate) => candidate.path === selectedKeys.value[0]))
+const recentVisits = computed(() => tabsStore.recent(route.fullPath))
+const canGoBack = computed(() => tabsStore.canGoBack(route.fullPath))
 
 const breadcrumbs = computed(() => {
   for (const section of navigation) {
@@ -78,6 +80,10 @@ function navigate(path: string) {
   void router.push(path)
 }
 
+function navigateHistory(path: string) {
+  void router.push(path)
+}
+
 function openSearch() {
   searchText.value = ''
   searchOpen.value = true
@@ -98,7 +104,7 @@ function reloadPage() {
 }
 
 function tabMenuAction(action: string, key: string, path: string) {
-  if (action === 'close') void tabsStore.close(key, router, route.fullPath)
+  if (action === 'close') void tabsStore.close(key, router, route.path)
   if (action === 'pin') tabsStore.togglePin(key)
   if (action === 'maximize') contentMaximized.value = !contentMaximized.value
   if (action === 'reload') reloadPage()
@@ -118,6 +124,7 @@ function keyboard(event: KeyboardEvent) {
 }
 
 watch(() => route.fullPath, () => {
+  tabsStore.visit(route)
   tabsStore.add(route)
   const branch = navigation.flatMap((section) => section.branches ?? [])
     .find((item) => item.items.some((candidate) => candidate.path === selectedKeys.value[0]))
@@ -192,6 +199,19 @@ onBeforeUnmount(() => window.removeEventListener('keydown', keyboard))
         <div class="header-left">
           <button class="mobile-menu-button" type="button" aria-label="打开导航" @click="mobileMenuOpen = true"><Menu /></button>
           <button class="desktop-collapse" type="button" aria-label="切换导航" @click="preferences.toggleSidebar()"><Menu /></button>
+          <div class="breadcrumb-history" :class="{ disabled: !canGoBack }">
+            <a-tooltip :title="t('common.back')"><button type="button" :disabled="!canGoBack" @click="tabsStore.back(router,route.fullPath)"><ChevronLeft /></button></a-tooltip>
+            <a-dropdown :disabled="recentVisits.length===0" placement="bottomLeft" :trigger="['click']">
+              <button type="button" :disabled="recentVisits.length===0" :aria-label="t('common.history')"><ChevronDown /></button>
+              <template #overlay>
+                <a-menu class="navigation-history-menu" @click="({key}:{key:string})=>navigateHistory(key)">
+                  <a-menu-item v-for="item in recentVisits" :key="item.path">
+                    <span class="navigation-history-item"><component :is="tabIcon(item.path)" v-if="tabIcon(item.path)"/><span><strong>{{ t(item.title) }}</strong><small>{{ item.path }}</small></span></span>
+                  </a-menu-item>
+                </a-menu>
+              </template>
+            </a-dropdown>
+          </div>
           <a-breadcrumb>
             <a-breadcrumb-item v-for="(item, index) in breadcrumbs" :key="item.label">
               <span class="breadcrumb-label" :class="{ current: index === breadcrumbs.length - 1 }">
@@ -233,7 +253,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', keyboard))
           <a-dropdown v-for="tab in tabsStore.tabs" :key="tab.key" :trigger="['contextmenu']">
             <div
               class="page-tab"
-              :class="{ active: route.fullPath === tab.key, pinned: tab.pinned }"
+              :class="{ active: route.path === tab.key, pinned: tab.pinned }"
               role="button"
               tabindex="0"
               @click="navigate(tab.path)"
@@ -243,7 +263,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', keyboard))
               <component :is="tabIcon(tab.path)" v-if="tabIcon(tab.path)" class="tab-route-icon" :size="16" />
               <span>{{ t(tab.title) }}</span>
               <button v-if="tab.pinned" class="tab-action pin-action" type="button" aria-label="已固定" :disabled="tab.key === '/'" @click.stop="tabsStore.togglePin(tab.key)"><Pin :size="14" /></button>
-              <button v-else class="tab-action" type="button" aria-label="关闭标签" @click.stop="tabsStore.close(tab.key, router, route.fullPath)"><X :size="14" /></button>
+              <button v-else class="tab-action" type="button" aria-label="关闭标签" @click.stop="tabsStore.close(tab.key, router, route.path)"><X :size="14" /></button>
             </div>
             <template #overlay>
               <a-menu @click="({ key }: { key: string }) => tabMenuAction(key, tab.key, tab.path)">
@@ -268,7 +288,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', keyboard))
       <section class="vben-content">
         <RouterView v-slot="{ Component }">
           <Transition name="page-fade" mode="out-in">
-            <component :is="Component" :key="`${route.fullPath}:${reloadKey}`" />
+            <component :is="Component" :key="`${route.path}:${reloadKey}`" />
           </Transition>
         </RouterView>
       </section>
@@ -280,7 +300,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', keyboard))
         <button v-for="item in searchableItems" :key="item.path" type="button" @click="searchOpen = false; navigate(item.path)">
           <component :is="item.icon" :size="17" /><span>{{ t(item.label) }}</span><kbd>↵</kbd>
         </button>
-        <a-empty v-if="searchableItems.length === 0" :image="null" description="没有匹配页面" />
+        <a-empty v-if="searchableItems.length === 0" description="没有匹配页面" />
       </div>
     </a-modal>
   </div>

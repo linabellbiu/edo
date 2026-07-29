@@ -5,6 +5,7 @@ import "time"
 type DockerEndpoint struct {
 	ID                      string    `gorm:"type:varchar(36);primaryKey"`
 	Name                    string    `gorm:"type:varchar(128);not null;uniqueIndex"`
+	HostID                  string    `gorm:"type:varchar(36);not null;default:'';index"`
 	Host                    string    `gorm:"type:varchar(1024);not null"`
 	TLSCiphertext           string    `gorm:"type:text;not null"`
 	SSHCredentialCiphertext string    `gorm:"type:text;not null"`

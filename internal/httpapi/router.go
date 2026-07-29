@@ -22,8 +22,11 @@ import (
 	"zrt/internal/deployment"
 	dnsmanager "zrt/internal/dns"
 	"zrt/internal/dockerengine"
+	environmentmanager "zrt/internal/environment"
+	hostmanager "zrt/internal/host"
 	"zrt/internal/identity"
 	"zrt/internal/kube"
+	"zrt/internal/logging"
 	"zrt/internal/logretention"
 	"zrt/internal/monitor"
 	"zrt/internal/notification"
@@ -42,6 +45,7 @@ type Dependencies struct {
 	Redis            Pinger
 	NATS             Pinger
 	Logger           *slog.Logger
+	RuntimeLogs      *logging.RuntimeController
 	Version          string
 	WebRoot          string
 	AuthConfig       config.Auth
@@ -56,6 +60,8 @@ type Dependencies struct {
 	Pipelines        *pipeline.Service
 	Docker           *dockerengine.Service
 	Kubernetes       *kube.Service
+	Hosts            *hostmanager.Service
+	Environments     *environmentmanager.Service
 	Deployments      *deployment.Service
 	Terminal         *terminal.Service
 	Configurations   *configuration.Service
@@ -82,7 +88,7 @@ func NewRouter(deps Dependencies) *gin.Engine {
 	}
 	router := gin.New()
 	_ = router.SetTrustedProxies(nil)
-	router.Use(requestID(), securityHeaders(), recovery(deps.Logger), accessLog(deps.Logger))
+	router.Use(requestID(), securityHeaders(), recovery(deps.Logger), accessLog(deps.Logger, deps.RuntimeLogs))
 
 	health := healthHandler{database: deps.Database, redis: deps.Redis, nats: deps.NATS, builder: deps.Docker, logger: deps.Logger}
 	api := router.Group("/api/v1")
@@ -193,7 +199,10 @@ func NewRouter(deps Dependencies) *gin.Engine {
 	protected.POST("/release-plans", auditAction(deps.Audits, deps.Logger, "release_plan.create", "release_plan"), requirePermission(deps.Access, deps.Logger, access.PermissionDeliveryManage), pipelineAPI.createReleasePlan)
 	protected.GET("/release-plans/:id", requirePermission(deps.Access, deps.Logger, access.PermissionDeliveryRead), pipelineAPI.getReleasePlan)
 	protected.PUT("/release-plans/:id", auditAction(deps.Audits, deps.Logger, "release_plan.update", "release_plan"), requirePermission(deps.Access, deps.Logger, access.PermissionDeliveryManage), pipelineAPI.updateReleasePlan)
+	protected.PUT("/release-plans/:id/configuration", auditAction(deps.Audits, deps.Logger, "release_plan.configuration.update", "release_plan"), requirePermission(deps.Access, deps.Logger, access.PermissionDeliveryManage), pipelineAPI.saveReleasePlanConfiguration)
+	protected.PATCH("/release-plans/:id/status", auditAction(deps.Audits, deps.Logger, "release_plan.status.update", "release_plan"), requirePermission(deps.Access, deps.Logger, access.PermissionDeliveryManage), pipelineAPI.setReleasePlanStatus)
 	protected.DELETE("/release-plans/:id", auditAction(deps.Audits, deps.Logger, "release_plan.delete", "release_plan"), requirePermission(deps.Access, deps.Logger, access.PermissionDeliveryManage), pipelineAPI.deleteReleasePlan)
+	protected.POST("/release-plans/:id/executions", auditAction(deps.Audits, deps.Logger, "release_plan.execute", "release_plan_execution"), requirePermission(deps.Access, deps.Logger, access.PermissionDeliveryRun), pipelineAPI.createReleasePlanExecution)
 	protected.POST("/release-plans/:id/groups", auditAction(deps.Audits, deps.Logger, "release_group.create", "release_plan"), requirePermission(deps.Access, deps.Logger, access.PermissionDeliveryManage), pipelineAPI.createReleaseGroup)
 	protected.PUT("/release-plans/:id/groups/:group_id", auditAction(deps.Audits, deps.Logger, "release_group.update", "release_plan"), requirePermission(deps.Access, deps.Logger, access.PermissionDeliveryManage), pipelineAPI.updateReleaseGroup)
 	protected.DELETE("/release-plans/:id/groups/:group_id", auditAction(deps.Audits, deps.Logger, "release_group.delete", "release_plan"), requirePermission(deps.Access, deps.Logger, access.PermissionDeliveryManage), pipelineAPI.deleteReleaseGroup)
@@ -216,6 +225,8 @@ func NewRouter(deps Dependencies) *gin.Engine {
 	protected.PATCH("/docker/endpoints/:id/status", auditAction(deps.Audits, deps.Logger, "docker.endpoint.status.update", "docker_endpoint"), requirePermission(deps.Access, deps.Logger, access.PermissionClusterManage), clusterAPI.setDockerStatus)
 	protected.POST("/docker/endpoints/:id/ping", auditAction(deps.Audits, deps.Logger, "docker.endpoint.test", "docker_endpoint"), requirePermission(deps.Access, deps.Logger, access.PermissionClusterManage), clusterAPI.pingDocker)
 	protected.GET("/docker/endpoints/:id/containers", requirePermission(deps.Access, deps.Logger, access.PermissionClusterRead), clusterAPI.listContainers)
+	containerLogsAPI := containerLogHandler{docker: deps.Docker, audits: deps.Audits, logger: deps.Logger}
+	protected.GET("/docker/endpoints/:id/containers/:container_id/logs/ws", requirePermission(deps.Access, deps.Logger, access.PermissionClusterRead), containerLogsAPI.stream)
 
 	protected.GET("/kubernetes/clusters", requirePermission(deps.Access, deps.Logger, access.PermissionClusterRead), clusterAPI.listKubernetesClusters)
 	protected.POST("/kubernetes/clusters", auditAction(deps.Audits, deps.Logger, "kubernetes.cluster.create", "kubernetes_cluster"), requirePermission(deps.Access, deps.Logger, access.PermissionClusterManage), clusterAPI.createKubernetesCluster)
@@ -226,15 +237,29 @@ func NewRouter(deps Dependencies) *gin.Engine {
 	protected.GET("/kubernetes/clusters/:id/pods", requirePermission(deps.Access, deps.Logger, access.PermissionClusterRead), clusterAPI.listPods)
 	protected.GET("/kubernetes/clusters/:id/deployments", requirePermission(deps.Access, deps.Logger, access.PermissionClusterRead), clusterAPI.listDeployments)
 
+	hostAPI := hostHandler{service: deps.Hosts, logger: deps.Logger}
+	protected.GET("/hosts", requireAnyPermission(deps.Access, deps.Logger, access.PermissionClusterRead, access.PermissionDeploymentRead), hostAPI.list)
+	protected.GET("/hosts/:id", requireAnyPermission(deps.Access, deps.Logger, access.PermissionClusterRead, access.PermissionDeploymentRead), hostAPI.get)
+	protected.POST("/hosts/:id/ping", auditAction(deps.Audits, deps.Logger, "host.ping", "host"), requireAnyPermission(deps.Access, deps.Logger, access.PermissionClusterManage, access.PermissionDeploymentManage), hostAPI.ping)
+	protected.POST("/hosts/test", auditAction(deps.Audits, deps.Logger, "host.test", "host"), requirePermission(deps.Access, deps.Logger, access.PermissionClusterManage), hostAPI.test)
+	protected.POST("/hosts/:id/test", auditAction(deps.Audits, deps.Logger, "host.test", "host"), requirePermission(deps.Access, deps.Logger, access.PermissionClusterManage), hostAPI.testExisting)
+	protected.POST("/hosts", auditAction(deps.Audits, deps.Logger, "host.create", "host"), requirePermission(deps.Access, deps.Logger, access.PermissionClusterManage), hostAPI.create)
+	protected.PUT("/hosts/:id", auditAction(deps.Audits, deps.Logger, "host.update", "host"), requirePermission(deps.Access, deps.Logger, access.PermissionClusterManage), hostAPI.update)
+	protected.PATCH("/hosts/:id/status", auditAction(deps.Audits, deps.Logger, "host.status.update", "host"), requirePermission(deps.Access, deps.Logger, access.PermissionClusterManage), hostAPI.setStatus)
+	protected.DELETE("/hosts/:id", auditAction(deps.Audits, deps.Logger, "host.delete", "host"), requirePermission(deps.Access, deps.Logger, access.PermissionClusterManage), hostAPI.remove)
+
 	deploymentAPI := deploymentHandler{service: deps.Deployments, logger: deps.Logger}
 	protected.GET("/deployment-targets", requirePermission(deps.Access, deps.Logger, access.PermissionDeploymentRead), deploymentAPI.listTargets)
 	protected.POST("/deployment-targets", auditAction(deps.Audits, deps.Logger, "deployment.target.create", "deployment_target"), requirePermission(deps.Access, deps.Logger, access.PermissionDeploymentManage), deploymentAPI.createTarget)
 	protected.PUT("/deployment-targets/:id", auditAction(deps.Audits, deps.Logger, "deployment.target.update", "deployment_target"), requirePermission(deps.Access, deps.Logger, access.PermissionDeploymentManage), deploymentAPI.updateTarget)
 	protected.PATCH("/deployment-targets/:id/status", auditAction(deps.Audits, deps.Logger, "deployment.target.status.update", "deployment_target"), requirePermission(deps.Access, deps.Logger, access.PermissionDeploymentManage), deploymentAPI.setTargetStatus)
-	protected.GET("/environments", requirePermission(deps.Access, deps.Logger, access.PermissionDeploymentRead), deploymentAPI.listEnvironments)
-	protected.POST("/environments", auditAction(deps.Audits, deps.Logger, "environment.create", "environment"), requirePermission(deps.Access, deps.Logger, access.PermissionDeploymentManage), deploymentAPI.createEnvironment)
-	protected.PUT("/environments/:id", auditAction(deps.Audits, deps.Logger, "environment.update", "environment"), requirePermission(deps.Access, deps.Logger, access.PermissionDeploymentManage), deploymentAPI.updateEnvironment)
-	protected.PATCH("/environments/:id/status", auditAction(deps.Audits, deps.Logger, "environment.status.update", "environment"), requirePermission(deps.Access, deps.Logger, access.PermissionDeploymentManage), deploymentAPI.setEnvironmentStatus)
+	environmentAPI := environmentHandler{service: deps.Environments, hosts: deps.Hosts, logger: deps.Logger}
+	protected.GET("/environments", requirePermission(deps.Access, deps.Logger, access.PermissionDeploymentRead), environmentAPI.list)
+	protected.GET("/environments/:id", requirePermission(deps.Access, deps.Logger, access.PermissionDeploymentRead), environmentAPI.get)
+	protected.POST("/environments", auditAction(deps.Audits, deps.Logger, "environment.create", "environment"), requirePermission(deps.Access, deps.Logger, access.PermissionDeploymentManage), environmentAPI.create)
+	protected.PUT("/environments/:id", auditAction(deps.Audits, deps.Logger, "environment.update", "environment"), requirePermission(deps.Access, deps.Logger, access.PermissionDeploymentManage), environmentAPI.update)
+	protected.PATCH("/environments/:id/status", auditAction(deps.Audits, deps.Logger, "environment.status.update", "environment"), requirePermission(deps.Access, deps.Logger, access.PermissionDeploymentManage), environmentAPI.setStatus)
+	protected.DELETE("/environments/:id", auditAction(deps.Audits, deps.Logger, "environment.delete", "environment"), requirePermission(deps.Access, deps.Logger, access.PermissionDeploymentManage), environmentAPI.remove)
 	protected.GET("/deployments", requirePermission(deps.Access, deps.Logger, access.PermissionDeploymentRead), deploymentAPI.list)
 	protected.POST("/deployments", auditAction(deps.Audits, deps.Logger, "deployment.request", "deployment"), requirePermission(deps.Access, deps.Logger, access.PermissionDeploymentRun), deploymentAPI.request)
 	protected.POST("/deployments/:id/rollback", auditAction(deps.Audits, deps.Logger, "deployment.rollback", "deployment"), requirePermission(deps.Access, deps.Logger, access.PermissionDeploymentReview), deploymentAPI.rollback)
@@ -244,11 +269,13 @@ func NewRouter(deps Dependencies) *gin.Engine {
 	protected.GET("/terminals/kubernetes/:cluster_id/namespaces/:namespace/pods/:pod/containers/:container/ws", requirePermission(deps.Access, deps.Logger, access.PermissionTerminalOpen), terminalAPI.kubernetes)
 
 	configurationAPI := configurationHandler{service: deps.Configurations, logger: deps.Logger}
-	settingsAPI := settingsHandler{service: deps.Configurations, loginLimiter: deps.LoginLimiter, authConfig: deps.AuthConfig, retention: deps.LogRetention, migration: deps.DatabaseTransfer, logger: deps.Logger}
+	settingsAPI := settingsHandler{service: deps.Configurations, loginLimiter: deps.LoginLimiter, authConfig: deps.AuthConfig, retention: deps.LogRetention, migration: deps.DatabaseTransfer, runtimeLogs: deps.RuntimeLogs, logger: deps.Logger}
 	protected.GET("/settings/external-git-webhook", requirePermission(deps.Access, deps.Logger, access.PermissionConfigRead), settingsAPI.externalGitWebhook)
 	protected.PUT("/settings/external-git-webhook", auditAction(deps.Audits, deps.Logger, "settings.git_webhook.update", "settings"), requirePermission(deps.Access, deps.Logger, access.PermissionConfigManage), settingsAPI.updateExternalGitWebhook)
 	protected.GET("/settings/login-lockout", requirePermission(deps.Access, deps.Logger, access.PermissionConfigRead), settingsAPI.loginLockout)
 	protected.PUT("/settings/login-lockout", auditAction(deps.Audits, deps.Logger, "settings.login_lockout.update", "settings"), requirePermission(deps.Access, deps.Logger, access.PermissionConfigManage), settingsAPI.updateLoginLockout)
+	protected.GET("/settings/runtime-logging", requirePermission(deps.Access, deps.Logger, access.PermissionConfigRead), settingsAPI.runtimeLogging)
+	protected.PUT("/settings/runtime-logging", auditAction(deps.Audits, deps.Logger, "settings.runtime_logging.update", "settings"), requirePermission(deps.Access, deps.Logger, access.PermissionConfigManage), settingsAPI.updateRuntimeLogging)
 	protected.GET("/settings/log-retention", requirePermission(deps.Access, deps.Logger, access.PermissionConfigRead), settingsAPI.logRetention)
 	protected.PUT("/settings/log-retention", auditAction(deps.Audits, deps.Logger, "settings.log_retention.update", "settings"), requirePermission(deps.Access, deps.Logger, access.PermissionConfigManage), settingsAPI.updateLogRetention)
 	protected.POST("/settings/log-retention/cleanup", auditAction(deps.Audits, deps.Logger, "settings.log_retention.cleanup", "settings"), requirePermission(deps.Access, deps.Logger, access.PermissionConfigManage), settingsAPI.cleanupLogs)

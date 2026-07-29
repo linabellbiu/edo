@@ -3,9 +3,13 @@ package kube
 import (
 	"context"
 	"encoding/base64"
+	"encoding/pem"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -79,4 +83,113 @@ func TestKubeconfigIsEncrypted(t *testing.T) {
 	if cluster.KubeconfigCiphertext == "" || strings.Contains(cluster.KubeconfigCiphertext, "test-token") {
 		t.Fatal("kubeconfig 未加密存储")
 	}
+}
+
+func TestPingReadsServerVersion(t *testing.T) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != "/version" {
+			http.NotFound(response, request)
+			return
+		}
+		response.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(response, `{"gitVersion":"v1.32.4"}`)
+	}))
+	defer server.Close()
+
+	service := newKubeTestService(t, 5*time.Second)
+	clusterID := createKubeTestCluster(t, service, server)
+	version, err := service.Ping(context.Background(), clusterID)
+	if err != nil {
+		t.Fatalf("检查 Kubernetes API 失败: %v", err)
+	}
+	if version != "v1.32.4" {
+		t.Fatalf("Kubernetes 版本不正确: %q", version)
+	}
+}
+
+func TestPingHonorsContextDeadline(t *testing.T) {
+	requestStarted := make(chan struct{}, 1)
+	requestCanceled := make(chan struct{}, 1)
+	server := httptest.NewTLSServer(http.HandlerFunc(func(_ http.ResponseWriter, request *http.Request) {
+		requestStarted <- struct{}{}
+		<-request.Context().Done()
+		requestCanceled <- struct{}{}
+	}))
+	defer server.Close()
+
+	service := newKubeTestService(t, 5*time.Second)
+	clusterID := createKubeTestCluster(t, service, server)
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	startedAt := time.Now()
+	_, err := service.Ping(ctx, clusterID)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("调用方超时未传递到 Kubernetes 请求: %v", err)
+	}
+	if elapsed := time.Since(startedAt); elapsed >= time.Second {
+		t.Fatalf("Kubernetes 请求没有及时取消: %s", elapsed)
+	}
+	select {
+	case <-requestStarted:
+	default:
+		t.Fatal("Kubernetes API 没有收到健康检查请求")
+	}
+	select {
+	case <-requestCanceled:
+	case <-time.After(time.Second):
+		t.Fatal("Kubernetes API 请求在 context 超时后仍未取消")
+	}
+}
+
+func newKubeTestService(t *testing.T, requestTimeout time.Duration) *Service {
+	t.Helper()
+	ctx := context.Background()
+	dsn := "file:" + strings.ReplaceAll(t.Name(), "/", "_") + "?mode=memory&cache=shared"
+	db, err := database.Open(ctx, config.Database{
+		Driver: "sqlite", DSN: dsn,
+		MaxOpenConns: 1, MaxIdleConns: 1, ConnMaxLifetime: time.Minute,
+	}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatalf("打开 Kubernetes 测试数据库失败: %v", err)
+	}
+	t.Cleanup(func() { database.Close(db) })
+	if err := database.Migrate(ctx, db); err != nil {
+		t.Fatalf("迁移 Kubernetes 测试数据库失败: %v", err)
+	}
+	manager, err := secret.New(base64.StdEncoding.EncodeToString([]byte("0123456789abcdef0123456789abcdef")))
+	if err != nil {
+		t.Fatalf("初始化 Kubernetes 测试密钥失败: %v", err)
+	}
+	return NewService(db, manager, config.Runtime{ConnectTimeout: time.Second, RequestTimeout: requestTimeout})
+}
+
+func createKubeTestCluster(t *testing.T, service *Service, server *httptest.Server) string {
+	t.Helper()
+	certificate := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: server.Certificate().Raw})
+	kubeconfig := fmt.Sprintf(`apiVersion: v1
+kind: Config
+clusters:
+- name: test
+  cluster:
+    server: %s
+    certificate-authority-data: %s
+users:
+- name: zrt
+  user:
+    token: test-token
+contexts:
+- name: test
+  context:
+    cluster: test
+    user: zrt
+current-context: test
+`, server.URL, base64.StdEncoding.EncodeToString(certificate))
+	cluster, err := service.Create(context.Background(), "admin", Input{
+		Name: "test-cluster", Mode: model.KubernetesKubeconfig,
+		DefaultNamespace: "default", Kubeconfig: &kubeconfig,
+	})
+	if err != nil {
+		t.Fatalf("创建 Kubernetes 测试集群失败: %v", err)
+	}
+	return cluster.ID
 }

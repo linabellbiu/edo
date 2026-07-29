@@ -8,6 +8,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"zrt/internal/deployment"
 	"zrt/internal/model"
 	"zrt/internal/pipeline"
 )
@@ -101,15 +102,16 @@ type registryRequest struct {
 }
 
 type deploymentPlanRequest struct {
-	Name           string                   `json:"name" binding:"required,max=128"`
-	Kind           model.DeploymentPlanKind `json:"kind" binding:"required,max=16"`
-	Description    string                   `json:"description" binding:"max=500"`
-	Script         string                   `json:"script" binding:"max=262144"`
-	HelmChart      string                   `json:"helm_chart" binding:"max=512"`
-	HelmValues     string                   `json:"helm_values" binding:"max=524288"`
-	ComposeFile    string                   `json:"compose_file" binding:"max=512"`
-	ServiceName    string                   `json:"service_name" binding:"max=255"`
-	TimeoutSeconds int                      `json:"timeout_seconds" binding:"omitempty,min=30,max=3600"`
+	Name             string                   `json:"name" binding:"required,max=128"`
+	Kind             model.DeploymentPlanKind `json:"kind" binding:"required,max=16"`
+	DeploymentTarget *deploymentTargetRequest `json:"deployment_target" binding:"required"`
+	Description      string                   `json:"description" binding:"max=500"`
+	Script           string                   `json:"script" binding:"max=262144"`
+	HelmChart        string                   `json:"helm_chart" binding:"max=512"`
+	HelmValues       string                   `json:"helm_values" binding:"max=524288"`
+	ComposeFile      string                   `json:"compose_file" binding:"max=512"`
+	ServiceName      string                   `json:"service_name" binding:"max=255"`
+	TimeoutSeconds   int                      `json:"timeout_seconds" binding:"omitempty,min=30,max=3600"`
 }
 
 type imageRegistryResponse struct {
@@ -482,12 +484,15 @@ func (h pipelineHandler) listDeploymentPlans(c *gin.Context) {
 func (h pipelineHandler) createDeploymentPlan(c *gin.Context) {
 	var request deploymentPlanRequest
 	if err := c.ShouldBindJSON(&request); err != nil {
+		h.logger.Warn("创建部署方案参数无效", "operation", "deployment_plan_create_bind", "request_id", requestIDFrom(c), "err", err)
 		writeError(c, http.StatusBadRequest, "invalid_deployment_plan", pipeline.ErrInvalidDeploymentPlan.Error())
 		return
 	}
 	actor, _ := currentUser(c)
+	target := toDeploymentTargetInput(*request.DeploymentTarget)
 	plan, err := h.service.CreateDeploymentPlan(c.Request.Context(), actor.ID, pipeline.DeploymentPlanInput{
-		Name: request.Name, Kind: request.Kind, Description: request.Description, Script: request.Script,
+		Name: request.Name, Kind: request.Kind, DeploymentTarget: &target,
+		Description: request.Description, Script: request.Script,
 		HelmChart: request.HelmChart, HelmValues: request.HelmValues, ComposeFile: request.ComposeFile,
 		ServiceName: request.ServiceName, TimeoutSeconds: request.TimeoutSeconds,
 	})
@@ -506,8 +511,10 @@ func (h pipelineHandler) updateDeploymentPlan(c *gin.Context) {
 		writeError(c, http.StatusBadRequest, "invalid_deployment_plan", pipeline.ErrInvalidDeploymentPlan.Error())
 		return
 	}
+	target := toDeploymentTargetInput(*request.DeploymentTarget)
 	plan, err := h.service.UpdateDeploymentPlan(c.Request.Context(), c.Param("id"), pipeline.DeploymentPlanInput{
-		Name: request.Name, Kind: request.Kind, Description: request.Description, Script: request.Script,
+		Name: request.Name, Kind: request.Kind, DeploymentTarget: &target,
+		Description: request.Description, Script: request.Script,
 		HelmChart: request.HelmChart, HelmValues: request.HelmValues, ComposeFile: request.ComposeFile,
 		ServiceName: request.ServiceName, TimeoutSeconds: request.TimeoutSeconds,
 	})
@@ -532,14 +539,21 @@ func (h pipelineHandler) listRuns(c *gin.Context) {
 func (h pipelineHandler) writeError(c *gin.Context, operation string, err error) {
 	h.logger.Warn("持续交付操作失败", "operation", operation, "request_id", requestIDFrom(c), "resource_id", c.Param("id"), "err", err)
 	switch {
-	case errors.Is(err, pipeline.ErrReleasePlanNotFound), errors.Is(err, pipeline.ErrReleaseGroupNotFound):
+	case errors.Is(err, pipeline.ErrReleasePlanNotFound), errors.Is(err, pipeline.ErrReleaseGroupNotFound), errors.Is(err, pipeline.ErrReleasePlanExecutionNotFound):
 		writeError(c, http.StatusNotFound, "release_plan_not_found", err.Error())
-	case errors.Is(err, pipeline.ErrReleasePlanNotEditable):
+	case errors.Is(err, pipeline.ErrReleasePlanNotEditable), errors.Is(err, pipeline.ErrReleasePlanDisabled),
+		errors.Is(err, pipeline.ErrReleaseApplicationAssigned),
+		errors.Is(err, pipeline.ErrReleasePlanExecutionExists),
+		errors.Is(err, pipeline.ErrReleasePlanExecutionPlanChanged), errors.Is(err, pipeline.ErrReleasePlanExecutionWorkflowChanged),
+		errors.Is(err, pipeline.ErrReleasePlanExecutionVersionChanged):
 		writeError(c, http.StatusConflict, "release_plan_not_editable", err.Error())
 	case errors.Is(err, pipeline.ErrReleasePlanExists), errors.Is(err, pipeline.ErrReleaseGroupExists):
 		writeError(c, http.StatusConflict, "release_plan_exists", err.Error())
-	case errors.Is(err, pipeline.ErrInvalidReleasePlan), errors.Is(err, pipeline.ErrInvalidReleaseGroup), errors.Is(err, pipeline.ErrReleaseGroupDependency):
+	case errors.Is(err, pipeline.ErrInvalidReleasePlan), errors.Is(err, pipeline.ErrInvalidReleaseGroup), errors.Is(err, pipeline.ErrReleaseGroupDependency),
+		errors.Is(err, pipeline.ErrInvalidReleasePlanExecution):
 		writeError(c, http.StatusBadRequest, "invalid_release_plan", err.Error())
+	case errors.Is(err, pipeline.ErrReleasePlanExecutionTemporarilyFailed):
+		writeError(c, http.StatusServiceUnavailable, "release_plan_execution_unavailable", err.Error())
 	case errors.Is(err, pipeline.ErrRegistryLoginFailed):
 		writeError(c, http.StatusUnprocessableEntity, "image_registry_login_failed", pipeline.ErrRegistryLoginFailed.Error())
 	case errors.Is(err, pipeline.ErrRegistryConnectionFailed):
@@ -549,9 +563,15 @@ func (h pipelineHandler) writeError(c *gin.Context, operation string, err error)
 		errors.Is(err, pipeline.ErrInvalidRegistryProvider), errors.Is(err, pipeline.ErrInvalidRegistryEndpoint),
 		errors.Is(err, pipeline.ErrInsecureRegistryEndpoint), errors.Is(err, pipeline.ErrInvalidRegistryNamespace),
 		errors.Is(err, pipeline.ErrInvalidRegistryUsername), errors.Is(err, pipeline.ErrInvalidRegistrySecret),
-		errors.Is(err, pipeline.ErrInvalidDeploymentPlan),
+		errors.Is(err, pipeline.ErrInvalidDeploymentPlan), errors.Is(err, pipeline.ErrDeploymentPlanTargetMismatch),
 		errors.Is(err, pipeline.ErrInvalidWorkflow):
 		writeError(c, http.StatusBadRequest, "invalid_delivery_config", err.Error())
+	case errors.Is(err, deployment.ErrInvalidTarget):
+		writeError(c, http.StatusBadRequest, "invalid_deployment_target", deployment.ErrInvalidTarget.Error())
+	case errors.Is(err, deployment.ErrTargetExists):
+		writeError(c, http.StatusConflict, "deployment_target_exists", deployment.ErrTargetExists.Error())
+	case errors.Is(err, deployment.ErrTargetNotFound):
+		writeError(c, http.StatusNotFound, "deployment_target_not_found", deployment.ErrTargetNotFound.Error())
 	case errors.Is(err, pipeline.ErrApplicationExists), errors.Is(err, pipeline.ErrBuildPlanExists),
 		errors.Is(err, pipeline.ErrRegistryExists), errors.Is(err, pipeline.ErrDeploymentPlanExists),
 		errors.Is(err, pipeline.ErrWorkflowTemplateExists):
@@ -566,10 +586,14 @@ func (h pipelineHandler) writeError(c *gin.Context, operation string, err error)
 		writeError(c, http.StatusNotFound, "pipeline_run_not_found", err.Error())
 	case errors.Is(err, pipeline.ErrPipelineRunNotRetryable):
 		writeError(c, http.StatusConflict, "pipeline_run_not_retryable", err.Error())
+	case errors.Is(err, pipeline.ErrPipelineRunManagedByReleasePlan), errors.Is(err, pipeline.ErrPipelineRunAwaitingReleasePlan):
+		writeError(c, http.StatusConflict, "pipeline_run_managed_by_release_plan", err.Error())
 	case errors.Is(err, pipeline.ErrManualCommitRequired):
 		writeError(c, http.StatusBadRequest, "manual_commit_required", err.Error())
 	case errors.Is(err, pipeline.ErrManualCommitNotFound):
 		writeError(c, http.StatusConflict, "manual_commit_changed", err.Error())
+	case errors.Is(err, pipeline.ErrManualReleaseDisabled):
+		writeError(c, http.StatusConflict, "manual_release_disabled", err.Error())
 	case errors.Is(err, pipeline.ErrPipelineIncomplete):
 		writeError(c, http.StatusUnprocessableEntity, "pipeline_incomplete", err.Error())
 	case errors.Is(err, pipeline.ErrWorkflowRevisionConflict), errors.Is(err, pipeline.ErrWorkflowTemplateRevisionConflict):

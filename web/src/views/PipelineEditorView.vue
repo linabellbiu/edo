@@ -26,7 +26,13 @@ interface ApplicationEnvironment {
   deployment_target_id?: string
   sort_order: number
 }
-interface ApplicationRecord { id: string; name: string; environments: ApplicationEnvironment[] }
+type DeploymentPlanKind = 'script' | 'helm' | 'compose' | 'docker'
+interface ApplicationRecord {
+  id: string
+  name: string
+  environments: ApplicationEnvironment[]
+  deployment_plan?: DeploymentPlan
+}
 interface WorkflowNode {
   id: string
   type: NodeType
@@ -57,15 +63,31 @@ interface Workflow {
 interface WorkflowIssue { code: string; message: string; node_id?: string; edge_id?: string }
 interface WorkflowResponse { workflow: Workflow; valid: boolean; issues: WorkflowIssue[] }
 interface WorkflowTemplateResponse { workflow_template: Workflow; valid: boolean; issues: WorkflowIssue[] }
-interface DeploymentEnvironment { id: string; name: string; platform: 'docker' | 'kubernetes'; is_active: boolean }
+interface DeploymentPlan {
+  id: string
+  name: string
+  kind: DeploymentPlanKind
+  is_active: boolean
+  deployment_target?: { platform: 'ssh' | 'docker' | 'kubernetes'; workload_name?: string; namespace?: string }
+}
 interface Viewport { x: number; y: number; zoom: number }
 
 const nodeMeta: Record<NodeType, { label: string; hint: string; color: string; icon: typeof GitBranch }> = {
-  trigger: { label: '代码触发', hint: '监听 Push、PR 或 Tag', color: '#4f6ef7', icon: GitBranch },
-  manual_release: { label: '手动发布', hint: '选择代码版本后启动', color: '#6d5ce7', icon: Play },
+  trigger: { label: '代码触发', hint: '代码事件或手动发布', color: '#4f6ef7', icon: GitBranch },
+  manual_release: { label: '手动发布', hint: '选择分支并复用后续发布路径', color: '#6d5ce7', icon: Play },
   manual: { label: '人工放行', hint: '确认后进入下一阶段', color: '#9b62d0', icon: CheckCircle2 },
   approval: { label: '发布审核', hint: '由其他成员审核确认', color: '#e69b38', icon: ShieldCheck },
   deploy: { label: '部署', hint: '发布到指定运行环境', color: '#27a875', icon: Rocket },
+}
+
+const nodeGroups: Array<{ label: string; hint: string; types: NodeType[] }> = [
+  { label: '启动方式', hint: '代码事件或手动发布', types: ['trigger'] },
+  { label: '流程阶段', hint: '人工放行与审核', types: ['manual', 'approval'] },
+  { label: '执行节点', hint: '使用流水线指定目标', types: ['deploy'] },
+]
+
+const deploymentKindNames: Record<DeploymentPlanKind, string> = {
+  script: '主机脚本', docker: 'Docker 容器', compose: 'Docker Compose', helm: 'Kubernetes / Helm',
 }
 
 const publicEnvironments: ApplicationEnvironment[] = [
@@ -81,7 +103,7 @@ const auth = useAuthStore()
 const canvasRef = ref<HTMLDivElement>()
 const applications = ref<ApplicationRecord[]>([])
 const templates = ref<Workflow[]>([])
-const deploymentEnvironments = ref<DeploymentEnvironment[]>([])
+const deploymentPlans = ref<DeploymentPlan[]>([])
 const applicationID = ref(String(route.query.application || ''))
 const templateID = ref(String(route.query.template || ''))
 const workflow = ref<Workflow | null>(null)
@@ -107,7 +129,6 @@ let connectionState: { pointerID: number; source: string; startX: number; startY
 let createStarted = false
 
 const canManage = computed(() => Boolean(auth.user?.is_superuser || auth.permissions.has('delivery.manage')))
-const canReadDeployment = computed(() => auth.canAny(['deployment.read']))
 const publicMode = computed(() => !applicationID.value)
 const editorApplication = computed<ApplicationRecord | null>(() => {
   if (publicMode.value) return { id: 'public-template', name: '流水线方案', environments: publicEnvironments }
@@ -155,7 +176,7 @@ function createGraph(environments: ApplicationEnvironment[], compact = false) {
     const deployID = `deploy-${environment.key}`
     graphNodes.push(
       { id: triggerID, type: 'trigger', name: `${environment.name}代码`, position: { x, y: 80 }, config: { environment: environment.key, branch: environment.branch, events: triggerEvents(environment), tag_pattern: environment.tag_pattern } },
-      { id: deployID, type: 'deploy', name: `部署到${environment.name}`, position: { x, y: 350 }, config: { environment: environment.key, deployment_target_id: environment.deployment_target_id } },
+      { id: deployID, type: 'deploy', name: `部署到${environment.name}`, position: { x, y: 350 }, config: { environment: environment.key, deployment_plan_id: environment.deployment_plan_id } },
     )
     graphEdges.push({ id: uid('edge'), source: triggerID, target: deployID })
     deployIDs.push(deployID)
@@ -196,14 +217,14 @@ function summarizeIssues(items: WorkflowIssue[]) {
 async function loadResources() {
   loading.value = true
   try {
-    const [applicationResult, templateResult, environmentResult] = await Promise.all([
+    const [applicationResult, templateResult, deploymentPlanResult] = await Promise.all([
       client.get<{ applications: ApplicationRecord[] }>('/applications'),
       client.get<{ workflow_templates: Workflow[] }>('/workflow-templates'),
-      canReadDeployment.value ? client.get<{ environments: DeploymentEnvironment[] }>('/environments') : Promise.resolve(null),
+      client.get<{ deployment_plans: DeploymentPlan[] }>('/deployment-plans'),
     ])
     applications.value = applicationResult.data.applications || []
     templates.value = templateResult.data.workflow_templates || []
-    deploymentEnvironments.value = environmentResult?.data.environments || []
+    deploymentPlans.value = deploymentPlanResult.data.deployment_plans || []
     if (route.query.create === '1' && canManage.value) await createTemplate()
     else if (applicationID.value) await loadApplication(applicationID.value)
     else if (templateID.value) await loadTemplate(templateID.value)
@@ -321,6 +342,18 @@ function toggleEvent(eventName: string, checked: boolean) {
   const events = selectedNode.value?.config.events || []
   updateNode({}, { events: checked ? [...new Set([...events, eventName])] : events.filter((item) => item !== eventName) })
 }
+function triggerEventSummary(events?: string[]) {
+  const labels: Record<string, string> = { pull: '远程检查', push: '分支变更', pr: 'PR / MR', tag: 'Tag', manual: '手动发布' }
+  return events?.map((event) => labels[event] || event).join(' / ') || '未选择启动方式'
+}
+function triggerUsesBranch(events?: string[]) {
+  return Boolean(events?.some(event => ['pull', 'push', 'pr'].includes(event)))
+}
+function triggerVersionSummary(node: WorkflowNode) {
+  if (triggerUsesBranch(node.config.events)) return node.config.branch || '未配置分支'
+  if (node.config.events?.includes('manual')) return '运行时选择分支或 Tag'
+  return '仅监听 Tag'
+}
 function addNode(type: NodeType) {
   if (!editorApplication.value || !canvasRef.value) return
   const rect = canvasRef.value.getBoundingClientRect()
@@ -328,7 +361,12 @@ function addNode(type: NodeType) {
   const node: WorkflowNode = {
     id: uid(type), type, name: nodeMeta[type].label,
     position: { x: (rect.width / 2 - viewport.x) / viewport.zoom - 110, y: (rect.height / 2 - viewport.y) / viewport.zoom - 64 },
-    config: { environment: environment?.key, branch: type === 'trigger' ? environment?.branch : undefined, events: type === 'trigger' ? ['push'] : undefined },
+    config: {
+      environment: environment?.key,
+      branch: type === 'trigger' ? environment?.branch : undefined,
+      events: type === 'trigger' ? ['push'] : undefined,
+      deployment_plan_id: type === 'deploy' ? environment?.deployment_plan_id || editorApplication.value.deployment_plan?.id : undefined,
+    },
   }
   nodes.value.push(node)
   selectNode(node.id)
@@ -354,6 +392,21 @@ function applyTemplate(compact: boolean) {
 function connectNodes(source: string, target: string) {
   connectingFrom.value = ''
   if (!source || source === target || edges.value.some((item) => item.source === source && item.target === target)) return
+  const sourceNode = nodes.value.find((item) => item.id === source)
+  const targetNode = nodes.value.find((item) => item.id === target)
+  if (!sourceNode || !targetNode) return
+  if (targetNode.type === 'trigger') {
+    message.warning('代码触发节点是流程入口，不能连接上游节点。')
+    return
+  }
+  if (targetNode.type === 'manual_release') {
+    message.warning('手动发布是流程入口，不能连接上游节点。')
+    return
+  }
+  if (edges.value.some((item) => item.source === source)) {
+    message.warning('每个节点只能连接一个下游节点；请先删除现有连线。')
+    return
+  }
   edges.value.push({ id: uid('edge'), source, target })
   selectNode(target)
   markDirty()
@@ -524,10 +577,14 @@ onBeforeUnmount(() => {
     <div v-else class="pipeline-studio" :class="{ immersive }">
       <aside class="pipeline-palette vben-card" :class="{ hidden: immersive && !paletteOpen }">
         <header><strong>节点库</strong><small>点击添加到画布</small></header>
-        <button v-for="(meta, type) in nodeMeta" :key="type" type="button" :disabled="!canManage" @click="addNode(type)">
-          <i :style="{ background: meta.color }"><component :is="meta.icon" :size="16" /></i>
-          <span><strong>{{ meta.label }}</strong><small>{{ meta.hint }}</small></span>
-        </button>
+        <template v-for="(group, groupIndex) in nodeGroups" :key="group.label">
+          <div v-if="groupIndex" class="palette-line" />
+          <header class="palette-group"><strong>{{ group.label }}</strong><small>{{ group.hint }}</small></header>
+          <button v-for="type in group.types" :key="type" type="button" :disabled="!canManage" @click="addNode(type)">
+            <i :style="{ background: nodeMeta[type].color }"><component :is="nodeMeta[type].icon" :size="16" /></i>
+            <span><strong>{{ nodeMeta[type].label }}</strong><small>{{ nodeMeta[type].hint }}</small></span>
+          </button>
+        </template>
         <div class="palette-line" />
         <header><strong>常用模板</strong><small>替换当前画布</small></header>
         <button type="button" :disabled="!canManage" @click="applyTemplate(false)"><i class="template-icon"><GitBranch :size="16" /></i><span><strong>标准四环境</strong><small>dev → test → pre → prod</small></span></button>
@@ -575,11 +632,11 @@ onBeforeUnmount(() => {
               @pointercancel="endNodeDrag"
               @click.stop="selectNode(node.id)"
             >
-              <button v-if="node.type !== 'trigger' && node.type !== 'manual_release'" class="pipeline-port pipeline-input" :class="{ active: preview?.target === node.id }" :data-node-id="node.id" type="button" :disabled="!canManage" aria-label="连接到此节点" @click.stop="connectNodes(connectingFrom, node.id)" />
+              <button v-if="!['trigger', 'manual_release'].includes(node.type)" class="pipeline-port pipeline-input" :class="{ active: preview?.target === node.id }" :data-node-id="node.id" type="button" :disabled="!canManage" aria-label="连接到此节点" @click.stop="connectNodes(connectingFrom, node.id)" />
               <header><i><component :is="nodeMeta[node.type].icon" :size="15" /></i><span>{{ nodeMeta[node.type].label }}</span><b>{{ node.config.environment || '通用' }}</b></header>
               <h3>{{ node.name }}</h3>
-              <p v-if="node.type === 'trigger'">{{ node.config.branch || '未配置分支' }} · {{ node.config.events?.join(' / ') || '未选择事件' }}</p>
-              <p v-else-if="node.type === 'deploy'">{{ deploymentEnvironments.find(item => item.id === node.config.deployment_target_id)?.name || '未选择发布环境' }}</p>
+              <p v-if="node.type === 'trigger'">{{ triggerVersionSummary(node) }} · {{ triggerEventSummary(node.config.events) }}</p>
+              <p v-else-if="node.type === 'deploy'">{{ deploymentPlans.find(item => item.id === node.config.deployment_plan_id)?.name || '未选择部署方案' }}</p>
               <p v-else>{{ node.config.description || nodeMeta[node.type].hint }}</p>
               <button v-if="node.type !== 'deploy'" class="pipeline-port pipeline-output" :class="{ active: connectingFrom === node.id || preview?.source === node.id }" type="button" :disabled="!canManage" aria-label="从此节点开始连接" @pointerdown="startConnection($event, node.id)" />
             </article>
@@ -598,21 +655,22 @@ onBeforeUnmount(() => {
             <a-form-item label="节点名称"><a-input :value="selectedNode.name" :disabled="!canManage" @update:value="updateNode({ name: String($event) })" /></a-form-item>
             <a-form-item label="流程阶段"><a-select :value="selectedNode.config.environment" allow-clear :disabled="!canManage" :options="editorApplication?.environments.map(item => ({ value: item.key, label: item.name }))" @update:value="updateNode({}, { environment: String($event || '') })" /></a-form-item>
             <template v-if="selectedNode.type === 'trigger'">
-              <a-form-item label="监听分支"><a-input :value="selectedNode.config.branch" :disabled="!canManage" placeholder="main 或 release/*" @update:value="updateNode({}, { branch: String($event) })" /></a-form-item>
-              <a-form-item label="触发事件"><a-checkbox :checked="selectedNode.config.events?.includes('push')" :disabled="!canManage" @change="toggleEvent('push', $event.target.checked)">分支变更</a-checkbox><a-checkbox :checked="selectedNode.config.events?.includes('pr')" :disabled="!canManage" @change="toggleEvent('pr', $event.target.checked)">PR / MR</a-checkbox><a-checkbox :checked="selectedNode.config.events?.includes('tag')" :disabled="!canManage" @change="toggleEvent('tag', $event.target.checked)">Tag</a-checkbox></a-form-item>
+              <a-form-item label="启动方式"><a-checkbox :checked="selectedNode.config.events?.includes('push')" :disabled="!canManage" @change="toggleEvent('push', $event.target.checked)">分支变更</a-checkbox><a-checkbox :checked="selectedNode.config.events?.includes('pr')" :disabled="!canManage" @change="toggleEvent('pr', $event.target.checked)">PR / MR</a-checkbox><a-checkbox :checked="selectedNode.config.events?.includes('tag')" :disabled="!canManage" @change="toggleEvent('tag', $event.target.checked)">Tag</a-checkbox><a-checkbox :checked="selectedNode.config.events?.includes('manual')" :disabled="!canManage" @change="toggleEvent('manual', $event.target.checked)">手动发布</a-checkbox></a-form-item>
+              <a-form-item v-if="triggerUsesBranch(selectedNode.config.events)" label="监听分支"><a-input :value="selectedNode.config.branch" :disabled="!canManage" placeholder="main 或 release/*" @update:value="updateNode({}, { branch: String($event) })" /></a-form-item>
               <a-form-item v-if="selectedNode.config.events?.includes('tag')" label="Tag 规则"><a-input :value="selectedNode.config.tag_pattern" :disabled="!canManage" placeholder="v*" @update:value="updateNode({}, { tag_pattern: String($event) })" /></a-form-item>
-              <p class="inspector-note">ZRT 主动检查远程引用，Webhook 只是可选的低延迟通道。</p>
+              <p class="inspector-note">ZRT 主动检查远程引用，Webhook 只是可选的低延迟通道；启用手动发布后，还可从流水线运行或发布计划选择代码版本启动这条路径。</p>
             </template>
+            <a-alert v-if="selectedNode.type === 'manual_release'" type="warning" show-icon message="这是旧版手动发布节点。请在代码触发节点中启用“手动发布”，再移除此节点。" />
             <template v-if="selectedNode.type === 'deploy'">
-              <a-form-item label="发布环境" required><a-select :value="selectedNode.config.deployment_target_id" :disabled="!canManage || !canReadDeployment" :options="deploymentEnvironments.filter(item => item.is_active).map(item => ({ value: item.id, label: `${item.name} · ${item.platform === 'kubernetes' ? 'Kubernetes' : 'Docker'}` }))" placeholder="请选择发布环境" @update:value="updateNode({}, { deployment_target_id: String($event) })" /></a-form-item>
-              <p class="inspector-note">部署方案由应用维护；这里决定最终发布到哪个运行环境。</p>
+              <a-form-item label="部署方案" required><a-select :value="selectedNode.config.deployment_plan_id" :disabled="!canManage" :options="deploymentPlans.filter(item => item.is_active && item.deployment_target).map(item => ({ value: item.id, label: `${item.name} · ${deploymentKindNames[item.kind]}` }))" placeholder="选择部署方案" @update:value="updateNode({}, { deployment_plan_id: String($event), deployment_target_id: undefined })" /></a-form-item>
+              <p class="inspector-note">方案中已经包含执行方式、运行环境和更新对象。</p>
             </template>
             <a-form-item v-if="['manual_release', 'manual', 'approval'].includes(selectedNode.type)" label="说明"><a-textarea :value="selectedNode.config.description" :rows="4" :disabled="!canManage" @update:value="updateNode({}, { description: String($event) })" /></a-form-item>
           </a-form>
           <div class="inspector-connections"><strong>关联连线</strong><div v-for="edge in edges.filter(item => item.source === selectedNode?.id || item.target === selectedNode?.id)" :key="edge.id"><span>{{ edge.source === selectedNode.id ? '到' : '从' }} {{ nodes.find(item => item.id === (edge.source === selectedNode?.id ? edge.target : edge.source))?.name }}</span><button type="button" @click="removeEdge(edge.id)">×</button></div></div>
           <a-alert v-for="(issue, index) in issues.filter(item => item.node_id === selectedNode?.id)" :key="`${issue.code}-${index}`" type="warning" :message="issue.message" show-icon />
         </template>
-        <div v-else class="inspector-empty"><CircleDot :size="28" /><strong>选择一个节点</strong><p>在这里配置环境、分支、触发事件和部署目标。</p><a-alert v-if="issues.length" type="warning" :message="summarizeIssues(issues)" /></div>
+        <div v-else class="inspector-empty"><CircleDot :size="28" /><strong>选择一个节点</strong><p>在这里配置环境、分支、触发事件和部署方案。</p><a-alert v-if="issues.length" type="warning" :message="summarizeIssues(issues)" /></div>
       </aside>
     </div>
   </section>

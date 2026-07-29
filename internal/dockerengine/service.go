@@ -14,6 +14,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -23,6 +24,7 @@ import (
 	"gorm.io/gorm/clause"
 
 	"zrt/internal/config"
+	"zrt/internal/hostcredential"
 	"zrt/internal/model"
 	"zrt/internal/secret"
 )
@@ -36,6 +38,7 @@ var (
 	ErrSSHRequired      = errors.New("SSH Docker 连接必须提供密码或私钥，并先完成连接测试")
 	ErrInvalidSSH       = errors.New("SSH Docker 连接配置无效")
 	ErrSSHUnreachable   = errors.New("无法通过 SSH 连接 Docker，请检查地址、端口、用户名和凭据")
+	ErrSSHDockerDenied  = errors.New("SSH 登录成功，但无法执行 Docker，请检查 sudo 配置和 Docker 权限")
 )
 
 var endpointNamePattern = regexp.MustCompile(`^[\p{L}\p{N}][\p{L}\p{N}_. -]{0,127}$`)
@@ -53,9 +56,11 @@ type TLSBundle struct {
 }
 
 type SSHBundle struct {
-	PrivateKey string `json:"private_key"`
-	Passphrase string `json:"passphrase,omitempty"`
-	Password   string `json:"password,omitempty"`
+	PrivateKey   string `json:"private_key"`
+	Passphrase   string `json:"passphrase,omitempty"`
+	Password     string `json:"password,omitempty"`
+	UseSudo      bool   `json:"use_sudo,omitempty"`
+	SudoPassword string `json:"sudo_password,omitempty"`
 }
 
 type Input struct {
@@ -81,10 +86,37 @@ type Service struct {
 	db      *gorm.DB
 	secrets *secret.Manager
 	config  config.Runtime
+
+	monitorMu      sync.Mutex
+	monitorClients map[string]monitorClientEntry
+}
+
+// WithTransaction 让 Docker 连接校验与上层聚合资源共享同一个数据库事务。
+// 返回浅拷贝，避免修改并发请求正在使用的 Service。
+func (s *Service) WithTransaction(tx *gorm.DB) *Service {
+	if s == nil || tx == nil {
+		return s
+	}
+	clone := *s
+	clone.db = tx
+	return &clone
+}
+
+type monitorClientEntry struct {
+	client   *client.Client
+	revision monitorClientRevision
+}
+
+type monitorClientRevision struct {
+	endpointUpdatedAt time.Time
+	hostUpdatedAt     time.Time
 }
 
 func NewService(db *gorm.DB, secrets *secret.Manager, cfg config.Runtime) *Service {
-	return &Service{db: db, secrets: secrets, config: cfg}
+	return &Service{
+		db: db, secrets: secrets, config: cfg,
+		monitorClients: make(map[string]monitorClientEntry),
+	}
 }
 
 func (s *Service) List(ctx context.Context) ([]model.DockerEndpoint, error) {
@@ -164,6 +196,7 @@ func (s *Service) Update(ctx context.Context, id string, input Input) (*model.Do
 	existing.Name, existing.Host, existing.TLSCiphertext = name, host, encryptedTLS
 	existing.SSHCredentialCiphertext, existing.SSHHostKeyFingerprint = encryptedSSH, sshFingerprint
 	existing.UpdatedAt = now
+	s.invalidateMonitorClient(id)
 	return existing, nil
 }
 
@@ -191,6 +224,7 @@ func (s *Service) Rename(ctx context.Context, id, value string) (*model.DockerEn
 		if err != nil {
 			return nil, err
 		}
+		s.invalidateMonitorClient(id)
 		return &updated, nil
 	}
 
@@ -205,6 +239,7 @@ func (s *Service) Rename(ctx context.Context, id, value string) (*model.DockerEn
 	if result.RowsAffected != 1 {
 		return nil, ErrEndpointNotFound
 	}
+	s.invalidateMonitorClient(id)
 	return s.Find(ctx, id)
 }
 
@@ -220,6 +255,7 @@ func (s *Service) SetActive(ctx context.Context, id string, active bool) error {
 	if result.RowsAffected != 1 {
 		return ErrEndpointNotFound
 	}
+	s.invalidateMonitorClient(id)
 	return nil
 }
 
@@ -233,6 +269,24 @@ func (s *Service) Ping(ctx context.Context, id string) (client.PingResult, error
 	defer cancel()
 	result, err := apiClient.Ping(requestContext, client.PingOptions{NegotiateAPIVersion: true})
 	if err != nil {
+		return client.PingResult{}, fmt.Errorf("Docker API 健康检查失败: %w", err)
+	}
+	return result, nil
+}
+
+// PingForMonitor 为高频健康检查复用同一 Docker API 客户端，
+// 连接配置变化或检查失败时会丢弃已缓存的客户端。
+func (s *Service) PingForMonitor(ctx context.Context, id string) (client.PingResult, error) {
+	id = strings.TrimSpace(id)
+	apiClient, err := s.clientForMonitor(ctx, id)
+	if err != nil {
+		return client.PingResult{}, err
+	}
+	requestContext, cancel := context.WithTimeout(ctx, s.config.RequestTimeout)
+	defer cancel()
+	result, err := apiClient.Ping(requestContext, client.PingOptions{NegotiateAPIVersion: true})
+	if err != nil {
+		s.invalidateMonitorClientIf(id, apiClient)
 		return client.PingResult{}, fmt.Errorf("Docker API 健康检查失败: %w", err)
 	}
 	return result, nil
@@ -268,6 +322,13 @@ func (s *Service) Client(ctx context.Context, id string) (*client.Client, error)
 	if !endpoint.IsActive {
 		return nil, ErrEndpointNotFound
 	}
+	return s.clientForEndpoint(ctx, endpoint)
+}
+
+func (s *Service) clientForEndpoint(ctx context.Context, endpoint *model.DockerEndpoint) (*client.Client, error) {
+	if endpoint == nil || !endpoint.IsActive {
+		return nil, ErrEndpointNotFound
+	}
 	if IsLocalEndpointID(endpoint.ID) {
 		return s.BuilderClient()
 	}
@@ -282,15 +343,11 @@ func (s *Service) Client(ctx context.Context, id string) (*client.Client, error)
 		return nil, ErrInvalidEndpoint
 	}
 	if parsedHost.Scheme == "ssh" {
-		value, err := s.secrets.Decrypt(endpoint.SSHCredentialCiphertext, sshAAD(endpoint.ID))
+		host, bundle, fingerprint, err := s.sshConfiguration(ctx, endpoint)
 		if err != nil {
-			return nil, fmt.Errorf("解密 Docker SSH 凭据失败: %w", err)
+			return nil, err
 		}
-		var bundle SSHBundle
-		if err := json.Unmarshal([]byte(value), &bundle); err != nil {
-			return nil, fmt.Errorf("解析 Docker SSH 凭据失败: %w", err)
-		}
-		sshDialer, err = newSSHDockerDialer(endpoint.Host, bundle, endpoint.SSHHostKeyFingerprint, s.config.ConnectTimeout)
+		sshDialer, err = newSSHDockerDialer(host, bundle, fingerprint, s.config.ConnectTimeout)
 		if err != nil {
 			return nil, err
 		}
@@ -326,6 +383,85 @@ func (s *Service) Client(ctx context.Context, id string) (*client.Client, error)
 	return apiClient, nil
 }
 
+func (s *Service) clientForMonitor(ctx context.Context, id string) (*client.Client, error) {
+	s.monitorMu.Lock()
+	defer s.monitorMu.Unlock()
+	if s.monitorClients == nil {
+		s.monitorClients = make(map[string]monitorClientEntry)
+	}
+	endpoint, err := s.Find(ctx, id)
+	if err != nil {
+		s.invalidateMonitorClientLocked(id)
+		return nil, err
+	}
+	if !endpoint.IsActive {
+		s.invalidateMonitorClientLocked(id)
+		return nil, ErrEndpointNotFound
+	}
+	revision, err := s.monitorRevision(ctx, endpoint)
+	if err != nil {
+		s.invalidateMonitorClientLocked(id)
+		return nil, err
+	}
+	if cached, exists := s.monitorClients[id]; exists {
+		if cached.revision == revision {
+			return cached.client, nil
+		}
+		s.invalidateMonitorClientLocked(id)
+	}
+	apiClient, err := s.clientForEndpoint(ctx, endpoint)
+	if err != nil {
+		return nil, err
+	}
+	s.monitorClients[id] = monitorClientEntry{client: apiClient, revision: revision}
+	return apiClient, nil
+}
+
+func (s *Service) monitorRevision(ctx context.Context, endpoint *model.DockerEndpoint) (monitorClientRevision, error) {
+	revision := monitorClientRevision{endpointUpdatedAt: endpoint.UpdatedAt}
+	if endpoint.HostID == "" {
+		return revision, nil
+	}
+	var assigned model.Host
+	if err := s.db.WithContext(ctx).Select("id", "is_active", "updated_at").
+		First(&assigned, "id = ?", endpoint.HostID).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return monitorClientRevision{}, ErrEndpointNotFound
+		}
+		return monitorClientRevision{}, fmt.Errorf("查询 Docker 所属主机状态失败: %w", err)
+	}
+	if !assigned.IsActive {
+		return monitorClientRevision{}, ErrEndpointNotFound
+	}
+	revision.hostUpdatedAt = assigned.UpdatedAt
+	return revision, nil
+}
+
+func (s *Service) invalidateMonitorClient(id string) {
+	s.monitorMu.Lock()
+	defer s.monitorMu.Unlock()
+	s.invalidateMonitorClientLocked(strings.TrimSpace(id))
+}
+
+func (s *Service) invalidateMonitorClientIf(id string, apiClient *client.Client) {
+	s.monitorMu.Lock()
+	defer s.monitorMu.Unlock()
+	cached, exists := s.monitorClients[id]
+	if !exists || cached.client != apiClient {
+		return
+	}
+	s.invalidateMonitorClientLocked(id)
+}
+
+func (s *Service) invalidateMonitorClientLocked(id string) {
+	cached, exists := s.monitorClients[id]
+	if !exists {
+		return
+	}
+	_ = cached.client.Close()
+	delete(s.monitorClients, id)
+}
+
 func IsLocalEndpointID(id string) bool {
 	return strings.TrimSpace(id) == LocalEndpointID
 }
@@ -333,7 +469,16 @@ func IsLocalEndpointID(id string) bool {
 func (s *Service) localEndpoint(ctx context.Context) (model.DockerEndpoint, error) {
 	endpoint := model.DockerEndpoint{
 		ID: LocalEndpointID, Name: defaultLocalEndpointName, Host: localEndpointHost,
-		IsActive: true, CreatedBy: "system",
+		CreatedBy: "system",
+	}
+	var capability model.HostCapability
+	if err := s.db.WithContext(ctx).
+		First(&capability, "host_id = ? AND kind = ?", model.BuiltinLocalHostID, model.HostCapabilityDocker).Error; err != nil {
+		if !errors.Is(err, gorm.ErrRecordNotFound) {
+			return model.DockerEndpoint{}, fmt.Errorf("读取本地 Docker 主机能力失败: %w", err)
+		}
+	} else {
+		endpoint.IsActive = capability.Status == model.HostCapabilityReady
 	}
 	var saved model.DockerEndpoint
 	if err := s.db.WithContext(ctx).First(&saved, "id = ?", LocalEndpointID).Error; err != nil {
@@ -441,10 +586,14 @@ func (s *Service) normalize(id string, existing *model.DockerEndpoint, input Inp
 		}
 	}
 	if input.SSH != nil {
-		if _, err := sshAuthMethods(*input.SSH); err != nil {
+		bundle := *input.SSH
+		if !bundle.UseSudo {
+			bundle.SudoPassword = ""
+		}
+		if _, err := sshAuthMethods(bundle); err != nil {
 			return "", "", "", "", "", err
 		}
-		payload, err := json.Marshal(input.SSH)
+		payload, err := json.Marshal(&bundle)
 		if err != nil {
 			return "", "", "", "", "", fmt.Errorf("序列化 Docker SSH 配置失败: %w", err)
 		}
@@ -492,3 +641,53 @@ func makeTLSConfig(host string, bundle TLSBundle) (*tls.Config, error) {
 func tlsAAD(id string) []byte { return []byte("docker_endpoint:" + id + ":tls") }
 
 func sshAAD(id string) []byte { return []byte("docker_endpoint:" + id + ":ssh") }
+
+func (s *Service) sshConfiguration(
+	ctx context.Context,
+	endpoint *model.DockerEndpoint,
+) (string, SSHBundle, string, error) {
+	if endpoint == nil {
+		return "", SSHBundle{}, "", ErrEndpointNotFound
+	}
+	hostURL := endpoint.Host
+	fingerprint := endpoint.SSHHostKeyFingerprint
+	ciphertext := endpoint.SSHCredentialCiphertext
+	aad := sshAAD(endpoint.ID)
+	if endpoint.HostID != "" {
+		var assigned model.Host
+		if err := s.db.WithContext(ctx).First(&assigned, "id = ? AND is_active = ?", endpoint.HostID, true).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return "", SSHBundle{}, "", ErrEndpointNotFound
+			}
+			return "", SSHBundle{}, "", fmt.Errorf("查询 Docker 所属主机失败: %w", err)
+		}
+		if assigned.Mode != model.HostModeSSH {
+			return "", SSHBundle{}, "", ErrInvalidSSH
+		}
+		if assigned.Address != "" && assigned.SSHPort > 0 && assigned.SSHUsername != "" {
+			hostURL = (&url.URL{
+				Scheme: "ssh", User: url.User(assigned.SSHUsername),
+				Host: net.JoinHostPort(assigned.Address, strconv.Itoa(assigned.SSHPort)),
+			}).String()
+		}
+		if assigned.SSHHostKeyFingerprint != "" {
+			fingerprint = assigned.SSHHostKeyFingerprint
+		}
+		if assigned.SSHCredentialCiphertext != "" {
+			ciphertext = assigned.SSHCredentialCiphertext
+			aad = hostcredential.AAD(assigned.ID)
+		}
+	}
+	if ciphertext == "" {
+		return "", SSHBundle{}, "", ErrSSHRequired
+	}
+	value, err := s.secrets.Decrypt(ciphertext, aad)
+	if err != nil {
+		return "", SSHBundle{}, "", fmt.Errorf("解密 Docker SSH 凭据失败: %w", err)
+	}
+	var bundle SSHBundle
+	if err := json.Unmarshal([]byte(value), &bundle); err != nil {
+		return "", SSHBundle{}, "", fmt.Errorf("解析 Docker SSH 凭据失败: %w", err)
+	}
+	return hostURL, bundle, fingerprint, nil
+}

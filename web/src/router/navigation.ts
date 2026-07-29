@@ -2,7 +2,7 @@ import type { Component } from 'vue'
 import {
   Activity, AppWindow, Boxes, Box, Building2, ChartNoAxesCombined, CloudCog,
   Container, FileClock, FileText, GitBranch, KeyRound, ListChecks, PackageCheck,
-  PanelsTopLeft, Play, Rocket, ScrollText, ServerCog, Settings, ShieldCheck,
+  PanelsTopLeft, Play, Rocket, ScrollText, Server, ServerCog, Settings, ShieldCheck,
   Tags, UsersRound, Workflow,
 } from 'lucide-vue-next'
 
@@ -42,7 +42,6 @@ export const navigation: NavSection[] = [
       ] },
       { key: 'release-management', label: 'nav.releaseManagement', icon: Rocket, items: [
         { label: 'nav.deploymentPlans', path: '/deployment-plans', permissions: ['delivery.read'], icon: CloudCog },
-        { label: 'nav.environments', path: '/environments', permissions: ['deployment.read'], icon: ServerCog },
         { label: 'nav.pipelinePlans', path: '/pipeline-plans', permissions: ['delivery.read'], icon: Workflow },
         { label: 'nav.releasePlans', path: '/release-plans?view=plans', permissions: ['delivery.read'], icon: ListChecks },
         { label: 'nav.pipelineRuns', path: '/release-plans?view=runs', permissions: ['delivery.read'], icon: Play },
@@ -55,7 +54,8 @@ export const navigation: NavSection[] = [
     branches: [
       { key: 'infrastructure', label: 'nav.infrastructure', icon: Container, items: [
         { label: 'nav.domains', path: '/domains', permissions: ['dns.read'], icon: Tags },
-        { label: 'nav.containers', path: '/infrastructure', permissions: ['cluster.read', 'terminal.open'], icon: Container },
+        { label: 'nav.environments', path: '/environments', permissions: ['deployment.read'], icon: ServerCog },
+        { label: 'nav.hosts', path: '/hosts', permissions: ['cluster.read', 'deployment.read'], icon: Server },
       ] },
       { key: 'operations', label: 'nav.operations', icon: Activity, items: [
         { label: 'nav.monitor', path: '/system-monitor', permissions: ['monitor.read'], icon: Activity },

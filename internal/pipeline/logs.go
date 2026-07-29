@@ -146,19 +146,31 @@ func truncateRunLogText(value string, limit int) string {
 }
 
 type buildLogWriter struct {
-	service   *Service
-	ctx       context.Context
-	runID     string
-	stage     string
-	mutex     sync.Mutex
-	pending   []byte
-	written   int
-	truncated bool
-	lastFlush time.Time
+	service    *Service
+	ctx        context.Context
+	runID      string
+	stage      string
+	outputName string
+	mutex      sync.Mutex
+	pending    []byte
+	written    int
+	truncated  bool
+	lastFlush  time.Time
 }
 
 func (s *Service) newBuildLogWriter(ctx context.Context, runID, stage string) io.WriteCloser {
-	return &buildLogWriter{service: s, ctx: ctx, runID: runID, stage: stage, lastFlush: time.Now()}
+	return s.newExecutionLogWriter(ctx, runID, stage, "构建")
+}
+
+func (s *Service) newExecutionLogWriter(ctx context.Context, runID, stage, outputName string) io.WriteCloser {
+	outputName = strings.TrimSpace(outputName)
+	if outputName == "" {
+		outputName = "任务"
+	}
+	return &buildLogWriter{
+		service: s, ctx: ctx, runID: runID, stage: stage,
+		outputName: outputName, lastFlush: time.Now(),
+	}
 }
 
 func (w *buildLogWriter) Write(value []byte) (int, error) {
@@ -182,7 +194,7 @@ func (w *buildLogWriter) Write(value []byte) (int, error) {
 	w.flushCompleteChunks()
 	if w.truncated {
 		w.flushPending()
-		w.service.appendRunLog(w.ctx, w.runID, w.stage, "warning", "构建输出超过 2 MiB，后续日志已截断。\n")
+		w.service.appendRunLog(w.ctx, w.runID, w.stage, "warning", w.outputName+"输出超过 2 MiB，后续日志已截断。\n")
 	}
 	return originalLength, nil
 }
@@ -226,5 +238,5 @@ func (w *buildLogWriter) flush(length int) {
 
 func (w *buildLogWriter) markTruncated() {
 	w.truncated = true
-	w.service.appendRunLog(w.ctx, w.runID, w.stage, "warning", "构建输出超过 2 MiB，后续日志已截断。\n")
+	w.service.appendRunLog(w.ctx, w.runID, w.stage, "warning", w.outputName+"输出超过 2 MiB，后续日志已截断。\n")
 }

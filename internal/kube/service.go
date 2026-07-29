@@ -2,6 +2,7 @@ package kube
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/url"
@@ -14,6 +15,7 @@ import (
 	"gorm.io/gorm"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/validation"
+	"k8s.io/apimachinery/pkg/version"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
@@ -67,6 +69,17 @@ type Service struct {
 	db      *gorm.DB
 	secrets *secret.Manager
 	config  config.Runtime
+}
+
+// WithTransaction 让集群连接校验与上层聚合资源共享同一个数据库事务。
+// 返回浅拷贝，避免修改并发请求正在使用的 Service。
+func (s *Service) WithTransaction(tx *gorm.DB) *Service {
+	if s == nil || tx == nil {
+		return s
+	}
+	clone := *s
+	clone.db = tx
+	return &clone
 }
 
 func NewService(db *gorm.DB, secrets *secret.Manager, cfg config.Runtime) *Service {
@@ -154,11 +167,15 @@ func (s *Service) Ping(ctx context.Context, id string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	version, err := clientset.Discovery().ServerVersion()
+	body, err := clientset.Discovery().RESTClient().Get().AbsPath("/version").Do(ctx).Raw()
 	if err != nil {
 		return "", fmt.Errorf("Kubernetes API 健康检查失败: %w", err)
 	}
-	return version.GitVersion, nil
+	var info version.Info
+	if err := json.Unmarshal(body, &info); err != nil {
+		return "", fmt.Errorf("解析 Kubernetes API 版本失败: %w", err)
+	}
+	return info.GitVersion, nil
 }
 
 func (s *Service) Namespaces(ctx context.Context, id string) ([]string, error) {

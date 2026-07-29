@@ -67,7 +67,7 @@ func (s *Service) CreateWorkflowTemplate(ctx context.Context, actorID string, in
 		return nil, err
 	}
 	issues := s.validateWorkflowTemplate(ctx, input.Nodes, input.Edges)
-	if input.Activate && len(issues) > 0 {
+	if len(issues) > 0 && (input.Activate || hasWorkflowIssue(issues, "deployment_plan_target_mismatch")) {
 		return &WorkflowTemplateResult{WorkflowTemplate: &model.ReleaseWorkflowTemplate{
 			Name: input.Name, Description: input.Description, Nodes: input.Nodes,
 			Edges: input.Edges, Viewport: input.Viewport,
@@ -94,7 +94,7 @@ func (s *Service) SaveWorkflowTemplate(ctx context.Context, id, actorID string, 
 		return nil, err
 	}
 	issues := s.validateWorkflowTemplate(ctx, input.Nodes, input.Edges)
-	if input.Activate && len(issues) > 0 {
+	if len(issues) > 0 && (input.Activate || hasWorkflowIssue(issues, "deployment_plan_target_mismatch")) {
 		return &WorkflowTemplateResult{WorkflowTemplate: &model.ReleaseWorkflowTemplate{
 			ID: id, Name: input.Name, Description: input.Description, Revision: input.Revision,
 			Nodes: input.Nodes, Edges: input.Edges, Viewport: input.Viewport,

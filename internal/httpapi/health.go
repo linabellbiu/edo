@@ -38,6 +38,7 @@ func (h healthHandler) ready(c *gin.Context) {
 		"builder":  "ok",
 	}
 	failed := false
+	degraded := false
 	checkCtx, cancel := context.WithTimeout(c.Request.Context(), 3*time.Second)
 	defer cancel()
 
@@ -58,9 +59,9 @@ func (h healthHandler) ready(c *gin.Context) {
 	}
 	if h.builder != nil {
 		if err := h.builder.PingBuilder(checkCtx); err != nil {
-			failed = true
-			checks["builder"] = "failed"
-			h.logFailure(c, "builder", err)
+			degraded = true
+			checks["builder"] = "unavailable"
+			h.logDegraded(c, "builder", err)
 		}
 	}
 	if failed {
@@ -72,11 +73,24 @@ func (h healthHandler) ready(c *gin.Context) {
 		})
 		return
 	}
+	if degraded {
+		c.JSON(http.StatusOK, gin.H{"status": "degraded", "checks": checks})
+		return
+	}
 	c.JSON(http.StatusOK, gin.H{"status": "ok", "checks": checks})
 }
 
 func (h healthHandler) logFailure(c *gin.Context, dependency string, err error) {
 	h.logger.Error("依赖服务健康检查失败",
+		"operation", "health_ready",
+		"request_id", requestIDFrom(c),
+		"dependency", dependency,
+		"err", err,
+	)
+}
+
+func (h healthHandler) logDegraded(c *gin.Context, dependency string, err error) {
+	h.logger.Warn("可选运行时健康检查失败",
 		"operation", "health_ready",
 		"request_id", requestIDFrom(c),
 		"dependency", dependency,

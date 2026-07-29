@@ -11,6 +11,7 @@ import (
 	"zrt/internal/config"
 	"zrt/internal/configuration"
 	"zrt/internal/database"
+	"zrt/internal/logging"
 	"zrt/internal/logretention"
 )
 
@@ -20,6 +21,7 @@ type settingsHandler struct {
 	authConfig   config.Auth
 	retention    *logretention.Service
 	migration    *database.TransferService
+	runtimeLogs  *logging.RuntimeController
 	logger       *slog.Logger
 }
 
@@ -152,6 +154,60 @@ type logRetentionUpdateRequest struct {
 	PipelineLogDays int   `json:"pipeline_log_days" binding:"required,min=1,max=3650"`
 	AuditLogDays    int   `json:"audit_log_days" binding:"required,min=1,max=3650"`
 	ExpectedVersion int   `json:"expected_version" binding:"min=0"`
+}
+
+type runtimeLoggingUpdateRequest struct {
+	Level             string `json:"level" binding:"required,oneof=debug info warn error"`
+	HTTPAccessEnabled *bool  `json:"http_access_enabled" binding:"required"`
+	ExpectedVersion   int    `json:"expected_version" binding:"min=0"`
+}
+
+func (h settingsHandler) runtimeLogging(c *gin.Context) {
+	defaultLevel, defaultHTTPAccess := "info", true
+	if h.runtimeLogs != nil {
+		defaultLevel = h.runtimeLogs.Level()
+		defaultHTTPAccess = h.runtimeLogs.HTTPAccessEnabled()
+	}
+	settings, err := h.service.GetRuntimeLoggingSettings(c.Request.Context(), defaultLevel, defaultHTTPAccess)
+	if err != nil {
+		h.logger.Error("读取运行日志设置失败", "operation", "settings_runtime_logging_read", "request_id", requestIDFrom(c), "err", err)
+		writeInternalError(c)
+		return
+	}
+	c.JSON(http.StatusOK, settings)
+}
+
+func (h settingsHandler) updateRuntimeLogging(c *gin.Context) {
+	var request runtimeLoggingUpdateRequest
+	if err := c.ShouldBindJSON(&request); err != nil || request.HTTPAccessEnabled == nil {
+		h.logger.Warn("修改运行日志设置参数无效", "operation", "settings_runtime_logging_bind", "request_id", requestIDFrom(c), "err", err)
+		writeError(c, http.StatusBadRequest, "invalid_settings", "日志级别或输出选项无效")
+		return
+	}
+	actor, _ := currentUser(c)
+	settings, err := h.service.UpdateRuntimeLoggingSettings(
+		c.Request.Context(), actor.ID, request.Level, *request.HTTPAccessEnabled, request.ExpectedVersion,
+	)
+	if err != nil {
+		h.logger.Warn("修改运行日志设置失败", "operation", "settings_runtime_logging_update", "request_id", requestIDFrom(c), "user_id", actor.ID, "err", err)
+		switch {
+		case errors.Is(err, configuration.ErrInvalidConfiguration):
+			writeError(c, http.StatusBadRequest, "invalid_settings", "日志级别或输出选项无效")
+		case errors.Is(err, configuration.ErrVersionConflict):
+			writeError(c, http.StatusConflict, "settings_version_conflict", configuration.ErrVersionConflict.Error())
+		default:
+			writeInternalError(c)
+		}
+		return
+	}
+	if h.runtimeLogs != nil {
+		if err := h.runtimeLogs.Apply(settings.Level, settings.HTTPAccessEnabled); err != nil {
+			h.logger.Error("热更新运行日志设置失败", "operation", "settings_runtime_logging_apply", "request_id", requestIDFrom(c), "user_id", actor.ID, "err", err)
+			writeInternalError(c)
+			return
+		}
+	}
+	c.JSON(http.StatusOK, settings)
 }
 
 func (h settingsHandler) logRetention(c *gin.Context) {

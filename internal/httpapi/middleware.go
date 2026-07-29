@@ -12,6 +12,7 @@ import (
 
 	"zrt/internal/audit"
 	"zrt/internal/database"
+	"zrt/internal/logging"
 	"zrt/internal/model"
 )
 
@@ -30,10 +31,13 @@ func requestID() gin.HandlerFunc {
 	}
 }
 
-func accessLog(logger *slog.Logger) gin.HandlerFunc {
+func accessLog(logger *slog.Logger, runtimeLogs *logging.RuntimeController) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		started := time.Now()
 		c.Next()
+		if runtimeLogs != nil && !runtimeLogs.HTTPAccessEnabled() {
+			return
+		}
 		logger.Info("HTTP 请求完成",
 			"operation", "http_request",
 			"request_id", requestIDFrom(c),

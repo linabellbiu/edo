@@ -3,7 +3,10 @@ package database
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"net/url"
+	"strconv"
 	"time"
 
 	"github.com/google/uuid"
@@ -206,6 +209,502 @@ var migrations = []migration{
 		version: "202607280029",
 		up:      migrateDeploymentApprovalsToWorkflow,
 	},
+	{
+		version: "202607280030",
+		up:      migrateHostsAndEnvironments,
+	},
+	{
+		version: "202607280031",
+		up:      migrateSSHDeploymentTargets,
+	},
+	{
+		version: "202607290032",
+		up: func(tx *gorm.DB) error {
+			return tx.AutoMigrate(
+				&model.PipelineRun{}, &model.ReleasePlanExecution{}, &model.ReleasePlanExecutionItem{},
+			)
+		},
+	},
+	{
+		version: "202607290033",
+		up:      migrateDeploymentPlanTargets,
+	},
+	{
+		version: "202607290034",
+		up: func(tx *gorm.DB) error {
+			return tx.AutoMigrate(&model.ReleasePlan{})
+		},
+	},
+	{
+		version: "202607290035",
+		up:      migrateManualReleaseNodesToTriggerEvents,
+	},
+	{
+		version: "202607290036",
+		up: func(tx *gorm.DB) error {
+			return tx.AutoMigrate(&model.ReleasePlan{})
+		},
+	},
+	{
+		version: "202607290037",
+		up:      backfillDeploymentPlanTargets,
+	},
+}
+
+func migrateDeploymentPlanTargets(tx *gorm.DB) error {
+	if err := addColumns(tx, &model.DeploymentPlan{}, []string{"DeploymentTargetID"}); err != nil {
+		return err
+	}
+	return addIndexes(tx, &model.DeploymentPlan{}, []string{"DeploymentTargetID"})
+}
+
+// backfillDeploymentPlanTargets 恢复聚合部署方案上线前保存在应用上的目标关联。
+// 只有一个方案能唯一确定一个历史目标且部署类型一致时才回填，避免把共享方案错误指向某个应用的环境。
+func backfillDeploymentPlanTargets(tx *gorm.DB) error {
+	type legacyBinding struct {
+		DeploymentPlanID   string
+		DeploymentTargetID string
+	}
+	var bindings []legacyBinding
+	if err := tx.Model(&model.Application{}).
+		Select("release_plan_id AS deployment_plan_id, deployment_target_id").
+		Where("release_plan_id <> ? AND deployment_target_id <> ?", "", "").
+		Group("release_plan_id, deployment_target_id").
+		Scan(&bindings).Error; err != nil {
+		return fmt.Errorf("读取部署方案历史目标关联失败: %w", err)
+	}
+	byPlan := make(map[string][]string)
+	for _, binding := range bindings {
+		byPlan[binding.DeploymentPlanID] = append(byPlan[binding.DeploymentPlanID], binding.DeploymentTargetID)
+	}
+	for planID, targetIDs := range byPlan {
+		if len(targetIDs) != 1 {
+			continue
+		}
+		var plan model.DeploymentPlan
+		if err := tx.Select("id", "kind", "deployment_target_id").First(&plan, "id = ?", planID).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				continue
+			}
+			return fmt.Errorf("读取待恢复部署方案失败: %w", err)
+		}
+		if plan.DeploymentTargetID != "" {
+			continue
+		}
+		var target model.DeploymentTarget
+		if err := tx.Select("id", "platform").First(&target, "id = ?", targetIDs[0]).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				continue
+			}
+			return fmt.Errorf("读取待恢复部署目标失败: %w", err)
+		}
+		if deploymentPlanPlatform(plan.Kind) != target.Platform {
+			continue
+		}
+		if err := tx.Model(&model.DeploymentPlan{}).
+			Where("id = ? AND deployment_target_id = ?", plan.ID, "").
+			Update("deployment_target_id", target.ID).Error; err != nil {
+			return fmt.Errorf("恢复部署方案目标关联失败: %w", err)
+		}
+	}
+	return nil
+}
+
+func deploymentPlanPlatform(kind model.DeploymentPlanKind) model.DeploymentPlatform {
+	switch kind {
+	case model.DeploymentPlanScript:
+		return model.DeploymentSSH
+	case model.DeploymentPlanHelm:
+		return model.DeploymentKubernetes
+	case model.DeploymentPlanDocker, model.DeploymentPlanCompose:
+		return model.DeploymentDocker
+	default:
+		return ""
+	}
+}
+
+// migrateManualReleaseNodesToTriggerEvents 只规范化仍可编辑的当前流水线和方案。
+// 已创建运行的 WorkflowSnapshot 是不可变执行依据，发布计划执行项也必须继续引用原始入口。
+func migrateManualReleaseNodesToTriggerEvents(tx *gorm.DB) error {
+	templateRevisions := make(map[string]uint64)
+	if tx.Migrator().HasTable(&model.ReleaseWorkflowTemplate{}) {
+		var templates []model.ReleaseWorkflowTemplate
+		if err := tx.Find(&templates).Error; err != nil {
+			return fmt.Errorf("读取待迁移流水线方案失败: %w", err)
+		}
+		for i := range templates {
+			nodes, edges, _, changed := migrateManualReleaseGraph(templates[i].Nodes, templates[i].Edges)
+			if !changed {
+				continue
+			}
+			nodesJSON, err := json.Marshal(nodes)
+			if err != nil {
+				return fmt.Errorf("序列化流水线方案节点迁移数据失败: %w", err)
+			}
+			edgesJSON, err := json.Marshal(edges)
+			if err != nil {
+				return fmt.Errorf("序列化流水线方案连线迁移数据失败: %w", err)
+			}
+			nextRevision := templates[i].Revision + 1
+			result := tx.Model(&model.ReleaseWorkflowTemplate{}).
+				Where("id = ? AND revision = ?", templates[i].ID, templates[i].Revision).
+				Updates(map[string]any{
+					"nodes": string(nodesJSON), "edges": string(edgesJSON),
+					"revision": nextRevision, "updated_at": time.Now().UTC(),
+				})
+			if result.Error != nil {
+				return fmt.Errorf("更新流水线方案手动触发配置失败: %w", result.Error)
+			}
+			if result.RowsAffected != 1 {
+				return fmt.Errorf("更新流水线方案手动触发配置失败: 方案版本已经变化")
+			}
+			templateRevisions[templates[i].ID] = nextRevision
+		}
+	}
+
+	if !tx.Migrator().HasTable(&model.ReleaseWorkflow{}) {
+		return nil
+	}
+	var workflows []model.ReleaseWorkflow
+	if err := tx.Find(&workflows).Error; err != nil {
+		return fmt.Errorf("读取待迁移应用流水线失败: %w", err)
+	}
+	for i := range workflows {
+		nodes, edges, sourceRemap, graphChanged := migrateManualReleaseGraph(workflows[i].Nodes, workflows[i].Edges)
+		templateRevision, templateChanged := templateRevisions[workflows[i].WorkflowTemplateID]
+		if !graphChanged && !templateChanged {
+			continue
+		}
+		nodesJSON, err := json.Marshal(nodes)
+		if err != nil {
+			return fmt.Errorf("序列化应用流水线节点迁移数据失败: %w", err)
+		}
+		edgesJSON, err := json.Marshal(edges)
+		if err != nil {
+			return fmt.Errorf("序列化应用流水线连线迁移数据失败: %w", err)
+		}
+		updates := map[string]any{
+			"nodes": string(nodesJSON), "edges": string(edgesJSON),
+			"revision": workflows[i].Revision + 1, "updated_at": time.Now().UTC(),
+		}
+		if templateChanged {
+			updates["workflow_template_revision"] = templateRevision
+		}
+		result := tx.Model(&model.ReleaseWorkflow{}).
+			Where("id = ? AND revision = ?", workflows[i].ID, workflows[i].Revision).
+			Updates(updates)
+		if result.Error != nil {
+			return fmt.Errorf("更新应用流水线手动触发配置失败: %w", result.Error)
+		}
+		if result.RowsAffected != 1 {
+			return fmt.Errorf("更新应用流水线手动触发配置失败: 流水线版本已经变化")
+		}
+		if err := remapBlockedManualRuns(tx, workflows[i].ApplicationID, sourceRemap); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func migrateManualReleaseGraph(
+	nodes []model.WorkflowNode,
+	edges []model.WorkflowEdge,
+) ([]model.WorkflowNode, []model.WorkflowEdge, map[string]string, bool) {
+	migratedNodes := append([]model.WorkflowNode(nil), nodes...)
+	for i := range migratedNodes {
+		migratedNodes[i].Config.Events = append([]string(nil), migratedNodes[i].Config.Events...)
+	}
+	migratedEdges := append([]model.WorkflowEdge(nil), edges...)
+	nodeIndex := make(map[string]int, len(migratedNodes))
+	incomingCount := make(map[string]int, len(migratedNodes))
+	outgoing := make(map[string][]model.WorkflowEdge, len(migratedNodes))
+	for i := range migratedNodes {
+		nodeIndex[migratedNodes[i].ID] = i
+	}
+	for i := range migratedEdges {
+		incomingCount[migratedEdges[i].Target]++
+		outgoing[migratedEdges[i].Source] = append(outgoing[migratedEdges[i].Source], migratedEdges[i])
+	}
+
+	remap := make(map[string]string)
+	changed := false
+	for i := range migratedNodes {
+		if migratedNodes[i].Type != model.WorkflowNodeManualRelease {
+			continue
+		}
+		manualEdges := outgoing[migratedNodes[i].ID]
+		if len(manualEdges) == 1 && incomingCount[migratedNodes[i].ID] == 0 {
+			if targetIndex, ok := nodeIndex[manualEdges[0].Target]; ok && migratedNodes[targetIndex].Type == model.WorkflowNodeTrigger {
+				if !workflowEventExists(migratedNodes[targetIndex].Config.Events, "manual") {
+					migratedNodes[targetIndex].Config.Events = append(migratedNodes[targetIndex].Config.Events, "manual")
+				}
+				remap[migratedNodes[i].ID] = migratedNodes[targetIndex].ID
+				changed = true
+				continue
+			}
+		}
+		// 没有可折叠的代码触发下游时保留节点 ID 和全部连线，只改变入口的表达方式。
+		migratedNodes[i].Type = model.WorkflowNodeTrigger
+		migratedNodes[i].Config.Events = []string{"manual"}
+		changed = true
+	}
+	if !changed {
+		return migratedNodes, migratedEdges, remap, false
+	}
+	if len(remap) == 0 {
+		return migratedNodes, migratedEdges, remap, true
+	}
+
+	keptNodes := make([]model.WorkflowNode, 0, len(migratedNodes)-len(remap))
+	for i := range migratedNodes {
+		if _, removed := remap[migratedNodes[i].ID]; removed {
+			continue
+		}
+		keptNodes = append(keptNodes, migratedNodes[i])
+	}
+	keptEdges := make([]model.WorkflowEdge, 0, len(migratedEdges)-len(remap))
+	for i := range migratedEdges {
+		source, sourceRemapped := remap[migratedEdges[i].Source]
+		target, targetRemapped := remap[migratedEdges[i].Target]
+		if !sourceRemapped {
+			source = migratedEdges[i].Source
+		}
+		if !targetRemapped {
+			target = migratedEdges[i].Target
+		}
+		if source == target {
+			continue
+		}
+		edge := migratedEdges[i]
+		edge.Source, edge.Target = source, target
+		keptEdges = append(keptEdges, edge)
+	}
+	return keptNodes, keptEdges, remap, true
+}
+
+func workflowEventExists(events []string, expected string) bool {
+	for i := range events {
+		if events[i] == expected {
+			return true
+		}
+	}
+	return false
+}
+
+func remapBlockedManualRuns(tx *gorm.DB, applicationID string, sourceRemap map[string]string) error {
+	if len(sourceRemap) == 0 || !tx.Migrator().HasTable(&model.PipelineRun{}) {
+		return nil
+	}
+	for sourceID, targetID := range sourceRemap {
+		result := tx.Model(&model.PipelineRun{}).
+			Where(
+				"application_id = ? AND workflow_snapshot = ? AND status = ? AND current_node_id = ?",
+				applicationID, "", model.PipelineRunBlocked, sourceID,
+			).
+			UpdateColumn("current_node_id", targetID)
+		if result.Error != nil {
+			return fmt.Errorf("迁移待执行流水线的手动触发入口失败: %w", result.Error)
+		}
+	}
+	return nil
+}
+
+func migrateSSHDeploymentTargets(tx *gorm.DB) error {
+	// 旧版本的 SQLite 表可能保留与当前模型不同的列约束。这里仅添加本次功能需要的列，
+	// 避免 AutoMigrate 重建整表时因历史脏数据或旧默认值导致升级失败。
+	if err := addColumns(tx, &model.DeploymentTarget{}, []string{
+		"EnvironmentID", "HostID", "WorkingDirectory",
+	}); err != nil {
+		return err
+	}
+	if err := addColumns(tx, &model.DeploymentRecord{}, []string{
+		"EnvironmentID", "HostID", "WorkingDirectory", "DeploymentPlanID", "DeploymentPlanKind",
+		"CommandScript", "CommandDigest", "CommandTimeout", "CommandExitCode",
+	}); err != nil {
+		return err
+	}
+	if err := addColumns(tx, &model.PipelineRunRepository{}, []string{
+		"DeploymentPlanKind", "DeploymentPlanScript", "DeploymentPlanTimeoutSeconds", "DeploymentPlanDigest",
+	}); err != nil {
+		return err
+	}
+	if err := addIndexes(tx, &model.DeploymentTarget{}, []string{"EnvironmentID", "HostID"}); err != nil {
+		return err
+	}
+	if err := addIndexes(tx, &model.DeploymentRecord{}, []string{"EnvironmentID", "HostID", "DeploymentPlanID"}); err != nil {
+		return err
+	}
+	var components []model.PipelineRunRepository
+	if err := tx.Where("release_plan_id <> '' AND deployment_plan_digest = ''").Find(&components).Error; err != nil {
+		return err
+	}
+	for i := range components {
+		var plan model.DeploymentPlan
+		if err := tx.First(&plan, "id = ?", components[i].DeploymentPlanID).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				continue
+			}
+			return err
+		}
+		if err := tx.Model(&model.PipelineRunRepository{}).Where("id = ?", components[i].ID).Updates(map[string]any{
+			"deployment_plan_kind":            plan.Kind,
+			"deployment_plan_script":          plan.Script,
+			"deployment_plan_timeout_seconds": plan.TimeoutSeconds,
+			"deployment_plan_digest":          model.DeploymentPlanExecutionDigest(plan.Kind, plan.Script, plan.TimeoutSeconds),
+		}).Error; err != nil {
+			return err
+		}
+	}
+
+	var targets []model.DeploymentTarget
+	if err := tx.Where("platform = ? AND host_id = '' AND runtime_id <> ''", model.DeploymentDocker).Find(&targets).Error; err != nil {
+		return err
+	}
+	for i := range targets {
+		var endpoint model.DockerEndpoint
+		if err := tx.Select("host_id").First(&endpoint, "id = ?", targets[i].RuntimeID).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				continue
+			}
+			return err
+		}
+		if endpoint.HostID != "" {
+			if err := tx.Model(&model.DeploymentTarget{}).Where("id = ?", targets[i].ID).Update("host_id", endpoint.HostID).Error; err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func addColumns(tx *gorm.DB, value any, fields []string) error {
+	if !tx.Migrator().HasTable(value) {
+		return tx.AutoMigrate(value)
+	}
+	for _, field := range fields {
+		if tx.Migrator().HasColumn(value, field) {
+			continue
+		}
+		if err := tx.Migrator().AddColumn(value, field); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func addIndexes(tx *gorm.DB, value any, fields []string) error {
+	for _, field := range fields {
+		if tx.Migrator().HasIndex(value, field) {
+			continue
+		}
+		if err := tx.Migrator().CreateIndex(value, field); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func migrateHostsAndEnvironments(tx *gorm.DB) error {
+	if err := tx.AutoMigrate(&model.Environment{}, &model.Host{}, &model.HostCapability{}); err != nil {
+		return err
+	}
+	if !tx.Migrator().HasColumn(&model.DockerEndpoint{}, "HostID") {
+		if err := tx.Migrator().AddColumn(&model.DockerEndpoint{}, "HostID"); err != nil {
+			return err
+		}
+	}
+	if !tx.Migrator().HasIndex(&model.DockerEndpoint{}, "idx_docker_endpoints_host_id") {
+		if err := tx.Migrator().CreateIndex(&model.DockerEndpoint{}, "HostID"); err != nil {
+			return err
+		}
+	}
+
+	now := time.Now().UTC()
+	localHost := model.Host{
+		ID: model.BuiltinLocalHostID, Name: "本地", Mode: model.HostModeLocal,
+		SSHPort: 22, IsBuiltin: true, IsActive: true, CreatedBy: "system",
+		CreatedAt: now, UpdatedAt: now,
+	}
+	createLocalHost := tx.Where("id = ?", localHost.ID).FirstOrCreate(&localHost)
+	if createLocalHost.Error != nil {
+		return createLocalHost.Error
+	}
+	// 只迁移历史版本写入的精确默认名，不覆盖管理员后续设置的自定义名称。
+	if localHost.Name == "ZRT 本机" {
+		if err := tx.Model(&model.Host{}).Where("id = ? AND name = ?", localHost.ID, "ZRT 本机").
+			Updates(map[string]any{"name": "本地", "updated_at": now}).Error; err != nil {
+			return err
+		}
+		localHost.Name = "本地"
+	}
+	// Docker 能力只是新安装的初始选择。之后是否启用由用户管理，
+	// 重跑迁移不得把已经关闭的能力静默恢复。
+	if createLocalHost.RowsAffected == 0 {
+		return migrateLegacySSHDockerHosts(tx, now)
+	}
+	localCapability := model.HostCapability{
+		HostID: localHost.ID, Kind: model.HostCapabilityDocker, RuntimeID: "zrt-local-docker",
+		Status: model.HostCapabilityReady, CreatedAt: now, UpdatedAt: now,
+	}
+	if err := tx.Create(&localCapability).Error; err != nil {
+		return err
+	}
+	return migrateLegacySSHDockerHosts(tx, now)
+}
+
+func migrateLegacySSHDockerHosts(tx *gorm.DB, now time.Time) error {
+	var endpoints []model.DockerEndpoint
+	if err := tx.Where("host_id = ''").Find(&endpoints).Error; err != nil {
+		return err
+	}
+	for i := range endpoints {
+		endpoint := &endpoints[i]
+		parsed, err := url.Parse(endpoint.Host)
+		if err != nil || parsed.Scheme != "ssh" || parsed.User == nil ||
+			parsed.User.Username() == "" || parsed.Hostname() == "" {
+			continue
+		}
+		port := 22
+		if parsed.Port() != "" {
+			value, err := strconv.ParseUint(parsed.Port(), 10, 16)
+			if err != nil || value == 0 {
+				continue
+			}
+			port = int(value)
+		}
+
+		// 旧凭据仍由 DockerEndpoint 使用 endpoint ID 作为 AAD 解密。数据库迁移没有密钥上下文，
+		// 因此这里只建立主机归属，不复制或重加密密文，也不猜测认证方式与 sudo 配置。
+		host := model.Host{
+			ID: endpoint.ID, Name: endpoint.Name, Mode: model.HostModeSSH,
+			Address: parsed.Hostname(), SSHPort: port, SSHUsername: parsed.User.Username(),
+			SSHHostKeyFingerprint: endpoint.SSHHostKeyFingerprint,
+			IsActive:              endpoint.IsActive, CreatedBy: endpoint.CreatedBy,
+			CreatedAt: endpoint.CreatedAt, UpdatedAt: endpoint.UpdatedAt,
+		}
+		var count int64
+		if err := tx.Model(&model.Host{}).Where("id = ?", host.ID).Count(&count).Error; err != nil {
+			return err
+		}
+		if count == 0 {
+			if err := tx.Create(&host).Error; err != nil {
+				return err
+			}
+		}
+		capability := model.HostCapability{
+			HostID: host.ID, Kind: model.HostCapabilityDocker, RuntimeID: endpoint.ID,
+			Status: model.HostCapabilityUnchecked, CreatedAt: endpoint.CreatedAt, UpdatedAt: endpoint.UpdatedAt,
+		}
+		if err := tx.Where("host_id = ? AND kind = ?", capability.HostID, capability.Kind).
+			FirstOrCreate(&capability).Error; err != nil {
+			return err
+		}
+		if err := tx.Model(&model.DockerEndpoint{}).Where("id = ? AND host_id = ''", endpoint.ID).
+			Update("host_id", host.ID).Error; err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func migrateDeploymentApprovalsToWorkflow(tx *gorm.DB) error {

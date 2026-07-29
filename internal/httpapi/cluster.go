@@ -40,6 +40,7 @@ type runtimeNameRequest struct {
 type dockerEndpointResponse struct {
 	ID                    string    `json:"id"`
 	Name                  string    `json:"name"`
+	HostID                string    `json:"host_id"`
 	Host                  string    `json:"host"`
 	Local                 bool      `json:"local"`
 	TLSConfigured         bool      `json:"tls_configured"`
@@ -115,6 +116,8 @@ func (h clusterHandler) testDockerSSH(c *gin.Context) {
 		switch {
 		case errors.Is(err, dockerengine.ErrInvalidSSH):
 			writeError(c, http.StatusBadRequest, "invalid_docker_ssh", dockerengine.ErrInvalidSSH.Error())
+		case errors.Is(err, dockerengine.ErrSSHDockerDenied):
+			writeError(c, http.StatusBadGateway, "docker_ssh_permission_denied", dockerengine.ErrSSHDockerDenied.Error())
 		default:
 			writeError(c, http.StatusBadGateway, "docker_ssh_unreachable", dockerengine.ErrSSHUnreachable.Error())
 		}
@@ -312,6 +315,8 @@ func (h clusterHandler) writeDockerError(c *gin.Context, operation string, err e
 		writeError(c, http.StatusBadRequest, "invalid_docker_ssh", dockerengine.ErrInvalidSSH.Error())
 	case errors.Is(err, dockerengine.ErrSSHUnreachable):
 		writeError(c, http.StatusBadGateway, "docker_ssh_unreachable", dockerengine.ErrSSHUnreachable.Error())
+	case errors.Is(err, dockerengine.ErrSSHDockerDenied):
+		writeError(c, http.StatusBadGateway, "docker_ssh_permission_denied", dockerengine.ErrSSHDockerDenied.Error())
 	case errors.Is(err, dockerengine.ErrEndpointExists):
 		writeError(c, http.StatusConflict, "docker_endpoint_exists", dockerengine.ErrEndpointExists.Error())
 	case errors.Is(err, dockerengine.ErrEndpointNotFound):
@@ -356,7 +361,7 @@ func (h clusterHandler) writeKubernetesReadError(c *gin.Context, operation strin
 
 func toDockerEndpointResponse(endpoint *model.DockerEndpoint) dockerEndpointResponse {
 	return dockerEndpointResponse{
-		ID: endpoint.ID, Name: endpoint.Name, Host: endpoint.Host,
+		ID: endpoint.ID, Name: endpoint.Name, HostID: endpoint.HostID, Host: endpoint.Host,
 		Local:         dockerengine.IsLocalEndpointID(endpoint.ID),
 		TLSConfigured: endpoint.TLSCiphertext != "", SSHConfigured: endpoint.SSHCredentialCiphertext != "",
 		SSHHostKeyFingerprint: endpoint.SSHHostKeyFingerprint, IsActive: endpoint.IsActive,

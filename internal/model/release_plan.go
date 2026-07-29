@@ -1,6 +1,10 @@
 package model
 
-import "time"
+import (
+	"time"
+
+	"gorm.io/gorm"
+)
 
 type ReleasePlanStatus string
 
@@ -14,19 +18,83 @@ const (
 // ReleasePlan 表示一次人工组织的批量发布。Name 和 Version 保留给历史数据及内部唯一标识，
 // 新建计划由服务端生成，用户只需要填写 Description。
 type ReleasePlan struct {
-	ID          string            `gorm:"type:varchar(36);primaryKey" json:"id"`
-	Name        string            `gorm:"type:varchar(128);not null" json:"name"`
-	Version     string            `gorm:"type:varchar(64);not null;uniqueIndex" json:"version"`
-	Description string            `gorm:"type:varchar(500);not null;default:''" json:"description"`
-	Status      ReleasePlanStatus `gorm:"type:varchar(16);not null;default:'draft';index" json:"status"`
-	CreatedBy   string            `gorm:"type:varchar(36);not null;index" json:"created_by"`
-	UpdatedBy   string            `gorm:"type:varchar(36);not null;index" json:"updated_by"`
-	CreatedAt   time.Time         `gorm:"not null;index" json:"created_at"`
-	UpdatedAt   time.Time         `gorm:"not null" json:"updated_at"`
-	Groups      []ReleaseGroup    `gorm:"foreignKey:ReleasePlanID" json:"groups,omitempty"`
+	ID              string                `gorm:"type:varchar(36);primaryKey" json:"id"`
+	Name            string                `gorm:"type:varchar(128);not null" json:"name"`
+	Version         string                `gorm:"type:varchar(64);not null;uniqueIndex" json:"version"`
+	Description     string                `gorm:"type:varchar(500);not null;default:''" json:"description"`
+	Status          ReleasePlanStatus     `gorm:"type:varchar(16);not null;default:'draft';index" json:"status"`
+	IsActive        bool                  `gorm:"not null;default:true;index" json:"is_active"`
+	CreatedBy       string                `gorm:"type:varchar(36);not null;index" json:"created_by"`
+	UpdatedBy       string                `gorm:"type:varchar(36);not null;index" json:"updated_by"`
+	CreatedAt       time.Time             `gorm:"not null;index" json:"created_at"`
+	UpdatedAt       time.Time             `gorm:"not null" json:"updated_at"`
+	DeletedAt       gorm.DeletedAt        `gorm:"index" json:"-"`
+	Groups          []ReleaseGroup        `gorm:"foreignKey:ReleasePlanID" json:"groups,omitempty"`
+	LatestExecution *ReleasePlanExecution `gorm:"-" json:"latest_execution,omitempty"`
 }
 
 func (ReleasePlan) TableName() string { return "release_plans" }
+
+type ReleasePlanExecutionStatus string
+
+const (
+	ReleasePlanExecutionPending   ReleasePlanExecutionStatus = "pending"
+	ReleasePlanExecutionRunning   ReleasePlanExecutionStatus = "running"
+	ReleasePlanExecutionSucceeded ReleasePlanExecutionStatus = "succeeded"
+	ReleasePlanExecutionFailed    ReleasePlanExecutionStatus = "failed"
+)
+
+// ReleasePlanExecution 固化一次发布计划的编排结构。发布计划只允许执行一次，
+// RequestID 用于识别客户端重试，Snapshot 保证后续调和不受计划编辑影响。
+type ReleasePlanExecution struct {
+	ID            string                     `gorm:"type:varchar(36);primaryKey" json:"id"`
+	ReleasePlanID string                     `gorm:"type:varchar(36);not null;uniqueIndex:idx_release_plan_execution_plan;uniqueIndex:idx_release_plan_execution_request,priority:1" json:"release_plan_id"`
+	RequestID     string                     `gorm:"type:varchar(128);not null;uniqueIndex:idx_release_plan_execution_request,priority:2" json:"request_id"`
+	Status        ReleasePlanExecutionStatus `gorm:"type:varchar(16);not null;default:'pending';index" json:"status"`
+	Snapshot      string                     `gorm:"type:text;not null" json:"-"`
+	CreatedBy     string                     `gorm:"type:varchar(36);not null;index" json:"created_by"`
+	StartedAt     *time.Time                 `json:"started_at,omitempty"`
+	FinishedAt    *time.Time                 `json:"finished_at,omitempty"`
+	CreatedAt     time.Time                  `gorm:"not null;index" json:"created_at"`
+	UpdatedAt     time.Time                  `gorm:"not null" json:"updated_at"`
+	Items         []ReleasePlanExecutionItem `gorm:"foreignKey:ReleasePlanExecutionID" json:"items,omitempty"`
+}
+
+func (ReleasePlanExecution) TableName() string { return "release_plan_executions" }
+
+type ReleasePlanExecutionItemStatus string
+
+const (
+	ReleasePlanExecutionItemPending   ReleasePlanExecutionItemStatus = "pending"
+	ReleasePlanExecutionItemRunning   ReleasePlanExecutionItemStatus = "running"
+	ReleasePlanExecutionItemSucceeded ReleasePlanExecutionItemStatus = "succeeded"
+	ReleasePlanExecutionItemFailed    ReleasePlanExecutionItemStatus = "failed"
+	ReleasePlanExecutionItemSkipped   ReleasePlanExecutionItemStatus = "skipped"
+	ReleasePlanExecutionItemCanceled  ReleasePlanExecutionItemStatus = "canceled"
+)
+
+// ReleasePlanExecutionItem 是发布组中单个应用的一次不可变执行槽。
+// PipelineRun 在创建执行时预先生成，调和器只负责按快照决定何时启动它。
+type ReleasePlanExecutionItem struct {
+	ID                        string                         `gorm:"type:varchar(36);primaryKey" json:"id"`
+	ReleasePlanExecutionID    string                         `gorm:"type:varchar(36);not null;index;uniqueIndex:idx_release_plan_execution_item,priority:1" json:"release_plan_execution_id"`
+	ReleaseGroupID            string                         `gorm:"type:varchar(36);not null;index" json:"release_group_id"`
+	ReleaseGroupApplicationID string                         `gorm:"type:varchar(36);not null;index;uniqueIndex:idx_release_plan_execution_item,priority:2" json:"release_group_application_id"`
+	ApplicationID             string                         `gorm:"type:varchar(36);not null;index" json:"application_id"`
+	PipelineRunID             string                         `gorm:"type:varchar(36);not null;uniqueIndex" json:"pipeline_run_id"`
+	Status                    ReleasePlanExecutionItemStatus `gorm:"type:varchar(16);not null;default:'pending';index" json:"status"`
+	Ref                       string                         `gorm:"type:varchar(512);not null" json:"ref"`
+	CommitSHA                 string                         `gorm:"type:varchar(64);not null" json:"commit_sha"`
+	SourceNodeID              string                         `gorm:"type:varchar(64);not null;index" json:"source_node_id"`
+	SortOrder                 int                            `gorm:"not null;default:0;index" json:"sort_order"`
+	Message                   string                         `gorm:"type:varchar(255);not null;default:''" json:"message,omitempty"`
+	StartedAt                 *time.Time                     `json:"started_at,omitempty"`
+	FinishedAt                *time.Time                     `json:"finished_at,omitempty"`
+	CreatedAt                 time.Time                      `gorm:"not null" json:"created_at"`
+	UpdatedAt                 time.Time                      `gorm:"not null" json:"updated_at"`
+}
+
+func (ReleasePlanExecutionItem) TableName() string { return "release_plan_execution_items" }
 
 type ReleaseGroupMode string
 

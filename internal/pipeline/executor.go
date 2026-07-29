@@ -23,7 +23,7 @@ import (
 var (
 	ErrPipelineExecutionUnavailable = errors.New("流水线执行服务尚未就绪")
 	ErrPipelineExecutionRunning     = errors.New("流水线正在执行，请稍后刷新")
-	ErrPipelineExecutionConfig      = errors.New("流水线执行配置不完整，请检查应用、构建方案和发布环境")
+	ErrPipelineExecutionConfig      = errors.New("流水线执行配置不完整，请检查应用、构建方案和部署配置")
 	errPipelineExecutionComplete    = errors.New("流水线执行已经完成")
 )
 
@@ -45,7 +45,7 @@ type executionContext struct {
 }
 
 func (s *Service) ExecuteDeployTask(ctx context.Context, payload DeployTaskPayload, jobID string) error {
-	if s.docker == nil || s.deployments == nil || s.repositories == nil || s.secrets == nil {
+	if s.deployments == nil || s.repositories == nil || s.secrets == nil {
 		return ErrPipelineExecutionUnavailable
 	}
 	prepared, err := s.loadExecution(ctx, payload, jobID)
@@ -53,9 +53,16 @@ func (s *Service) ExecuteDeployTask(ctx context.Context, payload DeployTaskPaylo
 		if errors.Is(err, errPipelineExecutionComplete) {
 			return nil
 		}
-		return s.failExecution(ctx, payload.PipelineRunID, "流水线执行配置不完整，请检查应用、构建方案和发布环境", err)
+		return s.failExecution(ctx, payload.PipelineRunID, "流水线执行配置不完整，请检查应用、构建方案和部署配置", err)
 	}
 	s.appendRunLog(ctx, prepared.run.ID, "start", "info", "流水线开始执行："+prepared.run.Ref+" · "+prepared.run.CommitSHA)
+	approvedBy, err := s.latestExecutionApproval(ctx, prepared.run.ID)
+	if err != nil {
+		return s.failExecution(ctx, prepared.run.ID, err.Error(), err)
+	}
+	if prepared.target.Platform == model.DeploymentSSH {
+		return s.executeSSHDeployment(ctx, prepared, approvedBy)
+	}
 	checkoutDirectory, err := os.MkdirTemp("", "zrt-pipeline-checkout-*")
 	if err != nil {
 		return s.failExecution(ctx, prepared.run.ID, "准备构建工作区失败，请稍后重试", err)
@@ -84,10 +91,6 @@ func (s *Service) ExecuteDeployTask(ctx context.Context, payload DeployTaskPaylo
 		return s.failExecution(ctx, prepared.run.ID, message, err)
 	}
 
-	approvedBy, err := s.latestExecutionApproval(ctx, prepared.run.ID)
-	if err != nil {
-		return s.failExecution(ctx, prepared.run.ID, err.Error(), err)
-	}
 	if err := s.updateExecutionPhase(ctx, &prepared.run, "deploy", buildMessage+"，正在发布到“"+prepared.target.Name+"”"); err != nil {
 		return s.failExecution(ctx, prepared.run.ID, "更新流水线执行状态失败", err)
 	}
@@ -101,13 +104,41 @@ func (s *Service) ExecuteDeployTask(ctx context.Context, payload DeployTaskPaylo
 	return s.completeExecution(ctx, prepared, record)
 }
 
+func (s *Service) executeSSHDeployment(ctx context.Context, prepared *executionContext, approvedBy string) error {
+	if err := s.updateExecutionPhase(ctx, &prepared.run, "deploy", "正在执行命令脚本并发布到“"+prepared.target.Name+"”"); err != nil {
+		return s.failExecution(ctx, prepared.run.ID, "更新流水线执行状态失败", err)
+	}
+	output := s.newExecutionLogWriter(ctx, prepared.run.ID, "deploy", "命令部署")
+	defer output.Close()
+	record, err := s.deployments.RequestCommandAndRun(ctx, prepared.run.CreatedBy, deployment.CommandRequestInput{
+		TargetID: prepared.target.ID, PipelineRunID: prepared.run.ID, WorkflowNodeID: prepared.node.ID,
+		ApprovedBy: approvedBy, DeploymentPlanID: prepared.component.DeploymentPlanID,
+		PlanKind: prepared.component.DeploymentPlanKind, Script: prepared.component.DeploymentPlanScript,
+		ScriptDigest:   prepared.component.DeploymentPlanDigest,
+		TimeoutSeconds: prepared.component.DeploymentPlanTimeoutSeconds,
+		Environment: map[string]string{
+			"ZRT_PIPELINE_RUN_ID":      prepared.run.ID,
+			"ZRT_APPLICATION_ID":       prepared.application.ID,
+			"ZRT_APPLICATION_NAME":     prepared.application.Name,
+			"ZRT_GIT_REF":              prepared.run.Ref,
+			"ZRT_COMMIT_SHA":           prepared.run.CommitSHA,
+			"ZRT_DEPLOYMENT_TARGET_ID": prepared.target.ID,
+		},
+		Stdout: output, Stderr: output,
+	})
+	if err != nil {
+		return s.failExecution(ctx, prepared.run.ID, "命令脚本部署失败，请查看流水线日志", err)
+	}
+	return s.completeExecution(ctx, prepared, record)
+}
+
 func executionImageFailureMessage(stage, targetName string, pushesToRegistry bool, cause error) string {
 	if stage == "transfer" {
 		var timeoutError net.Error
 		if errors.Is(cause, context.DeadlineExceeded) || (errors.As(cause, &timeoutError) && timeoutError.Timeout()) {
-			return "无法连接发布环境“" + targetName + "”，SSH 连接超时"
+			return "无法连接“" + targetName + "”，SSH 连接超时"
 		}
-		return "镜像传输到发布环境“" + targetName + "”失败，请检查 SSH 和 Docker"
+		return "镜像传输到“" + targetName + "”失败，请检查 SSH 和 Docker"
 	}
 	if pushesToRegistry {
 		return "镜像构建或推送失败，请检查任务日志、构建方案和镜像仓库"
@@ -150,17 +181,67 @@ func (s *Service) loadExecution(ctx context.Context, payload DeployTaskPayload, 
 	if err := s.db.WithContext(ctx).Preload("Repository").First(&result.component, "pipeline_run_id = ?", run.ID).Error; err != nil {
 		return nil, err
 	}
+	targetSnapshot, hasTargetSnapshot := snapshot.DeploymentTargets[node.ID]
+	if hasTargetSnapshot {
+		if targetSnapshot.ID == "" || targetSnapshot.ID != node.Config.DeploymentTargetID {
+			return nil, ErrPipelineExecutionConfig
+		}
+		result.target = model.DeploymentTarget{
+			ID: targetSnapshot.ID, Name: targetSnapshot.Name, Platform: targetSnapshot.Platform,
+			EnvironmentID: targetSnapshot.EnvironmentID, HostID: targetSnapshot.HostID,
+			RuntimeID: targetSnapshot.RuntimeID, WorkingDirectory: targetSnapshot.WorkingDirectory,
+			Namespace: targetSnapshot.Namespace, WorkloadName: targetSnapshot.WorkloadName,
+			ContainerName: targetSnapshot.ContainerName, RolloutTimeout: targetSnapshot.RolloutTimeout,
+			IsActive: true,
+		}
+	} else if err := s.db.WithContext(ctx).First(&result.target, "id = ? AND is_active = ?", node.Config.DeploymentTargetID, true).Error; err != nil {
+		return nil, err
+	}
+	planSnapshot, hasPlanSnapshot := snapshot.DeploymentPlans[node.ID]
+	if hasPlanSnapshot {
+		if planSnapshot.ID == "" || (node.Config.DeploymentPlanID != "" && planSnapshot.ID != node.Config.DeploymentPlanID) {
+			return nil, ErrPipelineExecutionConfig
+		}
+		result.deploymentPlan = model.DeploymentPlan{
+			ID: planSnapshot.ID, Kind: planSnapshot.Kind, Script: planSnapshot.Script,
+			HelmChart: planSnapshot.HelmChart, HelmValues: planSnapshot.HelmValues,
+			ComposeFile: planSnapshot.ComposeFile, ServiceName: planSnapshot.ServiceName,
+			TimeoutSeconds: planSnapshot.TimeoutSeconds,
+		}
+	}
+	if result.target.Platform == model.DeploymentSSH {
+		if hasPlanSnapshot {
+			if !validSSHDeploymentPlanSnapshot(&result.deploymentPlan, &result.target) {
+				return nil, errors.New("SSH 部署方案快照无效")
+			}
+			return result, nil
+		}
+		if !validSSHExecutionSnapshot(&result.component, &result.target) {
+			return nil, errors.New("SSH 部署方案快照无效")
+		}
+		result.deploymentPlan = model.DeploymentPlan{
+			ID: result.component.DeploymentPlanID, Kind: result.component.DeploymentPlanKind,
+			Script:         result.component.DeploymentPlanScript,
+			TimeoutSeconds: result.component.DeploymentPlanTimeoutSeconds,
+		}
+		return result, nil
+	}
+	if s.docker == nil {
+		return nil, ErrPipelineExecutionUnavailable
+	}
 	if err := s.db.WithContext(ctx).First(&result.buildPlan, "id = ? AND is_active = ?", result.component.BuildPlanID, true).Error; err != nil {
 		return nil, err
 	}
 	if result.buildPlan.Kind != model.BuildPlanDockerfile {
 		return nil, errors.New("当前只支持执行 Dockerfile 构建方案")
 	}
-	if err := s.db.WithContext(ctx).First(&result.deploymentPlan, "id = ? AND is_active = ?", result.component.DeploymentPlanID, true).Error; err != nil {
-		return nil, err
+	if !hasPlanSnapshot {
+		if err := s.db.WithContext(ctx).First(&result.deploymentPlan, "id = ? AND is_active = ?", result.component.DeploymentPlanID, true).Error; err != nil {
+			return nil, err
+		}
 	}
-	if err := s.db.WithContext(ctx).First(&result.target, "id = ? AND is_active = ?", node.Config.DeploymentTargetID, true).Error; err != nil {
-		return nil, err
+	if !deploymentPlanSupportsTarget(result.deploymentPlan.Kind, result.target.Platform) {
+		return nil, ErrDeploymentPlanTargetMismatch
 	}
 	if result.component.ImageRegistryID != "" {
 		if err := s.db.WithContext(ctx).First(&result.registry, "id = ? AND is_active = ?", result.component.ImageRegistryID, true).Error; err != nil {
@@ -176,10 +257,33 @@ func (s *Service) loadExecution(ctx context.Context, payload DeployTaskPayload, 
 		}
 		parsed, err := url.Parse(endpoint.Host)
 		if err != nil || (parsed.Scheme != "ssh" && !dockerengine.IsLocalEndpointID(endpoint.ID)) {
-			return nil, errors.New("未绑定镜像仓库时发布环境必须使用本地 Docker 或 Docker SSH 主机")
+			return nil, errors.New("未绑定镜像仓库时，只能部署到本地 Docker 或 Docker SSH 主机")
 		}
 	}
 	return result, nil
+}
+
+func validSSHDeploymentPlanSnapshot(plan *model.DeploymentPlan, target *model.DeploymentTarget) bool {
+	return plan != nil && target != nil && target.Platform == model.DeploymentSSH &&
+		plan.ID != "" && plan.Kind == model.DeploymentPlanScript &&
+		strings.TrimSpace(plan.Script) != "" && len(plan.Script) <= 256*1024 &&
+		plan.TimeoutSeconds >= 30 && plan.TimeoutSeconds <= 3600 &&
+		target.HostID != "" && target.EnvironmentID != ""
+}
+
+func validSSHExecutionSnapshot(component *model.PipelineRunRepository, target *model.DeploymentTarget) bool {
+	if component == nil || target == nil || target.Platform != model.DeploymentSSH ||
+		component.DeploymentPlanKind != model.DeploymentPlanScript ||
+		strings.TrimSpace(component.DeploymentPlanScript) == "" ||
+		component.DeploymentPlanTimeoutSeconds < 30 || component.DeploymentPlanTimeoutSeconds > 3600 ||
+		component.DeploymentPlanDigest == "" || target.HostID == "" || target.EnvironmentID == "" {
+		return false
+	}
+	return component.DeploymentPlanDigest == model.DeploymentPlanExecutionDigest(
+		component.DeploymentPlanKind,
+		component.DeploymentPlanScript,
+		component.DeploymentPlanTimeoutSeconds,
+	)
 }
 
 func (s *Service) buildExecutionImage(

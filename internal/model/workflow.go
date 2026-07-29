@@ -30,7 +30,9 @@ func (ApplicationEnvironment) TableName() string { return "application_environme
 type WorkflowNodeType string
 
 const (
-	WorkflowNodeTrigger       WorkflowNodeType = "trigger"
+	WorkflowNodeTrigger WorkflowNodeType = "trigger"
+	// WorkflowNodeManualRelease 仅用于读取迁移前的工作流和不可变运行快照。
+	// 新工作流通过 trigger.config.events 中的 manual 选项表达手动发布。
 	WorkflowNodeManualRelease WorkflowNodeType = "manual_release"
 	WorkflowNodeManual        WorkflowNodeType = "manual"
 	WorkflowNodeApproval      WorkflowNodeType = "approval"

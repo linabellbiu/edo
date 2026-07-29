@@ -32,6 +32,7 @@ const (
 	systemNamespace              = "zrt"
 	externalGitWebhookSettingKey = "EXTERNAL_GIT_WEBHOOK_ENABLED"
 	loginLockoutSettingKey       = "LOGIN_LOCKOUT_ENABLED"
+	runtimeLoggingSettingKey     = "RUNTIME_LOGGING_SETTINGS"
 	logRetentionSettingKey       = "LOG_RETENTION_SETTINGS"
 	defaultPipelineLogDays       = 30
 	defaultAuditLogDays          = 180
@@ -95,6 +96,17 @@ type LogRetentionSettings struct {
 	PipelineLogDays int  `json:"pipeline_log_days"`
 	AuditLogDays    int  `json:"audit_log_days"`
 	Version         int  `json:"version"`
+}
+
+type RuntimeLoggingSettings struct {
+	Level             string `json:"level"`
+	HTTPAccessEnabled bool   `json:"http_access_enabled"`
+	Version           int    `json:"version"`
+}
+
+type runtimeLoggingValue struct {
+	Level             string `json:"level"`
+	HTTPAccessEnabled bool   `json:"http_access_enabled"`
 }
 
 type logRetentionValue struct {
@@ -395,6 +407,136 @@ func (s *Service) GetLogRetentionSettings(ctx context.Context) (LogRetentionSett
 		Enabled: value.Enabled, PipelineLogDays: value.PipelineLogDays,
 		AuditLogDays: value.AuditLogDays, Version: item.Version,
 	}, nil
+}
+
+// GetRuntimeLoggingSettings 使用启动配置作为首次运行的默认值；一旦管理员保存，
+// 后续启动以数据库中的设置为准。
+func (s *Service) GetRuntimeLoggingSettings(
+	ctx context.Context,
+	defaultLevel string,
+	defaultHTTPAccess bool,
+) (RuntimeLoggingSettings, error) {
+	defaultLevel = normalizeRuntimeLogLevel(defaultLevel)
+	if !validRuntimeLogging(runtimeLoggingValue{Level: defaultLevel}) {
+		defaultLevel = "info"
+	}
+	defaults := RuntimeLoggingSettings{Level: defaultLevel, HTTPAccessEnabled: defaultHTTPAccess}
+	var item model.Configuration
+	err := s.db.WithContext(ctx).Where(
+		"namespace = ? AND environment = ? AND key = ?",
+		systemNamespace, model.EnvironmentGlobal, runtimeLoggingSettingKey,
+	).First(&item).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return defaults, nil
+	}
+	if err != nil {
+		return RuntimeLoggingSettings{}, fmt.Errorf("读取运行日志设置失败: %w", err)
+	}
+	if item.IsSecret || item.SecretCiphertext != "" || !item.IsActive {
+		return RuntimeLoggingSettings{}, ErrInvalidConfiguration
+	}
+	var value runtimeLoggingValue
+	if err := json.Unmarshal([]byte(item.Value), &value); err != nil || !validRuntimeLogging(value) {
+		return RuntimeLoggingSettings{}, ErrInvalidConfiguration
+	}
+	return RuntimeLoggingSettings{
+		Level: value.Level, HTTPAccessEnabled: value.HTTPAccessEnabled, Version: item.Version,
+	}, nil
+}
+
+func (s *Service) UpdateRuntimeLoggingSettings(
+	ctx context.Context,
+	actorID, level string,
+	httpAccessEnabled bool,
+	expectedVersion int,
+) (RuntimeLoggingSettings, error) {
+	value := runtimeLoggingValue{
+		Level: normalizeRuntimeLogLevel(level), HTTPAccessEnabled: httpAccessEnabled,
+	}
+	if expectedVersion < 0 || !validRuntimeLogging(value) {
+		return RuntimeLoggingSettings{}, ErrInvalidConfiguration
+	}
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		return RuntimeLoggingSettings{}, fmt.Errorf("序列化运行日志设置失败: %w", err)
+	}
+	var updated model.Configuration
+	err = s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var current model.Configuration
+		err := tx.Where(
+			"namespace = ? AND environment = ? AND key = ?",
+			systemNamespace, model.EnvironmentGlobal, runtimeLoggingSettingKey,
+		).First(&current).Error
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			if expectedVersion != 0 {
+				return ErrVersionConflict
+			}
+			now := time.Now().UTC()
+			current = model.Configuration{
+				ID: uuid.NewString(), Namespace: systemNamespace, Environment: model.EnvironmentGlobal,
+				Key: runtimeLoggingSettingKey, Value: string(encoded), Version: 1, IsActive: true,
+				CreatedBy: actorID, UpdatedBy: actorID, CreatedAt: now, UpdatedAt: now,
+			}
+			if err := tx.Create(&current).Error; err != nil {
+				if errors.Is(err, gorm.ErrDuplicatedKey) {
+					return ErrVersionConflict
+				}
+				return err
+			}
+			if err := tx.Create(revisionFrom(&current, actorID)).Error; err != nil {
+				return err
+			}
+			updated = current
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if current.Version != expectedVersion {
+			return ErrVersionConflict
+		}
+		now := time.Now().UTC()
+		nextVersion := current.Version + 1
+		result := tx.Model(&model.Configuration{}).Where("id = ? AND version = ?", current.ID, current.Version).
+			Updates(map[string]any{
+				"value": string(encoded), "secret_ciphertext": "", "is_secret": false,
+				"is_active": true, "version": nextVersion, "updated_by": actorID, "updated_at": now,
+			})
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected != 1 {
+			return ErrVersionConflict
+		}
+		current.Value, current.SecretCiphertext, current.IsSecret, current.IsActive = string(encoded), "", false, true
+		current.Version, current.UpdatedBy, current.UpdatedAt = nextVersion, actorID, now
+		if err := tx.Create(revisionFrom(&current, actorID)).Error; err != nil {
+			return err
+		}
+		updated = current
+		return nil
+	})
+	if err != nil {
+		if errors.Is(err, ErrVersionConflict) || errors.Is(err, ErrInvalidConfiguration) {
+			return RuntimeLoggingSettings{}, err
+		}
+		return RuntimeLoggingSettings{}, fmt.Errorf("更新运行日志设置失败: %w", err)
+	}
+	return RuntimeLoggingSettings{
+		Level: value.Level, HTTPAccessEnabled: value.HTTPAccessEnabled, Version: updated.Version,
+	}, nil
+}
+
+func validRuntimeLogging(value runtimeLoggingValue) bool {
+	return value.Level == "debug" || value.Level == "info" || value.Level == "warn" || value.Level == "error"
+}
+
+func normalizeRuntimeLogLevel(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	if value == "warning" {
+		return "warn"
+	}
+	return value
 }
 
 func (s *Service) UpdateLogRetentionSettings(

@@ -82,13 +82,30 @@ func TestResourcesCanBeBoundAndPrepared(t *testing.T) {
 	if len(application.Environments) != 1 || application.Environments[0].DeploymentPlanID != deploymentPlan.ID {
 		t.Fatalf("环境没有使用应用级部署方案: %+v", application.Environments)
 	}
+	workflowResult, err := service.GetWorkflow(ctx, application.ID)
+	if err != nil {
+		t.Fatalf("读取应用流水线失败: %v", err)
+	}
+	for i := range workflowResult.Workflow.Nodes {
+		if workflowResult.Workflow.Nodes[i].Type == model.WorkflowNodeTrigger {
+			workflowResult.Workflow.Nodes[i].Config.Events = append(workflowResult.Workflow.Nodes[i].Config.Events, "manual")
+			break
+		}
+	}
+	workflowResult, err = service.SaveWorkflow(ctx, application.ID, "admin", WorkflowInput{
+		Name: workflowResult.Workflow.Name, Revision: workflowResult.Workflow.Revision, Activate: true,
+		Nodes: workflowResult.Workflow.Nodes, Edges: workflowResult.Workflow.Edges, Viewport: workflowResult.Workflow.Viewport,
+	})
+	if err != nil || !workflowResult.Workflow.IsActive {
+		t.Fatalf("启用可手动发布的应用流水线失败: result=%+v err=%v", workflowResult, err)
+	}
 
 	blocked, err := service.PrepareRun(ctx, application.ID, "admin")
-	if err != ErrPipelineIncomplete || blocked.Status != model.PipelineRunBlocked {
-		t.Fatalf("未观察到代码版本时流水线应被阻止: run=%+v err=%v", blocked, err)
+	if err != nil || blocked.Status != model.PipelineRunBlocked {
+		t.Fatalf("手动执行应先等待选择代码版本: run=%+v err=%v", blocked, err)
 	}
-	if blocked.Message != "缺少：代码版本" {
-		t.Fatalf("阻塞原因应明确指出缺少代码版本: %q", blocked.Message)
+	if blocked.Message != "请选择每个代码仓库要发布的 Commit" {
+		t.Fatalf("手动执行提示没有明确要求选择代码版本: %q", blocked.Message)
 	}
 	if len(blocked.Repositories) != 1 || blocked.Repositories[0].BuildPlanID != buildPlan.ID ||
 		blocked.Repositories[0].DeploymentPlanID != deploymentPlan.ID {
@@ -103,8 +120,8 @@ func TestResourcesCanBeBoundAndPrepared(t *testing.T) {
 		t.Fatalf("设置测试代码版本失败: %v", err)
 	}
 	ready, err := service.PrepareRun(ctx, application.ID, "admin")
-	if err != nil || ready.Status != model.PipelineRunReady || ready.Stage != "configured" {
-		t.Fatalf("完整绑定的流水线未进入就绪状态: run=%+v err=%v", ready, err)
+	if err != nil || ready.Status != model.PipelineRunBlocked || ready.Ref != "" || ready.CommitSHA != "" {
+		t.Fatalf("手动执行不应静默复用后台最近观察到的代码版本: run=%+v err=%v", ready, err)
 	}
 	updated, err := service.UpdateApplication(ctx, application.ID, ApplicationInput{
 		Name: application.Name, RepositoryID: repositoryID, Branch: application.Branch,
@@ -117,6 +134,132 @@ func TestResourcesCanBeBoundAndPrepared(t *testing.T) {
 	}
 	if updated.ImageRegistryID != "" || updated.ImageRegistry != nil {
 		t.Fatalf("显式选择不绑定时仍保留了镜像仓库: %+v", updated)
+	}
+}
+
+func TestApplicationRejectsDeploymentPlanTargetMismatch(t *testing.T) {
+	service, db, _, repositoryID := newPipelineTestService(t)
+	plan, err := service.CreateDeploymentPlan(context.Background(), "admin", DeploymentPlanInput{
+		Name: "SSH 命令部署", Kind: model.DeploymentPlanScript, Script: "echo deploy\n", TimeoutSeconds: 120,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	target := model.DeploymentTarget{
+		ID: "docker-target-for-script", Name: "Docker 目标", Platform: model.DeploymentDocker,
+		Environment: model.EnvironmentDevelopment, RuntimeID: "docker-1", WorkloadName: "api",
+		RolloutTimeout: 120, IsActive: true, CreatedBy: "admin", CreatedAt: now, UpdatedAt: now,
+	}
+	if err := db.Create(&target).Error; err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.CreateApplication(context.Background(), "admin", ApplicationInput{
+		Name: "错误绑定应用", RepositoryID: repositoryID, Branch: "main", WatchPush: true,
+		PollIntervalSeconds: 60, DeploymentPlanID: plan.ID, DeploymentTargetID: target.ID,
+	}); !errors.Is(err, ErrDeploymentPlanTargetMismatch) {
+		t.Fatalf("Script 部署方案绑定 Docker 目标未返回稳定错误: %v", err)
+	}
+}
+
+func TestWorkflowDraftRejectsDeploymentPlanTargetMismatch(t *testing.T) {
+	service, db, _, repositoryID := newPipelineTestService(t)
+	ctx := context.Background()
+	plan, err := service.CreateDeploymentPlan(ctx, "admin", DeploymentPlanInput{
+		Name: "SSH 流水线部署", Kind: model.DeploymentPlanScript, Script: "echo deploy\n", TimeoutSeconds: 120,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	sshTarget := model.DeploymentTarget{
+		ID: "workflow-ssh-target", Name: "SSH 目标", Platform: model.DeploymentSSH,
+		Environment: model.EnvironmentDevelopment, EnvironmentID: "environment-1", HostID: "host-1",
+		RolloutTimeout: 120, IsActive: true, CreatedBy: "admin", CreatedAt: now, UpdatedAt: now,
+	}
+	dockerTarget := model.DeploymentTarget{
+		ID: "workflow-docker-target", Name: "Docker 目标", Platform: model.DeploymentDocker,
+		Environment: model.EnvironmentDevelopment, RuntimeID: "docker-1", WorkloadName: "api",
+		RolloutTimeout: 120, IsActive: true, CreatedBy: "admin", CreatedAt: now, UpdatedAt: now,
+	}
+	if err := db.Create(&[]model.DeploymentTarget{sshTarget, dockerTarget}).Error; err != nil {
+		t.Fatal(err)
+	}
+	application, err := service.CreateApplication(ctx, "admin", ApplicationInput{
+		Name: "SSH 流水线应用", RepositoryID: repositoryID, Branch: "main", WatchPush: true,
+		PollIntervalSeconds: 60, DeploymentPlanID: plan.ID, DeploymentTargetID: sshTarget.ID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	workflow, err := service.GetWorkflow(ctx, application.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	nodes, edges := cloneWorkflowGraph(workflow.Workflow.Nodes, workflow.Workflow.Edges)
+	for i := range nodes {
+		if nodes[i].Type == model.WorkflowNodeDeploy {
+			nodes[i].Config.DeploymentTargetID = dockerTarget.ID
+		}
+	}
+	result, err := service.SaveWorkflow(ctx, application.ID, "admin", WorkflowInput{
+		Name: workflow.Workflow.Name, Revision: workflow.Workflow.Revision, Activate: false,
+		Nodes: nodes, Edges: edges, Viewport: workflow.Workflow.Viewport,
+	})
+	if !errors.Is(err, ErrInvalidWorkflow) || result == nil || !hasWorkflowIssue(result.Issues, "deployment_plan_target_mismatch") {
+		t.Fatalf("流水线草稿保存未拒绝方案与目标错配: result=%+v err=%v", result, err)
+	}
+	stored, err := service.GetWorkflow(ctx, application.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.Workflow.Revision != workflow.Workflow.Revision {
+		t.Fatalf("被拒绝的错配草稿不应写入数据库: before=%d after=%d", workflow.Workflow.Revision, stored.Workflow.Revision)
+	}
+}
+
+func TestDeploymentPlanTargetCompatibilityMatrix(t *testing.T) {
+	tests := []struct {
+		kind     model.DeploymentPlanKind
+		platform model.DeploymentPlatform
+		want     bool
+	}{
+		{model.DeploymentPlanScript, model.DeploymentSSH, true},
+		{model.DeploymentPlanScript, model.DeploymentDocker, false},
+		{model.DeploymentPlanHelm, model.DeploymentKubernetes, true},
+		{model.DeploymentPlanHelm, model.DeploymentDocker, false},
+		{model.DeploymentPlanDocker, model.DeploymentDocker, true},
+		{model.DeploymentPlanCompose, model.DeploymentDocker, true},
+		{model.DeploymentPlanDocker, model.DeploymentKubernetes, false},
+	}
+	for _, test := range tests {
+		if got := deploymentPlanSupportsTarget(test.kind, test.platform); got != test.want {
+			t.Fatalf("部署方案/目标兼容矩阵错误: kind=%s platform=%s got=%t want=%t", test.kind, test.platform, got, test.want)
+		}
+	}
+}
+
+func TestScriptDeploymentPlanPreservesExactBytes(t *testing.T) {
+	service, _, _, _ := newPipelineTestService(t)
+	original := "\n  printf 'deploy'  \n\n"
+	plan, err := service.CreateDeploymentPlan(context.Background(), "admin", DeploymentPlanInput{
+		Name: "保留脚本字节", Kind: model.DeploymentPlanScript, Script: original, TimeoutSeconds: 120,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.Script != original {
+		t.Fatalf("创建部署方案时修改了脚本原始字节: got=%q want=%q", plan.Script, original)
+	}
+	updatedScript := "\tprintf 'updated'\n"
+	updated, err := service.UpdateDeploymentPlan(context.Background(), plan.ID, DeploymentPlanInput{
+		Name: plan.Name, Kind: model.DeploymentPlanScript, Script: updatedScript, TimeoutSeconds: 120,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.Script != updatedScript {
+		t.Fatalf("更新部署方案时修改了脚本原始字节: got=%q want=%q", updated.Script, updatedScript)
 	}
 }
 
@@ -446,8 +589,39 @@ func TestReleaseWorkflowUsesOnlyExplicitApprovalNodes(t *testing.T) {
 	}).Error; err != nil {
 		t.Fatalf("设置测试代码版本失败: %v", err)
 	}
-	run, err := service.PrepareRun(ctx, application.ID, "admin")
-	if err != nil || run.CurrentNodeID != "trigger-test" {
+	application, err = service.FindApplication(ctx, application.ID)
+	if err != nil {
+		t.Fatalf("重新读取应用失败: %v", err)
+	}
+	var source *model.WorkflowNode
+	for i := range application.Workflow.Nodes {
+		if application.Workflow.Nodes[i].ID == "trigger-test" {
+			source = &application.Workflow.Nodes[i]
+			break
+		}
+	}
+	if source == nil {
+		t.Fatal("启用后的流水线缺少测试代码触发节点")
+	}
+	runNow := time.Now().UTC()
+	run, err := service.newResolvedWorkflowRun(
+		ctx, application, application.Workflow, *source, "poll_push",
+		application.LastObservedRef, application.LastObservedCommit, "system", "检测到测试分支更新", runNow,
+	)
+	if err != nil {
+		t.Fatalf("创建代码事件流水线运行失败: %v", err)
+	}
+	components := pipelineRunRepositories(application, run.ID, run.Ref, run.CommitSHA, runNow)
+	if err := db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Create(run).Error; err != nil {
+			return err
+		}
+		return tx.Create(&components).Error
+	}); err != nil {
+		t.Fatalf("保存代码事件流水线运行失败: %v", err)
+	}
+	run.Repositories = components
+	if run.CurrentNodeID != "trigger-test" {
 		t.Fatalf("流水线运行没有从测试触发节点启动: run=%+v err=%v", run, err)
 	}
 	if run.ApprovalRequired {
@@ -456,6 +630,9 @@ func TestReleaseWorkflowUsesOnlyExplicitApprovalNodes(t *testing.T) {
 	listedRuns, err := service.ListRuns(ctx, 10)
 	if err != nil || len(listedRuns) == 0 || listedRuns[0].ApprovalRequired || listedRuns[0].CurrentNodeName == "" {
 		t.Fatalf("流水线运行列表错误地增加了审核要求: runs=%+v err=%v", listedRuns, err)
+	}
+	if listedRuns[0].ExecutionGraph == nil || len(listedRuns[0].ExecutionGraph.Nodes) != len(workflowResult.Workflow.Nodes) || len(listedRuns[0].ExecutionGraph.Edges) != len(workflowResult.Workflow.Edges) {
+		t.Fatalf("流水线运行列表没有返回只读执行拓扑: graph=%+v", listedRuns[0].ExecutionGraph)
 	}
 	run, err = service.AdvanceRun(ctx, run.ID, "admin", "")
 	if err != nil || run.CurrentNodeID != "deploy-test" || run.Status != model.PipelineRunRunning {

@@ -120,6 +120,40 @@ func TestLoginLockoutDefaultsOffAndCanBeEnabledFromSettings(t *testing.T) {
 	}
 }
 
+func TestRuntimeLoggingCanBeUpdatedWithoutRestart(t *testing.T) {
+	router, closeTest := newAuthTestRouter(t)
+	defer closeTest()
+
+	login := performJSONRequest(t, router, http.MethodPost, "/api/v1/auth/login", map[string]string{
+		"username": "admin", "password": "correct horse battery staple",
+	}, nil)
+	adminCookie := login.Result().Cookies()[0]
+
+	current := performJSONRequest(t, router, http.MethodGet, "/api/v1/settings/runtime-logging", nil, adminCookie)
+	if current.Code != http.StatusOK || !bytes.Contains(current.Body.Bytes(), []byte(`"level":"info"`)) ||
+		!bytes.Contains(current.Body.Bytes(), []byte(`"http_access_enabled":true`)) {
+		t.Fatalf("运行日志默认设置错误: status=%d body=%s", current.Code, current.Body.String())
+	}
+	updated := performJSONRequest(t, router, http.MethodPut, "/api/v1/settings/runtime-logging", map[string]any{
+		"level": "error", "http_access_enabled": false, "expected_version": 0,
+	}, adminCookie)
+	if updated.Code != http.StatusOK || !bytes.Contains(updated.Body.Bytes(), []byte(`"level":"error"`)) ||
+		!bytes.Contains(updated.Body.Bytes(), []byte(`"http_access_enabled":false`)) {
+		t.Fatalf("热更新运行日志设置失败: status=%d body=%s", updated.Code, updated.Body.String())
+	}
+	invalid := performJSONRequest(t, router, http.MethodPut, "/api/v1/settings/runtime-logging", map[string]any{
+		"level": "verbose", "http_access_enabled": true, "expected_version": 1,
+	}, adminCookie)
+	if invalid.Code != http.StatusBadRequest {
+		t.Fatalf("无效日志级别未被接口拒绝: status=%d body=%s", invalid.Code, invalid.Body.String())
+	}
+	persisted := performJSONRequest(t, router, http.MethodGet, "/api/v1/settings/runtime-logging", nil, adminCookie)
+	if persisted.Code != http.StatusOK || !bytes.Contains(persisted.Body.Bytes(), []byte(`"version":1`)) ||
+		!bytes.Contains(persisted.Body.Bytes(), []byte(`"http_access_enabled":false`)) {
+		t.Fatalf("运行日志设置未持久化: status=%d body=%s", persisted.Code, persisted.Body.String())
+	}
+}
+
 func performGenericWebhookRequest(
 	t *testing.T,
 	handler http.Handler,

@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
+	"path"
 	"regexp"
 	"strings"
 	"time"
@@ -18,33 +20,37 @@ import (
 	"zrt/internal/dockerengine"
 	"zrt/internal/kube"
 	"zrt/internal/model"
+	"zrt/internal/sshdeploy"
 	"zrt/internal/task"
 )
 
 var (
-	ErrInvalidTarget          = errors.New("发布环境配置无效")
-	ErrTargetExists           = errors.New("发布环境名称已存在")
-	ErrTargetNotFound         = errors.New("发布环境不存在")
-	ErrInvalidImage           = errors.New("容器镜像引用无效")
-	ErrImmutableImageRequired = errors.New("生产环境必须使用带摘要的不可变镜像")
-	ErrDeploymentNotFound     = errors.New("发布记录不存在")
-	ErrInvalidDeploymentState = errors.New("发布记录当前状态不允许此操作")
-	ErrRollbackUnavailable    = errors.New("该发布记录没有可回滚的上一镜像")
+	ErrInvalidTarget           = errors.New("部署配置无效")
+	ErrTargetExists            = errors.New("部署配置名称已存在")
+	ErrTargetNotFound          = errors.New("部署配置不存在")
+	ErrInvalidImage            = errors.New("容器镜像引用无效")
+	ErrImmutableImageRequired  = errors.New("镜像仓库或 Kubernetes 发布必须使用带摘要的不可变镜像")
+	ErrDeploymentNotFound      = errors.New("发布记录不存在")
+	ErrInvalidDeploymentState  = errors.New("发布记录当前状态不允许此操作")
+	ErrRollbackUnavailable     = errors.New("该发布记录没有可回滚的上一镜像")
+	ErrCommandPipelineRequired = errors.New("命令脚本发布必须从流水线部署节点发起")
 )
 
 var targetNamePattern = regexp.MustCompile(`^[\p{L}\p{N}][\p{L}\p{N}_. -]{0,127}$`)
 var workloadNamePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]{0,252}$`)
 
 type TargetInput struct {
-	Name           string
-	Description    string
-	Platform       model.DeploymentPlatform
-	Environment    model.EnvironmentType
-	RuntimeID      string
-	Namespace      string
-	WorkloadName   string
-	ContainerName  string
-	RolloutTimeout int
+	Name             string
+	Description      string
+	Platform         model.DeploymentPlatform
+	EnvironmentID    string
+	RuntimeID        string
+	HostID           string
+	WorkingDirectory string
+	Namespace        string
+	WorkloadName     string
+	ContainerName    string
+	RolloutTimeout   int
 }
 
 type RequestInput struct {
@@ -56,14 +62,34 @@ type RequestInput struct {
 	ApprovedBy      string
 }
 
+type CommandRequestInput struct {
+	TargetID         string
+	PipelineRunID    string
+	WorkflowNodeID   string
+	ApprovedBy       string
+	DeploymentPlanID string
+	PlanKind         model.DeploymentPlanKind
+	Script           string
+	ScriptDigest     string
+	TimeoutSeconds   int
+	Environment      map[string]string
+	Stdout           io.Writer
+	Stderr           io.Writer
+}
+
 type TaskPayload struct {
 	DeploymentID string `json:"deployment_id"`
+}
+
+type hostScriptRunner interface {
+	RunHostDeploymentScript(context.Context, sshdeploy.Input) (sshdeploy.Result, error)
 }
 
 type Service struct {
 	db            *gorm.DB
 	docker        *dockerengine.Service
 	kube          *kube.Service
+	ssh           hostScriptRunner
 	locks         *redislock.Client
 	lockKeyPrefix string
 	logger        *slog.Logger
@@ -73,6 +99,7 @@ func NewService(
 	db *gorm.DB,
 	docker *dockerengine.Service,
 	kubeService *kube.Service,
+	sshService hostScriptRunner,
 	locks *redislock.Client,
 	lockKeyPrefix string,
 	logger *slog.Logger,
@@ -84,10 +111,24 @@ func NewService(
 		db:            db,
 		docker:        docker,
 		kube:          kubeService,
+		ssh:           sshService,
 		locks:         locks,
 		lockKeyPrefix: strings.TrimSuffix(strings.TrimSpace(lockKeyPrefix), ":"),
 		logger:        logger,
 	}
+}
+
+// WithTransaction 让部署位置与上层聚合资源共享同一个数据库事务。
+// 返回的是浅拷贝，不会改变正在处理其他请求的 Service。
+func (s *Service) WithTransaction(tx *gorm.DB) *Service {
+	if s == nil || tx == nil {
+		return s
+	}
+	clone := *s
+	clone.db = tx
+	clone.docker = s.docker.WithTransaction(tx)
+	clone.kube = s.kube.WithTransaction(tx)
+	return &clone
 }
 
 func (s *Service) ListTargets(ctx context.Context) ([]model.DeploymentTarget, error) {
@@ -106,8 +147,10 @@ func (s *Service) CreateTarget(ctx context.Context, actorID string, input Target
 	now := time.Now().UTC()
 	target := &model.DeploymentTarget{
 		ID: uuid.NewString(), Name: input.Name, Description: input.Description,
-		Platform: input.Platform, Environment: input.Environment,
-		RuntimeID: input.RuntimeID, Namespace: input.Namespace, WorkloadName: input.WorkloadName,
+		Platform: input.Platform, Environment: "", // 旧数据库列仍有 NOT NULL 约束，但不再承载业务语义。
+		EnvironmentID: input.EnvironmentID, HostID: input.HostID,
+		RuntimeID: input.RuntimeID, WorkingDirectory: input.WorkingDirectory,
+		Namespace: input.Namespace, WorkloadName: input.WorkloadName,
 		ContainerName: input.ContainerName, RolloutTimeout: input.RolloutTimeout,
 		IsActive: true, CreatedBy: actorID, CreatedAt: now, UpdatedAt: now,
 	}
@@ -135,8 +178,9 @@ func (s *Service) UpdateTarget(ctx context.Context, id string, input TargetInput
 	now := time.Now().UTC()
 	if err := s.db.WithContext(ctx).Model(&existing).Updates(map[string]any{
 		"name": input.Name, "description": input.Description,
-		"platform": input.Platform, "environment": input.Environment,
-		"runtime_id": input.RuntimeID, "namespace": input.Namespace,
+		"platform":       input.Platform,
+		"environment_id": input.EnvironmentID, "host_id": input.HostID,
+		"runtime_id": input.RuntimeID, "working_directory": input.WorkingDirectory, "namespace": input.Namespace,
 		"workload_name": input.WorkloadName, "container_name": input.ContainerName,
 		"rollout_timeout": input.RolloutTimeout, "updated_at": now,
 	}).Error; err != nil {
@@ -146,8 +190,9 @@ func (s *Service) UpdateTarget(ctx context.Context, id string, input TargetInput
 		return nil, fmt.Errorf("更新发布目标失败: %w", err)
 	}
 	existing.Name, existing.Description = input.Name, input.Description
-	existing.Platform, existing.Environment = input.Platform, input.Environment
-	existing.RuntimeID, existing.Namespace = input.RuntimeID, input.Namespace
+	existing.Platform = input.Platform
+	existing.EnvironmentID, existing.HostID = input.EnvironmentID, input.HostID
+	existing.RuntimeID, existing.WorkingDirectory, existing.Namespace = input.RuntimeID, input.WorkingDirectory, input.Namespace
 	existing.WorkloadName, existing.ContainerName = input.WorkloadName, input.ContainerName
 	existing.RolloutTimeout, existing.UpdatedAt = input.RolloutTimeout, now
 	return &existing, nil
@@ -181,7 +226,10 @@ func (s *Service) Request(ctx context.Context, actorID string, input RequestInpu
 	if err != nil {
 		return nil, err
 	}
-	image, err := validateImage(input.Image, target.Environment == model.EnvironmentProduction)
+	if target.Platform == model.DeploymentSSH {
+		return nil, ErrCommandPipelineRequired
+	}
+	image, err := validateImage(input.Image, true)
 	if err != nil {
 		return nil, err
 	}
@@ -211,6 +259,9 @@ func (s *Service) RequestAndRun(ctx context.Context, actorID string, input Reque
 	if err != nil {
 		return nil, err
 	}
+	if target.Platform == model.DeploymentSSH {
+		return nil, ErrCommandPipelineRequired
+	}
 	image, err := validatePipelineImage(input.Image, input.ExpectedImageID, target)
 	if err != nil {
 		return nil, err
@@ -228,11 +279,62 @@ func (s *Service) RequestAndRun(ctx context.Context, actorID string, input Reque
 	if err := s.db.WithContext(ctx).Create(record).Error; err != nil {
 		return nil, fmt.Errorf("创建流水线发布记录失败: %w", err)
 	}
-	if err := s.run(ctx, record.ID, input.ExpectedImageID); err != nil {
+	if err := s.run(ctx, record.ID, input.ExpectedImageID, nil); err != nil {
 		return record, err
 	}
 	if err := s.db.WithContext(ctx).First(record, "id = ?", record.ID).Error; err != nil {
 		return nil, fmt.Errorf("读取流水线发布结果失败: %w", err)
+	}
+	return record, nil
+}
+
+type commandExecution struct {
+	environment map[string]string
+	stdout      io.Writer
+	stderr      io.Writer
+}
+
+func (s *Service) RequestCommandAndRun(ctx context.Context, actorID string, input CommandRequestInput) (*model.DeploymentRecord, error) {
+	target, err := s.findTarget(ctx, input.TargetID)
+	if err != nil {
+		return nil, err
+	}
+	input.ScriptDigest = strings.TrimSpace(input.ScriptDigest)
+	input.DeploymentPlanID = strings.TrimSpace(input.DeploymentPlanID)
+	expectedDigest := model.DeploymentPlanExecutionDigest(input.PlanKind, input.Script, input.TimeoutSeconds)
+	if target.Platform != model.DeploymentSSH || input.PlanKind != model.DeploymentPlanScript ||
+		input.DeploymentPlanID == "" || strings.TrimSpace(input.Script) == "" || len(input.Script) > 256*1024 ||
+		input.TimeoutSeconds < 30 || input.TimeoutSeconds > 3600 || input.ScriptDigest == "" ||
+		input.ScriptDigest != expectedDigest || s.ssh == nil {
+		return nil, ErrInvalidTarget
+	}
+	now := time.Now().UTC()
+	record := &model.DeploymentRecord{
+		ID: uuid.NewString(), PipelineRunID: input.PipelineRunID, WorkflowNodeID: input.WorkflowNodeID,
+		TargetID: target.ID, Operation: model.DeploymentRelease, Status: model.DeploymentQueued,
+		RequestedBy: actorID, CreatedAt: now, UpdatedAt: now,
+		DeploymentPlanID: input.DeploymentPlanID, DeploymentPlanKind: input.PlanKind,
+		CommandScript: input.Script, CommandDigest: input.ScriptDigest, CommandTimeout: input.TimeoutSeconds,
+	}
+	if input.ApprovedBy != "" {
+		record.ApprovedBy, record.ApprovedAt = &input.ApprovedBy, &now
+	}
+	applyTargetSnapshot(record, target)
+	if err := s.db.WithContext(ctx).Create(record).Error; err != nil {
+		return nil, fmt.Errorf("创建命令脚本流水线发布记录失败: %w", err)
+	}
+	environment := make(map[string]string, len(input.Environment)+1)
+	for key, value := range input.Environment {
+		environment[key] = value
+	}
+	environment["ZRT_DEPLOYMENT_ID"] = record.ID
+	if err := s.run(ctx, record.ID, "", &commandExecution{
+		environment: environment, stdout: input.Stdout, stderr: input.Stderr,
+	}); err != nil {
+		return record, err
+	}
+	if err := s.db.WithContext(ctx).First(record, "id = ?", record.ID).Error; err != nil {
+		return nil, fmt.Errorf("读取命令脚本流水线发布结果失败: %w", err)
 	}
 	return record, nil
 }
@@ -245,7 +347,7 @@ func (s *Service) Rollback(ctx context.Context, sourceID, actorID string) (*mode
 		}
 		return nil, fmt.Errorf("查询待回滚发布记录失败: %w", err)
 	}
-	if source.Status != model.DeploymentSucceeded || source.PreviousImage == "" {
+	if source.Platform == model.DeploymentSSH || source.Status != model.DeploymentSucceeded || source.PreviousImage == "" {
 		return nil, ErrRollbackUnavailable
 	}
 	now := time.Now().UTC()
@@ -268,10 +370,10 @@ func (s *Service) Rollback(ctx context.Context, sourceID, actorID string) (*mode
 }
 
 func (s *Service) Run(ctx context.Context, deploymentID string) error {
-	return s.run(ctx, deploymentID, "")
+	return s.run(ctx, deploymentID, "", nil)
 }
 
-func (s *Service) run(ctx context.Context, deploymentID, expectedImageID string) error {
+func (s *Service) run(ctx context.Context, deploymentID, expectedImageID string, command *commandExecution) error {
 	var record model.DeploymentRecord
 	if err := s.db.WithContext(ctx).First(&record, "id = ?", deploymentID).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -283,7 +385,7 @@ func (s *Service) run(ctx context.Context, deploymentID, expectedImageID string)
 	if err != nil {
 		internalErr := fmt.Errorf("获取发布环境并发锁失败: %w", err)
 		s.logger.Error("获取发布环境并发锁失败", "operation", "deployment_lock", "deployment_id", deploymentID, "target_id", record.TargetID, "err", err)
-		return s.markFailed(ctx, deploymentID, "deployment_lock_failed", "等待发布环境可用失败，请稍后重试", internalErr, "")
+		return s.markFailed(ctx, deploymentID, "deployment_lock_failed", "等待部署运行环境可用失败，请稍后重试", internalErr, "", nil)
 	}
 	if lock != nil {
 		defer func() {
@@ -314,12 +416,29 @@ func (s *Service) run(ctx context.Context, deploymentID, expectedImageID string)
 	}
 
 	if err := s.db.WithContext(ctx).First(&record, "id = ?", deploymentID).Error; err != nil {
-		return s.markFailed(ctx, deploymentID, "deployment_record_missing", "发布记录读取失败", err, "")
+		return s.markFailed(ctx, deploymentID, "deployment_record_missing", "发布记录读取失败", err, "", nil)
 	}
 	timeout := time.Duration(record.RolloutTimeout) * time.Second
 	var previousImage string
 	var warning error
+	var commandExitCode *int
 	switch record.Platform {
+	case model.DeploymentSSH:
+		commandTimeout, validTimeout := effectiveSSHTimeout(&record)
+		if command == nil || s.ssh == nil || record.CommandScript == "" || !validTimeout {
+			err = ErrInvalidTarget
+			break
+		}
+		result, commandErr := s.ssh.RunHostDeploymentScript(ctx, sshdeploy.Input{
+			HostID: record.HostID, EnvironmentID: record.EnvironmentID,
+			WorkingDirectory: record.WorkingDirectory, Script: record.CommandScript,
+			Timeout:     commandTimeout,
+			Environment: command.environment, Stdout: command.stdout, Stderr: command.stderr,
+		})
+		if result.ExitCode >= 0 {
+			commandExitCode = &result.ExitCode
+		}
+		err = commandErr
 	case model.DeploymentDocker:
 		if expectedImageID == "" {
 			previousImage, warning, err = s.docker.DeployContainer(
@@ -339,7 +458,17 @@ func (s *Service) run(ctx context.Context, deploymentID, expectedImageID string)
 		err = ErrInvalidTarget
 	}
 	if err != nil {
-		return s.markFailed(ctx, deploymentID, "deployment_execution_failed", "发布执行失败，需人工确认目标状态", err, previousImage)
+		message := "发布执行失败，需人工确认目标状态"
+		code := "deployment_execution_failed"
+		if record.Platform == model.DeploymentSSH {
+			code, message = "ssh_command_failed", "命令脚本部署失败，请查看流水线日志"
+			if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+				code, message = "ssh_command_timeout", "命令脚本部署超时，请查看流水线日志"
+			}
+			s.logger.Error("命令脚本部署失败", "operation", "command_deployment_execute", "deployment_id", deploymentID,
+				"target_id", record.TargetID, "host_id", record.HostID, "exit_code", commandExitCode, "err", err)
+		}
+		return s.markFailed(ctx, deploymentID, code, message, err, previousImage, commandExitCode)
 	}
 	warningMessage := ""
 	if warning != nil {
@@ -352,6 +481,7 @@ func (s *Service) run(ctx context.Context, deploymentID, expectedImageID string)
 			"status": model.DeploymentSucceeded, "previous_image": previousImage,
 			"finished_at": finishedAt, "updated_at": finishedAt,
 			"error_code": "", "error_message": "", "warning_message": warningMessage,
+			"command_exit_code": commandExitCode,
 		}).Error; err != nil {
 		return fmt.Errorf("记录发布成功状态失败: %w", err)
 	}
@@ -366,6 +496,13 @@ func (s *Service) acquireTargetLock(ctx context.Context, record *model.Deploymen
 		return nil, ErrInvalidTarget
 	}
 	rolloutTimeout := time.Duration(record.RolloutTimeout) * time.Second
+	if record.Platform == model.DeploymentSSH {
+		var valid bool
+		rolloutTimeout, valid = effectiveSSHTimeout(record)
+		if !valid {
+			return nil, ErrInvalidTarget
+		}
+	}
 	if rolloutTimeout < 30*time.Second {
 		rolloutTimeout = 30 * time.Second
 	}
@@ -378,6 +515,18 @@ func (s *Service) acquireTargetLock(ctx context.Context, record *model.Deploymen
 			Metadata:      record.ID,
 		},
 	)
+}
+
+func effectiveSSHTimeout(record *model.DeploymentRecord) (time.Duration, bool) {
+	if record == nil || record.CommandTimeout < 30 || record.CommandTimeout > 3600 ||
+		record.RolloutTimeout < 30 || record.RolloutTimeout > 3600 {
+		return 0, false
+	}
+	seconds := record.CommandTimeout
+	if record.RolloutTimeout < seconds {
+		seconds = record.RolloutTimeout
+	}
+	return time.Duration(seconds) * time.Second, true
 }
 
 func (s *Service) enqueue(ctx context.Context, tx *gorm.DB, record *model.DeploymentRecord, kind string) error {
@@ -406,30 +555,74 @@ func (s *Service) findTarget(ctx context.Context, id string) (*model.DeploymentT
 func (s *Service) normalizeTarget(ctx context.Context, input TargetInput) (TargetInput, error) {
 	input.Name = strings.TrimSpace(input.Name)
 	input.Description = strings.TrimSpace(input.Description)
+	input.EnvironmentID = strings.TrimSpace(input.EnvironmentID)
+	input.HostID = strings.TrimSpace(input.HostID)
 	input.RuntimeID = strings.TrimSpace(input.RuntimeID)
+	input.WorkingDirectory = strings.TrimSpace(input.WorkingDirectory)
 	input.Namespace = strings.TrimSpace(input.Namespace)
 	input.WorkloadName = strings.TrimSpace(input.WorkloadName)
 	input.ContainerName = strings.TrimSpace(input.ContainerName)
 	if input.RolloutTimeout == 0 {
 		input.RolloutTimeout = 300
 	}
-	if !targetNamePattern.MatchString(input.Name) || len([]rune(input.Description)) > 500 || input.RuntimeID == "" ||
-		input.RolloutTimeout < 30 || input.RolloutTimeout > 3600 || !validEnvironment(input.Environment) {
+	if !targetNamePattern.MatchString(input.Name) || len([]rune(input.Description)) > 500 ||
+		input.RolloutTimeout < 30 || input.RolloutTimeout > 3600 {
 		return TargetInput{}, ErrInvalidTarget
 	}
 	switch input.Platform {
-	case model.DeploymentDocker:
-		if !workloadNamePattern.MatchString(input.WorkloadName) {
+	case model.DeploymentSSH:
+		if input.HostID == "" {
 			return TargetInput{}, ErrInvalidTarget
 		}
+		if input.WorkingDirectory != "" && !validWorkingDirectory(input.WorkingDirectory) {
+			return TargetInput{}, ErrInvalidTarget
+		}
+		var host model.Host
+		if err := s.db.WithContext(ctx).First(&host,
+			"id = ? AND is_active = ?", input.HostID, true,
+		).Error; err != nil || host.EnvironmentID == "" {
+			return TargetInput{}, ErrInvalidTarget
+		}
+		capabilityKind := model.HostCapabilitySSH
+		switch host.Mode {
+		case model.HostModeLocal:
+			if !host.IsBuiltin || host.ID != model.BuiltinLocalHostID {
+				return TargetInput{}, ErrInvalidTarget
+			}
+			capabilityKind = model.HostCapabilityLocalExec
+		case model.HostModeSSH:
+			if host.IsBuiltin {
+				return TargetInput{}, ErrInvalidTarget
+			}
+		default:
+			return TargetInput{}, ErrInvalidTarget
+		}
+		var capability model.HostCapability
+		if err := s.db.WithContext(ctx).First(&capability,
+			"host_id = ? AND kind = ? AND status = ?", host.ID, capabilityKind, model.HostCapabilityReady,
+		).Error; err != nil {
+			return TargetInput{}, ErrInvalidTarget
+		}
+		var environment model.Environment
+		if err := s.db.WithContext(ctx).Select("id").First(&environment, "id = ? AND is_active = ?", host.EnvironmentID, true).Error; err != nil {
+			return TargetInput{}, ErrInvalidTarget
+		}
+		input.EnvironmentID = environment.ID
+		input.RuntimeID, input.Namespace, input.WorkloadName, input.ContainerName = "", "", "", ""
+	case model.DeploymentDocker:
+		if input.RuntimeID == "" || !workloadNamePattern.MatchString(input.WorkloadName) {
+			return TargetInput{}, ErrInvalidTarget
+		}
+		input.EnvironmentID, input.HostID, input.WorkingDirectory = "", "", ""
 		input.Namespace = ""
 		input.ContainerName = ""
 		endpoint, err := s.docker.Find(ctx, input.RuntimeID)
 		if err != nil || !endpoint.IsActive {
 			return TargetInput{}, ErrInvalidTarget
 		}
+		input.HostID = endpoint.HostID
 	case model.DeploymentKubernetes:
-		if len(validation.IsDNS1123Label(input.Namespace)) > 0 ||
+		if input.RuntimeID == "" || len(validation.IsDNS1123Label(input.Namespace)) > 0 ||
 			len(validation.IsDNS1123Subdomain(input.WorkloadName)) > 0 ||
 			len(validation.IsDNS1123Label(input.ContainerName)) > 0 {
 			return TargetInput{}, ErrInvalidTarget
@@ -438,13 +631,20 @@ func (s *Service) normalizeTarget(ctx context.Context, input TargetInput) (Targe
 		if err != nil || !cluster.IsActive {
 			return TargetInput{}, ErrInvalidTarget
 		}
+		input.EnvironmentID, input.HostID, input.WorkingDirectory = "", "", ""
 	default:
 		return TargetInput{}, ErrInvalidTarget
 	}
 	return input, nil
 }
 
-func (s *Service) markFailed(ctx context.Context, id, code, message string, cause error, previousImage string) error {
+func validWorkingDirectory(value string) bool {
+	value = strings.TrimSpace(value)
+	return value != "" && len(value) <= 1024 && strings.HasPrefix(value, "/") &&
+		!strings.ContainsAny(value, "\r\n\x00") && path.Clean(value) == value
+}
+
+func (s *Service) markFailed(ctx context.Context, id, code, message string, cause error, previousImage string, commandExitCode *int) error {
 	now := time.Now().UTC()
 	updateContext, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 	defer cancel()
@@ -452,7 +652,8 @@ func (s *Service) markFailed(ctx context.Context, id, code, message string, caus
 		Updates(map[string]any{
 			"status": model.DeploymentFailed, "previous_image": previousImage,
 			"error_code": code, "error_message": message,
-			"finished_at": now, "updated_at": now,
+			"command_exit_code": commandExitCode,
+			"finished_at":       now, "updated_at": now,
 		}).Error; err != nil {
 		return fmt.Errorf("记录发布失败状态时发生错误: %v；原始错误: %w", err, cause)
 	}
@@ -462,8 +663,10 @@ func (s *Service) markFailed(ctx context.Context, id, code, message string, caus
 func applyTargetSnapshot(record *model.DeploymentRecord, target *model.DeploymentTarget) {
 	record.TargetName = target.Name
 	record.Platform = target.Platform
-	record.Environment = target.Environment
+	record.EnvironmentID = target.EnvironmentID
+	record.HostID = target.HostID
 	record.RuntimeID = target.RuntimeID
+	record.WorkingDirectory = target.WorkingDirectory
 	record.Namespace = target.Namespace
 	record.WorkloadName = target.WorkloadName
 	record.ContainerName = target.ContainerName
@@ -473,8 +676,10 @@ func applyTargetSnapshot(record *model.DeploymentRecord, target *model.Deploymen
 func copyTargetSnapshot(destination, source *model.DeploymentRecord) {
 	destination.TargetName = source.TargetName
 	destination.Platform = source.Platform
-	destination.Environment = source.Environment
+	destination.EnvironmentID = source.EnvironmentID
+	destination.HostID = source.HostID
 	destination.RuntimeID = source.RuntimeID
+	destination.WorkingDirectory = source.WorkingDirectory
 	destination.Namespace = source.Namespace
 	destination.WorkloadName = source.WorkloadName
 	destination.ContainerName = source.ContainerName
@@ -501,14 +706,10 @@ func validateImage(value string, immutable bool) (string, error) {
 func validatePipelineImage(value, expectedImageID string, target *model.DeploymentTarget) (string, error) {
 	expectedImageID = strings.TrimSpace(expectedImageID)
 	if expectedImageID == "" {
-		return validateImage(value, target.Environment == model.EnvironmentProduction)
+		return validateImage(value, true)
 	}
 	if target.Platform != model.DeploymentDocker || !dockerengine.IsZRTLocalImage(value) || !dockerengine.IsValidImageID(expectedImageID) {
 		return "", ErrInvalidImage
 	}
 	return validateImage(value, false)
-}
-
-func validEnvironment(environment model.EnvironmentType) bool {
-	return environment == model.EnvironmentDevelopment || environment == model.EnvironmentStaging || environment == model.EnvironmentProduction
 }

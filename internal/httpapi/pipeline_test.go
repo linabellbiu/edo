@@ -18,8 +18,18 @@ func TestDeploymentPlansAndReleasePlansAreSeparateResources(t *testing.T) {
 		"username": "admin", "password": "correct horse battery staple",
 	}, nil)
 	adminCookie := login.Result().Cookies()[0]
+	missingTarget := performJSONRequest(t, router, http.MethodPost, "/api/v1/deployment-plans", map[string]any{
+		"name": "缺少位置的部署方案", "kind": "script", "script": "./deploy.sh\n", "timeout_seconds": 600,
+	}, adminCookie)
+	if missingTarget.Code != http.StatusBadRequest {
+		t.Fatalf("新建部署方案没有同时配置部署位置时应返回 400: status=%d body=%s", missingTarget.Code, missingTarget.Body.String())
+	}
 	created := performJSONRequest(t, router, http.MethodPost, "/api/v1/deployment-plans", map[string]any{
-		"name": "测试 Helm 部署", "kind": "helm", "helm_chart": "deploy/chart", "timeout_seconds": 600,
+		"name": "测试脚本部署", "kind": "script", "script": "./deploy.sh\n", "timeout_seconds": 600,
+		"deployment_target": map[string]any{
+			"name": "测试脚本部署位置", "platform": "ssh", "host_id": "httpapi-deployment-host",
+			"working_directory": "/srv/test", "rollout_timeout": 300,
+		},
 	}, adminCookie)
 	var createdPayload struct {
 		DeploymentPlan struct {
@@ -31,13 +41,22 @@ func TestDeploymentPlansAndReleasePlansAreSeparateResources(t *testing.T) {
 		t.Fatalf("创建部署方案失败: status=%d body=%s", created.Code, created.Body.String())
 	}
 	updated := performJSONRequest(t, router, http.MethodPut, "/api/v1/deployment-plans/"+createdPayload.DeploymentPlan.ID, map[string]any{
-		"name": "测试 Docker 部署", "kind": "docker", "service_name": "order-api", "description": "更新后的方案", "timeout_seconds": 300,
+		"name": "测试脚本部署", "kind": "script", "script": "./deploy-v2.sh\n", "description": "更新后的方案", "timeout_seconds": 300,
+		"deployment_target": map[string]any{
+			"name": "测试脚本部署位置", "platform": "ssh", "host_id": "httpapi-deployment-host",
+			"working_directory": "/srv/test-v2", "rollout_timeout": 300,
+		},
 	}, adminCookie)
-	if updated.Code != http.StatusOK || !strings.Contains(updated.Body.String(), `"kind":"docker"`) || !strings.Contains(updated.Body.String(), `"service_name":"order-api"`) || strings.Contains(updated.Body.String(), `"helm_chart"`) {
+	if updated.Code != http.StatusOK || !strings.Contains(updated.Body.String(), `"kind":"script"`) ||
+		!strings.Contains(updated.Body.String(), `"working_directory":"/srv/test-v2"`) {
 		t.Fatalf("更新部署方案失败: status=%d body=%s", updated.Code, updated.Body.String())
 	}
 	missing := performJSONRequest(t, router, http.MethodPut, "/api/v1/deployment-plans/not-found", map[string]any{
-		"name": "不存在的部署方案", "kind": "docker", "service_name": "order-api", "timeout_seconds": 300,
+		"name": "不存在的部署方案", "kind": "script", "script": "./deploy.sh\n", "timeout_seconds": 300,
+		"deployment_target": map[string]any{
+			"name": "不存在的部署位置", "platform": "ssh", "host_id": "httpapi-deployment-host",
+			"working_directory": "/srv/missing", "rollout_timeout": 300,
+		},
 	}, adminCookie)
 	if missing.Code != http.StatusNotFound {
 		t.Fatalf("更新不存在的部署方案应返回 404: status=%d body=%s", missing.Code, missing.Body.String())
@@ -86,8 +105,11 @@ func TestDeploymentPlansAndReleasePlansAreSeparateResources(t *testing.T) {
 	}, adminCookie)
 	var releasePayload struct {
 		ReleasePlan struct {
-			ID      string `json:"id"`
-			Version string `json:"version"`
+			ID          string `json:"id"`
+			Version     string `json:"version"`
+			Description string `json:"description"`
+			Status      string `json:"status"`
+			IsActive    bool   `json:"is_active"`
 		} `json:"release_plan"`
 	}
 	if releaseCreated.Code != http.StatusCreated || json.Unmarshal(releaseCreated.Body.Bytes(), &releasePayload) != nil || releasePayload.ReleasePlan.ID == "" {
@@ -96,11 +118,22 @@ func TestDeploymentPlansAndReleasePlansAreSeparateResources(t *testing.T) {
 	if !strings.Contains(releaseCreated.Body.String(), `"manual_deploy":true`) || !strings.Contains(releaseCreated.Body.String(), `"source_value":"main"`) {
 		t.Fatalf("发布计划未返回手动部署版本来源: body=%s", releaseCreated.Body.String())
 	}
+	if !releasePayload.ReleasePlan.IsActive {
+		t.Fatalf("发布计划默认未启用: body=%s", releaseCreated.Body.String())
+	}
 	releaseUpdated := performJSONRequest(t, router, http.MethodPut, "/api/v1/release-plans/"+releasePayload.ReleasePlan.ID, map[string]any{
-		"name": "七月发布列车", "version": "2026.07", "description": "一次迭代发布", "status": "active",
+		"description": "修改后的迭代说明",
 	}, adminCookie)
-	if releaseUpdated.Code != http.StatusOK || !strings.Contains(releaseUpdated.Body.String(), `"status":"active"`) {
-		t.Fatalf("发布计划基础信息更新不应重复要求应用: status=%d body=%s", releaseUpdated.Code, releaseUpdated.Body.String())
+	if releaseUpdated.Code != http.StatusOK || !strings.Contains(releaseUpdated.Body.String(), `"description":"修改后的迭代说明"`) ||
+		!strings.Contains(releaseUpdated.Body.String(), `"version":"2026.07"`) || !strings.Contains(releaseUpdated.Body.String(), `"status":"draft"`) {
+		t.Fatalf("发布计划说明更新没有保留内部标识和生命周期: status=%d body=%s", releaseUpdated.Code, releaseUpdated.Body.String())
+	}
+	releaseDisabled := performJSONRequest(t, router, http.MethodPatch, "/api/v1/release-plans/"+releasePayload.ReleasePlan.ID+"/status", map[string]any{
+		"active": false,
+	}, adminCookie)
+	if releaseDisabled.Code != http.StatusOK || !strings.Contains(releaseDisabled.Body.String(), `"is_active":false`) ||
+		!strings.Contains(releaseDisabled.Body.String(), `"status":"draft"`) {
+		t.Fatalf("停用发布计划不应改写生命周期状态: status=%d body=%s", releaseDisabled.Code, releaseDisabled.Body.String())
 	}
 	releases := performJSONRequest(t, router, http.MethodGet, "/api/v1/release-plans", nil, adminCookie)
 	if releases.Code != http.StatusOK || !strings.Contains(releases.Body.String(), releasePayload.ReleasePlan.ID) || strings.Contains(releases.Body.String(), createdPayload.DeploymentPlan.ID) {

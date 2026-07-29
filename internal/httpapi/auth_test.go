@@ -24,6 +24,9 @@ import (
 	"zrt/internal/configuration"
 	"zrt/internal/credential"
 	"zrt/internal/database"
+	"zrt/internal/deployment"
+	"zrt/internal/logging"
+	"zrt/internal/model"
 	"zrt/internal/pipeline"
 	"zrt/internal/repository"
 	"zrt/internal/secret"
@@ -135,6 +138,32 @@ func newAuthTestRouter(t *testing.T) (*gin.Engine, func()) {
 		repository.WithWebhookGate(configurationService),
 	)
 	pipelineService := pipeline.NewService(db, repositoryService, secretManager)
+	now := time.Now().UTC()
+	testEnvironment := model.Environment{
+		ID: "httpapi-deployment-environment", Name: "接口测试部署环境", IsActive: true,
+		CreatedBy: "system", CreatedAt: now, UpdatedAt: now,
+	}
+	testHost := model.Host{
+		ID: "httpapi-deployment-host", Name: "接口测试部署主机", Mode: model.HostModeSSH,
+		Address: "192.0.2.20", SSHPort: 22, SSHUsername: "deployer",
+		EnvironmentID: testEnvironment.ID, IsActive: true, CreatedBy: "system",
+		CreatedAt: now, UpdatedAt: now,
+	}
+	testCapability := model.HostCapability{
+		HostID: testHost.ID, Kind: model.HostCapabilitySSH, Status: model.HostCapabilityReady,
+		CreatedAt: now, UpdatedAt: now,
+	}
+	if err := db.Create(&testEnvironment).Error; err != nil {
+		t.Fatalf("创建接口测试部署环境失败: %v", err)
+	}
+	if err := db.Create(&testHost).Error; err != nil {
+		t.Fatalf("创建接口测试部署主机失败: %v", err)
+	}
+	if err := db.Create(&testCapability).Error; err != nil {
+		t.Fatalf("创建接口测试部署能力失败: %v", err)
+	}
+	deploymentService := deployment.NewService(db, nil, nil, nil, nil, "", logger)
+	pipelineService.ConfigureExecution(nil, deploymentService, logger)
 	if _, err := accounts.CreateAdmin(context.Background(), "admin", "管理员", "correct horse battery staple"); err != nil {
 		t.Fatalf("创建测试管理员失败: %v", err)
 	}
@@ -155,12 +184,14 @@ func newAuthTestRouter(t *testing.T) (*gin.Engine, func()) {
 		t.Fatalf("初始化登录服务失败: %v", err)
 	}
 	sqlDB, _ := db.DB()
+	_, runtimeLogs := logging.NewRuntime("info")
 	router := NewRouter(Dependencies{
 		Environment: "test", Database: sqlDB, Redis: healthyDependency{}, NATS: healthyDependency{},
-		Logger: logger, Version: "test", AuthConfig: authConfig,
+		Logger: logger, RuntimeLogs: runtimeLogs, Version: "test", AuthConfig: authConfig,
 		Accounts: accounts, Login: login, LoginLimiter: limiter, Sessions: sessions,
 		Access: accessService, Audits: auditService,
 		Credentials: credentialService, Repositories: repositoryService, Pipelines: pipelineService,
+		Deployments:    deploymentService,
 		Configurations: configurationService,
 	})
 	return router, func() {

@@ -37,6 +37,8 @@ func TestSQLiteMigrationIsIdempotent(t *testing.T) {
 		!db.Migrator().HasTable(&model.User{}) || !db.Migrator().HasTable(&model.Role{}) ||
 		!db.Migrator().HasTable(&model.AuditLog{}) || !db.Migrator().HasTable(&model.GitRepository{}) ||
 		!db.Migrator().HasTable(&model.DockerEndpoint{}) || !db.Migrator().HasTable(&model.KubernetesCluster{}) ||
+		!db.Migrator().HasTable(&model.Environment{}) || !db.Migrator().HasTable(&model.Host{}) ||
+		!db.Migrator().HasTable(&model.HostCapability{}) ||
 		!db.Migrator().HasTable(&model.DeploymentTarget{}) || !db.Migrator().HasTable(&model.DeploymentRecord{}) ||
 		!db.Migrator().HasTable(&model.Configuration{}) || !db.Migrator().HasTable(&model.ConfigurationRevision{}) ||
 		!db.Migrator().HasTable(&model.NotificationChannel{}) || !db.Migrator().HasTable(&model.Notification{}) ||
@@ -55,10 +57,19 @@ func TestSQLiteMigrationIsIdempotent(t *testing.T) {
 	if !db.Migrator().HasColumn(&model.PipelineRun{}, "retry_of_id") {
 		t.Fatal("流水线重新执行来源字段未创建")
 	}
+	if !db.Migrator().HasColumn(&model.DockerEndpoint{}, "host_id") {
+		t.Fatal("Docker 连接的主机归属字段未创建")
+	}
 	if !db.Migrator().HasColumn(&model.ReleaseGroupApplication{}, "manual_deploy") ||
 		!db.Migrator().HasColumn(&model.ReleaseGroupApplication{}, "source_type") ||
 		!db.Migrator().HasColumn(&model.ReleaseGroupApplication{}, "source_value") {
 		t.Fatal("发布计划应用的手动版本来源字段未创建")
+	}
+	if !db.Migrator().HasColumn(&model.ReleasePlan{}, "is_active") {
+		t.Fatal("发布计划停用状态字段未创建")
+	}
+	if !db.Migrator().HasColumn(&model.ReleasePlan{}, "deleted_at") {
+		t.Fatal("发布计划软删除字段未创建")
 	}
 }
 
@@ -95,6 +106,72 @@ func TestSQLiteUsesPureGoDriver(t *testing.T) {
 	}
 	if err := db.Create(&uniqueRecord{Name: "same"}).Error; !errors.Is(err, gorm.ErrDuplicatedKey) {
 		t.Fatalf("重复键错误未转换: %v", err)
+	}
+}
+
+func TestDeploymentPlanTargetBackfillUsesOnlyUnambiguousCompatibleBinding(t *testing.T) {
+	db, err := Open(context.Background(), config.Database{
+		Driver: "sqlite", DSN: "file:deployment_plan_target_backfill?mode=memory&cache=shared",
+		MaxOpenConns: 1, MaxIdleConns: 1, ConnMaxLifetime: time.Minute,
+	}, slog.Default())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer Close(db)
+	if err := Migrate(context.Background(), db); err != nil {
+		t.Fatal(err)
+	}
+
+	now := time.Now().UTC()
+	repository := model.GitRepository{
+		ID: "repo-a", Name: "迁移测试仓库", Provider: model.GitProviderGeneric,
+		CloneURL: "https://example.com/repo.git", DefaultBranch: "main", AuthType: model.GitAuthNone,
+		IsActive: true, CreatedBy: "admin", CreatedAt: now, UpdatedAt: now,
+	}
+	if err := db.Create(&repository).Error; err != nil {
+		t.Fatal(err)
+	}
+	targets := []model.DeploymentTarget{
+		{ID: "target-docker-a", Name: "Docker A", Platform: model.DeploymentDocker, RuntimeID: "docker-a", WorkloadName: "app-a", IsActive: true, CreatedBy: "admin", CreatedAt: now, UpdatedAt: now},
+		{ID: "target-docker-b", Name: "Docker B", Platform: model.DeploymentDocker, RuntimeID: "docker-b", WorkloadName: "app-b", IsActive: true, CreatedBy: "admin", CreatedAt: now, UpdatedAt: now},
+		{ID: "target-ssh", Name: "SSH", Platform: model.DeploymentSSH, HostID: "host-a", IsActive: true, CreatedBy: "admin", CreatedAt: now, UpdatedAt: now},
+	}
+	if err := db.Create(&targets).Error; err != nil {
+		t.Fatal(err)
+	}
+	plans := []model.DeploymentPlan{
+		{ID: "plan-single", Name: "唯一历史目标", Kind: model.DeploymentPlanDocker, ServiceName: "app-a", TimeoutSeconds: 300, IsActive: true, CreatedBy: "admin", CreatedAt: now, UpdatedAt: now},
+		{ID: "plan-ambiguous", Name: "多个历史目标", Kind: model.DeploymentPlanDocker, ServiceName: "app-b", TimeoutSeconds: 300, IsActive: true, CreatedBy: "admin", CreatedAt: now, UpdatedAt: now},
+		{ID: "plan-mismatch", Name: "类型不匹配", Kind: model.DeploymentPlanDocker, ServiceName: "app-c", TimeoutSeconds: 300, IsActive: true, CreatedBy: "admin", CreatedAt: now, UpdatedAt: now},
+	}
+	if err := db.Create(&plans).Error; err != nil {
+		t.Fatal(err)
+	}
+	applications := []model.Application{
+		{ID: "app-single", Name: "唯一应用", RepositoryID: "repo-a", Branch: "main", DeploymentPlanID: "plan-single", DeploymentTargetID: "target-docker-a", SyncStatus: model.ApplicationSyncIdle, IsActive: true, CreatedBy: "admin", CreatedAt: now, UpdatedAt: now},
+		{ID: "app-ambiguous-a", Name: "歧义应用 A", RepositoryID: "repo-a", Branch: "main", DeploymentPlanID: "plan-ambiguous", DeploymentTargetID: "target-docker-a", SyncStatus: model.ApplicationSyncIdle, IsActive: true, CreatedBy: "admin", CreatedAt: now, UpdatedAt: now},
+		{ID: "app-ambiguous-b", Name: "歧义应用 B", RepositoryID: "repo-a", Branch: "main", DeploymentPlanID: "plan-ambiguous", DeploymentTargetID: "target-docker-b", SyncStatus: model.ApplicationSyncIdle, IsActive: true, CreatedBy: "admin", CreatedAt: now, UpdatedAt: now},
+		{ID: "app-mismatch", Name: "类型应用", RepositoryID: "repo-a", Branch: "main", DeploymentPlanID: "plan-mismatch", DeploymentTargetID: "target-ssh", SyncStatus: model.ApplicationSyncIdle, IsActive: true, CreatedBy: "admin", CreatedAt: now, UpdatedAt: now},
+	}
+	if err := db.Create(&applications).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := backfillDeploymentPlanTargets(db); err != nil {
+		t.Fatal(err)
+	}
+	var actual []model.DeploymentPlan
+	if err := db.Where("id IN ?", []string{"plan-single", "plan-ambiguous", "plan-mismatch"}).Find(&actual).Error; err != nil {
+		t.Fatal(err)
+	}
+	byID := make(map[string]string, len(actual))
+	for _, plan := range actual {
+		byID[plan.ID] = plan.DeploymentTargetID
+	}
+	if byID["plan-single"] != "target-docker-a" {
+		t.Fatalf("唯一兼容目标没有恢复: %q", byID["plan-single"])
+	}
+	if byID["plan-ambiguous"] != "" || byID["plan-mismatch"] != "" {
+		t.Fatalf("歧义或类型不匹配的目标不应恢复: %+v", byID)
 	}
 }
 
@@ -241,6 +318,190 @@ func TestDockerSSHMigrationUpgradesExistingDatabase(t *testing.T) {
 	}
 	if endpoint.SSHCredentialCiphertext != "" || endpoint.SSHHostKeyFingerprint != "" {
 		t.Fatalf("旧 Docker 连接迁移默认值错误: %+v", endpoint)
+	}
+}
+
+func TestHostMigrationBackfillsLegacySSHDockerEndpoints(t *testing.T) {
+	db, err := Open(context.Background(), config.Database{
+		Driver: "sqlite", DSN: "file:host_upgrade?mode=memory&cache=shared",
+		MaxOpenConns: 1, MaxIdleConns: 1, ConnMaxLifetime: time.Minute,
+	}, slog.Default())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer Close(db)
+
+	if err := db.Exec(`CREATE TABLE docker_endpoints (
+		id varchar(36) PRIMARY KEY, name varchar(128) NOT NULL, host varchar(1024) NOT NULL,
+		tls_ciphertext text NOT NULL, ssh_credential_ciphertext text NOT NULL,
+		ssh_host_key_fingerprint varchar(128) NOT NULL DEFAULT '',
+		is_active numeric NOT NULL DEFAULT 1, created_by varchar(36) NOT NULL,
+		created_at datetime NOT NULL, updated_at datetime NOT NULL
+	)`).Error; err != nil {
+		t.Fatalf("创建旧 Docker 连接表失败: %v", err)
+	}
+	if err := db.Exec(`CREATE UNIQUE INDEX idx_docker_endpoints_name ON docker_endpoints(name)`).Error; err != nil {
+		t.Fatalf("创建旧 Docker 连接名称索引失败: %v", err)
+	}
+	now := time.Now().UTC()
+	fingerprint := "SHA256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	legacy := []struct {
+		id, name, host, ciphertext, fingerprint string
+	}{
+		{"docker-ssh-one", "开发 Docker", "ssh://deploy@docker.example.com:2202", "ciphertext-one", fingerprint},
+		{"docker-ssh-two", "测试 Docker", "ssh://release@docker.example.com:2202", "ciphertext-two", fingerprint},
+		{"docker-tcp", "兼容 Docker API", "tcp://docker.example.com:2376", "", ""},
+	}
+	for _, endpoint := range legacy {
+		if err := db.Exec(
+			`INSERT INTO docker_endpoints (
+				id,name,host,tls_ciphertext,ssh_credential_ciphertext,ssh_host_key_fingerprint,
+				is_active,created_by,created_at,updated_at
+			) VALUES (?,?,?,?,?,?,?,?,?,?)`,
+			endpoint.id, endpoint.name, endpoint.host, "", endpoint.ciphertext, endpoint.fingerprint,
+			true, "admin", now, now,
+		).Error; err != nil {
+			t.Fatalf("写入旧 Docker 连接失败: %v", err)
+		}
+	}
+
+	for range 2 {
+		if err := migrateHostsAndEnvironments(db); err != nil {
+			t.Fatalf("执行主机模型迁移失败: %v", err)
+		}
+	}
+	if !db.Migrator().HasTable(&model.Environment{}) || !db.Migrator().HasTable(&model.Host{}) ||
+		!db.Migrator().HasTable(&model.HostCapability{}) ||
+		!db.Migrator().HasColumn(&model.DockerEndpoint{}, "host_id") {
+		t.Fatal("主机与环境模型结构没有完整创建")
+	}
+
+	var hosts []model.Host
+	if err := db.Order("id ASC").Find(&hosts).Error; err != nil {
+		t.Fatalf("读取迁移后的主机失败: %v", err)
+	}
+	if len(hosts) != 3 {
+		t.Fatalf("SSH Docker 连接没有逐条迁移为主机: %+v", hosts)
+	}
+	for _, host := range hosts {
+		if host.ID == model.BuiltinLocalHostID {
+			if host.Name != "本地" || host.Mode != model.HostModeLocal || !host.IsBuiltin || !host.IsActive {
+				t.Fatalf("内置本地主机字段错误: %+v", host)
+			}
+			continue
+		}
+		if host.ID != "docker-ssh-one" && host.ID != "docker-ssh-two" {
+			t.Fatalf("迁移后的主机没有复用 Endpoint ID: %+v", host)
+		}
+		if host.Mode != model.HostModeSSH || host.Address != "docker.example.com" ||
+			host.SSHPort != 2202 || host.SSHUsername == "" {
+			t.Fatalf("迁移后的 SSH 主机字段错误: %+v", host)
+		}
+		if host.SSHCredentialCiphertext != "" || host.SSHAuthType != "" || host.EnvironmentID != "" {
+			t.Fatalf("迁移不应复制旧密文、猜测认证方式或环境: %+v", host)
+		}
+		if host.SSHHostKeyFingerprint != fingerprint {
+			t.Fatalf("迁移后的 SSH 主机指纹没有保留: %+v", host)
+		}
+	}
+
+	var endpoints []model.DockerEndpoint
+	if err := db.Order("id ASC").Find(&endpoints).Error; err != nil {
+		t.Fatalf("读取迁移后的 Docker 连接失败: %v", err)
+	}
+	endpointByID := make(map[string]model.DockerEndpoint, len(endpoints))
+	for _, endpoint := range endpoints {
+		endpointByID[endpoint.ID] = endpoint
+	}
+	for _, expected := range legacy[:2] {
+		endpoint := endpointByID[expected.id]
+		if endpoint.HostID != endpoint.ID || endpoint.SSHCredentialCiphertext != expected.ciphertext {
+			t.Fatalf("迁移改变了旧 Endpoint ID、归属或密文: %+v", endpoint)
+		}
+	}
+	if endpointByID["docker-tcp"].HostID != "" {
+		t.Fatalf("非 SSH Docker 连接不应自动映射主机: %+v", endpointByID["docker-tcp"])
+	}
+
+	var capabilities []model.HostCapability
+	if err := db.Order("host_id ASC").Find(&capabilities).Error; err != nil {
+		t.Fatalf("读取迁移后的主机能力失败: %v", err)
+	}
+	if len(capabilities) != 3 {
+		t.Fatalf("Docker 主机能力没有逐条回填: %+v", capabilities)
+	}
+	for _, capability := range capabilities {
+		if capability.HostID == model.BuiltinLocalHostID {
+			if capability.Kind != model.HostCapabilityDocker ||
+				capability.RuntimeID != "zrt-local-docker" ||
+				capability.Status != model.HostCapabilityReady {
+				t.Fatalf("内置本地主机能力错误: %+v", capability)
+			}
+			continue
+		}
+		if capability.Kind != model.HostCapabilityDocker || capability.RuntimeID != capability.HostID ||
+			capability.Status != model.HostCapabilityUnchecked || capability.UseSudo {
+			t.Fatalf("迁移后的 Docker 主机能力错误: %+v", capability)
+		}
+	}
+}
+
+func TestHostMigrationKeepsDisabledBuiltinCapabilities(t *testing.T) {
+	db, err := Open(context.Background(), config.Database{
+		Driver: "sqlite", DSN: "file:host_builtin_capability_upgrade?mode=memory&cache=shared",
+		MaxOpenConns: 1, MaxIdleConns: 1, ConnMaxLifetime: time.Minute,
+	}, slog.Default())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer Close(db)
+	if err := db.AutoMigrate(&model.DockerEndpoint{}); err != nil {
+		t.Fatalf("创建 Docker 连接测试表失败: %v", err)
+	}
+
+	if err := migrateHostsAndEnvironments(db); err != nil {
+		t.Fatalf("首次执行主机模型迁移失败: %v", err)
+	}
+	if err := db.Model(&model.Host{}).Where("id = ?", model.BuiltinLocalHostID).
+		Update("name", "ZRT 本机").Error; err != nil {
+		t.Fatalf("准备历史默认名失败: %v", err)
+	}
+	if err := db.Delete(&model.HostCapability{}, "host_id = ? AND kind = ?",
+		model.BuiltinLocalHostID, model.HostCapabilityDocker).Error; err != nil {
+		t.Fatalf("关闭本地 Docker 能力失败: %v", err)
+	}
+
+	if err := migrateHostsAndEnvironments(db); err != nil {
+		t.Fatalf("重复执行主机模型迁移失败: %v", err)
+	}
+	var host model.Host
+	if err := db.First(&host, "id = ?", model.BuiltinLocalHostID).Error; err != nil {
+		t.Fatalf("读取内置本地主机失败: %v", err)
+	}
+	if host.Name != "本地" {
+		t.Fatalf("历史默认名没有迁移为本地: %+v", host)
+	}
+	var capabilityCount int64
+	if err := db.Model(&model.HostCapability{}).
+		Where("host_id = ? AND kind = ?", model.BuiltinLocalHostID, model.HostCapabilityDocker).
+		Count(&capabilityCount).Error; err != nil {
+		t.Fatalf("统计本地 Docker 能力失败: %v", err)
+	}
+	if capabilityCount != 0 {
+		t.Fatalf("重跑迁移恢复了已关闭的本地 Docker 能力: %d", capabilityCount)
+	}
+
+	if err := db.Model(&host).Update("name", "开发机").Error; err != nil {
+		t.Fatalf("修改本地主机自定义名称失败: %v", err)
+	}
+	if err := migrateHostsAndEnvironments(db); err != nil {
+		t.Fatalf("自定义名称后重跑迁移失败: %v", err)
+	}
+	if err := db.First(&host, "id = ?", model.BuiltinLocalHostID).Error; err != nil {
+		t.Fatalf("读取自定义本地主机失败: %v", err)
+	}
+	if host.Name != "开发机" {
+		t.Fatalf("迁移覆盖了自定义本地主机名称: %+v", host)
 	}
 }
 
