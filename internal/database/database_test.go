@@ -38,6 +38,7 @@ func TestSQLiteMigrationIsIdempotent(t *testing.T) {
 		!db.Migrator().HasTable(&model.AuditLog{}) || !db.Migrator().HasTable(&model.GitRepository{}) ||
 		!db.Migrator().HasTable(&model.DockerEndpoint{}) || !db.Migrator().HasTable(&model.KubernetesCluster{}) ||
 		!db.Migrator().HasTable(&model.Environment{}) || !db.Migrator().HasTable(&model.Host{}) ||
+		!db.Migrator().HasTable(&model.EnvironmentHost{}) ||
 		!db.Migrator().HasTable(&model.HostCapability{}) ||
 		!db.Migrator().HasTable(&model.DeploymentTarget{}) || !db.Migrator().HasTable(&model.DeploymentRecord{}) ||
 		!db.Migrator().HasTable(&model.Configuration{}) || !db.Migrator().HasTable(&model.ConfigurationRevision{}) ||
@@ -70,6 +71,9 @@ func TestSQLiteMigrationIsIdempotent(t *testing.T) {
 	}
 	if !db.Migrator().HasColumn(&model.ReleasePlan{}, "deleted_at") {
 		t.Fatal("发布计划软删除字段未创建")
+	}
+	if !db.Migrator().HasColumn(&model.BuildPlan{}, "deleted_at") {
+		t.Fatal("构建方案软删除字段未创建")
 	}
 }
 
@@ -502,6 +506,54 @@ func TestHostMigrationKeepsDisabledBuiltinCapabilities(t *testing.T) {
 	}
 	if host.Name != "开发机" {
 		t.Fatalf("迁移覆盖了自定义本地主机名称: %+v", host)
+	}
+}
+
+func TestEnvironmentHostMigrationBackfillsLegacyMembership(t *testing.T) {
+	db, err := Open(context.Background(), config.Database{
+		Driver: "sqlite", DSN: "file:environment_host_upgrade?mode=memory&cache=shared",
+		MaxOpenConns: 1, MaxIdleConns: 1, ConnMaxLifetime: time.Minute,
+	}, slog.Default())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer Close(db)
+	if err := db.AutoMigrate(&model.Environment{}, &model.Host{}); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	environment := model.Environment{
+		ID: "environment-legacy", Name: "历史环境", IsActive: true,
+		CreatedBy: "admin", CreatedAt: now, UpdatedAt: now,
+	}
+	host := model.Host{
+		ID: "host-legacy", Name: "历史主机", Mode: model.HostModeSSH,
+		EnvironmentID: environment.ID, IsActive: true, CreatedBy: "admin",
+		CreatedAt: now, UpdatedAt: now,
+	}
+	if err := db.Create(&environment).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&host).Error; err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		if err := migrateEnvironmentHosts(db); err != nil {
+			t.Fatalf("迁移环境主机关联失败: %v", err)
+		}
+	}
+	var memberships []model.EnvironmentHost
+	if err := db.Find(&memberships).Error; err != nil {
+		t.Fatal(err)
+	}
+	if len(memberships) != 1 || memberships[0].EnvironmentID != environment.ID || memberships[0].HostID != host.ID {
+		t.Fatalf("旧主机环境归属未准确回填: %+v", memberships)
+	}
+	if err := db.First(&host, "id = ?", host.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if host.EnvironmentID != "" {
+		t.Fatalf("旧单值环境列回填后未清空: %+v", host)
 	}
 }
 

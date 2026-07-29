@@ -29,6 +29,8 @@ export interface InfrastructureHost {
   ssh_username: string
   ssh_auth_type: HostAuthType
   ssh_host_key_fingerprint: string
+  environment_ids: string[]
+  /** 兼容迁移期间的旧接口；新逻辑以 environment_ids 为准。 */
   environment_id?: string
   is_builtin: boolean
   is_active: boolean
@@ -61,6 +63,11 @@ export async function listEnvironments(): Promise<InfrastructureEnvironment[]> {
 
 export function capabilityOf(host: InfrastructureHost, kind: HostCapabilityKind) {
   return host.capabilities.find(capability => capability.kind === kind)
+}
+
+export function environmentIDsOf(host: InfrastructureHost) {
+  if (Array.isArray(host.environment_ids)) return [...new Set(host.environment_ids.filter(Boolean))]
+  return host.environment_id ? [host.environment_id] : []
 }
 
 export function hostRuntimeKinds(host: InfrastructureHost) {

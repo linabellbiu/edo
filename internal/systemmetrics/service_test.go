@@ -35,6 +35,18 @@ func (q testQueueStats) QueueStats(context.Context, string) (messaging.QueueStat
 	return q.stats, q.err
 }
 
+type testManageableQueue struct {
+	testQueueStats
+	purged uint64
+	err    error
+	calls  int
+}
+
+func (q *testManageableQueue) PurgeDeadLetters(context.Context) (uint64, error) {
+	q.calls++
+	return q.purged, q.err
+}
+
 func TestSnapshotIncludesRuntimeTasksAndQueue(t *testing.T) {
 	db, sqlDB, logger := openMetricsTestDB(t, "metrics_snapshot")
 	now := time.Now().UTC()
@@ -85,6 +97,28 @@ func TestSnapshotKeepsOtherMetricsWhenQueueIsUnavailable(t *testing.T) {
 	}
 	if snapshot.Runtime.Goroutines < 1 || snapshot.CollectedAt.IsZero() {
 		t.Fatalf("队列异常时未保留其他指标: %+v", snapshot)
+	}
+}
+
+func TestPurgeDeadLettersDelegatesToQueue(t *testing.T) {
+	db, sqlDB, logger := openMetricsTestDB(t, "metrics_purge_dead_letters")
+	queue := &testManageableQueue{purged: 7}
+	service := New(db, sqlDB, testWorkerStats{}, queue, logger)
+	purged, err := service.PurgeDeadLetters(context.Background())
+	if err != nil {
+		t.Fatalf("清空死信队列失败: %v", err)
+	}
+	if purged != 7 || queue.calls != 1 {
+		t.Fatalf("清空死信队列结果错误: purged=%d calls=%d", purged, queue.calls)
+	}
+}
+
+func TestPurgeDeadLettersRejectsReadOnlyQueueProvider(t *testing.T) {
+	db, sqlDB, logger := openMetricsTestDB(t, "metrics_purge_dead_letters_unavailable")
+	service := New(db, sqlDB, testWorkerStats{}, testQueueStats{}, logger)
+	_, err := service.PurgeDeadLetters(context.Background())
+	if !errors.Is(err, ErrDeadLetterQueueUnavailable) {
+		t.Fatalf("只读队列应返回不可用错误: %v", err)
 	}
 }
 

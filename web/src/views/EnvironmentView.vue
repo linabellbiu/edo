@@ -2,10 +2,12 @@
 import { computed, onMounted, reactive, ref } from 'vue'
 import { message } from 'ant-design-vue'
 import { Boxes, Pencil, Plus, RefreshCw, Server } from 'lucide-vue-next'
+import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
 
 import client from '@/api/client'
 import {
+  environmentIDsOf,
   listEnvironments,
   listHosts,
   type InfrastructureEnvironment,
@@ -18,6 +20,8 @@ import { useAuthStore } from '@/stores/auth'
 
 const auth = useAuthStore()
 const router = useRouter()
+const { t } = useI18n()
+type EnvironmentFormMode = 'create' | 'details' | 'hosts'
 const environments = ref<InfrastructureEnvironment[]>([])
 const hosts = ref<InfrastructureHost[]>([])
 const selectedID = ref('')
@@ -25,20 +29,23 @@ const formOpen = ref(false)
 const editingID = ref('')
 const loading = ref(false)
 const saving = ref(false)
+const formMode = ref<EnvironmentFormMode>('create')
 const form = reactive({ name: '', description: '', host_ids: [] as string[] })
 
 const selected = computed(() => environments.value.find(item => item.id === selectedID.value))
-const environmentNames = computed(() => new Map(environments.value.map(item => [item.id, item.name])))
+const formTitle = computed(() => {
+  if (formMode.value === 'details') return t('environment.drawer.editDetails')
+  if (formMode.value === 'hosts') return t('environment.drawer.adjustHosts', { name: form.name })
+  return t('environment.drawer.create')
+})
 const hostOptions = computed(() => hosts.value
   .map(host => {
-    const assignedElsewhere = Boolean(host.environment_id && host.environment_id !== editingID.value)
     const capabilities = host.capabilities.map(item => capabilityName(item.kind)).join(' + ') || '未配置能力'
+    const environmentCount = environmentIDsOf(host).length
     return {
       value: host.id,
-      label: assignedElsewhere
-        ? `${host.name} · 已属于 ${environmentNames.value.get(host.environment_id!) || '其他环境'}`
-        : `${host.name} · ${host.is_builtin ? '本地 · ' : ''}${capabilities}`,
-      disabled: assignedElsewhere || !host.is_active,
+      label: `${host.name} · ${host.is_builtin ? '本地 · ' : ''}${capabilities} · ${t('environment.hostPicker.environmentCount', { count: environmentCount })}`,
+      disabled: !host.is_active,
     }
   }))
 
@@ -59,15 +66,18 @@ async function refresh() {
 function reset() {
   Object.assign(form, { name: '', description: '', host_ids: [] })
   editingID.value = ''
+  formMode.value = 'create'
 }
 
 function create() {
   reset()
+  formMode.value = 'create'
   formOpen.value = true
 }
 
-function edit(environment: InfrastructureEnvironment) {
+function edit(environment: InfrastructureEnvironment, mode: Exclude<EnvironmentFormMode, 'create'>) {
   editingID.value = environment.id
+  formMode.value = mode
   Object.assign(form, {
     name: environment.name,
     description: environment.description || '',
@@ -77,18 +87,30 @@ function edit(environment: InfrastructureEnvironment) {
 }
 
 async function save() {
-  if (!form.name.trim()) {
-    message.error('请输入环境名称')
+  if (formMode.value !== 'hosts' && !form.name.trim()) {
+    message.error(t('environment.message.nameRequired'))
     return
   }
   saving.value = true
   try {
-    const payload = { ...form, name: form.name.trim(), description: form.description.trim() }
-    const response = editingID.value
-      ? await client.put<{ environment: InfrastructureEnvironment }>(`/environments/${editingID.value}`, payload)
-      : await client.post<{ environment: InfrastructureEnvironment }>('/environments', payload)
+    let response: { data: { environment: InfrastructureEnvironment } }
+    if (!editingID.value) {
+      response = await client.post<{ environment: InfrastructureEnvironment }>('/environments', {
+        name: form.name.trim(), description: form.description.trim(), host_ids: form.host_ids,
+      })
+    } else if (formMode.value === 'details') {
+      response = await client.patch<{ environment: InfrastructureEnvironment }>(`/environments/${editingID.value}`, {
+        name: form.name.trim(), description: form.description.trim(),
+      })
+    } else {
+      response = await client.put<{ environment: InfrastructureEnvironment }>(`/environments/${editingID.value}/hosts`, {
+        host_ids: form.host_ids,
+      })
+    }
     selectedID.value = response.data.environment.id
-    message.success(editingID.value ? '环境已更新' : '环境已创建')
+    message.success(editingID.value
+      ? t(formMode.value === 'hosts' ? 'environment.message.hostsUpdated' : 'environment.message.detailsUpdated')
+      : t('environment.message.created'))
     formOpen.value = false
     reset()
     await refresh()
@@ -167,7 +189,7 @@ onMounted(refresh)
           </div>
           <div class="detail-actions">
             <a-tag :color="selected.is_active ? 'success' : 'default'">{{ selected.is_active ? '已启用' : '已停用' }}</a-tag>
-            <a-button v-if="auth.canAny(['deployment.manage'])" @click="edit(selected)"><Pencil :size="14" />编辑</a-button>
+            <a-button v-if="auth.canAny(['deployment.manage'])" @click="edit(selected, 'details')"><Pencil :size="14" />{{ t('environment.actions.editDetails') }}</a-button>
             <a-button v-if="auth.canAny(['deployment.manage'])" @click="toggle(selected)">{{ selected.is_active ? '停用' : '启用' }}</a-button>
           </div>
         </header>
@@ -179,8 +201,8 @@ onMounted(refresh)
 
         <section class="assigned-hosts">
           <header>
-            <div><h4>所属主机</h4><p>一台主机在同一时刻只归属一个环境。</p></div>
-            <a-button v-if="auth.canAny(['deployment.manage'])" size="small" @click="edit(selected)">调整主机</a-button>
+            <div><h4>所属主机</h4><p>{{ t('environment.hosts.sharedDescription') }}</p></div>
+            <a-button v-if="auth.canAny(['deployment.manage'])" size="small" @click="edit(selected, 'hosts')">{{ t('environment.actions.adjustHosts') }}</a-button>
           </header>
           <div class="host-grid">
             <article v-for="host in selected.hosts" :key="host.id">
@@ -203,16 +225,16 @@ onMounted(refresh)
       <div v-else class="empty-panel"><a-empty description="选择或创建环境" /></div>
     </div>
 
-    <a-drawer v-model:open="formOpen" :title="editingID ? '编辑环境' : '创建环境'" width="600">
+    <a-drawer v-model:open="formOpen" :title="formTitle" width="600">
       <a-form layout="vertical">
         <div class="form-grid">
-          <a-form-item class="span-2" label="环境名称" required>
+          <a-form-item v-if="formMode !== 'hosts'" class="span-2" label="环境名称" required>
             <a-input v-model:value="form.name" placeholder="例如：上海测试、海外生产" />
           </a-form-item>
-          <a-form-item class="span-2" label="说明">
+          <a-form-item v-if="formMode !== 'hosts'" class="span-2" label="说明">
             <a-textarea v-model:value="form.description" :rows="3" placeholder="说明该环境的用途、区域或约束" />
           </a-form-item>
-          <a-form-item class="span-2" label="所属主机（可多选）">
+          <a-form-item v-if="formMode !== 'details'" class="span-2" label="所属主机（可多选）">
             <div class="relation-select">
               <a-select
                 v-model:value="form.host_ids"
@@ -230,9 +252,10 @@ onMounted(refresh)
               ><Plus :size="16" /></a-button>
             </div>
             <div class="field-hint host-selection-hint">
-              <span>一个环境可以包含多台主机；已属于其他环境的主机需要先从原环境移除。</span>
+              <span>{{ t('environment.hostPicker.selectionHint') }}</span>
               <strong>已选 {{ form.host_ids.length }} 台</strong>
             </div>
+            <div class="field-hint">{{ t('environment.hostPicker.portConflictHint') }}</div>
             <div class="field-hint">Kubernetes 集群仍作为独立资源接入。</div>
           </a-form-item>
         </div>

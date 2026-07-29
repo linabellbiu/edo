@@ -2,10 +2,11 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { Modal, message } from 'ant-design-vue'
 import { CheckCircle2, CircleOff, Pencil, Plus, RefreshCw, Server, Trash2 } from 'lucide-vue-next'
+import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
 
 import client from '@/api/client'
-import { capabilityOf, listEnvironments, listHosts, type HostCapabilityKind, type InfrastructureEnvironment, type InfrastructureHost } from '@/api/infrastructure'
+import { capabilityOf, environmentIDsOf, listEnvironments, listHosts, type HostCapabilityKind, type InfrastructureEnvironment, type InfrastructureHost } from '@/api/infrastructure'
 import { apiErrorMessage } from '@/api/resources'
 import HostDrawer from '@/components/HostDrawer.vue'
 import KubernetesClusterDrawer from '@/components/KubernetesClusterDrawer.vue'
@@ -16,6 +17,7 @@ import { useAuthStore } from '@/stores/auth'
 interface ClusterOption { id: string; name: string; is_active: boolean }
 
 const auth = useAuthStore()
+const { t } = useI18n()
 const route = useRoute()
 const router = useRouter()
 const hosts = ref<InfrastructureHost[]>([])
@@ -32,6 +34,18 @@ let statusErrorShown = false
 
 const selected = computed(() => hosts.value.find(host => host.id === selectedID.value))
 const environmentNames = computed(() => new Map(environments.value.map(environment => [environment.id, environment.name])))
+const selectedEnvironmentSummary = computed(() => {
+  if (!selected.value) return ''
+  const environmentIDs = environmentIDsOf(selected.value)
+  const names = environmentIDs
+    .map(id => environmentNames.value.get(id))
+    .filter((name): name is string => Boolean(name))
+  if (names.length === environmentIDs.length && names.length) {
+    return t('environment.hostAssociation.linked', { names: names.join(t('environment.hostAssociation.separator')) })
+  }
+  if (environmentIDs.length) return t('environment.hostAssociation.countOnly', { count: environmentIDs.length })
+  return t('environment.hostAssociation.none')
+})
 
 async function refresh() {
   loading.value = true
@@ -72,6 +86,13 @@ async function refreshStatuses() {
 function create() {
   editingHost.value = undefined
   drawerOpen.value = true
+}
+
+async function clusterCreated(cluster: ClusterOption) {
+  await refresh()
+  if (auth.canAny(['cluster.read'])) {
+    await router.push({ path: '/hosts', query: { view: 'resources', node: `kubernetes:${cluster.id}` } })
+  }
 }
 
 function edit(host: InfrastructureHost) {
@@ -152,12 +173,13 @@ function hostRuntimeState(host: InfrastructureHost) {
 }
 
 watch(() => route.query.create, value => {
-  if (value === '1' && auth.canAny(['cluster.manage'])) {
-    create()
-    const query = { ...route.query }
-    delete query.create
-    void router.replace({ path: route.path, query })
-  }
+  if (!auth.canAny(['cluster.manage'])) return
+  if (value === '1') create()
+  else if (value === 'kubernetes') clusterCreateOpen.value = true
+  else return
+  const query = { ...route.query }
+  delete query.create
+  void router.replace({ path: route.path, query })
 }, { immediate: true })
 
 onMounted(() => {
@@ -174,6 +196,7 @@ onBeforeUnmount(() => {
   <section>
     <PageToolbar description="维护主机接入、环境归属和运行时能力；容器、Pod、日志和终端统一在“运行资源”中查看。">
       <a-button :loading="loading" @click="refresh"><RefreshCw :size="15" />刷新</a-button>
+      <a-button v-if="auth.canAny(['cluster.manage'])" @click="clusterCreateOpen = true"><Plus :size="15" />{{ t('kubernetesCluster.action.add') }}</a-button>
       <a-button v-if="auth.canAny(['cluster.manage'])" type="primary" @click="create"><Plus :size="15" />添加主机</a-button>
     </PageToolbar>
 
@@ -211,7 +234,7 @@ onBeforeUnmount(() => {
           <div class="detail-title">
             <span>{{ selected.is_builtin ? '本地主机' : 'SSH 主机' }}</span>
             <h3>{{ selected.name }}</h3>
-            <p>{{ selected.environment_id ? `所属环境：${environmentNames.get(selected.environment_id) || '未知环境'}` : '尚未分配环境' }}</p>
+            <p>{{ selectedEnvironmentSummary }}</p>
           </div>
           <div class="detail-actions">
             <a-tag :color="selected.is_active ? 'success' : 'default'">{{ selected.is_active ? '已启用' : '已停用' }}</a-tag>
@@ -253,7 +276,7 @@ onBeforeUnmount(() => {
     </div>
 
     <HostDrawer v-model:open="drawerOpen" :host="editingHost" :clusters="clusters" @create-cluster="clusterCreateOpen = true" @saved="refresh" />
-    <KubernetesClusterDrawer v-model:open="clusterCreateOpen" @created="refresh" />
+    <KubernetesClusterDrawer v-model:open="clusterCreateOpen" @created="clusterCreated" />
   </section>
 </template>
 

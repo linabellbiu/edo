@@ -24,6 +24,15 @@ type environmentRequest struct {
 	HostIDs     []string `json:"host_ids" binding:"max=100"`
 }
 
+type environmentProfileRequest struct {
+	Name        string `json:"name" binding:"required,max=128"`
+	Description string `json:"description" binding:"max=500"`
+}
+
+type environmentHostsRequest struct {
+	HostIDs *[]string `json:"host_ids" binding:"required,max=100"`
+}
+
 type environmentResponse struct {
 	ID          string         `json:"id"`
 	Name        string         `json:"name"`
@@ -106,6 +115,38 @@ func (h environmentHandler) update(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"environment": toEnvironmentResponse(*current, hostDetails)})
 }
 
+func (h environmentHandler) updateProfile(c *gin.Context) {
+	var request environmentProfileRequest
+	if err := c.ShouldBindJSON(&request); err != nil {
+		h.logger.Warn("更新环境基本信息参数无效", "operation", "environment_profile_update_bind", "request_id", requestIDFrom(c), "environment_id", c.Param("id"), "err", err)
+		writeError(c, http.StatusBadRequest, "invalid_request", environmentmanager.ErrInvalidEnvironment.Error())
+		return
+	}
+	current, err := h.service.UpdateProfile(c.Request.Context(), c.Param("id"), environmentmanager.ProfileInput{
+		Name: request.Name, Description: request.Description,
+	})
+	if err != nil {
+		h.writeError(c, "environment_profile_update", err)
+		return
+	}
+	h.writeEnvironment(c, current)
+}
+
+func (h environmentHandler) replaceHosts(c *gin.Context) {
+	var request environmentHostsRequest
+	if err := c.ShouldBindJSON(&request); err != nil {
+		h.logger.Warn("调整环境主机参数无效", "operation", "environment_hosts_update_bind", "request_id", requestIDFrom(c), "environment_id", c.Param("id"), "err", err)
+		writeError(c, http.StatusBadRequest, "invalid_request", environmentmanager.ErrInvalidEnvironment.Error())
+		return
+	}
+	current, err := h.service.ReplaceHosts(c.Request.Context(), c.Param("id"), *request.HostIDs)
+	if err != nil {
+		h.writeError(c, "environment_hosts_update", err)
+		return
+	}
+	h.writeEnvironment(c, current)
+}
+
 func (h environmentHandler) setStatus(c *gin.Context) {
 	var request runtimeStatusRequest
 	if err := c.ShouldBindJSON(&request); err != nil || request.Active == nil {
@@ -142,6 +183,14 @@ func (h environmentHandler) hostDetails(c *gin.Context) (map[string]hostmanager.
 	return result, nil
 }
 
+func (h environmentHandler) writeEnvironment(c *gin.Context, current *environmentmanager.Detail) {
+	hostDetails, err := h.hostDetails(c)
+	if err != nil {
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"environment": toEnvironmentResponse(*current, hostDetails)})
+}
+
 func (h environmentHandler) writeError(c *gin.Context, operation string, err error) {
 	h.logger.Warn("环境操作失败", "operation", operation, "request_id", requestIDFrom(c), "environment_id", c.Param("id"), "err", err)
 	switch {
@@ -153,6 +202,8 @@ func (h environmentHandler) writeError(c *gin.Context, operation string, err err
 		writeError(c, http.StatusNotFound, "environment_not_found", environmentmanager.ErrEnvironmentNotFound.Error())
 	case errors.Is(err, environmentmanager.ErrEnvironmentReferenced):
 		writeError(c, http.StatusConflict, "environment_referenced", environmentmanager.ErrEnvironmentReferenced.Error())
+	case errors.Is(err, environmentmanager.ErrHostMembershipReferenced):
+		writeError(c, http.StatusConflict, "environment_host_referenced", environmentmanager.ErrHostMembershipReferenced.Error())
 	case errors.Is(err, environmentmanager.ErrHostNotFound):
 		writeError(c, http.StatusBadRequest, "environment_host_not_found", environmentmanager.ErrHostNotFound.Error())
 	default:

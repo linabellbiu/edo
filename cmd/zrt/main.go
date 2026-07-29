@@ -73,6 +73,7 @@ func run() error {
 		return fmt.Errorf("加载配置失败: %w", err)
 	}
 	logger, runtimeLogs := logging.NewRuntime(cfg.LogLevel)
+	slog.SetDefault(logger)
 	command := "server"
 	if len(os.Args) > 1 {
 		command = os.Args[1]

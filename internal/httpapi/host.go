@@ -56,6 +56,7 @@ type hostResponse struct {
 	SSHAuthType           model.SSHAuthType              `json:"ssh_auth_type"`
 	SSHHostKeyFingerprint string                         `json:"ssh_host_key_fingerprint,omitempty"`
 	EnvironmentID         string                         `json:"environment_id"`
+	EnvironmentIDs        []string                       `json:"environment_ids"`
 	IsBuiltin             bool                           `json:"is_builtin"`
 	IsActive              bool                           `json:"is_active"`
 	Capabilities          []hostCapabilityResponse       `json:"capabilities"`
@@ -255,12 +256,21 @@ func toHostResponse(detail hostmanager.Detail) hostResponse {
 			UseSudo: detail.Capabilities[i].UseSudo,
 		})
 	}
+	environmentIDs := detail.EnvironmentIDs
+	if environmentIDs == nil {
+		environmentIDs = []string{}
+	}
+	legacyEnvironmentID := ""
+	if len(environmentIDs) == 1 {
+		legacyEnvironmentID = environmentIDs[0]
+	}
 	return hostResponse{
 		ID: detail.Host.ID, Name: detail.Host.Name, Mode: detail.Host.Mode,
 		Address: detail.Host.Address, SSHPort: detail.Host.SSHPort, SSHUsername: detail.Host.SSHUsername,
 		SSHAuthType: detail.Host.SSHAuthType, SSHHostKeyFingerprint: detail.Host.SSHHostKeyFingerprint,
-		EnvironmentID: detail.Host.EnvironmentID, IsBuiltin: detail.Host.IsBuiltin,
-		IsActive: detail.Host.IsActive, Capabilities: capabilities,
+		EnvironmentID: legacyEnvironmentID, EnvironmentIDs: environmentIDs,
+		IsBuiltin: detail.Host.IsBuiltin,
+		IsActive:  detail.Host.IsActive, Capabilities: capabilities,
 		CapabilityOptions:    detail.CapabilityOptions,
 		CredentialConfigured: detail.Host.SSHCredentialCiphertext != "",
 		CreatedBy:            detail.Host.CreatedBy, CreatedAt: detail.Host.CreatedAt, UpdatedAt: detail.Host.UpdatedAt,

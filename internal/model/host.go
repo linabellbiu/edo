@@ -50,6 +50,16 @@ type Environment struct {
 
 func (Environment) TableName() string { return "environments" }
 
+// EnvironmentHost 保存环境与主机的多对多关系。环境只是用户定义的基础设施分组，
+// 同一台主机可以被多个环境复用；具体部署配置仍需各自避免服务端口冲突。
+type EnvironmentHost struct {
+	EnvironmentID string    `gorm:"type:varchar(36);primaryKey;index" json:"environment_id"`
+	HostID        string    `gorm:"type:varchar(36);primaryKey;index" json:"host_id"`
+	CreatedAt     time.Time `gorm:"not null" json:"created_at"`
+}
+
+func (EnvironmentHost) TableName() string { return "environment_hosts" }
+
 type Host struct {
 	ID                      string      `gorm:"type:varchar(36);primaryKey" json:"id"`
 	Name                    string      `gorm:"type:varchar(128);not null;uniqueIndex" json:"name"`
@@ -60,12 +70,14 @@ type Host struct {
 	SSHAuthType             SSHAuthType `gorm:"type:varchar(16);not null;default:''" json:"ssh_auth_type"`
 	SSHCredentialCiphertext string      `gorm:"type:text;not null" json:"-"`
 	SSHHostKeyFingerprint   string      `gorm:"type:varchar(128);not null;default:''" json:"ssh_host_key_fingerprint"`
-	EnvironmentID           string      `gorm:"type:varchar(36);not null;default:'';index" json:"environment_id"`
-	IsBuiltin               bool        `gorm:"not null;default:false;index" json:"is_builtin"`
-	IsActive                bool        `gorm:"not null;default:true;index" json:"is_active"`
-	CreatedBy               string      `gorm:"type:varchar(36);not null;index" json:"created_by"`
-	CreatedAt               time.Time   `gorm:"not null" json:"created_at"`
-	UpdatedAt               time.Time   `gorm:"not null" json:"updated_at"`
+	// EnvironmentID 仅保留旧数据库列兼容，新代码使用 environment_hosts 关联表。
+	// Deprecated: 不再读取或写入该字段的业务语义。
+	EnvironmentID string    `gorm:"type:varchar(36);not null;default:'';index" json:"-"`
+	IsBuiltin     bool      `gorm:"not null;default:false;index" json:"is_builtin"`
+	IsActive      bool      `gorm:"not null;default:true;index" json:"is_active"`
+	CreatedBy     string    `gorm:"type:varchar(36);not null;index" json:"created_by"`
+	CreatedAt     time.Time `gorm:"not null" json:"created_at"`
+	UpdatedAt     time.Time `gorm:"not null" json:"updated_at"`
 }
 
 func (Host) TableName() string { return "hosts" }

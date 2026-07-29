@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import Sortable from 'sortablejs'
-import { computed, nextTick, onBeforeUnmount, reactive, watch, type ComponentPublicInstance } from 'vue'
+import { computed, onBeforeUnmount, reactive, watch, type ComponentPublicInstance } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { GripVertical, Layers3, Plus, Trash2 } from 'lucide-vue-next'
 
@@ -60,8 +60,6 @@ const props = defineProps<{
   plan: ReleasePlan | null
   applications: ApplicationItem[]
   saving?: boolean
-  focusGroupID?: string
-  addGroupOnOpen?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -125,10 +123,6 @@ function initialize() {
         })),
     }))
   Object.keys(applicationSelection).forEach((key) => delete applicationSelection[key])
-  if (props.addGroupOnOpen) addGroup()
-  else if (props.focusGroupID) {
-    void nextTick(() => document.querySelector<HTMLElement>(`[data-release-group="${props.focusGroupID}"]`)?.scrollIntoView({ block: 'center' }))
-  }
 }
 
 function applicationName(applicationID: string) {
@@ -140,25 +134,6 @@ function availableApplications(group: EditableGroup) {
   return props.applications
     .filter((item) => item.is_active !== false && (!usedApplicationIDs.value.has(item.id) || ownIDs.has(item.id)))
     .map((item) => ({ value: item.id, label: item.name, disabled: ownIDs.has(item.id) }))
-}
-
-function addGroup() {
-  const key = nextKey('group')
-  draft.groups.push({
-    key,
-    id: '',
-    name: t('releasePlan.editor.defaultGroupName', { index: draft.groups.length + 1 }),
-    mode: 'parallel',
-    failure_policy: 'stop',
-    depends_on_group_ids: [],
-    applications: [],
-  })
-  void nextTick(() => document.querySelector<HTMLElement>(`[data-release-group="${key}"] input`)?.focus())
-}
-
-function removeGroup(index: number) {
-  const [removed] = draft.groups.splice(index, 1)
-  if (removed) delete applicationSelection[removed.key]
 }
 
 function addApplication(group: EditableGroup) {
@@ -273,26 +248,16 @@ onBeforeUnmount(destroySortables)
             <strong>{{ t('releasePlan.editor.groups') }}</strong>
             <small>{{ t('releasePlan.editor.groupsHint') }}</small>
           </div>
-          <a-button type="dashed" @click="addGroup"><Plus :size="14" />{{ t('releasePlan.editor.addGroup') }}</a-button>
         </header>
 
         <article
           v-for="(group, groupIndex) in draft.groups"
           :key="group.key"
-          :data-release-group="group.key"
           class="plan-editor-group"
         >
           <header>
             <span><Layers3 :size="17" />{{ groupIndex + 1 }}</span>
             <a-input v-model:value="group.name" :placeholder="t('releasePlan.editor.groupName')" :maxlength="128" />
-            <a-popconfirm
-              :title="t('releasePlan.editor.removeGroupConfirm')"
-              :ok-text="t('releasePlan.editor.remove')"
-              :cancel-text="t('releasePlan.editor.cancel')"
-              @confirm="removeGroup(groupIndex)"
-            >
-              <a-button danger type="text" :aria-label="t('releasePlan.editor.removeGroup')"><Trash2 :size="16" /></a-button>
-            </a-popconfirm>
           </header>
 
           <div class="plan-editor-rules">
@@ -376,7 +341,7 @@ onBeforeUnmount(destroySortables)
 
 <style scoped>
 .plan-editor-groups{display:grid;gap:12px}.plan-editor-groups>header{display:flex;align-items:center;justify-content:space-between;gap:16px}.plan-editor-groups>header strong,.plan-editor-groups>header small{display:block}.plan-editor-groups>header small{margin-top:3px;color:var(--zrt-muted);font-size:12px}.plan-editor-groups :deep(.ant-btn){display:inline-flex;align-items:center;gap:5px}
-.plan-editor-group{padding:14px;border:1px solid var(--zrt-border);border-radius:12px;background:var(--zrt-surface-soft)}.plan-editor-group>header{display:grid;align-items:center;grid-template-columns:34px minmax(0,1fr) 34px;gap:8px}.plan-editor-group>header>span{display:grid;width:34px;height:34px;place-items:center;border-radius:9px;color:var(--zrt-primary);background:var(--zrt-primary-soft);font-size:0}.plan-editor-group>header>span svg{width:17px}
+.plan-editor-group{padding:14px;border:1px solid var(--zrt-border);border-radius:12px;background:var(--zrt-surface-soft)}.plan-editor-group>header{display:grid;align-items:center;grid-template-columns:34px minmax(0,1fr);gap:8px}.plan-editor-group>header>span{display:grid;width:34px;height:34px;place-items:center;border-radius:9px;color:var(--zrt-primary);background:var(--zrt-primary-soft);font-size:0}.plan-editor-group>header>span svg{width:17px}
 .plan-editor-rules{display:grid;align-items:end;grid-template-columns:minmax(0,1fr) minmax(180px,.55fr);gap:12px;margin-top:13px}.plan-editor-rules>label{display:flex;min-height:55px;align-items:center;gap:10px;padding:9px 11px;border:1px solid var(--zrt-border);border-radius:9px;background:var(--zrt-surface)}.plan-editor-rules>label strong,.plan-editor-rules>label small{display:block}.plan-editor-rules>label strong{font-size:13px}.plan-editor-rules>label small{margin-top:2px;color:var(--zrt-muted);font-size:11px}.plan-editor-rules :deep(.ant-form-item){margin:0}.plan-editor-rules :deep(.ant-form-item-label){padding-bottom:4px}
 .plan-editor-add-application{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;margin-top:13px}.plan-editor-applications{display:grid;gap:6px;margin-top:9px}.plan-editor-application{display:grid;min-height:42px;align-items:center;grid-template-columns:32px 26px minmax(0,1fr) 34px;gap:5px;padding:4px 5px;border:1px solid var(--zrt-border);border-radius:9px;background:var(--zrt-surface);transition:border-color 160ms ease,box-shadow 160ms ease}.plan-editor-application:hover{border-color:color-mix(in srgb,var(--zrt-primary) 28%,var(--zrt-border))}.plan-app-drag{display:grid;width:32px;height:32px;place-items:center;border:0;border-radius:7px;color:var(--zrt-muted);background:transparent;cursor:grab}.plan-app-drag:active{cursor:grabbing}.plan-app-drag:focus-visible{outline:2px solid color-mix(in srgb,var(--zrt-primary) 45%,transparent);outline-offset:1px}.plan-app-order{display:grid;width:23px;height:23px;place-items:center;border-radius:7px;color:var(--zrt-primary);background:var(--zrt-primary-soft);font-size:11px;font-weight:700}.plan-editor-application strong{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px}.plan-app-ghost{opacity:.4}.plan-app-chosen{border-color:var(--zrt-primary);box-shadow:0 5px 18px color-mix(in srgb,var(--zrt-primary) 15%,transparent)}.plan-editor-order-hint{display:block;margin-top:8px;color:var(--zrt-muted);font-size:11px}.plan-editor-group :deep(.ant-empty){margin-block:10px}.plan-editor-footer{display:flex;justify-content:flex-end;gap:8px}
 @media(max-width:640px){.plan-editor-groups>header{align-items:flex-start}.plan-editor-rules{grid-template-columns:1fr}.plan-editor-add-application{grid-template-columns:1fr}.plan-editor-add-application :deep(.ant-btn){justify-content:center}}

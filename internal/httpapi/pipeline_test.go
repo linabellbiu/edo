@@ -27,7 +27,7 @@ func TestDeploymentPlansAndReleasePlansAreSeparateResources(t *testing.T) {
 	created := performJSONRequest(t, router, http.MethodPost, "/api/v1/deployment-plans", map[string]any{
 		"name": "测试脚本部署", "kind": "script", "script": "./deploy.sh\n", "timeout_seconds": 600,
 		"deployment_target": map[string]any{
-			"name": "测试脚本部署位置", "platform": "ssh", "host_id": "httpapi-deployment-host",
+			"name": "测试脚本部署位置", "platform": "ssh", "environment_id": "httpapi-deployment-environment", "host_id": "httpapi-deployment-host",
 			"working_directory": "/srv/test", "rollout_timeout": 300,
 		},
 	}, adminCookie)
@@ -43,7 +43,7 @@ func TestDeploymentPlansAndReleasePlansAreSeparateResources(t *testing.T) {
 	updated := performJSONRequest(t, router, http.MethodPut, "/api/v1/deployment-plans/"+createdPayload.DeploymentPlan.ID, map[string]any{
 		"name": "测试脚本部署", "kind": "script", "script": "./deploy-v2.sh\n", "description": "更新后的方案", "timeout_seconds": 300,
 		"deployment_target": map[string]any{
-			"name": "测试脚本部署位置", "platform": "ssh", "host_id": "httpapi-deployment-host",
+			"name": "测试脚本部署位置", "platform": "ssh", "environment_id": "httpapi-deployment-environment", "host_id": "httpapi-deployment-host",
 			"working_directory": "/srv/test-v2", "rollout_timeout": 300,
 		},
 	}, adminCookie)
@@ -54,7 +54,7 @@ func TestDeploymentPlansAndReleasePlansAreSeparateResources(t *testing.T) {
 	missing := performJSONRequest(t, router, http.MethodPut, "/api/v1/deployment-plans/not-found", map[string]any{
 		"name": "不存在的部署方案", "kind": "script", "script": "./deploy.sh\n", "timeout_seconds": 300,
 		"deployment_target": map[string]any{
-			"name": "不存在的部署位置", "platform": "ssh", "host_id": "httpapi-deployment-host",
+			"name": "不存在的部署位置", "platform": "ssh", "environment_id": "httpapi-deployment-environment", "host_id": "httpapi-deployment-host",
 			"working_directory": "/srv/missing", "rollout_timeout": 300,
 		},
 	}, adminCookie)

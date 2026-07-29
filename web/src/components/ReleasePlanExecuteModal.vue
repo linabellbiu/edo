@@ -12,6 +12,7 @@ import {
   RefreshCw,
   ShieldAlert,
 } from 'lucide-vue-next'
+import { formatGitReference } from '@/utils/gitReference'
 
 type LoadState = 'idle' | 'loading' | 'ready' | 'blocked' | 'error'
 type ReferenceKind = 'branch' | 'tag'
@@ -138,7 +139,7 @@ function failurePolicy(policy: string) {
 function dependencyLabel(dependencies: string[]) {
   return dependencies.length
     ? t('releasePlanExecution.group.dependencies', { names: dependencies.join(' · ') })
-    : t('releasePlanExecution.group.noDependencies')
+    : ''
 }
 
 function references(item: ReleasePlanExecutionItem, kind: ReferenceKind) {
@@ -146,7 +147,7 @@ function references(item: ReleasePlanExecutionItem, kind: ReferenceKind) {
 }
 
 function referenceLabel(reference: ReferenceOption) {
-  return `${reference.name} · ${reference.sha.slice(0, 8)}`
+  return formatGitReference(reference)
 }
 
 function sourceLabel(source: ReleasePath) {
@@ -222,7 +223,7 @@ function updateRef(membershipID: string, value: unknown) {
             <span class="group-step">{{ groupIndex + 1 }}</span>
             <div class="group-copy">
               <strong>{{ group.name }}</strong>
-              <small>{{ dependencyLabel(group.dependencies) }}</small>
+              <small v-if="dependencyLabel(group.dependencies)">{{ dependencyLabel(group.dependencies) }}</small>
             </div>
             <div class="group-rules">
               <span>{{ groupMode(group.mode) }}</span>

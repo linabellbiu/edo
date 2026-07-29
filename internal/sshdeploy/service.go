@@ -169,11 +169,13 @@ func (s *Service) loadHost(ctx context.Context, input Input) (model.Host, sshcli
 		}
 		return host, sshclient.Bundle{}, fmt.Errorf("查询命令发布主机失败: %w", err)
 	}
-	if host.EnvironmentID != input.EnvironmentID {
-		return host, sshclient.Bundle{}, ErrEnvironmentChanged
-	}
 	var environment model.Environment
-	if err := s.db.WithContext(ctx).Select("id").First(&environment, "id = ? AND is_active = ?", input.EnvironmentID, true).Error; err != nil {
+	if err := s.db.WithContext(ctx).Select("environments.id").
+		Joins("JOIN environment_hosts AS membership ON membership.environment_id = environments.id").
+		First(&environment,
+			"environments.id = ? AND environments.is_active = ? AND membership.host_id = ?",
+			input.EnvironmentID, true, host.ID,
+		).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return host, sshclient.Bundle{}, ErrEnvironmentChanged
 		}

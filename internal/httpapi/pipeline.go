@@ -430,6 +430,45 @@ func (h pipelineHandler) createBuildPlan(c *gin.Context) {
 	c.JSON(http.StatusCreated, gin.H{"build_plan": plan})
 }
 
+func (h pipelineHandler) updateBuildPlan(c *gin.Context) {
+	var request buildPlanRequest
+	if err := c.ShouldBindJSON(&request); err != nil {
+		writeError(c, http.StatusBadRequest, "invalid_build_plan", pipeline.ErrInvalidBuildPlan.Error())
+		return
+	}
+	plan, err := h.service.UpdateBuildPlan(c.Request.Context(), c.Param("id"), pipeline.BuildPlanInput{
+		Name: request.Name, Kind: request.Kind, Description: request.Description, Script: request.Script,
+		DockerfilePath: request.DockerfilePath, ContextPath: request.ContextPath,
+		ArtifactPath: request.ArtifactPath, TimeoutSeconds: request.TimeoutSeconds,
+	})
+	if err != nil {
+		h.writeError(c, "build_plan_update", err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"build_plan": plan})
+}
+
+func (h pipelineHandler) setBuildPlanStatus(c *gin.Context) {
+	var request runtimeStatusRequest
+	if err := c.ShouldBindJSON(&request); err != nil || request.Active == nil {
+		writeError(c, http.StatusBadRequest, "invalid_build_plan_status", "构建方案状态格式无效")
+		return
+	}
+	if err := h.service.SetBuildPlanActive(c.Request.Context(), c.Param("id"), *request.Active); err != nil {
+		h.writeError(c, "build_plan_status", err)
+		return
+	}
+	c.Status(http.StatusNoContent)
+}
+
+func (h pipelineHandler) deleteBuildPlan(c *gin.Context) {
+	if err := h.service.DeleteBuildPlan(c.Request.Context(), c.Param("id")); err != nil {
+		h.writeError(c, "build_plan_delete", err)
+		return
+	}
+	c.Status(http.StatusNoContent)
+}
+
 func (h pipelineHandler) listRegistries(c *gin.Context) {
 	registries, err := h.service.ListRegistries(c.Request.Context())
 	if err != nil {
@@ -576,8 +615,12 @@ func (h pipelineHandler) writeError(c *gin.Context, operation string, err error)
 		errors.Is(err, pipeline.ErrRegistryExists), errors.Is(err, pipeline.ErrDeploymentPlanExists),
 		errors.Is(err, pipeline.ErrWorkflowTemplateExists):
 		writeError(c, http.StatusConflict, "delivery_config_exists", err.Error())
+	case errors.Is(err, pipeline.ErrBuildPlanInUse):
+		writeError(c, http.StatusConflict, "build_plan_in_use", err.Error())
 	case errors.Is(err, pipeline.ErrApplicationNotFound):
 		writeError(c, http.StatusNotFound, "application_not_found", err.Error())
+	case errors.Is(err, pipeline.ErrBuildPlanNotFound):
+		writeError(c, http.StatusNotFound, "build_plan_not_found", err.Error())
 	case errors.Is(err, pipeline.ErrDeploymentPlanNotFound):
 		writeError(c, http.StatusNotFound, "deployment_plan_not_found", err.Error())
 	case errors.Is(err, pipeline.ErrWorkflowNotFound), errors.Is(err, pipeline.ErrWorkflowTemplateNotFound):

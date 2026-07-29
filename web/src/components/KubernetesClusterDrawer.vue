@@ -1,32 +1,104 @@
 <script setup lang="ts">
-import { reactive, ref, watch } from 'vue'
+import { computed, reactive, ref, watch } from 'vue'
 import { message } from 'ant-design-vue'
+import { useI18n } from 'vue-i18n'
 
 import client from '@/api/client'
 import { apiErrorMessage } from '@/api/resources'
 
+interface KubernetesCluster {
+  id: string
+  name: string
+  api_server: string
+  default_namespace: string
+  is_active: boolean
+}
+
+interface ConnectionTest {
+  api_server: string
+  version: string
+}
+
 const props = withDefaults(defineProps<{ open?: boolean }>(), { open: false })
-const emit = defineEmits<{ created: []; 'update:open': [value: boolean] }>()
+const emit = defineEmits<{ created: [cluster: KubernetesCluster]; 'update:open': [value: boolean] }>()
+const { t } = useI18n()
 const formRef = ref<{ validate: () => Promise<void> }>()
 const form = reactive({ name: '', mode: 'kubeconfig' as 'kubeconfig' | 'in_cluster', default_namespace: 'default', kubeconfig: '' })
+const testing = ref(false)
 const submitting = ref(false)
+const testedSignature = ref('')
+const testResult = ref<ConnectionTest>()
+
+const busy = computed(() => testing.value || submitting.value)
+const currentSignature = computed(() => JSON.stringify({
+  name: form.name.trim(),
+  mode: form.mode,
+  default_namespace: form.default_namespace.trim() || 'default',
+  kubeconfig: form.mode === 'kubeconfig' ? form.kubeconfig.trim() : '',
+}))
+const connectionTested = computed(() => Boolean(testResult.value) && testedSignature.value === currentSignature.value)
 
 watch(() => props.open, open => {
-  if (open) Object.assign(form, { name: '', mode: 'kubeconfig', default_namespace: 'default', kubeconfig: '' })
+  if (!open) return
+  Object.assign(form, { name: '', mode: 'kubeconfig', default_namespace: 'default', kubeconfig: '' })
+  testedSignature.value = ''
+  testResult.value = undefined
 })
 
+watch(currentSignature, signature => {
+  if (testedSignature.value && testedSignature.value !== signature) {
+    testedSignature.value = ''
+    testResult.value = undefined
+  }
+})
+
+function payload() {
+  return {
+    name: form.name.trim(),
+    mode: form.mode,
+    default_namespace: form.default_namespace.trim() || 'default',
+    kubeconfig: form.mode === 'kubeconfig' ? form.kubeconfig : undefined,
+  }
+}
+
+async function validate() {
+  try {
+    await formRef.value?.validate()
+    return true
+  } catch {
+    return false
+  }
+}
+
+async function testConnection() {
+  if (!await validate()) return
+  const signature = currentSignature.value
+  testing.value = true
+  try {
+    const response = await client.post<ConnectionTest>('/kubernetes/clusters/test', payload())
+    testedSignature.value = signature
+    testResult.value = response.data
+    message.success(t('kubernetesCluster.message.testSuccess', { version: response.data.version }))
+  } catch (error) {
+    testedSignature.value = ''
+    testResult.value = undefined
+    message.error(apiErrorMessage(error))
+  } finally {
+    testing.value = false
+  }
+}
+
 async function submit() {
-  try { await formRef.value?.validate() } catch { return }
+  if (!await validate()) return
+  if (!connectionTested.value) {
+    message.info(t('kubernetesCluster.message.testFirst'))
+    return
+  }
   submitting.value = true
   try {
-    await client.post('/kubernetes/clusters', {
-      name: form.name.trim(),
-      mode: form.mode,
-      default_namespace: form.default_namespace.trim() || 'default',
-      kubeconfig: form.mode === 'kubeconfig' ? form.kubeconfig : undefined,
-    })
-    message.success('Kubernetes 集群已创建')
-    emit('created')
+    const response = await client.post<{ cluster: KubernetesCluster }>('/kubernetes/clusters', payload())
+    message.success(t('kubernetesCluster.message.created'))
+    emit('created', response.data.cluster)
     emit('update:open', false)
   } catch (error) {
     message.error(apiErrorMessage(error))
@@ -37,29 +109,78 @@ async function submit() {
 </script>
 
 <template>
-  <a-drawer :open="open" title="创建 Kubernetes 集群" width="620" :mask-closable="!submitting" @close="emit('update:open', false)">
-    <a-form ref="formRef" :model="form" layout="vertical" :disabled="submitting">
+  <a-drawer
+    :open="open"
+    :title="t('kubernetesCluster.drawer.title')"
+    width="620"
+    :mask-closable="!busy"
+    @close="emit('update:open', false)"
+  >
+    <a-form ref="formRef" :model="form" layout="vertical" :disabled="busy">
       <div class="form-grid">
-        <a-form-item label="集群名称" name="name" :rules="[{ required:true, whitespace:true, message:'请输入集群名称' }]">
-          <a-input v-model:value="form.name" placeholder="例如：生产 Kubernetes" />
+        <a-form-item
+          :label="t('kubernetesCluster.field.name')"
+          name="name"
+          :rules="[{ required: true, whitespace: true, message: t('kubernetesCluster.validation.name') }]"
+        >
+          <a-input v-model:value="form.name" :placeholder="t('kubernetesCluster.placeholder.name')" />
         </a-form-item>
-        <a-form-item label="接入方式" name="mode">
-          <a-select v-model:value="form.mode" :options="[{ value:'kubeconfig',label:'kubeconfig' },{ value:'in_cluster',label:'集群内身份' }]" />
+        <a-form-item :label="t('kubernetesCluster.field.mode')" name="mode">
+          <a-select
+            v-model:value="form.mode"
+            :options="[
+              { value: 'kubeconfig', label: 'kubeconfig' },
+              { value: 'in_cluster', label: t('kubernetesCluster.mode.inCluster') },
+            ]"
+          />
         </a-form-item>
-        <a-form-item class="span-2" label="默认命名空间" name="default_namespace" :rules="[{ required:true, whitespace:true, message:'请输入默认命名空间' }]">
+        <a-form-item
+          class="span-2"
+          :label="t('kubernetesCluster.field.namespace')"
+          name="default_namespace"
+          :rules="[{ required: true, whitespace: true, message: t('kubernetesCluster.validation.namespace') }]"
+        >
           <a-input v-model:value="form.default_namespace" placeholder="default" />
         </a-form-item>
-        <a-form-item v-if="form.mode === 'kubeconfig'" class="span-2" label="kubeconfig" name="kubeconfig" :rules="[{ required:true, whitespace:true, message:'请粘贴 kubeconfig' }]">
+        <a-form-item
+          v-if="form.mode === 'kubeconfig'"
+          class="span-2"
+          label="kubeconfig"
+          name="kubeconfig"
+          :rules="[{ required: true, whitespace: true, message: t('kubernetesCluster.validation.kubeconfig') }]"
+        >
           <a-textarea v-model:value="form.kubeconfig" :rows="16" spellcheck="false" placeholder="apiVersion: v1" />
-          <div class="field-hint">禁止 exec 插件、外部文件引用、代理和身份模拟配置；凭据会加密保存。</div>
+          <div class="field-hint">{{ t('kubernetesCluster.hint.kubeconfig') }}</div>
         </a-form-item>
-        <a-alert v-else class="span-2" type="info" show-icon message="集群内身份仅适用于 ZRT 本身运行在目标 Kubernetes 集群内的场景。" />
+        <a-alert
+          v-else
+          class="span-2"
+          type="info"
+          show-icon
+          :message="t('kubernetesCluster.hint.inCluster')"
+        />
+        <a-alert
+          v-if="connectionTested && testResult"
+          class="span-2 connection-result"
+          type="success"
+          show-icon
+          :message="t('kubernetesCluster.test.ready', { version: testResult.version })"
+          :description="testResult.api_server"
+        />
       </div>
     </a-form>
-    <template #footer><div class="drawer-actions"><a-button @click="emit('update:open', false)">取消</a-button><a-button type="primary" :loading="submitting" @click="submit">创建集群</a-button></div></template>
+    <template #footer>
+      <div class="drawer-actions">
+        <a-button :disabled="busy" @click="emit('update:open', false)">{{ t('kubernetesCluster.action.cancel') }}</a-button>
+        <a-button :loading="testing" :disabled="submitting" @click="testConnection">{{ t('kubernetesCluster.action.test') }}</a-button>
+        <a-button type="primary" :loading="submitting" :disabled="!connectionTested || testing" @click="submit">
+          {{ t('kubernetesCluster.action.create') }}
+        </a-button>
+      </div>
+    </template>
   </a-drawer>
 </template>
 
 <style scoped>
-.form-grid{display:grid;grid-template-columns:1fr 1fr;gap:0 14px}.span-2{grid-column:1/-1}.field-hint{margin-top:6px;color:var(--zrt-muted);font-size:12px}.drawer-actions{display:flex;justify-content:flex-end;gap:8px}@media(max-width:620px){.form-grid{grid-template-columns:1fr}.span-2{grid-column:auto}}
+.form-grid{display:grid;grid-template-columns:1fr 1fr;gap:0 14px}.span-2{grid-column:1/-1}.field-hint{margin-top:6px;color:var(--zrt-muted);font-size:12px;line-height:1.55}.connection-result{margin-top:2px}.connection-result :deep(.ant-alert-description){overflow-wrap:anywhere}.drawer-actions{display:flex;justify-content:flex-end;gap:8px}@media(max-width:620px){.form-grid{grid-template-columns:1fr}.span-2{grid-column:auto}}
 </style>

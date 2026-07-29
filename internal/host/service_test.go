@@ -7,6 +7,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -179,6 +180,55 @@ func TestHostCreateRequiresInputBoundTestAndEncryptsCredential(t *testing.T) {
 	}
 	if _, err := service.Create(ctx, "admin", input); !errors.Is(err, ErrHostTestRequired) {
 		t.Fatalf("一次性测试令牌被重复使用: %v", err)
+	}
+}
+
+func TestHostDetailReturnsAllEnvironmentsAndRemovalCleansMemberships(t *testing.T) {
+	service, db, _ := newHostTestService(t)
+	ctx := context.Background()
+	input := hostTestInput()
+	input.Name = "共享主机"
+	input.CapabilityKinds = []model.HostCapabilityKind{model.HostCapabilitySSH}
+	tested, err := service.Test(ctx, input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	input.TestToken = tested.Token
+	created, err := service.Create(ctx, "admin", input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if created.EnvironmentIDs == nil || len(created.EnvironmentIDs) != 0 {
+		t.Fatalf("新主机环境列表必须返回空数组: %+v", created.EnvironmentIDs)
+	}
+	now := time.Now().UTC()
+	environments := []model.Environment{
+		{ID: "environment-a", Name: "环境 A", IsActive: true, CreatedBy: "admin", CreatedAt: now, UpdatedAt: now},
+		{ID: "environment-b", Name: "环境 B", IsActive: true, CreatedBy: "admin", CreatedAt: now, UpdatedAt: now},
+	}
+	if err := db.Create(&environments).Error; err != nil {
+		t.Fatal(err)
+	}
+	memberships := []model.EnvironmentHost{
+		{EnvironmentID: environments[1].ID, HostID: created.Host.ID, CreatedAt: now},
+		{EnvironmentID: environments[0].ID, HostID: created.Host.ID, CreatedAt: now},
+	}
+	if err := db.Create(&memberships).Error; err != nil {
+		t.Fatal(err)
+	}
+	detail, err := service.Get(ctx, created.Host.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(detail.EnvironmentIDs, []string{"environment-a", "environment-b"}) {
+		t.Fatalf("主机详情未返回全部环境: %+v", detail.EnvironmentIDs)
+	}
+	if err := service.Remove(ctx, created.Host.ID); err != nil {
+		t.Fatal(err)
+	}
+	var count int64
+	if err := db.Model(&model.EnvironmentHost{}).Where("host_id = ?", created.Host.ID).Count(&count).Error; err != nil || count != 0 {
+		t.Fatalf("删除主机后仍残留环境关联: count=%d err=%v", count, err)
 	}
 }
 
@@ -648,7 +698,8 @@ func newHostTestService(t *testing.T) (*Service, *gorm.DB, *secret.Manager) {
 	}
 	t.Cleanup(func() { _ = database.Close(db) })
 	if err := db.AutoMigrate(
-		&model.Host{}, &model.HostCapability{}, &model.DockerEndpoint{}, &model.DeploymentTarget{},
+		&model.Environment{}, &model.Host{}, &model.EnvironmentHost{}, &model.HostCapability{},
+		&model.DockerEndpoint{}, &model.DeploymentTarget{},
 	); err != nil {
 		t.Fatalf("初始化主机测试表失败: %v", err)
 	}

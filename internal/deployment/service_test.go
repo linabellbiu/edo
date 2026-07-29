@@ -163,12 +163,12 @@ func TestTargetLockSerializesSameEnvironmentOnly(t *testing.T) {
 	}
 }
 
-func TestSSHDeploymentUsesServerDerivedEnvironmentAndExactPlanSnapshot(t *testing.T) {
+func TestSSHDeploymentUsesSelectedMembershipAndExactPlanSnapshot(t *testing.T) {
 	service, db, _ := newDeploymentTestService(t)
 	environment, host := createSSHDeploymentResources(t, db)
 	target, err := service.CreateTarget(context.Background(), "admin", TargetInput{
 		Name: "SSH 命令目标", Platform: model.DeploymentSSH,
-		EnvironmentID: "client-value-is-ignored",
+		EnvironmentID: environment.ID,
 		HostID:        host.ID, WorkingDirectory: "/srv/zrt", RolloutTimeout: 90,
 	})
 	if err != nil {
@@ -214,6 +214,42 @@ func TestSSHDeploymentUsesServerDerivedEnvironmentAndExactPlanSnapshot(t *testin
 	}
 }
 
+func TestSSHDeploymentTargetAcceptsAnyConfiguredHostEnvironment(t *testing.T) {
+	service, db, _ := newDeploymentTestService(t)
+	first, host := createSSHDeploymentResources(t, db)
+	now := time.Now().UTC()
+	second := model.Environment{
+		ID: "environment-ssh-second", Name: "SSH 第二环境", IsActive: true,
+		CreatedBy: "admin", CreatedAt: now, UpdatedAt: now,
+	}
+	unrelated := model.Environment{
+		ID: "environment-ssh-unrelated", Name: "SSH 未关联环境", IsActive: true,
+		CreatedBy: "admin", CreatedAt: now, UpdatedAt: now,
+	}
+	if err := db.Create(&[]model.Environment{second, unrelated}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&model.EnvironmentHost{
+		EnvironmentID: second.ID, HostID: host.ID, CreatedAt: now,
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	for index, environmentID := range []string{first.ID, second.ID} {
+		if _, err := service.CreateTarget(context.Background(), "admin", TargetInput{
+			Name: "共享主机目标 " + string(rune('A'+index)), Platform: model.DeploymentSSH,
+			EnvironmentID: environmentID, HostID: host.ID, RolloutTimeout: 60,
+		}); err != nil {
+			t.Fatalf("已关联环境 %s 应允许使用共享主机: %v", environmentID, err)
+		}
+	}
+	if _, err := service.CreateTarget(context.Background(), "admin", TargetInput{
+		Name: "未关联环境目标", Platform: model.DeploymentSSH,
+		EnvironmentID: unrelated.ID, HostID: host.ID, RolloutTimeout: 60,
+	}); !errors.Is(err, ErrInvalidTarget) {
+		t.Fatalf("未关联环境不应使用该主机: %v", err)
+	}
+}
+
 func TestSSHDeploymentLockUsesLowerPlanAndTargetTimeout(t *testing.T) {
 	redisServer := miniredis.RunT(t)
 	redisClient := redis.NewClient(&redis.Options{Addr: redisServer.Addr()})
@@ -241,15 +277,17 @@ func TestSSHDeploymentLockUsesLowerPlanAndTargetTimeout(t *testing.T) {
 
 func TestSSHDeploymentRejectsTamperedDigestAndRelativeWorkingDirectory(t *testing.T) {
 	service, db, _ := newDeploymentTestService(t)
-	_, host := createSSHDeploymentResources(t, db)
+	environment, host := createSSHDeploymentResources(t, db)
 	if _, err := service.CreateTarget(context.Background(), "admin", TargetInput{
-		Name: "无效 SSH 目录", Platform: model.DeploymentSSH, HostID: host.ID,
+		Name: "无效 SSH 目录", Platform: model.DeploymentSSH,
+		EnvironmentID: environment.ID, HostID: host.ID,
 		WorkingDirectory: "relative/path", RolloutTimeout: 60,
 	}); !errors.Is(err, ErrInvalidTarget) {
 		t.Fatalf("SSH 工作目录必须是规范绝对路径: %v", err)
 	}
 	target, err := service.CreateTarget(context.Background(), "admin", TargetInput{
-		Name: "有效 SSH 目标", Platform: model.DeploymentSSH, HostID: host.ID, RolloutTimeout: 60,
+		Name: "有效 SSH 目标", Platform: model.DeploymentSSH,
+		EnvironmentID: environment.ID, HostID: host.ID, RolloutTimeout: 60,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -278,7 +316,12 @@ func TestLocalCommandTargetRequiresBuiltinReadyCapability(t *testing.T) {
 		t.Fatalf("创建本地命令环境失败: %v", err)
 	}
 	if err := db.Model(&model.Host{}).Where("id = ?", model.BuiltinLocalHostID).
-		Updates(map[string]any{"environment_id": environment.ID, "is_active": true}).Error; err != nil {
+		Update("is_active", true).Error; err != nil {
+		t.Fatalf("绑定本地主机环境失败: %v", err)
+	}
+	if err := db.Create(&model.EnvironmentHost{
+		EnvironmentID: environment.ID, HostID: model.BuiltinLocalHostID, CreatedAt: now,
+	}).Error; err != nil {
 		t.Fatalf("绑定本地主机环境失败: %v", err)
 	}
 	capability := model.HostCapability{
@@ -292,7 +335,8 @@ func TestLocalCommandTargetRequiresBuiltinReadyCapability(t *testing.T) {
 	}
 	target, err := service.CreateTarget(context.Background(), "admin", TargetInput{
 		Name: "本地命令目标", Platform: model.DeploymentSSH,
-		HostID: model.BuiltinLocalHostID, WorkingDirectory: "/srv/zrt", RolloutTimeout: 90,
+		EnvironmentID: environment.ID, HostID: model.BuiltinLocalHostID,
+		WorkingDirectory: "/srv/zrt", RolloutTimeout: 90,
 	})
 	if err != nil {
 		t.Fatalf("已启用本地执行能力时应允许创建命令目标: %v", err)
@@ -308,7 +352,7 @@ func TestLocalCommandTargetRequiresBuiltinReadyCapability(t *testing.T) {
 	}
 	if _, err := service.CreateTarget(context.Background(), "admin", TargetInput{
 		Name: "不可用的本地命令目标", Platform: model.DeploymentSSH,
-		HostID: model.BuiltinLocalHostID, RolloutTimeout: 90,
+		EnvironmentID: environment.ID, HostID: model.BuiltinLocalHostID, RolloutTimeout: 90,
 	}); !errors.Is(err, ErrInvalidTarget) {
 		t.Fatalf("本地执行能力不可用时不应创建发布目标: %v", err)
 	}
@@ -328,10 +372,15 @@ func createSSHDeploymentResources(t *testing.T, db *gorm.DB) (model.Environment,
 		ID: "host-ssh", Name: "SSH 主机", Mode: model.HostModeSSH, Address: "192.0.2.10",
 		SSHPort: 22, SSHUsername: "deploy", SSHAuthType: model.SSHAuthPassword,
 		SSHCredentialCiphertext: "encrypted", SSHHostKeyFingerprint: "SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
-		EnvironmentID: environment.ID, IsActive: true, CreatedBy: "admin", CreatedAt: now, UpdatedAt: now,
+		IsActive: true, CreatedBy: "admin", CreatedAt: now, UpdatedAt: now,
 	}
 	if err := db.Create(&host).Error; err != nil {
 		t.Fatalf("创建 SSH 测试主机失败: %v", err)
+	}
+	if err := db.Create(&model.EnvironmentHost{
+		EnvironmentID: environment.ID, HostID: host.ID, CreatedAt: now,
+	}).Error; err != nil {
+		t.Fatalf("创建 SSH 主机环境关联失败: %v", err)
 	}
 	capability := model.HostCapability{
 		HostID: host.ID, Kind: model.HostCapabilitySSH, Status: model.HostCapabilityReady,

@@ -15,13 +15,14 @@ import ReleasePlanExecuteModal from '@/components/ReleasePlanExecuteModal.vue'
 import ReleasePlanWorkspace from '@/components/ReleasePlanWorkspace.vue'
 import ResourceTable from '@/components/ResourceTable.vue'
 import { useAuthStore } from '@/stores/auth'
+import { formatGitReference } from '@/utils/gitReference'
 
 type Section='applications'|'repositories'|'build-plans'|'image-registries'|'deployment-plans'|'release-plans'
 const props=defineProps<{section:Section}>(),route=useRoute(),router=useRouter(),auth=useAuthStore()
 const {t,locale}=useI18n()
 interface Repository extends ResourceRecord{id:string;name:string;provider:string;clone_url:string;default_branch:string;webhook_enabled:boolean;webhook_url?:string;is_active:boolean;auth_type:string;username?:string;allow_insecure_http:boolean;has_credential?:boolean;credential_id?:string}
 interface Credential{id:string;name:string;provider:string;auth_type:string;username?:string;secret_hint:string}
-interface BuildPlan extends ResourceRecord{id:string;name:string;kind:string;description:string;dockerfile_path?:string;context_path:string;timeout_seconds:number;is_active:boolean}
+interface BuildPlan extends ResourceRecord{id:string;name:string;kind:string;description:string;script?:string;dockerfile_path?:string;context_path:string;artifact_path?:string;timeout_seconds:number;is_active:boolean;created_at:string;updated_at:string}
 interface Registry extends ResourceRecord{id:string;name:string;provider:string;endpoint:string;namespace:string;has_credential:boolean;is_active:boolean}
 interface DeploymentPlan extends ResourceRecord{id:string;name:string;kind:string;description:string;helm_chart?:string;helm_values?:string;compose_file?:string;service_name?:string;script?:string;timeout_seconds:number;deployment_target_id?:string;deployment_target?:{id:string;platform:string;workload_name?:string;namespace?:string};is_active:boolean}
 interface WorkflowTemplate{id:string;name:string;revision:number;is_active:boolean}
@@ -31,6 +32,8 @@ interface Run extends ResourceRecord{id:string;application_id:string;trigger:str
 type StatusTone='neutral'|'info'|'success'|'warning'|'danger'
 interface StatusMeta{tone:StatusTone;label:string;live:boolean}
  interface ReleasePlan extends ResourceRecord{id:string;name:string;version:string;description:string;status:string;is_active?:boolean;created_at:string;updated_at?:string;latest_execution?:{id:string;status:string;created_at:string;finished_at?:string};groups?:Array<{id:string;name:string;mode:string;failure_policy:string;sort_order?:number;dependencies?:Array<{depends_on_group_id:string}>;applications:Array<{id:string;application_id:string;application?:Application;manual_deploy?:boolean;source_type?:string;source_value?:string;sort_order?:number}>}>}
+type ReleasePlanGroup=NonNullable<ReleasePlan['groups']>[number]
+type ReleasePlanGroupApplication=ReleasePlanGroup['applications'][number]
 interface GitRef{name:string;sha:string} interface RefResult{branches:GitRef[];tags:GitRef[];manual_sources?:Array<{id:string;name:string;environment?:string}>}
 type PlanExecutionLoadState='idle'|'loading'|'ready'|'blocked'|'error'
 interface PlanExecutionReference{kind:'branch'|'tag';ref:string;name:string;sha:string}
@@ -40,9 +43,10 @@ interface PlanExecutionGroup{id:string;name:string;mode:string;failurePolicy:str
 interface ReleasePlanEditorValue{id:string;description:string;groups:Array<{id:string;name:string;mode:'parallel'|'sequential';failure_policy:'stop'|'continue';depends_on_group_ids:string[];applications:Array<{application_id:string;manual_deploy:boolean;source_type:string;source_value:string}>}>}
 
 const applications=ref<Application[]>([]),repositories=ref<Repository[]>([]),credentials=ref<Credential[]>([]),buildPlans=ref<BuildPlan[]>([]),registries=ref<Registry[]>([]),deploymentPlans=ref<DeploymentPlan[]>([]),workflowTemplates=ref<WorkflowTemplate[]>([]),runs=ref<Run[]>([]),releasePlans=ref<ReleasePlan[]>([]),deployments=ref<ResourceRecord[]>([])
-const loading=ref(false),saving=ref(false),formOpen=ref(false),editingID=ref(''),registryTested=ref(false),testing=ref(false),manualOpen=ref(false),manualApplicationID=ref(''),manualApplications=ref<Application[]>([]),commitOpen=ref(false),commitOptions=ref<Array<{ref:string;name:string;sha:string;kind:'branch'|'tag'}>>([]),selectedRef=ref(''),selectedSource=ref(''),manualSources=ref<Array<{id:string;name:string;environment?:string}>>([]),currentRun=ref<Run|null>(null),currentRunSelectionKey=ref(''),selectedRunID=ref(''),log=ref({open:false,runID:'',title:'',status:''})
+const loading=ref(false),saving=ref(false),resourceMutationID=ref(''),formOpen=ref(false),editingID=ref(''),registryTested=ref(false),testing=ref(false),manualOpen=ref(false),manualApplicationID=ref(''),manualApplications=ref<Application[]>([]),commitOpen=ref(false),commitOptions=ref<Array<{ref:string;name:string;sha:string;kind:'branch'|'tag'}>>([]),selectedRef=ref(''),selectedSource=ref(''),manualSources=ref<Array<{id:string;name:string;environment?:string}>>([]),currentRun=ref<Run|null>(null),currentRunSelectionKey=ref(''),selectedRunID=ref(''),log=ref({open:false,runID:'',title:'',status:''})
 const planExecutionOpen=ref(false),planExecutionPlanID=ref(''),planExecutionTitle=ref(''),planExecutionExpectedUpdatedAt=ref(''),planExecutionRequestID=ref(''),planExecutionGroups=ref<PlanExecutionGroup[]>([]),planExecutionSubmitting=ref(false)
-const releasePlanEditorOpen=ref(false),releasePlanEditorPlan=ref<ReleasePlan|null>(null),releasePlanEditorFocusGroupID=ref(''),releasePlanEditorAddGroup=ref(false),releasePlanMutationID=ref('')
+const releasePlanEditorOpen=ref(false),releasePlanEditorPlan=ref<ReleasePlan|null>(null),releasePlanMutationID=ref('')
+const releasePlanAddApplicationOpen=ref(false),releasePlanAddApplicationPlanID=ref(''),releasePlanAddApplicationGroupID=ref(''),releasePlanAddApplicationIDs=ref<string[]>([])
 let releaseTimer=0
 let planExecutionController:AbortController|null=null
 const appForm=reactive({name:'',description:'',repository_id:'',branch:'main',poll_enabled:true,poll_interval_seconds:5,watch_push:true,watch_pull_request:true,watch_tags:true,tag_pattern:'v*',build_plan_id:'',image_registry_id:'',deployment_plan_id:'',deployment_target_id:'',workflow_template_id:''})
@@ -55,13 +59,24 @@ const releaseForm=reactive({description:'',application_ids:[] as string[]})
 const copy:Record<Section,{description:string}>={applications:{description:'一个应用对应一个代码仓库，并维护自己的构建、部署和流水线配置。'},repositories:{description:'统一管理 Git 来源和可选 Webhook；凭据来自当前用户自己的令牌。'},'build-plans':{description:'保存可复用的 Dockerfile 或脚本构建配置。'},'image-registries':{description:'管理 Harbor、Docker Hub 或其他 OCI Registry；保存前必须完成真实登录测试。'},'deployment-plans':{description:'定义部署节点如何通过 Helm、Docker Compose、Docker 或受控脚本执行。'},'release-plans':{description:'发布计划组织人工批量发布；流水线运行与发布记录独立展示。'}}
 const releaseView=computed(()=>route.query.view==='runs'?'runs':route.query.view==='records'?'records':'plans')
 const canManage=computed(()=>props.section==='repositories'?auth.canAny(['repository.manage']):auth.canAny(['delivery.manage']))
+const releasePlanAddApplicationTarget=computed(()=>{
+ const plan=releasePlans.value.find(item=>item.id===releasePlanAddApplicationPlanID.value)
+ const group=plan?.groups?.find(item=>item.id===releasePlanAddApplicationGroupID.value)
+ return plan&&group?{plan,group}:null
+})
+const releasePlanAddApplicationOptions=computed(()=>{
+ const target=releasePlanAddApplicationTarget.value
+ if(!target)return []
+ const usedIDs=new Set((target.plan.groups||[]).flatMap(group=>group.applications.map(item=>item.application_id)))
+ return applications.value.filter(item=>item.is_active&&!usedIDs.has(item.id)).map(item=>({value:item.id,label:item.name}))
+})
 const currentDescription=computed(()=>props.section==='release-plans'?(releaseView.value==='runs'?'查看代码事件或手动操作触发的执行、当前节点和实时日志。':releaseView.value==='records'?'查看已经进入真实部署环节的执行结果。':copy[props.section].description):copy[props.section].description)
 const selectedApplicationDeploymentPlan=computed(()=>deploymentPlans.value.find(item=>item.id===appForm.deployment_plan_id))
 const applicationUsesSSHDeployment=computed(()=>selectedApplicationDeploymentPlan.value?.kind==='script')
 const selectedRun=computed(()=>runs.value.find(item=>item.id===selectedRunID.value)||runs.value[0]||null)
 const activeRunCount=computed(()=>runs.value.filter(item=>['running','awaiting_approval'].includes(item.status)).length)
 const activeRows=computed<ResourceRecord[]>(()=>props.section==='applications'?applications.value:props.section==='repositories'?repositories.value:props.section==='build-plans'?buildPlans.value:props.section==='image-registries'?registries.value:props.section==='deployment-plans'?deploymentPlans.value:[])
-const activeColumns=computed(()=>props.section==='applications'?[{key:'name',label:'应用'},{key:'repository',label:'代码仓库'},{key:'build_plan',label:'构建方案'},{key:'deployment_plan',label:'部署方案'},{key:'sync_status',label:'代码状态'},{key:'last_checked_at',label:'最近检查'}]:props.section==='repositories'?[{key:'name',label:'名称'},{key:'provider',label:'平台'},{key:'clone_url',label:'Clone 地址'},{key:'default_branch',label:'默认分支'},{key:'webhook_enabled',label:'Webhook'},{key:'is_active',label:'状态'}]:props.section==='build-plans'?[{key:'name',label:'名称'},{key:'kind',label:'类型'},{key:'description',label:'说明'},{key:'context_path',label:'构建上下文'},{key:'timeout_seconds',label:'超时'}]:props.section==='image-registries'?[{key:'name',label:'名称'},{key:'provider',label:'类型'},{key:'endpoint',label:'地址'},{key:'namespace',label:'命名空间'},{key:'has_credential',label:'凭据'}]:[{key:'name',label:'名称'},{key:'kind',label:'部署方式'},{key:'description',label:'说明'},{key:'timeout_seconds',label:'超时'}])
+const activeColumns=computed(()=>props.section==='applications'?[{key:'name',label:'应用'},{key:'repository',label:'代码仓库'},{key:'build_plan',label:'构建方案'},{key:'deployment_plan',label:'部署方案'},{key:'sync_status',label:'代码状态'},{key:'last_checked_at',label:'最近检查'}]:props.section==='repositories'?[{key:'name',label:'名称'},{key:'provider',label:'平台'},{key:'clone_url',label:'Git 地址'},{key:'default_branch',label:'默认分支'},{key:'webhook_enabled',label:'Webhook'},{key:'is_active',label:'状态'}]:props.section==='build-plans'?[{key:'name',label:'名称'},{key:'is_active',label:'状态'},{key:'kind',label:'类型'},{key:'build_entry',label:'构建入口'},{key:'context_path',label:'构建上下文'},{key:'artifact_path',label:'产物路径'},{key:'timeout_seconds',label:'超时'},{key:'description',label:'说明'},{key:'updated_at',label:'最近修改'}]:props.section==='image-registries'?[{key:'name',label:'名称'},{key:'provider',label:'类型'},{key:'endpoint',label:'地址'},{key:'namespace',label:'命名空间'},{key:'has_credential',label:'凭据'}]:[{key:'name',label:'名称'},{key:'kind',label:'部署方式'},{key:'description',label:'说明'},{key:'timeout_seconds',label:'超时'}])
 
 const activeApplicationRunStatuses=new Set(['running','awaiting_approval','ready'])
 const applicationCards=computed(()=>applications.value.map(application=>{
@@ -137,8 +152,40 @@ async function refreshRunState(){
 }
 function resetForms(){editingID.value='';registryTested.value=false;Object.assign(appForm,{name:'',description:'',repository_id:'',branch:'main',poll_enabled:true,poll_interval_seconds:5,watch_push:true,watch_pull_request:true,watch_tags:true,tag_pattern:'v*',build_plan_id:'',image_registry_id:'',deployment_plan_id:'',deployment_target_id:'',workflow_template_id:''});Object.assign(repoForm,{name:'',provider:'github',clone_url:'',default_branch:'main',auth_type:'none',username:'',credential_id:'',webhook_enabled:true,allow_insecure_http:false});Object.assign(buildForm,{name:'',kind:'dockerfile',description:'',script:'',dockerfile_path:'Dockerfile',context_path:'.',artifact_path:'',timeout_seconds:1800});Object.assign(registryForm,{name:'',provider:'harbor',endpoint:'https://',namespace:'',username:'',credential:'',allow_insecure_http:false});Object.assign(deployForm,{name:'',kind:'helm',description:'',script:'',helm_chart:'',helm_values:'',compose_file:'docker-compose.yml',service_name:'',timeout_seconds:600});Object.assign(releaseForm,{description:'',application_ids:[]})}
 function create(){resetForms();formOpen.value=true}
-function edit(row:ResourceRecord){editingID.value=String(row.id);if(props.section==='applications'){const item=row as Application;Object.assign(appForm,{name:item.name,description:item.description||'',repository_id:item.repository_id,branch:item.branch||'main',poll_enabled:true,poll_interval_seconds:item.poll_interval_seconds||5,watch_push:true,watch_pull_request:true,watch_tags:true,tag_pattern:'v*',build_plan_id:item.build_plan_id||'',image_registry_id:item.image_registry_id||'',deployment_plan_id:item.deployment_plan_id||'',deployment_target_id:item.deployment_target_id||item.deployment_plan?.deployment_target_id||'',workflow_template_id:item.workflow_template_id||''})}if(props.section==='repositories'){const item=row as Repository;Object.assign(repoForm,{name:item.name,provider:item.provider,clone_url:item.clone_url,default_branch:item.default_branch,auth_type:item.auth_type,username:item.username||'',credential_id:item.credential_id||'',webhook_enabled:item.webhook_enabled,allow_insecure_http:item.allow_insecure_http})}if(props.section==='deployment-plans'){const item=row as DeploymentPlan;Object.assign(deployForm,{name:item.name,kind:item.kind,description:item.description||'',script:item.script||'',helm_chart:item.helm_chart||'',helm_values:item.helm_values||'',compose_file:item.compose_file||'docker-compose.yml',service_name:item.service_name||'',timeout_seconds:item.timeout_seconds||600})}formOpen.value=true}
-async function save(){saving.value=true;try{let endpoint='',payload:unknown={},method:'post'|'put'='post';if(props.section==='applications'){const plan=selectedApplicationDeploymentPlan.value;if(!plan){message.error('请选择部署方案');return}const targetID=plan.deployment_target_id||plan.deployment_target?.id;if(!targetID){message.error('所选部署方案尚未补全，请先编辑部署方案');return}if(plan.kind!=='script'&&!appForm.build_plan_id){message.error('Docker 或 Kubernetes 发布必须选择构建方案');return}endpoint=editingID.value?`/applications/${editingID.value}`:'/applications';payload={...appForm,deployment_target_id:targetID,build_plan_id:plan.kind==='script'?'':appForm.build_plan_id,image_registry_id:plan.kind==='script'?'':appForm.image_registry_id,environments:[]};method=editingID.value?'put':'post'}if(props.section==='repositories'){endpoint=editingID.value?`/repositories/${editingID.value}`:'/repositories';payload={...repoForm,credential_id:repoForm.auth_type==='none'?null:repoForm.credential_id||null,regenerate_webhook:false};method=editingID.value?'put':'post'}if(props.section==='build-plans'){endpoint='/build-plans';payload=buildForm}if(props.section==='image-registries'){if(!registryTested.value){message.error('请先测试镜像仓库登录');return}endpoint='/image-registries';payload={...registryForm,credential:registryForm.credential||null}}if(props.section==='deployment-plans'){endpoint=editingID.value?`/deployment-plans/${editingID.value}`:'/deployment-plans';payload=deployForm;method=editingID.value?'put':'post'}if(props.section==='release-plans'){if(!releaseForm.application_ids.length){message.error('请至少选择一个应用');return}endpoint='/release-plans';payload={description:releaseForm.description,applications:releaseForm.application_ids.map(application_id=>({application_id,manual_deploy:false,source_type:'',source_value:''}))}}await client[method](endpoint,payload);message.success('配置已保存');formOpen.value=false;resetForms();await refresh()}catch(error){message.error(apiErrorMessage(error))}finally{saving.value=false}}
+function edit(row:ResourceRecord){editingID.value=String(row.id);if(props.section==='applications'){const item=row as Application;Object.assign(appForm,{name:item.name,description:item.description||'',repository_id:item.repository_id,branch:item.branch||'main',poll_enabled:true,poll_interval_seconds:item.poll_interval_seconds||5,watch_push:true,watch_pull_request:true,watch_tags:true,tag_pattern:'v*',build_plan_id:item.build_plan_id||'',image_registry_id:item.image_registry_id||'',deployment_plan_id:item.deployment_plan_id||'',deployment_target_id:item.deployment_target_id||item.deployment_plan?.deployment_target_id||'',workflow_template_id:item.workflow_template_id||''})}if(props.section==='repositories'){const item=row as Repository;Object.assign(repoForm,{name:item.name,provider:item.provider,clone_url:item.clone_url,default_branch:item.default_branch,auth_type:item.auth_type,username:item.username||'',credential_id:item.credential_id||'',webhook_enabled:item.webhook_enabled,allow_insecure_http:item.allow_insecure_http})}if(props.section==='build-plans'){const item=row as BuildPlan;Object.assign(buildForm,{name:item.name,kind:item.kind,description:item.description||'',script:item.script||'',dockerfile_path:item.dockerfile_path||'Dockerfile',context_path:item.context_path||'.',artifact_path:item.artifact_path||'',timeout_seconds:item.timeout_seconds||1800})}if(props.section==='deployment-plans'){const item=row as DeploymentPlan;Object.assign(deployForm,{name:item.name,kind:item.kind,description:item.description||'',script:item.script||'',helm_chart:item.helm_chart||'',helm_values:item.helm_values||'',compose_file:item.compose_file||'docker-compose.yml',service_name:item.service_name||'',timeout_seconds:item.timeout_seconds||600})}formOpen.value=true}
+async function save(){saving.value=true;try{let endpoint='',payload:unknown={},method:'post'|'put'='post';if(props.section==='applications'){const plan=selectedApplicationDeploymentPlan.value;if(!plan){message.error('请选择部署方案');return}const targetID=plan.deployment_target_id||plan.deployment_target?.id;if(!targetID){message.error('所选部署方案尚未补全，请先编辑部署方案');return}if(plan.kind!=='script'&&!appForm.build_plan_id){message.error('Docker 或 Kubernetes 发布必须选择构建方案');return}endpoint=editingID.value?`/applications/${editingID.value}`:'/applications';payload={...appForm,deployment_target_id:targetID,build_plan_id:plan.kind==='script'?'':appForm.build_plan_id,image_registry_id:plan.kind==='script'?'':appForm.image_registry_id,environments:[]};method=editingID.value?'put':'post'}if(props.section==='repositories'){endpoint=editingID.value?`/repositories/${editingID.value}`:'/repositories';payload={...repoForm,credential_id:repoForm.auth_type==='none'?null:repoForm.credential_id||null,regenerate_webhook:false};method=editingID.value?'put':'post'}if(props.section==='build-plans'){endpoint=editingID.value?`/build-plans/${editingID.value}`:'/build-plans';payload=buildForm;method=editingID.value?'put':'post'}if(props.section==='image-registries'){if(!registryTested.value){message.error('请先测试镜像仓库登录');return}endpoint='/image-registries';payload={...registryForm,credential:registryForm.credential||null}}if(props.section==='deployment-plans'){endpoint=editingID.value?`/deployment-plans/${editingID.value}`:'/deployment-plans';payload=deployForm;method=editingID.value?'put':'post'}if(props.section==='release-plans'){if(!releaseForm.application_ids.length){message.error('请至少选择一个应用');return}endpoint='/release-plans';payload={description:releaseForm.description,applications:releaseForm.application_ids.map(application_id=>({application_id,manual_deploy:false,source_type:'',source_value:''}))}}await client[method](endpoint,payload);message.success('配置已保存');formOpen.value=false;resetForms();await refresh()}catch(error){message.error(apiErrorMessage(error))}finally{saving.value=false}}
+function buildPlanKindLabel(kind:string){return kind==='dockerfile'?'Dockerfile':'构建脚本'}
+function buildPlanEntry(plan:BuildPlan){
+ if(plan.kind==='dockerfile')return plan.dockerfile_path||'Dockerfile'
+ const lines=(plan.script||'').split(/\r?\n/).filter(line=>line.trim()).length
+ return lines?`${lines} 行脚本`:'构建脚本'
+}
+function confirmBuildPlanStatus(plan:BuildPlan){
+ const enabling=!plan.is_active
+ Modal.confirm({
+  title:`${enabling?'启用':'停用'}构建方案“${plan.name}”？`,
+  content:enabling?'启用后，应用可以重新选择并执行该构建方案。':'停用后，引用该方案的应用将不能开始新的构建；历史运行不受影响。',
+  okText:enabling?'启用':'停用',cancelText:'取消',
+  onOk:async()=>{
+   resourceMutationID.value=plan.id
+   try{await client.patch(`/build-plans/${plan.id}/status`,{active:enabling});message.success(`构建方案已${enabling?'启用':'停用'}`);await refresh()}
+   catch(error){message.error(apiErrorMessage(error));throw error}
+   finally{resourceMutationID.value=''}
+  },
+ })
+}
+function confirmDeleteBuildPlan(plan:BuildPlan){
+ Modal.confirm({
+  title:`删除构建方案“${plan.name}”？`,content:'删除后将从构建方案列表隐藏，历史流水线记录继续保留。仍被应用引用时系统会拒绝删除。',
+  okText:'删除',okType:'danger',cancelText:'取消',
+  onOk:async()=>{
+   resourceMutationID.value=plan.id
+   try{await client.delete(`/build-plans/${plan.id}`);message.success('构建方案已删除');await refresh()}
+   catch(error){message.error(apiErrorMessage(error));throw error}
+   finally{resourceMutationID.value=''}
+  },
+ })
+}
 async function testRepository(){testing.value=true;try{const payload={...repoForm,credential_id:repoForm.auth_type==='none'?null:repoForm.credential_id||null,credential:null,regenerate_webhook:false};const result=editingID.value?await client.post<RefResult>(`/repositories/${editingID.value}/test`,undefined,{timeout:35000}):await client.post<RefResult>('/repositories/test',payload,{timeout:35000});message.success(`连接成功：${result.data.branches?.length||0} 个分支，${result.data.tags?.length||0} 个标签`)}catch(error){message.error(apiErrorMessage(error))}finally{testing.value=false}}
 async function testRegistry(){testing.value=true;registryTested.value=false;try{await client.post('/image-registries/test',{...registryForm,credential:registryForm.credential||null},{timeout:35000});registryTested.value=true;message.success('镜像仓库登录成功')}catch(error){message.error(apiErrorMessage(error))}finally{testing.value=false}}
 async function action(path:string){try{await client.post(path,undefined,{timeout:35000});await refresh()}catch(error){message.error(apiErrorMessage(error))}}
@@ -200,12 +247,10 @@ function releasePlanTitle(plan:ReleasePlan){
 function releasePlanMutationBlocked(plan:ReleasePlan){
  return plan.latest_execution?.status==='pending'||plan.latest_execution?.status==='running'
 }
-function openReleasePlanEditor(planID:string,groupID='',addGroup=false){
+function openReleasePlanEditor(planID:string){
  const plan=releasePlans.value.find(item=>item.id===planID)
  if(!plan||releasePlanMutationBlocked(plan))return
  releasePlanEditorPlan.value=plan
- releasePlanEditorFocusGroupID.value=groupID
- releasePlanEditorAddGroup.value=addGroup
  releasePlanEditorOpen.value=true
 }
 async function saveReleasePlanEditor(value:ReleasePlanEditorValue){
@@ -242,19 +287,55 @@ function removeReleasePlan(planID:string){
   },
  })
 }
-function removeReleaseGroup(planID:string,groupID:string){
+function openReleaseGroupApplicationPicker(planID:string,groupID:string){
  const plan=releasePlans.value.find(item=>item.id===planID)
- if(!plan||releasePlanMutationBlocked(plan))return
- Modal.confirm({
-  title:t('releasePlan.editor.removeGroupConfirm'),
-  content:t('releasePlan.editor.removeGroupHint'),
-  okText:t('releasePlan.editor.remove'),cancelText:t('releasePlan.editor.cancel'),okType:'danger',
-  async onOk(){
-   releasePlanMutationID.value=planID
-   try{await client.delete(`/release-plans/${planID}/groups/${groupID}`);message.success(t('releasePlan.editor.groupRemoved'));await refresh()}
-   catch(error){message.error(apiErrorMessage(error))}finally{releasePlanMutationID.value=''}
-  },
- })
+ const group=plan?.groups?.find(item=>item.id===groupID)
+ if(!plan||!group||releasePlanMutationBlocked(plan))return
+ releasePlanAddApplicationPlanID.value=planID
+ releasePlanAddApplicationGroupID.value=groupID
+ releasePlanAddApplicationIDs.value=[]
+ releasePlanAddApplicationOpen.value=true
+}
+function resetReleaseGroupApplicationPicker(){
+ releasePlanAddApplicationOpen.value=false
+ releasePlanAddApplicationPlanID.value=''
+ releasePlanAddApplicationGroupID.value=''
+ releasePlanAddApplicationIDs.value=[]
+}
+async function addReleaseGroupApplications(){
+ const target=releasePlanAddApplicationTarget.value
+ const selectedIDs=[...releasePlanAddApplicationIDs.value]
+ if(!target||!selectedIDs.length||releasePlanMutationBlocked(target.plan))return
+ const additions:ReleasePlanGroupApplication[]=selectedIDs.map(applicationID=>({id:'',application_id:applicationID,manual_deploy:false,source_type:'',source_value:''}))
+ releasePlanMutationID.value=target.plan.id
+ try{
+  const result=await client.put<{release_plan:ReleasePlan}>(`/release-plans/${target.plan.id}/groups/${target.group.id}`,releaseGroupPayload(target.group,[...target.group.applications,...additions]))
+  const planIndex=releasePlans.value.findIndex(item=>item.id===target.plan.id)
+  if(planIndex>=0)releasePlans.value[planIndex]=result.data.release_plan
+  message.success(t('releasePlan.addApplicationDialog.added',{count:selectedIDs.length}))
+  resetReleaseGroupApplicationPicker()
+ }catch(error){message.error(apiErrorMessage(error))}finally{releasePlanMutationID.value=''}
+}
+async function removeReleaseGroupApplication(planID:string,groupID:string,applicationID:string){
+ const plan=releasePlans.value.find(item=>item.id===planID)
+ const group=plan?.groups?.find(item=>item.id===groupID)
+ if(!plan||!group||releasePlanMutationBlocked(plan))return
+ releasePlanMutationID.value=planID
+ try{
+  const result=await client.put<{release_plan:ReleasePlan}>(`/release-plans/${planID}/groups/${groupID}`,releaseGroupPayload(group,group.applications.filter(item=>item.application_id!==applicationID)))
+  const planIndex=releasePlans.value.findIndex(item=>item.id===planID)
+  if(planIndex>=0)releasePlans.value[planIndex]=result.data.release_plan
+  message.success(t('releasePlan.editor.applicationRemoved'))
+ }catch(error){message.error(apiErrorMessage(error))}finally{releasePlanMutationID.value=''}
+}
+function releaseGroupPayload(group:ReleasePlanGroup,groupApplications:ReleasePlanGroupApplication[]){
+ return {
+  name:group.name,mode:group.mode,failure_policy:group.failure_policy,
+  depends_on_group_ids:(group.dependencies||[]).map(item=>item.depends_on_group_id),
+  applications:groupApplications.map(item=>({
+   application_id:item.application_id,manual_deploy:Boolean(item.manual_deploy),source_type:item.source_type||'',source_value:item.source_value||'',
+  })),
+ }
 }
 function resetPlanExecution(){
  planExecutionController?.abort()
@@ -389,7 +470,8 @@ function removeRun(run:Run){Modal.confirm({title:'删除这次流水线运行？
 function showWebhook(item:Repository){void client.get<{webhook_url:string;webhook_secret:string}>(`/repositories/${item.id}/webhook`).then(result=>Modal.info({title:`${item.name} Webhook`,width:650,content:()=>`${result.data.webhook_url}\n${result.data.webhook_secret}`})).catch(error=>message.error(apiErrorMessage(error)))}
 function linkedName(row:ResourceRecord,key:'repository'|'build_plan'|'deployment_plan'){return (row as Application)[key]?.name||'未绑定'}
 function applicationName(run:Run){return applications.value.find(item=>item.id===run.application_id)?.name||run.application?.name||'未命名应用'}
-function shortRef(ref?:string){return ref?.replace(/^refs\/(heads|tags)\//,'')||t('applicationCard.noRef')}
+function runReferenceLabel(run?:Run){return run?formatGitReference({ref:run.ref,sha:run.commit_sha,trigger:run.trigger}):'—'}
+function selectableReferenceLabel(reference:{ref:string;name:string;sha:string;kind:'branch'|'tag'}){return formatGitReference(reference)}
 function formatRunTime(value:string){return new Date(value).toLocaleString('zh-CN',{hour12:false})}
 function runStatusLabel(status:string){return ({detected:'已发现',ready:'准备就绪',blocked:'已阻塞',awaiting_approval:'等待审核',running:'执行中',succeeded:'已成功',failed:'已失败',canceled:'已取消'} as Record<string,string>)[status]||status}
 function runStatusColor(status:string){return status==='succeeded'?'success':status==='failed'||status==='blocked'?'error':status==='running'?'processing':status==='awaiting_approval'?'warning':'default'}
@@ -418,7 +500,7 @@ onBeforeUnmount(()=>{resetPlanExecution();clearInterval(releaseTimer);document.r
       <div class="application-state"><i/><span><small>{{ t('applicationCard.currentPipeline') }}</small><strong>{{ card.state.label }}</strong></span></div>
     </header>
     <section class="application-run">
-      <div class="application-commit"><small>{{ t('applicationCard.latestRun') }}</small><strong :title="card.run?.commit_message||t('applicationCard.noRun')">{{ card.run?.commit_message||t('applicationCard.noRun') }}</strong><span><GitBranch/>{{ shortRef(card.run?.ref) }}<code>{{ card.run?.commit_sha?.slice(0,8)||'—' }}</code></span></div>
+      <div class="application-commit"><small>{{ t('applicationCard.latestRun') }}</small><strong :title="card.run?.commit_message||t('applicationCard.noRun')">{{ card.run?.commit_message||t('applicationCard.noRun') }}</strong><span><GitBranch/>{{ runReferenceLabel(card.run) }}</span></div>
       <div class="application-node"><span><Workflow/></span><div><small>{{ t('applicationCard.currentNode') }}</small><strong :title="applicationCurrentNode(card.run)">{{ applicationCurrentNode(card.run) }}</strong><time><Clock3/>{{ formatApplicationTime(card.run?.updated_at||card.run?.created_at) }}</time></div></div>
     </section>
     <div class="application-links">
@@ -434,7 +516,7 @@ onBeforeUnmount(()=>{resetPlanExecution();clearInterval(releaseTimer);document.r
   </article>
   <a-empty v-if="!applicationCards.length&&!loading" :description="t('applicationCard.empty')"/>
 </div>
-<div v-else-if="props.section!=='release-plans'" class="vben-card"><ResourceTable :rows="activeRows" :columns="activeColumns" :loading="loading"><template #cell-repository="{row}">{{ linkedName(row,'repository') }}</template><template #cell-build_plan="{row}">{{ linkedName(row,'build_plan') }}</template><template #cell-deployment_plan="{row}">{{ linkedName(row,'deployment_plan') }}</template><template #cell-sync_status="{value}"><a-tag :color="value==='changed'?'warning':value==='synced'?'success':'default'">{{ value }}</a-tag></template><template #cell-kind="{value}"><a-tag color="blue">{{ value }}</a-tag></template><template #cell-timeout_seconds="{value}">{{ value }} 秒</template><template #actions="{row}"><a-button v-if="canManage&&(props.section==='repositories'||props.section==='deployment-plans')" type="link" @click="edit(row)">编辑</a-button><a-button v-if="props.section==='repositories'" type="link" @click="action(`/repositories/${row.id}/test`)">测试</a-button><a-button v-if="props.section==='repositories'&&auth.canAny(['repository.secret.read'])" type="link" @click="showWebhook(row as Repository)">Webhook</a-button></template></ResourceTable></div>
+<div v-else-if="props.section!=='release-plans'" class="vben-card"><ResourceTable :rows="activeRows" :columns="activeColumns" :loading="loading"><template #cell-repository="{row}">{{ linkedName(row,'repository') }}</template><template #cell-build_plan="{row}">{{ linkedName(row,'build_plan') }}</template><template #cell-deployment_plan="{row}">{{ linkedName(row,'deployment_plan') }}</template><template #cell-sync_status="{value}"><a-tag :color="value==='changed'?'warning':value==='synced'?'success':'default'">{{ value }}</a-tag></template><template #cell-kind="{value}"><a-tag color="blue">{{ props.section==='build-plans'?buildPlanKindLabel(String(value)):value }}</a-tag></template><template #cell-build_entry="{row}"><code>{{ buildPlanEntry(row as BuildPlan) }}</code></template><template #cell-context_path="{value}"><code>{{ value||'—' }}</code></template><template #cell-artifact_path="{value}"><code>{{ value||'—' }}</code></template><template #cell-description="{value}"><span :title="String(value||'')">{{ value||'—' }}</span></template><template #cell-timeout_seconds="{value}">{{ value }} 秒</template><template #actions="{row}"><a-button v-if="canManage&&(props.section==='repositories'||props.section==='build-plans'||props.section==='deployment-plans')" type="link" @click="edit(row)">编辑</a-button><a-button v-if="props.section==='build-plans'&&canManage" type="link" :loading="resourceMutationID===String(row.id)" @click="confirmBuildPlanStatus(row as BuildPlan)">{{ row.is_active?'停用':'启用' }}</a-button><a-button v-if="props.section==='build-plans'&&canManage" type="link" danger :disabled="resourceMutationID===String(row.id)" @click="confirmDeleteBuildPlan(row as BuildPlan)">删除</a-button><a-button v-if="props.section==='repositories'" type="link" @click="action(`/repositories/${row.id}/test`)">测试</a-button><a-button v-if="props.section==='repositories'&&auth.canAny(['repository.secret.read'])" type="link" @click="showWebhook(row as Repository)">Webhook</a-button></template></ResourceTable></div>
 <div v-else-if="releaseView==='runs'" class="run-workspace vben-card">
   <aside class="run-index">
     <header><div><strong>运行记录</strong><small>{{ runs.length }} 次执行</small></div><span :class="{active:activeRunCount}">{{ activeRunCount }} 个进行中</span></header>
@@ -444,7 +526,7 @@ onBeforeUnmount(()=>{resetPlanExecution();clearInterval(releaseTimer);document.r
         <span class="run-index-copy">
           <strong>{{ applicationName(run) }}</strong>
           <span>{{ run.commit_message||'未记录提交说明' }}</span>
-          <small>{{ shortRef(run.ref) }} · {{ run.current_node_name||run.current_node_id||runStatusLabel(run.status) }}</small>
+          <small>{{ runReferenceLabel(run) }} · {{ run.current_node_name||run.current_node_id||runStatusLabel(run.status) }}</small>
         </span>
         <ChevronRight :size="16"/>
       </button>
@@ -458,7 +540,7 @@ onBeforeUnmount(()=>{resetPlanExecution();clearInterval(releaseTimer);document.r
     </header>
     <section class="run-commit-panel">
       <GitCommit :size="18"/>
-      <div><small>提交说明</small><strong>{{ selectedRun.commit_message||'未记录提交说明' }}</strong><span>{{ shortRef(selectedRun.ref) }} · <code>{{ selectedRun.commit_sha?.slice(0,8)||'—' }}</code></span></div>
+      <div><small>提交说明</small><strong>{{ selectedRun.commit_message||'未记录提交说明' }}</strong><span>{{ runReferenceLabel(selectedRun) }}</span></div>
       <time>{{ formatRunTime(selectedRun.created_at) }}</time>
     </section>
     <PipelineRunGraph :key="selectedRun.id" :graph="selectedRun.execution_graph" :current-node-id="selectedRun.current_node_id" :status="selectedRun.status" :stage="selectedRun.stage"/>
@@ -485,21 +567,52 @@ onBeforeUnmount(()=>{resetPlanExecution();clearInterval(releaseTimer);document.r
  @create="create"
  @execute="openReleasePlan"
  @edit="openReleasePlanEditor"
+ @add-application="openReleaseGroupApplicationPicker"
  @toggle="toggleReleasePlan"
  @remove="removeReleasePlan"
- @remove-group="removeReleaseGroup"
+ @remove-application="removeReleaseGroupApplication"
 />
 
 <a-drawer v-model:open="formOpen" :title="editingID?'编辑配置':props.section==='release-plans'?'创建发布计划':'新建配置'" width="700"><a-form layout="vertical">
 <template v-if="props.section==='applications'"><div class="form-grid"><a-form-item label="应用名称" required><a-input v-model:value="appForm.name"/></a-form-item><a-form-item label="说明"><a-input v-model:value="appForm.description"/></a-form-item><a-form-item class="span2" label="代码仓库" required><a-select v-model:value="appForm.repository_id" show-search :options="repositories.filter(item=>item.is_active).map(item=>({value:item.id,label:`${item.name} · ${item.default_branch}`}))"/></a-form-item><a-form-item :label="applicationUsesSSHDeployment?'构建方案（命令部署不需要）':'构建方案'" :required="!applicationUsesSSHDeployment"><a-select v-model:value="appForm.build_plan_id" allow-clear :disabled="applicationUsesSSHDeployment" :options="buildPlans.filter(item=>item.is_active).map(item=>({value:item.id,label:item.name}))"/></a-form-item><a-form-item label="部署方案" required><a-select v-model:value="appForm.deployment_plan_id" :options="deploymentPlans.filter(item=>item.is_active&&item.deployment_target).map(item=>({value:item.id,label:`${item.name} · ${item.kind}`}))"/></a-form-item><a-form-item label="镜像仓库"><a-select v-model:value="appForm.image_registry_id" allow-clear :disabled="applicationUsesSSHDeployment" :options="registries.filter(item=>item.is_active).map(item=>({value:item.id,label:item.name}))"/></a-form-item><a-form-item label="流水线方案" required><a-select v-model:value="appForm.workflow_template_id" :options="workflowTemplates.filter(item=>item.is_active).map(item=>({value:item.id,label:`${item.name} · 第 ${item.revision} 版`}))"/></a-form-item><a-form-item label="检查间隔"><a-select v-model:value="appForm.poll_interval_seconds" :options="[3,5,10,60].map(value=>({value,label:`${value} 秒`}))"/></a-form-item><a-alert v-if="applicationUsesSSHDeployment" class="span2" type="info" show-icon message="命令脚本部署直接执行部署方案脚本，不构建或传输容器镜像。"/></div></template>
-<template v-if="props.section==='repositories'"><div class="form-grid"><a-form-item label="名称" required><a-input v-model:value="repoForm.name"/></a-form-item><a-form-item label="平台"><a-select v-model:value="repoForm.provider" :options="['github','gitlab','gitea','gitee','generic'].map(value=>({value,label:value}))"/></a-form-item><a-form-item class="span2" label="Clone 地址" required><a-input v-model:value="repoForm.clone_url"/></a-form-item><a-form-item label="默认分支"><a-input v-model:value="repoForm.default_branch"/></a-form-item><a-form-item label="认证方式"><a-select v-model:value="repoForm.auth_type" :options="[{value:'none',label:'无需认证'},{value:'token',label:'访问令牌'},{value:'ssh_key',label:'SSH 私钥'}]"/></a-form-item><a-form-item v-if="repoForm.auth_type!=='none'" class="span2" label="我的令牌"><a-select v-model:value="repoForm.credential_id" :options="credentials.filter(item=>item.auth_type===repoForm.auth_type).map(item=>({value:item.id,label:`${item.name} · ${item.secret_hint}`}))"/><small>仓库只能引用当前操作者自己的令牌。</small></a-form-item><a-checkbox v-model:checked="repoForm.webhook_enabled">启用 Webhook</a-checkbox></div></template>
-<template v-if="props.section==='build-plans'"><div class="form-grid"><a-form-item label="名称" required><a-input v-model:value="buildForm.name"/></a-form-item><a-form-item label="类型"><a-select v-model:value="buildForm.kind" :options="[{value:'dockerfile',label:'Dockerfile'},{value:'script',label:'打包脚本'}]"/></a-form-item><a-form-item class="span2" label="说明"><a-input v-model:value="buildForm.description"/></a-form-item><template v-if="buildForm.kind==='dockerfile'"><a-form-item label="Dockerfile 路径"><a-input v-model:value="buildForm.dockerfile_path"/></a-form-item><a-form-item label="构建上下文"><a-input v-model:value="buildForm.context_path"/></a-form-item></template><a-form-item v-else class="span2" label="打包脚本"><a-textarea v-model:value="buildForm.script" :rows="8"/></a-form-item><a-form-item label="超时（秒）"><a-input-number v-model:value="buildForm.timeout_seconds" :min="30" :max="7200"/></a-form-item></div></template>
+<template v-if="props.section==='repositories'"><div class="form-grid"><a-form-item label="名称" required><a-input v-model:value="repoForm.name"/></a-form-item><a-form-item label="平台"><a-select v-model:value="repoForm.provider" :options="['github','gitlab','gitea','gitee','generic'].map(value=>({value,label:value}))"/></a-form-item><a-form-item class="span2" label="Git 地址" required><a-input v-model:value="repoForm.clone_url"/></a-form-item><a-form-item label="默认分支"><a-input v-model:value="repoForm.default_branch"/></a-form-item><a-form-item label="认证方式"><a-select v-model:value="repoForm.auth_type" :options="[{value:'none',label:'无需认证'},{value:'token',label:'访问令牌'},{value:'ssh_key',label:'SSH 私钥'}]"/></a-form-item><a-form-item v-if="repoForm.auth_type!=='none'" class="span2" label="我的令牌"><a-select v-model:value="repoForm.credential_id" :options="credentials.filter(item=>item.auth_type===repoForm.auth_type).map(item=>({value:item.id,label:`${item.name} · ${item.secret_hint}`}))"/><small>仓库只能引用当前操作者自己的令牌。</small></a-form-item><a-checkbox v-model:checked="repoForm.webhook_enabled">启用 Webhook</a-checkbox></div></template>
+<template v-if="props.section==='build-plans'"><div class="form-grid"><a-form-item label="名称" required><a-input v-model:value="buildForm.name"/></a-form-item><a-form-item label="类型" required><a-select v-model:value="buildForm.kind" :options="[{value:'dockerfile',label:'Dockerfile'},{value:'script',label:'构建脚本'}]"/></a-form-item><a-form-item class="span2" label="说明"><a-input v-model:value="buildForm.description" placeholder="说明构建内容、适用应用或产物用途"/></a-form-item><a-form-item v-if="buildForm.kind==='dockerfile'" class="span2" label="Dockerfile 路径" required><a-input v-model:value="buildForm.dockerfile_path" placeholder="例如 deploy/Dockerfile"/></a-form-item><a-form-item v-else class="span2" label="构建脚本" required><a-textarea v-model:value="buildForm.script" :rows="8" placeholder="填写在检出目录中执行的非交互式构建脚本"/></a-form-item><a-form-item label="构建上下文" required><a-input v-model:value="buildForm.context_path" placeholder="例如 . 或 services/api"/></a-form-item><a-form-item label="产物路径"><a-input v-model:value="buildForm.artifact_path" placeholder="可选，例如 dist"/></a-form-item><a-form-item label="超时（秒）" required><a-input-number v-model:value="buildForm.timeout_seconds" :min="30" :max="7200"/></a-form-item></div></template>
 <template v-if="props.section==='image-registries'"><div class="form-grid"><a-form-item label="名称" required><a-input v-model:value="registryForm.name"/></a-form-item><a-form-item label="类型"><a-select v-model:value="registryForm.provider" :options="[{value:'harbor',label:'Harbor'},{value:'docker_hub',label:'Docker Hub'},{value:'generic',label:'通用 Registry'}]"/></a-form-item><a-form-item class="span2" label="地址"><a-input v-model:value="registryForm.endpoint"/></a-form-item><a-form-item label="命名空间"><a-input v-model:value="registryForm.namespace"/></a-form-item><a-form-item label="用户名"><a-input v-model:value="registryForm.username"/></a-form-item><a-form-item class="span2" label="密码或 Token"><a-input-password v-model:value="registryForm.credential"/></a-form-item><a-checkbox v-model:checked="registryForm.allow_insecure_http">允许 HTTP（仅可信内网）</a-checkbox></div><a-alert v-if="registryTested" type="success" show-icon message="镜像仓库登录测试成功"/></template>
 <template v-if="props.section==='deployment-plans'"><div class="form-grid"><a-form-item label="名称"><a-input v-model:value="deployForm.name"/></a-form-item><a-form-item label="部署方式"><a-select v-model:value="deployForm.kind" :options="[{value:'helm',label:'Helm'},{value:'compose',label:'Docker Compose'},{value:'docker',label:'Docker'},{value:'script',label:'自定义脚本'}]"/></a-form-item><a-form-item class="span2" label="说明"><a-input v-model:value="deployForm.description"/></a-form-item><a-form-item v-if="deployForm.kind==='helm'" class="span2" label="Chart 路径"><a-input v-model:value="deployForm.helm_chart"/></a-form-item><a-form-item v-if="deployForm.kind==='compose'" class="span2" label="Compose 文件"><a-input v-model:value="deployForm.compose_file"/></a-form-item><a-form-item v-if="deployForm.kind==='docker'" class="span2" label="Docker 容器名称"><a-input v-model:value="deployForm.service_name"/></a-form-item><a-form-item v-if="deployForm.kind==='script'" class="span2" label="部署脚本"><a-textarea v-model:value="deployForm.script" :rows="8"/></a-form-item><a-form-item label="超时（秒）"><a-input-number v-model:value="deployForm.timeout_seconds" :min="30" :max="3600"/></a-form-item></div></template>
 <template v-if="props.section==='release-plans'"><a-form-item label="说明" required><a-textarea v-model:value="releaseForm.description" :rows="3"/></a-form-item><a-form-item label="应用" required><a-select v-model:value="releaseForm.application_ids" mode="multiple" :options="applications.filter(item=>item.is_active).map(item=>({value:item.id,label:item.name}))"/><small>创建计划时至少选择一个应用。执行时选择代码分支，环境和部署配置以应用当前启用的流水线为准。</small></a-form-item></template>
 <div class="drawer-actions"><a-button v-if="props.section==='repositories'" :loading="testing" @click="testRepository">测试连接</a-button><a-button v-if="props.section==='image-registries'" :loading="testing" @click="testRegistry">测试登录</a-button><a-button type="primary" :loading="saving" :disabled="props.section==='image-registries'&&!registryTested" @click="save">保存</a-button></div></a-form></a-drawer>
 <a-modal v-model:open="manualOpen" :title="t('manualRun.title')" :confirm-loading="saving" :ok-text="t('manualRun.chooseVersion')" @ok="nextManual" @cancel="resetManualFlow"><a-form layout="vertical"><a-form-item :label="t('manualRun.application')"><a-select v-model:value="manualApplicationID" :options="manualApplications.map(item=>({value:item.id,label:item.name}))"/></a-form-item></a-form></a-modal>
-<a-modal v-model:open="commitOpen" :title="t('manualRun.versionTitle')" :confirm-loading="saving" :ok-text="t('manualRun.confirm')" @ok="executeCommit" @cancel="resetManualFlow"><a-form layout="vertical"><a-alert class="manual-release-note" type="info" show-icon :message="t('manualRun.executionHint')"/><a-form-item v-if="manualSources.length" :label="t('manualRun.source')"><a-select v-model:value="selectedSource" :options="manualSources.map(item=>({value:item.id,label:item.environment?`${item.name} · ${item.environment}`:item.name}))"/></a-form-item><a-form-item :label="t('manualRun.ref')"><a-select v-model:value="selectedRef"><a-select-opt-group :label="t('manualRun.branch')"><a-select-option v-for="item in commitOptions.filter(item=>item.kind==='branch')" :key="item.ref" :value="item.ref">{{ item.name }} · {{ item.sha.slice(0,8) }}</a-select-option></a-select-opt-group><a-select-opt-group :label="t('manualRun.tag')"><a-select-option v-for="item in commitOptions.filter(item=>item.kind==='tag')" :key="item.ref" :value="item.ref">{{ item.name }} · {{ item.sha.slice(0,8) }}</a-select-option></a-select-opt-group></a-select></a-form-item></a-form></a-modal>
+<a-modal v-model:open="commitOpen" :title="t('manualRun.versionTitle')" :confirm-loading="saving" :ok-text="t('manualRun.confirm')" @ok="executeCommit" @cancel="resetManualFlow"><a-form layout="vertical"><a-alert class="manual-release-note" type="info" show-icon :message="t('manualRun.executionHint')"/><a-form-item v-if="manualSources.length" :label="t('manualRun.source')"><a-select v-model:value="selectedSource" :options="manualSources.map(item=>({value:item.id,label:item.environment?`${item.name} · ${item.environment}`:item.name}))"/></a-form-item><a-form-item :label="t('manualRun.ref')"><a-select v-model:value="selectedRef"><a-select-opt-group :label="t('manualRun.branch')"><a-select-option v-for="item in commitOptions.filter(item=>item.kind==='branch')" :key="item.ref" :value="item.ref">{{ selectableReferenceLabel(item) }}</a-select-option></a-select-opt-group><a-select-opt-group :label="t('manualRun.tag')"><a-select-option v-for="item in commitOptions.filter(item=>item.kind==='tag')" :key="item.ref" :value="item.ref">{{ selectableReferenceLabel(item) }}</a-select-option></a-select-opt-group></a-select></a-form-item></a-form></a-modal>
+<a-modal
+ :open="releasePlanAddApplicationOpen"
+ :title="t('releasePlan.addApplicationDialog.title', { name: releasePlanAddApplicationTarget?.group.name || '' })"
+ :ok-text="t('releasePlan.addApplicationDialog.confirm')"
+ :cancel-text="t('releasePlan.editor.cancel')"
+ :confirm-loading="releasePlanMutationID === releasePlanAddApplicationPlanID"
+ :closable="releasePlanMutationID !== releasePlanAddApplicationPlanID"
+ :mask-closable="releasePlanMutationID !== releasePlanAddApplicationPlanID"
+ :ok-button-props="{ disabled: !releasePlanAddApplicationIDs.length || !releasePlanAddApplicationOptions.length }"
+ :cancel-button-props="{ disabled: releasePlanMutationID === releasePlanAddApplicationPlanID }"
+ @ok="addReleaseGroupApplications"
+ @cancel="resetReleaseGroupApplicationPicker"
+>
+ <a-form layout="vertical">
+  <a-form-item :label="t('releasePlan.addApplicationDialog.field')" required>
+   <a-select
+    v-model:value="releasePlanAddApplicationIDs"
+    mode="multiple"
+    show-search
+    allow-clear
+    option-filter-prop="label"
+    :disabled="!releasePlanAddApplicationOptions.length"
+    :placeholder="t('releasePlan.addApplicationDialog.placeholder')"
+    :options="releasePlanAddApplicationOptions"
+   />
+   <small class="release-plan-add-hint">{{ t('releasePlan.addApplicationDialog.hint') }}</small>
+  </a-form-item>
+  <a-alert v-if="!releasePlanAddApplicationOptions.length" type="info" show-icon :message="t('releasePlan.addApplicationDialog.empty')" />
+ </a-form>
+</a-modal>
 <ReleasePlanExecuteModal
  :open="planExecutionOpen"
  :plan-title="planExecutionTitle"
@@ -516,15 +629,13 @@ onBeforeUnmount(()=>{resetPlanExecution();clearInterval(releaseTimer);document.r
  :plan="releasePlanEditorPlan"
  :applications="applications"
  :saving="saving"
- :focusGroupID="releasePlanEditorFocusGroupID"
- :add-group-on-open="releasePlanEditorAddGroup"
  @save="saveReleasePlanEditor"
 />
 <PipelineLogDrawer v-model:open="log.open" :runID="log.runID" :title="log.title" :initial-status="log.status"/>
 </section></template>
 
 <style scoped>
-.form-grid{display:grid;grid-template-columns:1fr 1fr;gap:0 14px}.span2{grid-column:1/-1}.drawer-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:18px}
+.form-grid{display:grid;grid-template-columns:1fr 1fr;gap:0 14px}.span2{grid-column:1/-1}.drawer-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:18px}.release-plan-add-hint{display:block;margin-top:6px;color:var(--zrt-muted);font-size:11px}
 .application-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(620px,100%),880px));justify-content:start;gap:14px}.application-card{--application-state:#9ba1ad;position:relative;min-width:0;overflow:hidden;padding:18px;transition:transform 180ms cubic-bezier(.2,0,0,1),border-color 180ms ease,box-shadow 180ms ease}.application-card::before{position:absolute;inset:0 auto 0 0;width:3px;background:var(--application-state);content:"";opacity:.8}.application-card:hover{transform:translateY(-1px);border-color:color-mix(in srgb,var(--application-state) 36%,var(--zrt-border));box-shadow:0 10px 28px rgb(35 45 70 / 8%)}.application-card.state-info{--application-state:#4f7df3}.application-card.state-success{--application-state:#2ab573}.application-card.state-warning{--application-state:#dfa126}.application-card.state-danger{--application-state:#ed5965}
 .application-head{display:flex;align-items:flex-start;justify-content:space-between;gap:20px}.application-identity{display:flex;min-width:0;align-items:center;gap:12px}.application-mark{display:grid;width:42px;height:42px;flex:0 0 42px;place-items:center;border-radius:12px;color:var(--zrt-primary);background:var(--zrt-primary-soft)}.application-mark svg{width:21px}.application-identity>div{min-width:0}.application-title{display:flex;align-items:center;gap:9px}.application-title h3{overflow:hidden;margin:0;font-size:17px;text-overflow:ellipsis;white-space:nowrap}.application-enabled{padding:2px 7px;border-radius:999px;color:#168b57;background:color-mix(in srgb,#2ab573 12%,var(--zrt-surface));font-size:11px;white-space:nowrap}.application-enabled.inactive{color:var(--zrt-muted);background:var(--zrt-surface-soft)}.application-identity p{overflow:hidden;margin:3px 0 0;color:var(--zrt-muted);text-overflow:ellipsis;white-space:nowrap}
 .application-state{display:flex;flex:0 0 auto;align-items:center;gap:9px;padding:7px 11px;border-radius:10px;color:var(--application-state);background:color-mix(in srgb,var(--application-state) 9%,var(--zrt-surface))}.application-state>i,.application-sync>i{width:8px;height:8px;flex:0 0 8px;border-radius:50%;background:currentColor;box-shadow:0 0 0 4px color-mix(in srgb,currentColor 10%,transparent)}.application-card.is-live .application-state>i,.application-sync.is-live>i{animation:application-pulse 2s ease-out infinite}.application-state small,.application-state strong,.application-sync small,.application-sync strong{display:block}.application-state small,.application-sync small{color:var(--zrt-muted);font-size:11px;font-weight:400}.application-state strong{font-size:13px}

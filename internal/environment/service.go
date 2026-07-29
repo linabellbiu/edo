@@ -11,16 +11,18 @@ import (
 
 	"github.com/google/uuid"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
 	"zrt/internal/model"
 )
 
 var (
-	ErrInvalidEnvironment    = errors.New("环境信息无效")
-	ErrEnvironmentExists     = errors.New("环境名称已存在")
-	ErrEnvironmentNotFound   = errors.New("环境不存在")
-	ErrEnvironmentReferenced = errors.New("环境仍被部署配置引用，不能删除")
-	ErrHostNotFound          = errors.New("所选主机不存在，请刷新后重试")
+	ErrInvalidEnvironment       = errors.New("环境信息无效")
+	ErrEnvironmentExists        = errors.New("环境名称已存在")
+	ErrEnvironmentNotFound      = errors.New("环境不存在")
+	ErrEnvironmentReferenced    = errors.New("环境仍被部署配置引用，不能删除")
+	ErrHostMembershipReferenced = errors.New("所选主机仍被该环境的部署配置引用，不能移除")
+	ErrHostNotFound             = errors.New("所选主机不存在，请刷新后重试")
 )
 
 var environmentNamePattern = regexp.MustCompile(`^[\p{L}\p{N}][\p{L}\p{N}_. -]{0,127}$`)
@@ -28,9 +30,14 @@ var environmentNamePattern = regexp.MustCompile(`^[\p{L}\p{N}][\p{L}\p{N}_. -]{0
 type Input struct {
 	Name        string
 	Description string
-	// HostIDs 是环境当前应包含的完整主机集合。更新时未包含的原成员会解除归属，
-	// 已属于其他环境的主机会原子移动到当前环境。
+	// HostIDs 是当前环境包含的完整主机集合。主机可以同时属于多个环境，
+	// 更新只增删当前环境的关系，不影响该主机在其他环境中的成员关系。
 	HostIDs []string
+}
+
+type ProfileInput struct {
+	Name        string
+	Description string
 }
 
 type Detail struct {
@@ -59,18 +66,33 @@ func (s *Service) List(ctx context.Context) ([]Detail, error) {
 	for i := range environments {
 		environmentIDs = append(environmentIDs, environments[i].ID)
 	}
-	var hosts []model.Host
+	var memberships []model.EnvironmentHost
 	if err := s.db.WithContext(ctx).
 		Where("environment_id IN ?", environmentIDs).
-		Order("name ASC").
-		Find(&hosts).Error; err != nil {
+		Find(&memberships).Error; err != nil {
 		return nil, fmt.Errorf("查询环境所属主机失败: %w", err)
 	}
-
+	hostEnvironmentIDs := make(map[string][]string, len(memberships))
+	hostIDs := make([]string, 0, len(memberships))
+	for i := range memberships {
+		if _, exists := hostEnvironmentIDs[memberships[i].HostID]; !exists {
+			hostIDs = append(hostIDs, memberships[i].HostID)
+		}
+		hostEnvironmentIDs[memberships[i].HostID] = append(
+			hostEnvironmentIDs[memberships[i].HostID], memberships[i].EnvironmentID,
+		)
+	}
 	hostsByEnvironment := make(map[string][]model.Host, len(environments))
-	for i := range hosts {
-		host := hosts[i]
-		hostsByEnvironment[host.EnvironmentID] = append(hostsByEnvironment[host.EnvironmentID], host)
+	if len(hostIDs) > 0 {
+		var hosts []model.Host
+		if err := s.db.WithContext(ctx).Where("id IN ?", hostIDs).Order("name ASC").Find(&hosts).Error; err != nil {
+			return nil, fmt.Errorf("查询环境所属主机失败: %w", err)
+		}
+		for i := range hosts {
+			for _, environmentID := range hostEnvironmentIDs[hosts[i].ID] {
+				hostsByEnvironment[environmentID] = append(hostsByEnvironment[environmentID], hosts[i])
+			}
+		}
 	}
 	result := make([]Detail, 0, len(environments))
 	for i := range environments {
@@ -176,8 +198,77 @@ func (s *Service) Update(ctx context.Context, id string, input Input) (*Detail, 
 			return nil, ErrEnvironmentExists
 		case errors.Is(err, ErrHostNotFound):
 			return nil, ErrHostNotFound
+		case errors.Is(err, ErrHostMembershipReferenced):
+			return nil, ErrHostMembershipReferenced
 		default:
 			return nil, fmt.Errorf("更新环境失败: %w", err)
+		}
+	}
+	return s.Get(ctx, id)
+}
+
+func (s *Service) UpdateProfile(ctx context.Context, id string, input ProfileInput) (*Detail, error) {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return nil, ErrEnvironmentNotFound
+	}
+	input, err := normalizeProfileInput(input)
+	if err != nil {
+		return nil, err
+	}
+	result := s.db.WithContext(ctx).
+		Model(&model.Environment{}).
+		Where("id = ?", id).
+		Updates(map[string]any{
+			"name":        input.Name,
+			"description": input.Description,
+			"updated_at":  time.Now().UTC(),
+		})
+	if result.Error != nil {
+		if errors.Is(result.Error, gorm.ErrDuplicatedKey) {
+			return nil, ErrEnvironmentExists
+		}
+		return nil, fmt.Errorf("更新环境基本信息失败: %w", result.Error)
+	}
+	if result.RowsAffected != 1 {
+		return nil, ErrEnvironmentNotFound
+	}
+	return s.Get(ctx, id)
+}
+
+func (s *Service) ReplaceHosts(ctx context.Context, id string, hostIDs []string) (*Detail, error) {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return nil, ErrEnvironmentNotFound
+	}
+	hostIDs, err := normalizeHostIDs(hostIDs)
+	if err != nil {
+		return nil, err
+	}
+	now := time.Now().UTC()
+	err = s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var existing model.Environment
+		if err := tx.First(&existing, "id = ?", id).Error; err != nil {
+			return err
+		}
+		if err := ensureHostsExist(tx, hostIDs); err != nil {
+			return err
+		}
+		if err := replaceHosts(tx, existing.ID, hostIDs, now); err != nil {
+			return err
+		}
+		return tx.Model(&existing).Update("updated_at", now).Error
+	})
+	if err != nil {
+		switch {
+		case errors.Is(err, gorm.ErrRecordNotFound):
+			return nil, ErrEnvironmentNotFound
+		case errors.Is(err, ErrHostNotFound):
+			return nil, ErrHostNotFound
+		case errors.Is(err, ErrHostMembershipReferenced):
+			return nil, ErrHostMembershipReferenced
+		default:
+			return nil, fmt.Errorf("调整环境主机归属失败: %w", err)
 		}
 	}
 	return s.Get(ctx, id)
@@ -220,9 +311,7 @@ func (s *Service) Remove(ctx context.Context, id string) error {
 		if targetCount > 0 {
 			return ErrEnvironmentReferenced
 		}
-		now := time.Now().UTC()
-		if err := tx.Model(&model.Host{}).Where("environment_id = ?", existing.ID).
-			Updates(map[string]any{"environment_id": "", "updated_at": now}).Error; err != nil {
+		if err := tx.Where("environment_id = ?", existing.ID).Delete(&model.EnvironmentHost{}).Error; err != nil {
 			return err
 		}
 		return tx.Delete(&existing).Error
@@ -240,19 +329,37 @@ func (s *Service) Remove(ctx context.Context, id string) error {
 }
 
 func normalizeInput(input Input) (Input, error) {
+	profile, err := normalizeProfileInput(ProfileInput{Name: input.Name, Description: input.Description})
+	if err != nil {
+		return Input{}, ErrInvalidEnvironment
+	}
+	hostIDs, err := normalizeHostIDs(input.HostIDs)
+	if err != nil {
+		return Input{}, err
+	}
+	input.Name = profile.Name
+	input.Description = profile.Description
+	input.HostIDs = hostIDs
+	return input, nil
+}
+
+func normalizeProfileInput(input ProfileInput) (ProfileInput, error) {
 	input.Name = strings.TrimSpace(input.Name)
 	input.Description = strings.TrimSpace(input.Description)
 	if !environmentNamePattern.MatchString(input.Name) ||
 		utf8.RuneCountInString(input.Description) > 500 {
-		return Input{}, ErrInvalidEnvironment
+		return ProfileInput{}, ErrInvalidEnvironment
 	}
+	return input, nil
+}
 
-	seen := make(map[string]struct{}, len(input.HostIDs))
-	hostIDs := make([]string, 0, len(input.HostIDs))
-	for _, rawID := range input.HostIDs {
+func normalizeHostIDs(values []string) ([]string, error) {
+	seen := make(map[string]struct{}, len(values))
+	hostIDs := make([]string, 0, len(values))
+	for _, rawID := range values {
 		id := strings.TrimSpace(rawID)
 		if id == "" {
-			return Input{}, ErrInvalidEnvironment
+			return nil, ErrInvalidEnvironment
 		}
 		if _, exists := seen[id]; exists {
 			continue
@@ -260,8 +367,7 @@ func normalizeInput(input Input) (Input, error) {
 		seen[id] = struct{}{}
 		hostIDs = append(hostIDs, id)
 	}
-	input.HostIDs = hostIDs
-	return input, nil
+	return hostIDs, nil
 }
 
 func ensureHostsExist(tx *gorm.DB, hostIDs []string) error {
@@ -279,25 +385,40 @@ func ensureHostsExist(tx *gorm.DB, hostIDs []string) error {
 }
 
 func replaceHosts(tx *gorm.DB, environmentID string, hostIDs []string, now time.Time) error {
-	unassign := tx.Model(&model.Host{}).Where("environment_id = ?", environmentID)
+	remove := tx.Model(&model.EnvironmentHost{}).Where("environment_id = ?", environmentID)
 	if len(hostIDs) > 0 {
-		unassign = unassign.Where("id NOT IN ?", hostIDs)
+		remove = remove.Where("host_id NOT IN ?", hostIDs)
 	}
-	if err := unassign.Updates(map[string]any{
-		"environment_id": "",
-		"updated_at":     now,
-	}).Error; err != nil {
+	var removedHostIDs []string
+	if err := remove.Pluck("host_id", &removedHostIDs).Error; err != nil {
+		return fmt.Errorf("查询待移除环境主机失败: %w", err)
+	}
+	if len(removedHostIDs) > 0 {
+		var targetCount int64
+		if err := tx.Model(&model.DeploymentTarget{}).
+			Where("platform = ? AND environment_id = ? AND host_id IN ?", model.DeploymentSSH, environmentID, removedHostIDs).
+			Count(&targetCount).Error; err != nil {
+			return fmt.Errorf("检查环境主机部署配置引用失败: %w", err)
+		}
+		if targetCount > 0 {
+			return ErrHostMembershipReferenced
+		}
+	}
+	if err := remove.Delete(&model.EnvironmentHost{}).Error; err != nil {
 		return fmt.Errorf("解除环境主机归属失败: %w", err)
 	}
 	if len(hostIDs) == 0 {
 		return nil
 	}
-	if err := tx.Model(&model.Host{}).
-		Where("id IN ?", hostIDs).
-		Updates(map[string]any{
-			"environment_id": environmentID,
-			"updated_at":     now,
-		}).Error; err != nil {
+	memberships := make([]model.EnvironmentHost, 0, len(hostIDs))
+	for _, hostID := range hostIDs {
+		memberships = append(memberships, model.EnvironmentHost{
+			EnvironmentID: environmentID,
+			HostID:        hostID,
+			CreatedAt:     now,
+		})
+	}
+	if err := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&memberships).Error; err != nil {
 		return fmt.Errorf("更新环境主机归属失败: %w", err)
 	}
 	return nil
@@ -306,8 +427,9 @@ func replaceHosts(tx *gorm.DB, environmentID string, hostIDs []string, now time.
 func listHosts(ctx context.Context, db *gorm.DB, environmentID string) ([]model.Host, error) {
 	hosts := make([]model.Host, 0)
 	if err := db.WithContext(ctx).
-		Where("environment_id = ?", environmentID).
-		Order("name ASC").
+		Joins("JOIN environment_hosts AS membership ON membership.host_id = hosts.id").
+		Where("membership.environment_id = ?", environmentID).
+		Order("hosts.name ASC").
 		Find(&hosts).Error; err != nil {
 		return nil, fmt.Errorf("查询环境所属主机失败: %w", err)
 	}

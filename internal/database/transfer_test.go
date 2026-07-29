@@ -47,10 +47,16 @@ func TestCopyDatabaseSnapshotCopiesAllRowsWithoutSchemaHistory(t *testing.T) {
 		Address: "host.example.com", SSHPort: 22, SSHUsername: "deploy",
 		SSHAuthType: model.SSHAuthPassword, SSHCredentialCiphertext: "host-ciphertext",
 		SSHHostKeyFingerprint: "SHA256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-		EnvironmentID:         environment.ID, IsActive: true, CreatedBy: user.ID,
+		IsActive:              true, CreatedBy: user.ID,
 		CreatedAt: now, UpdatedAt: now,
 	}
 	if err := source.Create(&host).Error; err != nil {
+		t.Fatal(err)
+	}
+	membership := model.EnvironmentHost{
+		EnvironmentID: environment.ID, HostID: host.ID, CreatedAt: now,
+	}
+	if err := source.Create(&membership).Error; err != nil {
 		t.Fatal(err)
 	}
 	endpoint := model.DockerEndpoint{
@@ -85,8 +91,14 @@ func TestCopyDatabaseSnapshotCopiesAllRowsWithoutSchemaHistory(t *testing.T) {
 	if err := target.First(&copiedHost, "id = ?", host.ID).Error; err != nil {
 		t.Fatalf("目标库未找到主机: %v", err)
 	}
-	if copiedHost.EnvironmentID != environment.ID || copiedHost.SSHCredentialCiphertext != host.SSHCredentialCiphertext {
-		t.Fatalf("主机归属或加密凭据复制不一致: %+v", copiedHost)
+	if copiedHost.SSHCredentialCiphertext != host.SSHCredentialCiphertext {
+		t.Fatalf("主机加密凭据复制不一致: %+v", copiedHost)
+	}
+	var copiedMembership model.EnvironmentHost
+	if err := target.First(&copiedMembership,
+		"environment_id = ? AND host_id = ?", environment.ID, host.ID,
+	).Error; err != nil {
+		t.Fatalf("目标库未找到环境主机关联: %v", err)
 	}
 	var copiedEndpoint model.DockerEndpoint
 	if err := target.First(&copiedEndpoint, "id = ?", endpoint.ID).Error; err != nil {

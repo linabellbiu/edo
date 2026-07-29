@@ -5,6 +5,8 @@ import (
 	"encoding/hex"
 	"strconv"
 	"time"
+
+	"gorm.io/gorm"
 )
 
 type BuildPlanKind string
@@ -15,19 +17,20 @@ const (
 )
 
 type BuildPlan struct {
-	ID             string        `gorm:"type:varchar(36);primaryKey" json:"id"`
-	Name           string        `gorm:"type:varchar(128);not null;uniqueIndex" json:"name"`
-	Kind           BuildPlanKind `gorm:"type:varchar(16);not null;index" json:"kind"`
-	Description    string        `gorm:"type:varchar(500);not null;default:''" json:"description"`
-	Script         string        `gorm:"type:text;not null" json:"script,omitempty"`
-	DockerfilePath string        `gorm:"type:varchar(512);not null;default:''" json:"dockerfile_path,omitempty"`
-	ContextPath    string        `gorm:"type:varchar(512);not null;default:'.'" json:"context_path"`
-	ArtifactPath   string        `gorm:"type:varchar(512);not null;default:''" json:"artifact_path,omitempty"`
-	TimeoutSeconds int           `gorm:"not null;default:1800" json:"timeout_seconds"`
-	IsActive       bool          `gorm:"not null;default:true;index" json:"is_active"`
-	CreatedBy      string        `gorm:"type:varchar(36);not null;index" json:"created_by"`
-	CreatedAt      time.Time     `gorm:"not null" json:"created_at"`
-	UpdatedAt      time.Time     `gorm:"not null" json:"updated_at"`
+	ID             string         `gorm:"type:varchar(36);primaryKey" json:"id"`
+	Name           string         `gorm:"type:varchar(128);not null;uniqueIndex" json:"name"`
+	Kind           BuildPlanKind  `gorm:"type:varchar(16);not null;index" json:"kind"`
+	Description    string         `gorm:"type:varchar(500);not null;default:''" json:"description"`
+	Script         string         `gorm:"type:text;not null" json:"script,omitempty"`
+	DockerfilePath string         `gorm:"type:varchar(512);not null;default:''" json:"dockerfile_path,omitempty"`
+	ContextPath    string         `gorm:"type:varchar(512);not null;default:'.'" json:"context_path"`
+	ArtifactPath   string         `gorm:"type:varchar(512);not null;default:''" json:"artifact_path,omitempty"`
+	TimeoutSeconds int            `gorm:"not null;default:1800" json:"timeout_seconds"`
+	IsActive       bool           `gorm:"not null;default:true;index" json:"is_active"`
+	CreatedBy      string         `gorm:"type:varchar(36);not null;index" json:"created_by"`
+	CreatedAt      time.Time      `gorm:"not null" json:"created_at"`
+	UpdatedAt      time.Time      `gorm:"not null" json:"updated_at"`
+	DeletedAt      gorm.DeletedAt `gorm:"index" json:"-"`
 }
 
 func (BuildPlan) TableName() string { return "build_plans" }

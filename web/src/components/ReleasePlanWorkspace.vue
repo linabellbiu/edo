@@ -81,10 +81,11 @@ const props = defineProps<{
 const emit = defineEmits<{
   create: []
   execute: [planID: string]
-  edit: [planID: string, groupID?: string, addGroup?: boolean]
+  edit: [planID: string]
+  addApplication: [planID: string, groupID: string]
   toggle: [planID: string, enabled: boolean]
   remove: [planID: string]
-  removeGroup: [planID: string, groupID: string]
+  removeApplication: [planID: string, groupID: string, applicationID: string]
 }>()
 const { t, locale } = useI18n()
 const selectedPlanID = ref('')
@@ -170,7 +171,7 @@ function dependencyLabel(plan: ReleasePlanItem, group: ReleaseGroup) {
   const names = (group.dependencies || [])
     .map((dependency) => plan.groups?.find((candidate) => candidate.id === dependency.depends_on_group_id)?.name)
     .filter(Boolean)
-  return names.length ? t('releasePlan.dependsOn', { names: names.join('、') }) : t('releasePlan.noDependency')
+  return names.length ? t('releasePlan.dependsOn', { names: names.join('、') }) : ''
 }
 
 function sourceMeta(item: ReleaseGroupApplication) {
@@ -278,15 +279,6 @@ function sourceMeta(item: ReleaseGroupApplication) {
           <div><small>{{ t('releasePlan.orchestration') }}</small><h3>{{ t('releasePlan.groupsTitle') }}</h3></div>
           <div class="plan-group-heading-actions">
             <span>{{ t('releasePlan.groupCount', { count: selectedPlan.groups?.length || 0 }) }}</span>
-            <a-button
-              v-if="canManage && !planMutationBlocked(selectedPlan)"
-              size="small"
-              type="dashed"
-              :disabled="mutatingPlanID === selectedPlan.id"
-              @click="emit('edit', selectedPlan.id, undefined, true)"
-            >
-              <Plus :size="13" />{{ t('releasePlan.editor.addGroup') }}
-            </a-button>
           </div>
         </header>
 
@@ -294,14 +286,11 @@ function sourceMeta(item: ReleaseGroupApplication) {
           <article v-for="(group, index) in selectedPlan.groups" :key="group.id" class="plan-group-row">
             <span class="plan-group-step">{{ index + 1 }}</span>
             <header>
-              <div><strong>{{ group.name }}</strong><small>{{ dependencyLabel(selectedPlan, group) }}</small></div>
+              <div><strong>{{ group.name }}</strong><small v-if="dependencyLabel(selectedPlan, group)">{{ dependencyLabel(selectedPlan, group) }}</small></div>
               <div class="plan-group-actions">
                 <div class="plan-group-rules"><span>{{ groupMode(group.mode) }}</span><span>{{ failurePolicy(group.failure_policy) }}</span></div>
-                <a-button v-if="canManage && !planMutationBlocked(selectedPlan)" size="small" type="text" :disabled="mutatingPlanID === selectedPlan.id" @click="emit('edit', selectedPlan.id, group.id)">
-                  <Pencil :size="13" />{{ t('releasePlan.actions.edit') }}
-                </a-button>
-                <a-button v-if="canManage && !planMutationBlocked(selectedPlan)" size="small" type="text" danger :disabled="mutatingPlanID === selectedPlan.id" @click="emit('removeGroup', selectedPlan.id, group.id)">
-                  <Trash2 :size="13" />{{ t('releasePlan.actions.remove') }}
+                <a-button v-if="canManage && !planMutationBlocked(selectedPlan)" size="small" type="text" :disabled="mutatingPlanID === selectedPlan.id" @click="emit('addApplication', selectedPlan.id, group.id)">
+                  <Plus :size="13" />{{ t('releasePlan.editor.addApplication') }}
                 </a-button>
               </div>
             </header>
@@ -316,7 +305,22 @@ function sourceMeta(item: ReleaseGroupApplication) {
                     {{ sourceMeta(item).label }} · {{ sourceMeta(item).value }}
                   </span>
                 </div>
-                <em :class="{ disabled: !applicationEnabled(item) }">{{ applicationEnabled(item) ? t('releasePlan.enabled') : t('releasePlan.disabled') }}</em>
+                <div class="plan-app-actions">
+                  <em :class="{ disabled: !applicationEnabled(item) }">{{ applicationEnabled(item) ? t('releasePlan.enabled') : t('releasePlan.disabled') }}</em>
+                  <a-popconfirm
+                    v-if="canManage && !planMutationBlocked(selectedPlan)"
+                    :title="t('releasePlan.editor.removeApplicationConfirm', { name: applicationName(item) })"
+                    :description="t('releasePlan.editor.removeApplicationHint')"
+                    :ok-text="t('releasePlan.editor.remove')"
+                    :cancel-text="t('releasePlan.editor.cancel')"
+                    ok-type="danger"
+                    @confirm="emit('removeApplication', selectedPlan.id, group.id, item.application_id)"
+                  >
+                    <a-button danger type="text" size="small" :disabled="mutatingPlanID === selectedPlan.id">
+                      <Trash2 :size="13" />{{ t('releasePlan.editor.removeApplication') }}
+                    </a-button>
+                  </a-popconfirm>
+                </div>
               </div>
             </div>
             <a-empty v-else :image="AntEmpty.PRESENTED_IMAGE_SIMPLE" :description="t('releasePlan.emptyGroup')" />
@@ -345,11 +349,11 @@ function sourceMeta(item: ReleaseGroupApplication) {
 .plan-summary{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:9px;margin:16px 0}.plan-summary>div{min-width:0;padding:12px 13px;border:1px solid var(--zrt-border);border-radius:11px;background:var(--zrt-surface-soft)}.plan-summary dt{display:flex;align-items:center;gap:6px;color:var(--zrt-muted);font-size:11px}.plan-summary dt svg{width:14px;color:var(--zrt-primary)}.plan-summary dd{margin:4px 0 0;font-size:21px;font-weight:650;line-height:1.2}.plan-summary small{display:block;margin-top:3px;color:var(--zrt-muted);font-size:10px}
 .plan-groups{overflow:hidden;border:1px solid var(--zrt-border);border-radius:12px}.plan-groups>header{display:flex;align-items:center;justify-content:space-between;padding:13px 15px;background:var(--zrt-surface-soft)}.plan-groups>header small,.plan-groups>header h3{display:block;margin:0}.plan-groups>header small{color:var(--zrt-muted);font-size:10px}.plan-groups>header h3{margin-top:1px;font-size:14px}.plan-group-heading-actions{display:flex;align-items:center;gap:7px}.plan-group-heading-actions>span{padding:4px 8px;border-radius:999px;color:var(--zrt-muted);background:var(--zrt-surface);font-size:10px}.plan-group-heading-actions :deep(.ant-btn),.plan-group-actions :deep(.ant-btn){display:inline-flex;align-items:center;gap:4px}
 .plan-group-list{padding:0 15px 4px}.plan-group-row{position:relative;padding:15px 0 15px 39px}.plan-group-row+.plan-group-row{border-top:1px solid var(--zrt-border)}.plan-group-step{position:absolute;top:16px;left:0;display:grid;width:26px;height:26px;place-items:center;border-radius:9px;color:var(--zrt-primary);background:var(--zrt-primary-soft);font-size:11px;font-weight:700}.plan-group-row>header{display:flex;align-items:flex-start;justify-content:space-between;gap:12px}.plan-group-row>header strong,.plan-group-row>header small{display:block}.plan-group-row>header strong{font-size:13px}.plan-group-row>header small{margin-top:3px;color:var(--zrt-muted);font-size:10px}.plan-group-actions{display:flex;flex-wrap:wrap;align-items:center;justify-content:flex-end;gap:3px}.plan-group-rules{display:flex;flex-wrap:wrap;justify-content:flex-end;gap:5px}.plan-group-rules span{padding:3px 7px;border-radius:999px;color:var(--zrt-muted);background:var(--zrt-surface-soft);font-size:10px;white-space:nowrap}
-.plan-application-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(280px,100%),1fr));gap:7px;margin-top:11px}.plan-application{display:grid;min-width:0;align-items:center;grid-template-columns:34px minmax(0,1fr) auto;gap:9px;padding:9px 10px;border:1px solid var(--zrt-border);border-radius:10px;background:var(--zrt-surface-soft)}.plan-app-mark{display:grid;width:34px;height:34px;place-items:center;border-radius:9px;color:var(--zrt-primary);background:var(--zrt-surface)}.plan-app-mark svg{width:16px}.plan-app-copy{min-width:0}.plan-app-copy strong,.plan-app-copy span{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.plan-app-copy strong{font-size:12px}.plan-app-copy span{display:flex;align-items:center;gap:4px;margin-top:3px;color:var(--zrt-muted);font-size:10px}.plan-app-copy span svg{width:12px;flex:0 0 12px}.plan-application em{padding:3px 6px;border-radius:999px;color:#168b57;background:color-mix(in srgb,#2ab573 10%,var(--zrt-surface));font-size:9px;font-style:normal;white-space:nowrap}.plan-application em.disabled{color:var(--zrt-muted);background:var(--zrt-surface)}
+.plan-application-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(340px,100%),1fr));gap:7px;margin-top:11px}.plan-application{display:grid;min-width:0;align-items:center;grid-template-columns:34px minmax(0,1fr) auto;gap:9px;padding:9px 10px;border:1px solid var(--zrt-border);border-radius:10px;background:var(--zrt-surface-soft)}.plan-app-mark{display:grid;width:34px;height:34px;place-items:center;border-radius:9px;color:var(--zrt-primary);background:var(--zrt-surface)}.plan-app-mark svg{width:16px}.plan-app-copy{min-width:0}.plan-app-copy strong,.plan-app-copy span{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.plan-app-copy strong{font-size:12px}.plan-app-copy span{display:flex;align-items:center;gap:4px;margin-top:3px;color:var(--zrt-muted);font-size:10px}.plan-app-copy span svg{width:12px;flex:0 0 12px}.plan-app-actions{display:flex;align-items:center;justify-content:flex-end;gap:3px}.plan-app-actions em{padding:3px 6px;border-radius:999px;color:#168b57;background:color-mix(in srgb,#2ab573 10%,var(--zrt-surface));font-size:9px;font-style:normal;white-space:nowrap}.plan-app-actions em.disabled{color:var(--zrt-muted);background:var(--zrt-surface)}.plan-app-actions :deep(.ant-btn){display:inline-flex;align-items:center;gap:4px;padding-inline:5px}
 .plan-empty{display:grid;min-height:460px;place-items:center;align-content:center;padding:32px;text-align:center}.plan-empty>span{display:grid;width:58px;height:58px;place-items:center;border-radius:18px;color:var(--zrt-primary);background:var(--zrt-primary-soft)}.plan-empty>span svg{width:25px}.plan-empty h3{margin:15px 0 0;font-size:16px}.plan-empty p{max-width:420px;margin:6px 0 16px;color:var(--zrt-muted);font-size:12px}
 @keyframes plan-pulse{0%{box-shadow:0 0 0 0 color-mix(in srgb,currentColor 30%,transparent)}70%{box-shadow:0 0 0 7px transparent}100%{box-shadow:0 0 0 0 transparent}}
 @media(max-width:980px){.plan-workspace{grid-template-columns:250px minmax(0,1fr)}.plan-application-grid{grid-template-columns:1fr}}
 @media(max-width:760px){.plan-workspace{grid-template-columns:1fr;min-height:0}.plan-index-list{display:flex;max-height:none;overflow-x:auto;overflow-y:hidden;padding:7px}.plan-index-list>button{width:260px;flex:0 0 260px}.plan-detail{padding:16px}.plan-detail-heading{align-items:flex-start}.plan-summary{grid-template-columns:repeat(3,minmax(100px,1fr));overflow-x:auto}.plan-group-row>header{flex-direction:column}.plan-group-rules{justify-content:flex-start}}
-@media(max-width:520px){.plan-detail-heading{flex-direction:column}.plan-detail-actions{width:100%;align-items:stretch;flex-direction:column}.plan-state{align-self:stretch}.plan-detail-actions :deep(.ant-btn){justify-content:center}.plan-summary{grid-template-columns:1fr}.plan-application{grid-template-columns:34px minmax(0,1fr)}.plan-application em{grid-column:2;justify-self:start}.plan-group-row{padding-left:34px}}
+@media(max-width:520px){.plan-detail-heading{flex-direction:column}.plan-detail-actions{width:100%;align-items:stretch;flex-direction:column}.plan-state{align-self:stretch}.plan-detail-actions :deep(.ant-btn){justify-content:center}.plan-summary{grid-template-columns:1fr}.plan-application{grid-template-columns:34px minmax(0,1fr)}.plan-app-actions{grid-column:2;justify-self:start}.plan-group-row{padding-left:34px}}
 @media(prefers-reduced-motion:reduce){.plan-index-list>button>i.live,.plan-state.live>i{animation:none}}
 </style>

@@ -17,7 +17,8 @@ import (
 
 func TestHostResponseKeepsDockerSudoCapability(t *testing.T) {
 	response := toHostResponse(hostmanager.Detail{
-		Host: model.Host{ID: "host-1", Name: "构建主机"},
+		Host:           model.Host{ID: "host-1", Name: "构建主机"},
+		EnvironmentIDs: []string{"environment-a", "environment-b"},
 		Capabilities: []model.HostCapability{{
 			HostID: "host-1", Kind: model.HostCapabilityDocker, RuntimeID: "docker-1",
 			Status: model.HostCapabilityReady, UseSudo: true,
@@ -25,6 +26,9 @@ func TestHostResponseKeepsDockerSudoCapability(t *testing.T) {
 	})
 	if len(response.Capabilities) != 1 || !response.Capabilities[0].UseSudo {
 		t.Fatalf("主机响应丢失 Docker sudo 能力: %+v", response.Capabilities)
+	}
+	if len(response.EnvironmentIDs) != 2 || response.EnvironmentID != "" {
+		t.Fatalf("主机多环境响应错误: %+v", response)
 	}
 	payload, err := json.Marshal(response)
 	if err != nil {

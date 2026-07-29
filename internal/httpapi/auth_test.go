@@ -25,6 +25,7 @@ import (
 	"zrt/internal/credential"
 	"zrt/internal/database"
 	"zrt/internal/deployment"
+	"zrt/internal/kube"
 	"zrt/internal/logging"
 	"zrt/internal/model"
 	"zrt/internal/pipeline"
@@ -132,6 +133,7 @@ func newAuthTestRouter(t *testing.T) (*gin.Engine, func()) {
 	}
 	credentialService := credential.NewService(db, secretManager)
 	configurationService := configuration.NewService(db, secretManager)
+	kubernetesService := kube.NewService(db, secretManager, config.Runtime{ConnectTimeout: time.Second, RequestTimeout: time.Second})
 	repositoryService := repository.NewService(
 		db, secretManager, credentialService,
 		repository.NewGitClient(config.Git{Timeout: time.Second}), 4,
@@ -146,7 +148,7 @@ func newAuthTestRouter(t *testing.T) (*gin.Engine, func()) {
 	testHost := model.Host{
 		ID: "httpapi-deployment-host", Name: "接口测试部署主机", Mode: model.HostModeSSH,
 		Address: "192.0.2.20", SSHPort: 22, SSHUsername: "deployer",
-		EnvironmentID: testEnvironment.ID, IsActive: true, CreatedBy: "system",
+		IsActive: true, CreatedBy: "system",
 		CreatedAt: now, UpdatedAt: now,
 	}
 	testCapability := model.HostCapability{
@@ -158,6 +160,11 @@ func newAuthTestRouter(t *testing.T) (*gin.Engine, func()) {
 	}
 	if err := db.Create(&testHost).Error; err != nil {
 		t.Fatalf("创建接口测试部署主机失败: %v", err)
+	}
+	if err := db.Create(&model.EnvironmentHost{
+		EnvironmentID: testEnvironment.ID, HostID: testHost.ID, CreatedAt: now,
+	}).Error; err != nil {
+		t.Fatalf("创建接口测试环境主机关联失败: %v", err)
 	}
 	if err := db.Create(&testCapability).Error; err != nil {
 		t.Fatalf("创建接口测试部署能力失败: %v", err)
@@ -191,6 +198,7 @@ func newAuthTestRouter(t *testing.T) (*gin.Engine, func()) {
 		Accounts: accounts, Login: login, LoginLimiter: limiter, Sessions: sessions,
 		Access: accessService, Audits: auditService,
 		Credentials: credentialService, Repositories: repositoryService, Pipelines: pipelineService,
+		Kubernetes:     kubernetesService,
 		Deployments:    deploymentService,
 		Configurations: configurationService,
 	})

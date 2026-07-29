@@ -110,6 +110,7 @@ type runtimeProbeResult struct {
 
 type Detail struct {
 	Host              model.Host
+	EnvironmentIDs    []string
 	Capabilities      []model.HostCapability
 	CapabilityOptions []CapabilityOption
 }
@@ -165,9 +166,16 @@ func (s *Service) List(ctx context.Context) ([]Detail, error) {
 	if err != nil {
 		return nil, err
 	}
+	environmentIDs, err := s.listEnvironmentIDs(ctx, hostIDs(hosts))
+	if err != nil {
+		return nil, err
+	}
 	result := make([]Detail, 0, len(hosts))
 	for i := range hosts {
-		detail := Detail{Host: hosts[i], Capabilities: capabilities[hosts[i].ID]}
+		detail := Detail{
+			Host: hosts[i], EnvironmentIDs: environmentIDs[hosts[i].ID],
+			Capabilities: capabilities[hosts[i].ID],
+		}
 		if hosts[i].ID == model.BuiltinLocalHostID {
 			s.decorateLocalDetail(ctx, &detail)
 		}
@@ -194,7 +202,14 @@ func (s *Service) Get(ctx context.Context, id string) (*Detail, error) {
 	if err != nil {
 		return nil, err
 	}
-	detail := &Detail{Host: current, Capabilities: capabilities[current.ID]}
+	environmentIDs, err := s.listEnvironmentIDs(ctx, []string{current.ID})
+	if err != nil {
+		return nil, err
+	}
+	detail := &Detail{
+		Host: current, EnvironmentIDs: environmentIDs[current.ID],
+		Capabilities: capabilities[current.ID],
+	}
 	if current.ID == model.BuiltinLocalHostID {
 		s.decorateLocalDetail(ctx, detail)
 	}
@@ -724,7 +739,7 @@ func (s *Service) Create(ctx context.Context, actorID string, input Input) (*Det
 		}
 		return nil, fmt.Errorf("创建主机失败: %w", err)
 	}
-	return &Detail{Host: current, Capabilities: capabilities}, nil
+	return &Detail{Host: current, EnvironmentIDs: []string{}, Capabilities: capabilities}, nil
 }
 
 func (s *Service) Update(ctx context.Context, id string, input Input) (*Detail, error) {
@@ -755,7 +770,6 @@ func (s *Service) Update(ctx context.Context, id string, input Input) (*Detail, 
 		}
 	}
 	now := time.Now().UTC()
-	var capabilities []model.HostCapability
 	err = s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if err := tx.Model(&model.Host{}).Where("id = ?", existing.ID).Updates(map[string]any{
 			"name": normalized.Name, "address": normalized.Address, "ssh_port": normalized.SSHPort,
@@ -769,7 +783,7 @@ func (s *Service) Update(ctx context.Context, id string, input Input) (*Detail, 
 		existing.SSHUsername, existing.SSHAuthType = normalized.SSHUsername, normalized.SSHAuthType
 		existing.SSHCredentialCiphertext, existing.SSHHostKeyFingerprint = ciphertext, tested.Fingerprint
 		existing.UpdatedAt = now
-		capabilities, err = s.replaceCapabilities(tx, &existing, normalized, tested)
+		_, err = s.replaceCapabilities(tx, &existing, normalized, tested)
 		return err
 	})
 	if err != nil {
@@ -781,7 +795,7 @@ func (s *Service) Update(ctx context.Context, id string, input Input) (*Detail, 
 		}
 		return nil, fmt.Errorf("更新主机失败: %w", err)
 	}
-	return &Detail{Host: existing, Capabilities: capabilities}, nil
+	return s.Get(ctx, existing.ID)
 }
 
 func (s *Service) updateLocal(ctx context.Context, existing *model.Host, input Input) (*Detail, error) {
@@ -872,7 +886,14 @@ func (s *Service) updateLocal(ctx context.Context, existing *model.Host, input I
 		return nil, fmt.Errorf("更新本地主机失败: %w", err)
 	}
 	existing.Name, existing.UpdatedAt = normalized.Name, now
-	detail := &Detail{Host: *existing, Capabilities: capabilities, CapabilityOptions: options}
+	environmentIDs, err := s.listEnvironmentIDs(ctx, []string{existing.ID})
+	if err != nil {
+		return nil, err
+	}
+	detail := &Detail{
+		Host: *existing, EnvironmentIDs: environmentIDs[existing.ID],
+		Capabilities: capabilities, CapabilityOptions: options,
+	}
 	s.decorateLocalDetail(ctx, detail)
 	return detail, nil
 }
@@ -967,6 +988,9 @@ func (s *Service) Remove(ctx context.Context, id string) error {
 	}
 	now := time.Now().UTC()
 	if err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Where("host_id = ?", id).Delete(&model.EnvironmentHost{}).Error; err != nil {
+			return err
+		}
 		if err := tx.Model(&model.DockerEndpoint{}).Where("host_id = ?", id).
 			Updates(map[string]any{"host_id": "", "is_active": false, "updated_at": now}).Error; err != nil {
 			return err
@@ -979,6 +1003,29 @@ func (s *Service) Remove(ctx context.Context, id string) error {
 		return fmt.Errorf("删除主机失败: %w", err)
 	}
 	return nil
+}
+
+func (s *Service) listEnvironmentIDs(ctx context.Context, hostIDs []string) (map[string][]string, error) {
+	result := make(map[string][]string, len(hostIDs))
+	if len(hostIDs) == 0 {
+		return result, nil
+	}
+	var memberships []model.EnvironmentHost
+	if err := s.db.WithContext(ctx).
+		Where("host_id IN ?", hostIDs).
+		Order("environment_id ASC").
+		Find(&memberships).Error; err != nil {
+		return nil, fmt.Errorf("查询主机所属环境失败: %w", err)
+	}
+	for i := range memberships {
+		result[memberships[i].HostID] = append(result[memberships[i].HostID], memberships[i].EnvironmentID)
+	}
+	for _, hostID := range hostIDs {
+		if result[hostID] == nil {
+			result[hostID] = []string{}
+		}
+	}
+	return result, nil
 }
 
 func (s *Service) replaceCapabilities(

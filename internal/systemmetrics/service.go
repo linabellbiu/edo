@@ -3,6 +3,7 @@ package systemmetrics
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"log/slog"
 	"math"
@@ -30,6 +31,12 @@ type workerStatsProvider interface {
 type queueStatsProvider interface {
 	QueueStats(context.Context, string) (messaging.QueueStats, error)
 }
+
+type deadLetterPurger interface {
+	PurgeDeadLetters(context.Context) (uint64, error)
+}
+
+var ErrDeadLetterQueueUnavailable = errors.New("死信队列暂不可用")
 
 type HostMetrics struct {
 	CPUPercent           float64 `json:"cpu_percent"`
@@ -205,6 +212,20 @@ func (s *Service) Snapshot(ctx context.Context) Snapshot {
 		}
 	}
 	return snapshot
+}
+
+func (s *Service) PurgeDeadLetters(ctx context.Context) (uint64, error) {
+	purger, ok := s.queue.(deadLetterPurger)
+	if !ok {
+		return 0, ErrDeadLetterQueueUnavailable
+	}
+	queueCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	count, err := purger.PurgeDeadLetters(queueCtx)
+	if err != nil {
+		return 0, fmt.Errorf("清空死信队列: %w", err)
+	}
+	return count, nil
 }
 
 func (s *Service) readCPU(ctx context.Context, snapshot *Snapshot) error {

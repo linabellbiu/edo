@@ -21,6 +21,7 @@ type deploymentTargetRequest struct {
 	Name             string                   `json:"name" binding:"required,max=128"`
 	Description      string                   `json:"description" binding:"max=500"`
 	Platform         model.DeploymentPlatform `json:"platform" binding:"required,max=16"`
+	EnvironmentID    string                   `json:"environment_id" binding:"max=36"`
 	HostID           string                   `json:"host_id" binding:"max=36"`
 	RuntimeID        string                   `json:"runtime_id" binding:"max=36"`
 	WorkingDirectory string                   `json:"working_directory" binding:"max=1024"`
@@ -169,8 +170,9 @@ func (h deploymentHandler) writeDeploymentError(c *gin.Context, operation string
 func toDeploymentTargetInput(request deploymentTargetRequest) deployment.TargetInput {
 	return deployment.TargetInput{
 		Name: request.Name, Description: request.Description,
-		Platform: request.Platform,
-		HostID:   request.HostID, RuntimeID: request.RuntimeID, WorkingDirectory: request.WorkingDirectory,
+		Platform:      request.Platform,
+		EnvironmentID: request.EnvironmentID, HostID: request.HostID,
+		RuntimeID: request.RuntimeID, WorkingDirectory: request.WorkingDirectory,
 		Namespace:    request.Namespace,
 		WorkloadName: request.WorkloadName, ContainerName: request.ContainerName,
 		RolloutTimeout: request.RolloutTimeout,

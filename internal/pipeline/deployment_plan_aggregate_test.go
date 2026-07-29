@@ -28,7 +28,7 @@ func TestDeploymentPlanSavesTargetAtomically(t *testing.T) {
 	host := model.Host{
 		ID: "aggregate-host", Name: "聚合方案主机", Mode: model.HostModeSSH,
 		Address: "192.0.2.10", SSHPort: 22, SSHUsername: "deployer",
-		EnvironmentID: environment.ID, IsActive: true, CreatedBy: "admin",
+		IsActive: true, CreatedBy: "admin",
 		CreatedAt: now, UpdatedAt: now,
 	}
 	capability := model.HostCapability{
@@ -41,13 +41,19 @@ func TestDeploymentPlanSavesTargetAtomically(t *testing.T) {
 	if err := db.Create(&host).Error; err != nil {
 		t.Fatal(err)
 	}
+	if err := db.Create(&model.EnvironmentHost{
+		EnvironmentID: environment.ID, HostID: host.ID, CreatedAt: now,
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
 	if err := db.Create(&capability).Error; err != nil {
 		t.Fatal(err)
 	}
 
 	targetInput := deployment.TargetInput{
 		Name: "聚合方案位置", Platform: model.DeploymentSSH,
-		HostID: host.ID, WorkingDirectory: "/srv/app", RolloutTimeout: 120,
+		EnvironmentID: environment.ID, HostID: host.ID,
+		WorkingDirectory: "/srv/app", RolloutTimeout: 120,
 	}
 	plan, err := service.CreateDeploymentPlan(context.Background(), "admin", DeploymentPlanInput{
 		Name: "聚合脚本方案", Kind: model.DeploymentPlanScript,
@@ -78,7 +84,8 @@ func TestDeploymentPlanSavesTargetAtomically(t *testing.T) {
 
 	conflictingTarget := deployment.TargetInput{
 		Name: "冲突事务位置", Platform: model.DeploymentSSH,
-		HostID: host.ID, WorkingDirectory: "/srv/conflict", RolloutTimeout: 120,
+		EnvironmentID: environment.ID, HostID: host.ID,
+		WorkingDirectory: "/srv/conflict", RolloutTimeout: 120,
 	}
 	if _, err := service.CreateDeploymentPlan(context.Background(), "admin", DeploymentPlanInput{
 		Name: plan.Name, Kind: model.DeploymentPlanScript,

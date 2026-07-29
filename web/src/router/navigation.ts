@@ -60,7 +60,7 @@ export const navigation: NavSection[] = [
       { key: 'operations', label: 'nav.operations', icon: Activity, items: [
         { label: 'nav.monitor', path: '/system-monitor', permissions: ['monitor.read'], icon: Activity },
         { label: 'nav.tasks', path: '/operations?section=tasks', permissions: ['task.read'], icon: ListChecks },
-        { label: 'nav.logs', path: '/logs', permissions: ['delivery.read'], icon: FileText },
+        { label: 'nav.logs', path: '/logs', permissions: ['monitor.read'], icon: FileText },
       ] },
       { key: 'security', label: 'nav.security', icon: ShieldCheck, items: [
         { label: 'nav.settings', path: '/settings', permissions: [], icon: Settings },

@@ -76,7 +76,7 @@ var catalog = []Permission{
 	{PermissionConfigManage, "配置", "管理配置及密钥引用"},
 	{PermissionNotificationRead, "通知", "查看通知"},
 	{PermissionNotificationManage, "通知", "管理通知渠道和规则"},
-	{PermissionMonitorRead, "监控", "查看系统性能、监控规则和事件"},
+	{PermissionMonitorRead, "监控", "查看系统性能、运行日志、监控规则和事件"},
 	{PermissionMonitorManage, "监控", "管理监控规则"},
 	{PermissionSchedulerRead, "调度", "查看定时任务"},
 	{PermissionSchedulerManage, "调度", "管理定时任务"},

@@ -38,6 +38,8 @@ var (
 	ErrApplicationNotFound          = errors.New("应用不存在")
 	ErrInvalidBuildPlan             = errors.New("构建方案配置无效")
 	ErrBuildPlanExists              = errors.New("构建方案名称已存在")
+	ErrBuildPlanNotFound            = errors.New("构建方案不存在")
+	ErrBuildPlanInUse               = errors.New("构建方案仍被应用使用，请先更换应用的构建方案")
 	ErrInvalidRegistry              = errors.New("镜像仓库配置无效")
 	ErrInvalidRegistryName          = errors.New("镜像仓库名称格式无效")
 	ErrInvalidRegistryProvider      = errors.New("镜像仓库类型无效")
@@ -659,20 +661,9 @@ func (s *Service) ListBuildPlans(ctx context.Context) ([]model.BuildPlan, error)
 }
 
 func (s *Service) CreateBuildPlan(ctx context.Context, actorID string, input BuildPlanInput) (*model.BuildPlan, error) {
-	input.Name, input.Description = strings.TrimSpace(input.Name), strings.TrimSpace(input.Description)
-	input.Script, input.DockerfilePath = strings.TrimSpace(input.Script), strings.TrimSpace(input.DockerfilePath)
-	input.ContextPath, input.ArtifactPath = strings.TrimSpace(input.ContextPath), strings.TrimSpace(input.ArtifactPath)
-	if input.ContextPath == "" {
-		input.ContextPath = "."
-	}
-	if input.TimeoutSeconds == 0 {
-		input.TimeoutSeconds = 1800
-	}
-	validKind := (input.Kind == model.BuildPlanScript && input.Script != "") ||
-		(input.Kind == model.BuildPlanDockerfile && input.DockerfilePath != "")
-	if !validResourceName(input.Name) || !validKind || input.TimeoutSeconds < 30 || input.TimeoutSeconds > 7200 ||
-		len(input.Script) > 256*1024 || utf8.RuneCountInString(input.Description) > 500 {
-		return nil, ErrInvalidBuildPlan
+	input, err := normalizeBuildPlanInput(input)
+	if err != nil {
+		return nil, err
 	}
 	now := time.Now().UTC()
 	plan := &model.BuildPlan{
@@ -688,6 +679,105 @@ func (s *Service) CreateBuildPlan(ctx context.Context, actorID string, input Bui
 		return nil, fmt.Errorf("创建构建方案失败: %w", err)
 	}
 	return plan, nil
+}
+
+func normalizeBuildPlanInput(input BuildPlanInput) (BuildPlanInput, error) {
+	input.Name, input.Description = strings.TrimSpace(input.Name), strings.TrimSpace(input.Description)
+	input.Script, input.DockerfilePath = strings.TrimSpace(input.Script), strings.TrimSpace(input.DockerfilePath)
+	input.ContextPath, input.ArtifactPath = strings.TrimSpace(input.ContextPath), strings.TrimSpace(input.ArtifactPath)
+	if input.ContextPath == "" {
+		input.ContextPath = "."
+	}
+	if input.TimeoutSeconds == 0 {
+		input.TimeoutSeconds = 1800
+	}
+	switch input.Kind {
+	case model.BuildPlanDockerfile:
+		input.Script = ""
+	case model.BuildPlanScript:
+		input.DockerfilePath = ""
+	}
+	validKind := (input.Kind == model.BuildPlanScript && input.Script != "") ||
+		(input.Kind == model.BuildPlanDockerfile && input.DockerfilePath != "")
+	if !validResourceName(input.Name) || !validKind || input.TimeoutSeconds < 30 || input.TimeoutSeconds > 7200 ||
+		len(input.Script) > 256*1024 || utf8.RuneCountInString(input.Description) > 500 ||
+		len(input.DockerfilePath) > 512 || len(input.ContextPath) > 512 || len(input.ArtifactPath) > 512 {
+		return input, ErrInvalidBuildPlan
+	}
+	return input, nil
+}
+
+func (s *Service) UpdateBuildPlan(ctx context.Context, id string, input BuildPlanInput) (*model.BuildPlan, error) {
+	input, err := normalizeBuildPlanInput(input)
+	if err != nil {
+		return nil, err
+	}
+	var existing model.BuildPlan
+	if err := s.db.WithContext(ctx).First(&existing, "id = ?", id).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, ErrBuildPlanNotFound
+		}
+		return nil, fmt.Errorf("读取待更新构建方案失败: %w", err)
+	}
+	result := s.db.WithContext(ctx).Model(&model.BuildPlan{}).Where("id = ?", id).Updates(map[string]any{
+		"name": input.Name, "kind": input.Kind, "description": input.Description,
+		"script": input.Script, "dockerfile_path": input.DockerfilePath, "context_path": input.ContextPath,
+		"artifact_path": input.ArtifactPath, "timeout_seconds": input.TimeoutSeconds, "updated_at": time.Now().UTC(),
+	})
+	if result.Error != nil {
+		err = result.Error
+		if errors.Is(err, gorm.ErrDuplicatedKey) {
+			return nil, ErrBuildPlanExists
+		}
+		return nil, fmt.Errorf("更新构建方案失败: %w", err)
+	}
+	var plan model.BuildPlan
+	if err := s.db.WithContext(ctx).First(&plan, "id = ?", id).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, ErrBuildPlanNotFound
+		}
+		return nil, fmt.Errorf("读取更新后的构建方案失败: %w", err)
+	}
+	return &plan, nil
+}
+
+func (s *Service) SetBuildPlanActive(ctx context.Context, id string, active bool) error {
+	var plan model.BuildPlan
+	if err := s.db.WithContext(ctx).First(&plan, "id = ?", id).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return ErrBuildPlanNotFound
+		}
+		return fmt.Errorf("读取待修改状态的构建方案失败: %w", err)
+	}
+	result := s.db.WithContext(ctx).Model(&model.BuildPlan{}).Where("id = ?", id).
+		Updates(map[string]any{"is_active": active, "updated_at": time.Now().UTC()})
+	if result.Error != nil {
+		return fmt.Errorf("修改构建方案状态失败: %w", result.Error)
+	}
+	return nil
+}
+
+func (s *Service) DeleteBuildPlan(ctx context.Context, id string) error {
+	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var plan model.BuildPlan
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&plan, "id = ?", id).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return ErrBuildPlanNotFound
+			}
+			return fmt.Errorf("读取待删除构建方案失败: %w", err)
+		}
+		var applicationCount int64
+		if err := tx.Model(&model.Application{}).Where("build_plan_id = ?", plan.ID).Count(&applicationCount).Error; err != nil {
+			return fmt.Errorf("检查构建方案应用关联失败: %w", err)
+		}
+		if applicationCount > 0 {
+			return ErrBuildPlanInUse
+		}
+		if err := tx.Delete(&plan).Error; err != nil {
+			return fmt.Errorf("删除构建方案失败: %w", err)
+		}
+		return nil
+	})
 }
 
 func (s *Service) ListRegistries(ctx context.Context) ([]model.ImageRegistry, error) {

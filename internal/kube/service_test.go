@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -58,22 +59,10 @@ func TestSafeKubeconfigRejectsCommandAndFileReferences(t *testing.T) {
 }
 
 func TestKubeconfigIsEncrypted(t *testing.T) {
-	ctx := context.Background()
-	db, err := database.Open(ctx, config.Database{
-		Driver: "sqlite", DSN: "file:kube_cluster_test?mode=memory&cache=shared",
-		MaxOpenConns: 1, MaxIdleConns: 1, ConnMaxLifetime: time.Minute,
-	}, slog.New(slog.NewTextHandler(io.Discard, nil)))
-	if err != nil {
-		t.Fatalf("打开 Kubernetes 测试数据库失败: %v", err)
-	}
-	defer database.Close(db)
-	if err := database.Migrate(ctx, db); err != nil {
-		t.Fatalf("迁移 Kubernetes 测试数据库失败: %v", err)
-	}
-	manager, _ := secret.New(base64.StdEncoding.EncodeToString([]byte("0123456789abcdef0123456789abcdef")))
-	service := NewService(db, manager, config.Runtime{ConnectTimeout: time.Second, RequestTimeout: time.Second})
-	value := safeKubeconfig
-	cluster, err := service.Create(ctx, "admin", Input{
+	server := newKubeVersionServer(t)
+	service := newKubeTestService(t, time.Second)
+	value := kubeconfigForServer(server)
+	cluster, err := service.Create(context.Background(), "admin", Input{
 		Name: "production", Mode: model.KubernetesKubeconfig,
 		DefaultNamespace: "default", Kubeconfig: &value,
 	})
@@ -82,6 +71,52 @@ func TestKubeconfigIsEncrypted(t *testing.T) {
 	}
 	if cluster.KubeconfigCiphertext == "" || strings.Contains(cluster.KubeconfigCiphertext, "test-token") {
 		t.Fatal("kubeconfig 未加密存储")
+	}
+}
+
+func TestConnectionUsesUnsavedConfigWithoutPersistingIt(t *testing.T) {
+	server := newKubeVersionServer(t)
+	service := newKubeTestService(t, time.Second)
+	kubeconfig := kubeconfigForServer(server)
+
+	result, err := service.Test(context.Background(), Input{
+		Name: "preview", Mode: model.KubernetesKubeconfig,
+		DefaultNamespace: "default", Kubeconfig: &kubeconfig,
+	})
+	if err != nil {
+		t.Fatalf("测试未保存的 Kubernetes 连接失败: %v", err)
+	}
+	if result.APIServer != server.URL || result.Version != "v1.32.4" {
+		t.Fatalf("Kubernetes 连接测试结果不正确: %+v", result)
+	}
+	var count int64
+	if err := service.db.Model(&model.KubernetesCluster{}).Count(&count).Error; err != nil {
+		t.Fatalf("查询 Kubernetes 集群数量失败: %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("连接测试不应保存集群，实际保存 %d 条", count)
+	}
+}
+
+func TestCreateRejectsUnreachableClusterWithoutPersistingIt(t *testing.T) {
+	server := newKubeVersionServer(t)
+	kubeconfig := kubeconfigForServer(server)
+	server.Close()
+	service := newKubeTestService(t, 150*time.Millisecond)
+
+	_, err := service.Create(context.Background(), "admin", Input{
+		Name: "unreachable", Mode: model.KubernetesKubeconfig,
+		DefaultNamespace: "default", Kubeconfig: &kubeconfig,
+	})
+	if !errors.Is(err, ErrClusterUnreachable) {
+		t.Fatalf("不可连接的 Kubernetes 集群未被拒绝: %v", err)
+	}
+	var count int64
+	if err := service.db.Model(&model.KubernetesCluster{}).Count(&count).Error; err != nil {
+		t.Fatalf("查询 Kubernetes 集群数量失败: %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("连接失败后不应保存集群，实际保存 %d 条", count)
 	}
 }
 
@@ -110,7 +145,13 @@ func TestPingReadsServerVersion(t *testing.T) {
 func TestPingHonorsContextDeadline(t *testing.T) {
 	requestStarted := make(chan struct{}, 1)
 	requestCanceled := make(chan struct{}, 1)
-	server := httptest.NewTLSServer(http.HandlerFunc(func(_ http.ResponseWriter, request *http.Request) {
+	var requests atomic.Int32
+	server := httptest.NewTLSServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		if requests.Add(1) == 1 {
+			response.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(response, `{"gitVersion":"v1.32.4"}`)
+			return
+		}
 		requestStarted <- struct{}{}
 		<-request.Context().Done()
 		requestCanceled <- struct{}{}
@@ -165,8 +206,34 @@ func newKubeTestService(t *testing.T, requestTimeout time.Duration) *Service {
 
 func createKubeTestCluster(t *testing.T, service *Service, server *httptest.Server) string {
 	t.Helper()
+	kubeconfig := kubeconfigForServer(server)
+	cluster, err := service.Create(context.Background(), "admin", Input{
+		Name: "test-cluster", Mode: model.KubernetesKubeconfig,
+		DefaultNamespace: "default", Kubeconfig: &kubeconfig,
+	})
+	if err != nil {
+		t.Fatalf("创建 Kubernetes 测试集群失败: %v", err)
+	}
+	return cluster.ID
+}
+
+func newKubeVersionServer(t *testing.T) *httptest.Server {
+	t.Helper()
+	server := httptest.NewTLSServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != "/version" {
+			http.NotFound(response, request)
+			return
+		}
+		response.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(response, `{"gitVersion":"v1.32.4"}`)
+	}))
+	t.Cleanup(server.Close)
+	return server
+}
+
+func kubeconfigForServer(server *httptest.Server) string {
 	certificate := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: server.Certificate().Raw})
-	kubeconfig := fmt.Sprintf(`apiVersion: v1
+	return fmt.Sprintf(`apiVersion: v1
 kind: Config
 clusters:
 - name: test
@@ -184,12 +251,4 @@ contexts:
     user: zrt
 current-context: test
 `, server.URL, base64.StdEncoding.EncodeToString(certificate))
-	cluster, err := service.Create(context.Background(), "admin", Input{
-		Name: "test-cluster", Mode: model.KubernetesKubeconfig,
-		DefaultNamespace: "default", Kubeconfig: &kubeconfig,
-	})
-	if err != nil {
-		t.Fatalf("创建 Kubernetes 测试集群失败: %v", err)
-	}
-	return cluster.ID
 }

@@ -187,6 +187,40 @@ func (n *NATS) QueueStats(ctx context.Context, consumerName string) (QueueStats,
 	return stats, nil
 }
 
+// PurgeDeadLetters 只清理配置的死信主题，不删除 Stream，也不会影响正常任务队列。
+func (n *NATS) PurgeDeadLetters(ctx context.Context) (uint64, error) {
+	if !n.conn.IsConnected() {
+		return 0, fmt.Errorf("NATS 连接当前不可用")
+	}
+	purgeCtx, cancel := context.WithTimeout(ctx, n.config.Timeout)
+	defer cancel()
+	stream, err := n.js.Stream(purgeCtx, n.config.DeadStream)
+	if err != nil {
+		return 0, fmt.Errorf("读取 NATS 死信 Stream 失败: %w", err)
+	}
+	purged, err := purgeDeadLetterStream(purgeCtx, stream, n.config.DeadSubject)
+	if err != nil {
+		return 0, fmt.Errorf("清空 NATS 死信 Stream 失败: %w", err)
+	}
+	return purged, nil
+}
+
+type deadLetterStream interface {
+	Info(context.Context, ...jetstream.StreamInfoOpt) (*jetstream.StreamInfo, error)
+	Purge(context.Context, ...jetstream.StreamPurgeOpt) error
+}
+
+func purgeDeadLetterStream(ctx context.Context, stream deadLetterStream, subject string) (uint64, error) {
+	info, err := stream.Info(ctx)
+	if err != nil {
+		return 0, err
+	}
+	if err := stream.Purge(ctx, jetstream.WithPurgeSubject(subject)); err != nil {
+		return 0, err
+	}
+	return info.State.Msgs, nil
+}
+
 func (n *NATS) Close() error {
 	if err := n.conn.Drain(); err != nil {
 		n.conn.Close()

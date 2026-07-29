@@ -2,10 +2,11 @@
 import { computed, onMounted, reactive, ref } from 'vue'
 import { message } from 'ant-design-vue'
 import { Box, ChevronRight, Clock3, FileCode2, FolderOpen, MapPin, Plus, RefreshCw } from 'lucide-vue-next'
+import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
 
 import client from '@/api/client'
-import { listEnvironments, listHosts, type InfrastructureEnvironment, type InfrastructureHost } from '@/api/infrastructure'
+import { environmentIDsOf, listEnvironments, listHosts, type InfrastructureEnvironment, type InfrastructureHost } from '@/api/infrastructure'
 import { apiErrorMessage, type ResourceRecord } from '@/api/resources'
 import PageToolbar from '@/components/PageToolbar.vue'
 import RuntimeBrandIcon from '@/components/RuntimeBrandIcon.vue'
@@ -17,6 +18,7 @@ type Platform = 'ssh' | 'docker' | 'kubernetes'
 interface DeploymentTarget {
   id: string
   platform: Platform
+  environment_id: string
   host_id: string
   runtime_id: string
   working_directory: string
@@ -57,6 +59,7 @@ interface DeploymentDraft {
   helm_chart: string
   helm_values: string
   compose_file: string
+  environment_id: string
   host_id: string
   working_directory: string
   runtime_id: string
@@ -66,6 +69,7 @@ interface DeploymentDraft {
 }
 
 const auth = useAuthStore()
+const { t } = useI18n()
 const route = useRoute()
 const router = useRouter()
 const plans = ref<DeploymentPlan[]>([])
@@ -89,6 +93,7 @@ const form = reactive({
   helm_chart: '',
   helm_values: '',
   compose_file: 'docker-compose.yml',
+  environment_id: '',
   host_id: '',
   working_directory: '',
   runtime_id: '',
@@ -117,13 +122,15 @@ const runtimeOptions = computed(() => (platform.value === 'docker' ? docker.valu
     value: item.id,
     label: `${item.name} · ${item.local ? '本地 Docker' : item.host || item.api_server || '集群内连接'}`,
   })))
+const sshEnvironmentOptions = computed(() => environments.value
+  .filter(environment => environment.is_active)
+  .map(environment => ({ value: environment.id, label: environment.name })))
 const sshHostOptions = computed(() => hosts.value
-  .filter(host => host.is_active && Boolean(host.environment_id) &&
-    environmentByID.value.get(host.environment_id || '')?.is_active &&
+  .filter(host => host.is_active && environmentIDsOf(host).includes(form.environment_id) &&
     host.capabilities.some(capability => capability.kind === (host.mode === 'local' ? 'local_exec' : 'ssh') && capability.status === 'ready'))
   .map(host => ({
     value: host.id,
-    label: `${host.name} · ${environmentByID.value.get(host.environment_id || '')?.name || '未知环境'} · ${host.mode === 'local' ? '本地' : `${host.address}:${host.ssh_port}`}`,
+    label: `${host.name} · ${host.mode === 'local' ? '本地' : `${host.address}:${host.ssh_port}`}`,
   })))
 
 function planPlatform(kind: PlanKind): Platform {
@@ -147,7 +154,11 @@ function runtimeOf(plan: DeploymentPlan) {
 function destinationName(plan: DeploymentPlan) {
   const target = targetOf(plan)
   if (!target) return '尚未配置部署到'
-  if (target.platform === 'ssh') return hostByID.value.get(target.host_id)?.name || '主机不可用'
+  if (target.platform === 'ssh') {
+    const hostName = hostByID.value.get(target.host_id)?.name || '主机不可用'
+    const environmentName = environmentByID.value.get(target.environment_id)?.name
+    return environmentName ? `${environmentName} / ${hostName}` : hostName
+  }
   return runtimeOf(plan)?.name || (target.platform === 'docker' ? 'Docker 连接不可用' : 'Kubernetes 集群不可用')
 }
 
@@ -191,7 +202,7 @@ function executionFile(plan: DeploymentPlan) {
 function reset() {
   Object.assign(form, {
     name: '', description: '', kind: 'docker', script: '', helm_chart: '', helm_values: '',
-    compose_file: 'docker-compose.yml', host_id: '', working_directory: '', runtime_id: '',
+    compose_file: 'docker-compose.yml', environment_id: '', host_id: '', working_directory: '', runtime_id: '',
     namespace: 'default', workload_name: '', container_name: '', timeout_seconds: 600,
   })
   for (const kind of kindOptions) delete deploymentDrafts[kind.value]
@@ -243,6 +254,7 @@ function edit(plan: DeploymentPlan) {
     helm_chart: plan.helm_chart || '',
     helm_values: plan.helm_values || '',
     compose_file: plan.compose_file || 'docker-compose.yml',
+    environment_id: target?.environment_id || '',
     host_id: target?.host_id || '',
     working_directory: target?.working_directory || '',
     runtime_id: target?.runtime_id || '',
@@ -262,6 +274,7 @@ function currentDeploymentDraft(): DeploymentDraft {
     helm_chart: form.helm_chart,
     helm_values: form.helm_values,
     compose_file: form.compose_file,
+    environment_id: form.environment_id,
     host_id: form.host_id,
     working_directory: form.working_directory,
     runtime_id: form.runtime_id,
@@ -281,6 +294,7 @@ function emptyDeploymentDraft(kind: PlanKind): DeploymentDraft {
     helm_chart: '',
     helm_values: '',
     compose_file: kind === 'compose' ? 'docker-compose.yml' : '',
+    environment_id: '',
     host_id: '',
     working_directory: '',
     runtime_id: '',
@@ -294,17 +308,22 @@ function changeKind(kind: PlanKind) {
   if (kind === form.kind) return
   const previousKind = form.kind
   rememberDeploymentDraft(previousKind)
-  let next = deploymentDrafts[kind]
-  if (!next) {
-    next = emptyDeploymentDraft(kind)
-    if ((kind === 'docker' || kind === 'compose') && (previousKind === 'docker' || previousKind === 'compose')) {
-      const previous = deploymentDrafts[previousKind]
-      next.runtime_id = previous?.runtime_id || ''
-      next.workload_name = previous?.workload_name || ''
-    }
-  }
+  const next = deploymentDrafts[kind] || emptyDeploymentDraft(kind)
   form.kind = kind
   Object.assign(form, next)
+}
+
+function changeSSHEnvironment(environmentID: unknown) {
+  const nextEnvironmentID = typeof environmentID === 'string' ? environmentID : ''
+  form.environment_id = nextEnvironmentID
+  if (!form.host_id) return
+  const host = hostByID.value.get(form.host_id)
+  if (!host || !environmentIDsOf(host).includes(nextEnvironmentID)) form.host_id = ''
+}
+
+function hostBelongsToEnvironment(hostID: string, environmentID: string) {
+  const host = hostByID.value.get(hostID)
+  return Boolean(host && environmentIDsOf(host).includes(environmentID))
 }
 
 function validWorkingDirectory(value: string) {
@@ -316,7 +335,9 @@ function validWorkingDirectory(value: string) {
 
 function validate() {
   if (!form.name.trim()) return '请输入方案名称'
+  if (form.kind === 'script' && !form.environment_id) return t('environment.deployment.environmentRequired')
   if (form.kind === 'script' && !form.host_id) return '请选择执行部署脚本的主机'
+  if (form.kind === 'script' && !hostBelongsToEnvironment(form.host_id, form.environment_id)) return t('environment.deployment.membershipInvalid')
   if (form.kind === 'script' && !form.script.trim()) return '请输入部署脚本'
   if (form.kind === 'script' && !validWorkingDirectory(form.working_directory)) return '工作目录必须是规范化绝对路径，或留空使用执行用户主目录'
   if ((form.kind === 'docker' || form.kind === 'compose') && !form.runtime_id) return '请选择 Docker 连接'
@@ -331,16 +352,20 @@ function validate() {
 function savedTargetMatchesForm(plan: DeploymentPlan) {
   const target = plan.deployment_target
   if (!plan.deployment_target_id || !target || target.id !== plan.deployment_target_id || target.platform !== platform.value) return false
-  if (platform.value === 'ssh') return target.host_id === form.host_id
+  if (platform.value === 'ssh') return target.environment_id === form.environment_id && target.host_id === form.host_id
   return target.runtime_id === form.runtime_id
 }
 
 async function testConnection() {
-  const validationMessage = platform.value === 'ssh' && !form.host_id
-    ? '请选择主机'
-    : platform.value !== 'ssh' && !form.runtime_id
-      ? `请选择${platform.value === 'docker' ? ' Docker 连接' : ' Kubernetes 集群'}`
-      : ''
+  const validationMessage = platform.value === 'ssh' && !form.environment_id
+    ? t('environment.deployment.environmentRequired')
+    : platform.value === 'ssh' && !form.host_id
+      ? '请选择主机'
+      : platform.value === 'ssh' && !hostBelongsToEnvironment(form.host_id, form.environment_id)
+        ? t('environment.deployment.membershipInvalid')
+        : platform.value !== 'ssh' && !form.runtime_id
+          ? `请选择${platform.value === 'docker' ? ' Docker 连接' : ' Kubernetes 集群'}`
+          : ''
   if (validationMessage) {
     message.error(validationMessage)
     return
@@ -376,6 +401,7 @@ async function save() {
       name: form.name.trim(),
       description: form.description.trim(),
       platform: platform.value,
+      environment_id: platform.value === 'ssh' ? form.environment_id : '',
       host_id: platform.value === 'ssh' ? form.host_id : '',
       working_directory: platform.value === 'ssh' ? form.working_directory.trim() : '',
       runtime_id: platform.value === 'ssh' ? '' : form.runtime_id,
@@ -481,14 +507,38 @@ onMounted(refresh)
         <div class="form-section">
           <header><b>3</b><div><strong>部署到哪里</strong><small>选择实际执行部署的主机、Docker 连接或 Kubernetes 集群。</small></div></header>
           <div class="form-grid">
-            <a-form-item v-if="platform === 'ssh'" class="span-2" label="主机" required>
+            <a-form-item v-if="platform === 'ssh'" :label="t('environment.deployment.environment')" required>
+              <a-select
+                v-model:value="form.environment_id"
+                show-search
+                :disabled="!canReadInfrastructure"
+                :options="sshEnvironmentOptions"
+                :placeholder="t('environment.deployment.environmentPlaceholder')"
+                @change="changeSSHEnvironment"
+              />
+            </a-form-item>
+            <a-form-item v-if="platform === 'ssh'" label="主机" required>
               <div class="resource-select">
-                <a-select v-model:value="form.host_id" show-search :disabled="!canReadInfrastructure" :options="sshHostOptions" placeholder="选择可以执行部署脚本的主机" />
+                <a-select
+                  v-model:value="form.host_id"
+                  show-search
+                  :disabled="!canReadInfrastructure || !form.environment_id"
+                  :options="sshHostOptions"
+                  :placeholder="t('environment.deployment.hostPlaceholder')"
+                />
                 <a-button v-if="auth.canAny(['cluster.manage'])" aria-label="创建主机" title="创建主机" @click="router.push('/hosts?create=1')">＋</a-button>
               </div>
             </a-form-item>
             <a-form-item v-else class="span-2" :label="platform === 'docker' ? 'Docker 连接' : 'Kubernetes 集群'" required>
-              <a-select v-model:value="form.runtime_id" show-search :disabled="!canReadInfrastructure" :options="runtimeOptions" :placeholder="platform === 'docker' ? '选择 Docker 连接' : '选择 Kubernetes 集群'" />
+              <div :class="{ 'resource-select': platform === 'kubernetes' && auth.canAny(['cluster.manage']) }">
+                <a-select v-model:value="form.runtime_id" show-search :disabled="!canReadInfrastructure" :options="runtimeOptions" :placeholder="platform === 'docker' ? '选择 Docker 连接' : '选择 Kubernetes 集群'" />
+                <a-button
+                  v-if="platform === 'kubernetes' && auth.canAny(['cluster.manage'])"
+                  :aria-label="t('kubernetesCluster.action.add')"
+                  :title="t('kubernetesCluster.action.add')"
+                  @click="router.push('/hosts?create=kubernetes')"
+                ><Plus :size="15" /></a-button>
+              </div>
             </a-form-item>
 
             <a-form-item v-if="platform === 'ssh'" class="span-2" label="工作目录">

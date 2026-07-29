@@ -90,7 +90,12 @@ func TestRunHostDeploymentScriptExecutesLocalSnapshot(t *testing.T) {
 		t.Fatalf("创建本地命令测试环境失败: %v", err)
 	}
 	if err := db.Model(&model.Host{}).Where("id = ?", model.BuiltinLocalHostID).
-		Updates(map[string]any{"environment_id": environment.ID, "is_active": true}).Error; err != nil {
+		Update("is_active", true).Error; err != nil {
+		t.Fatalf("绑定本地主机测试环境失败: %v", err)
+	}
+	if err := db.Create(&model.EnvironmentHost{
+		EnvironmentID: environment.ID, HostID: model.BuiltinLocalHostID, CreatedAt: now,
+	}).Error; err != nil {
 		t.Fatalf("绑定本地主机测试环境失败: %v", err)
 	}
 	capability := model.HostCapability{

@@ -31,6 +31,7 @@ var (
 	ErrClusterNotFound    = errors.New("Kubernetes 集群不存在")
 	ErrUnsafeKubeconfig   = errors.New("kubeconfig 包含不允许的外部命令、文件引用或身份模拟配置")
 	ErrKubeconfigRequired = errors.New("请提供 kubeconfig")
+	ErrClusterUnreachable = errors.New("无法连接 Kubernetes API，请检查集群凭据和网络")
 )
 
 var clusterNamePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_. -]{1,127}$`)
@@ -40,6 +41,11 @@ type Input struct {
 	Mode             model.KubernetesMode
 	DefaultNamespace string
 	Kubeconfig       *string
+}
+
+type ConnectionTest struct {
+	APIServer string `json:"api_server"`
+	Version   string `json:"version"`
 }
 
 type Pod struct {
@@ -111,6 +117,9 @@ func (s *Service) Create(ctx context.Context, actorID string, input Input) (*mod
 	if err != nil {
 		return nil, err
 	}
+	if _, err := s.Test(ctx, input); err != nil {
+		return nil, err
+	}
 	now := time.Now().UTC()
 	cluster := &model.KubernetesCluster{
 		ID: id, Name: name, Mode: input.Mode, APIServer: apiServer,
@@ -124,6 +133,46 @@ func (s *Service) Create(ctx context.Context, actorID string, input Input) (*mod
 		return nil, fmt.Errorf("创建 Kubernetes 集群失败: %w", err)
 	}
 	return cluster, nil
+}
+
+// Test 使用尚未保存的连接配置访问 Kubernetes API，不写入 kubeconfig 或集群记录。
+func (s *Service) Test(ctx context.Context, input Input) (*ConnectionTest, error) {
+	name := strings.TrimSpace(input.Name)
+	if !clusterNamePattern.MatchString(name) || utf8.RuneCountInString(name) > 128 {
+		return nil, ErrInvalidCluster
+	}
+	if _, err := normalizeNamespace(input.DefaultNamespace); err != nil {
+		return nil, err
+	}
+	restConfig, err := restConfigFromInput(input)
+	if err != nil {
+		return nil, err
+	}
+	s.configureRESTConfig(restConfig)
+
+	requestContext := ctx
+	cancel := func() {}
+	if s.config.ConnectTimeout > 0 {
+		requestContext, cancel = context.WithTimeout(ctx, s.config.ConnectTimeout)
+	}
+	defer cancel()
+
+	clientset, err := kubernetes.NewForConfig(restConfig)
+	if err != nil {
+		return nil, fmt.Errorf("%w: 初始化 Kubernetes 客户端失败: %w", ErrClusterUnreachable, err)
+	}
+	body, err := clientset.Discovery().RESTClient().Get().AbsPath("/version").Do(requestContext).Raw()
+	if err != nil {
+		return nil, fmt.Errorf("%w: 请求 Kubernetes API %q 失败: %w", ErrClusterUnreachable, restConfig.Host, err)
+	}
+	var info version.Info
+	if err := json.Unmarshal(body, &info); err != nil || strings.TrimSpace(info.GitVersion) == "" {
+		if err == nil {
+			err = errors.New("版本字段为空")
+		}
+		return nil, fmt.Errorf("%w: 解析 Kubernetes API 版本失败: %w", ErrClusterUnreachable, err)
+	}
+	return &ConnectionTest{APIServer: restConfig.Host, Version: info.GitVersion}, nil
 }
 
 func (s *Service) Update(ctx context.Context, id string, input Input) (*model.KubernetesCluster, error) {
@@ -293,11 +342,15 @@ func (s *Service) RESTConfig(ctx context.Context, id string) (*rest.Config, erro
 	if err != nil {
 		return nil, fmt.Errorf("加载 Kubernetes 连接配置失败: %w", err)
 	}
+	s.configureRESTConfig(result)
+	return result, nil
+}
+
+func (s *Service) configureRESTConfig(result *rest.Config) {
 	result.Timeout = s.config.RequestTimeout
 	result.QPS = 20
 	result.Burst = 40
 	result.UserAgent = "zrt"
-	return result, nil
 }
 
 func (s *Service) normalize(
@@ -376,6 +429,28 @@ func safeRESTConfig(data []byte) (*rest.Config, error) {
 		return nil, ErrInvalidCluster
 	}
 	return result, nil
+}
+
+func restConfigFromInput(input Input) (*rest.Config, error) {
+	switch input.Mode {
+	case model.KubernetesInCluster:
+		result, err := rest.InClusterConfig()
+		if err != nil {
+			return nil, fmt.Errorf("%w: 读取集群内连接配置失败: %w", ErrClusterUnreachable, err)
+		}
+		return result, nil
+	case model.KubernetesKubeconfig:
+		if input.Kubeconfig == nil {
+			return nil, ErrKubeconfigRequired
+		}
+		value := strings.TrimSpace(*input.Kubeconfig)
+		if value == "" || len(value) > 1024*1024 {
+			return nil, ErrKubeconfigRequired
+		}
+		return safeRESTConfig([]byte(value))
+	default:
+		return nil, ErrInvalidCluster
+	}
 }
 
 func normalizeNamespace(value string) (string, error) {

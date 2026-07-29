@@ -213,6 +213,21 @@ func (h clusterHandler) listKubernetesClusters(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"clusters": response})
 }
 
+func (h clusterHandler) testKubernetesCluster(c *gin.Context) {
+	var request kubernetesClusterRequest
+	if err := c.ShouldBindJSON(&request); err != nil {
+		h.logger.Warn("测试 Kubernetes 集群参数无效", "operation", "kubernetes_cluster_test_bind", "request_id", requestIDFrom(c), "err", err)
+		writeError(c, http.StatusBadRequest, "invalid_request", kube.ErrInvalidCluster.Error())
+		return
+	}
+	result, err := h.kube.Test(c.Request.Context(), toKubernetesInput(request))
+	if err != nil {
+		h.writeKubernetesError(c, "kubernetes_cluster_test_input", err)
+		return
+	}
+	c.JSON(http.StatusOK, result)
+}
+
 func (h clusterHandler) createKubernetesCluster(c *gin.Context) {
 	var request kubernetesClusterRequest
 	if err := c.ShouldBindJSON(&request); err != nil {
@@ -337,6 +352,8 @@ func (h clusterHandler) writeKubernetesError(c *gin.Context, operation string, e
 		writeError(c, http.StatusBadRequest, "unsafe_kubeconfig", kube.ErrUnsafeKubeconfig.Error())
 	case errors.Is(err, kube.ErrKubeconfigRequired):
 		writeError(c, http.StatusBadRequest, "kubeconfig_required", kube.ErrKubeconfigRequired.Error())
+	case errors.Is(err, kube.ErrClusterUnreachable):
+		writeError(c, http.StatusBadGateway, "kubernetes_unreachable", kube.ErrClusterUnreachable.Error())
 	case errors.Is(err, kube.ErrClusterExists):
 		writeError(c, http.StatusConflict, "kubernetes_cluster_exists", kube.ErrClusterExists.Error())
 	case errors.Is(err, kube.ErrClusterNotFound):

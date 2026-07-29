@@ -571,7 +571,7 @@ func (s *Service) normalizeTarget(ctx context.Context, input TargetInput) (Targe
 	}
 	switch input.Platform {
 	case model.DeploymentSSH:
-		if input.HostID == "" {
+		if input.HostID == "" || input.EnvironmentID == "" {
 			return TargetInput{}, ErrInvalidTarget
 		}
 		if input.WorkingDirectory != "" && !validWorkingDirectory(input.WorkingDirectory) {
@@ -580,7 +580,7 @@ func (s *Service) normalizeTarget(ctx context.Context, input TargetInput) (Targe
 		var host model.Host
 		if err := s.db.WithContext(ctx).First(&host,
 			"id = ? AND is_active = ?", input.HostID, true,
-		).Error; err != nil || host.EnvironmentID == "" {
+		).Error; err != nil {
 			return TargetInput{}, ErrInvalidTarget
 		}
 		capabilityKind := model.HostCapabilitySSH
@@ -604,7 +604,12 @@ func (s *Service) normalizeTarget(ctx context.Context, input TargetInput) (Targe
 			return TargetInput{}, ErrInvalidTarget
 		}
 		var environment model.Environment
-		if err := s.db.WithContext(ctx).Select("id").First(&environment, "id = ? AND is_active = ?", host.EnvironmentID, true).Error; err != nil {
+		if err := s.db.WithContext(ctx).Select("environments.id").
+			Joins("JOIN environment_hosts AS membership ON membership.environment_id = environments.id").
+			First(&environment,
+				"environments.id = ? AND environments.is_active = ? AND membership.host_id = ?",
+				input.EnvironmentID, true, host.ID,
+			).Error; err != nil {
 			return TargetInput{}, ErrInvalidTarget
 		}
 		input.EnvironmentID = environment.ID

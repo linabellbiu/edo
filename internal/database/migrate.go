@@ -249,6 +249,54 @@ var migrations = []migration{
 		version: "202607290037",
 		up:      backfillDeploymentPlanTargets,
 	},
+	{
+		version: "202607290038",
+		up: func(tx *gorm.DB) error {
+			return tx.AutoMigrate(&model.BuildPlan{})
+		},
+	},
+	{
+		version: "202607290039",
+		up:      migrateEnvironmentHosts,
+	},
+}
+
+func migrateEnvironmentHosts(tx *gorm.DB) error {
+	if err := tx.AutoMigrate(&model.EnvironmentHost{}); err != nil {
+		return err
+	}
+	if !tx.Migrator().HasTable(&model.Host{}) || !tx.Migrator().HasColumn(&model.Host{}, "EnvironmentID") {
+		return nil
+	}
+	var legacy []struct {
+		HostID        string    `gorm:"column:host_id"`
+		EnvironmentID string    `gorm:"column:environment_id"`
+		CreatedAt     time.Time `gorm:"column:created_at"`
+	}
+	if err := tx.Model(&model.Host{}).
+		Select("id AS host_id", "environment_id", "created_at").
+		Where("environment_id <> ''").
+		Scan(&legacy).Error; err != nil {
+		return err
+	}
+	for i := range legacy {
+		createdAt := legacy[i].CreatedAt
+		if createdAt.IsZero() {
+			createdAt = time.Now().UTC()
+		}
+		membership := model.EnvironmentHost{
+			EnvironmentID: legacy[i].EnvironmentID,
+			HostID:        legacy[i].HostID,
+			CreatedAt:     createdAt,
+		}
+		if err := tx.Where(
+			"environment_id = ? AND host_id = ?", membership.EnvironmentID, membership.HostID,
+		).FirstOrCreate(&membership).Error; err != nil {
+			return err
+		}
+	}
+	// 旧单值列必须清空，避免后续代码或外部工具把它误认为权威关系。
+	return tx.Model(&model.Host{}).Where("environment_id <> ''").Update("environment_id", "").Error
 }
 
 func migrateDeploymentPlanTargets(tx *gorm.DB) error {
