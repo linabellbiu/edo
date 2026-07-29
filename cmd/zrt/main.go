@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/bsm/redislock"
+	"github.com/joho/godotenv"
 	"golang.org/x/term"
 	"gorm.io/gorm"
 
@@ -68,12 +69,6 @@ func main() {
 }
 
 func run() error {
-	cfg, err := config.Load()
-	if err != nil {
-		return fmt.Errorf("加载配置失败: %w", err)
-	}
-	logger, runtimeLogs := logging.NewRuntime(cfg.LogLevel)
-	slog.SetDefault(logger)
 	command := "server"
 	if len(os.Args) > 1 {
 		command = os.Args[1]
@@ -82,6 +77,15 @@ func run() error {
 		fmt.Printf("ZRT %s\n", version)
 		return nil
 	}
+	if err := loadRuntimeEnvironmentFile(".env"); err != nil {
+		return err
+	}
+	cfg, err := config.Load()
+	if err != nil {
+		return fmt.Errorf("加载配置失败: %w", err)
+	}
+	logger, runtimeLogs := logging.NewRuntime(cfg.LogLevel)
+	slog.SetDefault(logger)
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
@@ -97,6 +101,13 @@ func run() error {
 	default:
 		return fmt.Errorf("未知启动命令 %q，可用命令: server、migrate、admin、legacy-import、version", command)
 	}
+}
+
+func loadRuntimeEnvironmentFile(path string) error {
+	if err := godotenv.Load(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("读取 .env 失败: %w", err)
+	}
+	return nil
 }
 
 func runAdmin(ctx context.Context, cfg config.Config, logger *slog.Logger, args []string) error {
@@ -370,6 +381,16 @@ func runMigrate(ctx context.Context, cfg config.Config, logger *slog.Logger) err
 }
 
 func runServer(ctx context.Context, cfg config.Config, logger *slog.Logger, runtimeLogs *logging.RuntimeController) error {
+	secretManager, err := secret.New(cfg.Secrets.Key)
+	if err != nil {
+		logger.Error("初始化基础设施密钥管理器失败", "operation", "secret_bootstrap", "err", err)
+		return errors.New("密钥服务初始化失败")
+	}
+	if !secretManager.Available() {
+		logger.Error("服务加密密钥未配置", "operation", "secret_bootstrap")
+		return errors.New("请配置 ZRT_SECRETS_KEY 后重新启动")
+	}
+
 	// 先占用监听地址，再初始化数据库、消息队列和后台消费者。端口冲突时应立即退出，
 	// 避免启动一半后产生一串 context canceled 的连带错误。
 	listener, err := net.Listen("tcp", cfg.Server.Address)
@@ -407,11 +428,6 @@ func runServer(ctx context.Context, cfg config.Config, logger *slog.Logger, runt
 		return errors.New("权限服务初始化失败")
 	}
 	auditService := audit.NewService(resources.Database)
-	secretManager, err := secret.New(cfg.Secrets.Key)
-	if err != nil {
-		logger.Error("初始化基础设施密钥管理器失败", "operation", "secret_bootstrap", "err", err)
-		return errors.New("密钥服务初始化失败")
-	}
 	configurationService := configuration.NewService(resources.Database, secretManager)
 	runtimeLogSettings, err := configurationService.GetRuntimeLoggingSettings(serviceCtx, cfg.LogLevel, true)
 	if err != nil {

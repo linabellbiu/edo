@@ -22,7 +22,7 @@ x-zrt-environment: &zrt-environment
   ZRT_DOCKER_BUILDER_HOST: tcp://docker-builder:2375
 
   # 请在 .env 中设置。该密钥用于加密登录方式、仓库凭据和 kubeconfig。
-  ZRT_SECRETS_KEY: ${ZRT_SECRETS_KEY:?请先在 .env 中设置 ZRT_SECRETS_KEY}
+  ZRT_SECRETS_KEY: ${ZRT_SECRETS_KEY:?请先在根目录 .env 中设置 ZRT_SECRETS_KEY}
 
 # migrate 和 api 共用同一个镜像、数据卷和安全设置。
 x-zrt-runtime: &zrt-runtime

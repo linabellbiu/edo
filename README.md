@@ -37,9 +37,12 @@ ZRT 是面向 Docker 与 Kubernetes 的运维、发布和可观测平台，使�
 
 ```bash
 cp .env.example .env
+openssl rand -base64 32
 go install github.com/magefile/mage@v1.17.2
 mage start
 ```
+
+把 `openssl` 输出填入根目录 `.env` 的 `ZRT_SECRETS_KEY`。密钥生成后必须固定保存并备份；已有数据库必须继续使用原密钥，不能重新生成后直接替换。
 
 首次启动服务且账户库为空时会自动创建管理员账户 `admin`，初始密码为 `123456`；该账户登录后不会被强制修改密码。已有任意账户的数据库不会补建或覆盖默认管理员。普通新建账户仍须使用至少 12 位密码。
 
@@ -56,7 +59,7 @@ Windows 使用 `zrt.exe migrate` 和 `zrt.exe`。单文件只包含 ZRT 后端�
 
 开发时执行 `mage start --dev`。Mage 会先通过 `deploy/compose.dev.yml` 启动 Redis 和 NATS，等待健康检查通过，再在本机执行数据库迁移、`go run` 和 `npm start`。开发页面地址为 `http://127.0.0.1:5173`，流水线直接使用宿主机 Docker，不启动 DinD；前端继续使用 Vite 热更新。
 
-SQLite 固定保存在仓库的 `data/zrt.db`，Redis 和 NATS 分别保存在 `data/redis`、`data/nats`。`mage start --dev`、`mage start --docker` 和根目录 Compose 使用同一组文件，切换启动方式不会换库。依赖容器在 Mage 退出后继续运行，执行 `docker compose -f deploy/compose.dev.yml stop redis nats` 可以停止它们。Compose 的 DinD 只服务容器后端且不映射 2375 到宿主机。首次运行缺少本机 Web 依赖时会自动执行 `npm ci`。不要直接删除 `data` 目录。
+SQLite 固定保存在仓库的 `data/zrt.db`，Redis 和 NATS 分别保存在 `data/redis`、`data/nats`。`mage start`、`mage start --dev`、`mage start --docker` 和 Compose 都读取根目录 `.env` 并使用同一组数据文件，切换启动方式不会换库或密钥。依赖容器在 Mage 退出后继续运行，执行 `docker compose --env-file .env -f deploy/compose.dev.yml stop redis nats` 可以停止它们。Compose 的 DinD 只服务容器后端且不映射 2375 到宿主机。首次运行缺少本机 Web 依赖时会自动执行 `npm ci`。不要直接删除 `data` 目录。
 
 只迁移 `.env` 指定的数据库时执行：
 
@@ -70,9 +73,9 @@ mage migrate
 
 执行 `mage help` 可查看中文命令总览，执行 `mage start --help` 可查看启动参数说明。
 
-需要完全使用容器时执行 `mage start --docker`。该模式会在后台启动 Redis、NATS、迁移任务、后端和 Web；停止环境执行 `docker compose -f deploy/compose.dev.yml down`，该命令不会删除业务数据。`--dev` 和 `--docker` 不能同时使用。
+需要完全使用容器时执行 `mage start --docker`。该模式会在后台启动 Redis、NATS、迁移任务、后端和 Web；停止环境执行 `docker compose --env-file .env -f deploy/compose.dev.yml down`，该命令不会删除业务数据。`--dev` 和 `--docker` 不能同时使用。
 
-登录后可在“平台管理 → 系统设置 → 登录方式”中接入 LDAP 或 OAuth。`mage start --dev` 与开发 Compose 使用同一份本机开发密钥，切换启动方式后仍能读取已有凭据；多人共享、测试和生产环境必须在 `.env` 中设置自己的 `ZRT_SECRETS_KEY`，不能继续使用开发密钥。
+登录后可在“平台管理 → 系统设置 → 登录方式”中接入 LDAP 或 OAuth。Mage 和 Compose 不会生成、回退或轮换加密密钥；根目录 `.env` 缺失、密钥为空或格式错误时，包含后端的启动会在迁移和启动前直接失败。
 
 ## 构建与测试
 

@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"net/http"
@@ -17,7 +18,7 @@ import (
 	"github.com/joho/godotenv"
 )
 
-const developmentSecretsKey = "b97MuZYq2cdfHG+Hy2hjRvh0yerPm2MF9rHRe0KXVQg="
+const environmentFile = ".env"
 
 // Start 启动 ZRT；可使用 --dev、--docker、--server 和 --web 调整启动方式。
 func Start(ctx context.Context) error {
@@ -33,11 +34,14 @@ func Start(ctx context.Context) error {
 		return errors.New("--dev 和 --docker 不能同时使用")
 	}
 	runServer, runWeb := selectedComponents(options.server, options.web)
-	if options.docker {
-		return finishStart(startDocker(ctx, runServer, runWeb), options.provided)
-	}
 	if err := loadEnvironment(); err != nil {
 		return err
+	}
+	if err := validateStartSecretsKey(runServer); err != nil {
+		return err
+	}
+	if options.docker {
+		return finishStart(startDocker(ctx, runServer, runWeb), options.provided)
 	}
 	if options.dev {
 		return finishStart(startDevelopment(ctx, runServer, runWeb), options.provided)
@@ -127,14 +131,39 @@ func printStartHelp() {
 }
 
 func loadEnvironment() error {
-	if err := godotenv.Load(); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return fmt.Errorf("读取 .env 失败: %w", err)
+	return loadEnvironmentFile(environmentFile)
+}
+
+func loadEnvironmentFile(path string) error {
+	if err := godotenv.Load(path); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return errors.New("未找到根目录 .env，请先复制 .env.example 并填写必要配置")
+		}
+		return fmt.Errorf("读取 %s 失败: %w", path, err)
+	}
+	return nil
+}
+
+func validateStartSecretsKey(runServer bool) error {
+	if !runServer {
+		return nil
+	}
+	encoded := strings.TrimSpace(os.Getenv("ZRT_SECRETS_KEY"))
+	if encoded == "" {
+		return errors.New("请在根目录 .env 中配置 ZRT_SECRETS_KEY")
+	}
+	key, err := base64.StdEncoding.DecodeString(encoded)
+	if err != nil {
+		key, err = base64.RawStdEncoding.DecodeString(encoded)
+	}
+	if err != nil || len(key) != 32 {
+		return errors.New(".env 中的 ZRT_SECRETS_KEY 必须是 32 字节随机密钥的 Base64 编码")
 	}
 	return nil
 }
 
 func startDocker(ctx context.Context, runServer, runWeb bool) error {
-	args := []string{"compose", "-f", "deploy/compose.dev.yml", "up", "-d", "--build"}
+	args := []string{"compose", "--env-file", environmentFile, "-f", "deploy/compose.dev.yml", "up", "-d", "--build"}
 	if runServer && !runWeb {
 		args = append(args, "api")
 	} else if runWeb && !runServer {
@@ -185,9 +214,6 @@ func startBuilt(ctx context.Context, runServer, runWeb bool) error {
 
 func startDevelopment(ctx context.Context, runServer, runWeb bool) error {
 	if runServer {
-		if err := setDevelopmentSecretsKey(); err != nil {
-			return err
-		}
 		if err := startDevelopmentDependencies(ctx); err != nil {
 			return err
 		}
@@ -225,16 +251,6 @@ func startDevelopment(ctx context.Context, runServer, runWeb bool) error {
 	return runCommand(ctx, npmExecutable(), "--prefix", "web", "start")
 }
 
-func setDevelopmentSecretsKey() error {
-	if strings.TrimSpace(os.Getenv("ZRT_SECRETS_KEY")) != "" {
-		return nil
-	}
-	if err := os.Setenv("ZRT_SECRETS_KEY", developmentSecretsKey); err != nil {
-		return fmt.Errorf("设置开发环境加密密钥失败: %w", err)
-	}
-	return nil
-}
-
 func migrateFromSource(ctx context.Context) error {
 	if err := runCommand(ctx, "go", "run", "./cmd/zrt", "migrate"); err != nil {
 		return fmt.Errorf("数据库迁移失败: %w", err)
@@ -249,6 +265,8 @@ func startDevelopmentDependencies(ctx context.Context) error {
 		ctx,
 		"docker",
 		"compose",
+		"--env-file",
+		environmentFile,
 		"-f",
 		"deploy/compose.dev.yml",
 		"stop",
@@ -268,6 +286,8 @@ func startDevelopmentDependencies(ctx context.Context) error {
 		ctx,
 		"docker",
 		"compose",
+		"--env-file",
+		environmentFile,
 		"-f",
 		"deploy/compose.dev.yml",
 		"up",

@@ -8,8 +8,9 @@
 - 系统 CPU、内存、Go GC、Worker、任务、消息队列和数据库连接池指标必须在 ZRT 内置页面展示，并受 `monitor.read` 权限保护；不得把 Grafana、Prometheus 或其他外部可观测平台作为查看这些基础指标的前置条件。
 - 系统监控的消息队列卡片必须允许拥有 `monitor.manage` 权限的用户清空死信；操作前必须明确二次确认，只清理死信 Stream，不得影响正常任务 Stream，并记录操作审计。死信为空或 JetStream 不可用时不得发起清理。
 - 系统设置必须提供运行日志输出配置，至少支持最低日志级别和 HTTP 访问日志开关；保存后必须立即热更新当前进程并持久化，后续重启继续生效。`ZRT_LOG_LEVEL` 只作为尚未保存系统设置时的启动默认值，任何日志配置都不得放宽敏感信息保护。
-- `mage start --dev` 是宿主机开发模式，启动前必须停止同一 Compose 项目中遗留的 `api`、`web` 和 Docker-in-Docker 容器，只保留 Redis 与 NATS JetStream；禁止宿主机后端与容器后端同时消费同一 NATS Consumer 或并发访问同一 SQLite 文件。
+- `mage start --dev` 是宿主机开发模式，启动前必须停止同一 Compose 项目中遗留的 `api`、`web` 和 Docker-in-Docker 容器，只保留 Redis 与 NATS JetStream；禁止宿主机后端与容器后端同时消费同一 NATS Consumer 或并发访问同一 SQLite 文件。`mage start`、`mage start --dev`、`mage start --docker` 和 Compose 必须统一读取根目录 `.env`；包含后端的启动在 `.env` 缺失、`ZRT_SECRETS_KEY` 为空或格式无效时必须于构建、迁移和启动依赖前失败。不得在代码或 Compose 中硬编码回退密钥、临时生成进程密钥或静默轮换已有密钥。
 - 数据库默认使用 SQLite，同时兼容 PostgreSQL 和 MySQL。
+- GORM 模型及迁移必须遵守 SQLite、PostgreSQL 和 MySQL 的共同兼容边界；`TEXT`、`BLOB`、`JSON` 等大字段不得配置 `default:''` 等字面量数据库默认值，零值由 Go 显式写入。新增或修改表结构后必须执行三种数据库的真实迁移测试，不能仅凭 SQLite 测试通过判定兼容。
 - 系统设置必须提供 SQLite 到 MySQL/PostgreSQL 的受控数据迁移；仅超级管理员可执行，目标库必须为空库且先完成真实连接测试。目标 DSN 不得持久化或记录；迁移完成后必须明确要求切换 `ZRT_DATABASE_DRIVER`/`ZRT_DATABASE_DSN` 并重启，禁止新旧库同时写入。
 - 取消通过浏览器 SSH 登录宿主机的功能，不保留宿主机 Web SSH、远程文件管理或交互式服务器终端。
 - 保留 Kubernetes Pod 和 Docker 容器内的交互式终端；浏览器通过 WebSocket 连接 Go 后端，由后端使用 Kubernetes Exec 或 Docker Exec API 桥接输入、输出和终端尺寸变更。

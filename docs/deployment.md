@@ -2,12 +2,15 @@
 
 ## Docker Compose
 
-生成密钥并仅保存在密钥管理系统或受限环境文件中：
+复制根目录环境文件模板，生成密钥并填入 `.env` 的 `ZRT_SECRETS_KEY`：
 
 ```bash
-export ZRT_SECRETS_KEY="$(openssl rand -base64 32)"
-docker compose up -d --build
+cp .env.example .env
+openssl rand -base64 32
+docker compose --env-file .env up -d --build
 ```
+
+`.env` 已被 Git 忽略，但仍应限制文件权限并单独备份密钥。已有数据库必须继续使用原密钥，不能用新生成的值直接覆盖，否则历史凭据将无法解密。
 
 默认只监听 `127.0.0.1:8080`，应由启用 HTTPS 和 WebSocket Upgrade 的反向代理对外提供服务。首次启动服务且账户库为空时会自动创建管理员账户 `admin`，初始密码为 `123456`，且登录后不会强制修改密码。已有任意账户的数据库不会补建或覆盖该账户，普通新建账户的 12 位密码要求保持不变。
 

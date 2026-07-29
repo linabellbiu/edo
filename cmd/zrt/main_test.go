@@ -1,6 +1,28 @@
 package main
 
-import "testing"
+import (
+	"os"
+	"path/filepath"
+	"testing"
+)
+
+func TestLoadRuntimeEnvironmentFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), ".env")
+	if err := os.WriteFile(path, []byte("ZRT_RUNTIME_ENV_TEST=loaded\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_ = os.Unsetenv("ZRT_RUNTIME_ENV_TEST")
+	t.Cleanup(func() { _ = os.Unsetenv("ZRT_RUNTIME_ENV_TEST") })
+	if err := loadRuntimeEnvironmentFile(path); err != nil {
+		t.Fatal(err)
+	}
+	if got := os.Getenv("ZRT_RUNTIME_ENV_TEST"); got != "loaded" {
+		t.Fatalf("本地二进制未读取 .env: %q", got)
+	}
+	if err := loadRuntimeEnvironmentFile(filepath.Join(t.TempDir(), ".env")); err != nil {
+		t.Fatalf("容器环境缺少 .env 时应继续读取进程环境变量: %v", err)
+	}
+}
 
 func TestSameDatabaseRecognizesEquivalentSQLiteDSNs(t *testing.T) {
 	if !sameDatabase("sqlite", "data/legacy.db", "sqlite", "file:data/legacy.db?_busy_timeout=5000") {

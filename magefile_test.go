@@ -54,35 +54,64 @@ func TestSelectedComponents(t *testing.T) {
 	}
 }
 
-func TestSetDevelopmentSecretsKeyUsesComposeDefault(t *testing.T) {
-	t.Setenv("ZRT_SECRETS_KEY", "")
-	if err := setDevelopmentSecretsKey(); err != nil {
+func TestValidateStartSecretsKey(t *testing.T) {
+	const validKey = "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY="
+
+	t.Run("有效密钥", func(t *testing.T) {
+		t.Setenv("ZRT_SECRETS_KEY", validKey)
+		if err := validateStartSecretsKey(true); err != nil {
+			t.Fatal(err)
+		}
+	})
+
+	t.Run("只启动 Web", func(t *testing.T) {
+		t.Setenv("ZRT_SECRETS_KEY", "")
+		if err := validateStartSecretsKey(false); err != nil {
+			t.Fatal(err)
+		}
+	})
+
+	t.Run("空密钥", func(t *testing.T) {
+		t.Setenv("ZRT_SECRETS_KEY", "")
+		if err := validateStartSecretsKey(true); err == nil {
+			t.Fatal("含后端启动时必须拒绝空密钥")
+		}
+	})
+
+	t.Run("格式错误", func(t *testing.T) {
+		t.Setenv("ZRT_SECRETS_KEY", "not-a-valid-key")
+		if err := validateStartSecretsKey(true); err == nil {
+			t.Fatal("含后端启动时必须拒绝无效密钥")
+		}
+	})
+}
+
+func TestLoadEnvironmentFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), ".env")
+	if err := os.WriteFile(path, []byte("ZRT_MAGE_ENV_TEST=loaded\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if got := os.Getenv("ZRT_SECRETS_KEY"); got != developmentSecretsKey {
-		t.Fatalf("开发密钥 = %q, want %q", got, developmentSecretsKey)
+	_ = os.Unsetenv("ZRT_MAGE_ENV_TEST")
+	t.Cleanup(func() { _ = os.Unsetenv("ZRT_MAGE_ENV_TEST") })
+	if err := loadEnvironmentFile(path); err != nil {
+		t.Fatal(err)
+	}
+	if got := os.Getenv("ZRT_MAGE_ENV_TEST"); got != "loaded" {
+		t.Fatalf("未从指定 .env 加载配置: %q", got)
+	}
+	if err := loadEnvironmentFile(filepath.Join(t.TempDir(), ".env")); err == nil {
+		t.Fatal("缺少 .env 时必须返回错误")
 	}
 }
 
-func TestSetDevelopmentSecretsKeyPreservesExplicitValue(t *testing.T) {
-	const configured = "user-configured-key"
-	t.Setenv("ZRT_SECRETS_KEY", configured)
-	if err := setDevelopmentSecretsKey(); err != nil {
-		t.Fatal(err)
-	}
-	if got := os.Getenv("ZRT_SECRETS_KEY"); got != configured {
-		t.Fatalf("显式配置被覆盖: %q", got)
-	}
-}
-
-func TestDevelopmentSecretsKeyMatchesCompose(t *testing.T) {
+func TestDevelopmentComposeRequiresDotEnvSecretsKey(t *testing.T) {
 	content, err := os.ReadFile(filepath.Join("deploy", "compose.dev.yml"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	expected := "${ZRT_SECRETS_KEY:-" + developmentSecretsKey + "}"
-	if !strings.Contains(string(content), expected) {
-		t.Fatal("Mage 与开发 Compose 的默认加密密钥不一致")
+	value := string(content)
+	if !strings.Contains(value, "${ZRT_SECRETS_KEY:?") || strings.Contains(value, "${ZRT_SECRETS_KEY:-") {
+		t.Fatal("开发 Compose 必须从 .env 读取必填密钥且不得提供硬编码回退")
 	}
 }
 
