@@ -2,12 +2,15 @@ package deployment
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"path"
+	"reflect"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -15,6 +18,7 @@ import (
 	"github.com/distribution/reference"
 	"github.com/google/uuid"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 	"k8s.io/apimachinery/pkg/util/validation"
 
 	"zrt/internal/dockerengine"
@@ -34,6 +38,10 @@ var (
 	ErrInvalidDeploymentState  = errors.New("发布记录当前状态不允许此操作")
 	ErrRollbackUnavailable     = errors.New("该发布记录没有可回滚的上一镜像")
 	ErrCommandPipelineRequired = errors.New("命令脚本发布必须从流水线部署节点发起")
+	ErrPipelineReleaseIdentity = errors.New("流水线发布缺少幂等标识")
+	ErrPipelineReleaseRunning  = errors.New("该流水线节点已有发布正在执行，不能重复发布")
+	ErrPipelineReleaseFailed   = errors.New("该流水线节点的发布已经失败，请重新执行流水线")
+	ErrPipelineReleaseConflict = errors.New("该流水线节点已经创建发布记录，不能重复发布")
 )
 
 var targetNamePattern = regexp.MustCompile(`^[\p{L}\p{N}][\p{L}\p{N}_. -]{0,127}$`)
@@ -54,16 +62,29 @@ type TargetInput struct {
 }
 
 type RequestInput struct {
-	TargetID        string
-	Image           string
-	ExpectedImageID string
-	PipelineRunID   string
-	WorkflowNodeID  string
-	ApprovedBy      string
+	TargetID           string
+	ArtifactID         string
+	Image              string
+	ExpectedImageID    string
+	PipelineRunID      string
+	WorkflowNodeID     string
+	ApprovedBy         string
+	DeploymentPlanID   string
+	PlanKind           model.DeploymentPlanKind
+	ComposeYAML        string
+	ComposeService     string
+	ComposeDigest      string
+	DockerConfig       model.DockerContainerConfig
+	DockerConfigDigest string
+	RegistryAuth       dockerengine.RegistryAuth
+	TimeoutSeconds     int
+	Stdout             io.Writer
+	Stderr             io.Writer
 }
 
 type CommandRequestInput struct {
 	TargetID         string
+	ArtifactID       string
 	PipelineRunID    string
 	WorkflowNodeID   string
 	ApprovedBy       string
@@ -73,6 +94,9 @@ type CommandRequestInput struct {
 	ScriptDigest     string
 	TimeoutSeconds   int
 	Environment      map[string]string
+	Artifact         io.Reader
+	ArtifactName     string
+	ArtifactDigest   string
 	Stdout           io.Writer
 	Stderr           io.Writer
 }
@@ -147,7 +171,7 @@ func (s *Service) CreateTarget(ctx context.Context, actorID string, input Target
 	now := time.Now().UTC()
 	target := &model.DeploymentTarget{
 		ID: uuid.NewString(), Name: input.Name, Description: input.Description,
-		Platform: input.Platform, Environment: "", // 旧数据库列仍有 NOT NULL 约束，但不再承载业务语义。
+		Platform:      input.Platform,
 		EnvironmentID: input.EnvironmentID, HostID: input.HostID,
 		RuntimeID: input.RuntimeID, WorkingDirectory: input.WorkingDirectory,
 		Namespace: input.Namespace, WorkloadName: input.WorkloadName,
@@ -236,7 +260,7 @@ func (s *Service) Request(ctx context.Context, actorID string, input RequestInpu
 	now := time.Now().UTC()
 	record := &model.DeploymentRecord{
 		ID: uuid.NewString(), PipelineRunID: input.PipelineRunID, WorkflowNodeID: input.WorkflowNodeID,
-		TargetID: target.ID, Operation: model.DeploymentRelease,
+		ArtifactID: input.ArtifactID, TargetID: target.ID, Operation: model.DeploymentRelease,
 		Image: image, Status: model.DeploymentQueued, RequestedBy: actorID, CreatedAt: now, UpdatedAt: now,
 	}
 	applyTargetSnapshot(record, target)
@@ -259,6 +283,29 @@ func (s *Service) RequestAndRun(ctx context.Context, actorID string, input Reque
 	if err != nil {
 		return nil, err
 	}
+	return s.requestAndRun(ctx, actorID, input, target)
+}
+
+// RequestSnapshotAndRun 只供流水线执行器使用。target 必须来自服务端创建运行时保存的
+// 不可变快照，执行过程中不再读取可能已被修改的部署目标。
+func (s *Service) RequestSnapshotAndRun(
+	ctx context.Context,
+	actorID string,
+	target model.DeploymentTarget,
+	input RequestInput,
+) (*model.DeploymentRecord, error) {
+	return s.requestAndRun(ctx, actorID, input, &target)
+}
+
+func (s *Service) requestAndRun(
+	ctx context.Context,
+	actorID string,
+	input RequestInput,
+	target *model.DeploymentTarget,
+) (*model.DeploymentRecord, error) {
+	if !validExecutionTargetSnapshot(input.TargetID, target) {
+		return nil, ErrInvalidTarget
+	}
 	if target.Platform == model.DeploymentSSH {
 		return nil, ErrCommandPipelineRequired
 	}
@@ -266,20 +313,71 @@ func (s *Service) RequestAndRun(ctx context.Context, actorID string, input Reque
 	if err != nil {
 		return nil, err
 	}
+	if input.PlanKind == model.DeploymentPlanCompose {
+		input.DeploymentPlanID = strings.TrimSpace(input.DeploymentPlanID)
+		input.ComposeYAML = strings.TrimSpace(input.ComposeYAML)
+		if input.ComposeYAML != "" {
+			input.ComposeYAML += "\n"
+		}
+		input.ComposeService = strings.TrimSpace(input.ComposeService)
+		input.ComposeDigest = strings.TrimSpace(input.ComposeDigest)
+		expectedDigest := model.DeploymentPlanComposeExecutionDigest(input.ComposeYAML, input.ComposeService, input.TimeoutSeconds)
+		if target.Platform != model.DeploymentDocker || input.DeploymentPlanID == "" ||
+			input.TimeoutSeconds < 30 || input.TimeoutSeconds > 3600 || input.ComposeDigest == "" ||
+			input.ComposeDigest != expectedDigest || s.docker == nil ||
+			dockerengine.ValidateComposeYAML(input.ComposeYAML, input.ComposeService) != nil {
+			return nil, ErrInvalidTarget
+		}
+		input.DockerConfig, input.DockerConfigDigest = model.DockerContainerConfig{}, ""
+	} else if input.PlanKind == model.DeploymentPlanDocker {
+		input.DeploymentPlanID = strings.TrimSpace(input.DeploymentPlanID)
+		input.DockerConfigDigest = strings.TrimSpace(input.DockerConfigDigest)
+		normalized, configErr := dockerengine.NormalizeContainerConfig(input.DockerConfig)
+		expectedDigest := model.DockerContainerConfigDigest(normalized)
+		if target.Platform != model.DeploymentDocker || input.DeploymentPlanID == "" || configErr != nil ||
+			input.DockerConfigDigest == "" || input.DockerConfigDigest != expectedDigest || s.docker == nil {
+			return nil, ErrInvalidTarget
+		}
+		input.DockerConfig = normalized
+		input.ComposeYAML, input.ComposeService, input.ComposeDigest, input.TimeoutSeconds = "", "", "", 0
+	} else {
+		input.ComposeYAML, input.ComposeService, input.ComposeDigest, input.TimeoutSeconds = "", "", "", 0
+		input.DockerConfig, input.DockerConfigDigest = model.DockerContainerConfig{}, ""
+	}
+	input.PipelineRunID = strings.TrimSpace(input.PipelineRunID)
+	input.WorkflowNodeID = strings.TrimSpace(input.WorkflowNodeID)
+	idempotencyKey, err := pipelineReleaseIdempotencyKey(input.PipelineRunID, input.WorkflowNodeID)
+	if err != nil {
+		s.logger.Error("生成流水线发布幂等标识失败", "operation", "pipeline_release_idempotency",
+			"pipeline_run_id", input.PipelineRunID, "workflow_node_id", input.WorkflowNodeID, "err", err)
+		return nil, err
+	}
 	now := time.Now().UTC()
 	record := &model.DeploymentRecord{
-		ID: uuid.NewString(), PipelineRunID: input.PipelineRunID, WorkflowNodeID: input.WorkflowNodeID,
-		TargetID: target.ID, Operation: model.DeploymentRelease, Image: image,
-		Status: model.DeploymentQueued, RequestedBy: actorID, CreatedAt: now, UpdatedAt: now,
+		ID: uuid.NewString(), IdempotencyKey: &idempotencyKey,
+		PipelineRunID: input.PipelineRunID, WorkflowNodeID: input.WorkflowNodeID,
+		ArtifactID: input.ArtifactID, TargetID: target.ID, Operation: model.DeploymentRelease, Image: image,
+		ExpectedImageID: strings.TrimSpace(input.ExpectedImageID),
+		Status:          model.DeploymentQueued, RequestedBy: actorID, CreatedAt: now, UpdatedAt: now,
+		DeploymentPlanID: input.DeploymentPlanID, DeploymentPlanKind: input.PlanKind,
+		ComposeYAML: input.ComposeYAML, ComposeService: input.ComposeService,
+		ComposeDigest: input.ComposeDigest, ComposeTimeout: input.TimeoutSeconds,
+		DockerConfig: input.DockerConfig, DockerConfigDigest: input.DockerConfigDigest,
 	}
 	if input.ApprovedBy != "" {
 		record.ApprovedBy, record.ApprovedAt = &input.ApprovedBy, &now
 	}
 	applyTargetSnapshot(record, target)
-	if err := s.db.WithContext(ctx).Create(record).Error; err != nil {
-		return nil, fmt.Errorf("创建流水线发布记录失败: %w", err)
+	record, created, err := s.createPipelineReleaseRecord(ctx, record)
+	if err != nil {
+		return record, err
 	}
-	if err := s.run(ctx, record.ID, input.ExpectedImageID, nil); err != nil {
+	if !created {
+		return record, nil
+	}
+	if err := s.run(ctx, record.ID, input.ExpectedImageID, &commandExecution{
+		registryAuth: input.RegistryAuth, stdout: input.Stdout, stderr: input.Stderr,
+	}); err != nil {
 		return record, err
 	}
 	if err := s.db.WithContext(ctx).First(record, "id = ?", record.ID).Error; err != nil {
@@ -289,15 +387,41 @@ func (s *Service) RequestAndRun(ctx context.Context, actorID string, input Reque
 }
 
 type commandExecution struct {
-	environment map[string]string
-	stdout      io.Writer
-	stderr      io.Writer
+	environment    map[string]string
+	artifact       io.Reader
+	artifactName   string
+	artifactDigest string
+	stdout         io.Writer
+	stderr         io.Writer
+	registryAuth   dockerengine.RegistryAuth
 }
 
 func (s *Service) RequestCommandAndRun(ctx context.Context, actorID string, input CommandRequestInput) (*model.DeploymentRecord, error) {
 	target, err := s.findTarget(ctx, input.TargetID)
 	if err != nil {
 		return nil, err
+	}
+	return s.requestCommandAndRun(ctx, actorID, input, target)
+}
+
+// RequestCommandSnapshotAndRun 与 RequestSnapshotAndRun 相同，但用于 SSH 脚本部署。
+func (s *Service) RequestCommandSnapshotAndRun(
+	ctx context.Context,
+	actorID string,
+	target model.DeploymentTarget,
+	input CommandRequestInput,
+) (*model.DeploymentRecord, error) {
+	return s.requestCommandAndRun(ctx, actorID, input, &target)
+}
+
+func (s *Service) requestCommandAndRun(
+	ctx context.Context,
+	actorID string,
+	input CommandRequestInput,
+	target *model.DeploymentTarget,
+) (*model.DeploymentRecord, error) {
+	if !validExecutionTargetSnapshot(input.TargetID, target) {
+		return nil, ErrInvalidTarget
 	}
 	input.ScriptDigest = strings.TrimSpace(input.ScriptDigest)
 	input.DeploymentPlanID = strings.TrimSpace(input.DeploymentPlanID)
@@ -308,10 +432,19 @@ func (s *Service) RequestCommandAndRun(ctx context.Context, actorID string, inpu
 		input.ScriptDigest != expectedDigest || s.ssh == nil {
 		return nil, ErrInvalidTarget
 	}
+	input.PipelineRunID = strings.TrimSpace(input.PipelineRunID)
+	input.WorkflowNodeID = strings.TrimSpace(input.WorkflowNodeID)
+	idempotencyKey, err := pipelineReleaseIdempotencyKey(input.PipelineRunID, input.WorkflowNodeID)
+	if err != nil {
+		s.logger.Error("生成命令脚本流水线发布幂等标识失败", "operation", "pipeline_release_idempotency",
+			"pipeline_run_id", input.PipelineRunID, "workflow_node_id", input.WorkflowNodeID, "err", err)
+		return nil, err
+	}
 	now := time.Now().UTC()
 	record := &model.DeploymentRecord{
-		ID: uuid.NewString(), PipelineRunID: input.PipelineRunID, WorkflowNodeID: input.WorkflowNodeID,
-		TargetID: target.ID, Operation: model.DeploymentRelease, Status: model.DeploymentQueued,
+		ID: uuid.NewString(), IdempotencyKey: &idempotencyKey,
+		PipelineRunID: input.PipelineRunID, WorkflowNodeID: input.WorkflowNodeID,
+		ArtifactID: input.ArtifactID, TargetID: target.ID, Operation: model.DeploymentRelease, Status: model.DeploymentQueued,
 		RequestedBy: actorID, CreatedAt: now, UpdatedAt: now,
 		DeploymentPlanID: input.DeploymentPlanID, DeploymentPlanKind: input.PlanKind,
 		CommandScript: input.Script, CommandDigest: input.ScriptDigest, CommandTimeout: input.TimeoutSeconds,
@@ -320,8 +453,12 @@ func (s *Service) RequestCommandAndRun(ctx context.Context, actorID string, inpu
 		record.ApprovedBy, record.ApprovedAt = &input.ApprovedBy, &now
 	}
 	applyTargetSnapshot(record, target)
-	if err := s.db.WithContext(ctx).Create(record).Error; err != nil {
-		return nil, fmt.Errorf("创建命令脚本流水线发布记录失败: %w", err)
+	record, created, err := s.createPipelineReleaseRecord(ctx, record)
+	if err != nil {
+		return record, err
+	}
+	if !created {
+		return record, nil
 	}
 	environment := make(map[string]string, len(input.Environment)+1)
 	for key, value := range input.Environment {
@@ -329,7 +466,8 @@ func (s *Service) RequestCommandAndRun(ctx context.Context, actorID string, inpu
 	}
 	environment["ZRT_DEPLOYMENT_ID"] = record.ID
 	if err := s.run(ctx, record.ID, "", &commandExecution{
-		environment: environment, stdout: input.Stdout, stderr: input.Stderr,
+		environment: environment, artifact: input.Artifact, artifactName: input.ArtifactName,
+		artifactDigest: input.ArtifactDigest, stdout: input.Stdout, stderr: input.Stderr,
 	}); err != nil {
 		return record, err
 	}
@@ -339,34 +477,294 @@ func (s *Service) RequestCommandAndRun(ctx context.Context, actorID string, inpu
 	return record, nil
 }
 
+func validExecutionTargetSnapshot(targetID string, target *model.DeploymentTarget) bool {
+	if target == nil || strings.TrimSpace(targetID) == "" || target.ID != strings.TrimSpace(targetID) ||
+		target.RolloutTimeout < 30 || target.RolloutTimeout > 3600 {
+		return false
+	}
+	switch target.Platform {
+	case model.DeploymentSSH:
+		return target.EnvironmentID != "" && target.HostID != ""
+	case model.DeploymentDocker:
+		return target.RuntimeID != "" && workloadNamePattern.MatchString(target.WorkloadName)
+	case model.DeploymentKubernetes:
+		return target.RuntimeID != "" && len(validation.IsDNS1123Label(target.Namespace)) == 0 &&
+			len(validation.IsDNS1123Subdomain(target.WorkloadName)) == 0 &&
+			len(validation.IsDNS1123Label(target.ContainerName)) == 0
+	default:
+		return false
+	}
+}
+
+func pipelineReleaseIdempotencyKey(pipelineRunID, workflowNodeID string) (string, error) {
+	pipelineRunID = strings.TrimSpace(pipelineRunID)
+	workflowNodeID = strings.TrimSpace(workflowNodeID)
+	if pipelineRunID == "" || workflowNodeID == "" || len(pipelineRunID) > 36 || len(workflowNodeID) > 64 ||
+		strings.ContainsAny(pipelineRunID, "\r\n\x00") || strings.ContainsAny(workflowNodeID, "\r\n\x00") {
+		return "", ErrPipelineReleaseIdentity
+	}
+	digest := sha256.Sum256([]byte(string(model.DeploymentRelease) + "\x00" + pipelineRunID + "\x00" + workflowNodeID))
+	return fmt.Sprintf("%x", digest), nil
+}
+
+func (s *Service) createPipelineReleaseRecord(
+	ctx context.Context,
+	record *model.DeploymentRecord,
+) (*model.DeploymentRecord, bool, error) {
+	if record == nil || record.IdempotencyKey == nil || *record.IdempotencyKey == "" ||
+		record.Operation != model.DeploymentRelease {
+		s.logger.Error("创建流水线发布记录时幂等上下文无效", "operation", "pipeline_release_create", "err", ErrPipelineReleaseIdentity)
+		return nil, false, ErrPipelineReleaseIdentity
+	}
+	if err := s.db.WithContext(ctx).Create(record).Error; err == nil {
+		return record, true, nil
+	} else if !errors.Is(err, gorm.ErrDuplicatedKey) {
+		s.logger.Error("创建流水线发布记录失败", "operation", "pipeline_release_create",
+			"pipeline_run_id", record.PipelineRunID, "workflow_node_id", record.WorkflowNodeID, "err", err)
+		return nil, false, fmt.Errorf("创建流水线发布记录失败: %w", err)
+	}
+
+	var existing model.DeploymentRecord
+	if err := s.db.WithContext(ctx).Where("idempotency_key = ?", *record.IdempotencyKey).First(&existing).Error; err != nil {
+		s.logger.Error("读取已存在的流水线发布记录失败", "operation", "pipeline_release_idempotency",
+			"pipeline_run_id", record.PipelineRunID, "workflow_node_id", record.WorkflowNodeID, "err", err)
+		return nil, false, fmt.Errorf("读取流水线发布记录失败: %w", err)
+	}
+	if !samePipelineReleaseSemantics(&existing, record) {
+		s.logger.Error("流水线发布幂等标识对应的执行语义不一致", "operation", "pipeline_release_idempotency",
+			"pipeline_run_id", record.PipelineRunID, "workflow_node_id", record.WorkflowNodeID,
+			"deployment_id", existing.ID, "err", ErrPipelineReleaseConflict)
+		return &existing, false, ErrPipelineReleaseConflict
+	}
+	if existing.Status == model.DeploymentSucceeded {
+		s.logger.Info("复用已成功的流水线发布记录", "operation", "pipeline_release_idempotency",
+			"pipeline_run_id", existing.PipelineRunID, "workflow_node_id", existing.WorkflowNodeID,
+			"deployment_id", existing.ID)
+		return &existing, false, nil
+	}
+
+	conflict := ErrPipelineReleaseConflict
+	if existing.Status == model.DeploymentQueued || existing.Status == model.DeploymentRunning {
+		conflict = ErrPipelineReleaseRunning
+	} else if existing.Status == model.DeploymentFailed {
+		conflict = ErrPipelineReleaseFailed
+	}
+	s.logger.Error("拒绝重复执行流水线发布", "operation", "pipeline_release_idempotency",
+		"pipeline_run_id", existing.PipelineRunID, "workflow_node_id", existing.WorkflowNodeID,
+		"deployment_id", existing.ID, "deployment_status", existing.Status, "err", conflict)
+	return &existing, false, conflict
+}
+
+func samePipelineReleaseSemantics(existing, requested *model.DeploymentRecord) bool {
+	if existing == nil || requested == nil {
+		return false
+	}
+	return existing.Operation == requested.Operation &&
+		existing.PipelineRunID == requested.PipelineRunID && existing.WorkflowNodeID == requested.WorkflowNodeID &&
+		existing.ArtifactID == requested.ArtifactID && existing.TargetID == requested.TargetID &&
+		existing.TargetName == requested.TargetName && existing.Platform == requested.Platform &&
+		existing.EnvironmentID == requested.EnvironmentID && existing.HostID == requested.HostID &&
+		existing.RuntimeID == requested.RuntimeID && existing.WorkingDirectory == requested.WorkingDirectory &&
+		existing.Namespace == requested.Namespace && existing.WorkloadName == requested.WorkloadName &&
+		existing.ContainerName == requested.ContainerName && existing.RolloutTimeout == requested.RolloutTimeout &&
+		existing.Image == requested.Image && existing.ExpectedImageID == requested.ExpectedImageID &&
+		existing.DeploymentPlanID == requested.DeploymentPlanID && existing.DeploymentPlanKind == requested.DeploymentPlanKind &&
+		existing.CommandScript == requested.CommandScript && existing.CommandDigest == requested.CommandDigest &&
+		existing.CommandTimeout == requested.CommandTimeout && existing.ComposeYAML == requested.ComposeYAML &&
+		existing.ComposeService == requested.ComposeService && existing.ComposeDigest == requested.ComposeDigest &&
+		existing.ComposeTimeout == requested.ComposeTimeout && existing.DockerConfigDigest == requested.DockerConfigDigest &&
+		reflect.DeepEqual(existing.DockerConfig, requested.DockerConfig)
+}
+
 func (s *Service) Rollback(ctx context.Context, sourceID, actorID string) (*model.DeploymentRecord, error) {
 	var source model.DeploymentRecord
 	if err := s.db.WithContext(ctx).First(&source, "id = ?", sourceID).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, ErrDeploymentNotFound
 		}
+		s.logger.Error("查询待回滚发布记录失败", "operation", "deployment_rollback_source", "source_deployment_id", sourceID, "err", err)
 		return nil, fmt.Errorf("查询待回滚发布记录失败: %w", err)
 	}
-	if source.Platform == model.DeploymentSSH || source.Status != model.DeploymentSucceeded || source.PreviousImage == "" {
+	if source.Platform == model.DeploymentSSH || source.DeploymentPlanKind == model.DeploymentPlanCompose ||
+		source.Status != model.DeploymentSucceeded || source.PreviousImage == "" {
+		return nil, ErrRollbackUnavailable
+	}
+	image := strings.TrimSpace(source.PreviousImage)
+	expectedImageID := ""
+	switch source.Platform {
+	case model.DeploymentDocker:
+		if !dockerengine.IsValidImageID(source.PreviousImageID) {
+			return nil, ErrRollbackUnavailable
+		}
+		// Docker 回滚直接按上一容器实际使用的 Image ID 执行；标签只用于历史展示，
+		// 不能再次成为回滚时的可变解析入口。
+		image = source.PreviousImageID
+		expectedImageID = source.PreviousImageID
+	case model.DeploymentKubernetes:
+		var err error
+		image, err = validateImage(image, true)
+		if err != nil {
+			return nil, ErrRollbackUnavailable
+		}
+	default:
 		return nil, ErrRollbackUnavailable
 	}
 	now := time.Now().UTC()
-	record := &model.DeploymentRecord{
-		ID: uuid.NewString(), TargetID: source.TargetID, Operation: model.DeploymentRollback,
-		Image: source.PreviousImage, Status: model.DeploymentQueued,
+	prototype := &model.DeploymentRecord{
+		TargetID: source.TargetID, Operation: model.DeploymentRollback,
+		Image: image, ExpectedImageID: expectedImageID, Status: model.DeploymentQueued,
+		DeploymentPlanID: source.DeploymentPlanID, DeploymentPlanKind: source.DeploymentPlanKind,
+		DockerConfig: source.DockerConfig, DockerConfigDigest: source.DockerConfigDigest,
 		RequestedBy: actorID, ApprovedBy: &actorID, ApprovedAt: &now,
 		CreatedAt: now, UpdatedAt: now,
 	}
-	copyTargetSnapshot(record, &source)
-	if err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		if err := tx.Create(record).Error; err != nil {
-			return err
-		}
-		return s.enqueue(ctx, tx, record, "rollback.runtime")
-	}); err != nil {
+	copyTargetSnapshot(prototype, &source)
+
+	record, created, err := s.createRollbackAttempt(ctx, &source, prototype)
+	if err != nil {
+		s.logger.Error("创建回滚任务失败", "operation", "deployment_rollback_create", "source_deployment_id", source.ID, "err", err)
 		return nil, fmt.Errorf("创建回滚任务失败: %w", err)
 	}
+	if !created {
+		s.logger.Info("复用已有的回滚任务", "operation", "deployment_rollback_idempotency",
+			"source_deployment_id", source.ID, "deployment_id", record.ID,
+			"rollback_attempt", record.RollbackAttempt, "deployment_status", record.Status)
+	}
 	return record, nil
+}
+
+func (s *Service) createRollbackAttempt(
+	ctx context.Context,
+	source *model.DeploymentRecord,
+	prototype *model.DeploymentRecord,
+) (*model.DeploymentRecord, bool, error) {
+	if source == nil || prototype == nil {
+		return nil, false, ErrInvalidDeploymentState
+	}
+	legacyKey, err := rollbackIdempotencyKey(source.ID, 1)
+	if err != nil {
+		return nil, false, err
+	}
+	var selected *model.DeploymentRecord
+	created := false
+	if err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		// 在读取最近尝试之前先用不改变值的 UPDATE 获取写锁。PostgreSQL/MySQL
+		// 只锁定来源行；SQLite 没有行锁，但提前取得写锁可避免多个读事务随后
+		// 同时升级为写事务。幂等键唯一索引仍是最后一道并发保护。
+		if err := tx.Model(&model.DeploymentRecord{}).Where("id = ?", source.ID).
+			UpdateColumn("updated_at", gorm.Expr("updated_at")).Error; err != nil {
+			return fmt.Errorf("锁定回滚来源发布记录失败: %w", err)
+		}
+		latest, err := findLatestRollbackAttempt(tx, source.ID, legacyKey)
+		if err != nil {
+			return err
+		}
+		attempt := 1
+		if latest != nil {
+			if latest.RollbackAttempt < 1 {
+				return fmt.Errorf("回滚尝试次数无效: deployment_id=%s", latest.ID)
+			}
+			if latest.Status != model.DeploymentFailed {
+				selected = latest
+				return nil
+			}
+			attempt = latest.RollbackAttempt + 1
+			if attempt <= latest.RollbackAttempt {
+				return fmt.Errorf("回滚尝试次数溢出: deployment_id=%s", latest.ID)
+			}
+		}
+		idempotencyKey, err := rollbackIdempotencyKey(source.ID, attempt)
+		if err != nil {
+			return err
+		}
+		record := *prototype
+		record.ID = uuid.NewString()
+		record.IdempotencyKey = &idempotencyKey
+		record.RollbackSourceID = source.ID
+		record.RollbackAttempt = attempt
+		result := tx.Clauses(clause.OnConflict{
+			Columns:   []clause.Column{{Name: "idempotency_key"}},
+			DoNothing: true,
+		}).Create(&record)
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected == 0 {
+			var existing model.DeploymentRecord
+			if err := tx.Where("idempotency_key = ?", idempotencyKey).First(&existing).Error; err != nil {
+				return fmt.Errorf("读取并发创建的回滚任务失败: %w", err)
+			}
+			if existing.Operation != model.DeploymentRollback || existing.RollbackSourceID != source.ID ||
+				existing.RollbackAttempt != attempt {
+				return fmt.Errorf("回滚幂等标识对应的执行语义不一致: deployment_id=%s", existing.ID)
+			}
+			selected = &existing
+			return nil
+		}
+		created = true
+		selected = &record
+		return s.enqueue(ctx, tx, &record, "rollback.runtime")
+	}); err != nil {
+		return nil, false, err
+	}
+	if selected == nil {
+		return nil, false, errors.New("回滚任务状态异常")
+	}
+	return selected, created, nil
+}
+
+func findLatestRollbackAttempt(tx *gorm.DB, sourceID, legacyKey string) (*model.DeploymentRecord, error) {
+	var latest model.DeploymentRecord
+	err := tx.Where("rollback_source_id = ? AND operation = ?", sourceID, model.DeploymentRollback).
+		Order("rollback_attempt DESC").First(&latest).Error
+	if err == nil {
+		return &latest, nil
+	}
+	if !errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, fmt.Errorf("查询最近一次回滚任务失败: %w", err)
+	}
+
+	// 202607300051 之前的回滚只保存了来源发布的哈希幂等键。该键能够精确
+	// 定位第 1 次尝试，惰性补齐关联可保留历史记录，并允许失败后创建第 2 次尝试。
+	var legacy model.DeploymentRecord
+	err = tx.Where("idempotency_key = ? AND operation = ?", legacyKey, model.DeploymentRollback).First(&legacy).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("查询历史回滚任务失败: %w", err)
+	}
+	if legacy.RollbackSourceID == "" && legacy.RollbackAttempt == 0 {
+		result := tx.Model(&model.DeploymentRecord{}).
+			Where("id = ? AND rollback_source_id = ? AND rollback_attempt = ?", legacy.ID, "", 0).
+			Updates(map[string]any{"rollback_source_id": sourceID, "rollback_attempt": 1})
+		if result.Error != nil {
+			return nil, fmt.Errorf("补齐历史回滚任务关联失败: %w", result.Error)
+		}
+		legacy.RollbackSourceID = sourceID
+		legacy.RollbackAttempt = 1
+	}
+	if legacy.RollbackSourceID != sourceID || legacy.RollbackAttempt != 1 {
+		return nil, fmt.Errorf("历史回滚幂等标识对应的执行语义不一致: deployment_id=%s", legacy.ID)
+	}
+	return &legacy, nil
+}
+
+func rollbackIdempotencyKey(sourceID string, attempt int) (string, error) {
+	sourceID = strings.TrimSpace(sourceID)
+	if sourceID == "" || len(sourceID) > 36 || strings.ContainsAny(sourceID, "\r\n\x00") {
+		return "", ErrDeploymentNotFound
+	}
+	if attempt < 1 {
+		return "", ErrInvalidDeploymentState
+	}
+	seed := string(model.DeploymentRollback) + "\x00" + sourceID
+	// 第 1 次尝试保持旧算法，确保升级后仍能识别并复用既有回滚记录。
+	if attempt > 1 {
+		seed += "\x00" + strconv.Itoa(attempt)
+	}
+	digest := sha256.Sum256([]byte(seed))
+	return fmt.Sprintf("%x", digest), nil
 }
 
 func (s *Service) Run(ctx context.Context, deploymentID string) error {
@@ -418,8 +816,29 @@ func (s *Service) run(ctx context.Context, deploymentID, expectedImageID string,
 	if err := s.db.WithContext(ctx).First(&record, "id = ?", deploymentID).Error; err != nil {
 		return s.markFailed(ctx, deploymentID, "deployment_record_missing", "发布记录读取失败", err, "", nil)
 	}
+	expectedImageID = strings.TrimSpace(expectedImageID)
+	if record.ExpectedImageID != "" {
+		if expectedImageID != "" && expectedImageID != record.ExpectedImageID {
+			internalErr := errors.New("执行请求中的镜像身份与发布记录不一致")
+			s.logger.Error("拒绝使用不一致的镜像身份执行发布", "operation", "deployment_image_identity",
+				"deployment_id", deploymentID, "target_id", record.TargetID, "err", internalErr)
+			return s.markFailed(ctx, deploymentID, "deployment_image_identity_mismatch", "待发布镜像身份校验失败", internalErr, "", nil)
+		}
+		expectedImageID = record.ExpectedImageID
+	}
+	if record.Operation == model.DeploymentRollback {
+		validRollbackIdentity := (record.Platform == model.DeploymentDocker && dockerengine.IsValidImageID(expectedImageID)) ||
+			(record.Platform == model.DeploymentKubernetes && expectedImageID == "" && immutableImageReference(record.Image))
+		if !validRollbackIdentity {
+			internalErr := errors.New("回滚记录缺少不可变镜像身份")
+			s.logger.Error("拒绝执行无法验证镜像身份的回滚", "operation", "deployment_rollback_identity",
+				"deployment_id", deploymentID, "target_id", record.TargetID, "err", internalErr)
+			return s.markFailed(ctx, deploymentID, "rollback_image_identity_missing", "回滚镜像身份不可验证", internalErr, "", nil)
+		}
+	}
 	timeout := time.Duration(record.RolloutTimeout) * time.Second
 	var previousImage string
+	var previousImageID string
 	var warning error
 	var commandExitCode *int
 	switch record.Platform {
@@ -432,22 +851,54 @@ func (s *Service) run(ctx context.Context, deploymentID, expectedImageID string,
 		result, commandErr := s.ssh.RunHostDeploymentScript(ctx, sshdeploy.Input{
 			HostID: record.HostID, EnvironmentID: record.EnvironmentID,
 			WorkingDirectory: record.WorkingDirectory, Script: record.CommandScript,
-			Timeout:     commandTimeout,
-			Environment: command.environment, Stdout: command.stdout, Stderr: command.stderr,
+			Timeout: commandTimeout, Environment: command.environment,
+			Artifact: command.artifact, ArtifactName: command.artifactName, ArtifactDigest: command.artifactDigest,
+			Stdout: command.stdout, Stderr: command.stderr,
 		})
 		if result.ExitCode >= 0 {
 			commandExitCode = &result.ExitCode
 		}
 		err = commandErr
 	case model.DeploymentDocker:
-		if expectedImageID == "" {
-			previousImage, warning, err = s.docker.DeployContainer(
-				ctx, record.RuntimeID, record.WorkloadName, record.Image, record.ID, timeout,
-			)
+		if record.DeploymentPlanKind == model.DeploymentPlanCompose {
+			composeTimeout, validTimeout := effectiveComposeTimeout(&record)
+			expectedDigest := model.DeploymentPlanComposeExecutionDigest(record.ComposeYAML, record.ComposeService, record.ComposeTimeout)
+			if !validTimeout || record.ComposeDigest == "" || record.ComposeDigest != expectedDigest || s.docker == nil {
+				err = ErrInvalidTarget
+				break
+			}
+			previousImage, err = s.docker.DeployCompose(ctx, dockerengine.ComposeDeployInput{
+				EndpointID: record.RuntimeID, TargetID: record.TargetID,
+				ServiceName: record.ComposeService, YAML: record.ComposeYAML,
+				Image: record.Image, ExpectedImageID: expectedImageID,
+				DeploymentID: record.ID, Timeout: composeTimeout,
+				RegistryAuth: executionRegistryAuth(command),
+				Stdout:       executionOutput(command, true), Stderr: executionOutput(command, false),
+			})
 		} else {
-			previousImage, warning, err = s.docker.DeployPreparedContainer(
-				ctx, record.RuntimeID, record.WorkloadName, record.Image, expectedImageID, record.ID, timeout,
-			)
+			dockerConfig, configErr := dockerengine.NormalizeContainerConfig(record.DockerConfig)
+			if record.DeploymentPlanKind == model.DeploymentPlanDocker &&
+				(configErr != nil || record.DockerConfigDigest == "" || record.DockerConfigDigest != model.DockerContainerConfigDigest(dockerConfig)) {
+				err = ErrInvalidTarget
+				break
+			}
+			if configErr != nil {
+				err = ErrInvalidTarget
+				break
+			}
+			if expectedImageID == "" {
+				previous, deployWarning, deployErr := s.docker.DeployContainer(
+					ctx, record.RuntimeID, record.TargetID, record.WorkloadName, record.Image, record.ID, timeout, dockerConfig,
+					executionRegistryAuth(command),
+				)
+				previousImage, previousImageID, warning, err = previous.Reference, previous.ID, deployWarning, deployErr
+			} else {
+				previous, deployWarning, deployErr := s.docker.DeployPreparedContainer(
+					ctx, record.RuntimeID, record.TargetID, record.WorkloadName, record.Image, expectedImageID, record.ID, timeout, dockerConfig,
+					executionRegistryAuth(command),
+				)
+				previousImage, previousImageID, warning, err = previous.Reference, previous.ID, deployWarning, deployErr
+			}
 		}
 	case model.DeploymentKubernetes:
 		previousImage, err = s.kube.DeployImage(
@@ -467,6 +918,13 @@ func (s *Service) run(ctx context.Context, deploymentID, expectedImageID string,
 			}
 			s.logger.Error("命令脚本部署失败", "operation", "command_deployment_execute", "deployment_id", deploymentID,
 				"target_id", record.TargetID, "host_id", record.HostID, "exit_code", commandExitCode, "err", err)
+		} else if record.DeploymentPlanKind == model.DeploymentPlanCompose {
+			code, message = "compose_deployment_failed", "Docker Compose 部署失败，请查看流水线日志"
+			if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+				code, message = "compose_deployment_timeout", "Docker Compose 部署超时，请查看流水线日志"
+			}
+			s.logger.Error("Docker Compose 部署失败", "operation", "compose_deployment_execute", "deployment_id", deploymentID,
+				"target_id", record.TargetID, "runtime_id", record.RuntimeID, "service", record.ComposeService, "err", err)
 		}
 		return s.markFailed(ctx, deploymentID, code, message, err, previousImage, commandExitCode)
 	}
@@ -475,10 +933,15 @@ func (s *Service) run(ctx context.Context, deploymentID, expectedImageID string,
 		warningMessage = "发布已完成，但旧资源自动清理失败，请人工检查"
 		s.logger.Warn("发布成功后清理旧资源失败", "operation", "deployment_post_cleanup", "deployment_id", deploymentID, "target_id", record.TargetID, "err", warning)
 	}
+	if previousImageID != "" && !dockerengine.IsValidImageID(previousImageID) {
+		s.logger.Warn("旧 Docker 镜像身份无效，后续将不允许自动回滚", "operation", "deployment_previous_image_identity",
+			"deployment_id", deploymentID, "target_id", record.TargetID)
+		previousImageID = ""
+	}
 	finishedAt := time.Now().UTC()
 	if err := s.db.WithContext(ctx).Model(&model.DeploymentRecord{}).Where("id = ?", deploymentID).
 		Updates(map[string]any{
-			"status": model.DeploymentSucceeded, "previous_image": previousImage,
+			"status": model.DeploymentSucceeded, "previous_image": previousImage, "previous_image_id": previousImageID,
 			"finished_at": finishedAt, "updated_at": finishedAt,
 			"error_code": "", "error_message": "", "warning_message": warningMessage,
 			"command_exit_code": commandExitCode,
@@ -499,6 +962,12 @@ func (s *Service) acquireTargetLock(ctx context.Context, record *model.Deploymen
 	if record.Platform == model.DeploymentSSH {
 		var valid bool
 		rolloutTimeout, valid = effectiveSSHTimeout(record)
+		if !valid {
+			return nil, ErrInvalidTarget
+		}
+	} else if record.DeploymentPlanKind == model.DeploymentPlanCompose {
+		var valid bool
+		rolloutTimeout, valid = effectiveComposeTimeout(record)
 		if !valid {
 			return nil, ErrInvalidTarget
 		}
@@ -527,6 +996,39 @@ func effectiveSSHTimeout(record *model.DeploymentRecord) (time.Duration, bool) {
 		seconds = record.RolloutTimeout
 	}
 	return time.Duration(seconds) * time.Second, true
+}
+
+func effectiveComposeTimeout(record *model.DeploymentRecord) (time.Duration, bool) {
+	if record == nil || record.ComposeTimeout < 30 || record.ComposeTimeout > 3600 ||
+		record.RolloutTimeout < 30 || record.RolloutTimeout > 3600 {
+		return 0, false
+	}
+	seconds := record.ComposeTimeout
+	if record.RolloutTimeout < seconds {
+		seconds = record.RolloutTimeout
+	}
+	return time.Duration(seconds) * time.Second, true
+}
+
+func executionOutput(execution *commandExecution, stdout bool) io.Writer {
+	if execution == nil {
+		return io.Discard
+	}
+	if stdout {
+		if execution.stdout != nil {
+			return execution.stdout
+		}
+	} else if execution.stderr != nil {
+		return execution.stderr
+	}
+	return io.Discard
+}
+
+func executionRegistryAuth(execution *commandExecution) dockerengine.RegistryAuth {
+	if execution == nil {
+		return dockerengine.RegistryAuth{}
+	}
+	return execution.registryAuth
 }
 
 func (s *Service) enqueue(ctx context.Context, tx *gorm.DB, record *model.DeploymentRecord, kind string) error {
@@ -706,6 +1208,11 @@ func validateImage(value string, immutable bool) (string, error) {
 		}
 	}
 	return reference.FamiliarString(named), nil
+}
+
+func immutableImageReference(value string) bool {
+	_, err := validateImage(value, true)
+	return err == nil
 }
 
 func validatePipelineImage(value, expectedImageID string, target *model.DeploymentTarget) (string, error) {

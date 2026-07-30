@@ -87,7 +87,8 @@ type Service struct {
 	secrets *secret.Manager
 	config  config.Runtime
 
-	monitorMu      sync.Mutex
+	// 事务克隆与主服务共享监控客户端缓存，因此锁也必须共享，不能复制已使用的 Mutex。
+	monitorMu      *sync.Mutex
 	monitorClients map[string]monitorClientEntry
 }
 
@@ -115,6 +116,7 @@ type monitorClientRevision struct {
 func NewService(db *gorm.DB, secrets *secret.Manager, cfg config.Runtime) *Service {
 	return &Service{
 		db: db, secrets: secrets, config: cfg,
+		monitorMu:      &sync.Mutex{},
 		monitorClients: make(map[string]monitorClientEntry),
 	}
 }
@@ -493,18 +495,56 @@ func (s *Service) localEndpoint(ctx context.Context) (model.DockerEndpoint, erro
 }
 
 // BuilderClient 连接当前 ZRT 实例的构建运行时。本地二进制使用宿主机 Docker，
-// Compose 通过 ZRT_DOCKER_BUILDER_HOST 显式连接隔离的 Docker-in-Docker。
+// Compose 通过独立的 mTLS 客户端证书连接隔离的 Docker-in-Docker。
 func (s *Service) BuilderClient() (*client.Client, error) {
+	return s.builderClient(s.config.RequestTimeout)
+}
+
+// builderExecutionClient 只使用调用方上下文控制长时间的镜像拉取、文件复制和容器等待。
+// 常规 BuilderClient 的 HTTP 总超时不适用于持续数十分钟的构建输出流。
+func (s *Service) builderExecutionClient() (*client.Client, error) {
+	return s.builderClient(0)
+}
+
+func (s *Service) builderClient(requestTimeout time.Duration) (*client.Client, error) {
 	host := strings.TrimSpace(s.config.DockerBuilderHost)
+	certPath := strings.TrimSpace(s.config.DockerBuilderTLSCertPath)
 	options := []client.Opt{
-		client.WithTimeout(s.config.RequestTimeout),
 		client.WithUserAgent("zrt-builder"),
 		client.WithAPIVersionNegotiation(),
 	}
+	if requestTimeout > 0 {
+		options = append(options, client.WithTimeout(requestTimeout))
+	}
 	if host == "" {
+		if certPath != "" {
+			return nil, ErrInvalidEndpoint
+		}
 		options = append([]client.Opt{client.FromEnv}, options...)
 	} else {
-		options = append([]client.Opt{client.WithHost(host)}, options...)
+		parsed, err := url.Parse(host)
+		if err != nil {
+			return nil, ErrInvalidEndpoint
+		}
+		connectionOptions := []client.Opt{client.WithHost(host)}
+		switch parsed.Scheme {
+		case "tcp":
+			if certPath == "" {
+				return nil, ErrTLSRequired
+			}
+			connectionOptions = append(connectionOptions, client.WithTLSClientConfig(
+				filepath.Join(certPath, "ca.pem"),
+				filepath.Join(certPath, "cert.pem"),
+				filepath.Join(certPath, "key.pem"),
+			))
+		case "unix":
+			if certPath != "" {
+				return nil, ErrInvalidEndpoint
+			}
+		default:
+			return nil, ErrInvalidEndpoint
+		}
+		options = append(connectionOptions, options...)
 	}
 	apiClient, err := client.New(options...)
 	if err != nil {

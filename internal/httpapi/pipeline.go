@@ -19,59 +19,30 @@ type pipelineHandler struct {
 }
 
 type applicationRequest struct {
-	Name                string                          `json:"name" binding:"required,max=128"`
-	Description         string                          `json:"description" binding:"max=500"`
-	RepositoryID        string                          `json:"repository_id" binding:"required,max=36"`
-	Branch              string                          `json:"branch" binding:"max=255"`
-	PollEnabled         bool                            `json:"poll_enabled"`
-	PollIntervalSeconds int                             `json:"poll_interval_seconds" binding:"omitempty,oneof=3 5 10 60"`
-	WatchPush           bool                            `json:"watch_push"`
-	WatchPullRequest    bool                            `json:"watch_pull_request"`
-	WatchTags           bool                            `json:"watch_tags"`
-	TagPattern          string                          `json:"tag_pattern" binding:"max=255"`
-	BuildPlanID         string                          `json:"build_plan_id" binding:"max=36"`
-	ImageRegistryID     *string                         `json:"image_registry_id" binding:"omitempty,max=36"`
-	DeploymentPlanID    string                          `json:"deployment_plan_id" binding:"max=36"`
-	DeploymentTargetID  string                          `json:"deployment_target_id" binding:"max=36"`
-	WorkflowTemplateID  string                          `json:"workflow_template_id" binding:"max=36"`
-	Environments        []applicationEnvironmentRequest `json:"environments" binding:"omitempty,max=4,dive"`
-}
-
-type applicationEnvironmentRequest struct {
-	Key                string `json:"key" binding:"required,oneof=dev test pre prod"`
-	Name               string `json:"name" binding:"max=64"`
-	Branch             string `json:"branch" binding:"max=255"`
-	PollEnabled        bool   `json:"poll_enabled"`
-	WatchPush          bool   `json:"watch_push"`
-	WatchPullRequest   bool   `json:"watch_pull_request"`
-	WatchTags          bool   `json:"watch_tags"`
-	TagPattern         string `json:"tag_pattern" binding:"max=255"`
-	DeploymentPlanID   string `json:"deployment_plan_id" binding:"max=36"`
-	DeploymentTargetID string `json:"deployment_target_id" binding:"max=36"`
-	SortOrder          int    `json:"sort_order" binding:"omitempty,min=0,max=3"`
+	Name                string `json:"name" binding:"required,max=128"`
+	Description         string `json:"description" binding:"max=500"`
+	RepositoryID        string `json:"repository_id" binding:"required,max=36"`
+	PollIntervalSeconds int    `json:"poll_interval_seconds" binding:"omitempty,oneof=3 5 10 60"`
+	WorkflowTemplateID  string `json:"workflow_template_id" binding:"max=36"`
 }
 
 type workflowRequest struct {
-	Name     string                 `json:"name" binding:"required,max=128"`
-	Revision uint64                 `json:"revision"`
-	Activate bool                   `json:"activate"`
-	Nodes    []model.WorkflowNode   `json:"nodes" binding:"max=200"`
-	Edges    []model.WorkflowEdge   `json:"edges" binding:"max=400"`
-	Viewport model.WorkflowViewport `json:"viewport"`
+	SchemaVersion uint16                `json:"schema_version" binding:"required,eq=1"`
+	Name          string                `json:"name" binding:"required,max=128"`
+	Revision      uint64                `json:"revision"`
+	Activate      bool                  `json:"activate"`
+	Source        model.WorkflowNode    `json:"source" binding:"required"`
+	Stages        []model.WorkflowStage `json:"stages" binding:"max=50"`
 }
 
 type workflowTemplateRequest struct {
-	Name        string                 `json:"name" binding:"required,max=128"`
-	Description string                 `json:"description" binding:"max=500"`
-	Revision    uint64                 `json:"revision"`
-	Activate    bool                   `json:"activate"`
-	Nodes       []model.WorkflowNode   `json:"nodes" binding:"max=200"`
-	Edges       []model.WorkflowEdge   `json:"edges" binding:"max=400"`
-	Viewport    model.WorkflowViewport `json:"viewport"`
-}
-
-type advanceRunRequest struct {
-	TargetNodeID string `json:"target_node_id" binding:"max=64"`
+	SchemaVersion uint16                `json:"schema_version" binding:"required,eq=1"`
+	Name          string                `json:"name" binding:"required,max=128"`
+	Description   string                `json:"description" binding:"max=500"`
+	Revision      uint64                `json:"revision"`
+	Activate      bool                  `json:"activate"`
+	Source        model.WorkflowNode    `json:"source" binding:"required"`
+	Stages        []model.WorkflowStage `json:"stages" binding:"max=50"`
 }
 
 type executeRunRequest struct {
@@ -81,14 +52,23 @@ type executeRunRequest struct {
 }
 
 type buildPlanRequest struct {
-	Name           string              `json:"name" binding:"required,max=128"`
-	Kind           model.BuildPlanKind `json:"kind" binding:"required,max=16"`
-	Description    string              `json:"description" binding:"max=500"`
-	Script         string              `json:"script" binding:"max=262144"`
-	DockerfilePath string              `json:"dockerfile_path" binding:"max=512"`
-	ContextPath    string              `json:"context_path" binding:"max=512"`
-	ArtifactPath   string              `json:"artifact_path" binding:"max=512"`
-	TimeoutSeconds int                 `json:"timeout_seconds" binding:"omitempty,min=30,max=7200"`
+	Name                 string              `json:"name" binding:"required,max=128"`
+	Kind                 model.BuildPlanKind `json:"kind" binding:"required,max=16"`
+	Description          string              `json:"description" binding:"max=500"`
+	Script               string              `json:"script" binding:"max=262144"`
+	DockerfilePath       string              `json:"dockerfile_path" binding:"max=512"`
+	ContextPath          string              `json:"context_path" binding:"max=512"`
+	WorkingDirectory     string              `json:"working_directory" binding:"max=512"`
+	ArtifactPath         string              `json:"artifact_path" binding:"max=512"`
+	RuntimeImage         string              `json:"runtime_image" binding:"max=512"`
+	ImageRegistryID      string              `json:"image_registry_id" binding:"max=36"`
+	TargetStage          string              `json:"target_stage" binding:"max=128"`
+	Platform             string              `json:"platform" binding:"max=64"`
+	Pull                 *bool               `json:"pull"`
+	CacheEnabled         *bool               `json:"cache_enabled"`
+	BuildArgs            map[string]string   `json:"build_args" binding:"max=100"`
+	EnvironmentVariables map[string]string   `json:"environment_variables" binding:"max=100"`
+	TimeoutSeconds       int                 `json:"timeout_seconds" binding:"omitempty,min=30,max=7200"`
 }
 
 type registryRequest struct {
@@ -102,16 +82,15 @@ type registryRequest struct {
 }
 
 type deploymentPlanRequest struct {
-	Name             string                   `json:"name" binding:"required,max=128"`
-	Kind             model.DeploymentPlanKind `json:"kind" binding:"required,max=16"`
-	DeploymentTarget *deploymentTargetRequest `json:"deployment_target" binding:"required"`
-	Description      string                   `json:"description" binding:"max=500"`
-	Script           string                   `json:"script" binding:"max=262144"`
-	HelmChart        string                   `json:"helm_chart" binding:"max=512"`
-	HelmValues       string                   `json:"helm_values" binding:"max=524288"`
-	ComposeFile      string                   `json:"compose_file" binding:"max=512"`
-	ServiceName      string                   `json:"service_name" binding:"max=255"`
-	TimeoutSeconds   int                      `json:"timeout_seconds" binding:"omitempty,min=30,max=3600"`
+	Name             string                      `json:"name" binding:"required,max=128"`
+	Kind             model.DeploymentPlanKind    `json:"kind" binding:"required,max=16"`
+	DeploymentTarget *deploymentTargetRequest    `json:"deployment_target" binding:"required"`
+	Description      string                      `json:"description" binding:"max=500"`
+	Script           string                      `json:"script" binding:"max=262144"`
+	ComposeYAML      string                      `json:"compose_yaml" binding:"max=524288"`
+	ServiceName      string                      `json:"service_name" binding:"max=255"`
+	DockerConfig     model.DockerContainerConfig `json:"docker_config"`
+	TimeoutSeconds   int                         `json:"timeout_seconds" binding:"omitempty,min=30,max=3600"`
 }
 
 type imageRegistryResponse struct {
@@ -336,13 +315,8 @@ func (h pipelineHandler) deleteWorkflowTemplate(c *gin.Context) {
 }
 
 func (h pipelineHandler) advanceRun(c *gin.Context) {
-	var request advanceRunRequest
-	if err := c.ShouldBindJSON(&request); err != nil {
-		writeError(c, http.StatusBadRequest, "invalid_workflow_transition", pipeline.ErrInvalidWorkflowTransition.Error())
-		return
-	}
 	actor, _ := currentUser(c)
-	run, err := h.service.AdvanceRun(c.Request.Context(), c.Param("id"), actor.ID, request.TargetNodeID)
+	run, err := h.service.AdvanceRun(c.Request.Context(), c.Param("id"), actor.ID, "")
 	if err != nil {
 		h.writeError(c, "workflow_run_advance", err)
 		return
@@ -382,15 +356,6 @@ func (h pipelineHandler) retryRun(c *gin.Context) {
 	c.JSON(http.StatusCreated, gin.H{"pipeline_run": run})
 }
 
-func (h pipelineHandler) deleteRun(c *gin.Context) {
-	if err := h.service.DeleteRun(c.Request.Context(), c.Param("id")); err != nil {
-		h.writeError(c, "pipeline_run_delete", err)
-		return
-	}
-	setAuditResourceID(c, c.Param("id"))
-	c.Status(http.StatusNoContent)
-}
-
 func (h pipelineHandler) approveRun(c *gin.Context) {
 	actor, _ := currentUser(c)
 	run, err := h.service.ApproveRun(c.Request.Context(), c.Param("id"), actor.ID)
@@ -420,7 +385,10 @@ func (h pipelineHandler) createBuildPlan(c *gin.Context) {
 	plan, err := h.service.CreateBuildPlan(c.Request.Context(), actor.ID, pipeline.BuildPlanInput{
 		Name: request.Name, Kind: request.Kind, Description: request.Description, Script: request.Script,
 		DockerfilePath: request.DockerfilePath, ContextPath: request.ContextPath,
-		ArtifactPath: request.ArtifactPath, TimeoutSeconds: request.TimeoutSeconds,
+		WorkingDirectory: request.WorkingDirectory, ArtifactPath: request.ArtifactPath, RuntimeImage: request.RuntimeImage,
+		ImageRegistryID: request.ImageRegistryID, TargetStage: request.TargetStage, Platform: request.Platform,
+		Pull: request.Pull, CacheEnabled: request.CacheEnabled, BuildArgs: request.BuildArgs,
+		EnvironmentVariables: request.EnvironmentVariables, TimeoutSeconds: request.TimeoutSeconds,
 	})
 	if err != nil {
 		h.writeError(c, "build_plan_create", err)
@@ -439,7 +407,10 @@ func (h pipelineHandler) updateBuildPlan(c *gin.Context) {
 	plan, err := h.service.UpdateBuildPlan(c.Request.Context(), c.Param("id"), pipeline.BuildPlanInput{
 		Name: request.Name, Kind: request.Kind, Description: request.Description, Script: request.Script,
 		DockerfilePath: request.DockerfilePath, ContextPath: request.ContextPath,
-		ArtifactPath: request.ArtifactPath, TimeoutSeconds: request.TimeoutSeconds,
+		WorkingDirectory: request.WorkingDirectory, ArtifactPath: request.ArtifactPath, RuntimeImage: request.RuntimeImage,
+		ImageRegistryID: request.ImageRegistryID, TargetStage: request.TargetStage, Platform: request.Platform,
+		Pull: request.Pull, CacheEnabled: request.CacheEnabled, BuildArgs: request.BuildArgs,
+		EnvironmentVariables: request.EnvironmentVariables, TimeoutSeconds: request.TimeoutSeconds,
 	})
 	if err != nil {
 		h.writeError(c, "build_plan_update", err)
@@ -532,8 +503,8 @@ func (h pipelineHandler) createDeploymentPlan(c *gin.Context) {
 	plan, err := h.service.CreateDeploymentPlan(c.Request.Context(), actor.ID, pipeline.DeploymentPlanInput{
 		Name: request.Name, Kind: request.Kind, DeploymentTarget: &target,
 		Description: request.Description, Script: request.Script,
-		HelmChart: request.HelmChart, HelmValues: request.HelmValues, ComposeFile: request.ComposeFile,
-		ServiceName: request.ServiceName, TimeoutSeconds: request.TimeoutSeconds,
+		ComposeYAML: request.ComposeYAML,
+		ServiceName: request.ServiceName, DockerConfig: request.DockerConfig, TimeoutSeconds: request.TimeoutSeconds,
 	})
 	if err != nil {
 		h.writeError(c, "deployment_plan_create", err)
@@ -554,8 +525,8 @@ func (h pipelineHandler) updateDeploymentPlan(c *gin.Context) {
 	plan, err := h.service.UpdateDeploymentPlan(c.Request.Context(), c.Param("id"), pipeline.DeploymentPlanInput{
 		Name: request.Name, Kind: request.Kind, DeploymentTarget: &target,
 		Description: request.Description, Script: request.Script,
-		HelmChart: request.HelmChart, HelmValues: request.HelmValues, ComposeFile: request.ComposeFile,
-		ServiceName: request.ServiceName, TimeoutSeconds: request.TimeoutSeconds,
+		ComposeYAML: request.ComposeYAML,
+		ServiceName: request.ServiceName, DockerConfig: request.DockerConfig, TimeoutSeconds: request.TimeoutSeconds,
 	})
 	if err != nil {
 		h.writeError(c, "deployment_plan_update", err)
@@ -563,6 +534,30 @@ func (h pipelineHandler) updateDeploymentPlan(c *gin.Context) {
 	}
 	setAuditResourceID(c, plan.ID)
 	c.JSON(http.StatusOK, gin.H{"deployment_plan": plan})
+}
+
+func (h pipelineHandler) setDeploymentPlanStatus(c *gin.Context) {
+	var request runtimeStatusRequest
+	if err := c.ShouldBindJSON(&request); err != nil || request.Active == nil {
+		h.logger.Warn("修改部署方案状态参数无效", "operation", "deployment_plan_status_bind", "request_id", requestIDFrom(c), "deployment_plan_id", c.Param("id"), "err", err)
+		writeError(c, http.StatusBadRequest, "invalid_deployment_plan_status", "部署方案状态格式无效")
+		return
+	}
+	if err := h.service.SetDeploymentPlanActive(c.Request.Context(), c.Param("id"), *request.Active); err != nil {
+		h.writeError(c, "deployment_plan_status", err)
+		return
+	}
+	setAuditResourceID(c, c.Param("id"))
+	c.Status(http.StatusNoContent)
+}
+
+func (h pipelineHandler) deleteDeploymentPlan(c *gin.Context) {
+	if err := h.service.DeleteDeploymentPlan(c.Request.Context(), c.Param("id")); err != nil {
+		h.writeError(c, "deployment_plan_delete", err)
+		return
+	}
+	setAuditResourceID(c, c.Param("id"))
+	c.Status(http.StatusNoContent)
 }
 
 func (h pipelineHandler) listRuns(c *gin.Context) {
@@ -598,6 +593,7 @@ func (h pipelineHandler) writeError(c *gin.Context, operation string, err error)
 	case errors.Is(err, pipeline.ErrRegistryConnectionFailed):
 		writeError(c, http.StatusBadGateway, "image_registry_connection_failed", pipeline.ErrRegistryConnectionFailed.Error())
 	case errors.Is(err, pipeline.ErrInvalidApplication), errors.Is(err, pipeline.ErrInvalidBuildPlan),
+		errors.Is(err, pipeline.ErrInvalidScriptEnvironment),
 		errors.Is(err, pipeline.ErrInvalidRegistry), errors.Is(err, pipeline.ErrInvalidRegistryName),
 		errors.Is(err, pipeline.ErrInvalidRegistryProvider), errors.Is(err, pipeline.ErrInvalidRegistryEndpoint),
 		errors.Is(err, pipeline.ErrInsecureRegistryEndpoint), errors.Is(err, pipeline.ErrInvalidRegistryNamespace),
@@ -617,6 +613,8 @@ func (h pipelineHandler) writeError(c *gin.Context, operation string, err error)
 		writeError(c, http.StatusConflict, "delivery_config_exists", err.Error())
 	case errors.Is(err, pipeline.ErrBuildPlanInUse):
 		writeError(c, http.StatusConflict, "build_plan_in_use", err.Error())
+	case errors.Is(err, pipeline.ErrDeploymentPlanInUse):
+		writeError(c, http.StatusConflict, "deployment_plan_in_use", err.Error())
 	case errors.Is(err, pipeline.ErrApplicationNotFound):
 		writeError(c, http.StatusNotFound, "application_not_found", err.Error())
 	case errors.Is(err, pipeline.ErrBuildPlanNotFound):
@@ -629,7 +627,7 @@ func (h pipelineHandler) writeError(c *gin.Context, operation string, err error)
 		writeError(c, http.StatusNotFound, "pipeline_run_not_found", err.Error())
 	case errors.Is(err, pipeline.ErrPipelineRunNotRetryable):
 		writeError(c, http.StatusConflict, "pipeline_run_not_retryable", err.Error())
-	case errors.Is(err, pipeline.ErrPipelineRunManagedByReleasePlan), errors.Is(err, pipeline.ErrPipelineRunAwaitingReleasePlan):
+	case errors.Is(err, pipeline.ErrPipelineRunAwaitingReleasePlan):
 		writeError(c, http.StatusConflict, "pipeline_run_managed_by_release_plan", err.Error())
 	case errors.Is(err, pipeline.ErrManualCommitRequired):
 		writeError(c, http.StatusBadRequest, "manual_commit_required", err.Error())
@@ -666,21 +664,9 @@ func toRegistryInput(request registryRequest) pipeline.RegistryInput {
 }
 
 func toApplicationInput(request applicationRequest) pipeline.ApplicationInput {
-	imageRegistryID := ""
-	if request.ImageRegistryID != nil {
-		imageRegistryID = *request.ImageRegistryID
-	}
 	return pipeline.ApplicationInput{
 		Name: request.Name, Description: request.Description, RepositoryID: request.RepositoryID,
-		Branch: request.Branch, PollEnabled: request.PollEnabled,
-		PollIntervalSeconds: request.PollIntervalSeconds, WatchPush: request.WatchPush,
-		WatchPullRequest: request.WatchPullRequest, WatchTags: request.WatchTags,
-		TagPattern: request.TagPattern, BuildPlanID: request.BuildPlanID,
-		ImageRegistryID: imageRegistryID, ImageRegistrySet: request.ImageRegistryID != nil,
-		DeploymentPlanID:   request.DeploymentPlanID,
-		DeploymentTargetID: request.DeploymentTargetID,
-		WorkflowTemplateID: request.WorkflowTemplateID,
-		Environments:       toEnvironmentInputs(request.Environments),
+		PollIntervalSeconds: request.PollIntervalSeconds, WorkflowTemplateID: request.WorkflowTemplateID,
 	}
 }
 
@@ -688,29 +674,15 @@ func toWorkflowTemplateInput(request workflowTemplateRequest) pipeline.WorkflowT
 	return pipeline.WorkflowTemplateInput{
 		Description: request.Description,
 		WorkflowInput: pipeline.WorkflowInput{
-			Name: request.Name, Revision: request.Revision, Activate: request.Activate,
-			Nodes: request.Nodes, Edges: request.Edges, Viewport: request.Viewport,
+			SchemaVersion: request.SchemaVersion, Name: request.Name, Revision: request.Revision, Activate: request.Activate,
+			Source: request.Source, Stages: request.Stages,
 		},
 	}
 }
 
-func toEnvironmentInputs(requests []applicationEnvironmentRequest) []pipeline.EnvironmentInput {
-	result := make([]pipeline.EnvironmentInput, 0, len(requests))
-	for i := range requests {
-		result = append(result, pipeline.EnvironmentInput{
-			Key: requests[i].Key, Name: requests[i].Name, Branch: requests[i].Branch,
-			PollEnabled: requests[i].PollEnabled, WatchPush: requests[i].WatchPush,
-			WatchPullRequest: requests[i].WatchPullRequest, WatchTags: requests[i].WatchTags,
-			TagPattern: requests[i].TagPattern, DeploymentPlanID: requests[i].DeploymentPlanID,
-			DeploymentTargetID: requests[i].DeploymentTargetID, SortOrder: requests[i].SortOrder,
-		})
-	}
-	return result
-}
-
 func toWorkflowInput(request workflowRequest) pipeline.WorkflowInput {
 	return pipeline.WorkflowInput{
-		Name: request.Name, Revision: request.Revision, Activate: request.Activate,
-		Nodes: request.Nodes, Edges: request.Edges, Viewport: request.Viewport,
+		SchemaVersion: request.SchemaVersion, Name: request.Name, Revision: request.Revision, Activate: request.Activate,
+		Source: request.Source, Stages: request.Stages,
 	}
 }

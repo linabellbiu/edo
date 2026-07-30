@@ -35,6 +35,52 @@ func TestSSHConnectionWithPasswordAndDockerCheck(t *testing.T) {
 	}
 }
 
+func TestDockerPullWithRegistryAuthKeepsCredentialOutOfCommand(t *testing.T) {
+	const credential = "private-password-value"
+	command, input, err := dockerPullWithRegistryAuth("docker pull --quiet 'registry.example.com/app@sha256:abc'", RegistryAuth{
+		ServerAddress: "https://registry.example.com", Host: "registry.example.com",
+		Username: "deployer", Credential: credential,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(command, credential) || !strings.Contains(command, "--password-stdin") ||
+		!strings.Contains(command, "mktemp -d /tmp/zrt-docker-config") {
+		t.Fatalf("远程拉取命令没有安全传递认证信息: %s", command)
+	}
+	payload, err := io.ReadAll(input)
+	if err != nil || string(payload) != credential+"\n" {
+		t.Fatalf("远程登录标准输入不正确: %q err=%v", payload, err)
+	}
+	prepared, preparedInput := (dockerSSHCommandMode{prefix: "sudo -S -p '' -- ", password: "sudo-password"}).prepare(
+		command, strings.NewReader(credential+"\n"),
+	)
+	if strings.Contains(prepared, credential) || strings.Contains(prepared, "sudo-password") {
+		t.Fatal("registry 或 sudo 凭据进入了远程命令")
+	}
+	combined, err := io.ReadAll(preparedInput)
+	if err != nil || string(combined) != "sudo-password\n"+credential+"\n" {
+		t.Fatalf("sudo 与 registry 凭据的标准输入顺序错误: %q err=%v", combined, err)
+	}
+}
+
+func TestDockerPullWithIdentityTokenUsesTemporaryConfig(t *testing.T) {
+	const credential = "identity-token-value"
+	command, input, err := dockerPullWithRegistryAuth("docker pull --quiet image", RegistryAuth{
+		Host: "registry.example.com", Credential: credential,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(command, credential) || !strings.Contains(command, "config.json") || strings.Contains(command, "docker login") {
+		t.Fatalf("identity token 远程命令不安全: %s", command)
+	}
+	payload, err := io.ReadAll(input)
+	if err != nil || !strings.Contains(string(payload), credential) {
+		t.Fatalf("identity token 没有通过标准输入配置传递: %q err=%v", payload, err)
+	}
+}
+
 func TestSSHConnectionReusesSSHPasswordForSudo(t *testing.T) {
 	address, fingerprint, commands := startDockerSSHPasswordSudoTestServer(t, "secret")
 	service := &Service{config: config.Runtime{ConnectTimeout: time.Second, RequestTimeout: 2 * time.Second}}
@@ -99,9 +145,30 @@ func TestLoadImageWithSSHStreamsArchiveAndVerifiesImageID(t *testing.T) {
 	if uploaded := <-uploads; string(uploaded) != archive {
 		t.Fatalf("docker save 流没有完整传输: %q", uploaded)
 	}
-	expectedInspect := "sudo -S -p '' -- docker image inspect --format '{{.Id}}' '" + image + "'"
+	expectedInspect := "sudo -S -p '' -- docker image inspect --format '{{.Id}}' '" + targetImageID + "'"
 	if command := <-commands; command != expectedInspect {
 		t.Fatalf("镜像校验命令错误: %s", command)
+	}
+	expectedTag := "sudo -S -p '' -- docker image tag '" + targetImageID + "' '" + image + "'"
+	if command := <-commands; command != expectedTag {
+		t.Fatalf("镜像受控标签命令错误: %s", command)
+	}
+}
+
+func TestParseDockerLoadImageIDRejectsMissingOrAmbiguousResult(t *testing.T) {
+	first := "sha256:" + strings.Repeat("a", 64)
+	second := "sha256:" + strings.Repeat("b", 64)
+	if actual, err := parseDockerLoadImageID("warning\nLoaded image ID: " + first + "\n"); err != nil || actual != first {
+		t.Fatalf("没有解析本次 docker load 返回的 Image ID: actual=%q err=%v", actual, err)
+	}
+	for _, output := range []string{
+		"Loaded image: zrt.local/app:mutable\n",
+		"Loaded image ID: sha256:short\n",
+		"Loaded image ID: " + first + "\nLoaded image ID: " + second + "\n",
+	} {
+		if _, err := parseDockerLoadImageID(output); err == nil {
+			t.Fatalf("无法确认的 docker load 输出未被拒绝: %q", output)
+		}
 	}
 }
 
@@ -128,6 +195,15 @@ func startDockerSSHImageLoadTestServer(t *testing.T, password string) (string, s
 }
 
 func startDockerSSHTestServerWithUploads(t *testing.T, password string, sudoPasswordRequired bool) (string, string, <-chan string, <-chan []byte) {
+	return startDockerSSHTestServerWithCapabilities(t, password, sudoPasswordRequired, true)
+}
+
+func startDockerSSHTestServerWithCapabilities(
+	t *testing.T,
+	password string,
+	sudoPasswordRequired bool,
+	composeAvailable bool,
+) (string, string, <-chan string, <-chan []byte) {
 	t.Helper()
 	_, privateKey, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
@@ -159,7 +235,7 @@ func startDockerSSHTestServerWithUploads(t *testing.T, password string, sudoPass
 			if acceptErr != nil {
 				return
 			}
-			go serveDockerSSHTestConnection(connection, serverConfig, password, sudoPasswordRequired, commands, uploads)
+			go serveDockerSSHTestConnection(connection, serverConfig, password, sudoPasswordRequired, composeAvailable, commands, uploads)
 		}
 	}()
 	return listener.Addr().String(), ssh.FingerprintSHA256(signer.PublicKey()), commands, uploads
@@ -170,6 +246,7 @@ func serveDockerSSHTestConnection(
 	config *ssh.ServerConfig,
 	sudoPassword string,
 	sudoPasswordRequired bool,
+	composeAvailable bool,
 	commands chan<- string,
 	uploads chan<- []byte,
 ) {
@@ -240,11 +317,29 @@ func serveDockerSSHTestConnection(
 					}
 					if commandInput != nil {
 						uploads <- commandInput
-						_, _ = io.WriteString(channel, "Loaded image\n")
+						_, _ = io.WriteString(channel, "Loaded image ID: sha256:"+strings.Repeat("a", 64)+"\n")
 						status = 0
 					}
 				case strings.HasPrefix(command, "docker image inspect --format '{{.Id}}' "):
 					_, _ = io.WriteString(channel, "sha256:"+strings.Repeat("a", 64)+"\n")
+					status = 0
+				case strings.HasPrefix(command, "docker image tag "):
+					status = 0
+				case command == "docker compose version --short":
+					if composeAvailable {
+						_, _ = io.WriteString(channel, "2.39.2\n")
+						status = 0
+					}
+				case strings.HasPrefix(command, "env ZRT_IMAGE=") && strings.Contains(command, " docker 'compose' "):
+					if !inputRead {
+						var readErr error
+						commandInput, readErr = io.ReadAll(channel)
+						if readErr != nil {
+							break
+						}
+					}
+					uploads <- commandInput
+					_, _ = io.WriteString(channel, "Compose deployment accepted\n")
 					status = 0
 				default:
 					_, _ = io.WriteString(channel.Stderr(), fmt.Sprintf("不支持的命令: %s", strings.TrimSpace(command)))

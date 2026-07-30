@@ -3,6 +3,7 @@ package dockerengine
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -168,7 +169,7 @@ func connectForSSHTest(ctx context.Context, connector *sshConnector, fingerprint
 	})
 }
 
-func (s *Service) pullImageWithSSH(ctx context.Context, endpointID, image string) (bool, error) {
+func (s *Service) pullImageWithSSH(ctx context.Context, endpointID, image string, registry RegistryAuth) (bool, error) {
 	endpoint, err := s.Find(ctx, endpointID)
 	if err != nil {
 		return false, err
@@ -198,11 +199,54 @@ func (s *Service) pullImageWithSSH(ctx context.Context, endpointID, image string
 	if err != nil {
 		return true, fmt.Errorf("检查远程 Docker sudo 权限失败: %w", err)
 	}
-	command, commandInput := mode.prepare(command, nil)
+	command, registryInput, err := dockerPullWithRegistryAuth(command, registry)
+	if err != nil {
+		return true, err
+	}
+	command, commandInput := mode.prepare(command, registryInput)
 	if err := runSSHCommandWithInput(ctx, client, command, commandInput, io.Discard); err != nil {
 		return true, fmt.Errorf("远程执行 docker pull 失败: %w", err)
 	}
 	return true, nil
+}
+
+func dockerPullWithRegistryAuth(pullCommand string, registry RegistryAuth) (string, io.Reader, error) {
+	if strings.TrimSpace(registry.Credential) == "" {
+		return pullCommand, nil, nil
+	}
+	host := strings.TrimSpace(registry.Host)
+	if host == "" {
+		parsed, err := url.Parse(strings.TrimSpace(registry.ServerAddress))
+		if err != nil || parsed.Host == "" {
+			return "", nil, errors.New("镜像仓库认证地址无效")
+		}
+		host = parsed.Host
+	}
+	script := "set -eu; umask 077; config=$(mktemp -d /tmp/zrt-docker-config.XXXXXX); " +
+		"trap 'rm -rf \"$config\"' EXIT; export DOCKER_CONFIG=\"$config\"; "
+	var input io.Reader
+	if username := strings.TrimSpace(registry.Username); username != "" {
+		script += "docker login --username " + shellQuote(username) + " --password-stdin " + shellQuote(host) + " >/dev/null; "
+		input = strings.NewReader(registry.Credential + "\n")
+	} else {
+		type authEntry struct {
+			IdentityToken string `json:"identitytoken"`
+			Auth          string `json:"auth,omitempty"`
+		}
+		payload, err := json.Marshal(struct {
+			Auths map[string]authEntry `json:"auths"`
+		}{Auths: map[string]authEntry{
+			host: {IdentityToken: registry.Credential},
+		}})
+		if err != nil {
+			return "", nil, errors.New("编码镜像仓库认证信息失败")
+		}
+		// token 认证没有通用的 docker login 参数，以只存在于本次命令生命周期内的配置文件传入。
+		script += "cat >\"$DOCKER_CONFIG/config.json\"; "
+		input = bytes.NewReader(payload)
+	}
+	script += pullCommand
+	return "sh -c " + shellQuote(script), input, nil
 }
 
 func (s *Service) loadImageToSSH(ctx context.Context, endpointID, image string, archive io.Reader) (string, error) {
@@ -238,22 +282,52 @@ func loadImageWithSSH(ctx context.Context, connector *sshConnector, bundle SSHBu
 	if err != nil {
 		return "", fmt.Errorf("检查远程 Docker sudo 权限失败: %w", err)
 	}
-	loadOutput := &limitedOutput{remaining: 1024}
+	loadOutput := &limitedOutput{remaining: 4096}
 	loadCommand, loadInput := mode.prepare("docker image load --quiet", archive)
 	if err := runSSHCommandWithInput(ctx, client, loadCommand, loadInput, loadOutput); err != nil {
 		return "", fmt.Errorf("通过 SSH 加载 Docker 镜像失败: %w", err)
 	}
+	targetImageID, err := parseDockerLoadImageID(loadOutput.String())
+	if err != nil {
+		return "", err
+	}
 	inspectOutput := &limitedOutput{remaining: 256}
-	inspectCommand := "docker image inspect --format '{{.Id}}' " + shellQuote(image)
+	inspectCommand := "docker image inspect --format '{{.Id}}' " + shellQuote(targetImageID)
 	inspectCommand, inspectInput := mode.prepare(inspectCommand, nil)
 	if err := runSSHCommandWithInput(ctx, client, inspectCommand, inspectInput, inspectOutput); err != nil {
 		return "", fmt.Errorf("校验 SSH 主机上的 Docker 镜像失败: %w", err)
 	}
-	targetImageID := strings.TrimSpace(inspectOutput.String())
-	if !IsValidImageID(targetImageID) {
+	if strings.TrimSpace(inspectOutput.String()) != targetImageID {
 		return "", errors.New("Docker SSH 主机没有返回可验证的镜像 ID")
 	}
+	// ImageSave(sourceImageID) 生成不携带 RepoTag 的归档。目标端按固定 ID
+	// 复验后再恢复展示用标签；返回值和实际部署始终使用 targetImageID。
+	tagCommand := "docker image tag " + shellQuote(targetImageID) + " " + shellQuote(image)
+	tagCommand, tagInput := mode.prepare(tagCommand, nil)
+	if err := runSSHCommandWithInput(ctx, client, tagCommand, tagInput, io.Discard); err != nil {
+		return "", fmt.Errorf("为 SSH 主机上的 Docker 镜像设置受控标签失败: %w", err)
+	}
 	return targetImageID, nil
+}
+
+func parseDockerLoadImageID(output string) (string, error) {
+	const prefix = "Loaded image ID:"
+	loadedImageID := ""
+	for _, line := range strings.Split(output, "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, prefix) {
+			continue
+		}
+		candidate := strings.TrimSpace(strings.TrimPrefix(line, prefix))
+		if !IsValidImageID(candidate) || (loadedImageID != "" && candidate != loadedImageID) {
+			return "", errors.New("Docker SSH 主机返回了无法确认的镜像加载结果")
+		}
+		loadedImageID = candidate
+	}
+	if loadedImageID == "" {
+		return "", errors.New("Docker SSH 主机没有返回本次加载的镜像 ID")
+	}
+	return loadedImageID, nil
 }
 
 func dockerPullCommand(image string) (string, error) {

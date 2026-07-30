@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -12,22 +13,24 @@ import (
 )
 
 const (
-	DefaultMaxAttempts       = 4
-	maxAllowedAttempts       = 20
-	defaultNATSURL           = "nats://127.0.0.1:4222"
-	defaultNATSStream        = "zrt_tasks"
-	defaultNATSDeadStream    = "zrt_dead"
-	defaultNATSSubjectPrefix = "zrt.task"
-	defaultNATSDeadSubject   = "zrt.dead.task.v1"
-	defaultNATSMaxAge        = 7 * 24 * time.Hour
-	defaultNATSMaxBytes      = 512 * 1024 * 1024
-	defaultNATSDeadMaxBytes  = 256 * 1024 * 1024
-	defaultNATSReplicas      = 1
-	defaultWorkerConcurrency = 8
-	defaultWorkerTaskTimeout = 30 * time.Minute
-	defaultWorkerLease       = 45 * time.Second
-	defaultWorkerShutdown    = 30 * time.Second
-	defaultSchedulerPoll     = 15 * time.Second
+	DefaultMaxAttempts        = 4
+	maxAllowedAttempts        = 20
+	defaultNATSURL            = "nats://127.0.0.1:4222"
+	defaultNATSStream         = "zrt_tasks"
+	defaultNATSDeadStream     = "zrt_dead"
+	defaultNATSSubjectPrefix  = "zrt.task"
+	defaultNATSDeadSubject    = "zrt.dead.task.v1"
+	defaultNATSMaxAge         = 7 * 24 * time.Hour
+	defaultNATSMaxBytes       = 512 * 1024 * 1024
+	defaultNATSDeadMaxBytes   = 256 * 1024 * 1024
+	defaultNATSReplicas       = 1
+	defaultWorkerConcurrency  = 8
+	defaultWorkerTaskTimeout  = 30 * time.Minute
+	defaultWorkerLease        = 45 * time.Second
+	defaultWorkerShutdown     = 30 * time.Second
+	defaultSchedulerPoll      = 15 * time.Second
+	defaultArtifactsDirectory = "data/artifacts"
+	defaultArtifactsMaxBytes  = int64(1024 * 1024 * 1024)
 )
 
 type Config struct {
@@ -43,6 +46,7 @@ type Config struct {
 	Git         Git
 	Runtime     Runtime
 	Scheduler   Scheduler
+	Artifacts   Artifacts
 }
 
 type Auth struct {
@@ -107,14 +111,20 @@ type Git struct {
 }
 
 type Runtime struct {
-	ConnectTimeout      time.Duration `env:"ZRT_RUNTIME_CONNECT_TIMEOUT"`
-	RequestTimeout      time.Duration `env:"ZRT_RUNTIME_REQUEST_TIMEOUT"`
-	TerminalMaxDuration time.Duration `env:"ZRT_RUNTIME_TERMINAL_MAX_DURATION"`
-	DockerBuilderHost   string        `env:"ZRT_DOCKER_BUILDER_HOST"`
+	ConnectTimeout           time.Duration `env:"ZRT_RUNTIME_CONNECT_TIMEOUT"`
+	RequestTimeout           time.Duration `env:"ZRT_RUNTIME_REQUEST_TIMEOUT"`
+	TerminalMaxDuration      time.Duration `env:"ZRT_RUNTIME_TERMINAL_MAX_DURATION"`
+	DockerBuilderHost        string        `env:"ZRT_DOCKER_BUILDER_HOST"`
+	DockerBuilderTLSCertPath string        `env:"ZRT_DOCKER_BUILDER_TLS_CERT_PATH"`
 }
 
 type Scheduler struct {
 	PollInterval time.Duration `env:"ZRT_SCHEDULER_POLL_INTERVAL"`
+}
+
+type Artifacts struct {
+	Directory string `env:"ZRT_ARTIFACTS_DIRECTORY"`
+	MaxBytes  int64  `env:"ZRT_ARTIFACTS_MAX_BYTES"`
 }
 
 func Load() (Config, error) {
@@ -129,6 +139,7 @@ func Load() (Config, error) {
 		"ZRT_NATS_DEAD_STREAM",
 		"ZRT_NATS_SUBJECT_PREFIX",
 		"ZRT_NATS_DEAD_SUBJECT",
+		"ZRT_ARTIFACTS_DIRECTORY",
 	); err != nil {
 		return Config{}, err
 	}
@@ -201,6 +212,10 @@ func Load() (Config, error) {
 			TerminalMaxDuration: 2 * time.Hour,
 		},
 		Scheduler: Scheduler{PollInterval: defaultSchedulerPoll},
+		Artifacts: Artifacts{
+			Directory: defaultArtifactsDirectory,
+			MaxBytes:  defaultArtifactsMaxBytes,
+		},
 	}
 	if err := env.Parse(&cfg); err != nil {
 		return Config{}, fmt.Errorf("读取 ZRT 环境变量失败: %w", err)
@@ -288,11 +303,17 @@ func (c Config) Validate() error {
 		c.Runtime.TerminalMaxDuration < time.Minute || c.Runtime.TerminalMaxDuration > 24*time.Hour {
 		return errors.New("容器运行时连接或请求超时配置无效")
 	}
-	if !validDockerBuilderHost(c.Runtime.DockerBuilderHost) {
+	if !validDockerBuilderRuntime(c.Runtime.DockerBuilderHost, c.Runtime.DockerBuilderTLSCertPath) {
 		return errors.New("Docker 构建运行时地址无效")
 	}
 	if c.Scheduler.PollInterval < time.Second || c.Scheduler.PollInterval > time.Minute {
 		return errors.New("定时任务扫描间隔必须在 1 秒到 1 分钟之间")
+	}
+	if strings.TrimSpace(c.Artifacts.Directory) == "" {
+		return errors.New("制品存储目录不能为空")
+	}
+	if c.Artifacts.MaxBytes < 1 || c.Artifacts.MaxBytes > 1024*1024*1024*1024 {
+		return errors.New("单个制品大小限制必须在 1 字节到 1 TiB 之间")
 	}
 	return nil
 }
@@ -315,6 +336,29 @@ func (c *Config) normalizeStrings() {
 	c.Secrets.Key = strings.TrimSpace(c.Secrets.Key)
 	c.Git.KnownHostsFile = strings.TrimSpace(c.Git.KnownHostsFile)
 	c.Runtime.DockerBuilderHost = strings.TrimSpace(c.Runtime.DockerBuilderHost)
+	c.Runtime.DockerBuilderTLSCertPath = strings.TrimSpace(c.Runtime.DockerBuilderTLSCertPath)
+	c.Artifacts.Directory = strings.TrimSpace(c.Artifacts.Directory)
+}
+
+func validDockerBuilderRuntime(host, certPath string) bool {
+	host, certPath = strings.TrimSpace(host), strings.TrimSpace(certPath)
+	if !validDockerBuilderHost(host) || strings.ContainsRune(certPath, '\x00') {
+		return false
+	}
+	if host == "" {
+		// 未显式配置时由 Docker 标准环境变量决定本机连接及其 TLS 参数。
+		return certPath == ""
+	}
+	parsed, _ := url.Parse(host)
+	switch parsed.Scheme {
+	case "tcp":
+		// 显式 TCP 构建运行时必须使用包含 ca.pem、cert.pem、key.pem 的 mTLS 目录。
+		return certPath != "" && filepath.IsAbs(certPath)
+	case "unix":
+		return certPath == ""
+	default:
+		return false
+	}
 }
 
 func validDockerBuilderHost(value string) bool {

@@ -17,6 +17,7 @@ import (
 
 	"zrt/internal/access"
 	"zrt/internal/account"
+	artifactmanager "zrt/internal/artifact"
 	"zrt/internal/audit"
 	"zrt/internal/auth"
 	"zrt/internal/cache"
@@ -140,6 +141,10 @@ func newAuthTestRouter(t *testing.T) (*gin.Engine, func()) {
 		repository.WithWebhookGate(configurationService),
 	)
 	pipelineService := pipeline.NewService(db, repositoryService, secretManager)
+	artifactService, err := artifactmanager.NewService(db, t.TempDir(), 1024*1024, logger)
+	if err != nil {
+		t.Fatalf("初始化接口测试制品服务失败: %v", err)
+	}
 	now := time.Now().UTC()
 	testEnvironment := model.Environment{
 		ID: "httpapi-deployment-environment", Name: "接口测试部署环境", IsActive: true,
@@ -198,6 +203,7 @@ func newAuthTestRouter(t *testing.T) (*gin.Engine, func()) {
 		Accounts: accounts, Login: login, LoginLimiter: limiter, Sessions: sessions,
 		Access: accessService, Audits: auditService,
 		Credentials: credentialService, Repositories: repositoryService, Pipelines: pipelineService,
+		Artifacts:      artifactService,
 		Kubernetes:     kubernetesService,
 		Deployments:    deploymentService,
 		Configurations: configurationService,

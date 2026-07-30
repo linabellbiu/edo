@@ -7,6 +7,8 @@ import (
 	"io"
 	"log/slog"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -28,6 +30,30 @@ type hostScriptRunnerStub struct {
 	input  sshdeploy.Input
 	result sshdeploy.Result
 	err    error
+}
+
+type idempotentHostScriptRunnerStub struct {
+	result  sshdeploy.Result
+	err     error
+	started chan struct{}
+	release chan struct{}
+	once    sync.Once
+	calls   atomic.Int32
+}
+
+func (s *idempotentHostScriptRunnerStub) RunHostDeploymentScript(ctx context.Context, _ sshdeploy.Input) (sshdeploy.Result, error) {
+	s.calls.Add(1)
+	if s.started != nil {
+		s.once.Do(func() { close(s.started) })
+	}
+	if s.release != nil {
+		select {
+		case <-ctx.Done():
+			return sshdeploy.Result{}, ctx.Err()
+		case <-s.release:
+		}
+	}
+	return s.result, s.err
 }
 
 func (s *hostScriptRunnerStub) RunHostDeploymentScript(_ context.Context, input sshdeploy.Input) (sshdeploy.Result, error) {
@@ -214,6 +240,344 @@ func TestSSHDeploymentUsesSelectedMembershipAndExactPlanSnapshot(t *testing.T) {
 	}
 }
 
+func TestPipelineDeploymentExecutesImmutableTargetSnapshot(t *testing.T) {
+	service, db, _ := newDeploymentTestService(t)
+	environment, host := createSSHDeploymentResources(t, db)
+	target, err := service.CreateTarget(context.Background(), "admin", TargetInput{
+		Name: "流水线快照目标", Platform: model.DeploymentSSH,
+		EnvironmentID: environment.ID, HostID: host.ID,
+		WorkingDirectory: "/srv/original", RolloutTimeout: 90,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot := *target
+	if err := db.Model(&model.DeploymentTarget{}).Where("id = ?", target.ID).Updates(map[string]any{
+		"host_id": "changed-host", "environment_id": "changed-environment",
+		"working_directory": "/srv/changed", "rollout_timeout": 300,
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	runner := &hostScriptRunnerStub{result: sshdeploy.Result{ExitCode: 0, Started: true}}
+	service.ssh = runner
+	script := "echo ok\n"
+	digest := model.DeploymentPlanExecutionDigest(model.DeploymentPlanScript, script, 120)
+	record, err := service.RequestCommandSnapshotAndRun(
+		context.Background(), "operator", snapshot,
+		CommandRequestInput{
+			TargetID: target.ID, PipelineRunID: "snapshot-run", WorkflowNodeID: "deploy",
+			DeploymentPlanID: "snapshot-plan", PlanKind: model.DeploymentPlanScript,
+			Script: script, ScriptDigest: digest, TimeoutSeconds: 120,
+		},
+	)
+	if err != nil {
+		t.Fatalf("按流水线目标快照执行失败: %v", err)
+	}
+	if runner.input.HostID != host.ID || runner.input.EnvironmentID != environment.ID ||
+		runner.input.WorkingDirectory != "/srv/original" {
+		t.Fatalf("部署读取了运行创建后的目标改动: %+v", runner.input)
+	}
+	if record.HostID != host.ID || record.EnvironmentID != environment.ID ||
+		record.WorkingDirectory != "/srv/original" || record.RolloutTimeout != 90 {
+		t.Fatalf("发布记录没有保存流水线目标快照: %+v", record)
+	}
+}
+
+func TestPipelineReleaseIdempotencyBlocksConcurrentExecutionAndReusesSuccess(t *testing.T) {
+	service, db, _ := newDeploymentTestService(t)
+	environment, host := createSSHDeploymentResources(t, db)
+	target, err := service.CreateTarget(context.Background(), "admin", TargetInput{
+		Name: "幂等发布目标", Platform: model.DeploymentSSH,
+		EnvironmentID: environment.ID, HostID: host.ID, WorkingDirectory: "/srv/app", RolloutTimeout: 90,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runner := &idempotentHostScriptRunnerStub{
+		result:  sshdeploy.Result{ExitCode: 0, Started: true},
+		started: make(chan struct{}), release: make(chan struct{}),
+	}
+	service.ssh = runner
+	script := "./deploy.sh\n"
+	input := CommandRequestInput{
+		TargetID: target.ID, PipelineRunID: "run-idempotent", WorkflowNodeID: "deploy-production",
+		DeploymentPlanID: "plan-idempotent", PlanKind: model.DeploymentPlanScript,
+		Script: script, ScriptDigest: model.DeploymentPlanExecutionDigest(model.DeploymentPlanScript, script, 120),
+		TimeoutSeconds: 120,
+	}
+	type result struct {
+		record *model.DeploymentRecord
+		err    error
+	}
+	firstResult := make(chan result, 1)
+	go func() {
+		record, runErr := service.RequestCommandSnapshotAndRun(context.Background(), "operator", *target, input)
+		firstResult <- result{record: record, err: runErr}
+	}()
+	select {
+	case <-runner.started:
+	case <-time.After(3 * time.Second):
+		t.Fatal("首次发布没有开始执行")
+	}
+
+	duplicate, err := service.RequestCommandSnapshotAndRun(context.Background(), "operator", *target, input)
+	if !errors.Is(err, ErrPipelineReleaseRunning) || duplicate == nil {
+		t.Fatalf("并发重复发布未返回稳定的执行中错误: record=%+v err=%v", duplicate, err)
+	}
+	if runner.calls.Load() != 1 {
+		t.Fatalf("并发重复发布产生了第二次外部执行: calls=%d", runner.calls.Load())
+	}
+	var count int64
+	if err := db.Model(&model.DeploymentRecord{}).
+		Where("pipeline_run_id = ? AND workflow_node_id = ? AND operation = ?", input.PipelineRunID, input.WorkflowNodeID, model.DeploymentRelease).
+		Count(&count).Error; err != nil || count != 1 {
+		t.Fatalf("幂等键未限制为一条发布记录: count=%d err=%v", count, err)
+	}
+
+	close(runner.release)
+	first := <-firstResult
+	if first.err != nil || first.record == nil || first.record.ID != duplicate.ID {
+		t.Fatalf("首次发布执行结果错误: record=%+v err=%v", first.record, first.err)
+	}
+	reused, err := service.RequestCommandSnapshotAndRun(context.Background(), "operator", *target, input)
+	if err != nil || reused == nil || reused.ID != first.record.ID || reused.Status != model.DeploymentSucceeded {
+		t.Fatalf("重投没有复用已成功发布记录: record=%+v err=%v", reused, err)
+	}
+	if runner.calls.Load() != 1 {
+		t.Fatalf("复用成功记录时再次执行了部署: calls=%d", runner.calls.Load())
+	}
+	changed := input
+	changed.ArtifactID = "other-artifact"
+	conflict, err := service.RequestCommandSnapshotAndRun(context.Background(), "operator", *target, changed)
+	if !errors.Is(err, ErrPipelineReleaseConflict) || conflict == nil || conflict.ID != first.record.ID {
+		t.Fatalf("相同幂等键下不同制品语义未被拒绝: record=%+v err=%v", conflict, err)
+	}
+	if runner.calls.Load() != 1 {
+		t.Fatalf("语义冲突触发了重复外部执行: calls=%d", runner.calls.Load())
+	}
+}
+
+func TestRollbackRequiresImmutableImageIdentityAndIsIdempotent(t *testing.T) {
+	service, db, endpointID := newDeploymentTestService(t)
+	now := time.Now().UTC()
+	imageID := "sha256:" + strings.Repeat("e", 64)
+	source := model.DeploymentRecord{
+		ID: "successful-docker-release", TargetID: "target-rollback", TargetName: "回滚目标",
+		Platform: model.DeploymentDocker, RuntimeID: endpointID, WorkloadName: "api", RolloutTimeout: 120,
+		Operation: model.DeploymentRelease, Image: "registry.example.com/team/api@sha256:" + strings.Repeat("f", 64),
+		PreviousImage: "registry.example.com/team/api:stable", PreviousImageID: imageID,
+		DeploymentPlanID: "docker-plan", DeploymentPlanKind: model.DeploymentPlanDocker,
+		DockerConfig: model.DockerContainerConfig{Network: "bridge", RestartPolicy: "unless-stopped", EnvironmentVariables: map[string]string{}},
+		Status:       model.DeploymentSucceeded, RequestedBy: "operator", CreatedAt: now, UpdatedAt: now,
+	}
+	source.DockerConfigDigest = model.DockerContainerConfigDigest(source.DockerConfig)
+	if err := db.Create(&source).Error; err != nil {
+		t.Fatalf("创建待回滚发布记录失败: %v", err)
+	}
+	first, err := service.Rollback(context.Background(), source.ID, "operator")
+	if err != nil {
+		t.Fatalf("创建固定镜像身份的回滚失败: %v", err)
+	}
+	var storedRollback model.DeploymentRecord
+	if err := db.First(&storedRollback, "id = ?", first.ID).Error; err != nil || storedRollback.IdempotencyKey == nil {
+		t.Fatalf("回滚任务未保存幂等标识: record=%+v err=%v", storedRollback, err)
+	}
+	expectedRollbackKey, _ := rollbackIdempotencyKey(source.ID, 1)
+	if *storedRollback.IdempotencyKey != expectedRollbackKey {
+		t.Fatalf("回滚幂等标识错误: got=%q want=%q", *storedRollback.IdempotencyKey, expectedRollbackKey)
+	}
+	if storedRollback.RollbackSourceID != source.ID || storedRollback.RollbackAttempt != 1 {
+		t.Fatalf("回滚任务没有记录来源及尝试次数: %+v", storedRollback)
+	}
+	second, err := service.Rollback(context.Background(), source.ID, "operator")
+	if err != nil {
+		t.Fatalf("重复回滚请求未复用已有任务: %v", err)
+	}
+	if first.ID != second.ID || first.ExpectedImageID != imageID || first.Image != imageID {
+		t.Fatalf("回滚任务未保持幂等或镜像身份: first=%+v second=%+v", first, second)
+	}
+	var count int64
+	if err := db.Model(&model.DeploymentRecord{}).
+		Where("operation = ?", model.DeploymentRollback).Count(&count).Error; err != nil || count != 1 {
+		t.Fatalf("重复回滚创建了多条执行记录: count=%d err=%v", count, err)
+	}
+
+	if err := db.Model(&model.DeploymentRecord{}).Where("id = ?", first.ID).
+		Updates(map[string]any{"status": model.DeploymentFailed, "error_code": "rollback_failed"}).Error; err != nil {
+		t.Fatalf("标记首次回滚失败失败: %v", err)
+	}
+	const concurrentRequests = 12
+	sqlDB, err := db.DB()
+	if err != nil {
+		t.Fatalf("读取 SQLite 连接池失败: %v", err)
+	}
+	sqlDB.SetMaxOpenConns(concurrentRequests)
+	sqlDB.SetMaxIdleConns(concurrentRequests)
+	type rollbackResult struct {
+		record *model.DeploymentRecord
+		err    error
+	}
+	results := make(chan rollbackResult, concurrentRequests)
+	var wait sync.WaitGroup
+	for range concurrentRequests {
+		wait.Add(1)
+		go func() {
+			defer wait.Done()
+			record, err := service.Rollback(context.Background(), source.ID, "operator")
+			results <- rollbackResult{record: record, err: err}
+		}()
+	}
+	wait.Wait()
+	close(results)
+	var retryID string
+	for result := range results {
+		if result.err != nil || result.record == nil {
+			t.Fatalf("并发请求失败回滚的重试失败: record=%+v err=%v", result.record, result.err)
+		}
+		if result.record.ID == first.ID || result.record.RollbackAttempt != 2 || result.record.RollbackSourceID != source.ID {
+			t.Fatalf("失败回滚没有创建第 2 次尝试: %+v", result.record)
+		}
+		if retryID == "" {
+			retryID = result.record.ID
+		} else if result.record.ID != retryID {
+			t.Fatalf("并发重试创建了不同执行记录: first=%s current=%s", retryID, result.record.ID)
+		}
+	}
+	if err := db.Model(&model.DeploymentRecord{}).
+		Where("operation = ? AND rollback_source_id = ?", model.DeploymentRollback, source.ID).
+		Count(&count).Error; err != nil || count != 2 {
+		t.Fatalf("失败后的并发重试未收敛为一次新尝试: count=%d err=%v", count, err)
+	}
+	var retry model.DeploymentRecord
+	if err := db.First(&retry, "id = ?", retryID).Error; err != nil {
+		t.Fatalf("读取第 2 次回滚尝试失败: %v", err)
+	}
+	expectedRetryKey, _ := rollbackIdempotencyKey(source.ID, 2)
+	if retry.IdempotencyKey == nil || *retry.IdempotencyKey != expectedRetryKey || retry.JobID == "" {
+		t.Fatalf("第 2 次回滚尝试的幂等标识或任务错误: %+v", retry)
+	}
+	for _, status := range []model.DeploymentStatus{model.DeploymentRunning, model.DeploymentSucceeded} {
+		if err := db.Model(&model.DeploymentRecord{}).Where("id = ?", retry.ID).Update("status", status).Error; err != nil {
+			t.Fatalf("更新回滚状态为 %s 失败: %v", status, err)
+		}
+		reused, err := service.Rollback(context.Background(), source.ID, "operator")
+		if err != nil || reused == nil || reused.ID != retry.ID || reused.Status != status {
+			t.Fatalf("状态为 %s 的回滚尝试未被复用: record=%+v err=%v", status, reused, err)
+		}
+	}
+	if err := db.Model(&model.DeploymentRecord{}).
+		Where("operation = ? AND rollback_source_id = ?", model.DeploymentRollback, source.ID).
+		Count(&count).Error; err != nil || count != 2 {
+		t.Fatalf("执行中或成功的回滚被重复创建: count=%d err=%v", count, err)
+	}
+
+	missingIdentity := source
+	missingIdentity.ID = "docker-release-without-image-id"
+	missingIdentity.PreviousImageID = ""
+	if err := db.Create(&missingIdentity).Error; err != nil {
+		t.Fatalf("创建缺少镜像身份的历史记录失败: %v", err)
+	}
+	if _, err := service.Rollback(context.Background(), missingIdentity.ID, "operator"); !errors.Is(err, ErrRollbackUnavailable) {
+		t.Fatalf("缺少 Docker Image ID 的回滚未被拒绝: %v", err)
+	}
+
+	mutableKubernetes := source
+	mutableKubernetes.ID = "kubernetes-release-with-tag"
+	mutableKubernetes.Platform = model.DeploymentKubernetes
+	mutableKubernetes.RuntimeID = "cluster-1"
+	mutableKubernetes.Namespace = "default"
+	mutableKubernetes.WorkloadName = "api"
+	mutableKubernetes.ContainerName = "api"
+	mutableKubernetes.DeploymentPlanKind = model.DeploymentPlanKubernetes
+	mutableKubernetes.PreviousImageID = ""
+	if err := db.Create(&mutableKubernetes).Error; err != nil {
+		t.Fatalf("创建可变 Kubernetes 历史记录失败: %v", err)
+	}
+	if _, err := service.Rollback(context.Background(), mutableKubernetes.ID, "operator"); !errors.Is(err, ErrRollbackUnavailable) {
+		t.Fatalf("Kubernetes 可变标签回滚未被拒绝: %v", err)
+	}
+}
+
+func TestRollbackAdoptsLegacyFailedRecordBeforeCreatingRetry(t *testing.T) {
+	service, db, endpointID := newDeploymentTestService(t)
+	now := time.Now().UTC()
+	imageID := "sha256:" + strings.Repeat("a", 64)
+	source := model.DeploymentRecord{
+		ID: "legacy-rollback-source", TargetID: "legacy-target", TargetName: "历史回滚目标",
+		Platform: model.DeploymentDocker, RuntimeID: endpointID, WorkloadName: "api", RolloutTimeout: 120,
+		Operation: model.DeploymentRelease, Image: "registry.example.com/team/api@sha256:" + strings.Repeat("b", 64),
+		PreviousImage: "registry.example.com/team/api:stable", PreviousImageID: imageID,
+		DeploymentPlanID: "legacy-plan", DeploymentPlanKind: model.DeploymentPlanDocker,
+		DockerConfig: model.DockerContainerConfig{Network: "bridge", RestartPolicy: "unless-stopped", EnvironmentVariables: map[string]string{}},
+		Status:       model.DeploymentSucceeded, RequestedBy: "operator", CreatedAt: now, UpdatedAt: now,
+	}
+	source.DockerConfigDigest = model.DockerContainerConfigDigest(source.DockerConfig)
+	if err := db.Create(&source).Error; err != nil {
+		t.Fatalf("创建历史回滚来源失败: %v", err)
+	}
+	legacyKey, _ := rollbackIdempotencyKey(source.ID, 1)
+	legacy := model.DeploymentRecord{
+		ID: "legacy-failed-rollback", IdempotencyKey: &legacyKey,
+		TargetID: source.TargetID, Operation: model.DeploymentRollback,
+		Image: imageID, ExpectedImageID: imageID, Status: model.DeploymentFailed,
+		DeploymentPlanID: source.DeploymentPlanID, DeploymentPlanKind: source.DeploymentPlanKind,
+		DockerConfig: source.DockerConfig, DockerConfigDigest: source.DockerConfigDigest,
+		RequestedBy: "operator", CreatedAt: now, UpdatedAt: now,
+	}
+	copyTargetSnapshot(&legacy, &source)
+	if err := db.Create(&legacy).Error; err != nil {
+		t.Fatalf("创建旧结构失败回滚记录失败: %v", err)
+	}
+
+	retry, err := service.Rollback(context.Background(), source.ID, "operator")
+	if err != nil {
+		t.Fatalf("旧结构失败回滚无法重试: %v", err)
+	}
+	if retry.ID == legacy.ID || retry.RollbackSourceID != source.ID || retry.RollbackAttempt != 2 {
+		t.Fatalf("旧结构失败回滚没有创建第 2 次尝试: %+v", retry)
+	}
+	if err := db.First(&legacy, "id = ?", legacy.ID).Error; err != nil {
+		t.Fatalf("重新读取旧结构回滚失败: %v", err)
+	}
+	if legacy.RollbackSourceID != source.ID || legacy.RollbackAttempt != 1 || legacy.Status != model.DeploymentFailed {
+		t.Fatalf("旧结构回滚审计关系没有原位补齐: %+v", legacy)
+	}
+}
+
+func TestPipelineReleaseIdempotencyDoesNotRetryFailedDeployment(t *testing.T) {
+	service, db, _ := newDeploymentTestService(t)
+	environment, host := createSSHDeploymentResources(t, db)
+	target, err := service.CreateTarget(context.Background(), "admin", TargetInput{
+		Name: "失败幂等目标", Platform: model.DeploymentSSH,
+		EnvironmentID: environment.ID, HostID: host.ID, WorkingDirectory: "/srv/app", RolloutTimeout: 90,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runner := &idempotentHostScriptRunnerStub{
+		result: sshdeploy.Result{ExitCode: 17, Started: true}, err: errors.New("remote deployment failed"),
+	}
+	service.ssh = runner
+	script := "exit 17\n"
+	input := CommandRequestInput{
+		TargetID: target.ID, PipelineRunID: "run-failed-idempotent", WorkflowNodeID: "deploy",
+		DeploymentPlanID: "plan-failed-idempotent", PlanKind: model.DeploymentPlanScript,
+		Script: script, ScriptDigest: model.DeploymentPlanExecutionDigest(model.DeploymentPlanScript, script, 120),
+		TimeoutSeconds: 120,
+	}
+	first, err := service.RequestCommandSnapshotAndRun(context.Background(), "operator", *target, input)
+	if err == nil || first == nil {
+		t.Fatalf("首次失败发布没有保存发布记录: record=%+v err=%v", first, err)
+	}
+	duplicate, err := service.RequestCommandSnapshotAndRun(context.Background(), "operator", *target, input)
+	if !errors.Is(err, ErrPipelineReleaseFailed) || duplicate == nil || duplicate.ID != first.ID {
+		t.Fatalf("失败发布重投未返回稳定错误及原记录: record=%+v err=%v", duplicate, err)
+	}
+	if runner.calls.Load() != 1 {
+		t.Fatalf("失败发布被隐式重试: calls=%d", runner.calls.Load())
+	}
+}
+
 func TestSSHDeploymentTargetAcceptsAnyConfiguredHostEnvironment(t *testing.T) {
 	service, db, _ := newDeploymentTestService(t)
 	first, host := createSSHDeploymentResources(t, db)
@@ -272,6 +636,24 @@ func TestSSHDeploymentLockUsesLowerPlanAndTargetTimeout(t *testing.T) {
 	}
 	if _, valid := effectiveSSHTimeout(&model.DeploymentRecord{CommandTimeout: 60, RolloutTimeout: 3601}); valid {
 		t.Fatal("超过 3600 秒的发布目标超时不应进入执行")
+	}
+}
+
+func TestComposeDeploymentUsesLowerPlanAndTargetTimeout(t *testing.T) {
+	record := &model.DeploymentRecord{
+		Platform: model.DeploymentDocker, DeploymentPlanKind: model.DeploymentPlanCompose,
+		ComposeTimeout: 600, RolloutTimeout: 120,
+	}
+	if timeout, valid := effectiveComposeTimeout(record); !valid || timeout != 120*time.Second {
+		t.Fatalf("Compose 部署没有使用方案与目标中较小的超时: timeout=%s valid=%v", timeout, valid)
+	}
+	record.ComposeTimeout = 29
+	if _, valid := effectiveComposeTimeout(record); valid {
+		t.Fatal("过短的 Compose 方案超时未被拒绝")
+	}
+	record.ComposeTimeout, record.RolloutTimeout = 120, 3601
+	if _, valid := effectiveComposeTimeout(record); valid {
+		t.Fatal("过长的 Compose 目标超时未被拒绝")
 	}
 }
 

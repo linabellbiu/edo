@@ -10,6 +10,7 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     services:
       postgres:
         image: postgres:17-bookworm
@@ -38,12 +39,12 @@ jobs:
           --health-retries 30
 
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
           cache: true
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 24
           cache: npm
@@ -55,5 +56,13 @@ jobs:
         run: go test -race ./...
       - name: Go 静态检查
         run: go vet ./...
-      - name: React 构建
+      - name: Go 全量构建
+        run: go build ./...
+      - name: Mage 构建入口测试
+        run: go test -tags mage .
+      - name: Vue 构建
         run: npm ci --prefix web && npm run build --prefix web
+      - name: Dockerfile 与脚本构建到发布的真实链路
+        env:
+          ZRT_TEST_DOCKER_INTEGRATION: "1"
+        run: go test ./internal/dockerengine -run '^Test(DockerBuildAndCompose|ScriptContainer)Integration$' -count=1

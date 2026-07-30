@@ -12,6 +12,7 @@ import (
 	git "github.com/go-git/go-git/v5"
 	gitconfig "github.com/go-git/go-git/v5/config"
 	"github.com/go-git/go-git/v5/plumbing"
+	"github.com/go-git/go-git/v5/plumbing/object"
 	"github.com/go-git/go-git/v5/plumbing/transport"
 	githttp "github.com/go-git/go-git/v5/plumbing/transport/http"
 	gitssh "github.com/go-git/go-git/v5/plumbing/transport/ssh"
@@ -23,7 +24,12 @@ import (
 
 var scpURLPattern = regexp.MustCompile(`^[A-Za-z0-9._-]+@[A-Za-z0-9.-]+:[^\s]+$`)
 
-const maxRemoteRefs = 100_000
+const (
+	maxRemoteRefs          = 100_000
+	exactCheckoutReference = "refs/zrt/checkout/exact"
+)
+
+var checkoutFallbackDepths = [...]int{1, 32, 128, 512, 2048, 4096}
 
 type GitRef struct {
 	Name string `json:"name"`
@@ -34,6 +40,8 @@ type RefResult struct {
 	Branches     []GitRef         `json:"branches"`
 	Tags         []GitRef         `json:"tags"`
 	PullRequests []PullRequestRef `json:"pull_requests,omitempty"`
+	// PullRequestError 只在进程内传递 PR/MR 元数据同步诊断，不序列化到接口响应。
+	PullRequestError error `json:"-"`
 }
 
 type PullRequestRef struct {
@@ -42,6 +50,8 @@ type PullRequestRef struct {
 	SHA          string `json:"sha"`
 	SourceBranch string `json:"source_branch,omitempty"`
 	TargetBranch string `json:"target_branch,omitempty"`
+	State        string `json:"state,omitempty"`
+	Action       string `json:"action,omitempty"`
 }
 
 type GitClient struct {
@@ -194,38 +204,14 @@ func (c *GitClient) Checkout(
 	if !referenceName.IsBranch() && !referenceName.IsTag() && !isPullRequestRef(referenceName.String()) {
 		return errors.New("Git 引用格式无效")
 	}
-	hash := plumbing.NewHash(strings.TrimSpace(commitSHA))
+	commitSHA = strings.TrimSpace(commitSHA)
+	if !plumbing.IsHash(commitSHA) {
+		return errors.New("Git Commit 格式无效")
+	}
+	hash := plumbing.NewHash(commitSHA)
 	if hash.IsZero() {
 		return errors.New("Git Commit 格式无效")
 	}
-	if isPullRequestRef(referenceName.String()) {
-		return c.checkoutPullRequestRef(checkoutContext, repository, auth, referenceName, hash, destination)
-	}
-	cloned, err := git.PlainCloneContext(checkoutContext, destination, false, &git.CloneOptions{
-		URL: repository.CloneURL, Auth: auth, ReferenceName: referenceName,
-		SingleBranch: true, Depth: 1, NoCheckout: true, Tags: git.AllTags,
-	})
-	if err != nil {
-		return fmt.Errorf("拉取 Git 代码失败: %w", err)
-	}
-	worktree, err := cloned.Worktree()
-	if err != nil {
-		return fmt.Errorf("打开 Git 工作区失败: %w", err)
-	}
-	if err := worktree.Checkout(&git.CheckoutOptions{Hash: hash, Force: true}); err != nil {
-		return fmt.Errorf("检出 Git Commit 失败: %w", err)
-	}
-	return nil
-}
-
-func (c *GitClient) checkoutPullRequestRef(
-	ctx context.Context,
-	repository model.GitRepository,
-	auth transport.AuthMethod,
-	referenceName plumbing.ReferenceName,
-	hash plumbing.Hash,
-	destination string,
-) error {
 	cloned, err := git.PlainInit(destination, false)
 	if err != nil {
 		return fmt.Errorf("初始化 Git 工作区失败: %w", err)
@@ -234,19 +220,65 @@ func (c *GitClient) checkoutPullRequestRef(
 	if err != nil {
 		return fmt.Errorf("创建 Git 远端失败: %w", err)
 	}
+
+	// 优先直接请求固定 SHA，避免分支、Tag 或 PR Ref 推进后把构建静默切换到最新提交。
+	exactRefspec := gitconfig.RefSpec("+" + hash.String() + ":" + exactCheckoutReference)
+	exactErr := remote.FetchContext(checkoutContext, &git.FetchOptions{
+		Auth: auth, RefSpecs: []gitconfig.RefSpec{exactRefspec}, Depth: 1, Tags: git.NoTags,
+	})
+	if exactErr == nil || errors.Is(exactErr, git.NoErrAlreadyUpToDate) {
+		if err := checkoutFetchedCommit(cloned, hash); err != nil {
+			return fmt.Errorf("检出 Git 固定 Commit 失败: %w", err)
+		}
+		return nil
+	}
+
+	// 部分服务端不允许按 SHA 请求对象。此时仅沿原始 Ref 有界补充历史，
+	// 每一轮仍验证固定 SHA 是否存在，绝不把 Ref 当前 tip 当作替代结果。
 	localReference := plumbing.ReferenceName("refs/zrt/" + strings.TrimPrefix(referenceName.String(), "refs/"))
 	refspec := gitconfig.RefSpec("+" + referenceName.String() + ":" + localReference.String())
-	if err := remote.FetchContext(ctx, &git.FetchOptions{
-		Auth: auth, RefSpecs: []gitconfig.RefSpec{refspec}, Depth: 1, Tags: git.NoTags,
-	}); err != nil && !errors.Is(err, git.NoErrAlreadyUpToDate) {
-		return fmt.Errorf("拉取 PR 代码失败: %w", err)
+	for _, depth := range checkoutFallbackDepths {
+		if err := remote.FetchContext(checkoutContext, &git.FetchOptions{
+			Auth: auth, RefSpecs: []gitconfig.RefSpec{refspec}, Depth: depth, Tags: git.NoTags,
+		}); err != nil && !errors.Is(err, git.NoErrAlreadyUpToDate) {
+			return fmt.Errorf("按 Git 引用补充固定 Commit 历史失败: %w", err)
+		}
+		if checkoutCommitAvailable(cloned, hash) {
+			if err := checkoutFetchedCommit(cloned, hash); err != nil {
+				return fmt.Errorf("检出 Git 固定 Commit 失败: %w", err)
+			}
+			return nil
+		}
 	}
-	worktree, err := cloned.Worktree()
+	return errors.New("指定的 Git Commit 不在该引用允许拉取的历史范围内")
+}
+
+func checkoutCommitAvailable(repository *git.Repository, hash plumbing.Hash) bool {
+	gitObject, err := repository.Object(plumbing.AnyObject, hash)
 	if err != nil {
-		return fmt.Errorf("打开 Git 工作区失败: %w", err)
+		return false
+	}
+	switch typed := gitObject.(type) {
+	case *object.Commit:
+		return true
+	case *object.Tag:
+		if typed.TargetType != plumbing.CommitObject {
+			return false
+		}
+		_, err = repository.CommitObject(typed.Target)
+		return err == nil
+	default:
+		return false
+	}
+}
+
+func checkoutFetchedCommit(repository *git.Repository, hash plumbing.Hash) error {
+	worktree, err := repository.Worktree()
+	if err != nil {
+		return err
 	}
 	if err := worktree.Checkout(&git.CheckoutOptions{Hash: hash, Force: true}); err != nil {
-		return fmt.Errorf("检出 PR Commit 失败: %w", err)
+		return err
 	}
 	return nil
 }

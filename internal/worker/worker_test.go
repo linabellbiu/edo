@@ -14,6 +14,7 @@ import (
 	"zrt/internal/config"
 	"zrt/internal/database"
 	"zrt/internal/model"
+	"zrt/internal/pipeline"
 	"zrt/internal/task"
 )
 
@@ -94,6 +95,183 @@ func TestWorkerRetriesThenWritesDeadLetter(t *testing.T) {
 	stats := worker.RuntimeStats()
 	if stats.Active != 0 || stats.Executed != 2 || stats.Failed != 2 || stats.Retried != 1 {
 		t.Fatalf("Worker 运行统计错误: %+v", stats)
+	}
+}
+
+func TestAttemptsExhaustedConvergesPipelineAndDeploymentInSameFailure(t *testing.T) {
+	db := openWorkerTestDB(t, "worker_pipeline_attempts_exhausted")
+	pipelineService := pipeline.NewService(db, nil, nil)
+	registry := NewRegistry()
+	if err := registry.RegisterTerminalFailureHook("pipeline.deploy", pipelineService.HandleTerminalTaskFailure); err != nil {
+		t.Fatalf("注册流水线终止失败处理器失败: %v", err)
+	}
+	payload := pipeline.DeployTaskPayload{PipelineRunID: "run-interrupted", WorkflowNodeID: "deploy-interrupted"}
+	job, err := task.NewService(db, config.DefaultMaxAttempts).Create(context.Background(), task.CreateInput{
+		Kind: "pipeline.deploy", Subject: "zrt.task.pipeline.deploy", Payload: payload,
+		MaxAttempts: 1, Idempotent: false,
+	})
+	if err != nil {
+		t.Fatalf("创建流水线部署任务失败: %v", err)
+	}
+	now := time.Now().UTC()
+	repository := model.GitRepository{
+		ID: "repository-interrupted", Name: "中断部署仓库", Provider: model.GitProviderGeneric,
+		CloneURL: "https://git.example.com/team/interrupted.git", DefaultBranch: "main", AuthType: model.GitAuthNone,
+		IsActive: true, CreatedBy: "admin", CreatedAt: now, UpdatedAt: now,
+	}
+	application := model.Application{
+		ID: "app-interrupted", Name: "中断部署应用", RepositoryID: repository.ID,
+		PollIntervalSeconds: 30, SyncStatus: model.ApplicationSyncIdle, IsActive: true,
+		CreatedBy: "admin", CreatedAt: now, UpdatedAt: now,
+	}
+	run := model.PipelineRun{
+		ID: payload.PipelineRunID, ApplicationID: application.ID, Trigger: "manual", Ref: "refs/heads/main",
+		CommitSHA: "0123456789012345678901234567890123456789", Status: model.PipelineRunRunning,
+		Stage: "deploy", CurrentNodeID: payload.WorkflowNodeID, ExecutionJobID: job.ID,
+		WorkflowSnapshot: "{}", CreatedBy: "admin", CreatedAt: now, UpdatedAt: now,
+	}
+	component := model.PipelineRunRepository{
+		ID: "component-interrupted", PipelineRunID: run.ID, RepositoryID: repository.ID,
+		Ref: run.Ref, CommitSHA: run.CommitSHA, Status: model.PipelineRunRepositoryReady,
+		CreatedAt: now, UpdatedAt: now,
+	}
+	record := model.DeploymentRecord{
+		ID: "deployment-interrupted", PipelineRunID: run.ID, WorkflowNodeID: payload.WorkflowNodeID,
+		TargetID: "target", TargetName: "目标", Platform: model.DeploymentDocker, RuntimeID: "runtime",
+		WorkloadName: "api", Operation: model.DeploymentRelease, Image: "example.invalid/api:fixed",
+		Status: model.DeploymentRunning, RequestedBy: "admin", CreatedAt: now, UpdatedAt: now,
+	}
+	if err := db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Create(&repository).Error; err != nil {
+			return err
+		}
+		if err := tx.Create(&application).Error; err != nil {
+			return err
+		}
+		if err := tx.Create(&run).Error; err != nil {
+			return err
+		}
+		if err := tx.Create(&component).Error; err != nil {
+			return err
+		}
+		return tx.Create(&record).Error
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var event model.OutboxEvent
+	if err := db.Where("aggregate_id = ?", job.ID).First(&event).Error; err != nil {
+		t.Fatal(err)
+	}
+	message := &fakeQueueMessage{data: event.Payload, subject: job.Subject, deliveries: 2}
+	newTestWorker(db, registry).process(context.Background(), message)
+
+	if err := db.First(job, "id = ?", job.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if job.Status != model.JobFailed || !message.terminated {
+		t.Fatalf("耗尽执行次数后 Job 未终止: job=%+v terminated=%v", job, message.terminated)
+	}
+	if err := db.First(&run, "id = ?", run.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if run.Status != model.PipelineRunFailed || run.Stage != "failed" || run.Message != "部署执行中断，目标状态需人工确认" {
+		t.Fatalf("中断的部署 Job 没有收敛流水线: %+v", run)
+	}
+	if err := db.First(&component, "id = ?", component.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if component.Status != model.PipelineRunRepositoryFailed {
+		t.Fatalf("中断的部署 Job 没有收敛仓库状态: %+v", component)
+	}
+	if err := db.First(&record, "id = ?", record.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if record.Status != model.DeploymentFailed || record.ErrorCode != "pipeline_task_interrupted" ||
+		record.ErrorMessage != "部署执行中断，目标状态需人工确认" || record.FinishedAt == nil {
+		t.Fatalf("中断的部署 Job 没有收敛发布记录: %+v", record)
+	}
+}
+
+func TestAttemptsExhaustedConvergesNonIdempotentBuildTask(t *testing.T) {
+	db := openWorkerTestDB(t, "worker_build_attempts_exhausted")
+	pipelineService := pipeline.NewService(db, nil, nil)
+	registry := NewRegistry()
+	if err := registry.RegisterTerminalFailureHook("pipeline.build", pipelineService.HandleTerminalTaskFailure); err != nil {
+		t.Fatalf("注册流水线终止失败处理器失败: %v", err)
+	}
+	payload := pipeline.BuildTaskPayload{PipelineRunID: "run-shell-interrupted", WorkflowNodeID: "shell-interrupted"}
+	job, err := task.NewService(db, config.DefaultMaxAttempts).Create(context.Background(), task.CreateInput{
+		Kind: "pipeline.build", Subject: "zrt.task.pipeline.build", Payload: payload,
+		MaxAttempts: 1, Idempotent: false,
+	})
+	if err != nil {
+		t.Fatalf("创建 Shell 任务失败: %v", err)
+	}
+	now := time.Now().UTC()
+	repository := model.GitRepository{
+		ID: "repository-shell-interrupted", Name: "中断脚本仓库", Provider: model.GitProviderGeneric,
+		CloneURL: "https://git.example.com/team/shell-interrupted.git", DefaultBranch: "main", AuthType: model.GitAuthNone,
+		IsActive: true, CreatedBy: "admin", CreatedAt: now, UpdatedAt: now,
+	}
+	application := model.Application{
+		ID: "app-shell-interrupted", Name: "中断脚本应用", RepositoryID: repository.ID,
+		PollIntervalSeconds: 60, SyncStatus: model.ApplicationSyncIdle, IsActive: true,
+		CreatedBy: "admin", CreatedAt: now, UpdatedAt: now,
+	}
+	run := model.PipelineRun{
+		ID: payload.PipelineRunID, ApplicationID: application.ID, Trigger: "manual", Ref: "refs/heads/main",
+		CommitSHA: "0123456789012345678901234567890123456789", Status: model.PipelineRunRunning,
+		Stage: "shell", CurrentNodeID: payload.WorkflowNodeID, ExecutionJobID: job.ID,
+		WorkflowSnapshot: "{}", CreatedBy: "admin", CreatedAt: now, UpdatedAt: now,
+	}
+	component := model.PipelineRunRepository{
+		ID: "component-shell-interrupted", PipelineRunID: run.ID, RepositoryID: repository.ID,
+		Ref: run.Ref, CommitSHA: run.CommitSHA, Status: model.PipelineRunRepositoryReady,
+		CreatedAt: now, UpdatedAt: now,
+	}
+	if err := db.Transaction(func(tx *gorm.DB) error {
+		for _, value := range []any{&repository, &application, &run, &component} {
+			if err := tx.Create(value).Error; err != nil {
+				return err
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var event model.OutboxEvent
+	if err := db.Where("aggregate_id = ?", job.ID).First(&event).Error; err != nil {
+		t.Fatal(err)
+	}
+	leaseExpiresAt := time.Now().UTC().Add(30 * time.Second)
+	if err := db.Model(&model.Job{}).Where("id = ?", job.ID).Updates(map[string]any{
+		"status": model.JobRunning, "attempt": 1, "lease_owner": "dead-worker", "lease_expires_at": leaseExpiresAt,
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	taskWorker := newTestWorker(db, registry)
+	busyDelivery := &fakeQueueMessage{data: event.Payload, subject: job.Subject, deliveries: 2}
+	taskWorker.process(context.Background(), busyDelivery)
+	if !busyDelivery.naked || busyDelivery.delay < 25*time.Second {
+		t.Fatalf("旧进程租约未过期时不应短间隔耗尽投递次数: naked=%v delay=%v", busyDelivery.naked, busyDelivery.delay)
+	}
+	expired := time.Now().UTC().Add(-time.Second)
+	if err := db.Model(&model.Job{}).Where("id = ?", job.ID).Update("lease_expires_at", expired).Error; err != nil {
+		t.Fatal(err)
+	}
+	terminalDelivery := &fakeQueueMessage{data: event.Payload, subject: job.Subject, deliveries: 3}
+	taskWorker.process(context.Background(), terminalDelivery)
+	if err := db.First(&run, "id = ?", run.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if run.Status != model.PipelineRunFailed || run.Stage != "failed" || run.Message != "任务执行中断，请重新执行流水线" {
+		t.Fatalf("耗尽执行次数后 Shell 流水线仍悬挂: %+v", run)
+	}
+	if err := db.First(&component, "id = ?", component.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if component.Status != model.PipelineRunRepositoryFailed || !terminalDelivery.terminated {
+		t.Fatalf("耗尽执行次数后关联状态不完整: component=%+v terminated=%v", component, terminalDelivery.terminated)
 	}
 }
 

@@ -141,29 +141,46 @@ func TestDeploymentPlansAndReleasePlansAreSeparateResources(t *testing.T) {
 	}
 }
 
-func TestApplicationRequestAcceptsMultipleEnvironments(t *testing.T) {
+func TestDeploymentTargetsAndAdHocDeploymentAPIsAreNotExposed(t *testing.T) {
+	router, closeTest := newAuthTestRouter(t)
+	defer closeTest()
+
+	login := performJSONRequest(t, router, http.MethodPost, "/api/v1/auth/login", map[string]string{
+		"username": "admin", "password": "correct horse battery staple",
+	}, nil)
+	adminCookie := login.Result().Cookies()[0]
+	for _, request := range []struct {
+		method string
+		path   string
+	}{
+		{method: http.MethodGet, path: "/api/v1/deployment-targets"},
+		{method: http.MethodPost, path: "/api/v1/deployment-targets"},
+		{method: http.MethodPost, path: "/api/v1/deployments"},
+	} {
+		response := performJSONRequest(t, router, request.method, request.path, map[string]string{}, adminCookie)
+		if response.Code != http.StatusNotFound {
+			t.Fatalf("旧发布目标或临时发布接口不应继续暴露: %s %s status=%d body=%s",
+				request.method, request.path, response.Code, response.Body.String())
+		}
+	}
+}
+
+func TestApplicationRequestOnlyAcceptsRepositoryAndPollingConfiguration(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	context, _ := gin.CreateTestContext(httptest.NewRecorder())
 	payload := `{
 		"name":"流水线界面验收",
 		"repository_id":"637a764b-e79e-41a2-8dd4-cc038479ebee",
-		"poll_interval_seconds":60,
-		"environments":[
-			{"key":"test","name":"测试环境","branch":"test","watch_push":true,"watch_pull_request":true,"tag_pattern":"v*","sort_order":0},
-			{"key":"prod","name":"生产环境","branch":"release","watch_tags":true,"tag_pattern":"v*","sort_order":1}
-		]
+		"poll_interval_seconds":60
 	}`
 	context.Request = httptest.NewRequest("POST", "/api/v1/applications", strings.NewReader(payload))
 	context.Request.Header.Set("Content-Type", "application/json")
 	var request applicationRequest
 	if err := context.ShouldBindJSON(&request); err != nil {
-		t.Fatalf("多环境应用请求不应被拒绝: %v", err)
+		t.Fatalf("应用仓库请求不应被拒绝: %v", err)
 	}
-	if len(request.Environments) != 2 || request.Environments[0].Key != "test" || request.Environments[1].Key != "prod" {
-		t.Fatalf("多环境应用请求解析错误: %+v", request.Environments)
-	}
-	if !request.Environments[0].WatchPush || !request.Environments[0].WatchPullRequest || !request.Environments[1].WatchTags {
-		t.Fatalf("多环境触发方式解析错误: %+v", request.Environments)
+	if request.RepositoryID == "" || request.PollIntervalSeconds != 60 {
+		t.Fatalf("应用仓库请求解析错误: %+v", request)
 	}
 }
 

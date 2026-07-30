@@ -121,7 +121,7 @@ func TestRepositoryCanBeUpdatedAndDeletedWhenUnused(t *testing.T) {
 	}
 	now := time.Now().UTC()
 	application := model.Application{
-		ID: "application-delete", Name: "引用仓库的应用", RepositoryID: repo.ID, Branch: "develop",
+		ID: "application-delete", Name: "引用仓库的应用", RepositoryID: repo.ID,
 		SyncStatus: model.ApplicationSyncIdle, CreatedBy: "admin", CreatedAt: now, UpdatedAt: now,
 	}
 	if err := db.Create(&application).Error; err != nil {
@@ -175,6 +175,124 @@ func TestRepositoryUsesOwnedCredentialAndWebhookCanBeRevealed(t *testing.T) {
 	})
 	if !errors.Is(err, ErrInvalidCredential) {
 		t.Fatalf("其他用户引用非本人令牌未被拒绝: %v", err)
+	}
+}
+
+func TestRepositorySeparatesCloneAndPlatformAPICredentials(t *testing.T) {
+	service, _ := newRepositoryTestService(t)
+	privateKey := "-----BEGIN OPENSSH PRIVATE KEY-----\nprivate-key-material\n-----END OPENSSH PRIVATE KEY-----"
+	apiToken := "private-platform-api-token"
+	foreignToken := "foreign-platform-api-token"
+	sshCredential, err := service.credentials.Create(context.Background(), "user-a", credential.Input{
+		Name: "GitHub SSH", Provider: model.GitProviderGitHub, AuthType: model.GitAuthSSHKey, Secret: &privateKey,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	apiCredential, err := service.credentials.Create(context.Background(), "user-a", credential.Input{
+		Name: "GitHub API", Provider: model.GitProviderGitHub, AuthType: model.GitAuthToken, Secret: &apiToken,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	foreignCredential, err := service.credentials.Create(context.Background(), "user-b", credential.Input{
+		Name: "其他用户 API", Provider: model.GitProviderGitHub, AuthType: model.GitAuthToken, Secret: &foreignToken,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	lister := &credentialCapturingRefLister{refs: RefResult{
+		Branches: []GitRef{{Name: "main", SHA: "main-sha"}},
+		PullRequests: []PullRequestRef{{
+			Number: 1, Ref: "refs/pull/1/head", SHA: "pr-sha", SourceBranch: "feature/private", TargetBranch: "main",
+		}},
+	}}
+	service.git = lister
+	repo, _, err := service.Create(context.Background(), "user-a", Input{
+		Name: "private-ssh-repository", Provider: model.GitProviderGitHub,
+		CloneURL: "git@github.com:example/private.git", AuthType: model.GitAuthSSHKey,
+		CredentialID: &sshCredential.ID, APICredentialID: &apiCredential.ID,
+	})
+	if err != nil {
+		t.Fatalf("创建 SSH 私有仓库失败: %v", err)
+	}
+	if repo.APICredentialID == nil || *repo.APICredentialID != apiCredential.ID {
+		t.Fatalf("平台 API 令牌引用未保存: %+v", repo)
+	}
+	refs, err := service.PollState(context.Background(), repo.ID, true)
+	if err != nil || refs.PullRequestError != nil || len(refs.PullRequests) != 1 {
+		t.Fatalf("使用独立 API 令牌轮询失败: refs=%+v err=%v", refs, err)
+	}
+	if lister.cloneCredential != privateKey || lister.apiCredential != apiToken {
+		t.Fatalf("克隆凭据与 API 令牌未隔离: clone=%q api=%q", lister.cloneCredential, lister.apiCredential)
+	}
+
+	_, _, err = service.Create(context.Background(), "user-a", Input{
+		Name: "foreign-api-create", Provider: model.GitProviderGitHub,
+		CloneURL: "git@github.com:example/foreign.git", AuthType: model.GitAuthSSHKey,
+		CredentialID: &sshCredential.ID, APICredentialID: &foreignCredential.ID,
+	})
+	if !errors.Is(err, ErrInvalidCredential) {
+		t.Fatalf("创建仓库时引用其他用户 API 令牌未被拒绝: %v", err)
+	}
+	_, _, err = service.Create(context.Background(), "user-a", Input{
+		Name: "ssh-as-api", Provider: model.GitProviderGitHub,
+		CloneURL: "https://github.com/example/public.git", AuthType: model.GitAuthNone,
+		APICredentialID: &sshCredential.ID,
+	})
+	if !errors.Is(err, ErrInvalidCredential) {
+		t.Fatalf("SSH 私钥被错误接受为平台 API 令牌: %v", err)
+	}
+	_, _, err = service.Create(context.Background(), "user-a", Input{
+		Name: "provider-mismatch-api", Provider: model.GitProviderGitea,
+		CloneURL: "https://gitea.example.com/example/public.git", AuthType: model.GitAuthNone,
+		APICredentialID: &apiCredential.ID,
+	})
+	if !errors.Is(err, ErrInvalidCredential) {
+		t.Fatalf("平台不匹配的 API 令牌未被拒绝: %v", err)
+	}
+	_, _, err = service.Update(context.Background(), "user-a", repo.ID, Input{
+		Name: repo.Name, Provider: repo.Provider, CloneURL: repo.CloneURL, AuthType: repo.AuthType,
+		CredentialID: &sshCredential.ID, APICredentialID: &foreignCredential.ID,
+	})
+	if !errors.Is(err, ErrInvalidCredential) {
+		t.Fatalf("更新仓库时引用其他用户 API 令牌未被拒绝: %v", err)
+	}
+	emptyCredentialID := ""
+	updated, _, err := service.Update(context.Background(), "user-a", repo.ID, Input{
+		Name: repo.Name, Provider: repo.Provider, CloneURL: repo.CloneURL, AuthType: repo.AuthType,
+		CredentialID: &sshCredential.ID, APICredentialID: &emptyCredentialID,
+	})
+	if err != nil || updated.APICredentialID != nil {
+		t.Fatalf("显式清空平台 API 令牌失败: repository=%+v err=%v", updated, err)
+	}
+}
+
+func TestTokenCloneCredentialIsDefaultPlatformAPIToken(t *testing.T) {
+	service, _ := newRepositoryTestService(t)
+	token := "shared-clone-and-api-token"
+	credentialItem, err := service.credentials.Create(context.Background(), "user-a", credential.Input{
+		Name: "Gitea Token", Provider: model.GitProviderGitea, AuthType: model.GitAuthToken, Secret: &token,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	lister := &credentialCapturingRefLister{}
+	service.git = lister
+	repo, _, err := service.Create(context.Background(), "user-a", Input{
+		Name: "token-repository", Provider: model.GitProviderGitea,
+		CloneURL: "https://gitea.example.com/team/private.git", AuthType: model.GitAuthToken,
+		CredentialID: &credentialItem.ID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.PollState(context.Background(), repo.ID, true); err != nil {
+		t.Fatal(err)
+	}
+	if lister.cloneCredential != token || lister.apiCredential != token {
+		t.Fatalf("Token 克隆凭据未默认复用于平台 API: clone=%q api=%q", lister.cloneCredential, lister.apiCredential)
 	}
 }
 
@@ -256,6 +374,127 @@ func TestWebhookProvidersSignatureAndDeduplication(t *testing.T) {
 	}
 }
 
+func TestWebhookProvidersNormalizePullRequestHeadRefs(t *testing.T) {
+	tests := []struct {
+		provider       model.GitProvider
+		eventHeader    string
+		eventValue     string
+		deliveryHeader string
+		body           string
+		wantRef        string
+		wantCommit     string
+		wantSource     string
+		wantTarget     string
+		wantAction     string
+		signature      func(http.Header, []byte, string)
+	}{
+		{
+			provider: model.GitProviderGitHub, eventHeader: "X-GitHub-Event", eventValue: "pull_request",
+			deliveryHeader: "X-GitHub-Delivery",
+			body:           `{"action":"synchronize","number":21,"pull_request":{"number":21,"head":{"ref":"feature/github","sha":"1111111111111111111111111111111111111111"},"base":{"ref":"release"}}}`,
+			wantRef:        "refs/pull/21/head", wantCommit: "1111111111111111111111111111111111111111",
+			wantSource: "feature/github", wantTarget: "release", wantAction: "updated",
+			signature: func(header http.Header, body []byte, secret string) {
+				header.Set("X-Hub-Signature-256", "sha256="+sign(body, secret))
+			},
+		},
+		{
+			provider: model.GitProviderGitLab, eventHeader: "X-Gitlab-Event", eventValue: "Merge Request Hook",
+			deliveryHeader: "X-Gitlab-Event-UUID",
+			body:           `{"object_kind":"merge_request","object_attributes":{"iid":22,"action":"update","source_branch":"feature/gitlab","target_branch":"main","last_commit":{"id":"2222222222222222222222222222222222222222"}}}`,
+			wantRef:        "refs/merge-requests/22/head", wantCommit: "2222222222222222222222222222222222222222",
+			wantSource: "feature/gitlab", wantTarget: "main", wantAction: "updated",
+			signature: func(header http.Header, _ []byte, secret string) {
+				header.Set("X-Gitlab-Token", secret)
+			},
+		},
+		{
+			provider: model.GitProviderGitea, eventHeader: "X-Gitea-Event", eventValue: "pull_request",
+			deliveryHeader: "X-Gitea-Delivery",
+			body:           `{"action":"synchronized","number":23,"pull_request":{"number":23,"head":{"ref":"feature/gitea","sha":"3333333333333333333333333333333333333333"},"base":{"ref":"develop"}}}`,
+			wantRef:        "refs/pull/23/head", wantCommit: "3333333333333333333333333333333333333333",
+			wantSource: "feature/gitea", wantTarget: "develop", wantAction: "updated",
+			signature: func(header http.Header, body []byte, secret string) {
+				header.Set("X-Gitea-Signature", sign(body, secret))
+			},
+		},
+		{
+			provider: model.GitProviderGitee, eventHeader: "X-Gitee-Event", eventValue: "Merge Request Hook",
+			deliveryHeader: "X-Gitee-Delivery",
+			body:           `{"action":"update","number":24,"iid":24,"pull_request":{"number":24,"merge_reference_name":"refs/pull/24/MERGE","head":{"ref":"feature/gitee","sha":"4444444444444444444444444444444444444444"},"base":{"ref":"master"}}}`,
+			wantRef:        "refs/pull/24/head", wantCommit: "4444444444444444444444444444444444444444",
+			wantSource: "feature/gitee", wantTarget: "master", wantAction: "updated",
+			signature: func(header http.Header, _ []byte, secret string) {
+				header.Set("X-Gitee-Token", secret)
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(string(tt.provider), func(t *testing.T) {
+			service, db := newRepositoryTestService(t)
+			repo, webhookSecret, err := service.Create(context.Background(), "admin", Input{
+				Name: "pr-" + string(tt.provider), Provider: tt.provider,
+				CloneURL: "https://git.example.com/team/api.git", AuthType: model.GitAuthNone,
+				WebhookEnabled: true,
+			})
+			if err != nil {
+				t.Fatalf("创建 PR Webhook 仓库失败: %v", err)
+			}
+			body := []byte(tt.body)
+			headers := make(http.Header)
+			headers.Set(tt.eventHeader, tt.eventValue)
+			headers.Set(tt.deliveryHeader, "pr-delivery-"+string(tt.provider))
+			tt.signature(headers, body, webhookSecret)
+
+			result, err := service.HandleWebhook(context.Background(), repo.ID, headers, body)
+			if err != nil {
+				t.Fatalf("处理 %s PR Webhook 失败: %v", tt.provider, err)
+			}
+			if result.Delivery.EventType != "pull_request" || result.Delivery.Ref != tt.wantRef || result.Delivery.CommitSHA != tt.wantCommit {
+				t.Fatalf("%s PR Ref 归一化错误: %+v", tt.provider, result.Delivery)
+			}
+			var job model.Job
+			if err := db.First(&job, "id = ?", result.Delivery.JobID).Error; err != nil {
+				t.Fatalf("读取 Webhook 任务失败: %v", err)
+			}
+			var payload WebhookTaskPayload
+			if err := json.Unmarshal(job.Payload, &payload); err != nil {
+				t.Fatalf("解析 Webhook 任务失败: %v", err)
+			}
+			if payload.Ref != tt.wantRef || payload.CommitSHA != tt.wantCommit || payload.SourceBranch != tt.wantSource ||
+				payload.TargetBranch != tt.wantTarget || payload.Action != tt.wantAction {
+				t.Fatalf("%s PR 任务没有保留完整匹配信息: %+v", tt.provider, payload)
+			}
+		})
+	}
+}
+
+func TestNormalizeWebhookEventUsesMergedCommit(t *testing.T) {
+	var payload webhookPayload
+	if err := json.Unmarshal([]byte(`{
+		"action":"closed",
+		"number":25,
+		"pull_request":{
+			"number":25,
+			"merged":true,
+			"merge_commit_sha":"5555555555555555555555555555555555555555",
+			"head":{"ref":"feature/merged","sha":"4444444444444444444444444444444444444444"},
+			"base":{"ref":"main"}
+		}
+	}`), &payload); err != nil {
+		t.Fatal(err)
+	}
+	event, err := normalizeWebhookEvent(model.GitProviderGitHub, "pull_request", payload)
+	if err != nil {
+		t.Fatalf("归一化已合并 PR 失败: %v", err)
+	}
+	if event.Action != "merged" || event.CommitSHA != "5555555555555555555555555555555555555555" ||
+		event.Ref != "refs/pull/25/head" || event.TargetBranch != "main" {
+		t.Fatalf("已合并 PR 没有使用目标分支实际合并 Commit: %+v", event)
+	}
+}
+
 func TestGenericWebhookNormalizesCommonGitEvents(t *testing.T) {
 	service, _ := newRepositoryTestService(t)
 	repo, webhookSecret, err := service.Create(context.Background(), "admin", Input{
@@ -287,8 +526,8 @@ func TestGenericWebhookNormalizesCommonGitEvents(t *testing.T) {
 		},
 		{
 			name: "pull request", event: "pull_request",
-			body:     `{"pull_request":{"head":{"sha":"3333333333333333333333333333333333333333"},"base":{"ref":"release"}}}`,
-			wantType: "pull_request", wantRef: "refs/heads/release", wantCommit: "3333333333333333333333333333333333333333",
+			body:     `{"ref":"refs/pull/9/head","pull_request":{"number":9,"head":{"ref":"feature/common","sha":"3333333333333333333333333333333333333333"},"base":{"ref":"release"}}}`,
+			wantType: "pull_request", wantRef: "refs/pull/9/head", wantCommit: "3333333333333333333333333333333333333333",
 		},
 	}
 	for index, tt := range tests {
@@ -416,6 +655,23 @@ func (s staticWebhookGate) ExternalGitWebhookEnabled(context.Context) (bool, err
 type staticRefLister struct {
 	result RefResult
 	err    error
+}
+
+type credentialCapturingRefLister struct {
+	refs            RefResult
+	cloneCredential string
+	apiCredential   string
+}
+
+func (l *credentialCapturingRefLister) ListRefs(_ context.Context, _ model.GitRepository, credential string) (RefResult, error) {
+	l.cloneCredential = credential
+	return l.refs, nil
+}
+
+func (l *credentialCapturingRefLister) ListPullRequests(_ context.Context, _ model.GitRepository, cloneCredential, apiCredential string) ([]PullRequestRef, error) {
+	l.cloneCredential = cloneCredential
+	l.apiCredential = apiCredential
+	return l.refs.PullRequests, nil
 }
 
 func (s staticRefLister) ListRefs(context.Context, model.GitRepository, string) (RefResult, error) {

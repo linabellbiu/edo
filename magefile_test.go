@@ -115,6 +115,65 @@ func TestDevelopmentComposeRequiresDotEnvSecretsKey(t *testing.T) {
 	}
 }
 
+func TestEnvironmentExampleDeclaresRuntimeConnections(t *testing.T) {
+	content, err := os.ReadFile(".env.example")
+	if err != nil {
+		t.Fatal(err)
+	}
+	value := string(content)
+	for _, variable := range []string{
+		"ZRT_DATABASE_DRIVER=",
+		"ZRT_DATABASE_DSN=",
+		"ZRT_REDIS_URL=",
+		"ZRT_NATS_URL=",
+		"ZRT_COMPOSE_DATABASE_DRIVER=",
+		"ZRT_COMPOSE_DATABASE_DSN=",
+		"ZRT_COMPOSE_REDIS_URL=",
+		"ZRT_COMPOSE_NATS_URL=",
+	} {
+		if !strings.Contains(value, variable) {
+			t.Fatalf(".env.example 缺少连接配置 %s", strings.TrimSuffix(variable, "="))
+		}
+	}
+}
+
+func TestComposeMapsDotEnvConnections(t *testing.T) {
+	for _, path := range []string{"docker-compose.yml", filepath.Join("deploy", "compose.dev.yml")} {
+		content, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		value := string(content)
+		for _, variable := range []string{
+			"ZRT_COMPOSE_DATABASE_DRIVER",
+			"ZRT_COMPOSE_DATABASE_DSN",
+			"ZRT_COMPOSE_REDIS_URL",
+			"ZRT_COMPOSE_NATS_URL",
+		} {
+			if !strings.Contains(value, "${"+variable+":-") {
+				t.Fatalf("%s 未从 .env 映射 %s", path, variable)
+			}
+		}
+	}
+}
+
+func TestComposeBuilderAlwaysUsesMTLS(t *testing.T) {
+	for _, path := range []string{"docker-compose.yml", filepath.Join("deploy", "compose.dev.yml")} {
+		content, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		value := string(content)
+		if !strings.Contains(value, "ZRT_DOCKER_BUILDER_HOST: tcp://docker-builder:2376") ||
+			!strings.Contains(value, "ZRT_DOCKER_BUILDER_TLS_CERT_PATH: /certs/client") {
+			t.Fatalf("%s 未固定使用 Docker 构建器 mTLS", path)
+		}
+		if strings.Contains(value, "ZRT_COMPOSE_DOCKER_BUILDER_") {
+			t.Fatalf("%s 不得允许 .env 降级 Docker 构建器连接", path)
+		}
+	}
+}
+
 func TestCopyEmbeddedWebAssets(t *testing.T) {
 	root := t.TempDir()
 	source := filepath.Join(root, "source")

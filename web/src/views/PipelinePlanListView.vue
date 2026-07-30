@@ -8,16 +8,17 @@ import client from '@/api/client'
 import { apiErrorMessage } from '@/api/resources'
 import PageToolbar from '@/components/PageToolbar.vue'
 import { useAuthStore } from '@/stores/auth'
+import type { WorkflowNode, WorkflowStage } from '@/types/pipeline'
 
 interface WorkflowTemplate {
+  schema_version: 1
   id: string
   name: string
   description: string
   revision: number
   is_active: boolean
-  nodes: Array<Record<string, unknown>>
-  edges: Array<Record<string, unknown>>
-  viewport: { x: number; y: number; zoom: number }
+  source: WorkflowNode
+  stages: WorkflowStage[]
   updated_at: string
 }
 
@@ -89,9 +90,9 @@ async function setActive(template: WorkflowTemplate, active: boolean) {
       description: template.description,
       revision: template.revision,
       activate: active,
-      nodes: template.nodes,
-      edges: template.edges,
-      viewport: template.viewport,
+      schema_version: 1,
+      source: template.source,
+      stages: template.stages,
     })
     message.success(active ? '流水线方案已启用' : '流水线方案已停用')
     await refresh()
@@ -110,9 +111,9 @@ async function duplicate(template: WorkflowTemplate) {
       description: template.description,
       revision: 0,
       activate: false,
-      nodes: template.nodes,
-      edges: template.edges,
-      viewport: template.viewport,
+      schema_version: 1,
+      source: template.source,
+      stages: template.stages,
     })
     message.success('已复制为新的草稿')
     await router.push(`/pipeline-plans/editor?template=${result.data.workflow_template.id}`)
@@ -188,7 +189,7 @@ onMounted(async () => {
             <a-tag :color="record.is_active ? 'success' : 'default'">{{ record.is_active ? '已启用' : '草稿' }}</a-tag>
           </template>
           <template v-else-if="column.key === 'revision'">第 {{ record.revision }} 版</template>
-          <template v-else-if="column.key === 'scale'">{{ record.nodes.length }} 个节点 · {{ record.edges.length }} 条连线</template>
+          <template v-else-if="column.key === 'scale'">{{ record.stages.length }} 个阶段 · {{ record.stages.reduce((total: number, stage: WorkflowStage) => total + stage.tasks.length, 0) }} 个任务</template>
           <template v-else-if="column.key === 'usage'">{{ usageCount.get(record.id) || 0 }} 个</template>
           <template v-else-if="column.key === 'updated_at'">{{ formatTime(record.updated_at) }}</template>
           <template v-else-if="column.key === 'actions'">

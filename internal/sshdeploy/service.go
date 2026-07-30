@@ -2,6 +2,9 @@ package sshdeploy
 
 import (
 	"context"
+	"crypto/sha256"
+	"crypto/subtle"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -11,6 +14,7 @@ import (
 	"os"
 	"os/exec"
 	"path"
+	"path/filepath"
 	"regexp"
 	"runtime"
 	"sort"
@@ -45,6 +49,9 @@ type Input struct {
 	Script           string
 	Timeout          time.Duration
 	Environment      map[string]string
+	Artifact         io.Reader
+	ArtifactName     string
+	ArtifactDigest   string
 	Stdout           io.Writer
 	Stderr           io.Writer
 }
@@ -90,12 +97,22 @@ func (s *Service) RunHostDeploymentScript(ctx context.Context, input Input) (Res
 		input.Timeout < 30*time.Second || input.Timeout > time.Hour {
 		return Result{ExitCode: -1}, ErrInvalidScript
 	}
+	if (input.Artifact == nil) != (strings.TrimSpace(input.ArtifactName) == "" && strings.TrimSpace(input.ArtifactDigest) == "") {
+		return Result{ExitCode: -1}, ErrInvalidScript
+	}
 
 	host, bundle, err := s.loadHost(ctx, input)
 	if err != nil {
 		return Result{ExitCode: -1}, err
 	}
 	if host.Mode == model.HostModeLocal {
+		if input.Artifact != nil {
+			artifactPath, err := stageLocalArtifact(ctx, input)
+			if err != nil {
+				return Result{ExitCode: -1}, err
+			}
+			input.Environment = withArtifactEnvironment(input.Environment, artifactPath, input.ArtifactDigest)
+		}
 		return runLocalDeploymentScript(ctx, input, s.config.DockerBuilderHost)
 	}
 	hostURL := (&url.URL{
@@ -114,6 +131,13 @@ func (s *Service) RunHostDeploymentScript(ctx context.Context, input Input) (Res
 		return Result{ExitCode: -1}, fmt.Errorf("%w: %v", ErrHostUnavailable, err)
 	}
 	defer client.Close()
+	if input.Artifact != nil {
+		artifactPath, err := stageRemoteArtifact(commandContext, client, input)
+		if err != nil {
+			return Result{ExitCode: -1}, err
+		}
+		input.Environment = withArtifactEnvironment(input.Environment, artifactPath, input.ArtifactDigest)
+	}
 	session, err := client.NewSession()
 	if err != nil {
 		return Result{ExitCode: -1}, fmt.Errorf("%w: %v", ErrHostUnavailable, err)
@@ -159,6 +183,167 @@ func (s *Service) RunHostDeploymentScript(ctx context.Context, input Input) (Res
 		}
 		return result, commandContext.Err()
 	}
+}
+
+const maximumStagedArtifactBytes int64 = 1024*1024*1024 + 1
+
+func stageLocalArtifact(ctx context.Context, input Input) (string, error) {
+	destination, temporary, err := stagedArtifactPaths(input.WorkingDirectory, input.ArtifactName)
+	if err != nil {
+		return "", err
+	}
+	if err := os.MkdirAll(filepath.Dir(destination), 0o700); err != nil {
+		return "", ErrHostUnavailable
+	}
+	file, err := os.OpenFile(temporary, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return "", ErrHostUnavailable
+	}
+	hasher := sha256.New()
+	written, copyErr := io.Copy(
+		io.MultiWriter(file, hasher),
+		io.LimitReader(&contextArtifactReader{ctx: ctx, source: input.Artifact}, maximumStagedArtifactBytes),
+	)
+	closeErr := file.Close()
+	if copyErr != nil || closeErr != nil || written >= maximumStagedArtifactBytes || !artifactDigestMatches(input.ArtifactDigest, hasher.Sum(nil)) {
+		_ = os.Remove(temporary)
+		if ctx.Err() != nil {
+			return "", ctx.Err()
+		}
+		return "", ErrInvalidScript
+	}
+	if err := os.Rename(temporary, destination); err != nil {
+		_ = os.Remove(temporary)
+		return "", ErrHostUnavailable
+	}
+	return destination, nil
+}
+
+func stageRemoteArtifact(ctx context.Context, client *ssh.Client, input Input) (string, error) {
+	destination, temporary, err := stagedArtifactPaths(input.WorkingDirectory, input.ArtifactName)
+	if err != nil {
+		return "", err
+	}
+	session, err := client.NewSession()
+	if err != nil {
+		return "", ErrHostUnavailable
+	}
+	hasher := sha256.New()
+	limited := io.LimitReader(input.Artifact, maximumStagedArtifactBytes)
+	counting := &countingReader{reader: io.TeeReader(limited, hasher)}
+	session.Stdin = counting
+	command := "umask 077; mkdir -p " + shellQuote(path.Dir(destination)) + "; cat > " + shellQuote(temporary)
+	runDone := make(chan error, 1)
+	go func() { runDone <- session.Run(command) }()
+	var runErr error
+	select {
+	case runErr = <-runDone:
+	case <-ctx.Done():
+		_ = session.Close()
+		_ = client.Close()
+		return "", ctx.Err()
+	}
+	_ = session.Close()
+	if runErr != nil || counting.total >= maximumStagedArtifactBytes || !artifactDigestMatches(input.ArtifactDigest, hasher.Sum(nil)) {
+		cleanup, cleanupErr := client.NewSession()
+		if cleanupErr == nil {
+			_ = cleanup.Run("rm -f -- " + shellQuote(temporary))
+			_ = cleanup.Close()
+		}
+		return "", ErrInvalidScript
+	}
+	commit, err := client.NewSession()
+	if err != nil {
+		return "", ErrHostUnavailable
+	}
+	defer commit.Close()
+	done := make(chan error, 1)
+	go func() { done <- commit.Run("mv -f -- " + shellQuote(temporary) + " " + shellQuote(destination)) }()
+	select {
+	case err := <-done:
+		if err != nil {
+			return "", ErrHostUnavailable
+		}
+		return destination, nil
+	case <-ctx.Done():
+		_ = client.Close()
+		return "", ctx.Err()
+	}
+}
+
+type countingReader struct {
+	reader io.Reader
+	total  int64
+}
+
+type contextArtifactReader struct {
+	ctx    context.Context
+	source io.Reader
+}
+
+func (r *contextArtifactReader) Read(payload []byte) (int, error) {
+	select {
+	case <-r.ctx.Done():
+		return 0, r.ctx.Err()
+	default:
+		return r.source.Read(payload)
+	}
+}
+
+func (r *countingReader) Read(payload []byte) (int, error) {
+	count, err := r.reader.Read(payload)
+	r.total += int64(count)
+	return count, err
+}
+
+func stagedArtifactPaths(workingDirectory, name string) (string, string, error) {
+	workingDirectory = normalizeWorkingDirectory(workingDirectory)
+	name = safeArtifactName(name)
+	if workingDirectory == "" || name == "" {
+		return "", "", ErrInvalidScript
+	}
+	destination := path.Join(workingDirectory, ".zrt", "artifacts", name)
+	temporary := destination + ".tmp-" + strconv.FormatInt(time.Now().UTC().UnixNano(), 10)
+	return destination, temporary, nil
+}
+
+func safeArtifactName(value string) string {
+	value = path.Base(strings.TrimSpace(value))
+	if value == "." || value == "" {
+		return ""
+	}
+	var result strings.Builder
+	for _, character := range value {
+		if (character >= 'a' && character <= 'z') || (character >= 'A' && character <= 'Z') ||
+			(character >= '0' && character <= '9') || character == '.' || character == '_' || character == '-' {
+			result.WriteRune(character)
+		} else {
+			result.WriteByte('_')
+		}
+		if result.Len() >= 200 {
+			break
+		}
+	}
+	return strings.Trim(result.String(), ".")
+}
+
+func artifactDigestMatches(expected string, actual []byte) bool {
+	expected = strings.TrimSpace(expected)
+	if !strings.HasPrefix(expected, "sha256:") || len(expected) != len("sha256:")+64 {
+		return false
+	}
+	decoded, err := hex.DecodeString(strings.TrimPrefix(expected, "sha256:"))
+	return err == nil && len(decoded) == sha256.Size && subtle.ConstantTimeCompare(decoded, actual) == 1
+}
+
+func withArtifactEnvironment(environment map[string]string, artifactPath, digest string) map[string]string {
+	result := make(map[string]string, len(environment)+2)
+	for key, value := range environment {
+		result[key] = value
+	}
+	result["ZRT_ARTIFACT_PATH"] = artifactPath
+	result["ZRT_ARTIFACT_DIGEST"] = digest
+	return result
 }
 
 func (s *Service) loadHost(ctx context.Context, input Input) (model.Host, sshclient.Bundle, error) {

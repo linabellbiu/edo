@@ -3,7 +3,6 @@ package pipeline
 import (
 	"context"
 	"errors"
-	"path"
 	"strings"
 	"time"
 
@@ -17,13 +16,12 @@ import (
 var (
 	ErrManualCommitRequired  = errors.New("请选择要发布的 Commit")
 	ErrManualCommitNotFound  = errors.New("所选 Commit 不存在或对应分支、Tag 已经变化，请重新选择")
-	ErrManualReleaseDisabled = errors.New("应用流水线没有启用手动发布，请在代码触发节点中勾选手动发布")
+	ErrManualReleaseDisabled = errors.New("应用流水线没有启用手动发布，请在代码源中勾选手动发布")
 )
 
 type ManualRunSource struct {
-	ID          string `json:"id"`
-	Name        string `json:"name"`
-	Environment string `json:"environment,omitempty"`
+	ID   string `json:"id"`
+	Name string `json:"name"`
 }
 
 type ManualRunOptions struct {
@@ -44,11 +42,9 @@ func (s *Service) ListApplicationRefs(ctx context.Context, applicationID string)
 	}
 	options.Branches, options.Tags = refs.Branches, refs.Tags
 	if application.Workflow != nil {
-		for i := range application.Workflow.Nodes {
-			node := application.Workflow.Nodes[i]
-			if workflowNodeSupportsManualRelease(node) {
-				options.ManualSources = append(options.ManualSources, ManualRunSource{ID: node.ID, Name: node.Name, Environment: node.Config.Environment})
-			}
+		node := application.Workflow.Source
+		if workflowNodeSupportsManualRelease(node) {
+			options.ManualSources = append(options.ManualSources, ManualRunSource{ID: node.ID, Name: node.Name})
 		}
 	}
 	return options, nil
@@ -133,7 +129,10 @@ func (s *Service) ExecuteRun(ctx context.Context, runID, actorID, ref, commitSHA
 	}
 	prepared.ID = run.ID
 	prepared.CommitMessage = commitMessage
-	components := pipelineRunRepositories(application, run.ID, ref, commitSHA, now)
+	components, err := pipelineRunRepositories(application, run.ID, ref, commitSHA, now)
+	if err != nil {
+		return nil, err
+	}
 	err = s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		result := tx.Model(&model.PipelineRun{}).
 			Where("id = ? AND status = ? AND commit_sha = ?", run.ID, model.PipelineRunBlocked, run.CommitSHA).
@@ -161,34 +160,16 @@ func (s *Service) ExecuteRun(ctx context.Context, runID, actorID, ref, commitSHA
 	return s.advanceManualWorkflowEntry(ctx, run.ID, actorID, application.Workflow)
 }
 
-// advanceManualWorkflowEntry 从启用手动发布的代码触发节点连续进入后续流程。
-// 迁移前的 manual_release -> trigger 会多穿过一个兼容节点；人工放行、审核和部署节点仍按各自语义停留或执行。
+// advanceManualWorkflowEntry 从启用手动启动的唯一代码源进入第一个任务。
 func (s *Service) advanceManualWorkflowEntry(
 	ctx context.Context,
 	runID, actorID string,
 	workflow *model.ReleaseWorkflow,
 ) (*model.PipelineRun, error) {
-	if workflow == nil || len(workflow.Nodes) == 0 {
+	if workflow == nil || workflowTaskCount(workflow.Stages) == 0 {
 		return nil, ErrInvalidWorkflowTransition
 	}
-	nodes := make(map[string]model.WorkflowNode, len(workflow.Nodes))
-	for i := range workflow.Nodes {
-		nodes[workflow.Nodes[i].ID] = workflow.Nodes[i]
-	}
-	for transitions := 0; transitions < len(workflow.Nodes); transitions++ {
-		run, err := s.AdvanceRun(ctx, runID, actorID, "")
-		if err != nil {
-			return nil, err
-		}
-		current, ok := nodes[run.CurrentNodeID]
-		if !ok {
-			return nil, ErrInvalidWorkflowTransition
-		}
-		if current.Type != model.WorkflowNodeTrigger {
-			return run, nil
-		}
-	}
-	return nil, ErrInvalidWorkflowTransition
+	return s.AdvanceRun(ctx, runID, actorID, "")
 }
 
 // saveBlockedManualSelection 将版本选择与执行解耦；应用配置未完成时只保存代码版本，不投递任何构建或发布任务。
@@ -199,11 +180,14 @@ func (s *Service) saveBlockedManualSelection(
 	ref, commitSHA, commitMessage, sourceNodeID, message string,
 ) (*model.PipelineRun, error) {
 	now := time.Now().UTC()
-	components := pipelineRunRepositories(application, run.ID, ref, commitSHA, now)
+	components, err := pipelineRunRepositories(application, run.ID, ref, commitSHA, now)
+	if err != nil {
+		return nil, err
+	}
 	for i := range components {
 		components[i].Status = model.PipelineRunRepositoryPending
 	}
-	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	err = s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		result := tx.Model(&model.PipelineRun{}).
 			Where("id = ? AND status = ? AND commit_sha = ?", run.ID, model.PipelineRunBlocked, "").
 			Updates(map[string]any{
@@ -258,45 +242,35 @@ func (s *Service) validateManualSelection(ctx context.Context, application *mode
 	return ref, commitSHA, nil
 }
 
-func applicationRepositoryLinks(application *model.Application) []model.ApplicationRepository {
-	for i := range application.Repositories {
-		if application.Repositories[i].RepositoryID == application.RepositoryID {
-			link := application.Repositories[i]
-			link.SortOrder = 0
-			return []model.ApplicationRepository{link}
-		}
+func applicationRepositoryLink(application *model.Application) (*model.ApplicationRepository, error) {
+	if application == nil || application.ID == "" || application.RepositoryID == "" || len(application.Repositories) != 1 {
+		return nil, ErrApplicationRepositoryInvariant
 	}
-	if application.RepositoryID == "" {
+	link := &application.Repositories[0]
+	if link.ApplicationID != application.ID || link.RepositoryID != application.RepositoryID {
+		return nil, ErrApplicationRepositoryInvariant
+	}
+	return link, nil
+}
+
+func applicationRepositoryLinks(application *model.Application) []model.ApplicationRepository {
+	link, err := applicationRepositoryLink(application)
+	if err != nil {
 		return nil
 	}
-	return []model.ApplicationRepository{{RepositoryID: application.RepositoryID, Repository: application.Repository}}
+	return []model.ApplicationRepository{*link}
 }
 
-func pipelineRunRepositories(application *model.Application, runID, ref, commitSHA string, now time.Time) []model.PipelineRunRepository {
-	links := applicationRepositoryLinks(application)
-	result := make([]model.PipelineRunRepository, 0, len(links))
-	for i := range links {
-		component := model.PipelineRunRepository{
-			ID: uuid.NewString(), PipelineRunID: runID, RepositoryID: links[i].RepositoryID,
-			SortOrder: 0, Ref: ref, CommitSHA: commitSHA,
-			BuildPlanID: application.BuildPlanID, ImageRegistryID: application.ImageRegistryID,
-			DeploymentPlanID: application.DeploymentPlanID,
-			Status:           model.PipelineRunRepositoryReady, CreatedAt: now, UpdatedAt: now,
-		}
-		applyDeploymentPlanSnapshot(&component, application.DeploymentPlan)
-		result = append(result, component)
+func pipelineRunRepositories(application *model.Application, runID, ref, commitSHA string, now time.Time) ([]model.PipelineRunRepository, error) {
+	link, err := applicationRepositoryLink(application)
+	if err != nil {
+		return nil, err
 	}
-	return result
-}
-
-func applyDeploymentPlanSnapshot(component *model.PipelineRunRepository, plan *model.DeploymentPlan) {
-	if component == nil || plan == nil || plan.ID == "" || component.DeploymentPlanID != plan.ID {
-		return
-	}
-	component.DeploymentPlanKind = plan.Kind
-	component.DeploymentPlanScript = plan.Script
-	component.DeploymentPlanTimeoutSeconds = plan.TimeoutSeconds
-	component.DeploymentPlanDigest = model.DeploymentPlanExecutionDigest(plan.Kind, plan.Script, plan.TimeoutSeconds)
+	return []model.PipelineRunRepository{{
+		ID: uuid.NewString(), PipelineRunID: runID, RepositoryID: link.RepositoryID,
+		SortOrder: 0, Ref: ref, CommitSHA: commitSHA,
+		Status: model.PipelineRunRepositoryReady, CreatedAt: now, UpdatedAt: now,
+	}}, nil
 }
 
 func remoteRefContainsCommit(refs repository.RefResult, ref, commitSHA string) bool {
@@ -323,26 +297,12 @@ func manualWorkflowSource(workflow *model.ReleaseWorkflow, _ string, sourceNodeI
 	if workflow == nil {
 		return nil
 	}
-	if sourceNodeID != "" {
-		for i := range workflow.Nodes {
-			node := &workflow.Nodes[i]
-			if node.ID == sourceNodeID && workflowNodeSupportsManualRelease(*node) {
-				return node
-			}
-		}
+	source := &workflow.Source
+	if sourceNodeID != "" && source.ID != sourceNodeID {
 		return nil
 	}
-	var source *model.WorkflowNode
-	for i := range workflow.Nodes {
-		node := &workflow.Nodes[i]
-		if !workflowNodeSupportsManualRelease(*node) {
-			continue
-		}
-		if source != nil {
-			// 多条手动路径必须由调用方明确选择，不能静默发布到第一条路径。
-			return nil
-		}
-		source = node
+	if !workflowNodeSupportsManualRelease(*source) {
+		return nil
 	}
 	return source
 }
@@ -351,21 +311,28 @@ func retryWorkflowSource(workflow *model.ReleaseWorkflow, run *model.PipelineRun
 	if workflow == nil || run == nil {
 		return nil
 	}
-	for i := range workflow.Nodes {
-		node := &workflow.Nodes[i]
-		if node.Type != model.WorkflowNodeTrigger {
-			continue
-		}
-		if strings.HasPrefix(run.Ref, "refs/tags/") {
-			if containsEvent(node.Config.Events, "tag") && matchTag(node.Config.TagPattern, strings.TrimPrefix(run.Ref, "refs/tags/")) {
-				return node
-			}
-			continue
-		}
-		branch := strings.TrimPrefix(run.Ref, "refs/heads/")
-		if matched, err := path.Match(node.Config.Branch, branch); err == nil && matched {
+	node := &workflow.Source
+	if node.Type != model.WorkflowNodeTrigger {
+		return nil
+	}
+	if strings.HasPrefix(run.Ref, "refs/tags/") {
+		if containsEvent(node.Config.Events, "tag") && matchTag(node.Config.TagPattern, strings.TrimPrefix(run.Ref, "refs/tags/")) {
 			return node
 		}
+		return nil
+	}
+	if strings.HasPrefix(run.Ref, "refs/pull/") || strings.HasPrefix(run.Ref, "refs/merge-requests/") {
+		matched := matchingWorkflowTriggers(
+			workflow, "pr", run.Ref, run.SourceBranch, run.TargetBranch, run.TriggerAction,
+		)
+		if len(matched) == 1 {
+			return &workflow.Source
+		}
+		return nil
+	}
+	branch := strings.TrimPrefix(run.Ref, "refs/heads/")
+	if matchWorkflowPattern(node.Config.Branch, branch) {
+		return node
 	}
 	return manualWorkflowSource(workflow, run.Ref, "")
 }

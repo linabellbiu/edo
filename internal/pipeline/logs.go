@@ -6,21 +6,26 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"sort"
 	"strings"
 	"sync"
 	"time"
 	"unicode/utf8"
 
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
 	"zrt/internal/model"
 )
 
 const (
-	maximumRunLogMessageBytes = 16 * 1024
-	maximumBuildLogBytes      = 2 * 1024 * 1024
-	buildLogChunkBytes        = 8 * 1024
+	maximumRunLogMessageBytes  = 16 * 1024
+	maximumPipelineRunLogBytes = 2 * 1024 * 1024
+	maximumBuildLogBytes       = 2 * 1024 * 1024
+	buildLogChunkBytes         = 8 * 1024
 )
+
+const pipelineRunLogTruncatedMessage = "…本次流水线日志已达到 2 MiB 上限，后续日志不再保存"
 
 var ErrInvalidExecutionLogFilter = errors.New("日志查询条件无效")
 
@@ -110,19 +115,67 @@ func (s *Service) appendRunLog(ctx context.Context, runID, stage, level, message
 	if strings.TrimSpace(runID) == "" || message == "" {
 		return
 	}
-	entry := model.PipelineRunLog{
-		PipelineRunID: runID,
-		Stage:         truncateRunLogText(strings.TrimSpace(stage), 32),
-		Level:         truncateRunLogText(strings.TrimSpace(level), 16),
-		Message:       message,
-		CreatedAt:     time.Now().UTC(),
+	stage = truncateRunLogText(strings.TrimSpace(stage), 32)
+	level = truncateRunLogText(strings.TrimSpace(level), 16)
+	if level == "" {
+		level = "info"
 	}
-	if entry.Level == "" {
-		entry.Level = "info"
-	}
-	if err := s.db.WithContext(ctx).Create(&entry).Error; err != nil && s.logger != nil {
+	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var run model.PipelineRun
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			Select("id", "log_bytes", "log_truncated").First(&run, "id = ?", runID).Error; err != nil {
+			return err
+		}
+		if run.LogTruncated {
+			return nil
+		}
+		payloadLimit := maximumPipelineRunLogBytes - len(pipelineRunLogTruncatedMessage)
+		remaining := payloadLimit - int(run.LogBytes)
+		truncated := remaining <= 0 || len(message) > remaining
+		if remaining > 0 {
+			stored := message
+			if len(stored) > remaining {
+				stored = truncateUTF8Bytes(stored, remaining)
+			}
+			if stored != "" {
+				if err := tx.Create(&model.PipelineRunLog{
+					PipelineRunID: runID, Stage: stage, Level: level, Message: stored, CreatedAt: time.Now().UTC(),
+				}).Error; err != nil {
+					return err
+				}
+				run.LogBytes += uint64(len(stored))
+			}
+		}
+		if truncated || int(run.LogBytes) >= payloadLimit {
+			if err := tx.Create(&model.PipelineRunLog{
+				PipelineRunID: runID, Stage: stage, Level: "warning",
+				Message: pipelineRunLogTruncatedMessage, CreatedAt: time.Now().UTC(),
+			}).Error; err != nil {
+				return err
+			}
+			run.LogBytes += uint64(len(pipelineRunLogTruncatedMessage))
+			run.LogTruncated = true
+		}
+		return tx.Model(&model.PipelineRun{}).Where("id = ?", runID).
+			Updates(map[string]any{"log_bytes": run.LogBytes, "log_truncated": run.LogTruncated}).Error
+	})
+	if err != nil && s.logger != nil {
 		s.logger.Error("写入流水线执行日志失败", "operation", "pipeline_log_append", "pipeline_run_id", runID, "stage", stage, "err", err)
 	}
+}
+
+func truncateUTF8Bytes(value string, limit int) string {
+	if limit <= 0 {
+		return ""
+	}
+	if len(value) <= limit {
+		return value
+	}
+	value = value[:limit]
+	for value != "" && !utf8.ValidString(value) {
+		value = value[:len(value)-1]
+	}
+	return value
 }
 
 func normalizeRunLogMessage(message string) string {
@@ -156,20 +209,25 @@ type buildLogWriter struct {
 	written    int
 	truncated  bool
 	lastFlush  time.Time
+	redactions [][]byte
 }
 
-func (s *Service) newBuildLogWriter(ctx context.Context, runID, stage string) io.WriteCloser {
-	return s.newExecutionLogWriter(ctx, runID, stage, "构建")
+func (s *Service) newBuildLogWriter(ctx context.Context, runID, stage string, redactions ...string) io.WriteCloser {
+	return s.newExecutionLogWriter(ctx, runID, stage, "构建", redactions...)
 }
 
-func (s *Service) newExecutionLogWriter(ctx context.Context, runID, stage, outputName string) io.WriteCloser {
+func (s *Service) newExecutionLogWriter(
+	ctx context.Context,
+	runID, stage, outputName string,
+	redactions ...string,
+) io.WriteCloser {
 	outputName = strings.TrimSpace(outputName)
 	if outputName == "" {
 		outputName = "任务"
 	}
 	return &buildLogWriter{
 		service: s, ctx: ctx, runID: runID, stage: stage,
-		outputName: outputName, lastFlush: time.Now(),
+		outputName: outputName, lastFlush: time.Now(), redactions: normalizeLogRedactions(redactions),
 	}
 }
 
@@ -193,7 +251,7 @@ func (w *buildLogWriter) Write(value []byte) (int, error) {
 	w.pending = append(w.pending, value...)
 	w.flushCompleteChunks()
 	if w.truncated {
-		w.flushPending()
+		w.flushFinal()
 		w.service.appendRunLog(w.ctx, w.runID, w.stage, "warning", w.outputName+"输出超过 2 MiB，后续日志已截断。\n")
 	}
 	return originalLength, nil
@@ -202,7 +260,7 @@ func (w *buildLogWriter) Write(value []byte) (int, error) {
 func (w *buildLogWriter) Close() error {
 	w.mutex.Lock()
 	defer w.mutex.Unlock()
-	w.flushPending()
+	w.flushFinal()
 	return nil
 }
 
@@ -214,23 +272,36 @@ func (w *buildLogWriter) flushCompleteChunks() {
 		} else {
 			cut++
 		}
+		cut = w.safeFlushLength(cut)
+		if cut == 0 {
+			break
+		}
 		w.flush(cut)
 	}
 	if len(w.pending) > 0 && bytes.IndexByte(w.pending, '\n') >= 0 && time.Since(w.lastFlush) >= 250*time.Millisecond {
 		cut := bytes.LastIndexByte(w.pending, '\n') + 1
-		w.flush(cut)
+		if cut = w.safeFlushLength(cut); cut > 0 {
+			w.flush(cut)
+		}
 	}
 }
 
-func (w *buildLogWriter) flushPending() {
-	for len(w.pending) > 0 {
-		cut := min(len(w.pending), buildLogChunkBytes)
-		w.flush(cut)
+func (w *buildLogWriter) flushFinal() {
+	if len(w.pending) == 0 {
+		return
+	}
+	message := redactLogBytes(w.pending, w.redactions)
+	w.pending = nil
+	for len(message) > 0 {
+		cut := min(len(message), buildLogChunkBytes)
+		w.lastFlush = time.Now()
+		w.service.appendRunLog(w.ctx, w.runID, w.stage, "output", string(message[:cut]))
+		message = message[cut:]
 	}
 }
 
 func (w *buildLogWriter) flush(length int) {
-	message := string(w.pending[:length])
+	message := string(redactLogBytes(w.pending[:length], w.redactions))
 	w.pending = w.pending[length:]
 	w.lastFlush = time.Now()
 	w.service.appendRunLog(w.ctx, w.runID, w.stage, "output", message)
@@ -239,4 +310,49 @@ func (w *buildLogWriter) flush(length int) {
 func (w *buildLogWriter) markTruncated() {
 	w.truncated = true
 	w.service.appendRunLog(w.ctx, w.runID, w.stage, "warning", w.outputName+"输出超过 2 MiB，后续日志已截断。\n")
+}
+
+func (w *buildLogWriter) safeFlushLength(length int) int {
+	if length <= 0 || len(w.redactions) == 0 {
+		return length
+	}
+	for {
+		original := length
+		for _, secret := range w.redactions {
+			maximumPrefix := min(len(secret)-1, length)
+			for prefixLength := maximumPrefix; prefixLength > 0; prefixLength-- {
+				start := length - prefixLength
+				if bytes.Equal(w.pending[start:length], secret[:prefixLength]) {
+					length = start
+					break
+				}
+			}
+		}
+		if length == original || length == 0 {
+			return length
+		}
+	}
+}
+
+func normalizeLogRedactions(values []string) [][]byte {
+	unique := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		if value != "" {
+			unique[value] = struct{}{}
+		}
+	}
+	result := make([][]byte, 0, len(unique))
+	for value := range unique {
+		result = append(result, []byte(value))
+	}
+	sort.Slice(result, func(i, j int) bool { return len(result[i]) > len(result[j]) })
+	return result
+}
+
+func redactLogBytes(message []byte, redactions [][]byte) []byte {
+	result := append([]byte(nil), message...)
+	for _, secret := range redactions {
+		result = bytes.ReplaceAll(result, secret, []byte("[已脱敏]"))
+	}
+	return result
 }

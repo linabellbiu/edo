@@ -2,6 +2,7 @@ package dockerengine
 
 import (
 	"archive/tar"
+	"context"
 	"errors"
 	"io"
 	"os"
@@ -9,6 +10,9 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/moby/moby/client"
 )
 
 func TestCreateBuildContextAppliesDockerIgnore(t *testing.T) {
@@ -79,6 +83,39 @@ func TestCacheImageNameUsesStableRepositoryTag(t *testing.T) {
 	}
 }
 
+func TestMatchingRepoDigestUsesPushedRepository(t *testing.T) {
+	expected := "registry.example.com/team/api@sha256:" + strings.Repeat("b", 64)
+	other := "mirror.example.com/team/api@sha256:" + strings.Repeat("a", 64)
+	if actual := matchingRepoDigest("registry.example.com/team/api:commit", []string{other, expected}); actual != expected {
+		t.Fatalf("没有按刚推送的仓库筛选摘要: %q", actual)
+	}
+	if actual := matchingRepoDigest("registry.example.com/team/api:commit", []string{other}); actual != "" {
+		t.Fatalf("不得返回其他仓库的摘要: %q", actual)
+	}
+}
+
+func TestRetryableBuildErrorUsesDockerBoundaryClassification(t *testing.T) {
+	transient := &buildExecutionError{cause: errors.New("registry unavailable"), retryable: true}
+	permanent := &buildExecutionError{cause: errors.New("Dockerfile invalid")}
+	if !IsRetryableBuildError(transient) || IsRetryableBuildError(permanent) {
+		t.Fatal("Docker 构建错误类型的重试分类错误")
+	}
+	if !IsRetryableBuildError(context.DeadlineExceeded) || IsRetryableBuildError(context.Canceled) {
+		t.Fatal("构建超时可以重试，但主动取消不得自动重试")
+	}
+	for _, message := range []string{
+		"unexpected status from POST request: 429 Too Many Requests",
+		"server returned HTTP 503 Service Unavailable",
+	} {
+		if !transientRegistryStatusPattern.MatchString(message) {
+			t.Fatalf("没有识别镜像仓库临时状态: %q", message)
+		}
+	}
+	if transientRegistryStatusPattern.MatchString("Dockerfile parse error at line 500") {
+		t.Fatal("Dockerfile 错误不得因普通数字被误判为临时故障")
+	}
+}
+
 func TestZRTLocalImageAndImageIDValidation(t *testing.T) {
 	if !IsZRTLocalImage("zrt.local/order-api:abcdef-12345678") {
 		t.Fatal("合法的 ZRT 本地镜像没有被识别")
@@ -90,6 +127,53 @@ func TestZRTLocalImageAndImageIDValidation(t *testing.T) {
 	if !IsValidImageID(validID) || IsValidImageID("sha256:"+strings.Repeat("g", 64)) || IsValidImageID("sha256:short") {
 		t.Fatal("Docker 镜像 ID 校验结果错误")
 	}
+}
+
+func TestExportImageByIDNeverFallsBackToMutableTag(t *testing.T) {
+	sourceImageID := "sha256:" + strings.Repeat("b", 64)
+	exporter := &recordingImageArchiveExporter{
+		inspectID: sourceImageID,
+		archive:   "fixed-image-archive",
+	}
+	archive, err := exportImageByID(context.Background(), exporter, sourceImageID)
+	if err != nil {
+		t.Fatalf("按固定 Image ID 导出失败: %v", err)
+	}
+	defer archive.Close()
+	payload, err := io.ReadAll(archive)
+	if err != nil || string(payload) != exporter.archive {
+		t.Fatalf("镜像归档内容不正确: %q err=%v", payload, err)
+	}
+	if exporter.inspected != sourceImageID || len(exporter.saved) != 1 || exporter.saved[0] != sourceImageID {
+		t.Fatalf("镜像导出重新使用了可变标签: inspected=%q saved=%v", exporter.inspected, exporter.saved)
+	}
+}
+
+type recordingImageArchiveExporter struct {
+	inspectID string
+	archive   string
+	inspected string
+	saved     []string
+}
+
+func (f *recordingImageArchiveExporter) ImageInspect(
+	_ context.Context,
+	image string,
+	_ ...client.ImageInspectOption,
+) (client.ImageInspectResult, error) {
+	f.inspected = image
+	result := client.ImageInspectResult{}
+	result.ID = f.inspectID
+	return result, nil
+}
+
+func (f *recordingImageArchiveExporter) ImageSave(
+	_ context.Context,
+	images []string,
+	_ ...client.ImageSaveOption,
+) (client.ImageSaveResult, error) {
+	f.saved = append([]string(nil), images...)
+	return io.NopCloser(strings.NewReader(f.archive)), nil
 }
 
 func TestDockerBuildxArgumentsUseSessionCapableBuilder(t *testing.T) {
@@ -109,6 +193,107 @@ func TestDockerBuildxArgumentsUseSessionCapableBuilder(t *testing.T) {
 	local := dockerBuildxArguments("Dockerfile", []string{"zrt.local/app:local"}, "", "")
 	if slices.Contains(local, "--builder") {
 		t.Fatalf("本地构建不应覆盖当前 Docker Context/Builder: %v", local)
+	}
+}
+
+func TestDockerBuildxArgumentsWithOptionsAreStable(t *testing.T) {
+	arguments := dockerBuildxArgumentsWithOptions(
+		"deploy/Dockerfile",
+		[]string{"registry.example.com/team/app:commit", "registry.example.com/team/app:zrt-cache"},
+		"registry.example.com/team/app:zrt-cache",
+		"default",
+		BuildOptions{
+			Pull:         true,
+			CacheEnabled: true,
+			TargetStage:  "runtime",
+			Platform:     "linux/amd64",
+			BuildArgs: map[string]string{
+				"ZETA":  "last",
+				"ALPHA": "first",
+			},
+			Labels: map[string]string{
+				"zrt.example/revision":           "abcdef",
+				"org.opencontainers.image.title": "app",
+			},
+		},
+	)
+	expected := []string{
+		"buildx", "build", "--progress", "plain", "--pull", "--load",
+		"--builder", "default",
+		"--file", "deploy/Dockerfile",
+		"--target", "runtime",
+		"--platform", "linux/amd64",
+		"--build-arg", "ALPHA",
+		"--build-arg", "ZETA",
+		"--build-arg", "BUILDKIT_INLINE_CACHE=1",
+		"--label", "org.opencontainers.image.title=app",
+		"--label", "zrt.example/revision=abcdef",
+		"--tag", "registry.example.com/team/app:commit",
+		"--tag", "registry.example.com/team/app:zrt-cache",
+		"--cache-from", "registry.example.com/team/app:zrt-cache",
+		"-",
+	}
+	if !slices.Equal(arguments, expected) {
+		t.Fatalf("Buildx 参数顺序不稳定:\n实际: %v\n期望: %v", arguments, expected)
+	}
+}
+
+func TestDockerBuildxArgumentsCanDisablePullAndCache(t *testing.T) {
+	arguments := dockerBuildxArgumentsWithOptions(
+		"Dockerfile",
+		[]string{"zrt.local/app:commit"},
+		"zrt.local/app:zrt-cache",
+		"",
+		BuildOptions{BuildArgs: map[string]string{"VERSION": "1.2.3"}},
+	)
+	for _, unexpected := range []string{"--pull", "--cache-from", "BUILDKIT_INLINE_CACHE=1"} {
+		if slices.Contains(arguments, unexpected) {
+			t.Fatalf("禁用拉取或缓存后仍包含 %q: %v", unexpected, arguments)
+		}
+	}
+	if !slices.Contains(arguments, "VERSION") || slices.Contains(arguments, "VERSION=1.2.3") {
+		t.Fatalf("禁用缓存不应丢弃用户构建参数: %v", arguments)
+	}
+}
+
+func TestDockerBuildArgsStayOutOfProcessArguments(t *testing.T) {
+	arguments := dockerBuildxArgumentsWithOptions(
+		"Dockerfile", []string{"zrt.local/app:commit"}, "", "",
+		BuildOptions{BuildArgs: map[string]string{"API_TOKEN": "super-secret-value"}},
+	)
+	if slices.Contains(arguments, "API_TOKEN=super-secret-value") || !slices.Contains(arguments, "API_TOKEN") {
+		t.Fatalf("构建参数值不应进入进程参数: %v", arguments)
+	}
+	environment := environmentValues(dockerBuildEnvironment("", "", "/tmp/zrt-build-config", map[string]string{
+		"API_TOKEN": "super-secret-value",
+	}))
+	if environment["API_TOKEN"] != "super-secret-value" {
+		t.Fatalf("构建参数没有通过子进程环境传给 Docker CLI: %+v", environment)
+	}
+}
+
+func TestDockerBuildArgsRejectRuntimeControlVariables(t *testing.T) {
+	for _, name := range []string{"DOCKER_CONFIG", "docker_host", "BUILDX_BUILDER", "BUILDKIT_HOST", "PATH", "HOME"} {
+		if ValidBuildArgs(map[string]string{name: "attacker-controlled"}) {
+			t.Fatalf("Docker 客户端控制变量不应作为普通构建参数传入: %s", name)
+		}
+	}
+	if !ValidBuildArgs(map[string]string{"APP_VERSION": "1.2.3"}) {
+		t.Fatal("普通 Docker 构建参数被错误拒绝")
+	}
+}
+
+func TestDockerBuildxArgumentsDefaultOptionsRemainCompatible(t *testing.T) {
+	arguments := dockerBuildxArguments(
+		"Dockerfile",
+		[]string{"registry.example.com/team/app:commit"},
+		"registry.example.com/team/app:zrt-cache",
+		"",
+	)
+	for _, expected := range []string{"--pull", "BUILDKIT_INLINE_CACHE=1", "--cache-from"} {
+		if !slices.Contains(arguments, expected) {
+			t.Fatalf("默认构建行为缺少 %q: %v", expected, arguments)
+		}
 	}
 }
 
@@ -142,15 +327,21 @@ func TestDockerBuildEnvironmentSelectsLocalOrConfiguredRuntime(t *testing.T) {
 	t.Setenv("DOCKER_HOST", "unix:///host/docker.sock")
 	t.Setenv("DOCKER_CONTEXT", "desktop-linux")
 	t.Setenv("DOCKER_CONFIG", "/host/docker-config")
+	t.Setenv("DOCKER_TLS_VERIFY", "1")
+	t.Setenv("DOCKER_CERT_PATH", "/host/docker-certs")
 
-	local := environmentValues(dockerBuildEnvironment("", ""))
+	local := environmentValues(dockerBuildEnvironment("", "", "/tmp/zrt-local-docker-config"))
 	if local["DOCKER_HOST"] != "unix:///host/docker.sock" || local["DOCKER_CONTEXT"] != "desktop-linux" ||
-		local["DOCKER_CONFIG"] != "/host/docker-config" {
-		t.Fatalf("本地构建没有保留宿主机 Docker 环境: %+v", local)
+		local["DOCKER_CONFIG"] != "/tmp/zrt-local-docker-config" || local["DOCKER_TLS_VERIFY"] != "1" ||
+		local["DOCKER_CERT_PATH"] != "/host/docker-certs" {
+		t.Fatalf("本地构建没有隔离 Docker 认证配置: %+v", local)
 	}
 
-	container := environmentValues(dockerBuildEnvironment("tcp://docker-builder:2375", "/tmp/zrt-docker-config"))
-	if container["DOCKER_HOST"] != "tcp://docker-builder:2375" || container["DOCKER_CONFIG"] != "/tmp/zrt-docker-config" {
+	container := environmentValues(dockerBuildEnvironment(
+		"tcp://docker-builder:2376", "/certs/client", "/tmp/zrt-docker-config",
+	))
+	if container["DOCKER_HOST"] != "tcp://docker-builder:2376" || container["DOCKER_CONFIG"] != "/tmp/zrt-docker-config" ||
+		container["DOCKER_TLS_VERIFY"] != "1" || container["DOCKER_CERT_PATH"] != "/certs/client" {
 		t.Fatalf("容器构建没有使用显式 DinD: %+v", container)
 	}
 	if _, exists := container["DOCKER_CONTEXT"]; exists {
@@ -158,6 +349,36 @@ func TestDockerBuildEnvironmentSelectsLocalOrConfiguredRuntime(t *testing.T) {
 	}
 	if container["DOCKER_BUILDKIT"] != "1" {
 		t.Fatalf("构建必须启用 BuildKit: %+v", container)
+	}
+}
+
+func TestCacheOperationTimeoutDoesNotConsumeFormalBuildBudget(t *testing.T) {
+	for _, test := range []struct {
+		build time.Duration
+		want  time.Duration
+	}{
+		{build: 30 * time.Second, want: 5 * time.Second},
+		{build: 2 * time.Minute, want: 12 * time.Second},
+		{build: time.Hour, want: 30 * time.Second},
+	} {
+		if got := cacheOperationTimeout(test.build); got != test.want {
+			t.Fatalf("缓存操作超时不正确: build=%s got=%s want=%s", test.build, got, test.want)
+		}
+	}
+}
+
+func TestAnonymousDockerConfigDoesNotInheritCredentials(t *testing.T) {
+	directory, err := writeDockerCLIConfig(RegistryAuth{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(directory)
+	payload, err := os.ReadFile(filepath.Join(directory, "config.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(payload), "private-token") || strings.Contains(string(payload), "/host/docker-config") {
+		t.Fatalf("匿名构建配置继承了宿主机凭据: %s", payload)
 	}
 }
 

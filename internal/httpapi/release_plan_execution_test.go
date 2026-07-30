@@ -25,6 +25,8 @@ import (
 	"zrt/internal/configuration"
 	"zrt/internal/credential"
 	"zrt/internal/database"
+	"zrt/internal/deployment"
+	"zrt/internal/dockerengine"
 	"zrt/internal/logging"
 	"zrt/internal/model"
 	"zrt/internal/pipeline"
@@ -158,6 +160,20 @@ func TestCreateReleasePlanExecutionReturnsAccepted(t *testing.T) {
 		payload.Execution.Items[0].PipelineRunID == "" || payload.Execution.Items[0].SourceNodeID != sourceNodeID {
 		t.Fatalf("202 响应缺少完整的发布计划执行: %+v body=%s", payload.Execution, response.Body.String())
 	}
+	var run model.PipelineRun
+	if err := fixture.db.First(&run, "id = ?", payload.Execution.Items[0].PipelineRunID).Error; err != nil {
+		t.Fatalf("读取发布计划创建的流水线运行失败: %v", err)
+	}
+	if run.Status != model.PipelineRunRunning || run.CurrentNodeID != "build" || run.Stage != "queued" || run.ExecutionJobID == "" {
+		t.Fatalf("发布计划没有先进入构建任务: %+v", run)
+	}
+	var job model.Job
+	if err := fixture.db.First(&job, "id = ?", run.ExecutionJobID).Error; err != nil {
+		t.Fatalf("读取发布计划构建任务失败: %v", err)
+	}
+	if job.Kind != "pipeline.build" || job.Subject != "zrt.task.pipeline.build" {
+		t.Fatalf("发布计划首个任务不是构建任务: %+v", job)
+	}
 }
 
 type releasePlanExecutionRefLister struct {
@@ -206,6 +222,12 @@ func newReleasePlanExecutionHTTPFixture(t *testing.T, commitSHA string) releaseP
 		repository.WithWebhookGate(configurationService),
 	)
 	pipelineService := pipeline.NewService(db, repositoryService, secretManager)
+	dockerService := dockerengine.NewService(db, secretManager, config.Runtime{})
+	pipelineService.ConfigureExecution(
+		dockerService,
+		deployment.NewService(db, dockerService, nil, nil, nil, "", logger),
+		logger,
+	)
 	if _, err := accounts.CreateAdmin(context.Background(), "admin", "管理员", "correct horse battery staple"); err != nil {
 		t.Fatalf("创建测试管理员失败: %v", err)
 	}
@@ -258,35 +280,26 @@ func createReleasePlanExecutionHTTPApplication(
 	if err != nil {
 		t.Fatal(err)
 	}
-	registry, err := service.CreateRegistry(ctx, "admin", pipeline.RegistryInput{
-		Name: "发布计划 HTTP 镜像", Provider: model.RegistryGeneric,
-		Endpoint: "https://registry.example.com", Namespace: "zrt",
-	})
-	if err != nil {
+	now := time.Now().UTC()
+	endpoint := model.DockerEndpoint{
+		ID: uuid.NewString(), Name: "发布计划 HTTP Docker", Host: "unix:///var/run/docker.sock",
+		IsActive: true, CreatedBy: "admin", CreatedAt: now, UpdatedAt: now,
+	}
+	if err := db.Create(&endpoint).Error; err != nil {
 		t.Fatal(err)
 	}
 	deploymentPlan, err := service.CreateDeploymentPlan(ctx, "admin", pipeline.DeploymentPlanInput{
 		Name: "发布计划 HTTP 部署", Kind: model.DeploymentPlanDocker, ServiceName: "api",
+		DeploymentTarget: &deployment.TargetInput{
+			Name: "发布计划 HTTP 部署位置", Platform: model.DeploymentDocker,
+			RuntimeID: endpoint.ID, WorkloadName: "api", RolloutTimeout: 300,
+		},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	now := time.Now().UTC()
-	target := model.DeploymentTarget{
-		ID: uuid.NewString(), Name: "发布计划 HTTP 部署位置", Platform: model.DeploymentDocker,
-		Environment: model.EnvironmentStaging, RuntimeID: uuid.NewString(), WorkloadName: "api", RolloutTimeout: 300,
-		IsActive: true, CreatedBy: "admin", CreatedAt: now, UpdatedAt: now,
-	}
-	if err := db.Create(&target).Error; err != nil {
-		t.Fatal(err)
-	}
 	application, err := service.CreateApplication(ctx, "admin", pipeline.ApplicationInput{
-		Name: "发布计划 HTTP 应用", RepositoryID: repositoryID, Branch: "main", WatchPush: true,
-		BuildPlanID: buildPlan.ID, ImageRegistryID: registry.ID, DeploymentPlanID: deploymentPlan.ID,
-		Environments: []pipeline.EnvironmentInput{{
-			Key: "dev", Name: "开发环境", Branch: "main", WatchPush: true,
-			DeploymentPlanID: deploymentPlan.ID, DeploymentTargetID: target.ID,
-		}},
+		Name: "发布计划 HTTP 应用", RepositoryID: repositoryID,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -296,25 +309,38 @@ func createReleasePlanExecutionHTTPApplication(
 		t.Fatal(err)
 	}
 	workflow := workflowResult.Workflow
-	triggerID := ""
-	for i := range workflow.Nodes {
-		if workflow.Nodes[i].Type == model.WorkflowNodeTrigger {
-			triggerID = workflow.Nodes[i].ID
-			break
-		}
+	triggerID := "source"
+	workflow.SchemaVersion = model.WorkflowSchemaVersion
+	workflow.Source = model.WorkflowNode{
+		ID: triggerID, Type: model.WorkflowNodeTrigger, Name: "代码源",
+		Config: model.WorkflowNodeConfig{Branch: "main", Events: []string{"manual", "push"}},
 	}
-	if triggerID == "" {
-		t.Fatal("默认流水线缺少代码触发节点")
-	}
-	for i := range workflow.Nodes {
-		if workflow.Nodes[i].ID == triggerID {
-			workflow.Nodes[i].Config.Events = append(workflow.Nodes[i].Config.Events, "manual")
-			break
-		}
+	workflow.Stages = []model.WorkflowStage{
+		{
+			ID: "build-stage", Name: "构建",
+			Tasks: []model.WorkflowNode{
+				{ID: "build", Type: model.WorkflowNodeBuild, Name: "构建镜像", Config: model.WorkflowNodeConfig{BuildPlanID: buildPlan.ID}},
+				{
+					ID: "shell", Type: model.WorkflowNodeShell, Name: "冒烟检查",
+					Config: model.WorkflowNodeConfig{Script: "echo ready", WorkingDirectory: ".", TimeoutSeconds: 60},
+				},
+			},
+		},
+		{
+			ID: "release-stage", Name: "发布",
+			Tasks: []model.WorkflowNode{
+				{ID: "approval", Type: model.WorkflowNodeApproval, Name: "发布审核"},
+				{ID: "manual", Type: model.WorkflowNodeManual, Name: "人工放行"},
+				{
+					ID: "deploy", Type: model.WorkflowNodeDeploy, Name: "部署",
+					Config: model.WorkflowNodeConfig{DeploymentPlanID: deploymentPlan.ID},
+				},
+			},
+		},
 	}
 	saved, err := service.SaveWorkflow(ctx, application.ID, "admin", pipeline.WorkflowInput{
-		Name: workflow.Name, Revision: workflow.Revision, Activate: true,
-		Nodes: workflow.Nodes, Edges: workflow.Edges, Viewport: workflow.Viewport,
+		SchemaVersion: workflow.SchemaVersion, Name: workflow.Name, Revision: workflow.Revision, Activate: true,
+		Source: workflow.Source, Stages: workflow.Stages,
 	})
 	if err != nil {
 		t.Fatalf("启用测试流水线失败: %v", err)

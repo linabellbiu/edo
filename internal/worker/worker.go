@@ -205,7 +205,7 @@ func (w *Worker) process(runContext context.Context, message queueMessage) {
 			w.term(message, taskMessage.JobID)
 			return
 		}
-		w.nak(message, 5*time.Second, "lease_busy")
+		w.nak(message, leaseBusyRetryDelay(job, time.Now().UTC()), "lease_busy")
 		return
 	}
 
@@ -381,19 +381,24 @@ func (w *Worker) scheduleRetry(ctx context.Context, jobID, code, publicMessage s
 
 func (w *Worker) finishFailure(ctx context.Context, queueMessage queueMessage, message task.Message, attempt int, code, publicMessage string) {
 	failedAt := time.Now().UTC()
-	payload, err := json.Marshal(deadLetter{
-		Version: 1, JobID: message.JobID, Kind: message.Kind, Attempt: attempt,
-		MaxAttempts: message.MaxAttempts, ErrorCode: code, ErrorMessage: publicMessage,
-		FailedAt: failedAt, Task: message, SourceSubject: queueMessage.Subject(),
-	})
-	if err != nil {
-		w.logger.Error("序列化任务死信失败", "operation", "worker_dead_encode", "job_id", message.JobID, "err", err)
-		w.nak(queueMessage, retryDelay(attempt), "dead_encode")
-		return
-	}
-	err = w.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	err := w.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var job model.Job
+		if err := tx.First(&job, "id = ? AND status = ? AND lease_owner = ?", message.JobID, model.JobRunning, w.ownerID).Error; err != nil {
+			return err
+		}
+		authoritativeMessage := task.Message{
+			Version: 1, JobID: job.ID, Kind: job.Kind, MaxAttempts: job.MaxAttempts, Payload: json.RawMessage(job.Payload),
+		}
+		payload, err := json.Marshal(deadLetter{
+			Version: 1, JobID: job.ID, Kind: job.Kind, Attempt: attempt,
+			MaxAttempts: job.MaxAttempts, ErrorCode: code, ErrorMessage: publicMessage,
+			FailedAt: failedAt, Task: authoritativeMessage, SourceSubject: queueMessage.Subject(),
+		})
+		if err != nil {
+			return fmt.Errorf("序列化任务死信失败: %w", err)
+		}
 		result := tx.Model(&model.Job{}).
-			Where("id = ? AND status = ? AND lease_owner = ?", message.JobID, model.JobRunning, w.ownerID).
+			Where("id = ? AND status = ? AND lease_owner = ?", job.ID, model.JobRunning, w.ownerID).
 			Updates(map[string]any{
 				"status": model.JobFailed, "finished_at": failedAt, "updated_at": failedAt,
 				"lease_owner": "", "lease_expires_at": nil,
@@ -405,8 +410,13 @@ func (w *Worker) finishFailure(ctx context.Context, queueMessage queueMessage, m
 		if result.RowsAffected != 1 {
 			return errors.New("任务租约已失效，不能写入失败状态")
 		}
+		if hook, ok := w.registry.TerminalFailureHook(job.Kind); ok {
+			if err := hook(ctx, tx, job, code, publicMessage); err != nil {
+				return fmt.Errorf("收敛关联业务状态失败: %w", err)
+			}
+		}
 		return tx.Create(&model.OutboxEvent{
-			EventID: uuid.NewString(), AggregateID: message.JobID, Subject: w.nats.DeadSubject,
+			EventID: uuid.NewString(), AggregateID: job.ID, Subject: w.nats.DeadSubject,
 			Payload: datatypes.JSON(payload), NextAttemptAt: failedAt, CreatedAt: failedAt,
 		}).Error
 	})
@@ -475,6 +485,20 @@ func retryDelay(attempt int) time.Duration {
 		return delays[len(delays)-1]
 	}
 	return delays[attempt-1]
+}
+
+func leaseBusyRetryDelay(job model.Job, now time.Time) time.Duration {
+	const minimum = 5 * time.Second
+	if job.Status != model.JobRunning || job.LeaseExpiresAt == nil || !job.LeaseExpiresAt.After(now) {
+		return minimum
+	}
+	// 旧进程崩溃后，消息可能先于数据库租约过期重新投递。等待至租约边界之后再取回，
+	// 避免短间隔 NAK 提前耗尽 JetStream 的有限投递次数，使终态失败钩子没有机会执行。
+	delay := job.LeaseExpiresAt.Sub(now) + time.Second
+	if delay < minimum {
+		return minimum
+	}
+	return delay
 }
 
 func truncate(value string, maxRunes int) string {

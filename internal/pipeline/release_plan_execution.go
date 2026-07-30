@@ -369,7 +369,7 @@ func (s *Service) prepareReleasePlanExecution(
 			if application.Workflow.Revision != selection.ExpectedWorkflowRevision {
 				return nil, ErrReleasePlanExecutionWorkflowChanged
 			}
-			if issues := s.validateWorkflow(ctx, application, application.Workflow.Nodes, application.Workflow.Edges); len(issues) != 0 {
+			if issues := s.validateWorkflow(ctx, application, application.Workflow.SchemaVersion, application.Workflow.Source, application.Workflow.Stages); len(issues) != 0 {
 				return nil, ErrInvalidReleasePlanExecution
 			}
 			source := releasePlanManualSource(application.Workflow, selection.SourceNodeID, selection.Ref)
@@ -401,7 +401,11 @@ func (s *Service) prepareReleasePlanExecution(
 			run.Stage = string(source.Type)
 			run.CommitMessage = s.resolveCommitMessage(ctx, application.RepositoryID, ref, commitSHA)
 			run.Message = "发布计划等待编排启动"
-			components := pipelineRunRepositories(application, run.ID, ref, commitSHA, now)
+			components, err := pipelineRunRepositories(application, run.ID, ref, commitSHA, now)
+			if err != nil {
+				s.logReleasePlanExecutionError("release_plan_execution_repository_invariant", groupApplication.ApplicationID, err)
+				return nil, ErrReleasePlanExecutionTemporarilyFailed
+			}
 			item := model.ReleasePlanExecutionItem{
 				ID: itemID, ReleasePlanExecutionID: executionID,
 				ReleaseGroupID: group.ID, ReleaseGroupApplicationID: groupApplication.ID,
@@ -688,7 +692,7 @@ func (s *Service) ReconcileReleasePlanExecution(ctx context.Context, executionID
 		if _, err := s.startReleasePlanPipelineRun(ctx, claimed[i].PipelineRunID, execution.CreatedBy); err != nil {
 			s.logReleasePlanExecutionError("release_plan_execution_start_run", claimed[i].PipelineRunID, err)
 			if releasePlanExecutionPermanentAdvanceError(err) {
-				_ = s.failExecution(ctx, claimed[i].PipelineRunID, "发布计划启动流水线失败", err)
+				_ = s.failCurrentExecution(ctx, claimed[i].PipelineRunID, "发布计划启动流水线失败", err)
 			}
 		}
 	}
@@ -762,7 +766,7 @@ func (s *Service) syncReleasePlanExecutionItems(ctx context.Context, execution *
 	for i := range automaticRuns {
 		if _, _, err := s.advanceRunIfCurrent(ctx, automaticRuns[i], execution.CreatedBy, ""); err != nil {
 			if releasePlanExecutionPermanentAdvanceError(err) {
-				_ = s.failExecution(ctx, automaticRuns[i].ID, "流水线继续执行失败", err)
+				_ = s.failExecution(ctx, failureStateForRun(automaticRuns[i]), "流水线继续执行失败", err)
 			}
 		}
 	}
@@ -906,8 +910,7 @@ func releasePlanExecutionItemTerminal(status model.ReleasePlanExecutionItemStatu
 }
 
 // startReleasePlanPipelineRun 只读取 PipelineRun.WorkflowSnapshot，因此计划创建后修改当前流水线
-// 不会改变本次执行路径。新快照从启用手动发布的代码触发节点推进一次；
-// 旧快照仍兼容穿过 manual_release -> trigger 两个入口节点。
+// 不会改变本次执行路径。执行从唯一且已启用手动启动的代码源进入第一个任务。
 func (s *Service) startReleasePlanPipelineRun(ctx context.Context, runID, actorID string) (*model.PipelineRun, error) {
 	var run model.PipelineRun
 	if err := s.db.WithContext(ctx).First(&run, "id = ?", runID).Error; err != nil {
@@ -917,32 +920,12 @@ func (s *Service) startReleasePlanPipelineRun(ctx context.Context, runID, actorI
 	if err != nil {
 		return nil, err
 	}
-	nodes := make(map[string]model.WorkflowNode, len(snapshot.Nodes))
-	for i := range snapshot.Nodes {
-		nodes[snapshot.Nodes[i].ID] = snapshot.Nodes[i]
-	}
-	current, exists := nodes[run.CurrentNodeID]
+	current, exists := workflowFindNode(snapshot.Source, snapshot.Stages, run.CurrentNodeID)
 	if !exists || !workflowNodeSupportsManualRelease(current) || run.Status != model.PipelineRunBlocked {
 		return nil, ErrInvalidWorkflowTransition
 	}
-	for transitions := 0; transitions < 2; transitions++ {
-		advanced, advancedCurrent, err := s.advanceRunIfCurrent(ctx, run, actorID, "")
-		if err != nil {
-			return nil, err
-		}
-		if !advancedCurrent {
-			return advanced, nil
-		}
-		current, exists = nodes[advanced.CurrentNodeID]
-		if !exists {
-			return nil, ErrInvalidWorkflowTransition
-		}
-		if current.Type != model.WorkflowNodeTrigger {
-			return advanced, nil
-		}
-		run = *advanced
-	}
-	return nil, ErrInvalidWorkflowTransition
+	advanced, _, err := s.advanceRunIfCurrent(ctx, run, actorID, "")
+	return advanced, err
 }
 
 func releasePlanRunNeedsAutomaticAdvance(run *model.PipelineRun) bool {
@@ -956,12 +939,7 @@ func releasePlanRunNeedsAutomaticAdvance(run *model.PipelineRun) bool {
 	if err != nil {
 		return false
 	}
-	for i := range snapshot.Nodes {
-		if snapshot.Nodes[i].ID == run.CurrentNodeID {
-			return snapshot.Nodes[i].Type == model.WorkflowNodeTrigger
-		}
-	}
-	return false
+	return snapshot.Source.ID == run.CurrentNodeID && snapshot.Source.Type == model.WorkflowNodeTrigger
 }
 
 func releasePlanExecutionPermanentAdvanceError(err error) bool {

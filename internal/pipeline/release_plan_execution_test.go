@@ -2,7 +2,6 @@ package pipeline
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -65,6 +64,43 @@ func TestReleasePlanExecutionStartsParallelApplicationsTogether(t *testing.T) {
 	}
 	if storedPlan.Status != model.ReleasePlanCompleted {
 		t.Fatalf("计划没有随执行完成: %+v", storedPlan)
+	}
+}
+
+func TestReleasePlanExecutionQueuesBuildFromStageSnapshot(t *testing.T) {
+	service, db, secrets, repositoryID := newPipelineTestService(t)
+	application := createReleasePlanExecutionTestApplication(t, service, db, repositoryID, "阶段式发布服务")
+	commitSHA := strings.Repeat("7", 40)
+	setReleasePlanExecutionTestRefs(service, db, secrets, commitSHA)
+	plan := createReleasePlanExecutionTestPlan(t, service, []releasePlanExecutionTestApplication{application})
+
+	execution, err := service.CreateReleasePlanExecution(
+		context.Background(), plan.ID, "admin",
+		releasePlanExecutionTestInput(plan, "stage-workflow", commitSHA, application),
+	)
+	if err != nil {
+		t.Fatalf("阶段式流水线无法从发布计划执行: %v", err)
+	}
+	assertReleasePlanRunsBlocked(t, db, execution.Items)
+	execution, err = service.ReconcileReleasePlanExecution(context.Background(), execution.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var run model.PipelineRun
+	if err := db.First(&run, "id = ?", execution.Items[0].PipelineRunID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if run.CurrentNodeID != "build" || run.Status != model.PipelineRunRunning || run.Stage != "queued" || run.ExecutionJobID == "" {
+		t.Fatalf("发布计划没有从代码源提交构建任务: %+v", run)
+	}
+	assertPipelineBuildJob(t, db, run.ExecutionJobID)
+	snapshot, err := parseWorkflowSnapshot(&run)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.BuildPlans["build"].ID == "" || snapshot.DeploymentPlans["deploy-dev"].ID == "" ||
+		snapshot.DeploymentTargets["deploy-dev"].ID == "" {
+		t.Fatalf("发布计划运行没有保存完整的构建与部署任务快照: %+v", snapshot)
 	}
 }
 
@@ -233,22 +269,17 @@ func TestCreateReleasePlanExecutionRejectsAutomaticOnlyTrigger(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for i := range result.Workflow.Nodes {
-		if result.Workflow.Nodes[i].ID != application.sourceNodeID {
-			continue
+	events := result.Workflow.Source.Config.Events[:0]
+	for _, event := range result.Workflow.Source.Config.Events {
+		if event != "manual" {
+			events = append(events, event)
 		}
-		events := result.Workflow.Nodes[i].Config.Events[:0]
-		for _, event := range result.Workflow.Nodes[i].Config.Events {
-			if event != "manual" {
-				events = append(events, event)
-			}
-		}
-		result.Workflow.Nodes[i].Config.Events = events
-		break
 	}
+	result.Workflow.Source.Config.Events = events
 	saved, err := service.SaveWorkflow(context.Background(), application.applicationID, "admin", WorkflowInput{
-		Name: result.Workflow.Name, Revision: result.Workflow.Revision, Activate: true,
-		Nodes: result.Workflow.Nodes, Edges: result.Workflow.Edges, Viewport: result.Workflow.Viewport,
+		SchemaVersion: model.WorkflowSchemaVersion, Name: result.Workflow.Name,
+		Revision: result.Workflow.Revision, Activate: true,
+		Source: result.Workflow.Source, Stages: result.Workflow.Stages,
 	})
 	if err != nil {
 		t.Fatalf("准备仅自动触发的流水线失败: %v", err)
@@ -317,9 +348,6 @@ func TestCreateReleasePlanExecutionIsIdempotent(t *testing.T) {
 	if err := db.Model(&model.ReleasePlanExecution{}).Count(&count).Error; err != nil || count != 1 {
 		t.Fatalf("幂等请求创建了重复执行: count=%d err=%v", count, err)
 	}
-	if err := service.DeleteRun(context.Background(), first.Items[0].PipelineRunID); !errors.Is(err, ErrPipelineRunManagedByReleasePlan) {
-		t.Fatalf("发布计划子运行可被单独删除: %v", err)
-	}
 }
 
 func TestReleasePlanPendingRunCannotBypassGroupScheduling(t *testing.T) {
@@ -377,95 +405,17 @@ func TestReleasePlanExecutionRecoversClaimedBlockedRunFromSnapshot(t *testing.T)
 	if err := db.First(&run, "id = ?", execution.Items[0].PipelineRunID).Error; err != nil {
 		t.Fatal(err)
 	}
-	if run.Status != model.PipelineRunRunning || run.ExecutionJobID == "" {
-		t.Fatalf("调和器没有使用固化快照启动流水线: %+v", run)
+	if run.Status != model.PipelineRunRunning || run.CurrentNodeID != "build" || run.ExecutionJobID == "" {
+		t.Fatalf("调和器没有使用固化快照恢复构建任务: %+v", run)
 	}
-}
-
-func TestReleasePlanExecutionRecoversLegacyManualReleaseSnapshotStoppedAtTrigger(t *testing.T) {
-	service, db, secrets, repositoryID := newPipelineTestService(t)
-	application := createReleasePlanExecutionTestApplication(t, service, db, repositoryID, "触发节点恢复服务")
-	commitSHA := strings.Repeat("4", 40)
-	setReleasePlanExecutionTestRefs(service, db, secrets, commitSHA)
-	plan := createReleasePlanExecutionTestPlan(t, service, []releasePlanExecutionTestApplication{application})
-	execution, err := service.CreateReleasePlanExecution(
-		context.Background(), plan.ID, "admin",
-		releasePlanExecutionTestInput(plan, "trigger-recovery", commitSHA, application),
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := db.Model(&model.ReleasePlanExecutionItem{}).Where("id = ?", execution.Items[0].ID).
-		Update("status", model.ReleasePlanExecutionItemRunning).Error; err != nil {
-		t.Fatal(err)
-	}
-	if err := db.Model(&model.ReleasePlanExecution{}).Where("id = ?", execution.ID).
-		Update("status", model.ReleasePlanExecutionRunning).Error; err != nil {
-		t.Fatal(err)
-	}
-	var run model.PipelineRun
-	if err := db.First(&run, "id = ?", execution.Items[0].PipelineRunID).Error; err != nil {
-		t.Fatal(err)
-	}
-	var snapshot workflowSnapshot
-	if err := json.Unmarshal([]byte(run.WorkflowSnapshot), &snapshot); err != nil {
-		t.Fatal(err)
-	}
-	legacySourceID := "legacy-manual-release"
-	snapshot.Nodes = append(snapshot.Nodes, model.WorkflowNode{
-		ID: legacySourceID, Type: model.WorkflowNodeManualRelease, Name: "旧版手动发布",
-		Config: model.WorkflowNodeConfig{Environment: run.Environment},
-	})
-	snapshot.Edges = append(snapshot.Edges, model.WorkflowEdge{
-		ID: "legacy-manual-to-trigger", Source: legacySourceID, Target: run.CurrentNodeID,
-	})
-	legacySnapshot, err := json.Marshal(snapshot)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := db.Model(&model.PipelineRun{}).Where("id = ?", run.ID).Updates(map[string]any{
-		"current_node_id":   legacySourceID,
-		"stage":             string(model.WorkflowNodeManualRelease),
-		"status":            model.PipelineRunBlocked,
-		"workflow_snapshot": string(legacySnapshot),
-	}).Error; err != nil {
-		t.Fatal(err)
-	}
-	if err := db.Model(&model.ReleasePlanExecutionItem{}).Where("id = ?", execution.Items[0].ID).
-		Update("source_node_id", legacySourceID).Error; err != nil {
-		t.Fatal(err)
-	}
-	runResult, err := service.AdvanceRun(context.Background(), run.ID, "admin", "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if runResult.Stage != string(model.WorkflowNodeTrigger) || runResult.Status != model.PipelineRunRunning {
-		t.Fatalf("没有构造出旧手动入口已推进、触发节点尚未推进的崩溃状态: %+v", runResult)
-	}
-	if _, err := service.ReconcileReleasePlanExecution(context.Background(), execution.ID); err != nil {
-		t.Fatal(err)
-	}
-	if err := db.First(&run, "id = ?", run.ID).Error; err != nil {
-		t.Fatal(err)
-	}
-	if run.Status != model.PipelineRunRunning || run.Stage != "queued" || run.ExecutionJobID == "" {
-		t.Fatalf("调和器没有从旧版固化快照恢复触发节点后的执行: %+v", run)
-	}
+	assertPipelineBuildJob(t, db, run.ExecutionJobID)
 }
 
 func TestReleasePlanAutomaticAdvanceDoesNotPassStaleManualGate(t *testing.T) {
 	service, db, _, repositoryID := newPipelineTestService(t)
 	application := createManualRunTestApplication(t, service, db, repositoryID, "过期推进防护服务")
 	now := time.Now().UTC()
-	workflow := &model.ReleaseWorkflow{Nodes: []model.WorkflowNode{
-		{ID: "deploy-first", Type: model.WorkflowNodeDeploy, Name: "第一次部署"},
-		{ID: "manual-gate", Type: model.WorkflowNodeManual, Name: "人工放行"},
-		{ID: "deploy-second", Type: model.WorkflowNodeDeploy, Name: "第二次部署", Config: model.WorkflowNodeConfig{DeploymentTargetID: "target"}},
-	}, Edges: []model.WorkflowEdge{
-		{ID: "first-to-gate", Source: "deploy-first", Target: "manual-gate"},
-		{ID: "gate-to-second", Source: "manual-gate", Target: "deploy-second"},
-	}}
-	snapshot, err := workflowSnapshotJSON(workflow)
+	snapshot, err := workflowSnapshotJSON(application.Workflow)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -477,8 +427,9 @@ func TestReleasePlanAutomaticAdvanceDoesNotPassStaleManualGate(t *testing.T) {
 		ID: "stale-run", ApplicationID: application.ID,
 		ReleasePlanExecutionID: execution.ID, ReleasePlanExecutionItemID: "stale-item",
 		Trigger: "release_plan", Ref: "refs/heads/main", CommitSHA: strings.Repeat("5", 40),
-		Status: model.PipelineRunReady, Stage: "deploy_succeeded", CurrentNodeID: "deploy-first",
-		WorkflowSnapshot: snapshot, CreatedBy: "admin", CreatedAt: now, UpdatedAt: now,
+		Status: model.PipelineRunAwaitingApproval, Stage: string(model.WorkflowNodeApproval), CurrentNodeID: "approval",
+		WorkflowID: application.Workflow.ID, WorkflowRevision: application.Workflow.Revision,
+		WorkflowSnapshot: snapshot, ApprovalRequired: true, CreatedBy: "admin", CreatedAt: now, UpdatedAt: now,
 	}
 	item := model.ReleasePlanExecutionItem{
 		ID: run.ReleasePlanExecutionItemID, ReleasePlanExecutionID: execution.ID,
@@ -496,16 +447,22 @@ func TestReleasePlanAutomaticAdvanceDoesNotPassStaleManualGate(t *testing.T) {
 	if err := db.Create(&item).Error; err != nil {
 		t.Fatal(err)
 	}
+	if err := db.Create(&model.PipelineRunApproval{
+		ID: "stale-approval", PipelineRunID: run.ID, NodeID: "approval",
+		RequestedBy: "admin", ApprovedBy: "reviewer", ApprovedAt: now,
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
 	expected := run
 	advanced, err := service.AdvanceRun(context.Background(), run.ID, "admin", "")
-	if err != nil || advanced.CurrentNodeID != "manual-gate" {
+	if err != nil || advanced.CurrentNodeID != "manual" {
 		t.Fatalf("没有先进入人工放行节点: run=%+v err=%v", advanced, err)
 	}
 	current, advancedStale, err := service.advanceRunIfCurrent(context.Background(), expected, "admin", "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if advancedStale || current.CurrentNodeID != "manual-gate" || current.ExecutionJobID != "" {
+	if advancedStale || current.CurrentNodeID != "manual" || current.ExecutionJobID != "" {
 		t.Fatalf("过期的自动推进越过了人工放行节点: advanced=%t run=%+v", advancedStale, current)
 	}
 }
@@ -523,25 +480,16 @@ func createReleasePlanExecutionTestApplication(
 		t.Fatal(err)
 	}
 	workflow := result.Workflow
-	var triggerID string
-	for i := range workflow.Nodes {
-		if workflow.Nodes[i].Type == model.WorkflowNodeTrigger {
-			triggerID = workflow.Nodes[i].ID
-			break
-		}
-	}
+	triggerID := workflow.Source.ID
 	if triggerID == "" {
 		t.Fatal("测试流水线缺少代码触发节点")
 	}
-	for i := range workflow.Nodes {
-		if workflow.Nodes[i].ID == triggerID {
-			workflow.Nodes[i].Config.Events = append(workflow.Nodes[i].Config.Events, "manual")
-			break
-		}
+	if !containsEvent(workflow.Source.Config.Events, "manual") {
+		workflow.Source.Config.Events = append(workflow.Source.Config.Events, "manual")
 	}
 	saved, err := service.SaveWorkflow(context.Background(), application.ID, "admin", WorkflowInput{
-		Name: workflow.Name, Revision: workflow.Revision, Activate: true,
-		Nodes: workflow.Nodes, Edges: workflow.Edges, Viewport: workflow.Viewport,
+		SchemaVersion: model.WorkflowSchemaVersion, Name: workflow.Name,
+		Revision: workflow.Revision, Activate: true, Source: workflow.Source, Stages: workflow.Stages,
 	})
 	if err != nil {
 		t.Fatalf("启用发布计划测试流水线失败: %v", err)

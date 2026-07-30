@@ -3,18 +3,16 @@ package pipeline
 import (
 	"context"
 	"errors"
-	"fmt"
-	"net"
+	"io"
 	"net/url"
-	"os"
 	"path"
-	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
 
 	"gorm.io/gorm"
 
+	"zrt/internal/artifact"
 	"zrt/internal/deployment"
 	"zrt/internal/dockerengine"
 	"zrt/internal/model"
@@ -23,11 +21,17 @@ import (
 var (
 	ErrPipelineExecutionUnavailable = errors.New("流水线执行服务尚未就绪")
 	ErrPipelineExecutionRunning     = errors.New("流水线正在执行，请稍后刷新")
-	ErrPipelineExecutionConfig      = errors.New("流水线执行配置不完整，请检查应用、构建方案和部署配置")
+	ErrPipelineExecutionConfig      = errors.New("流水线执行配置不完整，请检查任务、构建方案和部署方案")
+	ErrPipelineExecutionState       = errors.New("流水线执行状态更新失败，请稍后重试")
 	errPipelineExecutionComplete    = errors.New("流水线执行已经完成")
 )
 
 type DeployTaskPayload struct {
+	PipelineRunID  string `json:"pipeline_run_id"`
+	WorkflowNodeID string `json:"workflow_node_id"`
+}
+
+type BuildTaskPayload struct {
 	PipelineRunID  string `json:"pipeline_run_id"`
 	WorkflowNodeID string `json:"workflow_node_id"`
 }
@@ -38,10 +42,27 @@ type executionContext struct {
 	snapshot       workflowSnapshot
 	application    model.Application
 	component      model.PipelineRunRepository
-	buildPlan      model.BuildPlan
 	deploymentPlan model.DeploymentPlan
 	registry       model.ImageRegistry
 	target         model.DeploymentTarget
+	artifact       model.Artifact
+}
+
+// executionFailureState 固定产生错误的任务身份。失败落库必须同时匹配任务、节点和状态，
+// 避免旧消息重投时覆盖已经推进到后续任务的流水线状态。
+type executionFailureState struct {
+	runID  string
+	jobID  string
+	nodeID string
+	status model.PipelineRunStatus
+}
+
+func taskFailureState(runID, jobID, nodeID string, status model.PipelineRunStatus) executionFailureState {
+	return executionFailureState{runID: runID, jobID: jobID, nodeID: nodeID, status: status}
+}
+
+func failureStateForRun(run model.PipelineRun) executionFailureState {
+	return taskFailureState(run.ID, run.ExecutionJobID, run.CurrentNodeID, run.Status)
 }
 
 func (s *Service) ExecuteDeployTask(ctx context.Context, payload DeployTaskPayload, jobID string) error {
@@ -53,69 +74,122 @@ func (s *Service) ExecuteDeployTask(ctx context.Context, payload DeployTaskPaylo
 		if errors.Is(err, errPipelineExecutionComplete) {
 			return nil
 		}
-		return s.failExecution(ctx, payload.PipelineRunID, "流水线执行配置不完整，请检查应用、构建方案和部署配置", err)
+		if obsolete, obsoleteErr := s.executionTaskObsolete(ctx, payload.PipelineRunID, jobID, payload.WorkflowNodeID); obsoleteErr == nil && obsolete {
+			return nil
+		}
+		return s.failExecution(ctx, taskFailureState(payload.PipelineRunID, jobID, payload.WorkflowNodeID, model.PipelineRunRunning),
+			"流水线执行配置不完整，请检查任务、构建方案和部署方案", err)
 	}
-	s.appendRunLog(ctx, prepared.run.ID, "start", "info", "流水线开始执行："+prepared.run.Ref+" · "+prepared.run.CommitSHA)
+	failureState := failureStateForRun(prepared.run)
+	s.appendRunLog(ctx, prepared.run.ID, "deploy", "info", "开始部署已构建制品")
 	approvedBy, err := s.latestExecutionApproval(ctx, prepared.run.ID)
 	if err != nil {
-		return s.failExecution(ctx, prepared.run.ID, err.Error(), err)
+		return s.failExecution(ctx, failureState, "读取流水线审核状态失败，请稍后重试", err)
 	}
 	if prepared.target.Platform == model.DeploymentSSH {
 		return s.executeSSHDeployment(ctx, prepared, approvedBy)
 	}
-	checkoutDirectory, err := os.MkdirTemp("", "zrt-pipeline-checkout-*")
+	image, expectedImageID, err := s.resolveDeploymentImage(ctx, prepared)
 	if err != nil {
-		return s.failExecution(ctx, prepared.run.ID, "准备构建工作区失败，请稍后重试", err)
-	}
-	defer os.RemoveAll(checkoutDirectory)
-
-	if err := s.updateExecutionPhase(ctx, &prepared.run, "checkout", "正在获取指定 Commit 的代码"); err != nil {
-		return s.failExecution(ctx, prepared.run.ID, "更新流水线执行状态失败", err)
-	}
-	if err := s.repositories.Checkout(ctx, prepared.component.RepositoryID, prepared.run.Ref, prepared.run.CommitSHA, checkoutDirectory); err != nil {
-		return s.failExecution(ctx, prepared.run.ID, "获取代码失败，请检查仓库连接和所选 Commit", err)
+		return s.failExecution(ctx, failureState, "部署制品不可用或传输失败，请查看流水线日志", err)
 	}
 
-	contextDirectory, dockerfile, err := buildPaths(checkoutDirectory, prepared.buildPlan)
-	if err != nil {
-		return s.failExecution(ctx, prepared.run.ID, "构建方案中的路径无效，请检查构建上下文和 Dockerfile", err)
+	if err := s.updateExecutionPhase(ctx, &prepared.run, "deploy", "正在将制品部署到“"+prepared.target.Name+"”"); err != nil {
+		return s.failExecution(ctx, failureState, "更新流水线执行状态失败", err)
 	}
-	image, expectedImageID, buildMessage, err := s.buildExecutionImage(ctx, prepared, contextDirectory, dockerfile)
-	if err != nil {
-		message := executionImageFailureMessage(
-			prepared.run.Stage,
-			prepared.target.Name,
-			prepared.component.ImageRegistryID != "",
-			err,
-		)
-		return s.failExecution(ctx, prepared.run.ID, message, err)
-	}
-
-	if err := s.updateExecutionPhase(ctx, &prepared.run, "deploy", buildMessage+"，正在发布到“"+prepared.target.Name+"”"); err != nil {
-		return s.failExecution(ctx, prepared.run.ID, "更新流水线执行状态失败", err)
-	}
-	record, err := s.deployments.RequestAndRun(ctx, prepared.run.CreatedBy, deployment.RequestInput{
-		TargetID: prepared.target.ID, Image: image, ExpectedImageID: expectedImageID,
+	request := deployment.RequestInput{
+		TargetID: prepared.target.ID, ArtifactID: prepared.artifact.ID, Image: image, ExpectedImageID: expectedImageID,
 		PipelineRunID: prepared.run.ID, WorkflowNodeID: prepared.node.ID, ApprovedBy: approvedBy,
-	})
+		DeploymentPlanID: prepared.deploymentPlan.ID, PlanKind: prepared.deploymentPlan.Kind,
+	}
+	if prepared.artifact.StorageKind == model.ArtifactStorageKindRegistry {
+		request.RegistryAuth, err = s.registryAuth(prepared.registry)
+		if err != nil {
+			return s.failExecution(ctx, failureState, "读取镜像仓库认证失败，请检查构建方案使用的镜像仓库", err)
+		}
+	}
+	var output io.WriteCloser
+	if prepared.deploymentPlan.Kind == model.DeploymentPlanCompose {
+		output = s.newExecutionLogWriter(ctx, prepared.run.ID, "deploy", "Docker Compose")
+		defer output.Close()
+		request.ComposeYAML = prepared.deploymentPlan.ComposeYAML
+		request.ComposeService = prepared.deploymentPlan.ServiceName
+		request.TimeoutSeconds = prepared.deploymentPlan.TimeoutSeconds
+		request.ComposeDigest = model.DeploymentPlanComposeExecutionDigest(
+			request.ComposeYAML, request.ComposeService, request.TimeoutSeconds,
+		)
+		request.Stdout, request.Stderr = output, output
+	} else if prepared.deploymentPlan.Kind == model.DeploymentPlanDocker {
+		request.DockerConfig = prepared.deploymentPlan.DockerConfig
+		request.DockerConfigDigest = model.DockerContainerConfigDigest(request.DockerConfig)
+	}
+	record, err := s.deployments.RequestSnapshotAndRun(ctx, prepared.run.CreatedBy, prepared.target, request)
 	if err != nil {
-		return s.failExecution(ctx, prepared.run.ID, "发布执行失败，请检查目标环境和发布记录", err)
+		return s.handleDeploymentExecutionError(ctx, failureState, "发布执行失败，请检查目标环境和发布记录", err)
 	}
 	return s.completeExecution(ctx, prepared, record)
 }
 
+func (s *Service) resolveDeploymentImage(ctx context.Context, prepared *executionContext) (string, string, error) {
+	if prepared.artifact.Status != model.ArtifactStatusAvailable || prepared.artifact.Kind != model.ArtifactKindOCIImage {
+		return "", "", ErrPipelineExecutionConfig
+	}
+	switch prepared.artifact.StorageKind {
+	case model.ArtifactStorageKindRegistry:
+		if prepared.target.Platform != model.DeploymentDocker && prepared.target.Platform != model.DeploymentKubernetes {
+			return "", "", ErrPipelineExecutionConfig
+		}
+		if !strings.Contains(prepared.artifact.ImageRef, "@sha256:") {
+			return "", "", ErrPipelineExecutionConfig
+		}
+		return prepared.artifact.ImageRef, "", nil
+	case model.ArtifactStorageKindDockerDaemon:
+		if prepared.target.Platform != model.DeploymentDocker || prepared.artifact.RuntimeID != dockerengine.LocalEndpointID ||
+			!dockerengine.IsZRTLocalImage(prepared.artifact.ImageRef) || !dockerengine.IsValidImageID(prepared.artifact.LocalImageID) {
+			return "", "", ErrPipelineExecutionConfig
+		}
+		if dockerengine.IsLocalEndpointID(prepared.target.RuntimeID) {
+			return prepared.artifact.ImageRef, prepared.artifact.LocalImageID, nil
+		}
+		if err := s.updateExecutionPhase(ctx, &prepared.run, "transfer", "正在通过 SSH 传输镜像到“"+prepared.target.Name+"”"); err != nil {
+			return "", "", err
+		}
+		targetImageID, err := s.docker.TransferImageToSSH(
+			ctx, prepared.target.RuntimeID, prepared.artifact.ImageRef, prepared.artifact.LocalImageID, 30*time.Minute,
+		)
+		if err != nil {
+			return "", "", err
+		}
+		return prepared.artifact.ImageRef, targetImageID, nil
+	default:
+		return "", "", ErrPipelineExecutionConfig
+	}
+}
+
 func (s *Service) executeSSHDeployment(ctx context.Context, prepared *executionContext, approvedBy string) error {
+	failureState := failureStateForRun(prepared.run)
 	if err := s.updateExecutionPhase(ctx, &prepared.run, "deploy", "正在执行命令脚本并发布到“"+prepared.target.Name+"”"); err != nil {
-		return s.failExecution(ctx, prepared.run.ID, "更新流水线执行状态失败", err)
+		return s.failExecution(ctx, failureState, "更新流水线执行状态失败", err)
 	}
 	output := s.newExecutionLogWriter(ctx, prepared.run.ID, "deploy", "命令部署")
 	defer output.Close()
-	record, err := s.deployments.RequestCommandAndRun(ctx, prepared.run.CreatedBy, deployment.CommandRequestInput{
-		TargetID: prepared.target.ID, PipelineRunID: prepared.run.ID, WorkflowNodeID: prepared.node.ID,
-		ApprovedBy: approvedBy, DeploymentPlanID: prepared.component.DeploymentPlanID,
-		PlanKind: prepared.component.DeploymentPlanKind, Script: prepared.component.DeploymentPlanScript,
-		ScriptDigest:   prepared.component.DeploymentPlanDigest,
-		TimeoutSeconds: prepared.component.DeploymentPlanTimeoutSeconds,
+	if prepared.artifact.ID == "" || prepared.artifact.Kind != model.ArtifactKindFileBundle || s.artifacts == nil {
+		return s.failExecution(ctx, failureState, "主机脚本部署需要上游文件制品", ErrPipelineExecutionConfig)
+	}
+	_, artifactFile, err := s.artifacts.OpenDownload(ctx, prepared.artifact.ID)
+	if err != nil {
+		return s.failExecution(ctx, failureState, "打开待部署制品失败", err)
+	}
+	defer artifactFile.Close()
+	record, err := s.deployments.RequestCommandSnapshotAndRun(ctx, prepared.run.CreatedBy, prepared.target, deployment.CommandRequestInput{
+		TargetID: prepared.target.ID, ArtifactID: prepared.artifact.ID,
+		PipelineRunID: prepared.run.ID, WorkflowNodeID: prepared.node.ID,
+		ApprovedBy: approvedBy, DeploymentPlanID: prepared.deploymentPlan.ID,
+		PlanKind: prepared.deploymentPlan.Kind, Script: prepared.deploymentPlan.Script,
+		ScriptDigest: model.DeploymentPlanExecutionDigest(
+			prepared.deploymentPlan.Kind, prepared.deploymentPlan.Script, prepared.deploymentPlan.TimeoutSeconds,
+		),
+		TimeoutSeconds: prepared.deploymentPlan.TimeoutSeconds,
 		Environment: map[string]string{
 			"ZRT_PIPELINE_RUN_ID":      prepared.run.ID,
 			"ZRT_APPLICATION_ID":       prepared.application.ID,
@@ -124,29 +198,31 @@ func (s *Service) executeSSHDeployment(ctx context.Context, prepared *executionC
 			"ZRT_COMMIT_SHA":           prepared.run.CommitSHA,
 			"ZRT_DEPLOYMENT_TARGET_ID": prepared.target.ID,
 		},
+		Artifact: artifactFile, ArtifactName: prepared.artifact.Name, ArtifactDigest: prepared.artifact.Digest,
 		Stdout: output, Stderr: output,
 	})
 	if err != nil {
-		return s.failExecution(ctx, prepared.run.ID, "命令脚本部署失败，请查看流水线日志", err)
+		return s.handleDeploymentExecutionError(ctx, failureState, "命令脚本部署失败，请查看流水线日志", err)
 	}
 	return s.completeExecution(ctx, prepared, record)
 }
 
-func executionImageFailureMessage(stage, targetName string, pushesToRegistry bool, cause error) string {
-	if stage == "transfer" {
-		var timeoutError net.Error
-		if errors.Is(cause, context.DeadlineExceeded) || (errors.As(cause, &timeoutError) && timeoutError.Timeout()) {
-			return "无法连接“" + targetName + "”，SSH 连接超时"
+func (s *Service) handleDeploymentExecutionError(ctx context.Context, expected executionFailureState, message string, cause error) error {
+	if errors.Is(cause, deployment.ErrPipelineReleaseRunning) {
+		if s.logger != nil {
+			s.logger.Error("流水线发布任务被重复投递，已有发布仍在执行", "operation", "pipeline_deploy_idempotency",
+				"pipeline_run_id", expected.runID, "err", cause)
 		}
-		return "镜像传输到“" + targetName + "”失败，请检查 SSH 和 Docker"
+		return cause
 	}
-	if pushesToRegistry {
-		return "镜像构建或推送失败，请检查任务日志、构建方案和镜像仓库"
-	}
-	return "镜像构建失败，请检查任务日志和构建方案"
+	return s.failExecution(ctx, expected, message, cause)
 }
 
 func (s *Service) loadExecution(ctx context.Context, payload DeployTaskPayload, jobID string) (*executionContext, error) {
+	return s.loadArtifactDeploymentExecution(ctx, payload, jobID)
+}
+
+func (s *Service) loadArtifactDeploymentExecution(ctx context.Context, payload DeployTaskPayload, jobID string) (*executionContext, error) {
 	if payload.PipelineRunID == "" || payload.WorkflowNodeID == "" || jobID == "" {
 		return nil, ErrPipelineExecutionConfig
 	}
@@ -164,100 +240,83 @@ func (s *Service) loadExecution(ctx context.Context, payload DeployTaskPayload, 
 	if err != nil {
 		return nil, err
 	}
-	var node *model.WorkflowNode
-	for i := range snapshot.Nodes {
-		if snapshot.Nodes[i].ID == payload.WorkflowNodeID {
-			node = &snapshot.Nodes[i]
-			break
-		}
-	}
-	if node == nil || node.Type != model.WorkflowNodeDeploy || node.Config.DeploymentTargetID == "" {
+	node, found := workflowFindNode(snapshot.Source, snapshot.Stages, payload.WorkflowNodeID)
+	if !found || node.Type != model.WorkflowNodeDeploy || node.Config.DeploymentPlanID == "" {
 		return nil, ErrPipelineExecutionConfig
 	}
-	result := &executionContext{run: run, node: *node, snapshot: *snapshot}
-	if err := s.db.WithContext(ctx).First(&result.application, "id = ? AND is_active = ?", run.ApplicationID, true).Error; err != nil {
-		return nil, err
+	plan, hasPlan := snapshot.DeploymentPlans[node.ID]
+	target, hasTarget := snapshot.DeploymentTargets[node.ID]
+	if !hasPlan || !hasTarget || plan.ID != node.Config.DeploymentPlanID || target.ID == "" {
+		return nil, ErrPipelineExecutionConfig
 	}
-	if err := s.db.WithContext(ctx).Preload("Repository").First(&result.component, "pipeline_run_id = ?", run.ID).Error; err != nil {
-		return nil, err
+	result := &executionContext{run: run, node: node, snapshot: *snapshot}
+	result.deploymentPlan = model.DeploymentPlan{
+		ID: plan.ID, Kind: plan.Kind, Script: plan.Script,
+		ComposeYAML: plan.ComposeYAML, ServiceName: plan.ServiceName,
+		DockerConfig:   plan.DockerConfig,
+		TimeoutSeconds: plan.TimeoutSeconds,
 	}
-	targetSnapshot, hasTargetSnapshot := snapshot.DeploymentTargets[node.ID]
-	if hasTargetSnapshot {
-		if targetSnapshot.ID == "" || targetSnapshot.ID != node.Config.DeploymentTargetID {
-			return nil, ErrPipelineExecutionConfig
-		}
-		result.target = model.DeploymentTarget{
-			ID: targetSnapshot.ID, Name: targetSnapshot.Name, Platform: targetSnapshot.Platform,
-			EnvironmentID: targetSnapshot.EnvironmentID, HostID: targetSnapshot.HostID,
-			RuntimeID: targetSnapshot.RuntimeID, WorkingDirectory: targetSnapshot.WorkingDirectory,
-			Namespace: targetSnapshot.Namespace, WorkloadName: targetSnapshot.WorkloadName,
-			ContainerName: targetSnapshot.ContainerName, RolloutTimeout: targetSnapshot.RolloutTimeout,
-			IsActive: true,
-		}
-	} else if err := s.db.WithContext(ctx).First(&result.target, "id = ? AND is_active = ?", node.Config.DeploymentTargetID, true).Error; err != nil {
-		return nil, err
-	}
-	planSnapshot, hasPlanSnapshot := snapshot.DeploymentPlans[node.ID]
-	if hasPlanSnapshot {
-		if planSnapshot.ID == "" || (node.Config.DeploymentPlanID != "" && planSnapshot.ID != node.Config.DeploymentPlanID) {
-			return nil, ErrPipelineExecutionConfig
-		}
-		result.deploymentPlan = model.DeploymentPlan{
-			ID: planSnapshot.ID, Kind: planSnapshot.Kind, Script: planSnapshot.Script,
-			HelmChart: planSnapshot.HelmChart, HelmValues: planSnapshot.HelmValues,
-			ComposeFile: planSnapshot.ComposeFile, ServiceName: planSnapshot.ServiceName,
-			TimeoutSeconds: planSnapshot.TimeoutSeconds,
-		}
-	}
-	if result.target.Platform == model.DeploymentSSH {
-		if hasPlanSnapshot {
-			if !validSSHDeploymentPlanSnapshot(&result.deploymentPlan, &result.target) {
-				return nil, errors.New("SSH 部署方案快照无效")
-			}
-			return result, nil
-		}
-		if !validSSHExecutionSnapshot(&result.component, &result.target) {
-			return nil, errors.New("SSH 部署方案快照无效")
-		}
-		result.deploymentPlan = model.DeploymentPlan{
-			ID: result.component.DeploymentPlanID, Kind: result.component.DeploymentPlanKind,
-			Script:         result.component.DeploymentPlanScript,
-			TimeoutSeconds: result.component.DeploymentPlanTimeoutSeconds,
-		}
-		return result, nil
-	}
-	if s.docker == nil {
-		return nil, ErrPipelineExecutionUnavailable
-	}
-	if err := s.db.WithContext(ctx).First(&result.buildPlan, "id = ? AND is_active = ?", result.component.BuildPlanID, true).Error; err != nil {
-		return nil, err
-	}
-	if result.buildPlan.Kind != model.BuildPlanDockerfile {
-		return nil, errors.New("当前只支持执行 Dockerfile 构建方案")
-	}
-	if !hasPlanSnapshot {
-		if err := s.db.WithContext(ctx).First(&result.deploymentPlan, "id = ? AND is_active = ?", result.component.DeploymentPlanID, true).Error; err != nil {
-			return nil, err
-		}
+	result.target = model.DeploymentTarget{
+		ID: target.ID, Name: target.Name, Platform: target.Platform, EnvironmentID: target.EnvironmentID,
+		HostID: target.HostID, RuntimeID: target.RuntimeID, WorkingDirectory: target.WorkingDirectory,
+		Namespace: target.Namespace, WorkloadName: target.WorkloadName, ContainerName: target.ContainerName,
+		RolloutTimeout: target.RolloutTimeout, IsActive: true,
 	}
 	if !deploymentPlanSupportsTarget(result.deploymentPlan.Kind, result.target.Platform) {
 		return nil, ErrDeploymentPlanTargetMismatch
 	}
-	if result.component.ImageRegistryID != "" {
-		if err := s.db.WithContext(ctx).First(&result.registry, "id = ? AND is_active = ?", result.component.ImageRegistryID, true).Error; err != nil {
-			return nil, err
+	if result.deploymentPlan.Kind == model.DeploymentPlanCompose &&
+		!validComposeDeploymentPlanSnapshot(&result.deploymentPlan, &result.target) {
+		return nil, ErrPipelineExecutionConfig
+	}
+	if result.deploymentPlan.Kind == model.DeploymentPlanDocker &&
+		!validDockerDeploymentPlanSnapshot(&result.deploymentPlan, &result.target) {
+		return nil, ErrPipelineExecutionConfig
+	}
+	if err := s.db.WithContext(ctx).First(&result.application, "id = ? AND is_active = ?", run.ApplicationID, true).Error; err != nil {
+		return nil, err
+	}
+	if err := s.db.WithContext(ctx).First(&result.component, "pipeline_run_id = ?", run.ID).Error; err != nil {
+		return nil, err
+	}
+	if result.target.Platform == model.DeploymentSSH {
+		if !validSSHDeploymentPlanSnapshot(&result.deploymentPlan, &result.target) {
+			return nil, ErrPipelineExecutionConfig
 		}
-	} else {
-		if result.target.Platform != model.DeploymentDocker {
-			return nil, errors.New("Kubernetes 发布必须绑定镜像仓库")
+		if run.ArtifactID == "" {
+			return nil, ErrPipelineExecutionConfig
 		}
-		endpoint, err := s.docker.Find(ctx, result.target.RuntimeID)
-		if err != nil {
-			return nil, err
+		if s.artifacts == nil {
+			return nil, ErrPipelineExecutionUnavailable
 		}
-		parsed, err := url.Parse(endpoint.Host)
-		if err != nil || (parsed.Scheme != "ssh" && !dockerengine.IsLocalEndpointID(endpoint.ID)) {
-			return nil, errors.New("未绑定镜像仓库时，只能部署到本地 Docker 或 Docker SSH 主机")
+		stored, err := s.artifacts.Find(ctx, run.ArtifactID)
+		if err != nil || stored.ApplicationID != run.ApplicationID || stored.PipelineRunID != run.ID ||
+			stored.Status != model.ArtifactStatusAvailable || stored.Kind != model.ArtifactKindFileBundle {
+			return nil, ErrPipelineExecutionConfig
+		}
+		result.artifact = *stored
+		return result, nil
+	}
+	if s.docker == nil || s.artifacts == nil || run.ArtifactID == "" {
+		return nil, ErrPipelineExecutionUnavailable
+	}
+	stored, err := s.artifacts.Find(ctx, run.ArtifactID)
+	if err != nil || stored.ApplicationID != run.ApplicationID || stored.PipelineRunID != run.ID {
+		return nil, ErrPipelineExecutionConfig
+	}
+	result.artifact = *stored
+	if stored.StorageKind == model.ArtifactStorageKindRegistry {
+		if stored.ImageRegistryID == "" || s.db.WithContext(ctx).
+			First(&result.registry, "id = ? AND is_active = ?", stored.ImageRegistryID, true).Error != nil {
+			return nil, ErrPipelineExecutionConfig
+		}
+		if !artifact.RegistryImageMatches(stored.ImageRef, stored.Digest, result.registry.Endpoint, result.registry.Namespace) {
+			if s.logger != nil {
+				s.logger.Error("镜像制品与登记仓库不匹配", "operation", "pipeline_registry_artifact_binding",
+					"pipeline_run_id", run.ID, "artifact_id", stored.ID,
+					"image_registry_id", stored.ImageRegistryID, "err", ErrPipelineExecutionConfig)
+			}
+			return nil, ErrPipelineExecutionConfig
 		}
 	}
 	return result, nil
@@ -271,93 +330,19 @@ func validSSHDeploymentPlanSnapshot(plan *model.DeploymentPlan, target *model.De
 		target.HostID != "" && target.EnvironmentID != ""
 }
 
-func validSSHExecutionSnapshot(component *model.PipelineRunRepository, target *model.DeploymentTarget) bool {
-	if component == nil || target == nil || target.Platform != model.DeploymentSSH ||
-		component.DeploymentPlanKind != model.DeploymentPlanScript ||
-		strings.TrimSpace(component.DeploymentPlanScript) == "" ||
-		component.DeploymentPlanTimeoutSeconds < 30 || component.DeploymentPlanTimeoutSeconds > 3600 ||
-		component.DeploymentPlanDigest == "" || target.HostID == "" || target.EnvironmentID == "" {
+func validComposeDeploymentPlanSnapshot(plan *model.DeploymentPlan, target *model.DeploymentTarget) bool {
+	return plan != nil && target != nil && plan.ID != "" && plan.Kind == model.DeploymentPlanCompose &&
+		target.Platform == model.DeploymentDocker && plan.TimeoutSeconds >= 30 && plan.TimeoutSeconds <= 3600 &&
+		dockerengine.ValidateComposeYAML(plan.ComposeYAML, plan.ServiceName) == nil
+}
+
+func validDockerDeploymentPlanSnapshot(plan *model.DeploymentPlan, target *model.DeploymentTarget) bool {
+	if plan == nil || target == nil || plan.ID == "" || plan.Kind != model.DeploymentPlanDocker ||
+		target.Platform != model.DeploymentDocker || plan.TimeoutSeconds < 30 || plan.TimeoutSeconds > 3600 {
 		return false
 	}
-	return component.DeploymentPlanDigest == model.DeploymentPlanExecutionDigest(
-		component.DeploymentPlanKind,
-		component.DeploymentPlanScript,
-		component.DeploymentPlanTimeoutSeconds,
-	)
-}
-
-func (s *Service) buildExecutionImage(
-	ctx context.Context,
-	prepared *executionContext,
-	contextDirectory, dockerfile string,
-) (string, string, string, error) {
-	timeout := time.Duration(prepared.buildPlan.TimeoutSeconds) * time.Second
-	buildOutput := s.newBuildLogWriter(ctx, prepared.run.ID, "build")
-	defer buildOutput.Close()
-	if prepared.component.ImageRegistryID == "" {
-		image, err := localExecutionImage(prepared)
-		if err != nil {
-			return "", "", "", err
-		}
-		if err := s.updateExecutionPhase(ctx, &prepared.run, "build", "正在 Docker 构建运行时构建本地镜像 "+image); err != nil {
-			return "", "", "", err
-		}
-		imageID, err := s.docker.BuildLocal(
-			ctx, contextDirectory, dockerfile, image, timeout, buildOutput,
-		)
-		if err != nil {
-			return "", "", "", err
-		}
-		if dockerengine.IsLocalEndpointID(prepared.target.RuntimeID) {
-			return image, imageID, "本地镜像已在 Docker 构建运行时构建并校验", nil
-		}
-		if err := s.updateExecutionPhase(ctx, &prepared.run, "transfer", "正在通过 SSH 将本地镜像传输到“"+prepared.target.Name+"”"); err != nil {
-			return "", "", "", err
-		}
-		targetImageID, err := s.docker.TransferImageToSSH(ctx, prepared.target.RuntimeID, image, imageID, timeout)
-		if err != nil {
-			return "", "", "", err
-		}
-		return image, targetImageID, "本地镜像已构建、传输并校验", nil
-	}
-
-	image, registryAuth, err := s.executionImage(ctx, prepared)
-	if err != nil {
-		return "", "", "", err
-	}
-	if err := s.updateExecutionPhase(ctx, &prepared.run, "build", "正在构建并推送镜像 "+image); err != nil {
-		return "", "", "", err
-	}
-	digest, cacheWarning, err := s.docker.BuildAndPush(
-		ctx, contextDirectory, dockerfile, image, registryAuth, timeout, buildOutput,
-	)
-	if err != nil {
-		return "", "", "", err
-	}
-	if cacheWarning != nil && s.logger != nil {
-		s.logger.Warn("构建缓存未命中或更新失败，本次正式镜像已成功推送",
-			"operation", "pipeline_build_cache", "pipeline_run_id", prepared.run.ID, "err", cacheWarning)
-	}
-	return digest, "", "镜像已推送", nil
-}
-
-func buildPaths(checkoutDirectory string, plan model.BuildPlan) (string, string, error) {
-	contextPath := filepath.Clean(strings.TrimSpace(plan.ContextPath))
-	dockerfilePath := filepath.Clean(strings.TrimSpace(plan.DockerfilePath))
-	if contextPath == "" {
-		contextPath = "."
-	}
-	if filepath.IsAbs(contextPath) || contextPath == ".." || strings.HasPrefix(contextPath, ".."+string(filepath.Separator)) ||
-		filepath.IsAbs(dockerfilePath) || dockerfilePath == ".." || strings.HasPrefix(dockerfilePath, ".."+string(filepath.Separator)) {
-		return "", "", ErrInvalidBuildPlan
-	}
-	contextDirectory := filepath.Join(checkoutDirectory, contextPath)
-	dockerfileAbsolute := filepath.Join(checkoutDirectory, dockerfilePath)
-	dockerfileRelative, err := filepath.Rel(contextDirectory, dockerfileAbsolute)
-	if err != nil || dockerfileRelative == ".." || strings.HasPrefix(dockerfileRelative, ".."+string(filepath.Separator)) {
-		return "", "", ErrInvalidBuildPlan
-	}
-	return contextDirectory, dockerfileRelative, nil
+	_, err := dockerengine.NormalizeContainerConfig(plan.DockerConfig)
+	return err == nil
 }
 
 var imageNamePartPattern = regexp.MustCompile(`[^a-z0-9._-]+`)
@@ -379,22 +364,31 @@ func (s *Service) executionImage(ctx context.Context, prepared *executionContext
 		parts = append(parts, strings.Trim(prepared.registry.Namespace, "/"))
 	}
 	parts = append(parts, name)
-	commit := prepared.run.CommitSHA
-	if len(commit) > 12 {
-		commit = commit[:12]
+	tag, err := executionImageTag(prepared.run)
+	if err != nil {
+		return "", dockerengine.RegistryAuth{}, err
 	}
-	image := parsed.Host + "/" + path.Join(parts...) + ":" + commit
+	image := parsed.Host + "/" + path.Join(parts...) + ":" + tag
+	_ = ctx
+	auth, err := s.registryAuth(prepared.registry)
+	return image, auth, err
+}
+
+func (s *Service) registryAuth(registry model.ImageRegistry) (dockerengine.RegistryAuth, error) {
+	parsed, err := url.Parse(registry.Endpoint)
+	if err != nil || parsed.Host == "" {
+		return dockerengine.RegistryAuth{}, ErrInvalidRegistryEndpoint
+	}
 	credential := ""
-	if prepared.registry.CredentialCiphertext != "" {
-		credential, err = s.secrets.Decrypt(prepared.registry.CredentialCiphertext, []byte("image_registry:"+prepared.registry.Name+":credential"))
+	if registry.CredentialCiphertext != "" {
+		credential, err = s.secrets.Decrypt(registry.CredentialCiphertext, []byte("image_registry:"+registry.Name+":credential"))
 		if err != nil {
-			return "", dockerengine.RegistryAuth{}, err
+			return dockerengine.RegistryAuth{}, err
 		}
 	}
-	_ = ctx
-	return image, dockerengine.RegistryAuth{
-		ServerAddress: prepared.registry.Endpoint, Host: parsed.Host,
-		Username: prepared.registry.Username, Credential: credential,
+	return dockerengine.RegistryAuth{
+		ServerAddress: registry.Endpoint, Host: parsed.Host,
+		Username: registry.Username, Credential: credential,
 	}, nil
 }
 
@@ -403,33 +397,42 @@ func localExecutionImage(prepared *executionContext) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	commit := prepared.run.CommitSHA
+	tag, err := executionImageTag(prepared.run)
+	if err != nil {
+		return "", ErrPipelineExecutionConfig
+	}
+	return "zrt.local/" + name + ":" + tag, nil
+}
+
+func executionImageName(application model.Application) (string, error) {
+	applicationID := strings.TrimSpace(application.ID)
+	if applicationID == "" {
+		return "", ErrInvalidApplication
+	}
+	name := strings.Trim(imageNamePartPattern.ReplaceAllString(strings.ToLower(application.Name), "-"), "-._")
+	if len(name) > 48 {
+		name = strings.Trim(name[:48], "-._")
+	}
+	if name == "" {
+		name = "app"
+	}
+	digest := strings.TrimPrefix(sha256Digest([]byte(applicationID)), "sha256:")
+	return name + "-" + digest[:8], nil
+}
+
+func executionImageTag(run model.PipelineRun) (string, error) {
+	commit := strings.TrimSpace(run.CommitSHA)
 	if len(commit) > 12 {
 		commit = commit[:12]
 	}
-	runID := strings.ReplaceAll(prepared.run.ID, "-", "")
+	runID := strings.ReplaceAll(strings.TrimSpace(run.ID), "-", "")
 	if len(runID) > 8 {
 		runID = runID[:8]
 	}
 	if commit == "" || runID == "" {
 		return "", ErrPipelineExecutionConfig
 	}
-	return "zrt.local/" + name + ":" + commit + "-" + runID, nil
-}
-
-func executionImageName(application model.Application) (string, error) {
-	name := strings.Trim(imageNamePartPattern.ReplaceAllString(strings.ToLower(application.Name), "-"), "-._")
-	if name != "" {
-		return name, nil
-	}
-	applicationID := strings.ReplaceAll(application.ID, "-", "")
-	if len(applicationID) > 8 {
-		applicationID = applicationID[:8]
-	}
-	if applicationID == "" {
-		return "", ErrInvalidApplication
-	}
-	return "app-" + applicationID, nil
+	return commit + "-" + runID, nil
 }
 
 func (s *Service) latestExecutionApproval(ctx context.Context, runID string) (string, error) {
@@ -460,14 +463,18 @@ func (s *Service) updateExecutionPhase(ctx context.Context, run *model.PipelineR
 }
 
 func (s *Service) completeExecution(ctx context.Context, prepared *executionContext, record *model.DeploymentRecord) error {
-	hasNext := false
-	for i := range prepared.snapshot.Edges {
-		if prepared.snapshot.Edges[i].Source == prepared.node.ID {
-			hasNext = true
-			break
+	if !completedDeploymentMatches(prepared, record) {
+		if s.logger != nil {
+			s.logger.Error("发布记录与流水线执行快照不一致", "operation", "pipeline_deployment_complete",
+				"pipeline_run_id", prepared.run.ID, "workflow_node_id", prepared.node.ID, "err", ErrPipelineExecutionConfig)
 		}
+		return ErrPipelineExecutionConfig
 	}
-	message := "当前节点：" + prepared.node.Name + "；状态：已完成"
+	_, hasNext, terminal := workflowNextNode(prepared.snapshot.Source, prepared.snapshot.Stages, prepared.node.ID)
+	if !hasNext && !terminal {
+		return ErrInvalidWorkflowTransition
+	}
+	message := "当前任务：" + prepared.node.Name + "；状态：已完成"
 	status, stage := model.PipelineRunReady, "deploy_succeeded"
 	componentStatus := model.PipelineRunRepositoryReady
 	if !hasNext {
@@ -494,26 +501,135 @@ func (s *Service) completeExecution(ctx context.Context, prepared *executionCont
 	if err == nil {
 		s.appendRunLog(ctx, prepared.run.ID, stage, "success", message)
 	}
-	return err
+	if err != nil || !hasNext || prepared.run.ReleasePlanExecutionID != "" || prepared.run.ReleasePlanExecutionItemID != "" {
+		return err
+	}
+	advanceContext, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+	defer cancel()
+	if _, err := s.AdvanceRun(advanceContext, prepared.run.ID, prepared.run.CreatedBy, ""); err != nil {
+		return s.failExecution(advanceContext,
+			taskFailureState(prepared.run.ID, prepared.run.ExecutionJobID, prepared.node.ID, model.PipelineRunReady),
+			"部署已完成，但推进后续任务失败", err)
+	}
+	return nil
 }
 
-func (s *Service) failExecution(ctx context.Context, runID, message string, cause error) error {
-	if s.logger != nil {
-		s.logger.Error("流水线执行失败", "operation", "pipeline_execute", "pipeline_run_id", runID, "err", cause)
+func completedDeploymentMatches(prepared *executionContext, record *model.DeploymentRecord) bool {
+	if prepared == nil || record == nil || record.Status != model.DeploymentSucceeded ||
+		record.Operation != model.DeploymentRelease || record.PipelineRunID != prepared.run.ID ||
+		record.WorkflowNodeID != prepared.node.ID || record.ArtifactID != prepared.artifact.ID ||
+		record.TargetID != prepared.target.ID || record.TargetName != prepared.target.Name ||
+		record.Platform != prepared.target.Platform || record.EnvironmentID != prepared.target.EnvironmentID ||
+		record.HostID != prepared.target.HostID || record.RuntimeID != prepared.target.RuntimeID ||
+		record.WorkingDirectory != prepared.target.WorkingDirectory || record.Namespace != prepared.target.Namespace ||
+		record.WorkloadName != prepared.target.WorkloadName || record.ContainerName != prepared.target.ContainerName ||
+		record.RolloutTimeout != prepared.target.RolloutTimeout || record.DeploymentPlanID != prepared.deploymentPlan.ID ||
+		record.DeploymentPlanKind != prepared.deploymentPlan.Kind {
+		return false
 	}
+	if prepared.target.Platform == model.DeploymentSSH {
+		return record.Image == "" && record.ExpectedImageID == "" &&
+			record.CommandDigest == model.DeploymentPlanExecutionDigest(
+				prepared.deploymentPlan.Kind, prepared.deploymentPlan.Script, prepared.deploymentPlan.TimeoutSeconds,
+			)
+	}
+	if record.Image != prepared.artifact.ImageRef {
+		return false
+	}
+	switch prepared.artifact.StorageKind {
+	case model.ArtifactStorageKindRegistry:
+		if record.ExpectedImageID != "" {
+			return false
+		}
+	case model.ArtifactStorageKindDockerDaemon:
+		if !dockerengine.IsValidImageID(record.ExpectedImageID) {
+			return false
+		}
+	default:
+		return false
+	}
+	switch prepared.deploymentPlan.Kind {
+	case model.DeploymentPlanCompose:
+		return record.ComposeDigest == model.DeploymentPlanComposeExecutionDigest(
+			prepared.deploymentPlan.ComposeYAML, prepared.deploymentPlan.ServiceName, prepared.deploymentPlan.TimeoutSeconds,
+		)
+	case model.DeploymentPlanDocker:
+		return record.DockerConfigDigest == model.DockerContainerConfigDigest(prepared.deploymentPlan.DockerConfig)
+	case model.DeploymentPlanKubernetes:
+		return prepared.target.Platform == model.DeploymentKubernetes
+	default:
+		return false
+	}
+}
+
+var errExecutionFailureStateChanged = errors.New("流水线任务身份已经变化")
+
+func (s *Service) failExecution(ctx context.Context, expected executionFailureState, message string, cause error) error {
 	now := time.Now().UTC()
 	updateContext, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 	defer cancel()
-	s.appendRunLog(updateContext, runID, "failed", "error", message)
-	if err := s.db.WithContext(updateContext).Transaction(func(tx *gorm.DB) error {
-		if err := tx.Model(&model.PipelineRun{}).Where("id = ? AND status <> ?", runID, model.PipelineRunSucceeded).
-			Updates(map[string]any{"status": model.PipelineRunFailed, "stage": "failed", "message": message, "updated_at": now}).Error; err != nil {
-			return err
+	err := s.db.WithContext(updateContext).Transaction(func(tx *gorm.DB) error {
+		result := tx.Model(&model.PipelineRun{}).
+			Where("id = ? AND execution_job_id = ? AND current_node_id = ? AND status = ?",
+				expected.runID, expected.jobID, expected.nodeID, expected.status).
+			Updates(map[string]any{"status": model.PipelineRunFailed, "stage": "failed", "message": message, "updated_at": now})
+		if result.Error != nil {
+			return result.Error
 		}
-		return tx.Model(&model.PipelineRunRepository{}).Where("pipeline_run_id = ?", runID).
+		if result.RowsAffected != 1 {
+			return errExecutionFailureStateChanged
+		}
+		return tx.Model(&model.PipelineRunRepository{}).Where("pipeline_run_id = ?", expected.runID).
 			Updates(map[string]any{"status": model.PipelineRunRepositoryFailed, "updated_at": now}).Error
-	}); err != nil {
-		return fmt.Errorf("记录流水线执行失败状态失败: %v；原始错误: %w", err, cause)
+	})
+	if errors.Is(err, errExecutionFailureStateChanged) {
+		if s.logger != nil {
+			s.logger.Warn("忽略已经过期的流水线任务失败结果", "operation", "pipeline_execute_stale_failure",
+				"pipeline_run_id", expected.runID, "execution_job_id", expected.jobID,
+				"workflow_node_id", expected.nodeID, "expected_status", expected.status, "err", cause)
+		}
+		return cause
 	}
+	if err != nil {
+		if s.logger != nil {
+			s.logger.Error("记录流水线执行失败状态失败", "operation", "pipeline_execute_failure_update",
+				"pipeline_run_id", expected.runID, "execution_job_id", expected.jobID,
+				"workflow_node_id", expected.nodeID, "err", err, "cause", cause)
+		}
+		return ErrPipelineExecutionState
+	}
+	if s.logger != nil {
+		s.logger.Error("流水线执行失败", "operation", "pipeline_execute", "pipeline_run_id", expected.runID,
+			"execution_job_id", expected.jobID, "workflow_node_id", expected.nodeID, "err", cause)
+	}
+	s.appendRunLog(updateContext, expected.runID, "failed", "error", message)
 	return cause
+}
+
+func (s *Service) failCurrentExecution(ctx context.Context, runID, message string, cause error) error {
+	var run model.PipelineRun
+	if err := s.db.WithContext(ctx).Select("id", "execution_job_id", "current_node_id", "status").First(&run, "id = ?", runID).Error; err != nil {
+		if s.logger != nil {
+			s.logger.Error("读取流水线失败状态前置条件失败", "operation", "pipeline_execute_failure_state",
+				"pipeline_run_id", runID, "err", err)
+		}
+		return ErrPipelineExecutionState
+	}
+	return s.failExecution(ctx, failureStateForRun(run), message, cause)
+}
+
+func (s *Service) executionTaskObsolete(ctx context.Context, runID, jobID, nodeID string) (bool, error) {
+	var run model.PipelineRun
+	if err := s.db.WithContext(ctx).Select("id", "execution_job_id", "current_node_id", "status").First(&run, "id = ?", runID).Error; err != nil {
+		return false, err
+	}
+	if run.ExecutionJobID != jobID || run.CurrentNodeID != nodeID {
+		return true, nil
+	}
+	switch run.Status {
+	case model.PipelineRunSucceeded, model.PipelineRunFailed, model.PipelineRunCanceled:
+		return true, nil
+	default:
+		return false, nil
+	}
 }

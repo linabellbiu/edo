@@ -131,6 +131,60 @@ func TestReplaceEnvironmentHostsKeepsProfileAndRollsBack(t *testing.T) {
 	assertHostEnvironments(t, db, hostB.ID, created.Environment.ID)
 }
 
+func TestActiveWorkflowPreventsEnvironmentDisableAndDelete(t *testing.T) {
+	service, db := newEnvironmentTestService(t)
+	created, err := service.Create(context.Background(), "admin", Input{Name: "流水线引用环境"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	target := model.DeploymentTarget{
+		ID: "environment-reference-target", Name: "环境引用目标", Platform: model.DeploymentSSH,
+		EnvironmentID: created.Environment.ID, HostID: "environment-reference-host", WorkingDirectory: "/srv/app",
+		IsActive: true, CreatedBy: "admin", CreatedAt: now, UpdatedAt: now,
+	}
+	plan := model.DeploymentPlan{
+		ID: "environment-reference-plan", Name: "环境引用方案", Kind: model.DeploymentPlanScript,
+		DeploymentTargetID: target.ID, Script: "echo deploy", TimeoutSeconds: 120,
+		IsActive: true, CreatedBy: "admin", CreatedAt: now, UpdatedAt: now,
+	}
+	if err := db.Create(&target).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&plan).Error; err != nil {
+		t.Fatal(err)
+	}
+	workflow := model.ReleaseWorkflow{
+		ID: "environment-reference-workflow", ApplicationID: "environment-reference-app",
+		Name: "环境引用流水线", Revision: 1, IsActive: true, SchemaVersion: model.WorkflowSchemaVersion,
+		Source: model.WorkflowNode{ID: "source", Type: model.WorkflowNodeTrigger, Name: "代码源"},
+		Stages: []model.WorkflowStage{{
+			ID: "deploy-stage", Name: "部署",
+			Tasks: []model.WorkflowNode{{
+				ID: "deploy", Type: model.WorkflowNodeDeploy, Name: "部署",
+				Config: model.WorkflowNodeConfig{DeploymentPlanID: plan.ID},
+			}},
+		}},
+		CreatedBy: "admin", UpdatedBy: "admin",
+		CreatedAt: now, UpdatedAt: now,
+	}
+	if err := db.Create(&workflow).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := service.SetActive(context.Background(), created.Environment.ID, false); !errors.Is(err, ErrEnvironmentReferenced) {
+		t.Fatalf("停用流水线正在使用的环境未被拒绝: %v", err)
+	}
+	if err := service.Remove(context.Background(), created.Environment.ID); !errors.Is(err, ErrEnvironmentReferenced) {
+		t.Fatalf("删除流水线正在使用的环境未被拒绝: %v", err)
+	}
+	if err := db.Model(&workflow).Update("is_active", false).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := service.SetActive(context.Background(), created.Environment.ID, false); err != nil {
+		t.Fatalf("流水线停用后仍不能停用环境: %v", err)
+	}
+}
+
 func TestHostCanBelongToMultipleEnvironments(t *testing.T) {
 	service, db := newEnvironmentTestService(t)
 	host := createEnvironmentTestHost(t, db, "host-a", "主机 A", "")
@@ -185,6 +239,56 @@ func TestReplaceHostsRejectsReferencedMembership(t *testing.T) {
 
 	if _, err := service.ReplaceHosts(context.Background(), created.Environment.ID, nil); !errors.Is(err, ErrHostMembershipReferenced) {
 		t.Fatalf("移除被部署配置引用的主机关联未返回稳定错误: %v", err)
+	}
+	assertHostEnvironments(t, db, host.ID, created.Environment.ID)
+}
+
+func TestReplaceHostsRejectsDockerWorkflowMembership(t *testing.T) {
+	service, db := newEnvironmentTestService(t)
+	host := createEnvironmentTestHost(t, db, "docker-host", "Docker 主机", "")
+	created, err := service.Create(context.Background(), "admin", Input{
+		Name: "Docker 部署环境", HostIDs: []string{host.ID},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	target := model.DeploymentTarget{
+		ID: "docker-target", Name: "Docker 部署", Platform: model.DeploymentDocker,
+		EnvironmentID: created.Environment.ID, HostID: host.ID, RuntimeID: "docker-endpoint", WorkloadName: "api", RolloutTimeout: 300,
+		IsActive: true, CreatedBy: "admin", CreatedAt: now, UpdatedAt: now,
+	}
+	if err := db.Create(&target).Error; err != nil {
+		t.Fatal(err)
+	}
+	plan := model.DeploymentPlan{
+		ID: "docker-plan", Name: "Docker 方案", Kind: model.DeploymentPlanDocker,
+		DeploymentTargetID: target.ID, ServiceName: "api", TimeoutSeconds: 300,
+		IsActive: true, CreatedBy: "admin", CreatedAt: now, UpdatedAt: now,
+	}
+	if err := db.Create(&plan).Error; err != nil {
+		t.Fatal(err)
+	}
+	workflow := model.ReleaseWorkflow{
+		ID: "docker-environment-workflow", ApplicationID: "docker-environment-app",
+		Name: "Docker 环境流水线", Revision: 1, IsActive: true, SchemaVersion: model.WorkflowSchemaVersion,
+		Source: model.WorkflowNode{ID: "source", Type: model.WorkflowNodeTrigger, Name: "代码源"},
+		Stages: []model.WorkflowStage{{
+			ID: "deploy-stage", Name: "部署",
+			Tasks: []model.WorkflowNode{{
+				ID: "deploy", Type: model.WorkflowNodeDeploy, Name: "部署",
+				Config: model.WorkflowNodeConfig{DeploymentPlanID: plan.ID},
+			}},
+		}},
+		CreatedBy: "admin", UpdatedBy: "admin",
+		CreatedAt: now, UpdatedAt: now,
+	}
+	if err := db.Create(&workflow).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := service.ReplaceHosts(context.Background(), created.Environment.ID, nil); !errors.Is(err, ErrHostMembershipReferenced) {
+		t.Fatalf("移除启用流水线使用的 Docker 主机关联未被拒绝: %v", err)
 	}
 	assertHostEnvironments(t, db, host.ID, created.Environment.ID)
 }
@@ -320,7 +424,10 @@ func newEnvironmentTestService(t *testing.T) (*Service, *gorm.DB) {
 		t.Fatalf("打开环境测试数据库失败: %v", err)
 	}
 	t.Cleanup(func() { _ = database.Close(db) })
-	if err := db.AutoMigrate(&model.Environment{}, &model.Host{}, &model.EnvironmentHost{}, &model.DeploymentTarget{}); err != nil {
+	if err := db.AutoMigrate(
+		&model.Environment{}, &model.Host{}, &model.EnvironmentHost{}, &model.DeploymentTarget{},
+		&model.DeploymentPlan{}, &model.ReleaseWorkflow{}, &model.ReleaseWorkflowTemplate{},
+	); err != nil {
 		t.Fatalf("初始化环境测试表失败: %v", err)
 	}
 	return NewService(db), db

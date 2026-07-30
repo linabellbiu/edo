@@ -3,6 +3,7 @@ package model
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"strconv"
 	"time"
 
@@ -14,23 +15,35 @@ type BuildPlanKind string
 const (
 	BuildPlanScript     BuildPlanKind = "script"
 	BuildPlanDockerfile BuildPlanKind = "dockerfile"
+	DefaultRuntimeImage               = "alpine:3.22"
 )
 
 type BuildPlan struct {
-	ID             string         `gorm:"type:varchar(36);primaryKey" json:"id"`
-	Name           string         `gorm:"type:varchar(128);not null;uniqueIndex" json:"name"`
-	Kind           BuildPlanKind  `gorm:"type:varchar(16);not null;index" json:"kind"`
-	Description    string         `gorm:"type:varchar(500);not null;default:''" json:"description"`
-	Script         string         `gorm:"type:text;not null" json:"script,omitempty"`
-	DockerfilePath string         `gorm:"type:varchar(512);not null;default:''" json:"dockerfile_path,omitempty"`
-	ContextPath    string         `gorm:"type:varchar(512);not null;default:'.'" json:"context_path"`
-	ArtifactPath   string         `gorm:"type:varchar(512);not null;default:''" json:"artifact_path,omitempty"`
-	TimeoutSeconds int            `gorm:"not null;default:1800" json:"timeout_seconds"`
-	IsActive       bool           `gorm:"not null;default:true;index" json:"is_active"`
-	CreatedBy      string         `gorm:"type:varchar(36);not null;index" json:"created_by"`
-	CreatedAt      time.Time      `gorm:"not null" json:"created_at"`
-	UpdatedAt      time.Time      `gorm:"not null" json:"updated_at"`
-	DeletedAt      gorm.DeletedAt `gorm:"index" json:"-"`
+	ID                   string            `gorm:"type:varchar(36);primaryKey" json:"id"`
+	Name                 string            `gorm:"type:varchar(128);not null;uniqueIndex" json:"name"`
+	Kind                 BuildPlanKind     `gorm:"type:varchar(16);not null;index" json:"kind"`
+	ConfigVersion        uint16            `gorm:"not null;default:1" json:"config_version"`
+	Description          string            `gorm:"type:varchar(500);not null;default:''" json:"description"`
+	Script               string            `gorm:"type:text;not null" json:"script,omitempty"`
+	DockerfilePath       string            `gorm:"type:varchar(512);not null;default:''" json:"dockerfile_path,omitempty"`
+	ContextPath          string            `gorm:"type:varchar(512);not null;default:'.'" json:"context_path"`
+	WorkingDirectory     string            `gorm:"type:varchar(512);not null;default:'.'" json:"working_directory"`
+	ArtifactPath         string            `gorm:"type:varchar(512);not null;default:''" json:"artifact_path,omitempty"`
+	RuntimeImage         string            `gorm:"type:varchar(512);not null;default:''" json:"runtime_image,omitempty"`
+	ImageRegistryID      string            `gorm:"type:varchar(36);not null;default:'';index" json:"image_registry_id,omitempty"`
+	TargetStage          string            `gorm:"type:varchar(128);not null;default:''" json:"target_stage,omitempty"`
+	Platform             string            `gorm:"type:varchar(64);not null;default:''" json:"platform,omitempty"`
+	Pull                 bool              `gorm:"not null" json:"pull"`
+	CacheEnabled         bool              `gorm:"not null" json:"cache_enabled"`
+	BuildArgs            map[string]string `gorm:"serializer:json;type:text;not null" json:"build_args"`
+	EnvironmentVariables map[string]string `gorm:"serializer:json;type:text;not null" json:"environment_variables"`
+	TimeoutSeconds       int               `gorm:"not null;default:1800" json:"timeout_seconds"`
+	IsActive             bool              `gorm:"not null;default:true;index" json:"is_active"`
+	CreatedBy            string            `gorm:"type:varchar(36);not null;index" json:"created_by"`
+	CreatedAt            time.Time         `gorm:"not null" json:"created_at"`
+	UpdatedAt            time.Time         `gorm:"not null" json:"updated_at"`
+	DeletedAt            gorm.DeletedAt    `gorm:"index" json:"-"`
+	ImageRegistry        *ImageRegistry    `gorm:"foreignKey:ImageRegistryID;-:migration" json:"image_registry,omitempty"`
 }
 
 func (BuildPlan) TableName() string { return "build_plans" }
@@ -63,29 +76,64 @@ func (ImageRegistry) TableName() string { return "image_registries" }
 type DeploymentPlanKind string
 
 const (
-	DeploymentPlanScript  DeploymentPlanKind = "script"
-	DeploymentPlanHelm    DeploymentPlanKind = "helm"
-	DeploymentPlanCompose DeploymentPlanKind = "compose"
-	DeploymentPlanDocker  DeploymentPlanKind = "docker"
+	DeploymentPlanScript     DeploymentPlanKind = "script"
+	DeploymentPlanKubernetes DeploymentPlanKind = "kubernetes"
+	DeploymentPlanCompose    DeploymentPlanKind = "compose"
+	DeploymentPlanDocker     DeploymentPlanKind = "docker"
 )
 
+type DockerPortMapping struct {
+	HostIP        string `json:"host_ip,omitempty"`
+	HostPort      int    `json:"host_port"`
+	ContainerPort int    `json:"container_port"`
+	Protocol      string `json:"protocol"`
+}
+
+type DockerVolumeMount struct {
+	Type     string `json:"type"`
+	Source   string `json:"source"`
+	Target   string `json:"target"`
+	ReadOnly bool   `json:"read_only"`
+}
+
+type DockerHealthCheck struct {
+	Enabled            bool     `json:"enabled"`
+	Command            []string `json:"command"`
+	IntervalSeconds    int      `json:"interval_seconds"`
+	TimeoutSeconds     int      `json:"timeout_seconds"`
+	Retries            int      `json:"retries"`
+	StartPeriodSeconds int      `json:"start_period_seconds"`
+}
+
+// DockerContainerConfig 是单容器部署方案的可执行配置。启动命令和健康检查都采用
+// exec 参数数组，不经过 shell 解析，避免因为表单字符串拼接引入额外命令语义。
+type DockerContainerConfig struct {
+	PortMappings         []DockerPortMapping `json:"port_mappings"`
+	EnvironmentVariables map[string]string   `json:"environment_variables"`
+	VolumeMounts         []DockerVolumeMount `json:"volume_mounts"`
+	Network              string              `json:"network"`
+	Command              []string            `json:"command"`
+	HealthCheck          DockerHealthCheck   `json:"health_check"`
+	RestartPolicy        string              `json:"restart_policy"`
+}
+
 type DeploymentPlan struct {
-	ID                 string             `gorm:"type:varchar(36);primaryKey" json:"id"`
-	Name               string             `gorm:"type:varchar(128);not null;uniqueIndex" json:"name"`
-	Kind               DeploymentPlanKind `gorm:"type:varchar(16);not null;index" json:"kind"`
-	DeploymentTargetID string             `gorm:"type:varchar(36);not null;default:'';index" json:"deployment_target_id,omitempty"`
-	Description        string             `gorm:"type:varchar(500);not null;default:''" json:"description"`
-	Script             string             `gorm:"type:text;not null" json:"script,omitempty"`
-	HelmChart          string             `gorm:"type:varchar(512);not null;default:''" json:"helm_chart,omitempty"`
-	HelmValues         string             `gorm:"type:text;not null" json:"helm_values,omitempty"`
-	ComposeFile        string             `gorm:"type:varchar(512);not null;default:''" json:"compose_file,omitempty"`
-	ServiceName        string             `gorm:"type:varchar(255);not null;default:''" json:"service_name,omitempty"`
-	TimeoutSeconds     int                `gorm:"not null;default:600" json:"timeout_seconds"`
-	IsActive           bool               `gorm:"not null;default:true;index" json:"is_active"`
-	CreatedBy          string             `gorm:"type:varchar(36);not null;index" json:"created_by"`
-	CreatedAt          time.Time          `gorm:"not null" json:"created_at"`
-	UpdatedAt          time.Time          `gorm:"not null" json:"updated_at"`
-	DeploymentTarget   *DeploymentTarget  `gorm:"foreignKey:DeploymentTargetID;-:migration" json:"deployment_target,omitempty"`
+	ID                 string                `gorm:"type:varchar(36);primaryKey" json:"id"`
+	Name               string                `gorm:"type:varchar(128);not null;uniqueIndex" json:"name"`
+	Kind               DeploymentPlanKind    `gorm:"type:varchar(16);not null;index" json:"kind"`
+	DeploymentTargetID string                `gorm:"type:varchar(36);not null;default:'';index" json:"deployment_target_id,omitempty"`
+	Description        string                `gorm:"type:varchar(500);not null;default:''" json:"description"`
+	Script             string                `gorm:"type:text;not null" json:"script,omitempty"`
+	ComposeYAML        string                `gorm:"type:text;not null" json:"compose_yaml,omitempty"`
+	ServiceName        string                `gorm:"type:varchar(255);not null;default:''" json:"service_name,omitempty"`
+	DockerConfig       DockerContainerConfig `gorm:"serializer:json;type:text;not null" json:"docker_config"`
+	TimeoutSeconds     int                   `gorm:"not null;default:600" json:"timeout_seconds"`
+	IsActive           bool                  `gorm:"not null;default:true;index" json:"is_active"`
+	CreatedBy          string                `gorm:"type:varchar(36);not null;index" json:"created_by"`
+	CreatedAt          time.Time             `gorm:"not null" json:"created_at"`
+	UpdatedAt          time.Time             `gorm:"not null" json:"updated_at"`
+	DeletedAt          gorm.DeletedAt        `gorm:"index" json:"-"`
+	DeploymentTarget   *DeploymentTarget     `gorm:"foreignKey:DeploymentTargetID;-:migration" json:"deployment_target,omitempty"`
 }
 
 func (DeploymentPlan) TableName() string { return "deployment_plans" }
@@ -93,6 +141,18 @@ func (DeploymentPlan) TableName() string { return "deployment_plans" }
 func DeploymentPlanExecutionDigest(kind DeploymentPlanKind, script string, timeoutSeconds int) string {
 	payload := string(kind) + "\x00" + strconv.Itoa(timeoutSeconds) + "\x00" + script
 	digest := sha256.Sum256([]byte(payload))
+	return hex.EncodeToString(digest[:])
+}
+
+func DeploymentPlanComposeExecutionDigest(composeYAML, serviceName string, timeoutSeconds int) string {
+	payload := string(DeploymentPlanCompose) + "\x00" + strconv.Itoa(timeoutSeconds) + "\x00" + serviceName + "\x00" + composeYAML
+	digest := sha256.Sum256([]byte(payload))
+	return hex.EncodeToString(digest[:])
+}
+
+func DockerContainerConfigDigest(config DockerContainerConfig) string {
+	payload, _ := json.Marshal(config)
+	digest := sha256.Sum256(payload)
 	return hex.EncodeToString(digest[:])
 }
 
@@ -106,12 +166,11 @@ const (
 	ApplicationSyncFailed   ApplicationSyncStatus = "failed"
 )
 
-// ApplicationRepository 保存主仓库的分环境监听基线。历史错误版本产生的额外关联只作兼容数据，不参与应用执行。
+// ApplicationRepository 保存应用唯一代码仓库的监听基线。
 type ApplicationRepository struct {
 	ID                 string                             `gorm:"type:varchar(36);primaryKey" json:"id"`
-	ApplicationID      string                             `gorm:"type:varchar(36);not null;index;uniqueIndex:idx_application_repository,priority:1" json:"application_id"`
-	RepositoryID       string                             `gorm:"type:varchar(36);not null;index;uniqueIndex:idx_application_repository,priority:2" json:"repository_id"`
-	SortOrder          int                                `gorm:"not null;default:0;index" json:"sort_order"`
+	ApplicationID      string                             `gorm:"type:varchar(36);not null;uniqueIndex" json:"application_id"`
+	RepositoryID       string                             `gorm:"type:varchar(36);not null;index" json:"repository_id"`
 	LastObservedRef    string                             `gorm:"type:varchar(512);not null;default:''" json:"last_observed_ref,omitempty"`
 	LastObservedCommit string                             `gorm:"type:varchar(64);not null;default:''" json:"last_observed_commit,omitempty"`
 	LastCheckedAt      *time.Time                         `json:"last_checked_at,omitempty"`
@@ -129,7 +188,7 @@ type ApplicationRepositoryObservation struct {
 	WatchKey                string     `gorm:"type:varchar(64);not null;default:'';index;uniqueIndex:idx_repository_watch,priority:2" json:"watch_key"`
 	SourceNodeID            string     `gorm:"type:varchar(64);not null;default:'';index" json:"source_node_id,omitempty"`
 	Event                   string     `gorm:"type:varchar(16);not null;default:'';index" json:"event,omitempty"`
-	Environment             string     `gorm:"type:varchar(16);not null;index" json:"environment"`
+	Action                  string     `gorm:"type:varchar(16);not null;default:''" json:"action,omitempty"`
 	Ref                     string     `gorm:"type:varchar(512);not null;default:''" json:"ref,omitempty"`
 	CommitSHA               string     `gorm:"type:varchar(64);not null;default:''" json:"commit_sha,omitempty"`
 	LastCheckedAt           *time.Time `json:"last_checked_at,omitempty"`
@@ -142,41 +201,23 @@ func (ApplicationRepositoryObservation) TableName() string {
 }
 
 type Application struct {
-	ID                     string                   `gorm:"type:varchar(36);primaryKey" json:"id"`
-	Name                   string                   `gorm:"type:varchar(128);not null;uniqueIndex" json:"name"`
-	Description            string                   `gorm:"type:varchar(500);not null;default:''" json:"description"`
-	RepositoryID           string                   `gorm:"type:varchar(36);not null;index" json:"repository_id"`
-	Branch                 string                   `gorm:"type:varchar(255);not null" json:"branch"`
-	PollEnabled            bool                     `gorm:"not null;default:true;index" json:"poll_enabled"`
-	PollIntervalSeconds    int                      `gorm:"not null;default:3" json:"poll_interval_seconds"`
-	WatchPush              bool                     `gorm:"not null;default:true" json:"watch_push"`
-	WatchPullRequest       bool                     `gorm:"not null;default:false" json:"watch_pull_request"`
-	WatchTags              bool                     `gorm:"not null;default:false" json:"watch_tags"`
-	TagPattern             string                   `gorm:"type:varchar(255);not null;default:''" json:"tag_pattern"`
-	BuildPlanID            string                   `gorm:"type:varchar(36);not null;default:'';index" json:"build_plan_id,omitempty"`
-	ImageRegistryID        string                   `gorm:"type:varchar(36);not null;default:'';index" json:"image_registry_id,omitempty"`
-	DeploymentPlanID       string                   `gorm:"column:release_plan_id;type:varchar(36);not null;default:'';index" json:"deployment_plan_id,omitempty"`
-	DeploymentTargetID     string                   `gorm:"type:varchar(36);not null;default:'';index" json:"deployment_target_id,omitempty"`
-	WorkflowTemplateID     string                   `gorm:"type:varchar(36);not null;default:'';index" json:"workflow_template_id,omitempty"`
-	ReleaseApprovalEnabled bool                     `gorm:"not null;default:true" json:"-"`
-	LastObservedRef        string                   `gorm:"type:varchar(512);not null;default:''" json:"last_observed_ref,omitempty"`
-	LastObservedCommit     string                   `gorm:"type:varchar(64);not null;default:''" json:"last_observed_commit,omitempty"`
-	SyncStatus             ApplicationSyncStatus    `gorm:"type:varchar(16);not null;index" json:"sync_status"`
-	SyncMessage            string                   `gorm:"type:varchar(255);not null;default:''" json:"sync_message,omitempty"`
-	LastCheckedAt          *time.Time               `json:"last_checked_at,omitempty"`
-	IsActive               bool                     `gorm:"not null;default:true;index" json:"is_active"`
-	CreatedBy              string                   `gorm:"type:varchar(36);not null;index" json:"created_by"`
-	CreatedAt              time.Time                `gorm:"not null" json:"created_at"`
-	UpdatedAt              time.Time                `gorm:"not null" json:"updated_at"`
-	Repository             GitRepository            `gorm:"foreignKey:RepositoryID" json:"repository,omitempty"`
-	BuildPlan              *BuildPlan               `gorm:"foreignKey:BuildPlanID;-:migration" json:"build_plan,omitempty"`
-	ImageRegistry          *ImageRegistry           `gorm:"foreignKey:ImageRegistryID;-:migration" json:"image_registry,omitempty"`
-	DeploymentPlan         *DeploymentPlan          `gorm:"foreignKey:DeploymentPlanID;-:migration" json:"deployment_plan,omitempty"`
-	DeploymentTarget       *DeploymentTarget        `gorm:"foreignKey:DeploymentTargetID;-:migration" json:"deployment_target,omitempty"`
-	WorkflowTemplate       *ReleaseWorkflowTemplate `gorm:"foreignKey:WorkflowTemplateID;-:migration" json:"workflow_template,omitempty"`
-	Environments           []ApplicationEnvironment `gorm:"foreignKey:ApplicationID" json:"environments,omitempty"`
-	Workflow               *ReleaseWorkflow         `gorm:"foreignKey:ApplicationID" json:"workflow,omitempty"`
-	Repositories           []ApplicationRepository  `gorm:"foreignKey:ApplicationID" json:"-"`
+	ID                  string                   `gorm:"type:varchar(36);primaryKey" json:"id"`
+	Name                string                   `gorm:"type:varchar(128);not null;uniqueIndex" json:"name"`
+	Description         string                   `gorm:"type:varchar(500);not null;default:''" json:"description"`
+	RepositoryID        string                   `gorm:"type:varchar(36);not null;index" json:"repository_id"`
+	PollIntervalSeconds int                      `gorm:"not null;default:3" json:"poll_interval_seconds"`
+	WorkflowTemplateID  string                   `gorm:"type:varchar(36);not null;default:'';index" json:"workflow_template_id,omitempty"`
+	SyncStatus          ApplicationSyncStatus    `gorm:"type:varchar(16);not null;index" json:"sync_status"`
+	SyncMessage         string                   `gorm:"type:varchar(255);not null;default:''" json:"sync_message,omitempty"`
+	LastCheckedAt       *time.Time               `json:"last_checked_at,omitempty"`
+	IsActive            bool                     `gorm:"not null;default:true;index" json:"is_active"`
+	CreatedBy           string                   `gorm:"type:varchar(36);not null;index" json:"created_by"`
+	CreatedAt           time.Time                `gorm:"not null" json:"created_at"`
+	UpdatedAt           time.Time                `gorm:"not null" json:"updated_at"`
+	Repository          GitRepository            `gorm:"foreignKey:RepositoryID" json:"repository,omitempty"`
+	WorkflowTemplate    *ReleaseWorkflowTemplate `gorm:"foreignKey:WorkflowTemplateID;-:migration" json:"workflow_template,omitempty"`
+	Workflow            *ReleaseWorkflow         `gorm:"foreignKey:ApplicationID" json:"workflow,omitempty"`
+	Repositories        []ApplicationRepository  `gorm:"foreignKey:ApplicationID" json:"-"`
 }
 
 func (Application) TableName() string { return "applications" }
@@ -194,19 +235,26 @@ const (
 	PipelineRunCanceled         PipelineRunStatus = "canceled"
 )
 
-// PipelineRunGraph 是运行列表使用的只读流程快照，只暴露绘制执行路径所需的信息，
-// 避免把部署目标、分支规则等编辑配置随运行记录返回给前端。
+// PipelineRunGraph 是运行列表使用的只读结构化流程快照。
+// 它保持代码源、阶段和任务顺序，但不暴露执行方案中的敏感配置。
 type PipelineRunGraph struct {
-	Nodes []PipelineRunGraphNode `json:"nodes"`
-	Edges []WorkflowEdge         `json:"edges"`
+	SchemaVersion uint16                  `json:"schema_version"`
+	Source        PipelineRunGraphNode    `json:"source"`
+	Stages        []PipelineRunGraphStage `json:"stages"`
+}
+
+type PipelineRunGraphStage struct {
+	ID    string                 `json:"id"`
+	Name  string                 `json:"name"`
+	Tasks []PipelineRunGraphNode `json:"tasks"`
 }
 
 type PipelineRunGraphNode struct {
-	ID          string           `json:"id"`
-	Type        WorkflowNodeType `json:"type"`
-	Name        string           `json:"name"`
-	Position    WorkflowPosition `json:"position"`
-	Environment string           `json:"environment,omitempty"`
+	ID            string           `json:"id"`
+	Type          WorkflowNodeType `json:"type"`
+	Name          string           `json:"name"`
+	Environment   string           `json:"environment,omitempty"`
+	EnvironmentID string           `json:"environment_id,omitempty"`
 }
 
 type PipelineRun struct {
@@ -215,6 +263,10 @@ type PipelineRun struct {
 	ReleasePlanExecutionID     string                  `gorm:"type:varchar(36);not null;default:'';index" json:"release_plan_execution_id,omitempty"`
 	ReleasePlanExecutionItemID string                  `gorm:"type:varchar(36);not null;default:'';index" json:"release_plan_execution_item_id,omitempty"`
 	Trigger                    string                  `gorm:"type:varchar(24);not null;index" json:"trigger"`
+	TriggerAction              string                  `gorm:"type:varchar(16);not null;default:'';index" json:"trigger_action,omitempty"`
+	SourceBranch               string                  `gorm:"type:varchar(255);not null;default:''" json:"source_branch,omitempty"`
+	TargetBranch               string                  `gorm:"type:varchar(255);not null;default:''" json:"target_branch,omitempty"`
+	EventDedupKey              *string                 `gorm:"type:varchar(64);uniqueIndex" json:"-"`
 	Ref                        string                  `gorm:"type:varchar(512);not null" json:"ref"`
 	CommitSHA                  string                  `gorm:"type:varchar(64);not null" json:"commit_sha"`
 	CommitMessage              string                  `gorm:"type:varchar(255);not null;default:''" json:"commit_message,omitempty"`
@@ -227,6 +279,9 @@ type PipelineRun struct {
 	CurrentNodeID              string                  `gorm:"type:varchar(64);not null;default:'';index" json:"current_node_id,omitempty"`
 	WorkflowSnapshot           string                  `gorm:"type:text;not null" json:"-"`
 	ExecutionJobID             string                  `gorm:"type:varchar(36);not null;default:'';index" json:"execution_job_id,omitempty"`
+	LogBytes                   uint64                  `gorm:"not null;default:0" json:"-"`
+	LogTruncated               bool                    `gorm:"not null;default:false" json:"-"`
+	ArtifactID                 string                  `gorm:"type:varchar(36);not null;default:'';index" json:"artifact_id,omitempty"`
 	DeploymentID               string                  `gorm:"type:varchar(36);not null;default:'';index" json:"deployment_id,omitempty"`
 	Image                      string                  `gorm:"type:varchar(1024);not null;default:''" json:"image,omitempty"`
 	Message                    string                  `gorm:"type:varchar(255);not null;default:''" json:"message,omitempty"`
@@ -278,7 +333,7 @@ type PipelineRunRepository struct {
 	ImageRegistryID              string                      `gorm:"type:varchar(36);not null;default:'';index" json:"image_registry_id,omitempty"`
 	DeploymentPlanID             string                      `gorm:"column:release_plan_id;type:varchar(36);not null;default:'';index" json:"deployment_plan_id,omitempty"`
 	DeploymentPlanKind           DeploymentPlanKind          `gorm:"type:varchar(16);not null;default:''" json:"deployment_plan_kind,omitempty"`
-	DeploymentPlanScript         string                      `gorm:"type:text;not null;default:''" json:"-"`
+	DeploymentPlanScript         string                      `gorm:"type:text;not null" json:"-"`
 	DeploymentPlanTimeoutSeconds int                         `gorm:"not null;default:0" json:"deployment_plan_timeout_seconds,omitempty"`
 	DeploymentPlanDigest         string                      `gorm:"type:varchar(64);not null;default:''" json:"deployment_plan_digest,omitempty"`
 	Status                       PipelineRunRepositoryStatus `gorm:"type:varchar(16);not null;default:'pending';index" json:"status"`

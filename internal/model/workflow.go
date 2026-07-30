@@ -2,94 +2,64 @@ package model
 
 import "time"
 
-type ApplicationEnvironment struct {
-	ID                 string            `gorm:"type:varchar(36);primaryKey" json:"id"`
-	ApplicationID      string            `gorm:"type:varchar(36);not null;uniqueIndex:idx_app_environment" json:"application_id"`
-	Key                string            `gorm:"type:varchar(16);not null;uniqueIndex:idx_app_environment" json:"key"`
-	Name               string            `gorm:"type:varchar(64);not null" json:"name"`
-	Branch             string            `gorm:"type:varchar(255);not null" json:"branch"`
-	PollEnabled        bool              `gorm:"not null;default:false" json:"poll_enabled"`
-	WatchPush          bool              `gorm:"not null;default:false" json:"watch_push"`
-	WatchPullRequest   bool              `gorm:"not null;default:false" json:"watch_pull_request"`
-	WatchTags          bool              `gorm:"not null;default:false" json:"watch_tags"`
-	TagPattern         string            `gorm:"type:varchar(255);not null;default:''" json:"tag_pattern"`
-	DeploymentPlanID   string            `gorm:"column:release_plan_id;type:varchar(36);not null;default:'';index" json:"deployment_plan_id,omitempty"`
-	DeploymentTargetID string            `gorm:"type:varchar(36);not null;default:'';index" json:"deployment_target_id,omitempty"`
-	SortOrder          int               `gorm:"not null;default:0" json:"sort_order"`
-	LastObservedRef    string            `gorm:"type:varchar(512);not null;default:''" json:"last_observed_ref,omitempty"`
-	LastObservedCommit string            `gorm:"type:varchar(64);not null;default:''" json:"last_observed_commit,omitempty"`
-	LastCheckedAt      *time.Time        `json:"last_checked_at,omitempty"`
-	CreatedAt          time.Time         `gorm:"not null" json:"created_at"`
-	UpdatedAt          time.Time         `gorm:"not null" json:"updated_at"`
-	DeploymentPlan     *DeploymentPlan   `gorm:"foreignKey:DeploymentPlanID;-:migration" json:"deployment_plan,omitempty"`
-	DeploymentTarget   *DeploymentTarget `gorm:"foreignKey:DeploymentTargetID;-:migration" json:"deployment_target,omitempty"`
-}
-
-func (ApplicationEnvironment) TableName() string { return "application_environments" }
-
 type WorkflowNodeType string
 
+const WorkflowSchemaVersion uint16 = 1
+
 const (
-	WorkflowNodeTrigger WorkflowNodeType = "trigger"
-	// WorkflowNodeManualRelease 仅用于读取迁移前的工作流和不可变运行快照。
-	// 新工作流通过 trigger.config.events 中的 manual 选项表达手动发布。
-	WorkflowNodeManualRelease WorkflowNodeType = "manual_release"
-	WorkflowNodeManual        WorkflowNodeType = "manual"
-	WorkflowNodeApproval      WorkflowNodeType = "approval"
-	WorkflowNodeDeploy        WorkflowNodeType = "deploy"
+	WorkflowNodeTrigger  WorkflowNodeType = "trigger"
+	WorkflowNodeBuild    WorkflowNodeType = "build"
+	WorkflowNodeShell    WorkflowNodeType = "shell"
+	WorkflowNodeManual   WorkflowNodeType = "manual"
+	WorkflowNodeApproval WorkflowNodeType = "approval"
+	WorkflowNodeDeploy   WorkflowNodeType = "deploy"
 )
 
-type WorkflowPosition struct {
-	X float64 `json:"x"`
-	Y float64 `json:"y"`
-}
-
 type WorkflowNodeConfig struct {
-	Environment        string   `json:"environment,omitempty"`
-	Branch             string   `json:"branch,omitempty"`
-	Events             []string `json:"events,omitempty"`
-	TagPattern         string   `json:"tag_pattern,omitempty"`
-	DeploymentPlanID   string   `json:"deployment_plan_id,omitempty"`
-	DeploymentTargetID string   `json:"deployment_target_id,omitempty"`
-	Description        string   `json:"description,omitempty"`
+	Branch               string            `json:"branch,omitempty"`
+	Events               []string          `json:"events,omitempty"`
+	TagPattern           string            `json:"tag_pattern,omitempty"`
+	PRTargetPattern      string            `json:"pr_target_pattern,omitempty"`
+	PRSourcePattern      string            `json:"pr_source_pattern,omitempty"`
+	PRActions            []string          `json:"pr_actions,omitempty"`
+	BuildPlanID          string            `json:"build_plan_id,omitempty"`
+	DeploymentPlanID     string            `json:"deployment_plan_id,omitempty"`
+	Script               string            `json:"script,omitempty"`
+	RuntimeImage         string            `json:"runtime_image,omitempty"`
+	WorkingDirectory     string            `json:"working_directory,omitempty"`
+	TimeoutSeconds       int               `json:"timeout_seconds,omitempty"`
+	EnvironmentVariables map[string]string `json:"environment_variables,omitempty"`
+	Description          string            `json:"description,omitempty"`
 }
 
 type WorkflowNode struct {
-	ID       string             `json:"id"`
-	Type     WorkflowNodeType   `json:"type"`
-	Name     string             `json:"name"`
-	Position WorkflowPosition   `json:"position"`
-	Config   WorkflowNodeConfig `json:"config"`
+	ID     string             `json:"id"`
+	Type   WorkflowNodeType   `json:"type"`
+	Name   string             `json:"name"`
+	Config WorkflowNodeConfig `json:"config"`
 }
 
-type WorkflowEdge struct {
-	ID     string `json:"id"`
-	Source string `json:"source"`
-	Target string `json:"target"`
-	Label  string `json:"label,omitempty"`
-}
-
-type WorkflowViewport struct {
-	X    float64 `json:"x"`
-	Y    float64 `json:"y"`
-	Zoom float64 `json:"zoom"`
+type WorkflowStage struct {
+	ID    string         `json:"id"`
+	Name  string         `json:"name"`
+	Tasks []WorkflowNode `gorm:"serializer:json" json:"tasks"`
 }
 
 type ReleaseWorkflow struct {
-	ID                       string           `gorm:"type:varchar(36);primaryKey" json:"id"`
-	ApplicationID            string           `gorm:"type:varchar(36);not null;uniqueIndex" json:"application_id"`
-	WorkflowTemplateID       string           `gorm:"type:varchar(36);not null;default:'';index" json:"workflow_template_id,omitempty"`
-	WorkflowTemplateRevision uint64           `gorm:"not null;default:0" json:"workflow_template_revision,omitempty"`
-	Name                     string           `gorm:"type:varchar(128);not null" json:"name"`
-	Revision                 uint64           `gorm:"not null;default:1" json:"revision"`
-	IsActive                 bool             `gorm:"not null;default:false;index" json:"is_active"`
-	Nodes                    []WorkflowNode   `gorm:"serializer:json;type:text;not null" json:"nodes"`
-	Edges                    []WorkflowEdge   `gorm:"serializer:json;type:text;not null" json:"edges"`
-	Viewport                 WorkflowViewport `gorm:"serializer:json;type:text;not null" json:"viewport"`
-	CreatedBy                string           `gorm:"type:varchar(36);not null;index" json:"created_by"`
-	UpdatedBy                string           `gorm:"type:varchar(36);not null;index" json:"updated_by"`
-	CreatedAt                time.Time        `gorm:"not null" json:"created_at"`
-	UpdatedAt                time.Time        `gorm:"not null" json:"updated_at"`
+	ID                       string          `gorm:"type:varchar(36);primaryKey" json:"id"`
+	ApplicationID            string          `gorm:"type:varchar(36);not null;uniqueIndex" json:"application_id"`
+	WorkflowTemplateID       string          `gorm:"type:varchar(36);not null;default:'';index" json:"workflow_template_id,omitempty"`
+	WorkflowTemplateRevision uint64          `gorm:"not null;default:0" json:"workflow_template_revision,omitempty"`
+	SchemaVersion            uint16          `gorm:"not null;default:1" json:"schema_version"`
+	Name                     string          `gorm:"type:varchar(128);not null" json:"name"`
+	Revision                 uint64          `gorm:"not null;default:1" json:"revision"`
+	IsActive                 bool            `gorm:"not null;default:false;index" json:"is_active"`
+	Source                   WorkflowNode    `gorm:"serializer:json;type:text;not null" json:"source"`
+	Stages                   []WorkflowStage `gorm:"serializer:json;type:text;not null" json:"stages"`
+	CreatedBy                string          `gorm:"type:varchar(36);not null;index" json:"created_by"`
+	UpdatedBy                string          `gorm:"type:varchar(36);not null;index" json:"updated_by"`
+	CreatedAt                time.Time       `gorm:"not null" json:"created_at"`
+	UpdatedAt                time.Time       `gorm:"not null" json:"updated_at"`
 }
 
 func (ReleaseWorkflow) TableName() string { return "release_workflows" }
@@ -97,18 +67,18 @@ func (ReleaseWorkflow) TableName() string { return "release_workflows" }
 // ReleaseWorkflowTemplate 是可以被多个应用复用的流水线方案。
 // 已关联的应用跟随启用版本；直接修改应用流水线时解除关联，保留独立配置。
 type ReleaseWorkflowTemplate struct {
-	ID          string           `gorm:"type:varchar(36);primaryKey" json:"id"`
-	Name        string           `gorm:"type:varchar(128);not null;uniqueIndex" json:"name"`
-	Description string           `gorm:"type:varchar(500);not null;default:''" json:"description"`
-	Revision    uint64           `gorm:"not null;default:1" json:"revision"`
-	IsActive    bool             `gorm:"not null;default:false;index" json:"is_active"`
-	Nodes       []WorkflowNode   `gorm:"serializer:json;type:text;not null" json:"nodes"`
-	Edges       []WorkflowEdge   `gorm:"serializer:json;type:text;not null" json:"edges"`
-	Viewport    WorkflowViewport `gorm:"serializer:json;type:text;not null" json:"viewport"`
-	CreatedBy   string           `gorm:"type:varchar(36);not null;index" json:"created_by"`
-	UpdatedBy   string           `gorm:"type:varchar(36);not null;index" json:"updated_by"`
-	CreatedAt   time.Time        `gorm:"not null" json:"created_at"`
-	UpdatedAt   time.Time        `gorm:"not null" json:"updated_at"`
+	ID            string          `gorm:"type:varchar(36);primaryKey" json:"id"`
+	SchemaVersion uint16          `gorm:"not null;default:1" json:"schema_version"`
+	Name          string          `gorm:"type:varchar(128);not null;uniqueIndex" json:"name"`
+	Description   string          `gorm:"type:varchar(500);not null;default:''" json:"description"`
+	Revision      uint64          `gorm:"not null;default:1" json:"revision"`
+	IsActive      bool            `gorm:"not null;default:false;index" json:"is_active"`
+	Source        WorkflowNode    `gorm:"serializer:json;type:text;not null" json:"source"`
+	Stages        []WorkflowStage `gorm:"serializer:json;type:text;not null" json:"stages"`
+	CreatedBy     string          `gorm:"type:varchar(36);not null;index" json:"created_by"`
+	UpdatedBy     string          `gorm:"type:varchar(36);not null;index" json:"updated_by"`
+	CreatedAt     time.Time       `gorm:"not null" json:"created_at"`
+	UpdatedAt     time.Time       `gorm:"not null" json:"updated_at"`
 }
 
 func (ReleaseWorkflowTemplate) TableName() string { return "release_workflow_templates" }

@@ -251,7 +251,7 @@ func TestHostCapabilityAndRemovalProtectReferencedRuntime(t *testing.T) {
 	now := time.Now().UTC()
 	target := model.DeploymentTarget{
 		ID: "target-1", Name: "引用主机的发布目标", Platform: model.DeploymentDocker,
-		Environment: model.EnvironmentDevelopment, RuntimeID: runtimeID,
+		RuntimeID:    runtimeID,
 		WorkloadName: "app", RolloutTimeout: 300, IsActive: true,
 		CreatedBy: "admin", CreatedAt: now, UpdatedAt: now,
 	}
@@ -314,7 +314,7 @@ func TestSSHCapabilityUsesNoRuntimeAndProtectsInactiveTargetReference(t *testing
 	now := time.Now().UTC()
 	target := model.DeploymentTarget{
 		ID: "ssh-target", Name: "已停用 SSH 发布目标", Platform: model.DeploymentSSH,
-		Environment: model.EnvironmentDevelopment, EnvironmentID: "environment-1", HostID: created.Host.ID,
+		EnvironmentID: "environment-1", HostID: created.Host.ID,
 		RolloutTimeout: 60, IsActive: false, CreatedBy: "admin", CreatedAt: now, UpdatedAt: now,
 	}
 	if err := db.Create(&target).Error; err != nil {
@@ -603,7 +603,7 @@ func TestBuiltinLocalHostCapabilitiesCanBeEditedButHostCannotBeDeleted(t *testin
 
 	target := model.DeploymentTarget{
 		ID: "local-target", Name: "本地 Docker 发布", Platform: model.DeploymentDocker,
-		Environment: model.EnvironmentDevelopment, RuntimeID: dockerengine.LocalEndpointID,
+		RuntimeID:    dockerengine.LocalEndpointID,
 		WorkloadName: "app", RolloutTimeout: 60, IsActive: true,
 		CreatedBy: "admin", CreatedAt: now, UpdatedAt: now,
 	}
@@ -647,7 +647,7 @@ func TestRemovingHostDoesNotTreatIndependentKubernetesTargetAsHostReference(t *t
 	now := time.Now().UTC()
 	target := model.DeploymentTarget{
 		ID: "shared-cluster-target", Name: "共享集群发布", Platform: model.DeploymentKubernetes,
-		Environment: model.EnvironmentDevelopment, RuntimeID: input.KubernetesClusterID,
+		RuntimeID: input.KubernetesClusterID,
 		Namespace: "default", WorkloadName: "app", ContainerName: "app", RolloutTimeout: 60,
 		IsActive: true, CreatedBy: "admin", CreatedAt: now, UpdatedAt: now,
 	}

@@ -33,6 +33,7 @@ type repositoryRequest struct {
 	Username          string            `json:"username" binding:"max=255"`
 	Credential        *string           `json:"credential" binding:"omitempty,max=65536"`
 	CredentialID      *string           `json:"credential_id" binding:"omitempty,max=36"`
+	APICredentialID   *string           `json:"api_credential_id" binding:"omitempty,max=36"`
 	WebhookEnabled    bool              `json:"webhook_enabled"`
 	RegenerateWebhook bool              `json:"regenerate_webhook"`
 	AllowInsecureHTTP bool              `json:"allow_insecure_http"`
@@ -52,6 +53,7 @@ type repositoryResponse struct {
 	Username          string            `json:"username,omitempty"`
 	HasCredential     bool              `json:"has_credential"`
 	CredentialID      *string           `json:"credential_id,omitempty"`
+	APICredentialID   *string           `json:"api_credential_id,omitempty"`
 	WebhookEnabled    bool              `json:"webhook_enabled"`
 	WebhookURL        string            `json:"webhook_url"`
 	AllowInsecureHTTP bool              `json:"allow_insecure_http"`
@@ -283,7 +285,7 @@ func toRepositoryInput(request repositoryRequest) repository.Input {
 		Name: request.Name, Provider: request.Provider, CloneURL: request.CloneURL,
 		DefaultBranch: request.DefaultBranch, AuthType: request.AuthType,
 		Username: request.Username, Credential: request.Credential,
-		CredentialID:   request.CredentialID,
+		CredentialID: request.CredentialID, APICredentialID: request.APICredentialID,
 		WebhookEnabled: request.WebhookEnabled, RegenerateWebhook: request.RegenerateWebhook,
 		AllowInsecureHTTP: request.AllowInsecureHTTP,
 	}
@@ -293,8 +295,10 @@ func (h repositoryHandler) toRepositoryResponse(c *gin.Context, actorID string, 
 	return repositoryResponse{
 		ID: repo.ID, Name: repo.Name, Provider: repo.Provider, CloneURL: repo.CloneURL,
 		DefaultBranch: repo.DefaultBranch, AuthType: repo.AuthType, Username: repo.Username,
-		HasCredential: repo.CredentialCiphertext != "" || repo.CredentialID != nil,
-		CredentialID:  h.service.CredentialIDForUser(c.Request.Context(), actorID, repo), WebhookEnabled: repo.WebhookEnabled,
+		HasCredential:     repo.CredentialCiphertext != "" || repo.CredentialID != nil,
+		CredentialID:      h.service.CredentialIDForUser(c.Request.Context(), actorID, repo),
+		APICredentialID:   h.service.APICredentialIDForUser(c.Request.Context(), actorID, repo),
+		WebhookEnabled:    repo.WebhookEnabled,
 		WebhookURL:        "/api/v1/webhooks/git/" + repo.ID,
 		AllowInsecureHTTP: repo.AllowInsecureHTTP,
 		IsActive:          repo.IsActive,

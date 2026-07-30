@@ -37,7 +37,7 @@ func TestDockerEndpointSecurityDefaults(t *testing.T) {
 	manager, _ := secret.New(base64.StdEncoding.EncodeToString([]byte("0123456789abcdef0123456789abcdef")))
 	service := NewService(db, manager, config.Runtime{
 		ConnectTimeout: time.Second, RequestTimeout: time.Second,
-		DockerBuilderHost: "tcp://docker-builder:2375",
+		DockerBuilderHost: "unix:///var/run/docker.sock",
 	})
 
 	localEndpoint, err := service.Find(ctx, LocalEndpointID)

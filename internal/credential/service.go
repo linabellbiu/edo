@@ -97,7 +97,8 @@ func (s *Service) Update(ctx context.Context, userID, id string, input Input) (*
 	}
 	if input.Provider != existing.Provider || input.AuthType != existing.AuthType {
 		var references int64
-		if err := s.db.WithContext(ctx).Model(&model.GitRepository{}).Where("credential_id = ?", id).Count(&references).Error; err != nil {
+		if err := s.db.WithContext(ctx).Model(&model.GitRepository{}).
+			Where("credential_id = ? OR api_credential_id = ?", id, id).Count(&references).Error; err != nil {
 			return nil, fmt.Errorf("检查 Git 令牌使用状态失败: %w", err)
 		}
 		if references > 0 {
@@ -141,7 +142,8 @@ func (s *Service) Delete(ctx context.Context, userID, id string) error {
 			return fmt.Errorf("查询待删除 Git 令牌失败: %w", err)
 		}
 		var count int64
-		if err := tx.Model(&model.GitRepository{}).Where("credential_id = ?", id).Count(&count).Error; err != nil {
+		if err := tx.Model(&model.GitRepository{}).
+			Where("credential_id = ? OR api_credential_id = ?", id, id).Count(&count).Error; err != nil {
 			return fmt.Errorf("检查 Git 令牌使用状态失败: %w", err)
 		}
 		if count > 0 {

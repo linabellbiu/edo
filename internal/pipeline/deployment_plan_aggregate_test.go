@@ -2,18 +2,61 @@ package pipeline
 
 import (
 	"context"
+	"errors"
 	"io"
 	"log/slog"
+	"strings"
 	"testing"
 	"time"
 
 	"gorm.io/gorm"
 
+	"zrt/internal/artifact"
 	"zrt/internal/config"
 	"zrt/internal/deployment"
 	"zrt/internal/dockerengine"
 	"zrt/internal/model"
 )
+
+func deploymentPlanTargetInput(t *testing.T, service *Service, target model.DeploymentTarget) *deployment.TargetInput {
+	t.Helper()
+	now := time.Now().UTC()
+	switch target.Platform {
+	case model.DeploymentDocker:
+		endpoint := model.DockerEndpoint{
+			ID: target.RuntimeID, Name: "runtime-" + target.RuntimeID, Host: "unix:///var/run/docker.sock",
+			HostID: target.HostID, IsActive: true, CreatedBy: "admin", CreatedAt: now, UpdatedAt: now,
+		}
+		if err := service.db.Where("id = ?", endpoint.ID).FirstOrCreate(&endpoint).Error; err != nil {
+			t.Fatal(err)
+		}
+	case model.DeploymentKubernetes:
+		cluster := model.KubernetesCluster{
+			ID: target.RuntimeID, Name: "cluster-" + target.RuntimeID, Mode: model.KubernetesInCluster,
+			DefaultNamespace: "default", IsActive: true, CreatedBy: "admin", CreatedAt: now, UpdatedAt: now,
+		}
+		if err := service.db.Where("id = ?", cluster.ID).FirstOrCreate(&cluster).Error; err != nil {
+			t.Fatal(err)
+		}
+	case model.DeploymentSSH:
+		environment := model.Environment{ID: target.EnvironmentID, Name: "environment-" + target.EnvironmentID, IsActive: true, CreatedBy: "admin", CreatedAt: now, UpdatedAt: now}
+		host := model.Host{ID: target.HostID, Name: "host-" + target.HostID, Mode: model.HostModeSSH, SSHPort: 22, IsActive: true, CreatedBy: "admin", CreatedAt: now, UpdatedAt: now}
+		capability := model.HostCapability{HostID: host.ID, Kind: model.HostCapabilitySSH, Status: model.HostCapabilityReady, CreatedAt: now, UpdatedAt: now}
+		membership := model.EnvironmentHost{EnvironmentID: environment.ID, HostID: host.ID, CreatedAt: now}
+		for _, value := range []any{&environment, &host, &capability, &membership} {
+			if err := service.db.FirstOrCreate(value).Error; err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	return &deployment.TargetInput{
+		Name: target.Name, Description: target.Description, Platform: target.Platform,
+		EnvironmentID: target.EnvironmentID, HostID: target.HostID, RuntimeID: target.RuntimeID,
+		WorkingDirectory: target.WorkingDirectory, Namespace: target.Namespace,
+		WorkloadName: target.WorkloadName, ContainerName: target.ContainerName,
+		RolloutTimeout: target.RolloutTimeout,
+	}
+}
 
 func TestDeploymentPlanSavesTargetAtomically(t *testing.T) {
 	service, db, _, _ := newPipelineTestService(t)
@@ -132,6 +175,10 @@ func TestDockerDeploymentPlanReturnsPersistedConnectionOnUpdate(t *testing.T) {
 	}
 	input := DeploymentPlanInput{
 		Name: "Docker 连接回填方案", Kind: model.DeploymentPlanDocker, ServiceName: "demo",
+		DockerConfig: model.DockerContainerConfig{
+			PortMappings:         []model.DockerPortMapping{{HostPort: 8080, ContainerPort: 80}},
+			EnvironmentVariables: map[string]string{"APP_ENV": "production"},
+		},
 		TimeoutSeconds: 300, DeploymentTarget: &deployment.TargetInput{
 			Name: "Docker 连接回填方案", Platform: model.DeploymentDocker,
 			RuntimeID: endpoints[0].ID, WorkloadName: "demo", RolloutTimeout: 300,
@@ -149,6 +196,11 @@ func TestDockerDeploymentPlanReturnsPersistedConnectionOnUpdate(t *testing.T) {
 	if updated.DeploymentTarget == nil || updated.DeploymentTarget.RuntimeID != endpoints[1].ID {
 		t.Fatalf("更新接口没有返回实际保存的 Docker 连接: %+v", updated)
 	}
+	if len(updated.DockerConfig.PortMappings) != 1 || updated.DockerConfig.PortMappings[0].HostIP != "127.0.0.1" ||
+		updated.DockerConfig.Network != "bridge" || updated.DockerConfig.RestartPolicy != "unless-stopped" ||
+		updated.DockerConfig.EnvironmentVariables["APP_ENV"] != "production" {
+		t.Fatalf("更新接口没有返回规范化的 Docker 启动配置: %+v", updated.DockerConfig)
+	}
 	plans, err := service.ListDeploymentPlans(context.Background())
 	if err != nil {
 		t.Fatal(err)
@@ -156,31 +208,42 @@ func TestDockerDeploymentPlanReturnsPersistedConnectionOnUpdate(t *testing.T) {
 	if len(plans) != 1 || plans[0].DeploymentTarget == nil || plans[0].DeploymentTarget.RuntimeID != endpoints[1].ID {
 		t.Fatalf("重新读取方案没有回填更新后的 Docker 连接: %+v", plans)
 	}
+	if model.DockerContainerConfigDigest(plans[0].DockerConfig) != model.DockerContainerConfigDigest(updated.DockerConfig) {
+		t.Fatal("重新读取方案时 Docker 启动配置发生变化")
+	}
 }
 
 func TestPipelineRunResolvesDeploymentPlanTargetIntoSnapshot(t *testing.T) {
 	service, db, _, repositoryID := newPipelineTestService(t)
 	ctx := context.Background()
 	now := time.Now().UTC()
+	artifactService, err := artifact.NewService(db, t.TempDir(), 1024*1024, service.logger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	service.ConfigureArtifacts(artifactService)
+	buildPlan, err := service.CreateBuildPlan(ctx, "admin", BuildPlanInput{
+		Name: "快照文件构建", Kind: model.BuildPlanScript,
+		Script: "mkdir -p dist && printf ready > dist/app", ArtifactPath: "dist",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	target := model.DeploymentTarget{
 		ID: "snapshot-plan-target", Name: "快照部署位置", Platform: model.DeploymentSSH,
 		EnvironmentID: "snapshot-environment", HostID: "snapshot-host", WorkingDirectory: "/srv/old",
 		RolloutTimeout: 120, IsActive: true, CreatedBy: "admin", CreatedAt: now, UpdatedAt: now,
 	}
-	if err := db.Create(&target).Error; err != nil {
-		t.Fatal(err)
-	}
 	plan, err := service.CreateDeploymentPlan(ctx, "admin", DeploymentPlanInput{
 		Name: "快照脚本方案", Kind: model.DeploymentPlanScript,
-		Script: "./deploy.sh\n", TimeoutSeconds: 120, DeploymentTargetID: target.ID,
+		Script: "./deploy.sh\n", TimeoutSeconds: 120, DeploymentTarget: deploymentPlanTargetInput(t, service, target),
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
+	target = *plan.DeploymentTarget
 	application, err := service.CreateApplication(ctx, "admin", ApplicationInput{
-		Name: "快照应用", RepositoryID: repositoryID, Branch: "main",
-		PollEnabled: true, PollIntervalSeconds: 60, WatchPush: true,
-		DeploymentPlanID: plan.ID,
+		Name: "快照应用", RepositoryID: repositoryID, PollIntervalSeconds: 60,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -189,16 +252,10 @@ func TestPipelineRunResolvesDeploymentPlanTargetIntoSnapshot(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	nodes := append([]model.WorkflowNode(nil), workflow.Workflow.Nodes...)
-	for i := range nodes {
-		if nodes[i].Type == model.WorkflowNodeDeploy {
-			nodes[i].Config.DeploymentPlanID = plan.ID
-			nodes[i].Config.DeploymentTargetID = ""
-		}
-	}
+	source, stages := testStageWorkflowGraph(buildPlan.ID, plan.ID)
 	if _, err := service.SaveWorkflow(ctx, application.ID, "admin", WorkflowInput{
-		Name: workflow.Workflow.Name, Revision: workflow.Workflow.Revision, Activate: true,
-		Nodes: nodes, Edges: workflow.Workflow.Edges, Viewport: workflow.Workflow.Viewport,
+		SchemaVersion: model.WorkflowSchemaVersion, Name: workflow.Workflow.Name,
+		Revision: workflow.Workflow.Revision, Activate: true, Source: source, Stages: stages,
 	}); err != nil {
 		t.Fatalf("只选择部署方案的流水线无法启用: %v", err)
 	}
@@ -206,13 +263,7 @@ func TestPipelineRunResolvesDeploymentPlanTargetIntoSnapshot(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var source model.WorkflowNode
-	for i := range application.Workflow.Nodes {
-		if application.Workflow.Nodes[i].Type == model.WorkflowNodeTrigger {
-			source = application.Workflow.Nodes[i]
-			break
-		}
-	}
+	source = application.Workflow.Source
 	run, err := service.newResolvedWorkflowRun(
 		ctx, application, application.Workflow, source, "push", "refs/heads/main",
 		"0123456789012345678901234567890123456789", "admin", "开始执行", now,
@@ -225,13 +276,13 @@ func TestPipelineRunResolvesDeploymentPlanTargetIntoSnapshot(t *testing.T) {
 		t.Fatal(err)
 	}
 	var deployNode model.WorkflowNode
-	for i := range snapshot.Nodes {
-		if snapshot.Nodes[i].Type == model.WorkflowNodeDeploy {
-			deployNode = snapshot.Nodes[i]
+	for _, task := range workflowTasks(snapshot.Stages) {
+		if task.Type == model.WorkflowNodeDeploy {
+			deployNode = task
 			break
 		}
 	}
-	if deployNode.Config.DeploymentPlanID != plan.ID || deployNode.Config.DeploymentTargetID != target.ID {
+	if deployNode.Config.DeploymentPlanID != plan.ID {
 		t.Fatalf("运行快照没有解析方案和位置: %+v", deployNode.Config)
 	}
 	if snapshot.DeploymentTargets[deployNode.ID].WorkingDirectory != "/srv/old" ||
@@ -242,12 +293,25 @@ func TestPipelineRunResolvesDeploymentPlanTargetIntoSnapshot(t *testing.T) {
 	run.Stage = string(model.WorkflowNodeDeploy)
 	run.CurrentNodeID = deployNode.ID
 	run.ExecutionJobID = "snapshot-job"
-	components := pipelineRunRepositories(application, run.ID, run.Ref, run.CommitSHA, now)
+	run.ArtifactID = "snapshot-artifact"
+	components, err := pipelineRunRepositories(application, run.ID, run.Ref, run.CommitSHA, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	artifactRecord := model.Artifact{
+		ID: run.ArtifactID, ApplicationID: application.ID, BuildRunID: "snapshot-build", PipelineRunID: run.ID,
+		Kind: model.ArtifactKindFileBundle, Status: model.ArtifactStatusAvailable, Name: "app.tar.gz",
+		Digest: "sha256:" + strings.Repeat("a", 64), StorageKind: model.ArtifactStorageKindLocalFile,
+		CreatedBy: "admin", CreatedAt: now, UpdatedAt: now,
+	}
 	if err := db.Transaction(func(tx *gorm.DB) error {
 		if err := tx.Create(run).Error; err != nil {
 			return err
 		}
-		return tx.Create(&components).Error
+		if err := tx.Create(&components).Error; err != nil {
+			return err
+		}
+		return tx.Create(&artifactRecord).Error
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -257,6 +321,9 @@ func TestPipelineRunResolvesDeploymentPlanTargetIntoSnapshot(t *testing.T) {
 	}
 	if err := db.Model(&model.DeploymentPlan{}).Where("id = ?", plan.ID).
 		Update("script", "./deploy-new.sh\n").Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := service.SetDeploymentPlanActive(ctx, plan.ID, false); err != nil {
 		t.Fatal(err)
 	}
 	snapshot, err = parseWorkflowSnapshot(run)
@@ -273,6 +340,14 @@ func TestPipelineRunResolvesDeploymentPlanTargetIntoSnapshot(t *testing.T) {
 		t.Fatalf("读取聚合方案运行快照失败: %v", err)
 	}
 	if prepared.target.WorkingDirectory != "/srv/old" || prepared.deploymentPlan.Script != "./deploy.sh\n" {
-		t.Fatalf("执行器读取了方案更新后的实时配置: target=%+v plan=%+v", prepared.target, prepared.deploymentPlan)
+		t.Fatalf("执行器没有继续使用运行启动时的方案快照: target=%+v plan=%+v", prepared.target, prepared.deploymentPlan)
+	}
+	if err := db.Model(&model.PipelineRun{}).Where("id = ?", run.ID).Update("artifact_id", "").Error; err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.loadExecution(ctx, DeployTaskPayload{
+		PipelineRunID: run.ID, WorkflowNodeID: deployNode.ID,
+	}, run.ExecutionJobID); !errors.Is(err, ErrPipelineExecutionConfig) {
+		t.Fatalf("主机脚本部署缺少文件制品时未被拒绝: %v", err)
 	}
 }

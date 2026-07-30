@@ -20,7 +20,7 @@ var (
 	ErrInvalidEnvironment       = errors.New("环境信息无效")
 	ErrEnvironmentExists        = errors.New("环境名称已存在")
 	ErrEnvironmentNotFound      = errors.New("环境不存在")
-	ErrEnvironmentReferenced    = errors.New("环境仍被部署配置引用，不能删除")
+	ErrEnvironmentReferenced    = errors.New("环境仍被启用的部署配置引用，不能停用或删除")
 	ErrHostMembershipReferenced = errors.New("所选主机仍被该环境的部署配置引用，不能移除")
 	ErrHostNotFound             = errors.New("所选主机不存在，请刷新后重试")
 )
@@ -279,15 +279,33 @@ func (s *Service) SetActive(ctx context.Context, id string, active bool) error {
 	if id == "" {
 		return ErrEnvironmentNotFound
 	}
-	result := s.db.WithContext(ctx).
-		Model(&model.Environment{}).
-		Where("id = ?", id).
-		Updates(map[string]any{"is_active": active, "updated_at": time.Now().UTC()})
-	if result.Error != nil {
-		return fmt.Errorf("修改环境状态失败: %w", result.Error)
-	}
-	if result.RowsAffected != 1 {
-		return ErrEnvironmentNotFound
+	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var existing model.Environment
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&existing, "id = ?", id).Error; err != nil {
+			return err
+		}
+		if !active {
+			referenced, err := activeWorkflowReferencesEnvironment(tx, existing.ID)
+			if err != nil {
+				return err
+			}
+			if referenced {
+				return ErrEnvironmentReferenced
+			}
+		}
+		return tx.Model(&existing).Updates(map[string]any{
+			"is_active": active, "updated_at": time.Now().UTC(),
+		}).Error
+	})
+	if err != nil {
+		switch {
+		case errors.Is(err, gorm.ErrRecordNotFound):
+			return ErrEnvironmentNotFound
+		case errors.Is(err, ErrEnvironmentReferenced):
+			return ErrEnvironmentReferenced
+		default:
+			return fmt.Errorf("修改环境状态失败: %w", err)
+		}
 	}
 	return nil
 }
@@ -311,6 +329,13 @@ func (s *Service) Remove(ctx context.Context, id string) error {
 		if targetCount > 0 {
 			return ErrEnvironmentReferenced
 		}
+		referenced, err := activeWorkflowReferencesEnvironment(tx, existing.ID)
+		if err != nil {
+			return err
+		}
+		if referenced {
+			return ErrEnvironmentReferenced
+		}
 		if err := tx.Where("environment_id = ?", existing.ID).Delete(&model.EnvironmentHost{}).Error; err != nil {
 			return err
 		}
@@ -326,6 +351,52 @@ func (s *Service) Remove(ctx context.Context, id string) error {
 		}
 	}
 	return nil
+}
+
+func activeWorkflowReferencesEnvironment(tx *gorm.DB, environmentID string) (bool, error) {
+	planIDs := make(map[string]struct{})
+	collect := func(stages []model.WorkflowStage) {
+		for i := range stages {
+			for j := range stages[i].Tasks {
+				if stages[i].Tasks[j].Type == model.WorkflowNodeDeploy && stages[i].Tasks[j].Config.DeploymentPlanID != "" {
+					planIDs[stages[i].Tasks[j].Config.DeploymentPlanID] = struct{}{}
+				}
+			}
+		}
+	}
+	if tx.Migrator().HasTable(&model.ReleaseWorkflow{}) {
+		var workflows []model.ReleaseWorkflow
+		if err := tx.Select("stages").Where("is_active = ?", true).Find(&workflows).Error; err != nil {
+			return false, err
+		}
+		for i := range workflows {
+			collect(workflows[i].Stages)
+		}
+	}
+	if tx.Migrator().HasTable(&model.ReleaseWorkflowTemplate{}) {
+		var templates []model.ReleaseWorkflowTemplate
+		if err := tx.Select("stages").Where("is_active = ?", true).Find(&templates).Error; err != nil {
+			return false, err
+		}
+		for i := range templates {
+			collect(templates[i].Stages)
+		}
+	}
+	if len(planIDs) == 0 {
+		return false, nil
+	}
+	ids := make([]string, 0, len(planIDs))
+	for id := range planIDs {
+		ids = append(ids, id)
+	}
+	var count int64
+	if err := tx.Table("deployment_plans AS plan").
+		Joins("JOIN deployment_targets AS target ON target.id = plan.deployment_target_id").
+		Where("plan.id IN ? AND target.environment_id = ?", ids, environmentID).
+		Count(&count).Error; err != nil {
+		return false, err
+	}
+	return count > 0, nil
 }
 
 func normalizeInput(input Input) (Input, error) {
@@ -403,6 +474,13 @@ func replaceHosts(tx *gorm.DB, environmentID string, hostIDs []string, now time.
 		if targetCount > 0 {
 			return ErrHostMembershipReferenced
 		}
+		referenced, err := activeWorkflowReferencesHostMembership(tx, environmentID, removedHostIDs)
+		if err != nil {
+			return fmt.Errorf("检查流水线 Docker 部署环境引用失败: %w", err)
+		}
+		if referenced {
+			return ErrHostMembershipReferenced
+		}
 	}
 	if err := remove.Delete(&model.EnvironmentHost{}).Error; err != nil {
 		return fmt.Errorf("解除环境主机归属失败: %w", err)
@@ -422,6 +500,75 @@ func replaceHosts(tx *gorm.DB, environmentID string, hostIDs []string, now time.
 		return fmt.Errorf("更新环境主机归属失败: %w", err)
 	}
 	return nil
+}
+
+func activeWorkflowReferencesHostMembership(
+	tx *gorm.DB,
+	environmentID string,
+	hostIDs []string,
+) (bool, error) {
+	if len(hostIDs) == 0 || !tx.Migrator().HasTable(&model.DeploymentPlan{}) {
+		return false, nil
+	}
+	planIDs := make(map[string]struct{})
+	targetIDs := make(map[string]struct{})
+	collect := func(stages []model.WorkflowStage) {
+		for i := range stages {
+			for j := range stages[i].Tasks {
+				node := stages[i].Tasks[j]
+				if node.Type == model.WorkflowNodeDeploy && node.Config.DeploymentPlanID != "" {
+					planIDs[node.Config.DeploymentPlanID] = struct{}{}
+				}
+			}
+		}
+	}
+	if tx.Migrator().HasTable(&model.ReleaseWorkflow{}) {
+		var workflows []model.ReleaseWorkflow
+		if err := tx.Select("stages").Where("is_active = ?", true).Find(&workflows).Error; err != nil {
+			return false, err
+		}
+		for i := range workflows {
+			collect(workflows[i].Stages)
+		}
+	}
+	if tx.Migrator().HasTable(&model.ReleaseWorkflowTemplate{}) {
+		var templates []model.ReleaseWorkflowTemplate
+		if err := tx.Select("stages").Where("is_active = ?", true).Find(&templates).Error; err != nil {
+			return false, err
+		}
+		for i := range templates {
+			collect(templates[i].Stages)
+		}
+	}
+	if len(planIDs) > 0 {
+		ids := make([]string, 0, len(planIDs))
+		for id := range planIDs {
+			ids = append(ids, id)
+		}
+		var plans []model.DeploymentPlan
+		if err := tx.Select("deployment_target_id").Where("id IN ?", ids).Find(&plans).Error; err != nil {
+			return false, err
+		}
+		for i := range plans {
+			if plans[i].DeploymentTargetID != "" {
+				targetIDs[plans[i].DeploymentTargetID] = struct{}{}
+			}
+		}
+	}
+	if len(targetIDs) == 0 {
+		return false, nil
+	}
+	ids := make([]string, 0, len(targetIDs))
+	for id := range targetIDs {
+		ids = append(ids, id)
+	}
+	var count int64
+	if err := tx.Model(&model.DeploymentTarget{}).
+		Where("id IN ? AND environment_id = ? AND platform = ? AND host_id IN ?", ids, environmentID, model.DeploymentDocker, hostIDs).
+		Count(&count).Error; err != nil {
+		return false, err
+	}
+	return count > 0, nil
 }
 
 func listHosts(ctx context.Context, db *gorm.DB, environmentID string) ([]model.Host, error) {

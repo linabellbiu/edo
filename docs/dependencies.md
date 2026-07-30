@@ -8,7 +8,8 @@
 | --- | --- | --- | --- |
 | 环境变量解析 | `github.com/caarlos0/env/v11` | 零运行时依赖，支持结构体标签、数值、布尔值和 `time.Duration`，替代手写类型转换 | 默认值、跨字段校验、显式空值检查和安全错误文案 |
 | Git 远端引用与认证 | `github.com/go-git/go-git/v5` | 纯 Go、持续维护、支持 HTTPS Basic Auth、SSH 私钥和 `known_hosts` | 仓库地址白名单、不安全 HTTP 显式确认、凭据所有权和引用数量上限 |
-| Docker 构建与发布 | Moby Client + Docker CLI/Buildx + `golang.org/x/crypto/ssh` | Moby 官方客户端负责镜像、容器和传输 API；官方 Docker CLI/Buildx 负责建立 BuildKit 双向 session，避免直接调用 HTTP build API 时丢失上下文、认证和前端解析能力；Go 官方扩展库负责远程目标认证 | Compose 通过隔离网络连接 DinD，本地二进制直接使用宿主机 Docker；Docker CLI/Buildx 从固定版本官方镜像复制到 ZRT 运行镜像，Apache-2.0 许可证兼容且 Windows、Linux、macOS 开发机均可使用。每个 Worker 使用独立上下文、认证目录和镜像标签，可按配置并行构建；认证只写入权限为 `0600` 的临时配置并立即清理。本地目标直接部署构建运行时内镜像并跳过 SSH；远程目标保存前执行 `docker version` 并固定 SHA256 主机指纹，有仓库时受控 push/pull，无仓库时传输 `docker save` 流，分别校验源 daemon 与目标 daemon 的镜像 ID，并使用目标 ID保护后续发布，不开放宿主机终端 |
+| Docker 构建与发布 | Moby Client + Docker CLI/Buildx/Compose v2 + `golang.org/x/crypto/ssh` | Moby 官方客户端负责镜像、容器和传输 API；官方 Docker CLI/Buildx 负责 BuildKit 双向 session，Compose v2 负责执行经 ZRT 校验的内联服务定义；Go 官方扩展库负责远程目标认证 | Compose 通过隔离网络连接 DinD，本地二进制直接使用宿主机 Docker；Docker CLI/Buildx/Compose 从固定版本官方镜像复制到 ZRT 运行镜像，Apache-2.0 许可证兼容。每个 Worker 使用独立上下文、认证目录和镜像标签，可按配置并行构建；认证只写入权限为 `0600` 的临时配置并立即清理。本地目标直接部署构建运行时内镜像；远程目标固定主机指纹，有仓库时受控 push/pull，无仓库时传输 `docker save` 流并校验两端镜像，不开放宿主机终端 |
+| Docker Compose YAML 解析 | `go.yaml.in/yaml/v3` | 维护活跃，MIT/Apache-2.0 双许可兼容；使用 AST 能在执行前精确验证服务、镜像占位符和禁止的外部文件引用 | ZRT 只允许 `${ZRT_IMAGE}` 插值，拒绝 `build`、`include`、`extends`、`env_file`、外部 config/secret 等越界输入，项目名、超时、镜像摘要校验和执行审计仍由 ZRT 实现 |
 | Docker 构建上下文 | `github.com/moby/patternmatcher` | 复用 Docker 官方维护的 `.dockerignore` 语义，避免自行实现忽略规则后出现敏感文件误打包或缓存失效 | 强制排除 `.git`、限制上下文为 1 GiB，并拒绝上下文外 Dockerfile |
 | 密码摘要 | `github.com/matthewhartstonge/argon2` | Apache-2.0、持续维护、兼容标准 Argon2id PHC 格式 | 固定 Argon2id v1.3，并在计算前限制内存、迭代、并发、盐和摘要长度 |
 | RBAC 判定 | `github.com/casbin/casbin/v3` | 成熟的 RBAC 模型、角色继承和 deny-override 判定 | 权限目录、超级管理员边界、个人密钥所有权和管理接口 |
@@ -20,6 +21,7 @@
 | UI、图标与动效 | `ant-design-vue`、`lucide-vue-next`、`@vueuse/motion` | 对齐 Vben `web-antd` 的成熟组件与主题能力；图标和动效包均可按需打包，避免维护自制表单、弹层和动画基础设施 | ZRT 主题令牌、简体中文文案、业务状态色、减少动效偏好和可访问性规则 |
 | Vue 组件按需导入 | `unplugin-vue-components` | MIT 许可、持续维护并提供 Ant Design Vue Resolver；构建时生成显式组件导入，避免全量注册 UI 库造成超大首屏入口包 | 只在 Vite 构建阶段工作，不参与浏览器运行；组件选型和页面行为仍由 ZRT 控制 |
 | 国际化 | `vue-i18n` | Vue 官方生态事实标准，支持组合式 API、懒加载词典和运行时切换 | 简体中文为默认语言；语言入口、业务词典和 Ant Design Vue Locale 同步由 ZRT 管理 |
+| 流水线阶段与任务排序 | `sortablejs` | MIT 许可、成熟且项目已在使用；能直接实现阶段和阶段内任务链的横向拖动 | 只保存版本化的“唯一代码源 + 串行阶段数组 + 串行任务数组”；跨阶段规则、任务配置、草稿和启用边界由 ZRT 控制 |
 
 `go-git` 同时负责远端引用查询和指定 Commit 检出。运行镜像不再安装 `git` 和 `openssh-client`，SSH 私钥也不再写入临时文件。已有 Argon2id PHC 摘要不需要迁移。
 
@@ -41,6 +43,7 @@
 | Gin 通用中间件合集 | 请求 ID、结构化访问日志和安全响应头都很短，并与 ZRT 的中文错误边界及 `slog` 字段约定绑定；整包替换收益低。 |
 | Prometheus `client_golang` 与 Grafana | 两者适合外部抓取、长期存储和集中看板，但不能直接满足 ZRT 内登录后查看基础运行状态的产品要求。本次使用受权限保护的快照 API 和内置页面；未来可增加可选导出，但不能替代内置监控。 |
 | 直接复制 `vbenjs/vue-vben-admin` 完整 Monorepo 与内部 `@vben/*` 工作区包 | Vben Admin 5 为 MIT 许可且维护活跃，本次已采用其 `web-antd` 技术栈和交互基线；但完整仓库依赖 pnpm workspace、Turbo 和大量内部包，直接嵌入会破坏 ZRT 当前 npm 单应用、Docker 构建及 Go `embed` 链路。ZRT 因此使用同版本线的 Vue、Pinia、Vue Router、Ant Design Vue、Vue I18n 与 Motion 公开包自行组织单应用，不复制不可独立发布的 `workspace:*` 包。 |
+| Vue Flow、AntV X6、LogicFlow 等通用图编辑器 | 三者均有持续维护且许可证兼容的开源实现，适合自由连线、分支、缩放和平移画布；但 ZRT 当前故意限制为类 Gitee 的唯一代码源与串行阶段。引入图引擎会增加依赖体积、可访问性和交互约束成本，且会诱导用户创建后端不支持的拓扑；因此复用现有 SortableJS，只实现领域化阶段/任务视图，不自行重造通用图引擎。若执行器未来真实支持 DAG，再重新评估。 |
 
 ## 升级原则
 

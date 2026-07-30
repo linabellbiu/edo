@@ -25,6 +25,7 @@ import (
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 
+	"zrt/internal/artifact"
 	"zrt/internal/deployment"
 	"zrt/internal/dockerengine"
 	"zrt/internal/model"
@@ -33,30 +34,33 @@ import (
 )
 
 var (
-	ErrInvalidApplication           = errors.New("应用配置无效")
-	ErrApplicationExists            = errors.New("应用名称已存在")
-	ErrApplicationNotFound          = errors.New("应用不存在")
-	ErrInvalidBuildPlan             = errors.New("构建方案配置无效")
-	ErrBuildPlanExists              = errors.New("构建方案名称已存在")
-	ErrBuildPlanNotFound            = errors.New("构建方案不存在")
-	ErrBuildPlanInUse               = errors.New("构建方案仍被应用使用，请先更换应用的构建方案")
-	ErrInvalidRegistry              = errors.New("镜像仓库配置无效")
-	ErrInvalidRegistryName          = errors.New("镜像仓库名称格式无效")
-	ErrInvalidRegistryProvider      = errors.New("镜像仓库类型无效")
-	ErrInvalidRegistryEndpoint      = errors.New("镜像仓库地址格式无效")
-	ErrInsecureRegistryEndpoint     = errors.New("HTTP 镜像仓库需要显式允许不安全连接")
-	ErrInvalidRegistryNamespace     = errors.New("镜像仓库命名空间格式无效")
-	ErrInvalidRegistryUsername      = errors.New("镜像仓库用户名过长")
-	ErrInvalidRegistrySecret        = errors.New("镜像仓库密码或 Token 过长")
-	ErrRegistryLoginFailed          = errors.New("镜像仓库登录失败，请检查用户名和密码或 Token")
-	ErrRegistryConnectionFailed     = errors.New("无法连接镜像仓库，请检查地址和网络")
-	ErrRegistryExists               = errors.New("镜像仓库名称已存在")
-	ErrInvalidDeploymentPlan        = errors.New("部署方案配置无效")
-	ErrDeploymentPlanExists         = errors.New("部署方案名称已存在")
-	ErrDeploymentPlanNotFound       = errors.New("部署方案不存在")
-	ErrDeploymentPlanTargetMismatch = errors.New("部署方案的执行方式与所选运行环境不匹配")
-	ErrWorkflowTemplateNotFound     = errors.New("流水线方案不存在或未启用")
-	ErrPipelineIncomplete           = errors.New("应用尚未绑定完整的构建与发布流程")
+	ErrInvalidApplication             = errors.New("应用配置无效")
+	ErrApplicationExists              = errors.New("应用名称已存在")
+	ErrApplicationNotFound            = errors.New("应用不存在")
+	ErrInvalidBuildPlan               = errors.New("构建方案配置无效")
+	ErrBuildPlanExists                = errors.New("构建方案名称已存在")
+	ErrBuildPlanNotFound              = errors.New("构建方案不存在")
+	ErrBuildPlanInUse                 = errors.New("构建方案仍被流水线使用，请先更换相关构建任务")
+	ErrInvalidScriptEnvironment       = errors.New("脚本环境变量无效；CI、HOME、TMPDIR 和 ZRT 流水线元数据名称由系统保留")
+	ErrInvalidRegistry                = errors.New("镜像仓库配置无效")
+	ErrInvalidRegistryName            = errors.New("镜像仓库名称格式无效")
+	ErrInvalidRegistryProvider        = errors.New("镜像仓库类型无效")
+	ErrInvalidRegistryEndpoint        = errors.New("镜像仓库地址格式无效")
+	ErrInsecureRegistryEndpoint       = errors.New("HTTP 镜像仓库需要显式允许不安全连接")
+	ErrInvalidRegistryNamespace       = errors.New("镜像仓库命名空间格式无效")
+	ErrInvalidRegistryUsername        = errors.New("镜像仓库用户名过长")
+	ErrInvalidRegistrySecret          = errors.New("镜像仓库密码或 Token 过长")
+	ErrRegistryLoginFailed            = errors.New("镜像仓库登录失败，请检查用户名和密码或 Token")
+	ErrRegistryConnectionFailed       = errors.New("无法连接镜像仓库，请检查地址和网络")
+	ErrRegistryExists                 = errors.New("镜像仓库名称已存在")
+	ErrInvalidDeploymentPlan          = errors.New("部署方案配置无效")
+	ErrDeploymentPlanExists           = errors.New("部署方案名称已存在")
+	ErrDeploymentPlanNotFound         = errors.New("部署方案不存在")
+	ErrDeploymentPlanInUse            = errors.New("部署方案仍被流水线使用，请先更换相关部署任务")
+	ErrDeploymentPlanTargetMismatch   = errors.New("部署方案的执行方式与所选运行环境不匹配")
+	ErrWorkflowTemplateNotFound       = errors.New("流水线方案不存在或未启用")
+	ErrPipelineIncomplete             = errors.New("应用尚未绑定完整的构建与发布流程")
+	ErrApplicationRepositoryInvariant = errors.New("应用代码仓库关联数据不完整")
 )
 
 var resourceNamePattern = regexp.MustCompile(`^[A-Za-z0-9\p{Han}][A-Za-z0-9\p{Han}_. -]{0,127}$`)
@@ -68,45 +72,28 @@ type ApplicationInput struct {
 	Name                string
 	Description         string
 	RepositoryID        string
-	Branch              string
-	PollEnabled         bool
 	PollIntervalSeconds int
-	WatchPush           bool
-	WatchPullRequest    bool
-	WatchTags           bool
-	TagPattern          string
-	BuildPlanID         string
-	ImageRegistryID     string
-	ImageRegistrySet    bool
-	DeploymentPlanID    string
-	DeploymentTargetID  string
 	WorkflowTemplateID  string
-	Environments        []EnvironmentInput
-}
-
-type EnvironmentInput struct {
-	Key                string
-	Name               string
-	Branch             string
-	PollEnabled        bool
-	WatchPush          bool
-	WatchPullRequest   bool
-	WatchTags          bool
-	TagPattern         string
-	DeploymentPlanID   string
-	DeploymentTargetID string
-	SortOrder          int
 }
 
 type BuildPlanInput struct {
-	Name           string
-	Kind           model.BuildPlanKind
-	Description    string
-	Script         string
-	DockerfilePath string
-	ContextPath    string
-	ArtifactPath   string
-	TimeoutSeconds int
+	Name                 string
+	Kind                 model.BuildPlanKind
+	Description          string
+	Script               string
+	DockerfilePath       string
+	ContextPath          string
+	WorkingDirectory     string
+	ArtifactPath         string
+	RuntimeImage         string
+	ImageRegistryID      string
+	TargetStage          string
+	Platform             string
+	Pull                 *bool
+	CacheEnabled         *bool
+	BuildArgs            map[string]string
+	EnvironmentVariables map[string]string
+	TimeoutSeconds       int
 }
 
 type RegistryInput struct {
@@ -120,17 +107,15 @@ type RegistryInput struct {
 }
 
 type DeploymentPlanInput struct {
-	Name               string
-	Kind               model.DeploymentPlanKind
-	DeploymentTargetID string
-	DeploymentTarget   *deployment.TargetInput
-	Description        string
-	Script             string
-	HelmChart          string
-	HelmValues         string
-	ComposeFile        string
-	ServiceName        string
-	TimeoutSeconds     int
+	Name             string
+	Kind             model.DeploymentPlanKind
+	DeploymentTarget *deployment.TargetInput
+	Description      string
+	Script           string
+	ComposeYAML      string
+	ServiceName      string
+	DockerConfig     model.DockerContainerConfig
+	TimeoutSeconds   int
 }
 
 type Service struct {
@@ -138,6 +123,8 @@ type Service struct {
 	repositories           *repository.Service
 	secrets                *secret.Manager
 	docker                 *dockerengine.Service
+	scriptRunner           scriptContainerRunner
+	artifacts              *artifact.Service
 	deployments            *deployment.Service
 	logger                 *slog.Logger
 	releasePlanExecutionMu sync.Mutex
@@ -149,22 +136,22 @@ func NewService(db *gorm.DB, repositories *repository.Service, secrets *secret.M
 }
 
 func (s *Service) ConfigureExecution(docker *dockerengine.Service, deployments *deployment.Service, logger *slog.Logger) {
-	s.docker, s.deployments = docker, deployments
+	s.docker, s.scriptRunner, s.deployments = docker, docker, deployments
 	if logger != nil {
 		s.logger = logger
 	}
 }
 
+func (s *Service) ConfigureArtifacts(artifacts *artifact.Service) {
+	s.artifacts = artifacts
+}
+
 func (s *Service) ListApplications(ctx context.Context) ([]model.Application, error) {
 	var applications []model.Application
 	err := s.db.WithContext(ctx).
-		Preload("Repository").Preload("BuildPlan").Preload("ImageRegistry").
-		Preload("DeploymentPlan").Preload("DeploymentPlan.DeploymentTarget").Preload("DeploymentTarget").
-		Preload("WorkflowTemplate").
-		Preload("Environments", func(db *gorm.DB) *gorm.DB { return db.Order("sort_order ASC") }).
-		Preload("Environments.DeploymentPlan").Preload("Environments.DeploymentTarget").
+		Preload("Repository").Preload("WorkflowTemplate").
 		Preload("Workflow").
-		Preload("Repositories", func(db *gorm.DB) *gorm.DB { return db.Order("sort_order ASC") }).
+		Preload("Repositories").
 		Preload("Repositories.Observations").
 		Preload("Repositories.Repository").
 		Order("name ASC").Find(&applications).Error
@@ -177,13 +164,9 @@ func (s *Service) ListApplications(ctx context.Context) ([]model.Application, er
 func (s *Service) FindApplication(ctx context.Context, id string) (*model.Application, error) {
 	var application model.Application
 	err := s.db.WithContext(ctx).
-		Preload("Repository").Preload("BuildPlan").Preload("ImageRegistry").
-		Preload("DeploymentPlan").Preload("DeploymentPlan.DeploymentTarget").Preload("DeploymentTarget").
-		Preload("WorkflowTemplate").
-		Preload("Environments", func(db *gorm.DB) *gorm.DB { return db.Order("sort_order ASC") }).
-		Preload("Environments.DeploymentPlan").Preload("Environments.DeploymentTarget").
+		Preload("Repository").Preload("WorkflowTemplate").
 		Preload("Workflow").
-		Preload("Repositories", func(db *gorm.DB) *gorm.DB { return db.Order("sort_order ASC") }).
+		Preload("Repositories").
 		Preload("Repositories.Observations").
 		Preload("Repositories.Repository").
 		First(&application, "id = ?", id).Error
@@ -204,29 +187,18 @@ func (s *Service) CreateApplication(ctx context.Context, actorID string, input A
 	now := time.Now().UTC()
 	application := &model.Application{
 		ID: uuid.NewString(), Name: input.Name, Description: input.Description,
-		RepositoryID: input.RepositoryID, Branch: input.Branch,
-		PollEnabled: input.PollEnabled, PollIntervalSeconds: input.PollIntervalSeconds,
-		WatchPush: input.WatchPush, WatchPullRequest: input.WatchPullRequest,
-		WatchTags: input.WatchTags, TagPattern: input.TagPattern,
-		BuildPlanID: input.BuildPlanID, ImageRegistryID: input.ImageRegistryID,
-		DeploymentPlanID: input.DeploymentPlanID, DeploymentTargetID: input.DeploymentTargetID,
+		RepositoryID: input.RepositoryID, PollIntervalSeconds: input.PollIntervalSeconds,
 		WorkflowTemplateID: input.WorkflowTemplateID,
 		SyncStatus:         model.ApplicationSyncIdle, IsActive: true,
 		CreatedBy: actorID, CreatedAt: now, UpdatedAt: now,
 	}
-	environments := buildEnvironmentModels(application.ID, input.Environments, now)
 	repositoryLink := buildApplicationRepositoryModel(application.ID, input.RepositoryID, now)
-	application.Environments = environments
 	workflow, err := s.newApplicationWorkflow(ctx, application, actorID, now)
 	if err != nil {
 		return nil, err
 	}
-	application.Environments = nil
 	if err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if err := tx.Create(application).Error; err != nil {
-			return err
-		}
-		if err := tx.Create(&environments).Error; err != nil {
 			return err
 		}
 		if err := tx.Create(&repositoryLink).Error; err != nil {
@@ -247,56 +219,28 @@ func (s *Service) UpdateApplication(ctx context.Context, id string, input Applic
 	if err != nil {
 		return nil, err
 	}
-	// 旧版更新请求不会回传应用级方案。保留已有绑定，避免只改说明时意外清空可执行配置。
-	if strings.TrimSpace(input.BuildPlanID) == "" {
-		input.BuildPlanID = existing.BuildPlanID
-	}
-	if !input.ImageRegistrySet && strings.TrimSpace(input.ImageRegistryID) == "" {
-		input.ImageRegistryID = existing.ImageRegistryID
-	}
-	if strings.TrimSpace(input.DeploymentPlanID) == "" {
-		input.DeploymentPlanID = existing.DeploymentPlanID
-	}
-	if strings.TrimSpace(input.DeploymentTargetID) == "" {
-		input.DeploymentTargetID = existing.DeploymentTargetID
-	}
-	requestedTemplateID := strings.TrimSpace(input.WorkflowTemplateID)
-	reuseTemplateSnapshot := existing.WorkflowTemplateID != "" && (requestedTemplateID == "" || requestedTemplateID == existing.WorkflowTemplateID)
-	if reuseTemplateSnapshot {
-		input.WorkflowTemplateID = ""
-		input.Environments = environmentModelInputs(existing.Environments)
-	}
 	input, err = s.normalizeApplication(ctx, input)
 	if err != nil {
 		return nil, err
 	}
-	if reuseTemplateSnapshot {
-		input.WorkflowTemplateID = existing.WorkflowTemplateID
-	}
 	updates := map[string]any{
 		"name": input.Name, "description": input.Description, "repository_id": input.RepositoryID,
-		"branch": input.Branch, "poll_enabled": input.PollEnabled,
-		"poll_interval_seconds": input.PollIntervalSeconds, "watch_push": input.WatchPush,
-		"watch_pull_request": input.WatchPullRequest, "watch_tags": input.WatchTags,
-		"tag_pattern": input.TagPattern, "build_plan_id": input.BuildPlanID,
-		"image_registry_id": input.ImageRegistryID, "release_plan_id": input.DeploymentPlanID,
-		"deployment_target_id": input.DeploymentTargetID,
-		"workflow_template_id": input.WorkflowTemplateID,
-		"updated_at":           time.Now().UTC(),
+		"poll_interval_seconds": input.PollIntervalSeconds,
+		"workflow_template_id":  input.WorkflowTemplateID,
+		"updated_at":            time.Now().UTC(),
 	}
-	if existing.RepositoryID != input.RepositoryID || existing.Branch != input.Branch {
-		updates["last_observed_ref"] = ""
-		updates["last_observed_commit"] = ""
+	if existing.RepositoryID != input.RepositoryID {
 		updates["sync_status"] = model.ApplicationSyncIdle
 		updates["sync_message"] = ""
 		updates["last_checked_at"] = nil
 	}
 	var replacementWorkflow *model.ReleaseWorkflow
-	if existing.WorkflowTemplateID != input.WorkflowTemplateID && input.WorkflowTemplateID != "" {
+	if existing.WorkflowTemplateID != input.WorkflowTemplateID {
 		updated := *existing
 		updated.Name = input.Name
+		updated.RepositoryID = input.RepositoryID
+		updated.Repository = model.GitRepository{}
 		updated.WorkflowTemplateID = input.WorkflowTemplateID
-		updated.Environments = buildEnvironmentModels(existing.ID, input.Environments, time.Now().UTC())
 		replacementWorkflow, err = s.newApplicationWorkflow(ctx, &updated, existing.CreatedBy, time.Now().UTC())
 		if err != nil {
 			return nil, err
@@ -304,9 +248,6 @@ func (s *Service) UpdateApplication(ctx context.Context, id string, input Applic
 	}
 	if err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if err := tx.Model(&model.Application{}).Where("id = ?", existing.ID).Updates(updates).Error; err != nil {
-			return err
-		}
-		if err := saveApplicationEnvironments(tx, existing, input.Environments, time.Now().UTC()); err != nil {
 			return err
 		}
 		if err := saveApplicationRepository(tx, existing, input.RepositoryID, time.Now().UTC()); err != nil {
@@ -317,10 +258,6 @@ func (s *Service) UpdateApplication(ctx context.Context, id string, input Applic
 				return err
 			}
 			return tx.Create(replacementWorkflow).Error
-		}
-		if !reuseTemplateSnapshot && workflowInputsChanged(existing, input) {
-			return tx.Model(&model.ReleaseWorkflow{}).Where("application_id = ?", existing.ID).
-				Updates(map[string]any{"is_active": false, "updated_at": time.Now().UTC()}).Error
 		}
 		return nil
 	}); err != nil {
@@ -348,12 +285,6 @@ func (s *Service) normalizeApplication(ctx context.Context, input ApplicationInp
 	input.Name = strings.TrimSpace(input.Name)
 	input.Description = strings.TrimSpace(input.Description)
 	input.RepositoryID = strings.TrimSpace(input.RepositoryID)
-	input.Branch = strings.TrimSpace(input.Branch)
-	input.TagPattern = strings.TrimSpace(input.TagPattern)
-	input.BuildPlanID = strings.TrimSpace(input.BuildPlanID)
-	input.ImageRegistryID = strings.TrimSpace(input.ImageRegistryID)
-	input.DeploymentPlanID = strings.TrimSpace(input.DeploymentPlanID)
-	input.DeploymentTargetID = strings.TrimSpace(input.DeploymentTargetID)
 	input.WorkflowTemplateID = strings.TrimSpace(input.WorkflowTemplateID)
 	if input.RepositoryID == "" {
 		return input, ErrInvalidApplication
@@ -367,172 +298,28 @@ func (s *Service) normalizeApplication(ctx context.Context, input ApplicationInp
 		if err := s.db.WithContext(ctx).First(&template, "id = ? AND is_active = ?", input.WorkflowTemplateID, true).Error; err != nil {
 			return input, ErrWorkflowTemplateNotFound
 		}
-		input.Environments = workflowTemplateEnvironmentInputs(template.Nodes)
 	}
-	legacyInput := len(input.Environments) == 0
-	if legacyInput {
-		input.Environments = []EnvironmentInput{{
-			Key: "dev", Name: "开发环境", Branch: input.Branch,
-			PollEnabled: input.PollEnabled, WatchPush: input.WatchPush,
-			WatchPullRequest: input.WatchPullRequest, WatchTags: input.WatchTags,
-			TagPattern: input.TagPattern, DeploymentPlanID: input.DeploymentPlanID,
-			DeploymentTargetID: input.DeploymentTargetID,
-		}}
-	}
-	if !validResourceName(input.Name) || utf8.RuneCountInString(input.Description) > 500 || input.RepositoryID == "" ||
-		utf8.RuneCountInString(input.Branch) > 255 || utf8.RuneCountInString(input.TagPattern) > 255 {
-		return input, ErrInvalidApplication
-	}
-	if legacyInput && !input.PollEnabled && !input.WatchPush && !input.WatchPullRequest && !input.WatchTags {
+	if !validResourceName(input.Name) || utf8.RuneCountInString(input.Description) > 500 || input.RepositoryID == "" {
 		return input, ErrInvalidApplication
 	}
 	if input.PollIntervalSeconds == 0 {
 		input.PollIntervalSeconds = 3
 	}
-	if input.WatchTags && input.TagPattern != "" {
-		if _, err := path.Match(input.TagPattern, "v1.0.0"); err != nil {
-			return input, ErrInvalidApplication
-		}
-	}
 	repo, err := s.repositories.Find(ctx, input.RepositoryID)
 	if err != nil || !repo.IsActive {
 		return input, ErrInvalidApplication
 	}
-	if input.Branch == "" {
-		input.Branch = repo.DefaultBranch
-		if input.Branch == "" {
-			input.Branch = "main"
-		}
-	}
-	checks := []struct {
-		id    string
-		model any
-	}{
-		{input.BuildPlanID, &model.BuildPlan{}},
-		{input.ImageRegistryID, &model.ImageRegistry{}},
-		{input.DeploymentPlanID, &model.DeploymentPlan{}},
-		{input.DeploymentTargetID, &model.DeploymentTarget{}},
-	}
-	for _, check := range checks {
-		if check.id == "" {
-			continue
-		}
-		var count int64
-		if err := s.db.WithContext(ctx).Model(check.model).Where("id = ? AND is_active = ?", check.id, true).Count(&count).Error; err != nil || count != 1 {
-			return input, ErrInvalidApplication
-		}
-	}
-	if err := s.validateDeploymentPlanTarget(ctx, input.DeploymentPlanID, input.DeploymentTargetID); err != nil {
-		return input, err
-	}
-	seenEnvironments := make(map[string]struct{}, len(input.Environments))
-	hasTrigger, hasPollableSource := false, false
-	for i := range input.Environments {
-		environment := &input.Environments[i]
-		environment.Key = strings.ToLower(strings.TrimSpace(environment.Key))
-		environment.Name = strings.TrimSpace(environment.Name)
-		environment.Branch = strings.TrimSpace(environment.Branch)
-		environment.TagPattern = strings.TrimSpace(environment.TagPattern)
-		if environment.DeploymentPlanID == "" {
-			environment.DeploymentPlanID = input.DeploymentPlanID
-		}
-		environment.DeploymentTargetID = strings.TrimSpace(environment.DeploymentTargetID)
-		if _, exists := seenEnvironments[environment.Key]; exists || !validEnvironmentKey(environment.Key) {
-			return input, ErrInvalidApplication
-		}
-		seenEnvironments[environment.Key] = struct{}{}
-		if environment.Name == "" {
-			environment.Name = environmentName(environment.Key)
-		}
-		if environment.Branch == "" {
-			environment.Branch = defaultEnvironmentBranch(environment.Key, input.Branch)
-		}
-		if utf8.RuneCountInString(environment.Name) > 64 || utf8.RuneCountInString(environment.Branch) > 255 ||
-			utf8.RuneCountInString(environment.TagPattern) > 255 {
-			return input, ErrInvalidApplication
-		}
-		if environment.WatchTags && environment.TagPattern != "" {
-			if _, err := path.Match(environment.TagPattern, "v1.0.0"); err != nil {
-				return input, ErrInvalidApplication
-			}
-		}
-		if environment.PollEnabled || environment.WatchPush || environment.WatchPullRequest || environment.WatchTags {
-			hasTrigger = true
-		}
-		if environment.PollEnabled || environment.WatchPush || environment.WatchPullRequest || environment.WatchTags {
-			hasPollableSource = true
-		}
-		for _, check := range []struct {
-			id    string
-			model any
-		}{{environment.DeploymentPlanID, &model.DeploymentPlan{}}, {environment.DeploymentTargetID, &model.DeploymentTarget{}}} {
-			if check.id == "" {
-				continue
-			}
-			var count int64
-			if err := s.db.WithContext(ctx).Model(check.model).Where("id = ? AND is_active = ?", check.id, true).Count(&count).Error; err != nil || count != 1 {
-				return input, ErrInvalidApplication
-			}
-		}
-		if err := s.validateDeploymentPlanTarget(ctx, environment.DeploymentPlanID, environment.DeploymentTargetID); err != nil {
-			return input, err
-		}
-	}
-	if len(input.Environments) > 4 {
+	if !validPollIntervalSeconds(input.PollIntervalSeconds) {
 		return input, ErrInvalidApplication
-	}
-	if !hasTrigger || (hasPollableSource && !validPollIntervalSeconds(input.PollIntervalSeconds)) {
-		return input, ErrInvalidApplication
-	}
-	primary := input.Environments[0]
-	input.Branch, input.PollEnabled = primary.Branch, primary.PollEnabled
-	input.WatchPush, input.WatchPullRequest = primary.WatchPush, primary.WatchPullRequest
-	input.WatchTags, input.TagPattern = primary.WatchTags, primary.TagPattern
-	if input.DeploymentPlanID == "" {
-		input.DeploymentPlanID = primary.DeploymentPlanID
-	}
-	if input.DeploymentTargetID == "" {
-		input.DeploymentTargetID = primary.DeploymentTargetID
 	}
 	return input, nil
-}
-
-func (s *Service) validateDeploymentPlanTarget(ctx context.Context, planID, targetID string) error {
-	planID, targetID = strings.TrimSpace(planID), strings.TrimSpace(targetID)
-	if planID == "" {
-		return nil
-	}
-	var plan model.DeploymentPlan
-	if err := s.db.WithContext(ctx).Select("id", "kind", "deployment_target_id").First(&plan, "id = ? AND is_active = ?", planID, true).Error; err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return ErrInvalidApplication
-		}
-		return fmt.Errorf("查询应用部署方案失败: %w", err)
-	}
-	if plan.DeploymentTargetID != "" {
-		targetID = plan.DeploymentTargetID
-	}
-	if targetID == "" {
-		return nil
-	}
-	var target model.DeploymentTarget
-	if err := s.db.WithContext(ctx).Select("id", "platform").First(&target, "id = ? AND is_active = ?", targetID, true).Error; err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return ErrInvalidApplication
-		}
-		return fmt.Errorf("查询应用发布目标失败: %w", err)
-	}
-	if !deploymentPlanSupportsTarget(plan.Kind, target.Platform) {
-		return ErrDeploymentPlanTargetMismatch
-	}
-	return nil
 }
 
 func deploymentPlanSupportsTarget(kind model.DeploymentPlanKind, platform model.DeploymentPlatform) bool {
 	switch kind {
 	case model.DeploymentPlanScript:
 		return platform == model.DeploymentSSH
-	case model.DeploymentPlanHelm:
+	case model.DeploymentPlanKubernetes:
 		return platform == model.DeploymentKubernetes
 	case model.DeploymentPlanDocker, model.DeploymentPlanCompose:
 		return platform == model.DeploymentDocker
@@ -541,120 +328,38 @@ func deploymentPlanSupportsTarget(kind model.DeploymentPlanKind, platform model.
 	}
 }
 
-func buildEnvironmentModels(applicationID string, inputs []EnvironmentInput, now time.Time) []model.ApplicationEnvironment {
-	result := make([]model.ApplicationEnvironment, 0, len(inputs))
-	for i := range inputs {
-		result = append(result, model.ApplicationEnvironment{
-			ID: uuid.NewString(), ApplicationID: applicationID, Key: inputs[i].Key,
-			Name: inputs[i].Name, Branch: inputs[i].Branch, PollEnabled: inputs[i].PollEnabled,
-			WatchPush: inputs[i].WatchPush, WatchPullRequest: inputs[i].WatchPullRequest,
-			WatchTags: inputs[i].WatchTags, TagPattern: inputs[i].TagPattern,
-			DeploymentPlanID: inputs[i].DeploymentPlanID, DeploymentTargetID: inputs[i].DeploymentTargetID,
-			SortOrder: i, CreatedAt: now, UpdatedAt: now,
-		})
-	}
-	return result
-}
-
 func buildApplicationRepositoryModel(applicationID, repositoryID string, now time.Time) model.ApplicationRepository {
 	return model.ApplicationRepository{
 		ID: uuid.NewString(), ApplicationID: applicationID, RepositoryID: repositoryID,
-		SortOrder: 0, CreatedAt: now, UpdatedAt: now,
+		CreatedAt: now, UpdatedAt: now,
 	}
 }
 
 func saveApplicationRepository(tx *gorm.DB, application *model.Application, repositoryID string, now time.Time) error {
-	for i := range application.Repositories {
-		if application.Repositories[i].RepositoryID == repositoryID {
-			return tx.Model(&model.ApplicationRepository{}).Where("id = ?", application.Repositories[i].ID).
-				Updates(map[string]any{"sort_order": 0, "updated_at": now}).Error
-		}
+	if len(application.Repositories) > 1 {
+		return ErrApplicationRepositoryInvariant
 	}
-	repository := buildApplicationRepositoryModel(application.ID, repositoryID, now)
-	return tx.Create(&repository).Error
-}
-
-func environmentModelInputs(environments []model.ApplicationEnvironment) []EnvironmentInput {
-	result := make([]EnvironmentInput, 0, len(environments))
-	for i := range environments {
-		result = append(result, EnvironmentInput{
-			Key: environments[i].Key, Name: environments[i].Name, Branch: environments[i].Branch,
-			PollEnabled: environments[i].PollEnabled, WatchPush: environments[i].WatchPush,
-			WatchPullRequest: environments[i].WatchPullRequest, WatchTags: environments[i].WatchTags,
-			TagPattern: environments[i].TagPattern, DeploymentPlanID: environments[i].DeploymentPlanID,
-			DeploymentTargetID: environments[i].DeploymentTargetID, SortOrder: environments[i].SortOrder,
-		})
+	if len(application.Repositories) == 0 {
+		repository := buildApplicationRepositoryModel(application.ID, repositoryID, now)
+		return tx.Create(&repository).Error
 	}
-	return result
-}
-
-func saveApplicationEnvironments(tx *gorm.DB, application *model.Application, inputs []EnvironmentInput, now time.Time) error {
-	existingByKey := make(map[string]model.ApplicationEnvironment, len(application.Environments))
-	for i := range application.Environments {
-		existingByKey[application.Environments[i].Key] = application.Environments[i]
-	}
-	environments := buildEnvironmentModels(application.ID, inputs, now)
-	keys := make([]string, 0, len(environments))
-	for i := range environments {
-		keys = append(keys, environments[i].Key)
-		if existing, ok := existingByKey[environments[i].Key]; ok {
-			environments[i].ID = existing.ID
-			environments[i].CreatedAt = existing.CreatedAt
-			if existing.Branch == environments[i].Branch && existing.WatchTags == environments[i].WatchTags && existing.TagPattern == environments[i].TagPattern {
-				environments[i].LastObservedRef = existing.LastObservedRef
-				environments[i].LastObservedCommit = existing.LastObservedCommit
-				environments[i].LastCheckedAt = existing.LastCheckedAt
-			}
-		}
-		if err := tx.Save(&environments[i]).Error; err != nil {
+	link := application.Repositories[0]
+	updates := map[string]any{"repository_id": repositoryID, "updated_at": now}
+	if link.RepositoryID != repositoryID {
+		updates["last_observed_ref"] = ""
+		updates["last_observed_commit"] = ""
+		updates["last_checked_at"] = nil
+		if err := tx.Where("application_repository_id = ?", link.ID).
+			Delete(&model.ApplicationRepositoryObservation{}).Error; err != nil {
 			return err
 		}
 	}
-	return tx.Where("application_id = ? AND key NOT IN ?", application.ID, keys).
-		Delete(&model.ApplicationEnvironment{}).Error
-}
-
-func validEnvironmentKey(value string) bool {
-	return value == "dev" || value == "test" || value == "pre" || value == "prod"
-}
-
-func environmentName(value string) string {
-	return map[string]string{"dev": "开发环境", "test": "测试环境", "pre": "预发布环境", "prod": "生产环境"}[value]
-}
-
-func defaultEnvironmentBranch(key, fallback string) string {
-	if fallback == "" {
-		fallback = "main"
-	}
-	return map[string]string{"dev": "dev", "test": "test", "pre": "main", "prod": "release"}[key]
-}
-
-func workflowInputsChanged(existing *model.Application, input ApplicationInput) bool {
-	if existing.WorkflowTemplateID != input.WorkflowTemplateID || len(existing.Environments) != len(input.Environments) {
-		return true
-	}
-	for i := range input.Environments {
-		current := input.Environments[i]
-		var found *model.ApplicationEnvironment
-		for j := range existing.Environments {
-			if existing.Environments[j].Key == current.Key {
-				found = &existing.Environments[j]
-				break
-			}
-		}
-		if found == nil || found.Branch != current.Branch || found.PollEnabled != current.PollEnabled ||
-			found.WatchPush != current.WatchPush || found.WatchPullRequest != current.WatchPullRequest ||
-			found.WatchTags != current.WatchTags || found.TagPattern != current.TagPattern ||
-			found.DeploymentPlanID != current.DeploymentPlanID || found.DeploymentTargetID != current.DeploymentTargetID {
-			return true
-		}
-	}
-	return false
+	return tx.Model(&model.ApplicationRepository{}).Where("id = ?", link.ID).Updates(updates).Error
 }
 
 func (s *Service) ListBuildPlans(ctx context.Context) ([]model.BuildPlan, error) {
 	var plans []model.BuildPlan
-	if err := s.db.WithContext(ctx).Order("name ASC").Find(&plans).Error; err != nil {
+	if err := s.db.WithContext(ctx).Preload("ImageRegistry").Order("name ASC").Find(&plans).Error; err != nil {
 		return nil, fmt.Errorf("查询构建方案失败: %w", err)
 	}
 	return plans, nil
@@ -667,10 +372,16 @@ func (s *Service) CreateBuildPlan(ctx context.Context, actorID string, input Bui
 	}
 	now := time.Now().UTC()
 	plan := &model.BuildPlan{
-		ID: uuid.NewString(), Name: input.Name, Kind: input.Kind, Description: input.Description,
+		ID: uuid.NewString(), Name: input.Name, Kind: input.Kind, ConfigVersion: 1, Description: input.Description,
 		Script: input.Script, DockerfilePath: input.DockerfilePath, ContextPath: input.ContextPath,
-		ArtifactPath: input.ArtifactPath, TimeoutSeconds: input.TimeoutSeconds,
+		WorkingDirectory: input.WorkingDirectory, ArtifactPath: input.ArtifactPath, RuntimeImage: input.RuntimeImage,
+		ImageRegistryID: input.ImageRegistryID, TargetStage: input.TargetStage, Platform: input.Platform,
+		Pull: *input.Pull, CacheEnabled: *input.CacheEnabled, BuildArgs: input.BuildArgs,
+		EnvironmentVariables: input.EnvironmentVariables, TimeoutSeconds: input.TimeoutSeconds,
 		IsActive: true, CreatedBy: actorID, CreatedAt: now, UpdatedAt: now,
+	}
+	if err := s.validateBuildPlanRegistry(ctx, plan.ImageRegistryID); err != nil {
+		return nil, err
 	}
 	if err := s.db.WithContext(ctx).Create(plan).Error; err != nil {
 		if errors.Is(err, gorm.ErrDuplicatedKey) {
@@ -683,28 +394,137 @@ func (s *Service) CreateBuildPlan(ctx context.Context, actorID string, input Bui
 
 func normalizeBuildPlanInput(input BuildPlanInput) (BuildPlanInput, error) {
 	input.Name, input.Description = strings.TrimSpace(input.Name), strings.TrimSpace(input.Description)
-	input.Script, input.DockerfilePath = strings.TrimSpace(input.Script), strings.TrimSpace(input.DockerfilePath)
-	input.ContextPath, input.ArtifactPath = strings.TrimSpace(input.ContextPath), strings.TrimSpace(input.ArtifactPath)
+	input.DockerfilePath = strings.TrimSpace(input.DockerfilePath)
+	input.ContextPath, input.WorkingDirectory = strings.TrimSpace(input.ContextPath), strings.TrimSpace(input.WorkingDirectory)
+	input.ArtifactPath, input.RuntimeImage = strings.TrimSpace(input.ArtifactPath), strings.TrimSpace(input.RuntimeImage)
+	input.ImageRegistryID = strings.TrimSpace(input.ImageRegistryID)
+	input.TargetStage, input.Platform = strings.TrimSpace(input.TargetStage), strings.TrimSpace(input.Platform)
 	if input.ContextPath == "" {
 		input.ContextPath = "."
+	}
+	if input.WorkingDirectory == "" {
+		input.WorkingDirectory = "."
 	}
 	if input.TimeoutSeconds == 0 {
 		input.TimeoutSeconds = 1800
 	}
+	if input.Pull == nil {
+		input.Pull = boolPointer(true)
+	}
+	if input.CacheEnabled == nil {
+		input.CacheEnabled = boolPointer(true)
+	}
+	if input.BuildArgs == nil {
+		input.BuildArgs = map[string]string{}
+	}
+	if input.EnvironmentVariables == nil {
+		input.EnvironmentVariables = map[string]string{}
+	}
 	switch input.Kind {
 	case model.BuildPlanDockerfile:
 		input.Script = ""
+		input.WorkingDirectory = "."
+		input.ArtifactPath, input.RuntimeImage = "", ""
+		input.EnvironmentVariables = map[string]string{}
+		if input.DockerfilePath == "" {
+			input.DockerfilePath = "Dockerfile"
+		}
 	case model.BuildPlanScript:
-		input.DockerfilePath = ""
+		input.DockerfilePath, input.ImageRegistryID = "", ""
+		input.TargetStage, input.Platform = "", ""
+		input.BuildArgs = map[string]string{}
+		if input.RuntimeImage == "" {
+			input.RuntimeImage = model.DefaultRuntimeImage
+		}
+		if !validScriptEnvironmentVariables(input.EnvironmentVariables) {
+			return input, ErrInvalidScriptEnvironment
+		}
 	}
-	validKind := (input.Kind == model.BuildPlanScript && input.Script != "") ||
+	validKind := (input.Kind == model.BuildPlanScript && strings.TrimSpace(input.Script) != "" && input.ArtifactPath != "" && validRuntimeImageReference(input.RuntimeImage)) ||
 		(input.Kind == model.BuildPlanDockerfile && input.DockerfilePath != "")
 	if !validResourceName(input.Name) || !validKind || input.TimeoutSeconds < 30 || input.TimeoutSeconds > 7200 ||
 		len(input.Script) > 256*1024 || utf8.RuneCountInString(input.Description) > 500 ||
-		len(input.DockerfilePath) > 512 || len(input.ContextPath) > 512 || len(input.ArtifactPath) > 512 {
+		len(input.DockerfilePath) > 512 || len(input.ContextPath) > 512 || len(input.WorkingDirectory) > 512 ||
+		len(input.ArtifactPath) > 512 || len(input.RuntimeImage) > 512 || len(input.ImageRegistryID) > 36 || len(input.TargetStage) > 128 ||
+		len(input.Platform) > 64 || (input.TargetStage != "" && !buildTargetStagePattern.MatchString(input.TargetStage)) ||
+		(input.Platform != "" && !buildPlatformPattern.MatchString(input.Platform)) ||
+		!validBuildVariables(input.BuildArgs) ||
+		(input.Kind == model.BuildPlanDockerfile && !dockerengine.ValidBuildArgs(input.BuildArgs)) {
 		return input, ErrInvalidBuildPlan
 	}
 	return input, nil
+}
+
+func boolPointer(value bool) *bool { return &value }
+
+var buildVariableNamePattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]{0,127}$`)
+var buildTargetStagePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$`)
+var buildPlatformPattern = regexp.MustCompile(`^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)?$`)
+
+// validRuntimeImageReference 只接受固定 tag 或 digest。裸镜像名和 latest 会让
+// 同一份流水线快照在不同时间解析到不同内容，不能作为可审计的执行配置。
+func validRuntimeImageReference(value string) bool {
+	if value == "" || len(value) > 512 {
+		return false
+	}
+	named, err := distributionreference.ParseNormalizedNamed(value)
+	if err != nil {
+		return false
+	}
+	if tagged, ok := named.(distributionreference.Tagged); ok {
+		if strings.EqualFold(tagged.Tag(), "latest") {
+			return false
+		}
+		return true
+	}
+	_, ok := named.(distributionreference.Digested)
+	return ok
+}
+
+func validBuildVariables(values map[string]string) bool {
+	if len(values) > 100 {
+		return false
+	}
+	for name, value := range values {
+		if !buildVariableNamePattern.MatchString(name) || len(value) > 16*1024 {
+			return false
+		}
+	}
+	return true
+}
+
+var reservedScriptEnvironmentNames = map[string]struct{}{
+	"CI": {}, "HOME": {}, "TMPDIR": {},
+	"ZRT_PIPELINE_RUN_ID": {}, "ZRT_APPLICATION_ID": {}, "ZRT_GIT_REF": {}, "ZRT_COMMIT_SHA": {},
+}
+
+// 脚本运行元数据和受控目录由执行器固定注入。保存阶段直接拒绝同名变量，
+// 避免用户配置看似成功、运行时却被系统静默覆盖。
+func validScriptEnvironmentVariables(values map[string]string) bool {
+	if !validBuildVariables(values) {
+		return false
+	}
+	for name := range values {
+		if _, reserved := reservedScriptEnvironmentNames[name]; reserved {
+			return false
+		}
+	}
+	return true
+}
+
+func (s *Service) validateBuildPlanRegistry(ctx context.Context, registryID string) error {
+	if registryID == "" {
+		return nil
+	}
+	var count int64
+	if err := s.db.WithContext(ctx).Model(&model.ImageRegistry{}).
+		Where("id = ? AND is_active = ?", registryID, true).Count(&count).Error; err != nil {
+		return fmt.Errorf("校验构建镜像仓库失败: %w", err)
+	}
+	if count != 1 {
+		return ErrInvalidBuildPlan
+	}
+	return nil
 }
 
 func (s *Service) UpdateBuildPlan(ctx context.Context, id string, input BuildPlanInput) (*model.BuildPlan, error) {
@@ -719,10 +539,25 @@ func (s *Service) UpdateBuildPlan(ctx context.Context, id string, input BuildPla
 		}
 		return nil, fmt.Errorf("读取待更新构建方案失败: %w", err)
 	}
+	if err := s.validateBuildPlanRegistry(ctx, input.ImageRegistryID); err != nil {
+		return nil, err
+	}
+	buildArgsJSON, err := json.Marshal(input.BuildArgs)
+	if err != nil {
+		return nil, ErrInvalidBuildPlan
+	}
+	environmentJSON, err := json.Marshal(input.EnvironmentVariables)
+	if err != nil {
+		return nil, ErrInvalidBuildPlan
+	}
 	result := s.db.WithContext(ctx).Model(&model.BuildPlan{}).Where("id = ?", id).Updates(map[string]any{
 		"name": input.Name, "kind": input.Kind, "description": input.Description,
 		"script": input.Script, "dockerfile_path": input.DockerfilePath, "context_path": input.ContextPath,
-		"artifact_path": input.ArtifactPath, "timeout_seconds": input.TimeoutSeconds, "updated_at": time.Now().UTC(),
+		"working_directory": input.WorkingDirectory, "artifact_path": input.ArtifactPath, "runtime_image": input.RuntimeImage,
+		"image_registry_id": input.ImageRegistryID, "target_stage": input.TargetStage, "platform": input.Platform,
+		"pull": *input.Pull, "cache_enabled": *input.CacheEnabled, "build_args": string(buildArgsJSON),
+		"environment_variables": string(environmentJSON), "timeout_seconds": input.TimeoutSeconds,
+		"config_version": existing.ConfigVersion + 1, "updated_at": time.Now().UTC(),
 	})
 	if result.Error != nil {
 		err = result.Error
@@ -732,7 +567,7 @@ func (s *Service) UpdateBuildPlan(ctx context.Context, id string, input BuildPla
 		return nil, fmt.Errorf("更新构建方案失败: %w", err)
 	}
 	var plan model.BuildPlan
-	if err := s.db.WithContext(ctx).First(&plan, "id = ?", id).Error; err != nil {
+	if err := s.db.WithContext(ctx).Preload("ImageRegistry").First(&plan, "id = ?", id).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, ErrBuildPlanNotFound
 		}
@@ -766,11 +601,11 @@ func (s *Service) DeleteBuildPlan(ctx context.Context, id string) error {
 			}
 			return fmt.Errorf("读取待删除构建方案失败: %w", err)
 		}
-		var applicationCount int64
-		if err := tx.Model(&model.Application{}).Where("build_plan_id = ?", plan.ID).Count(&applicationCount).Error; err != nil {
-			return fmt.Errorf("检查构建方案应用关联失败: %w", err)
+		inUse, err := workflowResourceInUse(tx, model.WorkflowNodeBuild, plan.ID)
+		if err != nil {
+			return fmt.Errorf("检查构建方案流水线关联失败: %w", err)
 		}
-		if applicationCount > 0 {
+		if inUse {
 			return ErrBuildPlanInUse
 		}
 		if err := tx.Delete(&plan).Error; err != nil {
@@ -778,6 +613,48 @@ func (s *Service) DeleteBuildPlan(ctx context.Context, id string) error {
 		}
 		return nil
 	})
+}
+
+// workflowResourceInUse 在调用者的同一事务中检查所有应用流水线和公共方案。
+// 停用、草稿配置也可能之后重新启用，因此不能绕过引用保护。
+func workflowResourceInUse(tx *gorm.DB, nodeType model.WorkflowNodeType, resourceID string) (bool, error) {
+	var workflows []model.ReleaseWorkflow
+	if err := tx.Find(&workflows).Error; err != nil {
+		return false, err
+	}
+	for i := range workflows {
+		if workflowStagesReference(workflows[i].Stages, nodeType, resourceID) {
+			return true, nil
+		}
+	}
+	var templates []model.ReleaseWorkflowTemplate
+	if err := tx.Find(&templates).Error; err != nil {
+		return false, err
+	}
+	for i := range templates {
+		if workflowStagesReference(templates[i].Stages, nodeType, resourceID) {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func workflowStagesReference(stages []model.WorkflowStage, nodeType model.WorkflowNodeType, resourceID string) bool {
+	for i := range stages {
+		for j := range stages[i].Tasks {
+			task := stages[i].Tasks[j]
+			if task.Type != nodeType {
+				continue
+			}
+			if nodeType == model.WorkflowNodeBuild && task.Config.BuildPlanID == resourceID {
+				return true
+			}
+			if nodeType == model.WorkflowNodeDeploy && task.Config.DeploymentPlanID == resourceID {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func (s *Service) ListRegistries(ctx context.Context) ([]model.ImageRegistry, error) {
@@ -897,29 +774,39 @@ func (s *Service) ListDeploymentPlans(ctx context.Context) ([]model.DeploymentPl
 
 func normalizeDeploymentPlanInput(input DeploymentPlanInput) (DeploymentPlanInput, error) {
 	input.Name, input.Description = strings.TrimSpace(input.Name), strings.TrimSpace(input.Description)
-	input.DeploymentTargetID = strings.TrimSpace(input.DeploymentTargetID)
-	input.HelmChart = strings.TrimSpace(input.HelmChart)
-	input.ComposeFile, input.ServiceName = strings.TrimSpace(input.ComposeFile), strings.TrimSpace(input.ServiceName)
+	input.ComposeYAML, input.ServiceName = strings.TrimSpace(input.ComposeYAML), strings.TrimSpace(input.ServiceName)
+	if input.ComposeYAML != "" {
+		input.ComposeYAML += "\n"
+	}
 	if input.TimeoutSeconds == 0 {
 		input.TimeoutSeconds = 600
 	}
 	validKind := (input.Kind == model.DeploymentPlanScript && strings.TrimSpace(input.Script) != "") ||
-		(input.Kind == model.DeploymentPlanHelm && input.HelmChart != "") ||
-		(input.Kind == model.DeploymentPlanCompose && input.ComposeFile != "") ||
+		input.Kind == model.DeploymentPlanKubernetes ||
+		(input.Kind == model.DeploymentPlanCompose && input.ComposeYAML != "" && input.ServiceName != "") ||
 		(input.Kind == model.DeploymentPlanDocker && input.ServiceName != "")
-	if !validResourceName(input.Name) || !validKind || input.TimeoutSeconds < 30 || input.TimeoutSeconds > 3600 ||
-		len(input.Script) > 256*1024 || len(input.HelmValues) > 512*1024 || utf8.RuneCountInString(input.Description) > 500 {
+	if input.DeploymentTarget == nil || !validResourceName(input.Name) || !validKind || input.TimeoutSeconds < 30 || input.TimeoutSeconds > 3600 ||
+		len(input.Script) > 256*1024 || len(input.ComposeYAML) > dockerengine.MaximumComposeYAMLBytes ||
+		utf8.RuneCountInString(input.Description) > 500 {
 		return input, ErrInvalidDeploymentPlan
 	}
 	switch input.Kind {
 	case model.DeploymentPlanScript:
-		input.HelmChart, input.HelmValues, input.ComposeFile, input.ServiceName = "", "", "", ""
-	case model.DeploymentPlanHelm:
-		input.Script, input.ComposeFile, input.ServiceName = "", "", ""
+		input.ComposeYAML, input.ServiceName, input.DockerConfig = "", "", model.DockerContainerConfig{}
+	case model.DeploymentPlanKubernetes:
+		input.Script, input.ComposeYAML, input.ServiceName, input.DockerConfig = "", "", "", model.DockerContainerConfig{}
 	case model.DeploymentPlanCompose:
-		input.Script, input.HelmChart, input.HelmValues, input.ServiceName = "", "", "", ""
+		input.Script, input.DockerConfig = "", model.DockerContainerConfig{}
+		if err := dockerengine.ValidateComposeYAML(input.ComposeYAML, input.ServiceName); err != nil {
+			return input, ErrInvalidDeploymentPlan
+		}
 	case model.DeploymentPlanDocker:
-		input.Script, input.HelmChart, input.HelmValues, input.ComposeFile = "", "", "", ""
+		input.Script, input.ComposeYAML = "", ""
+		var err error
+		input.DockerConfig, err = dockerengine.NormalizeContainerConfig(input.DockerConfig)
+		if err != nil {
+			return input, ErrInvalidDeploymentPlan
+		}
 	}
 	return input, nil
 }
@@ -929,34 +816,23 @@ func (s *Service) CreateDeploymentPlan(ctx context.Context, actorID string, inpu
 	if err != nil {
 		return nil, err
 	}
-	if input.DeploymentTarget != nil && input.DeploymentTargetID != "" {
-		return nil, ErrInvalidDeploymentPlan
-	}
 	now := time.Now().UTC()
 	plan := &model.DeploymentPlan{
 		ID: uuid.NewString(), Name: input.Name, Kind: input.Kind, Description: input.Description,
-		Script: input.Script, HelmChart: input.HelmChart, HelmValues: input.HelmValues,
-		ComposeFile: input.ComposeFile, ServiceName: input.ServiceName, TimeoutSeconds: input.TimeoutSeconds,
-		DeploymentTargetID: input.DeploymentTargetID,
-		IsActive:           true, CreatedBy: actorID, CreatedAt: now, UpdatedAt: now,
+		Script:      input.Script,
+		ComposeYAML: input.ComposeYAML, ServiceName: input.ServiceName, TimeoutSeconds: input.TimeoutSeconds,
+		DockerConfig: input.DockerConfig,
+		IsActive:     true, CreatedBy: actorID, CreatedAt: now, UpdatedAt: now,
 	}
 	err = s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		if input.DeploymentTarget != nil {
-			if s.deployments == nil || !deploymentPlanSupportsTarget(input.Kind, input.DeploymentTarget.Platform) {
-				return ErrDeploymentPlanTargetMismatch
-			}
-			target, createErr := s.deployments.WithTransaction(tx).CreateTarget(ctx, actorID, *input.DeploymentTarget)
-			if createErr != nil {
-				return createErr
-			}
-			plan.DeploymentTargetID, plan.DeploymentTarget = target.ID, target
-		} else if plan.DeploymentTargetID != "" {
-			target, findErr := findDeploymentPlanTarget(ctx, tx, plan.DeploymentTargetID, plan.Kind)
-			if findErr != nil {
-				return findErr
-			}
-			plan.DeploymentTarget = target
+		if s.deployments == nil || !deploymentPlanSupportsTarget(input.Kind, input.DeploymentTarget.Platform) {
+			return ErrDeploymentPlanTargetMismatch
 		}
+		target, createErr := s.deployments.WithTransaction(tx).CreateTarget(ctx, actorID, *input.DeploymentTarget)
+		if createErr != nil {
+			return createErr
+		}
+		plan.DeploymentTargetID, plan.DeploymentTarget = target.ID, target
 		return tx.Create(plan).Error
 	})
 	if err != nil {
@@ -977,9 +853,6 @@ func (s *Service) UpdateDeploymentPlan(ctx context.Context, id string, input Dep
 	if err != nil {
 		return nil, err
 	}
-	if input.DeploymentTarget != nil && input.DeploymentTargetID != "" {
-		return nil, ErrInvalidDeploymentPlan
-	}
 	var plan model.DeploymentPlan
 	err = s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if findErr := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&plan, "id = ?", strings.TrimSpace(id)).Error; findErr != nil {
@@ -989,45 +862,30 @@ func (s *Service) UpdateDeploymentPlan(ctx context.Context, id string, input Dep
 			return findErr
 		}
 		targetID := plan.DeploymentTargetID
-		var target *model.DeploymentTarget
-		switch {
-		case input.DeploymentTarget != nil:
-			if s.deployments == nil || !deploymentPlanSupportsTarget(input.Kind, input.DeploymentTarget.Platform) {
-				return ErrDeploymentPlanTargetMismatch
-			}
-			deploymentService := s.deployments.WithTransaction(tx)
-			if targetID == "" {
-				created, createErr := deploymentService.CreateTarget(ctx, plan.CreatedBy, *input.DeploymentTarget)
-				if createErr != nil {
-					return createErr
-				}
-				target = created
-			} else {
-				updated, updateErr := deploymentService.UpdateTarget(ctx, targetID, *input.DeploymentTarget)
-				if updateErr != nil {
-					return updateErr
-				}
-				target = updated
-			}
-			targetID = target.ID
-		case input.DeploymentTargetID != "":
-			targetID = input.DeploymentTargetID
-			found, findErr := findDeploymentPlanTarget(ctx, tx, targetID, input.Kind)
-			if findErr != nil {
-				return findErr
-			}
-			target = found
-		case targetID != "":
-			found, findErr := findDeploymentPlanTarget(ctx, tx, targetID, input.Kind)
-			if findErr != nil {
-				return findErr
-			}
-			target = found
+		if s.deployments == nil || !deploymentPlanSupportsTarget(input.Kind, input.DeploymentTarget.Platform) {
+			return ErrDeploymentPlanTargetMismatch
 		}
+		deploymentService := s.deployments.WithTransaction(tx)
+		var target *model.DeploymentTarget
+		if targetID == "" {
+			created, createErr := deploymentService.CreateTarget(ctx, plan.CreatedBy, *input.DeploymentTarget)
+			if createErr != nil {
+				return createErr
+			}
+			target = created
+		} else {
+			updated, updateErr := deploymentService.UpdateTarget(ctx, targetID, *input.DeploymentTarget)
+			if updateErr != nil {
+				return updateErr
+			}
+			target = updated
+		}
+		targetID = target.ID
 		plan.Name, plan.Kind, plan.Description = input.Name, input.Kind, input.Description
 		plan.DeploymentTargetID, plan.DeploymentTarget = targetID, target
-		plan.Script, plan.HelmChart, plan.HelmValues = input.Script, input.HelmChart, input.HelmValues
-		plan.ComposeFile, plan.ServiceName = input.ComposeFile, input.ServiceName
+		plan.Script = input.Script
+		plan.ComposeYAML, plan.ServiceName = input.ComposeYAML, input.ServiceName
+		plan.DockerConfig = input.DockerConfig
 		plan.TimeoutSeconds, plan.UpdatedAt = input.TimeoutSeconds, time.Now().UTC()
 		return tx.Save(&plan).Error
 	})
@@ -1045,23 +903,62 @@ func (s *Service) UpdateDeploymentPlan(ctx context.Context, id string, input Dep
 	return &plan, nil
 }
 
-func findDeploymentPlanTarget(
-	ctx context.Context,
-	db *gorm.DB,
-	targetID string,
-	kind model.DeploymentPlanKind,
-) (*model.DeploymentTarget, error) {
-	var target model.DeploymentTarget
-	if err := db.WithContext(ctx).First(&target, "id = ? AND is_active = ?", targetID, true).Error; err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return nil, deployment.ErrTargetNotFound
+func (s *Service) SetDeploymentPlanActive(ctx context.Context, id string, active bool) error {
+	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var plan model.DeploymentPlan
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&plan, "id = ?", strings.TrimSpace(id)).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return ErrDeploymentPlanNotFound
+			}
+			return fmt.Errorf("读取待修改状态的部署方案失败: %w", err)
 		}
-		return nil, err
-	}
-	if !deploymentPlanSupportsTarget(kind, target.Platform) {
-		return nil, ErrDeploymentPlanTargetMismatch
-	}
-	return &target, nil
+		if plan.IsActive == active {
+			return nil
+		}
+		if err := tx.Model(&model.DeploymentPlan{}).Where("id = ?", plan.ID).
+			Updates(map[string]any{"is_active": active, "updated_at": time.Now().UTC()}).Error; err != nil {
+			return fmt.Errorf("修改部署方案状态失败: %w", err)
+		}
+		return nil
+	})
+}
+
+func (s *Service) DeleteDeploymentPlan(ctx context.Context, id string) error {
+	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var plan model.DeploymentPlan
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&plan, "id = ?", strings.TrimSpace(id)).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return ErrDeploymentPlanNotFound
+			}
+			return fmt.Errorf("读取待删除部署方案失败: %w", err)
+		}
+		inUse, err := workflowResourceInUse(tx, model.WorkflowNodeDeploy, plan.ID)
+		if err != nil {
+			return fmt.Errorf("检查部署方案流水线关联失败: %w", err)
+		}
+		if inUse {
+			return ErrDeploymentPlanInUse
+		}
+		if err := tx.Delete(&plan).Error; err != nil {
+			return fmt.Errorf("删除部署方案失败: %w", err)
+		}
+		// DeploymentTarget 是部署方案的内部执行位置，不是用户可独立管理的资源。
+		// 历史发布已在 DeploymentRecord 保存完整快照；继续保留孤儿 target 反而会
+		// 永久阻止环境或主机删除。
+		if plan.DeploymentTargetID != "" {
+			var otherPlans int64
+			if err := tx.Model(&model.DeploymentPlan{}).
+				Where("deployment_target_id = ?", plan.DeploymentTargetID).Count(&otherPlans).Error; err != nil {
+				return fmt.Errorf("检查部署位置关联失败: %w", err)
+			}
+			if otherPlans == 0 {
+				if err := tx.Delete(&model.DeploymentTarget{}, "id = ?", plan.DeploymentTargetID).Error; err != nil {
+					return fmt.Errorf("清理部署方案执行位置失败: %w", err)
+				}
+			}
+		}
+		return nil
+	})
 }
 
 func (s *Service) ListRuns(ctx context.Context, limit int) ([]model.PipelineRun, error) {
@@ -1081,62 +978,37 @@ func (s *Service) ListRuns(ctx context.Context, limit int) ([]model.PipelineRun,
 			continue
 		}
 		var snapshot workflowSnapshot
-		if json.Unmarshal([]byte(runs[i].WorkflowSnapshot), &snapshot) == nil {
-			snapshot.ApprovalEnabled = workflowHasApprovalNode(snapshot.Nodes)
+		if json.Unmarshal([]byte(runs[i].WorkflowSnapshot), &snapshot) == nil && snapshot.SchemaVersion == model.WorkflowSchemaVersion {
+			snapshot.ApprovalEnabled = workflowHasApprovalNode(snapshot.Stages)
 			runs[i].ApprovalRequired = snapshot.ApprovalEnabled
 			graph := &model.PipelineRunGraph{
-				Nodes: make([]model.PipelineRunGraphNode, 0, len(snapshot.Nodes)),
-				Edges: append([]model.WorkflowEdge(nil), snapshot.Edges...),
+				SchemaVersion: snapshot.SchemaVersion,
+				Source: model.PipelineRunGraphNode{
+					ID: snapshot.Source.ID, Type: snapshot.Source.Type, Name: snapshot.Source.Name,
+				},
+				Stages: make([]model.PipelineRunGraphStage, 0, len(snapshot.Stages)),
 			}
-			for _, node := range snapshot.Nodes {
-				graph.Nodes = append(graph.Nodes, model.PipelineRunGraphNode{
-					ID: node.ID, Type: node.Type, Name: node.Name,
-					Position: node.Position, Environment: node.Config.Environment,
-				})
-				if node.ID == runs[i].CurrentNodeID {
-					runs[i].CurrentNodeName = node.Name
+			if snapshot.Source.ID == runs[i].CurrentNodeID {
+				runs[i].CurrentNodeName = snapshot.Source.Name
+			}
+			for _, stage := range snapshot.Stages {
+				graphStage := model.PipelineRunGraphStage{ID: stage.ID, Name: stage.Name, Tasks: make([]model.PipelineRunGraphNode, 0, len(stage.Tasks))}
+				for _, node := range stage.Tasks {
+					graphNode := model.PipelineRunGraphNode{ID: node.ID, Type: node.Type, Name: node.Name}
+					if target, ok := snapshot.DeploymentTargets[node.ID]; ok {
+						graphNode.EnvironmentID = target.EnvironmentID
+					}
+					graphStage.Tasks = append(graphStage.Tasks, graphNode)
+					if node.ID == runs[i].CurrentNodeID {
+						runs[i].CurrentNodeName = node.Name
+					}
 				}
+				graph.Stages = append(graph.Stages, graphStage)
 			}
 			runs[i].ExecutionGraph = graph
 		}
 	}
 	return runs, nil
-}
-
-// BackfillCommitMessages 为升级前创建的运行补齐提交标题。失败的仓库留待下次启动重试，
-// 不影响 HTTP 服务和流水线消费者启动。
-func (s *Service) BackfillCommitMessages(ctx context.Context, limit int) error {
-	if limit < 1 || limit > 200 {
-		limit = 50
-	}
-	var runs []model.PipelineRun
-	if err := s.db.WithContext(ctx).
-		Preload("Repositories", func(db *gorm.DB) *gorm.DB { return db.Order("sort_order ASC") }).
-		Where("commit_message = ? AND commit_sha <> ?", "", "").
-		Order("created_at DESC").Limit(limit).Find(&runs).Error; err != nil {
-		return fmt.Errorf("查询待补全提交说明的流水线运行失败: %w", err)
-	}
-	for i := range runs {
-		if len(runs[i].Repositories) == 0 {
-			continue
-		}
-		message, err := s.repositories.HistoricalCommitMessage(ctx, runs[i].Repositories[0].RepositoryID, runs[i].Ref, runs[i].CommitSHA)
-		if err != nil {
-			s.logger.Warn("读取历史流水线提交说明失败", "operation", "pipeline_commit_backfill", "repository_id", runs[i].Repositories[0].RepositoryID, "ref", runs[i].Ref, "commit_sha", runs[i].CommitSHA, "err", err)
-			continue
-		}
-		message = strings.TrimSpace(message)
-		if message == "" {
-			continue
-		}
-		result := s.db.WithContext(ctx).Model(&model.PipelineRun{}).
-			Where("id = ? AND commit_message = ?", runs[i].ID, "").
-			Update("commit_message", message)
-		if result.Error != nil {
-			return fmt.Errorf("补全流水线提交说明失败: %w", result.Error)
-		}
-	}
-	return nil
 }
 
 func (s *Service) PrepareRun(ctx context.Context, applicationID, actorID string) (*model.PipelineRun, error) {
@@ -1176,7 +1048,10 @@ func (s *Service) createPendingRun(ctx context.Context, application *model.Appli
 		Status: model.PipelineRunBlocked, Stage: "configured", Message: message,
 		CreatedBy: actorID, CreatedAt: now, UpdatedAt: now,
 	}
-	components := pipelineRunRepositories(application, run.ID, "", "", now)
+	components, err := pipelineRunRepositories(application, run.ID, "", "", now)
+	if err != nil {
+		return nil, err
+	}
 	for i := range components {
 		components[i].Status = model.PipelineRunRepositoryPending
 	}
@@ -1204,17 +1079,16 @@ func (s *Service) SyncApplication(ctx context.Context, applicationID, trigger st
 	_ = s.db.WithContext(ctx).Model(&model.Application{}).Where("id = ?", application.ID).
 		Updates(map[string]any{"sync_status": model.ApplicationSyncChecking, "sync_message": "", "updated_at": now}).Error
 	pollSources := applicationPollSources(application)
-	links := applicationRepositoryLinks(application)
-	if len(links) == 0 {
-		return application, nil, ErrInvalidApplication
+	link, err := applicationRepositoryLink(application)
+	if err != nil {
+		s.logger.Error("应用代码仓库关联违反数据不变量", "operation", "pipeline_sync_application", "application_id", application.ID, "repository_id", application.RepositoryID, "err", err)
+		return application, nil, err
 	}
-	environmentByKey := make(map[string]*model.ApplicationEnvironment, len(application.Environments))
-	for i := range application.Environments {
-		environmentByKey[application.Environments[i].Key] = &application.Environments[i]
-	}
+	links := []model.ApplicationRepository{*link}
 	status, message := model.ApplicationSyncSynced, "代码已是最新状态"
 	var lastRun *model.PipelineRun
 	found := false
+	pullRequestSyncFailed := false
 	configurationChanged := applicationConfigurationChangedSinceLastCheck(application)
 	includePullRequests := false
 	for i := range pollSources {
@@ -1230,19 +1104,18 @@ func (s *Service) SyncApplication(ctx context.Context, applicationID, trigger st
 			s.markSyncFailure(ctx, application.ID, err)
 			return application, nil, fmt.Errorf("读取仓库“%s”失败: %w", link.Repository.Name, err)
 		}
+		if refs.PullRequestError != nil {
+			pullRequestSyncFailed = true
+			s.logger.Warn("同步代码仓库 PR/MR 元数据失败", "operation", "pipeline_sync_pull_requests", "application_id", application.ID, "repository_id", link.RepositoryID, "err", refs.PullRequestError)
+		}
 		if len(pollSources) == 0 {
 			continue
 		}
 		linkHadBaseline := link.LastCheckedAt != nil || application.LastCheckedAt != nil
 		observedByWatchKey := make(map[string]model.ApplicationRepositoryObservation, len(link.Observations))
 		observedByEventRef := make(map[string]model.ApplicationRepositoryObservation, len(link.Observations))
-		legacyObservations := make([]model.ApplicationRepositoryObservation, 0)
 		for i := range link.Observations {
 			observation := link.Observations[i]
-			if strings.HasPrefix(observation.WatchKey, "legacy:") || observation.WatchKey == "" {
-				legacyObservations = append(legacyObservations, observation)
-				continue
-			}
 			observedByWatchKey[observation.WatchKey] = observation
 			observedByEventRef[observationEventRefKey(observation.Event, observation.Ref)] = observation
 		}
@@ -1259,9 +1132,6 @@ func (s *Service) SyncApplication(ctx context.Context, applicationID, trigger st
 				seenWatchKeys = append(seenWatchKeys, watchKey)
 				observation, exists := observedByWatchKey[watchKey]
 				if !exists {
-					observation, exists = takeLegacyObservation(&legacyObservations, source.Config.Environment, candidate.Ref)
-				}
-				if !exists {
 					if _, sameRefExists := observedByEventRef[observationEventRefKey(candidate.Event, candidate.Ref)]; sameRefExists {
 						// 新增、复制或切换触发节点时，已有 Ref 只建立该节点自己的基线，
 						// 不能因为节点 ID 变化而重复发布同一个 Commit。
@@ -1271,7 +1141,30 @@ func (s *Service) SyncApplication(ctx context.Context, applicationID, trigger st
 						exists = true
 					}
 				}
+				candidateAction := ""
+				if candidate.Event == "pr" {
+					remoteAction := normalizePullRequestAction(candidate.Action)
+					switch {
+					case remoteAction == "merged":
+						candidateAction = "merged"
+					case !exists:
+						candidateAction = "opened"
+					case observation.CommitSHA != candidate.Commit:
+						candidateAction = "updated"
+					default:
+						candidateAction = normalizePullRequestAction(observation.Action)
+						if candidateAction == "" || candidateAction == "merged" {
+							candidateAction = "opened"
+						}
+					}
+				}
 				changed := exists && observation.CommitSHA != "" && observation.CommitSHA != candidate.Commit
+				if candidate.Event == "pr" && exists && observation.CommitSHA != "" && candidateAction == "merged" &&
+					normalizePullRequestAction(observation.Action) != "merged" {
+					// Fast-forward 合并时 merge commit 可能等于 PR head；动作游标仍须识别
+					// opened/updated -> merged 的状态变化。
+					changed = true
+				}
 				if !exists && linkHadBaseline && !configurationChanged {
 					// 完成过基线后出现的新分支、Tag 或 PR 都是新的远端事件。
 					changed = true
@@ -1282,7 +1175,7 @@ func (s *Service) SyncApplication(ctx context.Context, applicationID, trigger st
 					}
 				}
 				observation.WatchKey, observation.SourceNodeID = watchKey, source.ID
-				observation.Event, observation.Environment = candidate.Event, source.Config.Environment
+				observation.Event, observation.Action = candidate.Event, candidateAction
 				observation.Ref, observation.CommitSHA = candidate.Ref, candidate.Commit
 				observation.LastCheckedAt, observation.UpdatedAt = &now, now
 				if err := s.db.WithContext(ctx).Save(&observation).Error; err != nil {
@@ -1296,43 +1189,54 @@ func (s *Service) SyncApplication(ctx context.Context, applicationID, trigger st
 				}).Error; err != nil {
 					return application, nil, fmt.Errorf("更新应用仓库监听状态失败: %w", err)
 				}
-				if linkIndex == 0 {
-					application.LastObservedRef, application.LastObservedCommit = candidate.Ref, candidate.Commit
-					if environment := environmentByKey[source.Config.Environment]; environment != nil {
-						if err := s.db.WithContext(ctx).Model(environment).Updates(map[string]any{
-							"last_observed_ref": candidate.Ref, "last_observed_commit": candidate.Commit, "last_checked_at": now, "updated_at": now,
-						}).Error; err != nil {
-							return application, nil, fmt.Errorf("更新环境监听状态失败: %w", err)
-						}
-					}
-				}
 				if !changed {
 					continue
 				}
+				if candidate.Event == "pr" && !containsEvent(source.Config.PRActions, candidateAction) {
+					continue
+				}
+				candidate.Action = candidateAction
 				status, message = model.ApplicationSyncChanged, pollChangeMessage(candidate.Event)
-				run, createErr := s.createObservedRun(ctx, application, *link, source, polledRunTrigger(candidate.Event), candidate.Ref, candidate.Commit, message, now)
+				run, createErr := s.createObservedRun(ctx, application, *link, source, candidate, polledRunTrigger(candidate.Event), message, now)
 				if createErr != nil {
 					return application, nil, createErr
 				}
-				lastRun = run
+				if run != nil {
+					lastRun = run
+				}
 			}
 		}
 		stale := s.db.WithContext(ctx).Where("application_repository_id = ? AND source_node_id IN ?", link.ID, sourceNodeIDs)
 		if len(seenWatchKeys) > 0 {
 			stale = stale.Where("watch_key NOT IN ?", seenWatchKeys)
 		}
+		// 最近合并列表是有界窗口。合并记录离开窗口后仍保留动作游标，避免旧 PR
+		// 因评论等原因重新进入“最近更新”列表时被误当作新的合并事件。
+		stale = stale.Where("NOT (event = ? AND action = ?)", "pr", "merged")
+		if refs.PullRequestError != nil {
+			// API 暂时不可用不代表远端 PR 已删除；保留全部 PR 游标，避免恢复后重放。
+			stale = stale.Where("event <> ?", "pr")
+		}
 		if err := stale.Delete(&model.ApplicationRepositoryObservation{}).Error; err != nil {
 			return application, nil, fmt.Errorf("清理失效仓库监听状态失败: %w", err)
 		}
 	}
 	if len(pollSources) == 0 {
-		message = "所有仓库均可读取；当前流水线没有可定时检查的分支、PR 或 Tag 节点"
+		message = "所有仓库均可读取；当前流水线没有可定时检查的分支、PR 或 Tag 规则"
 		if err := s.markSyncReadable(ctx, application, now, message); err != nil {
 			return application, nil, err
 		}
 		return application, nil, nil
 	}
-	if !found {
+	if pullRequestSyncFailed {
+		const partialFailure = "分支与 Tag 已检查；PR/MR 同步失败，请检查平台 API 令牌、仓库地址或网络"
+		if status == model.ApplicationSyncChanged {
+			message += "；PR/MR 同步失败，请检查平台 API 令牌、仓库地址或网络"
+		} else {
+			status, message = model.ApplicationSyncFailed, partialFailure
+		}
+	}
+	if !found && !pullRequestSyncFailed {
 		message = "所有仓库均可读取；未找到流水线配置的分支、PR 或 Tag"
 		if err := s.markSyncReadable(ctx, application, now, message); err != nil {
 			return application, nil, err
@@ -1340,9 +1244,7 @@ func (s *Service) SyncApplication(ctx context.Context, applicationID, trigger st
 		return application, nil, nil
 	}
 	updates := map[string]any{
-		"last_observed_ref":    application.LastObservedRef,
-		"last_observed_commit": application.LastObservedCommit,
-		"last_checked_at":      now, "sync_status": status,
+		"last_checked_at": now, "sync_status": status,
 		"sync_message": message, "updated_at": now,
 	}
 	if err := s.db.WithContext(ctx).Model(&model.Application{}).Where("id = ?", application.ID).Updates(updates).Error; err != nil {
@@ -1361,6 +1263,16 @@ func observationEventRefKey(event, ref string) string {
 	return event + "\x00" + ref
 }
 
+func pipelineCandidateCheckoutRef(candidate workflowPollCandidate) string {
+	if candidate.Event == "pr" && normalizePullRequestAction(candidate.Action) == "merged" {
+		targetBranch := strings.TrimSpace(strings.TrimPrefix(candidate.TargetBranch, "refs/heads/"))
+		if targetBranch != "" {
+			return "refs/heads/" + targetBranch
+		}
+	}
+	return candidate.Ref
+}
+
 func applicationConfigurationChangedSinceLastCheck(application *model.Application) bool {
 	if application.LastCheckedAt == nil {
 		return false
@@ -1369,17 +1281,6 @@ func applicationConfigurationChangedSinceLastCheck(application *model.Applicatio
 		return true
 	}
 	return application.Workflow != nil && application.Workflow.UpdatedAt.After(*application.LastCheckedAt)
-}
-
-func takeLegacyObservation(observations *[]model.ApplicationRepositoryObservation, environment, ref string) (model.ApplicationRepositoryObservation, bool) {
-	for i := range *observations {
-		observation := (*observations)[i]
-		if observation.ID != "" && observation.Environment == environment && observation.Ref == ref {
-			(*observations)[i].ID = ""
-			return observation, true
-		}
-	}
-	return model.ApplicationRepositoryObservation{}, false
 }
 
 func pollChangeMessage(event string) string {
@@ -1402,20 +1303,38 @@ func (s *Service) resolveCommitMessage(ctx context.Context, repositoryID, ref, c
 	return strings.TrimSpace(message)
 }
 
-func (s *Service) createObservedRun(ctx context.Context, application *model.Application, link model.ApplicationRepository, source model.WorkflowNode, trigger, ref, commit, message string, now time.Time) (*model.PipelineRun, error) {
-	run, err := s.runFromSource(ctx, application, source, trigger, ref, commit, "system", message, now)
+func (s *Service) createObservedRun(
+	ctx context.Context,
+	application *model.Application,
+	link model.ApplicationRepository,
+	source model.WorkflowNode,
+	candidate workflowPollCandidate,
+	trigger, message string,
+	now time.Time,
+) (*model.PipelineRun, error) {
+	run, err := s.runFromSource(ctx, application, source, trigger, candidate.Ref, candidate.Commit, "system", message, now)
 	if err != nil {
 		return nil, err
 	}
-	run.CommitMessage = s.resolveCommitMessage(ctx, link.RepositoryID, ref, commit)
-	component := pipelineRunRepositoryForLink(application, run.ID, link, ref, commit, now)
+	setRepositoryEventMetadata(run, candidate.Event, candidate.Ref, candidate.Commit, candidate.SourceBranch, candidate.TargetBranch, candidate.Action)
+	run.CommitMessage = s.resolveCommitMessage(ctx, link.RepositoryID, pipelineCandidateCheckoutRef(candidate), candidate.Commit)
+	component := pipelineRunRepositoryForLink(run.ID, link, candidate.Ref, candidate.Commit, now)
+	created := false
 	if err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		if err := tx.Create(run).Error; err != nil {
-			return err
+		result := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(run)
+		if result.Error != nil {
+			return result.Error
 		}
+		if result.RowsAffected == 0 {
+			return nil
+		}
+		created = true
 		return tx.Create(&component).Error
 	}); err != nil {
 		return nil, fmt.Errorf("记录代码变更失败: %w", err)
+	}
+	if !created {
+		return nil, nil
 	}
 	run.Repositories = []model.PipelineRunRepository{component}
 	if application.Workflow == nil || !application.Workflow.IsActive {
@@ -1426,20 +1345,56 @@ func (s *Service) createObservedRun(ctx context.Context, application *model.Appl
 		return advanced, nil
 	}
 	const failureMessage = "检测到代码变化，但自动执行流水线失败"
-	_ = s.failExecution(ctx, run.ID, failureMessage, err)
+	_ = s.failCurrentExecution(ctx, run.ID, failureMessage, err)
 	return nil, fmt.Errorf("自动执行流水线失败: %w", err)
 }
 
-func pipelineRunRepositoryForLink(application *model.Application, runID string, link model.ApplicationRepository, ref, commit string, now time.Time) model.PipelineRunRepository {
-	component := model.PipelineRunRepository{
-		ID: uuid.NewString(), PipelineRunID: runID, RepositoryID: link.RepositoryID,
-		SortOrder: link.SortOrder, Ref: ref, CommitSHA: commit, BuildPlanID: application.BuildPlanID,
-		ImageRegistryID: application.ImageRegistryID, DeploymentPlanID: application.DeploymentPlanID,
-		Status:    model.PipelineRunRepositoryReady,
-		CreatedAt: now, UpdatedAt: now,
+func setRepositoryEventMetadata(run *model.PipelineRun, event, ref, commit, sourceBranch, targetBranch, action string) {
+	if run == nil {
+		return
 	}
-	applyDeploymentPlanSnapshot(&component, application.DeploymentPlan)
-	return component
+	event = strings.TrimSpace(event)
+	ref = strings.TrimSpace(ref)
+	commit = strings.TrimSpace(commit)
+	action = normalizePullRequestAction(action)
+	sourceBranch = strings.TrimSpace(sourceBranch)
+	targetBranch = strings.TrimSpace(targetBranch)
+	if event == "push" && targetBranch == "" {
+		targetBranch = strings.TrimPrefix(ref, "refs/heads/")
+	}
+	run.TriggerAction = action
+	run.SourceBranch = sourceBranch
+	run.TargetBranch = targetBranch
+	key := repositoryEventDedupKey(run.ApplicationID, event, ref, commit, targetBranch, action)
+	run.EventDedupKey = &key
+}
+
+func repositoryEventDedupKey(applicationID, event, ref, commit, targetBranch, action string) string {
+	category, identity := event, ref
+	switch event {
+	case "push":
+		category, identity = "branch_commit", strings.TrimPrefix(ref, "refs/heads/")
+	case "pr":
+		if normalizePullRequestAction(action) == "merged" {
+			category, identity = "branch_commit", targetBranch
+		} else {
+			category = "pr_commit"
+		}
+	case "tag":
+		category = "tag_commit"
+	}
+	digest := sha256.Sum256([]byte(strings.Join([]string{
+		strings.TrimSpace(applicationID), strings.TrimSpace(category), strings.TrimSpace(identity), strings.TrimSpace(commit),
+	}, "\x00")))
+	return fmt.Sprintf("%x", digest[:])
+}
+
+func pipelineRunRepositoryForLink(runID string, link model.ApplicationRepository, ref, commit string, now time.Time) model.PipelineRunRepository {
+	return model.PipelineRunRepository{
+		ID: uuid.NewString(), PipelineRunID: runID, RepositoryID: link.RepositoryID,
+		SortOrder: 0, Ref: ref, CommitSHA: commit,
+		Status: model.PipelineRunRepositoryReady, CreatedAt: now, UpdatedAt: now,
+	}
 }
 
 func (s *Service) HandleRepositoryEvent(ctx context.Context, input repository.WebhookTaskPayload) error {
@@ -1466,19 +1421,29 @@ func (s *Service) HandleRepositoryEvent(ctx context.Context, input repository.We
 			continue
 		}
 		event := workflowEventName(input.EventType)
-		sources := applicationEventSources(application, event, input.Ref)
+		matchRef := input.Ref
+		if event == "pr" {
+			if strings.TrimSpace(input.TargetBranch) == "" {
+				continue
+			}
+			matchRef = "refs/heads/" + strings.TrimSpace(input.TargetBranch)
+		}
+		sources := applicationEventSources(
+			application, event, matchRef, input.SourceBranch, input.TargetBranch, input.Action,
+		)
 		if len(sources) == 0 || input.CommitSHA == "" {
 			continue
 		}
 		now := time.Now().UTC()
+		eventAction := ""
+		if event == "pr" {
+			eventAction = normalizePullRequestAction(input.Action)
+		}
+		createdRunIDs := make([]string, 0, len(sources))
 		if err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 			applicationUpdates := map[string]any{
 				"last_checked_at": now, "sync_status": model.ApplicationSyncChanged,
 				"sync_message": "Webhook 检测到新的代码版本", "updated_at": now,
-			}
-			if applicationRepository.SortOrder == 0 {
-				applicationUpdates["last_observed_ref"] = input.Ref
-				applicationUpdates["last_observed_commit"] = input.CommitSHA
 			}
 			if err := tx.Model(&model.Application{}).Where("id = ?", application.ID).Updates(applicationUpdates).Error; err != nil {
 				return err
@@ -1496,45 +1461,50 @@ func (s *Service) HandleRepositoryEvent(ctx context.Context, input repository.We
 				if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
 					return err
 				}
-				if err == nil && observation.CommitSHA == input.CommitSHA {
+				if err == nil && observation.CommitSHA == input.CommitSHA && observation.Action == eventAction {
 					continue
 				}
 				if errors.Is(err, gorm.ErrRecordNotFound) {
 					observation = model.ApplicationRepositoryObservation{
 						ID: uuid.NewString(), ApplicationRepositoryID: applicationRepository.ID,
-						WatchKey: watchKey, SourceNodeID: source.ID, Event: event,
-						Environment: source.Config.Environment, CreatedAt: now,
+						WatchKey: watchKey, SourceNodeID: source.ID, Event: event, CreatedAt: now,
 					}
 				}
 				observation.WatchKey, observation.SourceNodeID, observation.Event = watchKey, source.ID, event
+				observation.Action = eventAction
 				observation.Ref, observation.CommitSHA, observation.LastCheckedAt, observation.UpdatedAt = input.Ref, input.CommitSHA, &now, now
 				if err := tx.Save(&observation).Error; err != nil {
 					return err
 				}
-				if applicationRepository.SortOrder == 0 {
-					if err := tx.Model(&model.ApplicationEnvironment{}).Where("application_id = ? AND key = ?", application.ID, source.Config.Environment).Updates(map[string]any{
-						"last_observed_ref": input.Ref, "last_observed_commit": input.CommitSHA,
-						"last_checked_at": now, "updated_at": now,
-					}).Error; err != nil {
-						return err
-					}
-				}
-				run, err := s.runFromSource(ctx, application, source, input.EventType, input.Ref, input.CommitSHA, "", "Webhook 检测到新的代码版本", now)
+				run, err := s.runFromSourceWithDatabase(ctx, tx, application, source, input.EventType, input.Ref, input.CommitSHA, "", "Webhook 检测到新的代码版本", now)
 				if err != nil {
 					return err
 				}
+				setRepositoryEventMetadata(run, event, input.Ref, input.CommitSHA, input.SourceBranch, input.TargetBranch, input.Action)
 				run.CommitMessage = strings.TrimSpace(strings.SplitN(input.Message, "\n", 2)[0])
-				if err := tx.Create(run).Error; err != nil {
-					return err
+				result := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(run)
+				if result.Error != nil {
+					return result.Error
 				}
-				component := pipelineRunRepositoryForLink(application, run.ID, *applicationRepository, input.Ref, input.CommitSHA, now)
+				if result.RowsAffected == 0 {
+					continue
+				}
+				component := pipelineRunRepositoryForLink(run.ID, *applicationRepository, input.Ref, input.CommitSHA, now)
 				if err := tx.Create(&component).Error; err != nil {
 					return err
 				}
+				createdRunIDs = append(createdRunIDs, run.ID)
 			}
 			return nil
 		}); err != nil {
 			return fmt.Errorf("更新 Webhook 关联应用失败: %w", err)
+		}
+		for _, runID := range createdRunIDs {
+			if _, err := s.AdvanceRun(ctx, runID, "system", ""); err != nil {
+				const failureMessage = "Webhook 已创建流水线运行，但自动执行失败"
+				_ = s.failCurrentExecution(ctx, runID, failureMessage, err)
+				return fmt.Errorf("Webhook 自动执行流水线失败: %w", err)
+			}
 		}
 	}
 	return nil
@@ -1617,32 +1587,17 @@ func (s *Service) markSyncReadable(ctx context.Context, application *model.Appli
 	return nil
 }
 
-func selectObservedRef(application *model.Application, refs repository.RefResult) (string, string) {
-	if application.WatchTags && application.TagPattern != "" {
-		for i := len(refs.Tags) - 1; i >= 0; i-- {
-			if matchTag(application.TagPattern, refs.Tags[i].Name) {
-				return "refs/tags/" + refs.Tags[i].Name, refs.Tags[i].SHA
-			}
-		}
-	}
-	for _, branch := range refs.Branches {
-		if branch.Name == application.Branch {
-			return "refs/heads/" + branch.Name, branch.SHA
-		}
-	}
-	return "", ""
-}
-
 func pipelineComplete(application *model.Application) bool {
-	return pipelineExecutionConfigured(application) && application.LastObservedCommit != ""
+	links := applicationRepositoryLinks(application)
+	return pipelineExecutionConfigured(application) && len(links) == 1 && links[0].LastObservedCommit != ""
 }
 
 func pipelineExecutionConfigured(application *model.Application) bool {
-	if !applicationRepositoriesComplete(application) || application.DeploymentPlanID == "" {
+	if !applicationRepositoriesComplete(application) || application.Workflow == nil || !application.Workflow.IsActive {
 		return false
 	}
-	return application.DeploymentPlan != nil && application.DeploymentPlan.Kind == model.DeploymentPlanScript ||
-		application.BuildPlanID != ""
+	return application.Workflow.SchemaVersion == model.WorkflowSchemaVersion &&
+		application.Workflow.Source.Type == model.WorkflowNodeTrigger && workflowTaskCount(application.Workflow.Stages) > 0
 }
 
 func pipelineExecutionIncompleteMessage(application *model.Application) string {
@@ -1650,11 +1605,10 @@ func pipelineExecutionIncompleteMessage(application *model.Application) string {
 	if !applicationRepositoriesComplete(application) {
 		missing = append(missing, "代码仓库")
 	}
-	if application.BuildPlanID == "" && (application.DeploymentPlan == nil || application.DeploymentPlan.Kind != model.DeploymentPlanScript) {
-		missing = append(missing, "构建方案")
-	}
-	if application.DeploymentPlanID == "" {
-		missing = append(missing, "部署方案")
+	if application.Workflow == nil || !application.Workflow.IsActive {
+		missing = append(missing, "已启用的流水线")
+	} else if workflowTaskCount(application.Workflow.Stages) == 0 {
+		missing = append(missing, "流水线任务")
 	}
 	if len(missing) == 0 {
 		return ErrPipelineIncomplete.Error()
@@ -1664,16 +1618,16 @@ func pipelineExecutionIncompleteMessage(application *model.Application) string {
 
 func pipelineIncompleteMessage(application *model.Application) string {
 	missing := make([]string, 0, 4)
-	if application.BuildPlanID == "" && (application.DeploymentPlan == nil || application.DeploymentPlan.Kind != model.DeploymentPlanScript) {
-		missing = append(missing, "构建方案")
-	}
 	if !applicationRepositoriesComplete(application) {
 		missing = append(missing, "代码仓库")
 	}
-	if application.DeploymentPlanID == "" {
-		missing = append(missing, "部署方案")
+	if application.Workflow == nil || !application.Workflow.IsActive {
+		missing = append(missing, "已启用的流水线")
+	} else if workflowTaskCount(application.Workflow.Stages) == 0 {
+		missing = append(missing, "流水线任务")
 	}
-	if application.LastObservedCommit == "" {
+	links := applicationRepositoryLinks(application)
+	if len(links) != 1 || links[0].LastObservedCommit == "" {
 		missing = append(missing, "代码版本")
 	}
 	if len(missing) == 0 {
@@ -1683,7 +1637,8 @@ func pipelineIncompleteMessage(application *model.Application) string {
 }
 
 func applicationRepositoriesComplete(application *model.Application) bool {
-	return application.RepositoryID != "" && application.Repository.ID != ""
+	links := applicationRepositoryLinks(application)
+	return application.RepositoryID != "" && application.Repository.ID != "" && len(links) == 1
 }
 
 func validResourceName(name string) bool { return resourceNamePattern.MatchString(name) }

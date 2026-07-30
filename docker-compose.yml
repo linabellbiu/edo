@@ -10,16 +10,18 @@ x-zrt-environment: &zrt-environment
   # 配置 HTTPS 反向代理后改为 true。
   ZRT_AUTH_COOKIE_SECURE: "false"
 
-  # SQLite 数据库保存在 zrt-data 卷中。
-  ZRT_DATABASE_DRIVER: sqlite
-  ZRT_DATABASE_DSN: /app/data/zrt.db
+  # 宿主机路径、127.0.0.1 与容器内地址含义不同，使用根 .env 的 Compose 专用值映射实际运行变量。
+  # SQLite 数据库默认保存在仓库 data 目录中。
+  ZRT_DATABASE_DRIVER: ${ZRT_COMPOSE_DATABASE_DRIVER:-sqlite}
+  ZRT_DATABASE_DSN: ${ZRT_COMPOSE_DATABASE_DSN:-/app/data/zrt.db}
+
+  # 文件制品与 SQLite 共用持久化 data 目录；单文件默认限制为 1 GiB，避免构建输出挤满磁盘。
+  ZRT_ARTIFACTS_DIRECTORY: ${ZRT_COMPOSE_ARTIFACTS_DIRECTORY:-/app/data/artifacts}
+  ZRT_ARTIFACTS_MAX_BYTES: ${ZRT_ARTIFACTS_MAX_BYTES:-1073741824}
 
   # redis 和 nats 是下面的 Compose 服务名，只在容器网络内使用。
-  ZRT_REDIS_URL: redis://redis:6379/0
-  ZRT_NATS_URL: nats://nats:4222
-
-  # 构建统一交给隔离的 Docker-in-Docker 服务；发布目标主机只接收或拉取镜像。
-  ZRT_DOCKER_BUILDER_HOST: tcp://docker-builder:2375
+  ZRT_REDIS_URL: ${ZRT_COMPOSE_REDIS_URL:-redis://redis:6379/0}
+  ZRT_NATS_URL: ${ZRT_COMPOSE_NATS_URL:-nats://nats:4222}
 
   # 请在 .env 中设置。该密钥用于加密登录方式、仓库凭据和 kubeconfig。
   ZRT_SECRETS_KEY: ${ZRT_SECRETS_KEY:?请先在根目录 .env 中设置 ZRT_SECRETS_KEY}
@@ -65,7 +67,16 @@ services:
   # 默认每项任务最多执行 4 次；任务 Stream 上限 512 MiB，死信 Stream 上限 256 MiB。
   api:
     <<: *zrt-runtime
+    environment:
+      <<: *zrt-environment
+      # 只有 API 挂载客户端证书；构建出的镜像和脚本容器都拿不到 Docker API 凭据。
+      # Compose 内置构建器固定使用自动签发的 mTLS，禁止被 .env 降级为明文 2375。
+      ZRT_DOCKER_BUILDER_HOST: tcp://docker-builder:2376
+      ZRT_DOCKER_BUILDER_TLS_CERT_PATH: /certs/client
     command: ["server"]
+    volumes:
+      - ./data:/app/data
+      - zrt-builder-client-certs:/certs/client:ro
     ports:
       - "127.0.0.1:${ZRT_HTTP_PORT:-8080}:8080"
     depends_on:
@@ -97,12 +108,16 @@ services:
     image: docker:28.3.3-dind
     privileged: true
     environment:
-      # 2375 仅存在于内部网络，关闭自动 TLS，不能把该端口映射到公网或宿主机。
-      DOCKER_TLS_CERTDIR: ""
-    command: ["--host=tcp://0.0.0.0:2375", "--host=unix:///var/run/docker.sock", "--tls=false", "--storage-driver=overlay2"]
+      # 官方入口自动生成 CA、服务端和客户端证书，并让 2376 强制校验客户端证书。
+      DOCKER_TLS_CERTDIR: /certs
+      DOCKER_TLS_SAN: DNS:docker-builder
+    command: ["--storage-driver=overlay2"]
     volumes:
       # 持久化 BuildKit 图层缓存，重启 ZRT 后无需从零构建全部基础镜像。
       - zrt-builder-data:/var/lib/docker
+      # CA 私钥只保留在 DinD；API 只能只读访问单独的客户端证书卷。
+      - zrt-builder-ca-certs:/certs/ca
+      - zrt-builder-client-certs:/certs/client
     networks:
       - zrt-builder
     healthcheck:
@@ -167,7 +182,7 @@ services:
 networks:
   zrt:
     driver: bridge
-  # 未启用 TLS 的 DinD API 不映射宿主机端口，仅允许同网络的 api 访问。
+  # DinD API 不映射宿主机端口，并通过 mTLS 限制为持有客户端证书的 api 访问。
   zrt-builder:
     driver: bridge
 
@@ -176,3 +191,6 @@ networks:
 volumes:
   # 这是可重建的镜像层缓存，不包含 SQLite、Redis 或 NATS 业务数据。
   zrt-builder-data:
+  # CA 私钥与客户端证书分卷保存，避免 API 获得签发新证书的能力。
+  zrt-builder-ca-certs:
+  zrt-builder-client-certs:

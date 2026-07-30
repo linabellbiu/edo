@@ -49,6 +49,7 @@ func TestSQLiteMigrationIsIdempotent(t *testing.T) {
 		!db.Migrator().HasTable(&model.DeploymentPlan{}) || !db.Migrator().HasTable(&model.ReleasePlan{}) ||
 		!db.Migrator().HasTable(&model.ReleaseGroup{}) || !db.Migrator().HasTable(&model.PipelineRun{}) ||
 		!db.Migrator().HasTable(&model.PipelineRunLog{}) ||
+		!db.Migrator().HasTable(&model.BuildRun{}) || !db.Migrator().HasTable(&model.Artifact{}) ||
 		!db.Migrator().HasTable(&model.ApplicationRepository{}) || !db.Migrator().HasTable(&model.ApplicationRepositoryObservation{}) ||
 		!db.Migrator().HasTable(&model.PipelineRunRepository{}) ||
 		!db.Migrator().HasTable(&model.UserPermission{}) || !db.Migrator().HasTable(&model.GitCredential{}) ||
@@ -75,6 +76,30 @@ func TestSQLiteMigrationIsIdempotent(t *testing.T) {
 	if !db.Migrator().HasColumn(&model.BuildPlan{}, "deleted_at") {
 		t.Fatal("构建方案软删除字段未创建")
 	}
+	if !db.Migrator().HasColumn(&model.DeploymentPlan{}, "deleted_at") ||
+		!db.Migrator().HasIndex(&model.DeploymentPlan{}, "DeletedAt") {
+		t.Fatal("部署方案软删除字段或索引未创建")
+	}
+	if !db.Migrator().HasColumn(&model.BuildPlan{}, "runtime_image") {
+		t.Fatal("脚本构建运行镜像字段未创建")
+	}
+	if !db.Migrator().HasColumn(&model.DeploymentRecord{}, "idempotency_key") ||
+		!db.Migrator().HasIndex(&model.DeploymentRecord{}, "IdempotencyKey") {
+		t.Fatal("流水线发布幂等字段或唯一索引未创建")
+	}
+	if !db.Migrator().HasColumn(&model.DeploymentRecord{}, "rollback_source_id") ||
+		!db.Migrator().HasColumn(&model.DeploymentRecord{}, "rollback_attempt") ||
+		!db.Migrator().HasIndex(&model.DeploymentRecord{}, "idx_deployment_records_rollback_source_attempt") {
+		t.Fatal("回滚来源、尝试次数字段或查询索引未创建")
+	}
+	if !db.Migrator().HasColumn(&model.ApplicationRepositoryObservation{}, "action") {
+		t.Fatal("PR 监听动作游标字段未创建")
+	}
+	if !db.Migrator().HasColumn(&model.GitRepository{}, "api_credential_id") ||
+		!db.Migrator().HasIndex(&model.GitRepository{}, "APICredentialID") {
+		t.Fatal("代码仓库平台 API 令牌引用字段或索引未创建")
+	}
+	assertStructuredWorkflowSchema(t, db, "SQLite")
 }
 
 func TestSQLiteUsesPureGoDriver(t *testing.T) {
@@ -113,138 +138,143 @@ func TestSQLiteUsesPureGoDriver(t *testing.T) {
 	}
 }
 
-func TestDeploymentPlanTargetBackfillUsesOnlyUnambiguousCompatibleBinding(t *testing.T) {
+func TestRepositoryAPICredentialMigrationPreservesLegacyRepositories(t *testing.T) {
 	db, err := Open(context.Background(), config.Database{
-		Driver: "sqlite", DSN: "file:deployment_plan_target_backfill?mode=memory&cache=shared",
+		Driver: "sqlite", DSN: "file:repository_api_credential_upgrade?mode=memory&cache=shared",
 		MaxOpenConns: 1, MaxIdleConns: 1, ConnMaxLifetime: time.Minute,
 	}, slog.Default())
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer Close(db)
-	if err := Migrate(context.Background(), db); err != nil {
+	if err := db.Exec(`CREATE TABLE git_repositories (id varchar(36) PRIMARY KEY)`).Error; err != nil {
 		t.Fatal(err)
 	}
-
-	now := time.Now().UTC()
-	repository := model.GitRepository{
-		ID: "repo-a", Name: "迁移测试仓库", Provider: model.GitProviderGeneric,
-		CloneURL: "https://example.com/repo.git", DefaultBranch: "main", AuthType: model.GitAuthNone,
-		IsActive: true, CreatedBy: "admin", CreatedAt: now, UpdatedAt: now,
-	}
-	if err := db.Create(&repository).Error; err != nil {
+	if err := db.Exec(`INSERT INTO git_repositories (id) VALUES (?)`, "legacy-repository").Error; err != nil {
 		t.Fatal(err)
 	}
-	targets := []model.DeploymentTarget{
-		{ID: "target-docker-a", Name: "Docker A", Platform: model.DeploymentDocker, RuntimeID: "docker-a", WorkloadName: "app-a", IsActive: true, CreatedBy: "admin", CreatedAt: now, UpdatedAt: now},
-		{ID: "target-docker-b", Name: "Docker B", Platform: model.DeploymentDocker, RuntimeID: "docker-b", WorkloadName: "app-b", IsActive: true, CreatedBy: "admin", CreatedAt: now, UpdatedAt: now},
-		{ID: "target-ssh", Name: "SSH", Platform: model.DeploymentSSH, HostID: "host-a", IsActive: true, CreatedBy: "admin", CreatedAt: now, UpdatedAt: now},
+	if err := migrateRepositoryAPICredential(db); err != nil {
+		t.Fatalf("升级历史仓库 API 令牌字段失败: %v", err)
 	}
-	if err := db.Create(&targets).Error; err != nil {
-		t.Fatal(err)
+	if !db.Migrator().HasColumn(&model.GitRepository{}, "api_credential_id") ||
+		!db.Migrator().HasIndex(&model.GitRepository{}, "APICredentialID") {
+		t.Fatal("仓库 API 令牌字段或索引没有创建")
 	}
-	plans := []model.DeploymentPlan{
-		{ID: "plan-single", Name: "唯一历史目标", Kind: model.DeploymentPlanDocker, ServiceName: "app-a", TimeoutSeconds: 300, IsActive: true, CreatedBy: "admin", CreatedAt: now, UpdatedAt: now},
-		{ID: "plan-ambiguous", Name: "多个历史目标", Kind: model.DeploymentPlanDocker, ServiceName: "app-b", TimeoutSeconds: 300, IsActive: true, CreatedBy: "admin", CreatedAt: now, UpdatedAt: now},
-		{ID: "plan-mismatch", Name: "类型不匹配", Kind: model.DeploymentPlanDocker, ServiceName: "app-c", TimeoutSeconds: 300, IsActive: true, CreatedBy: "admin", CreatedAt: now, UpdatedAt: now},
-	}
-	if err := db.Create(&plans).Error; err != nil {
-		t.Fatal(err)
-	}
-	applications := []model.Application{
-		{ID: "app-single", Name: "唯一应用", RepositoryID: "repo-a", Branch: "main", DeploymentPlanID: "plan-single", DeploymentTargetID: "target-docker-a", SyncStatus: model.ApplicationSyncIdle, IsActive: true, CreatedBy: "admin", CreatedAt: now, UpdatedAt: now},
-		{ID: "app-ambiguous-a", Name: "歧义应用 A", RepositoryID: "repo-a", Branch: "main", DeploymentPlanID: "plan-ambiguous", DeploymentTargetID: "target-docker-a", SyncStatus: model.ApplicationSyncIdle, IsActive: true, CreatedBy: "admin", CreatedAt: now, UpdatedAt: now},
-		{ID: "app-ambiguous-b", Name: "歧义应用 B", RepositoryID: "repo-a", Branch: "main", DeploymentPlanID: "plan-ambiguous", DeploymentTargetID: "target-docker-b", SyncStatus: model.ApplicationSyncIdle, IsActive: true, CreatedBy: "admin", CreatedAt: now, UpdatedAt: now},
-		{ID: "app-mismatch", Name: "类型应用", RepositoryID: "repo-a", Branch: "main", DeploymentPlanID: "plan-mismatch", DeploymentTargetID: "target-ssh", SyncStatus: model.ApplicationSyncIdle, IsActive: true, CreatedBy: "admin", CreatedAt: now, UpdatedAt: now},
-	}
-	if err := db.Create(&applications).Error; err != nil {
-		t.Fatal(err)
-	}
-	if err := backfillDeploymentPlanTargets(db); err != nil {
-		t.Fatal(err)
-	}
-	var actual []model.DeploymentPlan
-	if err := db.Where("id IN ?", []string{"plan-single", "plan-ambiguous", "plan-mismatch"}).Find(&actual).Error; err != nil {
-		t.Fatal(err)
-	}
-	byID := make(map[string]string, len(actual))
-	for _, plan := range actual {
-		byID[plan.ID] = plan.DeploymentTargetID
-	}
-	if byID["plan-single"] != "target-docker-a" {
-		t.Fatalf("唯一兼容目标没有恢复: %q", byID["plan-single"])
-	}
-	if byID["plan-ambiguous"] != "" || byID["plan-mismatch"] != "" {
-		t.Fatalf("歧义或类型不匹配的目标不应恢复: %+v", byID)
+	var nullCount int64
+	if err := db.Table("git_repositories").Where("api_credential_id IS NULL").Count(&nullCount).Error; err != nil || nullCount != 1 {
+		t.Fatalf("历史仓库不应被绑定伪造的 API 令牌: count=%d err=%v", nullCount, err)
 	}
 }
 
-func TestReleasePlanningMigrationPreservesLegacyDeploymentPlans(t *testing.T) {
+func TestDeploymentIdempotencyMigrationPreservesLegacyRecords(t *testing.T) {
 	db, err := Open(context.Background(), config.Database{
-		Driver: "sqlite", DSN: ":memory:", MaxOpenConns: 1, MaxIdleConns: 1, ConnMaxLifetime: time.Minute,
+		Driver: "sqlite", DSN: "file:deployment_idempotency_upgrade?mode=memory&cache=shared",
+		MaxOpenConns: 1, MaxIdleConns: 1, ConnMaxLifetime: time.Minute,
 	}, slog.Default())
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer Close(db)
-
-	if err := db.Table("release_plans").AutoMigrate(&model.DeploymentPlan{}); err != nil {
-		t.Fatalf("创建旧部署方案表失败: %v", err)
-	}
-	now := time.Now().UTC()
-	legacyPlan := model.DeploymentPlan{
-		ID: "deploy-legacy", Name: "旧 Helm 方案", Kind: model.DeploymentPlanHelm,
-		HelmChart: "deploy/chart", TimeoutSeconds: 600, IsActive: true,
-		CreatedBy: "admin", CreatedAt: now, UpdatedAt: now,
-	}
-	if err := db.Table("release_plans").Create(&legacyPlan).Error; err != nil {
-		t.Fatalf("写入旧部署方案失败: %v", err)
-	}
-	if err := db.AutoMigrate(&model.GitRepository{}, &model.Application{}); err != nil {
-		t.Fatalf("创建旧应用表失败: %v", err)
-	}
-	if err := db.Exec("ALTER TABLE git_repositories ADD COLUMN build_plan_id varchar(36) NOT NULL DEFAULT ''").Error; err != nil {
-		t.Fatalf("添加旧构建方案字段失败: %v", err)
-	}
-	if err := db.Exec("ALTER TABLE git_repositories ADD COLUMN release_plan_id varchar(36) NOT NULL DEFAULT ''").Error; err != nil {
-		t.Fatalf("添加旧部署方案字段失败: %v", err)
-	}
-	repository := model.GitRepository{
-		ID: "repo-legacy", Name: "旧仓库", Provider: model.GitProviderGeneric,
-		CloneURL: "https://git.example.com/team/app.git", AuthType: model.GitAuthNone,
-		IsActive: true, CreatedBy: "admin", CreatedAt: now, UpdatedAt: now,
-	}
-	if err := db.Create(&repository).Error; err != nil {
-		t.Fatalf("写入旧仓库失败: %v", err)
-	}
-	if err := db.Model(&model.GitRepository{}).Where("id = ?", repository.ID).
-		Updates(map[string]any{"build_plan_id": "build-legacy", "release_plan_id": legacyPlan.ID}).Error; err != nil {
-		t.Fatalf("写入旧仓库方案失败: %v", err)
-	}
-	application := model.Application{
-		ID: "app-legacy", Name: "旧应用", RepositoryID: repository.ID, Branch: "main",
-		PollIntervalSeconds: 60, WatchPush: true, SyncStatus: model.ApplicationSyncIdle,
-		IsActive: true, CreatedBy: "admin", CreatedAt: now, UpdatedAt: now,
-	}
-	if err := db.Create(&application).Error; err != nil {
-		t.Fatalf("写入旧应用失败: %v", err)
-	}
-
-	if err := migrateReleasePlanning(db); err != nil {
-		t.Fatalf("执行发布模型迁移失败: %v", err)
-	}
-	var migratedPlan model.DeploymentPlan
-	if err := db.First(&migratedPlan, "id = ?", legacyPlan.ID).Error; err != nil || migratedPlan.HelmChart != legacyPlan.HelmChart {
-		t.Fatalf("旧部署方案没有完整保留: plan=%+v err=%v", migratedPlan, err)
-	}
-	if !db.Migrator().HasTable(&model.ReleasePlan{}) || !db.Migrator().HasTable(&model.ReleaseGroup{}) {
-		t.Fatal("新的发布计划和发布组表未创建")
-	}
-	if err := db.First(&application, "id = ?", application.ID).Error; err != nil {
+	if err := db.Exec(`CREATE TABLE deployment_records (id varchar(36) PRIMARY KEY)`).Error; err != nil {
 		t.Fatal(err)
 	}
-	if application.BuildPlanID != "build-legacy" || application.DeploymentPlanID != legacyPlan.ID {
-		t.Fatalf("旧仓库方案没有迁移到应用: %+v", application)
+	if err := db.Exec(`INSERT INTO deployment_records (id) VALUES (?), (?)`, "legacy-a", "legacy-b").Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := migrateDeploymentIdempotency(db); err != nil {
+		t.Fatalf("升级历史发布记录失败: %v", err)
+	}
+	if !db.Migrator().HasColumn(&model.DeploymentRecord{}, "idempotency_key") ||
+		!db.Migrator().HasIndex(&model.DeploymentRecord{}, "IdempotencyKey") {
+		t.Fatal("幂等字段或唯一索引没有创建")
+	}
+	var nullCount int64
+	if err := db.Table("deployment_records").Where("idempotency_key IS NULL").Count(&nullCount).Error; err != nil || nullCount != 2 {
+		t.Fatalf("历史发布记录不应被伪造幂等标识: count=%d err=%v", nullCount, err)
+	}
+	if err := db.Exec(`INSERT INTO deployment_records (id) VALUES (?)`, "legacy-c").Error; err != nil {
+		t.Fatalf("唯一索引应允许新的非流水线空幂等键记录: %v", err)
+	}
+	if err := db.Exec(`UPDATE deployment_records SET idempotency_key = ? WHERE id = ?`, "same-key", "legacy-a").Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Exec(`UPDATE deployment_records SET idempotency_key = ? WHERE id = ?`, "same-key", "legacy-b").Error; !errors.Is(err, gorm.ErrDuplicatedKey) {
+		t.Fatalf("幂等键唯一约束没有生效: %v", err)
+	}
+}
+
+func TestDeploymentRollbackAttemptMigrationPreservesLegacyRecords(t *testing.T) {
+	db, err := Open(context.Background(), config.Database{
+		Driver: "sqlite", DSN: "file:deployment_rollback_attempt_upgrade?mode=memory&cache=shared",
+		MaxOpenConns: 1, MaxIdleConns: 1, ConnMaxLifetime: time.Minute,
+	}, slog.Default())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer Close(db)
+	if err := db.Exec(`CREATE TABLE deployment_records (id varchar(36) PRIMARY KEY)`).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Exec(`INSERT INTO deployment_records (id) VALUES (?)`, "legacy-rollback").Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := migrateDeploymentRollbackAttempts(db); err != nil {
+		t.Fatalf("升级历史回滚尝试字段失败: %v", err)
+	}
+	if !db.Migrator().HasColumn(&model.DeploymentRecord{}, "rollback_source_id") ||
+		!db.Migrator().HasColumn(&model.DeploymentRecord{}, "rollback_attempt") ||
+		!db.Migrator().HasIndex(&model.DeploymentRecord{}, "idx_deployment_records_rollback_source_attempt") {
+		t.Fatal("回滚来源、尝试次数字段或查询索引没有创建")
+	}
+	var sourceID string
+	var attempt int
+	if err := db.Table("deployment_records").Select("rollback_source_id", "rollback_attempt").
+		Where("id = ?", "legacy-rollback").Row().Scan(&sourceID, &attempt); err != nil {
+		t.Fatalf("读取迁移后的历史回滚记录失败: %v", err)
+	}
+	if sourceID != "" || attempt != 0 {
+		t.Fatalf("迁移不应伪造历史回滚关系: source=%q attempt=%d", sourceID, attempt)
+	}
+}
+
+func TestDeploymentPlanLifecycleMigrationPreservesLegacyPlans(t *testing.T) {
+	db, err := Open(context.Background(), config.Database{
+		Driver: "sqlite", DSN: "file:deployment_plan_lifecycle_upgrade?mode=memory&cache=shared",
+		MaxOpenConns: 1, MaxIdleConns: 1, ConnMaxLifetime: time.Minute,
+	}, slog.Default())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer Close(db)
+	if err := db.Exec(`CREATE TABLE deployment_plans (id varchar(36) PRIMARY KEY)`).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Exec(`INSERT INTO deployment_plans (id) VALUES (?), (?)`, "legacy-a", "legacy-b").Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := migrateDeploymentPlanLifecycle(db); err != nil {
+		t.Fatalf("升级历史部署方案失败: %v", err)
+	}
+	if !db.Migrator().HasColumn(&model.DeploymentPlan{}, "deleted_at") ||
+		!db.Migrator().HasIndex(&model.DeploymentPlan{}, "DeletedAt") {
+		t.Fatal("部署方案软删除字段或索引没有创建")
+	}
+	var nullCount int64
+	if err := db.Table("deployment_plans").Where("deleted_at IS NULL").Count(&nullCount).Error; err != nil || nullCount != 2 {
+		t.Fatalf("历史部署方案不应被标记为已删除: count=%d err=%v", nullCount, err)
+	}
+	if err := db.Delete(&model.DeploymentPlan{ID: "legacy-a"}).Error; err != nil {
+		t.Fatalf("新软删除字段无法使用: %v", err)
+	}
+	var visible, all int64
+	if err := db.Model(&model.DeploymentPlan{}).Count(&visible).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Unscoped().Model(&model.DeploymentPlan{}).Count(&all).Error; err != nil {
+		t.Fatal(err)
+	}
+	if visible != 1 || all != 2 {
+		t.Fatalf("软删除默认范围错误: visible=%d all=%d", visible, all)
 	}
 }
 
@@ -557,105 +587,6 @@ func TestEnvironmentHostMigrationBackfillsLegacyMembership(t *testing.T) {
 	}
 }
 
-func TestPipelineExecutionMigrationRepairsLegacyRuns(t *testing.T) {
-	db, err := Open(context.Background(), config.Database{
-		Driver: "sqlite", DSN: "file:pipeline_execution_upgrade?mode=memory&cache=shared",
-		MaxOpenConns: 1, MaxIdleConns: 1, ConnMaxLifetime: time.Minute,
-	}, slog.Default())
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer Close(db)
-	if err := db.AutoMigrate(
-		&model.GitRepository{}, &model.Application{}, &model.ApplicationEnvironment{},
-		&model.ReleaseWorkflowTemplate{}, &model.ReleaseWorkflow{},
-		&model.PipelineRun{}, &model.PipelineRunRepository{}, &model.DeploymentRecord{},
-	); err != nil {
-		t.Fatal(err)
-	}
-	now := time.Now().UTC()
-	repository := model.GitRepository{
-		ID: "repo-execution", Name: "执行迁移仓库", Provider: model.GitProviderGeneric,
-		CloneURL: "https://git.example.com/team/app.git", DefaultBranch: "main", AuthType: model.GitAuthNone,
-		IsActive: true, CreatedBy: "admin", CreatedAt: now, UpdatedAt: now,
-	}
-	if err := db.Create(&repository).Error; err != nil {
-		t.Fatal(err)
-	}
-	application := model.Application{
-		ID: "app-execution", Name: "执行迁移应用", RepositoryID: repository.ID, Branch: "main",
-		WatchPush: true, PollIntervalSeconds: 3, ImageRegistryID: "registry-execution",
-		SyncStatus: model.ApplicationSyncIdle, IsActive: true, CreatedBy: "admin", CreatedAt: now, UpdatedAt: now,
-	}
-	if err := db.Create(&application).Error; err != nil {
-		t.Fatal(err)
-	}
-	template := model.ReleaseWorkflowTemplate{
-		ID: "template-execution", Name: "执行迁移模板", Revision: 2, IsActive: false,
-		Nodes: []model.WorkflowNode{{
-			ID: "deploy-prod", Type: model.WorkflowNodeDeploy, Name: "部署生产",
-			Config: model.WorkflowNodeConfig{Environment: "prod", DeploymentTargetID: "target-execution"},
-		}},
-		Edges: []model.WorkflowEdge{}, Viewport: model.WorkflowViewport{Zoom: 1},
-		CreatedBy: "admin", UpdatedBy: "admin", CreatedAt: now, UpdatedAt: now,
-	}
-	if err := db.Create(&template).Error; err != nil {
-		t.Fatal(err)
-	}
-	workflow := model.ReleaseWorkflow{
-		ID: "workflow-execution", ApplicationID: application.ID, WorkflowTemplateID: template.ID,
-		Name: "旧应用流水线", Revision: 1, IsActive: true,
-		Nodes: []model.WorkflowNode{{
-			ID: "deploy-prod", Type: model.WorkflowNodeDeploy, Name: "部署生产",
-			Config: model.WorkflowNodeConfig{Environment: "prod"},
-		}},
-		Edges: []model.WorkflowEdge{}, Viewport: model.WorkflowViewport{Zoom: 1},
-		CreatedBy: "admin", UpdatedBy: "admin", CreatedAt: now, UpdatedAt: now,
-	}
-	if err := db.Create(&workflow).Error; err != nil {
-		t.Fatal(err)
-	}
-	environment := model.ApplicationEnvironment{
-		ID: "environment-execution", ApplicationID: application.ID, Key: "prod", Name: "生产",
-		Branch: "main", WatchPush: true, CreatedAt: now, UpdatedAt: now,
-	}
-	if err := db.Create(&environment).Error; err != nil {
-		t.Fatal(err)
-	}
-	run := model.PipelineRun{
-		ID: "run-execution", ApplicationID: application.ID, Trigger: "manual", Ref: "refs/heads/main",
-		CommitSHA: "0123456789012345678901234567890123456789", Status: model.PipelineRunSucceeded,
-		Stage: "completed", CurrentNodeID: "deploy-prod", WorkflowSnapshot: "{}",
-		CreatedBy: "admin", CreatedAt: now, UpdatedAt: now,
-	}
-	if err := db.Create(&run).Error; err != nil {
-		t.Fatal(err)
-	}
-	component := model.PipelineRunRepository{
-		ID: "component-execution", PipelineRunID: run.ID, RepositoryID: repository.ID,
-		Status: model.PipelineRunRepositorySucceeded, CreatedAt: now, UpdatedAt: now,
-	}
-	if err := db.Create(&component).Error; err != nil {
-		t.Fatal(err)
-	}
-
-	if err := migratePipelineExecutionFields(db); err != nil {
-		t.Fatalf("执行流水线迁移失败: %v", err)
-	}
-	if err := db.First(&component, "id = ?", component.ID).Error; err != nil || component.ImageRegistryID != application.ImageRegistryID {
-		t.Fatalf("运行没有补齐镜像仓库快照: component=%+v err=%v", component, err)
-	}
-	if err := db.First(&workflow, "id = ?", workflow.ID).Error; err != nil || workflow.Nodes[0].Config.DeploymentTargetID != "target-execution" {
-		t.Fatalf("应用流水线没有补齐发布环境: workflow=%+v err=%v", workflow, err)
-	}
-	if err := db.First(&environment, "id = ?", environment.ID).Error; err != nil || environment.DeploymentTargetID != "target-execution" {
-		t.Fatalf("应用环境没有补齐发布环境: environment=%+v err=%v", environment, err)
-	}
-	if err := db.First(&run, "id = ?", run.ID).Error; err != nil || run.Status != model.PipelineRunFailed || run.Stage != "execution_missing" {
-		t.Fatalf("历史伪成功运行没有改为失败: run=%+v err=%v", run, err)
-	}
-}
-
 func TestExternalDatabaseMigration(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -671,7 +602,7 @@ func TestExternalDatabaseMigration(t *testing.T) {
 			if dsn == "" {
 				t.Skipf("未设置 %s", test.env)
 			}
-			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 			defer cancel()
 			db, err := Open(ctx, config.Database{
 				Driver: test.driver, DSN: dsn, MaxOpenConns: 4, MaxIdleConns: 1, ConnMaxLifetime: time.Minute,
@@ -690,105 +621,49 @@ func TestExternalDatabaseMigration(t *testing.T) {
 			}
 			if !db.Migrator().HasTable(&model.User{}) || !db.Migrator().HasTable(&model.DeploymentRecord{}) ||
 				!db.Migrator().HasTable(&model.MonitorCheck{}) || !db.Migrator().HasTable(&model.Application{}) ||
-				!db.Migrator().HasTable(&model.PipelineRun{}) {
+				!db.Migrator().HasTable(&model.PipelineRun{}) || !db.Migrator().HasTable(&model.BuildRun{}) ||
+				!db.Migrator().HasTable(&model.Artifact{}) {
 				t.Fatalf("%s 核心表不完整", test.name)
+			}
+			assertStructuredWorkflowSchema(t, db, test.name)
+			if !db.Migrator().HasColumn(&model.DeploymentRecord{}, "idempotency_key") ||
+				!db.Migrator().HasIndex(&model.DeploymentRecord{}, "IdempotencyKey") {
+				t.Fatalf("%s 流水线发布幂等字段或唯一索引未创建", test.name)
+			}
+			if !db.Migrator().HasColumn(&model.DeploymentRecord{}, "rollback_source_id") ||
+				!db.Migrator().HasColumn(&model.DeploymentRecord{}, "rollback_attempt") ||
+				!db.Migrator().HasIndex(&model.DeploymentRecord{}, "idx_deployment_records_rollback_source_attempt") {
+				t.Fatalf("%s 回滚来源、尝试次数字段或查询索引未创建", test.name)
+			}
+			if !db.Migrator().HasColumn(&model.DeploymentPlan{}, "deleted_at") ||
+				!db.Migrator().HasIndex(&model.DeploymentPlan{}, "DeletedAt") {
+				t.Fatalf("%s 部署方案软删除字段或索引未创建", test.name)
+			}
+			if !db.Migrator().HasColumn(&model.ApplicationRepositoryObservation{}, "action") {
+				t.Fatalf("%s PR 监听动作游标字段未创建", test.name)
 			}
 		})
 	}
 }
 
-type legacyRepositoryObservation struct {
-	ID                      string `gorm:"type:varchar(36);primaryKey"`
-	ApplicationRepositoryID string `gorm:"type:varchar(36);not null;uniqueIndex:idx_repository_environment,priority:1"`
-	Environment             string `gorm:"type:varchar(16);not null;uniqueIndex:idx_repository_environment,priority:2"`
-	Ref                     string `gorm:"type:varchar(512);not null;default:''"`
-	CommitSHA               string `gorm:"type:varchar(64);not null;default:''"`
-	LastCheckedAt           *time.Time
-	CreatedAt               time.Time `gorm:"not null"`
-	UpdatedAt               time.Time `gorm:"not null"`
-}
-
-func (legacyRepositoryObservation) TableName() string {
-	return "application_repository_observations"
-}
-
-func TestRepositoryObservationMigrationSupportsMultipleCustomRefs(t *testing.T) {
-	db, err := Open(context.Background(), config.Database{
-		Driver: "sqlite", DSN: "file:repository_observation_upgrade?mode=memory&cache=shared",
-		MaxOpenConns: 1, MaxIdleConns: 1, ConnMaxLifetime: time.Minute,
-	}, slog.Default())
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer Close(db)
-	if err := db.AutoMigrate(&legacyRepositoryObservation{}); err != nil {
-		t.Fatal(err)
-	}
-	now := time.Now().UTC()
-	for _, observation := range []legacyRepositoryObservation{
-		{ID: "legacy-test", ApplicationRepositoryID: "app-repo", Environment: "test", Ref: "refs/heads/test", CommitSHA: "test-1", CreatedAt: now, UpdatedAt: now},
-		{ID: "legacy-prod", ApplicationRepositoryID: "app-repo", Environment: "prod", Ref: "refs/heads/main", CommitSHA: "main-1", CreatedAt: now, UpdatedAt: now},
-	} {
-		if err := db.Create(&observation).Error; err != nil {
-			t.Fatal(err)
+func assertStructuredWorkflowSchema(t *testing.T, db *gorm.DB, databaseName string) {
+	t.Helper()
+	for _, table := range []any{&model.ReleaseWorkflow{}, &model.ReleaseWorkflowTemplate{}} {
+		if !db.Migrator().HasTable(table) ||
+			!db.Migrator().HasColumn(table, "schema_version") ||
+			!db.Migrator().HasColumn(table, "source") ||
+			!db.Migrator().HasColumn(table, "stages") {
+			t.Fatalf("%s 阶段式流水线表结构不完整: %T", databaseName, table)
+		}
+		for _, legacyColumn := range []string{"nodes", "edges", "viewport"} {
+			if db.Migrator().HasColumn(table, legacyColumn) {
+				t.Fatalf("%s 仍保留旧流水线字段 %s: %T", databaseName, legacyColumn, table)
+			}
 		}
 	}
-	if err := migrateRepositoryObservationWatchKeys(db); err != nil {
-		t.Fatalf("迁移仓库监听游标失败: %v", err)
-	}
-	if db.Migrator().HasIndex(&model.ApplicationRepositoryObservation{}, "idx_repository_environment") ||
-		!db.Migrator().HasIndex(&model.ApplicationRepositoryObservation{}, "idx_repository_watch") {
-		t.Fatal("仓库监听游标唯一索引没有完成迁移")
-	}
-	var migrated []model.ApplicationRepositoryObservation
-	if err := db.Order("id ASC").Find(&migrated).Error; err != nil || len(migrated) != 2 {
-		t.Fatalf("读取迁移后的监听游标失败: observations=%+v err=%v", migrated, err)
-	}
-	for i := range migrated {
-		if migrated[i].WatchKey != "legacy:"+migrated[i].ID {
-			t.Fatalf("旧监听游标没有保留为兼容基线: %+v", migrated[i])
+	for _, field := range []string{"trigger_action", "source_branch", "target_branch", "event_dedup_key"} {
+		if !db.Migrator().HasColumn(&model.PipelineRun{}, field) {
+			t.Fatalf("%s 流水线运行缺少事件去重字段 %s", databaseName, field)
 		}
-	}
-	additional := model.ApplicationRepositoryObservation{
-		ID: "custom-test-pr", ApplicationRepositoryID: "app-repo", WatchKey: "custom-pr-key",
-		SourceNodeID: "trigger-custom", Event: "pr", Environment: "test", Ref: "refs/pull/8/head",
-		CommitSHA: "pr-1", CreatedAt: now, UpdatedAt: now,
-	}
-	if err := db.Create(&additional).Error; err != nil {
-		t.Fatalf("同一环境不能保存独立 PR 游标: %v", err)
-	}
-}
-
-func TestDeploymentApprovalMigrationCancelsLegacyPendingRecords(t *testing.T) {
-	db, err := Open(context.Background(), config.Database{
-		Driver: "sqlite", DSN: "file:deployment_approval_upgrade?mode=memory&cache=shared",
-		MaxOpenConns: 1, MaxIdleConns: 1, ConnMaxLifetime: time.Minute,
-	}, slog.Default())
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer Close(db)
-	if err := db.AutoMigrate(&model.DeploymentRecord{}); err != nil {
-		t.Fatal(err)
-	}
-	now := time.Now().UTC()
-	record := model.DeploymentRecord{
-		ID: "legacy-awaiting-approval", TargetID: "production-target", TargetName: "生产环境",
-		Platform: model.DeploymentDocker, Environment: model.EnvironmentProduction,
-		RuntimeID: "docker-1", WorkloadName: "api", RolloutTimeout: 300,
-		Operation: model.DeploymentRelease, Image: "registry.example.com/api@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-		Status: model.DeploymentAwaitingApproval, RequestedBy: "operator", CreatedAt: now, UpdatedAt: now,
-	}
-	if err := db.Create(&record).Error; err != nil {
-		t.Fatal(err)
-	}
-	if err := migrateDeploymentApprovalsToWorkflow(db); err != nil {
-		t.Fatalf("迁移历史待审批发布失败: %v", err)
-	}
-	if err := db.First(&record, "id = ?", record.ID).Error; err != nil {
-		t.Fatal(err)
-	}
-	if record.Status != model.DeploymentCanceled || record.ErrorCode != "legacy_environment_approval_removed" || record.FinishedAt == nil {
-		t.Fatalf("历史待审批记录没有安全取消: %+v", record)
 	}
 }

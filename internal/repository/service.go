@@ -34,6 +34,7 @@ var (
 	ErrInvalidSignature        = errors.New("Webhook 签名校验失败")
 	ErrUnsupportedEvent        = errors.New("Webhook 事件类型不受支持")
 	ErrInvalidTaskPayload      = errors.New("Webhook 任务参数无效")
+	ErrPullRequestMetadata     = errors.New("无法读取可靠的 PR/MR 分支元数据")
 )
 
 var repositoryNamePattern = regexp.MustCompile(`^[A-Za-z0-9\p{Han}][A-Za-z0-9\p{Han}_. -]{0,127}$`)
@@ -47,6 +48,7 @@ type Input struct {
 	Username          string
 	Credential        *string
 	CredentialID      *string
+	APICredentialID   *string
 	WebhookEnabled    bool
 	RegenerateWebhook bool
 	AllowInsecureHTTP bool
@@ -140,6 +142,7 @@ func (s *Service) Create(ctx context.Context, actorID string, input Input) (*mod
 		CloneURL: normalized.CloneURL, DefaultBranch: normalized.DefaultBranch,
 		AuthType: normalized.AuthType, Username: normalized.Username,
 		CredentialID:            normalized.credentialID,
+		APICredentialID:         normalized.apiCredentialID,
 		CredentialCiphertext:    normalized.credentialCiphertext,
 		WebhookSecretCiphertext: normalized.webhookCiphertext,
 		WebhookEnabled:          normalized.WebhookEnabled, AllowInsecureHTTP: normalized.AllowInsecureHTTP,
@@ -169,6 +172,7 @@ func (s *Service) Update(ctx context.Context, actorID, id string, input Input) (
 		"clone_url": normalized.CloneURL, "default_branch": normalized.DefaultBranch,
 		"auth_type": normalized.AuthType, "username": normalized.Username,
 		"credential_id":             normalized.credentialID,
+		"api_credential_id":         normalized.apiCredentialID,
 		"credential_ciphertext":     normalized.credentialCiphertext,
 		"webhook_secret_ciphertext": normalized.webhookCiphertext,
 		"webhook_enabled":           normalized.WebhookEnabled,
@@ -187,6 +191,7 @@ func (s *Service) Update(ctx context.Context, actorID, id string, input Input) (
 	existing.AuthType = normalized.AuthType
 	existing.Username = normalized.Username
 	existing.CredentialID = normalized.credentialID
+	existing.APICredentialID = normalized.apiCredentialID
 	existing.CredentialCiphertext = normalized.credentialCiphertext
 	existing.WebhookSecretCiphertext = normalized.webhookCiphertext
 	existing.WebhookEnabled = normalized.WebhookEnabled
@@ -254,7 +259,7 @@ func (s *Service) TestConnection(ctx context.Context, id string) (RefResult, err
 }
 
 // PollState 返回后台监听所需的全部远端状态。分支和 Tag 使用 Git 协议读取；
-// PR 优先使用托管平台 API 补全源分支和目标分支，通用 Git 则使用服务端公开的 PR Ref。
+// PR/MR 必须由托管平台 API 提供可靠的源分支和目标分支，Git 协议公开的裸 Ref 不作为触发依据。
 func (s *Service) PollState(ctx context.Context, id string, includePullRequests bool) (RefResult, error) {
 	repository, err := s.Find(ctx, id)
 	if err != nil {
@@ -268,21 +273,28 @@ func (s *Service) PollState(ctx context.Context, id string, includePullRequests 
 		return RefResult{}, err
 	}
 	result, err := s.git.ListRefs(ctx, *repository, credential)
-	if err != nil || !includePullRequests || repository.Provider == model.GitProviderGeneric {
+	if err != nil || !includePullRequests {
 		return result, err
 	}
 	lister, ok := s.git.(pullRequestLister)
 	if !ok {
-		return result, errors.New("当前 Git 客户端不支持查询 PR")
+		result.PullRequests = nil
+		result.PullRequestError = ErrPullRequestMetadata
+		return result, nil
 	}
-	pullRequests, err := lister.ListPullRequests(ctx, *repository, credential)
+	apiCredential, apiErr := s.resolveAPICredential(ctx, repository, credential)
+	if apiErr != nil {
+		result.PullRequests = nil
+		result.PullRequestError = apiErr
+		return result, nil
+	}
+	pullRequests, err := lister.ListPullRequests(ctx, *repository, credential, apiCredential)
 	if err != nil {
-		// 部分平台会同时通过 Git 协议公开 PR Ref；API 不可用时仍可继续检测，
-		// 但没有目标分支元数据的 Ref 只能按源分支匹配。
-		if len(result.PullRequests) > 0 {
-			return result, nil
-		}
-		return RefResult{}, err
+		// Git 协议读取到的 PR Ref 没有可靠的源/目标分支，API 失败时不能据此触发规则。
+		// 分支和 Tag 结果仍返回，让两类监听独立继续推进。
+		result.PullRequests = nil
+		result.PullRequestError = err
+		return result, nil
 	}
 	result.PullRequests = pullRequests
 	return result, nil
@@ -385,6 +397,9 @@ func (s *Service) TestInput(ctx context.Context, actorID string, input Input) (R
 	default:
 		return RefResult{}, ErrInvalidCredential
 	}
+	if _, err := s.normalizeAPICredentialID(ctx, actorID, input.Provider, nil, input.APICredentialID); err != nil {
+		return RefResult{}, err
+	}
 
 	return s.git.ListRefs(ctx, model.GitRepository{
 		Provider: input.Provider, CloneURL: cloneURL, AuthType: input.AuthType, Username: input.Username,
@@ -407,13 +422,21 @@ func (s *Service) RevealWebhookSecret(ctx context.Context, id string) (string, e
 }
 
 func (s *Service) CredentialIDForUser(ctx context.Context, userID string, repository *model.GitRepository) *string {
-	if repository.CredentialID == nil || *repository.CredentialID == "" || s.credentials == nil {
+	return s.ownedCredentialID(ctx, userID, repository.CredentialID)
+}
+
+func (s *Service) APICredentialIDForUser(ctx context.Context, userID string, repository *model.GitRepository) *string {
+	return s.ownedCredentialID(ctx, userID, repository.APICredentialID)
+}
+
+func (s *Service) ownedCredentialID(ctx context.Context, userID string, credentialID *string) *string {
+	if credentialID == nil || *credentialID == "" || s.credentials == nil {
 		return nil
 	}
-	if _, err := s.credentials.FindOwned(ctx, userID, *repository.CredentialID); err != nil {
+	if _, err := s.credentials.FindOwned(ctx, userID, *credentialID); err != nil {
 		return nil
 	}
-	id := *repository.CredentialID
+	id := *credentialID
 	return &id
 }
 
@@ -435,9 +458,30 @@ func (s *Service) resolveCredential(ctx context.Context, repository *model.GitRe
 	return plaintext, nil
 }
 
+func (s *Service) resolveAPICredential(ctx context.Context, repository *model.GitRepository, cloneCredential string) (string, error) {
+	if repository.APICredentialID == nil || strings.TrimSpace(*repository.APICredentialID) == "" {
+		if repository.AuthType == model.GitAuthToken {
+			return cloneCredential, nil
+		}
+		return "", nil
+	}
+	if s.credentials == nil {
+		return "", ErrInvalidCredential
+	}
+	selected, plaintext, err := s.credentials.Resolve(ctx, strings.TrimSpace(*repository.APICredentialID))
+	if err != nil {
+		return "", fmt.Errorf("读取代码仓库 API 令牌失败: %w", err)
+	}
+	if selected.AuthType != model.GitAuthToken || selected.Provider != repository.Provider {
+		return "", ErrInvalidCredential
+	}
+	return plaintext, nil
+}
+
 type normalizedInput struct {
 	Input
 	credentialID         *string
+	apiCredentialID      *string
 	credentialCiphertext string
 	webhookCiphertext    string
 	webhookPlaintext     string
@@ -495,6 +539,10 @@ func (s *Service) normalizeInput(ctx context.Context, actorID, id string, existi
 	if input.AuthType != model.GitAuthNone && credentialCiphertext == "" && credentialID == nil {
 		return normalizedInput{}, ErrInvalidCredential
 	}
+	apiCredentialID, err := s.normalizeAPICredentialID(ctx, actorID, input.Provider, existing, input.APICredentialID)
+	if err != nil {
+		return normalizedInput{}, err
+	}
 
 	webhookCiphertext := ""
 	if existing != nil {
@@ -513,9 +561,40 @@ func (s *Service) normalizeInput(ctx context.Context, actorID, id string, existi
 		}
 	}
 	return normalizedInput{
-		Input: input, credentialID: credentialID, credentialCiphertext: credentialCiphertext,
+		Input: input, credentialID: credentialID, apiCredentialID: apiCredentialID, credentialCiphertext: credentialCiphertext,
 		webhookCiphertext: webhookCiphertext, webhookPlaintext: webhookPlaintext,
 	}, nil
+}
+
+func (s *Service) normalizeAPICredentialID(
+	ctx context.Context,
+	actorID string,
+	provider model.GitProvider,
+	existing *model.GitRepository,
+	requestedID *string,
+) (*string, error) {
+	if provider == model.GitProviderGeneric {
+		if requestedID != nil && strings.TrimSpace(*requestedID) != "" {
+			return nil, ErrInvalidCredential
+		}
+		return nil, nil
+	}
+	candidateID := requestedID
+	if candidateID == nil && existing != nil {
+		candidateID = existing.APICredentialID
+	}
+	if candidateID == nil || strings.TrimSpace(*candidateID) == "" {
+		return nil, nil
+	}
+	if s.credentials == nil {
+		return nil, ErrInvalidCredential
+	}
+	selectedID := strings.TrimSpace(*candidateID)
+	selected, err := s.credentials.FindOwned(ctx, actorID, selectedID)
+	if err != nil || selected.AuthType != model.GitAuthToken || selected.Provider != provider {
+		return nil, ErrInvalidCredential
+	}
+	return &selected.ID, nil
 }
 
 func normalizeRepositoryFields(input *Input) error {

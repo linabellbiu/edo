@@ -503,9 +503,9 @@ var orderedTransferTables = []string{
 	"build_plans", "image_registries", "deployment_plans", "release_workflow_templates",
 	"git_repositories", "git_webhook_deliveries",
 	"environments", "hosts", "environment_hosts", "docker_endpoints", "kubernetes_clusters", "host_capabilities", "deployment_targets",
-	"applications", "application_environments", "application_repositories", "application_repository_observations", "release_workflows",
+	"applications", "application_repositories", "application_repository_observations", "release_workflows",
 	"release_plans", "release_groups", "release_group_applications", "release_group_dependencies", "release_plan_executions", "release_plan_execution_items",
-	"pipeline_runs", "pipeline_run_repositories", "pipeline_run_approvals", "pipeline_run_logs", "deployment_records",
+	"pipeline_runs", "pipeline_run_repositories", "pipeline_run_approvals", "pipeline_run_logs", "build_runs", "artifacts", "deployment_records",
 	"notification_channels", "notifications", "scheduled_tasks", "monitor_rules", "monitor_checks",
 	"jobs", "outbox_events",
 }

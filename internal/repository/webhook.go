@@ -30,6 +30,9 @@ type WebhookTaskPayload struct {
 	EventType    string `json:"event_type"`
 	Ref          string `json:"ref"`
 	CommitSHA    string `json:"commit_sha"`
+	SourceBranch string `json:"source_branch,omitempty"`
+	TargetBranch string `json:"target_branch,omitempty"`
+	Action       string `json:"action,omitempty"`
 	Message      string `json:"message,omitempty"`
 }
 
@@ -38,6 +41,8 @@ type webhookPayload struct {
 	After       string `json:"after"`
 	CheckoutSHA string `json:"checkout_sha"`
 	Action      string `json:"action"`
+	Number      int64  `json:"number"`
+	IID         int64  `json:"iid"`
 	ObjectKind  string `json:"object_kind"`
 	HeadCommit  *struct {
 		Message string `json:"message"`
@@ -46,7 +51,11 @@ type webhookPayload struct {
 		Message string `json:"message"`
 	} `json:"commits"`
 	PullRequest *struct {
-		Head struct {
+		Number         int64  `json:"number"`
+		Merged         bool   `json:"merged"`
+		MergeCommitSHA string `json:"merge_commit_sha"`
+		Head           struct {
+			Ref string `json:"ref"`
 			SHA string `json:"sha"`
 		} `json:"head"`
 		Base struct {
@@ -54,12 +63,24 @@ type webhookPayload struct {
 		} `json:"base"`
 	} `json:"pull_request"`
 	ObjectAttributes *struct {
-		Action       string `json:"action"`
-		TargetBranch string `json:"target_branch"`
-		LastCommit   struct {
+		Action         string `json:"action"`
+		IID            int64  `json:"iid"`
+		SourceBranch   string `json:"source_branch"`
+		TargetBranch   string `json:"target_branch"`
+		MergeCommitSHA string `json:"merge_commit_sha"`
+		LastCommit     struct {
 			ID string `json:"id"`
 		} `json:"last_commit"`
 	} `json:"object_attributes"`
+}
+
+type normalizedWebhookEvent struct {
+	EventType    string
+	Ref          string
+	CommitSHA    string
+	SourceBranch string
+	TargetBranch string
+	Action       string
 }
 
 func (s *Service) HandleWebhook(
@@ -98,38 +119,12 @@ func (s *Service) HandleWebhook(
 	if err := json.Unmarshal(body, &payload); err != nil {
 		return WebhookResult{}, ErrUnsupportedEvent
 	}
-	eventType := ""
-	commitSHA := ""
-	if supportedPushEvent(repository.Provider, eventName) {
-		switch {
-		case strings.HasPrefix(payload.Ref, "refs/heads/"):
-			eventType = "branch_push"
-		case strings.HasPrefix(payload.Ref, "refs/tags/"):
-			eventType = "tag_push"
-		default:
-			return WebhookResult{}, ErrUnsupportedEvent
-		}
-		commitSHA = payload.After
-		if commitSHA == "" {
-			commitSHA = payload.CheckoutSHA
-		}
-	} else if supportedPullRequestEvent(repository.Provider, eventName) {
-		eventType = "pull_request"
-		if payload.PullRequest != nil {
-			payload.Ref = "refs/heads/" + strings.TrimSpace(payload.PullRequest.Base.Ref)
-			commitSHA = payload.PullRequest.Head.SHA
-		} else if payload.ObjectAttributes != nil {
-			payload.Ref = "refs/heads/" + strings.TrimSpace(payload.ObjectAttributes.TargetBranch)
-			commitSHA = payload.ObjectAttributes.LastCommit.ID
-		}
-		if payload.Ref == "refs/heads/" || commitSHA == "" {
-			return WebhookResult{}, ErrUnsupportedEvent
-		}
-	} else {
+	event, err := normalizeWebhookEvent(repository.Provider, eventName, payload)
+	if err != nil {
 		return WebhookResult{}, ErrUnsupportedEvent
 	}
-	if allZeroSHA(commitSHA) {
-		commitSHA = ""
+	if allZeroSHA(event.CommitSHA) {
+		event.CommitSHA = ""
 	}
 	payloadHash := sha256.Sum256(body)
 	deliveryID := providerDeliveryID(repository.Provider, headers)
@@ -153,7 +148,7 @@ func (s *Service) HandleWebhook(
 	now := time.Now().UTC()
 	delivery := &model.GitWebhookDelivery{
 		ID: uuid.NewString(), RepositoryID: repository.ID, DeliveryID: deliveryID,
-		EventType: eventType, Ref: truncateString(payload.Ref, 512), CommitSHA: truncateString(commitSHA, 64),
+		EventType: event.EventType, Ref: truncateString(event.Ref, 512), CommitSHA: truncateString(event.CommitSHA, 64),
 		Message:     truncateString(webhookCommitMessage(payload), 255),
 		PayloadHash: hex.EncodeToString(payloadHash[:]), Status: model.WebhookReceived, ReceivedAt: now,
 	}
@@ -165,7 +160,9 @@ func (s *Service) HandleWebhook(
 			Kind: "repository.webhook", Subject: "zrt.task.repository.webhook",
 			Payload: WebhookTaskPayload{
 				DeliveryID: delivery.ID, RepositoryID: repository.ID,
-				EventType: eventType, Ref: delivery.Ref, CommitSHA: delivery.CommitSHA, Message: delivery.Message,
+				EventType: event.EventType, Ref: delivery.Ref, CommitSHA: delivery.CommitSHA,
+				SourceBranch: truncateString(event.SourceBranch, 255), TargetBranch: truncateString(event.TargetBranch, 255),
+				Action: truncateString(event.Action, 32), Message: delivery.Message,
 			},
 			IdempotencyKey: webhookIdempotencyKey(repository.ID, deliveryID), Idempotent: true,
 		})
@@ -184,6 +181,108 @@ func (s *Service) HandleWebhook(
 		return WebhookResult{}, fmt.Errorf("保存 Webhook 投递任务失败: %w", err)
 	}
 	return WebhookResult{Delivery: delivery}, nil
+}
+
+func normalizeWebhookEvent(provider model.GitProvider, eventName string, payload webhookPayload) (normalizedWebhookEvent, error) {
+	if supportedPushEvent(provider, eventName) {
+		eventType := ""
+		switch {
+		case strings.HasPrefix(payload.Ref, "refs/heads/"):
+			eventType = "branch_push"
+		case strings.HasPrefix(payload.Ref, "refs/tags/"):
+			eventType = "tag_push"
+		default:
+			return normalizedWebhookEvent{}, ErrUnsupportedEvent
+		}
+		commitSHA := strings.TrimSpace(payload.After)
+		if commitSHA == "" {
+			commitSHA = strings.TrimSpace(payload.CheckoutSHA)
+		}
+		return normalizedWebhookEvent{EventType: eventType, Ref: strings.TrimSpace(payload.Ref), CommitSHA: commitSHA}, nil
+	}
+	if !supportedPullRequestEvent(provider, eventName) {
+		return normalizedWebhookEvent{}, ErrUnsupportedEvent
+	}
+
+	if provider == model.GitProviderGitLab {
+		if payload.ObjectAttributes == nil {
+			return normalizedWebhookEvent{}, ErrUnsupportedEvent
+		}
+		ref, ok := pullRequestHeadRef(provider, payload.ObjectAttributes.IID)
+		if !ok {
+			return normalizedWebhookEvent{}, ErrUnsupportedEvent
+		}
+		action := normalizeWebhookPullRequestAction(payload.ObjectAttributes.Action, false)
+		commitSHA := strings.TrimSpace(payload.ObjectAttributes.LastCommit.ID)
+		if action == "merged" && strings.TrimSpace(payload.ObjectAttributes.MergeCommitSHA) != "" {
+			commitSHA = strings.TrimSpace(payload.ObjectAttributes.MergeCommitSHA)
+		}
+		event := normalizedWebhookEvent{
+			EventType: "pull_request", Ref: ref,
+			CommitSHA:    commitSHA,
+			SourceBranch: strings.TrimSpace(payload.ObjectAttributes.SourceBranch),
+			TargetBranch: strings.TrimSpace(payload.ObjectAttributes.TargetBranch),
+			Action:       action,
+		}
+		if event.CommitSHA == "" || event.SourceBranch == "" || event.TargetBranch == "" {
+			return normalizedWebhookEvent{}, ErrUnsupportedEvent
+		}
+		return event, nil
+	}
+
+	if payload.PullRequest == nil {
+		return normalizedWebhookEvent{}, ErrUnsupportedEvent
+	}
+	action := normalizeWebhookPullRequestAction(payload.Action, payload.PullRequest.Merged)
+	commitSHA := strings.TrimSpace(payload.PullRequest.Head.SHA)
+	if action == "merged" && strings.TrimSpace(payload.PullRequest.MergeCommitSHA) != "" {
+		commitSHA = strings.TrimSpace(payload.PullRequest.MergeCommitSHA)
+	}
+	sourceBranch := strings.TrimSpace(payload.PullRequest.Head.Ref)
+	targetBranch := strings.TrimSpace(payload.PullRequest.Base.Ref)
+	if provider == model.GitProviderGeneric {
+		ref := strings.TrimSpace(payload.Ref)
+		if !isPullRequestRef(ref) || commitSHA == "" || sourceBranch == "" || targetBranch == "" {
+			return normalizedWebhookEvent{}, ErrUnsupportedEvent
+		}
+		return normalizedWebhookEvent{
+			EventType: "pull_request", Ref: ref, CommitSHA: commitSHA,
+			SourceBranch: sourceBranch, TargetBranch: targetBranch,
+			Action: action,
+		}, nil
+	}
+	number := payload.Number
+	if number == 0 {
+		number = payload.PullRequest.Number
+	}
+	if number == 0 {
+		number = payload.IID
+	}
+	ref, ok := pullRequestHeadRef(provider, number)
+	if !ok || commitSHA == "" || sourceBranch == "" || targetBranch == "" {
+		return normalizedWebhookEvent{}, ErrUnsupportedEvent
+	}
+	return normalizedWebhookEvent{
+		EventType: "pull_request", Ref: ref, CommitSHA: commitSHA,
+		SourceBranch: sourceBranch, TargetBranch: targetBranch,
+		Action: action,
+	}, nil
+}
+
+func normalizeWebhookPullRequestAction(action string, merged bool) string {
+	if merged {
+		return "merged"
+	}
+	switch strings.ToLower(strings.TrimSpace(action)) {
+	case "open", "opened", "reopen", "reopened":
+		return "opened"
+	case "update", "updated", "synchronize", "synchronized":
+		return "updated"
+	case "merge", "merged":
+		return "merged"
+	default:
+		return ""
+	}
 }
 
 func (s *Service) ProcessWebhookTask(ctx context.Context, payload json.RawMessage) error {

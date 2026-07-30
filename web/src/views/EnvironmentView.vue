@@ -1,9 +1,9 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { message } from 'ant-design-vue'
 import { Boxes, Pencil, Plus, RefreshCw, Server } from 'lucide-vue-next'
 import { useI18n } from 'vue-i18n'
-import { useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 
 import client from '@/api/client'
 import {
@@ -19,6 +19,7 @@ import RuntimeBrandIcon from '@/components/RuntimeBrandIcon.vue'
 import { useAuthStore } from '@/stores/auth'
 
 const auth = useAuthStore()
+const route = useRoute()
 const router = useRouter()
 const { t } = useI18n()
 type EnvironmentFormMode = 'create' | 'details' | 'hosts'
@@ -145,6 +146,14 @@ function capabilityName(kind: InfrastructureHost['capabilities'][number]['kind']
   if (kind === 'local_exec') return '直接终端执行'
   return 'Kubernetes'
 }
+
+watch([() => route.query.create, () => auth.loaded], ([value]) => {
+  if (value !== '1' || !auth.canAny(['deployment.manage'])) return
+  create()
+  const query = { ...route.query }
+  delete query.create
+  void router.replace({ query })
+}, { immediate: true })
 
 onMounted(refresh)
 </script>

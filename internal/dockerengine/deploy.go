@@ -2,88 +2,128 @@ package dockerengine
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
-	"maps"
+	"net/netip"
 	"slices"
+	"sort"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/containerd/errdefs"
 	"github.com/moby/moby/api/types/container"
+	"github.com/moby/moby/api/types/mount"
 	"github.com/moby/moby/api/types/network"
 	"github.com/moby/moby/client"
+
+	"zrt/internal/model"
 )
+
+// ImageSnapshot 保存被替换容器实际使用的镜像引用和本地 Image ID。
+// 引用用于展示，Image ID 用于后续回滚时阻止同名标签漂移到其他内容。
+type ImageSnapshot struct {
+	Reference string
+	ID        string
+}
 
 func (s *Service) DeployContainer(
 	ctx context.Context,
-	endpointID, containerName, image, deploymentID string,
-	timeout time.Duration,
-) (string, error, error) {
-	return s.deployContainer(ctx, endpointID, containerName, image, "", deploymentID, timeout)
+	endpointID, targetID, containerName, image, deploymentID string,
+	timeout time.Duration, configuration model.DockerContainerConfig, registry RegistryAuth,
+) (ImageSnapshot, error, error) {
+	return s.deployContainer(ctx, endpointID, targetID, containerName, image, "", deploymentID, timeout, configuration, registry)
 }
 
-// DeployPreparedContainer 发布已经由流水线构建在目标 Docker daemon 中的镜像。
-// expectedImageID 防止唯一标签在构建和发布之间被替换。
+// DeployPreparedContainer 发布已经在目标 Docker daemon 中固定 Image ID 的镜像。
+// expectedImageID 防止唯一标签在构建和发布之间，或回滚创建和执行之间被替换。
 func (s *Service) DeployPreparedContainer(
 	ctx context.Context,
-	endpointID, containerName, image, expectedImageID, deploymentID string,
-	timeout time.Duration,
-) (string, error, error) {
-	if !IsZRTLocalImage(image) || !IsValidImageID(expectedImageID) {
-		return "", nil, errors.New("待发布的本地 Docker 镜像无效")
+	endpointID, targetID, containerName, image, expectedImageID, deploymentID string,
+	timeout time.Duration, configuration model.DockerContainerConfig, registry RegistryAuth,
+) (ImageSnapshot, error, error) {
+	if strings.TrimSpace(image) == "" || !IsValidImageID(expectedImageID) {
+		return ImageSnapshot{}, nil, errors.New("待发布的 Docker 镜像不可验证")
 	}
-	return s.deployContainer(ctx, endpointID, containerName, image, expectedImageID, deploymentID, timeout)
+	return s.deployContainer(ctx, endpointID, targetID, containerName, image, expectedImageID, deploymentID, timeout, configuration, registry)
 }
 
 func (s *Service) deployContainer(
 	ctx context.Context,
-	endpointID, containerName, image, expectedImageID, deploymentID string,
-	timeout time.Duration,
-) (string, error, error) {
+	endpointID, targetID, containerName, image, expectedImageID, deploymentID string,
+	timeout time.Duration, configuration model.DockerContainerConfig, registry RegistryAuth,
+) (ImageSnapshot, error, error) {
+	configuration, err := NormalizeContainerConfig(configuration)
+	if err != nil {
+		return ImageSnapshot{}, nil, err
+	}
 	apiClient, err := s.Client(ctx, endpointID)
 	if err != nil {
-		return "", nil, err
+		return ImageSnapshot{}, nil, err
 	}
 	defer apiClient.Close()
 	deployContext, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	if expectedImageID != "" || IsZRTLocalImage(image) {
-		localImage, err := apiClient.ImageInspect(deployContext, image)
+	executionImage := image
+	if expectedImageID != "" {
+		// expectedImageID 已由构建或 SSH 导入阶段固定。校验和创建都直接按 ID
+		// 执行，不能再次读取可能被其他构建覆盖的展示标签。
+		localImage, err := apiClient.ImageInspect(deployContext, expectedImageID)
 		if err != nil {
-			return "", nil, fmt.Errorf("目标主机上找不到流水线构建的本地镜像: %w", err)
+			return ImageSnapshot{}, nil, fmt.Errorf("目标主机上找不到待发布的 Docker 镜像: %w", err)
 		}
-		if expectedImageID != "" && localImage.ID != expectedImageID {
-			return "", nil, errors.New("目标主机上的本地镜像与流水线构建结果不一致")
+		if localImage.ID != expectedImageID {
+			return ImageSnapshot{}, nil, errors.New("目标主机上的 Docker 镜像与固定结果不一致")
 		}
-	} else {
-		pulledWithSSH, err := s.pullImageWithSSH(deployContext, endpointID, image)
+		executionImage = expectedImageID
+	} else if IsZRTLocalImage(image) {
+		if _, err := apiClient.ImageInspect(deployContext, image); err != nil {
+			return ImageSnapshot{}, nil, fmt.Errorf("目标主机上找不到待发布的 Docker 镜像: %w", err)
+		}
+	} else if _, inspectErr := apiClient.ImageInspect(deployContext, image); inspectErr != nil {
+		if !errdefs.IsNotFound(inspectErr) {
+			return ImageSnapshot{}, nil, fmt.Errorf("检查目标主机 Docker 镜像失败: %w", inspectErr)
+		}
+		pulledWithSSH, err := s.pullImageWithSSH(deployContext, endpointID, image, registry)
 		if err != nil {
-			return "", nil, err
+			return ImageSnapshot{}, nil, err
 		}
 		if !pulledWithSSH {
-			pull, err := apiClient.ImagePull(deployContext, image, client.ImagePullOptions{})
+			encodedAuth, encodeErr := encodeRegistryAuth(registryAuthConfig(registry))
+			if encodeErr != nil {
+				return ImageSnapshot{}, nil, encodeErr
+			}
+			pull, err := apiClient.ImagePull(deployContext, image, client.ImagePullOptions{RegistryAuth: encodedAuth})
 			if err != nil {
-				return "", nil, fmt.Errorf("拉取 Docker 镜像失败: %w", err)
+				return ImageSnapshot{}, nil, fmt.Errorf("拉取 Docker 镜像失败: %w", err)
 			}
 			if err := pull.Wait(deployContext); err != nil {
-				return "", nil, fmt.Errorf("等待 Docker 镜像拉取完成失败: %w", err)
+				return ImageSnapshot{}, nil, fmt.Errorf("等待 Docker 镜像拉取完成失败: %w", err)
 			}
 		}
+	}
+	configuration, err = prepareManagedContainerVolumes(deployContext, apiClient, targetID, configuration)
+	if err != nil {
+		return ImageSnapshot{}, nil, err
 	}
 
 	inspect, err := apiClient.ContainerInspect(deployContext, containerName, client.ContainerInspectOptions{})
 	if err != nil {
 		if errdefs.IsNotFound(err) {
-			return createInitialContainer(deployContext, apiClient, containerName, image, deploymentID)
+			return createInitialContainer(deployContext, apiClient, targetID, containerName, executionImage, deploymentID, configuration)
 		}
-		return "", nil, fmt.Errorf("读取待更新 Docker 容器失败: %w", err)
+		return ImageSnapshot{}, nil, fmt.Errorf("读取待更新 Docker 容器失败: %w", err)
 	}
 	if inspect.Container.Config == nil || inspect.Container.HostConfig == nil {
-		return "", nil, errors.New("Docker 容器配置不完整")
+		return ImageSnapshot{}, nil, errors.New("Docker 容器配置不完整")
 	}
-	previousImage := inspect.Container.Config.Image
+	if inspect.Container.Config.Labels["zrt.managed"] != "true" ||
+		inspect.Container.Config.Labels["zrt.deployment.target.id"] != targetID {
+		return ImageSnapshot{}, nil, errors.New("同名 Docker 容器不属于当前 ZRT 部署目标")
+	}
+	previousImage := ImageSnapshot{Reference: inspect.Container.Config.Image, ID: inspect.Container.Image}
 	oldID := inspect.Container.ID
 	canonicalName := strings.TrimPrefix(inspect.Container.Name, "/")
 	if canonicalName == "" {
@@ -114,18 +154,13 @@ func (s *Service) deployContainer(
 		return previousImage, nil, fmt.Errorf("为旧 Docker 容器创建回退名称失败: %w", err)
 	}
 
-	newConfig := *inspect.Container.Config
-	newConfig.Image = image
-	newConfig.Labels = maps.Clone(newConfig.Labels)
-	if newConfig.Labels == nil {
-		newConfig.Labels = map[string]string{}
+	newConfig, newHostConfig, err := initialContainerConfig(executionImage, targetID, deploymentID, configuration)
+	if err != nil {
+		rollbackOld()
+		return previousImage, nil, err
 	}
-	newConfig.Labels["zrt.deployment.id"] = deploymentID
-	newConfig.Labels["zrt.managed"] = "true"
-	networkingConfig := sanitizedNetworkingConfig(inspect.Container.NetworkSettings)
 	created, err := apiClient.ContainerCreate(deployContext, client.ContainerCreateOptions{
-		Config: &newConfig, HostConfig: inspect.Container.HostConfig,
-		NetworkingConfig: networkingConfig, Name: canonicalName,
+		Config: newConfig, HostConfig: newHostConfig, Name: canonicalName,
 	})
 	if err != nil {
 		rollbackOld()
@@ -159,17 +194,64 @@ func (s *Service) deployContainer(
 	return previousImage, nil, nil
 }
 
+func prepareManagedContainerVolumes(
+	ctx context.Context,
+	apiClient *client.Client,
+	targetID string,
+	configuration model.DockerContainerConfig,
+) (model.DockerContainerConfig, error) {
+	targetID = strings.TrimSpace(targetID)
+	if targetID == "" || len(targetID) > 64 || strings.ContainsAny(targetID, "\x00\r\n") {
+		return configuration, ErrInvalidContainerConfig
+	}
+	for index := range configuration.VolumeMounts {
+		logicalName := configuration.VolumeMounts[index].Source
+		actualName := managedContainerVolumeName(targetID, logicalName)
+		labels := map[string]string{
+			"zrt.managed":              "true",
+			"zrt.deployment.target.id": targetID,
+			"zrt.volume.logical_name":  logicalName,
+		}
+		inspected, err := apiClient.VolumeInspect(ctx, actualName, client.VolumeInspectOptions{})
+		if err != nil {
+			if !errdefs.IsNotFound(err) {
+				return configuration, fmt.Errorf("检查 Docker 命名卷失败: %w", err)
+			}
+			created, createErr := apiClient.VolumeCreate(ctx, client.VolumeCreateOptions{Name: actualName, Labels: labels})
+			if createErr != nil {
+				return configuration, fmt.Errorf("创建 Docker 命名卷失败: %w", createErr)
+			}
+			inspected.Volume = created.Volume
+		}
+		for key, expected := range labels {
+			if inspected.Volume.Labels[key] != expected {
+				return configuration, errors.New("Docker 命名卷不属于当前部署目标")
+			}
+		}
+		configuration.VolumeMounts[index].Source = actualName
+	}
+	return configuration, nil
+}
+
+func managedContainerVolumeName(targetID, logicalName string) string {
+	digest := sha256.Sum256([]byte(targetID + "\x00" + logicalName))
+	return fmt.Sprintf("zrt-%x", digest[:16])
+}
+
 func createInitialContainer(
 	ctx context.Context,
 	apiClient *client.Client,
-	containerName, image, deploymentID string,
-) (string, error, error) {
-	configuration, hostConfiguration := initialContainerConfig(image, deploymentID)
+	targetID, containerName, image, deploymentID string, deploymentConfig model.DockerContainerConfig,
+) (ImageSnapshot, error, error) {
+	configuration, hostConfiguration, err := initialContainerConfig(image, targetID, deploymentID, deploymentConfig)
+	if err != nil {
+		return ImageSnapshot{}, nil, err
+	}
 	created, err := apiClient.ContainerCreate(ctx, client.ContainerCreateOptions{
 		Config: configuration, HostConfig: hostConfiguration, Name: strings.TrimPrefix(containerName, "/"),
 	})
 	if err != nil {
-		return "", nil, fmt.Errorf("创建首个 Docker 容器失败: %w", err)
+		return ImageSnapshot{}, nil, fmt.Errorf("创建首个 Docker 容器失败: %w", err)
 	}
 	removeCreated := true
 	defer func() {
@@ -180,43 +262,81 @@ func createInitialContainer(
 		}
 	}()
 	if _, err := apiClient.ContainerStart(ctx, created.ID, client.ContainerStartOptions{}); err != nil {
-		return "", nil, fmt.Errorf("启动首个 Docker 容器失败: %w", err)
+		return ImageSnapshot{}, nil, fmt.Errorf("启动首个 Docker 容器失败: %w", err)
 	}
 	if err := waitContainerHealthy(ctx, apiClient, created.ID); err != nil {
-		return "", nil, err
+		return ImageSnapshot{}, nil, err
 	}
 	removeCreated = false
-	return "", nil, nil
+	return ImageSnapshot{}, nil, nil
 }
 
-func initialContainerConfig(image, deploymentID string) (*container.Config, *container.HostConfig) {
-	return &container.Config{
-			Image: image,
-			Labels: map[string]string{
-				"zrt.deployment.id": deploymentID,
-				"zrt.managed":       "true",
-			},
-		}, &container.HostConfig{
-			RestartPolicy: container.RestartPolicy{Name: container.RestartPolicyUnlessStopped},
-		}
-}
-
-func sanitizedNetworkingConfig(settings *container.NetworkSettings) *network.NetworkingConfig {
-	if settings == nil || len(settings.Networks) == 0 {
-		return nil
+func initialContainerConfig(
+	image, targetID, deploymentID string,
+	deploymentConfig model.DockerContainerConfig,
+) (*container.Config, *container.HostConfig, error) {
+	deploymentConfig, err := NormalizeContainerConfig(deploymentConfig)
+	if err != nil {
+		return nil, nil, err
 	}
-	endpoints := make(map[string]*network.EndpointSettings, len(settings.Networks))
-	for name, current := range settings.Networks {
-		if current == nil {
-			endpoints[name] = nil
-			continue
+	configuration := &container.Config{
+		Image: image,
+		Labels: map[string]string{
+			"zrt.deployment.id":        deploymentID,
+			"zrt.deployment.target.id": targetID,
+			"zrt.managed":              "true",
+		},
+	}
+	hostConfiguration := &container.HostConfig{
+		RestartPolicy: container.RestartPolicy{Name: container.RestartPolicyUnlessStopped},
+		NetworkMode:   container.NetworkMode(deploymentConfig.Network),
+	}
+	if len(deploymentConfig.Command) > 0 {
+		configuration.Cmd = slices.Clone(deploymentConfig.Command)
+	}
+	if len(deploymentConfig.EnvironmentVariables) > 0 {
+		names := make([]string, 0, len(deploymentConfig.EnvironmentVariables))
+		for name := range deploymentConfig.EnvironmentVariables {
+			names = append(names, name)
 		}
-		endpoints[name] = &network.EndpointSettings{
-			Links: slices.Clone(current.Links), Aliases: slices.Clone(current.Aliases),
-			DriverOpts: maps.Clone(current.DriverOpts), GwPriority: current.GwPriority,
+		sort.Strings(names)
+		configuration.Env = make([]string, 0, len(names))
+		for _, name := range names {
+			configuration.Env = append(configuration.Env, name+"="+deploymentConfig.EnvironmentVariables[name])
 		}
 	}
-	return &network.NetworkingConfig{EndpointsConfig: endpoints}
+	if deploymentConfig.HealthCheck.Enabled {
+		configuration.Healthcheck = &container.HealthConfig{
+			Test:        append([]string{"CMD"}, deploymentConfig.HealthCheck.Command...),
+			Interval:    time.Duration(deploymentConfig.HealthCheck.IntervalSeconds) * time.Second,
+			Timeout:     time.Duration(deploymentConfig.HealthCheck.TimeoutSeconds) * time.Second,
+			Retries:     deploymentConfig.HealthCheck.Retries,
+			StartPeriod: time.Duration(deploymentConfig.HealthCheck.StartPeriodSeconds) * time.Second,
+		}
+	}
+	if len(deploymentConfig.PortMappings) > 0 {
+		configuration.ExposedPorts = make(network.PortSet, len(deploymentConfig.PortMappings))
+		hostConfiguration.PortBindings = make(network.PortMap, len(deploymentConfig.PortMappings))
+		for _, mapping := range deploymentConfig.PortMappings {
+			port, parseErr := network.ParsePort(strconv.Itoa(mapping.ContainerPort) + "/" + mapping.Protocol)
+			if parseErr != nil {
+				return nil, nil, ErrInvalidContainerConfig
+			}
+			configuration.ExposedPorts[port] = struct{}{}
+			hostConfiguration.PortBindings[port] = []network.PortBinding{{
+				HostIP: netip.MustParseAddr(mapping.HostIP), HostPort: strconv.Itoa(mapping.HostPort),
+			}}
+		}
+	}
+	if len(deploymentConfig.VolumeMounts) > 0 {
+		hostConfiguration.Mounts = make([]mount.Mount, 0, len(deploymentConfig.VolumeMounts))
+		for _, volume := range deploymentConfig.VolumeMounts {
+			hostConfiguration.Mounts = append(hostConfiguration.Mounts, mount.Mount{
+				Type: mount.Type(volume.Type), Source: volume.Source, Target: volume.Target, ReadOnly: volume.ReadOnly,
+			})
+		}
+	}
+	return configuration, hostConfiguration, nil
 }
 
 func waitContainerHealthy(ctx context.Context, apiClient *client.Client, containerID string) error {

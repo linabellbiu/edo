@@ -12,6 +12,7 @@ WORKDIR /src
 # Buildx 负责与 Docker-in-Docker 中的 BuildKit 建立双向 session；仅调用 HTTP build API 无法传输上下文和认证。
 COPY --from=docker-cli /usr/local/bin/docker /usr/local/bin/docker
 COPY --from=docker-cli /usr/local/libexec/docker/cli-plugins/docker-buildx /usr/local/libexec/docker/cli-plugins/docker-buildx
+COPY --from=docker-cli /usr/local/libexec/docker/cli-plugins/docker-compose /usr/local/libexec/docker/cli-plugins/docker-compose
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
@@ -30,6 +31,7 @@ RUN CGO_ENABLED=0 go build -tags=zrt_web -trimpath -ldflags="-s -w -X main.versi
 FROM debian:bookworm-slim
 COPY --from=docker-cli /usr/local/bin/docker /usr/local/bin/docker
 COPY --from=docker-cli /usr/local/libexec/docker/cli-plugins/docker-buildx /usr/local/libexec/docker/cli-plugins/docker-buildx
+COPY --from=docker-cli /usr/local/libexec/docker/cli-plugins/docker-compose /usr/local/libexec/docker/cli-plugins/docker-compose
 RUN apt-get -o Acquire::Retries=5 update \
     && apt-get -o Acquire::Retries=5 install -y --no-install-recommends ca-certificates curl tzdata \
     && rm -rf /var/lib/apt/lists/* \

@@ -307,6 +307,9 @@ func useHostDockerBuilder() error {
 	if err := os.Unsetenv("ZRT_DOCKER_BUILDER_HOST"); err != nil {
 		return fmt.Errorf("切换到宿主机 Docker 构建运行时失败: %w", err)
 	}
+	if err := os.Unsetenv("ZRT_DOCKER_BUILDER_TLS_CERT_PATH"); err != nil {
+		return fmt.Errorf("清理容器 Docker 客户端证书配置失败: %w", err)
+	}
 	return nil
 }
 

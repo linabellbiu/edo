@@ -36,9 +36,10 @@ func TestExecuteBlockedManualRunWithSelectedCommit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if run.Ref != "refs/heads/main" || run.CommitSHA != commitSHA || run.Status != model.PipelineRunRunning || run.CurrentNodeID != "deploy-dev" || run.ExecutionJobID == "" {
+	if run.Ref != "refs/heads/main" || run.CommitSHA != commitSHA || run.Status != model.PipelineRunRunning || run.CurrentNodeID != "build" || run.ExecutionJobID == "" {
 		t.Fatalf("流水线运行没有使用所选版本提交真实执行任务: %+v", run)
 	}
+	assertPipelineBuildJob(t, db, run.ExecutionJobID)
 }
 
 func TestExecuteManualRunStartsFromManualCodeTrigger(t *testing.T) {
@@ -56,19 +57,13 @@ func TestExecuteManualRunStartsFromManualCodeTrigger(t *testing.T) {
 		t.Fatal(err)
 	}
 	workflow := workflowResult.Workflow
-	var triggerID string
-	for i := range workflow.Nodes {
-		if workflow.Nodes[i].Type == model.WorkflowNodeTrigger {
-			triggerID = workflow.Nodes[i].ID
-			break
-		}
-	}
+	triggerID := workflow.Source.ID
 	if triggerID == "" {
 		t.Fatal("默认流水线缺少代码触发节点")
 	}
 	if _, err := service.SaveWorkflow(context.Background(), application.ID, "admin", WorkflowInput{
-		Name: workflow.Name, Revision: workflow.Revision, Activate: true,
-		Nodes: workflow.Nodes, Edges: workflow.Edges, Viewport: workflow.Viewport,
+		SchemaVersion: model.WorkflowSchemaVersion, Name: workflow.Name,
+		Revision: workflow.Revision, Activate: true, Source: workflow.Source, Stages: workflow.Stages,
 	}); err != nil {
 		t.Fatalf("包含手动选项的代码触发流水线未能启用: %v", err)
 	}
@@ -83,10 +78,11 @@ func TestExecuteManualRunStartsFromManualCodeTrigger(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if run.CurrentNodeID != "deploy-dev" || run.Status != model.PipelineRunRunning ||
+	if run.CurrentNodeID != "build" || run.Status != model.PipelineRunRunning ||
 		run.Stage != "queued" || run.ExecutionJobID == "" {
-		t.Fatalf("手动运行没有从代码触发节点进入部署: %+v", run)
+		t.Fatalf("手动运行没有从代码触发节点进入构建任务: %+v", run)
 	}
+	assertPipelineBuildJob(t, db, run.ExecutionJobID)
 }
 
 func TestExecuteManualRunRejectsAutomaticOnlyCodeTrigger(t *testing.T) {
@@ -103,26 +99,15 @@ func TestExecuteManualRunRejectsAutomaticOnlyCodeTrigger(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	deployID := ""
-	for i := range result.Workflow.Nodes {
-		if result.Workflow.Nodes[i].Type == model.WorkflowNodeDeploy {
-			deployID = result.Workflow.Nodes[i].ID
-			break
-		}
+	triggerID := result.Workflow.Source.ID
+	result.Workflow.Source.Config.Events = []string{"push"}
+	if triggerID == "" {
+		t.Fatal("阶段式流水线缺少代码源")
 	}
-	if deployID == "" {
-		t.Fatal("默认流水线缺少部署节点")
-	}
-	result.Workflow.Nodes = append(result.Workflow.Nodes, model.WorkflowNode{
-		ID: "trigger-auto-only", Type: model.WorkflowNodeTrigger, Name: "仅自动触发",
-		Config: model.WorkflowNodeConfig{Environment: "dev", Branch: "main", Events: []string{"push"}},
-	})
-	result.Workflow.Edges = append(result.Workflow.Edges, model.WorkflowEdge{
-		ID: "auto-only-to-deploy", Source: "trigger-auto-only", Target: deployID,
-	})
 	saved, err := service.SaveWorkflow(context.Background(), application.ID, "admin", WorkflowInput{
-		Name: result.Workflow.Name, Revision: result.Workflow.Revision, Activate: true,
-		Nodes: result.Workflow.Nodes, Edges: result.Workflow.Edges, Viewport: result.Workflow.Viewport,
+		SchemaVersion: model.WorkflowSchemaVersion, Name: result.Workflow.Name,
+		Revision: result.Workflow.Revision, Activate: true,
+		Source: result.Workflow.Source, Stages: result.Workflow.Stages,
 	})
 	if err != nil {
 		t.Fatalf("准备自动和手动代码触发入口失败: %v", err)
@@ -130,21 +115,12 @@ func TestExecuteManualRunRejectsAutomaticOnlyCodeTrigger(t *testing.T) {
 	if !saved.Workflow.IsActive {
 		t.Fatal("测试流水线未启用")
 	}
-	run, err := service.PrepareRun(context.Background(), application.ID, "admin")
-	if err != nil {
-		t.Fatal(err)
+	if _, err := service.PrepareRun(context.Background(), application.ID, "admin"); !errors.Is(err, ErrManualReleaseDisabled) {
+		t.Fatalf("未开启 manual 的代码源仍可创建手动运行: %v", err)
 	}
-	_, err = service.ExecuteRun(
-		context.Background(), run.ID, "admin", "refs/heads/main", commitSHA, "trigger-auto-only",
-	)
-	if !errors.Is(err, ErrInvalidWorkflow) {
-		t.Fatalf("未开启 manual 的代码触发节点仍可作为手动入口: %v", err)
-	}
-	if err := db.First(run, "id = ?", run.ID).Error; err != nil {
-		t.Fatal(err)
-	}
-	if run.Status != model.PipelineRunBlocked || run.CommitSHA != "" || run.ExecutionJobID != "" {
-		t.Fatalf("拒绝自动入口后产生了执行副作用: %+v", run)
+	var count int64
+	if err := db.Model(&model.PipelineRun{}).Where("application_id = ?", application.ID).Count(&count).Error; err != nil || count != 0 {
+		t.Fatalf("拒绝自动入口后产生了执行副作用: count=%d err=%v", count, err)
 	}
 }
 
@@ -175,7 +151,7 @@ func TestExecuteManualRunRejectsStaleCommit(t *testing.T) {
 	}
 }
 
-func TestExecuteWithoutImageRegistryUsesDockerSSHFallback(t *testing.T) {
+func TestExecuteDockerfileBuildWithoutImageRegistryQueuesLocalBuild(t *testing.T) {
 	service, db, secrets, repositoryID := newPipelineTestService(t)
 	commitSHA := strings.Repeat("f", 40)
 	service.repositories = repository.NewService(
@@ -188,9 +164,6 @@ func TestExecuteWithoutImageRegistryUsesDockerSSHFallback(t *testing.T) {
 	if err := db.Model(&model.ReleaseWorkflow{}).Where("application_id = ?", application.ID).Update("is_active", true).Error; err != nil {
 		t.Fatal(err)
 	}
-	if err := db.Model(&model.Application{}).Where("id = ?", application.ID).Update("image_registry_id", "").Error; err != nil {
-		t.Fatal(err)
-	}
 	run, err := service.PrepareRun(context.Background(), application.ID, "admin")
 	if err != nil {
 		t.Fatalf("尚未选择代码版本时应该生成待手动选择的运行: %v", err)
@@ -198,17 +171,26 @@ func TestExecuteWithoutImageRegistryUsesDockerSSHFallback(t *testing.T) {
 
 	run, err = service.ExecuteRun(context.Background(), run.ID, "admin", "refs/heads/main", commitSHA, "")
 	if err != nil {
-		t.Fatalf("Docker SSH 发布不应强制绑定镜像仓库: %v", err)
+		t.Fatalf("本地 Dockerfile 构建不应强制绑定镜像仓库: %v", err)
 	}
-	if run.Status != model.PipelineRunRunning || run.Ref != "refs/heads/main" || run.CommitSHA != commitSHA || run.ExecutionJobID == "" {
-		t.Fatalf("未绑定镜像仓库时没有提交 Docker SSH 构建发布任务: %+v", run)
+	if run.Status != model.PipelineRunRunning || run.Ref != "refs/heads/main" || run.CommitSHA != commitSHA ||
+		run.CurrentNodeID != "build" || run.ExecutionJobID == "" {
+		t.Fatalf("未绑定镜像仓库时没有提交 Docker 构建任务: %+v", run)
 	}
+	assertPipelineBuildJob(t, db, run.ExecutionJobID)
 	var component model.PipelineRunRepository
 	if err := db.First(&component, "pipeline_run_id = ?", run.ID).Error; err != nil {
 		t.Fatal(err)
 	}
 	if component.ImageRegistryID != "" {
-		t.Fatalf("无仓库运行不应写入不存在的镜像仓库快照: %+v", component)
+		t.Fatalf("阶段式运行不应从应用级字段写入镜像仓库快照: %+v", component)
+	}
+	snapshot, err := parseWorkflowSnapshot(run)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.BuildPlans["build"].ImageRegistryID != "" {
+		t.Fatalf("默认 Dockerfile 构建方案应使用本地构建运行时: %+v", snapshot.BuildPlans["build"])
 	}
 }
 
@@ -223,32 +205,87 @@ func TestLocalExecutionImageUsesCommitAndRunIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if image != "zrt.local/order-api:abcdef123456-12345678" {
+	if image != "zrt.local/order-api-"+strings.TrimPrefix(sha256Digest([]byte("application-id")), "sha256:")[:8]+":abcdef123456-12345678" {
 		t.Fatalf("本地镜像标签没有同时固定 Commit 和运行身份: %q", image)
 	}
 }
 
+func TestExecutionImageTagSeparatesRunsForSameCommit(t *testing.T) {
+	first, err := executionImageTag(model.PipelineRun{ID: "11111111-abcd-efab-cdef-1234567890ab", CommitSHA: "abcdef1234567890"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := executionImageTag(model.PipelineRun{ID: "22222222-abcd-efab-cdef-1234567890ab", CommitSHA: "abcdef1234567890"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first == second {
+		t.Fatalf("同一 Commit 的不同运行不得共用可变镜像标签: %q", first)
+	}
+}
+
 func TestPipelineRunKeepsExactSSHDeploymentPlanSnapshot(t *testing.T) {
+	service, db, _, repositoryID := newPipelineTestService(t)
+	ctx := context.Background()
 	script := "printf 'release'  \n\n"
-	plan := &model.DeploymentPlan{
-		ID: "script-plan", Kind: model.DeploymentPlanScript, Script: script, TimeoutSeconds: 180,
+	now := time.Now().UTC()
+	target := model.DeploymentTarget{
+		ID: "script-plan-target", Name: "SSH 发布位置", Platform: model.DeploymentSSH,
+		EnvironmentID: "environment-1", HostID: "host-1", WorkingDirectory: "/srv/app",
+		RolloutTimeout: 180, IsActive: true, CreatedBy: "admin", CreatedAt: now, UpdatedAt: now,
 	}
-	application := &model.Application{
-		RepositoryID: "repository-1", DeploymentPlanID: plan.ID, DeploymentPlan: plan,
+	plan, err := service.CreateDeploymentPlan(ctx, "admin", DeploymentPlanInput{
+		Name: "精确脚本快照", Kind: model.DeploymentPlanScript, DeploymentTarget: deploymentPlanTargetInput(t, service, target),
+		Script: script, TimeoutSeconds: 180,
+	})
+	if err != nil {
+		t.Fatal(err)
 	}
-	components := pipelineRunRepositories(application, "run-1", "refs/heads/main", strings.Repeat("a", 40), time.Now().UTC())
-	if len(components) != 1 {
-		t.Fatalf("流水线仓库快照数量错误: %d", len(components))
+	buildPlan, err := service.CreateBuildPlan(ctx, "admin", BuildPlanInput{
+		Name: "脚本发布前构建", Kind: model.BuildPlanScript,
+		Script: "mkdir -p dist && printf ready > dist/app", ArtifactPath: "dist",
+	})
+	if err != nil {
+		t.Fatal(err)
 	}
+	application, err := service.CreateApplication(ctx, "admin", ApplicationInput{
+		Name: "脚本快照应用", RepositoryID: repositoryID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	source, stages := stageWorkflowGraph(buildPlan.ID, plan.ID, []string{"manual"}, "main")
+	workflow := &model.ReleaseWorkflow{
+		ID: "script-snapshot-workflow", ApplicationID: application.ID,
+		SchemaVersion: model.WorkflowSchemaVersion, Name: "脚本快照流水线",
+		Revision: 1, IsActive: true, Source: source, Stages: stages,
+	}
+	run, err := service.newResolvedWorkflowRun(
+		ctx, application, workflow, source, "manual", "refs/heads/main", strings.Repeat("a", 40), "admin", "", now,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := parseWorkflowSnapshot(run)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stored := snapshot.DeploymentPlans["deploy-dev"]
 	wantDigest := model.DeploymentPlanExecutionDigest(plan.Kind, script, plan.TimeoutSeconds)
-	if components[0].DeploymentPlanScript != script || components[0].DeploymentPlanKind != plan.Kind ||
-		components[0].DeploymentPlanTimeoutSeconds != plan.TimeoutSeconds || components[0].DeploymentPlanDigest != wantDigest {
-		t.Fatalf("SSH 部署方案没有按原始字节创建不可变快照: %+v", components[0])
+	if stored.Script != script || stored.Kind != plan.Kind || stored.TimeoutSeconds != plan.TimeoutSeconds ||
+		model.DeploymentPlanExecutionDigest(stored.Kind, stored.Script, stored.TimeoutSeconds) != wantDigest {
+		t.Fatalf("SSH 部署方案没有按原始字节创建不可变快照: %+v", stored)
 	}
-	plan.Script = "echo modified\n"
-	plan.TimeoutSeconds = 30
-	if components[0].DeploymentPlanScript != script || components[0].DeploymentPlanDigest != wantDigest {
-		t.Fatal("应用部署方案后续修改污染了已经创建的流水线运行")
+	if err := db.Model(&model.DeploymentPlan{}).Where("id = ?", plan.ID).
+		Updates(map[string]any{"script": "echo modified\n", "timeout_seconds": 30}).Error; err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err = parseWorkflowSnapshot(run)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.DeploymentPlans["deploy-dev"].Script != script {
+		t.Fatal("部署方案后续修改污染了已经创建的流水线运行")
 	}
 }
 
@@ -290,7 +327,7 @@ func TestRetryFailedRunCreatesNewAuditedExecution(t *testing.T) {
 	if err := db.First(&job, "id = ?", retried.ExecutionJobID).Error; err != nil {
 		t.Fatal(err)
 	}
-	if job.Kind != "pipeline.deploy" || job.MaxAttempts != 1 {
+	if job.Kind != "pipeline.build" || job.MaxAttempts != 4 || !job.IsIdempotent {
 		t.Fatalf("重新执行任务的副作用保护不正确: %+v", job)
 	}
 }
@@ -313,12 +350,47 @@ func TestRetryRunRejectsNonFailedRun(t *testing.T) {
 }
 
 func TestRetryWorkflowSourceKeepsMatchingCodeTrigger(t *testing.T) {
-	workflow := &model.ReleaseWorkflow{Nodes: []model.WorkflowNode{
-		{ID: "trigger-main", Type: model.WorkflowNodeTrigger, Name: "主分支", Config: model.WorkflowNodeConfig{Branch: "main", Events: []string{"push", "manual"}}},
+	workflow := &model.ReleaseWorkflow{Source: model.WorkflowNode{
+		ID: "trigger-main", Type: model.WorkflowNodeTrigger, Name: "主分支", Config: model.WorkflowNodeConfig{Branch: "main", Events: []string{"push", "manual"}},
 	}}
 	source := retryWorkflowSource(workflow, &model.PipelineRun{Ref: "refs/heads/main"})
 	if source == nil || source.ID != "trigger-main" {
 		t.Fatalf("重新执行应保留匹配的代码触发入口: %+v", source)
+	}
+}
+
+func TestRetryMergedPullRequestKeepsEventSnapshot(t *testing.T) {
+	service, db, _, repositoryID := newPipelineTestService(t)
+	application := createManualRunTestApplication(t, service, db, repositoryID, "重新执行合并 PR")
+	var workflow model.ReleaseWorkflow
+	if err := db.First(&workflow, "application_id = ?", application.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	workflow.Source.Config.Events = []string{"pr"}
+	workflow.Source.Config.PRSourcePattern = "feature/*"
+	workflow.Source.Config.PRTargetPattern = "main"
+	workflow.Source.Config.PRActions = []string{"merged"}
+	workflow.IsActive = true
+	if err := db.Save(&workflow).Error; err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	failed := model.PipelineRun{
+		ID: "failed-merged-pr", ApplicationID: application.ID, Trigger: "poll_pr", TriggerAction: "merged",
+		SourceBranch: "feature/payment", TargetBranch: "main", Ref: "refs/pull/12/head", CommitSHA: strings.Repeat("f", 40),
+		Status: model.PipelineRunFailed, Stage: "failed", CreatedBy: "system", CreatedAt: now, UpdatedAt: now,
+	}
+	if err := db.Create(&failed).Error; err != nil {
+		t.Fatal(err)
+	}
+	retried, err := service.RetryRun(context.Background(), failed.ID, "operator")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if retried.RetryOfID != failed.ID || retried.TriggerAction != "merged" ||
+		retried.SourceBranch != "feature/payment" || retried.TargetBranch != "main" ||
+		pipelineRunCheckoutRef(*retried) != "refs/heads/main" {
+		t.Fatalf("重新执行没有保留合并 PR 的不可变事件快照: %+v", retried)
 	}
 }
 
@@ -331,33 +403,20 @@ func createManualRunTestApplication(t *testing.T, service *Service, db *gorm.DB,
 	if err != nil {
 		t.Fatal(err)
 	}
-	registry, err := service.CreateRegistry(ctx, "admin", RegistryInput{
-		Name: name + "镜像", Provider: model.RegistryGeneric, Endpoint: "https://registry.example.com", Namespace: "zrt",
-	})
-	if err != nil {
-		t.Fatal(err)
+	target := model.DeploymentTarget{
+		ID: "target-" + strings.ReplaceAll(name, " ", "-"), Name: name + "环境", Platform: model.DeploymentDocker,
+		RuntimeID: "docker-1", WorkloadName: "api", RolloutTimeout: 300,
+		IsActive: true, CreatedBy: "admin", CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
 	}
 	deploymentPlan, err := service.CreateDeploymentPlan(ctx, "admin", DeploymentPlanInput{
 		Name: name + "发布", Kind: model.DeploymentPlanDocker, ServiceName: "api",
+		DeploymentTarget: deploymentPlanTargetInput(t, service, target),
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	target := model.DeploymentTarget{
-		ID: "target-" + strings.ReplaceAll(name, " ", "-"), Name: name + "环境", Platform: model.DeploymentDocker,
-		Environment: model.EnvironmentStaging, RuntimeID: "docker-1", WorkloadName: "api", RolloutTimeout: 300,
-		IsActive: true, CreatedBy: "admin", CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
-	}
-	if err := db.Create(&target).Error; err != nil {
-		t.Fatal(err)
-	}
 	application, err := service.CreateApplication(ctx, "admin", ApplicationInput{
-		Name: name, RepositoryID: repositoryID, Branch: "main", WatchPush: true,
-		BuildPlanID: buildPlan.ID, ImageRegistryID: registry.ID, DeploymentPlanID: deploymentPlan.ID,
-		Environments: []EnvironmentInput{{
-			Key: "dev", Name: "开发环境", Branch: "main", WatchPush: true,
-			DeploymentPlanID: deploymentPlan.ID, DeploymentTargetID: target.ID,
-		}},
+		Name: name, RepositoryID: repositoryID,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -366,46 +425,70 @@ func createManualRunTestApplication(t *testing.T, service *Service, db *gorm.DB,
 	if err != nil {
 		t.Fatal(err)
 	}
-	manualTriggerFound := false
-	for i := range workflowResult.Workflow.Nodes {
-		node := &workflowResult.Workflow.Nodes[i]
-		if node.Type != model.WorkflowNodeTrigger {
-			continue
-		}
-		node.Config.Events = append(node.Config.Events, "manual")
-		manualTriggerFound = true
-		break
+	source, stages := stageWorkflowGraph(buildPlan.ID, deploymentPlan.ID, []string{"manual", "push"}, "main")
+	saved, err := service.SaveWorkflow(ctx, application.ID, "admin", WorkflowInput{
+		SchemaVersion: model.WorkflowSchemaVersion, Name: workflowResult.Workflow.Name,
+		Revision: workflowResult.Workflow.Revision, Source: source, Stages: stages,
+	})
+	if err != nil || !saved.Valid {
+		t.Fatalf("保存阶段式测试流水线失败: result=%+v err=%v", saved, err)
 	}
-	if !manualTriggerFound {
-		t.Fatal("默认流水线缺少代码触发节点")
-	}
-	if err := db.Save(workflowResult.Workflow).Error; err != nil {
-		t.Fatal(err)
-	}
-	application.Workflow = workflowResult.Workflow
+	application.Workflow = saved.Workflow
 	return application
 }
 
-func TestManualWorkflowSourceUsesOnlyManualCodeTriggers(t *testing.T) {
-	workflow := &model.ReleaseWorkflow{Nodes: []model.WorkflowNode{
-		{ID: "trigger-auto", Type: model.WorkflowNodeTrigger, Name: "自动 main", Config: model.WorkflowNodeConfig{Branch: "main", Events: []string{"push"}}},
-		{ID: "trigger-test", Type: model.WorkflowNodeTrigger, Name: "手动测试", Config: model.WorkflowNodeConfig{Branch: "main", Events: []string{"push", "manual"}}},
-		{ID: "trigger-prod", Type: model.WorkflowNodeTrigger, Name: "手动生产", Config: model.WorkflowNodeConfig{Branch: "release/*", Events: []string{"manual"}}},
-	}}
+func stageWorkflowGraph(buildPlanID, deploymentPlanID string, events []string, branch string) (model.WorkflowNode, []model.WorkflowStage) {
+	source := model.WorkflowNode{ID: "trigger-dev", Type: model.WorkflowNodeTrigger, Name: "代码源", Config: model.WorkflowNodeConfig{Branch: branch, Events: events}}
+	tasks := []model.WorkflowNode{
+		{ID: "build", Type: model.WorkflowNodeBuild, Name: "构建制品", Config: model.WorkflowNodeConfig{
+			BuildPlanID: buildPlanID,
+		}},
+		{ID: "shell", Type: model.WorkflowNodeShell, Name: "验证制品", Config: model.WorkflowNodeConfig{
+			Script: "echo verify", WorkingDirectory: ".", TimeoutSeconds: 30,
+		}},
+		{ID: "approval", Type: model.WorkflowNodeApproval, Name: "发布审核"},
+		{ID: "manual", Type: model.WorkflowNodeManual, Name: "人工放行"},
+		{ID: "deploy-dev", Type: model.WorkflowNodeDeploy, Name: "部署", Config: model.WorkflowNodeConfig{
+			DeploymentPlanID: deploymentPlanID,
+		}},
+	}
+	stages := []model.WorkflowStage{
+		{ID: "build", Name: "构建", Tasks: tasks[:1]},
+		{ID: "verify", Name: "验证", Tasks: tasks[1:2]},
+		{ID: "release", Name: "发布", Tasks: tasks[2:]},
+	}
+	return source, stages
+}
 
-	selected := manualWorkflowSource(workflow, "refs/heads/release/v1", "trigger-prod")
-	if selected == nil || selected.ID != "trigger-prod" {
+func assertPipelineBuildJob(t *testing.T, db *gorm.DB, jobID string) {
+	t.Helper()
+	var job model.Job
+	if err := db.First(&job, "id = ?", jobID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if job.Kind != "pipeline.build" || job.MaxAttempts != 4 || !job.IsIdempotent {
+		t.Fatalf("首个阶段任务不是可幂等重试的构建任务: %+v", job)
+	}
+}
+
+func TestManualWorkflowSourceUsesOnlyManualCodeTriggers(t *testing.T) {
+	workflow := &model.ReleaseWorkflow{Source: model.WorkflowNode{
+		ID: "source", Type: model.WorkflowNodeTrigger, Name: "代码源",
+		Config: model.WorkflowNodeConfig{Branch: "release/*", Events: []string{"push", "manual"}},
+	}}
+	selected := manualWorkflowSource(workflow, "refs/heads/release/v1", "source")
+	if selected == nil || selected.ID != "source" {
 		t.Fatalf("没有使用用户选择的发布路径: %+v", selected)
 	}
-	if manualWorkflowSource(workflow, "refs/heads/main", "trigger-auto") != nil {
-		t.Fatal("未开启 manual 的自动代码触发节点不能作为手动来源")
+	if manualWorkflowSource(workflow, "refs/heads/main", "unknown") != nil {
+		t.Fatal("未知代码源标识不能作为手动来源")
 	}
-	if fallback := manualWorkflowSource(workflow, "refs/heads/main", ""); fallback != nil {
-		t.Fatalf("存在多个手动代码触发节点时不得静默选择入口: %+v", fallback)
+	if fallback := manualWorkflowSource(workflow, "refs/heads/main", ""); fallback == nil || fallback.ID != "source" {
+		t.Fatalf("唯一手动代码源应允许默认选择: %+v", fallback)
 	}
-	single := &model.ReleaseWorkflow{Nodes: workflow.Nodes[:2]}
-	if fallback := manualWorkflowSource(single, "refs/heads/main", ""); fallback == nil || fallback.ID != "trigger-test" {
-		t.Fatalf("只有一个手动代码触发节点时应允许兼容缺省入口: %+v", fallback)
+	workflow.Source.Config.Events = []string{"push"}
+	if manualWorkflowSource(workflow, "refs/heads/main", "") != nil {
+		t.Fatal("未开启 manual 的代码源不能作为手动来源")
 	}
 }
 
@@ -423,54 +506,49 @@ func TestListApplicationRefsReturnsOnlyManualCodeTriggers(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	result.Workflow.Nodes = append(result.Workflow.Nodes, model.WorkflowNode{
-		ID: "trigger-auto-only", Type: model.WorkflowNodeTrigger, Name: "仅自动触发",
-		Config: model.WorkflowNodeConfig{Environment: "dev", Branch: "main", Events: []string{"push"}},
-	})
-	if err := db.Save(result.Workflow).Error; err != nil {
-		t.Fatal(err)
-	}
 
 	options, err := service.ListApplicationRefs(context.Background(), application.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(options.ManualSources) != 1 || options.ManualSources[0].ID != "trigger-dev" {
-		t.Fatalf("手动入口列表包含了未开启 manual 的代码触发节点: %+v", options.ManualSources)
+		t.Fatalf("手动入口列表没有返回阶段式流水线的代码源: %+v", options.ManualSources)
+	}
+	result.Workflow.Source.Config.Events = []string{"push"}
+	if err := db.Save(result.Workflow).Error; err != nil {
+		t.Fatal(err)
+	}
+	options, err = service.ListApplicationRefs(context.Background(), application.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(options.ManualSources) != 0 {
+		t.Fatalf("仅自动触发的代码源出现在手动入口列表: %+v", options.ManualSources)
 	}
 }
 
 func TestWorkflowAllowsManualOnlyCodeTriggerAsSource(t *testing.T) {
-	service, db, _, _ := newPipelineTestService(t)
-	ctx := context.Background()
-	deploymentPlan, err := service.CreateDeploymentPlan(ctx, "admin", DeploymentPlanInput{
-		Name: "手动发布方案", Kind: model.DeploymentPlanDocker, ServiceName: "zrt-api",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	now := time.Now().UTC()
-	target := model.DeploymentTarget{
-		ID: "manual-prod-target", Name: "手动发布生产环境", Platform: model.DeploymentDocker,
-		Environment: model.EnvironmentProduction, RuntimeID: "docker-1", WorkloadName: "zrt-api",
-		RolloutTimeout: 300, IsActive: true, CreatedBy: "admin", CreatedAt: now, UpdatedAt: now,
-	}
-	if err := db.Create(&target).Error; err != nil {
-		t.Fatal(err)
-	}
-	application := &model.Application{Environments: []model.ApplicationEnvironment{{Key: "prod", Name: "生产环境"}}}
-	nodes := []model.WorkflowNode{
-		{ID: "trigger-prod", Type: model.WorkflowNodeTrigger, Name: "生产代码", Config: model.WorkflowNodeConfig{Environment: "prod", Branch: "release/*", Events: []string{"manual"}}},
-		{ID: "approval-prod", Type: model.WorkflowNodeApproval, Name: "生产发布审核", Config: model.WorkflowNodeConfig{Environment: "prod"}},
-		{ID: "deploy-prod", Type: model.WorkflowNodeDeploy, Name: "部署生产", Config: model.WorkflowNodeConfig{Environment: "prod", DeploymentPlanID: deploymentPlan.ID, DeploymentTargetID: target.ID}},
-	}
-	edges := []model.WorkflowEdge{
-		{ID: "edge-trigger-approval", Source: "trigger-prod", Target: "approval-prod"},
-		{ID: "edge-approval-deploy", Source: "approval-prod", Target: "deploy-prod"},
-	}
-
-	if issues := service.validateWorkflow(ctx, application, nodes, edges); len(issues) != 0 {
+	service, db, _, repositoryID := newPipelineTestService(t)
+	application := createManualRunTestApplication(t, service, db, repositoryID, "仅手动代码源")
+	source, stages := application.Workflow.Source, cloneWorkflowStages(application.Workflow.Stages)
+	source.Config.Events = []string{"manual"}
+	if issues := service.validateWorkflow(context.Background(), application, model.WorkflowSchemaVersion, source, stages); len(issues) != 0 {
 		t.Fatalf("只开启 manual 的代码触发入口应该有效: %+v", issues)
+	}
+}
+
+func TestWorkflowRequiresNamedNonEmptyUniqueStages(t *testing.T) {
+	service, db, _, repositoryID := newPipelineTestService(t)
+	application := createManualRunTestApplication(t, service, db, repositoryID, "阶段约束")
+	stages := cloneWorkflowStages(application.Workflow.Stages)
+	stages[0].Tasks = nil
+	if issues := service.validateWorkflow(context.Background(), application, model.WorkflowSchemaVersion, application.Workflow.Source, stages); !hasWorkflowIssue(issues, "empty_stage") {
+		t.Fatalf("空阶段未被拒绝: %+v", issues)
+	}
+	stages = cloneWorkflowStages(application.Workflow.Stages)
+	stages[1].ID = stages[0].ID
+	if issues := service.validateWorkflow(context.Background(), application, model.WorkflowSchemaVersion, application.Workflow.Source, stages); !hasWorkflowIssue(issues, "duplicate_stage") {
+		t.Fatalf("重复阶段标识未被拒绝: %+v", issues)
 	}
 }
 
@@ -481,230 +559,107 @@ func TestWorkflowValidatesCodeTriggerAsOnlyEntryType(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var deploy model.WorkflowNode
-	for i := range application.Workflow.Nodes {
-		if application.Workflow.Nodes[i].Type == model.WorkflowNodeDeploy {
-			deploy = application.Workflow.Nodes[i]
-			break
-		}
-	}
-	if deploy.ID == "" {
-		t.Fatal("默认流水线缺少部署节点")
-	}
-	trigger := model.WorkflowNode{
-		ID: "code-trigger", Type: model.WorkflowNodeTrigger, Name: "main 代码",
-		Config: model.WorkflowNodeConfig{Environment: "dev", Branch: "main", Events: []string{"push", "manual"}},
-	}
-	manualGate := model.WorkflowNode{
-		ID: "manual-gate", Type: model.WorkflowNodeManual, Name: "人工放行",
-		Config: model.WorkflowNodeConfig{Environment: "dev"},
-	}
-
-	validIssues := service.validateWorkflow(context.Background(), application,
-		[]model.WorkflowNode{trigger, deploy},
-		[]model.WorkflowEdge{
-			{ID: "trigger-deploy", Source: trigger.ID, Target: deploy.ID},
-		},
-	)
+	source, stages := application.Workflow.Source, cloneWorkflowStages(application.Workflow.Stages)
+	validIssues := service.validateWorkflow(context.Background(), application, model.WorkflowSchemaVersion, source, stages)
 	if len(validIssues) != 0 {
 		t.Fatalf("包含 manual 选项的代码触发入口应该有效: %+v", validIssues)
 	}
-
-	issues := service.validateWorkflow(context.Background(), application,
-		[]model.WorkflowNode{manualGate, trigger, deploy},
-		[]model.WorkflowEdge{
-			{ID: "gate-trigger", Source: manualGate.ID, Target: trigger.ID},
-			{ID: "trigger-deploy", Source: trigger.ID, Target: deploy.ID},
-		},
-	)
-	foundUpstream := false
-	for i := range issues {
-		if issues[i].Code == "trigger_has_upstream" && issues[i].NodeID == trigger.ID {
-			foundUpstream = true
-			break
-		}
-	}
-	if !foundUpstream {
-		t.Fatalf("代码触发入口存在上游时未被拒绝: %+v", issues)
-	}
-
-	legacy := model.WorkflowNode{
-		ID: "legacy-manual", Type: model.WorkflowNodeManualRelease, Name: "旧手动发布",
-		Config: model.WorkflowNodeConfig{Environment: "dev"},
-	}
-	issues = service.validateWorkflow(context.Background(), application,
-		[]model.WorkflowNode{legacy, deploy},
-		[]model.WorkflowEdge{{ID: "legacy-deploy", Source: legacy.ID, Target: deploy.ID}},
-	)
-	foundInvalidType := false
-	for i := range issues {
-		if issues[i].Code == "invalid_node_type" && issues[i].NodeID == legacy.ID {
-			foundInvalidType = true
-			break
-		}
-	}
-	if !foundInvalidType {
-		t.Fatalf("新工作流仍接受独立 manual_release 节点: %+v", issues)
+	source.Type = model.WorkflowNodeManual
+	issues := service.validateWorkflow(context.Background(), application, model.WorkflowSchemaVersion, source, stages)
+	if !hasWorkflowIssue(issues, "invalid_source_type") {
+		t.Fatalf("非代码源类型作为唯一入口时未被拒绝: %+v", issues)
 	}
 }
 
-func TestWorkflowRejectsMultipleOutgoingEdges(t *testing.T) {
+func TestWorkflowRejectsDuplicateTaskIDs(t *testing.T) {
 	service, db, _, repositoryID := newPipelineTestService(t)
-	application := createManualRunTestApplication(t, service, db, repositoryID, "多路径校验")
+	application := createManualRunTestApplication(t, service, db, repositoryID, "任务标识校验")
 	application, err := service.FindApplication(context.Background(), application.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	var deploy model.WorkflowNode
-	for i := range application.Workflow.Nodes {
-		if application.Workflow.Nodes[i].Type == model.WorkflowNodeDeploy {
-			deploy = application.Workflow.Nodes[i]
-			break
-		}
-	}
-	if deploy.ID == "" {
-		t.Fatal("默认流水线缺少部署节点")
-	}
-	trigger := model.WorkflowNode{
-		ID: "trigger-main", Type: model.WorkflowNodeTrigger, Name: "main 代码",
-		Config: model.WorkflowNodeConfig{Environment: "dev", Branch: "main", Events: []string{"push"}},
-	}
-	firstDeploy, secondDeploy := deploy, deploy
-	firstDeploy.ID, firstDeploy.Name = "deploy-first", "部署一"
-	secondDeploy.ID, secondDeploy.Name = "deploy-second", "部署二"
-	issues := service.validateWorkflow(context.Background(), application,
-		[]model.WorkflowNode{trigger, firstDeploy, secondDeploy},
-		[]model.WorkflowEdge{
-			{ID: "trigger-first", Source: trigger.ID, Target: firstDeploy.ID},
-			{ID: "trigger-second", Source: trigger.ID, Target: secondDeploy.ID},
-		},
-	)
-	found := false
-	for i := range issues {
-		if issues[i].Code == "multiple_outgoing_edges" && issues[i].NodeID == trigger.ID {
-			if issues[i].Message != "节点只能连接一个下游节点，自动推进无法选择多条路径" {
-				t.Fatalf("多路径校验返回了不稳定文案: %q", issues[i].Message)
-			}
-			found = true
-		}
-	}
-	if !found {
-		t.Fatalf("非部署节点的多个出边未被拒绝: %+v", issues)
-	}
-
-	rootDeploy := deploy
-	rootDeploy.ID, rootDeploy.Name = "deploy-root", "首个部署"
-	issues = service.validateWorkflow(context.Background(), application,
-		[]model.WorkflowNode{trigger, rootDeploy, firstDeploy, secondDeploy},
-		[]model.WorkflowEdge{
-			{ID: "trigger-root", Source: trigger.ID, Target: rootDeploy.ID},
-			{ID: "root-first", Source: rootDeploy.ID, Target: firstDeploy.ID},
-			{ID: "root-second", Source: rootDeploy.ID, Target: secondDeploy.ID},
-		},
-	)
-	found = false
-	for i := range issues {
-		if issues[i].Code == "multiple_outgoing_edges" && issues[i].NodeID == rootDeploy.ID {
-			found = true
-			break
-		}
-	}
-	if !found {
-		t.Fatalf("部署节点的多个出边未被拒绝: %+v", issues)
+	stages := cloneWorkflowStages(application.Workflow.Stages)
+	stages[1].Tasks[0].ID = stages[0].Tasks[0].ID
+	issues := service.validateWorkflow(context.Background(), application, model.WorkflowSchemaVersion, application.Workflow.Source, stages)
+	if !hasWorkflowIssue(issues, "duplicate_node") {
+		t.Fatalf("重复任务标识未被拒绝: %+v", issues)
 	}
 }
 
 func TestProductionWorkflowDoesNotRequireImplicitApprovalNode(t *testing.T) {
-	service, db, _, _ := newPipelineTestService(t)
-	deploymentPlan, err := service.CreateDeploymentPlan(context.Background(), "admin", DeploymentPlanInput{
-		Name: "无隐式审核部署方案", Kind: model.DeploymentPlanDocker, ServiceName: "zrt-api",
-	})
-	if err != nil {
-		t.Fatal(err)
+	service, db, _, repositoryID := newPipelineTestService(t)
+	application := createManualRunTestApplication(t, service, db, repositoryID, "无隐式审核")
+	stages := cloneWorkflowStages(application.Workflow.Stages)
+	for i := range stages {
+		filtered := stages[i].Tasks[:0]
+		for j := range stages[i].Tasks {
+			if stages[i].Tasks[j].Type != model.WorkflowNodeApproval {
+				filtered = append(filtered, stages[i].Tasks[j])
+			}
+		}
+		stages[i].Tasks = filtered
 	}
-	now := time.Now().UTC()
-	target := model.DeploymentTarget{
-		ID: "production-without-approval", Name: "生产环境", Platform: model.DeploymentDocker,
-		Environment: model.EnvironmentProduction, RuntimeID: "docker-1", WorkloadName: "zrt-api",
-		RolloutTimeout: 300, IsActive: true, CreatedBy: "admin", CreatedAt: now, UpdatedAt: now,
-	}
-	if err := db.Create(&target).Error; err != nil {
-		t.Fatal(err)
-	}
-	application := &model.Application{
-		DeploymentPlanID: deploymentPlan.ID,
-		Environments:     []model.ApplicationEnvironment{{Key: "prod", Name: "生产环境"}},
-	}
-	nodes := []model.WorkflowNode{
-		{ID: "trigger-prod", Type: model.WorkflowNodeTrigger, Name: "生产代码", Config: model.WorkflowNodeConfig{Environment: "prod", Branch: "release/*", Events: []string{"manual"}}},
-		{ID: "deploy-prod", Type: model.WorkflowNodeDeploy, Name: "部署生产", Config: model.WorkflowNodeConfig{Environment: "prod", DeploymentPlanID: deploymentPlan.ID, DeploymentTargetID: target.ID}},
-	}
-	edges := []model.WorkflowEdge{{ID: "edge-trigger-deploy", Source: "trigger-prod", Target: "deploy-prod"}}
-
-	issues := service.validateWorkflow(context.Background(), application, nodes, edges)
+	issues := service.validateWorkflow(context.Background(), application, model.WorkflowSchemaVersion, application.Workflow.Source, stages)
 	if len(issues) != 0 {
-		t.Fatalf("没有审核节点的生产发布路径应由画布配置决定: %+v", issues)
+		t.Fatalf("没有审核任务的发布路径应由阶段配置决定: %+v", issues)
 	}
 }
 
 func TestExplicitApprovalNodeControlsWorkflowRun(t *testing.T) {
 	service, db, _, repositoryID := newPipelineTestService(t)
 	application := createManualRunTestApplication(t, service, db, repositoryID, "明确审核节点")
-	var target model.DeploymentTarget
-	if err := db.First(&target, "id = ?", "target-明确审核节点").Error; err != nil {
-		t.Fatal(err)
-	}
 	now := time.Now().UTC()
-	workflow := &model.ReleaseWorkflow{
-		ID: "explicit-approval-workflow",
-		Nodes: []model.WorkflowNode{
-			{ID: "trigger", Type: model.WorkflowNodeTrigger, Name: "代码触发", Config: model.WorkflowNodeConfig{Branch: "main", Events: []string{"manual"}}},
-			{ID: "approval", Type: model.WorkflowNodeApproval, Name: "负责人审核"},
-			{ID: "deploy", Type: model.WorkflowNodeDeploy, Name: "执行部署", Config: model.WorkflowNodeConfig{
-				Environment: "dev", DeploymentPlanID: application.DeploymentPlanID, DeploymentTargetID: target.ID,
-			}},
-		},
-		Edges: []model.WorkflowEdge{
-			{ID: "trigger-approval", Source: "trigger", Target: "approval"},
-			{ID: "approval-deploy", Source: "approval", Target: "deploy"},
-		},
-	}
-	run, err := newWorkflowRun(
-		application, workflow, workflow.Nodes[0],
+	run, err := service.newResolvedWorkflowRun(
+		context.Background(), application, application.Workflow, application.Workflow.Source,
 		"manual", "refs/heads/main", strings.Repeat("a", 40), "requester", "手动执行", now,
 	)
 	if err != nil {
 		t.Fatal(err)
 	}
+	run.CurrentNodeID = "approval"
+	run.Status = model.PipelineRunAwaitingApproval
+	run.Stage = string(model.WorkflowNodeApproval)
 	if err := db.Create(run).Error; err != nil {
 		t.Fatal(err)
-	}
-	run, err = service.AdvanceRun(context.Background(), run.ID, "requester", "")
-	if err != nil || run.CurrentNodeID != "approval" || run.Status != model.PipelineRunAwaitingApproval {
-		t.Fatalf("明确配置的审核节点没有拦截流水线: run=%+v err=%v", run, err)
 	}
 	if _, err := service.ApproveRun(context.Background(), run.ID, "requester"); !errors.Is(err, ErrWorkflowSelfApproval) {
 		t.Fatalf("审核节点没有阻止申请人自审: %v", err)
 	}
 	run, err = service.ApproveRun(context.Background(), run.ID, "reviewer")
-	if err != nil || run.Status != model.PipelineRunRunning || run.CurrentNodeID != "deploy" || run.Stage != "queued" || run.ExecutionJobID == "" {
-		t.Fatalf("审核通过后没有自动进入部署节点: run=%+v err=%v", run, err)
+	if err != nil || run.Status != model.PipelineRunRunning || run.CurrentNodeID != "manual" || run.Stage != string(model.WorkflowNodeManual) || run.ExecutionJobID != "" {
+		t.Fatalf("审核通过后没有自动进入人工放行任务: run=%+v err=%v", run, err)
 	}
 	if run.ApprovedBy == nil || *run.ApprovedBy != "reviewer" {
 		t.Fatalf("审核节点没有记录审核人: %+v", run)
 	}
+	run, err = service.AdvanceRun(context.Background(), run.ID, "operator", "")
+	if err != nil || run.Status != model.PipelineRunRunning || run.CurrentNodeID != "deploy-dev" || run.Stage != "queued" || run.ExecutionJobID == "" {
+		t.Fatalf("人工放行后没有提交部署任务: run=%+v err=%v", run, err)
+	}
 }
 
-func TestApplicationRepositoryLinksIgnoreLegacyExtraRepositories(t *testing.T) {
+func TestApplicationRepositoryLinksRejectMissingOrDuplicateLink(t *testing.T) {
 	application := &model.Application{
+		ID:           "application-1",
 		RepositoryID: "primary",
 		Repositories: []model.ApplicationRepository{
-			{RepositoryID: "legacy-extra", SortOrder: 0},
-			{RepositoryID: "primary", SortOrder: 1},
+			{ApplicationID: "application-1", RepositoryID: "ignored-extra"},
+			{ApplicationID: "application-1", RepositoryID: "primary"},
 		},
 	}
-	links := applicationRepositoryLinks(application)
-	if len(links) != 1 || links[0].RepositoryID != "primary" || links[0].SortOrder != 0 {
-		t.Fatalf("应用只能使用主仓库: %+v", links)
+	if _, err := applicationRepositoryLink(application); !errors.Is(err, ErrApplicationRepositoryInvariant) {
+		t.Fatalf("重复仓库关联必须被视为数据不变量错误: %v", err)
+	}
+	application.Repositories = []model.ApplicationRepository{{
+		ApplicationID: application.ID,
+		RepositoryID:  application.RepositoryID,
+	}}
+	link, err := applicationRepositoryLink(application)
+	if err != nil || link.RepositoryID != "primary" {
+		t.Fatalf("唯一且匹配的仓库关联应通过校验: link=%+v err=%v", link, err)
+	}
+	application.Repositories = nil
+	if _, err := applicationRepositoryLink(application); !errors.Is(err, ErrApplicationRepositoryInvariant) {
+		t.Fatalf("缺失仓库关联必须被视为数据不变量错误: %v", err)
 	}
 }

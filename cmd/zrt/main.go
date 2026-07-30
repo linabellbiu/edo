@@ -25,6 +25,7 @@ import (
 
 	"zrt/internal/access"
 	"zrt/internal/account"
+	artifactmanager "zrt/internal/artifact"
 	"zrt/internal/audit"
 	"zrt/internal/auth"
 	"zrt/internal/bootstrap"
@@ -453,6 +454,11 @@ func runServer(ctx context.Context, cfg config.Config, logger *slog.Logger, runt
 	}
 	identityService := identity.NewService(resources.Database, resources.Redis, secretManager, accounts, loginService, limiter)
 	pipelineService := pipeline.NewService(resources.Database, repositoryService, secretManager)
+	artifactService, err := artifactmanager.NewService(resources.Database, cfg.Artifacts.Directory, cfg.Artifacts.MaxBytes, logger)
+	if err != nil {
+		logger.Error("初始化制品服务失败", "operation", "artifact_bootstrap", "directory", cfg.Artifacts.Directory, "err", err)
+		return errors.New("制品服务初始化失败")
+	}
 	dockerService := dockerengine.NewService(resources.Database, secretManager, cfg.Runtime)
 	kubernetesService := kube.NewService(resources.Database, secretManager, cfg.Runtime)
 	sshDeploymentService := sshdeploy.NewService(resources.Database, secretManager, cfg.Runtime)
@@ -471,6 +477,7 @@ func runServer(ctx context.Context, cfg config.Config, logger *slog.Logger, runt
 		logger,
 	)
 	pipelineService.ConfigureExecution(dockerService, deploymentService, logger)
+	pipelineService.ConfigureArtifacts(artifactService)
 	terminalService := terminal.NewService(dockerService, kubernetesService, cfg.Runtime.TerminalMaxDuration)
 	notificationService := notification.NewService(resources.Database, secretManager, nil, cfg.NATS.MaxAttempts)
 	monitorService := monitor.NewService(resources.Database, secretManager, notificationService, nil, cfg.NATS.MaxAttempts, logger)
@@ -505,6 +512,7 @@ func runServer(ctx context.Context, cfg config.Config, logger *slog.Logger, runt
 		Identities:       identityService,
 		Repositories:     repositoryService,
 		Pipelines:        pipelineService,
+		Artifacts:        artifactService,
 		Docker:           dockerService,
 		Kubernetes:       kubernetesService,
 		Hosts:            hostService,
@@ -561,12 +569,6 @@ func runServer(ctx context.Context, cfg config.Config, logger *slog.Logger, runt
 	})
 	startBackground("server_release_plan_reconciler", func() error {
 		pipelineService.RunReleasePlanExecutionReconciler(serviceCtx, time.Second)
-		return nil
-	})
-	startBackground("server_pipeline_commit_backfill", func() error {
-		if err := pipelineService.BackfillCommitMessages(serviceCtx, 50); err != nil {
-			logger.Warn("补全历史流水线提交说明失败", "operation", "pipeline_commit_backfill", "err", err)
-		}
 		return nil
 	})
 	startBackground("server_monitor_scanner", func() error {
@@ -742,6 +744,31 @@ func newBackgroundTaskWorker(
 	}); err != nil {
 		logger.Error("注册流水线执行任务处理器失败", "operation", "worker_register", "kind", "pipeline.deploy", "err", err)
 		return nil, errors.New("后台任务初始化失败")
+	}
+	if err := registry.Register("pipeline.build", func(ctx context.Context, message task.Message) error {
+		var payload pipeline.BuildTaskPayload
+		if err := json.Unmarshal(message.Payload, &payload); err != nil {
+			return worker.NewPermanentError("invalid_pipeline_build_task", "流水线构建任务参数无效", err)
+		}
+		if payload.PipelineRunID == "" || payload.WorkflowNodeID == "" {
+			return worker.NewPermanentError("invalid_pipeline_build_task", "流水线构建任务参数无效", errors.New("流水线运行或任务为空"))
+		}
+		if err := pipelineService.ExecuteBuildTask(ctx, payload, message.JobID); err != nil {
+			if pipeline.IsRetryableBuildTaskError(err) {
+				return worker.NewRetryableError("pipeline_build_temporary_failure", "流水线构建暂时失败，系统将自动重试", err)
+			}
+			return worker.NewPermanentError("pipeline_build_failed", "流水线构建或脚本任务失败", err)
+		}
+		return nil
+	}); err != nil {
+		logger.Error("注册流水线构建任务处理器失败", "operation", "worker_register", "kind", "pipeline.build", "err", err)
+		return nil, errors.New("后台任务初始化失败")
+	}
+	for _, kind := range []string{"pipeline.build", "pipeline.deploy"} {
+		if err := registry.RegisterTerminalFailureHook(kind, pipelineService.HandleTerminalTaskFailure); err != nil {
+			logger.Error("注册流水线任务终止失败处理器失败", "operation", "worker_register_terminal_failure", "kind", kind, "err", err)
+			return nil, errors.New("后台任务初始化失败")
+		}
 	}
 	registerDeployment := func(kind string) error {
 		return registry.Register(kind, func(ctx context.Context, message task.Message) error {

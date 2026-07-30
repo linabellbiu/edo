@@ -47,7 +47,7 @@ func (s *Service) GetWorkflowTemplate(ctx context.Context, id string) (*Workflow
 		}
 		return nil, fmt.Errorf("读取流水线方案失败: %w", err)
 	}
-	issues := s.validateWorkflowTemplate(ctx, template.Nodes, template.Edges)
+	issues := s.validateWorkflowTemplate(ctx, template.SchemaVersion, template.Source, template.Stages)
 	return &WorkflowTemplateResult{WorkflowTemplate: &template, Valid: len(issues) == 0, Issues: issues}, nil
 }
 
@@ -55,10 +55,10 @@ func (s *Service) ValidateWorkflowTemplate(ctx context.Context, input WorkflowTe
 	if err := sanitizeWorkflowTemplateInput(&input); err != nil {
 		return nil, err
 	}
-	issues := s.validateWorkflowTemplate(ctx, input.Nodes, input.Edges)
+	issues := s.validateWorkflowTemplate(ctx, input.SchemaVersion, input.Source, input.Stages)
 	return &WorkflowTemplateResult{WorkflowTemplate: &model.ReleaseWorkflowTemplate{
-		Name: input.Name, Description: input.Description, Revision: input.Revision,
-		Nodes: input.Nodes, Edges: input.Edges, Viewport: input.Viewport,
+		SchemaVersion: input.SchemaVersion, Name: input.Name, Description: input.Description,
+		Revision: input.Revision, Source: input.Source, Stages: input.Stages,
 	}, Valid: len(issues) == 0, Issues: issues}, nil
 }
 
@@ -66,18 +66,18 @@ func (s *Service) CreateWorkflowTemplate(ctx context.Context, actorID string, in
 	if err := sanitizeWorkflowTemplateInput(&input); err != nil {
 		return nil, err
 	}
-	issues := s.validateWorkflowTemplate(ctx, input.Nodes, input.Edges)
-	if len(issues) > 0 && (input.Activate || hasWorkflowIssue(issues, "deployment_plan_target_mismatch")) {
+	issues := s.validateWorkflowTemplate(ctx, input.SchemaVersion, input.Source, input.Stages)
+	if len(issues) > 0 && (input.Activate || hasWorkflowSaveBlockingIssue(issues)) {
 		return &WorkflowTemplateResult{WorkflowTemplate: &model.ReleaseWorkflowTemplate{
-			Name: input.Name, Description: input.Description, Nodes: input.Nodes,
-			Edges: input.Edges, Viewport: input.Viewport,
+			SchemaVersion: input.SchemaVersion, Name: input.Name, Description: input.Description,
+			Source: input.Source, Stages: input.Stages,
 		}, Valid: false, Issues: issues}, ErrInvalidWorkflow
 	}
 	now := time.Now().UTC()
 	template := &model.ReleaseWorkflowTemplate{
-		ID: uuid.NewString(), Name: input.Name, Description: input.Description,
-		Revision: 1, IsActive: input.Activate, Nodes: input.Nodes, Edges: input.Edges,
-		Viewport: input.Viewport, CreatedBy: actorID, UpdatedBy: actorID,
+		ID: uuid.NewString(), SchemaVersion: input.SchemaVersion, Name: input.Name, Description: input.Description,
+		Revision: 1, IsActive: input.Activate, Source: input.Source, Stages: input.Stages,
+		CreatedBy: actorID, UpdatedBy: actorID,
 		CreatedAt: now, UpdatedAt: now,
 	}
 	if err := s.db.WithContext(ctx).Create(template).Error; err != nil {
@@ -93,16 +93,26 @@ func (s *Service) SaveWorkflowTemplate(ctx context.Context, id, actorID string, 
 	if err := sanitizeWorkflowTemplateInput(&input); err != nil {
 		return nil, err
 	}
-	issues := s.validateWorkflowTemplate(ctx, input.Nodes, input.Edges)
-	if len(issues) > 0 && (input.Activate || hasWorkflowIssue(issues, "deployment_plan_target_mismatch")) {
+	var existingForValidation model.ReleaseWorkflowTemplate
+	if err := s.db.WithContext(ctx).First(&existingForValidation, "id = ?", id).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, ErrWorkflowTemplateNotFound
+		}
+		return nil, fmt.Errorf("读取流水线方案失败: %w", err)
+	}
+	if existingForValidation.Revision != input.Revision {
+		return nil, ErrWorkflowTemplateRevisionConflict
+	}
+	issues := s.validateWorkflowTemplate(ctx, input.SchemaVersion, input.Source, input.Stages)
+	if len(issues) > 0 && (input.Activate || hasWorkflowSaveBlockingIssue(issues)) {
 		return &WorkflowTemplateResult{WorkflowTemplate: &model.ReleaseWorkflowTemplate{
-			ID: id, Name: input.Name, Description: input.Description, Revision: input.Revision,
-			Nodes: input.Nodes, Edges: input.Edges, Viewport: input.Viewport,
+			ID: id, SchemaVersion: input.SchemaVersion, Name: input.Name,
+			Description: input.Description, Revision: input.Revision,
+			Source: input.Source, Stages: input.Stages,
 		}, Valid: false, Issues: issues}, ErrInvalidWorkflow
 	}
-	nodesJSON, _ := json.Marshal(input.Nodes)
-	edgesJSON, _ := json.Marshal(input.Edges)
-	viewportJSON, _ := json.Marshal(input.Viewport)
+	sourceJSON, _ := json.Marshal(input.Source)
+	stagesJSON, _ := json.Marshal(input.Stages)
 	now := time.Now().UTC()
 	var saved model.ReleaseWorkflowTemplate
 	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
@@ -119,8 +129,8 @@ func (s *Service) SaveWorkflowTemplate(ctx context.Context, id, actorID string, 
 		result := tx.Model(&model.ReleaseWorkflowTemplate{}).
 			Where("id = ? AND revision = ?", id, input.Revision).
 			Updates(map[string]any{
-				"name": input.Name, "description": input.Description,
-				"nodes": string(nodesJSON), "edges": string(edgesJSON), "viewport": string(viewportJSON),
+				"schema_version": input.SchemaVersion, "name": input.Name, "description": input.Description,
+				"source": string(sourceJSON), "stages": string(stagesJSON),
 				"is_active": input.Activate, "revision": input.Revision + 1,
 				"updated_by": actorID, "updated_at": now,
 			})
@@ -159,43 +169,25 @@ func syncLinkedApplicationWorkflows(tx *gorm.DB, template *model.ReleaseWorkflow
 		return nil
 	}
 
-	nodesJSON, err := json.Marshal(template.Nodes)
+	sourceJSON, err := json.Marshal(template.Source)
 	if err != nil {
 		return err
 	}
-	edgesJSON, err := json.Marshal(template.Edges)
+	stagesJSON, err := json.Marshal(template.Stages)
 	if err != nil {
 		return err
 	}
-	viewportJSON, err := json.Marshal(template.Viewport)
-	if err != nil {
-		return err
-	}
-	environments := workflowTemplateEnvironmentInputs(template.Nodes)
 	for i := range workflows {
 		var application model.Application
-		if err := tx.Preload("Environments").First(&application, "id = ?", workflows[i].ApplicationID).Error; err != nil {
+		if err := tx.First(&application, "id = ?", workflows[i].ApplicationID).Error; err != nil {
 			return err
-		}
-		if err := saveApplicationEnvironments(tx, &application, environments, now); err != nil {
-			return err
-		}
-		if len(environments) > 0 {
-			primary := environments[0]
-			if err := tx.Model(&model.Application{}).Where("id = ?", application.ID).Updates(map[string]any{
-				"branch": primary.Branch, "poll_enabled": primary.PollEnabled,
-				"watch_push": primary.WatchPush, "watch_pull_request": primary.WatchPullRequest,
-				"watch_tags": primary.WatchTags, "tag_pattern": primary.TagPattern,
-				"updated_at": now,
-			}).Error; err != nil {
-				return err
-			}
 		}
 		result := tx.Model(&model.ReleaseWorkflow{}).
 			Where("id = ? AND revision = ?", workflows[i].ID, workflows[i].Revision).
 			Updates(map[string]any{
-				"name":  application.Name + " · " + template.Name,
-				"nodes": string(nodesJSON), "edges": string(edgesJSON), "viewport": string(viewportJSON),
+				"name":           application.Name + " · " + template.Name,
+				"schema_version": template.SchemaVersion,
+				"source":         string(sourceJSON), "stages": string(stagesJSON),
 				"workflow_template_revision": template.Revision,
 				"revision":                   workflows[i].Revision + 1, "updated_by": actorID, "updated_at": now,
 			})
@@ -243,113 +235,32 @@ func sanitizeWorkflowTemplateInput(input *WorkflowTemplateInput) error {
 	return sanitizeWorkflowInput(&input.WorkflowInput)
 }
 
-func (s *Service) validateWorkflowTemplate(ctx context.Context, nodes []model.WorkflowNode, edges []model.WorkflowEdge) []WorkflowIssue {
-	application := &model.Application{Environments: workflowTemplateEnvironments(nodes)}
-	return s.validateWorkflow(ctx, application, nodes, edges)
-}
-
-func workflowTemplateEnvironments(nodes []model.WorkflowNode) []model.ApplicationEnvironment {
-	type environmentConfig struct {
-		branch, tagPattern, deploymentPlanID, deploymentTargetID string
-		poll, push, pullRequest, tags                            bool
-	}
-	configs := make(map[string]*environmentConfig, 4)
-	for i := range nodes {
-		key := strings.ToLower(strings.TrimSpace(nodes[i].Config.Environment))
-		if !validEnvironmentKey(key) {
-			continue
-		}
-		config := configs[key]
-		if config == nil {
-			config = &environmentConfig{}
-			configs[key] = config
-		}
-		switch nodes[i].Type {
-		case model.WorkflowNodeTrigger:
-			if config.branch == "" {
-				config.branch = nodes[i].Config.Branch
-			}
-			if config.tagPattern == "" {
-				config.tagPattern = nodes[i].Config.TagPattern
-			}
-			config.poll = config.poll || containsEvent(nodes[i].Config.Events, "pull")
-			config.push = config.push || containsEvent(nodes[i].Config.Events, "push")
-			config.pullRequest = config.pullRequest || containsEvent(nodes[i].Config.Events, "pr")
-			config.tags = config.tags || containsEvent(nodes[i].Config.Events, "tag")
-		case model.WorkflowNodeDeploy:
-			if config.deploymentPlanID == "" {
-				config.deploymentPlanID = nodes[i].Config.DeploymentPlanID
-			}
-			if config.deploymentTargetID == "" {
-				config.deploymentTargetID = nodes[i].Config.DeploymentTargetID
-			}
-		}
-	}
-	keys := []string{"dev", "test", "pre", "prod"}
-	result := make([]model.ApplicationEnvironment, 0, len(configs))
-	for order, key := range keys {
-		config := configs[key]
-		if config == nil {
-			continue
-		}
-		branch := strings.TrimSpace(config.branch)
-		if branch == "" {
-			branch = defaultEnvironmentBranch(key, "main")
-		}
-		result = append(result, model.ApplicationEnvironment{
-			Key: key, Name: environmentName(key), Branch: branch,
-			PollEnabled: config.poll, WatchPush: config.push, WatchPullRequest: config.pullRequest,
-			WatchTags: config.tags, TagPattern: config.tagPattern,
-			DeploymentPlanID: config.deploymentPlanID, DeploymentTargetID: config.deploymentTargetID,
-			SortOrder: order,
-		})
-	}
-	return result
-}
-
-func workflowTemplateEnvironmentInputs(nodes []model.WorkflowNode) []EnvironmentInput {
-	environments := workflowTemplateEnvironments(nodes)
-	result := make([]EnvironmentInput, 0, len(environments))
-	for i := range environments {
-		result = append(result, EnvironmentInput{
-			Key: environments[i].Key, Name: environments[i].Name, Branch: environments[i].Branch,
-			PollEnabled: environments[i].PollEnabled, WatchPush: environments[i].WatchPush,
-			WatchPullRequest: environments[i].WatchPullRequest, WatchTags: environments[i].WatchTags,
-			TagPattern: environments[i].TagPattern, DeploymentPlanID: environments[i].DeploymentPlanID,
-			DeploymentTargetID: environments[i].DeploymentTargetID, SortOrder: environments[i].SortOrder,
-		})
-	}
-	return result
+func (s *Service) validateWorkflowTemplate(ctx context.Context, schemaVersion uint16, source model.WorkflowNode, stages []model.WorkflowStage) []WorkflowIssue {
+	return s.validateWorkflow(ctx, nil, schemaVersion, source, stages)
 }
 
 func (s *Service) newApplicationWorkflow(ctx context.Context, application *model.Application, actorID string, now time.Time) (*model.ReleaseWorkflow, error) {
 	if application.WorkflowTemplateID == "" {
-		return defaultWorkflow(application, application.Environments, actorID, now), nil
+		if application.Repository.ID == "" {
+			repository, err := s.repositories.Find(ctx, application.RepositoryID)
+			if err != nil {
+				return nil, ErrInvalidApplication
+			}
+			application.Repository = *repository
+		}
+		return defaultWorkflow(application, actorID, now), nil
 	}
 	var template model.ReleaseWorkflowTemplate
 	if err := s.db.WithContext(ctx).First(&template, "id = ? AND is_active = ?", application.WorkflowTemplateID, true).Error; err != nil {
 		return nil, ErrWorkflowTemplateNotFound
 	}
-	nodes, edges := cloneWorkflowGraph(template.Nodes, template.Edges)
-	issues := s.validateWorkflow(ctx, application, nodes, edges)
+	stages := cloneWorkflowStages(template.Stages)
+	issues := s.validateWorkflow(ctx, application, template.SchemaVersion, template.Source, stages)
 	return &model.ReleaseWorkflow{
 		ID: uuid.NewString(), ApplicationID: application.ID,
 		WorkflowTemplateID: template.ID, WorkflowTemplateRevision: template.Revision,
-		Name: application.Name + " · " + template.Name, Revision: 1,
-		IsActive: len(issues) == 0, Nodes: nodes, Edges: edges, Viewport: template.Viewport,
+		SchemaVersion: template.SchemaVersion, Name: application.Name + " · " + template.Name, Revision: 1,
+		IsActive: len(issues) == 0, Source: template.Source, Stages: stages,
 		CreatedBy: actorID, UpdatedBy: actorID, CreatedAt: now, UpdatedAt: now,
 	}, nil
-}
-
-func cloneWorkflowGraph(nodes []model.WorkflowNode, edges []model.WorkflowEdge) ([]model.WorkflowNode, []model.WorkflowEdge) {
-	data, _ := json.Marshal(struct {
-		Nodes []model.WorkflowNode `json:"nodes"`
-		Edges []model.WorkflowEdge `json:"edges"`
-	}{Nodes: nodes, Edges: edges})
-	var clone struct {
-		Nodes []model.WorkflowNode `json:"nodes"`
-		Edges []model.WorkflowEdge `json:"edges"`
-	}
-	_ = json.Unmarshal(data, &clone)
-	return clone.Nodes, clone.Edges
 }

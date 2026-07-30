@@ -50,20 +50,6 @@ func TestInfrastructureResponsesHideLegacySafetyLevels(t *testing.T) {
 			value:     model.Environment{Level: model.EnvironmentProduction},
 			forbidden: `"level":`,
 		},
-		{
-			name: "deployment target",
-			value: model.DeploymentTarget{
-				Environment: model.EnvironmentProduction,
-			},
-			forbidden: `"environment":`,
-		},
-		{
-			name: "deployment record",
-			value: model.DeploymentRecord{
-				Environment: model.EnvironmentProduction,
-			},
-			forbidden: `"environment":`,
-		},
 	}
 
 	for _, test := range tests {

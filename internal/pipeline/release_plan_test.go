@@ -12,13 +12,13 @@ func TestReleasePlanContainsOrderedApplicationGroups(t *testing.T) {
 	service, _, _, repositoryID := newPipelineTestService(t)
 	ctx := context.Background()
 	first, err := service.CreateApplication(ctx, "admin", ApplicationInput{
-		Name: "订单服务", RepositoryID: repositoryID, Branch: "main", PollEnabled: true, WatchPush: true,
+		Name: "订单服务", RepositoryID: repositoryID,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	second, err := service.CreateApplication(ctx, "admin", ApplicationInput{
-		Name: "库存服务", RepositoryID: repositoryID, Branch: "main", PollEnabled: true, WatchPush: true,
+		Name: "库存服务", RepositoryID: repositoryID,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -70,7 +70,7 @@ func TestReleasePlanGeneratesInternalIdentity(t *testing.T) {
 	service, _, _, repositoryID := newPipelineTestService(t)
 	ctx := context.Background()
 	application, err := service.CreateApplication(ctx, "admin", ApplicationInput{
-		Name: "发布应用", RepositoryID: repositoryID, Branch: "main", PollEnabled: true, WatchPush: true,
+		Name: "发布应用", RepositoryID: repositoryID,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -95,7 +95,7 @@ func TestReleasePlanVersionIsUnique(t *testing.T) {
 	service, _, _, repositoryID := newPipelineTestService(t)
 	ctx := context.Background()
 	application, err := service.CreateApplication(ctx, "admin", ApplicationInput{
-		Name: "发布应用", RepositoryID: repositoryID, Branch: "main", PollEnabled: true, WatchPush: true,
+		Name: "发布应用", RepositoryID: repositoryID,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -113,7 +113,7 @@ func TestReleasePlanRejectsInvalidManualSource(t *testing.T) {
 	service, _, _, repositoryID := newPipelineTestService(t)
 	ctx := context.Background()
 	application, err := service.CreateApplication(ctx, "admin", ApplicationInput{
-		Name: "手动发布应用", RepositoryID: repositoryID, Branch: "main", PollEnabled: true, WatchPush: true,
+		Name: "手动发布应用", RepositoryID: repositoryID,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -134,7 +134,7 @@ func TestReleasePlanDetailsStatusAndDeletion(t *testing.T) {
 	service, db, _, repositoryID := newPipelineTestService(t)
 	ctx := context.Background()
 	application, err := service.CreateApplication(ctx, "admin", ApplicationInput{
-		Name: "计划维护应用", RepositoryID: repositoryID, Branch: "main", PollEnabled: true, WatchPush: true,
+		Name: "计划维护应用", RepositoryID: repositoryID,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -193,7 +193,7 @@ func TestReleaseGroupPersistsApplicationOrderAndParallelDefault(t *testing.T) {
 	applications := make([]*model.Application, 0, 3)
 	for _, name := range []string{"订单服务", "库存服务", "支付服务"} {
 		application, err := service.CreateApplication(ctx, "admin", ApplicationInput{
-			Name: name, RepositoryID: repositoryID, Branch: "main", PollEnabled: true, WatchPush: true,
+			Name: name, RepositoryID: repositoryID,
 		})
 		if err != nil {
 			t.Fatal(err)
@@ -252,7 +252,7 @@ func TestReleaseGroupRejectsApplicationAssignedToAnotherGroup(t *testing.T) {
 	service, _, _, repositoryID := newPipelineTestService(t)
 	ctx := context.Background()
 	application, err := service.CreateApplication(ctx, "admin", ApplicationInput{
-		Name: "唯一发布应用", RepositoryID: repositoryID, Branch: "main", PollEnabled: true, WatchPush: true,
+		Name: "唯一发布应用", RepositoryID: repositoryID,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -274,7 +274,7 @@ func TestReleasePlanWithCompletedExecutionCanBeSoftDeleted(t *testing.T) {
 	service, db, _, repositoryID := newPipelineTestService(t)
 	ctx := context.Background()
 	application, err := service.CreateApplication(ctx, "admin", ApplicationInput{
-		Name: "执行历史应用", RepositoryID: repositoryID, Branch: "main", PollEnabled: true, WatchPush: true,
+		Name: "执行历史应用", RepositoryID: repositoryID,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -326,7 +326,7 @@ func TestRunningReleasePlanBlocksStructuralChangesButCanBeDisabled(t *testing.T)
 	service, db, _, repositoryID := newPipelineTestService(t)
 	ctx := context.Background()
 	application, err := service.CreateApplication(ctx, "admin", ApplicationInput{
-		Name: "执行中计划应用", RepositoryID: repositoryID, Branch: "main", PollEnabled: true, WatchPush: true,
+		Name: "执行中计划应用", RepositoryID: repositoryID,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -379,7 +379,7 @@ func TestSaveReleasePlanConfigurationMovesApplicationsAtomically(t *testing.T) {
 	applications := make([]*model.Application, 0, 2)
 	for _, name := range []string{"原子订单服务", "原子库存服务"} {
 		application, err := service.CreateApplication(ctx, "admin", ApplicationInput{
-			Name: name, RepositoryID: repositoryID, Branch: "main", PollEnabled: true, WatchPush: true,
+			Name: name, RepositoryID: repositoryID,
 		})
 		if err != nil {
 			t.Fatal(err)
