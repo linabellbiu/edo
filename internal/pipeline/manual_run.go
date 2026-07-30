@@ -35,14 +35,33 @@ func (s *Service) ListApplicationRefs(ctx context.Context, applicationID string)
 	if err != nil {
 		return ManualRunOptions{}, err
 	}
+	if application.Workflow == nil {
+		return ManualRunOptions{}, ErrWorkflowNotFound
+	}
+	return s.listWorkflowRefs(ctx, application, application.Workflow)
+}
+
+func (s *Service) ListWorkflowRefs(ctx context.Context, applicationID, workflowID string) (ManualRunOptions, error) {
+	application, err := s.FindApplication(ctx, applicationID)
+	if err != nil {
+		return ManualRunOptions{}, err
+	}
+	workflow, err := s.FindApplicationWorkflow(ctx, applicationID, workflowID)
+	if err != nil {
+		return ManualRunOptions{}, err
+	}
+	return s.listWorkflowRefs(ctx, application, workflow)
+}
+
+func (s *Service) listWorkflowRefs(ctx context.Context, application *model.Application, workflow *model.ReleaseWorkflow) (ManualRunOptions, error) {
 	options := ManualRunOptions{ManualSources: make([]ManualRunSource, 0)}
 	refs, err := s.repositories.TestConnection(ctx, application.RepositoryID)
 	if err != nil {
 		return ManualRunOptions{}, err
 	}
 	options.Branches, options.Tags = refs.Branches, refs.Tags
-	if application.Workflow != nil {
-		node := application.Workflow.Source
+	if workflow != nil {
+		node := workflow.Source
 		if workflowNodeSupportsManualRelease(node) {
 			options.ManualSources = append(options.ManualSources, ManualRunSource{ID: node.ID, Name: node.Name})
 		}
@@ -72,6 +91,13 @@ func (s *Service) ExecuteRun(ctx context.Context, runID, actorID, ref, commitSHA
 	if err != nil {
 		return nil, err
 	}
+	if run.WorkflowID == "" {
+		return nil, ErrWorkflowNotFound
+	}
+	workflow, err := s.FindApplicationWorkflow(ctx, application.ID, run.WorkflowID)
+	if err != nil {
+		return nil, err
+	}
 	if run.CommitSHA == "" {
 		ref, commitSHA, err = s.validateManualSelection(ctx, application, ref, commitSHA)
 		if err != nil {
@@ -87,7 +113,7 @@ func (s *Service) ExecuteRun(ctx context.Context, runID, actorID, ref, commitSHA
 		}
 	}
 	sourceNodeID = strings.TrimSpace(sourceNodeID)
-	if sourceNodeID != "" && (application.Workflow == nil || manualWorkflowSource(application.Workflow, ref, sourceNodeID) == nil) {
+	if sourceNodeID != "" && (workflow == nil || manualWorkflowSource(workflow, ref, sourceNodeID) == nil) {
 		return nil, ErrInvalidWorkflow
 	}
 	commitMessage := run.CommitMessage
@@ -97,19 +123,19 @@ func (s *Service) ExecuteRun(ctx context.Context, runID, actorID, ref, commitSHA
 			commitMessage = s.resolveCommitMessage(ctx, links[0].RepositoryID, ref, commitSHA)
 		}
 	}
-	if !pipelineExecutionConfigured(application) {
+	if !pipelineExecutionConfiguredForWorkflow(application, workflow) {
 		if run.CommitSHA != "" {
 			return nil, ErrPipelineIncomplete
 		}
-		return s.saveBlockedManualSelection(ctx, &run, application, ref, commitSHA, commitMessage, sourceNodeID, pipelineExecutionIncompleteMessage(application))
+		return s.saveBlockedManualSelection(ctx, &run, application, workflow, ref, commitSHA, commitMessage, sourceNodeID, pipelineExecutionIncompleteMessageForWorkflow(application, workflow))
 	}
-	if application.Workflow == nil || !application.Workflow.IsActive {
+	if workflow == nil || !workflow.IsActive {
 		if run.CommitSHA == "" {
-			return s.saveBlockedManualSelection(ctx, &run, application, ref, commitSHA, commitMessage, sourceNodeID, "已选择代码版本；应用流水线尚未启用")
+			return s.saveBlockedManualSelection(ctx, &run, application, workflow, ref, commitSHA, commitMessage, sourceNodeID, "已选择代码版本；应用流水线尚未启用")
 		}
 		return nil, ErrWorkflowNotActive
 	}
-	source := manualWorkflowSource(application.Workflow, ref, sourceNodeID)
+	source := manualWorkflowSource(workflow, ref, sourceNodeID)
 	if source == nil {
 		return nil, ErrInvalidWorkflow
 	}
@@ -121,7 +147,7 @@ func (s *Service) ExecuteRun(ctx context.Context, runID, actorID, ref, commitSHA
 	}
 	prepared, err := s.newResolvedWorkflowRun(
 		ctx,
-		application, application.Workflow, *source, "manual", ref, commitSHA,
+		application, workflow, *source, "manual", ref, commitSHA,
 		createdBy, "已选择代码版本，开始执行流水线", now,
 	)
 	if err != nil {
@@ -157,7 +183,7 @@ func (s *Service) ExecuteRun(ctx context.Context, runID, actorID, ref, commitSHA
 	if err != nil {
 		return nil, err
 	}
-	return s.advanceManualWorkflowEntry(ctx, run.ID, actorID, application.Workflow)
+	return s.advanceManualWorkflowEntry(ctx, run.ID, actorID, workflow)
 }
 
 // advanceManualWorkflowEntry 从启用手动启动的唯一代码源进入第一个任务。
@@ -177,9 +203,15 @@ func (s *Service) saveBlockedManualSelection(
 	ctx context.Context,
 	run *model.PipelineRun,
 	application *model.Application,
+	workflow *model.ReleaseWorkflow,
 	ref, commitSHA, commitMessage, sourceNodeID, message string,
 ) (*model.PipelineRun, error) {
 	now := time.Now().UTC()
+	workflowID := ""
+	var workflowRevision uint64
+	if workflow != nil {
+		workflowID, workflowRevision = workflow.ID, workflow.Revision
+	}
 	components, err := pipelineRunRepositories(application, run.ID, ref, commitSHA, now)
 	if err != nil {
 		return nil, err
@@ -193,7 +225,7 @@ func (s *Service) saveBlockedManualSelection(
 			Updates(map[string]any{
 				"trigger": "manual", "ref": ref, "commit_sha": commitSHA, "commit_message": commitMessage,
 				"status": model.PipelineRunBlocked, "stage": "configured", "environment": "",
-				"workflow_id": "", "workflow_revision": 0, "current_node_id": sourceNodeID,
+				"workflow_id": workflowID, "workflow_revision": workflowRevision, "current_node_id": sourceNodeID,
 				"workflow_snapshot": "", "message": message, "updated_at": now,
 			})
 		if result.Error != nil {
@@ -217,8 +249,8 @@ func (s *Service) saveBlockedManualSelection(
 	run.Status = model.PipelineRunBlocked
 	run.Stage = "configured"
 	run.Environment = ""
-	run.WorkflowID = ""
-	run.WorkflowRevision = 0
+	run.WorkflowID = workflowID
+	run.WorkflowRevision = workflowRevision
 	run.CurrentNodeID = sourceNodeID
 	run.WorkflowSnapshot = ""
 	run.Message = message

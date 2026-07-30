@@ -23,7 +23,11 @@ type applicationRequest struct {
 	Description         string `json:"description" binding:"max=500"`
 	RepositoryID        string `json:"repository_id" binding:"required,max=36"`
 	PollIntervalSeconds int    `json:"poll_interval_seconds" binding:"omitempty,oneof=3 5 10 60"`
-	WorkflowTemplateID  string `json:"workflow_template_id" binding:"max=36"`
+}
+
+type workflowCreateRequest struct {
+	Name               string `json:"name" binding:"max=128"`
+	WorkflowTemplateID string `json:"workflow_template_id" binding:"max=36"`
 }
 
 type workflowRequest struct {
@@ -160,7 +164,7 @@ func (h pipelineHandler) syncApplication(c *gin.Context) {
 }
 
 func (h pipelineHandler) listApplicationRefs(c *gin.Context) {
-	refs, err := h.service.ListApplicationRefs(c.Request.Context(), c.Param("id"))
+	refs, err := h.service.ListWorkflowRefs(c.Request.Context(), c.Param("id"), c.Param("workflow_id"))
 	if err != nil {
 		h.writeError(c, "application_refs", err)
 		return
@@ -170,7 +174,7 @@ func (h pipelineHandler) listApplicationRefs(c *gin.Context) {
 
 func (h pipelineHandler) prepareRun(c *gin.Context) {
 	actor, _ := currentUser(c)
-	run, err := h.service.PrepareRun(c.Request.Context(), c.Param("id"), actor.ID)
+	run, err := h.service.PrepareWorkflowRun(c.Request.Context(), c.Param("id"), c.Param("workflow_id"), actor.ID)
 	if err != nil && !errors.Is(err, pipeline.ErrPipelineIncomplete) {
 		h.writeError(c, "pipeline_prepare", err)
 		return
@@ -187,8 +191,35 @@ func (h pipelineHandler) prepareRun(c *gin.Context) {
 	c.JSON(http.StatusCreated, gin.H{"pipeline_run": run})
 }
 
+func (h pipelineHandler) listWorkflows(c *gin.Context) {
+	workflows, err := h.service.ListApplicationWorkflows(c.Request.Context(), c.Param("id"))
+	if err != nil {
+		h.writeError(c, "workflow_list", err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"workflows": workflows})
+}
+
+func (h pipelineHandler) createWorkflow(c *gin.Context) {
+	var request workflowCreateRequest
+	if err := c.ShouldBindJSON(&request); err != nil {
+		writeError(c, http.StatusBadRequest, "invalid_workflow", pipeline.ErrInvalidWorkflow.Error())
+		return
+	}
+	actor, _ := currentUser(c)
+	result, err := h.service.CreateApplicationWorkflow(c.Request.Context(), c.Param("id"), actor.ID, pipeline.WorkflowCreateInput{
+		Name: request.Name, WorkflowTemplateID: request.WorkflowTemplateID,
+	})
+	if err != nil {
+		h.writeError(c, "workflow_create", err)
+		return
+	}
+	setAuditResourceID(c, result.Workflow.ID)
+	c.JSON(http.StatusCreated, result)
+}
+
 func (h pipelineHandler) getWorkflow(c *gin.Context) {
-	result, err := h.service.GetWorkflow(c.Request.Context(), c.Param("id"))
+	result, err := h.service.GetApplicationWorkflow(c.Request.Context(), c.Param("id"), c.Param("workflow_id"))
 	if err != nil {
 		h.writeError(c, "workflow_get", err)
 		return
@@ -202,7 +233,7 @@ func (h pipelineHandler) validateWorkflow(c *gin.Context) {
 		writeError(c, http.StatusBadRequest, "invalid_workflow", pipeline.ErrInvalidWorkflow.Error())
 		return
 	}
-	result, err := h.service.ValidateWorkflow(c.Request.Context(), c.Param("id"), toWorkflowInput(request))
+	result, err := h.service.ValidateApplicationWorkflow(c.Request.Context(), c.Param("id"), c.Param("workflow_id"), toWorkflowInput(request))
 	if err != nil {
 		h.writeError(c, "workflow_validate", err)
 		return
@@ -217,7 +248,7 @@ func (h pipelineHandler) saveWorkflow(c *gin.Context) {
 		return
 	}
 	actor, _ := currentUser(c)
-	result, err := h.service.SaveWorkflow(c.Request.Context(), c.Param("id"), actor.ID, toWorkflowInput(request))
+	result, err := h.service.SaveApplicationWorkflow(c.Request.Context(), c.Param("id"), c.Param("workflow_id"), actor.ID, toWorkflowInput(request))
 	if errors.Is(err, pipeline.ErrInvalidWorkflow) && result != nil {
 		c.JSON(http.StatusUnprocessableEntity, gin.H{
 			"code": "invalid_workflow", "message": err.Error(), "workflow": result.Workflow,
@@ -231,6 +262,15 @@ func (h pipelineHandler) saveWorkflow(c *gin.Context) {
 	}
 	setAuditResourceID(c, result.Workflow.ID)
 	c.JSON(http.StatusOK, result)
+}
+
+func (h pipelineHandler) deleteWorkflow(c *gin.Context) {
+	if err := h.service.DeleteApplicationWorkflow(c.Request.Context(), c.Param("id"), c.Param("workflow_id")); err != nil {
+		h.writeError(c, "workflow_delete", err)
+		return
+	}
+	setAuditResourceID(c, c.Param("workflow_id"))
+	c.Status(http.StatusNoContent)
 }
 
 func (h pipelineHandler) listWorkflowTemplates(c *gin.Context) {
@@ -609,7 +649,7 @@ func (h pipelineHandler) writeError(c *gin.Context, operation string, err error)
 		writeError(c, http.StatusNotFound, "deployment_target_not_found", deployment.ErrTargetNotFound.Error())
 	case errors.Is(err, pipeline.ErrApplicationExists), errors.Is(err, pipeline.ErrBuildPlanExists),
 		errors.Is(err, pipeline.ErrRegistryExists), errors.Is(err, pipeline.ErrDeploymentPlanExists),
-		errors.Is(err, pipeline.ErrWorkflowTemplateExists):
+		errors.Is(err, pipeline.ErrWorkflowExists), errors.Is(err, pipeline.ErrWorkflowTemplateExists):
 		writeError(c, http.StatusConflict, "delivery_config_exists", err.Error())
 	case errors.Is(err, pipeline.ErrBuildPlanInUse):
 		writeError(c, http.StatusConflict, "build_plan_in_use", err.Error())
@@ -639,7 +679,7 @@ func (h pipelineHandler) writeError(c *gin.Context, operation string, err error)
 		writeError(c, http.StatusUnprocessableEntity, "pipeline_incomplete", err.Error())
 	case errors.Is(err, pipeline.ErrWorkflowRevisionConflict), errors.Is(err, pipeline.ErrWorkflowTemplateRevisionConflict):
 		writeError(c, http.StatusConflict, "workflow_revision_conflict", err.Error())
-	case errors.Is(err, pipeline.ErrWorkflowTemplateInUse):
+	case errors.Is(err, pipeline.ErrWorkflowInUse), errors.Is(err, pipeline.ErrWorkflowTemplateInUse):
 		writeError(c, http.StatusConflict, "workflow_template_in_use", err.Error())
 	case errors.Is(err, pipeline.ErrWorkflowNotActive), errors.Is(err, pipeline.ErrInvalidWorkflowTransition),
 		errors.Is(err, pipeline.ErrWorkflowApprovalRequired), errors.Is(err, pipeline.ErrWorkflowSelfApproval):
@@ -666,7 +706,7 @@ func toRegistryInput(request registryRequest) pipeline.RegistryInput {
 func toApplicationInput(request applicationRequest) pipeline.ApplicationInput {
 	return pipeline.ApplicationInput{
 		Name: request.Name, Description: request.Description, RepositoryID: request.RepositoryID,
-		PollIntervalSeconds: request.PollIntervalSeconds, WorkflowTemplateID: request.WorkflowTemplateID,
+		PollIntervalSeconds: request.PollIntervalSeconds,
 	}
 }
 

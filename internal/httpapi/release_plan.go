@@ -11,11 +11,24 @@ import (
 )
 
 type releasePlanRequest struct {
-	Name         string                      `json:"name" binding:"max=128"`
-	Version      string                      `json:"version" binding:"max=64"`
-	Description  string                      `json:"description" binding:"max=500"`
-	Status       model.ReleasePlanStatus     `json:"status" binding:"omitempty,max=16"`
-	Applications []releaseApplicationRequest `json:"applications" binding:"omitempty,max=50,dive"`
+	Name        string                          `json:"name" binding:"max=128"`
+	Version     string                          `json:"version" binding:"max=64"`
+	Description string                          `json:"description" binding:"max=500"`
+	Status      model.ReleasePlanStatus         `json:"status" binding:"omitempty,max=16"`
+	Groups      []releasePlanCreateGroupRequest `json:"groups" binding:"required,min=1,max=50,dive"`
+}
+
+type releasePlanCreateGroupRequest struct {
+	Name          string                          `json:"name" binding:"required,max=128"`
+	Mode          model.ReleaseGroupMode          `json:"mode" binding:"omitempty,max=16"`
+	FailurePolicy model.ReleaseGroupFailurePolicy `json:"failure_policy" binding:"omitempty,max=16"`
+	Applications  []releaseApplicationRequest     `json:"applications" binding:"max=50,dive"`
+}
+
+type releasePlanUpdateRequest struct {
+	Name        string `json:"name" binding:"max=128"`
+	Version     string `json:"version" binding:"max=64"`
+	Description string `json:"description" binding:"max=500"`
 }
 
 type releaseApplicationRequest struct {
@@ -60,6 +73,7 @@ type releasePlanExecutionRequest struct {
 
 type releasePlanExecutionSelectionRequest struct {
 	ReleaseGroupApplicationID string `json:"release_group_application_id" binding:"required,max=36"`
+	WorkflowID                string `json:"workflow_id" binding:"required,max=36"`
 	ExpectedWorkflowRevision  uint64 `json:"expected_workflow_revision" binding:"required"`
 	SourceNodeID              string `json:"source_node_id" binding:"required,max=64"`
 	Ref                       string `json:"ref" binding:"required,max=512"`
@@ -91,15 +105,24 @@ func (h pipelineHandler) createReleasePlan(c *gin.Context) {
 		writeError(c, http.StatusBadRequest, "invalid_release_plan", pipeline.ErrInvalidReleasePlan.Error())
 		return
 	}
-	if len(request.Applications) == 0 {
-		h.logger.Warn("创建发布计划未选择应用", "operation", "release_plan_create_validate", "request_id", requestIDFrom(c))
+	applicationCount := 0
+	groups := make([]pipeline.ReleaseGroupInput, 0, len(request.Groups))
+	for _, group := range request.Groups {
+		applicationCount += len(group.Applications)
+		groups = append(groups, pipeline.ReleaseGroupInput{
+			Name: group.Name, Mode: group.Mode, FailurePolicy: group.FailurePolicy,
+			Applications: toReleaseApplicationInputs(group.Applications),
+		})
+	}
+	if applicationCount == 0 {
+		h.logger.Warn("创建发布计划的发布组未配置应用", "operation", "release_plan_create_validate", "request_id", requestIDFrom(c))
 		writeError(c, http.StatusBadRequest, "invalid_release_plan", pipeline.ErrInvalidReleasePlan.Error())
 		return
 	}
 	actor, _ := currentUser(c)
 	plan, err := h.service.CreateReleasePlan(c.Request.Context(), actor.ID, pipeline.ReleasePlanInput{
 		Name: request.Name, Version: request.Version, Description: request.Description, Status: request.Status,
-		Applications: toReleaseApplicationInputs(request.Applications),
+		Groups: groups,
 	})
 	if err != nil {
 		h.writeError(c, "release_plan_create", err)
@@ -110,7 +133,7 @@ func (h pipelineHandler) createReleasePlan(c *gin.Context) {
 }
 
 func (h pipelineHandler) updateReleasePlan(c *gin.Context) {
-	var request releasePlanRequest
+	var request releasePlanUpdateRequest
 	if err := c.ShouldBindJSON(&request); err != nil {
 		h.logger.Warn("更新发布计划请求格式无效", "operation", "release_plan_update_bind", "request_id", requestIDFrom(c), "release_plan_id", c.Param("id"), "err", err)
 		writeError(c, http.StatusBadRequest, "invalid_release_plan", pipeline.ErrInvalidReleasePlan.Error())
@@ -190,6 +213,7 @@ func (h pipelineHandler) createReleasePlanExecution(c *gin.Context) {
 	for _, selection := range request.Selections {
 		selections = append(selections, pipeline.ReleasePlanExecutionSelection{
 			ReleaseGroupApplicationID: selection.ReleaseGroupApplicationID,
+			WorkflowID:                selection.WorkflowID,
 			ExpectedWorkflowRevision:  selection.ExpectedWorkflowRevision,
 			SourceNodeID:              selection.SourceNodeID,
 			Ref:                       selection.Ref,

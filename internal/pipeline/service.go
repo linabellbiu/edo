@@ -149,8 +149,9 @@ func (s *Service) ConfigureArtifacts(artifacts *artifact.Service) {
 func (s *Service) ListApplications(ctx context.Context) ([]model.Application, error) {
 	var applications []model.Application
 	err := s.db.WithContext(ctx).
-		Preload("Repository").Preload("WorkflowTemplate").
-		Preload("Workflow").
+		Preload("Repository").
+		Preload("Workflows", func(db *gorm.DB) *gorm.DB { return db.Order("created_at ASC") }).
+		Preload("Workflows.WorkflowTemplate").
 		Preload("Repositories").
 		Preload("Repositories.Observations").
 		Preload("Repositories.Repository").
@@ -158,14 +159,18 @@ func (s *Service) ListApplications(ctx context.Context) ([]model.Application, er
 	if err != nil {
 		return nil, fmt.Errorf("查询应用失败: %w", err)
 	}
+	for i := range applications {
+		setLegacyApplicationWorkflow(&applications[i])
+	}
 	return applications, nil
 }
 
 func (s *Service) FindApplication(ctx context.Context, id string) (*model.Application, error) {
 	var application model.Application
 	err := s.db.WithContext(ctx).
-		Preload("Repository").Preload("WorkflowTemplate").
-		Preload("Workflow").
+		Preload("Repository").
+		Preload("Workflows", func(db *gorm.DB) *gorm.DB { return db.Order("created_at ASC") }).
+		Preload("Workflows.WorkflowTemplate").
 		Preload("Repositories").
 		Preload("Repositories.Observations").
 		Preload("Repositories.Repository").
@@ -176,7 +181,21 @@ func (s *Service) FindApplication(ctx context.Context, id string) (*model.Applic
 	if err != nil {
 		return nil, fmt.Errorf("查询应用失败: %w", err)
 	}
+	setLegacyApplicationWorkflow(&application)
 	return &application, nil
+}
+
+func setLegacyApplicationWorkflow(application *model.Application) {
+	application.Workflow = nil
+	application.WorkflowTemplateID = ""
+	application.WorkflowTemplate = nil
+	// 旧的包内单流水线调用只在结果唯一时才允许继续工作；多流水线应用必须
+	// 显式携带 workflow_id，绝不能为兼容调用任取第一条流水线。
+	if len(application.Workflows) == 1 {
+		application.Workflow = &application.Workflows[0]
+		application.WorkflowTemplateID = application.Workflow.WorkflowTemplateID
+		application.WorkflowTemplate = application.Workflow.WorkflowTemplate
+	}
 }
 
 func (s *Service) CreateApplication(ctx context.Context, actorID string, input ApplicationInput) (*model.Application, error) {
@@ -188,10 +207,10 @@ func (s *Service) CreateApplication(ctx context.Context, actorID string, input A
 	application := &model.Application{
 		ID: uuid.NewString(), Name: input.Name, Description: input.Description,
 		RepositoryID: input.RepositoryID, PollIntervalSeconds: input.PollIntervalSeconds,
-		WorkflowTemplateID: input.WorkflowTemplateID,
-		SyncStatus:         model.ApplicationSyncIdle, IsActive: true,
+		SyncStatus: model.ApplicationSyncIdle, IsActive: true,
 		CreatedBy: actorID, CreatedAt: now, UpdatedAt: now,
 	}
+	application.WorkflowTemplateID = input.WorkflowTemplateID
 	repositoryLink := buildApplicationRepositoryModel(application.ID, input.RepositoryID, now)
 	workflow, err := s.newApplicationWorkflow(ctx, application, actorID, now)
 	if err != nil {
@@ -226,7 +245,6 @@ func (s *Service) UpdateApplication(ctx context.Context, id string, input Applic
 	updates := map[string]any{
 		"name": input.Name, "description": input.Description, "repository_id": input.RepositoryID,
 		"poll_interval_seconds": input.PollIntervalSeconds,
-		"workflow_template_id":  input.WorkflowTemplateID,
 		"updated_at":            time.Now().UTC(),
 	}
 	if existing.RepositoryID != input.RepositoryID {
@@ -234,30 +252,12 @@ func (s *Service) UpdateApplication(ctx context.Context, id string, input Applic
 		updates["sync_message"] = ""
 		updates["last_checked_at"] = nil
 	}
-	var replacementWorkflow *model.ReleaseWorkflow
-	if existing.WorkflowTemplateID != input.WorkflowTemplateID {
-		updated := *existing
-		updated.Name = input.Name
-		updated.RepositoryID = input.RepositoryID
-		updated.Repository = model.GitRepository{}
-		updated.WorkflowTemplateID = input.WorkflowTemplateID
-		replacementWorkflow, err = s.newApplicationWorkflow(ctx, &updated, existing.CreatedBy, time.Now().UTC())
-		if err != nil {
-			return nil, err
-		}
-	}
 	if err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if err := tx.Model(&model.Application{}).Where("id = ?", existing.ID).Updates(updates).Error; err != nil {
 			return err
 		}
 		if err := saveApplicationRepository(tx, existing, input.RepositoryID, time.Now().UTC()); err != nil {
 			return err
-		}
-		if replacementWorkflow != nil {
-			if err := tx.Where("application_id = ?", existing.ID).Delete(&model.ReleaseWorkflow{}).Error; err != nil {
-				return err
-			}
-			return tx.Create(replacementWorkflow).Error
 		}
 		return nil
 	}); err != nil {
@@ -967,7 +967,7 @@ func (s *Service) ListRuns(ctx context.Context, limit int) ([]model.PipelineRun,
 	}
 	var runs []model.PipelineRun
 	if err := s.db.WithContext(ctx).
-		Preload("Application").Preload("Application.WorkflowTemplate").
+		Preload("Application").
 		Preload("Repositories", func(db *gorm.DB) *gorm.DB { return db.Order("sort_order ASC") }).
 		Preload("Repositories.Repository").Preload("Repositories.BuildPlan").Preload("Repositories.DeploymentPlan").
 		Order("created_at DESC").Limit(limit).Find(&runs).Error; err != nil {
@@ -1019,31 +1019,51 @@ func (s *Service) PrepareRun(ctx context.Context, applicationID, actorID string)
 	if application.Workflow == nil || !application.Workflow.IsActive {
 		return nil, ErrWorkflowNotActive
 	}
-	if !workflowHasManualReleaseSource(application.Workflow) {
-		return nil, ErrManualReleaseDisabled
-	}
-	if !pipelineExecutionConfigured(application) {
-		return s.createBlockedRun(ctx, application, actorID, pipelineExecutionIncompleteMessage(application))
-	}
-	return s.createManualSelectionRun(ctx, application, actorID)
+	return s.prepareWorkflowRun(ctx, application, application.Workflow, actorID)
 }
 
-func (s *Service) createBlockedRun(ctx context.Context, application *model.Application, actorID, message string) (*model.PipelineRun, error) {
-	run, err := s.createPendingRun(ctx, application, actorID, message)
+func (s *Service) PrepareWorkflowRun(ctx context.Context, applicationID, workflowID, actorID string) (*model.PipelineRun, error) {
+	application, err := s.FindApplication(ctx, applicationID)
+	if err != nil {
+		return nil, err
+	}
+	workflow, err := s.FindApplicationWorkflow(ctx, applicationID, workflowID)
+	if err != nil {
+		return nil, err
+	}
+	return s.prepareWorkflowRun(ctx, application, workflow, actorID)
+}
+
+func (s *Service) prepareWorkflowRun(ctx context.Context, application *model.Application, workflow *model.ReleaseWorkflow, actorID string) (*model.PipelineRun, error) {
+	if workflow == nil || !workflow.IsActive {
+		return nil, ErrWorkflowNotActive
+	}
+	if !workflowHasManualReleaseSource(workflow) {
+		return nil, ErrManualReleaseDisabled
+	}
+	if !pipelineExecutionConfiguredForWorkflow(application, workflow) {
+		return s.createBlockedRun(ctx, application, workflow, actorID, pipelineExecutionIncompleteMessageForWorkflow(application, workflow))
+	}
+	return s.createManualSelectionRun(ctx, application, workflow, actorID)
+}
+
+func (s *Service) createBlockedRun(ctx context.Context, application *model.Application, workflow *model.ReleaseWorkflow, actorID, message string) (*model.PipelineRun, error) {
+	run, err := s.createPendingRun(ctx, application, workflow, actorID, message)
 	if err != nil {
 		return nil, err
 	}
 	return run, ErrPipelineIncomplete
 }
 
-func (s *Service) createManualSelectionRun(ctx context.Context, application *model.Application, actorID string) (*model.PipelineRun, error) {
-	return s.createPendingRun(ctx, application, actorID, "请选择每个代码仓库要发布的 Commit")
+func (s *Service) createManualSelectionRun(ctx context.Context, application *model.Application, workflow *model.ReleaseWorkflow, actorID string) (*model.PipelineRun, error) {
+	return s.createPendingRun(ctx, application, workflow, actorID, "请选择每个代码仓库要发布的 Commit")
 }
 
-func (s *Service) createPendingRun(ctx context.Context, application *model.Application, actorID, message string) (*model.PipelineRun, error) {
+func (s *Service) createPendingRun(ctx context.Context, application *model.Application, workflow *model.ReleaseWorkflow, actorID, message string) (*model.PipelineRun, error) {
 	now := time.Now().UTC()
 	run := &model.PipelineRun{
 		ID: uuid.NewString(), ApplicationID: application.ID, Trigger: "manual",
+		WorkflowID: workflow.ID, WorkflowRevision: workflow.Revision,
 		Ref: "", CommitSHA: "",
 		Status: model.PipelineRunBlocked, Stage: "configured", Message: message,
 		CreatedBy: actorID, CreatedAt: now, UpdatedAt: now,
@@ -1092,7 +1112,7 @@ func (s *Service) SyncApplication(ctx context.Context, applicationID, trigger st
 	configurationChanged := applicationConfigurationChangedSinceLastCheck(application)
 	includePullRequests := false
 	for i := range pollSources {
-		if containsEvent(pollSources[i].Config.Events, "pr") {
+		if containsEvent(pollSources[i].Source.Config.Events, "pr") {
 			includePullRequests = true
 			break
 		}
@@ -1117,22 +1137,21 @@ func (s *Service) SyncApplication(ctx context.Context, applicationID, trigger st
 		for i := range link.Observations {
 			observation := link.Observations[i]
 			observedByWatchKey[observation.WatchKey] = observation
-			observedByEventRef[observationEventRefKey(observation.Event, observation.Ref)] = observation
+			observedByEventRef[observationEventRefKey(observation.WorkflowID, observation.Event, observation.Ref)] = observation
 		}
 		seenWatchKeys := make([]string, 0)
-		sourceNodeIDs := make([]string, 0, len(pollSources))
-		for _, source := range pollSources {
-			sourceNodeIDs = append(sourceNodeIDs, source.ID)
+		for _, binding := range pollSources {
+			workflow, source := binding.Workflow, binding.Source
 			for _, candidate := range workflowPollCandidates(source, refs) {
 				if candidate.Commit == "" {
 					continue
 				}
 				found = true
-				watchKey := repositoryObservationWatchKey(source.ID, candidate.Event, candidate.Ref)
+				watchKey := repositoryObservationWatchKey(workflow.ID, source.ID, candidate.Event, candidate.Ref)
 				seenWatchKeys = append(seenWatchKeys, watchKey)
 				observation, exists := observedByWatchKey[watchKey]
 				if !exists {
-					if _, sameRefExists := observedByEventRef[observationEventRefKey(candidate.Event, candidate.Ref)]; sameRefExists {
+					if _, sameRefExists := observedByEventRef[observationEventRefKey(workflow.ID, candidate.Event, candidate.Ref)]; sameRefExists {
 						// 新增、复制或切换触发节点时，已有 Ref 只建立该节点自己的基线，
 						// 不能因为节点 ID 变化而重复发布同一个 Commit。
 						observation = model.ApplicationRepositoryObservation{
@@ -1174,7 +1193,7 @@ func (s *Service) SyncApplication(ctx context.Context, applicationID, trigger st
 						ID: uuid.NewString(), ApplicationRepositoryID: link.ID, CreatedAt: now,
 					}
 				}
-				observation.WatchKey, observation.SourceNodeID = watchKey, source.ID
+				observation.WatchKey, observation.WorkflowID, observation.SourceNodeID = watchKey, workflow.ID, source.ID
 				observation.Event, observation.Action = candidate.Event, candidateAction
 				observation.Ref, observation.CommitSHA = candidate.Ref, candidate.Commit
 				observation.LastCheckedAt, observation.UpdatedAt = &now, now
@@ -1182,7 +1201,7 @@ func (s *Service) SyncApplication(ctx context.Context, applicationID, trigger st
 					return application, nil, fmt.Errorf("更新仓库监听状态失败: %w", err)
 				}
 				observedByWatchKey[watchKey] = observation
-				observedByEventRef[observationEventRefKey(candidate.Event, candidate.Ref)] = observation
+				observedByEventRef[observationEventRefKey(workflow.ID, candidate.Event, candidate.Ref)] = observation
 				link.LastObservedRef, link.LastObservedCommit, link.LastCheckedAt = candidate.Ref, candidate.Commit, &now
 				if err := s.db.WithContext(ctx).Model(&model.ApplicationRepository{}).Where("id = ?", link.ID).Updates(map[string]any{
 					"last_observed_ref": candidate.Ref, "last_observed_commit": candidate.Commit, "last_checked_at": now, "updated_at": now,
@@ -1197,7 +1216,7 @@ func (s *Service) SyncApplication(ctx context.Context, applicationID, trigger st
 				}
 				candidate.Action = candidateAction
 				status, message = model.ApplicationSyncChanged, pollChangeMessage(candidate.Event)
-				run, createErr := s.createObservedRun(ctx, application, *link, source, candidate, polledRunTrigger(candidate.Event), message, now)
+				run, createErr := s.createObservedRun(ctx, application, workflow, *link, source, candidate, polledRunTrigger(candidate.Event), message, now)
 				if createErr != nil {
 					return application, nil, createErr
 				}
@@ -1206,7 +1225,7 @@ func (s *Service) SyncApplication(ctx context.Context, applicationID, trigger st
 				}
 			}
 		}
-		stale := s.db.WithContext(ctx).Where("application_repository_id = ? AND source_node_id IN ?", link.ID, sourceNodeIDs)
+		stale := s.db.WithContext(ctx).Where("application_repository_id = ?", link.ID)
 		if len(seenWatchKeys) > 0 {
 			stale = stale.Where("watch_key NOT IN ?", seenWatchKeys)
 		}
@@ -1254,13 +1273,13 @@ func (s *Service) SyncApplication(ctx context.Context, applicationID, trigger st
 	return application, lastRun, nil
 }
 
-func repositoryObservationWatchKey(sourceNodeID, event, ref string) string {
-	digest := sha256.Sum256([]byte(sourceNodeID + "\x00" + event + "\x00" + ref))
+func repositoryObservationWatchKey(workflowID, sourceNodeID, event, ref string) string {
+	digest := sha256.Sum256([]byte(workflowID + "\x00" + sourceNodeID + "\x00" + event + "\x00" + ref))
 	return fmt.Sprintf("%x", digest[:])
 }
 
-func observationEventRefKey(event, ref string) string {
-	return event + "\x00" + ref
+func observationEventRefKey(workflowID, event, ref string) string {
+	return workflowID + "\x00" + event + "\x00" + ref
 }
 
 func pipelineCandidateCheckoutRef(candidate workflowPollCandidate) string {
@@ -1280,7 +1299,12 @@ func applicationConfigurationChangedSinceLastCheck(application *model.Applicatio
 	if application.UpdatedAt.After(*application.LastCheckedAt) {
 		return true
 	}
-	return application.Workflow != nil && application.Workflow.UpdatedAt.After(*application.LastCheckedAt)
+	for i := range application.Workflows {
+		if application.Workflows[i].UpdatedAt.After(*application.LastCheckedAt) {
+			return true
+		}
+	}
+	return false
 }
 
 func pollChangeMessage(event string) string {
@@ -1306,13 +1330,14 @@ func (s *Service) resolveCommitMessage(ctx context.Context, repositoryID, ref, c
 func (s *Service) createObservedRun(
 	ctx context.Context,
 	application *model.Application,
+	workflow *model.ReleaseWorkflow,
 	link model.ApplicationRepository,
 	source model.WorkflowNode,
 	candidate workflowPollCandidate,
 	trigger, message string,
 	now time.Time,
 ) (*model.PipelineRun, error) {
-	run, err := s.runFromSource(ctx, application, source, trigger, candidate.Ref, candidate.Commit, "system", message, now)
+	run, err := s.runFromSource(ctx, application, workflow, source, trigger, candidate.Ref, candidate.Commit, "system", message, now)
 	if err != nil {
 		return nil, err
 	}
@@ -1337,7 +1362,7 @@ func (s *Service) createObservedRun(
 		return nil, nil
 	}
 	run.Repositories = []model.PipelineRunRepository{component}
-	if application.Workflow == nil || !application.Workflow.IsActive {
+	if workflow == nil || !workflow.IsActive {
 		return run, nil
 	}
 	advanced, err := s.AdvanceRun(ctx, run.ID, "system", "")
@@ -1365,11 +1390,11 @@ func setRepositoryEventMetadata(run *model.PipelineRun, event, ref, commit, sour
 	run.TriggerAction = action
 	run.SourceBranch = sourceBranch
 	run.TargetBranch = targetBranch
-	key := repositoryEventDedupKey(run.ApplicationID, event, ref, commit, targetBranch, action)
+	key := repositoryEventDedupKey(run.ApplicationID, run.WorkflowID, event, ref, commit, targetBranch, action)
 	run.EventDedupKey = &key
 }
 
-func repositoryEventDedupKey(applicationID, event, ref, commit, targetBranch, action string) string {
+func repositoryEventDedupKey(applicationID, workflowID, event, ref, commit, targetBranch, action string) string {
 	category, identity := event, ref
 	switch event {
 	case "push":
@@ -1384,7 +1409,7 @@ func repositoryEventDedupKey(applicationID, event, ref, commit, targetBranch, ac
 		category = "tag_commit"
 	}
 	digest := sha256.Sum256([]byte(strings.Join([]string{
-		strings.TrimSpace(applicationID), strings.TrimSpace(category), strings.TrimSpace(identity), strings.TrimSpace(commit),
+		strings.TrimSpace(applicationID), strings.TrimSpace(workflowID), strings.TrimSpace(category), strings.TrimSpace(identity), strings.TrimSpace(commit),
 	}, "\x00")))
 	return fmt.Sprintf("%x", digest[:])
 }
@@ -1454,9 +1479,10 @@ func (s *Service) HandleRepositoryEvent(ctx context.Context, input repository.We
 			}).Error; err != nil {
 				return err
 			}
-			for _, source := range sources {
+			for _, binding := range sources {
+				workflow, source := binding.Workflow, binding.Source
 				var observation model.ApplicationRepositoryObservation
-				watchKey := repositoryObservationWatchKey(source.ID, event, input.Ref)
+				watchKey := repositoryObservationWatchKey(workflow.ID, source.ID, event, input.Ref)
 				err := tx.First(&observation, "application_repository_id = ? AND watch_key = ?", applicationRepository.ID, watchKey).Error
 				if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
 					return err
@@ -1467,16 +1493,16 @@ func (s *Service) HandleRepositoryEvent(ctx context.Context, input repository.We
 				if errors.Is(err, gorm.ErrRecordNotFound) {
 					observation = model.ApplicationRepositoryObservation{
 						ID: uuid.NewString(), ApplicationRepositoryID: applicationRepository.ID,
-						WatchKey: watchKey, SourceNodeID: source.ID, Event: event, CreatedAt: now,
+						WatchKey: watchKey, WorkflowID: workflow.ID, SourceNodeID: source.ID, Event: event, CreatedAt: now,
 					}
 				}
-				observation.WatchKey, observation.SourceNodeID, observation.Event = watchKey, source.ID, event
+				observation.WatchKey, observation.WorkflowID, observation.SourceNodeID, observation.Event = watchKey, workflow.ID, source.ID, event
 				observation.Action = eventAction
 				observation.Ref, observation.CommitSHA, observation.LastCheckedAt, observation.UpdatedAt = input.Ref, input.CommitSHA, &now, now
 				if err := tx.Save(&observation).Error; err != nil {
 					return err
 				}
-				run, err := s.runFromSourceWithDatabase(ctx, tx, application, source, input.EventType, input.Ref, input.CommitSHA, "", "Webhook 检测到新的代码版本", now)
+				run, err := s.runFromSourceWithDatabase(ctx, tx, application, workflow, source, input.EventType, input.Ref, input.CommitSHA, "", "Webhook 检测到新的代码版本", now)
 				if err != nil {
 					return err
 				}
@@ -1593,21 +1619,29 @@ func pipelineComplete(application *model.Application) bool {
 }
 
 func pipelineExecutionConfigured(application *model.Application) bool {
-	if !applicationRepositoriesComplete(application) || application.Workflow == nil || !application.Workflow.IsActive {
+	return pipelineExecutionConfiguredForWorkflow(application, application.Workflow)
+}
+
+func pipelineExecutionConfiguredForWorkflow(application *model.Application, workflow *model.ReleaseWorkflow) bool {
+	if !applicationRepositoriesComplete(application) || workflow == nil || !workflow.IsActive {
 		return false
 	}
-	return application.Workflow.SchemaVersion == model.WorkflowSchemaVersion &&
-		application.Workflow.Source.Type == model.WorkflowNodeTrigger && workflowTaskCount(application.Workflow.Stages) > 0
+	return workflow.SchemaVersion == model.WorkflowSchemaVersion &&
+		workflow.Source.Type == model.WorkflowNodeTrigger && workflowTaskCount(workflow.Stages) > 0
 }
 
 func pipelineExecutionIncompleteMessage(application *model.Application) string {
+	return pipelineExecutionIncompleteMessageForWorkflow(application, application.Workflow)
+}
+
+func pipelineExecutionIncompleteMessageForWorkflow(application *model.Application, workflow *model.ReleaseWorkflow) string {
 	missing := make([]string, 0, 4)
 	if !applicationRepositoriesComplete(application) {
 		missing = append(missing, "代码仓库")
 	}
-	if application.Workflow == nil || !application.Workflow.IsActive {
+	if workflow == nil || !workflow.IsActive {
 		missing = append(missing, "已启用的流水线")
-	} else if workflowTaskCount(application.Workflow.Stages) == 0 {
+	} else if workflowTaskCount(workflow.Stages) == 0 {
 		missing = append(missing, "流水线任务")
 	}
 	if len(missing) == 0 {

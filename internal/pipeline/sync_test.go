@@ -112,6 +112,63 @@ func TestSyncApplicationAutomaticallyExecutesPolledPushChange(t *testing.T) {
 	}
 }
 
+func TestSyncApplicationPollsEachMatchingWorkflowIndependently(t *testing.T) {
+	service, db, secrets, repositoryID := newPipelineTestService(t)
+	lister := &pipelineRefLister{refs: repository.RefResult{
+		Branches: []repository.GitRef{{Name: "main", SHA: "baseline-commit"}},
+	}}
+	service.repositories = repository.NewService(
+		db, secrets, credential.NewService(db, secrets), lister, 4,
+	)
+	application := createManualRunTestApplication(t, service, db, repositoryID, "多流水线定时检查")
+	first := application.Workflow
+	if first == nil {
+		t.Fatal("新应用缺少默认流水线")
+	}
+	firstSource, firstStages := first.Source, cloneWorkflowStages(first.Stages)
+	firstSource.Config.Events = []string{"push"}
+	if _, err := service.SaveApplicationWorkflow(context.Background(), application.ID, first.ID, "admin", WorkflowInput{
+		SchemaVersion: model.WorkflowSchemaVersion, Name: "主分支构建",
+		Revision: first.Revision, Activate: true, Source: firstSource, Stages: firstStages,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	second, err := service.CreateApplicationWorkflow(context.Background(), application.ID, "admin", WorkflowCreateInput{Name: "主分支检查"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.SaveApplicationWorkflow(context.Background(), application.ID, second.Workflow.ID, "admin", WorkflowInput{
+		SchemaVersion: model.WorkflowSchemaVersion, Name: second.Workflow.Name,
+		Revision: second.Workflow.Revision, Activate: true, Source: firstSource, Stages: cloneWorkflowStages(firstStages),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, run, err := service.SyncApplication(context.Background(), application.ID, "manual_sync"); err != nil || run != nil {
+		t.Fatalf("首次检查应只为两条流水线分别建立基线: run=%+v err=%v", run, err)
+	}
+	var baselines []model.ApplicationRepositoryObservation
+	if err := db.Find(&baselines).Error; err != nil || len(baselines) != 2 || baselines[0].WorkflowID == baselines[1].WorkflowID {
+		t.Fatalf("两条流水线的监听基线没有隔离: observations=%+v err=%v", baselines, err)
+	}
+
+	lister.refs = repository.RefResult{Branches: []repository.GitRef{{Name: "main", SHA: "changed-commit"}}}
+	if _, _, err := service.SyncApplication(context.Background(), application.ID, "poll"); err != nil {
+		t.Fatalf("轮询同一应用的多条流水线失败: %v", err)
+	}
+	var runs []model.PipelineRun
+	if err := db.Where("application_id = ? AND commit_sha = ?", application.ID, "changed-commit").Find(&runs).Error; err != nil {
+		t.Fatal(err)
+	}
+	workflowIDs := map[string]bool{}
+	for i := range runs {
+		workflowIDs[runs[i].WorkflowID] = true
+	}
+	if len(runs) != 2 || len(workflowIDs) != 2 {
+		t.Fatalf("轮询变化没有分别触发两条流水线: %+v", runs)
+	}
+}
+
 func TestSyncApplicationAcceptsReadableRepositoryWithoutMatchingRef(t *testing.T) {
 	service, db, secrets, repositoryID := newPipelineTestService(t)
 	service.repositories = repository.NewService(

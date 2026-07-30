@@ -14,6 +14,14 @@ import (
 	"zrt/internal/model"
 )
 
+type legacyRepositoryObservationEnvironment struct {
+	Environment string `gorm:"type:varchar(16);not null;default:''"`
+}
+
+func (legacyRepositoryObservationEnvironment) TableName() string {
+	return "application_repository_observations"
+}
+
 func TestSQLiteMigrationIsIdempotent(t *testing.T) {
 	cfg := config.Database{
 		Driver:          "sqlite",
@@ -95,6 +103,9 @@ func TestSQLiteMigrationIsIdempotent(t *testing.T) {
 	if !db.Migrator().HasColumn(&model.ApplicationRepositoryObservation{}, "action") {
 		t.Fatal("PR 监听动作游标字段未创建")
 	}
+	if db.Migrator().HasColumn(&model.ApplicationRepositoryObservation{}, "environment") {
+		t.Fatal("仓库监听表仍保留旧环境字段")
+	}
 	if !db.Migrator().HasColumn(&model.GitRepository{}, "api_credential_id") ||
 		!db.Migrator().HasIndex(&model.GitRepository{}, "APICredentialID") {
 		t.Fatal("代码仓库平台 API 令牌引用字段或索引未创建")
@@ -135,6 +146,105 @@ func TestSQLiteUsesPureGoDriver(t *testing.T) {
 	}
 	if err := db.Create(&uniqueRecord{Name: "same"}).Error; !errors.Is(err, gorm.ErrDuplicatedKey) {
 		t.Fatalf("重复键错误未转换: %v", err)
+	}
+}
+
+func TestSQLiteRepositoryObservationUpgradeRebuildsWorkflowScopedCursor(t *testing.T) {
+	db, err := Open(context.Background(), config.Database{
+		Driver:          "sqlite",
+		DSN:             "file:repository_observation_upgrade?mode=memory&cache=shared",
+		MaxOpenConns:    1,
+		MaxIdleConns:    1,
+		ConnMaxLifetime: time.Minute,
+	}, slog.Default())
+	if err != nil {
+		t.Fatalf("打开 SQLite 失败: %v", err)
+	}
+	defer Close(db)
+	if err := Migrate(context.Background(), db); err != nil {
+		t.Fatalf("初始化迁移失败: %v", err)
+	}
+	if err := db.Exec("DELETE FROM schema_migrations WHERE version IN ?", []string{"202607300052", "202607300053"}).Error; err != nil {
+		t.Fatalf("重置仓库监听迁移版本失败: %v", err)
+	}
+	if err := db.Exec("ALTER TABLE applications ADD workflow_template_id varchar(36) NOT NULL DEFAULT ''").Error; err != nil {
+		t.Fatalf("恢复应用唯一流水线方案旧字段失败: %v", err)
+	}
+	if err := db.Migrator().DropTable(&model.ApplicationRepositoryObservation{}); err != nil {
+		t.Fatalf("删除当前仓库监听表失败: %v", err)
+	}
+	if err := db.Exec(`CREATE TABLE application_repository_observations (
+		id varchar(36) PRIMARY KEY,
+		application_repository_id varchar(36) NOT NULL,
+		"environment" varchar(16) NOT NULL,
+		ref varchar(512) NOT NULL DEFAULT '',
+		commit_sha varchar(64) NOT NULL DEFAULT '',
+		last_checked_at datetime,
+		created_at datetime NOT NULL,
+		updated_at datetime NOT NULL,
+		watch_key varchar(64) NOT NULL DEFAULT '',
+		source_node_id varchar(64) NOT NULL DEFAULT '',
+		event varchar(16) NOT NULL DEFAULT '',
+		action varchar(16) NOT NULL DEFAULT ''
+	)`).Error; err != nil {
+		t.Fatalf("构造旧仓库监听表失败: %v", err)
+	}
+	if err := db.Exec("CREATE INDEX idx_application_repository_observations_environment ON application_repository_observations(environment)").Error; err != nil {
+		t.Fatalf("构造旧仓库监听环境索引失败: %v", err)
+	}
+	now := time.Now().UTC()
+	repository := model.GitRepository{
+		ID: "repository", Name: "迁移测试仓库", Provider: model.GitProviderGeneric,
+		CloneURL: "https://example.invalid/repository.git", AuthType: model.GitAuthNone,
+		IsActive: true, CreatedBy: "admin", CreatedAt: now, UpdatedAt: now,
+	}
+	application := model.Application{
+		ID: "application", Name: "迁移测试应用", RepositoryID: repository.ID,
+		PollIntervalSeconds: 3, SyncStatus: model.ApplicationSyncIdle, IsActive: true,
+		CreatedBy: "admin", CreatedAt: now, UpdatedAt: now,
+	}
+	repositoryLink := model.ApplicationRepository{
+		ID: "repository-link", ApplicationID: application.ID, RepositoryID: repository.ID,
+		CreatedAt: now, UpdatedAt: now,
+	}
+	for _, value := range []any{&repository, &application, &repositoryLink} {
+		if err := db.Create(value).Error; err != nil {
+			t.Fatalf("写入仓库监听关联数据失败: %v", err)
+		}
+	}
+	if err := db.Exec(`INSERT INTO application_repository_observations
+		(id, application_repository_id, environment, ref, commit_sha, last_checked_at, created_at, updated_at, watch_key, source_node_id, event, action)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		"observation-legacy", "repository-link", "test", "refs/heads/main", "0123456789abcdef", now, now, now,
+		"watch-main", "source-main", "push", "",
+	).Error; err != nil {
+		t.Fatalf("写入旧仓库监听游标失败: %v", err)
+	}
+	if err := Migrate(context.Background(), db); err != nil {
+		t.Fatalf("升级旧仓库监听表失败: %v", err)
+	}
+	if db.Migrator().HasColumn(&model.ApplicationRepositoryObservation{}, "environment") {
+		var ddl string
+		_ = db.Raw("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?", "application_repository_observations").Scan(&ddl).Error
+		t.Fatalf("升级后仍保留旧环境字段: %s", ddl)
+	}
+	if db.Migrator().HasColumn(&legacyApplicationWorkflowTemplateColumn{}, "WorkflowTemplateID") {
+		var ddl string
+		_ = db.Raw("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?", "applications").Scan(&ddl).Error
+		t.Fatalf("升级后 applications 仍保留唯一流水线方案字段: %s", ddl)
+	}
+	var observation model.ApplicationRepositoryObservation
+	if err := db.First(&observation, "id = ?", "observation-legacy").Error; !errors.Is(err, gorm.ErrRecordNotFound) {
+		t.Fatalf("旧的应用级监听游标不应进入多流水线模型: %v", err)
+	}
+	observation = model.ApplicationRepositoryObservation{
+		ID: "observation-workflow", ApplicationRepositoryID: repositoryLink.ID,
+		WorkflowID: "workflow", WatchKey: "watch-workflow-main", SourceNodeID: "source-main",
+		Event: "push", Ref: "refs/heads/main", CommitSHA: "0123456789abcdef",
+		CreatedAt: now, UpdatedAt: now,
+	}
+	if err := db.Create(&observation).Error; err != nil {
+		t.Fatalf("升级后无法保存按流水线隔离的监听游标: %v", err)
 	}
 }
 
@@ -276,6 +386,128 @@ func TestDeploymentPlanLifecycleMigrationPreservesLegacyPlans(t *testing.T) {
 	if visible != 1 || all != 2 {
 		t.Fatalf("软删除默认范围错误: visible=%d all=%d", visible, all)
 	}
+}
+
+func TestExecutionConfigMigrationsUpgradeNonemptySQLiteTables(t *testing.T) {
+	db, err := Open(context.Background(), config.Database{
+		Driver: "sqlite", DSN: "file:execution_config_upgrade?mode=memory&cache=shared",
+		MaxOpenConns: 1, MaxIdleConns: 1, ConnMaxLifetime: time.Minute,
+	}, slog.Default())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer Close(db)
+	if err := db.AutoMigrate(&model.BuildPlan{}, &model.DeploymentPlan{}, &model.DeploymentRecord{}); err != nil {
+		t.Fatalf("创建升级前测试表失败: %v", err)
+	}
+
+	now := time.Now().UTC()
+	buildPlan := model.BuildPlan{
+		ID: "legacy-build", Name: "旧构建方案", Kind: model.BuildPlanDockerfile,
+		Pull: true, CacheEnabled: true, BuildArgs: map[string]string{}, EnvironmentVariables: map[string]string{},
+		TimeoutSeconds: 1800, IsActive: true, CreatedBy: "admin", CreatedAt: now, UpdatedAt: now,
+	}
+	deploymentPlan := model.DeploymentPlan{
+		ID: "legacy-deployment", Name: "旧部署方案", Kind: model.DeploymentPlanScript,
+		Script: "echo deploy", DockerConfig: model.DockerContainerConfig{},
+		TimeoutSeconds: 600, IsActive: true, CreatedBy: "admin", CreatedAt: now, UpdatedAt: now,
+	}
+	deploymentRecord := model.DeploymentRecord{
+		ID: "legacy-record", TargetID: "target", TargetName: "旧目标", Platform: model.DeploymentSSH,
+		Operation: model.DeploymentRelease, Status: model.DeploymentSucceeded,
+		DockerConfig: model.DockerContainerConfig{}, RequestedBy: "admin", CreatedAt: now, UpdatedAt: now,
+	}
+	for _, value := range []any{&buildPlan, &deploymentPlan, &deploymentRecord} {
+		if err := db.Create(value).Error; err != nil {
+			t.Fatalf("写入升级前测试数据失败: %v", err)
+		}
+	}
+
+	removed := []struct {
+		model any
+		field string
+	}{
+		{&model.DeploymentPlan{}, "DeletedAt"},
+		{&model.DeploymentPlan{}, "ComposeYAML"},
+		{&model.DeploymentPlan{}, "DockerConfig"},
+		{&model.DeploymentRecord{}, "ComposeYAML"},
+		{&model.DeploymentRecord{}, "DockerConfig"},
+		{&model.BuildPlan{}, "Pull"},
+		{&model.BuildPlan{}, "CacheEnabled"},
+		{&model.BuildPlan{}, "BuildArgs"},
+		{&model.BuildPlan{}, "EnvironmentVariables"},
+	}
+	for _, column := range removed {
+		if err := db.Migrator().DropColumn(column.model, column.field); err != nil {
+			t.Fatalf("构造升级前字段缺失状态失败: %s: %v", column.field, err)
+		}
+	}
+
+	if err := migrateDeploymentExecutionConfig(db); err != nil {
+		t.Fatalf("升级部署执行配置失败: %v", err)
+	}
+	if err := migrateBuildExecutionConfig(db); err != nil {
+		t.Fatalf("升级构建执行配置失败: %v", err)
+	}
+
+	var migratedPlan model.DeploymentPlan
+	if err := db.First(&migratedPlan, "id = ?", deploymentPlan.ID).Error; err != nil {
+		t.Fatalf("读取升级后的部署方案失败: %v", err)
+	}
+	if migratedPlan.ComposeYAML != "" || migratedPlan.DockerConfig.Network != "" {
+		t.Fatalf("旧部署方案执行配置回填错误: %+v", migratedPlan)
+	}
+	var migratedRecord model.DeploymentRecord
+	if err := db.First(&migratedRecord, "id = ?", deploymentRecord.ID).Error; err != nil {
+		t.Fatalf("读取升级后的部署记录失败: %v", err)
+	}
+	if migratedRecord.ComposeYAML != "" || migratedRecord.DockerConfig.Network != "" {
+		t.Fatalf("旧部署记录执行快照回填错误: %+v", migratedRecord)
+	}
+	var migratedBuild model.BuildPlan
+	if err := db.First(&migratedBuild, "id = ?", buildPlan.ID).Error; err != nil {
+		t.Fatalf("读取升级后的构建方案失败: %v", err)
+	}
+	if !migratedBuild.Pull || !migratedBuild.CacheEnabled || len(migratedBuild.BuildArgs) != 0 || len(migratedBuild.EnvironmentVariables) != 0 {
+		t.Fatalf("旧构建方案执行配置回填错误: %+v", migratedBuild)
+	}
+
+	for _, column := range []struct {
+		model any
+		name  string
+	}{
+		{&model.DeploymentPlan{}, "compose_yaml"},
+		{&model.DeploymentPlan{}, "docker_config"},
+		{&model.DeploymentRecord{}, "compose_yaml"},
+		{&model.DeploymentRecord{}, "docker_config"},
+		{&model.BuildPlan{}, "pull"},
+		{&model.BuildPlan{}, "cache_enabled"},
+		{&model.BuildPlan{}, "build_args"},
+		{&model.BuildPlan{}, "environment_variables"},
+	} {
+		assertNotNullWithoutDefault(t, db, column.model, column.name)
+	}
+}
+
+func assertNotNullWithoutDefault(t *testing.T, db *gorm.DB, value any, column string) {
+	t.Helper()
+	columns, err := db.Migrator().ColumnTypes(value)
+	if err != nil {
+		t.Fatalf("读取字段 %s 结构失败: %v", column, err)
+	}
+	for _, current := range columns {
+		if current.Name() != column {
+			continue
+		}
+		if nullable, ok := current.Nullable(); !ok || nullable {
+			t.Fatalf("字段 %s 没有收紧为 NOT NULL", column)
+		}
+		if defaultValue, ok := current.DefaultValue(); ok {
+			t.Fatalf("字段 %s 不应保留数据库默认值，实际为 %q", column, defaultValue)
+		}
+		return
+	}
+	t.Fatalf("没有找到字段 %s", column)
 }
 
 func TestDockerSSHMigrationUpgradesExistingDatabase(t *testing.T) {
@@ -642,7 +874,108 @@ func TestExternalDatabaseMigration(t *testing.T) {
 			if !db.Migrator().HasColumn(&model.ApplicationRepositoryObservation{}, "action") {
 				t.Fatalf("%s PR 监听动作游标字段未创建", test.name)
 			}
+			exerciseExternalExecutionConfigUpgrade(t, db, test.driver)
+			exerciseRepositoryObservationEnvironmentUpgrade(t, ctx, db, test.driver)
 		})
+	}
+}
+
+func exerciseRepositoryObservationEnvironmentUpgrade(t *testing.T, ctx context.Context, db *gorm.DB, databaseName string) {
+	t.Helper()
+	if err := db.Migrator().AddColumn(&legacyRepositoryObservationEnvironment{}, "Environment"); err != nil {
+		t.Fatalf("构造 %s 仓库监听旧环境字段失败: %v", databaseName, err)
+	}
+	if err := db.Exec("DELETE FROM schema_migrations WHERE version = ?", "202607300052").Error; err != nil {
+		t.Fatalf("重置 %s 仓库监听迁移版本失败: %v", databaseName, err)
+	}
+	if err := Migrate(ctx, db); err != nil {
+		t.Fatalf("升级 %s 仓库监听表失败: %v", databaseName, err)
+	}
+	hasEnvironment, err := physicalColumnExists(db, &model.ApplicationRepositoryObservation{}, "environment")
+	if err != nil {
+		t.Fatalf("检查 %s 仓库监听字段失败: %v", databaseName, err)
+	}
+	if hasEnvironment {
+		t.Fatalf("%s 仓库监听表仍保留旧环境字段", databaseName)
+	}
+}
+
+func exerciseExternalExecutionConfigUpgrade(t *testing.T, db *gorm.DB, prefix string) {
+	t.Helper()
+	now := time.Now().UTC()
+	buildPlan := model.BuildPlan{
+		ID: prefix + "-upgrade-build", Name: prefix + "-旧构建方案", Kind: model.BuildPlanDockerfile,
+		Pull: true, CacheEnabled: true, BuildArgs: map[string]string{}, EnvironmentVariables: map[string]string{},
+		TimeoutSeconds: 1800, IsActive: true, CreatedBy: "admin", CreatedAt: now, UpdatedAt: now,
+	}
+	deploymentPlan := model.DeploymentPlan{
+		ID: prefix + "-upgrade-deployment", Name: prefix + "-旧部署方案", Kind: model.DeploymentPlanScript,
+		Script: "echo deploy", DockerConfig: model.DockerContainerConfig{},
+		TimeoutSeconds: 600, IsActive: true, CreatedBy: "admin", CreatedAt: now, UpdatedAt: now,
+	}
+	deploymentRecord := model.DeploymentRecord{
+		ID: prefix + "-upgrade-record", TargetID: "target", TargetName: "旧目标", Platform: model.DeploymentSSH,
+		Operation: model.DeploymentRelease, Status: model.DeploymentSucceeded,
+		DockerConfig: model.DockerContainerConfig{}, RequestedBy: "admin", CreatedAt: now, UpdatedAt: now,
+	}
+	for _, value := range []any{&deploymentRecord, &deploymentPlan, &buildPlan} {
+		if err := db.Unscoped().Delete(value).Error; err != nil {
+			t.Fatalf("清理 %s 升级测试数据失败: %v", prefix, err)
+		}
+	}
+	for _, value := range []any{&buildPlan, &deploymentPlan, &deploymentRecord} {
+		if err := db.Create(value).Error; err != nil {
+			t.Fatalf("写入 %s 升级前测试数据失败: %v", prefix, err)
+		}
+	}
+
+	removed := []struct {
+		model any
+		field string
+	}{
+		{&model.DeploymentPlan{}, "DeletedAt"},
+		{&model.DeploymentPlan{}, "ComposeYAML"},
+		{&model.DeploymentPlan{}, "DockerConfig"},
+		{&model.DeploymentRecord{}, "ComposeYAML"},
+		{&model.DeploymentRecord{}, "DockerConfig"},
+		{&model.BuildPlan{}, "Pull"},
+		{&model.BuildPlan{}, "CacheEnabled"},
+		{&model.BuildPlan{}, "BuildArgs"},
+		{&model.BuildPlan{}, "EnvironmentVariables"},
+	}
+	for _, column := range removed {
+		if err := db.Migrator().DropColumn(column.model, column.field); err != nil {
+			t.Fatalf("构造 %s 升级前字段缺失状态失败: %s: %v", prefix, column.field, err)
+		}
+	}
+	if err := migrateDeploymentExecutionConfig(db); err != nil {
+		t.Fatalf("升级 %s 部署执行配置失败: %v", prefix, err)
+	}
+	if err := migrateBuildExecutionConfig(db); err != nil {
+		t.Fatalf("升级 %s 构建执行配置失败: %v", prefix, err)
+	}
+
+	var migratedBuild model.BuildPlan
+	if err := db.First(&migratedBuild, "id = ?", buildPlan.ID).Error; err != nil {
+		t.Fatalf("读取 %s 升级后的构建方案失败: %v", prefix, err)
+	}
+	if !migratedBuild.Pull || !migratedBuild.CacheEnabled || len(migratedBuild.BuildArgs) != 0 || len(migratedBuild.EnvironmentVariables) != 0 {
+		t.Fatalf("%s 旧构建方案执行配置回填错误: %+v", prefix, migratedBuild)
+	}
+	for _, column := range []struct {
+		model any
+		name  string
+	}{
+		{&model.DeploymentPlan{}, "compose_yaml"},
+		{&model.DeploymentPlan{}, "docker_config"},
+		{&model.DeploymentRecord{}, "compose_yaml"},
+		{&model.DeploymentRecord{}, "docker_config"},
+		{&model.BuildPlan{}, "pull"},
+		{&model.BuildPlan{}, "cache_enabled"},
+		{&model.BuildPlan{}, "build_args"},
+		{&model.BuildPlan{}, "environment_variables"},
+	} {
+		assertNotNullWithoutDefault(t, db, column.model, column.name)
 	}
 }
 

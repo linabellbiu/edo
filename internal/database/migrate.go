@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/url"
 	"strconv"
+	"strings"
 	"time"
 
 	"gorm.io/gorm"
@@ -237,9 +238,7 @@ var migrations = []migration{
 	},
 	{
 		version: "202607300041",
-		up: func(tx *gorm.DB) error {
-			return tx.AutoMigrate(&model.DeploymentPlan{}, &model.DeploymentRecord{})
-		},
+		up:      migrateDeploymentExecutionConfig,
 	},
 	{
 		version: "202607300042",
@@ -257,9 +256,7 @@ var migrations = []migration{
 	},
 	{
 		version: "202607300045",
-		up: func(tx *gorm.DB) error {
-			return tx.AutoMigrate(&model.BuildPlan{})
-		},
+		up:      migrateBuildExecutionConfig,
 	},
 	{
 		version: "202607300046",
@@ -287,6 +284,230 @@ var migrations = []migration{
 		version: "202607300051",
 		up:      migrateDeploymentRollbackAttempts,
 	},
+	{
+		version: "202607300052",
+		up:      migrateRepositoryObservationWatchSchema,
+	},
+	{
+		version: "202607300053",
+		up:      migrateApplicationWorkflowsOneToMany,
+	},
+}
+
+// migrateApplicationWorkflowsOneToMany 删除旧的“应用唯一流水线”结构。
+// 流水线定义和仓库监听游标都不是历史执行审计数据；本次模型重构明确不兼容
+// 旧定义，因此直接重建这两张表，已完成运行仍由 pipeline_runs 中的快照保留。
+func migrateApplicationWorkflowsOneToMany(tx *gorm.DB) error {
+	if tx.Migrator().HasTable(&model.ApplicationRepositoryObservation{}) {
+		if err := tx.Migrator().DropTable(&model.ApplicationRepositoryObservation{}); err != nil {
+			return fmt.Errorf("重建应用流水线监听游标失败: %w", err)
+		}
+	}
+	if tx.Migrator().HasTable(&model.ReleaseWorkflow{}) {
+		if err := tx.Migrator().DropTable(&model.ReleaseWorkflow{}); err != nil {
+			return fmt.Errorf("重建应用流水线失败: %w", err)
+		}
+	}
+	legacyApplication := &legacyApplicationWorkflowTemplateColumn{}
+	if tx.Migrator().HasTable(legacyApplication) && tx.Migrator().HasColumn(legacyApplication, "WorkflowTemplateID") {
+		var err error
+		if tx.Dialector.Name() == "sqlite" {
+			// GORM 的 SQLite DropColumn 会重建 applications，入站外键会阻止删除
+			// 原表。当前 SQLite 已原生支持 DROP COLUMN，先移除旧字段索引即可原位完成。
+			if err = tx.Exec(`DROP INDEX IF EXISTS "idx_applications_workflow_template_id"`).Error; err == nil {
+				err = tx.Exec(`ALTER TABLE "applications" DROP COLUMN "workflow_template_id"`).Error
+			}
+		} else {
+			err = tx.Migrator().DropColumn(legacyApplication, "WorkflowTemplateID")
+		}
+		if err != nil {
+			return fmt.Errorf("移除应用唯一流水线方案字段失败: %w", err)
+		}
+	}
+	if tx.Migrator().HasTable(&model.ReleasePlanExecutionItem{}) {
+		if err := addBackfilledNotNullColumn(
+			tx, &model.ReleasePlanExecutionItem{}, &nullableReleasePlanExecutionItemWorkflowColumn{},
+			"WorkflowID", "workflow_id", "",
+		); err != nil {
+			return err
+		}
+	}
+	// MySQL 会重排一次 AutoMigrate 中的多个模型，并可能在 release_workflows
+	// 尚未创建时先探测依赖表。按依赖顺序逐张迁移可在全新库和升级库中保持一致。
+	for _, table := range []any{
+		&model.ReleaseWorkflow{},
+		&model.ApplicationRepositoryObservation{},
+		&model.ReleasePlanExecutionItem{},
+	} {
+		if err := tx.AutoMigrate(table); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+type nullableReleasePlanExecutionItemWorkflowColumn struct {
+	WorkflowID *string `gorm:"type:varchar(36)"`
+}
+
+func (nullableReleasePlanExecutionItemWorkflowColumn) TableName() string {
+	return "release_plan_execution_items"
+}
+
+// GORM 的 SQLite Migrator 删除列时需要从模型 Schema 中解析字段；直接传表名会
+// 触发空 Schema。这个最小旧模型只用于安全移除已经退出正式 Application 模型的列。
+type legacyApplicationWorkflowTemplateColumn struct {
+	WorkflowTemplateID string `gorm:"column:workflow_template_id;type:varchar(36);not null;default:''"`
+}
+
+func (legacyApplicationWorkflowTemplateColumn) TableName() string {
+	return "applications"
+}
+
+// 这些仅用于先创建可回填的 NULL 列。回填完成后，迁移会依据正式模型收紧为
+// NOT NULL；不能直接用正式模型 AddColumn，否则非空 SQLite 表会拒绝新增列。
+type nullableDeploymentPlanExecutionColumns struct {
+	ComposeYAML  *string `gorm:"type:text"`
+	DockerConfig *string `gorm:"type:text"`
+}
+
+func (nullableDeploymentPlanExecutionColumns) TableName() string { return "deployment_plans" }
+
+type nullableDeploymentRecordExecutionColumns struct {
+	ComposeYAML  *string `gorm:"type:text"`
+	DockerConfig *string `gorm:"type:text"`
+}
+
+func (nullableDeploymentRecordExecutionColumns) TableName() string { return "deployment_records" }
+
+type nullableBuildPlanExecutionColumns struct {
+	Pull                 *bool   `gorm:"type:boolean"`
+	CacheEnabled         *bool   `gorm:"type:boolean"`
+	BuildArgs            *string `gorm:"type:text"`
+	EnvironmentVariables *string `gorm:"type:text"`
+}
+
+func (nullableBuildPlanExecutionColumns) TableName() string { return "build_plans" }
+
+func migrateDeploymentExecutionConfig(tx *gorm.DB) error {
+	if !tx.Migrator().HasTable(&model.DeploymentPlan{}) {
+		if err := tx.AutoMigrate(&model.DeploymentPlan{}); err != nil {
+			return err
+		}
+	}
+	if !tx.Migrator().HasTable(&model.DeploymentRecord{}) {
+		if err := tx.AutoMigrate(&model.DeploymentRecord{}); err != nil {
+			return err
+		}
+	}
+	columns := []struct {
+		model       any
+		nullable    any
+		field       string
+		column      string
+		legacyValue string
+	}{
+		{&model.DeploymentPlan{}, &nullableDeploymentPlanExecutionColumns{}, "ComposeYAML", "compose_yaml", ""},
+		{&model.DeploymentPlan{}, &nullableDeploymentPlanExecutionColumns{}, "DockerConfig", "docker_config", "{}"},
+		{&model.DeploymentRecord{}, &nullableDeploymentRecordExecutionColumns{}, "ComposeYAML", "compose_yaml", ""},
+		{&model.DeploymentRecord{}, &nullableDeploymentRecordExecutionColumns{}, "DockerConfig", "docker_config", "{}"},
+	}
+	for _, column := range columns {
+		if err := addBackfilledNotNullColumn(tx, column.model, column.nullable, column.field, column.column, column.legacyValue); err != nil {
+			return err
+		}
+	}
+	return tx.AutoMigrate(&model.DeploymentPlan{}, &model.DeploymentRecord{})
+}
+
+func migrateBuildExecutionConfig(tx *gorm.DB) error {
+	if !tx.Migrator().HasTable(&model.BuildPlan{}) {
+		return tx.AutoMigrate(&model.BuildPlan{})
+	}
+	columns := []struct {
+		field       string
+		column      string
+		legacyValue any
+	}{
+		{"Pull", "pull", true},
+		{"CacheEnabled", "cache_enabled", true},
+		{"BuildArgs", "build_args", "{}"},
+		{"EnvironmentVariables", "environment_variables", "{}"},
+	}
+	for _, column := range columns {
+		if err := addBackfilledNotNullColumn(
+			tx, &model.BuildPlan{}, &nullableBuildPlanExecutionColumns{},
+			column.field, column.column, column.legacyValue,
+		); err != nil {
+			return err
+		}
+	}
+	return tx.AutoMigrate(&model.BuildPlan{})
+}
+
+// addBackfilledNotNullColumn 使用“先允许 NULL、回填历史行、再收紧约束”的顺序，
+// 同时兼容 SQLite 重建表、PostgreSQL ALTER COLUMN 和 MySQL MODIFY COLUMN。
+// 正式结构不保留数据库默认值，后续零值仍由 Go 显式写入。
+func addBackfilledNotNullColumn(
+	tx *gorm.DB,
+	value any,
+	nullableValue any,
+	field string,
+	column string,
+	legacyValue any,
+) error {
+	if !tx.Migrator().HasColumn(value, column) {
+		if err := tx.Migrator().AddColumn(nullableValue, field); err != nil {
+			return fmt.Errorf("添加可回填字段 %s 失败: %w", column, err)
+		}
+	}
+	// 某些正式模型已经包含软删除字段，但旧表要在更晚的迁移才新增该列。
+	// Unscoped 避免 GORM 在回填 SQL 中提前附加不存在的 deleted_at 条件。
+	if err := tx.Unscoped().Model(value).Where(column+" IS NULL").UpdateColumn(column, legacyValue).Error; err != nil {
+		return fmt.Errorf("回填字段 %s 失败: %w", column, err)
+	}
+	nullable, err := columnNullable(tx, value, column)
+	if err != nil {
+		return err
+	}
+	if !nullable {
+		return nil
+	}
+	if err := tx.Migrator().AlterColumn(value, field); err != nil {
+		return fmt.Errorf("收紧字段 %s 非空约束失败: %w", column, err)
+	}
+	return nil
+}
+
+func columnNullable(tx *gorm.DB, value any, column string) (bool, error) {
+	columns, err := tx.Migrator().ColumnTypes(value)
+	if err != nil {
+		return false, fmt.Errorf("读取字段 %s 结构失败: %w", column, err)
+	}
+	for _, current := range columns {
+		if current.Name() != column {
+			continue
+		}
+		nullable, ok := current.Nullable()
+		if !ok {
+			return false, fmt.Errorf("数据库未返回字段 %s 的非空约束", column)
+		}
+		return nullable, nil
+	}
+	return false, fmt.Errorf("迁移后未找到字段 %s", column)
+}
+
+func physicalColumnExists(tx *gorm.DB, value any, column string) (bool, error) {
+	columns, err := tx.Migrator().ColumnTypes(value)
+	if err != nil {
+		return false, fmt.Errorf("读取字段 %s 结构失败: %w", column, err)
+	}
+	for _, current := range columns {
+		if strings.EqualFold(current.Name(), column) {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func migrateRepositoryAPICredential(tx *gorm.DB) error {
@@ -339,6 +560,32 @@ func migrateRepositoryObservationActions(tx *gorm.DB) error {
 	// 空动作表示升级前只记录过 Commit 的监听游标。下一次轮询会补齐当前动作，
 	// 但不会把已有开启 PR 误判为一次新事件。
 	return addColumns(tx, &model.ApplicationRepositoryObservation{}, []string{"Action"})
+}
+
+func migrateRepositoryObservationWatchSchema(tx *gorm.DB) error {
+	if !tx.Migrator().HasTable(&model.ApplicationRepositoryObservation{}) {
+		return tx.AutoMigrate(&model.ApplicationRepositoryObservation{})
+	}
+	// environment 是旧的按环境监听模型遗留列。当前监听游标以代码源节点、事件和 Ref
+	// 唯一标识；保留这个 NOT NULL 列会让不再携带环境字段的 Upsert 永久失败。
+	const legacyEnvironmentIndex = "idx_application_repository_observations_environment"
+	if tx.Migrator().HasIndex(&model.ApplicationRepositoryObservation{}, legacyEnvironmentIndex) {
+		if err := tx.Migrator().DropIndex(&model.ApplicationRepositoryObservation{}, legacyEnvironmentIndex); err != nil {
+			return fmt.Errorf("删除仓库监听旧环境索引失败: %w", err)
+		}
+	}
+	hasEnvironment, err := physicalColumnExists(tx, &model.ApplicationRepositoryObservation{}, "environment")
+	if err != nil {
+		return err
+	}
+	if hasEnvironment {
+		if err := tx.Migrator().DropColumn(&model.ApplicationRepositoryObservation{}, "environment"); err != nil {
+			return fmt.Errorf("删除仓库监听旧环境字段失败: %w", err)
+		}
+	}
+	// 下一版本会按多流水线维度重建监听游标；这里不能用已经包含 workflow_id
+	// 的正式模型 AutoMigrate 非空旧表，否则 SQLite 会在新增 NOT NULL 列时失败。
+	return nil
 }
 
 // migrateStructuredWorkflows 明确切断旧画布定义。旧 nodes/edges/viewport 列均为

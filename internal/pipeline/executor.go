@@ -270,7 +270,7 @@ func (s *Service) loadArtifactDeploymentExecution(ctx context.Context, payload D
 		return nil, ErrPipelineExecutionConfig
 	}
 	if result.deploymentPlan.Kind == model.DeploymentPlanDocker &&
-		!validDockerDeploymentPlanSnapshot(&result.deploymentPlan, &result.target) {
+		!normalizeDockerDeploymentPlanSnapshot(&result.deploymentPlan, &result.target) {
 		return nil, ErrPipelineExecutionConfig
 	}
 	if err := s.db.WithContext(ctx).First(&result.application, "id = ? AND is_active = ?", run.ApplicationID, true).Error; err != nil {
@@ -336,13 +336,19 @@ func validComposeDeploymentPlanSnapshot(plan *model.DeploymentPlan, target *mode
 		dockerengine.ValidateComposeYAML(plan.ComposeYAML, plan.ServiceName) == nil
 }
 
-func validDockerDeploymentPlanSnapshot(plan *model.DeploymentPlan, target *model.DeploymentTarget) bool {
+func normalizeDockerDeploymentPlanSnapshot(plan *model.DeploymentPlan, target *model.DeploymentTarget) bool {
 	if plan == nil || target == nil || plan.ID == "" || plan.Kind != model.DeploymentPlanDocker ||
 		target.Platform != model.DeploymentDocker || plan.TimeoutSeconds < 30 || plan.TimeoutSeconds > 3600 {
 		return false
 	}
-	_, err := dockerengine.NormalizeContainerConfig(plan.DockerConfig)
-	return err == nil
+	normalized, err := dockerengine.NormalizeContainerConfig(plan.DockerConfig)
+	if err != nil {
+		return false
+	}
+	// 早期快照可能保留空数组、空映射和未展开的默认值。执行前固定为规范形式，
+	// 确保流水线与部署服务计算的是同一份配置摘要。
+	plan.DockerConfig = normalized
+	return true
 }
 
 var imageNamePartPattern = regexp.MustCompile(`[^a-z0-9._-]+`)

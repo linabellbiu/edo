@@ -23,9 +23,13 @@ const validComposeYAML = `services:
       test: ["CMD-SHELL", "test -n \"$${HOSTNAME}\""]
 `
 
-func TestValidateComposeYAMLRequiresUpstreamImagePlaceholder(t *testing.T) {
+func TestValidateComposeYAMLAcceptsManagedUpstreamImage(t *testing.T) {
 	if err := ValidateComposeYAML(validComposeYAML, "api"); err != nil {
 		t.Fatalf("有效的内联 Compose 配置被拒绝: %v", err)
+	}
+	withoutImage := "services:\n  api:\n    restart: unless-stopped\n"
+	if err := ValidateComposeYAML(withoutImage, "api"); err != nil {
+		t.Fatalf("省略目标服务镜像的 Compose 配置被拒绝: %v", err)
 	}
 	tests := []struct {
 		name    string
@@ -71,6 +75,21 @@ func TestValidateComposeYAMLRequiresUpstreamImagePlaceholder(t *testing.T) {
 				t.Fatal("不安全或不完整的 Compose 配置未被拒绝")
 			}
 		})
+	}
+}
+
+func TestComposeYAMLWithManagedImageInjectsUpstreamPlaceholder(t *testing.T) {
+	value := "services:\n  api:\n    restart: unless-stopped\n    ports: [8080:8080]\n"
+	rendered, err := composeYAMLWithManagedImage(value, "api")
+	if err != nil {
+		t.Fatalf("注入上游镜像失败: %v", err)
+	}
+	if !strings.Contains(rendered, "image: ${ZRT_IMAGE}") || !strings.Contains(rendered, "restart: unless-stopped") ||
+		!strings.Contains(rendered, "8080:8080") {
+		t.Fatalf("注入镜像时破坏了 Compose 运行参数: %q", rendered)
+	}
+	if err := ValidateComposeYAML(rendered, "api"); err != nil {
+		t.Fatalf("注入后的 Compose 配置无法再次通过安全校验: %v", err)
 	}
 }
 

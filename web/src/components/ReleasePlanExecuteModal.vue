@@ -34,7 +34,9 @@ interface ReleasePlanExecutionItem {
   membershipID: string
   applicationID: string
   applicationName: string
+  workflowID: string
   workflowRevision: number
+  workflows: Array<{ id: string; name: string; revision: number }>
   loadState: LoadState
   reason?: string
   staticBlocked?: boolean
@@ -69,7 +71,8 @@ const props = defineProps<{
 const emit = defineEmits<{
   cancel: []
   submit: []
-  retry: [applicationID: string]
+  retry: [membershipID: string]
+  'update-workflow': [membershipID: string, value: string]
   'update-source': [membershipID: string, value: string]
   'update-ref': [membershipID: string, value: string]
 }>()
@@ -116,7 +119,7 @@ const validationMeta = computed(() => {
 })
 
 function isItemComplete(item: ReleasePlanExecutionItem) {
-  return item.loadState === 'ready' && Boolean(item.selectedSourceID) && Boolean(item.selectedRef)
+  return item.loadState === 'ready' && Boolean(item.workflowID) && Boolean(item.selectedSourceID) && Boolean(item.selectedRef)
 }
 
 function itemStatus(item: ReleasePlanExecutionItem): ItemStatus {
@@ -124,7 +127,7 @@ function itemStatus(item: ReleasePlanExecutionItem): ItemStatus {
   if (item.loadState === 'error') return { key: 'error', label: t('releasePlanExecution.status.error'), icon: AlertTriangle }
   if (item.loadState === 'blocked') return { key: 'blocked', label: t('releasePlanExecution.status.blocked'), icon: ShieldAlert }
   if (item.loadState === 'idle') return { key: 'idle', label: t('releasePlanExecution.status.idle'), icon: CircleDashed }
-  if (!item.selectedSourceID || !item.selectedRef) return { key: 'pending', label: t('releasePlanExecution.status.pending'), icon: CircleDashed }
+  if (!item.workflowID || !item.selectedSourceID || !item.selectedRef) return { key: 'pending', label: t('releasePlanExecution.status.pending'), icon: CircleDashed }
   return { key: 'complete', label: t('releasePlanExecution.status.ready'), icon: CheckCircle2 }
 }
 
@@ -158,6 +161,10 @@ function updateSource(membershipID: string, value: unknown) {
   emit('update-source', membershipID, typeof value === 'string' ? value : '')
 }
 
+function updateWorkflow(membershipID: string, value: unknown) {
+  emit('update-workflow', membershipID, typeof value === 'string' ? value : '')
+}
+
 function updateRef(membershipID: string, value: unknown) {
   emit('update-ref', membershipID, typeof value === 'string' ? value : '')
 }
@@ -166,7 +173,7 @@ function updateRef(membershipID: string, value: unknown) {
 <template>
   <a-modal
     :open="open"
-    :width="960"
+    :width="1080"
     wrap-class-name="release-plan-execute-modal"
     :title="t('releasePlanExecution.title')"
     :closable="!submitting"
@@ -248,6 +255,21 @@ function updateRef(membershipID: string, value: unknown) {
                   </div>
                 </div>
 
+                <div class="item-field" :class="{ incomplete: !item.workflowID }">
+                  <label :for="`execution-workflow-${item.membershipID}`">流水线</label>
+                  <a-select
+                    :id="`execution-workflow-${item.membershipID}`"
+                    :value="item.workflowID || undefined"
+                    :disabled="item.staticBlocked || submitting"
+                    show-search
+                    option-filter-prop="label"
+                    placeholder="选择本次执行的流水线"
+                    :options="item.workflows.map(workflow => ({ value: workflow.id, label: `${workflow.name} · 第 ${workflow.revision} 版` }))"
+                    @update:value="updateWorkflow(item.membershipID, $event)"
+                  />
+                  <small v-if="!item.workflowID" class="field-message">请选择一条已启用且支持手动发布的流水线</small>
+                </div>
+
                 <div class="item-field" :class="{ incomplete: item.loadState === 'ready' && !item.selectedSourceID }">
                   <label :for="`execution-source-${item.membershipID}`">{{ t('releasePlanExecution.field.source') }}</label>
                   <a-select
@@ -324,7 +346,7 @@ function updateRef(membershipID: string, value: unknown) {
                     type="text"
                     size="small"
                     :disabled="submitting"
-                    @click="emit('retry', item.applicationID)"
+					@click="emit('retry', item.membershipID)"
                   >
                     <RefreshCw :size="13" />{{ t('releasePlanExecution.retry') }}
                   </a-button>
@@ -360,7 +382,7 @@ function updateRef(membershipID: string, value: unknown) {
 .execution-summary{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;margin:0 0 12px}.execution-summary>div{--summary-color:var(--zrt-primary);min-width:0;padding:10px 12px;border:1px solid var(--zrt-border);border-radius:10px;background:var(--zrt-surface-soft)}.execution-summary>div.ready{--summary-color:#24a86c}.execution-summary>div.pending{--summary-color:#d28b20}.execution-summary>div.blocked{--summary-color:#df5260}.execution-summary dt{color:var(--zrt-muted);font-size:10px}.execution-summary dd{margin:2px 0 0;color:var(--summary-color);font-size:20px;font-weight:700;line-height:1.2}
 .validation-banner{--validation-color:var(--zrt-primary);display:flex;align-items:flex-start;gap:10px;margin-bottom:13px;padding:10px 12px;border:1px solid color-mix(in srgb,var(--validation-color) 24%,var(--zrt-border));border-radius:10px;background:color-mix(in srgb,var(--validation-color) 7%,var(--zrt-surface))}.validation-banner.pending{--validation-color:#d28b20}.validation-banner.blocked{--validation-color:#df5260}.validation-banner.ready{--validation-color:#24a86c}.validation-banner>span{display:grid;width:28px;height:28px;flex:0 0 28px;place-items:center;border-radius:8px;color:var(--validation-color);background:color-mix(in srgb,var(--validation-color) 11%,var(--zrt-surface))}.validation-banner strong,.validation-banner small{display:block}.validation-banner strong{font-size:12px}.validation-banner small{margin-top:2px;color:var(--zrt-muted);font-size:10px;line-height:1.45}
 .execution-groups{display:grid;gap:11px}.execution-group{overflow:hidden;border:1px solid var(--zrt-border);border-radius:12px;background:var(--zrt-surface)}.group-heading{display:grid;min-height:58px;align-items:center;grid-template-columns:30px minmax(0,1fr) auto;gap:10px;padding:10px 12px;border-bottom:1px solid var(--zrt-border);background:var(--zrt-surface-soft)}.group-step{display:grid;width:28px;height:28px;place-items:center;border-radius:9px;color:var(--zrt-primary);background:var(--zrt-primary-soft);font-size:11px;font-weight:700}.group-copy{min-width:0}.group-copy strong,.group-copy small{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.group-copy strong{font-size:13px}.group-copy small{margin-top:2px;color:var(--zrt-muted);font-size:10px}.group-rules{display:flex;flex-wrap:wrap;justify-content:flex-end;gap:5px}.group-rules span{padding:3px 7px;border-radius:999px;color:var(--zrt-muted);background:var(--zrt-surface);font-size:10px;white-space:nowrap}
-.execution-items{display:grid;gap:7px;padding:8px}.execution-item{--item-state:var(--zrt-primary);overflow:hidden;border:1px solid var(--zrt-border);border-radius:10px;background:var(--zrt-surface);transition:border-color 160ms ease,background-color 160ms ease}.execution-item.state-complete{--item-state:#24a86c}.execution-item.state-pending,.execution-item.state-loading{--item-state:#d28b20}.execution-item.state-error,.execution-item.state-blocked{--item-state:#df5260}.execution-item:hover{border-color:color-mix(in srgb,var(--item-state) 34%,var(--zrt-border));background:color-mix(in srgb,var(--item-state) 2%,var(--zrt-surface))}.item-grid{display:grid;align-items:start;grid-template-columns:minmax(180px,.82fr) minmax(150px,.9fr) minmax(220px,1.12fr) auto;gap:11px;padding:11px}.item-identity{display:flex;min-width:0;align-items:center;gap:9px;padding-top:18px}.application-mark{display:grid;width:34px;height:34px;flex:0 0 34px;place-items:center;border-radius:9px;color:var(--item-state);background:color-mix(in srgb,var(--item-state) 9%,var(--zrt-surface-soft))}.item-identity>div{min-width:0}.item-identity strong,.item-identity small{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.item-identity strong{font-size:12px}.item-identity small{margin-top:3px;color:var(--zrt-muted);font-size:10px}
+.execution-items{display:grid;gap:7px;padding:8px}.execution-item{--item-state:var(--zrt-primary);overflow:hidden;border:1px solid var(--zrt-border);border-radius:10px;background:var(--zrt-surface);transition:border-color 160ms ease,background-color 160ms ease}.execution-item.state-complete{--item-state:#24a86c}.execution-item.state-pending,.execution-item.state-loading{--item-state:#d28b20}.execution-item.state-error,.execution-item.state-blocked{--item-state:#df5260}.execution-item:hover{border-color:color-mix(in srgb,var(--item-state) 34%,var(--zrt-border));background:color-mix(in srgb,var(--item-state) 2%,var(--zrt-surface))}.item-grid{display:grid;align-items:start;grid-template-columns:minmax(170px,.82fr) minmax(170px,.9fr) minmax(145px,.85fr) minmax(210px,1.08fr) auto;gap:10px;padding:11px}.item-identity{display:flex;min-width:0;align-items:center;gap:9px;padding-top:18px}.application-mark{display:grid;width:34px;height:34px;flex:0 0 34px;place-items:center;border-radius:9px;color:var(--item-state);background:color-mix(in srgb,var(--item-state) 9%,var(--zrt-surface-soft))}.item-identity>div{min-width:0}.item-identity strong,.item-identity small{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.item-identity strong{font-size:12px}.item-identity small{margin-top:3px;color:var(--zrt-muted);font-size:10px}
 .item-field{min-width:0}.item-field label{display:block;margin-bottom:5px;color:var(--zrt-muted);font-size:10px;font-weight:600}.item-field :deep(.ant-select){width:100%}.item-field.incomplete :deep(.ant-select-selector){border-color:color-mix(in srgb,#d28b20 58%,var(--zrt-border))!important}.field-message{display:block;margin-top:4px;color:#b87715;font-size:9px}.reference-option{display:flex;align-items:center;gap:6px}.reference-option svg{flex:0 0 auto;color:var(--zrt-muted)}
 .item-state{display:flex;min-width:96px;align-items:flex-end;flex-direction:column;gap:3px;padding-top:18px}.item-state>span{display:flex;align-items:center;gap:5px;padding:4px 7px;border-radius:999px;color:var(--item-state);background:color-mix(in srgb,var(--item-state) 9%,var(--zrt-surface-soft));font-size:10px;font-weight:600;white-space:nowrap}.item-state>span.loading svg{animation:execution-spin 1.2s linear infinite}.item-state :deep(.ant-btn){display:inline-flex;align-items:center;gap:4px;padding-inline:5px;color:var(--zrt-primary);font-size:10px}.item-reason{display:flex;align-items:flex-start;gap:6px;padding:7px 11px;border-top:1px solid color-mix(in srgb,#df5260 20%,var(--zrt-border));color:#c94552;background:color-mix(in srgb,#df5260 5%,var(--zrt-surface));font-size:10px;line-height:1.45}.item-reason svg{flex:0 0 auto;margin-top:1px}
 .group-empty,.execution-empty{display:flex;align-items:center;justify-content:center;gap:7px;color:var(--zrt-muted);font-size:11px}.group-empty{min-height:76px}.execution-empty{min-height:210px;flex-direction:column;padding:28px;text-align:center}.execution-empty svg{color:var(--zrt-primary)}.execution-empty strong{color:var(--zrt-text);font-size:14px}.execution-empty span{max-width:420px;font-size:11px}

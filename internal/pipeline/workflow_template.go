@@ -210,14 +210,11 @@ func (s *Service) DeleteWorkflowTemplate(ctx context.Context, id string) error {
 			}
 			return err
 		}
-		var applicationCount, workflowCount int64
-		if err := tx.Model(&model.Application{}).Where("workflow_template_id = ?", id).Count(&applicationCount).Error; err != nil {
-			return err
-		}
+		var workflowCount int64
 		if err := tx.Model(&model.ReleaseWorkflow{}).Where("workflow_template_id = ?", id).Count(&workflowCount).Error; err != nil {
 			return err
 		}
-		if applicationCount > 0 || workflowCount > 0 {
+		if workflowCount > 0 {
 			return ErrWorkflowTemplateInUse
 		}
 		if err := tx.Delete(&template).Error; err != nil {

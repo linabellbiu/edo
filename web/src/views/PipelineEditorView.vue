@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import Sortable from 'sortablejs'
-import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, toRaw, watch, type ComponentPublicInstance } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch, type ComponentPublicInstance } from 'vue'
 import { message, Modal } from 'ant-design-vue'
 import { onBeforeRouteLeave, onBeforeRouteUpdate, useRoute, useRouter } from 'vue-router'
 import {
@@ -33,7 +33,10 @@ type TaskGroup = '构建' | '测试' | '扫描' | '发布' | '部署' | '工具'
 interface ApplicationRecord {
   id: string
   name: string
+  description?: string
   repository_id?: string
+  poll_interval_seconds?: number
+  workflows?: Workflow[]
   repository?: { id: string; name: string; default_branch?: string }
 }
 
@@ -88,6 +91,7 @@ const templates = ref<Workflow[]>([])
 const buildPlans = ref<PipelineBuildPlan[]>([])
 const deploymentPlans = ref<DeploymentPlan[]>([])
 const applicationID = ref(String(route.query.application || ''))
+const workflowID = ref(String(route.query.workflow || ''))
 const templateID = ref(String(route.query.template || ''))
 const workflow = ref<Workflow | null>(null)
 const sources = ref<WorkflowNode[]>([])
@@ -97,13 +101,15 @@ const issues = ref<WorkflowIssue[]>([])
 const loading = ref(true)
 const switching = ref(false)
 const saving = ref(false)
+const saveConfirmOpen = ref(false)
+const saveConfirmSubmitting = ref(false)
 const dirty = ref(false)
 const autoSaveFailed = ref(false)
 const immersive = ref(false)
 const panelMode = ref<PanelMode>('closed')
 const propertyTab = ref<PropertyTab>('common')
 const libraryStageID = ref('')
-const libraryInsertIndex = ref<number | null>(null)
+const libraryIntent = ref<'initial' | 'parallel'>('parallel')
 const selectedStageID = ref('')
 const taskSearch = ref('')
 const activeTaskCategory = ref<(typeof taskCategories)[number]>('全部')
@@ -127,10 +133,19 @@ const editorApplication = computed<ApplicationRecord | null>(() => {
   if (publicMode.value) return { id: 'public-template', name: '流水线方案' }
   return applications.value.find(item => item.id === applicationID.value) || null
 })
-const codeSourceName = computed(() => {
-  if (publicMode.value) return '应用代码源'
-  return editorApplication.value?.repository?.name || '应用代码源'
-})
+const selectedTemplateID = computed(() => publicMode.value
+  ? templateID.value
+  : workflow.value?.workflow_template_id || '')
+const workflowOptions = computed(() => (editorApplication.value?.workflows || []).map(item => ({
+  value: item.id,
+  label: `${item.name} · ${item.is_active ? '已启用' : '草稿'}`,
+})))
+const templateOptions = computed(() => templates.value.map(item => ({
+  value: item.id,
+  label: item.name,
+  disabled: !item.is_active && item.id !== selectedTemplateID.value,
+})))
+const codeSourceName = computed(() => editorApplication.value?.repository?.name || '未配置代码仓库')
 const allNodes = computed(() => [...sources.value, ...stages.value.flatMap(stage => stage.tasks)])
 const selectedNode = computed(() => allNodes.value.find(item => item.id === selectedNodeID.value) || null)
 const selectedTask = computed(() => selectedNode.value && isTaskType(selectedNode.value.type) ? selectedNode.value : null)
@@ -263,7 +278,9 @@ function compileGraph(sourceNodes = sources.value, stageDrafts = stages.value) {
 }
 
 function cloneWorkflowValue<T>(value: T): T {
-  return structuredClone(toRaw(value))
+  // 流水线定义最终通过 JSON API 传输。JSON 序列化会完整移除 Vue 的深层代理；
+  // toRaw 只能解除最外层代理，嵌套的事件数组仍会让 structuredClone 抛出 DataCloneError。
+  return JSON.parse(JSON.stringify(value)) as T
 }
 
 function loadGraph(value: Workflow, loadedIssues: WorkflowIssue[]) {
@@ -276,7 +293,6 @@ function loadGraph(value: Workflow, loadedIssues: WorkflowIssue[]) {
   selectedStageID.value = ''
   panelMode.value = 'closed'
   libraryStageID.value = stages.value[0]?.id || ''
-  libraryInsertIndex.value = null
   dirty.value = false
   autoSaveFailed.value = false
 }
@@ -314,7 +330,12 @@ async function loadResources() {
     buildPlans.value = buildPlanResult.data.build_plans || []
     deploymentPlans.value = deploymentPlanResult.data.deployment_plans || []
     if (route.query.create === '1' && canManage.value) await createTemplate()
-    else if (applicationID.value) await loadApplication(applicationID.value)
+    else if (applicationID.value) {
+      await loadApplication(applicationID.value)
+      if (workflowID.value && route.query.workflow !== workflowID.value) {
+        await router.replace({ query: { application: applicationID.value, workflow: workflowID.value } })
+      }
+    }
     else if (templateID.value) await loadTemplate(templateID.value)
     else if (templates.value.length) {
       templateID.value = templates.value[0].id
@@ -328,14 +349,45 @@ async function loadResources() {
   }
 }
 
-async function loadApplication(id: string) {
-  const result = await client.get<WorkflowResponse>(`/applications/${id}/workflow`)
+async function loadApplication(id: string, requestedWorkflowID = workflowID.value) {
+  const application = applications.value.find(item => item.id === id)
+  const selected = application?.workflows?.find(item => item.id === requestedWorkflowID) || application?.workflows?.[0]
+  if (!selected) {
+    workflowID.value = ''
+    workflow.value = null
+    return
+  }
+  const result = await client.get<WorkflowResponse>(`/applications/${id}/workflows/${selected.id}`)
+  workflowID.value = selected.id
   loadGraph(result.data.workflow, result.data.issues)
 }
 
 async function loadTemplate(id: string) {
   const result = await client.get<WorkflowTemplateResponse>(`/workflow-templates/${id}`)
   loadGraph(result.data.workflow_template, result.data.issues)
+}
+
+function updateApplicationWorkflow(saved: Workflow) {
+  const application = editorApplication.value
+  if (!application) return
+  const workflows = [...(application.workflows || [])]
+  const index = workflows.findIndex(item => item.id === saved.id)
+  if (index >= 0) workflows[index] = saved
+  else workflows.push(saved)
+  application.workflows = workflows
+}
+
+function confirmTemplateBinding(templateName: string) {
+  return new Promise<boolean>(resolve => {
+    Modal.confirm({
+      title: `从“${templateName}”添加流水线？`,
+      content: '会在当前应用下新增一条独立流水线，并跟随该方案的最新启用版本；现有流水线不会被覆盖。',
+      okText: '确认添加',
+      cancelText: '取消',
+      onOk: () => resolve(true),
+      onCancel: () => resolve(false),
+    })
+  })
 }
 
 function confirmDiscardChanges() {
@@ -364,8 +416,36 @@ async function settleDraftBeforeNavigation() {
 }
 
 async function chooseTemplate(id: string) {
-  if (!id || id === templateID.value || loading.value || switching.value || saving.value) return
+  if (!id || loading.value || switching.value || saving.value) return
   if (!(await settleDraftBeforeNavigation())) return
+  if (!publicMode.value) {
+    const application = editorApplication.value
+    const targetTemplate = templates.value.find(item => item.id === id && item.is_active)
+    if (!application || !targetTemplate) {
+      message.error('流水线方案不存在或未启用')
+      return
+    }
+    if (!(await confirmTemplateBinding(targetTemplate.name))) return
+    loading.value = true
+    switching.value = true
+    try {
+      const result = await client.post<WorkflowResponse>(`/applications/${application.id}/workflows`, {
+        workflow_template_id: id,
+      })
+      const created = result.data.workflow
+      updateApplicationWorkflow(created)
+      workflowID.value = created.id
+      await router.replace({ query: { application: application.id, workflow: created.id } })
+      loadGraph(created, result.data.issues || [])
+      message.success(`已从方案“${targetTemplate.name}”添加流水线`)
+    } catch (error) {
+      message.error(apiErrorMessage(error))
+    } finally {
+      switching.value = false
+      loading.value = false
+    }
+    return
+  }
   loading.value = true
   switching.value = true
   try {
@@ -388,6 +468,67 @@ async function chooseTemplate(id: string) {
     switching.value = false
     loading.value = false
   }
+}
+
+async function chooseWorkflow(id: string) {
+  if (!id || id === workflowID.value || loading.value || switching.value || saving.value) return
+  if (!(await settleDraftBeforeNavigation())) return
+  switching.value = true
+  loading.value = true
+  const previousWorkflowID = workflowID.value
+  try {
+    workflowID.value = id
+    await router.replace({ query: { application: applicationID.value, workflow: id } })
+    await loadApplication(applicationID.value, id)
+  } catch (error) {
+    workflowID.value = previousWorkflowID
+    message.error(apiErrorMessage(error))
+  } finally {
+    switching.value = false
+    loading.value = false
+  }
+}
+
+async function createApplicationWorkflow() {
+  if (publicMode.value || !canManage.value || saving.value) return
+  if (!(await settleDraftBeforeNavigation())) return
+  saving.value = true
+  try {
+    const result = await client.post<WorkflowResponse>(`/applications/${applicationID.value}/workflows`, {})
+    const created = result.data.workflow
+    updateApplicationWorkflow(created)
+    workflowID.value = created.id
+    await router.replace({ query: { application: applicationID.value, workflow: created.id } })
+    loadGraph(created, result.data.issues || [])
+    message.success('已新增一条自定义流水线草稿')
+  } catch (error) {
+    message.error(apiErrorMessage(error))
+  } finally {
+    saving.value = false
+  }
+}
+
+function deleteCurrentWorkflow() {
+  if (publicMode.value || !workflow.value || !canManage.value) return
+  const deleting = workflow.value
+  Modal.confirm({
+    title: `删除流水线“${deleting.name}”？`,
+    content: '只删除这条流水线定义，不删除应用、其他流水线或历史运行记录。',
+    okText: '删除流水线',
+    okType: 'danger',
+    cancelText: '取消',
+    async onOk() {
+      await client.delete(`/applications/${applicationID.value}/workflows/${deleting.id}`)
+      const application = editorApplication.value
+      if (application) application.workflows = (application.workflows || []).filter(item => item.id !== deleting.id)
+      const next = application?.workflows?.[0]
+      workflowID.value = next?.id || ''
+      await router.replace({ query: { application: applicationID.value, ...(next ? { workflow: next.id } : {}) } })
+      if (next) await loadApplication(applicationID.value, next.id)
+      else workflow.value = null
+      message.success('流水线已删除')
+    },
+  })
 }
 
 async function createTemplate() {
@@ -470,7 +611,7 @@ async function validateGraph() {
   try {
     const result = publicMode.value
       ? await client.post<WorkflowTemplateResponse>('/workflow-templates/validate', payload(false))
-      : await client.post<WorkflowResponse>(`/applications/${applicationID.value}/workflow/validate`, payload(false))
+      : await client.post<WorkflowResponse>(`/applications/${applicationID.value}/workflows/${workflowID.value}/validate`, payload(false))
     issues.value = result.data.issues || []
     if (result.data.valid) message.success('结构检查通过，可以启用这份流水线。')
     else message.warning(`发现 ${issues.value.length} 个问题：${summarizeIssues(issues.value)}`)
@@ -488,19 +629,20 @@ async function save(activate: boolean, automatic = false): Promise<boolean> {
   const requestVersion = editVersion
   const requestWorkflowID = workflow.value.id
   const requestPayload = payload(activate)
+  const previousTemplateID = selectedTemplateID.value
   saving.value = true
   window.clearTimeout(autoSaveTimer)
   try {
     const result = publicMode.value
       ? await client.put<WorkflowTemplateResponse>(`/workflow-templates/${templateID.value}`, requestPayload)
-      : await client.put<WorkflowResponse>(`/applications/${applicationID.value}/workflow`, requestPayload)
+      : await client.put<WorkflowResponse>(`/applications/${applicationID.value}/workflows/${workflowID.value}`, requestPayload)
     const saved = publicMode.value
       ? (result.data as WorkflowTemplateResponse).workflow_template
       : (result.data as WorkflowResponse).workflow
     if (publicMode.value) {
       const templateIndex = templates.value.findIndex(item => item.id === saved.id)
       if (templateIndex >= 0) templates.value[templateIndex] = saved
-    }
+    } else updateApplicationWorkflow(saved)
     if (editVersion === requestVersion && workflow.value?.id === requestWorkflowID) {
       loadGraph(saved, result.data.issues || [])
     } else if (workflow.value?.id === requestWorkflowID) {
@@ -511,7 +653,13 @@ async function save(activate: boolean, automatic = false): Promise<boolean> {
       }
       dirty.value = true
     }
-    if (!automatic) message.success(activate ? '流水线已启用，新运行将按当前阶段顺序执行。' : '草稿已保存')
+    if (!automatic) {
+      if (!publicMode.value && previousTemplateID && !saved.workflow_template_id) {
+        message.success('应用流水线已保存为自定义配置，后续不再跟随原流水线方案更新。')
+      } else {
+        message.success(activate ? '流水线已启用，新运行将按当前阶段顺序执行。' : '草稿已保存')
+      }
+    }
     return true
   } catch (error) {
     const responseIssues = (error as { response?: { data?: { issues?: WorkflowIssue[] } } }).response?.data?.issues
@@ -540,13 +688,17 @@ function requestSave() {
     void save(false)
     return
   }
-  Modal.confirm({
-    title: '保存并更新已启用流水线？',
-    content: '新启动的运行将使用更新后的配置；已经启动的运行仍使用原快照。',
-    okText: '保存并启用',
-    cancelText: '取消',
-    onOk: () => save(true),
-  })
+  saveConfirmOpen.value = true
+}
+
+async function confirmSaveUpdate() {
+  if (saveConfirmSubmitting.value) return
+  saveConfirmSubmitting.value = true
+  try {
+    if (await save(true)) saveConfirmOpen.value = false
+  } finally {
+    saveConfirmSubmitting.value = false
+  }
 }
 
 function updateWorkflowMeta() {
@@ -622,19 +774,38 @@ function selectStage(stageID: string) {
 }
 
 function closePanel() {
-  selectedNodeID.value = ''
-  selectedStageID.value = ''
   propertyTab.value = 'common'
   panelMode.value = 'closed'
 }
 
-function openTaskLibrary(stageID?: string, insertIndex: number | null = null) {
-  if (stageID) libraryStageID.value = stageID
-  else if (!stages.value.some(stage => stage.id === libraryStageID.value)) libraryStageID.value = stages.value.at(-1)?.id || ''
+function clearBoardSelection() {
   selectedNodeID.value = ''
   selectedStageID.value = ''
+  closePanel()
+}
+
+function handleBoardClick(event: MouseEvent) {
+  const target = event.target
+  if (!(target instanceof Element)) return
+  if (target.closest('button, a, input, textarea, select, [role="button"], [role="combobox"]')) return
+  clearBoardSelection()
+}
+
+function cancelParallelTaskCreation() {
+  if (libraryIntent.value !== 'parallel') return
+  clearBoardSelection()
+}
+
+function openTaskLibrary(stageID?: string, intent: 'initial' | 'parallel' = 'parallel') {
+  if (stageID) libraryStageID.value = stageID
+  else if (!stages.value.some(stage => stage.id === libraryStageID.value)) libraryStageID.value = stages.value.at(-1)?.id || ''
+  libraryIntent.value = intent
+  const targetStage = stages.value.find(stage => stage.id === libraryStageID.value)
+  const keepSelectedTask = intent === 'parallel'
+    && Boolean(targetStage?.tasks.some(task => task.id === selectedNodeID.value))
+  if (!keepSelectedTask) selectedNodeID.value = ''
+  selectedStageID.value = ''
   panelMode.value = 'library'
-  libraryInsertIndex.value = insertIndex
   taskSearch.value = ''
   activeTaskCategory.value = '全部'
 }
@@ -648,13 +819,17 @@ function addTask(definition: TaskDefinition) {
     libraryStageID.value = stage.id
   }
   const task = createTaskNode(definition.type, definition)
-  const index = libraryInsertIndex.value == null
-    ? stage.tasks.length
-    : Math.max(0, Math.min(libraryInsertIndex.value, stage.tasks.length))
-  stage.tasks.splice(index, 0, task)
-  libraryInsertIndex.value = null
+  stage.tasks.push(task)
   selectNode(task.id)
   markDirty()
+}
+
+function stageCanvasWidth(stage: PipelineStageDraft) {
+  return stage.tasks.length ? 360 : 300
+}
+
+function stageHasSelectedTask(stage: PipelineStageDraft) {
+  return stage.tasks.some(task => task.id === selectedNodeID.value)
 }
 
 function removeTask(id: string) {
@@ -849,10 +1024,10 @@ function setTaskListRef(stageID: string, target: Element | ComponentPublicInstan
   taskListElements.set(stageID, element)
   taskSortables.set(stageID, Sortable.create(element, {
     animation: 160,
-    direction: 'horizontal',
+    direction: 'vertical',
     disabled: !canManage.value || saving.value,
     handle: '.task-drag-handle',
-    draggable: '.pipeline-task-card',
+    draggable: '.parallel-task-row',
     group: { name: 'pipeline-stage-tasks', pull: true, put: true },
     ghostClass: 'pipeline-task-ghost',
     chosenClass: 'pipeline-task-chosen',
@@ -925,8 +1100,9 @@ onBeforeUnmount(() => {
 })
 onBeforeRouteUpdate(async to => {
   const nextApplicationID = typeof to.query.application === 'string' ? to.query.application : ''
+  const nextWorkflowID = nextApplicationID && typeof to.query.workflow === 'string' ? to.query.workflow : ''
   const nextTemplateID = nextApplicationID ? '' : typeof to.query.template === 'string' ? to.query.template : ''
-  if (nextApplicationID === applicationID.value && nextTemplateID === templateID.value) return true
+  if (nextApplicationID === applicationID.value && nextWorkflowID === workflowID.value && nextTemplateID === templateID.value) return true
   if (switching.value) return false
   if (saving.value) {
     message.warning('流水线正在保存，请稍后再切换方案。')
@@ -938,15 +1114,19 @@ onBeforeRouteUpdate(async to => {
   switching.value = true
   try {
     if (nextApplicationID) {
-      const result = await client.get<WorkflowResponse>(`/applications/${nextApplicationID}/workflow`)
+      const selected = applications.value.find(item => item.id === nextApplicationID)?.workflows?.find(item => item.id === nextWorkflowID)
+      if (!selected) return false
+      const result = await client.get<WorkflowResponse>(`/applications/${nextApplicationID}/workflows/${selected.id}`)
       loadGraph(result.data.workflow, result.data.issues)
       applicationID.value = nextApplicationID
+      workflowID.value = selected.id
       templateID.value = ''
     } else {
       const result = await client.get<WorkflowTemplateResponse>(`/workflow-templates/${nextTemplateID}`)
       loadGraph(result.data.workflow_template, result.data.issues)
       templateID.value = nextTemplateID
       applicationID.value = ''
+      workflowID.value = ''
     }
     return true
   } catch (error) {
@@ -974,32 +1154,46 @@ onBeforeRouteLeave(async () => {
   <section class="pipeline-editor-page">
     <div class="pipeline-command vben-card">
       <div class="pipeline-command-main">
-        <a-button type="text" :disabled="saving || switching" @click="router.push('/pipeline-plans')"><ChevronLeft :size="17" />返回</a-button>
+        <a-button type="text" :disabled="saving || switching" @click="router.push(publicMode ? '/pipeline-plans' : '/applications')"><ChevronLeft :size="17" />返回</a-button>
         <span class="command-divider" />
-        <label class="plan-switcher">
-          <span>流水线方案</span>
-          <a-select :value="templateID" :options="templates.map(item => ({ value: item.id, label: item.name }))" :loading="loading" :disabled="saving" @change="chooseTemplate(String($event))" />
+        <label v-if="!publicMode" class="plan-switcher">
+          <span>应用流水线</span>
+          <a-select :value="workflowID || undefined" :options="workflowOptions" :loading="loading" :disabled="saving" placeholder="选择流水线" @change="chooseWorkflow(String($event))" />
         </label>
+        <label v-else class="plan-switcher">
+          <span>流水线方案</span>
+          <a-select :value="selectedTemplateID || undefined" :options="templateOptions" :loading="loading" :disabled="saving" placeholder="选择流水线方案" @change="chooseTemplate(String($event))" />
+        </label>
+        <label v-if="!publicMode && canManage" class="plan-switcher template-adder">
+          <span>从方案添加</span>
+          <a-select :value="undefined" :options="templateOptions.filter(item => !item.disabled)" :disabled="saving" placeholder="选择方案" @change="chooseTemplate(String($event))" />
+        </label>
+        <a-tag v-if="!publicMode && workflow" :color="selectedTemplateID ? 'blue' : 'default'">{{ selectedTemplateID ? '跟随方案' : '自定义' }}</a-tag>
         <a-tag v-if="workflow" :color="workflow.is_active ? 'success' : 'default'">{{ workflow.is_active ? '已启用' : '草稿' }}</a-tag>
         <span v-if="workflow" class="save-indicator" :class="{ failed: autoSaveFailed, pending: dirty }"><i />{{ saveState }}</span>
       </div>
       <div class="pipeline-command-actions">
-        <a-button v-if="canManage" :disabled="saving || createStarted" @click="createTemplate"><Plus :size="15" />新建方案</a-button>
+        <a-input
+          v-if="workflow"
+          v-model:value="workflow.name"
+          class="pipeline-name-input"
+          :disabled="!canEdit"
+          :placeholder="publicMode ? '方案名称' : '流水线名称'"
+          :aria-label="publicMode ? '方案名称' : '流水线名称'"
+          @change="updateWorkflowMeta"
+        />
+        <a-button v-if="canManage && publicMode" :disabled="saving || createStarted" @click="createTemplate"><Plus :size="15" />新建方案</a-button>
+        <a-button v-if="canManage && !publicMode" :disabled="saving" @click="createApplicationWorkflow"><Plus :size="15" />新建流水线</a-button>
+        <a-button v-if="canManage && !publicMode && workflow" danger type="text" :disabled="saving" title="删除当前流水线" aria-label="删除当前流水线" @click="deleteCurrentWorkflow"><Trash2 :size="16" /></a-button>
         <a-button v-if="workflow" :disabled="saving" @click="validateGraph"><Scan :size="15" />检查</a-button>
         <a-button v-if="workflow && canManage" :loading="saving" @click="requestSave"><Save :size="15" />{{ workflow.is_active ? '保存并更新' : '保存草稿' }}</a-button>
-        <a-button v-if="workflow && canManage && !workflow.is_active" type="primary" :loading="saving" @click="save(true)">启用方案</a-button>
+        <a-button v-if="workflow && canManage && !workflow.is_active" type="primary" :loading="saving" @click="save(true)">{{ publicMode ? '启用方案' : '启用流水线' }}</a-button>
       </div>
     </div>
 
-    <div v-if="workflow" class="pipeline-meta vben-card" :class="{ 'template-meta': publicMode }" :inert="saving">
-      <a-input v-model:value="workflow.name" :disabled="!canEdit" placeholder="方案名称" @change="updateWorkflowMeta" />
-      <a-input v-if="publicMode" v-model:value="workflow.description" :disabled="!canEdit" placeholder="适用范围和使用说明" @change="updateWorkflowMeta" />
-      <span>第 {{ workflow.revision }} 版</span>
-    </div>
-
     <a-skeleton v-if="loading && !workflow" active :paragraph="{ rows: 12 }" />
-    <a-empty v-else-if="!workflow" class="pipeline-empty" description="还没有可编辑的流水线方案">
-      <a-button v-if="canManage" type="primary" :disabled="saving || createStarted" @click="createTemplate">创建第一份方案</a-button>
+    <a-empty v-else-if="!workflow" class="pipeline-empty" :description="publicMode ? '还没有可编辑的流水线方案' : '这个应用还没有流水线'">
+      <a-button v-if="canManage" type="primary" :disabled="saving || createStarted" @click="publicMode ? createTemplate() : createApplicationWorkflow()">{{ publicMode ? '创建第一份方案' : '创建第一条流水线' }}</a-button>
     </a-empty>
 
     <div v-else class="pipeline-studio" :class="{ immersive, 'panel-open': panelMode !== 'closed' }" :inert="saving">
@@ -1007,7 +1201,7 @@ onBeforeRouteLeave(async () => {
         <header class="board-toolbar">
           <div>
             <strong>流程编排</strong>
-            <span>代码源触发后，阶段和任务都按从左到右的顺序执行</span>
+            <span>代码源触发后，阶段从左到右推进，任务按分支直观呈现</span>
           </div>
           <div>
             <span class="graph-view-pill"><GitBranch :size="14" />图形视图</span>
@@ -1015,7 +1209,7 @@ onBeforeRouteLeave(async () => {
           </div>
         </header>
 
-        <div class="pipeline-board-scroll">
+        <div class="pipeline-board-scroll" @click="handleBoardClick">
           <div class="pipeline-flow">
             <section class="pipeline-source-column">
               <header><strong>源</strong></header>
@@ -1028,10 +1222,11 @@ onBeforeRouteLeave(async () => {
                 @click="selectNode(source.id)"
               >
                 <span class="source-title"><strong>{{ source.name }}</strong><Pencil :size="13" /></span>
-                <span class="source-repository"><i><GitBranch :size="17" /></i>{{ codeSourceName }}</span>
+                <span v-if="publicMode" class="source-repository"><i><Layers3 :size="17" /></i>应用入口</span>
+                <span v-else class="source-repository"><i><GitBranch :size="17" /></i>{{ codeSourceName }}</span>
                 <small>{{ triggerVersionSummary(source) }} · {{ triggerEventSummary(source.config.events) }}</small>
               </button>
-              <p v-if="publicMode">仓库和凭据由使用此方案的应用提供。</p>
+              <p v-if="publicMode">方案不绑定代码仓库；应用使用方案时自动采用自己的代码仓库和凭据。</p>
             </section>
 
             <div :ref="setStageListRef" class="pipeline-stage-list">
@@ -1041,7 +1236,7 @@ onBeforeRouteLeave(async () => {
                   class="pipeline-stage"
                   :class="{ selected: selectedStageID === stage.id, issue: issues.some(item => item.stage_id === stage.id) }"
                   :data-stage-id="stage.id"
-                  :style="{ width: `${Math.max(270, 78 + Math.max(stage.tasks.length, 1) * 176)}px` }"
+                  :style="{ width: `${stageCanvasWidth(stage)}px` }"
                 >
                   <header>
                     <div>
@@ -1054,31 +1249,54 @@ onBeforeRouteLeave(async () => {
                   <div
                     :ref="target => setTaskListRef(stage.id, target)"
                     class="pipeline-task-list"
+                    :class="{ 'show-parallel-entry': stageHasSelectedTask(stage) }"
                     :data-stage-id="stage.id"
                   >
-                    <button v-if="canManage" class="task-insert" type="button" title="在这里添加任务" @click="openTaskLibrary(stage.id, 0)"><Plus :size="13" /></button>
-                    <template v-for="(task, taskIndex) in stage.tasks" :key="task.id">
-                      <article
-                        class="pipeline-task-card"
-                        :class="{ selected: selectedNodeID === task.id, issue: issues.some(item => item.node_id === task.id) }"
-                        :data-task-id="task.id"
-                        :style="{ '--task-color': taskMeta[task.type as TaskNodeType]?.color || '#718096' }"
-                        :title="taskSummary(task)"
-                        role="button"
-                        tabindex="0"
-                        @click="selectNode(task.id)"
-                        @keydown.enter.prevent="selectNode(task.id)"
-                        @keydown.space.prevent="selectNode(task.id)"
-                      >
-                        <button v-if="canManage" class="task-drag-handle" type="button" aria-label="拖动任务" @click.stop><GripVertical :size="14" /></button>
-                        <span class="task-icon"><component :is="taskMeta[task.type as TaskNodeType]?.icon || CircleDot" :size="17" /></span>
-                        <span class="task-copy"><strong>{{ task.name }}</strong><small>{{ taskSummary(task) }}</small></span>
-                      </article>
-                      <button v-if="canManage" class="task-insert" type="button" title="在这里添加任务" @click="openTaskLibrary(stage.id, taskIndex + 1)"><Plus :size="13" /></button>
+                    <span v-if="stage.tasks.length > 1 || stageHasSelectedTask(stage)" class="parallel-branch-frame" aria-hidden="true" />
+                    <template v-for="task in stage.tasks" :key="task.id">
+                      <div class="parallel-task-row" :data-task-id="task.id">
+                        <article
+                          class="pipeline-task-card"
+                          :class="{ selected: selectedNodeID === task.id, issue: issues.some(item => item.node_id === task.id) }"
+                          :data-task-id="task.id"
+                          :style="{ '--task-color': taskMeta[task.type as TaskNodeType]?.color || '#718096' }"
+                          :title="taskSummary(task)"
+                          role="button"
+                          tabindex="0"
+                          @click="selectNode(task.id)"
+                          @keydown.enter.prevent="selectNode(task.id)"
+                          @keydown.space.prevent="selectNode(task.id)"
+                        >
+                          <button v-if="canManage" class="task-drag-handle" type="button" aria-label="拖动任务" @click.stop><GripVertical :size="14" /></button>
+                          <span class="task-icon"><component :is="taskMeta[task.type as TaskNodeType]?.icon || CircleDot" :size="17" /></span>
+                          <span class="task-copy"><strong>{{ task.name }}</strong><small>{{ taskSummary(task) }}</small></span>
+                        </article>
+                      </div>
                     </template>
-                    <button v-if="!stage.tasks.length" class="empty-task-slot" type="button" @click="openTaskLibrary(stage.id, 0)"><Plus :size="16" /><span>新的任务</span></button>
+                    <button
+                      v-if="canManage && stage.tasks.length && stageHasSelectedTask(stage)"
+                      class="new-parallel-task-slot"
+                      :class="{ active: panelMode === 'library' && libraryStageID === stage.id && libraryIntent === 'parallel' }"
+                      type="button"
+                      :aria-expanded="panelMode === 'library' && libraryStageID === stage.id && libraryIntent === 'parallel'"
+                      :aria-label="`向阶段 ${stage.name || '未命名阶段'} 添加并行任务`"
+                      @click="openTaskLibrary(stage.id, 'parallel')"
+                    >
+                      新建并行任务
+                    </button>
+                    <button
+                      v-else-if="canManage && !stage.tasks.length"
+                      class="new-task-slot"
+                      :class="{ active: panelMode === 'library' && libraryStageID === stage.id }"
+                      type="button"
+                      :aria-label="`向阶段 ${stage.name || '未命名阶段'} 添加第一个任务`"
+                      @click="openTaskLibrary(stage.id, 'initial')"
+                    >
+                      <Plus :size="18" /><strong>新的任务</strong>
+                    </button>
+                    <span v-else-if="!stage.tasks.length" class="empty-task-readonly">暂无任务</span>
                   </div>
-                  <p class="stage-mode-note">阶段内顺序执行</p>
+                  <p class="stage-mode-note">并行分支</p>
                 </article>
                 <button v-if="canManage" class="stage-insert" type="button" title="在这里添加阶段" :aria-label="`在阶段 ${stage.name} 后添加阶段`" @click="addStage(stageIndex)"><Plus :size="14" /></button>
               </template>
@@ -1089,15 +1307,31 @@ onBeforeRouteLeave(async () => {
 
         <footer class="board-footer">
           <div><a-tag :color="issues.length || !draftStructureValid ? 'warning' : 'success'">{{ issues.length ? `${issues.length} 个问题` : draftStructureValid ? '结构正常' : '流程尚未完成' }}</a-tag><span>{{ saveState }}</span></div>
-          <small>拖动阶段或任务可以调整执行顺序；运行会保存当前配置快照。</small>
+          <small>拖动阶段调整流程顺序；拖动任务调整分支排列，运行会保存当前配置快照。</small>
         </footer>
       </main>
 
-      <aside v-if="panelMode !== 'closed'" class="pipeline-side-panel vben-card">
+      <Transition name="pipeline-panel">
+        <aside v-if="panelMode !== 'closed'" class="pipeline-side-panel vben-card">
         <template v-if="panelMode === 'library'">
           <header>
-            <div><small>添加到 {{ stages.find(item => item.id === libraryStageID)?.name || '当前阶段' }}</small><strong>添加任务</strong></div>
-            <a-button type="text" aria-label="关闭任务库" @click="closePanel"><X :size="17" /></a-button>
+            <div>
+              <small>添加到 {{ stages.find(item => item.id === libraryStageID)?.name || '当前阶段' }}</small>
+              <strong>{{ libraryIntent === 'parallel' ? '选择并行任务' : '选择新的任务' }}</strong>
+            </div>
+            <div class="panel-header-actions">
+              <a-button
+                v-if="libraryIntent === 'parallel' && selectedTask"
+                type="text"
+                danger
+                title="取消新建并行任务"
+                aria-label="取消新建并行任务"
+                @click="cancelParallelTaskCreation"
+              >
+                <Trash2 :size="16" />
+              </a-button>
+              <a-button type="text" aria-label="关闭任务库" @click="closePanel"><X :size="17" /></a-button>
+            </div>
           </header>
           <a-input v-model:value="taskSearch" allow-clear placeholder="搜索任务">
             <template #prefix><Search :size="15" /></template>
@@ -1151,14 +1385,14 @@ onBeforeRouteLeave(async () => {
             :message="issue.message"
             show-icon
           />
-          <p class="panel-note">阶段从左到右执行；当前阶段中的任务按任务链从左到右执行。</p>
+          <p class="panel-note">阶段从左到右推进；当前阶段中的任务以纵向分支排列。</p>
         </template>
 
         <template v-else-if="panelMode === 'properties' && selectedNode">
           <header>
             <div><small>{{ selectedNode.type === 'trigger' ? '代码源' : '流水线任务' }}</small><strong>{{ selectedNode.type === 'trigger' ? '编辑代码源' : '编辑任务' }}</strong></div>
             <div class="panel-header-actions">
-              <a-button type="text" @click="openTaskLibrary(selectedStage?.id)">任务库</a-button>
+              <a-button v-if="selectedTask" type="text" @click="openTaskLibrary(selectedStage?.id)">任务库</a-button>
               <a-button v-if="canManage && selectedNode.type !== 'trigger'" type="text" danger @click="removeTask(selectedNode.id)"><Trash2 :size="15" /></a-button>
               <a-button type="text" aria-label="关闭任务配置" @click="closePanel"><X :size="17" /></a-button>
             </div>
@@ -1173,7 +1407,7 @@ onBeforeRouteLeave(async () => {
             </a-form-item>
 
             <template v-if="selectedNode.type === 'trigger'">
-              <a-form-item label="代码仓库"><a-input :value="codeSourceName" disabled /></a-form-item>
+              <a-form-item v-if="!publicMode" label="应用代码仓库"><a-input :value="codeSourceName" disabled /></a-form-item>
               <a-form-item label="启动方式">
                 <a-checkbox :checked="selectedNode.config.events?.includes('push')" :disabled="!canManage" @change="toggleEvent('push', $event.target.checked)">分支变更</a-checkbox>
                 <a-checkbox :checked="selectedNode.config.events?.includes('pr')" :disabled="!canManage" @change="toggleEvent('pr', $event.target.checked)">PR / MR</a-checkbox>
@@ -1278,27 +1512,46 @@ onBeforeRouteLeave(async () => {
         </template>
 
         <div v-else class="panel-empty"><CircleDot :size="28" /><strong>没有可编辑的内容</strong><p>关闭后重新选择阶段或任务。</p></div>
-      </aside>
+        </aside>
+      </Transition>
     </div>
+
+    <a-modal
+      v-model:open="saveConfirmOpen"
+      title="保存并更新已启用流水线？"
+      centered
+      :closable="!saveConfirmSubmitting"
+      :keyboard="!saveConfirmSubmitting"
+      :mask-closable="!saveConfirmSubmitting"
+    >
+      <p class="save-confirm-copy">新启动的运行将使用更新后的配置；已经启动的运行仍使用原快照。</p>
+      <template #footer>
+        <a-button html-type="button" :disabled="saveConfirmSubmitting" @click="saveConfirmOpen = false">取消</a-button>
+        <a-button type="primary" html-type="button" :loading="saveConfirmSubmitting" @click.stop="confirmSaveUpdate">保存并启用</a-button>
+      </template>
+    </a-modal>
   </section>
 </template>
 
 <style scoped>
-.pipeline-editor-page { min-height: calc(100vh - 124px); }
-.pipeline-command { display: flex; min-height: 52px; align-items: center; justify-content: space-between; gap: 12px; padding: 7px 10px; }
+.pipeline-editor-page { display: flex; height: calc(100dvh - 124px); min-height: 0; flex-direction: column; overflow: hidden; }
+.pipeline-command { display: flex; min-height: 52px; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px 12px; padding: 7px 10px; }
 .pipeline-command-main, .pipeline-command-actions, .board-toolbar > div { display: flex; align-items: center; gap: 8px; }
+.pipeline-command { flex: 0 0 auto; }
+.pipeline-command-main { min-width: 0; flex: 1 1 620px; flex-wrap: wrap; }
+.pipeline-command-actions { min-width: 0; flex: 0 1 auto; flex-wrap: wrap; }
+.pipeline-name-input { width: clamp(180px,22vw,300px); }
 .pipeline-command svg, .board-toolbar svg { margin-right: 4px; vertical-align: -2px; }
 .command-divider { width: 1px; height: 22px; background: var(--zrt-border); }
-.plan-switcher { display: flex; align-items: center; gap: 8px; color: var(--zrt-muted); font-size: 12px; }
+.plan-switcher { display: flex; flex: 0 0 auto; align-items: center; gap: 8px; color: var(--zrt-muted); font-size: 12px; white-space: nowrap; }
 .plan-switcher :deep(.ant-select) { width: 230px; }
-.save-indicator { display: flex; align-items: center; gap: 6px; color: var(--zrt-muted); font-size: 12px; }
+.plan-switcher.template-adder :deep(.ant-select) { width: 180px; }
+.save-indicator { display: flex; align-items: center; gap: 6px; color: var(--zrt-muted); font-size: 12px; white-space: nowrap; }
 .save-indicator i { width: 7px; height: 7px; border-radius: 50%; background: #2ab36d; }
 .save-indicator.pending i { background: #e7a23b; animation: save-pulse 1.5s ease-in-out infinite; }
 .save-indicator.failed i { background: #ed5c5c; }
-.pipeline-meta { display: grid; align-items: center; grid-template-columns: minmax(220px,.8fr) minmax(260px,1.4fr) auto; gap: 10px; margin-top: 10px; padding: 10px; }
-.pipeline-meta:not(.template-meta) { grid-template-columns: minmax(220px,1fr) auto; }
-.pipeline-meta > span { color: var(--zrt-muted); font-size: 12px; }
-.pipeline-studio { position: relative; height: calc(100vh - 230px); min-height: 610px; margin-top: 10px; }
+.save-confirm-copy { margin: 8px 0 2px; color: var(--zrt-muted); line-height: 1.7; }
+.pipeline-studio { position: relative; min-height: 0; flex: 1 1 auto; margin-top: 10px; overflow: hidden; }
 .pipeline-board-shell { display: grid; height: 100%; min-width: 0; overflow: hidden; grid-template-rows: 48px minmax(0,1fr) 40px; }
 .board-toolbar, .board-footer { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 0 12px; border-bottom: 1px solid var(--zrt-border); }
 .board-toolbar > div:first-child { min-width: 0; align-items: baseline; }
@@ -1323,24 +1576,33 @@ onBeforeRouteLeave(async () => {
 .source-repository { gap: 9px; color: var(--zrt-muted); }
 .source-repository i { display: grid; width: 30px; height: 30px; place-items: center; border-radius: 6px; color: var(--zrt-primary); background: var(--zrt-primary-soft); }
 .source-card small { display: block; color: var(--zrt-muted); font-size: 11px; }
-.pipeline-stage-list { display: flex; min-height: 100%; align-items: stretch; }
+.pipeline-stage-list {
+  --pipeline-stage-header-height: 58px;
+  --pipeline-task-line-offset: 51px;
+  --pipeline-mainline-y: calc(var(--pipeline-stage-header-height) + var(--pipeline-task-line-offset));
+  display: flex;
+  min-height: 100%;
+  align-items: stretch;
+}
 .pipeline-stage { position: relative; min-width: 270px; flex: 0 0 auto; border-right: 1px solid var(--zrt-border); background: var(--zrt-surface); transition: background .16s ease; }
 .pipeline-stage.selected { background: color-mix(in srgb,var(--zrt-primary) 3%,var(--zrt-surface)); }
 .pipeline-stage.issue { box-shadow: inset 0 2px 0 #e7a23b; }
-.pipeline-stage > header { display: flex; height: 58px; align-items: center; justify-content: space-between; gap: 12px; padding: 0 18px; }
+.pipeline-stage > header { display: flex; height: var(--pipeline-stage-header-height); align-items: center; justify-content: space-between; gap: 12px; padding: 0 18px; }
 .pipeline-stage > header > div { display: flex; min-width: 0; align-items: center; gap: 6px; }
 .pipeline-stage > header strong { overflow: hidden; max-width: 240px; font-size: 14px; text-overflow: ellipsis; white-space: nowrap; }
 .pipeline-stage > header small { color: var(--zrt-muted); font-size: 10px; white-space: nowrap; }
 .stage-drag-handle, .task-drag-handle { display: grid; padding: 2px; border: 0; color: var(--zrt-muted); background: transparent; cursor: grab; }
 .stage-edit { display: grid; padding: 3px; border: 0; color: var(--zrt-muted); background: transparent; cursor: pointer; }
 .stage-edit:hover { color: var(--zrt-primary); }
-.stage-insert { position: relative; z-index: 3; display: grid; width: 28px; min-width: 28px; align-self: stretch; place-items: start center; padding: 91px 0 0; border: 0; color: #fff; background: var(--zrt-surface); cursor: pointer; }
-.stage-insert::before { position: absolute; top: 99px; left: 0; width: 100%; height: 1px; background: var(--zrt-border); content: ''; }
-.stage-insert svg { z-index: 1; box-sizing: content-box; padding: 2px; border-radius: 3px; background: var(--zrt-primary); }
-.pipeline-task-list { position: relative; display: flex; min-height: 112px; align-items: center; padding: 12px 14px 22px; }
-.pipeline-task-list::before { position: absolute; top: 55px; right: 22px; left: 22px; height: 1px; background: var(--zrt-border); content: ''; }
-.task-insert { position: relative; z-index: 2; display: grid; width: 22px; min-width: 22px; height: 22px; place-items: center; padding: 0; border: 0; border-radius: 4px; color: #fff; background: var(--zrt-primary); cursor: pointer; opacity: .82; }
-.task-insert:hover { opacity: 1; transform: scale(1.05); }
+.stage-insert { position: relative; z-index: 3; width: 28px; min-width: 28px; align-self: stretch; padding: 0; border: 0; color: #fff; background: var(--zrt-surface); cursor: pointer; }
+.stage-insert::before { position: absolute; top: var(--pipeline-mainline-y); left: 0; width: 100%; height: 1px; background: var(--zrt-border); content: ''; }
+.stage-insert svg { position: absolute; z-index: 1; top: var(--pipeline-mainline-y); left: 50%; box-sizing: content-box; padding: 2px; border-radius: 3px; background: var(--zrt-primary); transform: translate(-50%, -50%); }
+.pipeline-task-list { position: relative; display: flex; min-height: 168px; align-items: center; flex-direction: column; gap: 22px; padding: 20px 38px 32px; }
+.pipeline-task-list::before { position: absolute; top: var(--pipeline-task-line-offset); right: 0; left: 0; height: 1px; background: var(--zrt-border); content: ''; }
+.parallel-branch-frame { position: absolute; z-index: 0; top: var(--pipeline-task-line-offset); right: 38px; bottom: 63px; left: 38px; border: 1px solid var(--zrt-border); border-top: 0; border-radius: 0 0 28px 28px; pointer-events: none; }
+.pipeline-task-list.show-parallel-entry .parallel-branch-frame { bottom: 49px; }
+.parallel-task-row { position: relative; z-index: 2; display: flex; width: 100%; min-height: 62px; align-items: center; justify-content: center; }
+.parallel-task-row::before { position: absolute; z-index: -1; top: 50%; right: 0; left: 0; height: 1px; background: var(--zrt-border); content: ''; }
 .pipeline-task-card { --task-color:var(--zrt-primary); position: relative; z-index: 2; display: grid; width: 154px; min-width: 154px; min-height: 62px; align-items: center; grid-template-columns: 16px 32px minmax(0,1fr); gap: 6px; padding: 8px 9px 8px 5px; border: 1px solid var(--zrt-border); border-radius: 7px; background: var(--zrt-surface-soft); box-shadow: 0 3px 10px rgb(25 35 55 / 6%); cursor: pointer; }
 .pipeline-task-card:hover, .pipeline-task-card.selected { border-color: var(--task-color); background: var(--zrt-surface); box-shadow: 0 0 0 2px color-mix(in srgb,var(--task-color) 12%,transparent); }
 .pipeline-task-card:focus-visible { outline: 2px solid var(--zrt-primary); outline-offset: 2px; }
@@ -1350,16 +1612,22 @@ onBeforeRouteLeave(async () => {
 .task-copy small, .task-copy strong { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .task-copy strong { font-size: 12.5px; }
 .task-copy small { margin-top: 4px; color: var(--zrt-muted); font-size: 9.5px; }
-.empty-task-slot { position: relative; z-index: 2; display: flex; width: 142px; height: 52px; align-items: center; justify-content: center; gap: 6px; border: 1px dashed var(--zrt-border); border-radius: 7px; color: var(--zrt-muted); background: var(--zrt-surface); cursor: pointer; }
-.empty-task-slot:hover { border-color: var(--zrt-primary); color: var(--zrt-primary); background: var(--zrt-primary-soft); }
-.stage-mode-note { margin: -12px 0 0; color: var(--zrt-muted); font-size: 10px; text-align: center; }
+.new-parallel-task-slot { position: relative; z-index: 3; width: 142px; height: 36px; padding: 0 14px; border: 1px solid color-mix(in srgb,var(--zrt-primary) 32%,var(--zrt-border)); border-radius: 6px; color: var(--zrt-primary); background: var(--zrt-surface); box-shadow: 0 4px 12px rgb(25 35 55 / 8%); cursor: pointer; font-size: 11.5px; font-weight: 600; animation: parallel-entry-in .18s ease-out; }
+.new-parallel-task-slot:hover,.new-parallel-task-slot:focus-visible,.new-parallel-task-slot.active { outline: 0; border-color: var(--zrt-primary); background: var(--zrt-primary-soft); box-shadow: 0 0 0 2px color-mix(in srgb,var(--zrt-primary) 10%,transparent),0 5px 14px rgb(25 35 55 / 10%); }
+.new-task-slot { position: relative; z-index: 2; display: flex; width: 154px; min-width: 154px; min-height: 62px; align-items: center; justify-content: center; gap: 7px; padding: 8px 12px; border: 1px dashed color-mix(in srgb,var(--zrt-muted) 38%,var(--zrt-border)); border-radius: 7px; color: var(--zrt-muted); background: color-mix(in srgb,var(--zrt-surface) 92%,transparent); cursor: pointer; transition: border-color .16s ease,color .16s ease,background-color .16s ease,box-shadow .16s ease; }
+.new-task-slot strong { font-size: 12.5px; font-weight: 600; }
+.new-task-slot:hover,.new-task-slot:focus-visible,.new-task-slot.active { border-color: var(--zrt-primary); outline: 0; color: var(--zrt-primary); background: var(--zrt-primary-soft); box-shadow: 0 0 0 2px color-mix(in srgb,var(--zrt-primary) 10%,transparent); }
+.empty-task-readonly { position: relative; z-index: 2; display: grid; width: 154px; min-height: 62px; place-items: center; border: 1px dashed var(--zrt-border); border-radius: 7px; color: var(--zrt-muted); background: var(--zrt-surface); font-size: 11px; }
+.stage-mode-note { margin: -16px 0 14px; color: var(--zrt-muted); font-size: 10px; text-align: center; }
 .first-stage { display: grid; width: 250px; min-height: 170px; place-items: center; align-content: center; align-self: flex-start; gap: 5px; margin: 18px; border: 1px dashed var(--zrt-border); border-radius: 8px; color: var(--zrt-muted); background: var(--zrt-surface); cursor: pointer; }
 .first-stage:hover { border-color: var(--zrt-primary); color: var(--zrt-primary); background: var(--zrt-primary-soft); }
 .first-stage strong, .first-stage span { display: block; }
 .first-stage span { font-size: 11px; }
 .pipeline-stage-ghost, .pipeline-task-ghost { opacity: .35; }
-.pipeline-stage-chosen, .pipeline-task-chosen { box-shadow: 0 12px 30px rgb(30 45 80 / 16%); }
-.pipeline-side-panel { position: absolute; top: 0; right: 0; bottom: 0; z-index: 20; width: min(560px,calc(100% - 48px)); min-width: 0; overflow-x: hidden; overflow-y: auto; padding: 0; border-radius: 0 10px 10px 0; box-shadow: -12px 0 28px rgb(25 35 55 / 14%); }
+.pipeline-stage-chosen, .pipeline-task-chosen .pipeline-task-card { box-shadow: 0 12px 30px rgb(30 45 80 / 16%); }
+.pipeline-side-panel { position: absolute; top: 0; right: 0; bottom: 0; z-index: 20; width: min(560px,calc(100% - 48px)); min-width: 0; overflow-x: hidden; overflow-y: auto; overscroll-behavior: contain; padding: 0; border-radius: 0 10px 10px 0; box-shadow: -12px 0 28px rgb(25 35 55 / 14%); }
+.pipeline-panel-enter-active,.pipeline-panel-leave-active { transition: opacity .18s ease,transform .22s cubic-bezier(.22,.61,.36,1); }
+.pipeline-panel-enter-from,.pipeline-panel-leave-to { opacity: 0; transform: translateX(24px); }
 .pipeline-side-panel > header { position: sticky; top: 0; z-index: 4; display: flex; min-height: 58px; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 14px; padding: 10px 16px; border-bottom: 1px solid var(--zrt-border); background: var(--zrt-surface); }
 .pipeline-side-panel > header small, .pipeline-side-panel > header strong { display: block; }
 .pipeline-side-panel > header small { margin-bottom: 2px; color: var(--zrt-muted); font-size: 10px; }
@@ -1408,6 +1676,9 @@ onBeforeRouteLeave(async () => {
 .pipeline-studio.immersive { position: fixed; inset: 0; z-index: 1000; height: 100vh; min-height: 0; margin: 0; background: var(--zrt-bg); }
 .pipeline-studio.immersive .pipeline-board-shell, .pipeline-studio.immersive .pipeline-side-panel { border-radius: 0; }
 @keyframes save-pulse { 50% { opacity: .35; transform: scale(.7); } }
-@media(max-width:1000px){.pipeline-side-panel{position:fixed;top:auto;right:12px;bottom:12px;width:min(560px,calc(100vw - 24px));max-height:78vh;border-radius:10px}.pipeline-studio.immersive .pipeline-side-panel{top:0;right:0;bottom:0;max-height:100vh;border-radius:0}}
-@media(max-width:760px){.pipeline-command{align-items:flex-start;flex-direction:column}.pipeline-command-main,.pipeline-command-actions{width:100%;flex-wrap:wrap}.plan-switcher:deep(.ant-select){width:180px}.pipeline-meta{grid-template-columns:1fr}.pipeline-studio{height:calc(100vh - 250px)}.board-toolbar>div:first-child span,.board-footer small{display:none}.pipeline-source-column{width:245px;flex-basis:245px}.pipeline-side-panel{right:0;bottom:0;width:100vw;max-height:82vh;border-radius:10px 10px 0 0}.task-library-grid{grid-template-columns:1fr}}
+@keyframes parallel-entry-in { from { opacity: 0; transform: translate(-50%,-5px); } }
+@media(prefers-reduced-motion:reduce){.new-parallel-task-slot{animation:none}.pipeline-panel-enter-active,.pipeline-panel-leave-active{transition:none}}
+@media(max-width:1200px){.plan-switcher>span{display:none}.plan-switcher:deep(.ant-select){width:210px}.pipeline-name-input{width:180px}}
+@media(max-width:1000px){.pipeline-side-panel{top:0;right:0;bottom:0;width:min(560px,100%);max-height:none;border-radius:0 10px 10px 0}.pipeline-studio.immersive .pipeline-side-panel{border-radius:0}}
+@media(max-width:760px){.pipeline-editor-page{height:calc(100dvh - 108px)}.pipeline-command{align-items:flex-start;flex-direction:column}.pipeline-command-main,.pipeline-command-actions{width:100%;flex-wrap:wrap}.pipeline-name-input{width:min(100%,260px)}.plan-switcher:deep(.ant-select){width:180px}.board-toolbar>div:first-child span,.board-footer small{display:none}.pipeline-source-column{width:245px;flex-basis:245px}.pipeline-side-panel{width:100%;border-radius:0}.task-library-grid{grid-template-columns:1fr}}
 </style>

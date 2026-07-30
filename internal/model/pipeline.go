@@ -186,6 +186,7 @@ type ApplicationRepositoryObservation struct {
 	ID                      string     `gorm:"type:varchar(36);primaryKey" json:"id"`
 	ApplicationRepositoryID string     `gorm:"type:varchar(36);not null;index;uniqueIndex:idx_repository_watch,priority:1" json:"application_repository_id"`
 	WatchKey                string     `gorm:"type:varchar(64);not null;default:'';index;uniqueIndex:idx_repository_watch,priority:2" json:"watch_key"`
+	WorkflowID              string     `gorm:"type:varchar(36);not null;index" json:"workflow_id"`
 	SourceNodeID            string     `gorm:"type:varchar(64);not null;default:'';index" json:"source_node_id,omitempty"`
 	Event                   string     `gorm:"type:varchar(16);not null;default:'';index" json:"event,omitempty"`
 	Action                  string     `gorm:"type:varchar(16);not null;default:''" json:"action,omitempty"`
@@ -201,23 +202,27 @@ func (ApplicationRepositoryObservation) TableName() string {
 }
 
 type Application struct {
-	ID                  string                   `gorm:"type:varchar(36);primaryKey" json:"id"`
-	Name                string                   `gorm:"type:varchar(128);not null;uniqueIndex" json:"name"`
-	Description         string                   `gorm:"type:varchar(500);not null;default:''" json:"description"`
-	RepositoryID        string                   `gorm:"type:varchar(36);not null;index" json:"repository_id"`
-	PollIntervalSeconds int                      `gorm:"not null;default:3" json:"poll_interval_seconds"`
-	WorkflowTemplateID  string                   `gorm:"type:varchar(36);not null;default:'';index" json:"workflow_template_id,omitempty"`
-	SyncStatus          ApplicationSyncStatus    `gorm:"type:varchar(16);not null;index" json:"sync_status"`
-	SyncMessage         string                   `gorm:"type:varchar(255);not null;default:''" json:"sync_message,omitempty"`
-	LastCheckedAt       *time.Time               `json:"last_checked_at,omitempty"`
-	IsActive            bool                     `gorm:"not null;default:true;index" json:"is_active"`
-	CreatedBy           string                   `gorm:"type:varchar(36);not null;index" json:"created_by"`
-	CreatedAt           time.Time                `gorm:"not null" json:"created_at"`
-	UpdatedAt           time.Time                `gorm:"not null" json:"updated_at"`
-	Repository          GitRepository            `gorm:"foreignKey:RepositoryID" json:"repository,omitempty"`
-	WorkflowTemplate    *ReleaseWorkflowTemplate `gorm:"foreignKey:WorkflowTemplateID;-:migration" json:"workflow_template,omitempty"`
-	Workflow            *ReleaseWorkflow         `gorm:"foreignKey:ApplicationID" json:"workflow,omitempty"`
-	Repositories        []ApplicationRepository  `gorm:"foreignKey:ApplicationID" json:"-"`
+	ID                  string                  `gorm:"type:varchar(36);primaryKey" json:"id"`
+	Name                string                  `gorm:"type:varchar(128);not null;uniqueIndex" json:"name"`
+	Description         string                  `gorm:"type:varchar(500);not null;default:''" json:"description"`
+	RepositoryID        string                  `gorm:"type:varchar(36);not null;index" json:"repository_id"`
+	PollIntervalSeconds int                     `gorm:"not null;default:3" json:"poll_interval_seconds"`
+	SyncStatus          ApplicationSyncStatus   `gorm:"type:varchar(16);not null;index" json:"sync_status"`
+	SyncMessage         string                  `gorm:"type:varchar(255);not null;default:''" json:"sync_message,omitempty"`
+	LastCheckedAt       *time.Time              `json:"last_checked_at,omitempty"`
+	IsActive            bool                    `gorm:"not null;default:true;index" json:"is_active"`
+	CreatedBy           string                  `gorm:"type:varchar(36);not null;index" json:"created_by"`
+	CreatedAt           time.Time               `gorm:"not null" json:"created_at"`
+	UpdatedAt           time.Time               `gorm:"not null" json:"updated_at"`
+	Repository          GitRepository           `gorm:"foreignKey:RepositoryID" json:"repository,omitempty"`
+	Workflows           []ReleaseWorkflow       `gorm:"foreignKey:ApplicationID" json:"workflows"`
+	Repositories        []ApplicationRepository `gorm:"foreignKey:ApplicationID" json:"-"`
+
+	// Workflow 只为包内旧测试和渐进迁移保留，不参与持久化或接口序列化；
+	// 业务代码必须通过 Workflows 或明确的 workflow_id 访问流水线。
+	Workflow           *ReleaseWorkflow         `gorm:"-" json:"-"`
+	WorkflowTemplateID string                   `gorm:"-" json:"-"`
+	WorkflowTemplate   *ReleaseWorkflowTemplate `gorm:"-" json:"-"`
 }
 
 func (Application) TableName() string { return "applications" }

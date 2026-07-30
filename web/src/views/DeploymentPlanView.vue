@@ -132,9 +132,8 @@ const saving = ref(false)
 const testing = ref(false)
 const mutatingID = ref('')
 const composeFileInput = ref<HTMLInputElement>()
-const advancedSections = ref<string[]>([])
 const deploymentDrafts: Partial<Record<PlanKind, DeploymentDraft>> = {}
-const defaultComposeYAML = 'services:\n  app:\n    image: ${ZRT_IMAGE}\n    restart: unless-stopped\n'
+const defaultComposeYAML = 'services:\n  app:\n    restart: unless-stopped\n'
 
 const form = reactive({
   name: '',
@@ -295,7 +294,6 @@ function reset() {
     docker_network: 'bridge', docker_command: '', docker_health_enabled: false, docker_health_command: '',
     docker_health_interval: 30, docker_health_timeout: 5, docker_health_retries: 3, docker_health_start_period: 10,
   })
-  advancedSections.value = []
   for (const kind of kindOptions) delete deploymentDrafts[kind.value]
   editingID.value = ''
 }
@@ -609,7 +607,6 @@ function validate() {
   }
   if (form.kind === 'compose' && !form.workload_name.trim()) return '请输入 Compose 目标服务名称'
   if (form.kind === 'compose' && !form.compose_yaml.trim()) return '请输入内联 Compose YAML'
-  if (form.kind === 'compose' && !/^\s*image:\s*(["'])?\$\{ZRT_IMAGE\}\1\s*$/m.test(form.compose_yaml)) return 'Compose 目标服务必须使用 image: ${ZRT_IMAGE}'
   if (form.kind === 'kubernetes' && !form.runtime_id) return '请选择 Kubernetes 集群'
   if (form.kind === 'kubernetes' && (!form.namespace.trim() || !form.workload_name.trim() || !form.container_name.trim())) return '请输入命名空间、Deployment 名称和容器名称'
   return ''
@@ -869,86 +866,83 @@ onMounted(refresh)
           </div>
           <div v-if="platform === 'ssh' && (!canReadHosts || !canReadEnvironments)" class="permission-note">需要发布记录查看权限才能选择环境和主机。</div>
           <div v-else-if="platform !== 'ssh' && !canReadRuntimes" class="permission-note">需要主机与集群查看权限才能选择 Docker 连接或 Kubernetes 集群。</div>
-          <div class="form-subtitle">部署参数</div>
+          <div class="form-subtitle">{{ form.kind === 'docker' ? '容器输入参数' : form.kind === 'compose' ? 'Compose 输入参数' : '部署参数' }}</div>
           <template v-if="form.kind === 'docker'">
-            <div class="form-grid docker-primary-port">
-              <a-form-item label="宿主机端口（可选）">
-                <a-input-number v-model:value="form.docker_port_mappings[0].host_port" :min="1" :max="65535" placeholder="例如：8080" />
-              </a-form-item>
-              <a-form-item label="容器端口（可选）">
-                <a-input-number v-model:value="form.docker_port_mappings[0].container_port" :min="1" :max="65535" placeholder="例如：8080" />
-              </a-form-item>
+            <a-alert
+              class="artifact-image-notice"
+              type="info"
+              show-icon
+              message="镜像来自上游构建制品，无需填写镜像地址"
+              description="运行时会固定并校验不可变镜像，再按下面的输入参数创建或更新容器。"
+            />
+            <div class="runtime-inputs">
+              <div class="runtime-input-block">
+                <header>
+                  <span><strong>端口映射</strong><small>不配置则不发布端口；默认监听地址为 127.0.0.1。</small></span>
+                  <a-button type="link" size="small" @click="addDockerPort"><Plus :size="14" />添加端口</a-button>
+                </header>
+                <div v-for="(port, index) in form.docker_port_mappings" :key="`port-${index}`" class="docker-row docker-port-input-row">
+                  <a-input v-model:value="port.host_ip" placeholder="监听地址" />
+                  <a-input-number v-model:value="port.host_port" :min="1" :max="65535" placeholder="宿主机端口" />
+                  <a-input-number v-model:value="port.container_port" :min="1" :max="65535" placeholder="容器端口" />
+                  <a-select v-model:value="port.protocol" :options="[{ value: 'tcp', label: 'TCP' }, { value: 'udp', label: 'UDP' }]" />
+                  <a-button type="text" danger aria-label="删除端口" @click="removeDockerPort(index)"><Trash2 :size="15" /></a-button>
+                </div>
+                <p class="field-help input-block-help">单容器固定使用 bridge 网络；多服务网络互联请使用 Docker Compose。</p>
+              </div>
+
+              <div class="runtime-input-block">
+                <header>
+                  <span><strong>环境变量</strong><small>每项明确填写变量名和值。</small></span>
+                  <a-button type="link" size="small" @click="addDockerVariable"><Plus :size="14" />添加变量</a-button>
+                </header>
+                <div v-for="(item, index) in form.docker_environment_variables" :key="`env-${index}`" class="docker-row docker-key-value-row">
+                  <a-input v-model:value="item.name" placeholder="变量名，例如 APP_ENV" />
+                  <a-input v-model:value="item.value" placeholder="变量值" />
+                  <a-button type="text" danger aria-label="删除环境变量" @click="form.docker_environment_variables.splice(index, 1)"><Trash2 :size="15" /></a-button>
+                </div>
+                <p v-if="!form.docker_environment_variables.length" class="input-empty">未设置环境变量</p>
+                <p class="field-help input-block-help">配置会随方案保存，请勿填写密码、令牌等敏感信息。</p>
+              </div>
+
+              <div class="runtime-input-block">
+                <header>
+                  <span><strong>命名卷</strong><small>只允许由 ZRT 隔离创建的 Docker 命名卷。</small></span>
+                  <a-button type="link" size="small" @click="addDockerVolume"><Plus :size="14" />添加挂载</a-button>
+                </header>
+                <div v-for="(item, index) in form.docker_volume_mounts" :key="`volume-${index}`" class="docker-volume-row">
+                  <a-input v-model:value="item.source" placeholder="卷标识，例如 data" />
+                  <a-input v-model:value="item.target" placeholder="容器路径，例如 /data" />
+                  <a-checkbox v-model:checked="item.read_only">只读</a-checkbox>
+                  <a-button type="text" danger aria-label="删除卷挂载" @click="form.docker_volume_mounts.splice(index, 1)"><Trash2 :size="15" /></a-button>
+                </div>
+                <p v-if="!form.docker_volume_mounts.length" class="input-empty">未挂载命名卷</p>
+                <p class="field-help input-block-help">不允许配置宿主机目录或 Docker Socket 挂载。</p>
+              </div>
+
+              <div class="runtime-input-block">
+                <header><span><strong>启动参数</strong><small>留空时使用镜像内置 ENTRYPOINT 与 CMD。</small></span></header>
+                <a-form-item label="命令参数（每行一个）">
+                  <a-textarea v-model:value="form.docker_command" :rows="4" placeholder="例如：&#10;server&#10;--port&#10;8080" />
+                </a-form-item>
+              </div>
+
+              <div class="runtime-input-block">
+                <div class="health-toggle"><span><strong>自定义健康检查</strong><small>关闭时优先使用镜像内置 HEALTHCHECK；否则只确认容器持续运行。</small></span><a-switch v-model:checked="form.docker_health_enabled" /></div>
+                <template v-if="form.docker_health_enabled">
+                  <a-form-item label="检查命令参数（每行一个）" required>
+                    <a-textarea v-model:value="form.docker_health_command" :rows="3" placeholder="例如：&#10;wget&#10;--spider&#10;http://127.0.0.1:8080/health" />
+                  </a-form-item>
+                  <div class="health-grid">
+                    <a-form-item label="间隔（秒）"><a-input-number v-model:value="form.docker_health_interval" :min="2" :max="3600" /></a-form-item>
+                    <a-form-item label="超时（秒）"><a-input-number v-model:value="form.docker_health_timeout" :min="1" :max="300" /></a-form-item>
+                    <a-form-item label="失败次数"><a-input-number v-model:value="form.docker_health_retries" :min="1" :max="20" /></a-form-item>
+                    <a-form-item label="启动宽限（秒）"><a-input-number v-model:value="form.docker_health_start_period" :min="0" :max="3600" /></a-form-item>
+                  </div>
+                </template>
+              </div>
             </div>
-            <p class="field-help">不填写则不发布端口；默认只监听 127.0.0.1。需要外部访问、多个端口或其他启动设置时展开高级配置。</p>
-
-            <a-collapse v-model:active-key="advancedSections" class="advanced-config" ghost>
-              <a-collapse-panel key="docker" header="高级配置">
-                <div class="advanced-block">
-                  <header><strong>端口与网络</strong><a-button type="link" size="small" @click="addDockerPort"><Plus :size="14" />添加端口</a-button></header>
-                  <div class="docker-row docker-port-row">
-                    <a-input v-model:value="form.docker_port_mappings[0].host_ip" placeholder="监听地址" />
-                    <a-select v-model:value="form.docker_port_mappings[0].protocol" :options="[{ value: 'tcp', label: 'TCP' }, { value: 'udp', label: 'UDP' }]" />
-                  </div>
-                  <template v-for="(port, index) in form.docker_port_mappings" :key="`port-${index}`">
-                    <div v-if="index > 0" class="docker-row docker-port-extra">
-                      <a-input v-model:value="port.host_ip" placeholder="监听地址" />
-                      <a-input-number v-model:value="port.host_port" :min="1" :max="65535" placeholder="宿主机端口" />
-                      <a-input-number v-model:value="port.container_port" :min="1" :max="65535" placeholder="容器端口" />
-                      <a-select v-model:value="port.protocol" :options="[{ value: 'tcp', label: 'TCP' }, { value: 'udp', label: 'UDP' }]" />
-                      <a-button type="text" danger aria-label="删除端口" @click="removeDockerPort(index)"><Trash2 :size="15" /></a-button>
-                    </div>
-                  </template>
-                  <a-form-item label="Docker 网络">
-                    <a-input value="bridge" disabled />
-                    <p class="field-help">单容器方案固定使用 bridge；需要多服务互联时请使用 Docker Compose 方案。</p>
-                  </a-form-item>
-                </div>
-
-                <div class="advanced-block">
-                  <header><strong>环境变量</strong><a-button type="link" size="small" @click="addDockerVariable"><Plus :size="14" />添加变量</a-button></header>
-                  <div v-for="(item, index) in form.docker_environment_variables" :key="`env-${index}`" class="docker-row docker-key-value-row">
-                    <a-input v-model:value="item.name" placeholder="变量名，例如 APP_ENV" />
-                    <a-input v-model:value="item.value" placeholder="变量值" />
-                    <a-button type="text" danger aria-label="删除环境变量" @click="form.docker_environment_variables.splice(index, 1)"><Trash2 :size="15" /></a-button>
-                  </div>
-                  <a-empty v-if="!form.docker_environment_variables.length" :image="null" description="未设置额外环境变量" />
-                  <p class="field-help">环境变量会随方案保存，请勿在这里填写密码、令牌等敏感信息。</p>
-                </div>
-
-                <div class="advanced-block">
-                  <header><strong>卷挂载</strong><a-button type="link" size="small" @click="addDockerVolume"><Plus :size="14" />添加挂载</a-button></header>
-                  <div v-for="(item, index) in form.docker_volume_mounts" :key="`volume-${index}`" class="docker-volume-row">
-                    <a-input value="命名卷" disabled />
-                    <a-input v-model:value="item.source" placeholder="卷标识，例如 data" />
-                    <a-input v-model:value="item.target" placeholder="容器绝对路径，例如 /data" />
-                    <a-checkbox v-model:checked="item.read_only">只读</a-checkbox>
-                    <a-button type="text" danger aria-label="删除卷挂载" @click="form.docker_volume_mounts.splice(index, 1)"><Trash2 :size="15" /></a-button>
-                  </div>
-                  <a-empty v-if="!form.docker_volume_mounts.length" :image="null" description="未挂载额外数据卷" />
-                  <p class="field-help">ZRT 只创建命名卷，并按部署目标隔离实际卷名；不允许把宿主机目录直接挂载到容器。</p>
-                </div>
-
-                <div class="advanced-block">
-                  <strong>启动与健康检查</strong>
-                  <a-form-item label="启动命令参数（可选）">
-                    <a-textarea v-model:value="form.docker_command" :rows="4" placeholder="每行一个参数；留空使用镜像默认 CMD&#10;例如：server&#10;--port&#10;8080" />
-                  </a-form-item>
-                  <div class="health-toggle"><span><strong>自定义健康检查</strong><small>关闭时使用镜像内置 HEALTHCHECK；镜像未提供时仅确认容器持续运行。</small></span><a-switch v-model:checked="form.docker_health_enabled" /></div>
-                  <template v-if="form.docker_health_enabled">
-                    <a-form-item label="检查命令参数" required>
-                      <a-textarea v-model:value="form.docker_health_command" :rows="3" placeholder="每行一个参数，例如：&#10;wget&#10;--spider&#10;http://127.0.0.1:8080/health" />
-                    </a-form-item>
-                    <div class="health-grid">
-                      <a-form-item label="间隔（秒）"><a-input-number v-model:value="form.docker_health_interval" :min="2" :max="3600" /></a-form-item>
-                      <a-form-item label="超时（秒）"><a-input-number v-model:value="form.docker_health_timeout" :min="1" :max="300" /></a-form-item>
-                      <a-form-item label="失败次数"><a-input-number v-model:value="form.docker_health_retries" :min="1" :max="20" /></a-form-item>
-                      <a-form-item label="启动宽限（秒）"><a-input-number v-model:value="form.docker_health_start_period" :min="0" :max="3600" /></a-form-item>
-                    </div>
-                  </template>
-                </div>
-                <a-alert type="info" show-icon message="容器始终使用 unless-stopped 重启策略；不会启用特权模式、主机网络或 Docker Socket 挂载。" />
-              </a-collapse-panel>
-            </a-collapse>
+            <a-alert type="info" show-icon message="容器固定使用 bridge 网络和 unless-stopped 重启策略；不会启用特权模式、主机网络或 Docker Socket 挂载。" />
           </template>
           <template v-if="form.kind === 'script'">
             <a-form-item label="部署脚本" required>
@@ -962,19 +956,26 @@ onMounted(refresh)
             />
           </template>
           <template v-if="form.kind === 'compose'">
+            <a-alert
+              class="artifact-image-notice"
+              type="info"
+              show-icon
+              message="镜像来自上游构建制品，无需在 Compose 中填写 image"
+              description="ZRT 会在执行时把不可变镜像安全注入目标服务；固定镜像地址和 build 配置会被拒绝。"
+            />
             <div class="compose-import">
               <input ref="composeFileInput" class="file-input" type="file" accept=".yml,.yaml,application/yaml,text/yaml" @change="readComposeFile" />
               <a-button @click="composeFileInput?.click()"><FileUp :size="15" />读取 docker-compose.yml</a-button>
               <span>只读入当前表单，不会自动保存。</span>
             </div>
             <a-form-item label="内联 Compose YAML" required>
-              <a-textarea v-model:value="form.compose_yaml" :rows="12" spellcheck="false" placeholder="services:&#10;  app:&#10;    image: ${ZRT_IMAGE}" />
+              <a-textarea v-model:value="form.compose_yaml" :rows="12" spellcheck="false" placeholder="services:&#10;  app:&#10;    restart: unless-stopped&#10;    ports:&#10;      - 8080:8080" />
             </a-form-item>
             <a-alert
               type="info"
               show-icon
-              message="目标服务必须使用 image: ${ZRT_IMAGE}"
-              description="ZRT 会注入上游制品的不可变镜像并执行 docker compose up；不会读取代码仓库中的 Compose 文件。所选 Docker 连接的运行环境必须安装并可用 Docker Compose v2 插件。"
+              message="Compose 只描述目标服务的运行参数"
+              description="不会读取代码仓库中的 Compose 文件；所选 Docker 连接必须安装 Docker Compose v2 插件。"
             />
           </template>
           <a-alert v-if="form.kind === 'docker'" type="info" show-icon message="首次部署会按这里的端口和启动配置创建容器，后续发布使用同一方案重建容器并保留可回退的旧镜像。" />
@@ -993,5 +994,5 @@ onMounted(refresh)
 </template>
 
 <style scoped>
-.plan-layout{display:grid;min-height:560px;grid-template-columns:300px minmax(0,1fr);overflow:hidden}.plan-layout>aside{border-right:1px solid var(--zrt-border);background:var(--zrt-surface-soft)}aside>header{display:flex;align-items:center;justify-content:space-between;padding:16px}aside>header small{color:var(--zrt-muted)}.plan-list-item{width:calc(100% - 12px);margin:6px;border-radius:10px;background:transparent}.plan-list-item:hover,.plan-list-item.active{background:var(--zrt-primary-soft)}.plan-select{display:grid;width:100%;min-height:74px;align-items:center;grid-template-columns:38px minmax(0,1fr) 8px;gap:10px;padding:9px 10px;border:0;border-radius:10px;color:var(--zrt-text);background:transparent;cursor:pointer;text-align:left}.plan-select i{width:7px;height:7px;border-radius:50%;background:#28b66e}.plan-select i.inactive{background:#a8adb7}.plan-list-actions{display:flex;justify-content:flex-end;padding:0 5px 5px}.plan-list-actions :deep(.ant-btn){height:24px;padding:0 6px;font-size:11px}.plan-list-copy{min-width:0}.plan-list-copy strong,.plan-list-copy small,.plan-list-copy em{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.plan-list-copy small{margin-top:2px;color:var(--zrt-muted);font-size:12px}.plan-list-copy em{margin-top:2px;color:var(--zrt-muted);font-size:10px;font-style:normal}.brand{display:grid;width:36px;height:36px;place-items:center;border-radius:10px;background:var(--zrt-surface)}.brand.ssh{color:var(--zrt-muted)}.brand.docker{color:#2496ed}.brand.kubernetes{color:#326ce5}.brand :deep(svg){width:21px;height:21px}.plan-layout>main{min-width:0;padding:24px}.detail-header{display:flex;align-items:flex-start;justify-content:space-between;gap:18px;margin-bottom:24px}.detail-header h3,.detail-header p{margin:0}.detail-header p,.detail-header span{color:var(--zrt-muted)}.detail-header h3{margin:2px 0;font-size:22px}.detail-header>div:last-child{display:flex;flex:0 0 auto;align-items:center;gap:8px}.deployment-path{display:grid;align-items:center;grid-template-columns:minmax(0,1fr) 20px minmax(0,1fr) 20px minmax(0,1fr);gap:10px}.deployment-path article{display:flex;min-width:0;min-height:108px;align-items:center;gap:13px;padding:16px;border:1px solid var(--zrt-border);border-radius:12px;background:var(--zrt-surface-soft)}.deployment-path article>span{display:grid;width:40px;height:40px;flex:0 0 40px;place-items:center;border-radius:11px;color:var(--zrt-primary);background:var(--zrt-surface)}.deployment-path article>span svg{width:20px}.deployment-path article>div{min-width:0}.deployment-path small,.deployment-path strong,.deployment-path p{display:block;overflow:hidden;margin:0;text-overflow:ellipsis;white-space:nowrap}.deployment-path small{color:var(--zrt-muted);font-size:11px}.deployment-path strong{margin:3px 0;font-size:15px}.deployment-path p{color:var(--zrt-muted);font-size:11px}.path-arrow{width:17px;justify-self:center;color:var(--zrt-muted)}.plan-limit{display:flex;align-items:center;gap:12px;margin-top:16px;padding:14px 16px;border-radius:10px;background:var(--zrt-primary-soft)}.plan-limit>svg{width:20px;color:var(--zrt-primary)}.plan-limit small,.plan-limit strong{display:block}.plan-limit small{color:var(--zrt-muted);font-size:11px}.plan-limit p{margin:0 0 0 auto;color:var(--zrt-muted)}.empty-panel{display:grid;place-items:center}.form-section{margin-bottom:14px;padding:15px 16px 4px;border:1px solid var(--zrt-border);border-radius:11px;background:var(--zrt-surface-soft)}.form-section>header{display:flex;align-items:center;gap:10px;margin-bottom:14px}.form-section>header b{display:grid;width:26px;height:26px;flex:0 0 26px;place-items:center;border-radius:8px;color:var(--zrt-primary);background:var(--zrt-primary-soft)}.form-section>header strong,.form-section>header small{display:block}.form-section>header small{margin-top:1px;color:var(--zrt-muted);font-size:11px}.form-subtitle{margin:3px 0 12px;padding-top:12px;border-top:1px solid var(--zrt-border);color:var(--zrt-muted);font-size:12px;font-weight:600}.form-grid{display:grid;grid-template-columns:1fr 1fr;gap:0 14px}.span-2{grid-column:1/-1}.form-grid :deep(.ant-input-number){width:100%}.resource-select{display:grid;grid-template-columns:minmax(0,1fr) 34px;gap:8px}.resource-select>.ant-btn{padding:0}.permission-note,.field-help{margin:-4px 0 13px;color:var(--zrt-muted);font-size:12px}.kind-picker{display:grid!important;width:100%;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}.kind-picker :deep(.ant-radio-button-wrapper){display:flex;height:70px;align-items:center;gap:10px;padding:9px 11px;border:1px solid var(--zrt-border)!important;border-radius:10px!important;background:var(--zrt-surface);box-shadow:none!important;line-height:1.3}.kind-picker :deep(.ant-radio-button-wrapper::before){display:none}.kind-picker :deep(.ant-radio-button-wrapper-checked){border-color:color-mix(in srgb,var(--zrt-primary) 65%,var(--zrt-border))!important;background:var(--zrt-primary-soft)}.kind-picker :deep(.ant-radio-button-wrapper>svg){width:24px;height:24px;flex:0 0 24px}.kind-picker :deep(.ant-radio-button-wrapper span){min-width:0}.kind-picker :deep(.ant-radio-button-wrapper strong),.kind-picker :deep(.ant-radio-button-wrapper small){display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.kind-picker :deep(.ant-radio-button-wrapper small){margin-top:3px;color:var(--zrt-muted);font-size:10px}.advanced-config{margin:0 -4px 14px;border:1px solid var(--zrt-border);border-radius:10px;background:var(--zrt-surface)}.advanced-config :deep(.ant-collapse-header){font-weight:600}.advanced-block{margin-bottom:14px;padding-bottom:14px;border-bottom:1px solid var(--zrt-border)}.advanced-block:last-of-type{border-bottom:0}.advanced-block>header{display:flex;align-items:center;justify-content:space-between;margin-bottom:9px}.advanced-block>.ant-form-item{margin-top:10px}.docker-row{display:grid;align-items:center;gap:8px;margin-bottom:8px}.docker-port-row{grid-template-columns:minmax(0,1fr) 110px}.docker-port-extra{grid-template-columns:minmax(0,1fr) 120px 120px 90px 32px}.docker-port-extra :deep(.ant-input-number){width:100%}.docker-key-value-row{grid-template-columns:minmax(0,1fr) minmax(0,1.4fr) 32px}.docker-volume-row{display:grid;align-items:center;grid-template-columns:105px minmax(0,1fr) minmax(0,1fr) auto 32px;gap:8px;margin-bottom:8px}.health-toggle{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;margin:12px 0}.health-toggle span strong,.health-toggle span small{display:block}.health-toggle span small{margin-top:3px;color:var(--zrt-muted);font-size:11px}.health-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px}.health-grid :deep(.ant-input-number){width:100%}.compose-import{display:flex;align-items:center;gap:8px;margin-bottom:10px}.compose-import span{color:var(--zrt-muted);font-size:12px}.file-input{display:none}.drawer-actions{display:flex;justify-content:flex-end;gap:8px}@media(max-width:1080px){.deployment-path{grid-template-columns:1fr}.path-arrow{transform:rotate(90deg)}}@media(max-width:760px){.plan-layout{grid-template-columns:1fr}.plan-layout>aside{max-height:300px;border-right:0;border-bottom:1px solid var(--zrt-border)}.form-grid,.kind-picker,.health-grid{grid-template-columns:1fr}.span-2{grid-column:auto}.detail-header{flex-direction:column}.plan-layout>main{padding:18px}.plan-limit{align-items:flex-start;flex-wrap:wrap}.plan-limit p{width:100%;margin:0}.docker-port-extra,.docker-volume-row{grid-template-columns:1fr}.docker-key-value-row{grid-template-columns:1fr 32px}.docker-key-value-row>:nth-child(2){grid-column:1/-1}.compose-import{align-items:flex-start;flex-direction:column}}
+.plan-layout{display:grid;min-height:560px;grid-template-columns:300px minmax(0,1fr);overflow:hidden}.plan-layout>aside{border-right:1px solid var(--zrt-border);background:var(--zrt-surface-soft)}aside>header{display:flex;align-items:center;justify-content:space-between;padding:16px}aside>header small{color:var(--zrt-muted)}.plan-list-item{width:calc(100% - 12px);margin:6px;border-radius:10px;background:transparent}.plan-list-item:hover,.plan-list-item.active{background:var(--zrt-primary-soft)}.plan-select{display:grid;width:100%;min-height:74px;align-items:center;grid-template-columns:38px minmax(0,1fr) 8px;gap:10px;padding:9px 10px;border:0;border-radius:10px;color:var(--zrt-text);background:transparent;cursor:pointer;text-align:left}.plan-select i{width:7px;height:7px;border-radius:50%;background:#28b66e}.plan-select i.inactive{background:#a8adb7}.plan-list-actions{display:flex;justify-content:flex-end;padding:0 5px 5px}.plan-list-actions :deep(.ant-btn){height:24px;padding:0 6px;font-size:11px}.plan-list-copy{min-width:0}.plan-list-copy strong,.plan-list-copy small,.plan-list-copy em{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.plan-list-copy small{margin-top:2px;color:var(--zrt-muted);font-size:12px}.plan-list-copy em{margin-top:2px;color:var(--zrt-muted);font-size:10px;font-style:normal}.brand{display:grid;width:36px;height:36px;place-items:center;border-radius:10px;background:var(--zrt-surface)}.brand.ssh{color:var(--zrt-muted)}.brand.docker{color:#2496ed}.brand.kubernetes{color:#326ce5}.brand :deep(svg){width:21px;height:21px}.plan-layout>main{min-width:0;padding:24px}.detail-header{display:flex;align-items:flex-start;justify-content:space-between;gap:18px;margin-bottom:24px}.detail-header h3,.detail-header p{margin:0}.detail-header p,.detail-header span{color:var(--zrt-muted)}.detail-header h3{margin:2px 0;font-size:22px}.detail-header>div:last-child{display:flex;flex:0 0 auto;align-items:center;gap:8px}.deployment-path{display:grid;align-items:center;grid-template-columns:minmax(0,1fr) 20px minmax(0,1fr) 20px minmax(0,1fr);gap:10px}.deployment-path article{display:flex;min-width:0;min-height:108px;align-items:center;gap:13px;padding:16px;border:1px solid var(--zrt-border);border-radius:12px;background:var(--zrt-surface-soft)}.deployment-path article>span{display:grid;width:40px;height:40px;flex:0 0 40px;place-items:center;border-radius:11px;color:var(--zrt-primary);background:var(--zrt-surface)}.deployment-path article>span svg{width:20px}.deployment-path article>div{min-width:0}.deployment-path small,.deployment-path strong,.deployment-path p{display:block;overflow:hidden;margin:0;text-overflow:ellipsis;white-space:nowrap}.deployment-path small{color:var(--zrt-muted);font-size:11px}.deployment-path strong{margin:3px 0;font-size:15px}.deployment-path p{color:var(--zrt-muted);font-size:11px}.path-arrow{width:17px;justify-self:center;color:var(--zrt-muted)}.plan-limit{display:flex;align-items:center;gap:12px;margin-top:16px;padding:14px 16px;border-radius:10px;background:var(--zrt-primary-soft)}.plan-limit>svg{width:20px;color:var(--zrt-primary)}.plan-limit small,.plan-limit strong{display:block}.plan-limit small{color:var(--zrt-muted);font-size:11px}.plan-limit p{margin:0 0 0 auto;color:var(--zrt-muted)}.empty-panel{display:grid;place-items:center}.form-section{margin-bottom:14px;padding:15px 16px 4px;border:1px solid var(--zrt-border);border-radius:11px;background:var(--zrt-surface-soft)}.form-section>header{display:flex;align-items:center;gap:10px;margin-bottom:14px}.form-section>header b{display:grid;width:26px;height:26px;flex:0 0 26px;place-items:center;border-radius:8px;color:var(--zrt-primary);background:var(--zrt-primary-soft)}.form-section>header strong,.form-section>header small{display:block}.form-section>header small{margin-top:1px;color:var(--zrt-muted);font-size:11px}.form-subtitle{margin:3px 0 12px;padding-top:12px;border-top:1px solid var(--zrt-border);color:var(--zrt-muted);font-size:12px;font-weight:600}.form-grid{display:grid;grid-template-columns:1fr 1fr;gap:0 14px}.span-2{grid-column:1/-1}.form-grid :deep(.ant-input-number){width:100%}.resource-select{display:grid;grid-template-columns:minmax(0,1fr) 34px;gap:8px}.resource-select>.ant-btn{padding:0}.permission-note,.field-help{margin:-4px 0 13px;color:var(--zrt-muted);font-size:12px}.kind-picker{display:grid!important;width:100%;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}.kind-picker :deep(.ant-radio-button-wrapper){display:flex;height:70px;align-items:center;gap:10px;padding:9px 11px;border:1px solid var(--zrt-border)!important;border-radius:10px!important;background:var(--zrt-surface);box-shadow:none!important;line-height:1.3}.kind-picker :deep(.ant-radio-button-wrapper::before){display:none}.kind-picker :deep(.ant-radio-button-wrapper-checked){border-color:color-mix(in srgb,var(--zrt-primary) 65%,var(--zrt-border))!important;background:var(--zrt-primary-soft)}.kind-picker :deep(.ant-radio-button-wrapper>svg){width:24px;height:24px;flex:0 0 24px}.kind-picker :deep(.ant-radio-button-wrapper span){min-width:0}.kind-picker :deep(.ant-radio-button-wrapper strong),.kind-picker :deep(.ant-radio-button-wrapper small){display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.kind-picker :deep(.ant-radio-button-wrapper small){margin-top:3px;color:var(--zrt-muted);font-size:10px}.artifact-image-notice{margin-bottom:12px}.runtime-inputs{display:grid;gap:10px;margin-bottom:12px}.runtime-input-block{padding:13px 14px 2px;border:1px solid var(--zrt-border);border-radius:10px;background:var(--zrt-surface)}.runtime-input-block>header{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:10px}.runtime-input-block>header span strong,.runtime-input-block>header span small{display:block}.runtime-input-block>header span small{margin-top:2px;color:var(--zrt-muted);font-size:11px}.runtime-input-block>header>.ant-btn{height:24px;padding:0}.runtime-input-block>.ant-form-item{margin-bottom:12px}.docker-row{display:grid;align-items:center;gap:8px;margin-bottom:8px}.docker-port-input-row{grid-template-columns:minmax(0,1fr) 112px 112px 86px 32px}.docker-port-input-row :deep(.ant-input-number){width:100%}.docker-key-value-row{grid-template-columns:minmax(0,1fr) minmax(0,1.4fr) 32px}.docker-volume-row{display:grid;align-items:center;grid-template-columns:minmax(0,1fr) minmax(0,1.35fr) auto 32px;gap:8px;margin-bottom:8px}.input-empty{margin:4px 0 10px;padding:12px;border:1px dashed var(--zrt-border);border-radius:8px;color:var(--zrt-muted);background:var(--zrt-surface-soft);font-size:12px;text-align:center}.input-block-help{margin:4px 0 10px}.health-toggle{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;margin:2px 0 12px}.health-toggle span strong,.health-toggle span small{display:block}.health-toggle span small{margin-top:3px;color:var(--zrt-muted);font-size:11px}.health-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px}.health-grid :deep(.ant-input-number){width:100%}.compose-import{display:flex;align-items:center;gap:8px;margin-bottom:10px}.compose-import span{color:var(--zrt-muted);font-size:12px}.file-input{display:none!important}.drawer-actions{display:flex;justify-content:flex-end;gap:8px}@media(max-width:1080px){.deployment-path{grid-template-columns:1fr}.path-arrow{transform:rotate(90deg)}}@media(max-width:760px){.plan-layout{grid-template-columns:1fr}.plan-layout>aside{max-height:300px;border-right:0;border-bottom:1px solid var(--zrt-border)}.form-grid,.kind-picker,.health-grid{grid-template-columns:1fr}.span-2{grid-column:auto}.detail-header{flex-direction:column}.plan-layout>main{padding:18px}.plan-limit{align-items:flex-start;flex-wrap:wrap}.plan-limit p{width:100%;margin:0}.docker-port-input-row,.docker-volume-row{grid-template-columns:1fr}.docker-key-value-row{grid-template-columns:1fr 32px}.docker-key-value-row>:nth-child(2){grid-column:1/-1}.compose-import{align-items:flex-start;flex-direction:column}}
 </style>

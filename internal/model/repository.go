@@ -21,23 +21,23 @@ const (
 )
 
 type GitRepository struct {
-	ID                      string      `gorm:"type:varchar(36);primaryKey"`
-	Name                    string      `gorm:"type:varchar(128);not null;uniqueIndex"`
-	Provider                GitProvider `gorm:"type:varchar(16);not null;index"`
-	CloneURL                string      `gorm:"type:varchar(1024);not null"`
-	DefaultBranch           string      `gorm:"type:varchar(255);not null;default:''"`
-	AuthType                GitAuthType `gorm:"type:varchar(16);not null"`
-	Username                string      `gorm:"type:varchar(255);not null;default:''"`
-	CredentialID            *string     `gorm:"type:varchar(36);index"`
-	APICredentialID         *string     `gorm:"type:varchar(36);index"`
-	CredentialCiphertext    string      `gorm:"type:text;not null"`
-	WebhookSecretCiphertext string      `gorm:"type:text;not null"`
-	WebhookEnabled          bool        `gorm:"not null;default:false;index"`
-	AllowInsecureHTTP       bool        `gorm:"not null;default:false"`
-	IsActive                bool        `gorm:"not null;default:true;index"`
-	CreatedBy               string      `gorm:"type:varchar(36);not null;index"`
-	CreatedAt               time.Time   `gorm:"not null"`
-	UpdatedAt               time.Time   `gorm:"not null"`
+	ID                      string      `gorm:"type:varchar(36);primaryKey" json:"id"`
+	Name                    string      `gorm:"type:varchar(128);not null;uniqueIndex" json:"name"`
+	Provider                GitProvider `gorm:"type:varchar(16);not null;index" json:"provider"`
+	CloneURL                string      `gorm:"type:varchar(1024);not null" json:"clone_url"`
+	DefaultBranch           string      `gorm:"type:varchar(255);not null;default:''" json:"default_branch"`
+	AuthType                GitAuthType `gorm:"type:varchar(16);not null" json:"auth_type"`
+	Username                string      `gorm:"type:varchar(255);not null;default:''" json:"username,omitempty"`
+	CredentialID            *string     `gorm:"type:varchar(36);index" json:"credential_id,omitempty"`
+	APICredentialID         *string     `gorm:"type:varchar(36);index" json:"api_credential_id,omitempty"`
+	CredentialCiphertext    string      `gorm:"type:text;not null" json:"-"`
+	WebhookSecretCiphertext string      `gorm:"type:text;not null" json:"-"`
+	WebhookEnabled          bool        `gorm:"not null;default:false;index" json:"webhook_enabled"`
+	AllowInsecureHTTP       bool        `gorm:"not null;default:false" json:"allow_insecure_http"`
+	IsActive                bool        `gorm:"not null;default:true;index" json:"is_active"`
+	CreatedBy               string      `gorm:"type:varchar(36);not null;index" json:"created_by"`
+	CreatedAt               time.Time   `gorm:"not null" json:"created_at"`
+	UpdatedAt               time.Time   `gorm:"not null" json:"updated_at"`
 }
 
 func (GitRepository) TableName() string { return "git_repositories" }

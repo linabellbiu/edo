@@ -24,6 +24,81 @@ import (
 	"zrt/internal/secret"
 )
 
+func TestApplicationOwnsIndependentWorkflows(t *testing.T) {
+	service, _, _, repositoryID := newPipelineTestService(t)
+	ctx := context.Background()
+	application, err := service.CreateApplication(ctx, "admin", ApplicationInput{
+		Name: "多流水线应用", RepositoryID: repositoryID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(application.Workflows) != 1 {
+		t.Fatalf("新应用应带有一条可编辑草稿: %+v", application.Workflows)
+	}
+	first := application.Workflows[0]
+	created, err := service.CreateApplicationWorkflow(ctx, application.ID, "admin", WorkflowCreateInput{Name: "生产发布"})
+	if err != nil {
+		t.Fatalf("新增第二条流水线失败: %v", err)
+	}
+	if created.Workflow.ID == first.ID {
+		t.Fatal("新增流水线覆盖了原流水线")
+	}
+	hydrated, err := service.FindApplication(ctx, application.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hydrated.Workflow != nil {
+		t.Fatal("多流水线应用不得隐式选择第一条流水线")
+	}
+	if _, err := service.GetWorkflow(ctx, application.ID); !errors.Is(err, ErrWorkflowNotFound) {
+		t.Fatalf("缺少 workflow_id 的旧调用必须拒绝多流水线应用: %v", err)
+	}
+	saved, err := service.SaveApplicationWorkflow(ctx, application.ID, created.Workflow.ID, "admin", WorkflowInput{
+		SchemaVersion: model.WorkflowSchemaVersion, Name: "生产发布-自定义",
+		Revision: created.Workflow.Revision, Source: created.Workflow.Source, Stages: created.Workflow.Stages,
+	})
+	if err != nil {
+		t.Fatalf("修改第二条流水线失败: %v", err)
+	}
+	workflows, err := service.ListApplicationWorkflows(ctx, application.ID)
+	if err != nil || len(workflows) != 2 {
+		t.Fatalf("应用没有同时返回两条流水线: workflows=%+v err=%v", workflows, err)
+	}
+	if workflows[0].ID != first.ID || workflows[0].Revision != first.Revision || workflows[1].ID != saved.Workflow.ID {
+		t.Fatalf("修改第二条流水线影响了第一条: %+v", workflows)
+	}
+	if err := service.DeleteApplicationWorkflow(ctx, application.ID, saved.Workflow.ID); err != nil {
+		t.Fatalf("删除第二条流水线失败: %v", err)
+	}
+	workflows, err = service.ListApplicationWorkflows(ctx, application.ID)
+	if err != nil || len(workflows) != 1 || workflows[0].ID != first.ID {
+		t.Fatalf("删除单条流水线影响了应用内其他流水线: workflows=%+v err=%v", workflows, err)
+	}
+}
+
+func TestApplicationWorkflowDefaultNamesRemainUnique(t *testing.T) {
+	service, _, _, repositoryID := newPipelineTestService(t)
+	ctx := context.Background()
+	application, err := service.CreateApplication(ctx, "admin", ApplicationInput{
+		Name: "默认命名应用", RepositoryID: repositoryID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := service.CreateApplicationWorkflow(ctx, application.ID, "admin", WorkflowCreateInput{})
+	if err != nil {
+		t.Fatalf("第二条流水线应自动生成不重复的名称: %v", err)
+	}
+	third, err := service.CreateApplicationWorkflow(ctx, application.ID, "admin", WorkflowCreateInput{})
+	if err != nil {
+		t.Fatalf("第三条流水线应自动生成不重复的名称: %v", err)
+	}
+	if second.Workflow.Name != "默认命名应用流水线 2" || third.Workflow.Name != "默认命名应用流水线 3" {
+		t.Fatalf("自动名称不符合预期: second=%q third=%q", second.Workflow.Name, third.Workflow.Name)
+	}
+}
+
 func TestResourcesCanBeConfiguredAndPipelinePrepared(t *testing.T) {
 	service, db, secretManager, repositoryID := newPipelineTestService(t)
 	ctx := context.Background()
@@ -434,6 +509,68 @@ func TestRepositoryEventsFollowApplicationTriggers(t *testing.T) {
 	}
 }
 
+func TestRepositoryEventTriggersEveryMatchingApplicationWorkflow(t *testing.T) {
+	service, db, _, repositoryID := newPipelineTestService(t)
+	ctx := context.Background()
+	application := createManualRunTestApplication(t, service, db, repositoryID, "多流水线事件应用")
+	first := application.Workflow
+	if first == nil {
+		t.Fatal("新应用缺少默认流水线")
+	}
+	firstSource, firstStages := first.Source, cloneWorkflowStages(first.Stages)
+	firstSource.Config.Events = []string{"push"}
+	if _, err := service.SaveApplicationWorkflow(ctx, application.ID, first.ID, "admin", WorkflowInput{
+		SchemaVersion: model.WorkflowSchemaVersion, Name: "主分支构建",
+		Revision: first.Revision, Activate: true, Source: firstSource, Stages: firstStages,
+	}); err != nil {
+		t.Fatalf("启用第一条流水线失败: %v", err)
+	}
+	second, err := service.CreateApplicationWorkflow(ctx, application.ID, "admin", WorkflowCreateInput{Name: "主分支安全检查"})
+	if err != nil {
+		t.Fatalf("创建第二条流水线失败: %v", err)
+	}
+	secondSource := firstSource
+	if _, err := service.SaveApplicationWorkflow(ctx, application.ID, second.Workflow.ID, "admin", WorkflowInput{
+		SchemaVersion: model.WorkflowSchemaVersion, Name: second.Workflow.Name,
+		Revision: second.Workflow.Revision, Activate: true, Source: secondSource, Stages: cloneWorkflowStages(firstStages),
+	}); err != nil {
+		t.Fatalf("启用第二条流水线失败: %v", err)
+	}
+
+	if err := service.HandleRepositoryEvent(ctx, repository.WebhookTaskPayload{
+		RepositoryID: repositoryID, EventType: "branch_push",
+		Ref: "refs/heads/main", CommitSHA: "shared-workflow-commit",
+	}); err != nil {
+		t.Fatalf("同一事件触发多条流水线失败: %v", err)
+	}
+	var runs []model.PipelineRun
+	if err := db.Where("application_id = ? AND commit_sha = ?", application.ID, "shared-workflow-commit").Find(&runs).Error; err != nil {
+		t.Fatal(err)
+	}
+	if len(runs) != 2 {
+		t.Fatalf("同一应用的两条匹配流水线应各创建一次运行: %+v", runs)
+	}
+	workflowIDs, dedupKeys := map[string]bool{}, map[string]bool{}
+	for i := range runs {
+		workflowIDs[runs[i].WorkflowID] = true
+		if runs[i].EventDedupKey != nil {
+			dedupKeys[*runs[i].EventDedupKey] = true
+		}
+	}
+	if len(workflowIDs) != 2 || len(dedupKeys) != 2 {
+		t.Fatalf("运行和幂等键没有按流水线隔离: runs=%+v", runs)
+	}
+	var observations []model.ApplicationRepositoryObservation
+	if err := db.Where("application_repository_id IN (?)",
+		db.Model(&model.ApplicationRepository{}).Select("id").Where("application_id = ?", application.ID),
+	).Find(&observations).Error; err != nil {
+		t.Fatal(err)
+	}
+	if len(observations) != 2 || observations[0].WorkflowID == observations[1].WorkflowID {
+		t.Fatalf("仓库监听游标没有按流水线隔离: %+v", observations)
+	}
+}
+
 func TestApplicationRepositoryCheckInterval(t *testing.T) {
 	service, _, _, repositoryID := newPipelineTestService(t)
 	ctx := context.Background()
@@ -584,6 +721,9 @@ func TestPublicWorkflowTemplateSyncsLinkedApplications(t *testing.T) {
 		application.Workflow.WorkflowTemplateRevision != 1 {
 		t.Fatalf("应用没有完整关联阶段式流水线方案: %+v", application)
 	}
+	if application.RepositoryID != repositoryID {
+		t.Fatalf("通用流水线方案不应改变应用代码仓库: got=%s want=%s", application.RepositoryID, repositoryID)
+	}
 
 	updatedSource, updatedStages := source, cloneWorkflowStages(stages)
 	updatedSource.Name = "修改后的代码源"
@@ -599,6 +739,10 @@ func TestPublicWorkflowTemplateSyncsLinkedApplications(t *testing.T) {
 	stored, err := service.GetWorkflow(ctx, application.ID)
 	if err != nil || stored.Workflow.Source.Name != "修改后的代码源" || stored.Workflow.WorkflowTemplateRevision != 2 {
 		t.Fatalf("启用方案的新版本没有同步到关联应用: workflow=%+v err=%v", stored, err)
+	}
+	var repositoryBoundApplication model.Application
+	if err := db.First(&repositoryBoundApplication, "id = ?", application.ID).Error; err != nil || repositoryBoundApplication.RepositoryID != repositoryID {
+		t.Fatalf("方案版本同步不应改写应用代码仓库: application=%+v err=%v", repositoryBoundApplication, err)
 	}
 	updatedApplication, err := service.UpdateApplication(ctx, application.ID, ApplicationInput{
 		Name: application.Name, Description: "只修改应用说明", RepositoryID: repositoryID,
