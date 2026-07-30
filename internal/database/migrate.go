@@ -332,18 +332,16 @@ func migrateApplicationWorkflowsOneToMany(tx *gorm.DB) error {
 			return err
 		}
 	}
-	// MySQL 会重排一次 AutoMigrate 中的多个模型，并可能在 release_workflows
-	// 尚未创建时先探测依赖表。按依赖顺序逐张迁移可在全新库和升级库中保持一致。
-	for _, table := range []any{
-		&model.ReleaseWorkflow{},
-		&model.ApplicationRepositoryObservation{},
-		&model.ReleasePlanExecutionItem{},
-	} {
-		if err := tx.AutoMigrate(table); err != nil {
-			return err
-		}
+	// MySQL 的 DDL 会隐式提交事务，DropTable 后 AutoMigrate 仍可能根据迁移事务
+	// 的旧元数据快照判断表存在，继而探测一个已经删除的表。两张表本就需要完整
+	// 重建，因此直接按依赖顺序 CreateTable，避免再次执行存在性判断。
+	if err := tx.Migrator().CreateTable(&model.ReleaseWorkflow{}); err != nil {
+		return fmt.Errorf("创建应用流水线表失败: %w", err)
 	}
-	return nil
+	if err := tx.Migrator().CreateTable(&model.ApplicationRepositoryObservation{}); err != nil {
+		return fmt.Errorf("创建流水线监听游标表失败: %w", err)
+	}
+	return tx.AutoMigrate(&model.ReleasePlanExecutionItem{})
 }
 
 type nullableReleasePlanExecutionItemWorkflowColumn struct {
