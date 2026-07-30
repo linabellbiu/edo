@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -87,7 +88,8 @@ func TestValidateStartSecretsKey(t *testing.T) {
 }
 
 func TestLoadEnvironmentFile(t *testing.T) {
-	path := filepath.Join(t.TempDir(), ".env")
+	root := t.TempDir()
+	path := filepath.Join(root, ".env")
 	if err := os.WriteFile(path, []byte("ZRT_MAGE_ENV_TEST=loaded\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -100,7 +102,82 @@ func TestLoadEnvironmentFile(t *testing.T) {
 		t.Fatalf("未从指定 .env 加载配置: %q", got)
 	}
 	if err := loadEnvironmentFile(filepath.Join(t.TempDir(), ".env")); err == nil {
-		t.Fatal("缺少 .env 时必须返回错误")
+		t.Fatal("缺少 .env 和 .env.example 时必须返回错误")
+	}
+}
+
+func TestLoadEnvironmentFileCreatesDefault(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, ".env")
+	template := "ZRT_MAGE_CREATED_TEST=loaded\nZRT_SECRETS_KEY=\n"
+	if err := os.WriteFile(path+".example", []byte(template), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_ = os.Unsetenv("ZRT_MAGE_CREATED_TEST")
+	_ = os.Unsetenv("ZRT_SECRETS_KEY")
+	t.Cleanup(func() {
+		_ = os.Unsetenv("ZRT_MAGE_CREATED_TEST")
+		_ = os.Unsetenv("ZRT_SECRETS_KEY")
+	})
+
+	if err := loadEnvironmentFile(path); err != nil {
+		t.Fatal(err)
+	}
+	if got := os.Getenv("ZRT_MAGE_CREATED_TEST"); got != "loaded" {
+		t.Fatalf("未加载自动创建的默认配置: %q", got)
+	}
+	encoded := os.Getenv("ZRT_SECRETS_KEY")
+	key, err := base64.StdEncoding.DecodeString(encoded)
+	if err != nil || len(key) != 32 {
+		t.Fatalf("自动生成的 ZRT_SECRETS_KEY 无效: %q", encoded)
+	}
+	content, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(content), "ZRT_SECRETS_KEY="+encoded) {
+		t.Fatal("自动生成的密钥未持久化到 .env")
+	}
+
+	before := string(content)
+	if err := loadEnvironmentFile(path); err != nil {
+		t.Fatal(err)
+	}
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(after) != before {
+		t.Fatal("再次加载时不得覆盖或轮换已有 .env")
+	}
+}
+
+func TestFillEnvironmentSecretsKeyRejectsUnsafeTemplate(t *testing.T) {
+	for _, template := range []string{
+		"ZRT_ENV=development\n",
+		"ZRT_SECRETS_KEY=hard-coded\n",
+		"ZRT_SECRETS_KEY=\nZRT_SECRETS_KEY=\n",
+	} {
+		if _, err := fillEnvironmentSecretsKey([]byte(template), "generated"); err == nil {
+			t.Fatalf("应拒绝不安全的默认配置模板: %q", template)
+		}
+	}
+}
+
+func TestInitialSecretsKeyUsesProcessEnvironment(t *testing.T) {
+	const existing = "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY="
+	t.Setenv("ZRT_SECRETS_KEY", existing)
+	got, err := initialSecretsKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != existing {
+		t.Fatalf("未复用进程环境中的固定密钥: %q", got)
+	}
+
+	t.Setenv("ZRT_SECRETS_KEY", "invalid")
+	if _, err := initialSecretsKey(); err == nil {
+		t.Fatal("不得用随机密钥替代进程环境中的无效密钥")
 	}
 }
 
@@ -202,6 +279,64 @@ func TestCopyEmbeddedWebAssets(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(target, "stale.js")); !os.IsNotExist(err) {
 		t.Fatalf("旧的内嵌资源未清理: %v", err)
+	}
+}
+
+func TestWebDependenciesCurrent(t *testing.T) {
+	root := t.TempDir()
+	lockfile := filepath.Join(root, "package-lock.json")
+	if err := os.WriteFile(lockfile, []byte("first lock"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range webDependencyFiles(root) {
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte("installed"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	current, digest, err := webDependenciesCurrent(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if current {
+		t.Fatal("没有锁文件摘要时不得把 Web 依赖视为最新")
+	}
+	if err := os.WriteFile(webDependencyStampPath(root), []byte(digest+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	current, _, err = webDependenciesCurrent(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !current {
+		t.Fatal("依赖文件完整且锁文件摘要一致时应视为最新")
+	}
+
+	if err := os.WriteFile(lockfile, []byte("second lock"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	current, digest, err = webDependenciesCurrent(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if current {
+		t.Fatal("package-lock.json 变化后必须重新安装 Web 依赖")
+	}
+	if err := os.WriteFile(webDependencyStampPath(root), []byte(digest), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(webDependencyFiles(root)[0]); err != nil {
+		t.Fatal(err)
+	}
+	current, _, err = webDependenciesCurrent(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if current {
+		t.Fatal("关键 Web 依赖缺失时必须重新安装")
 	}
 }
 

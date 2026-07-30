@@ -4,6 +4,8 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
 	"errors"
 	"fmt"
@@ -135,13 +137,109 @@ func loadEnvironment() error {
 }
 
 func loadEnvironmentFile(path string) error {
+	created, err := ensureEnvironmentFile(path)
+	if err != nil {
+		return err
+	}
+	if created {
+		fmt.Printf("未找到 %s，已根据 %s 创建默认配置并生成固定密钥\n", path, path+".example")
+	}
 	if err := godotenv.Load(path); err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return errors.New("未找到根目录 .env，请先复制 .env.example 并填写必要配置")
-		}
 		return fmt.Errorf("读取 %s 失败: %w", path, err)
 	}
 	return nil
+}
+
+func ensureEnvironmentFile(path string) (bool, error) {
+	if _, err := os.Stat(path); err == nil {
+		return false, nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return false, fmt.Errorf("检查 %s 失败: %w", path, err)
+	}
+
+	templatePath := path + ".example"
+	template, err := os.ReadFile(templatePath)
+	if err != nil {
+		return false, fmt.Errorf("读取默认配置模板 %s 失败: %w", templatePath, err)
+	}
+	encodedKey, err := initialSecretsKey()
+	if err != nil {
+		return false, err
+	}
+	content, err := fillEnvironmentSecretsKey(template, encodedKey)
+	if err != nil {
+		return false, fmt.Errorf("生成默认配置失败: %w", err)
+	}
+
+	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if errors.Is(err, os.ErrExist) {
+		// 另一个同时启动的 Mage 已创建文件，后续直接读取该文件。
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("创建 %s 失败: %w", path, err)
+	}
+	if _, err := file.Write(content); err != nil {
+		_ = file.Close()
+		_ = os.Remove(path)
+		return false, fmt.Errorf("写入 %s 失败: %w", path, err)
+	}
+	if err := file.Close(); err != nil {
+		_ = os.Remove(path)
+		return false, fmt.Errorf("保存 %s 失败: %w", path, err)
+	}
+	return true, nil
+}
+
+func initialSecretsKey() (string, error) {
+	if encoded := strings.TrimSpace(os.Getenv("ZRT_SECRETS_KEY")); encoded != "" {
+		key, err := base64.StdEncoding.DecodeString(encoded)
+		if err != nil {
+			key, err = base64.RawStdEncoding.DecodeString(encoded)
+		}
+		if err != nil || len(key) != 32 {
+			return "", errors.New("进程环境中的 ZRT_SECRETS_KEY 必须是 32 字节随机密钥的 Base64 编码")
+		}
+		return encoded, nil
+	}
+
+	key := make([]byte, 32)
+	if _, err := rand.Read(key); err != nil {
+		return "", fmt.Errorf("生成 ZRT_SECRETS_KEY 失败: %w", err)
+	}
+	return base64.StdEncoding.EncodeToString(key), nil
+}
+
+func fillEnvironmentSecretsKey(template []byte, key string) ([]byte, error) {
+	lines := strings.Split(string(template), "\n")
+	found := false
+	for index, line := range lines {
+		lineWithoutCR := strings.TrimSuffix(line, "\r")
+		trimmed := strings.TrimSpace(lineWithoutCR)
+		if strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		separator := strings.IndexByte(lineWithoutCR, '=')
+		if separator < 0 || strings.TrimSpace(lineWithoutCR[:separator]) != "ZRT_SECRETS_KEY" {
+			continue
+		}
+		if found {
+			return nil, errors.New(".env.example 中存在重复的 ZRT_SECRETS_KEY")
+		}
+		if strings.TrimSpace(lineWithoutCR[separator+1:]) != "" {
+			return nil, errors.New(".env.example 中的 ZRT_SECRETS_KEY 必须留空")
+		}
+		lineEnding := ""
+		if strings.HasSuffix(line, "\r") {
+			lineEnding = "\r"
+		}
+		lines[index] = lineWithoutCR[:separator+1] + key + lineEnding
+		found = true
+	}
+	if !found {
+		return nil, errors.New(".env.example 缺少 ZRT_SECRETS_KEY")
+	}
+	return []byte(strings.Join(lines, "\n")), nil
 }
 
 func validateStartSecretsKey(runServer bool) error {
@@ -359,19 +457,87 @@ func copyEmbeddedWebAssets(source, target string) error {
 }
 
 func ensureWebDependencies(ctx context.Context) error {
-	vite := filepath.Join("web", "node_modules", ".bin", "vite")
+	const webRoot = "web"
+	current, lockDigest, err := webDependenciesCurrent(webRoot)
+	if err != nil {
+		return err
+	}
+	if current {
+		return nil
+	}
+
+	fmt.Println("Web 依赖缺失或已变更，执行 npm ci")
+	if err := runCommand(ctx, npmExecutable(), "--prefix", webRoot, "ci", "--include=dev"); err != nil {
+		return fmt.Errorf("安装 Web 依赖失败: %w", err)
+	}
+	present, err := webDependencyFilesPresent(webRoot)
+	if err != nil {
+		return err
+	}
+	if !present {
+		return errors.New("npm ci 完成后 Web 依赖仍不完整")
+	}
+	if err := os.WriteFile(webDependencyStampPath(webRoot), []byte(lockDigest+"\n"), 0o644); err != nil {
+		return fmt.Errorf("记录 Web 依赖版本失败: %w", err)
+	}
+	return nil
+}
+
+func webDependenciesCurrent(webRoot string) (bool, string, error) {
+	lockfile, err := os.ReadFile(filepath.Join(webRoot, "package-lock.json"))
+	if err != nil {
+		return false, "", fmt.Errorf("读取 Web 依赖锁文件失败: %w", err)
+	}
+	lockDigest := fmt.Sprintf("%x", sha256.Sum256(lockfile))
+	stamp, err := os.ReadFile(webDependencyStampPath(webRoot))
+	if errors.Is(err, os.ErrNotExist) {
+		return false, lockDigest, nil
+	}
+	if err != nil {
+		return false, "", fmt.Errorf("读取 Web 依赖版本失败: %w", err)
+	}
+	if strings.TrimSpace(string(stamp)) != lockDigest {
+		return false, lockDigest, nil
+	}
+	present, err := webDependencyFilesPresent(webRoot)
+	if err != nil {
+		return false, "", err
+	}
+	return present, lockDigest, nil
+}
+
+func webDependencyFilesPresent(webRoot string) (bool, error) {
+	for _, path := range webDependencyFiles(webRoot) {
+		info, err := os.Stat(path)
+		if errors.Is(err, os.ErrNotExist) {
+			return false, nil
+		}
+		if err != nil {
+			return false, fmt.Errorf("检查 Web 依赖 %s 失败: %w", path, err)
+		}
+		if !info.Mode().IsRegular() {
+			return false, nil
+		}
+	}
+	return true, nil
+}
+
+func webDependencyFiles(webRoot string) []string {
+	vite := filepath.Join(webRoot, "node_modules", ".bin", "vite")
 	if runtime.GOOS == "windows" {
 		vite += ".cmd"
 	}
-	if _, err := os.Stat(vite); err == nil {
-		return nil
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return fmt.Errorf("检查 Web 依赖失败: %w", err)
+	return []string{
+		vite,
+		filepath.Join(webRoot, "node_modules", "vite", "package.json"),
+		filepath.Join(webRoot, "node_modules", "vue", "package.json"),
+		filepath.Join(webRoot, "node_modules", "@vitejs", "plugin-vue", "package.json"),
+		filepath.Join(webRoot, "node_modules", "unplugin-vue-components", "package.json"),
 	}
-	if err := runCommand(ctx, npmExecutable(), "--prefix", "web", "ci"); err != nil {
-		return fmt.Errorf("安装 Web 依赖失败: %w", err)
-	}
-	return nil
+}
+
+func webDependencyStampPath(webRoot string) string {
+	return filepath.Join(webRoot, "node_modules", ".zrt-package-lock.sha256")
 }
 
 type localService struct {

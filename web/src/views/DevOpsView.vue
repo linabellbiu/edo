@@ -183,7 +183,19 @@ function resetForms(){
  Object.assign(registryForm,{name:'',provider:'harbor',endpoint:'https://',namespace:'',username:'',credential:'',allow_insecure_http:false})
  Object.assign(releaseForm,{description:'',application_ids:[]})
 }
-function create(){resetForms();formOpen.value=true}
+function create(){
+ resetForms()
+ if(props.section==='applications'&&!applications.value.length){
+  const activeRepositories=repositories.value.filter(item=>item.is_active)
+  const activeTemplates=workflowTemplates.value.filter(item=>item.is_active)
+  if(activeRepositories.length===1){
+   appForm.repository_id=activeRepositories[0].id
+   appForm.name=activeRepositories[0].name
+  }
+  if(activeTemplates.length===1)appForm.workflow_template_id=activeTemplates[0].id
+ }
+ formOpen.value=true
+}
 function edit(row:ResourceRecord){
  editingID.value=String(row.id)
  if(props.section==='applications'){
