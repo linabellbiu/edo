@@ -48,7 +48,7 @@ WebSocket 用于 Docker 容器和 Kubernetes Pod Exec，也承载只读的 Docke
 ## 发布边界
 
 - Docker 通过受控 Unix Socket 或双向 TLS Docker API 连接，拒绝明文远程 TCP API。
-- Kubernetes 使用 in-cluster 身份或加密保存的 kubeconfig，拒绝 exec 插件和外部文件引用。
+- Kubernetes 使用加密保存的 kubeconfig，拒绝 exec 插件和外部文件引用。
 - 通过镜像仓库或 Kubernetes 发布时统一使用镜像摘要；本地或 SSH 传输的 Docker 镜像使用真实 Image ID 校验。环境名称或分组不改变制品校验强度。是否审核仅由流水线阶段中的审核任务决定，不提供应用或环境级审核开关。
 - 发布任务保存目标快照；之后修改目标不会改变已经排队的任务。
 - 新实例必须通过 Docker 健康状态或 Kubernetes Rollout 检查，失败时记录需人工确认的安全提示。

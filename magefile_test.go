@@ -5,10 +5,13 @@ package main
 import (
 	"context"
 	"encoding/base64"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -28,6 +31,97 @@ func TestParseStartOptions(t *testing.T) {
 func TestParseStartOptionsRejectsUnknownArgument(t *testing.T) {
 	if _, err := parseStartOptions([]string{"--unknown"}); err == nil {
 		t.Fatal("未知参数应返回错误")
+	}
+}
+
+func TestParseLogOptions(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+		want int
+	}{
+		{name: "默认一百行", want: 100},
+		{name: "分离参数", args: []string{"--tail", "25"}, want: 25},
+		{name: "等号参数", args: []string{"--tail=50"}, want: 50},
+		{name: "只监听新增", args: []string{"-n", "0"}, want: 0},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			options, err := parseLogOptions(test.args)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if options.tail != test.want {
+				t.Fatalf("tail = %d，want %d", options.tail, test.want)
+			}
+		})
+	}
+}
+
+func TestParseLogOptionsRejectsInvalidTail(t *testing.T) {
+	for _, args := range [][]string{
+		{"--tail"},
+		{"--tail", "-1"},
+		{"--tail=abc"},
+		{"--unknown"},
+	} {
+		if _, err := parseLogOptions(args); err == nil {
+			t.Fatalf("无效日志参数应返回错误: %v", args)
+		}
+	}
+}
+
+func TestLocalLogFiles(t *testing.T) {
+	directory := t.TempDir()
+	for name, content := range map[string]string{
+		"backend.log": "backend\n",
+		"web.LOG":     "web\n",
+		"notes.txt":   "ignored\n",
+	} {
+		if err := os.WriteFile(filepath.Join(directory, name), []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	paths, err := localLogFiles(directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(paths) != 2 {
+		t.Fatalf("日志文件数量 = %d，want 2: %v", len(paths), paths)
+	}
+	if filepath.Base(paths[0]) != "backend.log" || filepath.Base(paths[1]) != "web.LOG" {
+		t.Fatalf("日志文件顺序或过滤不正确: %v", paths)
+	}
+}
+
+func TestLocalLogFilesRejectsEmptyDirectory(t *testing.T) {
+	if _, err := localLogFiles(t.TempDir()); err == nil {
+		t.Fatal("空日志目录应返回错误")
+	}
+}
+
+func TestFollowLocalLogsStopsWhenContextCanceled(t *testing.T) {
+	if _, err := exec.LookPath("tail"); err != nil {
+		t.Skip("当前系统没有 tail")
+	}
+	path := filepath.Join(t.TempDir(), "backend.log")
+	if err := os.WriteFile(path, []byte("last line\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- followLocalLogs(ctx, []string{path}, 1)
+	}()
+	time.Sleep(100 * time.Millisecond)
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("取消上下文后日志监听未退出")
 	}
 }
 
@@ -301,6 +395,9 @@ func TestWebDependenciesCurrent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if !strings.HasSuffix(digest, "\n"+runtime.GOOS+"/"+runtime.GOARCH) {
+		t.Fatalf("Web 依赖摘要缺少平台身份: %q", digest)
+	}
 	if current {
 		t.Fatal("没有锁文件摘要时不得把 Web 依赖视为最新")
 	}
@@ -340,7 +437,132 @@ func TestWebDependenciesCurrent(t *testing.T) {
 	}
 }
 
-func TestWaitForLocalServiceReady(t *testing.T) {
+func TestRolldownNativeBindingSpec(t *testing.T) {
+	root := t.TempDir()
+	manifestPath := filepath.Join(root, "node_modules", "rolldown", "package.json")
+	if err := os.MkdirAll(filepath.Dir(manifestPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	const binding = "@rolldown/binding-linux-x64-gnu"
+	if err := os.WriteFile(manifestPath, []byte(`{"optionalDependencies":{"`+binding+`":"1.2.3"}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	spec, err := rolldownNativeBindingSpec(root, binding)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if spec != binding+"@1.2.3" {
+		t.Fatalf("原生依赖规格 = %q", spec)
+	}
+	if _, err := rolldownNativeBindingSpec(root, "@rolldown/missing"); err == nil {
+		t.Fatal("未声明的原生依赖必须返回错误")
+	}
+}
+
+func TestOpenLocalServiceLogAppends(t *testing.T) {
+	directory := t.TempDir()
+	service := localService{id: localServiceWeb, name: "Web", executable: "npm", args: []string{"start"}}
+	var path string
+	for range 2 {
+		file, currentPath, err := openLocalServiceLog(directory, service)
+		if err != nil {
+			t.Fatal(err)
+		}
+		path = currentPath
+		if err := file.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	content, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count := strings.Count(string(content), "===== Web 启动于"); count != 2 {
+		t.Fatalf("日志启动标记数量 = %d，want 2", count)
+	}
+	if !strings.Contains(string(content), "命令：npm start") {
+		t.Fatal("日志缺少启动命令")
+	}
+}
+
+func TestInspectLocalProcessTreatsZombieAsStopped(t *testing.T) {
+	if runtime.GOOS != "linux" && runtime.GOOS != "darwin" {
+		t.Skip("本地进程检查只在 Linux 和 macOS 上启用")
+	}
+	command := exec.Command("sh", "-c", "exit 0")
+	if err := configureLocalProcessCommand(command); err != nil {
+		t.Fatal(err)
+	}
+	if err := command.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer command.Wait()
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		_, err := inspectLocalProcess(command.Process.Pid)
+		if errors.Is(err, os.ErrProcessDone) {
+			return
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("已退出但尚未 Wait 的进程未被识别为 zombie")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func TestForegroundLocalCommandStopsProcessGroupOnCancel(t *testing.T) {
+	if runtime.GOOS != "linux" && runtime.GOOS != "darwin" {
+		t.Skip("本地进程组只在 Linux 和 macOS 上启用")
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	command, err := foregroundLocalCommand(ctx, localService{
+		id:         localServiceBackend,
+		name:       "后端",
+		executable: "sh",
+		args:       []string{"-c", "while :; do sleep 1; done"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := command.Start(); err != nil {
+		t.Fatal(err)
+	}
+	record, err := registerLocalProcess(t.TempDir(), localService{
+		id:         localServiceBackend,
+		name:       "后端",
+		executable: "sh",
+	}, command, "")
+	if err != nil {
+		_ = signalLocalProcessGroup(command.Process.Pid, true)
+		_ = command.Wait()
+		t.Fatal(err)
+	}
+	if record.LogPath != "" {
+		t.Fatalf("前台进程不应记录日志路径，实际为 %q", record.LogPath)
+	}
+
+	done := make(chan error, 1)
+	go func() { done <- command.Wait() }()
+	cancel()
+	select {
+	case waitErr := <-done:
+		if !localProcessExitWasSignaled(waitErr) {
+			t.Fatalf("取消前台命令后退出原因 = %v，want signal", waitErr)
+		}
+	case <-time.After(3 * time.Second):
+		_ = signalLocalProcessGroup(record.ProcessGroupID, true)
+		<-done
+		t.Fatal("取消前台命令后进程组未退出")
+	}
+}
+
+func TestWaitForBackgroundLocalServiceReady(t *testing.T) {
+	if runtime.GOOS != "linux" && runtime.GOOS != "darwin" {
+		t.Skip("本地进程组只在 Linux 和 macOS 上启用")
+	}
 	var requests atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
 		if requests.Add(1) < 3 {
@@ -350,55 +572,224 @@ func TestWaitForLocalServiceReady(t *testing.T) {
 		response.WriteHeader(http.StatusOK)
 	}))
 	defer server.Close()
-
-	stopped, err := waitForLocalServiceReady(context.Background(), localService{
-		name:         "测试服务",
-		readyURL:     server.URL,
-		readyTimeout: time.Second,
-	}, make(chan localServiceResult))
-	if err != nil {
+	directory := t.TempDir()
+	command := exec.Command("sh", "-c", "while :; do sleep 1; done")
+	if err := configureLocalProcessCommand(command); err != nil {
 		t.Fatal(err)
 	}
-	if stopped != nil {
-		t.Fatalf("服务不应提前退出: %+v", stopped)
+	if err := command.Start(); err != nil {
+		t.Fatal(err)
+	}
+	record, err := registerLocalProcess(directory, localService{id: localServiceBackend, name: "后端", executable: "sh"}, command, filepath.Join(directory, "backend.log"))
+	if err != nil {
+		_ = signalLocalProcessGroup(command.Process.Pid, true)
+		_ = command.Wait()
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- command.Wait() }()
+	defer func() {
+		_, _ = stopLocalProcessRecords(context.Background(), directory, []localProcessRecord{record}, true, 3*time.Second)
+		<-done
+	}()
+
+	err = waitForBackgroundLocalServiceReady(context.Background(), directory, localService{
+		name:         "测试服务",
+		readyURL:     server.URL,
+		readyTimeout: 2 * time.Second,
+	}, record)
+	if err != nil {
+		t.Fatal(err)
 	}
 	if requests.Load() < 3 {
 		t.Fatalf("就绪检查次数不足: %d", requests.Load())
 	}
 }
 
-func TestWaitForLocalServiceReadyReturnsEarlyExit(t *testing.T) {
-	results := make(chan localServiceResult, 1)
-	results <- localServiceResult{name: "后端", err: context.Canceled}
+func TestWaitForBackgroundLocalServiceReadyReturnsEarlyExit(t *testing.T) {
+	if runtime.GOOS != "linux" && runtime.GOOS != "darwin" {
+		t.Skip("本地进程组只在 Linux 和 macOS 上启用")
+	}
+	directory := t.TempDir()
+	command := exec.Command("sh", "-c", "while :; do sleep 1; done")
+	if err := configureLocalProcessCommand(command); err != nil {
+		t.Fatal(err)
+	}
+	if err := command.Start(); err != nil {
+		t.Fatal(err)
+	}
+	record, err := registerLocalProcess(directory, localService{id: localServiceBackend, name: "后端", executable: "sh"}, command, filepath.Join(directory, "backend.log"))
+	if err != nil {
+		_ = signalLocalProcessGroup(command.Process.Pid, true)
+		_ = command.Wait()
+		t.Fatal(err)
+	}
+	_ = signalLocalProcessGroup(record.ProcessGroupID, true)
+	_ = command.Wait()
 
-	stopped, err := waitForLocalServiceReady(context.Background(), localService{
+	err = waitForBackgroundLocalServiceReady(context.Background(), directory, localService{
 		name:         "后端",
 		readyURL:     "http://127.0.0.1:1",
 		readyTimeout: time.Second,
-	}, results)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if stopped == nil || stopped.name != "后端" || stopped.err != context.Canceled {
-		t.Fatalf("未返回提前退出的进程: %+v", stopped)
+	}, record)
+	if err == nil || !strings.Contains(err.Error(), "启动后退出") {
+		t.Fatalf("未报告提前退出的后台进程: %v", err)
 	}
 }
 
-func TestWaitForLocalServiceReadyTimesOut(t *testing.T) {
+func TestWaitForBackgroundLocalServiceReadyTimesOut(t *testing.T) {
+	if runtime.GOOS != "linux" && runtime.GOOS != "darwin" {
+		t.Skip("本地进程组只在 Linux 和 macOS 上启用")
+	}
 	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
 		response.WriteHeader(http.StatusServiceUnavailable)
 	}))
 	defer server.Close()
+	directory := t.TempDir()
+	command := exec.Command("sh", "-c", "while :; do sleep 1; done")
+	if err := configureLocalProcessCommand(command); err != nil {
+		t.Fatal(err)
+	}
+	if err := command.Start(); err != nil {
+		t.Fatal(err)
+	}
+	record, err := registerLocalProcess(directory, localService{id: localServiceWeb, name: "Web", executable: "sh"}, command, filepath.Join(directory, "web.log"))
+	if err != nil {
+		_ = signalLocalProcessGroup(command.Process.Pid, true)
+		_ = command.Wait()
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- command.Wait() }()
+	defer func() {
+		_, _ = stopLocalProcessRecords(context.Background(), directory, []localProcessRecord{record}, true, 3*time.Second)
+		<-done
+	}()
 
-	stopped, err := waitForLocalServiceReady(context.Background(), localService{
+	err = waitForBackgroundLocalServiceReady(context.Background(), directory, localService{
 		name:         "测试服务",
 		readyURL:     server.URL,
-		readyTimeout: 50 * time.Millisecond,
-	}, make(chan localServiceResult))
+		readyTimeout: 700 * time.Millisecond,
+	}, record)
 	if err == nil {
 		t.Fatal("服务未就绪时应返回超时错误")
 	}
-	if stopped != nil {
-		t.Fatalf("超时时不应报告进程退出: %+v", stopped)
+}
+
+func TestStopRecordedLocalProcessesGracefully(t *testing.T) {
+	if runtime.GOOS != "linux" && runtime.GOOS != "darwin" {
+		t.Skip("本地进程组只在 Linux 和 macOS 上启用")
+	}
+	directory := t.TempDir()
+	command := exec.Command("sh", "-c", "trap 'exit 0' TERM; while :; do sleep 1; done")
+	if err := configureLocalProcessCommand(command); err != nil {
+		t.Fatal(err)
+	}
+	if err := command.Start(); err != nil {
+		t.Fatal(err)
+	}
+	record, err := registerLocalProcess(directory, localService{
+		id:         localServiceBackend,
+		name:       "后端",
+		executable: "sh",
+		args:       []string{"-c", "test service"},
+	}, command, filepath.Join(directory, "backend.log"))
+	if err != nil {
+		_ = signalLocalProcessGroup(command.Process.Pid, true)
+		_ = command.Wait()
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- command.Wait() }()
+	finished := false
+	t.Cleanup(func() {
+		if !finished {
+			_ = signalLocalProcessGroup(record.ProcessGroupID, true)
+			<-done
+		}
+	})
+
+	count, err := stopRecordedLocalProcesses(context.Background(), directory, false, 3*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Fatalf("安全停止数量 = %d，want 1", count)
+	}
+	select {
+	case <-done:
+		finished = true
+	case <-time.After(3 * time.Second):
+		t.Fatal("收到 SIGTERM 后进程组未退出")
+	}
+	if _, exists, err := readLocalProcessRecord(directory, localServiceBackend); err != nil || exists {
+		t.Fatalf("安全停止后进程记录未清理: exists=%t err=%v", exists, err)
+	}
+}
+
+func TestKillRecordedLocalProcessesAfterGracefulTimeout(t *testing.T) {
+	if runtime.GOOS != "linux" && runtime.GOOS != "darwin" {
+		t.Skip("本地进程组只在 Linux 和 macOS 上启用")
+	}
+	directory := t.TempDir()
+	readyPath := filepath.Join(directory, "ready")
+	command := exec.Command("sh", "-c", "trap '' TERM; touch \"$EDO_TEST_READY\"; while :; do sleep 1; done")
+	command.Env = append(os.Environ(), "EDO_TEST_READY="+readyPath)
+	if err := configureLocalProcessCommand(command); err != nil {
+		t.Fatal(err)
+	}
+	if err := command.Start(); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		if _, err := os.Stat(readyPath); err == nil {
+			break
+		} else if !errors.Is(err, os.ErrNotExist) {
+			t.Fatal(err)
+		}
+		if time.Now().After(deadline) {
+			_ = signalLocalProcessGroup(command.Process.Pid, true)
+			_ = command.Wait()
+			t.Fatal("测试进程未完成信号处理初始化")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	record, err := registerLocalProcess(directory, localService{
+		id:         localServiceWeb,
+		name:       "Web",
+		executable: "sh",
+		args:       []string{"-c", "test service"},
+	}, command, filepath.Join(directory, "web.log"))
+	if err != nil {
+		_ = signalLocalProcessGroup(command.Process.Pid, true)
+		_ = command.Wait()
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- command.Wait() }()
+	finished := false
+	t.Cleanup(func() {
+		if !finished {
+			_ = signalLocalProcessGroup(record.ProcessGroupID, true)
+			<-done
+		}
+	})
+
+	if _, err := stopRecordedLocalProcesses(context.Background(), directory, false, 100*time.Millisecond); err == nil || !strings.Contains(err.Error(), "mage kill") {
+		t.Fatalf("忽略 SIGTERM 时应提示 mage kill，实际错误: %v", err)
+	}
+	count, err := stopRecordedLocalProcesses(context.Background(), directory, true, 3*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Fatalf("强制结束数量 = %d，want 1", count)
+	}
+	select {
+	case <-done:
+		finished = true
+	case <-time.After(3 * time.Second):
+		t.Fatal("收到 SIGKILL 后进程组未退出")
 	}
 }

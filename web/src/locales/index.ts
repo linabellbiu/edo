@@ -14,13 +14,11 @@ export const messages = {
     kubernetesCluster: {
       action: { add: '添加 K8s 集群', cancel: '取消', test: '测试连接', create: '创建集群' },
       drawer: { title: '添加 Kubernetes 集群' },
-      field: { name: '集群名称', mode: '接入方式', namespace: '默认命名空间' },
-      mode: { inCluster: '集群内身份' },
+      field: { name: '集群名称', namespace: '默认命名空间' },
       placeholder: { name: '例如：生产 Kubernetes' },
       validation: { name: '请输入集群名称', namespace: '请输入默认命名空间', kubeconfig: '请粘贴 kubeconfig' },
       hint: {
         kubeconfig: '禁止 exec 插件、外部文件引用、代理和身份模拟配置；连接测试不会保存配置，创建后凭据会加密保存。',
-        inCluster: '集群内身份仅适用于 EDO 本身运行在目标 Kubernetes 集群内的场景。',
       },
       test: { ready: '连接正常 · Kubernetes {version}' },
       message: { testFirst: '请先测试连接', testSuccess: 'Kubernetes {version} 连接正常', created: 'Kubernetes 集群已创建' },
@@ -202,13 +200,11 @@ export const messages = {
     kubernetesCluster: {
       action: { add: 'Add K8s cluster', cancel: 'Cancel', test: 'Test connection', create: 'Create cluster' },
       drawer: { title: 'Add Kubernetes cluster' },
-      field: { name: 'Cluster name', mode: 'Connection mode', namespace: 'Default namespace' },
-      mode: { inCluster: 'In-cluster identity' },
+      field: { name: 'Cluster name', namespace: 'Default namespace' },
       placeholder: { name: 'e.g. Production Kubernetes' },
       validation: { name: 'Enter a cluster name', namespace: 'Enter the default namespace', kubeconfig: 'Paste a kubeconfig' },
       hint: {
         kubeconfig: 'Exec plugins, external file references, proxies, and impersonation are blocked. Tests do not save the configuration; credentials are encrypted after creation.',
-        inCluster: 'In-cluster identity is available only when EDO itself runs inside the target Kubernetes cluster.',
       },
       test: { ready: 'Connected · Kubernetes {version}' },
       message: { testFirst: 'Test the connection first', testSuccess: 'Connected to Kubernetes {version}', created: 'Kubernetes cluster created' },

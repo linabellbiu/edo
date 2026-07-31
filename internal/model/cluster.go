@@ -22,7 +22,6 @@ type KubernetesMode string
 
 const (
 	KubernetesKubeconfig KubernetesMode = "kubeconfig"
-	KubernetesInCluster  KubernetesMode = "in_cluster"
 )
 
 type KubernetesCluster struct {

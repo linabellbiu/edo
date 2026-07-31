@@ -328,8 +328,6 @@ func (s *Service) RESTConfig(ctx context.Context, id string) (*rest.Config, erro
 	}
 	var result *rest.Config
 	switch cluster.Mode {
-	case model.KubernetesInCluster:
-		result, err = rest.InClusterConfig()
 	case model.KubernetesKubeconfig:
 		var raw string
 		raw, err = s.secrets.Decrypt(cluster.KubeconfigCiphertext, kubeconfigAAD(cluster.ID))
@@ -372,9 +370,6 @@ func (s *Service) normalize(
 		apiServer = existing.APIServer
 	}
 	switch input.Mode {
-	case model.KubernetesInCluster:
-		encrypted = ""
-		apiServer = "in-cluster"
 	case model.KubernetesKubeconfig:
 		if input.Kubeconfig != nil {
 			value := strings.TrimSpace(*input.Kubeconfig)
@@ -433,12 +428,6 @@ func safeRESTConfig(data []byte) (*rest.Config, error) {
 
 func restConfigFromInput(input Input) (*rest.Config, error) {
 	switch input.Mode {
-	case model.KubernetesInCluster:
-		result, err := rest.InClusterConfig()
-		if err != nil {
-			return nil, fmt.Errorf("%w: 读取集群内连接配置失败: %w", ErrClusterUnreachable, err)
-		}
-		return result, nil
 	case model.KubernetesKubeconfig:
 		if input.Kubeconfig == nil {
 			return nil, ErrKubeconfigRequired

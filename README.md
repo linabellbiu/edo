@@ -1,10 +1,35 @@
 # EDO
 
-EDO（EasyDevOps）是使用 Go 和 Vue 3 构建的运维、流水线发布与可观测平台，支持 Docker 和 Kubernetes。
+EDO（EasyDevOps）是一套给中小公司和小团队使用的发布自动化工具。它解决的是一件很实际的事：少花时间打包和部署，多花时间做产品。
+
+## 为什么做 EDO
+
+小团队的发布流程往往从几条命令开始：拉代码、打包、上传、登录服务器、重启服务。项目少的时候还能应付，项目和环境多起来以后，漏步骤、版本不一致、发布失败、记录找不到都会变成日常问题。
+
+现有工具也不总是合适：
+
+- 有些开源项目已经停更，碰到兼容问题或历史 Bug 只能自己处理。
+- 有些云服务的免费版本有时间、次数或资源限制，用量上来后就要付费或迁移。
+- 大型平台功能很多，但安装和维护也更复杂，小团队通常没有人专门照看它。
+- 有些工具接入过程太长，最后还不如继续用脚本和手工发布。
+
+EDO 想把这件事做得简单一些。接好代码仓库，选好触发条件，再配置测试、构建和部署步骤，后面的发布就交给系统执行。过程有日志，结果能追踪，失败后也知道从哪里查。
+
+## EDO 的特点
+
+- **启动快**：本地开发、单文件运行和 Docker Compose 都有现成命令。默认配置可以直接使用，不需要先搭一套复杂的平台。
+- **少做重复工作**：代码检出、测试、构建镜像、登记制品、部署、健康检查和日志保存都放进流水线，不用每次上线重新敲一遍命令。
+- **流程容易理解**：流水线就是代码源、阶段和任务。支持 Push、Pull Request、Tag 和手动执行，审核、通知、并行任务和多应用发布按需添加。
+- **自己部署，没有试用期限**：代码、配置、凭据、制品和运行记录都留在自己的环境里，不受云服务免费额度和套餐变化影响。
+- **日常维护量小**：Go 后端使用单进程，Web 可以打进同一个 `edo` 二进制。默认数据库是 SQLite，规模上来后再切换 PostgreSQL 或 MySQL。
+- **Docker 和 Kubernetes 都能用**：小项目可以先用本地或远程 Docker，需要时再接 Kubernetes。构建、部署、日志和容器终端都走标准 API。
+- **发布记录完整**：任务通过 NATS JetStream 持久化，支持确认、有限重试和死信。每次运行保留配置快照和执行日志，重新执行不会覆盖原记录。
+- **权限不靠共享密码**：系统提供权限控制、加密凭据、SSH 主机指纹校验和操作审计，可以把发布权限分给团队成员。
+- **基本监控不用另外搭平台**：CPU、内存、Go GC、Worker、任务、JetStream 和数据库连接池状态可以直接在 EDO 中查看。
 
 ## 快速开始
 
-首次本地开发建议直接使用：
+本地开发运行：
 
 ```bash
 go install github.com/magefile/mage@v1.17.2
@@ -23,9 +48,22 @@ mage start --dev
 2. 停止同一 Compose 项目中遗留的 API、Web 和 Docker-in-Docker 容器。
 3. 使用 Docker Compose 启动 Redis 和 NATS JetStream。
 4. 执行数据库迁移。
-5. 使用 `go run` 启动后端，后端就绪后再启动 Vite 开发服务器。
+5. 使用 `go run` 在当前终端启动后端，后端就绪后再启动 Vite 开发服务器。
 
-按 `Ctrl+C` 可停止本机后端和前端。Redis、NATS 容器会继续运行，需要时执行：
+`mage start --dev` 会保持前台运行，后端和 Vite 日志直接输出到当前终端；按 `Ctrl+C` 可以停止，也可以在另一个终端执行 `mage stop` 或 `mage kill`。
+
+普通 `mage start` 会在服务就绪后返回并保持后台运行；后端日志追加到 `logs/backend.log`，单独使用 `mage start --web` 时 Web 日志追加到 `logs/web.log`。
+
+停止前后端：
+
+```bash
+mage stop  # 发送终止信号并等待安全退出
+mage kill  # 进程无响应时强制结束
+```
+
+这两个命令只处理当前项目由 Mage 记录的本地前后端，以及 `edo-dev` Compose 项目的 `api/web`；不会按进程名误杀其他 Go/Node 进程，也不会停止 Redis、NATS 或删除数据。
+
+需要同时停止开发依赖时执行：
 
 ```bash
 docker compose --env-file .env -f deploy/compose.dev.yml stop redis nats
@@ -99,16 +137,34 @@ EDO_WEB_PORT=5173
 
 | 命令 | 用途 | Web 地址 | API 地址 |
 | --- | --- | --- | --- |
-| `mage start --dev` | 推荐的本地开发模式，启动 Redis、NATS、迁移、后端和 Vite | `:5173` | `:8080` |
-| `mage start` | 构建内嵌 Web 的 `bin/edo`，迁移后以前台方式启动 | `:8080` | `:8080` |
+| `mage start --dev` | 推荐的本地开发模式；启动 Redis、NATS 和迁移，在前台运行后端与 Vite | `:5173` | `:8080` |
+| `mage start` | 构建内嵌 Web 的 `bin/edo`，迁移后在后台启动 | `:8080` | `:8080` |
 | `mage start --docker` | 构建并在容器中后台启动完整开发环境 | `:5173` | `:8080` |
-| `mage start --dev --server` | 仅启动开发后端，同时启动 Redis、NATS 并迁移 | 无 | `:8080` |
-| `mage start --dev --web` | 仅启动 Vite，要求后端已经单独运行 | `:5173` | 不启动 |
+| `mage start --dev --server` | 在前台仅启动开发后端，同时启动 Redis、NATS 并迁移 | 无 | `:8080` |
+| `mage start --dev --web` | 在前台仅启动 Vite，要求后端已经单独运行 | `:5173` | 不启动 |
 | `mage start --server` | 构建并启动不含 Web 的后端，启动前迁移数据库 | 无 | `:8080` |
 | `mage start --web` | 构建 Web 后使用 Vite Preview 运行，要求后端已经单独运行 | `:5173` | 不启动 |
 | `mage start --docker --server` | 仅启动 Compose 后端及其依赖 | 无 | `:8080` |
 | `mage start --docker --web` | 仅启动 Compose Web，不自动启动依赖 | `:5173` | 不启动 |
 | `mage migrate` | 只迁移 `.env` 指定的数据库 | 无 | 不启动 |
+
+进程控制命令：
+
+| 命令 | 用途 |
+| --- | --- |
+| `mage stop` | 向当前项目的本地前后端发送终止信号并等待安全退出；安全停止 Compose `api/web` |
+| `mage kill` | 强制结束当前项目的本地前后端进程组；以零秒宽限强制停止 Compose `api/web` |
+| `mage status` | 显示本地前后端的运行模式、PID、就绪状态和日志路径，并显示全部 Compose 服务状态 |
+| `mage log --tail 100` | 显示 `logs/*.log` 各文件最后 100 行，然后持续监听新增日志 |
+
+查看状态或监听后台日志：
+
+```bash
+mage status
+mage log --tail 100
+```
+
+`mage log` 默认也是最后 100 行；支持 `--tail=100` 和 `-n 100`。使用 `--tail 0` 时不显示历史内容，只监听新增日志。按 `Ctrl+C` 停止监听。开发模式的日志直接显示在 `mage start --dev` 所在终端，不会重复写入 `logs/`。
 
 不指定 `--server` 或 `--web` 时，默认同时启动两者；两个参数同时提供时也是同时启动。`--dev` 与 `--docker` 不能一起使用。
 
@@ -119,6 +175,7 @@ EDO_WEB_PORT=5173
 ```bash
 mage help
 mage start --help
+mage log --help
 mage -l
 ```
 
@@ -131,8 +188,10 @@ mage start --dev
 此模式适合日常开发：
 
 - Redis、NATS 在容器中运行。
-- Go 后端在宿主机通过 `go run ./cmd/edo server` 运行。
-- Vue 前端在宿主机通过 Vite 运行并支持热更新。
+- Go 后端在宿主机通过 `go run ./cmd/edo server` 前台运行。
+- Vue 前端在宿主机通过 Vite 前台运行并支持热更新。
+- `mage start --dev` 会占用当前终端，后端和 Vite 日志直接显示在终端；按 `Ctrl+C` 停止。
+- 也可以在另一个终端执行 `mage stop` 安全停止，或执行 `mage kill` 强制结束。
 - Dockerfile 流水线直接使用宿主机 Docker/Buildx，不使用 Docker-in-Docker。
 
 只调试后端：
@@ -161,9 +220,9 @@ mage start
 2. 构建 Vue 生产资源。
 3. 将 Web 资源嵌入 `bin/edo`。
 4. 执行数据库迁移。
-5. 启动 `bin/edo server`。
+5. 在后台启动 `bin/edo server`，确认就绪后返回。
 
-Web 与 API 都通过 `http://127.0.0.1:8080` 提供。此模式不会自动启动 Redis 和 NATS，可以预先启动依赖：
+Web 与 API 都通过 `http://127.0.0.1:8080` 提供，运行日志追加到 `logs/backend.log`。此模式不会自动启动 Redis 和 NATS，可以预先启动依赖：
 
 ```bash
 docker compose --env-file .env -f deploy/compose.dev.yml up -d --wait redis nats

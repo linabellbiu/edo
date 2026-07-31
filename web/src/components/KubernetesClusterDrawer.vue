@@ -23,7 +23,7 @@ const props = withDefaults(defineProps<{ open?: boolean }>(), { open: false })
 const emit = defineEmits<{ created: [cluster: KubernetesCluster]; 'update:open': [value: boolean] }>()
 const { t } = useI18n()
 const formRef = ref<{ validate: () => Promise<void> }>()
-const form = reactive({ name: '', mode: 'kubeconfig' as 'kubeconfig' | 'in_cluster', default_namespace: 'default', kubeconfig: '' })
+const form = reactive({ name: '', default_namespace: 'default', kubeconfig: '' })
 const testing = ref(false)
 const submitting = ref(false)
 const testedSignature = ref('')
@@ -32,15 +32,14 @@ const testResult = ref<ConnectionTest>()
 const busy = computed(() => testing.value || submitting.value)
 const currentSignature = computed(() => JSON.stringify({
   name: form.name.trim(),
-  mode: form.mode,
   default_namespace: form.default_namespace.trim() || 'default',
-  kubeconfig: form.mode === 'kubeconfig' ? form.kubeconfig.trim() : '',
+  kubeconfig: form.kubeconfig.trim(),
 }))
 const connectionTested = computed(() => Boolean(testResult.value) && testedSignature.value === currentSignature.value)
 
 watch(() => props.open, open => {
   if (!open) return
-  Object.assign(form, { name: '', mode: 'kubeconfig', default_namespace: 'default', kubeconfig: '' })
+  Object.assign(form, { name: '', default_namespace: 'default', kubeconfig: '' })
   testedSignature.value = ''
   testResult.value = undefined
 })
@@ -55,9 +54,9 @@ watch(currentSignature, signature => {
 function payload() {
   return {
     name: form.name.trim(),
-    mode: form.mode,
+    mode: 'kubeconfig',
     default_namespace: form.default_namespace.trim() || 'default',
-    kubeconfig: form.mode === 'kubeconfig' ? form.kubeconfig : undefined,
+    kubeconfig: form.kubeconfig,
   }
 }
 
@@ -125,17 +124,7 @@ async function submit() {
         >
           <a-input v-model:value="form.name" :placeholder="t('kubernetesCluster.placeholder.name')" />
         </a-form-item>
-        <a-form-item :label="t('kubernetesCluster.field.mode')" name="mode">
-          <a-select
-            v-model:value="form.mode"
-            :options="[
-              { value: 'kubeconfig', label: 'kubeconfig' },
-              { value: 'in_cluster', label: t('kubernetesCluster.mode.inCluster') },
-            ]"
-          />
-        </a-form-item>
         <a-form-item
-          class="span-2"
           :label="t('kubernetesCluster.field.namespace')"
           name="default_namespace"
           :rules="[{ required: true, whitespace: true, message: t('kubernetesCluster.validation.namespace') }]"
@@ -143,7 +132,6 @@ async function submit() {
           <a-input v-model:value="form.default_namespace" placeholder="default" />
         </a-form-item>
         <a-form-item
-          v-if="form.mode === 'kubeconfig'"
           class="span-2"
           label="kubeconfig"
           name="kubeconfig"
@@ -152,13 +140,6 @@ async function submit() {
           <a-textarea v-model:value="form.kubeconfig" :rows="16" spellcheck="false" placeholder="apiVersion: v1" />
           <div class="field-hint">{{ t('kubernetesCluster.hint.kubeconfig') }}</div>
         </a-form-item>
-        <a-alert
-          v-else
-          class="span-2"
-          type="info"
-          show-icon
-          :message="t('kubernetesCluster.hint.inCluster')"
-        />
         <a-alert
           v-if="connectionTested && testResult"
           class="span-2 connection-result"

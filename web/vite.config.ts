@@ -5,6 +5,7 @@ import Components from 'unplugin-vue-components/vite'
 import { AntDesignVueResolver } from 'unplugin-vue-components/resolvers'
 
 const proxyTarget = process.env.EDO_WEB_PROXY_TARGET ?? 'http://127.0.0.1:8080'
+const useWSLMountPolling = Boolean(process.env.WSL_DISTRO_NAME) && process.cwd().startsWith('/mnt/')
 
 export default defineConfig({
   plugins: [
@@ -22,6 +23,7 @@ export default defineConfig({
   server: {
     host: '127.0.0.1',
     port: 5173,
+    watch: useWSLMountPolling ? { usePolling: true, interval: 500 } : undefined,
     proxy: {
       '/api': {
         target: proxyTarget,

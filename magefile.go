@@ -7,19 +7,31 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
+	"runtime"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/joho/godotenv"
 )
 
-const environmentFile = ".env"
+const (
+	environmentFile          = ".env"
+	localProcessDirectory    = "data/run"
+	localLogDirectory        = "logs"
+	localGracefulStopTimeout = 70 * time.Second
+	localForcefulStopTimeout = 5 * time.Second
+	localServiceBackend      = "backend"
+	localServiceWeb          = "web"
+)
 
 // Start 启动 EDO；可使用 --dev、--docker、--server 和 --web 调整启动方式。
 func Start(ctx context.Context) error {
@@ -54,13 +66,17 @@ func Start(ctx context.Context) error {
 func Help() {
 	fmt.Println(`EDO Mage 命令
 
-mage start                       构建内嵌 Web 的单文件程序并启动
-mage start --server              只启动后端
-mage start --web                 只启动 Web
-mage start --dev                 启动开发依赖和迁移，再运行 go run 与 npm start
-mage start --dev --server        开发模式，只运行后端
-mage start --dev --web           开发模式，只运行 Web
-mage start --docker              使用 Docker Compose 启动完整环境
+mage start                       构建后在后台启动，日志写入 logs/
+mage start --server              只在后台启动后端
+mage start --web                 只在后台启动 Web
+mage start --dev                 启动开发依赖和迁移，在前台运行后端与 Vite
+mage start --dev --server        开发模式，只在前台运行后端
+mage start --dev --web           开发模式，只在前台运行 Web
+mage start --docker              使用 Docker Compose 在后台启动完整环境
+mage stop                        安全停止本项目的前后端
+mage kill                        强制结束本项目的前后端
+mage status                      查看本地进程和 Compose 服务状态
+mage log --tail 100              从日志最后 100 行开始持续监听
 mage migrate                     迁移 .env 指定的数据库
 mage start --help                查看 start 参数说明
 mage -l                          查看全部 Mage 任务`)
@@ -72,6 +88,42 @@ func Migrate(ctx context.Context) error {
 		return err
 	}
 	return migrateFromSource(ctx)
+}
+
+// Stop 安全停止 Mage 启动的本地前后端和 Compose 前后端容器。
+func Stop(ctx context.Context) error {
+	return controlFrontendAndBackend(ctx, false)
+}
+
+// Kill 强制结束 Mage 启动的本地前后端和 Compose 前后端容器。
+func Kill(ctx context.Context) error {
+	return controlFrontendAndBackend(ctx, true)
+}
+
+// Status 显示 Mage 管理的本地进程以及 Compose 服务状态。
+func Status(ctx context.Context) error {
+	if err := printLocalServiceStatus(ctx, localProcessDirectory); err != nil {
+		return err
+	}
+	return printComposeServiceStatus(ctx)
+}
+
+// Log 从指定行数开始持续监听 logs 目录中的本地服务日志。
+func Log(ctx context.Context) error {
+	options, err := readLogOptions()
+	if err != nil {
+		return err
+	}
+	if options.help {
+		printLogHelp()
+		return finishLog(nil, options.provided)
+	}
+	paths, err := localLogFiles(localLogDirectory)
+	if err != nil {
+		return err
+	}
+	err = followLocalLogs(ctx, paths, options.tail)
+	return finishLog(err, options.provided)
 }
 
 type startOptions struct {
@@ -124,11 +176,81 @@ func parseStartOptions(args []string) (startOptions, error) {
 func printStartHelp() {
 	fmt.Println(`用法：mage start [--dev | --docker] [--server | --web]
 
-不指定参数时，构建内嵌 Web 的单文件程序，迁移数据库后启动。
---dev     启动 Redis、NATS 和迁移，再使用 go run 与 npm start 开发运行
---docker  使用 Docker Compose 启动
+不指定参数时，构建内嵌 Web 的单文件程序，迁移数据库后在后台启动。
+本地服务日志写入 logs/backend.log 和 logs/web.log。
+--dev     启动 Redis、NATS 和迁移，再使用 go run 与 npm start 在当前终端运行
+--docker  使用 Docker Compose 在后台启动
 --server  只启动后端
 --web     只启动 Web`)
+}
+
+type logOptions struct {
+	tail     int
+	help     bool
+	provided bool
+}
+
+func readLogOptions() (logOptions, error) {
+	for index, arg := range os.Args[1:] {
+		if strings.EqualFold(arg, "log") {
+			return parseLogOptions(os.Args[index+2:])
+		}
+	}
+	return logOptions{tail: 100}, nil
+}
+
+func parseLogOptions(args []string) (logOptions, error) {
+	options := logOptions{tail: 100, provided: len(args) > 0}
+	for index := 0; index < len(args); index++ {
+		arg := args[index]
+		switch {
+		case arg == "--help" || arg == "-h":
+			options.help = true
+		case arg == "--tail" || arg == "-tail" || arg == "-n":
+			if index+1 >= len(args) {
+				return logOptions{}, fmt.Errorf("%s 需要提供行数", arg)
+			}
+			index++
+			value, err := parseLogTail(args[index])
+			if err != nil {
+				return logOptions{}, err
+			}
+			options.tail = value
+		case strings.HasPrefix(arg, "--tail="):
+			value, err := parseLogTail(strings.TrimPrefix(arg, "--tail="))
+			if err != nil {
+				return logOptions{}, err
+			}
+			options.tail = value
+		default:
+			return logOptions{}, fmt.Errorf("未知日志参数 %q", arg)
+		}
+	}
+	return options, nil
+}
+
+func parseLogTail(value string) (int, error) {
+	tail, err := strconv.Atoi(value)
+	if err != nil || tail < 0 {
+		return 0, fmt.Errorf("--tail 必须是大于或等于 0 的整数，实际为 %q", value)
+	}
+	return tail, nil
+}
+
+func finishLog(err error, optionsProvided bool) error {
+	if err == nil && optionsProvided {
+		// Mage 会把目标后的自定义参数继续当作目标；任务完成后直接结束，避免再次解析。
+		os.Exit(0)
+	}
+	return err
+}
+
+func printLogHelp() {
+	fmt.Println(`用法：mage log [--tail N]
+
+监听 logs 目录中的全部 .log 文件；先显示每个文件最后 N 行，再持续显示新增日志。
+--tail N  起始显示行数，默认 100；使用 0 表示只监听新日志
+按 Ctrl+C 停止监听。`)
 }
 
 func loadEnvironment() error {
@@ -302,11 +424,25 @@ func startBuilt(ctx context.Context, runServer, runWeb bool) error {
 		if runWeb {
 			fmt.Println("EDO Web：http://127.0.0.1:8080")
 		}
-		return runCommand(ctx, backend, "server")
+		return runLocalServices(ctx, []localService{{
+			id:           localServiceBackend,
+			name:         "后端",
+			executable:   backend,
+			args:         []string{"server"},
+			readyURL:     "http://127.0.0.1:8080/api/v1/health/ready",
+			readyTimeout: 90 * time.Second,
+		}})
 	}
 
 	fmt.Println("EDO Web：http://127.0.0.1:5173")
-	return runCommand(ctx, npmExecutable(), "--prefix", "web", "run", "preview", "--", "--host", "127.0.0.1", "--port", "5173")
+	return runLocalServices(ctx, []localService{{
+		id:           localServiceWeb,
+		name:         "Web",
+		executable:   npmExecutable(),
+		args:         []string{"--prefix", "web", "run", "preview", "--", "--host", "127.0.0.1", "--port", "5173"},
+		readyURL:     "http://127.0.0.1:5173",
+		readyTimeout: 30 * time.Second,
+	}})
 }
 
 func startDevelopment(ctx context.Context, runServer, runWeb bool) error {
@@ -329,23 +465,45 @@ func startDevelopment(ctx context.Context, runServer, runWeb bool) error {
 	if runServer && runWeb {
 		fmt.Println("EDO 后端：http://127.0.0.1:8080")
 		fmt.Println("EDO Web：http://127.0.0.1:5173")
-		return runLocalServices(ctx, []localService{
+		return runForegroundLocalServices(ctx, []localService{
 			{
+				id:           localServiceBackend,
 				name:         "后端",
 				executable:   "go",
 				args:         []string{"run", "./cmd/edo", "server"},
 				readyURL:     "http://127.0.0.1:8080/api/v1/health/ready",
 				readyTimeout: 90 * time.Second,
 			},
-			{name: "Web", executable: npmExecutable(), args: []string{"--prefix", "web", "start"}},
+			{
+				id:           localServiceWeb,
+				name:         "Web",
+				executable:   npmExecutable(),
+				args:         []string{"--prefix", "web", "start"},
+				readyURL:     "http://127.0.0.1:5173",
+				readyTimeout: 30 * time.Second,
+			},
 		})
 	}
 	if runServer {
 		fmt.Println("EDO 后端：http://127.0.0.1:8080")
-		return runCommand(ctx, "go", "run", "./cmd/edo", "server")
+		return runForegroundLocalServices(ctx, []localService{{
+			id:           localServiceBackend,
+			name:         "后端",
+			executable:   "go",
+			args:         []string{"run", "./cmd/edo", "server"},
+			readyURL:     "http://127.0.0.1:8080/api/v1/health/ready",
+			readyTimeout: 90 * time.Second,
+		}})
 	}
 	fmt.Println("EDO Web：http://127.0.0.1:5173")
-	return runCommand(ctx, npmExecutable(), "--prefix", "web", "start")
+	return runForegroundLocalServices(ctx, []localService{{
+		id:           localServiceWeb,
+		name:         "Web",
+		executable:   npmExecutable(),
+		args:         []string{"--prefix", "web", "start"},
+		readyURL:     "http://127.0.0.1:5173",
+		readyTimeout: 30 * time.Second,
+	}})
 }
 
 func migrateFromSource(ctx context.Context) error {
@@ -454,17 +612,23 @@ func copyEmbeddedWebAssets(source, target string) error {
 
 func ensureWebDependencies(ctx context.Context) error {
 	const webRoot = "web"
-	current, lockDigest, err := webDependenciesCurrent(webRoot)
+	current, dependencyStamp, err := webDependenciesCurrent(webRoot)
 	if err != nil {
 		return err
 	}
-	if current {
+	nativeBinding, err := rolldownNativeBindingPackage()
+	if err != nil {
+		return err
+	}
+	if current && webRuntimeDependenciesAvailable(ctx, webRoot, nativeBinding) {
 		return nil
 	}
 
-	fmt.Println("Web 依赖缺失或已变更，执行 npm ci")
-	if err := runCommand(ctx, npmExecutable(), "--prefix", webRoot, "ci", "--include=dev"); err != nil {
-		return fmt.Errorf("安装 Web 依赖失败: %w", err)
+	if !current {
+		fmt.Println("Web 依赖缺失、平台已切换或锁文件已变更，执行 npm ci")
+		if err := runCommand(ctx, npmExecutable(), "--prefix", webRoot, "ci", "--include=dev"); err != nil {
+			return fmt.Errorf("安装 Web 依赖失败: %w", err)
+		}
 	}
 	present, err := webDependencyFilesPresent(webRoot)
 	if err != nil {
@@ -473,7 +637,20 @@ func ensureWebDependencies(ctx context.Context) error {
 	if !present {
 		return errors.New("npm ci 完成后 Web 依赖仍不完整")
 	}
-	if err := os.WriteFile(webDependencyStampPath(webRoot), []byte(lockDigest+"\n"), 0o644); err != nil {
+	if !webRuntimeDependenciesAvailable(ctx, webRoot, nativeBinding) {
+		nativeBindingSpec, err := rolldownNativeBindingSpec(webRoot, nativeBinding)
+		if err != nil {
+			return err
+		}
+		fmt.Printf("npm 未安装当前平台的 Rolldown 原生依赖，修复安装 %s\n", nativeBindingSpec)
+		if err := runCommand(ctx, npmExecutable(), "--prefix", webRoot, "install", "--no-save", "--package-lock=false", "--include=optional", nativeBindingSpec); err != nil {
+			return fmt.Errorf("修复 Web 原生依赖失败: %w", err)
+		}
+	}
+	if !webRuntimeDependenciesAvailable(ctx, webRoot, nativeBinding) {
+		return fmt.Errorf("Web 原生依赖 %s 仍无法加载", nativeBinding)
+	}
+	if err := os.WriteFile(webDependencyStampPath(webRoot), []byte(dependencyStamp+"\n"), 0o644); err != nil {
 		return fmt.Errorf("记录 Web 依赖版本失败: %w", err)
 	}
 	return nil
@@ -485,21 +662,83 @@ func webDependenciesCurrent(webRoot string) (bool, string, error) {
 		return false, "", fmt.Errorf("读取 Web 依赖锁文件失败: %w", err)
 	}
 	lockDigest := fmt.Sprintf("%x", sha256.Sum256(lockfile))
+	dependencyStamp := lockDigest + "\n" + runtime.GOOS + "/" + runtime.GOARCH
 	stamp, err := os.ReadFile(webDependencyStampPath(webRoot))
 	if errors.Is(err, os.ErrNotExist) {
-		return false, lockDigest, nil
+		return false, dependencyStamp, nil
 	}
 	if err != nil {
 		return false, "", fmt.Errorf("读取 Web 依赖版本失败: %w", err)
 	}
-	if strings.TrimSpace(string(stamp)) != lockDigest {
-		return false, lockDigest, nil
+	if strings.TrimSpace(string(stamp)) != dependencyStamp {
+		return false, dependencyStamp, nil
 	}
 	present, err := webDependencyFilesPresent(webRoot)
 	if err != nil {
 		return false, "", err
 	}
-	return present, lockDigest, nil
+	return present, dependencyStamp, nil
+}
+
+func webRuntimeDependenciesAvailable(ctx context.Context, webRoot, nativeBinding string) bool {
+	command := exec.CommandContext(ctx, "node", "--eval", "require(process.argv[1])", nativeBinding)
+	command.Dir = webRoot
+	return command.Run() == nil
+}
+
+func rolldownNativeBindingPackage() (string, error) {
+	switch runtime.GOOS {
+	case "darwin":
+		switch runtime.GOARCH {
+		case "amd64":
+			return "@rolldown/binding-darwin-x64", nil
+		case "arm64":
+			return "@rolldown/binding-darwin-arm64", nil
+		}
+	case "linux":
+		switch runtime.GOARCH {
+		case "amd64":
+			return "@rolldown/binding-linux-x64-" + linuxLibcVariant(), nil
+		case "arm64":
+			return "@rolldown/binding-linux-arm64-" + linuxLibcVariant(), nil
+		case "arm":
+			return "@rolldown/binding-linux-arm-gnueabihf", nil
+		case "ppc64", "ppc64le":
+			return "@rolldown/binding-linux-ppc64-gnu", nil
+		case "s390x":
+			return "@rolldown/binding-linux-s390x-gnu", nil
+		}
+	}
+	return "", fmt.Errorf("Rolldown 不支持当前平台 %s/%s", runtime.GOOS, runtime.GOARCH)
+}
+
+func linuxLibcVariant() string {
+	if _, err := os.Stat("/etc/alpine-release"); err == nil {
+		return "musl"
+	}
+	output, _ := exec.Command("ldd", "--version").CombinedOutput()
+	if strings.Contains(strings.ToLower(string(output)), "musl") {
+		return "musl"
+	}
+	return "gnu"
+}
+
+func rolldownNativeBindingSpec(webRoot, nativeBinding string) (string, error) {
+	manifest, err := os.ReadFile(filepath.Join(webRoot, "node_modules", "rolldown", "package.json"))
+	if err != nil {
+		return "", fmt.Errorf("读取 Rolldown 依赖信息失败: %w", err)
+	}
+	metadata := struct {
+		OptionalDependencies map[string]string `json:"optionalDependencies"`
+	}{}
+	if err := json.Unmarshal(manifest, &metadata); err != nil {
+		return "", fmt.Errorf("解析 Rolldown 依赖信息失败: %w", err)
+	}
+	version := strings.TrimSpace(metadata.OptionalDependencies[nativeBinding])
+	if version == "" {
+		return "", fmt.Errorf("Rolldown 未声明当前平台依赖 %s", nativeBinding)
+	}
+	return nativeBinding + "@" + version, nil
 }
 
 func webDependencyFilesPresent(webRoot string) (bool, error) {
@@ -533,7 +772,531 @@ func webDependencyStampPath(webRoot string) string {
 	return filepath.Join(webRoot, "node_modules", ".edo-package-lock.sha256")
 }
 
+type localProcessSnapshot struct {
+	processGroupID int
+	identity       string
+}
+
+type localProcessRecord struct {
+	Service        string   `json:"service"`
+	PID            int      `json:"pid"`
+	ProcessGroupID int      `json:"process_group_id"`
+	Identity       string   `json:"identity"`
+	ProjectRoot    string   `json:"project_root"`
+	Command        []string `json:"command"`
+	LogPath        string   `json:"log_path"`
+}
+
+func controlFrontendAndBackend(ctx context.Context, force bool) error {
+	timeout := localGracefulStopTimeout
+	if force {
+		timeout = localForcefulStopTimeout
+	}
+	localCount, localErr := stopRecordedLocalProcesses(ctx, localProcessDirectory, force, timeout)
+	composeCount, composeErr := controlComposeFrontendAndBackend(ctx, force)
+	if err := errors.Join(localErr, composeErr); err != nil {
+		return err
+	}
+	verb := "已安全停止"
+	if force {
+		verb = "已强制结束"
+	}
+	if localCount == 0 && composeCount == 0 {
+		fmt.Println("未发现由本项目启动的前后端进程或容器")
+		return nil
+	}
+	fmt.Printf("%s前后端：本地进程组 %d 个，Compose 服务 %d 个\n", verb, localCount, composeCount)
+	return nil
+}
+
+func controlComposeFrontendAndBackend(ctx context.Context, force bool) (int, error) {
+	if _, err := exec.LookPath("docker"); err != nil {
+		return 0, nil
+	}
+	baseArgs := developmentComposeArgs()
+	output, err := runComposeOutput(ctx, append(baseArgs, "ps", "--services", "--status", "running", "api", "web")...)
+	if err != nil {
+		return 0, fmt.Errorf("检查 Compose 前后端失败: %w", err)
+	}
+	services := strings.Fields(output)
+	if len(services) == 0 {
+		return 0, nil
+	}
+	args := append([]string{}, baseArgs...)
+	if force {
+		args = append(args, "stop", "--timeout", "0")
+	} else {
+		args = append(args, "stop", "--timeout", fmt.Sprintf("%.0f", localGracefulStopTimeout.Seconds()))
+	}
+	args = append(args, services...)
+	if err := runComposeCommand(ctx, args...); err != nil {
+		action := "安全停止"
+		if force {
+			action = "强制停止"
+		}
+		return 0, fmt.Errorf("%s Compose 前后端失败: %w", action, err)
+	}
+	return len(services), nil
+}
+
+func developmentComposeArgs() []string {
+	args := []string{"compose"}
+	if _, err := os.Stat(environmentFile); err == nil {
+		args = append(args, "--env-file", environmentFile)
+	}
+	return append(args, "-f", "deploy/compose.dev.yml")
+}
+
+func runComposeOutput(ctx context.Context, args ...string) (string, error) {
+	command := exec.CommandContext(ctx, "docker", args...)
+	command.Env = composeCommandEnvironment()
+	output, err := command.CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("docker %s: %s: %w", strings.Join(args, " "), strings.TrimSpace(string(output)), err)
+	}
+	return string(output), nil
+}
+
+func runComposeCommand(ctx context.Context, args ...string) error {
+	command := exec.CommandContext(ctx, "docker", args...)
+	command.Env = composeCommandEnvironment()
+	command.Stdout = os.Stdout
+	command.Stderr = os.Stderr
+	command.Stdin = os.Stdin
+	return command.Run()
+}
+
+func composeCommandEnvironment() []string {
+	environment := os.Environ()
+	if strings.TrimSpace(os.Getenv("EDO_SECRETS_KEY")) == "" {
+		// stop/kill 只操作已有容器，但 Compose 解析配置时仍要求该变量存在。
+		environment = append(environment, "EDO_SECRETS_KEY=MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=")
+	}
+	return environment
+}
+
+func printLocalServiceStatus(ctx context.Context, directory string) error {
+	fmt.Println("本地服务：")
+	for _, service := range []string{localServiceBackend, localServiceWeb} {
+		record, exists, err := readLocalProcessRecord(directory, service)
+		if err != nil {
+			return err
+		}
+		if !exists {
+			fmt.Printf("- %s：未运行（无 Mage 进程记录）\n", localServiceDisplayName(service))
+			continue
+		}
+		running, err := managedLocalProcessRunning(record)
+		if err != nil {
+			return err
+		}
+		if !running {
+			fmt.Printf("- %s：未运行（存在已失效的 PID %d 记录）\n", localServiceDisplayName(service), record.PID)
+			continue
+		}
+		mode := "前台"
+		logDescription := "当前启动终端"
+		if record.LogPath != "" {
+			mode = "后台"
+			logDescription = record.LogPath
+		}
+		fmt.Printf(
+			"- %s：运行中 | %s | PID %d | %s | 日志：%s\n",
+			localServiceDisplayName(service),
+			mode,
+			record.PID,
+			localServiceReadiness(ctx, service),
+			logDescription,
+		)
+	}
+	return nil
+}
+
+func localServiceReadiness(ctx context.Context, service string) string {
+	readyURL := ""
+	switch service {
+	case localServiceBackend:
+		readyURL = "http://127.0.0.1:8080/api/v1/health/ready"
+	case localServiceWeb:
+		readyURL = "http://127.0.0.1:5173"
+	default:
+		return "就绪状态未知"
+	}
+	readyCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	client := &http.Client{Timeout: 2 * time.Second}
+	if localServiceIsReady(readyCtx, client, readyURL) {
+		return "已就绪"
+	}
+	return "未就绪"
+}
+
+func printComposeServiceStatus(ctx context.Context) error {
+	fmt.Println("\nCompose 服务：")
+	if _, err := exec.LookPath("docker"); err != nil {
+		fmt.Println("- 未安装 Docker，无法检查")
+		return nil
+	}
+	args := append(developmentComposeArgs(), "ps", "--all")
+	if err := runComposeCommand(ctx, args...); err != nil {
+		return fmt.Errorf("检查 Compose 服务状态失败: %w", err)
+	}
+	return nil
+}
+
+func localLogFiles(directory string) ([]string, error) {
+	entries, err := os.ReadDir(directory)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, fmt.Errorf("日志目录 %s 不存在，请先执行 mage start", directory)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("读取日志目录 %s 失败: %w", directory, err)
+	}
+	paths := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(strings.ToLower(entry.Name()), ".log") {
+			continue
+		}
+		path, err := filepath.Abs(filepath.Join(directory, entry.Name()))
+		if err != nil {
+			return nil, fmt.Errorf("解析日志路径失败: %w", err)
+		}
+		paths = append(paths, path)
+	}
+	if len(paths) == 0 {
+		return nil, fmt.Errorf("日志目录 %s 中没有 .log 文件，请先执行 mage start", directory)
+	}
+	return paths, nil
+}
+
+func followLocalLogs(ctx context.Context, paths []string, tail int) error {
+	if len(paths) == 0 {
+		return errors.New("没有可监听的日志文件")
+	}
+	if _, err := exec.LookPath("tail"); err != nil {
+		return errors.New("当前系统未安装 tail，无法持续监听日志")
+	}
+	fmt.Printf("从每个日志文件最后 %d 行开始监听，按 Ctrl+C 停止：\n", tail)
+	for _, path := range paths {
+		fmt.Printf("- %s\n", path)
+	}
+	followCtx, stop := signal.NotifyContext(ctx, os.Interrupt)
+	defer stop()
+	args := []string{"-n", strconv.Itoa(tail), "-F"}
+	args = append(args, paths...)
+	command := exec.CommandContext(followCtx, "tail", args...)
+	command.Stdout = os.Stdout
+	command.Stderr = os.Stderr
+	command.Stdin = os.Stdin
+	if err := command.Run(); err != nil && followCtx.Err() == nil && !localProcessExitWasSignaled(err) {
+		return fmt.Errorf("监听日志失败: %w", err)
+	}
+	return nil
+}
+
+func backgroundLocalCommand(service localService, output *os.File) (*exec.Cmd, error) {
+	command := exec.Command(service.executable, service.args...)
+	if err := configureLocalProcessCommand(command); err != nil {
+		return nil, err
+	}
+	command.Stdout = output
+	command.Stderr = output
+	return command, nil
+}
+
+func foregroundLocalCommand(ctx context.Context, service localService) (*exec.Cmd, error) {
+	command := exec.CommandContext(ctx, service.executable, service.args...)
+	if err := configureLocalProcessCommand(command); err != nil {
+		return nil, err
+	}
+	command.Stdout = os.Stdout
+	command.Stderr = os.Stderr
+	command.Stdin = os.Stdin
+	command.Cancel = func() error {
+		if command.Process == nil {
+			return nil
+		}
+		return signalLocalProcessGroup(command.Process.Pid, false)
+	}
+	command.WaitDelay = localGracefulStopTimeout
+	return command, nil
+}
+
+func openLocalServiceLog(directory string, service localService) (*os.File, string, error) {
+	if err := os.MkdirAll(directory, 0o755); err != nil {
+		return nil, "", fmt.Errorf("创建日志目录失败: %w", err)
+	}
+	path, err := filepath.Abs(filepath.Join(directory, service.id+".log"))
+	if err != nil {
+		return nil, "", fmt.Errorf("解析%s日志路径失败: %w", service.name, err)
+	}
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	if err != nil {
+		return nil, "", fmt.Errorf("打开%s日志失败: %w", service.name, err)
+	}
+	if _, err := fmt.Fprintf(file, "\n===== %s 启动于 %s =====\n命令：%s\n", service.name, time.Now().Format(time.RFC3339), strings.Join(append([]string{service.executable}, service.args...), " ")); err != nil {
+		_ = file.Close()
+		return nil, "", fmt.Errorf("写入%s日志起始标记失败: %w", service.name, err)
+	}
+	return file, path, nil
+}
+
+func ensureLocalServiceCanStart(directory, service string) error {
+	record, exists, err := readLocalProcessRecord(directory, service)
+	if err != nil {
+		return err
+	}
+	if !exists {
+		return nil
+	}
+	running, err := managedLocalProcessRunning(record)
+	if err != nil {
+		return err
+	}
+	if running {
+		return fmt.Errorf("%s进程已经运行（PID %d），请先执行 mage stop 或 mage kill", localServiceDisplayName(service), record.PID)
+	}
+	return removeLocalProcessRecord(record, directory)
+}
+
+func registerLocalProcess(directory string, service localService, command *exec.Cmd, logPath string) (localProcessRecord, error) {
+	if command.Process == nil {
+		return localProcessRecord{}, errors.New("无法记录尚未启动的本地进程")
+	}
+	snapshot, err := inspectLocalProcess(command.Process.Pid)
+	if err != nil {
+		return localProcessRecord{}, fmt.Errorf("检查%s进程失败: %w", service.name, err)
+	}
+	projectRoot, err := filepath.Abs(".")
+	if err != nil {
+		return localProcessRecord{}, fmt.Errorf("解析项目根目录失败: %w", err)
+	}
+	cleanLogPath := ""
+	if logPath != "" {
+		cleanLogPath = filepath.Clean(logPath)
+	}
+	record := localProcessRecord{
+		Service:        service.id,
+		PID:            command.Process.Pid,
+		ProcessGroupID: snapshot.processGroupID,
+		Identity:       snapshot.identity,
+		ProjectRoot:    filepath.Clean(projectRoot),
+		Command:        append([]string{service.executable}, service.args...),
+		LogPath:        cleanLogPath,
+	}
+	if err := writeLocalProcessRecord(directory, record); err != nil {
+		return localProcessRecord{}, err
+	}
+	return record, nil
+}
+
+func readLocalProcessRecord(directory, service string) (localProcessRecord, bool, error) {
+	path, err := localProcessRecordPath(directory, service)
+	if err != nil {
+		return localProcessRecord{}, false, err
+	}
+	content, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return localProcessRecord{}, false, nil
+	}
+	if err != nil {
+		return localProcessRecord{}, false, fmt.Errorf("读取%s进程记录失败: %w", localServiceDisplayName(service), err)
+	}
+	var record localProcessRecord
+	if err := json.Unmarshal(content, &record); err != nil {
+		return localProcessRecord{}, false, fmt.Errorf("%s进程记录已损坏: %w", localServiceDisplayName(service), err)
+	}
+	if err := validateLocalProcessRecord(record, service); err != nil {
+		return localProcessRecord{}, false, err
+	}
+	return record, true, nil
+}
+
+func writeLocalProcessRecord(directory string, record localProcessRecord) error {
+	path, err := localProcessRecordPath(directory, record.Service)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(directory, 0o755); err != nil {
+		return fmt.Errorf("创建本地进程记录目录失败: %w", err)
+	}
+	content, err := json.MarshalIndent(record, "", "  ")
+	if err != nil {
+		return fmt.Errorf("编码%s进程记录失败: %w", localServiceDisplayName(record.Service), err)
+	}
+	temporary, err := os.CreateTemp(directory, ".process-*.tmp")
+	if err != nil {
+		return fmt.Errorf("创建%s进程临时记录失败: %w", localServiceDisplayName(record.Service), err)
+	}
+	temporaryPath := temporary.Name()
+	defer os.Remove(temporaryPath)
+	if err := temporary.Chmod(0o600); err != nil {
+		_ = temporary.Close()
+		return fmt.Errorf("设置%s进程记录权限失败: %w", localServiceDisplayName(record.Service), err)
+	}
+	if _, err := temporary.Write(append(content, '\n')); err != nil {
+		_ = temporary.Close()
+		return fmt.Errorf("写入%s进程记录失败: %w", localServiceDisplayName(record.Service), err)
+	}
+	if err := temporary.Close(); err != nil {
+		return fmt.Errorf("保存%s进程记录失败: %w", localServiceDisplayName(record.Service), err)
+	}
+	if err := os.Rename(temporaryPath, path); err != nil {
+		return fmt.Errorf("更新%s进程记录失败: %w", localServiceDisplayName(record.Service), err)
+	}
+	return nil
+}
+
+func validateLocalProcessRecord(record localProcessRecord, expectedService string) error {
+	if record.Service != expectedService || record.PID <= 0 || record.ProcessGroupID <= 0 || strings.TrimSpace(record.Identity) == "" {
+		return fmt.Errorf("%s进程记录内容无效", localServiceDisplayName(expectedService))
+	}
+	projectRoot, err := filepath.Abs(".")
+	if err != nil {
+		return fmt.Errorf("解析项目根目录失败: %w", err)
+	}
+	if filepath.Clean(record.ProjectRoot) != filepath.Clean(projectRoot) {
+		return fmt.Errorf("%s进程记录不属于当前项目，拒绝发送信号", localServiceDisplayName(expectedService))
+	}
+	return nil
+}
+
+func managedLocalProcessRunning(record localProcessRecord) (bool, error) {
+	snapshot, err := inspectLocalProcess(record.PID)
+	if errors.Is(err, os.ErrProcessDone) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("检查%s进程状态失败: %w", localServiceDisplayName(record.Service), err)
+	}
+	return snapshot.processGroupID == record.ProcessGroupID && snapshot.identity == record.Identity, nil
+}
+
+func removeLocalProcessRecord(record localProcessRecord, directory string) error {
+	current, exists, err := readLocalProcessRecord(directory, record.Service)
+	if err != nil {
+		return err
+	}
+	if !exists || !sameLocalProcess(current, record) {
+		return nil
+	}
+	path, err := localProcessRecordPath(directory, record.Service)
+	if err != nil {
+		return err
+	}
+	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("删除%s进程记录失败: %w", localServiceDisplayName(record.Service), err)
+	}
+	return nil
+}
+
+func sameLocalProcess(left, right localProcessRecord) bool {
+	return left.Service == right.Service && left.PID == right.PID && left.ProcessGroupID == right.ProcessGroupID && left.Identity == right.Identity
+}
+
+func localProcessRecordPath(directory, service string) (string, error) {
+	switch service {
+	case localServiceBackend, localServiceWeb:
+		return filepath.Join(directory, service+".json"), nil
+	default:
+		return "", fmt.Errorf("未知本地服务 %q", service)
+	}
+}
+
+func localServiceDisplayName(service string) string {
+	if service == localServiceBackend {
+		return "后端"
+	}
+	if service == localServiceWeb {
+		return "Web"
+	}
+	return service
+}
+
+func stopRecordedLocalProcesses(ctx context.Context, directory string, force bool, timeout time.Duration) (int, error) {
+	records := make([]localProcessRecord, 0, 2)
+	for _, service := range []string{localServiceWeb, localServiceBackend} {
+		record, exists, err := readLocalProcessRecord(directory, service)
+		if err != nil {
+			return 0, err
+		}
+		if !exists {
+			continue
+		}
+		records = append(records, record)
+	}
+	return stopLocalProcessRecords(ctx, directory, records, force, timeout)
+}
+
+func stopLocalProcessRecords(ctx context.Context, directory string, records []localProcessRecord, force bool, timeout time.Duration) (int, error) {
+	active := make([]localProcessRecord, 0, len(records))
+	for _, record := range records {
+		current, exists, err := readLocalProcessRecord(directory, record.Service)
+		if err != nil {
+			return 0, err
+		}
+		if !exists || !sameLocalProcess(current, record) {
+			continue
+		}
+		running, err := managedLocalProcessRunning(current)
+		if err != nil {
+			return 0, err
+		}
+		if !running {
+			if err := removeLocalProcessRecord(current, directory); err != nil {
+				return 0, err
+			}
+			continue
+		}
+		if err := signalLocalProcessGroup(current.ProcessGroupID, force); err != nil {
+			return 0, fmt.Errorf("向%s进程组发送信号失败: %w", localServiceDisplayName(current.Service), err)
+		}
+		active = append(active, current)
+	}
+	if len(active) == 0 {
+		return 0, nil
+	}
+	if timeout <= 0 {
+		timeout = localGracefulStopTimeout
+	}
+	deadline := time.NewTimer(timeout)
+	defer deadline.Stop()
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		remaining := 0
+		for _, record := range active {
+			running, err := localProcessGroupRunning(record.ProcessGroupID)
+			if err != nil {
+				return 0, fmt.Errorf("检查%s进程组状态失败: %w", localServiceDisplayName(record.Service), err)
+			}
+			if running {
+				remaining++
+			}
+		}
+		if remaining == 0 {
+			for _, record := range active {
+				if err := removeLocalProcessRecord(record, directory); err != nil {
+					return 0, err
+				}
+			}
+			return len(active), nil
+		}
+		select {
+		case <-ctx.Done():
+			return 0, ctx.Err()
+		case <-deadline.C:
+			if force {
+				return 0, fmt.Errorf("强制结束后仍有 %d 个本地进程组未退出", remaining)
+			}
+			return 0, fmt.Errorf("等待本地前后端安全退出超时（%s），请执行 mage kill", timeout)
+		case <-ticker.C:
+		}
+	}
+}
+
 type localService struct {
+	id           string
 	name         string
 	executable   string
 	args         []string
@@ -541,80 +1304,114 @@ type localService struct {
 	readyTimeout time.Duration
 }
 
-type localServiceResult struct {
-	name string
-	err  error
+func validateLocalServicesToStart(services []localService) error {
+	seen := make(map[string]struct{}, len(services))
+	for _, service := range services {
+		if _, err := localProcessRecordPath(localProcessDirectory, service.id); err != nil {
+			return err
+		}
+		if _, duplicate := seen[service.id]; duplicate {
+			return fmt.Errorf("本地服务 %q 重复", service.id)
+		}
+		seen[service.id] = struct{}{}
+		if err := ensureLocalServiceCanStart(localProcessDirectory, service.id); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
-func runLocalServices(ctx context.Context, services []localService) error {
+type foregroundLocalServiceResult struct {
+	service localService
+	err     error
+}
+
+func runForegroundLocalServices(ctx context.Context, services []localService) error {
+	if err := validateLocalServicesToStart(services); err != nil {
+		return err
+	}
+
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	results := make(chan localServiceResult, len(services))
+	results := make(chan foregroundLocalServiceResult, len(services))
 	started := 0
-	for _, service := range services {
-		command := exec.CommandContext(runCtx, service.executable, service.args...)
-		command.Stdout = os.Stdout
-		command.Stderr = os.Stderr
-		command.Stdin = os.Stdin
-		if err := command.Start(); err != nil {
-			cancel()
-			for range started {
-				<-results
-			}
-			return fmt.Errorf("启动%s失败: %w", service.name, err)
-		}
-		started++
-		go func(name string, command *exec.Cmd) {
-			results <- localServiceResult{name: name, err: command.Wait()}
-		}(service.name, command)
 
-		if service.readyURL == "" {
-			continue
-		}
-		fmt.Printf("等待%s就绪...\n", service.name)
-		stopped, err := waitForLocalServiceReady(runCtx, service, results)
-		if stopped != nil || err != nil {
-			cancel()
-			remaining := started
-			if stopped != nil {
-				remaining--
-			}
-			for range remaining {
-				<-results
-			}
+	for _, service := range services {
+		if err := runCtx.Err(); err != nil {
+			cancelAndWaitForForegroundLocalServices(cancel, results, started)
 			if ctx.Err() != nil {
 				return nil
 			}
-			if stopped != nil {
-				if stopped.err == nil {
-					return fmt.Errorf("%s进程在就绪前退出", stopped.name)
-				}
-				return fmt.Errorf("%s进程在就绪前退出: %w", stopped.name, stopped.err)
+			return err
+		}
+		command, err := foregroundLocalCommand(runCtx, service)
+		if err != nil {
+			cancelAndWaitForForegroundLocalServices(cancel, results, started)
+			return fmt.Errorf("准备%s进程失败: %w", service.name, err)
+		}
+		if err := command.Start(); err != nil {
+			cancelAndWaitForForegroundLocalServices(cancel, results, started)
+			if ctx.Err() != nil {
+				return nil
+			}
+			return fmt.Errorf("启动%s失败: %w", service.name, err)
+		}
+		record, err := registerLocalProcess(localProcessDirectory, service, command, "")
+		if err != nil {
+			_ = signalLocalProcessGroup(command.Process.Pid, true)
+			_ = command.Wait()
+			cancelAndWaitForForegroundLocalServices(cancel, results, started)
+			return fmt.Errorf("记录%s进程失败: %w", service.name, err)
+		}
+		started++
+		go func() {
+			waitErr := command.Wait()
+			waitErr = errors.Join(waitErr, removeLocalProcessRecord(record, localProcessDirectory))
+			results <- foregroundLocalServiceResult{service: service, err: waitErr}
+		}()
+
+		fmt.Printf("%s已在前台启动（PID %d）\n", service.name, record.PID)
+		fmt.Printf("等待%s就绪...\n", service.name)
+		if err := waitForForegroundLocalServiceReady(runCtx, service, record); err != nil {
+			cancelAndWaitForForegroundLocalServices(cancel, results, started)
+			if ctx.Err() != nil {
+				return nil
 			}
 			return err
 		}
 		fmt.Printf("%s已就绪，继续启动其他服务\n", service.name)
 	}
 
-	first := <-results
-	cancel()
-	for range started - 1 {
-		<-results
+	fmt.Println("EDO 前后端正在前台运行；按 Ctrl+C 停止，也可在另一终端执行 mage stop 或 mage kill")
+	var unexpected []error
+	for completed := 0; completed < started; completed++ {
+		result := <-results
+		if completed == 0 {
+			cancel()
+		}
+		if ctx.Err() != nil || localProcessExitWasSignaled(result.err) {
+			continue
+		}
+		if result.err == nil {
+			unexpected = append(unexpected, fmt.Errorf("%s进程已退出", result.service.name))
+			continue
+		}
+		unexpected = append(unexpected, fmt.Errorf("%s进程退出: %w", result.service.name, result.err))
 	}
 	if ctx.Err() != nil {
 		return nil
 	}
-	if first.err == nil {
-		return nil
-	}
-	return fmt.Errorf("%s进程退出: %w", first.name, first.err)
+	return errors.Join(unexpected...)
 }
 
-func waitForLocalServiceReady(
-	ctx context.Context,
-	service localService,
-	results <-chan localServiceResult,
-) (*localServiceResult, error) {
+func cancelAndWaitForForegroundLocalServices(cancel context.CancelFunc, results <-chan foregroundLocalServiceResult, count int) {
+	cancel()
+	for range count {
+		<-results
+	}
+}
+
+func waitForForegroundLocalServiceReady(ctx context.Context, service localService, record localProcessRecord) error {
 	timeout := service.readyTimeout
 	if timeout <= 0 {
 		timeout = 90 * time.Second
@@ -626,20 +1423,136 @@ func waitForLocalServiceReady(
 	ticker := time.NewTicker(250 * time.Millisecond)
 	defer ticker.Stop()
 
+	stabilizedAt := time.Now().Add(500 * time.Millisecond)
 	for {
-		if localServiceIsReady(readyCtx, client, service.readyURL) {
-			return nil, nil
+		running, err := managedLocalProcessRunning(record)
+		if err != nil {
+			return err
+		}
+		if !running {
+			return fmt.Errorf("%s进程已退出", service.name)
+		}
+		if time.Now().After(stabilizedAt) && (service.readyURL == "" || localServiceIsReady(readyCtx, client, service.readyURL)) {
+			return nil
 		}
 		select {
-		case result := <-results:
-			return &result, nil
 		case <-ctx.Done():
-			return nil, ctx.Err()
+			return ctx.Err()
 		case <-readyCtx.Done():
-			return nil, fmt.Errorf("等待%s就绪超时（%s）", service.name, timeout)
+			return fmt.Errorf("等待%s就绪超时（%s）", service.name, timeout)
 		case <-ticker.C:
 		}
 	}
+}
+
+func localProcessExitWasSignaled(err error) bool {
+	var exitError *exec.ExitError
+	return errors.As(err, &exitError) && exitError.ExitCode() == -1
+}
+
+func runLocalServices(ctx context.Context, services []localService) error {
+	if err := validateLocalServicesToStart(services); err != nil {
+		return err
+	}
+
+	started := make([]localProcessRecord, 0, len(services))
+	for _, service := range services {
+		if err := ctx.Err(); err != nil {
+			return errors.Join(err, rollbackLocalServices(started))
+		}
+		logFile, logPath, err := openLocalServiceLog(localLogDirectory, service)
+		if err != nil {
+			return errors.Join(err, rollbackLocalServices(started))
+		}
+		command, err := backgroundLocalCommand(service, logFile)
+		if err != nil {
+			_ = logFile.Close()
+			return errors.Join(fmt.Errorf("准备%s进程失败: %w", service.name, err), rollbackLocalServices(started))
+		}
+		if err := command.Start(); err != nil {
+			_ = logFile.Close()
+			return errors.Join(fmt.Errorf("启动%s失败: %w", service.name, err), rollbackLocalServices(started))
+		}
+		record, err := registerLocalProcess(localProcessDirectory, service, command, logPath)
+		if err != nil {
+			_ = signalLocalProcessGroup(command.Process.Pid, true)
+			_ = command.Wait()
+			_ = logFile.Close()
+			return errors.Join(fmt.Errorf("记录%s进程失败: %w", service.name, err), rollbackLocalServices(started))
+		}
+		if err := command.Process.Release(); err != nil {
+			_ = signalLocalProcessGroup(record.ProcessGroupID, true)
+			_ = command.Wait()
+			_ = logFile.Close()
+			_ = removeLocalProcessRecord(record, localProcessDirectory)
+			return errors.Join(fmt.Errorf("将%s转入后台失败: %w", service.name, err), rollbackLocalServices(started))
+		}
+		if err := logFile.Close(); err != nil {
+			return errors.Join(fmt.Errorf("关闭%s日志句柄失败: %w", service.name, err), rollbackLocalServices(append(started, record)))
+		}
+		started = append(started, record)
+		fmt.Printf("%s已在后台启动（PID %d），日志：%s\n", service.name, record.PID, record.LogPath)
+		fmt.Printf("等待%s就绪...\n", service.name)
+		if err := waitForBackgroundLocalServiceReady(ctx, localProcessDirectory, service, record); err != nil {
+			return errors.Join(err, rollbackLocalServices(started))
+		}
+		fmt.Printf("%s已就绪，继续启动其他服务\n", service.name)
+	}
+	fmt.Println("EDO 前后端已在后台运行")
+	return nil
+}
+
+func waitForBackgroundLocalServiceReady(ctx context.Context, directory string, service localService, record localProcessRecord) error {
+	timeout := service.readyTimeout
+	if timeout <= 0 {
+		timeout = 90 * time.Second
+	}
+	readyCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	client := &http.Client{Timeout: time.Second}
+	ticker := time.NewTicker(250 * time.Millisecond)
+	defer ticker.Stop()
+
+	stabilizedAt := time.Now().Add(500 * time.Millisecond)
+	for {
+		running, err := managedLocalProcessRunning(record)
+		if err != nil {
+			return err
+		}
+		if !running {
+			_ = removeLocalProcessRecord(record, directory)
+			return fmt.Errorf("%s进程启动后退出，请查看日志 %s", service.name, record.LogPath)
+		}
+		if time.Now().After(stabilizedAt) && (service.readyURL == "" || localServiceIsReady(readyCtx, client, service.readyURL)) {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-readyCtx.Done():
+			return fmt.Errorf("等待%s就绪超时（%s），请查看日志 %s", service.name, timeout, record.LogPath)
+		case <-ticker.C:
+		}
+	}
+}
+
+func rollbackLocalServices(records []localProcessRecord) error {
+	if len(records) == 0 {
+		return nil
+	}
+	rollbackCtx, cancel := context.WithTimeout(context.Background(), localGracefulStopTimeout)
+	defer cancel()
+	if _, err := stopLocalProcessRecords(rollbackCtx, localProcessDirectory, records, false, localGracefulStopTimeout); err == nil {
+		return nil
+	}
+	forceCtx, forceCancel := context.WithTimeout(context.Background(), localForcefulStopTimeout)
+	defer forceCancel()
+	_, err := stopLocalProcessRecords(forceCtx, localProcessDirectory, records, true, localForcefulStopTimeout)
+	if err != nil {
+		return fmt.Errorf("回滚后台服务失败: %w", err)
+	}
+	return nil
 }
 
 func localServiceIsReady(ctx context.Context, client *http.Client, readyURL string) bool {

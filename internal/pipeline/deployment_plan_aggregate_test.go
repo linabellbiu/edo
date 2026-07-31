@@ -52,7 +52,7 @@ func deploymentPlanTargetInput(t *testing.T, service *Service, target model.Depl
 		}
 		createDeploymentPlanTestEnvironmentHost(t, service, target.EnvironmentID, target.HostID, model.HostModeSSH, false, model.HostCapabilityKubernetes, target.RuntimeID, now)
 		cluster := model.KubernetesCluster{
-			ID: target.RuntimeID, Name: "cluster-" + target.RuntimeID, Mode: model.KubernetesInCluster,
+			ID: target.RuntimeID, Name: "cluster-" + target.RuntimeID, Mode: model.KubernetesKubeconfig,
 			DefaultNamespace: "default", IsActive: true, CreatedBy: "admin", CreatedAt: now, UpdatedAt: now,
 		}
 		if err := service.db.Where("id = ?", cluster.ID).FirstOrCreate(&cluster).Error; err != nil {

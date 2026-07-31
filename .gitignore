@@ -5,6 +5,7 @@ AGENTS.md
 /.env
 /bin/
 /data/
+/logs/
 /internal/webui/dist/
 /web/dist/
 /web/node_modules/

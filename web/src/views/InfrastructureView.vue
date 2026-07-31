@@ -298,7 +298,7 @@ onBeforeUnmount(() => {
 
         <template v-else-if="selectedCluster">
           <header class="runtime-heading">
-            <div><span>{{ hostForSelectedRuntime?.name || '独立集群' }} · Kubernetes</span><h3>{{ selectedCluster.name }}</h3><p>{{ selectedCluster.api_server || '集群内连接' }}</p></div>
+            <div><span>{{ hostForSelectedRuntime?.name || '独立集群' }} · Kubernetes</span><h3>{{ selectedCluster.name }}</h3><p>{{ selectedCluster.api_server || '未记录 API Server' }}</p></div>
             <div><a-input v-model:value="namespace" style="width:160px" /><a-button :loading="resourceLoading" @click="loadRuntime">加载命名空间</a-button></div>
           </header>
           <ResourceTable :rows="pods" :columns="[{ key: 'name', label: 'Pod' }, { key: 'namespace', label: '命名空间' }, { key: 'phase', label: '阶段' }, { key: 'containers', label: '容器' }]" :loading="resourceLoading">

@@ -299,7 +299,7 @@ function destinationDetail(plan: DeploymentPlan) {
   const runtime = runtimeOf(plan)
   if (!runtime) return '无法读取连接信息'
   if (target.platform === 'docker') return runtime.local ? '本地 Docker' : runtime.host || '远程 Docker'
-  return runtime.api_server || '集群内连接'
+  return runtime.api_server || '未记录 API Server'
 }
 
 function objectName(plan: DeploymentPlan) {

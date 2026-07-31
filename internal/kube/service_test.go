@@ -98,6 +98,16 @@ func TestConnectionUsesUnsavedConfigWithoutPersistingIt(t *testing.T) {
 	}
 }
 
+func TestConnectionRejectsInClusterMode(t *testing.T) {
+	service := newKubeTestService(t, time.Second)
+	_, err := service.Test(context.Background(), Input{
+		Name: "legacy", Mode: model.KubernetesMode("in_cluster"), DefaultNamespace: "default",
+	})
+	if !errors.Is(err, ErrInvalidCluster) {
+		t.Fatalf("已移除的集群内身份接入方式未被拒绝: %v", err)
+	}
+}
+
 func TestCreateRejectsUnreachableClusterWithoutPersistingIt(t *testing.T) {
 	server := newKubeVersionServer(t)
 	kubeconfig := kubeconfigForServer(server)
