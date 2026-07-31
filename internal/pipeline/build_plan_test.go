@@ -5,7 +5,7 @@ import (
 	"errors"
 	"testing"
 
-	"zrt/internal/model"
+	"edo/internal/model"
 )
 
 func TestBuildPlanCanBeUpdatedDisabledAndSoftDeleted(t *testing.T) {
@@ -148,7 +148,7 @@ func TestScriptBuildPlanRuntimeImageMustBePinned(t *testing.T) {
 func TestScriptBuildPlanRejectsReservedEnvironmentVariables(t *testing.T) {
 	service, _, _, _ := newPipelineTestService(t)
 	for _, name := range []string{
-		"CI", "HOME", "TMPDIR", "ZRT_PIPELINE_RUN_ID", "ZRT_APPLICATION_ID", "ZRT_GIT_REF", "ZRT_COMMIT_SHA",
+		"CI", "HOME", "TMPDIR", "EDO_PIPELINE_RUN_ID", "EDO_APPLICATION_ID", "EDO_GIT_REF", "EDO_COMMIT_SHA",
 	} {
 		_, err := service.CreateBuildPlan(context.Background(), "admin", BuildPlanInput{
 			Name: "保留变量 " + name, Kind: model.BuildPlanScript,

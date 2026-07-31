@@ -15,23 +15,23 @@ import (
 	miniredis "github.com/alicebob/miniredis/v2"
 	"github.com/gin-gonic/gin"
 
-	"zrt/internal/access"
-	"zrt/internal/account"
-	artifactmanager "zrt/internal/artifact"
-	"zrt/internal/audit"
-	"zrt/internal/auth"
-	"zrt/internal/cache"
-	"zrt/internal/config"
-	"zrt/internal/configuration"
-	"zrt/internal/credential"
-	"zrt/internal/database"
-	"zrt/internal/deployment"
-	"zrt/internal/kube"
-	"zrt/internal/logging"
-	"zrt/internal/model"
-	"zrt/internal/pipeline"
-	"zrt/internal/repository"
-	"zrt/internal/secret"
+	"edo/internal/access"
+	"edo/internal/account"
+	artifactmanager "edo/internal/artifact"
+	"edo/internal/audit"
+	"edo/internal/auth"
+	"edo/internal/cache"
+	"edo/internal/config"
+	"edo/internal/configuration"
+	"edo/internal/credential"
+	"edo/internal/database"
+	"edo/internal/deployment"
+	"edo/internal/kube"
+	"edo/internal/logging"
+	"edo/internal/model"
+	"edo/internal/pipeline"
+	"edo/internal/repository"
+	"edo/internal/secret"
 )
 
 type healthyDependency struct{}
@@ -49,7 +49,7 @@ func TestLoginMeAndLogout(t *testing.T) {
 		t.Fatalf("登录失败: status=%d body=%s", login.Code, login.Body.String())
 	}
 	cookies := login.Result().Cookies()
-	if len(cookies) != 1 || cookies[0].Name != "zrt_session" || !cookies[0].HttpOnly || cookies[0].SameSite != http.SameSiteStrictMode {
+	if len(cookies) != 1 || cookies[0].Name != "edo_session" || !cookies[0].HttpOnly || cookies[0].SameSite != http.SameSiteStrictMode {
 		t.Fatalf("登录 Cookie 安全属性错误: %+v", cookies)
 	}
 
@@ -181,13 +181,13 @@ func newAuthTestRouter(t *testing.T) (*gin.Engine, func()) {
 	}
 	server := miniredis.RunT(t)
 	redisClient, err := cache.Open(context.Background(), config.Redis{
-		URL: "redis://" + server.Addr() + "/0", KeyPrefix: "zrt:", Timeout: time.Second,
+		URL: "redis://" + server.Addr() + "/0", KeyPrefix: "edo:", Timeout: time.Second,
 	})
 	if err != nil {
 		t.Fatalf("打开测试 Redis 失败: %v", err)
 	}
 	authConfig := config.Auth{
-		SessionTTL: time.Hour, CookieName: "zrt_session", LoginMaxFailure: 3, LoginWindow: time.Minute,
+		SessionTTL: time.Hour, CookieName: "edo_session", LoginMaxFailure: 3, LoginWindow: time.Minute,
 	}
 	sessions := auth.NewSessionStore(redisClient, authConfig.SessionTTL)
 	limiter := auth.NewLoginRateLimiter(redisClient, authConfig.LoginMaxFailure, authConfig.LoginWindow, configurationService)

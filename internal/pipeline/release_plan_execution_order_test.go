@@ -4,7 +4,7 @@ import (
 	"reflect"
 	"testing"
 
-	"zrt/internal/model"
+	"edo/internal/model"
 )
 
 func TestReleasePlanExecutionParallelStartsAllApplicationsInSavedOrder(t *testing.T) {

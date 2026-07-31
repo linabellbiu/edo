@@ -13,8 +13,8 @@ import (
 
 	"github.com/gin-gonic/gin"
 
-	"zrt/internal/config"
-	"zrt/internal/database"
+	"edo/internal/config"
+	"edo/internal/database"
 )
 
 type healthBuilderStub struct {

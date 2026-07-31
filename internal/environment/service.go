@@ -13,7 +13,7 @@ import (
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 
-	"zrt/internal/model"
+	"edo/internal/model"
 )
 
 var (

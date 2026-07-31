@@ -167,9 +167,9 @@ func performGenericWebhookRequest(
 	_, _ = mac.Write(body)
 	request := httptest.NewRequest(http.MethodPost, path, bytes.NewReader(body))
 	request.Header.Set("Content-Type", "application/json")
-	request.Header.Set("X-ZRT-Event", "push")
-	request.Header.Set("X-ZRT-Delivery", deliveryID)
-	request.Header.Set("X-ZRT-Signature-256", "sha256="+hex.EncodeToString(mac.Sum(nil)))
+	request.Header.Set("X-EDO-Event", "push")
+	request.Header.Set("X-EDO-Delivery", deliveryID)
+	request.Header.Set("X-EDO-Signature-256", "sha256="+hex.EncodeToString(mac.Sum(nil)))
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
 	return response

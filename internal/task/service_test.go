@@ -3,7 +3,7 @@ package task
 import (
 	"testing"
 
-	"zrt/internal/config"
+	"edo/internal/config"
 )
 
 func TestDeploymentDoesNotRetryWithoutIdempotency(t *testing.T) {

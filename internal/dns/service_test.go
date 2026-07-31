@@ -13,10 +13,10 @@ import (
 	"github.com/libdns/libdns"
 	"gorm.io/gorm"
 
-	"zrt/internal/config"
-	"zrt/internal/database"
-	"zrt/internal/model"
-	"zrt/internal/secret"
+	"edo/internal/config"
+	"edo/internal/database"
+	"edo/internal/model"
+	"edo/internal/secret"
 )
 
 type fakeDNSProvider struct {

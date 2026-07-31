@@ -16,10 +16,10 @@ import (
 
 	"gorm.io/gorm"
 
-	"zrt/internal/artifact"
-	"zrt/internal/dockerengine"
-	"zrt/internal/model"
-	"zrt/internal/repository"
+	"edo/internal/artifact"
+	"edo/internal/dockerengine"
+	"edo/internal/model"
+	"edo/internal/repository"
 )
 
 type buildExecutorCheckoutStub struct {
@@ -48,7 +48,7 @@ func (buildExecutorScriptRunner) RunScriptContainer(
 		if err := os.MkdirAll(output, 0o700); err != nil {
 			return result, err
 		}
-		content := input.Environment["BUILD_VALUE"] + "|" + input.SystemEnvironment["ZRT_PIPELINE_RUN_ID"] + "|" + filepath.Base(workingDirectory)
+		content := input.Environment["BUILD_VALUE"] + "|" + input.SystemEnvironment["EDO_PIPELINE_RUN_ID"] + "|" + filepath.Base(workingDirectory)
 		if err := os.WriteFile(filepath.Join(output, "result.txt"), []byte(content), 0o600); err != nil {
 			return result, err
 		}
@@ -56,7 +56,7 @@ func (buildExecutorScriptRunner) RunScriptContainer(
 		return result, nil
 	}
 	_, err := io.WriteString(input.Stdout, filepath.Base(workingDirectory)+"|"+input.Environment["SHELL_VALUE"]+"|"+
-		input.SystemEnvironment["ZRT_PIPELINE_RUN_ID"]+"|"+input.SystemEnvironment["ZRT_COMMIT_SHA"])
+		input.SystemEnvironment["EDO_PIPELINE_RUN_ID"]+"|"+input.SystemEnvironment["EDO_COMMIT_SHA"])
 	return result, err
 }
 
@@ -105,7 +105,7 @@ func TestExecuteScriptBuildProducesFileBundleAndAdvances(t *testing.T) {
 		BuildPlans: map[string]workflowBuildPlanSnapshot{
 			buildNode.ID: {
 				ID: "plan-script", Kind: model.BuildPlanScript, ConfigVersion: 1,
-				Script:           "mkdir -p dist\nprintf '%s|%s|%s' \"$BUILD_VALUE\" \"$ZRT_PIPELINE_RUN_ID\" \"${PWD##*/}\" > dist/result.txt\n",
+				Script:           "mkdir -p dist\nprintf '%s|%s|%s' \"$BUILD_VALUE\" \"$EDO_PIPELINE_RUN_ID\" \"${PWD##*/}\" > dist/result.txt\n",
 				WorkingDirectory: "src", ArtifactPath: "src/dist", RuntimeImage: model.DefaultRuntimeImage,
 				EnvironmentVariables: map[string]string{"BUILD_VALUE": "from-plan"}, TimeoutSeconds: 30,
 			},
@@ -167,7 +167,7 @@ func TestExecuteShellTaskUsesWorkingDirectoryAndEnvironment(t *testing.T) {
 	node := model.WorkflowNode{
 		ID: "shell-task", Type: model.WorkflowNodeShell, Name: "Shell 检查",
 		Config: model.WorkflowNodeConfig{
-			Script:       "printf '%s|%s|%s|%s' \"${PWD##*/}\" \"$SHELL_VALUE\" \"$ZRT_PIPELINE_RUN_ID\" \"$ZRT_COMMIT_SHA\"\n",
+			Script:       "printf '%s|%s|%s|%s' \"${PWD##*/}\" \"$SHELL_VALUE\" \"$EDO_PIPELINE_RUN_ID\" \"$EDO_COMMIT_SHA\"\n",
 			RuntimeImage: model.DefaultRuntimeImage, WorkingDirectory: "work", TimeoutSeconds: 30,
 			EnvironmentVariables: map[string]string{"SHELL_VALUE": "configured"},
 		},

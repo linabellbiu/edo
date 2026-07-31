@@ -15,10 +15,10 @@ import (
 
 	"gorm.io/gorm"
 
-	"zrt/internal/config"
-	"zrt/internal/database"
-	"zrt/internal/model"
-	"zrt/internal/secret"
+	"edo/internal/config"
+	"edo/internal/database"
+	"edo/internal/model"
+	"edo/internal/secret"
 )
 
 type countingListener struct {
@@ -140,7 +140,7 @@ func TestMonitorClientTracksAssignedHostVersion(t *testing.T) {
 	now := time.Now().UTC()
 	host := model.Host{
 		ID: "monitor-host", Name: "monitor-host", Mode: model.HostModeSSH,
-		Address: "docker.example.com", SSHPort: 22, SSHUsername: "zrt",
+		Address: "docker.example.com", SSHPort: 22, SSHUsername: "edo",
 		IsActive: true, CreatedBy: "admin", CreatedAt: now, UpdatedAt: now,
 	}
 	if err := db.Create(&host).Error; err != nil {

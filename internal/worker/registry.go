@@ -8,8 +8,8 @@ import (
 
 	"gorm.io/gorm"
 
-	"zrt/internal/model"
-	"zrt/internal/task"
+	"edo/internal/model"
+	"edo/internal/task"
 )
 
 type Handler func(context.Context, task.Message) error

@@ -18,13 +18,13 @@ import (
 	"gorm.io/datatypes"
 	"gorm.io/gorm"
 
-	"zrt/internal/config"
-	"zrt/internal/messaging"
-	"zrt/internal/model"
-	"zrt/internal/task"
+	"edo/internal/config"
+	"edo/internal/messaging"
+	"edo/internal/model"
+	"edo/internal/task"
 )
 
-const ConsumerName = "zrt_worker_v1"
+const ConsumerName = "edo_worker_v1"
 
 type queueMessage interface {
 	Metadata() (*jetstream.MsgMetadata, error)

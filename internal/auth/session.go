@@ -13,7 +13,7 @@ import (
 
 	"github.com/redis/go-redis/v9"
 
-	"zrt/internal/cache"
+	"edo/internal/cache"
 )
 
 var ErrSessionNotFound = errors.New("登录会话不存在或已过期")

@@ -23,40 +23,40 @@ import (
 	"golang.org/x/term"
 	"gorm.io/gorm"
 
-	"zrt/internal/access"
-	"zrt/internal/account"
-	artifactmanager "zrt/internal/artifact"
-	"zrt/internal/audit"
-	"zrt/internal/auth"
-	"zrt/internal/bootstrap"
-	"zrt/internal/config"
-	"zrt/internal/configuration"
-	"zrt/internal/credential"
-	"zrt/internal/database"
-	"zrt/internal/deployment"
-	dnsmanager "zrt/internal/dns"
-	"zrt/internal/dockerengine"
-	environmentmanager "zrt/internal/environment"
-	hostmanager "zrt/internal/host"
-	"zrt/internal/httpapi"
-	"zrt/internal/identity"
-	"zrt/internal/kube"
-	"zrt/internal/legacyimport"
-	"zrt/internal/logging"
-	"zrt/internal/logretention"
-	"zrt/internal/model"
-	"zrt/internal/monitor"
-	"zrt/internal/notification"
-	"zrt/internal/outbox"
-	"zrt/internal/pipeline"
-	"zrt/internal/repository"
-	"zrt/internal/scheduler"
-	"zrt/internal/secret"
-	"zrt/internal/sshdeploy"
-	"zrt/internal/systemmetrics"
-	"zrt/internal/task"
-	"zrt/internal/terminal"
-	"zrt/internal/worker"
+	"edo/internal/access"
+	"edo/internal/account"
+	artifactmanager "edo/internal/artifact"
+	"edo/internal/audit"
+	"edo/internal/auth"
+	"edo/internal/bootstrap"
+	"edo/internal/config"
+	"edo/internal/configuration"
+	"edo/internal/credential"
+	"edo/internal/database"
+	"edo/internal/deployment"
+	dnsmanager "edo/internal/dns"
+	"edo/internal/dockerengine"
+	environmentmanager "edo/internal/environment"
+	hostmanager "edo/internal/host"
+	"edo/internal/httpapi"
+	"edo/internal/identity"
+	"edo/internal/kube"
+	"edo/internal/legacyimport"
+	"edo/internal/logging"
+	"edo/internal/logretention"
+	"edo/internal/model"
+	"edo/internal/monitor"
+	"edo/internal/notification"
+	"edo/internal/outbox"
+	"edo/internal/pipeline"
+	"edo/internal/repository"
+	"edo/internal/scheduler"
+	"edo/internal/secret"
+	"edo/internal/sshdeploy"
+	"edo/internal/systemmetrics"
+	"edo/internal/task"
+	"edo/internal/terminal"
+	"edo/internal/worker"
 )
 
 var version = "dev"
@@ -64,7 +64,7 @@ var version = "dev"
 func main() {
 	if err := run(); err != nil {
 		logger := logging.New("info")
-		logger.Error("ZRT 进程退出", "operation", "process_run", "err", err)
+		logger.Error("EDO 进程退出", "operation", "process_run", "err", err)
 		os.Exit(1)
 	}
 }
@@ -75,7 +75,7 @@ func run() error {
 		command = os.Args[1]
 	}
 	if command == "version" {
-		fmt.Printf("ZRT %s\n", version)
+		fmt.Printf("EDO %s\n", version)
 		return nil
 	}
 	if err := loadRuntimeEnvironmentFile(".env"); err != nil {
@@ -113,7 +113,7 @@ func loadRuntimeEnvironmentFile(path string) error {
 
 func runAdmin(ctx context.Context, cfg config.Config, logger *slog.Logger, args []string) error {
 	if len(args) == 0 {
-		return errors.New("管理员命令格式：zrt admin create 或 zrt admin reset-password")
+		return errors.New("管理员命令格式：edo admin create 或 edo admin reset-password")
 	}
 	switch args[0] {
 	case "create":
@@ -121,7 +121,7 @@ func runAdmin(ctx context.Context, cfg config.Config, logger *slog.Logger, args 
 	case "reset-password":
 		return runAdminResetPassword(ctx, cfg, logger, args[1:])
 	default:
-		return errors.New("管理员命令格式：zrt admin create 或 zrt admin reset-password")
+		return errors.New("管理员命令格式：edo admin create 或 edo admin reset-password")
 	}
 }
 
@@ -166,7 +166,7 @@ func runAdminResetPassword(ctx context.Context, cfg config.Config, logger *slog.
 	flags.SetOutput(io.Discard)
 	username := flags.String("username", "", "待重置密码的用户名")
 	if err := flags.Parse(args); err != nil || strings.TrimSpace(*username) == "" {
-		return errors.New("密码重置命令格式：zrt admin reset-password --username 用户名")
+		return errors.New("密码重置命令格式：edo admin reset-password --username 用户名")
 	}
 	password, err := readAdminPassword()
 	if err != nil {
@@ -199,17 +199,17 @@ func runAdminResetPassword(ctx context.Context, cfg config.Config, logger *slog.
 func runLegacyImport(ctx context.Context, cfg config.Config, logger *slog.Logger, args []string) error {
 	flags := flag.NewFlagSet("legacy-import", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
-	dryRun := flags.Bool("dry-run", false, "只检查和统计，不写入 ZRT 数据库")
+	dryRun := flags.Bool("dry-run", false, "只检查和统计，不写入 EDO 数据库")
 	if err := flags.Parse(args); err != nil {
-		return errors.New("旧数据迁移命令格式：zrt legacy-import [--dry-run]")
+		return errors.New("旧数据迁移命令格式：edo legacy-import [--dry-run]")
 	}
-	sourceDriver := strings.ToLower(strings.TrimSpace(os.Getenv("ZRT_LEGACY_DATABASE_DRIVER")))
-	sourceDSN := strings.TrimSpace(os.Getenv("ZRT_LEGACY_DATABASE_DSN"))
+	sourceDriver := strings.ToLower(strings.TrimSpace(os.Getenv("EDO_LEGACY_DATABASE_DRIVER")))
+	sourceDSN := strings.TrimSpace(os.Getenv("EDO_LEGACY_DATABASE_DSN"))
 	if sourceDriver == "" || sourceDSN == "" {
-		return errors.New("请通过 ZRT_LEGACY_DATABASE_DRIVER 和 ZRT_LEGACY_DATABASE_DSN 配置只读来源数据库")
+		return errors.New("请通过 EDO_LEGACY_DATABASE_DRIVER 和 EDO_LEGACY_DATABASE_DSN 配置只读来源数据库")
 	}
 	if sameDatabase(sourceDriver, sourceDSN, cfg.Database.Driver, cfg.Database.DSN) {
-		return errors.New("旧数据来源数据库不能与 ZRT 目标数据库相同")
+		return errors.New("旧数据来源数据库不能与 EDO 目标数据库相同")
 	}
 	destination, err := database.Open(ctx, cfg.Database, logger)
 	if err != nil {
@@ -223,7 +223,7 @@ func runLegacyImport(ctx context.Context, cfg config.Config, logger *slog.Logger
 	}()
 	if err := database.VerifyMigrations(ctx, destination); err != nil {
 		logger.Error("旧数据迁移前目标数据库迁移检查失败", "operation", "legacy_import_migration", "err", err)
-		return errors.New("请先对 ZRT 目标数据库执行数据库迁移")
+		return errors.New("请先对 EDO 目标数据库执行数据库迁移")
 	}
 	sourceConfig := cfg.Database
 	sourceConfig.Driver = sourceDriver
@@ -323,8 +323,8 @@ func readOnlySQLiteDSN(dsn string) (string, error) {
 }
 
 func readAdminPassword() (string, error) {
-	if password, ok := os.LookupEnv("ZRT_ADMIN_PASSWORD"); ok {
-		_ = os.Unsetenv("ZRT_ADMIN_PASSWORD")
+	if password, ok := os.LookupEnv("EDO_ADMIN_PASSWORD"); ok {
+		_ = os.Unsetenv("EDO_ADMIN_PASSWORD")
 		if err := account.ValidatePassword(password); err != nil {
 			return "", err
 		}
@@ -332,7 +332,7 @@ func readAdminPassword() (string, error) {
 	}
 	stdin := int(os.Stdin.Fd())
 	if !term.IsTerminal(stdin) {
-		return "", errors.New("非交互环境请通过临时变量 ZRT_ADMIN_PASSWORD 提供管理员密码")
+		return "", errors.New("非交互环境请通过临时变量 EDO_ADMIN_PASSWORD 提供管理员密码")
 	}
 	fmt.Fprint(os.Stderr, "请输入管理员密码：")
 	first, err := term.ReadPassword(stdin)
@@ -389,7 +389,7 @@ func runServer(ctx context.Context, cfg config.Config, logger *slog.Logger, runt
 	}
 	if !secretManager.Available() {
 		logger.Error("服务加密密钥未配置", "operation", "secret_bootstrap")
-		return errors.New("请配置 ZRT_SECRETS_KEY 后重新启动")
+		return errors.New("请配置 EDO_SECRETS_KEY 后重新启动")
 	}
 
 	// 先占用监听地址，再初始化数据库、消息队列和后台消费者。端口冲突时应立即退出，
@@ -670,8 +670,8 @@ func runServer(ctx context.Context, cfg config.Config, logger *slog.Logger, runt
 	go func() {
 		httpErrCh <- server.Serve(listener)
 	}()
-	logger.Info("ZRT HTTP 服务已启动", "operation", "http_listen", "address", listener.Addr().String())
-	logger.Info("ZRT 后台任务协程已启动", "operation", "server_background_start", "concurrency", cfg.Worker.Concurrency)
+	logger.Info("EDO HTTP 服务已启动", "operation", "http_listen", "address", listener.Addr().String())
+	logger.Info("EDO 后台任务协程已启动", "operation", "server_background_start", "concurrency", cfg.Worker.Concurrency)
 
 	var resultErr error
 	select {
@@ -711,7 +711,7 @@ func runServer(ctx context.Context, cfg config.Config, logger *slog.Logger, runt
 			resultErr = errors.New("后台任务服务退出超时")
 		}
 	}
-	logger.Info("ZRT 服务已停止", "operation", "server_shutdown", "time", time.Now().UTC())
+	logger.Info("EDO 服务已停止", "operation", "server_shutdown", "time", time.Now().UTC())
 	return resultErr
 }
 

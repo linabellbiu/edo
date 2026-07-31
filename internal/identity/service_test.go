@@ -16,14 +16,14 @@ import (
 	miniredis "github.com/alicebob/miniredis/v2"
 	"gorm.io/gorm"
 
-	"zrt/internal/account"
-	"zrt/internal/auth"
-	"zrt/internal/cache"
-	"zrt/internal/config"
-	"zrt/internal/configuration"
-	"zrt/internal/database"
-	"zrt/internal/model"
-	"zrt/internal/secret"
+	"edo/internal/account"
+	"edo/internal/auth"
+	"edo/internal/cache"
+	"edo/internal/config"
+	"edo/internal/configuration"
+	"edo/internal/database"
+	"edo/internal/model"
+	"edo/internal/secret"
 )
 
 func TestGenericOAuthCreatesBoundUserAndConsumesState(t *testing.T) {
@@ -59,7 +59,7 @@ func TestGenericOAuthCreatesBoundUserAndConsumesState(t *testing.T) {
 		Type: TypeGenericOAuth, Name: "company_oauth", DisplayName: "公司账号", IsActive: true, AutoCreate: true,
 		ClientID: "client-id", ClientSecret: &clientSecret, AuthorizationURL: providerServer.URL + "/authorize",
 		TokenURL: providerServer.URL + "/token", UserInfoURL: providerServer.URL + "/userinfo",
-		RedirectURL: "http://zrt.example/api/v1/auth/oauth/company_oauth/callback", Scopes: "openid email",
+		RedirectURL: "http://edo.example/api/v1/auth/oauth/company_oauth/callback", Scopes: "openid email",
 		SubjectField: "sub", UsernameField: "preferred_username", NicknameField: "name", EmailField: "email",
 		EmailVerifiedField: "email_verified", AllowInsecure: true,
 	}, "admin-id")
@@ -99,7 +99,7 @@ func TestProviderDefaultsAndSecureTransportValidation(t *testing.T) {
 	clientSecret := "secret"
 	view, err := service.Create(context.Background(), ProviderInput{
 		Type: TypeGoogle, Name: "google", DisplayName: "Google", IsActive: true,
-		ClientID: "client", ClientSecret: &clientSecret, RedirectURL: "https://zrt.example/api/v1/auth/oauth/google/callback",
+		ClientID: "client", ClientSecret: &clientSecret, RedirectURL: "https://edo.example/api/v1/auth/oauth/google/callback",
 	}, "admin-id")
 	if err != nil {
 		t.Fatalf("创建 Google 预设失败: %v", err)
@@ -110,7 +110,7 @@ func TestProviderDefaultsAndSecureTransportValidation(t *testing.T) {
 	bindPassword := "bind-secret"
 	_, err = service.Create(context.Background(), ProviderInput{
 		Type: TypeLDAP, Name: "plain_ldap", DisplayName: "LDAP", IsActive: true,
-		LDAPURL: "ldap://ldap.example.com:389", LDAPBaseDN: "dc=example,dc=com", LDAPBindDN: "cn=zrt,dc=example,dc=com",
+		LDAPURL: "ldap://ldap.example.com:389", LDAPBaseDN: "dc=example,dc=com", LDAPBindDN: "cn=edo,dc=example,dc=com",
 		LDAPBindPassword: &bindPassword, LDAPUserFilter: "(uid={username})", LDAPUsernameAttribute: "uid",
 	}, "admin-id")
 	if err == nil || !strings.Contains(err.Error(), "StartTLS") {
@@ -132,7 +132,7 @@ func newIdentityTestService(t *testing.T) (*Service, *gorm.DB, func()) {
 		t.Fatalf("迁移测试数据库失败: %v", err)
 	}
 	redisServer := miniredis.RunT(t)
-	redisClient, err := cache.Open(ctx, config.Redis{URL: "redis://" + redisServer.Addr() + "/0", KeyPrefix: "zrt:", Timeout: time.Second})
+	redisClient, err := cache.Open(ctx, config.Redis{URL: "redis://" + redisServer.Addr() + "/0", KeyPrefix: "edo:", Timeout: time.Second})
 	if err != nil {
 		t.Fatalf("打开测试 Redis 失败: %v", err)
 	}

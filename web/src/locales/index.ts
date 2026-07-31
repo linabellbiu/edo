@@ -20,7 +20,7 @@ export const messages = {
       validation: { name: '请输入集群名称', namespace: '请输入默认命名空间', kubeconfig: '请粘贴 kubeconfig' },
       hint: {
         kubeconfig: '禁止 exec 插件、外部文件引用、代理和身份模拟配置；连接测试不会保存配置，创建后凭据会加密保存。',
-        inCluster: '集群内身份仅适用于 ZRT 本身运行在目标 Kubernetes 集群内的场景。',
+        inCluster: '集群内身份仅适用于 EDO 本身运行在目标 Kubernetes 集群内的场景。',
       },
       test: { ready: '连接正常 · Kubernetes {version}' },
       message: { testFirst: '请先测试连接', testSuccess: 'Kubernetes {version} 连接正常', created: 'Kubernetes 集群已创建' },
@@ -61,7 +61,7 @@ export const messages = {
       },
     },
     systemLogs: {
-      description: '查看当前 ZRT 进程及内部模块输出的结构化运行日志。', currentProcess: '当前进程',
+      description: '查看当前 EDO 进程及内部模块输出的结构化运行日志。', currentProcess: '当前进程',
       scopeHint: '这里只保留当前进程最近的系统日志，服务重启后清空；流水线执行日志仍在对应运行详情中查看，不采集部署容器日志。',
       searchPlaceholder: '操作名称、日志内容或上下文字段', empty: '当前没有符合条件的系统日志', defaultOperation: 'system', loadEarlier: '加载更早日志',
       level: { all: '全部级别', debug: '调试', info: '信息', warn: '警告', error: '错误' },
@@ -208,7 +208,7 @@ export const messages = {
       validation: { name: 'Enter a cluster name', namespace: 'Enter the default namespace', kubeconfig: 'Paste a kubeconfig' },
       hint: {
         kubeconfig: 'Exec plugins, external file references, proxies, and impersonation are blocked. Tests do not save the configuration; credentials are encrypted after creation.',
-        inCluster: 'In-cluster identity is available only when ZRT itself runs inside the target Kubernetes cluster.',
+        inCluster: 'In-cluster identity is available only when EDO itself runs inside the target Kubernetes cluster.',
       },
       test: { ready: 'Connected · Kubernetes {version}' },
       message: { testFirst: 'Test the connection first', testSuccess: 'Connected to Kubernetes {version}', created: 'Kubernetes cluster created' },
@@ -249,7 +249,7 @@ export const messages = {
       },
     },
     systemLogs: {
-      description: 'View structured runtime logs from the current ZRT process and its internal modules.', currentProcess: 'Current process',
+      description: 'View structured runtime logs from the current EDO process and its internal modules.', currentProcess: 'Current process',
       scopeHint: 'Only recent logs from the current process are retained and they are cleared on restart. Pipeline logs remain in each run; deployed container logs are not collected here.',
       searchPlaceholder: 'Operation, message, or context field', empty: 'No matching system logs', defaultOperation: 'system', loadEarlier: 'Load earlier logs',
       level: { all: 'All levels', debug: 'Debug', info: 'Info', warn: 'Warning', error: 'Error' },

@@ -19,7 +19,7 @@ import (
 	"github.com/moby/moby/api/types/network"
 	"github.com/moby/moby/client"
 
-	"zrt/internal/model"
+	"edo/internal/model"
 )
 
 // ImageSnapshot 保存被替换容器实际使用的镜像引用和本地 Image ID。
@@ -79,7 +79,7 @@ func (s *Service) deployContainer(
 			return ImageSnapshot{}, nil, errors.New("目标主机上的 Docker 镜像与固定结果不一致")
 		}
 		executionImage = expectedImageID
-	} else if IsZRTLocalImage(image) {
+	} else if IsEDOLocalImage(image) {
 		if _, err := apiClient.ImageInspect(deployContext, image); err != nil {
 			return ImageSnapshot{}, nil, fmt.Errorf("目标主机上找不到待发布的 Docker 镜像: %w", err)
 		}
@@ -126,9 +126,9 @@ func (s *Service) deployContainer(
 	if inspect.Container.Config == nil || inspect.Container.HostConfig == nil {
 		return ImageSnapshot{}, nil, errors.New("Docker 容器配置不完整")
 	}
-	if inspect.Container.Config.Labels["zrt.managed"] != "true" ||
-		inspect.Container.Config.Labels["zrt.deployment.target.id"] != targetID {
-		return ImageSnapshot{}, nil, errors.New("同名 Docker 容器不属于当前 ZRT 部署目标")
+	if inspect.Container.Config.Labels["edo.managed"] != "true" ||
+		inspect.Container.Config.Labels["edo.deployment.target.id"] != targetID {
+		return ImageSnapshot{}, nil, errors.New("同名 Docker 容器不属于当前 EDO 部署目标")
 	}
 	previousImage := ImageSnapshot{Reference: inspect.Container.Config.Image, ID: inspect.Container.Image}
 	oldID := inspect.Container.ID
@@ -140,7 +140,7 @@ func (s *Service) deployContainer(
 	if len(shortDeploymentID) > 8 {
 		shortDeploymentID = shortDeploymentID[:8]
 	}
-	backupName := canonicalName + "-zrt-backup-" + shortDeploymentID
+	backupName := canonicalName + "-edo-backup-" + shortDeploymentID
 	stopTimeout := 30
 	if _, err := apiClient.ContainerStop(deployContext, oldID, client.ContainerStopOptions{Timeout: &stopTimeout}); err != nil {
 		return previousImage, nil, fmt.Errorf("停止旧 Docker 容器失败: %w", err)
@@ -224,9 +224,9 @@ func (s *Service) deployContainerWithHostCommand(
 	canonicalName := strings.TrimPrefix(containerName, "/")
 	inspect, inspectErr := apiClient.ContainerInspect(ctx, canonicalName, client.ContainerInspectOptions{})
 	if inspectErr == nil {
-		if inspect.Container.Config == nil || inspect.Container.Config.Labels["zrt.managed"] != "true" ||
-			inspect.Container.Config.Labels["zrt.deployment.target.id"] != targetID {
-			return ImageSnapshot{}, nil, errors.New("同名 Docker 容器不属于当前 ZRT 部署目标")
+		if inspect.Container.Config == nil || inspect.Container.Config.Labels["edo.managed"] != "true" ||
+			inspect.Container.Config.Labels["edo.deployment.target.id"] != targetID {
+			return ImageSnapshot{}, nil, errors.New("同名 Docker 容器不属于当前 EDO 部署目标")
 		}
 		oldID = inspect.Container.ID
 		previous = ImageSnapshot{Reference: inspect.Container.Config.Image, ID: inspect.Container.Image}
@@ -250,7 +250,7 @@ func (s *Service) deployContainerWithHostCommand(
 		if len(shortID) > 8 {
 			shortID = shortID[:8]
 		}
-		backupName = canonicalName + "-zrt-backup-" + shortID
+		backupName = canonicalName + "-edo-backup-" + shortID
 		stopTimeout := 30
 		if _, err := apiClient.ContainerStop(ctx, oldID, client.ContainerStopOptions{Timeout: &stopTimeout}); err != nil {
 			return previous, nil, fmt.Errorf("停止旧 Docker 容器失败: %w", err)
@@ -266,8 +266,8 @@ func (s *Service) deployContainerWithHostCommand(
 		cleanupContext, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
 		defer cancel()
 		created, createdErr := apiClient.ContainerInspect(cleanupContext, canonicalName, client.ContainerInspectOptions{})
-		if createdErr == nil && created.Container.Config != nil && created.Container.Config.Labels["zrt.managed"] == "true" &&
-			created.Container.Config.Labels["zrt.deployment.target.id"] == targetID {
+		if createdErr == nil && created.Container.Config != nil && created.Container.Config.Labels["edo.managed"] == "true" &&
+			created.Container.Config.Labels["edo.deployment.target.id"] == targetID {
 			_, _ = apiClient.ContainerRemove(cleanupContext, created.Container.ID, client.ContainerRemoveOptions{Force: true})
 		}
 	}
@@ -278,8 +278,8 @@ func (s *Service) deployContainerWithHostCommand(
 	}
 
 	created, err := apiClient.ContainerInspect(ctx, canonicalName, client.ContainerInspectOptions{})
-	if err != nil || created.Container.Config == nil || created.Container.Config.Labels["zrt.managed"] != "true" ||
-		created.Container.Config.Labels["zrt.deployment.target.id"] != targetID || created.Container.Image != imageInspect.ID {
+	if err != nil || created.Container.Config == nil || created.Container.Config.Labels["edo.managed"] != "true" ||
+		created.Container.Config.Labels["edo.deployment.target.id"] != targetID || created.Container.Image != imageInspect.ID {
 		cleanupNew()
 		rollbackOld()
 		return previous, nil, errors.New("Docker 部署命令没有创建可验证的目标容器")
@@ -313,9 +313,9 @@ func prepareManagedContainerVolumes(
 		logicalName := configuration.VolumeMounts[index].Source
 		actualName := managedContainerVolumeName(targetID, logicalName)
 		labels := map[string]string{
-			"zrt.managed":              "true",
-			"zrt.deployment.target.id": targetID,
-			"zrt.volume.logical_name":  logicalName,
+			"edo.managed":              "true",
+			"edo.deployment.target.id": targetID,
+			"edo.volume.logical_name":  logicalName,
 		}
 		inspected, err := apiClient.VolumeInspect(ctx, actualName, client.VolumeInspectOptions{})
 		if err != nil {
@@ -340,7 +340,7 @@ func prepareManagedContainerVolumes(
 
 func managedContainerVolumeName(targetID, logicalName string) string {
 	digest := sha256.Sum256([]byte(targetID + "\x00" + logicalName))
-	return fmt.Sprintf("zrt-%x", digest[:16])
+	return fmt.Sprintf("edo-%x", digest[:16])
 }
 
 func createInitialContainer(
@@ -396,9 +396,9 @@ func initialContainerConfig(
 	configuration := &container.Config{
 		Image: image,
 		Labels: map[string]string{
-			"zrt.deployment.id":        deploymentID,
-			"zrt.deployment.target.id": targetID,
-			"zrt.managed":              "true",
+			"edo.deployment.id":        deploymentID,
+			"edo.deployment.target.id": targetID,
+			"edo.managed":              "true",
 		},
 	}
 	hostConfiguration := &container.HostConfig{

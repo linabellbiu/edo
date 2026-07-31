@@ -17,11 +17,11 @@ import (
 
 	"gorm.io/gorm"
 
-	"zrt/internal/config"
-	"zrt/internal/credential"
-	"zrt/internal/database"
-	"zrt/internal/model"
-	"zrt/internal/secret"
+	"edo/internal/config"
+	"edo/internal/credential"
+	"edo/internal/database"
+	"edo/internal/model"
+	"edo/internal/secret"
 )
 
 func TestRepositorySecretsAreEncryptedAndURLsAreValidated(t *testing.T) {
@@ -316,8 +316,8 @@ func TestWebhookProvidersSignatureAndDeduplication(t *testing.T) {
 		{model.GitProviderGitee, "X-Gitee-Event", "Push Hook", "X-Gitee-Delivery", func(header http.Header, _ []byte, secret string) {
 			header.Set("X-Gitee-Token", secret)
 		}},
-		{model.GitProviderGeneric, "X-ZRT-Event", "push", "X-ZRT-Delivery", func(header http.Header, body []byte, secret string) {
-			header.Set("X-ZRT-Signature-256", "sha256="+sign(body, secret))
+		{model.GitProviderGeneric, "X-EDO-Event", "push", "X-EDO-Delivery", func(header http.Header, body []byte, secret string) {
+			header.Set("X-EDO-Signature-256", "sha256="+sign(body, secret))
 		}},
 	}
 	body := []byte(`{"ref":"refs/heads/main","after":"0123456789012345678901234567890123456789","head_commit":{"message":"release"}}`)
@@ -365,7 +365,7 @@ func TestWebhookProvidersSignatureAndDeduplication(t *testing.T) {
 			case model.GitProviderGitee:
 				badHeaders.Set("X-Gitee-Token", "bad")
 			default:
-				badHeaders.Set("X-ZRT-Signature-256", "sha256=00")
+				badHeaders.Set("X-EDO-Signature-256", "sha256=00")
 			}
 			if _, err := service.HandleWebhook(context.Background(), repo.ID, badHeaders, body); !errors.Is(err, ErrInvalidSignature) {
 				t.Fatalf("无效签名未被拒绝: %v", err)
@@ -534,9 +534,9 @@ func TestGenericWebhookNormalizesCommonGitEvents(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			body := []byte(tt.body)
 			headers := make(http.Header)
-			headers.Set("X-ZRT-Event", tt.event)
-			headers.Set("X-ZRT-Delivery", fmt.Sprintf("common-event-%d", index))
-			headers.Set("X-ZRT-Signature-256", "sha256="+sign(body, webhookSecret))
+			headers.Set("X-EDO-Event", tt.event)
+			headers.Set("X-EDO-Delivery", fmt.Sprintf("common-event-%d", index))
+			headers.Set("X-EDO-Signature-256", "sha256="+sign(body, webhookSecret))
 
 			result, err := service.HandleWebhook(context.Background(), repo.ID, headers, body)
 			if err != nil {

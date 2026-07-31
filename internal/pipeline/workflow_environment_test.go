@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"zrt/internal/model"
+	"edo/internal/model"
 )
 
 func TestWorkflowDeploymentNodeUsesOnlyPlanAndResolvesItsTarget(t *testing.T) {

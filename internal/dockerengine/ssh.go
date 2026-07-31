@@ -18,7 +18,7 @@ import (
 	"github.com/distribution/reference"
 	"golang.org/x/crypto/ssh"
 
-	"zrt/internal/sshclient"
+	"edo/internal/sshclient"
 )
 
 type SSHTestResult struct {
@@ -290,7 +290,7 @@ func dockerPullWithRegistryAuth(pullCommand string, registry RegistryAuth) (stri
 		}
 		host = parsed.Host
 	}
-	script := "set -eu; umask 077; config=$(mktemp -d /tmp/zrt-docker-config.XXXXXX); " +
+	script := "set -eu; umask 077; config=$(mktemp -d /tmp/edo-docker-config.XXXXXX); " +
 		"trap 'rm -rf \"$config\"' EXIT; export DOCKER_CONFIG=\"$config\"; "
 	var input io.Reader
 	if username := strings.TrimSpace(registry.Username); username != "" {
@@ -338,7 +338,7 @@ func (s *Service) loadImageToSSH(ctx context.Context, endpointID, image string, 
 }
 
 func loadImageWithSSH(ctx context.Context, connector *sshConnector, bundle SSHBundle, image string, archive io.Reader) (string, error) {
-	if connector == nil || archive == nil || !IsZRTLocalImage(image) {
+	if connector == nil || archive == nil || !IsEDOLocalImage(image) {
 		return "", errors.New("待加载的 Docker 镜像无效")
 	}
 	client, err := connector.connectPinned(ctx)

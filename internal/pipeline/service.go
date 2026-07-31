@@ -25,12 +25,12 @@ import (
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 
-	"zrt/internal/artifact"
-	"zrt/internal/deployment"
-	"zrt/internal/dockerengine"
-	"zrt/internal/model"
-	"zrt/internal/repository"
-	"zrt/internal/secret"
+	"edo/internal/artifact"
+	"edo/internal/deployment"
+	"edo/internal/dockerengine"
+	"edo/internal/model"
+	"edo/internal/repository"
+	"edo/internal/secret"
 )
 
 var (
@@ -42,7 +42,7 @@ var (
 	ErrBuildPlanExists                = errors.New("构建方案名称已存在")
 	ErrBuildPlanNotFound              = errors.New("构建方案不存在")
 	ErrBuildPlanInUse                 = errors.New("构建方案仍被流水线使用，请先更换相关构建任务")
-	ErrInvalidScriptEnvironment       = errors.New("脚本环境变量无效；CI、HOME、TMPDIR 和 ZRT 流水线元数据名称由系统保留")
+	ErrInvalidScriptEnvironment       = errors.New("脚本环境变量无效；CI、HOME、TMPDIR 和 EDO 流水线元数据名称由系统保留")
 	ErrInvalidRegistry                = errors.New("镜像仓库配置无效")
 	ErrInvalidRegistryName            = errors.New("镜像仓库名称格式无效")
 	ErrInvalidRegistryProvider        = errors.New("镜像仓库类型无效")
@@ -501,7 +501,7 @@ func validBuildVariables(values map[string]string) bool {
 
 var reservedScriptEnvironmentNames = map[string]struct{}{
 	"CI": {}, "HOME": {}, "TMPDIR": {},
-	"ZRT_PIPELINE_RUN_ID": {}, "ZRT_APPLICATION_ID": {}, "ZRT_GIT_REF": {}, "ZRT_COMMIT_SHA": {},
+	"EDO_PIPELINE_RUN_ID": {}, "EDO_APPLICATION_ID": {}, "EDO_GIT_REF": {}, "EDO_COMMIT_SHA": {},
 }
 
 // 脚本运行元数据和受控目录由执行器固定注入。保存阶段直接拒绝同名变量，
@@ -730,7 +730,7 @@ func (s *Service) TestRegistry(ctx context.Context, input RegistryInput) error {
 	client := regclient.New(
 		regclient.WithConfigHost(*host),
 		regclient.WithRegOpts(reg.WithDelay(100*time.Millisecond, 500*time.Millisecond), reg.WithRetryLimit(1)),
-		regclient.WithUserAgent("zrt"),
+		regclient.WithUserAgent("edo"),
 	)
 	if _, err := client.Ping(testContext, reference); err != nil {
 		if errors.Is(err, registryerrors.ErrHTTPUnauthorized) || errors.Is(err, registryerrors.ErrNoLogin) {

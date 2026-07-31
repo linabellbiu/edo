@@ -9,7 +9,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 
-	"zrt/internal/logging"
+	"edo/internal/logging"
 )
 
 func TestValidRequestID(t *testing.T) {

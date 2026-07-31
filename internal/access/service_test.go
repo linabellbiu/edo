@@ -11,10 +11,10 @@ import (
 	"github.com/alicebob/miniredis/v2"
 	"github.com/redis/go-redis/v9"
 
-	"zrt/internal/account"
-	"zrt/internal/config"
-	"zrt/internal/database"
-	"zrt/internal/model"
+	"edo/internal/account"
+	"edo/internal/config"
+	"edo/internal/database"
+	"edo/internal/model"
 )
 
 func TestRolePermissionAndAtomicUserCreation(t *testing.T) {
@@ -101,11 +101,11 @@ func TestDistributedCasbinPolicySync(t *testing.T) {
 		_ = firstRedis.Close()
 		_ = secondRedis.Close()
 	})
-	first, err := NewDistributedService(db, firstRedis, "zrt:test:casbin", slog.Default())
+	first, err := NewDistributedService(db, firstRedis, "edo:test:casbin", slog.Default())
 	if err != nil {
 		t.Fatalf("初始化第一个分布式权限服务失败: %v", err)
 	}
-	second, err := NewDistributedService(db, secondRedis, "zrt:test:casbin", slog.Default())
+	second, err := NewDistributedService(db, secondRedis, "edo:test:casbin", slog.Default())
 	if err != nil {
 		t.Fatalf("初始化第二个分布式权限服务失败: %v", err)
 	}

@@ -4,7 +4,7 @@ import { fileURLToPath, URL } from 'node:url'
 import Components from 'unplugin-vue-components/vite'
 import { AntDesignVueResolver } from 'unplugin-vue-components/resolvers'
 
-const proxyTarget = process.env.ZRT_WEB_PROXY_TARGET ?? 'http://127.0.0.1:8080'
+const proxyTarget = process.env.EDO_WEB_PROXY_TARGET ?? 'http://127.0.0.1:8080'
 
 export default defineConfig({
   plugins: [

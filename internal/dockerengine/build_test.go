@@ -116,12 +116,12 @@ func TestRetryableBuildErrorUsesDockerBoundaryClassification(t *testing.T) {
 	}
 }
 
-func TestZRTLocalImageAndImageIDValidation(t *testing.T) {
-	if !IsZRTLocalImage("zrt.local/order-api:abcdef-12345678") {
-		t.Fatal("合法的 ZRT 本地镜像没有被识别")
+func TestEDOLocalImageAndImageIDValidation(t *testing.T) {
+	if !IsEDOLocalImage("edo.local/order-api:abcdef-12345678") {
+		t.Fatal("合法的 EDO 本地镜像没有被识别")
 	}
-	if IsZRTLocalImage("registry.example.com/zrt/order-api:latest") || IsZRTLocalImage("zrt.local.invalid/order-api:latest") {
-		t.Fatal("镜像仓库地址不应被识别为 ZRT 本地镜像")
+	if IsEDOLocalImage("registry.example.com/edo/order-api:latest") || IsEDOLocalImage("edo.local.invalid/order-api:latest") {
+		t.Fatal("镜像仓库地址不应被识别为 EDO 本地镜像")
 	}
 	validID := "sha256:" + strings.Repeat("a", 64)
 	if !IsValidImageID(validID) || IsValidImageID("sha256:"+strings.Repeat("g", 64)) || IsValidImageID("sha256:short") {
@@ -177,8 +177,8 @@ func (f *recordingImageArchiveExporter) ImageSave(
 }
 
 func TestDockerBuildxArgumentsUseSessionCapableBuilder(t *testing.T) {
-	arguments := dockerBuildxArguments("deploy/Dockerfile", "zrt.local/app:commit", "default")
-	for _, expected := range []string{"buildx", "build", "--load", "--file", "deploy/Dockerfile", "zrt.local/app:commit"} {
+	arguments := dockerBuildxArguments("deploy/Dockerfile", "edo.local/app:commit", "default")
+	for _, expected := range []string{"buildx", "build", "--load", "--file", "deploy/Dockerfile", "edo.local/app:commit"} {
 		if !slices.Contains(arguments, expected) {
 			t.Fatalf("Buildx 参数缺少 %q: %v", expected, arguments)
 		}
@@ -190,7 +190,7 @@ func TestDockerBuildxArgumentsUseSessionCapableBuilder(t *testing.T) {
 		t.Fatalf("显式 Docker API 构建没有选择默认 Builder: %v", arguments)
 	}
 
-	local := dockerBuildxArguments("Dockerfile", "zrt.local/app:local", "")
+	local := dockerBuildxArguments("Dockerfile", "edo.local/app:local", "")
 	if slices.Contains(local, "--builder") {
 		t.Fatalf("本地构建不应覆盖当前 Docker Context/Builder: %v", local)
 	}
@@ -211,7 +211,7 @@ func TestDockerBuildxArgumentsWithOptionsAreStable(t *testing.T) {
 				"ALPHA": "first",
 			},
 			Labels: map[string]string{
-				"zrt.example/revision":           "abcdef",
+				"edo.example/revision":           "abcdef",
 				"org.opencontainers.image.title": "app",
 			},
 		},
@@ -224,8 +224,8 @@ func TestDockerBuildxArgumentsWithOptionsAreStable(t *testing.T) {
 		"--platform", "linux/amd64",
 		"--build-arg", "ALPHA",
 		"--build-arg", "ZETA",
+		"--label", "edo.example/revision=abcdef",
 		"--label", "org.opencontainers.image.title=app",
-		"--label", "zrt.example/revision=abcdef",
 		"--tag", "registry.example.com/team/app:commit",
 		"-",
 	}
@@ -237,11 +237,11 @@ func TestDockerBuildxArgumentsWithOptionsAreStable(t *testing.T) {
 func TestDockerBuildxArgumentsCanDisablePullAndLocalCache(t *testing.T) {
 	arguments := dockerBuildxArgumentsWithOptions(
 		"Dockerfile",
-		"zrt.local/app:commit",
+		"edo.local/app:commit",
 		"",
 		BuildOptions{BuildArgs: map[string]string{"VERSION": "1.2.3"}},
 	)
-	for _, unexpected := range []string{"--pull", "--cache-from", "BUILDKIT_INLINE_CACHE=1", "zrt-cache"} {
+	for _, unexpected := range []string{"--pull", "--cache-from", "BUILDKIT_INLINE_CACHE=1", "edo-cache"} {
 		if slices.Contains(arguments, unexpected) {
 			t.Fatalf("禁用拉取或缓存后仍包含 %q: %v", unexpected, arguments)
 		}
@@ -256,13 +256,13 @@ func TestDockerBuildxArgumentsCanDisablePullAndLocalCache(t *testing.T) {
 
 func TestDockerBuildArgsStayOutOfProcessArguments(t *testing.T) {
 	arguments := dockerBuildxArgumentsWithOptions(
-		"Dockerfile", "zrt.local/app:commit", "",
+		"Dockerfile", "edo.local/app:commit", "",
 		BuildOptions{BuildArgs: map[string]string{"API_TOKEN": "super-secret-value"}},
 	)
 	if slices.Contains(arguments, "API_TOKEN=super-secret-value") || !slices.Contains(arguments, "API_TOKEN") {
 		t.Fatalf("构建参数值不应进入进程参数: %v", arguments)
 	}
-	environment := environmentValues(dockerBuildEnvironment("", "", "/tmp/zrt-build-config", map[string]string{
+	environment := environmentValues(dockerBuildEnvironment("", "", "/tmp/edo-build-config", map[string]string{
 		"API_TOKEN": "super-secret-value",
 	}))
 	if environment["API_TOKEN"] != "super-secret-value" {
@@ -292,7 +292,7 @@ func TestDockerBuildxArgumentsDefaultToLocalCacheOnly(t *testing.T) {
 			t.Fatalf("默认构建行为缺少 %q: %v", expected, arguments)
 		}
 	}
-	for _, unexpected := range []string{"--no-cache", "--cache-from", "BUILDKIT_INLINE_CACHE=1", "zrt-cache"} {
+	for _, unexpected := range []string{"--no-cache", "--cache-from", "BUILDKIT_INLINE_CACHE=1", "edo-cache"} {
 		if slices.Contains(arguments, unexpected) {
 			t.Fatalf("默认本地缓存构建不应包含 %q: %v", unexpected, arguments)
 		}
@@ -332,17 +332,17 @@ func TestDockerBuildEnvironmentSelectsLocalOrConfiguredRuntime(t *testing.T) {
 	t.Setenv("DOCKER_TLS_VERIFY", "1")
 	t.Setenv("DOCKER_CERT_PATH", "/host/docker-certs")
 
-	local := environmentValues(dockerBuildEnvironment("", "", "/tmp/zrt-local-docker-config"))
+	local := environmentValues(dockerBuildEnvironment("", "", "/tmp/edo-local-docker-config"))
 	if local["DOCKER_HOST"] != "unix:///host/docker.sock" || local["DOCKER_CONTEXT"] != "desktop-linux" ||
-		local["DOCKER_CONFIG"] != "/tmp/zrt-local-docker-config" || local["DOCKER_TLS_VERIFY"] != "1" ||
+		local["DOCKER_CONFIG"] != "/tmp/edo-local-docker-config" || local["DOCKER_TLS_VERIFY"] != "1" ||
 		local["DOCKER_CERT_PATH"] != "/host/docker-certs" {
 		t.Fatalf("本地构建没有隔离 Docker 认证配置: %+v", local)
 	}
 
 	container := environmentValues(dockerBuildEnvironment(
-		"tcp://docker-builder:2376", "/certs/client", "/tmp/zrt-docker-config",
+		"tcp://docker-builder:2376", "/certs/client", "/tmp/edo-docker-config",
 	))
-	if container["DOCKER_HOST"] != "tcp://docker-builder:2376" || container["DOCKER_CONFIG"] != "/tmp/zrt-docker-config" ||
+	if container["DOCKER_HOST"] != "tcp://docker-builder:2376" || container["DOCKER_CONFIG"] != "/tmp/edo-docker-config" ||
 		container["DOCKER_TLS_VERIFY"] != "1" || container["DOCKER_CERT_PATH"] != "/certs/client" {
 		t.Fatalf("容器构建没有使用显式 DinD: %+v", container)
 	}

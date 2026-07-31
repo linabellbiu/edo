@@ -67,7 +67,7 @@ async function connect() {
   })
   const socket = new WebSocket(
     `${protocol}//${location.host}${props.path}${separator}${query}`,
-    'zrt-container-logs-v1',
+    'edo-container-logs-v1',
   )
   const decoder = new TextDecoder()
   socket.binaryType = 'arraybuffer'
@@ -180,7 +180,7 @@ onBeforeUnmount(() => dispose?.())
   display: inline-flex;
   align-items: center;
   gap: 8px;
-  color: var(--zrt-muted);
+  color: var(--edo-muted);
   font-size: 13px;
 }
 

@@ -25,7 +25,7 @@ import (
 	"github.com/google/uuid"
 	"gorm.io/gorm"
 
-	"zrt/internal/model"
+	"edo/internal/model"
 )
 
 var (

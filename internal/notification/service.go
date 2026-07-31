@@ -17,9 +17,9 @@ import (
 	"github.com/google/uuid"
 	"gorm.io/gorm"
 
-	"zrt/internal/model"
-	"zrt/internal/secret"
-	"zrt/internal/task"
+	"edo/internal/model"
+	"edo/internal/secret"
+	"edo/internal/task"
 )
 
 var (
@@ -234,7 +234,7 @@ func (s *Service) Enqueue(ctx context.Context, input EnqueueInput) (*model.Notif
 			return err
 		}
 		job, err := task.NewService(tx, s.maxAttempts).Create(ctx, task.CreateInput{
-			Kind: "notification.dispatch", Subject: "zrt.task.notification.dispatch",
+			Kind: "notification.dispatch", Subject: "edo.task.notification.dispatch",
 			Payload:        TaskPayload{NotificationID: notification.ID},
 			IdempotencyKey: "notification:" + notification.ID, Idempotent: true,
 		})
@@ -295,7 +295,7 @@ func (s *Service) Dispatch(ctx context.Context, notificationID, jobID string) er
 		return s.failDispatch(ctx, &item, jobID, false, "通知渠道配置无效", err)
 	}
 	request.Header.Set("Content-Type", "application/json")
-	request.Header.Set("User-Agent", "zrt-notifier")
+	request.Header.Set("User-Agent", "edo-notifier")
 	request.Header.Set("Idempotency-Key", item.ID)
 	if token != "" {
 		request.Header.Set("Authorization", "Bearer "+token)

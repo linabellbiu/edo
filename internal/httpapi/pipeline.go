@@ -8,9 +8,9 @@ import (
 
 	"github.com/gin-gonic/gin"
 
-	"zrt/internal/deployment"
-	"zrt/internal/model"
-	"zrt/internal/pipeline"
+	"edo/internal/deployment"
+	"edo/internal/model"
+	"edo/internal/pipeline"
 )
 
 type pipelineHandler struct {

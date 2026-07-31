@@ -24,11 +24,11 @@ import (
 	"golang.org/x/crypto/ssh"
 	"gorm.io/gorm"
 
-	"zrt/internal/config"
-	"zrt/internal/hostcredential"
-	"zrt/internal/model"
-	"zrt/internal/secret"
-	"zrt/internal/sshclient"
+	"edo/internal/config"
+	"edo/internal/hostcredential"
+	"edo/internal/model"
+	"edo/internal/secret"
+	"edo/internal/sshclient"
 )
 
 var (
@@ -39,7 +39,7 @@ var (
 	ErrEnvironmentChanged   = errors.New("命令发布主机所属环境已变化")
 )
 
-var environmentKeyPattern = regexp.MustCompile(`^ZRT_[A-Z0-9_]{1,60}$`)
+var environmentKeyPattern = regexp.MustCompile(`^EDO_[A-Z0-9_]{1,60}$`)
 
 type Input struct {
 	HostID           string
@@ -301,7 +301,7 @@ func stagedArtifactPaths(workingDirectory, name string) (string, string, error) 
 	if workingDirectory == "" || name == "" {
 		return "", "", ErrInvalidScript
 	}
-	destination := path.Join(workingDirectory, ".zrt", "artifacts", name)
+	destination := path.Join(workingDirectory, ".edo", "artifacts", name)
 	temporary := destination + ".tmp-" + strconv.FormatInt(time.Now().UTC().UnixNano(), 10)
 	return destination, temporary, nil
 }
@@ -340,8 +340,8 @@ func withArtifactEnvironment(environment map[string]string, artifactPath, digest
 	for key, value := range environment {
 		result[key] = value
 	}
-	result["ZRT_ARTIFACT_PATH"] = artifactPath
-	result["ZRT_ARTIFACT_DIGEST"] = digest
+	result["EDO_ARTIFACT_PATH"] = artifactPath
+	result["EDO_ARTIFACT_DIGEST"] = digest
 	return result
 }
 

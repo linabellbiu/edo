@@ -10,8 +10,8 @@ import (
 
 	"github.com/gin-gonic/gin"
 
-	artifactmanager "zrt/internal/artifact"
-	"zrt/internal/model"
+	artifactmanager "edo/internal/artifact"
+	"edo/internal/model"
 )
 
 const multipartArtifactOverhead = int64(1024 * 1024)

@@ -11,11 +11,11 @@ import (
 
 	"gorm.io/gorm"
 
-	"zrt/internal/artifact"
-	"zrt/internal/config"
-	"zrt/internal/deployment"
-	"zrt/internal/dockerengine"
-	"zrt/internal/model"
+	"edo/internal/artifact"
+	"edo/internal/config"
+	"edo/internal/deployment"
+	"edo/internal/dockerengine"
+	"edo/internal/model"
 )
 
 func deploymentPlanTargetInput(t *testing.T, service *Service, target model.DeploymentTarget) *deployment.TargetInput {

@@ -182,5 +182,5 @@ async function submit() {
 </template>
 
 <style scoped>
-.form-grid{display:grid;grid-template-columns:1fr 1fr;gap:0 14px}.span-2{grid-column:1/-1}.field-hint{margin-top:6px;color:var(--zrt-muted);font-size:12px;line-height:1.55}.connection-result{margin-top:2px}.connection-result :deep(.ant-alert-description){overflow-wrap:anywhere}.drawer-actions{display:flex;justify-content:flex-end;gap:8px}@media(max-width:620px){.form-grid{grid-template-columns:1fr}.span-2{grid-column:auto}}
+.form-grid{display:grid;grid-template-columns:1fr 1fr;gap:0 14px}.span-2{grid-column:1/-1}.field-hint{margin-top:6px;color:var(--edo-muted);font-size:12px;line-height:1.55}.connection-result{margin-top:2px}.connection-result :deep(.ant-alert-description){overflow-wrap:anywhere}.drawer-actions{display:flex;justify-content:flex-end;gap:8px}@media(max-width:620px){.form-grid{grid-template-columns:1fr}.span-2{grid-column:auto}}
 </style>

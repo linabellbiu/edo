@@ -1,4 +1,4 @@
-name: ZRT CI
+name: EDO CI
 
 on:
   push:
@@ -15,25 +15,25 @@ jobs:
       postgres:
         image: postgres:17-bookworm
         env:
-          POSTGRES_USER: zrt
-          POSTGRES_PASSWORD: zrt_test
-          POSTGRES_DB: zrt
+          POSTGRES_USER: edo
+          POSTGRES_PASSWORD: edo_test
+          POSTGRES_DB: edo
         ports:
           - 5432:5432
         options: >-
-          --health-cmd "pg_isready -U zrt -d zrt"
+          --health-cmd "pg_isready -U edo -d edo"
           --health-interval 5s
           --health-timeout 3s
           --health-retries 20
       mysql:
         image: mysql:8.4
         env:
-          MYSQL_ROOT_PASSWORD: zrt_test
-          MYSQL_DATABASE: zrt
+          MYSQL_ROOT_PASSWORD: edo_test
+          MYSQL_DATABASE: edo
         ports:
           - 3306:3306
         options: >-
-          --health-cmd "mysqladmin ping -h 127.0.0.1 -pzrt_test"
+          --health-cmd "mysqladmin ping -h 127.0.0.1 -pedo_test"
           --health-interval 5s
           --health-timeout 3s
           --health-retries 30
@@ -51,8 +51,8 @@ jobs:
           cache-dependency-path: web/package-lock.json
       - name: Go 单元与集成测试
         env:
-          ZRT_TEST_POSTGRES_DSN: host=127.0.0.1 port=5432 user=zrt password=zrt_test dbname=zrt sslmode=disable
-          ZRT_TEST_MYSQL_DSN: root:zrt_test@tcp(127.0.0.1:3306)/zrt?charset=utf8mb4&parseTime=True&loc=UTC
+          EDO_TEST_POSTGRES_DSN: host=127.0.0.1 port=5432 user=edo password=edo_test dbname=edo sslmode=disable
+          EDO_TEST_MYSQL_DSN: root:edo_test@tcp(127.0.0.1:3306)/edo?charset=utf8mb4&parseTime=True&loc=UTC
         run: go test -race ./...
       - name: Go 静态检查
         run: go vet ./...
@@ -64,5 +64,5 @@ jobs:
         run: npm ci --prefix web && npm run build --prefix web
       - name: Dockerfile 与脚本构建到发布的真实链路
         env:
-          ZRT_TEST_DOCKER_INTEGRATION: "1"
+          EDO_TEST_DOCKER_INTEGRATION: "1"
         run: go test ./internal/dockerengine -run '^Test(DockerBuildAndCompose|ScriptContainer)Integration$' -count=1

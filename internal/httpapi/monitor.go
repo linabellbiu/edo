@@ -8,8 +8,8 @@ import (
 
 	"github.com/gin-gonic/gin"
 
-	"zrt/internal/monitor"
-	"zrt/internal/secret"
+	"edo/internal/monitor"
+	"edo/internal/secret"
 )
 
 type monitorHandler struct {

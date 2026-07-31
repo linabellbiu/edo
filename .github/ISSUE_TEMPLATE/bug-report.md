@@ -4,7 +4,7 @@ about: Report a reproducible bug or regression.
 title: 'Bug: '
 ---
 
-ZRT 版本与部署方式：
+EDO 版本与部署方式：
 
 数据库类型：
 

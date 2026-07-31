@@ -19,11 +19,11 @@ import (
 	"github.com/google/uuid"
 	"gorm.io/gorm"
 
-	"zrt/internal/account"
-	"zrt/internal/auth"
-	"zrt/internal/cache"
-	"zrt/internal/model"
-	"zrt/internal/secret"
+	"edo/internal/account"
+	"edo/internal/auth"
+	"edo/internal/cache"
+	"edo/internal/model"
+	"edo/internal/secret"
 )
 
 const (

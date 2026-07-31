@@ -12,8 +12,8 @@ import (
 	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/object"
 
-	"zrt/internal/config"
-	"zrt/internal/model"
+	"edo/internal/config"
+	"edo/internal/model"
 )
 
 func TestValidateCloneURL(t *testing.T) {
@@ -59,7 +59,7 @@ func TestCommitMessageReadsSubjectFromTargetRef(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(repositoryPath+"/README.md", []byte("ZRT\n"), 0o600); err != nil {
+	if err := os.WriteFile(repositoryPath+"/README.md", []byte("EDO\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	worktree, err := local.Worktree()
@@ -70,7 +70,7 @@ func TestCommitMessageReadsSubjectFromTargetRef(t *testing.T) {
 		t.Fatal(err)
 	}
 	hash, err := worktree.Commit("修复订单发布状态\n\n补充详细说明", &git.CommitOptions{Author: &object.Signature{
-		Name: "ZRT Test", Email: "zrt@example.com", When: time.Now().UTC(),
+		Name: "EDO Test", Email: "edo@example.com", When: time.Now().UTC(),
 	}})
 	if err != nil {
 		t.Fatal(err)
@@ -104,7 +104,7 @@ func TestCheckoutPullRequestHeadRefsWithShallowFetch(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := worktree.Commit("base", &git.CommitOptions{Author: &object.Signature{
-		Name: "ZRT Test", Email: "zrt@example.com", When: time.Now().UTC(),
+		Name: "EDO Test", Email: "edo@example.com", When: time.Now().UTC(),
 	}}); err != nil {
 		t.Fatal(err)
 	}
@@ -120,7 +120,7 @@ func TestCheckoutPullRequestHeadRefsWithShallowFetch(t *testing.T) {
 		t.Fatal(err)
 	}
 	head, err := worktree.Commit("pull request head", &git.CommitOptions{Author: &object.Signature{
-		Name: "ZRT Test", Email: "zrt@example.com", When: time.Now().UTC(),
+		Name: "EDO Test", Email: "edo@example.com", When: time.Now().UTC(),
 	}})
 	if err != nil {
 		t.Fatal(err)
@@ -266,7 +266,7 @@ func commitVersionFile(t *testing.T, repository *git.Repository, repositoryPath,
 		t.Fatal(err)
 	}
 	hash, err := worktree.Commit(message, &git.CommitOptions{Author: &object.Signature{
-		Name: "ZRT Test", Email: "zrt@example.com", When: time.Now().UTC(),
+		Name: "EDO Test", Email: "edo@example.com", When: time.Now().UTC(),
 	}})
 	if err != nil {
 		t.Fatal(err)

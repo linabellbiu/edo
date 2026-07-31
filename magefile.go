@@ -21,7 +21,7 @@ import (
 
 const environmentFile = ".env"
 
-// Start 启动 ZRT；可使用 --dev、--docker、--server 和 --web 调整启动方式。
+// Start 启动 EDO；可使用 --dev、--docker、--server 和 --web 调整启动方式。
 func Start(ctx context.Context) error {
 	options, err := readStartOptions()
 	if err != nil {
@@ -50,9 +50,9 @@ func Start(ctx context.Context) error {
 	return finishStart(startBuilt(ctx, runServer, runWeb), options.provided)
 }
 
-// Help 显示 ZRT 常用开发和启动命令。
+// Help 显示 EDO 常用开发和启动命令。
 func Help() {
-	fmt.Println(`ZRT Mage 命令
+	fmt.Println(`EDO Mage 命令
 
 mage start                       构建内嵌 Web 的单文件程序并启动
 mage start --server              只启动后端
@@ -191,20 +191,20 @@ func ensureEnvironmentFile(path string) (bool, error) {
 }
 
 func initialSecretsKey() (string, error) {
-	if encoded := strings.TrimSpace(os.Getenv("ZRT_SECRETS_KEY")); encoded != "" {
+	if encoded := strings.TrimSpace(os.Getenv("EDO_SECRETS_KEY")); encoded != "" {
 		key, err := base64.StdEncoding.DecodeString(encoded)
 		if err != nil {
 			key, err = base64.RawStdEncoding.DecodeString(encoded)
 		}
 		if err != nil || len(key) != 32 {
-			return "", errors.New("进程环境中的 ZRT_SECRETS_KEY 必须是 32 字节随机密钥的 Base64 编码")
+			return "", errors.New("进程环境中的 EDO_SECRETS_KEY 必须是 32 字节随机密钥的 Base64 编码")
 		}
 		return encoded, nil
 	}
 
 	key := make([]byte, 32)
 	if _, err := rand.Read(key); err != nil {
-		return "", fmt.Errorf("生成 ZRT_SECRETS_KEY 失败: %w", err)
+		return "", fmt.Errorf("生成 EDO_SECRETS_KEY 失败: %w", err)
 	}
 	return base64.StdEncoding.EncodeToString(key), nil
 }
@@ -219,14 +219,14 @@ func fillEnvironmentSecretsKey(template []byte, key string) ([]byte, error) {
 			continue
 		}
 		separator := strings.IndexByte(lineWithoutCR, '=')
-		if separator < 0 || strings.TrimSpace(lineWithoutCR[:separator]) != "ZRT_SECRETS_KEY" {
+		if separator < 0 || strings.TrimSpace(lineWithoutCR[:separator]) != "EDO_SECRETS_KEY" {
 			continue
 		}
 		if found {
-			return nil, errors.New(".env.example 中存在重复的 ZRT_SECRETS_KEY")
+			return nil, errors.New(".env.example 中存在重复的 EDO_SECRETS_KEY")
 		}
 		if strings.TrimSpace(lineWithoutCR[separator+1:]) != "" {
-			return nil, errors.New(".env.example 中的 ZRT_SECRETS_KEY 必须留空")
+			return nil, errors.New(".env.example 中的 EDO_SECRETS_KEY 必须留空")
 		}
 		lineEnding := ""
 		if strings.HasSuffix(line, "\r") {
@@ -236,7 +236,7 @@ func fillEnvironmentSecretsKey(template []byte, key string) ([]byte, error) {
 		found = true
 	}
 	if !found {
-		return nil, errors.New(".env.example 缺少 ZRT_SECRETS_KEY")
+		return nil, errors.New(".env.example 缺少 EDO_SECRETS_KEY")
 	}
 	return []byte(strings.Join(lines, "\n")), nil
 }
@@ -245,16 +245,16 @@ func validateStartSecretsKey(runServer bool) error {
 	if !runServer {
 		return nil
 	}
-	encoded := strings.TrimSpace(os.Getenv("ZRT_SECRETS_KEY"))
+	encoded := strings.TrimSpace(os.Getenv("EDO_SECRETS_KEY"))
 	if encoded == "" {
-		return errors.New("请在根目录 .env 中配置 ZRT_SECRETS_KEY")
+		return errors.New("请在根目录 .env 中配置 EDO_SECRETS_KEY")
 	}
 	key, err := base64.StdEncoding.DecodeString(encoded)
 	if err != nil {
 		key, err = base64.RawStdEncoding.DecodeString(encoded)
 	}
 	if err != nil || len(key) != 32 {
-		return errors.New(".env 中的 ZRT_SECRETS_KEY 必须是 32 字节随机密钥的 Base64 编码")
+		return errors.New(".env 中的 EDO_SECRETS_KEY 必须是 32 字节随机密钥的 Base64 编码")
 	}
 	return nil
 }
@@ -292,20 +292,20 @@ func startBuilt(ctx context.Context, runServer, runWeb bool) error {
 		}
 	}
 	if runServer {
-		if err := os.Setenv("ZRT_WEB_ROOT", ""); err != nil {
+		if err := os.Setenv("EDO_WEB_ROOT", ""); err != nil {
 			return fmt.Errorf("设置 Web 目录失败: %w", err)
 		}
 		if err := runCommand(ctx, backend, "migrate"); err != nil {
 			return fmt.Errorf("数据库迁移失败: %w", err)
 		}
-		fmt.Println("ZRT 后端：http://127.0.0.1:8080")
+		fmt.Println("EDO 后端：http://127.0.0.1:8080")
 		if runWeb {
-			fmt.Println("ZRT Web：http://127.0.0.1:8080")
+			fmt.Println("EDO Web：http://127.0.0.1:8080")
 		}
 		return runCommand(ctx, backend, "server")
 	}
 
-	fmt.Println("ZRT Web：http://127.0.0.1:5173")
+	fmt.Println("EDO Web：http://127.0.0.1:5173")
 	return runCommand(ctx, npmExecutable(), "--prefix", "web", "run", "preview", "--", "--host", "127.0.0.1", "--port", "5173")
 }
 
@@ -314,7 +314,7 @@ func startDevelopment(ctx context.Context, runServer, runWeb bool) error {
 		if err := startDevelopmentDependencies(ctx); err != nil {
 			return err
 		}
-		if err := os.Setenv("ZRT_WEB_ROOT", ""); err != nil {
+		if err := os.Setenv("EDO_WEB_ROOT", ""); err != nil {
 			return fmt.Errorf("设置开发环境 Web 目录失败: %w", err)
 		}
 		if err := migrateFromSource(ctx); err != nil {
@@ -327,13 +327,13 @@ func startDevelopment(ctx context.Context, runServer, runWeb bool) error {
 		}
 	}
 	if runServer && runWeb {
-		fmt.Println("ZRT 后端：http://127.0.0.1:8080")
-		fmt.Println("ZRT Web：http://127.0.0.1:5173")
+		fmt.Println("EDO 后端：http://127.0.0.1:8080")
+		fmt.Println("EDO Web：http://127.0.0.1:5173")
 		return runLocalServices(ctx, []localService{
 			{
 				name:         "后端",
 				executable:   "go",
-				args:         []string{"run", "./cmd/zrt", "server"},
+				args:         []string{"run", "./cmd/edo", "server"},
 				readyURL:     "http://127.0.0.1:8080/api/v1/health/ready",
 				readyTimeout: 90 * time.Second,
 			},
@@ -341,15 +341,15 @@ func startDevelopment(ctx context.Context, runServer, runWeb bool) error {
 		})
 	}
 	if runServer {
-		fmt.Println("ZRT 后端：http://127.0.0.1:8080")
-		return runCommand(ctx, "go", "run", "./cmd/zrt", "server")
+		fmt.Println("EDO 后端：http://127.0.0.1:8080")
+		return runCommand(ctx, "go", "run", "./cmd/edo", "server")
 	}
-	fmt.Println("ZRT Web：http://127.0.0.1:5173")
+	fmt.Println("EDO Web：http://127.0.0.1:5173")
 	return runCommand(ctx, npmExecutable(), "--prefix", "web", "start")
 }
 
 func migrateFromSource(ctx context.Context) error {
-	if err := runCommand(ctx, "go", "run", "./cmd/zrt", "migrate"); err != nil {
+	if err := runCommand(ctx, "go", "run", "./cmd/edo", "migrate"); err != nil {
 		return fmt.Errorf("数据库迁移失败: %w", err)
 	}
 	return nil
@@ -401,10 +401,10 @@ func startDevelopmentDependencies(ctx context.Context) error {
 }
 
 func useHostDockerBuilder() error {
-	if err := os.Unsetenv("ZRT_DOCKER_BUILDER_HOST"); err != nil {
+	if err := os.Unsetenv("EDO_DOCKER_BUILDER_HOST"); err != nil {
 		return fmt.Errorf("切换到宿主机 Docker 构建运行时失败: %w", err)
 	}
-	if err := os.Unsetenv("ZRT_DOCKER_BUILDER_TLS_CERT_PATH"); err != nil {
+	if err := os.Unsetenv("EDO_DOCKER_BUILDER_TLS_CERT_PATH"); err != nil {
 		return fmt.Errorf("清理容器 Docker 客户端证书配置失败: %w", err)
 	}
 	return nil
@@ -419,19 +419,19 @@ func buildBackend(ctx context.Context, embedWeb bool) (string, error) {
 			return "", err
 		}
 	}
-	binary := filepath.Join("bin", "zrt")
+	binary := filepath.Join("bin", "edo")
 	// 本地单文件构建与容器发布构建保持一致，移除生产运行不需要的符号表和 DWARF 调试信息。
 	args := []string{"build", "-trimpath", "-ldflags", "-s -w"}
 	if embedWeb {
-		args = append(args, "-tags", "zrt_web")
+		args = append(args, "-tags", "edo_web")
 	}
-	args = append(args, "-o", binary, "./cmd/zrt")
+	args = append(args, "-o", binary, "./cmd/edo")
 	if err := runCommand(ctx, "go", args...); err != nil {
-		return "", fmt.Errorf("构建 ZRT 后端失败: %w", err)
+		return "", fmt.Errorf("构建 EDO 后端失败: %w", err)
 	}
 	absolute, err := filepath.Abs(binary)
 	if err != nil {
-		return "", fmt.Errorf("解析 ZRT 后端路径失败: %w", err)
+		return "", fmt.Errorf("解析 EDO 后端路径失败: %w", err)
 	}
 	return absolute, nil
 }
@@ -530,7 +530,7 @@ func webDependencyFiles(webRoot string) []string {
 }
 
 func webDependencyStampPath(webRoot string) string {
-	return filepath.Join(webRoot, "node_modules", ".zrt-package-lock.sha256")
+	return filepath.Join(webRoot, "node_modules", ".edo-package-lock.sha256")
 }
 
 type localService struct {

@@ -9,10 +9,10 @@ import (
 
 	"gorm.io/gorm"
 
-	"zrt/internal/auth"
-	"zrt/internal/config"
-	"zrt/internal/database"
-	"zrt/internal/model"
+	"edo/internal/auth"
+	"edo/internal/config"
+	"edo/internal/database"
+	"edo/internal/model"
 )
 
 func TestEnsureInitialAdmin(t *testing.T) {

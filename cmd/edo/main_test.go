@@ -8,15 +8,15 @@ import (
 
 func TestLoadRuntimeEnvironmentFile(t *testing.T) {
 	path := filepath.Join(t.TempDir(), ".env")
-	if err := os.WriteFile(path, []byte("ZRT_RUNTIME_ENV_TEST=loaded\n"), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte("EDO_RUNTIME_ENV_TEST=loaded\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	_ = os.Unsetenv("ZRT_RUNTIME_ENV_TEST")
-	t.Cleanup(func() { _ = os.Unsetenv("ZRT_RUNTIME_ENV_TEST") })
+	_ = os.Unsetenv("EDO_RUNTIME_ENV_TEST")
+	t.Cleanup(func() { _ = os.Unsetenv("EDO_RUNTIME_ENV_TEST") })
 	if err := loadRuntimeEnvironmentFile(path); err != nil {
 		t.Fatal(err)
 	}
-	if got := os.Getenv("ZRT_RUNTIME_ENV_TEST"); got != "loaded" {
+	if got := os.Getenv("EDO_RUNTIME_ENV_TEST"); got != "loaded" {
 		t.Fatalf("本地二进制未读取 .env: %q", got)
 	}
 	if err := loadRuntimeEnvironmentFile(filepath.Join(t.TempDir(), ".env")); err != nil {

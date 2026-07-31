@@ -16,12 +16,12 @@ import (
 	"github.com/gorilla/websocket"
 	"github.com/moby/moby/api/pkg/stdcopy"
 
-	"zrt/internal/audit"
-	"zrt/internal/dockerengine"
-	"zrt/internal/model"
+	"edo/internal/audit"
+	"edo/internal/dockerengine"
+	"edo/internal/model"
 )
 
-const containerLogSubprotocol = "zrt-container-logs-v1"
+const containerLogSubprotocol = "edo-container-logs-v1"
 
 type dockerContainerLogService interface {
 	ContainerLogs(context.Context, string, string, dockerengine.ContainerLogOptions) (*dockerengine.ContainerLogStream, error)

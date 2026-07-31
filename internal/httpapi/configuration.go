@@ -8,9 +8,9 @@ import (
 
 	"github.com/gin-gonic/gin"
 
-	"zrt/internal/configuration"
-	"zrt/internal/model"
-	"zrt/internal/secret"
+	"edo/internal/configuration"
+	"edo/internal/model"
+	"edo/internal/secret"
 )
 
 type configurationHandler struct {

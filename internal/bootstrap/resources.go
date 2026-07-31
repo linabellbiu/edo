@@ -8,10 +8,10 @@ import (
 
 	"gorm.io/gorm"
 
-	"zrt/internal/cache"
-	"zrt/internal/config"
-	"zrt/internal/database"
-	"zrt/internal/messaging"
+	"edo/internal/cache"
+	"edo/internal/config"
+	"edo/internal/database"
+	"edo/internal/messaging"
 )
 
 type Resources struct {

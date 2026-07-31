@@ -9,7 +9,7 @@ import (
 
 	"github.com/google/uuid"
 
-	"zrt/internal/model"
+	"edo/internal/model"
 )
 
 func TestBuildLogRedactionKeepsSecretAcrossChunkBoundary(t *testing.T) {

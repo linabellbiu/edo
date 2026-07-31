@@ -9,7 +9,7 @@ import (
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 
-	"zrt/internal/config"
+	"edo/internal/config"
 )
 
 type NATS struct {
@@ -35,7 +35,7 @@ type QueueStats struct {
 func Open(ctx context.Context, cfg config.NATS, logger *slog.Logger) (*NATS, error) {
 	conn, err := nats.Connect(
 		cfg.URL,
-		nats.Name("zrt"),
+		nats.Name("edo"),
 		nats.Timeout(cfg.Timeout),
 		nats.MaxReconnects(-1),
 		nats.ReconnectWait(time.Second),
@@ -68,7 +68,7 @@ func Open(ctx context.Context, cfg config.NATS, logger *slog.Logger) (*NATS, err
 func (n *NATS) EnsureStreams(ctx context.Context) error {
 	_, err := n.js.CreateOrUpdateStream(ctx, jetstream.StreamConfig{
 		Name:        n.config.Stream,
-		Description: "ZRT 持久化任务队列",
+		Description: "EDO 持久化任务队列",
 		Subjects:    []string{n.config.SubjectPrefix + ".>"},
 		Retention:   jetstream.WorkQueuePolicy,
 		Storage:     jetstream.FileStorage,
@@ -84,7 +84,7 @@ func (n *NATS) EnsureStreams(ctx context.Context) error {
 	}
 	_, err = n.js.CreateOrUpdateStream(ctx, jetstream.StreamConfig{
 		Name:        n.config.DeadStream,
-		Description: "ZRT 任务死信",
+		Description: "EDO 任务死信",
 		Subjects:    []string{n.config.DeadSubject},
 		Retention:   jetstream.LimitsPolicy,
 		Storage:     jetstream.FileStorage,
@@ -107,7 +107,7 @@ func (n *NATS) EnsureConsumer(ctx context.Context, durable, filter string, maxAt
 	consumer, err := n.js.CreateOrUpdateConsumer(ctx, n.config.Stream, jetstream.ConsumerConfig{
 		Name:          durable,
 		Durable:       durable,
-		Description:   "ZRT Worker " + durable,
+		Description:   "EDO Worker " + durable,
 		AckPolicy:     jetstream.AckExplicitPolicy,
 		MaxDeliver:    maxAttempts,
 		BackOff:       retryBackoff(maxAttempts),

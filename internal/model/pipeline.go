@@ -110,7 +110,7 @@ type DockerHealthCheck struct {
 }
 
 // DockerContainerConfig 是单容器部署方案的可执行配置。DeploymentScript 保存目标
-// 主机侧的受限 docker run 命令模板；留空时由 ZRT 通过 Docker API 创建容器。Command
+// 主机侧的受限 docker run 命令模板；留空时由 EDO 通过 Docker API 创建容器。Command
 // 仅用于兼容已有运行快照，新配置不再通过表单写入该字段。
 type DockerContainerConfig struct {
 	PortMappings         []DockerPortMapping `json:"port_mappings"`

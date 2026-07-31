@@ -15,12 +15,12 @@ import (
 	mobyclient "github.com/moby/moby/client"
 	"gorm.io/gorm"
 
-	"zrt/internal/config"
-	"zrt/internal/database"
-	"zrt/internal/dockerengine"
-	"zrt/internal/hostcredential"
-	"zrt/internal/model"
-	"zrt/internal/secret"
+	"edo/internal/config"
+	"edo/internal/database"
+	"edo/internal/dockerengine"
+	"edo/internal/hostcredential"
+	"edo/internal/model"
+	"edo/internal/secret"
 )
 
 type dockerProbeStub struct {

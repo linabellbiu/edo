@@ -8,9 +8,9 @@ import (
 
 	"github.com/gin-gonic/gin"
 
-	"zrt/internal/credential"
-	"zrt/internal/model"
-	"zrt/internal/secret"
+	"edo/internal/credential"
+	"edo/internal/model"
+	"edo/internal/secret"
 )
 
 type credentialHandler struct {

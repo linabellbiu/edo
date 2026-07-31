@@ -15,12 +15,12 @@ import (
 	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
 
-	"zrt/internal/audit"
-	"zrt/internal/model"
-	terminalservice "zrt/internal/terminal"
+	"edo/internal/audit"
+	"edo/internal/model"
+	terminalservice "edo/internal/terminal"
 )
 
-const terminalSubprotocol = "zrt-terminal-v1"
+const terminalSubprotocol = "edo-terminal-v1"
 
 type terminalHandler struct {
 	service *terminalservice.Service

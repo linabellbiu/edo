@@ -26,7 +26,7 @@ func New(encodedKey string) (*Manager, error) {
 		key, err = base64.RawStdEncoding.DecodeString(encodedKey)
 	}
 	if err != nil || len(key) != 32 {
-		return nil, errors.New("ZRT_SECRETS_KEY 必须是 32 字节随机密钥的 Base64 编码")
+		return nil, errors.New("EDO_SECRETS_KEY 必须是 32 字节随机密钥的 Base64 编码")
 	}
 	block, err := aes.NewCipher(key)
 	if err != nil {

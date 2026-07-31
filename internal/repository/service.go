@@ -14,9 +14,9 @@ import (
 	"github.com/google/uuid"
 	"gorm.io/gorm"
 
-	"zrt/internal/credential"
-	"zrt/internal/model"
-	"zrt/internal/secret"
+	"edo/internal/credential"
+	"edo/internal/model"
+	"edo/internal/secret"
 )
 
 var (

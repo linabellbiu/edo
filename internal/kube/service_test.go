@@ -15,10 +15,10 @@ import (
 	"testing"
 	"time"
 
-	"zrt/internal/config"
-	"zrt/internal/database"
-	"zrt/internal/model"
-	"zrt/internal/secret"
+	"edo/internal/config"
+	"edo/internal/database"
+	"edo/internal/model"
+	"edo/internal/secret"
 )
 
 const safeKubeconfig = `apiVersion: v1
@@ -28,14 +28,14 @@ clusters:
   cluster:
     server: https://kubernetes.example.com
 users:
-- name: zrt
+- name: edo
   user:
     token: test-token
 contexts:
 - name: production
   context:
     cluster: production
-    user: zrt
+    user: edo
     namespace: default
 current-context: production
 `
@@ -241,14 +241,14 @@ clusters:
     server: %s
     certificate-authority-data: %s
 users:
-- name: zrt
+- name: edo
   user:
     token: test-token
 contexts:
 - name: test
   context:
     cluster: test
-    user: zrt
+    user: edo
 current-context: test
 `, server.URL, base64.StdEncoding.EncodeToString(certificate))
 }

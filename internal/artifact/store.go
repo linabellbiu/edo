@@ -63,7 +63,7 @@ func (s *LocalStore) CreateTempDirectory(prefix string) (string, error) {
 	}
 	prefix = strings.TrimSpace(prefix)
 	if prefix == "" || strings.ContainsAny(prefix, `/\\\x00`) {
-		prefix = "zrt-artifact-"
+		prefix = "edo-artifact-"
 	}
 	directory, err := os.MkdirTemp(s.temp, prefix)
 	if err != nil {

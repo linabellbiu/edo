@@ -13,8 +13,8 @@ import (
 
 	ldap "github.com/go-ldap/ldap/v3"
 
-	"zrt/internal/account"
-	"zrt/internal/model"
+	"edo/internal/account"
+	"edo/internal/model"
 )
 
 func (s *Service) LoginLDAP(ctx context.Context, providerID, username, password, clientIP string) (account.LoginResult, error) {

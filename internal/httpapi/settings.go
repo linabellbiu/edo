@@ -7,12 +7,12 @@ import (
 
 	"github.com/gin-gonic/gin"
 
-	"zrt/internal/auth"
-	"zrt/internal/config"
-	"zrt/internal/configuration"
-	"zrt/internal/database"
-	"zrt/internal/logging"
-	"zrt/internal/logretention"
+	"edo/internal/auth"
+	"edo/internal/config"
+	"edo/internal/configuration"
+	"edo/internal/database"
+	"edo/internal/logging"
+	"edo/internal/logretention"
 )
 
 type settingsHandler struct {

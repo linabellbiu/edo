@@ -13,7 +13,7 @@ import (
 
 	"github.com/gorilla/websocket"
 
-	terminalservice "zrt/internal/terminal"
+	terminalservice "edo/internal/terminal"
 )
 
 func TestTerminalBridgeCarriesInputOutputAndResize(t *testing.T) {
@@ -57,11 +57,11 @@ func TestTerminalBridgeCarriesInputOutputAndResize(t *testing.T) {
 		t.Fatal("等待终端输入超时")
 	}
 
-	if _, err := session.outputWriter.Write([]byte("zrt-user\r\n")); err != nil {
+	if _, err := session.outputWriter.Write([]byte("edo-user\r\n")); err != nil {
 		t.Fatalf("写入终端模拟输出失败: %v", err)
 	}
 	messageType, output, err := connection.ReadMessage()
-	if err != nil || messageType != websocket.BinaryMessage || string(output) != "zrt-user\r\n" {
+	if err != nil || messageType != websocket.BinaryMessage || string(output) != "edo-user\r\n" {
 		t.Fatalf("终端输出内容错误: type=%d payload=%q err=%v", messageType, output, err)
 	}
 

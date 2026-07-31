@@ -15,9 +15,9 @@ import (
 
 	"gorm.io/gorm"
 
-	"zrt/internal/artifact"
-	"zrt/internal/dockerengine"
-	"zrt/internal/model"
+	"edo/internal/artifact"
+	"edo/internal/dockerengine"
+	"edo/internal/model"
 )
 
 type buildExecutionContext struct {
@@ -87,7 +87,7 @@ func (s *Service) ExecuteBuildTask(ctx context.Context, payload BuildTaskPayload
 			return nil
 		}
 	}
-	workspace, err := os.MkdirTemp("", "zrt-pipeline-build-*")
+	workspace, err := os.MkdirTemp("", "edo-pipeline-build-*")
 	if err != nil {
 		return s.finishBuildTaskFailure(ctx, runningState, buildTaskCanRetry(prepared),
 			"准备构建工作区失败，请稍后重试", err)
@@ -328,7 +328,7 @@ func (s *Service) executePipelineBuild(ctx context.Context, prepared *buildExecu
 	}
 	switch prepared.plan.Kind {
 	case model.BuildPlanScript:
-		outputDirectory, err := s.artifacts.CreateTempDirectory("zrt-script-output-")
+		outputDirectory, err := s.artifacts.CreateTempDirectory("edo-script-output-")
 		if err != nil {
 			return nil, err
 		}
@@ -363,9 +363,9 @@ func (s *Service) executePipelineBuild(ctx context.Context, prepared *buildExecu
 			TargetStage: prepared.plan.TargetStage, Platform: prepared.plan.Platform,
 			BuildArgs: prepared.plan.BuildArgs,
 			Labels: map[string]string{
-				"io.zrt.application.id":  prepared.application.ID,
-				"io.zrt.pipeline.run.id": prepared.run.ID,
-				"io.zrt.commit":          prepared.run.CommitSHA,
+				"io.edo.application.id":  prepared.application.ID,
+				"io.edo.pipeline.run.id": prepared.run.ID,
+				"io.edo.commit":          prepared.run.CommitSHA,
 			},
 		}
 		timeout := time.Duration(prepared.plan.TimeoutSeconds) * time.Second
@@ -484,10 +484,10 @@ func (s *Service) executePipelineShell(
 		Environment:       environment,
 		SystemEnvironment: pipelineCommandEnvironment(prepared),
 		Labels: map[string]string{
-			"io.zrt.application.id":   prepared.application.ID,
-			"io.zrt.pipeline.run.id":  prepared.run.ID,
-			"io.zrt.workflow.node.id": prepared.node.ID,
-			"io.zrt.commit":           prepared.run.CommitSHA,
+			"io.edo.application.id":   prepared.application.ID,
+			"io.edo.pipeline.run.id":  prepared.run.ID,
+			"io.edo.workflow.node.id": prepared.node.ID,
+			"io.edo.commit":           prepared.run.CommitSHA,
 		},
 		Timeout: time.Duration(timeoutSeconds) * time.Second,
 		Stdout:  output,
@@ -519,10 +519,10 @@ func sensitiveVariableValues(values map[string]string) []string {
 
 func pipelineCommandEnvironment(prepared *buildExecutionContext) map[string]string {
 	return map[string]string{
-		"ZRT_PIPELINE_RUN_ID": prepared.run.ID,
-		"ZRT_APPLICATION_ID":  prepared.application.ID,
-		"ZRT_GIT_REF":         prepared.run.Ref,
-		"ZRT_COMMIT_SHA":      prepared.run.CommitSHA,
+		"EDO_PIPELINE_RUN_ID": prepared.run.ID,
+		"EDO_APPLICATION_ID":  prepared.application.ID,
+		"EDO_GIT_REF":         prepared.run.Ref,
+		"EDO_COMMIT_SHA":      prepared.run.CommitSHA,
 	}
 }
 

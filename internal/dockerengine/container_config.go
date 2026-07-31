@@ -10,7 +10,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"zrt/internal/model"
+	"edo/internal/model"
 )
 
 var ErrInvalidContainerConfig = errors.New("Docker 容器配置无效")

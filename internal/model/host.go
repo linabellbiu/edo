@@ -5,7 +5,7 @@ import "time"
 type HostMode string
 
 const (
-	BuiltinLocalHostID = "zrt-local-host"
+	BuiltinLocalHostID = "edo-local-host"
 
 	HostModeLocal HostMode = "local"
 	HostModeSSH   HostMode = "ssh"

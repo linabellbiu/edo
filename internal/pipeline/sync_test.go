@@ -6,9 +6,9 @@ import (
 	"strings"
 	"testing"
 
-	"zrt/internal/credential"
-	"zrt/internal/model"
-	"zrt/internal/repository"
+	"edo/internal/credential"
+	"edo/internal/model"
+	"edo/internal/repository"
 )
 
 type pipelineRefLister struct {

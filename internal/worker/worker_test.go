@@ -11,11 +11,11 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 	"gorm.io/gorm"
 
-	"zrt/internal/config"
-	"zrt/internal/database"
-	"zrt/internal/model"
-	"zrt/internal/pipeline"
-	"zrt/internal/task"
+	"edo/internal/config"
+	"edo/internal/database"
+	"edo/internal/model"
+	"edo/internal/pipeline"
+	"edo/internal/task"
 )
 
 type fakeQueueMessage struct {
@@ -86,7 +86,7 @@ func TestWorkerRetriesThenWritesDeadLetter(t *testing.T) {
 		t.Fatalf("耗尽重试后状态错误: status=%s attempt=%d terminated=%v", stored.Status, stored.Attempt, second.terminated)
 	}
 	var deadCount int64
-	if err := db.Model(&model.OutboxEvent{}).Where("aggregate_id = ? AND subject = ?", job.ID, "zrt.dead.task.v1").Count(&deadCount).Error; err != nil {
+	if err := db.Model(&model.OutboxEvent{}).Where("aggregate_id = ? AND subject = ?", job.ID, "edo.dead.task.v1").Count(&deadCount).Error; err != nil {
 		t.Fatalf("查询死信 Outbox 失败: %v", err)
 	}
 	if deadCount != 1 {
@@ -107,7 +107,7 @@ func TestAttemptsExhaustedConvergesPipelineAndDeploymentInSameFailure(t *testing
 	}
 	payload := pipeline.DeployTaskPayload{PipelineRunID: "run-interrupted", WorkflowNodeID: "deploy-interrupted"}
 	job, err := task.NewService(db, config.DefaultMaxAttempts).Create(context.Background(), task.CreateInput{
-		Kind: "pipeline.deploy", Subject: "zrt.task.pipeline.deploy", Payload: payload,
+		Kind: "pipeline.deploy", Subject: "edo.task.pipeline.deploy", Payload: payload,
 		MaxAttempts: 1, Idempotent: false,
 	})
 	if err != nil {
@@ -201,7 +201,7 @@ func TestAttemptsExhaustedConvergesNonIdempotentBuildTask(t *testing.T) {
 	}
 	payload := pipeline.BuildTaskPayload{PipelineRunID: "run-shell-interrupted", WorkflowNodeID: "shell-interrupted"}
 	job, err := task.NewService(db, config.DefaultMaxAttempts).Create(context.Background(), task.CreateInput{
-		Kind: "pipeline.build", Subject: "zrt.task.pipeline.build", Payload: payload,
+		Kind: "pipeline.build", Subject: "edo.task.pipeline.build", Payload: payload,
 		MaxAttempts: 1, Idempotent: false,
 	})
 	if err != nil {
@@ -374,7 +374,7 @@ func openWorkerTestDB(t *testing.T, name string) *gorm.DB {
 func createWorkerTestJob(t *testing.T, db *gorm.DB, kind string, maxAttempts int) (*model.Job, *fakeQueueMessage) {
 	t.Helper()
 	service := task.NewService(db, config.DefaultMaxAttempts)
-	subject := "zrt.task." + kind
+	subject := "edo.task." + kind
 	job, err := service.Create(context.Background(), task.CreateInput{
 		Kind: kind, Subject: subject, Payload: map[string]string{"ref": "test"},
 		MaxAttempts: maxAttempts, Idempotent: true,
@@ -392,7 +392,7 @@ func createWorkerTestJob(t *testing.T, db *gorm.DB, kind string, maxAttempts int
 func newTestWorker(db *gorm.DB, registry *Registry) *Worker {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	return New(db, nil, registry, logger, config.NATS{
-		SubjectPrefix: "zrt.task", DeadSubject: "zrt.dead.task.v1",
+		SubjectPrefix: "edo.task", DeadSubject: "edo.dead.task.v1",
 		MaxAttempts: config.DefaultMaxAttempts, Timeout: time.Second,
 	}, config.Worker{
 		Concurrency: 1, TaskTimeout: time.Second,

@@ -8,9 +8,9 @@ import (
 
 	"github.com/gin-gonic/gin"
 
-	dnsmanager "zrt/internal/dns"
-	"zrt/internal/model"
-	"zrt/internal/secret"
+	dnsmanager "edo/internal/dns"
+	"edo/internal/model"
+	"edo/internal/secret"
 )
 
 type dnsHandler struct {

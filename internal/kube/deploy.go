@@ -47,9 +47,9 @@ func (s *Service) DeployImage(
 		if current.Spec.Template.Annotations == nil {
 			current.Spec.Template.Annotations = map[string]string{}
 		}
-		current.Spec.Template.Annotations["zrt.io/deployment-id"] = deploymentID
+		current.Spec.Template.Annotations["edo.io/deployment-id"] = deploymentID
 		updated, err := clientset.AppsV1().Deployments(namespace).Update(ctx, current, metav1.UpdateOptions{
-			FieldManager: "zrt",
+			FieldManager: "edo",
 		})
 		if err == nil {
 			generation = updated.Generation

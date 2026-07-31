@@ -53,7 +53,7 @@ function externalLogin(item: LoginProvider) {
 
 onMounted(async () => {
   try { providers.value = await getLoginProviders() } catch { providers.value = [] }
-  if (route.query.reason === 'unavailable') error.value = '暂时无法读取登录状态，请确认 ZRT 服务已启动。'
+  if (route.query.reason === 'unavailable') error.value = '暂时无法读取登录状态，请确认 EDO 服务已启动。'
 })
 </script>
 
@@ -64,30 +64,30 @@ onMounted(async () => {
       <button type="button" @click="preferences.toggleTheme()"><Sun v-if="preferences.theme === 'dark'" /><Moon v-else /></button>
     </div>
     <section class="login-visual">
-      <div class="visual-brand"><span class="logo-mark"><span>Z</span></span><strong>ZRT</strong></div>
+      <div class="visual-brand"><span class="logo-mark"><span>Z</span></span><strong>EDO</strong></div>
       <div class="visual-copy"><p>持续交付与运行管理平台</p><h1>让每一次变更<br>都有清晰路径。</h1><span>从代码检查、镜像构建到环境发布，把复杂流程收进一个可靠的工作台。</span></div>
       <div class="visual-orbits"><i /><i /><i /></div>
     </section>
     <section class="login-panel">
       <form class="login-card" @submit.prevent="submit">
-        <div class="login-card-head"><h2>欢迎回来</h2><p>登录 ZRT 继续工作</p></div>
+        <div class="login-card-head"><h2>欢迎回来</h2><p>登录 EDO 继续工作</p></div>
         <a-alert v-if="error" type="error" show-icon :message="error" />
-        <a-segmented v-if="ldapProviders.length" v-model:value="provider" block :options="[{ label: 'ZRT 账号', value: 'local' }, ...ldapProviders.map((item) => ({ label: item.display_name, value: item.id }))]" />
+        <a-segmented v-if="ldapProviders.length" v-model:value="provider" block :options="[{ label: 'EDO 账号', value: 'local' }, ...ldapProviders.map((item) => ({ label: item.display_name, value: item.id }))]" />
         <label><span>用户名</span><a-input v-model:value="username" size="large" autocomplete="username" placeholder="请输入用户名"><template #prefix><UserRound /></template></a-input></label>
         <label><span>密码</span><a-input-password v-model:value="password" size="large" autocomplete="current-password" placeholder="请输入密码"><template #prefix><LockKeyhole /></template></a-input-password></label>
         <a-button type="primary" html-type="submit" size="large" block :loading="loading">登录</a-button>
         <template v-if="oauthProviders.length"><a-divider>其他登录方式</a-divider><div class="oauth-list"><a-button v-for="item in oauthProviders" :key="item.id" @click="externalLogin(item)">{{ item.display_name }}</a-button></div></template>
       </form>
-      <p class="login-copyright">ZRT · 安全、清晰、可追踪</p>
+      <p class="login-copyright">EDO · 安全、清晰、可追踪</p>
     </section>
   </main>
 </template>
 
 <style scoped>
-.vben-login-page { position: relative; display: grid; min-height: 100vh; grid-template-columns: minmax(380px,1.08fr) minmax(420px,.92fr); overflow: hidden; background: var(--zrt-surface); }
+.vben-login-page { position: relative; display: grid; min-height: 100vh; grid-template-columns: minmax(380px,1.08fr) minmax(420px,.92fr); overflow: hidden; background: var(--edo-surface); }
 .login-tools { position: absolute; top: 20px; right: 22px; z-index: 3; display: flex; gap: 5px; }
-.login-tools button { display: grid; width: 34px; height: 34px; place-items: center; border: 0; border-radius: 6px; color: var(--zrt-muted); background: transparent; cursor: pointer; }
-.login-tools button:hover { color: var(--zrt-primary); background: var(--zrt-surface-soft); }
+.login-tools button { display: grid; width: 34px; height: 34px; place-items: center; border: 0; border-radius: 6px; color: var(--edo-muted); background: transparent; cursor: pointer; }
+.login-tools button:hover { color: var(--edo-primary); background: var(--edo-surface-soft); }
 .login-tools svg { width: 18px; }
 .login-visual { position: relative; display: flex; min-height: 100vh; flex-direction: column; justify-content: space-between; overflow: hidden; padding: 42px 7vw 64px; color: #fff; background: radial-gradient(circle at 18% 20%,rgb(116 107 255 / 95%),transparent 38%),radial-gradient(circle at 78% 78%,rgb(47 201 190 / 80%),transparent 36%),linear-gradient(145deg,#2d3c86,#5367df 56%,#335e8c); }
 .login-visual::after { position: absolute; inset: 0; background-image: linear-gradient(rgb(255 255 255 / 5%) 1px,transparent 1px),linear-gradient(90deg,rgb(255 255 255 / 5%) 1px,transparent 1px); background-size: 42px 42px; content: ""; mask-image: linear-gradient(to bottom,black,transparent); }
@@ -100,11 +100,11 @@ onMounted(async () => {
 .visual-orbits { position: absolute; right: -150px; bottom: -170px; width: 520px; height: 520px; border: 1px solid rgb(255 255 255 / 15%); border-radius: 50%; }
 .visual-orbits i { position: absolute; inset: 65px; border: 1px solid rgb(255 255 255 / 12%); border-radius: 50%; }
 .visual-orbits i:nth-child(2) { inset: 135px; }.visual-orbits i:nth-child(3) { inset: 205px; background: rgb(255 255 255 / 9%); }
-.login-panel { display: flex; min-height: 100vh; align-items: center; justify-content: center; flex-direction: column; padding: 80px 34px 34px; background: var(--zrt-surface); }
+.login-panel { display: flex; min-height: 100vh; align-items: center; justify-content: center; flex-direction: column; padding: 80px 34px 34px; background: var(--edo-surface); }
 .login-card { display: grid; width: min(390px,100%); gap: 20px; }
-.login-card-head h2 { margin: 0; color: var(--zrt-text); font-size: 28px; }.login-card-head p { margin: 6px 0 0; color: var(--zrt-muted); }
-label { display: grid; gap: 7px; color: var(--zrt-text); font-weight: 500; }
-label :deep(.ant-input-prefix) svg { width: 17px; color: var(--zrt-muted); }
-.oauth-list { display: flex; flex-wrap: wrap; gap: 8px; }.login-copyright { margin-top: 58px; color: var(--zrt-muted); font-size: 12px; }
-@media (max-width: 820px) { .vben-login-page { display: block; background: var(--zrt-bg); }.login-visual { display: none; }.login-panel { background: var(--zrt-bg); }.login-card { padding: 26px; border: 1px solid var(--zrt-border); border-radius: 10px; background: var(--zrt-surface); box-shadow: var(--zrt-shadow); } }
+.login-card-head h2 { margin: 0; color: var(--edo-text); font-size: 28px; }.login-card-head p { margin: 6px 0 0; color: var(--edo-muted); }
+label { display: grid; gap: 7px; color: var(--edo-text); font-weight: 500; }
+label :deep(.ant-input-prefix) svg { width: 17px; color: var(--edo-muted); }
+.oauth-list { display: flex; flex-wrap: wrap; gap: 8px; }.login-copyright { margin-top: 58px; color: var(--edo-muted); font-size: 12px; }
+@media (max-width: 820px) { .vben-login-page { display: block; background: var(--edo-bg); }.login-visual { display: none; }.login-panel { background: var(--edo-bg); }.login-card { padding: 26px; border: 1px solid var(--edo-border); border-radius: 10px; background: var(--edo-surface); box-shadow: var(--edo-shadow); } }
 </style>

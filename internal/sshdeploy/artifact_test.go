@@ -15,7 +15,7 @@ func TestStageLocalArtifactValidatesDigestAndCommitsAtomically(t *testing.T) {
 	workingDirectory := t.TempDir()
 	content := []byte("immutable artifact payload")
 	digest := stagedArtifactDigest(content)
-	destination := filepath.Join(workingDirectory, ".zrt", "artifacts", "bundle.tar.gz")
+	destination := filepath.Join(workingDirectory, ".edo", "artifacts", "bundle.tar.gz")
 	if err := os.MkdirAll(filepath.Dir(destination), 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -57,26 +57,26 @@ func TestStageLocalArtifactValidatesDigestAndCommitsAtomically(t *testing.T) {
 		t.Fatalf("原子落盘后遗留临时文件: %v", temporaryFiles)
 	}
 
-	environment := map[string]string{"ZRT_PIPELINE_RUN_ID": "run-1"}
+	environment := map[string]string{"EDO_PIPELINE_RUN_ID": "run-1"}
 	injected := withArtifactEnvironment(environment, staged, digest)
-	if injected["ZRT_ARTIFACT_PATH"] != staged || injected["ZRT_ARTIFACT_DIGEST"] != digest {
+	if injected["EDO_ARTIFACT_PATH"] != staged || injected["EDO_ARTIFACT_DIGEST"] != digest {
 		t.Fatalf("部署环境没有注入制品路径和摘要: %+v", injected)
 	}
-	if _, changed := environment["ZRT_ARTIFACT_PATH"]; changed {
+	if _, changed := environment["EDO_ARTIFACT_PATH"]; changed {
 		t.Fatal("注入制品元数据时修改了调用方环境变量")
 	}
 	body, err := deploymentScriptInput(Input{Script: "printf deploy", Environment: injected})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(body, "export ZRT_ARTIFACT_PATH='"+staged+"'\n") {
+	if !strings.Contains(body, "export EDO_ARTIFACT_PATH='"+staged+"'\n") {
 		t.Fatalf("部署脚本输入缺少制品路径: %q", body)
 	}
 }
 
 func TestStageLocalArtifactRejectsDigestMismatchWithoutPartialFile(t *testing.T) {
 	workingDirectory := t.TempDir()
-	destination := filepath.Join(workingDirectory, ".zrt", "artifacts", "bad.tar.gz")
+	destination := filepath.Join(workingDirectory, ".edo", "artifacts", "bad.tar.gz")
 	_, err := stageLocalArtifact(context.Background(), Input{
 		WorkingDirectory: workingDirectory,
 		Artifact:         strings.NewReader("tampered"),
@@ -111,7 +111,7 @@ func TestStageLocalArtifactStopsWhenContextCanceled(t *testing.T) {
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("上下文取消后仍继续暂存制品: %v", err)
 	}
-	temporaryFiles, globErr := filepath.Glob(filepath.Join(workingDirectory, ".zrt", "artifacts", "canceled.tar.gz.tmp-*"))
+	temporaryFiles, globErr := filepath.Glob(filepath.Join(workingDirectory, ".edo", "artifacts", "canceled.tar.gz.tmp-*"))
 	if globErr != nil {
 		t.Fatal(globErr)
 	}
@@ -126,7 +126,7 @@ func TestStagedArtifactPathsContainUntrustedName(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	expected := filepath.Join(workingDirectory, ".zrt", "artifacts", "release_bundle.tar.gz")
+	expected := filepath.Join(workingDirectory, ".edo", "artifacts", "release_bundle.tar.gz")
 	if destination != expected {
 		t.Fatalf("不可信制品名称未被限制在暂存目录: got=%q want=%q", destination, expected)
 	}

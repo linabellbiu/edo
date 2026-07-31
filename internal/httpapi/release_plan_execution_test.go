@@ -16,22 +16,22 @@ import (
 	"github.com/google/uuid"
 	"gorm.io/gorm"
 
-	"zrt/internal/access"
-	"zrt/internal/account"
-	"zrt/internal/audit"
-	"zrt/internal/auth"
-	"zrt/internal/cache"
-	"zrt/internal/config"
-	"zrt/internal/configuration"
-	"zrt/internal/credential"
-	"zrt/internal/database"
-	"zrt/internal/deployment"
-	"zrt/internal/dockerengine"
-	"zrt/internal/logging"
-	"zrt/internal/model"
-	"zrt/internal/pipeline"
-	"zrt/internal/repository"
-	"zrt/internal/secret"
+	"edo/internal/access"
+	"edo/internal/account"
+	"edo/internal/audit"
+	"edo/internal/auth"
+	"edo/internal/cache"
+	"edo/internal/config"
+	"edo/internal/configuration"
+	"edo/internal/credential"
+	"edo/internal/database"
+	"edo/internal/deployment"
+	"edo/internal/dockerengine"
+	"edo/internal/logging"
+	"edo/internal/model"
+	"edo/internal/pipeline"
+	"edo/internal/repository"
+	"edo/internal/secret"
 )
 
 func TestReleasePlanExecutionRequiresDeliveryRun(t *testing.T) {
@@ -174,7 +174,7 @@ func TestCreateReleasePlanExecutionReturnsAccepted(t *testing.T) {
 	if err := fixture.db.First(&job, "id = ?", run.ExecutionJobID).Error; err != nil {
 		t.Fatalf("读取发布计划构建任务失败: %v", err)
 	}
-	if job.Kind != "pipeline.build" || job.Subject != "zrt.task.pipeline.build" {
+	if job.Kind != "pipeline.build" || job.Subject != "edo.task.pipeline.build" {
 		t.Fatalf("发布计划首个任务不是构建任务: %+v", job)
 	}
 }
@@ -236,13 +236,13 @@ func newReleasePlanExecutionHTTPFixture(t *testing.T, commitSHA string) releaseP
 	}
 	server := miniredis.RunT(t)
 	redisClient, err := cache.Open(context.Background(), config.Redis{
-		URL: "redis://" + server.Addr() + "/0", KeyPrefix: "zrt:", Timeout: time.Second,
+		URL: "redis://" + server.Addr() + "/0", KeyPrefix: "edo:", Timeout: time.Second,
 	})
 	if err != nil {
 		t.Fatalf("打开测试 Redis 失败: %v", err)
 	}
 	authConfig := config.Auth{
-		SessionTTL: time.Hour, CookieName: "zrt_session", LoginMaxFailure: 3, LoginWindow: time.Minute,
+		SessionTTL: time.Hour, CookieName: "edo_session", LoginMaxFailure: 3, LoginWindow: time.Minute,
 	}
 	sessions := auth.NewSessionStore(redisClient, authConfig.SessionTTL)
 	limiter := auth.NewLoginRateLimiter(redisClient, authConfig.LoginMaxFailure, authConfig.LoginWindow, configurationService)

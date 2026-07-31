@@ -7,9 +7,9 @@ import (
 
 	"gorm.io/gorm"
 
-	"zrt/internal/deployment"
-	"zrt/internal/dockerengine"
-	"zrt/internal/model"
+	"edo/internal/deployment"
+	"edo/internal/dockerengine"
+	"edo/internal/model"
 )
 
 const (
@@ -17,12 +17,12 @@ const (
 	initialBuildPlanName               = "快速开始 Dockerfile 构建"
 	initialDeploymentPlanName          = "快速开始 本地 Docker 部署"
 	initialDeploymentTargetName        = "快速开始 本地 Docker"
-	initialDeploymentEnvironmentID     = "zrt-local-environment"
+	initialDeploymentEnvironmentID     = "edo-local-environment"
 	initialDeploymentEnvironmentName   = "本地环境"
 	initialWorkflowTemplateName        = "快速开始 Dockerfile 流水线"
-	initialBuildPlanDescription        = "默认读取仓库根目录的 Dockerfile，在当前 ZRT 构建运行时生成本地 OCI 镜像。"
-	initialDeploymentPlanDescription   = "把上游镜像部署到当前 ZRT 的本地 Docker，容器名在应用运行时自动生成。"
-	initialDeploymentTargetDescription = "当前 ZRT 构建运行时中的本地 Docker，仅用于快速开始。"
+	initialBuildPlanDescription        = "默认读取仓库根目录的 Dockerfile，在当前 EDO 构建运行时生成本地 OCI 镜像。"
+	initialDeploymentPlanDescription   = "把上游镜像部署到当前 EDO 的本地 Docker，容器名在应用运行时自动生成。"
+	initialDeploymentTargetDescription = "当前 EDO 构建运行时中的本地 Docker，仅用于快速开始。"
 )
 
 type InitialDeliverySettings struct {
@@ -94,7 +94,7 @@ func (s *Service) EnsureInitialDeliverySettings(ctx context.Context) (InitialDel
 			now := time.Now().UTC()
 			environment := model.Environment{
 				ID: initialDeploymentEnvironmentID, Name: initialDeploymentEnvironmentName,
-				Description: "当前 ZRT 内置本地主机的默认环境。", IsActive: true,
+				Description: "当前 EDO 内置本地主机的默认环境。", IsActive: true,
 				CreatedBy: initialDeliveryActor, CreatedAt: now, UpdatedAt: now,
 			}
 			if err := tx.Where("id = ?", environment.ID).FirstOrCreate(&environment).Error; err != nil {

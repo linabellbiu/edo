@@ -11,33 +11,33 @@ import (
 
 	"github.com/gin-gonic/gin"
 
-	"zrt/internal/access"
-	"zrt/internal/account"
-	artifactmanager "zrt/internal/artifact"
-	"zrt/internal/audit"
-	"zrt/internal/auth"
-	"zrt/internal/config"
-	"zrt/internal/configuration"
-	"zrt/internal/credential"
-	"zrt/internal/database"
-	"zrt/internal/deployment"
-	dnsmanager "zrt/internal/dns"
-	"zrt/internal/dockerengine"
-	environmentmanager "zrt/internal/environment"
-	hostmanager "zrt/internal/host"
-	"zrt/internal/identity"
-	"zrt/internal/kube"
-	"zrt/internal/logging"
-	"zrt/internal/logretention"
-	"zrt/internal/monitor"
-	"zrt/internal/notification"
-	"zrt/internal/pipeline"
-	"zrt/internal/repository"
-	"zrt/internal/scheduler"
-	"zrt/internal/systemmetrics"
-	"zrt/internal/task"
-	"zrt/internal/terminal"
-	"zrt/internal/webui"
+	"edo/internal/access"
+	"edo/internal/account"
+	artifactmanager "edo/internal/artifact"
+	"edo/internal/audit"
+	"edo/internal/auth"
+	"edo/internal/config"
+	"edo/internal/configuration"
+	"edo/internal/credential"
+	"edo/internal/database"
+	"edo/internal/deployment"
+	dnsmanager "edo/internal/dns"
+	"edo/internal/dockerengine"
+	environmentmanager "edo/internal/environment"
+	hostmanager "edo/internal/host"
+	"edo/internal/identity"
+	"edo/internal/kube"
+	"edo/internal/logging"
+	"edo/internal/logretention"
+	"edo/internal/monitor"
+	"edo/internal/notification"
+	"edo/internal/pipeline"
+	"edo/internal/repository"
+	"edo/internal/scheduler"
+	"edo/internal/systemmetrics"
+	"edo/internal/task"
+	"edo/internal/terminal"
+	"edo/internal/webui"
 )
 
 type Dependencies struct {
@@ -114,7 +114,7 @@ func NewRouter(deps Dependencies) *gin.Engine {
 	protected.GET("/auth/me", authHandler.handleMe)
 	protected.PUT("/auth/password", auditAction(deps.Audits, deps.Logger, "auth.password.change", "user"), authHandler.handleChangePassword)
 	protected.GET("/system/info", requirePermission(deps.Access, deps.Logger, access.PermissionSystemRead), func(c *gin.Context) {
-		c.JSON(http.StatusOK, gin.H{"name": "ZRT", "version": deps.Version})
+		c.JSON(http.StatusOK, gin.H{"name": "EDO", "version": deps.Version})
 	})
 	systemMetricsAPI := systemMetricsHandler{service: deps.SystemMetrics, logger: deps.Logger}
 	protected.GET("/system/metrics", requirePermission(deps.Access, deps.Logger, access.PermissionMonitorRead), systemMetricsAPI.snapshot)
@@ -357,7 +357,7 @@ func installWebUI(router *gin.Engine, webRoot string, logger *slog.Logger) gin.H
 				}
 				handler := func(c *gin.Context) { c.File(index) }
 				router.GET("/", handler)
-				logger.Info("ZRT Web 前端已启用", "operation", "webui_enabled", "web_root", root)
+				logger.Info("EDO Web 前端已启用", "operation", "webui_enabled", "web_root", root)
 				return handler
 			}
 		}
@@ -380,6 +380,6 @@ func installWebUI(router *gin.Engine, webRoot string, logger *slog.Logger) gin.H
 		c.Data(http.StatusOK, "text/html; charset=utf-8", index)
 	}
 	router.GET("/", handler)
-	logger.Info("ZRT 内嵌 Web 前端已启用", "operation", "webui_enabled", "web_root", "embedded")
+	logger.Info("EDO 内嵌 Web 前端已启用", "operation", "webui_enabled", "web_root", "embedded")
 	return handler
 }

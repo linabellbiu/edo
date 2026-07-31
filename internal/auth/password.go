@@ -30,7 +30,7 @@ func ComparePassword(password, encoded string) (bool, error) {
 	if err != nil {
 		return false, errors.New("密码摘要格式无效")
 	}
-	// 第三方包负责 PHC 编解码；ZRT 在执行昂贵计算前额外限制数据库中可控参数，
+	// 第三方包负责 PHC 编解码；EDO 在执行昂贵计算前额外限制数据库中可控参数，
 	// 避免被篡改的摘要触发超大内存分配或长时间计算。
 	if decoded.Config.Mode != argon2.ModeArgon2id || decoded.Config.Version != argon2.Version13 {
 		return false, errors.New("密码摘要算法或版本无效")

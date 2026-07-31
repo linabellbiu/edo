@@ -10,10 +10,10 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 
-	"zrt/internal/audit"
-	"zrt/internal/database"
-	"zrt/internal/logging"
-	"zrt/internal/model"
+	"edo/internal/audit"
+	"edo/internal/database"
+	"edo/internal/logging"
+	"edo/internal/model"
 )
 
 const requestIDKey = "request_id"

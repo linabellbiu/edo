@@ -15,10 +15,10 @@ import (
 	"github.com/google/uuid"
 	"gorm.io/gorm"
 
-	"zrt/internal/model"
-	"zrt/internal/notification"
-	"zrt/internal/secret"
-	"zrt/internal/task"
+	"edo/internal/model"
+	"edo/internal/notification"
+	"edo/internal/secret"
+	"edo/internal/task"
 )
 
 var (
@@ -251,7 +251,7 @@ func (s *Service) Execute(ctx context.Context, payload TaskPayload, jobID string
 	if err != nil {
 		return ErrInvalidRule
 	}
-	request.Header.Set("User-Agent", "zrt-monitor")
+	request.Header.Set("User-Agent", "edo-monitor")
 	started := time.Now()
 	response, requestErr := s.httpClient.Do(request)
 	latency := time.Since(started).Milliseconds()
@@ -311,7 +311,7 @@ func (s *Service) enqueueOne(ctx context.Context, rule *model.MonitorRule, now t
 			return nil
 		}
 		job, err := task.NewService(tx, s.maxAttempts).Create(ctx, task.CreateInput{
-			Kind: "monitor.check", Subject: "zrt.task.monitor.check", Idempotent: true,
+			Kind: "monitor.check", Subject: "edo.task.monitor.check", Idempotent: true,
 			IdempotencyKey: "monitor:" + rule.ID + ":" + scheduledAt.Format(time.RFC3339),
 			Payload:        TaskPayload{RuleID: rule.ID, ScheduledAt: scheduledAt},
 		})

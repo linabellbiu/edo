@@ -24,7 +24,7 @@ func TestNormalizeScriptContainerInputRequiresPinnedImageAndEmptyOutput(t *testi
 		Image: "alpine:3.22", Script: "echo ok", SourceDirectory: source,
 		WorkingDirectory: "cmd", ArtifactPath: "dist", OutputDirectory: output,
 		Environment:       map[string]string{"BUILD_MODE": "release"},
-		SystemEnvironment: map[string]string{"ZRT_PIPELINE_RUN_ID": "run-1"}, Timeout: 30 * time.Second,
+		SystemEnvironment: map[string]string{"EDO_PIPELINE_RUN_ID": "run-1"}, Timeout: 30 * time.Second,
 	}
 	normalized, err := normalizeScriptContainerInput(valid)
 	if err != nil {
@@ -62,7 +62,7 @@ func TestScriptContainerCreateOptionsHaveNoHostOrDockerMounts(t *testing.T) {
 	options := scriptContainerCreateOptions(ScriptContainerInput{
 		Image: "alpine:3.22", WorkingDirectory: ".",
 		Environment: map[string]string{"VALUE": "configured"},
-		Labels:      map[string]string{"io.zrt.pipeline.run.id": "run-1"},
+		Labels:      map[string]string{"io.edo.pipeline.run.id": "run-1"},
 	}, "sha256:image")
 	if options.Config.User != scriptContainerUser || options.Config.WorkingDir != "/workspace/src/." {
 		t.Fatalf("脚本容器没有使用受限用户或工作目录: %+v", options.Config)
@@ -86,7 +86,7 @@ func TestScriptContainerCreateOptionsHaveNoHostOrDockerMounts(t *testing.T) {
 			t.Fatalf("脚本容器泄露了 Docker 连接配置: %q", value)
 		}
 	}
-	if options.Config.Labels["io.zrt.managed"] != "script" || options.HostConfig.PidsLimit == nil ||
+	if options.Config.Labels["io.edo.managed"] != "script" || options.HostConfig.PidsLimit == nil ||
 		*options.HostConfig.PidsLimit != 512 || options.HostConfig.Memory != 2*1024*1024*1024 ||
 		options.HostConfig.NanoCPUs != 2_000_000_000 {
 		t.Fatalf("脚本容器标签或资源限制不完整: labels=%v resources=%+v", options.Config.Labels, options.HostConfig.Resources)

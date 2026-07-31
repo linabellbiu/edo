@@ -8,7 +8,7 @@ import (
 
 	"gorm.io/gorm"
 
-	"zrt/internal/model"
+	"edo/internal/model"
 )
 
 // HandleTerminalTaskFailure 在 Worker 确认任务不会再次执行时，与 Job 失败状态同事务

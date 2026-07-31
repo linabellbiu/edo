@@ -225,8 +225,8 @@ onMounted(async () => {
 .plan-name-cell { display: flex; min-width: 240px; align-items: center; gap: 11px; }
 .plan-name-cell > div { min-width: 0; }
 .plan-name-cell strong, .plan-name-cell small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.plan-name-cell strong { color: var(--zrt-text); font-weight: 600; }
-.plan-name-cell small { max-width: 260px; margin-top: 2px; color: var(--zrt-muted); font-size: 12px; }
-.plan-icon { display: grid; width: 34px; height: 34px; flex: 0 0 34px; place-items: center; border-radius: 8px; color: var(--zrt-primary); background: var(--zrt-primary-soft); }
+.plan-name-cell strong { color: var(--edo-text); font-weight: 600; }
+.plan-name-cell small { max-width: 260px; margin-top: 2px; color: var(--edo-muted); font-size: 12px; }
+.plan-icon { display: grid; width: 34px; height: 34px; flex: 0 0 34px; place-items: center; border-radius: 8px; color: var(--edo-primary); background: var(--edo-primary-soft); }
 :deep(.ant-btn svg), :deep(.ant-menu-item svg) { margin-right: 5px; vertical-align: -2px; }
 </style>

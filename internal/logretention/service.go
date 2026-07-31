@@ -8,8 +8,8 @@ import (
 
 	"gorm.io/gorm"
 
-	"zrt/internal/configuration"
-	"zrt/internal/model"
+	"edo/internal/configuration"
+	"edo/internal/model"
 )
 
 type Report struct {

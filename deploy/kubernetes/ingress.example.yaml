@@ -1,23 +1,23 @@
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
-  name: zrt
-  namespace: zrt
+  name: edo
+  namespace: edo
   annotations:
     nginx.ingress.kubernetes.io/proxy-read-timeout: "7200"
     nginx.ingress.kubernetes.io/proxy-send-timeout: "7200"
 spec:
   ingressClassName: nginx
   tls:
-    - hosts: [zrt.example.com]
-      secretName: zrt-tls
+    - hosts: [edo.example.com]
+      secretName: edo-tls
   rules:
-    - host: zrt.example.com
+    - host: edo.example.com
       http:
         paths:
           - path: /
             pathType: Prefix
             backend:
               service:
-                name: zrt
+                name: edo
                 port: { number: 80 }

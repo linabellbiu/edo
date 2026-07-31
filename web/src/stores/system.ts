@@ -17,7 +17,7 @@ export const useSystemStore = defineStore('system', () => {
       updatedAt.value = new Date()
     } catch {
       ready.value = null
-      error.value = '无法连接 ZRT API，请检查服务是否已启动。'
+      error.value = '无法连接 EDO API，请检查服务是否已启动。'
     } finally {
       loading.value = false
     }

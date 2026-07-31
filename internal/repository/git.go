@@ -18,15 +18,15 @@ import (
 	gitssh "github.com/go-git/go-git/v5/plumbing/transport/ssh"
 	"github.com/go-git/go-git/v5/storage/memory"
 
-	"zrt/internal/config"
-	"zrt/internal/model"
+	"edo/internal/config"
+	"edo/internal/model"
 )
 
 var scpURLPattern = regexp.MustCompile(`^[A-Za-z0-9._-]+@[A-Za-z0-9.-]+:[^\s]+$`)
 
 const (
 	maxRemoteRefs          = 100_000
-	exactCheckoutReference = "refs/zrt/checkout/exact"
+	exactCheckoutReference = "refs/edo/checkout/exact"
 )
 
 var checkoutFallbackDepths = [...]int{1, 32, 128, 512, 2048, 4096}
@@ -167,7 +167,7 @@ func (c *GitClient) commitMessage(
 	if err != nil {
 		return "", fmt.Errorf("创建 Git 元数据远端失败: %w", err)
 	}
-	localReference := plumbing.ReferenceName("refs/zrt/commit-message")
+	localReference := plumbing.ReferenceName("refs/edo/commit-message")
 	refspec := gitconfig.RefSpec("+" + referenceName.String() + ":" + localReference.String())
 	if err := remote.FetchContext(queryContext, &git.FetchOptions{
 		Auth: auth, RefSpecs: []gitconfig.RefSpec{refspec}, Depth: depth, Tags: git.NoTags,
@@ -235,7 +235,7 @@ func (c *GitClient) Checkout(
 
 	// 部分服务端不允许按 SHA 请求对象。此时仅沿原始 Ref 有界补充历史，
 	// 每一轮仍验证固定 SHA 是否存在，绝不把 Ref 当前 tip 当作替代结果。
-	localReference := plumbing.ReferenceName("refs/zrt/" + strings.TrimPrefix(referenceName.String(), "refs/"))
+	localReference := plumbing.ReferenceName("refs/edo/" + strings.TrimPrefix(referenceName.String(), "refs/"))
 	refspec := gitconfig.RefSpec("+" + referenceName.String() + ":" + localReference.String())
 	for _, depth := range checkoutFallbackDepths {
 		if err := remote.FetchContext(checkoutContext, &git.FetchOptions{

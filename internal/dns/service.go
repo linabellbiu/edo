@@ -22,8 +22,8 @@ import (
 	"gorm.io/datatypes"
 	"gorm.io/gorm"
 
-	"zrt/internal/model"
-	"zrt/internal/secret"
+	"edo/internal/model"
+	"edo/internal/secret"
 )
 
 var (
@@ -42,7 +42,7 @@ var (
 	ErrRecordNotFound         = errors.New("DNS 解析记录不存在或已变化，请刷新后重试")
 	ErrRecordReadOnly         = errors.New("SOA 与根域名 NS 记录只能在 DNS 厂商控制台维护")
 	ErrRecordIdentityChange   = errors.New("修改主机记录或记录类型时，请先删除旧记录再创建新记录")
-	ErrProviderRecordSetLimit = errors.New("当前 DNS 厂商无法通过 ZRT 安全管理此多值记录集，请在厂商控制台处理")
+	ErrProviderRecordSetLimit = errors.New("当前 DNS 厂商无法通过 EDO 安全管理此多值记录集，请在厂商控制台处理")
 	ErrProviderRequest        = errors.New("DNS 厂商接口调用失败")
 )
 

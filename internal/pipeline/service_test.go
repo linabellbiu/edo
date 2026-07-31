@@ -15,15 +15,15 @@ import (
 	"github.com/regclient/regclient"
 	"gorm.io/gorm"
 
-	"zrt/internal/config"
-	"zrt/internal/credential"
-	"zrt/internal/database"
-	"zrt/internal/deployment"
-	"zrt/internal/dockerengine"
-	"zrt/internal/kube"
-	"zrt/internal/model"
-	"zrt/internal/repository"
-	"zrt/internal/secret"
+	"edo/internal/config"
+	"edo/internal/credential"
+	"edo/internal/database"
+	"edo/internal/deployment"
+	"edo/internal/dockerengine"
+	"edo/internal/kube"
+	"edo/internal/model"
+	"edo/internal/repository"
+	"edo/internal/secret"
 )
 
 func TestApplicationOwnsIndependentWorkflows(t *testing.T) {
@@ -182,7 +182,7 @@ func TestResourcesCanBeConfiguredAndPipelinePrepared(t *testing.T) {
 	credential := "registry-password"
 	registry, err := service.CreateRegistry(ctx, "admin", RegistryInput{
 		Name: "团队镜像仓库", Provider: model.RegistryHarbor,
-		Endpoint: "https://harbor.example.com", Namespace: "zrt", Username: "robot",
+		Endpoint: "https://harbor.example.com", Namespace: "edo", Username: "robot",
 		Credential: &credential,
 	})
 	if err != nil {
@@ -204,7 +204,7 @@ func TestResourcesCanBeConfiguredAndPipelinePrepared(t *testing.T) {
 	target := model.DeploymentTarget{
 		ID: "target-1", Name: "测试环境", Platform: model.DeploymentKubernetes,
 		RuntimeID: "cluster-1", Namespace: "default",
-		WorkloadName: "zrt-api", ContainerName: "api", RolloutTimeout: 300,
+		WorkloadName: "edo-api", ContainerName: "api", RolloutTimeout: 300,
 		IsActive: true, CreatedBy: "admin", CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
 	}
 	deploymentPlan, err := service.CreateDeploymentPlan(ctx, "admin", DeploymentPlanInput{
@@ -385,18 +385,18 @@ func TestCreateRegistryAcceptsRepositoryStyleDisplayName(t *testing.T) {
 	service, _, secretManager, _ := newPipelineTestService(t)
 	credential := " ucloud-registry-token "
 	registry, err := service.CreateRegistry(context.Background(), "admin", RegistryInput{
-		Name:       "uhub.service.ucloud.cn/zrt-application",
+		Name:       "uhub.service.ucloud.cn/edo-application",
 		Provider:   model.RegistryGeneric,
 		Endpoint:   "https://uhub.service.ucloud.cn",
-		Namespace:  "zrt-application",
+		Namespace:  "edo-application",
 		Username:   "852519822@qq.com",
 		Credential: &credential,
 	})
 	if err != nil {
 		t.Fatalf("合法的 UCloud 镜像仓库配置不应被拒绝: %v", err)
 	}
-	if registry.Name != "uhub.service.ucloud.cn/zrt-application" ||
-		registry.Endpoint != "https://uhub.service.ucloud.cn" || registry.Namespace != "zrt-application" {
+	if registry.Name != "uhub.service.ucloud.cn/edo-application" ||
+		registry.Endpoint != "https://uhub.service.ucloud.cn" || registry.Namespace != "edo-application" {
 		t.Fatalf("镜像仓库配置保存错误: %+v", registry)
 	}
 	plaintext, err := secretManager.Decrypt(registry.CredentialCiphertext, []byte("image_registry:"+registry.Name+":credential"))
@@ -409,8 +409,8 @@ func TestDockerHubRegistryUsesFixedEndpoint(t *testing.T) {
 	service, _, _, _ := newPipelineTestService(t)
 	credential := "docker-hub-token"
 	registry, err := service.CreateRegistry(context.Background(), "admin", RegistryInput{
-		Name: "Docker Hub", Provider: model.RegistryDockerHub, Namespace: "zrt-team",
-		Username: "zrt-team", Credential: &credential, AllowInsecureHTTP: true,
+		Name: "Docker Hub", Provider: model.RegistryDockerHub, Namespace: "edo-team",
+		Username: "edo-team", Credential: &credential, AllowInsecureHTTP: true,
 	})
 	if err != nil {
 		t.Fatalf("未填写地址的 Docker Hub 配置被拒绝: %v", err)
@@ -431,7 +431,7 @@ func TestDockerHubRegistryRejectsThirdPartyEndpoint(t *testing.T) {
 	service, _, _, _ := newPipelineTestService(t)
 	_, err := service.CreateRegistry(context.Background(), "admin", RegistryInput{
 		Name: "错误类型", Provider: model.RegistryDockerHub,
-		Endpoint: "https://registry.cn-shenzhen.aliyuncs.com", Namespace: "zrt-team",
+		Endpoint: "https://registry.cn-shenzhen.aliyuncs.com", Namespace: "edo-team",
 	})
 	if !errors.Is(err, ErrRegistryProviderEndpoint) {
 		t.Fatalf("Docker Hub 类型接受了第三方仓库地址: %v", err)
@@ -481,7 +481,7 @@ func TestCreateRegistryReturnsFieldSpecificValidationErrors(t *testing.T) {
 }
 
 func TestRegistryLoginUsesOCIAuthentication(t *testing.T) {
-	const username = "robot$zrt"
+	const username = "robot$edo"
 	const password = "registry-token"
 	registryServer := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
 		if request.URL.Path != "/v2/" {
@@ -490,7 +490,7 @@ func TestRegistryLoginUsesOCIAuthentication(t *testing.T) {
 		}
 		actualUser, actualPassword, ok := request.BasicAuth()
 		if !ok || actualUser != username || actualPassword != password {
-			response.Header().Set("WWW-Authenticate", `Basic realm="ZRT test registry"`)
+			response.Header().Set("WWW-Authenticate", `Basic realm="EDO test registry"`)
 			response.WriteHeader(http.StatusUnauthorized)
 			return
 		}
@@ -720,7 +720,7 @@ func TestReleaseWorkflowCapturesExplicitApprovalNode(t *testing.T) {
 	now := time.Now().UTC()
 	target := model.DeploymentTarget{
 		ID: "workflow-target", Name: "workflow-target", Platform: model.DeploymentKubernetes,
-		RuntimeID: "cluster-1", Namespace: "default", WorkloadName: "zrt-api", ContainerName: "api",
+		RuntimeID: "cluster-1", Namespace: "default", WorkloadName: "edo-api", ContainerName: "api",
 		RolloutTimeout: 300, IsActive: true, CreatedBy: "admin", CreatedAt: now, UpdatedAt: now,
 	}
 	deploymentPlan, err := service.CreateDeploymentPlan(ctx, "admin", DeploymentPlanInput{
@@ -798,7 +798,7 @@ func TestPublicWorkflowTemplateSyncsLinkedApplications(t *testing.T) {
 	now := time.Now().UTC()
 	target := model.DeploymentTarget{
 		ID: "template-target", Name: "模板部署目标", Platform: model.DeploymentKubernetes,
-		RuntimeID: "cluster-1", Namespace: "default", WorkloadName: "zrt-api", ContainerName: "api",
+		RuntimeID: "cluster-1", Namespace: "default", WorkloadName: "edo-api", ContainerName: "api",
 		RolloutTimeout: 300, IsActive: true, CreatedBy: "admin", CreatedAt: now, UpdatedAt: now,
 	}
 	deploymentPlan, err := service.CreateDeploymentPlan(ctx, "admin", DeploymentPlanInput{
@@ -958,7 +958,7 @@ func testStageWorkflowGraph(buildPlanID, deploymentPlanID string) (model.Workflo
 func createTestImageRegistry(t *testing.T, service *Service, name string) *model.ImageRegistry {
 	t.Helper()
 	registry, err := service.CreateRegistry(context.Background(), "admin", RegistryInput{
-		Name: name, Provider: model.RegistryGeneric, Endpoint: "https://registry.example.com", Namespace: "zrt",
+		Name: name, Provider: model.RegistryGeneric, Endpoint: "https://registry.example.com", Namespace: "edo",
 	})
 	if err != nil {
 		t.Fatalf("创建测试镜像仓库失败: %v", err)

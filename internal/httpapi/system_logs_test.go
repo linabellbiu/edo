@@ -8,7 +8,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 
-	"zrt/internal/logging"
+	"edo/internal/logging"
 )
 
 func TestListSystemLogsReturnsCurrentProcessEntries(t *testing.T) {

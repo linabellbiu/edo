@@ -24,10 +24,10 @@ import (
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 
-	"zrt/internal/config"
-	"zrt/internal/hostcredential"
-	"zrt/internal/model"
-	"zrt/internal/secret"
+	"edo/internal/config"
+	"edo/internal/hostcredential"
+	"edo/internal/model"
+	"edo/internal/secret"
 )
 
 var (
@@ -45,10 +45,10 @@ var (
 var endpointNamePattern = regexp.MustCompile(`^[\p{L}\p{N}][\p{L}\p{N}_. -]{0,127}$`)
 
 const (
-	LocalEndpointID          = "zrt-local-docker"
+	LocalEndpointID          = "edo-local-docker"
 	localEndpointHost        = "builder://local"
 	defaultLocalEndpointName = "本地 Docker"
-	managedImageDisplayLabel = "zrt.image.display"
+	managedImageDisplayLabel = "edo.image.display"
 )
 
 type TLSBundle struct {
@@ -389,7 +389,7 @@ func (s *Service) clientForEndpoint(ctx context.Context, endpoint *model.DockerE
 	httpClient := &http.Client{Transport: transport, Timeout: s.config.RequestTimeout, CheckRedirect: client.CheckRedirect}
 	options := []client.Opt{
 		client.WithHTTPClient(httpClient), client.WithHost(dockerHost),
-		client.WithUserAgent("zrt"), client.WithTimeout(s.config.RequestTimeout),
+		client.WithUserAgent("edo"), client.WithTimeout(s.config.RequestTimeout),
 	}
 	if sshDialer != nil {
 		options = append(options, client.WithDialContext(sshDialer.DialContext))
@@ -511,7 +511,7 @@ func (s *Service) localEndpoint(ctx context.Context) (model.DockerEndpoint, erro
 	return endpoint, nil
 }
 
-// BuilderClient 连接当前 ZRT 实例的构建运行时。本地二进制使用宿主机 Docker，
+// BuilderClient 连接当前 EDO 实例的构建运行时。本地二进制使用宿主机 Docker，
 // Compose 通过独立的 mTLS 客户端证书连接隔离的 Docker-in-Docker。
 func (s *Service) BuilderClient() (*client.Client, error) {
 	return s.builderClient(s.config.RequestTimeout)
@@ -527,7 +527,7 @@ func (s *Service) builderClient(requestTimeout time.Duration) (*client.Client, e
 	host := strings.TrimSpace(s.config.DockerBuilderHost)
 	certPath := strings.TrimSpace(s.config.DockerBuilderTLSCertPath)
 	options := []client.Opt{
-		client.WithUserAgent("zrt-builder"),
+		client.WithUserAgent("edo-builder"),
 		client.WithAPIVersionNegotiation(),
 	}
 	if requestTimeout > 0 {

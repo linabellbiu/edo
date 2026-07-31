@@ -9,10 +9,10 @@ import (
 
 	"gorm.io/gorm"
 
-	"zrt/internal/credential"
-	"zrt/internal/model"
-	"zrt/internal/repository"
-	"zrt/internal/secret"
+	"edo/internal/credential"
+	"edo/internal/model"
+	"edo/internal/repository"
+	"edo/internal/secret"
 )
 
 type releasePlanExecutionTestApplication struct {

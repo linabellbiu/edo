@@ -11,8 +11,8 @@ import (
 
 	"github.com/gin-gonic/gin"
 
-	hostmanager "zrt/internal/host"
-	"zrt/internal/model"
+	hostmanager "edo/internal/host"
+	"edo/internal/model"
 )
 
 func TestHostResponseKeepsDockerSudoCapability(t *testing.T) {

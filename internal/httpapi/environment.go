@@ -8,8 +8,8 @@ import (
 
 	"github.com/gin-gonic/gin"
 
-	environmentmanager "zrt/internal/environment"
-	hostmanager "zrt/internal/host"
+	environmentmanager "edo/internal/environment"
+	hostmanager "edo/internal/host"
 )
 
 type environmentHandler struct {

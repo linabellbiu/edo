@@ -41,7 +41,7 @@ type DNSProviderAccount struct {
 
 func (DNSProviderAccount) TableName() string { return "dns_provider_accounts" }
 
-// DNSDomain 是 ZRT 管理的权威 DNS Zone 引用；删除该记录不会删除厂商侧 Zone。
+// DNSDomain 是 EDO 管理的权威 DNS Zone 引用；删除该记录不会删除厂商侧 Zone。
 type DNSDomain struct {
 	ID          string             `gorm:"type:varchar(36);primaryKey"`
 	AccountID   string             `gorm:"type:varchar(36);not null;index;uniqueIndex:idx_dns_domains_account_name,priority:1"`

@@ -10,11 +10,11 @@ import (
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 
-	"zrt/internal/access"
-	"zrt/internal/account"
-	"zrt/internal/auth"
-	"zrt/internal/config"
-	"zrt/internal/model"
+	"edo/internal/access"
+	"edo/internal/account"
+	"edo/internal/auth"
+	"edo/internal/config"
+	"edo/internal/model"
 )
 
 const currentUserKey = "current_user"

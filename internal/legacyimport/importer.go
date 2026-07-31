@@ -14,14 +14,14 @@ import (
 	"github.com/google/uuid"
 	"gorm.io/gorm"
 
-	"zrt/internal/auth"
-	"zrt/internal/model"
-	"zrt/internal/secret"
+	"edo/internal/auth"
+	"edo/internal/model"
+	"edo/internal/secret"
 )
 
 var (
-	ErrNotLegacyDatabase = errors.New("来源数据库不是可识别的 ZRT 旧版数据库")
-	ErrSecretsRequired   = errors.New("迁移配置数据前必须设置 ZRT_SECRETS_KEY")
+	ErrNotLegacyDatabase = errors.New("来源数据库不是可识别的 EDO 旧版数据库")
+	ErrSecretsRequired   = errors.New("迁移配置数据前必须设置 EDO_SECRETS_KEY")
 )
 
 type Stat struct {
@@ -640,7 +640,7 @@ func legacyID(kind string, id int64) string {
 }
 
 func legacyStringID(kind, value string) string {
-	return uuid.NewSHA1(uuid.NameSpaceOID, []byte("zrt:legacy:"+kind+":"+value)).String()
+	return uuid.NewSHA1(uuid.NameSpaceOID, []byte("edo:legacy:"+kind+":"+value)).String()
 }
 
 func fallbackActorID(users map[int64]string) string {

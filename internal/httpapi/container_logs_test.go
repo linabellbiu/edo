@@ -16,7 +16,7 @@ import (
 	"github.com/gorilla/websocket"
 	"github.com/moby/moby/api/pkg/stdcopy"
 
-	"zrt/internal/dockerengine"
+	"edo/internal/dockerengine"
 )
 
 func TestContainerLogsStreamDemultiplexesDockerOutput(t *testing.T) {

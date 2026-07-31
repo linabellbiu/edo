@@ -42,7 +42,7 @@ var scriptEnvironmentNamePattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]{0,
 
 var reservedScriptContainerEnvironment = map[string]struct{}{
 	"CI": {}, "HOME": {}, "TMPDIR": {},
-	"ZRT_PIPELINE_RUN_ID": {}, "ZRT_APPLICATION_ID": {}, "ZRT_GIT_REF": {}, "ZRT_COMMIT_SHA": {},
+	"EDO_PIPELINE_RUN_ID": {}, "EDO_APPLICATION_ID": {}, "EDO_GIT_REF": {}, "EDO_COMMIT_SHA": {},
 }
 
 // ScriptContainerInput 描述一次隔离的非交互脚本执行。源码通过 Docker archive API
@@ -348,15 +348,15 @@ func scriptContainerCreateOptions(input ScriptContainerInput, imageID string) cl
 			labels[name] = value
 		}
 	}
-	labels["io.zrt.managed"] = "script"
-	labels["io.zrt.runtime.image"] = input.Image
+	labels["io.edo.managed"] = "script"
+	labels["io.edo.runtime.image"] = input.Image
 	return client.ContainerCreateOptions{
-		Name: "zrt-script-" + strings.ReplaceAll(uuid.NewString(), "-", "")[:16],
+		Name: "edo-script-" + strings.ReplaceAll(uuid.NewString(), "-", "")[:16],
 		Config: &container.Config{
 			Image:        imageID,
 			User:         scriptContainerUser,
 			Entrypoint:   []string{"/bin/sh"},
-			Cmd:          []string{"-e", scriptWorkspace + "/.zrt/script.sh"},
+			Cmd:          []string{"-e", scriptWorkspace + "/.edo/script.sh"},
 			WorkingDir:   scriptWorkspace + "/src/" + path.Clean(input.WorkingDirectory),
 			Env:          scriptContainerEnvironment(input.Environment, input.SystemEnvironment),
 			AttachStdout: true,
@@ -374,11 +374,11 @@ func scriptContainerCreateOptions(input ScriptContainerInput, imageID string) cl
 			Init:           &initProcess,
 			Tmpfs: map[string]string{
 				"/tmp":      "rw,noexec,nosuid,nodev,size=268435456,uid=10001,gid=10001,mode=0700",
-				"/home/zrt": "rw,noexec,nosuid,nodev,size=16777216,uid=10001,gid=10001,mode=0700",
+				"/home/edo": "rw,noexec,nosuid,nodev,size=16777216,uid=10001,gid=10001,mode=0700",
 			},
 			Mounts: []mount.Mount{{
 				Type: mount.TypeVolume, Target: scriptWorkspace,
-				VolumeOptions: &mount.VolumeOptions{NoCopy: true, Labels: map[string]string{"io.zrt.managed": "script"}},
+				VolumeOptions: &mount.VolumeOptions{NoCopy: true, Labels: map[string]string{"io.edo.managed": "script"}},
 			}},
 			Resources: container.Resources{
 				Memory: 2 * 1024 * 1024 * 1024, MemorySwap: 2 * 1024 * 1024 * 1024,
@@ -407,7 +407,7 @@ func scriptContainerEnvironment(configured, system map[string]string) []string {
 		result = append(result, key+"="+system[key])
 	}
 	// 受控目录最后写入，避免方案变量把非 root 用户重新指向只读或敏感路径。
-	result = append(result, "CI=true", "HOME=/home/zrt", "TMPDIR=/tmp")
+	result = append(result, "CI=true", "HOME=/home/edo", "TMPDIR=/tmp")
 	return result
 }
 
@@ -416,10 +416,10 @@ func scriptArchive(script string) io.Reader {
 	writer := tar.NewWriter(&output)
 	content := []byte(script)
 	_ = writer.WriteHeader(&tar.Header{
-		Name: ".zrt/", Typeflag: tar.TypeDir, Mode: 0o700, Uid: 10001, Gid: 10001,
+		Name: ".edo/", Typeflag: tar.TypeDir, Mode: 0o700, Uid: 10001, Gid: 10001,
 	})
 	_ = writer.WriteHeader(&tar.Header{
-		Name: ".zrt/script.sh", Typeflag: tar.TypeReg, Mode: 0o500,
+		Name: ".edo/script.sh", Typeflag: tar.TypeReg, Mode: 0o500,
 		Size: int64(len(content)), Uid: 10001, Gid: 10001,
 	})
 	_, _ = writer.Write(content)
@@ -445,7 +445,7 @@ func createScriptSourceArchiveWithLimits(
 		return nil, fmt.Errorf("读取脚本源码目录失败: %w", err)
 	}
 	sourceDirectory = resolvedSource
-	archive, err := os.CreateTemp("", "zrt-script-source-*.tar")
+	archive, err := os.CreateTemp("", "edo-script-source-*.tar")
 	if err != nil {
 		return nil, fmt.Errorf("创建脚本源码归档失败: %w", err)
 	}

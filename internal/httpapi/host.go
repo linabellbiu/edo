@@ -9,11 +9,11 @@ import (
 
 	"github.com/gin-gonic/gin"
 
-	"zrt/internal/dockerengine"
-	hostmanager "zrt/internal/host"
-	"zrt/internal/kube"
-	"zrt/internal/model"
-	"zrt/internal/secret"
+	"edo/internal/dockerengine"
+	hostmanager "edo/internal/host"
+	"edo/internal/kube"
+	"edo/internal/model"
+	"edo/internal/secret"
 )
 
 type hostHandler struct {

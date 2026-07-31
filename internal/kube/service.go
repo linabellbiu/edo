@@ -20,9 +20,9 @@ import (
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 
-	"zrt/internal/config"
-	"zrt/internal/model"
-	"zrt/internal/secret"
+	"edo/internal/config"
+	"edo/internal/model"
+	"edo/internal/secret"
 )
 
 var (
@@ -350,7 +350,7 @@ func (s *Service) configureRESTConfig(result *rest.Config) {
 	result.Timeout = s.config.RequestTimeout
 	result.QPS = 20
 	result.Burst = 40
-	result.UserAgent = "zrt"
+	result.UserAgent = "edo"
 }
 
 func (s *Service) normalize(

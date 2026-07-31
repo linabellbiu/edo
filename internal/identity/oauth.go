@@ -20,8 +20,8 @@ import (
 	"github.com/redis/go-redis/v9"
 	"golang.org/x/oauth2"
 
-	"zrt/internal/account"
-	"zrt/internal/model"
+	"edo/internal/account"
+	"edo/internal/model"
 )
 
 const oauthStateTTL = 10 * time.Minute
@@ -227,7 +227,7 @@ func (s *Service) fetchUserInfo(ctx context.Context, endpoint, accessToken strin
 	}
 	request.Header.Set("Authorization", "Bearer "+accessToken)
 	request.Header.Set("Accept", "application/json")
-	request.Header.Set("User-Agent", "ZRT")
+	request.Header.Set("User-Agent", "EDO")
 	response, err := s.httpClient.Do(request)
 	if err != nil {
 		return nil, err

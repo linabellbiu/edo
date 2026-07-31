@@ -11,8 +11,8 @@ import (
 	"gorm.io/datatypes"
 	"gorm.io/gorm"
 
-	"zrt/internal/config"
-	"zrt/internal/model"
+	"edo/internal/config"
+	"edo/internal/model"
 )
 
 func TestCopyDatabaseSnapshotCopiesAllRowsWithoutSchemaHistory(t *testing.T) {

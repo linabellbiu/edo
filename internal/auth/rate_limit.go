@@ -11,7 +11,7 @@ import (
 
 	"github.com/redis/go-redis/v9"
 
-	"zrt/internal/cache"
+	"edo/internal/cache"
 )
 
 type LoginRateLimiter struct {

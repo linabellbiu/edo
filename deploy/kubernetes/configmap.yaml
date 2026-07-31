@@ -1,19 +1,19 @@
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: zrt-config
-  namespace: zrt
+  name: edo-config
+  namespace: edo
 data:
-  ZRT_ENV: production
-  ZRT_LOG_LEVEL: info
-  ZRT_SERVER_ADDRESS: :8080
-  ZRT_WEB_ROOT: /app/web
-  ZRT_DATABASE_DRIVER: postgres
-  ZRT_AUTH_COOKIE_SECURE: "true"
-  ZRT_NATS_STREAM: zrt_tasks
-  ZRT_NATS_DEAD_STREAM: zrt_dead
-  ZRT_NATS_MAX_ATTEMPTS: "4"
-  ZRT_NATS_MAX_BYTES: "536870912"
-  ZRT_NATS_DEAD_MAX_BYTES: "268435456"
-  ZRT_WORKER_CONCURRENCY: "8"
-  ZRT_SCHEDULER_POLL_INTERVAL: 15s
+  EDO_ENV: production
+  EDO_LOG_LEVEL: info
+  EDO_SERVER_ADDRESS: :8080
+  EDO_WEB_ROOT: /app/web
+  EDO_DATABASE_DRIVER: postgres
+  EDO_AUTH_COOKIE_SECURE: "true"
+  EDO_NATS_STREAM: edo_tasks
+  EDO_NATS_DEAD_STREAM: edo_dead
+  EDO_NATS_MAX_ATTEMPTS: "4"
+  EDO_NATS_MAX_BYTES: "536870912"
+  EDO_NATS_DEAD_MAX_BYTES: "268435456"
+  EDO_WORKER_CONCURRENCY: "8"
+  EDO_SCHEDULER_POLL_INTERVAL: 15s

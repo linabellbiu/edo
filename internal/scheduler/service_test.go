@@ -12,11 +12,11 @@ import (
 
 	"gorm.io/gorm"
 
-	"zrt/internal/config"
-	"zrt/internal/database"
-	"zrt/internal/model"
-	"zrt/internal/notification"
-	"zrt/internal/secret"
+	"edo/internal/config"
+	"edo/internal/database"
+	"edo/internal/model"
+	"edo/internal/notification"
+	"edo/internal/secret"
 )
 
 func TestScheduleEnqueuesOnceAndExecutesIdempotently(t *testing.T) {
@@ -93,7 +93,7 @@ func newSchedulerTestService(t *testing.T) (*Service, *notification.Service, *go
 		t.Fatalf("初始化定时任务测试密钥失败: %v", err)
 	}
 	notifier := notification.NewService(db, secretManager, nil, 4)
-	endpoint := "https://notify.example.com/zrt"
+	endpoint := "https://notify.example.com/edo"
 	channel, err := notifier.CreateChannel(context.Background(), "admin", notification.ChannelInput{
 		Name: "scheduler-alerts", Type: model.NotificationChannelWebhook, Endpoint: &endpoint,
 	})

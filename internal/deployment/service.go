@@ -21,11 +21,11 @@ import (
 	"gorm.io/gorm/clause"
 	"k8s.io/apimachinery/pkg/util/validation"
 
-	"zrt/internal/dockerengine"
-	"zrt/internal/kube"
-	"zrt/internal/model"
-	"zrt/internal/sshdeploy"
-	"zrt/internal/task"
+	"edo/internal/dockerengine"
+	"edo/internal/kube"
+	"edo/internal/model"
+	"edo/internal/sshdeploy"
+	"edo/internal/task"
 )
 
 var (
@@ -488,7 +488,7 @@ func (s *Service) requestCommandAndRun(
 	for key, value := range input.Environment {
 		environment[key] = value
 	}
-	environment["ZRT_DEPLOYMENT_ID"] = record.ID
+	environment["EDO_DEPLOYMENT_ID"] = record.ID
 	if err := s.run(ctx, record.ID, "", &commandExecution{
 		environment: environment, artifact: input.Artifact, artifactName: input.ArtifactName,
 		artifactDigest: input.ArtifactDigest, stdout: input.Stdout, stderr: input.Stderr,
@@ -1060,7 +1060,7 @@ func executionRegistryAuth(execution *commandExecution) dockerengine.RegistryAut
 
 func (s *Service) enqueue(ctx context.Context, tx *gorm.DB, record *model.DeploymentRecord, kind string) error {
 	job, err := task.NewService(tx, 1).Create(ctx, task.CreateInput{
-		Kind: kind, Subject: "zrt.task." + kind, Payload: TaskPayload{DeploymentID: record.ID},
+		Kind: kind, Subject: "edo.task." + kind, Payload: TaskPayload{DeploymentID: record.ID},
 		IdempotencyKey: "deployment:" + record.ID,
 	})
 	if err != nil {
@@ -1342,7 +1342,7 @@ func validatePipelineImage(value, expectedImageID string, target *model.Deployme
 	if expectedImageID == "" {
 		return validateImage(value, true)
 	}
-	if target.Platform != model.DeploymentDocker || !dockerengine.IsZRTLocalImage(value) || !dockerengine.IsValidImageID(expectedImageID) {
+	if target.Platform != model.DeploymentDocker || !dockerengine.IsEDOLocalImage(value) || !dockerengine.IsValidImageID(expectedImageID) {
 		return "", ErrInvalidImage
 	}
 	return validateImage(value, false)

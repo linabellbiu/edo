@@ -13,7 +13,7 @@ import (
 	"gorm.io/datatypes"
 	"gorm.io/gorm"
 
-	"zrt/internal/model"
+	"edo/internal/model"
 )
 
 var namePattern = regexp.MustCompile(`^[a-z][a-z0-9_.-]{1,63}$`)
@@ -48,7 +48,7 @@ func (s *Service) Create(ctx context.Context, input CreateInput) (*model.Job, er
 	if !namePattern.MatchString(input.Kind) {
 		return nil, errors.New("任务类型格式无效")
 	}
-	if !strings.HasPrefix(input.Subject, "zrt.task.") || !namePattern.MatchString(input.Subject) {
+	if !strings.HasPrefix(input.Subject, "edo.task.") || !namePattern.MatchString(input.Subject) {
 		return nil, errors.New("任务主题格式无效")
 	}
 	payload, err := json.Marshal(input.Payload)

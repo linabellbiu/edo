@@ -8,9 +8,9 @@ import (
 
 	"github.com/gin-gonic/gin"
 
-	"zrt/internal/model"
-	"zrt/internal/notification"
-	"zrt/internal/secret"
+	"edo/internal/model"
+	"edo/internal/notification"
+	"edo/internal/secret"
 )
 
 type notificationHandler struct {
@@ -85,8 +85,8 @@ func (h notificationHandler) setChannelStatus(c *gin.Context) {
 func (h notificationHandler) testChannel(c *gin.Context) {
 	actor, _ := currentUser(c)
 	item, err := h.service.Enqueue(c.Request.Context(), notification.EnqueueInput{
-		ChannelID: c.Param("id"), Title: "ZRT 通知测试",
-		Message: "这是一条由 ZRT 发起的通知渠道连通性测试。", Severity: model.NotificationInfo,
+		ChannelID: c.Param("id"), Title: "EDO 通知测试",
+		Message: "这是一条由 EDO 发起的通知渠道连通性测试。", Severity: model.NotificationInfo,
 		Source: "manual_test", SourceID: actor.ID,
 	})
 	if err != nil {

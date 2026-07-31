@@ -179,7 +179,7 @@ func (s *Service) BuildLocalWithOptions(
 	timeout time.Duration,
 	output io.Writer,
 ) (string, error) {
-	if !IsZRTLocalImage(image) {
+	if !IsEDOLocalImage(image) {
 		return "", errors.New("本地构建镜像名称无效")
 	}
 	apiClient, err := s.BuilderClient()
@@ -220,7 +220,7 @@ func (s *Service) TransferImageToSSH(
 	endpointID, image, sourceImageID string,
 	timeout time.Duration,
 ) (string, error) {
-	if !IsZRTLocalImage(image) || !IsValidImageID(sourceImageID) {
+	if !IsEDOLocalImage(image) || !IsValidImageID(sourceImageID) {
 		return "", errors.New("待传输的本地 Docker 镜像无效")
 	}
 	apiClient, err := s.BuilderClient()
@@ -267,10 +267,10 @@ func exportImageByID(ctx context.Context, exporter imageArchiveExporter, sourceI
 	return archive, nil
 }
 
-// IsZRTLocalImage 判断镜像是否属于本地 Docker 或 Docker SSH 目标保存的本地命名空间。
-func IsZRTLocalImage(value string) bool {
+// IsEDOLocalImage 判断镜像是否属于本地 Docker 或 Docker SSH 目标保存的本地命名空间。
+func IsEDOLocalImage(value string) bool {
 	named, err := distributionreference.ParseNormalizedNamed(strings.TrimSpace(value))
-	return err == nil && distributionreference.Domain(named) == "zrt.local"
+	return err == nil && distributionreference.Domain(named) == "edo.local"
 }
 
 // IsValidImageID 校验 Docker 返回的内容寻址镜像 ID，防止只凭可变标签发布。
@@ -320,7 +320,7 @@ func (s *Service) runBuildx(
 		return errors.New("Docker 构建参数无效或与构建运行时变量冲突")
 	}
 	// 每次构建都使用独立 Docker 配置。即使是本地或匿名构建，
-	// 也不得继承 ZRT 进程所在账户的镜像仓库凭据。
+	// 也不得继承 EDO 进程所在账户的镜像仓库凭据。
 	configDirectory, err := writeDockerCLIConfig(registry)
 	if err != nil {
 		return err
@@ -500,7 +500,7 @@ func dockerBuildEnvironment(host, tlsCertPath, configDirectory string, buildArgs
 }
 
 func writeDockerCLIConfig(registry RegistryAuth) (string, error) {
-	directory, err := os.MkdirTemp("", "zrt-docker-config-*")
+	directory, err := os.MkdirTemp("", "edo-docker-config-*")
 	if err != nil {
 		return "", fmt.Errorf("创建 Docker 临时认证目录失败: %w", err)
 	}
@@ -612,7 +612,7 @@ func createBuildContext(root, dockerfile string) (*os.File, error) {
 	if err != nil {
 		return nil, err
 	}
-	archive, err := os.CreateTemp("", "zrt-build-context-*.tar")
+	archive, err := os.CreateTemp("", "edo-build-context-*.tar")
 	if err != nil {
 		return nil, fmt.Errorf("创建临时构建上下文失败: %w", err)
 	}

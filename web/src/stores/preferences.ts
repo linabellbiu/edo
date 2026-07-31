@@ -6,9 +6,9 @@ import i18n, { type AppLocale } from '@/locales'
 
 export type ThemeMode = 'light' | 'dark'
 
-const themeKey = 'zrt.theme'
-const localeKey = 'zrt.locale'
-const sidebarKey = 'zrt.sidebar.collapsed'
+const themeKey = 'edo.theme'
+const localeKey = 'edo.locale'
+const sidebarKey = 'edo.sidebar.collapsed'
 
 function stored<T extends string>(key: string, allowed: readonly T[], fallback: T): T {
   try {

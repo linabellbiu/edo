@@ -17,13 +17,13 @@ import (
 	"github.com/redis/go-redis/v9"
 	"gorm.io/gorm"
 
-	"zrt/internal/config"
-	"zrt/internal/database"
-	"zrt/internal/dockerengine"
-	"zrt/internal/kube"
-	"zrt/internal/model"
-	"zrt/internal/secret"
-	"zrt/internal/sshdeploy"
+	"edo/internal/config"
+	"edo/internal/database"
+	"edo/internal/dockerengine"
+	"edo/internal/kube"
+	"edo/internal/model"
+	"edo/internal/secret"
+	"edo/internal/sshdeploy"
 )
 
 type hostScriptRunnerStub struct {
@@ -101,7 +101,7 @@ func TestRegistryDeploymentRequiresDigestAndQueuesWithoutImplicitApproval(t *tes
 
 func TestPipelinePreparedLocalImageUsesVerifiedImageID(t *testing.T) {
 	target := &model.DeploymentTarget{Platform: model.DeploymentDocker}
-	image := "zrt.local/order-api:abcdef123456-12345678"
+	image := "edo.local/order-api:abcdef123456-12345678"
 	imageID := "sha256:" + strings.Repeat("b", 64)
 	if normalized, err := validatePipelineImage(image, imageID, target); err != nil || normalized != image {
 		t.Fatalf("流水线已经校验的本地镜像应允许用于 Docker 发布: image=%q err=%v", normalized, err)
@@ -216,7 +216,7 @@ func TestTargetLockSerializesSameEnvironmentOnly(t *testing.T) {
 	redisServer := miniredis.RunT(t)
 	redisClient := redis.NewClient(&redis.Options{Addr: redisServer.Addr()})
 	t.Cleanup(func() { _ = redisClient.Close() })
-	service := &Service{locks: redislock.New(redisClient), lockKeyPrefix: "zrt:test:deployment"}
+	service := &Service{locks: redislock.New(redisClient), lockKeyPrefix: "edo:test:deployment"}
 	first := &model.DeploymentRecord{ID: "deployment-1", TargetID: "target-a", RolloutTimeout: 30}
 	firstLock, err := service.acquireTargetLock(context.Background(), first)
 	if err != nil {
@@ -249,13 +249,13 @@ func TestSSHDeploymentUsesSelectedMembershipAndExactPlanSnapshot(t *testing.T) {
 	target, err := service.CreateTarget(context.Background(), "admin", TargetInput{
 		Name: "SSH 命令目标", Platform: model.DeploymentSSH,
 		EnvironmentID: environment.ID,
-		HostID:        host.ID, WorkingDirectory: "/srv/zrt", RolloutTimeout: 90,
+		HostID:        host.ID, WorkingDirectory: "/srv/edo", RolloutTimeout: 90,
 	})
 	if err != nil {
 		t.Fatalf("创建 SSH 发布目标失败: %v", err)
 	}
 	if target.EnvironmentID != environment.ID ||
-		target.RuntimeID != "" || target.WorkloadName != "" || target.WorkingDirectory != "/srv/zrt" {
+		target.RuntimeID != "" || target.WorkloadName != "" || target.WorkingDirectory != "/srv/edo" {
 		t.Fatalf("SSH 发布目标未使用服务端主机环境快照: %+v", target)
 	}
 
@@ -264,20 +264,20 @@ func TestSSHDeploymentUsesSelectedMembershipAndExactPlanSnapshot(t *testing.T) {
 		err:    errors.New("remote command failed"),
 	}
 	service.ssh = runner
-	script := "printf '%s\\n' \"$ZRT_DEPLOYMENT_ID\"  \nexit 17\n\n"
+	script := "printf '%s\\n' \"$EDO_DEPLOYMENT_ID\"  \nexit 17\n\n"
 	digest := model.DeploymentPlanExecutionDigest(model.DeploymentPlanScript, script, 120)
 	record, err := service.RequestCommandAndRun(context.Background(), "operator", CommandRequestInput{
 		TargetID: target.ID, PipelineRunID: "run-1", WorkflowNodeID: "deploy-1",
 		DeploymentPlanID: "plan-1", PlanKind: model.DeploymentPlanScript,
 		Script: script, ScriptDigest: digest, TimeoutSeconds: 120,
-		Environment: map[string]string{"ZRT_PIPELINE_RUN_ID": "run-1"},
+		Environment: map[string]string{"EDO_PIPELINE_RUN_ID": "run-1"},
 	})
 	if err == nil {
 		t.Fatal("远端命令失败时不应返回成功")
 	}
 	if runner.input.Script != script || runner.input.WorkingDirectory != target.WorkingDirectory ||
 		runner.input.EnvironmentID != environment.ID ||
-		runner.input.Environment["ZRT_DEPLOYMENT_ID"] == "" || runner.input.Timeout != 90*time.Second {
+		runner.input.Environment["EDO_DEPLOYMENT_ID"] == "" || runner.input.Timeout != 90*time.Second {
 		t.Fatalf("SSH 执行输入未保持不可变快照: %+v", runner.input)
 	}
 	var stored model.DeploymentRecord
@@ -672,7 +672,7 @@ func TestSSHDeploymentLockUsesLowerPlanAndTargetTimeout(t *testing.T) {
 	redisServer := miniredis.RunT(t)
 	redisClient := redis.NewClient(&redis.Options{Addr: redisServer.Addr()})
 	t.Cleanup(func() { _ = redisClient.Close() })
-	service := &Service{locks: redislock.New(redisClient), lockKeyPrefix: "zrt:test:ssh-lock"}
+	service := &Service{locks: redislock.New(redisClient), lockKeyPrefix: "edo:test:ssh-lock"}
 	record := &model.DeploymentRecord{
 		ID: "deployment-ssh", TargetID: "target-ssh", Platform: model.DeploymentSSH,
 		CommandTimeout: 120, RolloutTimeout: 45,
@@ -682,7 +682,7 @@ func TestSSHDeploymentLockUsesLowerPlanAndTargetTimeout(t *testing.T) {
 		t.Fatalf("获取 SSH 发布锁失败: %v", err)
 	}
 	defer lock.Release(context.Background())
-	if ttl := redisServer.TTL("zrt:test:ssh-lock:target-ssh"); ttl != 165*time.Second {
+	if ttl := redisServer.TTL("edo:test:ssh-lock:target-ssh"); ttl != 165*time.Second {
 		t.Fatalf("SSH 发布锁应使用较小超时加保护窗口: got=%s want=%s", ttl, 165*time.Second)
 	}
 	if _, valid := effectiveSSHTimeout(&model.DeploymentRecord{CommandTimeout: 29, RolloutTimeout: 60}); valid {
@@ -772,7 +772,7 @@ func TestLocalCommandTargetRequiresBuiltinReadyCapability(t *testing.T) {
 	target, err := service.CreateTarget(context.Background(), "admin", TargetInput{
 		Name: "本地命令目标", Platform: model.DeploymentSSH,
 		EnvironmentID: environment.ID, HostID: model.BuiltinLocalHostID,
-		WorkingDirectory: "/srv/zrt", RolloutTimeout: 90,
+		WorkingDirectory: "/srv/edo", RolloutTimeout: 90,
 	})
 	if err != nil {
 		t.Fatalf("已启用本地执行能力时应允许创建命令目标: %v", err)

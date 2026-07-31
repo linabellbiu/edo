@@ -12,16 +12,16 @@ import (
 
 	"gorm.io/gorm"
 
-	"zrt/internal/config"
-	"zrt/internal/database"
-	"zrt/internal/model"
-	"zrt/internal/secret"
+	"edo/internal/config"
+	"edo/internal/database"
+	"edo/internal/model"
+	"edo/internal/secret"
 )
 
 func TestNotificationSecretsAndSuccessfulDispatch(t *testing.T) {
 	client := &fakeHTTPClient{statusCode: http.StatusNoContent}
 	service, db := newNotificationTestService(t, client, 4)
-	endpoint := "https://notify.example.com/hooks/zrt"
+	endpoint := "https://notify.example.com/hooks/edo"
 	token := "notify-token"
 	channel, err := service.CreateChannel(context.Background(), "admin", ChannelInput{
 		Name: "production-alerts", Type: model.NotificationChannelWebhook,
@@ -74,7 +74,7 @@ func TestNotificationSecretsAndSuccessfulDispatch(t *testing.T) {
 func TestNotificationFiniteRetryState(t *testing.T) {
 	client := &fakeHTTPClient{statusCode: http.StatusInternalServerError}
 	service, db := newNotificationTestService(t, client, 2)
-	endpoint := "https://notify.example.com/hooks/zrt"
+	endpoint := "https://notify.example.com/hooks/edo"
 	channel, err := service.CreateChannel(context.Background(), "admin", ChannelInput{
 		Name: "retry-alerts", Type: model.NotificationChannelWebhook, Endpoint: &endpoint,
 	})

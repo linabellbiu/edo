@@ -10,7 +10,7 @@ import (
 	"gorm.io/datatypes"
 	"gorm.io/gorm"
 
-	"zrt/internal/model"
+	"edo/internal/model"
 )
 
 type RecordInput struct {

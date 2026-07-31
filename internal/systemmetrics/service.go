@@ -19,9 +19,9 @@ import (
 	"github.com/shirou/gopsutil/v4/process"
 	"gorm.io/gorm"
 
-	"zrt/internal/messaging"
-	"zrt/internal/model"
-	"zrt/internal/worker"
+	"edo/internal/messaging"
+	"edo/internal/model"
+	"edo/internal/worker"
 )
 
 type workerStatsProvider interface {

@@ -5,7 +5,7 @@ import (
 	"reflect"
 	"testing"
 
-	"zrt/internal/model"
+	"edo/internal/model"
 )
 
 func TestNormalizeContainerConfigUsesSafeDefaults(t *testing.T) {
@@ -42,20 +42,20 @@ func TestNormalizeContainerConfigNormalizesHealthCheck(t *testing.T) {
 
 func TestNormalizeContainerConfigDeploymentScriptTakesPriority(t *testing.T) {
 	config, err := NormalizeContainerConfig(model.DockerContainerConfig{
-		DeploymentScript: "  docker run -it ${ZRT_IMAGE}  ",
+		DeploymentScript: "  docker run -it ${EDO_IMAGE}  ",
 		Command:          []string{"legacy", "argument"},
 	})
 	if err != nil {
 		t.Fatalf("规范化部署脚本失败: %v", err)
 	}
-	if config.DeploymentScript != "docker run -it ${ZRT_IMAGE}" || len(config.Command) != 0 {
+	if config.DeploymentScript != "docker run -it ${EDO_IMAGE}" || len(config.Command) != 0 {
 		t.Fatalf("部署脚本没有覆盖历史启动参数: %+v", config)
 	}
 }
 
 func TestNormalizeContainerConfigRejectsHostCommandMixedWithStructuredParameters(t *testing.T) {
 	_, err := NormalizeContainerConfig(model.DockerContainerConfig{
-		DeploymentScript:     "docker run ${ZRT_IMAGE}",
+		DeploymentScript:     "docker run ${EDO_IMAGE}",
 		EnvironmentVariables: map[string]string{"APP_ENV": "production"},
 	})
 	if !errors.Is(err, ErrInvalidContainerConfig) {
@@ -81,9 +81,9 @@ func TestNormalizeContainerConfigRejectsUnsafeOrAmbiguousValues(t *testing.T) {
 			{Type: "bind", Source: "/srv/app", Target: "/data"},
 		}}},
 		{name: "包含换行的启动参数", config: model.DockerContainerConfig{Command: []string{"sh\n-c"}}},
-		{name: "部署脚本包含空字节", config: model.DockerContainerConfig{DeploymentScript: "docker run ${ZRT_IMAGE}\x00"}},
+		{name: "部署脚本包含空字节", config: model.DockerContainerConfig{DeploymentScript: "docker run ${EDO_IMAGE}\x00"}},
 		{name: "部署脚本不是 Docker run", config: model.DockerContainerConfig{DeploymentScript: "echo ok"}},
-		{name: "部署脚本包含 Shell 串联", config: model.DockerContainerConfig{DeploymentScript: "docker run ${ZRT_IMAGE}; touch /tmp/pwned"}},
+		{name: "部署脚本包含 Shell 串联", config: model.DockerContainerConfig{DeploymentScript: "docker run ${EDO_IMAGE}; touch /tmp/pwned"}},
 		{name: "健康检查超时不小于间隔", config: model.DockerContainerConfig{HealthCheck: model.DockerHealthCheck{
 			Enabled: true, Command: []string{"check"}, IntervalSeconds: 5, TimeoutSeconds: 5,
 		}}},

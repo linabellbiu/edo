@@ -6,18 +6,18 @@ import (
 )
 
 func TestLoadRejectsExplicitEmptyDatabaseConfig(t *testing.T) {
-	t.Setenv("ZRT_DATABASE_DRIVER", "sqlite")
-	t.Setenv("ZRT_DATABASE_DSN", "")
+	t.Setenv("EDO_DATABASE_DRIVER", "sqlite")
+	t.Setenv("EDO_DATABASE_DSN", "")
 	if _, err := Load(); err == nil {
 		t.Fatal("显式空数据库配置应返回错误")
 	}
 }
 
 func TestLoadParsesTypedEnvironmentValues(t *testing.T) {
-	t.Setenv("ZRT_ENV", "production")
-	t.Setenv("ZRT_AUTH_COOKIE_SECURE", "")
-	t.Setenv("ZRT_SERVER_READ_TIMEOUT", "23s")
-	t.Setenv("ZRT_NATS_MAX_ATTEMPTS", "6")
+	t.Setenv("EDO_ENV", "production")
+	t.Setenv("EDO_AUTH_COOKIE_SECURE", "")
+	t.Setenv("EDO_SERVER_READ_TIMEOUT", "23s")
+	t.Setenv("EDO_NATS_MAX_ATTEMPTS", "6")
 	cfg, err := Load()
 	if err != nil {
 		t.Fatalf("解析类型化环境变量失败: %v", err)
@@ -29,7 +29,7 @@ func TestLoadParsesTypedEnvironmentValues(t *testing.T) {
 }
 
 func TestLoadRejectsInvalidBoolean(t *testing.T) {
-	t.Setenv("ZRT_AUTH_COOKIE_SECURE", "invalid")
+	t.Setenv("EDO_AUTH_COOKIE_SECURE", "invalid")
 	if _, err := Load(); err == nil {
 		t.Fatal("非法布尔环境变量必须返回错误")
 	}
@@ -96,8 +96,8 @@ func TestValidateRequiresMTLSForExplicitDockerBuilderTCP(t *testing.T) {
 }
 
 func TestLoadUsesLocalDockerByDefault(t *testing.T) {
-	t.Setenv("ZRT_DOCKER_BUILDER_HOST", "")
-	t.Setenv("ZRT_DOCKER_BUILDER_TLS_CERT_PATH", "")
+	t.Setenv("EDO_DOCKER_BUILDER_HOST", "")
+	t.Setenv("EDO_DOCKER_BUILDER_TLS_CERT_PATH", "")
 	cfg, err := Load()
 	if err != nil {
 		t.Fatalf("加载本地 Docker 默认配置失败: %v", err)
@@ -133,16 +133,16 @@ func validConfig() Config {
 			IdleTimeout: time.Second, ShutdownTimeout: time.Second,
 		},
 		Auth: Auth{
-			SessionTTL: time.Hour, CookieName: "zrt_session",
+			SessionTTL: time.Hour, CookieName: "edo_session",
 			LoginMaxFailure: 5, LoginWindow: time.Minute,
 		},
-		Database: Database{Driver: "sqlite", DSN: "data/zrt.db", MaxOpenConns: 1, MaxIdleConns: 1},
-		Redis:    Redis{KeyPrefix: "zrt:", Timeout: time.Second},
+		Database: Database{Driver: "sqlite", DSN: "data/edo.db", MaxOpenConns: 1, MaxIdleConns: 1},
+		Redis:    Redis{KeyPrefix: "edo:", Timeout: time.Second},
 		NATS: NATS{
-			Stream:        "zrt_tasks",
-			DeadStream:    "zrt_dead",
-			SubjectPrefix: "zrt.task",
-			DeadSubject:   "zrt.dead.task.v1",
+			Stream:        "edo_tasks",
+			DeadStream:    "edo_dead",
+			SubjectPrefix: "edo.task",
+			DeadSubject:   "edo.dead.task.v1",
 			MaxAttempts:   DefaultMaxAttempts,
 			Replicas:      1,
 			Timeout:       time.Second,

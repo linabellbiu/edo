@@ -12,8 +12,8 @@ import (
 
 	"github.com/gin-gonic/gin"
 
-	"zrt/internal/messaging"
-	"zrt/internal/systemmetrics"
+	"edo/internal/messaging"
+	"edo/internal/systemmetrics"
 )
 
 type purgeQueueStub struct {

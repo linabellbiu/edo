@@ -7,20 +7,20 @@ import (
 
 	"github.com/moby/moby/api/types/container"
 
-	"zrt/internal/model"
+	"edo/internal/model"
 )
 
 func TestInitialContainerConfigUsesImageDefaultsAndSafeRestartPolicy(t *testing.T) {
-	configuration, hostConfiguration, err := initialContainerConfig("zrt.local/app:commit", "target-id", "deployment-id", model.DockerContainerConfig{})
+	configuration, hostConfiguration, err := initialContainerConfig("edo.local/app:commit", "target-id", "deployment-id", model.DockerContainerConfig{})
 	if err != nil {
 		t.Fatalf("生成默认容器配置失败: %v", err)
 	}
-	if configuration.Image != "zrt.local/app:commit" || configuration.Cmd != nil || configuration.Entrypoint != nil {
+	if configuration.Image != "edo.local/app:commit" || configuration.Cmd != nil || configuration.Entrypoint != nil {
 		t.Fatalf("首次部署没有保留镜像默认启动配置: %+v", configuration)
 	}
-	if configuration.Labels["zrt.managed"] != "true" || configuration.Labels["zrt.deployment.id"] != "deployment-id" ||
-		configuration.Labels["zrt.deployment.target.id"] != "target-id" {
-		t.Fatalf("首次部署缺少 ZRT 管理标签: %+v", configuration.Labels)
+	if configuration.Labels["edo.managed"] != "true" || configuration.Labels["edo.deployment.id"] != "deployment-id" ||
+		configuration.Labels["edo.deployment.target.id"] != "target-id" {
+		t.Fatalf("首次部署缺少 EDO 管理标签: %+v", configuration.Labels)
 	}
 	if hostConfiguration.RestartPolicy.Name != container.RestartPolicyUnlessStopped {
 		t.Fatalf("首次部署没有配置守护进程重启策略: %+v", hostConfiguration.RestartPolicy)
@@ -50,7 +50,7 @@ func TestApplyImageDisplayLabelKeepsFriendlyVersionSeparateFromExecutionImage(t 
 func TestManagedContainerVolumeNameIsScopedByContainerAndLogicalName(t *testing.T) {
 	first := managedContainerVolumeName("target-api", "data")
 	if first != managedContainerVolumeName("target-api", "data") || first == managedContainerVolumeName("target-worker", "data") ||
-		first == managedContainerVolumeName("target-api", "cache") || !strings.HasPrefix(first, "zrt-") {
+		first == managedContainerVolumeName("target-api", "cache") || !strings.HasPrefix(first, "edo-") {
 		t.Fatalf("命名卷必须稳定地隔离到容器和逻辑卷: %q", first)
 	}
 }
@@ -63,7 +63,7 @@ func TestInitialContainerConfigAppliesDeploymentPlan(t *testing.T) {
 		Network:              "bridge", Command: []string{"server", "--listen", ":8080"},
 		HealthCheck: model.DockerHealthCheck{Enabled: true, Command: []string{"server", "health"}},
 	}
-	configuration, hostConfiguration, err := initialContainerConfig("zrt.local/app:commit", "target-id", "deployment-id", input)
+	configuration, hostConfiguration, err := initialContainerConfig("edo.local/app:commit", "target-id", "deployment-id", input)
 	if err != nil {
 		t.Fatalf("生成容器配置失败: %v", err)
 	}
@@ -82,10 +82,10 @@ func TestInitialContainerConfigAppliesDeploymentPlan(t *testing.T) {
 
 func TestInitialContainerConfigDoesNotRunHostCommandInsideContainer(t *testing.T) {
 	input := model.DockerContainerConfig{
-		DeploymentScript: "docker run ${ZRT_IMAGE}",
+		DeploymentScript: "docker run ${EDO_IMAGE}",
 		Command:          []string{"legacy", "argument"},
 	}
-	configuration, _, err := initialContainerConfig("zrt.local/app:commit", "target-id", "deployment-id", input)
+	configuration, _, err := initialContainerConfig("edo.local/app:commit", "target-id", "deployment-id", input)
 	if err != nil {
 		t.Fatalf("生成部署脚本容器配置失败: %v", err)
 	}

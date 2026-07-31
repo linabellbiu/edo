@@ -9,8 +9,8 @@ import (
 	"github.com/google/uuid"
 	"gorm.io/gorm"
 
-	"zrt/internal/model"
-	"zrt/internal/repository"
+	"edo/internal/model"
+	"edo/internal/repository"
 )
 
 var (

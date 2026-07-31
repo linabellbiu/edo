@@ -10,10 +10,10 @@ import (
 
 	"github.com/gin-gonic/gin"
 
-	"zrt/internal/access"
-	"zrt/internal/model"
-	"zrt/internal/repository"
-	"zrt/internal/secret"
+	"edo/internal/access"
+	"edo/internal/model"
+	"edo/internal/repository"
+	"edo/internal/secret"
 )
 
 const maxWebhookBodyBytes = 2 * 1024 * 1024

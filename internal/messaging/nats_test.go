@@ -58,21 +58,21 @@ func TestRetryBackoffIsFinite(t *testing.T) {
 
 func TestPurgeDeadLetterStreamOnlyPurgesConfiguredSubject(t *testing.T) {
 	stream := &testDeadLetterStream{info: &jetstream.StreamInfo{State: jetstream.StreamState{Msgs: 7}}}
-	purged, err := purgeDeadLetterStream(context.Background(), stream, "zrt.dead.task.v1")
+	purged, err := purgeDeadLetterStream(context.Background(), stream, "edo.dead.task.v1")
 	if err != nil {
 		t.Fatalf("清空死信失败: %v", err)
 	}
 	if purged != 7 {
 		t.Fatalf("清空数量错误: %d", purged)
 	}
-	if stream.purgeCalls != 1 || stream.purgeSubject != "zrt.dead.task.v1" {
+	if stream.purgeCalls != 1 || stream.purgeSubject != "edo.dead.task.v1" {
 		t.Fatalf("清空范围错误: calls=%d subject=%q", stream.purgeCalls, stream.purgeSubject)
 	}
 }
 
 func TestPurgeDeadLetterStreamDoesNotPurgeWhenStatsFail(t *testing.T) {
 	stream := &testDeadLetterStream{infoErr: errors.New("stream unavailable")}
-	if _, err := purgeDeadLetterStream(context.Background(), stream, "zrt.dead.task.v1"); err == nil {
+	if _, err := purgeDeadLetterStream(context.Background(), stream, "edo.dead.task.v1"); err == nil {
 		t.Fatal("读取死信状态失败时应返回错误")
 	}
 	if stream.purgeCalls != 0 {

@@ -57,11 +57,11 @@ function displayValue(value: unknown): string {
 .resource-table-wrap { min-width: 0; overflow: hidden; }
 .table-scroll { overflow-x: auto; }
 .resource-table { width: 100%; border-collapse: collapse; font-size: 13px; }
-th { padding: 11px 16px; border-bottom: 1px solid var(--zrt-border); color: var(--zrt-muted); background: var(--zrt-surface-soft); font-weight: 600; text-align: left; white-space: nowrap; }
-td { max-width: 420px; padding: 13px 16px; border-bottom: 1px solid var(--zrt-border); color: var(--zrt-text); vertical-align: middle; }
+th { padding: 11px 16px; border-bottom: 1px solid var(--edo-border); color: var(--edo-muted); background: var(--edo-surface-soft); font-weight: 600; text-align: left; white-space: nowrap; }
+td { max-width: 420px; padding: 13px 16px; border-bottom: 1px solid var(--edo-border); color: var(--edo-text); vertical-align: middle; }
 tbody tr:last-child td { border-bottom: 0; }
-tbody tr:hover td { background: color-mix(in srgb,var(--zrt-primary) 3%,transparent); }
-.json-cell { display: block; max-width: 360px; overflow: hidden; color: var(--zrt-muted); text-overflow: ellipsis; white-space: nowrap; }
+tbody tr:hover td { background: color-mix(in srgb,var(--edo-primary) 3%,transparent); }
+.json-cell { display: block; max-width: 360px; overflow: hidden; color: var(--edo-muted); text-overflow: ellipsis; white-space: nowrap; }
 .table-actions { width: 1%; white-space: nowrap; }
 .table-actions :deep(.ant-btn) { padding-inline: 5px; }
 </style>

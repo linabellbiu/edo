@@ -9,15 +9,15 @@ import (
 	"testing"
 	"time"
 
-	"zrt/internal/config"
-	"zrt/internal/database"
-	"zrt/internal/model"
-	"zrt/internal/secret"
+	"edo/internal/config"
+	"edo/internal/database"
+	"edo/internal/model"
+	"edo/internal/secret"
 )
 
 func TestSecretConfigurationIsEncryptedAndNeverReturned(t *testing.T) {
 	service := newConfigurationTestService(t)
-	secretValue := "postgres://user:password@database/zrt"
+	secretValue := "postgres://user:password@database/edo"
 	created, err := service.Create(context.Background(), "admin", Input{
 		Namespace: "payment", Environment: model.EnvironmentProduction,
 		Key: "DATABASE_URL", Value: &secretValue, IsSecret: true,

@@ -7,7 +7,7 @@ import (
 
 	"github.com/redis/go-redis/v9"
 
-	"zrt/internal/config"
+	"edo/internal/config"
 )
 
 type Redis struct {

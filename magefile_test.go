@@ -59,28 +59,28 @@ func TestValidateStartSecretsKey(t *testing.T) {
 	const validKey = "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY="
 
 	t.Run("有效密钥", func(t *testing.T) {
-		t.Setenv("ZRT_SECRETS_KEY", validKey)
+		t.Setenv("EDO_SECRETS_KEY", validKey)
 		if err := validateStartSecretsKey(true); err != nil {
 			t.Fatal(err)
 		}
 	})
 
 	t.Run("只启动 Web", func(t *testing.T) {
-		t.Setenv("ZRT_SECRETS_KEY", "")
+		t.Setenv("EDO_SECRETS_KEY", "")
 		if err := validateStartSecretsKey(false); err != nil {
 			t.Fatal(err)
 		}
 	})
 
 	t.Run("空密钥", func(t *testing.T) {
-		t.Setenv("ZRT_SECRETS_KEY", "")
+		t.Setenv("EDO_SECRETS_KEY", "")
 		if err := validateStartSecretsKey(true); err == nil {
 			t.Fatal("含后端启动时必须拒绝空密钥")
 		}
 	})
 
 	t.Run("格式错误", func(t *testing.T) {
-		t.Setenv("ZRT_SECRETS_KEY", "not-a-valid-key")
+		t.Setenv("EDO_SECRETS_KEY", "not-a-valid-key")
 		if err := validateStartSecretsKey(true); err == nil {
 			t.Fatal("含后端启动时必须拒绝无效密钥")
 		}
@@ -90,15 +90,15 @@ func TestValidateStartSecretsKey(t *testing.T) {
 func TestLoadEnvironmentFile(t *testing.T) {
 	root := t.TempDir()
 	path := filepath.Join(root, ".env")
-	if err := os.WriteFile(path, []byte("ZRT_MAGE_ENV_TEST=loaded\n"), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte("EDO_MAGE_ENV_TEST=loaded\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	_ = os.Unsetenv("ZRT_MAGE_ENV_TEST")
-	t.Cleanup(func() { _ = os.Unsetenv("ZRT_MAGE_ENV_TEST") })
+	_ = os.Unsetenv("EDO_MAGE_ENV_TEST")
+	t.Cleanup(func() { _ = os.Unsetenv("EDO_MAGE_ENV_TEST") })
 	if err := loadEnvironmentFile(path); err != nil {
 		t.Fatal(err)
 	}
-	if got := os.Getenv("ZRT_MAGE_ENV_TEST"); got != "loaded" {
+	if got := os.Getenv("EDO_MAGE_ENV_TEST"); got != "loaded" {
 		t.Fatalf("未从指定 .env 加载配置: %q", got)
 	}
 	if err := loadEnvironmentFile(filepath.Join(t.TempDir(), ".env")); err == nil {
@@ -109,33 +109,33 @@ func TestLoadEnvironmentFile(t *testing.T) {
 func TestLoadEnvironmentFileCreatesDefault(t *testing.T) {
 	root := t.TempDir()
 	path := filepath.Join(root, ".env")
-	template := "ZRT_MAGE_CREATED_TEST=loaded\nZRT_SECRETS_KEY=\n"
+	template := "EDO_MAGE_CREATED_TEST=loaded\nEDO_SECRETS_KEY=\n"
 	if err := os.WriteFile(path+".example", []byte(template), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	_ = os.Unsetenv("ZRT_MAGE_CREATED_TEST")
-	_ = os.Unsetenv("ZRT_SECRETS_KEY")
+	_ = os.Unsetenv("EDO_MAGE_CREATED_TEST")
+	_ = os.Unsetenv("EDO_SECRETS_KEY")
 	t.Cleanup(func() {
-		_ = os.Unsetenv("ZRT_MAGE_CREATED_TEST")
-		_ = os.Unsetenv("ZRT_SECRETS_KEY")
+		_ = os.Unsetenv("EDO_MAGE_CREATED_TEST")
+		_ = os.Unsetenv("EDO_SECRETS_KEY")
 	})
 
 	if err := loadEnvironmentFile(path); err != nil {
 		t.Fatal(err)
 	}
-	if got := os.Getenv("ZRT_MAGE_CREATED_TEST"); got != "loaded" {
+	if got := os.Getenv("EDO_MAGE_CREATED_TEST"); got != "loaded" {
 		t.Fatalf("未加载自动创建的默认配置: %q", got)
 	}
-	encoded := os.Getenv("ZRT_SECRETS_KEY")
+	encoded := os.Getenv("EDO_SECRETS_KEY")
 	key, err := base64.StdEncoding.DecodeString(encoded)
 	if err != nil || len(key) != 32 {
-		t.Fatalf("自动生成的 ZRT_SECRETS_KEY 无效: %q", encoded)
+		t.Fatalf("自动生成的 EDO_SECRETS_KEY 无效: %q", encoded)
 	}
 	content, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(content), "ZRT_SECRETS_KEY="+encoded) {
+	if !strings.Contains(string(content), "EDO_SECRETS_KEY="+encoded) {
 		t.Fatal("自动生成的密钥未持久化到 .env")
 	}
 
@@ -154,9 +154,9 @@ func TestLoadEnvironmentFileCreatesDefault(t *testing.T) {
 
 func TestFillEnvironmentSecretsKeyRejectsUnsafeTemplate(t *testing.T) {
 	for _, template := range []string{
-		"ZRT_ENV=development\n",
-		"ZRT_SECRETS_KEY=hard-coded\n",
-		"ZRT_SECRETS_KEY=\nZRT_SECRETS_KEY=\n",
+		"EDO_ENV=development\n",
+		"EDO_SECRETS_KEY=hard-coded\n",
+		"EDO_SECRETS_KEY=\nEDO_SECRETS_KEY=\n",
 	} {
 		if _, err := fillEnvironmentSecretsKey([]byte(template), "generated"); err == nil {
 			t.Fatalf("应拒绝不安全的默认配置模板: %q", template)
@@ -166,7 +166,7 @@ func TestFillEnvironmentSecretsKeyRejectsUnsafeTemplate(t *testing.T) {
 
 func TestInitialSecretsKeyUsesProcessEnvironment(t *testing.T) {
 	const existing = "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY="
-	t.Setenv("ZRT_SECRETS_KEY", existing)
+	t.Setenv("EDO_SECRETS_KEY", existing)
 	got, err := initialSecretsKey()
 	if err != nil {
 		t.Fatal(err)
@@ -175,7 +175,7 @@ func TestInitialSecretsKeyUsesProcessEnvironment(t *testing.T) {
 		t.Fatalf("未复用进程环境中的固定密钥: %q", got)
 	}
 
-	t.Setenv("ZRT_SECRETS_KEY", "invalid")
+	t.Setenv("EDO_SECRETS_KEY", "invalid")
 	if _, err := initialSecretsKey(); err == nil {
 		t.Fatal("不得用随机密钥替代进程环境中的无效密钥")
 	}
@@ -187,7 +187,7 @@ func TestDevelopmentComposeRequiresDotEnvSecretsKey(t *testing.T) {
 		t.Fatal(err)
 	}
 	value := string(content)
-	if !strings.Contains(value, "${ZRT_SECRETS_KEY:?") || strings.Contains(value, "${ZRT_SECRETS_KEY:-") {
+	if !strings.Contains(value, "${EDO_SECRETS_KEY:?") || strings.Contains(value, "${EDO_SECRETS_KEY:-") {
 		t.Fatal("开发 Compose 必须从 .env 读取必填密钥且不得提供硬编码回退")
 	}
 }
@@ -199,14 +199,14 @@ func TestEnvironmentExampleDeclaresRuntimeConnections(t *testing.T) {
 	}
 	value := string(content)
 	for _, variable := range []string{
-		"ZRT_DATABASE_DRIVER=",
-		"ZRT_DATABASE_DSN=",
-		"ZRT_REDIS_URL=",
-		"ZRT_NATS_URL=",
-		"ZRT_COMPOSE_DATABASE_DRIVER=",
-		"ZRT_COMPOSE_DATABASE_DSN=",
-		"ZRT_COMPOSE_REDIS_URL=",
-		"ZRT_COMPOSE_NATS_URL=",
+		"EDO_DATABASE_DRIVER=",
+		"EDO_DATABASE_DSN=",
+		"EDO_REDIS_URL=",
+		"EDO_NATS_URL=",
+		"EDO_COMPOSE_DATABASE_DRIVER=",
+		"EDO_COMPOSE_DATABASE_DSN=",
+		"EDO_COMPOSE_REDIS_URL=",
+		"EDO_COMPOSE_NATS_URL=",
 	} {
 		if !strings.Contains(value, variable) {
 			t.Fatalf(".env.example 缺少连接配置 %s", strings.TrimSuffix(variable, "="))
@@ -222,10 +222,10 @@ func TestComposeMapsDotEnvConnections(t *testing.T) {
 		}
 		value := string(content)
 		for _, variable := range []string{
-			"ZRT_COMPOSE_DATABASE_DRIVER",
-			"ZRT_COMPOSE_DATABASE_DSN",
-			"ZRT_COMPOSE_REDIS_URL",
-			"ZRT_COMPOSE_NATS_URL",
+			"EDO_COMPOSE_DATABASE_DRIVER",
+			"EDO_COMPOSE_DATABASE_DSN",
+			"EDO_COMPOSE_REDIS_URL",
+			"EDO_COMPOSE_NATS_URL",
 		} {
 			if !strings.Contains(value, "${"+variable+":-") {
 				t.Fatalf("%s 未从 .env 映射 %s", path, variable)
@@ -241,11 +241,11 @@ func TestComposeBuilderAlwaysUsesMTLS(t *testing.T) {
 			t.Fatal(err)
 		}
 		value := string(content)
-		if !strings.Contains(value, "ZRT_DOCKER_BUILDER_HOST: tcp://docker-builder:2376") ||
-			!strings.Contains(value, "ZRT_DOCKER_BUILDER_TLS_CERT_PATH: /certs/client") {
+		if !strings.Contains(value, "EDO_DOCKER_BUILDER_HOST: tcp://docker-builder:2376") ||
+			!strings.Contains(value, "EDO_DOCKER_BUILDER_TLS_CERT_PATH: /certs/client") {
 			t.Fatalf("%s 未固定使用 Docker 构建器 mTLS", path)
 		}
-		if strings.Contains(value, "ZRT_COMPOSE_DOCKER_BUILDER_") {
+		if strings.Contains(value, "EDO_COMPOSE_DOCKER_BUILDER_") {
 			t.Fatalf("%s 不得允许 .env 降级 Docker 构建器连接", path)
 		}
 	}
@@ -261,7 +261,7 @@ func TestCopyEmbeddedWebAssets(t *testing.T) {
 	if err := os.MkdirAll(target, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(source, "index.html"), []byte("ZRT"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(source, "index.html"), []byte("EDO"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(source, "assets", "app.js"), []byte("app"), 0o644); err != nil {

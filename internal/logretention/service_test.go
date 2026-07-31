@@ -10,11 +10,11 @@ import (
 
 	"gorm.io/datatypes"
 
-	"zrt/internal/config"
-	"zrt/internal/configuration"
-	"zrt/internal/database"
-	"zrt/internal/model"
-	"zrt/internal/secret"
+	"edo/internal/config"
+	"edo/internal/configuration"
+	"edo/internal/database"
+	"edo/internal/model"
+	"edo/internal/secret"
 )
 
 func TestCleanupUsesIndependentRetentionWindows(t *testing.T) {

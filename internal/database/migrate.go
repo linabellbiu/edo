@@ -11,7 +11,7 @@ import (
 
 	"gorm.io/gorm"
 
-	"zrt/internal/model"
+	"edo/internal/model"
 )
 
 type migration struct {
@@ -829,8 +829,8 @@ func migrateHostsAndEnvironments(tx *gorm.DB) error {
 		return createLocalHost.Error
 	}
 	// 只迁移历史版本写入的精确默认名，不覆盖管理员后续设置的自定义名称。
-	if localHost.Name == "ZRT 本机" {
-		if err := tx.Model(&model.Host{}).Where("id = ? AND name = ?", localHost.ID, "ZRT 本机").
+	if localHost.Name == "EDO 本机" {
+		if err := tx.Model(&model.Host{}).Where("id = ? AND name = ?", localHost.ID, "EDO 本机").
 			Updates(map[string]any{"name": "本地", "updated_at": now}).Error; err != nil {
 			return err
 		}
@@ -842,7 +842,7 @@ func migrateHostsAndEnvironments(tx *gorm.DB) error {
 		return migrateLegacySSHDockerHosts(tx, now)
 	}
 	localCapability := model.HostCapability{
-		HostID: localHost.ID, Kind: model.HostCapabilityDocker, RuntimeID: "zrt-local-docker",
+		HostID: localHost.ID, Kind: model.HostCapabilityDocker, RuntimeID: "edo-local-docker",
 		Status: model.HostCapabilityReady, CreatedAt: now, UpdatedAt: now,
 	}
 	if err := tx.Create(&localCapability).Error; err != nil {
@@ -1086,7 +1086,7 @@ func Migrate(ctx context.Context, db *gorm.DB) error {
 
 func VerifyMigrations(ctx context.Context, db *gorm.DB) error {
 	if !db.Migrator().HasTable(&model.SchemaMigration{}) {
-		return fmt.Errorf("数据库尚未初始化，请先执行 zrt migrate")
+		return fmt.Errorf("数据库尚未初始化，请先执行 edo migrate")
 	}
 	for _, item := range migrations {
 		var count int64
@@ -1095,7 +1095,7 @@ func VerifyMigrations(ctx context.Context, db *gorm.DB) error {
 			return fmt.Errorf("检查数据库迁移版本 %s 失败: %w", item.version, err)
 		}
 		if count == 0 {
-			return fmt.Errorf("数据库迁移版本 %s 尚未执行，请先执行 zrt migrate", item.version)
+			return fmt.Errorf("数据库迁移版本 %s 尚未执行，请先执行 edo migrate", item.version)
 		}
 	}
 	return nil

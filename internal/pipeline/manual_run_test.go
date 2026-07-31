@@ -9,9 +9,9 @@ import (
 
 	"gorm.io/gorm"
 
-	"zrt/internal/credential"
-	"zrt/internal/model"
-	"zrt/internal/repository"
+	"edo/internal/credential"
+	"edo/internal/model"
+	"edo/internal/repository"
 )
 
 func TestExecuteBlockedManualRunWithSelectedCommit(t *testing.T) {
@@ -205,7 +205,7 @@ func TestLocalExecutionImageUsesCommitShortHash(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if image != "zrt.local/order_api:abcdef123456" {
+	if image != "edo.local/order_api:abcdef123456" {
 		t.Fatalf("本地镜像标签没有使用 Commit 短哈希: %q", image)
 	}
 }

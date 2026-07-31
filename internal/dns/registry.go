@@ -23,7 +23,7 @@ import (
 	route53provider "github.com/libdns/route53"
 	tencentclouddns "github.com/libdns/tencentcloud"
 
-	"zrt/internal/model"
+	"edo/internal/model"
 )
 
 var ErrUnsupportedProvider = errors.New("不支持该 DNS 厂商")

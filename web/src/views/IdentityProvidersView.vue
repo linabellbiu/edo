@@ -37,5 +37,5 @@ onMounted(refresh)
   </div>
 </template>
 
-<style scoped>.identity-heading{display:flex;align-items:center;justify-content:space-between;margin-bottom:14px}.identity-heading h3,.identity-heading p{margin:0}.identity-heading p{margin-top:4px;color:var(--zrt-muted)}.identity-heading>div:last-child{display:flex;gap:8px}.form-grid{display:grid;grid-template-columns:1fr 1fr;gap:0 14px}.span-2{grid-column:1/-1}.save-provider{margin-top:22px}@media(max-width:650px){.form-grid{grid-template-columns:1fr}.span-2{grid-column:auto}}
+<style scoped>.identity-heading{display:flex;align-items:center;justify-content:space-between;margin-bottom:14px}.identity-heading h3,.identity-heading p{margin:0}.identity-heading p{margin-top:4px;color:var(--edo-muted)}.identity-heading>div:last-child{display:flex;gap:8px}.form-grid{display:grid;grid-template-columns:1fr 1fr;gap:0 14px}.span-2{grid-column:1/-1}.save-provider{margin-top:22px}@media(max-width:650px){.form-grid{grid-template-columns:1fr}.span-2{grid-column:auto}}
 </style>

@@ -8,8 +8,8 @@ import (
 
 	"github.com/gin-gonic/gin"
 
-	"zrt/internal/deployment"
-	"zrt/internal/model"
+	"edo/internal/deployment"
+	"edo/internal/model"
 )
 
 type deploymentHandler struct {

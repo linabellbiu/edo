@@ -9,11 +9,11 @@ import (
 
 	"github.com/gin-gonic/gin"
 
-	"zrt/internal/account"
-	"zrt/internal/audit"
-	"zrt/internal/identity"
-	"zrt/internal/model"
-	"zrt/internal/secret"
+	"edo/internal/account"
+	"edo/internal/audit"
+	"edo/internal/identity"
+	"edo/internal/model"
+	"edo/internal/secret"
 )
 
 type identityHandler struct {
@@ -165,7 +165,7 @@ func (h identityHandler) writeProviderError(c *gin.Context, err error) {
 	case errors.Is(err, identity.ErrProviderNotFound):
 		c.JSON(http.StatusNotFound, errorResponse{Code: "provider_not_found", Message: err.Error(), RequestID: requestIDFrom(c)})
 	case errors.Is(err, secret.ErrUnavailable):
-		c.JSON(http.StatusServiceUnavailable, errorResponse{Code: "secret_unavailable", Message: "请先配置 ZRT 密钥加密功能", RequestID: requestIDFrom(c)})
+		c.JSON(http.StatusServiceUnavailable, errorResponse{Code: "secret_unavailable", Message: "请先配置 EDO 密钥加密功能", RequestID: requestIDFrom(c)})
 	default:
 		h.logger.Error("保存登录方式失败", "operation", "identity_provider_save", "request_id", requestIDFrom(c), "err", err)
 		writeInternalError(c)

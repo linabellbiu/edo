@@ -1,36 +1,36 @@
-# ZRT 单机部署：应用、Redis、NATS 一起启动，数据保存在 Docker Volume 中。
-name: zrt
+# EDO 单机部署：应用、Redis、NATS 一起启动，数据保存在 Docker Volume 中。
+name: edo
 
 # migrate 和 api 共用这组环境变量。这里仅保留容器部署必须指定的内容，
 # 重试次数、任务超时、Stream 容量等默认值统一放在 Go 配置中维护。
-x-zrt-environment: &zrt-environment
-  ZRT_ENV: production
+x-edo-environment: &edo-environment
+  EDO_ENV: production
 
   # 当前端通过 http://127.0.0.1:8080 访问时必须为 false。
   # 配置 HTTPS 反向代理后改为 true。
-  ZRT_AUTH_COOKIE_SECURE: "false"
+  EDO_AUTH_COOKIE_SECURE: "false"
 
   # 宿主机路径、127.0.0.1 与容器内地址含义不同，使用根 .env 的 Compose 专用值映射实际运行变量。
   # SQLite 数据库默认保存在仓库 data 目录中。
-  ZRT_DATABASE_DRIVER: ${ZRT_COMPOSE_DATABASE_DRIVER:-sqlite}
-  ZRT_DATABASE_DSN: ${ZRT_COMPOSE_DATABASE_DSN:-/app/data/zrt.db}
+  EDO_DATABASE_DRIVER: ${EDO_COMPOSE_DATABASE_DRIVER:-sqlite}
+  EDO_DATABASE_DSN: ${EDO_COMPOSE_DATABASE_DSN:-/app/data/edo.db}
 
   # 文件制品与 SQLite 共用持久化 data 目录；单文件默认限制为 1 GiB，避免构建输出挤满磁盘。
-  ZRT_ARTIFACTS_DIRECTORY: ${ZRT_COMPOSE_ARTIFACTS_DIRECTORY:-/app/data/artifacts}
-  ZRT_ARTIFACTS_MAX_BYTES: ${ZRT_ARTIFACTS_MAX_BYTES:-1073741824}
+  EDO_ARTIFACTS_DIRECTORY: ${EDO_COMPOSE_ARTIFACTS_DIRECTORY:-/app/data/artifacts}
+  EDO_ARTIFACTS_MAX_BYTES: ${EDO_ARTIFACTS_MAX_BYTES:-1073741824}
 
   # redis 和 nats 是下面的 Compose 服务名，只在容器网络内使用。
-  ZRT_REDIS_URL: ${ZRT_COMPOSE_REDIS_URL:-redis://redis:6379/0}
-  ZRT_NATS_URL: ${ZRT_COMPOSE_NATS_URL:-nats://nats:4222}
+  EDO_REDIS_URL: ${EDO_COMPOSE_REDIS_URL:-redis://redis:6379/0}
+  EDO_NATS_URL: ${EDO_COMPOSE_NATS_URL:-nats://nats:4222}
 
   # 请在 .env 中设置。该密钥用于加密登录方式、仓库凭据和 kubeconfig。
-  ZRT_SECRETS_KEY: ${ZRT_SECRETS_KEY:?请先在根目录 .env 中设置 ZRT_SECRETS_KEY}
+  EDO_SECRETS_KEY: ${EDO_SECRETS_KEY:?请先在根目录 .env 中设置 EDO_SECRETS_KEY}
 
 # migrate 和 api 共用同一个镜像、数据卷和安全设置。
-x-zrt-runtime: &zrt-runtime
-  image: ${ZRT_IMAGE:-zrt:local}
+x-edo-runtime: &edo-runtime
+  image: ${EDO_IMAGE:-edo:local}
   pull_policy: never
-  environment: *zrt-environment
+  environment: *edo-environment
   init: true
   # 容器根目录只读，并禁止进程提权。
   read_only: true
@@ -43,7 +43,7 @@ x-zrt-runtime: &zrt-runtime
     # 直接保存到仓库 data 目录，便于备份并与本机运行共享 SQLite。
     - ./data:/app/data
   networks:
-    - zrt
+    - edo
   logging:
     driver: json-file
     options:
@@ -53,32 +53,32 @@ x-zrt-runtime: &zrt-runtime
 services:
   # 一次性数据库迁移。迁移成功后 api 才会启动。
   migrate:
-    <<: *zrt-runtime
+    <<: *edo-runtime
     build:
       context: .
       dockerfile: Dockerfile
       args:
-        ZRT_VERSION: ${ZRT_VERSION:-dev}
+        EDO_VERSION: ${EDO_VERSION:-dev}
     command: ["migrate"]
     # 数据库临时不可用时最多重启 5 次。
     restart: "on-failure:5"
 
-  # ZRT 主服务。HTTP、WebSocket 和后台任务都在这个进程中运行。
+  # EDO 主服务。HTTP、WebSocket 和后台任务都在这个进程中运行。
   # 默认每项任务最多执行 4 次；任务 Stream 上限 512 MiB，死信 Stream 上限 256 MiB。
   api:
-    <<: *zrt-runtime
+    <<: *edo-runtime
     environment:
-      <<: *zrt-environment
+      <<: *edo-environment
       # 只有 API 挂载客户端证书；构建出的镜像和脚本容器都拿不到 Docker API 凭据。
       # Compose 内置构建器固定使用自动签发的 mTLS，禁止被 .env 降级为明文 2375。
-      ZRT_DOCKER_BUILDER_HOST: tcp://docker-builder:2376
-      ZRT_DOCKER_BUILDER_TLS_CERT_PATH: /certs/client
+      EDO_DOCKER_BUILDER_HOST: tcp://docker-builder:2376
+      EDO_DOCKER_BUILDER_TLS_CERT_PATH: /certs/client
     command: ["server"]
     volumes:
       - ./data:/app/data
-      - zrt-builder-client-certs:/certs/client:ro
+      - edo-builder-client-certs:/certs/client:ro
     ports:
-      - "127.0.0.1:${ZRT_HTTP_PORT:-8080}:8080"
+      - "127.0.0.1:${EDO_HTTP_PORT:-8080}:8080"
     depends_on:
       migrate:
         condition: service_completed_successfully
@@ -96,8 +96,8 @@ services:
       start_period: 10s
     stop_grace_period: 70s
     networks:
-      - zrt
-      - zrt-builder
+      - edo
+      - edo-builder
     restart: unless-stopped
 
   # 独立 Docker-in-Docker 构建节点。未绑定镜像仓库且发布到远程 Docker 时，api 会将
@@ -113,13 +113,13 @@ services:
       DOCKER_TLS_SAN: DNS:docker-builder
     command: ["--storage-driver=overlay2"]
     volumes:
-      # 持久化 BuildKit 图层缓存，重启 ZRT 后无需从零构建全部基础镜像。
-      - zrt-builder-data:/var/lib/docker
+      # 持久化 BuildKit 图层缓存，重启 EDO 后无需从零构建全部基础镜像。
+      - edo-builder-data:/var/lib/docker
       # CA 私钥只保留在 DinD；API 只能只读访问单独的客户端证书卷。
-      - zrt-builder-ca-certs:/certs/ca
-      - zrt-builder-client-certs:/certs/client
+      - edo-builder-ca-certs:/certs/ca
+      - edo-builder-client-certs:/certs/client
     networks:
-      - zrt-builder
+      - edo-builder
     healthcheck:
       test: ["CMD", "docker", "info"]
       interval: 5s
@@ -143,7 +143,7 @@ services:
     volumes:
       - ./data/redis:/data
     networks:
-      - zrt
+      - edo
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
@@ -166,7 +166,7 @@ services:
     volumes:
       - ./data/nats:/data
     networks:
-      - zrt
+      - edo
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8222/healthz?js-enabled-only=true"]
       interval: 5s
@@ -180,17 +180,17 @@ services:
     restart: unless-stopped
 
 networks:
-  zrt:
+  edo:
     driver: bridge
   # DinD API 不映射宿主机端口，并通过 mTLS 限制为持有客户端证书的 api 访问。
-  zrt-builder:
+  edo-builder:
     driver: bridge
 
 # SQLite、Redis 和 NATS 都保存在仓库 data 目录；docker compose down 不会删除这些文件。
 # 不要直接清空 data 目录，升级、迁移或重建环境前先完整备份。
 volumes:
   # 这是可重建的镜像层缓存，不包含 SQLite、Redis 或 NATS 业务数据。
-  zrt-builder-data:
+  edo-builder-data:
   # CA 私钥与客户端证书分卷保存，避免 API 获得签发新证书的能力。
-  zrt-builder-ca-certs:
-  zrt-builder-client-certs:
+  edo-builder-ca-certs:
+  edo-builder-client-certs:

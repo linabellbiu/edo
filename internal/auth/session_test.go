@@ -8,8 +8,8 @@ import (
 
 	miniredis "github.com/alicebob/miniredis/v2"
 
-	"zrt/internal/cache"
-	"zrt/internal/config"
+	"edo/internal/cache"
+	"edo/internal/config"
 )
 
 type staticLoginLockoutGate bool
@@ -21,7 +21,7 @@ func (gate staticLoginLockoutGate) LoginLockoutEnabled(context.Context) (bool, e
 func TestSessionTokenIsHashedInRedis(t *testing.T) {
 	server := miniredis.RunT(t)
 	redisClient, err := cache.Open(context.Background(), config.Redis{
-		URL: "redis://" + server.Addr() + "/0", KeyPrefix: "zrt:", Timeout: time.Second,
+		URL: "redis://" + server.Addr() + "/0", KeyPrefix: "edo:", Timeout: time.Second,
 	})
 	if err != nil {
 		t.Fatalf("连接测试 Redis 失败: %v", err)
@@ -52,7 +52,7 @@ func TestSessionTokenIsHashedInRedis(t *testing.T) {
 func TestLoginRateLimiterHasFiniteWindow(t *testing.T) {
 	server := miniredis.RunT(t)
 	redisClient, err := cache.Open(context.Background(), config.Redis{
-		URL: "redis://" + server.Addr() + "/0", KeyPrefix: "zrt:", Timeout: time.Second,
+		URL: "redis://" + server.Addr() + "/0", KeyPrefix: "edo:", Timeout: time.Second,
 	})
 	if err != nil {
 		t.Fatalf("连接测试 Redis 失败: %v", err)
@@ -79,7 +79,7 @@ func TestLoginRateLimiterHasFiniteWindow(t *testing.T) {
 func TestLoginRateLimiterDefaultsDisabled(t *testing.T) {
 	server := miniredis.RunT(t)
 	redisClient, err := cache.Open(context.Background(), config.Redis{
-		URL: "redis://" + server.Addr() + "/0", KeyPrefix: "zrt:", Timeout: time.Second,
+		URL: "redis://" + server.Addr() + "/0", KeyPrefix: "edo:", Timeout: time.Second,
 	})
 	if err != nil {
 		t.Fatalf("连接测试 Redis 失败: %v", err)
@@ -102,7 +102,7 @@ func TestLoginRateLimiterDefaultsDisabled(t *testing.T) {
 func TestLoginRateLimiterClearsExistingFailures(t *testing.T) {
 	server := miniredis.RunT(t)
 	redisClient, err := cache.Open(context.Background(), config.Redis{
-		URL: "redis://" + server.Addr() + "/0", KeyPrefix: "zrt:", Timeout: time.Second,
+		URL: "redis://" + server.Addr() + "/0", KeyPrefix: "edo:", Timeout: time.Second,
 	})
 	if err != nil {
 		t.Fatalf("连接测试 Redis 失败: %v", err)

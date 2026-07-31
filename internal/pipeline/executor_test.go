@@ -11,10 +11,10 @@ import (
 
 	"gorm.io/gorm"
 
-	"zrt/internal/artifact"
-	"zrt/internal/deployment"
-	"zrt/internal/dockerengine"
-	"zrt/internal/model"
+	"edo/internal/artifact"
+	"edo/internal/deployment"
+	"edo/internal/dockerengine"
+	"edo/internal/model"
 )
 
 func TestTransientBuildErrorUsesTypedCauses(t *testing.T) {

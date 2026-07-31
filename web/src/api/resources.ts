@@ -31,7 +31,7 @@ export async function createResource(
 export function apiErrorMessage(error: unknown): string {
   if (axios.isAxiosError(error)) {
     const message = (error.response?.data as { message?: string } | undefined)?.message
-    return message || (error.response ? `请求失败（${error.response.status}）` : '无法连接 ZRT API')
+    return message || (error.response ? `请求失败（${error.response.status}）` : '无法连接 EDO API')
   }
   return '操作失败，请稍后重试'
 }

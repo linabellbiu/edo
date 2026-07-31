@@ -12,11 +12,11 @@ import (
 
 	"gorm.io/gorm"
 
-	"zrt/internal/config"
-	"zrt/internal/database"
-	"zrt/internal/model"
-	"zrt/internal/notification"
-	"zrt/internal/secret"
+	"edo/internal/config"
+	"edo/internal/database"
+	"edo/internal/model"
+	"edo/internal/notification"
+	"edo/internal/secret"
 )
 
 func TestMonitorThresholdAlertRecoveryAndEndpointProtection(t *testing.T) {
@@ -134,7 +134,7 @@ func newMonitorTestService(t *testing.T, client HTTPDoer) (*Service, *notificati
 		t.Fatalf("初始化监控测试密钥失败: %v", err)
 	}
 	notifier := notification.NewService(db, secretManager, nil, 4)
-	channelEndpoint := "https://notify.example.com/zrt"
+	channelEndpoint := "https://notify.example.com/edo"
 	channel, err := notifier.CreateChannel(context.Background(), "admin", notification.ChannelInput{
 		Name: "monitor-alerts", Type: model.NotificationChannelWebhook, Endpoint: &channelEndpoint,
 	})

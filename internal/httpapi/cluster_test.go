@@ -78,14 +78,14 @@ clusters:
     server: %s
     certificate-authority-data: %s
 users:
-- name: zrt
+- name: edo
   user:
     token: test-token
 contexts:
 - name: test
   context:
     cluster: test
-    user: zrt
+    user: edo
 current-context: test
 `, server.URL, base64.StdEncoding.EncodeToString(certificate))
 }

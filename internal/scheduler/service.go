@@ -17,9 +17,9 @@ import (
 	"gorm.io/datatypes"
 	"gorm.io/gorm"
 
-	"zrt/internal/model"
-	"zrt/internal/notification"
-	"zrt/internal/task"
+	"edo/internal/model"
+	"edo/internal/notification"
+	"edo/internal/task"
 )
 
 var (
@@ -206,7 +206,7 @@ func (s *Service) enqueueOne(ctx context.Context, due *model.ScheduledTask, now 
 			return nil
 		}
 		job, err := task.NewService(tx, s.maxAttempts).Create(ctx, task.CreateInput{
-			Kind: "scheduler.execute", Subject: "zrt.task.scheduler.execute", Idempotent: true,
+			Kind: "scheduler.execute", Subject: "edo.task.scheduler.execute", Idempotent: true,
 			IdempotencyKey: "schedule:" + due.ID + ":" + scheduledAt.Format(time.RFC3339),
 			Payload: TaskPayload{
 				ScheduleID: due.ID, ScheduledAt: scheduledAt, Action: due.Action,

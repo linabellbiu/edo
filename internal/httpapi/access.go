@@ -10,9 +10,9 @@ import (
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 
-	"zrt/internal/access"
-	"zrt/internal/account"
-	"zrt/internal/audit"
+	"edo/internal/access"
+	"edo/internal/account"
+	"edo/internal/audit"
 )
 
 type accessHandler struct {

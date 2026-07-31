@@ -1,6 +1,6 @@
 package pipeline
 
-import "zrt/internal/model"
+import "edo/internal/model"
 
 const (
 	workflowPresetBlank  = "blank"

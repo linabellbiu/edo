@@ -4,8 +4,8 @@ import (
 	"context"
 	"testing"
 
-	"zrt/internal/dockerengine"
-	"zrt/internal/model"
+	"edo/internal/dockerengine"
+	"edo/internal/model"
 )
 
 func TestEnsureInitialDeliverySettingsCreatesCompleteLocalDockerFlow(t *testing.T) {

@@ -10,8 +10,8 @@ import (
 
 	"gorm.io/gorm"
 
-	"zrt/internal/config"
-	"zrt/internal/model"
+	"edo/internal/config"
+	"edo/internal/model"
 )
 
 type legacyRepositoryObservationEnvironment struct {
@@ -859,7 +859,7 @@ func TestHostMigrationBackfillsLegacySSHDockerEndpoints(t *testing.T) {
 	for _, capability := range capabilities {
 		if capability.HostID == model.BuiltinLocalHostID {
 			if capability.Kind != model.HostCapabilityDocker ||
-				capability.RuntimeID != "zrt-local-docker" ||
+				capability.RuntimeID != "edo-local-docker" ||
 				capability.Status != model.HostCapabilityReady {
 				t.Fatalf("内置本地主机能力错误: %+v", capability)
 			}
@@ -889,7 +889,7 @@ func TestHostMigrationKeepsDisabledBuiltinCapabilities(t *testing.T) {
 		t.Fatalf("首次执行主机模型迁移失败: %v", err)
 	}
 	if err := db.Model(&model.Host{}).Where("id = ?", model.BuiltinLocalHostID).
-		Update("name", "ZRT 本机").Error; err != nil {
+		Update("name", "EDO 本机").Error; err != nil {
 		t.Fatalf("准备历史默认名失败: %v", err)
 	}
 	if err := db.Delete(&model.HostCapability{}, "host_id = ? AND kind = ?",
@@ -985,8 +985,8 @@ func TestExternalDatabaseMigration(t *testing.T) {
 		driver string
 		env    string
 	}{
-		{name: "PostgreSQL", driver: "postgres", env: "ZRT_TEST_POSTGRES_DSN"},
-		{name: "MySQL", driver: "mysql", env: "ZRT_TEST_MYSQL_DSN"},
+		{name: "PostgreSQL", driver: "postgres", env: "EDO_TEST_POSTGRES_DSN"},
+		{name: "MySQL", driver: "mysql", env: "EDO_TEST_MYSQL_DSN"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

@@ -13,10 +13,10 @@ import (
 	"github.com/google/uuid"
 	"gorm.io/gorm"
 
-	"zrt/internal/dockerengine"
-	"zrt/internal/model"
-	"zrt/internal/repository"
-	"zrt/internal/task"
+	"edo/internal/dockerengine"
+	"edo/internal/model"
+	"edo/internal/repository"
+	"edo/internal/task"
 )
 
 var (
@@ -661,7 +661,7 @@ func (s *Service) validateWorkflow(
 				}
 			case model.WorkflowNodeShell:
 				if !validScriptEnvironmentVariables(node.Config.EnvironmentVariables) {
-					issues = append(issues, WorkflowIssue{Code: "invalid_shell_task", Message: fmt.Sprintf("脚本任务“%s”的环境变量无效；CI、HOME、TMPDIR 和 ZRT 流水线元数据名称由系统保留", node.Name), NodeID: node.ID, StageID: stage.ID})
+					issues = append(issues, WorkflowIssue{Code: "invalid_shell_task", Message: fmt.Sprintf("脚本任务“%s”的环境变量无效；CI、HOME、TMPDIR 和 EDO 流水线元数据名称由系统保留", node.Name), NodeID: node.ID, StageID: stage.ID})
 				} else if strings.TrimSpace(node.Config.Script) == "" || len(node.Config.Script) > 256*1024 || node.Config.TimeoutSeconds < 30 || node.Config.TimeoutSeconds > 7200 ||
 					!validRuntimeImageReference(node.Config.RuntimeImage) {
 					issues = append(issues, WorkflowIssue{Code: "invalid_shell_task", Message: fmt.Sprintf("脚本任务“%s”的命令、超时或环境变量无效", node.Name), NodeID: node.ID, StageID: stage.ID})
@@ -1488,7 +1488,7 @@ func (s *Service) enqueueBuildExecution(ctx context.Context, run *model.Pipeline
 	var jobID string
 	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		job, err := task.NewService(tx, 4).Create(ctx, task.CreateInput{
-			Kind: "pipeline.build", Subject: "zrt.task.pipeline.build",
+			Kind: "pipeline.build", Subject: "edo.task.pipeline.build",
 			Payload:        BuildTaskPayload{PipelineRunID: run.ID, WorkflowNodeID: node.ID},
 			IdempotencyKey: "pipeline:" + run.ID + ":task:" + node.ID,
 			MaxAttempts:    maxAttempts, Idempotent: idempotent,
@@ -1538,7 +1538,7 @@ func (s *Service) enqueueDeployExecution(ctx context.Context, run *model.Pipelin
 	var jobID string
 	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		job, err := task.NewService(tx, 1).Create(ctx, task.CreateInput{
-			Kind: "pipeline.deploy", Subject: "zrt.task.pipeline.deploy",
+			Kind: "pipeline.deploy", Subject: "edo.task.pipeline.deploy",
 			Payload:        DeployTaskPayload{PipelineRunID: run.ID, WorkflowNodeID: node.ID},
 			IdempotencyKey: "pipeline:" + run.ID + ":deploy:" + node.ID,
 			MaxAttempts:    1, Idempotent: false,

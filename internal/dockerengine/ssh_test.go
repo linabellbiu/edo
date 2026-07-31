@@ -14,7 +14,7 @@ import (
 
 	"golang.org/x/crypto/ssh"
 
-	"zrt/internal/config"
+	"edo/internal/config"
 )
 
 func TestSSHConnectionWithPasswordAndDockerCheck(t *testing.T) {
@@ -45,7 +45,7 @@ func TestDockerPullWithRegistryAuthKeepsCredentialOutOfCommand(t *testing.T) {
 		t.Fatal(err)
 	}
 	if strings.Contains(command, credential) || !strings.Contains(command, "--password-stdin") ||
-		!strings.Contains(command, "mktemp -d /tmp/zrt-docker-config") {
+		!strings.Contains(command, "mktemp -d /tmp/edo-docker-config") {
 		t.Fatalf("远程拉取命令没有安全传递认证信息: %s", command)
 	}
 	payload, err := io.ReadAll(input)
@@ -124,7 +124,7 @@ func TestLoadImageWithSSHStreamsArchiveAndVerifiesImageID(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	image := "zrt.local/order-api:abcdef123456-12345678"
+	image := "edo.local/order-api:abcdef123456-12345678"
 	sourceImageID := "sha256:" + strings.Repeat("b", 64)
 	targetImageID := "sha256:" + strings.Repeat("a", 64)
 	archive := "docker-save-archive"
@@ -162,7 +162,7 @@ func TestParseDockerLoadImageIDRejectsMissingOrAmbiguousResult(t *testing.T) {
 		t.Fatalf("没有解析本次 docker load 返回的 Image ID: actual=%q err=%v", actual, err)
 	}
 	for _, output := range []string{
-		"Loaded image: zrt.local/app:mutable\n",
+		"Loaded image: edo.local/app:mutable\n",
 		"Loaded image ID: sha256:short\n",
 		"Loaded image ID: " + first + "\nLoaded image ID: " + second + "\n",
 	} {
@@ -330,7 +330,7 @@ func serveDockerSSHTestConnection(
 						_, _ = io.WriteString(channel, "2.39.2\n")
 						status = 0
 					}
-				case strings.HasPrefix(command, "env ZRT_IMAGE=") && strings.Contains(command, " docker 'compose' "):
+				case strings.HasPrefix(command, "env EDO_IMAGE=") && strings.Contains(command, " docker 'compose' "):
 					if !inputRead {
 						var readErr error
 						commandInput, readErr = io.ReadAll(channel)

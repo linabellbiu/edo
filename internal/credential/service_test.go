@@ -8,10 +8,10 @@ import (
 	"testing"
 	"time"
 
-	"zrt/internal/config"
-	"zrt/internal/database"
-	"zrt/internal/model"
-	"zrt/internal/secret"
+	"edo/internal/config"
+	"edo/internal/database"
+	"edo/internal/model"
+	"edo/internal/secret"
 )
 
 func TestCredentialOwnershipEncryptionAndReveal(t *testing.T) {

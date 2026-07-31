@@ -23,7 +23,7 @@ import (
 	"github.com/moby/moby/client"
 	"go.yaml.in/yaml/v3"
 
-	"zrt/internal/model"
+	"edo/internal/model"
 )
 
 const MaximumComposeYAMLBytes = 512 * 1024
@@ -66,7 +66,7 @@ var composeTopLevelKeys = map[string]struct{}{
 }
 
 // Compose 的完整规范包含能够读取宿主机文件、复用 Engine API Socket、加入其他
-// 容器命名空间或调用运行时插件的入口。ZRT 只开放发布常用且不突破主机边界的子集；
+// 容器命名空间或调用运行时插件的入口。EDO 只开放发布常用且不突破主机边界的子集；
 // 未知字段必须拒绝，不能在解析结构体时丢弃后再把原始 YAML 交给 Compose。
 var composeServiceKeys = map[string]struct{}{
 	"cap_drop": {}, "command": {}, "cpus": {}, "depends_on": {}, "dns": {}, "dns_opt": {},
@@ -79,7 +79,7 @@ var composeServiceKeys = map[string]struct{}{
 }
 
 // ValidateComposeYAML 只接受能够独立执行的内联 Compose 配置。目标服务的镜像由
-// ZRT 在运行时注入；旧方案中的 ${ZRT_IMAGE} 占位符继续兼容，固定镜像仍会被拒绝。
+// EDO 在运行时注入；旧方案中的 ${EDO_IMAGE} 占位符继续兼容，固定镜像仍会被拒绝。
 func ValidateComposeYAML(value, serviceName string) error {
 	_, err := parseComposeYAML(value, serviceName)
 	return err
@@ -101,7 +101,7 @@ func parseComposeYAML(value, serviceName string) (*composeDocument, error) {
 		return nil, fmt.Errorf("%w: 只允许一个 YAML 文档", ErrInvalidComposeYAML)
 	}
 	if !validComposeInterpolation(&documentNode) {
-		return nil, fmt.Errorf("%w: 只允许引用 ZRT_IMAGE，容器内变量请使用 $$ 转义", ErrInvalidComposeYAML)
+		return nil, fmt.Errorf("%w: 只允许引用 EDO_IMAGE，容器内变量请使用 $$ 转义", ErrInvalidComposeYAML)
 	}
 	if !safeComposeDocumentSchema(&documentNode) {
 		return nil, fmt.Errorf("%w: 包含未允许的 Compose 字段或宿主机变量引用", ErrInvalidComposeYAML)
@@ -132,8 +132,8 @@ func parseComposeYAML(value, serviceName string) (*composeDocument, error) {
 	}
 	service, exists := document.Services[serviceName]
 	image := strings.TrimSpace(service.Image)
-	if !exists || (image != "" && image != "${ZRT_IMAGE}") || service.Build.Kind != 0 {
-		return nil, fmt.Errorf("%w: 指定服务的镜像由 ZRT 管理，不能填写固定 image 或 build", ErrInvalidComposeYAML)
+	if !exists || (image != "" && image != "${EDO_IMAGE}") || service.Build.Kind != 0 {
+		return nil, fmt.Errorf("%w: 指定服务的镜像由 EDO 管理，不能填写固定 image 或 build", ErrInvalidComposeYAML)
 	}
 	return &document, nil
 }
@@ -143,7 +143,7 @@ func composeYAMLWithManagedImage(value, serviceName string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if strings.TrimSpace(document.Services[strings.TrimSpace(serviceName)].Image) == "${ZRT_IMAGE}" {
+	if strings.TrimSpace(document.Services[strings.TrimSpace(serviceName)].Image) == "${EDO_IMAGE}" {
 		return value, nil
 	}
 
@@ -164,7 +164,7 @@ func composeYAMLWithManagedImage(value, serviceName string) (string, error) {
 	}
 	service.Content = append(service.Content,
 		&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: "image"},
-		&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: "${ZRT_IMAGE}"},
+		&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: "${EDO_IMAGE}"},
 	)
 	var rendered strings.Builder
 	encoder := yaml.NewEncoder(&rendered)
@@ -387,7 +387,7 @@ func safeComposeLongVolume(node *yaml.Node) bool {
 	case "tmpfs":
 		return !sourceExists || strings.TrimSpace(source) == ""
 	default:
-		// bind、npipe、cluster 与 image 都会绕过 ZRT 的制品和宿主机边界。
+		// bind、npipe、cluster 与 image 都会绕过 EDO 的制品和宿主机边界。
 		return false
 	}
 }
@@ -414,7 +414,7 @@ func safeComposeVolumeDefinitions(volumes map[string]yaml.Node) bool {
 		}
 		for index := 0; index+1 < len(node.Content); index += 2 {
 			key := node.Content[index].Value
-			// Compose 默认会使用 ZRT 项目名给卷加前缀并标记归属。
+			// Compose 默认会使用 EDO 项目名给卷加前缀并标记归属。
 			// name/external 会绕过该隔离并挂载主机上已有数据，因此不开放。
 			if key != "labels" {
 				return false
@@ -531,7 +531,7 @@ func validComposeScalarInterpolation(value string) bool {
 			if separator := strings.IndexAny(name, ":?+-"); separator >= 0 {
 				name = name[:separator]
 			}
-			if name != "ZRT_IMAGE" {
+			if name != "EDO_IMAGE" {
 				return false
 			}
 			index += end + 3
@@ -541,7 +541,7 @@ func validComposeScalarInterpolation(value string) bool {
 				(value[end] >= 'a' && value[end] <= 'z') || (value[end] >= '0' && value[end] <= '9') || value[end] == '_') {
 				end++
 			}
-			if value[index+1:end] != "ZRT_IMAGE" {
+			if value[index+1:end] != "EDO_IMAGE" {
 				return false
 			}
 			index = end
@@ -577,7 +577,7 @@ func (s *Service) DeployCompose(ctx context.Context, input ComposeDeployInput) (
 	}
 	input.YAML = managedYAML
 	if input.ExpectedImageID != "" {
-		if !IsZRTLocalImage(input.Image) || !IsValidImageID(input.ExpectedImageID) {
+		if !IsEDOLocalImage(input.Image) || !IsValidImageID(input.ExpectedImageID) {
 			return "", errors.New("待部署的本地 Docker 镜像无效")
 		}
 	} else if _, err := parseImmutableComposeImage(input.Image); err != nil {
@@ -679,7 +679,7 @@ func (s *Service) prepareComposeImage(
 
 func composeProjectName(targetID string) string {
 	digest := sha256.Sum256([]byte(strings.TrimSpace(targetID)))
-	return "zrt-" + hex.EncodeToString(digest[:6])
+	return "edo-" + hex.EncodeToString(digest[:6])
 }
 
 func composeServiceImage(
@@ -779,7 +779,7 @@ func runComposeWithSSH(
 	for _, argument := range arguments {
 		quotedArguments = append(quotedArguments, shellQuote(argument))
 	}
-	command := "env ZRT_IMAGE=" + shellQuote(input.Image) + " docker " + strings.Join(quotedArguments, " ")
+	command := "env EDO_IMAGE=" + shellQuote(input.Image) + " docker " + strings.Join(quotedArguments, " ")
 	command, commandInput := mode.prepare(command, strings.NewReader(input.YAML))
 	if err := runSSHCommandWithStreams(ctx, client, command, commandInput, outputOrDiscard(input.Stdout), outputOrDiscard(input.Stderr)); err != nil {
 		return fmt.Errorf("远程执行 Docker Compose 失败: %w", err)
@@ -796,7 +796,7 @@ func (s *Service) runComposeCLI(
 	if _, err := exec.LookPath("docker"); err != nil {
 		return errors.New("Docker CLI 未安装，无法执行 Docker Compose 部署")
 	}
-	directory, err := os.MkdirTemp("", "zrt-compose-*")
+	directory, err := os.MkdirTemp("", "edo-compose-*")
 	if err != nil {
 		return fmt.Errorf("创建 Docker Compose 临时目录失败: %w", err)
 	}
@@ -910,7 +910,7 @@ func (s *Service) composeCLIEnvironment(
 			environment = append(environment, "DOCKER_TLS_VERIFY=1", "DOCKER_CERT_PATH="+directory)
 		}
 	}
-	return append(environment, "ZRT_IMAGE="+image, "COMPOSE_IGNORE_ORPHANS=1"), cleanup, nil
+	return append(environment, "EDO_IMAGE="+image, "COMPOSE_IGNORE_ORPHANS=1"), cleanup, nil
 }
 
 func selectedEnvironment(names ...string) []string {
@@ -927,7 +927,7 @@ func writeComposeTLSDirectory(bundle TLSBundle) (string, error) {
 	if _, err := makeTLSConfig("tcp://docker.invalid:2376", bundle); err != nil {
 		return "", err
 	}
-	directory, err := os.MkdirTemp("", "zrt-compose-tls-*")
+	directory, err := os.MkdirTemp("", "edo-compose-tls-*")
 	if err != nil {
 		return "", fmt.Errorf("创建 Docker TLS 临时目录失败: %w", err)
 	}

@@ -16,10 +16,10 @@ const (
 	DefaultMaxAttempts        = 4
 	maxAllowedAttempts        = 20
 	defaultNATSURL            = "nats://127.0.0.1:4222"
-	defaultNATSStream         = "zrt_tasks"
-	defaultNATSDeadStream     = "zrt_dead"
-	defaultNATSSubjectPrefix  = "zrt.task"
-	defaultNATSDeadSubject    = "zrt.dead.task.v1"
+	defaultNATSStream         = "edo_tasks"
+	defaultNATSDeadStream     = "edo_dead"
+	defaultNATSSubjectPrefix  = "edo.task"
+	defaultNATSDeadSubject    = "edo.dead.task.v1"
 	defaultNATSMaxAge         = 7 * 24 * time.Hour
 	defaultNATSMaxBytes       = 512 * 1024 * 1024
 	defaultNATSDeadMaxBytes   = 256 * 1024 * 1024
@@ -34,8 +34,8 @@ const (
 )
 
 type Config struct {
-	Environment string `env:"ZRT_ENV"`
-	LogLevel    string `env:"ZRT_LOG_LEVEL"`
+	Environment string `env:"EDO_ENV"`
+	LogLevel    string `env:"EDO_LOG_LEVEL"`
 	Server      Server
 	Auth        Auth
 	Database    Database
@@ -50,101 +50,101 @@ type Config struct {
 }
 
 type Auth struct {
-	SessionTTL      time.Duration `env:"ZRT_AUTH_SESSION_TTL"`
-	CookieName      string        `env:"ZRT_AUTH_COOKIE_NAME"`
-	CookieSecure    bool          `env:"ZRT_AUTH_COOKIE_SECURE"`
-	LoginMaxFailure int           `env:"ZRT_AUTH_LOGIN_MAX_FAILURE"`
-	LoginWindow     time.Duration `env:"ZRT_AUTH_LOGIN_WINDOW"`
+	SessionTTL      time.Duration `env:"EDO_AUTH_SESSION_TTL"`
+	CookieName      string        `env:"EDO_AUTH_COOKIE_NAME"`
+	CookieSecure    bool          `env:"EDO_AUTH_COOKIE_SECURE"`
+	LoginMaxFailure int           `env:"EDO_AUTH_LOGIN_MAX_FAILURE"`
+	LoginWindow     time.Duration `env:"EDO_AUTH_LOGIN_WINDOW"`
 }
 
 type Server struct {
-	Address         string        `env:"ZRT_SERVER_ADDRESS"`
-	WebRoot         string        `env:"ZRT_WEB_ROOT"`
-	ReadTimeout     time.Duration `env:"ZRT_SERVER_READ_TIMEOUT"`
-	WriteTimeout    time.Duration `env:"ZRT_SERVER_WRITE_TIMEOUT"`
-	IdleTimeout     time.Duration `env:"ZRT_SERVER_IDLE_TIMEOUT"`
-	ShutdownTimeout time.Duration `env:"ZRT_SERVER_SHUTDOWN_TIMEOUT"`
+	Address         string        `env:"EDO_SERVER_ADDRESS"`
+	WebRoot         string        `env:"EDO_WEB_ROOT"`
+	ReadTimeout     time.Duration `env:"EDO_SERVER_READ_TIMEOUT"`
+	WriteTimeout    time.Duration `env:"EDO_SERVER_WRITE_TIMEOUT"`
+	IdleTimeout     time.Duration `env:"EDO_SERVER_IDLE_TIMEOUT"`
+	ShutdownTimeout time.Duration `env:"EDO_SERVER_SHUTDOWN_TIMEOUT"`
 }
 
 type Database struct {
-	Driver          string        `env:"ZRT_DATABASE_DRIVER"`
-	DSN             string        `env:"ZRT_DATABASE_DSN"`
-	MaxOpenConns    int           `env:"ZRT_DATABASE_MAX_OPEN_CONNS"`
-	MaxIdleConns    int           `env:"ZRT_DATABASE_MAX_IDLE_CONNS"`
-	ConnMaxLifetime time.Duration `env:"ZRT_DATABASE_CONN_MAX_LIFETIME"`
+	Driver          string        `env:"EDO_DATABASE_DRIVER"`
+	DSN             string        `env:"EDO_DATABASE_DSN"`
+	MaxOpenConns    int           `env:"EDO_DATABASE_MAX_OPEN_CONNS"`
+	MaxIdleConns    int           `env:"EDO_DATABASE_MAX_IDLE_CONNS"`
+	ConnMaxLifetime time.Duration `env:"EDO_DATABASE_CONN_MAX_LIFETIME"`
 }
 
 type Redis struct {
-	URL       string        `env:"ZRT_REDIS_URL"`
-	KeyPrefix string        `env:"ZRT_REDIS_KEY_PREFIX"`
-	Timeout   time.Duration `env:"ZRT_REDIS_TIMEOUT"`
+	URL       string        `env:"EDO_REDIS_URL"`
+	KeyPrefix string        `env:"EDO_REDIS_KEY_PREFIX"`
+	Timeout   time.Duration `env:"EDO_REDIS_TIMEOUT"`
 }
 
 type NATS struct {
-	URL           string        `env:"ZRT_NATS_URL"`
-	Stream        string        `env:"ZRT_NATS_STREAM"`
-	DeadStream    string        `env:"ZRT_NATS_DEAD_STREAM"`
-	SubjectPrefix string        `env:"ZRT_NATS_SUBJECT_PREFIX"`
-	DeadSubject   string        `env:"ZRT_NATS_DEAD_SUBJECT"`
-	MaxAttempts   int           `env:"ZRT_NATS_MAX_ATTEMPTS"`
-	Timeout       time.Duration `env:"ZRT_NATS_TIMEOUT"`
-	MaxAge        time.Duration `env:"ZRT_NATS_MAX_AGE"`
-	MaxBytes      int64         `env:"ZRT_NATS_MAX_BYTES"`
-	DeadMaxBytes  int64         `env:"ZRT_NATS_DEAD_MAX_BYTES"`
-	Replicas      int           `env:"ZRT_NATS_REPLICAS"`
+	URL           string        `env:"EDO_NATS_URL"`
+	Stream        string        `env:"EDO_NATS_STREAM"`
+	DeadStream    string        `env:"EDO_NATS_DEAD_STREAM"`
+	SubjectPrefix string        `env:"EDO_NATS_SUBJECT_PREFIX"`
+	DeadSubject   string        `env:"EDO_NATS_DEAD_SUBJECT"`
+	MaxAttempts   int           `env:"EDO_NATS_MAX_ATTEMPTS"`
+	Timeout       time.Duration `env:"EDO_NATS_TIMEOUT"`
+	MaxAge        time.Duration `env:"EDO_NATS_MAX_AGE"`
+	MaxBytes      int64         `env:"EDO_NATS_MAX_BYTES"`
+	DeadMaxBytes  int64         `env:"EDO_NATS_DEAD_MAX_BYTES"`
+	Replicas      int           `env:"EDO_NATS_REPLICAS"`
 }
 
 type Worker struct {
-	Concurrency     int           `env:"ZRT_WORKER_CONCURRENCY"`
-	TaskTimeout     time.Duration `env:"ZRT_WORKER_TASK_TIMEOUT"`
-	LeaseDuration   time.Duration `env:"ZRT_WORKER_LEASE_DURATION"`
-	ShutdownTimeout time.Duration `env:"ZRT_WORKER_SHUTDOWN_TIMEOUT"`
+	Concurrency     int           `env:"EDO_WORKER_CONCURRENCY"`
+	TaskTimeout     time.Duration `env:"EDO_WORKER_TASK_TIMEOUT"`
+	LeaseDuration   time.Duration `env:"EDO_WORKER_LEASE_DURATION"`
+	ShutdownTimeout time.Duration `env:"EDO_WORKER_SHUTDOWN_TIMEOUT"`
 }
 
 type Secrets struct {
-	Key string `env:"ZRT_SECRETS_KEY"`
+	Key string `env:"EDO_SECRETS_KEY"`
 }
 
 type Git struct {
-	Timeout        time.Duration `env:"ZRT_GIT_TIMEOUT"`
-	KnownHostsFile string        `env:"ZRT_GIT_KNOWN_HOSTS_FILE"`
+	Timeout        time.Duration `env:"EDO_GIT_TIMEOUT"`
+	KnownHostsFile string        `env:"EDO_GIT_KNOWN_HOSTS_FILE"`
 }
 
 type Runtime struct {
-	ConnectTimeout           time.Duration `env:"ZRT_RUNTIME_CONNECT_TIMEOUT"`
-	RequestTimeout           time.Duration `env:"ZRT_RUNTIME_REQUEST_TIMEOUT"`
-	TerminalMaxDuration      time.Duration `env:"ZRT_RUNTIME_TERMINAL_MAX_DURATION"`
-	DockerBuilderHost        string        `env:"ZRT_DOCKER_BUILDER_HOST"`
-	DockerBuilderTLSCertPath string        `env:"ZRT_DOCKER_BUILDER_TLS_CERT_PATH"`
+	ConnectTimeout           time.Duration `env:"EDO_RUNTIME_CONNECT_TIMEOUT"`
+	RequestTimeout           time.Duration `env:"EDO_RUNTIME_REQUEST_TIMEOUT"`
+	TerminalMaxDuration      time.Duration `env:"EDO_RUNTIME_TERMINAL_MAX_DURATION"`
+	DockerBuilderHost        string        `env:"EDO_DOCKER_BUILDER_HOST"`
+	DockerBuilderTLSCertPath string        `env:"EDO_DOCKER_BUILDER_TLS_CERT_PATH"`
 }
 
 type Scheduler struct {
-	PollInterval time.Duration `env:"ZRT_SCHEDULER_POLL_INTERVAL"`
+	PollInterval time.Duration `env:"EDO_SCHEDULER_POLL_INTERVAL"`
 }
 
 type Artifacts struct {
-	Directory string `env:"ZRT_ARTIFACTS_DIRECTORY"`
-	MaxBytes  int64  `env:"ZRT_ARTIFACTS_MAX_BYTES"`
+	Directory string `env:"EDO_ARTIFACTS_DIRECTORY"`
+	MaxBytes  int64  `env:"EDO_ARTIFACTS_MAX_BYTES"`
 }
 
 func Load() (Config, error) {
 	if err := rejectExplicitEmptyValues(
-		"ZRT_AUTH_COOKIE_NAME",
-		"ZRT_DATABASE_DRIVER",
-		"ZRT_DATABASE_DSN",
-		"ZRT_REDIS_URL",
-		"ZRT_REDIS_KEY_PREFIX",
-		"ZRT_NATS_URL",
-		"ZRT_NATS_STREAM",
-		"ZRT_NATS_DEAD_STREAM",
-		"ZRT_NATS_SUBJECT_PREFIX",
-		"ZRT_NATS_DEAD_SUBJECT",
-		"ZRT_ARTIFACTS_DIRECTORY",
+		"EDO_AUTH_COOKIE_NAME",
+		"EDO_DATABASE_DRIVER",
+		"EDO_DATABASE_DSN",
+		"EDO_REDIS_URL",
+		"EDO_REDIS_KEY_PREFIX",
+		"EDO_NATS_URL",
+		"EDO_NATS_STREAM",
+		"EDO_NATS_DEAD_STREAM",
+		"EDO_NATS_SUBJECT_PREFIX",
+		"EDO_NATS_DEAD_SUBJECT",
+		"EDO_ARTIFACTS_DIRECTORY",
 	); err != nil {
 		return Config{}, err
 	}
 	probe := struct {
-		Environment string `env:"ZRT_ENV" envDefault:"development"`
+		Environment string `env:"EDO_ENV" envDefault:"development"`
 	}{}
 	if err := env.Parse(&probe); err != nil {
 		return Config{}, fmt.Errorf("读取运行环境配置失败: %w", err)
@@ -166,21 +166,21 @@ func Load() (Config, error) {
 		},
 		Auth: Auth{
 			SessionTTL:      8 * time.Hour,
-			CookieName:      "zrt_session",
+			CookieName:      "edo_session",
 			CookieSecure:    environment == "production",
 			LoginMaxFailure: 5,
 			LoginWindow:     15 * time.Minute,
 		},
 		Database: Database{
 			Driver:          "sqlite",
-			DSN:             "data/zrt.db",
+			DSN:             "data/edo.db",
 			MaxOpenConns:    25,
 			MaxIdleConns:    5,
 			ConnMaxLifetime: time.Hour,
 		},
 		Redis: Redis{
 			URL:       "redis://127.0.0.1:6379/0",
-			KeyPrefix: "zrt:",
+			KeyPrefix: "edo:",
 			Timeout:   3 * time.Second,
 		},
 		NATS: NATS{
@@ -218,7 +218,7 @@ func Load() (Config, error) {
 		},
 	}
 	if err := env.Parse(&cfg); err != nil {
-		return Config{}, fmt.Errorf("读取 ZRT 环境变量失败: %w", err)
+		return Config{}, fmt.Errorf("读取 EDO 环境变量失败: %w", err)
 	}
 	cfg.normalizeStrings()
 
@@ -259,14 +259,14 @@ func (c Config) Validate() error {
 	if c.Auth.SessionTTL <= 0 || c.Auth.LoginWindow <= 0 || c.Auth.LoginMaxFailure < 1 || c.Auth.LoginMaxFailure > 100 {
 		return errors.New("登录会话或限流配置无效")
 	}
-	if !strings.HasPrefix(c.Auth.CookieName, "zrt_") {
-		return errors.New("登录 Cookie 名称必须以 zrt_ 开头")
+	if !strings.HasPrefix(c.Auth.CookieName, "edo_") {
+		return errors.New("登录 Cookie 名称必须以 edo_ 开头")
 	}
 	if c.Redis.Timeout <= 0 || c.NATS.Timeout <= 0 || c.NATS.MaxAge <= 0 {
 		return errors.New("依赖服务超时或保留时间配置无效")
 	}
-	if !strings.HasPrefix(c.Redis.KeyPrefix, "zrt:") {
-		return errors.New("Redis Key 前缀必须以 zrt: 开头")
+	if !strings.HasPrefix(c.Redis.KeyPrefix, "edo:") {
+		return errors.New("Redis Key 前缀必须以 edo: 开头")
 	}
 	if c.NATS.MaxAttempts < 1 || c.NATS.MaxAttempts > maxAllowedAttempts {
 		return fmt.Errorf("NATS 最大执行次数必须在 1 到 %d 之间", maxAllowedAttempts)
@@ -278,17 +278,17 @@ func (c Config) Validate() error {
 		c.NATS.DeadMaxBytes < 1024*1024 || c.NATS.DeadMaxBytes > 1024*1024*1024*1024 {
 		return errors.New("NATS Stream 容量必须在 1 MiB 到 1 TiB 之间")
 	}
-	if !strings.HasPrefix(c.NATS.Stream, "zrt_") {
-		return errors.New("NATS Stream 名称必须以 zrt_ 开头")
+	if !strings.HasPrefix(c.NATS.Stream, "edo_") {
+		return errors.New("NATS Stream 名称必须以 edo_ 开头")
 	}
-	if !strings.HasPrefix(c.NATS.DeadStream, "zrt_") {
-		return errors.New("NATS 死信 Stream 名称必须以 zrt_ 开头")
+	if !strings.HasPrefix(c.NATS.DeadStream, "edo_") {
+		return errors.New("NATS 死信 Stream 名称必须以 edo_ 开头")
 	}
-	if !strings.HasPrefix(c.NATS.SubjectPrefix, "zrt.") {
-		return errors.New("NATS Subject 前缀必须以 zrt. 开头")
+	if !strings.HasPrefix(c.NATS.SubjectPrefix, "edo.") {
+		return errors.New("NATS Subject 前缀必须以 edo. 开头")
 	}
-	if !strings.HasPrefix(c.NATS.DeadSubject, "zrt.") {
-		return errors.New("NATS 死信主题必须以 zrt. 开头")
+	if !strings.HasPrefix(c.NATS.DeadSubject, "edo.") {
+		return errors.New("NATS 死信主题必须以 edo. 开头")
 	}
 	if c.Worker.Concurrency < 1 || c.Worker.Concurrency > 100 {
 		return errors.New("Worker 并发数必须在 1 到 100 之间")

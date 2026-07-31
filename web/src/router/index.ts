@@ -57,7 +57,7 @@ router.beforeEach(async (to) => {
 
 router.afterEach((to) => {
   const title = typeof to.meta.title === 'string' ? i18n.global.t(to.meta.title) : ''
-  document.title = title ? `ZRT · ${title}` : 'ZRT'
+  document.title = title ? `EDO · ${title}` : 'EDO'
 })
 
 export default router

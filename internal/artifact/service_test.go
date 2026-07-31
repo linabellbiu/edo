@@ -17,9 +17,9 @@ import (
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 
-	"zrt/internal/config"
-	"zrt/internal/database"
-	"zrt/internal/model"
+	"edo/internal/config"
+	"edo/internal/database"
+	"edo/internal/model"
 )
 
 func TestServiceUploadCreatesBuildRunAndDownloadableArtifact(t *testing.T) {

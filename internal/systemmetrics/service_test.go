@@ -13,11 +13,11 @@ import (
 	"gorm.io/datatypes"
 	"gorm.io/gorm"
 
-	"zrt/internal/config"
-	"zrt/internal/database"
-	"zrt/internal/messaging"
-	"zrt/internal/model"
-	"zrt/internal/worker"
+	"edo/internal/config"
+	"edo/internal/database"
+	"edo/internal/messaging"
+	"edo/internal/model"
+	"edo/internal/worker"
 )
 
 type testWorkerStats struct {
@@ -62,8 +62,8 @@ func TestSnapshotIncludesRuntimeTasksAndQueue(t *testing.T) {
 	}
 	failedAt := now
 	if err := db.Create(&[]model.OutboxEvent{
-		{EventID: "pending", AggregateID: "pending", Subject: "zrt.task.test", Payload: datatypes.JSON(`{}`), NextAttemptAt: now, CreatedAt: now},
-		{EventID: "failed", AggregateID: "failed", Subject: "zrt.task.test", Payload: datatypes.JSON(`{}`), NextAttemptAt: now, FailedAt: &failedAt, CreatedAt: now},
+		{EventID: "pending", AggregateID: "pending", Subject: "edo.task.test", Payload: datatypes.JSON(`{}`), NextAttemptAt: now, CreatedAt: now},
+		{EventID: "failed", AggregateID: "failed", Subject: "edo.task.test", Payload: datatypes.JSON(`{}`), NextAttemptAt: now, FailedAt: &failedAt, CreatedAt: now},
 	}).Error; err != nil {
 		t.Fatalf("写入测试 Outbox 失败: %v", err)
 	}
@@ -145,7 +145,7 @@ func openMetricsTestDB(t *testing.T, name string) (*gorm.DB, *sql.DB, *slog.Logg
 
 func testJob(id string, status model.JobStatus, now time.Time) model.Job {
 	return model.Job{
-		ID: id, Kind: "system.test", Subject: "zrt.task.system.test", Status: status,
+		ID: id, Kind: "system.test", Subject: "edo.task.system.test", Status: status,
 		Payload: datatypes.JSON(`{}`), MaxAttempts: 1, CreatedAt: now, UpdatedAt: now,
 	}
 }

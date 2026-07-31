@@ -14,7 +14,7 @@ import (
 	"strconv"
 	"strings"
 
-	"zrt/internal/model"
+	"edo/internal/model"
 )
 
 const (
@@ -287,7 +287,7 @@ func escapeRepositoryPath(repositoryPath string) string {
 
 func setProviderAPIHeaders(request *http.Request, provider model.GitProvider, credential string) {
 	request.Header.Set("Accept", "application/json")
-	request.Header.Set("User-Agent", "zrt")
+	request.Header.Set("User-Agent", "edo")
 	if credential == "" {
 		return
 	}

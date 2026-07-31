@@ -6,8 +6,8 @@ import (
 
 	"github.com/gin-gonic/gin"
 
-	"zrt/internal/model"
-	"zrt/internal/pipeline"
+	"edo/internal/model"
+	"edo/internal/pipeline"
 )
 
 type releasePlanRequest struct {

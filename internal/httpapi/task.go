@@ -8,8 +8,8 @@ import (
 
 	"github.com/gin-gonic/gin"
 
-	"zrt/internal/model"
-	"zrt/internal/task"
+	"edo/internal/model"
+	"edo/internal/task"
 )
 
 type taskHandler struct {

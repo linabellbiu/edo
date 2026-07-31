@@ -9,7 +9,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 
-	"zrt/internal/model"
+	"edo/internal/model"
 )
 
 func TestEnvironmentHostsRequestRequiresExplicitCollection(t *testing.T) {

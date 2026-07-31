@@ -15,7 +15,7 @@ func TestArtifactUploadListDetailAndDownloadAPI(t *testing.T) {
 	router, closeTest := newAuthTestRouter(t)
 	defer closeTest()
 	cookie, applicationID := createArtifactTestApplication(t, router)
-	content := []byte("zrt artifact content")
+	content := []byte("edo artifact content")
 	uploaded := performArtifactUpload(t, router, "/api/v1/applications/"+applicationID+"/artifacts/upload", "../release.tar", content, cookie)
 	if uploaded.Code != http.StatusCreated {
 		t.Fatalf("上传制品失败: status=%d body=%s", uploaded.Code, uploaded.Body.String())

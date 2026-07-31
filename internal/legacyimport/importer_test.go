@@ -10,10 +10,10 @@ import (
 
 	"gorm.io/gorm"
 
-	"zrt/internal/config"
-	"zrt/internal/database"
-	"zrt/internal/model"
-	"zrt/internal/secret"
+	"edo/internal/config"
+	"edo/internal/database"
+	"edo/internal/model"
+	"edo/internal/secret"
 )
 
 func TestImporterMigratesSafeDataAndIsIdempotent(t *testing.T) {
@@ -139,7 +139,7 @@ func createLegacyFixture(t *testing.T, db *gorm.DB) {
 		`INSERT INTO environments VALUES (3, '生产', 'prod', 1)`,
 		`INSERT INTO apps VALUES (4, 'checkout-api')`,
 		`INSERT INTO services VALUES (5, 'shared')`,
-		`INSERT INTO configs VALUES (6, 'app', 4, '_ZRT_DATABASE_URL', 3, 'legacy-secret', '2025-01-01 00:00:00', 1)`,
+		`INSERT INTO configs VALUES (6, 'app', 4, '_EDO_DATABASE_URL', 3, 'legacy-secret', '2025-01-01 00:00:00', 1)`,
 		`INSERT INTO deploy_extend1 VALUES (7, 'https://github.com/example/project.git')`,
 		`INSERT INTO hosts VALUES (1)`,
 		`INSERT INTO tasks VALUES (1)`,

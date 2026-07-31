@@ -41,7 +41,7 @@ onMounted(refresh)
     </ResourceTable></div>
 
     <a-drawer v-model:open="formOpen" :title="editingID ? '修改 Git 凭据' : '保存 Git 凭据'" width="520" @close="reset">
-      <a-alert type="info" show-icon message="凭据使用 ZRT 主密钥加密，且只对当前用户可见。" class="form-alert" />
+      <a-alert type="info" show-icon message="凭据使用 EDO 主密钥加密，且只对当前用户可见。" class="form-alert" />
       <a-form layout="vertical" @finish="submit">
         <a-form-item label="名称" required><a-input v-model:value="form.name" maxlength="128" placeholder="例如：GitHub 生产账号" /></a-form-item>
         <div class="form-row"><a-form-item label="平台" required><a-select v-model:value="form.provider" :options="Object.entries(providerNames).map(([value,label])=>({value,label}))" /></a-form-item><a-form-item label="类型" required><a-select v-model:value="form.auth_type" :options="[{value:'token',label:'访问令牌'},{value:'ssh_key',label:'SSH 私钥'}]" /></a-form-item></div>

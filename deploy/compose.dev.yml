@@ -1,34 +1,34 @@
-# ZRT 本地开发入口：一次启动数据库迁移、后端、前端、Redis 与 NATS JetStream。
-name: zrt-dev
+# EDO 本地开发入口：一次启动数据库迁移、后端、前端、Redis 与 NATS JetStream。
+name: edo-dev
 
 # x- 扩展字段只作为 YAML 锚点，不会创建容器；集中维护 migrate 与 api 的公共配置。
-x-zrt-environment: &zrt-environment
-  ZRT_ENV: development
-  ZRT_LOG_LEVEL: ${ZRT_LOG_LEVEL:-info}
-  ZRT_SERVER_ADDRESS: :8080
+x-edo-environment: &edo-environment
+  EDO_ENV: development
+  EDO_LOG_LEVEL: ${EDO_LOG_LEVEL:-info}
+  EDO_SERVER_ADDRESS: :8080
   # 开发环境由独立 Vite 容器提供前端，Go 后端只提供 API 与 WebSocket。
-  ZRT_WEB_ROOT: ""
-  ZRT_AUTH_COOKIE_SECURE: "false"
+  EDO_WEB_ROOT: ""
+  EDO_AUTH_COOKIE_SECURE: "false"
   # 宿主机路径、127.0.0.1 与容器内地址含义不同，使用根 .env 的 Compose 专用值映射实际运行变量。
   # SQLite 文件默认位于持久卷；删除普通容器不会丢失账户和业务数据。
-  ZRT_DATABASE_DRIVER: ${ZRT_COMPOSE_DATABASE_DRIVER:-sqlite}
-  ZRT_DATABASE_DSN: ${ZRT_COMPOSE_DATABASE_DSN:-/app/data/zrt.db}
+  EDO_DATABASE_DRIVER: ${EDO_COMPOSE_DATABASE_DRIVER:-sqlite}
+  EDO_DATABASE_DSN: ${EDO_COMPOSE_DATABASE_DSN:-/app/data/edo.db}
   # 构建制品保存在持久化 data 目录；限制单文件大小，避免开发构建意外占满磁盘。
-  ZRT_ARTIFACTS_DIRECTORY: ${ZRT_COMPOSE_ARTIFACTS_DIRECTORY:-/app/data/artifacts}
-  ZRT_ARTIFACTS_MAX_BYTES: ${ZRT_ARTIFACTS_MAX_BYTES:-1073741824}
+  EDO_ARTIFACTS_DIRECTORY: ${EDO_COMPOSE_ARTIFACTS_DIRECTORY:-/app/data/artifacts}
+  EDO_ARTIFACTS_MAX_BYTES: ${EDO_ARTIFACTS_MAX_BYTES:-1073741824}
   # redis 和 nats 是本文件中的默认容器服务名；URL 也可在 .env 中改为受控的外部服务。
-  ZRT_REDIS_URL: ${ZRT_COMPOSE_REDIS_URL:-redis://redis:6379/0}
-  ZRT_NATS_URL: ${ZRT_COMPOSE_NATS_URL:-nats://nats:4222}
+  EDO_REDIS_URL: ${EDO_COMPOSE_REDIS_URL:-redis://redis:6379/0}
+  EDO_NATS_URL: ${EDO_COMPOSE_NATS_URL:-nats://nats:4222}
   # 所有本地启动方式共用根目录 .env，缺失时必须停止，避免使用错误密钥损坏既有凭据。
-  ZRT_SECRETS_KEY: ${ZRT_SECRETS_KEY:?请先在根目录 .env 中设置 ZRT_SECRETS_KEY}
+  EDO_SECRETS_KEY: ${EDO_SECRETS_KEY:?请先在根目录 .env 中设置 EDO_SECRETS_KEY}
 
-x-zrt-go: &zrt-go
+x-edo-go: &edo-go
   build:
     context: ..
     dockerfile: Dockerfile
     # 复用只含 Go 源码和依赖的构建阶段，避免开发时额外生成生产前端镜像。
     target: go-builder
-  environment: *zrt-environment
+  environment: *edo-environment
   init: true
   security_opt:
     - no-new-privileges:true
@@ -36,30 +36,30 @@ x-zrt-go: &zrt-go
     # 与本机 go run 共用仓库 data 目录，切换启动方式不会连接到另一份 SQLite。
     - ../data:/app/data
   networks:
-    - zrt
+    - edo
 
 services:
   # 一次性迁移任务：只有成功退出后 api 才会启动；失败时不会绕过迁移直接提供服务。
   migrate:
-    <<: *zrt-go
-    command: ["/out/zrt", "migrate"]
+    <<: *edo-go
+    command: ["/out/edo", "migrate"]
     restart: "no"
 
   # Go 单进程后端，同时运行 HTTP/WebSocket、任务消费、Outbox、监控和调度。
   api:
-    <<: *zrt-go
+    <<: *edo-go
     environment:
-      <<: *zrt-environment
+      <<: *edo-environment
       # 只有 API 挂载客户端证书；构建出的镜像和脚本容器都拿不到 Docker API 凭据。
       # Compose 内置构建器固定使用自动签发的 mTLS，禁止被 .env 降级为明文 2375。
-      ZRT_DOCKER_BUILDER_HOST: tcp://docker-builder:2376
-      ZRT_DOCKER_BUILDER_TLS_CERT_PATH: /certs/client
-    command: ["/out/zrt", "server"]
+      EDO_DOCKER_BUILDER_HOST: tcp://docker-builder:2376
+      EDO_DOCKER_BUILDER_TLS_CERT_PATH: /certs/client
+    command: ["/out/edo", "server"]
     volumes:
       - ../data:/app/data
-      - zrt-builder-client-certs:/certs/client:ro
+      - edo-builder-client-certs:/certs/client:ro
     ports:
-      - "127.0.0.1:${ZRT_HTTP_PORT:-8080}:8080"
+      - "127.0.0.1:${EDO_HTTP_PORT:-8080}:8080"
     depends_on:
       migrate:
         condition: service_completed_successfully
@@ -78,8 +78,8 @@ services:
       start_period: 30s
     stop_grace_period: 70s
     networks:
-      - zrt
-      - zrt-builder
+      - edo
+      - edo-builder
     restart: unless-stopped
 
   # Vite 开发前端通过服务名 api 转发 API 与 WebSocket，并在后端健康后启动。
@@ -91,16 +91,16 @@ services:
     working_dir: /src/web
     command: ["npm", "run", "dev", "--", "--host", "0.0.0.0", "--port", "5173"]
     environment:
-      ZRT_WEB_PROXY_TARGET: http://api:8080
+      EDO_WEB_PROXY_TARGET: http://api:8080
     init: true
     security_opt:
       - no-new-privileges:true
     volumes:
       - ../web:/src/web
       # 覆盖源码目录时保留镜像内已安装的 node_modules，避免依赖落到宿主机。
-      - zrt-web-node-modules:/src/web/node_modules
+      - edo-web-node-modules:/src/web/node_modules
     ports:
-      - "127.0.0.1:${ZRT_WEB_PORT:-5173}:5173"
+      - "127.0.0.1:${EDO_WEB_PORT:-5173}:5173"
     depends_on:
       api:
         condition: service_healthy
@@ -111,7 +111,7 @@ services:
       retries: 10
       start_period: 10s
     networks:
-      - zrt
+      - edo
     restart: unless-stopped
 
   # Compose 部署专用的 Docker-in-Docker 构建节点：保留 BuildKit 图层缓存，不挂载宿主机 Docker Socket。
@@ -126,12 +126,12 @@ services:
     command: ["--storage-driver=overlay2"]
     volumes:
       # 保存基础镜像和构建图层；docker compose down 不会清除此缓存。
-      - zrt-builder-data:/var/lib/docker
+      - edo-builder-data:/var/lib/docker
       # CA 私钥只保留在 DinD；API 只能只读访问单独的客户端证书卷。
-      - zrt-builder-ca-certs:/certs/ca
-      - zrt-builder-client-certs:/certs/client
+      - edo-builder-ca-certs:/certs/ca
+      - edo-builder-client-certs:/certs/client
     networks:
-      - zrt-builder
+      - edo-builder
     healthcheck:
       test: ["CMD", "docker", "info"]
       interval: 3s
@@ -150,14 +150,14 @@ services:
     volumes:
       - ../data/redis:/data
     ports:
-      - "127.0.0.1:${ZRT_REDIS_PORT:-6379}:6379"
+      - "127.0.0.1:${EDO_REDIS_PORT:-6379}:6379"
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 3s
       timeout: 2s
       retries: 10
     networks:
-      - zrt
+      - edo
     restart: unless-stopped
 
   # NATS JetStream 持久化任务消息；磁盘容量和有限重试由后端环境变量约束。
@@ -170,32 +170,32 @@ services:
     volumes:
       - ../data/nats:/data
     ports:
-      - "127.0.0.1:${ZRT_NATS_PORT:-4222}:4222"
-      - "127.0.0.1:${ZRT_NATS_MONITOR_PORT:-8222}:8222"
+      - "127.0.0.1:${EDO_NATS_PORT:-4222}:4222"
+      - "127.0.0.1:${EDO_NATS_MONITOR_PORT:-8222}:8222"
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8222/healthz?js-enabled-only=true"]
       interval: 3s
       timeout: 2s
       retries: 10
     networks:
-      - zrt
+      - edo
     restart: unless-stopped
 
 # 所有容器只通过独立桥接网络按服务名通信；映射到宿主机的端口均限制在 127.0.0.1。
 networks:
-  zrt:
+  edo:
     driver: bridge
   # 构建节点不映射宿主机端口，并通过 mTLS 限制为持有客户端证书的 api 调用。
-  zrt-builder:
+  edo-builder:
     driver: bridge
 
 # SQLite、Redis 和 NATS 数据都保存在仓库 data 目录，删除容器不会删除这些文件。
 # data 目录不得直接清空；升级、迁移或重建环境前先完整备份。
 volumes:
-  # node_modules 只是 Linux 容器依赖缓存，不包含 ZRT 业务数据。
-  zrt-web-node-modules:
+  # node_modules 只是 Linux 容器依赖缓存，不包含 EDO 业务数据。
+  edo-web-node-modules:
   # 仅保存 DinD 镜像层和 BuildKit 缓存，可以在磁盘紧张时单独删除后重新构建。
-  zrt-builder-data:
+  edo-builder-data:
   # CA 私钥与客户端证书分卷保存，避免 API 获得签发新证书的能力。
-  zrt-builder-ca-certs:
-  zrt-builder-client-certs:
+  edo-builder-ca-certs:
+  edo-builder-client-certs:

@@ -19,7 +19,7 @@ import (
 	gormlogger "gorm.io/gorm/logger"
 	moderncsqlite "modernc.org/sqlite"
 
-	"zrt/internal/config"
+	"edo/internal/config"
 )
 
 func Open(ctx context.Context, cfg config.Database, logger *slog.Logger) (*gorm.DB, error) {

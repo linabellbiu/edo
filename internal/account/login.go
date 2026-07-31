@@ -11,8 +11,8 @@ import (
 
 	"gorm.io/gorm"
 
-	"zrt/internal/auth"
-	"zrt/internal/model"
+	"edo/internal/auth"
+	"edo/internal/model"
 )
 
 var (
@@ -42,7 +42,7 @@ func NewLoginService(
 	limiter *auth.LoginRateLimiter,
 	logger *slog.Logger,
 ) (*LoginService, error) {
-	dummyHash, err := auth.HashPassword("zrt-invalid-password-placeholder")
+	dummyHash, err := auth.HashPassword("edo-invalid-password-placeholder")
 	if err != nil {
 		return nil, err
 	}
@@ -103,7 +103,7 @@ func (s *LoginService) Login(ctx context.Context, username, password, clientIP s
 	return LoginResult{User: user, Token: token, ExpiresAt: session.ExpiresAt}, nil
 }
 
-// CreateSession 为已经由 LDAP 或 OAuth 验证过身份的用户创建同一类 ZRT 会话。
+// CreateSession 为已经由 LDAP 或 OAuth 验证过身份的用户创建同一类 EDO 会话。
 func (s *LoginService) CreateSession(ctx context.Context, user *model.User, clientIP, method string) (LoginResult, error) {
 	if user == nil || !user.IsActive {
 		return LoginResult{}, ErrAccountDisabled

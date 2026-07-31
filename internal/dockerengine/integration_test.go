@@ -16,16 +16,16 @@ import (
 	"github.com/google/uuid"
 	"github.com/moby/moby/client"
 
-	"zrt/internal/config"
-	"zrt/internal/database"
-	"zrt/internal/model"
+	"edo/internal/config"
+	"edo/internal/database"
+	"edo/internal/model"
 )
 
 // TestDockerBuildAndComposeIntegration 覆盖“Dockerfile 构建 OCI 制品 → 同一运行时
 // Docker/Compose 发布”的真实路径，并确认两种执行器都直接使用固定 Image ID。
-// 默认跳过，开发机或 CI 明确提供 Docker 后以 ZRT_TEST_DOCKER_INTEGRATION=1 启用。
+// 默认跳过，开发机或 CI 明确提供 Docker 后以 EDO_TEST_DOCKER_INTEGRATION=1 启用。
 func TestDockerBuildAndComposeIntegration(t *testing.T) {
-	if os.Getenv("ZRT_TEST_DOCKER_INTEGRATION") != "1" {
+	if os.Getenv("EDO_TEST_DOCKER_INTEGRATION") != "1" {
 		t.Skip("未启用真实 Docker/Compose 集成测试")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
@@ -48,13 +48,13 @@ func TestDockerBuildAndComposeIntegration(t *testing.T) {
 	}
 
 	buildContext := t.TempDir()
-	dockerfile := "FROM busybox:1.37.0\nARG APP_VERSION\nLABEL io.zrt.integration.version=$APP_VERSION\nCMD [\"sh\",\"-c\",\"while true; do sleep 1; done\"]\n"
+	dockerfile := "FROM busybox:1.37.0\nARG APP_VERSION\nLABEL io.edo.integration.version=$APP_VERSION\nCMD [\"sh\",\"-c\",\"while true; do sleep 1; done\"]\n"
 	if err := os.WriteFile(filepath.Join(buildContext, "Dockerfile"), []byte(dockerfile), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	identity := strings.ReplaceAll(uuid.NewString(), "-", "")[:12]
-	image := "zrt.local/integration:" + identity
-	alternateImage := "zrt.local/integration-mutated:" + identity
+	image := "edo.local/integration:" + identity
+	alternateImage := "edo.local/integration-mutated:" + identity
 	apiClient, err := service.BuilderClient()
 	if err != nil {
 		t.Fatal(err)
@@ -78,7 +78,7 @@ func TestDockerBuildAndComposeIntegration(t *testing.T) {
 		t.Fatalf("真实构建没有返回内容寻址镜像 ID: %q", imageID)
 	}
 	inspect, err := apiClient.ImageInspect(ctx, image)
-	if err != nil || inspect.Config == nil || inspect.Config.Labels["io.zrt.integration.version"] != identity {
+	if err != nil || inspect.Config == nil || inspect.Config.Labels["io.edo.integration.version"] != identity {
 		t.Fatalf("真实构建参数或镜像标签不正确: inspect=%+v err=%v", inspect.Config, err)
 	}
 	var alternateBuildOutput bytes.Buffer
@@ -92,7 +92,7 @@ func TestDockerBuildAndComposeIntegration(t *testing.T) {
 		t.Fatalf("模拟构建标签在部署前被替换失败: %v", err)
 	}
 
-	containerName := "zrt-integration-" + identity
+	containerName := "edo-integration-" + identity
 	directTargetID := "docker-integration-" + identity
 	logicalVolume := "application-data"
 	actualVolume := managedContainerVolumeName(directTargetID, logicalVolume)
@@ -123,13 +123,13 @@ func TestDockerBuildAndComposeIntegration(t *testing.T) {
 	if _, _, err := service.DeployPreparedContainer(
 		ctx, LocalEndpointID, "other-"+directTargetID, containerName, image, "integration:"+identity, imageID,
 		"deployment-other-"+identity, 90*time.Second, model.DockerContainerConfig{}, RegistryAuth{}, io.Discard, io.Discard,
-	); err == nil || !strings.Contains(err.Error(), "不属于当前 ZRT 部署目标") {
+	); err == nil || !strings.Contains(err.Error(), "不属于当前 EDO 部署目标") {
 		t.Fatalf("其他部署目标仍可替换同名容器: %v", err)
 	}
 	volume, err := apiClient.VolumeInspect(ctx, actualVolume, client.VolumeInspectOptions{})
-	if err != nil || volume.Volume.Labels["zrt.managed"] != "true" ||
-		volume.Volume.Labels["zrt.deployment.target.id"] != directTargetID ||
-		volume.Volume.Labels["zrt.volume.logical_name"] != logicalVolume {
+	if err != nil || volume.Volume.Labels["edo.managed"] != "true" ||
+		volume.Volume.Labels["edo.deployment.target.id"] != directTargetID ||
+		volume.Volume.Labels["edo.volume.logical_name"] != logicalVolume {
 		t.Fatalf("Docker 命名卷未按部署目标隔离: volume=%+v err=%v", volume.Volume, err)
 	}
 	if _, err := apiClient.ImageTag(ctx, client.ImageTagOptions{Source: imageID, Target: image}); err != nil {
@@ -138,12 +138,12 @@ func TestDockerBuildAndComposeIntegration(t *testing.T) {
 
 	targetID := "compose-integration-" + identity
 	project := composeProjectName(targetID)
-	composeYAML := "services:\n  app:\n    image: ${ZRT_IMAGE}\n"
+	composeYAML := "services:\n  app:\n    image: ${EDO_IMAGE}\n"
 	defer func() {
 		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cleanupCancel()
 		command := exec.CommandContext(cleanupCtx, "docker", "compose", "--ansi", "never", "--project-name", project, "--file", "-", "down", "--remove-orphans")
-		command.Env = append(os.Environ(), "ZRT_IMAGE="+image)
+		command.Env = append(os.Environ(), "EDO_IMAGE="+image)
 		command.Stdin = strings.NewReader(composeYAML)
 		_ = command.Run()
 	}()
@@ -177,7 +177,7 @@ func TestDockerBuildAndComposeIntegration(t *testing.T) {
 
 // TestScriptContainerIntegration 覆盖“上传固定源码 → 隔离容器执行 → Docker API 回收制品”的真实路径。
 func TestScriptContainerIntegration(t *testing.T) {
-	if os.Getenv("ZRT_TEST_DOCKER_INTEGRATION") != "1" {
+	if os.Getenv("EDO_TEST_DOCKER_INTEGRATION") != "1" {
 		t.Skip("未启用真实 Docker 脚本执行集成测试")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
@@ -201,7 +201,7 @@ func TestScriptContainerIntegration(t *testing.T) {
 		Script:          "mkdir -p dist\nprintf '%s|%s' \"$(cat input.txt)\" \"$BUILD_VALUE\" > dist/result.txt\nprintf stdout-log\nprintf stderr-log >&2\n",
 		SourceDirectory: source, WorkingDirectory: "src", ArtifactPath: "src/dist", OutputDirectory: output,
 		Environment: map[string]string{"BUILD_VALUE": identity},
-		Labels:      map[string]string{"io.zrt.integration.id": identity},
+		Labels:      map[string]string{"io.edo.integration.id": identity},
 		Timeout:     2 * time.Minute, Stdout: &stdout, Stderr: &stderr,
 	})
 	if err != nil {
@@ -226,7 +226,7 @@ func TestScriptContainerIntegration(t *testing.T) {
 	}
 	defer apiClient.Close()
 	containers, err := apiClient.ContainerList(ctx, client.ContainerListOptions{
-		All: true, Filters: client.Filters{"label": {"io.zrt.integration.id=" + identity: true}},
+		All: true, Filters: client.Filters{"label": {"io.edo.integration.id=" + identity: true}},
 	})
 	if err != nil {
 		t.Fatalf("检查脚本容器清理结果失败: %v", err)

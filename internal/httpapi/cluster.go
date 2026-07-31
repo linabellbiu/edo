@@ -9,10 +9,10 @@ import (
 
 	"github.com/gin-gonic/gin"
 
-	"zrt/internal/dockerengine"
-	"zrt/internal/kube"
-	"zrt/internal/model"
-	"zrt/internal/secret"
+	"edo/internal/dockerengine"
+	"edo/internal/kube"
+	"edo/internal/model"
+	"edo/internal/secret"
 )
 
 type clusterHandler struct {

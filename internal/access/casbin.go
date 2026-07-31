@@ -8,7 +8,7 @@ import (
 	"github.com/casbin/casbin/v3/persist"
 	"gorm.io/gorm"
 
-	"zrt/internal/model"
+	"edo/internal/model"
 )
 
 const (
@@ -16,7 +16,7 @@ const (
 	roleSubjectPrefix = "role:"
 )
 
-var errReadOnlyPolicyAdapter = errors.New("ZRT 权限策略适配器只允许从事务表加载策略")
+var errReadOnlyPolicyAdapter = errors.New("EDO 权限策略适配器只允许从事务表加载策略")
 
 func newAuthorizationModel() (casbinmodel.Model, error) {
 	result := casbinmodel.NewModel()

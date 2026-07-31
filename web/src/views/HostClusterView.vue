@@ -51,13 +51,13 @@ const section = computed<Section>({
 
 <style scoped>
 .host-cluster-switch{display:flex;margin-bottom:12px}
-.host-cluster-switch :deep(.ant-segmented){padding:4px;border:1px solid color-mix(in srgb,var(--zrt-primary) 18%,var(--zrt-border));border-radius:11px;background:var(--zrt-surface-soft);box-shadow:inset 0 1px 2px rgb(30 45 75 / 5%)}
-.host-cluster-switch :deep(.ant-segmented-thumb){border-radius:8px;background:var(--zrt-primary);box-shadow:0 4px 12px color-mix(in srgb,var(--zrt-primary) 32%,transparent)}
-.host-cluster-switch :deep(.ant-segmented-item){min-width:112px;min-height:40px;border-radius:8px;color:var(--zrt-muted);font-weight:650;transition:color 160ms ease,background-color 160ms ease,box-shadow 160ms ease}
+.host-cluster-switch :deep(.ant-segmented){padding:4px;border:1px solid color-mix(in srgb,var(--edo-primary) 18%,var(--edo-border));border-radius:11px;background:var(--edo-surface-soft);box-shadow:inset 0 1px 2px rgb(30 45 75 / 5%)}
+.host-cluster-switch :deep(.ant-segmented-thumb){border-radius:8px;background:var(--edo-primary);box-shadow:0 4px 12px color-mix(in srgb,var(--edo-primary) 32%,transparent)}
+.host-cluster-switch :deep(.ant-segmented-item){min-width:112px;min-height:40px;border-radius:8px;color:var(--edo-muted);font-weight:650;transition:color 160ms ease,background-color 160ms ease,box-shadow 160ms ease}
 .host-cluster-switch :deep(.ant-segmented-item-label){padding:7px 18px;line-height:26px}
-.host-cluster-switch :deep(.ant-segmented-item:not(.ant-segmented-item-selected):hover){color:var(--zrt-text);background:color-mix(in srgb,var(--zrt-primary) 8%,transparent)}
-.host-cluster-switch :deep(.ant-segmented-item-selected){color:#fff;background:var(--zrt-primary);box-shadow:0 4px 12px color-mix(in srgb,var(--zrt-primary) 32%,transparent)}
+.host-cluster-switch :deep(.ant-segmented-item:not(.ant-segmented-item-selected):hover){color:var(--edo-text);background:color-mix(in srgb,var(--edo-primary) 8%,transparent)}
+.host-cluster-switch :deep(.ant-segmented-item-selected){color:#fff;background:var(--edo-primary);box-shadow:0 4px 12px color-mix(in srgb,var(--edo-primary) 32%,transparent)}
 .host-cluster-switch :deep(.ant-segmented-item-selected .ant-segmented-item-label){color:#fff}
-.host-cluster-switch :deep(.ant-segmented-item:focus-visible){outline:2px solid color-mix(in srgb,var(--zrt-primary) 48%,transparent);outline-offset:2px}
+.host-cluster-switch :deep(.ant-segmented-item:focus-visible){outline:2px solid color-mix(in srgb,var(--edo-primary) 48%,transparent);outline-offset:2px}
 .host-cluster-fade-enter-active,.host-cluster-fade-leave-active{transition:opacity 150ms ease,transform 180ms ease}.host-cluster-fade-enter-from{opacity:0;transform:translateY(4px)}.host-cluster-fade-leave-to{opacity:0;transform:translateY(-2px)}@media(prefers-reduced-motion:reduce){.host-cluster-switch :deep(.ant-segmented-item),.host-cluster-fade-enter-active,.host-cluster-fade-leave-active{transition:none}}
 </style>

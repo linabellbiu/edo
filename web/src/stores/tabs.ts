@@ -9,8 +9,8 @@ export interface PageTab {
   pinned: boolean
 }
 
-const storageKey = 'zrt.tabs'
-const historyStorageKey = 'zrt.navigation-history'
+const storageKey = 'edo.tabs'
+const historyStorageKey = 'edo.navigation-history'
 const overview: PageTab = { key: '/', title: 'nav.overview', path: '/', pinned: true }
 
 export interface PageVisit {
@@ -20,7 +20,7 @@ export interface PageVisit {
 
 function pageKey(path: string) {
   try {
-    return new URL(path, 'http://zrt.local').pathname
+    return new URL(path, 'http://edo.local').pathname
   } catch {
     return path.split(/[?#]/, 1)[0] || '/'
   }
@@ -28,7 +28,7 @@ function pageKey(path: string) {
 
 function currentTabPath(path: string) {
   try {
-    const target = new URL(path, 'http://zrt.local')
+    const target = new URL(path, 'http://edo.local')
     if (target.pathname !== '/infrastructure') return path
     target.pathname = '/hosts'
     target.searchParams.set('view', 'resources')

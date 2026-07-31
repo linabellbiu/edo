@@ -15,8 +15,8 @@ import (
 	"github.com/google/uuid"
 	"gorm.io/gorm"
 
-	"zrt/internal/config"
-	"zrt/internal/model"
+	"edo/internal/config"
+	"edo/internal/model"
 )
 
 var (
@@ -213,7 +213,7 @@ func (s *TransferService) run(target config.Database) {
 	completedAt := time.Now().UTC()
 	s.updateStatus(transferID, func(status *TransferStatus) {
 		status.State = "succeeded"
-		status.Message = "数据快照已迁移；请停止当前服务，切换数据库环境变量后重启 ZRT"
+		status.Message = "数据快照已迁移；请停止当前服务，切换数据库环境变量后重启 EDO"
 		status.CompletedAt = &completedAt
 		status.RequiresRestart = true
 	})
@@ -283,7 +283,7 @@ func ensureEmptyTransferTarget(db *gorm.DB) error {
 				"host_id <> ? OR kind <> ? OR runtime_id <> ?",
 				model.BuiltinLocalHostID,
 				model.HostCapabilityDocker,
-				"zrt-local-docker",
+				"edo-local-docker",
 			)
 		}
 		if err := query.Limit(1).Count(&count).Error; err != nil {

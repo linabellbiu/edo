@@ -12,8 +12,8 @@ import (
 	"github.com/google/uuid"
 	"gorm.io/gorm"
 
-	"zrt/internal/auth"
-	"zrt/internal/model"
+	"edo/internal/auth"
+	"edo/internal/model"
 )
 
 var usernamePattern = regexp.MustCompile(`^[a-z][a-z0-9_.-]{2,31}$`)

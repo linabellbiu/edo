@@ -15,8 +15,8 @@ import (
 	"github.com/google/uuid"
 	"gorm.io/gorm"
 
-	"zrt/internal/model"
-	"zrt/internal/task"
+	"edo/internal/model"
+	"edo/internal/task"
 )
 
 type WebhookResult struct {
@@ -157,7 +157,7 @@ func (s *Service) HandleWebhook(
 			return err
 		}
 		job, err := task.NewService(tx, s.defaultMaxAttempts).Create(ctx, task.CreateInput{
-			Kind: "repository.webhook", Subject: "zrt.task.repository.webhook",
+			Kind: "repository.webhook", Subject: "edo.task.repository.webhook",
 			Payload: WebhookTaskPayload{
 				DeliveryID: delivery.ID, RepositoryID: repository.ID,
 				EventType: event.EventType, Ref: delivery.Ref, CommitSHA: delivery.CommitSHA,
@@ -324,7 +324,7 @@ func verifyWebhook(repository model.GitRepository, headers http.Header, body []b
 	case model.GitProviderGitee:
 		return verifyToken(headers.Get("X-Gitee-Token"), secret)
 	case model.GitProviderGeneric:
-		return verifyHMACHeader(headers.Get("X-ZRT-Signature-256"), "sha256=", body, secret)
+		return verifyHMACHeader(headers.Get("X-EDO-Signature-256"), "sha256=", body, secret)
 	default:
 		return ErrInvalidSignature
 	}
@@ -365,7 +365,7 @@ func providerEventName(provider model.GitProvider, headers http.Header) string {
 	case model.GitProviderGitee:
 		return headers.Get("X-Gitee-Event")
 	default:
-		return headers.Get("X-ZRT-Event")
+		return headers.Get("X-EDO-Event")
 	}
 }
 
@@ -408,7 +408,7 @@ func providerDeliveryID(provider model.GitProvider, headers http.Header) string 
 	case model.GitProviderGitee:
 		return headers.Get("X-Gitee-Delivery")
 	default:
-		return headers.Get("X-ZRT-Delivery")
+		return headers.Get("X-EDO-Delivery")
 	}
 }
 

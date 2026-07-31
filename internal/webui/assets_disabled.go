@@ -1,4 +1,4 @@
-//go:build !zrt_web
+//go:build !edo_web
 
 package webui
 

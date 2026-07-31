@@ -20,10 +20,10 @@ import (
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 
-	"zrt/internal/dockerengine"
-	"zrt/internal/hostcredential"
-	"zrt/internal/model"
-	"zrt/internal/secret"
+	"edo/internal/dockerengine"
+	"edo/internal/hostcredential"
+	"edo/internal/model"
+	"edo/internal/secret"
 )
 
 var (

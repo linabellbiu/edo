@@ -7,7 +7,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 
-	"zrt/internal/systemmetrics"
+	"edo/internal/systemmetrics"
 )
 
 type systemMetricsHandler struct {

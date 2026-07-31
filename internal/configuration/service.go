@@ -14,8 +14,8 @@ import (
 	"github.com/google/uuid"
 	"gorm.io/gorm"
 
-	"zrt/internal/model"
-	"zrt/internal/secret"
+	"edo/internal/model"
+	"edo/internal/secret"
 )
 
 var (
@@ -29,7 +29,7 @@ var namespacePattern = regexp.MustCompile(`^[a-z][a-z0-9_-]{1,63}$`)
 var keyPattern = regexp.MustCompile(`^[A-Z_][A-Z0-9_]{0,127}$`)
 
 const (
-	systemNamespace              = "zrt"
+	systemNamespace              = "edo"
 	externalGitWebhookSettingKey = "EXTERNAL_GIT_WEBHOOK_ENABLED"
 	loginLockoutSettingKey       = "LOGIN_LOCKOUT_ENABLED"
 	runtimeLoggingSettingKey     = "RUNTIME_LOGGING_SETTINGS"

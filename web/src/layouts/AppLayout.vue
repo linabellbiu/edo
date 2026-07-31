@@ -35,7 +35,7 @@ const allowedBranches = (sectionIndex: number): NavBranch[] =>
 
 const selectedKeys = computed(() => {
   const item = flatNavigation().find((candidate) => {
-    const target = new URL(candidate.path, 'http://zrt.local')
+    const target = new URL(candidate.path, 'http://edo.local')
     if (target.pathname !== route.path) return false
     return [...target.searchParams].every(([key, value]) => (route.query[key] ?? '') === value)
   })
@@ -67,9 +67,9 @@ const searchableItems = computed(() => flatNavigation()
   .filter((item) => t(item.label).toLowerCase().includes(searchText.value.trim().toLowerCase())))
 
 function tabIcon(path: string) {
-  const target = new URL(path, 'http://zrt.local')
+  const target = new URL(path, 'http://edo.local')
   return flatNavigation().find((item) => {
-    const candidate = new URL(item.path, 'http://zrt.local')
+    const candidate = new URL(item.path, 'http://edo.local')
     if (candidate.pathname !== target.pathname) return false
     return [...candidate.searchParams].every(([key, value]) => target.searchParams.get(key) === value)
   })?.icon
@@ -147,7 +147,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', keyboard))
       <button class="mobile-close" type="button" aria-label="关闭导航" @click="mobileMenuOpen = false"><X /></button>
       <div class="vben-logo" @click="navigate('/')">
         <span class="logo-mark"><span>Z</span></span>
-        <strong>ZRT</strong>
+        <strong>EDO</strong>
       </div>
 
       <nav class="vben-navigation">

@@ -5,7 +5,7 @@ import (
 	"errors"
 	"testing"
 
-	"zrt/internal/model"
+	"edo/internal/model"
 )
 
 func TestApplicationNameUsesDockerRepositoryFormat(t *testing.T) {

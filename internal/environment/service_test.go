@@ -11,9 +11,9 @@ import (
 
 	"gorm.io/gorm"
 
-	"zrt/internal/config"
-	"zrt/internal/database"
-	"zrt/internal/model"
+	"edo/internal/config"
+	"edo/internal/database"
+	"edo/internal/model"
 )
 
 func TestEnvironmentLifecycleAndHostReplacement(t *testing.T) {

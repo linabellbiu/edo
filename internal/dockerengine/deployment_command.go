@@ -7,8 +7,8 @@ import (
 )
 
 const (
-	dockerImagePlaceholder         = "${ZRT_IMAGE}"
-	dockerContainerNamePlaceholder = "${ZRT_CONTAINER_NAME}"
+	dockerImagePlaceholder         = "${EDO_IMAGE}"
+	dockerContainerNamePlaceholder = "${EDO_CONTAINER_NAME}"
 )
 
 type dockerRunTemplate struct {
@@ -52,7 +52,7 @@ func parseDockerRunTemplate(value string) (dockerRunTemplate, error) {
 			parsed.imageIndex = index
 			continue
 		}
-		if strings.Contains(argument, "${ZRT_") && argument != dockerContainerNamePlaceholder &&
+		if strings.Contains(argument, "${EDO_") && argument != dockerContainerNamePlaceholder &&
 			argument != "--name="+dockerContainerNamePlaceholder {
 			return dockerRunTemplate{}, ErrInvalidContainerConfig
 		}
@@ -104,9 +104,9 @@ func appendDockerCommandWordPart(value *strings.Builder, part syntax.WordPart) e
 			return ErrInvalidContainerConfig
 		}
 		switch typed.Param.Value {
-		case "ZRT_IMAGE":
+		case "EDO_IMAGE":
 			value.WriteString(dockerImagePlaceholder)
-		case "ZRT_CONTAINER_NAME":
+		case "EDO_CONTAINER_NAME":
 			value.WriteString(dockerContainerNamePlaceholder)
 		default:
 			return ErrInvalidContainerConfig
@@ -142,13 +142,13 @@ func validateDockerRunOptions(parsed *dockerRunTemplate) error {
 		case unsafeDockerRunOption(argument):
 			return ErrInvalidContainerConfig
 		case argument == "--label" || argument == "-l":
-			if index+1 >= parsed.imageIndex || strings.HasPrefix(strings.ToLower(arguments[index+1]), "zrt.") {
+			if index+1 >= parsed.imageIndex || strings.HasPrefix(strings.ToLower(arguments[index+1]), "edo.") {
 				return ErrInvalidContainerConfig
 			}
 			index++
 		case strings.HasPrefix(argument, "--label=") || strings.HasPrefix(argument, "-l="):
 			label := argument[strings.IndexByte(argument, '=')+1:]
-			if strings.HasPrefix(strings.ToLower(label), "zrt.") {
+			if strings.HasPrefix(strings.ToLower(label), "edo.") {
 				return ErrInvalidContainerConfig
 			}
 		}
@@ -191,9 +191,9 @@ func dockerRunCommandArguments(
 			}
 			arguments = append(arguments,
 				"--network", defaultDockerNetwork,
-				"--label", "zrt.managed=true",
-				"--label", "zrt.deployment.target.id="+targetID,
-				"--label", "zrt.deployment.id="+deploymentID,
+				"--label", "edo.managed=true",
+				"--label", "edo.deployment.target.id="+targetID,
+				"--label", "edo.deployment.id="+deploymentID,
 			)
 			if imageDisplay = strings.TrimSpace(imageDisplay); imageDisplay != "" {
 				arguments = append(arguments, "--label", managedImageDisplayLabel+"="+imageDisplay)

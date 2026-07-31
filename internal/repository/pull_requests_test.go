@@ -11,8 +11,8 @@ import (
 
 	"github.com/go-git/go-git/v5/plumbing"
 
-	"zrt/internal/config"
-	"zrt/internal/model"
+	"edo/internal/config"
+	"edo/internal/model"
 )
 
 func TestGitClientListsGiteaPullRequests(t *testing.T) {

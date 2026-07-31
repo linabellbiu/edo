@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"zrt/internal/model"
+	"edo/internal/model"
 )
 
 func TestBuildPlanDeleteChecksDraftWorkflowsAndTemplates(t *testing.T) {

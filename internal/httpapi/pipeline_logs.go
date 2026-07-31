@@ -10,11 +10,11 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/gorilla/websocket"
 
-	"zrt/internal/model"
-	"zrt/internal/pipeline"
+	"edo/internal/model"
+	"edo/internal/pipeline"
 )
 
-const pipelineLogSubprotocol = "zrt-pipeline-logs-v1"
+const pipelineLogSubprotocol = "edo-pipeline-logs-v1"
 
 type pipelineLogEvent struct {
 	Type    string                  `json:"type"`

@@ -13,10 +13,10 @@ import (
 	"github.com/regclient/regclient"
 	"gorm.io/gorm"
 
-	"zrt/internal/artifact"
-	"zrt/internal/deployment"
-	"zrt/internal/dockerengine"
-	"zrt/internal/model"
+	"edo/internal/artifact"
+	"edo/internal/deployment"
+	"edo/internal/dockerengine"
+	"edo/internal/model"
 )
 
 var (
@@ -151,7 +151,7 @@ func (s *Service) resolveDeploymentImage(ctx context.Context, prepared *executio
 		return prepared.artifact.ImageRef, "", nil
 	case model.ArtifactStorageKindDockerDaemon:
 		if prepared.target.Platform != model.DeploymentDocker || prepared.artifact.RuntimeID != dockerengine.LocalEndpointID ||
-			!dockerengine.IsZRTLocalImage(prepared.artifact.ImageRef) || !dockerengine.IsValidImageID(prepared.artifact.LocalImageID) {
+			!dockerengine.IsEDOLocalImage(prepared.artifact.ImageRef) || !dockerengine.IsValidImageID(prepared.artifact.LocalImageID) {
 			return "", "", ErrPipelineExecutionConfig
 		}
 		if dockerengine.IsLocalEndpointID(prepared.target.RuntimeID) {
@@ -197,12 +197,12 @@ func (s *Service) executeSSHDeployment(ctx context.Context, prepared *executionC
 		),
 		TimeoutSeconds: prepared.deploymentPlan.TimeoutSeconds,
 		Environment: map[string]string{
-			"ZRT_PIPELINE_RUN_ID":      prepared.run.ID,
-			"ZRT_APPLICATION_ID":       prepared.application.ID,
-			"ZRT_APPLICATION_NAME":     prepared.application.Name,
-			"ZRT_GIT_REF":              prepared.run.Ref,
-			"ZRT_COMMIT_SHA":           prepared.run.CommitSHA,
-			"ZRT_DEPLOYMENT_TARGET_ID": prepared.target.ID,
+			"EDO_PIPELINE_RUN_ID":      prepared.run.ID,
+			"EDO_APPLICATION_ID":       prepared.application.ID,
+			"EDO_APPLICATION_NAME":     prepared.application.Name,
+			"EDO_GIT_REF":              prepared.run.Ref,
+			"EDO_COMMIT_SHA":           prepared.run.CommitSHA,
+			"EDO_DEPLOYMENT_TARGET_ID": prepared.target.ID,
 		},
 		Artifact: artifactFile, ArtifactName: prepared.artifact.Name, ArtifactDigest: prepared.artifact.Digest,
 		Stdout: output, Stderr: output,
@@ -417,7 +417,7 @@ func localExecutionImage(prepared *executionContext) (string, error) {
 	if err != nil {
 		return "", ErrPipelineExecutionConfig
 	}
-	return "zrt.local/" + name + ":" + tag, nil
+	return "edo.local/" + name + ":" + tag, nil
 }
 
 func executionImageName(application model.Application) (string, error) {

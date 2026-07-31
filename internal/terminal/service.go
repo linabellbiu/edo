@@ -6,8 +6,8 @@ import (
 	"io"
 	"time"
 
-	"zrt/internal/dockerengine"
-	"zrt/internal/kube"
+	"edo/internal/dockerengine"
+	"edo/internal/kube"
 )
 
 var (

@@ -1,4 +1,4 @@
-module zrt
+module edo
 
 go 1.26.5
 

@@ -8,8 +8,8 @@ import (
 
 	"github.com/gin-gonic/gin"
 
-	"zrt/internal/model"
-	"zrt/internal/scheduler"
+	"edo/internal/model"
+	"edo/internal/scheduler"
 )
 
 type schedulerHandler struct {
