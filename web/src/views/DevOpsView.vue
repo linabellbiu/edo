@@ -191,6 +191,13 @@ function create(){
   releasePlanEditorOpen.value=true
   return
  }
+ if(props.section==='applications'&&!applications.value.length){
+  const activeRepositories=repositories.value.filter(item=>item.is_active)
+  if(activeRepositories.length===1){
+   appForm.repository_id=activeRepositories[0].id
+   appForm.name=activeRepositories[0].name
+  }
+ }
  formOpen.value=true
 }
 function edit(row:ResourceRecord){

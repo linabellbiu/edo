@@ -38,17 +38,19 @@ ZRT 是面向 Docker 与 Kubernetes 的运维、发布和可观测平台，使�
 需要 Go 1.26.5 或更新的安全补丁版本、Node.js 24，以及带 Buildx 和 Compose v2 插件的 Docker CLI。Docker Desktop（Windows/macOS）默认包含这两个插件；Linux 使用 Docker Engine 时需安装官方插件。ZRT 的正式运行镜像已经内置固定版本的 Docker CLI、Buildx 和 Compose v2。
 
 ```bash
-cp .env.example .env
-openssl rand -base64 32
 go install github.com/magefile/mage@v1.17.2
 mage start
 ```
 
-把 `openssl` 输出填入根目录 `.env` 的 `ZRT_SECRETS_KEY`。密钥生成后必须固定保存并备份；已有数据库必须继续使用原密钥，不能重新生成后直接替换。
+首次运行 Mage 时，如果根目录没有 `.env`，会复制 `.env.example` 的本地默认配置，生成 32 字节随机 `ZRT_SECRETS_KEY` 并持久化到新文件；如果进程环境已经提供有效密钥，则固定保存该密钥，避免本次运行与后续重启使用不同值。创建采用独占写入，已有 `.env` 不会被覆盖，密钥也不会被自动轮换。密钥生成后必须固定保存并备份；已有数据库必须继续使用原密钥，不能删除 `.env` 后重新生成。
+
+需要在首次启动前修改数据库或服务连接时，可以先手动复制 `.env.example` 为 `.env`，再填写配置并使用 `openssl rand -base64 32` 生成密钥。直接使用 Docker Compose 不经过 Mage，仍须手动完成这一步。
 
 `.env` 不是只保存密钥：`ZRT_DATABASE_DRIVER`、`ZRT_DATABASE_DSN`、`ZRT_REDIS_URL` 和 `ZRT_NATS_URL` 是宿主机运行连接。默认分别使用 `data/zrt.db`、`redis://127.0.0.1:6379/0` 和 `nats://127.0.0.1:4222`。Redis 与 NATS 的用户名、密码可直接写入各自 URL，但真实凭据不得提交。启动 Mage 前已经导出的同名进程环境变量优先于 `.env`。
 
 首次启动服务且账户库为空时会自动创建管理员账户 `admin`，初始密码为 `123456`；该账户登录后不会被强制修改密码。已有任意账户的数据库不会补建或覆盖默认管理员。普通新建账户仍须使用至少 12 位密码。
+
+全新实例还会创建默认 Dockerfile 构建方案和已启用的快速开始流水线；本地 Docker 探测可用时，流水线同时包含本地 Docker 部署。首次使用通常只需添加代码仓库，再创建应用并确认系统预选的仓库和流水线方案，随后选择分支或 Tag 执行。自动 Push 触发默认不开启，避免未知代码变化直接部署。默认部署使用容器名 `zrt-quickstart` 且不主动发布端口，第二个应用应先复制部署方案并设置独立容器名和实际端口。已有或已删除过交付资源的实例不会在重启时重新写入这些默认项。
 
 `mage start` 会读取 `.env`，构建 Web，并把页面资源嵌入 `bin/zrt`（Windows 为 `bin/zrt.exe`），然后迁移数据库并启动这个二进制。运行时不需要 `web/dist`、Node.js 或 Nginx，API 和页面都使用 `http://127.0.0.1:8080`。如果要执行 Dockerfile 流水线，宿主机仍需提供 Docker CLI/Buildx；使用 ZRT 官方容器镜像时已经内置，无需另行安装。
 
@@ -63,7 +65,7 @@ Windows 使用 `zrt.exe migrate` 和 `zrt.exe`。单文件只包含 ZRT 后端�
 
 开发时执行 `mage start --dev`。Mage 会读取根目录 `.env`，先通过 `deploy/compose.dev.yml` 启动 Redis 和 NATS，等待健康检查通过，再在本机使用 `.env` 中的宿主机连接执行数据库迁移、`go run` 和 `npm start`。开发页面地址为 `http://127.0.0.1:5173`，流水线直接使用宿主机 Docker，不启动 DinD；前端继续使用 Vite 热更新。
 
-SQLite 固定保存在仓库的 `data/zrt.db`，Redis 和 NATS 分别保存在 `data/redis`、`data/nats`。`mage start`、`mage start --dev`、`mage start --docker` 和 Compose 都读取根目录 `.env` 并使用同一组数据文件和密钥。由于容器内的 `127.0.0.1` 指向容器自身，Compose 会把 `.env` 的 `ZRT_COMPOSE_DATABASE_*`、`ZRT_COMPOSE_REDIS_URL` 和 `ZRT_COMPOSE_NATS_URL` 映射成容器进程实际配置；默认使用 `/app/data/zrt.db`、`redis://redis:6379/0` 和 `nats://nats:4222`。依赖容器在 Mage 退出后继续运行，执行 `docker compose --env-file .env -f deploy/compose.dev.yml stop redis nats` 可以停止它们。Compose 的 DinD 只服务容器后端且不映射 2375 到宿主机。首次运行缺少本机 Web 依赖时会自动执行 `npm ci`。不要直接删除 `data` 目录。
+SQLite 固定保存在仓库的 `data/zrt.db`，Redis 和 NATS 分别保存在 `data/redis`、`data/nats`。`mage start`、`mage start --dev`、`mage start --docker` 和 Compose 都读取根目录 `.env` 并使用同一组数据文件和密钥。由于容器内的 `127.0.0.1` 指向容器自身，Compose 会把 `.env` 的 `ZRT_COMPOSE_DATABASE_*`、`ZRT_COMPOSE_REDIS_URL` 和 `ZRT_COMPOSE_NATS_URL` 映射成容器进程实际配置；默认使用 `/app/data/zrt.db`、`redis://redis:6379/0` 和 `nats://nats:4222`。依赖容器在 Mage 退出后继续运行，执行 `docker compose --env-file .env -f deploy/compose.dev.yml stop redis nats` 可以停止它们。Compose 的 DinD 只服务容器后端且不映射 2375 到宿主机。首次运行、`package-lock.json` 变化或关键 Vue 包缺失时会自动执行 `npm ci --include=dev`，并清理其他包管理器留下的不一致依赖。不要直接删除 `data` 目录。
 
 只迁移 `.env` 指定的数据库时执行：
 

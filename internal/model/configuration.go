@@ -21,7 +21,8 @@ type Configuration struct {
 func (Configuration) TableName() string { return "configurations" }
 
 type ConfigurationRevision struct {
-	ID               string          `gorm:"type:varchar(36);primaryKey"`
+	ID string `gorm:"type:varchar(36);primaryKey"`
+
 	ConfigurationID  string          `gorm:"type:varchar(36);not null;uniqueIndex:ux_configuration_revision;index"`
 	Version          int             `gorm:"not null;uniqueIndex:ux_configuration_revision"`
 	Namespace        string          `gorm:"type:varchar(64);not null"`

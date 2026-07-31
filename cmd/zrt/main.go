@@ -478,6 +478,27 @@ func runServer(ctx context.Context, cfg config.Config, logger *slog.Logger, runt
 	)
 	pipelineService.ConfigureExecution(dockerService, deploymentService, logger)
 	pipelineService.ConfigureArtifacts(artifactService)
+	initialDelivery, err := pipelineService.EnsureInitialDeliverySettings(serviceCtx)
+	if err != nil {
+		logger.Error("初始化默认交付设置失败", "operation", "delivery_settings_bootstrap", "err", err)
+		return errors.New("默认交付设置初始化失败")
+	}
+	if initialDelivery.Created {
+		logger.Info(
+			"默认交付设置已创建",
+			"operation", "delivery_settings_bootstrap",
+			"build_plan_id", initialDelivery.BuildPlanID,
+			"deployment_plan_id", initialDelivery.DeploymentPlanID,
+			"workflow_template_id", initialDelivery.WorkflowTemplateID,
+			"local_docker_deployment", initialDelivery.LocalDockerDeployment,
+		)
+		if !initialDelivery.LocalDockerDeployment {
+			logger.Warn(
+				"本地 Docker 不可用，快速开始流水线仅包含镜像构建",
+				"operation", "delivery_settings_bootstrap",
+			)
+		}
+	}
 	terminalService := terminal.NewService(dockerService, kubernetesService, cfg.Runtime.TerminalMaxDuration)
 	notificationService := notification.NewService(resources.Database, secretManager, nil, cfg.NATS.MaxAttempts)
 	monitorService := monitor.NewService(resources.Database, secretManager, notificationService, nil, cfg.NATS.MaxAttempts, logger)
