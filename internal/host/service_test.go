@@ -683,6 +683,48 @@ func TestDetectLocalExecCapability(t *testing.T) {
 	}
 }
 
+func TestListStatusesReturnsOnlyCurrentHostState(t *testing.T) {
+	service, db, _ := newHostTestService(t)
+	now := time.Now().UTC()
+	hosts := []model.Host{
+		{ID: "status-host-a", Name: "状态主机 A", Mode: model.HostModeSSH, SSHPort: 22, IsActive: true, CreatedBy: "admin", CreatedAt: now, UpdatedAt: now},
+		{ID: "status-host-b", Name: "状态主机 B", Mode: model.HostModeSSH, SSHPort: 22, IsActive: true, CreatedBy: "admin", CreatedAt: now, UpdatedAt: now},
+	}
+	if err := db.Create(&hosts).Error; err != nil {
+		t.Fatalf("创建状态测试主机失败: %v", err)
+	}
+	if err := db.Model(&model.Host{}).Where("id = ?", hosts[1].ID).Update("is_active", false).Error; err != nil {
+		t.Fatalf("停用状态测试主机失败: %v", err)
+	}
+	capability := model.HostCapability{
+		HostID: hosts[0].ID, Kind: model.HostCapabilityDocker, RuntimeID: "docker-status-a",
+		Status: model.HostCapabilityReady, Version: "1.48", UseSudo: true, CreatedAt: now, UpdatedAt: now,
+	}
+	if err := db.Create(&capability).Error; err != nil {
+		t.Fatalf("创建状态测试能力失败: %v", err)
+	}
+
+	statuses, err := service.ListStatuses(context.Background())
+	if err != nil {
+		t.Fatalf("读取轻量主机状态失败: %v", err)
+	}
+	if len(statuses) != 2 {
+		t.Fatalf("轻量主机状态数量错误: %+v", statuses)
+	}
+	statusByID := make(map[string]Status, len(statuses))
+	for i := range statuses {
+		statusByID[statuses[i].HostID] = statuses[i]
+	}
+	if statusByID[hosts[1].ID].IsActive {
+		t.Fatalf("轻量状态没有返回主机停用状态: %+v", statusByID[hosts[1].ID])
+	}
+	first := statusByID[hosts[0].ID]
+	if !first.IsActive || len(first.Capabilities) != 1 || first.Capabilities[0].RuntimeID != capability.RuntimeID ||
+		first.Capabilities[0].Status != model.HostCapabilityReady || !first.Capabilities[0].UseSudo {
+		t.Fatalf("轻量状态丢失运行时能力: %+v", first)
+	}
+}
+
 func newHostTestService(t *testing.T) (*Service, *gorm.DB, *secret.Manager) {
 	t.Helper()
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))

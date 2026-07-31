@@ -36,7 +36,7 @@ func TestWorkflowDeploymentNodeUsesOnlyPlanAndResolvesItsTarget(t *testing.T) {
 		t.Fatal(err)
 	}
 	application, err := service.CreateApplication(ctx, "admin", ApplicationInput{
-		Name: "方案目标快照应用", RepositoryID: repositoryID, PollIntervalSeconds: 60,
+		Name: "target_snapshot", RepositoryID: repositoryID, PollIntervalSeconds: 60,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -104,7 +104,7 @@ func TestShellTaskScriptBytesRemainUnchangedInSavedAndRunSnapshots(t *testing.T)
 	service, _, _, repositoryID := newPipelineTestService(t)
 	ctx := context.Background()
 	application, err := service.CreateApplication(ctx, "admin", ApplicationInput{
-		Name: "脚本字节快照应用", RepositoryID: repositoryID,
+		Name: "script_snapshot", RepositoryID: repositoryID,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -159,7 +159,7 @@ func TestShellTaskScriptBytesRemainUnchangedInSavedAndRunSnapshots(t *testing.T)
 func TestShellTaskRejectsFloatingRuntimeImage(t *testing.T) {
 	service, _, _, repositoryID := newPipelineTestService(t)
 	application, err := service.CreateApplication(context.Background(), "admin", ApplicationInput{
-		Name: "Shell 运行镜像校验应用", RepositoryID: repositoryID,
+		Name: "shell_runtime_validation", RepositoryID: repositoryID,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -284,7 +284,7 @@ func TestWorkflowDraftAllowsMissingDeploymentPlanButCannotActivate(t *testing.T)
 		t.Fatal(err)
 	}
 	application, err := service.CreateApplication(ctx, "admin", ApplicationInput{
-		Name: "草稿应用", RepositoryID: repositoryID, PollIntervalSeconds: 60,
+		Name: "draft_app", RepositoryID: repositoryID, PollIntervalSeconds: 60,
 	})
 	if err != nil {
 		t.Fatal(err)

@@ -30,6 +30,23 @@ func TestInitialContainerConfigUsesImageDefaultsAndSafeRestartPolicy(t *testing.
 	}
 }
 
+func TestApplyImageDisplayLabelKeepsFriendlyVersionSeparateFromExecutionImage(t *testing.T) {
+	configuration, _, err := initialContainerConfig(
+		"registry.example.com/team/order_api@sha256:"+strings.Repeat("a", 64),
+		"target-id", "deployment-id", model.DockerContainerConfig{},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	applyImageDisplayLabel(configuration, "order_api:fea2410d1e47")
+	if configuration.Labels[managedImageDisplayLabel] != "order_api:fea2410d1e47" {
+		t.Fatalf("容器没有保存简短镜像版本: %+v", configuration.Labels)
+	}
+	if !strings.Contains(configuration.Image, "@sha256:") {
+		t.Fatalf("展示版本不得替换实际执行的不可变镜像: %q", configuration.Image)
+	}
+}
+
 func TestManagedContainerVolumeNameIsScopedByContainerAndLogicalName(t *testing.T) {
 	first := managedContainerVolumeName("target-api", "data")
 	if first != managedContainerVolumeName("target-api", "data") || first == managedContainerVolumeName("target-worker", "data") ||
@@ -60,5 +77,19 @@ func TestInitialContainerConfigAppliesDeploymentPlan(t *testing.T) {
 	if hostConfiguration.NetworkMode != container.NetworkMode("bridge") || len(hostConfiguration.PortBindings) != 1 ||
 		len(hostConfiguration.Mounts) != 1 || !hostConfiguration.Mounts[0].ReadOnly {
 		t.Fatalf("网络、端口或卷挂载未应用: %+v", hostConfiguration)
+	}
+}
+
+func TestInitialContainerConfigDoesNotRunHostCommandInsideContainer(t *testing.T) {
+	input := model.DockerContainerConfig{
+		DeploymentScript: "docker run ${ZRT_IMAGE}",
+		Command:          []string{"legacy", "argument"},
+	}
+	configuration, _, err := initialContainerConfig("zrt.local/app:commit", "target-id", "deployment-id", input)
+	if err != nil {
+		t.Fatalf("生成部署脚本容器配置失败: %v", err)
+	}
+	if len(configuration.Entrypoint) != 0 || len(configuration.Cmd) != 0 {
+		t.Fatalf("主机侧 Docker 命令不应写入容器 ENTRYPOINT/CMD: %+v", configuration)
 	}
 }

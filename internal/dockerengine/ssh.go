@@ -9,6 +9,8 @@ import (
 	"io"
 	"net"
 	"net/url"
+	"os"
+	"os/exec"
 	"strings"
 	"sync"
 	"time"
@@ -208,6 +210,72 @@ func (s *Service) pullImageWithSSH(ctx context.Context, endpointID, image string
 		return true, fmt.Errorf("远程执行 docker pull 失败: %w", err)
 	}
 	return true, nil
+}
+
+// runDockerHostCommand 执行已经通过语法树校验并拆分的 docker run 参数。SSH 目标复用
+// Docker 连接的固定主机指纹和 sudo 策略，本地目标直接调用当前构建运行时的 Docker CLI。
+func (s *Service) runDockerHostCommand(
+	ctx context.Context,
+	endpointID string,
+	arguments []string,
+	stdout io.Writer,
+	stderr io.Writer,
+) error {
+	command, err := renderDockerCommand(arguments)
+	if err != nil {
+		return err
+	}
+	endpoint, err := s.Find(ctx, endpointID)
+	if err != nil {
+		return err
+	}
+	if stdout == nil {
+		stdout = io.Discard
+	}
+	if stderr == nil {
+		stderr = io.Discard
+	}
+	parsed, err := url.Parse(endpoint.Host)
+	if err != nil {
+		return errors.New("Docker 执行主机配置无效")
+	}
+	if parsed.Scheme == "ssh" {
+		host, bundle, fingerprint, configErr := s.sshConfiguration(ctx, endpoint)
+		if configErr != nil {
+			return configErr
+		}
+		connector, connectErr := newSSHConnector(host, bundle, fingerprint, s.config.ConnectTimeout)
+		if connectErr != nil {
+			return connectErr
+		}
+		client, connectErr := connector.connectPinned(ctx)
+		if connectErr != nil {
+			return fmt.Errorf("连接 Docker SSH 主机失败: %w", connectErr)
+		}
+		defer client.Close()
+		mode, modeErr := resolveDockerSSHCommandMode(ctx, client, bundle)
+		if modeErr != nil {
+			return fmt.Errorf("检查远程 Docker sudo 权限失败: %w", modeErr)
+		}
+		command, commandInput := mode.prepare(command, nil)
+		if runErr := runSSHCommandWithStreams(ctx, client, command, commandInput, stdout, stderr); runErr != nil {
+			return fmt.Errorf("在目标主机执行 Docker 部署命令失败: %w", runErr)
+		}
+		return nil
+	}
+	if parsed.Scheme != "builder" || parsed.Host != "local" {
+		return errors.New("自定义 Docker 命令只支持本地运行时或 SSH 主机")
+	}
+	process := exec.CommandContext(ctx, arguments[0], arguments[1:]...)
+	process.Stdout, process.Stderr = stdout, stderr
+	process.Env = os.Environ()
+	if dockerHost := strings.TrimSpace(s.config.DockerBuilderHost); dockerHost != "" {
+		process.Env = append(process.Env, "DOCKER_HOST="+dockerHost)
+	}
+	if err := process.Run(); err != nil {
+		return fmt.Errorf("在本地运行时执行 Docker 部署命令失败: %w", err)
+	}
+	return nil
 }
 
 func dockerPullWithRegistryAuth(pullCommand string, registry RegistryAuth) (string, io.Reader, error) {

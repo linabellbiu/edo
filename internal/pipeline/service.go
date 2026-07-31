@@ -35,6 +35,7 @@ import (
 
 var (
 	ErrInvalidApplication             = errors.New("应用配置无效")
+	ErrInvalidApplicationName         = errors.New("应用名必须以小写英文字母开头，只能使用小写英文字母和单个下划线")
 	ErrApplicationExists              = errors.New("应用名称已存在")
 	ErrApplicationNotFound            = errors.New("应用不存在")
 	ErrInvalidBuildPlan               = errors.New("构建方案配置无效")
@@ -46,6 +47,7 @@ var (
 	ErrInvalidRegistryName            = errors.New("镜像仓库名称格式无效")
 	ErrInvalidRegistryProvider        = errors.New("镜像仓库类型无效")
 	ErrInvalidRegistryEndpoint        = errors.New("镜像仓库地址格式无效")
+	ErrRegistryProviderEndpoint       = errors.New("Docker Hub 使用系统固定地址，其他仓库请选择 Harbor 或通用 Registry")
 	ErrInsecureRegistryEndpoint       = errors.New("HTTP 镜像仓库需要显式允许不安全连接")
 	ErrInvalidRegistryNamespace       = errors.New("镜像仓库命名空间格式无效")
 	ErrInvalidRegistryUsername        = errors.New("镜像仓库用户名过长")
@@ -64,6 +66,7 @@ var (
 )
 
 var resourceNamePattern = regexp.MustCompile(`^[A-Za-z0-9\p{Han}][A-Za-z0-9\p{Han}_. -]{0,127}$`)
+var applicationNamePattern = regexp.MustCompile(`^[a-z]+(?:_[a-z]+)*$`)
 
 // 镜像仓库名称是显示标签，也允许管理员直接使用 host/namespace 形式命名。
 var registryNamePattern = regexp.MustCompile(`^[A-Za-z0-9\p{Han}][A-Za-z0-9\p{Han}_. /:-]{0,127}$`)
@@ -286,6 +289,9 @@ func (s *Service) normalizeApplication(ctx context.Context, input ApplicationInp
 	input.Description = strings.TrimSpace(input.Description)
 	input.RepositoryID = strings.TrimSpace(input.RepositoryID)
 	input.WorkflowTemplateID = strings.TrimSpace(input.WorkflowTemplateID)
+	if len(input.Name) > 128 || !applicationNamePattern.MatchString(input.Name) {
+		return input, ErrInvalidApplicationName
+	}
 	if input.RepositoryID == "" {
 		return input, ErrInvalidApplication
 	}
@@ -299,7 +305,7 @@ func (s *Service) normalizeApplication(ctx context.Context, input ApplicationInp
 			return input, ErrWorkflowTemplateNotFound
 		}
 	}
-	if !validResourceName(input.Name) || utf8.RuneCountInString(input.Description) > 500 || input.RepositoryID == "" {
+	if utf8.RuneCountInString(input.Description) > 500 || input.RepositoryID == "" {
 		return input, ErrInvalidApplication
 	}
 	if input.PollIntervalSeconds == 0 {
@@ -744,6 +750,13 @@ func normalizeRegistryInput(input RegistryInput) (RegistryInput, *url.URL, error
 	if !validRegistryProvider(input.Provider) {
 		return input, nil, ErrInvalidRegistryProvider
 	}
+	if input.Provider == model.RegistryDockerHub {
+		if input.Endpoint != "" && !isDockerHubEndpoint(input.Endpoint) {
+			return input, nil, ErrRegistryProviderEndpoint
+		}
+		input.Endpoint = model.DockerHubEndpoint
+		input.AllowInsecureHTTP = false
+	}
 	if !validRegistryNamespace(input.Namespace) {
 		return input, nil, ErrInvalidRegistryNamespace
 	}
@@ -762,6 +775,23 @@ func normalizeRegistryInput(input RegistryInput) (RegistryInput, *url.URL, error
 		return input, nil, ErrInvalidRegistrySecret
 	}
 	return input, parsed, nil
+}
+
+func isDockerHubEndpoint(value string) bool {
+	parsed, err := url.Parse(strings.TrimSpace(value))
+	if err != nil || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" ||
+		(parsed.Scheme != "https" && parsed.Scheme != "http") {
+		return false
+	}
+	host, endpointPath := strings.ToLower(parsed.Host), strings.Trim(parsed.Path, "/")
+	switch host {
+	case "docker.io", "registry-1.docker.io":
+		return endpointPath == ""
+	case "index.docker.io":
+		return endpointPath == "" || endpointPath == "v1"
+	default:
+		return false
+	}
 }
 
 func (s *Service) ListDeploymentPlans(ctx context.Context) ([]model.DeploymentPlan, error) {
@@ -784,7 +814,7 @@ func normalizeDeploymentPlanInput(input DeploymentPlanInput) (DeploymentPlanInpu
 	validKind := (input.Kind == model.DeploymentPlanScript && strings.TrimSpace(input.Script) != "") ||
 		input.Kind == model.DeploymentPlanKubernetes ||
 		(input.Kind == model.DeploymentPlanCompose && input.ComposeYAML != "" && input.ServiceName != "") ||
-		(input.Kind == model.DeploymentPlanDocker && input.ServiceName != "")
+		input.Kind == model.DeploymentPlanDocker
 	if input.DeploymentTarget == nil || !validResourceName(input.Name) || !validKind || input.TimeoutSeconds < 30 || input.TimeoutSeconds > 3600 ||
 		len(input.Script) > 256*1024 || len(input.ComposeYAML) > dockerengine.MaximumComposeYAMLBytes ||
 		utf8.RuneCountInString(input.Description) > 500 {

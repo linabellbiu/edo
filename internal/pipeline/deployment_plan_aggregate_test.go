@@ -23,14 +23,34 @@ func deploymentPlanTargetInput(t *testing.T, service *Service, target model.Depl
 	now := time.Now().UTC()
 	switch target.Platform {
 	case model.DeploymentDocker:
+		if target.EnvironmentID == "" {
+			target.EnvironmentID = "environment-" + target.RuntimeID
+		}
+		if target.HostID == "" {
+			target.HostID = "host-" + target.RuntimeID
+		}
+		mode, builtin := model.HostModeSSH, false
+		if dockerengine.IsLocalEndpointID(target.RuntimeID) {
+			target.HostID, mode, builtin = model.BuiltinLocalHostID, model.HostModeLocal, true
+		}
+		createDeploymentPlanTestEnvironmentHost(t, service, target.EnvironmentID, target.HostID, mode, builtin, model.HostCapabilityDocker, target.RuntimeID, now)
 		endpoint := model.DockerEndpoint{
 			ID: target.RuntimeID, Name: "runtime-" + target.RuntimeID, Host: "unix:///var/run/docker.sock",
 			HostID: target.HostID, IsActive: true, CreatedBy: "admin", CreatedAt: now, UpdatedAt: now,
 		}
-		if err := service.db.Where("id = ?", endpoint.ID).FirstOrCreate(&endpoint).Error; err != nil {
-			t.Fatal(err)
+		if !dockerengine.IsLocalEndpointID(target.RuntimeID) {
+			if err := service.db.Where("id = ?", endpoint.ID).FirstOrCreate(&endpoint).Error; err != nil {
+				t.Fatal(err)
+			}
 		}
 	case model.DeploymentKubernetes:
+		if target.EnvironmentID == "" {
+			target.EnvironmentID = "environment-" + target.RuntimeID
+		}
+		if target.HostID == "" {
+			target.HostID = "host-" + target.RuntimeID
+		}
+		createDeploymentPlanTestEnvironmentHost(t, service, target.EnvironmentID, target.HostID, model.HostModeSSH, false, model.HostCapabilityKubernetes, target.RuntimeID, now)
 		cluster := model.KubernetesCluster{
 			ID: target.RuntimeID, Name: "cluster-" + target.RuntimeID, Mode: model.KubernetesInCluster,
 			DefaultNamespace: "default", IsActive: true, CreatedBy: "admin", CreatedAt: now, UpdatedAt: now,
@@ -55,6 +75,28 @@ func deploymentPlanTargetInput(t *testing.T, service *Service, target model.Depl
 		WorkingDirectory: target.WorkingDirectory, Namespace: target.Namespace,
 		WorkloadName: target.WorkloadName, ContainerName: target.ContainerName,
 		RolloutTimeout: target.RolloutTimeout,
+	}
+}
+
+func createDeploymentPlanTestEnvironmentHost(
+	t *testing.T,
+	service *Service,
+	environmentID, hostID string,
+	mode model.HostMode,
+	builtin bool,
+	capabilityKind model.HostCapabilityKind,
+	runtimeID string,
+	now time.Time,
+) {
+	t.Helper()
+	environment := model.Environment{ID: environmentID, Name: "environment-" + environmentID, IsActive: true, CreatedBy: "admin", CreatedAt: now, UpdatedAt: now}
+	host := model.Host{ID: hostID, Name: "host-" + hostID, Mode: mode, IsBuiltin: builtin, SSHPort: 22, IsActive: true, CreatedBy: "admin", CreatedAt: now, UpdatedAt: now}
+	capability := model.HostCapability{HostID: host.ID, Kind: capabilityKind, RuntimeID: runtimeID, Status: model.HostCapabilityReady, CreatedAt: now, UpdatedAt: now}
+	membership := model.EnvironmentHost{EnvironmentID: environment.ID, HostID: host.ID, CreatedAt: now}
+	for _, value := range []any{&environment, &host, &capability, &membership} {
+		if err := service.db.FirstOrCreate(value).Error; err != nil {
+			t.Fatal(err)
+		}
 	}
 }
 
@@ -166,11 +208,26 @@ func TestDockerDeploymentPlanReturnsPersistedConnectionOnUpdate(t *testing.T) {
 	service.ConfigureExecution(nil, deployment.NewService(db, dockerService, nil, nil, nil, "", logger), logger)
 
 	now := time.Now().UTC()
-	endpoints := []model.DockerEndpoint{
-		{ID: "docker-before", Name: "更新前连接", Host: "ssh://before.example.com:22", IsActive: true, CreatedBy: "admin", CreatedAt: now, UpdatedAt: now},
-		{ID: "docker-after", Name: "更新后连接", Host: "ssh://after.example.com:22", IsActive: true, CreatedBy: "admin", CreatedAt: now, UpdatedAt: now},
+	environment := model.Environment{ID: "docker-update-environment", Name: "Docker 更新环境", IsActive: true, CreatedBy: "admin", CreatedAt: now, UpdatedAt: now}
+	hosts := []model.Host{
+		{ID: "docker-before-host", Name: "更新前主机", Mode: model.HostModeSSH, SSHPort: 22, IsActive: true, CreatedBy: "admin", CreatedAt: now, UpdatedAt: now},
+		{ID: "docker-after-host", Name: "更新后主机", Mode: model.HostModeSSH, SSHPort: 22, IsActive: true, CreatedBy: "admin", CreatedAt: now, UpdatedAt: now},
 	}
-	if err := db.Create(&endpoints).Error; err != nil {
+	endpoints := []model.DockerEndpoint{
+		{ID: "docker-before", Name: "更新前连接", HostID: hosts[0].ID, Host: "ssh://before.example.com:22", IsActive: true, CreatedBy: "admin", CreatedAt: now, UpdatedAt: now},
+		{ID: "docker-after", Name: "更新后连接", HostID: hosts[1].ID, Host: "ssh://after.example.com:22", IsActive: true, CreatedBy: "admin", CreatedAt: now, UpdatedAt: now},
+	}
+	for _, resource := range []any{&environment, &hosts, &endpoints} {
+		if err := db.Create(resource).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	for index := range hosts {
+		if err := db.Create(&model.HostCapability{HostID: hosts[index].ID, Kind: model.HostCapabilityDocker, RuntimeID: endpoints[index].ID, Status: model.HostCapabilityReady, CreatedAt: now, UpdatedAt: now}).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := db.Create(&model.EnvironmentHost{EnvironmentID: environment.ID, HostID: hosts[0].ID, CreatedAt: now}).Error; err != nil {
 		t.Fatal(err)
 	}
 	input := DeploymentPlanInput{
@@ -181,6 +238,7 @@ func TestDockerDeploymentPlanReturnsPersistedConnectionOnUpdate(t *testing.T) {
 		},
 		TimeoutSeconds: 300, DeploymentTarget: &deployment.TargetInput{
 			Name: "Docker 连接回填方案", Platform: model.DeploymentDocker,
+			EnvironmentID: environment.ID, HostID: hosts[0].ID,
 			RuntimeID: endpoints[0].ID, WorkloadName: "demo", RolloutTimeout: 300,
 		},
 	}
@@ -188,7 +246,17 @@ func TestDockerDeploymentPlanReturnsPersistedConnectionOnUpdate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if plan.DeploymentTarget == nil || plan.DeploymentTarget.HostID != hosts[0].ID || plan.DeploymentTarget.RuntimeID != endpoints[0].ID {
+		t.Fatalf("部署方案没有按环境解析唯一 Docker 主机: %+v", plan.DeploymentTarget)
+	}
+	if err := db.Where("environment_id = ? AND host_id = ?", environment.ID, hosts[0].ID).Delete(&model.EnvironmentHost{}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&model.EnvironmentHost{EnvironmentID: environment.ID, HostID: hosts[1].ID, CreatedAt: now}).Error; err != nil {
+		t.Fatal(err)
+	}
 	input.DeploymentTarget.RuntimeID = endpoints[1].ID
+	input.DeploymentTarget.HostID = hosts[1].ID
 	updated, err := service.UpdateDeploymentPlan(context.Background(), plan.ID, input)
 	if err != nil {
 		t.Fatal(err)
@@ -243,7 +311,7 @@ func TestPipelineRunResolvesDeploymentPlanTargetIntoSnapshot(t *testing.T) {
 	}
 	target = *plan.DeploymentTarget
 	application, err := service.CreateApplication(ctx, "admin", ApplicationInput{
-		Name: "快照应用", RepositoryID: repositoryID, PollIntervalSeconds: 60,
+		Name: "snapshot_app", RepositoryID: repositoryID, PollIntervalSeconds: 60,
 	})
 	if err != nil {
 		t.Fatal(err)

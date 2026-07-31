@@ -24,8 +24,8 @@ type releasePlanExecutionTestApplication struct {
 
 func TestReleasePlanExecutionStartsParallelApplicationsTogether(t *testing.T) {
 	service, db, secrets, repositoryID := newPipelineTestService(t)
-	first := createReleasePlanExecutionTestApplication(t, service, db, repositoryID, "并行订单服务")
-	second := createReleasePlanExecutionTestApplication(t, service, db, repositoryID, "并行库存服务")
+	first := createReleasePlanExecutionTestApplication(t, service, db, repositoryID, "parallel_order_service")
+	second := createReleasePlanExecutionTestApplication(t, service, db, repositoryID, "parallel_inventory_service")
 	commitSHA := strings.Repeat("a", 40)
 	setReleasePlanExecutionTestRefs(service, db, secrets, commitSHA)
 	plan := createReleasePlanExecutionTestPlan(t, service, []releasePlanExecutionTestApplication{first, second})
@@ -70,7 +70,7 @@ func TestReleasePlanExecutionStartsParallelApplicationsTogether(t *testing.T) {
 
 func TestReleasePlanExecutionQueuesBuildFromStageSnapshot(t *testing.T) {
 	service, db, secrets, repositoryID := newPipelineTestService(t)
-	application := createReleasePlanExecutionTestApplication(t, service, db, repositoryID, "阶段式发布服务")
+	application := createReleasePlanExecutionTestApplication(t, service, db, repositoryID, "staged_release_service")
 	commitSHA := strings.Repeat("7", 40)
 	setReleasePlanExecutionTestRefs(service, db, secrets, commitSHA)
 	plan := createReleasePlanExecutionTestPlan(t, service, []releasePlanExecutionTestApplication{application})
@@ -107,8 +107,8 @@ func TestReleasePlanExecutionQueuesBuildFromStageSnapshot(t *testing.T) {
 
 func TestReleasePlanExecutionStartsSequentialApplicationsOneAtATime(t *testing.T) {
 	service, db, secrets, repositoryID := newPipelineTestService(t)
-	first := createReleasePlanExecutionTestApplication(t, service, db, repositoryID, "串行订单服务")
-	second := createReleasePlanExecutionTestApplication(t, service, db, repositoryID, "串行库存服务")
+	first := createReleasePlanExecutionTestApplication(t, service, db, repositoryID, "sequential_order_service")
+	second := createReleasePlanExecutionTestApplication(t, service, db, repositoryID, "sequential_inventory_service")
 	commitSHA := strings.Repeat("b", 40)
 	setReleasePlanExecutionTestRefs(service, db, secrets, commitSHA)
 	plan := createReleasePlanExecutionTestPlan(t, service, []releasePlanExecutionTestApplication{first, second})
@@ -157,8 +157,8 @@ func TestReleasePlanExecutionDependencyFailurePolicies(t *testing.T) {
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
 			service, db, secrets, repositoryID := newPipelineTestService(t)
-			first := createReleasePlanExecutionTestApplication(t, service, db, repositoryID, "依赖基础服务")
-			second := createReleasePlanExecutionTestApplication(t, service, db, repositoryID, "依赖业务服务")
+			first := createReleasePlanExecutionTestApplication(t, service, db, repositoryID, "dependency_base_service")
+			second := createReleasePlanExecutionTestApplication(t, service, db, repositoryID, "dependency_business_service")
 			commitSHA := strings.Repeat("c", 40)
 			setReleasePlanExecutionTestRefs(service, db, secrets, commitSHA)
 			plan := createReleasePlanExecutionTestPlan(t, service, []releasePlanExecutionTestApplication{first})
@@ -230,8 +230,8 @@ func TestReleasePlanExecutionDependencyFailurePolicies(t *testing.T) {
 
 func TestCreateReleasePlanExecutionPreflightIsAtomic(t *testing.T) {
 	service, db, secrets, repositoryID := newPipelineTestService(t)
-	first := createReleasePlanExecutionTestApplication(t, service, db, repositoryID, "原子校验订单服务")
-	second := createReleasePlanExecutionTestApplication(t, service, db, repositoryID, "原子校验库存服务")
+	first := createReleasePlanExecutionTestApplication(t, service, db, repositoryID, "atomic_order_service")
+	second := createReleasePlanExecutionTestApplication(t, service, db, repositoryID, "atomic_inventory_service")
 	commitSHA := strings.Repeat("d", 40)
 	setReleasePlanExecutionTestRefs(service, db, secrets, commitSHA)
 	plan := createReleasePlanExecutionTestPlan(t, service, []releasePlanExecutionTestApplication{first, second})
@@ -263,7 +263,7 @@ func TestCreateReleasePlanExecutionPreflightIsAtomic(t *testing.T) {
 
 func TestCreateReleasePlanExecutionRejectsAutomaticOnlyTrigger(t *testing.T) {
 	service, db, secrets, repositoryID := newPipelineTestService(t)
-	application := createReleasePlanExecutionTestApplication(t, service, db, repositoryID, "仅自动触发服务")
+	application := createReleasePlanExecutionTestApplication(t, service, db, repositoryID, "automatic_only_service")
 	commitSHA := strings.Repeat("6", 40)
 	setReleasePlanExecutionTestRefs(service, db, secrets, commitSHA)
 	result, err := service.GetWorkflow(context.Background(), application.applicationID)
@@ -305,7 +305,7 @@ func TestCreateReleasePlanExecutionRejectsAutomaticOnlyTrigger(t *testing.T) {
 
 func TestCreateReleasePlanExecutionRejectsApplicationRepeatedAcrossGroups(t *testing.T) {
 	service, db, _, repositoryID := newPipelineTestService(t)
-	application := createReleasePlanExecutionTestApplication(t, service, db, repositoryID, "跨组重复服务")
+	application := createReleasePlanExecutionTestApplication(t, service, db, repositoryID, "cross_group_duplicate")
 	plan := createReleasePlanExecutionTestPlan(t, service, []releasePlanExecutionTestApplication{application})
 	_, err := service.CreateReleaseGroup(context.Background(), plan.ID, ReleaseGroupInput{
 		Name: "重复应用组", Mode: model.ReleaseGroupParallel, FailurePolicy: model.ReleaseGroupStopOnFailure,
@@ -322,7 +322,7 @@ func TestCreateReleasePlanExecutionRejectsApplicationRepeatedAcrossGroups(t *tes
 
 func TestCreateReleasePlanExecutionIsIdempotent(t *testing.T) {
 	service, db, secrets, repositoryID := newPipelineTestService(t)
-	application := createReleasePlanExecutionTestApplication(t, service, db, repositoryID, "幂等发布服务")
+	application := createReleasePlanExecutionTestApplication(t, service, db, repositoryID, "idempotent_release_service")
 	commitSHA := strings.Repeat("f", 40)
 	setReleasePlanExecutionTestRefs(service, db, secrets, commitSHA)
 	plan := createReleasePlanExecutionTestPlan(t, service, []releasePlanExecutionTestApplication{application})
@@ -353,7 +353,7 @@ func TestCreateReleasePlanExecutionIsIdempotent(t *testing.T) {
 
 func TestReleasePlanPendingRunCannotBypassGroupScheduling(t *testing.T) {
 	service, db, secrets, repositoryID := newPipelineTestService(t)
-	application := createReleasePlanExecutionTestApplication(t, service, db, repositoryID, "调度边界服务")
+	application := createReleasePlanExecutionTestApplication(t, service, db, repositoryID, "scheduling_boundary")
 	commitSHA := strings.Repeat("3", 40)
 	setReleasePlanExecutionTestRefs(service, db, secrets, commitSHA)
 	plan := createReleasePlanExecutionTestPlan(t, service, []releasePlanExecutionTestApplication{application})
@@ -376,7 +376,7 @@ func TestReleasePlanPendingRunCannotBypassGroupScheduling(t *testing.T) {
 
 func TestReleasePlanExecutionRecoversClaimedBlockedRunFromSnapshot(t *testing.T) {
 	service, db, secrets, repositoryID := newPipelineTestService(t)
-	application := createReleasePlanExecutionTestApplication(t, service, db, repositoryID, "崩溃恢复服务")
+	application := createReleasePlanExecutionTestApplication(t, service, db, repositoryID, "crash_recovery_service")
 	commitSHA := strings.Repeat("2", 40)
 	setReleasePlanExecutionTestRefs(service, db, secrets, commitSHA)
 	plan := createReleasePlanExecutionTestPlan(t, service, []releasePlanExecutionTestApplication{application})
@@ -414,7 +414,7 @@ func TestReleasePlanExecutionRecoversClaimedBlockedRunFromSnapshot(t *testing.T)
 
 func TestReleasePlanAutomaticAdvanceDoesNotPassStaleManualGate(t *testing.T) {
 	service, db, _, repositoryID := newPipelineTestService(t)
-	application := createManualRunTestApplication(t, service, db, repositoryID, "过期推进防护服务")
+	application := createManualRunTestApplication(t, service, db, repositoryID, "stale_advance_guard")
 	now := time.Now().UTC()
 	snapshot, err := workflowSnapshotJSON(application.Workflow)
 	if err != nil {

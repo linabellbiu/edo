@@ -68,6 +68,64 @@ func TestArtifactUploadRejectsOversizedFile(t *testing.T) {
 	}
 }
 
+func TestArtifactListAndUploadAreNestedUnderBuildPlan(t *testing.T) {
+	router, closeTest := newAuthTestRouter(t)
+	defer closeTest()
+	cookie, applicationID := createArtifactTestApplication(t, router)
+	buildPlanID := createArtifactTestBuildPlan(t, router, cookie, "主构建方案")
+	otherBuildPlanID := createArtifactTestBuildPlan(t, router, cookie, "其他构建方案")
+
+	uploaded := performArtifactUpload(
+		t,
+		router,
+		"/api/v1/build-plans/"+buildPlanID+"/applications/"+applicationID+"/artifacts/upload",
+		"release.tar",
+		[]byte("nested build plan artifact"),
+		cookie,
+	)
+	if uploaded.Code != http.StatusCreated {
+		t.Fatalf("在构建方案下上传制品失败: status=%d body=%s", uploaded.Code, uploaded.Body.String())
+	}
+	var uploadedPayload struct {
+		Artifact struct {
+			ID string `json:"id"`
+		} `json:"artifact"`
+	}
+	if json.Unmarshal(uploaded.Body.Bytes(), &uploadedPayload) != nil || uploadedPayload.Artifact.ID == "" {
+		t.Fatalf("解析构建方案制品失败: %s", uploaded.Body.String())
+	}
+
+	listed := performJSONRequest(t, router, http.MethodGet, "/api/v1/build-plans/"+buildPlanID+"/artifacts?application_id="+applicationID, nil, cookie)
+	if listed.Code != http.StatusOK || !strings.Contains(listed.Body.String(), uploadedPayload.Artifact.ID) {
+		t.Fatalf("构建方案没有返回所属制品: status=%d body=%s", listed.Code, listed.Body.String())
+	}
+	otherListed := performJSONRequest(t, router, http.MethodGet, "/api/v1/build-plans/"+otherBuildPlanID+"/artifacts", nil, cookie)
+	if otherListed.Code != http.StatusOK || strings.Contains(otherListed.Body.String(), uploadedPayload.Artifact.ID) {
+		t.Fatalf("制品串入其他构建方案: status=%d body=%s", otherListed.Code, otherListed.Body.String())
+	}
+	applicationListed := performJSONRequest(t, router, http.MethodGet, "/api/v1/applications/"+applicationID+"/artifacts", nil, cookie)
+	if applicationListed.Code != http.StatusOK || !strings.Contains(applicationListed.Body.String(), uploadedPayload.Artifact.ID) {
+		t.Fatalf("兼容的应用制品接口没有返回新制品: status=%d body=%s", applicationListed.Code, applicationListed.Body.String())
+	}
+}
+
+func createArtifactTestBuildPlan(t *testing.T, router http.Handler, cookie *http.Cookie, name string) string {
+	t.Helper()
+	response := performJSONRequest(t, router, http.MethodPost, "/api/v1/build-plans", map[string]any{
+		"name": name, "kind": "script", "script": "printf artifact > output",
+		"artifact_path": "output", "working_directory": ".", "timeout_seconds": 120,
+	}, cookie)
+	var payload struct {
+		BuildPlan struct {
+			ID string `json:"id"`
+		} `json:"build_plan"`
+	}
+	if response.Code != http.StatusCreated || json.Unmarshal(response.Body.Bytes(), &payload) != nil || payload.BuildPlan.ID == "" {
+		t.Fatalf("创建制品测试构建方案失败: status=%d body=%s", response.Code, response.Body.String())
+	}
+	return payload.BuildPlan.ID
+}
+
 func createArtifactTestApplication(t *testing.T, router http.Handler) (*http.Cookie, string) {
 	t.Helper()
 	login := performJSONRequest(t, router, http.MethodPost, "/api/v1/auth/login", map[string]string{
@@ -90,7 +148,7 @@ func createArtifactTestApplication(t *testing.T, router http.Handler) (*http.Coo
 		t.Fatalf("创建制品接口测试仓库失败: status=%d body=%s", repositoryResponse.Code, repositoryResponse.Body.String())
 	}
 	applicationResponse := performJSONRequest(t, router, http.MethodPost, "/api/v1/applications", map[string]any{
-		"name": "制品接口应用", "repository_id": repositoryPayload.Repository.ID, "branch": "main",
+		"name": "artifact_api_app", "repository_id": repositoryPayload.Repository.ID, "branch": "main",
 		"poll_enabled": true, "poll_interval_seconds": 3, "watch_push": true,
 	}, cookie)
 	var applicationPayload struct {

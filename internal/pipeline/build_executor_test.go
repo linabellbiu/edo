@@ -260,7 +260,7 @@ func TestStaleBuildDeliveryAfterAdvanceIsNoOp(t *testing.T) {
 func TestScriptBuildJobRunsAtMostOnce(t *testing.T) {
 	service, db, _, repositoryID := newPipelineTestService(t)
 	application, err := service.CreateApplication(context.Background(), "admin", ApplicationInput{
-		Name: "单次脚本构建", RepositoryID: repositoryID, PollIntervalSeconds: 60,
+		Name: "single_script_build", RepositoryID: repositoryID, PollIntervalSeconds: 60,
 	})
 	if err != nil {
 		t.Fatal(err)

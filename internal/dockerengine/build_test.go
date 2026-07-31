@@ -10,7 +10,6 @@ import (
 	"slices"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/moby/moby/client"
 )
@@ -73,16 +72,6 @@ func TestCreateBuildContextRejectsDockerfileOutsideContext(t *testing.T) {
 	}
 }
 
-func TestCacheImageNameUsesStableRepositoryTag(t *testing.T) {
-	cache, err := cacheImageName("registry.example.com/team/api:abcdef123456")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if cache != "registry.example.com/team/api:zrt-cache" {
-		t.Fatalf("缓存标签不正确: %s", cache)
-	}
-}
-
 func TestMatchingRepoDigestUsesPushedRepository(t *testing.T) {
 	expected := "registry.example.com/team/api@sha256:" + strings.Repeat("b", 64)
 	other := "mirror.example.com/team/api@sha256:" + strings.Repeat("a", 64)
@@ -113,6 +102,17 @@ func TestRetryableBuildErrorUsesDockerBoundaryClassification(t *testing.T) {
 	}
 	if transientRegistryStatusPattern.MatchString("Dockerfile parse error at line 500") {
 		t.Fatal("Dockerfile 错误不得因普通数字被误判为临时故障")
+	}
+	for _, message := range []string{
+		`failed to do request: Head "https://registry-1.docker.io/v2/library/alpine/manifests/3.21": EOF`,
+		`failed to authorize: failed to fetch anonymous token: Get "https://auth.docker.io/token": net/http: TLS handshake timeout`,
+	} {
+		if !transientRegistryNetworkPattern.MatchString(message) {
+			t.Fatalf("没有识别镜像仓库瞬时网络故障: %q", message)
+		}
+	}
+	if transientRegistryNetworkPattern.MatchString("Dockerfile heredoc parse error: unexpected EOF") {
+		t.Fatal("Dockerfile EOF 不得被误判为镜像仓库网络故障")
 	}
 }
 
@@ -177,7 +177,7 @@ func (f *recordingImageArchiveExporter) ImageSave(
 }
 
 func TestDockerBuildxArgumentsUseSessionCapableBuilder(t *testing.T) {
-	arguments := dockerBuildxArguments("deploy/Dockerfile", []string{"zrt.local/app:commit", "zrt.local/app:zrt-cache"}, "", "default")
+	arguments := dockerBuildxArguments("deploy/Dockerfile", "zrt.local/app:commit", "default")
 	for _, expected := range []string{"buildx", "build", "--load", "--file", "deploy/Dockerfile", "zrt.local/app:commit"} {
 		if !slices.Contains(arguments, expected) {
 			t.Fatalf("Buildx 参数缺少 %q: %v", expected, arguments)
@@ -190,7 +190,7 @@ func TestDockerBuildxArgumentsUseSessionCapableBuilder(t *testing.T) {
 		t.Fatalf("显式 Docker API 构建没有选择默认 Builder: %v", arguments)
 	}
 
-	local := dockerBuildxArguments("Dockerfile", []string{"zrt.local/app:local"}, "", "")
+	local := dockerBuildxArguments("Dockerfile", "zrt.local/app:local", "")
 	if slices.Contains(local, "--builder") {
 		t.Fatalf("本地构建不应覆盖当前 Docker Context/Builder: %v", local)
 	}
@@ -199,8 +199,7 @@ func TestDockerBuildxArgumentsUseSessionCapableBuilder(t *testing.T) {
 func TestDockerBuildxArgumentsWithOptionsAreStable(t *testing.T) {
 	arguments := dockerBuildxArgumentsWithOptions(
 		"deploy/Dockerfile",
-		[]string{"registry.example.com/team/app:commit", "registry.example.com/team/app:zrt-cache"},
-		"registry.example.com/team/app:zrt-cache",
+		"registry.example.com/team/app:commit",
 		"default",
 		BuildOptions{
 			Pull:         true,
@@ -225,12 +224,9 @@ func TestDockerBuildxArgumentsWithOptionsAreStable(t *testing.T) {
 		"--platform", "linux/amd64",
 		"--build-arg", "ALPHA",
 		"--build-arg", "ZETA",
-		"--build-arg", "BUILDKIT_INLINE_CACHE=1",
 		"--label", "org.opencontainers.image.title=app",
 		"--label", "zrt.example/revision=abcdef",
 		"--tag", "registry.example.com/team/app:commit",
-		"--tag", "registry.example.com/team/app:zrt-cache",
-		"--cache-from", "registry.example.com/team/app:zrt-cache",
 		"-",
 	}
 	if !slices.Equal(arguments, expected) {
@@ -238,18 +234,20 @@ func TestDockerBuildxArgumentsWithOptionsAreStable(t *testing.T) {
 	}
 }
 
-func TestDockerBuildxArgumentsCanDisablePullAndCache(t *testing.T) {
+func TestDockerBuildxArgumentsCanDisablePullAndLocalCache(t *testing.T) {
 	arguments := dockerBuildxArgumentsWithOptions(
 		"Dockerfile",
-		[]string{"zrt.local/app:commit"},
-		"zrt.local/app:zrt-cache",
+		"zrt.local/app:commit",
 		"",
 		BuildOptions{BuildArgs: map[string]string{"VERSION": "1.2.3"}},
 	)
-	for _, unexpected := range []string{"--pull", "--cache-from", "BUILDKIT_INLINE_CACHE=1"} {
+	for _, unexpected := range []string{"--pull", "--cache-from", "BUILDKIT_INLINE_CACHE=1", "zrt-cache"} {
 		if slices.Contains(arguments, unexpected) {
 			t.Fatalf("禁用拉取或缓存后仍包含 %q: %v", unexpected, arguments)
 		}
+	}
+	if !slices.Contains(arguments, "--no-cache") {
+		t.Fatalf("禁用本地缓存后没有传递 --no-cache: %v", arguments)
 	}
 	if !slices.Contains(arguments, "VERSION") || slices.Contains(arguments, "VERSION=1.2.3") {
 		t.Fatalf("禁用缓存不应丢弃用户构建参数: %v", arguments)
@@ -258,7 +256,7 @@ func TestDockerBuildxArgumentsCanDisablePullAndCache(t *testing.T) {
 
 func TestDockerBuildArgsStayOutOfProcessArguments(t *testing.T) {
 	arguments := dockerBuildxArgumentsWithOptions(
-		"Dockerfile", []string{"zrt.local/app:commit"}, "", "",
+		"Dockerfile", "zrt.local/app:commit", "",
 		BuildOptions{BuildArgs: map[string]string{"API_TOKEN": "super-secret-value"}},
 	)
 	if slices.Contains(arguments, "API_TOKEN=super-secret-value") || !slices.Contains(arguments, "API_TOKEN") {
@@ -283,16 +281,20 @@ func TestDockerBuildArgsRejectRuntimeControlVariables(t *testing.T) {
 	}
 }
 
-func TestDockerBuildxArgumentsDefaultOptionsRemainCompatible(t *testing.T) {
+func TestDockerBuildxArgumentsDefaultToLocalCacheOnly(t *testing.T) {
 	arguments := dockerBuildxArguments(
 		"Dockerfile",
-		[]string{"registry.example.com/team/app:commit"},
-		"registry.example.com/team/app:zrt-cache",
+		"registry.example.com/team/app:commit",
 		"",
 	)
-	for _, expected := range []string{"--pull", "BUILDKIT_INLINE_CACHE=1", "--cache-from"} {
+	for _, expected := range []string{"--pull", "--tag", "registry.example.com/team/app:commit"} {
 		if !slices.Contains(arguments, expected) {
 			t.Fatalf("默认构建行为缺少 %q: %v", expected, arguments)
+		}
+	}
+	for _, unexpected := range []string{"--no-cache", "--cache-from", "BUILDKIT_INLINE_CACHE=1", "zrt-cache"} {
+		if slices.Contains(arguments, unexpected) {
+			t.Fatalf("默认本地缓存构建不应包含 %q: %v", unexpected, arguments)
 		}
 	}
 }
@@ -349,21 +351,6 @@ func TestDockerBuildEnvironmentSelectsLocalOrConfiguredRuntime(t *testing.T) {
 	}
 	if container["DOCKER_BUILDKIT"] != "1" {
 		t.Fatalf("构建必须启用 BuildKit: %+v", container)
-	}
-}
-
-func TestCacheOperationTimeoutDoesNotConsumeFormalBuildBudget(t *testing.T) {
-	for _, test := range []struct {
-		build time.Duration
-		want  time.Duration
-	}{
-		{build: 30 * time.Second, want: 5 * time.Second},
-		{build: 2 * time.Minute, want: 12 * time.Second},
-		{build: time.Hour, want: 30 * time.Second},
-	} {
-		if got := cacheOperationTimeout(test.build); got != test.want {
-			t.Fatalf("缓存操作超时不正确: build=%s got=%s want=%s", test.build, got, test.want)
-		}
 	}
 }
 

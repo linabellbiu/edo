@@ -115,6 +115,13 @@ type Detail struct {
 	CapabilityOptions []CapabilityOption
 }
 
+// Status 只包含主机列表实时刷新所需的数据，避免轮询时重复加载环境归属和完整主机配置。
+type Status struct {
+	HostID       string
+	IsActive     bool
+	Capabilities []model.HostCapability
+}
+
 type CapabilityOption struct {
 	Kind      model.HostCapabilityKind `json:"kind"`
 	Available bool                     `json:"available"`
@@ -180,6 +187,28 @@ func (s *Service) List(ctx context.Context) ([]Detail, error) {
 			s.decorateLocalDetail(ctx, &detail)
 		}
 		result = append(result, detail)
+	}
+	return result, nil
+}
+
+func (s *Service) ListStatuses(ctx context.Context) ([]Status, error) {
+	if err := s.refreshLocalCapabilities(ctx, false); err != nil {
+		return nil, err
+	}
+	var hosts []model.Host
+	if err := s.db.WithContext(ctx).Select("id", "is_active").Order("is_builtin DESC, name ASC").Find(&hosts).Error; err != nil {
+		return nil, fmt.Errorf("查询主机状态失败: %w", err)
+	}
+	capabilities, err := s.listCapabilities(ctx, hostIDs(hosts))
+	if err != nil {
+		return nil, err
+	}
+	result := make([]Status, 0, len(hosts))
+	for i := range hosts {
+		result = append(result, Status{
+			HostID: hosts[i].ID, IsActive: hosts[i].IsActive,
+			Capabilities: capabilities[hosts[i].ID],
+		})
 	}
 	return result, nil
 }

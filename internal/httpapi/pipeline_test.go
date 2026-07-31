@@ -74,7 +74,7 @@ func TestDeploymentPlansAndReleasePlansAreSeparateResources(t *testing.T) {
 		t.Fatalf("创建发布计划测试仓库失败: status=%d body=%s", repositoryCreated.Code, repositoryCreated.Body.String())
 	}
 	applicationCreated := performJSONRequest(t, router, http.MethodPost, "/api/v1/applications", map[string]any{
-		"name": "发布计划测试应用", "repository_id": repositoryPayload.Repository.ID, "branch": "main",
+		"name": "release_plan_test_app", "repository_id": repositoryPayload.Repository.ID, "branch": "main",
 		"poll_enabled": true, "poll_interval_seconds": 3, "watch_push": true,
 	}, adminCookie)
 	var applicationPayload struct {
@@ -98,14 +98,29 @@ func TestDeploymentPlansAndReleasePlansAreSeparateResources(t *testing.T) {
 	}
 	secondWorkflow := performJSONRequest(t, router, http.MethodPost,
 		"/api/v1/applications/"+applicationPayload.Application.ID+"/workflows",
-		map[string]any{"name": "生产发布流水线"}, adminCookie)
+		map[string]any{"preset_key": "go"}, adminCookie)
 	var secondWorkflowPayload struct {
 		Workflow struct {
-			ID string `json:"id"`
+			ID     string `json:"id"`
+			Name   string `json:"name"`
+			Stages []struct {
+				Tasks []struct {
+					Type   string `json:"type"`
+					Config struct {
+						RuntimeImage string `json:"runtime_image"`
+					} `json:"config"`
+				} `json:"tasks"`
+			} `json:"stages"`
 		} `json:"workflow"`
 	}
 	if secondWorkflow.Code != http.StatusCreated || json.Unmarshal(secondWorkflow.Body.Bytes(), &secondWorkflowPayload) != nil || secondWorkflowPayload.Workflow.ID == "" {
-		t.Fatalf("应用新增第二条流水线失败: status=%d body=%s", secondWorkflow.Code, secondWorkflow.Body.String())
+		t.Fatalf("应用从模板新增第二条流水线失败: status=%d body=%s", secondWorkflow.Code, secondWorkflow.Body.String())
+	}
+	if secondWorkflowPayload.Workflow.Name != "Go 流水线" || len(secondWorkflowPayload.Workflow.Stages) != 3 ||
+		len(secondWorkflowPayload.Workflow.Stages[0].Tasks) != 1 ||
+		secondWorkflowPayload.Workflow.Stages[0].Tasks[0].Type != "shell" ||
+		secondWorkflowPayload.Workflow.Stages[0].Tasks[0].Config.RuntimeImage != "golang:1.26-alpine" {
+		t.Fatalf("Go 模板没有通过接口生成预期草稿: body=%s", secondWorkflow.Body.String())
 	}
 	workflowList := performJSONRequest(t, router, http.MethodGet,
 		"/api/v1/applications/"+applicationPayload.Application.ID+"/workflows", nil, adminCookie)

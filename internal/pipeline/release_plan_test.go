@@ -19,13 +19,13 @@ func TestReleasePlanContainsOrderedApplicationGroups(t *testing.T) {
 	service, _, _, repositoryID := newPipelineTestService(t)
 	ctx := context.Background()
 	first, err := service.CreateApplication(ctx, "admin", ApplicationInput{
-		Name: "订单服务", RepositoryID: repositoryID,
+		Name: "order_service", RepositoryID: repositoryID,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	second, err := service.CreateApplication(ctx, "admin", ApplicationInput{
-		Name: "库存服务", RepositoryID: repositoryID,
+		Name: "inventory_service", RepositoryID: repositoryID,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -77,7 +77,7 @@ func TestReleasePlanCreatesGroupsBeforeAssigningApplications(t *testing.T) {
 	service, _, _, repositoryID := newPipelineTestService(t)
 	ctx := context.Background()
 	applications := make([]*model.Application, 0, 3)
-	for _, name := range []string{"网关", "订单服务", "通知服务"} {
+	for _, name := range []string{"gateway", "order_service", "notification_service"} {
 		application, err := service.CreateApplication(ctx, "admin", ApplicationInput{Name: name, RepositoryID: repositoryID})
 		if err != nil {
 			t.Fatal(err)
@@ -116,7 +116,7 @@ func TestReleasePlanGeneratesInternalIdentity(t *testing.T) {
 	service, _, _, repositoryID := newPipelineTestService(t)
 	ctx := context.Background()
 	application, err := service.CreateApplication(ctx, "admin", ApplicationInput{
-		Name: "发布应用", RepositoryID: repositoryID,
+		Name: "release_app", RepositoryID: repositoryID,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -141,7 +141,7 @@ func TestReleasePlanVersionIsUnique(t *testing.T) {
 	service, _, _, repositoryID := newPipelineTestService(t)
 	ctx := context.Background()
 	application, err := service.CreateApplication(ctx, "admin", ApplicationInput{
-		Name: "发布应用", RepositoryID: repositoryID,
+		Name: "release_app", RepositoryID: repositoryID,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -159,7 +159,7 @@ func TestReleasePlanRejectsInvalidManualSource(t *testing.T) {
 	service, _, _, repositoryID := newPipelineTestService(t)
 	ctx := context.Background()
 	application, err := service.CreateApplication(ctx, "admin", ApplicationInput{
-		Name: "手动发布应用", RepositoryID: repositoryID,
+		Name: "manual_release_app", RepositoryID: repositoryID,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -180,7 +180,7 @@ func TestReleasePlanDetailsStatusAndDeletion(t *testing.T) {
 	service, db, _, repositoryID := newPipelineTestService(t)
 	ctx := context.Background()
 	application, err := service.CreateApplication(ctx, "admin", ApplicationInput{
-		Name: "计划维护应用", RepositoryID: repositoryID,
+		Name: "plan_maintenance_app", RepositoryID: repositoryID,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -237,7 +237,7 @@ func TestReleaseGroupPersistsApplicationOrderAndParallelDefault(t *testing.T) {
 	service, _, _, repositoryID := newPipelineTestService(t)
 	ctx := context.Background()
 	applications := make([]*model.Application, 0, 3)
-	for _, name := range []string{"订单服务", "库存服务", "支付服务"} {
+	for _, name := range []string{"order_service", "inventory_service", "payment_service"} {
 		application, err := service.CreateApplication(ctx, "admin", ApplicationInput{
 			Name: name, RepositoryID: repositoryID,
 		})
@@ -298,7 +298,7 @@ func TestReleaseGroupRejectsApplicationAssignedToAnotherGroup(t *testing.T) {
 	service, _, _, repositoryID := newPipelineTestService(t)
 	ctx := context.Background()
 	application, err := service.CreateApplication(ctx, "admin", ApplicationInput{
-		Name: "唯一发布应用", RepositoryID: repositoryID,
+		Name: "unique_release_app", RepositoryID: repositoryID,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -320,7 +320,7 @@ func TestReleasePlanWithCompletedExecutionCanBeSoftDeleted(t *testing.T) {
 	service, db, _, repositoryID := newPipelineTestService(t)
 	ctx := context.Background()
 	application, err := service.CreateApplication(ctx, "admin", ApplicationInput{
-		Name: "执行历史应用", RepositoryID: repositoryID,
+		Name: "execution_history_app", RepositoryID: repositoryID,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -372,7 +372,7 @@ func TestRunningReleasePlanBlocksStructuralChangesButCanBeDisabled(t *testing.T)
 	service, db, _, repositoryID := newPipelineTestService(t)
 	ctx := context.Background()
 	application, err := service.CreateApplication(ctx, "admin", ApplicationInput{
-		Name: "执行中计划应用", RepositoryID: repositoryID,
+		Name: "running_plan_app", RepositoryID: repositoryID,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -423,7 +423,7 @@ func TestSaveReleasePlanConfigurationMovesApplicationsAtomically(t *testing.T) {
 	service, _, _, repositoryID := newPipelineTestService(t)
 	ctx := context.Background()
 	applications := make([]*model.Application, 0, 2)
-	for _, name := range []string{"原子订单服务", "原子库存服务"} {
+	for _, name := range []string{"atomic_order_service", "atomic_inventory_service"} {
 		application, err := service.CreateApplication(ctx, "admin", ApplicationInput{
 			Name: name, RepositoryID: repositoryID,
 		})

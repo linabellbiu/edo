@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"errors"
+	"io"
 	"net"
 	"net/url"
 	"strconv"
@@ -14,6 +15,13 @@ import (
 )
 
 var ErrInvalidConfiguration = errors.New("SSH 连接配置无效")
+
+const maxPinnedConnectAttempts = 3
+
+var pinnedConnectRetryDelays = [...]time.Duration{
+	100 * time.Millisecond,
+	300 * time.Millisecond,
+}
 
 type Bundle struct {
 	PrivateKey   string `json:"private_key"`
@@ -122,6 +130,10 @@ func ValidFingerprint(value string) bool {
 }
 
 func (c *Connector) Connect(ctx context.Context, callback ssh.HostKeyCallback) (*ssh.Client, error) {
+	return c.connectOnce(ctx, callback)
+}
+
+func (c *Connector) connectOnce(ctx context.Context, callback ssh.HostKeyCallback) (*ssh.Client, error) {
 	raw, err := (&net.Dialer{Timeout: c.timeout, KeepAlive: 30 * time.Second}).DialContext(ctx, "tcp", c.address)
 	if err != nil {
 		return nil, err
@@ -147,10 +159,45 @@ func (c *Connector) ConnectPinned(ctx context.Context) (*ssh.Client, error) {
 	if !ValidFingerprint(c.fingerprint) {
 		return nil, ErrInvalidConfiguration
 	}
-	return c.Connect(ctx, func(_ string, _ net.Addr, key ssh.PublicKey) error {
+	callback := func(_ string, _ net.Addr, key ssh.PublicKey) error {
 		if ssh.FingerprintSHA256(key) != c.fingerprint {
 			return errors.New("SSH 主机指纹不匹配")
 		}
 		return nil
-	})
+	}
+	var lastErr error
+	for attempt := 0; attempt < maxPinnedConnectAttempts; attempt++ {
+		client, err := c.connectOnce(ctx, callback)
+		if err == nil {
+			return client, nil
+		}
+		lastErr = err
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		if attempt == maxPinnedConnectAttempts-1 || !retryablePinnedConnectError(err) {
+			return nil, err
+		}
+		timer := time.NewTimer(pinnedConnectRetryDelays[attempt])
+		select {
+		case <-timer.C:
+		case <-ctx.Done():
+			timer.Stop()
+			return nil, ctx.Err()
+		}
+	}
+	return nil, lastErr
+}
+
+// 只重试已固定主机指纹且尚未创建 SSH Client 的瞬时传输中断。
+// 认证、算法协商和主机指纹错误都不会命中这些条件。
+func retryablePinnedConnectError(err error) bool {
+	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+		return true
+	}
+	var networkError *net.OpError
+	if !errors.As(err, &networkError) {
+		return false
+	}
+	return networkError.Op == "read" || networkError.Op == "write"
 }

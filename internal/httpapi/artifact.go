@@ -11,6 +11,7 @@ import (
 	"github.com/gin-gonic/gin"
 
 	artifactmanager "zrt/internal/artifact"
+	"zrt/internal/model"
 )
 
 const multipartArtifactOverhead = int64(1024 * 1024)
@@ -32,7 +33,27 @@ func (h artifactHandler) list(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"artifacts": items})
 }
 
+func (h artifactHandler) listBuildPlan(c *gin.Context) {
+	if !h.available(c) {
+		return
+	}
+	items, err := h.service.ListByBuildPlan(c.Request.Context(), c.Param("id"), c.Query("application_id"))
+	if err != nil {
+		h.writeError(c, "artifact_list_build_plan", err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"artifacts": items})
+}
+
 func (h artifactHandler) upload(c *gin.Context) {
+	h.uploadFile(c, "", c.Param("id"))
+}
+
+func (h artifactHandler) uploadBuildPlan(c *gin.Context) {
+	h.uploadFile(c, c.Param("id"), c.Param("application_id"))
+}
+
+func (h artifactHandler) uploadFile(c *gin.Context, buildPlanID, applicationID string) {
 	if !h.available(c) {
 		return
 	}
@@ -42,7 +63,7 @@ func (h artifactHandler) upload(c *gin.Context) {
 	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, limit)
 	reader, err := c.Request.MultipartReader()
 	if err != nil {
-		h.log().Warn("上传制品请求格式无效", "operation", "artifact_upload_multipart", "request_id", requestIDFrom(c), "application_id", c.Param("id"), "err", err)
+		h.log().Warn("上传制品请求格式无效", "operation", "artifact_upload_multipart", "request_id", requestIDFrom(c), "build_plan_id", buildPlanID, "application_id", applicationID, "err", err)
 		writeError(c, http.StatusBadRequest, "invalid_artifact_upload", "请选择需要上传的制品文件")
 		return
 	}
@@ -60,9 +81,13 @@ func (h artifactHandler) upload(c *gin.Context) {
 			continue
 		}
 		actor, _ := currentUser(c)
-		item, uploadErr := h.service.Upload(
-			c.Request.Context(), c.Param("id"), actor.ID, part.FileName(), part.Header.Get("Content-Type"), part,
-		)
+		var item *model.Artifact
+		var uploadErr error
+		if buildPlanID == "" {
+			item, uploadErr = h.service.Upload(c.Request.Context(), applicationID, actor.ID, part.FileName(), part.Header.Get("Content-Type"), part)
+		} else {
+			item, uploadErr = h.service.UploadForBuildPlan(c.Request.Context(), buildPlanID, applicationID, actor.ID, part.FileName(), part.Header.Get("Content-Type"), part)
+		}
 		_ = part.Close()
 		if uploadErr != nil {
 			h.writeError(c, "artifact_upload", uploadErr)
@@ -72,7 +97,7 @@ func (h artifactHandler) upload(c *gin.Context) {
 		c.JSON(http.StatusCreated, gin.H{"artifact": item})
 		return
 	}
-	h.log().Warn("上传制品请求缺少文件", "operation", "artifact_upload_file_required", "request_id", requestIDFrom(c), "application_id", c.Param("id"))
+	h.log().Warn("上传制品请求缺少文件", "operation", "artifact_upload_file_required", "request_id", requestIDFrom(c), "build_plan_id", buildPlanID, "application_id", applicationID)
 	writeError(c, http.StatusBadRequest, "artifact_file_required", "请选择需要上传的制品文件")
 }
 
@@ -127,6 +152,8 @@ func (h artifactHandler) writeError(c *gin.Context, operation string, err error)
 	switch {
 	case errors.Is(err, artifactmanager.ErrApplicationNotFound):
 		writeError(c, http.StatusNotFound, "application_not_found", artifactmanager.ErrApplicationNotFound.Error())
+	case errors.Is(err, artifactmanager.ErrBuildPlanNotFound):
+		writeError(c, http.StatusNotFound, "build_plan_not_found", artifactmanager.ErrBuildPlanNotFound.Error())
 	case errors.Is(err, artifactmanager.ErrArtifactNotFound):
 		writeError(c, http.StatusNotFound, "artifact_not_found", artifactmanager.ErrArtifactNotFound.Error())
 	case errors.Is(err, artifactmanager.ErrTooLarge), errors.As(err, &maxBytesError):

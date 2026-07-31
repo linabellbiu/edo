@@ -54,6 +54,7 @@ func IsRetryableBuildError(err error) bool {
 }
 
 var transientRegistryStatusPattern = regexp.MustCompile(`(?i)(?:http(?:/\d(?:\.\d)?)?|status(?:\s+code)?|response)[^\r\n]{0,80}\b(?:429|5\d\d)\b|\b(?:429|5\d\d)\b[^\r\n]{0,80}(?:too many requests|internal server error|bad gateway|service unavailable|gateway timeout)`)
+var transientRegistryNetworkPattern = regexp.MustCompile(`(?i)(?:failed to (?:do request|fetch(?: anonymous)? token|authorize)|(?:head|get|put|post) "https?://)[^\r\n]{0,512}(?:\bEOF\b|TLS handshake timeout|i/o timeout|connection reset by peer|connection refused|temporary failure in name resolution|no such host|context deadline exceeded)`)
 var dockerBuildArgNamePattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
 type RegistryAuth struct {
@@ -78,7 +79,7 @@ func (s *Service) BuildAndPush(
 	registry RegistryAuth,
 	timeout time.Duration,
 	output io.Writer,
-) (string, error, error) {
+) (string, error) {
 	return s.BuildAndPushWithOptions(
 		ctx, contextDirectory, dockerfile, image, registry,
 		defaultBuildOptions(), timeout, output,
@@ -93,15 +94,15 @@ func (s *Service) BuildAndPushWithOptions(
 	options BuildOptions,
 	timeout time.Duration,
 	output io.Writer,
-) (string, error, error) {
+) (string, error) {
 	apiClient, err := s.BuilderClient()
 	if err != nil {
-		return "", nil, err
+		return "", err
 	}
 	defer apiClient.Close()
 	buildContext, err := createBuildContext(contextDirectory, dockerfile)
 	if err != nil {
-		return "", nil, err
+		return "", err
 	}
 	defer func() {
 		name := buildContext.Name()
@@ -112,70 +113,30 @@ func (s *Service) BuildAndPushWithOptions(
 	authConfig := registryAuthConfig(registry)
 	encodedAuth, err := encodeRegistryAuth(authConfig)
 	if err != nil {
-		return "", nil, err
+		return "", err
 	}
-	var cacheWarning error
-	tags := []string{image}
-	cacheImage := ""
-	if options.CacheEnabled {
-		cacheImage, err = cacheImageName(image)
-		if err != nil {
-			return "", nil, err
-		}
-		tags = append(tags, cacheImage)
-		cacheContext, cancelCache := context.WithTimeout(ctx, cacheOperationTimeout(timeout))
-		cachePull, pullErr := apiClient.ImagePull(cacheContext, cacheImage, client.ImagePullOptions{RegistryAuth: encodedAuth})
-		if pullErr != nil {
-			cacheWarning = fmt.Errorf("拉取远程构建缓存失败: %w", pullErr)
-		} else if waitErr := cachePull.Wait(cacheContext); waitErr != nil {
-			cacheWarning = fmt.Errorf("拉取远程构建缓存失败: %w", waitErr)
-		}
-		cancelCache()
-	}
-	// 缓存是可丢失优化，不占用正式构建的超时预算。
 	buildContextTimeout, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	if err := s.runBuildx(buildContextTimeout, buildContext, dockerfile, tags, cacheImage, registry, options, output); err != nil {
-		return "", cacheWarning, err
+	if err := s.runBuildx(buildContextTimeout, buildContext, dockerfile, image, registry, options, output); err != nil {
+		return "", err
 	}
 
 	push, err := apiClient.ImagePush(buildContextTimeout, image, client.ImagePushOptions{RegistryAuth: encodedAuth})
 	if err != nil {
-		return "", cacheWarning, fmt.Errorf("提交 Docker 镜像推送失败: %w", err)
+		return "", fmt.Errorf("提交 Docker 镜像推送失败: %w", err)
 	}
 	if err := push.Wait(buildContextTimeout); err != nil {
-		return "", cacheWarning, fmt.Errorf("等待 Docker 镜像推送完成失败: %w", err)
+		return "", fmt.Errorf("等待 Docker 镜像推送完成失败: %w", err)
 	}
 	inspect, err := apiClient.ImageInspect(buildContextTimeout, image)
 	if err != nil {
-		return "", cacheWarning, fmt.Errorf("读取已推送镜像摘要失败: %w", err)
+		return "", fmt.Errorf("读取已推送镜像摘要失败: %w", err)
 	}
 	digest := matchingRepoDigest(image, inspect.RepoDigests)
 	if digest == "" {
-		return "", cacheWarning, errors.New("镜像仓库没有返回可验证的镜像摘要")
+		return "", errors.New("镜像仓库没有返回可验证的镜像摘要")
 	}
-	if options.CacheEnabled {
-		cacheContext, cancelCache := context.WithTimeout(ctx, cacheOperationTimeout(timeout))
-		cachePush, pushErr := apiClient.ImagePush(cacheContext, cacheImage, client.ImagePushOptions{RegistryAuth: encodedAuth})
-		if pushErr != nil {
-			cacheWarning = errors.Join(cacheWarning, fmt.Errorf("提交远程构建缓存失败: %w", pushErr))
-		} else if waitErr := cachePush.Wait(cacheContext); waitErr != nil {
-			cacheWarning = errors.Join(cacheWarning, fmt.Errorf("等待远程构建缓存更新完成失败: %w", waitErr))
-		}
-		cancelCache()
-	}
-	return digest, cacheWarning, nil
-}
-
-func cacheOperationTimeout(buildTimeout time.Duration) time.Duration {
-	value := buildTimeout / 10
-	if value < 5*time.Second {
-		return 5 * time.Second
-	}
-	if value > 30*time.Second {
-		return 30 * time.Second
-	}
-	return value
+	return digest, nil
 }
 
 func matchingRepoDigest(image string, repoDigests []string) string {
@@ -238,15 +199,7 @@ func (s *Service) BuildLocalWithOptions(
 
 	buildContextTimeout, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	tags := []string{image}
-	if options.CacheEnabled {
-		cacheImage, err := cacheImageName(image)
-		if err != nil {
-			return "", err
-		}
-		tags = append(tags, cacheImage)
-	}
-	if err := s.runBuildx(buildContextTimeout, buildContext, dockerfile, tags, "", RegistryAuth{}, options, output); err != nil {
+	if err := s.runBuildx(buildContextTimeout, buildContext, dockerfile, image, RegistryAuth{}, options, output); err != nil {
 		return "", err
 	}
 	inspect, err := apiClient.ImageInspect(buildContextTimeout, image)
@@ -333,18 +286,6 @@ func IsValidImageID(value string) bool {
 	return true
 }
 
-func cacheImageName(image string) (string, error) {
-	named, err := distributionreference.ParseNormalizedNamed(image)
-	if err != nil {
-		return "", fmt.Errorf("解析构建镜像名称失败: %w", err)
-	}
-	cache, err := distributionreference.WithTag(distributionreference.TrimNamed(named), "zrt-cache")
-	if err != nil {
-		return "", fmt.Errorf("生成构建缓存镜像名称失败: %w", err)
-	}
-	return distributionreference.FamiliarString(cache), nil
-}
-
 func registryAuthConfig(input RegistryAuth) registrytypes.AuthConfig {
 	result := registrytypes.AuthConfig{Username: input.Username, ServerAddress: input.ServerAddress}
 	if input.Username == "" {
@@ -367,8 +308,7 @@ func (s *Service) runBuildx(
 	ctx context.Context,
 	buildContext io.Reader,
 	dockerfile string,
-	tags []string,
-	cacheFrom string,
+	image string,
 	registry RegistryAuth,
 	options BuildOptions,
 	output io.Writer,
@@ -391,7 +331,7 @@ func (s *Service) runBuildx(
 	if strings.TrimSpace(s.config.DockerBuilderHost) != "" {
 		builder = "default"
 	}
-	arguments := dockerBuildxArgumentsWithOptions(dockerfile, tags, cacheFrom, builder, options)
+	arguments := dockerBuildxArgumentsWithOptions(dockerfile, image, builder, options)
 	// 每个任务都有独立检出目录、构建上下文、认证目录和不可重复镜像标签；
 	// 这里不设置进程级锁，让 BuildKit 按 Worker 并发数并行调度构建。
 	command := exec.CommandContext(ctx, "docker", arguments...)
@@ -420,8 +360,9 @@ func (s *Service) runBuildx(
 		// 原始 BuildKit 输出已经写入受权限保护的流水线日志；错误值不得再次携带原始输出，
 		// 否则统一错误日志可能把构建参数或仓库内容复制到系统日志。
 		return &buildExecutionError{
-			cause:     fmt.Errorf("Docker 镜像构建失败: %w", err),
-			retryable: transientRegistryStatusPattern.MatchString(message),
+			cause: fmt.Errorf("Docker 镜像构建失败: %w", err),
+			retryable: transientRegistryStatusPattern.MatchString(message) ||
+				transientRegistryNetworkPattern.MatchString(message),
 		}
 	}
 	return nil
@@ -442,14 +383,13 @@ func ValidBuildArgs(values map[string]string) bool {
 	return true
 }
 
-func dockerBuildxArguments(dockerfile string, tags []string, cacheFrom, builder string) []string {
-	return dockerBuildxArgumentsWithOptions(dockerfile, tags, cacheFrom, builder, defaultBuildOptions())
+func dockerBuildxArguments(dockerfile, image, builder string) []string {
+	return dockerBuildxArgumentsWithOptions(dockerfile, image, builder, defaultBuildOptions())
 }
 
 func dockerBuildxArgumentsWithOptions(
 	dockerfile string,
-	tags []string,
-	cacheFrom, builder string,
+	image, builder string,
 	options BuildOptions,
 ) []string {
 	arguments := []string{
@@ -457,6 +397,9 @@ func dockerBuildxArgumentsWithOptions(
 	}
 	if options.Pull {
 		arguments = append(arguments, "--pull")
+	}
+	if !options.CacheEnabled {
+		arguments = append(arguments, "--no-cache")
 	}
 	arguments = append(arguments, "--load")
 	if builder != "" {
@@ -474,16 +417,8 @@ func dockerBuildxArgumentsWithOptions(
 		buildArgs[name] = value
 	}
 	arguments = appendSortedBuildArgNames(arguments, buildArgs)
-	if options.CacheEnabled {
-		arguments = append(arguments, "--build-arg", "BUILDKIT_INLINE_CACHE=1")
-	}
 	arguments = appendSortedBuildValues(arguments, "--label", options.Labels)
-	for _, tag := range tags {
-		arguments = append(arguments, "--tag", tag)
-	}
-	if options.CacheEnabled && cacheFrom != "" {
-		arguments = append(arguments, "--cache-from", cacheFrom)
-	}
+	arguments = append(arguments, "--tag", image)
 	return append(arguments, "-")
 }
 

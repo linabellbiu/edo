@@ -284,17 +284,27 @@ func createReleasePlanExecutionHTTPApplication(
 		t.Fatal(err)
 	}
 	now := time.Now().UTC()
+	environment := model.Environment{ID: uuid.NewString(), Name: "发布计划 HTTP 环境", IsActive: true, CreatedBy: "admin", CreatedAt: now, UpdatedAt: now}
+	host := model.Host{ID: uuid.NewString(), Name: "发布计划 HTTP 主机", Mode: model.HostModeSSH, SSHPort: 22, IsActive: true, CreatedBy: "admin", CreatedAt: now, UpdatedAt: now}
 	endpoint := model.DockerEndpoint{
-		ID: uuid.NewString(), Name: "发布计划 HTTP Docker", Host: "unix:///var/run/docker.sock",
+		ID: uuid.NewString(), Name: "发布计划 HTTP Docker", HostID: host.ID, Host: "unix:///var/run/docker.sock",
 		IsActive: true, CreatedBy: "admin", CreatedAt: now, UpdatedAt: now,
 	}
-	if err := db.Create(&endpoint).Error; err != nil {
-		t.Fatal(err)
+	resources := []any{
+		&environment, &host, &endpoint,
+		&model.EnvironmentHost{EnvironmentID: environment.ID, HostID: host.ID, CreatedAt: now},
+		&model.HostCapability{HostID: host.ID, Kind: model.HostCapabilityDocker, RuntimeID: endpoint.ID, Status: model.HostCapabilityReady, CreatedAt: now, UpdatedAt: now},
+	}
+	for _, resource := range resources {
+		if err := db.Create(resource).Error; err != nil {
+			t.Fatal(err)
+		}
 	}
 	deploymentPlan, err := service.CreateDeploymentPlan(ctx, "admin", pipeline.DeploymentPlanInput{
 		Name: "发布计划 HTTP 部署", Kind: model.DeploymentPlanDocker, ServiceName: "api",
 		DeploymentTarget: &deployment.TargetInput{
 			Name: "发布计划 HTTP 部署位置", Platform: model.DeploymentDocker,
+			EnvironmentID: environment.ID, HostID: host.ID,
 			RuntimeID: endpoint.ID, WorkloadName: "api", RolloutTimeout: 300,
 		},
 	})
@@ -302,7 +312,7 @@ func createReleasePlanExecutionHTTPApplication(
 		t.Fatal(err)
 	}
 	application, err := service.CreateApplication(ctx, "admin", pipeline.ApplicationInput{
-		Name: "发布计划 HTTP 应用", RepositoryID: repositoryID,
+		Name: "release_plan_http_app", RepositoryID: repositoryID,
 	})
 	if err != nil {
 		t.Fatal(err)

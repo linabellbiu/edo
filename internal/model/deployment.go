@@ -79,6 +79,7 @@ type DeploymentRecord struct {
 	RolloutTimeout     int                   `gorm:"not null;default:300" json:"rollout_timeout"`
 	Operation          DeploymentOperation   `gorm:"type:varchar(16);not null;index" json:"operation"`
 	Image              string                `gorm:"type:varchar(1024);not null" json:"image"`
+	ImageDisplay       string                `gorm:"type:varchar(255);not null;default:''" json:"image_display,omitempty"`
 	ExpectedImageID    string                `gorm:"type:varchar(71);not null;default:''" json:"expected_image_id,omitempty"`
 	PreviousImage      string                `gorm:"type:varchar(1024);not null;default:''" json:"previous_image"`
 	PreviousImageID    string                `gorm:"type:varchar(71);not null;default:''" json:"previous_image_id,omitempty"`

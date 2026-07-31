@@ -292,6 +292,66 @@ var migrations = []migration{
 		version: "202607300053",
 		up:      migrateApplicationWorkflowsOneToMany,
 	},
+	{
+		version: "202607310054",
+		up:      migrateLegacyDeploymentEnvironmentColumns,
+	},
+	{
+		version: "202607310055",
+		up:      migrateImageRegistryProviderSemantics,
+	},
+	{
+		version: "202607310056",
+		up: func(tx *gorm.DB) error {
+			return addColumns(tx, &model.DeploymentRecord{}, []string{"ImageDisplay"})
+		},
+	},
+}
+
+// migrateImageRegistryProviderSemantics 修复早期表单允许“Docker Hub”配任意
+// 地址造成的类型歧义。真正的 Docker Hub 固定为标准地址；指向其他厂商的记录
+// 保留原地址和凭据，仅改为通用 OCI Registry。
+func migrateImageRegistryProviderSemantics(tx *gorm.DB) error {
+	if !tx.Migrator().HasTable(&model.ImageRegistry{}) {
+		return nil
+	}
+	var registries []model.ImageRegistry
+	if err := tx.Where("provider = ?", model.RegistryDockerHub).Find(&registries).Error; err != nil {
+		return fmt.Errorf("查询 Docker Hub 镜像仓库失败: %w", err)
+	}
+	for i := range registries {
+		updates := map[string]any{}
+		if registryEndpointIsDockerHub(registries[i].Endpoint) {
+			updates["endpoint"] = model.DockerHubEndpoint
+			updates["allow_insecure_http"] = false
+		} else {
+			updates["provider"] = model.RegistryGeneric
+		}
+		if err := tx.Model(&model.ImageRegistry{}).Where("id = ?", registries[i].ID).Updates(updates).Error; err != nil {
+			return fmt.Errorf("修正镜像仓库类型失败: %w", err)
+		}
+	}
+	return nil
+}
+
+func registryEndpointIsDockerHub(value string) bool {
+	if strings.TrimSpace(value) == "" {
+		return true
+	}
+	parsed, err := url.Parse(strings.TrimSpace(value))
+	if err != nil || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" ||
+		(parsed.Scheme != "https" && parsed.Scheme != "http") {
+		return false
+	}
+	host, endpointPath := strings.ToLower(parsed.Host), strings.Trim(parsed.Path, "/")
+	switch host {
+	case "docker.io", "registry-1.docker.io":
+		return endpointPath == ""
+	case "index.docker.io":
+		return endpointPath == "" || endpointPath == "v1"
+	default:
+		return false
+	}
 }
 
 // migrateApplicationWorkflowsOneToMany 删除旧的“应用唯一流水线”结构。
@@ -360,6 +420,22 @@ type legacyApplicationWorkflowTemplateColumn struct {
 
 func (legacyApplicationWorkflowTemplateColumn) TableName() string {
 	return "applications"
+}
+
+type legacyDeploymentTargetEnvironmentColumn struct {
+	Environment model.EnvironmentType `gorm:"column:environment;type:varchar(16);not null;index"`
+}
+
+func (legacyDeploymentTargetEnvironmentColumn) TableName() string {
+	return "deployment_targets"
+}
+
+type legacyDeploymentRecordEnvironmentColumn struct {
+	Environment model.EnvironmentType `gorm:"column:environment;type:varchar(16);not null;index"`
+}
+
+func (legacyDeploymentRecordEnvironmentColumn) TableName() string {
+	return "deployment_records"
 }
 
 // 这些仅用于先创建可回填的 NULL 列。回填完成后，迁移会依据正式模型收紧为
@@ -852,6 +928,66 @@ func migrateDeploymentEnvironmentFields(tx *gorm.DB) error {
 		}
 		if err := tx.Migrator().AddColumn(column.model, column.field); err != nil {
 			return err
+		}
+	}
+	return nil
+}
+
+func migrateLegacyDeploymentEnvironmentColumns(tx *gorm.DB) error {
+	// environment 是旧的固定安全级别字段，当前模型已经改为独立环境资源。
+	// 旧列没有默认值，若只从 Go 模型删除它，升级后的数据库会拒绝所有不再写入
+	// environment 的发布目标和发布记录，因此必须从物理表结构中一并移除。
+	columns := []struct {
+		value         any
+		index         string
+		dropIndexSQL  string
+		dropColumnSQL string
+		label         string
+	}{
+		{
+			value:         &legacyDeploymentTargetEnvironmentColumn{},
+			index:         "idx_deployment_targets_environment",
+			dropIndexSQL:  `DROP INDEX IF EXISTS "idx_deployment_targets_environment"`,
+			dropColumnSQL: `ALTER TABLE "deployment_targets" DROP COLUMN "environment"`,
+			label:         "部署目标",
+		},
+		{
+			value:         &legacyDeploymentRecordEnvironmentColumn{},
+			index:         "idx_deployment_records_environment",
+			dropIndexSQL:  `DROP INDEX IF EXISTS "idx_deployment_records_environment"`,
+			dropColumnSQL: `ALTER TABLE "deployment_records" DROP COLUMN "environment"`,
+			label:         "发布记录",
+		},
+	}
+	for _, column := range columns {
+		if !tx.Migrator().HasTable(column.value) {
+			continue
+		}
+		exists, err := physicalColumnExists(tx, column.value, "environment")
+		if err != nil {
+			return err
+		}
+		if !exists {
+			continue
+		}
+		if tx.Dialector.Name() == "sqlite" {
+			// 当前 SQLite 已支持原生 DROP COLUMN。原位删除可避免 GORM 重建表时
+			// 受到入站外键影响，并完整保留现有发布审计记录及其索引。
+			if err := tx.Exec(column.dropIndexSQL).Error; err != nil {
+				return fmt.Errorf("删除%s旧环境索引失败: %w", column.label, err)
+			}
+			if err := tx.Exec(column.dropColumnSQL).Error; err != nil {
+				return fmt.Errorf("删除%s旧环境字段失败: %w", column.label, err)
+			}
+			continue
+		}
+		if tx.Migrator().HasIndex(column.value, column.index) {
+			if err := tx.Migrator().DropIndex(column.value, column.index); err != nil {
+				return fmt.Errorf("删除%s旧环境索引失败: %w", column.label, err)
+			}
+		}
+		if err := tx.Migrator().DropColumn(column.value, "Environment"); err != nil {
+			return fmt.Errorf("删除%s旧环境字段失败: %w", column.label, err)
 		}
 	}
 	return nil

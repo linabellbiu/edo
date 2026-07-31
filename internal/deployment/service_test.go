@@ -32,6 +32,11 @@ type hostScriptRunnerStub struct {
 	err    error
 }
 
+const (
+	dockerTestEnvironmentID = "docker-test-environment"
+	dockerTestHostID        = "docker-test-host"
+)
+
 type idempotentHostScriptRunnerStub struct {
 	result  sshdeploy.Result
 	err     error
@@ -65,6 +70,7 @@ func TestRegistryDeploymentRequiresDigestAndQueuesWithoutImplicitApproval(t *tes
 	service, db, endpointID := newDeploymentTestService(t)
 	target, err := service.CreateTarget(context.Background(), "admin", TargetInput{
 		Name: "registry-api", Platform: model.DeploymentDocker,
+		EnvironmentID: dockerTestEnvironmentID, HostID: dockerTestHostID,
 		RuntimeID: endpointID, WorkloadName: "production-api", RolloutTimeout: 120,
 	})
 	if err != nil {
@@ -117,6 +123,7 @@ func TestDeploymentUsesApprovedTargetSnapshot(t *testing.T) {
 	service, _, endpointID := newDeploymentTestService(t)
 	target, err := service.CreateTarget(context.Background(), "admin", TargetInput{
 		Name: "testing-api", Platform: model.DeploymentDocker,
+		EnvironmentID: dockerTestEnvironmentID, HostID: dockerTestHostID,
 		RuntimeID: endpointID, WorkloadName: "api-v1", RolloutTimeout: 120,
 	})
 	if err != nil {
@@ -130,6 +137,7 @@ func TestDeploymentUsesApprovedTargetSnapshot(t *testing.T) {
 	}
 	if _, err := service.UpdateTarget(context.Background(), target.ID, TargetInput{
 		Name: "testing-api", Platform: model.DeploymentDocker,
+		EnvironmentID: dockerTestEnvironmentID, HostID: dockerTestHostID,
 		RuntimeID: endpointID, WorkloadName: "api-v2", RolloutTimeout: 240,
 	}); err != nil {
 		t.Fatalf("更新发布目标失败: %v", err)
@@ -147,7 +155,7 @@ func TestDeploymentEnvironmentSupportsCustomChineseName(t *testing.T) {
 	service, _, endpointID := newDeploymentTestService(t)
 	target, err := service.CreateTarget(context.Background(), "admin", TargetInput{
 		Name: "华东客户演示", Description: "上海机房的演示环境",
-		Platform:  model.DeploymentDocker,
+		Platform: model.DeploymentDocker, EnvironmentID: dockerTestEnvironmentID, HostID: dockerTestHostID,
 		RuntimeID: endpointID, WorkloadName: "demo-api", RolloutTimeout: 120,
 	})
 	if err != nil {
@@ -155,6 +163,52 @@ func TestDeploymentEnvironmentSupportsCustomChineseName(t *testing.T) {
 	}
 	if target.Name != "华东客户演示" || target.Description != "上海机房的演示环境" {
 		t.Fatalf("发布环境名称或说明保存错误: %+v", target)
+	}
+}
+
+func TestDockerTargetDefersContainerNameUntilApplicationExecution(t *testing.T) {
+	service, _, endpointID := newDeploymentTestService(t)
+	target, err := service.CreateTarget(context.Background(), "admin", TargetInput{
+		Name: "订单服务", Platform: model.DeploymentDocker,
+		EnvironmentID: dockerTestEnvironmentID, HostID: dockerTestHostID,
+		RuntimeID: endpointID, RolloutTimeout: 120,
+	})
+	if err != nil {
+		t.Fatalf("容器名称留空时创建 Docker 发布目标失败: %v", err)
+	}
+	if target.WorkloadName != "" {
+		t.Fatalf("部署方案不应在尚未绑定应用时生成容器名称: %q", target.WorkloadName)
+	}
+	first, err := generatedDockerWorkloadName("order_api", "application-1", "plan-1", target.ID)
+	if err != nil {
+		t.Fatalf("按应用生成容器名称失败: %v", err)
+	}
+	second, err := generatedDockerWorkloadName("order_api", "application-1", "plan-1", target.ID)
+	if err != nil || first != second || !strings.HasPrefix(first, "order_api-") || !workloadNamePattern.MatchString(first) {
+		t.Fatalf("容器名称没有保持应用级稳定隔离: first=%q second=%q err=%v", first, second, err)
+	}
+	otherPlan, err := generatedDockerWorkloadName("order_api", "application-1", "plan-2", target.ID)
+	if err != nil || otherPlan == first {
+		t.Fatalf("同一应用的不同部署方案没有得到独立容器名称: first=%q other=%q err=%v", first, otherPlan, err)
+	}
+}
+
+func TestDockerTargetRejectsHostOutsideSelectedEnvironment(t *testing.T) {
+	service, db, endpointID := newDeploymentTestService(t)
+	now := time.Now().UTC()
+	environment := model.Environment{
+		ID: "docker-unrelated-environment", Name: "未关联 Docker 环境", IsActive: true,
+		CreatedBy: "admin", CreatedAt: now, UpdatedAt: now,
+	}
+	if err := db.Create(&environment).Error; err != nil {
+		t.Fatalf("创建未关联环境失败: %v", err)
+	}
+	if _, err := service.CreateTarget(context.Background(), "admin", TargetInput{
+		Name: "错误环境目标", Platform: model.DeploymentDocker,
+		EnvironmentID: environment.ID, HostID: dockerTestHostID,
+		RuntimeID: endpointID, RolloutTimeout: 120,
+	}); !errors.Is(err, ErrEnvironmentTargetUnavailable) {
+		t.Fatalf("未关联环境不应使用 Docker 主机: %v", err)
 	}
 }
 
@@ -609,7 +663,7 @@ func TestSSHDeploymentTargetAcceptsAnyConfiguredHostEnvironment(t *testing.T) {
 	if _, err := service.CreateTarget(context.Background(), "admin", TargetInput{
 		Name: "未关联环境目标", Platform: model.DeploymentSSH,
 		EnvironmentID: unrelated.ID, HostID: host.ID, RolloutTimeout: 60,
-	}); !errors.Is(err, ErrInvalidTarget) {
+	}); !errors.Is(err, ErrEnvironmentTargetUnavailable) {
 		t.Fatalf("未关联环境不应使用该主机: %v", err)
 	}
 }
@@ -735,8 +789,54 @@ func TestLocalCommandTargetRequiresBuiltinReadyCapability(t *testing.T) {
 	if _, err := service.CreateTarget(context.Background(), "admin", TargetInput{
 		Name: "不可用的本地命令目标", Platform: model.DeploymentSSH,
 		EnvironmentID: environment.ID, HostID: model.BuiltinLocalHostID, RolloutTimeout: 90,
-	}); !errors.Is(err, ErrInvalidTarget) {
+	}); !errors.Is(err, ErrEnvironmentTargetUnavailable) {
 		t.Fatalf("本地执行能力不可用时不应创建发布目标: %v", err)
+	}
+}
+
+func TestDeploymentTargetResolvesUniqueEnvironmentHost(t *testing.T) {
+	service, _, endpointID := newDeploymentTestService(t)
+	target, err := service.CreateTarget(context.Background(), "admin", TargetInput{
+		Name: "环境自动解析目标", Platform: model.DeploymentDocker,
+		EnvironmentID: dockerTestEnvironmentID,
+		HostID:        "客户端伪造主机", RuntimeID: "客户端伪造运行时",
+		WorkloadName: "demo", RolloutTimeout: 120,
+	})
+	if err != nil {
+		t.Fatalf("环境内唯一 Docker 主机应自动解析: %v", err)
+	}
+	if target.HostID != dockerTestHostID || target.RuntimeID != endpointID {
+		t.Fatalf("服务端没有忽略客户端主机并按环境解析: %+v", target)
+	}
+}
+
+func TestDeploymentTargetRejectsAmbiguousEnvironmentHosts(t *testing.T) {
+	service, db, _ := newDeploymentTestService(t)
+	now := time.Now().UTC()
+	host := model.Host{
+		ID: "docker-test-host-second", Name: "Docker 测试主机二", Mode: model.HostModeSSH,
+		SSHPort: 22, IsActive: true, CreatedBy: "admin", CreatedAt: now, UpdatedAt: now,
+	}
+	endpoint := model.DockerEndpoint{
+		ID: "docker-endpoint-second", Name: "local-docker-second", Host: "unix:///var/run/docker-second.sock",
+		HostID: host.ID, IsActive: true, CreatedBy: "admin", CreatedAt: now, UpdatedAt: now,
+	}
+	resources := []any{
+		&host,
+		&endpoint,
+		&model.HostCapability{HostID: host.ID, Kind: model.HostCapabilityDocker, RuntimeID: endpoint.ID, Status: model.HostCapabilityReady, CreatedAt: now, UpdatedAt: now},
+		&model.EnvironmentHost{EnvironmentID: dockerTestEnvironmentID, HostID: host.ID, CreatedAt: now},
+	}
+	for _, resource := range resources {
+		if err := db.Create(resource).Error; err != nil {
+			t.Fatalf("创建第二台环境主机失败: %v", err)
+		}
+	}
+	if _, err := service.CreateTarget(context.Background(), "admin", TargetInput{
+		Name: "环境歧义目标", Platform: model.DeploymentDocker,
+		EnvironmentID: dockerTestEnvironmentID, WorkloadName: "demo", RolloutTimeout: 120,
+	}); !errors.Is(err, ErrEnvironmentTargetAmbiguous) {
+		t.Fatalf("环境存在多台 Docker 主机时必须拒绝静默选择: %v", err)
 	}
 }
 
@@ -798,10 +898,23 @@ func newDeploymentTestService(t *testing.T) (*Service, *gorm.DB, string) {
 	kubeService := kube.NewService(db, secretManager, runtimeConfig)
 	endpoint := model.DockerEndpoint{
 		ID: "docker-endpoint", Name: "local-docker", Host: "unix:///var/run/docker.sock",
+		HostID:   dockerTestHostID,
 		IsActive: true, CreatedBy: "admin", CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
 	}
 	if err := db.Create(&endpoint).Error; err != nil {
 		t.Fatalf("创建测试 Docker 连接失败: %v", err)
+	}
+	now := time.Now().UTC()
+	resources := []any{
+		&model.Environment{ID: dockerTestEnvironmentID, Name: "Docker 测试环境", IsActive: true, CreatedBy: "admin", CreatedAt: now, UpdatedAt: now},
+		&model.Host{ID: dockerTestHostID, Name: "Docker 测试主机", Mode: model.HostModeSSH, SSHPort: 22, IsActive: true, CreatedBy: "admin", CreatedAt: now, UpdatedAt: now},
+		&model.HostCapability{HostID: dockerTestHostID, Kind: model.HostCapabilityDocker, RuntimeID: endpoint.ID, Status: model.HostCapabilityReady, CreatedAt: now, UpdatedAt: now},
+		&model.EnvironmentHost{EnvironmentID: dockerTestEnvironmentID, HostID: dockerTestHostID, CreatedAt: now},
+	}
+	for _, resource := range resources {
+		if err := db.Create(resource).Error; err != nil {
+			t.Fatalf("创建 Docker 环境测试资源失败: %v", err)
+		}
 	}
 	return NewService(db, dockerService, kubeService, nil, nil, "", logger), db, endpoint.ID
 }

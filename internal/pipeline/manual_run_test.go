@@ -23,7 +23,7 @@ func TestExecuteBlockedManualRunWithSelectedCommit(t *testing.T) {
 			Branches: []repository.GitRef{{Name: "main", SHA: commitSHA}},
 		}}, 4,
 	)
-	application := createManualRunTestApplication(t, service, db, repositoryID, "手动选择版本")
+	application := createManualRunTestApplication(t, service, db, repositoryID, "manual_version")
 	if err := db.Model(&model.ReleaseWorkflow{}).Where("application_id = ?", application.ID).Update("is_active", true).Error; err != nil {
 		t.Fatal(err)
 	}
@@ -51,7 +51,7 @@ func TestExecuteManualRunStartsFromManualCodeTrigger(t *testing.T) {
 			Branches: []repository.GitRef{{Name: "main", SHA: commitSHA}},
 		}}, 4,
 	)
-	application := createManualRunTestApplication(t, service, db, repositoryID, "代码触发手动入口")
+	application := createManualRunTestApplication(t, service, db, repositoryID, "code_manual_entry")
 	workflowResult, err := service.GetWorkflow(context.Background(), application.ID)
 	if err != nil {
 		t.Fatal(err)
@@ -94,7 +94,7 @@ func TestExecuteManualRunRejectsAutomaticOnlyCodeTrigger(t *testing.T) {
 			Branches: []repository.GitRef{{Name: "main", SHA: commitSHA}},
 		}}, 4,
 	)
-	application := createManualRunTestApplication(t, service, db, repositoryID, "拒绝自动入口手动执行")
+	application := createManualRunTestApplication(t, service, db, repositoryID, "reject_auto_entry")
 	result, err := service.GetWorkflow(context.Background(), application.ID)
 	if err != nil {
 		t.Fatal(err)
@@ -133,7 +133,7 @@ func TestExecuteManualRunRejectsStaleCommit(t *testing.T) {
 			Branches: []repository.GitRef{{Name: "main", SHA: remoteCommit}},
 		}}, 4,
 	)
-	application := createManualRunTestApplication(t, service, db, repositoryID, "拒绝过期版本")
+	application := createManualRunTestApplication(t, service, db, repositoryID, "reject_stale_version")
 	if err := db.Model(&model.ReleaseWorkflow{}).Where("application_id = ?", application.ID).Update("is_active", true).Error; err != nil {
 		t.Fatal(err)
 	}
@@ -160,7 +160,7 @@ func TestExecuteDockerfileBuildWithoutImageRegistryQueuesLocalBuild(t *testing.T
 			Branches: []repository.GitRef{{Name: "main", SHA: commitSHA}},
 		}}, 4,
 	)
-	application := createManualRunTestApplication(t, service, db, repositoryID, "先选版本再配置")
+	application := createManualRunTestApplication(t, service, db, repositoryID, "version_before_config")
 	if err := db.Model(&model.ReleaseWorkflow{}).Where("application_id = ?", application.ID).Update("is_active", true).Error; err != nil {
 		t.Fatal(err)
 	}
@@ -194,9 +194,9 @@ func TestExecuteDockerfileBuildWithoutImageRegistryQueuesLocalBuild(t *testing.T
 	}
 }
 
-func TestLocalExecutionImageUsesCommitAndRunIdentity(t *testing.T) {
+func TestLocalExecutionImageUsesCommitShortHash(t *testing.T) {
 	prepared := &executionContext{
-		application: model.Application{ID: "application-id", Name: "Order API"},
+		application: model.Application{ID: "application-id", Name: "order_api"},
 		run: model.PipelineRun{
 			ID: "12345678-abcd-efab-cdef-1234567890ab", CommitSHA: "abcdef1234567890abcdef1234567890abcdef12",
 		},
@@ -205,12 +205,12 @@ func TestLocalExecutionImageUsesCommitAndRunIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if image != "zrt.local/order-api-"+strings.TrimPrefix(sha256Digest([]byte("application-id")), "sha256:")[:8]+":abcdef123456-12345678" {
-		t.Fatalf("本地镜像标签没有同时固定 Commit 和运行身份: %q", image)
+	if image != "zrt.local/order_api:abcdef123456" {
+		t.Fatalf("本地镜像标签没有使用 Commit 短哈希: %q", image)
 	}
 }
 
-func TestExecutionImageTagSeparatesRunsForSameCommit(t *testing.T) {
+func TestExecutionImageTagIsStableForSameCommit(t *testing.T) {
 	first, err := executionImageTag(model.PipelineRun{ID: "11111111-abcd-efab-cdef-1234567890ab", CommitSHA: "abcdef1234567890"})
 	if err != nil {
 		t.Fatal(err)
@@ -219,8 +219,8 @@ func TestExecutionImageTagSeparatesRunsForSameCommit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if first == second {
-		t.Fatalf("同一 Commit 的不同运行不得共用可变镜像标签: %q", first)
+	if first != "abcdef123456" || second != first {
+		t.Fatalf("同一 Commit 的镜像展示标签应保持稳定: first=%q second=%q", first, second)
 	}
 }
 
@@ -249,7 +249,7 @@ func TestPipelineRunKeepsExactSSHDeploymentPlanSnapshot(t *testing.T) {
 		t.Fatal(err)
 	}
 	application, err := service.CreateApplication(ctx, "admin", ApplicationInput{
-		Name: "脚本快照应用", RepositoryID: repositoryID,
+		Name: "script_snapshot", RepositoryID: repositoryID,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -291,7 +291,7 @@ func TestPipelineRunKeepsExactSSHDeploymentPlanSnapshot(t *testing.T) {
 
 func TestRetryFailedRunCreatesNewAuditedExecution(t *testing.T) {
 	service, db, _, repositoryID := newPipelineTestService(t)
-	application := createManualRunTestApplication(t, service, db, repositoryID, "重新执行")
+	application := createManualRunTestApplication(t, service, db, repositoryID, "retry_run")
 	if err := db.Model(&model.ReleaseWorkflow{}).Where("application_id = ?", application.ID).Update("is_active", true).Error; err != nil {
 		t.Fatal(err)
 	}
@@ -335,7 +335,7 @@ func TestRetryFailedRunCreatesNewAuditedExecution(t *testing.T) {
 
 func TestRetryRunRejectsNonFailedRun(t *testing.T) {
 	service, db, _, repositoryID := newPipelineTestService(t)
-	application := createManualRunTestApplication(t, service, db, repositoryID, "拒绝重复执行")
+	application := createManualRunTestApplication(t, service, db, repositoryID, "reject_duplicate_run")
 	now := time.Now().UTC()
 	run := model.PipelineRun{
 		ID: "succeeded-run", ApplicationID: application.ID, Trigger: "manual",
@@ -362,7 +362,7 @@ func TestRetryWorkflowSourceKeepsMatchingCodeTrigger(t *testing.T) {
 
 func TestRetryMergedPullRequestKeepsEventSnapshot(t *testing.T) {
 	service, db, _, repositoryID := newPipelineTestService(t)
-	application := createManualRunTestApplication(t, service, db, repositoryID, "重新执行合并 PR")
+	application := createManualRunTestApplication(t, service, db, repositoryID, "retry_merged_pr")
 	var workflow model.ReleaseWorkflow
 	if err := db.First(&workflow, "application_id = ?", application.ID).Error; err != nil {
 		t.Fatal(err)
@@ -503,7 +503,7 @@ func TestListApplicationRefsReturnsOnlyManualCodeTriggers(t *testing.T) {
 			Branches: []repository.GitRef{{Name: "main", SHA: commitSHA}},
 		}}, 4,
 	)
-	application := createManualRunTestApplication(t, service, db, repositoryID, "手动入口列表")
+	application := createManualRunTestApplication(t, service, db, repositoryID, "manual_entry_list")
 	result, err := service.GetWorkflow(context.Background(), application.ID)
 	if err != nil {
 		t.Fatal(err)
@@ -531,7 +531,7 @@ func TestListApplicationRefsReturnsOnlyManualCodeTriggers(t *testing.T) {
 
 func TestWorkflowAllowsManualOnlyCodeTriggerAsSource(t *testing.T) {
 	service, db, _, repositoryID := newPipelineTestService(t)
-	application := createManualRunTestApplication(t, service, db, repositoryID, "仅手动代码源")
+	application := createManualRunTestApplication(t, service, db, repositoryID, "manual_source_only")
 	source, stages := application.Workflow.Source, cloneWorkflowStages(application.Workflow.Stages)
 	source.Config.Events = []string{"manual"}
 	if issues := service.validateWorkflow(context.Background(), application, model.WorkflowSchemaVersion, source, stages); len(issues) != 0 {
@@ -541,7 +541,7 @@ func TestWorkflowAllowsManualOnlyCodeTriggerAsSource(t *testing.T) {
 
 func TestWorkflowRequiresNamedNonEmptyUniqueStages(t *testing.T) {
 	service, db, _, repositoryID := newPipelineTestService(t)
-	application := createManualRunTestApplication(t, service, db, repositoryID, "阶段约束")
+	application := createManualRunTestApplication(t, service, db, repositoryID, "stage_constraint")
 	stages := cloneWorkflowStages(application.Workflow.Stages)
 	stages[0].Tasks = nil
 	if issues := service.validateWorkflow(context.Background(), application, model.WorkflowSchemaVersion, application.Workflow.Source, stages); !hasWorkflowIssue(issues, "empty_stage") {
@@ -556,7 +556,7 @@ func TestWorkflowRequiresNamedNonEmptyUniqueStages(t *testing.T) {
 
 func TestWorkflowValidatesCodeTriggerAsOnlyEntryType(t *testing.T) {
 	service, db, _, repositoryID := newPipelineTestService(t)
-	application := createManualRunTestApplication(t, service, db, repositoryID, "入口连线校验")
+	application := createManualRunTestApplication(t, service, db, repositoryID, "entry_validation")
 	application, err := service.FindApplication(context.Background(), application.ID)
 	if err != nil {
 		t.Fatal(err)
@@ -575,7 +575,7 @@ func TestWorkflowValidatesCodeTriggerAsOnlyEntryType(t *testing.T) {
 
 func TestWorkflowRejectsDuplicateTaskIDs(t *testing.T) {
 	service, db, _, repositoryID := newPipelineTestService(t)
-	application := createManualRunTestApplication(t, service, db, repositoryID, "任务标识校验")
+	application := createManualRunTestApplication(t, service, db, repositoryID, "task_identity_validation")
 	application, err := service.FindApplication(context.Background(), application.ID)
 	if err != nil {
 		t.Fatal(err)
@@ -590,7 +590,7 @@ func TestWorkflowRejectsDuplicateTaskIDs(t *testing.T) {
 
 func TestProductionWorkflowDoesNotRequireImplicitApprovalNode(t *testing.T) {
 	service, db, _, repositoryID := newPipelineTestService(t)
-	application := createManualRunTestApplication(t, service, db, repositoryID, "无隐式审核")
+	application := createManualRunTestApplication(t, service, db, repositoryID, "no_implicit_approval")
 	stages := cloneWorkflowStages(application.Workflow.Stages)
 	for i := range stages {
 		filtered := stages[i].Tasks[:0]
@@ -609,7 +609,7 @@ func TestProductionWorkflowDoesNotRequireImplicitApprovalNode(t *testing.T) {
 
 func TestExplicitApprovalNodeControlsWorkflowRun(t *testing.T) {
 	service, db, _, repositoryID := newPipelineTestService(t)
-	application := createManualRunTestApplication(t, service, db, repositoryID, "明确审核节点")
+	application := createManualRunTestApplication(t, service, db, repositoryID, "explicit_approval")
 	now := time.Now().UTC()
 	run, err := service.newResolvedWorkflowRun(
 		context.Background(), application, application.Workflow, application.Workflow.Source,

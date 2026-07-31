@@ -29,19 +29,21 @@ import (
 )
 
 var (
-	ErrInvalidTarget           = errors.New("部署配置无效")
-	ErrTargetExists            = errors.New("部署配置名称已存在")
-	ErrTargetNotFound          = errors.New("部署配置不存在")
-	ErrInvalidImage            = errors.New("容器镜像引用无效")
-	ErrImmutableImageRequired  = errors.New("镜像仓库或 Kubernetes 发布必须使用带摘要的不可变镜像")
-	ErrDeploymentNotFound      = errors.New("发布记录不存在")
-	ErrInvalidDeploymentState  = errors.New("发布记录当前状态不允许此操作")
-	ErrRollbackUnavailable     = errors.New("该发布记录没有可回滚的上一镜像")
-	ErrCommandPipelineRequired = errors.New("命令脚本发布必须从流水线部署节点发起")
-	ErrPipelineReleaseIdentity = errors.New("流水线发布缺少幂等标识")
-	ErrPipelineReleaseRunning  = errors.New("该流水线节点已有发布正在执行，不能重复发布")
-	ErrPipelineReleaseFailed   = errors.New("该流水线节点的发布已经失败，请重新执行流水线")
-	ErrPipelineReleaseConflict = errors.New("该流水线节点已经创建发布记录，不能重复发布")
+	ErrInvalidTarget                = errors.New("部署配置无效")
+	ErrEnvironmentTargetUnavailable = errors.New("当前环境没有可用的执行主机")
+	ErrEnvironmentTargetAmbiguous   = errors.New("当前环境存在多个可用的执行主机，请先调整环境配置")
+	ErrTargetExists                 = errors.New("部署配置名称已存在")
+	ErrTargetNotFound               = errors.New("部署配置不存在")
+	ErrInvalidImage                 = errors.New("容器镜像引用无效")
+	ErrImmutableImageRequired       = errors.New("镜像仓库或 Kubernetes 发布必须使用带摘要的不可变镜像")
+	ErrDeploymentNotFound           = errors.New("发布记录不存在")
+	ErrInvalidDeploymentState       = errors.New("发布记录当前状态不允许此操作")
+	ErrRollbackUnavailable          = errors.New("该发布记录没有可回滚的上一镜像")
+	ErrCommandPipelineRequired      = errors.New("命令脚本发布必须从流水线部署节点发起")
+	ErrPipelineReleaseIdentity      = errors.New("流水线发布缺少幂等标识")
+	ErrPipelineReleaseRunning       = errors.New("该流水线节点已有发布正在执行，不能重复发布")
+	ErrPipelineReleaseFailed        = errors.New("该流水线节点的发布已经失败，请重新执行流水线")
+	ErrPipelineReleaseConflict      = errors.New("该流水线节点已经创建发布记录，不能重复发布")
 )
 
 var targetNamePattern = regexp.MustCompile(`^[\p{L}\p{N}][\p{L}\p{N}_. -]{0,127}$`)
@@ -63,8 +65,11 @@ type TargetInput struct {
 
 type RequestInput struct {
 	TargetID           string
+	ApplicationID      string
+	ApplicationName    string
 	ArtifactID         string
 	Image              string
+	ImageDisplay       string
 	ExpectedImageID    string
 	PipelineRunID      string
 	WorkflowNodeID     string
@@ -313,6 +318,10 @@ func (s *Service) requestAndRun(
 	if err != nil {
 		return nil, err
 	}
+	input.ImageDisplay = strings.TrimSpace(input.ImageDisplay)
+	if len(input.ImageDisplay) > 255 || strings.ContainsAny(input.ImageDisplay, "\x00\r\n") {
+		return nil, ErrInvalidImage
+	}
 	if input.PlanKind == model.DeploymentPlanCompose {
 		input.DeploymentPlanID = strings.TrimSpace(input.DeploymentPlanID)
 		input.ComposeYAML = strings.TrimSpace(input.ComposeYAML)
@@ -344,6 +353,20 @@ func (s *Service) requestAndRun(
 		input.ComposeYAML, input.ComposeService, input.ComposeDigest, input.TimeoutSeconds = "", "", "", 0
 		input.DockerConfig, input.DockerConfigDigest = model.DockerContainerConfig{}, ""
 	}
+	if target.Platform == model.DeploymentDocker && strings.TrimSpace(target.WorkloadName) == "" {
+		if input.PlanKind != model.DeploymentPlanDocker {
+			return nil, ErrInvalidTarget
+		}
+		workloadName, nameErr := generatedDockerWorkloadName(
+			input.ApplicationName, input.ApplicationID, input.DeploymentPlanID, target.ID,
+		)
+		if nameErr != nil {
+			return nil, nameErr
+		}
+		targetSnapshot := *target
+		targetSnapshot.WorkloadName = workloadName
+		target = &targetSnapshot
+	}
 	input.PipelineRunID = strings.TrimSpace(input.PipelineRunID)
 	input.WorkflowNodeID = strings.TrimSpace(input.WorkflowNodeID)
 	idempotencyKey, err := pipelineReleaseIdempotencyKey(input.PipelineRunID, input.WorkflowNodeID)
@@ -356,7 +379,8 @@ func (s *Service) requestAndRun(
 	record := &model.DeploymentRecord{
 		ID: uuid.NewString(), IdempotencyKey: &idempotencyKey,
 		PipelineRunID: input.PipelineRunID, WorkflowNodeID: input.WorkflowNodeID,
-		ArtifactID: input.ArtifactID, TargetID: target.ID, Operation: model.DeploymentRelease, Image: image,
+		ArtifactID: input.ArtifactID, TargetID: target.ID, Operation: model.DeploymentRelease,
+		Image: image, ImageDisplay: strings.TrimSpace(input.ImageDisplay),
 		ExpectedImageID: strings.TrimSpace(input.ExpectedImageID),
 		Status:          model.DeploymentQueued, RequestedBy: actorID, CreatedAt: now, UpdatedAt: now,
 		DeploymentPlanID: input.DeploymentPlanID, DeploymentPlanKind: input.PlanKind,
@@ -486,7 +510,7 @@ func validExecutionTargetSnapshot(targetID string, target *model.DeploymentTarge
 	case model.DeploymentSSH:
 		return target.EnvironmentID != "" && target.HostID != ""
 	case model.DeploymentDocker:
-		return target.RuntimeID != "" && workloadNamePattern.MatchString(target.WorkloadName)
+		return target.RuntimeID != "" && (strings.TrimSpace(target.WorkloadName) == "" || workloadNamePattern.MatchString(target.WorkloadName))
 	case model.DeploymentKubernetes:
 		return target.RuntimeID != "" && len(validation.IsDNS1123Label(target.Namespace)) == 0 &&
 			len(validation.IsDNS1123Subdomain(target.WorkloadName)) == 0 &&
@@ -567,7 +591,8 @@ func samePipelineReleaseSemantics(existing, requested *model.DeploymentRecord) b
 		existing.RuntimeID == requested.RuntimeID && existing.WorkingDirectory == requested.WorkingDirectory &&
 		existing.Namespace == requested.Namespace && existing.WorkloadName == requested.WorkloadName &&
 		existing.ContainerName == requested.ContainerName && existing.RolloutTimeout == requested.RolloutTimeout &&
-		existing.Image == requested.Image && existing.ExpectedImageID == requested.ExpectedImageID &&
+		existing.Image == requested.Image && existing.ImageDisplay == requested.ImageDisplay &&
+		existing.ExpectedImageID == requested.ExpectedImageID &&
 		existing.DeploymentPlanID == requested.DeploymentPlanID && existing.DeploymentPlanKind == requested.DeploymentPlanKind &&
 		existing.CommandScript == requested.CommandScript && existing.CommandDigest == requested.CommandDigest &&
 		existing.CommandTimeout == requested.CommandTimeout && existing.ComposeYAML == requested.ComposeYAML &&
@@ -888,14 +913,16 @@ func (s *Service) run(ctx context.Context, deploymentID, expectedImageID string,
 			}
 			if expectedImageID == "" {
 				previous, deployWarning, deployErr := s.docker.DeployContainer(
-					ctx, record.RuntimeID, record.TargetID, record.WorkloadName, record.Image, record.ID, timeout, dockerConfig,
-					executionRegistryAuth(command),
+					ctx, record.RuntimeID, record.TargetID, record.WorkloadName, record.Image, record.ImageDisplay,
+					record.ID, timeout, dockerConfig,
+					executionRegistryAuth(command), executionOutput(command, true), executionOutput(command, false),
 				)
 				previousImage, previousImageID, warning, err = previous.Reference, previous.ID, deployWarning, deployErr
 			} else {
 				previous, deployWarning, deployErr := s.docker.DeployPreparedContainer(
-					ctx, record.RuntimeID, record.TargetID, record.WorkloadName, record.Image, expectedImageID, record.ID, timeout, dockerConfig,
-					executionRegistryAuth(command),
+					ctx, record.RuntimeID, record.TargetID, record.WorkloadName, record.Image, record.ImageDisplay,
+					expectedImageID, record.ID, timeout, dockerConfig,
+					executionRegistryAuth(command), executionOutput(command, true), executionOutput(command, false),
 				)
 				previousImage, previousImageID, warning, err = previous.Reference, previous.ID, deployWarning, deployErr
 			}
@@ -1071,63 +1098,32 @@ func (s *Service) normalizeTarget(ctx context.Context, input TargetInput) (Targe
 		input.RolloutTimeout < 30 || input.RolloutTimeout > 3600 {
 		return TargetInput{}, ErrInvalidTarget
 	}
+	if input.EnvironmentID == "" {
+		return TargetInput{}, ErrInvalidTarget
+	}
+	resolvedHost, resolvedCapability, err := s.resolveEnvironmentTarget(ctx, input.EnvironmentID, input.Platform, input.RuntimeID)
+	if err != nil {
+		return TargetInput{}, err
+	}
+	input.HostID = resolvedHost.ID
 	switch input.Platform {
 	case model.DeploymentSSH:
-		if input.HostID == "" || input.EnvironmentID == "" {
-			return TargetInput{}, ErrInvalidTarget
-		}
 		if input.WorkingDirectory != "" && !validWorkingDirectory(input.WorkingDirectory) {
 			return TargetInput{}, ErrInvalidTarget
 		}
-		var host model.Host
-		if err := s.db.WithContext(ctx).First(&host,
-			"id = ? AND is_active = ?", input.HostID, true,
-		).Error; err != nil {
-			return TargetInput{}, ErrInvalidTarget
-		}
-		capabilityKind := model.HostCapabilitySSH
-		switch host.Mode {
-		case model.HostModeLocal:
-			if !host.IsBuiltin || host.ID != model.BuiltinLocalHostID {
-				return TargetInput{}, ErrInvalidTarget
-			}
-			capabilityKind = model.HostCapabilityLocalExec
-		case model.HostModeSSH:
-			if host.IsBuiltin {
-				return TargetInput{}, ErrInvalidTarget
-			}
-		default:
-			return TargetInput{}, ErrInvalidTarget
-		}
-		var capability model.HostCapability
-		if err := s.db.WithContext(ctx).First(&capability,
-			"host_id = ? AND kind = ? AND status = ?", host.ID, capabilityKind, model.HostCapabilityReady,
-		).Error; err != nil {
-			return TargetInput{}, ErrInvalidTarget
-		}
-		var environment model.Environment
-		if err := s.db.WithContext(ctx).Select("environments.id").
-			Joins("JOIN environment_hosts AS membership ON membership.environment_id = environments.id").
-			First(&environment,
-				"environments.id = ? AND environments.is_active = ? AND membership.host_id = ?",
-				input.EnvironmentID, true, host.ID,
-			).Error; err != nil {
-			return TargetInput{}, ErrInvalidTarget
-		}
-		input.EnvironmentID = environment.ID
 		input.RuntimeID, input.Namespace, input.WorkloadName, input.ContainerName = "", "", "", ""
 	case model.DeploymentDocker:
-		if input.RuntimeID == "" || !workloadNamePattern.MatchString(input.WorkloadName) {
+		input.RuntimeID = resolvedCapability.RuntimeID
+		if input.WorkloadName != "" && !workloadNamePattern.MatchString(input.WorkloadName) {
 			return TargetInput{}, ErrInvalidTarget
 		}
-		input.EnvironmentID, input.HostID, input.WorkingDirectory = "", "", ""
+		input.WorkingDirectory = ""
 		input.Namespace = ""
 		input.ContainerName = ""
 		endpoint, err := s.docker.Find(ctx, input.RuntimeID)
-		if err != nil || !endpoint.IsActive {
+		if err != nil || !endpoint.IsActive || endpoint.HostID != input.HostID {
 			return TargetInput{}, ErrInvalidTarget
 		}
-		input.HostID = endpoint.HostID
 	case model.DeploymentKubernetes:
 		if input.RuntimeID == "" || len(validation.IsDNS1123Label(input.Namespace)) > 0 ||
 			len(validation.IsDNS1123Subdomain(input.WorkloadName)) > 0 ||
@@ -1138,11 +1134,137 @@ func (s *Service) normalizeTarget(ctx context.Context, input TargetInput) (Targe
 		if err != nil || !cluster.IsActive {
 			return TargetInput{}, ErrInvalidTarget
 		}
-		input.EnvironmentID, input.HostID, input.WorkingDirectory = "", "", ""
+		input.WorkingDirectory = ""
 	default:
 		return TargetInput{}, ErrInvalidTarget
 	}
 	return input, nil
+}
+
+// resolveEnvironmentTarget 根据环境归属和已就绪能力解析唯一执行主机。
+// 部署方案不接受客户端指定主机，避免环境与主机重复配置或被请求参数绕过。
+func (s *Service) resolveEnvironmentTarget(
+	ctx context.Context,
+	environmentID string,
+	platform model.DeploymentPlatform,
+	runtimeID string,
+) (model.Host, model.HostCapability, error) {
+	var environment model.Environment
+	if err := s.db.WithContext(ctx).Select("id").First(&environment, "id = ? AND is_active = ?", environmentID, true).Error; err != nil {
+		s.logger.Warn("解析环境执行主机失败", "operation", "deployment_target_resolve", "environment_id", environmentID, "platform", platform, "err", err)
+		return model.Host{}, model.HostCapability{}, ErrInvalidTarget
+	}
+	var memberships []model.EnvironmentHost
+	if err := s.db.WithContext(ctx).Where("environment_id = ?", environmentID).Find(&memberships).Error; err != nil {
+		s.logger.Error("查询环境主机关系失败", "operation", "deployment_target_resolve", "environment_id", environmentID, "platform", platform, "err", err)
+		return model.Host{}, model.HostCapability{}, fmt.Errorf("查询环境执行主机失败: %w", err)
+	}
+	hostIDs := make([]string, 0, len(memberships))
+	for i := range memberships {
+		hostIDs = append(hostIDs, memberships[i].HostID)
+	}
+	if len(hostIDs) == 0 {
+		s.logger.Warn("环境没有关联主机", "operation", "deployment_target_resolve", "environment_id", environmentID, "platform", platform)
+		return model.Host{}, model.HostCapability{}, ErrEnvironmentTargetUnavailable
+	}
+	var hosts []model.Host
+	if err := s.db.WithContext(ctx).Where("id IN ? AND is_active = ?", hostIDs, true).Order("id ASC").Find(&hosts).Error; err != nil {
+		s.logger.Error("查询环境可用主机失败", "operation", "deployment_target_resolve", "environment_id", environmentID, "platform", platform, "err", err)
+		return model.Host{}, model.HostCapability{}, fmt.Errorf("查询环境执行主机失败: %w", err)
+	}
+	var capabilities []model.HostCapability
+	if err := s.db.WithContext(ctx).Where("host_id IN ? AND status = ?", hostIDs, model.HostCapabilityReady).Find(&capabilities).Error; err != nil {
+		s.logger.Error("查询环境主机能力失败", "operation", "deployment_target_resolve", "environment_id", environmentID, "platform", platform, "err", err)
+		return model.Host{}, model.HostCapability{}, fmt.Errorf("查询环境执行能力失败: %w", err)
+	}
+	capabilitiesByHost := make(map[string][]model.HostCapability, len(hosts))
+	for i := range capabilities {
+		capabilitiesByHost[capabilities[i].HostID] = append(capabilitiesByHost[capabilities[i].HostID], capabilities[i])
+	}
+	type candidate struct {
+		host       model.Host
+		capability model.HostCapability
+	}
+	candidates := make([]candidate, 0, len(hosts))
+	for i := range hosts {
+		expectedKind := model.HostCapabilityKind("")
+		switch platform {
+		case model.DeploymentSSH:
+			switch hosts[i].Mode {
+			case model.HostModeLocal:
+				if hosts[i].IsBuiltin && hosts[i].ID == model.BuiltinLocalHostID {
+					expectedKind = model.HostCapabilityLocalExec
+				}
+			case model.HostModeSSH:
+				if !hosts[i].IsBuiltin {
+					expectedKind = model.HostCapabilitySSH
+				}
+			}
+		case model.DeploymentDocker:
+			expectedKind = model.HostCapabilityDocker
+		case model.DeploymentKubernetes:
+			expectedKind = model.HostCapabilityKubernetes
+		default:
+			return model.Host{}, model.HostCapability{}, ErrInvalidTarget
+		}
+		for _, capability := range capabilitiesByHost[hosts[i].ID] {
+			if capability.Kind != expectedKind {
+				continue
+			}
+			if platform != model.DeploymentSSH && capability.RuntimeID == "" {
+				continue
+			}
+			if platform == model.DeploymentKubernetes && capability.RuntimeID != strings.TrimSpace(runtimeID) {
+				continue
+			}
+			if platform == model.DeploymentDocker {
+				if s.docker == nil {
+					continue
+				}
+				endpoint, findErr := s.docker.Find(ctx, capability.RuntimeID)
+				if findErr != nil || !endpoint.IsActive || endpoint.HostID != hosts[i].ID {
+					continue
+				}
+			}
+			if platform == model.DeploymentKubernetes {
+				if s.kube == nil {
+					continue
+				}
+				cluster, findErr := s.kube.Find(ctx, capability.RuntimeID)
+				if findErr != nil || !cluster.IsActive {
+					continue
+				}
+			}
+			candidates = append(candidates, candidate{host: hosts[i], capability: capability})
+			break
+		}
+	}
+	if len(candidates) == 0 {
+		s.logger.Warn("环境没有匹配部署方式的可用主机", "operation", "deployment_target_resolve", "environment_id", environmentID, "platform", platform, "runtime_id", runtimeID)
+		return model.Host{}, model.HostCapability{}, ErrEnvironmentTargetUnavailable
+	}
+	if len(candidates) > 1 {
+		s.logger.Warn("环境存在多个匹配部署方式的可用主机", "operation", "deployment_target_resolve", "environment_id", environmentID, "platform", platform, "runtime_id", runtimeID, "candidate_count", len(candidates))
+		return model.Host{}, model.HostCapability{}, ErrEnvironmentTargetAmbiguous
+	}
+	return candidates[0].host, candidates[0].capability, nil
+}
+
+func generatedDockerWorkloadName(applicationName, applicationID, deploymentPlanID, targetID string) (string, error) {
+	applicationName = strings.TrimSpace(applicationName)
+	applicationID = strings.TrimSpace(applicationID)
+	deploymentPlanID = strings.TrimSpace(deploymentPlanID)
+	targetID = strings.TrimSpace(targetID)
+	if applicationName == "" || applicationID == "" || deploymentPlanID == "" || targetID == "" ||
+		!workloadNamePattern.MatchString(applicationName) {
+		return "", ErrInvalidTarget
+	}
+	digest := sha256.Sum256([]byte(applicationID + "\x00" + deploymentPlanID + "\x00" + targetID))
+	name := fmt.Sprintf("%s-%x", applicationName, digest[:4])
+	if !workloadNamePattern.MatchString(name) {
+		return "", ErrInvalidTarget
+	}
+	return name, nil
 }
 
 func validWorkingDirectory(value string) bool {

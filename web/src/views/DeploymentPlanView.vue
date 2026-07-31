@@ -76,7 +76,8 @@ interface DockerContainerConfig {
   environment_variables: Record<string, string>
   volume_mounts: DockerVolumeMount[]
   network: string
-  command: string[]
+  deployment_script?: string
+  command?: string[]
   health_check: DockerHealthCheck
   restart_policy: string
 }
@@ -84,6 +85,7 @@ interface DockerContainerConfig {
 interface Runtime {
   id: string
   name: string
+  host_id?: string
   host?: string
   api_server?: string
   default_namespace?: string
@@ -105,7 +107,7 @@ interface DeploymentDraft {
   docker_environment_variables: DockerEnvironmentVariable[]
   docker_volume_mounts: DockerVolumeMount[]
   docker_network: string
-  docker_command: string
+  docker_deployment_script: string
   docker_health_enabled: boolean
   docker_health_command: string
   docker_health_interval: number
@@ -152,7 +154,7 @@ const form = reactive({
   docker_environment_variables: [] as DockerEnvironmentVariable[],
   docker_volume_mounts: [] as DockerVolumeMount[],
   docker_network: 'bridge',
-  docker_command: '',
+  docker_deployment_script: '',
   docker_health_enabled: false,
   docker_health_command: '',
   docker_health_interval: 30,
@@ -178,27 +180,67 @@ const canReadRuntimes = computed(() => auth.canAny(['cluster.read']))
 const canTestInfrastructure = computed(() => auth.canAny(['cluster.manage']))
 const environmentByID = computed(() => new Map(environments.value.map(item => [item.id, item])))
 const hostByID = computed(() => new Map(hosts.value.map(item => [item.id, item])))
-const runtimeOptions = computed(() => (platform.value === 'docker' ? docker.value : clusters.value)
-  .filter(item => item.is_active)
-  .map(item => ({
-    value: item.id,
-    label: `${item.name} · ${item.local ? '本地 Docker' : item.host || item.api_server || '集群内连接'}`,
-  })))
-const sshEnvironmentOptions = computed(() => environments.value
+const dockerByID = computed(() => new Map(docker.value.filter(item => item.is_active).map(item => [item.id, item])))
+const clusterByID = computed(() => new Map(clusters.value.filter(item => item.is_active).map(item => [item.id, item])))
+const environmentOptions = computed(() => environments.value
   .filter(environment => environment.is_active)
   .map(environment => ({ value: environment.id, label: environment.name })))
-const sshHostOptions = computed(() => hosts.value
-  .filter(host => host.is_active && environmentIDsOf(host).includes(form.environment_id) &&
-    host.capabilities.some(capability => capability.kind === (host.mode === 'local' ? 'local_exec' : 'ssh') && capability.status === 'ready'))
-  .map(host => ({
-    value: host.id,
-    label: `${host.name} · ${host.mode === 'local' ? '本地' : `${host.address}:${host.ssh_port}`}`,
-  })))
+const environmentHosts = computed(() => hosts.value
+  .filter(host => host.is_active && environmentIDsOf(host).includes(form.environment_id)))
+const availableKindOptions = computed(() => kindOptions.filter(option => environmentSupportsKind(option.value)))
+const executionHosts = computed(() => environmentHosts.value.filter(host => hostSupportsKind(host, form.kind)))
+const kubernetesRuntimeOptions = computed(() => {
+  const seen = new Set<string>()
+  return environmentHosts.value.flatMap(host => {
+    const capability = readyCapability(host, 'kubernetes')
+    const runtime = capability?.runtime_id ? clusterByID.value.get(capability.runtime_id) : undefined
+    if (!runtime || seen.has(runtime.id)) return []
+    seen.add(runtime.id)
+    return [{ value: runtime.id, label: `${runtime.name} · ${host.name}` }]
+  })
+})
+const kubernetesExecutionHosts = computed(() => environmentHosts.value.filter(
+  host => readyCapability(host, 'kubernetes')?.runtime_id === form.runtime_id && hostSupportsKind(host, 'kubernetes'),
+))
+const executionTargetError = computed(() => {
+  if (!form.environment_id) return ''
+  const candidates = form.kind === 'kubernetes' ? kubernetesExecutionHosts.value : executionHosts.value
+  if (form.kind === 'kubernetes' && !form.runtime_id) return ''
+  if (!candidates.length) return '当前环境没有可用于所选部署方式的执行主机，请先调整环境配置。'
+  if (candidates.length > 1) return '当前环境有多台可用于所选部署方式的主机，无法唯一确定执行位置，请先调整环境配置。'
+  return ''
+})
 
 function planPlatform(kind: PlanKind): Platform {
   if (kind === 'script') return 'ssh'
   if (kind === 'kubernetes') return 'kubernetes'
   return 'docker'
+}
+
+function readyCapability(host: InfrastructureHost, kind: 'ssh' | 'docker' | 'kubernetes' | 'local_exec') {
+  return host.capabilities.find(capability => capability.kind === kind && capability.status === 'ready')
+}
+
+function hostSupportsKind(host: InfrastructureHost, kind: PlanKind) {
+  if (kind === 'script') return Boolean(readyCapability(host, host.mode === 'local' ? 'local_exec' : 'ssh'))
+  if (kind === 'docker' || kind === 'compose') {
+    const capability = readyCapability(host, 'docker')
+    return Boolean(capability?.runtime_id && dockerByID.value.has(capability.runtime_id))
+  }
+  const capability = readyCapability(host, 'kubernetes')
+  return Boolean(capability?.runtime_id && clusterByID.value.has(capability.runtime_id))
+}
+
+function environmentSupportsKind(kind: PlanKind) {
+  return Boolean(form.environment_id && environmentHosts.value.some(host => hostSupportsKind(host, kind)))
+}
+
+function targetCapabilityMatches(kind: PlanKind, hostID: string, runtimeID = '') {
+  const host = hostByID.value.get(hostID)
+  if (!host || !environmentIDsOf(host).includes(form.environment_id)) return false
+  if (kind === 'script') return hostSupportsKind(host, kind)
+  const capability = readyCapability(host, kind === 'kubernetes' ? 'kubernetes' : 'docker')
+  return Boolean(capability?.runtime_id && capability.runtime_id === runtimeID && hostSupportsKind(host, kind))
 }
 
 function emptyDockerPort(): DockerPortMapping {
@@ -240,22 +282,20 @@ function runtimeOf(plan: DeploymentPlan) {
 function destinationName(plan: DeploymentPlan) {
   const target = targetOf(plan)
   if (!target) return '尚未配置运行位置'
-  if (target.platform === 'ssh') {
-    const hostName = hostByID.value.get(target.host_id)?.name || '主机不可用'
-    const environmentName = environmentByID.value.get(target.environment_id)?.name
-    return environmentName ? `${environmentName} / ${hostName}` : hostName
-  }
-  return runtimeOf(plan)?.name || (target.platform === 'docker' ? 'Docker 连接不可用' : 'Kubernetes 集群不可用')
+  const environmentName = environmentByID.value.get(target.environment_id)?.name
+  const hostName = hostByID.value.get(target.host_id)?.name
+  if (environmentName && hostName) return `${environmentName} / ${hostName}`
+  if (environmentName) return environmentName
+  if (target.platform === 'ssh') return hostName || '主机不可用'
+  return runtimeOf(plan)?.name || (target.platform === 'docker' ? 'Docker 运行时不可用' : 'Kubernetes 集群不可用')
 }
 
 function destinationDetail(plan: DeploymentPlan) {
   const target = targetOf(plan)
   if (!target) return '编辑方案后补全部署信息'
-  if (target.platform === 'ssh') {
-    const host = hostByID.value.get(target.host_id)
-    if (!host) return '无法读取主机信息'
-    return host.mode === 'local' ? '本地主机' : `${host.address}:${host.ssh_port}`
-  }
+  const host = hostByID.value.get(target.host_id)
+  if (host) return host.mode === 'local' ? '本地主机' : `${host.address}:${host.ssh_port}`
+  if (target.platform === 'ssh') return '无法读取主机信息'
   const runtime = runtimeOf(plan)
   if (!runtime) return '无法读取连接信息'
   if (target.platform === 'docker') return runtime.local ? '本地 Docker' : runtime.host || '远程 Docker'
@@ -291,7 +331,7 @@ function reset() {
     environment_id: '', host_id: '', working_directory: '', runtime_id: '',
     namespace: 'default', workload_name: '', container_name: '', timeout_seconds: 600,
     docker_port_mappings: [emptyDockerPort()], docker_environment_variables: [], docker_volume_mounts: [],
-    docker_network: 'bridge', docker_command: '', docker_health_enabled: false, docker_health_command: '',
+    docker_network: 'bridge', docker_deployment_script: '', docker_health_enabled: false, docker_health_command: '',
     docker_health_interval: 30, docker_health_timeout: 5, docker_health_retries: 3, docker_health_start_period: 10,
   })
   for (const kind of kindOptions) delete deploymentDrafts[kind.value]
@@ -360,7 +400,7 @@ function edit(plan: DeploymentPlan) {
       type: 'volume' as const, source: item.source, target: item.target, read_only: item.read_only,
     })),
     docker_network: 'bridge',
-    docker_command: (dockerConfig?.command || []).join('\n'),
+    docker_deployment_script: dockerConfig?.deployment_script || '',
     docker_health_enabled: healthCheck.enabled,
     docker_health_command: (healthCheck.command || []).join('\n'),
     docker_health_interval: healthCheck.interval_seconds || 30,
@@ -369,6 +409,7 @@ function edit(plan: DeploymentPlan) {
     docker_health_start_period: healthCheck.start_period_seconds ?? 10,
     timeout_seconds: plan.timeout_seconds || target?.rollout_timeout || 600,
   })
+  reconcileExecutionTarget()
   rememberDeploymentDraft(plan.kind)
   editingID.value = plan.id
   formOpen.value = true
@@ -441,7 +482,7 @@ function currentDeploymentDraft(): DeploymentDraft {
     docker_environment_variables: cloneDockerVariables(form.docker_environment_variables),
     docker_volume_mounts: cloneDockerVolumes(form.docker_volume_mounts),
     docker_network: form.docker_network,
-    docker_command: form.docker_command,
+    docker_deployment_script: form.docker_deployment_script,
     docker_health_enabled: form.docker_health_enabled,
     docker_health_command: form.docker_health_command,
     docker_health_interval: form.docker_health_interval,
@@ -471,7 +512,7 @@ function emptyDeploymentDraft(kind: PlanKind): DeploymentDraft {
     docker_environment_variables: [],
     docker_volume_mounts: [],
     docker_network: 'bridge',
-    docker_command: '',
+    docker_deployment_script: '',
     docker_health_enabled: false,
     docker_health_command: '',
     docker_health_interval: 30,
@@ -484,6 +525,7 @@ function emptyDeploymentDraft(kind: PlanKind): DeploymentDraft {
 
 function changeKind(kind: PlanKind) {
   if (kind === form.kind) return
+  const environmentID = form.environment_id
   const previousKind = form.kind
   rememberDeploymentDraft(previousKind)
   const next = deploymentDrafts[kind] || emptyDeploymentDraft(kind)
@@ -494,6 +536,46 @@ function changeKind(kind: PlanKind) {
     docker_environment_variables: cloneDockerVariables(next.docker_environment_variables),
     docker_volume_mounts: cloneDockerVolumes(next.docker_volume_mounts),
   })
+  form.environment_id = environmentID
+  reconcileExecutionTarget()
+}
+
+function changeEnvironment(environmentID: unknown) {
+  form.environment_id = typeof environmentID === 'string' ? environmentID : ''
+  form.host_id = ''
+  form.runtime_id = ''
+  const firstAvailable = availableKindOptions.value[0]?.value
+  if (firstAvailable && !availableKindOptions.value.some(option => option.value === form.kind)) changeKind(firstAvailable)
+  else reconcileExecutionTarget()
+}
+
+function reconcileExecutionTarget() {
+	if (!form.environment_id) {
+		form.host_id = ''
+		form.runtime_id = ''
+		return
+	}
+  if (form.kind === 'kubernetes') {
+    changeKubernetesRuntime(form.runtime_id)
+    return
+  }
+  if (executionHosts.value.length !== 1) {
+    form.host_id = ''
+    form.runtime_id = ''
+    return
+  }
+  form.host_id = executionHosts.value[0]?.id || ''
+  if (form.kind !== 'docker' && form.kind !== 'compose') {
+    form.runtime_id = ''
+    return
+  }
+  const host = hostByID.value.get(form.host_id)
+  form.runtime_id = host ? readyCapability(host, 'docker')?.runtime_id || '' : ''
+}
+
+function changeKubernetesRuntime(runtimeID: unknown) {
+  form.runtime_id = typeof runtimeID === 'string' ? runtimeID : ''
+  form.host_id = kubernetesExecutionHosts.value.length === 1 ? kubernetesExecutionHosts.value[0]?.id || '' : ''
 }
 
 function addDockerPort() {
@@ -538,14 +620,6 @@ async function readComposeFile(event: Event) {
   }
 }
 
-function changeSSHEnvironment(environmentID: unknown) {
-  const nextEnvironmentID = typeof environmentID === 'string' ? environmentID : ''
-  form.environment_id = nextEnvironmentID
-  if (!form.host_id) return
-  const host = hostByID.value.get(form.host_id)
-  if (!host || !environmentIDsOf(host).includes(nextEnvironmentID)) form.host_id = ''
-}
-
 function hostBelongsToEnvironment(hostID: string, environmentID: string) {
   const host = hostByID.value.get(hostID)
   return Boolean(host && environmentIDsOf(host).includes(environmentID))
@@ -579,8 +653,12 @@ function validateDockerConfig() {
     if (!/^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/.test(source) || !target.startsWith('/') || target === '/' || mountTargets.has(target)) return '命名卷标识必须合法，容器绝对路径不能重复'
     mountTargets.add(target)
   }
-  const command = commandLines(form.docker_command)
-  if (command.length > 32 || command.some(item => item.length > 4096)) return '启动命令最多 32 个参数，每行填写一个参数'
+  const dockerCommand = form.docker_deployment_script.trim()
+  if (dockerCommand.length > 256 * 1024 || dockerCommand.includes('\0')) return '自定义 Docker 命令无效或超过 256 KiB'
+  if (dockerCommand && !dockerCommand.includes('${ZRT_IMAGE}')) return '自定义 Docker 命令必须使用 ${ZRT_IMAGE} 引用流水线镜像'
+  if (dockerCommand && (ports.length || form.docker_environment_variables.length || form.docker_volume_mounts.length || form.docker_health_enabled)) {
+    return '自定义 Docker 命令会替代容器参数，请清空端口、环境变量、命名卷和自定义健康检查'
+  }
   if (form.docker_health_enabled) {
     const healthCommand = commandLines(form.docker_health_command)
     if (!healthCommand.length || healthCommand.length > 32) return '启用健康检查后，请按每行一个参数填写检查命令'
@@ -593,21 +671,24 @@ function validateDockerConfig() {
 }
 
 function validate() {
+  reconcileExecutionTarget()
   if (!form.name.trim()) return '请输入方案名称'
-  if (form.kind === 'script' && !form.environment_id) return t('environment.deployment.environmentRequired')
-  if (form.kind === 'script' && !form.host_id) return '请选择执行部署脚本的主机'
+  if (!form.environment_id) return t('environment.deployment.environmentRequired')
+  if (!availableKindOptions.value.some(option => option.value === form.kind)) return '当前环境不支持所选部署方式'
+  if (executionTargetError.value) return executionTargetError.value
+  if (form.kind === 'script' && !form.host_id) return '当前环境没有唯一可用的脚本执行主机'
   if (form.kind === 'script' && !hostBelongsToEnvironment(form.host_id, form.environment_id)) return t('environment.deployment.membershipInvalid')
   if (form.kind === 'script' && !form.script.trim()) return '请输入部署脚本'
   if (form.kind === 'script' && !validWorkingDirectory(form.working_directory)) return '工作目录必须是规范化绝对路径，或留空使用执行用户主目录'
-  if ((form.kind === 'docker' || form.kind === 'compose') && !form.runtime_id) return '请选择 Docker 连接'
-  if (form.kind === 'docker' && !form.workload_name.trim()) return '请输入 Docker 容器名称'
+  if ((form.kind === 'docker' || form.kind === 'compose') && !form.host_id) return '当前环境没有唯一可用的 Docker 执行主机'
+  if ((form.kind === 'docker' || form.kind === 'compose') && !targetCapabilityMatches(form.kind, form.host_id, form.runtime_id)) return '当前环境的 Docker 能力不可用'
   if (form.kind === 'docker') {
     const dockerConfigMessage = validateDockerConfig()
     if (dockerConfigMessage) return dockerConfigMessage
   }
   if (form.kind === 'compose' && !form.workload_name.trim()) return '请输入 Compose 目标服务名称'
   if (form.kind === 'compose' && !form.compose_yaml.trim()) return '请输入内联 Compose YAML'
-  if (form.kind === 'kubernetes' && !form.runtime_id) return '请选择 Kubernetes 集群'
+  if (form.kind === 'kubernetes' && (!form.host_id || !form.runtime_id || !targetCapabilityMatches(form.kind, form.host_id, form.runtime_id))) return '请选择当前环境内可唯一解析执行位置的 Kubernetes 集群'
   if (form.kind === 'kubernetes' && (!form.namespace.trim() || !form.workload_name.trim() || !form.container_name.trim())) return '请输入命名空间、Deployment 名称和容器名称'
   return ''
 }
@@ -615,19 +696,23 @@ function validate() {
 function savedTargetMatchesForm(plan: DeploymentPlan) {
   const target = plan.deployment_target
   if (!plan.deployment_target_id || !target || target.id !== plan.deployment_target_id || target.platform !== platform.value) return false
-  if (platform.value === 'ssh') return target.environment_id === form.environment_id && target.host_id === form.host_id
+  if (target.environment_id !== form.environment_id || target.host_id !== form.host_id) return false
+  if (platform.value === 'ssh') return true
   return target.runtime_id === form.runtime_id
 }
 
 async function testConnection() {
-  const validationMessage = platform.value === 'ssh' && !form.environment_id
+  reconcileExecutionTarget()
+  const validationMessage = !form.environment_id
     ? t('environment.deployment.environmentRequired')
-    : platform.value === 'ssh' && !form.host_id
-      ? '请选择主机'
+    : executionTargetError.value
+      ? executionTargetError.value
+      : platform.value !== 'kubernetes' && !form.host_id
+        ? '当前环境没有唯一可用的执行主机'
       : platform.value === 'ssh' && !hostBelongsToEnvironment(form.host_id, form.environment_id)
         ? t('environment.deployment.membershipInvalid')
-        : platform.value !== 'ssh' && !form.runtime_id
-          ? `请选择${platform.value === 'docker' ? ' Docker 连接' : ' Kubernetes 集群'}`
+        : platform.value !== 'ssh' && (!form.runtime_id || !targetCapabilityMatches(form.kind, form.host_id, form.runtime_id))
+          ? `请选择当前环境可用的${platform.value === 'docker' ? ' Docker 主机' : ' Kubernetes 集群'}`
           : ''
   if (validationMessage) {
     message.error(validationMessage)
@@ -647,7 +732,7 @@ async function testConnection() {
     message.success(platform.value === 'ssh'
       ? '主机连接正常'
       : platform.value === 'docker'
-        ? form.kind === 'compose' ? 'Docker 连接正常；部署时还会检查 Docker Compose 插件' : 'Docker 连接正常'
+        ? form.kind === 'compose' ? '执行主机的 Docker 能力正常；部署时还会检查 Docker Compose 插件' : '执行主机的 Docker 能力正常'
         : 'Kubernetes 集群连接正常')
   } catch (error) {
     message.error(apiErrorMessage(error))
@@ -668,7 +753,8 @@ function dockerConfigPayload(): DockerContainerConfig {
       type: 'volume', source: item.source.trim(), target: item.target.trim(), read_only: item.read_only,
     })),
     network: 'bridge',
-    command: commandLines(form.docker_command),
+    deployment_script: form.docker_deployment_script.trim(),
+    command: [],
     health_check: form.docker_health_enabled
       ? {
           enabled: true, command: commandLines(form.docker_health_command), interval_seconds: form.docker_health_interval,
@@ -692,8 +778,8 @@ async function save() {
       name: form.name.trim(),
       description: form.description.trim(),
       platform: platform.value,
-      environment_id: platform.value === 'ssh' ? form.environment_id : '',
-      host_id: platform.value === 'ssh' ? form.host_id : '',
+      environment_id: form.environment_id,
+      host_id: form.host_id,
       working_directory: platform.value === 'ssh' ? form.working_directory.trim() : '',
       runtime_id: platform.value === 'ssh' ? '' : form.runtime_id,
       namespace: platform.value === 'kubernetes' ? form.namespace.trim() : '',
@@ -802,72 +888,73 @@ onMounted(refresh)
         </div>
 
         <div class="form-section">
-          <header><b>2</b><div><strong>执行方式与配置</strong><small>选择方式后，一次填完运行位置、更新对象和执行参数。</small></div></header>
-          <a-form-item label="部署方式" required>
+          <header><b>2</b><div><strong>目标环境</strong><small>执行方式由环境内已就绪的主机和集群能力决定。</small></div></header>
+          <a-form-item :label="t('environment.deployment.environment')" required>
+            <div class="resource-select">
+              <a-select
+                v-model:value="form.environment_id"
+                show-search
+                :disabled="!canReadEnvironments"
+                :options="environmentOptions"
+                :placeholder="t('environment.deployment.environmentPlaceholder')"
+                @change="changeEnvironment"
+              />
+              <a-button v-if="auth.canAny(['deployment.manage'])" aria-label="创建环境" title="创建环境" @click="router.push('/environments?create=1')"><Plus :size="15" /></a-button>
+            </div>
+          </a-form-item>
+          <div v-if="!canReadEnvironments" class="permission-note">需要发布记录查看权限才能选择环境。</div>
+        </div>
+
+        <div class="form-section">
+          <header><b>3</b><div><strong>执行方式与配置</strong><small>只展示当前环境真实可用的执行方式。</small></div></header>
+          <a-alert v-if="!form.environment_id" type="info" show-icon message="请先选择目标环境" description="选择后会根据环境内主机和集群的已就绪能力显示可用的部署方式。" />
+          <a-alert v-else-if="!availableKindOptions.length" type="warning" show-icon message="当前环境没有可用的执行方式" description="请先为环境关联主机，并检查 SSH、Docker 或 Kubernetes 能力是否就绪。" />
+          <a-form-item v-else label="部署方式" required>
             <a-radio-group :value="form.kind" class="kind-picker">
-              <a-radio-button v-for="option in kindOptions" :key="option.value" :value="option.value" @click.prevent="changeKind(option.value)">
+              <a-radio-button v-for="option in availableKindOptions" :key="option.value" :value="option.value" @click.prevent="changeKind(option.value)">
                 <RuntimeBrandIcon :kind="planPlatform(option.value)" />
                 <span><strong>{{ option.label }}</strong><small>{{ option.hint }}</small></span>
               </a-radio-button>
             </a-radio-group>
           </a-form-item>
-          <div class="form-subtitle">运行位置与更新对象</div>
-          <div class="form-grid">
-            <a-form-item v-if="platform === 'ssh'" :label="t('environment.deployment.environment')" required>
-              <a-select
-                v-model:value="form.environment_id"
-                show-search
-                :disabled="!canReadEnvironments"
-                :options="sshEnvironmentOptions"
-                :placeholder="t('environment.deployment.environmentPlaceholder')"
-                @change="changeSSHEnvironment"
-              />
-            </a-form-item>
-            <a-form-item v-if="platform === 'ssh'" label="主机" required>
-              <div class="resource-select">
-                <a-select
-                  v-model:value="form.host_id"
-                  show-search
-                  :disabled="!canReadHosts || !canReadEnvironments || !form.environment_id"
-                  :options="sshHostOptions"
-                  :placeholder="t('environment.deployment.hostPlaceholder')"
-                />
-                <a-button v-if="auth.canAny(['cluster.manage'])" aria-label="创建主机" title="创建主机" @click="router.push('/hosts?create=1')">＋</a-button>
-              </div>
-            </a-form-item>
-            <a-form-item v-else class="span-2" :label="platform === 'docker' ? 'Docker 连接' : 'Kubernetes 集群'" required>
-              <div :class="{ 'resource-select': platform === 'kubernetes' && auth.canAny(['cluster.manage']) }">
-                <a-select v-model:value="form.runtime_id" show-search :disabled="!canReadRuntimes" :options="runtimeOptions" :placeholder="platform === 'docker' ? '选择 Docker 连接' : '选择 Kubernetes 集群'" />
-                <a-button
-                  v-if="platform === 'kubernetes' && auth.canAny(['cluster.manage'])"
-                  :aria-label="t('kubernetesCluster.action.add')"
-                  :title="t('kubernetesCluster.action.add')"
-                  @click="router.push('/hosts?create=kubernetes')"
-                ><Plus :size="15" /></a-button>
-              </div>
-            </a-form-item>
-
-            <a-form-item v-if="platform === 'ssh'" class="span-2" label="工作目录">
-              <a-input v-model:value="form.working_directory" placeholder="例如：/srv/apps/zrt；留空使用执行用户主目录" />
-            </a-form-item>
-            <a-form-item
-              v-if="platform === 'docker'"
+          <template v-if="form.environment_id && availableKindOptions.length">
+            <div class="form-subtitle">运行位置与更新对象</div>
+            <a-alert
+              v-if="executionTargetError"
               class="span-2"
-              :label="form.kind === 'compose' ? 'Compose 目标服务名称' : 'Docker 容器名称'"
-              required
-            >
-              <a-input v-model:value="form.workload_name" :placeholder="form.kind === 'compose' ? '例如：app（必须与 services 下的名称一致）' : '例如：zrt-backend-web'" />
-            </a-form-item>
-            <template v-if="platform === 'kubernetes'">
-              <a-form-item label="命名空间" required><a-input v-model:value="form.namespace" placeholder="default" /></a-form-item>
-              <a-form-item label="Deployment 名称" required><a-input v-model:value="form.workload_name" placeholder="例如：backend-web" /></a-form-item>
-              <a-form-item class="span-2" label="容器名称" required><a-input v-model:value="form.container_name" placeholder="Deployment Pod 模板中的容器名" /></a-form-item>
-            </template>
-          </div>
-          <div v-if="platform === 'ssh' && (!canReadHosts || !canReadEnvironments)" class="permission-note">需要发布记录查看权限才能选择环境和主机。</div>
-          <div v-else-if="platform !== 'ssh' && !canReadRuntimes" class="permission-note">需要主机与集群查看权限才能选择 Docker 连接或 Kubernetes 集群。</div>
-          <div class="form-subtitle">{{ form.kind === 'docker' ? '容器输入参数' : form.kind === 'compose' ? 'Compose 输入参数' : '部署参数' }}</div>
-          <template v-if="form.kind === 'docker'">
+              type="warning"
+              show-icon
+              message="环境执行位置无法唯一确定"
+              :description="executionTargetError"
+            />
+            <div class="form-grid">
+              <a-form-item v-if="platform === 'kubernetes'" class="span-2" label="Kubernetes 集群" required>
+                <div :class="{ 'resource-select': auth.canAny(['cluster.manage']) }">
+                  <a-select :value="form.runtime_id" show-search :disabled="!canReadRuntimes" :options="kubernetesRuntimeOptions" placeholder="选择当前环境关联的 Kubernetes 集群" @change="changeKubernetesRuntime" />
+                  <a-button
+                    v-if="auth.canAny(['cluster.manage'])"
+                    :aria-label="t('kubernetesCluster.action.add')"
+                    :title="t('kubernetesCluster.action.add')"
+                    @click="router.push('/hosts?create=kubernetes')"
+                  ><Plus :size="15" /></a-button>
+                </div>
+              </a-form-item>
+
+              <a-form-item v-if="platform === 'ssh'" class="span-2" label="工作目录">
+                <a-input v-model:value="form.working_directory" placeholder="例如：/srv/apps/zrt；留空使用执行用户主目录" />
+              </a-form-item>
+              <a-form-item v-if="form.kind === 'compose'" class="span-2" label="Compose 目标服务名称" required>
+                <a-input v-model:value="form.workload_name" placeholder="例如：app（必须与 services 下的名称一致）" />
+              </a-form-item>
+              <template v-if="platform === 'kubernetes'">
+                <a-form-item label="命名空间" required><a-input v-model:value="form.namespace" placeholder="default" /></a-form-item>
+                <a-form-item label="Deployment 名称" required><a-input v-model:value="form.workload_name" placeholder="例如：backend-web" /></a-form-item>
+                <a-form-item class="span-2" label="容器名称" required><a-input v-model:value="form.container_name" placeholder="Deployment Pod 模板中的容器名" /></a-form-item>
+              </template>
+            </div>
+            <div v-if="!canReadHosts || (platform === 'kubernetes' && !canReadRuntimes)" class="permission-note">需要主机与集群查看权限才能读取当前环境的执行能力。</div>
+            <div class="form-subtitle">{{ form.kind === 'docker' ? '容器输入参数' : form.kind === 'compose' ? 'Compose 输入参数' : '部署参数' }}</div>
+            <template v-if="form.kind === 'docker'">
             <a-alert
               class="artifact-image-notice"
               type="info"
@@ -876,6 +963,13 @@ onMounted(refresh)
               description="运行时会固定并校验不可变镜像，再按下面的输入参数创建或更新容器。"
             />
             <div class="runtime-inputs">
+              <div class="runtime-input-block">
+                <header><span><strong>Docker 容器名称</strong><small>可选；留空时使用应用名加短隔离标识，同一应用可在同一主机部署多次。</small></span></header>
+                <a-form-item label="容器名称（可选）">
+                  <a-input v-model:value="form.workload_name" placeholder="留空自动生成，例如 order_api-a1b2c3d4" />
+                </a-form-item>
+              </div>
+
               <div class="runtime-input-block">
                 <header>
                   <span><strong>端口映射</strong><small>不配置则不发布端口；默认监听地址为 127.0.0.1。</small></span>
@@ -891,6 +985,8 @@ onMounted(refresh)
                 <p class="field-help input-block-help">单容器固定使用 bridge 网络；多服务网络互联请使用 Docker Compose。</p>
               </div>
 
+              <a-collapse class="docker-advanced" :bordered="false">
+                <a-collapse-panel key="advanced" header="高级配置">
               <div class="runtime-input-block">
                 <header>
                   <span><strong>环境变量</strong><small>每项明确填写变量名和值。</small></span>
@@ -921,10 +1017,11 @@ onMounted(refresh)
               </div>
 
               <div class="runtime-input-block">
-                <header><span><strong>启动参数</strong><small>留空时使用镜像内置 ENTRYPOINT 与 CMD。</small></span></header>
-                <a-form-item label="命令参数（每行一个）">
-                  <a-textarea v-model:value="form.docker_command" :rows="4" placeholder="例如：&#10;server&#10;--port&#10;8080" />
+                <header><span><strong>自定义 Docker 命令</strong><small>在目标主机执行，填写后替代 ZRT 内置的容器参数和创建命令。</small></span></header>
+                <a-form-item label="Docker run 命令（可选）">
+                  <a-textarea v-model:value="form.docker_deployment_script" :rows="5" placeholder="docker run -d --name ${ZRT_CONTAINER_NAME} ${ZRT_IMAGE}" />
                 </a-form-item>
+                <p class="field-help input-block-help">${ZRT_IMAGE} 由流水线替换为已校验镜像；${ZRT_CONTAINER_NAME} 可选。仅允许单条 docker run，Shell 串联、特权模式和宿主机目录挂载会被拒绝。</p>
               </div>
 
               <div class="runtime-input-block">
@@ -941,8 +1038,10 @@ onMounted(refresh)
                   </div>
                 </template>
               </div>
+                </a-collapse-panel>
+              </a-collapse>
             </div>
-            <a-alert type="info" show-icon message="容器固定使用 bridge 网络和 unless-stopped 重启策略；不会启用特权模式、主机网络或 Docker Socket 挂载。" />
+            <a-alert type="info" show-icon message="内置方式固定使用 bridge 网络和 unless-stopped 重启策略；自定义命令同样禁止特权模式、主机网络和宿主机目录挂载。" />
           </template>
           <template v-if="form.kind === 'script'">
             <a-form-item label="部署脚本" required>
@@ -975,11 +1074,11 @@ onMounted(refresh)
               type="info"
               show-icon
               message="Compose 只描述目标服务的运行参数"
-              description="不会读取代码仓库中的 Compose 文件；所选 Docker 连接必须安装 Docker Compose v2 插件。"
+              description="不会读取代码仓库中的 Compose 文件；所选执行主机必须安装 Docker Compose v2 插件。"
             />
           </template>
-          <a-alert v-if="form.kind === 'docker'" type="info" show-icon message="首次部署会按这里的端口和启动配置创建容器，后续发布使用同一方案重建容器并保留可回退的旧镜像。" />
           <a-alert v-if="form.kind === 'kubernetes'" type="info" show-icon message="流水线会使用上游镜像制品的不可变 Digest，更新指定 Deployment 中的容器；对应构建方案必须绑定集群可访问的镜像仓库。" />
+          </template>
         </div>
       </a-form>
       <template #footer>
@@ -994,5 +1093,5 @@ onMounted(refresh)
 </template>
 
 <style scoped>
-.plan-layout{display:grid;min-height:560px;grid-template-columns:300px minmax(0,1fr);overflow:hidden}.plan-layout>aside{border-right:1px solid var(--zrt-border);background:var(--zrt-surface-soft)}aside>header{display:flex;align-items:center;justify-content:space-between;padding:16px}aside>header small{color:var(--zrt-muted)}.plan-list-item{width:calc(100% - 12px);margin:6px;border-radius:10px;background:transparent}.plan-list-item:hover,.plan-list-item.active{background:var(--zrt-primary-soft)}.plan-select{display:grid;width:100%;min-height:74px;align-items:center;grid-template-columns:38px minmax(0,1fr) 8px;gap:10px;padding:9px 10px;border:0;border-radius:10px;color:var(--zrt-text);background:transparent;cursor:pointer;text-align:left}.plan-select i{width:7px;height:7px;border-radius:50%;background:#28b66e}.plan-select i.inactive{background:#a8adb7}.plan-list-actions{display:flex;justify-content:flex-end;padding:0 5px 5px}.plan-list-actions :deep(.ant-btn){height:24px;padding:0 6px;font-size:11px}.plan-list-copy{min-width:0}.plan-list-copy strong,.plan-list-copy small,.plan-list-copy em{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.plan-list-copy small{margin-top:2px;color:var(--zrt-muted);font-size:12px}.plan-list-copy em{margin-top:2px;color:var(--zrt-muted);font-size:10px;font-style:normal}.brand{display:grid;width:36px;height:36px;place-items:center;border-radius:10px;background:var(--zrt-surface)}.brand.ssh{color:var(--zrt-muted)}.brand.docker{color:#2496ed}.brand.kubernetes{color:#326ce5}.brand :deep(svg){width:21px;height:21px}.plan-layout>main{min-width:0;padding:24px}.detail-header{display:flex;align-items:flex-start;justify-content:space-between;gap:18px;margin-bottom:24px}.detail-header h3,.detail-header p{margin:0}.detail-header p,.detail-header span{color:var(--zrt-muted)}.detail-header h3{margin:2px 0;font-size:22px}.detail-header>div:last-child{display:flex;flex:0 0 auto;align-items:center;gap:8px}.deployment-path{display:grid;align-items:center;grid-template-columns:minmax(0,1fr) 20px minmax(0,1fr) 20px minmax(0,1fr);gap:10px}.deployment-path article{display:flex;min-width:0;min-height:108px;align-items:center;gap:13px;padding:16px;border:1px solid var(--zrt-border);border-radius:12px;background:var(--zrt-surface-soft)}.deployment-path article>span{display:grid;width:40px;height:40px;flex:0 0 40px;place-items:center;border-radius:11px;color:var(--zrt-primary);background:var(--zrt-surface)}.deployment-path article>span svg{width:20px}.deployment-path article>div{min-width:0}.deployment-path small,.deployment-path strong,.deployment-path p{display:block;overflow:hidden;margin:0;text-overflow:ellipsis;white-space:nowrap}.deployment-path small{color:var(--zrt-muted);font-size:11px}.deployment-path strong{margin:3px 0;font-size:15px}.deployment-path p{color:var(--zrt-muted);font-size:11px}.path-arrow{width:17px;justify-self:center;color:var(--zrt-muted)}.plan-limit{display:flex;align-items:center;gap:12px;margin-top:16px;padding:14px 16px;border-radius:10px;background:var(--zrt-primary-soft)}.plan-limit>svg{width:20px;color:var(--zrt-primary)}.plan-limit small,.plan-limit strong{display:block}.plan-limit small{color:var(--zrt-muted);font-size:11px}.plan-limit p{margin:0 0 0 auto;color:var(--zrt-muted)}.empty-panel{display:grid;place-items:center}.form-section{margin-bottom:14px;padding:15px 16px 4px;border:1px solid var(--zrt-border);border-radius:11px;background:var(--zrt-surface-soft)}.form-section>header{display:flex;align-items:center;gap:10px;margin-bottom:14px}.form-section>header b{display:grid;width:26px;height:26px;flex:0 0 26px;place-items:center;border-radius:8px;color:var(--zrt-primary);background:var(--zrt-primary-soft)}.form-section>header strong,.form-section>header small{display:block}.form-section>header small{margin-top:1px;color:var(--zrt-muted);font-size:11px}.form-subtitle{margin:3px 0 12px;padding-top:12px;border-top:1px solid var(--zrt-border);color:var(--zrt-muted);font-size:12px;font-weight:600}.form-grid{display:grid;grid-template-columns:1fr 1fr;gap:0 14px}.span-2{grid-column:1/-1}.form-grid :deep(.ant-input-number){width:100%}.resource-select{display:grid;grid-template-columns:minmax(0,1fr) 34px;gap:8px}.resource-select>.ant-btn{padding:0}.permission-note,.field-help{margin:-4px 0 13px;color:var(--zrt-muted);font-size:12px}.kind-picker{display:grid!important;width:100%;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}.kind-picker :deep(.ant-radio-button-wrapper){display:flex;height:70px;align-items:center;gap:10px;padding:9px 11px;border:1px solid var(--zrt-border)!important;border-radius:10px!important;background:var(--zrt-surface);box-shadow:none!important;line-height:1.3}.kind-picker :deep(.ant-radio-button-wrapper::before){display:none}.kind-picker :deep(.ant-radio-button-wrapper-checked){border-color:color-mix(in srgb,var(--zrt-primary) 65%,var(--zrt-border))!important;background:var(--zrt-primary-soft)}.kind-picker :deep(.ant-radio-button-wrapper>svg){width:24px;height:24px;flex:0 0 24px}.kind-picker :deep(.ant-radio-button-wrapper span){min-width:0}.kind-picker :deep(.ant-radio-button-wrapper strong),.kind-picker :deep(.ant-radio-button-wrapper small){display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.kind-picker :deep(.ant-radio-button-wrapper small){margin-top:3px;color:var(--zrt-muted);font-size:10px}.artifact-image-notice{margin-bottom:12px}.runtime-inputs{display:grid;gap:10px;margin-bottom:12px}.runtime-input-block{padding:13px 14px 2px;border:1px solid var(--zrt-border);border-radius:10px;background:var(--zrt-surface)}.runtime-input-block>header{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:10px}.runtime-input-block>header span strong,.runtime-input-block>header span small{display:block}.runtime-input-block>header span small{margin-top:2px;color:var(--zrt-muted);font-size:11px}.runtime-input-block>header>.ant-btn{height:24px;padding:0}.runtime-input-block>.ant-form-item{margin-bottom:12px}.docker-row{display:grid;align-items:center;gap:8px;margin-bottom:8px}.docker-port-input-row{grid-template-columns:minmax(0,1fr) 112px 112px 86px 32px}.docker-port-input-row :deep(.ant-input-number){width:100%}.docker-key-value-row{grid-template-columns:minmax(0,1fr) minmax(0,1.4fr) 32px}.docker-volume-row{display:grid;align-items:center;grid-template-columns:minmax(0,1fr) minmax(0,1.35fr) auto 32px;gap:8px;margin-bottom:8px}.input-empty{margin:4px 0 10px;padding:12px;border:1px dashed var(--zrt-border);border-radius:8px;color:var(--zrt-muted);background:var(--zrt-surface-soft);font-size:12px;text-align:center}.input-block-help{margin:4px 0 10px}.health-toggle{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;margin:2px 0 12px}.health-toggle span strong,.health-toggle span small{display:block}.health-toggle span small{margin-top:3px;color:var(--zrt-muted);font-size:11px}.health-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px}.health-grid :deep(.ant-input-number){width:100%}.compose-import{display:flex;align-items:center;gap:8px;margin-bottom:10px}.compose-import span{color:var(--zrt-muted);font-size:12px}.file-input{display:none!important}.drawer-actions{display:flex;justify-content:flex-end;gap:8px}@media(max-width:1080px){.deployment-path{grid-template-columns:1fr}.path-arrow{transform:rotate(90deg)}}@media(max-width:760px){.plan-layout{grid-template-columns:1fr}.plan-layout>aside{max-height:300px;border-right:0;border-bottom:1px solid var(--zrt-border)}.form-grid,.kind-picker,.health-grid{grid-template-columns:1fr}.span-2{grid-column:auto}.detail-header{flex-direction:column}.plan-layout>main{padding:18px}.plan-limit{align-items:flex-start;flex-wrap:wrap}.plan-limit p{width:100%;margin:0}.docker-port-input-row,.docker-volume-row{grid-template-columns:1fr}.docker-key-value-row{grid-template-columns:1fr 32px}.docker-key-value-row>:nth-child(2){grid-column:1/-1}.compose-import{align-items:flex-start;flex-direction:column}}
+.plan-layout{display:grid;min-height:560px;grid-template-columns:300px minmax(0,1fr);overflow:hidden}.plan-layout>aside{border-right:1px solid var(--zrt-border);background:var(--zrt-surface-soft)}aside>header{display:flex;align-items:center;justify-content:space-between;padding:16px}aside>header small{color:var(--zrt-muted)}.plan-list-item{width:calc(100% - 12px);margin:6px;border-radius:10px;background:transparent}.plan-list-item:hover,.plan-list-item.active{background:var(--zrt-primary-soft)}.plan-select{display:grid;width:100%;min-height:74px;align-items:center;grid-template-columns:38px minmax(0,1fr) 8px;gap:10px;padding:9px 10px;border:0;border-radius:10px;color:var(--zrt-text);background:transparent;cursor:pointer;text-align:left}.plan-select i{width:7px;height:7px;border-radius:50%;background:#28b66e}.plan-select i.inactive{background:#a8adb7}.plan-list-actions{display:flex;justify-content:flex-end;padding:0 5px 5px}.plan-list-actions :deep(.ant-btn){height:24px;padding:0 6px;font-size:11px}.plan-list-copy{min-width:0}.plan-list-copy strong,.plan-list-copy small,.plan-list-copy em{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.plan-list-copy small{margin-top:2px;color:var(--zrt-muted);font-size:12px}.plan-list-copy em{margin-top:2px;color:var(--zrt-muted);font-size:10px;font-style:normal}.brand{display:grid;width:36px;height:36px;place-items:center;border-radius:10px;background:var(--zrt-surface)}.brand.ssh{color:var(--zrt-muted)}.brand.docker{color:#2496ed}.brand.kubernetes{color:#326ce5}.brand :deep(svg){width:21px;height:21px}.plan-layout>main{min-width:0;padding:24px}.detail-header{display:flex;align-items:flex-start;justify-content:space-between;gap:18px;margin-bottom:24px}.detail-header h3,.detail-header p{margin:0}.detail-header p,.detail-header span{color:var(--zrt-muted)}.detail-header h3{margin:2px 0;font-size:22px}.detail-header>div:last-child{display:flex;flex:0 0 auto;align-items:center;gap:8px}.deployment-path{display:grid;align-items:center;grid-template-columns:minmax(0,1fr) 20px minmax(0,1fr) 20px minmax(0,1fr);gap:10px}.deployment-path article{display:flex;min-width:0;min-height:108px;align-items:center;gap:13px;padding:16px;border:1px solid var(--zrt-border);border-radius:12px;background:var(--zrt-surface-soft)}.deployment-path article>span{display:grid;width:40px;height:40px;flex:0 0 40px;place-items:center;border-radius:11px;color:var(--zrt-primary);background:var(--zrt-surface)}.deployment-path article>span svg{width:20px}.deployment-path article>div{min-width:0}.deployment-path small,.deployment-path strong,.deployment-path p{display:block;overflow:hidden;margin:0;text-overflow:ellipsis;white-space:nowrap}.deployment-path small{color:var(--zrt-muted);font-size:11px}.deployment-path strong{margin:3px 0;font-size:15px}.deployment-path p{color:var(--zrt-muted);font-size:11px}.path-arrow{width:17px;justify-self:center;color:var(--zrt-muted)}.plan-limit{display:flex;align-items:center;gap:12px;margin-top:16px;padding:14px 16px;border-radius:10px;background:var(--zrt-primary-soft)}.plan-limit>svg{width:20px;color:var(--zrt-primary)}.plan-limit small,.plan-limit strong{display:block}.plan-limit small{color:var(--zrt-muted);font-size:11px}.plan-limit p{margin:0 0 0 auto;color:var(--zrt-muted)}.empty-panel{display:grid;place-items:center}.form-section{margin-bottom:14px;padding:15px 16px 4px;border:1px solid var(--zrt-border);border-radius:11px;background:var(--zrt-surface-soft)}.form-section>header{display:flex;align-items:center;gap:10px;margin-bottom:14px}.form-section>header b{display:grid;width:26px;height:26px;flex:0 0 26px;place-items:center;border-radius:8px;color:var(--zrt-primary);background:var(--zrt-primary-soft)}.form-section>header strong,.form-section>header small{display:block}.form-section>header small{margin-top:1px;color:var(--zrt-muted);font-size:11px}.form-subtitle{margin:3px 0 12px;padding-top:12px;border-top:1px solid var(--zrt-border);color:var(--zrt-muted);font-size:12px;font-weight:600}.form-grid{display:grid;grid-template-columns:1fr 1fr;gap:0 14px}.span-2{grid-column:1/-1}.form-grid :deep(.ant-input-number){width:100%}.resource-select{display:grid;grid-template-columns:minmax(0,1fr) 34px;gap:8px}.resource-select>.ant-btn{padding:0}.permission-note,.field-help{margin:-4px 0 13px;color:var(--zrt-muted);font-size:12px}.kind-picker{display:grid!important;width:100%;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}.kind-picker :deep(.ant-radio-button-wrapper){display:flex;height:70px;align-items:center;gap:10px;padding:9px 11px;border:1px solid var(--zrt-border)!important;border-radius:10px!important;background:var(--zrt-surface);box-shadow:none!important;line-height:1.3}.kind-picker :deep(.ant-radio-button-wrapper::before){display:none}.kind-picker :deep(.ant-radio-button-wrapper-checked){border-color:color-mix(in srgb,var(--zrt-primary) 65%,var(--zrt-border))!important;background:var(--zrt-primary-soft)}.kind-picker :deep(.ant-radio-button-wrapper>svg){width:24px;height:24px;flex:0 0 24px}.kind-picker :deep(.ant-radio-button-wrapper span){min-width:0}.kind-picker :deep(.ant-radio-button-wrapper strong),.kind-picker :deep(.ant-radio-button-wrapper small){display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.kind-picker :deep(.ant-radio-button-wrapper small){margin-top:3px;color:var(--zrt-muted);font-size:10px}.artifact-image-notice{margin-bottom:12px}.runtime-inputs{display:grid;gap:10px;margin-bottom:12px}.runtime-input-block{padding:13px 14px 2px;border:1px solid var(--zrt-border);border-radius:10px;background:var(--zrt-surface)}.runtime-input-block>header{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:10px}.runtime-input-block>header span strong,.runtime-input-block>header span small{display:block}.runtime-input-block>header span small{margin-top:2px;color:var(--zrt-muted);font-size:11px}.runtime-input-block>header>.ant-btn{height:24px;padding:0}.runtime-input-block>.ant-form-item{margin-bottom:12px}.docker-row{display:grid;align-items:center;gap:8px;margin-bottom:8px}.docker-port-input-row{grid-template-columns:minmax(0,1fr) 112px 112px 86px 32px}.docker-port-input-row :deep(.ant-input-number){width:100%}.docker-key-value-row{grid-template-columns:minmax(0,1fr) minmax(0,1.4fr) 32px}.docker-volume-row{display:grid;align-items:center;grid-template-columns:minmax(0,1fr) minmax(0,1.35fr) auto 32px;gap:8px;margin-bottom:8px}.input-empty{margin:4px 0 10px;padding:12px;border:1px dashed var(--zrt-border);border-radius:8px;color:var(--zrt-muted);background:var(--zrt-surface-soft);font-size:12px;text-align:center}.input-block-help{margin:4px 0 10px}.docker-advanced{border:1px solid var(--zrt-border);border-radius:10px;background:var(--zrt-surface-soft)}.docker-advanced :deep(.ant-collapse-header){align-items:center!important;padding:13px 14px!important;font-weight:650}.docker-advanced :deep(.ant-collapse-content-box){display:grid;gap:10px;padding:0 10px 10px!important}.health-toggle{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;margin:2px 0 12px}.health-toggle span strong,.health-toggle span small{display:block}.health-toggle span small{margin-top:3px;color:var(--zrt-muted);font-size:11px}.health-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px}.health-grid :deep(.ant-input-number){width:100%}.compose-import{display:flex;align-items:center;gap:8px;margin-bottom:10px}.compose-import span{color:var(--zrt-muted);font-size:12px}.file-input{display:none!important}.drawer-actions{display:flex;justify-content:flex-end;gap:8px}@media(max-width:1080px){.deployment-path{grid-template-columns:1fr}.path-arrow{transform:rotate(90deg)}}@media(max-width:760px){.plan-layout{grid-template-columns:1fr}.plan-layout>aside{max-height:300px;border-right:0;border-bottom:1px solid var(--zrt-border)}.form-grid,.kind-picker,.health-grid{grid-template-columns:1fr}.span-2{grid-column:auto}.detail-header{flex-direction:column}.plan-layout>main{padding:18px}.plan-limit{align-items:flex-start;flex-wrap:wrap}.plan-limit p{width:100%;margin:0}.docker-port-input-row,.docker-volume-row{grid-template-columns:1fr}.docker-key-value-row{grid-template-columns:1fr 32px}.docker-key-value-row>:nth-child(2){grid-column:1/-1}.compose-import{align-items:flex-start;flex-direction:column}}
 </style>

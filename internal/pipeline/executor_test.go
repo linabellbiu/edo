@@ -42,7 +42,7 @@ func TestTransientBuildErrorUsesTypedCauses(t *testing.T) {
 func TestPipelineKeepsRunningWhenDuplicateDeliveryFindsActiveRelease(t *testing.T) {
 	service, db, _, repositoryID := newPipelineTestService(t)
 	application, err := service.CreateApplication(context.Background(), "admin", ApplicationInput{
-		Name: "幂等发布应用", RepositoryID: repositoryID, PollIntervalSeconds: 60,
+		Name: "idempotent_deploy", RepositoryID: repositoryID, PollIntervalSeconds: 60,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -72,7 +72,7 @@ func TestPipelineKeepsRunningWhenDuplicateDeliveryFindsActiveRelease(t *testing.
 func TestPipelineMarksRunFailedWhenExistingReleaseAlreadyFailed(t *testing.T) {
 	service, db, _, repositoryID := newPipelineTestService(t)
 	application, err := service.CreateApplication(context.Background(), "admin", ApplicationInput{
-		Name: "失败发布应用", RepositoryID: repositoryID, PollIntervalSeconds: 60,
+		Name: "failed_deploy", RepositoryID: repositoryID, PollIntervalSeconds: 60,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -102,7 +102,7 @@ func TestPipelineMarksRunFailedWhenExistingReleaseAlreadyFailed(t *testing.T) {
 func TestFailExecutionDoesNotOverwriteNewTaskState(t *testing.T) {
 	service, db, _, repositoryID := newPipelineTestService(t)
 	application, err := service.CreateApplication(context.Background(), "admin", ApplicationInput{
-		Name: "失败状态并发校验", RepositoryID: repositoryID, PollIntervalSeconds: 60,
+		Name: "failure_state_validation", RepositoryID: repositoryID, PollIntervalSeconds: 60,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -225,7 +225,7 @@ func TestCompletedDeploymentAutomaticallyAdvancesOrdinaryPipeline(t *testing.T) 
 		t.Run(test.name, func(t *testing.T) {
 			service, db, _, repositoryID := newPipelineTestService(t)
 			application, err := service.CreateApplication(context.Background(), "admin", ApplicationInput{
-				Name: "部署推进" + test.name, RepositoryID: repositoryID, PollIntervalSeconds: 60,
+				Name: "deploy_advance", RepositoryID: repositoryID, PollIntervalSeconds: 60,
 			})
 			if err != nil {
 				t.Fatal(err)
@@ -331,7 +331,7 @@ func TestLoadExecutionRejectsRegistryArtifactOutsideBoundRegistry(t *testing.T) 
 	}
 	service.ConfigureArtifacts(artifactService)
 	application, err := service.CreateApplication(context.Background(), "admin", ApplicationInput{
-		Name: "仓库绑定校验应用", RepositoryID: repositoryID, PollIntervalSeconds: 60,
+		Name: "registry_binding_validation", RepositoryID: repositoryID, PollIntervalSeconds: 60,
 	})
 	if err != nil {
 		t.Fatal(err)

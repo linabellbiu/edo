@@ -407,15 +407,11 @@ func (s *Service) executePipelineBuild(ctx context.Context, prepared *buildExecu
 		if err := s.updateExecutionPhase(ctx, &prepared.run, "build", "正在构建并推送 OCI 镜像 "+image); err != nil {
 			return nil, err
 		}
-		digestRef, cacheWarning, err := s.docker.BuildAndPushWithOptions(
+		digestRef, err := s.docker.BuildAndPushWithOptions(
 			ctx, contextDirectory, dockerfile, image, auth, options, timeout, output,
 		)
 		if err != nil {
 			return nil, err
-		}
-		if cacheWarning != nil && s.logger != nil {
-			s.logger.Warn("构建缓存未命中或更新失败，正式镜像已成功推送",
-				"operation", "pipeline_build_cache", "pipeline_run_id", prepared.run.ID, "err", cacheWarning)
 		}
 		return s.artifacts.CreateImage(ctx, artifact.ImageInput{
 			BuildMetadata: metadata, Name: image, StorageKind: model.ArtifactStorageKindRegistry,

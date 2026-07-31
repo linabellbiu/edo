@@ -46,6 +46,7 @@ type WorkflowInput struct {
 type WorkflowCreateInput struct {
 	Name               string
 	WorkflowTemplateID string
+	PresetKey          string
 }
 
 type WorkflowIssue struct {
@@ -187,7 +188,11 @@ func (s *Service) CreateApplicationWorkflow(
 	}
 	input.Name = strings.TrimSpace(input.Name)
 	input.WorkflowTemplateID = strings.TrimSpace(input.WorkflowTemplateID)
+	input.PresetKey = strings.ToLower(strings.TrimSpace(input.PresetKey))
 	if input.Name != "" && !validResourceName(input.Name) {
+		return nil, ErrInvalidWorkflow
+	}
+	if input.WorkflowTemplateID != "" && input.PresetKey != "" {
 		return nil, ErrInvalidWorkflow
 	}
 	now := time.Now().UTC()
@@ -196,6 +201,11 @@ func (s *Service) CreateApplicationWorkflow(
 	workflow, err := s.newApplicationWorkflow(ctx, &copyApplication, actorID, now)
 	if err != nil {
 		return nil, err
+	}
+	if input.PresetKey != "" {
+		if err := applyWorkflowPreset(workflow, input.PresetKey); err != nil {
+			return nil, err
+		}
 	}
 	if input.Name != "" {
 		workflow.Name = input.Name

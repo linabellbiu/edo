@@ -67,6 +67,12 @@ type hostResponse struct {
 	UpdatedAt             time.Time                      `json:"updated_at"`
 }
 
+type hostStatusResponse struct {
+	ID           string                   `json:"id"`
+	IsActive     bool                     `json:"is_active"`
+	Capabilities []hostCapabilityResponse `json:"capabilities"`
+}
+
 func (h hostHandler) list(c *gin.Context) {
 	hosts, err := h.service.List(c.Request.Context())
 	if err != nil {
@@ -77,6 +83,23 @@ func (h hostHandler) list(c *gin.Context) {
 	response := make([]hostResponse, 0, len(hosts))
 	for i := range hosts {
 		response = append(response, toHostResponse(hosts[i]))
+	}
+	c.JSON(http.StatusOK, gin.H{"hosts": response})
+}
+
+func (h hostHandler) listStatuses(c *gin.Context) {
+	statuses, err := h.service.ListStatuses(c.Request.Context())
+	if err != nil {
+		h.logger.Error("查询主机状态失败", "operation", "host_status_list", "request_id", requestIDFrom(c), "err", err)
+		writeInternalError(c)
+		return
+	}
+	response := make([]hostStatusResponse, 0, len(statuses))
+	for i := range statuses {
+		response = append(response, hostStatusResponse{
+			ID: statuses[i].HostID, IsActive: statuses[i].IsActive,
+			Capabilities: toHostCapabilityResponses(statuses[i].Capabilities),
+		})
 	}
 	c.JSON(http.StatusOK, gin.H{"hosts": response})
 }
@@ -248,14 +271,7 @@ func toHostInput(request hostRequest) hostmanager.Input {
 }
 
 func toHostResponse(detail hostmanager.Detail) hostResponse {
-	capabilities := make([]hostCapabilityResponse, 0, len(detail.Capabilities))
-	for i := range detail.Capabilities {
-		capabilities = append(capabilities, hostCapabilityResponse{
-			Kind: detail.Capabilities[i].Kind, RuntimeID: detail.Capabilities[i].RuntimeID,
-			Status: detail.Capabilities[i].Status, Version: detail.Capabilities[i].Version,
-			UseSudo: detail.Capabilities[i].UseSudo,
-		})
-	}
+	capabilities := toHostCapabilityResponses(detail.Capabilities)
 	environmentIDs := detail.EnvironmentIDs
 	if environmentIDs == nil {
 		environmentIDs = []string{}
@@ -275,4 +291,16 @@ func toHostResponse(detail hostmanager.Detail) hostResponse {
 		CredentialConfigured: detail.Host.SSHCredentialCiphertext != "",
 		CreatedBy:            detail.Host.CreatedBy, CreatedAt: detail.Host.CreatedAt, UpdatedAt: detail.Host.UpdatedAt,
 	}
+}
+
+func toHostCapabilityResponses(capabilities []model.HostCapability) []hostCapabilityResponse {
+	response := make([]hostCapabilityResponse, 0, len(capabilities))
+	for i := range capabilities {
+		response = append(response, hostCapabilityResponse{
+			Kind: capabilities[i].Kind, RuntimeID: capabilities[i].RuntimeID,
+			Status: capabilities[i].Status, Version: capabilities[i].Version,
+			UseSudo: capabilities[i].UseSudo,
+		})
+	}
+	return response
 }

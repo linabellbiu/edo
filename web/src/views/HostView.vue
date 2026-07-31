@@ -6,7 +6,7 @@ import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
 
 import client from '@/api/client'
-import { capabilityOf, environmentIDsOf, listEnvironments, listHosts, type HostCapabilityKind, type InfrastructureEnvironment, type InfrastructureHost } from '@/api/infrastructure'
+import { capabilityOf, environmentIDsOf, listEnvironments, listHosts, listHostStatuses, mergeHostStatuses, type HostCapabilityKind, type InfrastructureEnvironment, type InfrastructureHost } from '@/api/infrastructure'
 import { apiErrorMessage } from '@/api/resources'
 import HostDrawer from '@/components/HostDrawer.vue'
 import KubernetesClusterDrawer from '@/components/KubernetesClusterDrawer.vue'
@@ -31,6 +31,10 @@ const editingHost = ref<InfrastructureHost>()
 let statusTimer: number | undefined
 let statusRefreshing = false
 let statusErrorShown = false
+let lastStatusRefreshAt = 0
+
+const statusPollInterval = 5000
+const statusRefreshDeduplicationWindow = 1000
 
 const selected = computed(() => hosts.value.find(host => host.id === selectedID.value))
 const environmentNames = computed(() => new Map(environments.value.map(environment => [environment.id, environment.name])))
@@ -69,10 +73,17 @@ async function refresh() {
 }
 
 async function refreshStatuses() {
-  if (statusRefreshing) return
+  const now = Date.now()
+  if (document.hidden || loading.value || statusRefreshing || now - lastStatusRefreshAt < statusRefreshDeduplicationWindow) return
   statusRefreshing = true
+  lastStatusRefreshAt = now
   try {
-    hosts.value = await listHosts()
+    const merged = mergeHostStatuses(hosts.value, await listHostStatuses())
+    if (!merged) {
+      await refresh()
+      return
+    }
+    hosts.value = merged
     if (!hosts.value.some(host => host.id === selectedID.value)) selectedID.value = hosts.value[0]?.id ?? ''
     statusErrorShown = false
   } catch (error) {
@@ -81,6 +92,10 @@ async function refreshStatuses() {
   } finally {
     statusRefreshing = false
   }
+}
+
+function refreshVisibleStatuses() {
+  if (!document.hidden) void refreshStatuses()
 }
 
 function create() {
@@ -183,12 +198,17 @@ watch(() => route.query.create, value => {
 }, { immediate: true })
 
 onMounted(() => {
-  statusTimer = window.setInterval(() => void refreshStatuses(), 1000)
+  lastStatusRefreshAt = Date.now()
+  statusTimer = window.setInterval(refreshVisibleStatuses, statusPollInterval)
+  document.addEventListener('visibilitychange', refreshVisibleStatuses)
+  window.addEventListener('focus', refreshVisibleStatuses)
   void refresh()
 })
 
 onBeforeUnmount(() => {
   if (statusTimer !== undefined) window.clearInterval(statusTimer)
+  document.removeEventListener('visibilitychange', refreshVisibleStatuses)
+  window.removeEventListener('focus', refreshVisibleStatuses)
 })
 </script>
 

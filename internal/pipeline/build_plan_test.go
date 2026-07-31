@@ -55,7 +55,7 @@ func TestBuildPlanCanBeUpdatedDisabledAndSoftDeleted(t *testing.T) {
 		t.Fatalf("创建测试部署方案失败: %v", err)
 	}
 	application, err := service.CreateApplication(ctx, "admin", ApplicationInput{
-		Name: "流水线引用构建方案的应用", RepositoryID: repositoryID, PollIntervalSeconds: 60,
+		Name: "build_plan_reference", RepositoryID: repositoryID, PollIntervalSeconds: 60,
 	})
 	if err != nil {
 		t.Fatalf("创建测试应用失败: %v", err)

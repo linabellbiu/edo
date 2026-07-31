@@ -103,10 +103,11 @@ func TestDockerBuildAndComposeIntegration(t *testing.T) {
 		_, _ = apiClient.VolumeRemove(cleanupCtx, actualVolume, client.VolumeRemoveOptions{Force: true})
 	}()
 	previousContainer, warning, err := service.DeployPreparedContainer(
-		ctx, LocalEndpointID, directTargetID, containerName, image, imageID, "deployment-container-"+identity,
+		ctx, LocalEndpointID, directTargetID, containerName, image, "integration:"+identity,
+		imageID, "deployment-container-"+identity,
 		90*time.Second, model.DockerContainerConfig{VolumeMounts: []model.DockerVolumeMount{{
 			Type: "volume", Source: logicalVolume, Target: "/data",
-		}}}, RegistryAuth{},
+		}}}, RegistryAuth{}, io.Discard, io.Discard,
 	)
 	if err != nil || warning != nil || previousContainer != (ImageSnapshot{}) {
 		t.Fatalf("真实 Docker 容器发布失败: previous=%+v warning=%v err=%v", previousContainer, warning, err)
@@ -116,9 +117,12 @@ func TestDockerBuildAndComposeIntegration(t *testing.T) {
 		deployedContainer.Container.Config.Image != imageID || deployedContainer.Container.Image != imageID {
 		t.Fatalf("Docker 没有直接按固定 Image ID 启动: container=%+v err=%v", deployedContainer.Container, err)
 	}
+	if deployedContainer.Container.Config.Labels[managedImageDisplayLabel] != "integration:"+identity {
+		t.Fatalf("Docker 容器没有保存简短展示版本: %+v", deployedContainer.Container.Config.Labels)
+	}
 	if _, _, err := service.DeployPreparedContainer(
-		ctx, LocalEndpointID, "other-"+directTargetID, containerName, image, imageID,
-		"deployment-other-"+identity, 90*time.Second, model.DockerContainerConfig{}, RegistryAuth{},
+		ctx, LocalEndpointID, "other-"+directTargetID, containerName, image, "integration:"+identity, imageID,
+		"deployment-other-"+identity, 90*time.Second, model.DockerContainerConfig{}, RegistryAuth{}, io.Discard, io.Discard,
 	); err == nil || !strings.Contains(err.Error(), "不属于当前 ZRT 部署目标") {
 		t.Fatalf("其他部署目标仍可替换同名容器: %v", err)
 	}

@@ -41,6 +41,12 @@ export interface InfrastructureHost {
   updated_at?: string
 }
 
+export interface InfrastructureHostStatus {
+  id: string
+  is_active: boolean
+  capabilities: HostCapability[]
+}
+
 export interface InfrastructureEnvironment {
   id: string
   name: string
@@ -54,6 +60,24 @@ export interface InfrastructureEnvironment {
 export async function listHosts(): Promise<InfrastructureHost[]> {
   const response = await client.get<{ hosts: InfrastructureHost[] }>('/hosts')
   return response.data.hosts ?? []
+}
+
+export async function listHostStatuses(): Promise<InfrastructureHostStatus[]> {
+  const response = await client.get<{ hosts: InfrastructureHostStatus[] }>('/hosts/statuses')
+  return response.data.hosts ?? []
+}
+
+export function mergeHostStatuses(
+  hosts: InfrastructureHost[],
+  statuses: InfrastructureHostStatus[],
+): InfrastructureHost[] | undefined {
+  if (hosts.length !== statuses.length) return undefined
+  const statusByID = new Map(statuses.map(status => [status.id, status]))
+  if (hosts.some(host => !statusByID.has(host.id))) return undefined
+  return hosts.map(host => {
+    const status = statusByID.get(host.id)!
+    return { ...host, is_active: status.is_active, capabilities: status.capabilities }
+  })
 }
 
 export async function listEnvironments(): Promise<InfrastructureEnvironment[]> {

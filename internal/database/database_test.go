@@ -22,6 +22,22 @@ func (legacyRepositoryObservationEnvironment) TableName() string {
 	return "application_repository_observations"
 }
 
+type legacyDeploymentTargetEnvironmentForTest struct {
+	Environment model.EnvironmentType `gorm:"column:environment;type:varchar(16);not null;default:'';index:idx_deployment_targets_environment"`
+}
+
+func (legacyDeploymentTargetEnvironmentForTest) TableName() string {
+	return "deployment_targets"
+}
+
+type legacyDeploymentRecordEnvironmentForTest struct {
+	Environment model.EnvironmentType `gorm:"column:environment;type:varchar(16);not null;default:'';index:idx_deployment_records_environment"`
+}
+
+func (legacyDeploymentRecordEnvironmentForTest) TableName() string {
+	return "deployment_records"
+}
+
 func TestSQLiteMigrationIsIdempotent(t *testing.T) {
 	cfg := config.Database{
 		Driver:          "sqlite",
@@ -146,6 +162,150 @@ func TestSQLiteUsesPureGoDriver(t *testing.T) {
 	}
 	if err := db.Create(&uniqueRecord{Name: "same"}).Error; !errors.Is(err, gorm.ErrDuplicatedKey) {
 		t.Fatalf("重复键错误未转换: %v", err)
+	}
+}
+
+func TestDeploymentEnvironmentMigrationRemovesLegacyColumns(t *testing.T) {
+	db, err := Open(context.Background(), config.Database{
+		Driver:          "sqlite",
+		DSN:             "file:deployment_environment_upgrade?mode=memory&cache=shared",
+		MaxOpenConns:    1,
+		MaxIdleConns:    1,
+		ConnMaxLifetime: time.Minute,
+	}, slog.Default())
+	if err != nil {
+		t.Fatalf("打开 SQLite 失败: %v", err)
+	}
+	defer Close(db)
+	if err := Migrate(context.Background(), db); err != nil {
+		t.Fatalf("初始化迁移失败: %v", err)
+	}
+	if err := db.Exec("DELETE FROM schema_migrations WHERE version = ?", "202607310054").Error; err != nil {
+		t.Fatalf("重置部署环境字段迁移版本失败: %v", err)
+	}
+	legacyStatements := []string{
+		`ALTER TABLE "deployment_targets" ADD COLUMN "environment" varchar(16) NOT NULL`,
+		`CREATE INDEX "idx_deployment_targets_environment" ON "deployment_targets"("environment")`,
+		`ALTER TABLE "deployment_records" ADD COLUMN "environment" varchar(16) NOT NULL`,
+		`CREATE INDEX "idx_deployment_records_environment" ON "deployment_records"("environment")`,
+	}
+	for _, statement := range legacyStatements {
+		if err := db.Exec(statement).Error; err != nil {
+			t.Fatalf("恢复部署旧环境字段失败: %v", err)
+		}
+	}
+	now := time.Now().UTC()
+	if err := db.Exec(`INSERT INTO deployment_targets
+		(id,name,platform,environment,runtime_id,workload_name,is_active,created_by,created_at,updated_at)
+		VALUES (?,?,?,?,?,?,?,?,?,?)`,
+		"legacy-target", "旧部署目标", model.DeploymentDocker, model.EnvironmentDevelopment,
+		"legacy-runtime", "legacy-app", true, "admin", now, now,
+	).Error; err != nil {
+		t.Fatalf("写入旧部署目标失败: %v", err)
+	}
+	if err := db.Exec(`INSERT INTO deployment_records
+		(id,target_id,target_name,platform,environment,runtime_id,workload_name,operation,image,
+		 command_script,compose_yaml,docker_config,status,requested_by,created_at,updated_at)
+		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		"legacy-record", "legacy-target", "旧部署目标", model.DeploymentDocker, model.EnvironmentDevelopment,
+		"legacy-runtime", "legacy-app", model.DeploymentRelease, "example.invalid/app@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		"", "", "{}", model.DeploymentSucceeded, "admin", now, now,
+	).Error; err != nil {
+		t.Fatalf("写入旧发布记录失败: %v", err)
+	}
+
+	if err := Migrate(context.Background(), db); err != nil {
+		t.Fatalf("升级部署旧环境字段失败: %v", err)
+	}
+	for _, table := range []any{&model.DeploymentTarget{}, &model.DeploymentRecord{}} {
+		hasEnvironment, err := physicalColumnExists(db, table, "environment")
+		if err != nil {
+			t.Fatalf("检查部署旧环境字段失败: %v", err)
+		}
+		if hasEnvironment {
+			t.Fatalf("升级后仍保留部署旧环境字段: %T", table)
+		}
+	}
+	for _, value := range []any{&model.DeploymentTarget{}, &model.DeploymentRecord{}} {
+		var count int64
+		if err := db.Model(value).Where("id LIKE ?", "legacy-%").Count(&count).Error; err != nil {
+			t.Fatalf("检查迁移后的历史部署数据失败: %v", err)
+		}
+		if count != 1 {
+			t.Fatalf("迁移后历史部署数据数量错误: model=%T count=%d", value, count)
+		}
+	}
+
+	newTarget := model.DeploymentTarget{
+		ID: "new-target", Name: "新部署目标", Platform: model.DeploymentDocker,
+		RuntimeID: "new-runtime", WorkloadName: "new-app", RolloutTimeout: 300,
+		IsActive: true, CreatedBy: "admin", CreatedAt: now, UpdatedAt: now,
+	}
+	if err := db.Create(&newTarget).Error; err != nil {
+		t.Fatalf("迁移后无法创建部署目标: %v", err)
+	}
+	newRecord := model.DeploymentRecord{
+		ID: "new-record", TargetID: newTarget.ID, TargetName: newTarget.Name,
+		Platform: model.DeploymentDocker, RuntimeID: newTarget.RuntimeID, WorkloadName: newTarget.WorkloadName,
+		RolloutTimeout: 300, Operation: model.DeploymentRelease,
+		Image:        "example.invalid/app@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+		DockerConfig: model.DockerContainerConfig{}, Status: model.DeploymentQueued,
+		RequestedBy: "admin", CreatedAt: now, UpdatedAt: now,
+	}
+	if err := db.Create(&newRecord).Error; err != nil {
+		t.Fatalf("迁移后无法创建发布记录: %v", err)
+	}
+}
+
+func TestImageRegistryProviderMigrationRepairsConflictingRows(t *testing.T) {
+	db, err := Open(context.Background(), config.Database{
+		Driver:          "sqlite",
+		DSN:             "file:image_registry_provider_upgrade?mode=memory&cache=shared",
+		MaxOpenConns:    1,
+		MaxIdleConns:    1,
+		ConnMaxLifetime: time.Minute,
+	}, slog.Default())
+	if err != nil {
+		t.Fatalf("打开 SQLite 失败: %v", err)
+	}
+	defer Close(db)
+	if err := Migrate(context.Background(), db); err != nil {
+		t.Fatalf("初始化迁移失败: %v", err)
+	}
+	if err := db.Exec("DELETE FROM schema_migrations WHERE version = ?", "202607310055").Error; err != nil {
+		t.Fatalf("重置镜像仓库语义迁移版本失败: %v", err)
+	}
+	now := time.Now().UTC()
+	registries := []model.ImageRegistry{
+		{
+			ID: "aliyun-wrong-provider", Name: "阿里云", Provider: model.RegistryDockerHub,
+			Endpoint: "https://registry.cn-shenzhen.aliyuncs.com", Namespace: "team",
+			IsActive: true, CreatedBy: "admin", CreatedAt: now, UpdatedAt: now,
+		},
+		{
+			ID: "docker-hub-alias", Name: "Docker Hub", Provider: model.RegistryDockerHub,
+			Endpoint: "https://registry-1.docker.io", Namespace: "team", AllowInsecureHTTP: true,
+			IsActive: true, CreatedBy: "admin", CreatedAt: now, UpdatedAt: now,
+		},
+	}
+	if err := db.Create(&registries).Error; err != nil {
+		t.Fatalf("写入旧镜像仓库配置失败: %v", err)
+	}
+	if err := Migrate(context.Background(), db); err != nil {
+		t.Fatalf("执行镜像仓库语义迁移失败: %v", err)
+	}
+	var aliyun, dockerHub model.ImageRegistry
+	if err := db.First(&aliyun, "id = ?", "aliyun-wrong-provider").Error; err != nil {
+		t.Fatalf("读取阿里云仓库失败: %v", err)
+	}
+	if aliyun.Provider != model.RegistryGeneric || aliyun.Endpoint != "https://registry.cn-shenzhen.aliyuncs.com" {
+		t.Fatalf("阿里云仓库没有保留地址并修正类型: %+v", aliyun)
+	}
+	if err := db.First(&dockerHub, "id = ?", "docker-hub-alias").Error; err != nil {
+		t.Fatalf("读取 Docker Hub 仓库失败: %v", err)
+	}
+	if dockerHub.Provider != model.RegistryDockerHub || dockerHub.Endpoint != model.DockerHubEndpoint || dockerHub.AllowInsecureHTTP {
+		t.Fatalf("Docker Hub 仓库没有规范化固定地址: %+v", dockerHub)
 	}
 }
 
@@ -874,9 +1034,52 @@ func TestExternalDatabaseMigration(t *testing.T) {
 			if !db.Migrator().HasColumn(&model.ApplicationRepositoryObservation{}, "action") {
 				t.Fatalf("%s PR 监听动作游标字段未创建", test.name)
 			}
+			exerciseDeploymentEnvironmentColumnUpgrade(t, ctx, db, test.driver)
 			exerciseExternalExecutionConfigUpgrade(t, db, test.driver)
 			exerciseRepositoryObservationEnvironmentUpgrade(t, ctx, db, test.driver)
 		})
+	}
+}
+
+func exerciseDeploymentEnvironmentColumnUpgrade(t *testing.T, ctx context.Context, db *gorm.DB, databaseName string) {
+	t.Helper()
+	legacyColumns := []struct {
+		value any
+		index string
+	}{
+		{value: &legacyDeploymentTargetEnvironmentForTest{}, index: "idx_deployment_targets_environment"},
+		{value: &legacyDeploymentRecordEnvironmentForTest{}, index: "idx_deployment_records_environment"},
+	}
+	for _, column := range legacyColumns {
+		hasEnvironment, err := physicalColumnExists(db, column.value, "environment")
+		if err != nil {
+			t.Fatalf("检查 %s 部署旧环境字段失败: %v", databaseName, err)
+		}
+		if !hasEnvironment {
+			if err := db.Migrator().AddColumn(column.value, "Environment"); err != nil {
+				t.Fatalf("构造 %s 部署旧环境字段失败: %v", databaseName, err)
+			}
+		}
+		if !db.Migrator().HasIndex(column.value, column.index) {
+			if err := db.Migrator().CreateIndex(column.value, "Environment"); err != nil {
+				t.Fatalf("构造 %s 部署旧环境索引失败: %v", databaseName, err)
+			}
+		}
+	}
+	if err := db.Exec("DELETE FROM schema_migrations WHERE version = ?", "202607310054").Error; err != nil {
+		t.Fatalf("重置 %s 部署旧环境字段迁移版本失败: %v", databaseName, err)
+	}
+	if err := Migrate(ctx, db); err != nil {
+		t.Fatalf("升级 %s 部署旧环境字段失败: %v", databaseName, err)
+	}
+	for _, column := range legacyColumns {
+		hasEnvironment, err := physicalColumnExists(db, column.value, "environment")
+		if err != nil {
+			t.Fatalf("检查 %s 升级后的部署环境字段失败: %v", databaseName, err)
+		}
+		if hasEnvironment {
+			t.Fatalf("%s 升级后仍保留部署旧环境字段: %T", databaseName, column.value)
+		}
 	}
 }
 

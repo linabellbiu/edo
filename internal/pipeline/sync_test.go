@@ -35,7 +35,7 @@ func TestSyncApplicationPollsPushNodeWithoutWebhook(t *testing.T) {
 		}},
 		4,
 	)
-	application := createManualRunTestApplication(t, service, db, repositoryID, "事件触发应用")
+	application := createManualRunTestApplication(t, service, db, repositoryID, "event_trigger_app")
 	workflow, err := service.GetWorkflow(context.Background(), application.ID)
 	if err != nil {
 		t.Fatal(err)
@@ -74,7 +74,7 @@ func TestSyncApplicationAutomaticallyExecutesPolledPushChange(t *testing.T) {
 	service.repositories = repository.NewService(
 		db, secrets, credential.NewService(db, secrets), lister, 4,
 	)
-	application := createManualRunTestApplication(t, service, db, repositoryID, "定时检查分支")
+	application := createManualRunTestApplication(t, service, db, repositoryID, "scheduled_branch_check")
 	if err := db.Model(&model.ReleaseWorkflow{}).Where("application_id = ?", application.ID).Update("is_active", true).Error; err != nil {
 		t.Fatal(err)
 	}
@@ -120,7 +120,7 @@ func TestSyncApplicationPollsEachMatchingWorkflowIndependently(t *testing.T) {
 	service.repositories = repository.NewService(
 		db, secrets, credential.NewService(db, secrets), lister, 4,
 	)
-	application := createManualRunTestApplication(t, service, db, repositoryID, "多流水线定时检查")
+	application := createManualRunTestApplication(t, service, db, repositoryID, "multi_workflow_poll")
 	first := application.Workflow
 	if first == nil {
 		t.Fatal("新应用缺少默认流水线")
@@ -180,7 +180,7 @@ func TestSyncApplicationAcceptsReadableRepositoryWithoutMatchingRef(t *testing.T
 		}},
 		4,
 	)
-	application := createManualRunTestApplication(t, service, db, repositoryID, "分支尚未创建")
+	application := createManualRunTestApplication(t, service, db, repositoryID, "branch_not_created")
 	workflow, err := service.GetWorkflow(context.Background(), application.ID)
 	if err != nil {
 		t.Fatal(err)
@@ -224,7 +224,7 @@ func TestSyncApplicationPollsEveryConfiguredCustomRef(t *testing.T) {
 	service.repositories = repository.NewService(
 		db, secrets, credential.NewService(db, secrets), lister, 4,
 	)
-	application := createManualRunTestApplication(t, service, db, repositoryID, "自定义分支定时检查")
+	application := createManualRunTestApplication(t, service, db, repositoryID, "custom_branch_poll")
 	var workflow model.ReleaseWorkflow
 	if err := db.First(&workflow, "application_id = ?", application.ID).Error; err != nil {
 		t.Fatal(err)
@@ -300,7 +300,7 @@ func TestSyncApplicationDetectsMergedPullRequestWithoutHistoricalReplay(t *testi
 		},
 	}}
 	service.repositories = repository.NewService(db, secrets, credential.NewService(db, secrets), lister, 4)
-	application := createManualRunTestApplication(t, service, db, repositoryID, "PR 合并轮询")
+	application := createManualRunTestApplication(t, service, db, repositoryID, "pr_merge_poll")
 	var workflow model.ReleaseWorkflow
 	if err := db.First(&workflow, "application_id = ?", application.ID).Error; err != nil {
 		t.Fatal(err)
@@ -364,7 +364,7 @@ func TestSyncApplicationDeduplicatesMergedPullRequestAndTargetPush(t *testing.T)
 		}},
 	}}
 	service.repositories = repository.NewService(db, secrets, credential.NewService(db, secrets), lister, 4)
-	application := createManualRunTestApplication(t, service, db, repositoryID, "PR Push 去重")
+	application := createManualRunTestApplication(t, service, db, repositoryID, "pr_push_dedup")
 	var workflow model.ReleaseWorkflow
 	if err := db.First(&workflow, "application_id = ?", application.ID).Error; err != nil {
 		t.Fatal(err)
@@ -416,7 +416,7 @@ func TestSyncApplicationContinuesPushAndTagWhenPullRequestAPIFails(t *testing.T)
 		}},
 	}}
 	service.repositories = repository.NewService(db, secrets, credential.NewService(db, secrets), lister, 4)
-	application := createManualRunTestApplication(t, service, db, repositoryID, "PR API 部分失败")
+	application := createManualRunTestApplication(t, service, db, repositoryID, "pr_api_partial_failure")
 	var workflow model.ReleaseWorkflow
 	if err := db.First(&workflow, "application_id = ?", application.ID).Error; err != nil {
 		t.Fatal(err)
@@ -480,7 +480,7 @@ func TestSyncApplicationMarksPullRequestOnlyFailureWithoutGuessingBranches(t *te
 		pullRequestErr: errors.New("provider API unavailable"),
 	}
 	service.repositories = repository.NewService(db, secrets, credential.NewService(db, secrets), lister, 4)
-	application := createManualRunTestApplication(t, service, db, repositoryID, "PR API 完全失败")
+	application := createManualRunTestApplication(t, service, db, repositoryID, "pr_api_total_failure")
 	var workflow model.ReleaseWorkflow
 	if err := db.First(&workflow, "application_id = ?", application.ID).Error; err != nil {
 		t.Fatal(err)

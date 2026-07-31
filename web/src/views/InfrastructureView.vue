@@ -6,7 +6,7 @@ import { ChevronDown, ChevronRight, FileText, LayoutGrid, RefreshCw, Server, Ter
 import { useI18n } from 'vue-i18n'
 
 import client from '@/api/client'
-import { listHosts, type HostCapability, type InfrastructureHost } from '@/api/infrastructure'
+import { listHosts, listHostStatuses, mergeHostStatuses, type HostCapability, type InfrastructureHost } from '@/api/infrastructure'
 import { apiErrorMessage, getResources, type ResourceRecord } from '@/api/resources'
 import ContainerLogDrawer from '@/components/ContainerLogDrawer.vue'
 import PageToolbar from '@/components/PageToolbar.vue'
@@ -34,6 +34,10 @@ const legacyExpanded = ref(true)
 let statusTimer: number | undefined
 let statusRefreshing = false
 let statusErrorShown = false
+let lastStatusRefreshAt = 0
+
+const statusPollInterval = 5000
+const statusRefreshDeduplicationWindow = 1000
 
 type RuntimeCapabilityKind = 'docker' | 'kubernetes'
 type RuntimeCapability = HostCapability & { kind: RuntimeCapabilityKind }
@@ -90,10 +94,17 @@ async function refresh() {
 }
 
 async function refreshStatuses() {
-  if (statusRefreshing) return
+  const now = Date.now()
+  if (document.hidden || loading.value || statusRefreshing || now - lastStatusRefreshAt < statusRefreshDeduplicationWindow) return
   statusRefreshing = true
+  lastStatusRefreshAt = now
   try {
-    setHosts(await listHosts())
+    const merged = mergeHostStatuses(hosts.value, await listHostStatuses())
+    if (!merged) {
+      await refresh()
+      return
+    }
+    setHosts(merged)
     statusErrorShown = false
   } catch (error) {
     if (!statusErrorShown) message.error(apiErrorMessage(error))
@@ -101,6 +112,10 @@ async function refreshStatuses() {
   } finally {
     statusRefreshing = false
   }
+}
+
+function refreshVisibleStatuses() {
+  if (!document.hidden) void refreshStatuses()
 }
 
 function choose(node: string) {
@@ -176,7 +191,10 @@ watch(selectedNode, () => {
 })
 
 onMounted(() => {
-  statusTimer = window.setInterval(() => void refreshStatuses(), 1000)
+  lastStatusRefreshAt = Date.now()
+  statusTimer = window.setInterval(refreshVisibleStatuses, statusPollInterval)
+  document.addEventListener('visibilitychange', refreshVisibleStatuses)
+  window.addEventListener('focus', refreshVisibleStatuses)
   void (async () => {
     await refresh()
     if (selectedDockerID.value || selectedClusterID.value) await loadRuntime()
@@ -185,6 +203,8 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   if (statusTimer !== undefined) window.clearInterval(statusTimer)
+  document.removeEventListener('visibilitychange', refreshVisibleStatuses)
+  window.removeEventListener('focus', refreshVisibleStatuses)
 })
 </script>
 
@@ -268,7 +288,7 @@ onBeforeUnmount(() => {
             <div><span>{{ hostForSelectedRuntime?.name || '未关联主机' }} · Docker</span><h3>{{ selectedDocker.name }}</h3><p>{{ selectedDocker.local ? 'ZRT 本地运行时' : selectedDocker.host }}</p></div>
             <a-button v-if="auth.canAny(['cluster.manage'])" @click="ping('docker', selectedDockerID)">检查连接</a-button>
           </header>
-          <ResourceTable :rows="containers" :columns="[{ key: 'names', label: '名称' }, { key: 'image', label: '镜像' }, { key: 'state', label: '状态' }, { key: 'status', label: '详情' }]" :loading="resourceLoading">
+          <ResourceTable :rows="containers" :columns="[{ key: 'names', label: '名称' }, { key: 'image_display', label: '镜像版本' }, { key: 'state', label: '状态' }, { key: 'status', label: '详情' }]" :loading="resourceLoading">
             <template #actions="{ row }">
               <a-button type="link" @click="openContainerLogs(row)"><FileText :size="15" />{{ t('containerLogs.button') }}</a-button>
               <a-button v-if="auth.canAny(['terminal.open']) && row.state === 'running'" type="link" @click="openTerminal(`Docker · ${containerName(row)}`, `/api/v1/terminals/docker/${encodeURIComponent(selectedDockerID)}/containers/${encodeURIComponent(String(row.id))}/ws`)"><TerminalSquare :size="15" />终端</a-button>

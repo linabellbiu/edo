@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
+	"io"
 	"net/netip"
 	"slices"
 	"sort"
@@ -30,29 +31,29 @@ type ImageSnapshot struct {
 
 func (s *Service) DeployContainer(
 	ctx context.Context,
-	endpointID, targetID, containerName, image, deploymentID string,
-	timeout time.Duration, configuration model.DockerContainerConfig, registry RegistryAuth,
+	endpointID, targetID, containerName, image, imageDisplay, deploymentID string,
+	timeout time.Duration, configuration model.DockerContainerConfig, registry RegistryAuth, stdout, stderr io.Writer,
 ) (ImageSnapshot, error, error) {
-	return s.deployContainer(ctx, endpointID, targetID, containerName, image, "", deploymentID, timeout, configuration, registry)
+	return s.deployContainer(ctx, endpointID, targetID, containerName, image, imageDisplay, "", deploymentID, timeout, configuration, registry, stdout, stderr)
 }
 
 // DeployPreparedContainer 发布已经在目标 Docker daemon 中固定 Image ID 的镜像。
 // expectedImageID 防止唯一标签在构建和发布之间，或回滚创建和执行之间被替换。
 func (s *Service) DeployPreparedContainer(
 	ctx context.Context,
-	endpointID, targetID, containerName, image, expectedImageID, deploymentID string,
-	timeout time.Duration, configuration model.DockerContainerConfig, registry RegistryAuth,
+	endpointID, targetID, containerName, image, imageDisplay, expectedImageID, deploymentID string,
+	timeout time.Duration, configuration model.DockerContainerConfig, registry RegistryAuth, stdout, stderr io.Writer,
 ) (ImageSnapshot, error, error) {
 	if strings.TrimSpace(image) == "" || !IsValidImageID(expectedImageID) {
 		return ImageSnapshot{}, nil, errors.New("待发布的 Docker 镜像不可验证")
 	}
-	return s.deployContainer(ctx, endpointID, targetID, containerName, image, expectedImageID, deploymentID, timeout, configuration, registry)
+	return s.deployContainer(ctx, endpointID, targetID, containerName, image, imageDisplay, expectedImageID, deploymentID, timeout, configuration, registry, stdout, stderr)
 }
 
 func (s *Service) deployContainer(
 	ctx context.Context,
-	endpointID, targetID, containerName, image, expectedImageID, deploymentID string,
-	timeout time.Duration, configuration model.DockerContainerConfig, registry RegistryAuth,
+	endpointID, targetID, containerName, image, imageDisplay, expectedImageID, deploymentID string,
+	timeout time.Duration, configuration model.DockerContainerConfig, registry RegistryAuth, stdout, stderr io.Writer,
 ) (ImageSnapshot, error, error) {
 	configuration, err := NormalizeContainerConfig(configuration)
 	if err != nil {
@@ -104,6 +105,12 @@ func (s *Service) deployContainer(
 			}
 		}
 	}
+	if configuration.DeploymentScript != "" {
+		return s.deployContainerWithHostCommand(
+			deployContext, apiClient, endpointID, targetID, containerName, executionImage, imageDisplay,
+			deploymentID, configuration.DeploymentScript, stdout, stderr,
+		)
+	}
 	configuration, err = prepareManagedContainerVolumes(deployContext, apiClient, targetID, configuration)
 	if err != nil {
 		return ImageSnapshot{}, nil, err
@@ -112,7 +119,7 @@ func (s *Service) deployContainer(
 	inspect, err := apiClient.ContainerInspect(deployContext, containerName, client.ContainerInspectOptions{})
 	if err != nil {
 		if errdefs.IsNotFound(err) {
-			return createInitialContainer(deployContext, apiClient, targetID, containerName, executionImage, deploymentID, configuration)
+			return createInitialContainer(deployContext, apiClient, targetID, containerName, executionImage, imageDisplay, deploymentID, configuration)
 		}
 		return ImageSnapshot{}, nil, fmt.Errorf("读取待更新 Docker 容器失败: %w", err)
 	}
@@ -159,6 +166,7 @@ func (s *Service) deployContainer(
 		rollbackOld()
 		return previousImage, nil, err
 	}
+	applyImageDisplayLabel(newConfig, imageDisplay)
 	created, err := apiClient.ContainerCreate(deployContext, client.ContainerCreateOptions{
 		Config: newConfig, HostConfig: newHostConfig, Name: canonicalName,
 	})
@@ -192,6 +200,103 @@ func (s *Service) deployContainer(
 	newCreated = false
 	oldStopped = false
 	return previousImage, nil, nil
+}
+
+func (s *Service) deployContainerWithHostCommand(
+	ctx context.Context,
+	apiClient *client.Client,
+	endpointID, targetID, containerName, image, imageDisplay, deploymentID, commandTemplate string,
+	stdout, stderr io.Writer,
+) (ImageSnapshot, error, error) {
+	imageInspect, err := apiClient.ImageInspect(ctx, image)
+	if err != nil || imageInspect.ID == "" {
+		return ImageSnapshot{}, nil, errors.New("目标主机上找不到待发布的 Docker 镜像")
+	}
+	arguments, err := dockerRunCommandArguments(
+		commandTemplate, image, imageDisplay, strings.TrimPrefix(containerName, "/"), targetID, deploymentID,
+	)
+	if err != nil {
+		return ImageSnapshot{}, nil, err
+	}
+
+	var previous ImageSnapshot
+	oldID := ""
+	canonicalName := strings.TrimPrefix(containerName, "/")
+	inspect, inspectErr := apiClient.ContainerInspect(ctx, canonicalName, client.ContainerInspectOptions{})
+	if inspectErr == nil {
+		if inspect.Container.Config == nil || inspect.Container.Config.Labels["zrt.managed"] != "true" ||
+			inspect.Container.Config.Labels["zrt.deployment.target.id"] != targetID {
+			return ImageSnapshot{}, nil, errors.New("同名 Docker 容器不属于当前 ZRT 部署目标")
+		}
+		oldID = inspect.Container.ID
+		previous = ImageSnapshot{Reference: inspect.Container.Config.Image, ID: inspect.Container.Image}
+	} else if !errdefs.IsNotFound(inspectErr) {
+		return ImageSnapshot{}, nil, fmt.Errorf("读取待更新 Docker 容器失败: %w", inspectErr)
+	}
+
+	backupName := ""
+	oldStopped := false
+	rollbackOld := func() {
+		if !oldStopped || oldID == "" {
+			return
+		}
+		rollbackContext, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+		defer cancel()
+		_, _ = apiClient.ContainerRename(rollbackContext, oldID, client.ContainerRenameOptions{NewName: canonicalName})
+		_, _ = apiClient.ContainerStart(rollbackContext, oldID, client.ContainerStartOptions{})
+	}
+	if oldID != "" {
+		shortID := strings.ReplaceAll(deploymentID, "-", "")
+		if len(shortID) > 8 {
+			shortID = shortID[:8]
+		}
+		backupName = canonicalName + "-zrt-backup-" + shortID
+		stopTimeout := 30
+		if _, err := apiClient.ContainerStop(ctx, oldID, client.ContainerStopOptions{Timeout: &stopTimeout}); err != nil {
+			return previous, nil, fmt.Errorf("停止旧 Docker 容器失败: %w", err)
+		}
+		oldStopped = true
+		if _, err := apiClient.ContainerRename(ctx, oldID, client.ContainerRenameOptions{NewName: backupName}); err != nil {
+			_, _ = apiClient.ContainerStart(ctx, oldID, client.ContainerStartOptions{})
+			return previous, nil, fmt.Errorf("为旧 Docker 容器创建回退名称失败: %w", err)
+		}
+	}
+
+	cleanupNew := func() {
+		cleanupContext, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+		defer cancel()
+		created, createdErr := apiClient.ContainerInspect(cleanupContext, canonicalName, client.ContainerInspectOptions{})
+		if createdErr == nil && created.Container.Config != nil && created.Container.Config.Labels["zrt.managed"] == "true" &&
+			created.Container.Config.Labels["zrt.deployment.target.id"] == targetID {
+			_, _ = apiClient.ContainerRemove(cleanupContext, created.Container.ID, client.ContainerRemoveOptions{Force: true})
+		}
+	}
+	if err := s.runDockerHostCommand(ctx, endpointID, arguments, stdout, stderr); err != nil {
+		cleanupNew()
+		rollbackOld()
+		return previous, nil, err
+	}
+
+	created, err := apiClient.ContainerInspect(ctx, canonicalName, client.ContainerInspectOptions{})
+	if err != nil || created.Container.Config == nil || created.Container.Config.Labels["zrt.managed"] != "true" ||
+		created.Container.Config.Labels["zrt.deployment.target.id"] != targetID || created.Container.Image != imageInspect.ID {
+		cleanupNew()
+		rollbackOld()
+		return previous, nil, errors.New("Docker 部署命令没有创建可验证的目标容器")
+	}
+	if err := waitContainerHealthy(ctx, apiClient, created.Container.ID); err != nil {
+		cleanupNew()
+		rollbackOld()
+		return previous, nil, err
+	}
+	if oldID != "" {
+		if _, err := apiClient.ContainerRemove(ctx, oldID, client.ContainerRemoveOptions{}); err != nil {
+			oldStopped = false
+			return previous, fmt.Errorf("清理旧 Docker 容器失败: %w", err), nil
+		}
+	}
+	oldStopped = false
+	return previous, nil, nil
 }
 
 func prepareManagedContainerVolumes(
@@ -241,12 +346,13 @@ func managedContainerVolumeName(targetID, logicalName string) string {
 func createInitialContainer(
 	ctx context.Context,
 	apiClient *client.Client,
-	targetID, containerName, image, deploymentID string, deploymentConfig model.DockerContainerConfig,
+	targetID, containerName, image, imageDisplay, deploymentID string, deploymentConfig model.DockerContainerConfig,
 ) (ImageSnapshot, error, error) {
 	configuration, hostConfiguration, err := initialContainerConfig(image, targetID, deploymentID, deploymentConfig)
 	if err != nil {
 		return ImageSnapshot{}, nil, err
 	}
+	applyImageDisplayLabel(configuration, imageDisplay)
 	created, err := apiClient.ContainerCreate(ctx, client.ContainerCreateOptions{
 		Config: configuration, HostConfig: hostConfiguration, Name: strings.TrimPrefix(containerName, "/"),
 	})
@@ -269,6 +375,14 @@ func createInitialContainer(
 	}
 	removeCreated = false
 	return ImageSnapshot{}, nil, nil
+}
+
+func applyImageDisplayLabel(configuration *container.Config, imageDisplay string) {
+	imageDisplay = strings.TrimSpace(imageDisplay)
+	if configuration == nil || imageDisplay == "" || len(imageDisplay) > 255 || strings.ContainsAny(imageDisplay, "\x00\r\n") {
+		return
+	}
+	configuration.Labels[managedImageDisplayLabel] = imageDisplay
 }
 
 func initialContainerConfig(

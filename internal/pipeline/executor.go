@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/regclient/regclient"
 	"gorm.io/gorm"
 
 	"zrt/internal/artifact"
@@ -98,8 +99,10 @@ func (s *Service) ExecuteDeployTask(ctx context.Context, payload DeployTaskPaylo
 		return s.failExecution(ctx, failureState, "更新流水线执行状态失败", err)
 	}
 	request := deployment.RequestInput{
-		TargetID: prepared.target.ID, ArtifactID: prepared.artifact.ID, Image: image, ExpectedImageID: expectedImageID,
-		PipelineRunID: prepared.run.ID, WorkflowNodeID: prepared.node.ID, ApprovedBy: approvedBy,
+		TargetID: prepared.target.ID, ApplicationID: prepared.application.ID, ApplicationName: prepared.application.Name,
+		ArtifactID: prepared.artifact.ID, Image: image, ImageDisplay: prepared.artifact.Name,
+		ExpectedImageID: expectedImageID,
+		PipelineRunID:   prepared.run.ID, WorkflowNodeID: prepared.node.ID, ApprovedBy: approvedBy,
 		DeploymentPlanID: prepared.deploymentPlan.ID, PlanKind: prepared.deploymentPlan.Kind,
 	}
 	if prepared.artifact.StorageKind == model.ArtifactStorageKindRegistry {
@@ -120,8 +123,11 @@ func (s *Service) ExecuteDeployTask(ctx context.Context, payload DeployTaskPaylo
 		)
 		request.Stdout, request.Stderr = output, output
 	} else if prepared.deploymentPlan.Kind == model.DeploymentPlanDocker {
+		output = s.newExecutionLogWriter(ctx, prepared.run.ID, "deploy", "Docker")
+		defer output.Close()
 		request.DockerConfig = prepared.deploymentPlan.DockerConfig
 		request.DockerConfigDigest = model.DockerContainerConfigDigest(request.DockerConfig)
+		request.Stdout, request.Stderr = output, output
 	}
 	record, err := s.deployments.RequestSnapshotAndRun(ctx, prepared.run.CreatedBy, prepared.target, request)
 	if err != nil {
@@ -392,8 +398,12 @@ func (s *Service) registryAuth(registry model.ImageRegistry) (dockerengine.Regis
 			return dockerengine.RegistryAuth{}, err
 		}
 	}
+	serverAddress := registry.Endpoint
+	if registry.Provider == model.RegistryDockerHub {
+		serverAddress = regclient.DockerRegistryAuth
+	}
 	return dockerengine.RegistryAuth{
-		ServerAddress: registry.Endpoint, Host: parsed.Host,
+		ServerAddress: serverAddress, Host: parsed.Host,
 		Username: registry.Username, Credential: credential,
 	}, nil
 }
@@ -415,7 +425,13 @@ func executionImageName(application model.Application) (string, error) {
 	if applicationID == "" {
 		return "", ErrInvalidApplication
 	}
-	name := strings.Trim(imageNamePartPattern.ReplaceAllString(strings.ToLower(application.Name), "-"), "-._")
+	name := strings.TrimSpace(application.Name)
+	if applicationNamePattern.MatchString(name) {
+		return name, nil
+	}
+	// 旧数据可能包含中文或空格。新建和修改已经强制使用合法应用名；
+	// 这个退化路径只用于避免历史流水线在应用重命名前立即中断。
+	name = strings.Trim(imageNamePartPattern.ReplaceAllString(strings.ToLower(application.Name), "-"), "-._")
 	if len(name) > 48 {
 		name = strings.Trim(name[:48], "-._")
 	}
@@ -431,14 +447,10 @@ func executionImageTag(run model.PipelineRun) (string, error) {
 	if len(commit) > 12 {
 		commit = commit[:12]
 	}
-	runID := strings.ReplaceAll(strings.TrimSpace(run.ID), "-", "")
-	if len(runID) > 8 {
-		runID = runID[:8]
-	}
-	if commit == "" || runID == "" {
+	if commit == "" {
 		return "", ErrPipelineExecutionConfig
 	}
-	return commit + "-" + runID, nil
+	return commit, nil
 }
 
 func (s *Service) latestExecutionApproval(ctx context.Context, runID string) (string, error) {

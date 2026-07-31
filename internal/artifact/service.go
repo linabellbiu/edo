@@ -30,6 +30,7 @@ import (
 
 var (
 	ErrApplicationNotFound = errors.New("应用不存在")
+	ErrBuildPlanNotFound   = errors.New("构建方案不存在")
 	ErrArtifactNotFound    = errors.New("制品不存在")
 	ErrInvalidArtifact     = errors.New("制品配置无效")
 	ErrArtifactUnavailable = errors.New("制品文件不可用")
@@ -111,6 +112,34 @@ func (s *Service) ListByApplication(ctx context.Context, applicationID string) (
 	return artifacts, nil
 }
 
+// ListByBuildPlan 只返回指定构建方案产生或在其下手工上传的制品。
+// BuildRun 是制品生产来源的审计记录，方案归属必须从该记录读取，不能按应用或制品名称猜测。
+func (s *Service) ListByBuildPlan(ctx context.Context, buildPlanID, applicationID string) ([]model.Artifact, error) {
+	buildPlanID = strings.TrimSpace(buildPlanID)
+	applicationID = strings.TrimSpace(applicationID)
+	if err := s.ensureBuildPlan(ctx, buildPlanID, false); err != nil {
+		return nil, err
+	}
+	if applicationID != "" {
+		if err := s.ensureApplication(ctx, applicationID, false); err != nil {
+			return nil, err
+		}
+	}
+
+	artifacts := make([]model.Artifact, 0)
+	query := s.db.WithContext(ctx).Model(&model.Artifact{}).
+		Joins("JOIN build_runs ON build_runs.id = artifacts.build_run_id").
+		Where("build_runs.build_plan_id = ?", buildPlanID)
+	if applicationID != "" {
+		query = query.Where("artifacts.application_id = ?", applicationID)
+	}
+	if err := query.Order("artifacts.created_at DESC").Find(&artifacts).Error; err != nil {
+		s.logger.Error("查询构建方案制品失败", "operation", "artifact_list_build_plan", "build_plan_id", buildPlanID, "application_id", applicationID, "err", err)
+		return nil, fmt.Errorf("查询构建方案制品失败: %w", err)
+	}
+	return artifacts, nil
+}
+
 func (s *Service) Find(ctx context.Context, id string) (*model.Artifact, error) {
 	id = strings.TrimSpace(id)
 	if id == "" {
@@ -134,8 +163,30 @@ func (s *Service) Upload(
 	applicationID, actorID, originalName, mediaType string,
 	source io.Reader,
 ) (*model.Artifact, error) {
+	return s.upload(ctx, "", applicationID, actorID, originalName, mediaType, source)
+}
+
+// UploadForBuildPlan 将手工上传纳入指定构建方案的生产历史，供方案下的制品视图统一查询。
+func (s *Service) UploadForBuildPlan(
+	ctx context.Context,
+	buildPlanID, applicationID, actorID, originalName, mediaType string,
+	source io.Reader,
+) (*model.Artifact, error) {
+	buildPlanID = strings.TrimSpace(buildPlanID)
+	if err := s.ensureBuildPlan(ctx, buildPlanID, true); err != nil {
+		return nil, err
+	}
+	return s.upload(ctx, buildPlanID, applicationID, actorID, originalName, mediaType, source)
+}
+
+func (s *Service) upload(
+	ctx context.Context,
+	buildPlanID, applicationID, actorID, originalName, mediaType string,
+	source io.Reader,
+) (*model.Artifact, error) {
 	metadata := BuildMetadata{
 		ApplicationID: strings.TrimSpace(applicationID),
+		BuildPlanID:   strings.TrimSpace(buildPlanID),
 		ProducerKind:  model.BuildRunProducerUpload,
 		CreatedBy:     strings.TrimSpace(actorID),
 	}
@@ -512,6 +563,27 @@ func (s *Service) ensureApplication(ctx context.Context, applicationID string, a
 	if count != 1 {
 		s.logger.Warn("制品所属应用不存在或不可用", "operation", "artifact_application_guard", "application_id", applicationID, "active_required", active)
 		return ErrApplicationNotFound
+	}
+	return nil
+}
+
+func (s *Service) ensureBuildPlan(ctx context.Context, buildPlanID string, active bool) error {
+	if buildPlanID == "" || len(buildPlanID) > 36 {
+		s.logger.Warn("制品所属构建方案标识无效", "operation", "artifact_build_plan_guard", "build_plan_id", buildPlanID)
+		return ErrBuildPlanNotFound
+	}
+	query := s.db.WithContext(ctx).Model(&model.BuildPlan{}).Where("id = ?", buildPlanID)
+	if active {
+		query = query.Where("is_active = ?", true)
+	}
+	var count int64
+	if err := query.Count(&count).Error; err != nil {
+		s.logger.Error("检查制品所属构建方案失败", "operation", "artifact_build_plan_guard", "build_plan_id", buildPlanID, "err", err)
+		return fmt.Errorf("检查制品所属构建方案失败: %w", err)
+	}
+	if count != 1 {
+		s.logger.Warn("制品所属构建方案不存在或不可用", "operation", "artifact_build_plan_guard", "build_plan_id", buildPlanID, "active_required", active)
+		return ErrBuildPlanNotFound
 	}
 	return nil
 }

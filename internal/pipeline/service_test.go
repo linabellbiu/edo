@@ -8,9 +8,11 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/regclient/regclient"
 	"gorm.io/gorm"
 
 	"zrt/internal/config"
@@ -28,7 +30,7 @@ func TestApplicationOwnsIndependentWorkflows(t *testing.T) {
 	service, _, _, repositoryID := newPipelineTestService(t)
 	ctx := context.Background()
 	application, err := service.CreateApplication(ctx, "admin", ApplicationInput{
-		Name: "多流水线应用", RepositoryID: repositoryID,
+		Name: "multiple_workflows", RepositoryID: repositoryID,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -81,7 +83,7 @@ func TestApplicationWorkflowDefaultNamesRemainUnique(t *testing.T) {
 	service, _, _, repositoryID := newPipelineTestService(t)
 	ctx := context.Background()
 	application, err := service.CreateApplication(ctx, "admin", ApplicationInput{
-		Name: "默认命名应用", RepositoryID: repositoryID,
+		Name: "default_named_app", RepositoryID: repositoryID,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -94,8 +96,82 @@ func TestApplicationWorkflowDefaultNamesRemainUnique(t *testing.T) {
 	if err != nil {
 		t.Fatalf("第三条流水线应自动生成不重复的名称: %v", err)
 	}
-	if second.Workflow.Name != "默认命名应用流水线 2" || third.Workflow.Name != "默认命名应用流水线 3" {
+	if second.Workflow.Name != "default_named_app流水线 2" || third.Workflow.Name != "default_named_app流水线 3" {
 		t.Fatalf("自动名称不符合预期: second=%q third=%q", second.Workflow.Name, third.Workflow.Name)
+	}
+}
+
+func TestApplicationWorkflowPresetsCreateEditableDrafts(t *testing.T) {
+	service, _, _, repositoryID := newPipelineTestService(t)
+	ctx := context.Background()
+	application, err := service.CreateApplication(ctx, "admin", ApplicationInput{
+		Name: "template_app", RepositoryID: repositoryID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	tests := []struct {
+		key          string
+		name         string
+		runtimeImage string
+		scriptPart   string
+	}{
+		{key: workflowPresetGo, name: "Go 流水线", runtimeImage: "golang:1.26-alpine", scriptPart: "go test ./..."},
+		{key: workflowPresetNodeJS, name: "Node.js 流水线", runtimeImage: "node:24-alpine", scriptPart: "npm ci"},
+		{key: workflowPresetPython, name: "Python 流水线", runtimeImage: "python:3.14-alpine", scriptPart: "python -m pytest"},
+	}
+	for _, test := range tests {
+		t.Run(test.key, func(t *testing.T) {
+			created, err := service.CreateApplicationWorkflow(ctx, application.ID, "admin", WorkflowCreateInput{PresetKey: test.key})
+			if err != nil {
+				t.Fatalf("从 %s 模板创建流水线失败: %v", test.key, err)
+			}
+			workflow := created.Workflow
+			if workflow.Name != test.name || workflow.IsActive {
+				t.Fatalf("模板应创建未启用草稿: name=%q active=%t", workflow.Name, workflow.IsActive)
+			}
+			if len(workflow.Stages) != 3 || len(workflow.Stages[0].Tasks) != 1 {
+				t.Fatalf("模板阶段结构不完整: %+v", workflow.Stages)
+			}
+			testTask := workflow.Stages[0].Tasks[0]
+			if testTask.Type != model.WorkflowNodeShell || testTask.Config.RuntimeImage != test.runtimeImage ||
+				!strings.Contains(testTask.Config.Script, test.scriptPart) {
+				t.Fatalf("语言测试任务不符合模板: %+v", testTask)
+			}
+			buildTask := workflow.Stages[1].Tasks[0]
+			deployTask := workflow.Stages[2].Tasks[0]
+			if buildTask.Type != model.WorkflowNodeBuild || buildTask.Config.BuildPlanID != "" ||
+				deployTask.Type != model.WorkflowNodeDeploy || deployTask.Config.DeploymentPlanID != "" {
+				t.Fatalf("模板不得绑定具体构建或部署方案: build=%+v deploy=%+v", buildTask, deployTask)
+			}
+			if created.Valid || !hasWorkflowIssue(created.Issues, "missing_build_plan") || !hasWorkflowIssue(created.Issues, "missing_deployment_plan") {
+				t.Fatalf("未选择方案的模板草稿应提示补充配置: valid=%t issues=%+v", created.Valid, created.Issues)
+			}
+		})
+	}
+
+	blank, err := service.CreateApplicationWorkflow(ctx, application.ID, "admin", WorkflowCreateInput{PresetKey: workflowPresetBlank})
+	if err != nil {
+		t.Fatalf("创建空白流水线失败: %v", err)
+	}
+	if blank.Workflow.Name != "空白流水线" || len(blank.Workflow.Stages) != 0 {
+		t.Fatalf("空白模板不应预设阶段: %+v", blank.Workflow)
+	}
+
+	before, err := service.ListApplicationWorkflows(ctx, application.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.CreateApplicationWorkflow(ctx, application.ID, "admin", WorkflowCreateInput{PresetKey: "java"}); !errors.Is(err, ErrInvalidWorkflow) {
+		t.Fatalf("未知模板应被拒绝: %v", err)
+	}
+	after, err := service.ListApplicationWorkflows(ctx, application.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(after) != len(before) {
+		t.Fatalf("未知模板不得留下流水线: before=%d after=%d", len(before), len(after))
 	}
 }
 
@@ -140,7 +216,7 @@ func TestResourcesCanBeConfiguredAndPipelinePrepared(t *testing.T) {
 	}
 
 	application, err := service.CreateApplication(ctx, "admin", ApplicationInput{
-		Name: "订单服务", RepositoryID: repositoryID, PollIntervalSeconds: 60,
+		Name: "order_service", RepositoryID: repositoryID, PollIntervalSeconds: 60,
 	})
 	if err != nil {
 		t.Fatalf("创建应用失败: %v", err)
@@ -218,7 +294,7 @@ func TestWorkflowDraftRejectsDeploymentPlanTargetMismatch(t *testing.T) {
 		t.Fatal(err)
 	}
 	application, err := service.CreateApplication(ctx, "admin", ApplicationInput{
-		Name: "SSH 流水线应用", RepositoryID: repositoryID,
+		Name: "ssh_pipeline_app", RepositoryID: repositoryID,
 		PollIntervalSeconds: 60,
 	})
 	if err != nil {
@@ -329,6 +405,39 @@ func TestCreateRegistryAcceptsRepositoryStyleDisplayName(t *testing.T) {
 	}
 }
 
+func TestDockerHubRegistryUsesFixedEndpoint(t *testing.T) {
+	service, _, _, _ := newPipelineTestService(t)
+	credential := "docker-hub-token"
+	registry, err := service.CreateRegistry(context.Background(), "admin", RegistryInput{
+		Name: "Docker Hub", Provider: model.RegistryDockerHub, Namespace: "zrt-team",
+		Username: "zrt-team", Credential: &credential, AllowInsecureHTTP: true,
+	})
+	if err != nil {
+		t.Fatalf("未填写地址的 Docker Hub 配置被拒绝: %v", err)
+	}
+	if registry.Endpoint != model.DockerHubEndpoint || registry.AllowInsecureHTTP {
+		t.Fatalf("Docker Hub 没有使用固定安全地址: %+v", registry)
+	}
+	auth, err := service.registryAuth(*registry)
+	if err != nil {
+		t.Fatalf("读取 Docker Hub 认证失败: %v", err)
+	}
+	if auth.Host != "docker.io" || auth.ServerAddress != regclient.DockerRegistryAuth {
+		t.Fatalf("Docker Hub 镜像主机或认证键错误: %+v", auth)
+	}
+}
+
+func TestDockerHubRegistryRejectsThirdPartyEndpoint(t *testing.T) {
+	service, _, _, _ := newPipelineTestService(t)
+	_, err := service.CreateRegistry(context.Background(), "admin", RegistryInput{
+		Name: "错误类型", Provider: model.RegistryDockerHub,
+		Endpoint: "https://registry.cn-shenzhen.aliyuncs.com", Namespace: "zrt-team",
+	})
+	if !errors.Is(err, ErrRegistryProviderEndpoint) {
+		t.Fatalf("Docker Hub 类型接受了第三方仓库地址: %v", err)
+	}
+}
+
 func TestCreateRegistryReturnsFieldSpecificValidationErrors(t *testing.T) {
 	service, _, _, _ := newPipelineTestService(t)
 	tests := []struct {
@@ -436,7 +545,7 @@ func TestRepositoryEventsFollowApplicationTriggers(t *testing.T) {
 		t.Fatal(err)
 	}
 	application, err := service.CreateApplication(ctx, "admin", ApplicationInput{
-		Name: "支付服务", RepositoryID: repositoryID, PollIntervalSeconds: 60,
+		Name: "payment_service", RepositoryID: repositoryID, PollIntervalSeconds: 60,
 	})
 	if err != nil {
 		t.Fatalf("创建应用失败: %v", err)
@@ -512,7 +621,7 @@ func TestRepositoryEventsFollowApplicationTriggers(t *testing.T) {
 func TestRepositoryEventTriggersEveryMatchingApplicationWorkflow(t *testing.T) {
 	service, db, _, repositoryID := newPipelineTestService(t)
 	ctx := context.Background()
-	application := createManualRunTestApplication(t, service, db, repositoryID, "多流水线事件应用")
+	application := createManualRunTestApplication(t, service, db, repositoryID, "multi_workflow_event")
 	first := application.Workflow
 	if first == nil {
 		t.Fatal("新应用缺少默认流水线")
@@ -576,7 +685,7 @@ func TestApplicationRepositoryCheckInterval(t *testing.T) {
 	ctx := context.Background()
 
 	application, err := service.CreateApplication(ctx, "admin", ApplicationInput{
-		Name: "默认仓库检查间隔", RepositoryID: repositoryID,
+		Name: "default_poll_interval", RepositoryID: repositoryID,
 	})
 	if err != nil {
 		t.Fatalf("使用默认仓库检查间隔创建应用失败: %v", err)
@@ -622,7 +731,7 @@ func TestReleaseWorkflowCapturesExplicitApprovalNode(t *testing.T) {
 		t.Fatalf("创建部署方案失败: %v", err)
 	}
 	application, err := service.CreateApplication(ctx, "admin", ApplicationInput{
-		Name: "阶段式流程应用", RepositoryID: repositoryID, PollIntervalSeconds: 60,
+		Name: "staged_pipeline_app", RepositoryID: repositoryID, PollIntervalSeconds: 60,
 	})
 	if err != nil {
 		t.Fatalf("创建应用失败: %v", err)
@@ -711,7 +820,7 @@ func TestPublicWorkflowTemplateSyncsLinkedApplications(t *testing.T) {
 		t.Fatalf("公共流水线方案未能启用: result=%+v err=%v", templateResult, err)
 	}
 	application, err := service.CreateApplication(ctx, "admin", ApplicationInput{
-		Name: "使用公共流水线的应用", RepositoryID: repositoryID, PollIntervalSeconds: 60,
+		Name: "public_pipeline_app", RepositoryID: repositoryID, PollIntervalSeconds: 60,
 		WorkflowTemplateID: templateResult.WorkflowTemplate.ID,
 	})
 	if err != nil {

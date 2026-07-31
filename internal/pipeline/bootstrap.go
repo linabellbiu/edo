@@ -3,6 +3,7 @@ package pipeline
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"gorm.io/gorm"
 
@@ -16,10 +17,11 @@ const (
 	initialBuildPlanName               = "快速开始 Dockerfile 构建"
 	initialDeploymentPlanName          = "快速开始 本地 Docker 部署"
 	initialDeploymentTargetName        = "快速开始 本地 Docker"
+	initialDeploymentEnvironmentID     = "zrt-local-environment"
+	initialDeploymentEnvironmentName   = "本地环境"
 	initialWorkflowTemplateName        = "快速开始 Dockerfile 流水线"
-	initialDockerContainerName         = "zrt-quickstart"
 	initialBuildPlanDescription        = "默认读取仓库根目录的 Dockerfile，在当前 ZRT 构建运行时生成本地 OCI 镜像。"
-	initialDeploymentPlanDescription   = "把上游镜像部署到当前 ZRT 的本地 Docker。默认容器名为 zrt-quickstart，多应用使用前请复制方案并修改容器名。"
+	initialDeploymentPlanDescription   = "把上游镜像部署到当前 ZRT 的本地 Docker，容器名在应用运行时自动生成。"
 	initialDeploymentTargetDescription = "当前 ZRT 构建运行时中的本地 Docker，仅用于快速开始。"
 )
 
@@ -89,14 +91,27 @@ func (s *Service) EnsureInitialDeliverySettings(ctx context.Context) (InitialDel
 
 		var deploymentPlan *model.DeploymentPlan
 		if localDockerReady {
+			now := time.Now().UTC()
+			environment := model.Environment{
+				ID: initialDeploymentEnvironmentID, Name: initialDeploymentEnvironmentName,
+				Description: "当前 ZRT 内置本地主机的默认环境。", IsActive: true,
+				CreatedBy: initialDeliveryActor, CreatedAt: now, UpdatedAt: now,
+			}
+			if err := tx.Where("id = ?", environment.ID).FirstOrCreate(&environment).Error; err != nil {
+				return fmt.Errorf("创建默认本地环境失败: %w", err)
+			}
+			membership := model.EnvironmentHost{EnvironmentID: environment.ID, HostID: model.BuiltinLocalHostID, CreatedAt: now}
+			if err := tx.FirstOrCreate(&membership).Error; err != nil {
+				return fmt.Errorf("关联默认本地主机失败: %w", err)
+			}
 			deploymentPlan, err = seed.CreateDeploymentPlan(ctx, initialDeliveryActor, DeploymentPlanInput{
 				Name: initialDeploymentPlanName, Kind: model.DeploymentPlanDocker,
 				Description: initialDeploymentPlanDescription,
-				ServiceName: initialDockerContainerName,
 				DeploymentTarget: &deployment.TargetInput{
 					Name: initialDeploymentTargetName, Description: initialDeploymentTargetDescription,
-					Platform: model.DeploymentDocker, RuntimeID: dockerengine.LocalEndpointID,
-					WorkloadName: initialDockerContainerName, RolloutTimeout: 300,
+					Platform: model.DeploymentDocker, EnvironmentID: environment.ID,
+					HostID: model.BuiltinLocalHostID, RuntimeID: dockerengine.LocalEndpointID,
+					RolloutTimeout: 300,
 				},
 			})
 			if err != nil {

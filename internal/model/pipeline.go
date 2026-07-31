@@ -54,6 +54,10 @@ const (
 	RegistryGeneric   RegistryProvider = "generic"
 	RegistryHarbor    RegistryProvider = "harbor"
 	RegistryDockerHub RegistryProvider = "docker_hub"
+
+	// Docker Hub 的镜像引用使用 docker.io。实际 Registry DNS 和 Docker
+	// 凭据键由客户端按这一标准名称解析，不能由用户改成其他仓库地址。
+	DockerHubEndpoint = "https://docker.io"
 )
 
 type ImageRegistry struct {
@@ -105,13 +109,15 @@ type DockerHealthCheck struct {
 	StartPeriodSeconds int      `json:"start_period_seconds"`
 }
 
-// DockerContainerConfig 是单容器部署方案的可执行配置。启动命令和健康检查都采用
-// exec 参数数组，不经过 shell 解析，避免因为表单字符串拼接引入额外命令语义。
+// DockerContainerConfig 是单容器部署方案的可执行配置。DeploymentScript 保存目标
+// 主机侧的受限 docker run 命令模板；留空时由 ZRT 通过 Docker API 创建容器。Command
+// 仅用于兼容已有运行快照，新配置不再通过表单写入该字段。
 type DockerContainerConfig struct {
 	PortMappings         []DockerPortMapping `json:"port_mappings"`
 	EnvironmentVariables map[string]string   `json:"environment_variables"`
 	VolumeMounts         []DockerVolumeMount `json:"volume_mounts"`
 	Network              string              `json:"network"`
+	DeploymentScript     string              `json:"deployment_script,omitempty"`
 	Command              []string            `json:"command"`
 	HealthCheck          DockerHealthCheck   `json:"health_check"`
 	RestartPolicy        string              `json:"restart_policy"`

@@ -28,6 +28,7 @@ type applicationRequest struct {
 type workflowCreateRequest struct {
 	Name               string `json:"name" binding:"max=128"`
 	WorkflowTemplateID string `json:"workflow_template_id" binding:"max=36"`
+	PresetKey          string `json:"preset_key" binding:"max=32"`
 }
 
 type workflowRequest struct {
@@ -78,7 +79,7 @@ type buildPlanRequest struct {
 type registryRequest struct {
 	Name              string                 `json:"name" binding:"required,max=128"`
 	Provider          model.RegistryProvider `json:"provider" binding:"required,max=24"`
-	Endpoint          string                 `json:"endpoint" binding:"required,max=1024"`
+	Endpoint          string                 `json:"endpoint" binding:"max=1024"`
 	Namespace         string                 `json:"namespace" binding:"max=255"`
 	Username          string                 `json:"username" binding:"max=255"`
 	Credential        *string                `json:"credential" binding:"omitempty,max=65536"`
@@ -208,7 +209,7 @@ func (h pipelineHandler) createWorkflow(c *gin.Context) {
 	}
 	actor, _ := currentUser(c)
 	result, err := h.service.CreateApplicationWorkflow(c.Request.Context(), c.Param("id"), actor.ID, pipeline.WorkflowCreateInput{
-		Name: request.Name, WorkflowTemplateID: request.WorkflowTemplateID,
+		Name: request.Name, WorkflowTemplateID: request.WorkflowTemplateID, PresetKey: request.PresetKey,
 	})
 	if err != nil {
 		h.writeError(c, "workflow_create", err)
@@ -632,15 +633,19 @@ func (h pipelineHandler) writeError(c *gin.Context, operation string, err error)
 		writeError(c, http.StatusUnprocessableEntity, "image_registry_login_failed", pipeline.ErrRegistryLoginFailed.Error())
 	case errors.Is(err, pipeline.ErrRegistryConnectionFailed):
 		writeError(c, http.StatusBadGateway, "image_registry_connection_failed", pipeline.ErrRegistryConnectionFailed.Error())
-	case errors.Is(err, pipeline.ErrInvalidApplication), errors.Is(err, pipeline.ErrInvalidBuildPlan),
+	case errors.Is(err, pipeline.ErrInvalidApplication), errors.Is(err, pipeline.ErrInvalidApplicationName), errors.Is(err, pipeline.ErrInvalidBuildPlan),
 		errors.Is(err, pipeline.ErrInvalidScriptEnvironment),
 		errors.Is(err, pipeline.ErrInvalidRegistry), errors.Is(err, pipeline.ErrInvalidRegistryName),
-		errors.Is(err, pipeline.ErrInvalidRegistryProvider), errors.Is(err, pipeline.ErrInvalidRegistryEndpoint),
+		errors.Is(err, pipeline.ErrInvalidRegistryProvider), errors.Is(err, pipeline.ErrInvalidRegistryEndpoint), errors.Is(err, pipeline.ErrRegistryProviderEndpoint),
 		errors.Is(err, pipeline.ErrInsecureRegistryEndpoint), errors.Is(err, pipeline.ErrInvalidRegistryNamespace),
 		errors.Is(err, pipeline.ErrInvalidRegistryUsername), errors.Is(err, pipeline.ErrInvalidRegistrySecret),
 		errors.Is(err, pipeline.ErrInvalidDeploymentPlan), errors.Is(err, pipeline.ErrDeploymentPlanTargetMismatch),
 		errors.Is(err, pipeline.ErrInvalidWorkflow):
 		writeError(c, http.StatusBadRequest, "invalid_delivery_config", err.Error())
+	case errors.Is(err, deployment.ErrEnvironmentTargetUnavailable):
+		writeError(c, http.StatusBadRequest, "environment_target_unavailable", deployment.ErrEnvironmentTargetUnavailable.Error())
+	case errors.Is(err, deployment.ErrEnvironmentTargetAmbiguous):
+		writeError(c, http.StatusBadRequest, "environment_target_ambiguous", deployment.ErrEnvironmentTargetAmbiguous.Error())
 	case errors.Is(err, deployment.ErrInvalidTarget):
 		writeError(c, http.StatusBadRequest, "invalid_deployment_target", deployment.ErrInvalidTarget.Error())
 	case errors.Is(err, deployment.ErrTargetExists):

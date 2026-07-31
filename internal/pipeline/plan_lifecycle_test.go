@@ -19,7 +19,7 @@ func TestBuildPlanDeleteChecksDraftWorkflowsAndTemplates(t *testing.T) {
 		t.Fatal(err)
 	}
 	application, err := service.CreateApplication(ctx, "admin", ApplicationInput{
-		Name: "构建引用应用", RepositoryID: repositoryID, PollIntervalSeconds: 60,
+		Name: "build_reference", RepositoryID: repositoryID, PollIntervalSeconds: 60,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -86,7 +86,7 @@ func TestDeploymentPlanLifecycleAndReferenceProtection(t *testing.T) {
 	}
 
 	application, err := service.CreateApplication(ctx, "admin", ApplicationInput{
-		Name: "部署引用应用", RepositoryID: repositoryID, PollIntervalSeconds: 60,
+		Name: "deploy_reference", RepositoryID: repositoryID, PollIntervalSeconds: 60,
 	})
 	if err != nil {
 		t.Fatal(err)

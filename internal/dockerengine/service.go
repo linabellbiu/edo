@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"path"
 	"path/filepath"
 	"regexp"
 	"strconv"
@@ -47,6 +48,7 @@ const (
 	LocalEndpointID          = "zrt-local-docker"
 	localEndpointHost        = "builder://local"
 	defaultLocalEndpointName = "本地 Docker"
+	managedImageDisplayLabel = "zrt.image.display"
 )
 
 type TLSBundle struct {
@@ -72,14 +74,15 @@ type Input struct {
 }
 
 type Container struct {
-	ID      string   `json:"id"`
-	Names   []string `json:"names"`
-	Image   string   `json:"image"`
-	ImageID string   `json:"image_id"`
-	Command string   `json:"command"`
-	Created int64    `json:"created"`
-	State   string   `json:"state"`
-	Status  string   `json:"status"`
+	ID           string   `json:"id"`
+	Names        []string `json:"names"`
+	Image        string   `json:"image"`
+	ImageDisplay string   `json:"image_display"`
+	ImageID      string   `json:"image_id"`
+	Command      string   `json:"command"`
+	Created      int64    `json:"created"`
+	State        string   `json:"state"`
+	Status       string   `json:"status"`
 }
 
 type Service struct {
@@ -308,12 +311,25 @@ func (s *Service) Containers(ctx context.Context, id string, all bool) ([]Contai
 	}
 	containers := make([]Container, 0, len(result.Items))
 	for _, item := range result.Items {
+		imageDisplay := strings.TrimSpace(item.Labels[managedImageDisplayLabel])
+		if imageDisplay == "" {
+			imageDisplay = compactContainerImageReference(item.Image)
+		}
 		containers = append(containers, Container{
-			ID: item.ID, Names: item.Names, Image: item.Image, ImageID: item.ImageID,
+			ID: item.ID, Names: item.Names, Image: item.Image, ImageDisplay: imageDisplay, ImageID: item.ImageID,
 			Command: item.Command, Created: item.Created, State: string(item.State), Status: item.Status,
 		})
 	}
 	return containers, nil
+}
+
+func compactContainerImageReference(value string) string {
+	value = strings.TrimSpace(value)
+	repository, digest, found := strings.Cut(value, "@sha256:")
+	if found && len(digest) >= 12 {
+		return path.Base(repository) + "@" + digest[:12]
+	}
+	return path.Base(value)
 }
 
 func (s *Service) Client(ctx context.Context, id string) (*client.Client, error) {
@@ -471,6 +487,7 @@ func IsLocalEndpointID(id string) bool {
 func (s *Service) localEndpoint(ctx context.Context) (model.DockerEndpoint, error) {
 	endpoint := model.DockerEndpoint{
 		ID: LocalEndpointID, Name: defaultLocalEndpointName, Host: localEndpointHost,
+		HostID:    model.BuiltinLocalHostID,
 		CreatedBy: "system",
 	}
 	var capability model.HostCapability

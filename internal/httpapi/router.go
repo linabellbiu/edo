@@ -200,6 +200,8 @@ func NewRouter(deps Dependencies) *gin.Engine {
 	protected.DELETE("/workflow-templates/:id", auditAction(deps.Audits, deps.Logger, "workflow_template.delete", "release_workflow_template"), requirePermission(deps.Access, deps.Logger, access.PermissionDeliveryManage), pipelineAPI.deleteWorkflowTemplate)
 	protected.GET("/build-plans", requirePermission(deps.Access, deps.Logger, access.PermissionDeliveryRead), pipelineAPI.listBuildPlans)
 	protected.POST("/build-plans", auditAction(deps.Audits, deps.Logger, "build_plan.create", "build_plan"), requirePermission(deps.Access, deps.Logger, access.PermissionDeliveryManage), pipelineAPI.createBuildPlan)
+	protected.GET("/build-plans/:id/artifacts", requirePermission(deps.Access, deps.Logger, access.PermissionDeliveryRead), artifactAPI.listBuildPlan)
+	protected.POST("/build-plans/:id/applications/:application_id/artifacts/upload", auditAction(deps.Audits, deps.Logger, "artifact.upload", "artifact"), requirePermission(deps.Access, deps.Logger, access.PermissionDeliveryManage), artifactAPI.uploadBuildPlan)
 	protected.PUT("/build-plans/:id", auditAction(deps.Audits, deps.Logger, "build_plan.update", "build_plan"), requirePermission(deps.Access, deps.Logger, access.PermissionDeliveryManage), pipelineAPI.updateBuildPlan)
 	protected.PATCH("/build-plans/:id/status", auditAction(deps.Audits, deps.Logger, "build_plan.status.update", "build_plan"), requirePermission(deps.Access, deps.Logger, access.PermissionDeliveryManage), pipelineAPI.setBuildPlanStatus)
 	protected.DELETE("/build-plans/:id", auditAction(deps.Audits, deps.Logger, "build_plan.delete", "build_plan"), requirePermission(deps.Access, deps.Logger, access.PermissionDeliveryManage), pipelineAPI.deleteBuildPlan)
@@ -256,6 +258,7 @@ func NewRouter(deps Dependencies) *gin.Engine {
 
 	hostAPI := hostHandler{service: deps.Hosts, logger: deps.Logger}
 	protected.GET("/hosts", requireAnyPermission(deps.Access, deps.Logger, access.PermissionClusterRead, access.PermissionDeploymentRead), hostAPI.list)
+	protected.GET("/hosts/statuses", requireAnyPermission(deps.Access, deps.Logger, access.PermissionClusterRead, access.PermissionDeploymentRead), hostAPI.listStatuses)
 	protected.GET("/hosts/:id", requireAnyPermission(deps.Access, deps.Logger, access.PermissionClusterRead, access.PermissionDeploymentRead), hostAPI.get)
 	protected.POST("/hosts/:id/ping", auditAction(deps.Audits, deps.Logger, "host.ping", "host"), requireAnyPermission(deps.Access, deps.Logger, access.PermissionClusterManage, access.PermissionDeploymentManage), hostAPI.ping)
 	protected.POST("/hosts/test", auditAction(deps.Audits, deps.Logger, "host.test", "host"), requirePermission(deps.Access, deps.Logger, access.PermissionClusterManage), hostAPI.test)

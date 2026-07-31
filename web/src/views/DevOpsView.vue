@@ -3,11 +3,11 @@ import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
 import { Modal, message } from 'ant-design-vue'
-import type { UploadProps } from 'ant-design-vue'
-import { Boxes, ChevronRight, Clock3, Download, GitBranch, GitCommit, Package, Play, Plus, RefreshCw, Settings2, Upload, Workflow } from 'lucide-vue-next'
+import { Box, Boxes, ChevronRight, Clock3, GitBranch, GitCommit, Layers3, Play, Plus, RefreshCw, Server, Settings2, Workflow } from 'lucide-vue-next'
 
 import client from '@/api/client'
 import { apiErrorMessage, type ResourceRecord } from '@/api/resources'
+import BuildPlanWorkspace from '@/components/BuildPlanWorkspace.vue'
 import PageToolbar from '@/components/PageToolbar.vue'
 import PipelineLogDrawer from '@/components/PipelineLogDrawer.vue'
 import PipelineRunGraph from '@/components/PipelineRunGraph.vue'
@@ -25,10 +25,13 @@ const {t,locale}=useI18n()
 interface Repository extends ResourceRecord{id:string;name:string;provider:string;clone_url:string;default_branch:string;webhook_enabled:boolean;webhook_url?:string;is_active:boolean;auth_type:string;username?:string;allow_insecure_http:boolean;has_credential?:boolean;credential_id?:string;api_credential_id?:string}
 interface Credential{id:string;name:string;provider:string;auth_type:string;username?:string;secret_hint:string}
 interface BuildPlan extends ResourceRecord{id:string;name:string;kind:'dockerfile'|'script';description:string;script?:string;dockerfile_path?:string;context_path:string;working_directory:string;artifact_path?:string;runtime_image?:string;image_registry_id?:string;target_stage?:string;platform?:string;pull:boolean;cache_enabled:boolean;build_args:Record<string,string>;environment_variables:Record<string,string>;timeout_seconds:number;is_active:boolean;created_at:string;updated_at:string;image_registry?:Registry}
-interface Registry extends ResourceRecord{id:string;name:string;provider:string;endpoint:string;namespace:string;has_credential:boolean;is_active:boolean}
+type RegistryProvider='harbor'|'docker_hub'|'generic'
+interface Registry extends ResourceRecord{id:string;name:string;provider:RegistryProvider;endpoint:string;namespace:string;has_credential:boolean;is_active:boolean}
 interface Artifact extends ResourceRecord{id:string;application_id:string;build_run_id:string;pipeline_run_id?:string;kind:'oci_image'|'file_bundle';status:'available'|'expired'|'corrupt';name:string;original_name?:string;media_type?:string;digest:string;size_bytes:number;storage_kind:'local_file'|'registry'|'docker_daemon';image_ref?:string;created_at:string;updated_at:string}
- interface Application extends ResourceRecord{id:string;name:string;description:string;repository_id:string;poll_interval_seconds:number;last_observed_commit?:string;sync_status:string;sync_message?:string;last_checked_at?:string;is_active:boolean;repository?:Repository;workflows:PipelineWorkflow[]}
- interface Run extends ResourceRecord{id:string;application_id:string;trigger:string;ref:string;commit_sha:string;commit_message?:string;status:string;stage:string;message?:string;created_at:string;updated_at?:string;application?:Application;environment?:string;current_node_id?:string;current_node_name?:string;created_by?:string;image?:string;execution_graph?:PipelineExecutionGraph}
+interface ApplicationWorkflow extends PipelineWorkflow{workflow_template?:{id:string;name:string}}
+interface Application extends ResourceRecord{id:string;name:string;description:string;repository_id:string;poll_interval_seconds:number;last_observed_commit?:string;sync_status:string;sync_message?:string;last_checked_at?:string;is_active:boolean;repository?:Repository;workflows:ApplicationWorkflow[]}
+interface Run extends ResourceRecord{id:string;application_id:string;workflow_id?:string;deployment_id?:string;trigger:string;ref:string;commit_sha:string;commit_message?:string;status:string;stage:string;message?:string;created_at:string;updated_at?:string;application?:Application;environment?:string;current_node_id?:string;current_node_name?:string;created_by?:string;image?:string;execution_graph?:PipelineExecutionGraph}
+interface DeploymentRecord extends ResourceRecord{id:string;pipeline_run_id?:string;target_id:string;target_name:string;platform:string;runtime_id:string;namespace:string;workload_name:string;container_name:string;deployment_plan_id?:string;deployment_plan_kind?:string;compose_service?:string;operation:string;image:string;image_display?:string;status:string;created_at:string;updated_at:string;finished_at?:string}
 type StatusTone='neutral'|'info'|'success'|'warning'|'danger'
 interface StatusMeta{tone:StatusTone;label:string;live:boolean}
  interface ReleasePlan extends ResourceRecord{id:string;name:string;version:string;description:string;status:string;is_active?:boolean;created_at:string;updated_at?:string;latest_execution?:{id:string;status:string;created_at:string;finished_at?:string};groups?:Array<{id:string;name:string;mode:string;failure_policy:string;sort_order?:number;dependencies?:Array<{depends_on_group_id:string}>;applications:Array<{id:string;application_id:string;application?:Application;manual_deploy?:boolean;source_type?:string;source_value?:string;sort_order?:number}>}>}
@@ -42,9 +45,9 @@ interface PlanExecutionItem{membershipID:string;applicationID:string;application
 interface PlanExecutionGroup{id:string;name:string;mode:string;failurePolicy:string;dependencies:string[];items:PlanExecutionItem[]}
 interface ReleasePlanEditorValue{id:string;description:string;groups:Array<{id:string;name:string;mode:'parallel'|'sequential';failure_policy:'stop'|'continue';depends_on_group_ids:string[];applications:Array<{application_id:string;manual_deploy:boolean;source_type:string;source_value:string}>}>}
 
-const applications=ref<Application[]>([]),repositories=ref<Repository[]>([]),credentials=ref<Credential[]>([]),buildPlans=ref<BuildPlan[]>([]),registries=ref<Registry[]>([]),runs=ref<Run[]>([]),releasePlans=ref<ReleasePlan[]>([]),deployments=ref<ResourceRecord[]>([]),artifacts=ref<Artifact[]>([])
+const applications=ref<Application[]>([]),repositories=ref<Repository[]>([]),credentials=ref<Credential[]>([]),buildPlans=ref<BuildPlan[]>([]),registries=ref<Registry[]>([]),runs=ref<Run[]>([]),releasePlans=ref<ReleasePlan[]>([]),deployments=ref<DeploymentRecord[]>([]),artifacts=ref<Artifact[]>([])
 const loading=ref(false),saving=ref(false),resourceMutationID=ref(''),formOpen=ref(false),editingID=ref(''),registryTested=ref(false),testing=ref(false),manualOpen=ref(false),manualApplicationID=ref(''),manualWorkflowID=ref(''),manualApplications=ref<Application[]>([]),commitOpen=ref(false),commitOptions=ref<Array<{ref:string;name:string;sha:string;kind:'branch'|'tag'}>>([]),selectedRef=ref(''),selectedSource=ref(''),manualSources=ref<Array<{id:string;name:string;environment?:string}>>([]),currentRun=ref<Run|null>(null),currentRunSelectionKey=ref(''),selectedRunID=ref(''),log=ref({open:false,runID:'',title:'',status:''})
-const buildImageDestination=ref<'local'|'registry'>('local'),buildArgsText=ref(''),buildEnvironmentText=ref(''),artifactApplicationID=ref(''),artifactLoading=ref(false),artifactUploading=ref(false),artifactDownloadingID=ref('')
+const buildImageDestination=ref<'local'|'registry'>('local'),buildArgsText=ref(''),buildEnvironmentText=ref(''),selectedBuildPlanID=ref(''),buildPlanView=ref<'overview'|'artifacts'>('overview'),artifactApplicationID=ref(''),artifactLoading=ref(false),artifactUploading=ref(false),artifactDownloadingID=ref('')
 const planExecutionOpen=ref(false),planExecutionPlanID=ref(''),planExecutionTitle=ref(''),planExecutionExpectedUpdatedAt=ref(''),planExecutionRequestID=ref(''),planExecutionGroups=ref<PlanExecutionGroup[]>([]),planExecutionSubmitting=ref(false)
 const releasePlanEditorOpen=ref(false),releasePlanEditorPlan=ref<ReleasePlan|null>(null),releasePlanMutationID=ref('')
 const releasePlanAddApplicationOpen=ref(false),releasePlanAddApplicationPlanID=ref(''),releasePlanAddApplicationGroupID=ref(''),releasePlanAddApplicationIDs=ref<string[]>([])
@@ -55,8 +58,15 @@ const repoForm=reactive({name:'',provider:'github',clone_url:'',default_branch:'
 const DEFAULT_RUNTIME_IMAGE='alpine:3.22'
 const runtimeImageOptions=['alpine:3.22','node:24-alpine','golang:1.26-alpine','maven:3.9-eclipse-temurin-21-alpine'].map(value=>({value}))
 const buildForm=reactive({name:'',kind:'dockerfile' as 'dockerfile'|'script',description:'',script:'',dockerfile_path:'Dockerfile',context_path:'.',working_directory:'.',artifact_path:'',runtime_image:DEFAULT_RUNTIME_IMAGE,image_registry_id:'',target_stage:'',platform:'',pull:true,cache_enabled:true,timeout_seconds:1800})
-const registryForm=reactive({name:'',provider:'harbor',endpoint:'https://',namespace:'',username:'',credential:'',allow_insecure_http:false})
-
+const registryForm=reactive({name:'',provider:'generic' as RegistryProvider,endpoint:'https://',namespace:'',username:'',credential:'',allow_insecure_http:false})
+const dockerHubRegistry=computed(()=>registryForm.provider==='docker_hub')
+const selectedBuildRegistry=computed(()=>registries.value.find(item=>item.id===buildForm.image_registry_id))
+const buildImagePathPreview=computed(()=>{
+ const registry=selectedBuildRegistry.value
+ const endpoint=(registry?.provider==='docker_hub'?'docker.io':registry?.endpoint||'[镜像仓库地址]').replace(/^https?:\/\//i,'').replace(/\/+$/,'')
+ const namespace=(registry?.namespace||'[命名空间]').replace(/^\/+|\/+$/g,'')
+ return `${endpoint}/${namespace}/[应用名]:[版本标签]`
+})
 const copy:Record<Section,{description:string}>={applications:{description:'一个应用对应一个代码仓库，可以拥有多条独立流水线；每条流水线分别定义触发、构建和部署流程。'},repositories:{description:'统一管理 Git 来源和可选 Webhook；凭据来自当前用户自己的令牌。'},'build-plans':{description:'保存可复用的 Dockerfile 或脚本构建配置。'},'image-registries':{description:'管理 Harbor、Docker Hub 或其他 OCI Registry；保存前必须完成真实登录测试。'},'release-plans':{description:'发布计划组织人工批量发布；流水线运行与发布记录独立展示。'}}
 const releaseView=computed(()=>route.query.view==='runs'?'runs':route.query.view==='records'?'records':'plans')
 const canManage=computed(()=>props.section==='repositories'?auth.canAny(['repository.manage']):auth.canAny(['delivery.manage']))
@@ -74,18 +84,40 @@ const releasePlanAddApplicationOptions=computed(()=>{
 const currentDescription=computed(()=>props.section==='release-plans'?(releaseView.value==='runs'?'查看代码事件或手动操作触发的执行、当前任务和实时日志。':releaseView.value==='records'?'查看已经进入真实部署环节的执行结果。':copy[props.section].description):copy[props.section].description)
 const selectedRun=computed(()=>runs.value.find(item=>item.id===selectedRunID.value)||runs.value[0]||null)
 const activeRunCount=computed(()=>runs.value.filter(item=>['running','awaiting_approval'].includes(item.status)).length)
-const activeRows=computed<ResourceRecord[]>(()=>props.section==='applications'?applications.value:props.section==='repositories'?repositories.value:props.section==='build-plans'?buildPlans.value:props.section==='image-registries'?registries.value:[])
-const activeColumns=computed(()=>props.section==='applications'?[{key:'name',label:'应用'},{key:'repository',label:'代码仓库'},{key:'workflows',label:'流水线'},{key:'sync_status',label:'代码状态'},{key:'last_checked_at',label:'最近检查'}]:props.section==='repositories'?[{key:'name',label:'名称'},{key:'provider',label:'平台'},{key:'clone_url',label:'Git 地址'},{key:'default_branch',label:'默认分支'},{key:'webhook_enabled',label:'Webhook'},{key:'is_active',label:'状态'}]:props.section==='build-plans'?[{key:'name',label:'名称'},{key:'is_active',label:'状态'},{key:'kind',label:'类型'},{key:'build_entry',label:'构建入口'},{key:'context_path',label:'执行目录'},{key:'artifact_path',label:'制品'},{key:'image_registry',label:'镜像输出'},{key:'timeout_seconds',label:'超时'},{key:'updated_at',label:'最近修改'}]:props.section==='image-registries'?[{key:'name',label:'名称'},{key:'provider',label:'类型'},{key:'endpoint',label:'地址'},{key:'namespace',label:'命名空间'},{key:'has_credential',label:'凭据'}]:[])
-const artifactColumns=[{key:'name',label:'制品名称'},{key:'kind',label:'类型'},{key:'status',label:'状态'},{key:'size_bytes',label:'大小'},{key:'storage_kind',label:'存储位置'},{key:'digest',label:'摘要'},{key:'created_at',label:'创建时间'}]
-const selectedArtifactApplication=computed(()=>applications.value.find(item=>item.id===artifactApplicationID.value))
-
+const canReadDeployments=computed(()=>auth.canAny(['deployment.read']))
+const activeRows=computed<ResourceRecord[]>(()=>props.section==='applications'?applications.value:props.section==='repositories'?repositories.value:props.section==='image-registries'?registries.value:[])
+const activeColumns=computed(()=>props.section==='applications'?[{key:'name',label:'应用'},{key:'repository',label:'代码仓库'},{key:'workflows',label:'流水线'},{key:'sync_status',label:'代码状态'},{key:'last_checked_at',label:'最近检查'}]:props.section==='repositories'?[{key:'name',label:'名称'},{key:'provider',label:'平台'},{key:'clone_url',label:'Git 地址'},{key:'default_branch',label:'默认分支'},{key:'webhook_enabled',label:'Webhook'},{key:'is_active',label:'状态'}]:props.section==='image-registries'?[{key:'name',label:'名称'},{key:'provider',label:'类型'},{key:'endpoint',label:'地址'},{key:'namespace',label:'命名空间'},{key:'has_credential',label:'凭据'}]:[])
 const activeApplicationRunStatuses=new Set(['running','awaiting_approval','ready'])
 const applicationCards=computed(()=>applications.value.map(application=>{
- const related=runs.value.filter(run=>run.application_id===application.id)
+ const related=runs.value.filter(run=>run.application_id===application.id).sort((left,right)=>Date.parse(right.created_at)-Date.parse(left.created_at))
  const run=related.find(item=>activeApplicationRunStatuses.has(item.status))||related[0]
  const repository=application.repository?.id?application.repository:repositories.value.find(item=>item.id===application.repository_id)
- const workflowCount=application.workflows?.length||0
- return {application,run,repository,workflowCount,state:applicationRunStatus(run),sync:applicationSyncStatus(application.sync_status)}
+ const workflowSummaries=(application.workflows||[]).map(workflow=>{
+  const tasks=workflow.stages.flatMap(stage=>stage.tasks)
+  const latestRun=related.find(item=>item.workflow_id===workflow.id)
+  return {
+   workflow,
+   latestRun,
+   state:applicationRunStatus(latestRun),
+   taskCount:tasks.length,
+   buildCount:tasks.filter(task=>task.type==='build').length,
+   deployCount:tasks.filter(task=>task.type==='deploy').length,
+   source:workflowSourceLabel(workflow),
+  }
+ })
+ const runIDs=new Set(related.map(item=>item.id))
+ const instanceKeys=new Set<string>()
+ const deploymentInstances=deployments.value.filter(record=>runIDs.has(record.pipeline_run_id||'')&&['queued','running','succeeded'].includes(record.status)).filter(record=>{
+  const key=[record.deployment_plan_id||record.target_id,record.platform,record.runtime_id,record.namespace,record.container_name||record.compose_service||record.workload_name].join(':')
+  if(instanceKeys.has(key))return false
+  instanceKeys.add(key)
+  return true
+ })
+ return {
+  application,run,repository,workflowSummaries,deploymentInstances,
+  enabledWorkflowCount:workflowSummaries.filter(item=>item.workflow.is_active).length,
+  state:applicationRunStatus(run),sync:applicationSyncStatus(application.sync_status),
+ }
 }))
 const releasePlanRunnableCounts=computed<Record<string,number>>(()=>Object.fromEntries(releasePlans.value.map(plan=>[plan.id,releasePlanManualApplicationCount(plan)])))
 
@@ -99,6 +131,7 @@ function applicationRunStatus(run?:Run):StatusMeta{
  }
  return states[run.status]||{tone:'neutral',label:run.status,live:false}
 }
+function validApplicationName(value:string){return /^[a-z]+(?:_[a-z]+)*$/.test(value)}
 function applicationSyncStatus(status:string):StatusMeta{
  const states:Record<string,StatusMeta>={
   checking:{tone:'info',label:t('applicationCard.syncStatus.checking'),live:true},synced:{tone:'success',label:t('applicationCard.syncStatus.synced'),live:false},
@@ -113,6 +146,26 @@ function applicationCurrentNode(run?:Run){
  if(run.status==='succeeded')return t('applicationCard.finished')
  if(['failed','blocked','canceled'].includes(run.status))return t('applicationCard.stopped')
  return t('applicationCard.notStarted')
+}
+function workflowSourceLabel(workflow:ApplicationWorkflow){
+ const branch=workflow.source.config.branch||'*'
+ const events=(workflow.source.config.events||[]).map(event=>t(`applicationCard.trigger.${event}`)).join(' / ')
+ return `${branch} · ${events||t('applicationCard.trigger.none')}`
+}
+function deploymentKind(record:DeploymentRecord){
+ const kind=record.deployment_plan_kind||record.platform
+ return ['docker','compose','kubernetes','script'].includes(kind)?kind:'script'
+}
+function deploymentKindLabel(record:DeploymentRecord){return t(`applicationCard.deploymentKind.${deploymentKind(record)}`)}
+function deploymentInstanceName(record:DeploymentRecord){return record.container_name||record.compose_service||record.workload_name||record.target_name||t('applicationCard.unknownInstance')}
+function deploymentImageLabel(record:DeploymentRecord){return record.image_display||record.image||t('applicationCard.noImage')}
+function deploymentStatus(record:DeploymentRecord):StatusMeta{
+ const states:Record<string,StatusMeta>={
+  queued:{tone:'warning',label:t('applicationCard.deploymentStatus.queued'),live:true},
+  running:{tone:'info',label:t('applicationCard.deploymentStatus.running'),live:true},
+  succeeded:{tone:'success',label:t('applicationCard.deploymentStatus.succeeded'),live:false},
+ }
+ return states[record.status]||{tone:'neutral',label:record.status,live:false}
 }
 function workflowSupportsManualRelease(workflow?:PipelineWorkflow){return Boolean(workflow?.is_active&&workflow.source?.type==='trigger'&&workflow.source.config?.events?.includes('manual'))}
 function applicationManualWorkflows(application?:Application){return (application?.workflows||[]).filter(workflowSupportsManualRelease)}
@@ -131,20 +184,23 @@ function openApplicationLink(card:(typeof applicationCards.value)[number],kind:'
  if(!target){edit(card.application);return}
  void router.push('/repositories')
 }
+function openApplicationWorkflow(applicationID:string,workflowID:string){void router.push(`/pipeline-plans/editor?application=${applicationID}&workflow=${workflowID}`)}
+function openDeploymentRecords(){void router.push({path:'/release-plans',query:{view:'records'}})}
 function createImageRegistry(){
  formOpen.value=false
  void router.push({path:'/image-registries',query:{create:'1',return_to:route.fullPath}})
 }
 
-async function refresh(){loading.value=true;try{const requests=await Promise.all([auth.canAny(['delivery.read'])?client.get<{applications:Application[]}>('/applications'):null,auth.canAny(['repository.read'])?client.get<{repositories:Repository[]}>('/repositories'):null,auth.canAny(['credential.read'])?client.get<{credentials:Credential[]}>('/git-credentials'):null,auth.canAny(['delivery.read'])?client.get<{build_plans:BuildPlan[]}>('/build-plans'):null,auth.canAny(['delivery.read'])?client.get<{image_registries:Registry[]}>('/image-registries'):null,auth.canAny(['delivery.read'])?client.get<{pipeline_runs:Run[]}>('/pipeline-runs?limit=200'):null,auth.canAny(['delivery.read'])?client.get<{release_plans:ReleasePlan[]}>('/release-plans'):null,auth.canAny(['deployment.read'])?client.get<{deployments:ResourceRecord[]}>('/deployments'):null]);applications.value=requests[0]?.data.applications||[];repositories.value=requests[1]?.data.repositories||[];credentials.value=requests[2]?.data.credentials||[];buildPlans.value=requests[3]?.data.build_plans||[];registries.value=requests[4]?.data.image_registries||[];runs.value=requests[5]?.data.pipeline_runs||[];if(!selectedRunID.value||!runs.value.some(item=>item.id===selectedRunID.value))selectedRunID.value=runs.value[0]?.id||'';releasePlans.value=requests[6]?.data.release_plans||[];deployments.value=requests[7]?.data.deployments||[]}catch(error){message.error(apiErrorMessage(error))}finally{loading.value=false}}
+async function refresh(){loading.value=true;try{const requests=await Promise.all([auth.canAny(['delivery.read'])?client.get<{applications:Application[]}>('/applications'):null,auth.canAny(['repository.read'])?client.get<{repositories:Repository[]}>('/repositories'):null,auth.canAny(['credential.read'])?client.get<{credentials:Credential[]}>('/git-credentials'):null,auth.canAny(['delivery.read'])?client.get<{build_plans:BuildPlan[]}>('/build-plans'):null,auth.canAny(['delivery.read'])?client.get<{image_registries:Registry[]}>('/image-registries'):null,auth.canAny(['delivery.read'])?client.get<{pipeline_runs:Run[]}>('/pipeline-runs?limit=200'):null,auth.canAny(['delivery.read'])?client.get<{release_plans:ReleasePlan[]}>('/release-plans'):null,canReadDeployments.value?client.get<{deployments:DeploymentRecord[]}>('/deployments?limit=200'):null]);applications.value=requests[0]?.data.applications||[];repositories.value=requests[1]?.data.repositories||[];credentials.value=requests[2]?.data.credentials||[];buildPlans.value=requests[3]?.data.build_plans||[];registries.value=requests[4]?.data.image_registries||[];runs.value=requests[5]?.data.pipeline_runs||[];if(!selectedRunID.value||!runs.value.some(item=>item.id===selectedRunID.value))selectedRunID.value=runs.value[0]?.id||'';releasePlans.value=requests[6]?.data.release_plans||[];deployments.value=requests[7]?.data.deployments||[]}catch(error){message.error(apiErrorMessage(error))}finally{loading.value=false}}
 let stateRefreshing=false
 async function refreshApplicationState(){
  if(stateRefreshing||!auth.canAny(['delivery.read']))return
  stateRefreshing=true
  try{
- const [applicationResult,runResult]=await Promise.all([client.get<{applications:Application[]}>('/applications'),client.get<{pipeline_runs:Run[]}>('/pipeline-runs?limit=200')])
+ const [applicationResult,runResult,deploymentResult]=await Promise.all([client.get<{applications:Application[]}>('/applications'),client.get<{pipeline_runs:Run[]}>('/pipeline-runs?limit=200'),canReadDeployments.value?client.get<{deployments:DeploymentRecord[]}>('/deployments?limit=200'):null])
   applications.value=applicationResult.data.applications||[]
   runs.value=runResult.data.pipeline_runs||[]
+  if(deploymentResult)deployments.value=deploymentResult.data.deployments||[]
  }catch{}finally{stateRefreshing=false}
 }
 async function refreshRunState(){
@@ -179,7 +235,7 @@ function resetForms(){
  Object.assign(appForm,{name:'',description:'',repository_id:'',poll_interval_seconds:5})
 	 Object.assign(repoForm,{name:'',provider:'github',clone_url:'',default_branch:'main',auth_type:'none',username:'',credential_id:'',api_credential_id:'',webhook_enabled:true,allow_insecure_http:false})
  Object.assign(buildForm,{name:'',kind:'dockerfile',description:'',script:'',dockerfile_path:'Dockerfile',context_path:'.',working_directory:'.',artifact_path:'',runtime_image:DEFAULT_RUNTIME_IMAGE,image_registry_id:'',target_stage:'',platform:'',pull:true,cache_enabled:true,timeout_seconds:1800})
- Object.assign(registryForm,{name:'',provider:'harbor',endpoint:'https://',namespace:'',username:'',credential:'',allow_insecure_http:false})
+ Object.assign(registryForm,{name:'',provider:'generic',endpoint:'https://',namespace:'',username:'',credential:'',allow_insecure_http:false})
 }
 function create(){
  resetForms()
@@ -195,7 +251,7 @@ function create(){
   const activeRepositories=repositories.value.filter(item=>item.is_active)
   if(activeRepositories.length===1){
    appForm.repository_id=activeRepositories[0].id
-   appForm.name=activeRepositories[0].name
+   if(validApplicationName(activeRepositories[0].name))appForm.name=activeRepositories[0].name
   }
  }
  formOpen.value=true
@@ -224,6 +280,7 @@ async function save(){
  try{
   let endpoint='',payload:unknown={},method:'post'|'put'='post'
   if(props.section==='applications'){
+   if(!validApplicationName(appForm.name)){message.error('应用名必须以小写英文字母开头，只能使用小写英文字母和单个下划线');return}
    if(!appForm.repository_id){message.error('请选择代码仓库');return}
    endpoint=editingID.value?`/applications/${editingID.value}`:'/applications'
    payload={...appForm}
@@ -259,54 +316,40 @@ async function save(){
   }
   if(props.section==='image-registries'){
    if(!registryTested.value){message.error('请先测试镜像仓库登录');return}
-   endpoint='/image-registries';payload={...registryForm,credential:registryForm.credential||null}
+   endpoint='/image-registries';payload=registryRequestPayload()
   }
   await client[method](endpoint,payload)
   message.success('配置已保存');formOpen.value=false;resetForms();await refresh()
  }catch(error){message.error(apiErrorMessage(error))}finally{saving.value=false}
 }
-function buildPlanKindLabel(kind:string){return kind==='dockerfile'?'Dockerfile':'构建脚本'}
-function buildPlanEntry(plan:BuildPlan){
- if(plan.kind==='dockerfile')return plan.dockerfile_path||'Dockerfile'
- const lines=(plan.script||'').split(/\r?\n/).filter(line=>line.trim()).length
- return lines?`${lines} 行脚本`:'构建脚本'
-}
-function buildPlanDirectory(plan:BuildPlan){return plan.kind==='dockerfile'?plan.context_path||'.':plan.working_directory||'.'}
-function buildPlanArtifact(plan:BuildPlan){return plan.kind==='dockerfile'?'OCI 镜像':`${plan.artifact_path||'—'} · 自动识别`}
-function buildPlanRegistry(plan:BuildPlan){return plan.kind==='script'?'不适用':plan.image_registry?.name||registries.value.find(item=>item.id===plan.image_registry_id)?.name||'构建运行时本地镜像'}
-function artifactKindLabel(kind:Artifact['kind']){return kind==='oci_image'?'OCI 镜像':'文件包'}
-function artifactStatusLabel(status:Artifact['status']){return ({available:'可用',expired:'已过期',corrupt:'已损坏'} as const)[status]||status}
-function artifactStorageLabel(kind:Artifact['storage_kind']){return ({local_file:'ZRT 制品存储',registry:'镜像仓库',docker_daemon:'构建运行时'} as const)[kind]||kind}
-function formatFileSize(value:number){
- if(!Number.isFinite(value)||value<=0)return '0 B'
- const units=['B','KB','MB','GB','TB']
- const index=Math.min(Math.floor(Math.log(value)/Math.log(1024)),units.length-1)
- return `${(value/1024**index).toFixed(index===0?0:1)} ${units[index]}`
-}
+function registryProviderLabel(provider:RegistryProvider){return ({harbor:'Harbor',docker_hub:'Docker Hub',generic:'通用 Registry'} as const)[provider]||provider}
+function registryEndpointLabel(registry:Registry){return registry.provider==='docker_hub'?'docker.io（系统固定）':registry.endpoint}
+function registryRequestPayload(){return {...registryForm,endpoint:dockerHubRegistry.value?'':registryForm.endpoint,allow_insecure_http:dockerHubRegistry.value?false:registryForm.allow_insecure_http,credential:registryForm.credential||null}}
 async function loadArtifacts(){
+ const buildPlanID=selectedBuildPlanID.value
  const applicationID=artifactApplicationID.value
- if(props.section!=='build-plans'||!applicationID||!auth.canAny(['delivery.read'])){artifacts.value=[];return}
+ if(props.section!=='build-plans'||buildPlanView.value!=='artifacts'||!buildPlanID||!auth.canAny(['delivery.read'])){artifacts.value=[];return}
+ const requestKey=`${buildPlanID}:${applicationID}`
  artifactLoading.value=true
  try{
-  const result=await client.get<{artifacts:Artifact[]}>(`/applications/${applicationID}/artifacts`)
-  if(artifactApplicationID.value===applicationID)artifacts.value=result.data.artifacts||[]
+  const result=await client.get<{artifacts:Artifact[]}>(`/build-plans/${buildPlanID}/artifacts`,{params:applicationID?{application_id:applicationID}:undefined})
+  if(`${selectedBuildPlanID.value}:${artifactApplicationID.value}`===requestKey&&buildPlanView.value==='artifacts')artifacts.value=result.data.artifacts||[]
  }catch(error){
-  if(artifactApplicationID.value===applicationID){artifacts.value=[];message.error(apiErrorMessage(error))}
- }finally{if(artifactApplicationID.value===applicationID)artifactLoading.value=false}
+  if(`${selectedBuildPlanID.value}:${artifactApplicationID.value}`===requestKey&&buildPlanView.value==='artifacts'){artifacts.value=[];message.error(apiErrorMessage(error))}
+ }finally{if(`${selectedBuildPlanID.value}:${artifactApplicationID.value}`===requestKey)artifactLoading.value=false}
 }
 async function uploadArtifact(file:File){
- if(!artifactApplicationID.value||artifactUploading.value)return
+ if(!selectedBuildPlanID.value||!artifactApplicationID.value||artifactUploading.value)return
  artifactUploading.value=true
  try{
   const body=new FormData()
   body.append('file',file,file.name)
-  await client.post(`/applications/${artifactApplicationID.value}/artifacts/upload`,body,{timeout:120_000})
-  message.success('制品上传完成，已计算摘要并登记')
+  await client.post(`/build-plans/${selectedBuildPlanID.value}/applications/${artifactApplicationID.value}/artifacts/upload`,body,{timeout:120_000})
+  message.success('制品上传完成，已记录到当前构建方案')
   await loadArtifacts()
  }catch(error){message.error(apiErrorMessage(error))}finally{artifactUploading.value=false}
 }
-const beforeArtifactUpload:UploadProps['beforeUpload']=(file)=>{void uploadArtifact(file);return false}
-async function downloadArtifact(item:Artifact){
+async function downloadArtifact(item:Pick<Artifact,'id'|'name'|'original_name'|'storage_kind'|'status'>){
  if(item.storage_kind!=='local_file'||item.status!=='available')return
  artifactDownloadingID.value=item.id
  try{
@@ -317,7 +360,7 @@ async function downloadArtifact(item:Artifact){
   window.setTimeout(()=>URL.revokeObjectURL(url),1000)
  }catch(error){message.error(apiErrorMessage(error))}finally{artifactDownloadingID.value=''}
 }
-function confirmBuildPlanStatus(plan:BuildPlan){
+function confirmBuildPlanStatus(plan:Pick<BuildPlan,'id'|'name'|'is_active'>){
  const enabling=!plan.is_active
  Modal.confirm({
   title:`${enabling?'启用':'停用'}构建方案“${plan.name}”？`,
@@ -331,7 +374,7 @@ function confirmBuildPlanStatus(plan:BuildPlan){
   },
  })
 }
-function confirmDeleteBuildPlan(plan:BuildPlan){
+function confirmDeleteBuildPlan(plan:Pick<BuildPlan,'id'|'name'>){
  Modal.confirm({
   title:`删除构建方案“${plan.name}”？`,content:'删除后将从构建方案列表隐藏，历史流水线记录继续保留。仍被流水线任务引用时系统会拒绝删除。',
   okText:'删除',okType:'danger',cancelText:'取消',
@@ -344,7 +387,7 @@ function confirmDeleteBuildPlan(plan:BuildPlan){
  })
 }
 async function testRepository(){testing.value=true;try{const payload={...repoForm,credential_id:repoForm.auth_type==='none'?null:repoForm.credential_id||null,api_credential_id:repoForm.provider==='generic'?'':repoForm.api_credential_id||'',credential:null,regenerate_webhook:false};const result=editingID.value?await client.post<RefResult>(`/repositories/${editingID.value}/test`,undefined,{timeout:35000}):await client.post<RefResult>('/repositories/test',payload,{timeout:35000});message.success(`连接成功：${result.data.branches?.length||0} 个分支，${result.data.tags?.length||0} 个标签`)}catch(error){message.error(apiErrorMessage(error))}finally{testing.value=false}}
-async function testRegistry(){testing.value=true;registryTested.value=false;try{await client.post('/image-registries/test',{...registryForm,credential:registryForm.credential||null},{timeout:35000});registryTested.value=true;message.success('镜像仓库登录成功')}catch(error){message.error(apiErrorMessage(error))}finally{testing.value=false}}
+async function testRegistry(){testing.value=true;registryTested.value=false;try{await client.post('/image-registries/test',registryRequestPayload(),{timeout:35000});registryTested.value=true;message.success('镜像仓库登录成功')}catch(error){message.error(apiErrorMessage(error))}finally{testing.value=false}}
 async function action(path:string){try{await client.post(path,undefined,{timeout:35000});await refresh()}catch(error){message.error(apiErrorMessage(error))}}
 function openLogs(run:Run){log.value={open:true,runID:run.id,title:`${applications.value.find(item=>item.id===run.application_id)?.name||'应用'} · 流水线日志`,status:run.status}}
 function resetManualFlow(){
@@ -649,12 +692,24 @@ function runStatusColor(status:string){return status==='succeeded'?'success':sta
 function refreshVisibleState(){
  if(document.hidden)return
  if(props.section==='applications')void refreshApplicationState()
+ else if(props.section==='build-plans'&&buildPlanView.value==='artifacts')void loadArtifacts()
  else if(props.section==='release-plans'&&releaseView.value==='runs')void refreshRunState()
  else if(props.section==='release-plans')void refresh()
 }
-function syncArtifactApplication(){
- if(props.section!=='build-plans'){artifacts.value=[];return}
- if(!applications.value.some(item=>item.id===artifactApplicationID.value))artifactApplicationID.value=applications.value[0]?.id||''
+function syncBuildPlanSelection(){
+ if(props.section!=='build-plans'){
+  selectedBuildPlanID.value=''
+  buildPlanView.value='overview'
+  artifactApplicationID.value=''
+  artifacts.value=[]
+  return
+ }
+ if(!buildPlans.value.some(item=>item.id===selectedBuildPlanID.value))selectedBuildPlanID.value=buildPlans.value[0]?.id||''
+ if(artifactApplicationID.value&&!applications.value.some(item=>item.id===artifactApplicationID.value))artifactApplicationID.value=''
+}
+function selectBuildPlan(id:string){
+ selectedBuildPlanID.value=id
+ buildPlanView.value='overview'
 }
 function consumeBuildCreateRequest(){
  if(!['build-plans','image-registries'].includes(props.section)||route.query.create!=='1'||!canManage.value)return
@@ -664,18 +719,27 @@ function consumeBuildCreateRequest(){
  void router.replace({query})
 }
 
-watch(()=>props.section,()=>{formOpen.value=false;resetForms();resetManualFlow();resetPlanExecution();syncArtifactApplication();void refresh().then(()=>{syncArtifactApplication();consumeBuildCreateRequest()})})
+watch(()=>props.section,()=>{formOpen.value=false;resetForms();resetManualFlow();resetPlanExecution();syncBuildPlanSelection();void refresh().then(()=>{syncBuildPlanSelection();consumeBuildCreateRequest()})})
 watch(()=>registryForm,()=>registryTested.value=false,{deep:true})
+watch(()=>registryForm.provider,(provider,previous)=>{
+ if(provider==='docker_hub'){
+  registryForm.endpoint=''
+  registryForm.allow_insecure_http=false
+ }else if(previous==='docker_hub'&&!registryForm.endpoint){
+  registryForm.endpoint='https://'
+ }
+})
 watch(()=>buildForm.kind,(kind)=>{if(kind==='dockerfile'){buildForm.dockerfile_path||='Dockerfile';buildForm.context_path||='.'}else{buildForm.working_directory||='.';buildForm.runtime_image||=DEFAULT_RUNTIME_IMAGE}})
 watch(()=>repoForm.provider,(provider)=>{
  if(repoForm.credential_id&&!credentials.value.some(item=>item.id===repoForm.credential_id&&item.auth_type===repoForm.auth_type&&(item.provider===provider||item.provider==='generic'||provider==='generic')))repoForm.credential_id=''
  if(repoForm.api_credential_id&&!credentials.value.some(item=>item.id===repoForm.api_credential_id&&item.auth_type==='token'&&item.provider===provider))repoForm.api_credential_id=''
 })
 watch(()=>repoForm.auth_type,(authType)=>{if(authType==='none'||!credentials.value.some(item=>item.id===repoForm.credential_id&&item.auth_type===authType))repoForm.credential_id=''})
-watch(()=>applications.value.map(item=>item.id).join(','),syncArtifactApplication)
-watch(artifactApplicationID,()=>{void loadArtifacts()})
+watch(()=>buildPlans.value.map(item=>item.id).join(','),syncBuildPlanSelection)
+watch(()=>applications.value.map(item=>item.id).join(','),syncBuildPlanSelection)
+watch([selectedBuildPlanID,artifactApplicationID,buildPlanView],()=>{void loadArtifacts()})
 watch(()=>route.query.create,consumeBuildCreateRequest)
-onMounted(()=>{void refresh().then(()=>{syncArtifactApplication();consumeBuildCreateRequest()});releaseTimer=window.setInterval(refreshVisibleState,5000);document.addEventListener('visibilitychange',refreshVisibleState);window.addEventListener('focus',refreshVisibleState)})
+onMounted(()=>{void refresh().then(()=>{syncBuildPlanSelection();consumeBuildCreateRequest()});releaseTimer=window.setInterval(refreshVisibleState,5000);document.addEventListener('visibilitychange',refreshVisibleState);window.addEventListener('focus',refreshVisibleState)})
 onBeforeUnmount(()=>{resetPlanExecution();clearInterval(releaseTimer);document.removeEventListener('visibilitychange',refreshVisibleState);window.removeEventListener('focus',refreshVisibleState)})
 </script>
 
@@ -687,16 +751,46 @@ onBeforeUnmount(()=>{resetPlanExecution();clearInterval(releaseTimer);document.r
         <span class="application-mark"><Boxes/></span>
         <div><div class="application-title"><h3>{{ card.application.name }}</h3><span class="application-enabled" :class="{inactive:!card.application.is_active}">{{ card.application.is_active?t('applicationCard.active'):t('applicationCard.inactive') }}</span></div><p :title="card.application.description">{{ card.application.description||t('applicationCard.noDescription') }}</p></div>
       </div>
-      <div class="application-state"><i/><span><small>{{ t('applicationCard.currentPipeline') }}</small><strong>{{ card.state.label }}</strong></span></div>
+      <div class="application-state"><i/><span><small>{{ t('applicationCard.currentRun') }}</small><strong>{{ card.state.label }}</strong></span></div>
     </header>
     <section class="application-run">
       <div class="application-commit"><small>{{ t('applicationCard.latestRun') }}</small><strong :title="card.run?.commit_message||t('applicationCard.noRun')">{{ card.run?.commit_message||t('applicationCard.noRun') }}</strong><span><GitBranch/>{{ runReferenceLabel(card.run) }}</span></div>
       <div class="application-node"><span><Workflow/></span><div><small>{{ t('applicationCard.currentNode') }}</small><strong :title="applicationCurrentNode(card.run)">{{ applicationCurrentNode(card.run) }}</strong><time><Clock3/>{{ formatApplicationTime(card.run?.updated_at||card.run?.created_at) }}</time></div></div>
     </section>
-    <div class="application-links">
+    <div class="application-links" :class="{single:!canReadDeployments}">
       <button type="button" @click="openApplicationLink(card,'repository')"><span><GitBranch/>{{ t('applicationCard.repository') }}</span><strong :title="card.repository?.name">{{ card.repository?.name||t('applicationCard.unbound') }}</strong><ChevronRight/></button>
-      <button type="button" @click="openApplicationLink(card,'workflow')"><span><Workflow/>{{ t('applicationCard.workflow') }}</span><strong>{{ card.workflowCount }} 条流水线</strong><ChevronRight/></button>
+      <button v-if="canReadDeployments" type="button" @click="openDeploymentRecords"><span><Boxes/>{{ t('applicationCard.deploymentInstances') }}</span><strong>{{ t('applicationCard.deploymentCount',{count:card.deploymentInstances.length}) }}</strong><ChevronRight/></button>
     </div>
+    <section class="application-resource-grid">
+      <div class="application-resource-panel">
+        <header><div><Workflow/><span><strong>{{ t('applicationCard.linkedWorkflows') }}</strong><small>{{ t('applicationCard.enabledWorkflowCount',{enabled:card.enabledWorkflowCount,total:card.workflowSummaries.length}) }}</small></span></div></header>
+        <div v-if="card.workflowSummaries.length" class="application-workflow-list">
+          <button v-for="item in card.workflowSummaries" :key="item.workflow.id" type="button" @click="openApplicationWorkflow(card.application.id,item.workflow.id)">
+            <span class="application-workflow-icon"><Workflow/></span>
+            <span class="application-workflow-copy">
+              <span><strong>{{ item.workflow.name }}</strong><i :class="{inactive:!item.workflow.is_active}">{{ item.workflow.is_active?t('applicationCard.active'):t('applicationCard.inactive') }}</i></span>
+              <small>{{ item.workflow.workflow_template?.name||t('applicationCard.customWorkflow') }} · {{ item.source }}</small>
+              <small>{{ t('applicationCard.taskCount',{count:item.taskCount}) }} · {{ t('applicationCard.buildCount',{count:item.buildCount}) }} · {{ t('applicationCard.deployCount',{count:item.deployCount}) }}</small>
+            </span>
+            <span class="application-workflow-run" :class="[`tone-${item.state.tone}`,{'is-live':item.state.live}]"><i/><strong>{{ item.state.label }}</strong><time>{{ formatApplicationTime(item.latestRun?.updated_at||item.latestRun?.created_at) }}</time></span>
+            <ChevronRight/>
+          </button>
+        </div>
+        <p v-else class="application-resource-empty">{{ t('applicationCard.noWorkflows') }}</p>
+      </div>
+      <div class="application-resource-panel">
+        <header><div><Boxes/><span><strong>{{ t('applicationCard.deploymentInstances') }}</strong><small>{{ t('applicationCard.deploymentSummary') }}</small></span></div></header>
+        <p v-if="!canReadDeployments" class="application-resource-empty">{{ t('applicationCard.deploymentPermissionDenied') }}</p>
+        <div v-else-if="card.deploymentInstances.length" class="application-deployment-list">
+          <div v-for="record in card.deploymentInstances" :key="record.id" class="application-deployment-item">
+            <span class="application-deployment-icon" :class="`kind-${deploymentKind(record)}`"><Box v-if="deploymentKind(record)==='docker'||deploymentKind(record)==='compose'"/><Layers3 v-else-if="deploymentKind(record)==='kubernetes'"/><Server v-else/></span>
+            <span class="application-deployment-copy"><strong :title="deploymentInstanceName(record)">{{ deploymentInstanceName(record) }}</strong><small>{{ deploymentKindLabel(record) }} · {{ record.target_name }}</small><code :title="deploymentImageLabel(record)">{{ deploymentImageLabel(record) }}</code></span>
+            <span class="application-deployment-state" :class="[`tone-${deploymentStatus(record).tone}`,{'is-live':deploymentStatus(record).live}]"><i/><strong>{{ deploymentStatus(record).label }}</strong><time>{{ formatApplicationTime(record.finished_at||record.updated_at||record.created_at) }}</time></span>
+          </div>
+        </div>
+        <p v-else class="application-resource-empty">{{ t('applicationCard.noDeployments') }}</p>
+      </div>
+    </section>
     <footer class="application-footer">
       <div class="application-sync" :class="[`tone-${card.sync.tone}`,{'is-live':card.sync.live}]"><i/><span><small>{{ t('applicationCard.codeStatus') }}</small><strong>{{ card.sync.label }}</strong></span><time>{{ t('applicationCard.lastChecked') }} {{ formatApplicationTime(card.application.last_checked_at) }}</time></div>
       <div class="application-actions"><a-button v-if="canManage" @click="edit(card.application)"><Settings2/>{{ t('applicationCard.configure') }}</a-button><a-button @click="openApplicationLink(card,'workflow')"><Workflow/>{{ t('applicationCard.pipeline') }}</a-button><a-button v-if="auth.canAny(['delivery.run'])" type="primary" @click="action(`/applications/${card.application.id}/sync`)"><RefreshCw/>{{ t('applicationCard.checkUpdates') }}</a-button></div>
@@ -704,47 +798,46 @@ onBeforeUnmount(()=>{resetPlanExecution();clearInterval(releaseTimer);document.r
   </article>
   <a-empty v-if="!applicationCards.length&&!loading" :description="t('applicationCard.empty')"/>
 </div>
+<BuildPlanWorkspace
+ v-else-if="props.section==='build-plans'"
+ :plans="buildPlans"
+ :applications="applications"
+ :artifacts="artifacts"
+ :registries="registries"
+ :selectedID="selectedBuildPlanID"
+ :activeView="buildPlanView"
+ :selectedApplicationID="artifactApplicationID"
+ :loading="loading"
+ :artifactLoading="artifactLoading"
+ :artifactUploading="artifactUploading"
+ :artifactDownloadingID="artifactDownloadingID"
+ :mutationID="resourceMutationID"
+ :canManage="canManage"
+ @select-plan="selectBuildPlan"
+ @select-view="buildPlanView=$event"
+ @update:selectedApplicationID="artifactApplicationID=$event"
+ @edit="edit"
+ @toggle="confirmBuildPlanStatus"
+ @remove="confirmDeleteBuildPlan"
+ @refresh-artifacts="loadArtifacts"
+ @upload="uploadArtifact"
+ @download="downloadArtifact"
+/>
 <div v-else-if="props.section!=='release-plans'" class="resource-section-stack">
  <div class="vben-card">
   <ResourceTable :rows="activeRows" :columns="activeColumns" :loading="loading">
    <template #cell-sync_status="{value}"><a-tag :color="value==='changed'?'warning':value==='synced'?'success':'default'">{{ value }}</a-tag></template>
-   <template #cell-kind="{value}"><a-tag color="blue">{{ props.section==='build-plans'?buildPlanKindLabel(String(value)):value }}</a-tag></template>
-   <template #cell-build_entry="{row}"><code>{{ buildPlanEntry(row as BuildPlan) }}</code></template>
-   <template #cell-context_path="{row}"><code>{{ buildPlanDirectory(row as BuildPlan) }}</code></template>
-   <template #cell-artifact_path="{row}"><code>{{ buildPlanArtifact(row as BuildPlan) }}</code></template>
-   <template #cell-image_registry="{row}">{{ buildPlanRegistry(row as BuildPlan) }}</template>
+   <template #cell-provider="{value}"><a-tag color="blue">{{ registryProviderLabel(value as RegistryProvider) }}</a-tag></template>
+   <template #cell-endpoint="{row}">{{ registryEndpointLabel(row as Registry) }}</template>
    <template #cell-description="{value}"><span :title="String(value||'')">{{ value||'—' }}</span></template>
    <template #cell-timeout_seconds="{value}">{{ value }} 秒</template>
    <template #actions="{row}">
-    <a-button v-if="canManage&&(props.section==='repositories'||props.section==='build-plans')" type="link" @click="edit(row)">编辑</a-button>
-    <a-button v-if="props.section==='build-plans'&&canManage" type="link" :loading="resourceMutationID===String(row.id)" @click="confirmBuildPlanStatus(row as BuildPlan)">{{ row.is_active?'停用':'启用' }}</a-button>
-    <a-button v-if="props.section==='build-plans'&&canManage" type="link" danger :disabled="resourceMutationID===String(row.id)" @click="confirmDeleteBuildPlan(row as BuildPlan)">删除</a-button>
+    <a-button v-if="canManage&&props.section==='repositories'" type="link" @click="edit(row)">编辑</a-button>
     <a-button v-if="props.section==='repositories'" type="link" @click="action(`/repositories/${row.id}/test`)">测试</a-button>
     <a-button v-if="props.section==='repositories'&&auth.canAny(['repository.secret.read'])" type="link" @click="showWebhook(row as Repository)">Webhook</a-button>
    </template>
   </ResourceTable>
  </div>
- <section v-if="props.section==='build-plans'" class="artifact-panel vben-card">
-  <header class="artifact-panel-head">
-   <div><span><Package/></span><div><strong>应用制品</strong><small>构建结果与手动上传统一登记；同次流水线只部署其构建任务固定的制品。</small></div></div>
-   <div class="artifact-panel-actions">
-    <a-select v-model:value="artifactApplicationID" show-search option-filter-prop="label" placeholder="选择应用" :options="applications.map(item=>({value:item.id,label:item.name}))"/>
-    <a-button :loading="artifactLoading" :disabled="!artifactApplicationID" @click="loadArtifacts"><RefreshCw :size="14"/>刷新</a-button>
-    <a-upload v-if="canManage" :show-upload-list="false" :before-upload="beforeArtifactUpload" :disabled="!artifactApplicationID||artifactUploading">
-     <a-button type="primary" :loading="artifactUploading" :disabled="!artifactApplicationID"><Upload :size="14"/>上传制品</a-button>
-    </a-upload>
-   </div>
-  </header>
-  <a-alert v-if="selectedArtifactApplication" class="artifact-note" type="info" show-icon :message="`当前查看：${selectedArtifactApplication.name}`" description="上传文件会流式保存、计算 SHA256 摘要并创建可审计记录，可用于归档和下载；不会替换运行中流水线已经固定的构建制品。"/>
-  <ResourceTable :rows="artifacts" :columns="artifactColumns" :loading="artifactLoading" empty-text="该应用还没有制品">
-   <template #cell-kind="{value}"><a-tag color="blue">{{ artifactKindLabel(value as Artifact['kind']) }}</a-tag></template>
-   <template #cell-status="{value}"><a-tag :color="value==='available'?'success':value==='corrupt'?'error':'default'">{{ artifactStatusLabel(value as Artifact['status']) }}</a-tag></template>
-   <template #cell-size_bytes="{value}">{{ formatFileSize(Number(value)) }}</template>
-   <template #cell-storage_kind="{value}">{{ artifactStorageLabel(value as Artifact['storage_kind']) }}</template>
-   <template #cell-digest="{value}"><code class="artifact-digest" :title="String(value)">{{ String(value).slice(0,19) }}…</code></template>
-   <template #actions="{row}"><a-button v-if="(row as Artifact).storage_kind==='local_file'&&(row as Artifact).status==='available'" type="link" :loading="artifactDownloadingID===String(row.id)" @click="downloadArtifact(row as Artifact)"><Download :size="14"/>下载</a-button></template>
-  </ResourceTable>
- </section>
 </div>
 <div v-else-if="releaseView==='runs'" class="run-workspace vben-card">
   <aside class="run-index">
@@ -806,7 +899,7 @@ onBeforeUnmount(()=>{resetPlanExecution();clearInterval(releaseTimer);document.r
  <section class="application-form-section">
   <header><strong>应用信息</strong><small>应用只绑定一个代码仓库；保存后可在流水线编辑器中新增和管理多条流水线。</small></header>
   <div class="form-grid">
-   <a-form-item label="应用名称" required><a-input v-model:value="appForm.name"/></a-form-item>
+   <a-form-item label="应用名称" required><a-input v-model:value="appForm.name" :maxlength="128" placeholder="例如 order_service"/><small class="field-hint">应用名同时作为镜像仓库名；以小写英文字母开头，仅使用小写英文字母和单个下划线。</small></a-form-item>
    <a-form-item label="说明"><a-input v-model:value="appForm.description"/></a-form-item>
    <a-form-item class="span2" label="代码仓库" required><a-select v-model:value="appForm.repository_id" show-search option-filter-prop="label" :options="repositories.filter(item=>item.is_active).map(item=>({value:item.id,label:`${item.name} · ${item.default_branch}`}))"/></a-form-item>
    <a-alert class="span2" type="info" show-icon message="一个应用可以拥有多条流水线" description="应用保存后进入流水线编辑器，可以新建自定义流水线，也可以从已启用的公共方案添加；各流水线独立启停和监听。"/>
@@ -868,10 +961,13 @@ onBeforeUnmount(()=>{resetPlanExecution();clearInterval(releaseTimer);document.r
      <a-radio-group v-model:value="buildImageDestination" button-style="solid"><a-radio-button value="local">构建运行时本地镜像</a-radio-button><a-radio-button value="registry">推送镜像仓库</a-radio-button></a-radio-group>
     </a-form-item>
     <a-form-item v-if="buildForm.kind==='dockerfile'&&buildImageDestination==='registry'" class="span2" label="镜像仓库" required><div class="resource-picker"><a-select v-model:value="buildForm.image_registry_id" show-search option-filter-prop="label" placeholder="选择已测试可用的镜像仓库" :options="registries.filter(item=>item.is_active).map(item=>({value:item.id,label:item.name}))"/><a-button v-if="canManage" class="resource-create" aria-label="创建镜像仓库" title="创建镜像仓库" @click="createImageRegistry"><Plus :size="16"/></a-button></div></a-form-item>
+    <a-alert v-if="buildForm.kind==='dockerfile'&&buildImageDestination==='registry'" class="span2 image-path-alert" type="info" show-icon message="当前镜像路径">
+     <template #description><code class="image-path-preview">{{ buildImagePathPreview }}</code><small class="field-hint">应用名是实际仓库名；版本标签使用 12 位提交短哈希，例如 fea2410d1e47。部署时仍会在后台固定并校验完整 Digest。</small></template>
+    </a-alert>
     <a-form-item v-if="buildForm.kind==='dockerfile'" label="Docker target"><a-input v-model:value="buildForm.target_stage" placeholder="可选，多阶段构建目标"/></a-form-item>
     <a-form-item v-if="buildForm.kind==='dockerfile'" label="目标平台"><a-input v-model:value="buildForm.platform" placeholder="例如 linux/amd64"/></a-form-item>
     <a-form-item v-if="buildForm.kind==='dockerfile'" label="拉取基础镜像"><a-switch v-model:checked="buildForm.pull"/><small class="field-hint">默认开启，确保基础镜像及时更新。</small></a-form-item>
-    <a-form-item v-if="buildForm.kind==='dockerfile'" label="启用构建缓存"><a-switch v-model:checked="buildForm.cache_enabled"/><small class="field-hint">默认开启，缓存不可用不会导致正式构建失败。</small></a-form-item>
+    <a-form-item v-if="buildForm.kind==='dockerfile'" label="启用本地构建缓存"><a-switch v-model:checked="buildForm.cache_enabled"/><small class="field-hint">默认开启，仅复用当前构建节点的 Docker/BuildKit 层缓存，不会向镜像仓库推送缓存标签。</small></a-form-item>
     <a-form-item v-if="buildForm.kind==='dockerfile'" class="span2" label="构建参数（每行 KEY=value）"><a-textarea v-model:value="buildArgsText" :rows="5" placeholder="VERSION=1.0.0&#10;ENABLE_FEATURE=true"/></a-form-item>
     <a-form-item v-if="buildForm.kind==='script'" class="span2" label="环境变量（每行 KEY=value）"><a-textarea v-model:value="buildEnvironmentText" :rows="5" placeholder="NODE_ENV=production&#10;CGO_ENABLED=0"/></a-form-item>
     <a-form-item label="超时（秒）" required><a-input-number v-model:value="buildForm.timeout_seconds" :min="30" :max="7200"/></a-form-item>
@@ -880,7 +976,19 @@ onBeforeUnmount(()=>{resetPlanExecution();clearInterval(releaseTimer);document.r
   </a-collapse-panel>
  </a-collapse>
 </template>
-<template v-if="props.section==='image-registries'"><div class="form-grid"><a-form-item label="名称" required><a-input v-model:value="registryForm.name"/></a-form-item><a-form-item label="类型"><a-select v-model:value="registryForm.provider" :options="[{value:'harbor',label:'Harbor'},{value:'docker_hub',label:'Docker Hub'},{value:'generic',label:'通用 Registry'}]"/></a-form-item><a-form-item class="span2" label="地址"><a-input v-model:value="registryForm.endpoint"/></a-form-item><a-form-item label="命名空间"><a-input v-model:value="registryForm.namespace"/></a-form-item><a-form-item label="用户名"><a-input v-model:value="registryForm.username"/></a-form-item><a-form-item class="span2" label="密码或 Token"><a-input-password v-model:value="registryForm.credential"/></a-form-item><a-checkbox v-model:checked="registryForm.allow_insecure_http">允许 HTTP（仅可信内网）</a-checkbox></div><a-alert v-if="registryTested" type="success" show-icon message="镜像仓库登录测试成功"/></template>
+<template v-if="props.section==='image-registries'">
+ <div class="form-grid">
+  <a-form-item label="名称" required><a-input v-model:value="registryForm.name"/></a-form-item>
+  <a-form-item label="类型" required><a-select v-model:value="registryForm.provider" :options="[{value:'generic',label:'通用 Registry（阿里云 ACR 等）'},{value:'harbor',label:'Harbor'},{value:'docker_hub',label:'Docker Hub（官方）'}]"/></a-form-item>
+  <a-alert v-if="dockerHubRegistry" class="span2" type="info" show-icon message="Docker Hub 使用系统固定地址" description="固定使用 docker.io，无需填写仓库地址；命名空间请填写 Docker Hub 用户名或组织名。"/>
+  <a-form-item v-else class="span2" label="地址" required><a-input v-model:value="registryForm.endpoint" placeholder="例如 https://registry.cn-shenzhen.aliyuncs.com"/><small class="field-hint">填写 OCI Registry 服务地址，不要填写具体镜像仓库或镜像名称。</small></a-form-item>
+  <a-form-item label="命名空间" required><a-input v-model:value="registryForm.namespace" :placeholder="dockerHubRegistry?'用户名或组织名':'例如 linabellbiu'"/></a-form-item>
+  <a-form-item label="用户名"><a-input v-model:value="registryForm.username"/></a-form-item>
+  <a-form-item class="span2" label="密码或 Token"><a-input-password v-model:value="registryForm.credential"/></a-form-item>
+  <a-checkbox v-if="!dockerHubRegistry" v-model:checked="registryForm.allow_insecure_http">允许 HTTP（仅可信内网）</a-checkbox>
+ </div>
+ <a-alert v-if="registryTested" type="success" show-icon message="镜像仓库登录测试成功"/>
+</template>
 </a-form><template #footer><div class="drawer-actions"><a-button @click="formOpen=false">取消</a-button><a-button v-if="props.section==='repositories'" :loading="testing" @click="testRepository">测试连接</a-button><a-button v-if="props.section==='image-registries'" :loading="testing" @click="testRegistry">测试登录</a-button><a-button type="primary" :loading="saving" :disabled="props.section==='image-registries'&&!registryTested" @click="save">保存</a-button></div></template></a-drawer>
 <a-modal v-model:open="manualOpen" :title="t('manualRun.title')" :confirm-loading="saving" :ok-button-props="{disabled:!manualApplicationID||!manualWorkflowID}" :ok-text="t('manualRun.chooseVersion')" @ok="nextManual" @cancel="resetManualFlow"><a-form layout="vertical"><a-form-item :label="t('manualRun.application')"><a-select :value="manualApplicationID" :options="manualApplications.map(item=>({value:item.id,label:item.name}))" @change="updateManualApplication(String($event))"/></a-form-item><a-form-item label="流水线" required><a-select v-model:value="manualWorkflowID" :options="applicationManualWorkflows(manualApplications.find(item=>item.id===manualApplicationID)).map(item=>({value:item.id,label:item.name}))"/></a-form-item></a-form></a-modal>
 <a-modal v-model:open="commitOpen" :title="t('manualRun.versionTitle')" :confirm-loading="saving" :ok-text="t('manualRun.confirm')" @ok="executeCommit" @cancel="resetManualFlow"><a-form layout="vertical"><a-alert class="manual-release-note" type="info" show-icon :message="t('manualRun.executionHint')"/><a-form-item v-if="manualSources.length" :label="t('manualRun.source')"><a-select v-model:value="selectedSource" :options="manualSources.map(item=>({value:item.id,label:item.environment?`${item.name} · ${item.environment}`:item.name}))"/></a-form-item><a-form-item :label="t('manualRun.ref')"><a-select v-model:value="selectedRef"><a-select-opt-group :label="t('manualRun.branch')"><a-select-option v-for="item in commitOptions.filter(item=>item.kind==='branch')" :key="item.ref" :value="item.ref">{{ selectableReferenceLabel(item) }}</a-select-option></a-select-opt-group><a-select-opt-group :label="t('manualRun.tag')"><a-select-option v-for="item in commitOptions.filter(item=>item.kind==='tag')" :key="item.ref" :value="item.ref">{{ selectableReferenceLabel(item) }}</a-select-option></a-select-opt-group></a-select></a-form-item></a-form></a-modal>
@@ -938,13 +1046,15 @@ onBeforeUnmount(()=>{resetPlanExecution();clearInterval(releaseTimer);document.r
 
 <style scoped>
 .form-grid{display:grid;grid-template-columns:1fr 1fr;gap:0 14px}.span2{grid-column:1/-1}.drawer-actions{display:flex;justify-content:flex-end;gap:8px}.release-plan-add-hint{display:block;margin-top:6px;color:var(--zrt-muted);font-size:11px}
-.resource-section-stack{display:grid;gap:14px}.artifact-panel{overflow:hidden}.artifact-panel-head{display:flex;align-items:center;justify-content:space-between;gap:20px;padding:17px 18px;border-bottom:1px solid var(--zrt-border)}.artifact-panel-head>div:first-child{display:flex;min-width:0;align-items:center;gap:11px}.artifact-panel-head>div:first-child>span{display:grid;width:38px;height:38px;flex:0 0 38px;place-items:center;border-radius:11px;color:var(--zrt-primary);background:var(--zrt-primary-soft)}.artifact-panel-head svg{width:18px}.artifact-panel-head strong,.artifact-panel-head small{display:block}.artifact-panel-head small{margin-top:2px;color:var(--zrt-muted);font-size:11px}.artifact-panel-actions{display:flex;flex:0 0 auto;align-items:center;gap:8px}.artifact-panel-actions :deep(.ant-select){width:220px}.artifact-panel-actions :deep(.ant-btn){display:inline-flex;align-items:center;gap:5px}.artifact-note{margin:14px 16px}.artifact-digest{white-space:nowrap}
+.resource-section-stack{display:grid;gap:14px}
 .build-form-section,.application-form-section{margin-bottom:16px;padding:15px 15px 0;border:1px solid var(--zrt-border);border-radius:12px;background:var(--zrt-surface-soft)}.build-form-section>header,.application-form-section>header{margin-bottom:13px}.build-form-section>header strong,.build-form-section>header small,.application-form-section>header strong,.application-form-section>header small{display:block}.build-form-section>header strong,.application-form-section>header strong{font-size:14px}.build-form-section>header small,.application-form-section>header small{margin-top:3px;color:var(--zrt-muted);font-size:11px}.resource-picker{display:flex;align-items:stretch;gap:8px}.resource-picker :deep(.ant-select){min-width:0;flex:1}.resource-create{width:34px;flex:0 0 34px;padding:0}.build-advanced{margin-bottom:12px;border:1px solid var(--zrt-border);border-radius:12px;background:var(--zrt-surface-soft)}.build-advanced :deep(.ant-collapse-header){align-items:center!important}.build-advanced :deep(.ant-collapse-content-box){padding-top:4px!important}.build-advanced-title{display:flex;align-items:baseline;gap:9px}.build-advanced-title small,.field-hint{color:var(--zrt-muted);font-size:11px}.field-hint{display:block;margin-top:5px}.build-form-section :deep(.ant-alert),.application-form-section :deep(.ant-alert){margin-bottom:16px}
+.image-path-preview{display:block;overflow-wrap:anywhere;color:var(--zrt-text);font-size:12px}.image-path-alert .field-hint{line-height:1.55}
 .application-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(620px,100%),880px));justify-content:start;gap:14px}.application-card{--application-state:#9ba1ad;position:relative;min-width:0;overflow:hidden;padding:18px;transition:transform 180ms cubic-bezier(.2,0,0,1),border-color 180ms ease,box-shadow 180ms ease}.application-card::before{position:absolute;inset:0 auto 0 0;width:3px;background:var(--application-state);content:"";opacity:.8}.application-card:hover{transform:translateY(-1px);border-color:color-mix(in srgb,var(--application-state) 36%,var(--zrt-border));box-shadow:0 10px 28px rgb(35 45 70 / 8%)}.application-card.state-info{--application-state:#4f7df3}.application-card.state-success{--application-state:#2ab573}.application-card.state-warning{--application-state:#dfa126}.application-card.state-danger{--application-state:#ed5965}
 .application-head{display:flex;align-items:flex-start;justify-content:space-between;gap:20px}.application-identity{display:flex;min-width:0;align-items:center;gap:12px}.application-mark{display:grid;width:42px;height:42px;flex:0 0 42px;place-items:center;border-radius:12px;color:var(--zrt-primary);background:var(--zrt-primary-soft)}.application-mark svg{width:21px}.application-identity>div{min-width:0}.application-title{display:flex;align-items:center;gap:9px}.application-title h3{overflow:hidden;margin:0;font-size:17px;text-overflow:ellipsis;white-space:nowrap}.application-enabled{padding:2px 7px;border-radius:999px;color:#168b57;background:color-mix(in srgb,#2ab573 12%,var(--zrt-surface));font-size:11px;white-space:nowrap}.application-enabled.inactive{color:var(--zrt-muted);background:var(--zrt-surface-soft)}.application-identity p{overflow:hidden;margin:3px 0 0;color:var(--zrt-muted);text-overflow:ellipsis;white-space:nowrap}
 .application-state{display:flex;flex:0 0 auto;align-items:center;gap:9px;padding:7px 11px;border-radius:10px;color:var(--application-state);background:color-mix(in srgb,var(--application-state) 9%,var(--zrt-surface))}.application-state>i,.application-sync>i{width:8px;height:8px;flex:0 0 8px;border-radius:50%;background:currentColor;box-shadow:0 0 0 4px color-mix(in srgb,currentColor 10%,transparent)}.application-card.is-live .application-state>i,.application-sync.is-live>i{animation:application-pulse 2s ease-out infinite}.application-state small,.application-state strong,.application-sync small,.application-sync strong{display:block}.application-state small,.application-sync small{color:var(--zrt-muted);font-size:11px;font-weight:400}.application-state strong{font-size:13px}
 .application-run{display:grid;grid-template-columns:minmax(0,1.35fr) minmax(210px,.65fr);gap:12px;margin-top:17px;padding:14px;border:1px solid color-mix(in srgb,var(--application-state) 15%,var(--zrt-border));border-radius:12px;background:linear-gradient(135deg,color-mix(in srgb,var(--application-state) 5%,var(--zrt-surface-soft)),var(--zrt-surface-soft))}.application-commit{min-width:0}.application-commit small,.application-commit strong,.application-commit span{display:block}.application-commit small,.application-node small{color:var(--zrt-muted);font-size:11px}.application-commit strong{overflow:hidden;margin:4px 0 7px;font-size:14px;text-overflow:ellipsis;white-space:nowrap}.application-commit span{display:flex;align-items:center;gap:6px;color:var(--zrt-muted);font-size:12px}.application-commit span svg{width:14px}.application-commit code{padding:1px 5px;border-radius:5px;background:var(--zrt-surface);color:var(--zrt-text)}.application-node{display:flex;min-width:0;align-items:center;gap:10px;padding-left:14px;border-left:1px solid var(--zrt-border)}.application-node>span{display:grid;width:34px;height:34px;flex:0 0 34px;place-items:center;border-radius:10px;color:var(--application-state);background:var(--zrt-surface)}.application-node svg{width:17px}.application-node>div{min-width:0}.application-node strong{display:block;overflow:hidden;margin-top:2px;text-overflow:ellipsis;white-space:nowrap}.application-node time{display:flex;align-items:center;gap:4px;margin-top:4px;color:var(--zrt-muted);font-size:11px}.application-node time svg{width:12px}
 .application-links{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin:12px 0 0}.application-links>button{display:grid;grid-template-columns:minmax(0,1fr) 14px;min-width:0;padding:10px 10px 10px 11px;border:1px solid transparent;border-radius:9px;color:var(--zrt-text);background:var(--zrt-surface-soft);cursor:pointer;text-align:left;transition:transform 160ms ease,border-color 160ms ease,background 160ms ease}.application-links>button:hover{transform:translateY(-1px);border-color:color-mix(in srgb,var(--zrt-primary) 28%,var(--zrt-border));background:color-mix(in srgb,var(--zrt-primary) 5%,var(--zrt-surface))}.application-links>button:focus-visible{outline:2px solid color-mix(in srgb,var(--zrt-primary) 48%,transparent);outline-offset:2px}.application-links button>span{display:flex;min-width:0;align-items:center;gap:5px;color:var(--zrt-muted);font-size:11px}.application-links button>span svg{width:13px}.application-links button>strong{overflow:hidden;margin-top:4px;font-size:12px;text-overflow:ellipsis;white-space:nowrap}.application-links button>svg{grid-area:1/2/3/3;width:14px;align-self:center;color:var(--zrt-muted);transition:transform 160ms ease}.application-links>button:hover>svg{transform:translateX(2px);color:var(--zrt-primary)}.application-footer{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-top:14px;padding-top:14px;border-top:1px solid var(--zrt-border)}.application-sync{display:flex;min-width:0;align-items:center;gap:8px;color:#9ba1ad}.application-sync.tone-info{color:#4f7df3}.application-sync.tone-success{color:#2ab573}.application-sync.tone-warning{color:#dfa126}.application-sync.tone-danger{color:#ed5965}.application-sync time{margin-left:4px;color:var(--zrt-muted);font-size:11px;white-space:nowrap}.application-actions{display:flex;flex:0 0 auto;gap:7px}.application-actions :deep(.ant-btn){display:inline-flex;align-items:center;gap:5px}.application-actions svg{width:14px}
+.application-links.single{grid-template-columns:1fr}.application-resource-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:9px;margin-top:9px}.application-resource-panel{min-width:0;padding:11px;border:1px solid var(--zrt-border);border-radius:11px;background:var(--zrt-surface-soft)}.application-resource-panel>header{display:flex;align-items:center;justify-content:space-between;margin-bottom:8px}.application-resource-panel>header>div{display:flex;min-width:0;align-items:center;gap:7px}.application-resource-panel>header svg{width:15px;color:var(--zrt-primary)}.application-resource-panel>header span,.application-resource-panel>header strong,.application-resource-panel>header small{display:block}.application-resource-panel>header strong{font-size:12px}.application-resource-panel>header small{margin-top:1px;color:var(--zrt-muted);font-size:10px}.application-workflow-list,.application-deployment-list{display:grid;max-height:280px;gap:6px;overflow-y:auto;scrollbar-width:thin}.application-workflow-list>button{display:grid;width:100%;min-width:0;align-items:center;grid-template-columns:30px minmax(0,1fr) auto 13px;gap:8px;padding:8px;border:1px solid transparent;border-radius:9px;color:var(--zrt-text);background:var(--zrt-surface);cursor:pointer;text-align:left;transition:border-color 160ms ease,transform 160ms ease}.application-workflow-list>button:hover{transform:translateY(-1px);border-color:color-mix(in srgb,var(--zrt-primary) 28%,var(--zrt-border))}.application-workflow-list>button:focus-visible{outline:2px solid color-mix(in srgb,var(--zrt-primary) 48%,transparent);outline-offset:1px}.application-workflow-list>button>svg{width:13px;color:var(--zrt-muted)}.application-workflow-icon,.application-deployment-icon{display:grid;width:30px;height:30px;place-items:center;border-radius:8px;color:var(--zrt-primary);background:var(--zrt-primary-soft)}.application-workflow-icon svg,.application-deployment-icon svg{width:15px}.application-workflow-copy{min-width:0}.application-workflow-copy>span{display:flex;min-width:0;align-items:center;gap:6px}.application-workflow-copy strong{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px}.application-workflow-copy i{padding:1px 5px;border-radius:999px;color:#168b57;background:color-mix(in srgb,#2ab573 11%,var(--zrt-surface));font-size:9px;font-style:normal;white-space:nowrap}.application-workflow-copy i.inactive{color:var(--zrt-muted);background:var(--zrt-surface-soft)}.application-workflow-copy small{display:block;overflow:hidden;margin-top:2px;color:var(--zrt-muted);font-size:10px;text-overflow:ellipsis;white-space:nowrap}.application-workflow-run,.application-deployment-state{display:grid;min-width:70px;grid-template-columns:7px auto;align-items:center;column-gap:5px;color:#949aa5}.application-workflow-run>i,.application-deployment-state>i{width:6px;height:6px;border-radius:50%;background:currentColor}.application-workflow-run strong,.application-deployment-state strong{font-size:10px;white-space:nowrap}.application-workflow-run time,.application-deployment-state time{grid-column:1/-1;margin-top:2px;color:var(--zrt-muted);font-size:9px;white-space:nowrap}.application-workflow-run.tone-info,.application-deployment-state.tone-info{color:#4f7df3}.application-workflow-run.tone-success,.application-deployment-state.tone-success{color:#2ab573}.application-workflow-run.tone-warning,.application-deployment-state.tone-warning{color:#dfa126}.application-workflow-run.tone-danger,.application-deployment-state.tone-danger{color:#ed5965}.application-workflow-run.is-live>i,.application-deployment-state.is-live>i{animation:application-pulse 2s ease-out infinite}.application-deployment-item{display:grid;min-width:0;align-items:center;grid-template-columns:30px minmax(0,1fr) auto;gap:8px;padding:8px;border-radius:9px;background:var(--zrt-surface)}.application-deployment-icon.kind-compose{color:#1677ff;background:color-mix(in srgb,#1677ff 10%,var(--zrt-surface))}.application-deployment-icon.kind-kubernetes{color:#326ce5;background:color-mix(in srgb,#326ce5 10%,var(--zrt-surface))}.application-deployment-icon.kind-script{color:#596273;background:color-mix(in srgb,#596273 10%,var(--zrt-surface))}.application-deployment-copy{min-width:0}.application-deployment-copy strong,.application-deployment-copy small,.application-deployment-copy code{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.application-deployment-copy strong{font-size:12px}.application-deployment-copy small{margin-top:2px;color:var(--zrt-muted);font-size:10px}.application-deployment-copy code{margin-top:2px;color:var(--zrt-muted);font-size:9px}.application-resource-empty{display:grid;min-height:46px;margin:0;place-items:center;color:var(--zrt-muted);font-size:11px}
 .run-workspace{display:grid;min-height:620px;grid-template-columns:310px minmax(0,1fr);gap:8px;overflow:hidden;padding:8px;background:var(--zrt-surface-soft)}
 .run-index,.run-detail,.run-detail-empty{min-width:0;border-radius:11px;background:var(--zrt-surface)}.run-index{overflow:hidden}.run-index>header{display:flex;min-height:62px;align-items:center;justify-content:space-between;padding:10px 14px}.run-index>header strong,.run-index>header small{display:block}.run-index>header small{margin-top:1px;color:var(--zrt-muted);font-size:11px}.run-index>header>span{padding:4px 8px;border-radius:999px;color:var(--zrt-muted);background:var(--zrt-surface-soft);font-size:11px}.run-index>header>span.active{color:var(--zrt-primary);background:var(--zrt-primary-soft)}
 .run-index-list{min-height:540px;max-height:calc(100vh - 242px);overflow-y:auto;padding:0 7px 9px;scrollbar-width:thin}.run-index-list>button{display:grid;width:100%;min-height:86px;align-items:center;grid-template-columns:10px minmax(0,1fr) 17px;gap:10px;margin:3px 0;padding:10px 9px;border:0;border-radius:11px;outline:0;color:var(--zrt-text);background:transparent;cursor:pointer;text-align:left;transition:background-color 160ms ease,box-shadow 160ms ease}.run-index-list>button:hover{background:var(--zrt-surface-soft)}.run-index-list>button:focus-visible{box-shadow:inset 0 0 0 2px color-mix(in srgb,var(--zrt-primary) 45%,transparent)}.run-index-list>button.active{background:var(--zrt-primary-soft);box-shadow:inset 3px 0 var(--zrt-primary)}.run-index-list>button>svg{color:var(--zrt-muted)}
@@ -955,8 +1065,8 @@ onBeforeUnmount(()=>{resetPlanExecution();clearInterval(releaseTimer);document.r
 .manual-release-note{margin-bottom:16px}
 @keyframes application-pulse{0%{box-shadow:0 0 0 0 color-mix(in srgb,currentColor 32%,transparent)}70%{box-shadow:0 0 0 7px transparent}100%{box-shadow:0 0 0 0 transparent}}@keyframes run-breathe{0%,100%{opacity:.45;transform:scale(.86)}50%{opacity:1;transform:scale(1.08)}}
 @media(max-width:1100px){.application-links{grid-template-columns:repeat(2,minmax(0,1fr))}.application-footer{align-items:flex-start;flex-direction:column}.application-actions{width:100%;justify-content:flex-end}.run-workspace{grid-template-columns:270px minmax(0,1fr)}.run-facts{grid-template-columns:repeat(2,minmax(0,1fr))}}
-@media(max-width:820px){.artifact-panel-head{align-items:flex-start;flex-direction:column}.artifact-panel-actions{width:100%;flex-wrap:wrap}.artifact-panel-actions :deep(.ant-select){min-width:200px;flex:1}.run-workspace{grid-template-columns:1fr}.run-index-list{display:flex;min-height:0;max-height:none;overflow-x:auto;overflow-y:hidden;padding:0 7px 8px}.run-index-list>button{width:270px;flex:0 0 270px}.run-detail{padding:16px}}
+@media(max-width:820px){.application-resource-grid{grid-template-columns:1fr}.run-workspace{grid-template-columns:1fr}.run-index-list{display:flex;min-height:0;max-height:none;overflow-x:auto;overflow-y:hidden;padding:0 7px 8px}.run-index-list>button{width:270px;flex:0 0 270px}.run-detail{padding:16px}}
 @media(max-width:640px){.form-grid{grid-template-columns:1fr}.span2{grid-column:auto}.build-advanced-title{align-items:flex-start;flex-direction:column;gap:2px}.application-head,.application-footer{align-items:flex-start;flex-direction:column}.application-state{align-self:stretch}.application-run{grid-template-columns:1fr}.application-node{padding-top:12px;padding-left:0;border-top:1px solid var(--zrt-border);border-left:0}.application-actions{justify-content:flex-start;flex-wrap:wrap}.application-sync{flex-wrap:wrap}.run-commit-panel{align-items:start;grid-template-columns:22px minmax(0,1fr)}.run-commit-panel time{grid-column:2}.run-facts{grid-template-columns:1fr}.run-detail-heading{align-items:flex-start}.run-detail-heading h3{font-size:17px}}
 @media(max-width:480px){.application-links{grid-template-columns:1fr}.application-actions :deep(.ant-btn){flex:1}.application-sync time{width:100%;margin-left:16px}}
-@media(prefers-reduced-motion:reduce){.application-card.is-live .application-state>i,.application-sync.is-live>i,.run-status-orb.running::after{animation:none}}
+@media(prefers-reduced-motion:reduce){.application-card.is-live .application-state>i,.application-sync.is-live>i,.application-workflow-run.is-live>i,.application-deployment-state.is-live>i,.run-status-orb.running::after{animation:none}}
 </style>

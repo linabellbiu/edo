@@ -35,7 +35,7 @@ func TestEnsureInitialDeliverySettingsCreatesCompleteLocalDockerFlow(t *testing.
 	}
 
 	application, err := service.CreateApplication(ctx, "admin", ApplicationInput{
-		Name: "快速开始应用", RepositoryID: repositoryID,
+		Name: "quick_start_app", RepositoryID: repositoryID,
 		WorkflowTemplateID: settings.WorkflowTemplateID,
 	})
 	if err != nil {
@@ -147,7 +147,7 @@ func TestInitialDeliveryUsesBuiltinLocalDockerRuntime(t *testing.T) {
 		t.Fatal(err)
 	}
 	if plan.DeploymentTarget == nil || plan.DeploymentTarget.RuntimeID != dockerengine.LocalEndpointID ||
-		plan.DeploymentTarget.WorkloadName != initialDockerContainerName ||
+		plan.DeploymentTarget.WorkloadName != "" ||
 		plan.DockerConfig.Network != "bridge" || plan.DockerConfig.RestartPolicy != "unless-stopped" {
 		t.Fatalf("默认部署方案没有使用安全的本地 Docker 配置: %+v", plan)
 	}

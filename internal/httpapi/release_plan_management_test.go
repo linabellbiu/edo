@@ -28,7 +28,7 @@ func TestReleasePlanManagementAPI(t *testing.T) {
 		t.Fatalf("创建发布计划管理仓库失败: status=%d body=%s", repositoryResponse.Code, repositoryResponse.Body.String())
 	}
 	applicationResponse := performJSONRequest(t, router, http.MethodPost, "/api/v1/applications", map[string]any{
-		"name": "发布计划管理应用", "repository_id": repositoryPayload.Repository.ID, "branch": "main",
+		"name": "release_plan_management_app", "repository_id": repositoryPayload.Repository.ID, "branch": "main",
 		"poll_enabled": true, "poll_interval_seconds": 60, "watch_push": true,
 	}, adminCookie)
 	var applicationPayload struct {

@@ -40,6 +40,7 @@ func NormalizeContainerConfig(input model.DockerContainerConfig) (model.DockerCo
 		EnvironmentVariables: make(map[string]string, len(input.EnvironmentVariables)),
 		VolumeMounts:         slices.Clone(input.VolumeMounts),
 		Network:              strings.TrimSpace(input.Network),
+		DeploymentScript:     strings.TrimSpace(input.DeploymentScript),
 		Command:              slices.Clone(input.Command),
 		HealthCheck:          input.HealthCheck,
 		RestartPolicy:        strings.TrimSpace(input.RestartPolicy),
@@ -118,12 +119,26 @@ func NormalizeContainerConfig(input model.DockerContainerConfig) (model.DockerCo
 		}
 	}
 
-	for index := range result.Command {
-		result.Command[index] = strings.TrimSpace(result.Command[index])
-		if !validExecArgument(result.Command[index]) {
+	if result.DeploymentScript != "" {
+		if len(result.DeploymentScript) > maximumDockerConfigBytes || !utf8.ValidString(result.DeploymentScript) ||
+			strings.ContainsRune(result.DeploymentScript, '\x00') {
 			return input, ErrInvalidContainerConfig
 		}
-		valueBytes += len(result.Command[index])
+		if _, err := parseDockerRunTemplate(result.DeploymentScript); err != nil || len(result.PortMappings) > 0 ||
+			len(result.EnvironmentVariables) > 0 || len(result.VolumeMounts) > 0 || result.HealthCheck.Enabled {
+			return input, ErrInvalidContainerConfig
+		}
+		// 主机侧 Docker 命令完整替代结构化容器参数，不能与历史 Command 同时生效。
+		result.Command = nil
+		valueBytes += len(result.DeploymentScript)
+	} else {
+		for index := range result.Command {
+			result.Command[index] = strings.TrimSpace(result.Command[index])
+			if !validExecArgument(result.Command[index]) {
+				return input, ErrInvalidContainerConfig
+			}
+			valueBytes += len(result.Command[index])
+		}
 	}
 	if result.HealthCheck.Enabled {
 		if len(result.HealthCheck.Command) == 0 {

@@ -11,6 +11,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"strings"
 	"testing"
 	"time"
 
@@ -178,5 +179,15 @@ func TestDockerEndpointSecurityDefaults(t *testing.T) {
 	}
 	if preferredBundle.Password != hostBundle.Password || preferredBundle.PrivateKey != "" {
 		t.Fatalf("未优先使用主机 SSH 凭据: %+v", preferredBundle)
+	}
+}
+
+func TestCompactContainerImageReferenceKeepsVersionReadable(t *testing.T) {
+	digest := strings.Repeat("a", 64)
+	if actual := compactContainerImageReference("registry.example.com/team/order_api@sha256:" + digest); actual != "order_api@aaaaaaaaaaaa" {
+		t.Fatalf("Digest 镜像没有压缩为可读摘要: %q", actual)
+	}
+	if actual := compactContainerImageReference("registry.example.com/team/order_api:fea2410d1e47"); actual != "order_api:fea2410d1e47" {
+		t.Fatalf("正式版本标签不应被改写: %q", actual)
 	}
 }
