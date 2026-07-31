@@ -451,10 +451,34 @@ func TestSSHDeploymentPlanSnapshotValidation(t *testing.T) {
 	}
 }
 
+func TestDockerDeploymentPlanSnapshotNormalizesLegacyEmptyConfig(t *testing.T) {
+	plan := model.DeploymentPlan{
+		ID: "docker-plan", Kind: model.DeploymentPlanDocker,
+		DockerConfig: model.DockerContainerConfig{}, TimeoutSeconds: 120,
+	}
+	target := model.DeploymentTarget{Platform: model.DeploymentDocker}
+	originalDigest := model.DockerContainerConfigDigest(plan.DockerConfig)
+
+	if !normalizeDockerDeploymentPlanSnapshot(&plan, &target) {
+		t.Fatal("旧版空 Docker 配置快照应当可以规范化后执行")
+	}
+	if plan.DockerConfig.Network != "bridge" || plan.DockerConfig.RestartPolicy != "unless-stopped" ||
+		plan.DockerConfig.EnvironmentVariables == nil {
+		t.Fatalf("Docker 配置快照没有补齐规范默认值: %+v", plan.DockerConfig)
+	}
+	if originalDigest == model.DockerContainerConfigDigest(plan.DockerConfig) {
+		t.Fatal("回归用例没有覆盖曾导致部署服务摘要不一致的旧式空配置")
+	}
+	rechecked, err := dockerengine.NormalizeContainerConfig(plan.DockerConfig)
+	if err != nil || model.DockerContainerConfigDigest(rechecked) != model.DockerContainerConfigDigest(plan.DockerConfig) {
+		t.Fatalf("规范化后的 Docker 配置摘要不稳定: config=%+v err=%v", plan.DockerConfig, err)
+	}
+}
+
 func TestComposeDeploymentPlanSnapshotValidation(t *testing.T) {
 	plan := model.DeploymentPlan{
 		ID: "compose-plan", Kind: model.DeploymentPlanCompose,
-		ComposeYAML: "services:\n  api:\n    image: ${ZRT_IMAGE}\n", ServiceName: "api", TimeoutSeconds: 120,
+		ComposeYAML: "services:\n  api:\n    restart: unless-stopped\n", ServiceName: "api", TimeoutSeconds: 120,
 	}
 	target := model.DeploymentTarget{Platform: model.DeploymentDocker}
 	if !validComposeDeploymentPlanSnapshot(&plan, &target) {
@@ -488,13 +512,13 @@ func TestComposeDeploymentPlanSnapshotValidation(t *testing.T) {
 func TestNormalizeComposeDeploymentPlanKeepsInlineYAMLAndService(t *testing.T) {
 	input, err := normalizeDeploymentPlanInput(DeploymentPlanInput{
 		Name: "Compose 发布", Kind: model.DeploymentPlanCompose,
-		ComposeYAML: "\nservices:\n  api:\n    image: ${ZRT_IMAGE}\n", ServiceName: " api ",
+		ComposeYAML: "\nservices:\n  api:\n    restart: unless-stopped\n", ServiceName: " api ",
 		DeploymentTarget: &deployment.TargetInput{Platform: model.DeploymentDocker},
 	})
 	if err != nil {
 		t.Fatalf("有效的 Docker Compose 部署方案被拒绝: %v", err)
 	}
-	if input.ComposeYAML != "services:\n  api:\n    image: ${ZRT_IMAGE}\n" || input.ServiceName != "api" || input.TimeoutSeconds != 600 {
+	if input.ComposeYAML != "services:\n  api:\n    restart: unless-stopped\n" || input.ServiceName != "api" || input.TimeoutSeconds != 600 {
 		t.Fatalf("Docker Compose 方案没有规范化为开箱即用默认值: %+v", input)
 	}
 	if _, err := normalizeDeploymentPlanInput(DeploymentPlanInput{

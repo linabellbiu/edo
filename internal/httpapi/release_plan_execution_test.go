@@ -109,12 +109,14 @@ func TestCreateReleasePlanExecutionReturnsAccepted(t *testing.T) {
 	if err != nil {
 		t.Fatalf("创建测试仓库失败: %v", err)
 	}
-	application, sourceNodeID, workflowRevision := createReleasePlanExecutionHTTPApplication(
+	application, workflowID, sourceNodeID, workflowRevision := createReleasePlanExecutionHTTPApplication(
 		t, fixture.pipelines, fixture.db, repositoryItem.ID,
 	)
 	plan, err := fixture.pipelines.CreateReleasePlan(ctx, "admin", pipeline.ReleasePlanInput{
-		Description:  "验证发布计划 HTTP 批量执行",
-		Applications: []pipeline.ReleaseApplicationInput{{ApplicationID: application.ID}},
+		Description: "验证发布计划 HTTP 批量执行",
+		Groups: []pipeline.ReleaseGroupInput{{
+			Name: "默认发布组", Applications: []pipeline.ReleaseApplicationInput{{ApplicationID: application.ID}},
+		}},
 	})
 	if err != nil {
 		t.Fatalf("创建测试发布计划失败: %v", err)
@@ -134,6 +136,7 @@ func TestCreateReleasePlanExecutionReturnsAccepted(t *testing.T) {
 		"expected_plan_updated_at": plan.UpdatedAt,
 		"selections": []map[string]any{{
 			"release_group_application_id": plan.Groups[0].Applications[0].ID,
+			"workflow_id":                  workflowID,
 			"expected_workflow_revision":   workflowRevision,
 			"source_node_id":               sourceNodeID,
 			"ref":                          "refs/heads/main",
@@ -271,7 +274,7 @@ func createReleasePlanExecutionHTTPApplication(
 	service *pipeline.Service,
 	db *gorm.DB,
 	repositoryID string,
-) (*model.Application, string, uint64) {
+) (*model.Application, string, string, uint64) {
 	t.Helper()
 	ctx := context.Background()
 	buildPlan, err := service.CreateBuildPlan(ctx, "admin", pipeline.BuildPlanInput{
@@ -345,5 +348,5 @@ func createReleasePlanExecutionHTTPApplication(
 	if err != nil {
 		t.Fatalf("启用测试流水线失败: %v", err)
 	}
-	return application, triggerID, saved.Workflow.Revision
+	return application, saved.Workflow.ID, triggerID, saved.Workflow.Revision
 }

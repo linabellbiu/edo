@@ -212,7 +212,7 @@ function sourceMeta(item: ReleaseGroupApplication) {
           <i :class="{ live: planStatus(visiblePlanStatus(plan)).live }" />
           <span class="plan-index-copy">
             <strong :title="planTitle(plan)">{{ planTitle(plan) }}</strong>
-            <span>{{ planStatus(visiblePlanStatus(plan)).label }} · {{ t('releasePlan.applicationCount', { count: applicationCount(plan) }) }}</span>
+            <span>{{ planStatus(visiblePlanStatus(plan)).label }} · {{ t('releasePlan.structureCount', { groups: plan.groups?.length || 0, applications: applicationCount(plan) }) }}</span>
             <small>{{ formatTime(plan.updated_at || plan.created_at) }}</small>
           </span>
           <ChevronRight :size="16" />
@@ -258,14 +258,14 @@ function sourceMeta(item: ReleaseGroupApplication) {
 
       <dl class="plan-summary">
         <div>
-          <dt><UsersRound />{{ t('releasePlan.summaryApplications') }}</dt>
-          <dd>{{ applicationCount(selectedPlan) }}</dd>
-          <small>{{ t('releasePlan.summaryApplicationsHint') }}</small>
-        </div>
-        <div>
           <dt><Layers3 />{{ t('releasePlan.summaryGroups') }}</dt>
           <dd>{{ selectedPlan.groups?.length || 0 }}</dd>
           <small>{{ t('releasePlan.summaryGroupsHint') }}</small>
+        </div>
+        <div>
+          <dt><UsersRound />{{ t('releasePlan.summaryApplications') }}</dt>
+          <dd>{{ applicationCount(selectedPlan) }}</dd>
+          <small>{{ t('releasePlan.summaryApplicationsHint') }}</small>
         </div>
         <div>
           <dt><GitBranch />{{ t('releasePlan.summaryManual') }}</dt>

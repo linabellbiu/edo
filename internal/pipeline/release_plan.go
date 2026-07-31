@@ -43,11 +43,11 @@ type ReleaseApplicationInput struct {
 }
 
 type ReleasePlanInput struct {
-	Name         string
-	Version      string
-	Description  string
-	Status       model.ReleasePlanStatus
-	Applications []ReleaseApplicationInput
+	Name        string
+	Version     string
+	Description string
+	Status      model.ReleasePlanStatus
+	Groups      []ReleaseGroupInput
 }
 
 type ReleaseGroupInput struct {
@@ -145,12 +145,9 @@ func (s *Service) CreateReleasePlan(ctx context.Context, actorID string, input R
 	if err != nil {
 		return nil, err
 	}
-	input.Applications, err = s.normalizeReleaseApplications(ctx, input.Applications)
+	input.Groups, err = s.normalizeNewReleaseGroups(ctx, input.Groups)
 	if err != nil {
-		if errors.Is(err, errInvalidReleaseApplications) {
-			return nil, ErrInvalidReleasePlan
-		}
-		return nil, fmt.Errorf("检查发布计划应用失败: %w", err)
+		return nil, err
 	}
 	now := time.Now().UTC()
 	plan := &model.ReleasePlan{
@@ -161,16 +158,23 @@ func (s *Service) CreateReleasePlan(ctx context.Context, actorID string, input R
 		if err := tx.Create(plan).Error; err != nil {
 			return err
 		}
-		group := model.ReleaseGroup{
-			ID: uuid.NewString(), ReleasePlanID: plan.ID, Name: "默认发布组",
-			Mode: model.ReleaseGroupParallel, FailurePolicy: model.ReleaseGroupStopOnFailure,
-			SortOrder: 0, CreatedAt: now, UpdatedAt: now,
+		for index, groupInput := range input.Groups {
+			group := model.ReleaseGroup{
+				ID: uuid.NewString(), ReleasePlanID: plan.ID, Name: groupInput.Name,
+				Mode: groupInput.Mode, FailurePolicy: groupInput.FailurePolicy,
+				SortOrder: index, CreatedAt: now, UpdatedAt: now,
+			}
+			if err := tx.Create(&group).Error; err != nil {
+				return err
+			}
+			applications := releaseGroupApplicationModels(group.ID, groupInput.Applications, now)
+			if len(applications) > 0 {
+				if err := tx.Create(&applications).Error; err != nil {
+					return err
+				}
+			}
 		}
-		if err := tx.Create(&group).Error; err != nil {
-			return err
-		}
-		applications := releaseGroupApplicationModels(group.ID, input.Applications, now)
-		return tx.Create(&applications).Error
+		return nil
 	})
 	if err != nil {
 		if errors.Is(err, gorm.ErrDuplicatedKey) {
@@ -179,6 +183,44 @@ func (s *Service) CreateReleasePlan(ctx context.Context, actorID string, input R
 		return nil, fmt.Errorf("创建发布计划失败: %w", err)
 	}
 	return s.FindReleasePlan(ctx, plan.ID)
+}
+
+func (s *Service) normalizeNewReleaseGroups(ctx context.Context, inputs []ReleaseGroupInput) ([]ReleaseGroupInput, error) {
+	if len(inputs) == 0 || len(inputs) > 50 {
+		return nil, ErrInvalidReleasePlan
+	}
+	seenNames := make(map[string]struct{}, len(inputs))
+	seenApplications := make(map[string]struct{})
+	result := make([]ReleaseGroupInput, 0, len(inputs))
+	for _, input := range inputs {
+		// 新建请求中的发布组尚无服务端 ID，不能引用一个尚未创建的依赖组。
+		// 多组依赖可在计划创建后通过原子配置接口保存。
+		if len(input.DependsOnGroupIDs) > 0 {
+			return nil, ErrInvalidReleasePlan
+		}
+		normalized, err := s.normalizeReleaseGroupInput(ctx, "", "", input)
+		if err != nil {
+			if errors.Is(err, ErrInvalidReleaseGroup) || errors.Is(err, errInvalidReleaseApplications) {
+				return nil, ErrInvalidReleasePlan
+			}
+			return nil, fmt.Errorf("检查发布组配置失败: %w", err)
+		}
+		if _, exists := seenNames[normalized.Name]; exists {
+			return nil, ErrInvalidReleasePlan
+		}
+		seenNames[normalized.Name] = struct{}{}
+		for _, application := range normalized.Applications {
+			if _, exists := seenApplications[application.ApplicationID]; exists {
+				return nil, ErrInvalidReleasePlan
+			}
+			seenApplications[application.ApplicationID] = struct{}{}
+		}
+		result = append(result, normalized)
+	}
+	if len(seenApplications) == 0 {
+		return nil, ErrInvalidReleasePlan
+	}
+	return result, nil
 }
 
 func (s *Service) UpdateReleasePlan(ctx context.Context, id, actorID string, input ReleasePlanInput) (*model.ReleasePlan, error) {

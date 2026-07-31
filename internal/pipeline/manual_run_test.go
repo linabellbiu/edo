@@ -298,6 +298,7 @@ func TestRetryFailedRunCreatesNewAuditedExecution(t *testing.T) {
 	now := time.Now().UTC()
 	failed := model.PipelineRun{
 		ID: "failed-run", ApplicationID: application.ID, Trigger: "manual",
+		WorkflowID: application.Workflow.ID, WorkflowRevision: application.Workflow.Revision,
 		Ref: "refs/heads/main", CommitSHA: strings.Repeat("d", 40),
 		Status: model.PipelineRunFailed, Stage: "failed", Message: "构建失败",
 		CreatedBy: "admin", CreatedAt: now, UpdatedAt: now,
@@ -377,6 +378,7 @@ func TestRetryMergedPullRequestKeepsEventSnapshot(t *testing.T) {
 	now := time.Now().UTC()
 	failed := model.PipelineRun{
 		ID: "failed-merged-pr", ApplicationID: application.ID, Trigger: "poll_pr", TriggerAction: "merged",
+		WorkflowID: workflow.ID, WorkflowRevision: workflow.Revision,
 		SourceBranch: "feature/payment", TargetBranch: "main", Ref: "refs/pull/12/head", CommitSHA: strings.Repeat("f", 40),
 		Status: model.PipelineRunFailed, Stage: "failed", CreatedBy: "system", CreatedAt: now, UpdatedAt: now,
 	}

@@ -8,7 +8,7 @@ import client from '@/api/client'
 import { apiErrorMessage } from '@/api/resources'
 import PageToolbar from '@/components/PageToolbar.vue'
 import { useAuthStore } from '@/stores/auth'
-import type { WorkflowNode, WorkflowStage } from '@/types/pipeline'
+import type { Workflow, WorkflowNode, WorkflowStage } from '@/types/pipeline'
 
 interface WorkflowTemplate {
   schema_version: 1
@@ -24,7 +24,7 @@ interface WorkflowTemplate {
 
 interface ApplicationReference {
   id: string
-  workflow_template_id?: string
+  workflows?: Workflow[]
 }
 
 const route = useRoute()
@@ -39,8 +39,8 @@ const canManage = computed(() => Boolean(auth.user?.is_superuser || auth.permiss
 const usageCount = computed(() => {
   const result = new Map<string, number>()
   applications.value.forEach((application) => {
-    if (!application.workflow_template_id) return
-    result.set(application.workflow_template_id, (result.get(application.workflow_template_id) || 0) + 1)
+    const used = new Set((application.workflows || []).map(workflow => workflow.workflow_template_id).filter(Boolean) as string[])
+    used.forEach(templateID => result.set(templateID, (result.get(templateID) || 0) + 1))
   })
   return result
 })

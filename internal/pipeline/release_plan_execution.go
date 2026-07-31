@@ -27,6 +27,7 @@ var (
 
 type ReleasePlanExecutionSelection struct {
 	ReleaseGroupApplicationID string
+	WorkflowID                string
 	ExpectedWorkflowRevision  uint64
 	SourceNodeID              string
 	Ref                       string
@@ -288,10 +289,11 @@ func (s *Service) prepareReleasePlanExecution(
 	for i := range input.Selections {
 		selection := input.Selections[i]
 		selection.ReleaseGroupApplicationID = strings.TrimSpace(selection.ReleaseGroupApplicationID)
+		selection.WorkflowID = strings.TrimSpace(selection.WorkflowID)
 		selection.SourceNodeID = strings.TrimSpace(selection.SourceNodeID)
 		selection.Ref = strings.TrimSpace(selection.Ref)
 		selection.CommitSHA = strings.TrimSpace(selection.CommitSHA)
-		if selection.ReleaseGroupApplicationID == "" || selection.SourceNodeID == "" || selection.Ref == "" || selection.CommitSHA == "" {
+		if selection.ReleaseGroupApplicationID == "" || selection.WorkflowID == "" || selection.SourceNodeID == "" || selection.Ref == "" || selection.CommitSHA == "" {
 			return nil, ErrInvalidReleasePlanExecution
 		}
 		if _, exists := selectionByApplication[selection.ReleaseGroupApplicationID]; exists {
@@ -363,16 +365,17 @@ func (s *Service) prepareReleasePlanExecution(
 				}
 				return nil, ErrInvalidReleasePlanExecution
 			}
-			if !application.IsActive || !pipelineExecutionConfigured(application) || application.Workflow == nil || !application.Workflow.IsActive {
+			workflow, err := s.FindApplicationWorkflow(ctx, application.ID, selection.WorkflowID)
+			if err != nil || !application.IsActive || !pipelineExecutionConfiguredForWorkflow(application, workflow) || !workflow.IsActive {
 				return nil, ErrInvalidReleasePlanExecution
 			}
-			if application.Workflow.Revision != selection.ExpectedWorkflowRevision {
+			if workflow.Revision != selection.ExpectedWorkflowRevision {
 				return nil, ErrReleasePlanExecutionWorkflowChanged
 			}
-			if issues := s.validateWorkflow(ctx, application, application.Workflow.SchemaVersion, application.Workflow.Source, application.Workflow.Stages); len(issues) != 0 {
+			if issues := s.validateWorkflow(ctx, application, workflow.SchemaVersion, workflow.Source, workflow.Stages); len(issues) != 0 {
 				return nil, ErrInvalidReleasePlanExecution
 			}
-			source := releasePlanManualSource(application.Workflow, selection.SourceNodeID, selection.Ref)
+			source := releasePlanManualSource(workflow, selection.SourceNodeID, selection.Ref)
 			if source == nil {
 				return nil, ErrInvalidReleasePlanExecution
 			}
@@ -388,7 +391,7 @@ func (s *Service) prepareReleasePlanExecution(
 			itemID := uuid.NewString()
 			run, err := s.newResolvedWorkflowRun(
 				ctx,
-				application, application.Workflow, *source, "release_plan", ref, commitSHA,
+				application, workflow, *source, "release_plan", ref, commitSHA,
 				actorID, "发布计划等待编排启动", now,
 			)
 			if err != nil {
@@ -409,14 +412,14 @@ func (s *Service) prepareReleasePlanExecution(
 			item := model.ReleasePlanExecutionItem{
 				ID: itemID, ReleasePlanExecutionID: executionID,
 				ReleaseGroupID: group.ID, ReleaseGroupApplicationID: groupApplication.ID,
-				ApplicationID: application.ID, PipelineRunID: run.ID,
+				ApplicationID: application.ID, WorkflowID: workflow.ID, PipelineRunID: run.ID,
 				Status: model.ReleasePlanExecutionItemPending, Ref: ref, CommitSHA: commitSHA,
 				SourceNodeID: source.ID, SortOrder: groupApplication.SortOrder,
 				Message: "等待所属发布组开始", CreatedAt: now, UpdatedAt: now,
 			}
 			prepared.items = append(prepared.items, preparedReleasePlanExecutionItem{
 				item: item, run: *run, components: components,
-				applicationUpdatedAt: application.UpdatedAt, workflowUpdatedAt: application.Workflow.UpdatedAt,
+				applicationUpdatedAt: application.UpdatedAt, workflowUpdatedAt: workflow.UpdatedAt,
 			})
 			groupSnapshot.ItemIDs = append(groupSnapshot.ItemIDs, itemID)
 		}

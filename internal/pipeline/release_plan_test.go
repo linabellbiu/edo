@@ -8,6 +8,13 @@ import (
 	"zrt/internal/model"
 )
 
+func defaultReleasePlanGroups(applications []ReleaseApplicationInput) []ReleaseGroupInput {
+	return []ReleaseGroupInput{{
+		Name: "默认发布组", Mode: model.ReleaseGroupParallel,
+		FailurePolicy: model.ReleaseGroupStopOnFailure, Applications: applications,
+	}}
+}
+
 func TestReleasePlanContainsOrderedApplicationGroups(t *testing.T) {
 	service, _, _, repositoryID := newPipelineTestService(t)
 	ctx := context.Background()
@@ -26,10 +33,10 @@ func TestReleasePlanContainsOrderedApplicationGroups(t *testing.T) {
 	commitSHA := "0123456789012345678901234567890123456789"
 	plan, err := service.CreateReleasePlan(ctx, "admin", ReleasePlanInput{
 		Name: "八月发布列车", Version: "2026.08", Description: "八月应用发布",
-		Applications: []ReleaseApplicationInput{
+		Groups: defaultReleasePlanGroups([]ReleaseApplicationInput{
 			{ApplicationID: first.ID, ManualDeploy: true, SourceType: model.ReleaseApplicationSourceBranch, SourceValue: "main"},
 			{ApplicationID: second.ID, ManualDeploy: true, SourceType: model.ReleaseApplicationSourceCommit, SourceValue: commitSHA},
-		},
+		}),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -66,6 +73,45 @@ func TestReleasePlanContainsOrderedApplicationGroups(t *testing.T) {
 	}
 }
 
+func TestReleasePlanCreatesGroupsBeforeAssigningApplications(t *testing.T) {
+	service, _, _, repositoryID := newPipelineTestService(t)
+	ctx := context.Background()
+	applications := make([]*model.Application, 0, 3)
+	for _, name := range []string{"网关", "订单服务", "通知服务"} {
+		application, err := service.CreateApplication(ctx, "admin", ApplicationInput{Name: name, RepositoryID: repositoryID})
+		if err != nil {
+			t.Fatal(err)
+		}
+		applications = append(applications, application)
+	}
+	groups := []ReleaseGroupInput{
+		{
+			Name: "基础服务", Mode: model.ReleaseGroupSequential, FailurePolicy: model.ReleaseGroupStopOnFailure,
+			Applications: []ReleaseApplicationInput{{ApplicationID: applications[0].ID}, {ApplicationID: applications[1].ID}},
+		},
+		{
+			Name: "异步服务", Mode: model.ReleaseGroupParallel, FailurePolicy: model.ReleaseGroupContinue,
+			Applications: []ReleaseApplicationInput{{ApplicationID: applications[2].ID}},
+		},
+	}
+	plan, err := service.CreateReleasePlan(ctx, "admin", ReleasePlanInput{Description: "验证计划、发布组和应用层级", Groups: groups})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.Groups) != 2 || plan.Groups[0].Name != "基础服务" || plan.Groups[0].SortOrder != 0 ||
+		len(plan.Groups[0].Applications) != 2 || plan.Groups[1].Name != "异步服务" || plan.Groups[1].SortOrder != 1 ||
+		len(plan.Groups[1].Applications) != 1 {
+		t.Fatalf("发布计划没有按发布组保存应用: %+v", plan.Groups)
+	}
+	duplicateGroups := []ReleaseGroupInput{
+		{Name: "第一组", Applications: []ReleaseApplicationInput{{ApplicationID: applications[0].ID}}},
+		{Name: "第二组", Applications: []ReleaseApplicationInput{{ApplicationID: applications[0].ID}}},
+	}
+	if _, err := service.CreateReleasePlan(ctx, "admin", ReleasePlanInput{Description: "拒绝跨组重复应用", Groups: duplicateGroups}); !errors.Is(err, ErrInvalidReleasePlan) {
+		t.Fatalf("创建发布计划没有拒绝跨组重复应用: %v", err)
+	}
+}
+
 func TestReleasePlanGeneratesInternalIdentity(t *testing.T) {
 	service, _, _, repositoryID := newPipelineTestService(t)
 	ctx := context.Background()
@@ -76,7 +122,7 @@ func TestReleasePlanGeneratesInternalIdentity(t *testing.T) {
 		t.Fatal(err)
 	}
 	plan, err := service.CreateReleasePlan(ctx, "admin", ReleasePlanInput{
-		Description: "修复订单查询并发布", Applications: []ReleaseApplicationInput{{ApplicationID: application.ID}},
+		Description: "修复订单查询并发布", Groups: defaultReleasePlanGroups([]ReleaseApplicationInput{{ApplicationID: application.ID}}),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -85,7 +131,7 @@ func TestReleasePlanGeneratesInternalIdentity(t *testing.T) {
 		t.Fatalf("发布计划没有生成内部标识: %+v", plan)
 	}
 	if _, err := service.CreateReleasePlan(ctx, "admin", ReleasePlanInput{
-		Applications: []ReleaseApplicationInput{{ApplicationID: application.ID}},
+		Groups: defaultReleasePlanGroups([]ReleaseApplicationInput{{ApplicationID: application.ID}}),
 	}); !errors.Is(err, ErrInvalidReleasePlan) {
 		t.Fatalf("缺少说明的发布计划应被拒绝: %v", err)
 	}
@@ -101,10 +147,10 @@ func TestReleasePlanVersionIsUnique(t *testing.T) {
 		t.Fatal(err)
 	}
 	applications := []ReleaseApplicationInput{{ApplicationID: application.ID}}
-	if _, err := service.CreateReleasePlan(ctx, "admin", ReleasePlanInput{Name: "第一批", Version: "2026.08", Description: "第一批发布", Applications: applications}); err != nil {
+	if _, err := service.CreateReleasePlan(ctx, "admin", ReleasePlanInput{Name: "第一批", Version: "2026.08", Description: "第一批发布", Groups: defaultReleasePlanGroups(applications)}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := service.CreateReleasePlan(ctx, "admin", ReleasePlanInput{Name: "第二批", Version: "2026.08", Description: "第二批发布", Applications: applications}); !errors.Is(err, ErrReleasePlanExists) {
+	if _, err := service.CreateReleasePlan(ctx, "admin", ReleasePlanInput{Name: "第二批", Version: "2026.08", Description: "第二批发布", Groups: defaultReleasePlanGroups(applications)}); !errors.Is(err, ErrReleasePlanExists) {
 		t.Fatalf("重复发布版本未被拒绝: %v", err)
 	}
 }
@@ -120,10 +166,10 @@ func TestReleasePlanRejectsInvalidManualSource(t *testing.T) {
 	}
 	_, err = service.CreateReleasePlan(ctx, "admin", ReleasePlanInput{
 		Name: "错误版本来源", Version: "2026.09", Description: "验证错误版本来源",
-		Applications: []ReleaseApplicationInput{{
+		Groups: defaultReleasePlanGroups([]ReleaseApplicationInput{{
 			ApplicationID: application.ID, ManualDeploy: true,
 			SourceType: model.ReleaseApplicationSourceCommit, SourceValue: "not-a-commit",
-		}},
+		}}),
 	})
 	if !errors.Is(err, ErrInvalidReleasePlan) {
 		t.Fatalf("无效 Commit 未被拒绝: %v", err)
@@ -140,7 +186,7 @@ func TestReleasePlanDetailsStatusAndDeletion(t *testing.T) {
 		t.Fatal(err)
 	}
 	plan, err := service.CreateReleasePlan(ctx, "admin", ReleasePlanInput{
-		Description: "原始说明", Applications: []ReleaseApplicationInput{{ApplicationID: application.ID}},
+		Description: "原始说明", Groups: defaultReleasePlanGroups([]ReleaseApplicationInput{{ApplicationID: application.ID}}),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -201,9 +247,9 @@ func TestReleaseGroupPersistsApplicationOrderAndParallelDefault(t *testing.T) {
 		applications = append(applications, application)
 	}
 	plan, err := service.CreateReleasePlan(ctx, "admin", ReleasePlanInput{
-		Description: "验证发布顺序", Applications: []ReleaseApplicationInput{
+		Description: "验证发布顺序", Groups: defaultReleasePlanGroups([]ReleaseApplicationInput{
 			{ApplicationID: applications[0].ID}, {ApplicationID: applications[1].ID},
-		},
+		}),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -258,7 +304,7 @@ func TestReleaseGroupRejectsApplicationAssignedToAnotherGroup(t *testing.T) {
 		t.Fatal(err)
 	}
 	plan, err := service.CreateReleasePlan(ctx, "admin", ReleasePlanInput{
-		Description: "验证跨组重复", Applications: []ReleaseApplicationInput{{ApplicationID: application.ID}},
+		Description: "验证跨组重复", Groups: defaultReleasePlanGroups([]ReleaseApplicationInput{{ApplicationID: application.ID}}),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -280,7 +326,7 @@ func TestReleasePlanWithCompletedExecutionCanBeSoftDeleted(t *testing.T) {
 		t.Fatal(err)
 	}
 	plan, err := service.CreateReleasePlan(ctx, "admin", ReleasePlanInput{
-		Description: "保留执行历史", Applications: []ReleaseApplicationInput{{ApplicationID: application.ID}},
+		Description: "保留执行历史", Groups: defaultReleasePlanGroups([]ReleaseApplicationInput{{ApplicationID: application.ID}}),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -332,7 +378,7 @@ func TestRunningReleasePlanBlocksStructuralChangesButCanBeDisabled(t *testing.T)
 		t.Fatal(err)
 	}
 	plan, err := service.CreateReleasePlan(ctx, "admin", ReleasePlanInput{
-		Description: "验证执行中修改边界", Applications: []ReleaseApplicationInput{{ApplicationID: application.ID}},
+		Description: "验证执行中修改边界", Groups: defaultReleasePlanGroups([]ReleaseApplicationInput{{ApplicationID: application.ID}}),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -387,9 +433,9 @@ func TestSaveReleasePlanConfigurationMovesApplicationsAtomically(t *testing.T) {
 		applications = append(applications, application)
 	}
 	plan, err := service.CreateReleasePlan(ctx, "admin", ReleasePlanInput{
-		Description: "原始批量配置", Applications: []ReleaseApplicationInput{
+		Description: "原始批量配置", Groups: defaultReleasePlanGroups([]ReleaseApplicationInput{
 			{ApplicationID: applications[0].ID}, {ApplicationID: applications[1].ID},
-		},
+		}),
 	})
 	if err != nil {
 		t.Fatal(err)

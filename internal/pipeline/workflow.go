@@ -13,6 +13,7 @@ import (
 	"github.com/google/uuid"
 	"gorm.io/gorm"
 
+	"zrt/internal/dockerengine"
 	"zrt/internal/model"
 	"zrt/internal/repository"
 	"zrt/internal/task"
@@ -21,6 +22,8 @@ import (
 var (
 	ErrInvalidWorkflow                = errors.New("流水线配置存在错误，请先修正代码源、阶段和任务")
 	ErrWorkflowNotFound               = errors.New("应用流水线不存在")
+	ErrWorkflowExists                 = errors.New("应用内已存在同名流水线")
+	ErrWorkflowInUse                  = errors.New("流水线正在执行，不能删除")
 	ErrWorkflowRevisionConflict       = errors.New("应用流水线已被其他人修改，请刷新后再保存")
 	ErrWorkflowNotActive              = errors.New("应用流水线尚未启用")
 	ErrInvalidWorkflowTransition      = errors.New("当前任务不能这样推进")
@@ -38,6 +41,11 @@ type WorkflowInput struct {
 	Activate      bool
 	Source        model.WorkflowNode
 	Stages        []model.WorkflowStage
+}
+
+type WorkflowCreateInput struct {
+	Name               string
+	WorkflowTemplateID string
 }
 
 type WorkflowIssue struct {
@@ -120,6 +128,128 @@ func (s *Service) GetWorkflow(ctx context.Context, applicationID string) (*Workf
 	return &WorkflowResult{Workflow: workflow, Valid: len(issues) == 0, Issues: issues}, nil
 }
 
+func (s *Service) ListApplicationWorkflows(ctx context.Context, applicationID string) ([]model.ReleaseWorkflow, error) {
+	if _, err := s.FindApplication(ctx, applicationID); err != nil {
+		return nil, err
+	}
+	var workflows []model.ReleaseWorkflow
+	if err := s.db.WithContext(ctx).Preload("WorkflowTemplate").
+		Where("application_id = ?", applicationID).Order("created_at ASC").Find(&workflows).Error; err != nil {
+		if s.logger != nil {
+			s.logger.Error("查询应用流水线失败", "operation", "application_workflow_list", "application_id", applicationID, "err", err)
+		}
+		return nil, errors.New("查询应用流水线失败")
+	}
+	return workflows, nil
+}
+
+func (s *Service) FindApplicationWorkflow(ctx context.Context, applicationID, workflowID string) (*model.ReleaseWorkflow, error) {
+	applicationID, workflowID = strings.TrimSpace(applicationID), strings.TrimSpace(workflowID)
+	if applicationID == "" || workflowID == "" {
+		return nil, ErrWorkflowNotFound
+	}
+	var workflow model.ReleaseWorkflow
+	err := s.db.WithContext(ctx).Preload("WorkflowTemplate").
+		First(&workflow, "id = ? AND application_id = ?", workflowID, applicationID).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, ErrWorkflowNotFound
+	}
+	if err != nil {
+		if s.logger != nil {
+			s.logger.Error("查询应用流水线失败", "operation", "application_workflow_find", "application_id", applicationID, "workflow_id", workflowID, "err", err)
+		}
+		return nil, errors.New("查询应用流水线失败")
+	}
+	return &workflow, nil
+}
+
+func (s *Service) GetApplicationWorkflow(ctx context.Context, applicationID, workflowID string) (*WorkflowResult, error) {
+	application, err := s.FindApplication(ctx, applicationID)
+	if err != nil {
+		return nil, err
+	}
+	workflow, err := s.FindApplicationWorkflow(ctx, applicationID, workflowID)
+	if err != nil {
+		return nil, err
+	}
+	issues := s.validateWorkflow(ctx, application, workflow.SchemaVersion, workflow.Source, workflow.Stages)
+	return &WorkflowResult{Workflow: workflow, Valid: len(issues) == 0, Issues: issues}, nil
+}
+
+func (s *Service) CreateApplicationWorkflow(
+	ctx context.Context,
+	applicationID, actorID string,
+	input WorkflowCreateInput,
+) (*WorkflowResult, error) {
+	application, err := s.FindApplication(ctx, applicationID)
+	if err != nil {
+		return nil, err
+	}
+	input.Name = strings.TrimSpace(input.Name)
+	input.WorkflowTemplateID = strings.TrimSpace(input.WorkflowTemplateID)
+	if input.Name != "" && !validResourceName(input.Name) {
+		return nil, ErrInvalidWorkflow
+	}
+	now := time.Now().UTC()
+	copyApplication := *application
+	copyApplication.WorkflowTemplateID = input.WorkflowTemplateID
+	workflow, err := s.newApplicationWorkflow(ctx, &copyApplication, actorID, now)
+	if err != nil {
+		return nil, err
+	}
+	if input.Name != "" {
+		workflow.Name = input.Name
+	} else {
+		workflow.Name, err = s.nextApplicationWorkflowName(ctx, applicationID, workflow.Name)
+		if err != nil {
+			return nil, err
+		}
+	}
+	var duplicate int64
+	if err := s.db.WithContext(ctx).Model(&model.ReleaseWorkflow{}).
+		Where("application_id = ? AND name = ?", applicationID, workflow.Name).Count(&duplicate).Error; err != nil {
+		return nil, err
+	}
+	if duplicate > 0 {
+		return nil, ErrWorkflowExists
+	}
+	if err := s.db.WithContext(ctx).Create(workflow).Error; err != nil {
+		if errors.Is(err, gorm.ErrDuplicatedKey) {
+			return nil, ErrWorkflowExists
+		}
+		if s.logger != nil {
+			s.logger.Error("创建应用流水线失败", "operation", "application_workflow_create", "application_id", applicationID, "err", err)
+		}
+		return nil, errors.New("创建应用流水线失败")
+	}
+	issues := s.validateWorkflow(ctx, application, workflow.SchemaVersion, workflow.Source, workflow.Stages)
+	return &WorkflowResult{Workflow: workflow, Valid: len(issues) == 0, Issues: issues}, nil
+}
+
+func (s *Service) nextApplicationWorkflowName(ctx context.Context, applicationID, base string) (string, error) {
+	var names []string
+	if err := s.db.WithContext(ctx).Model(&model.ReleaseWorkflow{}).
+		Where("application_id = ?", applicationID).Pluck("name", &names).Error; err != nil {
+		if s.logger != nil {
+			s.logger.Error("生成应用流水线默认名称失败", "operation", "application_workflow_name", "application_id", applicationID, "err", err)
+		}
+		return "", errors.New("创建应用流水线失败")
+	}
+	used := make(map[string]struct{}, len(names))
+	for _, name := range names {
+		used[name] = struct{}{}
+	}
+	if _, exists := used[base]; !exists {
+		return base, nil
+	}
+	for suffix := 2; ; suffix++ {
+		candidate := fmt.Sprintf("%s %d", base, suffix)
+		if _, exists := used[candidate]; !exists {
+			return candidate, nil
+		}
+	}
+}
+
 func (s *Service) ValidateWorkflow(ctx context.Context, applicationID string, input WorkflowInput) (*WorkflowResult, error) {
 	application, err := s.FindApplication(ctx, applicationID)
 	if err != nil {
@@ -135,8 +265,43 @@ func (s *Service) ValidateWorkflow(ctx context.Context, applicationID string, in
 	}, Valid: len(issues) == 0, Issues: issues}, nil
 }
 
+func (s *Service) ValidateApplicationWorkflow(ctx context.Context, applicationID, workflowID string, input WorkflowInput) (*WorkflowResult, error) {
+	application, err := s.FindApplication(ctx, applicationID)
+	if err != nil {
+		return nil, err
+	}
+	workflow, err := s.FindApplicationWorkflow(ctx, applicationID, workflowID)
+	if err != nil {
+		return nil, err
+	}
+	if err := sanitizeWorkflowInput(&input); err != nil {
+		return nil, err
+	}
+	issues := s.validateWorkflow(ctx, application, input.SchemaVersion, input.Source, input.Stages)
+	return &WorkflowResult{Workflow: &model.ReleaseWorkflow{
+		ID: workflow.ID, ApplicationID: application.ID, SchemaVersion: input.SchemaVersion,
+		Name: input.Name, Revision: input.Revision, Source: input.Source, Stages: input.Stages,
+	}, Valid: len(issues) == 0, Issues: issues}, nil
+}
+
 func (s *Service) SaveWorkflow(ctx context.Context, applicationID, actorID string, input WorkflowInput) (*WorkflowResult, error) {
 	application, err := s.FindApplication(ctx, applicationID)
+	if err != nil {
+		return nil, err
+	}
+	workflow, err := s.ensureWorkflow(ctx, application)
+	if err != nil {
+		return nil, err
+	}
+	return s.SaveApplicationWorkflow(ctx, applicationID, workflow.ID, actorID, input)
+}
+
+func (s *Service) SaveApplicationWorkflow(ctx context.Context, applicationID, workflowID, actorID string, input WorkflowInput) (*WorkflowResult, error) {
+	application, err := s.FindApplication(ctx, applicationID)
+	if err != nil {
+		return nil, err
+	}
+	workflow, err := s.FindApplicationWorkflow(ctx, applicationID, workflowID)
 	if err != nil {
 		return nil, err
 	}
@@ -146,7 +311,7 @@ func (s *Service) SaveWorkflow(ctx context.Context, applicationID, actorID strin
 	issues := s.validateWorkflow(ctx, application, input.SchemaVersion, input.Source, input.Stages)
 	if len(issues) > 0 && (input.Activate || hasWorkflowSaveBlockingIssue(issues)) {
 		return &WorkflowResult{Workflow: &model.ReleaseWorkflow{
-			ApplicationID: application.ID, SchemaVersion: input.SchemaVersion,
+			ID: workflow.ID, ApplicationID: application.ID, SchemaVersion: input.SchemaVersion,
 			Name: input.Name, Revision: input.Revision, Source: input.Source, Stages: input.Stages,
 		}, Valid: false, Issues: issues}, ErrInvalidWorkflow
 	}
@@ -163,20 +328,11 @@ func (s *Service) SaveWorkflow(ctx context.Context, applicationID, actorID strin
 	var saved model.ReleaseWorkflow
 	err = s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var existing model.ReleaseWorkflow
-		err := tx.First(&existing, "application_id = ?", application.ID).Error
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			if input.Revision != 0 {
-				return ErrWorkflowRevisionConflict
-			}
-			saved = model.ReleaseWorkflow{
-				ID: uuid.NewString(), ApplicationID: application.ID, Name: input.Name,
-				SchemaVersion: input.SchemaVersion, Revision: 1, IsActive: input.Activate,
-				Source: input.Source, Stages: input.Stages, CreatedBy: actorID, UpdatedBy: actorID,
-				CreatedAt: now, UpdatedAt: now,
-			}
-			return tx.Create(&saved).Error
-		}
+		err := tx.First(&existing, "id = ? AND application_id = ?", workflow.ID, application.ID).Error
 		if err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return ErrWorkflowNotFound
+			}
 			return err
 		}
 		if input.Revision != existing.Revision {
@@ -196,12 +352,6 @@ func (s *Service) SaveWorkflow(ctx context.Context, applicationID, actorID strin
 		if result.RowsAffected != 1 {
 			return ErrWorkflowRevisionConflict
 		}
-		if existing.WorkflowTemplateID != "" {
-			if err := tx.Model(&model.Application{}).Where("id = ?", application.ID).
-				Updates(map[string]any{"workflow_template_id": "", "updated_at": now}).Error; err != nil {
-				return err
-			}
-		}
 		return tx.First(&saved, "id = ?", existing.ID).Error
 	})
 	if err != nil {
@@ -210,9 +360,42 @@ func (s *Service) SaveWorkflow(ctx context.Context, applicationID, actorID strin
 	return &WorkflowResult{Workflow: &saved, Valid: len(issues) == 0, Issues: issues}, nil
 }
 
+func (s *Service) DeleteApplicationWorkflow(ctx context.Context, applicationID, workflowID string) error {
+	workflow, err := s.FindApplicationWorkflow(ctx, applicationID, workflowID)
+	if err != nil {
+		return err
+	}
+	var running int64
+	if err := s.db.WithContext(ctx).Model(&model.PipelineRun{}).
+		Where("workflow_id = ? AND status IN ?", workflow.ID, []model.PipelineRunStatus{
+			model.PipelineRunDetected, model.PipelineRunReady, model.PipelineRunBlocked,
+			model.PipelineRunAwaitingApproval, model.PipelineRunRunning,
+		}).Count(&running).Error; err != nil {
+		if s.logger != nil {
+			s.logger.Error("检查流水线执行状态失败", "operation", "application_workflow_delete_check", "application_id", applicationID, "workflow_id", workflowID, "err", err)
+		}
+		return errors.New("删除流水线失败")
+	}
+	if running > 0 {
+		return ErrWorkflowInUse
+	}
+	if err := s.db.WithContext(ctx).Delete(workflow).Error; err != nil {
+		if s.logger != nil {
+			s.logger.Error("删除应用流水线失败", "operation", "application_workflow_delete", "application_id", applicationID, "workflow_id", workflowID, "err", err)
+		}
+		return errors.New("删除流水线失败")
+	}
+	return nil
+}
+
 func (s *Service) ensureWorkflow(ctx context.Context, application *model.Application) (*model.ReleaseWorkflow, error) {
 	if application.Workflow != nil && application.Workflow.ID != "" {
 		return application.Workflow, nil
+	}
+	if len(application.Workflows) > 0 {
+		// 已经存在多条流水线时，旧调用没有足够信息选择目标，必须拒绝而不是
+		// 新建或默认选择其中一条。
+		return nil, ErrWorkflowNotFound
 	}
 	now := time.Now().UTC()
 	workflow, err := s.newApplicationWorkflow(ctx, application, application.CreatedBy, now)
@@ -796,10 +979,18 @@ func (s *Service) newStageResolvedWorkflowRunWithDatabase(
 					!deploymentPlanSupportsTarget(plan.Kind, target.Platform) {
 					return nil, ErrInvalidWorkflow
 				}
+				dockerConfig := plan.DockerConfig
+				if plan.Kind == model.DeploymentPlanDocker {
+					normalized, configErr := dockerengine.NormalizeContainerConfig(dockerConfig)
+					if configErr != nil {
+						return nil, ErrInvalidWorkflow
+					}
+					dockerConfig = normalized
+				}
 				deploymentPlans[current.ID] = workflowDeploymentPlanSnapshot{
 					ID: plan.ID, Kind: plan.Kind, Script: plan.Script,
 					ComposeYAML: plan.ComposeYAML, ServiceName: plan.ServiceName,
-					DockerConfig:   plan.DockerConfig,
+					DockerConfig:   dockerConfig,
 					TimeoutSeconds: plan.TimeoutSeconds,
 				}
 				deploymentTargets[current.ID] = workflowDeploymentTargetSnapshot{
@@ -903,24 +1094,37 @@ func matchingWorkflowTriggers(workflow *model.ReleaseWorkflow, event, ref, sourc
 	return nil
 }
 
-func applicationPollSources(application *model.Application) []model.WorkflowNode {
-	if application.Workflow == nil || !application.Workflow.IsActive {
-		return nil
-	}
-	node := application.Workflow.Source
-	// Push、PR 和 Tag 均由远端状态发现；Webhook 只提供可选的低延迟通知。
-	if node.Type == model.WorkflowNodeTrigger &&
-		(containsEvent(node.Config.Events, "push") || containsEvent(node.Config.Events, "pr") || containsEvent(node.Config.Events, "tag")) {
-		return []model.WorkflowNode{node}
-	}
-	return nil
+type workflowSourceBinding struct {
+	Workflow *model.ReleaseWorkflow
+	Source   model.WorkflowNode
 }
 
-func applicationEventSources(application *model.Application, event, ref, sourceBranch, targetBranch, action string) []model.WorkflowNode {
-	if application.Workflow == nil || !application.Workflow.IsActive {
-		return nil
+func applicationPollSources(application *model.Application) []workflowSourceBinding {
+	result := make([]workflowSourceBinding, 0, len(application.Workflows))
+	for i := range application.Workflows {
+		workflow := &application.Workflows[i]
+		if !workflow.IsActive {
+			continue
+		}
+		node := workflow.Source
+		// Push、PR 和 Tag 均由远端状态发现；Webhook 只提供可选的低延迟通知。
+		if node.Type == model.WorkflowNodeTrigger &&
+			(containsEvent(node.Config.Events, "push") || containsEvent(node.Config.Events, "pr") || containsEvent(node.Config.Events, "tag")) {
+			result = append(result, workflowSourceBinding{Workflow: workflow, Source: node})
+		}
 	}
-	return matchingWorkflowTriggers(application.Workflow, event, ref, sourceBranch, targetBranch, action)
+	return result
+}
+
+func applicationEventSources(application *model.Application, event, ref, sourceBranch, targetBranch, action string) []workflowSourceBinding {
+	result := make([]workflowSourceBinding, 0, len(application.Workflows))
+	for i := range application.Workflows {
+		workflow := &application.Workflows[i]
+		for _, source := range matchingWorkflowTriggers(workflow, event, ref, sourceBranch, targetBranch, action) {
+			result = append(result, workflowSourceBinding{Workflow: workflow, Source: source})
+		}
+	}
+	return result
 }
 
 func matchWorkflowPattern(pattern, value string) bool {
@@ -1003,18 +1207,18 @@ func polledRunTrigger(event string) string {
 	return map[string]string{"push": "poll_push", "pr": "poll_pr", "tag": "poll_tag"}[event]
 }
 
-func (s *Service) runFromSource(ctx context.Context, application *model.Application, source model.WorkflowNode, trigger, ref, commitSHA, actorID, message string, now time.Time) (*model.PipelineRun, error) {
-	if application.Workflow == nil || !application.Workflow.IsActive {
+func (s *Service) runFromSource(ctx context.Context, application *model.Application, workflow *model.ReleaseWorkflow, source model.WorkflowNode, trigger, ref, commitSHA, actorID, message string, now time.Time) (*model.PipelineRun, error) {
+	if workflow == nil || !workflow.IsActive {
 		return nil, ErrWorkflowNotActive
 	}
-	return s.newResolvedWorkflowRun(ctx, application, application.Workflow, source, trigger, ref, commitSHA, actorID, message, now)
+	return s.newResolvedWorkflowRun(ctx, application, workflow, source, trigger, ref, commitSHA, actorID, message, now)
 }
 
-func (s *Service) runFromSourceWithDatabase(ctx context.Context, database *gorm.DB, application *model.Application, source model.WorkflowNode, trigger, ref, commitSHA, actorID, message string, now time.Time) (*model.PipelineRun, error) {
-	if application.Workflow == nil || !application.Workflow.IsActive {
+func (s *Service) runFromSourceWithDatabase(ctx context.Context, database *gorm.DB, application *model.Application, workflow *model.ReleaseWorkflow, source model.WorkflowNode, trigger, ref, commitSHA, actorID, message string, now time.Time) (*model.PipelineRun, error) {
+	if workflow == nil || !workflow.IsActive {
 		return nil, ErrWorkflowNotActive
 	}
-	return s.newStageResolvedWorkflowRunWithDatabase(ctx, database, application, application.Workflow, source, trigger, ref, commitSHA, actorID, message, now)
+	return s.newStageResolvedWorkflowRunWithDatabase(ctx, database, application, workflow, source, trigger, ref, commitSHA, actorID, message, now)
 }
 
 func parseWorkflowSnapshot(run *model.PipelineRun) (*workflowSnapshot, error) {
@@ -1047,20 +1251,27 @@ func (s *Service) RetryRun(ctx context.Context, runID, actorID string) (*model.P
 	if err != nil {
 		return nil, err
 	}
-	if !application.IsActive || !pipelineExecutionConfigured(application) {
-		return nil, fmt.Errorf("%w：%s", ErrPipelineIncomplete, pipelineExecutionIncompleteMessage(application))
+	if failed.WorkflowID == "" {
+		return nil, ErrWorkflowNotFound
 	}
-	if application.Workflow == nil || !application.Workflow.IsActive {
+	workflow, err := s.FindApplicationWorkflow(ctx, application.ID, failed.WorkflowID)
+	if err != nil {
+		return nil, err
+	}
+	if !application.IsActive || !pipelineExecutionConfiguredForWorkflow(application, workflow) {
+		return nil, fmt.Errorf("%w：%s", ErrPipelineIncomplete, pipelineExecutionIncompleteMessageForWorkflow(application, workflow))
+	}
+	if !workflow.IsActive {
 		return nil, ErrWorkflowNotActive
 	}
-	source := retryWorkflowSource(application.Workflow, &failed)
+	source := retryWorkflowSource(workflow, &failed)
 	if source == nil {
 		return nil, ErrInvalidWorkflow
 	}
 	now := time.Now().UTC()
 	run, err := s.newResolvedWorkflowRun(
 		ctx,
-		application, application.Workflow, *source, "retry", failed.Ref, failed.CommitSHA,
+		application, workflow, *source, "retry", failed.Ref, failed.CommitSHA,
 		actorID, "重新执行失败运行 "+failed.ID, now,
 	)
 	if err != nil {

@@ -40,6 +40,8 @@ export interface Workflow {
   schema_version: 1
   id: string
   application_id?: string
+  workflow_template_id?: string
+  workflow_template_revision?: number
   name: string
   description?: string
   revision: number

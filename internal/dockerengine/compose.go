@@ -78,8 +78,8 @@ var composeServiceKeys = map[string]struct{}{
 	"volumes": {}, "working_dir": {},
 }
 
-// ValidateComposeYAML 只接受能够独立执行的内联 Compose 配置。被部署服务的镜像必须
-// 使用 ${ZRT_IMAGE}，执行器会在运行时注入上游制品的不可变镜像引用。
+// ValidateComposeYAML 只接受能够独立执行的内联 Compose 配置。目标服务的镜像由
+// ZRT 在运行时注入；旧方案中的 ${ZRT_IMAGE} 占位符继续兼容，固定镜像仍会被拒绝。
 func ValidateComposeYAML(value, serviceName string) error {
 	_, err := parseComposeYAML(value, serviceName)
 	return err
@@ -131,10 +131,51 @@ func parseComposeYAML(value, serviceName string) (*composeDocument, error) {
 		return nil, fmt.Errorf("%w: 命名卷不能配置自定义驱动或宿主机路径", ErrInvalidComposeYAML)
 	}
 	service, exists := document.Services[serviceName]
-	if !exists || strings.TrimSpace(service.Image) != "${ZRT_IMAGE}" || service.Build.Kind != 0 {
-		return nil, fmt.Errorf("%w: 指定服务必须使用 image: ${ZRT_IMAGE} 且不能包含 build", ErrInvalidComposeYAML)
+	image := strings.TrimSpace(service.Image)
+	if !exists || (image != "" && image != "${ZRT_IMAGE}") || service.Build.Kind != 0 {
+		return nil, fmt.Errorf("%w: 指定服务的镜像由 ZRT 管理，不能填写固定 image 或 build", ErrInvalidComposeYAML)
 	}
 	return &document, nil
+}
+
+func composeYAMLWithManagedImage(value, serviceName string) (string, error) {
+	document, err := parseComposeYAML(value, serviceName)
+	if err != nil {
+		return "", err
+	}
+	if strings.TrimSpace(document.Services[strings.TrimSpace(serviceName)].Image) == "${ZRT_IMAGE}" {
+		return value, nil
+	}
+
+	decoder := yaml.NewDecoder(strings.NewReader(value))
+	var documentNode yaml.Node
+	if err := decoder.Decode(&documentNode); err != nil {
+		return "", fmt.Errorf("%w: YAML 无法解析", ErrInvalidComposeYAML)
+	}
+	root := composeNode(&documentNode)
+	services, exists := yamlMappingValue(root, "services")
+	if !exists {
+		return "", ErrInvalidComposeYAML
+	}
+	service, exists := yamlMappingValue(services, strings.TrimSpace(serviceName))
+	service = composeNode(service)
+	if !exists || service == nil || service.Kind != yaml.MappingNode {
+		return "", ErrInvalidComposeYAML
+	}
+	service.Content = append(service.Content,
+		&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: "image"},
+		&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: "${ZRT_IMAGE}"},
+	)
+	var rendered strings.Builder
+	encoder := yaml.NewEncoder(&rendered)
+	encoder.SetIndent(2)
+	if err := encoder.Encode(&documentNode); err != nil {
+		return "", fmt.Errorf("%w: 生成执行配置失败", ErrInvalidComposeYAML)
+	}
+	if err := encoder.Close(); err != nil {
+		return "", fmt.Errorf("%w: 生成执行配置失败", ErrInvalidComposeYAML)
+	}
+	return rendered.String(), nil
 }
 
 func safeComposeDocumentSchema(document *yaml.Node) bool {
@@ -530,9 +571,11 @@ func (s *Service) DeployCompose(ctx context.Context, input ComposeDeployInput) (
 		strings.TrimSpace(input.DeploymentID) == "" || input.Timeout < 30*time.Second || input.Timeout > time.Hour {
 		return "", ErrInvalidComposeYAML
 	}
-	if err := ValidateComposeYAML(input.YAML, input.ServiceName); err != nil {
+	managedYAML, err := composeYAMLWithManagedImage(input.YAML, input.ServiceName)
+	if err != nil {
 		return "", err
 	}
+	input.YAML = managedYAML
 	if input.ExpectedImageID != "" {
 		if !IsZRTLocalImage(input.Image) || !IsValidImageID(input.ExpectedImageID) {
 			return "", errors.New("待部署的本地 Docker 镜像无效")

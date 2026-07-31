@@ -17,6 +17,7 @@ import (
 
 type releasePlanExecutionTestApplication struct {
 	applicationID    string
+	workflowID       string
 	sourceNodeID     string
 	workflowRevision uint64
 }
@@ -495,7 +496,8 @@ func createReleasePlanExecutionTestApplication(
 		t.Fatalf("启用发布计划测试流水线失败: %v", err)
 	}
 	return releasePlanExecutionTestApplication{
-		applicationID: application.ID, sourceNodeID: triggerID, workflowRevision: saved.Workflow.Revision,
+		applicationID: application.ID, workflowID: saved.Workflow.ID,
+		sourceNodeID: triggerID, workflowRevision: saved.Workflow.Revision,
 	}
 }
 
@@ -519,7 +521,7 @@ func createReleasePlanExecutionTestPlan(
 		inputs = append(inputs, ReleaseApplicationInput{ApplicationID: applications[i].applicationID})
 	}
 	plan, err := service.CreateReleasePlan(context.Background(), "admin", ReleasePlanInput{
-		Description: "验证发布计划批量执行", Applications: inputs,
+		Description: "验证发布计划批量执行", Groups: defaultReleasePlanGroups(inputs),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -543,6 +545,7 @@ func releasePlanExecutionTestInput(
 			application := applicationByID[groupApplication.ApplicationID]
 			selections = append(selections, ReleasePlanExecutionSelection{
 				ReleaseGroupApplicationID: groupApplication.ID,
+				WorkflowID:                application.workflowID,
 				ExpectedWorkflowRevision:  application.workflowRevision,
 				SourceNodeID:              application.sourceNodeID,
 				Ref:                       "refs/heads/main",

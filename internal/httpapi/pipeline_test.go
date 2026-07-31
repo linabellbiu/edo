@@ -79,17 +79,67 @@ func TestDeploymentPlansAndReleasePlansAreSeparateResources(t *testing.T) {
 	}, adminCookie)
 	var applicationPayload struct {
 		Application struct {
-			ID string `json:"id"`
+			ID        string `json:"id"`
+			Workflows []struct {
+				ID string `json:"id"`
+			} `json:"workflows"`
 		} `json:"application"`
 	}
 	if applicationCreated.Code != http.StatusCreated || json.Unmarshal(applicationCreated.Body.Bytes(), &applicationPayload) != nil || applicationPayload.Application.ID == "" {
 		t.Fatalf("创建发布计划测试应用失败: status=%d body=%s", applicationCreated.Code, applicationCreated.Body.String())
 	}
+	if !strings.Contains(applicationCreated.Body.String(), `"repository":{"id":"`+repositoryPayload.Repository.ID+`","name":"发布计划测试仓库"`) ||
+		strings.Contains(applicationCreated.Body.String(), "CredentialCiphertext") ||
+		strings.Contains(applicationCreated.Body.String(), "WebhookSecretCiphertext") {
+		t.Fatalf("应用接口没有安全回显小写仓库摘要: status=%d body=%s", applicationCreated.Code, applicationCreated.Body.String())
+	}
+	if len(applicationPayload.Application.Workflows) != 1 {
+		t.Fatalf("新应用应返回一条默认流水线草稿: body=%s", applicationCreated.Body.String())
+	}
+	secondWorkflow := performJSONRequest(t, router, http.MethodPost,
+		"/api/v1/applications/"+applicationPayload.Application.ID+"/workflows",
+		map[string]any{"name": "生产发布流水线"}, adminCookie)
+	var secondWorkflowPayload struct {
+		Workflow struct {
+			ID string `json:"id"`
+		} `json:"workflow"`
+	}
+	if secondWorkflow.Code != http.StatusCreated || json.Unmarshal(secondWorkflow.Body.Bytes(), &secondWorkflowPayload) != nil || secondWorkflowPayload.Workflow.ID == "" {
+		t.Fatalf("应用新增第二条流水线失败: status=%d body=%s", secondWorkflow.Code, secondWorkflow.Body.String())
+	}
+	workflowList := performJSONRequest(t, router, http.MethodGet,
+		"/api/v1/applications/"+applicationPayload.Application.ID+"/workflows", nil, adminCookie)
+	if workflowList.Code != http.StatusOK || !strings.Contains(workflowList.Body.String(), applicationPayload.Application.Workflows[0].ID) ||
+		!strings.Contains(workflowList.Body.String(), secondWorkflowPayload.Workflow.ID) {
+		t.Fatalf("应用没有同时返回多条流水线: status=%d body=%s", workflowList.Code, workflowList.Body.String())
+	}
+	legacyWorkflow := performJSONRequest(t, router, http.MethodGet,
+		"/api/v1/applications/"+applicationPayload.Application.ID+"/workflow", nil, adminCookie)
+	if legacyWorkflow.Code != http.StatusNotFound {
+		t.Fatalf("旧的应用唯一流水线接口不应继续暴露: status=%d body=%s", legacyWorkflow.Code, legacyWorkflow.Body.String())
+	}
+	deletedWorkflow := performJSONRequest(t, router, http.MethodDelete,
+		"/api/v1/applications/"+applicationPayload.Application.ID+"/workflows/"+secondWorkflowPayload.Workflow.ID, nil, adminCookie)
+	if deletedWorkflow.Code != http.StatusNoContent {
+		t.Fatalf("删除单条应用流水线失败: status=%d body=%s", deletedWorkflow.Code, deletedWorkflow.Body.String())
+	}
+	workflowList = performJSONRequest(t, router, http.MethodGet,
+		"/api/v1/applications/"+applicationPayload.Application.ID+"/workflows", nil, adminCookie)
+	if workflowList.Code != http.StatusOK || !strings.Contains(workflowList.Body.String(), applicationPayload.Application.Workflows[0].ID) ||
+		strings.Contains(workflowList.Body.String(), secondWorkflowPayload.Workflow.ID) {
+		t.Fatalf("删除一条流水线影响了其他流水线: status=%d body=%s", workflowList.Code, workflowList.Body.String())
+	}
 	missingApplications := performJSONRequest(t, router, http.MethodPost, "/api/v1/release-plans", map[string]any{
-		"name": "缺少应用的发布计划", "version": "2026.06",
+		"name": "缺少应用的发布计划", "version": "2026.06", "groups": []map[string]any{{"name": "默认发布组"}},
 	}, adminCookie)
 	if missingApplications.Code != http.StatusBadRequest {
 		t.Fatalf("未拒绝没有选择应用的发布计划: status=%d body=%s", missingApplications.Code, missingApplications.Body.String())
+	}
+	legacyTopLevelApplications := performJSONRequest(t, router, http.MethodPost, "/api/v1/release-plans", map[string]any{
+		"description": "不允许顶层应用", "applications": []map[string]any{{"application_id": applicationPayload.Application.ID}},
+	}, adminCookie)
+	if legacyTopLevelApplications.Code != http.StatusBadRequest {
+		t.Fatalf("发布计划仍接受顶层应用字段: status=%d body=%s", legacyTopLevelApplications.Code, legacyTopLevelApplications.Body.String())
 	}
 
 	listed := performJSONRequest(t, router, http.MethodGet, "/api/v1/deployment-plans", nil, adminCookie)
@@ -98,10 +148,9 @@ func TestDeploymentPlansAndReleasePlansAreSeparateResources(t *testing.T) {
 	}
 	releaseCreated := performJSONRequest(t, router, http.MethodPost, "/api/v1/release-plans", map[string]any{
 		"name": "七月发布列车", "version": "2026.07", "description": "一次迭代发布",
-		"applications": []map[string]any{{
-			"application_id": applicationPayload.Application.ID, "manual_deploy": true,
-			"source_type": "branch", "source_value": "main",
-		}},
+		"groups": []map[string]any{{"name": "默认发布组", "mode": "parallel", "failure_policy": "stop", "applications": []map[string]any{{
+			"application_id": applicationPayload.Application.ID, "manual_deploy": true, "source_type": "branch", "source_value": "main",
+		}}}},
 	}, adminCookie)
 	var releasePayload struct {
 		ReleasePlan struct {
@@ -184,7 +233,7 @@ func TestApplicationRequestOnlyAcceptsRepositoryAndPollingConfiguration(t *testi
 	}
 }
 
-func TestApplicationRequestAcceptsPublicWorkflowTemplate(t *testing.T) {
+func TestApplicationRequestDoesNotBindWorkflowTemplate(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	context, _ := gin.CreateTestContext(httptest.NewRecorder())
 	payload := `{
@@ -199,8 +248,8 @@ func TestApplicationRequestAcceptsPublicWorkflowTemplate(t *testing.T) {
 	if err := context.ShouldBindJSON(&request); err != nil {
 		t.Fatalf("公共流水线方案选择不应被拒绝: %v", err)
 	}
-	if request.WorkflowTemplateID != "dd448d0b-df10-45c2-9436-42ee44817399" {
-		t.Fatalf("公共流水线方案未正确解析: %+v", request)
+	if request.Name != "选择公共流水线方案" || request.RepositoryID == "" {
+		t.Fatalf("应用基础字段解析错误: %+v", request)
 	}
 }
 

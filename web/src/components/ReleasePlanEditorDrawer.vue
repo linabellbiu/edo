@@ -86,7 +86,7 @@ const emit = defineEmits<{
 const { t } = useI18n()
 let localKey = 0
 const draft = reactive({ id: '', description: '', groups: [] as EditableGroup[] })
-const applicationSelection = reactive<Record<string, string>>({})
+const applicationSelection = reactive<Record<string, string[]>>({})
 const listElements = new Map<string, HTMLElement>()
 const sortables = new Map<string, Sortable>()
 
@@ -102,10 +102,13 @@ function initialize() {
   draft.id = props.plan?.id || ''
   const legacyName = props.plan?.name?.trim() || ''
   draft.description = props.plan?.description?.trim() || (legacyName && !/^发布计划-[0-9a-f]{8}$/i.test(legacyName) ? legacyName : '')
-  draft.groups = [...(props.plan?.groups || [])]
+  const groups: ReleaseGroup[] = props.plan?.groups?.length
+    ? props.plan.groups
+    : [{ id: '', name: t('releasePlan.defaultGroup'), mode: 'parallel', failure_policy: 'stop', sort_order: 0, applications: [], dependencies: [] }]
+  draft.groups = [...groups]
     .sort((left, right) => (left.sort_order || 0) - (right.sort_order || 0))
     .map((group) => ({
-      key: group.id,
+      key: group.id || nextKey('group'),
       id: group.id,
       name: group.name,
       mode: group.mode === 'sequential' ? 'sequential' : 'parallel',
@@ -137,17 +140,19 @@ function availableApplications(group: EditableGroup) {
 }
 
 function addApplication(group: EditableGroup) {
-  const applicationID = applicationSelection[group.key]
-  if (!applicationID || usedApplicationIDs.value.has(applicationID)) return
-  group.applications.push({
-    key: nextKey('application'),
-    id: '',
-    application_id: applicationID,
-    manual_deploy: false,
-    source_type: '',
-    source_value: '',
+  const applicationIDs = applicationSelection[group.key] || []
+  applicationIDs.forEach((applicationID) => {
+    if (usedApplicationIDs.value.has(applicationID)) return
+    group.applications.push({
+      key: nextKey('application'),
+      id: '',
+      application_id: applicationID,
+      manual_deploy: false,
+      source_type: '',
+      source_value: '',
+    })
   })
-  applicationSelection[group.key] = ''
+  applicationSelection[group.key] = []
 }
 
 function removeApplication(group: EditableGroup, index: number) {
@@ -193,7 +198,7 @@ function destroySortables() {
 function submit() {
   const description = draft.description.trim()
   if (!description) return
-  if (draft.groups.some((group) => !group.name.trim())) return
+  if (!draft.groups.length || draft.groups.some((group) => !group.name.trim()) || !draft.groups.some((group) => group.applications.length)) return
   const groupIDs = new Set(draft.groups.map((group) => group.id).filter(Boolean))
   emit('save', {
     id: draft.id,
@@ -230,7 +235,7 @@ onBeforeUnmount(destroySortables)
 <template>
   <a-drawer
     :open="open"
-    :title="t('releasePlan.editor.title')"
+    :title="t(draft.id ? 'releasePlan.editor.title' : 'releasePlan.editor.createTitle')"
     width="min(820px, 100vw)"
     :mask-closable="!saving"
     :closable="!saving"
@@ -285,13 +290,14 @@ onBeforeUnmount(destroySortables)
           <div class="plan-editor-add-application">
             <a-select
               v-model:value="applicationSelection[group.key]"
+              mode="multiple"
               show-search
               allow-clear
               :placeholder="t('releasePlan.editor.applicationPlaceholder')"
               :options="availableApplications(group)"
               :filter-option="(input: string, option: { label?: string }) => String(option.label || '').toLowerCase().includes(input.toLowerCase())"
             />
-            <a-button :disabled="!applicationSelection[group.key]" @click="addApplication(group)">
+            <a-button :disabled="!applicationSelection[group.key]?.length" @click="addApplication(group)">
               <Plus :size="14" />{{ t('releasePlan.editor.addApplication') }}
             </a-button>
           </div>
@@ -329,10 +335,10 @@ onBeforeUnmount(destroySortables)
         <a-button
           type="primary"
           :loading="saving"
-          :disabled="!draft.description.trim() || draft.groups.some((group) => !group.name.trim())"
+          :disabled="!draft.description.trim() || !draft.groups.length || draft.groups.some((group) => !group.name.trim()) || !draft.groups.some((group) => group.applications.length)"
           @click="submit"
         >
-          {{ t('releasePlan.editor.save') }}
+          {{ t(draft.id ? 'releasePlan.editor.save' : 'releasePlan.editor.create') }}
         </a-button>
       </div>
     </template>

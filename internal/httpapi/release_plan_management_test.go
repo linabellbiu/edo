@@ -40,8 +40,10 @@ func TestReleasePlanManagementAPI(t *testing.T) {
 		t.Fatalf("创建发布计划管理应用失败: status=%d body=%s", applicationResponse.Code, applicationResponse.Body.String())
 	}
 	createResponse := performJSONRequest(t, router, http.MethodPost, "/api/v1/release-plans", map[string]any{
-		"description":  "首版说明",
-		"applications": []map[string]any{{"application_id": applicationPayload.Application.ID}},
+		"description": "首版说明",
+		"groups": []map[string]any{{
+			"name": "默认发布组", "applications": []map[string]any{{"application_id": applicationPayload.Application.ID}},
+		}},
 	}, adminCookie)
 	var planPayload struct {
 		ReleasePlan struct {
@@ -99,6 +101,7 @@ func TestReleasePlanManagementAPI(t *testing.T) {
 		"request_id": "disabled-plan-http", "expected_plan_updated_at": disabledPayload.ReleasePlan.UpdatedAt,
 		"selections": []map[string]any{{
 			"release_group_application_id": "placeholder", "expected_workflow_revision": 1,
+			"workflow_id":    "placeholder",
 			"source_node_id": "manual", "ref": "refs/heads/main", "commit_sha": strings.Repeat("a", 40),
 		}},
 	}, adminCookie)

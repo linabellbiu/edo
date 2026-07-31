@@ -60,8 +60,16 @@ func (s *Service) EnsureInitialDeliverySettings(ctx context.Context) (InitialDel
 			return nil
 		}
 
-		seed := *s
-		seed.db = tx
+		seed := &Service{
+			db:           tx,
+			repositories: s.repositories,
+			secrets:      s.secrets,
+			docker:       s.docker,
+			scriptRunner: s.scriptRunner,
+			artifacts:    s.artifacts,
+			deployments:  s.deployments,
+			logger:       s.logger,
+		}
 		if s.docker != nil {
 			seed.docker = s.docker.WithTransaction(tx)
 		}

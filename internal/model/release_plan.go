@@ -15,8 +15,8 @@ const (
 	ReleasePlanCanceled  ReleasePlanStatus = "canceled"
 )
 
-// ReleasePlan 表示一次人工组织的批量发布。Name 和 Version 保留给历史数据及内部唯一标识，
-// 新建计划由服务端生成，用户只需要填写 Description。
+// ReleasePlan 表示一次人工组织的批量发布。Name 和 Version 是服务端生成的内部唯一标识；
+// 用户填写 Description，并通过 Groups 编排应用，计划本身不直接关联应用。
 type ReleasePlan struct {
 	ID              string                `gorm:"type:varchar(36);primaryKey" json:"id"`
 	Name            string                `gorm:"type:varchar(128);not null" json:"name"`
@@ -81,6 +81,7 @@ type ReleasePlanExecutionItem struct {
 	ReleaseGroupID            string                         `gorm:"type:varchar(36);not null;index" json:"release_group_id"`
 	ReleaseGroupApplicationID string                         `gorm:"type:varchar(36);not null;index;uniqueIndex:idx_release_plan_execution_item,priority:2" json:"release_group_application_id"`
 	ApplicationID             string                         `gorm:"type:varchar(36);not null;index" json:"application_id"`
+	WorkflowID                string                         `gorm:"type:varchar(36);not null;index" json:"workflow_id"`
 	PipelineRunID             string                         `gorm:"type:varchar(36);not null;uniqueIndex" json:"pipeline_run_id"`
 	Status                    ReleasePlanExecutionItemStatus `gorm:"type:varchar(16);not null;default:'pending';index" json:"status"`
 	Ref                       string                         `gorm:"type:varchar(512);not null" json:"ref"`
