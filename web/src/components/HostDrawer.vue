@@ -241,7 +241,7 @@ function close() {
               <span><strong>直接终端执行</strong><small>{{ localCapabilityHint('local_exec') }}</small></span>
             </a-checkbox>
           </a-checkbox-group>
-          <div class="field-hint">本地 Docker 由当前 ZRT 运行方式自动检测；原生 Windows 不支持直接终端执行。</div>
+          <div class="field-hint">本地 Docker 由当前 ZRT 运行方式自动检测；Linux/macOS 存在 sh 时可以启用直接终端执行。</div>
         </a-form-item>
 
         <template v-else>

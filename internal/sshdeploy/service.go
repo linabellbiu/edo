@@ -16,7 +16,6 @@ import (
 	"path"
 	"path/filepath"
 	"regexp"
-	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -410,7 +409,7 @@ func (s *Service) loadHost(ctx context.Context, input Input) (model.Host, sshcli
 }
 
 func runLocalDeploymentScript(ctx context.Context, input Input, dockerHost string) (Result, error) {
-	shell, err := localShellPath(runtime.GOOS, exec.LookPath)
+	shell, err := localShellPath(exec.LookPath)
 	if err != nil {
 		return Result{ExitCode: -1}, err
 	}
@@ -471,8 +470,8 @@ func localCommandEnvironment(dockerHost string) []string {
 	return environment
 }
 
-func localShellPath(goos string, lookPath func(string) (string, error)) (string, error) {
-	if goos == "windows" || lookPath == nil {
+func localShellPath(lookPath func(string) (string, error)) (string, error) {
+	if lookPath == nil {
 		return "", ErrLocalExecUnsupported
 	}
 	shell, err := lookPath("sh")

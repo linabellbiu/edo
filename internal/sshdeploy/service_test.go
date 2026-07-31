@@ -7,7 +7,6 @@ import (
 	"errors"
 	"io"
 	"log/slog"
-	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -67,9 +66,6 @@ func TestCommandErrorExposesStableCategoryAndExitCode(t *testing.T) {
 }
 
 func TestRunHostDeploymentScriptExecutesLocalSnapshot(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("原生 Windows 不支持本地 sh 脚本执行")
-	}
 	db, err := database.Open(context.Background(), config.Database{
 		Driver: "sqlite", DSN: "file:" + t.Name() + "?mode=memory&cache=shared",
 		MaxOpenConns: 1, MaxIdleConns: 1, ConnMaxLifetime: time.Minute,
@@ -148,15 +144,8 @@ func TestLocalCommandEnvironmentUsesBuilderWithoutLeakingZRTConfiguration(t *tes
 	}
 }
 
-func TestLocalShellPathRejectsNativeWindowsAndMissingShell(t *testing.T) {
-	called := false
-	if _, err := localShellPath("windows", func(string) (string, error) {
-		called = true
-		return "sh", nil
-	}); !errors.Is(err, ErrLocalExecUnsupported) || called {
-		t.Fatalf("原生 Windows 应在查找 sh 前被拒绝: called=%v err=%v", called, err)
-	}
-	if _, err := localShellPath("linux", func(string) (string, error) {
+func TestLocalShellPathRejectsMissingShell(t *testing.T) {
+	if _, err := localShellPath(func(string) (string, error) {
 		return "", errors.New("not found")
 	}); !errors.Is(err, ErrLocalExecUnsupported) {
 		t.Fatalf("缺少 sh 时不应声称支持本地执行: %v", err)

@@ -7,7 +7,6 @@ import (
 	"errors"
 	"io"
 	"os"
-	"runtime"
 	"strings"
 	"testing"
 )
@@ -47,14 +46,12 @@ func TestLocalStorePutUsesContentAddressAndDeduplicates(t *testing.T) {
 	if string(actual) != string(content) {
 		t.Fatalf("制品内容错误: %q", actual)
 	}
-	if runtime.GOOS != "windows" {
-		info, err := file.Stat()
-		if err != nil {
-			t.Fatal(err)
-		}
-		if info.Mode().Perm() != 0o400 {
-			t.Fatalf("内容寻址对象创建后仍可被普通写入: mode=%o", info.Mode().Perm())
-		}
+	info, err := file.Stat()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o400 {
+		t.Fatalf("内容寻址对象创建后仍可被普通写入: mode=%o", info.Mode().Perm())
 	}
 }
 

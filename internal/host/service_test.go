@@ -663,19 +663,13 @@ func TestRemovingHostDoesNotTreatIndependentKubernetesTargetAsHostReference(t *t
 }
 
 func TestDetectLocalExecCapability(t *testing.T) {
-	windows := detectLocalExecCapability("windows", func(string) (string, error) {
-		return "", errors.New("不应调用")
-	})
-	if windows.Available || windows.Reason == "" {
-		t.Fatalf("Windows 原生运行不应启用直接终端执行: %+v", windows)
-	}
-	missing := detectLocalExecCapability("linux", func(string) (string, error) {
+	missing := detectLocalExecCapability(func(string) (string, error) {
 		return "", errors.New("not found")
 	})
 	if missing.Available || missing.Reason == "" {
 		t.Fatalf("缺少 sh 时不应启用直接终端执行: %+v", missing)
 	}
-	available := detectLocalExecCapability("darwin", func(string) (string, error) {
+	available := detectLocalExecCapability(func(string) (string, error) {
 		return "/bin/sh", nil
 	})
 	if !available.Available || available.Kind != model.HostCapabilityLocalExec {

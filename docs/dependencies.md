@@ -16,7 +16,7 @@
 | RBAC 多实例同步 | `github.com/casbin/redis-watcher/v2` | 使用现有 go-redis/v9 客户端广播策略失效事件 | GORM 表仍是唯一数据源；本实例先重载策略，再通知其他实例 |
 | 发布并发锁 | `github.com/bsm/redislock` | 基于现有 go-redis/v9 的令牌锁、原子释放和有限 TTL，避免自行维护易出错的 SET NX/Lua 协议 | 锁粒度固定为发布目标；构建阶段不持锁，不同目标可并行，同一目标部署串行；等待受任务 Context 限制，TTL 由发布超时推导 |
 | OCI 镜像仓库认证 | `github.com/regclient/regclient` | 成熟实现 OCI Distribution API、Basic/Bearer 认证挑战和 Registry 兼容处理 | 地址与 HTTP 安全校验、请求超时、权限审计、凭据加密和安全错误文案 |
-| 主机与进程指标 | `github.com/shirou/gopsutil/v4` | BSD-3-Clause，跨 Linux、macOS、Windows，持续按月发布；复用成熟的 CPU、内存和进程采集实现，避免维护多套平台专用系统调用 | 只读取本机指标，不发起网络请求；Go 堆与 GC 使用标准库，Worker、任务和队列业务指标由 ZRT 自身定义 |
+| 主机与进程指标 | `github.com/shirou/gopsutil/v4` | BSD-3-Clause，在 ZRT 支持的 Linux、macOS 上持续维护；复用成熟的 CPU、内存和进程采集实现，避免维护多套平台专用系统调用 | 只读取本机指标，不发起网络请求；Go 堆与 GC 使用标准库，Worker、任务和队列业务指标由 ZRT 自身定义 |
 | 前端运行时、路由与状态 | `vue`、`vue-router`、`pinia` | 与 Vben Admin 5 `web-antd` 使用同一套 Vue 3 技术栈；均为 MIT 许可、维护活跃，路由元数据和组合式 Store 可以直接承载菜单、面包屑、历史标签和权限状态 | ZRT 的有效权限、菜单层级、标签关闭策略和 API 契约仍由项目定义 |
 | UI、图标与动效 | `ant-design-vue`、`lucide-vue-next`、`@vueuse/motion` | 对齐 Vben `web-antd` 的成熟组件与主题能力；图标和动效包均可按需打包，避免维护自制表单、弹层和动画基础设施 | ZRT 主题令牌、简体中文文案、业务状态色、减少动效偏好和可访问性规则 |
 | Vue 组件按需导入 | `unplugin-vue-components` | MIT 许可、持续维护并提供 Ant Design Vue Resolver；构建时生成显式组件导入，避免全量注册 UI 库造成超大首屏入口包 | 只在 Vite 构建阶段工作，不参与浏览器运行；组件选型和页面行为仍由 ZRT 控制 |

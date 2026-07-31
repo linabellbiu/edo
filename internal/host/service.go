@@ -10,7 +10,6 @@ import (
 	"net/url"
 	"os/exec"
 	"regexp"
-	"runtime"
 	"slices"
 	"strings"
 	"sync"
@@ -518,7 +517,7 @@ func (s *Service) probeLocalCapabilityOptions(ctx context.Context, force bool) [
 			dockerOption.probeErr = err
 		}
 	}
-	localExecOption := detectLocalExecCapability(runtime.GOOS, exec.LookPath)
+	localExecOption := detectLocalExecCapability(exec.LookPath)
 	options := []CapabilityOption{dockerOption, localExecOption}
 
 	s.mu.Lock()
@@ -528,13 +527,8 @@ func (s *Service) probeLocalCapabilityOptions(ctx context.Context, force bool) [
 	return options
 }
 
-func detectLocalExecCapability(goos string, lookPath func(string) (string, error)) CapabilityOption {
+func detectLocalExecCapability(lookPath func(string) (string, error)) CapabilityOption {
 	option := CapabilityOption{Kind: model.HostCapabilityLocalExec}
-	if goos == "windows" {
-		option.Reason = "Windows 原生运行暂不支持直接终端执行"
-		option.probeErr = errors.New("native Windows local execution is unsupported")
-		return option
-	}
 	if _, err := lookPath("sh"); err != nil {
 		option.Reason = "当前运行环境缺少 sh，无法直接终端执行"
 		option.probeErr = err

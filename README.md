@@ -35,7 +35,7 @@ ZRT 是面向 Docker 与 Kubernetes 的运维、发布和可观测平台，使�
 
 ## 本地开发
 
-需要 Go 1.26.5 或更新的安全补丁版本、Node.js 24，以及带 Buildx 和 Compose v2 插件的 Docker CLI。Docker Desktop（Windows/macOS）默认包含这两个插件；Linux 使用 Docker Engine 时需安装官方插件。ZRT 的正式运行镜像已经内置固定版本的 Docker CLI、Buildx 和 Compose v2。
+ZRT 只支持 Linux 和 macOS。需要 Go 1.26.5 或更新的安全补丁版本、Node.js 24，以及带 Buildx 和 Compose v2 插件的 Docker CLI。macOS 的 Docker Desktop 默认包含这两个插件；Linux 使用 Docker Engine 时需安装官方插件。ZRT 的正式运行镜像已经内置固定版本的 Docker CLI、Buildx 和 Compose v2。
 
 ```bash
 go install github.com/magefile/mage@v1.17.2
@@ -52,7 +52,7 @@ mage start
 
 全新实例还会创建默认 Dockerfile 构建方案和已启用的快速开始流水线；本地 Docker 探测可用时，流水线同时包含本地 Docker 部署。首次使用通常只需添加代码仓库，再创建应用并确认系统预选的仓库和流水线方案，随后选择分支或 Tag 执行。自动 Push 触发默认不开启，避免未知代码变化直接部署。默认部署使用容器名 `zrt-quickstart` 且不主动发布端口，第二个应用应先复制部署方案并设置独立容器名和实际端口。已有或已删除过交付资源的实例不会在重启时重新写入这些默认项。
 
-`mage start` 会读取 `.env`，构建 Web，并把页面资源嵌入 `bin/zrt`（Windows 为 `bin/zrt.exe`），然后迁移数据库并启动这个二进制。运行时不需要 `web/dist`、Node.js 或 Nginx，API 和页面都使用 `http://127.0.0.1:8080`。如果要执行 Dockerfile 流水线，宿主机仍需提供 Docker CLI/Buildx；使用 ZRT 官方容器镜像时已经内置，无需另行安装。
+`mage start` 会读取 `.env`，构建 Web，并把页面资源嵌入 `bin/zrt`，然后迁移数据库并启动这个二进制。运行时不需要 `web/dist`、Node.js 或 Nginx，API 和页面都使用 `http://127.0.0.1:8080`。如果要执行 Dockerfile 流水线，宿主机仍需提供 Docker CLI/Buildx；使用 ZRT 官方容器镜像时已经内置，无需另行安装。
 
 构建后的程序可以单独复制到其他机器。新数据库先迁移，再启动服务：
 
@@ -61,7 +61,7 @@ mage start
 ./zrt
 ```
 
-Windows 使用 `zrt.exe migrate` 和 `zrt.exe`。单文件只包含 ZRT 后端和 Web，Redis、NATS 以及 `.env` 中配置的外部数据库仍需单独提供；使用默认 SQLite 时，数据库文件会写入 `data/zrt.db`。
+单文件只包含 ZRT 后端和 Web，Redis、NATS 以及 `.env` 中配置的外部数据库仍需单独提供；使用默认 SQLite 时，数据库文件会写入 `data/zrt.db`。
 
 开发时执行 `mage start --dev`。Mage 会读取根目录 `.env`，先通过 `deploy/compose.dev.yml` 启动 Redis 和 NATS，等待健康检查通过，再在本机使用 `.env` 中的宿主机连接执行数据库迁移、`go run` 和 `npm start`。开发页面地址为 `http://127.0.0.1:5173`，流水线直接使用宿主机 Docker，不启动 DinD；前端继续使用 Vite 热更新。
 

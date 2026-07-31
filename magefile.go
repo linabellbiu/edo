@@ -13,7 +13,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"time"
 
@@ -421,9 +420,6 @@ func buildBackend(ctx context.Context, embedWeb bool) (string, error) {
 		}
 	}
 	binary := filepath.Join("bin", "zrt")
-	if runtime.GOOS == "windows" {
-		binary += ".exe"
-	}
 	// 本地单文件构建与容器发布构建保持一致，移除生产运行不需要的符号表和 DWARF 调试信息。
 	args := []string{"build", "-trimpath", "-ldflags", "-s -w"}
 	if embedWeb {
@@ -524,9 +520,6 @@ func webDependencyFilesPresent(webRoot string) (bool, error) {
 
 func webDependencyFiles(webRoot string) []string {
 	vite := filepath.Join(webRoot, "node_modules", ".bin", "vite")
-	if runtime.GOOS == "windows" {
-		vite += ".cmd"
-	}
 	return []string{
 		vite,
 		filepath.Join(webRoot, "node_modules", "vite", "package.json"),
@@ -671,9 +664,6 @@ func runCommand(ctx context.Context, executable string, args ...string) error {
 }
 
 func npmExecutable() string {
-	if runtime.GOOS == "windows" {
-		return "npm.cmd"
-	}
 	return "npm"
 }
 
