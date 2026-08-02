@@ -1,7 +1,7 @@
 import type { Component } from 'vue'
 import {
   Activity, AppWindow, Boxes, Box, Building2, ChartNoAxesCombined, CloudCog,
-  Container, FileClock, FileText, GitBranch, KeyRound, ListChecks, PackageCheck,
+  Container, FileText, GitBranch, KeyRound, ListChecks, PackageCheck,
   PanelsTopLeft, Play, Rocket, ScrollText, Server, ServerCog, Settings, ShieldCheck,
   Tags, UsersRound, Workflow,
 } from 'lucide-vue-next'
@@ -41,11 +41,10 @@ export const navigation: NavSection[] = [
         { label: 'nav.registries', path: '/image-registries', permissions: ['delivery.read'], icon: Box },
       ] },
       { key: 'release-management', label: 'nav.releaseManagement', icon: Rocket, items: [
-        { label: 'nav.deploymentPlans', path: '/deployment-plans', permissions: ['delivery.read'], icon: CloudCog },
         { label: 'nav.pipelinePlans', path: '/pipeline-plans', permissions: ['delivery.read'], icon: Workflow },
+        { label: 'nav.deploymentPlans', path: '/deployment-plans', permissions: ['delivery.read'], icon: CloudCog },
         { label: 'nav.releasePlans', path: '/release-plans?view=plans', permissions: ['delivery.read'], icon: ListChecks },
         { label: 'nav.pipelineRuns', path: '/release-plans?view=runs', permissions: ['delivery.read'], icon: Play },
-        { label: 'nav.deploymentRecords', path: '/release-plans?view=records', permissions: ['deployment.read'], icon: FileClock },
       ] },
     ],
   },

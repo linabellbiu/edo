@@ -38,7 +38,7 @@ func (s *Service) CreateWorkflowTemplateFromPreset(ctx context.Context, actorID,
 	}
 	var runtime WorkflowRuntimeVersion
 	var err error
-	if preset.Key != workflowPresetBlank {
+	if preset.language != "" {
 		runtime, err = s.requirePreparedWorkflowRuntime(ctx, preset.language, runtimeVersion)
 		if err != nil {
 			return nil, err

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"time"
 
 	"edo/internal/dockerengine"
 )
@@ -15,11 +16,25 @@ var (
 )
 
 type WorkflowRuntimeVersion struct {
-	Language    string `json:"language"`
-	Version     string `json:"version"`
-	Image       string `json:"image"`
-	Recommended bool   `json:"recommended"`
-	Installed   bool   `json:"installed"`
+	Language           string `json:"language"`
+	Version            string `json:"version"`
+	Image              string `json:"image"`
+	Recommended        bool   `json:"recommended"`
+	Legacy             bool   `json:"legacy,omitempty"`
+	Installed          bool   `json:"installed"`
+	PreparationStatus  string `json:"preparation_status,omitempty"`
+	PreparationMessage string `json:"preparation_message,omitempty"`
+}
+
+const (
+	workflowRuntimePreparing = "preparing"
+	workflowRuntimeFailed    = "failed"
+	workflowRuntimeTimeout   = 30 * time.Minute
+)
+
+type workflowRuntimePreparation struct {
+	Status  string
+	Message string
 }
 
 // WorkflowRuntimeManager 把语言版本管理限定在 EDO 的构建运行时。
@@ -33,17 +48,23 @@ var workflowRuntimeVersions = map[string][]WorkflowRuntimeVersion{
 	workflowPresetGo: {
 		{Language: workflowPresetGo, Version: "1.26", Image: "golang:1.26-alpine", Recommended: true},
 		{Language: workflowPresetGo, Version: "1.25", Image: "golang:1.25-alpine"},
-		{Language: workflowPresetGo, Version: "1.24", Image: "golang:1.24-alpine"},
+		{Language: workflowPresetGo, Version: "1.24", Image: "golang:1.24-alpine", Legacy: true},
+		{Language: workflowPresetGo, Version: "1.23", Image: "golang:1.23-alpine", Legacy: true},
+		{Language: workflowPresetGo, Version: "1.22", Image: "golang:1.22-alpine", Legacy: true},
 	},
 	workflowPresetNodeJS: {
 		{Language: workflowPresetNodeJS, Version: "24", Image: "node:24-alpine", Recommended: true},
 		{Language: workflowPresetNodeJS, Version: "26", Image: "node:26-alpine"},
 		{Language: workflowPresetNodeJS, Version: "22", Image: "node:22-alpine"},
+		{Language: workflowPresetNodeJS, Version: "20", Image: "node:20-alpine", Legacy: true},
+		{Language: workflowPresetNodeJS, Version: "18", Image: "node:18-alpine", Legacy: true},
 	},
 	workflowPresetPython: {
 		{Language: workflowPresetPython, Version: "3.14", Image: "python:3.14-alpine", Recommended: true},
 		{Language: workflowPresetPython, Version: "3.13", Image: "python:3.13-alpine"},
 		{Language: workflowPresetPython, Version: "3.12", Image: "python:3.12-alpine"},
+		{Language: workflowPresetPython, Version: "3.11", Image: "python:3.11-alpine"},
+		{Language: workflowPresetPython, Version: "3.10", Image: "python:3.10-alpine", Legacy: true},
 	},
 }
 
@@ -71,8 +92,92 @@ func (s *Service) ListWorkflowRuntimeVersions(ctx context.Context, language stri
 			return nil, ErrWorkflowRuntimeUnavailable
 		}
 		result[i].Installed = status.Installed
+		if status.Installed {
+			s.clearWorkflowRuntimePreparation(result[i].Image)
+		} else if preparation, exists := s.workflowRuntimePreparation(result[i].Image); exists {
+			result[i].PreparationStatus = preparation.Status
+			result[i].PreparationMessage = preparation.Message
+		}
 	}
 	return result, nil
+}
+
+// StartPrepareWorkflowRuntimeVersion 只启动后台拉取并立即返回，避免大型镜像下载
+// 长时间占用 HTTP 连接而被开发代理或外部网关误判为 502。
+func (s *Service) StartPrepareWorkflowRuntimeVersion(ctx context.Context, language, version string) (*WorkflowRuntimeVersion, error) {
+	runtime, ok := findWorkflowRuntimeVersion(language, version)
+	if !ok {
+		return nil, ErrInvalidWorkflowRuntime
+	}
+	if s.workflowRuntimes == nil {
+		return nil, ErrWorkflowRuntimeUnavailable
+	}
+	status, err := s.workflowRuntimes.InspectScriptRuntimeImage(ctx, runtime.Image)
+	if err != nil {
+		if s.logger != nil {
+			s.logger.Error("启动构建语言版本下载前检查失败", "operation", "workflow_runtime_prepare_inspect", "language", runtime.Language, "version", runtime.Version, "image", runtime.Image, "err", err)
+		}
+		return nil, ErrWorkflowRuntimeUnavailable
+	}
+	if status.Installed {
+		runtime.Installed = true
+		s.clearWorkflowRuntimePreparation(runtime.Image)
+		return &runtime, nil
+	}
+
+	s.workflowRuntimeMu.Lock()
+	if s.workflowRuntimeJobs == nil {
+		s.workflowRuntimeJobs = make(map[string]workflowRuntimePreparation)
+	}
+	if current, exists := s.workflowRuntimeJobs[runtime.Image]; exists && current.Status == workflowRuntimePreparing {
+		s.workflowRuntimeMu.Unlock()
+		runtime.PreparationStatus = workflowRuntimePreparing
+		return &runtime, nil
+	}
+	s.workflowRuntimeJobs[runtime.Image] = workflowRuntimePreparation{Status: workflowRuntimePreparing}
+	s.workflowRuntimeMu.Unlock()
+
+	go s.prepareWorkflowRuntimeVersion(runtime)
+	runtime.PreparationStatus = workflowRuntimePreparing
+	return &runtime, nil
+}
+
+func (s *Service) prepareWorkflowRuntimeVersion(runtime WorkflowRuntimeVersion) {
+	ctx, cancel := context.WithTimeout(context.Background(), workflowRuntimeTimeout)
+	defer cancel()
+	status, err := s.workflowRuntimes.PrepareScriptRuntimeImage(ctx, runtime.Image)
+	if err == nil && status.Installed {
+		s.clearWorkflowRuntimePreparation(runtime.Image)
+		return
+	}
+	if err == nil {
+		err = ErrWorkflowRuntimeUnavailable
+	}
+	if s.logger != nil {
+		s.logger.Error("后台下载构建语言版本失败", "operation", "workflow_runtime_prepare_async", "language", runtime.Language, "version", runtime.Version, "image", runtime.Image, "err", err)
+	}
+	s.workflowRuntimeMu.Lock()
+	if s.workflowRuntimeJobs == nil {
+		s.workflowRuntimeJobs = make(map[string]workflowRuntimePreparation)
+	}
+	s.workflowRuntimeJobs[runtime.Image] = workflowRuntimePreparation{
+		Status:  workflowRuntimeFailed,
+		Message: "构建版本下载失败，请检查 Docker 构建运行时和镜像网络后重试",
+	}
+	s.workflowRuntimeMu.Unlock()
+}
+
+func (s *Service) workflowRuntimePreparation(image string) (workflowRuntimePreparation, bool) {
+	s.workflowRuntimeMu.Lock()
+	defer s.workflowRuntimeMu.Unlock()
+	preparation, exists := s.workflowRuntimeJobs[image]
+	return preparation, exists
+}
+
+func (s *Service) clearWorkflowRuntimePreparation(image string) {
+	s.workflowRuntimeMu.Lock()
+	defer s.workflowRuntimeMu.Unlock()
+	delete(s.workflowRuntimeJobs, image)
 }
 
 func (s *Service) PrepareWorkflowRuntimeVersion(ctx context.Context, language, version string) (*WorkflowRuntimeVersion, error) {

@@ -4,21 +4,28 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"edo/internal/dockerengine"
 	"edo/internal/model"
 )
 
 type workflowRuntimeManagerStub struct {
+	mu        sync.Mutex
 	installed map[string]bool
 }
 
 func (s *workflowRuntimeManagerStub) InspectScriptRuntimeImage(_ context.Context, image string) (dockerengine.ScriptRuntimeImageStatus, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	return dockerengine.ScriptRuntimeImageStatus{Image: image, Installed: s.installed[image]}, nil
 }
 
 func (s *workflowRuntimeManagerStub) PrepareScriptRuntimeImage(_ context.Context, image string) (dockerengine.ScriptRuntimeImageStatus, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.installed[image] = true
 	return dockerengine.ScriptRuntimeImageStatus{Image: image, ImageID: "sha256:runtime", Installed: true}, nil
 }
@@ -35,13 +42,14 @@ func presetTestService(t *testing.T) (*Service, *workflowRuntimeManagerStub) {
 	return service, runtimes
 }
 
-func TestWorkflowPresetCatalogContainsGoNodeJSPythonFlows(t *testing.T) {
+func TestWorkflowPresetCatalogContainsDockerGoNodeJSPythonFlows(t *testing.T) {
 	presets := ListWorkflowPresets()
-	if len(presets) != 10 {
-		t.Fatalf("流水线模板数量为 %d，期望空白模板和三种语言各三份模板", len(presets))
+	if len(presets) != 13 {
+		t.Fatalf("流水线模板数量为 %d，期望空白模板、三份 Docker 模板和三种语言各三份模板", len(presets))
 	}
 	wanted := map[string]string{
-		"blank": "quickstart", "go-host": "go", "go-artifact-host": "go", "go-kubernetes": "go",
+		"blank": "quickstart", "docker-container": "docker", "docker-compose": "docker", "docker-kubernetes": "docker",
+		"go-host": "go", "go-artifact-host": "go", "go-kubernetes": "go",
 		"nodejs-host": "nodejs", "nodejs-artifact-host": "nodejs", "nodejs-kubernetes": "nodejs",
 		"python-host": "python", "python-artifact-host": "python", "python-kubernetes": "python",
 	}
@@ -57,6 +65,22 @@ func TestWorkflowPresetCatalogContainsGoNodeJSPythonFlows(t *testing.T) {
 	}
 	if len(wanted) != 0 {
 		t.Fatalf("模板目录缺少项目: %+v", wanted)
+	}
+}
+
+func TestCreateDockerWorkflowTemplateDoesNotRequireLanguageRuntime(t *testing.T) {
+	service, _ := presetTestService(t)
+	result, err := service.CreateWorkflowTemplateFromPreset(context.Background(), "admin", "docker-container", "")
+	if err != nil {
+		t.Fatalf("创建 Docker 容器流水线模板失败: %v", err)
+	}
+	stages := result.WorkflowTemplate.Stages
+	if len(stages) != 2 || stages[0].Tasks[0].Name != "镜像构建" || stages[1].Tasks[0].Name != "Docker 容器部署" {
+		t.Fatalf("Docker 容器模板任务不正确: %+v", stages)
+	}
+	build := stages[0].Tasks[0].Config
+	if build.RuntimeImage != "" || build.ToolchainLanguage != "" || build.ToolchainVersion != "" {
+		t.Fatalf("通用 Docker 模板不应绑定语言工具链: %+v", build)
 	}
 }
 
@@ -164,7 +188,7 @@ func TestWorkflowRuntimeMustBePreparedBeforeTemplateCreation(t *testing.T) {
 	ctx := context.Background()
 
 	versions, err := service.ListWorkflowRuntimeVersions(ctx, "go")
-	if err != nil || len(versions) != 3 || !versions[0].Recommended || !versions[0].Installed || versions[1].Installed {
+	if err != nil || len(versions) != 5 || !versions[0].Recommended || !versions[0].Installed || versions[1].Installed || !versions[3].Legacy {
 		t.Fatalf("构建版本目录状态不正确: versions=%+v err=%v", versions, err)
 	}
 	if _, err := service.CreateWorkflowTemplateFromPreset(ctx, "admin", "go-host", "1.25"); !errors.Is(err, ErrWorkflowRuntimeNotPrepared) {
@@ -182,4 +206,59 @@ func TestWorkflowRuntimeMustBePreparedBeforeTemplateCreation(t *testing.T) {
 	if build.Config.ToolchainVersion != "1.25" || build.Config.RuntimeImage != "golang:1.25-alpine" {
 		t.Fatalf("所选版本未写入构建任务: %+v", build.Config)
 	}
+}
+
+type blockingWorkflowRuntimeManager struct {
+	mu        sync.Mutex
+	installed bool
+	started   chan struct{}
+	release   chan struct{}
+}
+
+func (m *blockingWorkflowRuntimeManager) InspectScriptRuntimeImage(_ context.Context, image string) (dockerengine.ScriptRuntimeImageStatus, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return dockerengine.ScriptRuntimeImageStatus{Image: image, Installed: m.installed}, nil
+}
+
+func (m *blockingWorkflowRuntimeManager) PrepareScriptRuntimeImage(_ context.Context, image string) (dockerengine.ScriptRuntimeImageStatus, error) {
+	select {
+	case m.started <- struct{}{}:
+	default:
+	}
+	<-m.release
+	m.mu.Lock()
+	m.installed = true
+	m.mu.Unlock()
+	return dockerengine.ScriptRuntimeImageStatus{Image: image, ImageID: "sha256:runtime", Installed: true}, nil
+}
+
+func TestStartPrepareWorkflowRuntimeReturnsBeforeImagePullCompletes(t *testing.T) {
+	service, _, _, _ := newPipelineTestService(t)
+	manager := &blockingWorkflowRuntimeManager{started: make(chan struct{}, 1), release: make(chan struct{})}
+	service.ConfigureWorkflowRuntimeManager(manager)
+
+	started, err := service.StartPrepareWorkflowRuntimeVersion(context.Background(), "nodejs", "20")
+	if err != nil || started.Installed || started.PreparationStatus != workflowRuntimePreparing {
+		t.Fatalf("启动异步下载返回不正确: runtime=%+v err=%v", started, err)
+	}
+	select {
+	case <-manager.started:
+	case <-time.After(time.Second):
+		t.Fatal("后台镜像拉取没有启动")
+	}
+	versions, err := service.ListWorkflowRuntimeVersions(context.Background(), "nodejs")
+	if err != nil || versions[3].PreparationStatus != workflowRuntimePreparing {
+		t.Fatalf("下载中状态没有对外返回: versions=%+v err=%v", versions, err)
+	}
+	close(manager.release)
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		versions, err = service.ListWorkflowRuntimeVersions(context.Background(), "nodejs")
+		if err == nil && versions[3].Installed && versions[3].PreparationStatus == "" {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("后台镜像拉取完成后状态未更新: versions=%+v err=%v", versions, err)
 }

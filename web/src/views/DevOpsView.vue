@@ -413,7 +413,7 @@ function removeApplicationWorkflow(workflow:ApplicationWorkflow){
  const templateLinked=Boolean(workflow.workflow_template_id)
  Modal.confirm({
   title:`${templateLinked?'解除关联并删除':'删除'}流水线“${workflow.name}”？`,
-  content:'只删除该应用下的流水线定义，应用、公共流水线方案和历史运行记录不会被删除。正在执行的流水线不能删除。',
+  content:'只删除该应用下的流水线定义，应用、公共流水线和历史运行记录不会被删除。正在执行的流水线不能删除。',
   okText:templateLinked?'解除并删除':'删除流水线',cancelText:'取消',okType:'danger',
   async onOk(){
    workflowRemovalID.value=workflow.id
@@ -1080,7 +1080,7 @@ onBeforeUnmount(()=>{resetPlanExecution();clearInterval(releaseTimer);document.r
   </div>
  </section>
  <section class="application-form-section application-workflow-association">
-  <header><strong>关联流水线</strong><small>{{ editingID?'查看应用已有流水线，或继续选择已启用的流水线方案。':'选择创建应用时使用的流水线方案；不选择则创建一条空白流水线。' }}</small></header>
+  <header><strong>关联流水线</strong><small>{{ editingID?'查看应用已有流水线，或继续选择已启用的公共流水线。':'选择创建应用时使用的公共流水线；不选择则创建一条空白流水线。' }}</small></header>
   <template v-if="editingID">
    <div v-if="editingApplication?.workflows?.length" class="workflow-association-list">
     <div v-for="workflow in editingApplication.workflows" :key="workflow.id" class="workflow-association-item">
@@ -1094,12 +1094,12 @@ onBeforeUnmount(()=>{resetPlanExecution();clearInterval(releaseTimer);document.r
     </div>
    </div>
    <div v-else class="workflow-association-empty">当前应用还没有流水线</div>
-   <a-form-item label="选择流水线方案">
-    <a-select v-model:value="selectedWorkflowTemplateID" allow-clear show-search option-filter-prop="label" :placeholder="availableWorkflowTemplates.length?'请选择已启用的流水线方案':'没有可添加的流水线方案'" :options="availableWorkflowTemplates.map(item=>({value:item.id,label:item.name}))"/>
+   <a-form-item label="选择流水线">
+    <a-select v-model:value="selectedWorkflowTemplateID" allow-clear show-search option-filter-prop="label" :placeholder="availableWorkflowTemplates.length?'请选择已启用的流水线':'没有可添加的流水线'" :options="availableWorkflowTemplates.map(item=>({value:item.id,label:item.name}))"/>
     <small class="field-hint">选择后点击底部“保存”生效；会新增一条独立流水线，不会覆盖现有配置。</small>
    </a-form-item>
   </template>
-  <a-form-item v-else label="选择流水线方案">
+  <a-form-item v-else label="选择流水线">
    <a-select v-model:value="appForm.workflow_template_id" allow-clear show-search option-filter-prop="label" placeholder="可选；不选择则创建空白流水线" :options="workflowTemplates.filter(item=>item.is_active).map(item=>({value:item.id,label:item.name}))"/>
   </a-form-item>
  </section>

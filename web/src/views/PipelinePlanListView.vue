@@ -48,7 +48,7 @@ const usageCount = computed(() => {
 })
 
 const columns = [
-  { title: '流水线方案', key: 'name', width: 300 },
+  { title: '流水线', key: 'name', width: 300 },
   { title: '状态', key: 'status', width: 90 },
   { title: '版本', key: 'revision', width: 90 },
   { title: '流程规模', key: 'scale', width: 160 },
@@ -96,7 +96,7 @@ async function setActive(template: WorkflowTemplate, active: boolean) {
       source: template.source,
       stages: template.stages,
     })
-    message.success(active ? '流水线方案已启用' : '流水线方案已停用')
+    message.success(active ? '流水线已启用' : '流水线已停用')
     await refresh()
   } catch (error) {
     message.error(apiErrorMessage(error))
@@ -129,12 +129,12 @@ async function duplicate(template: WorkflowTemplate) {
 function remove(template: WorkflowTemplate) {
   const usage = usageCount.value.get(template.id) || 0
   if (usage > 0) {
-    message.error(`“${template.name}”仍被 ${usage} 个应用使用，请先为这些应用更换流水线方案。`)
+    message.error(`“${template.name}”仍被 ${usage} 个应用使用，请先为这些应用更换流水线。`)
     return
   }
   Modal.confirm({
     title: `删除“${template.name}”？`,
-    content: '删除后无法恢复，请确认这份方案不再需要。',
+    content: '删除后无法恢复，请确认这条流水线不再需要。',
     okText: '删除',
     okType: 'danger',
     cancelText: '取消',
@@ -142,7 +142,7 @@ function remove(template: WorkflowTemplate) {
       busyID.value = template.id
       try {
         await client.delete(`/workflow-templates/${template.id}`)
-        message.success('流水线方案已删除')
+        message.success('流水线已删除')
         await refresh()
       } catch (error) {
         message.error(apiErrorMessage(error))
@@ -173,9 +173,9 @@ async function openCreatedTemplate(result: import('@/types/pipeline').WorkflowTe
 
 <template>
   <section class="pipeline-plan-page">
-    <PageToolbar :description="`${templates.length} 份方案；应用使用已启用方案的最新版本。`">
+    <PageToolbar :description="`${templates.length} 条流水线；应用使用已启用流水线的最新版本。`">
       <a-button v-if="canManage" type="primary" @click="presetOpen = true">
-        新建流水线方案
+        新建流水线
       </a-button>
     </PageToolbar>
 
@@ -192,7 +192,7 @@ async function openCreatedTemplate(result: import('@/types/pipeline').WorkflowTe
           <template v-if="column.key === 'name'">
             <div class="plan-name-cell">
               <span class="plan-icon"><GitBranch :size="17" /></span>
-              <div><strong>{{ record.name }}</strong><small>{{ record.description || '暂未填写方案说明' }}</small></div>
+              <div><strong>{{ record.name }}</strong><small>{{ record.description || '暂未填写流水线说明' }}</small></div>
             </div>
           </template>
           <template v-else-if="column.key === 'status'">
@@ -220,8 +220,8 @@ async function openCreatedTemplate(result: import('@/types/pipeline').WorkflowTe
           </template>
         </template>
         <template #emptyText>
-          <a-empty description="还没有流水线方案">
-            <a-button v-if="canManage" type="primary" @click="presetOpen = true">创建第一份方案</a-button>
+          <a-empty description="还没有流水线">
+            <a-button v-if="canManage" type="primary" @click="presetOpen = true">创建第一条流水线</a-button>
           </a-empty>
         </template>
       </a-table>

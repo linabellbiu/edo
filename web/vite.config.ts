@@ -5,6 +5,7 @@ import Components from 'unplugin-vue-components/vite'
 import { AntDesignVueResolver } from 'unplugin-vue-components/resolvers'
 
 const proxyTarget = process.env.EDO_WEB_PROXY_TARGET ?? 'http://127.0.0.1:8080'
+const apiProxyTimeout = 15 * 60 * 1000
 const useWSLMountPolling = Boolean(process.env.WSL_DISTRO_NAME) && process.cwd().startsWith('/mnt/')
 
 export default defineConfig({
@@ -28,6 +29,8 @@ export default defineConfig({
       '/api': {
         target: proxyTarget,
         ws: true,
+        timeout: apiProxyTimeout,
+        proxyTimeout: apiProxyTimeout,
       },
     },
   },

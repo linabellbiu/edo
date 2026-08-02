@@ -8,6 +8,7 @@ import (
 
 const (
 	workflowPresetBlank  = "blank"
+	workflowPresetDocker = "docker"
 	workflowPresetGo     = "go"
 	workflowPresetNodeJS = "nodejs"
 	workflowPresetPython = "python"
@@ -37,6 +38,8 @@ type workflowPresetDefinition struct {
 	language     string
 	includeTest  bool
 	kubernetes   bool
+	docker       bool
+	compose      bool
 	fullArtifact bool
 }
 
@@ -66,6 +69,9 @@ var workflowPresetDefinitions = []workflowPresetDefinition{
 			Steps:       []WorkflowPresetStep{},
 		},
 	},
+	newDockerPreset("docker-container", "Docker · 镜像构建并部署到容器", false, false),
+	newDockerPreset("docker-compose", "Docker · 镜像构建并部署到 Compose", true, false),
+	newDockerPreset("docker-kubernetes", "Docker · 镜像构建并部署到 Kubernetes", false, true),
 	newHostPreset("go-host", workflowPresetGo, "Go · 构建并部署到自有主机", false, false),
 	newHostPreset("go-artifact-host", workflowPresetGo, "Go · 测试、构建并部署到自有主机", true, true),
 	newKubernetesPreset("go-kubernetes", workflowPresetGo, "Go · 测试、镜像构建并部署到 Kubernetes", true),
@@ -75,6 +81,28 @@ var workflowPresetDefinitions = []workflowPresetDefinition{
 	newHostPreset("python-host", workflowPresetPython, "Python · 构建并部署到自有主机", false, false),
 	newHostPreset("python-artifact-host", workflowPresetPython, "Python · 构建制品并部署到自有主机", false, true),
 	newKubernetesPreset("python-kubernetes", workflowPresetPython, "Python · 镜像构建并部署到 Kubernetes", false),
+}
+
+func newDockerPreset(key, name string, compose, kubernetes bool) workflowPresetDefinition {
+	deployName := "Docker 容器部署"
+	description := "使用 Dockerfile 构建 OCI 镜像并部署到 Docker 容器；创建后需要选择镜像构建和 Docker 容器部署方案。"
+	if compose {
+		deployName = "Docker Compose 部署"
+		description = "使用 Dockerfile 构建 OCI 镜像并部署到 Compose 服务；创建后需要选择镜像构建和 Docker Compose 部署方案。"
+	} else if kubernetes {
+		deployName = "Kubernetes 部署"
+		description = "使用 Dockerfile 构建并推送 OCI 镜像，再更新 Kubernetes 工作负载；创建后需要选择镜像构建和 Kubernetes 部署方案。"
+	}
+	return workflowPresetDefinition{
+		WorkflowPreset: WorkflowPreset{
+			Key: key, Category: workflowPresetDocker, Name: name, Description: description,
+			Steps: []WorkflowPresetStep{
+				{Name: "镜像构建", Type: "build"},
+				{Name: deployName, Type: "deploy"},
+			},
+		},
+		docker: true, compose: compose, kubernetes: kubernetes,
+	}
 }
 
 func newHostPreset(key, language, name string, includeTest, fullArtifact bool) workflowPresetDefinition {
@@ -198,9 +226,12 @@ func buildWorkflowPresetStages(preset workflowPresetDefinition, runtime Workflow
 
 	buildName := languageBuildName(preset.language)
 	buildDescription := "请选择脚本构建方案；构建产生的文件制品会自动归档。"
-	if preset.kubernetes {
+	if preset.kubernetes || preset.docker {
 		buildName = "镜像构建"
-		buildDescription = "请选择绑定镜像仓库的 Dockerfile 构建方案。"
+		buildDescription = "请选择 Dockerfile 构建方案。"
+		if preset.kubernetes {
+			buildDescription = "请选择绑定镜像仓库的 Dockerfile 构建方案。"
+		}
 	} else if preset.fullArtifact {
 		buildName += "并归档制品"
 	}
@@ -220,6 +251,12 @@ func buildWorkflowPresetStages(preset workflowPresetDefinition, runtime Workflow
 	if preset.kubernetes {
 		deployName = "Kubernetes 部署"
 		deployDescription = "请选择 Kubernetes 部署方案。"
+	} else if preset.compose {
+		deployName = "Docker Compose 部署"
+		deployDescription = "请选择 Docker Compose 部署方案。"
+	} else if preset.docker {
+		deployName = "Docker 容器部署"
+		deployDescription = "请选择 Docker 容器部署方案。"
 	}
 	stages = append(stages, model.WorkflowStage{
 		ID: "deploy", Name: "部署",

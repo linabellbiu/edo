@@ -130,6 +130,8 @@ type Service struct {
 	deployments            *deployment.Service
 	workflowRuntimes       WorkflowRuntimeManager
 	logger                 *slog.Logger
+	workflowRuntimeMu      sync.Mutex
+	workflowRuntimeJobs    map[string]workflowRuntimePreparation
 	releasePlanExecutionMu sync.Mutex
 	pipelineAdvanceMu      sync.Mutex
 }

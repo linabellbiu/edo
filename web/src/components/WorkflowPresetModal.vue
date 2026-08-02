@@ -15,7 +15,7 @@ interface WorkflowPresetStep {
 
 interface WorkflowPreset {
   key: string
-  category: 'quickstart' | 'go' | 'nodejs' | 'python'
+  category: 'quickstart' | 'docker' | 'go' | 'nodejs' | 'python'
   name: string
   description: string
   steps: WorkflowPresetStep[]
@@ -26,7 +26,10 @@ interface WorkflowRuntimeVersion {
   version: string
   image: string
   recommended: boolean
+  legacy?: boolean
   installed: boolean
+  preparation_status?: 'preparing' | 'failed'
+  preparation_message?: string
 }
 
 const props = defineProps<{ open: boolean }>()
@@ -40,6 +43,7 @@ type CategoryKey = WorkflowPreset['category']
 const { t } = useI18n()
 const categories = computed(() => [
   { key: 'quickstart' as const, label: t('pipelinePreset.category.quickstart'), mark: '⌁' },
+  { key: 'docker' as const, label: t('pipelinePreset.category.docker'), mark: 'DK' },
   { key: 'go' as const, label: t('pipelinePreset.category.go'), mark: 'GO' },
   { key: 'nodejs' as const, label: t('pipelinePreset.category.nodejs'), mark: 'JS' },
   { key: 'python' as const, label: t('pipelinePreset.category.python'), mark: 'PY' },
@@ -59,8 +63,9 @@ const selectedPreset = computed(() => presets.value.find(item => item.key === se
 const selectedRuntime = computed(() => runtimeVersions.value.find(item => item.version === selectedRuntimeVersion.value))
 const visiblePresets = computed(() => presets.value.filter(item => item.category === activeCategory.value))
 const activeCategoryName = computed(() => categories.value.find(item => item.key === activeCategory.value)?.label || '')
-const requiresRuntime = computed(() => activeCategory.value !== 'quickstart')
-const busy = computed(() => creating.value || preparingRuntime.value)
+const requiresRuntime = computed(() => ['go', 'nodejs', 'python'].includes(activeCategory.value))
+const runtimeIsPreparing = computed(() => preparingRuntime.value || selectedRuntime.value?.preparation_status === 'preparing')
+const busy = computed(() => creating.value)
 const canConfirm = computed(() => Boolean(selectedKey.value) && (!requiresRuntime.value || Boolean(selectedRuntime.value?.installed)))
 
 function stepIcon(type: string) {
@@ -68,6 +73,16 @@ function stepIcon(type: string) {
   if (type === 'build') return Package
   if (type === 'deploy') return Rocket
   return TerminalSquare
+}
+
+function runtimeOptionLabel(item: WorkflowRuntimeVersion) {
+  const labels = [`${activeCategoryName.value} ${item.version}`]
+  if (item.recommended) labels.push(t('pipelinePreset.runtime.recommended'))
+  if (item.legacy) labels.push(t('pipelinePreset.runtime.compatible'))
+  if (item.installed) labels.push(t('pipelinePreset.runtime.ready'))
+  else if (item.preparation_status === 'preparing') labels.push(t('pipelinePreset.runtime.preparing'))
+  else labels.push(t('pipelinePreset.runtime.missing'))
+  return labels.join(' · ')
 }
 
 async function loadPresets() {
@@ -86,19 +101,21 @@ async function loadPresets() {
 }
 
 function selectCategory(key: CategoryKey) {
+  runtimePreparationToken += 1
+  preparingRuntime.value = false
   activeCategory.value = key
   const current = presets.value.find(item => item.key === selectedKey.value)
   if (current?.category !== key) selectedKey.value = ''
   runtimeVersions.value = []
   selectedRuntimeVersion.value = ''
-  if (key !== 'quickstart') void loadRuntimeVersions(key)
+  if (['go', 'nodejs', 'python'].includes(key)) void loadRuntimeVersions(key as Exclude<CategoryKey, 'quickstart' | 'docker'>)
 }
 
 function close() {
   if (!busy.value) emit('update:open', false)
 }
 
-async function loadRuntimeVersions(language: Exclude<CategoryKey, 'quickstart'>) {
+async function loadRuntimeVersions(language: Exclude<CategoryKey, 'quickstart' | 'docker'>) {
   loadingRuntimes.value = true
   try {
     const result = await client.get<{ runtime_versions: WorkflowRuntimeVersion[] }>('/workflow-runtime-versions', {
@@ -114,20 +131,60 @@ async function loadRuntimeVersions(language: Exclude<CategoryKey, 'quickstart'>)
   }
 }
 
-async function prepareSelectedRuntime() {
-  if (!selectedRuntime.value || selectedRuntime.value.installed || preparingRuntime.value) return
+let runtimePreparationToken = 0
+
+function waitForRuntimePollDelay() {
+  return new Promise(resolve => window.setTimeout(resolve, 1800))
+}
+
+async function waitForRuntimePreparation(language: Exclude<CategoryKey, 'quickstart' | 'docker'>, version: string) {
+  const token = ++runtimePreparationToken
   preparingRuntime.value = true
   try {
+    while (props.open && token === runtimePreparationToken) {
+      await waitForRuntimePollDelay()
+      if (!props.open || token !== runtimePreparationToken) return
+      const result = await client.get<{ runtime_versions: WorkflowRuntimeVersion[] }>('/workflow-runtime-versions', { params: { language } })
+      const versions = result.data.runtime_versions || []
+      if (activeCategory.value === language) runtimeVersions.value = versions
+      const runtime = versions.find(item => item.version === version)
+      if (!runtime) {
+        message.error(t('pipelinePreset.runtime.unavailable'))
+        return
+      }
+      if (runtime.installed) {
+        message.success(t('pipelinePreset.runtime.downloaded', { version }))
+        return
+      }
+      if (runtime.preparation_status === 'failed') {
+        message.error(runtime.preparation_message || t('pipelinePreset.runtime.failed'))
+        return
+      }
+    }
+  } catch (error) {
+    if (token === runtimePreparationToken) message.error(apiErrorMessage(error))
+  } finally {
+    if (token === runtimePreparationToken) preparingRuntime.value = false
+  }
+}
+
+async function prepareSelectedRuntime() {
+  if (!selectedRuntime.value || selectedRuntime.value.installed || runtimeIsPreparing.value) return
+  const language = selectedRuntime.value.language
+  const version = selectedRuntime.value.version
+  try {
     const result = await client.post<WorkflowRuntimeVersion>('/workflow-runtime-versions/prepare', {
-      language: selectedRuntime.value.language,
-      version: selectedRuntime.value.version,
-    }, { timeout: 15 * 60 * 1000 })
+      language,
+      version,
+    })
     runtimeVersions.value = runtimeVersions.value.map(item => item.version === result.data.version ? result.data : item)
-    message.success(t('pipelinePreset.runtime.downloaded', { version: result.data.version }))
+    if (result.data.installed) {
+      message.success(t('pipelinePreset.runtime.downloaded', { version }))
+      return
+    }
+    void waitForRuntimePreparation(language, version)
   } catch (error) {
     message.error(apiErrorMessage(error))
-  } finally {
-    preparingRuntime.value = false
   }
 }
 
@@ -150,12 +207,23 @@ async function confirm() {
 }
 
 watch(() => props.open, (open) => {
-  if (!open) return
+  if (!open) {
+    runtimePreparationToken += 1
+    preparingRuntime.value = false
+    return
+  }
   activeCategory.value = 'quickstart'
   selectedKey.value = ''
   runtimeVersions.value = []
   selectedRuntimeVersion.value = ''
   if (!presets.value.length) void loadPresets()
+})
+watch(selectedRuntimeVersion, (version) => {
+  runtimePreparationToken += 1
+  preparingRuntime.value = false
+  const runtime = runtimeVersions.value.find(item => item.version === version)
+  if (!runtime || runtime.preparation_status !== 'preparing') return
+  void waitForRuntimePreparation(runtime.language, runtime.version)
 })
 </script>
 
@@ -212,24 +280,25 @@ watch(() => props.open, (open) => {
               <a-select
                 v-model:value="selectedRuntimeVersion"
                 :loading="loadingRuntimes"
-                :disabled="loadingRuntimes || preparingRuntime"
+                :disabled="loadingRuntimes || runtimeIsPreparing"
                 :placeholder="t('pipelinePreset.runtime.placeholder')"
                 :options="runtimeVersions.map(item => ({
                   value: item.version,
-                  label: `${activeCategoryName} ${item.version}${item.recommended ? ` · ${t('pipelinePreset.runtime.recommended')}` : ''}${item.installed ? ` · ${t('pipelinePreset.runtime.ready')}` : ` · ${t('pipelinePreset.runtime.missing')}`}`,
+                  label: runtimeOptionLabel(item),
                 }))"
               />
               <a-button
                 v-if="selectedRuntime && !selectedRuntime.installed"
-                :loading="preparingRuntime"
+                :loading="runtimeIsPreparing"
                 :disabled="loadingRuntimes"
                 @click="prepareSelectedRuntime"
               >
-                <Download v-if="!preparingRuntime" :size="15" />{{ t('pipelinePreset.runtime.download') }}
+                <Download v-if="!runtimeIsPreparing" :size="15" />{{ runtimeIsPreparing ? t('pipelinePreset.runtime.preparing') : t('pipelinePreset.runtime.download') }}
               </a-button>
               <span v-else-if="selectedRuntime?.installed" class="runtime-ready"><CheckCircle2 :size="15" />{{ t('pipelinePreset.runtime.ready') }}</span>
             </div>
             <small v-if="requiresRuntime" class="runtime-isolation">{{ t('pipelinePreset.runtime.isolation') }}</small>
+            <small v-if="selectedRuntime?.preparation_status === 'failed'" class="runtime-error">{{ selectedRuntime.preparation_message || t('pipelinePreset.runtime.failed') }}</small>
           </header>
           <div v-if="visiblePresets.length" class="preset-list">
             <button
@@ -299,6 +368,7 @@ watch(() => props.open, (open) => {
 .runtime-picker :deep(.ant-btn) { display: inline-flex; align-items: center; gap: 6px; }
 .runtime-ready { display: inline-flex; height: 32px; align-items: center; gap: 5px; color: var(--edo-success); font-size: 12px; white-space: nowrap; }
 .runtime-isolation { grid-column: 1 / -1; margin: 0 !important; line-height: 1.45; }
+.runtime-error { grid-column: 1 / -1; margin: 0 !important; color: #d94150 !important; line-height: 1.45; }
 .preset-list { display: grid; gap: 14px; }
 .preset-card { position: relative; display: grid; width: 100%; min-height: 132px; grid-template-columns: 24px minmax(0,1fr); gap: 12px; padding: 18px; border: 1px solid var(--edo-border); border-radius: 8px; color: var(--edo-text); background: var(--edo-surface); cursor: pointer; text-align: left; transition: border-color .16s ease, box-shadow .16s ease, background-color .16s ease; }
 .preset-card:hover { border-color: color-mix(in srgb, var(--edo-primary) 55%, var(--edo-border)); box-shadow: 0 5px 18px rgb(25 35 55 / 7%); }

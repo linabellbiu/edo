@@ -6,7 +6,7 @@ export const messages = {
     nav: {
       overview: '概览', delivery: '持续交付', applicationsCode: '应用与代码', applications: '应用', repositories: '代码仓库', credentials: '我的令牌',
       buildArtifacts: '构建与制品', buildPlans: '构建方案', registries: '镜像仓库', releaseManagement: '发布管理', deploymentPlans: '部署方案',
-      environments: '环境管理', pipelinePlans: '流水线方案', releasePlans: '发布计划', pipelineRuns: '流水线运行', deploymentRecords: '发布记录',
+      environments: '环境管理', pipelinePlans: '流水线', releasePlans: '发布计划', pipelineRuns: '流水线运行记录',
       platform: '平台管理', infrastructure: '基础设施', domains: '域名解析', hosts: '主机与集群', containers: '主机与集群', operations: '可观测与运维',
       monitor: '系统监控', tasks: '任务中心', logs: '日志', security: '系统与安全', settings: '系统设置', users: '用户管理', roles: '角色与功能', audit: '审计日志',
     },
@@ -52,13 +52,13 @@ export const messages = {
     },
     pipelinePreset: {
       title: '选择流水线模板', subtitle: '先选择流程骨架，再进入画布绑定实际构建与部署资源。', recommended: '推荐模板',
-      category: { quickstart: '快速开始', go: 'Golang', nodejs: 'Node.js', python: 'Python' },
+      category: { quickstart: '快速开始', docker: 'Docker', go: 'Golang', nodejs: 'Node.js', python: 'Python' },
       categoryHint: '选择适合交付目标的默认流水线，稍后可自由修改每个任务。', quickstartHint: '从空白流程开始，创建后再配置任务。', blankFlow: '空白画布', empty: '这个分类暂时没有可用模板',
       selected: '已选择：{name}', selectPrompt: '请选择一份流水线模板', cancel: '取消', confirm: '确认', fallbackName: '模板',
-      created: '已从“{name}”创建流水线方案草稿',
+      created: '已从“{name}”创建流水线草稿',
       runtime: {
-        label: '构建语言版本', placeholder: '选择版本', recommended: '推荐', ready: '已就绪', missing: '未下载',
-        download: '下载版本', downloaded: '构建版本 {version} 已准备完成',
+        label: '构建语言版本', placeholder: '选择版本', recommended: '推荐', compatible: '兼容版本', ready: '已就绪', missing: '未下载',
+        download: '下载版本', preparing: '正在下载', downloaded: '构建版本 {version} 已准备完成', failed: '构建版本下载失败，请重试', unavailable: '所选构建版本已不可用，请刷新后重试',
         isolation: '版本保存在 EDO 隔离的 Docker 构建运行时中，不会安装或覆盖宿主机工具链。',
       },
     },
@@ -204,7 +204,7 @@ export const messages = {
     nav: {
       overview: 'Overview', delivery: 'Delivery', applicationsCode: 'Apps & Code', applications: 'Applications', repositories: 'Repositories', credentials: 'My Tokens',
       buildArtifacts: 'Build & Artifacts', buildPlans: 'Build Plans', registries: 'Registries', releaseManagement: 'Release Management', deploymentPlans: 'Deployment Plans',
-      environments: 'Environments', pipelinePlans: 'Pipeline Templates', releasePlans: 'Release Plans', pipelineRuns: 'Pipeline Runs', deploymentRecords: 'Deployments',
+      environments: 'Environments', pipelinePlans: 'Pipelines', releasePlans: 'Release Plans', pipelineRuns: 'Pipeline Run Records',
       platform: 'Platform', infrastructure: 'Infrastructure', domains: 'DNS', hosts: 'Hosts & Clusters', containers: 'Hosts & Clusters', operations: 'Operations',
       monitor: 'System Monitor', tasks: 'Tasks', logs: 'Logs', security: 'System & Security', settings: 'Settings', users: 'Users', roles: 'Roles & Permissions', audit: 'Audit Logs',
     },
@@ -250,13 +250,13 @@ export const messages = {
     },
     pipelinePreset: {
       title: 'Choose a pipeline template', subtitle: 'Choose a workflow skeleton first, then bind build and deployment resources in the editor.', recommended: 'Recommended templates',
-      category: { quickstart: 'Quick start', go: 'Golang', nodejs: 'Node.js', python: 'Python' },
+      category: { quickstart: 'Quick start', docker: 'Docker', go: 'Golang', nodejs: 'Node.js', python: 'Python' },
       categoryHint: 'Choose a default flow for the delivery target. Every task can be customized later.', quickstartHint: 'Start with an empty flow and configure tasks after creation.', blankFlow: 'Blank canvas', empty: 'No templates are available in this category',
       selected: 'Selected: {name}', selectPrompt: 'Choose a pipeline template', cancel: 'Cancel', confirm: 'Confirm', fallbackName: 'Template',
       created: 'Created a pipeline draft from “{name}”',
       runtime: {
-        label: 'Build language version', placeholder: 'Select a version', recommended: 'Recommended', ready: 'Ready', missing: 'Not downloaded',
-        download: 'Download version', downloaded: 'Build version {version} is ready',
+        label: 'Build language version', placeholder: 'Select a version', recommended: 'Recommended', compatible: 'Compatibility', ready: 'Ready', missing: 'Not downloaded',
+        download: 'Download version', preparing: 'Downloading', downloaded: 'Build version {version} is ready', failed: 'Build version download failed. Please retry.', unavailable: 'The selected build version is unavailable. Refresh and retry.',
         isolation: 'The version is stored in EDO\'s isolated Docker build runtime and never installs or replaces the host toolchain.',
       },
     },

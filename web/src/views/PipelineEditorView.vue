@@ -132,7 +132,7 @@ const canCreateBuildPlan = computed(() => auth.canAny(['delivery.manage']))
 const canCreateDeploymentPlan = computed(() => auth.canAny(['delivery.manage']))
 const publicMode = computed(() => !applicationID.value)
 const editorApplication = computed<ApplicationRecord | null>(() => {
-  if (publicMode.value) return { id: 'public-template', name: '流水线方案' }
+  if (publicMode.value) return { id: 'public-template', name: '流水线' }
   return applications.value.find(item => item.id === applicationID.value) || null
 })
 const selectedTemplateID = computed(() => publicMode.value
@@ -553,7 +553,7 @@ async function save(activate: boolean, automatic = false): Promise<boolean> {
     }
     if (!automatic) {
       if (!publicMode.value && previousTemplateID && !saved.workflow_template_id) {
-        message.success('应用流水线已保存为自定义配置，后续不再跟随原流水线方案更新。')
+        message.success('应用流水线已保存为自定义配置，后续不再跟随原流水线更新。')
       } else {
         message.success(activate ? '流水线已启用，新运行将按当前阶段顺序执行。' : '草稿已保存')
       }
@@ -1024,7 +1024,7 @@ onBeforeRouteUpdate(async to => {
   if (nextApplicationID === applicationID.value && nextWorkflowID === workflowID.value && nextTemplateID === templateID.value) return true
   if (switching.value) return false
   if (saving.value) {
-    message.warning('流水线正在保存，请稍后再切换方案。')
+    message.warning('流水线正在保存，请稍后再切换。')
     return false
   }
   if (!nextApplicationID && !nextTemplateID) return false
@@ -1080,10 +1080,10 @@ onBeforeRouteLeave(async () => {
           <a-select :value="workflowID || undefined" :options="workflowOptions" :loading="loading" :disabled="saving" placeholder="选择流水线" @change="chooseWorkflow(String($event))" />
         </label>
         <label v-else class="plan-switcher">
-          <span>流水线方案</span>
-          <a-select :value="selectedTemplateID || undefined" :options="templateOptions" :loading="loading" :disabled="saving" placeholder="选择流水线方案" @change="chooseTemplate(String($event))" />
+          <span>流水线</span>
+          <a-select :value="selectedTemplateID || undefined" :options="templateOptions" :loading="loading" :disabled="saving" placeholder="选择流水线" @change="chooseTemplate(String($event))" />
         </label>
-        <a-tag v-if="!publicMode && workflow" :color="selectedTemplateID ? 'blue' : 'default'">{{ selectedTemplateID ? '跟随方案' : '自定义' }}</a-tag>
+        <a-tag v-if="!publicMode && workflow" :color="selectedTemplateID ? 'blue' : 'default'">{{ selectedTemplateID ? '跟随公共流水线' : '自定义' }}</a-tag>
         <a-tag v-if="workflow" :color="workflow.is_active ? 'success' : 'default'">{{ workflow.is_active ? '已启用' : '草稿' }}</a-tag>
         <span v-if="workflow" class="save-indicator" :class="{ failed: autoSaveFailed, pending: dirty }"><i />{{ saveState }}</span>
       </div>
@@ -1093,20 +1093,20 @@ onBeforeRouteLeave(async () => {
           v-model:value="workflow.name"
           class="pipeline-name-input"
           :disabled="!canEdit"
-          :placeholder="publicMode ? '方案名称' : '流水线名称'"
-          :aria-label="publicMode ? '方案名称' : '流水线名称'"
+          placeholder="流水线名称"
+          aria-label="流水线名称"
           @change="updateWorkflowMeta"
         />
-        <a-button v-if="canManage && publicMode" :disabled="saving" @click="openPresetSelector"><Plus :size="15" />新建方案</a-button>
+        <a-button v-if="canManage && publicMode" :disabled="saving" @click="openPresetSelector"><Plus :size="15" />新建流水线</a-button>
         <a-button v-if="workflow" :disabled="saving" @click="validateGraph"><Scan :size="15" />检查</a-button>
         <a-button v-if="workflow && canManage" :loading="saving" @click="requestSave"><Save :size="15" />{{ workflow.is_active ? '保存并更新' : '保存草稿' }}</a-button>
-        <a-button v-if="workflow && canManage && !workflow.is_active" type="primary" :loading="saving" @click="save(true)">{{ publicMode ? '启用方案' : '启用流水线' }}</a-button>
+        <a-button v-if="workflow && canManage && !workflow.is_active" type="primary" :loading="saving" @click="save(true)">启用流水线</a-button>
       </div>
     </div>
 
     <a-skeleton v-if="loading && !workflow" active :paragraph="{ rows: 12 }" />
-    <a-empty v-else-if="!workflow" class="pipeline-empty" :description="publicMode ? '还没有可编辑的流水线方案' : '这个应用还没有流水线'">
-      <a-button v-if="canManage && publicMode" type="primary" :disabled="saving" @click="openPresetSelector">创建第一份方案</a-button>
+    <a-empty v-else-if="!workflow" class="pipeline-empty" :description="publicMode ? '还没有可编辑的流水线' : '这个应用还没有流水线'">
+      <a-button v-if="canManage && publicMode" type="primary" :disabled="saving" @click="openPresetSelector">创建第一条流水线</a-button>
       <a-button v-else-if="!publicMode" type="primary" @click="router.push('/applications')">返回应用配置</a-button>
     </a-empty>
 
@@ -1140,7 +1140,7 @@ onBeforeRouteLeave(async () => {
                 <span v-else class="source-repository"><i><GitBranch :size="17" /></i>{{ codeSourceName }}</span>
                 <small>{{ triggerVersionSummary(source) }} · {{ triggerEventSummary(source.config.events) }}</small>
               </button>
-              <p v-if="publicMode">方案不绑定代码仓库；应用使用方案时自动采用自己的代码仓库和凭据。</p>
+              <p v-if="publicMode">公共流水线不绑定代码仓库；应用使用时自动采用自己的代码仓库和凭据。</p>
             </section>
 
             <div :ref="setStageListRef" class="pipeline-stage-list">

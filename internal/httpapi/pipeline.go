@@ -312,12 +312,16 @@ func (h pipelineHandler) prepareWorkflowRuntimeVersion(c *gin.Context) {
 		writeError(c, http.StatusBadRequest, "invalid_workflow_runtime", pipeline.ErrInvalidWorkflowRuntime.Error())
 		return
 	}
-	runtime, err := h.service.PrepareWorkflowRuntimeVersion(c.Request.Context(), request.Language, request.Version)
+	runtime, err := h.service.StartPrepareWorkflowRuntimeVersion(c.Request.Context(), request.Language, request.Version)
 	if err != nil {
 		h.writeError(c, "workflow_runtime_prepare", err)
 		return
 	}
-	c.JSON(http.StatusOK, runtime)
+	status := http.StatusOK
+	if !runtime.Installed {
+		status = http.StatusAccepted
+	}
+	c.JSON(status, runtime)
 }
 
 func (h pipelineHandler) createWorkflowTemplateFromPreset(c *gin.Context) {

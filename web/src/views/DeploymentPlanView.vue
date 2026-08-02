@@ -463,7 +463,7 @@ async function deletePlan(plan: DeploymentPlan) {
 function confirmDeletePlan(plan: DeploymentPlan) {
   Modal.confirm({
     title: `删除部署方案“${plan.name}”？`,
-    content: '删除后不再出现在方案列表，历史运行和快照仍保留用于审计。如果流水线或流水线方案仍在引用，服务端会拒绝删除。',
+    content: '删除后不再出现在方案列表，历史运行和快照仍保留用于审计。如果流水线仍在引用，服务端会拒绝删除。',
     okText: '删除',
     okType: 'danger',
     cancelText: '取消',
