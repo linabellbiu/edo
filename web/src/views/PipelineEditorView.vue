@@ -1044,6 +1044,10 @@ function createDeploymentPlan() {
   void router.push({ path: '/deployment-plans', query: { create: '1', return_to: route.fullPath } })
 }
 
+function resourceViewHref(path: string, queryKey: string, id: string) {
+  return router.resolve({ path, query: { [queryKey]: id } }).href
+}
+
 function elementOf(target: Element | ComponentPublicInstance | null) {
   if (target instanceof HTMLElement) return target
   if (target && '$el' in target && target.$el instanceof HTMLElement) return target.$el
@@ -1507,7 +1511,14 @@ onBeforeRouteLeave(async () => {
                     :options="activeBuildPlans.map(item => ({ value: item.id, label: `${item.name} · ${item.kind === 'dockerfile' ? '镜像' : '文件制品'}` }))"
                     placeholder="选择构建方案"
                     @update:value="updateSelectedNode({}, { build_plan_id: String($event || '') || undefined })"
-                  />
+                  >
+                    <template #option="{ value, label }">
+                      <span class="managed-resource-option">
+                        <span class="managed-resource-option-label">{{ label }}</span>
+                        <a class="managed-resource-option-view" :href="resourceViewHref('/build-plans', 'plan', String(value))" target="_blank" rel="noopener noreferrer" @mousedown.stop @click.stop>查看</a>
+                      </span>
+                    </template>
+                  </a-select>
                   <a-button v-if="canCreateBuildPlan" class="resource-create" aria-label="创建构建方案" title="创建构建方案" @click="createBuildPlan"><Plus :size="16" /></a-button>
                 </div>
               </a-form-item>
@@ -1532,7 +1543,14 @@ onBeforeRouteLeave(async () => {
                     :options="compatibleDeploymentPlans(selectedNode.id).map(item => ({ value: item.id, label: `${item.name} · ${deploymentKindNames[item.kind]}` }))"
                     placeholder="选择部署方案"
                     @update:value="updateSelectedNode({}, { deployment_plan_id: String($event || '') || undefined })"
-                  />
+                  >
+                    <template #option="{ value, label }">
+                      <span class="managed-resource-option">
+                        <span class="managed-resource-option-label">{{ label }}</span>
+                        <a class="managed-resource-option-view" :href="resourceViewHref('/deployment-plans', 'plan', String(value))" target="_blank" rel="noopener noreferrer" @mousedown.stop @click.stop>查看</a>
+                      </span>
+                    </template>
+                  </a-select>
                   <a-button v-if="canCreateDeploymentPlan" class="resource-create" aria-label="创建部署方案" title="创建部署方案" @click="createDeploymentPlan"><Plus :size="16" /></a-button>
                 </div>
               </a-form-item>

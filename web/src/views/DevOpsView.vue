@@ -94,6 +94,7 @@ const canReadDeployments=computed(()=>auth.canAny(['deployment.read']))
 const canReadContainerLogs=computed(()=>auth.canAny(['cluster.read']))
 const canOpenContainerTerminal=computed(()=>auth.canAny(['terminal.open']))
 const activeRows=computed<ResourceRecord[]>(()=>props.section==='applications'?applications.value:props.section==='repositories'?repositories.value:props.section==='image-registries'?registries.value:[])
+const activeResourceID=computed(()=>props.section==='image-registries'&&typeof route.query.registry==='string'?route.query.registry:'')
 const activeColumns=computed(()=>props.section==='applications'?[{key:'name',label:'应用'},{key:'repository',label:'代码仓库'},{key:'workflows',label:'流水线'},{key:'sync_status',label:'代码状态'},{key:'last_checked_at',label:'最近检查'}]:props.section==='repositories'?[{key:'name',label:'名称'},{key:'provider',label:'平台'},{key:'clone_url',label:'Git 地址'},{key:'default_branch',label:'默认分支'},{key:'webhook_enabled',label:'Webhook'},{key:'is_active',label:'状态'}]:props.section==='image-registries'?[{key:'name',label:'名称'},{key:'provider',label:'类型'},{key:'endpoint',label:'地址'},{key:'namespace',label:'命名空间'},{key:'has_credential',label:'凭据'}]:[])
 const activeApplicationRunStatuses=new Set(['running','awaiting_approval','ready'])
 const applicationCards=computed(()=>applications.value.map(application=>{
@@ -254,6 +255,7 @@ function createImageRegistry(){
  formOpen.value=false
  void router.push({path:'/image-registries',query:{create:'1',return_to:route.fullPath}})
 }
+function resourceViewHref(path:string,queryKey:string,id:string){return router.resolve({path,query:{[queryKey]:id}}).href}
 
 async function refresh(){loading.value=true;try{const requests=await Promise.all([auth.canAny(['delivery.read'])?client.get<{applications:Application[]}>('/applications'):null,auth.canAny(['repository.read'])?client.get<{repositories:Repository[]}>('/repositories'):null,auth.canAny(['credential.read'])?client.get<{credentials:Credential[]}>('/git-credentials'):null,auth.canAny(['delivery.read'])?client.get<{build_plans:BuildPlan[]}>('/build-plans'):null,auth.canAny(['delivery.read'])?client.get<{image_registries:Registry[]}>('/image-registries'):null,auth.canAny(['delivery.read'])?client.get<{pipeline_runs:Run[]}>('/pipeline-runs?limit=200'):null,auth.canAny(['delivery.read'])?client.get<{release_plans:ReleasePlan[]}>('/release-plans'):null,canReadDeployments.value?client.get<{deployments:DeploymentRecord[]}>('/deployments?limit=200'):null]);applications.value=requests[0]?.data.applications||[];repositories.value=requests[1]?.data.repositories||[];credentials.value=requests[2]?.data.credentials||[];buildPlans.value=requests[3]?.data.build_plans||[];registries.value=requests[4]?.data.image_registries||[];runs.value=requests[5]?.data.pipeline_runs||[];if(!selectedRunID.value||!runs.value.some(item=>item.id===selectedRunID.value))selectedRunID.value=runs.value[0]?.id||'';releasePlans.value=requests[6]?.data.release_plans||[];deployments.value=requests[7]?.data.deployments||[]}catch(error){message.error(apiErrorMessage(error))}finally{loading.value=false}}
 let stateRefreshing=false
@@ -771,7 +773,9 @@ function syncBuildPlanSelection(){
   artifacts.value=[]
   return
  }
- if(!buildPlans.value.some(item=>item.id===selectedBuildPlanID.value))selectedBuildPlanID.value=buildPlans.value[0]?.id||''
+ const requested=typeof route.query.plan==='string'?route.query.plan:''
+ if(requested&&buildPlans.value.some(item=>item.id===requested))selectedBuildPlanID.value=requested
+ else if(!buildPlans.value.some(item=>item.id===selectedBuildPlanID.value))selectedBuildPlanID.value=buildPlans.value[0]?.id||''
  if(artifactApplicationID.value&&!applications.value.some(item=>item.id===artifactApplicationID.value))artifactApplicationID.value=''
 }
 function selectBuildPlan(id:string){
@@ -803,6 +807,7 @@ watch(()=>repoForm.provider,(provider)=>{
 })
 watch(()=>repoForm.auth_type,(authType)=>{if(authType==='none'||!credentials.value.some(item=>item.id===repoForm.credential_id&&item.auth_type===authType))repoForm.credential_id=''})
 watch(()=>buildPlans.value.map(item=>item.id).join(','),syncBuildPlanSelection)
+watch(()=>route.query.plan,syncBuildPlanSelection)
 watch(()=>applications.value.map(item=>item.id).join(','),syncBuildPlanSelection)
 watch([selectedBuildPlanID,artifactApplicationID,buildPlanView],()=>{void loadArtifacts()})
 watch(()=>route.query.create,consumeBuildCreateRequest)
@@ -908,7 +913,7 @@ onBeforeUnmount(()=>{resetPlanExecution();clearInterval(releaseTimer);document.r
 />
 <div v-else-if="props.section!=='release-plans'" class="resource-section-stack">
  <div class="vben-card">
-  <ResourceTable :rows="activeRows" :columns="activeColumns" :loading="loading">
+  <ResourceTable :rows="activeRows" :columns="activeColumns" :loading="loading" :active-row-key="activeResourceID">
    <template #cell-sync_status="{value}"><a-tag :color="value==='changed'?'warning':value==='synced'?'success':'default'">{{ value }}</a-tag></template>
    <template #cell-provider="{value}"><a-tag color="blue">{{ registryProviderLabel(value as RegistryProvider) }}</a-tag></template>
    <template #cell-endpoint="{row}">{{ registryEndpointLabel(row as Registry) }}</template>
@@ -1043,7 +1048,14 @@ onBeforeUnmount(()=>{resetPlanExecution();clearInterval(releaseTimer);document.r
     <a-form-item v-if="buildForm.kind==='dockerfile'" class="span2" label="镜像输出">
      <a-radio-group v-model:value="buildImageDestination" button-style="solid"><a-radio-button value="local">构建运行时本地镜像</a-radio-button><a-radio-button value="registry">推送镜像仓库</a-radio-button></a-radio-group>
     </a-form-item>
-    <a-form-item v-if="buildForm.kind==='dockerfile'&&buildImageDestination==='registry'" class="span2" label="镜像仓库" required><div class="resource-picker"><a-select v-model:value="buildForm.image_registry_id" show-search option-filter-prop="label" placeholder="选择已测试可用的镜像仓库" :options="registries.filter(item=>item.is_active).map(item=>({value:item.id,label:item.name}))"/><a-button v-if="canManage" class="resource-create" aria-label="创建镜像仓库" title="创建镜像仓库" @click="createImageRegistry"><Plus :size="16"/></a-button></div></a-form-item>
+    <a-form-item v-if="buildForm.kind==='dockerfile'&&buildImageDestination==='registry'" class="span2" label="镜像仓库" required>
+     <div class="resource-picker">
+      <a-select v-model:value="buildForm.image_registry_id" show-search option-filter-prop="label" placeholder="选择已测试可用的镜像仓库" :options="registries.filter(item=>item.is_active).map(item=>({value:item.id,label:item.name}))">
+       <template #option="{value,label}"><span class="managed-resource-option"><span class="managed-resource-option-label">{{ label }}</span><a class="managed-resource-option-view" :href="resourceViewHref('/image-registries','registry',String(value))" target="_blank" rel="noopener noreferrer" @mousedown.stop @click.stop>查看</a></span></template>
+      </a-select>
+      <a-button v-if="canManage" class="resource-create" aria-label="创建镜像仓库" title="创建镜像仓库" @click="createImageRegistry"><Plus :size="16"/></a-button>
+     </div>
+    </a-form-item>
     <a-alert v-if="buildForm.kind==='dockerfile'&&buildImageDestination==='registry'" class="span2 image-path-alert" type="info" show-icon message="当前镜像路径">
      <template #description><code class="image-path-preview">{{ buildImagePathPreview }}</code><small class="field-hint">应用名是实际仓库名；版本标签使用 12 位提交短哈希，例如 fea2410d1e47。部署时仍会在后台固定并校验完整 Digest。</small></template>
     </a-alert>

@@ -51,6 +51,12 @@ const selectedEnvironmentSummary = computed(() => {
   return t('environment.hostAssociation.none')
 })
 
+function syncRequestedHost() {
+  const requested = typeof route.query.host === 'string' ? route.query.host : ''
+  if (requested && hosts.value.some(host => host.id === requested)) selectedID.value = requested
+  else if (!hosts.value.some(host => host.id === selectedID.value)) selectedID.value = hosts.value[0]?.id ?? ''
+}
+
 async function refresh() {
   loading.value = true
   try {
@@ -64,7 +70,7 @@ async function refresh() {
     hosts.value = hostItems
     environments.value = environmentItems
     clusters.value = clusterResponse.data.clusters ?? []
-    if (!hosts.value.some(host => host.id === selectedID.value)) selectedID.value = hosts.value[0]?.id ?? ''
+    syncRequestedHost()
   } catch (error) {
     message.error(apiErrorMessage(error))
   } finally {
@@ -84,7 +90,7 @@ async function refreshStatuses() {
       return
     }
     hosts.value = merged
-    if (!hosts.value.some(host => host.id === selectedID.value)) selectedID.value = hosts.value[0]?.id ?? ''
+    syncRequestedHost()
     statusErrorShown = false
   } catch (error) {
     if (!statusErrorShown) message.error(apiErrorMessage(error))
@@ -196,6 +202,7 @@ watch(() => route.query.create, value => {
   delete query.create
   void router.replace({ path: route.path, query })
 }, { immediate: true })
+watch(() => route.query.host, syncRequestedHost)
 
 onMounted(() => {
   lastStatusRefreshAt = Date.now()

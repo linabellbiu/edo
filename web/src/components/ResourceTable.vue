@@ -13,6 +13,7 @@ withDefaults(defineProps<{
   loading?: boolean
   emptyText?: string
   rowKey?: string
+  activeRowKey?: string
 }>(), { loading: false, emptyText: '暂无数据', rowKey: 'id' })
 
 function displayValue(value: unknown): string {
@@ -36,7 +37,7 @@ function displayValue(value: unknown): string {
         <table class="resource-table">
           <thead><tr><th v-for="column in columns" :key="column.key" :style="{ width: column.width }">{{ column.label }}</th><th v-if="$slots.actions">操作</th></tr></thead>
           <tbody>
-            <tr v-for="(row, index) in rows" :key="String(row[rowKey] ?? index)">
+            <tr v-for="(row, index) in rows" :key="String(row[rowKey] ?? index)" :class="{ active: activeRowKey && String(row[rowKey] ?? index) === activeRowKey }">
               <td v-for="column in columns" :key="column.key">
                 <slot :name="`cell-${column.key}`" :row="row" :value="row[column.key]">
                   <a-tag v-if="typeof row[column.key] === 'boolean'" :color="row[column.key] ? 'success' : 'default'">{{ row[column.key] ? '启用' : '停用' }}</a-tag>
@@ -61,6 +62,8 @@ th { padding: 11px 16px; border-bottom: 1px solid var(--edo-border); color: var(
 td { max-width: 420px; padding: 13px 16px; border-bottom: 1px solid var(--edo-border); color: var(--edo-text); vertical-align: middle; }
 tbody tr:last-child td { border-bottom: 0; }
 tbody tr:hover td { background: color-mix(in srgb,var(--edo-primary) 3%,transparent); }
+tbody tr.active td { background: var(--edo-primary-soft); }
+tbody tr.active td:first-child { box-shadow: inset 3px 0 var(--edo-primary); }
 .json-cell { display: block; max-width: 360px; overflow: hidden; color: var(--edo-muted); text-overflow: ellipsis; white-space: nowrap; }
 .table-actions { width: 1%; white-space: nowrap; }
 .table-actions :deep(.ant-btn) { padding-inline: 5px; }

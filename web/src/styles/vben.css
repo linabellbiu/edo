@@ -160,6 +160,11 @@ button { color: inherit; }
 .status-dot.ok { background: #22b56d; box-shadow: 0 0 0 4px rgb(34 181 109 / 10%); }
 .status-dot.failed { background: #ef5656; box-shadow: 0 0 0 4px rgb(239 86 86 / 10%); }
 
+.managed-resource-option { display: flex; min-width: 0; align-items: center; justify-content: space-between; gap: 12px; }
+.managed-resource-option-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.managed-resource-option-view { flex: 0 0 auto; padding: 1px 5px; border-radius: 5px; color: var(--edo-primary); font-size: 12px; font-weight: 600; text-decoration: none; }
+.managed-resource-option-view:hover, .managed-resource-option-view:focus-visible { background: var(--edo-primary-soft); color: var(--edo-primary); outline: none; }
+
 @media (max-width: 900px) {
   .vben-app { display: block; }
   .vben-sidebar { position: fixed; left: 0; width: 230px; transform: translateX(-102%); box-shadow: 12px 0 30px rgb(0 0 0 / 18%); transition: transform 220ms ease; }

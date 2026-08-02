@@ -372,6 +372,10 @@ function create() {
   formOpen.value = true
 }
 
+function resourceViewHref(path: string, query: Record<string, string>) {
+  return router.resolve({ path, query }).href
+}
+
 function edit(plan: DeploymentPlan) {
   for (const kind of kindOptions) delete deploymentDrafts[kind.value]
   const target = targetOf(plan)
@@ -898,7 +902,14 @@ onMounted(refresh)
                 :options="environmentOptions"
                 :placeholder="t('environment.deployment.environmentPlaceholder')"
                 @change="changeEnvironment"
-              />
+              >
+                <template #option="{ value, label }">
+                  <span class="managed-resource-option">
+                    <span class="managed-resource-option-label">{{ label }}</span>
+                    <a class="managed-resource-option-view" :href="resourceViewHref('/environments', { environment: String(value) })" target="_blank" rel="noopener noreferrer" @mousedown.stop @click.stop>查看</a>
+                  </span>
+                </template>
+              </a-select>
               <a-button v-if="auth.canAny(['deployment.manage'])" aria-label="创建环境" title="创建环境" @click="router.push('/environments?create=1')"><Plus :size="15" /></a-button>
             </div>
           </a-form-item>
@@ -930,7 +941,14 @@ onMounted(refresh)
             <div class="form-grid">
               <a-form-item v-if="platform === 'kubernetes'" class="span-2" label="Kubernetes 集群" required>
                 <div :class="{ 'resource-select': auth.canAny(['cluster.manage']) }">
-                  <a-select :value="form.runtime_id" show-search :disabled="!canReadRuntimes" :options="kubernetesRuntimeOptions" placeholder="选择当前环境关联的 Kubernetes 集群" @change="changeKubernetesRuntime" />
+                  <a-select :value="form.runtime_id" show-search :disabled="!canReadRuntimes" :options="kubernetesRuntimeOptions" placeholder="选择当前环境关联的 Kubernetes 集群" @change="changeKubernetesRuntime">
+                    <template #option="{ value, label }">
+                      <span class="managed-resource-option">
+                        <span class="managed-resource-option-label">{{ label }}</span>
+                        <a class="managed-resource-option-view" :href="resourceViewHref('/hosts', { view: 'resources', node: `kubernetes:${String(value)}` })" target="_blank" rel="noopener noreferrer" @mousedown.stop @click.stop>查看</a>
+                      </span>
+                    </template>
+                  </a-select>
                   <a-button
                     v-if="auth.canAny(['cluster.manage'])"
                     :aria-label="t('kubernetesCluster.action.add')"

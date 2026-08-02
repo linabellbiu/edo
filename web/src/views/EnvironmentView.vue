@@ -50,13 +50,23 @@ const hostOptions = computed(() => hosts.value
     }
   }))
 
+function syncRequestedEnvironment() {
+  const requested = typeof route.query.environment === 'string' ? route.query.environment : ''
+  if (requested && environments.value.some(item => item.id === requested)) selectedID.value = requested
+  else if (!environments.value.some(item => item.id === selectedID.value)) selectedID.value = environments.value[0]?.id ?? ''
+}
+
+function resourceViewHref(path: string, query: Record<string, string>) {
+  return router.resolve({ path, query }).href
+}
+
 async function refresh() {
   loading.value = true
   try {
     const [environmentItems, hostItems] = await Promise.all([listEnvironments(), listHosts()])
     environments.value = environmentItems
     hosts.value = hostItems
-    if (!environments.value.some(item => item.id === selectedID.value)) selectedID.value = environments.value[0]?.id ?? ''
+    syncRequestedEnvironment()
   } catch (error) {
     message.error(apiErrorMessage(error))
   } finally {
@@ -154,6 +164,7 @@ watch([() => route.query.create, () => auth.loaded], ([value]) => {
   delete query.create
   void router.replace({ query })
 }, { immediate: true })
+watch(() => route.query.environment, syncRequestedEnvironment)
 
 onMounted(refresh)
 </script>
@@ -251,7 +262,14 @@ onMounted(refresh)
                 allow-clear
                 placeholder="选择一个或多个主机"
                 :options="hostOptions"
-              />
+              >
+                <template #option="{ value, label }">
+                  <span class="managed-resource-option">
+                    <span class="managed-resource-option-label">{{ label }}</span>
+                    <a class="managed-resource-option-view" :href="resourceViewHref('/hosts', { host: String(value) })" target="_blank" rel="noopener noreferrer" @mousedown.stop @click.stop>查看</a>
+                  </span>
+                </template>
+              </a-select>
               <a-button
                 v-if="auth.canAny(['cluster.manage'])"
                 class="create-relation"
