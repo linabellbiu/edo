@@ -91,6 +91,7 @@ const taskMeta = Object.fromEntries(
 ) as Record<TaskNodeType, TaskDefinition>
 const taskCategories = ['全部', '构建', '测试', '扫描', '发布', '部署', '工具'] as const
 const DEFAULT_RUNTIME_IMAGE = 'alpine:3.22'
+const DEFAULT_TAG_PATTERN = 'v*'
 const runtimeImageOptions = ['alpine:3.22', 'node:24-alpine', 'golang:1.26-alpine', 'python:3.14-alpine', 'maven:3.9-eclipse-temurin-21-alpine'].map(value => ({ value }))
 const workflowPresetCategories: Array<{ key: WorkflowPresetCategory; label: string; icon: typeof GitBranch }> = [
   { key: 'quick', label: '快速开始', icon: Sparkles },
@@ -250,7 +251,7 @@ function createSourceNode(): WorkflowNode {
     config: {
       branch,
       events: ['manual', 'push'],
-      tag_pattern: 'v*',
+      tag_pattern: DEFAULT_TAG_PATTERN,
       pr_target_pattern: branch,
       pr_source_pattern: '*',
       pr_actions: ['opened', 'updated', 'merged'],
@@ -299,7 +300,9 @@ function defaultDraft() {
 }
 
 function graphToDraft(value: Workflow) {
-  sources.value = value.source ? [cloneWorkflowValue(value.source)] : []
+  const source = value.source ? cloneWorkflowValue(value.source) : undefined
+  if (source && !source.config.tag_pattern && !source.config.events?.includes('tag')) source.config.tag_pattern = DEFAULT_TAG_PATTERN
+  sources.value = source ? [source] : []
   stages.value = (value.stages || []).map(stage => ({
     id: stage.id,
     name: stage.name,
@@ -1497,7 +1500,7 @@ onBeforeRouteLeave(async () => {
                 </a-form-item>
               </template>
               <a-form-item v-if="selectedNode.config.events?.includes('tag')" label="Tag 规则">
-                <a-input :value="selectedNode.config.tag_pattern" :disabled="!canManage" placeholder="v*" @update:value="updateSelectedNode({}, { tag_pattern: String($event) })" />
+                <a-input :value="selectedNode.config.tag_pattern" :disabled="!canManage" :placeholder="DEFAULT_TAG_PATTERN" @update:value="updateSelectedNode({}, { tag_pattern: String($event) })" />
               </a-form-item>
               <p class="panel-note">EDO 主动检查远程引用，Webhook 只是可选的低延迟通道。</p>
             </template>
