@@ -49,7 +49,7 @@ interface PlanExecutionGroup{id:string;name:string;mode:string;failurePolicy:str
 interface ReleasePlanEditorValue{id:string;description:string;groups:Array<{id:string;name:string;mode:'parallel'|'sequential';failure_policy:'stop'|'continue';depends_on_group_ids:string[];applications:Array<{application_id:string;manual_deploy:boolean;source_type:string;source_value:string}>}>}
 
 const applications=ref<Application[]>([]),repositories=ref<Repository[]>([]),credentials=ref<Credential[]>([]),buildPlans=ref<BuildPlan[]>([]),registries=ref<Registry[]>([]),runs=ref<Run[]>([]),releasePlans=ref<ReleasePlan[]>([]),deployments=ref<DeploymentRecord[]>([]),artifacts=ref<Artifact[]>([])
-const loading=ref(false),saving=ref(false),resourceMutationID=ref(''),formOpen=ref(false),editingID=ref(''),registryTested=ref(false),testing=ref(false),manualOpen=ref(false),manualApplicationID=ref(''),manualWorkflowID=ref(''),manualApplications=ref<Application[]>([]),commitOpen=ref(false),commitOptions=ref<Array<{ref:string;name:string;sha:string;kind:'branch'|'tag'}>>([]),selectedRef=ref(''),selectedSource=ref(''),manualSources=ref<Array<{id:string;name:string;environment?:string}>>([]),currentRun=ref<Run|null>(null),currentRunSelectionKey=ref(''),selectedRunID=ref(''),log=ref({open:false,runID:'',title:'',status:''})
+const loading=ref(false),saving=ref(false),resourceMutationID=ref(''),formOpen=ref(false),editingID=ref(''),registryTested=ref(false),testing=ref(false),repositoryTestingID=ref(''),manualOpen=ref(false),manualApplicationID=ref(''),manualWorkflowID=ref(''),manualApplications=ref<Application[]>([]),commitOpen=ref(false),commitOptions=ref<Array<{ref:string;name:string;sha:string;kind:'branch'|'tag'}>>([]),selectedRef=ref(''),selectedSource=ref(''),manualSources=ref<Array<{id:string;name:string;environment?:string}>>([]),currentRun=ref<Run|null>(null),currentRunSelectionKey=ref(''),selectedRunID=ref(''),log=ref({open:false,runID:'',title:'',status:''})
 const expandedApplications=ref<Record<string,boolean>>({}),expandedDeployments=ref<Record<string,boolean>>({}),dockerRuntimeContainers=ref<Record<string,DockerContainerRecord[]>>({}),dockerRuntimeLoading=ref<Record<string,boolean>>({}),dockerRuntimeLoaded=ref<Record<string,boolean>>({}),dockerRuntimeErrors=ref<Record<string,string>>({})
 const containerLogs=ref({open:false,title:'',path:''}),terminal=ref({open:false,title:'',path:''})
 const buildImageDestination=ref<'local'|'registry'>('local'),buildArgsText=ref(''),buildEnvironmentText=ref(''),selectedBuildPlanID=ref(''),buildPlanView=ref<'overview'|'artifacts'>('overview'),artifactApplicationID=ref(''),artifactLoading=ref(false),artifactUploading=ref(false),artifactDownloadingID=ref('')
@@ -58,7 +58,8 @@ const releasePlanEditorOpen=ref(false),releasePlanEditorPlan=ref<ReleasePlan|nul
 const releasePlanAddApplicationOpen=ref(false),releasePlanAddApplicationPlanID=ref(''),releasePlanAddApplicationGroupID=ref(''),releasePlanAddApplicationIDs=ref<string[]>([])
 let releaseTimer=0
 let planExecutionController:AbortController|null=null
-const appForm=reactive({name:'',description:'',repository_id:'',poll_interval_seconds:5})
+const DEFAULT_APPLICATION_POLL_INTERVAL=3
+const appForm=reactive({name:'',description:'',repository_id:'',poll_interval_seconds:DEFAULT_APPLICATION_POLL_INTERVAL})
 const repoForm=reactive({name:'',provider:'github',clone_url:'',default_branch:'main',auth_type:'none',username:'',credential_id:'',api_credential_id:'',webhook_enabled:true,allow_insecure_http:false})
 const DEFAULT_RUNTIME_IMAGE='alpine:3.22'
 const runtimeImageOptions=['alpine:3.22','node:24-alpine','golang:1.26-alpine','maven:3.9-eclipse-temurin-21-alpine'].map(value=>({value}))
@@ -297,7 +298,7 @@ function parseVariableText(source:string,label:string){
 }
 function resetForms(){
  editingID.value='';registryTested.value=false;buildImageDestination.value='local';buildArgsText.value='';buildEnvironmentText.value=''
- Object.assign(appForm,{name:'',description:'',repository_id:'',poll_interval_seconds:5})
+ Object.assign(appForm,{name:'',description:'',repository_id:'',poll_interval_seconds:DEFAULT_APPLICATION_POLL_INTERVAL})
 	 Object.assign(repoForm,{name:'',provider:'github',clone_url:'',default_branch:'main',auth_type:'none',username:'',credential_id:'',api_credential_id:'',webhook_enabled:true,allow_insecure_http:false})
  Object.assign(buildForm,{name:'',kind:'dockerfile',description:'',script:'',dockerfile_path:'Dockerfile',context_path:'.',working_directory:'.',artifact_path:'',runtime_image:DEFAULT_RUNTIME_IMAGE,image_registry_id:'',target_stage:'',platform:'',pull:true,cache_enabled:true,timeout_seconds:1800})
  Object.assign(registryForm,{name:'',provider:'generic',endpoint:'https://',namespace:'',username:'',credential:'',allow_insecure_http:false})
@@ -325,7 +326,7 @@ function edit(row:ResourceRecord){
  editingID.value=String(row.id)
  if(props.section==='applications'){
   const item=row as Application
-  Object.assign(appForm,{name:item.name,description:item.description||'',repository_id:item.repository_id,poll_interval_seconds:item.poll_interval_seconds||5})
+  Object.assign(appForm,{name:item.name,description:item.description||'',repository_id:item.repository_id,poll_interval_seconds:item.poll_interval_seconds||DEFAULT_APPLICATION_POLL_INTERVAL})
  }
  if(props.section==='repositories'){
   const item=row as Repository
@@ -452,6 +453,7 @@ function confirmDeleteBuildPlan(plan:Pick<BuildPlan,'id'|'name'>){
  })
 }
 async function testRepository(){testing.value=true;try{const payload={...repoForm,credential_id:repoForm.auth_type==='none'?null:repoForm.credential_id||null,api_credential_id:repoForm.provider==='generic'?'':repoForm.api_credential_id||'',credential:null,regenerate_webhook:false};const result=editingID.value?await client.post<RefResult>(`/repositories/${editingID.value}/test`,undefined,{timeout:35000}):await client.post<RefResult>('/repositories/test',payload,{timeout:35000});message.success(`连接成功：${result.data.branches?.length||0} 个分支，${result.data.tags?.length||0} 个标签`)}catch(error){message.error(apiErrorMessage(error))}finally{testing.value=false}}
+async function testStoredRepository(repository:Repository){repositoryTestingID.value=repository.id;try{const result=await client.post<RefResult>(`/repositories/${repository.id}/test`,undefined,{timeout:35000});message.success(`连接成功：${result.data.branches?.length||0} 个分支，${result.data.tags?.length||0} 个标签`);await refresh()}catch(error){message.error(apiErrorMessage(error))}finally{repositoryTestingID.value=''}}
 async function testRegistry(){testing.value=true;registryTested.value=false;try{await client.post('/image-registries/test',registryRequestPayload(),{timeout:35000});registryTested.value=true;message.success('镜像仓库登录成功')}catch(error){message.error(apiErrorMessage(error))}finally{testing.value=false}}
 async function action(path:string){try{await client.post(path,undefined,{timeout:35000});await refresh()}catch(error){message.error(apiErrorMessage(error))}}
 function openLogs(run:Run){log.value={open:true,runID:run.id,title:`${applications.value.find(item=>item.id===run.application_id)?.name||'应用'} · 流水线日志`,status:run.status}}
@@ -914,7 +916,7 @@ onBeforeUnmount(()=>{resetPlanExecution();clearInterval(releaseTimer);document.r
    <template #cell-timeout_seconds="{value}">{{ value }} 秒</template>
    <template #actions="{row}">
     <a-button v-if="canManage&&props.section==='repositories'" type="link" @click="edit(row)">编辑</a-button>
-    <a-button v-if="props.section==='repositories'" type="link" @click="action(`/repositories/${row.id}/test`)">测试</a-button>
+    <a-button v-if="props.section==='repositories'" type="link" :loading="repositoryTestingID===String(row.id)" :disabled="Boolean(repositoryTestingID)&&repositoryTestingID!==String(row.id)" @click="testStoredRepository(row as Repository)">测试</a-button>
     <a-button v-if="props.section==='repositories'&&auth.canAny(['repository.secret.read'])" type="link" @click="showWebhook(row as Repository)">Webhook</a-button>
    </template>
   </ResourceTable>
