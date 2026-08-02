@@ -285,7 +285,7 @@ func createReleasePlanExecutionHTTPApplication(
 	}
 	now := time.Now().UTC()
 	environment := model.Environment{ID: uuid.NewString(), Name: "发布计划 HTTP 环境", IsActive: true, CreatedBy: "admin", CreatedAt: now, UpdatedAt: now}
-	host := model.Host{ID: uuid.NewString(), Name: "发布计划 HTTP 主机", Mode: model.HostModeSSH, SSHPort: 22, IsActive: true, CreatedBy: "admin", CreatedAt: now, UpdatedAt: now}
+	host := model.Host{ID: uuid.NewString(), Name: "发布计划 HTTP 主机", Mode: model.HostModeSSH, Architecture: model.HostArchitectureAMD64, SSHPort: 22, IsActive: true, CreatedBy: "admin", CreatedAt: now, UpdatedAt: now}
 	endpoint := model.DockerEndpoint{
 		ID: uuid.NewString(), Name: "发布计划 HTTP Docker", HostID: host.ID, Host: "unix:///var/run/docker.sock",
 		IsActive: true, CreatedBy: "admin", CreatedAt: now, UpdatedAt: now,

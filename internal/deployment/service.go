@@ -240,11 +240,27 @@ func (s *Service) SetTargetActive(ctx context.Context, id string, active bool) e
 }
 
 func (s *Service) List(ctx context.Context, limit int) ([]model.DeploymentRecord, error) {
+	return s.list(ctx, "", limit)
+}
+
+func (s *Service) ListForPipelineRun(ctx context.Context, pipelineRunID string, limit int) ([]model.DeploymentRecord, error) {
+	normalizedID := strings.TrimSpace(pipelineRunID)
+	if normalizedID == "" || normalizedID != pipelineRunID || len(normalizedID) > 36 || strings.ContainsAny(normalizedID, "\x00\r\n") {
+		return nil, ErrInvalidDeploymentState
+	}
+	return s.list(ctx, normalizedID, limit)
+}
+
+func (s *Service) list(ctx context.Context, pipelineRunID string, limit int) ([]model.DeploymentRecord, error) {
 	if limit < 1 || limit > 200 {
 		limit = 50
 	}
 	var records []model.DeploymentRecord
-	if err := s.db.WithContext(ctx).Order("created_at DESC").Limit(limit).Find(&records).Error; err != nil {
+	query := s.db.WithContext(ctx)
+	if pipelineRunID != "" {
+		query = query.Where("pipeline_run_id = ?", pipelineRunID)
+	}
+	if err := query.Order("created_at DESC").Limit(limit).Find(&records).Error; err != nil {
 		return nil, fmt.Errorf("查询发布记录失败: %w", err)
 	}
 	return records, nil
@@ -353,12 +369,9 @@ func (s *Service) requestAndRun(
 		input.ComposeYAML, input.ComposeService, input.ComposeDigest, input.TimeoutSeconds = "", "", "", 0
 		input.DockerConfig, input.DockerConfigDigest = model.DockerContainerConfig{}, ""
 	}
-	if target.Platform == model.DeploymentDocker && strings.TrimSpace(target.WorkloadName) == "" {
-		if input.PlanKind != model.DeploymentPlanDocker {
-			return nil, ErrInvalidTarget
-		}
-		workloadName, nameErr := generatedDockerWorkloadName(
-			input.ApplicationName, input.ApplicationID, input.DeploymentPlanID, target.ID,
+	if target.Platform == model.DeploymentDocker && input.PlanKind == model.DeploymentPlanDocker {
+		workloadName, nameErr := ResolveDockerWorkloadName(
+			target.WorkloadName, input.ApplicationName, input.ApplicationID, input.DeploymentPlanID, target.ID,
 		)
 		if nameErr != nil {
 			return nil, nameErr
@@ -366,6 +379,8 @@ func (s *Service) requestAndRun(
 		targetSnapshot := *target
 		targetSnapshot.WorkloadName = workloadName
 		target = &targetSnapshot
+	} else if target.Platform == model.DeploymentDocker && strings.TrimSpace(target.WorkloadName) == "" {
+		return nil, ErrInvalidTarget
 	}
 	input.PipelineRunID = strings.TrimSpace(input.PipelineRunID)
 	input.WorkflowNodeID = strings.TrimSpace(input.WorkflowNodeID)
@@ -399,15 +414,10 @@ func (s *Service) requestAndRun(
 	if !created {
 		return record, nil
 	}
-	if err := s.run(ctx, record.ID, input.ExpectedImageID, &commandExecution{
+	executionErr := s.run(ctx, record.ID, input.ExpectedImageID, &commandExecution{
 		registryAuth: input.RegistryAuth, stdout: input.Stdout, stderr: input.Stderr,
-	}); err != nil {
-		return record, err
-	}
-	if err := s.db.WithContext(ctx).First(record, "id = ?", record.ID).Error; err != nil {
-		return nil, fmt.Errorf("读取流水线发布结果失败: %w", err)
-	}
-	return record, nil
+	})
+	return s.loadPipelineReleaseResult(ctx, record, executionErr)
 }
 
 type commandExecution struct {
@@ -489,16 +499,39 @@ func (s *Service) requestCommandAndRun(
 		environment[key] = value
 	}
 	environment["EDO_DEPLOYMENT_ID"] = record.ID
-	if err := s.run(ctx, record.ID, "", &commandExecution{
+	executionErr := s.run(ctx, record.ID, "", &commandExecution{
 		environment: environment, artifact: input.Artifact, artifactName: input.ArtifactName,
 		artifactDigest: input.ArtifactDigest, stdout: input.Stdout, stderr: input.Stderr,
-	}); err != nil {
-		return record, err
+	})
+	return s.loadPipelineReleaseResult(ctx, record, executionErr)
+}
+
+func (s *Service) loadPipelineReleaseResult(
+	ctx context.Context,
+	record *model.DeploymentRecord,
+	executionErr error,
+) (*model.DeploymentRecord, error) {
+	if record == nil || record.ID == "" {
+		if executionErr != nil {
+			return record, executionErr
+		}
+		return nil, ErrDeploymentNotFound
 	}
-	if err := s.db.WithContext(ctx).First(record, "id = ?", record.ID).Error; err != nil {
-		return nil, fmt.Errorf("读取命令脚本流水线发布结果失败: %w", err)
+	loadContext := ctx
+	cancel := func() {}
+	if executionErr != nil {
+		loadContext, cancel = context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 	}
-	return record, nil
+	defer cancel()
+	if err := s.db.WithContext(loadContext).First(record, "id = ?", record.ID).Error; err != nil {
+		if executionErr != nil {
+			s.logger.Error("读取流水线发布失败结果失败", "operation", "pipeline_release_result_load",
+				"deployment_id", record.ID, "err", err, "cause", executionErr)
+			return record, executionErr
+		}
+		return nil, fmt.Errorf("读取流水线发布结果失败: %w", err)
+	}
+	return record, executionErr
 }
 
 func validExecutionTargetSnapshot(targetID string, target *model.DeploymentTarget) bool {
@@ -952,6 +985,11 @@ func (s *Service) run(ctx context.Context, deploymentID, expectedImageID string,
 			}
 			s.logger.Error("Docker Compose 部署失败", "operation", "compose_deployment_execute", "deployment_id", deploymentID,
 				"target_id", record.TargetID, "runtime_id", record.RuntimeID, "service", record.ComposeService, "err", err)
+		} else if record.Platform == model.DeploymentDocker {
+			code, message = dockerContainerFailureDetails(err)
+			s.logger.Error("Docker 容器部署失败", "operation", "docker_container_deployment_execute",
+				"deployment_id", deploymentID, "target_id", record.TargetID, "runtime_id", record.RuntimeID,
+				"container_name", record.WorkloadName, "err", err)
 		}
 		return s.markFailed(ctx, deploymentID, code, message, err, previousImage, commandExitCode)
 	}
@@ -976,6 +1014,23 @@ func (s *Service) run(ctx context.Context, deploymentID, expectedImageID string,
 		return fmt.Errorf("记录发布成功状态失败: %w", err)
 	}
 	return nil
+}
+
+func dockerContainerFailureDetails(err error) (string, string) {
+	switch {
+	case errors.Is(err, dockerengine.ErrContainerRestarted):
+		return "docker_container_restarted", "Docker 容器启动失败：容器启动后退出并进入重启，请查看容器日志"
+	case errors.Is(err, dockerengine.ErrContainerNotRunning):
+		return "docker_container_not_running", "Docker 容器启动失败：容器未保持运行，请查看容器日志"
+	case errors.Is(err, dockerengine.ErrContainerUnhealthy):
+		return "docker_container_unhealthy", "Docker 容器启动失败：健康检查未通过，请查看容器日志"
+	case errors.Is(err, dockerengine.ErrContainerReadinessTimeout):
+		return "docker_container_readiness_timeout", "Docker 容器启动超时：未在规定时间内就绪，请查看容器日志"
+	case errors.Is(err, ErrInvalidTarget):
+		return "docker_deployment_config_invalid", "Docker 部署配置无效，请检查部署方案"
+	default:
+		return "docker_deployment_failed", "Docker 容器部署失败，请查看流水线日志和容器日志"
+	}
 }
 
 func (s *Service) acquireTargetLock(ctx context.Context, record *model.DeploymentRecord) (*redislock.Lock, error) {
@@ -1250,7 +1305,17 @@ func (s *Service) resolveEnvironmentTarget(
 	return candidates[0].host, candidates[0].capability, nil
 }
 
-func generatedDockerWorkloadName(applicationName, applicationID, deploymentPlanID, targetID string) (string, error) {
+// ResolveDockerWorkloadName 固定 Docker 容器部署在本次运行中使用的容器名称。
+// 用户未配置名称时，名称稳定绑定应用、部署方案和内部目标，流水线快照与发布记录
+// 必须共同使用这个结果，避免执行阶段生成名称后破坏不可变快照的一致性。
+func ResolveDockerWorkloadName(configuredName, applicationName, applicationID, deploymentPlanID, targetID string) (string, error) {
+	configuredName = strings.TrimSpace(configuredName)
+	if configuredName != "" {
+		if !workloadNamePattern.MatchString(configuredName) {
+			return "", ErrInvalidTarget
+		}
+		return configuredName, nil
+	}
 	applicationName = strings.TrimSpace(applicationName)
 	applicationID = strings.TrimSpace(applicationID)
 	deploymentPlanID = strings.TrimSpace(deploymentPlanID)

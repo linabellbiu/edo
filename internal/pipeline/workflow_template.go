@@ -31,6 +31,64 @@ type WorkflowTemplateResult struct {
 	Issues           []WorkflowIssue                `json:"issues"`
 }
 
+func (s *Service) CreateWorkflowTemplateFromPreset(ctx context.Context, actorID, presetKey, runtimeVersion string) (*WorkflowTemplateResult, error) {
+	preset, ok := findWorkflowPreset(presetKey)
+	if !ok {
+		return nil, ErrInvalidWorkflow
+	}
+	var runtime WorkflowRuntimeVersion
+	var err error
+	if preset.Key != workflowPresetBlank {
+		runtime, err = s.requirePreparedWorkflowRuntime(ctx, preset.language, runtimeVersion)
+		if err != nil {
+			return nil, err
+		}
+	}
+	name, err := s.nextWorkflowTemplateName(ctx, preset.Name)
+	if err != nil {
+		if s.logger != nil {
+			s.logger.Error("生成流水线方案默认名称失败", "operation", "workflow_template_preset_name", "preset_key", presetKey, "err", err)
+		}
+		return nil, errors.New("创建流水线方案失败")
+	}
+	workflow := defaultWorkflow(&model.Application{Name: name, Repository: model.GitRepository{DefaultBranch: "main"}}, actorID, time.Now().UTC())
+	workflow.Name = name
+	workflow.Stages = []model.WorkflowStage{}
+	if preset.Key != workflowPresetBlank {
+		workflow.Stages = buildWorkflowPresetStages(preset, runtime)
+	}
+	return s.CreateWorkflowTemplate(ctx, actorID, WorkflowTemplateInput{
+		Description: preset.Description,
+		WorkflowInput: WorkflowInput{
+			SchemaVersion: model.WorkflowSchemaVersion,
+			Name:          workflow.Name,
+			Source:        workflow.Source,
+			Stages:        workflow.Stages,
+			Activate:      false,
+		},
+	})
+}
+
+func (s *Service) nextWorkflowTemplateName(ctx context.Context, base string) (string, error) {
+	var names []string
+	if err := s.db.WithContext(ctx).Unscoped().Model(&model.ReleaseWorkflowTemplate{}).Pluck("name", &names).Error; err != nil {
+		return "", err
+	}
+	used := make(map[string]struct{}, len(names))
+	for _, name := range names {
+		used[name] = struct{}{}
+	}
+	if _, exists := used[base]; !exists {
+		return base, nil
+	}
+	for suffix := 2; ; suffix++ {
+		candidate := fmt.Sprintf("%s %d", base, suffix)
+		if _, exists := used[candidate]; !exists {
+			return candidate, nil
+		}
+	}
+}
+
 func (s *Service) ListWorkflowTemplates(ctx context.Context) ([]model.ReleaseWorkflowTemplate, error) {
 	var templates []model.ReleaseWorkflowTemplate
 	if err := s.db.WithContext(ctx).Order("name ASC").Find(&templates).Error; err != nil {

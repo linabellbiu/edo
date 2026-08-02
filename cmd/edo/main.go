@@ -44,6 +44,7 @@ import (
 	"edo/internal/legacyimport"
 	"edo/internal/logging"
 	"edo/internal/logretention"
+	"edo/internal/manageddirectory"
 	"edo/internal/model"
 	"edo/internal/monitor"
 	"edo/internal/notification"
@@ -452,6 +453,42 @@ func runServer(ctx context.Context, cfg config.Config, logger *slog.Logger, runt
 	}); err != nil {
 		logger.Error("应用运行日志设置失败，继续使用启动配置", "operation", "runtime_logging_bootstrap", "err", err)
 	}
+	runtimeDirectories, err := configurationService.GetRuntimeDirectorySettings(serviceCtx, configuration.RuntimeDirectorySettings{
+		WorkspaceDirectory:     cfg.Git.Directory,
+		BuildDirectory:         cfg.Artifacts.BuildDirectory,
+		CacheDirectory:         cfg.Git.CacheDirectory,
+		LocalArtifactDirectory: cfg.Artifacts.Directory,
+	})
+	if err != nil {
+		logger.Error("读取运行目录设置失败", "operation", "runtime_directories_bootstrap", "err", err)
+		return errors.New("运行目录设置无效")
+	}
+	workspaceDirectory, err := manageddirectory.Prepare(runtimeDirectories.WorkspaceDirectory, "repository-build", true)
+	if err != nil {
+		logger.Error("准备仓库工作区目录失败", "operation", "runtime_directories_bootstrap", "err", err)
+		return errors.New("仓库工作区目录不可用")
+	}
+	buildDirectory, err := manageddirectory.Prepare(runtimeDirectories.BuildDirectory, "build", true)
+	if err != nil {
+		logger.Error("准备构建目录失败", "operation", "runtime_directories_bootstrap", "err", err)
+		return errors.New("构建目录不可用")
+	}
+	cacheDirectory, err := manageddirectory.Prepare(runtimeDirectories.CacheDirectory, "repository-cache", true)
+	if err != nil {
+		logger.Error("准备仓库缓存目录失败", "operation", "runtime_directories_bootstrap", "err", err)
+		return errors.New("仓库缓存目录不可用")
+	}
+	artifactDirectory, err := manageddirectory.Prepare(runtimeDirectories.LocalArtifactDirectory, "artifacts", true)
+	if err != nil {
+		logger.Error("准备本地产物目录失败", "operation", "runtime_directories_bootstrap", "err", err)
+		return errors.New("本地产物目录不可用")
+	}
+	if err := manageddirectory.ValidateSeparate(workspaceDirectory, buildDirectory, cacheDirectory, artifactDirectory); err != nil {
+		logger.Error("运行目录存在包含关系", "operation", "runtime_directories_bootstrap", "err", err)
+		return manageddirectory.ErrDirectoryOverlap
+	}
+	cfg.Git.Directory, cfg.Git.CacheDirectory = workspaceDirectory, cacheDirectory
+	cfg.Artifacts.BuildDirectory, cfg.Artifacts.Directory = buildDirectory, artifactDirectory
 	logRetentionService := logretention.NewService(resources.Database, configurationService, logger)
 	databaseTransferService := database.NewTransferService(serviceCtx, resources.Database, cfg.Database.Driver, logger)
 	sessions := auth.NewSessionStore(resources.Redis, cfg.Auth.SessionTTL)
@@ -470,7 +507,10 @@ func runServer(ctx context.Context, cfg config.Config, logger *slog.Logger, runt
 	}
 	identityService := identity.NewService(resources.Database, resources.Redis, secretManager, accounts, loginService, limiter)
 	pipelineService := pipeline.NewService(resources.Database, repositoryService, secretManager)
-	artifactService, err := artifactmanager.NewService(resources.Database, cfg.Artifacts.Directory, cfg.Artifacts.MaxBytes, logger)
+	artifactService, err := artifactmanager.NewService(
+		resources.Database, cfg.Artifacts.Directory, cfg.Artifacts.MaxBytes, logger,
+		artifactmanager.WithBuildDirectory(cfg.Artifacts.BuildDirectory),
+	)
 	if err != nil {
 		logger.Error("初始化制品服务失败", "operation", "artifact_bootstrap", "directory", cfg.Artifacts.Directory, "err", err)
 		return errors.New("制品服务初始化失败")
@@ -901,5 +941,6 @@ func newRepositoryService(
 		db, secretManager, credentialService, repository.NewGitClient(cfg.Git), cfg.NATS.MaxAttempts,
 		repository.WithWebhookGate(configurationService),
 		repository.WithCheckoutDirectory(cfg.Git.Directory),
+		repository.WithCacheDirectory(cfg.Git.CacheDirectory),
 	), nil
 }

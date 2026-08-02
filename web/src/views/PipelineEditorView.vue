@@ -11,6 +11,7 @@ import {
 
 import client from '@/api/client'
 import { apiErrorMessage } from '@/api/resources'
+import WorkflowPresetModal from '@/components/WorkflowPresetModal.vue'
 import { useAuthStore } from '@/stores/auth'
 import type {
   PipelineBuildPlan,
@@ -107,6 +108,7 @@ const saveConfirmSubmitting = ref(false)
 const dirty = ref(false)
 const autoSaveFailed = ref(false)
 const immersive = ref(false)
+const presetOpen = ref(false)
 const panelMode = ref<PanelMode>('closed')
 const propertyTab = ref<PropertyTab>('common')
 const libraryStageID = ref('')
@@ -118,7 +120,6 @@ const environmentVariableTexts = reactive<Record<string, string>>({})
 const environmentVariableErrors = reactive<Record<string, string>>({})
 
 let autoSaveTimer = 0
-let createStarted = false
 let editVersion = 0
 let stageSortable: Sortable | null = null
 let stageListElement: HTMLElement | null = null
@@ -332,8 +333,11 @@ async function loadResources() {
     templates.value = templateResult.data.workflow_templates || []
     buildPlans.value = buildPlanResult.data.build_plans || []
     deploymentPlans.value = deploymentPlanResult.data.deployment_plans || []
-    if (publicMode.value && route.query.create === '1' && canManage.value) await createTemplate()
-    else if (applicationID.value) {
+    if (publicMode.value && route.query.create === '1' && canManage.value) {
+      presetOpen.value = true
+      await router.replace({ path: '/pipeline-plans/editor' })
+    }
+    if (applicationID.value) {
       await loadApplication(applicationID.value)
       if (workflowID.value && route.query.workflow !== workflowID.value) {
         await router.replace({ query: { application: applicationID.value, workflow: workflowID.value } })
@@ -451,46 +455,20 @@ async function chooseWorkflow(id: string) {
   }
 }
 
-async function createTemplate() {
-  if (!canManage.value || createStarted) return
+async function openCreatedTemplate(result: WorkflowTemplateResponse) {
+  const created = result.workflow_template
+  const existingIndex = templates.value.findIndex(item => item.id === created.id)
+  if (existingIndex >= 0) templates.value[existingIndex] = created
+  else templates.value.push(created)
+  templateID.value = created.id
+  applicationID.value = ''
+  await router.replace({ query: { template: created.id } })
+  loadGraph(created, result.issues || [])
+}
+
+async function openPresetSelector() {
   if (dirty.value && !(await confirmDiscardChanges())) return
-  createStarted = true
-  saving.value = true
-  try {
-    const draft = defaultDraft()
-    const graph = compileGraph(draft.sources, draft.stages)
-    const now = new Date()
-    const name = `新流水线方案 ${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')} ${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`
-    const result = await client.post<WorkflowTemplateResponse>('/workflow-templates', {
-      name,
-      description: '按代码源、构建和发布阶段顺序执行的流水线。',
-      revision: 0,
-      activate: false,
-      schema_version: 1,
-      source: graph.source,
-      stages: graph.stages,
-    })
-    const created = result.data.workflow_template
-    templates.value.push(created)
-    const previousTemplateID = templateID.value
-    const previousApplicationID = applicationID.value
-    templateID.value = created.id
-    applicationID.value = ''
-    try {
-      await router.replace({ query: { template: created.id } })
-    } catch (error) {
-      templateID.value = previousTemplateID
-      applicationID.value = previousApplicationID
-      throw error
-    }
-    loadGraph(created, result.data.issues || [])
-    message.success('已创建流水线方案草稿')
-  } catch (error) {
-    message.error(apiErrorMessage(error))
-  } finally {
-    createStarted = false
-    saving.value = false
-  }
+  presetOpen.value = true
 }
 
 function payload(activate: boolean) {
@@ -811,7 +789,10 @@ function triggerVersionSummary(node: WorkflowNode) {
 function taskSummary(node: WorkflowNode) {
   if (node.type === 'build') {
     const plan = buildPlans.value.find(item => item.id === node.config.build_plan_id)
-    return plan ? `${plan.name} · ${plan.kind === 'dockerfile' ? '镜像' : '文件制品'}` : '未选择构建方案'
+    const toolchain = node.config.toolchain_language && node.config.toolchain_version
+      ? `${toolchainName(node.config.toolchain_language)} ${node.config.toolchain_version} · `
+      : ''
+    return plan ? `${toolchain}${plan.name} · ${plan.kind === 'dockerfile' ? '镜像' : '文件制品'}` : `${toolchain}未选择构建方案`
   }
   if (node.type === 'shell') {
     const firstLine = node.config.script?.split(/\r?\n/).find(line => line.trim())?.trim()
@@ -822,6 +803,20 @@ function taskSummary(node: WorkflowNode) {
     return plan ? `${plan.name} · ${deploymentKindNames[plan.kind]}` : '未选择部署方案'
   }
   return node.config.description || taskMeta[node.type as TaskNodeType]?.hint || ''
+}
+
+function toolchainName(language?: string) {
+  if (language === 'go') return 'Go'
+  if (language === 'nodejs') return 'Node.js'
+  if (language === 'python') return 'Python'
+  return language || ''
+}
+
+function toolchainBuildArgument(language?: string) {
+  if (language === 'go') return 'GO_VERSION'
+  if (language === 'nodejs') return 'NODE_VERSION'
+  if (language === 'python') return 'PYTHON_VERSION'
+  return ''
 }
 
 function deploymentPlanAcceptsBuild(plan: DeploymentPlan, buildPlan?: PipelineBuildPlan) {
@@ -1102,7 +1097,7 @@ onBeforeRouteLeave(async () => {
           :aria-label="publicMode ? '方案名称' : '流水线名称'"
           @change="updateWorkflowMeta"
         />
-        <a-button v-if="canManage && publicMode" :disabled="saving || createStarted" @click="createTemplate"><Plus :size="15" />新建方案</a-button>
+        <a-button v-if="canManage && publicMode" :disabled="saving" @click="openPresetSelector"><Plus :size="15" />新建方案</a-button>
         <a-button v-if="workflow" :disabled="saving" @click="validateGraph"><Scan :size="15" />检查</a-button>
         <a-button v-if="workflow && canManage" :loading="saving" @click="requestSave"><Save :size="15" />{{ workflow.is_active ? '保存并更新' : '保存草稿' }}</a-button>
         <a-button v-if="workflow && canManage && !workflow.is_active" type="primary" :loading="saving" @click="save(true)">{{ publicMode ? '启用方案' : '启用流水线' }}</a-button>
@@ -1111,7 +1106,7 @@ onBeforeRouteLeave(async () => {
 
     <a-skeleton v-if="loading && !workflow" active :paragraph="{ rows: 12 }" />
     <a-empty v-else-if="!workflow" class="pipeline-empty" :description="publicMode ? '还没有可编辑的流水线方案' : '这个应用还没有流水线'">
-      <a-button v-if="canManage && publicMode" type="primary" :disabled="saving || createStarted" @click="createTemplate">创建第一份方案</a-button>
+      <a-button v-if="canManage && publicMode" type="primary" :disabled="saving" @click="openPresetSelector">创建第一份方案</a-button>
       <a-button v-else-if="!publicMode" type="primary" @click="router.push('/applications')">返回应用配置</a-button>
     </a-empty>
 
@@ -1355,6 +1350,14 @@ onBeforeRouteLeave(async () => {
             </template>
 
             <template v-else-if="selectedNode.type === 'build'">
+              <a-alert
+                v-if="selectedNode.config.toolchain_language && selectedNode.config.toolchain_version"
+                class="panel-alert"
+                type="info"
+                show-icon
+                :message="`构建工具链：${toolchainName(selectedNode.config.toolchain_language)} ${selectedNode.config.toolchain_version}`"
+                :description="`脚本方案使用隔离镜像 ${selectedNode.config.runtime_image}；Dockerfile 方案传入 ${toolchainBuildArgument(selectedNode.config.toolchain_language)} 构建参数。`"
+              />
               <a-form-item label="构建方案" required>
                 <div class="resource-picker">
                   <a-select
@@ -1379,6 +1382,14 @@ onBeforeRouteLeave(async () => {
             </template>
 
             <template v-else-if="selectedNode.type === 'shell'">
+              <a-alert
+                v-if="selectedNode.config.toolchain_language && selectedNode.config.toolchain_version"
+                class="panel-alert"
+                type="info"
+                show-icon
+                :message="`隔离工具链：${toolchainName(selectedNode.config.toolchain_language)} ${selectedNode.config.toolchain_version}`"
+                :description="`任务使用 ${selectedNode.config.runtime_image} 运行，不读写宿主机语言版本。`"
+              />
               <a-form-item label="脚本" required><a-textarea :value="selectedNode.config.script" :rows="10" :disabled="!canManage" placeholder="填写非交互式 Shell 脚本" @update:value="updateSelectedNode({}, { script: String($event) })" /></a-form-item>
             </template>
 
@@ -1414,7 +1425,7 @@ onBeforeRouteLeave(async () => {
           </a-form>
           <a-form v-else layout="vertical">
             <template v-if="selectedNode.type === 'shell'">
-              <a-form-item label="运行镜像"><a-auto-complete :value="selectedNode.config.runtime_image || DEFAULT_RUNTIME_IMAGE" :options="runtimeImageOptions" :disabled="!canManage" placeholder="alpine:3.22" @update:value="updateSelectedNode({}, { runtime_image: String($event) })" /><small class="field-hint">镜像必须提供 /bin/sh，并使用明确 tag 或 digest；不接受裸镜像名和 latest。</small></a-form-item>
+              <a-form-item label="运行镜像"><a-auto-complete :value="selectedNode.config.runtime_image || DEFAULT_RUNTIME_IMAGE" :options="runtimeImageOptions" :disabled="!canManage || Boolean(selectedNode.config.toolchain_language)" placeholder="alpine:3.22" @update:value="updateSelectedNode({}, { runtime_image: String($event) })" /><small class="field-hint">{{ selectedNode.config.toolchain_language ? '运行镜像由模板中所选语言版本固定。' : '镜像必须提供 /bin/sh，并使用明确 tag 或 digest；不接受裸镜像名和 latest。' }}</small></a-form-item>
               <a-form-item label="工作目录"><a-input :value="selectedNode.config.working_directory" :disabled="!canManage" placeholder="." @update:value="updateSelectedNode({}, { working_directory: String($event) })" /></a-form-item>
               <a-form-item label="超时（秒）"><a-input-number :value="selectedNode.config.timeout_seconds || 600" :min="30" :max="7200" :disabled="!canManage" @update:value="updateSelectedNode({}, { timeout_seconds: Number($event || 600) })" /></a-form-item>
               <a-form-item label="环境变量" :validate-status="environmentVariableErrors[selectedNode.id] ? 'error' : undefined" :help="environmentVariableErrors[selectedNode.id]">
@@ -1462,6 +1473,7 @@ onBeforeRouteLeave(async () => {
         <a-button type="primary" html-type="button" :loading="saveConfirmSubmitting" @click.stop="confirmSaveUpdate">保存并启用</a-button>
       </template>
     </a-modal>
+    <WorkflowPresetModal v-model:open="presetOpen" @created="openCreatedTemplate" />
   </section>
 </template>
 

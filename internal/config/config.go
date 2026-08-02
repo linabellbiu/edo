@@ -29,9 +29,11 @@ const (
 	defaultWorkerLease        = 45 * time.Second
 	defaultWorkerShutdown     = 30 * time.Second
 	defaultSchedulerPoll      = 15 * time.Second
+	defaultBuildDirectory     = "data/builds"
 	defaultArtifactsDirectory = "data/artifacts"
 	defaultArtifactsMaxBytes  = int64(1024 * 1024 * 1024)
 	defaultGitDirectory       = "data/repositories"
+	defaultGitCacheDirectory  = "data/cache"
 	defaultLogDirectory       = "logs"
 	defaultLogMaxFileSizeMB   = 100
 	defaultLogCompressDays    = 3
@@ -121,6 +123,7 @@ type Git struct {
 	Timeout        time.Duration `env:"EDO_GIT_TIMEOUT"`
 	KnownHostsFile string        `env:"EDO_GIT_KNOWN_HOSTS_FILE"`
 	Directory      string        `env:"EDO_GIT_DIRECTORY"`
+	CacheDirectory string        `env:"EDO_GIT_CACHE_DIRECTORY"`
 }
 
 type Runtime struct {
@@ -136,8 +139,9 @@ type Scheduler struct {
 }
 
 type Artifacts struct {
-	Directory string `env:"EDO_ARTIFACTS_DIRECTORY"`
-	MaxBytes  int64  `env:"EDO_ARTIFACTS_MAX_BYTES"`
+	BuildDirectory string `env:"EDO_BUILD_DIRECTORY"`
+	Directory      string `env:"EDO_ARTIFACTS_DIRECTORY"`
+	MaxBytes       int64  `env:"EDO_ARTIFACTS_MAX_BYTES"`
 }
 
 func Load() (Config, error) {
@@ -153,8 +157,10 @@ func Load() (Config, error) {
 		"EDO_NATS_SUBJECT_PREFIX",
 		"EDO_NATS_DEAD_SUBJECT",
 		"EDO_LOG_DIRECTORY",
+		"EDO_BUILD_DIRECTORY",
 		"EDO_ARTIFACTS_DIRECTORY",
 		"EDO_GIT_DIRECTORY",
+		"EDO_GIT_CACHE_DIRECTORY",
 	); err != nil {
 		return Config{}, err
 	}
@@ -225,8 +231,9 @@ func Load() (Config, error) {
 		},
 		Secrets: Secrets{},
 		Git: Git{
-			Timeout:   30 * time.Second,
-			Directory: defaultGitDirectory,
+			Timeout:        30 * time.Second,
+			Directory:      defaultGitDirectory,
+			CacheDirectory: defaultGitCacheDirectory,
 		},
 		Runtime: Runtime{
 			ConnectTimeout:      10 * time.Second,
@@ -235,8 +242,9 @@ func Load() (Config, error) {
 		},
 		Scheduler: Scheduler{PollInterval: defaultSchedulerPoll},
 		Artifacts: Artifacts{
-			Directory: defaultArtifactsDirectory,
-			MaxBytes:  defaultArtifactsMaxBytes,
+			BuildDirectory: defaultBuildDirectory,
+			Directory:      defaultArtifactsDirectory,
+			MaxBytes:       defaultArtifactsMaxBytes,
 		},
 	}
 	if err := env.Parse(&cfg); err != nil {
@@ -336,11 +344,11 @@ func (c Config) Validate() error {
 		c.Logging.CompressAfterDays < 1 || c.Logging.CompressAfterDays > 3650) {
 		return errors.New("运行日志文件设置无效")
 	}
-	if strings.TrimSpace(c.Artifacts.Directory) == "" {
-		return errors.New("制品存储目录不能为空")
+	if strings.TrimSpace(c.Artifacts.BuildDirectory) == "" || strings.TrimSpace(c.Artifacts.Directory) == "" {
+		return errors.New("构建或制品存储目录不能为空")
 	}
-	if strings.TrimSpace(c.Git.Directory) == "" {
-		return errors.New("Git 仓库缓存目录不能为空")
+	if strings.TrimSpace(c.Git.Directory) == "" || strings.TrimSpace(c.Git.CacheDirectory) == "" {
+		return errors.New("Git 仓库构建或缓存目录不能为空")
 	}
 	if c.Artifacts.MaxBytes < 1 || c.Artifacts.MaxBytes > 1024*1024*1024*1024 {
 		return errors.New("单个制品大小限制必须在 1 字节到 1 TiB 之间")
@@ -367,8 +375,10 @@ func (c *Config) normalizeStrings() {
 	c.Secrets.Key = strings.TrimSpace(c.Secrets.Key)
 	c.Git.KnownHostsFile = strings.TrimSpace(c.Git.KnownHostsFile)
 	c.Git.Directory = filepath.Clean(strings.TrimSpace(c.Git.Directory))
+	c.Git.CacheDirectory = filepath.Clean(strings.TrimSpace(c.Git.CacheDirectory))
 	c.Runtime.DockerBuilderHost = strings.TrimSpace(c.Runtime.DockerBuilderHost)
 	c.Runtime.DockerBuilderTLSCertPath = strings.TrimSpace(c.Runtime.DockerBuilderTLSCertPath)
+	c.Artifacts.BuildDirectory = filepath.Clean(strings.TrimSpace(c.Artifacts.BuildDirectory))
 	c.Artifacts.Directory = strings.TrimSpace(c.Artifacts.Directory)
 }
 

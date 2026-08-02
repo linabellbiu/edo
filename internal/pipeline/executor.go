@@ -131,7 +131,8 @@ func (s *Service) ExecuteDeployTask(ctx context.Context, payload DeployTaskPaylo
 	}
 	record, err := s.deployments.RequestSnapshotAndRun(ctx, prepared.run.CreatedBy, prepared.target, request)
 	if err != nil {
-		return s.handleDeploymentExecutionError(ctx, failureState, "发布执行失败，请检查目标环境和发布记录", err)
+		return s.handleDeploymentExecutionError(ctx, failureState,
+			deploymentFailureLogMessage(record, "发布执行失败，请检查目标环境和发布记录"), err)
 	}
 	return s.completeExecution(ctx, prepared, record)
 }
@@ -208,9 +209,22 @@ func (s *Service) executeSSHDeployment(ctx context.Context, prepared *executionC
 		Stdout: output, Stderr: output,
 	})
 	if err != nil {
-		return s.handleDeploymentExecutionError(ctx, failureState, "命令脚本部署失败，请查看流水线日志", err)
+		return s.handleDeploymentExecutionError(ctx, failureState,
+			deploymentFailureLogMessage(record, "命令脚本部署失败，请查看流水线日志"), err)
 	}
 	return s.completeExecution(ctx, prepared, record)
+}
+
+func deploymentFailureLogMessage(record *model.DeploymentRecord, fallback string) string {
+	fallback = strings.TrimSpace(fallback)
+	if record == nil || record.Status != model.DeploymentFailed {
+		return fallback
+	}
+	message := strings.TrimSpace(record.ErrorMessage)
+	if message == "" || len(message) > 255 || strings.ContainsAny(message, "\x00\r\n") {
+		return fallback
+	}
+	return message
 }
 
 func (s *Service) handleDeploymentExecutionError(ctx context.Context, expected executionFailureState, message string, cause error) error {

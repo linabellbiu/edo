@@ -26,6 +26,7 @@ import (
 	"edo/internal/credential"
 	"edo/internal/database"
 	"edo/internal/deployment"
+	"edo/internal/dockerengine"
 	"edo/internal/kube"
 	"edo/internal/logging"
 	"edo/internal/model"
@@ -140,8 +141,16 @@ func newAuthTestRouter(t *testing.T) (*gin.Engine, func()) {
 		repository.NewGitClient(config.Git{Timeout: time.Second}), 4,
 		repository.WithWebhookGate(configurationService),
 	)
+	repositoryDirectories, err := repositoryService.PrepareDirectories(t.TempDir(), t.TempDir())
+	if err != nil {
+		t.Fatalf("准备接口测试运行目录失败: %v", err)
+	}
+	repositoryService.ApplyDirectories(repositoryDirectories)
 	pipelineService := pipeline.NewService(db, repositoryService, secretManager)
-	artifactService, err := artifactmanager.NewService(db, t.TempDir(), 1024*1024, logger)
+	artifactService, err := artifactmanager.NewService(
+		db, t.TempDir(), 1024*1024, logger,
+		artifactmanager.WithBuildDirectory(t.TempDir()),
+	)
 	if err != nil {
 		t.Fatalf("初始化接口测试制品服务失败: %v", err)
 	}
@@ -176,6 +185,7 @@ func newAuthTestRouter(t *testing.T) (*gin.Engine, func()) {
 	}
 	deploymentService := deployment.NewService(db, nil, nil, nil, nil, "", logger)
 	pipelineService.ConfigureExecution(nil, deploymentService, logger)
+	pipelineService.ConfigureWorkflowRuntimeManager(authTestWorkflowRuntimeManager{})
 	if _, err := accounts.CreateAdmin(context.Background(), "admin", "管理员", "correct horse battery staple"); err != nil {
 		t.Fatalf("创建测试管理员失败: %v", err)
 	}
@@ -212,6 +222,16 @@ func newAuthTestRouter(t *testing.T) (*gin.Engine, func()) {
 		_ = redisClient.Close()
 		_ = database.Close(db)
 	}
+}
+
+type authTestWorkflowRuntimeManager struct{}
+
+func (authTestWorkflowRuntimeManager) InspectScriptRuntimeImage(_ context.Context, image string) (dockerengine.ScriptRuntimeImageStatus, error) {
+	return dockerengine.ScriptRuntimeImageStatus{Image: image, ImageID: "sha256:test-runtime", Installed: true}, nil
+}
+
+func (authTestWorkflowRuntimeManager) PrepareScriptRuntimeImage(_ context.Context, image string) (dockerengine.ScriptRuntimeImageStatus, error) {
+	return dockerengine.ScriptRuntimeImageStatus{Image: image, ImageID: "sha256:test-runtime", Installed: true}, nil
 }
 
 func performJSONRequest(t *testing.T, handler http.Handler, method, path string, payload any, cookie *http.Cookie) *httptest.ResponseRecorder {

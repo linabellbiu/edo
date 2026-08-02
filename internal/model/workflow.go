@@ -30,6 +30,8 @@ type WorkflowNodeConfig struct {
 	DeploymentPlanID     string            `json:"deployment_plan_id,omitempty"`
 	Script               string            `json:"script,omitempty"`
 	RuntimeImage         string            `json:"runtime_image,omitempty"`
+	ToolchainLanguage    string            `json:"toolchain_language,omitempty"`
+	ToolchainVersion     string            `json:"toolchain_version,omitempty"`
 	WorkingDirectory     string            `json:"working_directory,omitempty"`
 	TimeoutSeconds       int               `json:"timeout_seconds,omitempty"`
 	EnvironmentVariables map[string]string `json:"environment_variables,omitempty"`

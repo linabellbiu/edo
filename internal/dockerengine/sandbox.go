@@ -22,6 +22,7 @@ import (
 	"github.com/moby/moby/api/types/container"
 	"github.com/moby/moby/api/types/mount"
 	"github.com/moby/moby/client"
+	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 )
 
 const (
@@ -43,12 +44,14 @@ var scriptEnvironmentNamePattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]{0,
 var reservedScriptContainerEnvironment = map[string]struct{}{
 	"CI": {}, "HOME": {}, "TMPDIR": {},
 	"EDO_PIPELINE_RUN_ID": {}, "EDO_APPLICATION_ID": {}, "EDO_GIT_REF": {}, "EDO_COMMIT_SHA": {},
+	"EDO_TARGET_PLATFORM": {}, "EDO_TARGET_ARCH": {}, "GOOS": {}, "GOARCH": {},
 }
 
 // ScriptContainerInput 描述一次隔离的非交互脚本执行。源码通过 Docker archive API
 // 写入匿名卷，不允许调用方传入宿主机挂载或 Docker 连接凭据。
 type ScriptContainerInput struct {
 	Image             string
+	Platform          string
 	Script            string
 	SourceDirectory   string
 	WorkingDirectory  string
@@ -66,6 +69,14 @@ type ScriptContainerResult struct {
 	ExitCode     int64
 	ImageID      string
 	ArtifactPath string
+}
+
+// ScriptRuntimeImageStatus 表示语言构建镜像在当前构建运行时中的状态。
+// 本地二进制与 Compose 会分别查询宿主机 Docker 和独立 DinD。
+type ScriptRuntimeImageStatus struct {
+	Image     string `json:"image"`
+	ImageID   string `json:"image_id,omitempty"`
+	Installed bool   `json:"installed"`
 }
 
 type ScriptContainerExitError struct {
@@ -111,7 +122,7 @@ func (s *Service) RunScriptContainer(ctx context.Context, input ScriptContainerI
 	if !strings.EqualFold(ping.OSType, "linux") {
 		return ScriptContainerResult{}, ErrScriptRuntimeImage
 	}
-	imageID, err := ensureScriptRuntimeImage(executionContext, apiClient, input.Image)
+	imageID, err := ensureScriptRuntimeImage(executionContext, apiClient, input.Image, input.Platform)
 	if err != nil {
 		return ScriptContainerResult{}, err
 	}
@@ -188,8 +199,70 @@ func (s *Service) RunScriptContainer(ctx context.Context, input ScriptContainerI
 	return result, nil
 }
 
+// InspectScriptRuntimeImage 只检查当前构建运行时，不会触发拉取。
+func (s *Service) InspectScriptRuntimeImage(ctx context.Context, image string) (ScriptRuntimeImageStatus, error) {
+	image = strings.TrimSpace(image)
+	status := ScriptRuntimeImageStatus{Image: image}
+	if s == nil || !validPinnedRuntimeImage(image) {
+		return status, ErrScriptRuntimeImage
+	}
+	apiClient, err := s.builderExecutionClient()
+	if err != nil {
+		return status, fmt.Errorf("连接构建运行时失败: %w", err)
+	}
+	defer apiClient.Close()
+	ping, err := apiClient.Ping(ctx, client.PingOptions{NegotiateAPIVersion: true})
+	if err != nil {
+		return status, fmt.Errorf("检查构建运行时失败: %w", err)
+	}
+	if !strings.EqualFold(ping.OSType, "linux") {
+		return status, ErrScriptRuntimeImage
+	}
+	inspect, err := apiClient.ImageInspect(ctx, image)
+	if err != nil {
+		if errdefs.IsNotFound(err) {
+			return status, nil
+		}
+		return status, fmt.Errorf("检查脚本运行镜像失败: %w", err)
+	}
+	if inspect.ID == "" || !strings.EqualFold(inspect.Os, "linux") {
+		return status, ErrScriptRuntimeImage
+	}
+	status.ImageID, status.Installed = inspect.ID, true
+	return status, nil
+}
+
+// PrepareScriptRuntimeImage 将缺失的镜像拉取到当前 EDO 构建运行时，
+// 不访问或修改宿主机的 Go、Node.js 和 Python 安装。
+func (s *Service) PrepareScriptRuntimeImage(ctx context.Context, image string) (ScriptRuntimeImageStatus, error) {
+	image = strings.TrimSpace(image)
+	status := ScriptRuntimeImageStatus{Image: image}
+	if s == nil || !validPinnedRuntimeImage(image) {
+		return status, ErrScriptRuntimeImage
+	}
+	apiClient, err := s.builderExecutionClient()
+	if err != nil {
+		return status, fmt.Errorf("连接构建运行时失败: %w", err)
+	}
+	defer apiClient.Close()
+	ping, err := apiClient.Ping(ctx, client.PingOptions{NegotiateAPIVersion: true})
+	if err != nil {
+		return status, fmt.Errorf("检查构建运行时失败: %w", err)
+	}
+	if !strings.EqualFold(ping.OSType, "linux") {
+		return status, ErrScriptRuntimeImage
+	}
+	imageID, err := ensureScriptRuntimeImage(ctx, apiClient, image, "")
+	if err != nil {
+		return status, err
+	}
+	status.ImageID, status.Installed = imageID, true
+	return status, nil
+}
+
 func normalizeScriptContainerInput(input ScriptContainerInput) (ScriptContainerInput, error) {
 	input.Image = strings.TrimSpace(input.Image)
+	input.Platform = strings.ToLower(strings.TrimSpace(input.Platform))
 	input.SourceDirectory = strings.TrimSpace(input.SourceDirectory)
 	input.WorkingDirectory = strings.TrimSpace(input.WorkingDirectory)
 	input.ArtifactPath = strings.TrimSpace(input.ArtifactPath)
@@ -205,7 +278,7 @@ func normalizeScriptContainerInput(input ScriptContainerInput) (ScriptContainerI
 	}
 	if input.Script == "" || len(input.Script) > maximumScriptSize || strings.ContainsRune(input.Script, '\x00') ||
 		input.Timeout < 30*time.Second || input.Timeout > 2*time.Hour ||
-		!validPinnedRuntimeImage(input.Image) || !validContainerRelativePath(input.WorkingDirectory) ||
+		!validPinnedRuntimeImage(input.Image) || !validScriptPlatform(input.Platform) || !validContainerRelativePath(input.WorkingDirectory) ||
 		(input.ArtifactPath != "" && !validContainerRelativePath(input.ArtifactPath)) ||
 		(input.ArtifactPath == "") != (input.OutputDirectory == "") || !validScriptEnvironment(input.Environment) ||
 		!validScriptSystemEnvironment(input.SystemEnvironment) {
@@ -239,6 +312,10 @@ func normalizeScriptContainerInput(input ScriptContainerInput) (ScriptContainerI
 		input.OutputDirectory = output
 	}
 	return input, nil
+}
+
+func validScriptPlatform(value string) bool {
+	return value == "" || value == "linux/amd64" || value == "linux/arm64"
 }
 
 func validPinnedRuntimeImage(value string) bool {
@@ -315,13 +392,21 @@ func secureScriptSourcePath(root, relative string) (string, error) {
 	return resolved, nil
 }
 
-func ensureScriptRuntimeImage(ctx context.Context, apiClient *client.Client, image string) (string, error) {
+func ensureScriptRuntimeImage(ctx context.Context, apiClient *client.Client, image, platform string) (string, error) {
 	inspect, err := apiClient.ImageInspect(ctx, image)
+	architecture := strings.TrimPrefix(platform, "linux/")
+	if err == nil && architecture != "" && !strings.EqualFold(inspect.Architecture, architecture) {
+		err = errdefs.ErrNotFound
+	}
 	if err != nil {
 		if !errdefs.IsNotFound(err) {
 			return "", fmt.Errorf("检查脚本运行镜像失败: %w", err)
 		}
-		pull, pullErr := apiClient.ImagePull(ctx, image, client.ImagePullOptions{})
+		pullOptions := client.ImagePullOptions{}
+		if architecture != "" {
+			pullOptions.Platforms = []ocispec.Platform{{OS: "linux", Architecture: architecture}}
+		}
+		pull, pullErr := apiClient.ImagePull(ctx, image, pullOptions)
 		if pullErr != nil {
 			return "", fmt.Errorf("拉取脚本运行镜像失败: %w", pullErr)
 		}
@@ -333,7 +418,8 @@ func ensureScriptRuntimeImage(ctx context.Context, apiClient *client.Client, ima
 			return "", fmt.Errorf("校验脚本运行镜像失败: %w", err)
 		}
 	}
-	if inspect.ID == "" || !strings.EqualFold(inspect.Os, "linux") {
+	if inspect.ID == "" || !strings.EqualFold(inspect.Os, "linux") ||
+		(architecture != "" && !strings.EqualFold(inspect.Architecture, architecture)) {
 		return "", ErrScriptRuntimeImage
 	}
 	return inspect.ID, nil
@@ -350,7 +436,7 @@ func scriptContainerCreateOptions(input ScriptContainerInput, imageID string) cl
 	}
 	labels["io.edo.managed"] = "script"
 	labels["io.edo.runtime.image"] = input.Image
-	return client.ContainerCreateOptions{
+	options := client.ContainerCreateOptions{
 		Name: "edo-script-" + strings.ReplaceAll(uuid.NewString(), "-", "")[:16],
 		Config: &container.Config{
 			Image:        imageID,
@@ -386,6 +472,10 @@ func scriptContainerCreateOptions(input ScriptContainerInput, imageID string) cl
 			},
 		},
 	}
+	if architecture := strings.TrimPrefix(input.Platform, "linux/"); architecture != "" {
+		options.Platform = &ocispec.Platform{OS: "linux", Architecture: architecture}
+	}
+	return options
 }
 
 func scriptContainerEnvironment(configured, system map[string]string) []string {

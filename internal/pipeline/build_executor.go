@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"maps"
 	"net"
 	"os"
 	"path/filepath"
@@ -313,9 +314,57 @@ func (s *Service) loadBuildExecution(ctx context.Context, payload BuildTaskPaylo
 		if !ok || plan.ID == "" || plan.ID != node.Config.BuildPlanID {
 			return nil, ErrPipelineExecutionConfig
 		}
+		platform, platformErr := workflowBuildPlatform(*snapshot, node.ID, plan)
+		if platformErr != nil {
+			return nil, platformErr
+		}
+		plan.Platform = platform
 		result.plan = plan
 	}
 	return result, nil
+}
+
+// workflowBuildPlatform 从本次运行已经冻结的下游部署目标中推导构建平台。
+// 遇到下一次构建即停止，避免把后续独立制品的部署架构错误合并到当前制品。
+func workflowBuildPlatform(snapshot workflowSnapshot, buildNodeID string, plan workflowBuildPlanSnapshot) (string, error) {
+	tasks := workflowTasks(snapshot.Stages)
+	buildIndex := -1
+	for index := range tasks {
+		if tasks[index].ID == buildNodeID {
+			buildIndex = index
+			break
+		}
+	}
+	if buildIndex < 0 {
+		return "", ErrPipelineExecutionConfig
+	}
+	platformSet := make(map[string]struct{}, 2)
+	for index := buildIndex + 1; index < len(tasks); index++ {
+		if tasks[index].Type == model.WorkflowNodeBuild {
+			break
+		}
+		if tasks[index].Type != model.WorkflowNodeDeploy {
+			continue
+		}
+		target, exists := snapshot.DeploymentTargets[tasks[index].ID]
+		if !exists {
+			return "", ErrPipelineExecutionConfig
+		}
+		platform := target.Architecture.OCIPlatform()
+		if platform == "" {
+			return "", ErrPipelineExecutionConfig
+		}
+		platformSet[platform] = struct{}{}
+	}
+	platforms := make([]string, 0, len(platformSet))
+	for platform := range platformSet {
+		platforms = append(platforms, platform)
+	}
+	sort.Strings(platforms)
+	if len(platforms) > 1 && (plan.Kind != model.BuildPlanDockerfile || plan.ImageRegistryID == "") {
+		return "", ErrPipelineExecutionConfig
+	}
+	return strings.Join(platforms, ","), nil
 }
 
 func (s *Service) executePipelineBuild(ctx context.Context, prepared *buildExecutionContext, workspace string) (*model.Artifact, error) {
@@ -334,14 +383,15 @@ func (s *Service) executePipelineBuild(ctx context.Context, prepared *buildExecu
 	}
 	switch prepared.plan.Kind {
 	case model.BuildPlanScript:
-		outputDirectory, err := s.artifacts.CreateTempDirectory("edo-script-output-")
+		buildDirectory, err := s.artifacts.AcquireBuildDirectory("edo-script-output-")
 		if err != nil {
 			return nil, err
 		}
-		defer os.RemoveAll(outputDirectory)
-		result, err := s.executePipelineShell(ctx, prepared, workspace, prepared.plan.RuntimeImage, prepared.plan.Script,
+		defer buildDirectory.Release()
+		runtimeImage := effectiveBuildRuntimeImage(prepared.node.Config, prepared.plan)
+		result, err := s.executePipelineShell(ctx, prepared, workspace, runtimeImage, prepared.plan.Script,
 			prepared.plan.WorkingDirectory, prepared.plan.EnvironmentVariables,
-			prepared.plan.TimeoutSeconds, "build", "构建", prepared.plan.ArtifactPath, outputDirectory)
+			prepared.plan.TimeoutSeconds, "build", "构建", prepared.plan.ArtifactPath, buildDirectory.Directory)
 		if err != nil {
 			return nil, err
 		}
@@ -364,19 +414,23 @@ func (s *Service) executePipelineBuild(ctx context.Context, prepared *buildExecu
 			return nil, err
 		}
 		metadata.ProducerKind = model.BuildRunProducerDockerfile
+		buildArgs := effectiveDockerBuildArgs(prepared.node.Config, prepared.plan.BuildArgs)
 		options := dockerengine.BuildOptions{
 			Pull: prepared.plan.Pull, CacheEnabled: prepared.plan.CacheEnabled,
 			TargetStage: prepared.plan.TargetStage, Platform: prepared.plan.Platform,
-			BuildArgs: prepared.plan.BuildArgs,
+			BuildArgs: buildArgs,
 			Labels: map[string]string{
 				"io.edo.application.id":  prepared.application.ID,
 				"io.edo.pipeline.run.id": prepared.run.ID,
 				"io.edo.commit":          prepared.run.CommitSHA,
 			},
 		}
+		if options.Platform != "" {
+			s.appendRunLog(ctx, prepared.run.ID, "build", "info", "已根据部署目标主机选择构建平台 "+options.Platform)
+		}
 		timeout := time.Duration(prepared.plan.TimeoutSeconds) * time.Second
 		if prepared.plan.ImageRegistryID == "" {
-			output := s.newBuildLogWriter(ctx, prepared.run.ID, "build", sensitiveVariableValues(prepared.plan.BuildArgs)...)
+			output := s.newBuildLogWriter(ctx, prepared.run.ID, "build", sensitiveVariableValues(buildArgs)...)
 			defer output.Close()
 			image, err := localExecutionImage(&executionContext{run: prepared.run, application: prepared.application})
 			if err != nil {
@@ -404,7 +458,7 @@ func (s *Service) executePipelineBuild(ctx context.Context, prepared *buildExecu
 		if err != nil {
 			return nil, err
 		}
-		redactions := sensitiveVariableValues(prepared.plan.BuildArgs)
+		redactions := sensitiveVariableValues(buildArgs)
 		if auth.Credential != "" {
 			redactions = append(redactions, auth.Credential)
 		}
@@ -426,6 +480,26 @@ func (s *Service) executePipelineBuild(ctx context.Context, prepared *buildExecu
 	default:
 		return nil, ErrPipelineExecutionConfig
 	}
+}
+
+func effectiveBuildRuntimeImage(config model.WorkflowNodeConfig, plan workflowBuildPlanSnapshot) string {
+	if strings.TrimSpace(config.RuntimeImage) != "" {
+		return config.RuntimeImage
+	}
+	return plan.RuntimeImage
+}
+
+func effectiveDockerBuildArgs(config model.WorkflowNodeConfig, configured map[string]string) map[string]string {
+	result := maps.Clone(configured)
+	argument := workflowRuntimeBuildArg(config.ToolchainLanguage)
+	if argument == "" || config.ToolchainVersion == "" {
+		return result
+	}
+	if result == nil {
+		result = make(map[string]string, 1)
+	}
+	result[argument] = config.ToolchainVersion
+	return result
 }
 
 func secureBuildPaths(workspace, contextPath, dockerfilePath string) (string, string, error) {
@@ -482,6 +556,7 @@ func (s *Service) executePipelineShell(
 	defer output.Close()
 	result, err := s.scriptRunner.RunScriptContainer(ctx, dockerengine.ScriptContainerInput{
 		Image:             runtimeImage,
+		Platform:          prepared.plan.Platform,
 		Script:            script,
 		SourceDirectory:   workspace,
 		WorkingDirectory:  workingDirectory,
@@ -524,12 +599,23 @@ func sensitiveVariableValues(values map[string]string) []string {
 }
 
 func pipelineCommandEnvironment(prepared *buildExecutionContext) map[string]string {
-	return map[string]string{
+	environment := map[string]string{
 		"EDO_PIPELINE_RUN_ID": prepared.run.ID,
 		"EDO_APPLICATION_ID":  prepared.application.ID,
 		"EDO_GIT_REF":         prepared.run.Ref,
 		"EDO_COMMIT_SHA":      prepared.run.CommitSHA,
 	}
+	if prepared.plan.Platform != "" {
+		environment["EDO_TARGET_PLATFORM"] = prepared.plan.Platform
+		if strings.HasPrefix(prepared.plan.Platform, "linux/") && !strings.Contains(prepared.plan.Platform, ",") {
+			architecture := strings.TrimPrefix(prepared.plan.Platform, "linux/")
+			environment["EDO_TARGET_ARCH"] = architecture
+			if prepared.node.Config.ToolchainLanguage == workflowPresetGo {
+				environment["GOOS"], environment["GOARCH"] = "linux", architecture
+			}
+		}
+	}
+	return environment
 }
 
 func secureWorkspacePath(workspace, relative string) (string, error) {

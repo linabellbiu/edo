@@ -309,6 +309,84 @@ func TestRegistryImageMatchesRequiresHostPathAndDigest(t *testing.T) {
 	}
 }
 
+func TestServiceHotSwitchesDirectoryAndClearsLocalArtifacts(t *testing.T) {
+	service, _, application := newArtifactTestService(t, 1024)
+	item, err := service.Upload(
+		context.Background(), application.ID, "user-1", "release.bin", "application/octet-stream", strings.NewReader("release-content"),
+	)
+	if err != nil {
+		t.Fatalf("上传待迁移制品失败: %v", err)
+	}
+	oldRoot := service.Root()
+	oldPath := filepath.Join(oldRoot, filepath.FromSlash(item.StorageKey))
+	change, err := service.StageDirectory(context.Background(), t.TempDir())
+	if err != nil {
+		t.Fatalf("准备本地产物目录热切换失败: %v", err)
+	}
+	removed, err := change.Commit()
+	if err != nil {
+		t.Fatalf("提交本地产物目录热切换失败: %v", err)
+	}
+	if service.Root() == oldRoot || removed.FilesDeleted != 1 {
+		t.Fatalf("本地产物目录未切换或旧副本未清理: root=%s report=%+v", service.Root(), removed)
+	}
+	if _, err := os.Stat(oldPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("旧目录仍保留已迁移的本地产物: %v", err)
+	}
+	_, file, err := service.OpenDownload(context.Background(), item.ID)
+	if err != nil {
+		t.Fatalf("目录热切换后制品不可下载: %v", err)
+	}
+	content, err := io.ReadAll(file)
+	_ = file.Close()
+	if err != nil || string(content) != "release-content" {
+		t.Fatalf("迁移后的制品内容错误: content=%q err=%v", content, err)
+	}
+
+	report, err := service.ClearLocalArtifacts(context.Background())
+	if err != nil {
+		t.Fatalf("清理本地产物失败: %v", err)
+	}
+	if report.ArtifactsExpired != 1 || report.FilesDeleted != 1 || report.BytesReleased != int64(len("release-content")) {
+		t.Fatalf("本地产物清理统计错误: %+v", report)
+	}
+	stored, err := service.Find(context.Background(), item.ID)
+	if err != nil || stored.Status != model.ArtifactStatusExpired {
+		t.Fatalf("清理后产物记录未标记为过期: artifact=%+v err=%v", stored, err)
+	}
+	if _, _, err := service.OpenDownload(context.Background(), item.ID); !errors.Is(err, ErrArtifactUnavailable) {
+		t.Fatalf("已清理产物仍可下载: %v", err)
+	}
+}
+
+func TestBuildDirectoryReportsUsageAndRejectsCleanupWhileActive(t *testing.T) {
+	service, _, _ := newArtifactTestService(t, 1024)
+	lease, err := service.AcquireBuildDirectory("active-")
+	if err != nil {
+		t.Fatalf("申请构建目录失败: %v", err)
+	}
+	target := filepath.Join(lease.Directory, "output.bin")
+	if err := os.WriteFile(target, []byte("1234"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	usage, err := service.BuildDirectoryUsage()
+	if err != nil || usage.Files != 1 || usage.Bytes != 4 {
+		t.Fatalf("构建目录统计错误: usage=%+v err=%v", usage, err)
+	}
+	if _, err := service.ClearBuildDirectory(); !errors.Is(err, ErrBuildDirectoryBusy) {
+		t.Fatalf("正在使用的构建目录必须拒绝清理: %v", err)
+	}
+	lease.Release()
+	stale := filepath.Join(service.BuildRoot(), "stale.bin")
+	if err := os.WriteFile(stale, []byte("1234"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	report, err := service.ClearBuildDirectory()
+	if err != nil || report.FilesDeleted != 1 || report.BytesReleased != 4 {
+		t.Fatalf("清理构建目录失败: report=%+v err=%v", report, err)
+	}
+}
+
 func newArtifactTestService(t *testing.T, maxBytes int64) (*Service, *gorm.DB, model.Application) {
 	t.Helper()
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
@@ -341,7 +419,10 @@ func newArtifactTestService(t *testing.T, maxBytes int64) (*Service, *gorm.DB, m
 	if err := db.Omit(clause.Associations).Create(&application).Error; err != nil {
 		t.Fatalf("创建制品测试应用失败: %v", err)
 	}
-	service, err := NewService(db, filepath.Join(t.TempDir(), "artifacts"), maxBytes, logger)
+	service, err := NewService(
+		db, filepath.Join(t.TempDir(), "artifacts"), maxBytes, logger,
+		WithBuildDirectory(filepath.Join(t.TempDir(), "builds")),
+	)
 	if err != nil {
 		t.Fatalf("初始化制品服务失败: %v", err)
 	}

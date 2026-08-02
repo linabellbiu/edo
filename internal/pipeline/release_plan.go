@@ -124,6 +124,26 @@ func (s *Service) attachLatestReleasePlanExecutions(ctx context.Context, plans [
 	for i := range plans {
 		plans[i].LatestExecution = latest[plans[i].ID]
 	}
+	latestExecutionIDs := make([]string, 0, len(latest))
+	for _, execution := range latest {
+		latestExecutionIDs = append(latestExecutionIDs, execution.ID)
+	}
+	if len(latestExecutionIDs) == 0 {
+		return nil
+	}
+	var items []model.ReleasePlanExecutionItem
+	if err := s.db.WithContext(ctx).Where("release_plan_execution_id IN ?", latestExecutionIDs).
+		Order("sort_order ASC").Find(&items).Error; err != nil {
+		return fmt.Errorf("查询发布计划最近执行应用失败: %w", err)
+	}
+	itemsByExecution := make(map[string][]model.ReleasePlanExecutionItem, len(latestExecutionIDs))
+	for i := range items {
+		id := items[i].ReleasePlanExecutionID
+		itemsByExecution[id] = append(itemsByExecution[id], items[i])
+	}
+	for _, execution := range latest {
+		execution.Items = itemsByExecution[execution.ID]
+	}
 	return nil
 }
 

@@ -2,7 +2,7 @@
 import { computed } from 'vue'
 import type { UploadProps } from 'ant-design-vue'
 import {
-  Boxes, Clock3, Download, FileCode2, FolderOpen,
+  Boxes, Clock3, Cpu, Download, FileCode2, FolderOpen,
   Package, RefreshCw, Settings2, Upload,
 } from 'lucide-vue-next'
 
@@ -208,6 +208,7 @@ function formatTime(value: string) {
           <article><span><FolderOpen /></span><div><small>执行目录</small><strong>{{ buildPlanDirectory(selected) }}</strong></div></article>
           <article><span><Package /></span><div><small>制品类型</small><strong>{{ buildPlanArtifact(selected) }}</strong></div></article>
           <article><span><Boxes /></span><div><small>存储位置</small><strong>{{ buildPlanRegistry(selected) }}</strong></div></article>
+          <article><span><Cpu /></span><div><small>目标架构</small><strong>自动跟随部署主机</strong></div></article>
         </div>
         <div class="build-plan-limit"><Clock3 /><span><small>构建超时</small><strong>{{ selected.timeout_seconds }} 秒</strong></span><p>最近修改 {{ formatTime(selected.updated_at) }}</p></div>
       </section>

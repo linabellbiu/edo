@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"strings"
@@ -179,17 +180,101 @@ func TestDockerTargetDefersContainerNameUntilApplicationExecution(t *testing.T) 
 	if target.WorkloadName != "" {
 		t.Fatalf("部署方案不应在尚未绑定应用时生成容器名称: %q", target.WorkloadName)
 	}
-	first, err := generatedDockerWorkloadName("order_api", "application-1", "plan-1", target.ID)
+	first, err := ResolveDockerWorkloadName("", "order_api", "application-1", "plan-1", target.ID)
 	if err != nil {
 		t.Fatalf("按应用生成容器名称失败: %v", err)
 	}
-	second, err := generatedDockerWorkloadName("order_api", "application-1", "plan-1", target.ID)
+	second, err := ResolveDockerWorkloadName("", "order_api", "application-1", "plan-1", target.ID)
 	if err != nil || first != second || !strings.HasPrefix(first, "order_api-") || !workloadNamePattern.MatchString(first) {
 		t.Fatalf("容器名称没有保持应用级稳定隔离: first=%q second=%q err=%v", first, second, err)
 	}
-	otherPlan, err := generatedDockerWorkloadName("order_api", "application-1", "plan-2", target.ID)
+	otherPlan, err := ResolveDockerWorkloadName("", "order_api", "application-1", "plan-2", target.ID)
 	if err != nil || otherPlan == first {
 		t.Fatalf("同一应用的不同部署方案没有得到独立容器名称: first=%q other=%q err=%v", first, otherPlan, err)
+	}
+}
+
+func TestDockerContainerFailureDetailsReturnsSafeReason(t *testing.T) {
+	tests := []struct {
+		name        string
+		err         error
+		wantCode    string
+		wantMessage string
+	}{
+		{
+			name:        "容器重启",
+			err:         fmt.Errorf("%w: status=restarting exit_code=1", dockerengine.ErrContainerRestarted),
+			wantCode:    "docker_container_restarted",
+			wantMessage: "Docker 容器启动失败：容器启动后退出并进入重启，请查看容器日志",
+		},
+		{
+			name:        "健康检查失败",
+			err:         fmt.Errorf("%w: failing_streak=3", dockerengine.ErrContainerUnhealthy),
+			wantCode:    "docker_container_unhealthy",
+			wantMessage: "Docker 容器启动失败：健康检查未通过，请查看容器日志",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			code, message := dockerContainerFailureDetails(test.err)
+			if code != test.wantCode || message != test.wantMessage || strings.Contains(message, "exit_code") {
+				t.Fatalf("Docker 失败原因分类不安全或不准确: code=%q message=%q", code, message)
+			}
+		})
+	}
+}
+
+func TestLoadPipelineReleaseResultReturnsPersistedFailureReason(t *testing.T) {
+	service, db, endpointID := newDeploymentTestService(t)
+	now := time.Now().UTC()
+	record := model.DeploymentRecord{
+		ID: "deployment-failed-result", TargetID: "target", TargetName: "目标",
+		Platform: model.DeploymentDocker, RuntimeID: endpointID, WorkloadName: "api",
+		RolloutTimeout: 120, Operation: model.DeploymentRelease, Image: "edo.local/api:fixed",
+		Status: model.DeploymentRunning, RequestedBy: "admin", CreatedAt: now, UpdatedAt: now,
+	}
+	if err := db.Create(&record).Error; err != nil {
+		t.Fatal(err)
+	}
+	const message = "Docker 容器启动失败：容器启动后退出并进入重启，请查看容器日志"
+	if err := db.Model(&model.DeploymentRecord{}).Where("id = ?", record.ID).Updates(map[string]any{
+		"status": model.DeploymentFailed, "error_code": "docker_container_restarted", "error_message": message,
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	cause := fmt.Errorf("%w: exit_code=1", dockerengine.ErrContainerRestarted)
+	loaded, err := service.loadPipelineReleaseResult(context.Background(), &record, cause)
+	if !errors.Is(err, cause) || loaded.Status != model.DeploymentFailed || loaded.ErrorMessage != message {
+		t.Fatalf("流水线发布失败结果未携带持久化原因: record=%+v err=%v", loaded, err)
+	}
+}
+
+func TestListForPipelineRunOnlyReturnsAssociatedDeployments(t *testing.T) {
+	service, db, endpointID := newDeploymentTestService(t)
+	now := time.Now().UTC()
+	records := []model.DeploymentRecord{
+		{
+			ID: "deployment-run-a", PipelineRunID: "pipeline-run-a", TargetID: "target-a", TargetName: "目标 A",
+			Platform: model.DeploymentDocker, RuntimeID: endpointID, WorkloadName: "app-a", RolloutTimeout: 120,
+			Operation: model.DeploymentRelease, Image: "edo.local/app:a", Status: model.DeploymentSucceeded,
+			RequestedBy: "admin", CreatedAt: now, UpdatedAt: now,
+		},
+		{
+			ID: "deployment-run-b", PipelineRunID: "pipeline-run-b", TargetID: "target-b", TargetName: "目标 B",
+			Platform: model.DeploymentDocker, RuntimeID: endpointID, WorkloadName: "app-b", RolloutTimeout: 120,
+			Operation: model.DeploymentRelease, Image: "edo.local/app:b", Status: model.DeploymentSucceeded,
+			RequestedBy: "admin", CreatedAt: now.Add(time.Second), UpdatedAt: now.Add(time.Second),
+		},
+	}
+	if err := db.Create(&records).Error; err != nil {
+		t.Fatal(err)
+	}
+	listed, err := service.ListForPipelineRun(context.Background(), "pipeline-run-a", 20)
+	if err != nil || len(listed) != 1 || listed[0].ID != records[0].ID {
+		t.Fatalf("按流水线运行查询发布记录不准确: records=%+v err=%v", listed, err)
+	}
+	if _, err := service.ListForPipelineRun(context.Background(), "含换行\n", 20); !errors.Is(err, ErrInvalidDeploymentState) {
+		t.Fatalf("无效流水线运行标识未被拒绝: %v", err)
 	}
 }
 

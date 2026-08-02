@@ -7,12 +7,15 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	artifactmanager "edo/internal/artifact"
 	"edo/internal/auth"
 	"edo/internal/config"
 	"edo/internal/configuration"
 	"edo/internal/database"
 	"edo/internal/logging"
 	"edo/internal/logretention"
+	"edo/internal/manageddirectory"
+	"edo/internal/repository"
 )
 
 type settingsHandler struct {
@@ -22,7 +25,31 @@ type settingsHandler struct {
 	retention    *logretention.Service
 	migration    *database.TransferService
 	runtimeLogs  *logging.RuntimeController
+	repositories *repository.Service
+	artifacts    *artifactmanager.Service
 	logger       *slog.Logger
+}
+
+type runtimeDirectoryUpdateRequest struct {
+	WorkspaceDirectory     string `json:"workspace_directory" binding:"required,max=4096"`
+	BuildDirectory         string `json:"build_directory" binding:"required,max=4096"`
+	CacheDirectory         string `json:"cache_directory" binding:"required,max=4096"`
+	LocalArtifactDirectory string `json:"local_artifact_directory" binding:"required,max=4096"`
+	ExpectedVersion        int    `json:"expected_version" binding:"min=0"`
+}
+
+type directoryUsageResponse struct {
+	Path  string `json:"path"`
+	Files int64  `json:"files"`
+	Bytes int64  `json:"bytes"`
+}
+
+type runtimeDirectoryResponse struct {
+	configuration.RuntimeDirectorySettings
+	WorkspaceUsage directoryUsageResponse `json:"workspace_usage"`
+	BuildUsage     directoryUsageResponse `json:"build_usage"`
+	CacheUsage     directoryUsageResponse `json:"cache_usage"`
+	ArtifactUsage  directoryUsageResponse `json:"artifact_usage"`
 }
 
 type databaseMigrationRequest struct {
@@ -290,6 +317,218 @@ func (h settingsHandler) cleanupLogs(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, report)
+}
+
+func (h settingsHandler) runtimeDirectories(c *gin.Context) {
+	if h.repositories == nil || h.artifacts == nil {
+		h.logger.Error("运行目录服务未初始化", "operation", "settings_runtime_directories_read", "request_id", requestIDFrom(c))
+		writeInternalError(c)
+		return
+	}
+	repositoryDirectories := h.repositories.Directories()
+	settings, err := h.service.GetRuntimeDirectorySettings(c.Request.Context(), configuration.RuntimeDirectorySettings{
+		WorkspaceDirectory:     repositoryDirectories.WorkspaceDirectory,
+		BuildDirectory:         h.artifacts.BuildRoot(),
+		CacheDirectory:         repositoryDirectories.CacheDirectory,
+		LocalArtifactDirectory: h.artifacts.Root(),
+	})
+	if err != nil {
+		h.logger.Error("读取运行目录设置失败", "operation", "settings_runtime_directories_read", "request_id", requestIDFrom(c), "err", err)
+		writeInternalError(c)
+		return
+	}
+	h.writeRuntimeDirectoryResponse(c, settings, "settings_runtime_directories_read_usage")
+}
+
+func (h settingsHandler) updateRuntimeDirectories(c *gin.Context) {
+	if h.repositories == nil || h.artifacts == nil {
+		h.logger.Error("运行目录服务未初始化", "operation", "settings_runtime_directories_update", "request_id", requestIDFrom(c))
+		writeInternalError(c)
+		return
+	}
+	var request runtimeDirectoryUpdateRequest
+	if err := c.ShouldBindJSON(&request); err != nil {
+		h.logger.Warn("修改运行目录参数无效", "operation", "settings_runtime_directories_bind", "request_id", requestIDFrom(c), "err", err)
+		writeError(c, http.StatusBadRequest, "invalid_settings", "工作区、构建、缓存或本地产物目录无效")
+		return
+	}
+	preparedRepositories, err := h.repositories.PrepareDirectories(request.WorkspaceDirectory, request.CacheDirectory)
+	if err != nil {
+		h.writeRuntimeDirectoryError(c, "settings_runtime_directories_prepare_repository", err)
+		return
+	}
+	buildDirectory, err := h.artifacts.PrepareBuildDirectory(request.BuildDirectory)
+	if err != nil {
+		h.writeRuntimeDirectoryError(c, "settings_runtime_directories_prepare_build", err)
+		return
+	}
+	artifactDirectory, err := manageddirectory.Prepare(request.LocalArtifactDirectory, "artifacts", false)
+	if err != nil {
+		h.writeRuntimeDirectoryError(c, "settings_runtime_directories_prepare_artifact", err)
+		return
+	}
+	if err := manageddirectory.ValidateSeparate(
+		preparedRepositories.WorkspaceDirectory,
+		buildDirectory,
+		preparedRepositories.CacheDirectory,
+		artifactDirectory,
+	); err != nil {
+		h.writeRuntimeDirectoryError(c, "settings_runtime_directories_validate", err)
+		return
+	}
+	change, err := h.artifacts.StageDirectory(c.Request.Context(), artifactDirectory)
+	if err != nil {
+		h.writeRuntimeDirectoryError(c, "settings_runtime_directories_stage_artifact", err)
+		return
+	}
+	defer change.Abort()
+	actor, _ := currentUser(c)
+	settings, err := h.service.UpdateRuntimeDirectorySettings(c.Request.Context(), actor.ID, configuration.RuntimeDirectorySettings{
+		WorkspaceDirectory:     preparedRepositories.WorkspaceDirectory,
+		BuildDirectory:         buildDirectory,
+		CacheDirectory:         preparedRepositories.CacheDirectory,
+		LocalArtifactDirectory: artifactDirectory,
+	}, request.ExpectedVersion)
+	if err != nil {
+		h.logger.Warn("保存运行目录设置失败", "operation", "settings_runtime_directories_update", "request_id", requestIDFrom(c), "user_id", actor.ID, "err", err)
+		switch {
+		case errors.Is(err, configuration.ErrInvalidConfiguration):
+			writeError(c, http.StatusBadRequest, "invalid_settings", "工作区、构建、缓存或本地产物目录无效")
+		case errors.Is(err, configuration.ErrVersionConflict):
+			writeError(c, http.StatusConflict, "settings_version_conflict", configuration.ErrVersionConflict.Error())
+		default:
+			writeInternalError(c)
+		}
+		return
+	}
+	h.repositories.ApplyDirectories(preparedRepositories)
+	h.artifacts.ApplyBuildDirectory(buildDirectory)
+	if _, err := change.Commit(); err != nil {
+		// 新目录已经生效，这里只是旧目录空间回收失败；保留副本比回滚后丢失并发写入更安全。
+		h.logger.Warn("运行目录已切换，但旧产物目录未完全清理", "operation", "settings_runtime_directories_cleanup_previous", "request_id", requestIDFrom(c), "user_id", actor.ID, "err", err)
+	}
+	h.writeRuntimeDirectoryResponse(c, settings, "settings_runtime_directories_update_usage")
+}
+
+func (h settingsHandler) cleanupRepositoryWorkspaces(c *gin.Context) {
+	if h.repositories == nil {
+		h.logger.Error("仓库服务未初始化", "operation", "settings_repository_workspace_cleanup", "request_id", requestIDFrom(c))
+		writeInternalError(c)
+		return
+	}
+	report, err := h.repositories.ClearWorkspaceDirectory()
+	if err != nil {
+		h.logger.Warn("清理仓库工作区目录失败", "operation", "settings_repository_workspace_cleanup", "request_id", requestIDFrom(c), "err", err)
+		if errors.Is(err, repository.ErrDirectoryBusy) {
+			writeError(c, http.StatusConflict, "directory_busy", repository.ErrDirectoryBusy.Error())
+		} else {
+			writeInternalError(c)
+		}
+		return
+	}
+	c.JSON(http.StatusOK, report)
+}
+
+func (h settingsHandler) cleanupBuilds(c *gin.Context) {
+	if h.artifacts == nil {
+		h.logger.Error("制品服务未初始化", "operation", "settings_build_cleanup", "request_id", requestIDFrom(c))
+		writeInternalError(c)
+		return
+	}
+	report, err := h.artifacts.ClearBuildDirectory()
+	if err != nil {
+		h.logger.Warn("清理构建目录失败", "operation", "settings_build_cleanup", "request_id", requestIDFrom(c), "err", err)
+		if errors.Is(err, artifactmanager.ErrBuildDirectoryBusy) {
+			writeError(c, http.StatusConflict, "directory_busy", artifactmanager.ErrBuildDirectoryBusy.Error())
+		} else {
+			writeInternalError(c)
+		}
+		return
+	}
+	c.JSON(http.StatusOK, report)
+}
+
+func (h settingsHandler) cleanupRepositoryCache(c *gin.Context) {
+	if h.repositories == nil {
+		h.logger.Error("仓库服务未初始化", "operation", "settings_repository_cache_cleanup", "request_id", requestIDFrom(c))
+		writeInternalError(c)
+		return
+	}
+	report, err := h.repositories.ClearCacheDirectory()
+	if err != nil {
+		h.logger.Warn("清理仓库缓存目录失败", "operation", "settings_repository_cache_cleanup", "request_id", requestIDFrom(c), "err", err)
+		if errors.Is(err, repository.ErrDirectoryBusy) {
+			writeError(c, http.StatusConflict, "directory_busy", repository.ErrDirectoryBusy.Error())
+		} else {
+			writeInternalError(c)
+		}
+		return
+	}
+	c.JSON(http.StatusOK, report)
+}
+
+func (h settingsHandler) cleanupLocalArtifacts(c *gin.Context) {
+	if h.artifacts == nil {
+		h.logger.Error("制品服务未初始化", "operation", "settings_local_artifact_cleanup", "request_id", requestIDFrom(c))
+		writeInternalError(c)
+		return
+	}
+	report, err := h.artifacts.ClearLocalArtifacts(c.Request.Context())
+	if err != nil {
+		h.logger.Error("清理本地产物失败", "operation", "settings_local_artifact_cleanup", "request_id", requestIDFrom(c), "err", err)
+		writeInternalError(c)
+		return
+	}
+	c.JSON(http.StatusOK, report)
+}
+
+func (h settingsHandler) writeRuntimeDirectoryResponse(c *gin.Context, settings configuration.RuntimeDirectorySettings, operation string) {
+	repositoryDirectories := h.repositories.Directories()
+	workspaceUsage, err := h.repositories.WorkspaceUsage()
+	if err != nil {
+		h.logger.Error("统计仓库工作区失败", "operation", operation, "request_id", requestIDFrom(c), "err", err)
+		writeInternalError(c)
+		return
+	}
+	buildUsage, err := h.artifacts.BuildDirectoryUsage()
+	if err != nil {
+		h.logger.Error("统计构建目录失败", "operation", operation, "request_id", requestIDFrom(c), "err", err)
+		writeInternalError(c)
+		return
+	}
+	cacheUsage, err := h.repositories.CacheUsage()
+	if err != nil {
+		h.logger.Error("统计仓库缓存失败", "operation", operation, "request_id", requestIDFrom(c), "err", err)
+		writeInternalError(c)
+		return
+	}
+	artifactUsage, err := h.artifacts.LocalArtifactUsage()
+	if err != nil {
+		h.logger.Error("统计本地产物失败", "operation", operation, "request_id", requestIDFrom(c), "err", err)
+		writeInternalError(c)
+		return
+	}
+	c.JSON(http.StatusOK, runtimeDirectoryResponse{
+		RuntimeDirectorySettings: settings,
+		WorkspaceUsage:           directoryUsageResponse{Path: repositoryDirectories.WorkspaceDirectory, Files: workspaceUsage.Files, Bytes: workspaceUsage.Bytes},
+		BuildUsage:               directoryUsageResponse{Path: h.artifacts.BuildRoot(), Files: buildUsage.Files, Bytes: buildUsage.Bytes},
+		CacheUsage:               directoryUsageResponse{Path: repositoryDirectories.CacheDirectory, Files: cacheUsage.Files, Bytes: cacheUsage.Bytes},
+		ArtifactUsage:            directoryUsageResponse{Path: h.artifacts.Root(), Files: artifactUsage.Files, Bytes: artifactUsage.Bytes},
+	})
+}
+
+func (h settingsHandler) writeRuntimeDirectoryError(c *gin.Context, operation string, err error) {
+	h.logger.Warn("运行目录不可用", "operation", operation, "request_id", requestIDFrom(c), "err", err)
+	switch {
+	case errors.Is(err, manageddirectory.ErrDirectoryNotEmpty):
+		writeError(c, http.StatusConflict, "directory_not_empty", "新目录必须为空，或选择此前由 EDO 管理的同用途目录")
+	case errors.Is(err, manageddirectory.ErrDirectoryOverlap):
+		writeError(c, http.StatusBadRequest, "directory_overlap", manageddirectory.ErrDirectoryOverlap.Error())
+	case errors.Is(err, manageddirectory.ErrInvalidDirectory):
+		writeError(c, http.StatusBadRequest, "invalid_directory", "目录不能是根目录、用户主目录、系统临时目录或 EDO 工作目录")
+	default:
+		writeError(c, http.StatusBadRequest, "directory_unavailable", "目录不可用，请检查路径和 EDO 服务进程权限")
+	}
 }
 
 func (h settingsHandler) externalGitWebhook(c *gin.Context) {

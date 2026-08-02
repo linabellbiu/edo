@@ -18,6 +18,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -25,6 +26,7 @@ import (
 	"github.com/google/uuid"
 	"gorm.io/gorm"
 
+	"edo/internal/manageddirectory"
 	"edo/internal/model"
 )
 
@@ -35,12 +37,60 @@ var (
 	ErrInvalidArtifact     = errors.New("制品配置无效")
 	ErrArtifactUnavailable = errors.New("制品文件不可用")
 	ErrArtifactConflict    = errors.New("同一流水线节点已登记不同制品")
+	ErrBuildDirectoryBusy  = errors.New("当前有构建正在使用构建目录，请稍后重试")
 )
 
 type Service struct {
-	db     *gorm.DB
-	store  *LocalStore
-	logger *slog.Logger
+	db               *gorm.DB
+	storeMu          sync.RWMutex
+	store            *LocalStore
+	buildDirectoryMu sync.RWMutex
+	buildDirectory   string
+	buildMaintenance sync.RWMutex
+	logger           *slog.Logger
+}
+
+const (
+	localArtifactDirectoryKind = "artifacts"
+	buildDirectoryKind         = "build"
+)
+
+type serviceOptions struct {
+	buildDirectory string
+}
+
+type Option func(*serviceOptions)
+
+func WithBuildDirectory(directory string) Option {
+	return func(options *serviceOptions) {
+		options.buildDirectory = directory
+	}
+}
+
+type DirectoryChange struct {
+	service  *Service
+	previous *LocalStore
+	next     *LocalStore
+	changed  bool
+	finished bool
+}
+
+type CleanupReport struct {
+	ArtifactsExpired int64 `json:"artifacts_expired"`
+	FilesDeleted     int64 `json:"files_deleted"`
+	BytesReleased    int64 `json:"bytes_released"`
+}
+
+type BuildDirectoryLease struct {
+	Directory string
+	release   func()
+	once      sync.Once
+}
+
+func (l *BuildDirectoryLease) Release() {
+	if l != nil && l.release != nil {
+		l.once.Do(l.release)
+	}
 }
 
 type BuildMetadata struct {
@@ -76,26 +126,166 @@ type ImageInput struct {
 	SizeBytes       int64
 }
 
-func NewService(db *gorm.DB, directory string, maxBytes int64, logger *slog.Logger) (*Service, error) {
+func NewService(db *gorm.DB, directory string, maxBytes int64, logger *slog.Logger, options ...Option) (*Service, error) {
 	if db == nil {
 		return nil, ErrInvalidStore
 	}
-	store, err := NewLocalStore(directory, maxBytes)
+	resolved, err := manageddirectory.Prepare(directory, localArtifactDirectoryKind, true)
+	if err != nil {
+		return nil, fmt.Errorf("准备制品存储目录失败: %w", err)
+	}
+	store, err := NewLocalStore(resolved, maxBytes)
 	if err != nil {
 		return nil, err
 	}
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &Service{db: db, store: store, logger: logger}, nil
+	settings := serviceOptions{buildDirectory: filepath.Join(filepath.Dir(resolved), "builds")}
+	for _, option := range options {
+		option(&settings)
+	}
+	buildDirectory, err := manageddirectory.Prepare(settings.buildDirectory, buildDirectoryKind, true)
+	if err != nil {
+		return nil, fmt.Errorf("准备构建目录失败: %w", err)
+	}
+	return &Service{db: db, store: store, buildDirectory: buildDirectory, logger: logger}, nil
 }
 
-func (s *Service) Root() string { return s.store.Root() }
+func (s *Service) Root() string {
+	s.storeMu.RLock()
+	defer s.storeMu.RUnlock()
+	return s.store.Root()
+}
 
-func (s *Service) MaxBytes() int64 { return s.store.MaxBytes() }
+func (s *Service) MaxBytes() int64 {
+	s.storeMu.RLock()
+	defer s.storeMu.RUnlock()
+	return s.store.MaxBytes()
+}
 
-func (s *Service) CreateTempDirectory(prefix string) (string, error) {
-	return s.store.CreateTempDirectory(prefix)
+func (s *Service) BuildRoot() string {
+	s.buildDirectoryMu.RLock()
+	defer s.buildDirectoryMu.RUnlock()
+	return s.buildDirectory
+}
+
+func (s *Service) PrepareBuildDirectory(directory string) (string, error) {
+	return manageddirectory.Prepare(directory, buildDirectoryKind, false)
+}
+
+func (s *Service) ApplyBuildDirectory(directory string) {
+	s.buildDirectoryMu.Lock()
+	s.buildDirectory = directory
+	s.buildDirectoryMu.Unlock()
+}
+
+func (s *Service) AcquireBuildDirectory(prefix string) (*BuildDirectoryLease, error) {
+	s.buildMaintenance.RLock()
+	root := s.BuildRoot()
+	directory, err := os.MkdirTemp(root, prefix)
+	if err != nil {
+		s.buildMaintenance.RUnlock()
+		s.logger.Error("创建构建临时目录失败", "operation", "artifact_build_directory_create", "directory", root, "err", err)
+		return nil, fmt.Errorf("创建构建目录失败: %w", err)
+	}
+	return &BuildDirectoryLease{Directory: directory, release: func() {
+		if err := os.RemoveAll(directory); err != nil {
+			s.logger.Warn("回收构建临时目录失败", "operation", "artifact_build_directory_release", "directory", directory, "err", err)
+		}
+		s.buildMaintenance.RUnlock()
+	}}, nil
+}
+
+func (s *Service) ClearBuildDirectory() (manageddirectory.CleanupReport, error) {
+	if !s.buildMaintenance.TryLock() {
+		return manageddirectory.CleanupReport{}, ErrBuildDirectoryBusy
+	}
+	defer s.buildMaintenance.Unlock()
+	return manageddirectory.ClearContents(s.BuildRoot(), buildDirectoryKind)
+}
+
+func (s *Service) BuildDirectoryUsage() (manageddirectory.UsageReport, error) {
+	s.buildMaintenance.RLock()
+	defer s.buildMaintenance.RUnlock()
+	return manageddirectory.InspectContents(s.BuildRoot(), buildDirectoryKind)
+}
+
+func (s *Service) LocalArtifactUsage() (manageddirectory.UsageReport, error) {
+	s.storeMu.RLock()
+	defer s.storeMu.RUnlock()
+	return manageddirectory.InspectSubdirectory(s.store.Root(), localArtifactDirectoryKind, filepath.Join("blobs", "sha256"))
+}
+
+// StageDirectory 在配置落库前同步现有本地制品，并持有写锁直到 Commit 或 Abort。
+// 这样目录切换与并发上传、构建登记之间不会出现可见性空窗。
+func (s *Service) StageDirectory(ctx context.Context, directory string) (*DirectoryChange, error) {
+	resolved, err := manageddirectory.Prepare(directory, localArtifactDirectoryKind, false)
+	if err != nil {
+		s.logger.Warn("准备新的本地产物目录失败", "operation", "artifact_directory_prepare", "err", err)
+		return nil, err
+	}
+	next, err := NewLocalStore(resolved, s.MaxBytes())
+	if err != nil {
+		s.logger.Error("打开新的本地产物目录失败", "operation", "artifact_directory_open", "directory", resolved, "err", err)
+		return nil, err
+	}
+	s.storeMu.Lock()
+	change := &DirectoryChange{service: s, previous: s.store, next: next, changed: s.store.Root() != next.Root()}
+	if change.changed {
+		if err := copyLocalBlobs(ctx, s.store.Root(), next.Root()); err != nil {
+			s.storeMu.Unlock()
+			s.logger.Error("同步本地产物到新目录失败", "operation", "artifact_directory_copy", "source_directory", s.store.Root(), "target_directory", next.Root(), "err", err)
+			return nil, err
+		}
+	}
+	return change, nil
+}
+
+func (c *DirectoryChange) Commit() (manageddirectory.CleanupReport, error) {
+	if c == nil || c.service == nil || c.finished {
+		return manageddirectory.CleanupReport{}, ErrInvalidStore
+	}
+	c.finished = true
+	var report manageddirectory.CleanupReport
+	var err error
+	if c.changed {
+		c.service.store = c.next
+		report, err = manageddirectory.ClearSubdirectory(c.previous.Root(), localArtifactDirectoryKind, filepath.Join("blobs", "sha256"))
+	}
+	c.service.storeMu.Unlock()
+	return report, err
+}
+
+func (c *DirectoryChange) Abort() {
+	if c == nil || c.service == nil || c.finished {
+		return
+	}
+	c.finished = true
+	c.service.storeMu.Unlock()
+}
+
+func (s *Service) ClearLocalArtifacts(ctx context.Context) (CleanupReport, error) {
+	s.storeMu.Lock()
+	defer s.storeMu.Unlock()
+	if _, err := manageddirectory.Prepare(s.store.Root(), localArtifactDirectoryKind, false); err != nil {
+		s.logger.Error("校验本地产物目录失败", "operation", "artifact_cleanup_prepare", "err", err)
+		return CleanupReport{}, err
+	}
+	result := s.db.WithContext(ctx).Model(&model.Artifact{}).
+		Where("storage_kind = ? AND status = ?", model.ArtifactStorageKindLocalFile, model.ArtifactStatusAvailable).
+		Updates(map[string]any{"status": model.ArtifactStatusExpired, "updated_at": time.Now().UTC()})
+	if result.Error != nil {
+		s.logger.Error("标记本地文件制品过期失败", "operation", "artifact_cleanup_expire", "err", result.Error)
+		return CleanupReport{}, fmt.Errorf("更新本地制品状态失败: %w", result.Error)
+	}
+	removed, err := manageddirectory.ClearSubdirectory(s.store.Root(), localArtifactDirectoryKind, filepath.Join("blobs", "sha256"))
+	report := CleanupReport{ArtifactsExpired: result.RowsAffected, FilesDeleted: removed.FilesDeleted, BytesReleased: removed.BytesReleased}
+	if err != nil {
+		s.logger.Error("清理本地制品文件失败", "operation", "artifact_cleanup_files", "artifacts_expired", result.RowsAffected, "err", err)
+		return report, err
+	}
+	return report, nil
 }
 
 func (s *Service) ListByApplication(ctx context.Context, applicationID string) ([]model.Artifact, error) {
@@ -321,6 +511,8 @@ func (s *Service) CreateImage(ctx context.Context, input ImageInput) (*model.Art
 }
 
 func (s *Service) OpenDownload(ctx context.Context, id string) (*model.Artifact, *os.File, error) {
+	s.storeMu.RLock()
+	defer s.storeMu.RUnlock()
 	artifact, err := s.Find(ctx, id)
 	if err != nil {
 		return nil, nil, err
@@ -368,6 +560,8 @@ func (s *Service) createFileArtifact(
 	name, originalName, mediaType string,
 	producerErrors <-chan error,
 ) (*model.Artifact, error) {
+	s.storeMu.RLock()
+	defer s.storeMu.RUnlock()
 	blob, storeErr := s.store.Put(ctx, source)
 	if storeErr != nil {
 		// 目录打包通过 io.Pipe 边生成边保存；存储提前停止读取时必须关闭 reader，

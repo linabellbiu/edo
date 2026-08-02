@@ -209,6 +209,14 @@ func (c *GitClient) CheckoutCached(
 	repository model.GitRepository,
 	credential, ref, commitSHA, destination string,
 ) (bool, error) {
+	return c.CheckoutCachedAt(ctx, repository, credential, ref, commitSHA, destination, filepath.Join(filepath.Dir(destination), ".cache"))
+}
+
+func (c *GitClient) CheckoutCachedAt(
+	ctx context.Context,
+	repository model.GitRepository,
+	credential, ref, commitSHA, destination, cacheDirectory string,
+) (bool, error) {
 	checkoutContext, cancel := context.WithTimeout(ctx, c.config.Timeout)
 	defer cancel()
 	auth, err := c.authMethod(repository, credential)
@@ -227,7 +235,6 @@ func (c *GitClient) CheckoutCached(
 	if hash.IsZero() {
 		return false, errors.New("Git Commit 格式无效")
 	}
-	cacheDirectory := filepath.Join(filepath.Dir(destination), ".cache")
 	if cachedWorkspaceMatches(cacheDirectory, destination, hash) {
 		return true, nil
 	}

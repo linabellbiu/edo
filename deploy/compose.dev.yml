@@ -17,11 +17,13 @@ x-edo-environment: &edo-environment
   # SQLite 文件默认位于持久卷；删除普通容器不会丢失账户和业务数据。
   EDO_DATABASE_DRIVER: ${EDO_COMPOSE_DATABASE_DRIVER:-sqlite}
   EDO_DATABASE_DSN: ${EDO_COMPOSE_DATABASE_DSN:-/app/data/edo.db}
-  # 构建制品保存在持久化 data 目录；限制单文件大小，避免开发构建意外占满磁盘。
+  # 构建中间输出与文件制品分开存放，便于独立查看和清理。
+  EDO_BUILD_DIRECTORY: ${EDO_COMPOSE_BUILD_DIRECTORY:-/app/data/builds}
   EDO_ARTIFACTS_DIRECTORY: ${EDO_COMPOSE_ARTIFACTS_DIRECTORY:-/app/data/artifacts}
   EDO_ARTIFACTS_MAX_BYTES: ${EDO_ARTIFACTS_MAX_BYTES:-1073741824}
   # Git 对象缓存与 Tag/Commit 隔离工作区随 data 卷持久化，避免每次流水线重新 Clone。
   EDO_GIT_DIRECTORY: ${EDO_COMPOSE_GIT_DIRECTORY:-/app/data/repositories}
+  EDO_GIT_CACHE_DIRECTORY: ${EDO_COMPOSE_GIT_CACHE_DIRECTORY:-/app/data/cache}
   # redis 和 nats 是本文件中的默认容器服务名；URL 也可在 .env 中改为受控的外部服务。
   EDO_REDIS_URL: ${EDO_COMPOSE_REDIS_URL:-redis://redis:6379/0}
   EDO_NATS_URL: ${EDO_COMPOSE_NATS_URL:-nats://nats:4222}

@@ -50,6 +50,18 @@ export const messages = {
         runtimePermissionHint: '无查看运行资源权限，Docker 与 Kubernetes 连接状态将在保存时由服务端校验。', runtimeStatusUnavailable: '暂时无法读取 Docker 或 Kubernetes 连接状态，将在保存时再次校验。',
       },
     },
+    pipelinePreset: {
+      title: '选择流水线模板', subtitle: '先选择流程骨架，再进入画布绑定实际构建与部署资源。', recommended: '推荐模板',
+      category: { quickstart: '快速开始', go: 'Golang', nodejs: 'Node.js', python: 'Python' },
+      categoryHint: '选择适合交付目标的默认流水线，稍后可自由修改每个任务。', quickstartHint: '从空白流程开始，创建后再配置任务。', blankFlow: '空白画布', empty: '这个分类暂时没有可用模板',
+      selected: '已选择：{name}', selectPrompt: '请选择一份流水线模板', cancel: '取消', confirm: '确认', fallbackName: '模板',
+      created: '已从“{name}”创建流水线方案草稿',
+      runtime: {
+        label: '构建语言版本', placeholder: '选择版本', recommended: '推荐', ready: '已就绪', missing: '未下载',
+        download: '下载版本', downloaded: '构建版本 {version} 已准备完成',
+        isolation: '版本保存在 EDO 隔离的 Docker 构建运行时中，不会安装或覆盖宿主机工具链。',
+      },
+    },
     dashboard: { title: '分析页', healthy: '运行正常', checking: '正在检查', updated: '最近更新' },
     systemMonitor: {
       deadLetters: {
@@ -234,6 +246,18 @@ export const messages = {
         label: 'Deployment plan', placeholder: 'Select a deployment plan', chooseEnvironmentFirst: 'Select an environment first', unselected: 'No deployment plan selected', create: 'Create deployment plan',
         empty: 'No deployment plan is available for this environment', hint: 'Host script and Docker plans are filtered by actual host membership. Kubernetes clusters are not currently filtered by environment membership.',
         runtimePermissionHint: 'You cannot view runtime resources. Docker and Kubernetes connection state will be validated by the server when saving.', runtimeStatusUnavailable: 'Docker or Kubernetes connection state is temporarily unavailable and will be validated again when saving.',
+      },
+    },
+    pipelinePreset: {
+      title: 'Choose a pipeline template', subtitle: 'Choose a workflow skeleton first, then bind build and deployment resources in the editor.', recommended: 'Recommended templates',
+      category: { quickstart: 'Quick start', go: 'Golang', nodejs: 'Node.js', python: 'Python' },
+      categoryHint: 'Choose a default flow for the delivery target. Every task can be customized later.', quickstartHint: 'Start with an empty flow and configure tasks after creation.', blankFlow: 'Blank canvas', empty: 'No templates are available in this category',
+      selected: 'Selected: {name}', selectPrompt: 'Choose a pipeline template', cancel: 'Cancel', confirm: 'Confirm', fallbackName: 'Template',
+      created: 'Created a pipeline draft from “{name}”',
+      runtime: {
+        label: 'Build language version', placeholder: 'Select a version', recommended: 'Recommended', ready: 'Ready', missing: 'Not downloaded',
+        download: 'Download version', downloaded: 'Build version {version} is ready',
+        isolation: 'The version is stored in EDO\'s isolated Docker build runtime and never installs or replaces the host toolchain.',
       },
     },
     dashboard: { title: 'Analytics', healthy: 'Healthy', checking: 'Checking', updated: 'Updated' },

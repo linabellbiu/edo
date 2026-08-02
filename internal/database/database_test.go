@@ -57,6 +57,9 @@ func TestSQLiteMigrationIsIdempotent(t *testing.T) {
 			t.Fatalf("执行迁移失败: %v", err)
 		}
 	}
+	if !db.Migrator().HasColumn(&model.Host{}, "Architecture") {
+		t.Fatal("主机架构字段未完成迁移")
+	}
 	if !db.Migrator().HasTable(&model.Job{}) || !db.Migrator().HasTable(&model.OutboxEvent{}) ||
 		!db.Migrator().HasTable(&model.User{}) || !db.Migrator().HasTable(&model.Role{}) ||
 		!db.Migrator().HasTable(&model.AuditLog{}) || !db.Migrator().HasTable(&model.GitRepository{}) ||

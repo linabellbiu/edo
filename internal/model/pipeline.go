@@ -19,20 +19,22 @@ const (
 )
 
 type BuildPlan struct {
-	ID                   string            `gorm:"type:varchar(36);primaryKey" json:"id"`
-	Name                 string            `gorm:"type:varchar(128);not null;uniqueIndex" json:"name"`
-	Kind                 BuildPlanKind     `gorm:"type:varchar(16);not null;index" json:"kind"`
-	ConfigVersion        uint16            `gorm:"not null;default:1" json:"config_version"`
-	Description          string            `gorm:"type:varchar(500);not null;default:''" json:"description"`
-	Script               string            `gorm:"type:text;not null" json:"script,omitempty"`
-	DockerfilePath       string            `gorm:"type:varchar(512);not null;default:''" json:"dockerfile_path,omitempty"`
-	ContextPath          string            `gorm:"type:varchar(512);not null;default:'.'" json:"context_path"`
-	WorkingDirectory     string            `gorm:"type:varchar(512);not null;default:'.'" json:"working_directory"`
-	ArtifactPath         string            `gorm:"type:varchar(512);not null;default:''" json:"artifact_path,omitempty"`
-	RuntimeImage         string            `gorm:"type:varchar(512);not null;default:''" json:"runtime_image,omitempty"`
-	ImageRegistryID      string            `gorm:"type:varchar(36);not null;default:'';index" json:"image_registry_id,omitempty"`
-	TargetStage          string            `gorm:"type:varchar(128);not null;default:''" json:"target_stage,omitempty"`
-	Platform             string            `gorm:"type:varchar(64);not null;default:''" json:"platform,omitempty"`
+	ID               string        `gorm:"type:varchar(36);primaryKey" json:"id"`
+	Name             string        `gorm:"type:varchar(128);not null;uniqueIndex" json:"name"`
+	Kind             BuildPlanKind `gorm:"type:varchar(16);not null;index" json:"kind"`
+	ConfigVersion    uint16        `gorm:"not null;default:1" json:"config_version"`
+	Description      string        `gorm:"type:varchar(500);not null;default:''" json:"description"`
+	Script           string        `gorm:"type:text;not null" json:"script,omitempty"`
+	DockerfilePath   string        `gorm:"type:varchar(512);not null;default:''" json:"dockerfile_path,omitempty"`
+	ContextPath      string        `gorm:"type:varchar(512);not null;default:'.'" json:"context_path"`
+	WorkingDirectory string        `gorm:"type:varchar(512);not null;default:'.'" json:"working_directory"`
+	ArtifactPath     string        `gorm:"type:varchar(512);not null;default:''" json:"artifact_path,omitempty"`
+	RuntimeImage     string        `gorm:"type:varchar(512);not null;default:''" json:"runtime_image,omitempty"`
+	ImageRegistryID  string        `gorm:"type:varchar(36);not null;default:'';index" json:"image_registry_id,omitempty"`
+	TargetStage      string        `gorm:"type:varchar(128);not null;default:''" json:"target_stage,omitempty"`
+	// Platform 仅保留旧数据库列兼容。构建平台现在由流水线下游目标主机自动解析。
+	// Deprecated: 新建和更新构建方案始终清空该字段，接口不再暴露。
+	Platform             string            `gorm:"type:varchar(64);not null;default:''" json:"-"`
 	Pull                 bool              `gorm:"not null" json:"pull"`
 	CacheEnabled         bool              `gorm:"not null" json:"cache_enabled"`
 	BuildArgs            map[string]string `gorm:"serializer:json;type:text;not null" json:"build_args"`
@@ -273,6 +275,7 @@ type PipelineRun struct {
 	ApplicationID              string                  `gorm:"type:varchar(36);not null;index" json:"application_id"`
 	ReleasePlanExecutionID     string                  `gorm:"type:varchar(36);not null;default:'';index" json:"release_plan_execution_id,omitempty"`
 	ReleasePlanExecutionItemID string                  `gorm:"type:varchar(36);not null;default:'';index" json:"release_plan_execution_item_id,omitempty"`
+	ReleasePlanID              string                  `gorm:"-" json:"release_plan_id,omitempty"`
 	Trigger                    string                  `gorm:"type:varchar(24);not null;index" json:"trigger"`
 	TriggerAction              string                  `gorm:"type:varchar(16);not null;default:'';index" json:"trigger_action,omitempty"`
 	SourceBranch               string                  `gorm:"type:varchar(255);not null;default:''" json:"source_branch,omitempty"`

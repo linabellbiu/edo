@@ -16,6 +16,7 @@ import {
   Power,
   PowerOff,
   Route,
+  TerminalSquare,
   Trash2,
   UsersRound,
 } from 'lucide-vue-next'
@@ -52,6 +53,14 @@ interface ReleaseGroup {
   dependencies?: ReleaseGroupDependency[]
 }
 
+interface ReleasePlanExecutionItem {
+  id: string
+  release_group_application_id: string
+  application_id: string
+  pipeline_run_id: string
+  status: string
+}
+
 interface ReleasePlanItem {
   id: string
   name?: string
@@ -65,6 +74,7 @@ interface ReleasePlanItem {
     status: string
     created_at: string
     finished_at?: string
+    items?: ReleasePlanExecutionItem[]
   }
   groups?: ReleaseGroup[]
 }
@@ -75,6 +85,8 @@ const props = defineProps<{
   loading?: boolean
   canManage?: boolean
   canRun?: boolean
+  canReadDeployments?: boolean
+  activePlanID?: string
   runnableCounts?: Record<string, number>
   mutatingPlanID?: string
 }>()
@@ -86,6 +98,7 @@ const emit = defineEmits<{
   toggle: [planID: string, enabled: boolean]
   remove: [planID: string]
   removeApplication: [planID: string, groupID: string, applicationID: string]
+  openApplicationResources: [planID: string, applicationID: string, pipelineRunID: string]
 }>()
 const { t, locale } = useI18n()
 const selectedPlanID = ref('')
@@ -93,8 +106,12 @@ const selectedPlanID = ref('')
 const selectedPlan = computed(() => props.plans.find((plan) => plan.id === selectedPlanID.value) || props.plans[0] || null)
 
 watch(
-  () => props.plans.map((plan) => plan.id),
-  (ids) => {
+  () => ({ ids: props.plans.map((plan) => plan.id), activePlanID: props.activePlanID || '' }),
+  ({ ids, activePlanID }) => {
+    if (activePlanID && ids.includes(activePlanID)) {
+      selectedPlanID.value = activePlanID
+      return
+    }
     if (!ids.includes(selectedPlanID.value)) selectedPlanID.value = ids[0] || ''
   },
   { immediate: true },
@@ -152,6 +169,23 @@ function applicationName(item: ReleaseGroupApplication) {
 
 function applicationEnabled(item: ReleaseGroupApplication) {
   return item.application?.is_active ?? props.applications.find((application) => application.id === item.application_id)?.is_active ?? true
+}
+
+function executionItem(plan: ReleasePlanItem, item: ReleaseGroupApplication) {
+  return plan.latest_execution?.items?.find((candidate) => candidate.release_group_application_id === item.id)
+    || plan.latest_execution?.items?.find((candidate) => candidate.application_id === item.application_id)
+}
+
+function executionItemStatus(status?: string) {
+  const states: Record<string, { tone: PlanTone; label: string }> = {
+    pending: { tone: 'info', label: '等待执行' },
+    running: { tone: 'info', label: '正在执行' },
+    succeeded: { tone: 'success', label: '最近执行成功' },
+    failed: { tone: 'danger', label: '最近执行失败' },
+    skipped: { tone: 'neutral', label: '已跳过' },
+    canceled: { tone: 'neutral', label: '已取消' },
+  }
+  return states[status || ''] || { tone: 'neutral' as const, label: status || '暂无执行记录' }
 }
 
 function formatTime(value?: string) {
@@ -304,9 +338,21 @@ function sourceMeta(item: ReleaseGroupApplication) {
                     <component :is="sourceMeta(item).icon" />
                     {{ sourceMeta(item).label }} · {{ sourceMeta(item).value }}
                   </span>
+                  <span v-if="executionItem(selectedPlan, item)" class="plan-app-execution" :class="`tone-${executionItemStatus(executionItem(selectedPlan, item)?.status).tone}`">
+                    <Route />{{ executionItemStatus(executionItem(selectedPlan, item)?.status).label }}
+                  </span>
                 </div>
                 <div class="plan-app-actions">
                   <em :class="{ disabled: !applicationEnabled(item) }">{{ applicationEnabled(item) ? t('releasePlan.enabled') : t('releasePlan.disabled') }}</em>
+                  <a-button
+                    v-if="executionItem(selectedPlan, item)?.pipeline_run_id && canReadDeployments"
+                    type="text"
+                    size="small"
+                    @click="emit('openApplicationResources', selectedPlan.id, item.application_id, executionItem(selectedPlan, item)!.pipeline_run_id)"
+                  >
+                    <TerminalSquare :size="13" />部署资源
+                  </a-button>
+                  <em v-else-if="executionItem(selectedPlan, item)?.pipeline_run_id && !canReadDeployments" class="disabled">无部署权限</em>
                   <a-popconfirm
                     v-if="canManage && !planMutationBlocked(selectedPlan)"
                     :title="t('releasePlan.editor.removeApplicationConfirm', { name: applicationName(item) })"
@@ -349,7 +395,7 @@ function sourceMeta(item: ReleaseGroupApplication) {
 .plan-summary{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:9px;margin:16px 0}.plan-summary>div{min-width:0;padding:12px 13px;border:1px solid var(--edo-border);border-radius:11px;background:var(--edo-surface-soft)}.plan-summary dt{display:flex;align-items:center;gap:6px;color:var(--edo-muted);font-size:11px}.plan-summary dt svg{width:14px;color:var(--edo-primary)}.plan-summary dd{margin:4px 0 0;font-size:21px;font-weight:650;line-height:1.2}.plan-summary small{display:block;margin-top:3px;color:var(--edo-muted);font-size:10px}
 .plan-groups{overflow:hidden;border:1px solid var(--edo-border);border-radius:12px}.plan-groups>header{display:flex;align-items:center;justify-content:space-between;padding:13px 15px;background:var(--edo-surface-soft)}.plan-groups>header small,.plan-groups>header h3{display:block;margin:0}.plan-groups>header small{color:var(--edo-muted);font-size:10px}.plan-groups>header h3{margin-top:1px;font-size:14px}.plan-group-heading-actions{display:flex;align-items:center;gap:7px}.plan-group-heading-actions>span{padding:4px 8px;border-radius:999px;color:var(--edo-muted);background:var(--edo-surface);font-size:10px}.plan-group-heading-actions :deep(.ant-btn),.plan-group-actions :deep(.ant-btn){display:inline-flex;align-items:center;gap:4px}
 .plan-group-list{padding:0 15px 4px}.plan-group-row{position:relative;padding:15px 0 15px 39px}.plan-group-row+.plan-group-row{border-top:1px solid var(--edo-border)}.plan-group-step{position:absolute;top:16px;left:0;display:grid;width:26px;height:26px;place-items:center;border-radius:9px;color:var(--edo-primary);background:var(--edo-primary-soft);font-size:11px;font-weight:700}.plan-group-row>header{display:flex;align-items:flex-start;justify-content:space-between;gap:12px}.plan-group-row>header strong,.plan-group-row>header small{display:block}.plan-group-row>header strong{font-size:13px}.plan-group-row>header small{margin-top:3px;color:var(--edo-muted);font-size:10px}.plan-group-actions{display:flex;flex-wrap:wrap;align-items:center;justify-content:flex-end;gap:3px}.plan-group-rules{display:flex;flex-wrap:wrap;justify-content:flex-end;gap:5px}.plan-group-rules span{padding:3px 7px;border-radius:999px;color:var(--edo-muted);background:var(--edo-surface-soft);font-size:10px;white-space:nowrap}
-.plan-application-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(340px,100%),1fr));gap:7px;margin-top:11px}.plan-application{display:grid;min-width:0;align-items:center;grid-template-columns:34px minmax(0,1fr) auto;gap:9px;padding:9px 10px;border:1px solid var(--edo-border);border-radius:10px;background:var(--edo-surface-soft)}.plan-app-mark{display:grid;width:34px;height:34px;place-items:center;border-radius:9px;color:var(--edo-primary);background:var(--edo-surface)}.plan-app-mark svg{width:16px}.plan-app-copy{min-width:0}.plan-app-copy strong,.plan-app-copy span{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.plan-app-copy strong{font-size:12px}.plan-app-copy span{display:flex;align-items:center;gap:4px;margin-top:3px;color:var(--edo-muted);font-size:10px}.plan-app-copy span svg{width:12px;flex:0 0 12px}.plan-app-actions{display:flex;align-items:center;justify-content:flex-end;gap:3px}.plan-app-actions em{padding:3px 6px;border-radius:999px;color:#168b57;background:color-mix(in srgb,#2ab573 10%,var(--edo-surface));font-size:9px;font-style:normal;white-space:nowrap}.plan-app-actions em.disabled{color:var(--edo-muted);background:var(--edo-surface)}.plan-app-actions :deep(.ant-btn){display:inline-flex;align-items:center;gap:4px;padding-inline:5px}
+.plan-application-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(380px,100%),1fr));gap:7px;margin-top:11px}.plan-application{display:grid;min-width:0;align-items:center;grid-template-columns:34px minmax(0,1fr) auto;gap:9px;padding:9px 10px;border:1px solid var(--edo-border);border-radius:10px;background:var(--edo-surface-soft)}.plan-app-mark{display:grid;width:34px;height:34px;place-items:center;border-radius:9px;color:var(--edo-primary);background:var(--edo-surface)}.plan-app-mark svg{width:16px}.plan-app-copy{min-width:0}.plan-app-copy strong,.plan-app-copy span{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.plan-app-copy strong{font-size:12px}.plan-app-copy span{display:flex;align-items:center;gap:4px;margin-top:3px;color:var(--edo-muted);font-size:10px}.plan-app-copy span svg{width:12px;flex:0 0 12px}.plan-app-copy .plan-app-execution.tone-info{color:#3768d8}.plan-app-copy .plan-app-execution.tone-success{color:#168b57}.plan-app-copy .plan-app-execution.tone-danger{color:#d94150}.plan-app-actions{display:flex;align-items:center;justify-content:flex-end;gap:3px}.plan-app-actions em{padding:3px 6px;border-radius:999px;color:#168b57;background:color-mix(in srgb,#2ab573 10%,var(--edo-surface));font-size:9px;font-style:normal;white-space:nowrap}.plan-app-actions em.disabled{color:var(--edo-muted);background:var(--edo-surface)}.plan-app-actions :deep(.ant-btn){display:inline-flex;align-items:center;gap:4px;padding-inline:5px}
 .plan-empty{display:grid;min-height:460px;place-items:center;align-content:center;padding:32px;text-align:center}.plan-empty>span{display:grid;width:58px;height:58px;place-items:center;border-radius:18px;color:var(--edo-primary);background:var(--edo-primary-soft)}.plan-empty>span svg{width:25px}.plan-empty h3{margin:15px 0 0;font-size:16px}.plan-empty p{max-width:420px;margin:6px 0 16px;color:var(--edo-muted);font-size:12px}
 @keyframes plan-pulse{0%{box-shadow:0 0 0 0 color-mix(in srgb,currentColor 30%,transparent)}70%{box-shadow:0 0 0 7px transparent}100%{box-shadow:0 0 0 0 transparent}}
 @media(max-width:980px){.plan-workspace{grid-template-columns:250px minmax(0,1fr)}.plan-application-grid{grid-template-columns:1fr}}

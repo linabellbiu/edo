@@ -29,6 +29,20 @@ type ImageSnapshot struct {
 	ID        string
 }
 
+var (
+	ErrContainerNotRunning       = errors.New("Docker 容器未保持运行")
+	ErrContainerRestarted        = errors.New("Docker 容器启动期间发生重启")
+	ErrContainerUnhealthy        = errors.New("Docker 容器健康检查失败")
+	ErrContainerReadinessTimeout = errors.New("等待 Docker 容器就绪超时")
+)
+
+const (
+	directContainerStabilityWindow = 10 * time.Second
+	directContainerPollInterval    = time.Second
+)
+
+type containerInspectFunc func(context.Context) (client.ContainerInspectResult, error)
+
 func (s *Service) DeployContainer(
 	ctx context.Context,
 	endpointID, targetID, containerName, image, imageDisplay, deploymentID string,
@@ -454,30 +468,60 @@ func initialContainerConfig(
 }
 
 func waitContainerHealthy(ctx context.Context, apiClient *client.Client, containerID string) error {
+	return waitContainerReady(ctx, func(inspectContext context.Context) (client.ContainerInspectResult, error) {
+		return apiClient.ContainerInspect(inspectContext, containerID, client.ContainerInspectOptions{})
+	}, directContainerStabilityWindow, directContainerPollInterval)
+}
+
+func waitContainerReady(
+	ctx context.Context,
+	inspect containerInspectFunc,
+	stabilityWindow time.Duration,
+	pollInterval time.Duration,
+) error {
+	if inspect == nil || stabilityWindow <= 0 || pollInterval <= 0 {
+		return errors.New("Docker 容器就绪检查配置无效")
+	}
 	started := time.Now()
-	ticker := time.NewTicker(2 * time.Second)
+	ticker := time.NewTicker(pollInterval)
 	defer ticker.Stop()
 	for {
-		inspect, err := apiClient.ContainerInspect(ctx, containerID, client.ContainerInspectOptions{})
+		result, err := inspect(ctx)
 		if err != nil {
 			return fmt.Errorf("检查新 Docker 容器状态失败: %w", err)
 		}
-		if inspect.Container.State == nil || !inspect.Container.State.Running {
-			return errors.New("新 Docker 容器未保持运行状态")
+		state := result.Container.State
+		if state == nil {
+			return fmt.Errorf("%w: 没有可读取的状态", ErrContainerNotRunning)
 		}
-		if inspect.Container.State.Health != nil {
-			switch inspect.Container.State.Health.Status {
-			case "healthy":
+		if state.Restarting || state.Status == container.StateRestarting || result.Container.RestartCount > 0 {
+			return fmt.Errorf("%w: status=%s restart_count=%d exit_code=%d",
+				ErrContainerRestarted, state.Status, result.Container.RestartCount, state.ExitCode)
+		}
+		if !state.Running || state.Status != container.StateRunning {
+			return fmt.Errorf("%w: status=%s exit_code=%d", ErrContainerNotRunning, state.Status, state.ExitCode)
+		}
+		if state.Health != nil {
+			switch state.Health.Status {
+			case container.Healthy:
 				return nil
-			case "unhealthy":
-				return errors.New("新 Docker 容器健康检查失败")
+			case container.Unhealthy:
+				return fmt.Errorf("%w: failing_streak=%d", ErrContainerUnhealthy, state.Health.FailingStreak)
+			case container.Starting:
+				// 继续等待 Docker 健康检查给出最终结果。
+			case container.NoHealthcheck:
+				if time.Since(started) >= stabilityWindow {
+					return nil
+				}
+			default:
+				return fmt.Errorf("新 Docker 容器返回未知健康状态: %s", state.Health.Status)
 			}
-		} else if time.Since(started) >= 5*time.Second {
+		} else if time.Since(started) >= stabilityWindow {
 			return nil
 		}
 		select {
 		case <-ctx.Done():
-			return errors.New("等待新 Docker 容器就绪超时")
+			return fmt.Errorf("%w: %v", ErrContainerReadinessTimeout, ctx.Err())
 		case <-ticker.C:
 		}
 	}

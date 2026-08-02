@@ -210,6 +210,90 @@ func (s *LocalStore) Remove(storageKey string) error {
 	return nil
 }
 
+func copyLocalBlobs(ctx context.Context, sourceRoot, targetRoot string) error {
+	source := filepath.Join(sourceRoot, "blobs", "sha256")
+	target := filepath.Join(targetRoot, "blobs", "sha256")
+	return filepath.WalkDir(source, func(current string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		relative, err := filepath.Rel(source, current)
+		if err != nil {
+			return err
+		}
+		if relative == "." {
+			return nil
+		}
+		destination := filepath.Join(target, relative)
+		if entry.IsDir() {
+			return os.MkdirAll(destination, 0o700)
+		}
+		if entry.Type()&os.ModeSymlink != 0 {
+			return errors.New("制品目录包含不允许的符号链接")
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		if !info.Mode().IsRegular() {
+			return errors.New("制品目录包含不支持的文件类型")
+		}
+		if existing, err := os.Stat(destination); err == nil && existing.Mode().IsRegular() && existing.Size() == info.Size() {
+			matches, verifyErr := storedFileMatches(destination, filepath.Base(destination))
+			if verifyErr != nil {
+				return verifyErr
+			}
+			if !matches {
+				return errors.New("目标制品目录存在摘要冲突")
+			}
+			return nil
+		} else if err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		if err := os.MkdirAll(filepath.Dir(destination), 0o700); err != nil {
+			return err
+		}
+		input, err := os.Open(current)
+		if err != nil {
+			return err
+		}
+		temporary, err := os.CreateTemp(filepath.Dir(destination), ".edo-copy-*")
+		if err != nil {
+			_ = input.Close()
+			return err
+		}
+		temporaryName := temporary.Name()
+		removeTemporary := true
+		defer func() {
+			_ = input.Close()
+			_ = temporary.Close()
+			if removeTemporary {
+				_ = os.Remove(temporaryName)
+			}
+		}()
+		if _, err := io.CopyBuffer(temporary, &contextReader{ctx: ctx, source: input}, make([]byte, 128*1024)); err != nil {
+			return err
+		}
+		if err := temporary.Sync(); err != nil {
+			return err
+		}
+		if err := temporary.Chmod(0o400); err != nil {
+			return err
+		}
+		if err := temporary.Close(); err != nil {
+			return err
+		}
+		if err := input.Close(); err != nil {
+			return err
+		}
+		if err := os.Rename(temporaryName, destination); err != nil {
+			return err
+		}
+		removeTemporary = false
+		return nil
+	})
+}
+
 func (s *LocalStore) resolve(storageKey string) (string, error) {
 	if s == nil || !storageKeyPattern.MatchString(storageKey) {
 		return "", ErrInvalidStore

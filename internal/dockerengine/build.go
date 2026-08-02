@@ -29,6 +29,8 @@ import (
 
 const maximumBuildContextSize int64 = 1024 * 1024 * 1024
 
+var ErrMultiPlatformRegistryRequired = errors.New("多架构镜像必须推送到镜像仓库")
+
 type buildExecutionError struct {
 	cause     error
 	retryable bool
@@ -96,23 +98,30 @@ func (s *Service) BuildAndPushWithOptions(
 	timeout time.Duration,
 	output io.Writer,
 ) (string, error) {
-	apiClient, err := s.BuilderClient()
+	platform, platforms, err := normalizeBuildPlatforms(options.Platform)
 	if err != nil {
 		return "", err
 	}
-	defer apiClient.Close()
+	options.Platform = platform
 	buildContext, err := validateBuildContextDirectory(contextDirectory, dockerfile)
-	if err != nil {
-		return "", err
-	}
-
-	authConfig := registryAuthConfig(registry)
-	encodedAuth, err := encodeRegistryAuth(authConfig)
 	if err != nil {
 		return "", err
 	}
 	buildContextTimeout, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
+	if len(platforms) > 1 {
+		return s.runBuildxPush(buildContextTimeout, buildContext, dockerfile, image, registry, options, output)
+	}
+	apiClient, err := s.BuilderClient()
+	if err != nil {
+		return "", err
+	}
+	defer apiClient.Close()
+	authConfig := registryAuthConfig(registry)
+	encodedAuth, err := encodeRegistryAuth(authConfig)
+	if err != nil {
+		return "", err
+	}
 	if err := s.runBuildx(buildContextTimeout, buildContext, dockerfile, image, registry, options, output); err != nil {
 		return "", err
 	}
@@ -178,6 +187,14 @@ func (s *Service) BuildLocalWithOptions(
 	if !IsEDOLocalImage(image) {
 		return "", errors.New("本地构建镜像名称无效")
 	}
+	platform, platforms, err := normalizeBuildPlatforms(options.Platform)
+	if err != nil {
+		return "", err
+	}
+	if len(platforms) > 1 {
+		return "", ErrMultiPlatformRegistryRequired
+	}
+	options.Platform = platform
 	apiClient, err := s.BuilderClient()
 	if err != nil {
 		return "", err
@@ -304,6 +321,64 @@ func (s *Service) runBuildx(
 	options BuildOptions,
 	output io.Writer,
 ) error {
+	builder := ""
+	if strings.TrimSpace(s.config.DockerBuilderHost) != "" {
+		builder = "default"
+	}
+	return s.runBuildxCommand(ctx, buildContext, registry, options,
+		dockerBuildxArgumentsWithOptions(dockerfile, image, builder, options), output)
+}
+
+func (s *Service) runBuildxPush(
+	ctx context.Context,
+	buildContext string,
+	dockerfile string,
+	image string,
+	registry RegistryAuth,
+	options BuildOptions,
+	output io.Writer,
+) (string, error) {
+	metadata, err := os.CreateTemp("", "edo-buildx-metadata-*.json")
+	if err != nil {
+		return "", fmt.Errorf("创建 Buildx 元数据文件失败: %w", err)
+	}
+	metadataPath := metadata.Name()
+	if err := metadata.Close(); err != nil {
+		_ = os.Remove(metadataPath)
+		return "", fmt.Errorf("准备 Buildx 元数据文件失败: %w", err)
+	}
+	defer os.Remove(metadataPath)
+	builder := ""
+	if strings.TrimSpace(s.config.DockerBuilderHost) != "" {
+		builder = "default"
+	}
+	arguments := dockerBuildxPushArgumentsWithOptions(dockerfile, image, builder, metadataPath, options)
+	if err := s.runBuildxCommand(ctx, buildContext, registry, options, arguments, output); err != nil {
+		return "", err
+	}
+	payload, err := os.ReadFile(metadataPath)
+	if err != nil {
+		return "", fmt.Errorf("读取 Buildx 镜像摘要失败: %w", err)
+	}
+	digest := buildxMetadataDigest(payload)
+	if digest == "" {
+		return "", errors.New("镜像仓库没有返回可验证的多架构镜像摘要")
+	}
+	named, err := distributionreference.ParseNormalizedNamed(strings.TrimSpace(image))
+	if err != nil {
+		return "", errors.New("多架构镜像名称无效")
+	}
+	return distributionreference.TrimNamed(named).String() + "@" + digest, nil
+}
+
+func (s *Service) runBuildxCommand(
+	ctx context.Context,
+	buildContext string,
+	registry RegistryAuth,
+	options BuildOptions,
+	arguments []string,
+	output io.Writer,
+) error {
 	if _, err := exec.LookPath("docker"); err != nil {
 		return errors.New("Docker CLI 未安装，无法执行 BuildKit 构建")
 	}
@@ -318,11 +393,6 @@ func (s *Service) runBuildx(
 	}
 	defer os.RemoveAll(configDirectory)
 
-	builder := ""
-	if strings.TrimSpace(s.config.DockerBuilderHost) != "" {
-		builder = "default"
-	}
-	arguments := dockerBuildxArgumentsWithOptions(dockerfile, image, builder, options)
 	// 每个任务都有独立检出目录、构建上下文、认证目录和不可重复镜像标签；
 	// 这里不设置进程级锁，让 BuildKit 按 Worker 并发数并行调度构建。
 	command := exec.CommandContext(ctx, "docker", arguments...)
@@ -358,6 +428,51 @@ func (s *Service) runBuildx(
 		}
 	}
 	return nil
+}
+
+func normalizeBuildPlatforms(value string) (string, []string, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "", nil, nil
+	}
+	seen := make(map[string]struct{}, 2)
+	for _, candidate := range strings.Split(value, ",") {
+		candidate = strings.ToLower(strings.TrimSpace(candidate))
+		if candidate != "linux/amd64" && candidate != "linux/arm64" {
+			return "", nil, errors.New("Docker 构建目标平台无效")
+		}
+		seen[candidate] = struct{}{}
+	}
+	platforms := make([]string, 0, len(seen))
+	for platform := range seen {
+		platforms = append(platforms, platform)
+	}
+	sort.Strings(platforms)
+	return strings.Join(platforms, ","), platforms, nil
+}
+
+func buildxMetadataDigest(payload []byte) string {
+	var metadata map[string]json.RawMessage
+	if json.Unmarshal(payload, &metadata) != nil {
+		return ""
+	}
+	var digest string
+	if raw := metadata["containerimage.digest"]; len(raw) > 0 {
+		_ = json.Unmarshal(raw, &digest)
+	}
+	if digest == "" {
+		var descriptor struct {
+			Digest string `json:"digest"`
+		}
+		if raw := metadata["containerimage.descriptor"]; len(raw) > 0 {
+			_ = json.Unmarshal(raw, &descriptor)
+			digest = descriptor.Digest
+		}
+	}
+	if !IsValidImageID(digest) {
+		return ""
+	}
+	return digest
 }
 
 // ValidBuildArgs 拒绝会改写 Docker CLI/BuildKit 自身运行配置的参数名。
@@ -409,6 +524,35 @@ func dockerBuildxArgumentsWithOptions(
 		buildArgs[name] = value
 	}
 	arguments = appendSortedBuildArgNames(arguments, buildArgs)
+	arguments = appendSortedBuildValues(arguments, "--label", options.Labels)
+	arguments = append(arguments, "--tag", image)
+	return append(arguments, ".")
+}
+
+func dockerBuildxPushArgumentsWithOptions(
+	dockerfile string,
+	image, builder, metadataFile string,
+	options BuildOptions,
+) []string {
+	arguments := []string{"buildx", "build", "--progress", "plain"}
+	if options.Pull {
+		arguments = append(arguments, "--pull")
+	}
+	if !options.CacheEnabled {
+		arguments = append(arguments, "--no-cache")
+	}
+	arguments = append(arguments, "--push", "--metadata-file", metadataFile)
+	if builder != "" {
+		arguments = append(arguments, "--builder", builder)
+	}
+	arguments = append(arguments, "--file", filepath.ToSlash(dockerfile))
+	if targetStage := strings.TrimSpace(options.TargetStage); targetStage != "" {
+		arguments = append(arguments, "--target", targetStage)
+	}
+	if platform := strings.TrimSpace(options.Platform); platform != "" {
+		arguments = append(arguments, "--platform", platform)
+	}
+	arguments = appendSortedBuildArgNames(arguments, options.BuildArgs)
 	arguments = appendSortedBuildValues(arguments, "--label", options.Labels)
 	arguments = append(arguments, "--tag", image)
 	return append(arguments, ".")

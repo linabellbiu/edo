@@ -60,7 +60,7 @@ func deploymentPlanTargetInput(t *testing.T, service *Service, target model.Depl
 		}
 	case model.DeploymentSSH:
 		environment := model.Environment{ID: target.EnvironmentID, Name: "environment-" + target.EnvironmentID, IsActive: true, CreatedBy: "admin", CreatedAt: now, UpdatedAt: now}
-		host := model.Host{ID: target.HostID, Name: "host-" + target.HostID, Mode: model.HostModeSSH, SSHPort: 22, IsActive: true, CreatedBy: "admin", CreatedAt: now, UpdatedAt: now}
+		host := model.Host{ID: target.HostID, Name: "host-" + target.HostID, Mode: model.HostModeSSH, Architecture: model.HostArchitectureAMD64, SSHPort: 22, IsActive: true, CreatedBy: "admin", CreatedAt: now, UpdatedAt: now}
 		capability := model.HostCapability{HostID: host.ID, Kind: model.HostCapabilitySSH, Status: model.HostCapabilityReady, CreatedAt: now, UpdatedAt: now}
 		membership := model.EnvironmentHost{EnvironmentID: environment.ID, HostID: host.ID, CreatedAt: now}
 		for _, value := range []any{&environment, &host, &capability, &membership} {
@@ -90,7 +90,7 @@ func createDeploymentPlanTestEnvironmentHost(
 ) {
 	t.Helper()
 	environment := model.Environment{ID: environmentID, Name: "environment-" + environmentID, IsActive: true, CreatedBy: "admin", CreatedAt: now, UpdatedAt: now}
-	host := model.Host{ID: hostID, Name: "host-" + hostID, Mode: mode, IsBuiltin: builtin, SSHPort: 22, IsActive: true, CreatedBy: "admin", CreatedAt: now, UpdatedAt: now}
+	host := model.Host{ID: hostID, Name: "host-" + hostID, Mode: mode, Architecture: model.HostArchitectureAMD64, IsBuiltin: builtin, SSHPort: 22, IsActive: true, CreatedBy: "admin", CreatedAt: now, UpdatedAt: now}
 	capability := model.HostCapability{HostID: host.ID, Kind: capabilityKind, RuntimeID: runtimeID, Status: model.HostCapabilityReady, CreatedAt: now, UpdatedAt: now}
 	membership := model.EnvironmentHost{EnvironmentID: environment.ID, HostID: host.ID, CreatedAt: now}
 	for _, value := range []any{&environment, &host, &capability, &membership} {

@@ -4,6 +4,7 @@ export type HostMode = 'local' | 'ssh'
 export type HostAuthType = 'password' | 'private_key' | 'legacy' | ''
 export type HostCapabilityKind = 'ssh' | 'docker' | 'kubernetes' | 'local_exec'
 export type HostCapabilityStatus = 'ready' | 'unchecked' | 'unreachable'
+export type HostArchitecture = 'amd64' | 'arm64' | ''
 
 export interface HostCapability {
   kind: HostCapabilityKind
@@ -29,6 +30,7 @@ export interface InfrastructureHost {
   ssh_username: string
   ssh_auth_type: HostAuthType
   ssh_host_key_fingerprint: string
+  architecture: HostArchitecture
   environment_ids: string[]
   /** 兼容迁移期间的旧接口；新逻辑以 environment_ids 为准。 */
   environment_id?: string

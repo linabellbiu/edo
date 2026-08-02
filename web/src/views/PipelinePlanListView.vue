@@ -7,6 +7,7 @@ import { Copy, GitBranch, Pencil, Power, Trash2 } from 'lucide-vue-next'
 import client from '@/api/client'
 import { apiErrorMessage } from '@/api/resources'
 import PageToolbar from '@/components/PageToolbar.vue'
+import WorkflowPresetModal from '@/components/WorkflowPresetModal.vue'
 import { useAuthStore } from '@/stores/auth'
 import type { Workflow, WorkflowNode, WorkflowStage } from '@/types/pipeline'
 
@@ -34,6 +35,7 @@ const templates = ref<WorkflowTemplate[]>([])
 const applications = ref<ApplicationReference[]>([])
 const loading = ref(false)
 const busyID = ref('')
+const presetOpen = ref(false)
 
 const canManage = computed(() => Boolean(auth.user?.is_superuser || auth.permissions.has('delivery.manage')))
 const usageCount = computed(() => {
@@ -153,18 +155,26 @@ function remove(template: WorkflowTemplate) {
 }
 
 onMounted(async () => {
-  if (route.query.application || route.query.template || route.query.create === '1') {
+  if (route.query.application || route.query.template) {
     await router.replace({ path: '/pipeline-plans/editor', query: route.query })
     return
   }
   await refresh()
+  if (route.query.create === '1' && canManage.value) {
+    presetOpen.value = true
+    await router.replace({ path: '/pipeline-plans' })
+  }
 })
+
+async function openCreatedTemplate(result: import('@/types/pipeline').WorkflowTemplateResponse) {
+  await router.push(`/pipeline-plans/editor?template=${result.workflow_template.id}`)
+}
 </script>
 
 <template>
   <section class="pipeline-plan-page">
     <PageToolbar :description="`${templates.length} 份方案；应用使用已启用方案的最新版本。`">
-      <a-button v-if="canManage" type="primary" @click="router.push('/pipeline-plans/editor?create=1')">
+      <a-button v-if="canManage" type="primary" @click="presetOpen = true">
         新建流水线方案
       </a-button>
     </PageToolbar>
@@ -211,11 +221,12 @@ onMounted(async () => {
         </template>
         <template #emptyText>
           <a-empty description="还没有流水线方案">
-            <a-button v-if="canManage" type="primary" @click="router.push('/pipeline-plans/editor?create=1')">创建第一份方案</a-button>
+            <a-button v-if="canManage" type="primary" @click="presetOpen = true">创建第一份方案</a-button>
           </a-empty>
         </template>
       </a-table>
     </div>
+    <WorkflowPresetModal v-model:open="presetOpen" @created="openCreatedTemplate" />
   </section>
 </template>
 

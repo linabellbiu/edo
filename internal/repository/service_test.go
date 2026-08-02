@@ -12,6 +12,8 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -307,6 +309,46 @@ func TestCheckoutDirectoryVersionUsesTagOrCommit(t *testing.T) {
 	}
 	if got := checkoutDirectoryVersion("refs/tags/release/1", commit); !strings.HasPrefix(got, "version-") {
 		t.Fatalf("包含路径分隔符的 Tag 没有安全哈希: %q", got)
+	}
+}
+
+func TestCheckoutUsesSeparateCacheAndCleanupWaitsForActiveBuild(t *testing.T) {
+	service, _ := newRepositoryTestService(t)
+	client := &separatedCheckoutStub{}
+	service.git = client
+	repository, _, err := service.Create(context.Background(), "admin", Input{
+		Name: "目录测试仓库", Provider: model.GitProviderGeneric,
+		CloneURL: "https://git.example.com/team/directory.git", AuthType: model.GitAuthNone,
+	})
+	if err != nil {
+		t.Fatalf("创建目录测试仓库失败: %v", err)
+	}
+	directories, err := service.PrepareDirectories(t.TempDir(), t.TempDir())
+	if err != nil {
+		t.Fatalf("准备仓库运行目录失败: %v", err)
+	}
+	service.ApplyDirectories(directories)
+	lease, err := service.AcquireCheckout(
+		context.Background(), repository.ID, "refs/heads/main", strings.Repeat("a", 40),
+	)
+	if err != nil {
+		t.Fatalf("检出目录测试仓库失败: %v", err)
+	}
+	if !strings.HasPrefix(client.cacheDirectory, directories.CacheDirectory+string(filepath.Separator)) ||
+		!strings.HasPrefix(lease.Directory, directories.WorkspaceDirectory+string(filepath.Separator)) {
+		t.Fatalf("仓库工作区和缓存未分开: lease=%s cache=%s", lease.Directory, client.cacheDirectory)
+	}
+	if _, err := service.ClearWorkspaceDirectory(); !errors.Is(err, ErrDirectoryBusy) {
+		t.Fatalf("活动构建期间仍允许清理目录: %v", err)
+	}
+	lease.Release()
+	buildReport, err := service.ClearWorkspaceDirectory()
+	if err != nil || buildReport.FilesDeleted != 1 {
+		t.Fatalf("清理仓库构建目录失败: report=%+v err=%v", buildReport, err)
+	}
+	cacheReport, err := service.ClearCacheDirectory()
+	if err != nil || cacheReport.FilesDeleted != 1 {
+		t.Fatalf("清理仓库缓存目录失败: report=%+v err=%v", cacheReport, err)
 	}
 }
 
@@ -669,6 +711,44 @@ func (s staticWebhookGate) ExternalGitWebhookEnabled(context.Context) (bool, err
 type staticRefLister struct {
 	result RefResult
 	err    error
+}
+
+type separatedCheckoutStub struct {
+	cacheDirectory string
+}
+
+func (s *separatedCheckoutStub) ListRefs(context.Context, model.GitRepository, string) (RefResult, error) {
+	return RefResult{}, nil
+}
+
+func (s *separatedCheckoutStub) Checkout(
+	ctx context.Context,
+	repository model.GitRepository,
+	credential, ref, commitSHA, destination string,
+) error {
+	_, err := s.CheckoutCachedAt(ctx, repository, credential, ref, commitSHA, destination, filepath.Join(filepath.Dir(destination), ".cache"))
+	return err
+}
+
+func (s *separatedCheckoutStub) CheckoutCachedAt(
+	_ context.Context,
+	_ model.GitRepository,
+	_, _, _, destination, cacheDirectory string,
+) (bool, error) {
+	s.cacheDirectory = cacheDirectory
+	if err := os.MkdirAll(destination, 0o700); err != nil {
+		return false, err
+	}
+	if err := os.WriteFile(filepath.Join(destination, "source.go"), []byte("package main"), 0o600); err != nil {
+		return false, err
+	}
+	if err := os.MkdirAll(cacheDirectory, 0o700); err != nil {
+		return false, err
+	}
+	if err := os.WriteFile(filepath.Join(cacheDirectory, "pack"), []byte("cache"), 0o600); err != nil {
+		return false, err
+	}
+	return false, nil
 }
 
 type credentialCapturingRefLister struct {

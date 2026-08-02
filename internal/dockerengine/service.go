@@ -31,15 +31,16 @@ import (
 )
 
 var (
-	ErrInvalidEndpoint  = errors.New("Docker 连接配置无效")
-	ErrEndpointExists   = errors.New("Docker 连接名称已存在")
-	ErrEndpointNotFound = errors.New("Docker 连接不存在")
-	ErrTLSRequired      = errors.New("远程 Docker API 必须启用双向 TLS")
-	ErrInvalidTLS       = errors.New("Docker TLS 证书配置无效")
-	ErrSSHRequired      = errors.New("SSH Docker 连接必须提供密码或私钥，并先完成连接测试")
-	ErrInvalidSSH       = errors.New("SSH Docker 连接配置无效")
-	ErrSSHUnreachable   = errors.New("无法通过 SSH 连接 Docker，请检查地址、端口、用户名和凭据")
-	ErrSSHDockerDenied  = errors.New("SSH 登录成功，但无法执行 Docker，请检查 sudo 配置和 Docker 权限")
+	ErrInvalidEndpoint         = errors.New("Docker 连接配置无效")
+	ErrEndpointExists          = errors.New("Docker 连接名称已存在")
+	ErrEndpointNotFound        = errors.New("Docker 连接不存在")
+	ErrTLSRequired             = errors.New("远程 Docker API 必须启用双向 TLS")
+	ErrInvalidTLS              = errors.New("Docker TLS 证书配置无效")
+	ErrSSHRequired             = errors.New("SSH Docker 连接必须提供密码或私钥，并先完成连接测试")
+	ErrInvalidSSH              = errors.New("SSH Docker 连接配置无效")
+	ErrSSHUnreachable          = errors.New("无法通过 SSH 连接 Docker，请检查地址、端口、用户名和凭据")
+	ErrSSHDockerDenied         = errors.New("SSH 登录成功，但无法执行 Docker，请检查 sudo 配置和 Docker 权限")
+	ErrUnsupportedArchitecture = errors.New("仅支持 AMD64 或 ARM64 主机架构")
 )
 
 var endpointNamePattern = regexp.MustCompile(`^[\p{L}\p{N}][\p{L}\p{N}_. -]{0,127}$`)
@@ -581,6 +582,25 @@ func (s *Service) PingBuilder(ctx context.Context) error {
 		return fmt.Errorf("Docker 构建运行时健康检查失败: %w", err)
 	}
 	return nil
+}
+
+// BuilderArchitecture 返回实际执行构建的 Docker daemon 架构。Compose 模式下它
+// 来自独立 Docker-in-Docker，二进制模式下来自当前连接的宿主机 Docker。
+func (s *Service) BuilderArchitecture(ctx context.Context) (model.HostArchitecture, error) {
+	apiClient, err := s.BuilderClient()
+	if err != nil {
+		return "", err
+	}
+	defer apiClient.Close()
+	info, err := apiClient.Info(ctx, client.InfoOptions{})
+	if err != nil {
+		return "", fmt.Errorf("读取 Docker 构建运行时架构失败: %w", err)
+	}
+	architecture, valid := model.NormalizeHostArchitecture(info.Info.Architecture)
+	if !valid {
+		return "", ErrUnsupportedArchitecture
+	}
+	return architecture, nil
 }
 
 func (s *Service) normalize(id string, existing *model.DockerEndpoint, input Input) (string, string, string, string, string, error) {

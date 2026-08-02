@@ -1,11 +1,15 @@
 package dockerengine
 
 import (
+	"context"
+	"errors"
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/moby/moby/api/types/container"
+	"github.com/moby/moby/client"
 
 	"edo/internal/model"
 )
@@ -91,5 +95,82 @@ func TestInitialContainerConfigDoesNotRunHostCommandInsideContainer(t *testing.T
 	}
 	if len(configuration.Entrypoint) != 0 || len(configuration.Cmd) != 0 {
 		t.Fatalf("主机侧 Docker 命令不应写入容器 ENTRYPOINT/CMD: %+v", configuration)
+	}
+}
+
+func TestWaitContainerReadyRequiresStableRunningState(t *testing.T) {
+	inspectCount := 0
+	err := waitContainerReady(context.Background(), func(context.Context) (client.ContainerInspectResult, error) {
+		inspectCount++
+		return client.ContainerInspectResult{Container: container.InspectResponse{
+			State: &container.State{Status: container.StateRunning, Running: true},
+		}}, nil
+	}, 5*time.Millisecond, time.Millisecond)
+	if err != nil {
+		t.Fatalf("稳定运行的 Docker 容器未通过就绪检查: %v", err)
+	}
+	if inspectCount < 2 {
+		t.Fatalf("Docker 容器只检查了一次，没有验证稳定运行窗口: inspect_count=%d", inspectCount)
+	}
+}
+
+func TestWaitContainerReadyRejectsStoppedOrRestartedContainer(t *testing.T) {
+	tests := []struct {
+		name     string
+		result   client.ContainerInspectResult
+		expected error
+	}{
+		{
+			name: "已经退出",
+			result: client.ContainerInspectResult{Container: container.InspectResponse{
+				State: &container.State{Status: container.StateExited, ExitCode: 1},
+			}},
+			expected: ErrContainerNotRunning,
+		},
+		{
+			name: "启动后重启",
+			result: client.ContainerInspectResult{Container: container.InspectResponse{
+				State: &container.State{Status: container.StateRunning, Running: true}, RestartCount: 1,
+			}},
+			expected: ErrContainerRestarted,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			err := waitContainerReady(context.Background(), func(context.Context) (client.ContainerInspectResult, error) {
+				return test.result, nil
+			}, time.Second, time.Millisecond)
+			if !errors.Is(err, test.expected) {
+				t.Fatalf("异常 Docker 容器被判定为就绪: err=%v", err)
+			}
+		})
+	}
+}
+
+func TestWaitContainerReadyUsesDockerHealthResult(t *testing.T) {
+	statuses := []container.HealthStatus{container.Starting, container.Healthy}
+	index := 0
+	err := waitContainerReady(context.Background(), func(context.Context) (client.ContainerInspectResult, error) {
+		status := statuses[index]
+		if index < len(statuses)-1 {
+			index++
+		}
+		return client.ContainerInspectResult{Container: container.InspectResponse{
+			State: &container.State{
+				Status: container.StateRunning, Running: true,
+				Health: &container.Health{Status: status},
+			},
+		}}, nil
+	}, time.Second, time.Millisecond)
+	if err != nil {
+		t.Fatalf("Docker 健康检查通过后仍未判定容器就绪: %v", err)
+	}
+
+	inspectErr := errors.New("inspect failed")
+	err = waitContainerReady(context.Background(), func(context.Context) (client.ContainerInspectResult, error) {
+		return client.ContainerInspectResult{}, inspectErr
+	}, time.Second, time.Millisecond)
+	if !errors.Is(err, inspectErr) {
+		t.Fatalf("Docker inspect 原始错误未保留给内部诊断: %v", err)
 	}
 }

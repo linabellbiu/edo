@@ -27,8 +27,11 @@ func TestSSHConnectionWithPasswordAndDockerCheck(t *testing.T) {
 	if err != nil {
 		t.Fatalf("密码方式测试 Docker SSH 失败: %v", err)
 	}
-	if result.Fingerprint != fingerprint || result.DockerVersion != "27.1.1" {
+	if result.Fingerprint != fingerprint || result.DockerVersion != "27.1.1" || result.Architecture != "amd64" {
 		t.Fatalf("Docker SSH 测试结果错误: %+v", result)
+	}
+	if command := <-commands; command != "uname -m" {
+		t.Fatalf("连接测试没有先检测主机架构: %s", command)
 	}
 	if command := <-commands; command != "docker version --format '{{.Server.Version}}'" {
 		t.Fatalf("连接测试执行了非预期命令: %s", command)
@@ -91,8 +94,11 @@ func TestSSHConnectionReusesSSHPasswordForSudo(t *testing.T) {
 	if err != nil {
 		t.Fatalf("sudo 密码方式测试 Docker SSH 失败: %v", err)
 	}
-	if result.Fingerprint != fingerprint || result.DockerVersion != "27.1.1" {
+	if result.Fingerprint != fingerprint || result.DockerVersion != "27.1.1" || result.Architecture != "amd64" {
 		t.Fatalf("Docker SSH sudo 测试结果错误: %+v", result)
+	}
+	if command := <-commands; command != "uname -m" {
+		t.Fatalf("连接测试没有先检测主机架构: %s", command)
 	}
 	if command := <-commands; command != "sudo -n -- docker version --format '{{.Server.Version}}'" {
 		t.Fatalf("连接测试没有先检测免密 sudo: %s", command)
@@ -304,6 +310,9 @@ func serveDockerSSHTestConnection(
 					command = strings.TrimPrefix(command, "sudo -n -- ")
 				}
 				switch {
+				case command == "uname -m":
+					_, _ = io.WriteString(channel, "x86_64\n")
+					status = 0
 				case command == "docker version --format '{{.Server.Version}}'":
 					_, _ = io.WriteString(channel, "27.1.1\n")
 					status = 0

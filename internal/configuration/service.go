@@ -34,6 +34,7 @@ const (
 	externalGitWebhookSettingKey = "EXTERNAL_GIT_WEBHOOK_ENABLED"
 	loginLockoutSettingKey       = "LOGIN_LOCKOUT_ENABLED"
 	runtimeLoggingSettingKey     = "RUNTIME_LOGGING_SETTINGS"
+	runtimeDirectorySettingKey   = "RUNTIME_DIRECTORY_SETTINGS"
 	logRetentionSettingKey       = "LOG_RETENTION_SETTINGS"
 	defaultPipelineLogDays       = 30
 	defaultAuditLogDays          = 180
@@ -112,6 +113,14 @@ type RuntimeLoggingSettings struct {
 	Version           int    `json:"version"`
 }
 
+type RuntimeDirectorySettings struct {
+	WorkspaceDirectory     string `json:"workspace_directory"`
+	BuildDirectory         string `json:"build_directory"`
+	CacheDirectory         string `json:"cache_directory"`
+	LocalArtifactDirectory string `json:"local_artifact_directory"`
+	Version                int    `json:"version"`
+}
+
 type runtimeLoggingValue struct {
 	Level             string `json:"level"`
 	HTTPAccessEnabled bool   `json:"http_access_enabled"`
@@ -119,6 +128,14 @@ type runtimeLoggingValue struct {
 	FileDirectory     string `json:"file_directory"`
 	MaxFileSizeMB     int    `json:"max_file_size_mb"`
 	CompressAfterDays int    `json:"compress_after_days"`
+}
+
+type runtimeDirectoryValue struct {
+	WorkspaceDirectory             string `json:"workspace_directory"`
+	BuildDirectory                 string `json:"build_directory"`
+	CacheDirectory                 string `json:"cache_directory"`
+	LocalArtifactDirectory         string `json:"local_artifact_directory"`
+	LegacyRepositoryBuildDirectory string `json:"repository_build_directory,omitempty"`
 }
 
 type logRetentionValue struct {
@@ -578,6 +595,177 @@ func (s *Service) UpdateRuntimeLoggingSettings(
 		MaxFileSizeMB: value.MaxFileSizeMB, CompressAfterDays: value.CompressAfterDays,
 		Version: updated.Version,
 	}, nil
+}
+
+// GetRuntimeDirectorySettings 使用环境变量作为首次启动默认值；管理员保存后以数据库为准。
+func (s *Service) GetRuntimeDirectorySettings(
+	ctx context.Context,
+	defaults RuntimeDirectorySettings,
+) (RuntimeDirectorySettings, error) {
+	defaults = normalizeRuntimeDirectories(defaults)
+	if !validRuntimeDirectories(defaults) {
+		return RuntimeDirectorySettings{}, ErrInvalidConfiguration
+	}
+	var item model.Configuration
+	err := s.db.WithContext(ctx).Where(
+		"namespace = ? AND environment = ? AND key = ?",
+		systemNamespace, model.EnvironmentGlobal, runtimeDirectorySettingKey,
+	).First(&item).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return defaults, nil
+	}
+	if err != nil {
+		return RuntimeDirectorySettings{}, fmt.Errorf("读取运行目录设置失败: %w", err)
+	}
+	if item.IsSecret || item.SecretCiphertext != "" || !item.IsActive {
+		return RuntimeDirectorySettings{}, ErrInvalidConfiguration
+	}
+	var value runtimeDirectoryValue
+	if err := json.Unmarshal([]byte(item.Value), &value); err != nil {
+		return RuntimeDirectorySettings{}, ErrInvalidConfiguration
+	}
+	workspaceDirectory := value.WorkspaceDirectory
+	if strings.TrimSpace(workspaceDirectory) == "" {
+		workspaceDirectory = value.LegacyRepositoryBuildDirectory
+	}
+	buildDirectory := value.BuildDirectory
+	if strings.TrimSpace(buildDirectory) == "" {
+		buildDirectory = defaults.BuildDirectory
+	}
+	settings := normalizeRuntimeDirectories(RuntimeDirectorySettings{
+		WorkspaceDirectory:     workspaceDirectory,
+		BuildDirectory:         buildDirectory,
+		CacheDirectory:         value.CacheDirectory,
+		LocalArtifactDirectory: value.LocalArtifactDirectory,
+		Version:                item.Version,
+	})
+	if !validRuntimeDirectories(settings) {
+		return RuntimeDirectorySettings{}, ErrInvalidConfiguration
+	}
+	return settings, nil
+}
+
+func (s *Service) UpdateRuntimeDirectorySettings(
+	ctx context.Context,
+	actorID string,
+	settings RuntimeDirectorySettings,
+	expectedVersion int,
+) (RuntimeDirectorySettings, error) {
+	settings = normalizeRuntimeDirectories(settings)
+	if expectedVersion < 0 || !validRuntimeDirectories(settings) {
+		return RuntimeDirectorySettings{}, ErrInvalidConfiguration
+	}
+	value := runtimeDirectoryValue{
+		WorkspaceDirectory:     settings.WorkspaceDirectory,
+		BuildDirectory:         settings.BuildDirectory,
+		CacheDirectory:         settings.CacheDirectory,
+		LocalArtifactDirectory: settings.LocalArtifactDirectory,
+	}
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		return RuntimeDirectorySettings{}, fmt.Errorf("序列化运行目录设置失败: %w", err)
+	}
+	updated, err := s.updateSystemJSONSettings(ctx, actorID, runtimeDirectorySettingKey, string(encoded), expectedVersion)
+	if err != nil {
+		return RuntimeDirectorySettings{}, err
+	}
+	settings.Version = updated.Version
+	return settings, nil
+}
+
+func normalizeRuntimeDirectories(value RuntimeDirectorySettings) RuntimeDirectorySettings {
+	value.WorkspaceDirectory = cleanDirectory(value.WorkspaceDirectory)
+	value.BuildDirectory = cleanDirectory(value.BuildDirectory)
+	value.CacheDirectory = cleanDirectory(value.CacheDirectory)
+	value.LocalArtifactDirectory = cleanDirectory(value.LocalArtifactDirectory)
+	return value
+}
+
+func cleanDirectory(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	return filepath.Clean(value)
+}
+
+func validRuntimeDirectories(value RuntimeDirectorySettings) bool {
+	for _, directory := range []string{value.WorkspaceDirectory, value.BuildDirectory, value.CacheDirectory, value.LocalArtifactDirectory} {
+		if directory == "" || len(directory) > 4096 || strings.ContainsRune(directory, 0) {
+			return false
+		}
+	}
+	return true
+}
+
+func (s *Service) updateSystemJSONSettings(
+	ctx context.Context,
+	actorID, key, value string,
+	expectedVersion int,
+) (model.Configuration, error) {
+	var updated model.Configuration
+	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var current model.Configuration
+		err := tx.Where(
+			"namespace = ? AND environment = ? AND key = ?",
+			systemNamespace, model.EnvironmentGlobal, key,
+		).First(&current).Error
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			if expectedVersion != 0 {
+				return ErrVersionConflict
+			}
+			now := time.Now().UTC()
+			current = model.Configuration{
+				ID: uuid.NewString(), Namespace: systemNamespace, Environment: model.EnvironmentGlobal,
+				Key: key, Value: value, Version: 1, IsActive: true,
+				CreatedBy: actorID, UpdatedBy: actorID, CreatedAt: now, UpdatedAt: now,
+			}
+			if err := tx.Create(&current).Error; err != nil {
+				if errors.Is(err, gorm.ErrDuplicatedKey) {
+					return ErrVersionConflict
+				}
+				return err
+			}
+			if err := tx.Create(revisionFrom(&current, actorID)).Error; err != nil {
+				return err
+			}
+			updated = current
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if current.Version != expectedVersion {
+			return ErrVersionConflict
+		}
+		now := time.Now().UTC()
+		nextVersion := current.Version + 1
+		result := tx.Model(&model.Configuration{}).Where("id = ? AND version = ?", current.ID, current.Version).
+			Updates(map[string]any{
+				"value": value, "secret_ciphertext": "", "is_secret": false, "is_active": true,
+				"version": nextVersion, "updated_by": actorID, "updated_at": now,
+			})
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected != 1 {
+			return ErrVersionConflict
+		}
+		current.Value, current.SecretCiphertext, current.IsSecret, current.IsActive = value, "", false, true
+		current.Version, current.UpdatedBy, current.UpdatedAt = nextVersion, actorID, now
+		if err := tx.Create(revisionFrom(&current, actorID)).Error; err != nil {
+			return err
+		}
+		updated = current
+		return nil
+	})
+	if err != nil {
+		if errors.Is(err, ErrVersionConflict) || errors.Is(err, ErrInvalidConfiguration) {
+			return model.Configuration{}, err
+		}
+		return model.Configuration{}, fmt.Errorf("更新系统设置失败: %w", err)
+	}
+	return updated, nil
 }
 
 func validRuntimeLogging(value RuntimeLoggingSettings) bool {

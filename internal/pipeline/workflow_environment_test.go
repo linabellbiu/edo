@@ -3,6 +3,7 @@ package pipeline
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -21,7 +22,7 @@ func TestWorkflowDeploymentNodeUsesOnlyPlanAndResolvesItsTarget(t *testing.T) {
 	now := time.Now().UTC()
 	target := model.DeploymentTarget{
 		ID: "plan-owned-target", Name: "方案内的部署目标", Platform: model.DeploymentDocker,
-		RuntimeID: "local", WorkloadName: "api", RolloutTimeout: 120,
+		RuntimeID: "local", RolloutTimeout: 120,
 		IsActive: true, CreatedBy: "admin", CreatedAt: now, UpdatedAt: now,
 	}
 	deploymentPlan, err := service.CreateDeploymentPlan(ctx, "admin", DeploymentPlanInput{
@@ -75,8 +76,12 @@ func TestWorkflowDeploymentNodeUsesOnlyPlanAndResolvesItsTarget(t *testing.T) {
 	}
 	resolvedTasks := workflowTasks(snapshot.Stages)
 	resolved := resolvedTasks[len(resolvedTasks)-1]
-	if snapshot.DeploymentTargets[resolved.ID].ID != deploymentPlan.DeploymentTargetID {
+	resolvedTarget := snapshot.DeploymentTargets[resolved.ID]
+	if resolvedTarget.ID != deploymentPlan.DeploymentTargetID {
 		t.Fatalf("运行快照没有从部署方案解析不可变目标: node=%+v targets=%+v", resolved, snapshot.DeploymentTargets)
+	}
+	if resolvedTarget.WorkloadName == "" || !strings.HasPrefix(resolvedTarget.WorkloadName, application.Name+"-") {
+		t.Fatalf("运行快照没有固定自动生成的 Docker 容器名称: %+v", resolvedTarget)
 	}
 	config := snapshot.DeploymentPlans[resolved.ID].DockerConfig
 	if len(config.PortMappings) != 1 || config.PortMappings[0].HostPort != 18080 || config.Network != "bridge" || len(config.Command) != 3 {

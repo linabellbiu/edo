@@ -44,6 +44,7 @@
 | Prometheus `client_golang` 与 Grafana | 两者适合外部抓取、长期存储和集中看板，但不能直接满足 EDO 内登录后查看基础运行状态的产品要求。本次使用受权限保护的快照 API 和内置页面；未来可增加可选导出，但不能替代内置监控。 |
 | 直接复制 `vbenjs/vue-vben-admin` 完整 Monorepo 与内部 `@vben/*` 工作区包 | Vben Admin 5 为 MIT 许可且维护活跃，本次已采用其 `web-antd` 技术栈和交互基线；但完整仓库依赖 pnpm workspace、Turbo 和大量内部包，直接嵌入会破坏 EDO 当前 npm 单应用、Docker 构建及 Go `embed` 链路。EDO 因此使用同版本线的 Vue、Pinia、Vue Router、Ant Design Vue、Vue I18n 与 Motion 公开包自行组织单应用，不复制不可独立发布的 `workspace:*` 包。 |
 | Vue Flow、AntV X6、LogicFlow 等通用图编辑器 | 三者均有持续维护且许可证兼容的开源实现，适合自由连线、分支、缩放和平移画布；但 EDO 当前故意限制为类 Gitee 的唯一代码源与串行阶段。引入图引擎会增加依赖体积、可访问性和交互约束成本，且会诱导用户创建后端不支持的拓扑；因此复用现有 SortableJS，只实现领域化阶段/任务视图，不自行重造通用图引擎。若执行器未来真实支持 DAG，再重新评估。 |
+| [`github.com/otiai10/copy`](https://github.com/otiai10/copy) | 该项目持续维护、采用 MIT 许可，能处理通用目录递归复制、符号链接、权限和时间戳。EDO 的目录热切换只复制内容寻址存储中的不可变普通文件，还必须拒绝符号链接、响应 Context 取消、校验目标摘要，并在配置提交前持有制品写锁；通用复制器的大部分语义用不上，接入后仍需保留这些业务边界。因此使用 Go 标准库 `filepath.WalkDir`、`io.CopyBuffer` 和 `os.Root` 实现受限复制与清理，不新增运行依赖。维护风险是跨文件系统复制和异常中断恢复需由 EDO 自己保证，当前通过临时文件原子替换、目录用途标记、旧目录延后清理以及迁移后下载测试覆盖。 |
 
 ## 升级原则
 

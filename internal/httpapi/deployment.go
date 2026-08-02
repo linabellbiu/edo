@@ -33,9 +33,20 @@ type deploymentTargetRequest struct {
 
 func (h deploymentHandler) list(c *gin.Context) {
 	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "50"))
-	records, err := h.service.List(c.Request.Context(), limit)
+	var records []model.DeploymentRecord
+	var err error
+	if pipelineRunID := c.Query("pipeline_run_id"); pipelineRunID != "" {
+		records, err = h.service.ListForPipelineRun(c.Request.Context(), pipelineRunID, limit)
+	} else {
+		records, err = h.service.List(c.Request.Context(), limit)
+	}
 	if err != nil {
-		h.logger.Error("查询发布记录失败", "operation", "deployment_list", "request_id", requestIDFrom(c), "err", err)
+		h.logger.Error("查询发布记录失败", "operation", "deployment_list", "request_id", requestIDFrom(c),
+			"pipeline_run_id", c.Query("pipeline_run_id"), "err", err)
+		if errors.Is(err, deployment.ErrInvalidDeploymentState) {
+			writeError(c, http.StatusBadRequest, "invalid_pipeline_run", "流水线运行标识无效")
+			return
+		}
 		writeInternalError(c)
 		return
 	}

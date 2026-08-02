@@ -1,6 +1,9 @@
 package model
 
-import "time"
+import (
+	"strings"
+	"time"
+)
 
 type HostMode string
 
@@ -10,6 +13,33 @@ const (
 	HostModeLocal HostMode = "local"
 	HostModeSSH   HostMode = "ssh"
 )
+
+type HostArchitecture string
+
+const (
+	HostArchitectureAMD64 HostArchitecture = "amd64"
+	HostArchitectureARM64 HostArchitecture = "arm64"
+)
+
+// NormalizeHostArchitecture 将操作系统和容器运行时常见的架构名称统一为 OCI 架构名。
+// EDO 当前只支持最常见的 AMD64 与 ARM64，未知架构不得静默回退到构建机架构。
+func NormalizeHostArchitecture(value string) (HostArchitecture, bool) {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "amd64", "x86_64", "x86-64":
+		return HostArchitectureAMD64, true
+	case "arm64", "aarch64", "arm64v8":
+		return HostArchitectureARM64, true
+	default:
+		return "", false
+	}
+}
+
+func (architecture HostArchitecture) OCIPlatform() string {
+	if normalized, valid := NormalizeHostArchitecture(string(architecture)); valid {
+		return "linux/" + string(normalized)
+	}
+	return ""
+}
 
 type SSHAuthType string
 
@@ -61,15 +91,16 @@ type EnvironmentHost struct {
 func (EnvironmentHost) TableName() string { return "environment_hosts" }
 
 type Host struct {
-	ID                      string      `gorm:"type:varchar(36);primaryKey" json:"id"`
-	Name                    string      `gorm:"type:varchar(128);not null;uniqueIndex" json:"name"`
-	Mode                    HostMode    `gorm:"type:varchar(16);not null;index" json:"mode"`
-	Address                 string      `gorm:"type:varchar(1024);not null;default:''" json:"address"`
-	SSHPort                 int         `gorm:"not null;default:22" json:"ssh_port"`
-	SSHUsername             string      `gorm:"type:varchar(128);not null;default:''" json:"ssh_username"`
-	SSHAuthType             SSHAuthType `gorm:"type:varchar(16);not null;default:''" json:"ssh_auth_type"`
-	SSHCredentialCiphertext string      `gorm:"type:text;not null" json:"-"`
-	SSHHostKeyFingerprint   string      `gorm:"type:varchar(128);not null;default:''" json:"ssh_host_key_fingerprint"`
+	ID                      string           `gorm:"type:varchar(36);primaryKey" json:"id"`
+	Name                    string           `gorm:"type:varchar(128);not null;uniqueIndex" json:"name"`
+	Mode                    HostMode         `gorm:"type:varchar(16);not null;index" json:"mode"`
+	Address                 string           `gorm:"type:varchar(1024);not null;default:''" json:"address"`
+	SSHPort                 int              `gorm:"not null;default:22" json:"ssh_port"`
+	SSHUsername             string           `gorm:"type:varchar(128);not null;default:''" json:"ssh_username"`
+	SSHAuthType             SSHAuthType      `gorm:"type:varchar(16);not null;default:''" json:"ssh_auth_type"`
+	SSHCredentialCiphertext string           `gorm:"type:text;not null" json:"-"`
+	SSHHostKeyFingerprint   string           `gorm:"type:varchar(128);not null;default:''" json:"ssh_host_key_fingerprint"`
+	Architecture            HostArchitecture `gorm:"type:varchar(16);not null;default:''" json:"architecture,omitempty"`
 	// EnvironmentID 仅保留旧数据库列兼容，新代码使用 environment_hosts 关联表。
 	// Deprecated: 不再读取或写入该字段的业务语义。
 	EnvironmentID string    `gorm:"type:varchar(36);not null;default:'';index" json:"-"`

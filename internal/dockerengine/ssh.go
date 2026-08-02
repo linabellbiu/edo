@@ -18,16 +18,19 @@ import (
 	"github.com/distribution/reference"
 	"golang.org/x/crypto/ssh"
 
+	"edo/internal/model"
 	"edo/internal/sshclient"
 )
 
 type SSHTestResult struct {
-	Fingerprint   string `json:"fingerprint"`
-	DockerVersion string `json:"docker_version"`
+	Fingerprint   string                 `json:"fingerprint"`
+	DockerVersion string                 `json:"docker_version"`
+	Architecture  model.HostArchitecture `json:"architecture"`
 }
 
 type SSHConnectionTestResult struct {
-	Fingerprint string `json:"fingerprint"`
+	Fingerprint  string                 `json:"fingerprint"`
+	Architecture model.HostArchitecture `json:"architecture"`
 }
 
 type sshConnector struct {
@@ -114,6 +117,10 @@ func (s *Service) TestSSH(ctx context.Context, input Input) (SSHTestResult, erro
 		return SSHTestResult{}, fmt.Errorf("%w: %v", ErrSSHUnreachable, err)
 	}
 	defer client.Close()
+	architecture, err := probeSSHArchitecture(testContext, client)
+	if err != nil {
+		return SSHTestResult{}, err
+	}
 	output := &limitedOutput{remaining: 256}
 	commandError := &limitedOutput{remaining: 512}
 	mode, err := resolveDockerSSHCommandMode(testContext, client, *input.SSH)
@@ -131,11 +138,11 @@ func (s *Service) TestSSH(ctx context.Context, input Input) (SSHTestResult, erro
 	if !validSSHFingerprint(fingerprint) || dockerVersion == "" {
 		return SSHTestResult{}, ErrSSHDockerDenied
 	}
-	return SSHTestResult{Fingerprint: fingerprint, DockerVersion: dockerVersion}, nil
+	return SSHTestResult{Fingerprint: fingerprint, DockerVersion: dockerVersion, Architecture: architecture}, nil
 }
 
-// TestSSHConnection 只验证 SSH 登录并读取主机指纹，不开放任何宿主机命令。
-// Docker 能力仍必须通过 TestSSH 的固定 docker version 命令单独验证。
+// TestSSHConnection 验证 SSH 登录、读取主机指纹，并通过固定只读命令 uname -m
+// 识别主机架构。Docker 能力仍必须通过 TestSSH 单独验证。
 func (s *Service) TestSSHConnection(ctx context.Context, input Input) (SSHConnectionTestResult, error) {
 	if input.SSH == nil {
 		return SSHConnectionTestResult{}, ErrInvalidSSH
@@ -151,11 +158,31 @@ func (s *Service) TestSSHConnection(ctx context.Context, input Input) (SSHConnec
 	if err != nil {
 		return SSHConnectionTestResult{}, fmt.Errorf("%w: %v", ErrSSHUnreachable, err)
 	}
-	_ = client.Close()
+	defer client.Close()
 	if !validSSHFingerprint(fingerprint) {
 		return SSHConnectionTestResult{}, ErrSSHUnreachable
 	}
-	return SSHConnectionTestResult{Fingerprint: fingerprint}, nil
+	architecture, err := probeSSHArchitecture(testContext, client)
+	if err != nil {
+		return SSHConnectionTestResult{}, err
+	}
+	return SSHConnectionTestResult{Fingerprint: fingerprint, Architecture: architecture}, nil
+}
+
+func probeSSHArchitecture(ctx context.Context, client *ssh.Client) (model.HostArchitecture, error) {
+	if client == nil {
+		return "", ErrInvalidSSH
+	}
+	output := &limitedOutput{remaining: 64}
+	commandError := &limitedOutput{remaining: 256}
+	if err := runSSHCommandWithStreams(ctx, client, "uname -m", nil, output, commandError); err != nil {
+		return "", fmt.Errorf("%w: %v", ErrUnsupportedArchitecture, err)
+	}
+	architecture, valid := model.NormalizeHostArchitecture(output.String())
+	if !valid {
+		return "", ErrUnsupportedArchitecture
+	}
+	return architecture, nil
 }
 
 func connectForSSHTest(ctx context.Context, connector *sshConnector, fingerprint *string) (*ssh.Client, error) {

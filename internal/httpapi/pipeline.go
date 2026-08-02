@@ -51,6 +51,16 @@ type workflowTemplateRequest struct {
 	Stages        []model.WorkflowStage `json:"stages" binding:"max=50"`
 }
 
+type workflowTemplatePresetRequest struct {
+	PresetKey      string `json:"preset_key" binding:"required,max=64"`
+	RuntimeVersion string `json:"runtime_version" binding:"max=32"`
+}
+
+type workflowRuntimePrepareRequest struct {
+	Language string `json:"language" binding:"required,max=16"`
+	Version  string `json:"version" binding:"required,max=32"`
+}
+
 type executeRunRequest struct {
 	Ref          string `json:"ref" binding:"max=512"`
 	CommitSHA    string `json:"commit_sha" binding:"max=64"`
@@ -69,7 +79,6 @@ type buildPlanRequest struct {
 	RuntimeImage         string              `json:"runtime_image" binding:"max=512"`
 	ImageRegistryID      string              `json:"image_registry_id" binding:"max=36"`
 	TargetStage          string              `json:"target_stage" binding:"max=128"`
-	Platform             string              `json:"platform" binding:"max=64"`
 	Pull                 *bool               `json:"pull"`
 	CacheEnabled         *bool               `json:"cache_enabled"`
 	BuildArgs            map[string]string   `json:"build_args" binding:"max=100"`
@@ -284,6 +293,49 @@ func (h pipelineHandler) listWorkflowTemplates(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"workflow_templates": templates})
 }
 
+func (h pipelineHandler) listWorkflowPresets(c *gin.Context) {
+	c.JSON(http.StatusOK, gin.H{"workflow_presets": pipeline.ListWorkflowPresets()})
+}
+
+func (h pipelineHandler) listWorkflowRuntimeVersions(c *gin.Context) {
+	versions, err := h.service.ListWorkflowRuntimeVersions(c.Request.Context(), c.Query("language"))
+	if err != nil {
+		h.writeError(c, "workflow_runtime_list", err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"runtime_versions": versions})
+}
+
+func (h pipelineHandler) prepareWorkflowRuntimeVersion(c *gin.Context) {
+	var request workflowRuntimePrepareRequest
+	if err := c.ShouldBindJSON(&request); err != nil {
+		writeError(c, http.StatusBadRequest, "invalid_workflow_runtime", pipeline.ErrInvalidWorkflowRuntime.Error())
+		return
+	}
+	runtime, err := h.service.PrepareWorkflowRuntimeVersion(c.Request.Context(), request.Language, request.Version)
+	if err != nil {
+		h.writeError(c, "workflow_runtime_prepare", err)
+		return
+	}
+	c.JSON(http.StatusOK, runtime)
+}
+
+func (h pipelineHandler) createWorkflowTemplateFromPreset(c *gin.Context) {
+	var request workflowTemplatePresetRequest
+	if err := c.ShouldBindJSON(&request); err != nil {
+		writeError(c, http.StatusBadRequest, "invalid_workflow_preset", pipeline.ErrInvalidWorkflow.Error())
+		return
+	}
+	actor, _ := currentUser(c)
+	result, err := h.service.CreateWorkflowTemplateFromPreset(c.Request.Context(), actor.ID, request.PresetKey, request.RuntimeVersion)
+	if err != nil {
+		h.writeError(c, "workflow_template_preset_create", err)
+		return
+	}
+	setAuditResourceID(c, result.WorkflowTemplate.ID)
+	c.JSON(http.StatusCreated, result)
+}
+
 func (h pipelineHandler) getWorkflowTemplate(c *gin.Context) {
 	result, err := h.service.GetWorkflowTemplate(c.Request.Context(), c.Param("id"))
 	if err != nil {
@@ -428,7 +480,7 @@ func (h pipelineHandler) createBuildPlan(c *gin.Context) {
 		Name: request.Name, Kind: request.Kind, Description: request.Description, Script: request.Script,
 		DockerfilePath: request.DockerfilePath, ContextPath: request.ContextPath,
 		WorkingDirectory: request.WorkingDirectory, ArtifactPath: request.ArtifactPath, RuntimeImage: request.RuntimeImage,
-		ImageRegistryID: request.ImageRegistryID, TargetStage: request.TargetStage, Platform: request.Platform,
+		ImageRegistryID: request.ImageRegistryID, TargetStage: request.TargetStage,
 		Pull: request.Pull, CacheEnabled: request.CacheEnabled, BuildArgs: request.BuildArgs,
 		EnvironmentVariables: request.EnvironmentVariables, TimeoutSeconds: request.TimeoutSeconds,
 	})
@@ -450,7 +502,7 @@ func (h pipelineHandler) updateBuildPlan(c *gin.Context) {
 		Name: request.Name, Kind: request.Kind, Description: request.Description, Script: request.Script,
 		DockerfilePath: request.DockerfilePath, ContextPath: request.ContextPath,
 		WorkingDirectory: request.WorkingDirectory, ArtifactPath: request.ArtifactPath, RuntimeImage: request.RuntimeImage,
-		ImageRegistryID: request.ImageRegistryID, TargetStage: request.TargetStage, Platform: request.Platform,
+		ImageRegistryID: request.ImageRegistryID, TargetStage: request.TargetStage,
 		Pull: request.Pull, CacheEnabled: request.CacheEnabled, BuildArgs: request.BuildArgs,
 		EnvironmentVariables: request.EnvironmentVariables, TimeoutSeconds: request.TimeoutSeconds,
 	})
@@ -641,8 +693,12 @@ func (h pipelineHandler) writeError(c *gin.Context, operation string, err error)
 		errors.Is(err, pipeline.ErrInsecureRegistryEndpoint), errors.Is(err, pipeline.ErrInvalidRegistryNamespace),
 		errors.Is(err, pipeline.ErrInvalidRegistryUsername), errors.Is(err, pipeline.ErrInvalidRegistrySecret),
 		errors.Is(err, pipeline.ErrInvalidDeploymentPlan), errors.Is(err, pipeline.ErrDeploymentPlanTargetMismatch),
-		errors.Is(err, pipeline.ErrInvalidWorkflow):
+		errors.Is(err, pipeline.ErrInvalidWorkflow), errors.Is(err, pipeline.ErrInvalidWorkflowRuntime):
 		writeError(c, http.StatusBadRequest, "invalid_delivery_config", err.Error())
+	case errors.Is(err, pipeline.ErrWorkflowRuntimeNotPrepared):
+		writeError(c, http.StatusConflict, "workflow_runtime_not_prepared", err.Error())
+	case errors.Is(err, pipeline.ErrWorkflowRuntimeUnavailable):
+		writeError(c, http.StatusServiceUnavailable, "workflow_runtime_unavailable", err.Error())
 	case errors.Is(err, deployment.ErrEnvironmentTargetUnavailable):
 		writeError(c, http.StatusBadRequest, "environment_target_unavailable", deployment.ErrEnvironmentTargetUnavailable.Error())
 	case errors.Is(err, deployment.ErrEnvironmentTargetAmbiguous):

@@ -20,6 +20,7 @@ import (
 	"gorm.io/gorm"
 
 	"edo/internal/credential"
+	"edo/internal/manageddirectory"
 	"edo/internal/model"
 	"edo/internal/secret"
 )
@@ -40,6 +41,7 @@ var (
 	ErrUnsupportedEvent        = errors.New("Webhook 事件类型不受支持")
 	ErrInvalidTaskPayload      = errors.New("Webhook 任务参数无效")
 	ErrPullRequestMetadata     = errors.New("无法读取可靠的 PR/MR 分支元数据")
+	ErrDirectoryBusy           = errors.New("当前有构建正在使用该目录，请稍后重试")
 )
 
 var repositoryNamePattern = regexp.MustCompile(`^[A-Za-z0-9\p{Han}][A-Za-z0-9\p{Han}_. -]{0,127}$`)
@@ -66,9 +68,22 @@ type Service struct {
 	credentials        *credential.Service
 	webhookGate        webhookGate
 	defaultMaxAttempts int
+	directoriesMu      sync.RWMutex
 	checkoutDirectory  string
+	cacheDirectory     string
+	maintenance        sync.RWMutex
 	checkoutLocksMu    sync.Mutex
 	checkoutLocks      map[string]chan struct{}
+}
+
+const (
+	checkoutDirectoryKind = "repository-build"
+	cacheDirectoryKind    = "repository-cache"
+)
+
+type DirectorySettings struct {
+	WorkspaceDirectory string `json:"workspace_directory"`
+	CacheDirectory     string `json:"cache_directory"`
 }
 
 type refLister interface {
@@ -81,6 +96,10 @@ type checkoutClient interface {
 
 type cachedCheckoutClient interface {
 	CheckoutCached(context.Context, model.GitRepository, string, string, string, string) (bool, error)
+}
+
+type separatedCachedCheckoutClient interface {
+	CheckoutCachedAt(context.Context, model.GitRepository, string, string, string, string, string) (bool, error)
 }
 
 type commitMessageClient interface {
@@ -109,6 +128,12 @@ func WithCheckoutDirectory(directory string) Option {
 	}
 }
 
+func WithCacheDirectory(directory string) Option {
+	return func(service *Service) {
+		service.cacheDirectory = filepath.Clean(strings.TrimSpace(directory))
+	}
+}
+
 func NewService(db *gorm.DB, secrets *secret.Manager, credentials *credential.Service, git refLister, defaultMaxAttempts int, options ...Option) *Service {
 	service := &Service{
 		db: db, secrets: secrets, credentials: credentials, git: git, defaultMaxAttempts: defaultMaxAttempts,
@@ -118,6 +143,66 @@ func NewService(db *gorm.DB, secrets *secret.Manager, credentials *credential.Se
 		option(service)
 	}
 	return service
+}
+
+func (s *Service) Directories() DirectorySettings {
+	s.directoriesMu.RLock()
+	defer s.directoriesMu.RUnlock()
+	return DirectorySettings{WorkspaceDirectory: s.checkoutDirectory, CacheDirectory: s.cacheDirectory}
+}
+
+func (s *Service) PrepareDirectories(workspaceDirectory, cacheDirectory string) (DirectorySettings, error) {
+	workspaceDirectory, err := manageddirectory.Prepare(workspaceDirectory, checkoutDirectoryKind, false)
+	if err != nil {
+		return DirectorySettings{}, fmt.Errorf("准备仓库工作区目录失败: %w", err)
+	}
+	cacheDirectory, err = manageddirectory.Prepare(cacheDirectory, cacheDirectoryKind, false)
+	if err != nil {
+		return DirectorySettings{}, fmt.Errorf("准备仓库缓存目录失败: %w", err)
+	}
+	if err := manageddirectory.ValidateSeparate(workspaceDirectory, cacheDirectory); err != nil {
+		return DirectorySettings{}, err
+	}
+	return DirectorySettings{WorkspaceDirectory: workspaceDirectory, CacheDirectory: cacheDirectory}, nil
+}
+
+func (s *Service) ApplyDirectories(settings DirectorySettings) {
+	s.directoriesMu.Lock()
+	s.checkoutDirectory = settings.WorkspaceDirectory
+	s.cacheDirectory = settings.CacheDirectory
+	s.directoriesMu.Unlock()
+}
+
+func (s *Service) ClearWorkspaceDirectory() (manageddirectory.CleanupReport, error) {
+	if !s.maintenance.TryLock() {
+		return manageddirectory.CleanupReport{}, ErrDirectoryBusy
+	}
+	defer s.maintenance.Unlock()
+	settings := s.Directories()
+	return manageddirectory.ClearContents(settings.WorkspaceDirectory, checkoutDirectoryKind)
+}
+
+func (s *Service) ClearCacheDirectory() (manageddirectory.CleanupReport, error) {
+	if !s.maintenance.TryLock() {
+		return manageddirectory.CleanupReport{}, ErrDirectoryBusy
+	}
+	defer s.maintenance.Unlock()
+	settings := s.Directories()
+	return manageddirectory.ClearContents(settings.CacheDirectory, cacheDirectoryKind)
+}
+
+func (s *Service) WorkspaceUsage() (manageddirectory.UsageReport, error) {
+	s.maintenance.RLock()
+	defer s.maintenance.RUnlock()
+	settings := s.Directories()
+	return manageddirectory.InspectContents(settings.WorkspaceDirectory, checkoutDirectoryKind)
+}
+
+func (s *Service) CacheUsage() (manageddirectory.UsageReport, error) {
+	s.maintenance.RLock()
+	defer s.maintenance.RUnlock()
+	settings := s.Directories()
+	return manageddirectory.InspectContents(settings.CacheDirectory, cacheDirectoryKind)
 }
 
 type CheckoutLease struct {
@@ -374,27 +459,42 @@ func (s *Service) AcquireCheckout(ctx context.Context, id, ref, commitSHA string
 	if err != nil {
 		return nil, err
 	}
+	s.maintenance.RLock()
+	maintenanceHeld := true
+	releaseMaintenance := func() {
+		if maintenanceHeld {
+			maintenanceHeld = false
+			s.maintenance.RUnlock()
+		}
+	}
 
 	repositoryHash := sha256.Sum256([]byte(strings.TrimSpace(repository.CloneURL)))
 	repositoryKey := hex.EncodeToString(repositoryHash[:])
 	version := checkoutDirectoryVersion(ref, commitSHA)
-	root := s.checkoutDirectory
+	directories := s.Directories()
+	root := directories.WorkspaceDirectory
 	removeRoot := false
 	if root == "" || root == "." {
 		root, err = os.MkdirTemp("", "edo-repositories-*")
 		if err != nil {
+			releaseMaintenance()
 			return nil, fmt.Errorf("创建流水线仓库工作区失败: %w", err)
 		}
 		removeRoot = true
 	}
 	repositoryDirectory := filepath.Join(root, repositoryKey)
 	destination := filepath.Join(repositoryDirectory, version)
+	cacheDirectory := filepath.Join(repositoryDirectory, ".cache")
+	if directories.CacheDirectory != "" && directories.CacheDirectory != "." {
+		cacheDirectory = filepath.Join(directories.CacheDirectory, repositoryKey)
+	}
 
 	releaseWorkspace, err := s.acquireCheckoutLock(ctx, "workspace:"+destination)
 	if err != nil {
 		if removeRoot {
 			_ = os.RemoveAll(root)
 		}
+		releaseMaintenance()
 		return nil, err
 	}
 	fail := func(cause error) (*CheckoutLease, error) {
@@ -402,20 +502,23 @@ func (s *Service) AcquireCheckout(ctx context.Context, id, ref, commitSHA string
 		if removeRoot {
 			_ = os.RemoveAll(root)
 		}
+		releaseMaintenance()
 		return nil, cause
 	}
 	if err := os.MkdirAll(repositoryDirectory, 0o700); err != nil {
 		return fail(fmt.Errorf("创建流水线仓库缓存目录失败: %w", err))
 	}
 
-	releaseRepository, err := s.acquireCheckoutLock(ctx, "repository:"+repositoryDirectory)
+	releaseRepository, err := s.acquireCheckoutLock(ctx, "repository:"+cacheDirectory)
 	if err != nil {
 		return fail(err)
 	}
-	_, repositoryCacheErr := os.Stat(filepath.Join(repositoryDirectory, ".cache"))
+	_, repositoryCacheErr := os.Stat(cacheDirectory)
 	repositoryCached := repositoryCacheErr == nil
 	cached := false
-	if cachedClient, ok := s.git.(cachedCheckoutClient); ok {
+	if cachedClient, ok := s.git.(separatedCachedCheckoutClient); ok {
+		cached, err = cachedClient.CheckoutCachedAt(ctx, *repository, credential, ref, commitSHA, destination, cacheDirectory)
+	} else if cachedClient, ok := s.git.(cachedCheckoutClient); ok {
 		cached, err = cachedClient.CheckoutCached(ctx, *repository, credential, ref, commitSHA, destination)
 	} else {
 		_, statErr := os.Stat(destination)
@@ -437,6 +540,7 @@ func (s *Service) AcquireCheckout(ctx context.Context, id, ref, commitSHA string
 			if removeRoot {
 				_ = os.RemoveAll(root)
 			}
+			releaseMaintenance()
 		},
 	}, nil
 }

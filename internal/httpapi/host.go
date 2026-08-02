@@ -55,6 +55,7 @@ type hostResponse struct {
 	SSHUsername           string                         `json:"ssh_username"`
 	SSHAuthType           model.SSHAuthType              `json:"ssh_auth_type"`
 	SSHHostKeyFingerprint string                         `json:"ssh_host_key_fingerprint,omitempty"`
+	Architecture          model.HostArchitecture         `json:"architecture,omitempty"`
 	EnvironmentID         string                         `json:"environment_id"`
 	EnvironmentIDs        []string                       `json:"environment_ids"`
 	IsBuiltin             bool                           `json:"is_builtin"`
@@ -236,6 +237,8 @@ func (h hostHandler) writeError(c *gin.Context, operation string, err error) {
 		writeError(c, http.StatusBadGateway, "host_ssh_unreachable", dockerengine.ErrSSHUnreachable.Error())
 	case errors.Is(err, dockerengine.ErrSSHDockerDenied):
 		writeError(c, http.StatusBadGateway, "host_docker_unavailable", dockerengine.ErrSSHDockerDenied.Error())
+	case errors.Is(err, dockerengine.ErrUnsupportedArchitecture):
+		writeError(c, http.StatusConflict, "host_architecture_unsupported", dockerengine.ErrUnsupportedArchitecture.Error())
 	case errors.Is(err, kube.ErrClusterNotFound):
 		writeError(c, http.StatusBadRequest, "host_kubernetes_cluster_not_found", kube.ErrClusterNotFound.Error())
 	case errors.Is(err, secret.ErrUnavailable):
@@ -284,6 +287,7 @@ func toHostResponse(detail hostmanager.Detail) hostResponse {
 		ID: detail.Host.ID, Name: detail.Host.Name, Mode: detail.Host.Mode,
 		Address: detail.Host.Address, SSHPort: detail.Host.SSHPort, SSHUsername: detail.Host.SSHUsername,
 		SSHAuthType: detail.Host.SSHAuthType, SSHHostKeyFingerprint: detail.Host.SSHHostKeyFingerprint,
+		Architecture:  detail.Host.Architecture,
 		EnvironmentID: legacyEnvironmentID, EnvironmentIDs: environmentIDs,
 		IsBuiltin: detail.Host.IsBuiltin,
 		IsActive:  detail.Host.IsActive, Capabilities: capabilities,

@@ -39,6 +39,20 @@ func TestTransientBuildErrorUsesTypedCauses(t *testing.T) {
 	}
 }
 
+func TestDeploymentFailureLogMessageUsesSafeRecordReason(t *testing.T) {
+	record := &model.DeploymentRecord{
+		Status:       model.DeploymentFailed,
+		ErrorMessage: "Docker 容器启动失败：容器启动后退出并进入重启，请查看容器日志",
+	}
+	if message := deploymentFailureLogMessage(record, "发布执行失败"); message != record.ErrorMessage {
+		t.Fatalf("流水线日志没有使用发布记录中的安全失败原因: %q", message)
+	}
+	record.ErrorMessage = "包含换行的异常信息\n基础设施细节"
+	if message := deploymentFailureLogMessage(record, "发布执行失败"); message != "发布执行失败" {
+		t.Fatalf("不稳定的发布错误被直接写入流水线日志: %q", message)
+	}
+}
+
 func TestPipelineKeepsRunningWhenDuplicateDeliveryFindsActiveRelease(t *testing.T) {
 	service, db, _, repositoryID := newPipelineTestService(t)
 	application, err := service.CreateApplication(context.Background(), "admin", ApplicationInput{

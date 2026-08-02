@@ -337,6 +337,35 @@ func TestCreateReleasePlanExecutionIsIdempotent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	listedPlans, err := service.ListReleasePlans(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var listedPlan *model.ReleasePlan
+	for i := range listedPlans {
+		if listedPlans[i].ID == plan.ID {
+			listedPlan = &listedPlans[i]
+			break
+		}
+	}
+	if listedPlan == nil || listedPlan.LatestExecution == nil || len(listedPlan.LatestExecution.Items) != len(first.Items) ||
+		listedPlan.LatestExecution.Items[0].PipelineRunID == "" {
+		t.Fatalf("发布计划列表没有返回最近执行的应用运行关联: %+v", listedPlan)
+	}
+	listedRuns, err := service.ListRuns(context.Background(), 50)
+	if err != nil {
+		t.Fatal(err)
+	}
+	linked := false
+	for i := range listedRuns {
+		if listedRuns[i].ID == first.Items[0].PipelineRunID {
+			linked = listedRuns[i].ReleasePlanID == plan.ID
+			break
+		}
+	}
+	if !linked {
+		t.Fatalf("流水线运行列表没有返回关联发布计划: plan_id=%s runs=%+v", plan.ID, listedRuns)
+	}
 	second, err := service.CreateReleasePlanExecution(context.Background(), plan.ID, "admin", input)
 	if err != nil || second.ID != first.ID {
 		t.Fatalf("相同请求没有返回同一执行: first=%+v second=%+v err=%v", first, second, err)

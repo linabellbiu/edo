@@ -17,6 +17,8 @@ export interface WorkflowNodeConfig {
   deployment_plan_id?: string
   script?: string
   runtime_image?: string
+  toolchain_language?: 'go' | 'nodejs' | 'python'
+  toolchain_version?: string
   timeout_seconds?: number
   working_directory?: string
   environment_variables?: Record<string, string>
@@ -103,7 +105,6 @@ export interface PipelineBuildPlan {
   runtime_image?: string
   image_registry_id?: string
   target_stage?: string
-  platform?: string
   pull?: boolean
   cache_enabled?: boolean
   build_args?: Record<string, string>

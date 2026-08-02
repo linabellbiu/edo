@@ -91,7 +91,6 @@ type BuildPlanInput struct {
 	RuntimeImage         string
 	ImageRegistryID      string
 	TargetStage          string
-	Platform             string
 	Pull                 *bool
 	CacheEnabled         *bool
 	BuildArgs            map[string]string
@@ -129,6 +128,7 @@ type Service struct {
 	scriptRunner           scriptContainerRunner
 	artifacts              *artifact.Service
 	deployments            *deployment.Service
+	workflowRuntimes       WorkflowRuntimeManager
 	logger                 *slog.Logger
 	releasePlanExecutionMu sync.Mutex
 	pipelineAdvanceMu      sync.Mutex
@@ -139,7 +139,7 @@ func NewService(db *gorm.DB, repositories *repository.Service, secrets *secret.M
 }
 
 func (s *Service) ConfigureExecution(docker *dockerengine.Service, deployments *deployment.Service, logger *slog.Logger) {
-	s.docker, s.scriptRunner, s.deployments = docker, docker, deployments
+	s.docker, s.scriptRunner, s.workflowRuntimes, s.deployments = docker, docker, docker, deployments
 	if logger != nil {
 		s.logger = logger
 	}
@@ -381,7 +381,7 @@ func (s *Service) CreateBuildPlan(ctx context.Context, actorID string, input Bui
 		ID: uuid.NewString(), Name: input.Name, Kind: input.Kind, ConfigVersion: 1, Description: input.Description,
 		Script: input.Script, DockerfilePath: input.DockerfilePath, ContextPath: input.ContextPath,
 		WorkingDirectory: input.WorkingDirectory, ArtifactPath: input.ArtifactPath, RuntimeImage: input.RuntimeImage,
-		ImageRegistryID: input.ImageRegistryID, TargetStage: input.TargetStage, Platform: input.Platform,
+		ImageRegistryID: input.ImageRegistryID, TargetStage: input.TargetStage,
 		Pull: *input.Pull, CacheEnabled: *input.CacheEnabled, BuildArgs: input.BuildArgs,
 		EnvironmentVariables: input.EnvironmentVariables, TimeoutSeconds: input.TimeoutSeconds,
 		IsActive: true, CreatedBy: actorID, CreatedAt: now, UpdatedAt: now,
@@ -404,7 +404,7 @@ func normalizeBuildPlanInput(input BuildPlanInput) (BuildPlanInput, error) {
 	input.ContextPath, input.WorkingDirectory = strings.TrimSpace(input.ContextPath), strings.TrimSpace(input.WorkingDirectory)
 	input.ArtifactPath, input.RuntimeImage = strings.TrimSpace(input.ArtifactPath), strings.TrimSpace(input.RuntimeImage)
 	input.ImageRegistryID = strings.TrimSpace(input.ImageRegistryID)
-	input.TargetStage, input.Platform = strings.TrimSpace(input.TargetStage), strings.TrimSpace(input.Platform)
+	input.TargetStage = strings.TrimSpace(input.TargetStage)
 	if input.ContextPath == "" {
 		input.ContextPath = "."
 	}
@@ -437,7 +437,7 @@ func normalizeBuildPlanInput(input BuildPlanInput) (BuildPlanInput, error) {
 		}
 	case model.BuildPlanScript:
 		input.DockerfilePath, input.ImageRegistryID = "", ""
-		input.TargetStage, input.Platform = "", ""
+		input.TargetStage = ""
 		input.BuildArgs = map[string]string{}
 		if input.RuntimeImage == "" {
 			input.RuntimeImage = model.DefaultRuntimeImage
@@ -452,8 +452,7 @@ func normalizeBuildPlanInput(input BuildPlanInput) (BuildPlanInput, error) {
 		len(input.Script) > 256*1024 || utf8.RuneCountInString(input.Description) > 500 ||
 		len(input.DockerfilePath) > 512 || len(input.ContextPath) > 512 || len(input.WorkingDirectory) > 512 ||
 		len(input.ArtifactPath) > 512 || len(input.RuntimeImage) > 512 || len(input.ImageRegistryID) > 36 || len(input.TargetStage) > 128 ||
-		len(input.Platform) > 64 || (input.TargetStage != "" && !buildTargetStagePattern.MatchString(input.TargetStage)) ||
-		(input.Platform != "" && !buildPlatformPattern.MatchString(input.Platform)) ||
+		(input.TargetStage != "" && !buildTargetStagePattern.MatchString(input.TargetStage)) ||
 		!validBuildVariables(input.BuildArgs) ||
 		(input.Kind == model.BuildPlanDockerfile && !dockerengine.ValidBuildArgs(input.BuildArgs)) {
 		return input, ErrInvalidBuildPlan
@@ -465,7 +464,6 @@ func boolPointer(value bool) *bool { return &value }
 
 var buildVariableNamePattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]{0,127}$`)
 var buildTargetStagePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$`)
-var buildPlatformPattern = regexp.MustCompile(`^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)?$`)
 
 // validRuntimeImageReference 只接受固定 tag 或 digest。裸镜像名和 latest 会让
 // 同一份流水线快照在不同时间解析到不同内容，不能作为可审计的执行配置。
@@ -502,6 +500,7 @@ func validBuildVariables(values map[string]string) bool {
 var reservedScriptEnvironmentNames = map[string]struct{}{
 	"CI": {}, "HOME": {}, "TMPDIR": {},
 	"EDO_PIPELINE_RUN_ID": {}, "EDO_APPLICATION_ID": {}, "EDO_GIT_REF": {}, "EDO_COMMIT_SHA": {},
+	"EDO_TARGET_PLATFORM": {}, "EDO_TARGET_ARCH": {}, "GOOS": {}, "GOARCH": {},
 }
 
 // 脚本运行元数据和受控目录由执行器固定注入。保存阶段直接拒绝同名变量，
@@ -560,7 +559,7 @@ func (s *Service) UpdateBuildPlan(ctx context.Context, id string, input BuildPla
 		"name": input.Name, "kind": input.Kind, "description": input.Description,
 		"script": input.Script, "dockerfile_path": input.DockerfilePath, "context_path": input.ContextPath,
 		"working_directory": input.WorkingDirectory, "artifact_path": input.ArtifactPath, "runtime_image": input.RuntimeImage,
-		"image_registry_id": input.ImageRegistryID, "target_stage": input.TargetStage, "platform": input.Platform,
+		"image_registry_id": input.ImageRegistryID, "target_stage": input.TargetStage, "platform": "",
 		"pull": *input.Pull, "cache_enabled": *input.CacheEnabled, "build_args": string(buildArgsJSON),
 		"environment_variables": string(environmentJSON), "timeout_seconds": input.TimeoutSeconds,
 		"config_version": existing.ConfigVersion + 1, "updated_at": time.Now().UTC(),
@@ -1003,6 +1002,9 @@ func (s *Service) ListRuns(ctx context.Context, limit int) ([]model.PipelineRun,
 		Order("created_at DESC").Limit(limit).Find(&runs).Error; err != nil {
 		return nil, fmt.Errorf("查询流水线运行失败: %w", err)
 	}
+	if err := s.attachRunReleasePlanIDs(ctx, runs); err != nil {
+		return nil, err
+	}
 	for i := range runs {
 		if runs[i].WorkflowSnapshot == "" {
 			continue
@@ -1039,6 +1041,37 @@ func (s *Service) ListRuns(ctx context.Context, limit int) ([]model.PipelineRun,
 		}
 	}
 	return runs, nil
+}
+
+func (s *Service) attachRunReleasePlanIDs(ctx context.Context, runs []model.PipelineRun) error {
+	executionIDs := make([]string, 0, len(runs))
+	seen := make(map[string]struct{}, len(runs))
+	for i := range runs {
+		id := strings.TrimSpace(runs[i].ReleasePlanExecutionID)
+		if id == "" {
+			continue
+		}
+		if _, exists := seen[id]; exists {
+			continue
+		}
+		seen[id] = struct{}{}
+		executionIDs = append(executionIDs, id)
+	}
+	if len(executionIDs) == 0 {
+		return nil
+	}
+	var executions []model.ReleasePlanExecution
+	if err := s.db.WithContext(ctx).Select("id", "release_plan_id").Where("id IN ?", executionIDs).Find(&executions).Error; err != nil {
+		return fmt.Errorf("查询流水线关联发布计划失败: %w", err)
+	}
+	planIDs := make(map[string]string, len(executions))
+	for i := range executions {
+		planIDs[executions[i].ID] = executions[i].ReleasePlanID
+	}
+	for i := range runs {
+		runs[i].ReleasePlanID = planIDs[runs[i].ReleasePlanExecutionID]
+	}
+	return nil
 }
 
 func (s *Service) PrepareRun(ctx context.Context, applicationID, actorID string) (*model.PipelineRun, error) {

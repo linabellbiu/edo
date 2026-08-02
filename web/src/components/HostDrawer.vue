@@ -17,6 +17,7 @@ interface HostTestResult {
   test_token: string
   expires_at: string
   fingerprint: string
+  architecture: 'amd64' | 'arm64'
   docker_version?: string
   kubernetes_version?: string
 }
@@ -336,6 +337,7 @@ function close() {
         <div class="test-details">
           <span v-if="tested.docker_version">Docker {{ tested.docker_version }}</span>
           <span v-if="tested.kubernetes_version">Kubernetes {{ tested.kubernetes_version }}</span>
+          <span>架构 {{ tested.architecture.toUpperCase() }}</span>
           <code>{{ tested.fingerprint }}</code>
         </div>
       </template>

@@ -117,6 +117,10 @@ EDO_DATABASE_DRIVER=sqlite
 EDO_DATABASE_DSN=data/edo.db
 EDO_REDIS_URL=redis://127.0.0.1:6379/0
 EDO_NATS_URL=nats://127.0.0.1:4222
+EDO_GIT_DIRECTORY=data/repositories
+EDO_BUILD_DIRECTORY=data/builds
+EDO_GIT_CACHE_DIRECTORY=data/cache
+EDO_ARTIFACTS_DIRECTORY=data/artifacts
 EDO_HTTP_PORT=8080
 EDO_WEB_PORT=5173
 ```
@@ -185,6 +189,21 @@ EDO_LOG_COMPRESS_AFTER_DAYS=3
 ```
 
 管理员在设置页保存后，数据库中的值优先于上述启动默认值。Compose 模式的日志目录固定为持久化数据卷内的 `/app/data/logs`。
+
+### 运行目录与空间清理
+
+“设置 → 存储目录”可以分别配置：
+
+- 仓库工作区目录：保存按仓库和 Commit 隔离的检出代码。
+- 构建目录：保存脚本构建的中间输出，任务结束后自动回收。
+- Git 缓存目录：保存 Git 对象缓存，减少重复拉取。
+- 本地产物目录：保存上传或脚本构建生成的文件产物。
+
+保存后新任务立即使用新目录，不需要重启。四个目录必须彼此独立，不能相同或互相包含；新目录必须为空，或是此前由 EDO 管理的同用途目录。修改本地产物目录时，EDO 会先同步已有文件，确认完成后再切换。
+
+同一页面会显示四类目录当前实际生效的路径、文件数和占用空间，并可以单独清除工作区、构建中间文件、Git 缓存或本地产物。清理正在使用的工作区或构建目录会被拒绝。清除本地产物后，相关记录保留并标记为已过期；镜像仓库中的镜像和 Docker 本地镜像不受影响。
+
+首次启动目录由 `.env` 中的 `EDO_GIT_DIRECTORY`、`EDO_BUILD_DIRECTORY`、`EDO_GIT_CACHE_DIRECTORY` 和 `EDO_ARTIFACTS_DIRECTORY` 决定。管理员在设置页保存后，数据库中的目录设置优先。
 
 不指定 `--server` 或 `--web` 时，默认同时启动两者；两个参数同时提供时也是同时启动。`--dev` 与 `--docker` 不能一起使用。
 
@@ -368,8 +387,10 @@ EDO_LEGACY_DATABASE_DSN='readonly:password@tcp(db:3306)/legacy?charset=utf8mb4&p
 - SQLite：`data/edo.db`
 - Redis：`data/redis/`
 - NATS JetStream：`data/nats/`
+- 构建中间输出：`data/builds/`
 - 构建制品：`data/artifacts/`
-- 流水线仓库缓存与版本工作区：`data/repositories/<仓库地址Hash>/<Tag版本号或Commit>/`
+- Git 对象缓存：`data/cache/<仓库地址Hash>/`
+- 仓库版本工作区：`data/repositories/<仓库地址Hash>/<Tag版本号或Commit>/`
 
 首次启动且账户表为空时，系统会创建管理员：
 

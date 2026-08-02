@@ -60,6 +60,28 @@ func (buildExecutorScriptRunner) RunScriptContainer(
 	return result, err
 }
 
+func TestWorkflowBuildPlatformFollowsDownstreamHosts(t *testing.T) {
+	build := model.WorkflowNode{ID: "build", Type: model.WorkflowNodeBuild}
+	deployAMD := model.WorkflowNode{ID: "deploy-amd", Type: model.WorkflowNodeDeploy}
+	deployARM := model.WorkflowNode{ID: "deploy-arm", Type: model.WorkflowNodeDeploy}
+	snapshot := workflowSnapshot{
+		Stages: []model.WorkflowStage{{ID: "stage", Tasks: []model.WorkflowNode{build, deployAMD, deployARM}}},
+		DeploymentTargets: map[string]workflowDeploymentTargetSnapshot{
+			deployAMD.ID: {Architecture: model.HostArchitectureAMD64},
+			deployARM.ID: {Architecture: model.HostArchitectureARM64},
+		},
+	}
+	platform, err := workflowBuildPlatform(snapshot, build.ID, workflowBuildPlanSnapshot{
+		Kind: model.BuildPlanDockerfile, ImageRegistryID: "registry",
+	})
+	if err != nil || platform != "linux/amd64,linux/arm64" {
+		t.Fatalf("没有从下游主机推导多架构构建: platform=%q err=%v", platform, err)
+	}
+	if _, err := workflowBuildPlatform(snapshot, build.ID, workflowBuildPlanSnapshot{Kind: model.BuildPlanDockerfile}); !errors.Is(err, ErrPipelineExecutionConfig) {
+		t.Fatalf("本地镜像不应允许覆盖多个架构: %v", err)
+	}
+}
+
 func (s buildExecutorCheckoutStub) ListRefs(context.Context, model.GitRepository, string) (repository.RefResult, error) {
 	return repository.RefResult{}, nil
 }
@@ -160,6 +182,25 @@ func TestExecuteScriptBuildProducesFileBundleAndAdvances(t *testing.T) {
 	if buildRun.ProducerKind != model.BuildRunProducerScript || buildRun.Status != model.BuildRunStatusSucceeded ||
 		buildRun.WorkflowNodeID != buildNode.ID || buildRun.BuildPlanID != "plan-script" {
 		t.Fatalf("脚本构建审计记录不完整: %+v", buildRun)
+	}
+}
+
+func TestTemplateToolchainOverridesBuildPlanWithoutMutatingIt(t *testing.T) {
+	config := model.WorkflowNodeConfig{
+		RuntimeImage: "golang:1.25-alpine", ToolchainLanguage: "go", ToolchainVersion: "1.25",
+	}
+	plan := workflowBuildPlanSnapshot{
+		RuntimeImage: "alpine:3.22", BuildArgs: map[string]string{"MODE": "release", "GO_VERSION": "1.24"},
+	}
+	if image := effectiveBuildRuntimeImage(config, plan); image != "golang:1.25-alpine" {
+		t.Fatalf("模板语言镜像没有覆盖脚本方案默认镜像: %q", image)
+	}
+	args := effectiveDockerBuildArgs(config, plan.BuildArgs)
+	if args["GO_VERSION"] != "1.25" || args["MODE"] != "release" {
+		t.Fatalf("所选 Go 版本没有注入 Dockerfile 构建参数: %+v", args)
+	}
+	if plan.BuildArgs["GO_VERSION"] != "1.24" {
+		t.Fatalf("构建任务修改了方案快照: %+v", plan.BuildArgs)
 	}
 }
 

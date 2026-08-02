@@ -29,12 +29,12 @@ type dockerProbeStub struct {
 
 func (s dockerProbeStub) TestSSH(context.Context, dockerengine.Input) (dockerengine.SSHTestResult, error) {
 	return dockerengine.SSHTestResult{
-		Fingerprint: s.fingerprint, DockerVersion: "27.2.0",
+		Fingerprint: s.fingerprint, DockerVersion: "27.2.0", Architecture: model.HostArchitectureAMD64,
 	}, nil
 }
 
 func (s dockerProbeStub) TestSSHConnection(context.Context, dockerengine.Input) (dockerengine.SSHConnectionTestResult, error) {
-	return dockerengine.SSHConnectionTestResult{Fingerprint: s.fingerprint}, nil
+	return dockerengine.SSHConnectionTestResult{Fingerprint: s.fingerprint, Architecture: model.HostArchitectureAMD64}, nil
 }
 
 func (s dockerProbeStub) PingForMonitor(context.Context, string) (mobyclient.PingResult, error) {
@@ -60,12 +60,12 @@ func (s *recordingDockerProbe) TestSSH(_ context.Context, input dockerengine.Inp
 	if s.dockerErr != nil {
 		return dockerengine.SSHTestResult{}, s.dockerErr
 	}
-	return dockerengine.SSHTestResult{Fingerprint: s.fingerprint, DockerVersion: "27.2.0"}, nil
+	return dockerengine.SSHTestResult{Fingerprint: s.fingerprint, DockerVersion: "27.2.0", Architecture: model.HostArchitectureAMD64}, nil
 }
 
 func (s *recordingDockerProbe) TestSSHConnection(_ context.Context, input dockerengine.Input) (dockerengine.SSHConnectionTestResult, error) {
 	s.input = input
-	return dockerengine.SSHConnectionTestResult{Fingerprint: s.fingerprint}, nil
+	return dockerengine.SSHConnectionTestResult{Fingerprint: s.fingerprint, Architecture: model.HostArchitectureAMD64}, nil
 }
 
 func (s *recordingDockerProbe) PingForMonitor(context.Context, string) (mobyclient.PingResult, error) {
@@ -88,7 +88,7 @@ type blockingDockerProbe struct {
 }
 
 func (s *blockingDockerProbe) TestSSH(context.Context, dockerengine.Input) (dockerengine.SSHTestResult, error) {
-	return dockerengine.SSHTestResult{Fingerprint: s.fingerprint, DockerVersion: "27.2.0"}, nil
+	return dockerengine.SSHTestResult{Fingerprint: s.fingerprint, DockerVersion: "27.2.0", Architecture: model.HostArchitectureAMD64}, nil
 }
 
 func (s *blockingDockerProbe) PingForMonitor(ctx context.Context, _ string) (mobyclient.PingResult, error) {
@@ -117,7 +117,7 @@ func (s *blockingDockerProbe) PingForMonitor(ctx context.Context, _ string) (mob
 }
 
 func (s *blockingDockerProbe) TestSSHConnection(context.Context, dockerengine.Input) (dockerengine.SSHConnectionTestResult, error) {
-	return dockerengine.SSHConnectionTestResult{Fingerprint: s.fingerprint}, nil
+	return dockerengine.SSHConnectionTestResult{Fingerprint: s.fingerprint, Architecture: model.HostArchitectureAMD64}, nil
 }
 
 func (s *blockingDockerProbe) PingBuilder(context.Context) error { return nil }
@@ -149,7 +149,7 @@ func TestHostCreateRequiresInputBoundTestAndEncryptsCredential(t *testing.T) {
 	}
 	if created.Host.SSHCredentialCiphertext == "" ||
 		created.Host.SSHCredentialCiphertext == input.SSH.Password ||
-		created.Host.SSHHostKeyFingerprint != tested.Fingerprint {
+		created.Host.SSHHostKeyFingerprint != tested.Fingerprint || created.Host.Architecture != model.HostArchitectureAMD64 {
 		t.Fatalf("主机 SSH 凭据或指纹保存错误: %+v", created.Host)
 	}
 	if len(created.Capabilities) != 2 {

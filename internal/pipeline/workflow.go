@@ -13,6 +13,7 @@ import (
 	"github.com/google/uuid"
 	"gorm.io/gorm"
 
+	"edo/internal/deployment"
 	"edo/internal/dockerengine"
 	"edo/internal/model"
 	"edo/internal/repository"
@@ -75,23 +76,24 @@ type workflowSnapshot struct {
 }
 
 type workflowBuildPlanSnapshot struct {
-	ID                   string              `json:"id"`
-	Kind                 model.BuildPlanKind `json:"kind"`
-	ConfigVersion        uint16              `json:"config_version"`
-	Script               string              `json:"script,omitempty"`
-	DockerfilePath       string              `json:"dockerfile_path,omitempty"`
-	ContextPath          string              `json:"context_path"`
-	WorkingDirectory     string              `json:"working_directory"`
-	ArtifactPath         string              `json:"artifact_path,omitempty"`
-	RuntimeImage         string              `json:"runtime_image,omitempty"`
-	ImageRegistryID      string              `json:"image_registry_id,omitempty"`
-	TargetStage          string              `json:"target_stage,omitempty"`
-	Platform             string              `json:"platform,omitempty"`
-	Pull                 bool                `json:"pull"`
-	CacheEnabled         bool                `json:"cache_enabled"`
-	BuildArgs            map[string]string   `json:"build_args,omitempty"`
-	EnvironmentVariables map[string]string   `json:"environment_variables,omitempty"`
-	TimeoutSeconds       int                 `json:"timeout_seconds"`
+	ID               string              `json:"id"`
+	Kind             model.BuildPlanKind `json:"kind"`
+	ConfigVersion    uint16              `json:"config_version"`
+	Script           string              `json:"script,omitempty"`
+	DockerfilePath   string              `json:"dockerfile_path,omitempty"`
+	ContextPath      string              `json:"context_path"`
+	WorkingDirectory string              `json:"working_directory"`
+	ArtifactPath     string              `json:"artifact_path,omitempty"`
+	RuntimeImage     string              `json:"runtime_image,omitempty"`
+	ImageRegistryID  string              `json:"image_registry_id,omitempty"`
+	TargetStage      string              `json:"target_stage,omitempty"`
+	// Platform 是本次运行根据下游部署主机冻结的 OCI 平台，不来自构建方案表单。
+	Platform             string            `json:"platform,omitempty"`
+	Pull                 bool              `json:"pull"`
+	CacheEnabled         bool              `json:"cache_enabled"`
+	BuildArgs            map[string]string `json:"build_args,omitempty"`
+	EnvironmentVariables map[string]string `json:"environment_variables,omitempty"`
+	TimeoutSeconds       int               `json:"timeout_seconds"`
 }
 
 type workflowDeploymentPlanSnapshot struct {
@@ -110,6 +112,7 @@ type workflowDeploymentTargetSnapshot struct {
 	Platform         model.DeploymentPlatform `json:"platform"`
 	EnvironmentID    string                   `json:"environment_id,omitempty"`
 	HostID           string                   `json:"host_id,omitempty"`
+	Architecture     model.HostArchitecture   `json:"architecture,omitempty"`
 	RuntimeID        string                   `json:"runtime_id,omitempty"`
 	WorkingDirectory string                   `json:"working_directory,omitempty"`
 	Namespace        string                   `json:"namespace,omitempty"`
@@ -482,6 +485,8 @@ func sanitizeWorkflowNode(node *model.WorkflowNode) error {
 	node.Config.BuildPlanID = strings.TrimSpace(node.Config.BuildPlanID)
 	node.Config.DeploymentPlanID = strings.TrimSpace(node.Config.DeploymentPlanID)
 	node.Config.RuntimeImage = strings.TrimSpace(node.Config.RuntimeImage)
+	node.Config.ToolchainLanguage = strings.ToLower(strings.TrimSpace(node.Config.ToolchainLanguage))
+	node.Config.ToolchainVersion = strings.TrimSpace(node.Config.ToolchainVersion)
 	node.Config.WorkingDirectory = strings.TrimSpace(node.Config.WorkingDirectory)
 	node.Config.Description = strings.TrimSpace(node.Config.Description)
 	for i := range node.Config.Events {
@@ -516,8 +521,15 @@ func sanitizeWorkflowNode(node *model.WorkflowNode) error {
 		len(node.Config.Branch) > 512 || len(node.Config.TagPattern) > 512 ||
 		len(node.Config.PRTargetPattern) > 512 || len(node.Config.PRSourcePattern) > 512 ||
 		len(node.Config.BuildPlanID) > 36 || len(node.Config.DeploymentPlanID) > 36 ||
-		len(node.Config.RuntimeImage) > 512 || len(node.Config.WorkingDirectory) > 512 || utf8.RuneCountInString(node.Config.Description) > 500 {
+		len(node.Config.RuntimeImage) > 512 || len(node.Config.ToolchainLanguage) > 16 || len(node.Config.ToolchainVersion) > 32 ||
+		len(node.Config.WorkingDirectory) > 512 || utf8.RuneCountInString(node.Config.Description) > 500 {
 		return ErrInvalidWorkflow
+	}
+	if node.Config.ToolchainLanguage != "" || node.Config.ToolchainVersion != "" {
+		runtime, ok := findWorkflowRuntimeVersion(node.Config.ToolchainLanguage, node.Config.ToolchainVersion)
+		if !ok || runtime.Image != node.Config.RuntimeImage || (node.Type != model.WorkflowNodeBuild && node.Type != model.WorkflowNodeShell) {
+			return ErrInvalidWorkflow
+		}
 	}
 	return nil
 }
@@ -991,6 +1003,15 @@ func (s *Service) newStageResolvedWorkflowRunWithDatabase(
 					!deploymentPlanSupportsTarget(plan.Kind, target.Platform) {
 					return nil, ErrInvalidWorkflow
 				}
+				architecture, architectureErr := deploymentTargetArchitecture(ctx, database, target.HostID)
+				if architectureErr != nil {
+					if s.logger != nil {
+						s.logger.Error("部署目标主机架构不可用", "operation", "pipeline_target_architecture_resolve",
+							"application_id", application.ID, "workflow_id", workflow.ID,
+							"deployment_target_id", target.ID, "host_id", target.HostID, "err", architectureErr)
+					}
+					return nil, ErrInvalidWorkflow
+				}
 				dockerConfig := plan.DockerConfig
 				if plan.Kind == model.DeploymentPlanDocker {
 					normalized, configErr := dockerengine.NormalizeContainerConfig(dockerConfig)
@@ -998,6 +1019,13 @@ func (s *Service) newStageResolvedWorkflowRunWithDatabase(
 						return nil, ErrInvalidWorkflow
 					}
 					dockerConfig = normalized
+					workloadName, nameErr := deployment.ResolveDockerWorkloadName(
+						target.WorkloadName, application.Name, application.ID, plan.ID, target.ID,
+					)
+					if nameErr != nil {
+						return nil, ErrInvalidWorkflow
+					}
+					target.WorkloadName = workloadName
 				}
 				deploymentPlans[current.ID] = workflowDeploymentPlanSnapshot{
 					ID: plan.ID, Kind: plan.Kind, Script: plan.Script,
@@ -1007,7 +1035,7 @@ func (s *Service) newStageResolvedWorkflowRunWithDatabase(
 				}
 				deploymentTargets[current.ID] = workflowDeploymentTargetSnapshot{
 					ID: target.ID, Name: target.Name, Platform: target.Platform,
-					EnvironmentID: target.EnvironmentID, HostID: target.HostID, RuntimeID: target.RuntimeID,
+					EnvironmentID: target.EnvironmentID, HostID: target.HostID, Architecture: architecture, RuntimeID: target.RuntimeID,
 					WorkingDirectory: target.WorkingDirectory, Namespace: target.Namespace,
 					WorkloadName: target.WorkloadName, ContainerName: target.ContainerName,
 					RolloutTimeout: target.RolloutTimeout,
@@ -1047,12 +1075,28 @@ func (s *Service) newStageResolvedWorkflowRunWithDatabase(
 	return run, nil
 }
 
+func deploymentTargetArchitecture(ctx context.Context, database *gorm.DB, hostID string) (model.HostArchitecture, error) {
+	if database == nil || strings.TrimSpace(hostID) == "" {
+		return "", errors.New("部署目标未关联主机")
+	}
+	var host model.Host
+	if err := database.WithContext(ctx).Select("id", "architecture", "is_active").
+		First(&host, "id = ? AND is_active = ?", strings.TrimSpace(hostID), true).Error; err != nil {
+		return "", fmt.Errorf("读取部署目标主机失败: %w", err)
+	}
+	architecture, valid := model.NormalizeHostArchitecture(string(host.Architecture))
+	if !valid {
+		return "", errors.New("部署目标主机尚未检测架构")
+	}
+	return architecture, nil
+}
+
 func buildPlanSnapshot(plan model.BuildPlan) workflowBuildPlanSnapshot {
 	return workflowBuildPlanSnapshot{
 		ID: plan.ID, Kind: plan.Kind, ConfigVersion: plan.ConfigVersion,
 		Script: plan.Script, DockerfilePath: plan.DockerfilePath, ContextPath: plan.ContextPath,
 		WorkingDirectory: plan.WorkingDirectory, ArtifactPath: plan.ArtifactPath, RuntimeImage: plan.RuntimeImage,
-		ImageRegistryID: plan.ImageRegistryID, TargetStage: plan.TargetStage, Platform: plan.Platform,
+		ImageRegistryID: plan.ImageRegistryID, TargetStage: plan.TargetStage,
 		Pull: plan.Pull, CacheEnabled: plan.CacheEnabled, BuildArgs: plan.BuildArgs,
 		EnvironmentVariables: plan.EnvironmentVariables, TimeoutSeconds: plan.TimeoutSeconds,
 	}

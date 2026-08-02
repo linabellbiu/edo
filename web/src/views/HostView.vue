@@ -243,7 +243,7 @@ onBeforeUnmount(() => {
             <span class="host-icon" :class="{ inactive: !host.is_active }"><Server /></span>
             <span class="host-copy">
               <strong>{{ host.name }}</strong>
-              <small>{{ host.is_builtin ? '本地' : `${host.address}:${host.ssh_port}` }}</small>
+              <small>{{ host.is_builtin ? '本地' : `${host.address}:${host.ssh_port}` }}<template v-if="host.architecture"> · {{ host.architecture.toUpperCase() }}</template></small>
               <span class="mini-capabilities">
                 <i v-for="capability in host.capabilities" :key="capability.kind" :title="capability.kind">
                   <RuntimeBrandIcon :kind="capability.kind" />
@@ -280,6 +280,7 @@ onBeforeUnmount(() => {
         <div class="host-facts">
           <div><small>连接地址</small><strong>{{ selected.is_builtin ? '本地' : `${selected.ssh_username}@${selected.address}:${selected.ssh_port}` }}</strong></div>
           <div><small>认证方式</small><strong>{{ selected.is_builtin ? '本地连接' : selected.ssh_auth_type === 'password' ? 'SSH 密码' : selected.ssh_auth_type === 'legacy' ? '历史凭据' : 'SSH 私钥' }}</strong></div>
+          <div><small>主机架构</small><strong>{{ selected.architecture ? selected.architecture.toUpperCase() : '尚未检测，请重新测试连接' }}</strong></div>
           <div class="fingerprint"><small>主机指纹</small><code>{{ selected.ssh_host_key_fingerprint || '本地无需 SSH 指纹' }}</code></div>
         </div>
 

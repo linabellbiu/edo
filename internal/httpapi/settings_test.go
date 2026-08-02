@@ -6,8 +6,11 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"testing"
 )
 
@@ -158,6 +161,80 @@ func TestRuntimeLoggingCanBeUpdatedWithoutRestart(t *testing.T) {
 	if persisted.Code != http.StatusOK || !bytes.Contains(persisted.Body.Bytes(), []byte(`"version":1`)) ||
 		!bytes.Contains(persisted.Body.Bytes(), []byte(`"http_access_enabled":false`)) {
 		t.Fatalf("运行日志设置未持久化: status=%d body=%s", persisted.Code, persisted.Body.String())
+	}
+}
+
+func TestRuntimeDirectoriesCanBeHotUpdatedAndCleanedSeparately(t *testing.T) {
+	router, closeTest := newAuthTestRouter(t)
+	defer closeTest()
+	login := performJSONRequest(t, router, http.MethodPost, "/api/v1/auth/login", map[string]string{
+		"username": "admin", "password": "correct horse battery staple",
+	}, nil)
+	adminCookie := login.Result().Cookies()[0]
+
+	current := performJSONRequest(t, router, http.MethodGet, "/api/v1/settings/runtime-directories", nil, adminCookie)
+	if current.Code != http.StatusOK || !bytes.Contains(current.Body.Bytes(), []byte(`"version":0`)) ||
+		!bytes.Contains(current.Body.Bytes(), []byte(`"workspace_usage"`)) ||
+		!bytes.Contains(current.Body.Bytes(), []byte(`"build_usage"`)) ||
+		!bytes.Contains(current.Body.Bytes(), []byte(`"cache_usage"`)) ||
+		!bytes.Contains(current.Body.Bytes(), []byte(`"artifact_usage"`)) {
+		t.Fatalf("读取默认运行目录失败: status=%d body=%s", current.Code, current.Body.String())
+	}
+	workspaceDirectory, buildDirectory, cacheDirectory, artifactDirectory := t.TempDir(), t.TempDir(), t.TempDir(), t.TempDir()
+	updated := performJSONRequest(t, router, http.MethodPut, "/api/v1/settings/runtime-directories", map[string]any{
+		"workspace_directory":      workspaceDirectory,
+		"build_directory":          buildDirectory,
+		"cache_directory":          cacheDirectory,
+		"local_artifact_directory": artifactDirectory,
+		"expected_version":         0,
+	}, adminCookie)
+	if updated.Code != http.StatusOK || !bytes.Contains(updated.Body.Bytes(), []byte(`"version":1`)) ||
+		!bytes.Contains(updated.Body.Bytes(), []byte(`"workspace_directory"`)) ||
+		!bytes.Contains(updated.Body.Bytes(), []byte(`"workspace_usage":{"path":"`)) ||
+		!bytes.Contains(updated.Body.Bytes(), []byte(`"artifact_usage":{"path":"`)) {
+		t.Fatalf("热更新运行目录失败: status=%d body=%s", updated.Code, updated.Body.String())
+	}
+	for _, target := range []string{
+		filepath.Join(workspaceDirectory, "workspace", "source.go"),
+		filepath.Join(buildDirectory, "output", "app.jar"),
+		filepath.Join(cacheDirectory, "objects", "pack"),
+		filepath.Join(artifactDirectory, "blobs", "sha256", "1234"),
+	} {
+		if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(target, []byte("1234"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, cleanup := range []struct {
+		path string
+		file string
+	}{
+		{path: "/api/v1/settings/runtime-directories/cleanup-workspaces", file: filepath.Join(workspaceDirectory, "workspace", "source.go")},
+		{path: "/api/v1/settings/runtime-directories/cleanup-builds", file: filepath.Join(buildDirectory, "output", "app.jar")},
+		{path: "/api/v1/settings/runtime-directories/cleanup-cache", file: filepath.Join(cacheDirectory, "objects", "pack")},
+		{path: "/api/v1/settings/runtime-directories/cleanup-artifacts", file: filepath.Join(artifactDirectory, "blobs", "sha256", "1234")},
+	} {
+		response := performJSONRequest(t, router, http.MethodPost, cleanup.path, nil, adminCookie)
+		if response.Code != http.StatusOK || !bytes.Contains(response.Body.Bytes(), []byte(`"files_deleted":1`)) {
+			t.Fatalf("运行目录独立清理失败: path=%s status=%d body=%s", cleanup.path, response.Code, response.Body.String())
+		}
+		if _, err := os.Stat(cleanup.file); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("目标文件未被清理: path=%s err=%v", cleanup.file, err)
+		}
+	}
+
+	overlapRoot := t.TempDir()
+	overlap := performJSONRequest(t, router, http.MethodPut, "/api/v1/settings/runtime-directories", map[string]any{
+		"workspace_directory":      overlapRoot,
+		"build_directory":          t.TempDir(),
+		"cache_directory":          filepath.Join(overlapRoot, "cache"),
+		"local_artifact_directory": t.TempDir(),
+		"expected_version":         1,
+	}, adminCookie)
+	if overlap.Code != http.StatusBadRequest || !bytes.Contains(overlap.Body.Bytes(), []byte(`"code":"directory_overlap"`)) {
+		t.Fatalf("互相包含的运行目录未被拒绝: status=%d body=%s", overlap.Code, overlap.Body.String())
 	}
 }
 

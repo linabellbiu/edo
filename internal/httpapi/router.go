@@ -193,7 +193,11 @@ func NewRouter(deps Dependencies) *gin.Engine {
 	protected.GET("/applications/:id/workflows/:workflow_id/repository-refs", requireAnyPermission(deps.Access, deps.Logger, access.PermissionDeliveryRun, access.PermissionDeliveryManage), pipelineAPI.listApplicationRefs)
 	protected.POST("/applications/:id/workflows/:workflow_id/pipeline-runs", auditAction(deps.Audits, deps.Logger, "pipeline.prepare", "pipeline_run"), requirePermission(deps.Access, deps.Logger, access.PermissionDeliveryRun), pipelineAPI.prepareRun)
 	protected.GET("/workflow-templates", requirePermission(deps.Access, deps.Logger, access.PermissionDeliveryRead), pipelineAPI.listWorkflowTemplates)
+	protected.GET("/workflow-presets", requirePermission(deps.Access, deps.Logger, access.PermissionDeliveryRead), pipelineAPI.listWorkflowPresets)
+	protected.GET("/workflow-runtime-versions", requirePermission(deps.Access, deps.Logger, access.PermissionDeliveryRead), pipelineAPI.listWorkflowRuntimeVersions)
+	protected.POST("/workflow-runtime-versions/prepare", auditAction(deps.Audits, deps.Logger, "workflow_runtime.prepare", "workflow_runtime"), requirePermission(deps.Access, deps.Logger, access.PermissionDeliveryManage), pipelineAPI.prepareWorkflowRuntimeVersion)
 	protected.POST("/workflow-templates", auditAction(deps.Audits, deps.Logger, "workflow_template.create", "release_workflow_template"), requirePermission(deps.Access, deps.Logger, access.PermissionDeliveryManage), pipelineAPI.createWorkflowTemplate)
+	protected.POST("/workflow-templates/from-preset", auditAction(deps.Audits, deps.Logger, "workflow_template.create_from_preset", "release_workflow_template"), requirePermission(deps.Access, deps.Logger, access.PermissionDeliveryManage), pipelineAPI.createWorkflowTemplateFromPreset)
 	protected.POST("/workflow-templates/validate", requirePermission(deps.Access, deps.Logger, access.PermissionDeliveryRead), pipelineAPI.validateWorkflowTemplate)
 	protected.GET("/workflow-templates/:id", requirePermission(deps.Access, deps.Logger, access.PermissionDeliveryRead), pipelineAPI.getWorkflowTemplate)
 	protected.PUT("/workflow-templates/:id", auditAction(deps.Audits, deps.Logger, "workflow_template.update", "release_workflow_template"), requirePermission(deps.Access, deps.Logger, access.PermissionDeliveryManage), pipelineAPI.saveWorkflowTemplate)
@@ -286,7 +290,7 @@ func NewRouter(deps Dependencies) *gin.Engine {
 	protected.GET("/terminals/kubernetes/:cluster_id/namespaces/:namespace/pods/:pod/containers/:container/ws", requirePermission(deps.Access, deps.Logger, access.PermissionTerminalOpen), terminalAPI.kubernetes)
 
 	configurationAPI := configurationHandler{service: deps.Configurations, logger: deps.Logger}
-	settingsAPI := settingsHandler{service: deps.Configurations, loginLimiter: deps.LoginLimiter, authConfig: deps.AuthConfig, retention: deps.LogRetention, migration: deps.DatabaseTransfer, runtimeLogs: deps.RuntimeLogs, logger: deps.Logger}
+	settingsAPI := settingsHandler{service: deps.Configurations, loginLimiter: deps.LoginLimiter, authConfig: deps.AuthConfig, retention: deps.LogRetention, migration: deps.DatabaseTransfer, runtimeLogs: deps.RuntimeLogs, repositories: deps.Repositories, artifacts: deps.Artifacts, logger: deps.Logger}
 	protected.GET("/settings/external-git-webhook", requirePermission(deps.Access, deps.Logger, access.PermissionConfigRead), settingsAPI.externalGitWebhook)
 	protected.PUT("/settings/external-git-webhook", auditAction(deps.Audits, deps.Logger, "settings.git_webhook.update", "settings"), requirePermission(deps.Access, deps.Logger, access.PermissionConfigManage), settingsAPI.updateExternalGitWebhook)
 	protected.GET("/settings/login-lockout", requirePermission(deps.Access, deps.Logger, access.PermissionConfigRead), settingsAPI.loginLockout)
@@ -296,6 +300,12 @@ func NewRouter(deps Dependencies) *gin.Engine {
 	protected.GET("/settings/log-retention", requirePermission(deps.Access, deps.Logger, access.PermissionConfigRead), settingsAPI.logRetention)
 	protected.PUT("/settings/log-retention", auditAction(deps.Audits, deps.Logger, "settings.log_retention.update", "settings"), requirePermission(deps.Access, deps.Logger, access.PermissionConfigManage), settingsAPI.updateLogRetention)
 	protected.POST("/settings/log-retention/cleanup", auditAction(deps.Audits, deps.Logger, "settings.log_retention.cleanup", "settings"), requirePermission(deps.Access, deps.Logger, access.PermissionConfigManage), settingsAPI.cleanupLogs)
+	protected.GET("/settings/runtime-directories", requirePermission(deps.Access, deps.Logger, access.PermissionConfigRead), settingsAPI.runtimeDirectories)
+	protected.PUT("/settings/runtime-directories", auditAction(deps.Audits, deps.Logger, "settings.runtime_directories.update", "settings"), requirePermission(deps.Access, deps.Logger, access.PermissionConfigManage), settingsAPI.updateRuntimeDirectories)
+	protected.POST("/settings/runtime-directories/cleanup-workspaces", auditAction(deps.Audits, deps.Logger, "settings.repository_workspaces.cleanup", "settings"), requirePermission(deps.Access, deps.Logger, access.PermissionConfigManage), settingsAPI.cleanupRepositoryWorkspaces)
+	protected.POST("/settings/runtime-directories/cleanup-builds", auditAction(deps.Audits, deps.Logger, "settings.builds.cleanup", "settings"), requirePermission(deps.Access, deps.Logger, access.PermissionConfigManage), settingsAPI.cleanupBuilds)
+	protected.POST("/settings/runtime-directories/cleanup-cache", auditAction(deps.Audits, deps.Logger, "settings.repository_cache.cleanup", "settings"), requirePermission(deps.Access, deps.Logger, access.PermissionConfigManage), settingsAPI.cleanupRepositoryCache)
+	protected.POST("/settings/runtime-directories/cleanup-artifacts", auditAction(deps.Audits, deps.Logger, "settings.local_artifacts.cleanup", "settings"), requirePermission(deps.Access, deps.Logger, access.PermissionConfigManage), settingsAPI.cleanupLocalArtifacts)
 	protected.GET("/settings/database-migration", requireSuperuser(deps.Logger), settingsAPI.databaseMigrationStatus)
 	protected.POST("/settings/database-migration/test", auditAction(deps.Audits, deps.Logger, "settings.database_migration.test", "settings"), requireSuperuser(deps.Logger), settingsAPI.testDatabaseMigration)
 	protected.POST("/settings/database-migration", auditAction(deps.Audits, deps.Logger, "settings.database_migration.start", "settings"), requireSuperuser(deps.Logger), settingsAPI.startDatabaseMigration)

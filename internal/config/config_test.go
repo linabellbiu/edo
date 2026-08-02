@@ -113,8 +113,11 @@ func TestLoadUsesArtifactDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatalf("加载制品默认配置失败: %v", err)
 	}
-	if cfg.Artifacts.Directory != "data/artifacts" || cfg.Artifacts.MaxBytes != 1024*1024*1024 {
-		t.Fatalf("制品默认配置错误: directory=%q max_bytes=%d", cfg.Artifacts.Directory, cfg.Artifacts.MaxBytes)
+	if cfg.Artifacts.BuildDirectory != "data/builds" || cfg.Artifacts.Directory != "data/artifacts" || cfg.Artifacts.MaxBytes != 1024*1024*1024 {
+		t.Fatalf("构建与制品默认配置错误: build_directory=%q directory=%q max_bytes=%d", cfg.Artifacts.BuildDirectory, cfg.Artifacts.Directory, cfg.Artifacts.MaxBytes)
+	}
+	if cfg.Git.Directory != "data/repositories" || cfg.Git.CacheDirectory != "data/cache" {
+		t.Fatalf("仓库目录默认配置错误: build=%q cache=%q", cfg.Git.Directory, cfg.Git.CacheDirectory)
 	}
 }
 
@@ -180,13 +183,13 @@ func validConfig() Config {
 			Concurrency: 1, TaskTimeout: time.Minute,
 			LeaseDuration: 30 * time.Second, ShutdownTimeout: time.Second,
 		},
-		Git: Git{Timeout: time.Second, Directory: "data/repositories"},
+		Git: Git{Timeout: time.Second, Directory: "data/repositories", CacheDirectory: "data/cache"},
 		Runtime: Runtime{
 			ConnectTimeout: time.Second, RequestTimeout: time.Second,
 			TerminalMaxDuration: time.Hour, DockerBuilderHost: "tcp://docker-builder:2376",
 			DockerBuilderTLSCertPath: "/certs/client",
 		},
 		Scheduler: Scheduler{PollInterval: 15 * time.Second},
-		Artifacts: Artifacts{Directory: "data/artifacts", MaxBytes: 1024 * 1024 * 1024},
+		Artifacts: Artifacts{BuildDirectory: "data/builds", Directory: "data/artifacts", MaxBytes: 1024 * 1024 * 1024},
 	}
 }

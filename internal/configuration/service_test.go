@@ -216,6 +216,31 @@ func TestRuntimeLoggingSettingsUpgradeLegacyStoredValueWithFileDefaults(t *testi
 	}
 }
 
+func TestRuntimeDirectorySettingsUpgradeLegacyWorkspaceNameAndBuildDefault(t *testing.T) {
+	service := newConfigurationTestService(t)
+	now := time.Now().UTC()
+	legacy := model.Configuration{
+		ID: "legacy-runtime-directories", Namespace: systemNamespace, Environment: model.EnvironmentGlobal,
+		Key:     runtimeDirectorySettingKey,
+		Value:   `{"repository_build_directory":"data/repositories","cache_directory":"data/cache","local_artifact_directory":"data/artifacts"}`,
+		Version: 3, IsActive: true, CreatedBy: "admin", UpdatedBy: "admin", CreatedAt: now, UpdatedAt: now,
+	}
+	if err := service.db.Create(&legacy).Error; err != nil {
+		t.Fatalf("创建旧版运行目录设置失败: %v", err)
+	}
+	settings, err := service.GetRuntimeDirectorySettings(context.Background(), RuntimeDirectorySettings{
+		WorkspaceDirectory: "default/repositories", BuildDirectory: "default/builds",
+		CacheDirectory: "default/cache", LocalArtifactDirectory: "default/artifacts",
+	})
+	if err != nil {
+		t.Fatalf("读取旧版运行目录设置失败: %v", err)
+	}
+	if settings.WorkspaceDirectory != "data/repositories" || settings.BuildDirectory != "default/builds" ||
+		settings.CacheDirectory != "data/cache" || settings.LocalArtifactDirectory != "data/artifacts" || settings.Version != 3 {
+		t.Fatalf("旧版运行目录设置兼容结果错误: %+v", settings)
+	}
+}
+
 func externalGitWebhookConfigurationID(t *testing.T, service *Service) string {
 	return systemConfigurationID(t, service, externalGitWebhookSettingKey)
 }

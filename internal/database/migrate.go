@@ -306,6 +306,12 @@ var migrations = []migration{
 			return addColumns(tx, &model.DeploymentRecord{}, []string{"ImageDisplay"})
 		},
 	},
+	{
+		version: "202608020057",
+		up: func(tx *gorm.DB) error {
+			return addColumns(tx, &model.Host{}, []string{"Architecture"})
+		},
+	},
 }
 
 // migrateImageRegistryProviderSemantics 修复早期表单允许“Docker Hub”配任意

@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"os/exec"
 	"regexp"
+	"runtime"
 	"slices"
 	"strings"
 	"sync"
@@ -56,6 +57,10 @@ type dockerProbe interface {
 	PingBuilder(context.Context) error
 }
 
+type dockerArchitectureProbe interface {
+	BuilderArchitecture(context.Context) (model.HostArchitecture, error)
+}
+
 type kubernetesProbe interface {
 	Ping(context.Context, string) (string, error)
 }
@@ -75,17 +80,19 @@ type Input struct {
 }
 
 type TestResult struct {
-	Token             string    `json:"test_token"`
-	ExpiresAt         time.Time `json:"expires_at"`
-	Fingerprint       string    `json:"fingerprint"`
-	DockerVersion     string    `json:"docker_version,omitempty"`
-	KubernetesVersion string    `json:"kubernetes_version,omitempty"`
+	Token             string                 `json:"test_token"`
+	ExpiresAt         time.Time              `json:"expires_at"`
+	Fingerprint       string                 `json:"fingerprint"`
+	Architecture      model.HostArchitecture `json:"architecture"`
+	DockerVersion     string                 `json:"docker_version,omitempty"`
+	KubernetesVersion string                 `json:"kubernetes_version,omitempty"`
 }
 
 type PingResult struct {
-	Fingerprint       string `json:"fingerprint"`
-	DockerVersion     string `json:"docker_version,omitempty"`
-	KubernetesVersion string `json:"kubernetes_version,omitempty"`
+	Fingerprint       string                 `json:"fingerprint"`
+	Architecture      model.HostArchitecture `json:"architecture"`
+	DockerVersion     string                 `json:"docker_version,omitempty"`
+	KubernetesVersion string                 `json:"kubernetes_version,omitempty"`
 }
 
 type RuntimeStatusChange struct {
@@ -145,6 +152,7 @@ type Service struct {
 	mu                  sync.Mutex
 	tests               map[string]testedInput
 	localOptions        []CapabilityOption
+	localArchitecture   model.HostArchitecture
 	localOptionsExpires time.Time
 	runtimeMu           sync.Mutex
 	runtimeProbes       map[string]struct{}
@@ -439,6 +447,9 @@ func (s *Service) probeRuntime(ctx context.Context, host model.Host, capability 
 
 func (s *Service) refreshLocalCapabilities(ctx context.Context, force bool) error {
 	options := s.probeLocalCapabilityOptions(ctx, force)
+	s.mu.Lock()
+	localArchitecture := s.localArchitecture
+	s.mu.Unlock()
 	available := make(map[model.HostCapabilityKind]CapabilityOption, len(options))
 	for i := range options {
 		available[options[i].Kind] = options[i]
@@ -449,6 +460,12 @@ func (s *Service) refreshLocalCapabilities(ctx context.Context, force bool) erro
 	}
 	now := time.Now().UTC()
 	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if localArchitecture != "" {
+			if err := tx.Model(&model.Host{}).Where("id = ? AND architecture <> ?", model.BuiltinLocalHostID, localArchitecture).
+				Updates(map[string]any{"architecture": localArchitecture, "updated_at": now}).Error; err != nil {
+				return err
+			}
+		}
 		for i := range capabilities {
 			option, exists := available[capabilities[i].Kind]
 			if !exists {
@@ -503,6 +520,7 @@ func (s *Service) probeLocalCapabilityOptions(ctx context.Context, force bool) [
 	}
 	s.mu.Unlock()
 
+	localArchitecture, _ := model.NormalizeHostArchitecture(runtime.GOARCH)
 	dockerOption := CapabilityOption{Kind: model.HostCapabilityDocker}
 	if s.docker == nil {
 		dockerOption.Reason = "当前运行环境未配置 Docker 客户端"
@@ -512,6 +530,14 @@ func (s *Service) probeLocalCapabilityOptions(ctx context.Context, force bool) [
 		cancel()
 		if err == nil {
 			dockerOption.Available = true
+			if detector, supported := s.docker.(dockerArchitectureProbe); supported {
+				architectureContext, architectureCancel := context.WithTimeout(ctx, localProbeTimeout)
+				architecture, architectureErr := detector.BuilderArchitecture(architectureContext)
+				architectureCancel()
+				if architectureErr == nil {
+					localArchitecture = architecture
+				}
+			}
 		} else {
 			dockerOption.Reason = "当前运行环境无法连接 Docker 服务"
 			dockerOption.probeErr = err
@@ -522,6 +548,7 @@ func (s *Service) probeLocalCapabilityOptions(ctx context.Context, force bool) [
 
 	s.mu.Lock()
 	s.localOptions = append([]CapabilityOption(nil), options...)
+	s.localArchitecture = localArchitecture
 	s.localOptionsExpires = now.Add(localProbeTTL)
 	s.mu.Unlock()
 	return options
@@ -579,13 +606,13 @@ func (s *Service) testRemoteInput(ctx context.Context, input Input, hostID strin
 		if err != nil {
 			return TestResult{}, err
 		}
-		result.Fingerprint, result.DockerVersion = tested.Fingerprint, tested.DockerVersion
+		result.Fingerprint, result.DockerVersion, result.Architecture = tested.Fingerprint, tested.DockerVersion, tested.Architecture
 	} else {
 		tested, err := s.docker.TestSSHConnection(ctx, dockerengine.Input{Host: hostURL, SSH: normalized.SSH})
 		if err != nil {
 			return TestResult{}, err
 		}
-		result.Fingerprint = tested.Fingerprint
+		result.Fingerprint, result.Architecture = tested.Fingerprint, tested.Architecture
 	}
 	if slices.Contains(normalized.CapabilityKinds, model.HostCapabilityKubernetes) {
 		if s.kubernetes == nil {
@@ -650,7 +677,7 @@ func (s *Service) Ping(ctx context.Context, id string, selected ...model.HostCap
 	probeInput := dockerengine.Input{
 		Host: hostURL, SSH: bundle, SSHHostKeyFingerprint: current.SSHHostKeyFingerprint,
 	}
-	result := PingResult{Fingerprint: current.SSHHostKeyFingerprint}
+	result := PingResult{Fingerprint: current.SSHHostKeyFingerprint, Architecture: current.Architecture}
 	if capability != "" && !slices.Contains(kinds, capability) {
 		return PingResult{}, ErrInvalidHost
 	}
@@ -659,21 +686,21 @@ func (s *Service) Ping(ctx context.Context, id string, selected ...model.HostCap
 		if err != nil {
 			return PingResult{}, err
 		}
-		result.Fingerprint = tested.Fingerprint
-		return result, nil
+		result.Fingerprint, result.Architecture = tested.Fingerprint, tested.Architecture
+		return s.persistPingArchitecture(ctx, current.ID, result)
 	}
 	if capability == model.HostCapabilityDocker || (capability == "" && slices.Contains(kinds, model.HostCapabilityDocker)) {
 		tested, err := s.docker.TestSSH(ctx, probeInput)
 		if err != nil {
 			return PingResult{}, err
 		}
-		result.Fingerprint, result.DockerVersion = tested.Fingerprint, tested.DockerVersion
+		result.Fingerprint, result.DockerVersion, result.Architecture = tested.Fingerprint, tested.DockerVersion, tested.Architecture
 	} else if capability == "" {
 		tested, err := s.docker.TestSSHConnection(ctx, probeInput)
 		if err != nil {
 			return PingResult{}, err
 		}
-		result.Fingerprint = tested.Fingerprint
+		result.Fingerprint, result.Architecture = tested.Fingerprint, tested.Architecture
 	}
 	if capability == model.HostCapabilityKubernetes || (capability == "" && slices.Contains(kinds, model.HostCapabilityKubernetes)) {
 		if s.kubernetes == nil || clusterID == "" {
@@ -683,6 +710,17 @@ func (s *Service) Ping(ctx context.Context, id string, selected ...model.HostCap
 		if err != nil {
 			return PingResult{}, err
 		}
+	}
+	return s.persistPingArchitecture(ctx, current.ID, result)
+}
+
+func (s *Service) persistPingArchitecture(ctx context.Context, hostID string, result PingResult) (PingResult, error) {
+	if result.Architecture == "" {
+		return PingResult{}, dockerengine.ErrUnsupportedArchitecture
+	}
+	if err := s.db.WithContext(ctx).Model(&model.Host{}).Where("id = ?", hostID).
+		Updates(map[string]any{"architecture": result.Architecture, "updated_at": time.Now().UTC()}).Error; err != nil {
+		return PingResult{}, fmt.Errorf("更新主机架构失败: %w", err)
 	}
 	return result, nil
 }
@@ -723,7 +761,10 @@ func (s *Service) pingLocal(ctx context.Context, detail *Detail, selected model.
 			return PingResult{}, ErrCapabilityUnavailable
 		}
 	}
-	return PingResult{}, nil
+	s.mu.Lock()
+	architecture := s.localArchitecture
+	s.mu.Unlock()
+	return PingResult{Architecture: architecture}, nil
 }
 
 func (s *Service) Create(ctx context.Context, actorID string, input Input) (*Detail, error) {
@@ -741,7 +782,7 @@ func (s *Service) Create(ctx context.Context, actorID string, input Input) (*Det
 		ID: id, Name: normalized.Name, Mode: model.HostModeSSH,
 		Address: normalized.Address, SSHPort: normalized.SSHPort, SSHUsername: normalized.SSHUsername,
 		SSHAuthType: normalized.SSHAuthType, SSHCredentialCiphertext: ciphertext,
-		SSHHostKeyFingerprint: tested.Fingerprint, IsActive: true,
+		SSHHostKeyFingerprint: tested.Fingerprint, Architecture: tested.Architecture, IsActive: true,
 		CreatedBy: actorID, CreatedAt: now, UpdatedAt: now,
 	}
 	var capabilities []model.HostCapability
@@ -798,13 +839,15 @@ func (s *Service) Update(ctx context.Context, id string, input Input) (*Detail, 
 			"name": normalized.Name, "address": normalized.Address, "ssh_port": normalized.SSHPort,
 			"ssh_username": normalized.SSHUsername, "ssh_auth_type": normalized.SSHAuthType,
 			"ssh_credential_ciphertext": ciphertext, "ssh_host_key_fingerprint": tested.Fingerprint,
-			"updated_at": now,
+			"architecture": tested.Architecture,
+			"updated_at":   now,
 		}).Error; err != nil {
 			return err
 		}
 		existing.Name, existing.Address, existing.SSHPort = normalized.Name, normalized.Address, normalized.SSHPort
 		existing.SSHUsername, existing.SSHAuthType = normalized.SSHUsername, normalized.SSHAuthType
 		existing.SSHCredentialCiphertext, existing.SSHHostKeyFingerprint = ciphertext, tested.Fingerprint
+		existing.Architecture = tested.Architecture
 		existing.UpdatedAt = now
 		_, err = s.replaceCapabilities(tx, &existing, normalized, tested)
 		return err

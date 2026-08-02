@@ -240,6 +240,36 @@ func TestDockerBuildxArgumentsWithOptionsAreStable(t *testing.T) {
 	}
 }
 
+func TestDockerBuildxPushArgumentsCreateMultiPlatformManifest(t *testing.T) {
+	arguments := dockerBuildxPushArgumentsWithOptions(
+		"Dockerfile", "registry.example.com/team/app:commit", "default", "/tmp/metadata.json",
+		BuildOptions{Pull: true, CacheEnabled: true, Platform: "linux/amd64,linux/arm64"},
+	)
+	for _, expected := range []string{"--push", "--metadata-file", "/tmp/metadata.json", "--platform", "linux/amd64,linux/arm64"} {
+		if !slices.Contains(arguments, expected) {
+			t.Fatalf("多架构 Buildx 参数缺少 %q: %v", expected, arguments)
+		}
+	}
+	if slices.Contains(arguments, "--load") {
+		t.Fatalf("多架构镜像不能加载到单一 Docker daemon: %v", arguments)
+	}
+	digest := "sha256:" + strings.Repeat("a", 64)
+	metadata := []byte(`{"containerimage.descriptor":{"digest":"` + digest + `"}}`)
+	if actual := buildxMetadataDigest(metadata); actual != digest {
+		t.Fatalf("未从 Buildx 元数据读取多架构摘要: %q", actual)
+	}
+}
+
+func TestNormalizeBuildPlatformsOnlyAcceptsDetectedArchitectures(t *testing.T) {
+	canonical, platforms, err := normalizeBuildPlatforms("linux/arm64, linux/amd64,linux/arm64")
+	if err != nil || canonical != "linux/amd64,linux/arm64" || !slices.Equal(platforms, []string{"linux/amd64", "linux/arm64"}) {
+		t.Fatalf("构建平台没有规范化: canonical=%q platforms=%v err=%v", canonical, platforms, err)
+	}
+	if _, _, err := normalizeBuildPlatforms("linux/386"); err == nil {
+		t.Fatal("不受支持的构建架构未被拒绝")
+	}
+}
+
 func TestDockerBuildxArgumentsCanDisablePullAndLocalCache(t *testing.T) {
 	arguments := dockerBuildxArgumentsWithOptions(
 		"Dockerfile",
