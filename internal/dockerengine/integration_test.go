@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"os"
@@ -48,8 +49,15 @@ func TestDockerBuildAndComposeIntegration(t *testing.T) {
 	}
 
 	buildContext := t.TempDir()
-	dockerfile := "FROM busybox:1.37.0\nARG APP_VERSION\nLABEL io.edo.integration.version=$APP_VERSION\nCMD [\"sh\",\"-c\",\"while true; do sleep 1; done\"]\n"
+	baseImage := strings.TrimSpace(os.Getenv("EDO_TEST_DOCKER_BASE_IMAGE"))
+	if baseImage == "" {
+		baseImage = "busybox:1.37.0"
+	}
+	dockerfile := fmt.Sprintf("# syntax=docker/dockerfile:1@sha256:87999aa3d42bdc6bea60565083ee17e86d1f3339802f543c0d03998580f9cb89\nFROM %s\nARG APP_VERSION\nCOPY fixture.txt /edo-integration-fixture.txt\nLABEL io.edo.integration.version=$APP_VERSION\nCMD [\"sh\",\"-c\",\"while true; do sleep 1; done\"]\n", baseImage)
 	if err := os.WriteFile(filepath.Join(buildContext, "Dockerfile"), []byte(dockerfile), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(buildContext, "fixture.txt"), []byte("local build context\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	identity := strings.ReplaceAll(uuid.NewString(), "-", "")[:12]
@@ -69,10 +77,14 @@ func TestDockerBuildAndComposeIntegration(t *testing.T) {
 
 	var buildOutput bytes.Buffer
 	imageID, err := service.BuildLocalWithOptions(ctx, buildContext, "Dockerfile", image, BuildOptions{
-		Pull: true, BuildArgs: map[string]string{"APP_VERSION": identity},
+		CacheEnabled: true, BuildArgs: map[string]string{"APP_VERSION": identity},
 	}, 3*time.Minute, &buildOutput)
 	if err != nil {
 		t.Fatalf("真实 Dockerfile 构建失败: %v\n%s", err, buildOutput.String())
+	}
+	if strings.Contains(buildOutput.String(), "load remote build context") ||
+		!strings.Contains(buildOutput.String(), "load build context") {
+		t.Fatalf("Buildx 没有直接读取本地版本工作区:\n%s", buildOutput.String())
 	}
 	if !IsValidImageID(imageID) {
 		t.Fatalf("真实构建没有返回内容寻址镜像 ID: %q", imageID)
@@ -172,6 +184,65 @@ func TestDockerBuildAndComposeIntegration(t *testing.T) {
 	deployed, err := apiClient.ContainerInspect(ctx, containers.Items[0].ID, client.ContainerInspectOptions{})
 	if err != nil || deployed.Container.Config == nil || deployed.Container.Config.Image != imageID || deployed.Container.Image != imageID {
 		t.Fatalf("Compose 没有直接按固定 Image ID 启动: container=%+v err=%v", deployed.Container, err)
+	}
+}
+
+func TestDockerBuildCacheAcrossIsolatedContexts(t *testing.T) {
+	if os.Getenv("EDO_TEST_DOCKER_INTEGRATION") != "1" {
+		t.Skip("未启用真实 Docker 缓存集成测试")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+	service := NewService(nil, nil, config.Runtime{ConnectTimeout: 10 * time.Second, RequestTimeout: 30 * time.Second})
+	if err := service.PingBuilder(ctx); err != nil {
+		t.Fatalf("Docker 构建运行时不可用: %v", err)
+	}
+	baseImage := strings.TrimSpace(os.Getenv("EDO_TEST_DOCKER_BASE_IMAGE"))
+	if baseImage == "" {
+		baseImage = "busybox:1.37.0"
+	}
+	dockerfile := fmt.Sprintf("# syntax=docker/dockerfile:1@sha256:87999aa3d42bdc6bea60565083ee17e86d1f3339802f543c0d03998580f9cb89\nFROM %s\nCOPY fixture.txt /fixture.txt\nRUN sha256sum /fixture.txt > /fixture.sha256\nCMD [\"sh\"]\n", baseImage)
+	contexts := []string{t.TempDir(), t.TempDir()}
+	for _, directory := range contexts {
+		if err := os.WriteFile(filepath.Join(directory, "Dockerfile"), []byte(dockerfile), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(directory, "fixture.txt"), []byte("same content across tags\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	identity := strings.ReplaceAll(uuid.NewString(), "-", "")[:12]
+	images := []string{"edo.local/cache-test-a:" + identity, "edo.local/cache-test-b:" + identity}
+	apiClient, err := service.BuilderClient()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer apiClient.Close()
+	defer func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cleanupCancel()
+		for _, image := range images {
+			_, _ = apiClient.ImageRemove(cleanupCtx, image, client.ImageRemoveOptions{Force: true})
+		}
+	}()
+	var firstOutput, secondOutput bytes.Buffer
+	firstID, err := service.BuildLocalWithOptions(
+		ctx, contexts[0], "Dockerfile", images[0], BuildOptions{CacheEnabled: true}, 2*time.Minute, &firstOutput,
+	)
+	if err != nil {
+		t.Fatalf("首次隔离工作区构建失败: %v\n%s", err, firstOutput.String())
+	}
+	secondID, err := service.BuildLocalWithOptions(
+		ctx, contexts[1], "Dockerfile", images[1], BuildOptions{CacheEnabled: true}, 2*time.Minute, &secondOutput,
+	)
+	if err != nil {
+		t.Fatalf("第二个隔离工作区构建失败: %v\n%s", err, secondOutput.String())
+	}
+	if firstID != secondID {
+		t.Fatalf("内容相同但目录不同的构建结果不一致: first=%s second=%s", firstID, secondID)
+	}
+	if !strings.Contains(secondOutput.String(), "CACHED") || strings.Contains(secondOutput.String(), "load remote build context") {
+		t.Fatalf("不同 Tag/Commit 目录没有复用本地 BuildKit 缓存:\n%s", secondOutput.String())
 	}
 }
 

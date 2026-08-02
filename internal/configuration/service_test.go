@@ -164,22 +164,55 @@ func TestLogRetentionSettingsDefaultDisabledAndValidateRange(t *testing.T) {
 func TestRuntimeLoggingSettingsUseStartupDefaultsAndOptimisticVersion(t *testing.T) {
 	service := newConfigurationTestService(t)
 	settings, err := service.GetRuntimeLoggingSettings(context.Background(), "warn", true)
-	if err != nil || settings.Level != "warn" || !settings.HTTPAccessEnabled || settings.Version != 0 {
+	if err != nil || settings.Level != "warn" || !settings.HTTPAccessEnabled || !settings.FileEnabled ||
+		settings.FileDirectory != "logs" || settings.MaxFileSizeMB != 100 || settings.CompressAfterDays != 3 || settings.Version != 0 {
 		t.Fatalf("运行日志启动默认值错误: settings=%+v err=%v", settings, err)
 	}
-	if _, err := service.UpdateRuntimeLoggingSettings(context.Background(), "admin", "verbose", false, 0); !errors.Is(err, ErrInvalidConfiguration) {
+	if _, err := service.UpdateRuntimeLoggingSettings(
+		context.Background(), "admin", "verbose", false, true, "logs", 100, 3, 0,
+	); !errors.Is(err, ErrInvalidConfiguration) {
 		t.Fatalf("无效日志级别未被拒绝: %v", err)
 	}
-	updated, err := service.UpdateRuntimeLoggingSettings(context.Background(), "admin", "error", false, 0)
-	if err != nil || updated.Level != "error" || updated.HTTPAccessEnabled || updated.Version != 1 {
+	updated, err := service.UpdateRuntimeLoggingSettings(
+		context.Background(), "admin", "error", false, true, "data/runtime-logs", 256, 7, 0,
+	)
+	if err != nil || updated.Level != "error" || updated.HTTPAccessEnabled || !updated.FileEnabled ||
+		updated.FileDirectory != "data/runtime-logs" || updated.MaxFileSizeMB != 256 || updated.CompressAfterDays != 7 || updated.Version != 1 {
 		t.Fatalf("保存运行日志设置失败: settings=%+v err=%v", updated, err)
 	}
-	if _, err := service.UpdateRuntimeLoggingSettings(context.Background(), "admin", "info", true, 0); !errors.Is(err, ErrVersionConflict) {
+	if _, err := service.UpdateRuntimeLoggingSettings(
+		context.Background(), "admin", "info", true, true, "logs", 100, 3, 0,
+	); !errors.Is(err, ErrVersionConflict) {
 		t.Fatalf("过期运行日志设置版本未被拒绝: %v", err)
 	}
 	persisted, err := service.GetRuntimeLoggingSettings(context.Background(), "debug", true)
 	if err != nil || persisted != updated {
 		t.Fatalf("运行日志设置未持久化: settings=%+v err=%v", persisted, err)
+	}
+}
+
+func TestRuntimeLoggingSettingsUpgradeLegacyStoredValueWithFileDefaults(t *testing.T) {
+	service := newConfigurationTestService(t)
+	now := time.Now().UTC()
+	legacy := model.Configuration{
+		ID: "legacy-runtime-logging", Namespace: systemNamespace, Environment: model.EnvironmentGlobal,
+		Key: runtimeLoggingSettingKey, Value: `{"level":"error","http_access_enabled":false}`,
+		Version: 4, IsActive: true, CreatedBy: "admin", UpdatedBy: "admin", CreatedAt: now, UpdatedAt: now,
+	}
+	if err := service.db.Create(&legacy).Error; err != nil {
+		t.Fatalf("create legacy runtime logging settings: %v", err)
+	}
+
+	settings, err := service.GetRuntimeLoggingSettings(context.Background(), "info", true, RuntimeLoggingSettings{
+		FileEnabled: true, FileDirectory: "custom-logs", MaxFileSizeMB: 256, CompressAfterDays: 5,
+	})
+	if err != nil {
+		t.Fatalf("read legacy runtime logging settings: %v", err)
+	}
+	if settings.Level != "error" || settings.HTTPAccessEnabled || !settings.FileEnabled ||
+		settings.FileDirectory != "custom-logs" || settings.MaxFileSizeMB != 256 ||
+		settings.CompressAfterDays != 5 || settings.Version != 4 {
+		t.Fatalf("legacy runtime logging settings were not upgraded with file defaults: %+v", settings)
 	}
 }
 

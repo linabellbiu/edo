@@ -12,6 +12,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -293,6 +294,19 @@ func TestTokenCloneCredentialIsDefaultPlatformAPIToken(t *testing.T) {
 	}
 	if lister.cloneCredential != token || lister.apiCredential != token {
 		t.Fatalf("Token 克隆凭据未默认复用于平台 API: clone=%q api=%q", lister.cloneCredential, lister.apiCredential)
+	}
+}
+
+func TestCheckoutDirectoryVersionUsesTagOrCommit(t *testing.T) {
+	commit := "0123456789012345678901234567890123456789"
+	if got := checkoutDirectoryVersion("refs/tags/v1.0.10", commit); got != "v1.0.10" {
+		t.Fatalf("Tag 工作区没有使用版本号: %q", got)
+	}
+	if got := checkoutDirectoryVersion("refs/heads/main", commit); got != commit {
+		t.Fatalf("分支工作区没有使用固定 Commit: %q", got)
+	}
+	if got := checkoutDirectoryVersion("refs/tags/release/1", commit); !strings.HasPrefix(got, "version-") {
+		t.Fatalf("包含路径分隔符的 Tag 没有安全哈希: %q", got)
 	}
 }
 

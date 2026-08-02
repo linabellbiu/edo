@@ -27,6 +27,7 @@ func TestEnsureInitialDeliverySettingsCreatesCompleteLocalDockerFlow(t *testing.
 	}
 	template := result.WorkflowTemplate
 	if !result.Valid || !template.IsActive || template.Source.Config.Branch != "*" ||
+		template.Source.Config.TagPattern != defaultWorkflowTagPattern ||
 		len(template.Source.Config.Events) != 1 || template.Source.Config.Events[0] != "manual" ||
 		len(template.Stages) != 2 || len(template.Stages[0].Tasks) != 1 || len(template.Stages[1].Tasks) != 1 ||
 		template.Stages[0].Tasks[0].Type != model.WorkflowNodeBuild ||
@@ -41,7 +42,8 @@ func TestEnsureInitialDeliverySettingsCreatesCompleteLocalDockerFlow(t *testing.
 	if err != nil {
 		t.Fatalf("默认流水线无法用于新应用: %v", err)
 	}
-	if application.Workflow == nil || !application.Workflow.IsActive || len(application.Workflow.Stages) != 2 {
+	if application.Workflow == nil || !application.Workflow.IsActive || len(application.Workflow.Stages) != 2 ||
+		application.Workflow.Source.Config.TagPattern != defaultWorkflowTagPattern {
 		t.Fatalf("新应用没有获得已启用的完整默认流水线: %+v", application.Workflow)
 	}
 

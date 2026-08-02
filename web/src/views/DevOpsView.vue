@@ -3,7 +3,7 @@ import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
 import { Modal, message } from 'ant-design-vue'
-import { Box, Boxes, ChevronDown, ChevronRight, Clock3, FileText, GitBranch, GitCommit, Layers3, Play, Plus, RefreshCw, Server, Settings2, TerminalSquare, Workflow } from 'lucide-vue-next'
+import { Box, Boxes, ChevronDown, ChevronRight, Clock3, FileText, GitBranch, GitCommit, Layers3, Play, Plus, RefreshCw, Server, Settings2, TerminalSquare, Trash2, Workflow } from 'lucide-vue-next'
 
 import client from '@/api/client'
 import { apiErrorMessage, type ResourceRecord } from '@/api/resources'
@@ -31,6 +31,7 @@ type RegistryProvider='harbor'|'docker_hub'|'generic'
 interface Registry extends ResourceRecord{id:string;name:string;provider:RegistryProvider;endpoint:string;namespace:string;has_credential:boolean;is_active:boolean}
 interface Artifact extends ResourceRecord{id:string;application_id:string;build_run_id:string;pipeline_run_id?:string;kind:'oci_image'|'file_bundle';status:'available'|'expired'|'corrupt';name:string;original_name?:string;media_type?:string;digest:string;size_bytes:number;storage_kind:'local_file'|'registry'|'docker_daemon';image_ref?:string;created_at:string;updated_at:string}
 interface ApplicationWorkflow extends PipelineWorkflow{workflow_template?:{id:string;name:string}}
+interface WorkflowTemplate extends PipelineWorkflow{description?:string}
 interface Application extends ResourceRecord{id:string;name:string;description:string;repository_id:string;poll_interval_seconds:number;last_observed_commit?:string;sync_status:string;sync_message?:string;last_checked_at?:string;is_active:boolean;repository?:Repository;workflows:ApplicationWorkflow[]}
 interface Run extends ResourceRecord{id:string;application_id:string;workflow_id?:string;deployment_id?:string;trigger:string;ref:string;commit_sha:string;commit_message?:string;status:string;stage:string;message?:string;created_at:string;updated_at?:string;application?:Application;environment?:string;current_node_id?:string;current_node_name?:string;created_by?:string;image?:string;execution_graph?:PipelineExecutionGraph}
 interface DeploymentRecord extends ResourceRecord{id:string;pipeline_run_id?:string;target_id:string;target_name:string;platform:string;runtime_id:string;namespace:string;workload_name:string;container_name:string;deployment_plan_id?:string;deployment_plan_kind?:string;compose_service?:string;operation:string;image:string;image_display?:string;status:string;created_at:string;updated_at:string;finished_at?:string}
@@ -48,8 +49,8 @@ interface PlanExecutionItem{membershipID:string;applicationID:string;application
 interface PlanExecutionGroup{id:string;name:string;mode:string;failurePolicy:string;dependencies:string[];items:PlanExecutionItem[]}
 interface ReleasePlanEditorValue{id:string;description:string;groups:Array<{id:string;name:string;mode:'parallel'|'sequential';failure_policy:'stop'|'continue';depends_on_group_ids:string[];applications:Array<{application_id:string;manual_deploy:boolean;source_type:string;source_value:string}>}>}
 
-const applications=ref<Application[]>([]),repositories=ref<Repository[]>([]),credentials=ref<Credential[]>([]),buildPlans=ref<BuildPlan[]>([]),registries=ref<Registry[]>([]),runs=ref<Run[]>([]),releasePlans=ref<ReleasePlan[]>([]),deployments=ref<DeploymentRecord[]>([]),artifacts=ref<Artifact[]>([])
-const loading=ref(false),saving=ref(false),resourceMutationID=ref(''),formOpen=ref(false),editingID=ref(''),registryTested=ref(false),testing=ref(false),repositoryTestingID=ref(''),manualOpen=ref(false),manualApplicationID=ref(''),manualWorkflowID=ref(''),manualApplications=ref<Application[]>([]),commitOpen=ref(false),commitOptions=ref<Array<{ref:string;name:string;sha:string;kind:'branch'|'tag'}>>([]),selectedRef=ref(''),selectedSource=ref(''),manualSources=ref<Array<{id:string;name:string;environment?:string}>>([]),currentRun=ref<Run|null>(null),currentRunSelectionKey=ref(''),selectedRunID=ref(''),log=ref({open:false,runID:'',title:'',status:''})
+const applications=ref<Application[]>([]),repositories=ref<Repository[]>([]),credentials=ref<Credential[]>([]),workflowTemplates=ref<WorkflowTemplate[]>([]),buildPlans=ref<BuildPlan[]>([]),registries=ref<Registry[]>([]),runs=ref<Run[]>([]),releasePlans=ref<ReleasePlan[]>([]),deployments=ref<DeploymentRecord[]>([]),artifacts=ref<Artifact[]>([])
+const loading=ref(false),saving=ref(false),workflowRemovalID=ref(''),resourceMutationID=ref(''),formOpen=ref(false),editingID=ref(''),selectedWorkflowTemplateID=ref(''),registryTested=ref(false),testing=ref(false),repositoryTestingID=ref(''),manualOpen=ref(false),manualApplicationID=ref(''),manualWorkflowID=ref(''),manualApplications=ref<Application[]>([]),commitOpen=ref(false),commitOptions=ref<Array<{ref:string;name:string;sha:string;kind:'branch'|'tag'}>>([]),selectedRef=ref(''),selectedSource=ref(''),manualSources=ref<Array<{id:string;name:string;environment?:string}>>([]),currentRun=ref<Run|null>(null),currentRunSelectionKey=ref(''),selectedRunID=ref(''),log=ref({open:false,runID:'',title:'',status:''})
 const expandedApplications=ref<Record<string,boolean>>({}),expandedDeployments=ref<Record<string,boolean>>({}),dockerRuntimeContainers=ref<Record<string,DockerContainerRecord[]>>({}),dockerRuntimeLoading=ref<Record<string,boolean>>({}),dockerRuntimeLoaded=ref<Record<string,boolean>>({}),dockerRuntimeErrors=ref<Record<string,string>>({})
 const containerLogs=ref({open:false,title:'',path:''}),terminal=ref({open:false,title:'',path:''})
 const buildImageDestination=ref<'local'|'registry'>('local'),buildArgsText=ref(''),buildEnvironmentText=ref(''),selectedBuildPlanID=ref(''),buildPlanView=ref<'overview'|'artifacts'>('overview'),artifactApplicationID=ref(''),artifactLoading=ref(false),artifactUploading=ref(false),artifactDownloadingID=ref('')
@@ -59,7 +60,7 @@ const releasePlanAddApplicationOpen=ref(false),releasePlanAddApplicationPlanID=r
 let releaseTimer=0
 let planExecutionController:AbortController|null=null
 const DEFAULT_APPLICATION_POLL_INTERVAL=3
-const appForm=reactive({name:'',description:'',repository_id:'',poll_interval_seconds:DEFAULT_APPLICATION_POLL_INTERVAL})
+const appForm=reactive({name:'',description:'',repository_id:'',workflow_template_id:'',poll_interval_seconds:DEFAULT_APPLICATION_POLL_INTERVAL})
 const repoForm=reactive({name:'',provider:'github',clone_url:'',default_branch:'main',auth_type:'none',username:'',credential_id:'',api_credential_id:'',webhook_enabled:true,allow_insecure_http:false})
 const DEFAULT_RUNTIME_IMAGE='alpine:3.22'
 const runtimeImageOptions=['alpine:3.22','node:24-alpine','golang:1.26-alpine','maven:3.9-eclipse-temurin-21-alpine'].map(value=>({value}))
@@ -94,6 +95,11 @@ const canReadDeployments=computed(()=>auth.canAny(['deployment.read']))
 const canReadContainerLogs=computed(()=>auth.canAny(['cluster.read']))
 const canOpenContainerTerminal=computed(()=>auth.canAny(['terminal.open']))
 const activeRows=computed<ResourceRecord[]>(()=>props.section==='applications'?applications.value:props.section==='repositories'?repositories.value:props.section==='image-registries'?registries.value:[])
+const editingApplication=computed(()=>applications.value.find(item=>item.id===editingID.value))
+const availableWorkflowTemplates=computed(()=>{
+ const associatedIDs=new Set((editingApplication.value?.workflows||[]).map(item=>item.workflow_template_id).filter(Boolean))
+ return workflowTemplates.value.filter(item=>item.is_active&&!associatedIDs.has(item.id))
+})
 const activeResourceID=computed(()=>props.section==='image-registries'&&typeof route.query.registry==='string'?route.query.registry:'')
 const activeColumns=computed(()=>props.section==='applications'?[{key:'name',label:'应用'},{key:'repository',label:'代码仓库'},{key:'workflows',label:'流水线'},{key:'sync_status',label:'代码状态'},{key:'last_checked_at',label:'最近检查'}]:props.section==='repositories'?[{key:'name',label:'名称'},{key:'provider',label:'平台'},{key:'clone_url',label:'Git 地址'},{key:'default_branch',label:'默认分支'},{key:'webhook_enabled',label:'Webhook'},{key:'is_active',label:'状态'}]:props.section==='image-registries'?[{key:'name',label:'名称'},{key:'provider',label:'类型'},{key:'endpoint',label:'地址'},{key:'namespace',label:'命名空间'},{key:'has_credential',label:'凭据'}]:[])
 const activeApplicationRunStatuses=new Set(['running','awaiting_approval','ready'])
@@ -239,17 +245,13 @@ function releasePlanManualApplicationCount(plan:ReleasePlan){
  return (plan.groups||[]).flatMap(group=>group.applications||[]).filter(item=>applicationCanManualRelease(applications.value.find(application=>application.id===item.application_id))).length
 }
 function formatApplicationTime(value?:string){return value?new Date(value).toLocaleString(locale.value==='en-US'?'en-US':'zh-CN',{hour12:false}):t('applicationCard.noTime')}
-function openApplicationLink(card:(typeof applicationCards.value)[number],kind:'repository'|'workflow'){
- if(kind==='workflow'){
-  const first=card.application.workflows?.[0]
-  void router.push(`/pipeline-plans/editor?application=${card.application.id}${first?`&workflow=${first.id}`:''}`)
-  return
- }
+function openApplicationLink(card:(typeof applicationCards.value)[number]){
  const target=card.repository
  if(!target){edit(card.application);return}
  void router.push('/repositories')
 }
 function openApplicationWorkflow(applicationID:string,workflowID:string){void router.push(`/pipeline-plans/editor?application=${applicationID}&workflow=${workflowID}`)}
+function editApplicationWorkflow(applicationID:string,workflowID:string){formOpen.value=false;openApplicationWorkflow(applicationID,workflowID)}
 function openDeploymentRecords(){void router.push({path:'/release-plans',query:{view:'records'}})}
 function createImageRegistry(){
  formOpen.value=false
@@ -257,7 +259,7 @@ function createImageRegistry(){
 }
 function resourceViewHref(path:string,queryKey:string,id:string){return router.resolve({path,query:{[queryKey]:id}}).href}
 
-async function refresh(){loading.value=true;try{const requests=await Promise.all([auth.canAny(['delivery.read'])?client.get<{applications:Application[]}>('/applications'):null,auth.canAny(['repository.read'])?client.get<{repositories:Repository[]}>('/repositories'):null,auth.canAny(['credential.read'])?client.get<{credentials:Credential[]}>('/git-credentials'):null,auth.canAny(['delivery.read'])?client.get<{build_plans:BuildPlan[]}>('/build-plans'):null,auth.canAny(['delivery.read'])?client.get<{image_registries:Registry[]}>('/image-registries'):null,auth.canAny(['delivery.read'])?client.get<{pipeline_runs:Run[]}>('/pipeline-runs?limit=200'):null,auth.canAny(['delivery.read'])?client.get<{release_plans:ReleasePlan[]}>('/release-plans'):null,canReadDeployments.value?client.get<{deployments:DeploymentRecord[]}>('/deployments?limit=200'):null]);applications.value=requests[0]?.data.applications||[];repositories.value=requests[1]?.data.repositories||[];credentials.value=requests[2]?.data.credentials||[];buildPlans.value=requests[3]?.data.build_plans||[];registries.value=requests[4]?.data.image_registries||[];runs.value=requests[5]?.data.pipeline_runs||[];if(!selectedRunID.value||!runs.value.some(item=>item.id===selectedRunID.value))selectedRunID.value=runs.value[0]?.id||'';releasePlans.value=requests[6]?.data.release_plans||[];deployments.value=requests[7]?.data.deployments||[]}catch(error){message.error(apiErrorMessage(error))}finally{loading.value=false}}
+async function refresh(){loading.value=true;try{const requests=await Promise.all([auth.canAny(['delivery.read'])?client.get<{applications:Application[]}>('/applications'):null,auth.canAny(['repository.read'])?client.get<{repositories:Repository[]}>('/repositories'):null,auth.canAny(['credential.read'])?client.get<{credentials:Credential[]}>('/git-credentials'):null,auth.canAny(['delivery.read'])?client.get<{build_plans:BuildPlan[]}>('/build-plans'):null,auth.canAny(['delivery.read'])?client.get<{image_registries:Registry[]}>('/image-registries'):null,auth.canAny(['delivery.read'])?client.get<{pipeline_runs:Run[]}>('/pipeline-runs?limit=200'):null,auth.canAny(['delivery.read'])?client.get<{release_plans:ReleasePlan[]}>('/release-plans'):null,canReadDeployments.value?client.get<{deployments:DeploymentRecord[]}>('/deployments?limit=200'):null,auth.canAny(['delivery.read'])?client.get<{workflow_templates:WorkflowTemplate[]}>('/workflow-templates'):null]);applications.value=requests[0]?.data.applications||[];repositories.value=requests[1]?.data.repositories||[];credentials.value=requests[2]?.data.credentials||[];buildPlans.value=requests[3]?.data.build_plans||[];registries.value=requests[4]?.data.image_registries||[];runs.value=requests[5]?.data.pipeline_runs||[];if(!selectedRunID.value||!runs.value.some(item=>item.id===selectedRunID.value))selectedRunID.value=runs.value[0]?.id||'';releasePlans.value=requests[6]?.data.release_plans||[];deployments.value=requests[7]?.data.deployments||[];workflowTemplates.value=requests[8]?.data.workflow_templates||[]}catch(error){message.error(apiErrorMessage(error))}finally{loading.value=false}}
 let stateRefreshing=false
 async function refreshApplicationState(){
  if(stateRefreshing||!auth.canAny(['delivery.read']))return
@@ -299,8 +301,8 @@ function parseVariableText(source:string,label:string){
  return {values,error:''}
 }
 function resetForms(){
- editingID.value='';registryTested.value=false;buildImageDestination.value='local';buildArgsText.value='';buildEnvironmentText.value=''
- Object.assign(appForm,{name:'',description:'',repository_id:'',poll_interval_seconds:DEFAULT_APPLICATION_POLL_INTERVAL})
+ editingID.value='';selectedWorkflowTemplateID.value='';workflowRemovalID.value='';registryTested.value=false;buildImageDestination.value='local';buildArgsText.value='';buildEnvironmentText.value=''
+ Object.assign(appForm,{name:'',description:'',repository_id:'',workflow_template_id:'',poll_interval_seconds:DEFAULT_APPLICATION_POLL_INTERVAL})
 	 Object.assign(repoForm,{name:'',provider:'github',clone_url:'',default_branch:'main',auth_type:'none',username:'',credential_id:'',api_credential_id:'',webhook_enabled:true,allow_insecure_http:false})
  Object.assign(buildForm,{name:'',kind:'dockerfile',description:'',script:'',dockerfile_path:'Dockerfile',context_path:'.',working_directory:'.',artifact_path:'',runtime_image:DEFAULT_RUNTIME_IMAGE,image_registry_id:'',target_stage:'',platform:'',pull:true,cache_enabled:true,timeout_seconds:1800})
  Object.assign(registryForm,{name:'',provider:'generic',endpoint:'https://',namespace:'',username:'',credential:'',allow_insecure_http:false})
@@ -326,9 +328,11 @@ function create(){
 }
 function edit(row:ResourceRecord){
  editingID.value=String(row.id)
+ selectedWorkflowTemplateID.value=''
+ workflowRemovalID.value=''
  if(props.section==='applications'){
   const item=row as Application
-  Object.assign(appForm,{name:item.name,description:item.description||'',repository_id:item.repository_id,poll_interval_seconds:item.poll_interval_seconds||DEFAULT_APPLICATION_POLL_INTERVAL})
+  Object.assign(appForm,{name:item.name,description:item.description||'',repository_id:item.repository_id,workflow_template_id:'',poll_interval_seconds:item.poll_interval_seconds||DEFAULT_APPLICATION_POLL_INTERVAL})
  }
  if(props.section==='repositories'){
   const item=row as Repository
@@ -347,11 +351,13 @@ async function save(){
  saving.value=true
  try{
   let endpoint='',payload:unknown={},method:'post'|'put'='post'
+  let pendingWorkflowTemplateID=''
   if(props.section==='applications'){
    if(!validApplicationName(appForm.name)){message.error('应用名必须以小写英文字母开头，只能使用小写英文字母和单个下划线');return}
    if(!appForm.repository_id){message.error('请选择代码仓库');return}
    endpoint=editingID.value?`/applications/${editingID.value}`:'/applications'
-   payload={...appForm}
+   payload=editingID.value?{name:appForm.name,description:appForm.description,repository_id:appForm.repository_id,poll_interval_seconds:appForm.poll_interval_seconds}:{...appForm,workflow_template_id:appForm.workflow_template_id||''}
+   pendingWorkflowTemplateID=editingID.value?selectedWorkflowTemplateID.value:''
    method=editingID.value?'put':'post'
   }
   if(props.section==='repositories'){
@@ -387,8 +393,28 @@ async function save(){
    endpoint='/image-registries';payload=registryRequestPayload()
   }
   await client[method](endpoint,payload)
+  if(props.section==='applications'&&editingID.value&&pendingWorkflowTemplateID){
+   await client.post(`/applications/${editingID.value}/workflows`,{workflow_template_id:pendingWorkflowTemplateID})
+  }
   message.success('配置已保存');formOpen.value=false;resetForms();await refresh()
  }catch(error){message.error(apiErrorMessage(error))}finally{saving.value=false}
+}
+function removeApplicationWorkflow(workflow:ApplicationWorkflow){
+ if(!editingID.value||workflowRemovalID.value)return
+ const templateLinked=Boolean(workflow.workflow_template_id)
+ Modal.confirm({
+  title:`${templateLinked?'解除关联并删除':'删除'}流水线“${workflow.name}”？`,
+  content:'只删除该应用下的流水线定义，应用、公共流水线方案和历史运行记录不会被删除。正在执行的流水线不能删除。',
+  okText:templateLinked?'解除并删除':'删除流水线',cancelText:'取消',okType:'danger',
+  async onOk(){
+   workflowRemovalID.value=workflow.id
+   try{
+    await client.delete(`/applications/${editingID.value}/workflows/${workflow.id}`)
+    await refresh()
+    message.success(templateLinked?'流水线关联已解除':'流水线已删除')
+   }catch(error){message.error(apiErrorMessage(error))}finally{workflowRemovalID.value=''}
+  },
+ })
 }
 function registryProviderLabel(provider:RegistryProvider){return ({harbor:'Harbor',docker_hub:'Docker Hub',generic:'通用 Registry'} as const)[provider]||provider}
 function registryEndpointLabel(registry:Registry){return registry.provider==='docker_hub'?'docker.io（系统固定）':registry.endpoint}
@@ -832,7 +858,7 @@ onBeforeUnmount(()=>{resetPlanExecution();clearInterval(releaseTimer);document.r
     <Transition name="application-details">
     <div v-if="applicationDetailsOpen(card.application.id)" class="application-details">
     <div class="application-links" :class="{single:!canReadDeployments}">
-      <button type="button" @click="openApplicationLink(card,'repository')"><span><GitBranch/>{{ t('applicationCard.repository') }}</span><strong :title="card.repository?.name">{{ card.repository?.name||t('applicationCard.unbound') }}</strong><ChevronRight/></button>
+      <button type="button" @click="openApplicationLink(card)"><span><GitBranch/>{{ t('applicationCard.repository') }}</span><strong :title="card.repository?.name">{{ card.repository?.name||t('applicationCard.unbound') }}</strong><ChevronRight/></button>
       <button v-if="canReadDeployments" type="button" @click="openDeploymentRecords"><span><Boxes/>{{ t('applicationCard.deploymentInstances') }}</span><strong>{{ t('applicationCard.deploymentCount',{count:card.deploymentInstances.length}) }}</strong><ChevronRight/></button>
     </div>
     <section class="application-resource-grid">
@@ -881,7 +907,7 @@ onBeforeUnmount(()=>{resetPlanExecution();clearInterval(releaseTimer);document.r
     </Transition>
     <footer class="application-footer">
       <div class="application-sync" :class="[`tone-${card.sync.tone}`,{'is-live':card.sync.live}]"><i/><span><small>{{ t('applicationCard.codeStatus') }}</small><strong>{{ card.sync.label }}</strong></span><time>{{ t('applicationCard.lastChecked') }} {{ formatApplicationTime(card.application.last_checked_at) }}</time></div>
-      <div class="application-actions"><a-button class="application-detail-toggle" :aria-expanded="applicationDetailsOpen(card.application.id)" @click="toggleApplicationDetails(card.application.id)"><ChevronDown :class="{expanded:applicationDetailsOpen(card.application.id)}"/>{{ applicationDetailsOpen(card.application.id)?t('applicationCard.hideDetails'):t('applicationCard.showDetails') }}</a-button><a-button v-if="canManage" @click="edit(card.application)"><Settings2/>{{ t('applicationCard.configure') }}</a-button><a-button @click="openApplicationLink(card,'workflow')"><Workflow/>{{ t('applicationCard.pipeline') }}</a-button><a-button v-if="auth.canAny(['delivery.run'])" type="primary" @click="action(`/applications/${card.application.id}/sync`)"><RefreshCw/>{{ t('applicationCard.checkUpdates') }}</a-button></div>
+      <div class="application-actions"><a-button class="application-detail-toggle" :aria-expanded="applicationDetailsOpen(card.application.id)" @click="toggleApplicationDetails(card.application.id)"><ChevronDown :class="{expanded:applicationDetailsOpen(card.application.id)}"/>{{ applicationDetailsOpen(card.application.id)?t('applicationCard.hideDetails'):t('applicationCard.showDetails') }}</a-button><a-button v-if="canManage" @click="edit(card.application)"><Settings2/>{{ t('applicationCard.configure') }}</a-button><a-button v-if="auth.canAny(['delivery.run'])" type="primary" @click="action(`/applications/${card.application.id}/sync`)"><RefreshCw/>{{ t('applicationCard.checkUpdates') }}</a-button></div>
     </footer>
   </article>
   <a-empty v-if="!applicationCards.length&&!loading" :description="t('applicationCard.empty')"/>
@@ -982,16 +1008,39 @@ onBeforeUnmount(()=>{resetPlanExecution();clearInterval(releaseTimer);document.r
  @remove-application="removeReleaseGroupApplication"
 />
 
-<a-drawer v-model:open="formOpen" :title="editingID?'编辑配置':'新建配置'" width="700"><a-form layout="vertical">
+<a-drawer v-model:open="formOpen" :title="props.section==='applications'?(editingID?'编辑应用':'创建应用'):(editingID?'编辑配置':'新建配置')" width="700"><a-form layout="vertical">
 <template v-if="props.section==='applications'">
  <section class="application-form-section">
-  <header><strong>应用信息</strong><small>应用只绑定一个代码仓库；保存后可在流水线编辑器中新增和管理多条流水线。</small></header>
+  <header><strong>应用信息</strong><small>配置应用名称、说明和唯一绑定的代码仓库。</small></header>
   <div class="form-grid">
    <a-form-item label="应用名称" required><a-input v-model:value="appForm.name" :maxlength="128" placeholder="例如 order_service"/><small class="field-hint">应用名同时作为镜像仓库名；以小写英文字母开头，仅使用小写英文字母和单个下划线。</small></a-form-item>
    <a-form-item label="说明"><a-input v-model:value="appForm.description"/></a-form-item>
    <a-form-item class="span2" label="代码仓库" required><a-select v-model:value="appForm.repository_id" show-search option-filter-prop="label" :options="repositories.filter(item=>item.is_active).map(item=>({value:item.id,label:`${item.name} · ${item.default_branch}`}))"/></a-form-item>
-   <a-alert class="span2" type="info" show-icon message="一个应用可以拥有多条流水线" description="应用保存后进入流水线编辑器，可以新建自定义流水线，也可以从已启用的公共方案添加；各流水线独立启停和监听。"/>
   </div>
+ </section>
+ <section class="application-form-section application-workflow-association">
+  <header><strong>关联流水线</strong><small>{{ editingID?'查看应用已有流水线，或继续选择已启用的流水线方案。':'选择创建应用时使用的流水线方案；不选择则创建一条空白流水线。' }}</small></header>
+  <template v-if="editingID">
+   <div v-if="editingApplication?.workflows?.length" class="workflow-association-list">
+    <div v-for="workflow in editingApplication.workflows" :key="workflow.id" class="workflow-association-item">
+     <span class="workflow-association-icon"><Workflow/></span>
+     <span class="workflow-association-copy"><strong>{{ workflow.name }}</strong><small>{{ workflow.workflow_template?.name?`方案：${workflow.workflow_template.name}`:'自定义流水线' }}</small></span>
+     <span class="workflow-association-actions">
+      <a-tag :color="workflow.is_active?'green':'default'">{{ workflow.is_active?'已启用':'未启用' }}</a-tag>
+      <a-button size="small" @click="editApplicationWorkflow(editingID,workflow.id)">编辑</a-button>
+      <a-button size="small" danger :loading="workflowRemovalID===workflow.id" :disabled="Boolean(workflowRemovalID)&&workflowRemovalID!==workflow.id" @click="removeApplicationWorkflow(workflow)"><Trash2/>{{ workflow.workflow_template_id?'解除':'删除' }}</a-button>
+     </span>
+    </div>
+   </div>
+   <div v-else class="workflow-association-empty">当前应用还没有流水线</div>
+   <a-form-item label="选择流水线方案">
+    <a-select v-model:value="selectedWorkflowTemplateID" allow-clear show-search option-filter-prop="label" :placeholder="availableWorkflowTemplates.length?'请选择已启用的流水线方案':'没有可添加的流水线方案'" :options="availableWorkflowTemplates.map(item=>({value:item.id,label:item.name}))"/>
+    <small class="field-hint">选择后点击底部“保存”生效；会新增一条独立流水线，不会覆盖现有配置。</small>
+   </a-form-item>
+  </template>
+  <a-form-item v-else label="选择流水线方案">
+   <a-select v-model:value="appForm.workflow_template_id" allow-clear show-search option-filter-prop="label" placeholder="可选；不选择则创建空白流水线" :options="workflowTemplates.filter(item=>item.is_active).map(item=>({value:item.id,label:item.name}))"/>
+  </a-form-item>
  </section>
  <section class="application-form-section">
   <header><strong>代码检查</strong><small>分支、PR/MR、Tag 和手动启动规则在流水线的代码源中配置；Webhook 只用于降低延迟。</small></header>
@@ -1145,6 +1194,7 @@ onBeforeUnmount(()=>{resetPlanExecution();clearInterval(releaseTimer);document.r
 .form-grid{display:grid;grid-template-columns:1fr 1fr;gap:0 14px}.span2{grid-column:1/-1}.drawer-actions{display:flex;justify-content:flex-end;gap:8px}.release-plan-add-hint{display:block;margin-top:6px;color:var(--edo-muted);font-size:11px}
 .resource-section-stack{display:grid;gap:14px}
 .build-form-section,.application-form-section{margin-bottom:16px;padding:15px 15px 0;border:1px solid var(--edo-border);border-radius:12px;background:var(--edo-surface-soft)}.build-form-section>header,.application-form-section>header{margin-bottom:13px}.build-form-section>header strong,.build-form-section>header small,.application-form-section>header strong,.application-form-section>header small{display:block}.build-form-section>header strong,.application-form-section>header strong{font-size:14px}.build-form-section>header small,.application-form-section>header small{margin-top:3px;color:var(--edo-muted);font-size:11px}.resource-picker{display:flex;align-items:stretch;gap:8px}.resource-picker :deep(.ant-select){min-width:0;flex:1}.resource-create{width:34px;flex:0 0 34px;padding:0}.build-advanced{margin-bottom:12px;border:1px solid var(--edo-border);border-radius:12px;background:var(--edo-surface-soft)}.build-advanced :deep(.ant-collapse-header){align-items:center!important}.build-advanced :deep(.ant-collapse-content-box){padding-top:4px!important}.build-advanced-title{display:flex;align-items:baseline;gap:9px}.build-advanced-title small,.field-hint{color:var(--edo-muted);font-size:11px}.field-hint{display:block;margin-top:5px}.build-form-section :deep(.ant-alert),.application-form-section :deep(.ant-alert){margin-bottom:16px}
+.workflow-association-list{display:grid;gap:8px;margin-bottom:16px}.workflow-association-item{display:grid;min-width:0;align-items:center;grid-template-columns:34px minmax(0,1fr) auto;gap:9px;padding:9px;border:1px solid var(--edo-border);border-radius:10px;background:var(--edo-surface)}.workflow-association-icon{display:grid;width:34px;height:34px;place-items:center;border-radius:9px;color:var(--edo-primary);background:var(--edo-primary-soft)}.workflow-association-icon svg{width:17px}.workflow-association-copy{min-width:0}.workflow-association-copy strong,.workflow-association-copy small{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.workflow-association-copy strong{font-size:13px}.workflow-association-copy small{margin-top:2px;color:var(--edo-muted);font-size:11px}.workflow-association-actions{display:flex;align-items:center;gap:6px}.workflow-association-actions :deep(.ant-tag){margin-inline-end:0}.workflow-association-actions :deep(.ant-btn){display:inline-flex;align-items:center;gap:4px}.workflow-association-actions svg{width:13px}.workflow-association-empty{margin-bottom:16px;padding:15px;border:1px dashed var(--edo-border);border-radius:10px;color:var(--edo-muted);background:var(--edo-surface);text-align:center}.application-workflow-association .resource-picker :deep(.ant-btn){display:inline-flex;align-items:center;gap:5px}.application-workflow-association .resource-picker svg{width:14px}
 .image-path-preview{display:block;overflow-wrap:anywhere;color:var(--edo-text);font-size:12px}.image-path-alert .field-hint{line-height:1.55}
 .application-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(560px,100%),780px));justify-content:start;gap:14px}.application-card{--application-state:#9ba1ad;position:relative;min-width:0;overflow:hidden;padding:18px;transition:transform 180ms cubic-bezier(.2,0,0,1),border-color 180ms ease,box-shadow 180ms ease}.application-card::before{position:absolute;inset:0 auto 0 0;width:3px;background:var(--application-state);content:"";opacity:.8}.application-card:hover{transform:translateY(-1px);border-color:color-mix(in srgb,var(--application-state) 36%,var(--edo-border));box-shadow:0 10px 28px rgb(35 45 70 / 8%)}.application-card.state-info{--application-state:#4f7df3}.application-card.state-success{--application-state:#2ab573}.application-card.state-warning{--application-state:#dfa126}.application-card.state-danger{--application-state:#ed5965}
 .application-head{display:flex;align-items:flex-start;justify-content:space-between;gap:20px}.application-identity{display:flex;min-width:0;align-items:center;gap:12px}.application-mark{display:grid;width:42px;height:42px;flex:0 0 42px;place-items:center;border-radius:12px;color:var(--edo-primary);background:var(--edo-primary-soft)}.application-mark svg{width:21px}.application-identity>div{min-width:0}.application-title{display:flex;align-items:center;gap:9px}.application-title h3{overflow:hidden;margin:0;font-size:17px;text-overflow:ellipsis;white-space:nowrap}.application-enabled{padding:2px 7px;border-radius:999px;color:#168b57;background:color-mix(in srgb,#2ab573 12%,var(--edo-surface));font-size:11px;white-space:nowrap}.application-enabled.inactive{color:var(--edo-muted);background:var(--edo-surface-soft)}.application-identity p{overflow:hidden;margin:3px 0 0;color:var(--edo-muted);text-overflow:ellipsis;white-space:nowrap}
@@ -1163,7 +1213,7 @@ onBeforeUnmount(()=>{resetPlanExecution();clearInterval(releaseTimer);document.r
 @keyframes application-pulse{0%{box-shadow:0 0 0 0 color-mix(in srgb,currentColor 32%,transparent)}70%{box-shadow:0 0 0 7px transparent}100%{box-shadow:0 0 0 0 transparent}}@keyframes run-breathe{0%,100%{opacity:.45;transform:scale(.86)}50%{opacity:1;transform:scale(1.08)}}
 @media(max-width:1100px){.application-links{grid-template-columns:repeat(2,minmax(0,1fr))}.application-footer{align-items:flex-start;flex-direction:column}.application-actions{width:100%;justify-content:flex-end}.run-workspace{grid-template-columns:270px minmax(0,1fr)}.run-facts{grid-template-columns:repeat(2,minmax(0,1fr))}}
 @media(max-width:820px){.application-resource-grid{grid-template-columns:1fr}.run-workspace{grid-template-columns:1fr}.run-index-list{display:flex;min-height:0;max-height:none;overflow-x:auto;overflow-y:hidden;padding:0 7px 8px}.run-index-list>button{width:270px;flex:0 0 270px}.run-detail{padding:16px}}
-@media(max-width:640px){.form-grid{grid-template-columns:1fr}.span2{grid-column:auto}.build-advanced-title{align-items:flex-start;flex-direction:column;gap:2px}.application-head,.application-footer{align-items:flex-start;flex-direction:column}.application-state{align-self:stretch}.application-run{grid-template-columns:1fr}.application-node{padding-top:12px;padding-left:0;border-top:1px solid var(--edo-border);border-left:0}.application-actions{justify-content:flex-start;flex-wrap:wrap}.application-sync{flex-wrap:wrap}.run-commit-panel{align-items:start;grid-template-columns:22px minmax(0,1fr)}.run-commit-panel time{grid-column:2}.run-facts{grid-template-columns:1fr}.run-detail-heading{align-items:flex-start}.run-detail-heading h3{font-size:17px}}
+@media(max-width:640px){.form-grid{grid-template-columns:1fr}.span2{grid-column:auto}.build-advanced-title{align-items:flex-start;flex-direction:column;gap:2px}.workflow-association-item{align-items:start;grid-template-columns:34px minmax(0,1fr)}.workflow-association-actions{grid-column:2;flex-wrap:wrap}.application-head,.application-footer{align-items:flex-start;flex-direction:column}.application-state{align-self:stretch}.application-run{grid-template-columns:1fr}.application-node{padding-top:12px;padding-left:0;border-top:1px solid var(--edo-border);border-left:0}.application-actions{justify-content:flex-start;flex-wrap:wrap}.application-sync{flex-wrap:wrap}.run-commit-panel{align-items:start;grid-template-columns:22px minmax(0,1fr)}.run-commit-panel time{grid-column:2}.run-facts{grid-template-columns:1fr}.run-detail-heading{align-items:flex-start}.run-detail-heading h3{font-size:17px}}
 @media(max-width:480px){.application-links{grid-template-columns:1fr}.application-actions :deep(.ant-btn){flex:1}.application-sync time{width:100%;margin-left:16px}}
 @media(prefers-reduced-motion:reduce){.application-card.is-live .application-state>i,.application-sync.is-live>i,.application-workflow-run.is-live>i,.application-deployment-state.is-live>i,.run-status-orb.running::after{animation:none}}
 </style>

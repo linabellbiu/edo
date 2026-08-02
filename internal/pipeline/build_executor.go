@@ -87,18 +87,24 @@ func (s *Service) ExecuteBuildTask(ctx context.Context, payload BuildTaskPayload
 			return nil
 		}
 	}
-	workspace, err := os.MkdirTemp("", "edo-pipeline-build-*")
-	if err != nil {
-		return s.finishBuildTaskFailure(ctx, runningState, buildTaskCanRetry(prepared),
-			"准备构建工作区失败，请稍后重试", err)
-	}
-	defer os.RemoveAll(workspace)
-	if err := s.updateExecutionPhase(ctx, &prepared.run, "checkout", "正在获取已固定 Commit 的代码"); err != nil {
+	if err := s.updateExecutionPhase(ctx, &prepared.run, "checkout", "正在准备已固定 Commit 的隔离工作区"); err != nil {
 		return s.finishBuildTaskFailure(ctx, runningState, buildTaskCanRetry(prepared), "更新构建任务状态失败", err)
 	}
-	if err := s.repositories.Checkout(ctx, prepared.component.RepositoryID, pipelineRunCheckoutRef(prepared.run), prepared.run.CommitSHA, workspace); err != nil {
+	checkout, err := s.repositories.AcquireCheckout(
+		ctx, prepared.component.RepositoryID, pipelineRunCheckoutRef(prepared.run), prepared.run.CommitSHA,
+	)
+	if err != nil {
 		return s.finishBuildTaskFailure(ctx, runningState, buildTaskCanRetry(prepared),
 			"获取代码失败，请检查仓库连接和所选 Commit", err)
+	}
+	defer checkout.Release()
+	workspace := checkout.Directory
+	if !checkout.RepositoryCached {
+		s.appendRunLog(ctx, prepared.run.ID, "checkout", "info", "首次 Clone 仓库并准备独立版本工作区 "+checkout.Version)
+	} else if checkout.Cached {
+		s.appendRunLog(ctx, prepared.run.ID, "checkout", "info", "已命中并复用本地版本工作区 "+checkout.Version)
+	} else {
+		s.appendRunLog(ctx, prepared.run.ID, "checkout", "info", "已 Pull 更新并准备独立版本工作区 "+checkout.Version)
 	}
 	var produced *model.Artifact
 	switch prepared.node.Type {

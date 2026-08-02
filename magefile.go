@@ -177,7 +177,7 @@ func printStartHelp() {
 	fmt.Println(`用法：mage start [--dev | --docker] [--server | --web]
 
 不指定参数时，构建内嵌 Web 的单文件程序，迁移数据库后在后台启动。
-本地服务日志写入 logs/backend.log 和 logs/web.log。
+启动器日志写入 logs/backend.log 和 logs/web.log，后端结构化日志写入可滚动的 logs/edo.log。
 --dev     启动 Redis、NATS 和迁移，再使用 go run 与 npm start 在当前终端运行
 --docker  使用 Docker Compose 在后台启动
 --server  只启动后端
@@ -954,7 +954,8 @@ func localLogFiles(directory string) ([]string, error) {
 	}
 	paths := make([]string, 0, len(entries))
 	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasSuffix(strings.ToLower(entry.Name()), ".log") {
+		name := strings.ToLower(entry.Name())
+		if entry.IsDir() || (name != "backend.log" && name != "web.log" && name != "edo.log") {
 			continue
 		}
 		path, err := filepath.Abs(filepath.Join(directory, entry.Name()))

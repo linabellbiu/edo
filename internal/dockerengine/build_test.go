@@ -114,6 +114,12 @@ func TestRetryableBuildErrorUsesDockerBoundaryClassification(t *testing.T) {
 	if transientRegistryNetworkPattern.MatchString("Dockerfile heredoc parse error: unexpected EOF") {
 		t.Fatal("Dockerfile EOF 不得被误判为镜像仓库网络故障")
 	}
+	if !transientBuildKitSessionPattern.MatchString("rpc error: code = Unknown desc = no http response from session for zlvgh5j4tagjuedn00ippl8en") {
+		t.Fatal("没有识别 BuildKit 构建上下文会话的临时故障")
+	}
+	if transientBuildKitSessionPattern.MatchString("Dockerfile parse error: unknown instruction") {
+		t.Fatal("Dockerfile 语法错误不得被误判为 BuildKit 会话故障")
+	}
 }
 
 func TestEDOLocalImageAndImageIDValidation(t *testing.T) {
@@ -176,15 +182,15 @@ func (f *recordingImageArchiveExporter) ImageSave(
 	return io.NopCloser(strings.NewReader(f.archive)), nil
 }
 
-func TestDockerBuildxArgumentsUseSessionCapableBuilder(t *testing.T) {
+func TestDockerBuildxArgumentsUseLocalDirectoryContext(t *testing.T) {
 	arguments := dockerBuildxArguments("deploy/Dockerfile", "edo.local/app:commit", "default")
 	for _, expected := range []string{"buildx", "build", "--load", "--file", "deploy/Dockerfile", "edo.local/app:commit"} {
 		if !slices.Contains(arguments, expected) {
 			t.Fatalf("Buildx 参数缺少 %q: %v", expected, arguments)
 		}
 	}
-	if arguments[len(arguments)-1] != "-" {
-		t.Fatalf("构建上下文没有通过标准输入传入: %v", arguments)
+	if arguments[len(arguments)-1] != "." {
+		t.Fatalf("构建上下文没有使用本地目录: %v", arguments)
 	}
 	if !slices.Contains(arguments, "default") {
 		t.Fatalf("显式 Docker API 构建没有选择默认 Builder: %v", arguments)
@@ -227,7 +233,7 @@ func TestDockerBuildxArgumentsWithOptionsAreStable(t *testing.T) {
 		"--label", "edo.example/revision=abcdef",
 		"--label", "org.opencontainers.image.title=app",
 		"--tag", "registry.example.com/team/app:commit",
-		"-",
+		".",
 	}
 	if !slices.Equal(arguments, expected) {
 		t.Fatalf("Buildx 参数顺序不稳定:\n实际: %v\n期望: %v", arguments, expected)

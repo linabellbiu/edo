@@ -31,11 +31,16 @@ const (
 	defaultSchedulerPoll      = 15 * time.Second
 	defaultArtifactsDirectory = "data/artifacts"
 	defaultArtifactsMaxBytes  = int64(1024 * 1024 * 1024)
+	defaultGitDirectory       = "data/repositories"
+	defaultLogDirectory       = "logs"
+	defaultLogMaxFileSizeMB   = 100
+	defaultLogCompressDays    = 3
 )
 
 type Config struct {
 	Environment string `env:"EDO_ENV"`
 	LogLevel    string `env:"EDO_LOG_LEVEL"`
+	Logging     Logging
 	Server      Server
 	Auth        Auth
 	Database    Database
@@ -47,6 +52,13 @@ type Config struct {
 	Runtime     Runtime
 	Scheduler   Scheduler
 	Artifacts   Artifacts
+}
+
+type Logging struct {
+	FileEnabled       bool   `env:"EDO_LOG_FILE_ENABLED"`
+	Directory         string `env:"EDO_LOG_DIRECTORY"`
+	MaxFileSizeMB     int    `env:"EDO_LOG_MAX_FILE_SIZE_MB"`
+	CompressAfterDays int    `env:"EDO_LOG_COMPRESS_AFTER_DAYS"`
 }
 
 type Auth struct {
@@ -108,6 +120,7 @@ type Secrets struct {
 type Git struct {
 	Timeout        time.Duration `env:"EDO_GIT_TIMEOUT"`
 	KnownHostsFile string        `env:"EDO_GIT_KNOWN_HOSTS_FILE"`
+	Directory      string        `env:"EDO_GIT_DIRECTORY"`
 }
 
 type Runtime struct {
@@ -139,7 +152,9 @@ func Load() (Config, error) {
 		"EDO_NATS_DEAD_STREAM",
 		"EDO_NATS_SUBJECT_PREFIX",
 		"EDO_NATS_DEAD_SUBJECT",
+		"EDO_LOG_DIRECTORY",
 		"EDO_ARTIFACTS_DIRECTORY",
+		"EDO_GIT_DIRECTORY",
 	); err != nil {
 		return Config{}, err
 	}
@@ -156,6 +171,12 @@ func Load() (Config, error) {
 	cfg := Config{
 		Environment: environment,
 		LogLevel:    "info",
+		Logging: Logging{
+			FileEnabled:       true,
+			Directory:         defaultLogDirectory,
+			MaxFileSizeMB:     defaultLogMaxFileSizeMB,
+			CompressAfterDays: defaultLogCompressDays,
+		},
 		Server: Server{
 			Address:         ":8080",
 			WebRoot:         "web/dist",
@@ -204,7 +225,8 @@ func Load() (Config, error) {
 		},
 		Secrets: Secrets{},
 		Git: Git{
-			Timeout: 30 * time.Second,
+			Timeout:   30 * time.Second,
+			Directory: defaultGitDirectory,
 		},
 		Runtime: Runtime{
 			ConnectTimeout:      10 * time.Second,
@@ -309,8 +331,16 @@ func (c Config) Validate() error {
 	if c.Scheduler.PollInterval < time.Second || c.Scheduler.PollInterval > time.Minute {
 		return errors.New("定时任务扫描间隔必须在 1 秒到 1 分钟之间")
 	}
+	if c.Logging.FileEnabled && (strings.TrimSpace(c.Logging.Directory) == "" ||
+		c.Logging.MaxFileSizeMB < 1 || c.Logging.MaxFileSizeMB > 10*1024 ||
+		c.Logging.CompressAfterDays < 1 || c.Logging.CompressAfterDays > 3650) {
+		return errors.New("运行日志文件设置无效")
+	}
 	if strings.TrimSpace(c.Artifacts.Directory) == "" {
 		return errors.New("制品存储目录不能为空")
+	}
+	if strings.TrimSpace(c.Git.Directory) == "" {
+		return errors.New("Git 仓库缓存目录不能为空")
 	}
 	if c.Artifacts.MaxBytes < 1 || c.Artifacts.MaxBytes > 1024*1024*1024*1024 {
 		return errors.New("单个制品大小限制必须在 1 字节到 1 TiB 之间")
@@ -321,6 +351,7 @@ func (c Config) Validate() error {
 func (c *Config) normalizeStrings() {
 	c.Environment = strings.TrimSpace(c.Environment)
 	c.LogLevel = strings.TrimSpace(c.LogLevel)
+	c.Logging.Directory = strings.TrimSpace(c.Logging.Directory)
 	c.Server.Address = strings.TrimSpace(c.Server.Address)
 	c.Server.WebRoot = strings.TrimSpace(c.Server.WebRoot)
 	c.Auth.CookieName = strings.TrimSpace(c.Auth.CookieName)
@@ -335,6 +366,7 @@ func (c *Config) normalizeStrings() {
 	c.NATS.DeadSubject = strings.TrimSpace(c.NATS.DeadSubject)
 	c.Secrets.Key = strings.TrimSpace(c.Secrets.Key)
 	c.Git.KnownHostsFile = strings.TrimSpace(c.Git.KnownHostsFile)
+	c.Git.Directory = filepath.Clean(strings.TrimSpace(c.Git.Directory))
 	c.Runtime.DockerBuilderHost = strings.TrimSpace(c.Runtime.DockerBuilderHost)
 	c.Runtime.DockerBuilderTLSCertPath = strings.TrimSpace(c.Runtime.DockerBuilderTLSCertPath)
 	c.Artifacts.Directory = strings.TrimSpace(c.Artifacts.Directory)

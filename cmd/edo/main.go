@@ -85,7 +85,14 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("加载配置失败: %w", err)
 	}
-	logger, runtimeLogs := logging.NewRuntime(cfg.LogLevel)
+	logger, runtimeLogs, err := logging.NewRuntimeWithFile(cfg.LogLevel, logging.FileSettings{
+		Enabled: cfg.Logging.FileEnabled, Directory: cfg.Logging.Directory,
+		MaxFileSizeMB: cfg.Logging.MaxFileSizeMB, CompressAfterDays: cfg.Logging.CompressAfterDays,
+	})
+	if err != nil {
+		return fmt.Errorf("初始化运行日志失败: %w", err)
+	}
+	defer runtimeLogs.Close()
 	slog.SetDefault(logger)
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -430,10 +437,19 @@ func runServer(ctx context.Context, cfg config.Config, logger *slog.Logger, runt
 	}
 	auditService := audit.NewService(resources.Database)
 	configurationService := configuration.NewService(resources.Database, secretManager)
-	runtimeLogSettings, err := configurationService.GetRuntimeLoggingSettings(serviceCtx, cfg.LogLevel, true)
+	runtimeLogSettings, err := configurationService.GetRuntimeLoggingSettings(
+		serviceCtx, cfg.LogLevel, true,
+		configuration.RuntimeLoggingSettings{
+			FileEnabled: cfg.Logging.FileEnabled, FileDirectory: cfg.Logging.Directory,
+			MaxFileSizeMB: cfg.Logging.MaxFileSizeMB, CompressAfterDays: cfg.Logging.CompressAfterDays,
+		},
+	)
 	if err != nil {
 		logger.Error("读取运行日志设置失败，继续使用启动配置", "operation", "runtime_logging_bootstrap", "err", err)
-	} else if err := runtimeLogs.Apply(runtimeLogSettings.Level, runtimeLogSettings.HTTPAccessEnabled); err != nil {
+	} else if err := runtimeLogs.ApplySettings(runtimeLogSettings.Level, runtimeLogSettings.HTTPAccessEnabled, logging.FileSettings{
+		Enabled: runtimeLogSettings.FileEnabled, Directory: runtimeLogSettings.FileDirectory,
+		MaxFileSizeMB: runtimeLogSettings.MaxFileSizeMB, CompressAfterDays: runtimeLogSettings.CompressAfterDays,
+	}); err != nil {
 		logger.Error("应用运行日志设置失败，继续使用启动配置", "operation", "runtime_logging_bootstrap", "err", err)
 	}
 	logRetentionService := logretention.NewService(resources.Database, configurationService, logger)
@@ -665,6 +681,7 @@ func runServer(ctx context.Context, cfg config.Config, logger *slog.Logger, runt
 		}
 	})
 	startBackground("server_log_retention", func() error { return logRetentionService.Run(serviceCtx) })
+	startBackground("server_log_file_maintenance", func() error { return runtimeLogs.RunFileMaintenance(serviceCtx) })
 
 	httpErrCh := make(chan error, 1)
 	go func() {
@@ -883,5 +900,6 @@ func newRepositoryService(
 	return repository.NewService(
 		db, secretManager, credentialService, repository.NewGitClient(cfg.Git), cfg.NATS.MaxAttempts,
 		repository.WithWebhookGate(configurationService),
+		repository.WithCheckoutDirectory(cfg.Git.Directory),
 	), nil
 }

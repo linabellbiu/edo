@@ -50,7 +50,7 @@ mage start --dev
 4. 执行数据库迁移。
 5. 使用 `go run` 在当前终端启动后端，后端就绪后再启动 Vite 开发服务器。
 
-`mage start --dev` 会保持前台运行，后端和 Vite 日志直接输出到当前终端；按 `Ctrl+C` 可以停止，也可以在另一个终端执行 `mage stop` 或 `mage kill`。
+`mage start --dev` 会保持前台运行，后端和 Vite 日志直接输出到当前终端；后端结构化日志同时写入可滚动的 `logs/edo.log`。按 `Ctrl+C` 可以停止，也可以在另一个终端执行 `mage stop` 或 `mage kill`。
 
 普通 `mage start` 会在服务就绪后返回并保持后台运行；后端日志追加到 `logs/backend.log`，单独使用 `mage start --web` 时 Web 日志追加到 `logs/web.log`。
 
@@ -155,7 +155,7 @@ EDO_WEB_PORT=5173
 | `mage stop` | 向当前项目的本地前后端发送终止信号并等待安全退出；安全停止 Compose `api/web` |
 | `mage kill` | 强制结束当前项目的本地前后端进程组；以零秒宽限强制停止 Compose `api/web` |
 | `mage status` | 显示本地前后端的运行模式、PID、就绪状态和日志路径，并显示全部 Compose 服务状态 |
-| `mage log --tail 100` | 显示 `logs/*.log` 各文件最后 100 行，然后持续监听新增日志 |
+| `mage log --tail 100` | 显示并持续监听 `logs/backend.log`、`logs/web.log` 和 `logs/edo.log` |
 
 查看状态或监听后台日志：
 
@@ -164,7 +164,27 @@ mage status
 mage log --tail 100
 ```
 
-`mage log` 默认也是最后 100 行；支持 `--tail=100` 和 `-n 100`。使用 `--tail 0` 时不显示历史内容，只监听新增日志。按 `Ctrl+C` 停止监听。开发模式的日志直接显示在 `mage start --dev` 所在终端，不会重复写入 `logs/`。
+`mage log` 默认从最后 100 行开始；支持 `--tail=100` 和 `-n 100`。使用 `--tail 0` 时不显示历史内容，只监听新增日志。按 `Ctrl+C` 停止监听。开发模式中的后端日志会同时显示在终端并写入可滚动文件；Vite 日志仅显示在终端。
+
+### 运行日志滚动
+
+后端使用开源 `github.com/libtnb/logrotate` 写入结构化日志。活动文件默认是 `logs/edo.log`：
+
+- 每天本地时间零点后的第一条日志会触发切分，历史文件名包含年、月、日和时间。
+- 活动文件达到 100 MiB 时立即切分。
+- 已切分且满 3 天的 `.log` 会转为 `.log.gz`。
+- 在“设置 → 日志设置”中可修改文件开关、目录、单文件大小和压缩天数，保存后立即生效，无需重启。
+
+首次启动值也可通过 `.env` 设置：
+
+```dotenv
+EDO_LOG_FILE_ENABLED=true
+EDO_LOG_DIRECTORY=logs
+EDO_LOG_MAX_FILE_SIZE_MB=100
+EDO_LOG_COMPRESS_AFTER_DAYS=3
+```
+
+管理员在设置页保存后，数据库中的值优先于上述启动默认值。Compose 模式的日志目录固定为持久化数据卷内的 `/app/data/logs`。
 
 不指定 `--server` 或 `--web` 时，默认同时启动两者；两个参数同时提供时也是同时启动。`--dev` 与 `--docker` 不能一起使用。
 
@@ -222,7 +242,7 @@ mage start
 4. 执行数据库迁移。
 5. 在后台启动 `bin/edo server`，确认就绪后返回。
 
-Web 与 API 都通过 `http://127.0.0.1:8080` 提供，运行日志追加到 `logs/backend.log`。此模式不会自动启动 Redis 和 NATS，可以预先启动依赖：
+Web 与 API 都通过 `http://127.0.0.1:8080` 提供。Mage 启动器输出追加到 `logs/backend.log`，后端结构化日志写入可滚动的 `logs/edo.log`。此模式不会自动启动 Redis 和 NATS，可以预先启动依赖：
 
 ```bash
 docker compose --env-file .env -f deploy/compose.dev.yml up -d --wait redis nats
@@ -349,6 +369,7 @@ EDO_LEGACY_DATABASE_DSN='readonly:password@tcp(db:3306)/legacy?charset=utf8mb4&p
 - Redis：`data/redis/`
 - NATS JetStream：`data/nats/`
 - 构建制品：`data/artifacts/`
+- 流水线仓库缓存与版本工作区：`data/repositories/<仓库地址Hash>/<Tag版本号或Commit>/`
 
 首次启动且账户表为空时，系统会创建管理员：
 

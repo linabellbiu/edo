@@ -131,18 +131,25 @@ func TestRuntimeLoggingCanBeUpdatedWithoutRestart(t *testing.T) {
 
 	current := performJSONRequest(t, router, http.MethodGet, "/api/v1/settings/runtime-logging", nil, adminCookie)
 	if current.Code != http.StatusOK || !bytes.Contains(current.Body.Bytes(), []byte(`"level":"info"`)) ||
-		!bytes.Contains(current.Body.Bytes(), []byte(`"http_access_enabled":true`)) {
+		!bytes.Contains(current.Body.Bytes(), []byte(`"http_access_enabled":true`)) ||
+		!bytes.Contains(current.Body.Bytes(), []byte(`"max_file_size_mb":100`)) ||
+		!bytes.Contains(current.Body.Bytes(), []byte(`"compress_after_days":3`)) {
 		t.Fatalf("运行日志默认设置错误: status=%d body=%s", current.Code, current.Body.String())
 	}
 	updated := performJSONRequest(t, router, http.MethodPut, "/api/v1/settings/runtime-logging", map[string]any{
-		"level": "error", "http_access_enabled": false, "expected_version": 0,
+		"level": "error", "http_access_enabled": false,
+		"file_enabled": false, "file_directory": "logs", "max_file_size_mb": 256, "compress_after_days": 7,
+		"expected_version": 0,
 	}, adminCookie)
 	if updated.Code != http.StatusOK || !bytes.Contains(updated.Body.Bytes(), []byte(`"level":"error"`)) ||
-		!bytes.Contains(updated.Body.Bytes(), []byte(`"http_access_enabled":false`)) {
+		!bytes.Contains(updated.Body.Bytes(), []byte(`"http_access_enabled":false`)) ||
+		!bytes.Contains(updated.Body.Bytes(), []byte(`"max_file_size_mb":256`)) {
 		t.Fatalf("热更新运行日志设置失败: status=%d body=%s", updated.Code, updated.Body.String())
 	}
 	invalid := performJSONRequest(t, router, http.MethodPut, "/api/v1/settings/runtime-logging", map[string]any{
-		"level": "verbose", "http_access_enabled": true, "expected_version": 1,
+		"level": "verbose", "http_access_enabled": true,
+		"file_enabled": true, "file_directory": "logs", "max_file_size_mb": 100, "compress_after_days": 3,
+		"expected_version": 1,
 	}, adminCookie)
 	if invalid.Code != http.StatusBadRequest {
 		t.Fatalf("无效日志级别未被接口拒绝: status=%d body=%s", invalid.Code, invalid.Body.String())

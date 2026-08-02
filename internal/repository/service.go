@@ -3,14 +3,19 @@ package repository
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
+	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/google/uuid"
 	"gorm.io/gorm"
 
@@ -61,6 +66,9 @@ type Service struct {
 	credentials        *credential.Service
 	webhookGate        webhookGate
 	defaultMaxAttempts int
+	checkoutDirectory  string
+	checkoutLocksMu    sync.Mutex
+	checkoutLocks      map[string]chan struct{}
 }
 
 type refLister interface {
@@ -69,6 +77,10 @@ type refLister interface {
 
 type checkoutClient interface {
 	Checkout(context.Context, model.GitRepository, string, string, string, string) error
+}
+
+type cachedCheckoutClient interface {
+	CheckoutCached(context.Context, model.GitRepository, string, string, string, string) (bool, error)
 }
 
 type commitMessageClient interface {
@@ -91,12 +103,36 @@ func WithWebhookGate(gate webhookGate) Option {
 	}
 }
 
+func WithCheckoutDirectory(directory string) Option {
+	return func(service *Service) {
+		service.checkoutDirectory = filepath.Clean(strings.TrimSpace(directory))
+	}
+}
+
 func NewService(db *gorm.DB, secrets *secret.Manager, credentials *credential.Service, git refLister, defaultMaxAttempts int, options ...Option) *Service {
-	service := &Service{db: db, secrets: secrets, credentials: credentials, git: git, defaultMaxAttempts: defaultMaxAttempts}
+	service := &Service{
+		db: db, secrets: secrets, credentials: credentials, git: git, defaultMaxAttempts: defaultMaxAttempts,
+		checkoutLocks: make(map[string]chan struct{}),
+	}
 	for _, option := range options {
 		option(service)
 	}
 	return service
+}
+
+type CheckoutLease struct {
+	Directory        string
+	Version          string
+	RepositoryCached bool
+	Cached           bool
+	release          func()
+	once             sync.Once
+}
+
+func (l *CheckoutLease) Release() {
+	if l != nil && l.release != nil {
+		l.once.Do(l.release)
+	}
 }
 
 func (s *Service) List(ctx context.Context) ([]model.GitRepository, error) {
@@ -317,6 +353,132 @@ func (s *Service) Checkout(ctx context.Context, id, ref, commitSHA, destination 
 		return err
 	}
 	return client.Checkout(ctx, *repository, credential, ref, commitSHA, destination)
+}
+
+// AcquireCheckout prepares a Runner-style immutable workspace. Repositories share only
+// their Git object cache; every Tag or Commit has an isolated directory that remains
+// locked until Release so concurrent pipelines can never switch each other's source.
+func (s *Service) AcquireCheckout(ctx context.Context, id, ref, commitSHA string) (*CheckoutLease, error) {
+	repository, err := s.Find(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if !repository.IsActive {
+		return nil, ErrRepositoryNotFound
+	}
+	client, ok := s.git.(checkoutClient)
+	if !ok {
+		return nil, errors.New("当前 Git 客户端不支持检出代码")
+	}
+	credential, err := s.resolveCredential(ctx, repository)
+	if err != nil {
+		return nil, err
+	}
+
+	repositoryHash := sha256.Sum256([]byte(strings.TrimSpace(repository.CloneURL)))
+	repositoryKey := hex.EncodeToString(repositoryHash[:])
+	version := checkoutDirectoryVersion(ref, commitSHA)
+	root := s.checkoutDirectory
+	removeRoot := false
+	if root == "" || root == "." {
+		root, err = os.MkdirTemp("", "edo-repositories-*")
+		if err != nil {
+			return nil, fmt.Errorf("创建流水线仓库工作区失败: %w", err)
+		}
+		removeRoot = true
+	}
+	repositoryDirectory := filepath.Join(root, repositoryKey)
+	destination := filepath.Join(repositoryDirectory, version)
+
+	releaseWorkspace, err := s.acquireCheckoutLock(ctx, "workspace:"+destination)
+	if err != nil {
+		if removeRoot {
+			_ = os.RemoveAll(root)
+		}
+		return nil, err
+	}
+	fail := func(cause error) (*CheckoutLease, error) {
+		releaseWorkspace()
+		if removeRoot {
+			_ = os.RemoveAll(root)
+		}
+		return nil, cause
+	}
+	if err := os.MkdirAll(repositoryDirectory, 0o700); err != nil {
+		return fail(fmt.Errorf("创建流水线仓库缓存目录失败: %w", err))
+	}
+
+	releaseRepository, err := s.acquireCheckoutLock(ctx, "repository:"+repositoryDirectory)
+	if err != nil {
+		return fail(err)
+	}
+	_, repositoryCacheErr := os.Stat(filepath.Join(repositoryDirectory, ".cache"))
+	repositoryCached := repositoryCacheErr == nil
+	cached := false
+	if cachedClient, ok := s.git.(cachedCheckoutClient); ok {
+		cached, err = cachedClient.CheckoutCached(ctx, *repository, credential, ref, commitSHA, destination)
+	} else {
+		_, statErr := os.Stat(destination)
+		cached = statErr == nil
+		err = client.Checkout(ctx, *repository, credential, ref, commitSHA, destination)
+	}
+	releaseRepository()
+	if err != nil {
+		return fail(err)
+	}
+
+	return &CheckoutLease{
+		Directory:        destination,
+		Version:          version,
+		RepositoryCached: repositoryCached,
+		Cached:           cached,
+		release: func() {
+			releaseWorkspace()
+			if removeRoot {
+				_ = os.RemoveAll(root)
+			}
+		},
+	}, nil
+}
+
+func (s *Service) acquireCheckoutLock(ctx context.Context, key string) (func(), error) {
+	s.checkoutLocksMu.Lock()
+	semaphore := s.checkoutLocks[key]
+	if semaphore == nil {
+		semaphore = make(chan struct{}, 1)
+		s.checkoutLocks[key] = semaphore
+	}
+	s.checkoutLocksMu.Unlock()
+	select {
+	case semaphore <- struct{}{}:
+		var once sync.Once
+		return func() { once.Do(func() { <-semaphore }) }, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
+func checkoutDirectoryVersion(ref, commitSHA string) string {
+	value := strings.TrimSpace(commitSHA)
+	reference := plumbing.ReferenceName(strings.TrimSpace(ref))
+	if reference.IsTag() {
+		value = strings.TrimSpace(reference.Short())
+	}
+	if value != "" && len(value) <= 128 {
+		valid := true
+		for _, character := range value {
+			if (character < 'a' || character > 'z') && (character < 'A' || character > 'Z') &&
+				(character < '0' || character > '9') && character != '.' && character != '_' && character != '-' {
+				valid = false
+				break
+			}
+		}
+		if valid && value != "." && value != ".." {
+			return value
+		}
+	}
+	digest := sha256.Sum256([]byte(value))
+	return "version-" + hex.EncodeToString(digest[:8])
 }
 
 func (s *Service) CommitMessage(ctx context.Context, id, ref, commitSHA string) (string, error) {

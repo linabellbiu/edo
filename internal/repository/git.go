@@ -4,7 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net/url"
+	"os"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
@@ -12,6 +15,7 @@ import (
 	git "github.com/go-git/go-git/v5"
 	gitconfig "github.com/go-git/go-git/v5/config"
 	"github.com/go-git/go-git/v5/plumbing"
+	"github.com/go-git/go-git/v5/plumbing/filemode"
 	"github.com/go-git/go-git/v5/plumbing/object"
 	"github.com/go-git/go-git/v5/plumbing/transport"
 	githttp "github.com/go-git/go-git/v5/plumbing/transport/http"
@@ -194,31 +198,42 @@ func (c *GitClient) Checkout(
 	repository model.GitRepository,
 	credential, ref, commitSHA, destination string,
 ) error {
+	_, err := c.CheckoutCached(ctx, repository, credential, ref, commitSHA, destination)
+	return err
+}
+
+// CheckoutCached keeps one bare object cache per repository and materializes an isolated,
+// immutable workspace per Tag or Commit. It never switches a shared working tree.
+func (c *GitClient) CheckoutCached(
+	ctx context.Context,
+	repository model.GitRepository,
+	credential, ref, commitSHA, destination string,
+) (bool, error) {
 	checkoutContext, cancel := context.WithTimeout(ctx, c.config.Timeout)
 	defer cancel()
 	auth, err := c.authMethod(repository, credential)
 	if err != nil {
-		return err
+		return false, err
 	}
 	referenceName := plumbing.ReferenceName(strings.TrimSpace(ref))
 	if !referenceName.IsBranch() && !referenceName.IsTag() && !isPullRequestRef(referenceName.String()) {
-		return errors.New("Git 引用格式无效")
+		return false, errors.New("Git 引用格式无效")
 	}
 	commitSHA = strings.TrimSpace(commitSHA)
 	if !plumbing.IsHash(commitSHA) {
-		return errors.New("Git Commit 格式无效")
+		return false, errors.New("Git Commit 格式无效")
 	}
 	hash := plumbing.NewHash(commitSHA)
 	if hash.IsZero() {
-		return errors.New("Git Commit 格式无效")
+		return false, errors.New("Git Commit 格式无效")
 	}
-	cloned, err := git.PlainInit(destination, false)
-	if err != nil {
-		return fmt.Errorf("初始化 Git 工作区失败: %w", err)
+	cacheDirectory := filepath.Join(filepath.Dir(destination), ".cache")
+	if cachedWorkspaceMatches(cacheDirectory, destination, hash) {
+		return true, nil
 	}
-	remote, err := cloned.CreateRemote(&gitconfig.RemoteConfig{Name: "origin", URLs: []string{repository.CloneURL}})
+	cachedRepository, remote, err := openCheckoutCache(cacheDirectory, repository.CloneURL)
 	if err != nil {
-		return fmt.Errorf("创建 Git 远端失败: %w", err)
+		return false, err
 	}
 
 	// 优先直接请求固定 SHA，避免分支、Tag 或 PR Ref 推进后把构建静默切换到最新提交。
@@ -227,10 +242,7 @@ func (c *GitClient) Checkout(
 		Auth: auth, RefSpecs: []gitconfig.RefSpec{exactRefspec}, Depth: 1, Tags: git.NoTags,
 	})
 	if exactErr == nil || errors.Is(exactErr, git.NoErrAlreadyUpToDate) {
-		if err := checkoutFetchedCommit(cloned, hash); err != nil {
-			return fmt.Errorf("检出 Git 固定 Commit 失败: %w", err)
-		}
-		return nil
+		return materializeCachedCommit(cachedRepository, hash, cacheDirectory, destination)
 	}
 
 	// 部分服务端不允许按 SHA 请求对象。此时仅沿原始 Ref 有界补充历史，
@@ -241,16 +253,188 @@ func (c *GitClient) Checkout(
 		if err := remote.FetchContext(checkoutContext, &git.FetchOptions{
 			Auth: auth, RefSpecs: []gitconfig.RefSpec{refspec}, Depth: depth, Tags: git.NoTags,
 		}); err != nil && !errors.Is(err, git.NoErrAlreadyUpToDate) {
-			return fmt.Errorf("按 Git 引用补充固定 Commit 历史失败: %w", err)
+			return false, fmt.Errorf("按 Git 引用补充固定 Commit 历史失败: %w", err)
 		}
-		if checkoutCommitAvailable(cloned, hash) {
-			if err := checkoutFetchedCommit(cloned, hash); err != nil {
-				return fmt.Errorf("检出 Git 固定 Commit 失败: %w", err)
-			}
-			return nil
+		if checkoutCommitAvailable(cachedRepository, hash) {
+			return materializeCachedCommit(cachedRepository, hash, cacheDirectory, destination)
 		}
 	}
-	return errors.New("指定的 Git Commit 不在该引用允许拉取的历史范围内")
+	return false, errors.New("指定的 Git Commit 不在该引用允许拉取的历史范围内")
+}
+
+func openCheckoutCache(directory, cloneURL string) (*git.Repository, *git.Remote, error) {
+	if err := os.MkdirAll(filepath.Dir(directory), 0o700); err != nil {
+		return nil, nil, fmt.Errorf("创建 Git 对象缓存目录失败: %w", err)
+	}
+	repository, err := git.PlainOpen(directory)
+	if errors.Is(err, git.ErrRepositoryNotExists) {
+		repository, err = git.PlainInit(directory, true)
+	}
+	if err != nil {
+		return nil, nil, fmt.Errorf("打开 Git 对象缓存失败: %w", err)
+	}
+	remote, err := repository.Remote("origin")
+	if errors.Is(err, git.ErrRemoteNotFound) {
+		remote, err = repository.CreateRemote(&gitconfig.RemoteConfig{Name: "origin", URLs: []string{cloneURL}})
+	}
+	if err != nil {
+		return nil, nil, fmt.Errorf("打开 Git 缓存远端失败: %w", err)
+	}
+	configuration := remote.Config()
+	if len(configuration.URLs) != 1 || configuration.URLs[0] != cloneURL {
+		return nil, nil, errors.New("Git 对象缓存与当前仓库地址不匹配")
+	}
+	return repository, remote, nil
+}
+
+func materializeCachedCommit(
+	repository *git.Repository,
+	hash plumbing.Hash,
+	cacheDirectory, destination string,
+) (bool, error) {
+	commit, err := pinnedCommitObject(repository, hash)
+	if err != nil {
+		return false, fmt.Errorf("读取 Git 固定 Commit 失败: %w", err)
+	}
+	markerDirectory := filepath.Join(cacheDirectory, "edo-workspaces")
+	marker := filepath.Join(markerDirectory, filepath.Base(destination)+".commit")
+	if cachedWorkspaceMatches(cacheDirectory, destination, hash) {
+		return true, nil
+	}
+	if err := os.MkdirAll(filepath.Dir(destination), 0o700); err != nil {
+		return false, fmt.Errorf("创建 Git 版本工作区目录失败: %w", err)
+	}
+	temporary, err := os.MkdirTemp(filepath.Dir(destination), ".edo-workspace-*")
+	if err != nil {
+		return false, fmt.Errorf("创建 Git 版本临时工作区失败: %w", err)
+	}
+	removeTemporary := true
+	defer func() {
+		if removeTemporary {
+			_ = os.RemoveAll(temporary)
+		}
+	}()
+	tree, err := commit.Tree()
+	if err != nil {
+		return false, fmt.Errorf("读取 Git Commit 文件树失败: %w", err)
+	}
+	if err := materializeGitTree(repository, tree, temporary); err != nil {
+		return false, err
+	}
+	if err := os.RemoveAll(destination); err != nil {
+		return false, fmt.Errorf("替换 Git 版本工作区失败: %w", err)
+	}
+	if err := os.Rename(temporary, destination); err != nil {
+		return false, fmt.Errorf("启用 Git 版本工作区失败: %w", err)
+	}
+	removeTemporary = false
+	if err := os.MkdirAll(markerDirectory, 0o700); err != nil {
+		return false, fmt.Errorf("创建 Git 工作区标记目录失败: %w", err)
+	}
+	markerTemporary, err := os.CreateTemp(markerDirectory, ".commit-*")
+	if err != nil {
+		return false, fmt.Errorf("创建 Git 工作区标记失败: %w", err)
+	}
+	markerTemporaryName := markerTemporary.Name()
+	defer os.Remove(markerTemporaryName)
+	if _, err := markerTemporary.WriteString(hash.String() + "\n"); err != nil {
+		_ = markerTemporary.Close()
+		return false, fmt.Errorf("写入 Git 工作区标记失败: %w", err)
+	}
+	if err := markerTemporary.Close(); err != nil {
+		return false, fmt.Errorf("关闭 Git 工作区标记失败: %w", err)
+	}
+	if err := os.Rename(markerTemporaryName, marker); err != nil {
+		return false, fmt.Errorf("更新 Git 工作区标记失败: %w", err)
+	}
+	return false, nil
+}
+
+func cachedWorkspaceMatches(cacheDirectory, destination string, hash plumbing.Hash) bool {
+	marker := filepath.Join(cacheDirectory, "edo-workspaces", filepath.Base(destination)+".commit")
+	content, err := os.ReadFile(marker)
+	if err != nil || strings.TrimSpace(string(content)) != hash.String() {
+		return false
+	}
+	info, err := os.Stat(destination)
+	return err == nil && info.IsDir()
+}
+
+func pinnedCommitObject(repository *git.Repository, hash plumbing.Hash) (*object.Commit, error) {
+	commit, err := repository.CommitObject(hash)
+	if err == nil {
+		return commit, nil
+	}
+	tag, tagErr := repository.TagObject(hash)
+	if tagErr != nil || tag.TargetType != plumbing.CommitObject {
+		return nil, err
+	}
+	return repository.CommitObject(tag.Target)
+}
+
+func materializeGitTree(repository *git.Repository, tree *object.Tree, directory string) error {
+	for _, entry := range tree.Entries {
+		name := filepath.Clean(filepath.FromSlash(entry.Name))
+		if name == "." || name == ".." || filepath.IsAbs(name) || filepath.Base(name) != name {
+			return errors.New("Git 工作区包含无效文件路径")
+		}
+		target := filepath.Join(directory, name)
+		switch entry.Mode {
+		case filemode.Dir:
+			child, err := repository.TreeObject(entry.Hash)
+			if err != nil {
+				return fmt.Errorf("读取 Git 子目录失败: %w", err)
+			}
+			if err := os.MkdirAll(target, 0o755); err != nil {
+				return fmt.Errorf("创建 Git 工作区子目录失败: %w", err)
+			}
+			if err := materializeGitTree(repository, child, target); err != nil {
+				return err
+			}
+		case filemode.Regular, filemode.Deprecated, filemode.Executable, filemode.Symlink:
+			blob, err := repository.BlobObject(entry.Hash)
+			if err != nil {
+				return fmt.Errorf("读取 Git 文件对象失败: %w", err)
+			}
+			reader, err := blob.Reader()
+			if err != nil {
+				return fmt.Errorf("打开 Git 文件对象失败: %w", err)
+			}
+			if entry.Mode == filemode.Symlink {
+				content, readErr := io.ReadAll(io.LimitReader(reader, 4097))
+				closeErr := reader.Close()
+				if readErr != nil || closeErr != nil || len(content) > 4096 {
+					return errors.New("读取 Git 符号链接失败")
+				}
+				if err := os.Symlink(string(content), target); err != nil {
+					return fmt.Errorf("创建 Git 工作区符号链接失败: %w", err)
+				}
+				continue
+			}
+			mode := os.FileMode(0o644)
+			if entry.Mode == filemode.Executable {
+				mode = 0o755
+			}
+			file, err := os.OpenFile(target, os.O_CREATE|os.O_EXCL|os.O_WRONLY, mode)
+			if err != nil {
+				_ = reader.Close()
+				return fmt.Errorf("创建 Git 工作区文件失败: %w", err)
+			}
+			_, copyErr := io.Copy(file, reader)
+			readerCloseErr := reader.Close()
+			fileCloseErr := file.Close()
+			if copyErr != nil || readerCloseErr != nil || fileCloseErr != nil {
+				return errors.New("写入 Git 工作区文件失败")
+			}
+		case filemode.Submodule:
+			if err := os.MkdirAll(target, 0o755); err != nil {
+				return fmt.Errorf("创建 Git 子模块占位目录失败: %w", err)
+			}
+		default:
+			return fmt.Errorf("Git 工作区包含不支持的文件类型: %s", entry.Name)
+		}
+	}
+	return nil
 }
 
 func checkoutCommitAvailable(repository *git.Repository, hash plumbing.Hash) bool {
@@ -270,17 +454,6 @@ func checkoutCommitAvailable(repository *git.Repository, hash plumbing.Hash) boo
 	default:
 		return false
 	}
-}
-
-func checkoutFetchedCommit(repository *git.Repository, hash plumbing.Hash) error {
-	worktree, err := repository.Worktree()
-	if err != nil {
-		return err
-	}
-	if err := worktree.Checkout(&git.CheckoutOptions{Hash: hash, Force: true}); err != nil {
-		return err
-	}
-	return nil
 }
 
 func (c *GitClient) authMethod(repository model.GitRepository, credential string) (transport.AuthMethod, error) {

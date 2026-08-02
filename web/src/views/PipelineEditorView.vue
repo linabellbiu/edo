@@ -4,9 +4,9 @@ import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch, t
 import { message, Modal } from 'ant-design-vue'
 import { onBeforeRouteLeave, onBeforeRouteUpdate, useRoute, useRouter } from 'vue-router'
 import {
-  Blocks, Braces, CheckCircle2, ChevronLeft, CircleDot, FileCode2, GitBranch, GripVertical, Layers3,
+  CheckCircle2, ChevronLeft, CircleDot, GitBranch, GripVertical, Layers3,
   Maximize2, Minimize2, Package, Pencil, Plus, Rocket, Save, Scan, Search,
-  ShieldCheck, Sparkles, TerminalSquare, Trash2, X,
+  ShieldCheck, TerminalSquare, Trash2, X,
 } from 'lucide-vue-next'
 
 import client from '@/api/client'
@@ -29,8 +29,6 @@ type PanelMode = 'closed' | 'library' | 'properties' | 'stage'
 type PropertyTab = 'common' | 'advanced'
 type DeploymentPlanKind = 'script' | 'kubernetes' | 'compose' | 'docker'
 type TaskGroup = '构建' | '测试' | '扫描' | '发布' | '部署' | '工具'
-type WorkflowPresetKey = 'blank' | 'go' | 'nodejs' | 'python'
-type WorkflowPresetCategory = 'quick' | Exclude<WorkflowPresetKey, 'blank'>
 
 interface ApplicationRecord {
   id: string
@@ -62,17 +60,6 @@ interface TaskDefinition {
   presetScript?: string
 }
 
-interface WorkflowPresetDefinition {
-  key: WorkflowPresetKey
-  category: WorkflowPresetCategory | 'quick'
-  title: string
-  description: string
-  runtime: string
-  steps: string[]
-  tone: string
-  icon: typeof GitBranch
-}
-
 const taskDefinitions: TaskDefinition[] = [
   { id: 'build', type: 'build', label: '构建制品', hint: '用构建方案生成镜像或文件制品，并自动归档', group: '构建', color: '#4f72f2', icon: Package },
   { id: 'unit-test', type: 'shell', label: '单元测试', hint: '执行项目测试命令，失败时停止流水线', group: '测试', color: '#3985c6', icon: CheckCircle2, presetScript: 'set -eu\n# 在这里填写项目测试命令\n' },
@@ -91,35 +78,8 @@ const taskMeta = Object.fromEntries(
 ) as Record<TaskNodeType, TaskDefinition>
 const taskCategories = ['全部', '构建', '测试', '扫描', '发布', '部署', '工具'] as const
 const DEFAULT_RUNTIME_IMAGE = 'alpine:3.22'
+const DEFAULT_TAG_PATTERN = 'v*'
 const runtimeImageOptions = ['alpine:3.22', 'node:24-alpine', 'golang:1.26-alpine', 'python:3.14-alpine', 'maven:3.9-eclipse-temurin-21-alpine'].map(value => ({ value }))
-const workflowPresetCategories: Array<{ key: WorkflowPresetCategory; label: string; icon: typeof GitBranch }> = [
-  { key: 'quick', label: '快速开始', icon: Sparkles },
-  { key: 'go', label: 'Go', icon: Braces },
-  { key: 'nodejs', label: 'Node.js', icon: Blocks },
-  { key: 'python', label: 'Python', icon: FileCode2 },
-]
-const workflowPresets: WorkflowPresetDefinition[] = [
-  {
-    key: 'blank', category: 'quick', title: '空白流水线',
-    description: '只创建代码源，从阶段和任务开始编排。', runtime: '不预设运行镜像',
-    steps: ['代码源'], tone: '#667085', icon: GitBranch,
-  },
-  {
-    key: 'go', category: 'go', title: 'Go 标准流水线',
-    description: '执行 Go 测试，再选择构建方案和部署方案。', runtime: 'golang:1.26-alpine',
-    steps: ['Go 测试', '构建制品', '部署'], tone: '#1687a7', icon: Braces,
-  },
-  {
-    key: 'nodejs', category: 'nodejs', title: 'Node.js 标准流水线',
-    description: '安装锁定依赖并运行测试，再构建和部署。', runtime: 'node:24-alpine',
-    steps: ['Node.js 测试', '构建制品', '部署'], tone: '#3c873a', icon: Blocks,
-  },
-  {
-    key: 'python', category: 'python', title: 'Python 标准流水线',
-    description: '安装 requirements.txt 依赖并运行 pytest，再构建和部署。', runtime: 'python:3.14-alpine',
-    steps: ['Python 测试', '构建制品', '部署'], tone: '#3776ab', icon: FileCode2,
-  },
-]
 const deploymentKindNames: Record<DeploymentPlanKind, string> = {
   script: '主机脚本', docker: 'Docker 容器', compose: 'Docker Compose', kubernetes: 'Kubernetes Deployment',
 }
@@ -144,9 +104,6 @@ const switching = ref(false)
 const saving = ref(false)
 const saveConfirmOpen = ref(false)
 const saveConfirmSubmitting = ref(false)
-const createWorkflowOpen = ref(false)
-const activePresetCategory = ref<WorkflowPresetCategory>('quick')
-const selectedPresetKey = ref<WorkflowPresetKey>('go')
 const dirty = ref(false)
 const autoSaveFailed = ref(false)
 const immersive = ref(false)
@@ -172,9 +129,6 @@ const canManage = computed(() => Boolean(auth.user?.is_superuser || auth.permiss
 const canEdit = computed(() => canManage.value && !saving.value)
 const canCreateBuildPlan = computed(() => auth.canAny(['delivery.manage']))
 const canCreateDeploymentPlan = computed(() => auth.canAny(['delivery.manage']))
-const visibleWorkflowPresets = computed(() => activePresetCategory.value === 'quick'
-  ? workflowPresets
-  : workflowPresets.filter(item => item.category === activePresetCategory.value))
 const publicMode = computed(() => !applicationID.value)
 const editorApplication = computed<ApplicationRecord | null>(() => {
   if (publicMode.value) return { id: 'public-template', name: '流水线方案' }
@@ -250,7 +204,7 @@ function createSourceNode(): WorkflowNode {
     config: {
       branch,
       events: ['manual', 'push'],
-      tag_pattern: 'v*',
+      tag_pattern: DEFAULT_TAG_PATTERN,
       pr_target_pattern: branch,
       pr_source_pattern: '*',
       pr_actions: ['opened', 'updated', 'merged'],
@@ -299,7 +253,9 @@ function defaultDraft() {
 }
 
 function graphToDraft(value: Workflow) {
-  sources.value = value.source ? [cloneWorkflowValue(value.source)] : []
+  const source = value.source ? cloneWorkflowValue(value.source) : undefined
+  if (source && !source.config.tag_pattern && !source.config.events?.includes('tag')) source.config.tag_pattern = DEFAULT_TAG_PATTERN
+  sources.value = source ? [source] : []
   stages.value = (value.stages || []).map(stage => ({
     id: stage.id,
     name: stage.name,
@@ -376,7 +332,7 @@ async function loadResources() {
     templates.value = templateResult.data.workflow_templates || []
     buildPlans.value = buildPlanResult.data.build_plans || []
     deploymentPlans.value = deploymentPlanResult.data.deployment_plans || []
-    if (route.query.create === '1' && canManage.value) await createTemplate()
+    if (publicMode.value && route.query.create === '1' && canManage.value) await createTemplate()
     else if (applicationID.value) {
       await loadApplication(applicationID.value)
       if (workflowID.value && route.query.workflow !== workflowID.value) {
@@ -424,19 +380,6 @@ function updateApplicationWorkflow(saved: Workflow) {
   application.workflows = workflows
 }
 
-function confirmTemplateBinding(templateName: string) {
-  return new Promise<boolean>(resolve => {
-    Modal.confirm({
-      title: `从“${templateName}”添加流水线？`,
-      content: '会在当前应用下新增一条独立流水线，并跟随该方案的最新启用版本；现有流水线不会被覆盖。',
-      okText: '确认添加',
-      cancelText: '取消',
-      onOk: () => resolve(true),
-      onCancel: () => resolve(false),
-    })
-  })
-}
-
 function confirmDiscardChanges() {
   return new Promise<boolean>(resolve => {
     Modal.confirm({
@@ -463,36 +406,8 @@ async function settleDraftBeforeNavigation() {
 }
 
 async function chooseTemplate(id: string) {
-  if (!id || loading.value || switching.value || saving.value) return
+  if (!publicMode.value || !id || loading.value || switching.value || saving.value) return
   if (!(await settleDraftBeforeNavigation())) return
-  if (!publicMode.value) {
-    const application = editorApplication.value
-    const targetTemplate = templates.value.find(item => item.id === id && item.is_active)
-    if (!application || !targetTemplate) {
-      message.error('流水线方案不存在或未启用')
-      return
-    }
-    if (!(await confirmTemplateBinding(targetTemplate.name))) return
-    loading.value = true
-    switching.value = true
-    try {
-      const result = await client.post<WorkflowResponse>(`/applications/${application.id}/workflows`, {
-        workflow_template_id: id,
-      })
-      const created = result.data.workflow
-      updateApplicationWorkflow(created)
-      workflowID.value = created.id
-      await router.replace({ query: { application: application.id, workflow: created.id } })
-      loadGraph(created, result.data.issues || [])
-      message.success(`已从方案“${targetTemplate.name}”添加流水线`)
-    } catch (error) {
-      message.error(apiErrorMessage(error))
-    } finally {
-      switching.value = false
-      loading.value = false
-    }
-    return
-  }
   loading.value = true
   switching.value = true
   try {
@@ -534,64 +449,6 @@ async function chooseWorkflow(id: string) {
     switching.value = false
     loading.value = false
   }
-}
-
-async function openCreateWorkflow() {
-  if (publicMode.value || !canManage.value || saving.value) return
-  if (!(await settleDraftBeforeNavigation())) return
-  activePresetCategory.value = 'quick'
-  selectedPresetKey.value = 'go'
-  createWorkflowOpen.value = true
-}
-
-function choosePresetCategory(category: WorkflowPresetCategory) {
-  activePresetCategory.value = category
-  if (category !== 'quick') selectedPresetKey.value = category
-}
-
-async function createApplicationWorkflow() {
-  if (publicMode.value || !canManage.value || saving.value) return
-  saving.value = true
-  try {
-    const preset = workflowPresets.find(item => item.key === selectedPresetKey.value)
-    const result = await client.post<WorkflowResponse>(`/applications/${applicationID.value}/workflows`, {
-      preset_key: selectedPresetKey.value,
-    })
-    const created = result.data.workflow
-    updateApplicationWorkflow(created)
-    workflowID.value = created.id
-    await router.replace({ query: { application: applicationID.value, workflow: created.id } })
-    loadGraph(created, result.data.issues || [])
-    createWorkflowOpen.value = false
-    message.success(`已创建${preset?.title || '流水线'}草稿`)
-  } catch (error) {
-    message.error(apiErrorMessage(error))
-  } finally {
-    saving.value = false
-  }
-}
-
-function deleteCurrentWorkflow() {
-  if (publicMode.value || !workflow.value || !canManage.value) return
-  const deleting = workflow.value
-  Modal.confirm({
-    title: `删除流水线“${deleting.name}”？`,
-    content: '只删除这条流水线定义，不删除应用、其他流水线或历史运行记录。',
-    okText: '删除流水线',
-    okType: 'danger',
-    cancelText: '取消',
-    async onOk() {
-      await client.delete(`/applications/${applicationID.value}/workflows/${deleting.id}`)
-      const application = editorApplication.value
-      if (application) application.workflows = (application.workflows || []).filter(item => item.id !== deleting.id)
-      const next = application?.workflows?.[0]
-      workflowID.value = next?.id || ''
-      await router.replace({ query: { application: applicationID.value, ...(next ? { workflow: next.id } : {}) } })
-      if (next) await loadApplication(applicationID.value, next.id)
-      else workflow.value = null
-      message.success('流水线已删除')
-    },
-  })
 }
 
 async function createTemplate() {
@@ -1231,10 +1088,6 @@ onBeforeRouteLeave(async () => {
           <span>流水线方案</span>
           <a-select :value="selectedTemplateID || undefined" :options="templateOptions" :loading="loading" :disabled="saving" placeholder="选择流水线方案" @change="chooseTemplate(String($event))" />
         </label>
-        <label v-if="!publicMode && canManage" class="plan-switcher template-adder">
-          <span>从方案添加</span>
-          <a-select :value="undefined" :options="templateOptions.filter(item => !item.disabled)" :disabled="saving" placeholder="选择方案" @change="chooseTemplate(String($event))" />
-        </label>
         <a-tag v-if="!publicMode && workflow" :color="selectedTemplateID ? 'blue' : 'default'">{{ selectedTemplateID ? '跟随方案' : '自定义' }}</a-tag>
         <a-tag v-if="workflow" :color="workflow.is_active ? 'success' : 'default'">{{ workflow.is_active ? '已启用' : '草稿' }}</a-tag>
         <span v-if="workflow" class="save-indicator" :class="{ failed: autoSaveFailed, pending: dirty }"><i />{{ saveState }}</span>
@@ -1250,8 +1103,6 @@ onBeforeRouteLeave(async () => {
           @change="updateWorkflowMeta"
         />
         <a-button v-if="canManage && publicMode" :disabled="saving || createStarted" @click="createTemplate"><Plus :size="15" />新建方案</a-button>
-        <a-button v-if="canManage && !publicMode" :disabled="saving" @click="openCreateWorkflow"><Plus :size="15" />新建流水线</a-button>
-        <a-button v-if="canManage && !publicMode && workflow" danger type="text" :disabled="saving" title="删除当前流水线" aria-label="删除当前流水线" @click="deleteCurrentWorkflow"><Trash2 :size="16" /></a-button>
         <a-button v-if="workflow" :disabled="saving" @click="validateGraph"><Scan :size="15" />检查</a-button>
         <a-button v-if="workflow && canManage" :loading="saving" @click="requestSave"><Save :size="15" />{{ workflow.is_active ? '保存并更新' : '保存草稿' }}</a-button>
         <a-button v-if="workflow && canManage && !workflow.is_active" type="primary" :loading="saving" @click="save(true)">{{ publicMode ? '启用方案' : '启用流水线' }}</a-button>
@@ -1260,7 +1111,8 @@ onBeforeRouteLeave(async () => {
 
     <a-skeleton v-if="loading && !workflow" active :paragraph="{ rows: 12 }" />
     <a-empty v-else-if="!workflow" class="pipeline-empty" :description="publicMode ? '还没有可编辑的流水线方案' : '这个应用还没有流水线'">
-      <a-button v-if="canManage" type="primary" :disabled="saving || createStarted" @click="publicMode ? createTemplate() : openCreateWorkflow()">{{ publicMode ? '创建第一份方案' : '创建第一条流水线' }}</a-button>
+      <a-button v-if="canManage && publicMode" type="primary" :disabled="saving || createStarted" @click="createTemplate">创建第一份方案</a-button>
+      <a-button v-else-if="!publicMode" type="primary" @click="router.push('/applications')">返回应用配置</a-button>
     </a-empty>
 
     <div v-else class="pipeline-studio" :class="{ immersive, 'panel-open': panelMode !== 'closed' }" :inert="saving">
@@ -1497,7 +1349,7 @@ onBeforeRouteLeave(async () => {
                 </a-form-item>
               </template>
               <a-form-item v-if="selectedNode.config.events?.includes('tag')" label="Tag 规则">
-                <a-input :value="selectedNode.config.tag_pattern" :disabled="!canManage" placeholder="v*" @update:value="updateSelectedNode({}, { tag_pattern: String($event) })" />
+                <a-input :value="selectedNode.config.tag_pattern" :disabled="!canManage" :placeholder="DEFAULT_TAG_PATTERN" @update:value="updateSelectedNode({}, { tag_pattern: String($event) })" />
               </a-form-item>
               <p class="panel-note">EDO 主动检查远程引用，Webhook 只是可选的低延迟通道。</p>
             </template>
@@ -1597,77 +1449,6 @@ onBeforeRouteLeave(async () => {
     </div>
 
     <a-modal
-      v-model:open="createWorkflowOpen"
-      title="选择流水线模板"
-      :width="1040"
-      centered
-      :closable="!saving"
-      :keyboard="!saving"
-      :mask-closable="!saving"
-      :confirm-loading="saving"
-      ok-text="创建流水线"
-      cancel-text="取消"
-      wrap-class-name="workflow-preset-modal"
-      @ok="createApplicationWorkflow"
-    >
-      <div class="workflow-preset-layout">
-        <nav class="workflow-preset-nav" aria-label="流水线模板分类">
-          <button
-            v-for="category in workflowPresetCategories"
-            :key="category.key"
-            type="button"
-            :class="{ active: activePresetCategory === category.key }"
-            @click="choosePresetCategory(category.key)"
-          >
-            <component :is="category.icon" :size="18" />
-            <span>{{ category.label }}</span>
-          </button>
-        </nav>
-
-        <section class="workflow-preset-content">
-          <header>
-            <div>
-              <strong>{{ workflowPresetCategories.find(item => item.key === activePresetCategory)?.label }}</strong>
-              <p>模板只填写通用步骤。创建后再选择项目实际使用的构建方案和部署方案。</p>
-            </div>
-            <span>{{ visibleWorkflowPresets.length }} 个模板</span>
-          </header>
-
-          <div class="workflow-preset-list" role="radiogroup" aria-label="选择流水线模板">
-            <button
-              v-for="preset in visibleWorkflowPresets"
-              :key="preset.key"
-              type="button"
-              role="radio"
-              class="workflow-preset-card"
-              :class="{ selected: selectedPresetKey === preset.key }"
-              :aria-checked="selectedPresetKey === preset.key"
-              :style="{ '--preset-tone': preset.tone }"
-              @click="selectedPresetKey = preset.key"
-              @dblclick="createApplicationWorkflow"
-            >
-              <span class="workflow-preset-icon"><component :is="preset.icon" :size="21" /></span>
-              <span class="workflow-preset-copy">
-                <span class="workflow-preset-heading">
-                  <strong>{{ preset.title }}</strong>
-                  <small>{{ preset.runtime }}</small>
-                </span>
-                <span class="workflow-preset-description">{{ preset.description }}</span>
-                <span class="workflow-preset-steps">
-                  <template v-for="(step, index) in preset.steps" :key="step">
-                    <span>{{ step }}</span>
-                    <i v-if="index < preset.steps.length - 1" />
-                  </template>
-                </span>
-              </span>
-              <span class="workflow-preset-check"><CheckCircle2 :size="20" /></span>
-            </button>
-          </div>
-        </section>
-      </div>
-    </a-modal>
-
-    <a-modal
       v-model:open="saveConfirmOpen"
       title="保存并更新已启用流水线？"
       centered
@@ -1696,7 +1477,6 @@ onBeforeRouteLeave(async () => {
 .command-divider { width: 1px; height: 22px; background: var(--edo-border); }
 .plan-switcher { display: flex; flex: 0 0 auto; align-items: center; gap: 8px; color: var(--edo-muted); font-size: 12px; white-space: nowrap; }
 .plan-switcher :deep(.ant-select) { width: 230px; }
-.plan-switcher.template-adder :deep(.ant-select) { width: 180px; }
 .save-indicator { display: flex; align-items: center; gap: 6px; color: var(--edo-muted); font-size: 12px; white-space: nowrap; }
 .save-indicator i { width: 7px; height: 7px; border-radius: 50%; background: #2ab36d; }
 .save-indicator.pending i { background: #e7a23b; animation: save-pulse 1.5s ease-in-out infinite; }
@@ -1826,42 +1606,10 @@ onBeforeRouteLeave(async () => {
 .pipeline-empty { min-height: 500px; padding-top: 120px; }
 .pipeline-studio.immersive { position: fixed; inset: 0; z-index: 1000; height: 100vh; min-height: 0; margin: 0; background: var(--edo-bg); }
 .pipeline-studio.immersive .pipeline-board-shell, .pipeline-studio.immersive .pipeline-side-panel { border-radius: 0; }
-:global(.workflow-preset-modal .ant-modal-content) { overflow: hidden; padding: 0; }
-:global(.workflow-preset-modal .ant-modal-header) { margin: 0; padding: 22px 26px 18px; border-bottom: 1px solid var(--edo-border); }
-:global(.workflow-preset-modal .ant-modal-title) { font-size: 19px; font-weight: 650; letter-spacing: -.01em; }
-:global(.workflow-preset-modal .ant-modal-close) { top: 15px; right: 16px; }
-:global(.workflow-preset-modal .ant-modal-body) { padding: 0; }
-:global(.workflow-preset-modal .ant-modal-footer) { margin: 0; padding: 14px 22px; border-top: 1px solid var(--edo-border); background: var(--edo-surface); }
-.workflow-preset-layout { display: grid; height: min(610px,calc(100dvh - 190px)); min-height: 430px; grid-template-columns: 190px minmax(0,1fr); background: var(--edo-surface); }
-.workflow-preset-nav { display: flex; flex-direction: column; gap: 5px; padding: 18px 12px; border-right: 1px solid var(--edo-border); background: var(--edo-surface-soft); }
-.workflow-preset-nav button { display: flex; width: 100%; min-height: 44px; align-items: center; gap: 11px; padding: 0 13px; border: 0; border-radius: 9px; color: var(--edo-muted); background: transparent; cursor: pointer; font-size: 14px; text-align: left; transition: color .16s ease,background-color .16s ease,transform .16s ease; }
-.workflow-preset-nav button:hover { color: var(--edo-text); background: color-mix(in srgb,var(--edo-surface) 80%,transparent); transform: translateX(2px); }
-.workflow-preset-nav button.active { color: var(--edo-primary); background: var(--edo-primary-soft); font-weight: 600; }
-.workflow-preset-content { min-width: 0; overflow-y: auto; padding: 24px; overscroll-behavior: contain; }
-.workflow-preset-content > header { display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; margin-bottom: 18px; }
-.workflow-preset-content > header strong { display: block; font-size: 17px; }
-.workflow-preset-content > header p { margin: 5px 0 0; color: var(--edo-muted); font-size: 12px; line-height: 1.6; }
-.workflow-preset-content > header > span { flex: 0 0 auto; padding: 4px 9px; border-radius: 999px; color: var(--edo-muted); background: var(--edo-surface-soft); font-size: 11px; }
-.workflow-preset-list { display: grid; gap: 12px; }
-.workflow-preset-card { --preset-tone:var(--edo-primary); position: relative; display: grid; width: 100%; min-height: 126px; align-items: start; grid-template-columns: 46px minmax(0,1fr) 24px; gap: 14px; padding: 18px; border: 1px solid var(--edo-border); border-radius: 12px; color: var(--edo-text); background: var(--edo-surface); box-shadow: 0 3px 12px rgb(30 45 75 / 5%); cursor: pointer; text-align: left; transition: border-color .18s ease,box-shadow .18s ease,transform .18s ease; }
-.workflow-preset-card:hover { border-color: color-mix(in srgb,var(--preset-tone) 52%,var(--edo-border)); box-shadow: 0 10px 24px rgb(30 45 75 / 9%); transform: translateY(-1px); }
-.workflow-preset-card.selected { border-color: var(--preset-tone); box-shadow: 0 0 0 3px color-mix(in srgb,var(--preset-tone) 12%,transparent),0 10px 24px rgb(30 45 75 / 8%); }
-.workflow-preset-card:focus-visible { outline: 2px solid var(--edo-primary); outline-offset: 2px; }
-.workflow-preset-icon { display: grid; width: 44px; height: 44px; place-items: center; border-radius: 11px; color: var(--preset-tone); background: color-mix(in srgb,var(--preset-tone) 11%,var(--edo-surface)); }
-.workflow-preset-copy, .workflow-preset-heading { display: block; min-width: 0; }
-.workflow-preset-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 14px; }
-.workflow-preset-heading strong { font-size: 15px; }
-.workflow-preset-heading small { overflow: hidden; color: var(--edo-muted); font-family: ui-monospace,SFMono-Regular,Menlo,monospace; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
-.workflow-preset-description { display: block; margin-top: 5px; color: var(--edo-muted); font-size: 12px; line-height: 1.55; }
-.workflow-preset-steps { display: flex; min-width: 0; align-items: center; margin-top: 16px; }
-.workflow-preset-steps span { position: relative; z-index: 1; flex: 0 0 auto; padding: 5px 9px; border-radius: 6px; color: color-mix(in srgb,var(--preset-tone) 82%,var(--edo-text)); background: color-mix(in srgb,var(--preset-tone) 9%,var(--edo-surface)); font-size: 11px; font-weight: 600; }
-.workflow-preset-steps i { width: clamp(20px,5vw,72px); height: 1px; background: color-mix(in srgb,var(--preset-tone) 35%,var(--edo-border)); }
-.workflow-preset-check { color: transparent; transition: color .16s ease,transform .16s ease; }
-.workflow-preset-card.selected .workflow-preset-check { color: var(--preset-tone); transform: scale(1.05); }
 @keyframes save-pulse { 50% { opacity: .35; transform: scale(.7); } }
 @keyframes parallel-entry-in { from { opacity: 0; transform: translate(-50%,-5px); } }
-@media(prefers-reduced-motion:reduce){.new-parallel-task-slot{animation:none}.pipeline-panel-enter-active,.pipeline-panel-leave-active,.workflow-preset-nav button,.workflow-preset-card,.workflow-preset-check{transition:none}}
+@media(prefers-reduced-motion:reduce){.new-parallel-task-slot{animation:none}.pipeline-panel-enter-active,.pipeline-panel-leave-active{transition:none}}
 @media(max-width:1200px){.plan-switcher>span{display:none}.plan-switcher:deep(.ant-select){width:210px}.pipeline-name-input{width:180px}}
 @media(max-width:1000px){.pipeline-side-panel{top:0;right:0;bottom:0;width:min(560px,100%);max-height:none;border-radius:0 10px 10px 0}.pipeline-studio.immersive .pipeline-side-panel{border-radius:0}}
-@media(max-width:760px){.pipeline-editor-page{height:calc(100dvh - 108px)}.pipeline-command{align-items:flex-start;flex-direction:column}.pipeline-command-main,.pipeline-command-actions{width:100%;flex-wrap:wrap}.pipeline-name-input{width:min(100%,260px)}.plan-switcher:deep(.ant-select){width:180px}.board-toolbar>div:first-child span,.board-footer small{display:none}.pipeline-source-column{width:245px;flex-basis:245px}.pipeline-side-panel{width:100%;border-radius:0}.task-library-grid{grid-template-columns:1fr}.workflow-preset-layout{height:min(640px,calc(100dvh - 150px));grid-template-columns:1fr}.workflow-preset-nav{overflow-x:auto;flex-direction:row;padding:10px;border-right:0;border-bottom:1px solid var(--edo-border)}.workflow-preset-nav button{width:auto;min-width:max-content}.workflow-preset-content{padding:16px}.workflow-preset-heading{align-items:flex-start;flex-direction:column;gap:3px}.workflow-preset-steps i{width:14px}}
+@media(max-width:760px){.pipeline-editor-page{height:calc(100dvh - 108px)}.pipeline-command{align-items:flex-start;flex-direction:column}.pipeline-command-main,.pipeline-command-actions{width:100%;flex-wrap:wrap}.pipeline-name-input{width:min(100%,260px)}.plan-switcher:deep(.ant-select){width:180px}.board-toolbar>div:first-child span,.board-footer small{display:none}.pipeline-source-column{width:245px;flex-basis:245px}.pipeline-side-panel{width:100%;border-radius:0}.task-library-grid{grid-template-columns:1fr}}
 </style>

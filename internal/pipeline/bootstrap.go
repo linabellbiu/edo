@@ -143,7 +143,7 @@ func (s *Service) EnsureInitialDeliverySettings(ctx context.Context) (InitialDel
 				SchemaVersion: model.WorkflowSchemaVersion, Name: initialWorkflowTemplateName, Activate: true,
 				Source: model.WorkflowNode{
 					ID: "source", Type: model.WorkflowNodeTrigger, Name: "代码源",
-					Config: model.WorkflowNodeConfig{Branch: "*", Events: []string{"manual"}},
+					Config: model.WorkflowNodeConfig{Branch: "*", Events: []string{"manual"}, TagPattern: defaultWorkflowTagPattern},
 				},
 				Stages: stages,
 			},

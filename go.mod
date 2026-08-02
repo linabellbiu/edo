@@ -31,6 +31,7 @@ require (
 	github.com/libdns/rfc2136 v1.0.1
 	github.com/libdns/route53 v1.6.2
 	github.com/libdns/tencentcloud v1.4.3
+	github.com/libtnb/logrotate v0.1.2
 	github.com/matthewhartstonge/argon2 v1.5.6
 	github.com/moby/moby/api v1.55.0
 	github.com/moby/moby/client v0.5.0

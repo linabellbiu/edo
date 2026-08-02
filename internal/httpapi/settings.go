@@ -159,16 +159,29 @@ type logRetentionUpdateRequest struct {
 type runtimeLoggingUpdateRequest struct {
 	Level             string `json:"level" binding:"required,oneof=debug info warn error"`
 	HTTPAccessEnabled *bool  `json:"http_access_enabled" binding:"required"`
+	FileEnabled       *bool  `json:"file_enabled" binding:"required"`
+	FileDirectory     string `json:"file_directory" binding:"required,max=1024"`
+	MaxFileSizeMB     int    `json:"max_file_size_mb" binding:"required,min=1,max=10240"`
+	CompressAfterDays int    `json:"compress_after_days" binding:"required,min=1,max=3650"`
 	ExpectedVersion   int    `json:"expected_version" binding:"min=0"`
 }
 
 func (h settingsHandler) runtimeLogging(c *gin.Context) {
 	defaultLevel, defaultHTTPAccess := "info", true
+	fileDefaults := configuration.RuntimeLoggingSettings{
+		FileEnabled: true, FileDirectory: logging.DefaultFileDirectory,
+		MaxFileSizeMB: logging.DefaultMaxFileSizeMB, CompressAfterDays: logging.DefaultCompressAfterDays,
+	}
 	if h.runtimeLogs != nil {
 		defaultLevel = h.runtimeLogs.Level()
 		defaultHTTPAccess = h.runtimeLogs.HTTPAccessEnabled()
+		current := h.runtimeLogs.FileSettings()
+		fileDefaults.FileEnabled = current.Enabled
+		fileDefaults.FileDirectory = current.Directory
+		fileDefaults.MaxFileSizeMB = current.MaxFileSizeMB
+		fileDefaults.CompressAfterDays = current.CompressAfterDays
 	}
-	settings, err := h.service.GetRuntimeLoggingSettings(c.Request.Context(), defaultLevel, defaultHTTPAccess)
+	settings, err := h.service.GetRuntimeLoggingSettings(c.Request.Context(), defaultLevel, defaultHTTPAccess, fileDefaults)
 	if err != nil {
 		h.logger.Error("读取运行日志设置失败", "operation", "settings_runtime_logging_read", "request_id", requestIDFrom(c), "err", err)
 		writeInternalError(c)
@@ -179,20 +192,30 @@ func (h settingsHandler) runtimeLogging(c *gin.Context) {
 
 func (h settingsHandler) updateRuntimeLogging(c *gin.Context) {
 	var request runtimeLoggingUpdateRequest
-	if err := c.ShouldBindJSON(&request); err != nil || request.HTTPAccessEnabled == nil {
+	if err := c.ShouldBindJSON(&request); err != nil || request.HTTPAccessEnabled == nil || request.FileEnabled == nil {
 		h.logger.Warn("修改运行日志设置参数无效", "operation", "settings_runtime_logging_bind", "request_id", requestIDFrom(c), "err", err)
-		writeError(c, http.StatusBadRequest, "invalid_settings", "日志级别或输出选项无效")
+		writeError(c, http.StatusBadRequest, "invalid_settings", "日志级别或文件切分设置无效")
+		return
+	}
+	fileSettings, err := logging.NormalizeFileSettings(logging.FileSettings{
+		Enabled: *request.FileEnabled, Directory: request.FileDirectory,
+		MaxFileSizeMB: request.MaxFileSizeMB, CompressAfterDays: request.CompressAfterDays,
+	})
+	if err != nil {
+		writeError(c, http.StatusBadRequest, "invalid_settings", "日志级别或文件切分设置无效")
 		return
 	}
 	actor, _ := currentUser(c)
 	settings, err := h.service.UpdateRuntimeLoggingSettings(
-		c.Request.Context(), actor.ID, request.Level, *request.HTTPAccessEnabled, request.ExpectedVersion,
+		c.Request.Context(), actor.ID, request.Level, *request.HTTPAccessEnabled,
+		fileSettings.Enabled, fileSettings.Directory, fileSettings.MaxFileSizeMB, fileSettings.CompressAfterDays,
+		request.ExpectedVersion,
 	)
 	if err != nil {
 		h.logger.Warn("修改运行日志设置失败", "operation", "settings_runtime_logging_update", "request_id", requestIDFrom(c), "user_id", actor.ID, "err", err)
 		switch {
 		case errors.Is(err, configuration.ErrInvalidConfiguration):
-			writeError(c, http.StatusBadRequest, "invalid_settings", "日志级别或输出选项无效")
+			writeError(c, http.StatusBadRequest, "invalid_settings", "日志级别或文件切分设置无效")
 		case errors.Is(err, configuration.ErrVersionConflict):
 			writeError(c, http.StatusConflict, "settings_version_conflict", configuration.ErrVersionConflict.Error())
 		default:
@@ -201,7 +224,10 @@ func (h settingsHandler) updateRuntimeLogging(c *gin.Context) {
 		return
 	}
 	if h.runtimeLogs != nil {
-		if err := h.runtimeLogs.Apply(settings.Level, settings.HTTPAccessEnabled); err != nil {
+		if err := h.runtimeLogs.ApplySettings(settings.Level, settings.HTTPAccessEnabled, logging.FileSettings{
+			Enabled: settings.FileEnabled, Directory: settings.FileDirectory,
+			MaxFileSizeMB: settings.MaxFileSizeMB, CompressAfterDays: settings.CompressAfterDays,
+		}); err != nil {
 			h.logger.Error("热更新运行日志设置失败", "operation", "settings_runtime_logging_apply", "request_id", requestIDFrom(c), "user_id", actor.ID, "err", err)
 			writeInternalError(c)
 			return

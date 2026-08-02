@@ -5,6 +5,10 @@ name: edo
 # 重试次数、任务超时、Stream 容量等默认值统一放在 Go 配置中维护。
 x-edo-environment: &edo-environment
   EDO_ENV: production
+  EDO_LOG_FILE_ENABLED: ${EDO_LOG_FILE_ENABLED:-true}
+  EDO_LOG_DIRECTORY: /app/data/logs
+  EDO_LOG_MAX_FILE_SIZE_MB: ${EDO_LOG_MAX_FILE_SIZE_MB:-100}
+  EDO_LOG_COMPRESS_AFTER_DAYS: ${EDO_LOG_COMPRESS_AFTER_DAYS:-3}
 
   # 当前端通过 http://127.0.0.1:8080 访问时必须为 false。
   # 配置 HTTPS 反向代理后改为 true。
@@ -18,6 +22,8 @@ x-edo-environment: &edo-environment
   # 文件制品与 SQLite 共用持久化 data 目录；单文件默认限制为 1 GiB，避免构建输出挤满磁盘。
   EDO_ARTIFACTS_DIRECTORY: ${EDO_COMPOSE_ARTIFACTS_DIRECTORY:-/app/data/artifacts}
   EDO_ARTIFACTS_MAX_BYTES: ${EDO_ARTIFACTS_MAX_BYTES:-1073741824}
+  # Git 对象缓存与 Tag/Commit 隔离工作区随 data 卷持久化，避免每次流水线重新 Clone。
+  EDO_GIT_DIRECTORY: ${EDO_COMPOSE_GIT_DIRECTORY:-/app/data/repositories}
 
   # redis 和 nats 是下面的 Compose 服务名，只在容器网络内使用。
   EDO_REDIS_URL: ${EDO_COMPOSE_REDIS_URL:-redis://redis:6379/0}

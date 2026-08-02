@@ -123,9 +123,11 @@ func cloneEntry(entry Entry) Entry {
 // RuntimeController 保存可在进程运行期间安全修改的日志过滤设置。
 // slog.LevelVar 由标准库 Handler 直接读取，不需要重建全局 Logger。
 type RuntimeController struct {
-	level      slog.LevelVar
-	httpAccess atomic.Bool
-	logs       *buffer
+	level           slog.LevelVar
+	httpAccess      atomic.Bool
+	logs            *buffer
+	output          *runtimeOutput
+	maintenanceWake chan struct{}
 }
 
 func New(level string) *slog.Logger {
@@ -137,14 +139,31 @@ func NewRuntime(level string) (*slog.Logger, *RuntimeController) {
 	return newRuntime(level, os.Stdout, defaultBufferCapacity)
 }
 
+func NewRuntimeWithFile(level string, fileSettings FileSettings) (*slog.Logger, *RuntimeController, error) {
+	return newRuntimeWithFile(level, os.Stdout, defaultBufferCapacity, fileSettings)
+}
+
 func newRuntime(level string, output io.Writer, capacity int) (*slog.Logger, *RuntimeController) {
-	controller := &RuntimeController{logs: newBuffer(capacity)}
+	logger, controller, _ := newRuntimeWithFile(level, output, capacity, FileSettings{})
+	return logger, controller
+}
+
+func newRuntimeWithFile(level string, output io.Writer, capacity int, fileSettings FileSettings) (*slog.Logger, *RuntimeController, error) {
+	runtimeOutput := newRuntimeOutput(output)
+	controller := &RuntimeController{
+		logs: newBuffer(capacity), output: runtimeOutput, maintenanceWake: make(chan struct{}, 1),
+	}
 	if err := controller.Apply(level, true); err != nil {
 		_ = controller.Apply("info", true)
 	}
-	outputHandler := slog.NewJSONHandler(output, &slog.HandlerOptions{Level: &controller.level})
+	if fileSettings != (FileSettings{}) {
+		if err := runtimeOutput.configure(fileSettings); err != nil {
+			return nil, nil, err
+		}
+	}
+	outputHandler := slog.NewJSONHandler(runtimeOutput, &slog.HandlerOptions{Level: &controller.level})
 	logger := slog.New(&captureHandler{next: outputHandler, logs: controller.logs})
-	return logger, controller
+	return logger, controller, nil
 }
 
 func (c *RuntimeController) Apply(level string, httpAccess bool) error {
@@ -155,6 +174,47 @@ func (c *RuntimeController) Apply(level string, httpAccess bool) error {
 	c.level.Set(parsed)
 	c.httpAccess.Store(httpAccess)
 	return nil
+}
+
+func (c *RuntimeController) ApplyFileSettings(settings FileSettings) error {
+	if c == nil || c.output == nil {
+		return errors.New("运行日志输出未初始化")
+	}
+	if err := c.output.configure(settings); err != nil {
+		return err
+	}
+	select {
+	case c.maintenanceWake <- struct{}{}:
+	default:
+	}
+	return nil
+}
+
+func (c *RuntimeController) ApplySettings(level string, httpAccess bool, fileSettings FileSettings) error {
+	parsed, err := parseLevel(level)
+	if err != nil {
+		return err
+	}
+	if err := c.ApplyFileSettings(fileSettings); err != nil {
+		return err
+	}
+	c.level.Set(parsed)
+	c.httpAccess.Store(httpAccess)
+	return nil
+}
+
+func (c *RuntimeController) FileSettings() FileSettings {
+	if c == nil || c.output == nil {
+		return DefaultFileSettings()
+	}
+	return c.output.fileSettings()
+}
+
+func (c *RuntimeController) Close() error {
+	if c == nil || c.output == nil {
+		return nil
+	}
+	return c.output.close()
 }
 
 func (c *RuntimeController) Level() string {

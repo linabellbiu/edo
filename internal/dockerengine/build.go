@@ -55,6 +55,7 @@ func IsRetryableBuildError(err error) bool {
 
 var transientRegistryStatusPattern = regexp.MustCompile(`(?i)(?:http(?:/\d(?:\.\d)?)?|status(?:\s+code)?|response)[^\r\n]{0,80}\b(?:429|5\d\d)\b|\b(?:429|5\d\d)\b[^\r\n]{0,80}(?:too many requests|internal server error|bad gateway|service unavailable|gateway timeout)`)
 var transientRegistryNetworkPattern = regexp.MustCompile(`(?i)(?:failed to (?:do request|fetch(?: anonymous)? token|authorize)|(?:head|get|put|post) "https?://)[^\r\n]{0,512}(?:\bEOF\b|TLS handshake timeout|i/o timeout|connection reset by peer|connection refused|temporary failure in name resolution|no such host|context deadline exceeded)`)
+var transientBuildKitSessionPattern = regexp.MustCompile(`(?i)\bno http response from session\b`)
 var dockerBuildArgNamePattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
 type RegistryAuth struct {
@@ -100,15 +101,10 @@ func (s *Service) BuildAndPushWithOptions(
 		return "", err
 	}
 	defer apiClient.Close()
-	buildContext, err := createBuildContext(contextDirectory, dockerfile)
+	buildContext, err := validateBuildContextDirectory(contextDirectory, dockerfile)
 	if err != nil {
 		return "", err
 	}
-	defer func() {
-		name := buildContext.Name()
-		_ = buildContext.Close()
-		_ = os.Remove(name)
-	}()
 
 	authConfig := registryAuthConfig(registry)
 	encodedAuth, err := encodeRegistryAuth(authConfig)
@@ -187,15 +183,10 @@ func (s *Service) BuildLocalWithOptions(
 		return "", err
 	}
 	defer apiClient.Close()
-	buildContext, err := createBuildContext(contextDirectory, dockerfile)
+	buildContext, err := validateBuildContextDirectory(contextDirectory, dockerfile)
 	if err != nil {
 		return "", err
 	}
-	defer func() {
-		name := buildContext.Name()
-		_ = buildContext.Close()
-		_ = os.Remove(name)
-	}()
 
 	buildContextTimeout, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
@@ -306,7 +297,7 @@ func encodeRegistryAuth(config registrytypes.AuthConfig) (string, error) {
 
 func (s *Service) runBuildx(
 	ctx context.Context,
-	buildContext io.Reader,
+	buildContext string,
 	dockerfile string,
 	image string,
 	registry RegistryAuth,
@@ -335,13 +326,13 @@ func (s *Service) runBuildx(
 	// 每个任务都有独立检出目录、构建上下文、认证目录和不可重复镜像标签；
 	// 这里不设置进程级锁，让 BuildKit 按 Worker 并发数并行调度构建。
 	command := exec.CommandContext(ctx, "docker", arguments...)
+	command.Dir = buildContext
 	command.Env = dockerBuildEnvironment(
 		s.config.DockerBuilderHost,
 		s.config.DockerBuilderTLSCertPath,
 		configDirectory,
 		options.BuildArgs,
 	)
-	command.Stdin = buildContext
 	diagnostic := &tailBuffer{limit: 16 * 1024}
 	commandOutput := io.Writer(diagnostic)
 	if output != nil {
@@ -362,7 +353,8 @@ func (s *Service) runBuildx(
 		return &buildExecutionError{
 			cause: fmt.Errorf("Docker 镜像构建失败: %w", err),
 			retryable: transientRegistryStatusPattern.MatchString(message) ||
-				transientRegistryNetworkPattern.MatchString(message),
+				transientRegistryNetworkPattern.MatchString(message) ||
+				transientBuildKitSessionPattern.MatchString(message),
 		}
 	}
 	return nil
@@ -419,7 +411,7 @@ func dockerBuildxArgumentsWithOptions(
 	arguments = appendSortedBuildArgNames(arguments, buildArgs)
 	arguments = appendSortedBuildValues(arguments, "--label", options.Labels)
 	arguments = append(arguments, "--tag", image)
-	return append(arguments, "-")
+	return append(arguments, ".")
 }
 
 func defaultBuildOptions() BuildOptions {
@@ -594,6 +586,24 @@ func (b *tailBuffer) String() string {
 	b.mutex.Lock()
 	defer b.mutex.Unlock()
 	return string(b.data)
+}
+
+func validateBuildContextDirectory(root, dockerfile string) (string, error) {
+	root, err := filepath.Abs(root)
+	if err != nil {
+		return "", fmt.Errorf("解析构建上下文失败: %w", err)
+	}
+	dockerfile = filepath.Clean(dockerfile)
+	if filepath.IsAbs(dockerfile) || dockerfile == ".." || strings.HasPrefix(dockerfile, ".."+string(filepath.Separator)) {
+		return "", errors.New("Dockerfile 必须位于构建上下文中")
+	}
+	if info, err := os.Stat(root); err != nil || !info.IsDir() {
+		return "", errors.New("Docker 构建上下文目录不存在")
+	}
+	if info, err := os.Stat(filepath.Join(root, dockerfile)); err != nil || !info.Mode().IsRegular() {
+		return "", errors.New("构建上下文中找不到 Dockerfile")
+	}
+	return root, nil
 }
 
 func createBuildContext(root, dockerfile string) (*os.File, error) {

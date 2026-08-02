@@ -19,6 +19,8 @@ import (
 	"edo/internal/task"
 )
 
+const defaultWorkflowTagPattern = "v*"
+
 var (
 	ErrInvalidWorkflow                = errors.New("流水线配置存在错误，请先修正代码源、阶段和任务")
 	ErrWorkflowNotFound               = errors.New("应用流水线不存在")
@@ -430,7 +432,7 @@ func defaultWorkflow(application *model.Application, actorID string, now time.Ti
 	}
 	source := model.WorkflowNode{
 		ID: "source", Type: model.WorkflowNodeTrigger, Name: "代码源",
-		Config: model.WorkflowNodeConfig{Branch: branch, Events: []string{"manual", "push"}},
+		Config: model.WorkflowNodeConfig{Branch: branch, Events: []string{"manual", "push"}, TagPattern: defaultWorkflowTagPattern},
 	}
 	return &model.ReleaseWorkflow{
 		ID: uuid.NewString(), ApplicationID: application.ID, Name: application.Name + "流水线",

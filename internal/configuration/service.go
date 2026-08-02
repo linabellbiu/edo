@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -36,6 +37,9 @@ const (
 	logRetentionSettingKey       = "LOG_RETENTION_SETTINGS"
 	defaultPipelineLogDays       = 30
 	defaultAuditLogDays          = 180
+	defaultRuntimeLogDirectory   = "logs"
+	defaultRuntimeLogMaxSizeMB   = 100
+	defaultRuntimeLogCompressDay = 3
 )
 
 type Input struct {
@@ -101,12 +105,20 @@ type LogRetentionSettings struct {
 type RuntimeLoggingSettings struct {
 	Level             string `json:"level"`
 	HTTPAccessEnabled bool   `json:"http_access_enabled"`
+	FileEnabled       bool   `json:"file_enabled"`
+	FileDirectory     string `json:"file_directory"`
+	MaxFileSizeMB     int    `json:"max_file_size_mb"`
+	CompressAfterDays int    `json:"compress_after_days"`
 	Version           int    `json:"version"`
 }
 
 type runtimeLoggingValue struct {
 	Level             string `json:"level"`
 	HTTPAccessEnabled bool   `json:"http_access_enabled"`
+	FileEnabled       bool   `json:"file_enabled"`
+	FileDirectory     string `json:"file_directory"`
+	MaxFileSizeMB     int    `json:"max_file_size_mb"`
+	CompressAfterDays int    `json:"compress_after_days"`
 }
 
 type logRetentionValue struct {
@@ -415,12 +427,29 @@ func (s *Service) GetRuntimeLoggingSettings(
 	ctx context.Context,
 	defaultLevel string,
 	defaultHTTPAccess bool,
+	fileDefaults ...RuntimeLoggingSettings,
 ) (RuntimeLoggingSettings, error) {
 	defaultLevel = normalizeRuntimeLogLevel(defaultLevel)
-	if !validRuntimeLogging(runtimeLoggingValue{Level: defaultLevel}) {
-		defaultLevel = "info"
+	defaults := RuntimeLoggingSettings{
+		Level: defaultLevel, HTTPAccessEnabled: defaultHTTPAccess,
+		FileEnabled: true, FileDirectory: defaultRuntimeLogDirectory,
+		MaxFileSizeMB: defaultRuntimeLogMaxSizeMB, CompressAfterDays: defaultRuntimeLogCompressDay,
 	}
-	defaults := RuntimeLoggingSettings{Level: defaultLevel, HTTPAccessEnabled: defaultHTTPAccess}
+	if len(fileDefaults) > 0 {
+		defaults.FileEnabled = fileDefaults[0].FileEnabled
+		defaults.FileDirectory = fileDefaults[0].FileDirectory
+		defaults.MaxFileSizeMB = fileDefaults[0].MaxFileSizeMB
+		defaults.CompressAfterDays = fileDefaults[0].CompressAfterDays
+	}
+	defaults = normalizeRuntimeLogging(defaults)
+	if !validRuntimeLogging(defaults) {
+		defaultLevel = "info"
+		defaults = RuntimeLoggingSettings{
+			Level: defaultLevel, HTTPAccessEnabled: defaultHTTPAccess,
+			FileEnabled: true, FileDirectory: defaultRuntimeLogDirectory,
+			MaxFileSizeMB: defaultRuntimeLogMaxSizeMB, CompressAfterDays: defaultRuntimeLogCompressDay,
+		}
+	}
 	var item model.Configuration
 	err := s.db.WithContext(ctx).Where(
 		"namespace = ? AND environment = ? AND key = ?",
@@ -435,26 +464,47 @@ func (s *Service) GetRuntimeLoggingSettings(
 	if item.IsSecret || item.SecretCiphertext != "" || !item.IsActive {
 		return RuntimeLoggingSettings{}, ErrInvalidConfiguration
 	}
-	var value runtimeLoggingValue
-	if err := json.Unmarshal([]byte(item.Value), &value); err != nil || !validRuntimeLogging(value) {
+	value := runtimeLoggingValue{
+		Level: defaults.Level, HTTPAccessEnabled: defaults.HTTPAccessEnabled,
+		FileEnabled: defaults.FileEnabled, FileDirectory: defaults.FileDirectory,
+		MaxFileSizeMB: defaults.MaxFileSizeMB, CompressAfterDays: defaults.CompressAfterDays,
+	}
+	if err := json.Unmarshal([]byte(item.Value), &value); err != nil {
 		return RuntimeLoggingSettings{}, ErrInvalidConfiguration
 	}
-	return RuntimeLoggingSettings{
-		Level: value.Level, HTTPAccessEnabled: value.HTTPAccessEnabled, Version: item.Version,
-	}, nil
+	settings := normalizeRuntimeLogging(RuntimeLoggingSettings{
+		Level: value.Level, HTTPAccessEnabled: value.HTTPAccessEnabled,
+		FileEnabled: value.FileEnabled, FileDirectory: value.FileDirectory,
+		MaxFileSizeMB: value.MaxFileSizeMB, CompressAfterDays: value.CompressAfterDays,
+		Version: item.Version,
+	})
+	if !validRuntimeLogging(settings) {
+		return RuntimeLoggingSettings{}, ErrInvalidConfiguration
+	}
+	return settings, nil
 }
 
 func (s *Service) UpdateRuntimeLoggingSettings(
 	ctx context.Context,
 	actorID, level string,
 	httpAccessEnabled bool,
+	fileEnabled bool,
+	fileDirectory string,
+	maxFileSizeMB, compressAfterDays int,
 	expectedVersion int,
 ) (RuntimeLoggingSettings, error) {
-	value := runtimeLoggingValue{
-		Level: normalizeRuntimeLogLevel(level), HTTPAccessEnabled: httpAccessEnabled,
-	}
-	if expectedVersion < 0 || !validRuntimeLogging(value) {
+	settings := normalizeRuntimeLogging(RuntimeLoggingSettings{
+		Level: level, HTTPAccessEnabled: httpAccessEnabled,
+		FileEnabled: fileEnabled, FileDirectory: fileDirectory,
+		MaxFileSizeMB: maxFileSizeMB, CompressAfterDays: compressAfterDays,
+	})
+	if expectedVersion < 0 || !validRuntimeLogging(settings) {
 		return RuntimeLoggingSettings{}, ErrInvalidConfiguration
+	}
+	value := runtimeLoggingValue{
+		Level: settings.Level, HTTPAccessEnabled: settings.HTTPAccessEnabled,
+		FileEnabled: settings.FileEnabled, FileDirectory: settings.FileDirectory,
+		MaxFileSizeMB: settings.MaxFileSizeMB, CompressAfterDays: settings.CompressAfterDays,
 	}
 	encoded, err := json.Marshal(value)
 	if err != nil {
@@ -523,12 +573,28 @@ func (s *Service) UpdateRuntimeLoggingSettings(
 		return RuntimeLoggingSettings{}, fmt.Errorf("更新运行日志设置失败: %w", err)
 	}
 	return RuntimeLoggingSettings{
-		Level: value.Level, HTTPAccessEnabled: value.HTTPAccessEnabled, Version: updated.Version,
+		Level: value.Level, HTTPAccessEnabled: value.HTTPAccessEnabled,
+		FileEnabled: value.FileEnabled, FileDirectory: value.FileDirectory,
+		MaxFileSizeMB: value.MaxFileSizeMB, CompressAfterDays: value.CompressAfterDays,
+		Version: updated.Version,
 	}, nil
 }
 
-func validRuntimeLogging(value runtimeLoggingValue) bool {
-	return value.Level == "debug" || value.Level == "info" || value.Level == "warn" || value.Level == "error"
+func validRuntimeLogging(value RuntimeLoggingSettings) bool {
+	validLevel := value.Level == "debug" || value.Level == "info" || value.Level == "warn" || value.Level == "error"
+	return validLevel && value.FileDirectory != "" && len(value.FileDirectory) <= 1024 &&
+		!strings.ContainsRune(value.FileDirectory, 0) &&
+		value.MaxFileSizeMB >= 1 && value.MaxFileSizeMB <= 10*1024 &&
+		value.CompressAfterDays >= 1 && value.CompressAfterDays <= 3650
+}
+
+func normalizeRuntimeLogging(value RuntimeLoggingSettings) RuntimeLoggingSettings {
+	value.Level = normalizeRuntimeLogLevel(value.Level)
+	value.FileDirectory = strings.TrimSpace(value.FileDirectory)
+	if value.FileDirectory != "" {
+		value.FileDirectory = filepath.Clean(value.FileDirectory)
+	}
+	return value
 }
 
 func normalizeRuntimeLogLevel(value string) string {

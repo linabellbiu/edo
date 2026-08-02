@@ -248,7 +248,7 @@ func TestApplicationRequestOnlyAcceptsRepositoryAndPollingConfiguration(t *testi
 	}
 }
 
-func TestApplicationRequestDoesNotBindWorkflowTemplate(t *testing.T) {
+func TestApplicationRequestBindsInitialWorkflowTemplate(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	context, _ := gin.CreateTestContext(httptest.NewRecorder())
 	payload := `{
@@ -263,8 +263,12 @@ func TestApplicationRequestDoesNotBindWorkflowTemplate(t *testing.T) {
 	if err := context.ShouldBindJSON(&request); err != nil {
 		t.Fatalf("公共流水线方案选择不应被拒绝: %v", err)
 	}
-	if request.Name != "选择公共流水线方案" || request.RepositoryID == "" {
-		t.Fatalf("应用基础字段解析错误: %+v", request)
+	if request.Name != "选择公共流水线方案" || request.RepositoryID == "" || request.WorkflowTemplateID != "dd448d0b-df10-45c2-9436-42ee44817399" {
+		t.Fatalf("应用初始流水线方案解析错误: %+v", request)
+	}
+	input := toApplicationInput(request)
+	if input.WorkflowTemplateID != request.WorkflowTemplateID {
+		t.Fatalf("应用初始流水线方案未传入服务层: %+v", input)
 	}
 }
 

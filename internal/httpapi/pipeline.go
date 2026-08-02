@@ -22,6 +22,7 @@ type applicationRequest struct {
 	Name                string `json:"name" binding:"required,max=128"`
 	Description         string `json:"description" binding:"max=500"`
 	RepositoryID        string `json:"repository_id" binding:"required,max=36"`
+	WorkflowTemplateID  string `json:"workflow_template_id" binding:"max=36"`
 	PollIntervalSeconds int    `json:"poll_interval_seconds" binding:"omitempty,oneof=3 5 10 60"`
 }
 
@@ -711,7 +712,7 @@ func toRegistryInput(request registryRequest) pipeline.RegistryInput {
 func toApplicationInput(request applicationRequest) pipeline.ApplicationInput {
 	return pipeline.ApplicationInput{
 		Name: request.Name, Description: request.Description, RepositoryID: request.RepositoryID,
-		PollIntervalSeconds: request.PollIntervalSeconds,
+		WorkflowTemplateID: request.WorkflowTemplateID, PollIntervalSeconds: request.PollIntervalSeconds,
 	}
 }
 

@@ -5,6 +5,10 @@ name: edo-dev
 x-edo-environment: &edo-environment
   EDO_ENV: development
   EDO_LOG_LEVEL: ${EDO_LOG_LEVEL:-info}
+  EDO_LOG_FILE_ENABLED: ${EDO_LOG_FILE_ENABLED:-true}
+  EDO_LOG_DIRECTORY: /app/data/logs
+  EDO_LOG_MAX_FILE_SIZE_MB: ${EDO_LOG_MAX_FILE_SIZE_MB:-100}
+  EDO_LOG_COMPRESS_AFTER_DAYS: ${EDO_LOG_COMPRESS_AFTER_DAYS:-3}
   EDO_SERVER_ADDRESS: :8080
   # 开发环境由独立 Vite 容器提供前端，Go 后端只提供 API 与 WebSocket。
   EDO_WEB_ROOT: ""
@@ -16,6 +20,8 @@ x-edo-environment: &edo-environment
   # 构建制品保存在持久化 data 目录；限制单文件大小，避免开发构建意外占满磁盘。
   EDO_ARTIFACTS_DIRECTORY: ${EDO_COMPOSE_ARTIFACTS_DIRECTORY:-/app/data/artifacts}
   EDO_ARTIFACTS_MAX_BYTES: ${EDO_ARTIFACTS_MAX_BYTES:-1073741824}
+  # Git 对象缓存与 Tag/Commit 隔离工作区随 data 卷持久化，避免每次流水线重新 Clone。
+  EDO_GIT_DIRECTORY: ${EDO_COMPOSE_GIT_DIRECTORY:-/app/data/repositories}
   # redis 和 nats 是本文件中的默认容器服务名；URL 也可在 .env 中改为受控的外部服务。
   EDO_REDIS_URL: ${EDO_COMPOSE_REDIS_URL:-redis://redis:6379/0}
   EDO_NATS_URL: ${EDO_COMPOSE_NATS_URL:-nats://nats:4222}

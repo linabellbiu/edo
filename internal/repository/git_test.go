@@ -170,6 +170,40 @@ func TestCheckoutKeepsPinnedBranchCommitAfterBranchAdvances(t *testing.T) {
 	assertVersionFile(t, destination, "pinned branch commit\n")
 }
 
+func TestCheckoutCachedReusesIsolatedVersionWorkspace(t *testing.T) {
+	repositoryPath := t.TempDir()
+	remote, err := git.PlainInit(repositoryPath, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	commit := commitVersionFile(t, remote, repositoryPath, "cached version\n", "cached version")
+	root := t.TempDir()
+	destination := filepath.Join(root, "repository-hash", "v1.0.10")
+	client := NewGitClient(config.Git{Timeout: 5 * time.Second})
+	cached, err := client.CheckoutCached(context.Background(), model.GitRepository{
+		CloneURL: repositoryPath, AuthType: model.GitAuthNone,
+	}, "", "refs/heads/master", commit.String(), destination)
+	if err != nil || cached {
+		t.Fatalf("首次版本工作区不应命中缓存: cached=%v err=%v", cached, err)
+	}
+	assertVersionFile(t, destination, "cached version\n")
+	if _, err := os.Stat(filepath.Join(destination, ".git")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("独立版本工作区不应包含可切换版本的 .git 目录: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(filepath.Dir(destination), ".cache")); err != nil {
+		t.Fatalf("仓库没有建立共享 Git 对象缓存: %v", err)
+	}
+	if err := os.RemoveAll(repositoryPath); err != nil {
+		t.Fatal(err)
+	}
+	cached, err = client.CheckoutCached(context.Background(), model.GitRepository{
+		CloneURL: repositoryPath, AuthType: model.GitAuthNone,
+	}, "", "refs/heads/master", commit.String(), destination)
+	if err != nil || !cached {
+		t.Fatalf("相同 Commit 没有复用隔离版本工作区: cached=%v err=%v", cached, err)
+	}
+}
+
 func TestCheckoutKeepsPinnedTagCommitAfterTagAdvances(t *testing.T) {
 	repositoryPath := t.TempDir()
 	remote, err := git.PlainInit(repositoryPath, false)

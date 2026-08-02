@@ -74,9 +74,12 @@ func TestParseLogOptionsRejectsInvalidTail(t *testing.T) {
 func TestLocalLogFiles(t *testing.T) {
 	directory := t.TempDir()
 	for name, content := range map[string]string{
-		"backend.log": "backend\n",
-		"web.LOG":     "web\n",
-		"notes.txt":   "ignored\n",
+		"backend.log":                        "backend\n",
+		"edo.log":                            "application\n",
+		"edo-2026-08-02T12-00-00.000.log":    "rotated\n",
+		"edo-2026-07-30T12-00-00.000.log.gz": "compressed\n",
+		"web.LOG":                            "web\n",
+		"notes.txt":                          "ignored\n",
 	} {
 		if err := os.WriteFile(filepath.Join(directory, name), []byte(content), 0o600); err != nil {
 			t.Fatal(err)
@@ -86,10 +89,10 @@ func TestLocalLogFiles(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(paths) != 2 {
-		t.Fatalf("日志文件数量 = %d，want 2: %v", len(paths), paths)
+	if len(paths) != 3 {
+		t.Fatalf("日志文件数量 = %d，want 3: %v", len(paths), paths)
 	}
-	if filepath.Base(paths[0]) != "backend.log" || filepath.Base(paths[1]) != "web.LOG" {
+	if filepath.Base(paths[0]) != "backend.log" || filepath.Base(paths[1]) != "edo.log" || filepath.Base(paths[2]) != "web.LOG" {
 		t.Fatalf("日志文件顺序或过滤不正确: %v", paths)
 	}
 }

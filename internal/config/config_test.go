@@ -118,6 +118,32 @@ func TestLoadUsesArtifactDefaults(t *testing.T) {
 	}
 }
 
+func TestLoadUsesGitCacheDefault(t *testing.T) {
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Git.Directory != "data/repositories" {
+		t.Fatalf("Git 仓库缓存默认目录错误: %q", cfg.Git.Directory)
+	}
+}
+
+func TestLoadUsesAndValidatesFileLoggingDefaults(t *testing.T) {
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("加载运行日志默认配置失败: %v", err)
+	}
+	if !cfg.Logging.FileEnabled || cfg.Logging.Directory != "logs" ||
+		cfg.Logging.MaxFileSizeMB != 100 || cfg.Logging.CompressAfterDays != 3 {
+		t.Fatalf("运行日志默认配置错误: %+v", cfg.Logging)
+	}
+
+	t.Setenv("EDO_LOG_MAX_FILE_SIZE_MB", "0")
+	if _, err := Load(); err == nil {
+		t.Fatal("无效的日志文件大小上限必须被拒绝")
+	}
+}
+
 func TestValidateRejectsInvalidArtifactLimit(t *testing.T) {
 	cfg := validConfig()
 	cfg.Artifacts.MaxBytes = 0
@@ -154,7 +180,7 @@ func validConfig() Config {
 			Concurrency: 1, TaskTimeout: time.Minute,
 			LeaseDuration: 30 * time.Second, ShutdownTimeout: time.Second,
 		},
-		Git: Git{Timeout: time.Second},
+		Git: Git{Timeout: time.Second, Directory: "data/repositories"},
 		Runtime: Runtime{
 			ConnectTimeout: time.Second, RequestTimeout: time.Second,
 			TerminalMaxDuration: time.Hour, DockerBuilderHost: "tcp://docker-builder:2376",
