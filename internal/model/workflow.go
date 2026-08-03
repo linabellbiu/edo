@@ -20,22 +20,34 @@ const (
 )
 
 type WorkflowNodeConfig struct {
-	Branch               string            `json:"branch,omitempty"`
-	Events               []string          `json:"events,omitempty"`
-	TagPattern           string            `json:"tag_pattern,omitempty"`
-	PRTargetPattern      string            `json:"pr_target_pattern,omitempty"`
-	PRSourcePattern      string            `json:"pr_source_pattern,omitempty"`
-	PRActions            []string          `json:"pr_actions,omitempty"`
-	BuildPlanID          string            `json:"build_plan_id,omitempty"`
-	DeploymentPlanID     string            `json:"deployment_plan_id,omitempty"`
-	Script               string            `json:"script,omitempty"`
-	RuntimeImage         string            `json:"runtime_image,omitempty"`
-	ToolchainLanguage    string            `json:"toolchain_language,omitempty"`
-	ToolchainVersion     string            `json:"toolchain_version,omitempty"`
-	WorkingDirectory     string            `json:"working_directory,omitempty"`
-	TimeoutSeconds       int               `json:"timeout_seconds,omitempty"`
-	EnvironmentVariables map[string]string `json:"environment_variables,omitempty"`
-	Description          string            `json:"description,omitempty"`
+	Branch               string                     `json:"branch,omitempty"`
+	Events               []string                   `json:"events,omitempty"`
+	TagPattern           string                     `json:"tag_pattern,omitempty"`
+	PRTargetPattern      string                     `json:"pr_target_pattern,omitempty"`
+	PRSourcePattern      string                     `json:"pr_source_pattern,omitempty"`
+	PRActions            []string                   `json:"pr_actions,omitempty"`
+	BuildPlanID          string                     `json:"build_plan_id,omitempty"`
+	DeploymentPlanID     string                     `json:"deployment_plan_id,omitempty"`
+	Script               string                     `json:"script,omitempty"`
+	RuntimeImage         string                     `json:"runtime_image,omitempty"`
+	ToolchainLanguage    string                     `json:"toolchain_language,omitempty"`
+	ToolchainVersion     string                     `json:"toolchain_version,omitempty"`
+	WorkingDirectory     string                     `json:"working_directory,omitempty"`
+	TimeoutSeconds       int                        `json:"timeout_seconds,omitempty"`
+	EnvironmentVariables map[string]string          `json:"environment_variables,omitempty"`
+	Description          string                     `json:"description,omitempty"`
+	Notifications        []WorkflowNotificationRule `json:"notifications,omitempty"`
+}
+
+// WorkflowNotificationRule 定义单个任务结束后需要发送的通知。规则属于任务配置，
+// 因此会和任务一起保存到流水线运行快照，后续修改流水线不会改变已经启动的运行。
+type WorkflowNotificationRule struct {
+	ID        string `json:"id"`
+	ChannelID string `json:"channel_id"`
+	OnSuccess bool   `json:"on_success"`
+	OnFailure bool   `json:"on_failure"`
+	Title     string `json:"title,omitempty"`
+	Message   string `json:"message,omitempty"`
 }
 
 type WorkflowNode struct {
@@ -62,6 +74,7 @@ type ReleaseWorkflow struct {
 	IsActive                 bool                     `gorm:"not null;default:false;index" json:"is_active"`
 	Source                   WorkflowNode             `gorm:"serializer:json;type:text;not null" json:"source"`
 	Stages                   []WorkflowStage          `gorm:"serializer:json;type:text;not null" json:"stages"`
+	DepartmentID             string                   `gorm:"type:varchar(36);not null;default:'00000000-0000-0000-0000-000000000001';index" json:"department_id"`
 	CreatedBy                string                   `gorm:"type:varchar(36);not null;index" json:"created_by"`
 	UpdatedBy                string                   `gorm:"type:varchar(36);not null;index" json:"updated_by"`
 	CreatedAt                time.Time                `gorm:"not null" json:"created_at"`
@@ -77,12 +90,13 @@ func (ReleaseWorkflow) TableName() string { return "release_workflows" }
 type ReleaseWorkflowTemplate struct {
 	ID            string          `gorm:"type:varchar(36);primaryKey" json:"id"`
 	SchemaVersion uint16          `gorm:"not null;default:1" json:"schema_version"`
-	Name          string          `gorm:"type:varchar(128);not null;uniqueIndex" json:"name"`
+	Name          string          `gorm:"type:varchar(128);not null;uniqueIndex:ux_release_workflow_templates_department_name,priority:2" json:"name"`
 	Description   string          `gorm:"type:varchar(500);not null;default:''" json:"description"`
 	Revision      uint64          `gorm:"not null;default:1" json:"revision"`
 	IsActive      bool            `gorm:"not null;default:false;index" json:"is_active"`
 	Source        WorkflowNode    `gorm:"serializer:json;type:text;not null" json:"source"`
 	Stages        []WorkflowStage `gorm:"serializer:json;type:text;not null" json:"stages"`
+	DepartmentID  string          `gorm:"type:varchar(36);not null;default:'00000000-0000-0000-0000-000000000001';index;uniqueIndex:ux_release_workflow_templates_department_name,priority:1" json:"department_id"`
 	CreatedBy     string          `gorm:"type:varchar(36);not null;index" json:"created_by"`
 	UpdatedBy     string          `gorm:"type:varchar(36);not null;index" json:"updated_by"`
 	CreatedAt     time.Time       `gorm:"not null" json:"created_at"`

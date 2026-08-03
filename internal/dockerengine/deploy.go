@@ -30,13 +30,26 @@ type ImageSnapshot struct {
 }
 
 var (
-	ErrContainerNotRunning       = errors.New("Docker 容器未保持运行")
-	ErrContainerRestarted        = errors.New("Docker 容器启动期间发生重启")
-	ErrContainerUnhealthy        = errors.New("Docker 容器健康检查失败")
-	ErrContainerReadinessTimeout = errors.New("等待 Docker 容器就绪超时")
-	ErrContainerStopTimeout      = errors.New("停止旧 Docker 容器超时")
-	ErrContainerStopFailed       = errors.New("停止旧 Docker 容器失败")
-	ErrContainerRollbackFailed   = errors.New("恢复旧 Docker 容器失败")
+	ErrContainerNotRunning         = errors.New("Docker 容器未保持运行")
+	ErrContainerRestarted          = errors.New("Docker 容器启动期间发生重启")
+	ErrContainerUnhealthy          = errors.New("Docker 容器健康检查失败")
+	ErrContainerReadinessTimeout   = errors.New("等待 Docker 容器就绪超时")
+	ErrContainerStopTimeout        = errors.New("停止旧 Docker 容器超时")
+	ErrContainerStopFailed         = errors.New("停止旧 Docker 容器失败")
+	ErrContainerRollbackFailed     = errors.New("恢复旧 Docker 容器失败")
+	ErrContainerPortAllocated      = errors.New("Docker 容器主机端口已被占用")
+	ErrContainerRuntimeUnavailable = errors.New("Docker 容器运行时不可用")
+	ErrContainerImageUnavailable   = errors.New("Docker 容器镜像不可用")
+	ErrContainerImageMismatch      = errors.New("Docker 容器镜像身份不一致")
+	ErrContainerConfigInvalid      = errors.New("Docker 容器发布配置无效")
+	ErrContainerOwnershipConflict  = errors.New("Docker 容器名称被其他资源占用")
+	ErrContainerVolumeFailed       = errors.New("Docker 容器卷准备失败")
+	ErrContainerCreateFailed       = errors.New("创建 Docker 容器失败")
+	ErrContainerStartFailed        = errors.New("启动 Docker 容器失败")
+	ErrContainerCommandFailed      = errors.New("Docker 自定义部署命令失败")
+	ErrContainerInspectFailed      = errors.New("读取 Docker 容器状态失败")
+	ErrContainerReplaceFailed      = errors.New("替换 Docker 容器失败")
+	ErrContainerVerificationFailed = errors.New("Docker 容器发布结果校验失败")
 )
 
 const (
@@ -66,7 +79,7 @@ func (s *Service) DeployPreparedContainer(
 	timeout time.Duration, configuration model.DockerContainerConfig, registry RegistryAuth, stdout, stderr io.Writer,
 ) (ImageSnapshot, error, error) {
 	if strings.TrimSpace(image) == "" || !IsValidImageID(expectedImageID) {
-		return ImageSnapshot{}, nil, errors.New("待发布的 Docker 镜像不可验证")
+		return ImageSnapshot{}, nil, containerDeploymentError(ErrContainerImageMismatch, errors.New("待发布的 Docker 镜像不可验证"))
 	}
 	return s.deployContainer(ctx, endpointID, targetID, containerName, image, imageDisplay, expectedImageID, deploymentID, timeout, configuration, registry, stdout, stderr)
 }
@@ -78,11 +91,11 @@ func (s *Service) deployContainer(
 ) (ImageSnapshot, error, error) {
 	configuration, err := NormalizeContainerConfig(configuration)
 	if err != nil {
-		return ImageSnapshot{}, nil, err
+		return ImageSnapshot{}, nil, containerDeploymentError(ErrContainerConfigInvalid, err)
 	}
 	apiClient, err := s.executionClient(ctx, endpointID)
 	if err != nil {
-		return ImageSnapshot{}, nil, err
+		return ImageSnapshot{}, nil, containerDeploymentError(ErrContainerRuntimeUnavailable, err)
 	}
 	defer apiClient.Close()
 	deployContext, cancel := context.WithTimeout(ctx, timeout)
@@ -94,35 +107,35 @@ func (s *Service) deployContainer(
 		// 执行，不能再次读取可能被其他构建覆盖的展示标签。
 		localImage, err := apiClient.ImageInspect(deployContext, expectedImageID)
 		if err != nil {
-			return ImageSnapshot{}, nil, fmt.Errorf("目标主机上找不到待发布的 Docker 镜像: %w", err)
+			return ImageSnapshot{}, nil, containerDeploymentError(ErrContainerImageUnavailable, fmt.Errorf("目标主机上找不到待发布的 Docker 镜像: %w", err))
 		}
 		if localImage.ID != expectedImageID {
-			return ImageSnapshot{}, nil, errors.New("目标主机上的 Docker 镜像与固定结果不一致")
+			return ImageSnapshot{}, nil, containerDeploymentError(ErrContainerImageMismatch, errors.New("目标主机上的 Docker 镜像与固定结果不一致"))
 		}
 		executionImage = expectedImageID
 	} else if IsEDOLocalImage(image) {
 		if _, err := apiClient.ImageInspect(deployContext, image); err != nil {
-			return ImageSnapshot{}, nil, fmt.Errorf("目标主机上找不到待发布的 Docker 镜像: %w", err)
+			return ImageSnapshot{}, nil, containerDeploymentError(ErrContainerImageUnavailable, fmt.Errorf("目标主机上找不到待发布的 Docker 镜像: %w", err))
 		}
 	} else if _, inspectErr := apiClient.ImageInspect(deployContext, image); inspectErr != nil {
 		if !errdefs.IsNotFound(inspectErr) {
-			return ImageSnapshot{}, nil, fmt.Errorf("检查目标主机 Docker 镜像失败: %w", inspectErr)
+			return ImageSnapshot{}, nil, containerDeploymentError(ErrContainerImageUnavailable, fmt.Errorf("检查目标主机 Docker 镜像失败: %w", inspectErr))
 		}
 		pulledWithSSH, err := s.pullImageWithSSH(deployContext, endpointID, image, registry)
 		if err != nil {
-			return ImageSnapshot{}, nil, err
+			return ImageSnapshot{}, nil, containerDeploymentError(ErrContainerImageUnavailable, err)
 		}
 		if !pulledWithSSH {
 			encodedAuth, encodeErr := encodeRegistryAuth(registryAuthConfig(registry))
 			if encodeErr != nil {
-				return ImageSnapshot{}, nil, encodeErr
+				return ImageSnapshot{}, nil, containerDeploymentError(ErrContainerImageUnavailable, encodeErr)
 			}
 			pull, err := apiClient.ImagePull(deployContext, image, client.ImagePullOptions{RegistryAuth: encodedAuth})
 			if err != nil {
-				return ImageSnapshot{}, nil, fmt.Errorf("拉取 Docker 镜像失败: %w", err)
+				return ImageSnapshot{}, nil, containerDeploymentError(ErrContainerImageUnavailable, fmt.Errorf("拉取 Docker 镜像失败: %w", err))
 			}
 			if err := pull.Wait(deployContext); err != nil {
-				return ImageSnapshot{}, nil, fmt.Errorf("等待 Docker 镜像拉取完成失败: %w", err)
+				return ImageSnapshot{}, nil, containerDeploymentError(ErrContainerImageUnavailable, fmt.Errorf("等待 Docker 镜像拉取完成失败: %w", err))
 			}
 		}
 	}
@@ -134,7 +147,7 @@ func (s *Service) deployContainer(
 	}
 	configuration, err = prepareManagedContainerVolumes(deployContext, apiClient, targetID, configuration)
 	if err != nil {
-		return ImageSnapshot{}, nil, err
+		return ImageSnapshot{}, nil, containerDeploymentError(ErrContainerVolumeFailed, err)
 	}
 
 	inspect, err := apiClient.ContainerInspect(deployContext, containerName, client.ContainerInspectOptions{})
@@ -142,14 +155,14 @@ func (s *Service) deployContainer(
 		if errdefs.IsNotFound(err) {
 			return createInitialContainer(deployContext, apiClient, targetID, containerName, executionImage, imageDisplay, deploymentID, configuration)
 		}
-		return ImageSnapshot{}, nil, fmt.Errorf("读取待更新 Docker 容器失败: %w", err)
+		return ImageSnapshot{}, nil, containerDeploymentError(ErrContainerInspectFailed, fmt.Errorf("读取待更新 Docker 容器失败: %w", err))
 	}
 	if inspect.Container.Config == nil || inspect.Container.HostConfig == nil {
-		return ImageSnapshot{}, nil, errors.New("Docker 容器配置不完整")
+		return ImageSnapshot{}, nil, containerDeploymentError(ErrContainerConfigInvalid, errors.New("Docker 容器配置不完整"))
 	}
 	if inspect.Container.Config.Labels["edo.managed"] != "true" ||
 		inspect.Container.Config.Labels["edo.deployment.target.id"] != targetID {
-		return ImageSnapshot{}, nil, errors.New("同名 Docker 容器不属于当前 EDO 部署目标")
+		return ImageSnapshot{}, nil, containerDeploymentError(ErrContainerOwnershipConflict, errors.New("同名 Docker 容器不属于当前 EDO 部署目标"))
 	}
 	previousImage := ImageSnapshot{Reference: inspect.Container.Config.Image, ID: inspect.Container.Image}
 	oldID := inspect.Container.ID
@@ -177,13 +190,13 @@ func (s *Service) deployContainer(
 	}
 	if _, err := apiClient.ContainerRename(deployContext, oldID, client.ContainerRenameOptions{NewName: backupName}); err != nil {
 		return previousImage, nil, deploymentErrorWithRollback(
-			fmt.Errorf("为旧 Docker 容器创建回退名称失败: %w", err), rollbackOld(),
+			containerDeploymentError(ErrContainerReplaceFailed, fmt.Errorf("为旧 Docker 容器创建回退名称失败: %w", err)), rollbackOld(),
 		)
 	}
 
 	newConfig, newHostConfig, err := initialContainerConfig(executionImage, targetID, deploymentID, configuration)
 	if err != nil {
-		return previousImage, nil, deploymentErrorWithRollback(err, rollbackOld())
+		return previousImage, nil, deploymentErrorWithRollback(containerDeploymentError(ErrContainerConfigInvalid, err), rollbackOld())
 	}
 	applyImageDisplayLabel(newConfig, imageDisplay)
 	created, err := apiClient.ContainerCreate(deployContext, client.ContainerCreateOptions{
@@ -191,7 +204,7 @@ func (s *Service) deployContainer(
 	})
 	if err != nil {
 		return previousImage, nil, deploymentErrorWithRollback(
-			fmt.Errorf("创建新 Docker 容器失败: %w", err), rollbackOld(),
+			containerDeploymentError(ErrContainerCreateFailed, fmt.Errorf("创建新 Docker 容器失败: %w", err)), rollbackOld(),
 		)
 	}
 	newID := created.ID
@@ -209,7 +222,7 @@ func (s *Service) deployContainer(
 	}
 	if _, err := apiClient.ContainerStart(deployContext, newID, client.ContainerStartOptions{}); err != nil {
 		return previousImage, nil, deploymentErrorWithRollback(
-			fmt.Errorf("启动新 Docker 容器失败: %w", err), rollbackNew(),
+			containerDeploymentError(ErrContainerStartFailed, fmt.Errorf("启动新 Docker 容器失败: %w", classifyContainerStartError(err))), rollbackNew(),
 		)
 	}
 	if err := waitContainerHealthy(deployContext, apiClient, newID); err != nil {
@@ -287,6 +300,28 @@ func deploymentErrorWithRollback(deployErr, rollbackErr error) error {
 	return fmt.Errorf("%w: deployment_error=%v rollback_error=%v", ErrContainerRollbackFailed, deployErr, rollbackErr)
 }
 
+// Docker Engine 的端口分配失败通过 500 响应中的稳定 daemon 文案返回，
+// Moby 客户端没有提供更细的结构化错误类型。这里在 Docker 启动边界转换为
+// EDO 的业务分类，原始错误仍保留在错误链中供系统日志诊断。
+func classifyContainerStartError(err error) error {
+	if err == nil {
+		return nil
+	}
+	message := strings.ToLower(err.Error())
+	if strings.Contains(message, "port is already allocated") ||
+		strings.Contains(message, "failed to bind host port") {
+		return fmt.Errorf("%w: %v", ErrContainerPortAllocated, err)
+	}
+	return err
+}
+
+func containerDeploymentError(category error, cause error) error {
+	if cause == nil || errors.Is(cause, category) {
+		return cause
+	}
+	return fmt.Errorf("%w: %w", category, cause)
+}
+
 func (s *Service) deployContainerWithHostCommand(
 	ctx context.Context,
 	apiClient *client.Client,
@@ -295,13 +330,13 @@ func (s *Service) deployContainerWithHostCommand(
 ) (ImageSnapshot, error, error) {
 	imageInspect, err := apiClient.ImageInspect(ctx, image)
 	if err != nil || imageInspect.ID == "" {
-		return ImageSnapshot{}, nil, errors.New("目标主机上找不到待发布的 Docker 镜像")
+		return ImageSnapshot{}, nil, containerDeploymentError(ErrContainerImageUnavailable, errors.New("目标主机上找不到待发布的 Docker 镜像"))
 	}
 	arguments, err := dockerRunCommandArguments(
 		commandTemplate, image, imageDisplay, strings.TrimPrefix(containerName, "/"), targetID, deploymentID,
 	)
 	if err != nil {
-		return ImageSnapshot{}, nil, err
+		return ImageSnapshot{}, nil, containerDeploymentError(ErrContainerConfigInvalid, err)
 	}
 
 	var previous ImageSnapshot
@@ -311,12 +346,12 @@ func (s *Service) deployContainerWithHostCommand(
 	if inspectErr == nil {
 		if inspect.Container.Config == nil || inspect.Container.Config.Labels["edo.managed"] != "true" ||
 			inspect.Container.Config.Labels["edo.deployment.target.id"] != targetID {
-			return ImageSnapshot{}, nil, errors.New("同名 Docker 容器不属于当前 EDO 部署目标")
+			return ImageSnapshot{}, nil, containerDeploymentError(ErrContainerOwnershipConflict, errors.New("同名 Docker 容器不属于当前 EDO 部署目标"))
 		}
 		oldID = inspect.Container.ID
 		previous = ImageSnapshot{Reference: inspect.Container.Config.Image, ID: inspect.Container.Image}
 	} else if !errdefs.IsNotFound(inspectErr) {
-		return ImageSnapshot{}, nil, fmt.Errorf("读取待更新 Docker 容器失败: %w", inspectErr)
+		return ImageSnapshot{}, nil, containerDeploymentError(ErrContainerInspectFailed, fmt.Errorf("读取待更新 Docker 容器失败: %w", inspectErr))
 	}
 
 	backupName := ""
@@ -343,7 +378,7 @@ func (s *Service) deployContainerWithHostCommand(
 		oldStopped = true
 		if _, err := apiClient.ContainerRename(ctx, oldID, client.ContainerRenameOptions{NewName: backupName}); err != nil {
 			return previous, nil, deploymentErrorWithRollback(
-				fmt.Errorf("为旧 Docker 容器创建回退名称失败: %w", err), rollbackOld(),
+				containerDeploymentError(ErrContainerReplaceFailed, fmt.Errorf("为旧 Docker 容器创建回退名称失败: %w", err)), rollbackOld(),
 			)
 		}
 	}
@@ -368,13 +403,13 @@ func (s *Service) deployContainerWithHostCommand(
 	}
 	if err := s.runDockerHostCommand(ctx, endpointID, arguments, stdout, stderr); err != nil {
 		rollbackErr := errors.Join(cleanupNew(), rollbackOld())
-		return previous, nil, deploymentErrorWithRollback(err, rollbackErr)
+		return previous, nil, deploymentErrorWithRollback(containerDeploymentError(ErrContainerCommandFailed, err), rollbackErr)
 	}
 
 	created, err := apiClient.ContainerInspect(ctx, canonicalName, client.ContainerInspectOptions{})
 	if err != nil || created.Container.Config == nil || created.Container.Config.Labels["edo.managed"] != "true" ||
 		created.Container.Config.Labels["edo.deployment.target.id"] != targetID || created.Container.Image != imageInspect.ID {
-		deployErr := errors.New("Docker 部署命令没有创建可验证的目标容器")
+		deployErr := containerDeploymentError(ErrContainerVerificationFailed, errors.New("Docker 部署命令没有创建可验证的目标容器"))
 		return previous, nil, deploymentErrorWithRollback(deployErr, errors.Join(cleanupNew(), rollbackOld()))
 	}
 	if err := waitContainerHealthy(ctx, apiClient, created.Container.ID); err != nil {
@@ -441,14 +476,14 @@ func createInitialContainer(
 ) (ImageSnapshot, error, error) {
 	configuration, hostConfiguration, err := initialContainerConfig(image, targetID, deploymentID, deploymentConfig)
 	if err != nil {
-		return ImageSnapshot{}, nil, err
+		return ImageSnapshot{}, nil, containerDeploymentError(ErrContainerConfigInvalid, err)
 	}
 	applyImageDisplayLabel(configuration, imageDisplay)
 	created, err := apiClient.ContainerCreate(ctx, client.ContainerCreateOptions{
 		Config: configuration, HostConfig: hostConfiguration, Name: strings.TrimPrefix(containerName, "/"),
 	})
 	if err != nil {
-		return ImageSnapshot{}, nil, fmt.Errorf("创建首个 Docker 容器失败: %w", err)
+		return ImageSnapshot{}, nil, containerDeploymentError(ErrContainerCreateFailed, fmt.Errorf("创建首个 Docker 容器失败: %w", err))
 	}
 	removeCreated := true
 	defer func() {
@@ -459,7 +494,7 @@ func createInitialContainer(
 		}
 	}()
 	if _, err := apiClient.ContainerStart(ctx, created.ID, client.ContainerStartOptions{}); err != nil {
-		return ImageSnapshot{}, nil, fmt.Errorf("启动首个 Docker 容器失败: %w", err)
+		return ImageSnapshot{}, nil, containerDeploymentError(ErrContainerStartFailed, fmt.Errorf("启动首个 Docker 容器失败: %w", classifyContainerStartError(err)))
 	}
 	if err := waitContainerHealthy(ctx, apiClient, created.ID); err != nil {
 		return ImageSnapshot{}, nil, err

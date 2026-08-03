@@ -19,6 +19,7 @@ import (
 	"gorm.io/gorm"
 
 	"edo/internal/config"
+	"edo/internal/database"
 	"edo/internal/messaging"
 	"edo/internal/model"
 	"edo/internal/task"
@@ -208,24 +209,27 @@ func (w *Worker) process(runContext context.Context, message queueMessage) {
 		w.nak(message, leaseBusyRetryDelay(job, time.Now().UTC()), "lease_busy")
 		return
 	}
+	jobContext := database.WithDepartmentScope(runContext, database.DepartmentScope{
+		DepartmentID: job.DepartmentID,
+	})
 
 	if attempt > job.MaxAttempts {
-		w.finishFailure(runContext, message, taskMessage, attempt, "attempts_exhausted", "任务已达到最大执行次数")
+		w.finishFailure(jobContext, message, taskMessage, attempt, "attempts_exhausted", "任务已达到最大执行次数")
 		return
 	}
 	if job.Kind != taskMessage.Kind || job.MaxAttempts != taskMessage.MaxAttempts || job.Subject != message.Subject() {
 		w.logger.Error("任务消息与数据库记录不一致", "operation", "worker_message_mismatch", "job_id", taskMessage.JobID, "attempt", attempt)
-		w.finishFailure(runContext, message, taskMessage, attempt, "message_mismatch", "任务消息校验失败")
+		w.finishFailure(jobContext, message, taskMessage, attempt, "message_mismatch", "任务消息校验失败")
 		return
 	}
 
 	handler, exists := w.registry.Handler(taskMessage.Kind)
 	if !exists {
-		w.finishFailure(runContext, message, taskMessage, attempt, "handler_not_found", "任务类型暂不受支持")
+		w.finishFailure(jobContext, message, taskMessage, attempt, "handler_not_found", "任务类型暂不受支持")
 		return
 	}
 
-	taskContext, cancel := context.WithTimeout(runContext, w.config.TaskTimeout)
+	taskContext, cancel := context.WithTimeout(jobContext, w.config.TaskTimeout)
 	heartbeatDone := make(chan struct{})
 	go w.heartbeat(taskContext, message, taskMessage.JobID, heartbeatDone)
 	w.active.Add(1)
@@ -236,7 +240,7 @@ func (w *Worker) process(runContext context.Context, message queueMessage) {
 	<-heartbeatDone
 
 	if executionErr == nil {
-		if err := w.finishSuccess(context.WithoutCancel(runContext), taskMessage.JobID); err != nil {
+		if err := w.finishSuccess(context.WithoutCancel(jobContext), taskMessage.JobID); err != nil {
 			w.logger.Error("记录任务成功状态失败", "operation", "worker_finish_success", "job_id", taskMessage.JobID, "attempt", attempt, "err", err)
 			w.nak(message, retryDelay(attempt), "finish_success")
 			return
@@ -251,13 +255,13 @@ func (w *Worker) process(runContext context.Context, message queueMessage) {
 	w.logger.Error("任务执行失败", "operation", "worker_execute", "job_id", taskMessage.JobID, "kind", taskMessage.Kind, "attempt", attempt, "max_attempts", job.MaxAttempts, "retryable", retryable, "err", executionErr)
 	if retryable && attempt < job.MaxAttempts {
 		w.retried.Add(1)
-		if err := w.scheduleRetry(context.WithoutCancel(runContext), taskMessage.JobID, code, publicMessage); err != nil {
+		if err := w.scheduleRetry(context.WithoutCancel(jobContext), taskMessage.JobID, code, publicMessage); err != nil {
 			w.logger.Error("记录任务重试状态失败", "operation", "worker_retry_state", "job_id", taskMessage.JobID, "attempt", attempt, "err", err)
 		}
 		w.nak(message, retryDelay(attempt), "execution_retry")
 		return
 	}
-	w.finishFailure(context.WithoutCancel(runContext), message, taskMessage, attempt, code, publicMessage)
+	w.finishFailure(context.WithoutCancel(jobContext), message, taskMessage, attempt, code, publicMessage)
 }
 
 func (w *Worker) RuntimeStats() RuntimeStats {
@@ -416,7 +420,8 @@ func (w *Worker) finishFailure(ctx context.Context, queueMessage queueMessage, m
 			}
 		}
 		return tx.Create(&model.OutboxEvent{
-			EventID: uuid.NewString(), AggregateID: job.ID, Subject: w.nats.DeadSubject,
+			DepartmentID: job.DepartmentID,
+			EventID:      uuid.NewString(), AggregateID: job.ID, Subject: w.nats.DeadSubject,
 			Payload: datatypes.JSON(payload), NextAttemptAt: failedAt, CreatedAt: failedAt,
 		}).Error
 	})

@@ -8,11 +8,12 @@ const NotificationChannelWebhook NotificationChannelType = "webhook"
 
 type NotificationChannel struct {
 	ID                 string                  `gorm:"type:varchar(36);primaryKey"`
-	Name               string                  `gorm:"type:varchar(128);not null;uniqueIndex"`
+	Name               string                  `gorm:"type:varchar(128);not null;uniqueIndex:ux_notification_channels_department_name,priority:2"`
 	Type               NotificationChannelType `gorm:"type:varchar(16);not null;index"`
 	EndpointCiphertext string                  `gorm:"type:text;not null"`
 	TokenCiphertext    string                  `gorm:"type:text;not null"`
 	IsActive           bool                    `gorm:"not null;default:true;index"`
+	DepartmentID       string                  `gorm:"type:varchar(36);not null;default:'00000000-0000-0000-0000-000000000001';index;uniqueIndex:ux_notification_channels_department_name,priority:1"`
 	CreatedBy          string                  `gorm:"type:varchar(36);not null;index"`
 	CreatedAt          time.Time               `gorm:"not null"`
 	UpdatedAt          time.Time               `gorm:"not null"`
@@ -38,6 +39,7 @@ const (
 
 type Notification struct {
 	ID           string               `gorm:"type:varchar(36);primaryKey" json:"id"`
+	DepartmentID string               `gorm:"type:varchar(36);not null;default:'00000000-0000-0000-0000-000000000001';index" json:"department_id"`
 	ChannelID    string               `gorm:"type:varchar(36);not null;index" json:"channel_id"`
 	Title        string               `gorm:"type:varchar(255);not null" json:"title"`
 	Message      string               `gorm:"type:text;not null" json:"message"`

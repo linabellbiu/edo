@@ -88,4 +88,31 @@ func TestRBACAndAuditAPI(t *testing.T) {
 		!bytes.Contains(audits.Body.Bytes(), []byte(`"denied"`)) {
 		t.Fatalf("审计日志未记录成功或拒绝操作: status=%d body=%s", audits.Code, audits.Body.String())
 	}
+	selfDelete := performJSONRequest(t, router, http.MethodDelete, "/api/v1/users/"+currentUserIDFromResponse(t, adminLogin.Body.Bytes()), nil, adminCookie)
+	if selfDelete.Code != http.StatusConflict {
+		t.Fatalf("删除当前登录账户未被拒绝: status=%d body=%s", selfDelete.Code, selfDelete.Body.String())
+	}
+	deleted := performJSONRequest(t, router, http.MethodDelete, "/api/v1/users/"+userPayload.User.ID, nil, adminCookie)
+	if deleted.Code != http.StatusNoContent {
+		t.Fatalf("拥有删除权限的管理员不能删除用户: status=%d body=%s", deleted.Code, deleted.Body.String())
+	}
+	readerLogin = performJSONRequest(t, router, http.MethodPost, "/api/v1/auth/login", map[string]string{
+		"username": "reader", "password": "correct horse battery staple",
+	}, nil)
+	if readerLogin.Code != http.StatusUnauthorized {
+		t.Fatalf("已删除用户仍能登录: status=%d body=%s", readerLogin.Code, readerLogin.Body.String())
+	}
+}
+
+func currentUserIDFromResponse(t *testing.T, body []byte) string {
+	t.Helper()
+	var payload struct {
+		User struct {
+			ID string `json:"id"`
+		} `json:"user"`
+	}
+	if err := json.Unmarshal(body, &payload); err != nil || payload.User.ID == "" {
+		t.Fatalf("解析当前用户失败: payload=%+v err=%v", payload, err)
+	}
+	return payload.User.ID
 }

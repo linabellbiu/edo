@@ -17,7 +17,7 @@ func TestWebhookSecretRequiresPermissionAndCanBeReadRepeatedly(t *testing.T) {
 	adminCookie := adminLogin.Result().Cookies()[0]
 	role := performJSONRequest(t, router, http.MethodPost, "/api/v1/roles", map[string]any{
 		"name": "repository-manager", "display_name": "仓库管理员",
-		"permissions": []string{"repository.read", "repository.manage"},
+		"permissions": []string{"repository.read", "repository.create"},
 	}, adminCookie)
 	var rolePayload struct {
 		Role struct {

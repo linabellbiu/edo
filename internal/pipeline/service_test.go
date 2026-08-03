@@ -837,6 +837,9 @@ func TestPublicWorkflowTemplateSyncsLinkedApplications(t *testing.T) {
 		application.Workflow.WorkflowTemplateRevision != 1 {
 		t.Fatalf("应用没有完整关联阶段式流水线方案: %+v", application)
 	}
+	if application.Workflow.Name != templateResult.WorkflowTemplate.Name {
+		t.Fatalf("关联流水线名称不应拼接应用名或方案类型: got=%q want=%q", application.Workflow.Name, templateResult.WorkflowTemplate.Name)
+	}
 	if application.RepositoryID != repositoryID {
 		t.Fatalf("通用流水线方案不应改变应用代码仓库: got=%s want=%s", application.RepositoryID, repositoryID)
 	}
@@ -846,14 +849,14 @@ func TestPublicWorkflowTemplateSyncsLinkedApplications(t *testing.T) {
 	if _, err := service.SaveWorkflowTemplate(ctx, templateResult.WorkflowTemplate.ID, "admin", WorkflowTemplateInput{
 		Description: "模板第二版",
 		WorkflowInput: WorkflowInput{
-			SchemaVersion: model.WorkflowSchemaVersion, Name: "持续交付", Revision: 1, Activate: true,
+			SchemaVersion: model.WorkflowSchemaVersion, Name: "持续交付新版", Revision: 1, Activate: true,
 			Source: updatedSource, Stages: updatedStages,
 		},
 	}); err != nil {
 		t.Fatalf("更新公共流水线方案失败: %v", err)
 	}
 	stored, err := service.GetWorkflow(ctx, application.ID)
-	if err != nil || stored.Workflow.Source.Name != "修改后的代码源" || stored.Workflow.WorkflowTemplateRevision != 2 {
+	if err != nil || stored.Workflow.Name != "持续交付新版" || stored.Workflow.Source.Name != "修改后的代码源" || stored.Workflow.WorkflowTemplateRevision != 2 {
 		t.Fatalf("启用方案的新版本没有同步到关联应用: workflow=%+v err=%v", stored, err)
 	}
 	var repositoryBoundApplication model.Application

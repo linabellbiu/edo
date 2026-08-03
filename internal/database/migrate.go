@@ -312,6 +312,285 @@ var migrations = []migration{
 			return addColumns(tx, &model.Host{}, []string{"Architecture"})
 		},
 	},
+	{
+		version: "202608030059",
+		up:      migrateLinkedWorkflowNames,
+	},
+	{
+		version: "202608030060",
+		up:      migrateApplicationRuntimeControls,
+	},
+	{
+		version: "202608030061",
+		up: func(tx *gorm.DB) error {
+			return tx.AutoMigrate(&model.DeploymentInstanceControl{})
+		},
+	},
+	{
+		version: "202608030062",
+		up: func(tx *gorm.DB) error {
+			return addColumns(tx, &model.DeploymentRecord{}, []string{"RuntimeDeletedAt"})
+		},
+	},
+	{
+		version: "202608030063",
+		up:      migrateDepartmentDataScope,
+	},
+	{
+		version: "202608030064",
+		up:      migrateDepartmentScopedUniqueIndexes,
+	},
+}
+
+type departmentScopedUniqueIndex struct {
+	model       any
+	table       string
+	field       string
+	oldIndex    string
+	newIndex    string
+	description string
+}
+
+var departmentScopedUniqueIndexes = []departmentScopedUniqueIndex{
+	{&model.GitRepository{}, "git_repositories", "name", "idx_git_repositories_name", "ux_git_repositories_department_name", "代码仓库名称"},
+	{&model.BuildPlan{}, "build_plans", "name", "idx_build_plans_name", "ux_build_plans_department_name", "构建方案名称"},
+	{&model.ImageRegistry{}, "image_registries", "name", "idx_image_registries_name", "ux_image_registries_department_name", "镜像仓库名称"},
+	{&model.DeploymentPlan{}, "deployment_plans", "name", "idx_deployment_plans_name", "ux_deployment_plans_department_name", "部署方案名称"},
+	{&model.Application{}, "applications", "name", "idx_applications_name", "ux_applications_department_name", "应用名称"},
+	{&model.DockerEndpoint{}, "docker_endpoints", "name", "idx_docker_endpoints_name", "ux_docker_endpoints_department_name", "Docker 连接名称"},
+	{&model.KubernetesCluster{}, "kubernetes_clusters", "name", "idx_kubernetes_clusters_name", "ux_kubernetes_clusters_department_name", "Kubernetes 集群名称"},
+	{&model.DeploymentTarget{}, "deployment_targets", "name", "idx_deployment_targets_name", "ux_deployment_targets_department_name", "部署目标名称"},
+	{&model.DNSProviderAccount{}, "dns_provider_accounts", "name", "idx_dns_provider_accounts_name", "ux_dns_provider_accounts_department_name", "DNS 厂商账户名称"},
+	{&model.Environment{}, "environments", "name", "idx_environments_name", "ux_environments_department_name", "环境名称"},
+	{&model.Host{}, "hosts", "name", "idx_hosts_name", "ux_hosts_department_name", "主机名称"},
+	{&model.NotificationChannel{}, "notification_channels", "name", "idx_notification_channels_name", "ux_notification_channels_department_name", "通知渠道名称"},
+	{&model.ScheduledTask{}, "scheduled_tasks", "name", "idx_scheduled_tasks_name", "ux_scheduled_tasks_department_name", "定时任务名称"},
+	{&model.MonitorRule{}, "monitor_rules", "name", "idx_monitor_rules_name", "ux_monitor_rules_department_name", "监控规则名称"},
+	{&model.ReleaseWorkflowTemplate{}, "release_workflow_templates", "name", "idx_release_workflow_templates_name", "ux_release_workflow_templates_department_name", "流水线方案名称"},
+	{&model.ReleasePlan{}, "release_plans", "version", "idx_release_plans_version", "ux_release_plans_department_version", "发布计划版本"},
+}
+
+// migrateDepartmentScopedUniqueIndexes 把部门资源的业务唯一标识从全局唯一收紧为部门内唯一。
+// 三个阶段不能调换：先验证全部数据，避免 MySQL 的非事务 DDL 留下半套结构；再创建新索引；
+// 最后才删除旧全局索引，确保升级过程中始终至少有一层唯一约束。
+func migrateDepartmentScopedUniqueIndexes(tx *gorm.DB) error {
+	for _, item := range departmentScopedUniqueIndexes {
+		if !tx.Migrator().HasTable(item.model) || tx.Migrator().HasIndex(item.model, item.newIndex) {
+			continue
+		}
+		if !tx.Migrator().HasColumn(item.model, "DepartmentID") || !tx.Migrator().HasColumn(item.model, item.field) {
+			return fmt.Errorf("%s缺少部门唯一索引所需字段", item.description)
+		}
+		var duplicate struct {
+			Count int64 `gorm:"column:duplicate_count"`
+		}
+		result := tx.Table(item.table).
+			Select("COUNT(*) AS duplicate_count").
+			Group("department_id, " + item.field).
+			Having("COUNT(*) > 1").
+			Limit(1).
+			Scan(&duplicate)
+		if result.Error != nil {
+			return fmt.Errorf("检查%s部门内重复数据失败: %w", item.description, result.Error)
+		}
+		if result.RowsAffected > 0 {
+			return fmt.Errorf("%s存在部门内重复数据，无法创建唯一索引", item.description)
+		}
+	}
+
+	for _, item := range departmentScopedUniqueIndexes {
+		if !tx.Migrator().HasTable(item.model) || tx.Migrator().HasIndex(item.model, item.newIndex) {
+			continue
+		}
+		// 使用模型中显式命名的组合索引，让 GORM 为 SQLite、PostgreSQL 和 MySQL
+		// 分别生成正确的标识符引用与建索引语句。
+		if err := tx.Migrator().CreateIndex(item.model, item.newIndex); err != nil {
+			return fmt.Errorf("创建%s部门唯一索引失败: %w", item.description, err)
+		}
+	}
+
+	for _, item := range departmentScopedUniqueIndexes {
+		if !tx.Migrator().HasTable(item.model) || !tx.Migrator().HasIndex(item.model, item.oldIndex) {
+			continue
+		}
+		// 必须传显式旧索引名。模型 tag 已经不再包含旧索引，按字段名删除会误删新组合索引。
+		if err := tx.Migrator().DropIndex(item.model, item.oldIndex); err != nil {
+			return fmt.Errorf("删除%s旧全局唯一索引失败: %w", item.description, err)
+		}
+	}
+	return nil
+}
+
+func migrateDepartmentDataScope(tx *gorm.DB) error {
+	now := time.Now().UTC()
+	if err := tx.AutoMigrate(&model.Department{}); err != nil {
+		return fmt.Errorf("创建部门表失败: %w", err)
+	}
+	defaultDepartment := model.Department{
+		ID: DefaultDepartmentID, Name: "默认部门", Description: "升级前已有用户和资源的默认归属",
+		IsActive: true, CreatedAt: now, UpdatedAt: now,
+	}
+	if err := tx.Where("id = ?", DefaultDepartmentID).FirstOrCreate(&defaultDepartment).Error; err != nil {
+		return fmt.Errorf("初始化默认部门失败: %w", err)
+	}
+	departmentModels := []any{
+		&model.User{}, &model.AuditLog{}, &model.Job{}, &model.OutboxEvent{},
+		&model.GitRepository{}, &model.DockerEndpoint{}, &model.KubernetesCluster{},
+		&model.DeploymentTarget{}, &model.DeploymentRecord{}, &model.NotificationChannel{}, &model.Notification{},
+		&model.ScheduledTask{}, &model.MonitorRule{}, &model.BuildRun{}, &model.Artifact{},
+		&model.ReleasePlan{}, &model.ReleasePlanExecution{}, &model.ReleaseWorkflow{}, &model.ReleaseWorkflowTemplate{},
+		&model.BuildPlan{}, &model.ImageRegistry{}, &model.DeploymentPlan{}, &model.Application{}, &model.PipelineRun{},
+		&model.DNSProviderAccount{}, &model.DNSDomain{}, &model.Environment{}, &model.Host{},
+	}
+	for _, value := range departmentModels {
+		if err := addColumns(tx, value, []string{"DepartmentID"}); err != nil {
+			return fmt.Errorf("增加部门归属字段失败: %w", err)
+		}
+		statement := &gorm.Statement{DB: tx}
+		if err := statement.Parse(value); err != nil {
+			return fmt.Errorf("解析部门资源表失败: %w", err)
+		}
+		table := statement.Schema.Table
+		if err := tx.Table(table).Where("department_id IS NULL OR department_id = ?", "").
+			Update("department_id", DefaultDepartmentID).Error; err != nil {
+			return fmt.Errorf("回填%s部门归属失败: %w", table, err)
+		}
+		if err := addIndexes(tx, value, []string{"DepartmentID"}); err != nil {
+			return fmt.Errorf("创建%s部门索引失败: %w", table, err)
+		}
+	}
+	return migrateLegacyPermissions(tx)
+}
+
+func migrateLegacyPermissions(tx *gorm.DB) error {
+	expansions := map[string][]string{
+		"user.manage":         {"user.create", "user.update", "user.delete"},
+		"role.manage":         {"role.create", "role.update", "role.delete"},
+		"identity.manage":     {"identity.create", "identity.update"},
+		"repository.manage":   {"repository.create", "repository.update", "repository.delete", "repository.execute"},
+		"credential.manage":   {"credential.create", "credential.update", "credential.delete"},
+		"dns.manage":          {"dns.create", "dns.update", "dns.delete", "dns.execute"},
+		"delivery.manage":     {"delivery.create", "delivery.update", "delivery.delete"},
+		"delivery.run":        {"delivery.execute"},
+		"deployment.manage":   {"deployment.create", "deployment.update", "deployment.delete"},
+		"deployment.run":      {"deployment.execute"},
+		"cluster.manage":      {"cluster.create", "cluster.update", "cluster.delete", "cluster.execute"},
+		"task.manage":         {"task.execute"},
+		"config.manage":       {"config.create", "config.update", "config.execute"},
+		"notification.manage": {"notification.create", "notification.update", "notification.execute"},
+		"monitor.manage":      {"monitor.create", "monitor.update", "monitor.execute"},
+		"scheduler.manage":    {"scheduler.create", "scheduler.update"},
+	}
+	legacyCodes := make([]string, 0, len(expansions))
+	for code := range expansions {
+		legacyCodes = append(legacyCodes, code)
+	}
+	if tx.Migrator().HasTable(&model.RolePermission{}) {
+		var roleRules []model.RolePermission
+		if err := tx.Where("permission IN ?", legacyCodes).Find(&roleRules).Error; err != nil {
+			return fmt.Errorf("读取旧角色权限失败: %w", err)
+		}
+		for _, rule := range roleRules {
+			for _, permission := range expansions[rule.Permission] {
+				item := model.RolePermission{RoleID: rule.RoleID, Permission: permission, CreatedAt: rule.CreatedAt}
+				if err := tx.Where("role_id = ? AND permission = ?", item.RoleID, item.Permission).FirstOrCreate(&item).Error; err != nil {
+					return fmt.Errorf("迁移角色权限失败: %w", err)
+				}
+			}
+		}
+		if err := tx.Where("permission IN ?", legacyCodes).Delete(&model.RolePermission{}).Error; err != nil {
+			return fmt.Errorf("清理旧角色权限失败: %w", err)
+		}
+	}
+	if tx.Migrator().HasTable(&model.UserPermission{}) {
+		var userRules []model.UserPermission
+		if err := tx.Where("permission IN ?", legacyCodes).Find(&userRules).Error; err != nil {
+			return fmt.Errorf("读取旧用户权限覆盖失败: %w", err)
+		}
+		for _, rule := range userRules {
+			for _, permission := range expansions[rule.Permission] {
+				item := model.UserPermission{
+					UserID: rule.UserID, Permission: permission, Effect: rule.Effect,
+					CreatedAt: rule.CreatedAt, UpdatedAt: rule.UpdatedAt,
+				}
+				if err := tx.Where("user_id = ? AND permission = ?", item.UserID, item.Permission).FirstOrCreate(&item).Error; err != nil {
+					return fmt.Errorf("迁移用户权限覆盖失败: %w", err)
+				}
+			}
+		}
+		if err := tx.Where("permission IN ?", legacyCodes).Delete(&model.UserPermission{}).Error; err != nil {
+			return fmt.Errorf("清理旧用户权限覆盖失败: %w", err)
+		}
+	}
+	return nil
+}
+
+func migrateApplicationRuntimeControls(tx *gorm.DB) error {
+	if err := addColumns(tx, &model.DeploymentRecord{}, []string{"ApplicationID"}); err != nil {
+		return err
+	}
+	if err := tx.AutoMigrate(&model.DeploymentInstanceControl{}); err != nil {
+		return err
+	}
+	// 已有发布记录通过不可变流水线运行补齐应用关联；无法关联的历史记录保持空值，
+	// 后续运行控制会明确拒绝，不能按应用名猜测归属。
+	return tx.Exec(`UPDATE deployment_records
+		SET application_id = (
+			SELECT pipeline_runs.application_id FROM pipeline_runs
+			WHERE pipeline_runs.id = deployment_records.pipeline_run_id
+		)
+		WHERE application_id = '' AND pipeline_run_id <> ''
+		AND EXISTS (
+			SELECT 1 FROM pipeline_runs WHERE pipeline_runs.id = deployment_records.pipeline_run_id
+		)`).Error
+}
+
+// migrateLinkedWorkflowNames 清理早期把应用名和公共流水线方案名拼接后保存的名称。
+// 自定义流水线没有方案关联，名称由用户维护，不参与本次修正。
+func migrateLinkedWorkflowNames(tx *gorm.DB) error {
+	if !tx.Migrator().HasTable(&model.ReleaseWorkflow{}) ||
+		!tx.Migrator().HasTable(&model.ReleaseWorkflowTemplate{}) {
+		return nil
+	}
+
+	var workflows []model.ReleaseWorkflow
+	if err := tx.Select("id", "workflow_template_id", "name").
+		Where("workflow_template_id <> ?", "").Find(&workflows).Error; err != nil {
+		return fmt.Errorf("查询关联公共方案的流水线失败: %w", err)
+	}
+	if len(workflows) == 0 {
+		return nil
+	}
+
+	templateIDs := make([]string, 0, len(workflows))
+	seen := make(map[string]struct{}, len(workflows))
+	for i := range workflows {
+		if _, ok := seen[workflows[i].WorkflowTemplateID]; ok {
+			continue
+		}
+		seen[workflows[i].WorkflowTemplateID] = struct{}{}
+		templateIDs = append(templateIDs, workflows[i].WorkflowTemplateID)
+	}
+	var templates []model.ReleaseWorkflowTemplate
+	if err := tx.Select("id", "name").Where("id IN ?", templateIDs).Find(&templates).Error; err != nil {
+		return fmt.Errorf("查询流水线公共方案名称失败: %w", err)
+	}
+	templateNames := make(map[string]string, len(templates))
+	for i := range templates {
+		templateNames[templates[i].ID] = templates[i].Name
+	}
+	for i := range workflows {
+		name, ok := templateNames[workflows[i].WorkflowTemplateID]
+		if !ok || workflows[i].Name == name {
+			continue
+		}
+		if err := tx.Model(&model.ReleaseWorkflow{}).
+			Where("id = ? AND workflow_template_id = ?", workflows[i].ID, workflows[i].WorkflowTemplateID).
+			Update("name", name).Error; err != nil {
+			return fmt.Errorf("修正关联流水线名称失败: %w", err)
+		}
+	}
+	return nil
 }
 
 // migrateImageRegistryProviderSemantics 修复早期表单允许“Docker Hub”配任意

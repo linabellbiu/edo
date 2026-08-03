@@ -1,10 +1,54 @@
 package task
 
 import (
+	"context"
 	"testing"
 
+	"gorm.io/driver/sqlite"
+	"gorm.io/gorm"
+
 	"edo/internal/config"
+	"edo/internal/model"
 )
+
+func TestCreateFreezesDepartmentOnJobAndOutbox(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open("file:task_department?mode=memory&cache=shared"), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("打开任务测试数据库失败: %v", err)
+	}
+	if err := db.AutoMigrate(&model.Job{}, &model.OutboxEvent{}); err != nil {
+		t.Fatalf("迁移任务测试数据库失败: %v", err)
+	}
+	const departmentID = "department-platform"
+	job, err := NewService(db, config.DefaultMaxAttempts).Create(context.Background(), CreateInput{
+		DepartmentID: departmentID,
+		Kind:         "build.image", Subject: "edo.task.build.image", Payload: map[string]string{"ref": "main"},
+		Idempotent: true,
+	})
+	if err != nil {
+		t.Fatalf("创建任务失败: %v", err)
+	}
+	var event model.OutboxEvent
+	if err := db.Where("aggregate_id = ?", job.ID).First(&event).Error; err != nil {
+		t.Fatalf("读取 Outbox 失败: %v", err)
+	}
+	if job.DepartmentID != departmentID || event.DepartmentID != departmentID {
+		t.Fatalf("任务部门没有可靠传播: job=%s outbox=%s", job.DepartmentID, event.DepartmentID)
+	}
+}
+
+func TestCreateRejectsMissingDepartment(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open("file:task_missing_department?mode=memory&cache=shared"), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("打开任务测试数据库失败: %v", err)
+	}
+	if _, err := NewService(db, config.DefaultMaxAttempts).Create(context.Background(), CreateInput{
+		Kind: "build.image", Subject: "edo.task.build.image", Payload: map[string]string{"ref": "main"},
+		Idempotent: true,
+	}); err == nil {
+		t.Fatal("缺少部门的后台任务必须被拒绝")
+	}
+}
 
 func TestDeploymentDoesNotRetryWithoutIdempotency(t *testing.T) {
 	attempts, err := normalizeMaxAttempts(CreateInput{Kind: "deploy.kubernetes", MaxAttempts: 4}, config.DefaultMaxAttempts)

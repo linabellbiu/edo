@@ -3,7 +3,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } 
 import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
 import { Modal, message } from 'ant-design-vue'
-import { Box, Boxes, ChevronDown, ChevronRight, Clock3, FileText, GitBranch, GitCommit, Layers3, Play, Plus, RefreshCw, Server, Settings2, TerminalSquare, Trash2, Workflow } from 'lucide-vue-next'
+import { Box, Boxes, ChevronDown, ChevronRight, Clock3, FileText, GitBranch, GitCommit, Layers3, Minus, Plus, Power, RefreshCw, RotateCw, Server, Settings2, TerminalSquare, Trash2, Workflow } from 'lucide-vue-next'
 
 import client from '@/api/client'
 import { apiErrorMessage, type ResourceRecord } from '@/api/resources'
@@ -34,8 +34,12 @@ interface ApplicationWorkflow extends PipelineWorkflow{workflow_template?:{id:st
 interface WorkflowTemplate extends PipelineWorkflow{description?:string}
 interface Application extends ResourceRecord{id:string;name:string;description:string;repository_id:string;poll_interval_seconds:number;last_observed_commit?:string;sync_status:string;sync_message?:string;last_checked_at?:string;is_active:boolean;repository?:Repository;workflows:ApplicationWorkflow[]}
 interface Run extends ResourceRecord{id:string;application_id:string;workflow_id?:string;deployment_id?:string;release_plan_id?:string;release_plan_execution_id?:string;release_plan_execution_item_id?:string;retry_of_id?:string;artifact_id?:string;trigger:string;ref:string;commit_sha:string;commit_message?:string;status:string;stage:string;message?:string;created_at:string;updated_at?:string;application?:Application;environment?:string;current_node_id?:string;current_node_name?:string;created_by?:string;image?:string;execution_graph?:PipelineExecutionGraph}
-interface DeploymentRecord extends ResourceRecord{id:string;pipeline_run_id?:string;target_id:string;target_name:string;platform:string;runtime_id:string;namespace:string;workload_name:string;container_name:string;deployment_plan_id?:string;deployment_plan_kind?:string;compose_service?:string;operation:string;image:string;image_display?:string;status:string;error_message?:string;created_at:string;updated_at:string;finished_at?:string}
+interface DeploymentTarget extends ResourceRecord{id:string;platform:string;environment_id:string;host_id:string;runtime_id:string;namespace?:string;workload_name?:string;container_name?:string}
+interface DeploymentPlan extends ResourceRecord{id:string;kind?:string;service_name?:string;deployment_target_id:string;deployment_target?:DeploymentTarget}
+interface DeploymentRecord extends ResourceRecord{id:string;pipeline_run_id?:string;application_id?:string;target_id:string;target_name:string;platform:string;environment_id:string;host_id:string;runtime_id:string;namespace:string;workload_name:string;container_name:string;deployment_plan_id?:string;deployment_plan_kind?:string;compose_service?:string;operation:string;image:string;image_display?:string;status:string;error_message?:string;runtime_deleted_at?:string;created_at:string;updated_at:string;finished_at?:string}
 interface DockerContainerRecord extends ResourceRecord{id:string;names:string[];state:string;status:string}
+interface DeploymentRuntimeState{deployment_id:string;kind:string;resource_id?:string;name:string;namespace?:string;state:string;running:boolean;count?:number;replicas?:number;ready_replicas?:number;available_replicas?:number;restart_configured?:boolean;stop_configured?:boolean;output?:string}
+interface ShellControlConfiguration{deployment_id:string;restart_script:string;stop_script:string;timeout_seconds:number}
 type StatusTone='neutral'|'info'|'success'|'warning'|'danger'
 interface StatusMeta{tone:StatusTone;label:string;live:boolean}
 interface ReleasePlanExecutionRecordItem{id:string;release_group_application_id:string;application_id:string;pipeline_run_id:string;status:string}
@@ -53,9 +57,14 @@ interface PlanExecutionItem{membershipID:string;applicationID:string;application
 interface PlanExecutionGroup{id:string;name:string;mode:string;failurePolicy:string;dependencies:string[];items:PlanExecutionItem[]}
 interface ReleasePlanEditorValue{id:string;description:string;groups:Array<{id:string;name:string;mode:'parallel'|'sequential';failure_policy:'stop'|'continue';depends_on_group_ids:string[];applications:Array<{application_id:string;manual_deploy:boolean;source_type:string;source_value:string}>}>}
 
-const applications=ref<Application[]>([]),repositories=ref<Repository[]>([]),credentials=ref<Credential[]>([]),workflowTemplates=ref<WorkflowTemplate[]>([]),buildPlans=ref<BuildPlan[]>([]),registries=ref<Registry[]>([]),runs=ref<Run[]>([]),releasePlans=ref<ReleasePlan[]>([]),deployments=ref<DeploymentRecord[]>([]),artifacts=ref<Artifact[]>([])
+const applications=ref<Application[]>([]),repositories=ref<Repository[]>([]),credentials=ref<Credential[]>([]),workflowTemplates=ref<WorkflowTemplate[]>([]),buildPlans=ref<BuildPlan[]>([]),registries=ref<Registry[]>([]),runs=ref<Run[]>([]),releasePlans=ref<ReleasePlan[]>([]),deployments=ref<DeploymentRecord[]>([]),deploymentPlans=ref<DeploymentPlan[]>([]),artifacts=ref<Artifact[]>([])
 const loading=ref(false),saving=ref(false),workflowRemovalID=ref(''),resourceMutationID=ref(''),formOpen=ref(false),editingID=ref(''),selectedWorkflowTemplateID=ref(''),registryTested=ref(false),testing=ref(false),repositoryTestingID=ref(''),manualOpen=ref(false),manualApplicationID=ref(''),manualWorkflowID=ref(''),manualApplications=ref<Application[]>([]),commitOpen=ref(false),commitOptions=ref<Array<{ref:string;name:string;sha:string;kind:'branch'|'tag'}>>([]),manualArtifacts=ref<ManualArtifact[]>([]),manualExecutionMode=ref<'code'|'artifact'>('code'),selectedArtifactID=ref(''),manualReferenceError=ref(''),selectedRef=ref(''),selectedSource=ref(''),manualSources=ref<Array<{id:string;name:string;environment?:string}>>([]),currentRun=ref<Run|null>(null),currentRunSelectionKey=ref(''),selectedRunID=ref(''),log=ref({open:false,runID:'',title:'',status:''})
 const expandedApplications=ref<Record<string,boolean>>({}),expandedDeployments=ref<Record<string,boolean>>({}),dockerRuntimeContainers=ref<Record<string,DockerContainerRecord[]>>({}),dockerRuntimeLoading=ref<Record<string,boolean>>({}),dockerRuntimeLoaded=ref<Record<string,boolean>>({}),dockerRuntimeErrors=ref<Record<string,string>>({})
+const deploymentRuntimeStates=ref<Record<string,DeploymentRuntimeState>>({}),deploymentRuntimeLoading=ref<Record<string,boolean>>({}),deploymentRuntimeErrors=ref<Record<string,string>>({}),deploymentRuntimeAction=ref('')
+const scaleDialog=reactive({open:false,record:null as DeploymentRecord|null,replicas:1,submitting:false})
+const shellControlDialog=reactive({open:false,record:null as DeploymentRecord|null,restart_script:'',stop_script:'',timeout_seconds:300,loading:false,saving:false})
+const lifecycleOutput=reactive({open:false,title:'',output:''})
+const dockerRuntimeRequests=new Map<string,Promise<void>>()
 const containerLogs=ref({open:false,title:'',path:''}),terminal=ref({open:false,title:'',path:''})
 const releasePlanResources=reactive({open:false,loading:false,planID:'',applicationID:'',pipelineRunID:'',title:'',error:'',records:[] as DeploymentRecord[]})
 const buildImageDestination=ref<'local'|'registry'>('local'),buildSaveArtifact=ref(false),buildArgsText=ref(''),buildEnvironmentText=ref(''),selectedBuildPlanID=ref(''),buildPlanView=ref<'overview'|'artifacts'>(route.query.view==='artifacts'?'artifacts':'overview'),artifactApplicationID=ref(''),artifactLoading=ref(false),artifactUploading=ref(false),artifactDownloadingID=ref('')
@@ -67,12 +76,17 @@ let releaseTimer=0
 let planExecutionController:AbortController|null=null
 const DEFAULT_APPLICATION_POLL_INTERVAL=3
 const appForm=reactive({name:'',description:'',repository_id:'',workflow_template_id:'',poll_interval_seconds:DEFAULT_APPLICATION_POLL_INTERVAL})
-const repoForm=reactive({name:'',provider:'github',clone_url:'',default_branch:'main',auth_type:'none',username:'',credential_id:'',api_credential_id:'',webhook_enabled:true,allow_insecure_http:false})
+const repoForm=reactive({name:'',provider:'github',clone_url:'',default_branch:'main',auth_type:'none',username:'',credential_id:'',api_credential_id:'',webhook_enabled:false,allow_insecure_http:false})
 const DEFAULT_RUNTIME_IMAGE='alpine:3.22'
 const runtimeImageOptions=['alpine:3.22','node:24-alpine','golang:1.26-alpine','maven:3.9-eclipse-temurin-21-alpine'].map(value=>({value}))
 const buildForm=reactive({name:'',kind:'dockerfile' as 'dockerfile'|'script',description:'',script:'',dockerfile_path:'Dockerfile',context_path:'.',working_directory:'.',artifact_path:'',runtime_image:DEFAULT_RUNTIME_IMAGE,image_registry_id:'',target_stage:'',pull:true,cache_enabled:true,timeout_seconds:1800})
 const registryForm=reactive({name:'',provider:'generic' as RegistryProvider,endpoint:'https://',namespace:'',username:'',credential:'',allow_insecure_http:false})
 const dockerHubRegistry=computed(()=>registryForm.provider==='docker_hub')
+const repositoryWebhookAPI=computed(()=>{
+ if(!editingID.value)return ''
+ const path=repositories.value.find(item=>item.id===editingID.value)?.webhook_url||`/api/v1/webhooks/git/${editingID.value}`
+ return new URL(path,window.location.origin).toString()
+})
 const selectedBuildRegistry=computed(()=>registries.value.find(item=>item.id===buildForm.image_registry_id))
 const buildImagePathPreview=computed(()=>{
  const registry=selectedBuildRegistry.value
@@ -81,9 +95,13 @@ const buildImagePathPreview=computed(()=>{
  return `${endpoint}/${namespace}/[应用名]:[版本标签]`
 })
 const copy:Record<Section,{description:string}>={applications:{description:'一个应用对应一个代码仓库，可以拥有多条独立流水线；每条流水线分别定义触发、构建和部署流程。'},repositories:{description:'统一管理 Git 来源和可选 Webhook；凭据来自当前用户自己的令牌。'},'build-plans':{description:'保存可复用的 Dockerfile 或脚本构建配置。'},'image-registries':{description:'管理 Harbor、Docker Hub 或其他 OCI Registry；保存前必须完成真实登录测试。'},'release-plans':{description:'发布计划组织人工批量发布；流水线运行与发布记录独立展示。'}}
-const releaseView=computed(()=>route.query.view==='runs'?'runs':route.query.view==='records'?'records':'plans')
+const releaseView=computed(()=>route.query.view==='runs'?'runs':'plans')
 const requestedRunID=computed(()=>typeof route.query.run==='string'?route.query.run:'')
-const canManage=computed(()=>props.section==='repositories'?auth.canAny(['repository.manage']):auth.canAny(['delivery.manage']))
+const canCreate=computed(()=>props.section==='repositories'?auth.canAny(['repository.create']):auth.canAny(['delivery.create']))
+const canUpdate=computed(()=>props.section==='repositories'?auth.canAny(['repository.update']):auth.canAny(['delivery.update']))
+const canDelete=computed(()=>props.section==='repositories'?auth.canAny(['repository.delete']):auth.canAny(['delivery.delete']))
+const canExecute=computed(()=>props.section==='repositories'?auth.canAny(['repository.execute']):auth.canAny(['delivery.execute']))
+const canSaveCurrent=computed(()=>editingID.value?canUpdate.value:canCreate.value)
 const releasePlanAddApplicationTarget=computed(()=>{
  const plan=releasePlans.value.find(item=>item.id===releasePlanAddApplicationPlanID.value)
  const group=plan?.groups?.find(item=>item.id===releasePlanAddApplicationGroupID.value)
@@ -95,7 +113,7 @@ const releasePlanAddApplicationOptions=computed(()=>{
  const usedIDs=new Set((target.plan.groups||[]).flatMap(group=>group.applications.map(item=>item.application_id)))
  return applications.value.filter(item=>item.is_active&&!usedIDs.has(item.id)).map(item=>({value:item.id,label:item.name}))
 })
-const currentDescription=computed(()=>props.section==='release-plans'?(releaseView.value==='runs'?'查看代码事件或手动操作触发的执行、当前任务和实时日志。':releaseView.value==='records'?'查看已经进入真实部署环节的执行结果。':copy[props.section].description):copy[props.section].description)
+const currentDescription=computed(()=>props.section==='release-plans'?(releaseView.value==='runs'?'查看代码事件或手动操作触发的执行、当前任务和实时日志。':copy[props.section].description):copy[props.section].description)
 const selectedRun=computed(()=>{
  if(releaseView.value==='runs'&&requestedRunID.value)return runs.value.find(item=>item.id===requestedRunID.value)||null
  return runs.value.find(item=>item.id===selectedRunID.value)||runs.value[0]||null
@@ -105,20 +123,35 @@ const activeRunCount=computed(()=>runs.value.filter(item=>['running','awaiting_a
 const canReadDeployments=computed(()=>auth.canAny(['deployment.read']))
 const canReadContainerLogs=computed(()=>auth.canAny(['cluster.read']))
 const canOpenContainerTerminal=computed(()=>auth.canAny(['terminal.open']))
+const canUpdateDeployments=computed(()=>auth.canAny(['deployment.update']))
+const canControlDeployments=computed(()=>auth.canAny(['deployment.execute']))
 const activeRows=computed<ResourceRecord[]>(()=>props.section==='applications'?applications.value:props.section==='repositories'?repositories.value:props.section==='image-registries'?registries.value:[])
 const editingApplication=computed(()=>applications.value.find(item=>item.id===editingID.value))
 const availableWorkflowTemplates=computed(()=>{
  const associatedIDs=new Set((editingApplication.value?.workflows||[]).map(item=>item.workflow_template_id).filter(Boolean))
  return workflowTemplates.value.filter(item=>item.is_active&&!associatedIDs.has(item.id))
 })
+const repositoryOptions=computed(()=>repositories.value.filter(item=>item.is_active).map(item=>({
+ value:item.id,label:item.name,details:[`默认分支：${item.default_branch||'未设置'}`],
+})))
+const cloneCredentialOptions=computed(()=>credentials.value
+ .filter(item=>item.auth_type===repoForm.auth_type&&(item.provider===repoForm.provider||item.provider==='generic'||repoForm.provider==='generic'))
+ .map(item=>({value:item.id,label:item.name,details:item.secret_hint?[`凭据提示：${item.secret_hint}`]:[]})))
+const apiCredentialOptions=computed(()=>credentials.value
+ .filter(item=>item.auth_type==='token'&&item.provider===repoForm.provider)
+ .map(item=>({value:item.id,label:item.name,details:item.secret_hint?[`凭据提示：${item.secret_hint}`]:[]})))
+const manualSourceOptions=computed(()=>manualSources.value.map(item=>({
+ value:item.id,label:item.name,details:item.environment?[`环境：${item.environment}`]:[],
+})))
+const manualArtifactOptions=computed(()=>manualArtifacts.value.map(artifactSelectOption))
+const retryArtifactOptions=computed(()=>(retryOptions.value?.artifacts||[]).map(artifactSelectOption))
 const activeResourceID=computed(()=>props.section==='image-registries'&&typeof route.query.registry==='string'?route.query.registry:'')
 const activeApplicationID=computed(()=>props.section==='applications'&&typeof route.query.application==='string'?route.query.application:'')
 const activeReleasePlanID=computed(()=>props.section==='release-plans'&&typeof route.query.plan==='string'?route.query.plan:'')
 const activeColumns=computed(()=>props.section==='applications'?[{key:'name',label:'应用'},{key:'repository',label:'代码仓库'},{key:'workflows',label:'流水线'},{key:'sync_status',label:'代码状态'},{key:'last_checked_at',label:'最近检查'}]:props.section==='repositories'?[{key:'name',label:'名称'},{key:'provider',label:'平台'},{key:'clone_url',label:'Git 地址'},{key:'default_branch',label:'默认分支'},{key:'webhook_enabled',label:'Webhook'},{key:'is_active',label:'状态'}]:props.section==='image-registries'?[{key:'name',label:'名称'},{key:'provider',label:'类型'},{key:'endpoint',label:'地址'},{key:'namespace',label:'命名空间'},{key:'has_credential',label:'凭据'}]:[])
-const activeApplicationRunStatuses=new Set(['running','awaiting_approval','ready'])
 const applicationCards=computed(()=>applications.value.map(application=>{
  const related=runs.value.filter(run=>run.application_id===application.id).sort((left,right)=>Date.parse(right.created_at)-Date.parse(left.created_at))
- const run=related.find(item=>activeApplicationRunStatuses.has(item.status))||related[0]
+ const run=related[0]
  const repository=application.repository?.id?application.repository:repositories.value.find(item=>item.id===application.repository_id)
  const workflowSummaries=(application.workflows||[]).map(workflow=>{
   const tasks=workflow.stages.flatMap(stage=>stage.tasks)
@@ -134,9 +167,24 @@ const applicationCards=computed(()=>applications.value.map(application=>{
   }
  })
  const runIDs=new Set(related.map(item=>item.id))
+ const currentPlanIDs=new Set((application.workflows||[]).flatMap(workflow=>workflow.stages.flatMap(stage=>stage.tasks)).filter(task=>task.type==='deploy').map(task=>task.config.deployment_plan_id).filter(Boolean))
+ const plansByID=new Map(deploymentPlans.value.map(plan=>[plan.id,plan]))
  const instanceKeys=new Set<string>()
- const deploymentInstances=deployments.value.filter(record=>runIDs.has(record.pipeline_run_id||'')&&['queued','running','succeeded'].includes(record.status)).filter(record=>{
-  const key=[record.deployment_plan_id||record.target_id,record.platform,record.runtime_id,record.namespace,record.container_name||record.compose_service||record.workload_name].join(':')
+ const deploymentInstances=[...deployments.value]
+  .sort((left,right)=>Date.parse(right.created_at)-Date.parse(left.created_at))
+  .filter(record=>!record.runtime_deleted_at)
+  .filter(record=>runIDs.has(record.pipeline_run_id||'')&&record.status==='succeeded')
+  .filter(record=>{
+  const planID=record.deployment_plan_id||''
+  if(!currentPlanIDs.has(planID))return false
+  const plan=plansByID.get(planID)
+  const target=plan?.deployment_target
+  if(!target||record.target_id!==target.id||record.host_id!==target.host_id||record.environment_id!==target.environment_id)return false
+  if(record.platform!=='ssh'&&record.runtime_id!==target.runtime_id)return false
+  if(plan.kind==='compose'&&plan.service_name&&record.compose_service!==plan.service_name)return false
+  if(plan.kind==='kubernetes'&&((target.namespace&&record.namespace!==target.namespace)||(target.workload_name&&record.workload_name!==target.workload_name)))return false
+  if(plan.kind==='docker'&&target.container_name&&record.container_name!==target.container_name)return false
+  const key=[plan.id,record.platform,record.namespace,record.container_name||record.compose_service||record.workload_name].join(':')
   if(instanceKeys.has(key))return false
   instanceKeys.add(key)
   return true
@@ -177,9 +225,11 @@ function applicationCurrentNode(run?:Run){
 }
 function workflowSourceLabel(workflow:ApplicationWorkflow){
  const branch=workflow.source.config.branch||'*'
- const events=(workflow.source.config.events||[]).map(event=>t(`applicationCard.trigger.${event}`)).join(' / ')
- return `${branch} · ${events||t('applicationCard.trigger.none')}`
+ const events=(workflow.source.config.events||[]).map(event=>t(`applicationCard.trigger.${event}`)).join('、')
+ return `分支：${branch}；触发：${events||t('applicationCard.trigger.none')}`
 }
+function workflowDisplayName(workflow:ApplicationWorkflow){return workflow.workflow_template?.name||workflow.name}
+function workflowOriginLabel(workflow:ApplicationWorkflow){return workflow.workflow_template?'公共流水线':'自定义流水线'}
 function deploymentKind(record:DeploymentRecord){
  const kind=record.deployment_plan_kind||record.platform
  return ['docker','compose','kubernetes','script'].includes(kind)?kind:'script'
@@ -196,9 +246,145 @@ function deploymentStatus(record:DeploymentRecord):StatusMeta{
  }
  return states[record.status]||{tone:'neutral',label:record.status,live:false}
 }
+function currentDeploymentStatus(record:DeploymentRecord):StatusMeta{
+ const runtime=deploymentRuntimeStates.value[record.id]
+ if(deploymentRuntimeLoading.value[record.id])return {tone:'info',label:'检查中',live:true}
+ if(deploymentRuntimeErrors.value[record.id])return {tone:'warning',label:'状态不可用',live:false}
+ if(runtime){
+  if(runtime.kind==='kubernetes'){
+   if(runtime.state==='stopped')return {tone:'neutral',label:'已停止',live:false}
+   if(runtime.state==='progressing')return {tone:'warning',label:'调整中',live:true}
+   if(runtime.running)return {tone:'success',label:'运行中',live:true}
+  }
+  if(runtime.kind==='docker'||runtime.kind==='compose'){
+   if(runtime.running)return {tone:'success',label:'运行中',live:true}
+   return {tone:'neutral',label:'已停止',live:false}
+  }
+ }
+ if(deploymentKind(record)!=='docker'||!canReadContainerLogs.value)return deploymentStatus(record)
+ if(dockerRuntimeErrors.value[record.runtime_id])return {tone:'warning',label:t('applicationCard.containerState.unavailable'),live:false}
+ if(!dockerRuntimeLoaded.value[record.runtime_id])return deploymentStatus(record)
+ const container=dockerContainerForDeployment(record)
+ if(!container)return {tone:'danger',label:t('applicationCard.containerState.missing'),live:false}
+ const states:Record<string,StatusMeta>={
+  running:{tone:'success',label:t('applicationCard.containerState.running'),live:true},
+  restarting:{tone:'warning',label:t('applicationCard.containerState.restarting'),live:true},
+  created:{tone:'warning',label:t('applicationCard.containerState.created'),live:false},
+  paused:{tone:'warning',label:t('applicationCard.containerState.paused'),live:false},
+  exited:{tone:'danger',label:t('applicationCard.containerState.exited'),live:false},
+  dead:{tone:'danger',label:t('applicationCard.containerState.dead'),live:false},
+ }
+ return states[container.state]||{tone:'neutral',label:t('applicationCard.containerState.unknown'),live:false}
+}
 function applicationDetailsOpen(applicationID:string){return Boolean(expandedApplications.value[applicationID])}
-function toggleApplicationDetails(applicationID:string){expandedApplications.value[applicationID]=!expandedApplications.value[applicationID]}
+function toggleApplicationDetails(card:(typeof applicationCards.value)[number]){
+ const applicationID=card.application.id
+ const open=!expandedApplications.value[applicationID]
+ expandedApplications.value[applicationID]=open
+ if(open&&canReadContainerLogs.value){
+  for(const record of card.deploymentInstances)if(deploymentKind(record)==='docker')void loadDockerRuntime(record.runtime_id,true)
+ }
+}
 function deploymentDetailsOpen(record:DeploymentRecord){return Boolean(expandedDeployments.value[record.id])}
+function lifecycleScriptAvailable(record:DeploymentRecord,action:'restart'|'stop'){
+ if(deploymentKind(record)!=='script')return true
+ const runtime=deploymentRuntimeStates.value[record.id]
+ return Boolean(action==='restart'?runtime?.restart_configured:runtime?.stop_configured)
+}
+function runtimeActionKey(record:DeploymentRecord,action:string){return `${record.id}:${action}`}
+async function loadDeploymentRuntime(record:DeploymentRecord,force=false){
+ if(record.runtime_deleted_at||!canReadDeployments.value||deploymentRuntimeLoading.value[record.id]||(!force&&deploymentRuntimeStates.value[record.id]))return
+ deploymentRuntimeLoading.value[record.id]=true
+ delete deploymentRuntimeErrors.value[record.id]
+ try{
+  const response=await client.get<{runtime:DeploymentRuntimeState}>(`/deployments/${encodeURIComponent(record.id)}/runtime`,{timeout:35_000})
+  deploymentRuntimeStates.value[record.id]=response.data.runtime
+ }catch(error){delete deploymentRuntimeStates.value[record.id];deploymentRuntimeErrors.value[record.id]=apiErrorMessage(error)}finally{deploymentRuntimeLoading.value[record.id]=false}
+}
+async function executeDeploymentRuntimeAction(record:DeploymentRecord,action:'restart'|'stop',replicas?:number){
+ const key=runtimeActionKey(record,action)
+ deploymentRuntimeAction.value=key
+ try{
+  const response=await client.post<{runtime:DeploymentRuntimeState}>(`/deployments/${encodeURIComponent(record.id)}/runtime/${action}`,replicas===undefined?undefined:{replicas},{timeout:3700_000})
+  deploymentRuntimeStates.value[record.id]=response.data.runtime
+  delete deploymentRuntimeErrors.value[record.id]
+  if(deploymentKind(record)==='docker')await loadDockerRuntime(record.runtime_id,true)
+  const actionLabel=action==='restart'?'重启':'停止'
+  message.success(`${deploymentInstanceName(record)}已${actionLabel}`)
+  if(response.data.runtime.output){lifecycleOutput.open=true;lifecycleOutput.title=`${actionLabel}命令输出：${deploymentInstanceName(record)}`;lifecycleOutput.output=response.data.runtime.output}
+ }catch(error){message.error(apiErrorMessage(error))}finally{deploymentRuntimeAction.value=''}
+}
+function confirmDeploymentRuntimeAction(record:DeploymentRecord,action:'restart'|'stop'){
+ if(!lifecycleScriptAvailable(record,action)){message.warning(`请先在该 Shell 部署实例中保存${action==='restart'?'重启':'停止'}命令`);return}
+ const actionLabel=action==='restart'?'重启':'停止'
+ Modal.confirm({
+  title:`确认${actionLabel}${deploymentInstanceName(record)}？`,
+  content:deploymentKind(record)==='script'?`将执行该部署实例中已经保存的${actionLabel} Shell 命令。`:`操作当前${deploymentKindLabel(record)}运行资源。`,
+  okText:actionLabel,cancelText:'取消',okType:action==='stop'?'danger':'primary',
+ onOk:()=>executeDeploymentRuntimeAction(record,action),
+ })
+}
+async function removeDeploymentRuntime(record:DeploymentRecord){
+ const key=runtimeActionKey(record,'remove')
+ deploymentRuntimeAction.value=key
+ try{
+  await client.delete(`/deployments/${encodeURIComponent(record.id)}/runtime`,{timeout:3700_000})
+  const deletedAt=new Date().toISOString()
+  deployments.value=deployments.value.map(item=>item.id===record.id?{...item,runtime_deleted_at:deletedAt}:item)
+  delete expandedDeployments.value[record.id]
+  delete deploymentRuntimeStates.value[record.id]
+  delete deploymentRuntimeErrors.value[record.id]
+  delete deploymentRuntimeLoading.value[record.id]
+  message.success('容器实例已删除；下一次部署成功后将自动恢复监控')
+ }catch(error){message.error(apiErrorMessage(error))}finally{deploymentRuntimeAction.value=''}
+}
+function confirmDeploymentRuntimeRemoval(record:DeploymentRecord){
+ Modal.confirm({
+  title:`确认删除容器实例 ${deploymentInstanceName(record)}？`,
+  content:'容器会被强制停止并删除，但不会删除镜像和数据卷。删除后不再监控这条实例，直到下一次部署成功。',
+  okText:'删除实例',cancelText:'取消',okType:'danger',
+  onOk:()=>removeDeploymentRuntime(record),
+ })
+}
+async function openShellControlConfiguration(record:DeploymentRecord){
+ shellControlDialog.open=true;shellControlDialog.record=record;shellControlDialog.loading=true
+ shellControlDialog.restart_script='';shellControlDialog.stop_script='';shellControlDialog.timeout_seconds=300
+ try{
+  const response=await client.get<{configuration:ShellControlConfiguration}>(`/deployments/${encodeURIComponent(record.id)}/runtime/configuration`)
+  const configuration=response.data.configuration
+  shellControlDialog.restart_script=configuration.restart_script||''
+  shellControlDialog.stop_script=configuration.stop_script||''
+  shellControlDialog.timeout_seconds=configuration.timeout_seconds||300
+ }catch(error){message.error(apiErrorMessage(error));shellControlDialog.open=false;shellControlDialog.record=null}finally{shellControlDialog.loading=false}
+}
+async function saveShellControlConfiguration(){
+ const record=shellControlDialog.record
+ if(!record)return
+ shellControlDialog.saving=true
+ try{
+  await client.put(`/deployments/${encodeURIComponent(record.id)}/runtime/configuration`,{
+   restart_script:shellControlDialog.restart_script,stop_script:shellControlDialog.stop_script,
+   timeout_seconds:shellControlDialog.timeout_seconds,
+  })
+  await loadDeploymentRuntime(record,true)
+  message.success('Shell 部署实例运行命令已保存')
+  shellControlDialog.open=false;shellControlDialog.record=null
+ }catch(error){message.error(apiErrorMessage(error))}finally{shellControlDialog.saving=false}
+}
+function openScaleDialog(record:DeploymentRecord){
+ const runtime=deploymentRuntimeStates.value[record.id]
+ scaleDialog.record=record;scaleDialog.replicas=Math.max(0,runtime?.replicas??1);scaleDialog.open=true
+}
+async function submitScale(){
+ const record=scaleDialog.record
+ if(!record||!Number.isInteger(scaleDialog.replicas)||scaleDialog.replicas<0||scaleDialog.replicas>1000)return
+ scaleDialog.submitting=true
+ try{
+  const response=await client.post<{runtime:DeploymentRuntimeState}>(`/deployments/${encodeURIComponent(record.id)}/runtime/scale`,{replicas:scaleDialog.replicas},{timeout:3700_000})
+  deploymentRuntimeStates.value[record.id]=response.data.runtime
+  message.success(`副本数已调整为 ${scaleDialog.replicas}`);scaleDialog.open=false
+ }catch(error){message.error(apiErrorMessage(error))}finally{scaleDialog.submitting=false}
+}
 function normalizeContainerName(value:string){return value.trim().replace(/^\/+/, '')}
 function deploymentContainerName(record:DeploymentRecord){return normalizeContainerName(record.container_name||record.workload_name||'')}
 function dockerContainerForDeployment(record:DeploymentRecord){
@@ -208,26 +394,38 @@ function dockerContainerForDeployment(record:DeploymentRecord){
 }
 function dockerContainerState(record:DeploymentRecord){
  if(!canReadContainerLogs.value)return t('applicationCard.containerState.noPermission')
- if(dockerRuntimeLoading.value[record.runtime_id])return t('applicationCard.containerState.loading')
  if(dockerRuntimeErrors.value[record.runtime_id])return t('applicationCard.containerState.unavailable')
  const container=dockerContainerForDeployment(record)
  if(!container)return dockerRuntimeLoaded.value[record.runtime_id]?t('applicationCard.containerState.missing'):t('applicationCard.containerState.unchecked')
  const key=['running','created','restarting','paused','exited','dead'].includes(container.state)?container.state:'unknown'
  return t(`applicationCard.containerState.${key}`)
 }
-async function loadDockerRuntime(runtimeID:string,force=false){
- if(!canReadContainerLogs.value||!runtimeID||dockerRuntimeLoading.value[runtimeID]||(!force&&dockerRuntimeLoaded.value[runtimeID]))return
- dockerRuntimeLoading.value[runtimeID]=true
- delete dockerRuntimeErrors.value[runtimeID]
- try{
-  const response=await client.get<{containers:DockerContainerRecord[]}>(`/docker/endpoints/${encodeURIComponent(runtimeID)}/containers?all=true`,{timeout:35_000})
-  dockerRuntimeContainers.value[runtimeID]=response.data.containers||[]
-  dockerRuntimeLoaded.value[runtimeID]=true
- }catch(error){dockerRuntimeContainers.value[runtimeID]=[];dockerRuntimeLoaded.value[runtimeID]=false;dockerRuntimeErrors.value[runtimeID]=apiErrorMessage(error)}finally{dockerRuntimeLoading.value[runtimeID]=false}
+async function loadDockerRuntime(runtimeID:string,force=false,silent=false){
+ if(!canReadContainerLogs.value||!runtimeID||(!force&&dockerRuntimeLoaded.value[runtimeID]))return
+ const pending=dockerRuntimeRequests.get(runtimeID)
+ if(pending){await pending;return}
+ if(!silent)dockerRuntimeLoading.value[runtimeID]=true
+ const request=(async()=>{
+  try{
+   const response=await client.get<{containers:DockerContainerRecord[]}>(`/docker/endpoints/${encodeURIComponent(runtimeID)}/containers?all=true`,{timeout:35_000})
+   dockerRuntimeContainers.value[runtimeID]=response.data.containers||[]
+   dockerRuntimeLoaded.value[runtimeID]=true
+   delete dockerRuntimeErrors.value[runtimeID]
+  }catch(error){
+   if(!silent){dockerRuntimeContainers.value[runtimeID]=[];dockerRuntimeLoaded.value[runtimeID]=false}
+   dockerRuntimeErrors.value[runtimeID]=apiErrorMessage(error)
+  }
+ })()
+ dockerRuntimeRequests.set(runtimeID,request)
+ try{await request}finally{
+  if(dockerRuntimeRequests.get(runtimeID)===request)dockerRuntimeRequests.delete(runtimeID)
+  if(!silent)dockerRuntimeLoading.value[runtimeID]=false
+ }
 }
 function toggleDeploymentDetails(record:DeploymentRecord){
  const open=!expandedDeployments.value[record.id]
  expandedDeployments.value[record.id]=open
+ if(open)void loadDeploymentRuntime(record)
  if(open&&deploymentKind(record)==='docker'&&canReadContainerLogs.value)void loadDockerRuntime(record.runtime_id)
 }
 async function openDeploymentLogs(record:DeploymentRecord){
@@ -250,7 +448,7 @@ async function openDeploymentTerminal(record:DeploymentRecord){
  if(container.state!=='running'){message.warning('容器当前未运行，不能打开终端');return}
  terminal.value={
   open:true,
-  title:`Docker · ${deploymentContainerName(record)||container.names?.[0]||container.id}`,
+  title:`容器终端：${deploymentContainerName(record)||container.names?.[0]||container.id}`,
   path:`/api/v1/terminals/docker/${encodeURIComponent(record.runtime_id)}/containers/${encodeURIComponent(container.id)}/ws`,
  }
 }
@@ -267,8 +465,11 @@ function openApplicationLink(card:(typeof applicationCards.value)[number]){
  void router.push('/repositories')
 }
 function openApplicationWorkflow(applicationID:string,workflowID:string){void router.push(`/pipeline-plans/editor?application=${applicationID}&workflow=${workflowID}`)}
+function openApplicationCurrentWorkflow(card:(typeof applicationCards.value)[number]){
+ const workflowID=card.run?.workflow_id
+ if(workflowID)openApplicationWorkflow(card.application.id,workflowID)
+}
 function editApplicationWorkflow(applicationID:string,workflowID:string){formOpen.value=false;openApplicationWorkflow(applicationID,workflowID)}
-function openDeploymentRecords(){void router.push({path:'/release-plans',query:{view:'records'}})}
 function createImageRegistry(){
  formOpen.value=false
  void router.push({path:'/image-registries',query:{create:'1',return_to:route.fullPath}})
@@ -298,18 +499,20 @@ function selectPipelineRun(runID:string){
  if(requestedRunID.value!==runID)void router.replace({path:'/release-plans',query:{view:'runs',run:runID}})
 }
 
-async function refresh(){const locatedRun=runs.value.find(item=>item.id===requestedRunID.value);loading.value=true;try{const requests=await Promise.all([auth.canAny(['delivery.read'])?client.get<{applications:Application[]}>('/applications'):null,auth.canAny(['repository.read'])?client.get<{repositories:Repository[]}>('/repositories'):null,auth.canAny(['credential.read'])?client.get<{credentials:Credential[]}>('/git-credentials'):null,auth.canAny(['delivery.read'])?client.get<{build_plans:BuildPlan[]}>('/build-plans'):null,auth.canAny(['delivery.read'])?client.get<{image_registries:Registry[]}>('/image-registries'):null,auth.canAny(['delivery.read'])?client.get<{pipeline_runs:Run[]}>('/pipeline-runs?limit=200'):null,auth.canAny(['delivery.read'])?client.get<{release_plans:ReleasePlan[]}>('/release-plans'):null,canReadDeployments.value?client.get<{deployments:DeploymentRecord[]}>('/deployments?limit=200'):null,auth.canAny(['delivery.read'])?client.get<{workflow_templates:WorkflowTemplate[]}>('/workflow-templates'):null]);applications.value=requests[0]?.data.applications||[];repositories.value=requests[1]?.data.repositories||[];credentials.value=requests[2]?.data.credentials||[];buildPlans.value=requests[3]?.data.build_plans||[];registries.value=requests[4]?.data.image_registries||[];runs.value=requests[5]?.data.pipeline_runs||[];if(locatedRun&&!runs.value.some(item=>item.id===locatedRun.id))runs.value=[locatedRun,...runs.value];if(requestedRunID.value&&runs.value.some(item=>item.id===requestedRunID.value))selectedRunID.value=requestedRunID.value;else if(!requestedRunID.value&&(!selectedRunID.value||!runs.value.some(item=>item.id===selectedRunID.value)))selectedRunID.value=runs.value[0]?.id||'';releasePlans.value=requests[6]?.data.release_plans||[];deployments.value=requests[7]?.data.deployments||[];workflowTemplates.value=requests[8]?.data.workflow_templates||[];if(requestedRunID.value)void revealRequestedRun()}catch(error){message.error(apiErrorMessage(error))}finally{loading.value=false}}
+async function refresh(){const locatedRun=runs.value.find(item=>item.id===requestedRunID.value);loading.value=true;try{const requests=await Promise.all([auth.canAny(['delivery.read'])?client.get<{applications:Application[]}>('/applications'):null,auth.canAny(['repository.read'])?client.get<{repositories:Repository[]}>('/repositories'):null,auth.canAny(['credential.read'])?client.get<{credentials:Credential[]}>('/git-credentials'):null,auth.canAny(['delivery.read'])?client.get<{build_plans:BuildPlan[]}>('/build-plans'):null,auth.canAny(['delivery.read'])?client.get<{image_registries:Registry[]}>('/image-registries'):null,auth.canAny(['delivery.read'])?client.get<{pipeline_runs:Run[]}>('/pipeline-runs?limit=200'):null,auth.canAny(['delivery.read'])?client.get<{release_plans:ReleasePlan[]}>('/release-plans'):null,canReadDeployments.value?client.get<{deployments:DeploymentRecord[]}>('/deployments?limit=200'):null,auth.canAny(['delivery.read'])?client.get<{deployment_plans:DeploymentPlan[]}>('/deployment-plans'):null,auth.canAny(['delivery.read'])?client.get<{workflow_templates:WorkflowTemplate[]}>('/workflow-templates'):null]);applications.value=requests[0]?.data.applications||[];repositories.value=requests[1]?.data.repositories||[];credentials.value=requests[2]?.data.credentials||[];buildPlans.value=requests[3]?.data.build_plans||[];registries.value=requests[4]?.data.image_registries||[];runs.value=requests[5]?.data.pipeline_runs||[];if(locatedRun&&!runs.value.some(item=>item.id===locatedRun.id))runs.value=[locatedRun,...runs.value];if(requestedRunID.value&&runs.value.some(item=>item.id===requestedRunID.value))selectedRunID.value=requestedRunID.value;else if(!requestedRunID.value&&(!selectedRunID.value||!runs.value.some(item=>item.id===selectedRunID.value)))selectedRunID.value=runs.value[0]?.id||'';releasePlans.value=requests[6]?.data.release_plans||[];deployments.value=requests[7]?.data.deployments||[];deploymentPlans.value=requests[8]?.data.deployment_plans||[];workflowTemplates.value=requests[9]?.data.workflow_templates||[];if(requestedRunID.value)void revealRequestedRun()}catch(error){message.error(apiErrorMessage(error))}finally{loading.value=false}}
 let stateRefreshing=false
 async function refreshApplicationState(){
  if(stateRefreshing||!auth.canAny(['delivery.read']))return
  stateRefreshing=true
  try{
- const [applicationResult,runResult,deploymentResult]=await Promise.all([client.get<{applications:Application[]}>('/applications'),client.get<{pipeline_runs:Run[]}>('/pipeline-runs?limit=200'),canReadDeployments.value?client.get<{deployments:DeploymentRecord[]}>('/deployments?limit=200'):null])
+ const [applicationResult,runResult,deploymentResult,deploymentPlanResult]=await Promise.all([client.get<{applications:Application[]}>('/applications'),client.get<{pipeline_runs:Run[]}>('/pipeline-runs?limit=200'),canReadDeployments.value?client.get<{deployments:DeploymentRecord[]}>('/deployments?limit=200'):null,client.get<{deployment_plans:DeploymentPlan[]}>('/deployment-plans')])
   applications.value=applicationResult.data.applications||[]
   runs.value=runResult.data.pipeline_runs||[]
   if(deploymentResult)deployments.value=deploymentResult.data.deployments||[]
-  const visibleRuntimeIDs=new Set(deployments.value.filter(record=>expandedDeployments.value[record.id]&&deploymentKind(record)==='docker').map(record=>record.runtime_id).filter(Boolean))
-  for(const runtimeID of visibleRuntimeIDs)void loadDockerRuntime(runtimeID,true)
+  deploymentPlans.value=deploymentPlanResult.data.deployment_plans||[]
+  const visibleRuntimeIDs=new Set(deployments.value.filter(record=>!record.runtime_deleted_at&&expandedDeployments.value[record.id]&&deploymentKind(record)==='docker').map(record=>record.runtime_id).filter(Boolean))
+  for(const runtimeID of visibleRuntimeIDs)void loadDockerRuntime(runtimeID,true,true)
+  for(const record of deployments.value.filter(item=>!item.runtime_deleted_at&&expandedDeployments.value[item.id]))void loadDeploymentRuntime(record,true)
  }catch{}finally{stateRefreshing=false}
 }
 async function refreshRunState(){
@@ -346,7 +549,7 @@ function parseVariableText(source:string,label:string){
 function resetForms(){
 	 editingID.value='';selectedWorkflowTemplateID.value='';workflowRemovalID.value='';registryTested.value=false;buildImageDestination.value='local';buildSaveArtifact.value=false;buildArgsText.value='';buildEnvironmentText.value=''
  Object.assign(appForm,{name:'',description:'',repository_id:'',workflow_template_id:'',poll_interval_seconds:DEFAULT_APPLICATION_POLL_INTERVAL})
-	 Object.assign(repoForm,{name:'',provider:'github',clone_url:'',default_branch:'main',auth_type:'none',username:'',credential_id:'',api_credential_id:'',webhook_enabled:true,allow_insecure_http:false})
+	 Object.assign(repoForm,{name:'',provider:'github',clone_url:'',default_branch:'main',auth_type:'none',username:'',credential_id:'',api_credential_id:'',webhook_enabled:false,allow_insecure_http:false})
 	 Object.assign(buildForm,{name:'',kind:'dockerfile',description:'',script:'',dockerfile_path:'Dockerfile',context_path:'.',working_directory:'.',artifact_path:'',runtime_image:DEFAULT_RUNTIME_IMAGE,image_registry_id:'',target_stage:'',pull:true,cache_enabled:true,timeout_seconds:1800})
  Object.assign(registryForm,{name:'',provider:'generic',endpoint:'https://',namespace:'',username:'',credential:'',allow_insecure_http:false})
 }
@@ -394,6 +597,7 @@ function edit(row:ResourceRecord){
 async function save(){
  saving.value=true
  try{
+  const creatingRepository=props.section==='repositories'&&!editingID.value
   let endpoint='',payload:unknown={},method:'post'|'put'='post'
   let pendingWorkflowTemplateID=''
   if(props.section==='applications'){
@@ -436,18 +640,33 @@ async function save(){
    if(!registryTested.value){message.error('请先测试镜像仓库登录');return}
    endpoint='/image-registries';payload=registryRequestPayload()
   }
-  await client[method](endpoint,payload)
+  const response=await client[method](endpoint,payload)
   if(props.section==='applications'&&editingID.value&&pendingWorkflowTemplateID){
    await client.post(`/applications/${editingID.value}/workflows`,{workflow_template_id:pendingWorkflowTemplateID})
   }
+  const savedRepository=props.section==='repositories'?(response.data as {repository?:Repository}).repository:undefined
+  const savedWebhookAPI=creatingRepository&&repoForm.webhook_enabled&&savedRepository?.webhook_url
+   ?new URL(savedRepository.webhook_url,window.location.origin).toString()
+   :''
   message.success('配置已保存');formOpen.value=false;resetForms();await refresh()
+  if(savedWebhookAPI)Modal.info({title:'Webhook 已启用',width:650,okText:'关闭',content:()=>`Webhook API：${savedWebhookAPI}`})
  }catch(error){message.error(apiErrorMessage(error))}finally{saving.value=false}
+}
+
+async function copyRepositoryWebhookAPI(){
+ if(!repositoryWebhookAPI.value)return
+ try{
+  await navigator.clipboard.writeText(repositoryWebhookAPI.value)
+  message.success('Webhook API 已复制')
+ }catch{
+  message.error('复制失败，请手动复制')
+ }
 }
 function removeApplicationWorkflow(workflow:ApplicationWorkflow){
  if(!editingID.value||workflowRemovalID.value)return
  const templateLinked=Boolean(workflow.workflow_template_id)
  Modal.confirm({
-  title:`${templateLinked?'解除关联并删除':'删除'}流水线“${workflow.name}”？`,
+  title:`${templateLinked?'解除关联并删除':'删除'}流水线“${workflowDisplayName(workflow)}”？`,
   content:'只删除该应用下的流水线定义，应用、公共流水线和历史运行记录不会被删除。正在执行的流水线不能删除。',
   okText:templateLinked?'解除并删除':'删除流水线',cancelText:'取消',okType:'danger',
   async onOk(){
@@ -546,7 +765,7 @@ async function executeRetry(){
   resetRetry();await refresh();selectedRunID.value=retried.id
  }catch(error){message.error(apiErrorMessage(error))}finally{retrySubmitting.value=false}
 }
-function openLogs(run:Run){log.value={open:true,runID:run.id,title:`${applications.value.find(item=>item.id===run.application_id)?.name||'应用'} · 流水线日志`,status:run.status}}
+function openLogs(run:Run){log.value={open:true,runID:run.id,title:`流水线日志：${applications.value.find(item=>item.id===run.application_id)?.name||'应用'}`,status:run.status}}
 function resetManualFlow(){
  manualOpen.value=false
  commitOpen.value=false
@@ -630,7 +849,6 @@ function openApplicationFromRun(run:Run){
 async function revealActiveApplication(){
  const applicationID=activeApplicationID.value
  if(!applicationID||!applications.value.some(item=>item.id===applicationID))return
- expandedApplications.value[applicationID]=true
  await nextTick()
  document.getElementById(`application-${applicationID}`)?.scrollIntoView({behavior:'smooth',block:'center'})
 }
@@ -660,7 +878,6 @@ function openReleasePlanApplicationRun(planID:string,applicationID:string,pipeli
  void router.push({path:'/release-plans',query:{view:'runs',run:pipelineRunID}})
 }
 function openReleasePlanApplicationResources(planID:string,applicationID:string,pipelineRunID:string){
- const plan=releasePlans.value.find(item=>item.id===planID)
  const application=applications.value.find(item=>item.id===applicationID)
  Object.assign(releasePlanResources,{
   open:true,
@@ -668,7 +885,7 @@ function openReleasePlanApplicationResources(planID:string,applicationID:string,
   planID,
   applicationID,
   pipelineRunID,
-  title:`${plan?releasePlanTitle(plan):'发布计划'} · ${application?.name||'应用'} · 部署资源`,
+  title:`部署资源：${application?.name||'应用'}`,
   error:'',
   records:[],
  })
@@ -807,7 +1024,7 @@ function buildPlanExecutionGroups(plan:ReleasePlan){
    const relationMissing=!membership.id
    const duplicated=(applicationCounts.get(membership.application_id)||0)>1
    const reason=relationMissing?t('releasePlanExecution.reason.membershipMissing'):duplicated?t('releasePlanExecution.reason.duplicateApplication'):planApplicationBlockReason(application)
-   const workflows=applicationManualWorkflows(application).map(item=>({id:item.id,name:item.name,revision:item.revision}))
+   const workflows=applicationManualWorkflows(application).map(item=>({id:item.id,name:workflowDisplayName(item),revision:item.revision}))
    const selectedWorkflow=workflows.length===1?workflows[0]:undefined
    return {
     membershipID:membership.id||`${group.id}:${membership.application_id}`,
@@ -918,11 +1135,15 @@ async function executeReleasePlan(){
 function showWebhook(item:Repository){void client.get<{webhook_url:string;webhook_secret:string}>(`/repositories/${item.id}/webhook`).then(result=>Modal.info({title:`${item.name} Webhook`,width:650,content:()=>`${result.data.webhook_url}\n${result.data.webhook_secret}`})).catch(error=>message.error(apiErrorMessage(error)))}
 function applicationName(run:Run){return applications.value.find(item=>item.id===run.application_id)?.name||run.application?.name||'未命名应用'}
 function runReferenceLabel(run?:Run){return run?formatGitReference({ref:run.ref,sha:run.commit_sha,trigger:run.trigger}):'—'}
-function selectableReferenceLabel(reference:{ref:string;name:string;sha:string;kind:'branch'|'tag'}){return formatGitReference(reference)}
-function selectableArtifactLabel(artifact:ManualArtifact){
-	const kind=artifact.kind==='oci_image'?'镜像':'文件'
-	const source=artifact.ref&&artifact.commit_sha?formatGitReference({ref:artifact.ref,sha:artifact.commit_sha}):'手工上传'
-	return `${kind}: ${artifact.name} · ${source} · ${artifact.digest.slice(0,19)}…`
+function artifactSelectOption(artifact:ManualArtifact){
+ const reference=artifact.ref?.trim()||''
+ const source=reference.startsWith('refs/heads/')?`来源：分支 ${reference.slice('refs/heads/'.length)}`:
+  reference.startsWith('refs/tags/')?`来源：Tag ${reference.slice('refs/tags/'.length)}`:
+  reference?`来源：版本 ${reference.replace(/^refs\//,'')}`:'来源：手工上传'
+ const details=[`制品类型：${artifact.kind==='oci_image'?'OCI 镜像':'文件制品'}`,source]
+ if(artifact.commit_sha)details.push(`提交：${artifact.commit_sha.slice(0,8)}`)
+ details.push(`摘要：${artifact.digest.slice(0,19)}…`)
+ return {value:artifact.id,label:artifact.name,details}
 }
 function formatRunTime(value:string){return new Date(value).toLocaleString('zh-CN',{hour12:false})}
 function runStatusLabel(status:string){return ({detected:'已发现',ready:'准备就绪',blocked:'已阻塞',awaiting_approval:'等待审核',running:'执行中',succeeded:'已成功',failed:'已失败',canceled:'已取消'} as Record<string,string>)[status]||status}
@@ -952,7 +1173,7 @@ function selectBuildPlan(id:string){
  buildPlanView.value='overview'
 }
 function consumeBuildCreateRequest(){
- if(!['build-plans','image-registries'].includes(props.section)||route.query.create!=='1'||!canManage.value)return
+ if(!['build-plans','image-registries'].includes(props.section)||route.query.create!=='1'||!canCreate.value)return
  create()
  const query={...route.query}
  delete query.create
@@ -986,26 +1207,32 @@ onMounted(()=>{void refresh().then(()=>{syncBuildPlanSelection();consumeBuildCre
 onBeforeUnmount(()=>{resetPlanExecution();clearInterval(releaseTimer);document.removeEventListener('visibilitychange',refreshVisibleState);window.removeEventListener('focus',refreshVisibleState)})
 </script>
 
-<template><section><PageToolbar :description="currentDescription"><a-tag v-if="props.section==='applications'||props.section==='release-plans'" color="processing">{{ t('applicationCard.autoRefresh') }}</a-tag><a-button :loading="loading" @click="refresh"><RefreshCw :size="15"/>刷新</a-button><a-button v-if="props.section==='release-plans'&&releaseView==='runs'&&auth.canAny(['delivery.run'])" type="primary" @click="openManual()"><Play :size="15"/>手动执行</a-button><a-button v-else-if="canManage&&(props.section!=='release-plans'||releaseView==='plans')" type="primary" @click="create"><Plus :size="15"/>{{ props.section==='release-plans'?'创建发布计划':'新建' }}</a-button></PageToolbar>
+<template><section><PageToolbar :description="currentDescription"><a-tag v-if="props.section==='applications'||props.section==='release-plans'" color="processing">{{ t('applicationCard.autoRefresh') }}</a-tag><a-button :loading="loading" @click="refresh"><RefreshCw :size="15"/>刷新</a-button><a-button v-if="canCreate&&(props.section!=='release-plans'||releaseView==='plans')" type="primary" @click="create"><Plus :size="15"/>{{ props.section==='release-plans'?'创建发布计划':'新建' }}</a-button></PageToolbar>
 <div v-if="props.section==='applications'" class="application-grid">
   <article v-for="card in applicationCards" :id="`application-${card.application.id}`" :key="card.application.id" class="application-card vben-card" :class="[`state-${card.state.tone}`,{'is-live':card.state.live,'is-linked':activeApplicationID===card.application.id}]">
-    <header class="application-head">
+    <header class="application-summary-row">
+      <button type="button" class="application-row-toggle" :aria-label="applicationDetailsOpen(card.application.id)?t('applicationCard.hideDetails'):t('applicationCard.showDetails')" :aria-expanded="applicationDetailsOpen(card.application.id)" @click="toggleApplicationDetails(card)"><ChevronRight :class="{expanded:applicationDetailsOpen(card.application.id)}"/></button>
       <div class="application-identity">
         <span class="application-mark"><Boxes/></span>
-        <div><div class="application-title"><h3>{{ card.application.name }}</h3><span class="application-enabled" :class="{inactive:!card.application.is_active}">{{ card.application.is_active?t('applicationCard.active'):t('applicationCard.inactive') }}</span></div><p :title="card.application.description">{{ card.application.description||t('applicationCard.noDescription') }}</p></div>
+        <div>
+          <div class="application-title"><h3>{{ card.application.name }}</h3><span class="application-enabled" :class="{inactive:!card.application.is_active}">{{ card.application.is_active?t('applicationCard.active'):t('applicationCard.inactive') }}</span><button type="button" class="application-inline-link" @click.stop="openApplicationLink(card)"><GitBranch/>{{ card.repository?.name||t('applicationCard.repository') }}</button></div>
+          <p :title="card.application.description">{{ card.application.description||t('applicationCard.noDescription') }}</p>
+        </div>
       </div>
-      <div class="application-state"><i/><span><small>{{ t('applicationCard.currentRun') }}</small><strong>{{ card.state.label }}</strong></span></div>
+      <div class="application-latest-run">
+        <div class="application-section-heading"><small>{{ t('applicationCard.latestRun') }}</small><button type="button" class="application-inline-link" :disabled="!card.run?.workflow_id" @click.stop="openApplicationCurrentWorkflow(card)"><Workflow/>{{ t('applicationCard.workflow') }}</button></div>
+        <strong :title="card.run?.commit_message||t('applicationCard.noRun')"><span>{{ t('applicationCard.commitMessage') }}</span>{{ card.run?.commit_message||t('applicationCard.noRun') }}</strong>
+        <span><GitBranch/>{{ runReferenceLabel(card.run) }}<time><Clock3/>{{ formatApplicationTime(card.run?.updated_at||card.run?.created_at) }}</time></span>
+      </div>
+      <div class="application-current-run">
+        <div class="application-state"><i/><span><small>{{ t('applicationCard.currentRun') }}</small><strong>{{ card.state.label }}</strong></span></div>
+        <span :title="applicationCurrentNode(card.run)">{{ applicationCurrentNode(card.run) }}</span>
+      </div>
+      <div class="application-sync" :class="[`tone-${card.sync.tone}`,{'is-live':card.sync.live}]"><i/><span><small>{{ t('applicationCard.codeStatus') }}</small><strong>{{ card.sync.label }}</strong></span><time>{{ t('applicationCard.lastChecked') }} {{ formatApplicationTime(card.application.last_checked_at) }}</time></div>
+      <div class="application-actions"><a-button v-if="canUpdate" size="small" @click="edit(card.application)"><Settings2/>{{ t('applicationCard.configure') }}</a-button><a-button v-if="canExecute" size="small" type="primary" @click="action(`/applications/${card.application.id}/sync`)"><RefreshCw/>{{ t('applicationCard.checkUpdates') }}</a-button></div>
     </header>
-    <section class="application-run">
-      <div class="application-commit"><small>{{ t('applicationCard.latestRun') }}</small><strong :title="card.run?.commit_message||t('applicationCard.noRun')">{{ card.run?.commit_message||t('applicationCard.noRun') }}</strong><span><GitBranch/>{{ runReferenceLabel(card.run) }}</span></div>
-      <div class="application-node"><span><Workflow/></span><div><small>{{ t('applicationCard.currentNode') }}</small><strong :title="applicationCurrentNode(card.run)">{{ applicationCurrentNode(card.run) }}</strong><time><Clock3/>{{ formatApplicationTime(card.run?.updated_at||card.run?.created_at) }}</time></div></div>
-    </section>
     <Transition name="application-details">
     <div v-if="applicationDetailsOpen(card.application.id)" class="application-details">
-    <div class="application-links" :class="{single:!canReadDeployments}">
-      <button type="button" @click="openApplicationLink(card)"><span><GitBranch/>{{ t('applicationCard.repository') }}</span><strong :title="card.repository?.name">{{ card.repository?.name||t('applicationCard.unbound') }}</strong><ChevronRight/></button>
-      <button v-if="canReadDeployments" type="button" @click="openDeploymentRecords"><span><Boxes/>{{ t('applicationCard.deploymentInstances') }}</span><strong>{{ t('applicationCard.deploymentCount',{count:card.deploymentInstances.length}) }}</strong><ChevronRight/></button>
-    </div>
     <section class="application-resource-grid">
       <div class="application-resource-panel">
         <header><div><Workflow/><span><strong>{{ t('applicationCard.linkedWorkflows') }}</strong><small>{{ t('applicationCard.enabledWorkflowCount',{enabled:card.enabledWorkflowCount,total:card.workflowSummaries.length}) }}</small></span></div></header>
@@ -1013,9 +1240,9 @@ onBeforeUnmount(()=>{resetPlanExecution();clearInterval(releaseTimer);document.r
           <button v-for="item in card.workflowSummaries" :key="item.workflow.id" type="button" @click="openApplicationWorkflow(card.application.id,item.workflow.id)">
             <span class="application-workflow-icon"><Workflow/></span>
             <span class="application-workflow-copy">
-              <span><strong>{{ item.workflow.name }}</strong><i :class="{inactive:!item.workflow.is_active}">{{ item.workflow.is_active?t('applicationCard.active'):t('applicationCard.inactive') }}</i></span>
-              <small>{{ item.workflow.workflow_template?.name||t('applicationCard.customWorkflow') }} · {{ item.source }}</small>
-              <small>{{ t('applicationCard.taskCount',{count:item.taskCount}) }} · {{ t('applicationCard.buildCount',{count:item.buildCount}) }} · {{ t('applicationCard.deployCount',{count:item.deployCount}) }}</small>
+              <span><strong>{{ workflowDisplayName(item.workflow) }}</strong><i :class="{inactive:!item.workflow.is_active}">{{ item.workflow.is_active?t('applicationCard.active'):t('applicationCard.inactive') }}</i></span>
+              <small>{{ workflowOriginLabel(item.workflow) }}；{{ item.source }}</small>
+              <small>任务：{{ item.taskCount }}；构建：{{ item.buildCount }}；部署：{{ item.deployCount }}</small>
             </span>
             <span class="application-workflow-run" :class="[`tone-${item.state.tone}`,{'is-live':item.state.live}]"><i/><strong>{{ item.state.label }}</strong><time>{{ formatApplicationTime(item.latestRun?.updated_at||item.latestRun?.created_at) }}</time></span>
             <ChevronRight/>
@@ -1024,22 +1251,34 @@ onBeforeUnmount(()=>{resetPlanExecution();clearInterval(releaseTimer);document.r
         <p v-else class="application-resource-empty">{{ t('applicationCard.noWorkflows') }}</p>
       </div>
       <div class="application-resource-panel">
-        <header><div><Boxes/><span><strong>{{ t('applicationCard.deploymentInstances') }}</strong><small>{{ t('applicationCard.deploymentSummary') }}</small></span></div></header>
+        <header><div><Boxes/><span><strong>{{ t('applicationCard.deploymentInstances') }}</strong><small>数量：{{ card.deploymentInstances.length }}；{{ t('applicationCard.deploymentSummary') }}</small></span></div></header>
         <p v-if="!canReadDeployments" class="application-resource-empty">{{ t('applicationCard.deploymentPermissionDenied') }}</p>
         <div v-else-if="card.deploymentInstances.length" class="application-deployment-list">
           <div v-for="record in card.deploymentInstances" :key="record.id" class="application-deployment-item">
             <button type="button" class="application-deployment-summary" :aria-expanded="deploymentDetailsOpen(record)" @click="toggleDeploymentDetails(record)">
               <span class="application-deployment-icon" :class="`kind-${deploymentKind(record)}`"><Box v-if="deploymentKind(record)==='docker'||deploymentKind(record)==='compose'"/><Layers3 v-else-if="deploymentKind(record)==='kubernetes'"/><Server v-else/></span>
-              <span class="application-deployment-copy"><strong :title="deploymentInstanceName(record)">{{ deploymentInstanceName(record) }}</strong><small>{{ deploymentKindLabel(record) }} · {{ record.target_name }}</small></span>
-              <span class="application-deployment-state" :class="[`tone-${deploymentStatus(record).tone}`,{'is-live':deploymentStatus(record).live}]"><i/><strong>{{ deploymentStatus(record).label }}</strong><time>{{ formatApplicationTime(record.finished_at||record.updated_at||record.created_at) }}</time></span>
+              <span class="application-deployment-copy"><strong :title="deploymentInstanceName(record)">{{ deploymentInstanceName(record) }}</strong><small>类型：{{ deploymentKindLabel(record) }}；运行位置：{{ record.target_name }}</small></span>
+              <span class="application-deployment-state" :class="[`tone-${currentDeploymentStatus(record).tone}`,{'is-live':currentDeploymentStatus(record).live}]"><i/><strong>{{ currentDeploymentStatus(record).label }}</strong><time>{{ formatApplicationTime(record.finished_at||record.updated_at||record.created_at) }}</time></span>
               <ChevronDown :class="{expanded:deploymentDetailsOpen(record)}"/>
             </button>
             <Transition name="deployment-details">
               <div v-if="deploymentDetailsOpen(record)" class="application-deployment-details">
-                <dl><div><dt>{{ t('applicationCard.image') }}</dt><dd :title="deploymentImageLabel(record)">{{ deploymentImageLabel(record) }}</dd></div><div v-if="deploymentKind(record)==='docker'"><dt>{{ t('applicationCard.containerStatus') }}</dt><dd>{{ dockerContainerState(record) }}</dd></div></dl>
-                <div v-if="deploymentKind(record)==='docker'" class="application-deployment-actions">
-                  <a-button v-if="canReadContainerLogs" size="small" :loading="dockerRuntimeLoading[record.runtime_id]" :disabled="!dockerContainerForDeployment(record)" @click="openDeploymentLogs(record)"><FileText/>{{ t('containerLogs.button') }}</a-button>
-                  <a-button v-if="canOpenContainerTerminal&&canReadContainerLogs" size="small" :disabled="dockerRuntimeLoading[record.runtime_id]||dockerContainerForDeployment(record)?.state!=='running'" :title="dockerContainerForDeployment(record)?.state==='running'?'':t('applicationCard.terminalRunningOnly')" @click="openDeploymentTerminal(record)"><TerminalSquare/>{{ t('applicationCard.terminal') }}</a-button>
+                <dl>
+                  <div v-if="deploymentKind(record)!=='script'"><dt>{{ t('applicationCard.image') }}</dt><dd :title="deploymentImageLabel(record)">{{ deploymentImageLabel(record) }}</dd></div>
+                  <div v-if="deploymentRuntimeStates[record.id]"><dt>实时状态</dt><dd>{{ currentDeploymentStatus(record).label }}</dd></div>
+                  <div v-if="deploymentRuntimeStates[record.id]?.kind==='kubernetes'"><dt>副本</dt><dd>{{ deploymentRuntimeStates[record.id]?.ready_replicas||0 }} / {{ deploymentRuntimeStates[record.id]?.replicas||0 }} 就绪</dd></div>
+                  <div v-if="deploymentKind(record)==='docker'"><dt>{{ t('applicationCard.containerStatus') }}</dt><dd>{{ dockerContainerState(record) }}</dd></div>
+                  <div v-if="deploymentKind(record)==='script'"><dt>停止命令</dt><dd>{{ lifecycleScriptAvailable(record,'stop')?'已配置':'未配置' }}</dd></div>
+                  <div v-if="deploymentKind(record)==='script'"><dt>重启命令</dt><dd>{{ lifecycleScriptAvailable(record,'restart')?'已配置':'未配置' }}</dd></div>
+                </dl>
+                <div class="application-deployment-actions">
+                  <a-button v-if="deploymentKind(record)==='docker'&&canReadContainerLogs" size="small" :loading="dockerRuntimeLoading[record.runtime_id]" :disabled="!dockerContainerForDeployment(record)" @click="openDeploymentLogs(record)"><FileText/>{{ t('containerLogs.button') }}</a-button>
+                  <a-button v-if="deploymentKind(record)==='docker'&&canOpenContainerTerminal&&canReadContainerLogs" size="small" :disabled="dockerRuntimeLoading[record.runtime_id]||dockerContainerForDeployment(record)?.state!=='running'" :title="dockerContainerForDeployment(record)?.state==='running'?'':t('applicationCard.terminalRunningOnly')" @click="openDeploymentTerminal(record)"><TerminalSquare/>{{ t('applicationCard.terminal') }}</a-button>
+                  <a-button v-if="canUpdateDeployments&&deploymentKind(record)==='script'" size="small" @click="openShellControlConfiguration(record)"><Settings2/>配置命令</a-button>
+                  <a-button v-if="canControlDeployments" size="small" danger :loading="deploymentRuntimeAction===runtimeActionKey(record,'stop')" :disabled="Boolean(deploymentRuntimeAction)||!lifecycleScriptAvailable(record,'stop')" :title="lifecycleScriptAvailable(record,'stop')?'':'请先在该 Shell 部署实例中保存停止命令'" @click="confirmDeploymentRuntimeAction(record,'stop')"><Power/>停止</a-button>
+                  <a-button v-if="canControlDeployments" size="small" :loading="deploymentRuntimeAction===runtimeActionKey(record,'restart')" :disabled="Boolean(deploymentRuntimeAction)||!lifecycleScriptAvailable(record,'restart')" :title="lifecycleScriptAvailable(record,'restart')?'':'请先在该 Shell 部署实例中保存重启命令'" @click="confirmDeploymentRuntimeAction(record,'restart')"><RotateCw/>重启</a-button>
+                  <a-button v-if="canControlDeployments&&deploymentKind(record)==='kubernetes'" size="small" :disabled="Boolean(deploymentRuntimeAction)" @click="openScaleDialog(record)"><Minus/>扩缩容</a-button>
+                  <a-button v-if="canControlDeployments&&deploymentKind(record)==='docker'" size="small" danger :loading="deploymentRuntimeAction===runtimeActionKey(record,'remove')" :disabled="Boolean(deploymentRuntimeAction)" @click="confirmDeploymentRuntimeRemoval(record)"><Trash2/>删除实例</a-button>
                 </div>
               </div>
             </Transition>
@@ -1050,10 +1289,6 @@ onBeforeUnmount(()=>{resetPlanExecution();clearInterval(releaseTimer);document.r
     </section>
     </div>
     </Transition>
-    <footer class="application-footer">
-      <div class="application-sync" :class="[`tone-${card.sync.tone}`,{'is-live':card.sync.live}]"><i/><span><small>{{ t('applicationCard.codeStatus') }}</small><strong>{{ card.sync.label }}</strong></span><time>{{ t('applicationCard.lastChecked') }} {{ formatApplicationTime(card.application.last_checked_at) }}</time></div>
-      <div class="application-actions"><a-button class="application-detail-toggle" :aria-expanded="applicationDetailsOpen(card.application.id)" @click="toggleApplicationDetails(card.application.id)"><ChevronDown :class="{expanded:applicationDetailsOpen(card.application.id)}"/>{{ applicationDetailsOpen(card.application.id)?t('applicationCard.hideDetails'):t('applicationCard.showDetails') }}</a-button><a-button v-if="canManage" @click="edit(card.application)"><Settings2/>{{ t('applicationCard.configure') }}</a-button><a-button v-if="auth.canAny(['delivery.run'])" type="primary" @click="action(`/applications/${card.application.id}/sync`)"><RefreshCw/>{{ t('applicationCard.checkUpdates') }}</a-button></div>
-    </footer>
   </article>
   <a-empty v-if="!applicationCards.length&&!loading" :description="t('applicationCard.empty')"/>
 </div>
@@ -1071,7 +1306,9 @@ onBeforeUnmount(()=>{resetPlanExecution();clearInterval(releaseTimer);document.r
  :artifactUploading="artifactUploading"
  :artifactDownloadingID="artifactDownloadingID"
  :mutationID="resourceMutationID"
- :canManage="canManage"
+ :can-create="auth.canAny(['delivery.create'])"
+ :can-update="auth.canAny(['delivery.update'])"
+ :can-delete="auth.canAny(['delivery.delete'])"
  @select-plan="selectBuildPlan"
  @select-view="buildPlanView=$event"
  @update:selectedApplicationID="artifactApplicationID=$event"
@@ -1091,9 +1328,9 @@ onBeforeUnmount(()=>{resetPlanExecution();clearInterval(releaseTimer);document.r
    <template #cell-description="{value}"><span :title="String(value||'')">{{ value||'—' }}</span></template>
    <template #cell-timeout_seconds="{value}">{{ value }} 秒</template>
    <template #actions="{row}">
-    <a-button v-if="canManage&&props.section==='repositories'" type="link" @click="edit(row)">编辑</a-button>
-    <a-button v-if="props.section==='repositories'" type="link" :loading="repositoryTestingID===String(row.id)" :disabled="Boolean(repositoryTestingID)&&repositoryTestingID!==String(row.id)" @click="testStoredRepository(row as Repository)">测试</a-button>
-    <a-button v-if="props.section==='repositories'&&auth.canAny(['repository.secret.read'])" type="link" @click="showWebhook(row as Repository)">Webhook</a-button>
+    <a-button v-if="canUpdate&&props.section==='repositories'" type="link" @click="edit(row)">编辑</a-button>
+    <a-button v-if="canExecute&&props.section==='repositories'" type="link" :loading="repositoryTestingID===String(row.id)" :disabled="Boolean(repositoryTestingID)&&repositoryTestingID!==String(row.id)" @click="testStoredRepository(row as Repository)">测试</a-button>
+    <a-button v-if="props.section==='repositories'&&(row as Repository).webhook_enabled&&auth.canAny(['repository.secret.read'])" type="link" @click="showWebhook(row as Repository)">Webhook</a-button>
    </template>
   </ResourceTable>
  </div>
@@ -1107,7 +1344,7 @@ onBeforeUnmount(()=>{resetPlanExecution();clearInterval(releaseTimer);document.r
         <span class="run-index-copy">
           <strong>{{ applicationName(run) }}</strong>
           <span>{{ run.commit_message||'未记录提交说明' }}</span>
-          <small>{{ runReferenceLabel(run) }} · {{ runStatusLabel(run.status) }} · {{ run.current_node_name||run.current_node_id||'尚未开始' }}</small>
+          <small>版本：{{ runReferenceLabel(run) }}；状态：{{ runStatusLabel(run.status) }}；当前节点：{{ run.current_node_name||run.current_node_id||'尚未开始' }}</small>
         </span>
         <ChevronRight :size="16"/>
       </button>
@@ -1132,19 +1369,20 @@ onBeforeUnmount(()=>{resetPlanExecution();clearInterval(releaseTimer);document.r
       <div><dt>关联应用</dt><dd><a-button type="link" size="small" @click="openApplicationFromRun(selectedRun)">{{ applicationName(selectedRun) }}</a-button></dd></div>
       <div><dt>关联发布计划</dt><dd><a-button v-if="selectedRun.release_plan_id" type="link" size="small" @click="openReleasePlanFromRun(selectedRun)">{{ selectedRunReleasePlan?releasePlanTitle(selectedRunReleasePlan):'查看发布计划' }}</a-button><span v-else>—</span></dd></div>
     </dl>
-    <footer class="run-actions"><a-button @click="openLogs(selectedRun)">查看实时日志</a-button><a-button v-if="selectedRun.status==='failed'&&auth.canAny(['delivery.run'])" type="primary" @click="openRetry(selectedRun)">重试流水线</a-button><a-button v-if="selectedRun.status==='awaiting_approval'&&auth.canAny(['deployment.review'])" type="primary" @click="action(`/pipeline-runs/${selectedRun.id}/approve`)">通过审核</a-button><a-button v-if="selectedRun.stage==='manual'&&auth.canAny(['delivery.run'])" type="primary" @click="action(`/pipeline-runs/${selectedRun.id}/advance`)">放行并继续</a-button></footer>
+    <footer class="run-actions"><a-button @click="openLogs(selectedRun)">查看实时日志</a-button><a-button v-if="selectedRun.status==='failed'&&auth.canAny(['delivery.execute'])" type="primary" @click="openRetry(selectedRun)">重试流水线</a-button><a-button v-if="selectedRun.status==='awaiting_approval'&&auth.canAny(['deployment.review'])" type="primary" @click="action(`/pipeline-runs/${selectedRun.id}/approve`)">通过审核</a-button><a-button v-if="selectedRun.stage==='manual'&&auth.canAny(['delivery.execute'])" type="primary" @click="action(`/pipeline-runs/${selectedRun.id}/advance`)">放行并继续</a-button></footer>
   </main>
   <div v-else class="run-detail-empty"><a-empty description="选择一条流水线运行查看执行拓扑"/></div>
 </div>
-<div v-else-if="releaseView==='records'" class="vben-card"><ResourceTable :rows="deployments" :loading="loading" :columns="[{key:'target_name',label:'运行位置'},{key:'platform',label:'方式'},{key:'operation',label:'操作'},{key:'image',label:'镜像'},{key:'status',label:'状态'},{key:'requested_by',label:'申请人'},{key:'approved_by',label:'审核人'},{key:'error_message',label:'失败原因'},{key:'created_at',label:'时间'}]"/></div>
 <ReleasePlanWorkspace
  v-else
  :plans="releasePlans"
  :applications="applications"
  :pipeline-runs="runs"
  :loading="loading"
- :can-manage="canManage"
- :can-run="auth.canAny(['delivery.run'])"
+ :can-create="auth.canAny(['delivery.create'])"
+ :can-update="auth.canAny(['delivery.update'])"
+ :can-delete="auth.canAny(['delivery.delete'])"
+ :can-execute="auth.canAny(['delivery.execute'])"
  :can-read-deployments="canReadDeployments"
  :activePlanID="activeReleasePlanID"
  :runnable-counts="releasePlanRunnableCounts"
@@ -1167,7 +1405,11 @@ onBeforeUnmount(()=>{resetPlanExecution();clearInterval(releaseTimer);document.r
   <div class="form-grid">
    <a-form-item label="应用名称" required><a-input v-model:value="appForm.name" :maxlength="128" placeholder="例如 order_service"/><small class="field-hint">应用名同时作为镜像仓库名；以小写英文字母开头，仅使用小写英文字母和单个下划线。</small></a-form-item>
    <a-form-item label="说明"><a-input v-model:value="appForm.description"/></a-form-item>
-   <a-form-item class="span2" label="代码仓库" required><a-select v-model:value="appForm.repository_id" show-search option-filter-prop="label" :options="repositories.filter(item=>item.is_active).map(item=>({value:item.id,label:`${item.name} · ${item.default_branch}`}))"/></a-form-item>
+   <a-form-item class="span2" label="代码仓库" required>
+    <a-select v-model:value="appForm.repository_id" show-search option-filter-prop="label" :options="repositoryOptions">
+     <template #option="{label,details}"><span class="resource-option"><strong>{{ label }}</strong><small v-for="detail in details" :key="detail">{{ detail }}</small></span></template>
+    </a-select>
+   </a-form-item>
   </div>
  </section>
  <section class="application-form-section application-workflow-association">
@@ -1176,11 +1418,11 @@ onBeforeUnmount(()=>{resetPlanExecution();clearInterval(releaseTimer);document.r
    <div v-if="editingApplication?.workflows?.length" class="workflow-association-list">
     <div v-for="workflow in editingApplication.workflows" :key="workflow.id" class="workflow-association-item">
      <span class="workflow-association-icon"><Workflow/></span>
-     <span class="workflow-association-copy"><strong>{{ workflow.name }}</strong><small>{{ workflow.workflow_template?.name?`方案：${workflow.workflow_template.name}`:'自定义流水线' }}</small></span>
+     <span class="workflow-association-copy"><strong>{{ workflowDisplayName(workflow) }}</strong><small>{{ workflowOriginLabel(workflow) }}</small></span>
      <span class="workflow-association-actions">
       <a-tag :color="workflow.is_active?'green':'default'">{{ workflow.is_active?'已启用':'未启用' }}</a-tag>
-      <a-button size="small" @click="editApplicationWorkflow(editingID,workflow.id)">编辑</a-button>
-      <a-button size="small" danger :loading="workflowRemovalID===workflow.id" :disabled="Boolean(workflowRemovalID)&&workflowRemovalID!==workflow.id" @click="removeApplicationWorkflow(workflow)"><Trash2/>{{ workflow.workflow_template_id?'解除':'删除' }}</a-button>
+      <a-button v-if="auth.canAny(['delivery.update'])" size="small" @click="editApplicationWorkflow(editingID,workflow.id)">编辑</a-button>
+      <a-button v-if="auth.canAny(['delivery.delete'])" size="small" danger :loading="workflowRemovalID===workflow.id" :disabled="Boolean(workflowRemovalID)&&workflowRemovalID!==workflow.id" @click="removeApplicationWorkflow(workflow)"><Trash2/>{{ workflow.workflow_template_id?'解除':'删除' }}</a-button>
      </span>
     </div>
    </div>
@@ -1209,14 +1451,25 @@ onBeforeUnmount(()=>{resetPlanExecution();clearInterval(releaseTimer);document.r
   <a-form-item label="默认分支"><a-input v-model:value="repoForm.default_branch"/></a-form-item>
   <a-form-item label="Git 克隆认证"><a-select v-model:value="repoForm.auth_type" :options="[{value:'none',label:'无需认证'},{value:'token',label:'访问令牌'},{value:'ssh_key',label:'SSH 私钥'}]"/></a-form-item>
   <a-form-item v-if="repoForm.auth_type!=='none'" class="span2" label="Git 克隆凭据">
-   <a-select v-model:value="repoForm.credential_id" show-search option-filter-prop="label" :options="credentials.filter(item=>item.auth_type===repoForm.auth_type&&(item.provider===repoForm.provider||item.provider==='generic'||repoForm.provider==='generic')).map(item=>({value:item.id,label:`${item.name} · ${item.secret_hint}`}))"/>
+   <a-select v-model:value="repoForm.credential_id" show-search option-filter-prop="label" :options="cloneCredentialOptions">
+    <template #option="{label,details}"><span class="resource-option"><strong>{{ label }}</strong><small v-for="detail in details" :key="detail">{{ detail }}</small></span></template>
+   </a-select>
    <small>仅用于 Git clone/fetch，仓库只能引用当前操作者自己的凭据。</small>
   </a-form-item>
   <a-form-item v-if="repoForm.provider!=='generic'" class="span2" label="平台 API 令牌（可选）">
-   <a-select v-model:value="repoForm.api_credential_id" allow-clear show-search option-filter-prop="label" placeholder="公开仓库可留空" :options="credentials.filter(item=>item.auth_type==='token'&&item.provider===repoForm.provider).map(item=>({value:item.id,label:`${item.name} · ${item.secret_hint}`}))"/>
+   <a-select v-model:value="repoForm.api_credential_id" allow-clear show-search option-filter-prop="label" placeholder="公开仓库可留空" :options="apiCredentialOptions">
+    <template #option="{label,details}"><span class="resource-option"><strong>{{ label }}</strong><small v-for="detail in details" :key="detail">{{ detail }}</small></span></template>
+   </a-select>
    <small>用于主动读取私有 PR/MR。SSH 私钥绝不会发送到平台 API；使用 Token 克隆时留空可复用克隆 Token。</small>
   </a-form-item>
   <a-checkbox v-model:checked="repoForm.webhook_enabled">启用 Webhook</a-checkbox>
+  <a-form-item v-if="repoForm.webhook_enabled" class="span2" label="Webhook API">
+   <div class="webhook-api-field">
+    <a-input :value="repositoryWebhookAPI" readonly :placeholder="editingID?'正在获取 Webhook API':'保存仓库后生成 Webhook API'"/>
+    <a-button :disabled="!repositoryWebhookAPI" @click="copyRepositoryWebhookAPI">复制</a-button>
+   </div>
+   <small class="field-hint">{{ repositoryWebhookAPI?'将此地址填写到代码托管平台的 Webhook 配置中。':'仓库 ID 由系统在保存时生成，创建成功后会显示实际地址。' }}</small>
+  </a-form-item>
  </div>
 </template>
 <template v-if="props.section==='build-plans'">
@@ -1256,7 +1509,7 @@ onBeforeUnmount(()=>{resetPlanExecution();clearInterval(releaseTimer);document.r
       <a-select v-model:value="buildForm.image_registry_id" show-search option-filter-prop="label" placeholder="选择已测试可用的镜像仓库" :options="registries.filter(item=>item.is_active).map(item=>({value:item.id,label:item.name}))">
        <template #option="{value,label}"><span class="managed-resource-option"><span class="managed-resource-option-label">{{ label }}</span><a class="managed-resource-option-view" :href="resourceViewHref('/image-registries','registry',String(value))" target="_blank" rel="noopener noreferrer" @mousedown.stop @click.stop>查看</a></span></template>
       </a-select>
-      <a-button v-if="canManage" class="resource-create" aria-label="创建镜像仓库" title="创建镜像仓库" @click="createImageRegistry"><Plus :size="16"/></a-button>
+      <a-button v-if="canCreate" class="resource-create" aria-label="创建镜像仓库" title="创建镜像仓库" @click="createImageRegistry"><Plus :size="16"/></a-button>
      </div>
     </a-form-item>
     <a-alert v-if="buildForm.kind==='dockerfile'&&buildImageDestination==='registry'" class="span2 image-path-alert" type="info" show-icon message="当前镜像路径">
@@ -1287,16 +1540,34 @@ onBeforeUnmount(()=>{resetPlanExecution();clearInterval(releaseTimer);document.r
  </div>
  <a-alert v-if="registryTested" type="success" show-icon message="镜像仓库登录测试成功"/>
 </template>
-</a-form><template #footer><div class="drawer-actions"><a-button @click="formOpen=false">取消</a-button><a-button v-if="props.section==='repositories'" :loading="testing" @click="testRepository">测试连接</a-button><a-button v-if="props.section==='image-registries'" :loading="testing" @click="testRegistry">测试登录</a-button><a-button type="primary" :loading="saving" :disabled="props.section==='image-registries'&&!registryTested" @click="save">保存</a-button></div></template></a-drawer>
-<a-modal v-model:open="manualOpen" :title="t('manualRun.title')" :confirm-loading="saving" :ok-button-props="{disabled:!manualApplicationID||!manualWorkflowID}" :ok-text="t('manualRun.chooseVersion')" @ok="nextManual" @cancel="resetManualFlow"><a-form layout="vertical"><a-form-item :label="t('manualRun.application')"><a-select :value="manualApplicationID" :options="manualApplications.map(item=>({value:item.id,label:item.name}))" @change="updateManualApplication(String($event))"/></a-form-item><a-form-item label="流水线" required><a-select v-model:value="manualWorkflowID" :options="applicationManualWorkflows(manualApplications.find(item=>item.id===manualApplicationID)).map(item=>({value:item.id,label:item.name}))"/></a-form-item></a-form></a-modal>
-<a-modal v-model:open="commitOpen" :title="t('manualRun.versionTitle')" :confirm-loading="saving" :ok-button-props="{disabled:!selectedSource||(manualExecutionMode==='code'?!selectedRef:!selectedArtifactID)}" :ok-text="t('manualRun.confirm')" @ok="executeCommit" @cancel="resetManualFlow"><a-form layout="vertical"><a-alert class="manual-release-note" type="info" show-icon :message="manualExecutionMode==='artifact'?t('manualRun.artifactHint'):t('manualRun.executionHint')"/><a-form-item v-if="manualSources.length" :label="t('manualRun.source')"><a-select v-model:value="selectedSource" :options="manualSources.map(item=>({value:item.id,label:item.environment?`${item.name} · ${item.environment}`:item.name}))"/></a-form-item><a-form-item label="执行内容"><a-radio-group v-model:value="manualExecutionMode" button-style="solid"><a-radio-button value="code" :disabled="!commitOptions.length">代码版本</a-radio-button><a-radio-button value="artifact" :disabled="!manualArtifacts.length">已有制品</a-radio-button></a-radio-group></a-form-item><a-alert v-if="manualReferenceError&&manualExecutionMode==='artifact'" class="manual-release-note" type="warning" show-icon :message="manualReferenceError"/><a-form-item v-if="manualExecutionMode==='code'" :label="t('manualRun.ref')"><a-select v-model:value="selectedRef"><a-select-opt-group :label="t('manualRun.branch')"><a-select-option v-for="item in commitOptions.filter(item=>item.kind==='branch')" :key="item.ref" :value="item.ref">{{ selectableReferenceLabel(item) }}</a-select-option></a-select-opt-group><a-select-opt-group :label="t('manualRun.tag')"><a-select-option v-for="item in commitOptions.filter(item=>item.kind==='tag')" :key="item.ref" :value="item.ref">{{ selectableReferenceLabel(item) }}</a-select-option></a-select-opt-group></a-select></a-form-item><a-form-item v-else label="历史制品"><a-select v-model:value="selectedArtifactID" show-search option-filter-prop="label" placeholder="选择之前构建或手工上传的可用制品" :options="manualArtifacts.map(item=>({value:item.id,label:selectableArtifactLabel(item)}))"/></a-form-item></a-form></a-modal>
+</a-form><template #footer><div class="drawer-actions"><a-button @click="formOpen=false">取消</a-button><a-button v-if="props.section==='repositories'&&auth.canAny(['repository.execute'])" :loading="testing" @click="testRepository">测试连接</a-button><a-button v-if="props.section==='image-registries'&&auth.canAny(['delivery.execute'])" :loading="testing" @click="testRegistry">测试登录</a-button><a-button v-if="canSaveCurrent" type="primary" :loading="saving" :disabled="props.section==='image-registries'&&!registryTested" @click="save">保存</a-button></div></template></a-drawer>
+<a-modal v-model:open="manualOpen" :title="t('manualRun.title')" :confirm-loading="saving" :ok-button-props="{disabled:!manualApplicationID||!manualWorkflowID}" :ok-text="t('manualRun.chooseVersion')" @ok="nextManual" @cancel="resetManualFlow"><a-form layout="vertical"><a-form-item :label="t('manualRun.application')"><a-select :value="manualApplicationID" :options="manualApplications.map(item=>({value:item.id,label:item.name}))" @change="updateManualApplication(String($event))"/></a-form-item><a-form-item label="流水线" required><a-select v-model:value="manualWorkflowID" :options="applicationManualWorkflows(manualApplications.find(item=>item.id===manualApplicationID)).map(item=>({value:item.id,label:workflowDisplayName(item)}))"/></a-form-item></a-form></a-modal>
+<a-modal v-model:open="commitOpen" :title="t('manualRun.versionTitle')" :confirm-loading="saving" :ok-button-props="{disabled:!selectedSource||(manualExecutionMode==='code'?!selectedRef:!selectedArtifactID)}" :ok-text="t('manualRun.confirm')" @ok="executeCommit" @cancel="resetManualFlow">
+ <a-form layout="vertical">
+  <a-alert class="manual-release-note" type="info" show-icon :message="manualExecutionMode==='artifact'?t('manualRun.artifactHint'):t('manualRun.executionHint')"/>
+  <a-form-item v-if="manualSources.length" :label="t('manualRun.source')">
+   <a-select v-model:value="selectedSource" :options="manualSourceOptions">
+    <template #option="{label,details}"><span class="resource-option"><strong>{{ label }}</strong><small v-for="detail in details" :key="detail">{{ detail }}</small></span></template>
+   </a-select>
+  </a-form-item>
+  <a-form-item label="执行内容"><a-radio-group v-model:value="manualExecutionMode" button-style="solid"><a-radio-button value="code" :disabled="!commitOptions.length">代码版本</a-radio-button><a-radio-button value="artifact" :disabled="!manualArtifacts.length">已有制品</a-radio-button></a-radio-group></a-form-item>
+  <a-alert v-if="manualReferenceError&&manualExecutionMode==='artifact'" class="manual-release-note" type="warning" show-icon :message="manualReferenceError"/>
+  <a-form-item v-if="manualExecutionMode==='code'" :label="t('manualRun.ref')">
+   <a-select v-model:value="selectedRef">
+    <a-select-opt-group :label="t('manualRun.branch')"><a-select-option v-for="item in commitOptions.filter(item=>item.kind==='branch')" :key="item.ref" :value="item.ref" :label="item.name"><span class="resource-option"><strong>{{ item.name }}</strong><small>类型：分支；提交：{{ item.sha.slice(0,8) }}</small></span></a-select-option></a-select-opt-group>
+    <a-select-opt-group :label="t('manualRun.tag')"><a-select-option v-for="item in commitOptions.filter(item=>item.kind==='tag')" :key="item.ref" :value="item.ref" :label="item.name"><span class="resource-option"><strong>{{ item.name }}</strong><small>类型：Tag；提交：{{ item.sha.slice(0,8) }}</small></span></a-select-option></a-select-opt-group>
+   </a-select>
+  </a-form-item>
+  <a-form-item v-else label="历史制品"><a-select v-model:value="selectedArtifactID" show-search option-filter-prop="label" placeholder="选择之前构建或手工上传的可用制品" :options="manualArtifactOptions"><template #option="{label,details}"><span class="resource-option"><strong>{{ label }}</strong><small v-for="detail in details" :key="detail">{{ detail }}</small></span></template></a-select></a-form-item>
+ </a-form>
+</a-modal>
 <a-modal :open="retryOpen" title="重试流水线" :confirm-loading="retrySubmitting" :ok-button-props="{disabled:retryLoading||!retryOptions||(retryMode==='artifact'&&!retryArtifactID)}" ok-text="确认重试" @ok="executeRetry" @cancel="resetRetry">
  <a-spin :spinning="retryLoading">
   <a-form v-if="retryOptions" layout="vertical">
    <a-alert class="manual-release-note" type="info" show-icon message="代码版本已经由原流水线运行固定，重试不能重新选择分支或 Tag。"/>
    <a-form-item label="固定代码版本"><a-input :value="formatGitReference({ref:retryOptions.ref,sha:retryOptions.commit_sha})" readonly/></a-form-item>
    <a-form-item label="重试方式"><a-radio-group v-model:value="retryMode" button-style="solid"><a-radio-button value="rebuild">按固定版本重新构建</a-radio-button><a-radio-button value="artifact" :disabled="!retryOptions.artifacts.length">使用原运行制品</a-radio-button></a-radio-group></a-form-item>
-   <a-form-item v-if="retryMode==='artifact'" label="该次运行已构建的制品" required><a-select v-model:value="retryArtifactID" show-search option-filter-prop="label" placeholder="选择原失败运行已经构建的可用制品" :options="retryOptions.artifacts.map(item=>({value:item.id,label:selectableArtifactLabel(item)}))"/></a-form-item>
+   <a-form-item v-if="retryMode==='artifact'" label="该次运行已构建的制品" required><a-select v-model:value="retryArtifactID" show-search option-filter-prop="label" placeholder="选择原失败运行已经构建的可用制品" :options="retryArtifactOptions"><template #option="{label,details}"><span class="resource-option"><strong>{{ label }}</strong><small v-for="detail in details" :key="detail">{{ detail }}</small></span></template></a-select></a-form-item>
    <a-alert v-if="retryMode==='artifact'" type="warning" show-icon message="将跳过该制品对应的构建和紧随其后的 Shell 检查，从后续审核、人工放行或部署继续。"/>
    <a-alert v-else-if="!retryOptions.artifacts.length" type="warning" show-icon message="该次运行没有已构建的可用制品，将使用原 Commit 重新构建。"/>
   </a-form>
@@ -1353,6 +1624,25 @@ onBeforeUnmount(()=>{resetPlanExecution();clearInterval(releaseTimer);document.r
  :saving="saving"
  @save="saveReleasePlanEditor"
 />
+<a-modal v-model:open="scaleDialog.open" title="调整 Kubernetes 副本数" ok-text="确认调整" cancel-text="取消" :confirm-loading="scaleDialog.submitting" @ok="submitScale">
+ <a-form layout="vertical">
+  <a-form-item label="目标副本数" required><a-input-number v-model:value="scaleDialog.replicas" :min="0" :max="1000" :precision="0" style="width:100%"/></a-form-item>
+  <a-alert type="info" show-icon message="设置为 0 会停止工作负载" description="以后点击重启时，EDO 会恢复停止前保存的副本数；设置为大于 0 时会等待目标副本就绪。"/>
+ </a-form>
+</a-modal>
+<a-modal v-model:open="shellControlDialog.open" title="配置 Shell 部署实例运行命令" ok-text="保存" cancel-text="取消" width="720" :confirm-loading="shellControlDialog.saving" :ok-button-props="{disabled:shellControlDialog.loading}" @ok="saveShellControlConfiguration">
+ <a-spin :spinning="shellControlDialog.loading">
+  <a-alert type="info" show-icon message="配置只作用于当前部署实例" description="同一应用使用其他部署方案或目标位置时会使用独立配置；运行时只能执行这里保存的非交互式命令。"/>
+  <a-form layout="vertical" style="margin-top:16px">
+   <a-form-item label="停止命令"><a-textarea v-model:value="shellControlDialog.stop_script" :rows="5" :maxlength="262144" placeholder="例如：systemctl --user stop my-service"/><small class="field-hint">留空会禁用该部署实例的停止操作。</small></a-form-item>
+   <a-form-item label="重启命令"><a-textarea v-model:value="shellControlDialog.restart_script" :rows="5" :maxlength="262144" placeholder="例如：systemctl --user restart my-service"/><small class="field-hint">留空会禁用该部署实例的重启操作。</small></a-form-item>
+   <a-form-item label="命令超时" required><a-input-number v-model:value="shellControlDialog.timeout_seconds" :min="30" :max="3600" :step="30" addon-after="秒"/></a-form-item>
+  </a-form>
+ </a-spin>
+</a-modal>
+<a-modal v-model:open="lifecycleOutput.open" :title="lifecycleOutput.title" :footer="null" width="720">
+ <pre class="lifecycle-command-output">{{ lifecycleOutput.output }}</pre>
+</a-modal>
 <a-drawer v-model:open="releasePlanResources.open" :title="releasePlanResources.title" width="720">
  <div class="release-plan-resource-toolbar">
   <span>流水线运行 {{ releasePlanResources.pipelineRunID.slice(0,12) }}</span>
@@ -1365,7 +1655,7 @@ onBeforeUnmount(()=>{resetPlanExecution();clearInterval(releaseTimer);document.r
    <article v-for="record in releasePlanResources.records" :key="record.id" class="release-plan-resource-item">
     <header>
      <span class="application-deployment-icon" :class="`kind-${deploymentKind(record)}`"><Box v-if="deploymentKind(record)==='docker'||deploymentKind(record)==='compose'"/><Layers3 v-else-if="deploymentKind(record)==='kubernetes'"/><Server v-else/></span>
-     <span class="release-plan-resource-copy"><strong>{{ deploymentInstanceName(record) }}</strong><small>{{ deploymentKindLabel(record) }} · {{ record.target_name }}</small></span>
+     <span class="release-plan-resource-copy"><strong>{{ deploymentInstanceName(record) }}</strong><small>类型：{{ deploymentKindLabel(record) }}；运行位置：{{ record.target_name }}</small></span>
      <span class="application-deployment-state" :class="[`tone-${deploymentStatus(record).tone}`,{'is-live':deploymentStatus(record).live}]"><i/><strong>{{ deploymentStatus(record).label }}</strong><time>{{ formatApplicationTime(record.finished_at||record.updated_at||record.created_at) }}</time></span>
     </header>
     <dl>
@@ -1391,7 +1681,10 @@ onBeforeUnmount(()=>{resetPlanExecution();clearInterval(releaseTimer);document.r
 </section></template>
 
 <style scoped>
+.resource-option{display:grid;gap:2px;padding-block:2px}.resource-option strong{overflow:hidden;color:var(--edo-text);font-weight:600;text-overflow:ellipsis;white-space:nowrap}.resource-option small{overflow:hidden;color:var(--edo-muted);font-size:11px;text-overflow:ellipsis;white-space:nowrap}
 .form-grid{display:grid;grid-template-columns:1fr 1fr;gap:0 14px}.span2{grid-column:1/-1}.drawer-actions{display:flex;justify-content:flex-end;gap:8px}.release-plan-add-hint{display:block;margin-top:6px;color:var(--edo-muted);font-size:11px}
+.webhook-api-field{display:flex;gap:8px}.webhook-api-field :deep(.ant-input){min-width:0}.webhook-api-field :deep(.ant-btn){flex:0 0 auto}
+.lifecycle-command-output{max-height:420px;margin:0;overflow:auto;padding:12px;border-radius:9px;color:var(--edo-text);background:#111827;font:12px/1.6 ui-monospace,SFMono-Regular,Menlo,monospace;white-space:pre-wrap;word-break:break-word}
 .release-plan-resource-toolbar{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:14px;color:var(--edo-muted);font-size:11px}.release-plan-resource-toolbar :deep(.ant-btn),.release-plan-resource-actions :deep(.ant-btn){display:inline-flex;align-items:center;gap:5px}.release-plan-resource-list{display:grid;gap:10px}.release-plan-resource-item{padding:13px;border:1px solid var(--edo-border);border-radius:12px;background:var(--edo-surface-soft)}.release-plan-resource-item>header{display:grid;align-items:center;grid-template-columns:36px minmax(0,1fr) auto;gap:10px}.release-plan-resource-copy{min-width:0}.release-plan-resource-copy strong,.release-plan-resource-copy small{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.release-plan-resource-copy strong{font-size:13px}.release-plan-resource-copy small{margin-top:2px;color:var(--edo-muted);font-size:10px}.release-plan-resource-item>dl{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:7px;margin:11px 0 0}.release-plan-resource-item>dl>div{min-width:0;padding:8px 9px;border-radius:8px;background:var(--edo-surface)}.release-plan-resource-item dt{color:var(--edo-muted);font-size:9px}.release-plan-resource-item dd{overflow:hidden;margin:3px 0 0;text-overflow:ellipsis;white-space:nowrap;font-size:11px}.release-plan-resource-actions{display:flex;align-items:center;flex-wrap:wrap;gap:7px;margin-top:10px}.release-plan-resource-permission,.release-plan-resource-hint{color:var(--edo-muted);font-size:10px}.release-plan-resource-hint{display:block;margin-top:9px}
 .resource-section-stack{display:grid;gap:14px}
 .build-form-section,.application-form-section{margin-bottom:16px;padding:15px 15px 0;border:1px solid var(--edo-border);border-radius:12px;background:var(--edo-surface-soft)}.build-form-section>header,.application-form-section>header{margin-bottom:13px}.build-form-section>header strong,.build-form-section>header small,.application-form-section>header strong,.application-form-section>header small{display:block}.build-form-section>header strong,.application-form-section>header strong{font-size:14px}.build-form-section>header small,.application-form-section>header small{margin-top:3px;color:var(--edo-muted);font-size:11px}.resource-picker{display:flex;align-items:stretch;gap:8px}.resource-picker :deep(.ant-select){min-width:0;flex:1}.resource-create{width:34px;flex:0 0 34px;padding:0}.build-advanced{margin-bottom:12px;border:1px solid var(--edo-border);border-radius:12px;background:var(--edo-surface-soft)}.build-advanced :deep(.ant-collapse-header){align-items:center!important}.build-advanced :deep(.ant-collapse-content-box){padding-top:4px!important}.build-advanced-title{display:flex;align-items:baseline;gap:9px}.build-advanced-title small,.field-hint{color:var(--edo-muted);font-size:11px}.field-hint{display:block;margin-top:5px}.build-form-section :deep(.ant-alert),.application-form-section :deep(.ant-alert){margin-bottom:16px}
@@ -1416,5 +1709,14 @@ onBeforeUnmount(()=>{resetPlanExecution();clearInterval(releaseTimer);document.r
 @media(max-width:820px){.application-resource-grid{grid-template-columns:1fr}.run-workspace{grid-template-columns:1fr}.run-index-list{display:flex;min-height:0;max-height:none;overflow-x:auto;overflow-y:hidden;padding:0 7px 8px}.run-index-list>button{width:270px;flex:0 0 270px}.run-detail{padding:16px}}
 @media(max-width:640px){.form-grid{grid-template-columns:1fr}.span2{grid-column:auto}.build-advanced-title{align-items:flex-start;flex-direction:column;gap:2px}.workflow-association-item{align-items:start;grid-template-columns:34px minmax(0,1fr)}.workflow-association-actions{grid-column:2;flex-wrap:wrap}.application-head,.application-footer{align-items:flex-start;flex-direction:column}.application-state{align-self:stretch}.application-run{grid-template-columns:1fr}.application-node{padding-top:12px;padding-left:0;border-top:1px solid var(--edo-border);border-left:0}.application-actions{justify-content:flex-start;flex-wrap:wrap}.application-sync{flex-wrap:wrap}.run-commit-panel{align-items:start;grid-template-columns:22px minmax(0,1fr)}.run-commit-panel time{grid-column:2}.run-facts{grid-template-columns:1fr}.run-detail-heading{align-items:flex-start}.run-detail-heading h3{font-size:17px}.release-plan-resource-item>header{grid-template-columns:36px minmax(0,1fr)}.release-plan-resource-item>header .application-deployment-state{grid-column:2}.release-plan-resource-item>dl{grid-template-columns:1fr}}
 @media(max-width:480px){.application-links{grid-template-columns:1fr}.application-actions :deep(.ant-btn){flex:1}.application-sync time{width:100%;margin-left:16px}}
+.application-grid{grid-template-columns:minmax(0,1fr);gap:8px}.application-card{padding:0;border-radius:11px;transform:none}.application-card:hover{transform:none;box-shadow:0 5px 18px rgb(35 45 70 / 6%)}
+.application-summary-row{display:grid;min-width:0;grid-template-columns:26px minmax(220px,1.05fr) minmax(260px,1.2fr) minmax(130px,.55fr) minmax(170px,.7fr) auto;align-items:center;gap:12px;padding:10px 12px}.application-row-toggle{display:grid;width:26px;height:26px;place-items:center;padding:0;border:0;border-radius:7px;color:var(--edo-muted);background:transparent;cursor:pointer}.application-row-toggle:hover{color:var(--edo-primary);background:var(--edo-primary-soft)}.application-row-toggle:focus-visible{outline:2px solid color-mix(in srgb,var(--edo-primary) 45%,transparent)}.application-row-toggle svg{width:15px;transition:transform 180ms ease}.application-row-toggle svg.expanded{transform:rotate(90deg)}
+.application-summary-row .application-identity{gap:9px}.application-summary-row .application-mark{width:34px;height:34px;flex-basis:34px;border-radius:9px}.application-summary-row .application-mark svg{width:17px}.application-summary-row .application-title{min-width:0;gap:6px}.application-summary-row .application-title h3{font-size:14px}.application-summary-row .application-enabled{padding:1px 5px;font-size:9px}.application-summary-row .application-identity p{margin-top:2px;font-size:10px}.application-inline-link{display:inline-flex;min-width:0;align-items:center;gap:3px;padding:2px 5px;border:0;border-radius:6px;color:var(--edo-primary);background:var(--edo-primary-soft);cursor:pointer;font-size:10px;white-space:nowrap}.application-inline-link:hover{background:color-mix(in srgb,var(--edo-primary) 16%,var(--edo-surface))}.application-inline-link:disabled{cursor:not-allowed;opacity:.45}.application-inline-link svg{width:11px;flex:0 0 11px}
+.application-latest-run{min-width:0;padding-left:12px;border-left:1px solid var(--edo-border)}.application-section-heading{display:flex;align-items:center;justify-content:space-between;gap:7px}.application-section-heading>small{color:var(--edo-muted);font-size:10px}.application-latest-run>strong{display:block;overflow:hidden;margin-top:2px;text-overflow:ellipsis;white-space:nowrap;font-size:12px}.application-latest-run>strong>span{color:var(--edo-muted);font-size:10px;font-weight:500}.application-latest-run>span{display:flex;min-width:0;align-items:center;gap:4px;overflow:hidden;margin-top:3px;color:var(--edo-muted);font-size:10px;white-space:nowrap}.application-latest-run>span>svg{width:11px;flex:0 0 11px}.application-latest-run time{display:inline-flex;min-width:0;align-items:center;gap:3px;overflow:hidden;margin-left:5px;text-overflow:ellipsis}.application-latest-run time svg{width:11px;flex:0 0 11px}
+.application-current-run{min-width:0}.application-current-run .application-state{gap:6px;padding:0;background:transparent}.application-current-run .application-state>i{width:7px;height:7px;flex-basis:7px}.application-current-run .application-state small{font-size:9px}.application-current-run .application-state strong{font-size:11px}.application-current-run>span{display:block;overflow:hidden;margin-top:3px;color:var(--edo-muted);font-size:10px;text-overflow:ellipsis;white-space:nowrap}.application-summary-row .application-sync{display:grid;grid-template-columns:7px minmax(0,1fr);gap:0 6px}.application-summary-row .application-sync>i{width:7px;height:7px;flex-basis:7px;margin-top:5px}.application-summary-row .application-sync small{font-size:9px}.application-summary-row .application-sync strong{font-size:11px}.application-summary-row .application-sync time{grid-column:2;overflow:hidden;margin:2px 0 0;font-size:9px;text-overflow:ellipsis;white-space:nowrap}.application-summary-row .application-actions{width:auto;justify-content:flex-end;gap:5px}.application-summary-row .application-actions :deep(.ant-btn){height:28px;padding-inline:8px;font-size:11px}.application-summary-row .application-actions svg{width:12px}
+.application-details{margin:0;padding:10px 12px 12px 50px;border-top:1px solid var(--edo-border);background:color-mix(in srgb,var(--edo-surface-soft) 55%,var(--edo-surface))}.application-details .application-resource-grid{margin-top:0}.application-details .application-resource-panel{padding:9px;border-radius:9px;background:var(--edo-surface)}
+@media(max-width:1180px){.application-summary-row{grid-template-columns:26px minmax(220px,1fr) minmax(240px,1fr) minmax(120px,.55fr) auto}.application-summary-row>.application-sync{display:none}}
+@media(max-width:900px){.application-summary-row{grid-template-columns:26px minmax(0,1fr) auto;align-items:start}.application-summary-row>.application-latest-run{grid-column:2;padding:8px 0 0;border-top:1px solid var(--edo-border);border-left:0}.application-summary-row>.application-current-run{grid-column:3;grid-row:1}.application-summary-row>.application-actions{grid-column:3;grid-row:2}.application-details{padding-left:12px}.application-resource-grid{grid-template-columns:1fr}}
+@media(max-width:620px){.application-summary-row{grid-template-columns:24px minmax(0,1fr)}.application-summary-row>.application-current-run,.application-summary-row>.application-actions{grid-column:2;grid-row:auto}.application-summary-row>.application-actions{justify-content:flex-start;flex-wrap:wrap}.application-summary-row .application-title{align-items:flex-start;flex-wrap:wrap}.application-latest-run time{display:none}}
 @media(prefers-reduced-motion:reduce){.application-card.is-live .application-state>i,.application-sync.is-live>i,.application-workflow-run.is-live>i,.application-deployment-state.is-live>i,.run-status-orb.running::after{animation:none}}
 </style>

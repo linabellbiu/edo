@@ -94,6 +94,7 @@ func (l *BuildDirectoryLease) Release() {
 }
 
 type BuildMetadata struct {
+	DepartmentID   string
 	ApplicationID  string
 	PipelineRunID  string
 	RepositoryID   string
@@ -612,7 +613,7 @@ func (s *Service) register(
 	}
 	now := time.Now().UTC()
 	build := model.BuildRun{
-		ID: uuid.NewString(), ApplicationID: metadata.ApplicationID,
+		ID: uuid.NewString(), DepartmentID: metadata.DepartmentID, ApplicationID: metadata.ApplicationID,
 		PipelineRunID: metadata.PipelineRunID, RepositoryID: metadata.RepositoryID,
 		WorkflowNodeID: metadata.WorkflowNodeID, IdempotencyKey: idempotencyKey, BuildPlanID: metadata.BuildPlanID,
 		ProducerKind: metadata.ProducerKind, Ref: metadata.Ref, CommitSHA: metadata.CommitSHA,
@@ -621,6 +622,7 @@ func (s *Service) register(
 		CreatedAt: now, UpdatedAt: now, StartedAt: &now, FinishedAt: &now,
 	}
 	artifact.ID = uuid.NewString()
+	artifact.DepartmentID = metadata.DepartmentID
 	artifact.ApplicationID = metadata.ApplicationID
 	artifact.BuildRunID = build.ID
 	artifact.PipelineRunID = metadata.PipelineRunID
@@ -706,6 +708,7 @@ func sameArtifactSemantics(existing, expected model.Artifact) bool {
 }
 
 func (s *Service) validateBuildMetadata(ctx context.Context, metadata *BuildMetadata) error {
+	metadata.DepartmentID = strings.TrimSpace(metadata.DepartmentID)
 	metadata.ApplicationID = strings.TrimSpace(metadata.ApplicationID)
 	metadata.PipelineRunID = strings.TrimSpace(metadata.PipelineRunID)
 	metadata.RepositoryID = strings.TrimSpace(metadata.RepositoryID)
@@ -715,7 +718,8 @@ func (s *Service) validateBuildMetadata(ctx context.Context, metadata *BuildMeta
 	metadata.CommitSHA = strings.TrimSpace(metadata.CommitSHA)
 	metadata.PlanDigest = strings.TrimSpace(metadata.PlanDigest)
 	metadata.CreatedBy = strings.TrimSpace(metadata.CreatedBy)
-	if metadata.ApplicationID == "" || len(metadata.ApplicationID) > 36 || metadata.CreatedBy == "" || len(metadata.CreatedBy) > 36 ||
+	if metadata.ApplicationID == "" || len(metadata.ApplicationID) > 36 || len(metadata.DepartmentID) > 36 ||
+		metadata.CreatedBy == "" || len(metadata.CreatedBy) > 36 ||
 		len(metadata.PipelineRunID) > 36 || len(metadata.RepositoryID) > 36 || len(metadata.WorkflowNodeID) > 64 ||
 		len(metadata.BuildPlanID) > 36 || len(metadata.Ref) > 512 || len(metadata.CommitSHA) > 64 ||
 		len(metadata.PlanSnapshot) > 1024*1024 || len(metadata.PlanDigest) > 71 {
@@ -737,7 +741,20 @@ func (s *Service) validateBuildMetadata(ctx context.Context, metadata *BuildMeta
 		s.logger.Warn("制品生产方式无效", "operation", "artifact_producer_validate", "application_id", metadata.ApplicationID, "pipeline_run_id", metadata.PipelineRunID, "workflow_node_id", metadata.WorkflowNodeID, "producer_kind", metadata.ProducerKind)
 		return ErrInvalidArtifact
 	}
-	return s.ensureApplication(ctx, metadata.ApplicationID, true)
+	var application model.Application
+	if err := s.db.WithContext(ctx).Select("id", "department_id", "is_active").
+		First(&application, "id = ? AND is_active = ?", metadata.ApplicationID, true).Error; err != nil {
+		if !errors.Is(err, gorm.ErrRecordNotFound) {
+			s.logger.Error("检查制品所属应用失败", "operation", "artifact_application_guard", "application_id", metadata.ApplicationID, "err", err)
+		}
+		return ErrApplicationNotFound
+	}
+	if metadata.DepartmentID != "" && metadata.DepartmentID != application.DepartmentID {
+		s.logger.Warn("制品生产上下文与应用部门不一致", "operation", "artifact_department_validate", "application_id", metadata.ApplicationID)
+		return ErrInvalidArtifact
+	}
+	metadata.DepartmentID = application.DepartmentID
+	return nil
 }
 
 func (s *Service) ensureApplication(ctx context.Context, applicationID string, active bool) error {

@@ -29,6 +29,7 @@ import (
 	"edo/internal/deployment"
 	"edo/internal/dockerengine"
 	"edo/internal/model"
+	"edo/internal/notification"
 	"edo/internal/repository"
 	"edo/internal/secret"
 )
@@ -128,6 +129,7 @@ type Service struct {
 	scriptRunner           scriptContainerRunner
 	artifacts              *artifact.Service
 	deployments            *deployment.Service
+	notifications          workflowNotificationEnqueuer
 	workflowRuntimes       WorkflowRuntimeManager
 	logger                 *slog.Logger
 	workflowRuntimeMu      sync.Mutex
@@ -149,6 +151,14 @@ func (s *Service) ConfigureExecution(docker *dockerengine.Service, deployments *
 
 func (s *Service) ConfigureArtifacts(artifacts *artifact.Service) {
 	s.artifacts = artifacts
+}
+
+type workflowNotificationEnqueuer interface {
+	Enqueue(context.Context, notification.EnqueueInput) (*model.Notification, error)
+}
+
+func (s *Service) ConfigureNotifications(notifications workflowNotificationEnqueuer) {
+	s.notifications = notifications
 }
 
 func (s *Service) ListApplications(ctx context.Context) ([]model.Application, error) {
@@ -1152,7 +1162,8 @@ func (s *Service) createManualSelectionRun(ctx context.Context, application *mod
 func (s *Service) createPendingRun(ctx context.Context, application *model.Application, workflow *model.ReleaseWorkflow, actorID, message string) (*model.PipelineRun, error) {
 	now := time.Now().UTC()
 	run := &model.PipelineRun{
-		ID: uuid.NewString(), ApplicationID: application.ID, Trigger: "manual",
+		ID: uuid.NewString(), DepartmentID: application.DepartmentID,
+		ApplicationID: application.ID, Trigger: "manual",
 		WorkflowID: workflow.ID, WorkflowRevision: workflow.Revision,
 		Ref: "", CommitSHA: "",
 		Status: model.PipelineRunBlocked, Stage: "configured", Message: message,

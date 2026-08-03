@@ -321,7 +321,8 @@ func (s *Service) prepareReleasePlanExecution(
 	prepared := &preparedReleasePlanExecution{
 		execution: model.ReleasePlanExecution{
 			ID: executionID, ReleasePlanID: plan.ID, RequestID: input.RequestID,
-			Status: model.ReleasePlanExecutionPending, CreatedBy: actorID, CreatedAt: now, UpdatedAt: now,
+			Status: model.ReleasePlanExecutionPending, DepartmentID: plan.DepartmentID,
+			CreatedBy: actorID, CreatedAt: now, UpdatedAt: now,
 		},
 		items:         make([]preparedReleasePlanExecutionItem, 0, groupApplicationCount),
 		planSignature: planSignature,
@@ -369,6 +370,9 @@ func (s *Service) prepareReleasePlanExecution(
 				if !errors.Is(err, ErrApplicationNotFound) {
 					s.logReleasePlanExecutionError("release_plan_execution_preflight_application", groupApplication.ApplicationID, err)
 				}
+				return nil, ErrInvalidReleasePlanExecution
+			}
+			if application.DepartmentID != plan.DepartmentID {
 				return nil, ErrInvalidReleasePlanExecution
 			}
 			workflow, err := s.FindApplicationWorkflow(ctx, application.ID, selection.WorkflowID)

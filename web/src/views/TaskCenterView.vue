@@ -39,7 +39,7 @@ onMounted(refresh)
     <PageToolbar description="查看任务的有限重试、失败原因和人工操作。"><a-button :loading="loading" @click="refresh"><RefreshCw :size="15" />刷新</a-button></PageToolbar>
     <div class="vben-card"><ResourceTable :rows="rows" :columns="columns" :loading="loading">
       <template #cell-status="{ value }"><a-tag :color="value === 'succeeded' ? 'success' : value === 'failed' ? 'error' : value === 'running' ? 'processing' : 'default'">{{ value }}</a-tag></template>
-      <template v-if="auth.canAny(['task.manage'])" #actions="{ row }"><a-button v-if="row.status === 'pending'" type="link" danger @click="action(row, 'cancel')">取消</a-button><a-button v-if="row.status === 'failed' && row.is_idempotent === true" type="link" @click="action(row, 'retry')">重试</a-button></template>
+      <template v-if="auth.canAny(['task.execute'])" #actions="{ row }"><a-button v-if="row.status === 'pending'" type="link" danger @click="action(row, 'cancel')">取消</a-button><a-button v-if="row.status === 'failed' && row.is_idempotent === true" type="link" @click="action(row, 'retry')">重试</a-button></template>
     </ResourceTable></div>
   </section>
 </template>

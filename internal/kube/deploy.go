@@ -11,6 +11,14 @@ import (
 	"k8s.io/client-go/util/retry"
 )
 
+var (
+	ErrDeploymentConfigInvalid     = errors.New("Kubernetes 发布配置无效")
+	ErrDeploymentContainerNotFound = errors.New("未找到目标 Kubernetes 容器")
+	ErrDeploymentUpdateFailed      = errors.New("更新 Kubernetes 工作负载失败")
+	ErrDeploymentStatusUnavailable = errors.New("无法读取 Kubernetes 工作负载状态")
+	ErrDeploymentRolloutTimeout    = errors.New("等待 Kubernetes 工作负载就绪超时")
+)
+
 func (s *Service) DeployImage(
 	ctx context.Context,
 	clusterID, namespace, deploymentName, containerName, image, deploymentID string,
@@ -18,7 +26,7 @@ func (s *Service) DeployImage(
 ) (string, error) {
 	namespace, err := normalizeNamespace(namespace)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("%w: %v", ErrDeploymentConfigInvalid, err)
 	}
 	clientset, err := s.Clientset(ctx, clusterID)
 	if err != nil {
@@ -40,7 +48,7 @@ func (s *Service) DeployImage(
 			}
 		}
 		if containerIndex < 0 {
-			return errors.New("未找到目标 Kubernetes 容器")
+			return ErrDeploymentContainerNotFound
 		}
 		previousImage = current.Spec.Template.Spec.Containers[containerIndex].Image
 		current.Spec.Template.Spec.Containers[containerIndex].Image = image
@@ -57,7 +65,10 @@ func (s *Service) DeployImage(
 		return err
 	})
 	if err != nil {
-		return previousImage, fmt.Errorf("更新 Kubernetes Deployment 镜像失败: %w", err)
+		if errors.Is(err, ErrDeploymentContainerNotFound) {
+			return previousImage, err
+		}
+		return previousImage, fmt.Errorf("%w: %v", ErrDeploymentUpdateFailed, err)
 	}
 
 	var lastReadErr error
@@ -80,9 +91,9 @@ func (s *Service) DeployImage(
 	})
 	if err != nil {
 		if lastReadErr != nil {
-			return previousImage, fmt.Errorf("等待 Kubernetes Deployment 状态时读取失败: %w", lastReadErr)
+			return previousImage, fmt.Errorf("%w: %v", ErrDeploymentStatusUnavailable, lastReadErr)
 		}
-		return previousImage, errors.New("等待 Kubernetes Deployment 发布完成超时")
+		return previousImage, ErrDeploymentRolloutTimeout
 	}
 	return previousImage, nil
 }

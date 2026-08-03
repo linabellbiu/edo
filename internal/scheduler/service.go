@@ -206,7 +206,8 @@ func (s *Service) enqueueOne(ctx context.Context, due *model.ScheduledTask, now 
 			return nil
 		}
 		job, err := task.NewService(tx, s.maxAttempts).Create(ctx, task.CreateInput{
-			Kind: "scheduler.execute", Subject: "edo.task.scheduler.execute", Idempotent: true,
+			DepartmentID: due.DepartmentID,
+			Kind:         "scheduler.execute", Subject: "edo.task.scheduler.execute", Idempotent: true,
 			IdempotencyKey: "schedule:" + due.ID + ":" + scheduledAt.Format(time.RFC3339),
 			Payload: TaskPayload{
 				ScheduleID: due.ID, ScheduledAt: scheduledAt, Action: due.Action,

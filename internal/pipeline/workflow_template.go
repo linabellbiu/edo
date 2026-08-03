@@ -236,14 +236,10 @@ func syncLinkedApplicationWorkflows(tx *gorm.DB, template *model.ReleaseWorkflow
 		return err
 	}
 	for i := range workflows {
-		var application model.Application
-		if err := tx.First(&application, "id = ?", workflows[i].ApplicationID).Error; err != nil {
-			return err
-		}
 		result := tx.Model(&model.ReleaseWorkflow{}).
 			Where("id = ? AND revision = ?", workflows[i].ID, workflows[i].Revision).
 			Updates(map[string]any{
-				"name":           application.Name + " · " + template.Name,
+				"name":           template.Name,
 				"schema_version": template.SchemaVersion,
 				"source":         string(sourceJSON), "stages": string(stagesJSON),
 				"workflow_template_revision": template.Revision,
@@ -314,7 +310,7 @@ func (s *Service) newApplicationWorkflow(ctx context.Context, application *model
 	return &model.ReleaseWorkflow{
 		ID: uuid.NewString(), ApplicationID: application.ID,
 		WorkflowTemplateID: template.ID, WorkflowTemplateRevision: template.Revision,
-		SchemaVersion: template.SchemaVersion, Name: application.Name + " · " + template.Name, Revision: 1,
+		SchemaVersion: template.SchemaVersion, Name: template.Name, Revision: 1,
 		IsActive: len(issues) == 0, Source: template.Source, Stages: stages,
 		CreatedBy: actorID, UpdatedBy: actorID, CreatedAt: now, UpdatedAt: now,
 	}, nil

@@ -24,7 +24,7 @@ func TestPersonalGitCredentialsAreIsolatedByOwner(t *testing.T) {
 
 	role := performJSONRequest(t, router, http.MethodPost, "/api/v1/roles", map[string]any{
 		"name": "credential-owner", "display_name": "个人令牌用户",
-		"permissions": []string{"credential.read", "credential.manage"},
+		"permissions": []string{"credential.read", "credential.create"},
 	}, adminCookie)
 	var rolePayload struct {
 		Role struct {

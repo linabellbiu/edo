@@ -194,7 +194,7 @@ function hostRuntimeState(host: InfrastructureHost) {
 }
 
 watch(() => route.query.create, value => {
-  if (!auth.canAny(['cluster.manage'])) return
+  if (!auth.canAny(['cluster.create'])) return
   if (value === '1') create()
   else if (value === 'kubernetes') clusterCreateOpen.value = true
   else return
@@ -223,8 +223,8 @@ onBeforeUnmount(() => {
   <section>
     <PageToolbar description="维护主机接入、环境归属和运行时能力；容器、Pod、日志和终端统一在“运行资源”中查看。">
       <a-button :loading="loading" @click="refresh"><RefreshCw :size="15" />刷新</a-button>
-      <a-button v-if="auth.canAny(['cluster.manage'])" @click="clusterCreateOpen = true"><Plus :size="15" />{{ t('kubernetesCluster.action.add') }}</a-button>
-      <a-button v-if="auth.canAny(['cluster.manage'])" type="primary" @click="create"><Plus :size="15" />添加主机</a-button>
+      <a-button v-if="auth.canAny(['cluster.create'])" @click="clusterCreateOpen = true"><Plus :size="15" />{{ t('kubernetesCluster.action.add') }}</a-button>
+      <a-button v-if="auth.canAny(['cluster.create'])" type="primary" @click="create"><Plus :size="15" />添加主机</a-button>
     </PageToolbar>
 
     <div class="host-layout vben-card">
@@ -243,11 +243,14 @@ onBeforeUnmount(() => {
             <span class="host-icon" :class="{ inactive: !host.is_active }"><Server /></span>
             <span class="host-copy">
               <strong>{{ host.name }}</strong>
-              <small>{{ host.is_builtin ? '本地' : `${host.address}:${host.ssh_port}` }}<template v-if="host.architecture"> · {{ host.architecture.toUpperCase() }}</template></small>
-              <span class="mini-capabilities">
-                <i v-for="capability in host.capabilities" :key="capability.kind" :title="capability.kind">
-                  <RuntimeBrandIcon :kind="capability.kind" />
-                </i>
+              <small>{{ host.is_builtin ? '位置：本地' : `连接地址：${host.address}:${host.ssh_port}` }}</small>
+              <span class="host-card-meta">
+                <span class="mini-capabilities">
+                  <i v-for="capability in host.capabilities" :key="capability.kind" :title="capability.kind">
+                    <RuntimeBrandIcon :kind="capability.kind" />
+                  </i>
+                </span>
+                <small v-if="host.architecture">架构：{{ host.architecture.toUpperCase() }}</small>
               </span>
             </span>
             <span class="host-state" :class="hostRuntimeState(host).className" :title="hostRuntimeState(host).label" :aria-label="hostRuntimeState(host).label" />
@@ -265,10 +268,10 @@ onBeforeUnmount(() => {
           </div>
           <div class="detail-actions">
             <a-tag :color="selected.is_active ? 'success' : 'default'">{{ selected.is_active ? '已启用' : '已停用' }}</a-tag>
-            <a-button v-if="auth.canAny(['cluster.manage'])" @click="edit(selected)"><Pencil :size="14" />编辑</a-button>
-            <a-button v-if="auth.canAny(['cluster.manage']) && !selected.is_builtin" @click="toggle(selected)">{{ selected.is_active ? '停用' : '启用' }}</a-button>
+            <a-button v-if="auth.canAny(['cluster.update'])" @click="edit(selected)"><Pencil :size="14" />编辑</a-button>
+            <a-button v-if="auth.canAny(['cluster.update']) && !selected.is_builtin" @click="toggle(selected)">{{ selected.is_active ? '停用' : '启用' }}</a-button>
             <a-button
-              v-if="auth.canAny(['cluster.manage'])"
+              v-if="auth.canAny(['cluster.delete'])"
               danger
               :disabled="selected.is_builtin"
               :title="selected.is_builtin ? '内置本地主机不能删除，可按需关闭它的主机能力' : '删除主机'"
@@ -303,12 +306,12 @@ onBeforeUnmount(() => {
       <div v-else class="empty-panel"><a-empty description="选择或添加主机" /></div>
     </div>
 
-    <HostDrawer v-model:open="drawerOpen" :host="editingHost" :clusters="clusters" @create-cluster="clusterCreateOpen = true" @saved="refresh" />
-    <KubernetesClusterDrawer v-model:open="clusterCreateOpen" @created="clusterCreated" />
+    <HostDrawer v-model:open="drawerOpen" :host="editingHost" :clusters="clusters" :can-test="auth.canAny(['cluster.execute'])" @create-cluster="clusterCreateOpen = true" @saved="refresh" />
+    <KubernetesClusterDrawer v-model:open="clusterCreateOpen" :can-test="auth.canAny(['cluster.execute'])" @created="clusterCreated" />
   </section>
 </template>
 
 <style scoped>
-.host-layout{display:grid;min-height:590px;grid-template-columns:290px minmax(0,1fr);overflow:hidden}.host-list{min-width:0;border-right:1px solid var(--edo-border);background:var(--edo-surface-soft)}.host-list>header{display:flex;height:64px;align-items:center;justify-content:space-between;padding:0 16px}.host-list>header div strong,.host-list>header div small{display:block}.host-list>header small{margin-top:2px;color:var(--edo-muted);font-size:12px}.host-list>header>span{min-width:27px;padding:3px 8px;border-radius:999px;color:var(--edo-muted);background:var(--edo-surface);text-align:center}.host-list-scroll{max-height:calc(100vh - 230px);overflow-y:auto;padding:0 8px 10px}.host-list-scroll>button{display:grid;width:100%;min-height:72px;align-items:center;grid-template-columns:38px minmax(0,1fr) 8px;gap:10px;margin:3px 0;padding:9px 10px;border:0;border-radius:10px;background:transparent;cursor:pointer;text-align:left}.host-list-scroll>button:hover{background:var(--edo-surface)}.host-list-scroll>button.active{background:var(--edo-primary-soft);box-shadow:inset 3px 0 var(--edo-primary)}.host-icon{display:grid;width:38px;height:38px;place-items:center;border-radius:11px;color:var(--edo-primary);background:var(--edo-surface)}.host-icon.inactive{color:var(--edo-muted)}.host-icon svg{width:19px}.host-copy{min-width:0}.host-copy>strong,.host-copy>small{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.host-copy>small{margin-top:2px;color:var(--edo-muted);font-size:12px}.mini-capabilities{display:flex;gap:5px;margin-top:5px}.mini-capabilities i{display:grid;width:17px;height:17px;place-items:center;color:var(--edo-muted)}.mini-capabilities :deep(svg){width:14px;height:14px}.host-state{width:8px;height:8px;border-radius:50%;background:#a8adb7}.host-state.ready{background:#28b66e;box-shadow:0 0 0 4px color-mix(in srgb,#28b66e 12%,transparent)}.host-state.unavailable{background:#ef5656;box-shadow:0 0 0 4px color-mix(in srgb,#ef5656 11%,transparent)}.host-state.unchecked{background:#d99b25;box-shadow:0 0 0 4px color-mix(in srgb,#d99b25 11%,transparent)}.host-state.inactive,.host-state.neutral{background:#a8adb7;box-shadow:none}.host-detail{min-width:0;padding:24px}.detail-header{display:flex;align-items:flex-start;justify-content:space-between;gap:20px}.detail-title>span,.detail-title p{color:var(--edo-muted)}.detail-title h3{margin:3px 0 1px;font-size:22px}.detail-title p{margin:0}.detail-actions{display:flex;align-items:center;gap:8px}.host-facts{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:24px}.host-facts>div{min-width:0;padding:14px 16px;border:1px solid var(--edo-border);border-radius:10px;background:var(--edo-surface-soft)}.host-facts small,.host-facts strong{display:block}.host-facts small{margin-bottom:5px;color:var(--edo-muted)}.host-facts .fingerprint{grid-column:1/-1}.host-facts code{overflow-wrap:anywhere;color:var(--edo-muted)}.capability-section{margin-top:28px}.capability-section>header h4,.capability-section>header p{margin:0}.capability-section>header p{margin-top:3px;color:var(--edo-muted)}.capability-cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px;margin-top:14px}.capability-cards article{display:grid;min-height:84px;align-items:center;grid-template-columns:44px minmax(0,1fr) 20px auto;gap:12px;padding:14px;border:1px solid var(--edo-border);border-radius:12px;background:var(--edo-surface-soft)}.runtime-logo{display:grid;width:44px;height:44px;place-items:center;border-radius:12px;background:var(--edo-surface)}.runtime-logo :deep(svg){width:27px;height:27px}.runtime-logo.ssh{color:var(--edo-muted)}.runtime-logo.docker{color:#2496ed}.runtime-logo.kubernetes{color:#326ce5}.capability-cards article strong,.capability-cards article small{display:block}.capability-cards article small{margin-top:3px;color:var(--edo-muted)}.capability-state{width:18px}.capability-state.ready{color:#28b66e}.capability-state.unchecked{color:#d99b25}.capability-state.unavailable{color:#ef5656}@media(max-width:900px){.host-layout{grid-template-columns:1fr}.host-list{max-height:270px;border-right:0;border-bottom:1px solid var(--edo-border)}.host-list-scroll{max-height:200px}.capability-cards{grid-template-columns:1fr}}@media(max-width:640px){.host-detail{padding:16px}.detail-header{flex-direction:column}.host-facts{grid-template-columns:1fr}.host-facts .fingerprint{grid-column:auto}}
+.host-layout{display:grid;min-height:590px;grid-template-columns:290px minmax(0,1fr);overflow:hidden}.host-list{min-width:0;border-right:1px solid var(--edo-border);background:var(--edo-surface-soft)}.host-list>header{display:flex;height:64px;align-items:center;justify-content:space-between;padding:0 16px}.host-list>header div strong,.host-list>header div small{display:block}.host-list>header small{margin-top:2px;color:var(--edo-muted);font-size:12px}.host-list>header>span{min-width:27px;padding:3px 8px;border-radius:999px;color:var(--edo-muted);background:var(--edo-surface);text-align:center}.host-list-scroll{max-height:calc(100vh - 230px);overflow-y:auto;padding:0 8px 10px}.host-list-scroll>button{display:grid;width:100%;min-height:76px;align-items:center;grid-template-columns:38px minmax(0,1fr) 8px;gap:10px;margin:3px 0;padding:9px 10px;border:0;border-radius:10px;background:transparent;cursor:pointer;text-align:left}.host-list-scroll>button:hover{background:var(--edo-surface)}.host-list-scroll>button.active{background:var(--edo-primary-soft);box-shadow:inset 3px 0 var(--edo-primary)}.host-icon{display:grid;width:38px;height:38px;place-items:center;border-radius:11px;color:var(--edo-primary);background:var(--edo-surface)}.host-icon.inactive{color:var(--edo-muted)}.host-icon svg{width:19px}.host-copy{min-width:0}.host-copy>strong,.host-copy>small{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.host-copy>small{margin-top:2px;color:var(--edo-muted);font-size:12px}.host-card-meta{display:flex;min-width:0;align-items:center;justify-content:space-between;gap:8px;margin-top:5px}.host-card-meta>small{overflow:hidden;color:var(--edo-muted);font-size:10px;text-overflow:ellipsis;white-space:nowrap}.mini-capabilities{display:flex;gap:5px}.mini-capabilities i{display:grid;width:17px;height:17px;place-items:center;color:var(--edo-muted)}.mini-capabilities :deep(svg){width:14px;height:14px}.host-state{width:8px;height:8px;border-radius:50%;background:#a8adb7}.host-state.ready{background:#28b66e;box-shadow:0 0 0 4px color-mix(in srgb,#28b66e 12%,transparent)}.host-state.unavailable{background:#ef5656;box-shadow:0 0 0 4px color-mix(in srgb,#ef5656 11%,transparent)}.host-state.unchecked{background:#d99b25;box-shadow:0 0 0 4px color-mix(in srgb,#d99b25 11%,transparent)}.host-state.inactive,.host-state.neutral{background:#a8adb7;box-shadow:none}.host-detail{min-width:0;padding:24px}.detail-header{display:flex;align-items:flex-start;justify-content:space-between;gap:20px}.detail-title>span,.detail-title p{color:var(--edo-muted)}.detail-title h3{margin:3px 0 1px;font-size:22px}.detail-title p{margin:0}.detail-actions{display:flex;align-items:center;gap:8px}.host-facts{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:24px}.host-facts>div{min-width:0;padding:14px 16px;border:1px solid var(--edo-border);border-radius:10px;background:var(--edo-surface-soft)}.host-facts small,.host-facts strong{display:block}.host-facts small{margin-bottom:5px;color:var(--edo-muted)}.host-facts .fingerprint{grid-column:1/-1}.host-facts code{overflow-wrap:anywhere;color:var(--edo-muted)}.capability-section{margin-top:28px}.capability-section>header h4,.capability-section>header p{margin:0}.capability-section>header p{margin-top:3px;color:var(--edo-muted)}.capability-cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px;margin-top:14px}.capability-cards article{display:grid;min-height:84px;align-items:center;grid-template-columns:44px minmax(0,1fr) 20px auto;gap:12px;padding:14px;border:1px solid var(--edo-border);border-radius:12px;background:var(--edo-surface-soft)}.runtime-logo{display:grid;width:44px;height:44px;place-items:center;border-radius:12px;background:var(--edo-surface)}.runtime-logo :deep(svg){width:27px;height:27px}.runtime-logo.ssh{color:var(--edo-muted)}.runtime-logo.docker{color:#2496ed}.runtime-logo.kubernetes{color:#326ce5}.capability-cards article strong,.capability-cards article small{display:block}.capability-cards article small{margin-top:3px;color:var(--edo-muted)}.capability-state{width:18px}.capability-state.ready{color:#28b66e}.capability-state.unchecked{color:#d99b25}.capability-state.unavailable{color:#ef5656}@media(max-width:900px){.host-layout{grid-template-columns:1fr}.host-list{max-height:270px;border-right:0;border-bottom:1px solid var(--edo-border)}.host-list-scroll{max-height:200px}.capability-cards{grid-template-columns:1fr}}@media(max-width:640px){.host-detail{padding:16px}.detail-header{flex-direction:column}.host-facts{grid-template-columns:1fr}.host-facts .fingerprint{grid-column:auto}}
 .runtime-logo.local_exec{color:var(--edo-muted)}
 </style>

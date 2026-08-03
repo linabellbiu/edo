@@ -56,15 +56,13 @@ export const navigation: NavSection[] = [
         { label: 'nav.environments', path: '/environments', permissions: ['deployment.read'], icon: ServerCog },
         { label: 'nav.hosts', path: '/hosts', permissions: ['cluster.read', 'deployment.read'], icon: Server },
       ] },
-      { key: 'operations', label: 'nav.operations', icon: Activity, items: [
+      { key: 'security', label: 'nav.security', icon: ShieldCheck, items: [
+        { label: 'nav.settings', path: '/settings', permissions: [], icon: Settings },
         { label: 'nav.monitor', path: '/system-monitor', permissions: ['monitor.read'], icon: Activity },
         { label: 'nav.tasks', path: '/operations?section=tasks', permissions: ['task.read'], icon: ListChecks },
         { label: 'nav.logs', path: '/logs', permissions: ['monitor.read'], icon: FileText },
-      ] },
-      { key: 'security', label: 'nav.security', icon: ShieldCheck, items: [
-        { label: 'nav.settings', path: '/settings', permissions: [], icon: Settings },
-        { label: 'nav.users', path: '/access?view=users', permissions: ['user.read', 'user.manage'], icon: UsersRound },
-        { label: 'nav.roles', path: '/access?view=roles', permissions: ['role.read', 'role.manage', 'user.manage'], icon: ShieldCheck },
+        { label: 'nav.users', path: '/access?view=users', permissions: ['user.read', 'user.create', 'user.update', 'user.delete', 'department.read', 'department.create', 'department.update', 'department.delete'], icon: UsersRound },
+        { label: 'nav.roles', path: '/access?view=roles', permissions: ['role.read', 'role.create', 'role.update', 'role.delete'], icon: ShieldCheck },
         { label: 'nav.audit', path: '/access?view=audit', permissions: ['audit.read'], icon: ScrollText },
       ] },
     ],

@@ -45,7 +45,11 @@ func (m *fakeQueueMessage) NakWithDelay(delay time.Duration) error {
 func TestWorkerCompletesTaskAndAcknowledges(t *testing.T) {
 	db := openWorkerTestDB(t, "worker_success")
 	registry := NewRegistry()
-	if err := registry.Register("system.noop", func(context.Context, task.Message) error { return nil }); err != nil {
+	var handlerScope database.DepartmentScope
+	if err := registry.Register("system.noop", func(ctx context.Context, _ task.Message) error {
+		handlerScope, _ = database.DepartmentScopeFromContext(ctx)
+		return nil
+	}); err != nil {
 		t.Fatalf("注册任务处理器失败: %v", err)
 	}
 	job, message := createWorkerTestJob(t, db, "system.noop", 1)
@@ -58,6 +62,9 @@ func TestWorkerCompletesTaskAndAcknowledges(t *testing.T) {
 	}
 	if stored.Status != model.JobSucceeded || stored.Attempt != 1 || !message.acked {
 		t.Fatalf("任务未正确完成: status=%s attempt=%d acked=%v", stored.Status, stored.Attempt, message.acked)
+	}
+	if handlerScope.DepartmentID != job.DepartmentID || handlerScope.AllDepartments {
+		t.Fatalf("Worker 没有使用任务冻结的部门范围: scope=%+v job_department=%s", handlerScope, job.DepartmentID)
 	}
 }
 
@@ -85,12 +92,12 @@ func TestWorkerRetriesThenWritesDeadLetter(t *testing.T) {
 	if stored.Status != model.JobFailed || stored.Attempt != 2 || !second.terminated {
 		t.Fatalf("耗尽重试后状态错误: status=%s attempt=%d terminated=%v", stored.Status, stored.Attempt, second.terminated)
 	}
-	var deadCount int64
-	if err := db.Model(&model.OutboxEvent{}).Where("aggregate_id = ? AND subject = ?", job.ID, "edo.dead.task.v1").Count(&deadCount).Error; err != nil {
+	var deadEvents []model.OutboxEvent
+	if err := db.Where("aggregate_id = ? AND subject = ?", job.ID, "edo.dead.task.v1").Find(&deadEvents).Error; err != nil {
 		t.Fatalf("查询死信 Outbox 失败: %v", err)
 	}
-	if deadCount != 1 {
-		t.Fatalf("死信 Outbox 数量错误: %d", deadCount)
+	if len(deadEvents) != 1 || deadEvents[0].DepartmentID != job.DepartmentID {
+		t.Fatalf("死信 Outbox 部门传播错误: events=%+v job_department=%s", deadEvents, job.DepartmentID)
 	}
 	stats := worker.RuntimeStats()
 	if stats.Active != 0 || stats.Executed != 2 || stats.Failed != 2 || stats.Retried != 1 {
@@ -107,7 +114,8 @@ func TestAttemptsExhaustedConvergesPipelineAndDeploymentInSameFailure(t *testing
 	}
 	payload := pipeline.DeployTaskPayload{PipelineRunID: "run-interrupted", WorkflowNodeID: "deploy-interrupted"}
 	job, err := task.NewService(db, config.DefaultMaxAttempts).Create(context.Background(), task.CreateInput{
-		Kind: "pipeline.deploy", Subject: "edo.task.pipeline.deploy", Payload: payload,
+		DepartmentID: database.DefaultDepartmentID,
+		Kind:         "pipeline.deploy", Subject: "edo.task.pipeline.deploy", Payload: payload,
 		MaxAttempts: 1, Idempotent: false,
 	})
 	if err != nil {
@@ -201,7 +209,8 @@ func TestAttemptsExhaustedConvergesNonIdempotentBuildTask(t *testing.T) {
 	}
 	payload := pipeline.BuildTaskPayload{PipelineRunID: "run-shell-interrupted", WorkflowNodeID: "shell-interrupted"}
 	job, err := task.NewService(db, config.DefaultMaxAttempts).Create(context.Background(), task.CreateInput{
-		Kind: "pipeline.build", Subject: "edo.task.pipeline.build", Payload: payload,
+		DepartmentID: database.DefaultDepartmentID,
+		Kind:         "pipeline.build", Subject: "edo.task.pipeline.build", Payload: payload,
 		MaxAttempts: 1, Idempotent: false,
 	})
 	if err != nil {
@@ -376,7 +385,8 @@ func createWorkerTestJob(t *testing.T, db *gorm.DB, kind string, maxAttempts int
 	service := task.NewService(db, config.DefaultMaxAttempts)
 	subject := "edo.task." + kind
 	job, err := service.Create(context.Background(), task.CreateInput{
-		Kind: kind, Subject: subject, Payload: map[string]string{"ref": "test"},
+		DepartmentID: database.DefaultDepartmentID,
+		Kind:         kind, Subject: subject, Payload: map[string]string{"ref": "test"},
 		MaxAttempts: maxAttempts, Idempotent: true,
 	})
 	if err != nil {

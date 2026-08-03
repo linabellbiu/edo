@@ -109,6 +109,7 @@ type workflowDeploymentPlanSnapshot struct {
 
 type workflowDeploymentTargetSnapshot struct {
 	ID               string                   `json:"id"`
+	DepartmentID     string                   `json:"department_id,omitempty"`
 	Name             string                   `json:"name"`
 	Platform         model.DeploymentPlatform `json:"platform"`
 	EnvironmentID    string                   `json:"environment_id,omitempty"`
@@ -490,6 +491,20 @@ func sanitizeWorkflowNode(node *model.WorkflowNode) error {
 	node.Config.ToolchainVersion = strings.TrimSpace(node.Config.ToolchainVersion)
 	node.Config.WorkingDirectory = strings.TrimSpace(node.Config.WorkingDirectory)
 	node.Config.Description = strings.TrimSpace(node.Config.Description)
+	if len(node.Config.Notifications) > 10 {
+		return ErrInvalidWorkflow
+	}
+	for i := range node.Config.Notifications {
+		rule := &node.Config.Notifications[i]
+		rule.ID = strings.TrimSpace(rule.ID)
+		rule.ChannelID = strings.TrimSpace(rule.ChannelID)
+		rule.Title = strings.TrimSpace(rule.Title)
+		rule.Message = strings.TrimSpace(rule.Message)
+		if rule.ID == "" || len(rule.ID) > 64 || len(rule.ChannelID) > 36 ||
+			utf8.RuneCountInString(rule.Title) > 255 || utf8.RuneCountInString(rule.Message) > 8192 {
+			return ErrInvalidWorkflow
+		}
+	}
 	for i := range node.Config.Events {
 		node.Config.Events[i] = strings.TrimSpace(node.Config.Events[i])
 	}
@@ -550,7 +565,13 @@ func (s *Service) validateWorkflow(
 	tasks := workflowTasks(stages)
 	buildPlanIDs := make([]string, 0)
 	deploymentPlanIDs := make([]string, 0)
+	notificationChannelIDs := make([]string, 0)
 	for i := range tasks {
+		for _, rule := range tasks[i].Config.Notifications {
+			if rule.ChannelID != "" {
+				notificationChannelIDs = append(notificationChannelIDs, rule.ChannelID)
+			}
+		}
 		switch tasks[i].Type {
 		case model.WorkflowNodeBuild:
 			if tasks[i].Config.BuildPlanID != "" {
@@ -559,6 +580,19 @@ func (s *Service) validateWorkflow(
 		case model.WorkflowNodeDeploy:
 			if tasks[i].Config.DeploymentPlanID != "" {
 				deploymentPlanIDs = append(deploymentPlanIDs, tasks[i].Config.DeploymentPlanID)
+			}
+		}
+	}
+	activeNotificationChannels := make(map[string]struct{}, len(notificationChannelIDs))
+	if len(notificationChannelIDs) > 0 {
+		var channels []model.NotificationChannel
+		if err := s.db.WithContext(ctx).Where("id IN ? AND is_active = ?", notificationChannelIDs, true).Find(&channels).Error; err != nil {
+			if s.logger != nil {
+				s.logger.Error("校验流水线通知渠道失败", "operation", "pipeline_workflow_validate_notification_channel", "err", err)
+			}
+		} else {
+			for i := range channels {
+				activeNotificationChannels[channels[i].ID] = struct{}{}
 			}
 		}
 	}
@@ -604,6 +638,9 @@ func (s *Service) validateWorkflow(
 	ids := map[string]struct{}{source.ID: {}}
 	if source.Type != model.WorkflowNodeTrigger {
 		issues = append(issues, WorkflowIssue{Code: "invalid_source_type", Message: "代码源类型无效", NodeID: source.ID})
+	}
+	if len(source.Config.Notifications) > 0 {
+		issues = append(issues, WorkflowIssue{Code: "notification_on_source", Message: "通知只能配置在流水线任务中", NodeID: source.ID})
 	}
 	if len(source.Config.Events) == 0 {
 		issues = append(issues, WorkflowIssue{Code: "missing_event", Message: "代码源至少选择一种启动方式", NodeID: source.ID})
@@ -669,6 +706,7 @@ func (s *Service) validateWorkflow(
 				continue
 			}
 			ids[node.ID] = struct{}{}
+			issues = append(issues, validateWorkflowNotificationRules(node, stage.ID, activeNotificationChannels)...)
 			switch node.Type {
 			case model.WorkflowNodeBuild:
 				if _, ok := activeBuildPlans[node.Config.BuildPlanID]; !ok {
@@ -703,6 +741,38 @@ func (s *Service) validateWorkflow(
 	}
 	issues = append(issues, validateWorkflowArtifactFlow(tasks, activeBuildPlans, activeDeploymentPlans, activeTargets)...)
 	return uniqueIssues(issues)
+}
+
+func validateWorkflowNotificationRules(
+	node model.WorkflowNode,
+	stageID string,
+	activeChannels map[string]struct{},
+) []WorkflowIssue {
+	issues := make([]WorkflowIssue, 0)
+	seen := make(map[string]struct{}, len(node.Config.Notifications))
+	for _, rule := range node.Config.Notifications {
+		if _, duplicate := seen[rule.ID]; duplicate {
+			issues = append(issues, WorkflowIssue{
+				Code: "duplicate_notification_rule", Message: fmt.Sprintf("任务“%s”的通知规则标识不能重复", node.Name),
+				NodeID: node.ID, StageID: stageID,
+			})
+		}
+		seen[rule.ID] = struct{}{}
+		if rule.ChannelID == "" || (!rule.OnSuccess && !rule.OnFailure) {
+			issues = append(issues, WorkflowIssue{
+				Code: "invalid_notification_rule", Message: fmt.Sprintf("任务“%s”的通知规则需要选择渠道和至少一种发送时机", node.Name),
+				NodeID: node.ID, StageID: stageID,
+			})
+			continue
+		}
+		if _, ok := activeChannels[rule.ChannelID]; !ok {
+			issues = append(issues, WorkflowIssue{
+				Code: "missing_notification_channel", Message: fmt.Sprintf("任务“%s”引用的通知渠道不存在或已停用", node.Name),
+				NodeID: node.ID, StageID: stageID,
+			})
+		}
+	}
+	return issues
 }
 
 func validateWorkflowArtifactFlow(
@@ -971,7 +1041,8 @@ func (s *Service) newStageResolvedWorkflowRunWithDatabase(
 	trigger, ref, commitSHA, actorID, message string,
 	now time.Time,
 ) (*model.PipelineRun, error) {
-	if workflow == nil {
+	if application == nil || workflow == nil || application.DepartmentID == "" ||
+		(workflow.DepartmentID != "" && workflow.DepartmentID != application.DepartmentID) {
 		return nil, ErrInvalidWorkflow
 	}
 	if workflow.SchemaVersion != model.WorkflowSchemaVersion || node.ID != workflow.Source.ID || node.Type != model.WorkflowNodeTrigger {
@@ -992,7 +1063,8 @@ func (s *Service) newStageResolvedWorkflowRunWithDatabase(
 			case model.WorkflowNodeBuild:
 				var plan model.BuildPlan
 				if current.Config.BuildPlanID == "" || database.WithContext(ctx).
-					First(&plan, "id = ? AND is_active = ?", current.Config.BuildPlanID, true).Error != nil {
+					First(&plan, "id = ? AND is_active = ?", current.Config.BuildPlanID, true).Error != nil ||
+					plan.DepartmentID != application.DepartmentID {
 					return nil, ErrInvalidWorkflow
 				}
 				buildPlans[current.ID] = buildPlanSnapshot(plan)
@@ -1000,12 +1072,14 @@ func (s *Service) newStageResolvedWorkflowRunWithDatabase(
 			case model.WorkflowNodeDeploy:
 				var plan model.DeploymentPlan
 				if current.Config.DeploymentPlanID == "" || database.WithContext(ctx).
-					First(&plan, "id = ? AND is_active = ?", current.Config.DeploymentPlanID, true).Error != nil {
+					First(&plan, "id = ? AND is_active = ?", current.Config.DeploymentPlanID, true).Error != nil ||
+					plan.DepartmentID != application.DepartmentID {
 					return nil, ErrInvalidWorkflow
 				}
 				var target model.DeploymentTarget
 				if plan.DeploymentTargetID == "" || database.WithContext(ctx).
 					First(&target, "id = ? AND is_active = ?", plan.DeploymentTargetID, true).Error != nil ||
+					target.DepartmentID != application.DepartmentID ||
 					!deploymentPlanSupportsTarget(plan.Kind, target.Platform) {
 					return nil, ErrInvalidWorkflow
 				}
@@ -1040,7 +1114,7 @@ func (s *Service) newStageResolvedWorkflowRunWithDatabase(
 					TimeoutSeconds: plan.TimeoutSeconds,
 				}
 				deploymentTargets[current.ID] = workflowDeploymentTargetSnapshot{
-					ID: target.ID, Name: target.Name, Platform: target.Platform,
+					ID: target.ID, DepartmentID: target.DepartmentID, Name: target.Name, Platform: target.Platform,
 					EnvironmentID: target.EnvironmentID, HostID: target.HostID, Architecture: architecture, RuntimeID: target.RuntimeID,
 					WorkingDirectory: target.WorkingDirectory, Namespace: target.Namespace,
 					WorkloadName: target.WorkloadName, ContainerName: target.ContainerName,
@@ -1115,7 +1189,8 @@ func newWorkflowRun(application *model.Application, workflow *model.ReleaseWorkf
 		return nil, err
 	}
 	return &model.PipelineRun{
-		ID: uuid.NewString(), ApplicationID: application.ID, Trigger: trigger,
+		ID: uuid.NewString(), DepartmentID: application.DepartmentID,
+		ApplicationID: application.ID, Trigger: trigger,
 		Ref: ref, CommitSHA: commitSHA, Status: model.PipelineRunDetected,
 		Stage: string(node.Type), Environment: "",
 		WorkflowID: workflow.ID, WorkflowRevision: workflow.Revision,
@@ -1556,10 +1631,15 @@ func (s *Service) advanceLoadedRun(ctx context.Context, run *model.PipelineRun, 
 			return nil, err
 		}
 		run.Status, run.Stage, run.Message, run.UpdatedAt = model.PipelineRunSucceeded, "completed", message, now
+		s.notifyWorkflowNode(ctx, run, current, workflowNotificationSucceeded, message)
 		return run, nil
 	}
 	if targetNodeID != "" && targetNodeID != target.ID {
 		return nil, ErrInvalidWorkflowTransition
+	}
+	if current.Type != model.WorkflowNodeTrigger && current.Type != model.WorkflowNodeBuild &&
+		current.Type != model.WorkflowNodeShell && current.Type != model.WorkflowNodeDeploy {
+		s.notifyWorkflowNode(ctx, run, current, workflowNotificationSucceeded, "当前任务："+current.Name+"；状态：已完成")
 	}
 	status, stage, message := model.PipelineRunRunning, string(target.Type), "已进入“"+target.Name+"”"
 	if target.Type == model.WorkflowNodeApproval && snapshot.ApprovalEnabled {
@@ -1612,7 +1692,8 @@ func (s *Service) enqueueBuildExecution(ctx context.Context, run *model.Pipeline
 	var jobID string
 	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		job, err := task.NewService(tx, 4).Create(ctx, task.CreateInput{
-			Kind: "pipeline.build", Subject: "edo.task.pipeline.build",
+			DepartmentID: run.DepartmentID,
+			Kind:         "pipeline.build", Subject: "edo.task.pipeline.build",
 			Payload:        BuildTaskPayload{PipelineRunID: run.ID, WorkflowNodeID: node.ID},
 			IdempotencyKey: "pipeline:" + run.ID + ":task:" + node.ID,
 			MaxAttempts:    maxAttempts, Idempotent: idempotent,
@@ -1662,7 +1743,8 @@ func (s *Service) enqueueDeployExecution(ctx context.Context, run *model.Pipelin
 	var jobID string
 	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		job, err := task.NewService(tx, 1).Create(ctx, task.CreateInput{
-			Kind: "pipeline.deploy", Subject: "edo.task.pipeline.deploy",
+			DepartmentID: run.DepartmentID,
+			Kind:         "pipeline.deploy", Subject: "edo.task.pipeline.deploy",
 			Payload:        DeployTaskPayload{PipelineRunID: run.ID, WorkflowNodeID: node.ID},
 			IdempotencyKey: "pipeline:" + run.ID + ":deploy:" + node.ID,
 			MaxAttempts:    1, Idempotent: false,

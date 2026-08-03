@@ -3,12 +3,14 @@ package pipeline
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
 
+	"edo/internal/database"
 	"edo/internal/model"
 )
 
@@ -115,5 +117,46 @@ func TestPipelineRunLogsShareOneRunLevelBudget(t *testing.T) {
 	var count int64
 	if err := db.Model(&model.PipelineRunLog{}).Where("pipeline_run_id = ?", run.ID).Count(&count).Error; err != nil || count != 2 {
 		t.Fatalf("达到运行级上限后仍写入日志: count=%d err=%v", count, err)
+	}
+}
+
+func TestExecutionLogListRespectsDepartmentScope(t *testing.T) {
+	service, db, _, repositoryID := newPipelineTestService(t)
+	now := time.Now().UTC()
+	departments := []string{database.DefaultDepartmentID, uuid.NewString()}
+	for index, departmentID := range departments {
+		application := model.Application{
+			ID: uuid.NewString(), DepartmentID: departmentID,
+			Name: fmt.Sprintf("部门日志应用-%d", index), RepositoryID: repositoryID,
+			PollIntervalSeconds: 60, SyncStatus: model.ApplicationSyncIdle, IsActive: true,
+			CreatedBy: "admin", CreatedAt: now, UpdatedAt: now,
+		}
+		if err := db.Create(&application).Error; err != nil {
+			t.Fatalf("创建部门日志应用失败: %v", err)
+		}
+		run := model.PipelineRun{
+			ID: uuid.NewString(), DepartmentID: departmentID, ApplicationID: application.ID,
+			Trigger: "manual", Ref: "refs/heads/main", CommitSHA: strings.Repeat("c", 40),
+			Status: model.PipelineRunRunning, Stage: "build", CreatedBy: "admin", CreatedAt: now, UpdatedAt: now,
+		}
+		if err := db.Create(&run).Error; err != nil {
+			t.Fatalf("创建部门日志运行失败: %v", err)
+		}
+		service.appendRunLog(context.Background(), run.ID, "build", "output", fmt.Sprintf("部门-%d", index))
+	}
+
+	scoped := database.WithDepartmentScope(context.Background(), database.DepartmentScope{
+		UserID: "department-user", DepartmentID: departments[0],
+	})
+	logs, err := service.ListExecutionLogs(scoped, ExecutionLogFilter{Limit: 20})
+	if err != nil || len(logs) != 1 || logs[0].Message != "部门-0" {
+		t.Fatalf("流水线日志未按部门隔离: logs=%+v err=%v", logs, err)
+	}
+	allDepartments := database.WithDepartmentScope(context.Background(), database.DepartmentScope{
+		UserID: "superuser", AllDepartments: true,
+	})
+	logs, err = service.ListExecutionLogs(allDepartments, ExecutionLogFilter{Limit: 20})
+	if err != nil || len(logs) != 2 {
+		t.Fatalf("超级管理员未看到全部部门日志: logs=%+v err=%v", logs, err)
 	}
 }

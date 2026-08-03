@@ -43,9 +43,17 @@ export function formatGitReference(input: GitReferenceInput) {
   const shortSHA = sha.slice(0, input.shaLength || 8)
 
   if (!parsed.name && !shortSHA) return '—'
-  if (parsed.kind === 'commit' && !parsed.name) return `commit: ${shortSHA}`
+  if (parsed.kind === 'commit' && !parsed.name) return `提交：${shortSHA}`
 
   const name = parsed.name || shortSHA
-  const suffix = shortSHA && shortSHA !== name ? ` · ${shortSHA}` : ''
-  return `${parsed.kind}: ${name}${suffix}`
+  const label: Record<GitReferenceKind, string> = {
+    branch: '分支',
+    tag: 'Tag',
+    pr: 'PR',
+    commit: '提交',
+    ref: '版本',
+  }
+  const parts = [`${label[parsed.kind]}：${name}`]
+  if (shortSHA && shortSHA !== name) parts.push(`提交：${shortSHA}`)
+  return parts.join('；')
 }

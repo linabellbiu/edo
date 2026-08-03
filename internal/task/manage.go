@@ -91,7 +91,8 @@ func (s *Service) Retry(ctx context.Context, id string) (*model.Job, error) {
 		return nil, ErrJobNotRetryable
 	}
 	return s.Create(ctx, CreateInput{
-		Kind: source.Kind, Subject: source.Subject, Payload: source.Payload,
+		DepartmentID: source.DepartmentID,
+		Kind:         source.Kind, Subject: source.Subject, Payload: source.Payload,
 		MaxAttempts: source.MaxAttempts, Idempotent: true,
 		IdempotencyKey: "manual-retry:" + source.ID + ":" + uuid.NewString(),
 	})

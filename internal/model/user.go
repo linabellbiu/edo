@@ -6,6 +6,7 @@ type User struct {
 	ID           string `gorm:"type:varchar(36);primaryKey"`
 	Username     string `gorm:"type:varchar(32);not null;uniqueIndex"`
 	Nickname     string `gorm:"type:varchar(64);not null"`
+	DepartmentID string `gorm:"type:varchar(36);not null;default:'00000000-0000-0000-0000-000000000001';index"`
 	PasswordHash string `gorm:"type:varchar(255);not null"`
 	IsActive     bool   `gorm:"not null;default:true;index"`
 	IsSuperuser  bool   `gorm:"not null;default:false"`

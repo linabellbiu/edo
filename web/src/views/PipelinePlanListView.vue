@@ -37,7 +37,10 @@ const loading = ref(false)
 const busyID = ref('')
 const presetOpen = ref(false)
 
-const canManage = computed(() => Boolean(auth.user?.is_superuser || auth.permissions.has('delivery.manage')))
+const canCreate = computed(() => auth.canAny(['delivery.create']))
+const canUpdate = computed(() => auth.canAny(['delivery.update']))
+const canDelete = computed(() => auth.canAny(['delivery.delete']))
+const canExecute = computed(() => auth.canAny(['delivery.execute']))
 const usageCount = computed(() => {
   const result = new Map<string, number>()
   applications.value.forEach((application) => {
@@ -160,7 +163,7 @@ onMounted(async () => {
     return
   }
   await refresh()
-  if (route.query.create === '1' && canManage.value) {
+  if (route.query.create === '1' && canCreate.value) {
     presetOpen.value = true
     await router.replace({ path: '/pipeline-plans' })
   }
@@ -174,7 +177,7 @@ async function openCreatedTemplate(result: import('@/types/pipeline').WorkflowTe
 <template>
   <section class="pipeline-plan-page">
     <PageToolbar :description="`${templates.length} 条流水线；应用使用已启用流水线的最新版本。`">
-      <a-button v-if="canManage" type="primary" @click="presetOpen = true">
+      <a-button v-if="canCreate" type="primary" @click="presetOpen = true">
         新建流水线
       </a-button>
     </PageToolbar>
@@ -199,20 +202,20 @@ async function openCreatedTemplate(result: import('@/types/pipeline').WorkflowTe
             <a-tag :color="record.is_active ? 'success' : 'default'">{{ record.is_active ? '已启用' : '草稿' }}</a-tag>
           </template>
           <template v-else-if="column.key === 'revision'">第 {{ record.revision }} 版</template>
-          <template v-else-if="column.key === 'scale'">{{ record.stages.length }} 个阶段 · {{ record.stages.reduce((total: number, stage: WorkflowStage) => total + stage.tasks.length, 0) }} 个任务</template>
+          <template v-else-if="column.key === 'scale'">阶段：{{ record.stages.length }}；任务：{{ record.stages.reduce((total: number, stage: WorkflowStage) => total + stage.tasks.length, 0) }}</template>
           <template v-else-if="column.key === 'usage'">{{ usageCount.get(record.id) || 0 }} 个</template>
           <template v-else-if="column.key === 'updated_at'">{{ formatTime(record.updated_at) }}</template>
           <template v-else-if="column.key === 'actions'">
             <a-space :size="2">
-              <a-button type="link" size="small" @click="router.push(`/pipeline-plans/editor?template=${record.id}`)"><Pencil :size="14" />编辑</a-button>
-              <a-dropdown v-if="canManage" placement="bottomRight">
+              <a-button v-if="canUpdate" type="link" size="small" @click="router.push(`/pipeline-plans/editor?template=${record.id}`)"><Pencil :size="14" />编辑</a-button>
+              <a-dropdown v-if="canCreate || canUpdate || canDelete" placement="bottomRight">
                 <a-button type="text" size="small" :loading="busyID === record.id">更多</a-button>
                 <template #overlay>
                   <a-menu>
-                    <a-menu-item @click="duplicate(record)"><Copy :size="14" />复制</a-menu-item>
-                    <a-menu-item @click="setActive(record, !record.is_active)"><Power :size="14" />{{ record.is_active ? '停用' : '启用' }}</a-menu-item>
-                    <a-menu-divider />
-                    <a-menu-item danger @click="remove(record)"><Trash2 :size="14" />删除</a-menu-item>
+                    <a-menu-item v-if="canCreate" @click="duplicate(record)"><Copy :size="14" />复制</a-menu-item>
+                    <a-menu-item v-if="canUpdate" @click="setActive(record, !record.is_active)"><Power :size="14" />{{ record.is_active ? '停用' : '启用' }}</a-menu-item>
+                    <a-menu-divider v-if="canDelete && (canCreate || canUpdate)" />
+                    <a-menu-item v-if="canDelete" danger @click="remove(record)"><Trash2 :size="14" />删除</a-menu-item>
                   </a-menu>
                 </template>
               </a-dropdown>
@@ -221,12 +224,12 @@ async function openCreatedTemplate(result: import('@/types/pipeline').WorkflowTe
         </template>
         <template #emptyText>
           <a-empty description="还没有流水线">
-            <a-button v-if="canManage" type="primary" @click="presetOpen = true">创建第一条流水线</a-button>
+            <a-button v-if="canCreate" type="primary" @click="presetOpen = true">创建第一条流水线</a-button>
           </a-empty>
         </template>
       </a-table>
     </div>
-    <WorkflowPresetModal v-model:open="presetOpen" @created="openCreatedTemplate" />
+    <WorkflowPresetModal v-model:open="presetOpen" :can-create="canCreate" :can-execute="canExecute" @created="openCreatedTemplate" />
   </section>
 </template>
 

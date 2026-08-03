@@ -91,8 +91,10 @@ const props = defineProps<{
   applications: ApplicationItem[]
   pipelineRuns?: PipelineRunItem[]
   loading?: boolean
-  canManage?: boolean
-  canRun?: boolean
+  canCreate?: boolean
+  canUpdate?: boolean
+  canDelete?: boolean
+  canExecute?: boolean
   canReadDeployments?: boolean
   activePlanID?: string
   runnableCounts?: Record<string, number>
@@ -280,7 +282,7 @@ function sourceMeta(item: ReleaseGroupApplication) {
           <i :class="{ live: planStatus(visiblePlanStatus(plan)).live }" />
           <span class="plan-index-copy">
             <strong :title="planTitle(plan)">{{ planTitle(plan) }}</strong>
-            <span>{{ planStatus(visiblePlanStatus(plan)).label }} · {{ t('releasePlan.applicationCount', { count: applicationCount(plan) }) }}</span>
+            <span>状态：{{ planStatus(visiblePlanStatus(plan)).label }}；{{ t('releasePlan.applicationCount', { count: applicationCount(plan) }) }}</span>
             <small>{{ formatTime(planDisplayTime(plan)) }}</small>
           </span>
           <ChevronRight :size="16" />
@@ -303,14 +305,14 @@ function sourceMeta(item: ReleaseGroupApplication) {
             <i />
             <span><small>{{ planStatus(visiblePlanStatus(selectedPlan)).hint }}</small><strong>{{ planStatus(visiblePlanStatus(selectedPlan)).label }}</strong></span>
           </div>
-          <a-button v-if="canRun && canExecutePlan(selectedPlan)" type="primary" @click="emit('execute', selectedPlan.id)">
+          <a-button v-if="canExecute && canExecutePlan(selectedPlan)" type="primary" @click="emit('execute', selectedPlan.id)">
             <Play :size="14" />{{ t('releasePlan.execute') }}
           </a-button>
-          <a-button v-if="canManage && !planMutationBlocked(selectedPlan)" :disabled="mutatingPlanID === selectedPlan.id" @click="emit('edit', selectedPlan.id)">
+          <a-button v-if="canUpdate && !planMutationBlocked(selectedPlan)" :disabled="mutatingPlanID === selectedPlan.id" @click="emit('edit', selectedPlan.id)">
             <Pencil :size="14" />{{ t('releasePlan.actions.edit') }}
           </a-button>
           <a-button
-            v-if="canManage"
+            v-if="canUpdate"
             :loading="mutatingPlanID === selectedPlan.id"
             @click="emit('toggle', selectedPlan.id, selectedPlan.is_active === false)"
           >
@@ -318,7 +320,7 @@ function sourceMeta(item: ReleaseGroupApplication) {
             <PowerOff v-else :size="14" />
             {{ selectedPlan.is_active === false ? t('releasePlan.actions.enable') : t('releasePlan.actions.disable') }}
           </a-button>
-          <a-button v-if="canManage && !planMutationBlocked(selectedPlan)" danger :disabled="mutatingPlanID === selectedPlan.id" @click="emit('remove', selectedPlan.id)">
+          <a-button v-if="canDelete && !planMutationBlocked(selectedPlan)" danger :disabled="mutatingPlanID === selectedPlan.id" @click="emit('remove', selectedPlan.id)">
             <Trash2 :size="14" />{{ t('releasePlan.actions.remove') }}
           </a-button>
         </div>
@@ -347,7 +349,7 @@ function sourceMeta(item: ReleaseGroupApplication) {
           <div><small>{{ t('releasePlan.orchestration') }}</small><h3>{{ t('releasePlan.applicationsTitle') }}</h3></div>
           <div class="plan-group-heading-actions">
             <span>{{ t('releasePlan.applicationCount', { count: applicationCount(selectedPlan) }) }}</span>
-            <a-button v-if="selectedGroup && canManage && !planMutationBlocked(selectedPlan)" size="small" type="text" :disabled="mutatingPlanID === selectedPlan.id" @click="emit('addApplication', selectedPlan.id, selectedGroup.id)">
+            <a-button v-if="selectedGroup && canUpdate && !planMutationBlocked(selectedPlan)" size="small" type="text" :disabled="mutatingPlanID === selectedPlan.id" @click="emit('addApplication', selectedPlan.id, selectedGroup.id)">
               <Plus :size="13" />{{ t('releasePlan.editor.addApplication') }}
             </a-button>
           </div>
@@ -362,7 +364,7 @@ function sourceMeta(item: ReleaseGroupApplication) {
                   <strong :title="applicationName(item)">{{ applicationName(item) }}</strong>
                   <span :title="item.source_value">
                     <component :is="sourceMeta(item).icon" />
-                    {{ sourceMeta(item).label }} · {{ sourceMeta(item).value }}
+                    {{ sourceMeta(item).label }}：{{ sourceMeta(item).value }}
                   </span>
                   <span v-if="executionItem(selectedPlan, item)" class="plan-app-execution" :class="`tone-${executionItemStatus(executionItem(selectedPlan, item)?.status).tone}`">
                     <Route />{{ executionItemStatus(executionItem(selectedPlan, item)?.status).label }}
@@ -388,7 +390,7 @@ function sourceMeta(item: ReleaseGroupApplication) {
                   </a-button>
                   <em v-else-if="executionItem(selectedPlan, item)?.pipeline_run_id && !canReadDeployments" class="disabled">无部署权限</em>
                   <a-popconfirm
-                    v-if="canManage && !planMutationBlocked(selectedPlan)"
+                    v-if="canUpdate && !planMutationBlocked(selectedPlan)"
                     :title="t('releasePlan.editor.removeApplicationConfirm', { name: applicationName(item) })"
                     :description="t('releasePlan.editor.removeApplicationHint')"
                     :ok-text="t('releasePlan.editor.remove')"
@@ -415,7 +417,7 @@ function sourceMeta(item: ReleaseGroupApplication) {
     <span><ListChecks /></span>
     <h3>{{ t('releasePlan.emptyTitle') }}</h3>
     <p>{{ t('releasePlan.emptyDescription') }}</p>
-    <a-button v-if="canManage" type="primary" @click="emit('create')">{{ t('releasePlan.create') }}</a-button>
+    <a-button v-if="canCreate" type="primary" @click="emit('create')">{{ t('releasePlan.create') }}</a-button>
   </div>
 </template>
 

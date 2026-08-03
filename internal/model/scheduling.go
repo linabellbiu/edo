@@ -12,7 +12,7 @@ const ScheduleNotification ScheduleAction = "notification"
 
 type ScheduledTask struct {
 	ID             string         `gorm:"type:varchar(36);primaryKey" json:"id"`
-	Name           string         `gorm:"type:varchar(128);not null;uniqueIndex" json:"name"`
+	Name           string         `gorm:"type:varchar(128);not null;uniqueIndex:ux_scheduled_tasks_department_name,priority:2" json:"name"`
 	CronExpression string         `gorm:"type:varchar(128);not null" json:"cron_expression"`
 	Timezone       string         `gorm:"type:varchar(64);not null" json:"timezone"`
 	Action         ScheduleAction `gorm:"type:varchar(32);not null;index" json:"action"`
@@ -21,6 +21,7 @@ type ScheduledTask struct {
 	NextRunAt      time.Time      `gorm:"not null;index" json:"next_run_at"`
 	LastRunAt      *time.Time     `json:"last_run_at,omitempty"`
 	LastJobID      string         `gorm:"type:varchar(36);not null;default:'';index" json:"last_job_id"`
+	DepartmentID   string         `gorm:"type:varchar(36);not null;default:'00000000-0000-0000-0000-000000000001';index;uniqueIndex:ux_scheduled_tasks_department_name,priority:1" json:"department_id"`
 	CreatedBy      string         `gorm:"type:varchar(36);not null;index" json:"created_by"`
 	CreatedAt      time.Time      `gorm:"not null" json:"created_at"`
 	UpdatedAt      time.Time      `gorm:"not null" json:"updated_at"`
@@ -38,7 +39,7 @@ const (
 
 type MonitorRule struct {
 	ID                    string        `gorm:"type:varchar(36);primaryKey"`
-	Name                  string        `gorm:"type:varchar(128);not null;uniqueIndex"`
+	Name                  string        `gorm:"type:varchar(128);not null;uniqueIndex:ux_monitor_rules_department_name,priority:2"`
 	EndpointCiphertext    string        `gorm:"type:text;not null"`
 	EndpointDisplay       string        `gorm:"type:varchar(1024);not null"`
 	Method                string        `gorm:"type:varchar(8);not null;default:'GET'"`
@@ -57,6 +58,7 @@ type MonitorRule struct {
 	LastRunAt             *time.Time
 	LastChangedAt         *time.Time
 	LastJobID             string    `gorm:"type:varchar(36);not null;default:'';index"`
+	DepartmentID          string    `gorm:"type:varchar(36);not null;default:'00000000-0000-0000-0000-000000000001';index;uniqueIndex:ux_monitor_rules_department_name,priority:1"`
 	CreatedBy             string    `gorm:"type:varchar(36);not null;index"`
 	CreatedAt             time.Time `gorm:"not null"`
 	UpdatedAt             time.Time `gorm:"not null"`

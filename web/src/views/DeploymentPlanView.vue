@@ -172,12 +172,14 @@ const kindOptions: Array<{ value: PlanKind; label: string; hint: string }> = [
 ]
 const kindNames: Record<PlanKind, string> = Object.fromEntries(kindOptions.map(item => [item.value, item.label])) as Record<PlanKind, string>
 const selected = computed(() => plans.value.find(item => item.id === selectedID.value))
-const canManage = computed(() => auth.canAny(['delivery.manage']))
+const canCreate = computed(() => auth.canAny(['delivery.create']))
+const canUpdate = computed(() => auth.canAny(['delivery.update']))
+const canDelete = computed(() => auth.canAny(['delivery.delete']))
 const platform = computed<Platform>(() => planPlatform(form.kind))
 const canReadHosts = computed(() => auth.canAny(['cluster.read', 'deployment.read']))
 const canReadEnvironments = computed(() => auth.canAny(['deployment.read']))
 const canReadRuntimes = computed(() => auth.canAny(['cluster.read']))
-const canTestInfrastructure = computed(() => auth.canAny(['cluster.manage']))
+const canTestInfrastructure = computed(() => auth.canAny(['cluster.execute']))
 const environmentByID = computed(() => new Map(environments.value.map(item => [item.id, item])))
 const hostByID = computed(() => new Map(hosts.value.map(item => [item.id, item])))
 const dockerByID = computed(() => new Map(docker.value.filter(item => item.is_active).map(item => [item.id, item])))
@@ -196,7 +198,7 @@ const kubernetesRuntimeOptions = computed(() => {
     const runtime = capability?.runtime_id ? clusterByID.value.get(capability.runtime_id) : undefined
     if (!runtime || seen.has(runtime.id)) return []
     seen.add(runtime.id)
-    return [{ value: runtime.id, label: `${runtime.name} · ${host.name}` }]
+    return [{ value: runtime.id, label: runtime.name, hostName: host.name }]
   })
 })
 const kubernetesExecutionHosts = computed(() => environmentHosts.value.filter(
@@ -282,24 +284,30 @@ function runtimeOf(plan: DeploymentPlan) {
 function destinationName(plan: DeploymentPlan) {
   const target = targetOf(plan)
   if (!target) return '尚未配置运行位置'
-  const environmentName = environmentByID.value.get(target.environment_id)?.name
   const hostName = hostByID.value.get(target.host_id)?.name
-  if (environmentName && hostName) return `${environmentName} / ${hostName}`
+  if (target.platform !== 'kubernetes' && hostName) return hostName
+  const runtimeName = runtimeOf(plan)?.name
+  if (runtimeName) return runtimeName
+  const environmentName = environmentByID.value.get(target.environment_id)?.name
   if (environmentName) return environmentName
   if (target.platform === 'ssh') return hostName || '主机不可用'
-  return runtimeOf(plan)?.name || (target.platform === 'docker' ? 'Docker 运行时不可用' : 'Kubernetes 集群不可用')
+  return target.platform === 'docker' ? 'Docker 运行时不可用' : 'Kubernetes 集群不可用'
 }
 
 function destinationDetail(plan: DeploymentPlan) {
   const target = targetOf(plan)
   if (!target) return '编辑方案后补全部署信息'
+  const details: string[] = []
+  const environmentName = environmentByID.value.get(target.environment_id)?.name
+  if (environmentName) details.push(`环境：${environmentName}`)
   const host = hostByID.value.get(target.host_id)
-  if (host) return host.mode === 'local' ? '本地主机' : `${host.address}:${host.ssh_port}`
-  if (target.platform === 'ssh') return '无法读取主机信息'
+  if (host) details.push(host.mode === 'local' ? '位置：本地' : `连接地址：${host.address}:${host.ssh_port}`)
+  if (target.platform === 'ssh') return details.join('；') || '无法读取主机信息'
   const runtime = runtimeOf(plan)
-  if (!runtime) return '无法读取连接信息'
-  if (target.platform === 'docker') return runtime.local ? '本地 Docker' : runtime.host || '远程 Docker'
-  return runtime.api_server || '未记录 API Server'
+  if (!runtime) return details.join('；') || '无法读取连接信息'
+  if (target.platform === 'docker') details.push(runtime.local ? '运行时：本地 Docker' : `运行时地址：${runtime.host || '未记录'}`)
+  else details.push(`API Server：${runtime.api_server || '未记录'}`)
+  return details.join('；')
 }
 
 function objectName(plan: DeploymentPlan) {
@@ -307,7 +315,7 @@ function objectName(plan: DeploymentPlan) {
   if (!target) return '尚未配置'
   if (target.platform === 'ssh') return target.working_directory || '执行用户主目录'
   if (target.platform === 'docker') return target.workload_name || plan.service_name || '未指定容器'
-  return `${target.namespace || 'default'} / ${target.workload_name || '未指定 Deployment'}`
+  return target.workload_name || '未指定 Deployment'
 }
 
 function objectDetail(plan: DeploymentPlan) {
@@ -315,12 +323,12 @@ function objectDetail(plan: DeploymentPlan) {
   if (!target) return '—'
   if (target.platform === 'ssh') return '执行方案中的部署脚本'
   if (target.platform === 'docker') return 'Docker 容器'
-  return `容器：${target.container_name || '未指定'}`
+  return `命名空间：${target.namespace || 'default'}；容器：${target.container_name || '未指定'}`
 }
 
 function executionFile(plan: DeploymentPlan) {
   if (plan.kind === 'script') return '部署脚本'
-  if (plan.kind === 'compose') return `内联 Compose YAML · ${plan.service_name || '未指定服务'}`
+  if (plan.kind === 'compose') return `内联 Compose YAML（服务：${plan.service_name || '未指定'}）`
   if (plan.kind === 'kubernetes') return 'Deployment 镜像更新'
   return '容器镜像更新'
 }
@@ -823,7 +831,7 @@ async function save() {
 }
 
 watch([() => route.query.create, () => auth.loaded], ([value]) => {
-  if (value !== '1' || !auth.canAny(['delivery.manage'])) return
+  if (value !== '1' || !canCreate.value) return
   create()
   const query = { ...route.query }
   delete query.create
@@ -837,7 +845,7 @@ onMounted(refresh)
   <section>
     <PageToolbar description="一个方案包含完整的执行方式、运行环境和更新对象，流水线部署任务只需选择方案。">
       <a-button :loading="loading" @click="refresh"><RefreshCw :size="15" />刷新</a-button>
-      <a-button v-if="canManage" type="primary" @click="create"><Plus :size="15" />新建部署方案</a-button>
+      <a-button v-if="canCreate" type="primary" @click="create"><Plus :size="15" />新建部署方案</a-button>
     </PageToolbar>
 
     <div class="plan-layout vben-card">
@@ -846,12 +854,12 @@ onMounted(refresh)
         <div v-for="plan in plans" :key="plan.id" class="plan-list-item" :class="{ active: selectedID === plan.id }">
           <button class="plan-select" @click="selectedID = plan.id">
             <span class="brand" :class="planPlatform(plan.kind)"><RuntimeBrandIcon :kind="planPlatform(plan.kind)" /></span>
-            <span class="plan-list-copy"><strong>{{ plan.name }}</strong><small>{{ kindNames[plan.kind] }}</small><em>{{ destinationName(plan) }} · {{ objectName(plan) }}</em></span>
+            <span class="plan-list-copy"><strong>{{ plan.name }}</strong><small>执行方式：{{ kindNames[plan.kind] }}</small><em>运行位置：{{ destinationName(plan) }}</em><em>更新对象：{{ objectName(plan) }}</em></span>
             <i :class="{ inactive: !plan.is_active || !plan.deployment_target }" />
           </button>
-          <div v-if="canManage" class="plan-list-actions">
-            <a-button type="link" size="small" :loading="mutatingID === plan.id" @click="confirmPlanStatus(plan)">{{ plan.is_active ? '停用' : '启用' }}</a-button>
-            <a-button type="link" size="small" danger :disabled="mutatingID === plan.id" @click="confirmDeletePlan(plan)">删除</a-button>
+          <div v-if="canUpdate || canDelete" class="plan-list-actions">
+            <a-button v-if="canUpdate" type="link" size="small" :loading="mutatingID === plan.id" @click="confirmPlanStatus(plan)">{{ plan.is_active ? '停用' : '启用' }}</a-button>
+            <a-button v-if="canDelete" type="link" size="small" danger :disabled="mutatingID === plan.id" @click="confirmDeletePlan(plan)">删除</a-button>
           </div>
         </div>
         <a-empty v-if="!plans.length && !loading" description="还没有部署方案" />
@@ -862,9 +870,9 @@ onMounted(refresh)
           <div><span>{{ kindNames[selected.kind] }}</span><h3>{{ selected.name }}</h3><p>{{ selected.description || '尚未填写说明' }}</p></div>
           <div>
             <a-tag :color="selected.is_active && selected.deployment_target ? 'success' : 'default'">{{ selected.deployment_target ? (selected.is_active ? '已启用' : '已停用') : '待补全' }}</a-tag>
-            <a-button v-if="canManage" :loading="mutatingID === selected.id" @click="confirmPlanStatus(selected)">{{ selected.is_active ? '停用' : '启用' }}</a-button>
-            <a-button v-if="canManage" @click="edit(selected)">编辑</a-button>
-            <a-button v-if="canManage" danger :disabled="mutatingID === selected.id" @click="confirmDeletePlan(selected)">删除</a-button>
+            <a-button v-if="canUpdate" :loading="mutatingID === selected.id" @click="confirmPlanStatus(selected)">{{ selected.is_active ? '停用' : '启用' }}</a-button>
+            <a-button v-if="canUpdate" @click="edit(selected)">编辑</a-button>
+            <a-button v-if="canDelete" danger :disabled="mutatingID === selected.id" @click="confirmDeletePlan(selected)">删除</a-button>
           </div>
         </header>
 
@@ -885,7 +893,7 @@ onMounted(refresh)
         <div class="form-section">
           <header><b>1</b><div><strong>方案信息</strong><small>使用能直接辨认用途和环境的名称。</small></div></header>
           <div class="form-grid">
-            <a-form-item label="方案名称" required><a-input v-model:value="form.name" placeholder="例如：生产 NAS · 后端" /></a-form-item>
+            <a-form-item label="方案名称" required><a-input v-model:value="form.name" placeholder="例如：生产后端部署" /></a-form-item>
             <a-form-item label="最长执行时间（秒）"><a-input-number v-model:value="form.timeout_seconds" :min="30" :max="3600" /></a-form-item>
             <a-form-item class="span-2" label="说明"><a-input v-model:value="form.description" placeholder="这套方案用于哪些应用或场景" /></a-form-item>
           </div>
@@ -910,7 +918,7 @@ onMounted(refresh)
                   </span>
                 </template>
               </a-select>
-              <a-button v-if="auth.canAny(['deployment.manage'])" aria-label="创建环境" title="创建环境" @click="router.push('/environments?create=1')"><Plus :size="15" /></a-button>
+              <a-button v-if="auth.canAny(['deployment.create'])" aria-label="创建环境" title="创建环境" @click="router.push('/environments?create=1')"><Plus :size="15" /></a-button>
             </div>
           </a-form-item>
           <div v-if="!canReadEnvironments" class="permission-note">需要发布记录查看权限才能选择环境。</div>
@@ -940,17 +948,17 @@ onMounted(refresh)
             />
             <div class="form-grid">
               <a-form-item v-if="platform === 'kubernetes'" class="span-2" label="Kubernetes 集群" required>
-                <div :class="{ 'resource-select': auth.canAny(['cluster.manage']) }">
+                <div :class="{ 'resource-select': auth.canAny(['cluster.create']) }">
                   <a-select :value="form.runtime_id" show-search :disabled="!canReadRuntimes" :options="kubernetesRuntimeOptions" placeholder="选择当前环境关联的 Kubernetes 集群" @change="changeKubernetesRuntime">
-                    <template #option="{ value, label }">
+                    <template #option="{ value, label, hostName }">
                       <span class="managed-resource-option">
-                        <span class="managed-resource-option-label">{{ label }}</span>
+                        <span class="runtime-option-copy"><strong>{{ label }}</strong><small>接入主机：{{ hostName }}</small></span>
                         <a class="managed-resource-option-view" :href="resourceViewHref('/hosts', { view: 'resources', node: `kubernetes:${String(value)}` })" target="_blank" rel="noopener noreferrer" @mousedown.stop @click.stop>查看</a>
                       </span>
                     </template>
                   </a-select>
                   <a-button
-                    v-if="auth.canAny(['cluster.manage'])"
+                    v-if="auth.canAny(['cluster.create'])"
                     :aria-label="t('kubernetesCluster.action.add')"
                     :title="t('kubernetesCluster.action.add')"
                     @click="router.push('/hosts?create=kubernetes')"
@@ -1111,5 +1119,5 @@ onMounted(refresh)
 </template>
 
 <style scoped>
-.plan-layout{display:grid;min-height:560px;grid-template-columns:300px minmax(0,1fr);overflow:hidden}.plan-layout>aside{border-right:1px solid var(--edo-border);background:var(--edo-surface-soft)}aside>header{display:flex;align-items:center;justify-content:space-between;padding:16px}aside>header small{color:var(--edo-muted)}.plan-list-item{width:calc(100% - 12px);margin:6px;border-radius:10px;background:transparent}.plan-list-item:hover,.plan-list-item.active{background:var(--edo-primary-soft)}.plan-select{display:grid;width:100%;min-height:74px;align-items:center;grid-template-columns:38px minmax(0,1fr) 8px;gap:10px;padding:9px 10px;border:0;border-radius:10px;color:var(--edo-text);background:transparent;cursor:pointer;text-align:left}.plan-select i{width:7px;height:7px;border-radius:50%;background:#28b66e}.plan-select i.inactive{background:#a8adb7}.plan-list-actions{display:flex;justify-content:flex-end;padding:0 5px 5px}.plan-list-actions :deep(.ant-btn){height:24px;padding:0 6px;font-size:11px}.plan-list-copy{min-width:0}.plan-list-copy strong,.plan-list-copy small,.plan-list-copy em{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.plan-list-copy small{margin-top:2px;color:var(--edo-muted);font-size:12px}.plan-list-copy em{margin-top:2px;color:var(--edo-muted);font-size:10px;font-style:normal}.brand{display:grid;width:36px;height:36px;place-items:center;border-radius:10px;background:var(--edo-surface)}.brand.ssh{color:var(--edo-muted)}.brand.docker{color:#2496ed}.brand.kubernetes{color:#326ce5}.brand :deep(svg){width:21px;height:21px}.plan-layout>main{min-width:0;padding:24px}.detail-header{display:flex;align-items:flex-start;justify-content:space-between;gap:18px;margin-bottom:24px}.detail-header h3,.detail-header p{margin:0}.detail-header p,.detail-header span{color:var(--edo-muted)}.detail-header h3{margin:2px 0;font-size:22px}.detail-header>div:last-child{display:flex;flex:0 0 auto;align-items:center;gap:8px}.deployment-path{display:grid;align-items:center;grid-template-columns:minmax(0,1fr) 20px minmax(0,1fr) 20px minmax(0,1fr);gap:10px}.deployment-path article{display:flex;min-width:0;min-height:108px;align-items:center;gap:13px;padding:16px;border:1px solid var(--edo-border);border-radius:12px;background:var(--edo-surface-soft)}.deployment-path article>span{display:grid;width:40px;height:40px;flex:0 0 40px;place-items:center;border-radius:11px;color:var(--edo-primary);background:var(--edo-surface)}.deployment-path article>span svg{width:20px}.deployment-path article>div{min-width:0}.deployment-path small,.deployment-path strong,.deployment-path p{display:block;overflow:hidden;margin:0;text-overflow:ellipsis;white-space:nowrap}.deployment-path small{color:var(--edo-muted);font-size:11px}.deployment-path strong{margin:3px 0;font-size:15px}.deployment-path p{color:var(--edo-muted);font-size:11px}.path-arrow{width:17px;justify-self:center;color:var(--edo-muted)}.plan-limit{display:flex;align-items:center;gap:12px;margin-top:16px;padding:14px 16px;border-radius:10px;background:var(--edo-primary-soft)}.plan-limit>svg{width:20px;color:var(--edo-primary)}.plan-limit small,.plan-limit strong{display:block}.plan-limit small{color:var(--edo-muted);font-size:11px}.plan-limit p{margin:0 0 0 auto;color:var(--edo-muted)}.empty-panel{display:grid;place-items:center}.form-section{margin-bottom:14px;padding:15px 16px 4px;border:1px solid var(--edo-border);border-radius:11px;background:var(--edo-surface-soft)}.form-section>header{display:flex;align-items:center;gap:10px;margin-bottom:14px}.form-section>header b{display:grid;width:26px;height:26px;flex:0 0 26px;place-items:center;border-radius:8px;color:var(--edo-primary);background:var(--edo-primary-soft)}.form-section>header strong,.form-section>header small{display:block}.form-section>header small{margin-top:1px;color:var(--edo-muted);font-size:11px}.form-subtitle{margin:3px 0 12px;padding-top:12px;border-top:1px solid var(--edo-border);color:var(--edo-muted);font-size:12px;font-weight:600}.form-grid{display:grid;grid-template-columns:1fr 1fr;gap:0 14px}.span-2{grid-column:1/-1}.form-grid :deep(.ant-input-number){width:100%}.resource-select{display:grid;grid-template-columns:minmax(0,1fr) 34px;gap:8px}.resource-select>.ant-btn{padding:0}.permission-note,.field-help{margin:-4px 0 13px;color:var(--edo-muted);font-size:12px}.kind-picker{display:grid!important;width:100%;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}.kind-picker :deep(.ant-radio-button-wrapper){display:flex;height:70px;align-items:center;gap:10px;padding:9px 11px;border:1px solid var(--edo-border)!important;border-radius:10px!important;background:var(--edo-surface);box-shadow:none!important;line-height:1.3}.kind-picker :deep(.ant-radio-button-wrapper::before){display:none}.kind-picker :deep(.ant-radio-button-wrapper-checked){border-color:color-mix(in srgb,var(--edo-primary) 65%,var(--edo-border))!important;background:var(--edo-primary-soft)}.kind-picker :deep(.ant-radio-button-wrapper>svg){width:24px;height:24px;flex:0 0 24px}.kind-picker :deep(.ant-radio-button-wrapper span){min-width:0}.kind-picker :deep(.ant-radio-button-wrapper strong),.kind-picker :deep(.ant-radio-button-wrapper small){display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.kind-picker :deep(.ant-radio-button-wrapper small){margin-top:3px;color:var(--edo-muted);font-size:10px}.artifact-image-notice{margin-bottom:12px}.runtime-inputs{display:grid;gap:10px;margin-bottom:12px}.runtime-input-block{padding:13px 14px 2px;border:1px solid var(--edo-border);border-radius:10px;background:var(--edo-surface)}.runtime-input-block>header{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:10px}.runtime-input-block>header span strong,.runtime-input-block>header span small{display:block}.runtime-input-block>header span small{margin-top:2px;color:var(--edo-muted);font-size:11px}.runtime-input-block>header>.ant-btn{height:24px;padding:0}.runtime-input-block>.ant-form-item{margin-bottom:12px}.docker-row{display:grid;align-items:center;gap:8px;margin-bottom:8px}.docker-port-input-row{grid-template-columns:minmax(0,1fr) 112px 112px 86px 32px}.docker-port-input-row :deep(.ant-input-number){width:100%}.docker-key-value-row{grid-template-columns:minmax(0,1fr) minmax(0,1.4fr) 32px}.docker-volume-row{display:grid;align-items:center;grid-template-columns:minmax(0,1fr) minmax(0,1.35fr) auto 32px;gap:8px;margin-bottom:8px}.input-empty{margin:4px 0 10px;padding:12px;border:1px dashed var(--edo-border);border-radius:8px;color:var(--edo-muted);background:var(--edo-surface-soft);font-size:12px;text-align:center}.input-block-help{margin:4px 0 10px}.docker-advanced{border:1px solid var(--edo-border);border-radius:10px;background:var(--edo-surface-soft)}.docker-advanced :deep(.ant-collapse-header){align-items:center!important;padding:13px 14px!important;font-weight:650}.docker-advanced :deep(.ant-collapse-content-box){display:grid;gap:10px;padding:0 10px 10px!important}.health-toggle{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;margin:2px 0 12px}.health-toggle span strong,.health-toggle span small{display:block}.health-toggle span small{margin-top:3px;color:var(--edo-muted);font-size:11px}.health-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px}.health-grid :deep(.ant-input-number){width:100%}.compose-import{display:flex;align-items:center;gap:8px;margin-bottom:10px}.compose-import span{color:var(--edo-muted);font-size:12px}.file-input{display:none!important}.drawer-actions{display:flex;justify-content:flex-end;gap:8px}@media(max-width:1080px){.deployment-path{grid-template-columns:1fr}.path-arrow{transform:rotate(90deg)}}@media(max-width:760px){.plan-layout{grid-template-columns:1fr}.plan-layout>aside{max-height:300px;border-right:0;border-bottom:1px solid var(--edo-border)}.form-grid,.kind-picker,.health-grid{grid-template-columns:1fr}.span-2{grid-column:auto}.detail-header{flex-direction:column}.plan-layout>main{padding:18px}.plan-limit{align-items:flex-start;flex-wrap:wrap}.plan-limit p{width:100%;margin:0}.docker-port-input-row,.docker-volume-row{grid-template-columns:1fr}.docker-key-value-row{grid-template-columns:1fr 32px}.docker-key-value-row>:nth-child(2){grid-column:1/-1}.compose-import{align-items:flex-start;flex-direction:column}}
+.plan-layout{display:grid;min-height:560px;grid-template-columns:300px minmax(0,1fr);overflow:hidden}.plan-layout>aside{border-right:1px solid var(--edo-border);background:var(--edo-surface-soft)}aside>header{display:flex;align-items:center;justify-content:space-between;padding:16px}aside>header small{color:var(--edo-muted)}.plan-list-item{width:calc(100% - 12px);margin:6px;border-radius:10px;background:transparent}.plan-list-item:hover,.plan-list-item.active{background:var(--edo-primary-soft)}.plan-select{display:grid;width:100%;min-height:86px;align-items:center;grid-template-columns:38px minmax(0,1fr) 8px;gap:10px;padding:9px 10px;border:0;border-radius:10px;color:var(--edo-text);background:transparent;cursor:pointer;text-align:left}.plan-select i{width:7px;height:7px;border-radius:50%;background:#28b66e}.plan-select i.inactive{background:#a8adb7}.plan-list-actions{display:flex;justify-content:flex-end;padding:0 5px 5px}.plan-list-actions :deep(.ant-btn){height:24px;padding:0 6px;font-size:11px}.plan-list-copy{min-width:0}.plan-list-copy strong,.plan-list-copy small,.plan-list-copy em{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.plan-list-copy small{margin-top:2px;color:var(--edo-muted);font-size:12px}.plan-list-copy em{margin-top:2px;color:var(--edo-muted);font-size:10px;font-style:normal}.brand{display:grid;width:36px;height:36px;place-items:center;border-radius:10px;background:var(--edo-surface)}.brand.ssh{color:var(--edo-muted)}.brand.docker{color:#2496ed}.brand.kubernetes{color:#326ce5}.brand :deep(svg){width:21px;height:21px}.plan-layout>main{min-width:0;padding:24px}.detail-header{display:flex;align-items:flex-start;justify-content:space-between;gap:18px;margin-bottom:24px}.detail-header h3,.detail-header p{margin:0}.detail-header p,.detail-header span{color:var(--edo-muted)}.detail-header h3{margin:2px 0;font-size:22px}.detail-header>div:last-child{display:flex;flex:0 0 auto;align-items:center;gap:8px}.deployment-path{display:grid;align-items:center;grid-template-columns:minmax(0,1fr) 20px minmax(0,1fr) 20px minmax(0,1fr);gap:10px}.deployment-path article{display:flex;min-width:0;min-height:108px;align-items:center;gap:13px;padding:16px;border:1px solid var(--edo-border);border-radius:12px;background:var(--edo-surface-soft)}.deployment-path article>span{display:grid;width:40px;height:40px;flex:0 0 40px;place-items:center;border-radius:11px;color:var(--edo-primary);background:var(--edo-surface)}.deployment-path article>span svg{width:20px}.deployment-path article>div{min-width:0}.deployment-path small,.deployment-path strong,.deployment-path p{display:block;overflow:hidden;margin:0;text-overflow:ellipsis;white-space:nowrap}.deployment-path small{color:var(--edo-muted);font-size:11px}.deployment-path strong{margin:3px 0;font-size:15px}.deployment-path p{color:var(--edo-muted);font-size:11px}.path-arrow{width:17px;justify-self:center;color:var(--edo-muted)}.plan-limit{display:flex;align-items:center;gap:12px;margin-top:16px;padding:14px 16px;border-radius:10px;background:var(--edo-primary-soft)}.plan-limit>svg{width:20px;color:var(--edo-primary)}.plan-limit small,.plan-limit strong{display:block}.plan-limit small{color:var(--edo-muted);font-size:11px}.plan-limit p{margin:0 0 0 auto;color:var(--edo-muted)}.empty-panel{display:grid;place-items:center}.form-section{margin-bottom:14px;padding:15px 16px 4px;border:1px solid var(--edo-border);border-radius:11px;background:var(--edo-surface-soft)}.form-section>header{display:flex;align-items:center;gap:10px;margin-bottom:14px}.form-section>header b{display:grid;width:26px;height:26px;flex:0 0 26px;place-items:center;border-radius:8px;color:var(--edo-primary);background:var(--edo-primary-soft)}.form-section>header strong,.form-section>header small{display:block}.form-section>header small{margin-top:1px;color:var(--edo-muted);font-size:11px}.form-subtitle{margin:3px 0 12px;padding-top:12px;border-top:1px solid var(--edo-border);color:var(--edo-muted);font-size:12px;font-weight:600}.form-grid{display:grid;grid-template-columns:1fr 1fr;gap:0 14px}.span-2{grid-column:1/-1}.form-grid :deep(.ant-input-number){width:100%}.resource-select{display:grid;grid-template-columns:minmax(0,1fr) 34px;gap:8px}.resource-select>.ant-btn{padding:0}.runtime-option-copy{min-width:0;flex:1}.runtime-option-copy strong,.runtime-option-copy small{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.runtime-option-copy small{color:var(--edo-muted);font-size:11px}.permission-note,.field-help{margin:-4px 0 13px;color:var(--edo-muted);font-size:12px}.kind-picker{display:grid!important;width:100%;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}.kind-picker :deep(.ant-radio-button-wrapper){display:flex;height:70px;align-items:center;gap:10px;padding:9px 11px;border:1px solid var(--edo-border)!important;border-radius:10px!important;background:var(--edo-surface);box-shadow:none!important;line-height:1.3}.kind-picker :deep(.ant-radio-button-wrapper::before){display:none}.kind-picker :deep(.ant-radio-button-wrapper-checked){border-color:color-mix(in srgb,var(--edo-primary) 65%,var(--edo-border))!important;background:var(--edo-primary-soft)}.kind-picker :deep(.ant-radio-button-wrapper>svg){width:24px;height:24px;flex:0 0 24px}.kind-picker :deep(.ant-radio-button-wrapper span){min-width:0}.kind-picker :deep(.ant-radio-button-wrapper strong),.kind-picker :deep(.ant-radio-button-wrapper small){display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.kind-picker :deep(.ant-radio-button-wrapper small){margin-top:3px;color:var(--edo-muted);font-size:10px}.artifact-image-notice{margin-bottom:12px}.runtime-inputs{display:grid;gap:10px;margin-bottom:12px}.runtime-input-block{padding:13px 14px 2px;border:1px solid var(--edo-border);border-radius:10px;background:var(--edo-surface)}.runtime-input-block>header{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:10px}.runtime-input-block>header span strong,.runtime-input-block>header span small{display:block}.runtime-input-block>header span small{margin-top:2px;color:var(--edo-muted);font-size:11px}.runtime-input-block>header>.ant-btn{height:24px;padding:0}.runtime-input-block>.ant-form-item{margin-bottom:12px}.docker-row{display:grid;align-items:center;gap:8px;margin-bottom:8px}.docker-port-input-row{grid-template-columns:minmax(0,1fr) 112px 112px 86px 32px}.docker-port-input-row :deep(.ant-input-number){width:100%}.docker-key-value-row{grid-template-columns:minmax(0,1fr) minmax(0,1.4fr) 32px}.docker-volume-row{display:grid;align-items:center;grid-template-columns:minmax(0,1fr) minmax(0,1.35fr) auto 32px;gap:8px;margin-bottom:8px}.input-empty{margin:4px 0 10px;padding:12px;border:1px dashed var(--edo-border);border-radius:8px;color:var(--edo-muted);background:var(--edo-surface-soft);font-size:12px;text-align:center}.input-block-help{margin:4px 0 10px}.docker-advanced{border:1px solid var(--edo-border);border-radius:10px;background:var(--edo-surface-soft)}.docker-advanced :deep(.ant-collapse-header){align-items:center!important;padding:13px 14px!important;font-weight:650}.docker-advanced :deep(.ant-collapse-content-box){display:grid;gap:10px;padding:0 10px 10px!important}.health-toggle{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;margin:2px 0 12px}.health-toggle span strong,.health-toggle span small{display:block}.health-toggle span small{margin-top:3px;color:var(--edo-muted);font-size:11px}.health-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px}.health-grid :deep(.ant-input-number){width:100%}.compose-import{display:flex;align-items:center;gap:8px;margin-bottom:10px}.compose-import span{color:var(--edo-muted);font-size:12px}.file-input{display:none!important}.drawer-actions{display:flex;justify-content:flex-end;gap:8px}@media(max-width:1080px){.deployment-path{grid-template-columns:1fr}.path-arrow{transform:rotate(90deg)}}@media(max-width:760px){.plan-layout{grid-template-columns:1fr}.plan-layout>aside{max-height:300px;border-right:0;border-bottom:1px solid var(--edo-border)}.form-grid,.kind-picker,.health-grid{grid-template-columns:1fr}.span-2{grid-column:auto}.detail-header{flex-direction:column}.plan-layout>main{padding:18px}.plan-limit{align-items:flex-start;flex-wrap:wrap}.plan-limit p{width:100%;margin:0}.docker-port-input-row,.docker-volume-row{grid-template-columns:1fr}.docker-key-value-row{grid-template-columns:1fr 32px}.docker-key-value-row>:nth-child(2){grid-column:1/-1}.compose-import{align-items:flex-start;flex-direction:column}}
 </style>

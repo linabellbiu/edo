@@ -13,6 +13,7 @@ import (
 	"gorm.io/gorm"
 
 	"edo/internal/auth"
+	"edo/internal/database"
 	"edo/internal/model"
 )
 
@@ -31,6 +32,7 @@ var (
 	ErrUsernameExists     = errors.New("用户名已存在")
 	ErrUserNotFound       = errors.New("用户不存在")
 	ErrSuperuserImmutable = errors.New("不能通过接口修改超级管理员状态")
+	ErrUserCredentialUsed = errors.New("该用户的个人 Git 令牌仍被代码仓库引用，请先为仓库更换凭据")
 )
 
 type Service struct {
@@ -65,7 +67,8 @@ func (s *Service) EnsureInitialAdmin(ctx context.Context) (*model.User, bool, er
 		now := time.Now().UTC()
 		created = &model.User{
 			ID: uuid.NewString(), Username: initialAdminUsername, Nickname: "管理员", PasswordHash: passwordHash,
-			IsActive: true, IsSuperuser: true, AuthVersion: 1, CreatedAt: now, UpdatedAt: now,
+			DepartmentID: database.DefaultDepartmentID, IsActive: true, IsSuperuser: true,
+			AuthVersion: 1, CreatedAt: now, UpdatedAt: now,
 		}
 		if err := tx.Create(created).Error; err != nil {
 			return fmt.Errorf("创建初始化账户失败: %w", err)
@@ -79,17 +82,22 @@ func (s *Service) EnsureInitialAdmin(ctx context.Context) (*model.User, bool, er
 }
 
 func (s *Service) CreateAdmin(ctx context.Context, username, nickname, password string) (*model.User, error) {
-	return s.create(ctx, username, nickname, password, true)
+	return s.create(ctx, username, nickname, password, database.DefaultDepartmentID, true)
 }
 
 func (s *Service) CreateUser(ctx context.Context, username, nickname, password string) (*model.User, error) {
-	return s.create(ctx, username, nickname, password, false)
+	return s.CreateUserInDepartment(ctx, username, nickname, password, database.DefaultDepartmentID)
 }
 
-func (s *Service) create(ctx context.Context, username, nickname, password string, superuser bool) (*model.User, error) {
+func (s *Service) CreateUserInDepartment(ctx context.Context, username, nickname, password, departmentID string) (*model.User, error) {
+	return s.create(ctx, username, nickname, password, departmentID, false)
+}
+
+func (s *Service) create(ctx context.Context, username, nickname, password, departmentID string, superuser bool) (*model.User, error) {
 	username = strings.ToLower(strings.TrimSpace(username))
 	nickname = strings.TrimSpace(nickname)
-	if !usernamePattern.MatchString(username) {
+	departmentID = strings.TrimSpace(departmentID)
+	if !usernamePattern.MatchString(username) || departmentID == "" {
 		return nil, fmt.Errorf("%w：用户名须为 3 到 32 位小写字母、数字、点、横线或下划线，且以字母开头", ErrInvalidUser)
 	}
 	if nickname == "" {
@@ -108,7 +116,7 @@ func (s *Service) create(ctx context.Context, username, nickname, password strin
 	now := time.Now().UTC()
 	user := &model.User{
 		ID: uuid.NewString(), Username: username, Nickname: nickname, PasswordHash: passwordHash,
-		IsActive: true, IsSuperuser: superuser, CreatedAt: now, UpdatedAt: now,
+		DepartmentID: departmentID, IsActive: true, IsSuperuser: superuser, CreatedAt: now, UpdatedAt: now,
 	}
 	if err := s.db.WithContext(ctx).Create(user).Error; err != nil {
 		if errors.Is(err, gorm.ErrDuplicatedKey) {
@@ -117,6 +125,64 @@ func (s *Service) create(ctx context.Context, username, nickname, password strin
 		return nil, fmt.Errorf("创建用户失败: %w", err)
 	}
 	return user, nil
+}
+
+func (s *Service) SetDepartment(ctx context.Context, userID, departmentID string) error {
+	departmentID = strings.TrimSpace(departmentID)
+	if departmentID == "" {
+		return ErrInvalidUser
+	}
+	var user model.User
+	if err := s.db.WithContext(ctx).First(&user, "id = ?", userID).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return ErrUserNotFound
+		}
+		return fmt.Errorf("查询待调整部门的用户失败: %w", err)
+	}
+	if user.IsSuperuser {
+		return ErrSuperuserImmutable
+	}
+	if err := s.EnsureCredentialsUnreferenced(ctx, user.ID, user.DepartmentID); err != nil {
+		return err
+	}
+	var departmentCount int64
+	if err := s.db.WithContext(ctx).Model(&model.Department{}).
+		Where("id = ? AND is_active = ?", departmentID, true).Count(&departmentCount).Error; err != nil {
+		return fmt.Errorf("查询目标部门失败: %w", err)
+	}
+	if departmentCount != 1 {
+		return ErrInvalidUser
+	}
+	if err := s.db.WithContext(ctx).Model(&user).Updates(map[string]any{
+		"department_id": departmentID, "auth_version": gorm.Expr("auth_version + ?", 1), "updated_at": time.Now().UTC(),
+	}).Error; err != nil {
+		return fmt.Errorf("调整用户部门失败: %w", err)
+	}
+	return nil
+}
+
+// EnsureCredentialsUnreferenced 防止调动或删除用户时破坏仍在运行的部门仓库。
+// 个人令牌归用户所有；引用必须先在原部门仓库中解除或替换。
+func (s *Service) EnsureCredentialsUnreferenced(ctx context.Context, userID, departmentID string) error {
+	var credentialIDs []string
+	if err := s.db.WithContext(ctx).Model(&model.GitCredential{}).
+		Where("user_id = ?", userID).Pluck("id", &credentialIDs).Error; err != nil {
+		return fmt.Errorf("查询用户个人 Git 令牌失败: %w", err)
+	}
+	if len(credentialIDs) == 0 {
+		return nil
+	}
+	var count int64
+	query := s.db.WithContext(ctx).Model(&model.GitRepository{}).
+		Where("department_id = ?", departmentID).
+		Where("credential_id IN ? OR api_credential_id IN ?", credentialIDs, credentialIDs)
+	if err := query.Count(&count).Error; err != nil {
+		return fmt.Errorf("检查代码仓库令牌引用失败: %w", err)
+	}
+	if count > 0 {
+		return ErrUserCredentialUsed
+	}
+	return nil
 }
 
 func (s *Service) List(ctx context.Context, limit, offset int) ([]model.User, error) {

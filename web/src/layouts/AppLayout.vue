@@ -3,7 +3,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
 import {
-  Bell, ChevronDown, ChevronLeft, Command, Expand, Languages, LockKeyhole, LogOut,
+  Bell, ChevronDown, ChevronLeft, Command, Expand, Github, Languages, LockKeyhole, LogOut,
   Maximize2, Menu, Moon, PanelLeftClose, PanelLeftOpen, RefreshCw, Search,
   Pin, Settings, Sun, X,
 } from 'lucide-vue-next'
@@ -73,6 +73,23 @@ function tabIcon(path: string) {
     if (candidate.pathname !== target.pathname) return false
     return [...candidate.searchParams].every(([key, value]) => target.searchParams.get(key) === value)
   })?.icon
+}
+
+function historyContext(path: string) {
+  const target = new URL(path, 'http://edo.local')
+  const selectedPath = flatNavigation().find((item) => {
+    const candidate = new URL(item.path, 'http://edo.local')
+    if (candidate.pathname !== target.pathname) return false
+    return [...candidate.searchParams].every(([key, value]) => target.searchParams.get(key) === value)
+  })?.path
+  if (!selectedPath) return ''
+  for (const section of navigation) {
+    if (section.items?.some(item => item.path === selectedPath)) return section.label ? t(section.label) : ''
+    const branch = section.branches?.find(item => item.items.some(candidate => candidate.path === selectedPath))
+    if (!branch) continue
+    return [section.label, branch.label].filter(Boolean).map(label => t(label!)).join(' > ')
+  }
+  return ''
 }
 
 function navigate(path: string) {
@@ -206,7 +223,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', keyboard))
               <template #overlay>
                 <a-menu class="navigation-history-menu" @click="({key}:{key:string})=>navigateHistory(key)">
                   <a-menu-item v-for="item in recentVisits" :key="item.path">
-                    <span class="navigation-history-item"><component :is="tabIcon(item.path)" v-if="tabIcon(item.path)"/><span><strong>{{ t(item.title) }}</strong><small>{{ item.path }}</small></span></span>
+                    <span class="navigation-history-item"><component :is="tabIcon(item.path)" v-if="tabIcon(item.path)"/><span><strong>{{ t(item.title) }}</strong><small v-if="historyContext(item.path)">{{ historyContext(item.path) }}</small></span></span>
                   </a-menu-item>
                 </a-menu>
               </template>
@@ -226,6 +243,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', keyboard))
           <button class="header-search" type="button" @click="openSearch">
             <Search :size="17" /><span>{{ t('common.search') }}</span><kbd><Command :size="12" /> K</kbd>
           </button>
+          <a-tooltip title="GitHub"><a class="icon-button github-link" href="https://github.com/linabellbiu/edo" target="_blank" rel="noopener noreferrer" aria-label="打开 EDO GitHub 仓库"><Github /></a></a-tooltip>
           <a-tooltip :title="t('common.theme')"><button class="icon-button" type="button" @click="preferences.toggleTheme()"><Sun v-if="preferences.theme === 'dark'" /><Moon v-else /></button></a-tooltip>
           <a-dropdown placement="bottomRight">
             <a-tooltip :title="t('common.language')"><button class="icon-button" type="button"><Languages /></button></a-tooltip>

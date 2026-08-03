@@ -176,7 +176,7 @@ function openContainerLogs(row: ResourceRecord) {
   const name = containerName(row)
   containerLogs.value = {
     open: true,
-    title: t('containerLogs.title', { name }),
+    title: `容器日志：${name}`,
     path: `/api/v1/docker/endpoints/${encodeURIComponent(selectedDockerID.value)}/containers/${encodeURIComponent(String(row.id))}/logs/ws`,
   }
 }
@@ -285,25 +285,25 @@ onBeforeUnmount(() => {
 
         <template v-else-if="selectedDocker">
           <header class="runtime-heading">
-            <div><span>{{ hostForSelectedRuntime?.name || '未关联主机' }} · Docker</span><h3>{{ selectedDocker.name }}</h3><p>{{ selectedDocker.local ? 'EDO 本地运行时' : selectedDocker.host }}</p></div>
-            <a-button v-if="auth.canAny(['cluster.manage'])" @click="ping('docker', selectedDockerID)">检查连接</a-button>
+            <div><span>所属主机：{{ hostForSelectedRuntime?.name || '未关联主机' }}</span><h3>{{ selectedDocker.name }}</h3><p>{{ selectedDocker.local ? '运行时：EDO 本地 Docker' : `连接地址：${selectedDocker.host || '未记录'}` }}</p></div>
+            <a-button v-if="auth.canAny(['cluster.execute'])" @click="ping('docker', selectedDockerID)">检查连接</a-button>
           </header>
           <ResourceTable :rows="containers" :columns="[{ key: 'names', label: '名称' }, { key: 'image_display', label: '镜像版本' }, { key: 'state', label: '状态' }, { key: 'status', label: '详情' }]" :loading="resourceLoading">
             <template #actions="{ row }">
               <a-button type="link" @click="openContainerLogs(row)"><FileText :size="15" />{{ t('containerLogs.button') }}</a-button>
-              <a-button v-if="auth.canAny(['terminal.open']) && row.state === 'running'" type="link" @click="openTerminal(`Docker · ${containerName(row)}`, `/api/v1/terminals/docker/${encodeURIComponent(selectedDockerID)}/containers/${encodeURIComponent(String(row.id))}/ws`)"><TerminalSquare :size="15" />终端</a-button>
+              <a-button v-if="auth.canAny(['terminal.open']) && row.state === 'running'" type="link" @click="openTerminal(`容器终端：${containerName(row)}`, `/api/v1/terminals/docker/${encodeURIComponent(selectedDockerID)}/containers/${encodeURIComponent(String(row.id))}/ws`)"><TerminalSquare :size="15" />终端</a-button>
             </template>
           </ResourceTable>
         </template>
 
         <template v-else-if="selectedCluster">
           <header class="runtime-heading">
-            <div><span>{{ hostForSelectedRuntime?.name || '独立集群' }} · Kubernetes</span><h3>{{ selectedCluster.name }}</h3><p>{{ selectedCluster.api_server || '未记录 API Server' }}</p></div>
+            <div><span>所属主机：{{ hostForSelectedRuntime?.name || '独立集群' }}</span><h3>{{ selectedCluster.name }}</h3><p>API Server：{{ selectedCluster.api_server || '未记录' }}</p></div>
             <div><a-input v-model:value="namespace" style="width:160px" /><a-button :loading="resourceLoading" @click="loadRuntime">加载命名空间</a-button></div>
           </header>
           <ResourceTable :rows="pods" :columns="[{ key: 'name', label: 'Pod' }, { key: 'namespace', label: '命名空间' }, { key: 'phase', label: '阶段' }, { key: 'containers', label: '容器' }]" :loading="resourceLoading">
             <template v-if="auth.canAny(['terminal.open'])" #actions="{ row }">
-              <a-button v-for="podContainer in (row.phase === 'Running' && Array.isArray(row.containers) ? row.containers : [])" :key="String(podContainer)" type="link" @click="openTerminal(`Pod · ${row.name} / ${podContainer}`, `/api/v1/terminals/kubernetes/${encodeURIComponent(selectedClusterID)}/namespaces/${encodeURIComponent(String(row.namespace))}/pods/${encodeURIComponent(String(row.name))}/containers/${encodeURIComponent(String(podContainer))}/ws`)">{{ podContainer }}</a-button>
+              <a-button v-for="podContainer in (row.phase === 'Running' && Array.isArray(row.containers) ? row.containers : [])" :key="String(podContainer)" type="link" @click="openTerminal(`Pod 终端：${row.name}（容器：${podContainer}）`, `/api/v1/terminals/kubernetes/${encodeURIComponent(selectedClusterID)}/namespaces/${encodeURIComponent(String(row.namespace))}/pods/${encodeURIComponent(String(row.name))}/containers/${encodeURIComponent(String(podContainer))}/ws`)">{{ podContainer }}</a-button>
             </template>
           </ResourceTable>
         </template>

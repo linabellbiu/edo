@@ -19,7 +19,7 @@ interface ConnectionTest {
   version: string
 }
 
-const props = withDefaults(defineProps<{ open?: boolean }>(), { open: false })
+const props = withDefaults(defineProps<{ open?: boolean; canTest?: boolean }>(), { open: false, canTest: false })
 const emit = defineEmits<{ created: [cluster: KubernetesCluster]; 'update:open': [value: boolean] }>()
 const { t } = useI18n()
 const formRef = ref<{ validate: () => Promise<void> }>()
@@ -70,6 +70,10 @@ async function validate() {
 }
 
 async function testConnection() {
+  if (!props.canTest) {
+    message.error('缺少 Kubernetes 连接测试权限')
+    return
+  }
   if (!await validate()) return
   const signature = currentSignature.value
   testing.value = true
@@ -153,8 +157,8 @@ async function submit() {
     <template #footer>
       <div class="drawer-actions">
         <a-button :disabled="busy" @click="emit('update:open', false)">{{ t('kubernetesCluster.action.cancel') }}</a-button>
-        <a-button :loading="testing" :disabled="submitting" @click="testConnection">{{ t('kubernetesCluster.action.test') }}</a-button>
-        <a-button type="primary" :loading="submitting" :disabled="!connectionTested || testing" @click="submit">
+        <a-button v-if="canTest" :loading="testing" :disabled="submitting" @click="testConnection">{{ t('kubernetesCluster.action.test') }}</a-button>
+        <a-button type="primary" :loading="submitting" :disabled="!canTest || !connectionTested || testing" @click="submit">
           {{ t('kubernetesCluster.action.create') }}
         </a-button>
       </div>

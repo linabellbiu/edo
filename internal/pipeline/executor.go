@@ -78,25 +78,25 @@ func (s *Service) ExecuteDeployTask(ctx context.Context, payload DeployTaskPaylo
 		if obsolete, obsoleteErr := s.executionTaskObsolete(ctx, payload.PipelineRunID, jobID, payload.WorkflowNodeID); obsoleteErr == nil && obsolete {
 			return nil
 		}
-		return s.failExecution(ctx, taskFailureState(payload.PipelineRunID, jobID, payload.WorkflowNodeID, model.PipelineRunRunning),
+		return s.failDeploymentExecution(ctx, taskFailureState(payload.PipelineRunID, jobID, payload.WorkflowNodeID, model.PipelineRunRunning),
 			"流水线执行配置不完整，请检查任务、构建方案和部署方案", err)
 	}
 	failureState := failureStateForRun(prepared.run)
 	s.appendRunLog(ctx, prepared.run.ID, "deploy", "info", "开始部署已构建制品")
 	approvedBy, err := s.latestExecutionApproval(ctx, prepared.run.ID)
 	if err != nil {
-		return s.failExecution(ctx, failureState, "读取流水线审核状态失败，请稍后重试", err)
+		return s.failDeploymentExecution(ctx, failureState, "读取流水线审核状态失败，请稍后重试", err)
 	}
 	if prepared.target.Platform == model.DeploymentSSH {
 		return s.executeSSHDeployment(ctx, prepared, approvedBy)
 	}
 	image, expectedImageID, err := s.resolveDeploymentImage(ctx, prepared)
 	if err != nil {
-		return s.failExecution(ctx, failureState, "部署制品不可用或传输失败，请查看流水线日志", err)
+		return s.failDeploymentExecution(ctx, failureState, deploymentPreparationFailureMessage(err), err)
 	}
 
 	if err := s.updateExecutionPhase(ctx, &prepared.run, "deploy", "正在将制品部署到“"+prepared.target.Name+"”"); err != nil {
-		return s.failExecution(ctx, failureState, "更新流水线执行状态失败", err)
+		return s.failDeploymentExecution(ctx, failureState, "更新流水线部署状态失败，请稍后重试", err)
 	}
 	request := deployment.RequestInput{
 		TargetID: prepared.target.ID, ApplicationID: prepared.application.ID, ApplicationName: prepared.application.Name,
@@ -108,7 +108,7 @@ func (s *Service) ExecuteDeployTask(ctx context.Context, payload DeployTaskPaylo
 	if prepared.artifact.StorageKind == model.ArtifactStorageKindRegistry {
 		request.RegistryAuth, err = s.registryAuth(prepared.registry)
 		if err != nil {
-			return s.failExecution(ctx, failureState, "读取镜像仓库认证失败，请检查构建方案使用的镜像仓库", err)
+			return s.failDeploymentExecution(ctx, failureState, "读取镜像仓库认证失败，请检查构建方案使用的镜像仓库", err)
 		}
 	}
 	var output io.WriteCloser
@@ -176,20 +176,20 @@ func (s *Service) resolveDeploymentImage(ctx context.Context, prepared *executio
 func (s *Service) executeSSHDeployment(ctx context.Context, prepared *executionContext, approvedBy string) error {
 	failureState := failureStateForRun(prepared.run)
 	if err := s.updateExecutionPhase(ctx, &prepared.run, "deploy", "正在执行命令脚本并发布到“"+prepared.target.Name+"”"); err != nil {
-		return s.failExecution(ctx, failureState, "更新流水线执行状态失败", err)
+		return s.failDeploymentExecution(ctx, failureState, "更新流水线部署状态失败，请稍后重试", err)
 	}
 	output := s.newExecutionLogWriter(ctx, prepared.run.ID, "deploy", "命令部署")
 	defer output.Close()
 	if prepared.artifact.ID == "" || prepared.artifact.Kind != model.ArtifactKindFileBundle || s.artifacts == nil {
-		return s.failExecution(ctx, failureState, "主机脚本部署需要上游文件制品", ErrPipelineExecutionConfig)
+		return s.failDeploymentExecution(ctx, failureState, "主机脚本部署失败：当前流水线没有可用的上游文件制品", ErrPipelineExecutionConfig)
 	}
 	_, artifactFile, err := s.artifacts.OpenDownload(ctx, prepared.artifact.ID)
 	if err != nil {
-		return s.failExecution(ctx, failureState, "打开待部署制品失败", err)
+		return s.failDeploymentExecution(ctx, failureState, "主机脚本部署失败：无法读取上游文件制品", err)
 	}
 	defer artifactFile.Close()
 	record, err := s.deployments.RequestCommandSnapshotAndRun(ctx, prepared.run.CreatedBy, prepared.target, deployment.CommandRequestInput{
-		TargetID: prepared.target.ID, ArtifactID: prepared.artifact.ID,
+		TargetID: prepared.target.ID, ApplicationID: prepared.application.ID, ArtifactID: prepared.artifact.ID,
 		PipelineRunID: prepared.run.ID, WorkflowNodeID: prepared.node.ID,
 		ApprovedBy: approvedBy, DeploymentPlanID: prepared.deploymentPlan.ID,
 		PlanKind: prepared.deploymentPlan.Kind, Script: prepared.deploymentPlan.Script,
@@ -235,7 +235,28 @@ func (s *Service) handleDeploymentExecutionError(ctx context.Context, expected e
 		}
 		return cause
 	}
-	return s.failExecution(ctx, expected, message, cause)
+	return s.failExecutionWithStageLog(ctx, expected, "deploy", message, cause)
+}
+
+func (s *Service) failDeploymentExecution(ctx context.Context, expected executionFailureState, message string, cause error) error {
+	return s.failExecutionWithStageLog(ctx, expected, "deploy", message, cause)
+}
+
+func deploymentPreparationFailureMessage(err error) string {
+	switch {
+	case errors.Is(err, context.DeadlineExceeded):
+		return "部署制品传输超时：未在规定时间内完成镜像导出或目标主机加载"
+	case errors.Is(err, context.Canceled):
+		return "部署制品传输已取消"
+	case errors.Is(err, ErrPipelineExecutionConfig):
+		return "部署制品不可用：流水线固定制品与部署目标不匹配"
+	case errors.Is(err, dockerengine.ErrEndpointNotFound), errors.Is(err, dockerengine.ErrSSHUnreachable):
+		return "部署制品传输失败：无法连接目标 Docker 主机，请检查主机状态和 SSH 配置"
+	case errors.Is(err, dockerengine.ErrSSHDockerDenied):
+		return "部署制品传输失败：目标主机拒绝 Docker 操作，请检查 Docker 或 sudo 权限"
+	default:
+		return "部署制品传输失败：镜像未能完成导出、传输、加载或身份校验，请检查目标主机和系统日志"
+	}
 }
 
 func (s *Service) loadExecution(ctx context.Context, payload DeployTaskPayload, jobID string) (*executionContext, error) {
@@ -269,6 +290,9 @@ func (s *Service) loadArtifactDeploymentExecution(ctx context.Context, payload D
 	if !hasPlan || !hasTarget || plan.ID != node.Config.DeploymentPlanID || target.ID == "" {
 		return nil, ErrPipelineExecutionConfig
 	}
+	if target.DepartmentID != "" && target.DepartmentID != run.DepartmentID {
+		return nil, ErrPipelineExecutionConfig
+	}
 	result := &executionContext{run: run, node: node, snapshot: *snapshot}
 	result.deploymentPlan = model.DeploymentPlan{
 		ID: plan.ID, Kind: plan.Kind, Script: plan.Script,
@@ -277,7 +301,8 @@ func (s *Service) loadArtifactDeploymentExecution(ctx context.Context, payload D
 		TimeoutSeconds: plan.TimeoutSeconds,
 	}
 	result.target = model.DeploymentTarget{
-		ID: target.ID, Name: target.Name, Platform: target.Platform, EnvironmentID: target.EnvironmentID,
+		ID: target.ID, DepartmentID: run.DepartmentID,
+		Name: target.Name, Platform: target.Platform, EnvironmentID: target.EnvironmentID,
 		HostID: target.HostID, RuntimeID: target.RuntimeID, WorkingDirectory: target.WorkingDirectory,
 		Namespace: target.Namespace, WorkloadName: target.WorkloadName, ContainerName: target.ContainerName,
 		RolloutTimeout: target.RolloutTimeout, IsActive: true,
@@ -541,11 +566,13 @@ func (s *Service) completeExecution(ctx context.Context, prepared *executionCont
 		return tx.Model(&model.PipelineRunRepository{}).Where("pipeline_run_id = ?", prepared.run.ID).
 			Updates(map[string]any{"status": componentStatus, "updated_at": now}).Error
 	})
-	if err == nil {
-		s.appendRunLog(ctx, prepared.run.ID, stage, "success", message)
-	}
-	if err != nil || !hasNext || prepared.run.ReleasePlanExecutionID != "" || prepared.run.ReleasePlanExecutionItemID != "" {
+	if err != nil {
 		return err
+	}
+	s.appendRunLog(ctx, prepared.run.ID, stage, "success", message)
+	if !hasNext || prepared.run.ReleasePlanExecutionID != "" || prepared.run.ReleasePlanExecutionItemID != "" {
+		s.notifyWorkflowNode(ctx, &prepared.run, prepared.node, workflowNotificationSucceeded, message)
+		return nil
 	}
 	advanceContext, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 	defer cancel()
@@ -554,6 +581,7 @@ func (s *Service) completeExecution(ctx context.Context, prepared *executionCont
 			taskFailureState(prepared.run.ID, prepared.run.ExecutionJobID, prepared.node.ID, model.PipelineRunReady),
 			"部署已完成，但推进后续任务失败", err)
 	}
+	s.notifyWorkflowNode(ctx, &prepared.run, prepared.node, workflowNotificationSucceeded, message)
 	return nil
 }
 
@@ -608,6 +636,16 @@ func completedDeploymentMatches(prepared *executionContext, record *model.Deploy
 var errExecutionFailureStateChanged = errors.New("流水线任务身份已经变化")
 
 func (s *Service) failExecution(ctx context.Context, expected executionFailureState, message string, cause error) error {
+	return s.failExecutionWithStageLog(ctx, expected, "", message, cause)
+}
+
+func (s *Service) failExecutionWithStageLog(
+	ctx context.Context,
+	expected executionFailureState,
+	logStage string,
+	message string,
+	cause error,
+) error {
 	now := time.Now().UTC()
 	updateContext, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 	defer cancel()
@@ -645,8 +683,40 @@ func (s *Service) failExecution(ctx context.Context, expected executionFailureSt
 		s.logger.Error("流水线执行失败", "operation", "pipeline_execute", "pipeline_run_id", expected.runID,
 			"execution_job_id", expected.jobID, "workflow_node_id", expected.nodeID, "err", cause)
 	}
+	if logStage != "" && logStage != "failed" {
+		s.appendRunLog(updateContext, expected.runID, logStage, "error", message)
+	}
 	s.appendRunLog(updateContext, expected.runID, "failed", "error", message)
+	s.notifyFailedWorkflowNode(updateContext, expected.runID, expected.nodeID, message)
 	return cause
+}
+
+func (s *Service) notifyFailedWorkflowNode(ctx context.Context, runID, nodeID, detail string) {
+	var run model.PipelineRun
+	if err := s.db.WithContext(ctx).First(&run, "id = ?", runID).Error; err != nil {
+		if s.logger != nil {
+			s.logger.Error("读取失败任务通知快照失败", "operation", "pipeline_task_notification_failure_context",
+				"pipeline_run_id", runID, "workflow_node_id", nodeID, "err", err)
+		}
+		return
+	}
+	snapshot, err := parseWorkflowSnapshot(&run)
+	if err != nil {
+		if s.logger != nil {
+			s.logger.Error("解析失败任务通知快照失败", "operation", "pipeline_task_notification_failure_context",
+				"pipeline_run_id", runID, "workflow_node_id", nodeID, "err", err)
+		}
+		return
+	}
+	node, ok := workflowFindNode(snapshot.Source, snapshot.Stages, nodeID)
+	if !ok {
+		if s.logger != nil {
+			s.logger.Error("失败任务在运行快照中不存在", "operation", "pipeline_task_notification_failure_context",
+				"pipeline_run_id", runID, "workflow_node_id", nodeID, "err", ErrInvalidWorkflowTransition)
+		}
+		return
+	}
+	s.notifyWorkflowNode(ctx, &run, node, workflowNotificationFailed, detail)
 }
 
 func (s *Service) failCurrentExecution(ctx context.Context, runID, message string, cause error) error {

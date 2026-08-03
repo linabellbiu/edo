@@ -51,6 +51,13 @@ func TestNotificationSecretsAndSuccessfulDispatch(t *testing.T) {
 	if err := service.Dispatch(context.Background(), item.ID, item.JobID); err != nil {
 		t.Fatalf("发送通知失败: %v", err)
 	}
+	var job model.Job
+	if err := db.First(&job, "id = ?", item.JobID).Error; err != nil {
+		t.Fatalf("读取通知任务失败: %v", err)
+	}
+	if item.DepartmentID != storedChannel.DepartmentID || job.DepartmentID != storedChannel.DepartmentID {
+		t.Fatalf("通知部门没有从渠道传播到记录和任务: channel=%s notification=%s job=%s", storedChannel.DepartmentID, item.DepartmentID, job.DepartmentID)
+	}
 	if client.request == nil || client.request.Header.Get("Authorization") != "Bearer "+token ||
 		client.request.Header.Get("Idempotency-Key") != item.ID {
 		t.Fatalf("通知请求头错误: %+v", client.request)

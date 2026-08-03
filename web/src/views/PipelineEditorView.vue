@@ -4,7 +4,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch, t
 import { message, Modal } from 'ant-design-vue'
 import { onBeforeRouteLeave, onBeforeRouteUpdate, useRoute, useRouter } from 'vue-router'
 import {
-  CheckCircle2, ChevronLeft, CircleDot, GitBranch, GripVertical, Layers3,
+  Bell, CheckCircle2, ChevronLeft, CircleDot, GitBranch, GripVertical, Layers3,
   Maximize2, Minimize2, Package, Pencil, Plus, Rocket, Save, Scan, Search,
   ShieldCheck, TerminalSquare, Trash2, X,
 } from 'lucide-vue-next'
@@ -20,6 +20,7 @@ import type {
   WorkflowIssue,
   WorkflowNode,
   WorkflowNodeConfig,
+  WorkflowNotificationRule,
   WorkflowNodeType,
   WorkflowResponse,
   WorkflowTemplateResponse,
@@ -48,6 +49,14 @@ interface DeploymentPlan {
   is_active: boolean
   deployment_target_id?: string
   deployment_target?: { id: string; is_active?: boolean }
+}
+
+interface NotificationChannel {
+  id: string
+  name: string
+  type: 'webhook'
+  has_token: boolean
+  is_active: boolean
 }
 
 interface TaskDefinition {
@@ -92,6 +101,7 @@ const applications = ref<ApplicationRecord[]>([])
 const templates = ref<Workflow[]>([])
 const buildPlans = ref<PipelineBuildPlan[]>([])
 const deploymentPlans = ref<DeploymentPlan[]>([])
+const notificationChannels = ref<NotificationChannel[]>([])
 const applicationID = ref(String(route.query.application || ''))
 const workflowID = ref(String(route.query.workflow || ''))
 const templateID = ref(String(route.query.template || ''))
@@ -118,6 +128,9 @@ const taskSearch = ref('')
 const activeTaskCategory = ref<(typeof taskCategories)[number]>('全部')
 const environmentVariableTexts = reactive<Record<string, string>>({})
 const environmentVariableErrors = reactive<Record<string, string>>({})
+const notificationChannelModalOpen = ref(false)
+const notificationChannelSubmitting = ref(false)
+const notificationChannelForm = reactive({ name: '', endpoint: '', token: '', allow_http: false })
 
 let autoSaveTimer = 0
 let editVersion = 0
@@ -126,10 +139,15 @@ let stageListElement: HTMLElement | null = null
 const taskListElements = new Map<string, HTMLElement>()
 const taskSortables = new Map<string, Sortable>()
 
-const canManage = computed(() => Boolean(auth.user?.is_superuser || auth.permissions.has('delivery.manage')))
-const canEdit = computed(() => canManage.value && !saving.value)
-const canCreateBuildPlan = computed(() => auth.canAny(['delivery.manage']))
-const canCreateDeploymentPlan = computed(() => auth.canAny(['delivery.manage']))
+const canCreate = computed(() => auth.canAny(['delivery.create']))
+const canUpdate = computed(() => auth.canAny(['delivery.update']))
+const canExecute = computed(() => auth.canAny(['delivery.execute']))
+const canEdit = computed(() => canUpdate.value && !saving.value)
+const canCreateBuildPlan = computed(() => auth.canAny(['delivery.create']))
+const canCreateDeploymentPlan = computed(() => auth.canAny(['delivery.create']))
+const canReadNotificationChannels = computed(() => auth.canAny(['notification.read']))
+const canCreateNotificationChannels = computed(() => auth.canAny(['notification.create']))
+const canTestNotificationChannels = computed(() => auth.canAny(['notification.execute']))
 const publicMode = computed(() => !applicationID.value)
 const editorApplication = computed<ApplicationRecord | null>(() => {
   if (publicMode.value) return { id: 'public-template', name: '流水线' }
@@ -140,11 +158,13 @@ const selectedTemplateID = computed(() => publicMode.value
   : workflow.value?.workflow_template_id || '')
 const workflowOptions = computed(() => (editorApplication.value?.workflows || []).map(item => ({
   value: item.id,
-  label: `${item.name} · ${item.is_active ? '已启用' : '草稿'}`,
+  label: item.workflow_template?.name || item.name,
+  detail: `状态：${item.is_active ? '已启用' : '草稿'}`,
 })))
 const templateOptions = computed(() => templates.value.map(item => ({
   value: item.id,
   label: item.name,
+  detail: `状态：${item.is_active ? '已启用' : '草稿'}`,
   disabled: !item.is_active && item.id !== selectedTemplateID.value,
 })))
 const codeSourceName = computed(() => editorApplication.value?.repository?.name || '未配置代码仓库')
@@ -156,8 +176,19 @@ const selectedStage = computed(() => selectedTask.value
   : null)
 const selectedStageDraft = computed(() => stages.value.find(stage => stage.id === selectedStageID.value) || null)
 const activeBuildPlans = computed(() => buildPlans.value.filter(item => item.is_active))
+const buildPlanOptions = computed(() => activeBuildPlans.value.map(item => ({
+  value: item.id,
+  label: item.name,
+  detail: `制品类型：${item.kind === 'dockerfile' ? 'OCI 镜像' : '文件制品'}`,
+})))
 const activeDeploymentPlans = computed(() => deploymentPlans.value.filter(item =>
   item.is_active && Boolean(item.deployment_target_id || item.deployment_target?.id) && item.deployment_target?.is_active !== false))
+const activeNotificationChannels = computed(() => notificationChannels.value.filter(item => item.is_active))
+const notificationChannelOptions = computed(() => activeNotificationChannels.value.map(item => ({
+  value: item.id,
+  label: item.name,
+  detail: item.type === 'webhook' ? 'Webhook' : item.type,
+})))
 const draftStructureValid = computed(() => sources.value.length === 1 && stages.value.length > 0 && stages.value.every(stage => stage.tasks.length > 0))
 const taskGroups = computed(() => {
   const keyword = taskSearch.value.trim().toLowerCase()
@@ -194,7 +225,7 @@ function markDirty() {
 
 function scheduleAutoSave() {
   window.clearTimeout(autoSaveTimer)
-  if (!canManage.value || !workflow.value || workflow.value.is_active || saving.value) return
+  if (!canUpdate.value || !workflow.value || workflow.value.is_active || saving.value) return
   autoSaveTimer = window.setTimeout(() => void save(false, true), 1200)
 }
 
@@ -323,17 +354,22 @@ function summarizeIssues(items: WorkflowIssue[]) {
 async function loadResources() {
   loading.value = true
   try {
-    const [applicationResult, templateResult, buildPlanResult, deploymentPlanResult] = await Promise.all([
+    const notificationChannelRequest = canReadNotificationChannels.value
+      ? client.get<{ channels: NotificationChannel[] }>('/notification-channels')
+      : Promise.resolve({ data: { channels: [] as NotificationChannel[] } })
+    const [applicationResult, templateResult, buildPlanResult, deploymentPlanResult, notificationChannelResult] = await Promise.all([
       client.get<{ applications: ApplicationRecord[] }>('/applications'),
       client.get<{ workflow_templates: Workflow[] }>('/workflow-templates'),
       client.get<{ build_plans: PipelineBuildPlan[] }>('/build-plans'),
       client.get<{ deployment_plans: DeploymentPlan[] }>('/deployment-plans'),
+      notificationChannelRequest,
     ])
     applications.value = applicationResult.data.applications || []
     templates.value = templateResult.data.workflow_templates || []
     buildPlans.value = buildPlanResult.data.build_plans || []
     deploymentPlans.value = deploymentPlanResult.data.deployment_plans || []
-    if (publicMode.value && route.query.create === '1' && canManage.value) {
+    notificationChannels.value = notificationChannelResult.data.channels || []
+    if (publicMode.value && route.query.create === '1' && canCreate.value) {
       presetOpen.value = true
       await router.replace({ path: '/pipeline-plans/editor' })
     }
@@ -627,6 +663,85 @@ function updateSelectedNode(update: Partial<WorkflowNode>, config?: Partial<Work
   replaceNode(selectedNode.value.id, update, config)
 }
 
+function addNotificationRule() {
+  if (!canEdit.value || !selectedTask.value) return
+  const channelID = activeNotificationChannels.value[0]?.id
+  if (!channelID) {
+    message.warning(canReadNotificationChannels.value ? '请先创建并启用一个通知渠道。' : '当前账号没有读取通知渠道的权限。')
+    return
+  }
+  const rules = selectedTask.value.config.notifications || []
+  if (rules.length >= 10) {
+    message.warning('每个任务最多配置 10 条通知规则。')
+    return
+  }
+  updateSelectedNode({}, {
+    notifications: [...rules, {
+      id: uid('notification'), channel_id: channelID,
+      on_success: false, on_failure: true,
+    }],
+  })
+}
+
+function updateNotificationRule(ruleID: string, update: Partial<WorkflowNotificationRule>) {
+  if (!canEdit.value || !selectedTask.value) return
+  updateSelectedNode({}, {
+    notifications: (selectedTask.value.config.notifications || []).map(rule =>
+      rule.id === ruleID ? { ...rule, ...update } : rule),
+  })
+}
+
+function removeNotificationRule(ruleID: string) {
+  if (!canEdit.value || !selectedTask.value) return
+  updateSelectedNode({}, {
+    notifications: (selectedTask.value.config.notifications || []).filter(rule => rule.id !== ruleID),
+  })
+}
+
+function openNotificationChannelModal() {
+  notificationChannelForm.name = ''
+  notificationChannelForm.endpoint = ''
+  notificationChannelForm.token = ''
+  notificationChannelForm.allow_http = false
+  notificationChannelModalOpen.value = true
+}
+
+async function createNotificationChannel() {
+  const name = notificationChannelForm.name.trim()
+  const endpoint = notificationChannelForm.endpoint.trim()
+  if (!name || !endpoint) {
+    message.warning('请填写渠道名称和 Webhook 地址。')
+    return
+  }
+  notificationChannelSubmitting.value = true
+  try {
+    const result = await client.post<{ channel: NotificationChannel }>('/notification-channels', {
+      name,
+      type: 'webhook',
+      endpoint,
+      token: notificationChannelForm.token.trim() || undefined,
+      allow_http: notificationChannelForm.allow_http,
+    })
+    notificationChannels.value = [...notificationChannels.value, result.data.channel]
+    notificationChannelModalOpen.value = false
+    message.success('通知渠道已创建。')
+  } catch (error) {
+    message.error(apiErrorMessage(error))
+  } finally {
+    notificationChannelSubmitting.value = false
+  }
+}
+
+async function testNotificationChannel(channelID: string) {
+  if (!channelID || !canTestNotificationChannels.value) return
+  try {
+    await client.post(`/notification-channels/${encodeURIComponent(channelID)}/test`)
+    message.success('测试通知已进入发送队列。')
+  } catch (error) {
+    message.error(apiErrorMessage(error))
+  }
+}
+
 function selectNode(id: string) {
   selectedNodeID.value = id
   selectedStageID.value = ''
@@ -776,7 +891,7 @@ function triggerUsesBranch(events?: string[]) {
 
 function triggerEventSummary(events?: string[]) {
   const labels: Record<string, string> = { push: '分支变更', pr: 'PR / MR', tag: 'Tag', manual: '手动发布' }
-  return events?.map(event => labels[event] || event).join(' / ') || '未选择启动方式'
+  return events?.map(event => labels[event] || event).join('、') || '未选择启动方式'
 }
 
 function triggerVersionSummary(node: WorkflowNode) {
@@ -789,20 +904,29 @@ function triggerVersionSummary(node: WorkflowNode) {
 function taskSummary(node: WorkflowNode) {
   if (node.type === 'build') {
     const plan = buildPlans.value.find(item => item.id === node.config.build_plan_id)
-    const toolchain = node.config.toolchain_language && node.config.toolchain_version
-      ? `${toolchainName(node.config.toolchain_language)} ${node.config.toolchain_version} · `
-      : ''
-    return plan ? `${toolchain}${plan.name} · ${plan.kind === 'dockerfile' ? '镜像' : '文件制品'}` : `${toolchain}未选择构建方案`
+    const summary = `构建方案：${plan?.name || '未选择'}`
+    if (!node.config.toolchain_language || !node.config.toolchain_version) return summary
+    return `${summary}；版本：${toolchainName(node.config.toolchain_language)} ${node.config.toolchain_version}`
   }
   if (node.type === 'shell') {
-    const firstLine = node.config.script?.split(/\r?\n/).find(line => line.trim())?.trim()
-    return `${firstLine || '未填写脚本'} · ${node.config.timeout_seconds || 600} 秒`
+    if (node.config.toolchain_language && node.config.toolchain_version) {
+      return `版本：${toolchainName(node.config.toolchain_language)} ${node.config.toolchain_version}`
+    }
+    return `运行镜像：${node.config.runtime_image || DEFAULT_RUNTIME_IMAGE}`
   }
   if (node.type === 'deploy') {
     const plan = deploymentPlans.value.find(item => item.id === node.config.deployment_plan_id)
-    return plan ? `${plan.name} · ${deploymentKindNames[plan.kind]}` : '未选择部署方案'
+    return `部署方案：${plan?.name || '未选择'}`
   }
   return node.config.description || taskMeta[node.type as TaskNodeType]?.hint || ''
+}
+
+function deploymentPlanOptions(taskID: string) {
+  return compatibleDeploymentPlans(taskID).map(item => ({
+    value: item.id,
+    label: item.name,
+    detail: `部署方式：${deploymentKindNames[item.kind]}`,
+  }))
 }
 
 function toolchainName(language?: string) {
@@ -916,7 +1040,7 @@ function setStageListRef(target: Element | ComponentPublicInstance | null) {
   stageSortable = Sortable.create(element, {
     animation: 160,
     direction: 'horizontal',
-    disabled: !canManage.value || saving.value,
+    disabled: !canUpdate.value || saving.value,
     handle: '.stage-drag-handle',
     draggable: '.pipeline-stage',
     ghostClass: 'pipeline-stage-ghost',
@@ -944,7 +1068,7 @@ function setTaskListRef(stageID: string, target: Element | ComponentPublicInstan
   taskSortables.set(stageID, Sortable.create(element, {
     animation: 160,
     direction: 'vertical',
-    disabled: !canManage.value || saving.value,
+    disabled: !canUpdate.value || saving.value,
     handle: '.task-drag-handle',
     draggable: '.parallel-task-row',
     group: { name: 'pipeline-stage-tasks', pull: true, put: true },
@@ -987,7 +1111,7 @@ function handleKeydown(event: KeyboardEvent) {
     immersive.value = false
     return
   }
-  if (event.key.toLowerCase() === 's' && (event.metaKey || event.ctrlKey) && canManage.value) {
+  if (event.key.toLowerCase() === 's' && (event.metaKey || event.ctrlKey) && canUpdate.value) {
     event.preventDefault()
     requestSave()
   }
@@ -1000,7 +1124,7 @@ function handleBeforeUnload(event: BeforeUnloadEvent) {
 }
 
 watch(immersive, value => document.body.classList.toggle('pipeline-immersive-open', value))
-watch([saving, canManage], ([isSaving, manageable]) => {
+watch([saving, canUpdate], ([isSaving, manageable]) => {
   stageSortable?.option('disabled', !manageable || isSaving)
   taskSortables.forEach(sortable => sortable.option('disabled', !manageable || isSaving))
 })
@@ -1077,11 +1201,15 @@ onBeforeRouteLeave(async () => {
         <span class="command-divider" />
         <label v-if="!publicMode" class="plan-switcher">
           <span>应用流水线</span>
-          <a-select :value="workflowID || undefined" :options="workflowOptions" :loading="loading" :disabled="saving" placeholder="选择流水线" @change="chooseWorkflow(String($event))" />
+          <a-select :value="workflowID || undefined" :options="workflowOptions" :loading="loading" :disabled="saving" placeholder="选择流水线" @change="chooseWorkflow(String($event))">
+            <template #option="{ label, detail }"><span class="named-option"><strong>{{ label }}</strong><small>{{ detail }}</small></span></template>
+          </a-select>
         </label>
         <label v-else class="plan-switcher">
           <span>流水线</span>
-          <a-select :value="selectedTemplateID || undefined" :options="templateOptions" :loading="loading" :disabled="saving" placeholder="选择流水线" @change="chooseTemplate(String($event))" />
+          <a-select :value="selectedTemplateID || undefined" :options="templateOptions" :loading="loading" :disabled="saving" placeholder="选择流水线" @change="chooseTemplate(String($event))">
+            <template #option="{ label, detail }"><span class="named-option"><strong>{{ label }}</strong><small>{{ detail }}</small></span></template>
+          </a-select>
         </label>
         <a-tag v-if="!publicMode && workflow" :color="selectedTemplateID ? 'blue' : 'default'">{{ selectedTemplateID ? '跟随公共流水线' : '自定义' }}</a-tag>
         <a-tag v-if="workflow" :color="workflow.is_active ? 'success' : 'default'">{{ workflow.is_active ? '已启用' : '草稿' }}</a-tag>
@@ -1097,16 +1225,16 @@ onBeforeRouteLeave(async () => {
           aria-label="流水线名称"
           @change="updateWorkflowMeta"
         />
-        <a-button v-if="canManage && publicMode" :disabled="saving" @click="openPresetSelector"><Plus :size="15" />新建流水线</a-button>
+        <a-button v-if="canCreate && publicMode" :disabled="saving" @click="openPresetSelector"><Plus :size="15" />新建流水线</a-button>
         <a-button v-if="workflow" :disabled="saving" @click="validateGraph"><Scan :size="15" />检查</a-button>
-        <a-button v-if="workflow && canManage" :loading="saving" @click="requestSave"><Save :size="15" />{{ workflow.is_active ? '保存并更新' : '保存草稿' }}</a-button>
-        <a-button v-if="workflow && canManage && !workflow.is_active" type="primary" :loading="saving" @click="save(true)">启用流水线</a-button>
+        <a-button v-if="workflow && canUpdate" :loading="saving" @click="requestSave"><Save :size="15" />{{ workflow.is_active ? '保存并更新' : '保存草稿' }}</a-button>
+        <a-button v-if="workflow && canUpdate && !workflow.is_active" type="primary" :loading="saving" @click="save(true)">启用流水线</a-button>
       </div>
     </div>
 
     <a-skeleton v-if="loading && !workflow" active :paragraph="{ rows: 12 }" />
     <a-empty v-else-if="!workflow" class="pipeline-empty" :description="publicMode ? '还没有可编辑的流水线' : '这个应用还没有流水线'">
-      <a-button v-if="canManage && publicMode" type="primary" :disabled="saving" @click="openPresetSelector">创建第一条流水线</a-button>
+      <a-button v-if="canCreate && publicMode" type="primary" :disabled="saving" @click="openPresetSelector">创建第一条流水线</a-button>
       <a-button v-else-if="!publicMode" type="primary" @click="router.push('/applications')">返回应用配置</a-button>
     </a-empty>
 
@@ -1138,13 +1266,13 @@ onBeforeRouteLeave(async () => {
                 <span class="source-title"><strong>{{ source.name }}</strong><Pencil :size="13" /></span>
                 <span v-if="publicMode" class="source-repository"><i><Layers3 :size="17" /></i>应用入口</span>
                 <span v-else class="source-repository"><i><GitBranch :size="17" /></i>{{ codeSourceName }}</span>
-                <small>{{ triggerVersionSummary(source) }} · {{ triggerEventSummary(source.config.events) }}</small>
+                <span class="source-meta"><small>版本：{{ triggerVersionSummary(source) }}</small><small>触发：{{ triggerEventSummary(source.config.events) }}</small></span>
               </button>
               <p v-if="publicMode">公共流水线不绑定代码仓库；应用使用时自动采用自己的代码仓库和凭据。</p>
             </section>
 
             <div :ref="setStageListRef" class="pipeline-stage-list">
-              <button v-if="canManage && stages.length" class="stage-insert" type="button" title="在这里添加阶段" aria-label="在代码源后添加阶段" @click="addStage(-1)"><Plus :size="14" /></button>
+              <button v-if="canUpdate && stages.length" class="stage-insert" type="button" title="在这里添加阶段" aria-label="在代码源后添加阶段" @click="addStage(-1)"><Plus :size="14" /></button>
               <template v-for="(stage, stageIndex) in stages" :key="stage.id">
                 <article
                   class="pipeline-stage"
@@ -1154,7 +1282,7 @@ onBeforeRouteLeave(async () => {
                 >
                   <header>
                     <div>
-                      <button v-if="canManage" class="stage-drag-handle" type="button" aria-label="拖动阶段"><GripVertical :size="16" /></button>
+                      <button v-if="canUpdate" class="stage-drag-handle" type="button" aria-label="拖动阶段"><GripVertical :size="16" /></button>
                       <strong>{{ stage.name || '未命名阶段' }}</strong>
                       <button class="stage-edit" type="button" :aria-label="`编辑阶段 ${stage.name}`" @click="selectStage(stage.id)"><Pencil :size="14" /></button>
                     </div>
@@ -1181,14 +1309,14 @@ onBeforeRouteLeave(async () => {
                           @keydown.enter.prevent="selectNode(task.id)"
                           @keydown.space.prevent="selectNode(task.id)"
                         >
-                          <button v-if="canManage" class="task-drag-handle" type="button" aria-label="拖动任务" @click.stop><GripVertical :size="14" /></button>
+                          <button v-if="canUpdate" class="task-drag-handle" type="button" aria-label="拖动任务" @click.stop><GripVertical :size="14" /></button>
                           <span class="task-icon"><component :is="taskMeta[task.type as TaskNodeType]?.icon || CircleDot" :size="17" /></span>
                           <span class="task-copy"><strong>{{ task.name }}</strong><small>{{ taskSummary(task) }}</small></span>
                         </article>
                       </div>
                     </template>
                     <button
-                      v-if="canManage && stage.tasks.length && stageHasSelectedTask(stage)"
+                      v-if="canUpdate && stage.tasks.length && stageHasSelectedTask(stage)"
                       class="new-parallel-task-slot"
                       :class="{ active: panelMode === 'library' && libraryStageID === stage.id && libraryIntent === 'parallel' }"
                       type="button"
@@ -1199,7 +1327,7 @@ onBeforeRouteLeave(async () => {
                       新建并行任务
                     </button>
                     <button
-                      v-else-if="canManage && !stage.tasks.length"
+                      v-else-if="canUpdate && !stage.tasks.length"
                       class="new-task-slot"
                       :class="{ active: panelMode === 'library' && libraryStageID === stage.id }"
                       type="button"
@@ -1212,9 +1340,9 @@ onBeforeRouteLeave(async () => {
                   </div>
                   <p class="stage-mode-note">并行分支</p>
                 </article>
-                <button v-if="canManage" class="stage-insert" type="button" title="在这里添加阶段" :aria-label="`在阶段 ${stage.name} 后添加阶段`" @click="addStage(stageIndex)"><Plus :size="14" /></button>
+                <button v-if="canUpdate" class="stage-insert" type="button" title="在这里添加阶段" :aria-label="`在阶段 ${stage.name} 后添加阶段`" @click="addStage(stageIndex)"><Plus :size="14" /></button>
               </template>
-              <button v-if="!stages.length && canManage" class="first-stage" type="button" @click="addStage(-1)"><Layers3 :size="24" /><strong>创建第一个阶段</strong><span>再从任务库添加常用任务</span></button>
+              <button v-if="!stages.length && canUpdate" class="first-stage" type="button" @click="addStage(-1)"><Layers3 :size="24" /><strong>创建第一个阶段</strong><span>再从任务库添加常用任务</span></button>
             </div>
           </div>
         </div>
@@ -1258,7 +1386,7 @@ onBeforeRouteLeave(async () => {
             <section v-for="group in taskGroups" :key="group.group">
               <h4>{{ group.group }}</h4>
               <div class="task-library-grid">
-              <button v-for="task in group.tasks" :key="task.id" type="button" :disabled="!canManage || !stages.length" @click="addTask(task)">
+              <button v-for="task in group.tasks" :key="task.id" type="button" :disabled="!canUpdate || !stages.length" @click="addTask(task)">
                 <span :style="{ color: task.color, background: `color-mix(in srgb, ${task.color} 12%, var(--edo-surface))` }"><component :is="task.icon" :size="19" /></span>
                 <span><strong>{{ task.label }}</strong><small>{{ task.hint }}</small></span>
                 <Plus :size="17" />
@@ -1269,8 +1397,8 @@ onBeforeRouteLeave(async () => {
           </div>
           <div class="template-shortcuts">
             <strong>常用模板</strong>
-            <button type="button" :disabled="!canManage" @click="applyTemplate(true)"><Package :size="16" /><span><b>构建并发布</b><small>代码源 → 构建 → 发布</small></span></button>
-            <button type="button" :disabled="!canManage" @click="applyTemplate(false)"><ShieldCheck :size="16" /><span><b>审核后发布</b><small>代码源 → 构建 → 审核 → 发布</small></span></button>
+            <button type="button" :disabled="!canUpdate" @click="applyTemplate(true)"><Package :size="16" /><span><b>构建并发布</b><small>代码源 → 构建 → 发布</small></span></button>
+            <button type="button" :disabled="!canUpdate" @click="applyTemplate(false)"><ShieldCheck :size="16" /><span><b>审核后发布</b><small>代码源 → 构建 → 审核 → 发布</small></span></button>
           </div>
         </template>
 
@@ -1278,7 +1406,7 @@ onBeforeRouteLeave(async () => {
           <header>
             <div><small>流程阶段</small><strong>编辑阶段</strong></div>
             <div class="panel-header-actions">
-              <a-button v-if="canManage" type="text" danger aria-label="删除阶段" @click="removeStage(selectedStageDraft)"><Trash2 :size="15" /></a-button>
+              <a-button v-if="canUpdate" type="text" danger aria-label="删除阶段" @click="removeStage(selectedStageDraft)"><Trash2 :size="15" /></a-button>
               <a-button type="text" aria-label="关闭阶段配置" @click="closePanel"><X :size="17" /></a-button>
             </div>
           </header>
@@ -1287,7 +1415,7 @@ onBeforeRouteLeave(async () => {
             <h4><Layers3 :size="15" />基础信息</h4>
             <a-form layout="vertical">
               <a-form-item label="阶段名称" required>
-                <a-input :value="selectedStageDraft.name" :maxlength="64" :disabled="!canManage" placeholder="例如：构建、测试、发布" @update:value="updateStageName(selectedStageDraft, String($event))" />
+                <a-input :value="selectedStageDraft.name" :maxlength="64" :disabled="!canUpdate" placeholder="例如：构建、测试、发布" @update:value="updateStageName(selectedStageDraft, String($event))" />
               </a-form-item>
             </a-form>
           </section>
@@ -1307,44 +1435,44 @@ onBeforeRouteLeave(async () => {
             <div><small>{{ selectedNode.type === 'trigger' ? '代码源' : '流水线任务' }}</small><strong>{{ selectedNode.type === 'trigger' ? '编辑代码源' : '编辑任务' }}</strong></div>
             <div class="panel-header-actions">
               <a-button v-if="selectedTask" type="text" @click="openTaskLibrary(selectedStage?.id)">任务库</a-button>
-              <a-button v-if="canManage && selectedNode.type !== 'trigger'" type="text" danger @click="removeTask(selectedNode.id)"><Trash2 :size="15" /></a-button>
+              <a-button v-if="canUpdate && selectedNode.type !== 'trigger'" type="text" danger @click="removeTask(selectedNode.id)"><Trash2 :size="15" /></a-button>
               <a-button type="text" aria-label="关闭任务配置" @click="closePanel"><X :size="17" /></a-button>
             </div>
           </header>
           <div class="panel-tabs" role="tablist" aria-label="任务配置分区">
             <button type="button" :class="{ active: propertyTab === 'common' }" role="tab" :aria-selected="propertyTab === 'common'" @click="propertyTab = 'common'">常规配置</button>
-            <button type="button" :class="{ active: propertyTab === 'advanced' }" role="tab" :aria-selected="propertyTab === 'advanced'" @click="propertyTab = 'advanced'">高级配置</button>
+            <button type="button" :class="{ active: propertyTab === 'advanced' }" role="tab" :aria-selected="propertyTab === 'advanced'" @click="propertyTab = 'advanced'">通知及高级配置</button>
           </div>
           <a-form v-if="propertyTab === 'common'" layout="vertical">
             <a-form-item :label="selectedNode.type === 'trigger' ? '来源名称' : '任务名称'">
-              <a-input :value="selectedNode.name" :disabled="!canManage" @update:value="updateSelectedNode({ name: String($event) })" />
+              <a-input :value="selectedNode.name" :disabled="!canUpdate" @update:value="updateSelectedNode({ name: String($event) })" />
             </a-form-item>
 
             <template v-if="selectedNode.type === 'trigger'">
               <a-form-item label="启动方式">
-                <a-checkbox :checked="selectedNode.config.events?.includes('push')" :disabled="!canManage" @change="toggleEvent('push', $event.target.checked)">分支变更</a-checkbox>
-                <a-checkbox :checked="selectedNode.config.events?.includes('pr')" :disabled="!canManage" @change="toggleEvent('pr', $event.target.checked)">PR / MR</a-checkbox>
-                <a-checkbox :checked="selectedNode.config.events?.includes('tag')" :disabled="!canManage" @change="toggleEvent('tag', $event.target.checked)">Tag</a-checkbox>
-                <a-checkbox :checked="selectedNode.config.events?.includes('manual')" :disabled="!canManage" @change="toggleEvent('manual', $event.target.checked)">手动发布</a-checkbox>
+                <a-checkbox :checked="selectedNode.config.events?.includes('push')" :disabled="!canUpdate" @change="toggleEvent('push', $event.target.checked)">分支变更</a-checkbox>
+                <a-checkbox :checked="selectedNode.config.events?.includes('pr')" :disabled="!canUpdate" @change="toggleEvent('pr', $event.target.checked)">PR / MR</a-checkbox>
+                <a-checkbox :checked="selectedNode.config.events?.includes('tag')" :disabled="!canUpdate" @change="toggleEvent('tag', $event.target.checked)">Tag</a-checkbox>
+                <a-checkbox :checked="selectedNode.config.events?.includes('manual')" :disabled="!canUpdate" @change="toggleEvent('manual', $event.target.checked)">手动发布</a-checkbox>
               </a-form-item>
               <a-form-item v-if="triggerUsesBranch(selectedNode.config.events)" label="监听分支">
-                <a-input :value="selectedNode.config.branch" :disabled="!canManage" placeholder="main 或 release/*" @update:value="updateSelectedNode({}, { branch: String($event) })" />
+                <a-input :value="selectedNode.config.branch" :disabled="!canUpdate" placeholder="main 或 release/*" @update:value="updateSelectedNode({}, { branch: String($event) })" />
               </a-form-item>
               <template v-if="selectedNode.config.events?.includes('pr')">
                 <a-form-item label="PR / MR 目标分支">
-                  <a-input :value="selectedNode.config.pr_target_pattern" :disabled="!canManage" placeholder="main 或 release/*" @update:value="updateSelectedNode({}, { pr_target_pattern: String($event) })" />
+                  <a-input :value="selectedNode.config.pr_target_pattern" :disabled="!canUpdate" placeholder="main 或 release/*" @update:value="updateSelectedNode({}, { pr_target_pattern: String($event) })" />
                 </a-form-item>
                 <a-form-item label="PR / MR 来源分支">
-                  <a-input :value="selectedNode.config.pr_source_pattern" :disabled="!canManage" placeholder="* 或 feature/*" @update:value="updateSelectedNode({}, { pr_source_pattern: String($event) })" />
+                  <a-input :value="selectedNode.config.pr_source_pattern" :disabled="!canUpdate" placeholder="* 或 feature/*" @update:value="updateSelectedNode({}, { pr_source_pattern: String($event) })" />
                 </a-form-item>
                 <a-form-item label="PR / MR 动作">
-                  <a-checkbox :checked="selectedNode.config.pr_actions?.includes('opened')" :disabled="!canManage" @change="togglePRAction('opened', $event.target.checked)">新建</a-checkbox>
-                  <a-checkbox :checked="selectedNode.config.pr_actions?.includes('updated')" :disabled="!canManage" @change="togglePRAction('updated', $event.target.checked)">更新</a-checkbox>
-                  <a-checkbox :checked="selectedNode.config.pr_actions?.includes('merged')" :disabled="!canManage" @change="togglePRAction('merged', $event.target.checked)">合并</a-checkbox>
+                  <a-checkbox :checked="selectedNode.config.pr_actions?.includes('opened')" :disabled="!canUpdate" @change="togglePRAction('opened', $event.target.checked)">新建</a-checkbox>
+                  <a-checkbox :checked="selectedNode.config.pr_actions?.includes('updated')" :disabled="!canUpdate" @change="togglePRAction('updated', $event.target.checked)">更新</a-checkbox>
+                  <a-checkbox :checked="selectedNode.config.pr_actions?.includes('merged')" :disabled="!canUpdate" @change="togglePRAction('merged', $event.target.checked)">合并</a-checkbox>
                 </a-form-item>
               </template>
               <a-form-item v-if="selectedNode.config.events?.includes('tag')" label="Tag 规则">
-                <a-input :value="selectedNode.config.tag_pattern" :disabled="!canManage" :placeholder="DEFAULT_TAG_PATTERN" @update:value="updateSelectedNode({}, { tag_pattern: String($event) })" />
+                <a-input :value="selectedNode.config.tag_pattern" :disabled="!canUpdate" :placeholder="DEFAULT_TAG_PATTERN" @update:value="updateSelectedNode({}, { tag_pattern: String($event) })" />
               </a-form-item>
               <p class="panel-note">EDO 主动检查远程引用，Webhook 只是可选的低延迟通道。</p>
             </template>
@@ -1362,14 +1490,14 @@ onBeforeRouteLeave(async () => {
                 <div class="resource-picker">
                   <a-select
                     :value="selectedNode.config.build_plan_id"
-                    :disabled="!canManage"
-                    :options="activeBuildPlans.map(item => ({ value: item.id, label: `${item.name} · ${item.kind === 'dockerfile' ? '镜像' : '文件制品'}` }))"
+                    :disabled="!canUpdate"
+                    :options="buildPlanOptions"
                     placeholder="选择构建方案"
                     @update:value="updateSelectedNode({}, { build_plan_id: String($event || '') || undefined })"
                   >
-                    <template #option="{ value, label }">
+                    <template #option="{ value, label, detail }">
                       <span class="managed-resource-option">
-                        <span class="managed-resource-option-label">{{ label }}</span>
+                        <span class="named-option"><strong>{{ label }}</strong><small>{{ detail }}</small></span>
                         <a class="managed-resource-option-view" :href="resourceViewHref('/build-plans', 'plan', String(value))" target="_blank" rel="noopener noreferrer" @mousedown.stop @click.stop>查看</a>
                       </span>
                     </template>
@@ -1390,11 +1518,11 @@ onBeforeRouteLeave(async () => {
                 :message="`隔离工具链：${toolchainName(selectedNode.config.toolchain_language)} ${selectedNode.config.toolchain_version}`"
                 :description="`任务使用 ${selectedNode.config.runtime_image} 运行，不读写宿主机语言版本。`"
               />
-              <a-form-item label="脚本" required><a-textarea :value="selectedNode.config.script" :rows="10" :disabled="!canManage" placeholder="填写非交互式 Shell 脚本" @update:value="updateSelectedNode({}, { script: String($event) })" /></a-form-item>
+              <a-form-item label="脚本" required><a-textarea :value="selectedNode.config.script" :rows="10" :disabled="!canUpdate" placeholder="填写非交互式 Shell 脚本" @update:value="updateSelectedNode({}, { script: String($event) })" /></a-form-item>
             </template>
 
             <template v-else-if="selectedNode.type === 'approval' || selectedNode.type === 'manual'">
-              <a-form-item label="说明"><a-textarea :value="selectedNode.config.description" :rows="5" :disabled="!canManage" @update:value="updateSelectedNode({}, { description: String($event) })" /></a-form-item>
+              <a-form-item label="说明"><a-textarea :value="selectedNode.config.description" :rows="5" :disabled="!canUpdate" @update:value="updateSelectedNode({}, { description: String($event) })" /></a-form-item>
             </template>
 
             <template v-else-if="selectedNode.type === 'deploy'">
@@ -1402,14 +1530,14 @@ onBeforeRouteLeave(async () => {
                 <div class="resource-picker">
                   <a-select
                     :value="selectedNode.config.deployment_plan_id"
-                    :disabled="!canManage"
-                    :options="compatibleDeploymentPlans(selectedNode.id).map(item => ({ value: item.id, label: `${item.name} · ${deploymentKindNames[item.kind]}` }))"
+                    :disabled="!canUpdate"
+                    :options="deploymentPlanOptions(selectedNode.id)"
                     placeholder="选择部署方案"
                     @update:value="updateSelectedNode({}, { deployment_plan_id: String($event || '') || undefined })"
                   >
-                    <template #option="{ value, label }">
+                    <template #option="{ value, label, detail }">
                       <span class="managed-resource-option">
-                        <span class="managed-resource-option-label">{{ label }}</span>
+                        <span class="named-option"><strong>{{ label }}</strong><small>{{ detail }}</small></span>
                         <a class="managed-resource-option-view" :href="resourceViewHref('/deployment-plans', 'plan', String(value))" target="_blank" rel="noopener noreferrer" @mousedown.stop @click.stop>查看</a>
                       </span>
                     </template>
@@ -1424,10 +1552,64 @@ onBeforeRouteLeave(async () => {
             </template>
           </a-form>
           <a-form v-else layout="vertical">
+            <section v-if="selectedTask" class="node-notification-section">
+              <header class="node-notification-header">
+                <span><Bell :size="16" /><strong>通知</strong><small>任务结束后发送</small></span>
+                <span>
+                  <a-button v-if="canCreateNotificationChannels" type="link" size="small" @click="openNotificationChannelModal">新建渠道</a-button>
+                  <a-button type="link" size="small" :disabled="!canEdit || !activeNotificationChannels.length || (selectedTask.config.notifications?.length || 0) >= 10" @click="addNotificationRule"><Plus :size="14" />添加</a-button>
+                </span>
+              </header>
+              <a-alert
+                v-if="!canReadNotificationChannels"
+                class="node-notification-alert"
+                type="warning"
+                show-icon
+                message="当前账号没有读取通知渠道的权限"
+                description="已有规则会继续保留，但不能在这里查看或修改通知渠道。"
+              />
+              <a-alert
+                v-else-if="!activeNotificationChannels.length"
+                class="node-notification-alert"
+                type="info"
+                show-icon
+                message="还没有可用通知渠道"
+                description="创建 Webhook 通知渠道后，可为当前任务配置成功或失败通知。"
+              />
+              <div v-else-if="selectedTask.config.notifications?.length" class="node-notification-list">
+                <article v-for="rule in selectedTask.config.notifications" :key="rule.id" class="node-notification-rule">
+                  <div class="node-notification-rule-head">
+                    <a-select
+                      :value="rule.channel_id"
+                      :disabled="!canEdit"
+                      :options="notificationChannelOptions"
+                      placeholder="选择通知渠道"
+                      @update:value="updateNotificationRule(rule.id, { channel_id: String($event || '') })"
+                    />
+                    <a-button v-if="canTestNotificationChannels" type="text" size="small" :disabled="!rule.channel_id" @click="testNotificationChannel(rule.channel_id)">测试</a-button>
+                    <a-button type="text" size="small" danger :disabled="!canEdit" aria-label="删除通知规则" @click="removeNotificationRule(rule.id)"><Trash2 :size="14" /></a-button>
+                  </div>
+                  <div class="node-notification-timing">
+                    <span>发送时机</span>
+                    <a-checkbox :checked="rule.on_failure" :disabled="!canEdit" @change="updateNotificationRule(rule.id, { on_failure: $event.target.checked })">失败</a-checkbox>
+                    <a-checkbox :checked="rule.on_success" :disabled="!canEdit" @change="updateNotificationRule(rule.id, { on_success: $event.target.checked })">成功</a-checkbox>
+                  </div>
+                  <a-form-item label="自定义标题（可选）">
+                    <a-input :value="rule.title" :maxlength="255" :disabled="!canEdit" placeholder="留空时使用 EDO 默认标题" @update:value="updateNotificationRule(rule.id, { title: String($event) })" />
+                  </a-form-item>
+                  <a-form-item label="自定义内容（可选）">
+                    <a-textarea :value="rule.message" :rows="4" :maxlength="8192" :disabled="!canEdit" placeholder="留空时自动包含应用、任务、版本、提交和执行结果" @update:value="updateNotificationRule(rule.id, { message: String($event) })" />
+                  </a-form-item>
+                  <small class="node-notification-placeholders">可用变量：&#123;&#123;application.name&#125;&#125;、&#123;&#123;workflow.name&#125;&#125;、&#123;&#123;task.name&#125;&#125;、&#123;&#123;task.status&#125;&#125;、&#123;&#123;git.ref&#125;&#125;、&#123;&#123;git.commit&#125;&#125;、&#123;&#123;git.message&#125;&#125;、&#123;&#123;run.id&#125;&#125;、&#123;&#123;detail&#125;&#125;</small>
+                </article>
+              </div>
+              <div v-else-if="canReadNotificationChannels" class="node-notification-empty">当前任务尚未配置通知；建议至少添加“失败”通知。</div>
+            </section>
+            <a-divider v-if="selectedTask" class="node-notification-divider" />
             <template v-if="selectedNode.type === 'shell'">
-              <a-form-item label="运行镜像"><a-auto-complete :value="selectedNode.config.runtime_image || DEFAULT_RUNTIME_IMAGE" :options="runtimeImageOptions" :disabled="!canManage || Boolean(selectedNode.config.toolchain_language)" placeholder="alpine:3.22" @update:value="updateSelectedNode({}, { runtime_image: String($event) })" /><small class="field-hint">{{ selectedNode.config.toolchain_language ? '运行镜像由模板中所选语言版本固定。' : '镜像必须提供 /bin/sh，并使用明确 tag 或 digest；不接受裸镜像名和 latest。' }}</small></a-form-item>
-              <a-form-item label="工作目录"><a-input :value="selectedNode.config.working_directory" :disabled="!canManage" placeholder="." @update:value="updateSelectedNode({}, { working_directory: String($event) })" /></a-form-item>
-              <a-form-item label="超时（秒）"><a-input-number :value="selectedNode.config.timeout_seconds || 600" :min="30" :max="7200" :disabled="!canManage" @update:value="updateSelectedNode({}, { timeout_seconds: Number($event || 600) })" /></a-form-item>
+              <a-form-item label="运行镜像"><a-auto-complete :value="selectedNode.config.runtime_image || DEFAULT_RUNTIME_IMAGE" :options="runtimeImageOptions" :disabled="!canUpdate || Boolean(selectedNode.config.toolchain_language)" placeholder="alpine:3.22" @update:value="updateSelectedNode({}, { runtime_image: String($event) })" /><small class="field-hint">{{ selectedNode.config.toolchain_language ? '运行镜像由模板中所选语言版本固定。' : '镜像必须提供 /bin/sh，并使用明确 tag 或 digest；不接受裸镜像名和 latest。' }}</small></a-form-item>
+              <a-form-item label="工作目录"><a-input :value="selectedNode.config.working_directory" :disabled="!canUpdate" placeholder="." @update:value="updateSelectedNode({}, { working_directory: String($event) })" /></a-form-item>
+              <a-form-item label="超时（秒）"><a-input-number :value="selectedNode.config.timeout_seconds || 600" :min="30" :max="7200" :disabled="!canUpdate" @update:value="updateSelectedNode({}, { timeout_seconds: Number($event || 600) })" /></a-form-item>
               <a-form-item label="环境变量" :validate-status="environmentVariableErrors[selectedNode.id] ? 'error' : undefined" :help="environmentVariableErrors[selectedNode.id]">
                 <a-textarea :value="environmentVariableTexts[selectedNode.id] ?? formatEnvironmentVariables(selectedNode.config.environment_variables)" :rows="7" :disabled="!canEdit" placeholder="NODE_ENV=production&#10;FEATURE_FLAG=true" @update:value="updateEnvironmentVariables(String($event))" />
               </a-form-item>
@@ -1473,7 +1655,24 @@ onBeforeRouteLeave(async () => {
         <a-button type="primary" html-type="button" :loading="saveConfirmSubmitting" @click.stop="confirmSaveUpdate">保存并启用</a-button>
       </template>
     </a-modal>
-    <WorkflowPresetModal v-model:open="presetOpen" @created="openCreatedTemplate" />
+    <a-modal
+      v-model:open="notificationChannelModalOpen"
+      title="新建 Webhook 通知渠道"
+      centered
+      :confirm-loading="notificationChannelSubmitting"
+      ok-text="创建"
+      cancel-text="取消"
+      @ok="createNotificationChannel"
+    >
+      <a-form layout="vertical">
+        <a-form-item label="渠道名称" required><a-input v-model:value="notificationChannelForm.name" :maxlength="128" placeholder="例如：研发群机器人" /></a-form-item>
+        <a-form-item label="Webhook 地址" required><a-input v-model:value="notificationChannelForm.endpoint" placeholder="https://example.com/webhook" /></a-form-item>
+        <a-form-item label="Bearer Token（可选）"><a-input-password v-model:value="notificationChannelForm.token" autocomplete="new-password" placeholder="只会加密保存，不会在页面回显" /></a-form-item>
+        <a-checkbox v-model:checked="notificationChannelForm.allow_http">允许使用不安全的 HTTP 地址</a-checkbox>
+        <p class="notification-channel-note">生产环境建议使用 HTTPS。通知请求包含标题、内容、级别、来源和运行标识，不会包含仓库凭据或部署密钥。</p>
+      </a-form>
+    </a-modal>
+    <WorkflowPresetModal v-model:open="presetOpen" :can-create="canCreate" :can-execute="canExecute" @created="openCreatedTemplate" />
   </section>
 </template>
 
@@ -1489,6 +1688,10 @@ onBeforeRouteLeave(async () => {
 .command-divider { width: 1px; height: 22px; background: var(--edo-border); }
 .plan-switcher { display: flex; flex: 0 0 auto; align-items: center; gap: 8px; color: var(--edo-muted); font-size: 12px; white-space: nowrap; }
 .plan-switcher :deep(.ant-select) { width: 230px; }
+.named-option { display: grid; min-width: 0; gap: 2px; line-height: 1.35; }
+.named-option strong, .named-option small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.named-option strong { color: var(--edo-text); font-size: 12px; font-weight: 600; }
+.named-option small { color: var(--edo-muted); font-size: 10px; }
 .save-indicator { display: flex; align-items: center; gap: 6px; color: var(--edo-muted); font-size: 12px; white-space: nowrap; }
 .save-indicator i { width: 7px; height: 7px; border-radius: 50%; background: #2ab36d; }
 .save-indicator.pending i { background: #e7a23b; animation: save-pulse 1.5s ease-in-out infinite; }
@@ -1519,6 +1722,7 @@ onBeforeRouteLeave(async () => {
 .source-repository { gap: 9px; color: var(--edo-muted); }
 .source-repository i { display: grid; width: 30px; height: 30px; place-items: center; border-radius: 6px; color: var(--edo-primary); background: var(--edo-primary-soft); }
 .source-card small { display: block; color: var(--edo-muted); font-size: 11px; }
+.source-meta { display: grid; min-width: 0; gap: 3px; }
 .pipeline-stage-list {
   --pipeline-stage-header-height: 58px;
   --pipeline-task-line-offset: 51px;
@@ -1610,6 +1814,22 @@ onBeforeRouteLeave(async () => {
 .resource-picker { display: flex; align-items: stretch; gap: 8px; }
 .resource-picker :deep(.ant-select) { min-width: 0; flex: 1; }
 .resource-create { width: 34px; flex: 0 0 34px; padding: 0; }
+.node-notification-section { margin: 0 -16px; }
+.node-notification-header { display: flex; min-height: 42px; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 16px; border-left: 4px solid var(--edo-primary); background: var(--edo-primary-soft); }
+.node-notification-header > span { display: flex; min-width: 0; align-items: center; gap: 7px; }
+.node-notification-header > span:first-child { color: var(--edo-text); }
+.node-notification-header small { color: var(--edo-muted); font-size: 10px; }
+.node-notification-alert { margin: 12px 16px 0; }
+.node-notification-list { display: grid; gap: 10px; padding: 12px 16px 0; }
+.node-notification-rule { padding: 11px 12px; border: 1px solid var(--edo-border); border-radius: 7px; background: var(--edo-surface-soft); }
+.node-notification-rule-head { display: grid; align-items: center; grid-template-columns: minmax(0,1fr) auto auto; gap: 5px; margin-bottom: 9px; }
+.node-notification-timing { display: flex; align-items: center; gap: 12px; margin-bottom: 10px; color: var(--edo-muted); font-size: 11px; }
+.node-notification-timing :deep(.ant-checkbox-wrapper) { margin: 0; }
+.node-notification-rule :deep(.ant-form-item) { margin-bottom: 9px; }
+.node-notification-placeholders { display: block; color: var(--edo-muted); font-size: 9.5px; line-height: 1.55; word-break: break-word; }
+.node-notification-empty { margin: 12px 16px 0; padding: 18px 12px; border: 1px dashed var(--edo-border); border-radius: 7px; color: var(--edo-muted); background: var(--edo-surface-soft); font-size: 11px; text-align: center; }
+.node-notification-divider { margin: 16px 0; }
+.notification-channel-note { margin: 12px 0 0; color: var(--edo-muted); font-size: 11px; line-height: 1.6; }
 .panel-alert { margin: 12px 16px; }
 .panel-note { margin: 0 16px 16px; color: var(--edo-muted); font-size: 11px; line-height: 1.55; }
 .panel-empty { display: grid; min-height: 360px; place-items: center; align-content: center; color: var(--edo-muted); text-align: center; }

@@ -97,6 +97,57 @@ func TestEnsureInitialAdminDoesNotModifyExistingUsers(t *testing.T) {
 	}
 }
 
+func TestSetDepartmentRequiresRepositoryCredentialHandover(t *testing.T) {
+	db := openAccountTestDatabase(t, "department-credential-handover")
+	ctx := context.Background()
+	now := time.Now().UTC()
+	for _, department := range []model.Department{
+		{ID: "department-source", Name: "原部门", IsActive: true, CreatedAt: now, UpdatedAt: now},
+		{ID: "department-target", Name: "新部门", IsActive: true, CreatedAt: now, UpdatedAt: now},
+	} {
+		if err := db.Create(&department).Error; err != nil {
+			t.Fatalf("创建测试部门失败: %v", err)
+		}
+	}
+	service := NewService(db)
+	user, err := service.CreateUserInDepartment(ctx, "transferuser", "调动用户", "correct horse battery staple", "department-source")
+	if err != nil {
+		t.Fatalf("创建调动用户失败: %v", err)
+	}
+	credential := model.GitCredential{
+		ID: "transfer-credential", UserID: user.ID, Name: "部门仓库令牌",
+		Provider: model.GitProviderGitea, AuthType: model.GitAuthToken,
+		SecretCiphertext: "encrypted-placeholder", CreatedAt: now, UpdatedAt: now,
+	}
+	if err := db.Create(&credential).Error; err != nil {
+		t.Fatalf("创建个人令牌失败: %v", err)
+	}
+	repository := model.GitRepository{
+		ID: "transfer-repository", DepartmentID: "department-source", Name: "部门仓库",
+		Provider: model.GitProviderGitea, CloneURL: "https://git.example.com/team/repository.git",
+		DefaultBranch: "main", AuthType: model.GitAuthToken, CredentialID: &credential.ID,
+		CredentialCiphertext: "", WebhookSecretCiphertext: "", IsActive: true,
+		CreatedBy: user.ID, CreatedAt: now, UpdatedAt: now,
+	}
+	if err := db.Create(&repository).Error; err != nil {
+		t.Fatalf("创建引用个人令牌的仓库失败: %v", err)
+	}
+	if err := service.SetDepartment(ctx, user.ID, "department-target"); !errors.Is(err, ErrUserCredentialUsed) {
+		t.Fatalf("仓库令牌尚未交接时仍允许调动部门: %v", err)
+	}
+	if err := db.Model(&model.GitRepository{}).Where("id = ?", repository.ID).
+		Updates(map[string]any{"credential_id": nil, "api_credential_id": nil}).Error; err != nil {
+		t.Fatalf("解除仓库令牌引用失败: %v", err)
+	}
+	if err := service.SetDepartment(ctx, user.ID, "department-target"); err != nil {
+		t.Fatalf("完成令牌交接后调整部门失败: %v", err)
+	}
+	updated, err := service.FindByID(ctx, user.ID)
+	if err != nil || updated.DepartmentID != "department-target" || updated.AuthVersion != user.AuthVersion+1 {
+		t.Fatalf("用户部门或认证版本未更新: user=%+v err=%v", updated, err)
+	}
+}
+
 func openAccountTestDatabase(t *testing.T, name string) *gorm.DB {
 	t.Helper()
 	db, err := database.Open(context.Background(), config.Database{

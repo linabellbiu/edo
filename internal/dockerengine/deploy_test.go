@@ -191,3 +191,16 @@ func TestDeploymentErrorWithRollbackPreservesPrimaryAndRollbackState(t *testing.
 		t.Fatalf("系统日志需要的发布和回滚诊断信息不完整: %v", err)
 	}
 }
+
+func TestClassifyContainerStartErrorRecognizesDockerPortConflict(t *testing.T) {
+	raw := errors.New("driver failed programming external connectivity: Bind for 127.0.0.1:881 failed: port is already allocated")
+	err := classifyContainerStartError(raw)
+	if !errors.Is(err, ErrContainerPortAllocated) || !strings.Contains(err.Error(), "127.0.0.1:881") {
+		t.Fatalf("Docker 端口冲突没有保留业务分类和内部诊断: %v", err)
+	}
+
+	other := errors.New("Docker daemon connection closed")
+	if classified := classifyContainerStartError(other); !errors.Is(classified, other) || errors.Is(classified, ErrContainerPortAllocated) {
+		t.Fatalf("普通 Docker 启动错误被误分类为端口冲突: %v", classified)
+	}
+}

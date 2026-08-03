@@ -47,6 +47,30 @@ type idempotentHostScriptRunnerStub struct {
 	calls   atomic.Int32
 }
 
+func TestRemovedDockerRuntimeIsNoLongerMonitored(t *testing.T) {
+	service, db, endpointID := newDeploymentTestService(t)
+	now := time.Now().UTC()
+	deletedAt := now.Add(time.Second)
+	record := model.DeploymentRecord{
+		ID: "deployment-runtime-removed", PipelineRunID: "pipeline-runtime-removed", ApplicationID: "application-runtime-removed",
+		TargetID: "target-runtime-removed", TargetName: "Docker 容器", Platform: model.DeploymentDocker,
+		EnvironmentID: dockerTestEnvironmentID, HostID: dockerTestHostID, RuntimeID: endpointID, WorkloadName: "edo-test-app",
+		RolloutTimeout: 120, Operation: model.DeploymentRelease, Image: "edo.local/app:fixed",
+		DeploymentPlanID: "plan-runtime-removed", DeploymentPlanKind: model.DeploymentPlanDocker,
+		Status: model.DeploymentSucceeded, RequestedBy: "admin", RuntimeDeletedAt: &deletedAt,
+		CreatedAt: now, UpdatedAt: deletedAt, FinishedAt: &now,
+	}
+	if err := db.Create(&record).Error; err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.RuntimeState(context.Background(), record.ID); !errors.Is(err, ErrRuntimeInstanceRemoved) {
+		t.Fatalf("已删除容器实例仍进入状态监控: %v", err)
+	}
+	if _, err := service.ControlRuntime(context.Background(), record.ID, "operator", RuntimeControlInput{Action: "restart"}); !errors.Is(err, ErrRuntimeInstanceRemoved) {
+		t.Fatalf("已删除容器实例仍可执行运行操作: %v", err)
+	}
+}
+
 func (s *idempotentHostScriptRunnerStub) RunHostDeploymentScript(ctx context.Context, _ sshdeploy.Input) (sshdeploy.Result, error) {
 	s.calls.Add(1)
 	if s.started != nil {
@@ -65,6 +89,102 @@ func (s *idempotentHostScriptRunnerStub) RunHostDeploymentScript(ctx context.Con
 func (s *hostScriptRunnerStub) RunHostDeploymentScript(_ context.Context, input sshdeploy.Input) (sshdeploy.Result, error) {
 	s.input = input
 	return s.result, s.err
+}
+
+func TestShellRuntimeControlUsesOnlySavedDeploymentInstanceCommand(t *testing.T) {
+	service, db, _ := newDeploymentTestService(t)
+	runner := &hostScriptRunnerStub{result: sshdeploy.Result{ExitCode: 0, Started: true}}
+	service.ssh = runner
+	now := time.Now().UTC()
+	repository := model.GitRepository{
+		ID: "repository-lifecycle", Name: "lifecycle", Provider: model.GitProviderGeneric,
+		CloneURL: "https://example.invalid/lifecycle.git", AuthType: model.GitAuthNone,
+		IsActive: true, CreatedBy: "admin", CreatedAt: now, UpdatedAt: now,
+	}
+	if err := db.Create(&repository).Error; err != nil {
+		t.Fatal(err)
+	}
+	application := model.Application{
+		ID: "application-lifecycle", Name: "lifecycle_app", RepositoryID: repository.ID,
+		PollIntervalSeconds: 3, SyncStatus: model.ApplicationSyncIdle,
+		IsActive: true, CreatedBy: "admin", CreatedAt: now, UpdatedAt: now,
+	}
+	if err := db.Create(&application).Error; err != nil {
+		t.Fatal(err)
+	}
+	run := model.PipelineRun{
+		ID: "pipeline-lifecycle", ApplicationID: application.ID, Trigger: "manual", Ref: "refs/heads/main",
+		CommitSHA: strings.Repeat("a", 40), Status: model.PipelineRunSucceeded, Stage: "succeeded",
+		WorkflowSnapshot: "{}", CreatedBy: "admin", CreatedAt: now, UpdatedAt: now,
+	}
+	if err := db.Create(&run).Error; err != nil {
+		t.Fatal(err)
+	}
+	record := model.DeploymentRecord{
+		ID: "deployment-lifecycle", PipelineRunID: run.ID, ApplicationID: application.ID,
+		TargetID: "target-lifecycle", TargetName: "Shell 主机", Platform: model.DeploymentSSH,
+		EnvironmentID: "environment-lifecycle", HostID: "host-lifecycle", WorkingDirectory: "/srv/lifecycle",
+		RolloutTimeout: 300, Operation: model.DeploymentRelease, DeploymentPlanID: "plan-lifecycle",
+		DeploymentPlanKind: model.DeploymentPlanScript, Status: model.DeploymentSucceeded,
+		RequestedBy: "admin", CreatedAt: now, UpdatedAt: now, FinishedAt: &now,
+	}
+	if err := db.Create(&record).Error; err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.ControlRuntime(context.Background(), record.ID, "operator", RuntimeControlInput{Action: "restart"}); !errors.Is(err, ErrLifecycleScriptRequired) {
+		t.Fatalf("没有保存重启命令时必须拒绝执行: %v", err)
+	}
+	configuration, err := service.SaveRuntimeConfiguration(context.Background(), record.ID, "operator", InstanceControlConfigurationInput{
+		RestartScript: "  systemctl --user restart lifecycle  ", StopScript: "systemctl --user stop lifecycle", TimeoutSeconds: 300,
+	})
+	if err != nil {
+		t.Fatalf("保存 Shell 部署实例运行命令失败: %v", err)
+	}
+	if configuration.RestartScript != "systemctl --user restart lifecycle" || configuration.StopScript != "systemctl --user stop lifecycle" {
+		t.Fatalf("Shell 部署实例运行命令没有正确规范化: %+v", configuration)
+	}
+	runtime, err := service.RuntimeState(context.Background(), record.ID)
+	if err != nil || !runtime.RestartConfigured || !runtime.StopConfigured {
+		t.Fatalf("Shell 部署实例没有返回命令配置状态: state=%+v err=%v", runtime, err)
+	}
+	state, err := service.ControlRuntime(context.Background(), record.ID, "operator", RuntimeControlInput{Action: "restart"})
+	if err != nil {
+		t.Fatalf("执行已保存的重启命令失败: %v", err)
+	}
+	if state.Kind != "script" || state.State != "restart_command_completed" ||
+		runner.input.Script != "systemctl --user restart lifecycle" || runner.input.WorkingDirectory != record.WorkingDirectory ||
+		runner.input.Environment["EDO_LIFECYCLE_ACTION"] != "restart" {
+		t.Fatalf("Shell 生命周期命令没有使用部署实例配置与发布快照: state=%+v input=%+v", state, runner.input)
+	}
+	isolated := record
+	isolated.ID = "deployment-lifecycle-other-target"
+	isolated.TargetID = "target-lifecycle-other"
+	isolated.TargetName = "另一台 Shell 主机"
+	isolated.CreatedAt = now.Add(500 * time.Millisecond)
+	isolated.UpdatedAt = isolated.CreatedAt
+	isolated.FinishedAt = &isolated.CreatedAt
+	if err := db.Create(&isolated).Error; err != nil {
+		t.Fatal(err)
+	}
+	isolatedState, err := service.RuntimeState(context.Background(), isolated.ID)
+	if err != nil || isolatedState.RestartConfigured || isolatedState.StopConfigured {
+		t.Fatalf("不同目标位置不能复用其他部署实例的 Shell 命令: state=%+v err=%v", isolatedState, err)
+	}
+	replicas := int32(2)
+	if _, err := service.ControlRuntime(context.Background(), record.ID, "operator", RuntimeControlInput{Action: "scale", Replicas: &replicas}); !errors.Is(err, ErrRuntimeControlUnsupported) {
+		t.Fatalf("Shell 部署不应允许扩缩容: %v", err)
+	}
+	later := record
+	later.ID = "deployment-lifecycle-later"
+	later.CreatedAt = now.Add(time.Second)
+	later.UpdatedAt = later.CreatedAt
+	later.FinishedAt = &later.CreatedAt
+	if err := db.Create(&later).Error; err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.ControlRuntime(context.Background(), record.ID, "operator", RuntimeControlInput{Action: "stop"}); !errors.Is(err, ErrDeploymentNotCurrent) {
+		t.Fatalf("历史部署实例必须拒绝运行控制: %v", err)
+	}
 }
 
 func TestRegistryDeploymentRequiresDigestAndQueuesWithoutImplicitApproval(t *testing.T) {
@@ -97,6 +217,9 @@ func TestRegistryDeploymentRequiresDigestAndQueuesWithoutImplicitApproval(t *tes
 	}
 	if job.MaxAttempts != 1 {
 		t.Fatalf("有外部副作用的发布任务执行次数应为 1，实际为 %d", job.MaxAttempts)
+	}
+	if record.DepartmentID != target.DepartmentID || job.DepartmentID != target.DepartmentID {
+		t.Fatalf("发布部门没有从目标传播到记录和任务: target=%s record=%s job=%s", target.DepartmentID, record.DepartmentID, job.DepartmentID)
 	}
 }
 
@@ -225,6 +348,42 @@ func TestDockerContainerFailureDetailsReturnsSafeReason(t *testing.T) {
 			wantCode:    "docker_container_rollback_failed",
 			wantMessage: "Docker 容器发布失败：新容器未就绪且旧容器恢复失败，请立即检查目标容器",
 		},
+		{
+			name:        "主机端口被占用",
+			err:         fmt.Errorf("%w: Bind for 127.0.0.1:881 failed", dockerengine.ErrContainerPortAllocated),
+			wantCode:    "docker_container_port_allocated",
+			wantMessage: "Docker 容器启动失败：主机端口已被占用，请修改部署方案的端口映射后重试",
+		},
+		{
+			name:        "运行时不可用",
+			err:         fmt.Errorf("%w: connection refused", dockerengine.ErrContainerRuntimeUnavailable),
+			wantCode:    "docker_runtime_unavailable",
+			wantMessage: "Docker 容器部署失败：无法连接目标 Docker 运行时，请检查主机连接和 Docker 服务状态",
+		},
+		{
+			name:        "镜像不可用",
+			err:         fmt.Errorf("%w: image not found", dockerengine.ErrContainerImageUnavailable),
+			wantCode:    "docker_image_unavailable",
+			wantMessage: "Docker 容器部署失败：目标主机无法读取待发布镜像，请检查镜像传输或仓库访问",
+		},
+		{
+			name:        "容器名称冲突",
+			err:         fmt.Errorf("%w: foreign container", dockerengine.ErrContainerOwnershipConflict),
+			wantCode:    "docker_container_name_conflict",
+			wantMessage: "Docker 容器部署失败：同名容器不属于当前部署目标，请修改容器名称或清理冲突资源",
+		},
+		{
+			name:        "创建容器失败",
+			err:         fmt.Errorf("%w: daemon rejected create", dockerengine.ErrContainerCreateFailed),
+			wantCode:    "docker_container_create_failed",
+			wantMessage: "Docker 容器部署失败：目标 Docker 未能创建容器，请检查容器配置和目标主机资源",
+		},
+		{
+			name:        "启动容器失败",
+			err:         fmt.Errorf("%w: daemon rejected start", dockerengine.ErrContainerStartFailed),
+			wantCode:    "docker_container_start_failed",
+			wantMessage: "Docker 容器启动失败：目标 Docker 拒绝启动请求，请检查端口、网络和运行配置",
+		},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -261,6 +420,18 @@ func TestDockerComposeFailureDetailsReturnsSafeReason(t *testing.T) {
 			wantCode:    "compose_rollback_failed",
 			wantMessage: "Docker Compose 发布失败：服务未就绪且旧服务恢复失败，请立即检查目标容器",
 		},
+		{
+			name:        "Compose 插件不可用",
+			err:         fmt.Errorf("%w: executable not found", dockerengine.ErrComposePluginUnavailable),
+			wantCode:    "compose_plugin_unavailable",
+			wantMessage: "Docker Compose 部署失败：目标主机未安装或无法运行 Docker Compose 插件",
+		},
+		{
+			name:        "Compose 命令失败",
+			err:         fmt.Errorf("%w: exit status 1", dockerengine.ErrComposeExecutionFailed),
+			wantCode:    "compose_command_failed",
+			wantMessage: "Docker Compose 部署失败：Compose 命令执行失败，请查看部署控制台输出",
+		},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -269,6 +440,44 @@ func TestDockerComposeFailureDetailsReturnsSafeReason(t *testing.T) {
 				t.Fatalf("Docker Compose 失败原因分类不安全或不准确: code=%q message=%q", code, message)
 			}
 		})
+	}
+}
+
+func TestSSHCommandFailureDetailsReturnsSafeReason(t *testing.T) {
+	exitCode := 23
+	tests := []struct {
+		err         error
+		exitCode    *int
+		wantCode    string
+		wantMessage string
+	}{
+		{fmt.Errorf("%w: connection refused", sshdeploy.ErrHostUnavailable), nil, "ssh_host_unavailable", "命令脚本部署失败：无法连接目标主机，请检查主机状态和 SSH 配置"},
+		{fmt.Errorf("%w: remote detail", sshdeploy.ErrCommandFailed), &exitCode, "ssh_command_failed", "命令脚本部署失败：脚本退出码为 23，请查看部署控制台输出"},
+		{context.DeadlineExceeded, nil, "ssh_command_timeout", "命令脚本部署超时：目标主机未在规定时间内执行完成"},
+	}
+	for _, test := range tests {
+		code, message := sshCommandFailureDetails(test.err, test.exitCode)
+		if code != test.wantCode || message != test.wantMessage || strings.Contains(message, "remote detail") {
+			t.Fatalf("SSH 失败原因分类不安全或不准确: code=%q message=%q", code, message)
+		}
+	}
+}
+
+func TestKubernetesFailureDetailsReturnsSafeReason(t *testing.T) {
+	tests := []struct {
+		err         error
+		wantCode    string
+		wantMessage string
+	}{
+		{fmt.Errorf("%w: forbidden detail", kube.ErrDeploymentUpdateFailed), "kubernetes_update_failed", "Kubernetes 部署失败：集群拒绝更新目标工作负载，请检查权限和资源状态"},
+		{kube.ErrDeploymentContainerNotFound, "kubernetes_container_not_found", "Kubernetes 部署失败：工作负载中找不到目标容器"},
+		{kube.ErrDeploymentRolloutTimeout, "kubernetes_rollout_timeout", "Kubernetes 部署超时：工作负载未在规定时间内就绪"},
+	}
+	for _, test := range tests {
+		code, message := kubernetesFailureDetails(test.err)
+		if code != test.wantCode || message != test.wantMessage || strings.Contains(message, "forbidden detail") {
+			t.Fatalf("Kubernetes 失败原因分类不安全或不准确: code=%q message=%q", code, message)
+		}
 	}
 }
 
@@ -394,7 +603,7 @@ func TestSSHDeploymentUsesSelectedMembershipAndExactPlanSnapshot(t *testing.T) {
 
 	runner := &hostScriptRunnerStub{
 		result: sshdeploy.Result{ExitCode: 17, Started: true},
-		err:    errors.New("remote command failed"),
+		err:    fmt.Errorf("%w: remote command failed", sshdeploy.ErrCommandFailed),
 	}
 	service.ssh = runner
 	script := "printf '%s\\n' \"$EDO_DEPLOYMENT_ID\"  \nexit 17\n\n"
@@ -419,7 +628,8 @@ func TestSSHDeploymentUsesSelectedMembershipAndExactPlanSnapshot(t *testing.T) {
 	}
 	if stored.Status != model.DeploymentFailed || stored.CommandScript != script || stored.CommandDigest != digest ||
 		stored.CommandExitCode == nil || *stored.CommandExitCode != 17 || stored.EnvironmentID != environment.ID ||
-		stored.HostID != host.ID || stored.ErrorMessage != "命令脚本部署失败，请查看流水线日志" {
+		stored.HostID != host.ID || stored.ErrorCode != "ssh_command_failed" ||
+		stored.ErrorMessage != "命令脚本部署失败：脚本退出码为 17，请查看部署控制台输出" {
 		t.Fatalf("SSH 发布记录快照或退出码错误: %+v", stored)
 	}
 	if _, err := service.Rollback(context.Background(), stored.ID, "operator"); !errors.Is(err, ErrRollbackUnavailable) {
@@ -970,6 +1180,78 @@ func TestDeploymentTargetRejectsAmbiguousEnvironmentHosts(t *testing.T) {
 		EnvironmentID: dockerTestEnvironmentID, WorkloadName: "demo", RolloutTimeout: 120,
 	}); !errors.Is(err, ErrEnvironmentTargetAmbiguous) {
 		t.Fatalf("环境存在多台 Docker 主机时必须拒绝静默选择: %v", err)
+	}
+}
+
+func TestReconcileEnvironmentTargetsMigratesCurrentDeploymentPlan(t *testing.T) {
+	service, db, oldEndpointID := newDeploymentTestService(t)
+	ctx := context.Background()
+	target, err := service.CreateTarget(ctx, "admin", TargetInput{
+		Name: "环境迁移目标", Platform: model.DeploymentDocker,
+		EnvironmentID: dockerTestEnvironmentID, WorkloadName: "demo", RolloutTimeout: 120,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	plan := model.DeploymentPlan{
+		ID: "environment-reconcile-plan", Name: "环境迁移方案", Kind: model.DeploymentPlanDocker,
+		DeploymentTargetID: target.ID, TimeoutSeconds: 120, IsActive: true, CreatedBy: "admin",
+		CreatedAt: now, UpdatedAt: now,
+	}
+	if err := db.Create(&plan).Error; err != nil {
+		t.Fatal(err)
+	}
+	newHost := model.Host{
+		ID: "docker-reconcile-host", Name: "替换 Docker 主机", Mode: model.HostModeSSH,
+		SSHPort: 22, IsActive: true, CreatedBy: "admin", CreatedAt: now, UpdatedAt: now,
+	}
+	newEndpoint := model.DockerEndpoint{
+		ID: "docker-reconcile-endpoint", Name: "replacement-docker", Host: "unix:///var/run/docker-replacement.sock",
+		HostID: newHost.ID, IsActive: true, CreatedBy: "admin", CreatedAt: now, UpdatedAt: now,
+	}
+	resources := []any{
+		&newHost,
+		&newEndpoint,
+		&model.HostCapability{HostID: newHost.ID, Kind: model.HostCapabilityDocker, RuntimeID: newEndpoint.ID, Status: model.HostCapabilityReady, CreatedAt: now, UpdatedAt: now},
+	}
+	for _, resource := range resources {
+		if err := db.Create(resource).Error; err != nil {
+			t.Fatalf("创建替换主机资源失败: %v", err)
+		}
+	}
+	if err := db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Where("environment_id = ?", dockerTestEnvironmentID).Delete(&model.EnvironmentHost{}).Error; err != nil {
+			return err
+		}
+		if err := tx.Create(&model.EnvironmentHost{EnvironmentID: dockerTestEnvironmentID, HostID: newHost.ID, CreatedAt: now}).Error; err != nil {
+			return err
+		}
+		return service.ReconcileEnvironmentTargets(ctx, tx, dockerTestEnvironmentID)
+	}); err != nil {
+		t.Fatalf("重新解析环境部署目标失败: %v", err)
+	}
+	if err := db.First(target, "id = ?", target.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if target.HostID != newHost.ID || target.RuntimeID != newEndpoint.ID || target.RuntimeID == oldEndpointID {
+		t.Fatalf("部署目标没有迁移到替换主机: %+v", target)
+	}
+
+	if err := db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Where("environment_id = ?", dockerTestEnvironmentID).Delete(&model.EnvironmentHost{}).Error; err != nil {
+			return err
+		}
+		return service.ReconcileEnvironmentTargets(ctx, tx, dockerTestEnvironmentID)
+	}); !errors.Is(err, ErrEnvironmentTargetUnavailable) {
+		t.Fatalf("环境失去可用主机时应拒绝并回滚: %v", err)
+	}
+	var memberships []model.EnvironmentHost
+	if err := db.Where("environment_id = ?", dockerTestEnvironmentID).Find(&memberships).Error; err != nil {
+		t.Fatal(err)
+	}
+	if len(memberships) != 1 || memberships[0].HostID != newHost.ID {
+		t.Fatalf("重新解析失败后环境成员关系未回滚: %+v", memberships)
 	}
 }
 

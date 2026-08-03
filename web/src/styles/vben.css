@@ -45,6 +45,7 @@ button { color: inherit; }
 .vben-sidebar.collapsed { width: 100%; }
 .vben-logo { display: flex; height: 52px; flex: 0 0 52px; align-items: center; gap: 10px; overflow: hidden; padding: 0 16px; border-bottom: 1px solid var(--edo-border); cursor: pointer; white-space: nowrap; }
 .vben-logo strong { font-size: 18px; font-weight: 700; letter-spacing: .04em; }
+.vben-sidebar.collapsed .vben-logo strong { display: none; }
 .logo-mark { position: relative; display: grid; width: 27px; height: 27px; flex: 0 0 27px; place-items: center; transform: rotate(-8deg); border-radius: 8px 10px 8px 10px; color: #fff; background: linear-gradient(135deg,#7c5cff 0%,#4d8cff 52%,#42c9b8 100%); box-shadow: inset 0 1px 0 rgb(255 255 255 / 35%); }
 .logo-mark::after { position: absolute; inset: 5px -4px -3px 5px; z-index: -1; border-radius: inherit; background: linear-gradient(135deg,#a45cff,#32c8c0); content: ""; opacity: .58; }
 .logo-mark span { transform: rotate(8deg); font-size: 14px; font-weight: 800; }
@@ -82,6 +83,7 @@ button { color: inherit; }
 .desktop-collapse, .mobile-menu-button, .icon-button, .tabs-extra { display: grid; width: 34px; height: 34px; place-items: center; padding: 0; border: 0; border-radius: 6px; color: var(--edo-muted); background: transparent; cursor: pointer; }
 .desktop-collapse:hover, .mobile-menu-button:hover, .icon-button:hover, .tabs-extra:hover { color: var(--edo-primary); background: var(--edo-surface-soft); }
 .desktop-collapse svg, .mobile-menu-button svg, .icon-button svg { width: 18px; height: 18px; stroke-width: 1.8; }
+.github-link { text-decoration: none; }
 .mobile-menu-button { display: none; }
 .header-search { display: flex; height: 34px; align-items: center; gap: 7px; padding: 0 8px 0 10px; border: 0; border-radius: 18px; color: var(--edo-muted); background: var(--edo-surface-soft); cursor: pointer; }
 .header-search kbd { display: flex; align-items: center; gap: 2px; padding: 2px 6px; border: 1px solid var(--edo-border); border-radius: 5px; background: var(--edo-surface); font-size: 11px; box-shadow: 0 1px 1px rgb(0 0 0 / 4%); }

@@ -20,7 +20,7 @@ const (
 
 type BuildPlan struct {
 	ID               string        `gorm:"type:varchar(36);primaryKey" json:"id"`
-	Name             string        `gorm:"type:varchar(128);not null;uniqueIndex" json:"name"`
+	Name             string        `gorm:"type:varchar(128);not null;uniqueIndex:ux_build_plans_department_name,priority:2" json:"name"`
 	Kind             BuildPlanKind `gorm:"type:varchar(16);not null;index" json:"kind"`
 	ConfigVersion    uint16        `gorm:"not null;default:1" json:"config_version"`
 	Description      string        `gorm:"type:varchar(500);not null;default:''" json:"description"`
@@ -41,6 +41,7 @@ type BuildPlan struct {
 	EnvironmentVariables map[string]string `gorm:"serializer:json;type:text;not null" json:"environment_variables"`
 	TimeoutSeconds       int               `gorm:"not null;default:1800" json:"timeout_seconds"`
 	IsActive             bool              `gorm:"not null;default:true;index" json:"is_active"`
+	DepartmentID         string            `gorm:"type:varchar(36);not null;default:'00000000-0000-0000-0000-000000000001';index;uniqueIndex:ux_build_plans_department_name,priority:1" json:"department_id"`
 	CreatedBy            string            `gorm:"type:varchar(36);not null;index" json:"created_by"`
 	CreatedAt            time.Time         `gorm:"not null" json:"created_at"`
 	UpdatedAt            time.Time         `gorm:"not null" json:"updated_at"`
@@ -64,7 +65,7 @@ const (
 
 type ImageRegistry struct {
 	ID                   string           `gorm:"type:varchar(36);primaryKey" json:"id"`
-	Name                 string           `gorm:"type:varchar(128);not null;uniqueIndex" json:"name"`
+	Name                 string           `gorm:"type:varchar(128);not null;uniqueIndex:ux_image_registries_department_name,priority:2" json:"name"`
 	Provider             RegistryProvider `gorm:"type:varchar(24);not null;index" json:"provider"`
 	Endpoint             string           `gorm:"type:varchar(1024);not null" json:"endpoint"`
 	Namespace            string           `gorm:"type:varchar(255);not null;default:''" json:"namespace"`
@@ -72,6 +73,7 @@ type ImageRegistry struct {
 	CredentialCiphertext string           `gorm:"type:text;not null" json:"-"`
 	AllowInsecureHTTP    bool             `gorm:"not null;default:false" json:"allow_insecure_http"`
 	IsActive             bool             `gorm:"not null;default:true;index" json:"is_active"`
+	DepartmentID         string           `gorm:"type:varchar(36);not null;default:'00000000-0000-0000-0000-000000000001';index;uniqueIndex:ux_image_registries_department_name,priority:1" json:"department_id"`
 	CreatedBy            string           `gorm:"type:varchar(36);not null;index" json:"created_by"`
 	CreatedAt            time.Time        `gorm:"not null" json:"created_at"`
 	UpdatedAt            time.Time        `gorm:"not null" json:"updated_at"`
@@ -127,7 +129,7 @@ type DockerContainerConfig struct {
 
 type DeploymentPlan struct {
 	ID                 string                `gorm:"type:varchar(36);primaryKey" json:"id"`
-	Name               string                `gorm:"type:varchar(128);not null;uniqueIndex" json:"name"`
+	Name               string                `gorm:"type:varchar(128);not null;uniqueIndex:ux_deployment_plans_department_name,priority:2" json:"name"`
 	Kind               DeploymentPlanKind    `gorm:"type:varchar(16);not null;index" json:"kind"`
 	DeploymentTargetID string                `gorm:"type:varchar(36);not null;default:'';index" json:"deployment_target_id,omitempty"`
 	Description        string                `gorm:"type:varchar(500);not null;default:''" json:"description"`
@@ -137,6 +139,7 @@ type DeploymentPlan struct {
 	DockerConfig       DockerContainerConfig `gorm:"serializer:json;type:text;not null" json:"docker_config"`
 	TimeoutSeconds     int                   `gorm:"not null;default:600" json:"timeout_seconds"`
 	IsActive           bool                  `gorm:"not null;default:true;index" json:"is_active"`
+	DepartmentID       string                `gorm:"type:varchar(36);not null;default:'00000000-0000-0000-0000-000000000001';index;uniqueIndex:ux_deployment_plans_department_name,priority:1" json:"department_id"`
 	CreatedBy          string                `gorm:"type:varchar(36);not null;index" json:"created_by"`
 	CreatedAt          time.Time             `gorm:"not null" json:"created_at"`
 	UpdatedAt          time.Time             `gorm:"not null" json:"updated_at"`
@@ -211,7 +214,7 @@ func (ApplicationRepositoryObservation) TableName() string {
 
 type Application struct {
 	ID                  string                  `gorm:"type:varchar(36);primaryKey" json:"id"`
-	Name                string                  `gorm:"type:varchar(128);not null;uniqueIndex" json:"name"`
+	Name                string                  `gorm:"type:varchar(128);not null;uniqueIndex:ux_applications_department_name,priority:2" json:"name"`
 	Description         string                  `gorm:"type:varchar(500);not null;default:''" json:"description"`
 	RepositoryID        string                  `gorm:"type:varchar(36);not null;index" json:"repository_id"`
 	PollIntervalSeconds int                     `gorm:"not null;default:3" json:"poll_interval_seconds"`
@@ -219,6 +222,7 @@ type Application struct {
 	SyncMessage         string                  `gorm:"type:varchar(255);not null;default:''" json:"sync_message,omitempty"`
 	LastCheckedAt       *time.Time              `json:"last_checked_at,omitempty"`
 	IsActive            bool                    `gorm:"not null;default:true;index" json:"is_active"`
+	DepartmentID        string                  `gorm:"type:varchar(36);not null;default:'00000000-0000-0000-0000-000000000001';index;uniqueIndex:ux_applications_department_name,priority:1" json:"department_id"`
 	CreatedBy           string                  `gorm:"type:varchar(36);not null;index" json:"created_by"`
 	CreatedAt           time.Time               `gorm:"not null" json:"created_at"`
 	UpdatedAt           time.Time               `gorm:"not null" json:"updated_at"`
@@ -272,6 +276,7 @@ type PipelineRunGraphNode struct {
 
 type PipelineRun struct {
 	ID                         string                  `gorm:"type:varchar(36);primaryKey" json:"id"`
+	DepartmentID               string                  `gorm:"type:varchar(36);not null;default:'00000000-0000-0000-0000-000000000001';index" json:"department_id"`
 	ApplicationID              string                  `gorm:"type:varchar(36);not null;index" json:"application_id"`
 	ReleasePlanExecutionID     string                  `gorm:"type:varchar(36);not null;default:'';index" json:"release_plan_execution_id,omitempty"`
 	ReleasePlanExecutionItemID string                  `gorm:"type:varchar(36);not null;default:'';index" json:"release_plan_execution_item_id,omitempty"`

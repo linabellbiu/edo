@@ -6,6 +6,15 @@ export type WorkflowNodeType =
   | 'approval'
   | 'deploy'
 
+export interface WorkflowNotificationRule {
+  id: string
+  channel_id: string
+  on_success: boolean
+  on_failure: boolean
+  title?: string
+  message?: string
+}
+
 export interface WorkflowNodeConfig {
   branch?: string
   events?: string[]
@@ -23,6 +32,7 @@ export interface WorkflowNodeConfig {
   working_directory?: string
   environment_variables?: Record<string, string>
   description?: string
+  notifications?: WorkflowNotificationRule[]
 }
 
 export interface WorkflowNode {
@@ -44,6 +54,7 @@ export interface Workflow {
   application_id?: string
   workflow_template_id?: string
   workflow_template_revision?: number
+  workflow_template?: { id: string; name: string }
   name: string
   description?: string
   revision: number

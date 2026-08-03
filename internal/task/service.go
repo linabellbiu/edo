@@ -13,12 +13,14 @@ import (
 	"gorm.io/datatypes"
 	"gorm.io/gorm"
 
+	"edo/internal/database"
 	"edo/internal/model"
 )
 
 var namePattern = regexp.MustCompile(`^[a-z][a-z0-9_.-]{1,63}$`)
 
 type CreateInput struct {
+	DepartmentID   string
 	Kind           string
 	Subject        string
 	Payload        any
@@ -45,6 +47,20 @@ func NewService(db *gorm.DB, defaultMaxAttempts int) *Service {
 }
 
 func (s *Service) Create(ctx context.Context, input CreateInput) (*model.Job, error) {
+	input.DepartmentID = strings.TrimSpace(input.DepartmentID)
+	if scope, ok := database.DepartmentScopeFromContext(ctx); ok && !scope.AllDepartments {
+		scope.DepartmentID = strings.TrimSpace(scope.DepartmentID)
+		if scope.DepartmentID == "" {
+			return nil, errors.New("任务所属部门不能为空")
+		}
+		if input.DepartmentID != "" && input.DepartmentID != scope.DepartmentID {
+			return nil, errors.New("任务所属部门与当前数据范围不一致")
+		}
+		input.DepartmentID = scope.DepartmentID
+	}
+	if input.DepartmentID == "" || len(input.DepartmentID) > 36 {
+		return nil, errors.New("任务所属部门无效")
+	}
 	if !namePattern.MatchString(input.Kind) {
 		return nil, errors.New("任务类型格式无效")
 	}
@@ -75,6 +91,7 @@ func (s *Service) Create(ctx context.Context, input CreateInput) (*model.Job, er
 	jobID := uuid.NewString()
 	job := &model.Job{
 		ID:           jobID,
+		DepartmentID: input.DepartmentID,
 		Kind:         input.Kind,
 		Subject:      input.Subject,
 		Status:       model.JobPending,
@@ -88,6 +105,7 @@ func (s *Service) Create(ctx context.Context, input CreateInput) (*model.Job, er
 		job.IdempotencyKey = &input.IdempotencyKey
 	}
 	event := &model.OutboxEvent{
+		DepartmentID:  input.DepartmentID,
 		EventID:       uuid.NewString(),
 		AggregateID:   jobID,
 		Subject:       input.Subject,

@@ -276,6 +276,8 @@ func ensureEmptyTransferTarget(db *gorm.DB) error {
 		var count int64
 		query := db.Table(table)
 		switch table {
+		case model.Department{}.TableName():
+			query = query.Where("id <> ?", DefaultDepartmentID)
 		case model.Host{}.TableName():
 			query = query.Where("id <> ?", model.BuiltinLocalHostID)
 		case model.HostCapability{}.TableName():
@@ -339,6 +341,10 @@ func copyDatabaseSnapshot(
 
 	return source.WithContext(ctx).Transaction(func(snapshot *gorm.DB) error {
 		return target.WithContext(ctx).Transaction(func(destination *gorm.DB) error {
+			// 新库迁移同样会创建确定性的默认部门；源库快照才是权威数据。
+			if err := destination.Delete(&model.Department{}, "id = ?", DefaultDepartmentID).Error; err != nil {
+				return fmt.Errorf("清理目标库默认部门失败: %w", err)
+			}
 			// 新库迁移会创建内置本地主机。复制前先移除这两条确定性的种子记录，
 			// 由源库快照恢复，避免主键冲突，也不会把真实业务数据误判为空库。
 			if err := destination.Where("host_id = ?", model.BuiltinLocalHostID).
@@ -496,7 +502,7 @@ func resetPostgresSequences(db *gorm.DB) error {
 }
 
 var orderedTransferTables = []string{
-	"users", "roles", "role_permissions", "user_roles", "user_permissions",
+	"departments", "users", "roles", "role_permissions", "user_roles", "user_permissions",
 	"git_credentials", "identity_providers", "external_identities",
 	"configurations", "configuration_revisions", "audit_logs",
 	"dns_provider_accounts", "dns_domains",
@@ -505,7 +511,7 @@ var orderedTransferTables = []string{
 	"environments", "hosts", "environment_hosts", "docker_endpoints", "kubernetes_clusters", "host_capabilities", "deployment_targets",
 	"applications", "application_repositories", "application_repository_observations", "release_workflows",
 	"release_plans", "release_groups", "release_group_applications", "release_group_dependencies", "release_plan_executions", "release_plan_execution_items",
-	"pipeline_runs", "pipeline_run_repositories", "pipeline_run_approvals", "pipeline_run_logs", "build_runs", "artifacts", "deployment_records",
+	"pipeline_runs", "pipeline_run_repositories", "pipeline_run_approvals", "pipeline_run_logs", "build_runs", "artifacts", "deployment_records", "deployment_instance_controls",
 	"notification_channels", "notifications", "scheduled_tasks", "monitor_rules", "monitor_checks",
 	"jobs", "outbox_events",
 }

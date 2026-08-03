@@ -105,7 +105,7 @@ watch(() => [props.currentNodeId, nodes.value.length], async () => {
                 >
                   <span class="node-icon"><component :is="nodeMeta[node.type]?.icon || CircleDot" :size="17" /></span>
                   <span class="node-copy">
-                    <small>{{ nodeMeta[node.type]?.label }}<template v-if="node.environment"> · {{ node.environment }}</template></small>
+                    <small>{{ nodeMeta[node.type]?.label }}<template v-if="node.environment">，环境：{{ node.environment }}</template></small>
                     <strong>{{ node.name }}</strong>
                   </span>
                   <span v-if="node.id === currentNodeId" class="node-state" :title="currentState.label">

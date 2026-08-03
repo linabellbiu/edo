@@ -32,7 +32,10 @@ interface WorkflowRuntimeVersion {
   preparation_message?: string
 }
 
-const props = defineProps<{ open: boolean }>()
+const props = withDefaults(defineProps<{ open: boolean; canCreate?: boolean; canExecute?: boolean }>(), {
+  canCreate: false,
+  canExecute: false,
+})
 const emit = defineEmits<{
   'update:open': [value: boolean]
   created: [response: WorkflowTemplateResponse]
@@ -66,7 +69,7 @@ const activeCategoryName = computed(() => categories.value.find(item => item.key
 const requiresRuntime = computed(() => ['go', 'nodejs', 'python'].includes(activeCategory.value))
 const runtimeIsPreparing = computed(() => preparingRuntime.value || selectedRuntime.value?.preparation_status === 'preparing')
 const busy = computed(() => creating.value)
-const canConfirm = computed(() => Boolean(selectedKey.value) && (!requiresRuntime.value || Boolean(selectedRuntime.value?.installed)))
+const canConfirm = computed(() => props.canCreate && Boolean(selectedKey.value) && (!requiresRuntime.value || Boolean(selectedRuntime.value?.installed)))
 
 function stepIcon(type: string) {
   if (type === 'test') return CheckCircle2
@@ -75,14 +78,10 @@ function stepIcon(type: string) {
   return TerminalSquare
 }
 
-function runtimeOptionLabel(item: WorkflowRuntimeVersion) {
-  const labels = [`${activeCategoryName.value} ${item.version}`]
-  if (item.recommended) labels.push(t('pipelinePreset.runtime.recommended'))
-  if (item.legacy) labels.push(t('pipelinePreset.runtime.compatible'))
-  if (item.installed) labels.push(t('pipelinePreset.runtime.ready'))
-  else if (item.preparation_status === 'preparing') labels.push(t('pipelinePreset.runtime.preparing'))
-  else labels.push(t('pipelinePreset.runtime.missing'))
-  return labels.join(' · ')
+function runtimeStatusLabel(item: WorkflowRuntimeVersion) {
+  if (item.installed) return t('pipelinePreset.runtime.ready')
+  if (item.preparation_status === 'preparing') return t('pipelinePreset.runtime.preparing')
+  return t('pipelinePreset.runtime.missing')
 }
 
 async function loadPresets() {
@@ -169,6 +168,10 @@ async function waitForRuntimePreparation(language: Exclude<CategoryKey, 'quickst
 }
 
 async function prepareSelectedRuntime() {
+  if (!props.canExecute) {
+    message.error('缺少准备构建运行时的执行权限')
+    return
+  }
   if (!selectedRuntime.value || selectedRuntime.value.installed || runtimeIsPreparing.value) return
   const language = selectedRuntime.value.language
   const version = selectedRuntime.value.version
@@ -282,19 +285,25 @@ watch(selectedRuntimeVersion, (version) => {
                 :loading="loadingRuntimes"
                 :disabled="loadingRuntimes || runtimeIsPreparing"
                 :placeholder="t('pipelinePreset.runtime.placeholder')"
-                :options="runtimeVersions.map(item => ({
-                  value: item.version,
-                  label: runtimeOptionLabel(item),
-                }))"
-              />
+              >
+                <a-select-option v-for="item in runtimeVersions" :key="item.version" :value="item.version" :label="item.version">
+                  <span class="runtime-option">
+                    <strong>{{ item.version }}</strong>
+                    <small><span>语言：{{ activeCategoryName }}</span><span>状态：{{ runtimeStatusLabel(item) }}</span></small>
+                    <em v-if="item.recommended">{{ t('pipelinePreset.runtime.recommended') }}</em>
+                    <em v-if="item.legacy">{{ t('pipelinePreset.runtime.compatible') }}</em>
+                  </span>
+                </a-select-option>
+              </a-select>
               <a-button
-                v-if="selectedRuntime && !selectedRuntime.installed"
+                v-if="selectedRuntime && !selectedRuntime.installed && canExecute"
                 :loading="runtimeIsPreparing"
                 :disabled="loadingRuntimes"
                 @click="prepareSelectedRuntime"
               >
                 <Download v-if="!runtimeIsPreparing" :size="15" />{{ runtimeIsPreparing ? t('pipelinePreset.runtime.preparing') : t('pipelinePreset.runtime.download') }}
               </a-button>
+              <span v-else-if="selectedRuntime && !selectedRuntime.installed" class="runtime-missing">需要执行权限才能下载</span>
               <span v-else-if="selectedRuntime?.installed" class="runtime-ready"><CheckCircle2 :size="15" />{{ t('pipelinePreset.runtime.ready') }}</span>
             </div>
             <small v-if="requiresRuntime" class="runtime-isolation">{{ t('pipelinePreset.runtime.isolation') }}</small>
@@ -366,7 +375,12 @@ watch(selectedRuntimeVersion, (version) => {
 .runtime-picker { display: grid; grid-template-columns: minmax(220px, 1fr) auto; align-items: end; gap: 7px 9px; }
 .runtime-picker label { grid-column: 1 / -1; color: var(--edo-muted); font-size: 12px; }
 .runtime-picker :deep(.ant-btn) { display: inline-flex; align-items: center; gap: 6px; }
+.runtime-option { display: grid; min-width: 0; align-items: center; grid-template-columns: minmax(0,1fr) auto auto; gap: 2px 7px; line-height: 1.35; }
+.runtime-option strong { overflow: hidden; color: var(--edo-text); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+.runtime-option small { display: flex; min-width: 0; grid-column: 1 / -1; gap: 10px; color: var(--edo-muted); font-size: 10px; }
+.runtime-option em { padding: 1px 5px; border-radius: 999px; color: var(--edo-primary); background: var(--edo-primary-soft); font-size: 9px; font-style: normal; }
 .runtime-ready { display: inline-flex; height: 32px; align-items: center; gap: 5px; color: var(--edo-success); font-size: 12px; white-space: nowrap; }
+.runtime-missing { display: inline-flex; height: 32px; align-items: center; color: #d99b25; font-size: 12px; white-space: nowrap; }
 .runtime-isolation { grid-column: 1 / -1; margin: 0 !important; line-height: 1.45; }
 .runtime-error { grid-column: 1 / -1; margin: 0 !important; color: #d94150 !important; line-height: 1.45; }
 .preset-list { display: grid; gap: 14px; }

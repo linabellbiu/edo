@@ -67,15 +67,16 @@ const (
 
 type Environment struct {
 	ID          string `gorm:"type:varchar(36);primaryKey" json:"id"`
-	Name        string `gorm:"type:varchar(128);not null;uniqueIndex" json:"name"`
+	Name        string `gorm:"type:varchar(128);not null;uniqueIndex:ux_environments_department_name,priority:2" json:"name"`
 	Description string `gorm:"type:varchar(500);not null;default:''" json:"description"`
 	// Level 仅保留旧数据库列兼容。环境现在只负责基础设施分组，不再具有安全级别。
 	// Deprecated: 新记录只写空值，旧值不迁移且不再参与业务或通过接口暴露。
-	Level     EnvironmentType `gorm:"type:varchar(16);not null;index" json:"-"`
-	IsActive  bool            `gorm:"not null;default:true;index" json:"is_active"`
-	CreatedBy string          `gorm:"type:varchar(36);not null;index" json:"created_by"`
-	CreatedAt time.Time       `gorm:"not null" json:"created_at"`
-	UpdatedAt time.Time       `gorm:"not null" json:"updated_at"`
+	Level        EnvironmentType `gorm:"type:varchar(16);not null;index" json:"-"`
+	IsActive     bool            `gorm:"not null;default:true;index" json:"is_active"`
+	DepartmentID string          `gorm:"type:varchar(36);not null;default:'00000000-0000-0000-0000-000000000001';index;uniqueIndex:ux_environments_department_name,priority:1" json:"department_id"`
+	CreatedBy    string          `gorm:"type:varchar(36);not null;index" json:"created_by"`
+	CreatedAt    time.Time       `gorm:"not null" json:"created_at"`
+	UpdatedAt    time.Time       `gorm:"not null" json:"updated_at"`
 }
 
 func (Environment) TableName() string { return "environments" }
@@ -92,7 +93,7 @@ func (EnvironmentHost) TableName() string { return "environment_hosts" }
 
 type Host struct {
 	ID                      string           `gorm:"type:varchar(36);primaryKey" json:"id"`
-	Name                    string           `gorm:"type:varchar(128);not null;uniqueIndex" json:"name"`
+	Name                    string           `gorm:"type:varchar(128);not null;uniqueIndex:ux_hosts_department_name,priority:2" json:"name"`
 	Mode                    HostMode         `gorm:"type:varchar(16);not null;index" json:"mode"`
 	Address                 string           `gorm:"type:varchar(1024);not null;default:''" json:"address"`
 	SSHPort                 int              `gorm:"not null;default:22" json:"ssh_port"`
@@ -106,6 +107,7 @@ type Host struct {
 	EnvironmentID string    `gorm:"type:varchar(36);not null;default:'';index" json:"-"`
 	IsBuiltin     bool      `gorm:"not null;default:false;index" json:"is_builtin"`
 	IsActive      bool      `gorm:"not null;default:true;index" json:"is_active"`
+	DepartmentID  string    `gorm:"type:varchar(36);not null;default:'00000000-0000-0000-0000-000000000001';index;uniqueIndex:ux_hosts_department_name,priority:1" json:"department_id"`
 	CreatedBy     string    `gorm:"type:varchar(36);not null;index" json:"created_by"`
 	CreatedAt     time.Time `gorm:"not null" json:"created_at"`
 	UpdatedAt     time.Time `gorm:"not null" json:"updated_at"`

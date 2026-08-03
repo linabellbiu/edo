@@ -27,11 +27,11 @@ const routes: RouteRecordRaw[] = [
       { path: 'logs', name: 'logs', component: () => import('@/views/LogsView.vue'), meta: { title: 'nav.logs', permissions: ['monitor.read'] } },
       { path: 'operations', name: 'operations', component: () => import('@/views/TaskCenterView.vue'), meta: { title: 'nav.tasks', permissions: ['task.read'] } },
       { path: 'settings', name: 'settings', component: () => import('@/views/SettingsView.vue'), meta: { title: 'nav.settings', permissions: [] } },
-      { path: 'access', name: 'access', component: () => import('@/views/AccessView.vue'), meta: { title: 'nav.users', permissions: ['user.read', 'role.read', 'audit.read'] } },
+      { path: 'access', name: 'access', component: () => import('@/views/AccessView.vue'), meta: { title: 'nav.users', permissions: ['user.read', 'user.create', 'user.update', 'user.delete', 'department.read', 'department.create', 'department.update', 'department.delete', 'role.read', 'role.create', 'role.update', 'role.delete', 'audit.read'] } },
     ],
   },
   { path: '/pipelines', redirect: '/release-plans?view=runs' },
-  { path: '/deployments', redirect: '/release-plans?view=records' },
+  { path: '/deployments', redirect: '/applications' },
   { path: '/identity-providers', redirect: '/settings?section=identity' },
   { path: '/:pathMatch(.*)*', redirect: '/' },
 ]

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net"
 	"strings"
 	"testing"
@@ -50,6 +51,24 @@ func TestDeploymentFailureLogMessageUsesSafeRecordReason(t *testing.T) {
 	record.ErrorMessage = "包含换行的异常信息\n基础设施细节"
 	if message := deploymentFailureLogMessage(record, "发布执行失败"); message != "发布执行失败" {
 		t.Fatalf("不稳定的发布错误被直接写入流水线日志: %q", message)
+	}
+}
+
+func TestDeploymentPreparationFailureMessageClassifiesEveryEarlyFailure(t *testing.T) {
+	tests := []struct {
+		err  error
+		want string
+	}{
+		{context.DeadlineExceeded, "部署制品传输超时：未在规定时间内完成镜像导出或目标主机加载"},
+		{ErrPipelineExecutionConfig, "部署制品不可用：流水线固定制品与部署目标不匹配"},
+		{fmt.Errorf("%w: connection detail", dockerengine.ErrSSHUnreachable), "部署制品传输失败：无法连接目标 Docker 主机，请检查主机状态和 SSH 配置"},
+		{errors.New("unexpected infrastructure detail"), "部署制品传输失败：镜像未能完成导出、传输、加载或身份校验，请检查目标主机和系统日志"},
+	}
+	for _, test := range tests {
+		message := deploymentPreparationFailureMessage(test.err)
+		if message != test.want || strings.Contains(message, "infrastructure detail") || strings.Contains(message, "connection detail") {
+			t.Fatalf("部署准备失败原因分类不安全或不准确: message=%q", message)
+		}
 	}
 }
 
@@ -110,6 +129,14 @@ func TestPipelineMarksRunFailedWhenExistingReleaseAlreadyFailed(t *testing.T) {
 	}
 	if run.Status != model.PipelineRunFailed || run.Stage != "failed" {
 		t.Fatalf("已失败的发布记录没有同步流水线失败状态: %+v", run)
+	}
+	var logs []model.PipelineRunLog
+	if err := db.Where("pipeline_run_id = ?", run.ID).Order("id ASC").Find(&logs).Error; err != nil {
+		t.Fatal(err)
+	}
+	if len(logs) != 2 || logs[0].Stage != "deploy" || logs[0].Level != "error" || logs[0].Message != "发布已经失败" ||
+		logs[1].Stage != "failed" || logs[1].Level != "error" || logs[1].Message != "发布已经失败" {
+		t.Fatalf("部署失败原因没有同时进入部署控制台和最终状态日志: %+v", logs)
 	}
 }
 

@@ -204,6 +204,10 @@ func (h environmentHandler) writeError(c *gin.Context, operation string, err err
 		writeError(c, http.StatusConflict, "environment_referenced", environmentmanager.ErrEnvironmentReferenced.Error())
 	case errors.Is(err, environmentmanager.ErrHostMembershipReferenced):
 		writeError(c, http.StatusConflict, "environment_host_referenced", environmentmanager.ErrHostMembershipReferenced.Error())
+	case errors.Is(err, environmentmanager.ErrHostMembershipRunning):
+		writeError(c, http.StatusConflict, "environment_host_running", environmentmanager.ErrHostMembershipRunning.Error())
+	case errors.Is(err, environmentmanager.ErrDeploymentTargetInvalid):
+		writeError(c, http.StatusConflict, "environment_deployment_target_invalid", environmentmanager.ErrDeploymentTargetInvalid.Error())
 	case errors.Is(err, environmentmanager.ErrHostNotFound):
 		writeError(c, http.StatusBadRequest, "environment_host_not_found", environmentmanager.ErrHostNotFound.Error())
 	default:

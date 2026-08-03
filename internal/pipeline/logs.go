@@ -15,6 +15,7 @@ import (
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 
+	"edo/internal/database"
 	"edo/internal/model"
 )
 
@@ -68,6 +69,12 @@ func (s *Service) ListExecutionLogs(ctx context.Context, filter ExecutionLogFilt
 		Joins("JOIN pipeline_runs AS run ON run.id = log.pipeline_run_id").
 		Joins("LEFT JOIN applications AS application ON application.id = run.application_id").
 		Order("log.id DESC").Limit(filter.Limit)
+	if scope, ok := database.DepartmentScopeFromContext(ctx); ok && !scope.AllDepartments {
+		if scope.DepartmentID == "" {
+			return nil, database.ErrDepartmentScopeRequired
+		}
+		query = query.Where("run.department_id = ?", scope.DepartmentID)
+	}
 	if filter.BeforeID > 0 {
 		query = query.Where("log.id < ?", filter.BeforeID)
 	}

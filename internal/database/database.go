@@ -42,6 +42,9 @@ func Open(ctx context.Context, cfg config.Database, logger *slog.Logger) (*gorm.
 	if err != nil {
 		return nil, fmt.Errorf("连接数据库失败: %w", err)
 	}
+	if err := registerDepartmentScope(db); err != nil {
+		return nil, err
+	}
 
 	sqlDB, err := db.DB()
 	if err != nil {

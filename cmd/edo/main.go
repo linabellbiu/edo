@@ -33,6 +33,7 @@ import (
 	"edo/internal/configuration"
 	"edo/internal/credential"
 	"edo/internal/database"
+	"edo/internal/department"
 	"edo/internal/deployment"
 	dnsmanager "edo/internal/dns"
 	"edo/internal/dockerengine"
@@ -522,7 +523,6 @@ func runServer(ctx context.Context, cfg config.Config, logger *slog.Logger, runt
 	if err := hostService.RefreshLocalCapabilities(serviceCtx); err != nil {
 		logger.Warn("刷新本地主机能力失败", "operation", "local_host_capability_refresh", "err", err)
 	}
-	environmentService := environmentmanager.NewService(resources.Database)
 	deploymentService := deployment.NewService(
 		resources.Database,
 		dockerService,
@@ -532,6 +532,7 @@ func runServer(ctx context.Context, cfg config.Config, logger *slog.Logger, runt
 		resources.Redis.Key("lock", "deployment"),
 		logger,
 	)
+	environmentService := environmentmanager.NewService(resources.Database, deploymentService)
 	pipelineService.ConfigureExecution(dockerService, deploymentService, logger)
 	pipelineService.ConfigureArtifacts(artifactService)
 	initialDelivery, err := pipelineService.EnsureInitialDeliverySettings(serviceCtx)
@@ -557,6 +558,7 @@ func runServer(ctx context.Context, cfg config.Config, logger *slog.Logger, runt
 	}
 	terminalService := terminal.NewService(dockerService, kubernetesService, cfg.Runtime.TerminalMaxDuration)
 	notificationService := notification.NewService(resources.Database, secretManager, nil, cfg.NATS.MaxAttempts)
+	pipelineService.ConfigureNotifications(notificationService)
 	monitorService := monitor.NewService(resources.Database, secretManager, notificationService, nil, cfg.NATS.MaxAttempts, logger)
 	schedulerService := scheduler.NewService(resources.Database, notificationService, cfg.NATS.MaxAttempts, logger)
 	taskService := task.NewService(resources.Database, cfg.NATS.MaxAttempts)
@@ -569,6 +571,7 @@ func runServer(ctx context.Context, cfg config.Config, logger *slog.Logger, runt
 		return errors.New("后台任务服务初始化失败")
 	}
 	systemMetricsService := systemmetrics.New(resources.Database, resources.SQL, taskWorker, resources.NATS, logger)
+	departmentService := department.NewService(resources.Database)
 
 	router := httpapi.NewRouter(httpapi.Dependencies{
 		Environment:      cfg.Environment,
@@ -595,6 +598,7 @@ func runServer(ctx context.Context, cfg config.Config, logger *slog.Logger, runt
 		Hosts:            hostService,
 		Environments:     environmentService,
 		Deployments:      deploymentService,
+		Departments:      departmentService,
 		Terminal:         terminalService,
 		Configurations:   configurationService,
 		Credentials:      credentialService,

@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-func TestRollbackRequiresDeploymentRunInsteadOfReview(t *testing.T) {
+func TestRollbackRequiresDeploymentExecuteInsteadOfReview(t *testing.T) {
 	router, closeTest := newAuthTestRouter(t)
 	defer closeTest()
 
@@ -52,14 +52,60 @@ func TestRollbackRequiresDeploymentRunInsteadOfReview(t *testing.T) {
 	if denied.Code != http.StatusForbidden {
 		t.Fatalf("只有 deployment.review 时仍可发起回滚: status=%d body=%s", denied.Code, denied.Body.String())
 	}
+	for _, path := range []string{
+		"/api/v1/deployments/not-found/runtime/restart",
+		"/api/v1/deployments/not-found/runtime/stop",
+		"/api/v1/deployments/not-found/runtime/scale",
+	} {
+		body := any(nil)
+		if path == "/api/v1/deployments/not-found/runtime/scale" {
+			body = map[string]any{"replicas": 2}
+		}
+		response := performJSONRequest(t, router, http.MethodPost, path, body, reviewerCookie)
+		if response.Code != http.StatusForbidden {
+			t.Fatalf("只有 deployment.review 时仍可控制运行资源: path=%s status=%d body=%s", path, response.Code, response.Body.String())
+		}
+	}
+	removed := performJSONRequest(t, router, http.MethodDelete, "/api/v1/deployments/not-found/runtime", nil, reviewerCookie)
+	if removed.Code != http.StatusForbidden {
+		t.Fatalf("只有 deployment.review 时仍可删除容器实例: status=%d body=%s", removed.Code, removed.Body.String())
+	}
 	grant := performJSONRequest(t, router, http.MethodPut, "/api/v1/users/"+userPayload.User.ID+"/permissions", map[string]any{
-		"allow": []string{"deployment.run"}, "deny": []string{},
+		"allow": []string{"deployment.execute"}, "deny": []string{},
 	}, adminCookie)
 	if grant.Code != http.StatusNoContent {
-		t.Fatalf("授予 deployment.run 失败: status=%d body=%s", grant.Code, grant.Body.String())
+		t.Fatalf("授予 deployment.execute 失败: status=%d body=%s", grant.Code, grant.Body.String())
+	}
+	for _, method := range []string{http.MethodGet, http.MethodPut} {
+		body := any(nil)
+		if method == http.MethodPut {
+			body = map[string]any{"restart_script": "true", "stop_script": "true", "timeout_seconds": 300}
+		}
+		response := performJSONRequest(t, router, method, "/api/v1/deployments/not-found/runtime/configuration", body, reviewerCookie)
+		if response.Code != http.StatusForbidden {
+			t.Fatalf("只有 deployment.execute 时仍可读取或修改 Shell 部署实例命令: method=%s status=%d body=%s", method, response.Code, response.Body.String())
+		}
 	}
 	allowed := performJSONRequest(t, router, http.MethodPost, "/api/v1/deployments/not-found/rollback", nil, reviewerCookie)
 	if allowed.Code != http.StatusNotFound {
-		t.Fatalf("授予 deployment.run 后未进入回滚业务校验: status=%d body=%s", allowed.Code, allowed.Body.String())
+		t.Fatalf("授予 deployment.execute 后未进入回滚业务校验: status=%d body=%s", allowed.Code, allowed.Body.String())
+	}
+	for _, path := range []string{
+		"/api/v1/deployments/not-found/runtime/restart",
+		"/api/v1/deployments/not-found/runtime/stop",
+		"/api/v1/deployments/not-found/runtime/scale",
+	} {
+		body := any(nil)
+		if path == "/api/v1/deployments/not-found/runtime/scale" {
+			body = map[string]any{"replicas": 2}
+		}
+		response := performJSONRequest(t, router, http.MethodPost, path, body, reviewerCookie)
+		if response.Code != http.StatusNotFound {
+			t.Fatalf("授予 deployment.execute 后未进入运行控制业务校验: path=%s status=%d body=%s", path, response.Code, response.Body.String())
+		}
+	}
+	removed = performJSONRequest(t, router, http.MethodDelete, "/api/v1/deployments/not-found/runtime", nil, reviewerCookie)
+	if removed.Code != http.StatusNotFound {
+		t.Fatalf("授予 deployment.execute 后未进入删除容器实例业务校验: status=%d body=%s", removed.Code, removed.Body.String())
 	}
 }

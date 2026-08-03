@@ -131,6 +131,128 @@ func TestReplaceEnvironmentHostsKeepsProfileAndRollsBack(t *testing.T) {
 	assertHostEnvironments(t, db, hostB.ID, created.Environment.ID)
 }
 
+func TestReplaceHostsReconcilesDeploymentTargetInSameTransaction(t *testing.T) {
+	baseService, db := newEnvironmentTestService(t)
+	hostA := createEnvironmentTestHost(t, db, "host-reconcile-a", "旧主机", "")
+	hostB := createEnvironmentTestHost(t, db, "host-reconcile-b", "新主机", "")
+	created, err := baseService.Create(context.Background(), "admin", Input{
+		Name: "迁移部署目标环境", HostIDs: []string{hostA.ID},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	target := model.DeploymentTarget{
+		ID: "environment-reconcile-target", Name: "待迁移目标", Platform: model.DeploymentDocker,
+		EnvironmentID: created.Environment.ID, HostID: hostA.ID, RuntimeID: "old-runtime",
+		WorkloadName: "api", RolloutTimeout: 300, IsActive: true, CreatedBy: "admin",
+		CreatedAt: now, UpdatedAt: now,
+	}
+	if err := db.Create(&target).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	reconciler := deploymentTargetReconcilerFunc(func(ctx context.Context, tx *gorm.DB, environmentID string) error {
+		var memberships []model.EnvironmentHost
+		if err := tx.WithContext(ctx).Where("environment_id = ?", environmentID).Find(&memberships).Error; err != nil {
+			return err
+		}
+		if len(memberships) != 1 || memberships[0].HostID != hostB.ID {
+			return errors.New("协调器未读取到事务内的新主机关系")
+		}
+		return tx.WithContext(ctx).Model(&model.DeploymentTarget{}).Where("id = ?", target.ID).
+			Updates(map[string]any{"host_id": hostB.ID, "runtime_id": "new-runtime"}).Error
+	})
+	service := NewService(db, reconciler)
+	updated, err := service.ReplaceHosts(context.Background(), created.Environment.ID, []string{hostB.ID})
+	if err != nil {
+		t.Fatalf("调整环境时应同步迁移部署目标: %v", err)
+	}
+	if len(updated.Hosts) != 1 || updated.Hosts[0].ID != hostB.ID {
+		t.Fatalf("环境主机未迁移: %+v", updated.Hosts)
+	}
+	if err := db.First(&target, "id = ?", target.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if target.HostID != hostB.ID || target.RuntimeID != "new-runtime" {
+		t.Fatalf("部署目标未随环境迁移: %+v", target)
+	}
+}
+
+func TestReplaceHostsRollsBackWhenDeploymentTargetCannotBeReconciled(t *testing.T) {
+	baseService, db := newEnvironmentTestService(t)
+	hostA := createEnvironmentTestHost(t, db, "host-rollback-a", "原主机", "")
+	hostB := createEnvironmentTestHost(t, db, "host-rollback-b", "无效新主机", "")
+	created, err := baseService.Create(context.Background(), "admin", Input{
+		Name: "回滚部署目标环境", HostIDs: []string{hostA.ID},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := NewService(db, deploymentTargetReconcilerFunc(func(context.Context, *gorm.DB, string) error {
+		return errors.New("没有匹配部署方式的可用主机")
+	}))
+	if _, err := service.ReplaceHosts(context.Background(), created.Environment.ID, []string{hostB.ID}); !errors.Is(err, ErrDeploymentTargetInvalid) {
+		t.Fatalf("无法重新解析部署目标时未返回稳定错误: %v", err)
+	}
+	assertHostEnvironments(t, db, hostA.ID, created.Environment.ID)
+	assertHostEnvironments(t, db, hostB.ID)
+}
+
+func TestReplaceHostsOnlyBlocksRunningDeployment(t *testing.T) {
+	baseService, db := newEnvironmentTestService(t)
+	hostA := createEnvironmentTestHost(t, db, "host-running-a", "运行中主机", "")
+	hostB := createEnvironmentTestHost(t, db, "host-running-b", "替换主机", "")
+	created, err := baseService.Create(context.Background(), "admin", Input{
+		Name: "运行态保护环境", HostIDs: []string{hostA.ID},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	record := model.DeploymentRecord{
+		ID: "running-environment-deployment", TargetID: "running-target", TargetName: "运行中目标",
+		Platform: model.DeploymentDocker, EnvironmentID: created.Environment.ID, HostID: hostA.ID,
+		RuntimeID: "running-runtime", WorkloadName: "api", RolloutTimeout: 300,
+		Operation: model.DeploymentRelease, Image: "example.invalid/api@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		Status: model.DeploymentRunning, RequestedBy: "admin", CreatedAt: now, UpdatedAt: now,
+	}
+	if err := db.Create(&record).Error; err != nil {
+		t.Fatal(err)
+	}
+	reconcileCount := 0
+	service := NewService(db, deploymentTargetReconcilerFunc(func(context.Context, *gorm.DB, string) error {
+		reconcileCount++
+		return nil
+	}))
+
+	if _, err := service.ReplaceHosts(context.Background(), created.Environment.ID, []string{hostB.ID}); !errors.Is(err, ErrHostMembershipRunning) {
+		t.Fatalf("运行中的发布未阻止移除主机: %v", err)
+	}
+	if reconcileCount != 0 {
+		t.Fatalf("运行态校验失败后不应继续迁移部署目标: %d", reconcileCount)
+	}
+	assertHostEnvironments(t, db, hostA.ID, created.Environment.ID)
+	assertHostEnvironments(t, db, hostB.ID)
+
+	if err := db.Model(&record).Update("status", model.DeploymentSucceeded).Error; err != nil {
+		t.Fatal(err)
+	}
+	updated, err := service.ReplaceHosts(context.Background(), created.Environment.ID, []string{hostB.ID})
+	if err != nil {
+		t.Fatalf("发布结束后仍阻止移除主机: %v", err)
+	}
+	if reconcileCount != 1 || len(updated.Hosts) != 1 || updated.Hosts[0].ID != hostB.ID {
+		t.Fatalf("发布结束后未完成主机迁移: reconciles=%d hosts=%+v", reconcileCount, updated.Hosts)
+	}
+}
+
+type deploymentTargetReconcilerFunc func(context.Context, *gorm.DB, string) error
+
+func (fn deploymentTargetReconcilerFunc) ReconcileEnvironmentTargets(ctx context.Context, tx *gorm.DB, environmentID string) error {
+	return fn(ctx, tx, environmentID)
+}
+
 func TestActiveWorkflowPreventsEnvironmentDisableAndDelete(t *testing.T) {
 	service, db := newEnvironmentTestService(t)
 	created, err := service.Create(context.Background(), "admin", Input{Name: "流水线引用环境"})
@@ -426,7 +548,7 @@ func newEnvironmentTestService(t *testing.T) (*Service, *gorm.DB) {
 	t.Cleanup(func() { _ = database.Close(db) })
 	if err := db.AutoMigrate(
 		&model.Environment{}, &model.Host{}, &model.EnvironmentHost{}, &model.DeploymentTarget{},
-		&model.DeploymentPlan{}, &model.ReleaseWorkflow{}, &model.ReleaseWorkflowTemplate{},
+		&model.DeploymentPlan{}, &model.DeploymentRecord{}, &model.ReleaseWorkflow{}, &model.ReleaseWorkflowTemplate{},
 	); err != nil {
 		t.Fatalf("初始化环境测试表失败: %v", err)
 	}

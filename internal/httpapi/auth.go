@@ -14,6 +14,7 @@ import (
 	"edo/internal/account"
 	"edo/internal/auth"
 	"edo/internal/config"
+	"edo/internal/database"
 	"edo/internal/model"
 )
 
@@ -39,12 +40,14 @@ type changePasswordRequest struct {
 }
 
 type userResponse struct {
-	ID          string     `json:"id"`
-	Username    string     `json:"username"`
-	Nickname    string     `json:"nickname"`
-	IsSuperuser bool       `json:"is_superuser"`
-	LastLoginAt *time.Time `json:"last_login_at,omitempty"`
-	Permissions []string   `json:"permissions"`
+	ID             string     `json:"id"`
+	Username       string     `json:"username"`
+	Nickname       string     `json:"nickname"`
+	DepartmentID   string     `json:"department_id"`
+	DepartmentName string     `json:"department_name,omitempty"`
+	IsSuperuser    bool       `json:"is_superuser"`
+	LastLoginAt    *time.Time `json:"last_login_at,omitempty"`
+	Permissions    []string   `json:"permissions"`
 }
 
 func (h authHandler) handleLogin(c *gin.Context) {
@@ -220,6 +223,9 @@ func requireAuth(
 			return
 		}
 		c.Set(currentUserKey, user)
+		c.Request = c.Request.WithContext(database.WithDepartmentScope(c.Request.Context(), database.DepartmentScope{
+			UserID: user.ID, DepartmentID: user.DepartmentID, AllDepartments: user.IsSuperuser,
+		}))
 		c.Next()
 	}
 }
@@ -318,6 +324,7 @@ func currentUser(c *gin.Context) (*model.User, bool) {
 func toUserResponse(user *model.User) userResponse {
 	return userResponse{
 		ID: user.ID, Username: user.Username, Nickname: user.Nickname,
-		IsSuperuser: user.IsSuperuser, LastLoginAt: user.LastLoginAt, Permissions: []string{},
+		DepartmentID: user.DepartmentID, IsSuperuser: user.IsSuperuser,
+		LastLoginAt: user.LastLoginAt, Permissions: []string{},
 	}
 }

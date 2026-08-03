@@ -376,6 +376,7 @@ func (s *Service) executePipelineBuild(ctx context.Context, prepared *buildExecu
 		return nil, ErrPipelineExecutionConfig
 	}
 	metadata := artifact.BuildMetadata{
+		DepartmentID:  prepared.run.DepartmentID,
 		ApplicationID: prepared.application.ID, PipelineRunID: prepared.run.ID,
 		RepositoryID: prepared.component.RepositoryID, WorkflowNodeID: prepared.node.ID,
 		BuildPlanID: prepared.plan.ID, Ref: prepared.run.Ref, CommitSHA: prepared.run.CommitSHA,
@@ -689,6 +690,7 @@ func (s *Service) completeBuildExecution(ctx context.Context, prepared *buildExe
 	}
 	s.appendRunLog(ctx, prepared.run.ID, stage, "success", message)
 	if !hasNext {
+		s.notifyWorkflowNode(ctx, &prepared.run, prepared.node, workflowNotificationSucceeded, message)
 		return nil
 	}
 	advanceContext, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
@@ -697,6 +699,7 @@ func (s *Service) completeBuildExecution(ctx context.Context, prepared *buildExe
 	if err != nil {
 		return &completedBuildAdvanceError{cause: err}
 	}
+	s.notifyWorkflowNode(ctx, &prepared.run, prepared.node, workflowNotificationSucceeded, message)
 	return nil
 }
 

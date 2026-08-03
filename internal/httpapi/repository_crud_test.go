@@ -75,7 +75,7 @@ func TestRepositoryAPICredentialIsIsolatedByCurrentUser(t *testing.T) {
 
 	roleResponse := performJSONRequest(t, router, http.MethodPost, "/api/v1/roles", map[string]any{
 		"name": "repository-credential-owner", "display_name": "仓库凭据用户",
-		"permissions": []string{"repository.read", "repository.manage", "credential.read", "credential.manage"},
+		"permissions": []string{"repository.read", "repository.create", "repository.update", "credential.read", "credential.create"},
 	}, adminCookie)
 	var role struct {
 		Role struct {

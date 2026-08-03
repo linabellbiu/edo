@@ -25,6 +25,7 @@ import (
 	"edo/internal/configuration"
 	"edo/internal/credential"
 	"edo/internal/database"
+	"edo/internal/department"
 	"edo/internal/deployment"
 	"edo/internal/dockerengine"
 	"edo/internal/kube"
@@ -124,6 +125,7 @@ func newAuthTestRouter(t *testing.T) (*gin.Engine, func()) {
 		t.Fatalf("迁移测试数据库失败: %v", err)
 	}
 	accounts := account.NewService(db)
+	departmentService := department.NewService(db)
 	accessService, err := access.NewService(db)
 	if err != nil {
 		t.Fatalf("初始化 Casbin 权限服务失败: %v", err)
@@ -212,6 +214,7 @@ func newAuthTestRouter(t *testing.T) (*gin.Engine, func()) {
 		Logger: logger, RuntimeLogs: runtimeLogs, Version: "test", AuthConfig: authConfig,
 		Accounts: accounts, Login: login, LoginLimiter: limiter, Sessions: sessions,
 		Access: accessService, Audits: auditService,
+		Departments: departmentService,
 		Credentials: credentialService, Repositories: repositoryService, Pipelines: pipelineService,
 		Artifacts:      artifactService,
 		Kubernetes:     kubernetesService,

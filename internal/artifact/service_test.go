@@ -41,7 +41,8 @@ func TestServiceUploadCreatesBuildRunAndDownloadableArtifact(t *testing.T) {
 		t.Fatalf("查询上传构建记录失败: %v", err)
 	}
 	if build.ProducerKind != model.BuildRunProducerUpload || build.Status != model.BuildRunStatusSucceeded ||
-		build.ApplicationID != application.ID || build.CreatedBy != "user-1" || build.FinishedAt == nil {
+		build.ApplicationID != application.ID || build.DepartmentID != application.DepartmentID ||
+		item.DepartmentID != application.DepartmentID || build.CreatedBy != "user-1" || build.FinishedAt == nil {
 		t.Fatalf("上传构建记录错误: %+v", build)
 	}
 	stored, file, err := service.OpenDownload(context.Background(), item.ID)

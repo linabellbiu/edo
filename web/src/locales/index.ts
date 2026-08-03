@@ -7,7 +7,7 @@ export const messages = {
       overview: '概览', delivery: '持续交付', applicationsCode: '应用与代码', applications: '应用', repositories: '代码仓库', credentials: '我的令牌',
       buildArtifacts: '构建与制品', buildPlans: '构建方案', registries: '镜像仓库', releaseManagement: '发布管理', deploymentPlans: '部署方案',
       environments: '环境管理', pipelinePlans: '流水线', releasePlans: '发布计划', pipelineRuns: '流水线运行记录',
-      platform: '平台管理', infrastructure: '基础设施', domains: '域名解析', hosts: '主机与集群', containers: '主机与集群', operations: '可观测与运维',
+      platform: '平台管理', infrastructure: '基础设施', domains: '域名解析', hosts: '主机与集群', containers: '主机与集群',
       monitor: '系统监控', tasks: '任务中心', logs: '日志', security: '系统与安全', settings: '系统设置', users: '用户管理', roles: '角色与功能', audit: '审计日志',
     },
     hostCluster: { hosts: '主机与接入', resources: '运行资源' },
@@ -20,7 +20,7 @@ export const messages = {
       hint: {
         kubeconfig: '禁止 exec 插件、外部文件引用、代理和身份模拟配置；连接测试不会保存配置，创建后凭据会加密保存。',
       },
-      test: { ready: '连接正常 · Kubernetes {version}' },
+      test: { ready: '连接正常（Kubernetes {version}）' },
       message: { testFirst: '请先测试连接', testSuccess: 'Kubernetes {version} 连接正常', created: 'Kubernetes 集群已创建' },
     },
     environment: {
@@ -103,7 +103,7 @@ export const messages = {
       sudoPasswordHint: '自动复用 SSH 密码；若服务器已配置免密 sudo，会自动识别。',
       sudoKeyHint: 'SSH 私钥登录时，远程用户需要配置免密 sudo。',
       testHint: '创建前需要测试 SSH 登录和 Docker 服务。',
-      ready: '连接正常 · Docker {version}',
+      ready: '连接正常（Docker {version}）',
       fingerprint: '已固定主机指纹 {fingerprint}',
       cancel: '取消',
       test: '测试连接',
@@ -113,13 +113,13 @@ export const messages = {
       createSuccess: 'Docker 连接已创建',
     },
     containerLogs: {
-      button: '日志', title: '{name} · 控制台日志', recent: '最近行数', follow: '实时跟随', clear: '清空', reconnect: '重新连接',
+      button: '日志', title: '控制台日志：{name}', recent: '最近行数', follow: '实时跟随', clear: '清空', reconnect: '重新连接',
       connecting: '连接中', connected: '实时日志', complete: '日志已结束', error: '连接异常', readFailed: '读取容器日志失败',
       invalidEvent: '收到无法识别的日志事件', disconnected: '日志连接已断开',
     },
     applicationCard: {
       autoRefresh: '自动更新', active: '已启用', inactive: '已停用', noDescription: '暂无应用说明', currentPipeline: '当前流水线', latestRun: '最近运行',
-      currentNode: '当前任务', repository: '代码仓库', workflow: '流水线', codeStatus: '代码状态',
+      currentNode: '当前任务', repository: '代码仓库', workflow: '流水线', commitMessage: 'Commit message：', codeStatus: '代码状态',
       lastChecked: '最近检查', configure: '配置', pipeline: '流水线', checkUpdates: '检查更新', unbound: '未绑定', customWorkflow: '自定义流水线',
       showDetails: '展开详情', hideDetails: '收起详情', image: '镜像', containerStatus: '容器状态', terminal: '终端', terminalRunningOnly: '容器运行时才能打开终端',
       currentRun: '当前运行', linkedWorkflows: '关联流水线', enabledWorkflowCount: '{enabled}/{total} 条启用', noWorkflows: '尚未配置流水线',
@@ -134,7 +134,7 @@ export const messages = {
       syncStatus: { idle: '等待检查', checking: '检查中', synced: '已同步', changed: '发现更新', failed: '检查失败' },
     },
     pipelineRunGraph: {
-      ariaLabel: '流水线只读执行拓扑', title: '执行拓扑', nodeCount: '{count} 个任务 · 仅展示当前任务状态', empty: '暂无可展示的执行任务',
+      ariaLabel: '流水线只读执行拓扑', title: '执行拓扑', nodeCount: '任务：{count}；仅展示当前任务状态', empty: '暂无可展示的执行任务',
       node: { trigger: '代码触发', build: '构建制品', shell: 'Shell 脚本', manual: '人工放行', approval: '发布审核', deploy: '部署' },
       state: {
         succeeded: '执行完成', failed: '执行失败', canceled: '已取消', blocked: '等待计划调度', awaitingApproval: '等待审核', awaitingManual: '等待放行',
@@ -206,7 +206,7 @@ export const messages = {
       overview: 'Overview', delivery: 'Delivery', applicationsCode: 'Apps & Code', applications: 'Applications', repositories: 'Repositories', credentials: 'My Tokens',
       buildArtifacts: 'Build & Artifacts', buildPlans: 'Build Plans', registries: 'Registries', releaseManagement: 'Release Management', deploymentPlans: 'Deployment Plans',
       environments: 'Environments', pipelinePlans: 'Pipelines', releasePlans: 'Release Plans', pipelineRuns: 'Pipeline Run Records',
-      platform: 'Platform', infrastructure: 'Infrastructure', domains: 'DNS', hosts: 'Hosts & Clusters', containers: 'Hosts & Clusters', operations: 'Operations',
+      platform: 'Platform', infrastructure: 'Infrastructure', domains: 'DNS', hosts: 'Hosts & Clusters', containers: 'Hosts & Clusters',
       monitor: 'System Monitor', tasks: 'Tasks', logs: 'Logs', security: 'System & Security', settings: 'Settings', users: 'Users', roles: 'Roles & Permissions', audit: 'Audit Logs',
     },
     hostCluster: { hosts: 'Hosts & Access', resources: 'Runtime Resources' },
@@ -219,7 +219,7 @@ export const messages = {
       hint: {
         kubeconfig: 'Exec plugins, external file references, proxies, and impersonation are blocked. Tests do not save the configuration; credentials are encrypted after creation.',
       },
-      test: { ready: 'Connected · Kubernetes {version}' },
+      test: { ready: 'Connected (Kubernetes {version})' },
       message: { testFirst: 'Test the connection first', testSuccess: 'Connected to Kubernetes {version}', created: 'Kubernetes cluster created' },
     },
     environment: {
@@ -302,7 +302,7 @@ export const messages = {
       sudoPasswordHint: 'The SSH password is reused automatically. Passwordless sudo is detected automatically.',
       sudoKeyHint: 'SSH private key authentication requires passwordless sudo on the remote host.',
       testHint: 'Test SSH login and the Docker service before creating the connection.',
-      ready: 'Connected · Docker {version}',
+      ready: 'Connected (Docker {version})',
       fingerprint: 'Pinned host fingerprint {fingerprint}',
       cancel: 'Cancel',
       test: 'Test connection',
@@ -312,13 +312,13 @@ export const messages = {
       createSuccess: 'Docker connection created',
     },
     containerLogs: {
-      button: 'Logs', title: '{name} · Console logs', recent: 'Recent lines', follow: 'Follow', clear: 'Clear', reconnect: 'Reconnect',
+      button: 'Logs', title: 'Console logs: {name}', recent: 'Recent lines', follow: 'Follow', clear: 'Clear', reconnect: 'Reconnect',
       connecting: 'Connecting', connected: 'Live', complete: 'Log ended', error: 'Connection error', readFailed: 'Unable to read container logs',
       invalidEvent: 'Received an invalid log event', disconnected: 'Log connection closed',
     },
     applicationCard: {
       autoRefresh: 'Auto refresh', active: 'Enabled', inactive: 'Disabled', noDescription: 'No description', currentPipeline: 'Current pipeline', latestRun: 'Latest run',
-      currentNode: 'Current task', repository: 'Repository', workflow: 'Pipelines', codeStatus: 'Code status',
+      currentNode: 'Current task', repository: 'Repository', workflow: 'Pipelines', commitMessage: 'Commit message: ', codeStatus: 'Code status',
       lastChecked: 'Last checked', configure: 'Configure', pipeline: 'Pipeline', checkUpdates: 'Check updates', unbound: 'Not linked', customWorkflow: 'Custom pipeline',
       showDetails: 'Show details', hideDetails: 'Hide details', image: 'Image', containerStatus: 'Container status', terminal: 'Terminal', terminalRunningOnly: 'The terminal is available only while the container is running',
       currentRun: 'Current run', linkedWorkflows: 'Linked pipelines', enabledWorkflowCount: '{enabled}/{total} enabled', noWorkflows: 'No pipelines configured',
@@ -333,7 +333,7 @@ export const messages = {
       syncStatus: { idle: 'Waiting', checking: 'Checking', synced: 'Synced', changed: 'Update found', failed: 'Check failed' },
     },
     pipelineRunGraph: {
-      ariaLabel: 'Read-only pipeline execution graph', title: 'Execution graph', nodeCount: '{count} tasks · only the current task is highlighted', empty: 'No execution tasks to display',
+      ariaLabel: 'Read-only pipeline execution graph', title: 'Execution graph', nodeCount: 'Tasks: {count}; only the current task is highlighted', empty: 'No execution tasks to display',
       node: { trigger: 'Code trigger', build: 'Build artifact', shell: 'Shell script', manual: 'Manual gate', approval: 'Approval', deploy: 'Deploy' },
       state: {
         succeeded: 'Completed', failed: 'Failed', canceled: 'Canceled', blocked: 'Waiting for plan scheduling', awaitingApproval: 'Awaiting approval', awaitingManual: 'Awaiting release',

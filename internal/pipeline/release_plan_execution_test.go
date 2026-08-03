@@ -308,6 +308,13 @@ func TestCreateReleasePlanExecutionIsIdempotent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	var firstRun model.PipelineRun
+	if err := db.First(&firstRun, "id = ?", first.Items[0].PipelineRunID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if first.DepartmentID != plan.DepartmentID || firstRun.DepartmentID != plan.DepartmentID {
+		t.Fatalf("发布计划部门没有传播到执行和流水线: plan=%s execution=%s run=%s", plan.DepartmentID, first.DepartmentID, firstRun.DepartmentID)
+	}
 	listedPlans, err := service.ListReleasePlans(context.Background())
 	if err != nil {
 		t.Fatal(err)

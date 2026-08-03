@@ -60,6 +60,10 @@ func TestSQLiteMigrationIsIdempotent(t *testing.T) {
 	if !db.Migrator().HasColumn(&model.Host{}, "Architecture") {
 		t.Fatal("主机架构字段未完成迁移")
 	}
+	if !db.Migrator().HasTable(&model.DeploymentInstanceControl{}) ||
+		!db.Migrator().HasColumn(&model.DeploymentRecord{}, "application_id") {
+		t.Fatal("部署实例运行控制配置或发布记录应用关联字段未完成迁移")
+	}
 	if !db.Migrator().HasTable(&model.Job{}) || !db.Migrator().HasTable(&model.OutboxEvent{}) ||
 		!db.Migrator().HasTable(&model.User{}) || !db.Migrator().HasTable(&model.Role{}) ||
 		!db.Migrator().HasTable(&model.AuditLog{}) || !db.Migrator().HasTable(&model.GitRepository{}) ||
@@ -165,6 +169,150 @@ func TestSQLiteUsesPureGoDriver(t *testing.T) {
 	}
 	if err := db.Create(&uniqueRecord{Name: "same"}).Error; !errors.Is(err, gorm.ErrDuplicatedKey) {
 		t.Fatalf("重复键错误未转换: %v", err)
+	}
+}
+
+func TestDepartmentScopedUniqueIndexMigration(t *testing.T) {
+	db, err := Open(context.Background(), config.Database{
+		Driver: "sqlite", DSN: "file:department_unique_index_upgrade?mode=memory&cache=shared",
+		MaxOpenConns: 1, MaxIdleConns: 1, ConnMaxLifetime: time.Minute,
+	}, slog.Default())
+	if err != nil {
+		t.Fatalf("打开 SQLite 失败: %v", err)
+	}
+	defer Close(db)
+	if err := Migrate(context.Background(), db); err != nil {
+		t.Fatalf("初始化迁移失败: %v", err)
+	}
+
+	for _, item := range departmentScopedUniqueIndexes {
+		if !db.Migrator().HasIndex(item.model, item.newIndex) {
+			t.Fatalf("%s未创建部门组合唯一索引 %s", item.description, item.newIndex)
+		}
+		if db.Migrator().HasIndex(item.model, item.oldIndex) {
+			t.Fatalf("%s仍保留旧全局唯一索引 %s", item.description, item.oldIndex)
+		}
+	}
+
+	// 模拟已经执行 063 的旧数据库：它仍保留 name 全局唯一索引，064 必须先创建
+	// 新组合索引，再按显式名称删除旧索引。
+	repositoryIndex := departmentScopedUniqueIndexes[0]
+	if err := db.Migrator().DropIndex(repositoryIndex.model, repositoryIndex.newIndex); err != nil {
+		t.Fatalf("移除测试组合索引失败: %v", err)
+	}
+	if err := db.Exec("CREATE UNIQUE INDEX " + repositoryIndex.oldIndex + " ON " + repositoryIndex.table + " (" + repositoryIndex.field + ")").Error; err != nil {
+		t.Fatalf("创建旧全局唯一索引失败: %v", err)
+	}
+	if err := migrateDepartmentScopedUniqueIndexes(db); err != nil {
+		t.Fatalf("升级部门组合唯一索引失败: %v", err)
+	}
+	if !db.Migrator().HasIndex(repositoryIndex.model, repositoryIndex.newIndex) ||
+		db.Migrator().HasIndex(repositoryIndex.model, repositoryIndex.oldIndex) {
+		t.Fatal("代码仓库名称索引没有从全局唯一切换为部门内唯一")
+	}
+
+	now := time.Now().UTC()
+	newRepository := func(id string) model.GitRepository {
+		return model.GitRepository{
+			ID: id, Name: "同名仓库", Provider: model.GitProviderGeneric,
+			CloneURL: "https://example.invalid/repository.git", DefaultBranch: "main",
+			AuthType: model.GitAuthNone, IsActive: true, CreatedBy: "admin",
+			CreatedAt: now, UpdatedAt: now,
+		}
+	}
+	departmentA := WithDepartmentScope(context.Background(), DepartmentScope{UserID: "user-a", DepartmentID: "department-a"})
+	departmentB := WithDepartmentScope(context.Background(), DepartmentScope{UserID: "user-b", DepartmentID: "department-b"})
+	repositoryA := newRepository("repository-a")
+	if err := db.WithContext(departmentA).Create(&repositoryA).Error; err != nil {
+		t.Fatalf("创建部门 A 代码仓库失败: %v", err)
+	}
+	repositoryB := newRepository("repository-b")
+	if err := db.WithContext(departmentB).Create(&repositoryB).Error; err != nil {
+		t.Fatalf("不同部门应允许同名代码仓库: %v", err)
+	}
+	repositoryADuplicate := newRepository("repository-a-duplicate")
+	if err := db.WithContext(departmentA).Create(&repositoryADuplicate).Error; !errors.Is(err, gorm.ErrDuplicatedKey) {
+		t.Fatalf("同一部门应拒绝同名代码仓库，实际错误: %v", err)
+	}
+}
+
+func TestLinkedWorkflowNameMigrationUsesTemplateName(t *testing.T) {
+	db, err := Open(context.Background(), config.Database{
+		Driver: "sqlite", DSN: "file:linked_workflow_name_upgrade?mode=memory&cache=shared",
+		MaxOpenConns: 1, MaxIdleConns: 1, ConnMaxLifetime: time.Minute,
+	}, slog.Default())
+	if err != nil {
+		t.Fatalf("打开 SQLite 失败: %v", err)
+	}
+	defer Close(db)
+	if err := Migrate(context.Background(), db); err != nil {
+		t.Fatalf("初始化迁移失败: %v", err)
+	}
+
+	now := time.Now().UTC()
+	repository := model.GitRepository{
+		ID: "workflow-name-repository", Name: "测试仓库", Provider: model.GitProviderGeneric,
+		CloneURL: "https://example.invalid/repository.git", DefaultBranch: "main", AuthType: model.GitAuthNone,
+		IsActive: true, CreatedBy: "admin", CreatedAt: now, UpdatedAt: now,
+	}
+	if err := db.Create(&repository).Error; err != nil {
+		t.Fatalf("创建测试代码仓库失败: %v", err)
+	}
+	application := model.Application{
+		ID: "workflow-name-application", Name: "测试应用", RepositoryID: repository.ID,
+		PollIntervalSeconds: 3, SyncStatus: model.ApplicationSyncIdle, IsActive: true,
+		CreatedBy: "admin", CreatedAt: now, UpdatedAt: now,
+	}
+	if err := db.Create(&application).Error; err != nil {
+		t.Fatalf("创建测试应用失败: %v", err)
+	}
+	source := model.WorkflowNode{
+		ID: "source", Type: model.WorkflowNodeTrigger, Name: "代码源",
+		Config: model.WorkflowNodeConfig{Branch: "main", Events: []string{"manual"}},
+	}
+	template := model.ReleaseWorkflowTemplate{
+		ID: "workflow-name-template", SchemaVersion: model.WorkflowSchemaVersion, Name: "持续交付",
+		Revision: 1, IsActive: true, Source: source, Stages: []model.WorkflowStage{},
+		CreatedBy: "admin", UpdatedBy: "admin", CreatedAt: now, UpdatedAt: now,
+	}
+	if err := db.Create(&template).Error; err != nil {
+		t.Fatalf("创建测试流水线方案失败: %v", err)
+	}
+	workflows := []model.ReleaseWorkflow{
+		{
+			ID: "linked-workflow", ApplicationID: application.ID, WorkflowTemplateID: template.ID,
+			WorkflowTemplateRevision: 1, SchemaVersion: model.WorkflowSchemaVersion,
+			Name: "测试应用 · 持续交付", Revision: 1, IsActive: true, Source: source, Stages: []model.WorkflowStage{},
+			CreatedBy: "admin", UpdatedBy: "admin", CreatedAt: now, UpdatedAt: now,
+		},
+		{
+			ID: "custom-workflow", ApplicationID: application.ID, SchemaVersion: model.WorkflowSchemaVersion,
+			Name: "我的自定义流水线", Revision: 1, IsActive: true, Source: source, Stages: []model.WorkflowStage{},
+			CreatedBy: "admin", UpdatedBy: "admin", CreatedAt: now, UpdatedAt: now,
+		},
+	}
+	if err := db.Create(&workflows).Error; err != nil {
+		t.Fatalf("创建测试流水线失败: %v", err)
+	}
+	if err := db.Exec("DELETE FROM schema_migrations WHERE version = ?", "202608030059").Error; err != nil {
+		t.Fatalf("重置流水线名称迁移版本失败: %v", err)
+	}
+	if err := Migrate(context.Background(), db); err != nil {
+		t.Fatalf("升级流水线名称失败: %v", err)
+	}
+
+	var linked, custom model.ReleaseWorkflow
+	if err := db.First(&linked, "id = ?", "linked-workflow").Error; err != nil {
+		t.Fatalf("读取关联流水线失败: %v", err)
+	}
+	if linked.Name != template.Name {
+		t.Fatalf("关联流水线仍保留拼接名称: got=%q want=%q", linked.Name, template.Name)
+	}
+	if err := db.First(&custom, "id = ?", "custom-workflow").Error; err != nil {
+		t.Fatalf("读取自定义流水线失败: %v", err)
+	}
+	if custom.Name != "我的自定义流水线" {
+		t.Fatalf("迁移不应改写自定义流水线名称: got=%q", custom.Name)
 	}
 }
 
@@ -1029,6 +1177,10 @@ func TestExternalDatabaseMigration(t *testing.T) {
 				!db.Migrator().HasColumn(&model.DeploymentRecord{}, "rollback_attempt") ||
 				!db.Migrator().HasIndex(&model.DeploymentRecord{}, "idx_deployment_records_rollback_source_attempt") {
 				t.Fatalf("%s 回滚来源、尝试次数字段或查询索引未创建", test.name)
+			}
+			if !db.Migrator().HasTable(&model.DeploymentInstanceControl{}) ||
+				!db.Migrator().HasColumn(&model.DeploymentRecord{}, "application_id") {
+				t.Fatalf("%s 部署实例运行控制配置或发布记录应用关联字段未创建", test.name)
 			}
 			if !db.Migrator().HasColumn(&model.DeploymentPlan{}, "deleted_at") ||
 				!db.Migrator().HasIndex(&model.DeploymentPlan{}, "DeletedAt") {

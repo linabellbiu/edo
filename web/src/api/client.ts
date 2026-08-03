@@ -11,6 +11,8 @@ export interface User {
   id: string
   username: string
   nickname: string
+  department_id?: string
+  department_name?: string
   is_superuser: boolean
   last_login_at?: string
   permissions: string[]

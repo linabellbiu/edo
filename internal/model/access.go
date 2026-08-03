@@ -61,6 +61,7 @@ const (
 
 type AuditLog struct {
 	ID           string         `gorm:"type:varchar(36);primaryKey" json:"id"`
+	DepartmentID string         `gorm:"type:varchar(36);not null;default:'00000000-0000-0000-0000-000000000001';index" json:"department_id"`
 	ActorUserID  *string        `gorm:"type:varchar(36);index" json:"actor_user_id,omitempty"`
 	Action       string         `gorm:"type:varchar(96);not null;index" json:"action"`
 	ResourceType string         `gorm:"type:varchar(64);not null;index" json:"resource_type"`

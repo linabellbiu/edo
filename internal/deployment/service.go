@@ -89,6 +89,7 @@ type RequestInput struct {
 
 type CommandRequestInput struct {
 	TargetID         string
+	ApplicationID    string
 	ArtifactID       string
 	PipelineRunID    string
 	WorkflowNodeID   string
@@ -155,8 +156,12 @@ func (s *Service) WithTransaction(tx *gorm.DB) *Service {
 	}
 	clone := *s
 	clone.db = tx
-	clone.docker = s.docker.WithTransaction(tx)
-	clone.kube = s.kube.WithTransaction(tx)
+	if s.docker != nil {
+		clone.docker = s.docker.WithTransaction(tx)
+	}
+	if s.kube != nil {
+		clone.kube = s.kube.WithTransaction(tx)
+	}
 	return &clone
 }
 
@@ -280,7 +285,8 @@ func (s *Service) Request(ctx context.Context, actorID string, input RequestInpu
 	}
 	now := time.Now().UTC()
 	record := &model.DeploymentRecord{
-		ID: uuid.NewString(), PipelineRunID: input.PipelineRunID, WorkflowNodeID: input.WorkflowNodeID,
+		ID: uuid.NewString(), DepartmentID: target.DepartmentID,
+		PipelineRunID: input.PipelineRunID, WorkflowNodeID: input.WorkflowNodeID,
 		ArtifactID: input.ArtifactID, TargetID: target.ID, Operation: model.DeploymentRelease,
 		Image: image, Status: model.DeploymentQueued, RequestedBy: actorID, CreatedAt: now, UpdatedAt: now,
 	}
@@ -392,8 +398,8 @@ func (s *Service) requestAndRun(
 	}
 	now := time.Now().UTC()
 	record := &model.DeploymentRecord{
-		ID: uuid.NewString(), IdempotencyKey: &idempotencyKey,
-		PipelineRunID: input.PipelineRunID, WorkflowNodeID: input.WorkflowNodeID,
+		ID: uuid.NewString(), DepartmentID: target.DepartmentID, IdempotencyKey: &idempotencyKey,
+		PipelineRunID: input.PipelineRunID, ApplicationID: strings.TrimSpace(input.ApplicationID), WorkflowNodeID: input.WorkflowNodeID,
 		ArtifactID: input.ArtifactID, TargetID: target.ID, Operation: model.DeploymentRelease,
 		Image: image, ImageDisplay: strings.TrimSpace(input.ImageDisplay),
 		ExpectedImageID: strings.TrimSpace(input.ExpectedImageID),
@@ -476,8 +482,8 @@ func (s *Service) requestCommandAndRun(
 	}
 	now := time.Now().UTC()
 	record := &model.DeploymentRecord{
-		ID: uuid.NewString(), IdempotencyKey: &idempotencyKey,
-		PipelineRunID: input.PipelineRunID, WorkflowNodeID: input.WorkflowNodeID,
+		ID: uuid.NewString(), DepartmentID: target.DepartmentID, IdempotencyKey: &idempotencyKey,
+		PipelineRunID: input.PipelineRunID, ApplicationID: strings.TrimSpace(input.ApplicationID), WorkflowNodeID: input.WorkflowNodeID,
 		ArtifactID: input.ArtifactID, TargetID: target.ID, Operation: model.DeploymentRelease, Status: model.DeploymentQueued,
 		RequestedBy: actorID, CreatedAt: now, UpdatedAt: now,
 		DeploymentPlanID: input.DeploymentPlanID, DeploymentPlanKind: input.PlanKind,
@@ -616,7 +622,7 @@ func samePipelineReleaseSemantics(existing, requested *model.DeploymentRecord) b
 	if existing == nil || requested == nil {
 		return false
 	}
-	return existing.Operation == requested.Operation &&
+	return existing.DepartmentID == requested.DepartmentID && existing.Operation == requested.Operation &&
 		existing.PipelineRunID == requested.PipelineRunID && existing.WorkflowNodeID == requested.WorkflowNodeID &&
 		existing.ArtifactID == requested.ArtifactID && existing.TargetID == requested.TargetID &&
 		existing.TargetName == requested.TargetName && existing.Platform == requested.Platform &&
@@ -669,7 +675,8 @@ func (s *Service) Rollback(ctx context.Context, sourceID, actorID string) (*mode
 	}
 	now := time.Now().UTC()
 	prototype := &model.DeploymentRecord{
-		TargetID: source.TargetID, Operation: model.DeploymentRollback,
+		DepartmentID: source.DepartmentID,
+		TargetID:     source.TargetID, Operation: model.DeploymentRollback,
 		Image: image, ExpectedImageID: expectedImageID, Status: model.DeploymentQueued,
 		DeploymentPlanID: source.DeploymentPlanID, DeploymentPlanKind: source.DeploymentPlanKind,
 		DockerConfig: source.DockerConfig, DockerConfigDigest: source.DockerConfigDigest,
@@ -972,10 +979,7 @@ func (s *Service) run(ctx context.Context, deploymentID, expectedImageID string,
 		message := "发布执行失败，需人工确认目标状态"
 		code := "deployment_execution_failed"
 		if record.Platform == model.DeploymentSSH {
-			code, message = "ssh_command_failed", "命令脚本部署失败，请查看流水线日志"
-			if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
-				code, message = "ssh_command_timeout", "命令脚本部署超时，请查看流水线日志"
-			}
+			code, message = sshCommandFailureDetails(err, commandExitCode)
 			s.logger.Error("命令脚本部署失败", "operation", "command_deployment_execute", "deployment_id", deploymentID,
 				"target_id", record.TargetID, "host_id", record.HostID, "exit_code", commandExitCode, "err", err)
 		} else if record.DeploymentPlanKind == model.DeploymentPlanCompose {
@@ -987,6 +991,11 @@ func (s *Service) run(ctx context.Context, deploymentID, expectedImageID string,
 			s.logger.Error("Docker 容器部署失败", "operation", "docker_container_deployment_execute",
 				"deployment_id", deploymentID, "target_id", record.TargetID, "runtime_id", record.RuntimeID,
 				"container_name", record.WorkloadName, "err", err)
+		} else if record.Platform == model.DeploymentKubernetes {
+			code, message = kubernetesFailureDetails(err)
+			s.logger.Error("Kubernetes 部署失败", "operation", "kubernetes_deployment_execute",
+				"deployment_id", deploymentID, "target_id", record.TargetID, "cluster_id", record.RuntimeID,
+				"namespace", record.Namespace, "workload_name", record.WorkloadName, "err", err)
 		}
 		return s.markFailed(ctx, deploymentID, code, message, err, previousImage, commandExitCode)
 	}
@@ -1021,6 +1030,32 @@ func dockerContainerFailureDetails(err error) (string, string) {
 		return "docker_previous_container_stop_timeout", "Docker 容器发布失败：停止旧容器超时，未继续替换容器"
 	case errors.Is(err, dockerengine.ErrContainerStopFailed):
 		return "docker_previous_container_stop_failed", "Docker 容器发布失败：无法停止旧容器，未继续替换容器"
+	case errors.Is(err, dockerengine.ErrContainerPortAllocated):
+		return "docker_container_port_allocated", "Docker 容器启动失败：主机端口已被占用，请修改部署方案的端口映射后重试"
+	case errors.Is(err, dockerengine.ErrContainerRuntimeUnavailable), errors.Is(err, dockerengine.ErrEndpointNotFound), errors.Is(err, dockerengine.ErrSSHUnreachable):
+		return "docker_runtime_unavailable", "Docker 容器部署失败：无法连接目标 Docker 运行时，请检查主机连接和 Docker 服务状态"
+	case errors.Is(err, dockerengine.ErrSSHDockerDenied):
+		return "docker_runtime_permission_denied", "Docker 容器部署失败：目标主机拒绝 Docker 操作，请检查 Docker 或 sudo 权限"
+	case errors.Is(err, dockerengine.ErrContainerImageUnavailable):
+		return "docker_image_unavailable", "Docker 容器部署失败：目标主机无法读取待发布镜像，请检查镜像传输或仓库访问"
+	case errors.Is(err, dockerengine.ErrContainerImageMismatch):
+		return "docker_image_mismatch", "Docker 容器部署失败：目标主机镜像与流水线固定制品不一致"
+	case errors.Is(err, dockerengine.ErrContainerOwnershipConflict):
+		return "docker_container_name_conflict", "Docker 容器部署失败：同名容器不属于当前部署目标，请修改容器名称或清理冲突资源"
+	case errors.Is(err, dockerengine.ErrContainerVolumeFailed):
+		return "docker_volume_prepare_failed", "Docker 容器部署失败：无法准备 EDO 管理的命名卷，请检查目标 Docker 存储状态"
+	case errors.Is(err, dockerengine.ErrContainerCreateFailed):
+		return "docker_container_create_failed", "Docker 容器部署失败：目标 Docker 未能创建容器，请检查容器配置和目标主机资源"
+	case errors.Is(err, dockerengine.ErrContainerStartFailed):
+		return "docker_container_start_failed", "Docker 容器启动失败：目标 Docker 拒绝启动请求，请检查端口、网络和运行配置"
+	case errors.Is(err, dockerengine.ErrContainerCommandFailed):
+		return "docker_command_failed", "Docker 容器部署失败：自定义 Docker 部署命令执行失败，请查看部署控制台输出"
+	case errors.Is(err, dockerengine.ErrContainerInspectFailed):
+		return "docker_container_inspect_failed", "Docker 容器部署失败：无法读取目标容器状态，请检查 Docker 服务和目标主机连接"
+	case errors.Is(err, dockerengine.ErrContainerReplaceFailed):
+		return "docker_container_replace_failed", "Docker 容器部署失败：无法安全替换旧容器，已停止继续发布"
+	case errors.Is(err, dockerengine.ErrContainerVerificationFailed):
+		return "docker_container_verification_failed", "Docker 容器部署失败：部署命令执行后没有生成可验证的目标容器"
 	case errors.Is(err, dockerengine.ErrContainerRestarted):
 		return "docker_container_restarted", "Docker 容器启动失败：容器启动后退出并进入重启，请查看容器日志"
 	case errors.Is(err, dockerengine.ErrContainerNotRunning):
@@ -1029,10 +1064,14 @@ func dockerContainerFailureDetails(err error) (string, string) {
 		return "docker_container_unhealthy", "Docker 容器启动失败：健康检查未通过，请查看容器日志"
 	case errors.Is(err, dockerengine.ErrContainerReadinessTimeout):
 		return "docker_container_readiness_timeout", "Docker 容器启动超时：未在规定时间内就绪，请查看容器日志"
-	case errors.Is(err, ErrInvalidTarget):
+	case errors.Is(err, ErrInvalidTarget), errors.Is(err, dockerengine.ErrContainerConfigInvalid), errors.Is(err, dockerengine.ErrInvalidContainerConfig):
 		return "docker_deployment_config_invalid", "Docker 部署配置无效，请检查部署方案"
+	case errors.Is(err, context.DeadlineExceeded):
+		return "docker_deployment_timeout", "Docker 容器部署超时：目标 Docker 未在规定时间内完成操作"
+	case errors.Is(err, context.Canceled):
+		return "docker_deployment_canceled", "Docker 容器部署已取消"
 	default:
-		return "docker_deployment_failed", "Docker 容器部署失败，请查看流水线日志和容器日志"
+		return "docker_deployment_failed", "Docker 容器部署失败：目标 Docker 未完成发布操作，请检查部署方案、主机状态和系统日志"
 	}
 }
 
@@ -1048,10 +1087,67 @@ func dockerComposeFailureDetails(err error) (string, string) {
 		return "compose_container_unhealthy", "Docker Compose 服务启动失败：健康检查未通过，请查看容器日志"
 	case errors.Is(err, dockerengine.ErrContainerReadinessTimeout), errors.Is(err, context.DeadlineExceeded), errors.Is(err, context.Canceled):
 		return "compose_container_readiness_timeout", "Docker Compose 服务启动超时：未在规定时间内就绪，请查看容器日志"
+	case errors.Is(err, dockerengine.ErrComposeRuntimeUnavailable), errors.Is(err, dockerengine.ErrEndpointNotFound), errors.Is(err, dockerengine.ErrSSHUnreachable):
+		return "compose_runtime_unavailable", "Docker Compose 部署失败：无法连接目标 Docker 运行时，请检查主机连接和 Docker 服务状态"
+	case errors.Is(err, dockerengine.ErrSSHDockerDenied):
+		return "compose_runtime_permission_denied", "Docker Compose 部署失败：目标主机拒绝 Docker 操作，请检查 Docker 或 sudo 权限"
+	case errors.Is(err, dockerengine.ErrComposePluginUnavailable):
+		return "compose_plugin_unavailable", "Docker Compose 部署失败：目标主机未安装或无法运行 Docker Compose 插件"
+	case errors.Is(err, dockerengine.ErrComposeImageUnavailable):
+		return "compose_image_unavailable", "Docker Compose 部署失败：目标主机无法读取待发布镜像，请检查镜像传输或仓库访问"
+	case errors.Is(err, dockerengine.ErrComposeExecutionFailed):
+		return "compose_command_failed", "Docker Compose 部署失败：Compose 命令执行失败，请查看部署控制台输出"
+	case errors.Is(err, dockerengine.ErrComposeVerificationFailed):
+		return "compose_verification_failed", "Docker Compose 部署失败：服务没有使用流水线固定的镜像或结果无法验证"
 	case errors.Is(err, ErrInvalidTarget), errors.Is(err, dockerengine.ErrInvalidComposeYAML):
 		return "compose_deployment_config_invalid", "Docker Compose 部署配置无效，请检查部署方案"
 	default:
-		return "compose_deployment_failed", "Docker Compose 部署失败，请查看流水线日志和容器日志"
+		return "compose_deployment_failed", "Docker Compose 部署失败：目标主机未完成 Compose 发布，请检查部署控制台和系统日志"
+	}
+}
+
+func sshCommandFailureDetails(err error, exitCode *int) (string, string) {
+	switch {
+	case errors.Is(err, context.DeadlineExceeded):
+		return "ssh_command_timeout", "命令脚本部署超时：目标主机未在规定时间内执行完成"
+	case errors.Is(err, context.Canceled):
+		return "ssh_command_canceled", "命令脚本部署已取消"
+	case errors.Is(err, sshdeploy.ErrInvalidScript):
+		return "ssh_command_config_invalid", "命令脚本部署失败：部署脚本或工作目录配置无效"
+	case errors.Is(err, sshdeploy.ErrEnvironmentChanged):
+		return "ssh_environment_changed", "命令脚本部署失败：目标主机已不属于流水线固定的环境"
+	case errors.Is(err, sshdeploy.ErrHostUnavailable):
+		return "ssh_host_unavailable", "命令脚本部署失败：无法连接目标主机，请检查主机状态和 SSH 配置"
+	case errors.Is(err, sshdeploy.ErrLocalExecUnsupported):
+		return "ssh_local_execution_unsupported", "命令脚本部署失败：当前 EDO 运行方式不支持本地脚本执行"
+	case errors.Is(err, sshdeploy.ErrCommandFailed):
+		if exitCode != nil {
+			return "ssh_command_failed", fmt.Sprintf("命令脚本部署失败：脚本退出码为 %d，请查看部署控制台输出", *exitCode)
+		}
+		return "ssh_command_failed", "命令脚本部署失败：脚本返回非零退出状态，请查看部署控制台输出"
+	default:
+		return "ssh_deployment_failed", "命令脚本部署失败：目标主机未完成脚本执行，请检查部署控制台和系统日志"
+	}
+}
+
+func kubernetesFailureDetails(err error) (string, string) {
+	switch {
+	case errors.Is(err, kube.ErrDeploymentConfigInvalid), errors.Is(err, kube.ErrInvalidCluster), errors.Is(err, kube.ErrClusterNotFound), errors.Is(err, kube.ErrKubeconfigRequired), errors.Is(err, kube.ErrUnsafeKubeconfig), errors.Is(err, ErrInvalidTarget):
+		return "kubernetes_deployment_config_invalid", "Kubernetes 部署配置无效，请检查集群、命名空间、工作负载和容器配置"
+	case errors.Is(err, kube.ErrClusterUnreachable):
+		return "kubernetes_cluster_unreachable", "Kubernetes 部署失败：无法连接集群 API，请检查集群网络和凭据"
+	case errors.Is(err, kube.ErrDeploymentContainerNotFound):
+		return "kubernetes_container_not_found", "Kubernetes 部署失败：工作负载中找不到目标容器"
+	case errors.Is(err, kube.ErrDeploymentUpdateFailed):
+		return "kubernetes_update_failed", "Kubernetes 部署失败：集群拒绝更新目标工作负载，请检查权限和资源状态"
+	case errors.Is(err, kube.ErrDeploymentStatusUnavailable):
+		return "kubernetes_status_unavailable", "Kubernetes 部署失败：更新后无法读取工作负载状态，请检查集群连接"
+	case errors.Is(err, kube.ErrDeploymentRolloutTimeout), errors.Is(err, context.DeadlineExceeded):
+		return "kubernetes_rollout_timeout", "Kubernetes 部署超时：工作负载未在规定时间内就绪"
+	case errors.Is(err, context.Canceled):
+		return "kubernetes_deployment_canceled", "Kubernetes 部署已取消"
+	default:
+		return "kubernetes_deployment_failed", "Kubernetes 部署失败：集群未完成工作负载更新，请检查工作负载事件和系统日志"
 	}
 }
 
@@ -1137,7 +1233,8 @@ func executionRegistryAuth(execution *commandExecution) dockerengine.RegistryAut
 
 func (s *Service) enqueue(ctx context.Context, tx *gorm.DB, record *model.DeploymentRecord, kind string) error {
 	job, err := task.NewService(tx, 1).Create(ctx, task.CreateInput{
-		Kind: kind, Subject: "edo.task." + kind, Payload: TaskPayload{DeploymentID: record.ID},
+		DepartmentID: record.DepartmentID,
+		Kind:         kind, Subject: "edo.task." + kind, Payload: TaskPayload{DeploymentID: record.ID},
 		IdempotencyKey: "deployment:" + record.ID,
 	})
 	if err != nil {
@@ -1156,6 +1253,69 @@ func (s *Service) findTarget(ctx context.Context, id string) (*model.DeploymentT
 		return nil, fmt.Errorf("查询发布目标失败: %w", err)
 	}
 	return &target, nil
+}
+
+// ReconcileEnvironmentTargets 在环境主机集合变更后重新固定当前部署方案的执行目标。
+// 该方法必须与环境成员关系更新共享事务：任一部署方案无法解析唯一可用主机时，
+// 调用方会回滚环境关系，避免保存出“环境已变更、部署方案仍指向旧主机”的半成品状态。
+func (s *Service) ReconcileEnvironmentTargets(ctx context.Context, tx *gorm.DB, environmentID string) error {
+	environmentID = strings.TrimSpace(environmentID)
+	if environmentID == "" || tx == nil {
+		return ErrInvalidTarget
+	}
+	service := s.WithTransaction(tx)
+	var targetIDs []string
+	if err := service.db.WithContext(ctx).
+		Model(&model.DeploymentPlan{}).
+		Where("deployment_target_id <> ?", "").
+		Distinct().
+		Pluck("deployment_target_id", &targetIDs).Error; err != nil {
+		service.logger.Error("查询环境关联部署方案失败", "operation", "deployment_target_reconcile", "environment_id", environmentID, "err", err)
+		return fmt.Errorf("查询环境关联部署方案失败: %w", err)
+	}
+	if len(targetIDs) == 0 {
+		return nil
+	}
+
+	var targets []model.DeploymentTarget
+	if err := service.db.WithContext(ctx).
+		Where("environment_id = ? AND id IN ?", environmentID, targetIDs).
+		Order("id ASC").
+		Find(&targets).Error; err != nil {
+		service.logger.Error("查询环境关联部署目标失败", "operation", "deployment_target_reconcile", "environment_id", environmentID, "err", err)
+		return fmt.Errorf("查询环境关联部署目标失败: %w", err)
+	}
+	now := time.Now().UTC()
+	for i := range targets {
+		target := &targets[i]
+		host, capability, err := service.resolveEnvironmentTarget(ctx, environmentID, target.Platform, target.RuntimeID)
+		if err != nil {
+			service.logger.Warn(
+				"调整环境后重新解析部署目标失败",
+				"operation", "deployment_target_reconcile",
+				"environment_id", environmentID,
+				"deployment_target_id", target.ID,
+				"platform", target.Platform,
+				"err", err,
+			)
+			return err
+		}
+		updates := map[string]any{"host_id": host.ID, "updated_at": now}
+		switch target.Platform {
+		case model.DeploymentSSH:
+			updates["runtime_id"] = ""
+		case model.DeploymentDocker, model.DeploymentKubernetes:
+			updates["runtime_id"] = capability.RuntimeID
+		default:
+			service.logger.Warn("部署目标类型无效", "operation", "deployment_target_reconcile", "environment_id", environmentID, "deployment_target_id", target.ID, "platform", target.Platform)
+			return ErrInvalidTarget
+		}
+		if err := service.db.WithContext(ctx).Model(target).Updates(updates).Error; err != nil {
+			service.logger.Error("更新环境关联部署目标失败", "operation", "deployment_target_reconcile", "environment_id", environmentID, "deployment_target_id", target.ID, "err", err)
+			return fmt.Errorf("更新环境关联部署目标失败: %w", err)
+		}
+	}
+	return nil
 }
 
 func (s *Service) normalizeTarget(ctx context.Context, input TargetInput) (TargetInput, error) {
@@ -1377,6 +1537,7 @@ func (s *Service) markFailed(ctx context.Context, id, code, message string, caus
 }
 
 func applyTargetSnapshot(record *model.DeploymentRecord, target *model.DeploymentTarget) {
+	record.DepartmentID = target.DepartmentID
 	record.TargetName = target.Name
 	record.Platform = target.Platform
 	record.EnvironmentID = target.EnvironmentID
@@ -1390,6 +1551,7 @@ func applyTargetSnapshot(record *model.DeploymentRecord, target *model.Deploymen
 }
 
 func copyTargetSnapshot(destination, source *model.DeploymentRecord) {
+	destination.DepartmentID = source.DepartmentID
 	destination.TargetName = source.TargetName
 	destination.Platform = source.Platform
 	destination.EnvironmentID = source.EnvironmentID

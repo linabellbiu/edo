@@ -30,10 +30,14 @@ import (
 const MaximumComposeYAMLBytes = 512 * 1024
 
 var (
-	ErrInvalidComposeYAML       = errors.New("Docker Compose 配置无效")
-	ErrComposePluginUnavailable = errors.New("Docker Compose 插件不可用")
-	ErrComposeRollbackFailed    = errors.New("恢复旧 Docker Compose 服务失败")
-	composeServicePattern       = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$`)
+	ErrInvalidComposeYAML        = errors.New("Docker Compose 配置无效")
+	ErrComposePluginUnavailable  = errors.New("Docker Compose 插件不可用")
+	ErrComposeRollbackFailed     = errors.New("恢复旧 Docker Compose 服务失败")
+	ErrComposeRuntimeUnavailable = errors.New("Docker Compose 运行时不可用")
+	ErrComposeImageUnavailable   = errors.New("Docker Compose 镜像不可用")
+	ErrComposeExecutionFailed    = errors.New("Docker Compose 命令执行失败")
+	ErrComposeVerificationFailed = errors.New("Docker Compose 服务结果校验失败")
+	composeServicePattern        = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$`)
 )
 
 type composeDocument struct {
@@ -580,30 +584,30 @@ func (s *Service) DeployCompose(ctx context.Context, input ComposeDeployInput) (
 	input.YAML = managedYAML
 	if input.ExpectedImageID != "" {
 		if !IsEDOLocalImage(input.Image) || !IsValidImageID(input.ExpectedImageID) {
-			return "", errors.New("待部署的本地 Docker 镜像无效")
+			return "", composeDeploymentError(ErrComposeImageUnavailable, errors.New("待部署的本地 Docker 镜像无效"))
 		}
 	} else if _, err := parseImmutableComposeImage(input.Image); err != nil {
-		return "", err
+		return "", composeDeploymentError(ErrComposeImageUnavailable, err)
 	}
 
 	endpoint, err := s.Find(ctx, input.EndpointID)
 	if err != nil {
-		return "", err
+		return "", composeDeploymentError(ErrComposeRuntimeUnavailable, err)
 	}
 	apiClient, err := s.executionClient(ctx, input.EndpointID)
 	if err != nil {
-		return "", err
+		return "", composeDeploymentError(ErrComposeRuntimeUnavailable, err)
 	}
 	defer apiClient.Close()
 	deployContext, cancel := context.WithTimeout(ctx, input.Timeout)
 	defer cancel()
 	if err := s.prepareComposeImage(deployContext, apiClient, endpoint, input.Image, input.ExpectedImageID, input.RegistryAuth); err != nil {
-		return "", err
+		return "", composeDeploymentError(ErrComposeImageUnavailable, err)
 	}
 	projectName := composeProjectName(input.TargetID)
 	previousImage, err := composeServiceImage(deployContext, apiClient, projectName, input.ServiceName, "")
 	if err != nil {
-		return "", err
+		return "", composeDeploymentError(ErrComposeVerificationFailed, err)
 	}
 	executionInput := input
 	if input.ExpectedImageID != "" {
@@ -621,7 +625,7 @@ func (s *Service) DeployCompose(ctx context.Context, input ComposeDeployInput) (
 				ctx, endpoint, apiClient, projectName, executionInput, previousImage, deployErr,
 			)
 		}
-		return previousImage, err
+		return previousImage, composeDeploymentError(ErrComposeExecutionFailed, err)
 	}
 	if err := waitComposeServiceHealthy(deployContext, apiClient, projectName, input.ServiceName); err != nil {
 		return previousImage, s.composeDeploymentErrorWithRollback(
@@ -630,10 +634,18 @@ func (s *Service) DeployCompose(ctx context.Context, input ComposeDeployInput) (
 	}
 	if _, err := composeServiceImage(deployContext, apiClient, projectName, input.ServiceName, executionInput.Image); err != nil {
 		return previousImage, s.composeDeploymentErrorWithRollback(
-			ctx, endpoint, apiClient, projectName, executionInput, previousImage, err,
+			ctx, endpoint, apiClient, projectName, executionInput, previousImage,
+			composeDeploymentError(ErrComposeVerificationFailed, err),
 		)
 	}
 	return previousImage, nil
+}
+
+func composeDeploymentError(category error, cause error) error {
+	if cause == nil || errors.Is(cause, category) {
+		return cause
+	}
+	return fmt.Errorf("%w: %w", category, cause)
 }
 
 func (s *Service) composeDeploymentErrorWithRollback(

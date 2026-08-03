@@ -19,6 +19,7 @@ import (
 	"gorm.io/gorm"
 
 	"edo/internal/account"
+	"edo/internal/database"
 	"edo/internal/model"
 )
 
@@ -257,6 +258,45 @@ func (s *Service) DeleteRole(ctx context.Context, roleID string) error {
 	return s.syncPolicy("role_delete")
 }
 
+// DeleteUser 删除账户自身的身份和授权数据，但保留其已经创建的部门业务资源及审计记录。
+// 业务资源使用冻结的 department_id 归属部门，不能因人员离职而被级联删除。
+func (s *Service) DeleteUser(ctx context.Context, userID string) error {
+	if err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var user model.User
+		if err := tx.First(&user, "id = ?", userID).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return account.ErrUserNotFound
+			}
+			return fmt.Errorf("查询待删除用户失败: %w", err)
+		}
+		if user.IsSuperuser {
+			return account.ErrSuperuserImmutable
+		}
+		if err := account.NewService(tx).EnsureCredentialsUnreferenced(ctx, user.ID, user.DepartmentID); err != nil {
+			return err
+		}
+		if err := tx.Where("user_id = ?", user.ID).Delete(&model.UserRole{}).Error; err != nil {
+			return fmt.Errorf("删除用户角色失败: %w", err)
+		}
+		if err := tx.Where("user_id = ?", user.ID).Delete(&model.UserPermission{}).Error; err != nil {
+			return fmt.Errorf("删除用户权限覆盖失败: %w", err)
+		}
+		if err := tx.Where("user_id = ?", user.ID).Delete(&model.ExternalIdentity{}).Error; err != nil {
+			return fmt.Errorf("删除用户外部身份失败: %w", err)
+		}
+		if err := tx.Where("user_id = ?", user.ID).Delete(&model.GitCredential{}).Error; err != nil {
+			return fmt.Errorf("删除用户个人 Git 令牌失败: %w", err)
+		}
+		if err := tx.Delete(&user).Error; err != nil {
+			return fmt.Errorf("删除用户失败: %w", err)
+		}
+		return nil
+	}); err != nil {
+		return err
+	}
+	return s.syncPolicy("user_delete")
+}
+
 func (s *Service) SetUserRoles(ctx context.Context, userID string, roleIDs []string) error {
 	roleIDs = uniqueSorted(roleIDs)
 	if err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
@@ -297,13 +337,20 @@ func (s *Service) SetUserRoles(ctx context.Context, userID string, roleIDs []str
 }
 
 func (s *Service) SetUserPermissions(ctx context.Context, userID string, overrides UserPermissionOverrides) error {
-	overrides.Allow = uniqueSorted(overrides.Allow)
-	overrides.Deny = uniqueSorted(overrides.Deny)
+	var ok bool
+	overrides.Allow, ok = normalizePermissionCodes(overrides.Allow)
+	if !ok {
+		return ErrInvalidUserPermissions
+	}
+	overrides.Deny, ok = normalizePermissionCodes(overrides.Deny)
+	if !ok {
+		return ErrInvalidUserPermissions
+	}
 	seen := make(map[string]struct{}, len(overrides.Allow)+len(overrides.Deny))
-	for _, permission := range append(append([]string{}, overrides.Allow...), overrides.Deny...) {
-		if !IsKnown(permission) {
-			return ErrInvalidUserPermissions
-		}
+	for _, permission := range overrides.Allow {
+		seen[permission] = struct{}{}
+	}
+	for _, permission := range overrides.Deny {
 		if _, exists := seen[permission]; exists {
 			return ErrInvalidUserPermissions
 		}
@@ -379,6 +426,22 @@ func (s *Service) CreateUser(
 	username, nickname, password string,
 	roleIDs []string,
 ) (*model.User, error) {
+	return s.CreateUserInDepartment(ctx, username, nickname, password, "", roleIDs)
+}
+
+func (s *Service) CreateUserInDepartment(
+	ctx context.Context,
+	username, nickname, password, departmentID string,
+	roleIDs []string,
+) (*model.User, error) {
+	if strings.TrimSpace(departmentID) == "" {
+		if scope, ok := database.DepartmentScopeFromContext(ctx); ok {
+			departmentID = scope.DepartmentID
+		}
+	}
+	if strings.TrimSpace(departmentID) == "" {
+		departmentID = database.DefaultDepartmentID
+	}
 	roleIDs = uniqueSorted(roleIDs)
 	var user *model.User
 	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
@@ -391,7 +454,7 @@ func (s *Service) CreateUser(
 				return ErrInvalidUserRoles
 			}
 		}
-		created, err := account.NewService(tx).CreateUser(ctx, username, nickname, password)
+		created, err := account.NewService(tx).CreateUserInDepartment(ctx, username, nickname, password, departmentID)
 		if err != nil {
 			return err
 		}
@@ -443,13 +506,25 @@ func normalizeRoleInput(input RoleInput) (RoleInput, error) {
 		utf8.RuneCountInString(input.DisplayName) > 64 || utf8.RuneCountInString(input.Description) > 255 {
 		return RoleInput{}, ErrInvalidRole
 	}
-	input.Permissions = uniqueSorted(input.Permissions)
-	for _, permission := range input.Permissions {
-		if !IsKnown(permission) {
-			return RoleInput{}, ErrInvalidPermission
-		}
+	permissions, ok := normalizePermissionCodes(input.Permissions)
+	if !ok {
+		return RoleInput{}, ErrInvalidPermission
 	}
+	input.Permissions = permissions
 	return input, nil
+}
+
+// normalizePermissionCodes 在写入数据库前把旧聚合权限展开为当前细粒度权限。
+// 同时提交旧码和对应新码时会自动去重，便于前后端滚动升级。
+func normalizePermissionCodes(permissions []string) ([]string, bool) {
+	expanded := make([]string, 0, len(permissions))
+	for _, permission := range uniqueSorted(permissions) {
+		if !IsKnown(permission) {
+			return nil, false
+		}
+		expanded = append(expanded, ExpandLegacyPermission(permission)...)
+	}
+	return uniqueSorted(expanded), true
 }
 
 func replacePermissions(tx *gorm.DB, roleID string, permissions []string, now time.Time) error {

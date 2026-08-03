@@ -26,10 +26,12 @@ const props = withDefaults(defineProps<{
   open?: boolean
   host?: InfrastructureHost
   clusters?: KubernetesClusterOption[]
+  canTest?: boolean
 }>(), {
   open: false,
   host: undefined,
   clusters: () => [],
+  canTest: false,
 })
 
 const emit = defineEmits<{
@@ -155,6 +157,10 @@ async function validate() {
 }
 
 async function testConnection() {
+  if (!props.canTest) {
+    message.error('缺少主机连接测试权限')
+    return
+  }
   try {
     await validate()
   } catch (error) {
@@ -343,18 +349,24 @@ function close() {
       </template>
     </a-alert>
     <a-alert
-      v-else-if="!isLocal"
+      v-else-if="!isLocal && canTest"
       class="test-result"
       type="info"
       show-icon
       :message="editingRemote && !replaceCredential ? '将使用已保存的 SSH 凭据测试连接及所选能力。' : '保存前需要测试 SSH 连接及所有勾选的主机能力。'"
     />
+    <a-alert
+      v-else-if="!isLocal"
+      type="warning"
+      show-icon
+      message="远程主机保存前需要主机连接测试权限。"
+    />
 
     <template #footer>
       <div class="drawer-actions">
         <a-button @click="close">取消</a-button>
-        <a-button v-if="!isLocal" :loading="testing" :disabled="submitting" @click="testConnection">测试连接</a-button>
-        <a-button type="primary" :loading="submitting" :disabled="testing || (!isLocal && !tested)" @click="submit">保存主机</a-button>
+        <a-button v-if="!isLocal && canTest" :loading="testing" :disabled="submitting" @click="testConnection">测试连接</a-button>
+        <a-button type="primary" :loading="submitting" :disabled="testing || (!isLocal && (!canTest || !tested))" @click="submit">保存主机</a-button>
       </div>
     </template>
   </a-drawer>

@@ -22,6 +22,8 @@ var (
 	ErrEnvironmentNotFound      = errors.New("环境不存在")
 	ErrEnvironmentReferenced    = errors.New("环境仍被启用的部署配置引用，不能停用或删除")
 	ErrHostMembershipReferenced = errors.New("所选主机仍被该环境的部署配置引用，不能移除")
+	ErrHostMembershipRunning    = errors.New("所选主机正在执行该环境的发布，运行结束后才能移除")
+	ErrDeploymentTargetInvalid  = errors.New("调整后的主机无法满足该环境现有部署方案，请保留唯一可用主机或先修改部署方案")
 	ErrHostNotFound             = errors.New("所选主机不存在，请刷新后重试")
 )
 
@@ -45,12 +47,21 @@ type Detail struct {
 	Hosts       []model.Host
 }
 
-type Service struct {
-	db *gorm.DB
+type DeploymentTargetReconciler interface {
+	ReconcileEnvironmentTargets(context.Context, *gorm.DB, string) error
 }
 
-func NewService(db *gorm.DB) *Service {
-	return &Service{db: db}
+type Service struct {
+	db               *gorm.DB
+	targetReconciler DeploymentTargetReconciler
+}
+
+func NewService(db *gorm.DB, reconcilers ...DeploymentTargetReconciler) *Service {
+	service := &Service{db: db}
+	if len(reconcilers) > 0 {
+		service.targetReconciler = reconcilers[0]
+	}
+	return service
 }
 
 func (s *Service) List(ctx context.Context) ([]Detail, error) {
@@ -148,7 +159,7 @@ func (s *Service) Create(ctx context.Context, actorID string, input Input) (*Det
 		if err := tx.Create(environment).Error; err != nil {
 			return err
 		}
-		return replaceHosts(tx, environment.ID, input.HostIDs, now)
+		return replaceHosts(tx, environment.ID, input.HostIDs, now, false)
 	})
 	if err != nil {
 		switch {
@@ -188,7 +199,10 @@ func (s *Service) Update(ctx context.Context, id string, input Input) (*Detail, 
 		}).Error; err != nil {
 			return err
 		}
-		return replaceHosts(tx, existing.ID, input.HostIDs, now)
+		if err := replaceHosts(tx, existing.ID, input.HostIDs, now, s.targetReconciler != nil); err != nil {
+			return err
+		}
+		return s.reconcileDeploymentTargets(ctx, tx, existing.ID)
 	})
 	if err != nil {
 		switch {
@@ -200,6 +214,10 @@ func (s *Service) Update(ctx context.Context, id string, input Input) (*Detail, 
 			return nil, ErrHostNotFound
 		case errors.Is(err, ErrHostMembershipReferenced):
 			return nil, ErrHostMembershipReferenced
+		case errors.Is(err, ErrHostMembershipRunning):
+			return nil, ErrHostMembershipRunning
+		case errors.Is(err, ErrDeploymentTargetInvalid):
+			return nil, ErrDeploymentTargetInvalid
 		default:
 			return nil, fmt.Errorf("更新环境失败: %w", err)
 		}
@@ -254,7 +272,10 @@ func (s *Service) ReplaceHosts(ctx context.Context, id string, hostIDs []string)
 		if err := ensureHostsExist(tx, hostIDs); err != nil {
 			return err
 		}
-		if err := replaceHosts(tx, existing.ID, hostIDs, now); err != nil {
+		if err := replaceHosts(tx, existing.ID, hostIDs, now, s.targetReconciler != nil); err != nil {
+			return err
+		}
+		if err := s.reconcileDeploymentTargets(ctx, tx, existing.ID); err != nil {
 			return err
 		}
 		return tx.Model(&existing).Update("updated_at", now).Error
@@ -267,6 +288,10 @@ func (s *Service) ReplaceHosts(ctx context.Context, id string, hostIDs []string)
 			return nil, ErrHostNotFound
 		case errors.Is(err, ErrHostMembershipReferenced):
 			return nil, ErrHostMembershipReferenced
+		case errors.Is(err, ErrHostMembershipRunning):
+			return nil, ErrHostMembershipRunning
+		case errors.Is(err, ErrDeploymentTargetInvalid):
+			return nil, ErrDeploymentTargetInvalid
 		default:
 			return nil, fmt.Errorf("调整环境主机归属失败: %w", err)
 		}
@@ -455,7 +480,7 @@ func ensureHostsExist(tx *gorm.DB, hostIDs []string) error {
 	return nil
 }
 
-func replaceHosts(tx *gorm.DB, environmentID string, hostIDs []string, now time.Time) error {
+func replaceHosts(tx *gorm.DB, environmentID string, hostIDs []string, now time.Time, allowReferenced bool) error {
 	remove := tx.Model(&model.EnvironmentHost{}).Where("environment_id = ?", environmentID)
 	if len(hostIDs) > 0 {
 		remove = remove.Where("host_id NOT IN ?", hostIDs)
@@ -465,6 +490,15 @@ func replaceHosts(tx *gorm.DB, environmentID string, hostIDs []string, now time.
 		return fmt.Errorf("查询待移除环境主机失败: %w", err)
 	}
 	if len(removedHostIDs) > 0 {
+		running, err := runningDeploymentReferencesHostMembership(tx, environmentID, removedHostIDs)
+		if err != nil {
+			return fmt.Errorf("检查环境主机运行中发布失败: %w", err)
+		}
+		if running {
+			return ErrHostMembershipRunning
+		}
+	}
+	if len(removedHostIDs) > 0 && !allowReferenced {
 		var targetCount int64
 		if err := tx.Model(&model.DeploymentTarget{}).
 			Where("platform = ? AND environment_id = ? AND host_id IN ?", model.DeploymentSSH, environmentID, removedHostIDs).
@@ -498,6 +532,29 @@ func replaceHosts(tx *gorm.DB, environmentID string, hostIDs []string, now time.
 	}
 	if err := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&memberships).Error; err != nil {
 		return fmt.Errorf("更新环境主机归属失败: %w", err)
+	}
+	return nil
+}
+
+func runningDeploymentReferencesHostMembership(tx *gorm.DB, environmentID string, hostIDs []string) (bool, error) {
+	if len(hostIDs) == 0 || !tx.Migrator().HasTable(&model.DeploymentRecord{}) {
+		return false, nil
+	}
+	var count int64
+	if err := tx.Model(&model.DeploymentRecord{}).
+		Where("environment_id = ? AND host_id IN ? AND status = ?", environmentID, hostIDs, model.DeploymentRunning).
+		Count(&count).Error; err != nil {
+		return false, err
+	}
+	return count > 0, nil
+}
+
+func (s *Service) reconcileDeploymentTargets(ctx context.Context, tx *gorm.DB, environmentID string) error {
+	if s.targetReconciler == nil {
+		return nil
+	}
+	if err := s.targetReconciler.ReconcileEnvironmentTargets(ctx, tx, environmentID); err != nil {
+		return fmt.Errorf("%w: %v", ErrDeploymentTargetInvalid, err)
 	}
 	return nil
 }

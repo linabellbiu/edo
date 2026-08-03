@@ -45,7 +45,10 @@ const hostOptions = computed(() => hosts.value
     const environmentCount = environmentIDsOf(host).length
     return {
       value: host.id,
-      label: `${host.name} · ${host.is_builtin ? '本地 · ' : ''}${capabilities} · ${t('environment.hostPicker.environmentCount', { count: environmentCount })}`,
+      label: host.name,
+      location: host.is_builtin ? '本地' : `${host.address}:${host.ssh_port}`,
+      capabilities,
+      environmentCount,
       disabled: !host.is_active,
     }
   }))
@@ -158,7 +161,7 @@ function capabilityName(kind: InfrastructureHost['capabilities'][number]['kind']
 }
 
 watch([() => route.query.create, () => auth.loaded], ([value]) => {
-  if (value !== '1' || !auth.canAny(['deployment.manage'])) return
+  if (value !== '1' || !auth.canAny(['deployment.create'])) return
   create()
   const query = { ...route.query }
   delete query.create
@@ -173,7 +176,7 @@ onMounted(refresh)
   <section>
     <PageToolbar description="环境是可自定义的基础设施分组，用来明确主机归属；命令部署和运行时能力统一在“主机与集群”中维护。">
       <a-button :loading="loading" @click="refresh"><RefreshCw :size="15" />刷新</a-button>
-      <a-button v-if="auth.canAny(['deployment.manage'])" type="primary" @click="create"><Plus :size="15" />创建环境</a-button>
+      <a-button v-if="auth.canAny(['deployment.create'])" type="primary" @click="create"><Plus :size="15" />创建环境</a-button>
     </PageToolbar>
 
     <div class="environment-layout vben-card">
@@ -209,8 +212,8 @@ onMounted(refresh)
           </div>
           <div class="detail-actions">
             <a-tag :color="selected.is_active ? 'success' : 'default'">{{ selected.is_active ? '已启用' : '已停用' }}</a-tag>
-            <a-button v-if="auth.canAny(['deployment.manage'])" @click="edit(selected, 'details')"><Pencil :size="14" />{{ t('environment.actions.editDetails') }}</a-button>
-            <a-button v-if="auth.canAny(['deployment.manage'])" @click="toggle(selected)">{{ selected.is_active ? '停用' : '启用' }}</a-button>
+            <a-button v-if="auth.canAny(['deployment.update'])" @click="edit(selected, 'details')"><Pencil :size="14" />{{ t('environment.actions.editDetails') }}</a-button>
+            <a-button v-if="auth.canAny(['deployment.update'])" @click="toggle(selected)">{{ selected.is_active ? '停用' : '启用' }}</a-button>
           </div>
         </header>
 
@@ -222,14 +225,15 @@ onMounted(refresh)
         <section class="assigned-hosts">
           <header>
             <div><h4>所属主机</h4><p>{{ t('environment.hosts.sharedDescription') }}</p></div>
-            <a-button v-if="auth.canAny(['deployment.manage'])" size="small" @click="edit(selected, 'hosts')">{{ t('environment.actions.adjustHosts') }}</a-button>
+            <a-button v-if="auth.canAny(['deployment.update'])" size="small" @click="edit(selected, 'hosts')">{{ t('environment.actions.adjustHosts') }}</a-button>
           </header>
           <div class="host-grid">
             <article v-for="host in selected.hosts" :key="host.id">
               <span class="host-status" :class="{ inactive: !host.is_active }" />
               <div class="host-main">
                 <strong>{{ host.name }}</strong>
-                <small>{{ host.is_builtin ? '本地' : `${host.address}:${host.ssh_port} · ${host.ssh_username}` }}</small>
+                <small>{{ host.is_builtin ? '位置：本地' : `连接地址：${host.address}:${host.ssh_port}` }}</small>
+                <small v-if="!host.is_builtin">SSH 用户：{{ host.ssh_username }}</small>
               </div>
               <div class="host-runtime-icons">
                 <span v-for="capability in host.capabilities" :key="capability.kind" :title="capabilityName(capability.kind)">
@@ -263,15 +267,19 @@ onMounted(refresh)
                 placeholder="选择一个或多个主机"
                 :options="hostOptions"
               >
-                <template #option="{ value, label }">
+                <template #option="{ value, label, location, capabilities, environmentCount }">
                   <span class="managed-resource-option">
-                    <span class="managed-resource-option-label">{{ label }}</span>
+                    <span class="host-option-copy">
+                      <strong>{{ label }}</strong>
+                      <small>位置：{{ location }}</small>
+                      <small>能力：{{ capabilities }}；已关联环境：{{ environmentCount }}</small>
+                    </span>
                     <a class="managed-resource-option-view" :href="resourceViewHref('/hosts', { host: String(value) })" target="_blank" rel="noopener noreferrer" @mousedown.stop @click.stop>查看</a>
                   </span>
                 </template>
               </a-select>
               <a-button
-                v-if="auth.canAny(['cluster.manage'])"
+                v-if="auth.canAny(['cluster.create'])"
                 class="create-relation"
                 aria-label="添加主机"
                 title="添加主机"
@@ -295,5 +303,5 @@ onMounted(refresh)
 </template>
 
 <style scoped>
-.environment-layout{display:grid;min-height:590px;grid-template-columns:290px minmax(0,1fr);overflow:hidden}.environment-list{border-right:1px solid var(--edo-border);background:var(--edo-surface-soft)}.environment-list>header{display:flex;height:64px;align-items:center;justify-content:space-between;padding:0 16px}.environment-list>header strong,.environment-list>header small{display:block}.environment-list>header small{margin-top:2px;color:var(--edo-muted);font-size:12px}.environment-list>header>span{min-width:27px;padding:3px 8px;border-radius:999px;color:var(--edo-muted);background:var(--edo-surface);text-align:center}.environment-list-scroll{max-height:calc(100vh - 230px);overflow-y:auto;padding:0 8px 10px}.environment-list-scroll>button{display:grid;width:100%;min-height:68px;align-items:center;grid-template-columns:38px minmax(0,1fr) 8px;gap:10px;margin:3px 0;padding:9px 10px;border:0;border-radius:10px;background:transparent;cursor:pointer;text-align:left}.environment-list-scroll>button:hover{background:var(--edo-surface)}.environment-list-scroll>button.active{background:var(--edo-primary-soft);box-shadow:inset 3px 0 var(--edo-primary)}.environment-list-scroll>button span:nth-child(2){min-width:0}.environment-list-scroll>button strong,.environment-list-scroll>button small{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.environment-list-scroll>button small{margin-top:3px;color:var(--edo-muted);font-size:12px}.environment-icon{display:grid;width:38px;height:38px;place-items:center;border-radius:11px;color:#4f6ef7;background:var(--edo-surface)}.environment-icon svg{width:19px}.environment-list-scroll>button i{width:8px;height:8px;border-radius:50%;background:#28b66e}.environment-list-scroll>button i.inactive{background:#a8adb7}.environment-detail{min-width:0;padding:24px}.detail-header{display:flex;align-items:flex-start;justify-content:space-between;gap:20px}.detail-header>div:first-child>span,.detail-header p{color:var(--edo-muted)}.detail-header h3{margin:3px 0 1px;font-size:22px}.detail-header p{margin:0}.detail-actions{display:flex;align-items:center;gap:8px}.environment-summary{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;margin-top:24px}.environment-summary>div{display:flex;align-items:center;gap:12px;padding:15px;border:1px solid var(--edo-border);border-radius:11px;background:var(--edo-surface-soft)}.environment-summary svg{width:21px;color:var(--edo-primary)}.environment-summary small,.environment-summary strong{display:block}.environment-summary small{color:var(--edo-muted)}.environment-summary strong{font-size:18px}.assigned-hosts{margin-top:28px}.assigned-hosts>header{display:flex;align-items:flex-start;justify-content:space-between}.assigned-hosts h4,.assigned-hosts p{margin:0}.assigned-hosts p{margin-top:3px;color:var(--edo-muted)}.host-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;margin-top:14px}.host-grid article{display:grid;min-height:86px;align-items:center;grid-template-columns:9px minmax(0,1fr) auto;gap:10px;padding:14px;border:1px solid var(--edo-border);border-radius:12px;background:var(--edo-surface-soft)}.host-status{width:8px;height:8px;border-radius:50%;background:#28b66e}.host-status.inactive{background:#a8adb7}.host-main{min-width:0}.host-main strong,.host-main small{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.host-main small,.capability-label{color:var(--edo-muted)}.host-runtime-icons{display:flex;gap:5px}.host-runtime-icons span{display:grid;width:28px;height:28px;place-items:center;border-radius:8px;background:var(--edo-surface)}.host-runtime-icons :deep(svg){width:18px;height:18px}.capability-label{grid-column:2/-1;font-size:12px}.form-grid{display:grid;grid-template-columns:1fr 1fr;gap:0 14px}.span-2{grid-column:1/-1}.relation-select{display:flex;gap:8px}.relation-select>.ant-select{min-width:0;flex:1}.create-relation{width:34px;flex:0 0 34px;padding:0}.field-hint{margin-top:6px;color:var(--edo-muted);font-size:12px}.host-selection-hint{display:flex;align-items:flex-start;justify-content:space-between;gap:12px}.host-selection-hint strong{flex:0 0 auto;color:var(--edo-text);font-weight:600}@media(max-width:900px){.environment-layout{grid-template-columns:1fr}.environment-list{max-height:270px;border-right:0;border-bottom:1px solid var(--edo-border)}.environment-list-scroll{max-height:200px}.environment-summary,.host-grid{grid-template-columns:1fr}}@media(max-width:640px){.environment-detail{padding:16px}.detail-header{flex-direction:column}.form-grid{grid-template-columns:1fr}.span-2{grid-column:auto}.host-selection-hint{flex-direction:column;gap:3px}}
+.environment-layout{display:grid;min-height:590px;grid-template-columns:290px minmax(0,1fr);overflow:hidden}.environment-list{border-right:1px solid var(--edo-border);background:var(--edo-surface-soft)}.environment-list>header{display:flex;height:64px;align-items:center;justify-content:space-between;padding:0 16px}.environment-list>header strong,.environment-list>header small{display:block}.environment-list>header small{margin-top:2px;color:var(--edo-muted);font-size:12px}.environment-list>header>span{min-width:27px;padding:3px 8px;border-radius:999px;color:var(--edo-muted);background:var(--edo-surface);text-align:center}.environment-list-scroll{max-height:calc(100vh - 230px);overflow-y:auto;padding:0 8px 10px}.environment-list-scroll>button{display:grid;width:100%;min-height:68px;align-items:center;grid-template-columns:38px minmax(0,1fr) 8px;gap:10px;margin:3px 0;padding:9px 10px;border:0;border-radius:10px;background:transparent;cursor:pointer;text-align:left}.environment-list-scroll>button:hover{background:var(--edo-surface)}.environment-list-scroll>button.active{background:var(--edo-primary-soft);box-shadow:inset 3px 0 var(--edo-primary)}.environment-list-scroll>button span:nth-child(2){min-width:0}.environment-list-scroll>button strong,.environment-list-scroll>button small{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.environment-list-scroll>button small{margin-top:3px;color:var(--edo-muted);font-size:12px}.environment-icon{display:grid;width:38px;height:38px;place-items:center;border-radius:11px;color:#4f6ef7;background:var(--edo-surface)}.environment-icon svg{width:19px}.environment-list-scroll>button i{width:8px;height:8px;border-radius:50%;background:#28b66e}.environment-list-scroll>button i.inactive{background:#a8adb7}.environment-detail{min-width:0;padding:24px}.detail-header{display:flex;align-items:flex-start;justify-content:space-between;gap:20px}.detail-header>div:first-child>span,.detail-header p{color:var(--edo-muted)}.detail-header h3{margin:3px 0 1px;font-size:22px}.detail-header p{margin:0}.detail-actions{display:flex;align-items:center;gap:8px}.environment-summary{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;margin-top:24px}.environment-summary>div{display:flex;align-items:center;gap:12px;padding:15px;border:1px solid var(--edo-border);border-radius:11px;background:var(--edo-surface-soft)}.environment-summary svg{width:21px;color:var(--edo-primary)}.environment-summary small,.environment-summary strong{display:block}.environment-summary small{color:var(--edo-muted)}.environment-summary strong{font-size:18px}.assigned-hosts{margin-top:28px}.assigned-hosts>header{display:flex;align-items:flex-start;justify-content:space-between}.assigned-hosts h4,.assigned-hosts p{margin:0}.assigned-hosts p{margin-top:3px;color:var(--edo-muted)}.host-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;margin-top:14px}.host-grid article{display:grid;min-height:86px;align-items:center;grid-template-columns:9px minmax(0,1fr) auto;gap:10px;padding:14px;border:1px solid var(--edo-border);border-radius:12px;background:var(--edo-surface-soft)}.host-status{width:8px;height:8px;border-radius:50%;background:#28b66e}.host-status.inactive{background:#a8adb7}.host-main{min-width:0}.host-main strong,.host-main small{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.host-main small,.capability-label{color:var(--edo-muted)}.host-runtime-icons{display:flex;gap:5px}.host-runtime-icons span{display:grid;width:28px;height:28px;place-items:center;border-radius:8px;background:var(--edo-surface)}.host-runtime-icons :deep(svg){width:18px;height:18px}.capability-label{grid-column:2/-1;font-size:12px}.form-grid{display:grid;grid-template-columns:1fr 1fr;gap:0 14px}.span-2{grid-column:1/-1}.relation-select{display:flex;gap:8px}.relation-select>.ant-select{min-width:0;flex:1}.create-relation{width:34px;flex:0 0 34px;padding:0}.host-option-copy{min-width:0;flex:1}.host-option-copy strong,.host-option-copy small{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.host-option-copy small{color:var(--edo-muted);font-size:11px}.field-hint{margin-top:6px;color:var(--edo-muted);font-size:12px}.host-selection-hint{display:flex;align-items:flex-start;justify-content:space-between;gap:12px}.host-selection-hint strong{flex:0 0 auto;color:var(--edo-text);font-weight:600}@media(max-width:900px){.environment-layout{grid-template-columns:1fr}.environment-list{max-height:270px;border-right:0;border-bottom:1px solid var(--edo-border)}.environment-list-scroll{max-height:200px}.environment-summary,.host-grid{grid-template-columns:1fr}}@media(max-width:640px){.environment-detail{padding:16px}.detail-header{flex-direction:column}.form-grid{grid-template-columns:1fr}.span-2{grid-column:auto}.host-selection-hint{flex-direction:column;gap:3px}}
 </style>

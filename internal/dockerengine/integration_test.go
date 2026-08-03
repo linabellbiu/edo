@@ -150,6 +150,14 @@ func TestDockerBuildAndComposeIntegration(t *testing.T) {
 		replacedContainer.Container.Config.Labels["edo.deployment.id"] != replacementDeploymentID {
 		t.Fatalf("重复发布后新容器没有稳定运行: container=%+v err=%v", replacedContainer.Container, err)
 	}
+	controlled, err := service.ControlContainer(ctx, LocalEndpointID, containerName, "stop")
+	if err != nil || controlled.Running || controlled.State == "running" {
+		t.Fatalf("真实 Docker 容器停止失败: state=%+v err=%v", controlled, err)
+	}
+	controlled, err = service.ControlContainer(ctx, LocalEndpointID, containerName, "restart")
+	if err != nil || !controlled.Running || controlled.State != "running" {
+		t.Fatalf("真实 Docker 容器重启失败: state=%+v err=%v", controlled, err)
+	}
 	shortRequestService := NewService(db, nil, config.Runtime{
 		ConnectTimeout: 10 * time.Second,
 		RequestTimeout: 250 * time.Millisecond,
@@ -243,6 +251,14 @@ func TestDockerBuildAndComposeIntegration(t *testing.T) {
 	deployed, err := apiClient.ContainerInspect(ctx, containers.Items[0].ID, client.ContainerInspectOptions{})
 	if err != nil || deployed.Container.Config == nil || deployed.Container.Config.Image != imageID || deployed.Container.Image != imageID {
 		t.Fatalf("Compose 没有直接按固定 Image ID 启动: container=%+v err=%v", deployed.Container, err)
+	}
+	composeState, err := service.ControlCompose(ctx, LocalEndpointID, targetID, "app", "stop")
+	if err != nil || composeState.Running {
+		t.Fatalf("真实 Docker Compose 服务停止失败: state=%+v err=%v", composeState, err)
+	}
+	composeState, err = service.ControlCompose(ctx, LocalEndpointID, targetID, "app", "restart")
+	if err != nil || !composeState.Running {
+		t.Fatalf("真实 Docker Compose 服务重启失败: state=%+v err=%v", composeState, err)
 	}
 	composeStopTimeout := 2
 	if _, err := apiClient.ContainerStop(ctx, deployed.Container.ID, client.ContainerStopOptions{Timeout: &composeStopTimeout}); err != nil {
