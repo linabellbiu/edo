@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
-	"sort"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -24,13 +23,16 @@ var (
 	ErrReleasePlanNotFound        = errors.New("发布计划不存在")
 	ErrReleasePlanNotEditable     = errors.New("发布计划正在执行，暂时不能修改")
 	ErrReleasePlanDisabled        = errors.New("发布计划已停用，不能执行")
-	ErrInvalidReleaseGroup        = errors.New("发布组配置无效")
-	ErrReleaseGroupExists         = errors.New("发布组名称已存在")
-	ErrReleaseGroupNotFound       = errors.New("发布组不存在")
-	ErrReleaseGroupDependency     = errors.New("发布组依赖不能形成循环")
-	ErrReleaseApplicationAssigned = errors.New("应用已属于当前计划的其他发布组")
+	ErrInvalidReleaseGroup        = errors.New("发布计划应用配置无效")
+	ErrReleaseGroupExists         = errors.New("发布计划应用配置已存在")
+	ErrReleaseGroupNotFound       = errors.New("发布计划应用配置不存在")
+	ErrReleaseGroupDependency     = errors.New("发布计划应用执行依赖无效")
+	ErrReleaseApplicationAssigned = errors.New("应用已加入当前发布计划")
+	ErrReleasePlanSingleGroup     = errors.New("一个发布计划只允许一个应用执行集合")
 	errInvalidReleaseApplications = errors.New("发布应用配置无效")
 )
+
+const releasePlanInternalGroupName = "应用列表"
 
 var releaseVersionPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._/-]{0,63}$`)
 var releaseCommitPattern = regexp.MustCompile(`^(?:[0-9a-f]{40}|[0-9a-f]{64})$`)
@@ -206,41 +208,26 @@ func (s *Service) CreateReleasePlan(ctx context.Context, actorID string, input R
 }
 
 func (s *Service) normalizeNewReleaseGroups(ctx context.Context, inputs []ReleaseGroupInput) ([]ReleaseGroupInput, error) {
-	if len(inputs) == 0 || len(inputs) > 50 {
+	if len(inputs) != 1 {
 		return nil, ErrInvalidReleasePlan
 	}
-	seenNames := make(map[string]struct{}, len(inputs))
-	seenApplications := make(map[string]struct{})
-	result := make([]ReleaseGroupInput, 0, len(inputs))
-	for _, input := range inputs {
-		// 新建请求中的发布组尚无服务端 ID，不能引用一个尚未创建的依赖组。
-		// 多组依赖可在计划创建后通过原子配置接口保存。
-		if len(input.DependsOnGroupIDs) > 0 {
-			return nil, ErrInvalidReleasePlan
-		}
-		normalized, err := s.normalizeReleaseGroupInput(ctx, "", "", input)
-		if err != nil {
-			if errors.Is(err, ErrInvalidReleaseGroup) || errors.Is(err, errInvalidReleaseApplications) {
-				return nil, ErrInvalidReleasePlan
-			}
-			return nil, fmt.Errorf("检查发布组配置失败: %w", err)
-		}
-		if _, exists := seenNames[normalized.Name]; exists {
-			return nil, ErrInvalidReleasePlan
-		}
-		seenNames[normalized.Name] = struct{}{}
-		for _, application := range normalized.Applications {
-			if _, exists := seenApplications[application.ApplicationID]; exists {
-				return nil, ErrInvalidReleasePlan
-			}
-			seenApplications[application.ApplicationID] = struct{}{}
-		}
-		result = append(result, normalized)
-	}
-	if len(seenApplications) == 0 {
+	input := inputs[0]
+	if len(input.DependsOnGroupIDs) > 0 {
 		return nil, ErrInvalidReleasePlan
 	}
-	return result, nil
+	input.Name = releasePlanInternalGroupName
+	input.DependsOnGroupIDs = nil
+	normalized, err := s.normalizeReleaseGroupInput(ctx, "", "", input)
+	if err != nil {
+		if errors.Is(err, ErrInvalidReleaseGroup) || errors.Is(err, errInvalidReleaseApplications) {
+			return nil, ErrInvalidReleasePlan
+		}
+		return nil, fmt.Errorf("检查发布计划应用配置失败: %w", err)
+	}
+	if len(normalized.Applications) == 0 {
+		return nil, ErrInvalidReleasePlan
+	}
+	return []ReleaseGroupInput{normalized}, nil
 }
 
 func (s *Service) UpdateReleasePlan(ctx context.Context, id, actorID string, input ReleasePlanInput) (*model.ReleasePlan, error) {
@@ -324,7 +311,7 @@ func (s *Service) SetReleasePlanActive(ctx context.Context, id, actorID string, 
 	return s.FindReleasePlan(ctx, id)
 }
 
-// SaveReleasePlanConfiguration 原子替换计划说明和完整发布组结构。
+// SaveReleasePlanConfiguration 原子替换计划说明和唯一应用执行集合。
 // 运行中的执行只读取启动快照，但仍禁止并发改写配置，避免操作者误判当前运行所用版本。
 func (s *Service) SaveReleasePlanConfiguration(
 	ctx context.Context,
@@ -332,15 +319,18 @@ func (s *Service) SaveReleasePlanConfiguration(
 	input ReleasePlanConfigurationInput,
 ) (*model.ReleasePlan, error) {
 	input.Description = strings.TrimSpace(input.Description)
-	if utf8.RuneCountInString(input.Description) > 500 || len(input.Groups) > 50 {
+	if utf8.RuneCountInString(input.Description) > 500 || len(input.Groups) != 1 {
 		return nil, ErrInvalidReleasePlan
 	}
-	seenNames := make(map[string]struct{}, len(input.Groups))
 	seenApplications := make(map[string]struct{})
 	for index := range input.Groups {
 		group := &input.Groups[index]
 		group.ID = strings.TrimSpace(group.ID)
-		group.Name = strings.TrimSpace(group.Name)
+		if len(group.DependsOnGroupIDs) > 0 {
+			return nil, ErrReleasePlanSingleGroup
+		}
+		group.Name = releasePlanInternalGroupName
+		group.DependsOnGroupIDs = nil
 		if group.ID != "" && len(group.ID) > 36 {
 			return nil, ErrInvalidReleaseGroup
 		}
@@ -355,10 +345,6 @@ func (s *Service) SaveReleasePlanConfiguration(
 			(group.FailurePolicy != model.ReleaseGroupStopOnFailure && group.FailurePolicy != model.ReleaseGroupContinue) {
 			return nil, ErrInvalidReleaseGroup
 		}
-		if _, duplicate := seenNames[group.Name]; duplicate {
-			return nil, ErrReleaseGroupExists
-		}
-		seenNames[group.Name] = struct{}{}
 		if len(group.Applications) > 0 {
 			applications, err := s.normalizeReleaseApplications(ctx, group.Applications)
 			if err != nil {
@@ -375,7 +361,6 @@ func (s *Service) SaveReleasePlanConfiguration(
 			}
 			seenApplications[application.ApplicationID] = struct{}{}
 		}
-		group.DependsOnGroupIDs = uniqueTrimmedIDs(group.DependsOnGroupIDs)
 	}
 
 	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
@@ -412,17 +397,6 @@ func (s *Service) SaveReleasePlanConfiguration(
 			}
 			finalIDs[group.ID] = struct{}{}
 		}
-		for index := range input.Groups {
-			for _, dependencyID := range input.Groups[index].DependsOnGroupIDs {
-				if dependencyID == input.Groups[index].ID {
-					return ErrReleaseGroupDependency
-				}
-				if _, exists := finalIDs[dependencyID]; !exists {
-					return ErrInvalidReleaseGroup
-				}
-			}
-		}
-
 		if len(existingIDs) > 0 {
 			if err := tx.Where("release_group_id IN ? OR depends_on_group_id IN ?", existingIDs, existingIDs).
 				Delete(&model.ReleaseGroupDependency{}).Error; err != nil {
@@ -439,7 +413,6 @@ func (s *Service) SaveReleasePlanConfiguration(
 		now := time.Now().UTC()
 		groups := make([]model.ReleaseGroup, 0, len(input.Groups))
 		applications := make([]model.ReleaseGroupApplication, 0, len(seenApplications))
-		dependencies := make([]model.ReleaseGroupDependency, 0)
 		for index, groupInput := range input.Groups {
 			createdAt := now
 			if existing, exists := existingByID[groupInput.ID]; exists {
@@ -451,11 +424,6 @@ func (s *Service) SaveReleasePlanConfiguration(
 				CreatedAt: createdAt, UpdatedAt: now,
 			})
 			applications = append(applications, releaseGroupApplicationModels(groupInput.ID, groupInput.Applications, now)...)
-			for _, dependencyID := range groupInput.DependsOnGroupIDs {
-				dependencies = append(dependencies, model.ReleaseGroupDependency{
-					ReleaseGroupID: groupInput.ID, DependsOnGroupID: dependencyID,
-				})
-			}
 		}
 		if len(groups) > 0 {
 			if err := tx.Create(&groups).Error; err != nil {
@@ -466,18 +434,6 @@ func (s *Service) SaveReleasePlanConfiguration(
 			if err := tx.Create(&applications).Error; err != nil {
 				return err
 			}
-		}
-		if len(dependencies) > 0 {
-			if err := tx.Create(&dependencies).Error; err != nil {
-				return err
-			}
-		}
-		cyclic, err := releaseGroupDependenciesCyclic(tx, plan.ID)
-		if err != nil {
-			return err
-		}
-		if cyclic {
-			return ErrReleaseGroupDependency
 		}
 		return tx.Model(&plan).Updates(map[string]any{
 			"description": input.Description, "updated_by": actorID, "updated_at": now,
@@ -530,7 +486,7 @@ func (s *Service) DeleteReleasePlan(ctx context.Context, id string) error {
 }
 
 func (s *Service) CreateReleaseGroup(ctx context.Context, planID string, input ReleaseGroupInput) (*model.ReleasePlan, error) {
-	return s.saveReleaseGroup(ctx, planID, "", input)
+	return nil, ErrReleasePlanSingleGroup
 }
 
 func (s *Service) UpdateReleaseGroup(ctx context.Context, planID, groupID string, input ReleaseGroupInput) (*model.ReleasePlan, error) {
@@ -538,6 +494,11 @@ func (s *Service) UpdateReleaseGroup(ctx context.Context, planID, groupID string
 }
 
 func (s *Service) saveReleaseGroup(ctx context.Context, planID, groupID string, input ReleaseGroupInput) (*model.ReleasePlan, error) {
+	if groupID == "" || len(input.DependsOnGroupIDs) > 0 {
+		return nil, ErrReleasePlanSingleGroup
+	}
+	input.Name = releasePlanInternalGroupName
+	input.DependsOnGroupIDs = nil
 	input, err := s.normalizeReleaseGroupInput(ctx, planID, groupID, input)
 	if err != nil {
 		return nil, err
@@ -553,6 +514,13 @@ func (s *Service) saveReleaseGroup(ctx context.Context, planID, groupID string, 
 		if err := ensureReleasePlanNotRunning(tx, plan.ID); err != nil {
 			return err
 		}
+		var groupCount int64
+		if err := tx.Model(&model.ReleaseGroup{}).Where("release_plan_id = ?", planID).Count(&groupCount).Error; err != nil {
+			return err
+		}
+		if groupCount != 1 {
+			return ErrReleasePlanSingleGroup
+		}
 		if err := ensureReleaseApplicationsUnassigned(tx, planID, groupID, input.Applications); err != nil {
 			return err
 		}
@@ -561,18 +529,7 @@ func (s *Service) saveReleaseGroup(ctx context.Context, planID, groupID string, 
 			ID: groupID, ReleasePlanID: planID, Name: input.Name, Mode: input.Mode,
 			FailurePolicy: input.FailurePolicy, UpdatedAt: now,
 		}
-		if groupID == "" {
-			group.ID, group.CreatedAt = uuid.NewString(), now
-			var maxOrder int
-			if err := tx.Model(&model.ReleaseGroup{}).Where("release_plan_id = ?", planID).
-				Select("COALESCE(MAX(sort_order), -1)").Scan(&maxOrder).Error; err != nil {
-				return err
-			}
-			group.SortOrder = maxOrder + 1
-			if err := tx.Create(&group).Error; err != nil {
-				return err
-			}
-		} else {
+		{
 			var existing model.ReleaseGroup
 			if err := tx.First(&existing, "id = ? AND release_plan_id = ?", groupID, planID).Error; err != nil {
 				if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -599,22 +556,6 @@ func (s *Service) saveReleaseGroup(ctx context.Context, planID, groupID string, 
 				return err
 			}
 		}
-		dependencies := make([]model.ReleaseGroupDependency, 0, len(input.DependsOnGroupIDs))
-		for _, dependencyID := range input.DependsOnGroupIDs {
-			dependencies = append(dependencies, model.ReleaseGroupDependency{ReleaseGroupID: group.ID, DependsOnGroupID: dependencyID})
-		}
-		if len(dependencies) > 0 {
-			if err := tx.Create(&dependencies).Error; err != nil {
-				return err
-			}
-		}
-		cyclic, err := releaseGroupDependenciesCyclic(tx, planID)
-		if err != nil {
-			return err
-		}
-		if cyclic {
-			return ErrReleaseGroupDependency
-		}
 		return tx.Model(&model.ReleasePlan{}).Where("id = ?", plan.ID).
 			Update("updated_at", now).Error
 	})
@@ -624,10 +565,10 @@ func (s *Service) saveReleaseGroup(ctx context.Context, planID, groupID string, 
 			return nil, ErrReleaseGroupExists
 		case errors.Is(err, ErrReleasePlanNotFound), errors.Is(err, ErrReleasePlanNotEditable),
 			errors.Is(err, ErrReleaseGroupNotFound), errors.Is(err, ErrReleaseGroupDependency),
-			errors.Is(err, ErrReleaseApplicationAssigned):
+			errors.Is(err, ErrReleaseApplicationAssigned), errors.Is(err, ErrReleasePlanSingleGroup):
 			return nil, err
 		default:
-			return nil, fmt.Errorf("保存发布组失败: %w", err)
+			return nil, fmt.Errorf("保存发布计划应用失败: %w", err)
 		}
 	}
 	return s.FindReleasePlan(ctx, planID)
@@ -677,7 +618,7 @@ func (s *Service) normalizeReleaseGroupInput(ctx context.Context, planID, groupI
 		var dependencyCount int64
 		if err := s.db.WithContext(ctx).Model(&model.ReleaseGroup{}).
 			Where("release_plan_id = ? AND id IN ?", planID, input.DependsOnGroupIDs).Count(&dependencyCount).Error; err != nil {
-			return input, fmt.Errorf("检查发布组依赖失败: %w", err)
+			return input, fmt.Errorf("检查发布计划应用依赖失败: %w", err)
 		}
 		if dependencyCount != int64(len(input.DependsOnGroupIDs)) {
 			return input, ErrInvalidReleaseGroup
@@ -753,7 +694,7 @@ func (s *Service) normalizeReleaseApplications(ctx context.Context, inputs []Rel
 	var applicationCount int64
 	if err := s.db.WithContext(ctx).Model(&model.Application{}).
 		Where("id IN ? AND is_active = ?", applicationIDs, true).Count(&applicationCount).Error; err != nil {
-		return nil, fmt.Errorf("检查发布组应用失败: %w", err)
+		return nil, fmt.Errorf("检查发布计划应用失败: %w", err)
 	}
 	if applicationCount != int64(len(applicationIDs)) {
 		return nil, errInvalidReleaseApplications
@@ -790,88 +731,6 @@ func uniqueTrimmedIDs(values []string) []string {
 	return result
 }
 
-func releaseGroupDependenciesCyclic(tx *gorm.DB, planID string) (bool, error) {
-	var groups []model.ReleaseGroup
-	if err := tx.Select("id").Where("release_plan_id = ?", planID).Find(&groups).Error; err != nil {
-		return false, err
-	}
-	ids := make([]string, 0, len(groups))
-	for _, group := range groups {
-		ids = append(ids, group.ID)
-	}
-	var dependencies []model.ReleaseGroupDependency
-	if len(ids) > 0 {
-		if err := tx.Where("release_group_id IN ?", ids).Find(&dependencies).Error; err != nil {
-			return false, err
-		}
-	}
-	outgoing := make(map[string][]string, len(ids))
-	indegree := make(map[string]int, len(ids))
-	for _, id := range ids {
-		indegree[id] = 0
-	}
-	for _, dependency := range dependencies {
-		outgoing[dependency.DependsOnGroupID] = append(outgoing[dependency.DependsOnGroupID], dependency.ReleaseGroupID)
-		indegree[dependency.ReleaseGroupID]++
-	}
-	queue := make([]string, 0, len(ids))
-	for id, degree := range indegree {
-		if degree == 0 {
-			queue = append(queue, id)
-		}
-	}
-	sort.Strings(queue)
-	visited := 0
-	for len(queue) > 0 {
-		id := queue[0]
-		queue = queue[1:]
-		visited++
-		for _, target := range outgoing[id] {
-			indegree[target]--
-			if indegree[target] == 0 {
-				queue = append(queue, target)
-			}
-		}
-	}
-	return visited != len(ids), nil
-}
-
 func (s *Service) DeleteReleaseGroup(ctx context.Context, planID, groupID string) (*model.ReleasePlan, error) {
-	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		var plan model.ReleasePlan
-		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&plan, "id = ?", planID).Error; err != nil {
-			if errors.Is(err, gorm.ErrRecordNotFound) {
-				return ErrReleasePlanNotFound
-			}
-			return err
-		}
-		if err := ensureReleasePlanNotRunning(tx, plan.ID); err != nil {
-			return err
-		}
-		var group model.ReleaseGroup
-		if err := tx.First(&group, "id = ? AND release_plan_id = ?", groupID, planID).Error; err != nil {
-			if errors.Is(err, gorm.ErrRecordNotFound) {
-				return ErrReleaseGroupNotFound
-			}
-			return err
-		}
-		if err := tx.Where("release_group_id = ? OR depends_on_group_id = ?", groupID, groupID).Delete(&model.ReleaseGroupDependency{}).Error; err != nil {
-			return err
-		}
-		if err := tx.Where("release_group_id = ?", groupID).Delete(&model.ReleaseGroupApplication{}).Error; err != nil {
-			return err
-		}
-		if err := tx.Delete(&group).Error; err != nil {
-			return err
-		}
-		return tx.Model(&model.ReleasePlan{}).Where("id = ?", plan.ID).
-			Update("updated_at", time.Now().UTC()).Error
-	})
-	if err != nil {
-		if errors.Is(err, ErrReleasePlanNotFound) || errors.Is(err, ErrReleasePlanNotEditable) || errors.Is(err, ErrReleaseGroupNotFound) {
-			return nil, err
-		}
-		return nil, fmt.Errorf("删除发布组失败: %w", err)
-	}
-	return s.FindReleasePlan(ctx, planID)
+	return nil, ErrReleasePlanSingleGroup
 }

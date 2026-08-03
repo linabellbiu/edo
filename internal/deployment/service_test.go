@@ -213,12 +213,60 @@ func TestDockerContainerFailureDetailsReturnsSafeReason(t *testing.T) {
 			wantCode:    "docker_container_unhealthy",
 			wantMessage: "Docker 容器启动失败：健康检查未通过，请查看容器日志",
 		},
+		{
+			name:        "停止旧容器超时",
+			err:         fmt.Errorf("%w: context deadline exceeded", dockerengine.ErrContainerStopTimeout),
+			wantCode:    "docker_previous_container_stop_timeout",
+			wantMessage: "Docker 容器发布失败：停止旧容器超时，未继续替换容器",
+		},
+		{
+			name:        "恢复旧容器失败",
+			err:         fmt.Errorf("%w: internal diagnostics", dockerengine.ErrContainerRollbackFailed),
+			wantCode:    "docker_container_rollback_failed",
+			wantMessage: "Docker 容器发布失败：新容器未就绪且旧容器恢复失败，请立即检查目标容器",
+		},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			code, message := dockerContainerFailureDetails(test.err)
 			if code != test.wantCode || message != test.wantMessage || strings.Contains(message, "exit_code") {
 				t.Fatalf("Docker 失败原因分类不安全或不准确: code=%q message=%q", code, message)
+			}
+		})
+	}
+}
+
+func TestDockerComposeFailureDetailsReturnsSafeReason(t *testing.T) {
+	tests := []struct {
+		name        string
+		err         error
+		wantCode    string
+		wantMessage string
+	}{
+		{
+			name:        "服务容器退出",
+			err:         fmt.Errorf("%w: service=app exit_code=1", dockerengine.ErrContainerNotRunning),
+			wantCode:    "compose_container_not_running",
+			wantMessage: "Docker Compose 服务启动失败：容器未保持运行，请查看容器日志",
+		},
+		{
+			name:        "服务健康检查失败",
+			err:         fmt.Errorf("%w: failing_streak=3", dockerengine.ErrContainerUnhealthy),
+			wantCode:    "compose_container_unhealthy",
+			wantMessage: "Docker Compose 服务启动失败：健康检查未通过，请查看容器日志",
+		},
+		{
+			name:        "恢复旧服务失败",
+			err:         fmt.Errorf("%w: internal diagnostics", dockerengine.ErrComposeRollbackFailed),
+			wantCode:    "compose_rollback_failed",
+			wantMessage: "Docker Compose 发布失败：服务未就绪且旧服务恢复失败，请立即检查目标容器",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			code, message := dockerComposeFailureDetails(test.err)
+			if code != test.wantCode || message != test.wantMessage || strings.Contains(message, "exit_code") {
+				t.Fatalf("Docker Compose 失败原因分类不安全或不准确: code=%q message=%q", code, message)
 			}
 		})
 	}

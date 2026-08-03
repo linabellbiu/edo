@@ -448,7 +448,7 @@ func normalizeBuildPlanInput(input BuildPlanInput) (BuildPlanInput, error) {
 			return input, ErrInvalidScriptEnvironment
 		}
 	}
-	validKind := (input.Kind == model.BuildPlanScript && strings.TrimSpace(input.Script) != "" && input.ArtifactPath != "" && validRuntimeImageReference(input.RuntimeImage)) ||
+	validKind := (input.Kind == model.BuildPlanScript && strings.TrimSpace(input.Script) != "" && validRuntimeImageReference(input.RuntimeImage)) ||
 		(input.Kind == model.BuildPlanDockerfile && input.DockerfilePath != "")
 	if !validResourceName(input.Name) || !validKind || input.TimeoutSeconds < 30 || input.TimeoutSeconds > 7200 ||
 		len(input.Script) > 256*1024 || utf8.RuneCountInString(input.Description) > 500 ||
@@ -997,15 +997,40 @@ func (s *Service) ListRuns(ctx context.Context, limit int) ([]model.PipelineRun,
 		limit = 50
 	}
 	var runs []model.PipelineRun
-	if err := s.db.WithContext(ctx).
-		Preload("Application").
-		Preload("Repositories", func(db *gorm.DB) *gorm.DB { return db.Order("sort_order ASC") }).
-		Preload("Repositories.Repository").Preload("Repositories.BuildPlan").Preload("Repositories.DeploymentPlan").
+	if err := pipelineRunQuery(s.db.WithContext(ctx)).
 		Order("created_at DESC").Limit(limit).Find(&runs).Error; err != nil {
 		return nil, fmt.Errorf("查询流水线运行失败: %w", err)
 	}
-	if err := s.attachRunReleasePlanIDs(ctx, runs); err != nil {
+	if err := s.enrichPipelineRuns(ctx, runs); err != nil {
 		return nil, err
+	}
+	return runs, nil
+}
+
+func (s *Service) FindRun(ctx context.Context, id string) (*model.PipelineRun, error) {
+	var run model.PipelineRun
+	if err := pipelineRunQuery(s.db.WithContext(ctx)).First(&run, "id = ?", strings.TrimSpace(id)).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, ErrPipelineRunNotFound
+		}
+		return nil, fmt.Errorf("读取流水线运行失败: %w", err)
+	}
+	runs := []model.PipelineRun{run}
+	if err := s.enrichPipelineRuns(ctx, runs); err != nil {
+		return nil, err
+	}
+	return &runs[0], nil
+}
+
+func pipelineRunQuery(db *gorm.DB) *gorm.DB {
+	return db.Preload("Application").
+		Preload("Repositories", func(db *gorm.DB) *gorm.DB { return db.Order("sort_order ASC") }).
+		Preload("Repositories.Repository").Preload("Repositories.BuildPlan").Preload("Repositories.DeploymentPlan")
+}
+
+func (s *Service) enrichPipelineRuns(ctx context.Context, runs []model.PipelineRun) error {
+	if err := s.attachRunReleasePlanIDs(ctx, runs); err != nil {
+		return err
 	}
 	for i := range runs {
 		if runs[i].WorkflowSnapshot == "" {
@@ -1042,7 +1067,7 @@ func (s *Service) ListRuns(ctx context.Context, limit int) ([]model.PipelineRun,
 			runs[i].ExecutionGraph = graph
 		}
 	}
-	return runs, nil
+	return nil
 }
 
 func (s *Service) attachRunReleasePlanIDs(ctx context.Context, runs []model.PipelineRun) error {

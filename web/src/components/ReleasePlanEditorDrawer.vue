@@ -1,8 +1,8 @@
 <script setup lang="ts">
 import Sortable from 'sortablejs'
-import { computed, onBeforeUnmount, reactive, watch, type ComponentPublicInstance } from 'vue'
+import { onBeforeUnmount, reactive, watch, type ComponentPublicInstance } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { GripVertical, Layers3, Plus, Trash2 } from 'lucide-vue-next'
+import { GripVertical, Plus, Trash2 } from 'lucide-vue-next'
 
 interface ApplicationItem {
   id: string
@@ -90,8 +90,6 @@ const applicationSelection = reactive<Record<string, string[]>>({})
 const listElements = new Map<string, HTMLElement>()
 const sortables = new Map<string, Sortable>()
 
-const usedApplicationIDs = computed(() => new Set(draft.groups.flatMap((group) => group.applications.map((item) => item.application_id))))
-
 function nextKey(prefix: string) {
   localKey += 1
   return `${prefix}-${Date.now()}-${localKey}`
@@ -103,17 +101,16 @@ function initialize() {
   const legacyName = props.plan?.name?.trim() || ''
   draft.description = props.plan?.description?.trim() || (legacyName && !/^发布计划-[0-9a-f]{8}$/i.test(legacyName) ? legacyName : '')
   const groups: ReleaseGroup[] = props.plan?.groups?.length
-    ? props.plan.groups
-    : [{ id: '', name: t('releasePlan.defaultGroup'), mode: 'parallel', failure_policy: 'stop', sort_order: 0, applications: [], dependencies: [] }]
-  draft.groups = [...groups]
-    .sort((left, right) => (left.sort_order || 0) - (right.sort_order || 0))
+    ? [props.plan.groups[0]]
+    : [{ id: '', name: '应用列表', mode: 'parallel', failure_policy: 'stop', sort_order: 0, applications: [], dependencies: [] }]
+  draft.groups = groups
     .map((group) => ({
       key: group.id || nextKey('group'),
       id: group.id,
-      name: group.name,
+      name: '应用列表',
       mode: group.mode === 'sequential' ? 'sequential' : 'parallel',
       failure_policy: group.failure_policy === 'continue' ? 'continue' : 'stop',
-      depends_on_group_ids: (group.dependencies || []).map((item) => item.depends_on_group_id),
+      depends_on_group_ids: [],
       applications: [...(group.applications || [])]
         .sort((left, right) => (left.sort_order || 0) - (right.sort_order || 0))
         .map((item) => ({
@@ -135,14 +132,15 @@ function applicationName(applicationID: string) {
 function availableApplications(group: EditableGroup) {
   const ownIDs = new Set(group.applications.map((item) => item.application_id))
   return props.applications
-    .filter((item) => item.is_active !== false && (!usedApplicationIDs.value.has(item.id) || ownIDs.has(item.id)))
+    .filter((item) => item.is_active !== false)
     .map((item) => ({ value: item.id, label: item.name, disabled: ownIDs.has(item.id) }))
 }
 
 function addApplication(group: EditableGroup) {
   const applicationIDs = applicationSelection[group.key] || []
+  const usedApplicationIDs = new Set(group.applications.map((item) => item.application_id))
   applicationIDs.forEach((applicationID) => {
-    if (usedApplicationIDs.value.has(applicationID)) return
+    if (usedApplicationIDs.has(applicationID)) return
     group.applications.push({
       key: nextKey('application'),
       id: '',
@@ -198,17 +196,16 @@ function destroySortables() {
 function submit() {
   const description = draft.description.trim()
   if (!description) return
-  if (!draft.groups.length || draft.groups.some((group) => !group.name.trim()) || !draft.groups.some((group) => group.applications.length)) return
-  const groupIDs = new Set(draft.groups.map((group) => group.id).filter(Boolean))
+  if (draft.groups.length !== 1 || !draft.groups[0].applications.length) return
   emit('save', {
     id: draft.id,
     description,
     groups: draft.groups.map((group) => ({
       id: group.id,
-      name: group.name.trim(),
+      name: '应用列表',
       mode: group.mode,
       failure_policy: group.failure_policy,
-      depends_on_group_ids: group.depends_on_group_ids.filter((id) => groupIDs.has(id)),
+      depends_on_group_ids: [],
       applications: group.applications.map((item) => ({
         application_id: item.application_id,
         manual_deploy: item.manual_deploy,
@@ -250,21 +247,16 @@ onBeforeUnmount(destroySortables)
       <section class="plan-editor-groups">
         <header>
           <div>
-            <strong>{{ t('releasePlan.editor.groups') }}</strong>
-            <small>{{ t('releasePlan.editor.groupsHint') }}</small>
+            <strong>{{ t('releasePlan.editor.applications') }}</strong>
+            <small>{{ t('releasePlan.editor.applicationsHint') }}</small>
           </div>
         </header>
 
         <article
-          v-for="(group, groupIndex) in draft.groups"
+          v-for="group in draft.groups"
           :key="group.key"
           class="plan-editor-group"
         >
-          <header>
-            <span><Layers3 :size="17" />{{ groupIndex + 1 }}</span>
-            <a-input v-model:value="group.name" :placeholder="t('releasePlan.editor.groupName')" :maxlength="128" />
-          </header>
-
           <div class="plan-editor-rules">
             <label>
               <a-switch
@@ -324,8 +316,6 @@ onBeforeUnmount(destroySortables)
           <a-empty v-if="!group.applications.length" :description="t('releasePlan.editor.emptyApplications')" />
           <small class="plan-editor-order-hint">{{ t('releasePlan.editor.orderHint') }}</small>
         </article>
-
-        <a-empty v-if="!draft.groups.length" :description="t('releasePlan.editor.emptyGroups')" />
       </section>
     </a-form>
 
@@ -335,7 +325,7 @@ onBeforeUnmount(destroySortables)
         <a-button
           type="primary"
           :loading="saving"
-          :disabled="!draft.description.trim() || !draft.groups.length || draft.groups.some((group) => !group.name.trim()) || !draft.groups.some((group) => group.applications.length)"
+          :disabled="!draft.description.trim() || draft.groups.length !== 1 || !draft.groups[0]?.applications.length"
           @click="submit"
         >
           {{ t(draft.id ? 'releasePlan.editor.save' : 'releasePlan.editor.create') }}
@@ -347,7 +337,7 @@ onBeforeUnmount(destroySortables)
 
 <style scoped>
 .plan-editor-groups{display:grid;gap:12px}.plan-editor-groups>header{display:flex;align-items:center;justify-content:space-between;gap:16px}.plan-editor-groups>header strong,.plan-editor-groups>header small{display:block}.plan-editor-groups>header small{margin-top:3px;color:var(--edo-muted);font-size:12px}.plan-editor-groups :deep(.ant-btn){display:inline-flex;align-items:center;gap:5px}
-.plan-editor-group{padding:14px;border:1px solid var(--edo-border);border-radius:12px;background:var(--edo-surface-soft)}.plan-editor-group>header{display:grid;align-items:center;grid-template-columns:34px minmax(0,1fr);gap:8px}.plan-editor-group>header>span{display:grid;width:34px;height:34px;place-items:center;border-radius:9px;color:var(--edo-primary);background:var(--edo-primary-soft);font-size:0}.plan-editor-group>header>span svg{width:17px}
+.plan-editor-group{padding:14px;border:1px solid var(--edo-border);border-radius:12px;background:var(--edo-surface-soft)}
 .plan-editor-rules{display:grid;align-items:end;grid-template-columns:minmax(0,1fr) minmax(180px,.55fr);gap:12px;margin-top:13px}.plan-editor-rules>label{display:flex;min-height:55px;align-items:center;gap:10px;padding:9px 11px;border:1px solid var(--edo-border);border-radius:9px;background:var(--edo-surface)}.plan-editor-rules>label strong,.plan-editor-rules>label small{display:block}.plan-editor-rules>label strong{font-size:13px}.plan-editor-rules>label small{margin-top:2px;color:var(--edo-muted);font-size:11px}.plan-editor-rules :deep(.ant-form-item){margin:0}.plan-editor-rules :deep(.ant-form-item-label){padding-bottom:4px}
 .plan-editor-add-application{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;margin-top:13px}.plan-editor-applications{display:grid;gap:6px;margin-top:9px}.plan-editor-application{display:grid;min-height:42px;align-items:center;grid-template-columns:32px 26px minmax(0,1fr) 34px;gap:5px;padding:4px 5px;border:1px solid var(--edo-border);border-radius:9px;background:var(--edo-surface);transition:border-color 160ms ease,box-shadow 160ms ease}.plan-editor-application:hover{border-color:color-mix(in srgb,var(--edo-primary) 28%,var(--edo-border))}.plan-app-drag{display:grid;width:32px;height:32px;place-items:center;border:0;border-radius:7px;color:var(--edo-muted);background:transparent;cursor:grab}.plan-app-drag:active{cursor:grabbing}.plan-app-drag:focus-visible{outline:2px solid color-mix(in srgb,var(--edo-primary) 45%,transparent);outline-offset:1px}.plan-app-order{display:grid;width:23px;height:23px;place-items:center;border-radius:7px;color:var(--edo-primary);background:var(--edo-primary-soft);font-size:11px;font-weight:700}.plan-editor-application strong{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px}.plan-app-ghost{opacity:.4}.plan-app-chosen{border-color:var(--edo-primary);box-shadow:0 5px 18px color-mix(in srgb,var(--edo-primary) 15%,transparent)}.plan-editor-order-hint{display:block;margin-top:8px;color:var(--edo-muted);font-size:11px}.plan-editor-group :deep(.ant-empty){margin-block:10px}.plan-editor-footer{display:flex;justify-content:flex-end;gap:8px}
 @media(max-width:640px){.plan-editor-groups>header{align-items:flex-start}.plan-editor-rules{grid-template-columns:1fr}.plan-editor-add-application{grid-template-columns:1fr}.plan-editor-add-application :deep(.ant-btn){justify-content:center}}

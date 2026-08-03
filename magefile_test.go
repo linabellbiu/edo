@@ -184,6 +184,36 @@ func TestValidateStartSecretsKey(t *testing.T) {
 	})
 }
 
+func TestRetryDockerComposeStartHandlesTransientFailure(t *testing.T) {
+	attempts := 0
+	waits := 0
+	err := retryDockerComposeStart(context.Background(), func() error {
+		attempts++
+		if attempts < dockerStartMaxAttempts {
+			return errors.New("transient build failure")
+		}
+		return nil
+	}, func(context.Context, time.Duration) error {
+		waits++
+		return nil
+	})
+	if err != nil || attempts != dockerStartMaxAttempts || waits != dockerStartMaxAttempts-1 {
+		t.Fatalf("暂态 Compose 构建失败没有有限重试: attempts=%d waits=%d err=%v", attempts, waits, err)
+	}
+}
+
+func TestRetryDockerComposeStartStopsAfterMaximumAttempts(t *testing.T) {
+	cause := errors.New("permanent build failure")
+	attempts := 0
+	err := retryDockerComposeStart(context.Background(), func() error {
+		attempts++
+		return cause
+	}, func(context.Context, time.Duration) error { return nil })
+	if !errors.Is(err, cause) || attempts != dockerStartMaxAttempts {
+		t.Fatalf("Compose 启动重试次数或原始错误不正确: attempts=%d err=%v", attempts, err)
+	}
+}
+
 func TestLoadEnvironmentFile(t *testing.T) {
 	root := t.TempDir()
 	path := filepath.Join(root, ".env")

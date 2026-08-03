@@ -33,7 +33,7 @@ interface Artifact extends ResourceRecord{id:string;application_id:string;build_
 interface ApplicationWorkflow extends PipelineWorkflow{workflow_template?:{id:string;name:string}}
 interface WorkflowTemplate extends PipelineWorkflow{description?:string}
 interface Application extends ResourceRecord{id:string;name:string;description:string;repository_id:string;poll_interval_seconds:number;last_observed_commit?:string;sync_status:string;sync_message?:string;last_checked_at?:string;is_active:boolean;repository?:Repository;workflows:ApplicationWorkflow[]}
-interface Run extends ResourceRecord{id:string;application_id:string;workflow_id?:string;deployment_id?:string;release_plan_id?:string;release_plan_execution_id?:string;release_plan_execution_item_id?:string;trigger:string;ref:string;commit_sha:string;commit_message?:string;status:string;stage:string;message?:string;created_at:string;updated_at?:string;application?:Application;environment?:string;current_node_id?:string;current_node_name?:string;created_by?:string;image?:string;execution_graph?:PipelineExecutionGraph}
+interface Run extends ResourceRecord{id:string;application_id:string;workflow_id?:string;deployment_id?:string;release_plan_id?:string;release_plan_execution_id?:string;release_plan_execution_item_id?:string;retry_of_id?:string;artifact_id?:string;trigger:string;ref:string;commit_sha:string;commit_message?:string;status:string;stage:string;message?:string;created_at:string;updated_at?:string;application?:Application;environment?:string;current_node_id?:string;current_node_name?:string;created_by?:string;image?:string;execution_graph?:PipelineExecutionGraph}
 interface DeploymentRecord extends ResourceRecord{id:string;pipeline_run_id?:string;target_id:string;target_name:string;platform:string;runtime_id:string;namespace:string;workload_name:string;container_name:string;deployment_plan_id?:string;deployment_plan_kind?:string;compose_service?:string;operation:string;image:string;image_display?:string;status:string;error_message?:string;created_at:string;updated_at:string;finished_at?:string}
 interface DockerContainerRecord extends ResourceRecord{id:string;names:string[];state:string;status:string}
 type StatusTone='neutral'|'info'|'success'|'warning'|'danger'
@@ -42,21 +42,25 @@ interface ReleasePlanExecutionRecordItem{id:string;release_group_application_id:
  interface ReleasePlan extends ResourceRecord{id:string;name:string;version:string;description:string;status:string;is_active?:boolean;created_at:string;updated_at?:string;latest_execution?:{id:string;status:string;created_at:string;finished_at?:string;items?:ReleasePlanExecutionRecordItem[]};groups?:Array<{id:string;name:string;mode:string;failure_policy:string;sort_order?:number;dependencies?:Array<{depends_on_group_id:string}>;applications:Array<{id:string;application_id:string;application?:Application;manual_deploy?:boolean;source_type?:string;source_value?:string;sort_order?:number}>}>}
 type ReleasePlanGroup=NonNullable<ReleasePlan['groups']>[number]
 type ReleasePlanGroupApplication=ReleasePlanGroup['applications'][number]
-interface GitRef{name:string;sha:string} interface RefResult{branches:GitRef[];tags:GitRef[];manual_sources?:Array<{id:string;name:string;environment?:string}>}
+interface GitRef{name:string;sha:string}
+interface ManualArtifact{id:string;name:string;kind:'oci_image'|'file_bundle';digest:string;build_plan_id:string;ref?:string;commit_sha?:string;created_at:string}
+interface RefResult{branches:GitRef[];tags:GitRef[];manual_sources?:Array<{id:string;name:string;environment?:string}>;artifacts?:ManualArtifact[];reference_error?:string}
+interface RetryRunOptions{ref:string;commit_sha:string;commit_message?:string;artifacts:ManualArtifact[]}
 type PlanExecutionLoadState='idle'|'loading'|'ready'|'blocked'|'error'
 interface PlanExecutionReference{kind:'branch'|'tag';ref:string;name:string;sha:string}
 interface PlanExecutionSource{id:string;name:string;environment?:string}
-interface PlanExecutionItem{membershipID:string;applicationID:string;applicationName:string;workflowID:string;workflowRevision:number;workflows:Array<{id:string;name:string;revision:number}>;loadState:PlanExecutionLoadState;reason?:string;staticBlocked:boolean;sources:PlanExecutionSource[];refs:PlanExecutionReference[];selectedSourceID:string;selectedRef:string}
+interface PlanExecutionItem{membershipID:string;applicationID:string;applicationName:string;workflowID:string;workflowRevision:number;workflows:Array<{id:string;name:string;revision:number}>;loadState:PlanExecutionLoadState;reason?:string;staticBlocked:boolean;sources:PlanExecutionSource[];refs:PlanExecutionReference[];artifacts:ManualArtifact[];executionMode:'code'|'artifact';selectedSourceID:string;selectedRef:string;selectedArtifactID:string;referenceError?:string}
 interface PlanExecutionGroup{id:string;name:string;mode:string;failurePolicy:string;dependencies:string[];items:PlanExecutionItem[]}
 interface ReleasePlanEditorValue{id:string;description:string;groups:Array<{id:string;name:string;mode:'parallel'|'sequential';failure_policy:'stop'|'continue';depends_on_group_ids:string[];applications:Array<{application_id:string;manual_deploy:boolean;source_type:string;source_value:string}>}>}
 
 const applications=ref<Application[]>([]),repositories=ref<Repository[]>([]),credentials=ref<Credential[]>([]),workflowTemplates=ref<WorkflowTemplate[]>([]),buildPlans=ref<BuildPlan[]>([]),registries=ref<Registry[]>([]),runs=ref<Run[]>([]),releasePlans=ref<ReleasePlan[]>([]),deployments=ref<DeploymentRecord[]>([]),artifacts=ref<Artifact[]>([])
-const loading=ref(false),saving=ref(false),workflowRemovalID=ref(''),resourceMutationID=ref(''),formOpen=ref(false),editingID=ref(''),selectedWorkflowTemplateID=ref(''),registryTested=ref(false),testing=ref(false),repositoryTestingID=ref(''),manualOpen=ref(false),manualApplicationID=ref(''),manualWorkflowID=ref(''),manualApplications=ref<Application[]>([]),commitOpen=ref(false),commitOptions=ref<Array<{ref:string;name:string;sha:string;kind:'branch'|'tag'}>>([]),selectedRef=ref(''),selectedSource=ref(''),manualSources=ref<Array<{id:string;name:string;environment?:string}>>([]),currentRun=ref<Run|null>(null),currentRunSelectionKey=ref(''),selectedRunID=ref(''),log=ref({open:false,runID:'',title:'',status:''})
+const loading=ref(false),saving=ref(false),workflowRemovalID=ref(''),resourceMutationID=ref(''),formOpen=ref(false),editingID=ref(''),selectedWorkflowTemplateID=ref(''),registryTested=ref(false),testing=ref(false),repositoryTestingID=ref(''),manualOpen=ref(false),manualApplicationID=ref(''),manualWorkflowID=ref(''),manualApplications=ref<Application[]>([]),commitOpen=ref(false),commitOptions=ref<Array<{ref:string;name:string;sha:string;kind:'branch'|'tag'}>>([]),manualArtifacts=ref<ManualArtifact[]>([]),manualExecutionMode=ref<'code'|'artifact'>('code'),selectedArtifactID=ref(''),manualReferenceError=ref(''),selectedRef=ref(''),selectedSource=ref(''),manualSources=ref<Array<{id:string;name:string;environment?:string}>>([]),currentRun=ref<Run|null>(null),currentRunSelectionKey=ref(''),selectedRunID=ref(''),log=ref({open:false,runID:'',title:'',status:''})
 const expandedApplications=ref<Record<string,boolean>>({}),expandedDeployments=ref<Record<string,boolean>>({}),dockerRuntimeContainers=ref<Record<string,DockerContainerRecord[]>>({}),dockerRuntimeLoading=ref<Record<string,boolean>>({}),dockerRuntimeLoaded=ref<Record<string,boolean>>({}),dockerRuntimeErrors=ref<Record<string,string>>({})
 const containerLogs=ref({open:false,title:'',path:''}),terminal=ref({open:false,title:'',path:''})
 const releasePlanResources=reactive({open:false,loading:false,planID:'',applicationID:'',pipelineRunID:'',title:'',error:'',records:[] as DeploymentRecord[]})
-const buildImageDestination=ref<'local'|'registry'>('local'),buildArgsText=ref(''),buildEnvironmentText=ref(''),selectedBuildPlanID=ref(''),buildPlanView=ref<'overview'|'artifacts'>(route.query.view==='artifacts'?'artifacts':'overview'),artifactApplicationID=ref(''),artifactLoading=ref(false),artifactUploading=ref(false),artifactDownloadingID=ref('')
+const buildImageDestination=ref<'local'|'registry'>('local'),buildSaveArtifact=ref(false),buildArgsText=ref(''),buildEnvironmentText=ref(''),selectedBuildPlanID=ref(''),buildPlanView=ref<'overview'|'artifacts'>(route.query.view==='artifacts'?'artifacts':'overview'),artifactApplicationID=ref(''),artifactLoading=ref(false),artifactUploading=ref(false),artifactDownloadingID=ref('')
 const planExecutionOpen=ref(false),planExecutionPlanID=ref(''),planExecutionTitle=ref(''),planExecutionExpectedUpdatedAt=ref(''),planExecutionRequestID=ref(''),planExecutionGroups=ref<PlanExecutionGroup[]>([]),planExecutionSubmitting=ref(false)
+const retryOpen=ref(false),retryLoading=ref(false),retrySubmitting=ref(false),retryRunID=ref(''),retryOptions=ref<RetryRunOptions|null>(null),retryMode=ref<'rebuild'|'artifact'>('rebuild'),retryArtifactID=ref('')
 const releasePlanEditorOpen=ref(false),releasePlanEditorPlan=ref<ReleasePlan|null>(null),releasePlanMutationID=ref('')
 const releasePlanAddApplicationOpen=ref(false),releasePlanAddApplicationPlanID=ref(''),releasePlanAddApplicationGroupID=ref(''),releasePlanAddApplicationIDs=ref<string[]>([])
 let releaseTimer=0
@@ -78,6 +82,7 @@ const buildImagePathPreview=computed(()=>{
 })
 const copy:Record<Section,{description:string}>={applications:{description:'一个应用对应一个代码仓库，可以拥有多条独立流水线；每条流水线分别定义触发、构建和部署流程。'},repositories:{description:'统一管理 Git 来源和可选 Webhook；凭据来自当前用户自己的令牌。'},'build-plans':{description:'保存可复用的 Dockerfile 或脚本构建配置。'},'image-registries':{description:'管理 Harbor、Docker Hub 或其他 OCI Registry；保存前必须完成真实登录测试。'},'release-plans':{description:'发布计划组织人工批量发布；流水线运行与发布记录独立展示。'}}
 const releaseView=computed(()=>route.query.view==='runs'?'runs':route.query.view==='records'?'records':'plans')
+const requestedRunID=computed(()=>typeof route.query.run==='string'?route.query.run:'')
 const canManage=computed(()=>props.section==='repositories'?auth.canAny(['repository.manage']):auth.canAny(['delivery.manage']))
 const releasePlanAddApplicationTarget=computed(()=>{
  const plan=releasePlans.value.find(item=>item.id===releasePlanAddApplicationPlanID.value)
@@ -91,7 +96,10 @@ const releasePlanAddApplicationOptions=computed(()=>{
  return applications.value.filter(item=>item.is_active&&!usedIDs.has(item.id)).map(item=>({value:item.id,label:item.name}))
 })
 const currentDescription=computed(()=>props.section==='release-plans'?(releaseView.value==='runs'?'查看代码事件或手动操作触发的执行、当前任务和实时日志。':releaseView.value==='records'?'查看已经进入真实部署环节的执行结果。':copy[props.section].description):copy[props.section].description)
-const selectedRun=computed(()=>runs.value.find(item=>item.id===selectedRunID.value)||runs.value[0]||null)
+const selectedRun=computed(()=>{
+ if(releaseView.value==='runs'&&requestedRunID.value)return runs.value.find(item=>item.id===requestedRunID.value)||null
+ return runs.value.find(item=>item.id===selectedRunID.value)||runs.value[0]||null
+})
 const selectedRunReleasePlan=computed(()=>releasePlans.value.find(item=>item.id===selectedRun.value?.release_plan_id)||null)
 const activeRunCount=computed(()=>runs.value.filter(item=>['running','awaiting_approval'].includes(item.status)).length)
 const canReadDeployments=computed(()=>auth.canAny(['deployment.read']))
@@ -267,7 +275,30 @@ function createImageRegistry(){
 }
 function resourceViewHref(path:string,queryKey:string,id:string){return router.resolve({path,query:{[queryKey]:id}}).href}
 
-async function refresh(){loading.value=true;try{const requests=await Promise.all([auth.canAny(['delivery.read'])?client.get<{applications:Application[]}>('/applications'):null,auth.canAny(['repository.read'])?client.get<{repositories:Repository[]}>('/repositories'):null,auth.canAny(['credential.read'])?client.get<{credentials:Credential[]}>('/git-credentials'):null,auth.canAny(['delivery.read'])?client.get<{build_plans:BuildPlan[]}>('/build-plans'):null,auth.canAny(['delivery.read'])?client.get<{image_registries:Registry[]}>('/image-registries'):null,auth.canAny(['delivery.read'])?client.get<{pipeline_runs:Run[]}>('/pipeline-runs?limit=200'):null,auth.canAny(['delivery.read'])?client.get<{release_plans:ReleasePlan[]}>('/release-plans'):null,canReadDeployments.value?client.get<{deployments:DeploymentRecord[]}>('/deployments?limit=200'):null,auth.canAny(['delivery.read'])?client.get<{workflow_templates:WorkflowTemplate[]}>('/workflow-templates'):null]);applications.value=requests[0]?.data.applications||[];repositories.value=requests[1]?.data.repositories||[];credentials.value=requests[2]?.data.credentials||[];buildPlans.value=requests[3]?.data.build_plans||[];registries.value=requests[4]?.data.image_registries||[];runs.value=requests[5]?.data.pipeline_runs||[];const requestedRunID=typeof route.query.run==='string'?route.query.run:'';if(requestedRunID&&runs.value.some(item=>item.id===requestedRunID))selectedRunID.value=requestedRunID;else if(!selectedRunID.value||!runs.value.some(item=>item.id===selectedRunID.value))selectedRunID.value=runs.value[0]?.id||'';releasePlans.value=requests[6]?.data.release_plans||[];deployments.value=requests[7]?.data.deployments||[];workflowTemplates.value=requests[8]?.data.workflow_templates||[]}catch(error){message.error(apiErrorMessage(error))}finally{loading.value=false}}
+let requestedRunRequestID=''
+async function revealRequestedRun(){
+ const runID=requestedRunID.value
+ if(props.section!=='release-plans'||releaseView.value!=='runs'||!runID)return
+ const existing=runs.value.find(item=>item.id===runID)
+ if(existing){selectedRunID.value=runID;return}
+ if(requestedRunRequestID===runID)return
+ requestedRunRequestID=runID
+ try{
+  const run=(await client.get<{pipeline_run:Run}>(`/pipeline-runs/${encodeURIComponent(runID)}`)).data.pipeline_run
+  runs.value=[run,...runs.value.filter(item=>item.id!==run.id)]
+  if(requestedRunID.value===runID)selectedRunID.value=runID
+ }catch(error){
+  if(requestedRunID.value===runID)message.error(`无法定位流水线运行：${apiErrorMessage(error)}`)
+ }finally{
+  if(requestedRunRequestID===runID)requestedRunRequestID=''
+ }
+}
+function selectPipelineRun(runID:string){
+ selectedRunID.value=runID
+ if(requestedRunID.value!==runID)void router.replace({path:'/release-plans',query:{view:'runs',run:runID}})
+}
+
+async function refresh(){const locatedRun=runs.value.find(item=>item.id===requestedRunID.value);loading.value=true;try{const requests=await Promise.all([auth.canAny(['delivery.read'])?client.get<{applications:Application[]}>('/applications'):null,auth.canAny(['repository.read'])?client.get<{repositories:Repository[]}>('/repositories'):null,auth.canAny(['credential.read'])?client.get<{credentials:Credential[]}>('/git-credentials'):null,auth.canAny(['delivery.read'])?client.get<{build_plans:BuildPlan[]}>('/build-plans'):null,auth.canAny(['delivery.read'])?client.get<{image_registries:Registry[]}>('/image-registries'):null,auth.canAny(['delivery.read'])?client.get<{pipeline_runs:Run[]}>('/pipeline-runs?limit=200'):null,auth.canAny(['delivery.read'])?client.get<{release_plans:ReleasePlan[]}>('/release-plans'):null,canReadDeployments.value?client.get<{deployments:DeploymentRecord[]}>('/deployments?limit=200'):null,auth.canAny(['delivery.read'])?client.get<{workflow_templates:WorkflowTemplate[]}>('/workflow-templates'):null]);applications.value=requests[0]?.data.applications||[];repositories.value=requests[1]?.data.repositories||[];credentials.value=requests[2]?.data.credentials||[];buildPlans.value=requests[3]?.data.build_plans||[];registries.value=requests[4]?.data.image_registries||[];runs.value=requests[5]?.data.pipeline_runs||[];if(locatedRun&&!runs.value.some(item=>item.id===locatedRun.id))runs.value=[locatedRun,...runs.value];if(requestedRunID.value&&runs.value.some(item=>item.id===requestedRunID.value))selectedRunID.value=requestedRunID.value;else if(!requestedRunID.value&&(!selectedRunID.value||!runs.value.some(item=>item.id===selectedRunID.value)))selectedRunID.value=runs.value[0]?.id||'';releasePlans.value=requests[6]?.data.release_plans||[];deployments.value=requests[7]?.data.deployments||[];workflowTemplates.value=requests[8]?.data.workflow_templates||[];if(requestedRunID.value)void revealRequestedRun()}catch(error){message.error(apiErrorMessage(error))}finally{loading.value=false}}
 let stateRefreshing=false
 async function refreshApplicationState(){
  if(stateRefreshing||!auth.canAny(['delivery.read']))return
@@ -285,10 +316,12 @@ async function refreshRunState(){
  if(stateRefreshing||!auth.canAny(['delivery.read']))return
  stateRefreshing=true
  try{
+  const locatedRun=runs.value.find(item=>item.id===requestedRunID.value)
   runs.value=(await client.get<{pipeline_runs:Run[]}>('/pipeline-runs?limit=200')).data.pipeline_runs||[]
-  const requestedRunID=typeof route.query.run==='string'?route.query.run:''
-  if(requestedRunID&&runs.value.some(item=>item.id===requestedRunID))selectedRunID.value=requestedRunID
-  else if(!selectedRunID.value||!runs.value.some(item=>item.id===selectedRunID.value))selectedRunID.value=runs.value[0]?.id||''
+  if(locatedRun&&!runs.value.some(item=>item.id===locatedRun.id))runs.value=[locatedRun,...runs.value]
+  if(requestedRunID.value&&runs.value.some(item=>item.id===requestedRunID.value))selectedRunID.value=requestedRunID.value
+  else if(!requestedRunID.value&&(!selectedRunID.value||!runs.value.some(item=>item.id===selectedRunID.value)))selectedRunID.value=runs.value[0]?.id||''
+  if(requestedRunID.value)void revealRequestedRun()
  }catch{}finally{stateRefreshing=false}
 }
 function formatVariableText(values?:Record<string,string>){return Object.entries(values||{}).map(([name,value])=>`${name}=${value}`).join('\n')}
@@ -311,7 +344,7 @@ function parseVariableText(source:string,label:string){
  return {values,error:''}
 }
 function resetForms(){
- editingID.value='';selectedWorkflowTemplateID.value='';workflowRemovalID.value='';registryTested.value=false;buildImageDestination.value='local';buildArgsText.value='';buildEnvironmentText.value=''
+	 editingID.value='';selectedWorkflowTemplateID.value='';workflowRemovalID.value='';registryTested.value=false;buildImageDestination.value='local';buildSaveArtifact.value=false;buildArgsText.value='';buildEnvironmentText.value=''
  Object.assign(appForm,{name:'',description:'',repository_id:'',workflow_template_id:'',poll_interval_seconds:DEFAULT_APPLICATION_POLL_INTERVAL})
 	 Object.assign(repoForm,{name:'',provider:'github',clone_url:'',default_branch:'main',auth_type:'none',username:'',credential_id:'',api_credential_id:'',webhook_enabled:true,allow_insecure_http:false})
 	 Object.assign(buildForm,{name:'',kind:'dockerfile',description:'',script:'',dockerfile_path:'Dockerfile',context_path:'.',working_directory:'.',artifact_path:'',runtime_image:DEFAULT_RUNTIME_IMAGE,image_registry_id:'',target_stage:'',pull:true,cache_enabled:true,timeout_seconds:1800})
@@ -322,7 +355,7 @@ function create(){
  if(props.section==='release-plans'){
   releasePlanEditorPlan.value={
    id:'',name:'',version:'',description:'',status:'draft',is_active:true,created_at:'',
-   groups:[{id:'',name:t('releasePlan.defaultGroup'),mode:'parallel',failure_policy:'stop',sort_order:0,dependencies:[],applications:[]}],
+	   groups:[{id:'',name:'应用列表',mode:'parallel',failure_policy:'stop',sort_order:0,dependencies:[],applications:[]}],
   }
   releasePlanEditorOpen.value=true
   return
@@ -350,7 +383,8 @@ function edit(row:ResourceRecord){
  }
  if(props.section==='build-plans'){
   const item=row as BuildPlan
-  Object.assign(buildForm,{name:item.name,kind:item.kind,description:item.description||'',script:item.script||'',dockerfile_path:item.dockerfile_path||'Dockerfile',context_path:item.context_path||'.',working_directory:item.working_directory||'.',artifact_path:item.artifact_path||'',runtime_image:item.runtime_image||DEFAULT_RUNTIME_IMAGE,image_registry_id:item.image_registry_id||'',target_stage:item.target_stage||'',pull:item.pull!==false,cache_enabled:item.cache_enabled!==false,timeout_seconds:item.timeout_seconds||1800})
+	  Object.assign(buildForm,{name:item.name,kind:item.kind,description:item.description||'',script:item.script||'',dockerfile_path:item.dockerfile_path||'Dockerfile',context_path:item.context_path||'.',working_directory:item.working_directory||'.',artifact_path:item.artifact_path||'',runtime_image:item.runtime_image||DEFAULT_RUNTIME_IMAGE,image_registry_id:item.image_registry_id||'',target_stage:item.target_stage||'',pull:item.pull!==false,cache_enabled:item.cache_enabled!==false,timeout_seconds:item.timeout_seconds||1800})
+	  buildSaveArtifact.value=item.kind==='script'&&Boolean(item.artifact_path)
   buildImageDestination.value=item.image_registry_id?'registry':'local'
   buildArgsText.value=formatVariableText(item.build_args)
   buildEnvironmentText.value=formatVariableText(item.environment_variables)
@@ -379,7 +413,8 @@ async function save(){
    if(!buildForm.name.trim()){message.error('请输入构建方案名称');return}
    if(buildForm.kind==='dockerfile'&&(!buildForm.dockerfile_path.trim()||!buildForm.context_path.trim())){message.error('请填写 Dockerfile 路径和构建上下文');return}
    if(buildForm.kind==='dockerfile'&&buildImageDestination.value==='registry'&&!buildForm.image_registry_id){message.error('请选择镜像仓库');return}
-   if(buildForm.kind==='script'&&(!buildForm.script.trim()||!buildForm.artifact_path.trim()||!buildForm.runtime_image.trim())){message.error('请填写构建脚本、运行镜像和产物路径');return}
+	   if(buildForm.kind==='script'&&(!buildForm.script.trim()||!buildForm.runtime_image.trim())){message.error('请填写构建脚本和运行镜像');return}
+	   if(buildForm.kind==='script'&&buildSaveArtifact.value&&!buildForm.artifact_path.trim()){message.error('开启保存产物后，请填写产物路径');return}
    const buildArgs=parseVariableText(buildArgsText.value,'构建参数')
    const environmentVariables=parseVariableText(buildEnvironmentText.value,'环境变量')
    if(buildArgs.error||environmentVariables.error){message.error(buildArgs.error||environmentVariables.error);return}
@@ -388,7 +423,7 @@ async function save(){
     ...buildForm,
     dockerfile_path:buildForm.kind==='dockerfile'?buildForm.dockerfile_path:'',
     working_directory:buildForm.kind==='script'?buildForm.working_directory:'.',
-    artifact_path:buildForm.kind==='script'?buildForm.artifact_path:'',
+	    artifact_path:buildForm.kind==='script'&&buildSaveArtifact.value?buildForm.artifact_path:'',
     runtime_image:buildForm.kind==='script'?buildForm.runtime_image:'',
     image_registry_id:buildForm.kind==='dockerfile'&&buildImageDestination.value==='registry'?buildForm.image_registry_id:'',
     target_stage:buildForm.kind==='dockerfile'?buildForm.target_stage:'',
@@ -493,15 +528,37 @@ async function testRepository(){testing.value=true;try{const payload={...repoFor
 async function testStoredRepository(repository:Repository){repositoryTestingID.value=repository.id;try{const result=await client.post<RefResult>(`/repositories/${repository.id}/test`,undefined,{timeout:35000});message.success(`连接成功：${result.data.branches?.length||0} 个分支，${result.data.tags?.length||0} 个标签`);await refresh()}catch(error){message.error(apiErrorMessage(error))}finally{repositoryTestingID.value=''}}
 async function testRegistry(){testing.value=true;registryTested.value=false;try{await client.post('/image-registries/test',registryRequestPayload(),{timeout:35000});registryTested.value=true;message.success('镜像仓库登录成功')}catch(error){message.error(apiErrorMessage(error))}finally{testing.value=false}}
 async function action(path:string){try{await client.post(path,undefined,{timeout:35000});await refresh()}catch(error){message.error(apiErrorMessage(error))}}
+function resetRetry(){retryOpen.value=false;retryLoading.value=false;retrySubmitting.value=false;retryRunID.value='';retryOptions.value=null;retryMode.value='rebuild';retryArtifactID.value=''}
+async function openRetry(run:Run){
+ resetRetry();retryOpen.value=true;retryLoading.value=true;retryRunID.value=run.id
+ try{
+  retryOptions.value=(await client.get<RetryRunOptions>(`/pipeline-runs/${run.id}/retry-options`,{timeout:35000})).data
+  retryMode.value=retryOptions.value.artifacts.length?'artifact':'rebuild'
+  retryArtifactID.value=retryOptions.value.artifacts.length===1?retryOptions.value.artifacts[0].id:''
+ }catch(error){message.error(apiErrorMessage(error));resetRetry()}finally{retryLoading.value=false}
+}
+async function executeRetry(){
+ if(!retryRunID.value||!retryOptions.value||(retryMode.value==='artifact'&&!retryArtifactID.value))return
+ retrySubmitting.value=true
+ try{
+  const retried=(await client.post<{pipeline_run:Run}>(`/pipeline-runs/${retryRunID.value}/retry`,retryMode.value==='artifact'?{artifact_id:retryArtifactID.value}:{},{timeout:35000})).data.pipeline_run
+  message.success(retryMode.value==='artifact'?'已使用原运行制品创建重试':'已按原固定版本重新构建')
+  resetRetry();await refresh();selectedRunID.value=retried.id
+ }catch(error){message.error(apiErrorMessage(error))}finally{retrySubmitting.value=false}
+}
 function openLogs(run:Run){log.value={open:true,runID:run.id,title:`${applications.value.find(item=>item.id===run.application_id)?.name||'应用'} · 流水线日志`,status:run.status}}
 function resetManualFlow(){
  manualOpen.value=false
  commitOpen.value=false
  manualApplicationID.value=''
  manualWorkflowID.value=''
- manualApplications.value=[]
- commitOptions.value=[]
- selectedRef.value=''
+	 manualApplications.value=[]
+	 commitOptions.value=[]
+	 manualArtifacts.value=[]
+	 manualExecutionMode.value='code'
+	 selectedArtifactID.value=''
+	 manualReferenceError.value=''
+	 selectedRef.value=''
  selectedSource.value=''
  manualSources.value=[]
  currentRun.value=null
@@ -523,28 +580,36 @@ async function nextManual(){
 	if(!manualApplicationID.value||!manualWorkflowID.value)return
  saving.value=true
  try{
-		const data=(await client.get<RefResult>(`/applications/${manualApplicationID.value}/workflows/${manualWorkflowID.value}/repository-refs`,{timeout:35000})).data
-  commitOptions.value=[...(data.branches||[]).map(item=>({ref:`refs/heads/${item.name}`,name:item.name,sha:item.sha,kind:'branch' as const})),...(data.tags||[]).map(item=>({ref:`refs/tags/${item.name}`,name:item.name,sha:item.sha,kind:'tag' as const}))]
-  manualSources.value=(data.manual_sources||[]).map(item=>({id:item.id,name:item.name,environment:item.environment}))
+			const data=(await client.get<RefResult>(`/applications/${manualApplicationID.value}/workflows/${manualWorkflowID.value}/repository-refs`,{timeout:35000})).data
+	  commitOptions.value=[...(data.branches||[]).map(item=>({ref:`refs/heads/${item.name}`,name:item.name,sha:item.sha,kind:'branch' as const})),...(data.tags||[]).map(item=>({ref:`refs/tags/${item.name}`,name:item.name,sha:item.sha,kind:'tag' as const}))]
+	  manualArtifacts.value=data.artifacts||[]
+	  manualReferenceError.value=data.reference_error||''
+	  manualSources.value=(data.manual_sources||[]).map(item=>({id:item.id,name:item.name,environment:item.environment}))
   const application=applications.value.find(item=>item.id===manualApplicationID.value)
   selectedRef.value=commitOptions.value.find(item=>item.kind==='branch'&&item.name===application?.repository?.default_branch)?.ref||commitOptions.value.find(item=>item.kind==='branch')?.ref||commitOptions.value[0]?.ref||''
-  selectedSource.value=manualSources.value[0]?.id||''
-  if(!commitOptions.value.length||!manualSources.value.length){message.warning(t('manualRun.noVersionOrSource'));return}
+	  selectedSource.value=manualSources.value[0]?.id||''
+	  manualExecutionMode.value=commitOptions.value.length?'code':'artifact'
+	  selectedArtifactID.value=manualArtifacts.value.length===1?manualArtifacts.value[0].id:''
+	  if((!commitOptions.value.length&&!manualArtifacts.value.length)||!manualSources.value.length){message.warning(t('manualRun.noVersionOrSource'));return}
   manualOpen.value=false
   commitOpen.value=true
  }catch(error){message.error(apiErrorMessage(error))}finally{saving.value=false}
 }
 async function executeCommit(){
- const selected=commitOptions.value.find(item=>item.ref===selectedRef.value)
-	if(!selected||!selectedSource.value||!manualApplicationID.value||!manualWorkflowID.value)return
- saving.value=true
- try{
-		const selectionKey=[manualApplicationID.value,manualWorkflowID.value,selected.ref,selected.sha,selectedSource.value].join('\u0000')
+	 const selected=commitOptions.value.find(item=>item.ref===selectedRef.value)
+	 const selectedArtifact=manualArtifacts.value.find(item=>item.id===selectedArtifactID.value)
+		if(!selectedSource.value||!manualApplicationID.value||!manualWorkflowID.value||
+		 (manualExecutionMode.value==='code'&&!selected)||(manualExecutionMode.value==='artifact'&&!selectedArtifact))return
+	 saving.value=true
+	 try{
+			const selectionKey=[manualApplicationID.value,manualWorkflowID.value,manualExecutionMode.value,selected?.ref||'',selected?.sha||'',selectedArtifact?.id||'',selectedSource.value].join('\u0000')
   if(!currentRun.value||currentRunSelectionKey.value!==selectionKey){
 		 currentRun.value=(await client.post<{pipeline_run:Run}>(`/applications/${manualApplicationID.value}/workflows/${manualWorkflowID.value}/pipeline-runs`)).data.pipeline_run
    currentRunSelectionKey.value=selectionKey
   }
-  await client.post(`/pipeline-runs/${currentRun.value.id}/execute`,{ref:selected.ref,commit_sha:selected.sha,source_node_id:selectedSource.value})
+	  await client.post(`/pipeline-runs/${currentRun.value.id}/execute`,manualExecutionMode.value==='artifact'?{
+	   artifact_id:selectedArtifact?.id,source_node_id:selectedSource.value,
+	  }:{ref:selected?.ref,commit_sha:selected?.sha,source_node_id:selectedSource.value})
   message.success(t('manualRun.started'))
   resetManualFlow()
   await refresh()
@@ -585,6 +650,15 @@ async function loadReleasePlanApplicationResources(){
   releasePlanResources.error=apiErrorMessage(error)
  }finally{releasePlanResources.loading=false}
 }
+function openReleasePlanApplicationRun(planID:string,applicationID:string,pipelineRunID:string){
+ const plan=releasePlans.value.find(item=>item.id===planID)
+ const member=plan?.groups?.[0]?.applications.some(item=>item.application_id===applicationID)
+ const latest=runs.value.filter(item=>item.application_id===applicationID).reduce<Run|undefined>((current,item)=>!current||Date.parse(item.created_at)>Date.parse(current.created_at)?item:current,undefined)
+ const linked=member&&latest?.id===pipelineRunID
+ if(!linked){message.error('该发布计划应用没有可定位的流水线运行');return}
+ selectedRunID.value=pipelineRunID
+ void router.push({path:'/release-plans',query:{view:'runs',run:pipelineRunID}})
+}
 function openReleasePlanApplicationResources(planID:string,applicationID:string,pipelineRunID:string){
  const plan=releasePlans.value.find(item=>item.id===planID)
  const application=applications.value.find(item=>item.id===applicationID)
@@ -617,8 +691,8 @@ async function saveReleasePlanEditor(value:ReleasePlanEditorValue){
  try{
   if(creating)await client.post('/release-plans',{
    description:value.description,
-   groups:value.groups.map(group=>({
-    name:group.name,mode:group.mode,failure_policy:group.failure_policy,applications:group.applications,
+	   groups:value.groups.map(group=>({
+	    name:'应用列表',mode:group.mode,failure_policy:group.failure_policy,applications:group.applications,
    })),
   })
   else await client.put(`/release-plans/${value.id}/configuration`,{description:value.description,groups:value.groups})
@@ -693,8 +767,8 @@ async function removeReleaseGroupApplication(planID:string,groupID:string,applic
 }
 function releaseGroupPayload(group:ReleasePlanGroup,groupApplications:ReleasePlanGroupApplication[]){
  return {
-  name:group.name,mode:group.mode,failure_policy:group.failure_policy,
-  depends_on_group_ids:(group.dependencies||[]).map(item=>item.depends_on_group_id),
+	  name:'应用列表',mode:group.mode,failure_policy:group.failure_policy,
+	  depends_on_group_ids:[],
   applications:groupApplications.map(item=>({
    application_id:item.application_id,manual_deploy:Boolean(item.manual_deploy),source_type:item.source_type||'',source_value:item.source_value||'',
   })),
@@ -719,15 +793,15 @@ function planApplicationBlockReason(application?:Application){
  return ''
 }
 function buildPlanExecutionGroups(plan:ReleasePlan){
- const groupNames=new Map((plan.groups||[]).map(group=>[group.id,group.name]))
- const applicationCounts=new Map<string,number>()
- for(const membership of (plan.groups||[]).flatMap(group=>group.applications||[]))applicationCounts.set(membership.application_id,(applicationCounts.get(membership.application_id)||0)+1)
- return [...(plan.groups||[])].sort((left,right)=>(left.sort_order||0)-(right.sort_order||0)).map(group=>({
+	 if(plan.groups?.length!==1)return []
+	 const applicationCounts=new Map<string,number>()
+	 for(const membership of plan.groups[0].applications||[])applicationCounts.set(membership.application_id,(applicationCounts.get(membership.application_id)||0)+1)
+	 return plan.groups.map(group=>({
   id:group.id,
   name:group.name,
   mode:group.mode,
   failurePolicy:group.failure_policy,
-  dependencies:(group.dependencies||[]).map(item=>groupNames.get(item.depends_on_group_id)||item.depends_on_group_id),
+	  dependencies:[],
   items:[...(group.applications||[])].sort((left,right)=>(left.sort_order||0)-(right.sort_order||0)).map(membership=>{
    const application=applications.value.find(item=>item.id===membership.application_id)
    const relationMissing=!membership.id
@@ -745,10 +819,14 @@ function buildPlanExecutionGroups(plan:ReleasePlan){
     loadState:reason?'blocked' as const:'idle' as const,
     reason,
     staticBlocked:Boolean(reason),
-    sources:[],
-    refs:[],
-    selectedSourceID:'',
-    selectedRef:'',
+	    sources:[],
+	    refs:[],
+	    artifacts:[],
+	    executionMode:'code' as const,
+	    selectedSourceID:'',
+	    selectedRef:'',
+	    selectedArtifactID:'',
+	    referenceError:'',
    }
   }),
  }))
@@ -764,16 +842,19 @@ async function loadPlanExecutionItem(membershipID:string,signal:AbortSignal){
  try{
   const data=(await client.get<RefResult>(`/applications/${item.applicationID}/workflows/${item.workflowID}/repository-refs`,{timeout:35000,signal})).data
   if(signal.aborted||item.workflowID!==requestedWorkflowID)return
-  const sources=(data.manual_sources||[]).map(item=>({id:item.id,name:item.name,environment:item.environment}))
-  const refs:PlanExecutionReference[]=[...(data.branches||[]).map(item=>({kind:'branch' as const,ref:`refs/heads/${item.name}`,name:item.name,sha:item.sha})),...(data.tags||[]).map(item=>({kind:'tag' as const,ref:`refs/tags/${item.name}`,name:item.name,sha:item.sha}))]
-  if(!sources.length||!refs.length){
-   const reason=!sources.length?t('releasePlanExecution.reason.manualSourceMissing'):t('releasePlanExecution.reason.referenceMissing')
-   item.loadState='blocked';item.reason=reason;item.sources=sources;item.refs=refs
-   return
-  }
-  const defaultRef=refs.find(item=>item.kind==='branch'&&item.name===application?.repository?.default_branch)?.ref||''
-  item.loadState='ready';item.reason='';item.sources=sources;item.refs=refs
-  item.selectedSourceID=sources.length===1?sources[0].id:'';item.selectedRef=defaultRef
+	  const sources=(data.manual_sources||[]).map(item=>({id:item.id,name:item.name,environment:item.environment}))
+	  const refs:PlanExecutionReference[]=[...(data.branches||[]).map(item=>({kind:'branch' as const,ref:`refs/heads/${item.name}`,name:item.name,sha:item.sha})),...(data.tags||[]).map(item=>({kind:'tag' as const,ref:`refs/tags/${item.name}`,name:item.name,sha:item.sha}))]
+	  const availableArtifacts=data.artifacts||[]
+	  if(!sources.length||(!refs.length&&!availableArtifacts.length)){
+	   const reason=!sources.length?t('releasePlanExecution.reason.manualSourceMissing'):t('releasePlanExecution.reason.referenceOrArtifactMissing')
+	   item.loadState='blocked';item.reason=reason;item.sources=sources;item.refs=refs;item.artifacts=availableArtifacts
+	   return
+	  }
+	  const defaultRef=refs.find(item=>item.kind==='branch'&&item.name===application?.repository?.default_branch)?.ref||''
+	  item.loadState='ready';item.reason='';item.sources=sources;item.refs=refs;item.artifacts=availableArtifacts;item.referenceError=data.reference_error||''
+	  item.executionMode=refs.length?'code':'artifact'
+	  item.selectedSourceID=sources.length===1?sources[0].id:'';item.selectedRef=defaultRef
+	  item.selectedArtifactID=availableArtifacts.length===1?availableArtifacts[0].id:''
  }catch(error){
   if(signal.aborted||item.workflowID!==requestedWorkflowID)return
   item.loadState='error';item.reason=apiErrorMessage(error)
@@ -803,11 +884,13 @@ function updatePlanExecutionWorkflow(membershipID:string,value:string){
  if(!item)return
  const workflow=item.workflows.find(candidate=>candidate.id===value)
  item.workflowID=workflow?.id||'';item.workflowRevision=workflow?.revision||0
- item.sources=[];item.refs=[];item.selectedSourceID='';item.selectedRef='';item.reason='';item.loadState='idle'
+	 item.sources=[];item.refs=[];item.artifacts=[];item.executionMode='code';item.selectedSourceID='';item.selectedRef='';item.selectedArtifactID='';item.referenceError='';item.reason='';item.loadState='idle'
  if(item.workflowID&&planExecutionController)void loadPlanExecutionItem(item.membershipID,planExecutionController.signal)
 }
 function updatePlanExecutionSource(membershipID:string,value:string){const item=planExecutionItems().find(candidate=>candidate.membershipID===membershipID);if(item)item.selectedSourceID=value}
 function updatePlanExecutionRef(membershipID:string,value:string){const item=planExecutionItems().find(candidate=>candidate.membershipID===membershipID);if(item)item.selectedRef=value}
+function updatePlanExecutionMode(membershipID:string,value:'code'|'artifact'){const item=planExecutionItems().find(candidate=>candidate.membershipID===membershipID);if(item)item.executionMode=value}
+function updatePlanExecutionArtifact(membershipID:string,value:string){const item=planExecutionItems().find(candidate=>candidate.membershipID===membershipID);if(item)item.selectedArtifactID=value}
 function retryPlanExecutionApplication(membershipID:string){if(planExecutionController)void loadPlanExecutionItem(membershipID,planExecutionController.signal)}
 function applyPlanExecutionIssues(error:unknown){
  const issues=(error as {response?:{data?:{issues?:Array<{release_group_application_id?:string;message?:string}>}}}).response?.data?.issues
@@ -818,11 +901,11 @@ function applyPlanExecutionIssues(error:unknown){
  }
 }
 async function executeReleasePlan(){
- const selections=planExecutionItems().map(item=>{
-  const reference=item.refs.find(candidate=>candidate.ref===item.selectedRef)
-  return {release_group_application_id:item.membershipID,workflow_id:item.workflowID,expected_workflow_revision:item.workflowRevision,source_node_id:item.selectedSourceID,ref:item.selectedRef,commit_sha:reference?.sha||''}
- })
- if(!planExecutionPlanID.value||selections.some(item=>!item.workflow_id||!item.source_node_id||!item.ref||!item.commit_sha))return
+	 const selections=planExecutionItems().map(item=>{
+	  const reference=item.refs.find(candidate=>candidate.ref===item.selectedRef)
+	  return {release_group_application_id:item.membershipID,workflow_id:item.workflowID,expected_workflow_revision:item.workflowRevision,source_node_id:item.selectedSourceID,ref:item.executionMode==='code'?item.selectedRef:'',commit_sha:item.executionMode==='code'?reference?.sha||'':'',artifact_id:item.executionMode==='artifact'?item.selectedArtifactID:''}
+	 })
+	 if(!planExecutionPlanID.value||selections.some(item=>!item.workflow_id||!item.source_node_id||(!item.artifact_id&&(!item.ref||!item.commit_sha))))return
  planExecutionSubmitting.value=true
  try{
   await client.post(`/release-plans/${planExecutionPlanID.value}/executions`,{request_id:planExecutionRequestID.value,expected_plan_updated_at:planExecutionExpectedUpdatedAt.value,selections},{timeout:60000})
@@ -836,6 +919,11 @@ function showWebhook(item:Repository){void client.get<{webhook_url:string;webhoo
 function applicationName(run:Run){return applications.value.find(item=>item.id===run.application_id)?.name||run.application?.name||'未命名应用'}
 function runReferenceLabel(run?:Run){return run?formatGitReference({ref:run.ref,sha:run.commit_sha,trigger:run.trigger}):'—'}
 function selectableReferenceLabel(reference:{ref:string;name:string;sha:string;kind:'branch'|'tag'}){return formatGitReference(reference)}
+function selectableArtifactLabel(artifact:ManualArtifact){
+	const kind=artifact.kind==='oci_image'?'镜像':'文件'
+	const source=artifact.ref&&artifact.commit_sha?formatGitReference({ref:artifact.ref,sha:artifact.commit_sha}):'手工上传'
+	return `${kind}: ${artifact.name} · ${source} · ${artifact.digest.slice(0,19)}…`
+}
 function formatRunTime(value:string){return new Date(value).toLocaleString('zh-CN',{hour12:false})}
 function runStatusLabel(status:string){return ({detected:'已发现',ready:'准备就绪',blocked:'已阻塞',awaiting_approval:'等待审核',running:'执行中',succeeded:'已成功',failed:'已失败',canceled:'已取消'} as Record<string,string>)[status]||status}
 function runStatusColor(status:string){return status==='succeeded'?'success':status==='failed'||status==='blocked'?'error':status==='running'?'processing':status==='awaiting_approval'?'warning':'default'}
@@ -893,6 +981,7 @@ watch(()=>applications.value.map(item=>item.id).join(','),syncBuildPlanSelection
 watch([selectedBuildPlanID,artifactApplicationID,buildPlanView],()=>{void loadArtifacts()})
 watch(()=>route.query.create,consumeBuildCreateRequest)
 watch(()=>route.query.application,()=>{void revealActiveApplication()})
+watch(()=>route.query.run,()=>{void revealRequestedRun()})
 onMounted(()=>{void refresh().then(()=>{syncBuildPlanSelection();consumeBuildCreateRequest();void revealActiveApplication()});releaseTimer=window.setInterval(refreshVisibleState,5000);document.addEventListener('visibilitychange',refreshVisibleState);window.addEventListener('focus',refreshVisibleState)})
 onBeforeUnmount(()=>{resetPlanExecution();clearInterval(releaseTimer);document.removeEventListener('visibilitychange',refreshVisibleState);window.removeEventListener('focus',refreshVisibleState)})
 </script>
@@ -1013,12 +1102,12 @@ onBeforeUnmount(()=>{resetPlanExecution();clearInterval(releaseTimer);document.r
   <aside class="run-index">
     <header><div><strong>运行记录</strong><small>{{ runs.length }} 次执行</small></div><span :class="{active:activeRunCount}">{{ activeRunCount }} 个进行中</span></header>
     <div class="run-index-list">
-      <button v-for="run in runs" :key="run.id" type="button" :class="{active:selectedRun?.id===run.id}" @click="selectedRunID=run.id">
+      <button v-for="run in runs" :key="run.id" type="button" :class="{active:selectedRun?.id===run.id}" @click="selectPipelineRun(run.id)">
         <span class="run-dot" :class="run.status"/>
         <span class="run-index-copy">
           <strong>{{ applicationName(run) }}</strong>
           <span>{{ run.commit_message||'未记录提交说明' }}</span>
-          <small>{{ runReferenceLabel(run) }} · {{ run.current_node_name||run.current_node_id||runStatusLabel(run.status) }}</small>
+          <small>{{ runReferenceLabel(run) }} · {{ runStatusLabel(run.status) }} · {{ run.current_node_name||run.current_node_id||'尚未开始' }}</small>
         </span>
         <ChevronRight :size="16"/>
       </button>
@@ -1043,7 +1132,7 @@ onBeforeUnmount(()=>{resetPlanExecution();clearInterval(releaseTimer);document.r
       <div><dt>关联应用</dt><dd><a-button type="link" size="small" @click="openApplicationFromRun(selectedRun)">{{ applicationName(selectedRun) }}</a-button></dd></div>
       <div><dt>关联发布计划</dt><dd><a-button v-if="selectedRun.release_plan_id" type="link" size="small" @click="openReleasePlanFromRun(selectedRun)">{{ selectedRunReleasePlan?releasePlanTitle(selectedRunReleasePlan):'查看发布计划' }}</a-button><span v-else>—</span></dd></div>
     </dl>
-    <footer class="run-actions"><a-button @click="openLogs(selectedRun)">查看实时日志</a-button><a-button v-if="selectedRun.status==='failed'&&auth.canAny(['delivery.run'])" type="primary" @click="action(`/pipeline-runs/${selectedRun.id}/retry`)">重新执行</a-button><a-button v-if="selectedRun.status==='awaiting_approval'&&auth.canAny(['deployment.review'])" type="primary" @click="action(`/pipeline-runs/${selectedRun.id}/approve`)">通过审核</a-button><a-button v-if="selectedRun.stage==='manual'&&auth.canAny(['delivery.run'])" type="primary" @click="action(`/pipeline-runs/${selectedRun.id}/advance`)">放行并继续</a-button></footer>
+    <footer class="run-actions"><a-button @click="openLogs(selectedRun)">查看实时日志</a-button><a-button v-if="selectedRun.status==='failed'&&auth.canAny(['delivery.run'])" type="primary" @click="openRetry(selectedRun)">重试流水线</a-button><a-button v-if="selectedRun.status==='awaiting_approval'&&auth.canAny(['deployment.review'])" type="primary" @click="action(`/pipeline-runs/${selectedRun.id}/approve`)">通过审核</a-button><a-button v-if="selectedRun.stage==='manual'&&auth.canAny(['delivery.run'])" type="primary" @click="action(`/pipeline-runs/${selectedRun.id}/advance`)">放行并继续</a-button></footer>
   </main>
   <div v-else class="run-detail-empty"><a-empty description="选择一条流水线运行查看执行拓扑"/></div>
 </div>
@@ -1052,6 +1141,7 @@ onBeforeUnmount(()=>{resetPlanExecution();clearInterval(releaseTimer);document.r
  v-else
  :plans="releasePlans"
  :applications="applications"
+ :pipeline-runs="runs"
  :loading="loading"
  :can-manage="canManage"
  :can-run="auth.canAny(['delivery.run'])"
@@ -1066,6 +1156,7 @@ onBeforeUnmount(()=>{resetPlanExecution();clearInterval(releaseTimer);document.r
  @toggle="toggleReleasePlan"
  @remove="removeReleasePlan"
  @remove-application="removeReleaseGroupApplication"
+ @open-application-run="openReleasePlanApplicationRun"
  @open-application-resources="openReleasePlanApplicationResources"
 />
 
@@ -1137,7 +1228,7 @@ onBeforeUnmount(()=>{resetPlanExecution();clearInterval(releaseTimer);document.r
   </div>
  </section>
  <section class="build-form-section">
-  <header><strong>{{ buildForm.kind==='dockerfile'?'镜像构建':'文件制品构建' }}</strong><small>{{ buildForm.kind==='dockerfile'?'默认读取仓库根目录 Dockerfile，并将镜像保留在当前构建运行时。':'脚本在已固定 Commit 的检出目录执行，目录产物自动打包，普通文件保持原格式。' }}</small></header>
+	  <header><strong>{{ buildForm.kind==='dockerfile'?'镜像构建':'Shell 构建' }}</strong><small>{{ buildForm.kind==='dockerfile'?'默认读取仓库根目录 Dockerfile，并将镜像保留在当前构建运行时。':'脚本在已固定 Commit 的隔离检出目录中执行，可按需保存文件制品。' }}</small></header>
   <div v-if="buildForm.kind==='dockerfile'" class="form-grid">
    <a-form-item label="Dockerfile 路径" required><a-input v-model:value="buildForm.dockerfile_path" placeholder="Dockerfile"/></a-form-item>
    <a-form-item label="构建上下文" required><a-input v-model:value="buildForm.context_path" placeholder="."/></a-form-item>
@@ -1145,10 +1236,12 @@ onBeforeUnmount(()=>{resetPlanExecution();clearInterval(releaseTimer);document.r
   </div>
   <div v-else class="form-grid">
    <a-form-item class="span2" label="构建脚本" required><a-textarea v-model:value="buildForm.script" :rows="8" placeholder="例如：npm ci&#10;npm run build"/></a-form-item>
-   <a-form-item class="span2" label="运行镜像" required><a-auto-complete v-model:value="buildForm.runtime_image" :options="runtimeImageOptions" placeholder="alpine:3.22"/><small class="field-hint">默认 alpine:3.22，也可输入其他镜像。镜像必须提供 /bin/sh，并使用明确 tag 或 digest；不接受裸镜像名和 latest。</small></a-form-item>
-   <a-form-item label="工作目录" required><a-input v-model:value="buildForm.working_directory" placeholder="."/></a-form-item>
-   <a-form-item label="产物路径" required><a-input v-model:value="buildForm.artifact_path" placeholder="例如 dist 或 bin/server"/></a-form-item>
-   <a-alert class="span2" type="info" show-icon message="产物上传由 EDO 自动完成" description="脚本成功后，EDO 会校验产物路径：目录确定性打包为 tar.gz，普通文件保持原格式，然后计算 SHA256 摘要并登记制品；脚本无需自行上传。"/>
+	   <a-form-item class="span2" label="运行镜像" required><a-auto-complete v-model:value="buildForm.runtime_image" :options="runtimeImageOptions" placeholder="alpine:3.22"/><small class="field-hint">默认 alpine:3.22，也可输入其他镜像。镜像必须提供 /bin/sh，并使用明确 tag 或 digest；不接受裸镜像名和 latest。</small></a-form-item>
+	   <a-form-item label="工作目录" required><a-input v-model:value="buildForm.working_directory" placeholder="."/></a-form-item>
+	   <a-form-item label="保存产物"><a-switch v-model:checked="buildSaveArtifact"/><small class="field-hint">关闭时只执行 Shell 构建，不登记文件制品。</small></a-form-item>
+	   <a-form-item v-if="buildSaveArtifact" class="span2" label="产物路径" required><a-input v-model:value="buildForm.artifact_path" placeholder="例如 dist 或 bin/server"/></a-form-item>
+	   <a-alert v-if="buildSaveArtifact" class="span2" type="info" show-icon message="产物归档由 EDO 自动完成" description="脚本成功后，EDO 会校验产物路径：目录确定性打包为 tar.gz，普通文件保持原格式，然后计算 SHA256 摘要并登记制品；脚本无需自行上传。"/>
+	   <a-alert v-else class="span2" type="warning" show-icon message="本方案不保存文件制品" description="可用于测试、检查或只需执行命令的流水线；若后续存在主机脚本部署任务，保存流水线时会要求开启产物归档。"/>
   </div>
  </section>
  <a-collapse class="build-advanced" :bordered="false">
@@ -1196,10 +1289,22 @@ onBeforeUnmount(()=>{resetPlanExecution();clearInterval(releaseTimer);document.r
 </template>
 </a-form><template #footer><div class="drawer-actions"><a-button @click="formOpen=false">取消</a-button><a-button v-if="props.section==='repositories'" :loading="testing" @click="testRepository">测试连接</a-button><a-button v-if="props.section==='image-registries'" :loading="testing" @click="testRegistry">测试登录</a-button><a-button type="primary" :loading="saving" :disabled="props.section==='image-registries'&&!registryTested" @click="save">保存</a-button></div></template></a-drawer>
 <a-modal v-model:open="manualOpen" :title="t('manualRun.title')" :confirm-loading="saving" :ok-button-props="{disabled:!manualApplicationID||!manualWorkflowID}" :ok-text="t('manualRun.chooseVersion')" @ok="nextManual" @cancel="resetManualFlow"><a-form layout="vertical"><a-form-item :label="t('manualRun.application')"><a-select :value="manualApplicationID" :options="manualApplications.map(item=>({value:item.id,label:item.name}))" @change="updateManualApplication(String($event))"/></a-form-item><a-form-item label="流水线" required><a-select v-model:value="manualWorkflowID" :options="applicationManualWorkflows(manualApplications.find(item=>item.id===manualApplicationID)).map(item=>({value:item.id,label:item.name}))"/></a-form-item></a-form></a-modal>
-<a-modal v-model:open="commitOpen" :title="t('manualRun.versionTitle')" :confirm-loading="saving" :ok-text="t('manualRun.confirm')" @ok="executeCommit" @cancel="resetManualFlow"><a-form layout="vertical"><a-alert class="manual-release-note" type="info" show-icon :message="t('manualRun.executionHint')"/><a-form-item v-if="manualSources.length" :label="t('manualRun.source')"><a-select v-model:value="selectedSource" :options="manualSources.map(item=>({value:item.id,label:item.environment?`${item.name} · ${item.environment}`:item.name}))"/></a-form-item><a-form-item :label="t('manualRun.ref')"><a-select v-model:value="selectedRef"><a-select-opt-group :label="t('manualRun.branch')"><a-select-option v-for="item in commitOptions.filter(item=>item.kind==='branch')" :key="item.ref" :value="item.ref">{{ selectableReferenceLabel(item) }}</a-select-option></a-select-opt-group><a-select-opt-group :label="t('manualRun.tag')"><a-select-option v-for="item in commitOptions.filter(item=>item.kind==='tag')" :key="item.ref" :value="item.ref">{{ selectableReferenceLabel(item) }}</a-select-option></a-select-opt-group></a-select></a-form-item></a-form></a-modal>
+<a-modal v-model:open="commitOpen" :title="t('manualRun.versionTitle')" :confirm-loading="saving" :ok-button-props="{disabled:!selectedSource||(manualExecutionMode==='code'?!selectedRef:!selectedArtifactID)}" :ok-text="t('manualRun.confirm')" @ok="executeCommit" @cancel="resetManualFlow"><a-form layout="vertical"><a-alert class="manual-release-note" type="info" show-icon :message="manualExecutionMode==='artifact'?t('manualRun.artifactHint'):t('manualRun.executionHint')"/><a-form-item v-if="manualSources.length" :label="t('manualRun.source')"><a-select v-model:value="selectedSource" :options="manualSources.map(item=>({value:item.id,label:item.environment?`${item.name} · ${item.environment}`:item.name}))"/></a-form-item><a-form-item label="执行内容"><a-radio-group v-model:value="manualExecutionMode" button-style="solid"><a-radio-button value="code" :disabled="!commitOptions.length">代码版本</a-radio-button><a-radio-button value="artifact" :disabled="!manualArtifacts.length">已有制品</a-radio-button></a-radio-group></a-form-item><a-alert v-if="manualReferenceError&&manualExecutionMode==='artifact'" class="manual-release-note" type="warning" show-icon :message="manualReferenceError"/><a-form-item v-if="manualExecutionMode==='code'" :label="t('manualRun.ref')"><a-select v-model:value="selectedRef"><a-select-opt-group :label="t('manualRun.branch')"><a-select-option v-for="item in commitOptions.filter(item=>item.kind==='branch')" :key="item.ref" :value="item.ref">{{ selectableReferenceLabel(item) }}</a-select-option></a-select-opt-group><a-select-opt-group :label="t('manualRun.tag')"><a-select-option v-for="item in commitOptions.filter(item=>item.kind==='tag')" :key="item.ref" :value="item.ref">{{ selectableReferenceLabel(item) }}</a-select-option></a-select-opt-group></a-select></a-form-item><a-form-item v-else label="历史制品"><a-select v-model:value="selectedArtifactID" show-search option-filter-prop="label" placeholder="选择之前构建或手工上传的可用制品" :options="manualArtifacts.map(item=>({value:item.id,label:selectableArtifactLabel(item)}))"/></a-form-item></a-form></a-modal>
+<a-modal :open="retryOpen" title="重试流水线" :confirm-loading="retrySubmitting" :ok-button-props="{disabled:retryLoading||!retryOptions||(retryMode==='artifact'&&!retryArtifactID)}" ok-text="确认重试" @ok="executeRetry" @cancel="resetRetry">
+ <a-spin :spinning="retryLoading">
+  <a-form v-if="retryOptions" layout="vertical">
+   <a-alert class="manual-release-note" type="info" show-icon message="代码版本已经由原流水线运行固定，重试不能重新选择分支或 Tag。"/>
+   <a-form-item label="固定代码版本"><a-input :value="formatGitReference({ref:retryOptions.ref,sha:retryOptions.commit_sha})" readonly/></a-form-item>
+   <a-form-item label="重试方式"><a-radio-group v-model:value="retryMode" button-style="solid"><a-radio-button value="rebuild">按固定版本重新构建</a-radio-button><a-radio-button value="artifact" :disabled="!retryOptions.artifacts.length">使用原运行制品</a-radio-button></a-radio-group></a-form-item>
+   <a-form-item v-if="retryMode==='artifact'" label="该次运行已构建的制品" required><a-select v-model:value="retryArtifactID" show-search option-filter-prop="label" placeholder="选择原失败运行已经构建的可用制品" :options="retryOptions.artifacts.map(item=>({value:item.id,label:selectableArtifactLabel(item)}))"/></a-form-item>
+   <a-alert v-if="retryMode==='artifact'" type="warning" show-icon message="将跳过该制品对应的构建和紧随其后的 Shell 检查，从后续审核、人工放行或部署继续。"/>
+   <a-alert v-else-if="!retryOptions.artifacts.length" type="warning" show-icon message="该次运行没有已构建的可用制品，将使用原 Commit 重新构建。"/>
+  </a-form>
+ </a-spin>
+</a-modal>
 <a-modal
  :open="releasePlanAddApplicationOpen"
- :title="t('releasePlan.addApplicationDialog.title', { name: releasePlanAddApplicationTarget?.group.name || '' })"
+	 :title="t('releasePlan.addApplicationDialog.title')"
  :ok-text="t('releasePlan.addApplicationDialog.confirm')"
  :cancel-text="t('releasePlan.editor.cancel')"
  :confirm-loading="releasePlanMutationID === releasePlanAddApplicationPlanID"
@@ -1236,8 +1341,10 @@ onBeforeUnmount(()=>{resetPlanExecution();clearInterval(releaseTimer);document.r
  @submit="executeReleasePlan"
  @retry="retryPlanExecutionApplication"
  @update-workflow="updatePlanExecutionWorkflow"
- @update-source="updatePlanExecutionSource"
- @update-ref="updatePlanExecutionRef"
+	 @update-source="updatePlanExecutionSource"
+	 @update-ref="updatePlanExecutionRef"
+	 @update-mode="updatePlanExecutionMode"
+	 @update-artifact="updatePlanExecutionArtifact"
 />
 <ReleasePlanEditorDrawer
  v-model:open="releasePlanEditorOpen"

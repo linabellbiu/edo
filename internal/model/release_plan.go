@@ -73,7 +73,7 @@ const (
 	ReleasePlanExecutionItemCanceled  ReleasePlanExecutionItemStatus = "canceled"
 )
 
-// ReleasePlanExecutionItem 是发布组中单个应用的一次不可变执行槽。
+// ReleasePlanExecutionItem 是发布计划中单个应用的一次不可变执行槽。
 // PipelineRun 在创建执行时预先生成，调和器只负责按快照决定何时启动它。
 type ReleasePlanExecutionItem struct {
 	ID                        string                         `gorm:"type:varchar(36);primaryKey" json:"id"`

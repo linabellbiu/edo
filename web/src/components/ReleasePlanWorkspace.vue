@@ -8,7 +8,6 @@ import {
   ChevronRight,
   GitBranch,
   GitCommit,
-  Layers3,
   ListChecks,
   Pencil,
   Play,
@@ -27,6 +26,14 @@ interface ApplicationItem {
   id: string
   name: string
   is_active?: boolean
+}
+
+interface PipelineRunItem {
+  id: string
+  application_id: string
+  status: string
+  created_at: string
+  updated_at?: string
 }
 
 interface ReleaseGroupApplication {
@@ -82,6 +89,7 @@ interface ReleasePlanItem {
 const props = defineProps<{
   plans: ReleasePlanItem[]
   applications: ApplicationItem[]
+  pipelineRuns?: PipelineRunItem[]
   loading?: boolean
   canManage?: boolean
   canRun?: boolean
@@ -98,12 +106,14 @@ const emit = defineEmits<{
   toggle: [planID: string, enabled: boolean]
   remove: [planID: string]
   removeApplication: [planID: string, groupID: string, applicationID: string]
+  openApplicationRun: [planID: string, applicationID: string, pipelineRunID: string]
   openApplicationResources: [planID: string, applicationID: string, pipelineRunID: string]
 }>()
 const { t, locale } = useI18n()
 const selectedPlanID = ref('')
 
 const selectedPlan = computed(() => props.plans.find((plan) => plan.id === selectedPlanID.value) || props.plans[0] || null)
+const selectedGroup = computed(() => selectedPlan.value?.groups?.[0] || null)
 
 watch(
   () => ({ ids: props.plans.map((plan) => plan.id), activePlanID: props.activePlanID || '' }),
@@ -139,6 +149,10 @@ function planStatus(status: string): { tone: PlanTone; label: string; hint: stri
 
 function visiblePlanStatus(plan: ReleasePlanItem) {
   if (plan.is_active === false) return 'disabled'
+  const latestRunStatus = latestPlanRun(plan)?.status
+  if (latestRunStatus === 'detected' || latestRunStatus === 'ready' || latestRunStatus === 'awaiting_approval') return 'running'
+  if (latestRunStatus === 'blocked') return 'failed'
+  if (latestRunStatus) return latestRunStatus
   return plan.latest_execution?.status || plan.status
 }
 
@@ -152,7 +166,7 @@ function canExecutePlan(plan: ReleasePlanItem) {
 }
 
 function planApplications(plan: ReleasePlanItem) {
-  return (plan.groups || []).flatMap((group) => group.applications || [])
+  return plan.groups?.[0]?.applications || []
 }
 
 function applicationCount(plan: ReleasePlanItem) {
@@ -171,7 +185,30 @@ function applicationEnabled(item: ReleaseGroupApplication) {
   return item.application?.is_active ?? props.applications.find((application) => application.id === item.application_id)?.is_active ?? true
 }
 
+function latestRun(runs: PipelineRunItem[]) {
+  return runs.reduce<PipelineRunItem | undefined>((latest, run) => {
+    if (!latest) return run
+    return Date.parse(run.created_at) > Date.parse(latest.created_at) ? run : latest
+  }, undefined)
+}
+
+function latestApplicationRun(item: ReleaseGroupApplication) {
+  return latestRun((props.pipelineRuns || []).filter((run) => run.application_id === item.application_id))
+}
+
+function latestPlanRun(plan: ReleasePlanItem) {
+  const applicationIDs = new Set(planApplications(plan).map((item) => item.application_id))
+  return latestRun((props.pipelineRuns || []).filter((run) => applicationIDs.has(run.application_id)))
+}
+
+function planDisplayTime(plan: ReleasePlanItem) {
+  const run = latestPlanRun(plan)
+  return run?.updated_at || run?.created_at || plan.updated_at || plan.created_at
+}
+
 function executionItem(plan: ReleasePlanItem, item: ReleaseGroupApplication) {
+  const run = latestApplicationRun(item)
+  if (run) return { pipeline_run_id: run.id, status: run.status }
   return plan.latest_execution?.items?.find((candidate) => candidate.release_group_application_id === item.id)
     || plan.latest_execution?.items?.find((candidate) => candidate.application_id === item.application_id)
 }
@@ -179,9 +216,13 @@ function executionItem(plan: ReleasePlanItem, item: ReleaseGroupApplication) {
 function executionItemStatus(status?: string) {
   const states: Record<string, { tone: PlanTone; label: string }> = {
     pending: { tone: 'info', label: '等待执行' },
+    detected: { tone: 'info', label: '等待执行' },
+    ready: { tone: 'info', label: '等待继续' },
     running: { tone: 'info', label: '正在执行' },
+    awaiting_approval: { tone: 'info', label: '等待审核' },
     succeeded: { tone: 'success', label: '最近执行成功' },
     failed: { tone: 'danger', label: '最近执行失败' },
+    blocked: { tone: 'danger', label: '最近执行阻塞' },
     skipped: { tone: 'neutral', label: '已跳过' },
     canceled: { tone: 'neutral', label: '已取消' },
   }
@@ -199,13 +240,6 @@ function groupMode(mode: string) {
 
 function failurePolicy(policy: string) {
   return policy === 'continue' ? t('releasePlan.failurePolicy.continue') : t('releasePlan.failurePolicy.stop')
-}
-
-function dependencyLabel(plan: ReleasePlanItem, group: ReleaseGroup) {
-  const names = (group.dependencies || [])
-    .map((dependency) => plan.groups?.find((candidate) => candidate.id === dependency.depends_on_group_id)?.name)
-    .filter(Boolean)
-  return names.length ? t('releasePlan.dependsOn', { names: names.join('、') }) : ''
 }
 
 function sourceMeta(item: ReleaseGroupApplication) {
@@ -246,8 +280,8 @@ function sourceMeta(item: ReleaseGroupApplication) {
           <i :class="{ live: planStatus(visiblePlanStatus(plan)).live }" />
           <span class="plan-index-copy">
             <strong :title="planTitle(plan)">{{ planTitle(plan) }}</strong>
-            <span>{{ planStatus(visiblePlanStatus(plan)).label }} · {{ t('releasePlan.structureCount', { groups: plan.groups?.length || 0, applications: applicationCount(plan) }) }}</span>
-            <small>{{ formatTime(plan.updated_at || plan.created_at) }}</small>
+            <span>{{ planStatus(visiblePlanStatus(plan)).label }} · {{ t('releasePlan.applicationCount', { count: applicationCount(plan) }) }}</span>
+            <small>{{ formatTime(planDisplayTime(plan)) }}</small>
           </span>
           <ChevronRight :size="16" />
         </button>
@@ -292,9 +326,9 @@ function sourceMeta(item: ReleaseGroupApplication) {
 
       <dl class="plan-summary">
         <div>
-          <dt><Layers3 />{{ t('releasePlan.summaryGroups') }}</dt>
-          <dd>{{ selectedPlan.groups?.length || 0 }}</dd>
-          <small>{{ t('releasePlan.summaryGroupsHint') }}</small>
+          <dt><ListChecks />{{ t('releasePlan.summaryExecution') }}</dt>
+          <dd class="summary-rule">{{ groupMode(selectedGroup?.mode || 'parallel') }}</dd>
+          <small>{{ failurePolicy(selectedGroup?.failure_policy || 'stop') }}</small>
         </div>
         <div>
           <dt><UsersRound />{{ t('releasePlan.summaryApplications') }}</dt>
@@ -310,27 +344,19 @@ function sourceMeta(item: ReleaseGroupApplication) {
 
       <section class="plan-groups">
         <header>
-          <div><small>{{ t('releasePlan.orchestration') }}</small><h3>{{ t('releasePlan.groupsTitle') }}</h3></div>
+          <div><small>{{ t('releasePlan.orchestration') }}</small><h3>{{ t('releasePlan.applicationsTitle') }}</h3></div>
           <div class="plan-group-heading-actions">
-            <span>{{ t('releasePlan.groupCount', { count: selectedPlan.groups?.length || 0 }) }}</span>
+            <span>{{ t('releasePlan.applicationCount', { count: applicationCount(selectedPlan) }) }}</span>
+            <a-button v-if="selectedGroup && canManage && !planMutationBlocked(selectedPlan)" size="small" type="text" :disabled="mutatingPlanID === selectedPlan.id" @click="emit('addApplication', selectedPlan.id, selectedGroup.id)">
+              <Plus :size="13" />{{ t('releasePlan.editor.addApplication') }}
+            </a-button>
           </div>
         </header>
 
-        <div v-if="selectedPlan.groups?.length" class="plan-group-list">
-          <article v-for="(group, index) in selectedPlan.groups" :key="group.id" class="plan-group-row">
-            <span class="plan-group-step">{{ index + 1 }}</span>
-            <header>
-              <div><strong>{{ group.name }}</strong><small v-if="dependencyLabel(selectedPlan, group)">{{ dependencyLabel(selectedPlan, group) }}</small></div>
-              <div class="plan-group-actions">
-                <div class="plan-group-rules"><span>{{ groupMode(group.mode) }}</span><span>{{ failurePolicy(group.failure_policy) }}</span></div>
-                <a-button v-if="canManage && !planMutationBlocked(selectedPlan)" size="small" type="text" :disabled="mutatingPlanID === selectedPlan.id" @click="emit('addApplication', selectedPlan.id, group.id)">
-                  <Plus :size="13" />{{ t('releasePlan.editor.addApplication') }}
-                </a-button>
-              </div>
-            </header>
-
-            <div v-if="group.applications?.length" class="plan-application-grid">
-              <div v-for="item in group.applications" :key="item.application_id" class="plan-application">
+        <div v-if="selectedGroup" class="plan-group-list">
+          <article class="plan-group-row">
+            <div v-if="selectedGroup.applications?.length" class="plan-application-grid">
+              <div v-for="item in selectedGroup.applications" :key="item.application_id" class="plan-application">
                 <span class="plan-app-mark"><Boxes /></span>
                 <div class="plan-app-copy">
                   <strong :title="applicationName(item)">{{ applicationName(item) }}</strong>
@@ -344,6 +370,14 @@ function sourceMeta(item: ReleaseGroupApplication) {
                 </div>
                 <div class="plan-app-actions">
                   <em :class="{ disabled: !applicationEnabled(item) }">{{ applicationEnabled(item) ? t('releasePlan.enabled') : t('releasePlan.disabled') }}</em>
+                  <a-button
+                    v-if="executionItem(selectedPlan, item)?.pipeline_run_id"
+                    type="text"
+                    size="small"
+                    @click="emit('openApplicationRun', selectedPlan.id, item.application_id, executionItem(selectedPlan, item)!.pipeline_run_id)"
+                  >
+                    <ListChecks :size="13" />流水线记录
+                  </a-button>
                   <a-button
                     v-if="executionItem(selectedPlan, item)?.pipeline_run_id && canReadDeployments"
                     type="text"
@@ -360,7 +394,7 @@ function sourceMeta(item: ReleaseGroupApplication) {
                     :ok-text="t('releasePlan.editor.remove')"
                     :cancel-text="t('releasePlan.editor.cancel')"
                     ok-type="danger"
-                    @confirm="emit('removeApplication', selectedPlan.id, group.id, item.application_id)"
+                    @confirm="emit('removeApplication', selectedPlan.id, selectedGroup.id, item.application_id)"
                   >
                     <a-button danger type="text" size="small" :disabled="mutatingPlanID === selectedPlan.id">
                       <Trash2 :size="13" />{{ t('releasePlan.editor.removeApplication') }}
@@ -369,10 +403,10 @@ function sourceMeta(item: ReleaseGroupApplication) {
                 </div>
               </div>
             </div>
-            <a-empty v-else :image="AntEmpty.PRESENTED_IMAGE_SIMPLE" :description="t('releasePlan.emptyGroup')" />
+            <a-empty v-else :image="AntEmpty.PRESENTED_IMAGE_SIMPLE" :description="t('releasePlan.emptyApplications')" />
           </article>
         </div>
-        <a-empty v-else :image="AntEmpty.PRESENTED_IMAGE_SIMPLE" :description="t('releasePlan.emptyGroups')" />
+        <a-empty v-else :image="AntEmpty.PRESENTED_IMAGE_SIMPLE" :description="t('releasePlan.emptyApplications')" />
       </section>
     </main>
   </div>
@@ -392,14 +426,14 @@ function sourceMeta(item: ReleaseGroupApplication) {
 .plan-index-copy{min-width:0}.plan-index-copy strong,.plan-index-copy span,.plan-index-copy small{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.plan-index-copy strong{font-size:13px}.plan-index-copy span{margin-top:4px;color:var(--edo-text);font-size:11px}.plan-index-copy small{margin-top:3px;color:var(--edo-muted);font-size:10px}
 .plan-detail{--plan-tone:#9ba1ad;padding:20px}.plan-detail.tone-info{--plan-tone:#4f7df3}.plan-detail.tone-success{--plan-tone:#2ab573}.plan-detail.tone-danger{--plan-tone:#ed5965}.plan-detail-heading{display:flex;align-items:flex-start;justify-content:space-between;gap:20px;padding-bottom:18px;border-bottom:1px solid var(--edo-border)}.plan-identity{display:flex;min-width:0;align-items:flex-start;gap:13px}.plan-mark{display:grid;width:44px;height:44px;flex:0 0 44px;place-items:center;border-radius:13px;color:var(--plan-tone);background:color-mix(in srgb,var(--plan-tone) 10%,var(--edo-surface))}.plan-mark svg{width:21px}.plan-identity>div{min-width:0}.plan-identity small{color:var(--edo-primary);font-size:11px;font-weight:600;letter-spacing:.08em}.plan-identity h2{overflow:hidden;margin:2px 0 0;text-overflow:ellipsis;font-size:20px;line-height:1.35}.plan-identity p{display:flex;align-items:center;gap:5px;margin:6px 0 0;color:var(--edo-muted);font-size:11px}
 .plan-detail-actions{display:flex;flex:0 0 auto;align-items:center;gap:8px}.plan-detail-actions :deep(.ant-btn){display:inline-flex;align-items:center;gap:5px}.plan-state{display:flex;flex:0 0 auto;align-items:center;gap:9px;padding:8px 11px;border-radius:10px;color:var(--plan-tone);background:color-mix(in srgb,var(--plan-tone) 9%,var(--edo-surface))}.plan-state>i{width:8px;height:8px;flex:0 0 8px;border-radius:50%;background:currentColor;box-shadow:0 0 0 4px color-mix(in srgb,currentColor 10%,transparent)}.plan-state.live>i{animation:plan-pulse 2s ease-out infinite}.plan-state small,.plan-state strong{display:block}.plan-state small{color:var(--edo-muted);font-size:10px;font-weight:400}.plan-state strong{font-size:13px}
-.plan-summary{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:9px;margin:16px 0}.plan-summary>div{min-width:0;padding:12px 13px;border:1px solid var(--edo-border);border-radius:11px;background:var(--edo-surface-soft)}.plan-summary dt{display:flex;align-items:center;gap:6px;color:var(--edo-muted);font-size:11px}.plan-summary dt svg{width:14px;color:var(--edo-primary)}.plan-summary dd{margin:4px 0 0;font-size:21px;font-weight:650;line-height:1.2}.plan-summary small{display:block;margin-top:3px;color:var(--edo-muted);font-size:10px}
+.plan-summary{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:9px;margin:16px 0}.plan-summary>div{min-width:0;padding:12px 13px;border:1px solid var(--edo-border);border-radius:11px;background:var(--edo-surface-soft)}.plan-summary dt{display:flex;align-items:center;gap:6px;color:var(--edo-muted);font-size:11px}.plan-summary dt svg{width:14px;color:var(--edo-primary)}.plan-summary dd{margin:4px 0 0;font-size:21px;font-weight:650;line-height:1.2}.plan-summary dd.summary-rule{font-size:16px}.plan-summary small{display:block;margin-top:3px;color:var(--edo-muted);font-size:10px}
 .plan-groups{overflow:hidden;border:1px solid var(--edo-border);border-radius:12px}.plan-groups>header{display:flex;align-items:center;justify-content:space-between;padding:13px 15px;background:var(--edo-surface-soft)}.plan-groups>header small,.plan-groups>header h3{display:block;margin:0}.plan-groups>header small{color:var(--edo-muted);font-size:10px}.plan-groups>header h3{margin-top:1px;font-size:14px}.plan-group-heading-actions{display:flex;align-items:center;gap:7px}.plan-group-heading-actions>span{padding:4px 8px;border-radius:999px;color:var(--edo-muted);background:var(--edo-surface);font-size:10px}.plan-group-heading-actions :deep(.ant-btn),.plan-group-actions :deep(.ant-btn){display:inline-flex;align-items:center;gap:4px}
-.plan-group-list{padding:0 15px 4px}.plan-group-row{position:relative;padding:15px 0 15px 39px}.plan-group-row+.plan-group-row{border-top:1px solid var(--edo-border)}.plan-group-step{position:absolute;top:16px;left:0;display:grid;width:26px;height:26px;place-items:center;border-radius:9px;color:var(--edo-primary);background:var(--edo-primary-soft);font-size:11px;font-weight:700}.plan-group-row>header{display:flex;align-items:flex-start;justify-content:space-between;gap:12px}.plan-group-row>header strong,.plan-group-row>header small{display:block}.plan-group-row>header strong{font-size:13px}.plan-group-row>header small{margin-top:3px;color:var(--edo-muted);font-size:10px}.plan-group-actions{display:flex;flex-wrap:wrap;align-items:center;justify-content:flex-end;gap:3px}.plan-group-rules{display:flex;flex-wrap:wrap;justify-content:flex-end;gap:5px}.plan-group-rules span{padding:3px 7px;border-radius:999px;color:var(--edo-muted);background:var(--edo-surface-soft);font-size:10px;white-space:nowrap}
+.plan-group-list{padding:0 15px 4px}.plan-group-row{padding:15px 0}
 .plan-application-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(380px,100%),1fr));gap:7px;margin-top:11px}.plan-application{display:grid;min-width:0;align-items:center;grid-template-columns:34px minmax(0,1fr) auto;gap:9px;padding:9px 10px;border:1px solid var(--edo-border);border-radius:10px;background:var(--edo-surface-soft)}.plan-app-mark{display:grid;width:34px;height:34px;place-items:center;border-radius:9px;color:var(--edo-primary);background:var(--edo-surface)}.plan-app-mark svg{width:16px}.plan-app-copy{min-width:0}.plan-app-copy strong,.plan-app-copy span{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.plan-app-copy strong{font-size:12px}.plan-app-copy span{display:flex;align-items:center;gap:4px;margin-top:3px;color:var(--edo-muted);font-size:10px}.plan-app-copy span svg{width:12px;flex:0 0 12px}.plan-app-copy .plan-app-execution.tone-info{color:#3768d8}.plan-app-copy .plan-app-execution.tone-success{color:#168b57}.plan-app-copy .plan-app-execution.tone-danger{color:#d94150}.plan-app-actions{display:flex;align-items:center;justify-content:flex-end;gap:3px}.plan-app-actions em{padding:3px 6px;border-radius:999px;color:#168b57;background:color-mix(in srgb,#2ab573 10%,var(--edo-surface));font-size:9px;font-style:normal;white-space:nowrap}.plan-app-actions em.disabled{color:var(--edo-muted);background:var(--edo-surface)}.plan-app-actions :deep(.ant-btn){display:inline-flex;align-items:center;gap:4px;padding-inline:5px}
 .plan-empty{display:grid;min-height:460px;place-items:center;align-content:center;padding:32px;text-align:center}.plan-empty>span{display:grid;width:58px;height:58px;place-items:center;border-radius:18px;color:var(--edo-primary);background:var(--edo-primary-soft)}.plan-empty>span svg{width:25px}.plan-empty h3{margin:15px 0 0;font-size:16px}.plan-empty p{max-width:420px;margin:6px 0 16px;color:var(--edo-muted);font-size:12px}
 @keyframes plan-pulse{0%{box-shadow:0 0 0 0 color-mix(in srgb,currentColor 30%,transparent)}70%{box-shadow:0 0 0 7px transparent}100%{box-shadow:0 0 0 0 transparent}}
 @media(max-width:980px){.plan-workspace{grid-template-columns:250px minmax(0,1fr)}.plan-application-grid{grid-template-columns:1fr}}
-@media(max-width:760px){.plan-workspace{grid-template-columns:1fr;min-height:0}.plan-index-list{display:flex;max-height:none;overflow-x:auto;overflow-y:hidden;padding:7px}.plan-index-list>button{width:260px;flex:0 0 260px}.plan-detail{padding:16px}.plan-detail-heading{align-items:flex-start}.plan-summary{grid-template-columns:repeat(3,minmax(100px,1fr));overflow-x:auto}.plan-group-row>header{flex-direction:column}.plan-group-rules{justify-content:flex-start}}
-@media(max-width:520px){.plan-detail-heading{flex-direction:column}.plan-detail-actions{width:100%;align-items:stretch;flex-direction:column}.plan-state{align-self:stretch}.plan-detail-actions :deep(.ant-btn){justify-content:center}.plan-summary{grid-template-columns:1fr}.plan-application{grid-template-columns:34px minmax(0,1fr)}.plan-app-actions{grid-column:2;justify-self:start}.plan-group-row{padding-left:34px}}
+@media(max-width:760px){.plan-workspace{grid-template-columns:1fr;min-height:0}.plan-index-list{display:flex;max-height:none;overflow-x:auto;overflow-y:hidden;padding:7px}.plan-index-list>button{width:260px;flex:0 0 260px}.plan-detail{padding:16px}.plan-detail-heading{align-items:flex-start}.plan-summary{grid-template-columns:repeat(3,minmax(100px,1fr));overflow-x:auto}}
+@media(max-width:520px){.plan-detail-heading{flex-direction:column}.plan-detail-actions{width:100%;align-items:stretch;flex-direction:column}.plan-state{align-self:stretch}.plan-detail-actions :deep(.ant-btn){justify-content:center}.plan-summary{grid-template-columns:1fr}.plan-application{grid-template-columns:34px minmax(0,1fr)}.plan-app-actions{grid-column:2;justify-self:start}}
 @media(prefers-reduced-motion:reduce){.plan-index-list>button>i.live,.plan-state.live>i{animation:none}}
 </style>

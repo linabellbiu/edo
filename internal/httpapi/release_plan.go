@@ -15,7 +15,7 @@ type releasePlanRequest struct {
 	Version     string                          `json:"version" binding:"max=64"`
 	Description string                          `json:"description" binding:"max=500"`
 	Status      model.ReleasePlanStatus         `json:"status" binding:"omitempty,max=16"`
-	Groups      []releasePlanCreateGroupRequest `json:"groups" binding:"required,min=1,max=50,dive"`
+	Groups      []releasePlanCreateGroupRequest `json:"groups" binding:"required,len=1,dive"`
 }
 
 type releasePlanCreateGroupRequest struct {
@@ -53,7 +53,7 @@ type releasePlanStatusRequest struct {
 
 type releasePlanConfigurationRequest struct {
 	Description string                                 `json:"description" binding:"max=500"`
-	Groups      []releasePlanConfigurationGroupRequest `json:"groups" binding:"max=50,dive"`
+	Groups      []releasePlanConfigurationGroupRequest `json:"groups" binding:"required,len=1,dive"`
 }
 
 type releasePlanConfigurationGroupRequest struct {
@@ -76,8 +76,9 @@ type releasePlanExecutionSelectionRequest struct {
 	WorkflowID                string `json:"workflow_id" binding:"required,max=36"`
 	ExpectedWorkflowRevision  uint64 `json:"expected_workflow_revision" binding:"required"`
 	SourceNodeID              string `json:"source_node_id" binding:"required,max=64"`
-	Ref                       string `json:"ref" binding:"required,max=512"`
-	CommitSHA                 string `json:"commit_sha" binding:"required,max=64"`
+	Ref                       string `json:"ref" binding:"max=512"`
+	CommitSHA                 string `json:"commit_sha" binding:"max=64"`
+	ArtifactID                string `json:"artifact_id" binding:"max=36"`
 }
 
 func (h pipelineHandler) listReleasePlans(c *gin.Context) {
@@ -115,7 +116,7 @@ func (h pipelineHandler) createReleasePlan(c *gin.Context) {
 		})
 	}
 	if applicationCount == 0 {
-		h.logger.Warn("创建发布计划的发布组未配置应用", "operation", "release_plan_create_validate", "request_id", requestIDFrom(c))
+		h.logger.Warn("创建发布计划时未配置应用", "operation", "release_plan_create_validate", "request_id", requestIDFrom(c))
 		writeError(c, http.StatusBadRequest, "invalid_release_plan", pipeline.ErrInvalidReleasePlan.Error())
 		return
 	}
@@ -218,6 +219,7 @@ func (h pipelineHandler) createReleasePlanExecution(c *gin.Context) {
 			SourceNodeID:              selection.SourceNodeID,
 			Ref:                       selection.Ref,
 			CommitSHA:                 selection.CommitSHA,
+			ArtifactID:                selection.ArtifactID,
 		})
 	}
 	actor, _ := currentUser(c)
@@ -248,7 +250,7 @@ func (h pipelineHandler) updateReleaseGroup(c *gin.Context) {
 func (h pipelineHandler) saveReleaseGroup(c *gin.Context, groupID string) {
 	var request releaseGroupRequest
 	if err := c.ShouldBindJSON(&request); err != nil {
-		h.logger.Warn("发布组请求格式无效", "operation", "release_group_bind", "request_id", requestIDFrom(c), "release_plan_id", c.Param("id"), "err", err)
+		h.logger.Warn("发布计划应用配置请求格式无效", "operation", "release_plan_applications_bind", "request_id", requestIDFrom(c), "release_plan_id", c.Param("id"), "err", err)
 		writeError(c, http.StatusBadRequest, "invalid_release_group", pipeline.ErrInvalidReleaseGroup.Error())
 		return
 	}

@@ -34,11 +34,18 @@ var (
 	ErrContainerRestarted        = errors.New("Docker 容器启动期间发生重启")
 	ErrContainerUnhealthy        = errors.New("Docker 容器健康检查失败")
 	ErrContainerReadinessTimeout = errors.New("等待 Docker 容器就绪超时")
+	ErrContainerStopTimeout      = errors.New("停止旧 Docker 容器超时")
+	ErrContainerStopFailed       = errors.New("停止旧 Docker 容器失败")
+	ErrContainerRollbackFailed   = errors.New("恢复旧 Docker 容器失败")
 )
 
 const (
 	directContainerStabilityWindow = 10 * time.Second
 	directContainerPollInterval    = time.Second
+	directContainerStopGrace       = 10
+	directContainerStopRequestWait = 5 * time.Second
+	directContainerReconcileWait   = 5 * time.Second
+	directContainerRollbackTimeout = 45 * time.Second
 )
 
 type containerInspectFunc func(context.Context) (client.ContainerInspectResult, error)
@@ -73,7 +80,7 @@ func (s *Service) deployContainer(
 	if err != nil {
 		return ImageSnapshot{}, nil, err
 	}
-	apiClient, err := s.Client(ctx, endpointID)
+	apiClient, err := s.executionClient(ctx, endpointID)
 	if err != nil {
 		return ImageSnapshot{}, nil, err
 	}
@@ -155,56 +162,58 @@ func (s *Service) deployContainer(
 		shortDeploymentID = shortDeploymentID[:8]
 	}
 	backupName := canonicalName + "-edo-backup-" + shortDeploymentID
-	stopTimeout := 30
-	if _, err := apiClient.ContainerStop(deployContext, oldID, client.ContainerStopOptions{Timeout: &stopTimeout}); err != nil {
-		return previousImage, nil, fmt.Errorf("停止旧 Docker 容器失败: %w", err)
+	if err := stopContainerForReplacement(deployContext, apiClient, oldID); err != nil {
+		return previousImage, nil, err
 	}
 	oldStopped := true
-	rollbackOld := func() {
+	rollbackOld := func() error {
 		if oldStopped {
-			rollbackContext, rollbackCancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
-			defer rollbackCancel()
-			_, _ = apiClient.ContainerRename(rollbackContext, oldID, client.ContainerRenameOptions{NewName: canonicalName})
-			_, _ = apiClient.ContainerStart(rollbackContext, oldID, client.ContainerStartOptions{})
+			if err := restoreStoppedContainer(ctx, apiClient, oldID, canonicalName); err != nil {
+				return err
+			}
+			oldStopped = false
 		}
+		return nil
 	}
 	if _, err := apiClient.ContainerRename(deployContext, oldID, client.ContainerRenameOptions{NewName: backupName}); err != nil {
-		rollbackContext, rollbackCancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
-		defer rollbackCancel()
-		_, _ = apiClient.ContainerStart(rollbackContext, oldID, client.ContainerStartOptions{})
-		return previousImage, nil, fmt.Errorf("为旧 Docker 容器创建回退名称失败: %w", err)
+		return previousImage, nil, deploymentErrorWithRollback(
+			fmt.Errorf("为旧 Docker 容器创建回退名称失败: %w", err), rollbackOld(),
+		)
 	}
 
 	newConfig, newHostConfig, err := initialContainerConfig(executionImage, targetID, deploymentID, configuration)
 	if err != nil {
-		rollbackOld()
-		return previousImage, nil, err
+		return previousImage, nil, deploymentErrorWithRollback(err, rollbackOld())
 	}
 	applyImageDisplayLabel(newConfig, imageDisplay)
 	created, err := apiClient.ContainerCreate(deployContext, client.ContainerCreateOptions{
 		Config: newConfig, HostConfig: newHostConfig, Name: canonicalName,
 	})
 	if err != nil {
-		rollbackOld()
-		return previousImage, nil, fmt.Errorf("创建新 Docker 容器失败: %w", err)
+		return previousImage, nil, deploymentErrorWithRollback(
+			fmt.Errorf("创建新 Docker 容器失败: %w", err), rollbackOld(),
+		)
 	}
 	newID := created.ID
 	newCreated := true
-	rollbackNew := func() {
+	rollbackNew := func() error {
 		rollbackContext, rollbackCancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
 		defer rollbackCancel()
+		var removeErr error
 		if newCreated {
-			_, _ = apiClient.ContainerRemove(rollbackContext, newID, client.ContainerRemoveOptions{Force: true})
+			if _, err := apiClient.ContainerRemove(rollbackContext, newID, client.ContainerRemoveOptions{Force: true}); err != nil && !errdefs.IsNotFound(err) {
+				removeErr = fmt.Errorf("清理未就绪的新 Docker 容器失败: %w", err)
+			}
 		}
-		rollbackOld()
+		return errors.Join(removeErr, rollbackOld())
 	}
 	if _, err := apiClient.ContainerStart(deployContext, newID, client.ContainerStartOptions{}); err != nil {
-		rollbackNew()
-		return previousImage, nil, fmt.Errorf("启动新 Docker 容器失败: %w", err)
+		return previousImage, nil, deploymentErrorWithRollback(
+			fmt.Errorf("启动新 Docker 容器失败: %w", err), rollbackNew(),
+		)
 	}
 	if err := waitContainerHealthy(deployContext, apiClient, newID); err != nil {
-		rollbackNew()
-		return previousImage, nil, err
+		return previousImage, nil, deploymentErrorWithRollback(err, rollbackNew())
 	}
 	if _, err := apiClient.ContainerRemove(deployContext, oldID, client.ContainerRemoveOptions{}); err != nil {
 		newCreated = false
@@ -214,6 +223,68 @@ func (s *Service) deployContainer(
 	newCreated = false
 	oldStopped = false
 	return previousImage, nil, nil
+}
+
+func stopContainerForReplacement(ctx context.Context, apiClient *client.Client, containerID string) error {
+	stopTimeout := directContainerStopGrace
+	stopContext, cancel := context.WithTimeout(
+		ctx,
+		time.Duration(directContainerStopGrace)*time.Second+directContainerStopRequestWait,
+	)
+	_, stopErr := apiClient.ContainerStop(stopContext, containerID, client.ContainerStopOptions{Timeout: &stopTimeout})
+	cancel()
+	if stopErr == nil {
+		return nil
+	}
+
+	// Docker 可能已经完成强制停止，但响应在超时边界上丢失。先重新读取真实状态，
+	// 避免把已经停止的容器误判为发布失败并中断替换流程。
+	reconcileContext, reconcileCancel := context.WithTimeout(context.WithoutCancel(ctx), directContainerReconcileWait)
+	defer reconcileCancel()
+	inspect, inspectErr := apiClient.ContainerInspect(reconcileContext, containerID, client.ContainerInspectOptions{})
+	if inspectErr == nil && inspect.Container.State != nil && !inspect.Container.State.Running && !inspect.Container.State.Restarting {
+		return nil
+	}
+	if errors.Is(stopErr, context.DeadlineExceeded) || errors.Is(stopErr, context.Canceled) {
+		return fmt.Errorf("%w: stop_error=%v inspect_error=%v", ErrContainerStopTimeout, stopErr, inspectErr)
+	}
+	return fmt.Errorf("%w: stop_error=%v inspect_error=%v", ErrContainerStopFailed, stopErr, inspectErr)
+}
+
+func restoreStoppedContainer(
+	ctx context.Context,
+	apiClient *client.Client,
+	containerID string,
+	canonicalName string,
+) error {
+	rollbackContext, cancel := context.WithTimeout(context.WithoutCancel(ctx), directContainerRollbackTimeout)
+	defer cancel()
+	inspect, err := apiClient.ContainerInspect(rollbackContext, containerID, client.ContainerInspectOptions{})
+	if err != nil {
+		return fmt.Errorf("读取待恢复 Docker 容器失败: %w", err)
+	}
+	restartBaseline := inspect.Container.RestartCount
+	if strings.TrimPrefix(inspect.Container.Name, "/") != canonicalName {
+		if _, err := apiClient.ContainerRename(rollbackContext, containerID, client.ContainerRenameOptions{NewName: canonicalName}); err != nil {
+			return fmt.Errorf("恢复旧 Docker 容器名称失败: %w", err)
+		}
+	}
+	if inspect.Container.State == nil || !inspect.Container.State.Running {
+		if _, err := apiClient.ContainerStart(rollbackContext, containerID, client.ContainerStartOptions{}); err != nil {
+			return fmt.Errorf("重新启动旧 Docker 容器失败: %w", err)
+		}
+	}
+	if err := waitContainerHealthyWithRestartBaseline(rollbackContext, apiClient, containerID, restartBaseline); err != nil {
+		return fmt.Errorf("确认旧 Docker 容器恢复失败: %w", err)
+	}
+	return nil
+}
+
+func deploymentErrorWithRollback(deployErr, rollbackErr error) error {
+	if rollbackErr == nil {
+		return deployErr
+	}
+	return fmt.Errorf("%w: deployment_error=%v rollback_error=%v", ErrContainerRollbackFailed, deployErr, rollbackErr)
 }
 
 func (s *Service) deployContainerWithHostCommand(
@@ -250,14 +321,15 @@ func (s *Service) deployContainerWithHostCommand(
 
 	backupName := ""
 	oldStopped := false
-	rollbackOld := func() {
+	rollbackOld := func() error {
 		if !oldStopped || oldID == "" {
-			return
+			return nil
 		}
-		rollbackContext, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
-		defer cancel()
-		_, _ = apiClient.ContainerRename(rollbackContext, oldID, client.ContainerRenameOptions{NewName: canonicalName})
-		_, _ = apiClient.ContainerStart(rollbackContext, oldID, client.ContainerStartOptions{})
+		if err := restoreStoppedContainer(ctx, apiClient, oldID, canonicalName); err != nil {
+			return err
+		}
+		oldStopped = false
+		return nil
 	}
 	if oldID != "" {
 		shortID := strings.ReplaceAll(deploymentID, "-", "")
@@ -265,43 +337,48 @@ func (s *Service) deployContainerWithHostCommand(
 			shortID = shortID[:8]
 		}
 		backupName = canonicalName + "-edo-backup-" + shortID
-		stopTimeout := 30
-		if _, err := apiClient.ContainerStop(ctx, oldID, client.ContainerStopOptions{Timeout: &stopTimeout}); err != nil {
-			return previous, nil, fmt.Errorf("停止旧 Docker 容器失败: %w", err)
+		if err := stopContainerForReplacement(ctx, apiClient, oldID); err != nil {
+			return previous, nil, err
 		}
 		oldStopped = true
 		if _, err := apiClient.ContainerRename(ctx, oldID, client.ContainerRenameOptions{NewName: backupName}); err != nil {
-			_, _ = apiClient.ContainerStart(ctx, oldID, client.ContainerStartOptions{})
-			return previous, nil, fmt.Errorf("为旧 Docker 容器创建回退名称失败: %w", err)
+			return previous, nil, deploymentErrorWithRollback(
+				fmt.Errorf("为旧 Docker 容器创建回退名称失败: %w", err), rollbackOld(),
+			)
 		}
 	}
 
-	cleanupNew := func() {
+	cleanupNew := func() error {
 		cleanupContext, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
 		defer cancel()
 		created, createdErr := apiClient.ContainerInspect(cleanupContext, canonicalName, client.ContainerInspectOptions{})
+		if createdErr != nil {
+			if errdefs.IsNotFound(createdErr) {
+				return nil
+			}
+			return fmt.Errorf("检查未就绪的新 Docker 容器失败: %w", createdErr)
+		}
 		if createdErr == nil && created.Container.Config != nil && created.Container.Config.Labels["edo.managed"] == "true" &&
 			created.Container.Config.Labels["edo.deployment.target.id"] == targetID {
-			_, _ = apiClient.ContainerRemove(cleanupContext, created.Container.ID, client.ContainerRemoveOptions{Force: true})
+			if _, err := apiClient.ContainerRemove(cleanupContext, created.Container.ID, client.ContainerRemoveOptions{Force: true}); err != nil && !errdefs.IsNotFound(err) {
+				return fmt.Errorf("清理未就绪的新 Docker 容器失败: %w", err)
+			}
 		}
+		return nil
 	}
 	if err := s.runDockerHostCommand(ctx, endpointID, arguments, stdout, stderr); err != nil {
-		cleanupNew()
-		rollbackOld()
-		return previous, nil, err
+		rollbackErr := errors.Join(cleanupNew(), rollbackOld())
+		return previous, nil, deploymentErrorWithRollback(err, rollbackErr)
 	}
 
 	created, err := apiClient.ContainerInspect(ctx, canonicalName, client.ContainerInspectOptions{})
 	if err != nil || created.Container.Config == nil || created.Container.Config.Labels["edo.managed"] != "true" ||
 		created.Container.Config.Labels["edo.deployment.target.id"] != targetID || created.Container.Image != imageInspect.ID {
-		cleanupNew()
-		rollbackOld()
-		return previous, nil, errors.New("Docker 部署命令没有创建可验证的目标容器")
+		deployErr := errors.New("Docker 部署命令没有创建可验证的目标容器")
+		return previous, nil, deploymentErrorWithRollback(deployErr, errors.Join(cleanupNew(), rollbackOld()))
 	}
 	if err := waitContainerHealthy(ctx, apiClient, created.Container.ID); err != nil {
-		cleanupNew()
-		rollbackOld()
-		return previous, nil, err
+		return previous, nil, deploymentErrorWithRollback(err, errors.Join(cleanupNew(), rollbackOld()))
 	}
 	if oldID != "" {
 		if _, err := apiClient.ContainerRemove(ctx, oldID, client.ContainerRemoveOptions{}); err != nil {
@@ -468,9 +545,18 @@ func initialContainerConfig(
 }
 
 func waitContainerHealthy(ctx context.Context, apiClient *client.Client, containerID string) error {
-	return waitContainerReady(ctx, func(inspectContext context.Context) (client.ContainerInspectResult, error) {
+	return waitContainerHealthyWithRestartBaseline(ctx, apiClient, containerID, 0)
+}
+
+func waitContainerHealthyWithRestartBaseline(
+	ctx context.Context,
+	apiClient *client.Client,
+	containerID string,
+	restartBaseline int,
+) error {
+	return waitContainerReadyFromRestartCount(ctx, func(inspectContext context.Context) (client.ContainerInspectResult, error) {
 		return apiClient.ContainerInspect(inspectContext, containerID, client.ContainerInspectOptions{})
-	}, directContainerStabilityWindow, directContainerPollInterval)
+	}, directContainerStabilityWindow, directContainerPollInterval, restartBaseline)
 }
 
 func waitContainerReady(
@@ -479,7 +565,17 @@ func waitContainerReady(
 	stabilityWindow time.Duration,
 	pollInterval time.Duration,
 ) error {
-	if inspect == nil || stabilityWindow <= 0 || pollInterval <= 0 {
+	return waitContainerReadyFromRestartCount(ctx, inspect, stabilityWindow, pollInterval, 0)
+}
+
+func waitContainerReadyFromRestartCount(
+	ctx context.Context,
+	inspect containerInspectFunc,
+	stabilityWindow time.Duration,
+	pollInterval time.Duration,
+	restartBaseline int,
+) error {
+	if inspect == nil || stabilityWindow <= 0 || pollInterval <= 0 || restartBaseline < 0 {
 		return errors.New("Docker 容器就绪检查配置无效")
 	}
 	started := time.Now()
@@ -494,7 +590,7 @@ func waitContainerReady(
 		if state == nil {
 			return fmt.Errorf("%w: 没有可读取的状态", ErrContainerNotRunning)
 		}
-		if state.Restarting || state.Status == container.StateRestarting || result.Container.RestartCount > 0 {
+		if state.Restarting || state.Status == container.StateRestarting || result.Container.RestartCount > restartBaseline {
 			return fmt.Errorf("%w: status=%s restart_count=%d exit_code=%d",
 				ErrContainerRestarted, state.Status, result.Container.RestartCount, state.ExitCode)
 		}

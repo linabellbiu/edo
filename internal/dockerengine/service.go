@@ -345,6 +345,30 @@ func (s *Service) Client(ctx context.Context, id string) (*client.Client, error)
 }
 
 func (s *Service) clientForEndpoint(ctx context.Context, endpoint *model.DockerEndpoint) (*client.Client, error) {
+	return s.clientForEndpointWithTimeout(ctx, endpoint, s.config.RequestTimeout)
+}
+
+// executionClient 只使用调用方上下文限制部署和日志流等长操作。
+// Docker HTTP 客户端仍限制连接和响应头等待，不能用普通请求的总超时截断响应体。
+func (s *Service) executionClient(ctx context.Context, id string) (*client.Client, error) {
+	endpoint, err := s.Find(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if !endpoint.IsActive {
+		return nil, ErrEndpointNotFound
+	}
+	if IsLocalEndpointID(endpoint.ID) {
+		return s.builderExecutionClient()
+	}
+	return s.clientForEndpointWithTimeout(ctx, endpoint, 0)
+}
+
+func (s *Service) clientForEndpointWithTimeout(
+	ctx context.Context,
+	endpoint *model.DockerEndpoint,
+	requestTimeout time.Duration,
+) (*client.Client, error) {
 	if endpoint == nil || !endpoint.IsActive {
 		return nil, ErrEndpointNotFound
 	}
@@ -353,7 +377,7 @@ func (s *Service) clientForEndpoint(ctx context.Context, endpoint *model.DockerE
 	}
 	transport := &http.Transport{
 		DialContext:  (&net.Dialer{Timeout: s.config.ConnectTimeout, KeepAlive: 30 * time.Second}).DialContext,
-		MaxIdleConns: 6, IdleConnTimeout: 30 * time.Second,
+		MaxIdleConns: 6, IdleConnTimeout: 30 * time.Second, ResponseHeaderTimeout: s.config.RequestTimeout,
 	}
 	dockerHost := endpoint.Host
 	var sshDialer *sshDockerDialer
@@ -387,10 +411,13 @@ func (s *Service) clientForEndpoint(ctx context.Context, endpoint *model.DockerE
 		}
 		transport.TLSClientConfig = tlsConfig
 	}
-	httpClient := &http.Client{Transport: transport, Timeout: s.config.RequestTimeout, CheckRedirect: client.CheckRedirect}
+	httpClient := &http.Client{Transport: transport, Timeout: requestTimeout, CheckRedirect: client.CheckRedirect}
 	options := []client.Opt{
 		client.WithHTTPClient(httpClient), client.WithHost(dockerHost),
-		client.WithUserAgent("edo"), client.WithTimeout(s.config.RequestTimeout),
+		client.WithUserAgent("edo"),
+	}
+	if requestTimeout > 0 {
+		options = append(options, client.WithTimeout(requestTimeout))
 	}
 	if sshDialer != nil {
 		options = append(options, client.WithDialContext(sshDialer.DialContext))

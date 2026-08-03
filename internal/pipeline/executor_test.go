@@ -543,3 +543,27 @@ func TestNormalizeComposeDeploymentPlanKeepsInlineYAMLAndService(t *testing.T) {
 		t.Fatal("没有消费上游制品的 Docker Compose 方案未被拒绝")
 	}
 }
+
+func TestArtifactAvailableToPipelineRunOnlyAllowsExplicitManualSelection(t *testing.T) {
+	stored := &model.Artifact{ID: "artifact-1", PipelineRunID: "original-run"}
+	tests := []struct {
+		name string
+		run  model.PipelineRun
+		want bool
+	}{
+		{name: "artifact produced by current run", run: model.PipelineRun{ID: stored.PipelineRunID, ArtifactID: stored.ID}, want: true},
+		{name: "manual historical artifact", run: model.PipelineRun{ID: "manual-run", Trigger: "manual", ArtifactID: stored.ID}, want: true},
+		{name: "release plan historical artifact", run: model.PipelineRun{ID: "plan-run", Trigger: "release_plan", ArtifactID: stored.ID}, want: true},
+		{name: "retry original run artifact", run: model.PipelineRun{ID: "retry-run", Trigger: "retry", RetryOfID: stored.PipelineRunID, ArtifactID: stored.ID}, want: true},
+		{name: "retry unrelated artifact", run: model.PipelineRun{ID: "retry-run", Trigger: "retry", RetryOfID: "different-run", ArtifactID: stored.ID}, want: false},
+		{name: "automatic historical artifact", run: model.PipelineRun{ID: "push-run", Trigger: "push", ArtifactID: stored.ID}, want: false},
+		{name: "different selected artifact", run: model.PipelineRun{ID: "manual-run", Trigger: "manual", ArtifactID: "artifact-2"}, want: false},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := artifactAvailableToPipelineRun(test.run, stored); got != test.want {
+				t.Fatalf("历史制品使用边界不正确: got=%v want=%v run=%+v", got, test.want, test.run)
+			}
+		})
+	}
+}

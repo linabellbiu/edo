@@ -310,7 +310,7 @@ func (s *Service) loadArtifactDeploymentExecution(ctx context.Context, payload D
 			return nil, ErrPipelineExecutionUnavailable
 		}
 		stored, err := s.artifacts.Find(ctx, run.ArtifactID)
-		if err != nil || stored.ApplicationID != run.ApplicationID || stored.PipelineRunID != run.ID ||
+		if err != nil || stored.ApplicationID != run.ApplicationID || !artifactAvailableToPipelineRun(run, stored) ||
 			stored.Status != model.ArtifactStatusAvailable || stored.Kind != model.ArtifactKindFileBundle {
 			return nil, ErrPipelineExecutionConfig
 		}
@@ -321,7 +321,8 @@ func (s *Service) loadArtifactDeploymentExecution(ctx context.Context, payload D
 		return nil, ErrPipelineExecutionUnavailable
 	}
 	stored, err := s.artifacts.Find(ctx, run.ArtifactID)
-	if err != nil || stored.ApplicationID != run.ApplicationID || stored.PipelineRunID != run.ID {
+	if err != nil || stored.ApplicationID != run.ApplicationID || !artifactAvailableToPipelineRun(run, stored) ||
+		stored.Status != model.ArtifactStatusAvailable || stored.Kind != model.ArtifactKindOCIImage {
 		return nil, ErrPipelineExecutionConfig
 	}
 	result.artifact = *stored
@@ -340,6 +341,16 @@ func (s *Service) loadArtifactDeploymentExecution(ctx context.Context, payload D
 		}
 	}
 	return result, nil
+}
+
+// artifactAvailableToPipelineRun 允许手动执行显式固定之前的不可变制品。
+// 当前运行持有的 ArtifactID 是选择边界；自动构建产生的制品仍必须属于当前运行。
+func artifactAvailableToPipelineRun(run model.PipelineRun, stored *model.Artifact) bool {
+	if stored == nil || run.ArtifactID == "" || stored.ID != run.ArtifactID {
+		return false
+	}
+	return stored.PipelineRunID == run.ID || run.Trigger == "manual" || run.Trigger == "release_plan" ||
+		(run.Trigger == "retry" && run.RetryOfID != "" && stored.PipelineRunID == run.RetryOfID)
 }
 
 func validSSHDeploymentPlanSnapshot(plan *model.DeploymentPlan, target *model.DeploymentTarget) bool {

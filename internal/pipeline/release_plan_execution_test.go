@@ -105,6 +105,43 @@ func TestReleasePlanExecutionQueuesBuildFromStageSnapshot(t *testing.T) {
 	}
 }
 
+func TestReleasePlanExecutionCanSelectPreviousArtifact(t *testing.T) {
+	service, db, _, repositoryID := newPipelineTestService(t)
+	application := createReleasePlanExecutionTestApplication(t, service, db, repositoryID, "release_plan_artifact_service")
+	storedApplication, err := service.FindApplication(context.Background(), application.applicationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	commitSHA := strings.Repeat("6", 40)
+	stored := createPreviousManualArtifact(t, db, storedApplication, commitSHA)
+	plan := createReleasePlanExecutionTestPlan(t, service, []releasePlanExecutionTestApplication{application})
+	input := releasePlanExecutionTestInput(plan, "artifact-release-plan", commitSHA, application)
+	input.Selections[0].Ref = ""
+	input.Selections[0].CommitSHA = ""
+	input.Selections[0].ArtifactID = stored.ID
+	execution, err := service.CreateReleasePlanExecution(context.Background(), plan.ID, "admin", input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var run model.PipelineRun
+	if err := db.First(&run, "id = ?", execution.Items[0].PipelineRunID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if run.ArtifactID != stored.ID || run.CurrentNodeID != "shell" || run.Stage != "task_succeeded" || run.Status != model.PipelineRunBlocked {
+		t.Fatalf("发布计划没有固定历史制品执行入口: %+v", run)
+	}
+	execution, err = service.ReconcileReleasePlanExecution(context.Background(), execution.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.First(&run, "id = ?", execution.Items[0].PipelineRunID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if run.ArtifactID != stored.ID || run.CurrentNodeID != "approval" || run.Status != model.PipelineRunAwaitingApproval || run.ExecutionJobID != "" {
+		t.Fatalf("发布计划历史制品没有跳过构建和脚本检查: %+v", run)
+	}
+}
+
 func TestReleasePlanExecutionStartsSequentialApplicationsOneAtATime(t *testing.T) {
 	service, db, secrets, repositoryID := newPipelineTestService(t)
 	first := createReleasePlanExecutionTestApplication(t, service, db, repositoryID, "sequential_order_service")
@@ -146,85 +183,19 @@ func TestReleasePlanExecutionStartsSequentialApplicationsOneAtATime(t *testing.T
 	}
 }
 
-func TestReleasePlanExecutionDependencyFailurePolicies(t *testing.T) {
-	for _, testCase := range []struct {
-		name                string
-		failurePolicy       model.ReleaseGroupFailurePolicy
-		wantDependentStatus model.ReleasePlanExecutionItemStatus
-	}{
-		{name: "停止策略阻断依赖组", failurePolicy: model.ReleaseGroupStopOnFailure, wantDependentStatus: model.ReleasePlanExecutionItemSkipped},
-		{name: "继续策略启动依赖组", failurePolicy: model.ReleaseGroupContinue, wantDependentStatus: model.ReleasePlanExecutionItemRunning},
-	} {
-		t.Run(testCase.name, func(t *testing.T) {
-			service, db, secrets, repositoryID := newPipelineTestService(t)
-			first := createReleasePlanExecutionTestApplication(t, service, db, repositoryID, "dependency_base_service")
-			second := createReleasePlanExecutionTestApplication(t, service, db, repositoryID, "dependency_business_service")
-			commitSHA := strings.Repeat("c", 40)
-			setReleasePlanExecutionTestRefs(service, db, secrets, commitSHA)
-			plan := createReleasePlanExecutionTestPlan(t, service, []releasePlanExecutionTestApplication{first})
-			rootGroupID := plan.Groups[0].ID
-			var err error
-			plan, err = service.UpdateReleaseGroup(context.Background(), plan.ID, rootGroupID, ReleaseGroupInput{
-				Name: "基础组", Mode: model.ReleaseGroupSequential, FailurePolicy: testCase.failurePolicy,
-				ApplicationIDs: []string{first.applicationID},
-			})
-			if err != nil {
-				t.Fatal(err)
-			}
-			plan, err = service.CreateReleaseGroup(context.Background(), plan.ID, ReleaseGroupInput{
-				Name: "依赖组", Mode: model.ReleaseGroupSequential, FailurePolicy: model.ReleaseGroupStopOnFailure,
-				ApplicationIDs: []string{second.applicationID}, DependsOnGroupIDs: []string{rootGroupID},
-			})
-			if err != nil {
-				t.Fatal(err)
-			}
-			execution, err := service.CreateReleasePlanExecution(
-				context.Background(), plan.ID, "admin",
-				releasePlanExecutionTestInput(plan, "dependency-"+string(testCase.failurePolicy), commitSHA, first, second),
-			)
-			if err != nil {
-				t.Fatal(err)
-			}
-			execution, err = service.ReconcileReleasePlanExecution(context.Background(), execution.ID)
-			if err != nil {
-				t.Fatal(err)
-			}
-			root := releasePlanExecutionItemForApplication(t, execution.Items, first.applicationID)
-			dependent := releasePlanExecutionItemForApplication(t, execution.Items, second.applicationID)
-			if root.Status != model.ReleasePlanExecutionItemRunning || dependent.Status != model.ReleasePlanExecutionItemPending {
-				t.Fatalf("依赖组在上游结束前被错误启动: %+v", execution.Items)
-			}
-			markReleasePlanExecutionRuns(t, db, []model.ReleasePlanExecutionItem{root}, model.PipelineRunFailed)
-			execution, err = service.ReconcileReleasePlanExecution(context.Background(), execution.ID)
-			if err != nil {
-				t.Fatal(err)
-			}
-			dependent = releasePlanExecutionItemForApplication(t, execution.Items, second.applicationID)
-			if dependent.Status != testCase.wantDependentStatus {
-				t.Fatalf("失败策略没有按快照生效: %+v", execution.Items)
-			}
-			if testCase.failurePolicy == model.ReleaseGroupStopOnFailure {
-				if execution.Status != model.ReleasePlanExecutionFailed {
-					t.Fatalf("停止策略结束后执行状态错误: %+v", execution)
-				}
-				var skippedRun model.PipelineRun
-				if err := db.First(&skippedRun, "id = ?", dependent.PipelineRunID).Error; err != nil {
-					t.Fatal(err)
-				}
-				if skippedRun.Status != model.PipelineRunCanceled || skippedRun.Stage != "canceled" {
-					t.Fatalf("跳过执行项后仍留下可操作的阻塞运行: %+v", skippedRun)
-				}
-				return
-			}
-			markReleasePlanExecutionRuns(t, db, []model.ReleasePlanExecutionItem{dependent}, model.PipelineRunSucceeded)
-			execution, err = service.ReconcileReleasePlanExecution(context.Background(), execution.ID)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if execution.Status != model.ReleasePlanExecutionFailed {
-				t.Fatalf("继续策略允许后续执行，但总体应保留失败结果: %+v", execution)
-			}
-		})
+func TestReleasePlanExecutionRejectsAdditionalGroupAndDependency(t *testing.T) {
+	service, db, _, repositoryID := newPipelineTestService(t)
+	application := createReleasePlanExecutionTestApplication(t, service, db, repositoryID, "single_group_release_service")
+	plan := createReleasePlanExecutionTestPlan(t, service, []releasePlanExecutionTestApplication{application})
+	if _, err := service.CreateReleaseGroup(context.Background(), plan.ID, ReleaseGroupInput{
+		Name: "第二个集合", ApplicationIDs: []string{application.applicationID},
+	}); !errors.Is(err, ErrReleasePlanSingleGroup) {
+		t.Fatalf("发布计划仍允许新增第二个应用集合: %v", err)
+	}
+	if _, err := service.UpdateReleaseGroup(context.Background(), plan.ID, plan.Groups[0].ID, ReleaseGroupInput{
+		Name: "应用列表", ApplicationIDs: []string{application.applicationID}, DependsOnGroupIDs: []string{plan.Groups[0].ID},
+	}); !errors.Is(err, ErrReleasePlanSingleGroup) {
+		t.Fatalf("发布计划仍允许配置集合依赖: %v", err)
 	}
 }
 
@@ -311,8 +282,8 @@ func TestCreateReleasePlanExecutionRejectsApplicationRepeatedAcrossGroups(t *tes
 		Name: "重复应用组", Mode: model.ReleaseGroupParallel, FailurePolicy: model.ReleaseGroupStopOnFailure,
 		ApplicationIDs: []string{application.applicationID},
 	})
-	if !errors.Is(err, ErrReleaseApplicationAssigned) {
-		t.Fatalf("同一应用跨组重复没有在保存发布组时被拒绝: %v", err)
+	if !errors.Is(err, ErrReleasePlanSingleGroup) {
+		t.Fatalf("第二个应用集合没有在保存时被拒绝: %v", err)
 	}
 	var count int64
 	if err := db.Model(&model.ReleasePlanExecution{}).Count(&count).Error; err != nil || count != 0 {

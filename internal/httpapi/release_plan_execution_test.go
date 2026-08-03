@@ -179,6 +179,169 @@ func TestCreateReleasePlanExecutionReturnsAccepted(t *testing.T) {
 	}
 }
 
+func TestManualAndReleasePlanHTTPCanSelectPreviousArtifact(t *testing.T) {
+	const commitSHA = "6789abcdef0123456789abcdef0123456789abcd"
+	fixture := newReleasePlanExecutionHTTPFixture(t, commitSHA)
+	defer fixture.close()
+
+	ctx := context.Background()
+	repositoryItem, _, err := fixture.repositories.Create(ctx, "admin", repository.Input{
+		Name: "历史制品执行测试仓库", Provider: model.GitProviderGeneric,
+		CloneURL: "https://git.example.com/team/artifact-release.git", DefaultBranch: "main", AuthType: model.GitAuthNone,
+	})
+	if err != nil {
+		t.Fatalf("创建测试仓库失败: %v", err)
+	}
+	application, workflowID, sourceNodeID, workflowRevision := createReleasePlanExecutionHTTPApplication(
+		t, fixture.pipelines, fixture.db, repositoryItem.ID,
+	)
+	artifact := createReleasePlanExecutionHTTPArtifact(t, fixture.db, application, commitSHA)
+	login := performJSONRequest(t, fixture.router, http.MethodPost, "/api/v1/auth/login", map[string]string{
+		"username": "admin", "password": "correct horse battery staple",
+	}, nil)
+	if login.Code != http.StatusOK {
+		t.Fatalf("管理员登录失败: status=%d body=%s", login.Code, login.Body.String())
+	}
+	cookie := login.Result().Cookies()[0]
+
+	options := performJSONRequest(t, fixture.router, http.MethodGet,
+		"/api/v1/applications/"+application.ID+"/workflows/"+workflowID+"/repository-refs", nil, cookie)
+	if options.Code != http.StatusOK || !strings.Contains(options.Body.String(), artifact.ID) {
+		t.Fatalf("手动执行选项没有返回历史制品: status=%d body=%s", options.Code, options.Body.String())
+	}
+	prepared := performJSONRequest(t, fixture.router, http.MethodPost,
+		"/api/v1/applications/"+application.ID+"/workflows/"+workflowID+"/pipeline-runs", nil, cookie)
+	var preparedPayload struct {
+		PipelineRun struct {
+			ID string `json:"id"`
+		} `json:"pipeline_run"`
+	}
+	if prepared.Code != http.StatusCreated || json.Unmarshal(prepared.Body.Bytes(), &preparedPayload) != nil || preparedPayload.PipelineRun.ID == "" {
+		t.Fatalf("准备手动流水线失败: status=%d body=%s", prepared.Code, prepared.Body.String())
+	}
+	executed := performJSONRequest(t, fixture.router, http.MethodPost,
+		"/api/v1/pipeline-runs/"+preparedPayload.PipelineRun.ID+"/execute", map[string]any{
+			"source_node_id": sourceNodeID,
+			"artifact_id":    artifact.ID,
+		}, cookie)
+	var executedPayload struct {
+		PipelineRun model.PipelineRun `json:"pipeline_run"`
+	}
+	if executed.Code != http.StatusOK || json.Unmarshal(executed.Body.Bytes(), &executedPayload) != nil {
+		t.Fatalf("使用历史制品手动执行流水线失败: status=%d body=%s", executed.Code, executed.Body.String())
+	}
+	if executedPayload.PipelineRun.ArtifactID != artifact.ID || executedPayload.PipelineRun.CurrentNodeID != "approval" ||
+		executedPayload.PipelineRun.Status != model.PipelineRunAwaitingApproval {
+		t.Fatalf("手动执行没有跳过构建和构建后 Shell: %+v", executedPayload.PipelineRun)
+	}
+
+	plan, err := fixture.pipelines.CreateReleasePlan(ctx, "admin", pipeline.ReleasePlanInput{
+		Description: "验证发布计划选择历史制品",
+		Groups: []pipeline.ReleaseGroupInput{{
+			Name: "默认发布组", Applications: []pipeline.ReleaseApplicationInput{{ApplicationID: application.ID}},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("创建测试发布计划失败: %v", err)
+	}
+	release := performJSONRequest(t, fixture.router, http.MethodPost, "/api/v1/release-plans/"+plan.ID+"/executions", map[string]any{
+		"request_id":               "release-plan-http-existing-artifact",
+		"expected_plan_updated_at": plan.UpdatedAt,
+		"selections": []map[string]any{{
+			"release_group_application_id": plan.Groups[0].Applications[0].ID,
+			"workflow_id":                  workflowID,
+			"expected_workflow_revision":   workflowRevision,
+			"source_node_id":               sourceNodeID,
+			"artifact_id":                  artifact.ID,
+		}},
+	}, cookie)
+	var releasePayload struct {
+		Execution struct {
+			Items []struct {
+				PipelineRunID string `json:"pipeline_run_id"`
+			} `json:"items"`
+		} `json:"release_plan_execution"`
+	}
+	if release.Code != http.StatusAccepted || json.Unmarshal(release.Body.Bytes(), &releasePayload) != nil || len(releasePayload.Execution.Items) != 1 {
+		t.Fatalf("发布计划使用历史制品失败: status=%d body=%s", release.Code, release.Body.String())
+	}
+	var releaseRun model.PipelineRun
+	if err := fixture.db.First(&releaseRun, "id = ?", releasePayload.Execution.Items[0].PipelineRunID).Error; err != nil {
+		t.Fatalf("读取发布计划流水线失败: %v", err)
+	}
+	if releaseRun.ArtifactID != artifact.ID || releaseRun.CurrentNodeID != "approval" || releaseRun.Status != model.PipelineRunAwaitingApproval {
+		t.Fatalf("发布计划没有使用历史制品跳过构建和构建后 Shell: %+v", releaseRun)
+	}
+	located := performJSONRequest(t, fixture.router, http.MethodGet,
+		"/api/v1/pipeline-runs/"+releasePayload.Execution.Items[0].PipelineRunID, nil, cookie)
+	var locatedPayload struct {
+		PipelineRun model.PipelineRun `json:"pipeline_run"`
+	}
+	if located.Code != http.StatusOK || json.Unmarshal(located.Body.Bytes(), &locatedPayload) != nil ||
+		locatedPayload.PipelineRun.ID != releaseRun.ID || locatedPayload.PipelineRun.ReleasePlanID != plan.ID ||
+		locatedPayload.PipelineRun.ApplicationID != application.ID {
+		t.Fatalf("无法通过发布计划执行项定位准确流水线运行: status=%d body=%s", located.Code, located.Body.String())
+	}
+}
+
+func TestRetryRunHTTPCanSelectOriginalRunArtifactWithoutRefInput(t *testing.T) {
+	const commitSHA = "789abcdef0123456789abcdef0123456789abcde"
+	fixture := newReleasePlanExecutionHTTPFixture(t, commitSHA)
+	defer fixture.close()
+
+	ctx := context.Background()
+	repositoryItem, _, err := fixture.repositories.Create(ctx, "admin", repository.Input{
+		Name: "重试固定版本测试仓库", Provider: model.GitProviderGeneric,
+		CloneURL: "https://git.example.com/team/retry-artifact.git", DefaultBranch: "main", AuthType: model.GitAuthNone,
+	})
+	if err != nil {
+		t.Fatalf("创建测试仓库失败: %v", err)
+	}
+	application, workflowID, _, workflowRevision := createReleasePlanExecutionHTTPApplication(
+		t, fixture.pipelines, fixture.db, repositoryItem.ID,
+	)
+	now := time.Now().UTC()
+	failed := model.PipelineRun{
+		ID: uuid.NewString(), ApplicationID: application.ID, WorkflowID: workflowID, WorkflowRevision: workflowRevision,
+		Trigger: "manual", Ref: "refs/heads/main", CommitSHA: commitSHA, CommitMessage: "固定版本 HTTP 重试",
+		Status: model.PipelineRunFailed, Stage: "deploy_failed", Message: "部署失败",
+		CreatedBy: "admin", CreatedAt: now, UpdatedAt: now,
+	}
+	if err := fixture.db.Create(&failed).Error; err != nil {
+		t.Fatalf("创建失败运行失败: %v", err)
+	}
+	artifact := createReleasePlanExecutionHTTPArtifact(t, fixture.db, application, commitSHA, failed.ID)
+	if err := fixture.db.Model(&model.PipelineRun{}).Where("id = ?", failed.ID).Update("artifact_id", artifact.ID).Error; err != nil {
+		t.Fatalf("关联失败运行制品失败: %v", err)
+	}
+	login := performJSONRequest(t, fixture.router, http.MethodPost, "/api/v1/auth/login", map[string]string{
+		"username": "admin", "password": "correct horse battery staple",
+	}, nil)
+	if login.Code != http.StatusOK {
+		t.Fatalf("管理员登录失败: status=%d body=%s", login.Code, login.Body.String())
+	}
+	cookie := login.Result().Cookies()[0]
+	options := performJSONRequest(t, fixture.router, http.MethodGet, "/api/v1/pipeline-runs/"+failed.ID+"/retry-options", nil, cookie)
+	if options.Code != http.StatusOK || !strings.Contains(options.Body.String(), artifact.ID) ||
+		!strings.Contains(options.Body.String(), commitSHA) || strings.Contains(options.Body.String(), `"branches"`) {
+		t.Fatalf("重试选项没有只返回固定版本和原运行制品: status=%d body=%s", options.Code, options.Body.String())
+	}
+	retried := performJSONRequest(t, fixture.router, http.MethodPost, "/api/v1/pipeline-runs/"+failed.ID+"/retry", map[string]any{
+		"artifact_id": artifact.ID,
+	}, cookie)
+	var payload struct {
+		PipelineRun model.PipelineRun `json:"pipeline_run"`
+	}
+	if retried.Code != http.StatusCreated || json.Unmarshal(retried.Body.Bytes(), &payload) != nil {
+		t.Fatalf("使用原运行制品重试失败: status=%d body=%s", retried.Code, retried.Body.String())
+	}
+	if payload.PipelineRun.RetryOfID != failed.ID || payload.PipelineRun.Ref != failed.Ref ||
+		payload.PipelineRun.CommitSHA != failed.CommitSHA || payload.PipelineRun.ArtifactID != artifact.ID ||
+		payload.PipelineRun.CurrentNodeID != "approval" || payload.PipelineRun.Status != model.PipelineRunAwaitingApproval {
+		t.Fatalf("HTTP 重试没有固定版本或跳过构建: %+v", payload.PipelineRun)
+	}
+}
+
 type releasePlanExecutionRefLister struct {
 	commitSHA string
 }
@@ -359,4 +522,40 @@ func createReleasePlanExecutionHTTPApplication(
 		t.Fatalf("启用测试流水线失败: %v", err)
 	}
 	return application, saved.Workflow.ID, triggerID, saved.Workflow.Revision
+}
+
+func createReleasePlanExecutionHTTPArtifact(t *testing.T, db *gorm.DB, application *model.Application, commitSHA string, pipelineRunIDs ...string) *model.Artifact {
+	t.Helper()
+	var buildPlan model.BuildPlan
+	if err := db.First(&buildPlan, "name = ?", "发布计划 HTTP 构建").Error; err != nil {
+		t.Fatalf("读取历史制品构建方案失败: %v", err)
+	}
+	now := time.Now().UTC()
+	finishedAt := now
+	pipelineRunID := uuid.NewString()
+	if len(pipelineRunIDs) > 0 && strings.TrimSpace(pipelineRunIDs[0]) != "" {
+		pipelineRunID = strings.TrimSpace(pipelineRunIDs[0])
+	}
+	build := model.BuildRun{
+		ID: uuid.NewString(), ApplicationID: application.ID, PipelineRunID: pipelineRunID,
+		RepositoryID: application.RepositoryID, WorkflowNodeID: "build", BuildPlanID: buildPlan.ID,
+		ProducerKind: model.BuildRunProducerDockerfile, Ref: "refs/heads/main", CommitSHA: commitSHA,
+		PlanSnapshot: "{}", Status: model.BuildRunStatusSucceeded, CreatedBy: "admin",
+		CreatedAt: now, UpdatedAt: now, FinishedAt: &finishedAt,
+	}
+	digest := "sha256:" + strings.Repeat("b", 64)
+	artifact := &model.Artifact{
+		ID: uuid.NewString(), ApplicationID: application.ID, BuildRunID: build.ID, PipelineRunID: build.PipelineRunID,
+		Kind: model.ArtifactKindOCIImage, Status: model.ArtifactStatusAvailable,
+		Name: "edo.local/" + application.Name + ":previous", Digest: digest,
+		StorageKind: model.ArtifactStorageKindDockerDaemon, ImageRef: "edo.local/" + application.Name + ":previous",
+		RuntimeID: "local", LocalImageID: digest, CreatedBy: "admin", CreatedAt: now, UpdatedAt: now,
+	}
+	if err := db.Create(&build).Error; err != nil {
+		t.Fatalf("创建历史构建记录失败: %v", err)
+	}
+	if err := db.Create(artifact).Error; err != nil {
+		t.Fatalf("创建历史制品失败: %v", err)
+	}
+	return artifact
 }

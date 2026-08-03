@@ -383,17 +383,27 @@ func (s *Service) executePipelineBuild(ctx context.Context, prepared *buildExecu
 	}
 	switch prepared.plan.Kind {
 	case model.BuildPlanScript:
-		buildDirectory, err := s.artifacts.AcquireBuildDirectory("edo-script-output-")
-		if err != nil {
-			return nil, err
+		artifactPath := strings.TrimSpace(prepared.plan.ArtifactPath)
+		outputDirectory := ""
+		var buildDirectory *artifact.BuildDirectoryLease
+		if artifactPath != "" {
+			buildDirectory, err = s.artifacts.AcquireBuildDirectory("edo-script-output-")
+			if err != nil {
+				return nil, err
+			}
+			defer buildDirectory.Release()
+			outputDirectory = buildDirectory.Directory
 		}
-		defer buildDirectory.Release()
 		runtimeImage := effectiveBuildRuntimeImage(prepared.node.Config, prepared.plan)
 		result, err := s.executePipelineShell(ctx, prepared, workspace, runtimeImage, prepared.plan.Script,
 			prepared.plan.WorkingDirectory, prepared.plan.EnvironmentVariables,
-			prepared.plan.TimeoutSeconds, "build", "构建", prepared.plan.ArtifactPath, buildDirectory.Directory)
+			prepared.plan.TimeoutSeconds, "build", "构建", artifactPath, outputDirectory)
 		if err != nil {
 			return nil, err
+		}
+		if artifactPath == "" {
+			s.appendRunLog(ctx, prepared.run.ID, "build", "success", "Shell 构建已完成，本次构建未配置保存文件制品")
+			return nil, nil
 		}
 		outputPath := result.ArtifactPath
 		outputInfo, err := os.Lstat(outputPath)
@@ -403,7 +413,7 @@ func (s *Service) executePipelineBuild(ctx context.Context, prepared *buildExecu
 		metadata.ProducerKind = model.BuildRunProducerScript
 		return s.artifacts.CreateFileFromPath(ctx, artifact.BuildOutputInput{
 			BuildMetadata: metadata, SourcePath: outputPath,
-			Name: artifactName(prepared.application.Name, prepared.run.CommitSHA, prepared.plan.ArtifactPath, outputInfo.IsDir()),
+			Name: artifactName(prepared.application.Name, prepared.run.CommitSHA, artifactPath, outputInfo.IsDir()),
 		})
 	case model.BuildPlanDockerfile:
 		if s.docker == nil {

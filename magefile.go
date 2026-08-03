@@ -29,6 +29,7 @@ const (
 	localLogDirectory        = "logs"
 	localGracefulStopTimeout = 70 * time.Second
 	localForcefulStopTimeout = 5 * time.Second
+	dockerStartMaxAttempts   = 3
 	localServiceBackend      = "backend"
 	localServiceWeb          = "web"
 )
@@ -388,7 +389,48 @@ func startDocker(ctx context.Context, runServer, runWeb bool) error {
 	} else if runWeb && !runServer {
 		args = append(args, "--no-deps", "web")
 	}
-	return runCommand(ctx, "docker", args...)
+	return retryDockerComposeStart(ctx, func() error {
+		return runCommand(ctx, "docker", args...)
+	}, waitForDockerStartRetry)
+}
+
+func retryDockerComposeStart(
+	ctx context.Context,
+	run func() error,
+	wait func(context.Context, time.Duration) error,
+) error {
+	if run == nil || wait == nil {
+		return errors.New("Docker Compose 启动重试配置无效")
+	}
+	var lastErr error
+	for attempt := 1; attempt <= dockerStartMaxAttempts; attempt++ {
+		if lastErr = run(); lastErr == nil {
+			return nil
+		}
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		if attempt == dockerStartMaxAttempts {
+			break
+		}
+		delay := time.Duration(attempt*2) * time.Second
+		fmt.Printf("Docker Compose 构建或启动未完成，%s 后进行第 %d 次尝试\n", delay, attempt+1)
+		if err := wait(ctx, delay); err != nil {
+			return err
+		}
+	}
+	return fmt.Errorf("Docker Compose 构建或启动失败: %w", lastErr)
+}
+
+func waitForDockerStartRetry(ctx context.Context, delay time.Duration) error {
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
 }
 
 func startBuilt(ctx context.Context, runServer, runWeb bool) error {

@@ -15,7 +15,7 @@ func defaultReleasePlanGroups(applications []ReleaseApplicationInput) []ReleaseG
 	}}
 }
 
-func TestReleasePlanContainsOrderedApplicationGroups(t *testing.T) {
+func TestReleasePlanContainsOneOrderedApplicationList(t *testing.T) {
 	service, _, _, repositoryID := newPipelineTestService(t)
 	ctx := context.Background()
 	first, err := service.CreateApplication(ctx, "admin", ApplicationInput{
@@ -55,25 +55,27 @@ func TestReleasePlanContainsOrderedApplicationGroups(t *testing.T) {
 	})
 	if err != nil || len(plan.Groups) != 1 || len(plan.Groups[0].Applications) != 1 ||
 		!plan.Groups[0].Applications[0].ManualDeploy || plan.Groups[0].Applications[0].SourceValue != "main" {
-		t.Fatalf("创建并行发布组失败: plan=%+v err=%v", plan, err)
+		t.Fatalf("更新发布计划应用失败: plan=%+v err=%v", plan, err)
 	}
-	plan, err = service.CreateReleaseGroup(ctx, plan.ID, ReleaseGroupInput{
+	if plan.Groups[0].Name != releasePlanInternalGroupName {
+		t.Fatalf("内部应用集合名称没有由服务端固定: %+v", plan.Groups[0])
+	}
+	_, err = service.CreateReleaseGroup(ctx, plan.ID, ReleaseGroupInput{
 		Name: "业务服务", Mode: model.ReleaseGroupSequential, FailurePolicy: model.ReleaseGroupContinue,
 		ApplicationIDs: []string{second.ID}, DependsOnGroupIDs: []string{firstGroupID},
 	})
-	if err != nil || len(plan.Groups) != 2 || len(plan.Groups[1].Dependencies) != 1 ||
-		plan.Groups[1].Dependencies[0].DependsOnGroupID != firstGroupID {
-		t.Fatalf("创建依赖发布组失败: plan=%+v err=%v", plan, err)
+	if !errors.Is(err, ErrReleasePlanSingleGroup) {
+		t.Fatalf("发布计划仍允许创建第二个应用集合: %v", err)
 	}
 	if _, err := service.UpdateReleaseGroup(ctx, plan.ID, firstGroupID, ReleaseGroupInput{
 		Name: "基础服务", Mode: model.ReleaseGroupParallel, FailurePolicy: model.ReleaseGroupStopOnFailure,
-		ApplicationIDs: []string{first.ID}, DependsOnGroupIDs: []string{plan.Groups[1].ID},
-	}); !errors.Is(err, ErrReleaseGroupDependency) {
-		t.Fatalf("循环依赖未被拒绝: %v", err)
+		ApplicationIDs: []string{first.ID}, DependsOnGroupIDs: []string{firstGroupID},
+	}); !errors.Is(err, ErrReleasePlanSingleGroup) {
+		t.Fatalf("发布计划仍允许配置集合依赖: %v", err)
 	}
 }
 
-func TestReleasePlanCreatesGroupsBeforeAssigningApplications(t *testing.T) {
+func TestReleasePlanRejectsMultipleApplicationGroups(t *testing.T) {
 	service, _, _, repositoryID := newPipelineTestService(t)
 	ctx := context.Background()
 	applications := make([]*model.Application, 0, 3)
@@ -94,21 +96,20 @@ func TestReleasePlanCreatesGroupsBeforeAssigningApplications(t *testing.T) {
 			Applications: []ReleaseApplicationInput{{ApplicationID: applications[2].ID}},
 		},
 	}
-	plan, err := service.CreateReleasePlan(ctx, "admin", ReleasePlanInput{Description: "验证计划、发布组和应用层级", Groups: groups})
+	if _, err := service.CreateReleasePlan(ctx, "admin", ReleasePlanInput{Description: "拒绝多层应用分组", Groups: groups}); !errors.Is(err, ErrInvalidReleasePlan) {
+		t.Fatalf("创建发布计划没有拒绝多个应用集合: %v", err)
+	}
+	plan, err := service.CreateReleasePlan(ctx, "admin", ReleasePlanInput{
+		Description: "直接管理应用", Groups: []ReleaseGroupInput{{
+			Name:         "客户端传入名称会被忽略",
+			Applications: []ReleaseApplicationInput{{ApplicationID: applications[0].ID}, {ApplicationID: applications[1].ID}, {ApplicationID: applications[2].ID}},
+		}},
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(plan.Groups) != 2 || plan.Groups[0].Name != "基础服务" || plan.Groups[0].SortOrder != 0 ||
-		len(plan.Groups[0].Applications) != 2 || plan.Groups[1].Name != "异步服务" || plan.Groups[1].SortOrder != 1 ||
-		len(plan.Groups[1].Applications) != 1 {
-		t.Fatalf("发布计划没有按发布组保存应用: %+v", plan.Groups)
-	}
-	duplicateGroups := []ReleaseGroupInput{
-		{Name: "第一组", Applications: []ReleaseApplicationInput{{ApplicationID: applications[0].ID}}},
-		{Name: "第二组", Applications: []ReleaseApplicationInput{{ApplicationID: applications[0].ID}}},
-	}
-	if _, err := service.CreateReleasePlan(ctx, "admin", ReleasePlanInput{Description: "拒绝跨组重复应用", Groups: duplicateGroups}); !errors.Is(err, ErrInvalidReleasePlan) {
-		t.Fatalf("创建发布计划没有拒绝跨组重复应用: %v", err)
+	if len(plan.Groups) != 1 || plan.Groups[0].Name != releasePlanInternalGroupName || len(plan.Groups[0].Applications) != 3 {
+		t.Fatalf("发布计划没有保存唯一应用集合: %+v", plan.Groups)
 	}
 }
 
@@ -294,7 +295,7 @@ func TestReleaseGroupPersistsApplicationOrderAndParallelDefault(t *testing.T) {
 	}
 }
 
-func TestReleaseGroupRejectsApplicationAssignedToAnotherGroup(t *testing.T) {
+func TestReleasePlanRejectsCreatingAnotherApplicationGroup(t *testing.T) {
 	service, _, _, repositoryID := newPipelineTestService(t)
 	ctx := context.Background()
 	application, err := service.CreateApplication(ctx, "admin", ApplicationInput{
@@ -311,8 +312,11 @@ func TestReleaseGroupRejectsApplicationAssignedToAnotherGroup(t *testing.T) {
 	}
 	if _, err := service.CreateReleaseGroup(ctx, plan.ID, ReleaseGroupInput{
 		Name: "重复发布组", Applications: []ReleaseApplicationInput{{ApplicationID: application.ID}},
-	}); !errors.Is(err, ErrReleaseApplicationAssigned) {
-		t.Fatalf("跨发布组重复应用未被拒绝: %v", err)
+	}); !errors.Is(err, ErrReleasePlanSingleGroup) {
+		t.Fatalf("第二个应用集合未被拒绝: %v", err)
+	}
+	if _, err := service.DeleteReleaseGroup(ctx, plan.ID, plan.Groups[0].ID); !errors.Is(err, ErrReleasePlanSingleGroup) {
+		t.Fatalf("唯一应用集合仍可被删除: %v", err)
 	}
 }
 
@@ -419,7 +423,7 @@ func TestRunningReleasePlanBlocksStructuralChangesButCanBeDisabled(t *testing.T)
 	}
 }
 
-func TestSaveReleasePlanConfigurationMovesApplicationsAtomically(t *testing.T) {
+func TestSaveReleasePlanConfigurationKeepsOneApplicationListAtomically(t *testing.T) {
 	service, _, _, repositoryID := newPipelineTestService(t)
 	ctx := context.Background()
 	applications := make([]*model.Application, 0, 2)
@@ -440,50 +444,38 @@ func TestSaveReleasePlanConfigurationMovesApplicationsAtomically(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	firstGroupID := plan.Groups[0].ID
-	plan, err = service.CreateReleaseGroup(ctx, plan.ID, ReleaseGroupInput{Name: "第二发布组"})
-	if err != nil {
-		t.Fatalf("创建空发布组失败: %v", err)
-	}
-	secondGroupID := plan.Groups[1].ID
+	groupID := plan.Groups[0].ID
 	plan, err = service.SaveReleasePlanConfiguration(ctx, plan.ID, "admin", ReleasePlanConfigurationInput{
 		Description: "原子调整完成",
-		Groups: []ReleaseGroupConfigurationInput{
-			{
-				ID: secondGroupID, Name: "第二发布组", Mode: model.ReleaseGroupSequential,
-				Applications: []ReleaseApplicationInput{{ApplicationID: applications[1].ID}},
-			},
-			{
-				ID: firstGroupID, Name: "第一发布组", Mode: model.ReleaseGroupParallel,
-				Applications: []ReleaseApplicationInput{{ApplicationID: applications[0].ID}},
-			},
-		},
+		Groups: []ReleaseGroupConfigurationInput{{
+			ID: groupID, Name: "客户端名称会被忽略", Mode: model.ReleaseGroupSequential,
+			Applications: []ReleaseApplicationInput{{ApplicationID: applications[1].ID}, {ApplicationID: applications[0].ID}},
+		}},
 	})
 	if err != nil {
-		t.Fatalf("跨组移动应用失败: %v", err)
+		t.Fatalf("调整应用顺序失败: %v", err)
 	}
-	if plan.Description != "原子调整完成" || len(plan.Groups) != 2 ||
-		plan.Groups[0].ID != secondGroupID || plan.Groups[0].SortOrder != 0 || plan.Groups[0].Mode != model.ReleaseGroupSequential ||
-		len(plan.Groups[0].Applications) != 1 || plan.Groups[0].Applications[0].ApplicationID != applications[1].ID ||
-		plan.Groups[1].ID != firstGroupID || plan.Groups[1].SortOrder != 1 ||
-		len(plan.Groups[1].Applications) != 1 || plan.Groups[1].Applications[0].ApplicationID != applications[0].ID {
-		t.Fatalf("批量配置没有保存组和应用顺序: %+v", plan)
+	if plan.Description != "原子调整完成" || len(plan.Groups) != 1 ||
+		plan.Groups[0].ID != groupID || plan.Groups[0].Name != releasePlanInternalGroupName || plan.Groups[0].Mode != model.ReleaseGroupSequential ||
+		len(plan.Groups[0].Applications) != 2 || plan.Groups[0].Applications[0].ApplicationID != applications[1].ID ||
+		plan.Groups[0].Applications[1].ApplicationID != applications[0].ID {
+		t.Fatalf("配置没有保存唯一应用集合及顺序: %+v", plan)
 	}
 	_, err = service.SaveReleasePlanConfiguration(ctx, plan.ID, "admin", ReleasePlanConfigurationInput{
 		Description: "不应部分保存",
 		Groups: []ReleaseGroupConfigurationInput{
-			{ID: secondGroupID, Name: "第二发布组", Applications: []ReleaseApplicationInput{{ApplicationID: applications[0].ID}}},
-			{ID: firstGroupID, Name: "第一发布组", Applications: []ReleaseApplicationInput{{ApplicationID: applications[0].ID}}},
+			{ID: groupID, Applications: []ReleaseApplicationInput{{ApplicationID: applications[0].ID}}},
+			{Applications: []ReleaseApplicationInput{{ApplicationID: applications[1].ID}}},
 		},
 	})
-	if !errors.Is(err, ErrReleaseApplicationAssigned) {
-		t.Fatalf("批量配置没有拒绝跨组重复应用: %v", err)
+	if !errors.Is(err, ErrInvalidReleasePlan) {
+		t.Fatalf("批量配置没有拒绝多个应用集合: %v", err)
 	}
 	stored, err := service.FindReleasePlan(ctx, plan.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if stored.Description != "原子调整完成" || len(stored.Groups) != 2 || stored.Groups[0].ID != secondGroupID {
+	if stored.Description != "原子调整完成" || len(stored.Groups) != 1 || stored.Groups[0].ID != groupID || len(stored.Groups[0].Applications) != 2 {
 		t.Fatalf("失败的批量配置留下了部分更新: %+v", stored)
 	}
 }

@@ -90,7 +90,7 @@ func NewRouter(deps Dependencies) *gin.Engine {
 	}
 	router := gin.New()
 	_ = router.SetTrustedProxies(nil)
-	router.Use(requestID(), securityHeaders(), recovery(deps.Logger), accessLog(deps.Logger, deps.RuntimeLogs))
+	router.Use(requestID(), securityHeaders(), webUICacheHeaders(), recovery(deps.Logger), accessLog(deps.Logger, deps.RuntimeLogs))
 
 	health := healthHandler{database: deps.Database, redis: deps.Redis, nats: deps.NATS, builder: deps.Docker, logger: deps.Logger}
 	api := router.Group("/api/v1")
@@ -227,13 +227,13 @@ func NewRouter(deps Dependencies) *gin.Engine {
 	protected.PATCH("/release-plans/:id/status", auditAction(deps.Audits, deps.Logger, "release_plan.status.update", "release_plan"), requirePermission(deps.Access, deps.Logger, access.PermissionDeliveryManage), pipelineAPI.setReleasePlanStatus)
 	protected.DELETE("/release-plans/:id", auditAction(deps.Audits, deps.Logger, "release_plan.delete", "release_plan"), requirePermission(deps.Access, deps.Logger, access.PermissionDeliveryManage), pipelineAPI.deleteReleasePlan)
 	protected.POST("/release-plans/:id/executions", auditAction(deps.Audits, deps.Logger, "release_plan.execute", "release_plan_execution"), requirePermission(deps.Access, deps.Logger, access.PermissionDeliveryRun), pipelineAPI.createReleasePlanExecution)
-	protected.POST("/release-plans/:id/groups", auditAction(deps.Audits, deps.Logger, "release_group.create", "release_plan"), requirePermission(deps.Access, deps.Logger, access.PermissionDeliveryManage), pipelineAPI.createReleaseGroup)
 	protected.PUT("/release-plans/:id/groups/:group_id", auditAction(deps.Audits, deps.Logger, "release_group.update", "release_plan"), requirePermission(deps.Access, deps.Logger, access.PermissionDeliveryManage), pipelineAPI.updateReleaseGroup)
-	protected.DELETE("/release-plans/:id/groups/:group_id", auditAction(deps.Audits, deps.Logger, "release_group.delete", "release_plan"), requirePermission(deps.Access, deps.Logger, access.PermissionDeliveryManage), pipelineAPI.deleteReleaseGroup)
 	protected.GET("/pipeline-runs", requirePermission(deps.Access, deps.Logger, access.PermissionDeliveryRead), pipelineAPI.listRuns)
+	protected.GET("/pipeline-runs/:id", requirePermission(deps.Access, deps.Logger, access.PermissionDeliveryRead), pipelineAPI.getRun)
 	protected.GET("/pipeline-runs/:id/logs", requirePermission(deps.Access, deps.Logger, access.PermissionDeliveryRead), pipelineAPI.listRunLogs)
 	protected.GET("/pipeline-runs/:id/logs/ws", requirePermission(deps.Access, deps.Logger, access.PermissionDeliveryRead), pipelineAPI.streamRunLogs)
 	protected.POST("/pipeline-runs/:id/execute", auditAction(deps.Audits, deps.Logger, "workflow_run.execute", "pipeline_run"), requirePermission(deps.Access, deps.Logger, access.PermissionDeliveryRun), pipelineAPI.executeRun)
+	protected.GET("/pipeline-runs/:id/retry-options", requirePermission(deps.Access, deps.Logger, access.PermissionDeliveryRun), pipelineAPI.listRetryRunOptions)
 	protected.POST("/pipeline-runs/:id/retry", auditAction(deps.Audits, deps.Logger, "workflow_run.retry", "pipeline_run"), requirePermission(deps.Access, deps.Logger, access.PermissionDeliveryRun), pipelineAPI.retryRun)
 	protected.POST("/pipeline-runs/:id/advance", auditAction(deps.Audits, deps.Logger, "workflow_run.advance", "pipeline_run"), requirePermission(deps.Access, deps.Logger, access.PermissionDeliveryRun), pipelineAPI.advanceRun)
 	protected.POST("/pipeline-runs/:id/approve", auditAction(deps.Audits, deps.Logger, "workflow_run.approve", "pipeline_run"), requirePermission(deps.Access, deps.Logger, access.PermissionDeploymentReview), pipelineAPI.approveRun)

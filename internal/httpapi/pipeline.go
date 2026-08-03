@@ -65,6 +65,11 @@ type executeRunRequest struct {
 	Ref          string `json:"ref" binding:"max=512"`
 	CommitSHA    string `json:"commit_sha" binding:"max=64"`
 	SourceNodeID string `json:"source_node_id" binding:"max=64"`
+	ArtifactID   string `json:"artifact_id" binding:"max=36"`
+}
+
+type retryRunRequest struct {
+	ArtifactID string `json:"artifact_id" binding:"max=36"`
 }
 
 type buildPlanRequest struct {
@@ -431,9 +436,9 @@ func (h pipelineHandler) executeRun(c *gin.Context) {
 		}
 	}
 	actor, _ := currentUser(c)
-	run, err := h.service.ExecuteRun(
+	run, err := h.service.ExecuteRunSelection(
 		c.Request.Context(), c.Param("id"), actor.ID, request.Ref, request.CommitSHA,
-		request.SourceNodeID,
+		request.SourceNodeID, request.ArtifactID,
 	)
 	if err != nil {
 		h.writeError(c, "workflow_run_execute", err)
@@ -443,9 +448,26 @@ func (h pipelineHandler) executeRun(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"pipeline_run": run})
 }
 
+func (h pipelineHandler) listRetryRunOptions(c *gin.Context) {
+	options, err := h.service.ListRetryRunOptions(c.Request.Context(), c.Param("id"))
+	if err != nil {
+		h.writeError(c, "workflow_run_retry_options", err)
+		return
+	}
+	c.JSON(http.StatusOK, options)
+}
+
 func (h pipelineHandler) retryRun(c *gin.Context) {
+	var request retryRunRequest
+	if c.Request.ContentLength > 0 {
+		if err := c.ShouldBindJSON(&request); err != nil {
+			h.logger.Warn("流水线重试参数无效", "operation", "workflow_run_retry_bind", "pipeline_run_id", c.Param("id"), "request_id", requestIDFrom(c), "err", err)
+			writeError(c, http.StatusBadRequest, "invalid_retry_selection", pipeline.ErrRetryArtifactInvalid.Error())
+			return
+		}
+	}
 	actor, _ := currentUser(c)
-	run, err := h.service.RetryRun(c.Request.Context(), c.Param("id"), actor.ID)
+	run, err := h.service.RetryRunSelection(c.Request.Context(), c.Param("id"), actor.ID, request.ArtifactID)
 	if err != nil {
 		h.writeError(c, "workflow_run_retry", err)
 		return
@@ -668,6 +690,15 @@ func (h pipelineHandler) listRuns(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"pipeline_runs": runs})
 }
 
+func (h pipelineHandler) getRun(c *gin.Context) {
+	run, err := h.service.FindRun(c.Request.Context(), c.Param("id"))
+	if err != nil {
+		h.writeError(c, "pipeline_run_get", err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"pipeline_run": run})
+}
+
 func (h pipelineHandler) writeError(c *gin.Context, operation string, err error) {
 	h.logger.Warn("持续交付操作失败", "operation", operation, "request_id", requestIDFrom(c), "resource_id", c.Param("id"), "err", err)
 	switch {
@@ -675,9 +706,10 @@ func (h pipelineHandler) writeError(c *gin.Context, operation string, err error)
 		writeError(c, http.StatusNotFound, "release_plan_not_found", err.Error())
 	case errors.Is(err, pipeline.ErrReleasePlanNotEditable), errors.Is(err, pipeline.ErrReleasePlanDisabled),
 		errors.Is(err, pipeline.ErrReleaseApplicationAssigned),
+		errors.Is(err, pipeline.ErrReleasePlanSingleGroup),
 		errors.Is(err, pipeline.ErrReleasePlanExecutionExists),
 		errors.Is(err, pipeline.ErrReleasePlanExecutionPlanChanged), errors.Is(err, pipeline.ErrReleasePlanExecutionWorkflowChanged),
-		errors.Is(err, pipeline.ErrReleasePlanExecutionVersionChanged):
+		errors.Is(err, pipeline.ErrReleasePlanExecutionVersionChanged), errors.Is(err, pipeline.ErrReleasePlanExecutionArtifactChanged):
 		writeError(c, http.StatusConflict, "release_plan_not_editable", err.Error())
 	case errors.Is(err, pipeline.ErrReleasePlanExists), errors.Is(err, pipeline.ErrReleaseGroupExists):
 		writeError(c, http.StatusConflict, "release_plan_exists", err.Error())
@@ -733,12 +765,18 @@ func (h pipelineHandler) writeError(c *gin.Context, operation string, err error)
 		writeError(c, http.StatusNotFound, "pipeline_run_not_found", err.Error())
 	case errors.Is(err, pipeline.ErrPipelineRunNotRetryable):
 		writeError(c, http.StatusConflict, "pipeline_run_not_retryable", err.Error())
+	case errors.Is(err, pipeline.ErrRetryArtifactInvalid):
+		writeError(c, http.StatusConflict, "retry_artifact_unavailable", err.Error())
 	case errors.Is(err, pipeline.ErrPipelineRunAwaitingReleasePlan):
 		writeError(c, http.StatusConflict, "pipeline_run_managed_by_release_plan", err.Error())
 	case errors.Is(err, pipeline.ErrManualCommitRequired):
 		writeError(c, http.StatusBadRequest, "manual_commit_required", err.Error())
 	case errors.Is(err, pipeline.ErrManualCommitNotFound):
 		writeError(c, http.StatusConflict, "manual_commit_changed", err.Error())
+	case errors.Is(err, pipeline.ErrManualSelectionInvalid):
+		writeError(c, http.StatusBadRequest, "manual_selection_invalid", err.Error())
+	case errors.Is(err, pipeline.ErrManualArtifactInvalid):
+		writeError(c, http.StatusConflict, "manual_artifact_unavailable", err.Error())
 	case errors.Is(err, pipeline.ErrManualReleaseDisabled):
 		writeError(c, http.StatusConflict, "manual_release_disabled", err.Error())
 	case errors.Is(err, pipeline.ErrPipelineIncomplete):

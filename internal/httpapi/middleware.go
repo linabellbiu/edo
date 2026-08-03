@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"net/http"
 	"runtime/debug"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -78,6 +79,23 @@ func securityHeaders() gin.HandlerFunc {
 		c.Header("X-Content-Type-Options", "nosniff")
 		c.Header("X-Frame-Options", "DENY")
 		c.Header("Referrer-Policy", "same-origin")
+		c.Next()
+	}
+}
+
+func webUICacheHeaders() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if c.Request.Method == http.MethodGet || c.Request.Method == http.MethodHead {
+			path := c.Request.URL.Path
+			switch {
+			case strings.HasPrefix(path, "/assets/"):
+				// Vite 的构建资源使用内容哈希文件名，可以安全地长期缓存。
+				c.Header("Cache-Control", "public, max-age=31536000, immutable")
+			case !strings.HasPrefix(path, "/api/"):
+				// HTML 导航必须每次重新验证，避免新旧版本入口引用不同模块而白屏。
+				c.Header("Cache-Control", "no-store")
+			}
+		}
 		c.Next()
 	}
 }

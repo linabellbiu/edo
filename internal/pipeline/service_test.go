@@ -783,6 +783,13 @@ func TestReleaseWorkflowCapturesExplicitApprovalNode(t *testing.T) {
 		len(listedRuns[0].ExecutionGraph.Stages) != len(stages) {
 		t.Fatalf("流水线运行列表没有返回只读执行拓扑: graph=%+v", listedRuns[0].ExecutionGraph)
 	}
+	foundRun, err := service.FindRun(ctx, run.ID)
+	if err != nil || foundRun.ID != run.ID || !foundRun.ApprovalRequired || foundRun.ExecutionGraph == nil {
+		t.Fatalf("无法按标识定位准确的流水线运行: run=%+v err=%v", foundRun, err)
+	}
+	if _, err := service.FindRun(ctx, "missing-pipeline-run"); !errors.Is(err, ErrPipelineRunNotFound) {
+		t.Fatalf("不存在的流水线运行没有返回稳定错误: %v", err)
+	}
 }
 
 func TestPublicWorkflowTemplateSyncsLinkedApplications(t *testing.T) {

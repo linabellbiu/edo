@@ -20,6 +20,7 @@ import (
 
 	"github.com/containerd/errdefs"
 	"github.com/distribution/reference"
+	"github.com/moby/moby/api/types/container"
 	"github.com/moby/moby/client"
 	"go.yaml.in/yaml/v3"
 
@@ -31,6 +32,7 @@ const MaximumComposeYAMLBytes = 512 * 1024
 var (
 	ErrInvalidComposeYAML       = errors.New("Docker Compose 配置无效")
 	ErrComposePluginUnavailable = errors.New("Docker Compose 插件不可用")
+	ErrComposeRollbackFailed    = errors.New("恢复旧 Docker Compose 服务失败")
 	composeServicePattern       = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$`)
 )
 
@@ -588,7 +590,7 @@ func (s *Service) DeployCompose(ctx context.Context, input ComposeDeployInput) (
 	if err != nil {
 		return "", err
 	}
-	apiClient, err := s.Client(ctx, input.EndpointID)
+	apiClient, err := s.executionClient(ctx, input.EndpointID)
 	if err != nil {
 		return "", err
 	}
@@ -613,12 +615,58 @@ func (s *Service) DeployCompose(ctx context.Context, input ComposeDeployInput) (
 		if contextError := deployContext.Err(); contextError != nil {
 			return previousImage, fmt.Errorf("Docker Compose 部署超时或被取消: %w", contextError)
 		}
+		if stateErr := composeServiceStateError(deployContext, apiClient, projectName, input.ServiceName); stateErr != nil {
+			deployErr := errors.Join(stateErr, err)
+			return previousImage, s.composeDeploymentErrorWithRollback(
+				ctx, endpoint, apiClient, projectName, executionInput, previousImage, deployErr,
+			)
+		}
 		return previousImage, err
+	}
+	if err := waitComposeServiceHealthy(deployContext, apiClient, projectName, input.ServiceName); err != nil {
+		return previousImage, s.composeDeploymentErrorWithRollback(
+			ctx, endpoint, apiClient, projectName, executionInput, previousImage, err,
+		)
 	}
 	if _, err := composeServiceImage(deployContext, apiClient, projectName, input.ServiceName, executionInput.Image); err != nil {
-		return previousImage, err
+		return previousImage, s.composeDeploymentErrorWithRollback(
+			ctx, endpoint, apiClient, projectName, executionInput, previousImage, err,
+		)
 	}
 	return previousImage, nil
+}
+
+func (s *Service) composeDeploymentErrorWithRollback(
+	ctx context.Context,
+	endpoint *model.DockerEndpoint,
+	apiClient *client.Client,
+	projectName string,
+	input ComposeDeployInput,
+	previousImage string,
+	deployErr error,
+) error {
+	if strings.TrimSpace(previousImage) == "" {
+		return deployErr
+	}
+	rollbackTimeout := min(input.Timeout, 2*time.Minute)
+	if rollbackTimeout < 30*time.Second {
+		rollbackTimeout = 30 * time.Second
+	}
+	rollbackContext, cancel := context.WithTimeout(context.WithoutCancel(ctx), rollbackTimeout)
+	defer cancel()
+	rollbackInput := input
+	rollbackInput.Image = previousImage
+	rollbackInput.ExpectedImageID = ""
+	if err := s.runCompose(rollbackContext, endpoint, projectName, rollbackInput); err != nil {
+		return fmt.Errorf("%w: deployment_error=%v rollback_error=%v", ErrComposeRollbackFailed, deployErr, err)
+	}
+	if err := waitComposeServiceHealthy(rollbackContext, apiClient, projectName, input.ServiceName); err != nil {
+		return fmt.Errorf("%w: deployment_error=%v rollback_error=%v", ErrComposeRollbackFailed, deployErr, err)
+	}
+	if _, err := composeServiceImage(rollbackContext, apiClient, projectName, input.ServiceName, previousImage); err != nil {
+		return fmt.Errorf("%w: deployment_error=%v rollback_error=%v", ErrComposeRollbackFailed, deployErr, err)
+	}
+	return deployErr
 }
 
 func parseImmutableComposeImage(value string) (string, error) {
@@ -711,8 +759,11 @@ func composeServiceImage(
 		if err != nil {
 			return "", fmt.Errorf("检查 Docker Compose 服务容器失败: %w", err)
 		}
-		if inspect.Container.Config == nil || inspect.Container.State == nil || !inspect.Container.State.Running {
-			return "", errors.New("Docker Compose 服务容器没有保持运行")
+		if inspect.Container.Config == nil {
+			return "", errors.New("Docker Compose 服务容器配置不完整")
+		}
+		if expectedImage != "" && (inspect.Container.State == nil || !inspect.Container.State.Running) {
+			return "", fmt.Errorf("%w: service=%s", ErrContainerNotRunning, serviceName)
 		}
 		image := strings.TrimSpace(inspect.Container.Config.Image)
 		if expectedImage != "" && image != expectedImage {
@@ -728,6 +779,86 @@ func composeServiceImage(
 		}
 	}
 	return currentImage, nil
+}
+
+func composeServiceStateError(
+	ctx context.Context,
+	apiClient *client.Client,
+	projectName string,
+	serviceName string,
+) error {
+	containers, err := composeServiceContainers(ctx, apiClient, projectName, serviceName)
+	if err != nil {
+		return err
+	}
+	if len(containers) == 0 {
+		return fmt.Errorf("%w: service=%s container_count=0", ErrContainerNotRunning, serviceName)
+	}
+	for _, item := range containers {
+		inspect, err := apiClient.ContainerInspect(ctx, item.ID, client.ContainerInspectOptions{})
+		if err != nil {
+			return fmt.Errorf("检查 Docker Compose 服务容器失败: %w", err)
+		}
+		state := inspect.Container.State
+		if state == nil {
+			return fmt.Errorf("%w: service=%s 没有可读取的状态", ErrContainerNotRunning, serviceName)
+		}
+		if state.Restarting || inspect.Container.RestartCount > 0 {
+			return fmt.Errorf("%w: service=%s status=%s restart_count=%d exit_code=%d",
+				ErrContainerRestarted, serviceName, state.Status, inspect.Container.RestartCount, state.ExitCode)
+		}
+		if !state.Running {
+			return fmt.Errorf("%w: service=%s status=%s exit_code=%d",
+				ErrContainerNotRunning, serviceName, state.Status, state.ExitCode)
+		}
+		if state.Health != nil && state.Health.Status == container.Unhealthy {
+			return fmt.Errorf("%w: service=%s failing_streak=%d",
+				ErrContainerUnhealthy, serviceName, state.Health.FailingStreak)
+		}
+	}
+	return nil
+}
+
+func waitComposeServiceHealthy(
+	ctx context.Context,
+	apiClient *client.Client,
+	projectName string,
+	serviceName string,
+) error {
+	containers, err := composeServiceContainers(ctx, apiClient, projectName, serviceName)
+	if err != nil {
+		return err
+	}
+	if len(containers) == 0 {
+		return fmt.Errorf("%w: service=%s container_count=0", ErrContainerNotRunning, serviceName)
+	}
+	for _, item := range containers {
+		if err := waitContainerHealthy(ctx, apiClient, item.ID); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func composeServiceContainers(
+	ctx context.Context,
+	apiClient *client.Client,
+	projectName string,
+	serviceName string,
+) ([]container.Summary, error) {
+	result, err := apiClient.ContainerList(ctx, client.ContainerListOptions{
+		All: true,
+		Filters: client.Filters{
+			"label": {
+				"com.docker.compose.project=" + projectName: true,
+				"com.docker.compose.service=" + serviceName: true,
+			},
+		},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("读取 Docker Compose 服务状态失败: %w", err)
+	}
+	return result.Items, nil
 }
 
 func (s *Service) runCompose(

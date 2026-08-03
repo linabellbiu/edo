@@ -22,6 +22,7 @@ var (
 	ErrReleasePlanExecutionPlanChanged       = errors.New("发布计划已经变更，请刷新后重试")
 	ErrReleasePlanExecutionWorkflowChanged   = errors.New("应用流水线已经变更，请刷新后重试")
 	ErrReleasePlanExecutionVersionChanged    = errors.New("所选代码版本已经变化，请重新选择")
+	ErrReleasePlanExecutionArtifactChanged   = errors.New("所选制品已经不可用或与当前流水线不匹配，请重新选择")
 	ErrReleasePlanExecutionTemporarilyFailed = errors.New("发布计划执行暂时不可用，请稍后重试")
 )
 
@@ -32,6 +33,7 @@ type ReleasePlanExecutionSelection struct {
 	SourceNodeID              string
 	Ref                       string
 	CommitSHA                 string
+	ArtifactID                string
 }
 
 type ReleasePlanExecutionInput struct {
@@ -293,7 +295,11 @@ func (s *Service) prepareReleasePlanExecution(
 		selection.SourceNodeID = strings.TrimSpace(selection.SourceNodeID)
 		selection.Ref = strings.TrimSpace(selection.Ref)
 		selection.CommitSHA = strings.TrimSpace(selection.CommitSHA)
-		if selection.ReleaseGroupApplicationID == "" || selection.WorkflowID == "" || selection.SourceNodeID == "" || selection.Ref == "" || selection.CommitSHA == "" {
+		selection.ArtifactID = strings.TrimSpace(selection.ArtifactID)
+		codeSelected := selection.Ref != "" || selection.CommitSHA != ""
+		artifactSelected := selection.ArtifactID != ""
+		if selection.ReleaseGroupApplicationID == "" || selection.WorkflowID == "" || selection.SourceNodeID == "" ||
+			codeSelected == artifactSelected || (codeSelected && (selection.Ref == "" || selection.CommitSHA == "")) {
 			return nil, ErrInvalidReleasePlanExecution
 		}
 		if _, exists := selectionByApplication[selection.ReleaseGroupApplicationID]; exists {
@@ -306,7 +312,7 @@ func (s *Service) prepareReleasePlanExecution(
 	for i := range plan.Groups {
 		groupApplicationCount += len(plan.Groups[i].Applications)
 	}
-	if len(plan.Groups) == 0 || groupApplicationCount == 0 || len(selectionByApplication) != groupApplicationCount {
+	if len(plan.Groups) != 1 || len(plan.Groups[0].Dependencies) != 0 || groupApplicationCount == 0 || len(selectionByApplication) != groupApplicationCount {
 		return nil, ErrInvalidReleasePlanExecution
 	}
 
@@ -379,13 +385,24 @@ func (s *Service) prepareReleasePlanExecution(
 			if source == nil {
 				return nil, ErrInvalidReleasePlanExecution
 			}
-			ref, commitSHA, err := s.validateManualSelection(ctx, application, selection.Ref, selection.CommitSHA)
-			if err != nil {
-				if errors.Is(err, ErrManualCommitNotFound) || errors.Is(err, ErrManualCommitRequired) {
-					return nil, ErrReleasePlanExecutionVersionChanged
+			ref, commitSHA := selection.Ref, selection.CommitSHA
+			var selectedArtifact *manualArtifactSelection
+			if selection.ArtifactID != "" {
+				selectedArtifact, err = s.validateManualArtifactSelection(ctx, application, workflow, selection.ArtifactID)
+				if err != nil {
+					s.logReleasePlanExecutionError("release_plan_execution_preflight_artifact", groupApplication.ApplicationID, err)
+					return nil, ErrReleasePlanExecutionArtifactChanged
 				}
-				s.logReleasePlanExecutionError("release_plan_execution_preflight_ref", groupApplication.ApplicationID, err)
-				return nil, ErrReleasePlanExecutionTemporarilyFailed
+				ref, commitSHA = selectedArtifact.build.Ref, selectedArtifact.build.CommitSHA
+			} else {
+				ref, commitSHA, err = s.validateManualSelection(ctx, application, selection.Ref, selection.CommitSHA)
+				if err != nil {
+					if errors.Is(err, ErrManualCommitNotFound) || errors.Is(err, ErrManualCommitRequired) {
+						return nil, ErrReleasePlanExecutionVersionChanged
+					}
+					s.logReleasePlanExecutionError("release_plan_execution_preflight_ref", groupApplication.ApplicationID, err)
+					return nil, ErrReleasePlanExecutionTemporarilyFailed
+				}
 			}
 
 			itemID := uuid.NewString()
@@ -402,12 +419,26 @@ func (s *Service) prepareReleasePlanExecution(
 			run.ReleasePlanExecutionItemID = itemID
 			run.Status = model.PipelineRunBlocked
 			run.Stage = string(source.Type)
-			run.CommitMessage = s.resolveCommitMessage(ctx, application.RepositoryID, ref, commitSHA)
+			if ref != "" && commitSHA != "" {
+				run.CommitMessage = s.resolveCommitMessage(ctx, application.RepositoryID, ref, commitSHA)
+			}
 			run.Message = "发布计划等待编排启动"
+			if selectedArtifact != nil {
+				run.CurrentNodeID = selectedArtifact.resumeNode.ID
+				run.Stage = "task_succeeded"
+				run.ArtifactID = selectedArtifact.artifact.ID
+				run.Image = selectedArtifact.artifact.ImageRef
+				run.Message = "发布计划已固定已有制品，等待编排启动"
+			}
 			components, err := pipelineRunRepositories(application, run.ID, ref, commitSHA, now)
 			if err != nil {
 				s.logReleasePlanExecutionError("release_plan_execution_repository_invariant", groupApplication.ApplicationID, err)
 				return nil, ErrReleasePlanExecutionTemporarilyFailed
+			}
+			if selectedArtifact != nil {
+				for i := range components {
+					components[i].Status = model.PipelineRunRepositoryReady
+				}
 			}
 			item := model.ReleasePlanExecutionItem{
 				ID: itemID, ReleasePlanExecutionID: executionID,
@@ -415,7 +446,7 @@ func (s *Service) prepareReleasePlanExecution(
 				ApplicationID: application.ID, WorkflowID: workflow.ID, PipelineRunID: run.ID,
 				Status: model.ReleasePlanExecutionItemPending, Ref: ref, CommitSHA: commitSHA,
 				SourceNodeID: source.ID, SortOrder: groupApplication.SortOrder,
-				Message: "等待所属发布组开始", CreatedAt: now, UpdatedAt: now,
+				Message: "等待发布计划开始", CreatedAt: now, UpdatedAt: now,
 			}
 			prepared.items = append(prepared.items, preparedReleasePlanExecutionItem{
 				item: item, run: *run, components: components,
@@ -810,7 +841,7 @@ func releasePlanExecutionSkips(
 			}
 			message := "同组应用失败，已按停止策略跳过"
 			if dependencyFailure {
-				message = "依赖发布组失败，已跳过"
+				message = "发布计划前置执行失败，已跳过"
 			}
 			for _, itemID := range group.ItemIDs {
 				if items[itemID].Status == model.ReleasePlanExecutionItemPending {
@@ -913,7 +944,7 @@ func releasePlanExecutionItemTerminal(status model.ReleasePlanExecutionItemStatu
 }
 
 // startReleasePlanPipelineRun 只读取 PipelineRun.WorkflowSnapshot，因此计划创建后修改当前流水线
-// 不会改变本次执行路径。执行从唯一且已启用手动启动的代码源进入第一个任务。
+// 不会改变本次执行路径。选择代码版本时从代码源开始；选择已有制品时从构建后的审核或部署继续。
 func (s *Service) startReleasePlanPipelineRun(ctx context.Context, runID, actorID string) (*model.PipelineRun, error) {
 	var run model.PipelineRun
 	if err := s.db.WithContext(ctx).First(&run, "id = ?", runID).Error; err != nil {
@@ -924,7 +955,10 @@ func (s *Service) startReleasePlanPipelineRun(ctx context.Context, runID, actorI
 		return nil, err
 	}
 	current, exists := workflowFindNode(snapshot.Source, snapshot.Stages, run.CurrentNodeID)
-	if !exists || !workflowNodeSupportsManualRelease(current) || run.Status != model.PipelineRunBlocked {
+	codeEntry := exists && workflowNodeSupportsManualRelease(current) && run.Stage == string(model.WorkflowNodeTrigger)
+	artifactEntry := exists && run.ArtifactID != "" && run.Stage == "task_succeeded" &&
+		(current.Type == model.WorkflowNodeBuild || current.Type == model.WorkflowNodeShell)
+	if run.Status != model.PipelineRunBlocked || (!codeEntry && !artifactEntry) {
 		return nil, ErrInvalidWorkflowTransition
 	}
 	advanced, _, err := s.advanceRunIfCurrent(ctx, run, actorID, "")
@@ -1010,5 +1044,6 @@ func (s *Service) logReleasePlanExecutionError(operation, id string, err error) 
 func isReleasePlanExecutionPublicError(err error) bool {
 	return errors.Is(err, ErrReleasePlanNotFound) || errors.Is(err, ErrReleasePlanDisabled) || errors.Is(err, ErrInvalidReleasePlanExecution) ||
 		errors.Is(err, ErrReleasePlanExecutionExists) || errors.Is(err, ErrReleasePlanExecutionPlanChanged) ||
-		errors.Is(err, ErrReleasePlanExecutionWorkflowChanged) || errors.Is(err, ErrReleasePlanExecutionVersionChanged)
+		errors.Is(err, ErrReleasePlanExecutionWorkflowChanged) || errors.Is(err, ErrReleasePlanExecutionVersionChanged) ||
+		errors.Is(err, ErrReleasePlanExecutionArtifactChanged)
 }

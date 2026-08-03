@@ -130,11 +130,11 @@ function buildPlanDirectory(plan: BuildPlan) {
 }
 
 function buildPlanArtifact(plan: BuildPlan) {
-  return plan.kind === 'dockerfile' ? 'OCI 镜像' : plan.artifact_path || '未配置产物路径'
+	return plan.kind === 'dockerfile' ? 'OCI 镜像' : plan.artifact_path || '不保存制品'
 }
 
 function buildPlanRegistry(plan: BuildPlan) {
-  if (plan.kind === 'script') return 'EDO 文件制品存储'
+	if (plan.kind === 'script') return plan.artifact_path ? 'EDO 文件制品存储' : '不使用制品存储'
   return plan.image_registry?.name || props.registries.find(item => item.id === plan.image_registry_id)?.name || '构建运行时本地镜像'
 }
 

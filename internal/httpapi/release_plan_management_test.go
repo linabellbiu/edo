@@ -59,8 +59,25 @@ func TestReleasePlanManagementAPI(t *testing.T) {
 		} `json:"release_plan"`
 	}
 	if createResponse.Code != http.StatusCreated || json.Unmarshal(createResponse.Body.Bytes(), &planPayload) != nil ||
-		planPayload.ReleasePlan.ID == "" || !planPayload.ReleasePlan.IsActive || len(planPayload.ReleasePlan.Groups) != 1 {
+		planPayload.ReleasePlan.ID == "" || !planPayload.ReleasePlan.IsActive || len(planPayload.ReleasePlan.Groups) != 1 ||
+		planPayload.ReleasePlan.Groups[0].Name != "应用列表" {
 		t.Fatalf("创建发布计划失败: status=%d body=%s", createResponse.Code, createResponse.Body.String())
+	}
+	additionalGroupResponse := performJSONRequest(t, router, http.MethodPost, "/api/v1/release-plans/"+planPayload.ReleasePlan.ID+"/groups", map[string]any{
+		"name": "第二个集合", "applications": []map[string]any{{"application_id": applicationPayload.Application.ID}},
+	}, adminCookie)
+	if additionalGroupResponse.Code != http.StatusNotFound {
+		t.Fatalf("新增应用集合接口仍然存在: status=%d body=%s", additionalGroupResponse.Code, additionalGroupResponse.Body.String())
+	}
+	multipleGroupsResponse := performJSONRequest(t, router, http.MethodPut, "/api/v1/release-plans/"+planPayload.ReleasePlan.ID+"/configuration", map[string]any{
+		"description": "不允许多集合",
+		"groups": []map[string]any{
+			{"id": planPayload.ReleasePlan.Groups[0].ID, "name": "第一组", "applications": []map[string]any{{"application_id": applicationPayload.Application.ID}}},
+			{"name": "第二组", "applications": []map[string]any{{"application_id": applicationPayload.Application.ID}}},
+		},
+	}, adminCookie)
+	if multipleGroupsResponse.Code != http.StatusBadRequest {
+		t.Fatalf("完整配置接口仍允许多个应用集合: status=%d body=%s", multipleGroupsResponse.Code, multipleGroupsResponse.Body.String())
 	}
 	configurationResponse := performJSONRequest(t, router, http.MethodPut, "/api/v1/release-plans/"+planPayload.ReleasePlan.ID+"/configuration", map[string]any{
 		"description": "批量配置说明",
@@ -71,6 +88,7 @@ func TestReleasePlanManagementAPI(t *testing.T) {
 		}},
 	}, adminCookie)
 	if configurationResponse.Code != http.StatusOK || !strings.Contains(configurationResponse.Body.String(), `"description":"批量配置说明"`) ||
+		!strings.Contains(configurationResponse.Body.String(), `"name":"应用列表"`) ||
 		!strings.Contains(configurationResponse.Body.String(), `"mode":"sequential"`) || !strings.Contains(configurationResponse.Body.String(), `"sort_order":0`) {
 		t.Fatalf("原子保存发布计划配置失败: status=%d body=%s", configurationResponse.Code, configurationResponse.Body.String())
 	}

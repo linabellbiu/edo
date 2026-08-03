@@ -3,6 +3,7 @@ package dockerengine
 import (
 	"context"
 	"errors"
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -172,5 +173,21 @@ func TestWaitContainerReadyUsesDockerHealthResult(t *testing.T) {
 	}, time.Second, time.Millisecond)
 	if !errors.Is(err, inspectErr) {
 		t.Fatalf("Docker inspect 原始错误未保留给内部诊断: %v", err)
+	}
+}
+
+func TestDeploymentErrorWithRollbackPreservesPrimaryAndRollbackState(t *testing.T) {
+	primaryErr := fmt.Errorf("%w: exit_code=1", ErrContainerNotRunning)
+	if err := deploymentErrorWithRollback(primaryErr, nil); !errors.Is(err, ErrContainerNotRunning) || errors.Is(err, ErrContainerRollbackFailed) {
+		t.Fatalf("回滚成功后没有保留原始发布分类: %v", err)
+	}
+
+	rollbackErr := errors.New("rename failed")
+	err := deploymentErrorWithRollback(primaryErr, rollbackErr)
+	if !errors.Is(err, ErrContainerRollbackFailed) {
+		t.Fatalf("回滚失败没有提升为需要人工处理的分类: %v", err)
+	}
+	if !strings.Contains(err.Error(), "exit_code=1") || !strings.Contains(err.Error(), "rename failed") {
+		t.Fatalf("系统日志需要的发布和回滚诊断信息不完整: %v", err)
 	}
 }

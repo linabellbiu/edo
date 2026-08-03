@@ -117,6 +117,20 @@ func TestScriptBuildPlanPreservesExactBytes(t *testing.T) {
 	}
 }
 
+func TestScriptBuildPlanAllowsRunningWithoutSavedArtifact(t *testing.T) {
+	service, _, _, _ := newPipelineTestService(t)
+	plan, err := service.CreateBuildPlan(context.Background(), "admin", BuildPlanInput{
+		Name: "只执行 Shell 构建", Kind: model.BuildPlanScript,
+		Script: "go test ./...", TimeoutSeconds: 120,
+	})
+	if err != nil {
+		t.Fatalf("不保存产物的 Shell 构建方案被拒绝: %v", err)
+	}
+	if plan.ArtifactPath != "" || plan.RuntimeImage != model.DefaultRuntimeImage {
+		t.Fatalf("不保存产物的 Shell 构建方案规范化错误: %+v", plan)
+	}
+}
+
 func TestScriptBuildPlanRuntimeImageMustBePinned(t *testing.T) {
 	service, _, _, _ := newPipelineTestService(t)
 	valid := []string{

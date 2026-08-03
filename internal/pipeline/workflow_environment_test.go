@@ -279,6 +279,38 @@ func TestStageWorkflowValidatesDeploymentPlanOwnedTarget(t *testing.T) {
 	}
 }
 
+func TestStageWorkflowRejectsDeployAfterScriptBuildWithoutArtifact(t *testing.T) {
+	service, db, _, _ := newPipelineTestService(t)
+	ctx := context.Background()
+	buildPlan, err := service.CreateBuildPlan(ctx, "admin", BuildPlanInput{
+		Name: "不保存产物构建", Kind: model.BuildPlanScript, Script: "echo test",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	target := model.DeploymentTarget{
+		ID: "no-artifact-target", Name: "无产物目标", Platform: model.DeploymentSSH,
+		HostID: "host-1", IsActive: true, CreatedBy: "admin", CreatedAt: now, UpdatedAt: now,
+	}
+	plan := model.DeploymentPlan{
+		ID: "no-artifact-deploy", Name: "无产物部署", Kind: model.DeploymentPlanScript,
+		DeploymentTargetID: target.ID, Script: "echo deploy", TimeoutSeconds: 120,
+		IsActive: true, CreatedBy: "admin", CreatedAt: now, UpdatedAt: now,
+	}
+	if err := db.Create(&target).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&plan).Error; err != nil {
+		t.Fatal(err)
+	}
+	source, stages := testStageWorkflowGraph(buildPlan.ID, plan.ID)
+	issues := service.validateWorkflow(ctx, &model.Application{}, model.WorkflowSchemaVersion, source, stages)
+	if !hasWorkflowIssue(issues, "artifact_not_saved") {
+		t.Fatalf("未保存文件制品的 Shell 构建仍可连接部署任务: %+v", issues)
+	}
+}
+
 func TestWorkflowDraftAllowsMissingDeploymentPlanButCannotActivate(t *testing.T) {
 	service, _, _, repositoryID := newPipelineTestService(t)
 	ctx := context.Background()

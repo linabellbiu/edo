@@ -33,6 +33,16 @@ func TestNormalizeScriptContainerInputRequiresPinnedImageAndEmptyOutput(t *testi
 	if normalized.SourceDirectory == "" || normalized.OutputDirectory == "" {
 		t.Fatalf("脚本容器目录没有规范化: %+v", normalized)
 	}
+	withoutArtifact := valid
+	withoutArtifact.ArtifactPath = ""
+	withoutArtifact.OutputDirectory = ""
+	normalized, err = normalizeScriptContainerInput(withoutArtifact)
+	if err != nil {
+		t.Fatalf("不保存制品的合法脚本容器配置被拒绝: %v", err)
+	}
+	if normalized.ArtifactPath != "" || normalized.OutputDirectory != "" {
+		t.Fatalf("不保存制品时不应生成输出目录: %+v", normalized)
+	}
 
 	invalid := []ScriptContainerInput{
 		func() ScriptContainerInput { value := valid; value.Image = "alpine:latest"; return value }(),

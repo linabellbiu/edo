@@ -85,6 +85,142 @@ func TestExecuteManualRunStartsFromManualCodeTrigger(t *testing.T) {
 	assertPipelineBuildJob(t, db, run.ExecutionJobID)
 }
 
+func TestExecuteManualRunCanSelectPreviousArtifact(t *testing.T) {
+	service, db, secrets, repositoryID := newPipelineTestService(t)
+	commitSHA := strings.Repeat("4", 40)
+	service.repositories = repository.NewService(
+		db, secrets, credential.NewService(db, secrets),
+		pipelineRefLister{refs: repository.RefResult{Branches: []repository.GitRef{{Name: "main", SHA: commitSHA}}}}, 4,
+	)
+	application := createManualRunTestApplication(t, service, db, repositoryID, "manual_existing_artifact")
+	if err := db.Model(&model.ReleaseWorkflow{}).Where("application_id = ?", application.ID).Update("is_active", true).Error; err != nil {
+		t.Fatal(err)
+	}
+	stored := createPreviousManualArtifact(t, db, application, commitSHA)
+	options, err := service.ListWorkflowRefs(context.Background(), application.ID, application.Workflow.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(options.Artifacts) != 1 || options.Artifacts[0].ID != stored.ID {
+		t.Fatalf("手动执行没有返回匹配当前流水线的历史制品: %+v", options.Artifacts)
+	}
+	run, err := service.PrepareRun(context.Background(), application.ID, "admin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, err = service.ExecuteRunSelection(context.Background(), run.ID, "admin", "", "", application.Workflow.Source.ID, stored.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run.ArtifactID != stored.ID || run.Ref != "refs/heads/main" || run.CommitSHA != commitSHA ||
+		run.CurrentNodeID != "approval" || run.Status != model.PipelineRunAwaitingApproval || run.ExecutionJobID != "" {
+		t.Fatalf("历史制品没有跳过构建与脚本检查并进入审核: %+v", run)
+	}
+	var jobs int64
+	if err := db.Model(&model.Job{}).Where("payload LIKE ?", "%"+run.ID+"%").Count(&jobs).Error; err != nil || jobs != 0 {
+		t.Fatalf("选择历史制品后仍创建了构建任务: count=%d err=%v", jobs, err)
+	}
+}
+
+func TestExecuteManualRunCanSelectUploadedFileArtifact(t *testing.T) {
+	service, db, _, repositoryID := newPipelineTestService(t)
+	ctx := context.Background()
+	buildPlan, err := service.CreateBuildPlan(ctx, "admin", BuildPlanInput{
+		Name: "手工上传文件制品构建", Kind: model.BuildPlanScript,
+		Script: "mkdir -p dist && printf ready > dist/app", ArtifactPath: "dist",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	deploymentPlan, err := service.CreateDeploymentPlan(ctx, "admin", DeploymentPlanInput{
+		Name: "手工上传文件制品部署", Kind: model.DeploymentPlanScript, Script: "echo deploy", TimeoutSeconds: 120,
+		DeploymentTarget: deploymentPlanTargetInput(t, service, model.DeploymentTarget{
+			ID: "uploaded-artifact-target", Name: "手工上传制品目标", Platform: model.DeploymentSSH,
+			EnvironmentID: "uploaded-artifact-environment", HostID: "uploaded-artifact-host", RolloutTimeout: 120,
+		}),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	application, err := service.CreateApplication(ctx, "admin", ApplicationInput{
+		Name: "manual_uploaded_artifact", RepositoryID: repositoryID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	workflowResult, err := service.GetWorkflow(ctx, application.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	source, stages := stageWorkflowGraph(buildPlan.ID, deploymentPlan.ID, []string{"manual"}, "main")
+	saved, err := service.SaveWorkflow(ctx, application.ID, "admin", WorkflowInput{
+		SchemaVersion: model.WorkflowSchemaVersion, Name: workflowResult.Workflow.Name,
+		Revision: workflowResult.Workflow.Revision, Activate: true, Source: source, Stages: stages,
+	})
+	if err != nil || !saved.Valid {
+		t.Fatalf("启用手工上传制品测试流水线失败: result=%+v err=%v", saved, err)
+	}
+	application.Workflow = saved.Workflow
+	now := time.Now().UTC()
+	finishedAt := now
+	build := model.BuildRun{
+		ID: "uploaded-build", ApplicationID: application.ID, BuildPlanID: buildPlan.ID,
+		ProducerKind: model.BuildRunProducerUpload, Status: model.BuildRunStatusSucceeded,
+		PlanSnapshot: "{}", CreatedBy: "admin", CreatedAt: now, UpdatedAt: now, FinishedAt: &finishedAt,
+	}
+	stored := &model.Artifact{
+		ID: "uploaded-artifact", ApplicationID: application.ID, BuildRunID: build.ID,
+		Kind: model.ArtifactKindFileBundle, Status: model.ArtifactStatusAvailable,
+		Name: "release.tar.gz", Digest: "sha256:" + strings.Repeat("7", 64),
+		StorageKind: model.ArtifactStorageKindLocalFile, StorageKey: "manual/release.tar.gz",
+		CreatedBy: "admin", CreatedAt: now, UpdatedAt: now,
+	}
+	if err := db.Create(&build).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(stored).Error; err != nil {
+		t.Fatal(err)
+	}
+	options, err := service.ListWorkflowRefs(ctx, application.ID, saved.Workflow.ID)
+	if err != nil || len(options.Artifacts) != 1 || options.Artifacts[0].ID != stored.ID {
+		t.Fatalf("手工上传文件制品没有进入手动执行选项: artifacts=%+v err=%v", options.Artifacts, err)
+	}
+	run, err := service.PrepareWorkflowRun(ctx, application.ID, saved.Workflow.ID, "admin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, err = service.ExecuteRunSelection(ctx, run.ID, "admin", "", "", source.ID, stored.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run.ArtifactID != stored.ID || run.Ref != "" || run.CommitSHA != "" ||
+		run.CurrentNodeID != "approval" || run.Status != model.PipelineRunAwaitingApproval {
+		t.Fatalf("手工上传文件制品没有跳过构建和 Shell 后进入审核: %+v", run)
+	}
+}
+
+func TestExecuteManualRunRejectsCodeAndArtifactTogether(t *testing.T) {
+	service, db, secrets, repositoryID := newPipelineTestService(t)
+	commitSHA := strings.Repeat("5", 40)
+	service.repositories = repository.NewService(
+		db, secrets, credential.NewService(db, secrets),
+		pipelineRefLister{refs: repository.RefResult{Branches: []repository.GitRef{{Name: "main", SHA: commitSHA}}}}, 4,
+	)
+	application := createManualRunTestApplication(t, service, db, repositoryID, "manual_mixed_artifact")
+	if err := db.Model(&model.ReleaseWorkflow{}).Where("application_id = ?", application.ID).Update("is_active", true).Error; err != nil {
+		t.Fatal(err)
+	}
+	stored := createPreviousManualArtifact(t, db, application, commitSHA)
+	run, err := service.PrepareRun(context.Background(), application.ID, "admin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = service.ExecuteRunSelection(context.Background(), run.ID, "admin", "refs/heads/main", commitSHA, application.Workflow.Source.ID, stored.ID)
+	if !errors.Is(err, ErrManualSelectionInvalid) {
+		t.Fatalf("同时选择代码版本和历史制品未被拒绝: %v", err)
+	}
+}
+
 func TestExecuteManualRunRejectsAutomaticOnlyCodeTrigger(t *testing.T) {
 	service, db, secrets, repositoryID := newPipelineTestService(t)
 	commitSHA := strings.Repeat("8", 40)
@@ -333,6 +469,59 @@ func TestRetryFailedRunCreatesNewAuditedExecution(t *testing.T) {
 	}
 }
 
+func TestRetryFailedRunCanUseArtifactBuiltByOriginalRun(t *testing.T) {
+	service, db, _, repositoryID := newPipelineTestService(t)
+	application := createManualRunTestApplication(t, service, db, repositoryID, "retry_built_artifact")
+	if err := db.Model(&model.ReleaseWorkflow{}).Where("application_id = ?", application.ID).Update("is_active", true).Error; err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	commitSHA := strings.Repeat("9", 40)
+	failed := model.PipelineRun{
+		ID: "failed-artifact-retry", ApplicationID: application.ID, Trigger: "manual",
+		WorkflowID: application.Workflow.ID, WorkflowRevision: application.Workflow.Revision,
+		Ref: "refs/heads/main", CommitSHA: commitSHA, CommitMessage: "固定版本重试",
+		Status: model.PipelineRunFailed, Stage: "deploy_failed", Message: "部署失败",
+		CreatedBy: "admin", CreatedAt: now, UpdatedAt: now,
+	}
+	if err := db.Create(&failed).Error; err != nil {
+		t.Fatal(err)
+	}
+	stored := createPreviousManualArtifact(t, db, application, commitSHA)
+	if _, err := service.RetryRunSelection(context.Background(), failed.ID, "operator", stored.ID); !errors.Is(err, ErrRetryArtifactInvalid) {
+		t.Fatalf("重试使用其他运行的制品未被拒绝: %v", err)
+	}
+	if err := db.Model(&model.BuildRun{}).Where("id = ?", stored.BuildRunID).Update("pipeline_run_id", failed.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Model(&model.Artifact{}).Where("id = ?", stored.ID).Update("pipeline_run_id", failed.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Model(&model.PipelineRun{}).Where("id = ?", failed.ID).Update("artifact_id", stored.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	options, err := service.ListRetryRunOptions(context.Background(), failed.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if options.Ref != failed.Ref || options.CommitSHA != failed.CommitSHA || len(options.Artifacts) != 1 || options.Artifacts[0].ID != stored.ID {
+		t.Fatalf("重试选项没有固定原代码版本和原运行制品: %+v", options)
+	}
+	retried, err := service.RetryRunSelection(context.Background(), failed.ID, "operator", stored.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if retried.RetryOfID != failed.ID || retried.Ref != failed.Ref || retried.CommitSHA != failed.CommitSHA ||
+		retried.ArtifactID != stored.ID || retried.CurrentNodeID != "approval" || retried.Status != model.PipelineRunAwaitingApproval ||
+		retried.ExecutionJobID != "" {
+		t.Fatalf("重试没有使用原运行制品跳过构建并保留固定代码版本: %+v", retried)
+	}
+	var jobs int64
+	if err := db.Model(&model.Job{}).Where("payload LIKE ?", "%"+retried.ID+"%").Count(&jobs).Error; err != nil || jobs != 0 {
+		t.Fatalf("使用原运行制品重试后仍创建了构建任务: count=%d err=%v", jobs, err)
+	}
+}
+
 func TestRetryRunRejectsNonFailedRun(t *testing.T) {
 	service, db, _, repositoryID := newPipelineTestService(t)
 	application := createManualRunTestApplication(t, service, db, repositoryID, "reject_duplicate_run")
@@ -357,6 +546,19 @@ func TestRetryWorkflowSourceKeepsMatchingCodeTrigger(t *testing.T) {
 	source := retryWorkflowSource(workflow, &model.PipelineRun{Ref: "refs/heads/main"})
 	if source == nil || source.ID != "trigger-main" {
 		t.Fatalf("重新执行应保留匹配的代码触发入口: %+v", source)
+	}
+}
+
+func TestRetryWorkflowSourceDoesNotRematchFixedTag(t *testing.T) {
+	workflow := &model.ReleaseWorkflow{Source: model.WorkflowNode{
+		ID: "trigger-manual", Type: model.WorkflowNodeTrigger, Name: "手动入口",
+		Config: model.WorkflowNodeConfig{Branch: "main", Events: []string{"manual"}},
+	}}
+	source := retryWorkflowSource(workflow, &model.PipelineRun{
+		Trigger: "manual", Ref: "refs/tags/v1.2.3", CommitSHA: strings.Repeat("a", 40),
+	})
+	if source == nil || source.ID != "trigger-manual" {
+		t.Fatalf("重试不应按当前 Tag 规则重新匹配已固定版本: %+v", source)
 	}
 }
 
@@ -437,6 +639,46 @@ func createManualRunTestApplication(t *testing.T, service *Service, db *gorm.DB,
 	}
 	application.Workflow = saved.Workflow
 	return application
+}
+
+func createPreviousManualArtifact(t *testing.T, db *gorm.DB, application *model.Application, commitSHA string) *model.Artifact {
+	t.Helper()
+	if application == nil || application.Workflow == nil {
+		t.Fatal("测试应用缺少流水线")
+	}
+	buildPlanID := ""
+	for _, node := range workflowTasks(application.Workflow.Stages) {
+		if node.Type == model.WorkflowNodeBuild {
+			buildPlanID = node.Config.BuildPlanID
+			break
+		}
+	}
+	if buildPlanID == "" {
+		t.Fatal("测试流水线缺少构建方案")
+	}
+	now := time.Now().UTC()
+	finishedAt := now
+	build := model.BuildRun{
+		ID: "build-" + application.ID, ApplicationID: application.ID, PipelineRunID: "previous-" + application.ID,
+		RepositoryID: application.RepositoryID, WorkflowNodeID: "build", BuildPlanID: buildPlanID,
+		ProducerKind: model.BuildRunProducerDockerfile, Ref: "refs/heads/main", CommitSHA: commitSHA,
+		Status: model.BuildRunStatusSucceeded, CreatedBy: "admin", CreatedAt: now, UpdatedAt: now, FinishedAt: &finishedAt,
+	}
+	digest := "sha256:" + strings.Repeat("a", 64)
+	stored := &model.Artifact{
+		ID: "artifact-" + application.ID, ApplicationID: application.ID, BuildRunID: build.ID,
+		PipelineRunID: build.PipelineRunID, Kind: model.ArtifactKindOCIImage, Status: model.ArtifactStatusAvailable,
+		Name: "edo.local/" + application.Name + ":previous", Digest: digest,
+		StorageKind: model.ArtifactStorageKindDockerDaemon, ImageRef: "edo.local/" + application.Name + ":previous",
+		RuntimeID: "local", LocalImageID: digest, CreatedBy: "admin", CreatedAt: now, UpdatedAt: now,
+	}
+	if err := db.Create(&build).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(stored).Error; err != nil {
+		t.Fatal(err)
+	}
+	return stored
 }
 
 func stageWorkflowGraph(buildPlanID, deploymentPlanID string, events []string, branch string) (model.WorkflowNode, []model.WorkflowStage) {

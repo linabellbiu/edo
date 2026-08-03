@@ -979,10 +979,7 @@ func (s *Service) run(ctx context.Context, deploymentID, expectedImageID string,
 			s.logger.Error("命令脚本部署失败", "operation", "command_deployment_execute", "deployment_id", deploymentID,
 				"target_id", record.TargetID, "host_id", record.HostID, "exit_code", commandExitCode, "err", err)
 		} else if record.DeploymentPlanKind == model.DeploymentPlanCompose {
-			code, message = "compose_deployment_failed", "Docker Compose 部署失败，请查看流水线日志"
-			if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
-				code, message = "compose_deployment_timeout", "Docker Compose 部署超时，请查看流水线日志"
-			}
+			code, message = dockerComposeFailureDetails(err)
 			s.logger.Error("Docker Compose 部署失败", "operation", "compose_deployment_execute", "deployment_id", deploymentID,
 				"target_id", record.TargetID, "runtime_id", record.RuntimeID, "service", record.ComposeService, "err", err)
 		} else if record.Platform == model.DeploymentDocker {
@@ -1018,6 +1015,12 @@ func (s *Service) run(ctx context.Context, deploymentID, expectedImageID string,
 
 func dockerContainerFailureDetails(err error) (string, string) {
 	switch {
+	case errors.Is(err, dockerengine.ErrContainerRollbackFailed):
+		return "docker_container_rollback_failed", "Docker 容器发布失败：新容器未就绪且旧容器恢复失败，请立即检查目标容器"
+	case errors.Is(err, dockerengine.ErrContainerStopTimeout):
+		return "docker_previous_container_stop_timeout", "Docker 容器发布失败：停止旧容器超时，未继续替换容器"
+	case errors.Is(err, dockerengine.ErrContainerStopFailed):
+		return "docker_previous_container_stop_failed", "Docker 容器发布失败：无法停止旧容器，未继续替换容器"
 	case errors.Is(err, dockerengine.ErrContainerRestarted):
 		return "docker_container_restarted", "Docker 容器启动失败：容器启动后退出并进入重启，请查看容器日志"
 	case errors.Is(err, dockerengine.ErrContainerNotRunning):
@@ -1030,6 +1033,25 @@ func dockerContainerFailureDetails(err error) (string, string) {
 		return "docker_deployment_config_invalid", "Docker 部署配置无效，请检查部署方案"
 	default:
 		return "docker_deployment_failed", "Docker 容器部署失败，请查看流水线日志和容器日志"
+	}
+}
+
+func dockerComposeFailureDetails(err error) (string, string) {
+	switch {
+	case errors.Is(err, dockerengine.ErrComposeRollbackFailed):
+		return "compose_rollback_failed", "Docker Compose 发布失败：服务未就绪且旧服务恢复失败，请立即检查目标容器"
+	case errors.Is(err, dockerengine.ErrContainerRestarted):
+		return "compose_container_restarted", "Docker Compose 服务启动失败：容器启动后退出并进入重启，请查看容器日志"
+	case errors.Is(err, dockerengine.ErrContainerNotRunning):
+		return "compose_container_not_running", "Docker Compose 服务启动失败：容器未保持运行，请查看容器日志"
+	case errors.Is(err, dockerengine.ErrContainerUnhealthy):
+		return "compose_container_unhealthy", "Docker Compose 服务启动失败：健康检查未通过，请查看容器日志"
+	case errors.Is(err, dockerengine.ErrContainerReadinessTimeout), errors.Is(err, context.DeadlineExceeded), errors.Is(err, context.Canceled):
+		return "compose_container_readiness_timeout", "Docker Compose 服务启动超时：未在规定时间内就绪，请查看容器日志"
+	case errors.Is(err, ErrInvalidTarget), errors.Is(err, dockerengine.ErrInvalidComposeYAML):
+		return "compose_deployment_config_invalid", "Docker Compose 部署配置无效，请检查部署方案"
+	default:
+		return "compose_deployment_failed", "Docker Compose 部署失败，请查看流水线日志和容器日志"
 	}
 }
 

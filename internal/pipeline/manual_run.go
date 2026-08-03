@@ -14,9 +14,11 @@ import (
 )
 
 var (
-	ErrManualCommitRequired  = errors.New("请选择要发布的 Commit")
-	ErrManualCommitNotFound  = errors.New("所选 Commit 不存在或对应分支、Tag 已经变化，请重新选择")
-	ErrManualReleaseDisabled = errors.New("应用流水线没有启用手动发布，请在代码源中勾选手动发布")
+	ErrManualCommitRequired   = errors.New("请选择要发布的 Commit")
+	ErrManualCommitNotFound   = errors.New("所选 Commit 不存在或对应分支、Tag 已经变化，请重新选择")
+	ErrManualSelectionInvalid = errors.New("请选择代码版本或已有制品，不能同时选择")
+	ErrManualArtifactInvalid  = errors.New("所选制品不可用或与当前流水线不匹配，请重新选择")
+	ErrManualReleaseDisabled  = errors.New("应用流水线没有启用手动发布，请在代码源中勾选手动发布")
 )
 
 type ManualRunSource struct {
@@ -25,9 +27,28 @@ type ManualRunSource struct {
 }
 
 type ManualRunOptions struct {
-	Branches      []repository.GitRef `json:"branches"`
-	Tags          []repository.GitRef `json:"tags"`
-	ManualSources []ManualRunSource   `json:"manual_sources"`
+	Branches       []repository.GitRef `json:"branches"`
+	Tags           []repository.GitRef `json:"tags"`
+	ManualSources  []ManualRunSource   `json:"manual_sources"`
+	Artifacts      []ManualRunArtifact `json:"artifacts"`
+	ReferenceError string              `json:"reference_error,omitempty"`
+}
+
+type ManualRunArtifact struct {
+	ID          string             `json:"id"`
+	Name        string             `json:"name"`
+	Kind        model.ArtifactKind `json:"kind"`
+	Digest      string             `json:"digest"`
+	BuildPlanID string             `json:"build_plan_id"`
+	Ref         string             `json:"ref,omitempty"`
+	CommitSHA   string             `json:"commit_sha,omitempty"`
+	CreatedAt   time.Time          `json:"created_at"`
+}
+
+type manualArtifactSelection struct {
+	artifact   model.Artifact
+	build      model.BuildRun
+	resumeNode model.WorkflowNode
 }
 
 func (s *Service) ListApplicationRefs(ctx context.Context, applicationID string) (ManualRunOptions, error) {
@@ -54,22 +75,42 @@ func (s *Service) ListWorkflowRefs(ctx context.Context, applicationID, workflowI
 }
 
 func (s *Service) listWorkflowRefs(ctx context.Context, application *model.Application, workflow *model.ReleaseWorkflow) (ManualRunOptions, error) {
-	options := ManualRunOptions{ManualSources: make([]ManualRunSource, 0)}
-	refs, err := s.repositories.TestConnection(ctx, application.RepositoryID)
-	if err != nil {
-		return ManualRunOptions{}, err
-	}
-	options.Branches, options.Tags = refs.Branches, refs.Tags
+	options := ManualRunOptions{ManualSources: make([]ManualRunSource, 0), Artifacts: make([]ManualRunArtifact, 0)}
 	if workflow != nil {
 		node := workflow.Source
 		if workflowNodeSupportsManualRelease(node) {
 			options.ManualSources = append(options.ManualSources, ManualRunSource{ID: node.ID, Name: node.Name})
 		}
 	}
+	artifacts, err := s.listManualWorkflowArtifacts(ctx, application, workflow)
+	if err != nil {
+		return ManualRunOptions{}, err
+	}
+	options.Artifacts = artifacts
+	refs, err := s.repositories.TestConnection(ctx, application.RepositoryID)
+	if err != nil {
+		if len(options.Artifacts) == 0 {
+			return ManualRunOptions{}, err
+		}
+		if s.logger != nil {
+			workflowID := ""
+			if workflow != nil {
+				workflowID = workflow.ID
+			}
+			s.logger.Error("读取手动执行代码版本失败，仍可选择已有制品", "operation", "pipeline_manual_refs", "application_id", application.ID, "workflow_id", workflowID, "err", err)
+		}
+		options.ReferenceError = "代码仓库暂时不可用，仍可选择已有制品执行"
+		return options, nil
+	}
+	options.Branches, options.Tags = refs.Branches, refs.Tags
 	return options, nil
 }
 
 func (s *Service) ExecuteRun(ctx context.Context, runID, actorID, ref, commitSHA, sourceNodeID string) (*model.PipelineRun, error) {
+	return s.ExecuteRunSelection(ctx, runID, actorID, ref, commitSHA, sourceNodeID, "")
+}
+
+func (s *Service) ExecuteRunSelection(ctx context.Context, runID, actorID, ref, commitSHA, sourceNodeID, artifactID string) (*model.PipelineRun, error) {
 	var run model.PipelineRun
 	if err := s.db.WithContext(ctx).First(&run, "id = ?", runID).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -80,9 +121,9 @@ func (s *Service) ExecuteRun(ctx context.Context, runID, actorID, ref, commitSHA
 	if run.ReleasePlanExecutionID != "" || run.ReleasePlanExecutionItemID != "" {
 		return nil, ErrPipelineRunAwaitingReleasePlan
 	}
-	ref, commitSHA = strings.TrimSpace(ref), strings.TrimSpace(commitSHA)
+	ref, commitSHA, artifactID = strings.TrimSpace(ref), strings.TrimSpace(commitSHA), strings.TrimSpace(artifactID)
 	if run.Status != model.PipelineRunBlocked {
-		if ref != "" || commitSHA != "" {
+		if ref != "" || commitSHA != "" || artifactID != "" {
 			return nil, ErrInvalidWorkflowTransition
 		}
 		return s.AdvanceRun(ctx, run.ID, actorID, "")
@@ -98,7 +139,17 @@ func (s *Service) ExecuteRun(ctx context.Context, runID, actorID, ref, commitSHA
 	if err != nil {
 		return nil, err
 	}
-	if run.CommitSHA == "" {
+	var selectedArtifact *manualArtifactSelection
+	if artifactID != "" {
+		if ref != "" || commitSHA != "" || run.CommitSHA != "" {
+			return nil, ErrManualSelectionInvalid
+		}
+		selectedArtifact, err = s.validateManualArtifactSelection(ctx, application, workflow, artifactID)
+		if err != nil {
+			return nil, err
+		}
+		ref, commitSHA = selectedArtifact.build.Ref, selectedArtifact.build.CommitSHA
+	} else if run.CommitSHA == "" {
 		ref, commitSHA, err = s.validateManualSelection(ctx, application, ref, commitSHA)
 		if err != nil {
 			return nil, err
@@ -117,13 +168,16 @@ func (s *Service) ExecuteRun(ctx context.Context, runID, actorID, ref, commitSHA
 		return nil, ErrInvalidWorkflow
 	}
 	commitMessage := run.CommitMessage
-	if commitMessage == "" {
+	if commitMessage == "" && ref != "" && commitSHA != "" {
 		links := applicationRepositoryLinks(application)
 		if len(links) > 0 {
 			commitMessage = s.resolveCommitMessage(ctx, links[0].RepositoryID, ref, commitSHA)
 		}
 	}
 	if !pipelineExecutionConfiguredForWorkflow(application, workflow) {
+		if selectedArtifact != nil {
+			return nil, ErrPipelineIncomplete
+		}
 		if run.CommitSHA != "" {
 			return nil, ErrPipelineIncomplete
 		}
@@ -155,9 +209,22 @@ func (s *Service) ExecuteRun(ctx context.Context, runID, actorID, ref, commitSHA
 	}
 	prepared.ID = run.ID
 	prepared.CommitMessage = commitMessage
+	if selectedArtifact != nil {
+		prepared.CurrentNodeID = selectedArtifact.resumeNode.ID
+		prepared.Status = model.PipelineRunReady
+		prepared.Stage = "task_succeeded"
+		prepared.ArtifactID = selectedArtifact.artifact.ID
+		prepared.Image = selectedArtifact.artifact.ImageRef
+		prepared.Message = "已选择已有制品，跳过构建和构建后的脚本检查并继续执行"
+	}
 	components, err := pipelineRunRepositories(application, run.ID, ref, commitSHA, now)
 	if err != nil {
 		return nil, err
+	}
+	if selectedArtifact != nil {
+		for i := range components {
+			components[i].Status = model.PipelineRunRepositoryReady
+		}
 	}
 	err = s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		result := tx.Model(&model.PipelineRun{}).
@@ -167,6 +234,7 @@ func (s *Service) ExecuteRun(ctx context.Context, runID, actorID, ref, commitSHA
 				"status": prepared.Status, "stage": prepared.Stage, "environment": prepared.Environment,
 				"workflow_id": prepared.WorkflowID, "workflow_revision": prepared.WorkflowRevision,
 				"current_node_id": prepared.CurrentNodeID, "workflow_snapshot": prepared.WorkflowSnapshot,
+				"artifact_id": prepared.ArtifactID, "image": prepared.Image,
 				"message": prepared.Message, "updated_at": now,
 			})
 		if result.Error != nil {
@@ -183,7 +251,195 @@ func (s *Service) ExecuteRun(ctx context.Context, runID, actorID, ref, commitSHA
 	if err != nil {
 		return nil, err
 	}
+	if selectedArtifact != nil {
+		s.appendRunLog(ctx, run.ID, "configured", "info", "已固定已有制品 "+selectedArtifact.artifact.Name+"（"+selectedArtifact.artifact.Digest+"）")
+	}
 	return s.advanceManualWorkflowEntry(ctx, run.ID, actorID, workflow)
+}
+
+func (s *Service) listManualWorkflowArtifacts(ctx context.Context, application *model.Application, workflow *model.ReleaseWorkflow) ([]ManualRunArtifact, error) {
+	return s.listWorkflowArtifacts(ctx, application, workflow, "")
+}
+
+func (s *Service) listWorkflowArtifacts(ctx context.Context, application *model.Application, workflow *model.ReleaseWorkflow, pipelineRunID string) ([]ManualRunArtifact, error) {
+	if application == nil || workflow == nil {
+		return []ManualRunArtifact{}, nil
+	}
+	var artifacts []model.Artifact
+	query := s.db.WithContext(ctx).Where("application_id = ? AND status = ?", application.ID, model.ArtifactStatusAvailable)
+	if pipelineRunID = strings.TrimSpace(pipelineRunID); pipelineRunID != "" {
+		query = query.Where("pipeline_run_id = ?", pipelineRunID)
+	}
+	if err := query.
+		Order("created_at DESC").Limit(100).Find(&artifacts).Error; err != nil {
+		if s.logger != nil {
+			s.logger.Error("查询手动执行可选制品失败", "operation", "pipeline_manual_artifacts", "application_id", application.ID, "workflow_id", workflow.ID, "err", err)
+		}
+		return nil, err
+	}
+	if len(artifacts) == 0 {
+		return []ManualRunArtifact{}, nil
+	}
+	buildIDs := make([]string, 0, len(artifacts))
+	for i := range artifacts {
+		buildIDs = append(buildIDs, artifacts[i].BuildRunID)
+	}
+	var builds []model.BuildRun
+	if err := s.db.WithContext(ctx).Where("id IN ? AND status = ?", buildIDs, model.BuildRunStatusSucceeded).Find(&builds).Error; err != nil {
+		if s.logger != nil {
+			s.logger.Error("查询手动执行制品生产记录失败", "operation", "pipeline_manual_artifact_builds", "application_id", application.ID, "workflow_id", workflow.ID, "err", err)
+		}
+		return nil, err
+	}
+	buildByID := make(map[string]model.BuildRun, len(builds))
+	planIDs := make([]string, 0, len(builds))
+	for i := range builds {
+		buildByID[builds[i].ID] = builds[i]
+		if builds[i].BuildPlanID != "" {
+			planIDs = append(planIDs, builds[i].BuildPlanID)
+		}
+	}
+	var plans []model.BuildPlan
+	if len(planIDs) > 0 {
+		if err := s.db.WithContext(ctx).Where("id IN ? AND is_active = ?", planIDs, true).Find(&plans).Error; err != nil {
+			if s.logger != nil {
+				s.logger.Error("查询手动执行制品构建方案失败", "operation", "pipeline_manual_artifact_plans", "application_id", application.ID, "workflow_id", workflow.ID, "err", err)
+			}
+			return nil, err
+		}
+	}
+	planByID := make(map[string]model.BuildPlan, len(plans))
+	for i := range plans {
+		planByID[plans[i].ID] = plans[i]
+	}
+	result := make([]ManualRunArtifact, 0, len(artifacts))
+	for i := range artifacts {
+		build, buildOK := buildByID[artifacts[i].BuildRunID]
+		plan, planOK := planByID[build.BuildPlanID]
+		if !buildOK || !planOK || build.ApplicationID != application.ID ||
+			(pipelineRunID != "" && build.PipelineRunID != pipelineRunID) {
+			continue
+		}
+		if _, _, ok := manualArtifactBuildNodes(workflow, build, plan, artifacts[i]); !ok {
+			continue
+		}
+		result = append(result, manualRunArtifactSummary(artifacts[i], build))
+	}
+	return result, nil
+}
+
+func manualRunArtifactSummary(stored model.Artifact, build model.BuildRun) ManualRunArtifact {
+	return ManualRunArtifact{
+		ID: stored.ID, Name: stored.Name, Kind: stored.Kind, Digest: stored.Digest,
+		BuildPlanID: build.BuildPlanID, Ref: build.Ref, CommitSHA: build.CommitSHA, CreatedAt: stored.CreatedAt,
+	}
+}
+
+func (s *Service) validateManualArtifactSelection(ctx context.Context, application *model.Application, workflow *model.ReleaseWorkflow, artifactID string) (*manualArtifactSelection, error) {
+	artifactID = strings.TrimSpace(artifactID)
+	if application == nil || workflow == nil || artifactID == "" {
+		return nil, ErrManualArtifactInvalid
+	}
+	var stored model.Artifact
+	if err := s.db.WithContext(ctx).First(&stored, "id = ?", artifactID).Error; err != nil {
+		if s.logger != nil {
+			s.logger.Warn("手动执行选择的制品不存在", "operation", "pipeline_manual_artifact_validate", "application_id", application.ID, "artifact_id", artifactID, "err", err)
+		}
+		return nil, ErrManualArtifactInvalid
+	}
+	var build model.BuildRun
+	if err := s.db.WithContext(ctx).First(&build, "id = ?", stored.BuildRunID).Error; err != nil {
+		if s.logger != nil {
+			s.logger.Error("手动执行选择的制品缺少生产记录", "operation", "pipeline_manual_artifact_validate", "application_id", application.ID, "artifact_id", artifactID, "build_run_id", stored.BuildRunID, "err", err)
+		}
+		return nil, ErrManualArtifactInvalid
+	}
+	var plan model.BuildPlan
+	if build.BuildPlanID == "" {
+		if s.logger != nil {
+			s.logger.Warn("手动执行选择的制品没有关联构建方案", "operation", "pipeline_manual_artifact_validate", "application_id", application.ID, "artifact_id", artifactID, "build_run_id", build.ID)
+		}
+		return nil, ErrManualArtifactInvalid
+	}
+	if err := s.db.WithContext(ctx).First(&plan, "id = ? AND is_active = ?", build.BuildPlanID, true).Error; err != nil {
+		if s.logger != nil {
+			s.logger.Warn("手动执行选择的制品构建方案不可用", "operation", "pipeline_manual_artifact_validate", "application_id", application.ID, "artifact_id", artifactID, "build_plan_id", build.BuildPlanID, "err", err)
+		}
+		return nil, ErrManualArtifactInvalid
+	}
+	_, resumeNode, ok := manualArtifactBuildNodes(workflow, build, plan, stored)
+	if !ok || stored.ApplicationID != application.ID || stored.Status != model.ArtifactStatusAvailable ||
+		build.ApplicationID != application.ID || build.Status != model.BuildRunStatusSucceeded {
+		if s.logger != nil {
+			s.logger.Warn("手动执行选择的制品与当前流水线不匹配", "operation", "pipeline_manual_artifact_validate", "application_id", application.ID, "workflow_id", workflow.ID, "artifact_id", artifactID, "build_plan_id", build.BuildPlanID, "artifact_status", stored.Status, "build_status", build.Status)
+		}
+		return nil, ErrManualArtifactInvalid
+	}
+	return &manualArtifactSelection{artifact: stored, build: build, resumeNode: resumeNode}, nil
+}
+
+func manualArtifactBuildNodes(workflow *model.ReleaseWorkflow, build model.BuildRun, plan model.BuildPlan, stored model.Artifact) (model.WorkflowNode, model.WorkflowNode, bool) {
+	if workflow == nil || plan.ID == "" || build.BuildPlanID != plan.ID {
+		return model.WorkflowNode{}, model.WorkflowNode{}, false
+	}
+	expectedKind := model.ArtifactKindFileBundle
+	if plan.Kind == model.BuildPlanDockerfile {
+		expectedKind = model.ArtifactKindOCIImage
+	} else if plan.Kind != model.BuildPlanScript {
+		return model.WorkflowNode{}, model.WorkflowNode{}, false
+	}
+	if stored.Kind != expectedKind {
+		return model.WorkflowNode{}, model.WorkflowNode{}, false
+	}
+	tasks := workflowTasks(workflow.Stages)
+	type candidate struct {
+		build  model.WorkflowNode
+		resume model.WorkflowNode
+	}
+	candidates := make([]candidate, 0, 1)
+	for index := range tasks {
+		resumeNode, feedsDeployment := workflowArtifactResumeNode(tasks, index)
+		if tasks[index].Type != model.WorkflowNodeBuild || tasks[index].Config.BuildPlanID != plan.ID || !feedsDeployment {
+			continue
+		}
+		if build.WorkflowNodeID != "" && tasks[index].ID == build.WorkflowNodeID {
+			return tasks[index], resumeNode, true
+		}
+		candidates = append(candidates, candidate{build: tasks[index], resume: resumeNode})
+	}
+	if len(candidates) != 1 {
+		return model.WorkflowNode{}, model.WorkflowNode{}, false
+	}
+	return candidates[0].build, candidates[0].resume, true
+}
+
+func workflowArtifactResumeNode(tasks []model.WorkflowNode, buildIndex int) (model.WorkflowNode, bool) {
+	if buildIndex < 0 || buildIndex >= len(tasks) || tasks[buildIndex].Type != model.WorkflowNodeBuild {
+		return model.WorkflowNode{}, false
+	}
+	resume := tasks[buildIndex]
+	for index := buildIndex + 1; index < len(tasks); index++ {
+		if tasks[index].Type == model.WorkflowNodeBuild {
+			return model.WorkflowNode{}, false
+		}
+		if tasks[index].Type == model.WorkflowNodeShell {
+			resume = tasks[index]
+			continue
+		}
+		if tasks[index].Type == model.WorkflowNodeDeploy {
+			return resume, true
+		}
+		for later := index + 1; later < len(tasks); later++ {
+			if tasks[later].Type == model.WorkflowNodeBuild {
+				return model.WorkflowNode{}, false
+			}
+			if tasks[later].Type == model.WorkflowNodeDeploy {
+				return resume, true
+			}
+		}
+		return model.WorkflowNode{}, false
+	}
+	return model.WorkflowNode{}, false
 }
 
 // advanceManualWorkflowEntry 从启用手动启动的唯一代码源进入第一个任务。
@@ -347,24 +603,6 @@ func retryWorkflowSource(workflow *model.ReleaseWorkflow, run *model.PipelineRun
 	if node.Type != model.WorkflowNodeTrigger {
 		return nil
 	}
-	if strings.HasPrefix(run.Ref, "refs/tags/") {
-		if containsEvent(node.Config.Events, "tag") && matchTag(node.Config.TagPattern, strings.TrimPrefix(run.Ref, "refs/tags/")) {
-			return node
-		}
-		return nil
-	}
-	if strings.HasPrefix(run.Ref, "refs/pull/") || strings.HasPrefix(run.Ref, "refs/merge-requests/") {
-		matched := matchingWorkflowTriggers(
-			workflow, "pr", run.Ref, run.SourceBranch, run.TargetBranch, run.TriggerAction,
-		)
-		if len(matched) == 1 {
-			return &workflow.Source
-		}
-		return nil
-	}
-	branch := strings.TrimPrefix(run.Ref, "refs/heads/")
-	if matchWorkflowPattern(node.Config.Branch, branch) {
-		return node
-	}
-	return manualWorkflowSource(workflow, run.Ref, "")
+	// 重试使用原运行已经固定的 Ref 和 Commit，不再按当前远程分支、Tag、PR 状态或触发规则重新匹配版本。
+	return node
 }

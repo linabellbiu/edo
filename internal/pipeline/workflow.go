@@ -34,6 +34,7 @@ var (
 	ErrWorkflowSelfApproval           = errors.New("执行申请人不能审核自己的流水线运行")
 	ErrPipelineRunNotFound            = errors.New("流水线运行不存在")
 	ErrPipelineRunNotRetryable        = errors.New("只有失败的流水线运行可以重新执行")
+	ErrRetryArtifactInvalid           = errors.New("所选制品不是此次失败运行已经构建的可用制品，请重新选择")
 	ErrPipelineRunAwaitingReleasePlan = errors.New("流水线运行由发布计划统一调度")
 )
 
@@ -745,6 +746,11 @@ func validateWorkflowArtifactFlow(
 					Code: "artifact_kind_mismatch", Message: fmt.Sprintf("部署任务“%s”需要文件制品，请选择脚本构建方案", next.Name), NodeID: next.ID,
 				})
 			}
+			if target.Platform == model.DeploymentSSH && artifactPlan.Kind == model.BuildPlanScript && strings.TrimSpace(artifactPlan.ArtifactPath) == "" {
+				issues = append(issues, WorkflowIssue{
+					Code: "artifact_not_saved", Message: fmt.Sprintf("部署任务“%s”需要文件制品，请在上游 Shell 构建方案中开启保存产物", next.Name), NodeID: next.ID,
+				})
+			}
 			if (target.Platform == model.DeploymentDocker || target.Platform == model.DeploymentKubernetes) && artifactPlan.Kind != model.BuildPlanDockerfile {
 				issues = append(issues, WorkflowIssue{
 					Code: "artifact_kind_mismatch", Message: fmt.Sprintf("部署任务“%s”需要镜像制品，请选择 Dockerfile 构建方案", next.Name), NodeID: next.ID,
@@ -1288,8 +1294,56 @@ func parseWorkflowSnapshot(run *model.PipelineRun) (*workflowSnapshot, error) {
 	return &snapshot, nil
 }
 
+type RetryRunOptions struct {
+	Ref           string              `json:"ref"`
+	CommitSHA     string              `json:"commit_sha"`
+	CommitMessage string              `json:"commit_message,omitempty"`
+	Artifacts     []ManualRunArtifact `json:"artifacts"`
+}
+
+// ListRetryRunOptions 只返回原失败运行已经固定的代码版本，以及该次运行实际构建成功的可用制品。
+func (s *Service) ListRetryRunOptions(ctx context.Context, runID string) (RetryRunOptions, error) {
+	var failed model.PipelineRun
+	if err := s.db.WithContext(ctx).First(&failed, "id = ?", strings.TrimSpace(runID)).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return RetryRunOptions{}, ErrPipelineRunNotFound
+		}
+		if s.logger != nil {
+			s.logger.Error("读取流水线重试选项失败", "operation", "pipeline_retry_options_run", "pipeline_run_id", runID, "err", err)
+		}
+		return RetryRunOptions{}, err
+	}
+	if failed.Status != model.PipelineRunFailed {
+		return RetryRunOptions{}, ErrPipelineRunNotRetryable
+	}
+	if failed.Ref == "" || failed.CommitSHA == "" {
+		return RetryRunOptions{}, ErrManualCommitRequired
+	}
+	application, err := s.FindApplication(ctx, failed.ApplicationID)
+	if err != nil {
+		return RetryRunOptions{}, err
+	}
+	workflow, err := s.FindApplicationWorkflow(ctx, application.ID, failed.WorkflowID)
+	if err != nil {
+		return RetryRunOptions{}, err
+	}
+	artifacts, err := s.listWorkflowArtifacts(ctx, application, workflow, failed.ID)
+	if err != nil {
+		return RetryRunOptions{}, err
+	}
+	return RetryRunOptions{
+		Ref: failed.Ref, CommitSHA: failed.CommitSHA, CommitMessage: failed.CommitMessage, Artifacts: artifacts,
+	}, nil
+}
+
 // RetryRun 保留失败记录，并使用相同代码版本和应用当前有效配置创建一条新的可审计运行。
 func (s *Service) RetryRun(ctx context.Context, runID, actorID string) (*model.PipelineRun, error) {
+	return s.RetryRunSelection(ctx, runID, actorID, "")
+}
+
+// RetryRunSelection 不接受新的分支或 Commit。选择制品时只允许使用原失败运行已经构建的制品，
+// 并从该构建之后继续；不选择制品时仍以原运行固定的代码版本重新构建。
+func (s *Service) RetryRunSelection(ctx context.Context, runID, actorID, artifactID string) (*model.PipelineRun, error) {
 	var failed model.PipelineRun
 	if err := s.db.WithContext(ctx).First(&failed, "id = ?", runID).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -1324,6 +1378,19 @@ func (s *Service) RetryRun(ctx context.Context, runID, actorID string) (*model.P
 	if source == nil {
 		return nil, ErrInvalidWorkflow
 	}
+	artifactID = strings.TrimSpace(artifactID)
+	var selectedArtifact *manualArtifactSelection
+	if artifactID != "" {
+		selectedArtifact, err = s.validateManualArtifactSelection(ctx, application, workflow, artifactID)
+		if err != nil || selectedArtifact == nil || selectedArtifact.artifact.PipelineRunID != failed.ID || selectedArtifact.build.PipelineRunID != failed.ID ||
+			selectedArtifact.build.Ref != failed.Ref || selectedArtifact.build.CommitSHA != failed.CommitSHA {
+			if s.logger != nil {
+				s.logger.Warn("流水线重试选择的制品不属于原失败运行", "operation", "pipeline_retry_artifact_validate",
+					"pipeline_run_id", failed.ID, "artifact_id", artifactID, "err", err)
+			}
+			return nil, ErrRetryArtifactInvalid
+		}
+	}
 	now := time.Now().UTC()
 	run, err := s.newResolvedWorkflowRun(
 		ctx,
@@ -1338,6 +1405,14 @@ func (s *Service) RetryRun(ctx context.Context, runID, actorID string) (*model.P
 	run.TriggerAction = failed.TriggerAction
 	run.SourceBranch = failed.SourceBranch
 	run.TargetBranch = failed.TargetBranch
+	if selectedArtifact != nil {
+		run.CurrentNodeID = selectedArtifact.resumeNode.ID
+		run.Status = model.PipelineRunReady
+		run.Stage = "task_succeeded"
+		run.ArtifactID = selectedArtifact.artifact.ID
+		run.Image = selectedArtifact.artifact.ImageRef
+		run.Message = "重试已固定原运行构建的制品，跳过构建和构建后的脚本检查"
+	}
 	components, err := pipelineRunRepositories(application, run.ID, run.Ref, run.CommitSHA, now)
 	if err != nil {
 		return nil, err
@@ -1351,6 +1426,9 @@ func (s *Service) RetryRun(ctx context.Context, runID, actorID string) (*model.P
 		return nil, fmt.Errorf("创建重新执行的流水线运行失败: %w", err)
 	}
 	run.Repositories = components
+	if selectedArtifact != nil {
+		s.appendRunLog(ctx, run.ID, "configured", "info", "重试已固定原运行制品 "+selectedArtifact.artifact.Name+"（"+selectedArtifact.artifact.Digest+"）")
+	}
 	return s.AdvanceRun(ctx, run.ID, actorID, "")
 }
 

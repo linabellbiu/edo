@@ -7,7 +7,7 @@ import {
   CheckCircle2,
   CircleDashed,
   GitBranch,
-  Layers3,
+  ListChecks,
   LoaderCircle,
   RefreshCw,
   ShieldAlert,
@@ -30,6 +30,15 @@ interface ReferenceOption {
   sha: string
 }
 
+interface ArtifactOption {
+  id: string
+  name: string
+  kind: 'oci_image' | 'file_bundle'
+  digest: string
+  ref?: string
+  commit_sha?: string
+}
+
 interface ReleasePlanExecutionItem {
   membershipID: string
   applicationID: string
@@ -42,8 +51,12 @@ interface ReleasePlanExecutionItem {
   staticBlocked?: boolean
   sources: ReleasePath[]
   refs: ReferenceOption[]
+  artifacts: ArtifactOption[]
+  executionMode: 'code' | 'artifact'
   selectedSourceID: string
   selectedRef: string
+  selectedArtifactID: string
+  referenceError?: string
 }
 
 interface ReleasePlanExecutionGroup {
@@ -75,6 +88,8 @@ const emit = defineEmits<{
   'update-workflow': [membershipID: string, value: string]
   'update-source': [membershipID: string, value: string]
   'update-ref': [membershipID: string, value: string]
+  'update-mode': [membershipID: string, value: 'code' | 'artifact']
+  'update-artifact': [membershipID: string, value: string]
 }>()
 
 const { t } = useI18n()
@@ -119,7 +134,11 @@ const validationMeta = computed(() => {
 })
 
 function isItemComplete(item: ReleasePlanExecutionItem) {
-  return item.loadState === 'ready' && Boolean(item.workflowID) && Boolean(item.selectedSourceID) && Boolean(item.selectedRef)
+	return item.loadState === 'ready' && Boolean(item.workflowID) && Boolean(item.selectedSourceID) && isExecutionContentSelected(item)
+}
+
+function isExecutionContentSelected(item: ReleasePlanExecutionItem) {
+	return item.executionMode === 'artifact' ? Boolean(item.selectedArtifactID) : Boolean(item.selectedRef)
 }
 
 function itemStatus(item: ReleasePlanExecutionItem): ItemStatus {
@@ -127,22 +146,8 @@ function itemStatus(item: ReleasePlanExecutionItem): ItemStatus {
   if (item.loadState === 'error') return { key: 'error', label: t('releasePlanExecution.status.error'), icon: AlertTriangle }
   if (item.loadState === 'blocked') return { key: 'blocked', label: t('releasePlanExecution.status.blocked'), icon: ShieldAlert }
   if (item.loadState === 'idle') return { key: 'idle', label: t('releasePlanExecution.status.idle'), icon: CircleDashed }
-  if (!item.workflowID || !item.selectedSourceID || !item.selectedRef) return { key: 'pending', label: t('releasePlanExecution.status.pending'), icon: CircleDashed }
+  if (!isItemComplete(item)) return { key: 'pending', label: t('releasePlanExecution.status.pending'), icon: CircleDashed }
   return { key: 'complete', label: t('releasePlanExecution.status.ready'), icon: CheckCircle2 }
-}
-
-function groupMode(mode: string) {
-  return t(mode === 'sequential' ? 'releasePlanExecution.group.sequential' : 'releasePlanExecution.group.parallel')
-}
-
-function failurePolicy(policy: string) {
-  return t(policy === 'continue' ? 'releasePlanExecution.group.continueOnFailure' : 'releasePlanExecution.group.stopOnFailure')
-}
-
-function dependencyLabel(dependencies: string[]) {
-  return dependencies.length
-    ? t('releasePlanExecution.group.dependencies', { names: dependencies.join(' · ') })
-    : ''
 }
 
 function references(item: ReleasePlanExecutionItem, kind: ReferenceKind) {
@@ -151,6 +156,14 @@ function references(item: ReleasePlanExecutionItem, kind: ReferenceKind) {
 
 function referenceLabel(reference: ReferenceOption) {
   return formatGitReference(reference)
+}
+
+function artifactLabel(artifact: ArtifactOption) {
+  const kind = artifact.kind === 'oci_image' ? t('releasePlanExecution.artifact.image') : t('releasePlanExecution.artifact.file')
+  const source = artifact.ref && artifact.commit_sha
+    ? formatGitReference({ ref: artifact.ref, sha: artifact.commit_sha })
+    : t('releasePlanExecution.artifact.upload')
+  return `${kind}: ${artifact.name} · ${source} · ${artifact.digest.slice(0, 19)}…`
 }
 
 function sourceLabel(source: ReleasePath) {
@@ -167,6 +180,14 @@ function updateWorkflow(membershipID: string, value: unknown) {
 
 function updateRef(membershipID: string, value: unknown) {
   emit('update-ref', membershipID, typeof value === 'string' ? value : '')
+}
+
+function updateMode(membershipID: string, value: unknown) {
+  if (value === 'code' || value === 'artifact') emit('update-mode', membershipID, value)
+}
+
+function updateArtifact(membershipID: string, value: unknown) {
+  emit('update-artifact', membershipID, typeof value === 'string' ? value : '')
 }
 </script>
 
@@ -189,7 +210,7 @@ function updateRef(membershipID: string, value: unknown) {
   >
     <div class="execution-shell" :aria-busy="submitting">
       <section class="execution-overview">
-        <span class="overview-mark"><Layers3 :size="22" /></span>
+        <span class="overview-mark"><ListChecks :size="22" /></span>
         <div>
           <small>{{ t('releasePlanExecution.eyebrow') }}</small>
           <strong :title="planTitle">{{ planTitle || t('releasePlanExecution.untitled') }}</strong>
@@ -225,24 +246,11 @@ function updateRef(membershipID: string, value: unknown) {
       </section>
 
       <div v-if="groups.length" class="execution-groups">
-        <article v-for="(group, groupIndex) in groups" :key="group.id" class="execution-group">
-          <header class="group-heading">
-            <span class="group-step">{{ groupIndex + 1 }}</span>
-            <div class="group-copy">
-              <strong>{{ group.name }}</strong>
-              <small v-if="dependencyLabel(group.dependencies)">{{ dependencyLabel(group.dependencies) }}</small>
-            </div>
-            <div class="group-rules">
-              <span>{{ groupMode(group.mode) }}</span>
-              <span>{{ failurePolicy(group.failurePolicy) }}</span>
-              <span>{{ t('releasePlanExecution.group.itemCount', { count: group.items.length }) }}</span>
-            </div>
-          </header>
-
+        <article v-for="group in groups" :key="group.id" class="execution-group">
           <div v-if="group.items.length" class="execution-items">
             <section
               v-for="item in group.items"
-              :key="`${group.id}:${item.membershipID}`"
+              :key="item.membershipID"
               class="execution-item"
               :class="`state-${itemStatus(item).key}`"
             >
@@ -297,44 +305,43 @@ function updateRef(membershipID: string, value: unknown) {
                   </small>
                 </div>
 
-                <div class="item-field" :class="{ incomplete: item.loadState === 'ready' && !item.selectedRef }">
-                  <label :for="`execution-ref-${item.membershipID}`">{{ t('releasePlanExecution.field.reference') }}</label>
-                  <a-select
-                    :id="`execution-ref-${item.membershipID}`"
-                    :value="item.selectedRef || undefined"
-                    :disabled="item.loadState !== 'ready' || submitting"
-                    allow-clear
-                    show-search
-                    option-filter-prop="label"
-                    :placeholder="t('releasePlanExecution.field.referencePlaceholder')"
-                    :not-found-content="t('releasePlanExecution.field.noReferences')"
-                    @update:value="updateRef(item.membershipID, $event)"
-                  >
-                    <a-select-opt-group v-if="references(item, 'branch').length" :label="t('releasePlanExecution.reference.branches')">
-                      <a-select-option
-                        v-for="reference in references(item, 'branch')"
-                        :key="reference.ref"
-                        :value="reference.ref"
-                        :label="referenceLabel(reference)"
-                      >
-                        <span class="reference-option"><GitBranch :size="13" />{{ referenceLabel(reference) }}</span>
-                      </a-select-option>
-                    </a-select-opt-group>
-                    <a-select-opt-group v-if="references(item, 'tag').length" :label="t('releasePlanExecution.reference.tags')">
-                      <a-select-option
-                        v-for="reference in references(item, 'tag')"
-                        :key="reference.ref"
-                        :value="reference.ref"
-                        :label="referenceLabel(reference)"
-                      >
-                        {{ referenceLabel(reference) }}
-                      </a-select-option>
-                    </a-select-opt-group>
-                  </a-select>
-                  <small v-if="item.loadState === 'ready' && !item.selectedRef" class="field-message">
-                    {{ t('releasePlanExecution.validation.referenceRequired') }}
-                  </small>
-                </div>
+				<div class="item-field execution-content" :class="{ incomplete: item.loadState === 'ready' && !isExecutionContentSelected(item) }">
+				  <label>{{ t('releasePlanExecution.field.content') }}</label>
+				  <a-radio-group :value="item.executionMode" size="small" button-style="solid" :disabled="item.loadState !== 'ready' || submitting" @update:value="updateMode(item.membershipID, $event)">
+				    <a-radio-button value="code" :disabled="!item.refs.length">{{ t('releasePlanExecution.field.code') }}</a-radio-button>
+				    <a-radio-button value="artifact" :disabled="!item.artifacts.length">{{ t('releasePlanExecution.field.artifact') }}</a-radio-button>
+				  </a-radio-group>
+				  <a-select
+				    v-if="item.executionMode === 'code'"
+				    :id="`execution-ref-${item.membershipID}`"
+				    :value="item.selectedRef || undefined"
+				    :disabled="item.loadState !== 'ready' || submitting"
+				    allow-clear show-search option-filter-prop="label"
+				    :placeholder="t('releasePlanExecution.field.referencePlaceholder')"
+				    :not-found-content="t('releasePlanExecution.field.noReferences')"
+				    @update:value="updateRef(item.membershipID, $event)"
+				  >
+				    <a-select-opt-group v-if="references(item, 'branch').length" :label="t('releasePlanExecution.reference.branches')">
+				      <a-select-option v-for="reference in references(item, 'branch')" :key="reference.ref" :value="reference.ref" :label="referenceLabel(reference)"><span class="reference-option"><GitBranch :size="13" />{{ referenceLabel(reference) }}</span></a-select-option>
+				    </a-select-opt-group>
+				    <a-select-opt-group v-if="references(item, 'tag').length" :label="t('releasePlanExecution.reference.tags')">
+				      <a-select-option v-for="reference in references(item, 'tag')" :key="reference.ref" :value="reference.ref" :label="referenceLabel(reference)">{{ referenceLabel(reference) }}</a-select-option>
+				    </a-select-opt-group>
+				  </a-select>
+				  <a-select
+				    v-else
+				    :id="`execution-artifact-${item.membershipID}`"
+				    :value="item.selectedArtifactID || undefined"
+				    :disabled="item.loadState !== 'ready' || submitting"
+				    allow-clear show-search option-filter-prop="label"
+				    :placeholder="t('releasePlanExecution.field.artifactPlaceholder')"
+				    :not-found-content="t('releasePlanExecution.field.noArtifacts')"
+				    :options="item.artifacts.map(artifact => ({ value: artifact.id, label: artifactLabel(artifact) }))"
+				    @update:value="updateArtifact(item.membershipID, $event)"
+				  />
+				  <small v-if="item.loadState === 'ready' && !isExecutionContentSelected(item)" class="field-message">{{ item.executionMode === 'artifact' ? t('releasePlanExecution.validation.artifactRequired') : t('releasePlanExecution.validation.referenceRequired') }}</small>
+				  <small v-if="item.executionMode === 'artifact' && item.referenceError" class="field-message">{{ item.referenceError }}</small>
+				</div>
 
                 <div class="item-state">
                   <span :class="itemStatus(item).key">
@@ -362,7 +369,7 @@ function updateRef(membershipID: string, value: unknown) {
 
           <div v-else class="group-empty">
             <Boxes :size="18" />
-            <span>{{ t('releasePlanExecution.group.empty') }}</span>
+            <span>{{ t('releasePlanExecution.empty.description') }}</span>
           </div>
         </article>
       </div>
@@ -384,6 +391,7 @@ function updateRef(membershipID: string, value: unknown) {
 .execution-groups{display:grid;gap:11px}.execution-group{overflow:hidden;border:1px solid var(--edo-border);border-radius:12px;background:var(--edo-surface)}.group-heading{display:grid;min-height:58px;align-items:center;grid-template-columns:30px minmax(0,1fr) auto;gap:10px;padding:10px 12px;border-bottom:1px solid var(--edo-border);background:var(--edo-surface-soft)}.group-step{display:grid;width:28px;height:28px;place-items:center;border-radius:9px;color:var(--edo-primary);background:var(--edo-primary-soft);font-size:11px;font-weight:700}.group-copy{min-width:0}.group-copy strong,.group-copy small{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.group-copy strong{font-size:13px}.group-copy small{margin-top:2px;color:var(--edo-muted);font-size:10px}.group-rules{display:flex;flex-wrap:wrap;justify-content:flex-end;gap:5px}.group-rules span{padding:3px 7px;border-radius:999px;color:var(--edo-muted);background:var(--edo-surface);font-size:10px;white-space:nowrap}
 .execution-items{display:grid;gap:7px;padding:8px}.execution-item{--item-state:var(--edo-primary);overflow:hidden;border:1px solid var(--edo-border);border-radius:10px;background:var(--edo-surface);transition:border-color 160ms ease,background-color 160ms ease}.execution-item.state-complete{--item-state:#24a86c}.execution-item.state-pending,.execution-item.state-loading{--item-state:#d28b20}.execution-item.state-error,.execution-item.state-blocked{--item-state:#df5260}.execution-item:hover{border-color:color-mix(in srgb,var(--item-state) 34%,var(--edo-border));background:color-mix(in srgb,var(--item-state) 2%,var(--edo-surface))}.item-grid{display:grid;align-items:start;grid-template-columns:minmax(170px,.82fr) minmax(170px,.9fr) minmax(145px,.85fr) minmax(210px,1.08fr) auto;gap:10px;padding:11px}.item-identity{display:flex;min-width:0;align-items:center;gap:9px;padding-top:18px}.application-mark{display:grid;width:34px;height:34px;flex:0 0 34px;place-items:center;border-radius:9px;color:var(--item-state);background:color-mix(in srgb,var(--item-state) 9%,var(--edo-surface-soft))}.item-identity>div{min-width:0}.item-identity strong,.item-identity small{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.item-identity strong{font-size:12px}.item-identity small{margin-top:3px;color:var(--edo-muted);font-size:10px}
 .item-field{min-width:0}.item-field label{display:block;margin-bottom:5px;color:var(--edo-muted);font-size:10px;font-weight:600}.item-field :deep(.ant-select){width:100%}.item-field.incomplete :deep(.ant-select-selector){border-color:color-mix(in srgb,#d28b20 58%,var(--edo-border))!important}.field-message{display:block;margin-top:4px;color:#b87715;font-size:9px}.reference-option{display:flex;align-items:center;gap:6px}.reference-option svg{flex:0 0 auto;color:var(--edo-muted)}
+.execution-content :deep(.ant-radio-group){display:flex;margin-bottom:5px}.execution-content :deep(.ant-radio-button-wrapper){flex:1;padding-inline:7px;text-align:center}
 .item-state{display:flex;min-width:96px;align-items:flex-end;flex-direction:column;gap:3px;padding-top:18px}.item-state>span{display:flex;align-items:center;gap:5px;padding:4px 7px;border-radius:999px;color:var(--item-state);background:color-mix(in srgb,var(--item-state) 9%,var(--edo-surface-soft));font-size:10px;font-weight:600;white-space:nowrap}.item-state>span.loading svg{animation:execution-spin 1.2s linear infinite}.item-state :deep(.ant-btn){display:inline-flex;align-items:center;gap:4px;padding-inline:5px;color:var(--edo-primary);font-size:10px}.item-reason{display:flex;align-items:flex-start;gap:6px;padding:7px 11px;border-top:1px solid color-mix(in srgb,#df5260 20%,var(--edo-border));color:#c94552;background:color-mix(in srgb,#df5260 5%,var(--edo-surface));font-size:10px;line-height:1.45}.item-reason svg{flex:0 0 auto;margin-top:1px}
 .group-empty,.execution-empty{display:flex;align-items:center;justify-content:center;gap:7px;color:var(--edo-muted);font-size:11px}.group-empty{min-height:76px}.execution-empty{min-height:210px;flex-direction:column;padding:28px;text-align:center}.execution-empty svg{color:var(--edo-primary)}.execution-empty strong{color:var(--edo-text);font-size:14px}.execution-empty span{max-width:420px;font-size:11px}
 @keyframes execution-spin{to{transform:rotate(360deg)}}

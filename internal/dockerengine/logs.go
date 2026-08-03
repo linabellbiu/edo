@@ -48,7 +48,7 @@ func (s *Service) ContainerLogs(
 		options.Tail < 1 || options.Tail > 5000 {
 		return nil, ErrInvalidContainerLogs
 	}
-	apiClient, err := s.Client(ctx, endpointID)
+	apiClient, err := s.executionClient(ctx, endpointID)
 	if err != nil {
 		return nil, err
 	}
