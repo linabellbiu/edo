@@ -116,6 +116,14 @@ func TestExecuteManualRunCanSelectPreviousArtifact(t *testing.T) {
 		run.CurrentNodeID != "approval" || run.Status != model.PipelineRunAwaitingApproval || run.ExecutionJobID != "" {
 		t.Fatalf("历史制品没有跳过构建与脚本检查并进入审核: %+v", run)
 	}
+	found, err := service.FindRun(context.Background(), run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if found.SelectedArtifact == nil || found.SelectedArtifact.ID != stored.ID ||
+		found.SelectedArtifact.Name != stored.Name || found.SelectedArtifact.Digest != stored.Digest {
+		t.Fatalf("流水线运行没有明确返回本次选择的已有制品: %+v", found.SelectedArtifact)
+	}
 	var jobs int64
 	if err := db.Model(&model.Job{}).Where("payload LIKE ?", "%"+run.ID+"%").Count(&jobs).Error; err != nil || jobs != 0 {
 		t.Fatalf("选择历史制品后仍创建了构建任务: count=%d err=%v", jobs, err)

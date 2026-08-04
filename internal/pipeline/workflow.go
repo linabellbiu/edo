@@ -1504,7 +1504,11 @@ func (s *Service) RetryRunSelection(ctx context.Context, runID, actorID, artifac
 	if selectedArtifact != nil {
 		s.appendRunLog(ctx, run.ID, "configured", "info", "重试已固定原运行制品 "+selectedArtifact.artifact.Name+"（"+selectedArtifact.artifact.Digest+"）")
 	}
-	return s.AdvanceRun(ctx, run.ID, actorID, "")
+	advanced, err := s.AdvanceRun(ctx, run.ID, actorID, "")
+	if err != nil {
+		return nil, err
+	}
+	return s.FindRun(ctx, advanced.ID)
 }
 
 func (s *Service) AdvanceRun(ctx context.Context, runID, actorID, targetNodeID string) (*model.PipelineRun, error) {

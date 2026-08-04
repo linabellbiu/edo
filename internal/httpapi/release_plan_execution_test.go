@@ -279,7 +279,8 @@ func TestManualAndReleasePlanHTTPCanSelectPreviousArtifact(t *testing.T) {
 	}
 	if located.Code != http.StatusOK || json.Unmarshal(located.Body.Bytes(), &locatedPayload) != nil ||
 		locatedPayload.PipelineRun.ID != releaseRun.ID || locatedPayload.PipelineRun.ReleasePlanID != plan.ID ||
-		locatedPayload.PipelineRun.ApplicationID != application.ID {
+		locatedPayload.PipelineRun.ApplicationID != application.ID || locatedPayload.PipelineRun.SelectedArtifact == nil ||
+		locatedPayload.PipelineRun.SelectedArtifact.ID != artifact.ID || locatedPayload.PipelineRun.SelectedArtifact.Name != artifact.Name {
 		t.Fatalf("无法通过发布计划执行项定位准确流水线运行: status=%d body=%s", located.Code, located.Body.String())
 	}
 }

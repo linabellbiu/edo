@@ -1042,6 +1042,9 @@ func (s *Service) enrichPipelineRuns(ctx context.Context, runs []model.PipelineR
 	if err := s.attachRunReleasePlanIDs(ctx, runs); err != nil {
 		return err
 	}
+	if err := s.attachRunSelectedArtifacts(ctx, runs); err != nil {
+		return err
+	}
 	for i := range runs {
 		if runs[i].WorkflowSnapshot == "" {
 			continue
@@ -1075,6 +1078,43 @@ func (s *Service) enrichPipelineRuns(ctx context.Context, runs []model.PipelineR
 				graph.Stages = append(graph.Stages, graphStage)
 			}
 			runs[i].ExecutionGraph = graph
+		}
+	}
+	return nil
+}
+
+func (s *Service) attachRunSelectedArtifacts(ctx context.Context, runs []model.PipelineRun) error {
+	artifactIDs := make([]string, 0, len(runs))
+	seen := make(map[string]struct{}, len(runs))
+	for i := range runs {
+		artifactID := strings.TrimSpace(runs[i].ArtifactID)
+		if artifactID == "" {
+			continue
+		}
+		if _, exists := seen[artifactID]; exists {
+			continue
+		}
+		seen[artifactID] = struct{}{}
+		artifactIDs = append(artifactIDs, artifactID)
+	}
+	if len(artifactIDs) == 0 {
+		return nil
+	}
+	var artifacts []model.Artifact
+	if err := s.db.WithContext(ctx).Where("id IN ?", artifactIDs).Find(&artifacts).Error; err != nil {
+		return fmt.Errorf("读取流水线选择制品失败: %w", err)
+	}
+	artifactByID := make(map[string]model.Artifact, len(artifacts))
+	for i := range artifacts {
+		artifactByID[artifacts[i].ID] = artifacts[i]
+	}
+	for i := range runs {
+		artifact, exists := artifactByID[runs[i].ArtifactID]
+		if !exists || artifact.PipelineRunID == runs[i].ID {
+			continue
+		}
+		runs[i].SelectedArtifact = &model.PipelineRunSelectedArtifact{
+			ID: artifact.ID, Name: artifact.Name, Kind: artifact.Kind, Digest: artifact.Digest,
 		}
 	}
 	return nil

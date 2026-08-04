@@ -451,7 +451,11 @@ func (s *Service) advanceManualWorkflowEntry(
 	if workflow == nil || workflowTaskCount(workflow.Stages) == 0 {
 		return nil, ErrInvalidWorkflowTransition
 	}
-	return s.AdvanceRun(ctx, runID, actorID, "")
+	advanced, err := s.AdvanceRun(ctx, runID, actorID, "")
+	if err != nil {
+		return nil, err
+	}
+	return s.FindRun(ctx, advanced.ID)
 }
 
 // saveBlockedManualSelection 将版本选择与执行解耦；应用配置未完成时只保存代码版本，不投递任何构建或发布任务。

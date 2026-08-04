@@ -34,7 +34,7 @@ interface Artifact extends ResourceRecord{id:string;application_id:string;build_
 interface ApplicationWorkflow extends PipelineWorkflow{workflow_template?:{id:string;name:string}}
 interface WorkflowTemplate extends PipelineWorkflow{description?:string}
 interface Application extends ResourceRecord{id:string;name:string;description:string;repository_id:string;poll_interval_seconds:number;last_observed_commit?:string;sync_status:string;sync_message?:string;last_checked_at?:string;is_active:boolean;repository?:Repository;workflows:ApplicationWorkflow[]}
-interface Run extends ResourceRecord{id:string;application_id:string;workflow_id?:string;deployment_id?:string;release_plan_id?:string;release_plan_execution_id?:string;release_plan_execution_item_id?:string;retry_of_id?:string;artifact_id?:string;trigger:string;ref:string;commit_sha:string;commit_message?:string;status:string;stage:string;message?:string;created_at:string;updated_at?:string;application?:Application;environment?:string;current_node_id?:string;current_node_name?:string;created_by?:string;image?:string;execution_graph?:PipelineExecutionGraph}
+interface Run extends ResourceRecord{id:string;application_id:string;workflow_id?:string;deployment_id?:string;release_plan_id?:string;release_plan_execution_id?:string;release_plan_execution_item_id?:string;retry_of_id?:string;artifact_id?:string;selected_artifact?:{id:string;name:string;kind:'oci_image'|'file_bundle';digest:string};trigger:string;ref:string;commit_sha:string;commit_message?:string;status:string;stage:string;message?:string;created_at:string;updated_at?:string;application?:Application;environment?:string;current_node_id?:string;current_node_name?:string;created_by?:string;image?:string;execution_graph?:PipelineExecutionGraph}
 interface DeploymentTarget extends ResourceRecord{id:string;platform:string;environment_id:string;host_id:string;runtime_id:string;namespace?:string;workload_name?:string;container_name?:string}
 interface DeploymentPlan extends ResourceRecord{id:string;kind?:string;service_name?:string;deployment_target_id:string;deployment_target?:DeploymentTarget}
 interface DeploymentRecord extends ResourceRecord{id:string;pipeline_run_id?:string;application_id?:string;target_id:string;target_name:string;platform:string;environment_id:string;host_id:string;runtime_id:string;namespace:string;workload_name:string;container_name:string;deployment_plan_id?:string;deployment_plan_kind?:string;compose_service?:string;operation:string;image:string;image_display?:string;status:string;error_message?:string;runtime_deleted_at?:string;created_at:string;updated_at:string;finished_at?:string}
@@ -1159,7 +1159,11 @@ function executeReleasePlan(){
 }
 function showWebhook(item:Repository){void client.get<{webhook_url:string;webhook_secret:string}>(`/repositories/${item.id}/webhook`).then(result=>Modal.info({title:`${item.name} Webhook`,width:650,content:()=>`${result.data.webhook_url}\n${result.data.webhook_secret}`})).catch(error=>message.error(apiErrorMessage(error)))}
 function applicationName(run:Run){return applications.value.find(item=>item.id===run.application_id)?.name||run.application?.name||'未命名应用'}
-function runReferenceLabel(run?:Run){return run?formatGitReference({ref:run.ref,sha:run.commit_sha,trigger:run.trigger}):'—'}
+function runReferenceLabel(run?:Run){
+ if(!run)return '—'
+ const source=formatGitReference({ref:run.ref,sha:run.commit_sha,trigger:run.trigger})
+ return run.selected_artifact?`已有制品：${run.selected_artifact.name}${source&&source!=='—'?`；原始版本：${source}`:''}`:source
+}
 function artifactSelectOption(artifact:ManualArtifact){
  const reference=artifact.ref?.trim()||''
  const source=reference.startsWith('refs/heads/')?`来源：分支 ${reference.slice('refs/heads/'.length)}`:
