@@ -45,11 +45,11 @@ const (
 	ReleasePlanExecutionFailed    ReleasePlanExecutionStatus = "failed"
 )
 
-// ReleasePlanExecution 固化一次发布计划的编排结构。发布计划只允许执行一次，
-// RequestID 用于识别客户端重试，Snapshot 保证后续调和不受计划编辑影响。
+// ReleasePlanExecution 固化发布计划的一次整体或单应用执行。
+// RequestID 在同一发布计划内识别客户端重试，Snapshot 保证后续调和不受计划编辑影响。
 type ReleasePlanExecution struct {
 	ID            string                     `gorm:"type:varchar(36);primaryKey" json:"id"`
-	ReleasePlanID string                     `gorm:"type:varchar(36);not null;uniqueIndex:idx_release_plan_execution_plan;uniqueIndex:idx_release_plan_execution_request,priority:1" json:"release_plan_id"`
+	ReleasePlanID string                     `gorm:"type:varchar(36);not null;index;uniqueIndex:idx_release_plan_execution_request,priority:1" json:"release_plan_id"`
 	RequestID     string                     `gorm:"type:varchar(128);not null;uniqueIndex:idx_release_plan_execution_request,priority:2" json:"request_id"`
 	Status        ReleasePlanExecutionStatus `gorm:"type:varchar(16);not null;default:'pending';index" json:"status"`
 	Snapshot      string                     `gorm:"type:text;not null" json:"-"`

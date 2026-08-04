@@ -740,7 +740,7 @@ func (s *Service) executionTaskObsolete(ctx context.Context, runID, jobID, nodeI
 		return true, nil
 	}
 	switch run.Status {
-	case model.PipelineRunSucceeded, model.PipelineRunFailed, model.PipelineRunCanceled:
+	case model.PipelineRunSucceeded, model.PipelineRunFailed, model.PipelineRunSkipped, model.PipelineRunCanceled:
 		return true, nil
 	default:
 		return false, nil

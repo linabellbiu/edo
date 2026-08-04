@@ -26,6 +26,7 @@ const nodeMeta = computed<Record<WorkflowNodeType, { label: string; color: strin
 const currentState = computed(() => {
   if (props.status === 'succeeded') return { key: 'succeeded', label: t('pipelineRunGraph.state.succeeded'), icon: Check }
   if (props.status === 'failed') return { key: 'failed', label: t('pipelineRunGraph.state.failed'), icon: X }
+  if (props.status === 'skipped') return { key: 'canceled', label: t('pipelineRunGraph.state.skipped'), icon: Check }
   if (props.status === 'canceled') return { key: 'canceled', label: t('pipelineRunGraph.state.canceled'), icon: X }
   if (props.status === 'blocked') return { key: 'waiting', label: t('pipelineRunGraph.state.blocked'), icon: Clock3 }
   if (props.status === 'awaiting_approval') return { key: 'waiting', label: t('pipelineRunGraph.state.awaitingApproval'), icon: Clock3 }

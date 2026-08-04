@@ -31,14 +31,17 @@ var (
 const targetTestTTL = 10 * time.Minute
 
 type TransferTarget struct {
-	Driver string `json:"driver"`
-	DSN    string `json:"-"`
+	Driver       string `json:"driver"`
+	DSN          string `json:"-"`
+	databaseName string
+	serverDSN    string
 }
 
 type TargetTestResult struct {
 	Token     string    `json:"test_token"`
 	Driver    string    `json:"driver"`
 	ExpiresAt time.Time `json:"expires_at"`
+	Created   bool      `json:"database_created"`
 }
 
 type TransferStatus struct {
@@ -98,6 +101,17 @@ func (s *TransferService) TestTarget(ctx context.Context, input TransferTarget) 
 		return TargetTestResult{}, err
 	}
 	db, err := Open(ctx, target, s.logger)
+	created := false
+	if err != nil && input.databaseName != "" && input.serverDSN != "" {
+		var createErr error
+		created, createErr = s.createTransferDatabaseIfMissing(ctx, input)
+		if createErr != nil {
+			return TargetTestResult{}, fmt.Errorf("创建目标数据库失败: %w", createErr)
+		}
+		if created {
+			db, err = Open(ctx, target, s.logger)
+		}
+	}
 	if err != nil {
 		return TargetTestResult{}, fmt.Errorf("连接目标数据库失败: %w", err)
 	}
@@ -111,7 +125,7 @@ func (s *TransferService) TestTarget(ctx context.Context, input TransferTarget) 
 	}
 
 	now := time.Now().UTC()
-	result := TargetTestResult{Token: uuid.NewString(), Driver: target.Driver, ExpiresAt: now.Add(targetTestTTL)}
+	result := TargetTestResult{Token: uuid.NewString(), Driver: target.Driver, ExpiresAt: now.Add(targetTestTTL), Created: created}
 	s.mu.Lock()
 	for token, tested := range s.tests {
 		if tested.expiresAt.Before(now) {
@@ -123,13 +137,55 @@ func (s *TransferService) TestTarget(ctx context.Context, input TransferTarget) 
 	return result, nil
 }
 
-func (s *TransferService) Start(input TransferTarget, testToken, confirmation string) (TransferStatus, error) {
+func (s *TransferService) createTransferDatabaseIfMissing(ctx context.Context, target TransferTarget) (bool, error) {
+	identifier, err := quoteTransferDatabaseIdentifier(target.Driver, target.databaseName)
+	if err != nil {
+		return false, err
+	}
+	admin, err := Open(ctx, config.Database{
+		Driver: target.Driver, DSN: target.serverDSN, MaxOpenConns: 1, MaxIdleConns: 1, ConnMaxLifetime: time.Minute,
+	}, s.logger)
+	if err != nil {
+		return false, fmt.Errorf("连接数据库服务器失败: %w", err)
+	}
+	defer func() {
+		if closeErr := Close(admin); closeErr != nil {
+			s.logger.Error("创建目标库后关闭服务器连接失败", "operation", "database_transfer_create_close", "driver", target.Driver, "database", target.databaseName, "err", closeErr)
+		}
+	}()
+
+	var count int64
+	switch target.Driver {
+	case "mysql":
+		if err := admin.WithContext(ctx).Raw("SELECT COUNT(*) FROM INFORMATION_SCHEMA.SCHEMATA WHERE SCHEMA_NAME = ?", target.databaseName).Scan(&count).Error; err != nil {
+			return false, fmt.Errorf("检查 MySQL 数据库是否存在失败: %w", err)
+		}
+		if count > 0 {
+			return false, nil
+		}
+		err = admin.WithContext(ctx).Exec("CREATE DATABASE " + identifier + " CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci").Error
+	case "postgres":
+		if err := admin.WithContext(ctx).Raw("SELECT COUNT(*) FROM pg_database WHERE datname = ?", target.databaseName).Scan(&count).Error; err != nil {
+			return false, fmt.Errorf("检查 PostgreSQL 数据库是否存在失败: %w", err)
+		}
+		if count > 0 {
+			return false, nil
+		}
+		err = admin.WithContext(ctx).Exec("CREATE DATABASE " + identifier + " ENCODING 'UTF8' TEMPLATE template0").Error
+	default:
+		return false, ErrInvalidTarget
+	}
+	if err != nil {
+		return false, fmt.Errorf("执行创建数据库失败: %w", err)
+	}
+	s.logger.Info("已创建数据库迁移目标库", "operation", "database_transfer_create", "driver", target.Driver, "database", target.databaseName)
+	return true, nil
+}
+
+func (s *TransferService) Start(input TransferTarget, testToken string) (TransferStatus, error) {
 	target, err := s.normalizeTarget(input)
 	if err != nil {
 		return TransferStatus{}, err
-	}
-	if confirmation != "MIGRATE" {
-		return TransferStatus{}, ErrInvalidTarget
 	}
 	now := time.Now().UTC()
 	digest := targetDigest(input)

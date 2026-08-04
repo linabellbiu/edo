@@ -340,6 +340,34 @@ var migrations = []migration{
 		version: "202608030064",
 		up:      migrateDepartmentScopedUniqueIndexes,
 	},
+	{
+		version: "202608040065",
+		up:      migrateRepeatableReleasePlanExecutions,
+	},
+}
+
+// migrateRepeatableReleasePlanExecutions 取消“一个发布计划只能执行一次”的旧约束，
+// 保留计划内 request_id 幂等，并把旧的 completed 生命周期状态恢复为可再次执行的 active 状态；
+// is_active 仍独立决定计划当前是否可用。
+func migrateRepeatableReleasePlanExecutions(tx *gorm.DB) error {
+	if tx.Migrator().HasIndex(&model.ReleasePlanExecution{}, "idx_release_plan_execution_plan") {
+		if err := tx.Migrator().DropIndex(&model.ReleasePlanExecution{}, "idx_release_plan_execution_plan"); err != nil {
+			return err
+		}
+	}
+	if !tx.Migrator().HasIndex(&model.ReleasePlanExecution{}, "idx_release_plan_execution_request") {
+		if err := tx.Migrator().CreateIndex(&model.ReleasePlanExecution{}, "idx_release_plan_execution_request"); err != nil {
+			return err
+		}
+	}
+	if !tx.Migrator().HasIndex(&model.ReleasePlanExecution{}, "ReleasePlanID") {
+		if err := tx.Migrator().CreateIndex(&model.ReleasePlanExecution{}, "ReleasePlanID"); err != nil {
+			return err
+		}
+	}
+	return tx.Model(&model.ReleasePlan{}).
+		Where("status = ?", model.ReleasePlanCompleted).
+		Update("status", model.ReleasePlanActive).Error
 }
 
 type departmentScopedUniqueIndex struct {

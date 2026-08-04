@@ -53,10 +53,27 @@ type runtimeDirectoryResponse struct {
 }
 
 type databaseMigrationRequest struct {
-	Driver       string `json:"driver" binding:"required,oneof=mysql postgres"`
-	DSN          string `json:"dsn" binding:"required,max=4096"`
-	TestToken    string `json:"test_token"`
-	Confirmation string `json:"confirmation"`
+	Driver    string `json:"driver" binding:"required,oneof=mysql postgres"`
+	Host      string `json:"host" binding:"max=255"`
+	Port      int    `json:"port" binding:"min=0,max=65535"`
+	Username  string `json:"username" binding:"max=256"`
+	Password  string `json:"password" binding:"max=1024"`
+	Database  string `json:"database" binding:"max=256"`
+	DSN       string `json:"dsn" binding:"max=4096"`
+	TestToken string `json:"test_token"`
+}
+
+func (r databaseMigrationRequest) transferTarget() (database.TransferTarget, error) {
+	if r.DSN != "" {
+		if r.Host != "" || r.Port != 0 || r.Username != "" || r.Password != "" || r.Database != "" {
+			return database.TransferTarget{}, database.ErrInvalidTarget
+		}
+		return database.TransferTarget{Driver: r.Driver, DSN: r.DSN}, nil
+	}
+	return database.BuildTransferTarget(database.TransferConnection{
+		Driver: r.Driver, Host: r.Host, Port: r.Port, Username: r.Username,
+		Password: r.Password, Database: r.Database,
+	})
 }
 
 func (h settingsHandler) databaseMigrationStatus(c *gin.Context) {
@@ -75,7 +92,13 @@ func (h settingsHandler) testDatabaseMigration(c *gin.Context) {
 		writeError(c, http.StatusBadRequest, "invalid_database_target", database.ErrInvalidTarget.Error())
 		return
 	}
-	result, err := h.migration.TestTarget(c.Request.Context(), database.TransferTarget{Driver: request.Driver, DSN: request.DSN})
+	target, err := request.transferTarget()
+	if err != nil {
+		h.logger.Warn("目标数据库连接参数无效", "operation", "database_transfer_test_target", "request_id", requestIDFrom(c), "driver", request.Driver, "err", err)
+		writeError(c, http.StatusBadRequest, "invalid_database_target", database.ErrInvalidTarget.Error())
+		return
+	}
+	result, err := h.migration.TestTarget(c.Request.Context(), target)
 	if err != nil {
 		h.logger.Warn("测试目标数据库失败", "operation", "database_transfer_test", "request_id", requestIDFrom(c), "driver", request.Driver, "err", err)
 		switch {
@@ -100,11 +123,13 @@ func (h settingsHandler) startDatabaseMigration(c *gin.Context) {
 		writeError(c, http.StatusBadRequest, "invalid_database_target", database.ErrInvalidTarget.Error())
 		return
 	}
-	status, err := h.migration.Start(
-		database.TransferTarget{Driver: request.Driver, DSN: request.DSN},
-		request.TestToken,
-		request.Confirmation,
-	)
+	target, err := request.transferTarget()
+	if err != nil {
+		h.logger.Warn("目标数据库连接参数无效", "operation", "database_transfer_start_target", "request_id", requestIDFrom(c), "driver", request.Driver, "err", err)
+		writeError(c, http.StatusBadRequest, "invalid_database_target", database.ErrInvalidTarget.Error())
+		return
+	}
+	status, err := h.migration.Start(target, request.TestToken)
 	if err != nil {
 		h.logger.Warn("启动数据库迁移失败", "operation", "database_transfer_start", "request_id", requestIDFrom(c), "driver", request.Driver, "err", err)
 		switch {

@@ -125,6 +125,46 @@ EDO_HTTP_PORT=8080
 EDO_WEB_PORT=5173
 ```
 
+### 数据库初始化
+
+EDO 默认使用 SQLite。首次执行 `mage migrate` 或包含后端的 `mage start` 时，会自动创建数据库文件和全部表结构：
+
+```dotenv
+EDO_DATABASE_DRIVER=sqlite
+EDO_DATABASE_DSN=data/edo.db
+```
+
+新安装直接使用 PostgreSQL 时，需要先在 PostgreSQL 服务器中创建一个空数据库。默认建议数据库名为 `edo`、用户名为 `postgres`、端口为 `5432`。连接服务器并执行：
+
+```sql
+CREATE DATABASE edo;
+```
+
+然后修改项目根目录的 `.env`：
+
+```dotenv
+EDO_DATABASE_DRIVER=postgres
+EDO_DATABASE_DSN=postgresql://postgres:your-password@db.example.com:5432/edo?sslmode=disable&TimeZone=Asia/Shanghai
+```
+
+PostgreSQL 18 仍使用 `postgres` 驱动标识。EDO 数据库连接会话统一使用 `Asia/Shanghai` 时区；PostgreSQL 驱动要求时区参数写成未编码的 `TimeZone=Asia/Shanghai`。请替换示例中的密码和数据库地址；密码中的 `@`、`/`、`?`、`#`、`%` 等字符需要进行 URL 百分号编码。`sslmode=disable` 只适用于可信内网或本地开发，生产环境应按 PostgreSQL 服务端证书配置使用 `require` 或 `verify-full`。
+
+初始化表结构并启动 EDO：
+
+```bash
+mage migrate
+mage start
+```
+
+使用 `mage start --docker` 时，后端运行在容器内，需要设置 Compose 专用连接变量，并使用容器能够访问的数据库地址，不能填写容器自身的 `127.0.0.1`：
+
+```dotenv
+EDO_COMPOSE_DATABASE_DRIVER=postgres
+EDO_COMPOSE_DATABASE_DSN=postgresql://postgres:your-password@db.example.com:5432/edo?sslmode=disable&TimeZone=Asia/Shanghai
+```
+
+已有 EDO SQLite 数据时，不要直接切换环境变量。先以 SQLite 启动 EDO，在“系统设置 → 数据库迁移”中填写 PostgreSQL 连接并执行迁移；目标数据库不存在且账号具有创建数据库权限时，EDO 会自动创建。迁移成功后停止当前服务，再修改 `EDO_DATABASE_DRIVER` 和 `EDO_DATABASE_DSN`，执行一次 `mage migrate` 后重新启动。完整流程见 [数据库迁移](docs/database-migration.md)。
+
 注意：
 
 - 已导出的同名进程环境变量优先于 `.env`。

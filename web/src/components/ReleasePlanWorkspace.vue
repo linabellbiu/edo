@@ -6,6 +6,7 @@ import {
   Boxes,
   CalendarDays,
   ChevronRight,
+  Clock3,
   GitBranch,
   GitCommit,
   ListChecks,
@@ -19,6 +20,7 @@ import {
   Trash2,
   UsersRound,
 } from 'lucide-vue-next'
+import { formatDateTime, formatRelativeTime } from '@/utils/time'
 
 type PlanTone = 'neutral' | 'info' | 'success' | 'danger'
 
@@ -98,11 +100,15 @@ const props = defineProps<{
   canReadDeployments?: boolean
   activePlanID?: string
   runnableCounts?: Record<string, number>
+  runnableApplicationIds?: string[]
+  executingPlanIds?: string[]
+  relativeNow?: number
   mutatingPlanID?: string
 }>()
 const emit = defineEmits<{
   create: []
   execute: [planID: string]
+  executeApplication: [planID: string, membershipID: string]
   edit: [planID: string]
   addApplication: [planID: string, groupID: string]
   toggle: [planID: string, enabled: boolean]
@@ -137,12 +143,13 @@ function planTitle(plan: ReleasePlanItem) {
 function planStatus(status: string): { tone: PlanTone; label: string; hint: string; live: boolean } {
   const states: Record<string, { tone: PlanTone; label: string; hint: string; live: boolean }> = {
     draft: { tone: 'neutral', label: t('releasePlan.status.draft'), hint: t('releasePlan.statusHint.draft'), live: false },
-    active: { tone: 'info', label: t('releasePlan.status.active'), hint: t('releasePlan.statusHint.active'), live: true },
+    active: { tone: 'info', label: t('releasePlan.status.active'), hint: t('releasePlan.statusHint.active'), live: false },
     completed: { tone: 'success', label: t('releasePlan.status.completed'), hint: t('releasePlan.statusHint.completed'), live: false },
     pending: { tone: 'info', label: t('releasePlan.status.pending'), hint: t('releasePlan.statusHint.executing'), live: true },
     running: { tone: 'info', label: t('releasePlan.status.running'), hint: t('releasePlan.statusHint.executing'), live: true },
     succeeded: { tone: 'success', label: t('releasePlan.status.succeeded'), hint: t('releasePlan.statusHint.execution'), live: false },
     failed: { tone: 'danger', label: t('releasePlan.status.failed'), hint: t('releasePlan.statusHint.execution'), live: false },
+    skipped: { tone: 'neutral', label: t('releasePlan.status.skipped'), hint: t('releasePlan.statusHint.execution'), live: false },
     disabled: { tone: 'neutral', label: t('releasePlan.status.disabled'), hint: t('releasePlan.statusHint.disabled'), live: false },
     canceled: { tone: 'neutral', label: t('releasePlan.status.canceled'), hint: t('releasePlan.statusHint.canceled'), live: false },
   }
@@ -151,6 +158,7 @@ function planStatus(status: string): { tone: PlanTone; label: string; hint: stri
 
 function visiblePlanStatus(plan: ReleasePlanItem) {
   if (plan.is_active === false) return 'disabled'
+  if (props.executingPlanIds?.includes(plan.id)) return 'running'
   const latestRunStatus = latestPlanRun(plan)?.status
   if (latestRunStatus === 'detected' || latestRunStatus === 'ready' || latestRunStatus === 'awaiting_approval') return 'running'
   if (latestRunStatus === 'blocked') return 'failed'
@@ -159,12 +167,17 @@ function visiblePlanStatus(plan: ReleasePlanItem) {
 }
 
 function planMutationBlocked(plan: ReleasePlanItem) {
-  return plan.latest_execution?.status === 'pending' || plan.latest_execution?.status === 'running'
+  return Boolean(props.executingPlanIds?.includes(plan.id)) || plan.latest_execution?.status === 'pending' || plan.latest_execution?.status === 'running'
 }
 
 function canExecutePlan(plan: ReleasePlanItem) {
   const applications = planApplications(plan)
-  return plan.is_active !== false && !plan.latest_execution && !['completed', 'canceled'].includes(plan.status) && applications.length > 0 && manualApplicationCount(plan) === applications.length
+  return plan.is_active !== false && !planMutationBlocked(plan) && plan.status !== 'canceled' && applications.length > 0 && manualApplicationCount(plan) === applications.length
+}
+
+function canExecuteApplication(plan: ReleasePlanItem, item: ReleaseGroupApplication) {
+  const runnable = props.runnableApplicationIds?.includes(item.application_id) ?? Boolean(item.manual_deploy)
+  return plan.is_active !== false && !planMutationBlocked(plan) && plan.status !== 'canceled' && applicationEnabled(item) && runnable
 }
 
 function planApplications(plan: ReleasePlanItem) {
@@ -232,8 +245,11 @@ function executionItemStatus(status?: string) {
 }
 
 function formatTime(value?: string) {
-  if (!value) return t('releasePlan.noTime')
-  return new Date(value).toLocaleString(locale.value === 'en-US' ? 'en-US' : 'zh-CN', { hour12: false })
+  return formatDateTime(value, locale.value === 'en-US' ? 'en-US' : 'zh-CN', t('releasePlan.noTime'))
+}
+
+function relativeTime(value?: string) {
+  return formatRelativeTime(value, props.relativeNow || Date.now(), locale.value === 'en-US' ? 'en-US' : 'zh-CN', t('releasePlan.noTime'))
 }
 
 function groupMode(mode: string) {
@@ -369,9 +385,20 @@ function sourceMeta(item: ReleaseGroupApplication) {
                   <span v-if="executionItem(selectedPlan, item)" class="plan-app-execution" :class="`tone-${executionItemStatus(executionItem(selectedPlan, item)?.status).tone}`">
                     <Route />{{ executionItemStatus(executionItem(selectedPlan, item)?.status).label }}
                   </span>
+                  <time v-if="latestApplicationRun(item)" class="plan-app-time" :datetime="latestApplicationRun(item)!.created_at" :title="formatTime(latestApplicationRun(item)!.created_at)">
+                    <Clock3 /><span>{{ formatTime(latestApplicationRun(item)!.created_at) }}</span><em>{{ relativeTime(latestApplicationRun(item)!.created_at) }}</em>
+                  </time>
                 </div>
                 <div class="plan-app-actions">
                   <em :class="{ disabled: !applicationEnabled(item) }">{{ applicationEnabled(item) ? t('releasePlan.enabled') : t('releasePlan.disabled') }}</em>
+                  <a-button
+                    v-if="canExecute && canExecuteApplication(selectedPlan, item)"
+                    type="text"
+                    size="small"
+                    @click="emit('executeApplication', selectedPlan.id, item.id)"
+                  >
+                    <Play :size="13" />{{ t('releasePlan.executeApplication') }}
+                  </a-button>
                   <a-button
                     v-if="executionItem(selectedPlan, item)?.pipeline_run_id"
                     type="text"
@@ -431,7 +458,7 @@ function sourceMeta(item: ReleaseGroupApplication) {
 .plan-summary{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:9px;margin:16px 0}.plan-summary>div{min-width:0;padding:12px 13px;border:1px solid var(--edo-border);border-radius:11px;background:var(--edo-surface-soft)}.plan-summary dt{display:flex;align-items:center;gap:6px;color:var(--edo-muted);font-size:11px}.plan-summary dt svg{width:14px;color:var(--edo-primary)}.plan-summary dd{margin:4px 0 0;font-size:21px;font-weight:650;line-height:1.2}.plan-summary dd.summary-rule{font-size:16px}.plan-summary small{display:block;margin-top:3px;color:var(--edo-muted);font-size:10px}
 .plan-groups{overflow:hidden;border:1px solid var(--edo-border);border-radius:12px}.plan-groups>header{display:flex;align-items:center;justify-content:space-between;padding:13px 15px;background:var(--edo-surface-soft)}.plan-groups>header small,.plan-groups>header h3{display:block;margin:0}.plan-groups>header small{color:var(--edo-muted);font-size:10px}.plan-groups>header h3{margin-top:1px;font-size:14px}.plan-group-heading-actions{display:flex;align-items:center;gap:7px}.plan-group-heading-actions>span{padding:4px 8px;border-radius:999px;color:var(--edo-muted);background:var(--edo-surface);font-size:10px}.plan-group-heading-actions :deep(.ant-btn),.plan-group-actions :deep(.ant-btn){display:inline-flex;align-items:center;gap:4px}
 .plan-group-list{padding:0 15px 4px}.plan-group-row{padding:15px 0}
-.plan-application-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(380px,100%),1fr));gap:7px;margin-top:11px}.plan-application{display:grid;min-width:0;align-items:center;grid-template-columns:34px minmax(0,1fr) auto;gap:9px;padding:9px 10px;border:1px solid var(--edo-border);border-radius:10px;background:var(--edo-surface-soft)}.plan-app-mark{display:grid;width:34px;height:34px;place-items:center;border-radius:9px;color:var(--edo-primary);background:var(--edo-surface)}.plan-app-mark svg{width:16px}.plan-app-copy{min-width:0}.plan-app-copy strong,.plan-app-copy span{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.plan-app-copy strong{font-size:12px}.plan-app-copy span{display:flex;align-items:center;gap:4px;margin-top:3px;color:var(--edo-muted);font-size:10px}.plan-app-copy span svg{width:12px;flex:0 0 12px}.plan-app-copy .plan-app-execution.tone-info{color:#3768d8}.plan-app-copy .plan-app-execution.tone-success{color:#168b57}.plan-app-copy .plan-app-execution.tone-danger{color:#d94150}.plan-app-actions{display:flex;align-items:center;justify-content:flex-end;gap:3px}.plan-app-actions em{padding:3px 6px;border-radius:999px;color:#168b57;background:color-mix(in srgb,#2ab573 10%,var(--edo-surface));font-size:9px;font-style:normal;white-space:nowrap}.plan-app-actions em.disabled{color:var(--edo-muted);background:var(--edo-surface)}.plan-app-actions :deep(.ant-btn){display:inline-flex;align-items:center;gap:4px;padding-inline:5px}
+.plan-application-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(380px,100%),1fr));gap:7px;margin-top:11px}.plan-application{display:grid;min-width:0;align-items:center;grid-template-columns:34px minmax(0,1fr) auto;gap:9px;padding:9px 10px;border:1px solid var(--edo-border);border-radius:10px;background:var(--edo-surface-soft)}.plan-app-mark{display:grid;width:34px;height:34px;place-items:center;border-radius:9px;color:var(--edo-primary);background:var(--edo-surface)}.plan-app-mark svg{width:16px}.plan-app-copy{min-width:0}.plan-app-copy strong,.plan-app-copy>span{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.plan-app-copy strong{font-size:12px}.plan-app-copy>span{display:flex;align-items:center;gap:4px;margin-top:3px;color:var(--edo-muted);font-size:10px}.plan-app-copy>span svg{width:12px;flex:0 0 12px}.plan-app-copy .plan-app-execution.tone-info{color:#3768d8}.plan-app-copy .plan-app-execution.tone-success{color:#168b57}.plan-app-copy .plan-app-execution.tone-danger{color:#d94150}.plan-app-time{display:flex;min-width:0;align-items:center;gap:4px;margin-top:3px;color:var(--edo-muted);font-size:9px}.plan-app-time svg{width:11px;flex:0 0 11px}.plan-app-time span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.plan-app-time em{flex:0 0 auto;color:color-mix(in srgb,var(--edo-primary) 72%,var(--edo-muted));font-style:normal;white-space:nowrap}.plan-app-actions{display:flex;align-items:center;justify-content:flex-end;gap:3px}.plan-app-actions em{padding:3px 6px;border-radius:999px;color:#168b57;background:color-mix(in srgb,#2ab573 10%,var(--edo-surface));font-size:9px;font-style:normal;white-space:nowrap}.plan-app-actions em.disabled{color:var(--edo-muted);background:var(--edo-surface)}.plan-app-actions :deep(.ant-btn){display:inline-flex;align-items:center;gap:4px;padding-inline:5px}
 .plan-empty{display:grid;min-height:460px;place-items:center;align-content:center;padding:32px;text-align:center}.plan-empty>span{display:grid;width:58px;height:58px;place-items:center;border-radius:18px;color:var(--edo-primary);background:var(--edo-primary-soft)}.plan-empty>span svg{width:25px}.plan-empty h3{margin:15px 0 0;font-size:16px}.plan-empty p{max-width:420px;margin:6px 0 16px;color:var(--edo-muted);font-size:12px}
 @keyframes plan-pulse{0%{box-shadow:0 0 0 0 color-mix(in srgb,currentColor 30%,transparent)}70%{box-shadow:0 0 0 7px transparent}100%{box-shadow:0 0 0 0 transparent}}
 @media(max-width:980px){.plan-workspace{grid-template-columns:250px minmax(0,1fr)}.plan-application-grid{grid-template-columns:1fr}}

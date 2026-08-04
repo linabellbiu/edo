@@ -236,6 +236,68 @@ func TestDepartmentScopedUniqueIndexMigration(t *testing.T) {
 	}
 }
 
+func TestRepeatableReleasePlanExecutionMigration(t *testing.T) {
+	db, err := Open(context.Background(), config.Database{
+		Driver: "sqlite", DSN: "file:repeatable_release_plan_upgrade?mode=memory&cache=shared",
+		MaxOpenConns: 1, MaxIdleConns: 1, ConnMaxLifetime: time.Minute,
+	}, slog.Default())
+	if err != nil {
+		t.Fatalf("打开 SQLite 失败: %v", err)
+	}
+	defer Close(db)
+	if err := Migrate(context.Background(), db); err != nil {
+		t.Fatalf("初始化迁移失败: %v", err)
+	}
+	if err := db.Exec("DELETE FROM schema_migrations WHERE version = ?", "202608040065").Error; err != nil {
+		t.Fatalf("重置发布计划重复执行迁移失败: %v", err)
+	}
+
+	now := time.Now().UTC()
+	plan := model.ReleasePlan{
+		ID: "repeatable-plan", Name: "发布计划-repeat", Version: "plan-repeatable", Description: "重复执行迁移测试",
+		Status: model.ReleasePlanCompleted, IsActive: true, CreatedBy: "admin", UpdatedBy: "admin", CreatedAt: now, UpdatedAt: now,
+	}
+	if err := db.Create(&plan).Error; err != nil {
+		t.Fatalf("写入旧发布计划失败: %v", err)
+	}
+	first := model.ReleasePlanExecution{
+		ID: "repeatable-execution-first", ReleasePlanID: plan.ID, RequestID: "request-first",
+		Status: model.ReleasePlanExecutionSucceeded, Snapshot: "{}", CreatedBy: "admin", CreatedAt: now, UpdatedAt: now,
+	}
+	if err := db.Create(&first).Error; err != nil {
+		t.Fatalf("写入旧发布计划执行失败: %v", err)
+	}
+	if err := db.Exec("CREATE UNIQUE INDEX idx_release_plan_execution_plan ON release_plan_executions (release_plan_id)").Error; err != nil {
+		t.Fatalf("构造发布计划单次执行旧索引失败: %v", err)
+	}
+
+	if err := Migrate(context.Background(), db); err != nil {
+		t.Fatalf("升级发布计划重复执行结构失败: %v", err)
+	}
+	if db.Migrator().HasIndex(&model.ReleasePlanExecution{}, "idx_release_plan_execution_plan") {
+		t.Fatal("发布计划仍保留单次执行唯一索引")
+	}
+	if !db.Migrator().HasIndex(&model.ReleasePlanExecution{}, "idx_release_plan_execution_request") ||
+		!db.Migrator().HasIndex(&model.ReleasePlanExecution{}, "ReleasePlanID") {
+		t.Fatal("发布计划执行幂等索引或查询索引缺失")
+	}
+	if err := db.First(&plan, "id = ?", plan.ID).Error; err != nil || plan.Status != model.ReleasePlanActive {
+		t.Fatalf("旧的已完成计划没有恢复为可执行状态: status=%s err=%v", plan.Status, err)
+	}
+	second := model.ReleasePlanExecution{
+		ID: "repeatable-execution-second", ReleasePlanID: plan.ID, RequestID: "request-second",
+		Status: model.ReleasePlanExecutionPending, Snapshot: "{}", CreatedBy: "admin", CreatedAt: now, UpdatedAt: now,
+	}
+	if err := db.Create(&second).Error; err != nil {
+		t.Fatalf("同一发布计划不能保存第二次执行: %v", err)
+	}
+	duplicate := second
+	duplicate.ID = "repeatable-execution-duplicate"
+	if err := db.Create(&duplicate).Error; !errors.Is(err, gorm.ErrDuplicatedKey) {
+		t.Fatalf("同一请求号没有保持幂等唯一约束: %v", err)
+	}
+}
+
 func TestLinkedWorkflowNameMigrationUsesTemplateName(t *testing.T) {
 	db, err := Open(context.Background(), config.Database{
 		Driver: "sqlite", DSN: "file:linked_workflow_name_upgrade?mode=memory&cache=shared",
@@ -1181,6 +1243,11 @@ func TestExternalDatabaseMigration(t *testing.T) {
 			if !db.Migrator().HasTable(&model.DeploymentInstanceControl{}) ||
 				!db.Migrator().HasColumn(&model.DeploymentRecord{}, "application_id") {
 				t.Fatalf("%s 部署实例运行控制配置或发布记录应用关联字段未创建", test.name)
+			}
+			if db.Migrator().HasIndex(&model.ReleasePlanExecution{}, "idx_release_plan_execution_plan") ||
+				!db.Migrator().HasIndex(&model.ReleasePlanExecution{}, "idx_release_plan_execution_request") ||
+				!db.Migrator().HasIndex(&model.ReleasePlanExecution{}, "ReleasePlanID") {
+				t.Fatalf("%s 发布计划重复执行索引未正确迁移", test.name)
 			}
 			if !db.Migrator().HasColumn(&model.DeploymentPlan{}, "deleted_at") ||
 				!db.Migrator().HasIndex(&model.DeploymentPlan{}, "DeletedAt") {

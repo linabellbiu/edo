@@ -20,6 +20,7 @@ import TerminalDrawer from '@/components/TerminalDrawer.vue'
 import { useAuthStore } from '@/stores/auth'
 import type { PipelineExecutionGraph, Workflow as PipelineWorkflow } from '@/types/pipeline'
 import { formatGitReference } from '@/utils/gitReference'
+import { formatDateTime, formatRelativeTime } from '@/utils/time'
 
 type Section='applications'|'repositories'|'build-plans'|'image-registries'|'release-plans'
 const props=defineProps<{section:Section}>(),route=useRoute(),router=useRouter(),auth=useAuthStore()
@@ -43,6 +44,7 @@ interface ShellControlConfiguration{deployment_id:string;restart_script:string;s
 type StatusTone='neutral'|'info'|'success'|'warning'|'danger'
 interface StatusMeta{tone:StatusTone;label:string;live:boolean}
 interface ReleasePlanExecutionRecordItem{id:string;release_group_application_id:string;application_id:string;pipeline_run_id:string;status:string}
+interface ReleasePlanExecutionRecord{id:string;release_plan_id:string;status:string;created_at:string;finished_at?:string;items?:ReleasePlanExecutionRecordItem[]}
  interface ReleasePlan extends ResourceRecord{id:string;name:string;version:string;description:string;status:string;is_active?:boolean;created_at:string;updated_at?:string;latest_execution?:{id:string;status:string;created_at:string;finished_at?:string;items?:ReleasePlanExecutionRecordItem[]};groups?:Array<{id:string;name:string;mode:string;failure_policy:string;sort_order?:number;dependencies?:Array<{depends_on_group_id:string}>;applications:Array<{id:string;application_id:string;application?:Application;manual_deploy?:boolean;source_type?:string;source_value?:string;sort_order?:number}>}>}
 type ReleasePlanGroup=NonNullable<ReleasePlan['groups']>[number]
 type ReleasePlanGroupApplication=ReleasePlanGroup['applications'][number]
@@ -68,11 +70,13 @@ const dockerRuntimeRequests=new Map<string,Promise<void>>()
 const containerLogs=ref({open:false,title:'',path:''}),terminal=ref({open:false,title:'',path:''})
 const releasePlanResources=reactive({open:false,loading:false,planID:'',applicationID:'',pipelineRunID:'',title:'',error:'',records:[] as DeploymentRecord[]})
 const buildImageDestination=ref<'local'|'registry'>('local'),buildSaveArtifact=ref(false),buildArgsText=ref(''),buildEnvironmentText=ref(''),selectedBuildPlanID=ref(''),buildPlanView=ref<'overview'|'artifacts'>(route.query.view==='artifacts'?'artifacts':'overview'),artifactApplicationID=ref(''),artifactLoading=ref(false),artifactUploading=ref(false),artifactDownloadingID=ref('')
-const planExecutionOpen=ref(false),planExecutionPlanID=ref(''),planExecutionTitle=ref(''),planExecutionExpectedUpdatedAt=ref(''),planExecutionRequestID=ref(''),planExecutionGroups=ref<PlanExecutionGroup[]>([]),planExecutionSubmitting=ref(false)
+const planExecutionOpen=ref(false),planExecutionPlanID=ref(''),planExecutionTitle=ref(''),planExecutionExpectedUpdatedAt=ref(''),planExecutionRequestID=ref(''),planExecutionGroups=ref<PlanExecutionGroup[]>([])
+const executingReleasePlanIDs=ref<string[]>([])
 const retryOpen=ref(false),retryLoading=ref(false),retrySubmitting=ref(false),retryRunID=ref(''),retryOptions=ref<RetryRunOptions|null>(null),retryMode=ref<'rebuild'|'artifact'>('rebuild'),retryArtifactID=ref('')
 const releasePlanEditorOpen=ref(false),releasePlanEditorPlan=ref<ReleasePlan|null>(null),releasePlanMutationID=ref('')
 const releasePlanAddApplicationOpen=ref(false),releasePlanAddApplicationPlanID=ref(''),releasePlanAddApplicationGroupID=ref(''),releasePlanAddApplicationIDs=ref<string[]>([])
 let releaseTimer=0
+const relativeTimeNow=ref(Date.now())
 let planExecutionController:AbortController|null=null
 const DEFAULT_APPLICATION_POLL_INTERVAL=3
 const appForm=reactive({name:'',description:'',repository_id:'',workflow_template_id:'',poll_interval_seconds:DEFAULT_APPLICATION_POLL_INTERVAL})
@@ -196,13 +200,14 @@ const applicationCards=computed(()=>applications.value.map(application=>{
  }
 }))
 const releasePlanRunnableCounts=computed<Record<string,number>>(()=>Object.fromEntries(releasePlans.value.map(plan=>[plan.id,releasePlanManualApplicationCount(plan)])))
+const releasePlanRunnableApplicationIDs=computed(()=>applications.value.filter(applicationCanManualRelease).map(application=>application.id))
 
 function applicationRunStatus(run?:Run):StatusMeta{
  if(!run)return {tone:'neutral',label:t('applicationCard.runStatus.none'),live:false}
  const states:Record<string,StatusMeta>={
   detected:{tone:'info',label:t('applicationCard.runStatus.detected'),live:false},ready:{tone:'warning',label:t('applicationCard.runStatus.ready'),live:true},
   running:{tone:'info',label:t('applicationCard.runStatus.running'),live:true},awaiting_approval:{tone:'warning',label:t('applicationCard.runStatus.awaitingApproval'),live:true},
-  succeeded:{tone:'success',label:t('applicationCard.runStatus.succeeded'),live:false},failed:{tone:'danger',label:t('applicationCard.runStatus.failed'),live:false},
+  succeeded:{tone:'success',label:t('applicationCard.runStatus.succeeded'),live:false},failed:{tone:'danger',label:t('applicationCard.runStatus.failed'),live:false},skipped:{tone:'neutral',label:t('applicationCard.runStatus.skipped'),live:false},
   blocked:{tone:'danger',label:t('applicationCard.runStatus.blocked'),live:false},canceled:{tone:'neutral',label:t('applicationCard.runStatus.canceled'),live:false},
  }
  return states[run.status]||{tone:'neutral',label:run.status,live:false}
@@ -220,7 +225,7 @@ function applicationCurrentNode(run?:Run){
  if(!run)return t('applicationCard.notStarted')
  if(run.current_node_name||run.current_node_id)return run.current_node_name||run.current_node_id
  if(run.status==='succeeded')return t('applicationCard.finished')
- if(['failed','blocked','canceled'].includes(run.status))return t('applicationCard.stopped')
+ if(['failed','blocked','skipped','canceled'].includes(run.status))return t('applicationCard.stopped')
  return t('applicationCard.notStarted')
 }
 function workflowSourceLabel(workflow:ApplicationWorkflow){
@@ -1000,7 +1005,6 @@ function resetPlanExecution(){
  planExecutionExpectedUpdatedAt.value=''
  planExecutionRequestID.value=''
  planExecutionGroups.value=[]
- planExecutionSubmitting.value=false
 }
 function planExecutionItems(){return planExecutionGroups.value.flatMap(group=>group.items)}
 function planApplicationBlockReason(application?:Application){
@@ -1025,7 +1029,7 @@ function buildPlanExecutionGroups(plan:ReleasePlan){
    const duplicated=(applicationCounts.get(membership.application_id)||0)>1
    const reason=relationMissing?t('releasePlanExecution.reason.membershipMissing'):duplicated?t('releasePlanExecution.reason.duplicateApplication'):planApplicationBlockReason(application)
    const workflows=applicationManualWorkflows(application).map(item=>({id:item.id,name:workflowDisplayName(item),revision:item.revision}))
-   const selectedWorkflow=workflows.length===1?workflows[0]:undefined
+   const selectedWorkflow=workflows[0]
    return {
     membershipID:membership.id||`${group.id}:${membership.application_id}`,
     applicationID:membership.application_id,
@@ -1070,7 +1074,7 @@ async function loadPlanExecutionItem(membershipID:string,signal:AbortSignal){
 	  const defaultRef=refs.find(item=>item.kind==='branch'&&item.name===application?.repository?.default_branch)?.ref||''
 	  item.loadState='ready';item.reason='';item.sources=sources;item.refs=refs;item.artifacts=availableArtifacts;item.referenceError=data.reference_error||''
 	  item.executionMode=refs.length?'code':'artifact'
-	  item.selectedSourceID=sources.length===1?sources[0].id:'';item.selectedRef=defaultRef
+	  item.selectedSourceID=sources[0]?.id||'';item.selectedRef=defaultRef
 	  item.selectedArtifactID=availableArtifacts.length===1?availableArtifacts[0].id:''
  }catch(error){
   if(signal.aborted||item.workflowID!==requestedWorkflowID)return
@@ -1082,55 +1086,76 @@ async function loadPlanExecutionItems(membershipIDs:string[],signal:AbortSignal)
  const worker=async()=>{for(;;){const membershipID=queue.shift();if(!membershipID||signal.aborted)return;await loadPlanExecutionItem(membershipID,signal)}}
  await Promise.all(Array.from({length:Math.min(4,queue.length)},()=>worker()))
 }
-function openReleasePlan(planID:string){
+function openReleasePlan(planID:string,membershipID=''){
  const plan=releasePlans.value.find(item=>item.id===planID)
  if(!plan)return
  resetPlanExecution()
  planExecutionPlanID.value=plan.id
- planExecutionTitle.value=releasePlanTitle(plan)
  planExecutionExpectedUpdatedAt.value=plan.updated_at||plan.created_at
  planExecutionRequestID.value=crypto.randomUUID()
- planExecutionGroups.value=buildPlanExecutionGroups(plan)
+ const groups=buildPlanExecutionGroups(plan)
+ if(membershipID){
+  const selected=groups.flatMap(group=>group.items).find(item=>item.membershipID===membershipID)
+  if(!selected)return
+  planExecutionGroups.value=groups.map(group=>({...group,items:group.items.filter(item=>item.membershipID===membershipID)})).filter(group=>group.items.length)
+  planExecutionTitle.value=`${releasePlanTitle(plan)} · ${selected.applicationName}`
+ }else{
+  planExecutionGroups.value=groups
+  planExecutionTitle.value=releasePlanTitle(plan)
+ }
  planExecutionOpen.value=true
  planExecutionController=new AbortController()
  const loadable=planExecutionItems().filter(item=>item.loadState==='idle'&&item.workflowID).map(item=>item.membershipID)
  void loadPlanExecutionItems(loadable,planExecutionController.signal)
 }
-function updatePlanExecutionWorkflow(membershipID:string,value:string){
- const item=planExecutionItems().find(candidate=>candidate.membershipID===membershipID)
- if(!item)return
- const workflow=item.workflows.find(candidate=>candidate.id===value)
- item.workflowID=workflow?.id||'';item.workflowRevision=workflow?.revision||0
-	 item.sources=[];item.refs=[];item.artifacts=[];item.executionMode='code';item.selectedSourceID='';item.selectedRef='';item.selectedArtifactID='';item.referenceError='';item.reason='';item.loadState='idle'
- if(item.workflowID&&planExecutionController)void loadPlanExecutionItem(item.membershipID,planExecutionController.signal)
-}
-function updatePlanExecutionSource(membershipID:string,value:string){const item=planExecutionItems().find(candidate=>candidate.membershipID===membershipID);if(item)item.selectedSourceID=value}
+function openReleasePlanApplication(planID:string,membershipID:string){openReleasePlan(planID,membershipID)}
 function updatePlanExecutionRef(membershipID:string,value:string){const item=planExecutionItems().find(candidate=>candidate.membershipID===membershipID);if(item)item.selectedRef=value}
 function updatePlanExecutionMode(membershipID:string,value:'code'|'artifact'){const item=planExecutionItems().find(candidate=>candidate.membershipID===membershipID);if(item)item.executionMode=value}
 function updatePlanExecutionArtifact(membershipID:string,value:string){const item=planExecutionItems().find(candidate=>candidate.membershipID===membershipID);if(item)item.selectedArtifactID=value}
 function retryPlanExecutionApplication(membershipID:string){if(planExecutionController)void loadPlanExecutionItem(membershipID,planExecutionController.signal)}
-function applyPlanExecutionIssues(error:unknown){
- const issues=(error as {response?:{data?:{issues?:Array<{release_group_application_id?:string;message?:string}>}}}).response?.data?.issues
- if(!Array.isArray(issues))return
- for(const issue of issues){
-  const item=planExecutionItems().find(candidate=>candidate.membershipID===issue.release_group_application_id)
-  if(item){item.loadState='error';item.reason=issue.message||t('releasePlanExecution.reason.preflightFailed')}
+function setReleasePlanExecuting(planID:string,executing:boolean){
+ executingReleasePlanIDs.value=executing
+  ? [...new Set([...executingReleasePlanIDs.value,planID])]
+  : executingReleasePlanIDs.value.filter(id=>id!==planID)
+}
+async function applyAcceptedReleasePlanExecution(planID:string,execution:ReleasePlanExecutionRecord){
+ const plan=releasePlans.value.find(item=>item.id===planID)
+ if(plan)plan.latest_execution={id:execution.id,status:execution.status,created_at:execution.created_at,finished_at:execution.finished_at,items:execution.items||[]}
+ const runIDs=[...new Set((execution.items||[]).map(item=>item.pipeline_run_id).filter(Boolean))]
+ if(!runIDs.length){
+  message.error(t('releasePlanExecution.acceptedWithoutRuns'))
+  await refresh()
+  return
+ }
+ const results=await Promise.allSettled(runIDs.map(runID=>client.get<{pipeline_run:Run}>(`/pipeline-runs/${encodeURIComponent(runID)}`)))
+ const acceptedRuns=results.flatMap(result=>result.status==='fulfilled'&&result.value.data.pipeline_run?[result.value.data.pipeline_run]:[])
+ if(acceptedRuns.length){
+  const acceptedIDs=new Set(acceptedRuns.map(run=>run.id))
+  runs.value=[...acceptedRuns,...runs.value.filter(run=>!acceptedIDs.has(run.id))].sort((left,right)=>new Date(right.created_at).getTime()-new Date(left.created_at).getTime())
  }
 }
-async function executeReleasePlan(){
+function executeReleasePlan(){
 	 const selections=planExecutionItems().map(item=>{
 	  const reference=item.refs.find(candidate=>candidate.ref===item.selectedRef)
 	  return {release_group_application_id:item.membershipID,workflow_id:item.workflowID,expected_workflow_revision:item.workflowRevision,source_node_id:item.selectedSourceID,ref:item.executionMode==='code'?item.selectedRef:'',commit_sha:item.executionMode==='code'?reference?.sha||'':'',artifact_id:item.executionMode==='artifact'?item.selectedArtifactID:''}
 	 })
-	 if(!planExecutionPlanID.value||selections.some(item=>!item.workflow_id||!item.source_node_id||(!item.artifact_id&&(!item.ref||!item.commit_sha))))return
- planExecutionSubmitting.value=true
- try{
-  await client.post(`/release-plans/${planExecutionPlanID.value}/executions`,{request_id:planExecutionRequestID.value,expected_plan_updated_at:planExecutionExpectedUpdatedAt.value,selections},{timeout:60000})
-  message.success(t('releasePlanExecution.started'))
-  resetPlanExecution()
+	 if(!planExecutionPlanID.value||selections.some(item=>!item.workflow_id||!item.source_node_id||(!item.artifact_id&&(!item.ref||!item.commit_sha)))){
+  message.error(t('releasePlanExecution.selectionInvalid'))
+  return
+ }
+ const planID=planExecutionPlanID.value
+ const request={request_id:planExecutionRequestID.value,expected_plan_updated_at:planExecutionExpectedUpdatedAt.value,selections}
+ setReleasePlanExecuting(planID,true)
+ resetPlanExecution()
+ message.success(t('releasePlanExecution.submitted'))
+ void client.post<{release_plan_execution:ReleasePlanExecutionRecord}>(`/release-plans/${planID}/executions`,request,{timeout:60000}).then(async result=>{
+  await applyAcceptedReleasePlanExecution(planID,result.data.release_plan_execution)
+ }).catch(async error=>{
+  message.error({content:t('releasePlanExecution.submitFailed',{message:apiErrorMessage(error)}),duration:8})
   await refresh()
-  await router.push({path:'/release-plans',query:{view:'runs'}})
- }catch(error){applyPlanExecutionIssues(error);message.error(apiErrorMessage(error))}finally{planExecutionSubmitting.value=false}
+ }).finally(()=>{
+  setReleasePlanExecuting(planID,false)
+ })
 }
 function showWebhook(item:Repository){void client.get<{webhook_url:string;webhook_secret:string}>(`/repositories/${item.id}/webhook`).then(result=>Modal.info({title:`${item.name} Webhook`,width:650,content:()=>`${result.data.webhook_url}\n${result.data.webhook_secret}`})).catch(error=>message.error(apiErrorMessage(error)))}
 function applicationName(run:Run){return applications.value.find(item=>item.id===run.application_id)?.name||run.application?.name||'未命名应用'}
@@ -1145,10 +1170,12 @@ function artifactSelectOption(artifact:ManualArtifact){
  details.push(`摘要：${artifact.digest.slice(0,19)}…`)
  return {value:artifact.id,label:artifact.name,details}
 }
-function formatRunTime(value:string){return new Date(value).toLocaleString('zh-CN',{hour12:false})}
-function runStatusLabel(status:string){return ({detected:'已发现',ready:'准备就绪',blocked:'已阻塞',awaiting_approval:'等待审核',running:'执行中',succeeded:'已成功',failed:'已失败',canceled:'已取消'} as Record<string,string>)[status]||status}
+function formatRunTime(value:string){return formatDateTime(value,locale.value==='en-US'?'en-US':'zh-CN')}
+function formatRunRelativeTime(value:string){return formatRelativeTime(value,relativeTimeNow.value,locale.value==='en-US'?'en-US':'zh-CN')}
+function runStatusLabel(status:string){return ({detected:'已发现',ready:'准备就绪',blocked:'已阻塞',awaiting_approval:'等待审核',running:'执行中',succeeded:'已成功',failed:'已失败',skipped:'已跳过',canceled:'已取消'} as Record<string,string>)[status]||status}
 function runStatusColor(status:string){return status==='succeeded'?'success':status==='failed'||status==='blocked'?'error':status==='running'?'processing':status==='awaiting_approval'?'warning':'default'}
 function refreshVisibleState(){
+ relativeTimeNow.value=Date.now()
  if(document.hidden)return
  if(props.section==='applications')void refreshApplicationState()
  else if(props.section==='build-plans'&&buildPlanView.value==='artifacts')void loadArtifacts()
@@ -1345,6 +1372,7 @@ onBeforeUnmount(()=>{resetPlanExecution();clearInterval(releaseTimer);document.r
           <strong>{{ applicationName(run) }}</strong>
           <span>{{ run.commit_message||'未记录提交说明' }}</span>
           <small>版本：{{ runReferenceLabel(run) }}；状态：{{ runStatusLabel(run.status) }}；当前节点：{{ run.current_node_name||run.current_node_id||'尚未开始' }}</small>
+          <time class="run-index-time" :datetime="run.created_at" :title="formatRunTime(run.created_at)"><Clock3/><span>{{ formatRunTime(run.created_at) }}</span><em>{{ formatRunRelativeTime(run.created_at) }}</em></time>
         </span>
         <ChevronRight :size="16"/>
       </button>
@@ -1386,9 +1414,13 @@ onBeforeUnmount(()=>{resetPlanExecution();clearInterval(releaseTimer);document.r
  :can-read-deployments="canReadDeployments"
  :activePlanID="activeReleasePlanID"
  :runnable-counts="releasePlanRunnableCounts"
+ :runnable-application-ids="releasePlanRunnableApplicationIDs"
+ :executing-plan-ids="executingReleasePlanIDs"
+ :relative-now="relativeTimeNow"
  :mutatingPlanID="releasePlanMutationID"
  @create="create"
  @execute="openReleasePlan"
+ @execute-application="openReleasePlanApplication"
  @edit="openReleasePlanEditor"
  @add-application="openReleaseGroupApplicationPicker"
  @toggle="toggleReleasePlan"
@@ -1607,12 +1639,9 @@ onBeforeUnmount(()=>{resetPlanExecution();clearInterval(releaseTimer);document.r
  :open="planExecutionOpen"
  :plan-title="planExecutionTitle"
  :groups="planExecutionGroups"
- :submitting="planExecutionSubmitting"
  @cancel="resetPlanExecution"
  @submit="executeReleasePlan"
  @retry="retryPlanExecutionApplication"
- @update-workflow="updatePlanExecutionWorkflow"
-	 @update-source="updatePlanExecutionSource"
 	 @update-ref="updatePlanExecutionRef"
 	 @update-mode="updatePlanExecutionMode"
 	 @update-artifact="updatePlanExecutionArtifact"
@@ -1698,8 +1727,8 @@ onBeforeUnmount(()=>{resetPlanExecution();clearInterval(releaseTimer);document.r
 .application-links.single{grid-template-columns:1fr}.application-resource-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:9px;margin-top:9px}.application-resource-panel{min-width:0;padding:11px;border:1px solid var(--edo-border);border-radius:11px;background:var(--edo-surface-soft)}.application-resource-panel>header{display:flex;align-items:center;justify-content:space-between;margin-bottom:8px}.application-resource-panel>header>div{display:flex;min-width:0;align-items:center;gap:7px}.application-resource-panel>header svg{width:15px;color:var(--edo-primary)}.application-resource-panel>header span,.application-resource-panel>header strong,.application-resource-panel>header small{display:block}.application-resource-panel>header strong{font-size:12px}.application-resource-panel>header small{margin-top:1px;color:var(--edo-muted);font-size:10px}.application-workflow-list,.application-deployment-list{display:grid;max-height:360px;gap:6px;overflow-y:auto;scrollbar-width:thin}.application-workflow-list>button{display:grid;width:100%;min-width:0;align-items:center;grid-template-columns:30px minmax(0,1fr) auto 13px;gap:8px;padding:8px;border:1px solid transparent;border-radius:9px;color:var(--edo-text);background:var(--edo-surface);cursor:pointer;text-align:left;transition:border-color 160ms ease,transform 160ms ease}.application-workflow-list>button:hover{transform:translateY(-1px);border-color:color-mix(in srgb,var(--edo-primary) 28%,var(--edo-border))}.application-workflow-list>button:focus-visible{outline:2px solid color-mix(in srgb,var(--edo-primary) 48%,transparent);outline-offset:1px}.application-workflow-list>button>svg{width:13px;color:var(--edo-muted)}.application-workflow-icon,.application-deployment-icon{display:grid;width:30px;height:30px;place-items:center;border-radius:8px;color:var(--edo-primary);background:var(--edo-primary-soft)}.application-workflow-icon svg,.application-deployment-icon svg{width:15px}.application-workflow-copy{min-width:0}.application-workflow-copy>span{display:flex;min-width:0;align-items:center;gap:6px}.application-workflow-copy strong{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px}.application-workflow-copy i{padding:1px 5px;border-radius:999px;color:#168b57;background:color-mix(in srgb,#2ab573 11%,var(--edo-surface));font-size:9px;font-style:normal;white-space:nowrap}.application-workflow-copy i.inactive{color:var(--edo-muted);background:var(--edo-surface-soft)}.application-workflow-copy small{display:block;overflow:hidden;margin-top:2px;color:var(--edo-muted);font-size:10px;text-overflow:ellipsis;white-space:nowrap}.application-workflow-run,.application-deployment-state{display:grid;min-width:70px;grid-template-columns:7px auto;align-items:center;column-gap:5px;color:#949aa5}.application-workflow-run>i,.application-deployment-state>i{width:6px;height:6px;border-radius:50%;background:currentColor}.application-workflow-run strong,.application-deployment-state strong{font-size:10px;white-space:nowrap}.application-workflow-run time,.application-deployment-state time{grid-column:1/-1;margin-top:2px;color:var(--edo-muted);font-size:9px;white-space:nowrap}.application-workflow-run.tone-info,.application-deployment-state.tone-info{color:#4f7df3}.application-workflow-run.tone-success,.application-deployment-state.tone-success{color:#2ab573}.application-workflow-run.tone-warning,.application-deployment-state.tone-warning{color:#dfa126}.application-workflow-run.tone-danger,.application-deployment-state.tone-danger{color:#ed5965}.application-workflow-run.is-live>i,.application-deployment-state.is-live>i{animation:application-pulse 2s ease-out infinite}.application-deployment-item{min-width:0;overflow:hidden;border-radius:9px;background:var(--edo-surface)}.application-deployment-summary{display:grid;width:100%;min-width:0;align-items:center;grid-template-columns:30px minmax(0,1fr) auto 14px;gap:8px;padding:8px;border:0;color:var(--edo-text);background:transparent;cursor:pointer;text-align:left}.application-deployment-summary:hover{background:color-mix(in srgb,var(--edo-primary) 4%,var(--edo-surface))}.application-deployment-summary:focus-visible{outline:2px solid color-mix(in srgb,var(--edo-primary) 45%,transparent);outline-offset:-2px}.application-deployment-summary>svg{width:14px;color:var(--edo-muted);transition:transform 180ms ease}.application-deployment-summary>svg.expanded{transform:rotate(180deg)}.application-deployment-icon.kind-compose{color:#1677ff;background:color-mix(in srgb,#1677ff 10%,var(--edo-surface))}.application-deployment-icon.kind-kubernetes{color:#326ce5;background:color-mix(in srgb,#326ce5 10%,var(--edo-surface))}.application-deployment-icon.kind-script{color:#596273;background:color-mix(in srgb,#596273 10%,var(--edo-surface))}.application-deployment-copy{min-width:0}.application-deployment-copy strong,.application-deployment-copy small{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.application-deployment-copy strong{font-size:12px}.application-deployment-copy small{margin-top:2px;color:var(--edo-muted);font-size:10px}.application-deployment-details{padding:0 9px 9px 47px}.application-deployment-details dl{display:grid;gap:5px;margin:0;padding:8px 9px;border-radius:8px;background:var(--edo-surface-soft)}.application-deployment-details dl>div{display:grid;min-width:0;grid-template-columns:62px minmax(0,1fr);gap:8px}.application-deployment-details dt{color:var(--edo-muted);font-size:10px}.application-deployment-details dd{overflow:hidden;margin:0;text-overflow:ellipsis;white-space:nowrap;font-size:10px}.application-deployment-actions{display:flex;justify-content:flex-end;gap:6px;margin-top:7px}.application-deployment-actions :deep(.ant-btn){display:inline-flex;align-items:center;gap:4px}.application-deployment-actions svg{width:13px}.deployment-details-enter-active,.deployment-details-leave-active{transition:opacity 140ms ease,transform 160ms ease}.deployment-details-enter-from,.deployment-details-leave-to{opacity:0;transform:translateY(-3px)}.application-resource-empty{display:grid;min-height:46px;margin:0;place-items:center;color:var(--edo-muted);font-size:11px}
 .run-workspace{display:grid;min-height:620px;grid-template-columns:310px minmax(0,1fr);gap:8px;overflow:hidden;padding:8px;background:var(--edo-surface-soft)}
 .run-index,.run-detail,.run-detail-empty{min-width:0;border-radius:11px;background:var(--edo-surface)}.run-index{overflow:hidden}.run-index>header{display:flex;min-height:62px;align-items:center;justify-content:space-between;padding:10px 14px}.run-index>header strong,.run-index>header small{display:block}.run-index>header small{margin-top:1px;color:var(--edo-muted);font-size:11px}.run-index>header>span{padding:4px 8px;border-radius:999px;color:var(--edo-muted);background:var(--edo-surface-soft);font-size:11px}.run-index>header>span.active{color:var(--edo-primary);background:var(--edo-primary-soft)}
-.run-index-list{min-height:540px;max-height:calc(100vh - 242px);overflow-y:auto;padding:0 7px 9px;scrollbar-width:thin}.run-index-list>button{display:grid;width:100%;min-height:86px;align-items:center;grid-template-columns:10px minmax(0,1fr) 17px;gap:10px;margin:3px 0;padding:10px 9px;border:0;border-radius:11px;outline:0;color:var(--edo-text);background:transparent;cursor:pointer;text-align:left;transition:background-color 160ms ease,box-shadow 160ms ease}.run-index-list>button:hover{background:var(--edo-surface-soft)}.run-index-list>button:focus-visible{box-shadow:inset 0 0 0 2px color-mix(in srgb,var(--edo-primary) 45%,transparent)}.run-index-list>button.active{background:var(--edo-primary-soft);box-shadow:inset 3px 0 var(--edo-primary)}.run-index-list>button>svg{color:var(--edo-muted)}
-.run-dot{width:8px;height:8px;border-radius:50%;background:#a5aab3}.run-dot.running{background:var(--edo-primary);box-shadow:0 0 0 5px color-mix(in srgb,var(--edo-primary) 11%,transparent)}.run-dot.awaiting_approval{background:#dfa03c}.run-dot.succeeded{background:#2ab573}.run-dot.failed,.run-dot.blocked{background:#ed5965}.run-dot.canceled{background:#9299a6}.run-index-copy{min-width:0}.run-index-copy strong,.run-index-copy>span,.run-index-copy small{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.run-index-copy strong{font-size:13px}.run-index-copy>span{margin-top:3px;color:var(--edo-text);font-size:12px}.run-index-copy small{margin-top:3px;color:var(--edo-muted);font-size:11px}
+.run-index-list{min-height:540px;max-height:calc(100vh - 242px);overflow-y:auto;padding:0 7px 9px;scrollbar-width:thin}.run-index-list>button{display:grid;width:100%;min-height:102px;align-items:center;grid-template-columns:10px minmax(0,1fr) 17px;gap:10px;margin:3px 0;padding:10px 9px;border:0;border-radius:11px;outline:0;color:var(--edo-text);background:transparent;cursor:pointer;text-align:left;transition:background-color 160ms ease,box-shadow 160ms ease}.run-index-list>button:hover{background:var(--edo-surface-soft)}.run-index-list>button:focus-visible{box-shadow:inset 0 0 0 2px color-mix(in srgb,var(--edo-primary) 45%,transparent)}.run-index-list>button.active{background:var(--edo-primary-soft);box-shadow:inset 3px 0 var(--edo-primary)}.run-index-list>button>svg{color:var(--edo-muted)}
+.run-dot{width:8px;height:8px;border-radius:50%;background:#a5aab3}.run-dot.running{background:var(--edo-primary);box-shadow:0 0 0 5px color-mix(in srgb,var(--edo-primary) 11%,transparent)}.run-dot.awaiting_approval{background:#dfa03c}.run-dot.succeeded{background:#2ab573}.run-dot.failed,.run-dot.blocked{background:#ed5965}.run-dot.canceled{background:#9299a6}.run-index-copy{min-width:0}.run-index-copy strong,.run-index-copy>span,.run-index-copy small{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.run-index-copy strong{font-size:13px}.run-index-copy>span{margin-top:3px;color:var(--edo-text);font-size:12px}.run-index-copy small{margin-top:3px;color:var(--edo-muted);font-size:11px}.run-index-time{display:flex;min-width:0;align-items:center;gap:4px;margin-top:4px;color:var(--edo-muted);font-size:10px;line-height:1.25}.run-index-time svg{width:11px;flex:0 0 11px}.run-index-time span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.run-index-time em{flex:0 0 auto;color:color-mix(in srgb,var(--edo-primary) 76%,var(--edo-muted));font-style:normal;white-space:nowrap}
 .run-detail{padding:20px}.run-detail-heading{display:flex;align-items:center;justify-content:space-between;gap:14px}.run-detail-heading>div{display:flex;min-width:0;align-items:center;gap:11px}.run-detail-heading small{color:var(--edo-muted);font-size:11px}.run-detail-heading h3{overflow:hidden;margin:1px 0 0;text-overflow:ellipsis;white-space:nowrap;font-size:19px}.run-status-orb{position:relative;display:grid;width:40px;height:40px;flex:0 0 40px;place-items:center;border-radius:12px;background:var(--edo-surface-soft)}.run-status-orb i{width:10px;height:10px;border-radius:50%;background:#9aa1ad}.run-status-orb.running{background:var(--edo-primary-soft)}.run-status-orb.running i{background:var(--edo-primary)}.run-status-orb.running::after{position:absolute;inset:7px;border:1px solid color-mix(in srgb,var(--edo-primary) 42%,transparent);border-radius:8px;content:"";animation:run-breathe 1.8s ease-in-out infinite}.run-status-orb.awaiting_approval i{background:#dfa03c}.run-status-orb.succeeded i{background:#2ab573}.run-status-orb.failed i,.run-status-orb.blocked i{background:#ed5965}
 .run-commit-panel{display:grid;align-items:center;grid-template-columns:22px minmax(0,1fr) auto;gap:11px;margin:18px 0 14px;padding:13px 14px;border:1px solid var(--edo-border);border-radius:12px;background:var(--edo-surface-soft)}.run-commit-panel>svg{color:var(--edo-primary)}.run-commit-panel>div{min-width:0}.run-commit-panel small,.run-commit-panel strong,.run-commit-panel span{display:block}.run-commit-panel small{color:var(--edo-muted);font-size:10px}.run-commit-panel strong{overflow:hidden;margin:2px 0;text-overflow:ellipsis;white-space:nowrap}.run-commit-panel span,.run-commit-panel time{color:var(--edo-muted);font-size:11px}.run-commit-panel code{color:var(--edo-text)}
 .run-facts{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px;margin:14px 0 0}.run-facts>div{min-width:0;padding:11px 12px;border:1px solid var(--edo-border);border-radius:10px;background:var(--edo-surface-soft)}.run-facts dt{color:var(--edo-muted);font-size:10px}.run-facts dd{overflow:hidden;margin:4px 0 0;text-overflow:ellipsis;white-space:nowrap;font-size:12px}.run-facts dd :deep(.ant-btn-link){max-width:100%;height:auto;padding:0;font-size:12px}.run-facts dd :deep(.ant-btn-link>span){overflow:hidden;text-overflow:ellipsis}.run-actions{display:flex;flex-wrap:wrap;gap:7px;margin-top:15px}.run-detail-empty{display:grid;place-items:center}

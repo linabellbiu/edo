@@ -22,6 +22,52 @@ type releasePlanExecutionTestApplication struct {
 	workflowRevision uint64
 }
 
+type releasePlanExecutionMutatingRefLister struct {
+	refs   repository.RefResult
+	mutate func() error
+}
+
+func (l releasePlanExecutionMutatingRefLister) ListRefs(context.Context, model.GitRepository, string) (repository.RefResult, error) {
+	if l.mutate != nil {
+		if err := l.mutate(); err != nil {
+			return repository.RefResult{}, err
+		}
+	}
+	return l.refs, nil
+}
+
+func TestCreateReleasePlanExecutionAllowsConcurrentRepositoryPollStateUpdate(t *testing.T) {
+	service, db, secrets, repositoryID := newPipelineTestService(t)
+	application := createReleasePlanExecutionTestApplication(t, service, db, repositoryID, "polling_state_service")
+	commitSHA := strings.Repeat("9", 40)
+	plan := createReleasePlanExecutionTestPlan(t, service, []releasePlanExecutionTestApplication{application})
+	service.repositories = repository.NewService(
+		db, secrets, credential.NewService(db, secrets),
+		releasePlanExecutionMutatingRefLister{
+			refs: repository.RefResult{Branches: []repository.GitRef{{Name: "main", SHA: commitSHA}}},
+			mutate: func() error {
+				now := time.Now().UTC().Add(time.Second)
+				return db.Model(&model.Application{}).Where("id = ?", application.applicationID).Updates(map[string]any{
+					"sync_status": model.ApplicationSyncSynced, "sync_message": "后台轮询已完成",
+					"last_checked_at": now, "updated_at": now,
+				}).Error
+			},
+		},
+		4,
+	)
+
+	execution, err := service.CreateReleasePlanExecution(
+		context.Background(), plan.ID, "admin",
+		releasePlanExecutionTestInput(plan, "polling-state-update", commitSHA, application),
+	)
+	if err != nil {
+		t.Fatalf("仓库轮询状态更新不应阻止发布计划创建流水线运行: %v", err)
+	}
+	if len(execution.Items) != 1 || execution.Items[0].PipelineRunID == "" {
+		t.Fatalf("发布计划没有创建流水线运行记录: %+v", execution)
+	}
+}
+
 func TestReleasePlanExecutionStartsParallelApplicationsTogether(t *testing.T) {
 	service, db, secrets, repositoryID := newPipelineTestService(t)
 	first := createReleasePlanExecutionTestApplication(t, service, db, repositoryID, "parallel_order_service")
@@ -63,8 +109,177 @@ func TestReleasePlanExecutionStartsParallelApplicationsTogether(t *testing.T) {
 	if err := db.First(&storedPlan, "id = ?", plan.ID).Error; err != nil {
 		t.Fatal(err)
 	}
-	if storedPlan.Status != model.ReleasePlanCompleted {
-		t.Fatalf("计划没有随执行完成: %+v", storedPlan)
+	if storedPlan.Status != model.ReleasePlanActive {
+		t.Fatalf("一次执行完成后发布计划不应被永久关闭: %+v", storedPlan)
+	}
+}
+
+func TestReleasePlanExecutionCanRunSingleApplication(t *testing.T) {
+	service, db, secrets, repositoryID := newPipelineTestService(t)
+	first := createReleasePlanExecutionTestApplication(t, service, db, repositoryID, "single_order_service")
+	second := createReleasePlanExecutionTestApplication(t, service, db, repositoryID, "single_inventory_service")
+	commitSHA := strings.Repeat("1", 40)
+	setReleasePlanExecutionTestRefs(service, db, secrets, commitSHA)
+	plan := createReleasePlanExecutionTestPlan(t, service, []releasePlanExecutionTestApplication{first, second})
+	input := releasePlanExecutionTestInput(plan, "single-application", commitSHA, first, second)
+	input.Selections = input.Selections[:1]
+
+	execution, err := service.CreateReleasePlanExecution(context.Background(), plan.ID, "admin", input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(execution.Items) != 1 || execution.Items[0].ApplicationID != first.applicationID {
+		t.Fatalf("单应用执行固化了计划内其他应用: %+v", execution.Items)
+	}
+	execution, err = service.ReconcileReleasePlanExecution(context.Background(), execution.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if execution.Items[0].Status != model.ReleasePlanExecutionItemRunning {
+		t.Fatalf("单应用执行没有启动所选应用: %+v", execution.Items)
+	}
+	var linkedRuns int64
+	if err := db.Model(&model.PipelineRun{}).Where("release_plan_execution_id = ?", execution.ID).Count(&linkedRuns).Error; err != nil || linkedRuns != 1 {
+		t.Fatalf("单应用执行创建了额外流水线运行: count=%d err=%v", linkedRuns, err)
+	}
+}
+
+func TestReleasePlanAllowsAnotherExecutionAfterCompletion(t *testing.T) {
+	service, db, secrets, repositoryID := newPipelineTestService(t)
+	application := createReleasePlanExecutionTestApplication(t, service, db, repositoryID, "repeatable_release_service")
+	commitSHA := strings.Repeat("2", 40)
+	setReleasePlanExecutionTestRefs(service, db, secrets, commitSHA)
+	plan := createReleasePlanExecutionTestPlan(t, service, []releasePlanExecutionTestApplication{application})
+	plan, err := service.UpdateReleasePlan(context.Background(), plan.ID, "admin", ReleasePlanInput{
+		Name: plan.Name, Version: plan.Version, Description: plan.Description, Status: model.ReleasePlanActive,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	firstInput := releasePlanExecutionTestInput(plan, "repeat-first", commitSHA, application)
+	first, err := service.CreateReleasePlanExecution(context.Background(), plan.ID, "admin", firstInput)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err = service.ReconcileReleasePlanExecution(context.Background(), first.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	markReleasePlanExecutionRuns(t, db, first.Items, model.PipelineRunSucceeded)
+	if _, err = service.ReconcileReleasePlanExecution(context.Background(), first.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	secondInput := releasePlanExecutionTestInput(plan, "repeat-second", commitSHA, application)
+	second, err := service.CreateReleasePlanExecution(context.Background(), plan.ID, "admin", secondInput)
+	if err != nil {
+		t.Fatalf("已完成的发布计划不能再次执行: %v", err)
+	}
+	if second.ID == first.ID {
+		t.Fatalf("不同请求错误复用了历史执行: first=%s second=%s", first.ID, second.ID)
+	}
+	var count int64
+	if err := db.Model(&model.ReleasePlanExecution{}).Where("release_plan_id = ?", plan.ID).Count(&count).Error; err != nil || count != 2 {
+		t.Fatalf("发布计划没有保存两次独立执行: count=%d err=%v", count, err)
+	}
+}
+
+func TestReleasePlanExecutionSkipsDownstreamWhenBranchDoesNotMatch(t *testing.T) {
+	service, db, secrets, repositoryID := newPipelineTestService(t)
+	application := createReleasePlanExecutionTestApplication(t, service, db, repositoryID, "branch_filter_service")
+	result, err := service.GetWorkflow(context.Background(), application.applicationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result.Workflow.Source.Config.Branch = "release/*"
+	saved, err := service.SaveWorkflow(context.Background(), application.applicationID, "admin", WorkflowInput{
+		SchemaVersion: model.WorkflowSchemaVersion, Name: result.Workflow.Name,
+		Revision: result.Workflow.Revision, Activate: true,
+		Source: result.Workflow.Source, Stages: result.Workflow.Stages,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	application.workflowRevision = saved.Workflow.Revision
+	commitSHA := strings.Repeat("3", 40)
+	setReleasePlanExecutionTestRefs(service, db, secrets, commitSHA)
+	plan := createReleasePlanExecutionTestPlan(t, service, []releasePlanExecutionTestApplication{application})
+
+	execution, err := service.CreateReleasePlanExecution(
+		context.Background(), plan.ID, "admin",
+		releasePlanExecutionTestInput(plan, "branch-not-matched", commitSHA, application),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(execution.Items) != 1 || execution.Items[0].Status != model.ReleasePlanExecutionItemSkipped {
+		t.Fatalf("分支不匹配没有把后续节点标记为跳过: %+v", execution.Items)
+	}
+	var run model.PipelineRun
+	if err := db.First(&run, "id = ?", execution.Items[0].PipelineRunID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if run.Status != model.PipelineRunSkipped || run.Stage != "skipped" || !strings.Contains(run.Message, "分支条件") || run.ExecutionJobID != "" {
+		t.Fatalf("分支不匹配仍进入了后续任务: %+v", run)
+	}
+	execution, err = service.ReconcileReleasePlanExecution(context.Background(), execution.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if execution.Status != model.ReleasePlanExecutionSucceeded {
+		t.Fatalf("仅包含条件跳过项的执行不应判定为失败: %+v", execution)
+	}
+	var jobCount int64
+	if err := db.Model(&model.Job{}).Count(&jobCount).Error; err != nil || jobCount != 0 {
+		t.Fatalf("分支不匹配仍投递了任务: count=%d err=%v", jobCount, err)
+	}
+}
+
+func TestReleasePlanBranchSkipDoesNotStopOtherApplications(t *testing.T) {
+	service, db, secrets, repositoryID := newPipelineTestService(t)
+	skippedApplication := createReleasePlanExecutionTestApplication(t, service, db, repositoryID, "branch_skip_service")
+	runningApplication := createReleasePlanExecutionTestApplication(t, service, db, repositoryID, "branch_match_service")
+	result, err := service.GetWorkflow(context.Background(), skippedApplication.applicationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result.Workflow.Source.Config.Branch = "release/*"
+	saved, err := service.SaveWorkflow(context.Background(), skippedApplication.applicationID, "admin", WorkflowInput{
+		SchemaVersion: model.WorkflowSchemaVersion, Name: result.Workflow.Name,
+		Revision: result.Workflow.Revision, Activate: true,
+		Source: result.Workflow.Source, Stages: result.Workflow.Stages,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	skippedApplication.workflowRevision = saved.Workflow.Revision
+	commitSHA := strings.Repeat("4", 40)
+	setReleasePlanExecutionTestRefs(service, db, secrets, commitSHA)
+	plan := createReleasePlanExecutionTestPlan(t, service, []releasePlanExecutionTestApplication{skippedApplication, runningApplication})
+
+	execution, err := service.CreateReleasePlanExecution(
+		context.Background(), plan.ID, "admin",
+		releasePlanExecutionTestInput(plan, "branch-mixed", commitSHA, skippedApplication, runningApplication),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	execution, err = service.ReconcileReleasePlanExecution(context.Background(), execution.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var skipped, running int
+	for _, item := range execution.Items {
+		switch item.Status {
+		case model.ReleasePlanExecutionItemSkipped:
+			skipped++
+		case model.ReleasePlanExecutionItemRunning:
+			running++
+		}
+	}
+	if skipped != 1 || running != 1 || execution.Status != model.ReleasePlanExecutionRunning {
+		t.Fatalf("一个应用分支不匹配时错误停止了其他应用: %+v", execution)
 	}
 }
 

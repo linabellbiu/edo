@@ -17,7 +17,7 @@ import (
 
 var (
 	ErrInvalidReleasePlanExecution           = errors.New("发布计划执行配置无效，请刷新后重试")
-	ErrReleasePlanExecutionExists            = errors.New("发布计划已经执行，不能重复执行")
+	ErrReleasePlanExecutionExists            = errors.New("发布计划已有执行正在进行，请等待完成后重试")
 	ErrReleasePlanExecutionNotFound          = errors.New("发布计划执行不存在")
 	ErrReleasePlanExecutionPlanChanged       = errors.New("发布计划已经变更，请刷新后重试")
 	ErrReleasePlanExecutionWorkflowChanged   = errors.New("应用流水线已经变更，请刷新后重试")
@@ -56,11 +56,12 @@ type releasePlanExecutionGroupSnapshot struct {
 }
 
 type preparedReleasePlanExecutionItem struct {
-	item                 model.ReleasePlanExecutionItem
-	run                  model.PipelineRun
-	components           []model.PipelineRunRepository
-	applicationUpdatedAt time.Time
-	workflowUpdatedAt    time.Time
+	item                    model.ReleasePlanExecutionItem
+	run                     model.PipelineRun
+	components              []model.PipelineRunRepository
+	applicationRepositoryID string
+	applicationDepartmentID string
+	workflowUpdatedAt       time.Time
 }
 
 type preparedReleasePlanExecution struct {
@@ -115,13 +116,16 @@ func (s *Service) CreateReleasePlanExecution(
 	if planID == "" || actorID == "" || input.RequestID == "" || len(input.RequestID) > 128 || input.ExpectedPlanUpdatedAt.IsZero() {
 		return nil, ErrInvalidReleasePlanExecution
 	}
-	if existing, err := s.findReleasePlanExecutionByPlan(ctx, planID); err == nil {
-		if existing.RequestID == input.RequestID {
-			return s.FindReleasePlanExecution(ctx, existing.ID)
-		}
-		return nil, ErrReleasePlanExecutionExists
+	if existing, err := s.findReleasePlanExecutionByRequest(ctx, planID, input.RequestID); err == nil {
+		return s.FindReleasePlanExecution(ctx, existing.ID)
 	} else if !errors.Is(err, gorm.ErrRecordNotFound) {
 		s.logReleasePlanExecutionError("release_plan_execution_idempotency_check", planID, err)
+		return nil, ErrReleasePlanExecutionTemporarilyFailed
+	}
+	if _, err := s.findActiveReleasePlanExecution(ctx, planID); err == nil {
+		return nil, ErrReleasePlanExecutionExists
+	} else if !errors.Is(err, gorm.ErrRecordNotFound) {
+		s.logReleasePlanExecutionError("release_plan_execution_active_check", planID, err)
 		return nil, ErrReleasePlanExecutionTemporarilyFailed
 	}
 
@@ -136,16 +140,23 @@ func (s *Service) CreateReleasePlanExecution(
 	var existingID string
 	err = s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var existing model.ReleasePlanExecution
-		findExisting := tx.Where("release_plan_id = ?", planID).First(&existing).Error
+		findExisting := tx.Where("release_plan_id = ? AND request_id = ?", planID, input.RequestID).First(&existing).Error
 		if findExisting == nil {
-			if existing.RequestID == input.RequestID {
-				existingID = existing.ID
-				return nil
-			}
-			return ErrReleasePlanExecutionExists
+			existingID = existing.ID
+			return nil
 		}
 		if !errors.Is(findExisting, gorm.ErrRecordNotFound) {
 			return findExisting
+		}
+		var activeExecution model.ReleasePlanExecution
+		findActive := tx.Where("release_plan_id = ? AND status IN ?", planID, []model.ReleasePlanExecutionStatus{
+			model.ReleasePlanExecutionPending, model.ReleasePlanExecutionRunning,
+		}).First(&activeExecution).Error
+		if findActive == nil {
+			return ErrReleasePlanExecutionExists
+		}
+		if !errors.Is(findActive, gorm.ErrRecordNotFound) {
+			return findActive
 		}
 
 		var plan model.ReleasePlan
@@ -158,7 +169,7 @@ func (s *Service) CreateReleasePlanExecution(
 		if !plan.IsActive {
 			return ErrReleasePlanDisabled
 		}
-		if (plan.Status != model.ReleasePlanDraft && plan.Status != model.ReleasePlanActive) ||
+		if (plan.Status != model.ReleasePlanDraft && plan.Status != model.ReleasePlanActive && plan.Status != model.ReleasePlanCompleted) ||
 			!plan.UpdatedAt.Equal(input.ExpectedPlanUpdatedAt) {
 			return ErrReleasePlanExecutionPlanChanged
 		}
@@ -183,14 +194,19 @@ func (s *Service) CreateReleasePlanExecution(
 		for _, itemIndex := range lockOrder {
 			item := &prepared.items[itemIndex]
 			var application model.Application
-			if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Select("id", "is_active", "updated_at").
+			if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Select("id", "is_active", "repository_id", "department_id").
 				First(&application, "id = ?", item.item.ApplicationID).Error; err != nil {
 				if errors.Is(err, gorm.ErrRecordNotFound) {
 					return ErrInvalidReleasePlanExecution
 				}
 				return err
 			}
-			if !application.IsActive || !application.UpdatedAt.Equal(item.applicationUpdatedAt) {
+			// 仓库轮询会更新应用的同步状态、检查时间和 updated_at，这些运行状态变化
+			// 不应让一次已经完成远端 Ref 校验的人工执行被误判为配置冲突。这里只锁定
+			// 真正影响本次执行上下文的启用状态、仓库和部门；流水线配置由下方的
+			// revision 与 updated_at 单独保护。
+			if !application.IsActive || application.RepositoryID != item.applicationRepositoryID ||
+				application.DepartmentID != item.applicationDepartmentID {
 				return ErrReleasePlanExecutionPlanChanged
 			}
 			var workflow model.ReleaseWorkflow
@@ -224,10 +240,10 @@ func (s *Service) CreateReleasePlanExecution(
 				return err
 			}
 		}
-		if plan.Status == model.ReleasePlanDraft {
+		if plan.Status == model.ReleasePlanDraft || plan.Status == model.ReleasePlanCompleted {
 			now := time.Now().UTC()
 			result := tx.Model(&model.ReleasePlan{}).
-				Where("id = ? AND status = ?", planID, model.ReleasePlanDraft).
+				Where("id = ? AND status = ?", planID, plan.Status).
 				Updates(map[string]any{
 					"status": model.ReleasePlanActive, "updated_by": actorID, "updated_at": now,
 				})
@@ -242,11 +258,8 @@ func (s *Service) CreateReleasePlanExecution(
 	})
 	if err != nil {
 		if errors.Is(err, gorm.ErrDuplicatedKey) {
-			if existing, findErr := s.findReleasePlanExecutionByPlan(ctx, planID); findErr == nil {
-				if existing.RequestID == input.RequestID {
-					return s.FindReleasePlanExecution(ctx, existing.ID)
-				}
-				return nil, ErrReleasePlanExecutionExists
+			if existing, findErr := s.findReleasePlanExecutionByRequest(ctx, planID, input.RequestID); findErr == nil {
+				return s.FindReleasePlanExecution(ctx, existing.ID)
 			}
 		}
 		if isReleasePlanExecutionPublicError(err) {
@@ -277,7 +290,7 @@ func (s *Service) prepareReleasePlanExecution(
 	if !plan.IsActive {
 		return nil, ErrReleasePlanDisabled
 	}
-	if (plan.Status != model.ReleasePlanDraft && plan.Status != model.ReleasePlanActive) ||
+	if (plan.Status != model.ReleasePlanDraft && plan.Status != model.ReleasePlanActive && plan.Status != model.ReleasePlanCompleted) ||
 		!plan.UpdatedAt.Equal(input.ExpectedPlanUpdatedAt) {
 		return nil, ErrReleasePlanExecutionPlanChanged
 	}
@@ -312,7 +325,8 @@ func (s *Service) prepareReleasePlanExecution(
 	for i := range plan.Groups {
 		groupApplicationCount += len(plan.Groups[i].Applications)
 	}
-	if len(plan.Groups) != 1 || len(plan.Groups[0].Dependencies) != 0 || groupApplicationCount == 0 || len(selectionByApplication) != groupApplicationCount {
+	if len(plan.Groups) != 1 || len(plan.Groups[0].Dependencies) != 0 || groupApplicationCount == 0 ||
+		len(selectionByApplication) == 0 || len(selectionByApplication) > groupApplicationCount {
 		return nil, ErrInvalidReleasePlanExecution
 	}
 
@@ -324,7 +338,7 @@ func (s *Service) prepareReleasePlanExecution(
 			Status: model.ReleasePlanExecutionPending, DepartmentID: plan.DepartmentID,
 			CreatedBy: actorID, CreatedAt: now, UpdatedAt: now,
 		},
-		items:         make([]preparedReleasePlanExecutionItem, 0, groupApplicationCount),
+		items:         make([]preparedReleasePlanExecutionItem, 0, len(selectionByApplication)),
 		planSignature: planSignature,
 	}
 	snapshot := releasePlanExecutionSnapshot{Groups: make([]releasePlanExecutionGroupSnapshot, 0, len(plan.Groups))}
@@ -354,7 +368,7 @@ func (s *Service) prepareReleasePlanExecution(
 			groupApplication := &group.Applications[applicationIndex]
 			selection, exists := selectionByApplication[groupApplication.ID]
 			if !exists {
-				return nil, ErrInvalidReleasePlanExecution
+				continue
 			}
 			if _, duplicate := seenGroupApplications[groupApplication.ID]; duplicate {
 				return nil, ErrInvalidReleasePlanExecution
@@ -427,6 +441,7 @@ func (s *Service) prepareReleasePlanExecution(
 				run.CommitMessage = s.resolveCommitMessage(ctx, application.RepositoryID, ref, commitSHA)
 			}
 			run.Message = "发布计划等待编排启动"
+			branchMismatch := selectedArtifact == nil && !releasePlanRefMatchesSourceBranch(*source, ref)
 			if selectedArtifact != nil {
 				run.CurrentNodeID = selectedArtifact.resumeNode.ID
 				run.Stage = "task_succeeded"
@@ -452,9 +467,18 @@ func (s *Service) prepareReleasePlanExecution(
 				SourceNodeID: source.ID, SortOrder: groupApplication.SortOrder,
 				Message: "等待发布计划开始", CreatedAt: now, UpdatedAt: now,
 			}
+			if branchMismatch {
+				message := "所选分支不匹配流水线分支条件，后续任务已跳过"
+				run.Status, run.Stage, run.Message = model.PipelineRunSkipped, "skipped", message
+				item.Status, item.Message, item.StartedAt, item.FinishedAt = model.ReleasePlanExecutionItemSkipped, message, &now, &now
+				for i := range components {
+					components[i].Status = model.PipelineRunRepositoryReady
+				}
+			}
 			prepared.items = append(prepared.items, preparedReleasePlanExecutionItem{
 				item: item, run: *run, components: components,
-				applicationUpdatedAt: application.UpdatedAt, workflowUpdatedAt: workflow.UpdatedAt,
+				applicationRepositoryID: application.RepositoryID, applicationDepartmentID: application.DepartmentID,
+				workflowUpdatedAt: workflow.UpdatedAt,
 			})
 			groupSnapshot.ItemIDs = append(groupSnapshot.ItemIDs, itemID)
 		}
@@ -517,6 +541,14 @@ func releasePlanManualSource(workflow *model.ReleaseWorkflow, sourceNodeID, ref 
 		return nil
 	}
 	return manualWorkflowSource(workflow, ref, sourceNodeID)
+}
+
+func releasePlanRefMatchesSourceBranch(source model.WorkflowNode, ref string) bool {
+	if !strings.HasPrefix(ref, "refs/heads/") {
+		return true
+	}
+	pattern := strings.TrimSpace(source.Config.Branch)
+	return pattern == "" || matchWorkflowPattern(pattern, strings.TrimPrefix(ref, "refs/heads/"))
 }
 
 func validReleasePlanExecutionDAG(snapshot releasePlanExecutionSnapshot) bool {
@@ -664,7 +696,7 @@ func (s *Service) ReconcileReleasePlanExecution(ctx context.Context, executionID
 	if releasePlanExecutionAllTerminal(itemByID) {
 		status := model.ReleasePlanExecutionSucceeded
 		for _, item := range itemByID {
-			if item.Status != model.ReleasePlanExecutionItemSucceeded {
+			if item.Status == model.ReleasePlanExecutionItemFailed || item.Status == model.ReleasePlanExecutionItemCanceled {
 				status = model.ReleasePlanExecutionFailed
 				break
 			}
@@ -675,14 +707,9 @@ func (s *Service) ReconcileReleasePlanExecution(ctx context.Context, executionID
 			updates["started_at"] = now
 		}
 		if err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-			if err := tx.Model(&model.ReleasePlanExecution{}).Where("id = ? AND status IN ?", execution.ID, []model.ReleasePlanExecutionStatus{
+			return tx.Model(&model.ReleasePlanExecution{}).Where("id = ? AND status IN ?", execution.ID, []model.ReleasePlanExecutionStatus{
 				model.ReleasePlanExecutionPending, model.ReleasePlanExecutionRunning,
-			}).Updates(updates).Error; err != nil {
-				return err
-			}
-			return tx.Model(&model.ReleasePlan{}).
-				Where("id = ? AND status = ?", execution.ReleasePlanID, model.ReleasePlanActive).
-				Updates(map[string]any{"status": model.ReleasePlanCompleted, "updated_at": now}).Error
+			}).Updates(updates).Error
 		}); err != nil {
 			s.logReleasePlanExecutionError("release_plan_execution_reconcile_complete", executionID, err)
 			return nil, ErrReleasePlanExecutionTemporarilyFailed
@@ -769,6 +796,8 @@ func (s *Service) syncReleasePlanExecutionItems(ctx context.Context, execution *
 		switch run.Status {
 		case model.PipelineRunSucceeded:
 			status, message, finishedAt = model.ReleasePlanExecutionItemSucceeded, "流水线执行成功", &now
+		case model.PipelineRunSkipped:
+			status, message, finishedAt = model.ReleasePlanExecutionItemSkipped, run.Message, &now
 		case model.PipelineRunFailed:
 			status, message, finishedAt = model.ReleasePlanExecutionItemFailed, "流水线执行失败", &now
 		case model.PipelineRunCanceled:
@@ -825,7 +854,7 @@ func releasePlanExecutionSkips(
 			ownFailure := false
 			for _, itemID := range group.ItemIDs {
 				status := items[itemID].Status
-				if status == model.ReleasePlanExecutionItemCanceled || status == model.ReleasePlanExecutionItemSkipped ||
+				if status == model.ReleasePlanExecutionItemCanceled ||
 					(group.FailurePolicy == model.ReleaseGroupStopOnFailure && status == model.ReleasePlanExecutionItemFailed) {
 					ownFailure = true
 				}
@@ -1030,9 +1059,19 @@ func (s *Service) RunReleasePlanExecutionReconciler(ctx context.Context, interva
 	}
 }
 
-func (s *Service) findReleasePlanExecutionByPlan(ctx context.Context, planID string) (*model.ReleasePlanExecution, error) {
+func (s *Service) findReleasePlanExecutionByRequest(ctx context.Context, planID, requestID string) (*model.ReleasePlanExecution, error) {
 	var execution model.ReleasePlanExecution
-	if err := s.db.WithContext(ctx).First(&execution, "release_plan_id = ?", planID).Error; err != nil {
+	if err := s.db.WithContext(ctx).First(&execution, "release_plan_id = ? AND request_id = ?", planID, requestID).Error; err != nil {
+		return nil, err
+	}
+	return &execution, nil
+}
+
+func (s *Service) findActiveReleasePlanExecution(ctx context.Context, planID string) (*model.ReleasePlanExecution, error) {
+	var execution model.ReleasePlanExecution
+	if err := s.db.WithContext(ctx).First(&execution, "release_plan_id = ? AND status IN ?", planID, []model.ReleasePlanExecutionStatus{
+		model.ReleasePlanExecutionPending, model.ReleasePlanExecutionRunning,
+	}).Error; err != nil {
 		return nil, err
 	}
 	return &execution, nil

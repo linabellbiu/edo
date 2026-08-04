@@ -249,6 +249,7 @@ const (
 	PipelineRunRunning          PipelineRunStatus = "running"
 	PipelineRunSucceeded        PipelineRunStatus = "succeeded"
 	PipelineRunFailed           PipelineRunStatus = "failed"
+	PipelineRunSkipped          PipelineRunStatus = "skipped"
 	PipelineRunCanceled         PipelineRunStatus = "canceled"
 )
 
