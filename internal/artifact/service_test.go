@@ -233,17 +233,17 @@ func TestServiceRegistersImmutableOCIImages(t *testing.T) {
 	}
 	registryArtifact, err := service.CreateImage(context.Background(), ImageInput{
 		BuildMetadata: metadata, StorageKind: model.ArtifactStorageKindRegistry,
-		ImageRef: "registry.example.com/team/service@" + digest, ImageRegistryID: "registry-1",
+		ImageRef: "registry.example.com/team/service@" + digest, ImageRegistryID: "registry-1", SizeBytes: 42_000_000,
 	})
 	if err != nil {
 		t.Fatalf("登记仓库 OCI 镜像失败: %v", err)
 	}
-	if registryArtifact.Digest != digest || registryArtifact.ImageRef != "registry.example.com/team/service@"+digest {
+	if registryArtifact.Digest != digest || registryArtifact.ImageRef != "registry.example.com/team/service@"+digest || registryArtifact.SizeBytes != 42_000_000 {
 		t.Fatalf("仓库 OCI 镜像登记错误: %+v", registryArtifact)
 	}
 	replayed, err := service.CreateImage(context.Background(), ImageInput{
 		BuildMetadata: metadata, StorageKind: model.ArtifactStorageKindRegistry,
-		ImageRef: "registry.example.com/team/service@" + digest, ImageRegistryID: "registry-1",
+		ImageRef: "registry.example.com/team/service@" + digest, ImageRegistryID: "registry-1", SizeBytes: 42_000_000,
 	})
 	if err != nil || replayed.ID != registryArtifact.ID {
 		t.Fatalf("仓库镜像节点重投未返回原制品: artifact=%+v err=%v", replayed, err)

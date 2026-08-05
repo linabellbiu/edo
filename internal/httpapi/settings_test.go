@@ -12,7 +12,75 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"edo/internal/variablecatalog"
 )
+
+func TestBuiltinVariableCatalogIsReadableAndContainsNoRuntimeValues(t *testing.T) {
+	router, closeTest := newAuthTestRouter(t)
+	defer closeTest()
+
+	login := performJSONRequest(t, router, http.MethodPost, "/api/v1/auth/login", map[string]string{
+		"username": "admin", "password": "correct horse battery staple",
+	}, nil)
+	adminCookie := login.Result().Cookies()[0]
+
+	response := performJSONRequest(t, router, http.MethodGet, "/api/v1/settings/builtin-variables", nil, adminCookie)
+	if response.Code != http.StatusOK {
+		t.Fatalf("读取内置变量目录失败: status=%d body=%s", response.Code, response.Body.String())
+	}
+	var catalog variablecatalog.Catalog
+	if err := json.Unmarshal(response.Body.Bytes(), &catalog); err != nil {
+		t.Fatalf("解析内置变量目录失败: %v", err)
+	}
+	if catalog.SchemaVersion != 1 || len(catalog.Variables) < 30 {
+		t.Fatalf("内置变量目录不完整: %+v", catalog)
+	}
+	foundTemplate, foundEnvironment, foundPlaceholder := false, false, false
+	for _, definition := range catalog.Variables {
+		switch definition.Syntax {
+		case "{{application.name}}":
+			foundTemplate = true
+		case "$EDO_PIPELINE_RUN_ID":
+			foundEnvironment = true
+		case "${EDO_IMAGE}":
+			foundPlaceholder = true
+		}
+	}
+	if !foundTemplate || !foundEnvironment || !foundPlaceholder {
+		t.Fatalf("内置变量目录缺少关键变量: template=%t environment=%t placeholder=%t", foundTemplate, foundEnvironment, foundPlaceholder)
+	}
+	if bytes.Contains(response.Body.Bytes(), []byte(`"value"`)) || bytes.Contains(response.Body.Bytes(), []byte(`"secret"`)) {
+		t.Fatalf("内置变量目录不应返回运行值或密钥字段: %s", response.Body.String())
+	}
+
+	role := performJSONRequest(t, router, http.MethodPost, "/api/v1/roles", map[string]any{
+		"name": "builtin-variable-reader", "display_name": "内置变量查看员", "permissions": []string{"delivery.read"},
+	}, adminCookie)
+	var rolePayload struct {
+		Role struct {
+			ID string `json:"id"`
+		} `json:"role"`
+	}
+	if role.Code != http.StatusCreated || json.Unmarshal(role.Body.Bytes(), &rolePayload) != nil || rolePayload.Role.ID == "" {
+		t.Fatalf("创建内置变量查看角色失败: status=%d body=%s", role.Code, role.Body.String())
+	}
+	user := performJSONRequest(t, router, http.MethodPost, "/api/v1/users", map[string]any{
+		"username": "builtin-variable-reader", "nickname": "内置变量查看员",
+		"password": "correct horse battery staple", "role_ids": []string{rolePayload.Role.ID},
+	}, adminCookie)
+	if user.Code != http.StatusCreated {
+		t.Fatalf("创建内置变量查看用户失败: status=%d body=%s", user.Code, user.Body.String())
+	}
+	readerLogin := performJSONRequest(t, router, http.MethodPost, "/api/v1/auth/login", map[string]string{
+		"username": "builtin-variable-reader", "password": "correct horse battery staple",
+	}, nil)
+	readerCookie := readerLogin.Result().Cookies()[0]
+	readerResponse := performJSONRequest(t, router, http.MethodGet, "/api/v1/settings/builtin-variables", nil, readerCookie)
+	if readerResponse.Code != http.StatusOK {
+		t.Fatalf("具有 delivery.read 的用户无法读取内置变量目录: status=%d body=%s", readerResponse.Code, readerResponse.Body.String())
+	}
+}
 
 func TestExternalGitWebhookCanBeEnabledFromSettings(t *testing.T) {
 	router, closeTest := newAuthTestRouter(t)

@@ -76,6 +76,14 @@ type BuildOptions struct {
 	Labels       map[string]string
 }
 
+// BuiltImage 是构建运行时返回的不可变镜像信息。
+// 多架构镜像直接推送到仓库时，本地运行时没有完整镜像，因此 SizeBytes 可能为 0。
+type BuiltImage struct {
+	ImageID   string
+	ImageRef  string
+	SizeBytes int64
+}
+
 func (s *Service) BuildAndPush(
 	ctx context.Context,
 	contextDirectory, dockerfile, image string,
@@ -98,50 +106,83 @@ func (s *Service) BuildAndPushWithOptions(
 	timeout time.Duration,
 	output io.Writer,
 ) (string, error) {
+	result, err := s.buildAndPushWithOptions(
+		ctx, contextDirectory, dockerfile, image, registry, options, timeout, output,
+	)
+	return result.ImageRef, err
+}
+
+// BuildAndPushArtifactWithOptions 构建并推送镜像，同时返回制品登记需要的摘要和大小。
+func (s *Service) BuildAndPushArtifactWithOptions(
+	ctx context.Context,
+	contextDirectory, dockerfile, image string,
+	registry RegistryAuth,
+	options BuildOptions,
+	timeout time.Duration,
+	output io.Writer,
+) (BuiltImage, error) {
+	return s.buildAndPushWithOptions(
+		ctx, contextDirectory, dockerfile, image, registry, options, timeout, output,
+	)
+}
+
+func (s *Service) buildAndPushWithOptions(
+	ctx context.Context,
+	contextDirectory, dockerfile, image string,
+	registry RegistryAuth,
+	options BuildOptions,
+	timeout time.Duration,
+	output io.Writer,
+) (BuiltImage, error) {
 	platform, platforms, err := normalizeBuildPlatforms(options.Platform)
 	if err != nil {
-		return "", err
+		return BuiltImage{}, err
 	}
 	options.Platform = platform
 	buildContext, err := validateBuildContextDirectory(contextDirectory, dockerfile)
 	if err != nil {
-		return "", err
+		return BuiltImage{}, err
 	}
 	buildContextTimeout, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	if len(platforms) > 1 {
-		return s.runBuildxPush(buildContextTimeout, buildContext, dockerfile, image, registry, options, output)
+		imageRef, err := s.runBuildxPush(buildContextTimeout, buildContext, dockerfile, image, registry, options, output)
+		return BuiltImage{ImageRef: imageRef}, err
 	}
 	apiClient, err := s.BuilderClient()
 	if err != nil {
-		return "", err
+		return BuiltImage{}, err
 	}
 	defer apiClient.Close()
 	authConfig := registryAuthConfig(registry)
 	encodedAuth, err := encodeRegistryAuth(authConfig)
 	if err != nil {
-		return "", err
+		return BuiltImage{}, err
 	}
 	if err := s.runBuildx(buildContextTimeout, buildContext, dockerfile, image, registry, options, output); err != nil {
-		return "", err
+		return BuiltImage{}, err
 	}
 
 	push, err := apiClient.ImagePush(buildContextTimeout, image, client.ImagePushOptions{RegistryAuth: encodedAuth})
 	if err != nil {
-		return "", fmt.Errorf("提交 Docker 镜像推送失败: %w", err)
+		return BuiltImage{}, fmt.Errorf("提交 Docker 镜像推送失败: %w", err)
 	}
 	if err := push.Wait(buildContextTimeout); err != nil {
-		return "", fmt.Errorf("等待 Docker 镜像推送完成失败: %w", err)
+		return BuiltImage{}, fmt.Errorf("等待 Docker 镜像推送完成失败: %w", err)
 	}
 	inspect, err := apiClient.ImageInspect(buildContextTimeout, image)
 	if err != nil {
-		return "", fmt.Errorf("读取已推送镜像摘要失败: %w", err)
+		return BuiltImage{}, fmt.Errorf("读取已推送镜像摘要失败: %w", err)
 	}
 	digest := matchingRepoDigest(image, inspect.RepoDigests)
 	if digest == "" {
-		return "", errors.New("镜像仓库没有返回可验证的镜像摘要")
+		return BuiltImage{}, errors.New("镜像仓库没有返回可验证的镜像摘要")
 	}
-	return digest, nil
+	return BuiltImage{
+		ImageID:   inspect.ID,
+		ImageRef:  digest,
+		SizeBytes: nonNegativeImageSize(inspect.Size),
+	}, nil
 }
 
 func matchingRepoDigest(image string, repoDigests []string) string {
@@ -184,40 +225,73 @@ func (s *Service) BuildLocalWithOptions(
 	timeout time.Duration,
 	output io.Writer,
 ) (string, error) {
+	result, err := s.buildLocalWithOptions(ctx, contextDirectory, dockerfile, image, options, timeout, output)
+	return result.ImageID, err
+}
+
+// BuildLocalArtifactWithOptions 构建本地镜像，同时返回制品登记需要的镜像 ID 和大小。
+func (s *Service) BuildLocalArtifactWithOptions(
+	ctx context.Context,
+	contextDirectory, dockerfile, image string,
+	options BuildOptions,
+	timeout time.Duration,
+	output io.Writer,
+) (BuiltImage, error) {
+	return s.buildLocalWithOptions(ctx, contextDirectory, dockerfile, image, options, timeout, output)
+}
+
+func (s *Service) buildLocalWithOptions(
+	ctx context.Context,
+	contextDirectory, dockerfile, image string,
+	options BuildOptions,
+	timeout time.Duration,
+	output io.Writer,
+) (BuiltImage, error) {
 	if !IsEDOLocalImage(image) {
-		return "", errors.New("本地构建镜像名称无效")
+		return BuiltImage{}, errors.New("本地构建镜像名称无效")
 	}
 	platform, platforms, err := normalizeBuildPlatforms(options.Platform)
 	if err != nil {
-		return "", err
+		return BuiltImage{}, err
 	}
 	if len(platforms) > 1 {
-		return "", ErrMultiPlatformRegistryRequired
+		return BuiltImage{}, ErrMultiPlatformRegistryRequired
 	}
 	options.Platform = platform
 	apiClient, err := s.BuilderClient()
 	if err != nil {
-		return "", err
+		return BuiltImage{}, err
 	}
 	defer apiClient.Close()
 	buildContext, err := validateBuildContextDirectory(contextDirectory, dockerfile)
 	if err != nil {
-		return "", err
+		return BuiltImage{}, err
 	}
 
 	buildContextTimeout, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	if err := s.runBuildx(buildContextTimeout, buildContext, dockerfile, image, RegistryAuth{}, options, output); err != nil {
-		return "", err
+		return BuiltImage{}, err
 	}
 	inspect, err := apiClient.ImageInspect(buildContextTimeout, image)
 	if err != nil {
-		return "", fmt.Errorf("读取本地构建镜像失败: %w", err)
+		return BuiltImage{}, fmt.Errorf("读取本地构建镜像失败: %w", err)
 	}
 	if !IsValidImageID(inspect.ID) {
-		return "", errors.New("Docker 没有返回可验证的本地镜像 ID")
+		return BuiltImage{}, errors.New("Docker 没有返回可验证的本地镜像 ID")
 	}
-	return inspect.ID, nil
+	return BuiltImage{
+		ImageID:   inspect.ID,
+		ImageRef:  image,
+		SizeBytes: nonNegativeImageSize(inspect.Size),
+	}, nil
+}
+
+func nonNegativeImageSize(size int64) int64 {
+	if size < 0 {
+		return 0
+	}
+	return size
 }
 
 // TransferImageToSSH 将构建运行时中的镜像以 docker save 流传给目标 SSH 主机的 docker load。

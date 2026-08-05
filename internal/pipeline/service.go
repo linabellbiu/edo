@@ -32,6 +32,7 @@ import (
 	"edo/internal/notification"
 	"edo/internal/repository"
 	"edo/internal/secret"
+	"edo/internal/variablecatalog"
 )
 
 var (
@@ -509,11 +510,7 @@ func validBuildVariables(values map[string]string) bool {
 	return true
 }
 
-var reservedScriptEnvironmentNames = map[string]struct{}{
-	"CI": {}, "HOME": {}, "TMPDIR": {},
-	"EDO_PIPELINE_RUN_ID": {}, "EDO_APPLICATION_ID": {}, "EDO_GIT_REF": {}, "EDO_COMMIT_SHA": {},
-	"EDO_TARGET_PLATFORM": {}, "EDO_TARGET_ARCH": {}, "GOOS": {}, "GOARCH": {},
-}
+var reservedScriptEnvironmentNames = variablecatalog.ReservedScriptEnvironmentNames()
 
 // 脚本运行元数据和受控目录由执行器固定注入。保存阶段直接拒绝同名变量，
 // 避免用户配置看似成功、运行时却被系统静默覆盖。

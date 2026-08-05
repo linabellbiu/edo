@@ -450,13 +450,14 @@ func (s *Service) executePipelineBuild(ctx context.Context, prepared *buildExecu
 			if err := s.updateExecutionPhase(ctx, &prepared.run, "build", "正在构建本地 OCI 镜像 "+image); err != nil {
 				return nil, err
 			}
-			imageID, err := s.docker.BuildLocalWithOptions(ctx, contextDirectory, dockerfile, image, options, timeout, output)
+			builtImage, err := s.docker.BuildLocalArtifactWithOptions(ctx, contextDirectory, dockerfile, image, options, timeout, output)
 			if err != nil {
 				return nil, err
 			}
 			return s.artifacts.CreateImage(ctx, artifact.ImageInput{
 				BuildMetadata: metadata, Name: image, StorageKind: model.ArtifactStorageKindDockerDaemon,
-				Digest: imageID, ImageRef: image, RuntimeID: dockerengine.LocalEndpointID, LocalImageID: imageID,
+				Digest: builtImage.ImageID, ImageRef: image, RuntimeID: dockerengine.LocalEndpointID,
+				LocalImageID: builtImage.ImageID, SizeBytes: builtImage.SizeBytes,
 			})
 		}
 		var registry model.ImageRegistry
@@ -478,7 +479,7 @@ func (s *Service) executePipelineBuild(ctx context.Context, prepared *buildExecu
 		if err := s.updateExecutionPhase(ctx, &prepared.run, "build", "正在构建并推送 OCI 镜像 "+image); err != nil {
 			return nil, err
 		}
-		digestRef, err := s.docker.BuildAndPushWithOptions(
+		builtImage, err := s.docker.BuildAndPushArtifactWithOptions(
 			ctx, contextDirectory, dockerfile, image, auth, options, timeout, output,
 		)
 		if err != nil {
@@ -486,7 +487,7 @@ func (s *Service) executePipelineBuild(ctx context.Context, prepared *buildExecu
 		}
 		return s.artifacts.CreateImage(ctx, artifact.ImageInput{
 			BuildMetadata: metadata, Name: image, StorageKind: model.ArtifactStorageKindRegistry,
-			ImageRef: digestRef, ImageRegistryID: registry.ID,
+			ImageRef: builtImage.ImageRef, ImageRegistryID: registry.ID, SizeBytes: builtImage.SizeBytes,
 		})
 	default:
 		return nil, ErrPipelineExecutionConfig

@@ -13,6 +13,7 @@ import client from '@/api/client'
 import { apiErrorMessage } from '@/api/resources'
 import WorkflowPresetModal from '@/components/WorkflowPresetModal.vue'
 import { useAuthStore } from '@/stores/auth'
+import type { BuiltinVariableCatalog, BuiltinVariableDefinition } from '@/types/builtinVariables'
 import type {
   PipelineBuildPlan,
   PipelineStageDraft,
@@ -29,6 +30,7 @@ import type {
 type TaskNodeType = 'build' | 'shell' | 'approval' | 'manual' | 'deploy'
 type PanelMode = 'closed' | 'library' | 'properties' | 'stage'
 type PropertyTab = 'common' | 'advanced'
+type NotificationTemplateField = 'title' | 'message'
 type DeploymentPlanKind = 'script' | 'kubernetes' | 'compose' | 'docker'
 type TaskGroup = '构建' | '测试' | '扫描' | '发布' | '部署' | '工具'
 
@@ -93,6 +95,16 @@ const runtimeImageOptions = ['alpine:3.22', 'node:24-alpine', 'golang:1.26-alpin
 const deploymentKindNames: Record<DeploymentPlanKind, string> = {
   script: '主机脚本', docker: 'Docker 容器', compose: 'Docker Compose', kubernetes: 'Kubernetes Deployment',
 }
+const defaultNotificationTitle = 'EDO｜{{application.name}}｜{{task.name}}｜{{task.status}}'
+const defaultNotificationMessage = [
+  '应用：{{application.name}}',
+  '流水线：{{workflow.name}}',
+  '任务：{{task.name}}',
+  '结果：{{task.status}}',
+  '版本：{{git.ref}}',
+  '提交：{{git.commit}} {{git.message}}',
+  '执行说明：{{detail}}',
+].join('\n')
 
 const route = useRoute()
 const router = useRouter()
@@ -102,6 +114,9 @@ const templates = ref<Workflow[]>([])
 const buildPlans = ref<PipelineBuildPlan[]>([])
 const deploymentPlans = ref<DeploymentPlan[]>([])
 const notificationChannels = ref<NotificationChannel[]>([])
+const builtinVariables = ref<BuiltinVariableDefinition[]>([])
+const builtinVariableLoading = ref(false)
+const builtinVariableError = ref('')
 const applicationID = ref(String(route.query.application || ''))
 const workflowID = ref(String(route.query.workflow || ''))
 const templateID = ref(String(route.query.template || ''))
@@ -128,9 +143,15 @@ const taskSearch = ref('')
 const activeTaskCategory = ref<(typeof taskCategories)[number]>('全部')
 const environmentVariableTexts = reactive<Record<string, string>>({})
 const environmentVariableErrors = reactive<Record<string, string>>({})
+const notificationTemplateTargets = reactive<Record<string, NotificationTemplateField>>({})
 const notificationChannelModalOpen = ref(false)
 const notificationChannelSubmitting = ref(false)
-const notificationChannelForm = reactive({ name: '', endpoint: '', token: '', allow_http: false })
+const notificationChannelTemplateTarget = ref<NotificationTemplateField>('message')
+const notificationChannelForm = reactive({
+  name: '', endpoint: '', token: '', allow_http: false,
+  title: defaultNotificationTitle,
+  message: defaultNotificationMessage,
+})
 
 let autoSaveTimer = 0
 let editVersion = 0
@@ -184,6 +205,13 @@ const buildPlanOptions = computed(() => activeBuildPlans.value.map(item => ({
 const activeDeploymentPlans = computed(() => deploymentPlans.value.filter(item =>
   item.is_active && Boolean(item.deployment_target_id || item.deployment_target?.id) && item.deployment_target?.is_active !== false))
 const activeNotificationChannels = computed(() => notificationChannels.value.filter(item => item.is_active))
+const notificationTemplateVariables = computed(() => builtinVariables.value
+  .filter(item => item.kind === 'template' && item.scopes.includes('notification_template'))
+  .map(item => ({ value: item.syntax, label: item.label })))
+const reservedPipelineEnvironmentNames = computed(() => new Set(builtinVariables.value
+  .filter(item => item.kind === 'environment' && item.scopes.includes('pipeline_script'))
+  .map(item => item.name)))
+const builtinVariableCatalogReady = computed(() => !builtinVariableLoading.value && !builtinVariableError.value && builtinVariables.value.length > 0)
 const notificationChannelOptions = computed(() => activeNotificationChannels.value.map(item => ({
   value: item.id,
   label: item.name,
@@ -351,8 +379,26 @@ function summarizeIssues(items: WorkflowIssue[]) {
   return first.join('；')
 }
 
+async function loadBuiltinVariableCatalog() {
+  builtinVariableLoading.value = true
+  builtinVariableError.value = ''
+  try {
+    const result = await client.get<BuiltinVariableCatalog>('/settings/builtin-variables')
+    const variables = result.data.variables || []
+    if (!variables.length) throw new Error('内置变量目录为空')
+    builtinVariables.value = variables
+  } catch (error) {
+    builtinVariables.value = []
+    builtinVariableError.value = `内置变量目录暂时不可用：${apiErrorMessage(error)}`
+    message.warning(builtinVariableError.value)
+  } finally {
+    builtinVariableLoading.value = false
+  }
+}
+
 async function loadResources() {
   loading.value = true
+  void loadBuiltinVariableCatalog()
   try {
     const notificationChannelRequest = canReadNotificationChannels.value
       ? client.get<{ channels: NotificationChannel[] }>('/notification-channels')
@@ -663,24 +709,35 @@ function updateSelectedNode(update: Partial<WorkflowNode>, config?: Partial<Work
   replaceNode(selectedNode.value.id, update, config)
 }
 
-function addNotificationRule() {
+function appendNotificationRule(
+  channelID: string,
+  template: { title?: string, message?: string } = {},
+) {
   if (!canEdit.value || !selectedTask.value) return
-  const channelID = activeNotificationChannels.value[0]?.id
-  if (!channelID) {
-    message.warning(canReadNotificationChannels.value ? '请先创建并启用一个通知渠道。' : '当前账号没有读取通知渠道的权限。')
-    return
-  }
   const rules = selectedTask.value.config.notifications || []
   if (rules.length >= 10) {
     message.warning('每个任务最多配置 10 条通知规则。')
     return
   }
+  const ruleID = uid('notification')
   updateSelectedNode({}, {
     notifications: [...rules, {
-      id: uid('notification'), channel_id: channelID,
+      id: ruleID, channel_id: channelID,
       on_success: false, on_failure: true,
+      title: template.title ?? defaultNotificationTitle,
+      message: template.message ?? defaultNotificationMessage,
     }],
   })
+  notificationTemplateTargets[ruleID] = 'message'
+}
+
+function addNotificationRule() {
+  const channelID = activeNotificationChannels.value[0]?.id
+  if (!channelID) {
+    message.warning(canReadNotificationChannels.value ? '请先创建并启用一个通知渠道。' : '当前账号没有读取通知渠道的权限。')
+    return
+  }
+  appendNotificationRule(channelID)
 }
 
 function updateNotificationRule(ruleID: string, update: Partial<WorkflowNotificationRule>) {
@@ -696,6 +753,30 @@ function removeNotificationRule(ruleID: string) {
   updateSelectedNode({}, {
     notifications: (selectedTask.value.config.notifications || []).filter(rule => rule.id !== ruleID),
   })
+  delete notificationTemplateTargets[ruleID]
+}
+
+function selectNotificationTemplateField(ruleID: string, field: NotificationTemplateField) {
+  notificationTemplateTargets[ruleID] = field
+}
+
+function insertNotificationVariable(rule: WorkflowNotificationRule, variable: string) {
+  if (!canEdit.value) return
+  const field = notificationTemplateTargets[rule.id] || 'message'
+  const current = rule[field] || ''
+  const separator = current && !current.endsWith(' ') && !current.endsWith('\n')
+    ? field === 'message' ? '\n' : ' '
+    : ''
+  updateNotificationRule(rule.id, { [field]: `${current}${separator}${variable}` })
+}
+
+function insertNotificationChannelVariable(variable: string) {
+  const field = notificationChannelTemplateTarget.value
+  const current = notificationChannelForm[field]
+  const separator = current && !current.endsWith(' ') && !current.endsWith('\n')
+    ? field === 'message' ? '\n' : ' '
+    : ''
+  notificationChannelForm[field] = `${current}${separator}${variable}`
 }
 
 function openNotificationChannelModal() {
@@ -703,14 +784,19 @@ function openNotificationChannelModal() {
   notificationChannelForm.endpoint = ''
   notificationChannelForm.token = ''
   notificationChannelForm.allow_http = false
+  notificationChannelForm.title = defaultNotificationTitle
+  notificationChannelForm.message = defaultNotificationMessage
+  notificationChannelTemplateTarget.value = 'message'
   notificationChannelModalOpen.value = true
 }
 
 async function createNotificationChannel() {
   const name = notificationChannelForm.name.trim()
   const endpoint = notificationChannelForm.endpoint.trim()
-  if (!name || !endpoint) {
-    message.warning('请填写渠道名称和 Webhook 地址。')
+  const title = notificationChannelForm.title.trim()
+  const content = notificationChannelForm.message.trim()
+  if (!name || !endpoint || !title || !content) {
+    message.warning('请填写渠道名称、Webhook 地址、通知标题和通知内容。')
     return
   }
   notificationChannelSubmitting.value = true
@@ -724,7 +810,12 @@ async function createNotificationChannel() {
     })
     notificationChannels.value = [...notificationChannels.value, result.data.channel]
     notificationChannelModalOpen.value = false
-    message.success('通知渠道已创建。')
+    if (selectedTask.value && canEdit.value && (selectedTask.value.config.notifications?.length || 0) < 10) {
+      appendNotificationRule(result.data.channel.id, { title, message: content })
+      message.success('通知渠道已创建，通知模板已添加到当前任务。')
+    } else {
+      message.success('通知渠道已创建。')
+    }
   } catch (error) {
     message.error(apiErrorMessage(error))
   } finally {
@@ -978,7 +1069,7 @@ function formatEnvironmentVariables(value?: Record<string, string>) {
 
 function parseEnvironmentVariables(value: string) {
   const result: Record<string, string> = {}
-  const reserved = new Set(['CI', 'HOME', 'TMPDIR', 'EDO_PIPELINE_RUN_ID', 'EDO_APPLICATION_ID', 'EDO_GIT_REF', 'EDO_COMMIT_SHA'])
+  const reserved = reservedPipelineEnvironmentNames.value
   const lines = value.split(/\r?\n/)
   for (let index = 0; index < lines.length; index += 1) {
     const line = lines[index]
@@ -999,7 +1090,7 @@ function parseEnvironmentVariables(value: string) {
 }
 
 function updateEnvironmentVariables(value: string) {
-  if (!canEdit.value || !selectedTask.value || selectedTask.value.type !== 'shell') return
+  if (!canEdit.value || !builtinVariableCatalogReady.value || !selectedTask.value || selectedTask.value.type !== 'shell') return
   const taskID = selectedTask.value.id
   environmentVariableTexts[taskID] = value
   const parsed = parseEnvironmentVariables(value)
@@ -1574,7 +1665,6 @@ onBeforeRouteLeave(async () => {
                 type="info"
                 show-icon
                 message="还没有可用通知渠道"
-                description="创建 Webhook 通知渠道后，可为当前任务配置成功或失败通知。"
               />
               <div v-else-if="selectedTask.config.notifications?.length" class="node-notification-list">
                 <article v-for="rule in selectedTask.config.notifications" :key="rule.id" class="node-notification-rule">
@@ -1594,24 +1684,36 @@ onBeforeRouteLeave(async () => {
                     <a-checkbox :checked="rule.on_failure" :disabled="!canEdit" @change="updateNotificationRule(rule.id, { on_failure: $event.target.checked })">失败</a-checkbox>
                     <a-checkbox :checked="rule.on_success" :disabled="!canEdit" @change="updateNotificationRule(rule.id, { on_success: $event.target.checked })">成功</a-checkbox>
                   </div>
-                  <a-form-item label="自定义标题（可选）">
-                    <a-input :value="rule.title" :maxlength="255" :disabled="!canEdit" placeholder="留空时使用 EDO 默认标题" @update:value="updateNotificationRule(rule.id, { title: String($event) })" />
+                  <a-form-item label="通知标题" required>
+                    <a-input :value="rule.title" :maxlength="255" :disabled="!canEdit" placeholder="请输入通知标题" @focus="selectNotificationTemplateField(rule.id, 'title')" @update:value="updateNotificationRule(rule.id, { title: String($event) })" />
                   </a-form-item>
-                  <a-form-item label="自定义内容（可选）">
-                    <a-textarea :value="rule.message" :rows="4" :maxlength="8192" :disabled="!canEdit" placeholder="留空时自动包含应用、任务、版本、提交和执行结果" @update:value="updateNotificationRule(rule.id, { message: String($event) })" />
+                  <a-form-item label="通知内容" required>
+                    <a-textarea :value="rule.message" :rows="9" :maxlength="8192" :disabled="!canEdit" placeholder="请输入通知内容" @focus="selectNotificationTemplateField(rule.id, 'message')" @update:value="updateNotificationRule(rule.id, { message: String($event) })" />
                   </a-form-item>
-                  <small class="node-notification-placeholders">可用变量：&#123;&#123;application.name&#125;&#125;、&#123;&#123;workflow.name&#125;&#125;、&#123;&#123;task.name&#125;&#125;、&#123;&#123;task.status&#125;&#125;、&#123;&#123;git.ref&#125;&#125;、&#123;&#123;git.commit&#125;&#125;、&#123;&#123;git.message&#125;&#125;、&#123;&#123;run.id&#125;&#125;、&#123;&#123;detail&#125;&#125;</small>
+                  <section class="node-notification-variables">
+                    <header><strong>流水线变量</strong><small>点击插入模板。只有被标题或内容引用的变量才会替换为本次运行的真实值。</small></header>
+                    <div v-if="notificationTemplateVariables.length">
+                      <button v-for="variable in notificationTemplateVariables" :key="variable.value" type="button" :disabled="!canEdit" :title="`插入${variable.label}`" @click="insertNotificationVariable(rule, variable.value)">
+                        <code>{{ variable.value }}</code><span>{{ variable.label }}</span>
+                      </button>
+                    </div>
+                    <small v-else>{{ builtinVariableLoading ? '正在加载内置变量目录…' : (builtinVariableError || '当前没有可用的通知模板变量。') }}</small>
+                  </section>
                 </article>
               </div>
               <div v-else-if="canReadNotificationChannels" class="node-notification-empty">当前任务尚未配置通知；建议至少添加“失败”通知。</div>
             </section>
-            <a-divider v-if="selectedTask" class="node-notification-divider" />
+            <a-divider v-if="selectedTask && selectedNode.type !== 'deploy'" class="node-notification-divider" />
             <template v-if="selectedNode.type === 'shell'">
               <a-form-item label="运行镜像"><a-auto-complete :value="selectedNode.config.runtime_image || DEFAULT_RUNTIME_IMAGE" :options="runtimeImageOptions" :disabled="!canUpdate || Boolean(selectedNode.config.toolchain_language)" placeholder="alpine:3.22" @update:value="updateSelectedNode({}, { runtime_image: String($event) })" /><small class="field-hint">{{ selectedNode.config.toolchain_language ? '运行镜像由模板中所选语言版本固定。' : '镜像必须提供 /bin/sh，并使用明确 tag 或 digest；不接受裸镜像名和 latest。' }}</small></a-form-item>
               <a-form-item label="工作目录"><a-input :value="selectedNode.config.working_directory" :disabled="!canUpdate" placeholder="." @update:value="updateSelectedNode({}, { working_directory: String($event) })" /></a-form-item>
               <a-form-item label="超时（秒）"><a-input-number :value="selectedNode.config.timeout_seconds || 600" :min="30" :max="7200" :disabled="!canUpdate" @update:value="updateSelectedNode({}, { timeout_seconds: Number($event || 600) })" /></a-form-item>
-              <a-form-item label="环境变量" :validate-status="environmentVariableErrors[selectedNode.id] ? 'error' : undefined" :help="environmentVariableErrors[selectedNode.id]">
-                <a-textarea :value="environmentVariableTexts[selectedNode.id] ?? formatEnvironmentVariables(selectedNode.config.environment_variables)" :rows="7" :disabled="!canEdit" placeholder="NODE_ENV=production&#10;FEATURE_FLAG=true" @update:value="updateEnvironmentVariables(String($event))" />
+              <a-form-item
+                label="环境变量"
+                :validate-status="environmentVariableErrors[selectedNode.id] ? 'error' : (builtinVariableError ? 'warning' : undefined)"
+                :help="environmentVariableErrors[selectedNode.id] || (builtinVariableLoading ? '正在加载系统保留变量目录…' : builtinVariableError)"
+              >
+                <a-textarea :value="environmentVariableTexts[selectedNode.id] ?? formatEnvironmentVariables(selectedNode.config.environment_variables)" :rows="7" :disabled="!canEdit || !builtinVariableCatalogReady" placeholder="NODE_ENV=production&#10;FEATURE_FLAG=true" @update:value="updateEnvironmentVariables(String($event))" />
               </a-form-item>
               <p class="panel-note">每行一个 KEY=value。密码、令牌等敏感值应使用凭据或 Secret 引用，不要直接填写。</p>
             </template>
@@ -1624,14 +1726,14 @@ onBeforeRouteLeave(async () => {
               description="检查间隔由应用配置；Webhook 只用于降低触发延迟，不改变分支、PR/MR 或 Tag 的匹配规则。"
             />
             <a-alert
-              v-else-if="selectedNode.type === 'build' || selectedNode.type === 'deploy'"
+              v-else-if="selectedNode.type === 'build'"
               class="panel-alert"
               type="info"
               show-icon
-              :message="selectedNode.type === 'build' ? '构建参数由构建方案统一管理' : '执行位置和高级参数由部署方案统一管理'"
+              message="构建参数由构建方案统一管理"
               description="任务只绑定可复用方案，流水线运行会保存当时实际使用的完整方案快照。"
             />
-            <a-alert v-else class="panel-alert" type="info" show-icon message="当前任务没有额外高级配置" />
+            <a-alert v-else-if="selectedNode.type !== 'deploy'" class="panel-alert" type="info" show-icon message="当前任务没有额外高级配置" />
           </a-form>
           <a-alert v-for="(issue, index) in issues.filter(item => item.node_id === selectedNode?.id)" :key="`${issue.code}-${index}`" type="warning" :message="issue.message" show-icon />
         </template>
@@ -1659,6 +1761,7 @@ onBeforeRouteLeave(async () => {
       v-model:open="notificationChannelModalOpen"
       title="新建 Webhook 通知渠道"
       centered
+      :width="720"
       :confirm-loading="notificationChannelSubmitting"
       ok-text="创建"
       cancel-text="取消"
@@ -1669,7 +1772,22 @@ onBeforeRouteLeave(async () => {
         <a-form-item label="Webhook 地址" required><a-input v-model:value="notificationChannelForm.endpoint" placeholder="https://example.com/webhook" /></a-form-item>
         <a-form-item label="Bearer Token（可选）"><a-input-password v-model:value="notificationChannelForm.token" autocomplete="new-password" placeholder="只会加密保存，不会在页面回显" /></a-form-item>
         <a-checkbox v-model:checked="notificationChannelForm.allow_http">允许使用不安全的 HTTP 地址</a-checkbox>
-        <p class="notification-channel-note">生产环境建议使用 HTTPS。通知请求包含标题、内容、级别、来源和运行标识，不会包含仓库凭据或部署密钥。</p>
+        <a-divider class="notification-channel-template-divider">当前任务通知模板</a-divider>
+        <a-form-item label="通知标题" required>
+          <a-input v-model:value="notificationChannelForm.title" :maxlength="255" placeholder="请输入通知标题" @focus="notificationChannelTemplateTarget = 'title'" />
+        </a-form-item>
+        <a-form-item label="通知内容" required>
+          <a-textarea v-model:value="notificationChannelForm.message" :rows="7" :maxlength="8192" placeholder="请输入通知内容" @focus="notificationChannelTemplateTarget = 'message'" />
+        </a-form-item>
+        <section class="node-notification-variables notification-channel-variables">
+          <header><strong>流水线变量</strong><small>点击插入到最近编辑的标题或内容。未在模板中引用的变量不会加入通知内容。</small></header>
+          <div>
+            <button v-for="variable in notificationTemplateVariables" :key="variable.value" type="button" :title="`插入${variable.label}`" @click="insertNotificationChannelVariable(variable.value)">
+              <code>{{ variable.value }}</code><span>{{ variable.label }}</span>
+            </button>
+          </div>
+        </section>
+        <p class="notification-channel-note">流水线执行时只会替换标题和内容中实际引用的变量。Webhook 请求还会包含投递所需的级别、来源和运行标识，不会包含仓库凭据或部署密钥。</p>
       </a-form>
     </a-modal>
     <WorkflowPresetModal v-model:open="presetOpen" :can-create="canCreate" :can-execute="canExecute" @created="openCreatedTemplate" />
@@ -1826,10 +1944,25 @@ onBeforeRouteLeave(async () => {
 .node-notification-timing { display: flex; align-items: center; gap: 12px; margin-bottom: 10px; color: var(--edo-muted); font-size: 11px; }
 .node-notification-timing :deep(.ant-checkbox-wrapper) { margin: 0; }
 .node-notification-rule :deep(.ant-form-item) { margin-bottom: 9px; }
-.node-notification-placeholders { display: block; color: var(--edo-muted); font-size: 9.5px; line-height: 1.55; word-break: break-word; }
+.node-notification-variables { overflow: hidden; border: 1px solid var(--edo-border); border-radius: 7px; background: var(--edo-surface); }
+.node-notification-variables > header { padding: 8px 9px 7px; border-bottom: 1px solid var(--edo-border); }
+.node-notification-variables > header strong, .node-notification-variables > header small { display: block; }
+.node-notification-variables > header strong { color: var(--edo-text); font-size: 11px; }
+.node-notification-variables > header small { margin-top: 2px; color: var(--edo-muted); font-size: 9.5px; line-height: 1.45; }
+.node-notification-variables > div { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 5px; padding: 8px; }
+.node-notification-variables button { min-width: 0; padding: 6px 7px; border: 1px solid transparent; border-radius: 6px; color: var(--edo-text); background: var(--edo-surface-soft); cursor: pointer; text-align: left; transition: border-color 140ms ease,background-color 140ms ease; }
+.node-notification-variables button:hover { border-color: color-mix(in srgb,var(--edo-primary) 36%,var(--edo-border)); background: var(--edo-primary-soft); }
+.node-notification-variables button:disabled { cursor: not-allowed; opacity: .5; }
+.node-notification-variables code, .node-notification-variables button span { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.node-notification-variables code { color: var(--edo-primary); font-size: 9.5px; }
+.node-notification-variables button span { margin-top: 2px; color: var(--edo-muted); font-size: 9px; }
+.notification-channel-template-divider { margin: 20px 0 16px; }
+.notification-channel-variables { margin-top: -2px; }
+.notification-channel-variables > div { grid-template-columns: repeat(3,minmax(0,1fr)); }
 .node-notification-empty { margin: 12px 16px 0; padding: 18px 12px; border: 1px dashed var(--edo-border); border-radius: 7px; color: var(--edo-muted); background: var(--edo-surface-soft); font-size: 11px; text-align: center; }
 .node-notification-divider { margin: 16px 0; }
 .notification-channel-note { margin: 12px 0 0; color: var(--edo-muted); font-size: 11px; line-height: 1.6; }
+@media (max-width: 760px) { .notification-channel-variables > div { grid-template-columns: repeat(2,minmax(0,1fr)); } }
 .panel-alert { margin: 12px 16px; }
 .panel-note { margin: 0 16px 16px; color: var(--edo-muted); font-size: 11px; line-height: 1.55; }
 .panel-empty { display: grid; min-height: 360px; place-items: center; align-content: center; color: var(--edo-muted); text-align: center; }

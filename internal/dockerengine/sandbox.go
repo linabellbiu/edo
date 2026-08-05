@@ -23,6 +23,8 @@ import (
 	"github.com/moby/moby/api/types/mount"
 	"github.com/moby/moby/client"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
+
+	"edo/internal/variablecatalog"
 )
 
 const (
@@ -41,11 +43,7 @@ var (
 
 var scriptEnvironmentNamePattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]{0,127}$`)
 
-var reservedScriptContainerEnvironment = map[string]struct{}{
-	"CI": {}, "HOME": {}, "TMPDIR": {},
-	"EDO_PIPELINE_RUN_ID": {}, "EDO_APPLICATION_ID": {}, "EDO_GIT_REF": {}, "EDO_COMMIT_SHA": {},
-	"EDO_TARGET_PLATFORM": {}, "EDO_TARGET_ARCH": {}, "GOOS": {}, "GOARCH": {},
-}
+var reservedScriptContainerEnvironment = variablecatalog.ReservedScriptEnvironmentNames()
 
 // ScriptContainerInput 描述一次隔离的非交互脚本执行。源码通过 Docker archive API
 // 写入匿名卷，不允许调用方传入宿主机挂载或 Docker 连接凭据。

@@ -2,13 +2,14 @@
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { Modal, message } from "ant-design-vue";
-import { Database, FolderCog, KeyRound, RefreshCw, ScrollText, ShieldCheck, Trash2 } from "lucide-vue-next";
+import { Braces, Database, FolderCog, KeyRound, RefreshCw, ScrollText, Search, ShieldCheck, Trash2 } from "lucide-vue-next";
 
 import client from "@/api/client";
 import { apiErrorMessage } from "@/api/resources";
 import PageToolbar from "@/components/PageToolbar.vue";
 import IdentityProvidersView from "@/views/IdentityProvidersView.vue";
 import { useAuthStore } from "@/stores/auth";
+import type { BuiltinVariableCatalog, BuiltinVariableDefinition } from "@/types/builtinVariables";
 
 interface ToggleSetting {
   enabled: boolean;
@@ -97,7 +98,11 @@ const webhook = ref<WebhookSetting | null>(null),
   runtimeDirectories = ref<RuntimeDirectorySetting | null>(null),
   retention = ref<RetentionSetting | null>(null),
   migration = ref<MigrationStatus | null>(null),
-  testResult = ref<TestResult | null>(null);
+  testResult = ref<TestResult | null>(null),
+  builtinVariableCatalog = ref<BuiltinVariableCatalog | null>(null),
+  variableLoading = ref(false),
+  variableSearch = ref(""),
+  variableKind = ref("all");
 const databaseDefaultPorts: Record<DatabaseDriver, number> = {
   mysql: 3306,
   postgres: 5432,
@@ -117,6 +122,7 @@ const password = reactive({ current: "", next: "", confirm: "" }),
   });
 let migrationTimer = 0;
 const canConfig = computed(() => auth.canAny(["config.read"])),
+  canViewVariables = computed(() => auth.canAny(["config.read", "delivery.read"])),
   canUpdate = computed(() => auth.canAny(["config.update"])),
   canExecute = computed(() => auth.canAny(["config.execute"])),
   canIdentity = computed(() => auth.canAny(["identity.read"])),
@@ -126,6 +132,11 @@ const sections = computed(() => [
   ...(canConfig.value
     ? [
         { key: "general", label: "安全与接入" },
+      ]
+    : []),
+  ...(canViewVariables.value ? [{ key: "variables", label: "环境变量" }] : []),
+  ...(canConfig.value
+    ? [
         { key: "logs", label: "日志设置" },
         { key: "storage", label: "存储目录" },
       ]
@@ -134,6 +145,21 @@ const sections = computed(() => [
   ...(canIdentity.value ? [{ key: "identity", label: "登录方式" }] : []),
 ]);
 const active = computed(() => (sections.value.some((item) => item.key === route.query.section) ? String(route.query.section) : "account"));
+const variableKindOptions = computed(() => [
+  { value: "all", label: "全部类型" },
+  ...(builtinVariableCatalog.value?.kinds || []).map((item) => ({ value: item.key, label: item.label })),
+]);
+const variableKindDetails = computed(() => Object.fromEntries((builtinVariableCatalog.value?.kinds || []).map((item) => [item.key, item])));
+const variableScopeDetails = computed(() => Object.fromEntries((builtinVariableCatalog.value?.scopes || []).map((item) => [item.key, item])));
+const filteredBuiltinVariables = computed(() => {
+  const keyword = variableSearch.value.trim().toLocaleLowerCase();
+  return (builtinVariableCatalog.value?.variables || []).filter((item) => {
+    if (variableKind.value !== "all" && item.kind !== variableKind.value) return false;
+    if (!keyword) return true;
+    const scopes = item.scopes.map((scope) => variableScopeDetails.value[scope]?.label || scope).join(" ");
+    return `${item.name} ${item.syntax} ${item.label} ${item.description} ${item.category} ${item.availability} ${scopes}`.toLocaleLowerCase().includes(keyword);
+  });
+});
 const migrationStatePresentation = computed(
   () =>
     ({
@@ -195,6 +221,21 @@ async function load() {
   } finally {
     loading.value = false;
   }
+}
+async function loadBuiltinVariables(force = false) {
+  if (!canViewVariables.value || (builtinVariableCatalog.value && !force)) return;
+  variableLoading.value = true;
+  try {
+    builtinVariableCatalog.value = (await client.get<BuiltinVariableCatalog>("/settings/builtin-variables")).data;
+  } catch (error) {
+    message.error(apiErrorMessage(error));
+  } finally {
+    variableLoading.value = false;
+  }
+}
+function refreshActiveSection() {
+  if (active.value === "variables") void loadBuiltinVariables(true);
+  else void load();
 }
 async function loadMigration() {
   if (!isSuperuser.value) return;
@@ -472,19 +513,23 @@ watch(
     if (state === "preparing" || state === "migrating") migrationTimer = window.setInterval(loadMigration, 1500);
   },
 );
+watch(active, (section) => {
+  if (section === "variables") void loadBuiltinVariables();
+});
 onMounted(() => {
   void load();
   void loadMigration();
+  if (active.value === "variables") void loadBuiltinVariables();
 });
 onBeforeUnmount(() => clearInterval(migrationTimer));
 </script>
 
 <template>
   <section>
-    <PageToolbar description="管理当前账户、运行目录、日志保留、登录安全和数据库迁移。"
-      ><a-button v-if="active === 'general' || active === 'logs' || active === 'storage'" :loading="loading" @click="load"><RefreshCw :size="15" />刷新</a-button></PageToolbar
+    <PageToolbar description="管理当前账户、内置变量、运行目录、日志保留、登录安全和数据库迁移。"
+      ><a-button v-if="active === 'general' || active === 'variables' || active === 'logs' || active === 'storage'" :loading="active === 'variables' ? variableLoading : loading" @click="refreshActiveSection"><RefreshCw :size="15" />刷新</a-button></PageToolbar
     >
-    <a-segmented :value="active" :options="sections.map((item) => ({ value: item.key, label: item.label }))" class="settings-tabs" @change="(value: string) => select(value)" />
+    <a-segmented :value="active" :options="sections.map((item) => ({ value: item.key, label: item.label }))" class="edo-page-tabs" aria-label="系统设置页面" @change="(value: string) => select(value)" />
     <article v-if="active === 'account'" class="setting-card vben-card">
       <header>
         <span><KeyRound /></span>
@@ -554,6 +599,48 @@ onBeforeUnmount(() => clearInterval(migrationTimer));
         </dl>
       </article>
     </template>
+    <article v-if="active === 'variables' && canViewVariables" class="setting-card variable-catalog-card vben-card">
+      <header>
+        <span><Braces /></span>
+        <div>
+          <h3>EDO 内置变量目录</h3>
+          <p>统一查看通知模板、流水线脚本、构建和部署当前已经支持的变量及其可用条件。</p>
+        </div>
+        <a-tag color="blue">只读目录</a-tag>
+      </header>
+      <a-alert class="variable-catalog-alert" type="info" show-icon message="变量只在标明的运行阶段注入实际值；目录不会展示运行值或密钥，也不会自动把变量集合加入通知。通知模板只替换你主动引用的变量。" />
+      <div class="variable-catalog-toolbar">
+        <a-input v-model:value="variableSearch" allow-clear placeholder="搜索变量名、用途或适用范围">
+          <template #prefix><Search :size="15" /></template>
+        </a-input>
+        <a-select v-model:value="variableKind" :options="variableKindOptions" aria-label="变量类型" />
+        <span>显示 {{ filteredBuiltinVariables.length }} / {{ builtinVariableCatalog?.variables.length || 0 }} 项</span>
+      </div>
+      <a-spin class="variable-catalog-spin" :spinning="variableLoading">
+        <a-empty v-if="!variableLoading && filteredBuiltinVariables.length === 0" description="没有符合条件的内置变量" />
+        <div v-else class="variable-catalog-list" :class="{ 'is-single': filteredBuiltinVariables.length === 1 }">
+          <section v-for="item in filteredBuiltinVariables" :key="item.id" class="variable-entry">
+            <div class="variable-entry-heading">
+              <div>
+                <code>{{ item.syntax }}</code>
+                <span>{{ item.label }}</span>
+              </div>
+              <a-tag>{{ variableKindDetails[item.kind]?.label || item.kind }}</a-tag>
+            </div>
+            <p>{{ item.description }}</p>
+            <div class="variable-entry-meta">
+              <span><b>分类</b>{{ item.category }}</span>
+              <span><b>可用条件</b>{{ item.availability }}</span>
+            </div>
+            <div class="variable-entry-scopes">
+              <b>适用范围</b>
+              <a-tag v-for="scope in item.scopes" :key="scope" color="blue">{{ variableScopeDetails[scope]?.label || scope }}</a-tag>
+            </div>
+          </section>
+        </div>
+      </a-spin>
+      <p class="variable-catalog-footnote">这里仅枚举 EDO 当前已经实现的内置变量。未来增加全局、流水线或任务级变量时，会继续纳入同一目录并明确快照与覆盖规则。</p>
+    </article>
     <template v-if="active === 'storage'">
       <article v-if="runtimeDirectories" class="setting-card vben-card">
         <header>
@@ -742,9 +829,6 @@ onBeforeUnmount(() => clearInterval(migrationTimer));
 </template>
 
 <style scoped>
-.settings-tabs {
-  margin-bottom: 14px;
-}
 .setting-card {
   margin-bottom: 14px;
   padding: 21px;
@@ -858,6 +942,106 @@ dd {
   display: flex !important;
   flex: 0 0 auto !important;
   gap: 8px;
+}
+.variable-catalog-card {
+  padding: 22px;
+}
+.variable-catalog-alert {
+  margin-top: 18px;
+}
+.variable-catalog-toolbar {
+  display: grid;
+  grid-template-columns: minmax(260px, 1fr) 190px auto;
+  align-items: center;
+  gap: 10px;
+  margin: 16px 0;
+}
+.variable-catalog-toolbar > span {
+  color: var(--edo-muted);
+  font-size: 12px;
+  text-align: right;
+}
+.variable-catalog-list {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  overflow: hidden;
+  border: 1px solid var(--edo-border);
+  border-radius: 10px;
+  background: var(--edo-border);
+  gap: 1px;
+}
+.variable-catalog-list.is-single {
+  grid-template-columns: 1fr;
+}
+.variable-catalog-spin {
+  display: block;
+  min-height: 120px;
+}
+.variable-entry {
+  min-width: 0;
+  padding: 15px 16px;
+  background: var(--edo-surface);
+}
+.variable-entry-heading,
+.variable-entry-heading > div,
+.variable-entry-scopes {
+  display: flex;
+  align-items: center;
+}
+.variable-entry-heading {
+  justify-content: space-between;
+  gap: 12px;
+}
+.variable-entry-heading > div {
+  min-width: 0;
+  gap: 9px;
+}
+.variable-entry-heading code {
+  overflow-wrap: anywhere;
+  color: var(--edo-primary);
+  font-size: 13px;
+  font-weight: 650;
+}
+.variable-entry-heading span {
+  color: var(--edo-text);
+  font-size: 13px;
+  font-weight: 600;
+}
+.variable-entry > p {
+  min-height: 38px;
+  margin-top: 9px;
+  font-size: 12px;
+  line-height: 1.55;
+}
+.variable-entry-meta {
+  display: grid;
+  grid-template-columns: minmax(90px, 0.45fr) minmax(0, 1fr);
+  gap: 8px 14px;
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid var(--edo-border);
+  color: var(--edo-muted);
+  font-size: 11px;
+}
+.variable-entry-meta span,
+.variable-entry-scopes {
+  min-width: 0;
+}
+.variable-entry-meta b,
+.variable-entry-scopes > b {
+  margin-right: 7px;
+  color: var(--edo-text);
+  font-weight: 600;
+}
+.variable-entry-scopes {
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-top: 10px;
+  font-size: 11px;
+}
+.variable-catalog-footnote {
+  margin-top: 14px !important;
+  font-size: 12px;
 }
 .database-migration-card {
   padding: 24px;
@@ -1128,8 +1312,23 @@ dd {
   .cleanup-buttons {
     width: 100%;
   }
+  .variable-catalog-toolbar,
+  .variable-catalog-list {
+    grid-template-columns: 1fr;
+  }
+  .variable-catalog-toolbar > span {
+    text-align: left;
+  }
+  .variable-entry > p {
+    min-height: 0;
+  }
 }
 @media (max-width: 520px) {
+  .variable-entry-heading,
+  .variable-entry-heading > div {
+    align-items: flex-start;
+    flex-wrap: wrap;
+  }
   .database-migration-card {
     padding: 16px;
   }

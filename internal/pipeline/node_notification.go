@@ -5,13 +5,14 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
-	"fmt"
 	"strings"
+	"time"
 
 	"gorm.io/gorm"
 
 	"edo/internal/model"
 	"edo/internal/notification"
+	"edo/internal/variablecatalog"
 )
 
 type workflowNotificationOutcome string
@@ -29,6 +30,8 @@ type workflowNotificationContext struct {
 	Version         string
 	Commit          string
 	CommitMessage   string
+	Trigger         string
+	CreatedAt       string
 	RunID           string
 	Detail          string
 }
@@ -82,7 +85,8 @@ func (s *Service) workflowNotificationContext(
 	view := workflowNotificationContext{
 		ApplicationName: "未知应用", WorkflowName: "流水线", TaskName: node.Name,
 		Status: "成功", Version: workflowNotificationVersion(run.Ref), Commit: shortWorkflowNotificationCommit(run.CommitSHA),
-		CommitMessage: strings.TrimSpace(run.CommitMessage), RunID: run.ID, Detail: strings.TrimSpace(detail),
+		CommitMessage: strings.TrimSpace(run.CommitMessage), Trigger: workflowNotificationTrigger(run.Trigger),
+		CreatedAt: workflowNotificationCreatedAt(run.CreatedAt), RunID: run.ID, Detail: strings.TrimSpace(detail),
 	}
 	if outcome == workflowNotificationFailed {
 		view.Status = "失败"
@@ -110,35 +114,49 @@ func renderWorkflowNotification(
 ) (string, string) {
 	title := strings.TrimSpace(rule.Title)
 	message := strings.TrimSpace(rule.Message)
-	if title == "" {
-		title = fmt.Sprintf("EDO 流水线任务%s：%s", view.Status, view.TaskName)
+	values := map[string]string{
+		"application.name": view.ApplicationName,
+		"workflow.name":    view.WorkflowName,
+		"task.name":        view.TaskName,
+		"task.status":      view.Status,
+		"git.ref":          view.Version,
+		"git.commit":       view.Commit,
+		"git.message":      view.CommitMessage,
+		"run.trigger":      view.Trigger,
+		"run.created_at":   view.CreatedAt,
+		"run.id":           view.RunID,
+		"detail":           view.Detail,
 	}
-	if message == "" {
-		message = strings.Join([]string{
-			"应用：" + view.ApplicationName,
-			"流水线：" + view.WorkflowName,
-			"任务：" + view.TaskName,
-			"状态：" + view.Status,
-			"版本：" + view.Version,
-			"提交：" + view.Commit,
-			"提交说明：" + fallbackWorkflowNotificationText(view.CommitMessage, "无"),
-			"执行说明：" + fallbackWorkflowNotificationText(view.Detail, "无"),
-			"运行 ID：" + view.RunID,
-		}, "\n")
+	return truncateWorkflowNotificationText(variablecatalog.RenderNotificationTemplate(title, values), 255),
+		truncateWorkflowNotificationText(variablecatalog.RenderNotificationTemplate(message, values), 8192)
+}
+
+func workflowNotificationTrigger(trigger string) string {
+	trigger = strings.TrimSpace(trigger)
+	labels := map[string]string{
+		"manual":       "手动执行",
+		"release_plan": "发布计划",
+		"push":         "分支推送",
+		"tag":          "Tag 变更",
+		"pr":           "PR/MR 变更",
+		"poll_push":    "分支变更",
+		"poll_tag":     "Tag 变更",
+		"poll_pr":      "PR/MR 变更",
+		"webhook":      "Webhook",
+		"retry":        "流水线重试",
 	}
-	replacer := strings.NewReplacer(
-		"{{application.name}}", view.ApplicationName,
-		"{{workflow.name}}", view.WorkflowName,
-		"{{task.name}}", view.TaskName,
-		"{{task.status}}", view.Status,
-		"{{git.ref}}", view.Version,
-		"{{git.commit}}", view.Commit,
-		"{{git.message}}", view.CommitMessage,
-		"{{run.id}}", view.RunID,
-		"{{detail}}", view.Detail,
-	)
-	return truncateWorkflowNotificationText(replacer.Replace(title), 255),
-		truncateWorkflowNotificationText(replacer.Replace(message), 8192)
+	if label := labels[trigger]; label != "" {
+		return label
+	}
+	return fallbackWorkflowNotificationText(trigger, "未记录")
+}
+
+func workflowNotificationCreatedAt(createdAt time.Time) string {
+	if createdAt.IsZero() {
+		return "未记录"
+	}
+	shanghai := time.FixedZone("Asia/Shanghai", 8*60*60)
+	return createdAt.In(shanghai).Format("2006-01-02 15:04:05")
 }
 
 func truncateWorkflowNotificationText(value string, maximum int) string {

@@ -16,6 +16,7 @@ import (
 	"edo/internal/logretention"
 	"edo/internal/manageddirectory"
 	"edo/internal/repository"
+	"edo/internal/variablecatalog"
 )
 
 type settingsHandler struct {
@@ -61,6 +62,10 @@ type databaseMigrationRequest struct {
 	Database  string `json:"database" binding:"max=256"`
 	DSN       string `json:"dsn" binding:"max=4096"`
 	TestToken string `json:"test_token"`
+}
+
+func (h settingsHandler) builtinVariables(c *gin.Context) {
+	c.JSON(http.StatusOK, variablecatalog.Snapshot())
 }
 
 func (r databaseMigrationRequest) transferTarget() (database.TransferTarget, error) {

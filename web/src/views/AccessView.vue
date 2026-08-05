@@ -534,7 +534,8 @@ onMounted(refresh)
     <a-segmented
       :value="active"
       :options="tabs.map((item) => ({ value: item.key, label: item.label }))"
-      class="access-tabs"
+      class="edo-page-tabs"
+      aria-label="访问控制页面"
       @change="(value: string) => selectTab(value)"
     />
 
@@ -811,10 +812,6 @@ onMounted(refresh)
 </template>
 
 <style scoped>
-.access-tabs {
-  margin-bottom: 12px;
-}
-
 .tag-list {
   display: flex;
   flex-wrap: wrap;

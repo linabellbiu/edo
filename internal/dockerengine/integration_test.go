@@ -77,18 +77,22 @@ func TestDockerBuildAndComposeIntegration(t *testing.T) {
 	}()
 
 	var buildOutput bytes.Buffer
-	imageID, err := service.BuildLocalWithOptions(ctx, buildContext, "Dockerfile", image, BuildOptions{
+	builtImage, err := service.BuildLocalArtifactWithOptions(ctx, buildContext, "Dockerfile", image, BuildOptions{
 		CacheEnabled: true, BuildArgs: map[string]string{"APP_VERSION": identity},
 	}, 3*time.Minute, &buildOutput)
 	if err != nil {
 		t.Fatalf("真实 Dockerfile 构建失败: %v\n%s", err, buildOutput.String())
 	}
+	imageID := builtImage.ImageID
 	if strings.Contains(buildOutput.String(), "load remote build context") ||
 		!strings.Contains(buildOutput.String(), "load build context") {
 		t.Fatalf("Buildx 没有直接读取本地版本工作区:\n%s", buildOutput.String())
 	}
 	if !IsValidImageID(imageID) {
 		t.Fatalf("真实构建没有返回内容寻址镜像 ID: %q", imageID)
+	}
+	if builtImage.SizeBytes <= 0 {
+		t.Fatalf("真实构建没有返回镜像大小: %+v", builtImage)
 	}
 	inspect, err := apiClient.ImageInspect(ctx, image)
 	if err != nil || inspect.Config == nil || inspect.Config.Labels["io.edo.integration.version"] != identity {

@@ -758,6 +758,12 @@ func validateWorkflowNotificationRules(
 			})
 		}
 		seen[rule.ID] = struct{}{}
+		if rule.Title == "" || rule.Message == "" {
+			issues = append(issues, WorkflowIssue{
+				Code: "invalid_notification_template", Message: fmt.Sprintf("任务“%s”的通知规则需要填写通知标题和通知内容", node.Name),
+				NodeID: node.ID, StageID: stageID,
+			})
+		}
 		if rule.ChannelID == "" || (!rule.OnSuccess && !rule.OnFailure) {
 			issues = append(issues, WorkflowIssue{
 				Code: "invalid_notification_rule", Message: fmt.Sprintf("任务“%s”的通知规则需要选择渠道和至少一种发送时机", node.Name),
