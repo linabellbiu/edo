@@ -137,6 +137,8 @@ func NewRouter(deps Dependencies) *gin.Engine {
 	), accessAPI.listRoles)
 	protected.POST("/roles", auditAction(deps.Audits, deps.Logger, "role.create", "role"), requirePermission(deps.Access, deps.Logger, access.PermissionRoleCreate), accessAPI.createRole)
 	protected.PUT("/roles/:id", auditAction(deps.Audits, deps.Logger, "role.update", "role"), requirePermission(deps.Access, deps.Logger, access.PermissionRoleUpdate), accessAPI.updateRole)
+	protected.PATCH("/roles/:id/basic", auditAction(deps.Audits, deps.Logger, "role.basic.update", "role"), requirePermission(deps.Access, deps.Logger, access.PermissionRoleUpdate), accessAPI.updateRoleBasic)
+	protected.PUT("/roles/:id/permissions", auditAction(deps.Audits, deps.Logger, "role.permissions.update", "role"), requirePermission(deps.Access, deps.Logger, access.PermissionRoleUpdate), accessAPI.updateRolePermissions)
 	protected.DELETE("/roles/:id", auditAction(deps.Audits, deps.Logger, "role.delete", "role"), requirePermission(deps.Access, deps.Logger, access.PermissionRoleDelete), accessAPI.deleteRole)
 
 	protected.GET("/users", requireAnyPermission(deps.Access, deps.Logger,
@@ -147,6 +149,7 @@ func NewRouter(deps Dependencies) *gin.Engine {
 	protected.PUT("/users/:id/department", auditAction(deps.Audits, deps.Logger, "user.department.update", "user"), requirePermission(deps.Access, deps.Logger, access.PermissionUserUpdate), accessAPI.setUserDepartment)
 	protected.PUT("/users/:id/roles", auditAction(deps.Audits, deps.Logger, "user.roles.update", "user"), requirePermission(deps.Access, deps.Logger, access.PermissionUserUpdate), accessAPI.setUserRoles)
 	protected.PUT("/users/:id/permissions", auditAction(deps.Audits, deps.Logger, "user.permissions.update", "user"), requirePermission(deps.Access, deps.Logger, access.PermissionUserUpdate), accessAPI.setUserPermissions)
+	protected.PUT("/users/:id/access", auditAction(deps.Audits, deps.Logger, "user.access.update", "user"), requirePermission(deps.Access, deps.Logger, access.PermissionUserUpdate), accessAPI.setUserAccess)
 	protected.DELETE("/users/:id", auditAction(deps.Audits, deps.Logger, "user.delete", "user"), requirePermission(deps.Access, deps.Logger, access.PermissionUserDelete), accessAPI.deleteUser)
 
 	departmentAPI := departmentHandler{service: deps.Departments, logger: deps.Logger}

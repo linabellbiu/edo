@@ -38,7 +38,9 @@ var roleNamePattern = regexp.MustCompile(`^[a-z][a-z0-9_.-]{2,63}$`)
 
 type RoleWithPermissions struct {
 	model.Role
-	Permissions []string `json:"permissions"`
+	Permissions        []string `json:"permissions"`
+	InUse              bool     `json:"-"`
+	VisibleMemberCount int64    `json:"-"`
 }
 
 type RoleInput struct {
@@ -46,6 +48,12 @@ type RoleInput struct {
 	DisplayName string
 	Description string
 	Permissions []string
+}
+
+type RoleBasicInput struct {
+	Name        string
+	DisplayName string
+	Description string
 }
 
 type UserPermissionOverrides struct {
@@ -153,18 +161,85 @@ func (s *Service) ListRoles(ctx context.Context) ([]RoleWithPermissions, error) 
 	if err := s.db.WithContext(ctx).Order("name ASC").Find(&roles).Error; err != nil {
 		return nil, fmt.Errorf("查询角色失败: %w", err)
 	}
+	roleIDs := make([]string, 0, len(roles))
+	for i := range roles {
+		roleIDs = append(roleIDs, roles[i].ID)
+	}
+	visibleMemberCounts, rolesInUse, err := s.roleMemberSummary(ctx, roleIDs)
+	if err != nil {
+		return nil, err
+	}
 	result := make([]RoleWithPermissions, 0, len(roles))
 	for _, role := range roles {
 		permissions, err := s.rolePermissions(ctx, role.ID)
 		if err != nil {
 			return nil, err
 		}
-		result = append(result, RoleWithPermissions{Role: role, Permissions: permissions})
+		result = append(result, RoleWithPermissions{
+			Role: role, Permissions: permissions,
+			InUse: rolesInUse[role.ID], VisibleMemberCount: visibleMemberCounts[role.ID],
+		})
 	}
 	return result, nil
 }
 
+func (s *Service) roleMemberSummary(
+	ctx context.Context,
+	roleIDs []string,
+) (map[string]int64, map[string]bool, error) {
+	visibleCounts := make(map[string]int64, len(roleIDs))
+	inUse := make(map[string]bool, len(roleIDs))
+	if len(roleIDs) == 0 {
+		return visibleCounts, inUse, nil
+	}
+	var usedRoleIDs []string
+	// UserRole 不携带部门字段；这里只返回是否被任意用户使用，不暴露跨部门成员数量。
+	if err := s.db.WithContext(ctx).Model(&model.UserRole{}).
+		Where("role_id IN ?", roleIDs).
+		Group("role_id").
+		Pluck("role_id", &usedRoleIDs).Error; err != nil {
+		return nil, nil, fmt.Errorf("检查角色使用状态失败: %w", err)
+	}
+	for _, roleID := range usedRoleIDs {
+		inUse[roleID] = true
+	}
+	type roleMemberCount struct {
+		RoleID      string
+		MemberCount int64
+	}
+	var rows []roleMemberCount
+	// 以 users 为查询模型，使数据库层的 DepartmentScope 自动限制为当前调用者可见用户。
+	if err := s.db.WithContext(ctx).Model(&model.User{}).
+		Select("user_roles.role_id AS role_id, COUNT(DISTINCT users.id) AS member_count").
+		Joins("JOIN user_roles ON user_roles.user_id = users.id").
+		Where("user_roles.role_id IN ?", roleIDs).
+		Group("user_roles.role_id").
+		Scan(&rows).Error; err != nil {
+		return nil, nil, fmt.Errorf("统计可见角色成员失败: %w", err)
+	}
+	for i := range rows {
+		visibleCounts[rows[i].RoleID] = rows[i].MemberCount
+	}
+	return visibleCounts, inUse, nil
+}
+
+func (s *Service) CreateRoleAs(
+	ctx context.Context,
+	actor *model.User,
+	input RoleInput,
+) (*RoleWithPermissions, error) {
+	return s.createRole(ctx, actor, input)
+}
+
 func (s *Service) CreateRole(ctx context.Context, input RoleInput) (*RoleWithPermissions, error) {
+	return s.createRole(ctx, nil, input)
+}
+
+func (s *Service) createRole(
+	ctx context.Context,
+	actor *model.User,
+	input RoleInput,
+) (*RoleWithPermissions, error) {
 	input, err := normalizeRoleInput(input)
 	if err != nil {
 		return nil, err
@@ -175,6 +250,11 @@ func (s *Service) CreateRole(ctx context.Context, input RoleInput) (*RoleWithPer
 		Description: input.Description, CreatedAt: now, UpdatedAt: now,
 	}
 	if err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := validateAccessDelegation(
+			tx, actor, PermissionRoleCreate, "", permissionCodeSet(input.Permissions), nil,
+		); err != nil {
+			return err
+		}
 		if err := tx.Create(&role).Error; err != nil {
 			return err
 		}
@@ -186,12 +266,31 @@ func (s *Service) CreateRole(ctx context.Context, input RoleInput) (*RoleWithPer
 		return nil, fmt.Errorf("创建角色失败: %w", err)
 	}
 	if err := s.syncPolicy("role_create"); err != nil {
-		return nil, err
+		s.logger.Error("角色已创建但权限策略同步失败", "operation", "role_create", "role_id", role.ID, "err", err)
+		return &RoleWithPermissions{Role: role, Permissions: input.Permissions}, ErrRoleCreatedSyncPending
 	}
 	return &RoleWithPermissions{Role: role, Permissions: input.Permissions}, nil
 }
 
 func (s *Service) UpdateRole(ctx context.Context, roleID string, input RoleInput) (*RoleWithPermissions, error) {
+	return s.updateRole(ctx, nil, roleID, input)
+}
+
+func (s *Service) UpdateRoleAs(
+	ctx context.Context,
+	actor *model.User,
+	roleID string,
+	input RoleInput,
+) (*RoleWithPermissions, error) {
+	return s.updateRole(ctx, actor, roleID, input)
+}
+
+func (s *Service) updateRole(
+	ctx context.Context,
+	actor *model.User,
+	roleID string,
+	input RoleInput,
+) (*RoleWithPermissions, error) {
 	input, err := normalizeRoleInput(input)
 	if err != nil {
 		return nil, err
@@ -199,6 +298,11 @@ func (s *Service) UpdateRole(ctx context.Context, roleID string, input RoleInput
 	now := time.Now().UTC()
 	var role model.Role
 	if err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := validateAccessDelegation(
+			tx, actor, PermissionRoleUpdate, "", permissionCodeSet(input.Permissions), nil,
+		); err != nil {
+			return err
+		}
 		if err := tx.First(&role, "id = ?", roleID).Error; err != nil {
 			return err
 		}
@@ -219,14 +323,113 @@ func (s *Service) UpdateRole(ctx context.Context, roleID string, input RoleInput
 			return nil, fmt.Errorf("更新角色失败: %w", err)
 		}
 	}
-	if err := s.syncPolicy("role_update"); err != nil {
+	role.Name = input.Name
+	role.DisplayName = input.DisplayName
+	role.Description = input.Description
+	role.UpdatedAt = now
+	result := &RoleWithPermissions{Role: role, Permissions: input.Permissions}
+	if err := s.syncRolePermissionsOrDisable(ctx, role.ID, "role_update"); err != nil {
+		return result, err
+	}
+	return result, nil
+}
+
+// UpdateRoleBasic 只修改角色标识、展示名称和说明，不触碰权限配置。
+func (s *Service) UpdateRoleBasic(
+	ctx context.Context,
+	roleID string,
+	input RoleBasicInput,
+) (*RoleWithPermissions, error) {
+	input, err := normalizeRoleBasicInput(input)
+	if err != nil {
 		return nil, err
+	}
+	now := time.Now().UTC()
+	var role model.Role
+	if err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.First(&role, "id = ?", roleID).Error; err != nil {
+			return err
+		}
+		return tx.Model(&role).Updates(map[string]any{
+			"name": input.Name, "display_name": input.DisplayName,
+			"description": input.Description, "updated_at": now,
+		}).Error
+	}); err != nil {
+		switch {
+		case errors.Is(err, gorm.ErrRecordNotFound):
+			return nil, ErrRoleNotFound
+		case errors.Is(err, gorm.ErrDuplicatedKey):
+			return nil, ErrRoleNameExists
+		default:
+			return nil, fmt.Errorf("更新角色基本信息失败: %w", err)
+		}
 	}
 	role.Name = input.Name
 	role.DisplayName = input.DisplayName
 	role.Description = input.Description
 	role.UpdatedAt = now
-	return &RoleWithPermissions{Role: role, Permissions: input.Permissions}, nil
+	permissions, err := s.rolePermissions(ctx, role.ID)
+	if err != nil {
+		return nil, err
+	}
+	return &RoleWithPermissions{Role: role, Permissions: permissions}, nil
+}
+
+// UpdateRolePermissions 只替换角色权限，不回写可能已经被其他请求修改的基本信息。
+func (s *Service) UpdateRolePermissions(
+	ctx context.Context,
+	roleID string,
+	permissions []string,
+) (*RoleWithPermissions, error) {
+	return s.updateRolePermissions(ctx, nil, roleID, permissions)
+}
+
+func (s *Service) UpdateRolePermissionsAs(
+	ctx context.Context,
+	actor *model.User,
+	roleID string,
+	permissions []string,
+) (*RoleWithPermissions, error) {
+	return s.updateRolePermissions(ctx, actor, roleID, permissions)
+}
+
+func (s *Service) updateRolePermissions(
+	ctx context.Context,
+	actor *model.User,
+	roleID string,
+	permissions []string,
+) (*RoleWithPermissions, error) {
+	permissions, err := normalizeRolePermissions(permissions)
+	if err != nil {
+		return nil, err
+	}
+	now := time.Now().UTC()
+	var role model.Role
+	if err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := validateAccessDelegation(
+			tx, actor, PermissionRoleUpdate, "", permissionCodeSet(permissions), nil,
+		); err != nil {
+			return err
+		}
+		if err := tx.First(&role, "id = ?", roleID).Error; err != nil {
+			return err
+		}
+		if err := replacePermissions(tx, role.ID, permissions, now); err != nil {
+			return err
+		}
+		return tx.Model(&role).Update("updated_at", now).Error
+	}); err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, ErrRoleNotFound
+		}
+		return nil, fmt.Errorf("更新角色权限失败: %w", err)
+	}
+	role.UpdatedAt = now
+	result := &RoleWithPermissions{Role: role, Permissions: permissions}
+	if err := s.syncRolePermissionsOrDisable(ctx, role.ID, "role_permissions_update"); err != nil {
+		return result, err
+	}
+	return result, nil
 }
 
 func (s *Service) DeleteRole(ctx context.Context, roleID string) error {
@@ -255,7 +458,11 @@ func (s *Service) DeleteRole(ctx context.Context, roleID string) error {
 	}); err != nil {
 		return err
 	}
-	return s.syncPolicy("role_delete")
+	if err := s.syncPolicy("role_delete"); err != nil {
+		s.logger.Error("角色已删除但权限策略同步失败", "operation", "role_delete", "role_id", roleID, "err", err)
+		return ErrRoleDeletedSyncPending
+	}
+	return nil
 }
 
 // DeleteUser 删除账户自身的身份和授权数据，但保留其已经创建的部门业务资源及审计记录。
@@ -298,31 +505,40 @@ func (s *Service) DeleteUser(ctx context.Context, userID string) error {
 }
 
 func (s *Service) SetUserRoles(ctx context.Context, userID string, roleIDs []string) error {
+	return s.setUserRoles(ctx, nil, userID, roleIDs)
+}
+
+func (s *Service) SetUserRolesAs(ctx context.Context, actor *model.User, userID string, roleIDs []string) error {
+	return s.setUserRoles(ctx, actor, userID, roleIDs)
+}
+
+func (s *Service) setUserRoles(ctx context.Context, actor *model.User, userID string, roleIDs []string) error {
 	roleIDs = uniqueSorted(roleIDs)
 	if err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		var userCount int64
-		if err := tx.Model(&model.User{}).Where("id = ?", userID).Count(&userCount).Error; err != nil {
-			return fmt.Errorf("查询用户失败: %w", err)
-		}
-		if userCount != 1 {
-			return ErrInvalidUserRoles
-		}
-		if len(roleIDs) > 0 {
-			var roleCount int64
-			if err := tx.Model(&model.Role{}).Where("id IN ?", roleIDs).Count(&roleCount).Error; err != nil {
-				return fmt.Errorf("查询待分配角色失败: %w", err)
+		var user model.User
+		if err := tx.First(&user, "id = ?", userID).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return account.ErrUserNotFound
 			}
-			if roleCount != int64(len(roleIDs)) {
-				return ErrInvalidUserRoles
-			}
+			return fmt.Errorf("查询待配置角色的用户失败: %w", err)
 		}
-		if err := tx.Where("user_id = ?", userID).Delete(&model.UserRole{}).Error; err != nil {
+		if user.IsSuperuser {
+			return account.ErrSuperuserImmutable
+		}
+		rolePermissions, err := validatedRolePermissionSet(tx, roleIDs)
+		if err != nil {
+			return err
+		}
+		if err := validateAccessDelegation(tx, actor, PermissionUserUpdate, user.ID, rolePermissions, nil); err != nil {
+			return err
+		}
+		if err := tx.Where("user_id = ?", user.ID).Delete(&model.UserRole{}).Error; err != nil {
 			return fmt.Errorf("清理用户原有角色失败: %w", err)
 		}
 		now := time.Now().UTC()
 		assignments := make([]model.UserRole, 0, len(roleIDs))
 		for _, roleID := range roleIDs {
-			assignments = append(assignments, model.UserRole{UserID: userID, RoleID: roleID, CreatedAt: now})
+			assignments = append(assignments, model.UserRole{UserID: user.ID, RoleID: roleID, CreatedAt: now})
 		}
 		if len(assignments) > 0 {
 			if err := tx.Create(&assignments).Error; err != nil {
@@ -333,39 +549,43 @@ func (s *Service) SetUserRoles(ctx context.Context, userID string, roleIDs []str
 	}); err != nil {
 		return err
 	}
-	return s.syncPolicy("user_roles_update")
+	return s.syncUserAccessOrDisable(ctx, userID, "user_roles_update")
 }
 
 func (s *Service) SetUserPermissions(ctx context.Context, userID string, overrides UserPermissionOverrides) error {
-	var ok bool
-	overrides.Allow, ok = normalizePermissionCodes(overrides.Allow)
-	if !ok {
-		return ErrInvalidUserPermissions
-	}
-	overrides.Deny, ok = normalizePermissionCodes(overrides.Deny)
-	if !ok {
-		return ErrInvalidUserPermissions
-	}
-	seen := make(map[string]struct{}, len(overrides.Allow)+len(overrides.Deny))
-	for _, permission := range overrides.Allow {
-		seen[permission] = struct{}{}
-	}
-	for _, permission := range overrides.Deny {
-		if _, exists := seen[permission]; exists {
-			return ErrInvalidUserPermissions
-		}
-		seen[permission] = struct{}{}
+	return s.setUserPermissions(ctx, nil, userID, overrides)
+}
+
+func (s *Service) SetUserPermissionsAs(ctx context.Context, actor *model.User, userID string, overrides UserPermissionOverrides) error {
+	return s.setUserPermissions(ctx, actor, userID, overrides)
+}
+
+func (s *Service) setUserPermissions(ctx context.Context, actor *model.User, userID string, overrides UserPermissionOverrides) error {
+	overrides, err := normalizeUserPermissionOverrides(overrides)
+	if err != nil {
+		return err
 	}
 	if err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var user model.User
 		if err := tx.First(&user, "id = ?", userID).Error; err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
-				return ErrInvalidUserPermissions
+				return account.ErrUserNotFound
 			}
 			return fmt.Errorf("查询用户失败: %w", err)
 		}
 		if user.IsSuperuser {
-			return ErrInvalidUserPermissions
+			return account.ErrSuperuserImmutable
+		}
+		var currentRoleIDs []string
+		if err := tx.Model(&model.UserRole{}).Where("user_id = ?", user.ID).Pluck("role_id", &currentRoleIDs).Error; err != nil {
+			return fmt.Errorf("查询用户当前角色失败: %w", err)
+		}
+		rolePermissions, err := validatedRolePermissionSet(tx, uniqueSorted(currentRoleIDs))
+		if err != nil {
+			return err
+		}
+		if err := validateAccessDelegation(tx, actor, PermissionUserUpdate, user.ID, rolePermissions, overrides.Allow); err != nil {
+			return err
 		}
 		if err := tx.Where("user_id = ?", userID).Delete(&model.UserPermission{}).Error; err != nil {
 			return fmt.Errorf("清理用户权限覆盖失败: %w", err)
@@ -387,7 +607,101 @@ func (s *Service) SetUserPermissions(ctx context.Context, userID string, overrid
 	}); err != nil {
 		return err
 	}
-	return s.syncPolicy("user_permissions_update")
+	return s.syncUserAccessOrDisable(ctx, userID, "user_permissions_update")
+}
+
+// SetUserAccess 在同一个事务中替换用户的角色和用户级权限例外。
+// 只有数据库提交成功后才重新加载一次 Casbin 策略，避免页面分步保存造成部分配置生效。
+func (s *Service) SetUserAccess(
+	ctx context.Context,
+	userID string,
+	roleIDs []string,
+	overrides UserPermissionOverrides,
+) error {
+	return s.setUserAccess(ctx, nil, userID, roleIDs, overrides)
+}
+
+func (s *Service) SetUserAccessAs(
+	ctx context.Context,
+	actor *model.User,
+	userID string,
+	roleIDs []string,
+	overrides UserPermissionOverrides,
+) error {
+	return s.setUserAccess(ctx, actor, userID, roleIDs, overrides)
+}
+
+func (s *Service) setUserAccess(
+	ctx context.Context,
+	actor *model.User,
+	userID string,
+	roleIDs []string,
+	overrides UserPermissionOverrides,
+) error {
+	roleIDs = uniqueSorted(roleIDs)
+	overrides, err := normalizeUserPermissionOverrides(overrides)
+	if err != nil {
+		return err
+	}
+	if err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var user model.User
+		if err := tx.First(&user, "id = ?", userID).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return account.ErrUserNotFound
+			}
+			return fmt.Errorf("查询待配置权限的用户失败: %w", err)
+		}
+		if user.IsSuperuser {
+			return account.ErrSuperuserImmutable
+		}
+		rolePermissions, err := validatedRolePermissionSet(tx, roleIDs)
+		if err != nil {
+			return err
+		}
+		if err := validateAccessDelegation(tx, actor, PermissionUserUpdate, user.ID, rolePermissions, overrides.Allow); err != nil {
+			return err
+		}
+
+		now := time.Now().UTC()
+		if err := tx.Where("user_id = ?", user.ID).Delete(&model.UserRole{}).Error; err != nil {
+			return fmt.Errorf("清理用户原有角色失败: %w", err)
+		}
+		assignments := make([]model.UserRole, 0, len(roleIDs))
+		for _, roleID := range roleIDs {
+			assignments = append(assignments, model.UserRole{UserID: user.ID, RoleID: roleID, CreatedAt: now})
+		}
+		if len(assignments) > 0 {
+			if err := tx.Create(&assignments).Error; err != nil {
+				return fmt.Errorf("保存用户角色失败: %w", err)
+			}
+		}
+
+		if err := tx.Where("user_id = ?", user.ID).Delete(&model.UserPermission{}).Error; err != nil {
+			return fmt.Errorf("清理用户权限覆盖失败: %w", err)
+		}
+		permissions := make([]model.UserPermission, 0, len(overrides.Allow)+len(overrides.Deny))
+		for _, permission := range overrides.Allow {
+			permissions = append(permissions, model.UserPermission{
+				UserID: user.ID, Permission: permission, Effect: model.PermissionAllow,
+				CreatedAt: now, UpdatedAt: now,
+			})
+		}
+		for _, permission := range overrides.Deny {
+			permissions = append(permissions, model.UserPermission{
+				UserID: user.ID, Permission: permission, Effect: model.PermissionDeny,
+				CreatedAt: now, UpdatedAt: now,
+			})
+		}
+		if len(permissions) > 0 {
+			if err := tx.Create(&permissions).Error; err != nil {
+				return fmt.Errorf("保存用户权限覆盖失败: %w", err)
+			}
+		}
+		return nil
+	}); err != nil {
+		return err
+	}
+	return s.syncUserAccessOrDisable(ctx, userID, "user_access_update")
 }
 
 func (s *Service) UserPermissionOverrides(ctx context.Context, userID string) (UserPermissionOverrides, error) {
@@ -434,6 +748,24 @@ func (s *Service) CreateUserInDepartment(
 	username, nickname, password, departmentID string,
 	roleIDs []string,
 ) (*model.User, error) {
+	return s.createUserInDepartment(ctx, nil, username, nickname, password, departmentID, roleIDs)
+}
+
+func (s *Service) CreateUserInDepartmentAs(
+	ctx context.Context,
+	actor *model.User,
+	username, nickname, password, departmentID string,
+	roleIDs []string,
+) (*model.User, error) {
+	return s.createUserInDepartment(ctx, actor, username, nickname, password, departmentID, roleIDs)
+}
+
+func (s *Service) createUserInDepartment(
+	ctx context.Context,
+	actor *model.User,
+	username, nickname, password, departmentID string,
+	roleIDs []string,
+) (*model.User, error) {
 	if strings.TrimSpace(departmentID) == "" {
 		if scope, ok := database.DepartmentScopeFromContext(ctx); ok {
 			departmentID = scope.DepartmentID
@@ -445,14 +777,12 @@ func (s *Service) CreateUserInDepartment(
 	roleIDs = uniqueSorted(roleIDs)
 	var user *model.User
 	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		if len(roleIDs) > 0 {
-			var count int64
-			if err := tx.Model(&model.Role{}).Where("id IN ?", roleIDs).Count(&count).Error; err != nil {
-				return fmt.Errorf("查询待分配角色失败: %w", err)
-			}
-			if count != int64(len(roleIDs)) {
-				return ErrInvalidUserRoles
-			}
+		rolePermissions, err := validatedRolePermissionSet(tx, roleIDs)
+		if err != nil {
+			return err
+		}
+		if err := validateAccessDelegation(tx, actor, PermissionUserCreate, "", rolePermissions, nil); err != nil {
+			return err
 		}
 		created, err := account.NewService(tx).CreateUserInDepartment(ctx, username, nickname, password, departmentID)
 		if err != nil {
@@ -475,7 +805,8 @@ func (s *Service) CreateUserInDepartment(
 		return nil, err
 	}
 	if err := s.syncPolicy("user_create"); err != nil {
-		return nil, err
+		s.logger.Error("用户已创建但权限策略同步失败", "operation", "user_create", "user_id", user.ID, "err", err)
+		return user, ErrUserCreatedSyncPending
 	}
 	return user, nil
 }
@@ -499,19 +830,63 @@ func (s *Service) rolePermissions(ctx context.Context, roleID string) ([]string,
 }
 
 func normalizeRoleInput(input RoleInput) (RoleInput, error) {
+	basic, err := normalizeRoleBasicInput(RoleBasicInput{
+		Name: input.Name, DisplayName: input.DisplayName, Description: input.Description,
+	})
+	if err != nil {
+		return RoleInput{}, ErrInvalidRole
+	}
+	permissions, err := normalizeRolePermissions(input.Permissions)
+	if err != nil {
+		return RoleInput{}, err
+	}
+	input.Name = basic.Name
+	input.DisplayName = basic.DisplayName
+	input.Description = basic.Description
+	input.Permissions = permissions
+	return input, nil
+}
+
+func normalizeRoleBasicInput(input RoleBasicInput) (RoleBasicInput, error) {
 	input.Name = strings.ToLower(strings.TrimSpace(input.Name))
 	input.DisplayName = strings.TrimSpace(input.DisplayName)
 	input.Description = strings.TrimSpace(input.Description)
 	if !roleNamePattern.MatchString(input.Name) || input.DisplayName == "" ||
 		utf8.RuneCountInString(input.DisplayName) > 64 || utf8.RuneCountInString(input.Description) > 255 {
-		return RoleInput{}, ErrInvalidRole
+		return RoleBasicInput{}, ErrInvalidRole
 	}
-	permissions, ok := normalizePermissionCodes(input.Permissions)
-	if !ok {
-		return RoleInput{}, ErrInvalidPermission
-	}
-	input.Permissions = permissions
 	return input, nil
+}
+
+func normalizeRolePermissions(permissions []string) ([]string, error) {
+	permissions, ok := normalizePermissionCodes(permissions)
+	if !ok {
+		return nil, ErrInvalidPermission
+	}
+	return permissions, nil
+}
+
+func normalizeUserPermissionOverrides(overrides UserPermissionOverrides) (UserPermissionOverrides, error) {
+	var ok bool
+	overrides.Allow, ok = normalizePermissionCodes(overrides.Allow)
+	if !ok {
+		return UserPermissionOverrides{}, ErrInvalidUserPermissions
+	}
+	overrides.Deny, ok = normalizePermissionCodes(overrides.Deny)
+	if !ok {
+		return UserPermissionOverrides{}, ErrInvalidUserPermissions
+	}
+	seen := make(map[string]struct{}, len(overrides.Allow)+len(overrides.Deny))
+	for _, permission := range overrides.Allow {
+		seen[permission] = struct{}{}
+	}
+	for _, permission := range overrides.Deny {
+		if _, exists := seen[permission]; exists {
+			return UserPermissionOverrides{}, ErrInvalidUserPermissions
+		}
+		seen[permission] = struct{}{}
+	}
+	return overrides, nil
 }
 
 // normalizePermissionCodes 在写入数据库前把旧聚合权限展开为当前细粒度权限。

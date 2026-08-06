@@ -5,12 +5,14 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"slices"
 	"testing"
 	"time"
 
 	"github.com/alicebob/miniredis/v2"
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
+	"gorm.io/gorm"
 
 	"edo/internal/account"
 	"edo/internal/config"
@@ -114,6 +116,227 @@ func TestRolePermissionAndAtomicUserCreation(t *testing.T) {
 		t.Fatal("事务失败后仍留下用户记录")
 	}
 }
+
+func TestSetUserAccessIsAtomicAndDepartmentScoped(t *testing.T) {
+	ctx := context.Background()
+	db, err := database.Open(ctx, config.Database{
+		Driver: "sqlite", DSN: "file:access_atomic_update_test?mode=memory&cache=shared",
+		MaxOpenConns: 1, MaxIdleConns: 1, ConnMaxLifetime: time.Minute,
+	}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatalf("打开测试数据库失败: %v", err)
+	}
+	defer database.Close(db)
+	if err := database.Migrate(ctx, db); err != nil {
+		t.Fatalf("迁移测试数据库失败: %v", err)
+	}
+
+	service, err := NewService(db)
+	if err != nil {
+		t.Fatalf("初始化权限服务失败: %v", err)
+	}
+	readerRole, err := service.CreateRole(ctx, RoleInput{
+		Name: "atomic-reader", DisplayName: "原角色", Permissions: []string{PermissionUserRead},
+	})
+	if err != nil {
+		t.Fatalf("创建原角色失败: %v", err)
+	}
+	operatorRole, err := service.CreateRole(ctx, RoleInput{
+		Name: "atomic-operator", DisplayName: "新角色", Permissions: []string{PermissionRoleUpdate},
+	})
+	if err != nil {
+		t.Fatalf("创建新角色失败: %v", err)
+	}
+	user, err := service.CreateUser(ctx, "atomic-user", "原子配置用户", "correct horse battery staple", []string{readerRole.ID})
+	if err != nil {
+		t.Fatalf("创建用户失败: %v", err)
+	}
+	watcher := &countingAccessWatcher{}
+	service.watcher = watcher
+
+	if err := service.SetUserAccess(ctx, user.ID, []string{operatorRole.ID}, UserPermissionOverrides{
+		Allow: []string{PermissionAuditRead}, Deny: []string{PermissionRoleUpdate},
+	}); err != nil {
+		t.Fatalf("原子保存用户访问配置失败: %v", err)
+	}
+	if watcher.updates != 1 {
+		t.Fatalf("原子保存只应同步一次 Casbin 策略: updates=%d", watcher.updates)
+	}
+	assertUserAccess := func(wantRoles, wantAllow, wantDeny []string) {
+		t.Helper()
+		roleIDs, roleErr := service.UserRoleIDs(ctx, user.ID)
+		if roleErr != nil || !slices.Equal(roleIDs, wantRoles) {
+			t.Fatalf("用户角色不符合预期: got=%v want=%v err=%v", roleIDs, wantRoles, roleErr)
+		}
+		overrides, overrideErr := service.UserPermissionOverrides(ctx, user.ID)
+		if overrideErr != nil || !slices.Equal(overrides.Allow, wantAllow) || !slices.Equal(overrides.Deny, wantDeny) {
+			t.Fatalf("用户权限例外不符合预期: got=%+v want_allow=%v want_deny=%v err=%v", overrides, wantAllow, wantDeny, overrideErr)
+		}
+	}
+	assertUserAccess([]string{operatorRole.ID}, []string{PermissionAuditRead}, []string{PermissionRoleUpdate})
+	allowed, err := service.HasPermission(ctx, user, PermissionAuditRead)
+	if err != nil || !allowed {
+		t.Fatalf("用户直接允许权限未生效: allowed=%v err=%v", allowed, err)
+	}
+	allowed, err = service.HasPermission(ctx, user, PermissionRoleUpdate)
+	if err != nil || allowed {
+		t.Fatalf("用户拒绝权限未覆盖角色授权: allowed=%v err=%v", allowed, err)
+	}
+
+	if err := service.SetUserAccess(ctx, user.ID, []string{"missing-role"}, UserPermissionOverrides{
+		Allow: []string{PermissionUserDelete},
+	}); !errors.Is(err, ErrInvalidUserRoles) {
+		t.Fatalf("不存在的角色未被拒绝: %v", err)
+	}
+	assertUserAccess([]string{operatorRole.ID}, []string{PermissionAuditRead}, []string{PermissionRoleUpdate})
+
+	if err := service.SetUserAccess(ctx, user.ID, []string{readerRole.ID}, UserPermissionOverrides{
+		Allow: []string{PermissionAuditRead}, Deny: []string{PermissionAuditRead},
+	}); !errors.Is(err, ErrInvalidUserPermissions) {
+		t.Fatalf("冲突的用户权限例外未被拒绝: %v", err)
+	}
+	assertUserAccess([]string{operatorRole.ID}, []string{PermissionAuditRead}, []string{PermissionRoleUpdate})
+
+	otherDepartment := database.WithDepartmentScope(ctx, database.DepartmentScope{
+		UserID: "other-manager", DepartmentID: "other-department",
+	})
+	if err := service.SetUserAccess(otherDepartment, user.ID, nil, UserPermissionOverrides{}); !errors.Is(err, account.ErrUserNotFound) {
+		t.Fatalf("跨部门配置用户权限未按用户不存在处理: %v", err)
+	}
+	assertUserAccess([]string{operatorRole.ID}, []string{PermissionAuditRead}, []string{PermissionRoleUpdate})
+
+	admin, err := account.NewService(db).CreateAdmin(ctx, "atomic-admin", "原子配置管理员", "correct horse battery staple")
+	if err != nil {
+		t.Fatalf("创建超级管理员失败: %v", err)
+	}
+	if err := service.SetUserAccess(ctx, admin.ID, []string{readerRole.ID}, UserPermissionOverrides{}); !errors.Is(err, account.ErrSuperuserImmutable) {
+		t.Fatalf("超级管理员访问配置未被保护: %v", err)
+	}
+	if watcher.updates != 1 {
+		t.Fatalf("失败的访问配置不应发布 Casbin 策略更新: updates=%d", watcher.updates)
+	}
+
+	var beforeSyncFailure model.User
+	if err := db.First(&beforeSyncFailure, "id = ?", user.ID).Error; err != nil {
+		t.Fatalf("读取同步失败前用户状态失败: %v", err)
+	}
+	service.watcher = &countingAccessWatcher{err: errors.New("测试策略广播失败")}
+	if err := service.SetUserAccess(ctx, user.ID, []string{readerRole.ID}, UserPermissionOverrides{}); !errors.Is(err, ErrUserAccessSyncDisabled) {
+		t.Fatalf("权限同步失败未返回已保存且停用提示: %v", err)
+	}
+	var afterSyncFailure model.User
+	if err := db.First(&afterSyncFailure, "id = ?", user.ID).Error; err != nil {
+		t.Fatalf("读取同步失败后用户状态失败: %v", err)
+	}
+	if afterSyncFailure.IsActive || afterSyncFailure.AuthVersion <= beforeSyncFailure.AuthVersion {
+		t.Fatalf("撤权同步失败后未安全停用账户: before=%+v after=%+v", beforeSyncFailure, afterSyncFailure)
+	}
+	createdWithPendingSync, err := service.CreateUser(ctx, "sync-pending-user", "同步待恢复用户", "correct horse battery staple", []string{readerRole.ID})
+	if !errors.Is(err, ErrUserCreatedSyncPending) || createdWithPendingSync == nil {
+		t.Fatalf("创建后同步失败未保留已创建结果: user=%+v err=%v", createdWithPendingSync, err)
+	}
+	var storedPendingUser model.User
+	if err := db.First(&storedPendingUser, "id = ?", createdWithPendingSync.ID).Error; err != nil || !storedPendingUser.IsActive {
+		t.Fatalf("同步待恢复用户未正确保存: user=%+v err=%v", storedPendingUser, err)
+	}
+}
+
+func TestDelegatedUserAccessCannotExceedActorPermissions(t *testing.T) {
+	ctx := context.Background()
+	db, err := database.Open(ctx, config.Database{
+		Driver: "sqlite", DSN: "file:access_delegation_test?mode=memory&cache=shared",
+		MaxOpenConns: 1, MaxIdleConns: 1, ConnMaxLifetime: time.Minute,
+	}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatalf("打开测试数据库失败: %v", err)
+	}
+	defer database.Close(db)
+	if err := database.Migrate(ctx, db); err != nil {
+		t.Fatalf("迁移测试数据库失败: %v", err)
+	}
+	service, err := NewService(db)
+	if err != nil {
+		t.Fatalf("初始化权限服务失败: %v", err)
+	}
+	managerRole, err := service.CreateRole(ctx, RoleInput{
+		Name: "delegation-manager", DisplayName: "受限用户管理员",
+		Permissions: []string{PermissionUserCreate, PermissionUserUpdate, PermissionUserRead},
+	})
+	if err != nil {
+		t.Fatalf("创建受限管理员角色失败: %v", err)
+	}
+	readerRole, err := service.CreateRole(ctx, RoleInput{
+		Name: "delegation-reader", DisplayName: "允许委派角色", Permissions: []string{PermissionUserRead},
+	})
+	if err != nil {
+		t.Fatalf("创建允许委派角色失败: %v", err)
+	}
+	strongRole, err := service.CreateRole(ctx, RoleInput{
+		Name: "delegation-strong", DisplayName: "越权角色", Permissions: []string{PermissionUserDelete},
+	})
+	if err != nil {
+		t.Fatalf("创建越权角色失败: %v", err)
+	}
+	manager, err := service.CreateUser(ctx, "delegation-manager", "受限用户管理员", "correct horse battery staple", []string{managerRole.ID})
+	if err != nil {
+		t.Fatalf("创建受限管理员失败: %v", err)
+	}
+	target, err := service.CreateUser(ctx, "delegation-target", "待配置用户", "correct horse battery staple", nil)
+	if err != nil {
+		t.Fatalf("创建待配置用户失败: %v", err)
+	}
+
+	if _, err := service.CreateUserInDepartmentAs(ctx, manager, "delegation-bad-create", "越权创建用户", "correct horse battery staple", manager.DepartmentID, []string{strongRole.ID}); !errors.Is(err, ErrAccessDelegationDenied) {
+		t.Fatalf("创建用户时分配越权角色未被拒绝: %v", err)
+	}
+	if _, err := account.NewService(db).FindByUsername(ctx, "delegation-bad-create"); !errors.Is(err, gorm.ErrRecordNotFound) {
+		t.Fatalf("越权创建失败后仍留下用户: %v", err)
+	}
+	if _, err := service.CreateUserInDepartmentAs(ctx, manager, "delegation-reader-user", "允许创建用户", "correct horse battery staple", manager.DepartmentID, []string{readerRole.ID}); err != nil {
+		t.Fatalf("受限管理员不能委派自身权限子集: %v", err)
+	}
+	if err := service.SetUserRolesAs(ctx, manager, manager.ID, []string{readerRole.ID}); !errors.Is(err, ErrSelfAccessUpdate) {
+		t.Fatalf("非超级管理员修改自身角色未被拒绝: %v", err)
+	}
+	if err := service.SetUserRolesAs(ctx, manager, target.ID, []string{strongRole.ID}); !errors.Is(err, ErrAccessDelegationDenied) {
+		t.Fatalf("分步角色接口允许委派越权角色: %v", err)
+	}
+	if err := service.SetUserPermissionsAs(ctx, manager, target.ID, UserPermissionOverrides{Allow: []string{PermissionUserDelete}}); !errors.Is(err, ErrAccessDelegationDenied) {
+		t.Fatalf("分步权限接口允许直接授予越权权限: %v", err)
+	}
+	if err := service.SetUserPermissionsAs(ctx, manager, manager.ID, UserPermissionOverrides{}); !errors.Is(err, ErrSelfAccessUpdate) {
+		t.Fatalf("非超级管理员修改自身权限例外未被拒绝: %v", err)
+	}
+	if err := service.SetUserAccess(ctx, target.ID, []string{strongRole.ID}, UserPermissionOverrides{Deny: []string{PermissionUserDelete}}); err != nil {
+		t.Fatalf("准备被 deny 遮蔽的高权限角色失败: %v", err)
+	}
+	if err := service.SetUserPermissionsAs(ctx, manager, target.ID, UserPermissionOverrides{}); !errors.Is(err, ErrAccessDelegationDenied) {
+		t.Fatalf("分步权限接口允许通过移除 deny 激活越权角色: %v", err)
+	}
+	if err := service.SetUserAccessAs(ctx, manager, target.ID, []string{strongRole.ID}, UserPermissionOverrides{Deny: []string{PermissionUserDelete}}); !errors.Is(err, ErrAccessDelegationDenied) {
+		t.Fatalf("原子接口允许使用 deny 掩盖越权角色: %v", err)
+	}
+	if err := service.SetUserAccessAs(ctx, manager, target.ID, []string{readerRole.ID}, UserPermissionOverrides{Allow: []string{PermissionUserDelete}}); !errors.Is(err, ErrAccessDelegationDenied) {
+		t.Fatalf("原子接口允许 direct allow 绕过委派边界: %v", err)
+	}
+	if err := service.SetUserAccessAs(ctx, manager, target.ID, []string{readerRole.ID}, UserPermissionOverrides{Allow: []string{PermissionUserRead}}); err != nil {
+		t.Fatalf("原子接口不能保存操作者权限子集: %v", err)
+	}
+}
+
+type countingAccessWatcher struct {
+	updates int
+	err     error
+}
+
+func (*countingAccessWatcher) SetUpdateCallback(func(string)) error { return nil }
+
+func (w *countingAccessWatcher) Update() error {
+	w.updates++
+	return w.err
+}
+
+func (*countingAccessWatcher) Close() {}
 
 func TestDistributedCasbinPolicySync(t *testing.T) {
 	ctx := context.Background()
