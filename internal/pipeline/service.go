@@ -30,6 +30,7 @@ import (
 	"edo/internal/dockerengine"
 	"edo/internal/model"
 	"edo/internal/notification"
+	"edo/internal/realtime"
 	"edo/internal/repository"
 	"edo/internal/secret"
 	"edo/internal/variablecatalog"
@@ -136,12 +137,16 @@ type Service struct {
 	workflowRuntimeMu      sync.Mutex
 	workflowRuntimeJobs    map[string]workflowRuntimePreparation
 	releasePlanExecutionMu sync.Mutex
+	realtime               *realtime.Bus
 	pipelineAdvanceMu      sync.Mutex
+	runningExecutions      map[string]*runExecutionControl
 }
 
 func NewService(db *gorm.DB, repositories *repository.Service, secrets *secret.Manager) *Service {
 	return &Service{db: db, repositories: repositories, secrets: secrets, logger: slog.Default()}
 }
+
+func (s *Service) ConfigureRealtime(bus *realtime.Bus) { s.realtime = bus }
 
 func (s *Service) ConfigureExecution(docker *dockerengine.Service, deployments *deployment.Service, logger *slog.Logger) {
 	s.docker, s.scriptRunner, s.workflowRuntimes, s.deployments = docker, docker, docker, deployments
@@ -1226,6 +1231,7 @@ func (s *Service) createPendingRun(ctx context.Context, application *model.Appli
 }
 
 func (s *Service) SyncApplication(ctx context.Context, applicationID, trigger string) (*model.Application, *model.PipelineRun, error) {
+	defer s.realtime.Changed(ctx, "application_sync", applicationID)
 	application, err := s.FindApplication(ctx, applicationID)
 	if err != nil {
 		return nil, nil, err
@@ -1499,6 +1505,7 @@ func (s *Service) createObservedRun(
 	if !created {
 		return nil, nil
 	}
+	s.realtime.Changed(ctx, "pipeline_runs", run.ID)
 	run.Repositories = []model.PipelineRunRepository{component}
 	if workflow == nil || !workflow.IsActive {
 		return run, nil

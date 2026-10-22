@@ -31,6 +31,14 @@
 
 前端版本线按 Vben Admin 5.7 的 `web-antd` 工作区核对，当前固定 Vue 3.5、Pinia 3、Ant Design Vue 4.2、Vue I18n 11、VueUse Motion 3 和 Vue Router 5。上述包均为 MIT 许可、持续维护且不包含浏览器端远程代码加载；Vite 按路由拆包，组件和图标只打入实际引用的导出。EDO 只在布局、主题和页面组件边界依赖这些公开 API，后续可以逐包升级或替换，不会改变 Go API、权限或数据库模型。
 
+## 实时通知与连接
+
+流水线停止复用 Go 标准库 [Context 取消](https://pkg.go.dev/context#WithCancel)、[exec.Cmd.Cancel 与 WaitDelay](https://pkg.go.dev/os/exec#Cmd)、现有 Moby API 和 [SSH Session.Signal](https://pkg.go.dev/golang.org/x/crypto/ssh#Session.Signal)。这些能力由 Go 官方及既有 SDK 维护，不增加依赖、常驻服务或平台兼容面；仅支持既定 Linux/macOS，Shell 使用独立进程组控制子进程。持久化停止状态、权限、幂等和审计属于 EDO 业务规则，不引入另一套任务编排框架。维护风险是已提交远程操作无法撤回，因此保留人工确认提示，并用真实隔离 Docker 容器及本地 Shell 取消测试覆盖正常退出路径。
+
+实时状态与流水线日志继续复用已有 `gorilla/websocket` 和官方 `go-redis/v9`，不增加 Redis/NATS 之外的服务或新的依赖。关闭握手、控制帧和并发约束按 [Gorilla 文档](https://pkg.go.dev/github.com/gorilla/websocket#hdr-Control_Messages) 实现；通知通过 Redis Pub/Sub 传递资源失效信号，业务数据仍以数据库和原有权限接口为准。Pub/Sub 的 [至多一次语义](https://redis.io/docs/latest/develop/pubsub/#delivery-semantics) 由重连补同步、日志游标和低频校准兜底。有限缓冲只用于合并突发通知，不代替 Redis；过载或断连不会阻塞业务任务。沿用已有固定版本和兼容许可证，不增加下载体积或平台兼容负担；通道适配封装在 `internal/realtime`，可独立替换。
+
+前端评估了 VueUse `useWebSocket`（MIT、持续维护、支持 Vue 3 的重连与心跳）。本次使用浏览器原生 WebSocket，仅封装 EDO 的结束事件、权限失效停止、动态日志游标和共享订阅计数，未新增直接依赖。连接生命周期由项目维护，以假时钟回归及真实 Vite 代理测试覆盖；未来扩大到更多协议和连接策略时应重新评估复用该库，避免持续扩展自建连接框架。
+
 ## 评估后未采用
 
 | 候选 | 结论 |

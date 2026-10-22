@@ -15,7 +15,6 @@ import {
   Search,
   Server,
   Trash2,
-  UsersRound,
 } from 'lucide-vue-next'
 import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter, type LocationQueryRaw } from 'vue-router'
@@ -34,6 +33,9 @@ import {
 } from '@/api/infrastructure'
 import { apiErrorMessage } from '@/api/resources'
 import HostDrawer from '@/components/HostDrawer.vue'
+import ResourceDetailDrawer from '@/components/ResourceDetailDrawer.vue'
+import ResourceRowActions from '@/components/ResourceRowActions.vue'
+import { useResourceList } from '@/utils/resourceList'
 import KubernetesClusterDrawer from '@/components/KubernetesClusterDrawer.vue'
 import PageToolbar from '@/components/PageToolbar.vue'
 import RuntimeBrandIcon from '@/components/RuntimeBrandIcon.vue'
@@ -42,7 +44,7 @@ import { useAuthStore } from '@/stores/auth'
 import { formatDateTime } from '@/utils/time'
 
 interface ClusterOption { id: string; name: string; is_active: boolean }
-type HostGroupKey = 'all' | 'ungrouped' | string
+type HostGroupKey = string
 type HostStatusFilter = 'all' | 'ready' | 'warning' | 'inactive'
 type GroupFormMode = 'create' | 'details' | 'hosts'
 type DetailTab = 'info' | 'resources'
@@ -79,11 +81,14 @@ let initialized = false
 
 const statusPollInterval = 5000
 const statusRefreshDeduplicationWindow = 1000
+// 旧版自动环境仅供已有部署兼容，不作为用户创建的主机分组展示。
+const legacyLocalEnvironmentID = 'edo-local-environment'
 const canReadGroups = computed(() => auth.canAny(['deployment.read']))
 const canReadResources = computed(() => auth.canAny(['cluster.read']))
 const selected = computed(() => hosts.value.find(host => host.id === selectedID.value))
-const selectedGroup = computed(() => environments.value.find(environment => environment.id === selectedGroupKey.value))
-const environmentNames = computed(() => new Map(environments.value.map(environment => [environment.id, environment.name])))
+const hostGroups = computed(() => environments.value.filter(environment => environment.id !== legacyLocalEnvironmentID))
+const selectedGroup = computed(() => hostGroups.value.find(environment => environment.id === selectedGroupKey.value))
+const environmentNames = computed(() => new Map(hostGroups.value.map(environment => [environment.id, environment.name])))
 const normalizedSearch = computed(() => searchQuery.value.trim().toLocaleLowerCase())
 const tableColumns = [
   { title: '主机名称', key: 'name', width: 210 },
@@ -98,7 +103,7 @@ const tableColumns = [
 
 const selectedEnvironmentSummary = computed(() => {
   if (!selected.value || !canReadGroups.value) return canReadGroups.value ? '' : '无环境查看权限'
-  const environmentIDs = environmentIDsOf(selected.value)
+  const environmentIDs = environmentIDsOf(selected.value).filter(id => id !== legacyLocalEnvironmentID)
   const names = environmentIDs
     .map(id => environmentNames.value.get(id))
     .filter((name): name is string => Boolean(name))
@@ -127,14 +132,12 @@ const searchAndStatusHosts = computed(() => hosts.value.filter(host => {
 
 const filteredHosts = computed(() => {
   if (!canReadGroups.value || selectedGroupKey.value === 'all') return searchAndStatusHosts.value
-  if (selectedGroupKey.value === 'ungrouped') {
-    return searchAndStatusHosts.value.filter(host => environmentIDsOf(host).length === 0)
-  }
   return searchAndStatusHosts.value.filter(host => environmentIDsOf(host).includes(selectedGroupKey.value))
 })
 
-const ungroupedCount = computed(() => searchAndStatusHosts.value.filter(host => environmentIDsOf(host).length === 0).length)
-const visibleEnvironments = computed(() => environments.value.filter(environment => {
+const { pagination: hostPagination, changePage: changeHostPage } = useResourceList(() => filteredHosts.value)
+
+const visibleEnvironments = computed(() => hostGroups.value.filter(environment => {
   if (!normalizedSearch.value && statusFilter.value === 'all') return true
   return groupHostCount(environment.id) > 0 || environment.id === selectedGroupKey.value
 }))
@@ -240,7 +243,7 @@ async function refresh() {
     hosts.value = hostItems
     environments.value = environmentItems
     if (!canReadGroups.value) selectedGroupKey.value = 'all'
-    else if (selectedGroupKey.value !== 'all' && selectedGroupKey.value !== 'ungrouped' && !environmentItems.some(item => item.id === selectedGroupKey.value)) {
+    else if (selectedGroupKey.value !== 'all' && !hostGroups.value.some(item => item.id === selectedGroupKey.value)) {
       selectedGroupKey.value = 'all'
     }
     if (canReadResources.value) {
@@ -604,71 +607,20 @@ onBeforeUnmount(() => {
 <template>
   <section>
     <PageToolbar description="按分组管理主机接入和运行时能力；容器、Pod、日志和终端可直接在对应主机中查看。">
+      <a-button v-if="canReadGroups && auth.canAny(['deployment.create'])" @click="createGroup"><Plus :size="15" />新建主机分组</a-button>
       <a-button v-if="canReadResources" @click="openAllResources"><Container :size="15" />全部运行资源</a-button>
     </PageToolbar>
 
     <div class="host-workspace vben-card">
-      <aside class="group-panel">
-        <header class="group-panel-header">
-          <div><strong>主机分组</strong><small>{{ canReadGroups ? '按环境组织主机' : '仅显示可访问主机' }}</small></div>
-          <a-button v-if="canReadGroups && auth.canAny(['deployment.create'])" type="text" size="small" aria-label="新建主机分组" title="新建主机分组" @click="createGroup"><Plus :size="17" /></a-button>
-        </header>
-
-        <div class="group-list">
-          <div class="group-row" :class="{ active: selectedGroupKey === 'all' }">
-            <button type="button" class="group-select" @click="selectGroup('all')">
-              <span class="group-icon"><Boxes :size="17" /></span>
-              <span class="group-copy"><strong>全部主机</strong><small>当前可访问的主机</small></span>
-              <span class="group-count">{{ searchAndStatusHosts.length }}</span>
-            </button>
-          </div>
-          <div v-if="canReadGroups" class="group-row" :class="{ active: selectedGroupKey === 'ungrouped' }">
-            <button type="button" class="group-select" @click="selectGroup('ungrouped')">
-              <span class="group-icon muted"><Folder :size="17" /></span>
-              <span class="group-copy"><strong>未分组</strong><small>尚未关联环境</small></span>
-              <span class="group-count">{{ ungroupedCount }}</span>
-            </button>
-          </div>
-          <div
-            v-for="environment in visibleEnvironments"
-            :key="environment.id"
-            class="group-row"
-            :class="{ active: selectedGroupKey === environment.id, inactive: !environment.is_active }"
-          >
-            <button type="button" class="group-select" @click="selectGroup(environment.id)">
-              <span class="group-icon"><component :is="selectedGroupKey === environment.id ? FolderOpen : Folder" :size="17" /></span>
-              <span class="group-copy"><strong>{{ environment.name }}</strong><small>{{ environment.description || (environment.is_active ? '已启用' : '已停用') }}</small></span>
-              <span class="group-count">{{ groupHostCount(environment.id) }}</span>
-            </button>
-            <a-dropdown v-if="auth.canAny(['deployment.update', 'deployment.delete'])" :trigger="['click']" placement="bottomRight">
-              <a-button type="text" size="small" class="group-more" aria-label="分组操作" @click.stop><MoreHorizontal :size="16" /></a-button>
-              <template #overlay>
-                <a-menu @click="handleGroupAction(environment, String($event.key))">
-                  <a-menu-item v-if="auth.canAny(['deployment.update'])" key="details">编辑信息</a-menu-item>
-                  <a-menu-item v-if="auth.canAny(['deployment.update'])" key="hosts">调整主机</a-menu-item>
-                  <a-menu-item v-if="auth.canAny(['deployment.update'])" key="toggle">{{ environment.is_active ? '停用分组' : '启用分组' }}</a-menu-item>
-                  <a-menu-item key="environment">打开环境管理</a-menu-item>
-                  <a-menu-divider v-if="auth.canAny(['deployment.delete'])" />
-                  <a-menu-item v-if="auth.canAny(['deployment.delete'])" key="delete" danger>删除分组</a-menu-item>
-                </a-menu>
-              </template>
-            </a-dropdown>
-          </div>
-          <a-empty v-if="canReadGroups && !visibleEnvironments.length && !loading" :image="undefined" description="还没有自定义分组" />
-        </div>
-
-        <button v-if="canReadGroups" type="button" class="environment-link" @click="router.push('/environments')">
-          <UsersRound :size="15" />完整环境管理
-        </button>
-      </aside>
-
       <main class="host-table-panel">
         <header class="table-toolbar">
           <div class="table-toolbar-copy">
-            <strong>{{ selectedGroup ? selectedGroup.name : selectedGroupKey === 'ungrouped' ? '未分组' : '全部主机' }}</strong>
+            <strong>{{ selectedGroup ? selectedGroup.name : '全部主机' }}</strong>
             <small>显示 {{ filteredHosts.length }} / {{ hosts.length }} 台主机</small>
           </div>
           <div class="table-filters">
+            <a-select v-if="canReadGroups" :value="selectedGroupKey" :options="[{ value: 'all', label: '全部分组' }, ...hostGroups.map(item => ({ value: item.id, label: item.name }))]" style="min-width:170px" @change="selectGroup" />
+            <a-dropdown v-if="selectedGroup && auth.canAny(['deployment.update', 'deployment.delete'])" :trigger="['click']"><a-button size="small">分组操作<MoreHorizontal :size="14" /></a-button><template #overlay><a-menu @click="handleGroupAction(selectedGroup!, String($event.key))"><a-menu-item v-if="auth.canAny(['deployment.update'])" key="details">编辑信息</a-menu-item><a-menu-item v-if="auth.canAny(['deployment.update'])" key="hosts">调整主机</a-menu-item><a-menu-item v-if="auth.canAny(['deployment.update'])" key="toggle">{{ selectedGroup.is_active ? '停用分组' : '启用分组' }}</a-menu-item><a-menu-item v-if="auth.canAny(['deployment.delete'])" key="delete" danger>删除分组</a-menu-item></a-menu></template></a-dropdown>
             <a-input v-model:value="searchQuery" allow-clear placeholder="搜索名称、地址、用户或分组" class="host-search">
               <template #prefix><Search :size="15" /></template>
             </a-input>
@@ -693,11 +645,11 @@ onBeforeUnmount(() => {
           :columns="tableColumns"
           :data-source="filteredHosts"
           :loading="loading"
-          :pagination="{ pageSize: 12, hideOnSinglePage: true, showSizeChanger: false }"
+          :pagination="hostPagination" @change="changeHostPage"
           :scroll="{ x: 1360 }"
           row-key="id"
           size="middle"
-          class="host-table"
+          class="host-table resource-list-table"
         >
           <template #bodyCell="{ column, record }: { column: { key: string }, record: InfrastructureHost }">
             <template v-if="column.key === 'name'">
@@ -717,7 +669,7 @@ onBeforeUnmount(() => {
               <div v-else-if="groupNamesOf(record).length" class="group-tags">
                 <a-tag v-for="name in groupNamesOf(record)" :key="name">{{ name }}</a-tag>
               </div>
-              <span v-else class="muted-text">未分组</span>
+              <span v-else class="muted-text">—</span>
             </template>
             <template v-else-if="column.key === 'capabilities'">
               <div v-if="record.capabilities.length" class="capability-icons">
@@ -733,24 +685,16 @@ onBeforeUnmount(() => {
             </template>
             <template v-else-if="column.key === 'updated_at'">{{ formatTime(record.updated_at) }}</template>
             <template v-else-if="column.key === 'actions'">
-              <a-space :size="0">
+              <ResourceRowActions :more="auth.canAny(['cluster.update', 'cluster.delete'])">
                 <a-button v-if="canReadResources && runtimeCount(record)" type="link" size="small" @click="openHostResources(record)">资源 {{ runtimeCount(record) }}</a-button>
                 <a-button type="link" size="small" @click="openDetails(record)">详情</a-button>
-                <a-dropdown placement="bottomRight">
-                  <a-button type="link" size="small">更多<MoreHorizontal :size="14" /></a-button>
-                  <template #overlay>
-                    <a-menu @click="handleHostAction(record, String($event.key))">
-                      <a-menu-item key="details">查看详情</a-menu-item>
-                      <a-menu-item v-if="auth.canAny(['cluster.update'])" key="edit">编辑主机</a-menu-item>
-                      <a-menu-item v-if="auth.canAny(['cluster.read']) && capabilityOf(record, 'docker')?.runtime_id" key="docker">Docker 资源</a-menu-item>
-                      <a-menu-item v-if="auth.canAny(['cluster.read']) && capabilityOf(record, 'kubernetes')?.runtime_id" key="kubernetes">Kubernetes 资源</a-menu-item>
-                      <a-menu-item v-if="auth.canAny(['cluster.update']) && !record.is_builtin" key="toggle">{{ record.is_active ? '停用主机' : '启用主机' }}</a-menu-item>
+                <template #more>
+                      <a-menu-item v-if="auth.canAny(['cluster.update'])" @click="handleHostAction(record, 'edit')">编辑主机</a-menu-item>
+                      <a-menu-item v-if="auth.canAny(['cluster.update']) && !record.is_builtin" @click="handleHostAction(record, 'toggle')">{{ record.is_active ? '停用主机' : '启用主机' }}</a-menu-item>
                       <a-menu-divider v-if="auth.canAny(['cluster.delete']) && !record.is_builtin" />
-                      <a-menu-item v-if="auth.canAny(['cluster.delete']) && !record.is_builtin" key="delete" danger>删除主机</a-menu-item>
-                    </a-menu>
-                  </template>
-                </a-dropdown>
-              </a-space>
+                      <a-menu-item v-if="auth.canAny(['cluster.delete']) && !record.is_builtin" @click="handleHostAction(record, 'delete')" danger>删除主机</a-menu-item>
+                </template>
+              </ResourceRowActions>
             </template>
           </template>
           <template #emptyText><a-empty description="当前筛选条件下没有主机" /></template>
@@ -758,7 +702,7 @@ onBeforeUnmount(() => {
       </main>
     </div>
 
-    <a-drawer v-model:open="detailOpen" width="min(980px, 100vw)" class="host-detail-drawer" @close="closeDetails">
+    <ResourceDetailDrawer v-model:open="detailOpen" class="host-detail-drawer" @close="closeDetails">
       <template #title>
         <div class="drawer-title">
           <component :is="selected ? Server : Container" :size="19" />
@@ -766,7 +710,7 @@ onBeforeUnmount(() => {
           <a-tag v-if="selected" :color="selected.is_active ? 'success' : 'default'">{{ selected.is_active ? '已启用' : '已停用' }}</a-tag>
         </div>
       </template>
-      <template v-if="selected && detailTab === 'info'" #extra>
+      <template v-if="selected && detailTab === 'info'" #actions>
         <a-space>
           <a-button v-if="auth.canAny(['cluster.update'])" @click="edit(selected)"><Pencil :size="14" />编辑</a-button>
           <a-button
@@ -800,19 +744,20 @@ onBeforeUnmount(() => {
       </div>
 
       <template v-if="detailTab === 'info' && selected">
-        <div class="detail-summary">
-          <span>{{ selected.is_builtin ? '本地主机' : 'SSH 主机' }}</span>
-          <p>{{ selectedEnvironmentSummary }}</p>
-        </div>
-        <div class="host-facts">
-          <div><small>连接地址</small><strong>{{ selected.is_builtin ? '本地' : `${selected.ssh_username}@${selected.address}:${selected.ssh_port}` }}</strong></div>
-          <div><small>认证方式</small><strong>{{ selected.is_builtin ? '本地连接' : selected.ssh_auth_type === 'password' ? 'SSH 密码' : selected.ssh_auth_type === 'legacy' ? '历史凭据' : 'SSH 私钥' }}</strong></div>
-          <div><small>主机架构</small><strong>{{ selected.architecture ? selected.architecture.toUpperCase() : '尚未检测，请重新测试连接' }}</strong></div>
-          <div><small>更新时间</small><strong>{{ formatTime(selected.updated_at) }}</strong></div>
-          <div class="fingerprint"><small>主机指纹</small><code>{{ selected.ssh_host_key_fingerprint || '本地无需 SSH 指纹' }}</code></div>
-        </div>
+        <section class="resource-detail-section">
+          <h4>{{ t('resourceList.basic') }}</h4>
+          <dl class="resource-facts">
+            <div><dt>连接地址</dt><dd>{{ selected.is_builtin ? '本地' : selected.address + ':' + selected.ssh_port }}</dd></div>
+            <div><dt>SSH 用户</dt><dd>{{ selected.is_builtin ? '—' : selected.ssh_username }}</dd></div>
+            <div><dt>认证方式</dt><dd>{{ selected.is_builtin ? '本地连接' : selected.ssh_auth_type === 'password' ? 'SSH 密码' : 'SSH 私钥' }}</dd></div>
+            <div><dt>主机架构</dt><dd>{{ selected.architecture ? selected.architecture.toUpperCase() : '尚未检测' }}</dd></div>
+            <div><dt>{{ t('resourceList.updated') }}</dt><dd>{{ formatTime(selected.updated_at) }}</dd></div>
+            <div><dt>所属环境</dt><dd>{{ selectedEnvironmentSummary }}</dd></div>
+            <div class="resource-facts-wide"><dt>主机指纹</dt><dd>{{ selected.ssh_host_key_fingerprint || '本地无需 SSH 指纹' }}</dd></div>
+          </dl>
+        </section>
 
-        <section class="capability-section">
+        <section class="capability-section resource-detail-section">
           <header><div><h4>{{ selected.is_builtin ? '本地的主机能力' : '主机能力' }}</h4><p>{{ selected.is_builtin ? '本地 Docker 与直接终端执行能力由当前 EDO 运行环境决定。' : 'SSH 用于执行部署方案脚本；Docker 与 Kubernetes 资源可直接在当前主机中查看。' }}</p></div></header>
           <div class="capability-cards">
             <article v-for="capability in selected.capabilities" :key="capability.kind">
@@ -832,7 +777,7 @@ onBeforeUnmount(() => {
         :node="resourceNode"
         @update:node="updateResourceNode"
       />
-    </a-drawer>
+    </ResourceDetailDrawer>
 
     <a-drawer v-model:open="groupDrawerOpen" :title="groupTitle" width="min(620px, 100vw)">
       <a-form layout="vertical">
@@ -862,7 +807,10 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
-.host-workspace{display:grid;min-height:610px;grid-template-columns:260px minmax(0,1fr);overflow:hidden}.group-panel{display:flex;min-width:0;flex-direction:column;border-right:1px solid var(--edo-border);background:var(--edo-surface-soft)}.group-panel-header{display:flex;height:64px;align-items:center;justify-content:space-between;padding:0 14px;border-bottom:1px solid var(--edo-border)}.group-panel-header strong,.group-panel-header small{display:block}.group-panel-header small{margin-top:2px;color:var(--edo-muted);font-size:12px}.group-list{min-height:0;flex:1;overflow-y:auto;padding:9px}.group-row{position:relative;display:flex;min-height:55px;align-items:center;margin:2px 0;border-radius:9px}.group-row:hover{background:var(--edo-surface)}.group-row.active{background:var(--edo-primary-soft);box-shadow:inset 3px 0 var(--edo-primary)}.group-row.inactive .group-icon,.group-row.inactive .group-copy{opacity:.62}.group-select{display:grid;min-width:0;flex:1;align-items:center;grid-template-columns:32px minmax(0,1fr) auto;gap:8px;padding:8px 8px;border:0;background:transparent;cursor:pointer;text-align:left}.group-icon{display:grid;width:32px;height:32px;place-items:center;border-radius:9px;color:var(--edo-primary);background:var(--edo-surface)}.group-icon.muted{color:var(--edo-muted)}.group-copy{min-width:0}.group-copy strong,.group-copy small{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.group-copy small{margin-top:2px;color:var(--edo-muted);font-size:11px}.group-count{min-width:24px;padding:2px 7px;border-radius:999px;color:var(--edo-muted);background:var(--edo-surface);font-size:11px;text-align:center}.group-more{width:28px;flex:0 0 28px;margin-right:4px;padding:0}.environment-link{display:flex;align-items:center;justify-content:center;gap:7px;margin:8px;padding:10px;border:1px solid var(--edo-border);border-radius:8px;color:var(--edo-muted);background:var(--edo-surface);cursor:pointer}.environment-link:hover{color:var(--edo-primary);border-color:color-mix(in srgb,var(--edo-primary) 40%,var(--edo-border))}.host-table-panel{min-width:0;background:var(--edo-surface)}.table-toolbar{display:grid;min-height:64px;align-items:center;grid-template-columns:auto minmax(360px,1fr) auto;gap:14px;padding:10px 14px;border-bottom:1px solid var(--edo-border)}.table-toolbar-copy strong,.table-toolbar-copy small{display:block;white-space:nowrap}.table-toolbar-copy small{margin-top:2px;color:var(--edo-muted);font-size:11px}.table-filters{display:flex;min-width:0;align-items:center;justify-content:center;gap:10px}.host-search{max-width:320px}.table-actions{display:flex;align-items:center;gap:8px}.host-table :deep(.ant-table-thead>tr>th){font-size:12px}.host-table :deep(.ant-table-cell){vertical-align:middle}.host-name{display:flex;min-width:0;align-items:center;gap:10px;padding:0;border:0;color:var(--edo-text);background:transparent;cursor:pointer;text-align:left}.host-name:hover strong{color:var(--edo-primary)}.host-name>span:last-child{min-width:0}.host-name strong,.host-name small,.two-line-cell strong,.two-line-cell small{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.host-name small,.two-line-cell small{margin-top:2px;color:var(--edo-muted);font-size:11px}.host-icon{display:grid;width:36px;height:36px;flex:0 0 36px;place-items:center;border-radius:10px;color:var(--edo-primary);background:var(--edo-primary-soft)}.host-icon.inactive{color:var(--edo-muted);background:var(--edo-surface-soft)}.group-tags{display:flex;overflow:hidden;flex-wrap:wrap;gap:4px}.group-tags :deep(.ant-tag){max-width:120px;overflow:hidden;margin:0;text-overflow:ellipsis}.muted-text{color:var(--edo-muted)}.capability-icons{display:flex;align-items:center;gap:6px}.capability-icons>span{position:relative;display:grid;width:27px;height:27px;place-items:center;border-radius:8px;color:var(--edo-muted);background:var(--edo-surface-soft)}.capability-icons>span.ready{color:var(--edo-primary)}.capability-icons>span.unreachable{color:#ef5656}.capability-icons>span::after{position:absolute;right:1px;bottom:1px;width:6px;height:6px;border:1px solid var(--edo-surface);border-radius:50%;background:#d99b25;content:''}.capability-icons>span.ready::after{background:#28b66e}.capability-icons>span.unreachable::after{background:#ef5656}.capability-icons :deep(svg){width:16px;height:16px}.runtime-state{display:inline-flex;align-items:center;gap:7px;white-space:nowrap}.runtime-state i{width:8px;height:8px;border-radius:50%;background:#a8adb7}.runtime-state.ready{color:#1d9459}.runtime-state.ready i{background:#28b66e;box-shadow:0 0 0 4px color-mix(in srgb,#28b66e 12%,transparent)}.runtime-state.unavailable{color:#d74747}.runtime-state.unavailable i{background:#ef5656}.runtime-state.unchecked{color:#b67813}.runtime-state.unchecked i{background:#d99b25}.drawer-title{display:flex;align-items:center;gap:9px}.detail-view-switch{display:flex;justify-content:center;margin:-2px 0 20px;padding-bottom:14px;border-bottom:1px solid var(--edo-border)}.detail-summary{padding:0 2px 16px}.detail-summary span,.detail-summary p{color:var(--edo-muted)}.detail-summary p{margin:4px 0 0}.host-facts{display:grid;grid-template-columns:1fr 1fr;gap:12px}.host-facts>div{min-width:0;padding:14px 16px;border:1px solid var(--edo-border);border-radius:10px;background:var(--edo-surface-soft)}.host-facts small,.host-facts strong{display:block}.host-facts small{margin-bottom:5px;color:var(--edo-muted)}.host-facts .fingerprint{grid-column:1/-1}.host-facts code{overflow-wrap:anywhere;color:var(--edo-muted)}.capability-section{margin-top:28px}.capability-section>header h4,.capability-section>header p{margin:0}.capability-section>header p{margin-top:3px;color:var(--edo-muted)}.capability-cards{display:grid;grid-template-columns:1fr;gap:10px;margin-top:14px}.capability-cards article{display:grid;min-height:80px;align-items:center;grid-template-columns:42px minmax(0,1fr) 20px auto;gap:12px;padding:13px;border:1px solid var(--edo-border);border-radius:11px;background:var(--edo-surface-soft)}.runtime-logo{display:grid;width:42px;height:42px;place-items:center;border-radius:11px;background:var(--edo-surface)}.runtime-logo :deep(svg){width:25px;height:25px}.runtime-logo.ssh,.runtime-logo.local_exec{color:var(--edo-muted)}.runtime-logo.docker{color:#2496ed}.runtime-logo.kubernetes{color:#326ce5}.capability-cards article strong,.capability-cards article small{display:block}.capability-cards article small{margin-top:3px;color:var(--edo-muted)}.capability-state{width:18px}.capability-state.ready{color:#28b66e}.capability-state.unchecked{color:#d99b25}.capability-state.unavailable{color:#ef5656}.host-option strong,.host-option small{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.host-option small{color:var(--edo-muted);font-size:11px}.field-hint{margin-top:7px;color:var(--edo-muted);font-size:12px}@media(max-width:1100px){.table-toolbar{grid-template-columns:1fr auto}.table-filters{grid-column:1/-1;grid-row:2;justify-content:flex-start}.host-search{max-width:none;flex:1}}@media(max-width:820px){.host-workspace{grid-template-columns:1fr}.group-panel{max-height:250px;border-right:0;border-bottom:1px solid var(--edo-border)}.group-list{max-height:170px}.table-toolbar{grid-template-columns:1fr}.table-filters{grid-column:auto;grid-row:auto;flex-direction:column;align-items:stretch}.table-actions{justify-content:flex-end}.host-facts{grid-template-columns:1fr}.host-facts .fingerprint{grid-column:auto}}@media(max-width:560px){.table-toolbar{padding:10px}.table-actions{justify-content:stretch}.table-actions .ant-btn{flex:1}.capability-cards article{grid-template-columns:38px minmax(0,1fr) 18px}.capability-cards article>.ant-btn{grid-column:2/-1}.host-detail-drawer :deep(.ant-drawer-content-wrapper){width:100%!important}}
+.host-workspace{display:grid;min-height:610px;grid-template-columns:260px minmax(0,1fr);overflow:hidden}.group-panel{display:flex;min-width:0;flex-direction:column;border-right:1px solid var(--edo-border);background:var(--edo-surface-soft)}.group-panel-header{display:flex;height:64px;align-items:center;justify-content:space-between;padding:0 14px;border-bottom:1px solid var(--edo-border)}.group-panel-header strong,.group-panel-header small{display:block}.group-panel-header small{margin-top:2px;color:var(--edo-muted);font-size:12px}.group-list{min-height:0;flex:1;overflow-y:auto;padding:9px}.group-row{position:relative;display:flex;min-height:55px;align-items:center;margin:2px 0;border-radius:9px}.group-row:hover{background:var(--edo-surface)}.group-row.active{background:var(--edo-primary-soft);box-shadow:inset 3px 0 var(--edo-primary)}.group-row.inactive .group-icon,.group-row.inactive .group-copy{opacity:.62}.group-select{display:grid;min-width:0;flex:1;align-items:center;grid-template-columns:32px minmax(0,1fr) auto;gap:8px;padding:8px 8px;border:0;background:transparent;cursor:pointer;text-align:left}.group-icon{display:grid;width:32px;height:32px;place-items:center;border-radius:9px;color:var(--edo-primary);background:var(--edo-surface)}.group-icon.muted{color:var(--edo-muted)}.group-copy{min-width:0}.group-copy strong,.group-copy small{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.group-copy small{margin-top:2px;color:var(--edo-muted);font-size:11px}.group-count{min-width:24px;padding:2px 7px;border-radius:999px;color:var(--edo-muted);background:var(--edo-surface);font-size:11px;text-align:center}.group-more{width:28px;flex:0 0 28px;margin-right:4px;padding:0}.host-table-panel{min-width:0;background:var(--edo-surface)}.table-toolbar{display:grid;min-height:64px;align-items:center;grid-template-columns:auto minmax(360px,1fr) auto;gap:14px;padding:10px 14px;border-bottom:1px solid var(--edo-border)}.table-toolbar-copy strong,.table-toolbar-copy small{display:block;white-space:nowrap}.table-toolbar-copy small{margin-top:2px;color:var(--edo-muted);font-size:11px}.table-filters{display:flex;min-width:0;align-items:center;justify-content:center;gap:10px}.host-search{max-width:320px}.table-actions{display:flex;align-items:center;gap:8px}.host-table :deep(.ant-table-thead>tr>th){font-size:12px}.host-table :deep(.ant-table-cell){vertical-align:middle}.host-name{display:flex;min-width:0;align-items:center;gap:10px;padding:0;border:0;color:var(--edo-text);background:transparent;cursor:pointer;text-align:left}.host-name:hover strong{color:var(--edo-primary)}.host-name>span:last-child{min-width:0}.host-name strong,.host-name small,.two-line-cell strong,.two-line-cell small{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.host-name small,.two-line-cell small{margin-top:2px;color:var(--edo-muted);font-size:11px}.host-icon{display:grid;width:36px;height:36px;flex:0 0 36px;place-items:center;border-radius:10px;color:var(--edo-primary);background:var(--edo-primary-soft)}.host-icon.inactive{color:var(--edo-muted);background:var(--edo-surface-soft)}.group-tags{display:flex;overflow:hidden;flex-wrap:wrap;gap:4px}.group-tags :deep(.ant-tag){max-width:120px;overflow:hidden;margin:0;text-overflow:ellipsis}.muted-text{color:var(--edo-muted)}.capability-icons{display:flex;align-items:center;gap:6px}.capability-icons>span{position:relative;display:grid;width:27px;height:27px;place-items:center;border-radius:8px;color:var(--edo-muted);background:var(--edo-surface-soft)}.capability-icons>span.ready{color:var(--edo-primary)}.capability-icons>span.unreachable{color:#ef5656}.capability-icons>span::after{position:absolute;right:1px;bottom:1px;width:6px;height:6px;border:1px solid var(--edo-surface);border-radius:50%;background:#d99b25;content:''}.capability-icons>span.ready::after{background:#28b66e}.capability-icons>span.unreachable::after{background:#ef5656}.capability-icons :deep(svg){width:16px;height:16px}.runtime-state{display:inline-flex;align-items:center;gap:7px;white-space:nowrap}.runtime-state i{width:8px;height:8px;border-radius:50%;background:#a8adb7}.runtime-state.ready{color:#1d9459}.runtime-state.ready i{background:#28b66e;box-shadow:0 0 0 4px color-mix(in srgb,#28b66e 12%,transparent)}.runtime-state.unavailable{color:#d74747}.runtime-state.unavailable i{background:#ef5656}.runtime-state.unchecked{color:#b67813}.runtime-state.unchecked i{background:#d99b25}.drawer-title{display:flex;align-items:center;gap:9px}.detail-view-switch{display:flex;justify-content:center;margin:-2px 0 20px;padding-bottom:14px;border-bottom:1px solid var(--edo-border)}.detail-summary{padding:0 2px 16px}.detail-summary span,.detail-summary p{color:var(--edo-muted)}.detail-summary p{margin:4px 0 0}.host-facts{display:grid;grid-template-columns:1fr 1fr;gap:12px}.host-facts>div{min-width:0;padding:14px 16px;border:1px solid var(--edo-border);border-radius:10px;background:var(--edo-surface-soft)}.host-facts small,.host-facts strong{display:block}.host-facts small{margin-bottom:5px;color:var(--edo-muted)}.host-facts .fingerprint{grid-column:1/-1}.host-facts code{overflow-wrap:anywhere;color:var(--edo-muted)}.capability-section{margin-top:28px}.capability-section>header h4,.capability-section>header p{margin:0}.capability-section>header p{margin-top:3px;color:var(--edo-muted)}.capability-cards{display:grid;grid-template-columns:1fr;gap:10px;margin-top:14px}.capability-cards article{display:grid;min-height:80px;align-items:center;grid-template-columns:42px minmax(0,1fr) 20px auto;gap:12px;padding:13px;border:1px solid var(--edo-border);border-radius:11px;background:var(--edo-surface-soft)}.runtime-logo{display:grid;width:42px;height:42px;place-items:center;border-radius:11px;background:var(--edo-surface)}.runtime-logo :deep(svg){width:25px;height:25px}.runtime-logo.ssh,.runtime-logo.local_exec{color:var(--edo-muted)}.runtime-logo.docker{color:#2496ed}.runtime-logo.kubernetes{color:#326ce5}.capability-cards article strong,.capability-cards article small{display:block}.capability-cards article small{margin-top:3px;color:var(--edo-muted)}.capability-state{width:18px}.capability-state.ready{color:#28b66e}.capability-state.unchecked{color:#d99b25}.capability-state.unavailable{color:#ef5656}.host-option strong,.host-option small{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.host-option small{color:var(--edo-muted);font-size:11px}.field-hint{margin-top:7px;color:var(--edo-muted);font-size:12px}@media(max-width:1100px){.table-toolbar{grid-template-columns:1fr auto}.table-filters{grid-column:1/-1;grid-row:2;justify-content:flex-start}.host-search{max-width:none;flex:1}}@media(max-width:820px){.host-workspace{grid-template-columns:1fr}.group-panel{max-height:250px;border-right:0;border-bottom:1px solid var(--edo-border)}.group-list{max-height:170px}.table-toolbar{grid-template-columns:1fr}.table-filters{grid-column:auto;grid-row:auto;flex-direction:column;align-items:stretch}.table-actions{justify-content:flex-end}.host-facts{grid-template-columns:1fr}.host-facts .fingerprint{grid-column:auto}}@media(max-width:560px){.table-toolbar{padding:10px}.table-actions{justify-content:stretch}.table-actions .ant-btn{flex:1}.capability-cards article{grid-template-columns:38px minmax(0,1fr) 18px}.capability-cards article>.ant-btn{grid-column:2/-1}.host-detail-drawer :deep(.ant-drawer-content-wrapper){width:100%!important}}
 .host-option strong em{margin-left:7px;color:var(--edo-muted);font-size:11px;font-style:normal;font-weight:400}
 @media (min-width:821px) and (max-width:1550px){.table-toolbar{grid-template-columns:1fr auto}.table-filters{grid-column:1/-1;grid-row:2;justify-content:flex-start}.host-search{max-width:none;flex:1}}
+
+.host-workspace{display:block;min-height:0}.table-toolbar{grid-template-columns:auto minmax(0,1fr) auto}.table-filters{flex-wrap:wrap;justify-content:flex-start}.host-table :deep(.resource-row-actions .ant-btn-link){border:1px solid var(--edo-border);color:var(--edo-text);padding:0 10px}.detail-view-switch{justify-content:flex-start;margin:0;padding:0 0 12px}.capability-section{margin-top:0}.capability-cards{gap:0;margin-top:12px}.capability-cards article{min-height:58px;grid-template-columns:28px minmax(0,1fr) 18px auto;gap:10px;padding:10px 0;border:0;border-bottom:1px solid var(--edo-border);border-radius:0;background:transparent}.runtime-logo{width:28px;height:28px;border-radius:5px}.runtime-logo :deep(svg){width:19px;height:19px}.capability-cards article small{font-size:12px}.host-name small,.two-line-cell small{font-size:12px}.host-icon{width:28px;height:28px;flex-basis:28px;border-radius:5px}
+@media(max-width:1100px){.table-toolbar{grid-template-columns:1fr auto}.table-filters{grid-column:1/-1;grid-row:2}}@media(max-width:640px){.table-toolbar{grid-template-columns:1fr}.table-actions{flex-wrap:wrap}.table-filters{grid-column:auto;grid-row:auto}}
 </style>

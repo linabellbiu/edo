@@ -66,7 +66,8 @@ func failureStateForRun(run model.PipelineRun) executionFailureState {
 	return taskFailureState(run.ID, run.ExecutionJobID, run.CurrentNodeID, run.Status)
 }
 
-func (s *Service) ExecuteDeployTask(ctx context.Context, payload DeployTaskPayload, jobID string) error {
+func (s *Service) executeDeployTask(ctx context.Context, payload DeployTaskPayload, jobID string) error {
+	defer s.realtime.Changed(ctx, "pipeline_runs", payload.PipelineRunID)
 	if s.deployments == nil || s.repositories == nil || s.secrets == nil {
 		return ErrPipelineExecutionUnavailable
 	}
@@ -515,8 +516,10 @@ func (s *Service) latestExecutionApproval(ctx context.Context, runID string) (st
 }
 
 func (s *Service) updateExecutionPhase(ctx context.Context, run *model.PipelineRun, stage, message string) error {
+	defer s.realtime.Changed(ctx, "pipeline_runs", run.ID)
 	now := time.Now().UTC()
 	result := s.db.WithContext(ctx).Model(&model.PipelineRun{}).
+		Where("stage <> ?", stoppingStage).
 		Where("id = ? AND execution_job_id = ? AND status = ?", run.ID, run.ExecutionJobID, model.PipelineRunRunning).
 		Updates(map[string]any{"stage": stage, "message": message, "updated_at": now})
 	if result.Error != nil {
@@ -552,6 +555,7 @@ func (s *Service) completeExecution(ctx context.Context, prepared *executionCont
 	now := time.Now().UTC()
 	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		result := tx.Model(&model.PipelineRun{}).
+			Where("stage <> ?", stoppingStage).
 			Where("id = ? AND execution_job_id = ? AND status = ?", prepared.run.ID, prepared.run.ExecutionJobID, model.PipelineRunRunning).
 			Updates(map[string]any{
 				"status": status, "stage": stage, "message": message,
@@ -651,6 +655,7 @@ func (s *Service) failExecutionWithStageLog(
 	defer cancel()
 	err := s.db.WithContext(updateContext).Transaction(func(tx *gorm.DB) error {
 		result := tx.Model(&model.PipelineRun{}).
+			Where("stage <> ?", stoppingStage).
 			Where("id = ? AND execution_job_id = ? AND current_node_id = ? AND status = ?",
 				expected.runID, expected.jobID, expected.nodeID, expected.status).
 			Updates(map[string]any{"status": model.PipelineRunFailed, "stage": "failed", "message": message, "updated_at": now})

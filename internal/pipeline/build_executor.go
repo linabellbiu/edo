@@ -54,7 +54,8 @@ func IsRetryableBuildTaskError(err error) bool {
 	return errors.As(err, &executionError) && executionError.retryable
 }
 
-func (s *Service) ExecuteBuildTask(ctx context.Context, payload BuildTaskPayload, jobID string) error {
+func (s *Service) executeBuildTask(ctx context.Context, payload BuildTaskPayload, jobID string) error {
+	defer s.realtime.Changed(ctx, "pipeline_runs", payload.PipelineRunID)
 	prepared, err := s.loadBuildExecution(ctx, payload, jobID)
 	if err != nil {
 		if errors.Is(err, errPipelineExecutionComplete) {
@@ -250,6 +251,7 @@ func (s *Service) finishBuildTaskFailure(
 				updates["stage"] = "retrying"
 			}
 			result := s.db.WithContext(updateContext).Model(&model.PipelineRun{}).
+				Where("stage <> ?", stoppingStage).
 				Where("id = ? AND execution_job_id = ? AND current_node_id = ? AND status = ?",
 					expected.runID, expected.jobID, expected.nodeID, expected.status).Updates(updates)
 			if result.Error == nil && result.RowsAffected == 1 {
@@ -675,6 +677,7 @@ func (s *Service) completeBuildExecution(ctx context.Context, prepared *buildExe
 	}
 	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		result := tx.Model(&model.PipelineRun{}).
+			Where("stage <> ?", stoppingStage).
 			Where("id = ? AND execution_job_id = ? AND status = ?", prepared.run.ID, prepared.run.ExecutionJobID, model.PipelineRunRunning).
 			Updates(updates)
 		if result.Error != nil {

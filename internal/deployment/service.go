@@ -265,7 +265,7 @@ func (s *Service) list(ctx context.Context, pipelineRunID string, limit int) ([]
 	if pipelineRunID != "" {
 		query = query.Where("pipeline_run_id = ?", pipelineRunID)
 	}
-	if err := query.Order("created_at DESC").Limit(limit).Find(&records).Error; err != nil {
+	if err := query.Order("created_at DESC").Order("id DESC").Limit(limit).Find(&records).Error; err != nil {
 		return nil, fmt.Errorf("查询发布记录失败: %w", err)
 	}
 	return records, nil

@@ -3,12 +3,17 @@ import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } 
 import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
 import { Modal, message } from 'ant-design-vue'
-import { Box, Boxes, ChevronDown, ChevronRight, Clock3, FileText, GitBranch, GitCommit, Layers3, Minus, Plus, Power, RefreshCw, RotateCw, Server, Settings2, TerminalSquare, Trash2, Workflow } from 'lucide-vue-next'
+import { isAxiosError } from 'axios'
+import { ArrowUpRight, Box, Boxes, ChevronDown, ChevronRight, Clock3, FileText, GitBranch, Layers3, Minus, Plus, Power, RefreshCw, RotateCw, Search, Server, Settings2, TerminalSquare, Trash2, Workflow } from 'lucide-vue-next'
 
 import client from '@/api/client'
+import { subscribeDeliveryEvents } from '@/utils/deliveryEvents'
 import { apiErrorMessage, type ResourceRecord } from '@/api/resources'
 import BuildPlanWorkspace from '@/components/BuildPlanWorkspace.vue'
+import ResourceDetailDrawer from '@/components/ResourceDetailDrawer.vue'
+import ResourceRowActions from '@/components/ResourceRowActions.vue'
 import ContainerLogDrawer from '@/components/ContainerLogDrawer.vue'
+import GitCredentialDrawer from '@/components/GitCredentialDrawer.vue'
 import PageToolbar from '@/components/PageToolbar.vue'
 import PipelineLogDrawer from '@/components/PipelineLogDrawer.vue'
 import PipelineRunGraph from '@/components/PipelineRunGraph.vue'
@@ -18,15 +23,16 @@ import ReleasePlanWorkspace from '@/components/ReleasePlanWorkspace.vue'
 import ResourceTable from '@/components/ResourceTable.vue'
 import TerminalDrawer from '@/components/TerminalDrawer.vue'
 import { useAuthStore } from '@/stores/auth'
+import type { GitCredential as Credential } from '@/types/credential'
 import type { PipelineExecutionGraph, Workflow as PipelineWorkflow } from '@/types/pipeline'
 import { formatGitReference } from '@/utils/gitReference'
+import { retainCurrentDeploymentState, selectCurrentDeploymentInstances } from '@/utils/deploymentInstances'
 import { formatDateTime, formatRelativeTime } from '@/utils/time'
 
 type Section='applications'|'repositories'|'build-plans'|'image-registries'|'release-plans'
 const props=defineProps<{section:Section}>(),route=useRoute(),router=useRouter(),auth=useAuthStore()
 const {t,locale}=useI18n()
 interface Repository extends ResourceRecord{id:string;name:string;provider:string;clone_url:string;default_branch:string;webhook_enabled:boolean;webhook_url?:string;is_active:boolean;auth_type:string;username?:string;allow_insecure_http:boolean;has_credential?:boolean;credential_id?:string;api_credential_id?:string}
-interface Credential{id:string;name:string;provider:string;auth_type:string;username?:string;secret_hint:string}
 interface BuildPlan extends ResourceRecord{id:string;name:string;kind:'dockerfile'|'script';description:string;script?:string;dockerfile_path?:string;context_path:string;working_directory:string;artifact_path?:string;runtime_image?:string;image_registry_id?:string;target_stage?:string;pull:boolean;cache_enabled:boolean;build_args:Record<string,string>;environment_variables:Record<string,string>;timeout_seconds:number;is_active:boolean;created_at:string;updated_at:string;image_registry?:Registry}
 type RegistryProvider='harbor'|'docker_hub'|'generic'
 interface Registry extends ResourceRecord{id:string;name:string;provider:RegistryProvider;endpoint:string;namespace:string;has_credential:boolean;is_active:boolean}
@@ -62,6 +68,10 @@ interface ReleasePlanEditorValue{id:string;description:string;groups:Array<{id:s
 const applications=ref<Application[]>([]),repositories=ref<Repository[]>([]),credentials=ref<Credential[]>([]),workflowTemplates=ref<WorkflowTemplate[]>([]),buildPlans=ref<BuildPlan[]>([]),registries=ref<Registry[]>([]),runs=ref<Run[]>([]),releasePlans=ref<ReleasePlan[]>([]),deployments=ref<DeploymentRecord[]>([]),deploymentPlans=ref<DeploymentPlan[]>([]),artifacts=ref<Artifact[]>([])
 const loading=ref(false),saving=ref(false),workflowRemovalID=ref(''),resourceMutationID=ref(''),formOpen=ref(false),editingID=ref(''),selectedWorkflowTemplateID=ref(''),registryTested=ref(false),testing=ref(false),repositoryTestingID=ref(''),manualOpen=ref(false),manualApplicationID=ref(''),manualWorkflowID=ref(''),manualApplications=ref<Application[]>([]),commitOpen=ref(false),commitOptions=ref<Array<{ref:string;name:string;sha:string;kind:'branch'|'tag'}>>([]),manualArtifacts=ref<ManualArtifact[]>([]),manualExecutionMode=ref<'code'|'artifact'>('code'),selectedArtifactID=ref(''),manualReferenceError=ref(''),selectedRef=ref(''),selectedSource=ref(''),manualSources=ref<Array<{id:string;name:string;environment?:string}>>([]),currentRun=ref<Run|null>(null),currentRunSelectionKey=ref(''),selectedRunID=ref(''),log=ref({open:false,runID:'',title:'',status:''})
 const expandedApplications=ref<Record<string,boolean>>({}),expandedDeployments=ref<Record<string,boolean>>({}),dockerRuntimeContainers=ref<Record<string,DockerContainerRecord[]>>({}),dockerRuntimeLoading=ref<Record<string,boolean>>({}),dockerRuntimeLoaded=ref<Record<string,boolean>>({}),dockerRuntimeErrors=ref<Record<string,string>>({})
+type ApplicationFilter='all'|'running'|'attention'|'inactive'
+type ApplicationDetailTab='workflows'|'deployments'
+const applicationSearch=ref(''),applicationFilter=ref<ApplicationFilter>('all')
+const applicationDetailTabs=ref<Record<string,ApplicationDetailTab>>({}),checkingApplicationIDs=ref<Record<string,boolean>>({})
 const deploymentRuntimeStates=ref<Record<string,DeploymentRuntimeState>>({}),deploymentRuntimeLoading=ref<Record<string,boolean>>({}),deploymentRuntimeErrors=ref<Record<string,string>>({}),deploymentRuntimeAction=ref('')
 const scaleDialog=reactive({open:false,record:null as DeploymentRecord|null,replicas:1,submitting:false})
 const shellControlDialog=reactive({open:false,record:null as DeploymentRecord|null,restart_script:'',stop_script:'',timeout_seconds:300,loading:false,saving:false})
@@ -73,22 +83,32 @@ const buildImageDestination=ref<'local'|'registry'>('local'),buildSaveArtifact=r
 const planExecutionOpen=ref(false),planExecutionPlanID=ref(''),planExecutionTitle=ref(''),planExecutionExpectedUpdatedAt=ref(''),planExecutionRequestID=ref(''),planExecutionGroups=ref<PlanExecutionGroup[]>([])
 const executingReleasePlanIDs=ref<string[]>([])
 const retryOpen=ref(false),retryLoading=ref(false),retrySubmitting=ref(false),retryRunID=ref(''),retryOptions=ref<RetryRunOptions|null>(null),retryMode=ref<'rebuild'|'artifact'>('rebuild'),retryArtifactID=ref('')
+const stoppingRunID=ref('')
 const releasePlanEditorOpen=ref(false),releasePlanEditorPlan=ref<ReleasePlan|null>(null),releasePlanMutationID=ref('')
 const releasePlanAddApplicationOpen=ref(false),releasePlanAddApplicationPlanID=ref(''),releasePlanAddApplicationGroupID=ref(''),releasePlanAddApplicationIDs=ref<string[]>([])
 let releaseTimer=0
+let stopDeliveryEvents: (()=>void)|undefined
+let deliveryConnected=false
+let lastDeliverySync=0
+let deliveryRefreshTimer: ReturnType<typeof setTimeout>|undefined
+let applicationSyncOnly=false
 const relativeTimeNow=ref(Date.now())
 let planExecutionController:AbortController|null=null
 const DEFAULT_APPLICATION_POLL_INTERVAL=3
 const appForm=reactive({name:'',description:'',repository_id:'',workflow_template_id:'',poll_interval_seconds:DEFAULT_APPLICATION_POLL_INTERVAL})
 const repoForm=reactive({name:'',provider:'github',clone_url:'',default_branch:'main',auth_type:'none',username:'',credential_id:'',api_credential_id:'',webhook_enabled:false,allow_insecure_http:false})
+const creatingApplicationRepository=ref(false)
+const credentialCreation=reactive({open:false,target:'git' as 'git'|'api',provider:'github',authType:'token' as Credential['auth_type']})
+const formSection=computed(()=>creatingApplicationRepository.value?'repositories':props.section)
+const formEditingID=computed(()=>creatingApplicationRepository.value?'':editingID.value)
 const DEFAULT_RUNTIME_IMAGE='alpine:3.22'
 const runtimeImageOptions=['alpine:3.22','node:24-alpine','golang:1.26-alpine','maven:3.9-eclipse-temurin-21-alpine'].map(value=>({value}))
 const buildForm=reactive({name:'',kind:'dockerfile' as 'dockerfile'|'script',description:'',script:'',dockerfile_path:'Dockerfile',context_path:'.',working_directory:'.',artifact_path:'',runtime_image:DEFAULT_RUNTIME_IMAGE,image_registry_id:'',target_stage:'',pull:true,cache_enabled:true,timeout_seconds:1800})
 const registryForm=reactive({name:'',provider:'generic' as RegistryProvider,endpoint:'https://',namespace:'',username:'',credential:'',allow_insecure_http:false})
 const dockerHubRegistry=computed(()=>registryForm.provider==='docker_hub')
 const repositoryWebhookAPI=computed(()=>{
- if(!editingID.value)return ''
- const path=repositories.value.find(item=>item.id===editingID.value)?.webhook_url||`/api/v1/webhooks/git/${editingID.value}`
+ if(!formEditingID.value)return ''
+ const path=repositories.value.find(item=>item.id===formEditingID.value)?.webhook_url||`/api/v1/webhooks/git/${formEditingID.value}`
  return new URL(path,window.location.origin).toString()
 })
 const selectedBuildRegistry=computed(()=>registries.value.find(item=>item.id===buildForm.image_registry_id))
@@ -105,7 +125,7 @@ const canCreate=computed(()=>props.section==='repositories'?auth.canAny(['reposi
 const canUpdate=computed(()=>props.section==='repositories'?auth.canAny(['repository.update']):auth.canAny(['delivery.update']))
 const canDelete=computed(()=>props.section==='repositories'?auth.canAny(['repository.delete']):auth.canAny(['delivery.delete']))
 const canExecute=computed(()=>props.section==='repositories'?auth.canAny(['repository.execute']):auth.canAny(['delivery.execute']))
-const canSaveCurrent=computed(()=>editingID.value?canUpdate.value:canCreate.value)
+const canSaveCurrent=computed(()=>creatingApplicationRepository.value?auth.canAny(['repository.create']):editingID.value?canUpdate.value:canCreate.value)
 const releasePlanAddApplicationTarget=computed(()=>{
  const plan=releasePlans.value.find(item=>item.id===releasePlanAddApplicationPlanID.value)
  const group=plan?.groups?.find(item=>item.id===releasePlanAddApplicationGroupID.value)
@@ -118,11 +138,40 @@ const releasePlanAddApplicationOptions=computed(()=>{
  return applications.value.filter(item=>item.is_active&&!usedIDs.has(item.id)).map(item=>({value:item.id,label:item.name}))
 })
 const currentDescription=computed(()=>props.section==='release-plans'?(releaseView.value==='runs'?'查看代码事件或手动操作触发的执行、当前任务和实时日志。':copy[props.section].description):copy[props.section].description)
-const selectedRun=computed(()=>{
- if(releaseView.value==='runs'&&requestedRunID.value)return runs.value.find(item=>item.id===requestedRunID.value)||null
- return runs.value.find(item=>item.id===selectedRunID.value)||runs.value[0]||null
+interface RunExecutionGroup{id:string;executionGroup:true;release_plan_id:string;release_plan_execution_id:string;created_at:string;runs:Run[]}
+type RunListEntry=Run|RunExecutionGroup
+const runListEntries=computed<RunListEntry[]>(()=>{
+ const entries:RunListEntry[]=[],groups=new Map<string,RunExecutionGroup>()
+ for(const run of runs.value){
+  if(!run.release_plan_id||!run.release_plan_execution_id){entries.push(run);continue}
+  const id=`execution:${run.release_plan_id}:${run.release_plan_execution_id}`
+  let group=groups.get(id)
+  if(!group){
+   group={id,executionGroup:true,release_plan_id:run.release_plan_id,release_plan_execution_id:run.release_plan_execution_id,created_at:run.created_at,runs:[]}
+   groups.set(id,group);entries.push(group)
+  }
+  group.runs.push(run)
+  if(Date.parse(run.created_at)>Date.parse(group.created_at))group.created_at=run.created_at
+ }
+ return entries
 })
-const selectedRunReleasePlan=computed(()=>releasePlans.value.find(item=>item.id===selectedRun.value?.release_plan_id)||null)
+const runPagination=reactive({current:1,pageSize:10,showSizeChanger:true,pageSizeOptions:['10','20','50','100'],showTotal:(total:number)=>`共 ${total} 项执行`})
+const expandedRunIDs=ref<string[]>([])
+const expandedExecutionIDs=ref<string[]>([])
+const expandedRunListKeys=computed(()=>[...expandedExecutionIDs.value,...expandedRunIDs.value])
+const runDrawerEntryID=ref('')
+const runDrawerEntry=computed(()=>runListEntries.value.find(entry=>entry.id===runDrawerEntryID.value))
+const runDrawerOpen=computed({get:()=>Boolean(runDrawerEntryID.value&&runDrawerEntry.value),set:(open:boolean)=>{if(!open){runDrawerEntryID.value='';collapseAllRuns()}}})
+const runWorkspace=ref<HTMLElement|null>(null)
+const runColumns=[
+ {title:'发布计划',key:'release_plan',width:180},
+ {title:'发布应用',key:'application',width:150},
+ {title:'应用流水线',key:'workflow',width:180},
+ {title:'提交 / 版本',key:'version'},
+ {title:'状态 / 当前任务',key:'status',width:160},
+ {title:'执行时间',key:'created_at',width:180},
+ {title:'操作',key:'actions',width:175,fixed:'right' as const},
+]
 const activeRunCount=computed(()=>runs.value.filter(item=>['running','awaiting_approval'].includes(item.status)).length)
 const canReadDeployments=computed(()=>auth.canAny(['deployment.read']))
 const canReadContainerLogs=computed(()=>auth.canAny(['cluster.read']))
@@ -153,6 +202,13 @@ const activeResourceID=computed(()=>props.section==='image-registries'&&typeof r
 const activeApplicationID=computed(()=>props.section==='applications'&&typeof route.query.application==='string'?route.query.application:'')
 const activeReleasePlanID=computed(()=>props.section==='release-plans'&&typeof route.query.plan==='string'?route.query.plan:'')
 const activeColumns=computed(()=>props.section==='applications'?[{key:'name',label:'应用'},{key:'repository',label:'代码仓库'},{key:'workflows',label:'流水线'},{key:'sync_status',label:'代码状态'},{key:'last_checked_at',label:'最近检查'}]:props.section==='repositories'?[{key:'name',label:'名称'},{key:'provider',label:'平台'},{key:'clone_url',label:'Git 地址'},{key:'default_branch',label:'默认分支'},{key:'webhook_enabled',label:'Webhook'},{key:'is_active',label:'状态'}]:props.section==='image-registries'?[{key:'name',label:'名称'},{key:'provider',label:'类型'},{key:'endpoint',label:'地址'},{key:'namespace',label:'命名空间'},{key:'has_credential',label:'凭据'}]:[])
+
+function currentApplicationDeployments(application:Application,relatedRuns:Run[]){
+ const runIDs=new Set(relatedRuns.map(item=>item.id))
+ const currentPlanIDs=new Set((application.workflows||[]).flatMap(workflow=>workflow.stages.flatMap(stage=>stage.tasks)).filter(task=>task.type==='deploy').map(task=>task.config.deployment_plan_id).filter((id):id is string=>Boolean(id)))
+ return selectCurrentDeploymentInstances(application.id,deployments.value,runIDs,currentPlanIDs,deploymentPlans.value)
+}
+
 const applicationCards=computed(()=>applications.value.map(application=>{
  const related=runs.value.filter(run=>run.application_id===application.id).sort((left,right)=>Date.parse(right.created_at)-Date.parse(left.created_at))
  const run=related[0]
@@ -170,40 +226,78 @@ const applicationCards=computed(()=>applications.value.map(application=>{
    source:workflowSourceLabel(workflow),
   }
  })
- const runIDs=new Set(related.map(item=>item.id))
- const currentPlanIDs=new Set((application.workflows||[]).flatMap(workflow=>workflow.stages.flatMap(stage=>stage.tasks)).filter(task=>task.type==='deploy').map(task=>task.config.deployment_plan_id).filter(Boolean))
- const plansByID=new Map(deploymentPlans.value.map(plan=>[plan.id,plan]))
- const instanceKeys=new Set<string>()
- const deploymentInstances=[...deployments.value]
-  .sort((left,right)=>Date.parse(right.created_at)-Date.parse(left.created_at))
-  .filter(record=>!record.runtime_deleted_at)
-  .filter(record=>runIDs.has(record.pipeline_run_id||'')&&record.status==='succeeded')
-  .filter(record=>{
-  const planID=record.deployment_plan_id||''
-  if(!currentPlanIDs.has(planID))return false
-  const plan=plansByID.get(planID)
-  const target=plan?.deployment_target
-  if(!target||record.target_id!==target.id||record.host_id!==target.host_id||record.environment_id!==target.environment_id)return false
-  if(record.platform!=='ssh'&&record.runtime_id!==target.runtime_id)return false
-  if(plan.kind==='compose'&&plan.service_name&&record.compose_service!==plan.service_name)return false
-  if(plan.kind==='kubernetes'&&((target.namespace&&record.namespace!==target.namespace)||(target.workload_name&&record.workload_name!==target.workload_name)))return false
-  if(plan.kind==='docker'&&target.container_name&&record.container_name!==target.container_name)return false
-  const key=[plan.id,record.platform,record.namespace,record.container_name||record.compose_service||record.workload_name].join(':')
-  if(instanceKeys.has(key))return false
-  instanceKeys.add(key)
-  return true
- })
+ const deploymentInstances=currentApplicationDeployments(application,related)
  return {
   application,run,repository,workflowSummaries,deploymentInstances,
   enabledWorkflowCount:workflowSummaries.filter(item=>item.workflow.is_active).length,
   state:applicationRunStatus(run),sync:applicationSyncStatus(application.sync_status),
  }
 }))
+type ApplicationCard=(typeof applicationCards.value)[number]
+function matchesApplicationFilter(card:ApplicationCard,filter:ApplicationFilter){
+ if(filter==='running')return card.state.live
+ if(filter==='attention')return card.state.tone==='danger'||card.sync.tone==='danger'||card.sync.tone==='warning'
+ if(filter==='inactive')return !card.application.is_active
+ return true
+}
+const searchedApplicationCards=computed(()=>{
+ const query=applicationSearch.value.trim().toLocaleLowerCase()
+ return applicationCards.value.filter(card=>!query||[card.application.name,card.application.description,card.repository?.name,...card.workflowSummaries.map(item=>item.workflow.name)].some(value=>value?.toLocaleLowerCase().includes(query)))
+})
+const applicationFilters=computed(()=>(['all','running','attention','inactive'] as ApplicationFilter[]).map(key=>({key,label:t(`applicationWorkspace.filters.${key}`),count:searchedApplicationCards.value.filter(card=>matchesApplicationFilter(card,key)).length})))
+const visibleApplicationCards=computed(()=>searchedApplicationCards.value.filter(card=>matchesApplicationFilter(card,applicationFilter.value)))
+const applicationDrawerID=ref('')
+const applicationDrawerCard=computed(()=>applicationCards.value.find(card=>card.application.id===applicationDrawerID.value))
+const applicationDrawerOpen=computed({get:()=>Boolean(applicationDrawerCard.value&&applicationDrawerID.value),set:(value:boolean)=>{if(!value)closeApplicationDetails()}})
+const applicationPageState=reactive({current:1,pageSize:10})
+const applicationPagination=computed(()=>({...applicationPageState,showSizeChanger:true,pageSizeOptions:['10','20','50','100'],showTotal:(count:number)=>t('planList.total',{count})}))
+function changeApplicationPage(page:{current?:number;pageSize?:number}){const size=page.pageSize||applicationPageState.pageSize;applicationPageState.current=size===applicationPageState.pageSize?page.current||1:1;applicationPageState.pageSize=size}
+function closeApplicationDetails(){expandedApplications.value={};applicationDrawerID.value=''}
+watch(()=>visibleApplicationCards.value.map(card=>card.application.id).join(','),()=>{applicationPageState.current=Math.min(applicationPageState.current,Math.max(1,Math.ceil(visibleApplicationCards.value.length/applicationPageState.pageSize)))})
+watch([applicationSearch,applicationFilter],()=>{applicationPageState.current=1})
+watch(()=>applicationCards.value.map(card=>card.application.id).join(','),()=>{if(applicationDrawerID.value&&!applicationDrawerCard.value)closeApplicationDetails()})
+const expandedApplicationIDs=computed(()=>visibleApplicationCards.value.filter(card=>applicationDetailsOpen(card.application.id)).map(card=>card.application.id))
+const applicationColumns=computed(()=>[
+ {key:'application',title:t('applicationWorkspace.columns.application'),width:230},
+ {key:'repository',title:t('applicationCard.repository'),width:180},
+ {key:'run',title:t('applicationCard.latestRun'),width:380},
+ {key:'status',title:t('applicationCard.currentNode'),width:150},
+ {key:'sync',title:t('applicationCard.codeStatus'),width:125},
+ {key:'resources',title:t('applicationWorkspace.columns.resources'),width:195},
+ {key:'actions',title:t('applicationWorkspace.columns.actions'),width:225,fixed:'right' as const,align:'right' as const},
+])
+const applicationWorkflowColumns=computed(()=>[
+ {key:'name',title:t('applicationCard.workflow'),width:270},
+ {key:'enabled',title:t('applicationWorkspace.columns.status'),width:85},
+ {key:'source',title:t('applicationWorkspace.columns.source'),width:265},
+ {key:'template',title:t('applicationWorkspace.columns.template'),width:195},
+ {key:'tasks',title:t('applicationWorkspace.columns.tasks'),width:210},
+ {key:'status',title:t('applicationCard.latestRun'),width:100},
+ {key:'time',title:t('applicationWorkspace.columns.runTime'),width:175},
+])
+function applicationTableRow(card:ApplicationCard){return {id:`application-${card.application.id}`}}
+function applicationTableRowClass(card:ApplicationCard){return ['apps-table-row',applicationDetailsOpen(card.application.id)?'is-expanded':'',activeApplicationID.value===card.application.id?'is-linked':''].join(' ')}
+function resetApplicationFilters(){applicationSearch.value='';applicationFilter.value='all'}
+const currentDeploymentRecords=computed(()=>applicationCards.value.flatMap(card=>card.deploymentInstances))
+const currentDeploymentIDs=computed(()=>new Set(currentDeploymentRecords.value.map(record=>record.id)))
+const staleDeploymentIDs=new Set<string>()
+
+function clearStaleDeploymentState(){
+ const ids=currentDeploymentIDs.value
+ expandedDeployments.value=retainCurrentDeploymentState(expandedDeployments.value,ids)
+ deploymentRuntimeStates.value=retainCurrentDeploymentState(deploymentRuntimeStates.value,ids)
+ deploymentRuntimeErrors.value=retainCurrentDeploymentState(deploymentRuntimeErrors.value,ids)
+ // 正在进行的请求保留 loading 标记，响应回来时再检查当前实例，避免并发重复请求。
+ for(const id of staleDeploymentIDs)if(!ids.has(id))staleDeploymentIDs.delete(id)
+}
+watch(currentDeploymentIDs,clearStaleDeploymentState)
 const releasePlanRunnableCounts=computed<Record<string,number>>(()=>Object.fromEntries(releasePlans.value.map(plan=>[plan.id,releasePlanManualApplicationCount(plan)])))
 const releasePlanRunnableApplicationIDs=computed(()=>applications.value.filter(applicationCanManualRelease).map(application=>application.id))
 
 function applicationRunStatus(run?:Run):StatusMeta{
  if(!run)return {tone:'neutral',label:t('applicationCard.runStatus.none'),live:false}
+ if(run.stage==='stopping')return {tone:'warning',label:t('pipelineStop.stopping'),live:true}
+ if(run.status==='canceled')return {tone:'neutral',label:t('pipelineStop.stopped'),live:false}
  const states:Record<string,StatusMeta>={
   detected:{tone:'info',label:t('applicationCard.runStatus.detected'),live:false},ready:{tone:'warning',label:t('applicationCard.runStatus.ready'),live:true},
   running:{tone:'info',label:t('applicationCard.runStatus.running'),live:true},awaiting_approval:{tone:'warning',label:t('applicationCard.runStatus.awaitingApproval'),live:true},
@@ -233,7 +327,7 @@ function workflowSourceLabel(workflow:ApplicationWorkflow){
  const events=(workflow.source.config.events||[]).map(event=>t(`applicationCard.trigger.${event}`)).join('、')
  return `分支：${branch}；触发：${events||t('applicationCard.trigger.none')}`
 }
-function workflowDisplayName(workflow:ApplicationWorkflow){return workflow.workflow_template?.name||workflow.name}
+function workflowDisplayName(workflow:ApplicationWorkflow){return workflow.name||workflow.workflow_template?.name||t('applicationCard.customWorkflow')}
 function workflowOriginLabel(workflow:ApplicationWorkflow){return workflow.workflow_template?'公共流水线':'自定义流水线'}
 function deploymentKind(record:DeploymentRecord){
  const kind=record.deployment_plan_kind||record.platform
@@ -253,7 +347,7 @@ function deploymentStatus(record:DeploymentRecord):StatusMeta{
 }
 function currentDeploymentStatus(record:DeploymentRecord):StatusMeta{
  const runtime=deploymentRuntimeStates.value[record.id]
- if(deploymentRuntimeLoading.value[record.id])return {tone:'info',label:'检查中',live:true}
+ if(deploymentRuntimeLoading.value[record.id]&&!deploymentRuntimeStates.value[record.id]&&!deploymentRuntimeErrors.value[record.id])return {tone:'info',label:'检查中',live:true}
  if(deploymentRuntimeErrors.value[record.id])return {tone:'warning',label:'状态不可用',live:false}
  if(runtime){
   if(runtime.kind==='kubernetes'){
@@ -282,13 +376,25 @@ function currentDeploymentStatus(record:DeploymentRecord):StatusMeta{
  return states[container.state]||{tone:'neutral',label:t('applicationCard.containerState.unknown'),live:false}
 }
 function applicationDetailsOpen(applicationID:string){return Boolean(expandedApplications.value[applicationID])}
-function toggleApplicationDetails(card:(typeof applicationCards.value)[number]){
+function applicationDetailTab(applicationID:string){return applicationDetailTabs.value[applicationID]||'workflows'}
+function toggleApplicationDetails(card:ApplicationCard,tab:ApplicationDetailTab=applicationDetailTab(card.application.id)){
  const applicationID=card.application.id
- const open=!expandedApplications.value[applicationID]
- expandedApplications.value[applicationID]=open
- if(open&&canReadContainerLogs.value){
+ const open=true
+ applicationDrawerID.value=applicationID
+ applicationDetailTabs.value[applicationID]=tab
+ expandedApplications.value={[applicationID]:open}
+ if(open&&tab==='deployments'&&canReadContainerLogs.value){
   for(const record of card.deploymentInstances)if(deploymentKind(record)==='docker')void loadDockerRuntime(record.runtime_id,true)
  }
+}
+async function checkApplicationUpdates(application:Application){
+ if(!canExecute.value||checkingApplicationIDs.value[application.id]||application.sync_status==='checking')return
+ checkingApplicationIDs.value[application.id]=true
+ try{
+  await client.post(`/applications/${encodeURIComponent(application.id)}/sync`,undefined,{timeout:35000})
+  await refreshApplicationState()
+ }catch(error){message.error(apiErrorMessage(error))}
+ finally{delete checkingApplicationIDs.value[application.id]}
 }
 function deploymentDetailsOpen(record:DeploymentRecord){return Boolean(expandedDeployments.value[record.id])}
 function lifecycleScriptAvailable(record:DeploymentRecord,action:'restart'|'stop'){
@@ -298,13 +404,25 @@ function lifecycleScriptAvailable(record:DeploymentRecord,action:'restart'|'stop
 }
 function runtimeActionKey(record:DeploymentRecord,action:string){return `${record.id}:${action}`}
 async function loadDeploymentRuntime(record:DeploymentRecord,force=false){
- if(record.runtime_deleted_at||!canReadDeployments.value||deploymentRuntimeLoading.value[record.id]||(!force&&deploymentRuntimeStates.value[record.id]))return
+ if(record.runtime_deleted_at||!currentDeploymentIDs.value.has(record.id)||staleDeploymentIDs.has(record.id)||!canReadDeployments.value||deploymentRuntimeLoading.value[record.id]||(!force&&deploymentRuntimeStates.value[record.id]))return
  deploymentRuntimeLoading.value[record.id]=true
- delete deploymentRuntimeErrors.value[record.id]
  try{
   const response=await client.get<{runtime:DeploymentRuntimeState}>(`/deployments/${encodeURIComponent(record.id)}/runtime`,{timeout:35_000})
-  deploymentRuntimeStates.value[record.id]=response.data.runtime
- }catch(error){delete deploymentRuntimeStates.value[record.id];deploymentRuntimeErrors.value[record.id]=apiErrorMessage(error)}finally{deploymentRuntimeLoading.value[record.id]=false}
+  if(currentDeploymentIDs.value.has(record.id)){
+   deploymentRuntimeStates.value[record.id]=response.data.runtime
+   delete deploymentRuntimeErrors.value[record.id]
+  }
+ }catch(error){
+  if(!currentDeploymentIDs.value.has(record.id))return
+  delete deploymentRuntimeStates.value[record.id]
+  deploymentRuntimeErrors.value[record.id]=apiErrorMessage(error)
+  const code=isAxiosError(error)?error.response?.data?.code:''
+  if(code==='deployment_not_current'||code==='runtime_instance_removed'){
+   staleDeploymentIDs.add(record.id)
+   // 列表读取和运行态读取之间可能刚好完成新部署，停止追问旧 ID 并同步新列表。
+   void refreshApplicationState()
+  }
+ }finally{delete deploymentRuntimeLoading.value[record.id]}
 }
 async function executeDeploymentRuntimeAction(record:DeploymentRecord,action:'restart'|'stop',replicas?:number){
  const key=runtimeActionKey(record,action)
@@ -466,14 +584,12 @@ function releasePlanManualApplicationCount(plan:ReleasePlan){
 function formatApplicationTime(value?:string){return value?new Date(value).toLocaleString(locale.value==='en-US'?'en-US':'zh-CN',{hour12:false}):t('applicationCard.noTime')}
 function openApplicationLink(card:(typeof applicationCards.value)[number]){
  const target=card.repository
- if(!target){edit(card.application);return}
+ if(!target||!auth.canAny(['repository.read']))return
  void router.push('/repositories')
 }
 function openApplicationWorkflow(applicationID:string,workflowID:string){void router.push(`/pipeline-plans/editor?application=${applicationID}&workflow=${workflowID}`)}
-function openApplicationCurrentWorkflow(card:(typeof applicationCards.value)[number]){
- const workflowID=card.run?.workflow_id
- if(workflowID)openApplicationWorkflow(card.application.id,workflowID)
-}
+function applicationLatestWorkflowName(card:ApplicationCard){return card.workflowSummaries.find(item=>item.workflow.id===card.run?.workflow_id)?.workflow.name||t('applicationCard.workflow')}
+function openApplicationLatestRun(card:ApplicationCard){if(card.run)void router.push({path:'/release-plans',query:{view:'runs',run:card.run.id}})}
 function editApplicationWorkflow(applicationID:string,workflowID:string){formOpen.value=false;openApplicationWorkflow(applicationID,workflowID)}
 function createImageRegistry(){
  formOpen.value=false
@@ -481,30 +597,109 @@ function createImageRegistry(){
 }
 function resourceViewHref(path:string,queryKey:string,id:string){return router.resolve({path,query:{[queryKey]:id}}).href}
 
-let requestedRunRequestID=''
+let requestedRunRequestID='',revealedRunID=''
 async function revealRequestedRun(){
  const runID=requestedRunID.value
- if(props.section!=='release-plans'||releaseView.value!=='runs'||!runID)return
+ if(props.section!=='release-plans'||releaseView.value!=='runs')return
+ if(!runID){selectedRunID.value='';expandedRunIDs.value=[];revealedRunID='';return}
+ if(revealedRunID===runID)return
  const existing=runs.value.find(item=>item.id===runID)
- if(existing){selectedRunID.value=runID;return}
+ if(existing){revealPipelineRun(runID);return}
  if(requestedRunRequestID===runID)return
  requestedRunRequestID=runID
  try{
   const run=(await client.get<{pipeline_run:Run}>(`/pipeline-runs/${encodeURIComponent(runID)}`)).data.pipeline_run
+  if(requestedRunID.value!==runID)return
   runs.value=[run,...runs.value.filter(item=>item.id!==run.id)]
-  if(requestedRunID.value===runID)selectedRunID.value=runID
+  revealPipelineRun(runID)
  }catch(error){
   if(requestedRunID.value===runID)message.error(`无法定位流水线运行：${apiErrorMessage(error)}`)
  }finally{
   if(requestedRunRequestID===runID)requestedRunRequestID=''
  }
 }
-function selectPipelineRun(runID:string){
+function revealPipelineRun(runID:string){
  selectedRunID.value=runID
- if(requestedRunID.value!==runID)void router.replace({path:'/release-plans',query:{view:'runs',run:runID}})
+ revealedRunID=runID
+ const index=runListEntries.value.findIndex(item=>isRunExecutionGroup(item)?item.runs.some(run=>run.id===runID):item.id===runID)
+ if(index>=0){
+  const page=Math.floor(index/runPagination.pageSize)+1
+  if(page!==runPagination.current){expandedRunIDs.value=[];expandedExecutionIDs.value=[]}
+  runPagination.current=page
+  const entry=runListEntries.value[index]!
+  runDrawerEntryID.value=entry.id
+  if(isRunExecutionGroup(entry)&&!expandedExecutionIDs.value.includes(entry.id))expandedExecutionIDs.value.push(entry.id)
+ }
+ if(!expandedRunIDs.value.includes(runID))expandedRunIDs.value.push(runID)
+}
+function isRunExecutionGroup(entry:RunListEntry):entry is RunExecutionGroup{return entry.executionGroup===true}
+function runEntryRecords(entry:RunListEntry){return isRunExecutionGroup(entry)?entry.runs:[entry]}
+function runEntryPlanName(entry:RunListEntry){return runReleasePlanName(runEntryRecords(entry)[0]!)}
+function executionApplicationCount(group:RunExecutionGroup){return new Set(group.runs.map(run=>run.application_id)).size}
+function executionRunCounts(group:RunExecutionGroup){
+ const counts=new Map<string,number>()
+ for(const run of group.runs){const label=runStatusLabel(run.status,run.stage);counts.set(label,(counts.get(label)||0)+1)}
+ return Array.from(counts,([label,count])=>`${label} ${count}`).join('、')
+}
+function runListRowClass(entry:RunListEntry){
+ return [expandedRunListKeys.value.includes(entry.id)?'run-row-expanded':'',runEntryRecords(entry).some(run=>run.id===selectedRunID.value)?'run-row-current':'',isRunExecutionGroup(entry)?'run-execution-row':''].join(' ')
+}
+function expandRunListEntry(expanded:boolean,entry:RunListEntry){
+ if(expanded)runDrawerEntryID.value=entry.id
+ if(!isRunExecutionGroup(entry)){expandPipelineRun(expanded,entry);return}
+ if(expanded){
+  if(!expandedExecutionIDs.value.includes(entry.id))expandedExecutionIDs.value.push(entry.id)
+ }else{
+  expandedExecutionIDs.value=expandedExecutionIDs.value.filter(id=>id!==entry.id)
+  const childIDs=new Set(entry.runs.map(run=>run.id))
+  expandedRunIDs.value=expandedRunIDs.value.filter(id=>!childIDs.has(id))
+  if(childIDs.has(selectedRunID.value)){
+   selectedRunID.value=expandedRunIDs.value.at(-1)||''
+   revealedRunID=selectedRunID.value
+   void router.replace({path:'/release-plans',query:{view:'runs',...(selectedRunID.value?{run:selectedRunID.value}:{})}})
+  }
+ }
+}
+function expandPipelineRun(expanded:boolean,run:Run){
+ if(expanded){
+  runDrawerEntryID.value=runListEntries.value.find(entry=>runEntryRecords(entry).some(item=>item.id===run.id))?.id||run.id
+  if(!expandedRunIDs.value.includes(run.id))expandedRunIDs.value.push(run.id)
+  selectedRunID.value=run.id
+ }else{
+  expandedRunIDs.value=expandedRunIDs.value.filter(id=>id!==run.id)
+  if(selectedRunID.value===run.id)selectedRunID.value=expandedRunIDs.value.at(-1)||''
+ }
+ revealedRunID=selectedRunID.value
+ void router.replace({path:'/release-plans',query:{view:'runs',...(selectedRunID.value?{run:selectedRunID.value}:{})}})
+}
+async function collapseRunDetail(run:Run){
+ expandPipelineRun(false,run)
+ await nextTick()
+ const row=Array.from(runWorkspace.value?.querySelectorAll<HTMLElement>('.ant-table-row,.run-group-row')||[]).find(item=>item.dataset.rowKey===run.id)
+ row?.querySelector<HTMLButtonElement>('.run-row-toggle')?.focus({preventScroll:true})
+ row?.scrollIntoView({block:'nearest',behavior:'instant'})
+}
+function collapseAllRuns(){
+ runDrawerEntryID.value=''
+ expandedExecutionIDs.value=[]
+ expandedRunIDs.value=[]
+ selectedRunID.value=''
+ revealedRunID=''
+ if(requestedRunID.value)void router.replace({path:'/release-plans',query:{view:'runs'}})
+}
+function changeRunPage(pagination:{current?:number;pageSize?:number}){
+ runDrawerEntryID.value=''
+ const pageSize=pagination.pageSize||10
+ runPagination.current=pageSize!==runPagination.pageSize?1:pagination.current||1
+ runPagination.pageSize=pageSize
+ expandedExecutionIDs.value=[]
+ expandedRunIDs.value=[]
+ selectedRunID.value=''
+ revealedRunID=''
+ if(requestedRunID.value)void router.replace({path:'/release-plans',query:{view:'runs'}})
 }
 
-async function refresh(){const locatedRun=runs.value.find(item=>item.id===requestedRunID.value);loading.value=true;try{const requests=await Promise.all([auth.canAny(['delivery.read'])?client.get<{applications:Application[]}>('/applications'):null,auth.canAny(['repository.read'])?client.get<{repositories:Repository[]}>('/repositories'):null,auth.canAny(['credential.read'])?client.get<{credentials:Credential[]}>('/git-credentials'):null,auth.canAny(['delivery.read'])?client.get<{build_plans:BuildPlan[]}>('/build-plans'):null,auth.canAny(['delivery.read'])?client.get<{image_registries:Registry[]}>('/image-registries'):null,auth.canAny(['delivery.read'])?client.get<{pipeline_runs:Run[]}>('/pipeline-runs?limit=200'):null,auth.canAny(['delivery.read'])?client.get<{release_plans:ReleasePlan[]}>('/release-plans'):null,canReadDeployments.value?client.get<{deployments:DeploymentRecord[]}>('/deployments?limit=200'):null,auth.canAny(['delivery.read'])?client.get<{deployment_plans:DeploymentPlan[]}>('/deployment-plans'):null,auth.canAny(['delivery.read'])?client.get<{workflow_templates:WorkflowTemplate[]}>('/workflow-templates'):null]);applications.value=requests[0]?.data.applications||[];repositories.value=requests[1]?.data.repositories||[];credentials.value=requests[2]?.data.credentials||[];buildPlans.value=requests[3]?.data.build_plans||[];registries.value=requests[4]?.data.image_registries||[];runs.value=requests[5]?.data.pipeline_runs||[];if(locatedRun&&!runs.value.some(item=>item.id===locatedRun.id))runs.value=[locatedRun,...runs.value];if(requestedRunID.value&&runs.value.some(item=>item.id===requestedRunID.value))selectedRunID.value=requestedRunID.value;else if(!requestedRunID.value&&(!selectedRunID.value||!runs.value.some(item=>item.id===selectedRunID.value)))selectedRunID.value=runs.value[0]?.id||'';releasePlans.value=requests[6]?.data.release_plans||[];deployments.value=requests[7]?.data.deployments||[];deploymentPlans.value=requests[8]?.data.deployment_plans||[];workflowTemplates.value=requests[9]?.data.workflow_templates||[];if(requestedRunID.value)void revealRequestedRun()}catch(error){message.error(apiErrorMessage(error))}finally{loading.value=false}}
+async function refresh(){const locatedRun=runs.value.find(item=>item.id===requestedRunID.value);loading.value=true;try{const requests=await Promise.all([auth.canAny(['delivery.read'])?client.get<{applications:Application[]}>('/applications'):null,auth.canAny(['repository.read'])?client.get<{repositories:Repository[]}>('/repositories'):null,auth.canAny(['credential.read'])?client.get<{credentials:Credential[]}>('/git-credentials'):null,auth.canAny(['delivery.read'])?client.get<{build_plans:BuildPlan[]}>('/build-plans'):null,auth.canAny(['delivery.read'])?client.get<{image_registries:Registry[]}>('/image-registries'):null,auth.canAny(['delivery.read'])?client.get<{pipeline_runs:Run[]}>('/pipeline-runs?limit=200'):null,auth.canAny(['delivery.read'])?client.get<{release_plans:ReleasePlan[]}>('/release-plans'):null,canReadDeployments.value?client.get<{deployments:DeploymentRecord[]}>('/deployments?limit=200'):null,auth.canAny(['delivery.read'])?client.get<{deployment_plans:DeploymentPlan[]}>('/deployment-plans'):null,auth.canAny(['delivery.read'])?client.get<{workflow_templates:WorkflowTemplate[]}>('/workflow-templates'):null]);applications.value=requests[0]?.data.applications||[];repositories.value=requests[1]?.data.repositories||[];credentials.value=requests[2]?.data.credentials||[];buildPlans.value=requests[3]?.data.build_plans||[];registries.value=requests[4]?.data.image_registries||[];runs.value=requests[5]?.data.pipeline_runs||[];if(locatedRun&&!runs.value.some(item=>item.id===locatedRun.id))runs.value=[locatedRun,...runs.value];releasePlans.value=requests[6]?.data.release_plans||[];deployments.value=requests[7]?.data.deployments||[];deploymentPlans.value=requests[8]?.data.deployment_plans||[];workflowTemplates.value=requests[9]?.data.workflow_templates||[];if(requestedRunID.value)void revealRequestedRun()}catch(error){message.error(apiErrorMessage(error))}finally{loading.value=false}}
 let stateRefreshing=false
 async function refreshApplicationState(){
  if(stateRefreshing||!auth.canAny(['delivery.read']))return
@@ -515,9 +710,27 @@ async function refreshApplicationState(){
   runs.value=runResult.data.pipeline_runs||[]
   if(deploymentResult)deployments.value=deploymentResult.data.deployments||[]
   deploymentPlans.value=deploymentPlanResult.data.deployment_plans||[]
-  const visibleRuntimeIDs=new Set(deployments.value.filter(record=>!record.runtime_deleted_at&&expandedDeployments.value[record.id]&&deploymentKind(record)==='docker').map(record=>record.runtime_id).filter(Boolean))
-  for(const runtimeID of visibleRuntimeIDs)void loadDockerRuntime(runtimeID,true,true)
-  for(const record of deployments.value.filter(item=>!item.runtime_deleted_at&&expandedDeployments.value[item.id]))void loadDeploymentRuntime(record,true)
+  clearStaleDeploymentState()
+ }catch{}finally{stateRefreshing=false}
+}
+function refreshVisibleDeploymentRuntime(){
+ const visibleRecords=applicationCards.value.filter(card=>applicationDetailsOpen(card.application.id)&&applicationDetailTab(card.application.id)==='deployments').flatMap(card=>card.deploymentInstances).filter(record=>expandedDeployments.value[record.id])
+ const visibleRuntimeIDs=new Set(visibleRecords.filter(record=>deploymentKind(record)==='docker').map(record=>record.runtime_id).filter(Boolean))
+ for(const runtimeID of visibleRuntimeIDs)void loadDockerRuntime(runtimeID,true,true)
+ for(const record of visibleRecords)void loadDeploymentRuntime(record,true)
+}
+async function refreshReleasePlanState(){
+ if(stateRefreshing||!auth.canAny(['delivery.read']))return
+ stateRefreshing=true
+ try{
+  const [appResult,runResult,planResult]=await Promise.all([
+   client.get<{applications:Application[]}>('/applications'),
+   client.get<{pipeline_runs:Run[]}>('/pipeline-runs?limit=200'),
+   client.get<{release_plans:ReleasePlan[]}>('/release-plans'),
+  ])
+  applications.value=appResult.data.applications||[]
+  runs.value=runResult.data.pipeline_runs||[]
+  releasePlans.value=planResult.data.release_plans||[]
  }catch{}finally{stateRefreshing=false}
 }
 async function refreshRunState(){
@@ -527,8 +740,6 @@ async function refreshRunState(){
   const locatedRun=runs.value.find(item=>item.id===requestedRunID.value)
   runs.value=(await client.get<{pipeline_runs:Run[]}>('/pipeline-runs?limit=200')).data.pipeline_runs||[]
   if(locatedRun&&!runs.value.some(item=>item.id===locatedRun.id))runs.value=[locatedRun,...runs.value]
-  if(requestedRunID.value&&runs.value.some(item=>item.id===requestedRunID.value))selectedRunID.value=requestedRunID.value
-  else if(!requestedRunID.value&&(!selectedRunID.value||!runs.value.some(item=>item.id===selectedRunID.value)))selectedRunID.value=runs.value[0]?.id||''
   if(requestedRunID.value)void revealRequestedRun()
  }catch{}finally{stateRefreshing=false}
 }
@@ -552,6 +763,8 @@ function parseVariableText(source:string,label:string){
  return {values,error:''}
 }
 function resetForms(){
+	 credentialCreation.open=false
+	 creatingApplicationRepository.value=false
 	 editingID.value='';selectedWorkflowTemplateID.value='';workflowRemovalID.value='';registryTested.value=false;buildImageDestination.value='local';buildSaveArtifact.value=false;buildArgsText.value='';buildEnvironmentText.value=''
  Object.assign(appForm,{name:'',description:'',repository_id:'',workflow_template_id:'',poll_interval_seconds:DEFAULT_APPLICATION_POLL_INTERVAL})
 	 Object.assign(repoForm,{name:'',provider:'github',clone_url:'',default_branch:'main',auth_type:'none',username:'',credential_id:'',api_credential_id:'',webhook_enabled:false,allow_insecure_http:false})
@@ -577,6 +790,34 @@ function create(){
  }
  formOpen.value=true
 }
+function createApplicationRepository(){
+ if(saving.value||!auth.canAny(['repository.create']))return
+ // 只切换仓库子表单，应用草稿和编辑中的应用 ID 保持不变。
+ Object.assign(repoForm,{name:'',provider:'github',clone_url:'',default_branch:'main',auth_type:'none',username:'',credential_id:'',api_credential_id:'',webhook_enabled:false,allow_insecure_http:false})
+ creatingApplicationRepository.value=true
+}
+function closeForm(){
+ if(saving.value||testing.value)return
+ if(credentialCreation.open){credentialCreation.open=false;return}
+ if(creatingApplicationRepository.value)creatingApplicationRepository.value=false
+ else formOpen.value=false
+}
+function createRepositoryCredential(target:'git'|'api'){
+ if(saving.value||testing.value||formSection.value!=='repositories'||!auth.canAny(['credential.create']))return
+ if(target==='git'&&repoForm.auth_type==='none')return
+ if(target==='api'&&repoForm.provider==='generic')return
+ Object.assign(credentialCreation,{open:true,target,provider:repoForm.provider,authType:target==='api'?'token':repoForm.auth_type})
+}
+function repositoryCredentialSaved(credential:Credential){
+ credentials.value=[credential,...credentials.value.filter(item=>item.id!==credential.id)]
+ // 保存过程中若仓库上下文已关闭或改变，只更新列表，不改写其他仓库草稿。
+ if(!credentialCreation.open||formSection.value!=='repositories'||credential.provider!==repoForm.provider)return
+ if(credentialCreation.target==='api'){
+  if(credential.auth_type==='token')repoForm.api_credential_id=credential.id
+ }else if(credential.auth_type===repoForm.auth_type){
+  repoForm.credential_id=credential.id
+ }
+}
 function edit(row:ResourceRecord){
  editingID.value=String(row.id)
  selectedWorkflowTemplateID.value=''
@@ -600,12 +841,15 @@ function edit(row:ResourceRecord){
  formOpen.value=true
 }
 async function save(){
+ if(saving.value||testing.value||credentialCreation.open||!canSaveCurrent.value)return
  saving.value=true
  try{
-  const creatingRepository=props.section==='repositories'&&!editingID.value
+  const section=formSection.value
+  const resourceID=formEditingID.value
+  const creatingRepository=section==='repositories'&&!resourceID
   let endpoint='',payload:unknown={},method:'post'|'put'='post'
   let pendingWorkflowTemplateID=''
-  if(props.section==='applications'){
+  if(section==='applications'){
    if(!validApplicationName(appForm.name)){message.error('应用名必须以小写英文字母开头，只能使用小写英文字母和单个下划线');return}
    if(!appForm.repository_id){message.error('请选择代码仓库');return}
    endpoint=editingID.value?`/applications/${editingID.value}`:'/applications'
@@ -613,10 +857,10 @@ async function save(){
    pendingWorkflowTemplateID=editingID.value?selectedWorkflowTemplateID.value:''
    method=editingID.value?'put':'post'
   }
-  if(props.section==='repositories'){
-   endpoint=editingID.value?`/repositories/${editingID.value}`:'/repositories'
+  if(section==='repositories'){
+   endpoint=resourceID?`/repositories/${resourceID}`:'/repositories'
 	   payload={...repoForm,credential_id:repoForm.auth_type==='none'?null:repoForm.credential_id||null,api_credential_id:repoForm.provider==='generic'?'':repoForm.api_credential_id||'',regenerate_webhook:false}
-   method=editingID.value?'put':'post'
+   method=resourceID?'put':'post'
   }
   if(props.section==='build-plans'){
    if(!buildForm.name.trim()){message.error('请输入构建方案名称');return}
@@ -646,14 +890,21 @@ async function save(){
    endpoint='/image-registries';payload=registryRequestPayload()
   }
   const response=await client[method](endpoint,payload)
-  if(props.section==='applications'&&editingID.value&&pendingWorkflowTemplateID){
+  if(section==='applications'&&editingID.value&&pendingWorkflowTemplateID){
    await client.post(`/applications/${editingID.value}/workflows`,{workflow_template_id:pendingWorkflowTemplateID})
   }
-  const savedRepository=props.section==='repositories'?(response.data as {repository?:Repository}).repository:undefined
+  const savedRepository=section==='repositories'?(response.data as {repository?:Repository}).repository:undefined
   const savedWebhookAPI=creatingRepository&&repoForm.webhook_enabled&&savedRepository?.webhook_url
    ?new URL(savedRepository.webhook_url,window.location.origin).toString()
    :''
-  message.success('配置已保存');formOpen.value=false;resetForms();await refresh()
+  if(creatingApplicationRepository.value&&savedRepository){
+   repositories.value=[savedRepository,...repositories.value.filter(item=>item.id!==savedRepository.id)]
+   appForm.repository_id=savedRepository.id
+   creatingApplicationRepository.value=false
+   message.success(t('applicationForm.repositoryCreated'))
+  }else{
+   message.success('配置已保存');formOpen.value=false;resetForms();await refresh()
+  }
   if(savedWebhookAPI)Modal.info({title:'Webhook 已启用',width:650,okText:'关闭',content:()=>`Webhook API：${savedWebhookAPI}`})
  }catch(error){message.error(apiErrorMessage(error))}finally{saving.value=false}
 }
@@ -748,10 +999,29 @@ function confirmDeleteBuildPlan(plan:Pick<BuildPlan,'id'|'name'>){
   },
  })
 }
-async function testRepository(){testing.value=true;try{const payload={...repoForm,credential_id:repoForm.auth_type==='none'?null:repoForm.credential_id||null,api_credential_id:repoForm.provider==='generic'?'':repoForm.api_credential_id||'',credential:null,regenerate_webhook:false};const result=editingID.value?await client.post<RefResult>(`/repositories/${editingID.value}/test`,undefined,{timeout:35000}):await client.post<RefResult>('/repositories/test',payload,{timeout:35000});message.success(`连接成功：${result.data.branches?.length||0} 个分支，${result.data.tags?.length||0} 个标签`)}catch(error){message.error(apiErrorMessage(error))}finally{testing.value=false}}
+async function testRepository(){if(testing.value||saving.value)return;testing.value=true;try{const payload={...repoForm,credential_id:repoForm.auth_type==='none'?null:repoForm.credential_id||null,api_credential_id:repoForm.provider==='generic'?'':repoForm.api_credential_id||'',credential:null,regenerate_webhook:false};const result=formEditingID.value?await client.post<RefResult>(`/repositories/${formEditingID.value}/test`,undefined,{timeout:35000}):await client.post<RefResult>('/repositories/test',payload,{timeout:35000});message.success(`连接成功：${result.data.branches?.length||0} 个分支，${result.data.tags?.length||0} 个标签`)}catch(error){message.error(apiErrorMessage(error))}finally{testing.value=false}}
 async function testStoredRepository(repository:Repository){repositoryTestingID.value=repository.id;try{const result=await client.post<RefResult>(`/repositories/${repository.id}/test`,undefined,{timeout:35000});message.success(`连接成功：${result.data.branches?.length||0} 个分支，${result.data.tags?.length||0} 个标签`);await refresh()}catch(error){message.error(apiErrorMessage(error))}finally{repositoryTestingID.value=''}}
 async function testRegistry(){testing.value=true;registryTested.value=false;try{await client.post('/image-registries/test',registryRequestPayload(),{timeout:35000});registryTested.value=true;message.success('镜像仓库登录成功')}catch(error){message.error(apiErrorMessage(error))}finally{testing.value=false}}
 async function action(path:string){try{await client.post(path,undefined,{timeout:35000});await refresh()}catch(error){message.error(apiErrorMessage(error))}}
+function canStopRun(run:Run){return ['detected','ready','blocked','awaiting_approval','running'].includes(run.status)}
+function confirmStopRun(run:Run){
+ if(!auth.canAny(['delivery.execute'])||!canStopRun(run)||run.stage==='stopping'||stoppingRunID.value)return
+ const runID=run.id
+ Modal.confirm({
+  title:t('pipelineStop.title'),content:t('pipelineStop.hint'),okText:t('pipelineStop.confirm'),cancelText:t('pipelineStop.cancel'),okType:'danger',
+  onOk:async()=>{
+   if(stoppingRunID.value)return
+   stoppingRunID.value=runID
+   try{
+    const stopped=(await client.post<{pipeline_run:Run}>(`/pipeline-runs/${encodeURIComponent(runID)}/stop`)).data.pipeline_run
+    runs.value=runs.value.map(item=>item.id===runID?stopped:item)
+    message.success(t(stopped.stage==='stopping'?'pipelineStop.accepted':'pipelineStop.stopped'))
+    queueDeliveryRefresh()
+   }catch(error){message.error(apiErrorMessage(error));throw error}
+   finally{stoppingRunID.value=''}
+  },
+ })
+}
 function resetRetry(){retryOpen.value=false;retryLoading.value=false;retrySubmitting.value=false;retryRunID.value='';retryOptions.value=null;retryMode.value='rebuild';retryArtifactID.value=''}
 async function openRetry(run:Run){
  resetRetry();retryOpen.value=true;retryLoading.value=true;retryRunID.value=run.id
@@ -767,7 +1037,10 @@ async function executeRetry(){
  try{
   const retried=(await client.post<{pipeline_run:Run}>(`/pipeline-runs/${retryRunID.value}/retry`,retryMode.value==='artifact'?{artifact_id:retryArtifactID.value}:{},{timeout:35000})).data.pipeline_run
   message.success(retryMode.value==='artifact'?'已使用原运行制品创建重试':'已按原固定版本重新构建')
-  resetRetry();await refresh();selectedRunID.value=retried.id
+  resetRetry();await refresh()
+  if(!runs.value.some(item=>item.id===retried.id))runs.value=[retried,...runs.value]
+  revealPipelineRun(retried.id)
+  void router.replace({path:'/release-plans',query:{view:'runs',run:retried.id}})
  }catch(error){message.error(apiErrorMessage(error))}finally{retrySubmitting.value=false}
 }
 function openLogs(run:Run){log.value={open:true,runID:run.id,title:`流水线日志：${applications.value.find(item=>item.id===run.application_id)?.name||'应用'}`,status:run.status}}
@@ -854,8 +1127,11 @@ function openApplicationFromRun(run:Run){
 async function revealActiveApplication(){
  const applicationID=activeApplicationID.value
  if(!applicationID||!applications.value.some(item=>item.id===applicationID))return
+ if(!visibleApplicationCards.value.some(card=>card.application.id===applicationID))resetApplicationFilters()
+ const card=applicationCards.value.find(item=>item.application.id===applicationID)
+ if(card){applicationPageState.current=Math.floor(visibleApplicationCards.value.indexOf(card)/applicationPageState.pageSize)+1;toggleApplicationDetails(card)}
  await nextTick()
- document.getElementById(`application-${applicationID}`)?.scrollIntoView({behavior:'smooth',block:'center'})
+ document.getElementById(`application-${applicationID}`)?.scrollIntoView({behavior:'instant',block:'nearest'})
 }
 async function loadReleasePlanApplicationResources(){
  if(!canReadDeployments.value||!releasePlanResources.pipelineRunID)return
@@ -1159,6 +1435,19 @@ function executeReleasePlan(){
 }
 function showWebhook(item:Repository){void client.get<{webhook_url:string;webhook_secret:string}>(`/repositories/${item.id}/webhook`).then(result=>Modal.info({title:`${item.name} Webhook`,width:650,content:()=>`${result.data.webhook_url}\n${result.data.webhook_secret}`})).catch(error=>message.error(apiErrorMessage(error)))}
 function applicationName(run:Run){return applications.value.find(item=>item.id===run.application_id)?.name||run.application?.name||'未命名应用'}
+function applicationForRun(run:Run){return applications.value.find(item=>item.id===run.application_id)||run.application}
+function workflowForRun(run:Run){return applicationForRun(run)?.workflows?.find(item=>item.id===run.workflow_id)}
+function runWorkflowName(run:Run){
+ const workflow=workflowForRun(run)
+ if(workflow)return workflowDisplayName(workflow)
+ return run.workflow_id?`流水线 ${run.workflow_id.slice(0,8)}`:'未关联流水线'
+}
+function releasePlanForRun(run:Run){return releasePlans.value.find(item=>item.id===run.release_plan_id)}
+function runReleasePlanName(run:Run){
+ if(!run.release_plan_id)return '未通过发布计划'
+ const plan=releasePlanForRun(run)
+ return plan?releasePlanTitle(plan):`发布计划 ${run.release_plan_id.slice(0,8)}`
+}
 function runReferenceLabel(run?:Run){
  if(!run)return '—'
  const source=formatGitReference({ref:run.ref,sha:run.commit_sha,trigger:run.trigger})
@@ -1176,15 +1465,51 @@ function artifactSelectOption(artifact:ManualArtifact){
 }
 function formatRunTime(value:string){return formatDateTime(value,locale.value==='en-US'?'en-US':'zh-CN')}
 function formatRunRelativeTime(value:string){return formatRelativeTime(value,relativeTimeNow.value,locale.value==='en-US'?'en-US':'zh-CN')}
-function runStatusLabel(status:string){return ({detected:'已发现',ready:'准备就绪',blocked:'已阻塞',awaiting_approval:'等待审核',running:'执行中',succeeded:'已成功',failed:'已失败',skipped:'已跳过',canceled:'已取消'} as Record<string,string>)[status]||status}
+function runStatusLabel(status:string,stage?:string){if(stage==='stopping')return t('pipelineStop.stopping');return ({detected:'已发现',ready:'准备就绪',blocked:'已阻塞',awaiting_approval:'等待审核',running:'执行中',succeeded:'已成功',failed:'已失败',skipped:'已跳过',canceled:t('pipelineStop.stopped')} as Record<string,string>)[status]||status}
 function runStatusColor(status:string){return status==='succeeded'?'success':status==='failed'||status==='blocked'?'error':status==='running'?'processing':status==='awaiting_approval'?'warning':'default'}
 function refreshVisibleState(){
  relativeTimeNow.value=Date.now()
  if(document.hidden)return
- if(props.section==='applications')void refreshApplicationState()
- else if(props.section==='build-plans'&&buildPlanView.value==='artifacts')void loadArtifacts()
- else if(props.section==='release-plans'&&releaseView.value==='runs')void refreshRunState()
- else if(props.section==='release-plans')void refresh()
+ if(props.section==='applications')refreshVisibleDeploymentRuntime()
+ if(props.section==='build-plans'&&buildPlanView.value==='artifacts')void loadArtifacts()
+ if(Date.now()-lastDeliverySync>=(deliveryConnected?60_000:30_000))queueDeliveryRefresh()
+}
+function queueDeliveryRefresh(syncOnly=false){
+ if(!deliveryRefreshTimer)applicationSyncOnly=syncOnly
+ else applicationSyncOnly=applicationSyncOnly&&syncOnly
+ if(document.hidden||deliveryRefreshTimer||!['applications','release-plans'].includes(props.section))return
+ deliveryRefreshTimer=setTimeout(async()=>{
+  deliveryRefreshTimer=undefined
+  if(document.hidden)return
+  // 状态事件可能在上一轮 HTTP 同步期间到达，必须留到下一轮处理。
+  if(stateRefreshing||loading.value){queueDeliveryRefresh(applicationSyncOnly);return}
+  if(!applicationSyncOnly)lastDeliverySync=Date.now()
+  if(props.section==='applications'&&applicationSyncOnly){
+   stateRefreshing=true
+   try{applications.value=(await client.get<{applications:Application[]}>('/applications')).data.applications||[]}catch{}finally{stateRefreshing=false}
+  }
+  else if(props.section==='applications')await refreshApplicationState()
+  else if(props.section==='release-plans'&&releaseView.value==='runs')await refreshRunState()
+  else if(props.section==='release-plans')await refreshReleasePlanState()
+ },300)
+}
+function onDeliveryPageVisible(){
+ relativeTimeNow.value=Date.now()
+ if(!document.hidden)queueDeliveryRefresh()
+}
+function connectDeliveryEvents(){
+ stopDeliveryEvents?.();stopDeliveryEvents=undefined;deliveryConnected=false
+ clearTimeout(deliveryRefreshTimer);deliveryRefreshTimer=undefined
+ if(!['applications','release-plans'].includes(props.section)||!auth.canAny(['delivery.read']))return
+ stopDeliveryEvents=subscribeDeliveryEvents({
+  event:event=>{
+   if(event.type==='resync'){queueDeliveryRefresh();return}
+   const resources=event.resources||[]
+   if(props.section!=='applications'&&resources.every(resource=>resource==='application_sync'||resource==='deployments'||resource==='deployment_plans'))return
+   queueDeliveryRefresh(resources.length>0&&resources.every(resource=>resource==='application_sync'))
+  },
+  state:value=>{deliveryConnected=value==='connected'},
+ })
 }
 function syncBuildPlanSelection(){
  if(props.section!=='build-plans'){
@@ -1196,7 +1521,10 @@ function syncBuildPlanSelection(){
  }
  const requested=typeof route.query.plan==='string'?route.query.plan:''
  if(requested&&buildPlans.value.some(item=>item.id===requested))selectedBuildPlanID.value=requested
- else if(!buildPlans.value.some(item=>item.id===selectedBuildPlanID.value))selectedBuildPlanID.value=buildPlans.value[0]?.id||''
+ else if(!buildPlans.value.some(item=>item.id===selectedBuildPlanID.value)){
+  if(selectedBuildPlanID.value){buildPlanView.value='overview';artifactApplicationID.value=''}
+  selectedBuildPlanID.value=buildPlans.value[0]?.id||''
+ }
  if(artifactApplicationID.value&&!applications.value.some(item=>item.id===artifactApplicationID.value))artifactApplicationID.value=''
 }
 function selectBuildPlan(id:string){
@@ -1234,56 +1562,97 @@ watch([selectedBuildPlanID,artifactApplicationID,buildPlanView],()=>{void loadAr
 watch(()=>route.query.create,consumeBuildCreateRequest)
 watch(()=>route.query.application,()=>{void revealActiveApplication()})
 watch(()=>route.query.run,()=>{void revealRequestedRun()})
-onMounted(()=>{void refresh().then(()=>{syncBuildPlanSelection();consumeBuildCreateRequest();void revealActiveApplication()});releaseTimer=window.setInterval(refreshVisibleState,5000);document.addEventListener('visibilitychange',refreshVisibleState);window.addEventListener('focus',refreshVisibleState)})
-onBeforeUnmount(()=>{resetPlanExecution();clearInterval(releaseTimer);document.removeEventListener('visibilitychange',refreshVisibleState);window.removeEventListener('focus',refreshVisibleState)})
+watch(()=>runListEntries.value.length,()=>{runPagination.current=Math.min(runPagination.current,Math.max(1,Math.ceil(runListEntries.value.length/runPagination.pageSize)))})
+watch(()=>props.section,connectDeliveryEvents)
+onMounted(()=>{connectDeliveryEvents();void refresh().then(()=>{lastDeliverySync=Date.now();syncBuildPlanSelection();consumeBuildCreateRequest();void revealActiveApplication()});releaseTimer=window.setInterval(refreshVisibleState,5000);document.addEventListener('visibilitychange',onDeliveryPageVisible);window.addEventListener('focus',onDeliveryPageVisible)})
+onBeforeUnmount(()=>{stopDeliveryEvents?.();clearTimeout(deliveryRefreshTimer);resetPlanExecution();clearInterval(releaseTimer);document.removeEventListener('visibilitychange',onDeliveryPageVisible);window.removeEventListener('focus',onDeliveryPageVisible)})
 </script>
 
-<template><section><PageToolbar :description="currentDescription"><a-tag v-if="props.section==='applications'||props.section==='release-plans'" color="processing">{{ t('applicationCard.autoRefresh') }}</a-tag><a-button :loading="loading" @click="refresh"><RefreshCw :size="15"/>刷新</a-button><a-button v-if="canCreate&&(props.section!=='release-plans'||releaseView==='plans')" type="primary" @click="create"><Plus :size="15"/>{{ props.section==='release-plans'?'创建发布计划':'新建' }}</a-button></PageToolbar>
-<div v-if="props.section==='applications'" class="application-grid">
-  <article v-for="card in applicationCards" :id="`application-${card.application.id}`" :key="card.application.id" class="application-card vben-card" :class="[`state-${card.state.tone}`,{'is-live':card.state.live,'is-linked':activeApplicationID===card.application.id}]">
-    <header class="application-summary-row">
-      <button type="button" class="application-row-toggle" :aria-label="applicationDetailsOpen(card.application.id)?t('applicationCard.hideDetails'):t('applicationCard.showDetails')" :aria-expanded="applicationDetailsOpen(card.application.id)" @click="toggleApplicationDetails(card)"><ChevronRight :class="{expanded:applicationDetailsOpen(card.application.id)}"/></button>
-      <div class="application-identity">
-        <span class="application-mark"><Boxes/></span>
-        <div>
-          <div class="application-title"><h3>{{ card.application.name }}</h3><span class="application-enabled" :class="{inactive:!card.application.is_active}">{{ card.application.is_active?t('applicationCard.active'):t('applicationCard.inactive') }}</span><button type="button" class="application-inline-link" @click.stop="openApplicationLink(card)"><GitBranch/>{{ card.repository?.name||t('applicationCard.repository') }}</button></div>
-          <p :title="card.application.description">{{ card.application.description||t('applicationCard.noDescription') }}</p>
+<template><section :class="{'applications-page':props.section==='applications'}"><PageToolbar :description="props.section==='applications'?t('applicationWorkspace.description'):currentDescription"><a-tag v-if="props.section==='applications'||props.section==='release-plans'" color="processing">{{ t('applicationCard.autoRefresh') }}</a-tag><a-button :loading="loading" @click="refresh"><RefreshCw :size="15"/>刷新</a-button><a-button v-if="canCreate&&(props.section!=='release-plans'||releaseView==='plans')" type="primary" @click="create"><Plus :size="15"/>{{ props.section==='release-plans'?'创建发布计划':props.section==='applications'?t('applicationWorkspace.create'):'新建' }}</a-button></PageToolbar>
+<div v-if="props.section==='applications'" class="apps-workspace">
+  <div class="apps-filter-bar">
+    <a-input v-model:value="applicationSearch" allow-clear :placeholder="t('applicationWorkspace.search')" :aria-label="t('applicationWorkspace.search')" class="apps-search"><template #prefix><Search :size="16"/></template></a-input>
+    <div class="apps-filters" role="group" :aria-label="t('applicationWorkspace.filterLabel')">
+      <button v-for="filter in applicationFilters" :key="filter.key" type="button" :class="{'is-selected':applicationFilter===filter.key}" :aria-pressed="applicationFilter===filter.key" @click="applicationFilter=filter.key">{{ filter.label }}<span>{{ filter.count }}</span></button>
+    </div>
+  </div>
+  <a-table v-if="visibleApplicationCards.length" class="apps-table resource-list-table" size="small" table-layout="fixed"
+    :columns="applicationColumns" :data-source="visibleApplicationCards" :row-key="(card:ApplicationCard)=>card.application.id"
+    :pagination="applicationPagination" :scroll="{x:1485}" @change="changeApplicationPage"
+    :row-class-name="applicationTableRowClass" :custom-row="applicationTableRow">
+    <template #bodyCell="{column,record:card}">
+      <div v-if="column.key==='application'" class="apps-identity">
+        <span class="apps-mark"><Boxes :size="18"/></span>
+        <div class="apps-identity-copy">
+          <div class="apps-title"><a-tooltip :title="card.application.name" :mouse-enter-delay="0.1"><button class="resource-name" @click="toggleApplicationDetails(card, 'workflows')">{{ card.application.name }}</button></a-tooltip><span v-if="!card.application.is_active" class="apps-inactive">{{ t('applicationCard.inactive') }}</span></div>
+          <a-tooltip :title="card.application.description" :mouse-enter-delay="0.1"><p class="apps-description">{{ card.application.description||t('applicationCard.noDescription') }}</p></a-tooltip>
         </div>
       </div>
-      <div class="application-latest-run">
-        <div class="application-section-heading"><small>{{ t('applicationCard.latestRun') }}</small><button type="button" class="application-inline-link" :disabled="!card.run?.workflow_id" @click.stop="openApplicationCurrentWorkflow(card)"><Workflow/>{{ t('applicationCard.workflow') }}</button></div>
-        <strong :title="card.run?.commit_message||t('applicationCard.noRun')"><span>{{ t('applicationCard.commitMessage') }}</span>{{ card.run?.commit_message||t('applicationCard.noRun') }}</strong>
-        <span><GitBranch/>{{ runReferenceLabel(card.run) }}<time><Clock3/>{{ formatApplicationTime(card.run?.updated_at||card.run?.created_at) }}</time></span>
-      </div>
-      <div class="application-current-run">
-        <div class="application-state"><i/><span><small>{{ t('applicationCard.currentRun') }}</small><strong>{{ card.state.label }}</strong></span></div>
-        <span :title="applicationCurrentNode(card.run)">{{ applicationCurrentNode(card.run) }}</span>
-      </div>
-      <div class="application-sync" :class="[`tone-${card.sync.tone}`,{'is-live':card.sync.live}]"><i/><span><small>{{ t('applicationCard.codeStatus') }}</small><strong>{{ card.sync.label }}</strong></span><time>{{ t('applicationCard.lastChecked') }} {{ formatApplicationTime(card.application.last_checked_at) }}</time></div>
-      <div class="application-actions"><a-button v-if="canUpdate" size="small" @click="edit(card.application)"><Settings2/>{{ t('applicationCard.configure') }}</a-button><a-button v-if="canExecute" size="small" type="primary" @click="action(`/applications/${card.application.id}/sync`)"><RefreshCw/>{{ t('applicationCard.checkUpdates') }}</a-button></div>
-    </header>
-    <Transition name="application-details">
-    <div v-if="applicationDetailsOpen(card.application.id)" class="application-details">
-    <section class="application-resource-grid">
-      <div class="application-resource-panel">
-        <header><div><Workflow/><span><strong>{{ t('applicationCard.linkedWorkflows') }}</strong><small>{{ t('applicationCard.enabledWorkflowCount',{enabled:card.enabledWorkflowCount,total:card.workflowSummaries.length}) }}</small></span></div></header>
-        <div v-if="card.workflowSummaries.length" class="application-workflow-list">
-          <button v-for="item in card.workflowSummaries" :key="item.workflow.id" type="button" @click="openApplicationWorkflow(card.application.id,item.workflow.id)">
-            <span class="application-workflow-icon"><Workflow/></span>
-            <span class="application-workflow-copy">
-              <span><strong>{{ workflowDisplayName(item.workflow) }}</strong><i :class="{inactive:!item.workflow.is_active}">{{ item.workflow.is_active?t('applicationCard.active'):t('applicationCard.inactive') }}</i></span>
-              <small>{{ workflowOriginLabel(item.workflow) }}；{{ item.source }}</small>
-              <small>任务：{{ item.taskCount }}；构建：{{ item.buildCount }}；部署：{{ item.deployCount }}</small>
-            </span>
-            <span class="application-workflow-run" :class="[`tone-${item.state.tone}`,{'is-live':item.state.live}]"><i/><strong>{{ item.state.label }}</strong><time>{{ formatApplicationTime(item.latestRun?.updated_at||item.latestRun?.created_at) }}</time></span>
-            <ChevronRight/>
-          </button>
+      <a-tooltip v-else-if="column.key==='repository'" :title="card.repository?.name" :mouse-enter-delay="0.1"><button type="button" class="apps-link apps-repository" :disabled="!card.repository||!auth.canAny(['repository.read'])" @click="openApplicationLink(card)"><GitBranch :size="14"/><span>{{ card.repository?.name||(card.application.repository_id?t('applicationCard.repository'):t('applicationCard.unbound')) }}</span><ArrowUpRight v-if="card.repository&&auth.canAny(['repository.read'])" :size="12"/></button></a-tooltip>
+      <div v-else-if="column.key==='run'" class="apps-run">
+        <a-tooltip :title="card.run?.commit_message" :mouse-enter-delay="0.1"><button type="button" class="apps-run-title" :disabled="!card.run" @click="openApplicationLatestRun(card)"><span>{{ card.run?.commit_message||t('applicationCard.noRun') }}</span><ArrowUpRight v-if="card.run" :size="13"/></button></a-tooltip>
+        <a-tooltip v-if="card.run" :title="runReferenceLabel(card.run)" :mouse-enter-delay="0.1"><div class="apps-reference">{{ runReferenceLabel(card.run) }}</div></a-tooltip>
+        <div v-if="card.run" class="apps-run-context">
+          <a-tooltip v-if="card.run.workflow_id" :title="applicationLatestWorkflowName(card)" :mouse-enter-delay="0.1"><span class="apps-workflow-caption"><Workflow :size="12"/><span>{{ applicationLatestWorkflowName(card) }}</span></span></a-tooltip>
+          <time class="apps-time" :datetime="card.run.created_at">{{ formatApplicationTime(card.run.created_at) }}</time>
         </div>
-        <p v-else class="application-resource-empty">{{ t('applicationCard.noWorkflows') }}</p>
       </div>
-      <div class="application-resource-panel">
-        <header><div><Boxes/><span><strong>{{ t('applicationCard.deploymentInstances') }}</strong><small>数量：{{ card.deploymentInstances.length }}；{{ t('applicationCard.deploymentSummary') }}</small></span></div></header>
-        <p v-if="!canReadDeployments" class="application-resource-empty">{{ t('applicationCard.deploymentPermissionDenied') }}</p>
+      <div v-else-if="column.key==='status'" class="apps-cell-stack">
+        <span class="apps-status" :class="[`tone-${card.state.tone}`,{'is-live':card.state.live}]"><i/>{{ card.state.label }}</span>
+        <a-tooltip :title="applicationCurrentNode(card.run)" :mouse-enter-delay="0.1"><span class="apps-node">{{ applicationCurrentNode(card.run) }}</span></a-tooltip>
+      </div>
+      <div v-else-if="column.key==='sync'" class="apps-cell-stack">
+        <a-tooltip :title="card.application.sync_message" :mouse-enter-delay="0.1"><span class="apps-status" :class="[`tone-${card.sync.tone}`,{'is-live':card.sync.live}]"><i/>{{ card.sync.label }}</span></a-tooltip>
+        <a-tooltip :title="t('applicationCard.lastChecked')+'：'+formatApplicationTime(card.application.last_checked_at)" :mouse-enter-delay="0.1"><time class="apps-time" :datetime="card.application.last_checked_at">{{ card.application.last_checked_at?formatRelativeTime(card.application.last_checked_at,relativeTimeNow,locale):t('applicationCard.noTime') }}</time></a-tooltip>
+      </div>
+      <div v-else-if="column.key==='resources'" class="apps-resource-switch">
+        <button type="button" :class="{'is-selected':applicationDetailsOpen(card.application.id)&&applicationDetailTab(card.application.id)==='workflows'}" :aria-label="t('applicationCard.linkedWorkflows')+'：'+card.application.name" :aria-expanded="applicationDetailsOpen(card.application.id)&&applicationDetailTab(card.application.id)==='workflows'" :aria-controls="applicationDetailsOpen(card.application.id)?`application-details-${card.application.id}`:undefined" @click="toggleApplicationDetails(card,'workflows')"><Workflow :size="14"/>{{ t('applicationCard.pipeline') }}<span class="apps-count">{{ card.workflowSummaries.length }}</span></button>
+        <button type="button" :class="{'is-selected':applicationDetailsOpen(card.application.id)&&applicationDetailTab(card.application.id)==='deployments'}" :aria-label="t('applicationCard.deploymentInstances')+'：'+card.application.name" :aria-expanded="applicationDetailsOpen(card.application.id)&&applicationDetailTab(card.application.id)==='deployments'" :aria-controls="applicationDetailsOpen(card.application.id)?`application-details-${card.application.id}`:undefined" @click="toggleApplicationDetails(card,'deployments')"><Boxes :size="14"/>{{ t('applicationWorkspace.instances') }}<span v-if="canReadDeployments" class="apps-count">{{ card.deploymentInstances.length }}</span></button>
+      </div>
+      <ResourceRowActions v-else-if="column.key==='actions'" :more="canUpdate">
+        <a-button size="small" @click="toggleApplicationDetails(card,'workflows')">{{ t('resourceList.details') }}</a-button>
+        <a-button v-if="canExecute" size="small" :loading="checkingApplicationIDs[card.application.id]" :disabled="card.sync.live" @click="checkApplicationUpdates(card.application)">{{ t('applicationCard.checkUpdates') }}</a-button>
+        <template #more><a-menu-item v-if="canUpdate" @click="edit(card.application)">{{ t('applicationCard.configure') }}</a-menu-item></template>
+      </ResourceRowActions>
+    </template>
+  </a-table>
+  <ResourceDetailDrawer v-model:open="applicationDrawerOpen" :title="applicationDrawerCard?.application.name">
+    <template #actions>
+      <template v-if="applicationDrawerCard">
+        <a-button size="small" :type="applicationDetailTab(applicationDrawerID)==='workflows'?'primary':'default'" @click="toggleApplicationDetails(applicationDrawerCard,'workflows')">{{ t('resourceList.workflows') }} ({{ applicationDrawerCard.workflowSummaries.length }})</a-button>
+        <a-button size="small" :type="applicationDetailTab(applicationDrawerID)==='deployments'?'primary':'default'" @click="toggleApplicationDetails(applicationDrawerCard,'deployments')">{{ t('resourceList.instances') }} ({{ applicationDrawerCard.deploymentInstances.length }})</a-button>
+        <a-button v-if="canUpdate" size="small" @click="edit(applicationDrawerCard.application)">{{ t('applicationCard.configure') }}</a-button>
+      </template>
+    </template>
+    <section v-if="applicationDrawerCard" class="resource-detail-section">
+      <h4>{{ t('resourceList.basic') }}</h4>
+      <dl class="resource-facts">
+        <div><dt>{{ t('applicationCard.repository') }}</dt><dd>{{ applicationDrawerCard.repository?.name || '—' }}</dd></div>
+        <div><dt>{{ t('applicationCard.currentNode') }}</dt><dd>{{ applicationCurrentNode(applicationDrawerCard.run) }}</dd></div>
+        <div><dt>{{ t('applicationCard.codeStatus') }}</dt><dd>{{ applicationDrawerCard.sync.label }}</dd></div>
+        <div class="resource-facts-wide"><dt>{{ t('resourceList.description') }}</dt><dd>{{ applicationDrawerCard.application.description || '—' }}</dd></div>
+      </dl>
+    </section>
+    <template v-for="card in applicationDrawerCard ? [applicationDrawerCard] : []" :key="card.application.id">
+
+      <section v-if="applicationDetailsOpen(card.application.id)" :id="`application-details-${card.application.id}`" class="apps-details-content resource-detail-section" :aria-label="card.application.name+' · '+(applicationDetailTab(card.application.id)==='workflows'?t('applicationCard.linkedWorkflows'):t('applicationCard.deploymentInstances'))">
+        <template v-if="applicationDetailTab(card.application.id)==='workflows'">
+          <a-table v-if="card.workflowSummaries.length" class="apps-workflow-table" size="small" table-layout="fixed"
+            :columns="applicationWorkflowColumns" :data-source="card.workflowSummaries" :row-key="(item:ApplicationCard['workflowSummaries'][number])=>item.workflow.id" :pagination="false" :scroll="{x:1300}">
+            <template #bodyCell="{column:workflowColumn,record:item}">
+              <a-tooltip v-if="workflowColumn.key==='name'" :title="workflowDisplayName(item.workflow)" :mouse-enter-delay="0.1"><button type="button" class="apps-workflow-name" @click="openApplicationWorkflow(card.application.id,item.workflow.id)"><Workflow :size="15"/><span>{{ workflowDisplayName(item.workflow) }}</span></button></a-tooltip>
+              <span v-else-if="workflowColumn.key==='enabled'" class="apps-enabled" :class="{'is-inactive':!item.workflow.is_active}">{{ item.workflow.is_active?t('applicationCard.active'):t('applicationCard.inactive') }}</span>
+              <a-tooltip v-else-if="workflowColumn.key==='source'" :title="item.source" :mouse-enter-delay="0.1"><span class="apps-cell-ellipsis">{{ item.source }}</span></a-tooltip>
+              <a-tooltip v-else-if="workflowColumn.key==='template'" :title="item.workflow.workflow_template?.name||t('applicationCard.customWorkflow')" :mouse-enter-delay="0.1"><span class="apps-cell-ellipsis">{{ item.workflow.workflow_template?.name||t('applicationCard.customWorkflow') }}</span></a-tooltip>
+              <span v-else-if="workflowColumn.key==='tasks'" class="apps-workflow-facts"><span>{{ t('applicationCard.taskCount',{count:item.taskCount}) }}</span><span>{{ t('applicationCard.buildCount',{count:item.buildCount}) }}</span><span>{{ t('applicationCard.deployCount',{count:item.deployCount}) }}</span></span>
+              <span v-else-if="workflowColumn.key==='status'" class="apps-status" :class="[`tone-${item.state.tone}`,{'is-live':item.state.live}]"><i/>{{ item.state.label }}</span>
+              <time v-else-if="workflowColumn.key==='time'" class="apps-time">{{ formatApplicationTime(item.latestRun?.created_at) }}</time>
+            </template>
+          </a-table>
+          <div v-else class="apps-empty-inline"><Workflow :size="20"/><span>{{ t('applicationCard.noWorkflows') }}</span></div>
+        </template>
+        <div v-else class="apps-deployments">
+        <p v-if="!canReadDeployments" class="apps-empty-inline">{{ t('applicationCard.deploymentPermissionDenied') }}</p>
         <div v-else-if="card.deploymentInstances.length" class="application-deployment-list">
           <div v-for="record in card.deploymentInstances" :key="record.id" class="application-deployment-item">
             <button type="button" class="application-deployment-summary" :aria-expanded="deploymentDetailsOpen(record)" @click="toggleDeploymentDetails(record)">
@@ -1294,6 +1663,7 @@ onBeforeUnmount(()=>{resetPlanExecution();clearInterval(releaseTimer);document.r
             </button>
             <Transition name="deployment-details">
               <div v-if="deploymentDetailsOpen(record)" class="application-deployment-details">
+                <a-alert v-if="deploymentRuntimeErrors[record.id]" type="warning" show-icon :message="deploymentRuntimeErrors[record.id]" style="margin-bottom:8px"/>
                 <dl>
                   <div v-if="deploymentKind(record)!=='script'"><dt>{{ t('applicationCard.image') }}</dt><dd :title="deploymentImageLabel(record)">{{ deploymentImageLabel(record) }}</dd></div>
                   <div v-if="deploymentRuntimeStates[record.id]"><dt>实时状态</dt><dd>{{ currentDeploymentStatus(record).label }}</dd></div>
@@ -1315,13 +1685,19 @@ onBeforeUnmount(()=>{resetPlanExecution();clearInterval(releaseTimer);document.r
             </Transition>
           </div>
         </div>
-        <p v-else class="application-resource-empty">{{ t('applicationCard.noDeployments') }}</p>
-      </div>
-    </section>
-    </div>
-    </Transition>
-  </article>
-  <a-empty v-if="!applicationCards.length&&!loading" :description="t('applicationCard.empty')"/>
+        <p v-else class="apps-empty-inline">{{ t('applicationCard.noDeployments') }}</p>
+        </div>
+      </section>
+
+    </template>
+  </ResourceDetailDrawer>
+  <div v-if="loading&&!applicationCards.length" class="apps-loading"><a-skeleton active :paragraph="{rows:3}"/></div>
+  <div v-else-if="!visibleApplicationCards.length" class="apps-empty">
+    <Search v-if="applicationCards.length" :size="28"/><Boxes v-else :size="28"/>
+    <strong>{{ applicationCards.length?t('applicationWorkspace.noResults'):t('applicationCard.empty') }}</strong>
+    <p>{{ applicationCards.length?t('applicationWorkspace.noResultsHint'):t('applicationWorkspace.emptyHint') }}</p>
+    <a-button v-if="applicationCards.length" @click="resetApplicationFilters">{{ t('applicationWorkspace.clearFilters') }}</a-button>
+  </div>
 </div>
 <BuildPlanWorkspace
  v-else-if="props.section==='build-plans'"
@@ -1330,6 +1706,7 @@ onBeforeUnmount(()=>{resetPlanExecution();clearInterval(releaseTimer);document.r
  :artifacts="artifacts"
  :registries="registries"
  :selectedID="selectedBuildPlanID"
+ :requestedID="typeof route.query.plan === 'string' ? route.query.plan : ''"
  :activeView="buildPlanView"
  :selectedApplicationID="artifactApplicationID"
  :loading="loading"
@@ -1366,44 +1743,94 @@ onBeforeUnmount(()=>{resetPlanExecution();clearInterval(releaseTimer);document.r
   </ResourceTable>
  </div>
 </div>
-<div v-else-if="releaseView==='runs'" class="run-workspace vben-card">
-  <aside class="run-index">
-    <header><div><strong>运行记录</strong><small>{{ runs.length }} 次执行</small></div><span :class="{active:activeRunCount}">{{ activeRunCount }} 个进行中</span></header>
-    <div class="run-index-list">
-      <button v-for="run in runs" :key="run.id" type="button" :class="{active:selectedRun?.id===run.id}" @click="selectPipelineRun(run.id)">
-        <span class="run-dot" :class="run.status"/>
-        <span class="run-index-copy">
-          <strong>{{ applicationName(run) }}</strong>
-          <span>{{ run.commit_message||'未记录提交说明' }}</span>
-          <small>版本：{{ runReferenceLabel(run) }}；状态：{{ runStatusLabel(run.status) }}；当前节点：{{ run.current_node_name||run.current_node_id||'尚未开始' }}</small>
-          <time class="run-index-time" :datetime="run.created_at" :title="formatRunTime(run.created_at)"><Clock3/><span>{{ formatRunTime(run.created_at) }}</span><em>{{ formatRunRelativeTime(run.created_at) }}</em></time>
-        </span>
-        <ChevronRight :size="16"/>
-      </button>
-      <a-empty v-if="!runs.length&&!loading" description="还没有流水线运行"/>
-    </div>
-  </aside>
-  <main v-if="selectedRun" class="run-detail">
-    <header class="run-detail-heading">
-      <div><span class="run-status-orb" :class="selectedRun.status"><i/></span><div><small>流水线运行</small><h3>{{ applicationName(selectedRun) }}</h3></div></div>
-      <a-tag :color="runStatusColor(selectedRun.status)">{{ runStatusLabel(selectedRun.status) }}</a-tag>
-    </header>
-    <section class="run-commit-panel">
-      <GitCommit :size="18"/>
-      <div><small>提交说明</small><strong>{{ selectedRun.commit_message||'未记录提交说明' }}</strong><span>{{ runReferenceLabel(selectedRun) }}</span></div>
-      <time>{{ formatRunTime(selectedRun.created_at) }}</time>
-    </section>
-    <PipelineRunGraph :key="selectedRun.id" :graph="selectedRun.execution_graph" :current-node-id="selectedRun.current_node_id" :status="selectedRun.status" :stage="selectedRun.stage"/>
-    <dl class="run-facts">
-      <div><dt>当前任务</dt><dd>{{ selectedRun.current_node_name||selectedRun.current_node_id||'尚未开始' }}</dd></div>
-      <div><dt>触发方式</dt><dd>{{ selectedRun.trigger||'—' }}</dd></div>
-      <div><dt>状态说明</dt><dd>{{ selectedRun.message||runStatusLabel(selectedRun.status) }}</dd></div>
-      <div><dt>关联应用</dt><dd><a-button type="link" size="small" @click="openApplicationFromRun(selectedRun)">{{ applicationName(selectedRun) }}</a-button></dd></div>
-      <div><dt>关联发布计划</dt><dd><a-button v-if="selectedRun.release_plan_id" type="link" size="small" @click="openReleasePlanFromRun(selectedRun)">{{ selectedRunReleasePlan?releasePlanTitle(selectedRunReleasePlan):'查看发布计划' }}</a-button><span v-else>—</span></dd></div>
-    </dl>
-    <footer class="run-actions"><a-button @click="openLogs(selectedRun)">查看实时日志</a-button><a-button v-if="selectedRun.status==='failed'&&auth.canAny(['delivery.execute'])" type="primary" @click="openRetry(selectedRun)">重试流水线</a-button><a-button v-if="selectedRun.status==='awaiting_approval'&&auth.canAny(['deployment.review'])" type="primary" @click="action(`/pipeline-runs/${selectedRun.id}/approve`)">通过审核</a-button><a-button v-if="selectedRun.stage==='manual'&&auth.canAny(['delivery.execute'])" type="primary" @click="action(`/pipeline-runs/${selectedRun.id}/advance`)">放行并继续</a-button></footer>
-  </main>
-  <div v-else class="run-detail-empty"><a-empty description="选择一条流水线运行查看执行拓扑"/></div>
+<div v-else-if="releaseView==='runs'" ref="runWorkspace" class="run-workspace vben-card">
+  <header class="run-list-heading"><span>共 {{ runs.length }} 条流水线记录<a-tag v-if="activeRunCount" color="processing">{{ activeRunCount }} 个进行中</a-tag></span><small class="resource-secondary">同次发布归为一组</small></header>
+  <a-table
+    class="run-table resource-list-table"
+    row-key="id"
+    table-layout="fixed"
+    :columns="runColumns"
+    :data-source="runListEntries"
+    :loading="loading&&!runs.length"
+    :pagination="runPagination"
+    :scroll="{x:1340}"
+    :row-class-name="runListRowClass"
+    @change="changeRunPage"
+  >
+    <template #emptyText><a-empty description="还没有流水线运行"/></template>
+    <template #bodyCell="{column,record}">
+      <ResourceRowActions v-if="column.key==='actions'" :more="false"><a-button size="small" @click="expandRunListEntry(true,record)">详情</a-button><a-button v-if="!record.executionGroup" size="small" @click="openLogs(record)">日志</a-button></ResourceRowActions>
+      <template v-else-if="record.executionGroup">
+        <template v-if="column.key==='release_plan'"><button type="button" class="run-resource-link" :title="runEntryPlanName(record)" @click.stop="openReleasePlanFromRun(record.runs[0])">{{ runEntryPlanName(record) }}</button><span class="run-cell-secondary">发布计划执行</span></template>
+        <template v-else-if="column.key==='application'"><button class="resource-name" @click="expandRunListEntry(true,record)">{{ executionApplicationCount(record) }} 个应用</button><span class="run-cell-secondary">查看本次发布</span></template>
+        <template v-else-if="column.key==='workflow'"><strong class="run-cell-title">{{ record.runs.length }} 条流水线记录</strong><span class="run-cell-secondary">各应用独立执行</span></template>
+        <template v-else-if="column.key==='version'"><span class="run-cell-muted">各应用使用各自的代码版本或制品</span></template>
+        <template v-else-if="column.key==='status'"><span class="run-group-counts"><span v-for="count in executionRunCounts(record).split('、')" :key="count">{{ count }}</span></span></template>
+        <template v-else-if="column.key==='created_at'"><time class="run-cell-time" :datetime="record.created_at">{{ formatRunTime(record.created_at) }}</time><span class="run-cell-secondary">最近运行</span></template>
+      </template>
+      <template v-else-if="column.key==='release_plan'">
+        <button v-if="record.release_plan_id" type="button" class="run-resource-link" :title="runReleasePlanName(record)" @click.stop="openReleasePlanFromRun(record)">{{ runReleasePlanName(record) }}</button>
+        <span v-else class="run-cell-muted">未通过发布计划</span>
+      </template>
+      <template v-else-if="column.key==='application'">
+        <button type="button" class="run-resource-link" :disabled="!record.application_id" :title="applicationName(record)" @click.stop="openApplicationFromRun(record)">{{ applicationName(record) }}</button>
+      </template>
+      <template v-else-if="column.key==='workflow'">
+        <button type="button" class="run-resource-link" :disabled="!record.application_id||!record.workflow_id" :title="runWorkflowName(record)" @click.stop="openApplicationWorkflow(record.application_id||'',record.workflow_id||'')">{{ runWorkflowName(record) }}</button>
+      </template>
+      <template v-else-if="column.key==='version'">
+        <button class="resource-name" @click="expandRunListEntry(true,record)">{{ record.commit_message||'未记录提交说明' }}</button>
+        <span class="run-cell-secondary" :title="runReferenceLabel(record)">{{ runReferenceLabel(record) }}</span>
+      </template>
+      <template v-else-if="column.key==='status'">
+        <a-tag :color="runStatusColor(record.status)">{{ runStatusLabel(record.status,record.stage) }}</a-tag>
+        <span class="run-cell-secondary" :title="record.current_node_name||record.current_node_id">{{ record.current_node_name||record.current_node_id||'尚未开始' }}</span>
+      </template>
+      <template v-else-if="column.key==='created_at'">
+        <time class="run-cell-time" :datetime="record.created_at">{{ formatRunTime(record.created_at) }}</time>
+        <span class="run-cell-secondary">{{ formatRunRelativeTime(record.created_at) }}</span>
+      </template>
+    </template>
+  </a-table>
+  <ResourceDetailDrawer v-model:open="runDrawerOpen" :title="runDrawerEntry ? (isRunExecutionGroup(runDrawerEntry) ? runEntryPlanName(runDrawerEntry) : applicationName(runDrawerEntry)) : '运行详情'">
+    <template v-for="record in runDrawerEntry ? [runDrawerEntry] : []" :key="record.id">
+      <div :id="`run-entry-${record.id}`" :class="{'run-execution-detail':record.executionGroup}">
+        <header v-if="isRunExecutionGroup(record)" class="run-group-caption"><span><Layers3 :size="15"/>本次发布的应用</span><small :title="record.release_plan_execution_id">执行编号：{{ record.release_plan_execution_id.slice(0,8) }}；已加载 {{ record.runs.length }} 条运行记录</small></header>
+        <article v-for="run in runEntryRecords(record)" :key="run.id" :class="{'run-group-item':record.executionGroup,'is-open':record.executionGroup&&expandedRunIDs.includes(run.id)}">
+          <div v-if="record.executionGroup" class="run-group-row" :class="{'is-current':selectedRunID===run.id}" :data-row-key="run.id" @click="expandPipelineRun(!expandedRunIDs.includes(run.id),run)">
+            <button type="button" class="run-row-toggle" :aria-expanded="expandedRunIDs.includes(run.id)" :aria-controls="`run-detail-${run.id}`" :aria-label="expandedRunIDs.includes(run.id)?'收起运行详情':'展开运行详情'" @click.stop="expandPipelineRun(!expandedRunIDs.includes(run.id),run)"><ChevronRight :size="15" :class="{expanded:expandedRunIDs.includes(run.id)}"/></button>
+            <div><small>应用</small><button type="button" class="run-resource-link" :title="applicationName(run)" @click.stop="openApplicationFromRun(run)">{{ applicationName(run) }}</button></div>
+            <div><small>流水线</small><button type="button" class="run-resource-link" :disabled="!run.workflow_id" :title="runWorkflowName(run)" @click.stop="openApplicationWorkflow(run.application_id,run.workflow_id||'')">{{ runWorkflowName(run) }}</button></div>
+            <div><strong class="run-cell-title" :title="run.commit_message||'未记录提交说明'">{{ run.commit_message||'未记录提交说明' }}</strong><span class="run-cell-secondary" :title="runReferenceLabel(run)">{{ runReferenceLabel(run) }}</span></div>
+            <div><a-tag :color="runStatusColor(run.status)">{{ runStatusLabel(run.status,run.stage) }}</a-tag><span class="run-cell-secondary">{{ run.current_node_name||run.current_node_id||'尚未开始' }}</span></div>
+            <div><time class="run-cell-time" :datetime="run.created_at">{{ formatRunTime(run.created_at) }}</time><span class="run-cell-secondary">{{ formatRunRelativeTime(run.created_at) }}</span></div>
+          </div>
+          <section v-if="expandedRunIDs.includes(run.id)" :id="`run-detail-${run.id}`" class="run-detail" :class="{'is-current':selectedRunID===run.id}" :aria-label="`运行详情：${formatRunTime(run.created_at)}`">
+            <header class="run-detail-heading">
+              <div class="run-detail-identity"><span class="run-detail-label">{{ selectedRunID===run.id?'当前查看':'运行详情' }}</span><time :datetime="run.created_at">{{ formatRunTime(run.created_at) }}</time><span class="run-detail-version">{{ runReferenceLabel(run) }}</span></div>
+              <a-button size="small" @click="runDrawerOpen=false">关闭详情</a-button>
+            </header>
+            <PipelineRunGraph :key="run.id" compact :graph="run.execution_graph" :current-node-id="run.current_node_id" :status="run.status" :stage="run.stage"/>
+            <dl class="run-facts">
+              <div><dt>发布应用</dt><dd>{{ applicationName(run) }}</dd></div>
+              <div><dt>应用流水线</dt><dd>{{ runWorkflowName(run) }}</dd></div>
+              <div><dt>发布计划</dt><dd>{{ run.release_plan_id ? runReleasePlanName(run) : '未通过发布计划' }}</dd></div>
+              <div><dt>当前任务</dt><dd>{{ run.current_node_name||run.current_node_id||'尚未开始' }}</dd></div>
+              <div><dt>状态说明</dt><dd :title="run.message||runStatusLabel(run.status,run.stage)">{{ run.message||runStatusLabel(run.status,run.stage) }}</dd></div>
+              <div><dt>运行编号</dt><dd :title="run.id">{{ run.id }}</dd></div>
+            </dl>
+            <footer class="run-actions">
+              <a-button @click="openLogs(run)">查看实时日志</a-button>
+              <a-button v-if="canStopRun(run)&&auth.canAny(['delivery.execute'])" danger :loading="stoppingRunID===run.id||run.stage==='stopping'" :disabled="!!stoppingRunID||run.stage==='stopping'" @click="confirmStopRun(run)">{{ t(run.stage==='stopping'?'pipelineStop.stopping':'pipelineStop.confirm') }}</a-button>
+              <a-button v-if="run.status==='failed'&&auth.canAny(['delivery.execute'])" type="primary" @click="openRetry(run)">重试流水线</a-button>
+              <a-button v-if="run.status==='awaiting_approval'&&auth.canAny(['deployment.review'])" type="primary" @click="action(`/pipeline-runs/${run.id}/approve`)">通过审核</a-button>
+              <a-button v-if="run.stage==='manual'&&auth.canAny(['delivery.execute'])" type="primary" @click="action(`/pipeline-runs/${run.id}/advance`)">放行并继续</a-button>
+            </footer>
+          </section>
+        </article>
+      </div>
+    </template>
+  </ResourceDetailDrawer>
 </div>
 <ReleasePlanWorkspace
  v-else
@@ -1434,17 +1861,20 @@ onBeforeUnmount(()=>{resetPlanExecution();clearInterval(releaseTimer);document.r
  @open-application-resources="openReleasePlanApplicationResources"
 />
 
-<a-drawer v-model:open="formOpen" :title="props.section==='applications'?(editingID?'编辑应用':'创建应用'):(editingID?'编辑配置':'新建配置')" width="700"><a-form layout="vertical">
-<template v-if="props.section==='applications'">
+<a-drawer :open="formOpen" :title="creatingApplicationRepository?t('applicationForm.createRepository'):props.section==='applications'?(editingID?'编辑应用':'创建应用'):(editingID?'编辑配置':'新建配置')" width="700" :closable="!saving&&!testing" :mask-closable="!saving&&!testing" :keyboard="!saving&&!testing" @close="closeForm"><a-form layout="vertical">
+<template v-if="formSection==='applications'">
  <section class="application-form-section">
   <header><strong>应用信息</strong><small>配置应用名称、说明和唯一绑定的代码仓库。</small></header>
   <div class="form-grid">
    <a-form-item label="应用名称" required><a-input v-model:value="appForm.name" :maxlength="128" placeholder="例如 order_service"/><small class="field-hint">应用名同时作为镜像仓库名；以小写英文字母开头，仅使用小写英文字母和单个下划线。</small></a-form-item>
    <a-form-item label="说明"><a-input v-model:value="appForm.description"/></a-form-item>
    <a-form-item class="span2" label="代码仓库" required>
-    <a-select v-model:value="appForm.repository_id" show-search option-filter-prop="label" :options="repositoryOptions">
-     <template #option="{label,details}"><span class="resource-option"><strong>{{ label }}</strong><small v-for="detail in details" :key="detail">{{ detail }}</small></span></template>
-    </a-select>
+    <div class="resource-picker">
+     <a-select v-model:value="appForm.repository_id" show-search option-filter-prop="label" :options="repositoryOptions">
+      <template #option="{label,details}"><span class="resource-option"><strong>{{ label }}</strong><small v-for="detail in details" :key="detail">{{ detail }}</small></span></template>
+     </a-select>
+     <a-button v-if="auth.canAny(['repository.create'])" class="resource-create" :aria-label="t('applicationForm.createRepository')" :title="t('applicationForm.createRepository')" @click="createApplicationRepository"><Plus :size="16"/></a-button>
+    </div>
    </a-form-item>
   </div>
  </section>
@@ -1479,29 +1909,35 @@ onBeforeUnmount(()=>{resetPlanExecution();clearInterval(releaseTimer);document.r
   </div>
  </section>
 </template>
-<template v-if="props.section==='repositories'">
+<template v-if="formSection==='repositories'">
  <div class="form-grid">
   <a-form-item label="名称" required><a-input v-model:value="repoForm.name"/></a-form-item>
   <a-form-item label="平台"><a-select v-model:value="repoForm.provider" :options="['github','gitlab','gitea','gitee','generic'].map(value=>({value,label:value}))"/></a-form-item>
   <a-form-item class="span2" label="Git 地址" required><a-input v-model:value="repoForm.clone_url"/></a-form-item>
   <a-form-item label="默认分支"><a-input v-model:value="repoForm.default_branch"/></a-form-item>
-  <a-form-item label="Git 克隆认证"><a-select v-model:value="repoForm.auth_type" :options="[{value:'none',label:'无需认证'},{value:'token',label:'访问令牌'},{value:'ssh_key',label:'SSH 私钥'}]"/></a-form-item>
-  <a-form-item v-if="repoForm.auth_type!=='none'" class="span2" label="Git 克隆凭据">
-   <a-select v-model:value="repoForm.credential_id" show-search option-filter-prop="label" :options="cloneCredentialOptions">
-    <template #option="{label,details}"><span class="resource-option"><strong>{{ label }}</strong><small v-for="detail in details" :key="detail">{{ detail }}</small></span></template>
-   </a-select>
-   <small>仅用于 Git clone/fetch，仓库只能引用当前操作者自己的凭据。</small>
+  <a-form-item :label="t('repositoryForm.gitAuthentication')"><a-select v-model:value="repoForm.auth_type" :options="[{value:'none',label:'无需认证'},{value:'token',label:'访问令牌'},{value:'ssh_key',label:'SSH 私钥'}]"/></a-form-item>
+  <a-form-item v-if="repoForm.auth_type!=='none'" class="span2" :label="t('repositoryForm.gitCredential')">
+   <div class="resource-picker">
+    <a-select v-model:value="repoForm.credential_id" show-search option-filter-prop="label" :options="cloneCredentialOptions">
+     <template #option="{label,details}"><span class="resource-option"><strong>{{ label }}</strong><small v-for="detail in details" :key="detail">{{ detail }}</small></span></template>
+    </a-select>
+    <a-button v-if="auth.canAny(['credential.create'])" class="resource-create" :aria-label="t('gitCredential.create')" :title="t('gitCredential.create')" @click="createRepositoryCredential('git')"><Plus :size="16"/></a-button>
+   </div>
+   <small>{{ t('repositoryForm.gitCredentialHint') }}</small>
   </a-form-item>
-  <a-form-item v-if="repoForm.provider!=='generic'" class="span2" label="平台 API 令牌（可选）">
-   <a-select v-model:value="repoForm.api_credential_id" allow-clear show-search option-filter-prop="label" placeholder="公开仓库可留空" :options="apiCredentialOptions">
-    <template #option="{label,details}"><span class="resource-option"><strong>{{ label }}</strong><small v-for="detail in details" :key="detail">{{ detail }}</small></span></template>
-   </a-select>
-   <small>用于主动读取私有 PR/MR。SSH 私钥绝不会发送到平台 API；使用 Token 克隆时留空可复用克隆 Token。</small>
+  <a-form-item v-if="repoForm.provider!=='generic'" class="span2" :label="t('repositoryForm.apiToken')">
+   <div class="resource-picker">
+    <a-select v-model:value="repoForm.api_credential_id" allow-clear show-search option-filter-prop="label" :placeholder="t(repoForm.auth_type==='token'?'repositoryForm.apiReusePlaceholder':'repositoryForm.apiTokenPlaceholder')" :options="apiCredentialOptions">
+     <template #option="{label,details}"><span class="resource-option"><strong>{{ label }}</strong><small v-for="detail in details" :key="detail">{{ detail }}</small></span></template>
+    </a-select>
+    <a-button v-if="auth.canAny(['credential.create'])" class="resource-create" :aria-label="t('repositoryForm.createApiToken')" :title="t('repositoryForm.createApiToken')" @click="createRepositoryCredential('api')"><Plus :size="16"/></a-button>
+   </div>
+   <small>{{ t(repoForm.auth_type==='token'?'repositoryForm.apiReuseHint':'repositoryForm.apiTokenHint') }}</small>
   </a-form-item>
   <a-checkbox v-model:checked="repoForm.webhook_enabled">启用 Webhook</a-checkbox>
   <a-form-item v-if="repoForm.webhook_enabled" class="span2" label="Webhook API">
    <div class="webhook-api-field">
-    <a-input :value="repositoryWebhookAPI" readonly :placeholder="editingID?'正在获取 Webhook API':'保存仓库后生成 Webhook API'"/>
+    <a-input :value="repositoryWebhookAPI" readonly :placeholder="formEditingID?'正在获取 Webhook API':'保存仓库后生成 Webhook API'"/>
     <a-button :disabled="!repositoryWebhookAPI" @click="copyRepositoryWebhookAPI">复制</a-button>
    </div>
    <small class="field-hint">{{ repositoryWebhookAPI?'将此地址填写到代码托管平台的 Webhook 配置中。':'仓库 ID 由系统在保存时生成，创建成功后会显示实际地址。' }}</small>
@@ -1576,7 +2012,8 @@ onBeforeUnmount(()=>{resetPlanExecution();clearInterval(releaseTimer);document.r
  </div>
  <a-alert v-if="registryTested" type="success" show-icon message="镜像仓库登录测试成功"/>
 </template>
-</a-form><template #footer><div class="drawer-actions"><a-button @click="formOpen=false">取消</a-button><a-button v-if="props.section==='repositories'&&auth.canAny(['repository.execute'])" :loading="testing" @click="testRepository">测试连接</a-button><a-button v-if="props.section==='image-registries'&&auth.canAny(['delivery.execute'])" :loading="testing" @click="testRegistry">测试登录</a-button><a-button v-if="canSaveCurrent" type="primary" :loading="saving" :disabled="props.section==='image-registries'&&!registryTested" @click="save">保存</a-button></div></template></a-drawer>
+</a-form><template #footer><div class="drawer-actions"><a-button :disabled="saving||testing" @click="closeForm">{{ creatingApplicationRepository?t('applicationForm.backToApplication'):'取消' }}</a-button><a-button v-if="formSection==='repositories'&&auth.canAny(['repository.execute'])" :loading="testing" :disabled="saving" @click="testRepository">测试连接</a-button><a-button v-if="props.section==='image-registries'&&auth.canAny(['delivery.execute'])" :loading="testing" @click="testRegistry">测试登录</a-button><a-button v-if="canSaveCurrent" type="primary" :loading="saving" :disabled="testing||(props.section==='image-registries'&&!registryTested)" @click="save">保存</a-button></div></template></a-drawer>
+<GitCredentialDrawer v-model:open="credentialCreation.open" :provider="credentialCreation.provider" :auth-type="credentialCreation.authType" lock-context @saved="repositoryCredentialSaved"/>
 <a-modal v-model:open="manualOpen" :title="t('manualRun.title')" :confirm-loading="saving" :ok-button-props="{disabled:!manualApplicationID||!manualWorkflowID}" :ok-text="t('manualRun.chooseVersion')" @ok="nextManual" @cancel="resetManualFlow"><a-form layout="vertical"><a-form-item :label="t('manualRun.application')"><a-select :value="manualApplicationID" :options="manualApplications.map(item=>({value:item.id,label:item.name}))" @change="updateManualApplication(String($event))"/></a-form-item><a-form-item label="流水线" required><a-select v-model:value="manualWorkflowID" :options="applicationManualWorkflows(manualApplications.find(item=>item.id===manualApplicationID)).map(item=>({value:item.id,label:workflowDisplayName(item)}))"/></a-form-item></a-form></a-modal>
 <a-modal v-model:open="commitOpen" :title="t('manualRun.versionTitle')" :confirm-loading="saving" :ok-button-props="{disabled:!selectedSource||(manualExecutionMode==='code'?!selectedRef:!selectedArtifactID)}" :ok-text="t('manualRun.confirm')" @ok="executeCommit" @cancel="resetManualFlow">
  <a-form layout="vertical">
@@ -1722,34 +2159,49 @@ onBeforeUnmount(()=>{resetPlanExecution();clearInterval(releaseTimer);document.r
 .resource-section-stack{display:grid;gap:14px}
 .build-form-section,.application-form-section{margin-bottom:16px;padding:15px 15px 0;border:1px solid var(--edo-border);border-radius:12px;background:var(--edo-surface-soft)}.build-form-section>header,.application-form-section>header{margin-bottom:13px}.build-form-section>header strong,.build-form-section>header small,.application-form-section>header strong,.application-form-section>header small{display:block}.build-form-section>header strong,.application-form-section>header strong{font-size:14px}.build-form-section>header small,.application-form-section>header small{margin-top:3px;color:var(--edo-muted);font-size:11px}.resource-picker{display:flex;align-items:stretch;gap:8px}.resource-picker :deep(.ant-select){min-width:0;flex:1}.resource-create{width:34px;flex:0 0 34px;padding:0}.build-advanced{margin-bottom:12px;border:1px solid var(--edo-border);border-radius:12px;background:var(--edo-surface-soft)}.build-advanced :deep(.ant-collapse-header){align-items:center!important}.build-advanced :deep(.ant-collapse-content-box){padding-top:4px!important}.build-advanced-title{display:flex;align-items:baseline;gap:9px}.build-advanced-title small,.field-hint{color:var(--edo-muted);font-size:11px}.field-hint{display:block;margin-top:5px}.build-form-section :deep(.ant-alert),.application-form-section :deep(.ant-alert){margin-bottom:16px}
 .workflow-association-list{display:grid;gap:8px;margin-bottom:16px}.workflow-association-item{display:grid;min-width:0;align-items:center;grid-template-columns:34px minmax(0,1fr) auto;gap:9px;padding:9px;border:1px solid var(--edo-border);border-radius:10px;background:var(--edo-surface)}.workflow-association-icon{display:grid;width:34px;height:34px;place-items:center;border-radius:9px;color:var(--edo-primary);background:var(--edo-primary-soft)}.workflow-association-icon svg{width:17px}.workflow-association-copy{min-width:0}.workflow-association-copy strong,.workflow-association-copy small{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.workflow-association-copy strong{font-size:13px}.workflow-association-copy small{margin-top:2px;color:var(--edo-muted);font-size:11px}.workflow-association-actions{display:flex;align-items:center;gap:6px}.workflow-association-actions :deep(.ant-tag){margin-inline-end:0}.workflow-association-actions :deep(.ant-btn){display:inline-flex;align-items:center;gap:4px}.workflow-association-actions svg{width:13px}.workflow-association-empty{margin-bottom:16px;padding:15px;border:1px dashed var(--edo-border);border-radius:10px;color:var(--edo-muted);background:var(--edo-surface);text-align:center}.application-workflow-association .resource-picker :deep(.ant-btn){display:inline-flex;align-items:center;gap:5px}.application-workflow-association .resource-picker svg{width:14px}
-.image-path-preview{display:block;overflow-wrap:anywhere;color:var(--edo-text);font-size:12px}.image-path-alert .field-hint{line-height:1.55}
-.application-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(560px,100%),780px));justify-content:start;gap:14px}.application-card{--application-state:#9ba1ad;position:relative;min-width:0;overflow:hidden;padding:18px;transition:transform 180ms cubic-bezier(.2,0,0,1),border-color 180ms ease,box-shadow 180ms ease}.application-card::before{position:absolute;inset:0 auto 0 0;width:3px;background:var(--application-state);content:"";opacity:.8}.application-card:hover{transform:translateY(-1px);border-color:color-mix(in srgb,var(--application-state) 36%,var(--edo-border));box-shadow:0 10px 28px rgb(35 45 70 / 8%)}.application-card.is-linked{border-color:color-mix(in srgb,var(--edo-primary) 58%,var(--edo-border));box-shadow:0 0 0 3px color-mix(in srgb,var(--edo-primary) 12%,transparent),0 10px 28px rgb(35 45 70 / 8%)}.application-card.state-info{--application-state:#4f7df3}.application-card.state-success{--application-state:#2ab573}.application-card.state-warning{--application-state:#dfa126}.application-card.state-danger{--application-state:#ed5965}
-.application-head{display:flex;align-items:flex-start;justify-content:space-between;gap:20px}.application-identity{display:flex;min-width:0;align-items:center;gap:12px}.application-mark{display:grid;width:42px;height:42px;flex:0 0 42px;place-items:center;border-radius:12px;color:var(--edo-primary);background:var(--edo-primary-soft)}.application-mark svg{width:21px}.application-identity>div{min-width:0}.application-title{display:flex;align-items:center;gap:9px}.application-title h3{overflow:hidden;margin:0;font-size:17px;text-overflow:ellipsis;white-space:nowrap}.application-enabled{padding:2px 7px;border-radius:999px;color:#168b57;background:color-mix(in srgb,#2ab573 12%,var(--edo-surface));font-size:11px;white-space:nowrap}.application-enabled.inactive{color:var(--edo-muted);background:var(--edo-surface-soft)}.application-identity p{overflow:hidden;margin:3px 0 0;color:var(--edo-muted);text-overflow:ellipsis;white-space:nowrap}
-.application-state{display:flex;flex:0 0 auto;align-items:center;gap:9px;padding:7px 11px;border-radius:10px;color:var(--application-state);background:color-mix(in srgb,var(--application-state) 9%,var(--edo-surface))}.application-state>i,.application-sync>i{width:8px;height:8px;flex:0 0 8px;border-radius:50%;background:currentColor;box-shadow:0 0 0 4px color-mix(in srgb,currentColor 10%,transparent)}.application-card.is-live .application-state>i,.application-sync.is-live>i{animation:application-pulse 2s ease-out infinite}.application-state small,.application-state strong,.application-sync small,.application-sync strong{display:block}.application-state small,.application-sync small{color:var(--edo-muted);font-size:11px;font-weight:400}.application-state strong{font-size:13px}
-.application-run{display:grid;grid-template-columns:minmax(0,1.35fr) minmax(210px,.65fr);gap:12px;margin-top:17px;padding:14px;border:1px solid color-mix(in srgb,var(--application-state) 15%,var(--edo-border));border-radius:12px;background:linear-gradient(135deg,color-mix(in srgb,var(--application-state) 5%,var(--edo-surface-soft)),var(--edo-surface-soft))}.application-commit{min-width:0}.application-commit small,.application-commit strong,.application-commit span{display:block}.application-commit small,.application-node small{color:var(--edo-muted);font-size:11px}.application-commit strong{overflow:hidden;margin:4px 0 7px;font-size:14px;text-overflow:ellipsis;white-space:nowrap}.application-commit span{display:flex;align-items:center;gap:6px;color:var(--edo-muted);font-size:12px}.application-commit span svg{width:14px}.application-commit code{padding:1px 5px;border-radius:5px;background:var(--edo-surface);color:var(--edo-text)}.application-node{display:flex;min-width:0;align-items:center;gap:10px;padding-left:14px;border-left:1px solid var(--edo-border)}.application-node>span{display:grid;width:34px;height:34px;flex:0 0 34px;place-items:center;border-radius:10px;color:var(--application-state);background:var(--edo-surface)}.application-node svg{width:17px}.application-node>div{min-width:0}.application-node strong{display:block;overflow:hidden;margin-top:2px;text-overflow:ellipsis;white-space:nowrap}.application-node time{display:flex;align-items:center;gap:4px;margin-top:4px;color:var(--edo-muted);font-size:11px}.application-node time svg{width:12px}
-.application-links{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}.application-links>button{display:grid;grid-template-columns:minmax(0,1fr) 14px;min-width:0;padding:10px 10px 10px 11px;border:1px solid transparent;border-radius:9px;color:var(--edo-text);background:var(--edo-surface-soft);cursor:pointer;text-align:left;transition:transform 160ms ease,border-color 160ms ease,background 160ms ease}.application-links>button:hover{transform:translateY(-1px);border-color:color-mix(in srgb,var(--edo-primary) 28%,var(--edo-border));background:color-mix(in srgb,var(--edo-primary) 5%,var(--edo-surface))}.application-links>button:focus-visible{outline:2px solid color-mix(in srgb,var(--edo-primary) 48%,transparent);outline-offset:2px}.application-links button>span{display:flex;min-width:0;align-items:center;gap:5px;color:var(--edo-muted);font-size:11px}.application-links button>span svg{width:13px}.application-links button>strong{overflow:hidden;margin-top:4px;font-size:12px;text-overflow:ellipsis;white-space:nowrap}.application-links button>svg{grid-area:1/2/3/3;width:14px;align-self:center;color:var(--edo-muted);transition:transform 160ms ease}.application-links>button:hover>svg{transform:translateX(2px);color:var(--edo-primary)}.application-footer{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-top:14px;padding-top:14px;border-top:1px solid var(--edo-border)}.application-sync{display:flex;min-width:0;align-items:center;gap:8px;color:#9ba1ad}.application-sync.tone-info{color:#4f7df3}.application-sync.tone-success{color:#2ab573}.application-sync.tone-warning{color:#dfa126}.application-sync.tone-danger{color:#ed5965}.application-sync time{margin-left:4px;color:var(--edo-muted);font-size:11px;white-space:nowrap}.application-actions{display:flex;flex:0 0 auto;gap:7px}.application-actions :deep(.ant-btn){display:inline-flex;align-items:center;gap:5px}.application-actions svg{width:14px}.application-detail-toggle svg{transition:transform 180ms ease}.application-detail-toggle svg.expanded{transform:rotate(180deg)}.application-details{margin-top:13px;padding-top:13px;border-top:1px solid var(--edo-border)}.application-details-enter-active,.application-details-leave-active{transform-origin:top;transition:opacity 160ms ease,transform 180ms cubic-bezier(.2,0,0,1)}.application-details-enter-from,.application-details-leave-to{opacity:0;transform:translateY(-5px)}
-.application-links.single{grid-template-columns:1fr}.application-resource-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:9px;margin-top:9px}.application-resource-panel{min-width:0;padding:11px;border:1px solid var(--edo-border);border-radius:11px;background:var(--edo-surface-soft)}.application-resource-panel>header{display:flex;align-items:center;justify-content:space-between;margin-bottom:8px}.application-resource-panel>header>div{display:flex;min-width:0;align-items:center;gap:7px}.application-resource-panel>header svg{width:15px;color:var(--edo-primary)}.application-resource-panel>header span,.application-resource-panel>header strong,.application-resource-panel>header small{display:block}.application-resource-panel>header strong{font-size:12px}.application-resource-panel>header small{margin-top:1px;color:var(--edo-muted);font-size:10px}.application-workflow-list,.application-deployment-list{display:grid;max-height:360px;gap:6px;overflow-y:auto;scrollbar-width:thin}.application-workflow-list>button{display:grid;width:100%;min-width:0;align-items:center;grid-template-columns:30px minmax(0,1fr) auto 13px;gap:8px;padding:8px;border:1px solid transparent;border-radius:9px;color:var(--edo-text);background:var(--edo-surface);cursor:pointer;text-align:left;transition:border-color 160ms ease,transform 160ms ease}.application-workflow-list>button:hover{transform:translateY(-1px);border-color:color-mix(in srgb,var(--edo-primary) 28%,var(--edo-border))}.application-workflow-list>button:focus-visible{outline:2px solid color-mix(in srgb,var(--edo-primary) 48%,transparent);outline-offset:1px}.application-workflow-list>button>svg{width:13px;color:var(--edo-muted)}.application-workflow-icon,.application-deployment-icon{display:grid;width:30px;height:30px;place-items:center;border-radius:8px;color:var(--edo-primary);background:var(--edo-primary-soft)}.application-workflow-icon svg,.application-deployment-icon svg{width:15px}.application-workflow-copy{min-width:0}.application-workflow-copy>span{display:flex;min-width:0;align-items:center;gap:6px}.application-workflow-copy strong{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px}.application-workflow-copy i{padding:1px 5px;border-radius:999px;color:#168b57;background:color-mix(in srgb,#2ab573 11%,var(--edo-surface));font-size:9px;font-style:normal;white-space:nowrap}.application-workflow-copy i.inactive{color:var(--edo-muted);background:var(--edo-surface-soft)}.application-workflow-copy small{display:block;overflow:hidden;margin-top:2px;color:var(--edo-muted);font-size:10px;text-overflow:ellipsis;white-space:nowrap}.application-workflow-run,.application-deployment-state{display:grid;min-width:70px;grid-template-columns:7px auto;align-items:center;column-gap:5px;color:#949aa5}.application-workflow-run>i,.application-deployment-state>i{width:6px;height:6px;border-radius:50%;background:currentColor}.application-workflow-run strong,.application-deployment-state strong{font-size:10px;white-space:nowrap}.application-workflow-run time,.application-deployment-state time{grid-column:1/-1;margin-top:2px;color:var(--edo-muted);font-size:9px;white-space:nowrap}.application-workflow-run.tone-info,.application-deployment-state.tone-info{color:#4f7df3}.application-workflow-run.tone-success,.application-deployment-state.tone-success{color:#2ab573}.application-workflow-run.tone-warning,.application-deployment-state.tone-warning{color:#dfa126}.application-workflow-run.tone-danger,.application-deployment-state.tone-danger{color:#ed5965}.application-workflow-run.is-live>i,.application-deployment-state.is-live>i{animation:application-pulse 2s ease-out infinite}.application-deployment-item{min-width:0;overflow:hidden;border-radius:9px;background:var(--edo-surface)}.application-deployment-summary{display:grid;width:100%;min-width:0;align-items:center;grid-template-columns:30px minmax(0,1fr) auto 14px;gap:8px;padding:8px;border:0;color:var(--edo-text);background:transparent;cursor:pointer;text-align:left}.application-deployment-summary:hover{background:color-mix(in srgb,var(--edo-primary) 4%,var(--edo-surface))}.application-deployment-summary:focus-visible{outline:2px solid color-mix(in srgb,var(--edo-primary) 45%,transparent);outline-offset:-2px}.application-deployment-summary>svg{width:14px;color:var(--edo-muted);transition:transform 180ms ease}.application-deployment-summary>svg.expanded{transform:rotate(180deg)}.application-deployment-icon.kind-compose{color:#1677ff;background:color-mix(in srgb,#1677ff 10%,var(--edo-surface))}.application-deployment-icon.kind-kubernetes{color:#326ce5;background:color-mix(in srgb,#326ce5 10%,var(--edo-surface))}.application-deployment-icon.kind-script{color:#596273;background:color-mix(in srgb,#596273 10%,var(--edo-surface))}.application-deployment-copy{min-width:0}.application-deployment-copy strong,.application-deployment-copy small{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.application-deployment-copy strong{font-size:12px}.application-deployment-copy small{margin-top:2px;color:var(--edo-muted);font-size:10px}.application-deployment-details{padding:0 9px 9px 47px}.application-deployment-details dl{display:grid;gap:5px;margin:0;padding:8px 9px;border-radius:8px;background:var(--edo-surface-soft)}.application-deployment-details dl>div{display:grid;min-width:0;grid-template-columns:62px minmax(0,1fr);gap:8px}.application-deployment-details dt{color:var(--edo-muted);font-size:10px}.application-deployment-details dd{overflow:hidden;margin:0;text-overflow:ellipsis;white-space:nowrap;font-size:10px}.application-deployment-actions{display:flex;justify-content:flex-end;gap:6px;margin-top:7px}.application-deployment-actions :deep(.ant-btn){display:inline-flex;align-items:center;gap:4px}.application-deployment-actions svg{width:13px}.deployment-details-enter-active,.deployment-details-leave-active{transition:opacity 140ms ease,transform 160ms ease}.deployment-details-enter-from,.deployment-details-leave-to{opacity:0;transform:translateY(-3px)}.application-resource-empty{display:grid;min-height:46px;margin:0;place-items:center;color:var(--edo-muted);font-size:11px}
-.run-workspace{display:grid;min-height:620px;grid-template-columns:310px minmax(0,1fr);gap:8px;overflow:hidden;padding:8px;background:var(--edo-surface-soft)}
-.run-index,.run-detail,.run-detail-empty{min-width:0;border-radius:11px;background:var(--edo-surface)}.run-index{overflow:hidden}.run-index>header{display:flex;min-height:62px;align-items:center;justify-content:space-between;padding:10px 14px}.run-index>header strong,.run-index>header small{display:block}.run-index>header small{margin-top:1px;color:var(--edo-muted);font-size:11px}.run-index>header>span{padding:4px 8px;border-radius:999px;color:var(--edo-muted);background:var(--edo-surface-soft);font-size:11px}.run-index>header>span.active{color:var(--edo-primary);background:var(--edo-primary-soft)}
-.run-index-list{min-height:540px;max-height:calc(100vh - 242px);overflow-y:auto;padding:0 7px 9px;scrollbar-width:thin}.run-index-list>button{display:grid;width:100%;min-height:102px;align-items:center;grid-template-columns:10px minmax(0,1fr) 17px;gap:10px;margin:3px 0;padding:10px 9px;border:0;border-radius:11px;outline:0;color:var(--edo-text);background:transparent;cursor:pointer;text-align:left;transition:background-color 160ms ease,box-shadow 160ms ease}.run-index-list>button:hover{background:var(--edo-surface-soft)}.run-index-list>button:focus-visible{box-shadow:inset 0 0 0 2px color-mix(in srgb,var(--edo-primary) 45%,transparent)}.run-index-list>button.active{background:var(--edo-primary-soft);box-shadow:inset 3px 0 var(--edo-primary)}.run-index-list>button>svg{color:var(--edo-muted)}
-.run-dot{width:8px;height:8px;border-radius:50%;background:#a5aab3}.run-dot.running{background:var(--edo-primary);box-shadow:0 0 0 5px color-mix(in srgb,var(--edo-primary) 11%,transparent)}.run-dot.awaiting_approval{background:#dfa03c}.run-dot.succeeded{background:#2ab573}.run-dot.failed,.run-dot.blocked{background:#ed5965}.run-dot.canceled{background:#9299a6}.run-index-copy{min-width:0}.run-index-copy strong,.run-index-copy>span,.run-index-copy small{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.run-index-copy strong{font-size:13px}.run-index-copy>span{margin-top:3px;color:var(--edo-text);font-size:12px}.run-index-copy small{margin-top:3px;color:var(--edo-muted);font-size:11px}.run-index-time{display:flex;min-width:0;align-items:center;gap:4px;margin-top:4px;color:var(--edo-muted);font-size:10px;line-height:1.25}.run-index-time svg{width:11px;flex:0 0 11px}.run-index-time span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.run-index-time em{flex:0 0 auto;color:color-mix(in srgb,var(--edo-primary) 76%,var(--edo-muted));font-style:normal;white-space:nowrap}
-.run-detail{padding:20px}.run-detail-heading{display:flex;align-items:center;justify-content:space-between;gap:14px}.run-detail-heading>div{display:flex;min-width:0;align-items:center;gap:11px}.run-detail-heading small{color:var(--edo-muted);font-size:11px}.run-detail-heading h3{overflow:hidden;margin:1px 0 0;text-overflow:ellipsis;white-space:nowrap;font-size:19px}.run-status-orb{position:relative;display:grid;width:40px;height:40px;flex:0 0 40px;place-items:center;border-radius:12px;background:var(--edo-surface-soft)}.run-status-orb i{width:10px;height:10px;border-radius:50%;background:#9aa1ad}.run-status-orb.running{background:var(--edo-primary-soft)}.run-status-orb.running i{background:var(--edo-primary)}.run-status-orb.running::after{position:absolute;inset:7px;border:1px solid color-mix(in srgb,var(--edo-primary) 42%,transparent);border-radius:8px;content:"";animation:run-breathe 1.8s ease-in-out infinite}.run-status-orb.awaiting_approval i{background:#dfa03c}.run-status-orb.succeeded i{background:#2ab573}.run-status-orb.failed i,.run-status-orb.blocked i{background:#ed5965}
-.run-commit-panel{display:grid;align-items:center;grid-template-columns:22px minmax(0,1fr) auto;gap:11px;margin:18px 0 14px;padding:13px 14px;border:1px solid var(--edo-border);border-radius:12px;background:var(--edo-surface-soft)}.run-commit-panel>svg{color:var(--edo-primary)}.run-commit-panel>div{min-width:0}.run-commit-panel small,.run-commit-panel strong,.run-commit-panel span{display:block}.run-commit-panel small{color:var(--edo-muted);font-size:10px}.run-commit-panel strong{overflow:hidden;margin:2px 0;text-overflow:ellipsis;white-space:nowrap}.run-commit-panel span,.run-commit-panel time{color:var(--edo-muted);font-size:11px}.run-commit-panel code{color:var(--edo-text)}
-.run-facts{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px;margin:14px 0 0}.run-facts>div{min-width:0;padding:11px 12px;border:1px solid var(--edo-border);border-radius:10px;background:var(--edo-surface-soft)}.run-facts dt{color:var(--edo-muted);font-size:10px}.run-facts dd{overflow:hidden;margin:4px 0 0;text-overflow:ellipsis;white-space:nowrap;font-size:12px}.run-facts dd :deep(.ant-btn-link){max-width:100%;height:auto;padding:0;font-size:12px}.run-facts dd :deep(.ant-btn-link>span){overflow:hidden;text-overflow:ellipsis}.run-actions{display:flex;flex-wrap:wrap;gap:7px;margin-top:15px}.run-detail-empty{display:grid;place-items:center}
+.image-path-preview{display:block;overflow-wrap:anywhere;color:var(--edo-text);font-size:12px}.image-path-alert .field-hint{line-height:1.55}.application-deployment-list{display:grid;max-height:360px;gap:6px;overflow-y:auto;scrollbar-width:thin}.application-deployment-icon{display:grid;width:30px;height:30px;place-items:center;border-radius:8px;color:var(--edo-primary);background:var(--edo-primary-soft)}.application-deployment-icon svg{width:15px}.application-deployment-state{display:grid;min-width:70px;grid-template-columns:7px auto;align-items:center;column-gap:5px;color:#949aa5}.application-deployment-state>i{width:6px;height:6px;border-radius:50%;background:currentColor}.application-deployment-state strong{font-size:10px;white-space:nowrap}.application-deployment-state time{grid-column:1/-1;margin-top:2px;color:var(--edo-muted);font-size:9px;white-space:nowrap}.application-deployment-state.tone-info{color:#4f7df3}.application-deployment-state.tone-success{color:#2ab573}.application-deployment-state.tone-warning{color:#dfa126}.application-deployment-state.tone-danger{color:#ed5965}.application-deployment-state.is-live>i{animation:application-pulse 2s ease-out infinite}.application-deployment-item{min-width:0;overflow:hidden;border-radius:9px;background:var(--edo-surface)}.application-deployment-summary{display:grid;width:100%;min-width:0;align-items:center;grid-template-columns:30px minmax(0,1fr) auto 14px;gap:8px;padding:8px;border:0;color:var(--edo-text);background:transparent;cursor:pointer;text-align:left}.application-deployment-summary:hover{background:color-mix(in srgb,var(--edo-primary) 4%,var(--edo-surface))}.application-deployment-summary:focus-visible{outline:2px solid color-mix(in srgb,var(--edo-primary) 45%,transparent);outline-offset:-2px}.application-deployment-summary>svg{width:14px;color:var(--edo-muted);transition:transform 180ms ease}.application-deployment-summary>svg.expanded{transform:rotate(180deg)}.application-deployment-icon.kind-compose{color:#1677ff;background:color-mix(in srgb,#1677ff 10%,var(--edo-surface))}.application-deployment-icon.kind-kubernetes{color:#326ce5;background:color-mix(in srgb,#326ce5 10%,var(--edo-surface))}.application-deployment-icon.kind-script{color:#596273;background:color-mix(in srgb,#596273 10%,var(--edo-surface))}.application-deployment-copy{min-width:0}.application-deployment-copy strong,.application-deployment-copy small{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.application-deployment-copy strong{font-size:12px}.application-deployment-copy small{margin-top:2px;color:var(--edo-muted);font-size:10px}.application-deployment-details{padding:0 9px 9px 47px}.application-deployment-details dl{display:grid;gap:5px;margin:0;padding:8px 9px;border-radius:8px;background:var(--edo-surface-soft)}.application-deployment-details dl>div{display:grid;min-width:0;grid-template-columns:62px minmax(0,1fr);gap:8px}.application-deployment-details dt{color:var(--edo-muted);font-size:10px}.application-deployment-details dd{overflow:hidden;margin:0;text-overflow:ellipsis;white-space:nowrap;font-size:10px}.application-deployment-actions{display:flex;justify-content:flex-end;gap:6px;margin-top:7px}.application-deployment-actions :deep(.ant-btn){display:inline-flex;align-items:center;gap:4px}.application-deployment-actions svg{width:13px}.deployment-details-enter-active,.deployment-details-leave-active{transition:opacity 140ms ease,transform 160ms ease}.deployment-details-enter-from,.deployment-details-leave-to{opacity:0;transform:translateY(-3px)}
+.run-workspace{min-width:0;overflow:hidden;background:var(--edo-surface)}
+.run-list-heading{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:10px 14px;border-bottom:1px solid var(--edo-border)}
+.run-list-heading>span{display:flex;align-items:center;gap:12px;font-size:13px}.run-list-heading small{color:var(--edo-muted);font-size:12px}
+.run-list-controls{display:flex;align-items:center;gap:12px}
+.run-table :deep(.ant-table){font-size:13px}.run-table :deep(.ant-table-thead>tr>th){padding:10px;color:var(--edo-muted);background:var(--edo-surface-soft);font-weight:500;white-space:nowrap}
+.run-table :deep(.ant-table-tbody>tr.ant-table-row>td){height:64px;padding:8px 10px;border-bottom:1px solid var(--edo-border);cursor:pointer}
+.run-table :deep(.ant-table-row){scroll-margin-block:102px 16px}
+.run-table :deep(.ant-table-tbody>tr.run-row-expanded>td){background:color-mix(in srgb,var(--edo-primary) 5%,var(--edo-surface));border-bottom-color:color-mix(in srgb,var(--edo-primary) 22%,var(--edo-border))}
+.run-table :deep(.ant-table-tbody>tr.run-row-current>td){background:var(--edo-primary-soft)}
+.run-table :deep(.run-row-expanded>td:first-child){box-shadow:inset 3px 0 color-mix(in srgb,var(--edo-primary) 40%,var(--edo-border))}
+.run-table :deep(.run-row-current>td:first-child){box-shadow:inset 3px 0 var(--edo-primary)}
+.run-table :deep(.ant-table-expanded-row>td){padding:10px 12px 14px 36px;border-bottom:2px solid var(--edo-border);background:color-mix(in srgb,var(--edo-border) 45%,var(--edo-bg))}
+.run-table :deep(.ant-table-pagination){margin:16px;row-gap:10px}.run-table :deep(.ant-tag){margin-inline-end:0}
+.run-row-toggle{display:grid;width:28px;height:28px;place-items:center;padding:0;border:0;border-radius:6px;color:var(--edo-muted);background:transparent;cursor:pointer}
+.run-row-toggle:hover{color:var(--edo-primary);background:var(--edo-primary-soft)}.run-row-toggle:focus-visible,.run-resource-link:focus-visible{outline:2px solid var(--edo-primary);outline-offset:2px}
+.run-row-toggle svg{transition:transform 160ms ease}.run-row-toggle svg.expanded{transform:rotate(90deg)}
+.run-resource-link{display:-webkit-box;max-width:100%;overflow:hidden;padding:2px 0;border:0;color:var(--edo-primary);background:transparent;cursor:pointer;font:inherit;line-height:1.5;text-align:left;overflow-wrap:anywhere;-webkit-box-orient:vertical;-webkit-line-clamp:2}
+.run-resource-link:hover{text-decoration:underline}.run-resource-link:disabled{color:var(--edo-muted);cursor:default;text-decoration:none}
+.run-cell-title,.run-cell-secondary{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.run-cell-title{font-weight:600}
+.run-cell-muted,.run-cell-secondary{color:var(--edo-muted);font-size:12px}.run-cell-secondary{margin-top:3px}.run-cell-time{white-space:nowrap;font-variant-numeric:tabular-nums}
+.run-detail{min-width:0;padding:12px;border:1px solid var(--edo-border);border-radius:8px;background:var(--edo-surface);box-shadow:var(--edo-shadow)}
+.run-detail.is-current{border-color:color-mix(in srgb,var(--edo-primary) 55%,var(--edo-border))}
+.run-detail-heading{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:10px;padding-bottom:8px;border-bottom:1px solid var(--edo-border)}
+.run-detail-identity{display:flex;flex-wrap:wrap;align-items:center;gap:8px 14px;min-width:0;font-size:13px}
+.run-detail-label{padding:3px 8px;border-radius:5px;color:var(--edo-muted);background:var(--edo-surface-soft);font-weight:600}
+.is-current .run-detail-label{color:var(--edo-primary);background:var(--edo-primary-soft)}
+.run-detail-identity time{font-weight:600;font-variant-numeric:tabular-nums}.run-detail-version{color:var(--edo-muted);overflow-wrap:anywhere}
+.run-detail-heading :deep(.ant-btn){display:inline-flex;flex-shrink:0;align-items:center;gap:5px}.run-collapse-icon{transform:rotate(180deg)}
+.run-facts{display:grid;grid-template-columns:minmax(150px,.7fr) minmax(200px,1.4fr) minmax(240px,1fr);gap:8px;margin:10px 0 0}
+.run-facts>div{min-width:0;padding:8px 10px;border:1px solid var(--edo-border);border-radius:6px;background:var(--edo-surface)}
+.run-facts dt{color:var(--edo-muted);font-size:12px}.run-facts dd{overflow-wrap:anywhere;margin:3px 0 0;font-size:12px}
+.run-actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:10px}.run-actions .run-collapse{display:inline-flex;align-items:center;gap:5px;margin-left:auto;color:var(--edo-muted)}.run-collapse svg{transform:rotate(180deg)}
+.run-group-caption{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:0 0 9px}.run-group-caption>span{display:flex;align-items:center;gap:6px;font-weight:600}.run-group-caption small{color:var(--edo-muted);font-size:12px}
+.run-group-counts{display:flex;flex-wrap:wrap;gap:2px 8px;font-size:12px;line-height:1.7}.run-group-counts>span{white-space:nowrap}.run-group-item{overflow:hidden;margin-top:6px;border:1px solid var(--edo-border);border-radius:8px;background:var(--edo-surface)}
+.run-group-row{display:grid;min-height:64px;grid-template-columns:28px minmax(100px,.8fr) minmax(150px,1fr) minmax(180px,1.4fr) 130px 170px;align-items:center;gap:10px;padding:8px 10px;cursor:pointer;scroll-margin-block:102px 16px}
+.run-group-row>div{min-width:0}.run-group-row small{color:var(--edo-muted);font-size:12px}.run-group-row:hover{background:var(--edo-surface-soft)}.run-group-row.is-current{background:var(--edo-primary-soft);box-shadow:inset 3px 0 var(--edo-primary)}
+.run-group-item>.run-detail{margin:0 10px 10px 38px;box-shadow:none}.run-group-item.is-open{border-color:color-mix(in srgb,var(--edo-primary) 30%,var(--edo-border))}
+@media(prefers-reduced-motion:reduce){.run-row-toggle svg{transition:none}}
 .manual-release-note{margin-bottom:16px}
-@keyframes application-pulse{0%{box-shadow:0 0 0 0 color-mix(in srgb,currentColor 32%,transparent)}70%{box-shadow:0 0 0 7px transparent}100%{box-shadow:0 0 0 0 transparent}}@keyframes run-breathe{0%,100%{opacity:.45;transform:scale(.86)}50%{opacity:1;transform:scale(1.08)}}
-@media(max-width:1100px){.application-links{grid-template-columns:repeat(2,minmax(0,1fr))}.application-footer{align-items:flex-start;flex-direction:column}.application-actions{width:100%;justify-content:flex-end}.run-workspace{grid-template-columns:270px minmax(0,1fr)}.run-facts{grid-template-columns:repeat(2,minmax(0,1fr))}}
-@media(max-width:820px){.application-resource-grid{grid-template-columns:1fr}.run-workspace{grid-template-columns:1fr}.run-index-list{display:flex;min-height:0;max-height:none;overflow-x:auto;overflow-y:hidden;padding:0 7px 8px}.run-index-list>button{width:270px;flex:0 0 270px}.run-detail{padding:16px}}
-@media(max-width:640px){.form-grid{grid-template-columns:1fr}.span2{grid-column:auto}.build-advanced-title{align-items:flex-start;flex-direction:column;gap:2px}.workflow-association-item{align-items:start;grid-template-columns:34px minmax(0,1fr)}.workflow-association-actions{grid-column:2;flex-wrap:wrap}.application-head,.application-footer{align-items:flex-start;flex-direction:column}.application-state{align-self:stretch}.application-run{grid-template-columns:1fr}.application-node{padding-top:12px;padding-left:0;border-top:1px solid var(--edo-border);border-left:0}.application-actions{justify-content:flex-start;flex-wrap:wrap}.application-sync{flex-wrap:wrap}.run-commit-panel{align-items:start;grid-template-columns:22px minmax(0,1fr)}.run-commit-panel time{grid-column:2}.run-facts{grid-template-columns:1fr}.run-detail-heading{align-items:flex-start}.run-detail-heading h3{font-size:17px}.release-plan-resource-item>header{grid-template-columns:36px minmax(0,1fr)}.release-plan-resource-item>header .application-deployment-state{grid-column:2}.release-plan-resource-item>dl{grid-template-columns:1fr}}
-@media(max-width:480px){.application-links{grid-template-columns:1fr}.application-actions :deep(.ant-btn){flex:1}.application-sync time{width:100%;margin-left:16px}}
-.application-grid{grid-template-columns:minmax(0,1fr);gap:8px}.application-card{padding:0;border-radius:11px;transform:none}.application-card:hover{transform:none;box-shadow:0 5px 18px rgb(35 45 70 / 6%)}
-.application-summary-row{display:grid;min-width:0;grid-template-columns:26px minmax(220px,1.05fr) minmax(260px,1.2fr) minmax(130px,.55fr) minmax(170px,.7fr) auto;align-items:center;gap:12px;padding:10px 12px}.application-row-toggle{display:grid;width:26px;height:26px;place-items:center;padding:0;border:0;border-radius:7px;color:var(--edo-muted);background:transparent;cursor:pointer}.application-row-toggle:hover{color:var(--edo-primary);background:var(--edo-primary-soft)}.application-row-toggle:focus-visible{outline:2px solid color-mix(in srgb,var(--edo-primary) 45%,transparent)}.application-row-toggle svg{width:15px;transition:transform 180ms ease}.application-row-toggle svg.expanded{transform:rotate(90deg)}
-.application-summary-row .application-identity{gap:9px}.application-summary-row .application-mark{width:34px;height:34px;flex-basis:34px;border-radius:9px}.application-summary-row .application-mark svg{width:17px}.application-summary-row .application-title{min-width:0;gap:6px}.application-summary-row .application-title h3{font-size:14px}.application-summary-row .application-enabled{padding:1px 5px;font-size:9px}.application-summary-row .application-identity p{margin-top:2px;font-size:10px}.application-inline-link{display:inline-flex;min-width:0;align-items:center;gap:3px;padding:2px 5px;border:0;border-radius:6px;color:var(--edo-primary);background:var(--edo-primary-soft);cursor:pointer;font-size:10px;white-space:nowrap}.application-inline-link:hover{background:color-mix(in srgb,var(--edo-primary) 16%,var(--edo-surface))}.application-inline-link:disabled{cursor:not-allowed;opacity:.45}.application-inline-link svg{width:11px;flex:0 0 11px}
-.application-latest-run{min-width:0;padding-left:12px;border-left:1px solid var(--edo-border)}.application-section-heading{display:flex;align-items:center;justify-content:space-between;gap:7px}.application-section-heading>small{color:var(--edo-muted);font-size:10px}.application-latest-run>strong{display:block;overflow:hidden;margin-top:2px;text-overflow:ellipsis;white-space:nowrap;font-size:12px}.application-latest-run>strong>span{color:var(--edo-muted);font-size:10px;font-weight:500}.application-latest-run>span{display:flex;min-width:0;align-items:center;gap:4px;overflow:hidden;margin-top:3px;color:var(--edo-muted);font-size:10px;white-space:nowrap}.application-latest-run>span>svg{width:11px;flex:0 0 11px}.application-latest-run time{display:inline-flex;min-width:0;align-items:center;gap:3px;overflow:hidden;margin-left:5px;text-overflow:ellipsis}.application-latest-run time svg{width:11px;flex:0 0 11px}
-.application-current-run{min-width:0}.application-current-run .application-state{gap:6px;padding:0;background:transparent}.application-current-run .application-state>i{width:7px;height:7px;flex-basis:7px}.application-current-run .application-state small{font-size:9px}.application-current-run .application-state strong{font-size:11px}.application-current-run>span{display:block;overflow:hidden;margin-top:3px;color:var(--edo-muted);font-size:10px;text-overflow:ellipsis;white-space:nowrap}.application-summary-row .application-sync{display:grid;grid-template-columns:7px minmax(0,1fr);gap:0 6px}.application-summary-row .application-sync>i{width:7px;height:7px;flex-basis:7px;margin-top:5px}.application-summary-row .application-sync small{font-size:9px}.application-summary-row .application-sync strong{font-size:11px}.application-summary-row .application-sync time{grid-column:2;overflow:hidden;margin:2px 0 0;font-size:9px;text-overflow:ellipsis;white-space:nowrap}.application-summary-row .application-actions{width:auto;justify-content:flex-end;gap:5px}.application-summary-row .application-actions :deep(.ant-btn){height:28px;padding-inline:8px;font-size:11px}.application-summary-row .application-actions svg{width:12px}
-.application-details{margin:0;padding:10px 12px 12px 50px;border-top:1px solid var(--edo-border);background:color-mix(in srgb,var(--edo-surface-soft) 55%,var(--edo-surface))}.application-details .application-resource-grid{margin-top:0}.application-details .application-resource-panel{padding:9px;border-radius:9px;background:var(--edo-surface)}
-@media(max-width:1180px){.application-summary-row{grid-template-columns:26px minmax(220px,1fr) minmax(240px,1fr) minmax(120px,.55fr) auto}.application-summary-row>.application-sync{display:none}}
-@media(max-width:900px){.application-summary-row{grid-template-columns:26px minmax(0,1fr) auto;align-items:start}.application-summary-row>.application-latest-run{grid-column:2;padding:8px 0 0;border-top:1px solid var(--edo-border);border-left:0}.application-summary-row>.application-current-run{grid-column:3;grid-row:1}.application-summary-row>.application-actions{grid-column:3;grid-row:2}.application-details{padding-left:12px}.application-resource-grid{grid-template-columns:1fr}}
-@media(max-width:620px){.application-summary-row{grid-template-columns:24px minmax(0,1fr)}.application-summary-row>.application-current-run,.application-summary-row>.application-actions{grid-column:2;grid-row:auto}.application-summary-row>.application-actions{justify-content:flex-start;flex-wrap:wrap}.application-summary-row .application-title{align-items:flex-start;flex-wrap:wrap}.application-latest-run time{display:none}}
-@media(prefers-reduced-motion:reduce){.application-card.is-live .application-state>i,.application-sync.is-live>i,.application-workflow-run.is-live>i,.application-deployment-state.is-live>i,.run-status-orb.running::after{animation:none}}
+@keyframes application-pulse{0%{box-shadow:0 0 0 0 color-mix(in srgb,currentColor 32%,transparent)}70%{box-shadow:0 0 0 7px transparent}100%{box-shadow:0 0 0 0 transparent}}
+@media(max-width:1100px){.run-facts{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media(max-width:640px){.form-grid{grid-template-columns:1fr}.span2{grid-column:auto}.build-advanced-title{align-items:flex-start;flex-direction:column;gap:2px}.workflow-association-item{align-items:start;grid-template-columns:34px minmax(0,1fr)}.workflow-association-actions{grid-column:2;flex-wrap:wrap}.run-facts{grid-template-columns:1fr}.release-plan-resource-item>header{grid-template-columns:36px minmax(0,1fr)}.release-plan-resource-item>header .application-deployment-state{grid-column:2}.release-plan-resource-item>dl{grid-template-columns:1fr}}
+@media(prefers-reduced-motion:reduce){.application-deployment-state.is-live>i{animation:none}}
 </style>
+<style scoped src="../styles/application-workspace.css"></style>

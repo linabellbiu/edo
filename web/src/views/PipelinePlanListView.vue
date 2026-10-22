@@ -7,6 +7,10 @@ import { Copy, GitBranch, Pencil, Power, Trash2 } from 'lucide-vue-next'
 import client from '@/api/client'
 import { apiErrorMessage } from '@/api/resources'
 import PageToolbar from '@/components/PageToolbar.vue'
+import ResourceDetailDrawer from '@/components/ResourceDetailDrawer.vue'
+import ResourceRowActions from '@/components/ResourceRowActions.vue'
+import { useResourceList } from '@/utils/resourceList'
+import { useI18n } from 'vue-i18n'
 import WorkflowPresetModal from '@/components/WorkflowPresetModal.vue'
 import { useAuthStore } from '@/stores/auth'
 import type { Workflow, WorkflowNode, WorkflowStage } from '@/types/pipeline'
@@ -28,11 +32,13 @@ interface ApplicationReference {
   workflows?: Workflow[]
 }
 
+const { t } = useI18n()
 const route = useRoute()
 const router = useRouter()
 const auth = useAuthStore()
 const templates = ref<WorkflowTemplate[]>([])
 const applications = ref<ApplicationReference[]>([])
+const { detailOpen, selected, pagination, openDetails, changePage } = useResourceList(() => templates.value)
 const loading = ref(false)
 const busyID = ref('')
 const presetOpen = ref(false)
@@ -187,7 +193,7 @@ async function openCreatedTemplate(result: import('@/types/pipeline').WorkflowTe
         :columns="columns"
         :data-source="templates"
         :loading="loading"
-        :pagination="{ pageSize: 12, hideOnSinglePage: true }"
+        :pagination="pagination" @change="changePage" class="resource-list-table" table-layout="fixed"
         :scroll="{ x: 1100 }"
         row-key="id"
       >
@@ -195,7 +201,7 @@ async function openCreatedTemplate(result: import('@/types/pipeline').WorkflowTe
           <template v-if="column.key === 'name'">
             <div class="plan-name-cell">
               <span class="plan-icon"><GitBranch :size="17" /></span>
-              <div><strong>{{ record.name }}</strong><small>{{ record.description || '暂未填写流水线说明' }}</small></div>
+              <div><button class="resource-name" @click="openDetails(record)">{{ record.name }}</button><small>{{ record.description || '暂未填写流水线说明' }}</small></div>
             </div>
           </template>
           <template v-else-if="column.key === 'status'">
@@ -206,20 +212,16 @@ async function openCreatedTemplate(result: import('@/types/pipeline').WorkflowTe
           <template v-else-if="column.key === 'usage'">{{ usageCount.get(record.id) || 0 }} 个</template>
           <template v-else-if="column.key === 'updated_at'">{{ formatTime(record.updated_at) }}</template>
           <template v-else-if="column.key === 'actions'">
-            <a-space :size="2">
-              <a-button v-if="canUpdate" type="link" size="small" @click="router.push(`/pipeline-plans/editor?template=${record.id}`)"><Pencil :size="14" />编辑</a-button>
-              <a-dropdown v-if="canCreate || canUpdate || canDelete" placement="bottomRight">
-                <a-button type="text" size="small" :loading="busyID === record.id">更多</a-button>
-                <template #overlay>
-                  <a-menu>
-                    <a-menu-item v-if="canCreate" @click="duplicate(record)"><Copy :size="14" />复制</a-menu-item>
-                    <a-menu-item v-if="canUpdate" @click="setActive(record, !record.is_active)"><Power :size="14" />{{ record.is_active ? '停用' : '启用' }}</a-menu-item>
-                    <a-menu-divider v-if="canDelete && (canCreate || canUpdate)" />
-                    <a-menu-item v-if="canDelete" danger @click="remove(record)"><Trash2 :size="14" />删除</a-menu-item>
-                  </a-menu>
-                </template>
-              </a-dropdown>
-            </a-space>
+            <ResourceRowActions :more="canCreate || canUpdate || canDelete" :loading="busyID === record.id">
+              <a-button size="small" @click="openDetails(record)">{{ t('resourceList.details') }}</a-button>
+              <a-button v-if="canUpdate" size="small" @click="router.push(`/pipeline-plans/editor?template=${record.id}`)">{{ t('planList.edit') }}</a-button>
+              <template #more>
+                <a-menu-item v-if="canCreate" @click="duplicate(record)"><Copy :size="14" />复制</a-menu-item>
+                <a-menu-item v-if="canUpdate" @click="setActive(record, !record.is_active)">{{ record.is_active ? t('planList.disable') : t('planList.enable') }}</a-menu-item>
+                <a-menu-divider v-if="canDelete" />
+                <a-menu-item v-if="canDelete" danger @click="remove(record)">{{ t('planList.remove') }}</a-menu-item>
+              </template>
+            </ResourceRowActions>
           </template>
         </template>
         <template #emptyText>
@@ -229,6 +231,24 @@ async function openCreatedTemplate(result: import('@/types/pipeline').WorkflowTe
         </template>
       </a-table>
     </div>
+    <ResourceDetailDrawer v-model:open="detailOpen" :title="selected?.name">
+      <template #actions><a-tag v-if="selected" :color="selected.is_active ? 'success' : 'default'">{{ selected.is_active ? t('planList.enabled') : '草稿' }}</a-tag><a-button v-if="selected && canUpdate" size="small" @click="router.push(`/pipeline-plans/editor?template=${selected.id}`)">{{ t('planList.edit') }}</a-button></template>
+      <section v-if="selected" class="resource-detail-section">
+        <h4>{{ t('resourceList.basic') }}</h4>
+        <dl class="resource-facts">
+          <div><dt>{{ t('resourceList.name') }}</dt><dd>{{ selected.name }}</dd></div>
+          <div><dt>阶段 / 任务</dt><dd>{{ selected.stages.length }} / {{ selected.stages.reduce((count, stage) => count + stage.tasks.length, 0) }}</dd></div>
+          <div><dt>使用应用</dt><dd>{{ usageCount.get(selected.id) || 0 }}</dd></div>
+          <div><dt>{{ t('resourceList.updated') }}</dt><dd>{{ formatTime(selected.updated_at) }}</dd></div>
+          <div class="resource-facts-wide"><dt>{{ t('resourceList.description') }}</dt><dd>{{ selected.description || '—' }}</dd></div>
+        </dl>
+      </section>
+      <section v-if="selected" class="resource-detail-section">
+        <h4>执行顺序</h4>
+        <div class="pipeline-detail-stage"><strong>代码源</strong><span>{{ selected.source.name || '应用入口' }}</span></div>
+        <div v-for="(stage, index) in selected.stages" :key="stage.id" class="pipeline-detail-stage"><strong>{{ index + 1 }}. {{ stage.name }}</strong><div class="resource-inline-tags"><a-tag v-for="task in stage.tasks" :key="task.id">{{ task.name }}</a-tag></div></div>
+      </section>
+    </ResourceDetailDrawer>
     <WorkflowPresetModal v-model:open="presetOpen" :can-create="canCreate" :can-execute="canExecute" @created="openCreatedTemplate" />
   </section>
 </template>
@@ -243,4 +263,5 @@ async function openCreatedTemplate(result: import('@/types/pipeline').WorkflowTe
 .plan-name-cell small { max-width: 260px; margin-top: 2px; color: var(--edo-muted); font-size: 12px; }
 .plan-icon { display: grid; width: 34px; height: 34px; flex: 0 0 34px; place-items: center; border-radius: 8px; color: var(--edo-primary); background: var(--edo-primary-soft); }
 :deep(.ant-btn svg), :deep(.ant-menu-item svg) { margin-right: 5px; vertical-align: -2px; }
+.pipeline-detail-stage{display:grid;grid-template-columns:180px minmax(0,1fr);gap:16px;align-items:center;min-height:52px;padding:10px 0;border-bottom:1px solid var(--edo-border);font-size:13px}.plan-icon{width:26px;height:26px;flex-basis:26px;border-radius:5px}.plan-name-cell{min-width:0}
 </style>

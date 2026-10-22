@@ -39,7 +39,12 @@ const routes: RouteRecordRaw[] = [
 const router = createRouter({
   history: createWebHistory(),
   routes,
-  scrollBehavior: () => ({ top: 0 }),
+  scrollBehavior: (to, from, savedPosition) => {
+    if (savedPosition) return savedPosition
+    // 运行详情通过查询参数定位，行内交互不能被当成页面切换而回顶。
+    if (to.path === '/release-plans' && from.path === to.path && to.query.view === 'runs' && from.query.view === 'runs') return false
+    return { top: 0 }
+  },
 })
 
 router.beforeEach(async (to) => {

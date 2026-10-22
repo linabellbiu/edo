@@ -11,11 +11,14 @@ import (
 	"edo/internal/deployment"
 	"edo/internal/model"
 	"edo/internal/pipeline"
+	"edo/internal/realtime"
 )
 
 type pipelineHandler struct {
-	service *pipeline.Service
-	logger  *slog.Logger
+	realtime   *realtime.Bus
+	streamAuth func(*gin.Context) func() bool
+	service    *pipeline.Service
+	logger     *slog.Logger
 }
 
 type applicationRequest struct {

@@ -2,6 +2,23 @@ import { createI18n } from 'vue-i18n'
 
 export const messages = {
   'zh-CN': {
+    resourceList: { details: '详情', more: '更多操作', basic: '基本信息', configuration: '配置信息', name: '名称', description: '说明', hosts: '所属主机', hostCount: '主机数量', capabilities: '主机能力', environmentEmpty: '还没有环境', status: '状态', resources: '运行资源', created: '创建时间', updated: '最近更新', close: '关闭', artifacts: '构建制品', workflows: '关联流水线', instances: '部署实例' },
+    buildPlanWorkspace: { entry: '构建入口', directory: '执行目录', artifact: '构建产物', storage: '存储位置', architecture: '目标架构', followHost: '自动跟随部署主机', timeout: '构建超时', updated: '最近修改', artifacts: '构建制品', empty: '还没有构建方案' },
+    deploymentList: { description: '配置部署方式、环境和执行参数，流水线部署任务直接选择方案。', environment: '环境', configuration: '部署配置', noEnvironment: '未配置环境', environmentUnavailable: '环境信息不可用', noLocation: '尚未配置运行位置', locationUnavailable: '连接信息不可用', localExecution: '本地执行', directory: '目录：{value}', homeDirectory: '执行用户主目录', savedScript: '执行已保存的部署脚本', service: '服务：{value}', notConfigured: '未配置', composeFile: '内联 Compose YAML', workload: 'Deployment：{value}', kubernetesScope: '命名空间：{namespace}；容器：{container}', customCommand: '自定义部署命令', customCommandHint: '通过已保存的命令配置容器', ports: '端口：{value}', noPorts: '未配置端口映射', configCounts: '环境变量：{variables} 个；命名卷：{volumes} 个' },
+    planList: { hint: '点击记录展开详情，可同时查看多条', total: '共 {count} 条', expand: '展开详情', collapse: '收起详情', status: '状态', actions: '操作', updated: '最近更新', details: '方案详情', deploymentName: '部署方案', releaseName: '发布计划', mode: '执行方式', destination: '运行位置', object: '更新对象', directory: '执行目录', timeout: '最长执行时间', seconds: '{count} 秒', timeoutHint: '超过时间后停止本次部署并标记失败。', descriptionEmpty: '尚未填写说明', deploymentEmpty: '还没有部署方案', enabled: '已启用', disabled: '已停用', incomplete: '待补全', enable: '启用', disable: '停用', edit: '编辑', remove: '删除', applications: '发布应用', applicationOverflow: '另 {count} 个', manualCount: '{count} 个可手动执行' },
+    applicationForm: { createRepository: '创建代码仓库', backToApplication: '返回应用', repositoryCreated: '代码仓库已创建并选中' },
+    repositoryForm: {
+      gitAuthentication: 'Git 认证', gitCredential: 'Git 凭据', gitCredentialHint: '用于拉取代码和查询分支、Tag；只能选择你自己保存的凭据。',
+      apiToken: '平台 API 令牌（可选）', createApiToken: '创建平台 API 令牌', apiReusePlaceholder: '留空则复用 Git 凭据中的 Token', apiTokenPlaceholder: '需要读取私有 PR/MR 时选择 Token',
+      apiReuseHint: '用于读取 PR/MR 信息。留空会自动复用上面的 Git Token；只有需要使用其他 API Token 时才单独选择。',
+      apiTokenHint: '用于读取 PR/MR 信息，不影响普通分支和 Tag 的 Git 检查。SSH 私钥不能调用平台 API；读取私有 PR/MR 时需提供具有相应读取权限的 Token。',
+    },
+    gitCredential: {
+      create: '创建 Git 凭据', edit: '修改 Git 凭据', saved: 'Git 凭据已保存', securityHint: '凭据使用 EDO 主密钥加密，且只对当前用户可见。',
+      name: '名称', nameRequired: '请输入凭据名称', namePlaceholder: '例如：GitHub 项目只读凭据', provider: '平台', providerRequired: '请选择平台',
+      type: '类型', typeRequired: '请选择凭据类型', token: '访问令牌', sshKey: 'SSH 私钥', username: '用户名', usernamePlaceholder: '部分平台可留空',
+      tokenRequired: '请输入访问令牌', sshKeyRequired: '请输入 SSH 私钥', keepSecret: '留空表示保持原值', secretPlaceholder: '请输入凭据内容', cancel: '取消', save: '保存',
+    },
     common: { search: '搜索', refresh: '刷新', logout: '退出登录', language: '语言', theme: '主题', fullscreen: '全屏', back: '返回上一页', history: '访问历史' },
     nav: {
       overview: '概览', delivery: '持续交付', applicationsCode: '应用与代码', applications: '应用', repositories: '代码仓库', credentials: '我的令牌',
@@ -117,6 +134,13 @@ export const messages = {
       connecting: '连接中', connected: '实时日志', complete: '日志已结束', error: '连接异常', readFailed: '读取容器日志失败',
       invalidEvent: '收到无法识别的日志事件', disconnected: '日志连接已断开',
     },
+    applicationWorkspace: {
+      description: '查看应用的代码更新、流水线运行和部署实例。', create: '新建应用', search: '搜索应用、仓库或流水线', filterLabel: '筛选应用', instances: '实例',
+      filters: { all: '全部应用', running: '进行中', attention: '需要关注', inactive: '已停用' },
+      columns: { application: '应用', resources: '关联资源', actions: '操作', status: '启用状态', source: '触发规则', template: '绑定方案', tasks: '任务构成', runTime: '运行时间' },
+      noResults: '没有符合条件的应用', noResultsHint: '试试其他关键词，或清除筛选条件。', clearFilters: '清除筛选',
+      emptyHint: '先创建应用并连接代码仓库，再配置流水线。', noRunHint: '运行后将在这里显示提交与执行进度。', template: '绑定方案：{name}',
+    },
     applicationCard: {
       autoRefresh: '自动更新', active: '已启用', inactive: '已停用', noDescription: '暂无应用说明', currentPipeline: '当前流水线', latestRun: '最近运行',
       currentNode: '当前任务', repository: '代码仓库', workflow: '流水线', commitMessage: 'Commit message：', codeStatus: '代码状态',
@@ -133,6 +157,7 @@ export const messages = {
       runStatus: { none: '暂无运行', detected: '已创建', ready: '待执行', running: '执行中', awaitingApproval: '等待审核', succeeded: '已完成', failed: '失败', skipped: '已跳过', blocked: '已阻塞', canceled: '已取消' },
       syncStatus: { idle: '等待检查', checking: '检查中', synced: '已同步', changed: '发现更新', failed: '检查失败' },
     },
+    pipelineStop: {title:'停止这次流水线运行？',hint:'将中断当前任务并停止后续节点，保留已有日志和制品。已经提交的部署操作可能已生效，不会自动回滚；停止流水线不等于停止已部署的应用。',confirm:'停止流水线',cancel:'返回',stopping:'停止中',stopped:'已停止',accepted:'已请求停止，正在等待当前任务退出'},
     pipelineRunGraph: {
       ariaLabel: '流水线只读执行拓扑', title: '执行拓扑', nodeCount: '任务：{count}；仅展示当前任务状态', empty: '暂无可展示的执行任务',
       node: { trigger: '代码触发', build: '构建制品', shell: 'Shell 脚本', manual: '人工放行', approval: '发布审核', deploy: '部署' },
@@ -201,6 +226,23 @@ export const messages = {
     },
   },
   'en-US': {
+    resourceList: { details: 'Details', more: 'More actions', basic: 'Basic information', configuration: 'Configuration', name: 'Name', description: 'Description', hosts: 'Hosts', hostCount: 'Host count', capabilities: 'Capabilities', environmentEmpty: 'No environments yet', status: 'Status', resources: 'Resources', created: 'Created', updated: 'Last updated', close: 'Close', artifacts: 'Build artifacts', workflows: 'Workflows', instances: 'Deployment instances' },
+    buildPlanWorkspace: { entry: 'Build entry', directory: 'Directory', artifact: 'Build output', storage: 'Storage', architecture: 'Architecture', followHost: 'Follow deployment host', timeout: 'Build timeout', updated: 'Last modified', artifacts: 'Artifacts', empty: 'No build plans yet' },
+    deploymentList: { description: 'Configure the deployment method, environment and parameters, then select this plan in a pipeline deployment task.', environment: 'Environment', configuration: 'Deployment configuration', noEnvironment: 'No environment configured', environmentUnavailable: 'Environment unavailable', noLocation: 'No location configured', locationUnavailable: 'Connection details unavailable', localExecution: 'Local execution', directory: 'Directory: {value}', homeDirectory: 'Execution user home', savedScript: 'Run the saved deployment script', service: 'Service: {value}', notConfigured: 'Not configured', composeFile: 'Inline Compose YAML', workload: 'Deployment: {value}', kubernetesScope: 'Namespace: {namespace}; container: {container}', customCommand: 'Custom deployment command', customCommandHint: 'Container configured by the saved command', ports: 'Ports: {value}', noPorts: 'No port mappings', configCounts: 'Environment variables: {variables}; named volumes: {volumes}' },
+    planList: { hint: 'Click a row to expand details; multiple rows can stay open', total: '{count} items', expand: 'Expand details', collapse: 'Collapse details', status: 'Status', actions: 'Actions', updated: 'Last updated', details: 'Plan details', deploymentName: 'Deployment plan', releaseName: 'Release plan', mode: 'Execution mode', destination: 'Location', object: 'Target', directory: 'Working directory', timeout: 'Timeout', seconds: '{count} seconds', timeoutHint: 'The deployment stops and is marked failed after the timeout.', descriptionEmpty: 'No description', deploymentEmpty: 'No deployment plans yet', enabled: 'Enabled', disabled: 'Disabled', incomplete: 'Incomplete', enable: 'Enable', disable: 'Disable', edit: 'Edit', remove: 'Delete', applications: 'Applications', applicationOverflow: '{count} more', manualCount: '{count} ready for manual execution' },
+    applicationForm: { createRepository: 'Create repository', backToApplication: 'Back to application', repositoryCreated: 'Repository created and selected' },
+    repositoryForm: {
+      gitAuthentication: 'Git authentication', gitCredential: 'Git credential', gitCredentialHint: 'Used to fetch code and query branches and tags. Only your own saved credentials are available.',
+      apiToken: 'Platform API token (optional)', createApiToken: 'Create platform API token', apiReusePlaceholder: 'Leave blank to reuse the Git token', apiTokenPlaceholder: 'Select a token to read private PRs/MRs',
+      apiReuseHint: 'Used to read PR/MR information. Leave blank to reuse the Git token above; select a separate token only if you need different API credentials.',
+      apiTokenHint: 'Used to read PR/MR information, independently of Git branch and tag checks. SSH keys cannot authenticate platform API requests; private PRs/MRs require a token with the appropriate read permissions.',
+    },
+    gitCredential: {
+      create: 'Create Git credential', edit: 'Edit Git credential', saved: 'Git credential saved', securityHint: 'Credentials are encrypted with the EDO master key and are visible only to their owner.',
+      name: 'Name', nameRequired: 'Enter a credential name', namePlaceholder: 'For example: GitHub project read-only credential', provider: 'Platform', providerRequired: 'Select a platform',
+      type: 'Type', typeRequired: 'Select a credential type', token: 'Access token', sshKey: 'SSH private key', username: 'Username', usernamePlaceholder: 'Optional on some platforms',
+      tokenRequired: 'Enter an access token', sshKeyRequired: 'Enter an SSH private key', keepSecret: 'Leave blank to keep the current value', secretPlaceholder: 'Enter the credential', cancel: 'Cancel', save: 'Save',
+    },
     common: { search: 'Search', refresh: 'Refresh', logout: 'Sign out', language: 'Language', theme: 'Theme', fullscreen: 'Fullscreen', back: 'Go back', history: 'Recent pages' },
     nav: {
       overview: 'Overview', delivery: 'Delivery', applicationsCode: 'Apps & Code', applications: 'Applications', repositories: 'Repositories', credentials: 'My Tokens',
@@ -316,6 +358,13 @@ export const messages = {
       connecting: 'Connecting', connected: 'Live', complete: 'Log ended', error: 'Connection error', readFailed: 'Unable to read container logs',
       invalidEvent: 'Received an invalid log event', disconnected: 'Log connection closed',
     },
+    applicationWorkspace: {
+      description: 'Track code updates, pipeline runs, and deployed instances.', create: 'New application', search: 'Search apps, repositories, or pipelines', filterLabel: 'Filter applications', instances: 'Instances',
+      filters: { all: 'All applications', running: 'In progress', attention: 'Needs attention', inactive: 'Disabled' },
+      columns: { application: 'Application', resources: 'Resources', actions: 'Actions', status: 'Enabled', source: 'Trigger rules', template: 'Linked template', tasks: 'Tasks', runTime: 'Run time' },
+      noResults: 'No matching applications', noResultsHint: 'Try another keyword or clear your filters.', clearFilters: 'Clear filters',
+      emptyHint: 'Create an application, connect its repository, and configure a pipeline.', noRunHint: 'Commits and progress will appear after the first run.', template: 'Linked template: {name}',
+    },
     applicationCard: {
       autoRefresh: 'Auto refresh', active: 'Enabled', inactive: 'Disabled', noDescription: 'No description', currentPipeline: 'Current pipeline', latestRun: 'Latest run',
       currentNode: 'Current task', repository: 'Repository', workflow: 'Pipelines', commitMessage: 'Commit message: ', codeStatus: 'Code status',
@@ -332,6 +381,7 @@ export const messages = {
       runStatus: { none: 'No runs', detected: 'Created', ready: 'Pending', running: 'Running', awaitingApproval: 'Awaiting approval', succeeded: 'Completed', failed: 'Failed', skipped: 'Skipped', blocked: 'Blocked', canceled: 'Canceled' },
       syncStatus: { idle: 'Waiting', checking: 'Checking', synced: 'Synced', changed: 'Update found', failed: 'Check failed' },
     },
+    pipelineStop: {title:'Stop this pipeline run?',hint:'Interrupt the current task and prevent subsequent tasks. Existing logs and artifacts are retained. Submitted deployments may already have taken effect and will not be rolled back. This does not stop the deployed application.',confirm:'Stop pipeline',cancel:'Back',stopping:'Stopping',stopped:'Stopped',accepted:'Stop requested; waiting for the current task to exit'},
     pipelineRunGraph: {
       ariaLabel: 'Read-only pipeline execution graph', title: 'Execution graph', nodeCount: 'Tasks: {count}; only the current task is highlighted', empty: 'No execution tasks to display',
       node: { trigger: 'Code trigger', build: 'Build artifact', shell: 'Shell script', manual: 'Manual gate', approval: 'Approval', deploy: 'Deploy' },

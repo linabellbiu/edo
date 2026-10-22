@@ -19,6 +19,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"golang.org/x/crypto/ssh"
@@ -175,6 +176,13 @@ func (s *Service) RunHostDeploymentScript(ctx context.Context, input Input) (Res
 		}
 		return result, fmt.Errorf("%w: %v", ErrCommandFailed, err)
 	case <-commandContext.Done():
+		// 只针对当前执行会话请求终止，不操作已经部署的后台服务。
+		signaled := make(chan struct{})
+		go func() { defer close(signaled); _ = session.Signal(ssh.SIGKILL) }()
+		select {
+		case <-signaled:
+		case <-time.After(time.Second):
+		}
 		_ = client.Close()
 		select {
 		case <-done:
@@ -427,6 +435,14 @@ func runLocalDeploymentScript(ctx context.Context, input Input, dockerHost strin
 	commandContext, cancel := context.WithTimeout(ctx, input.Timeout)
 	defer cancel()
 	command := exec.CommandContext(commandContext, shell, "-se")
+	// 独立进程组让取消同时终止脚本及其前台子进程，避免只杀掉 sh。
+	command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	command.Cancel = func() error {
+		if err := syscall.Kill(-command.Process.Pid, syscall.SIGKILL); err != nil && !errors.Is(err, syscall.ESRCH) {
+			return err
+		}
+		return nil
+	}
 	command.Stdin = strings.NewReader(body)
 	command.Stdout = stdout
 	command.Stderr = stderr

@@ -76,6 +76,29 @@ func (s *Service) HandleTerminalTaskFailure(
 		}
 		return err
 	}
+	if run.Status == model.PipelineRunRunning && run.Stage == stoppingStage {
+		now := time.Now().UTC()
+		message := "流水线已停止；执行进程已中断，请确认目标环境，系统不会自动回滚"
+		result := tx.Model(&model.PipelineRun{}).Where("id = ? AND execution_job_id = ? AND stage = ?", run.ID, job.ID, stoppingStage).
+			Updates(map[string]any{"status": model.PipelineRunCanceled, "stage": "canceled", "message": message, "updated_at": now})
+		if result.Error != nil || result.RowsAffected == 0 {
+			return result.Error
+		}
+		if err := tx.Model(&model.Job{}).Where("id = ?", job.ID).Updates(map[string]any{"status": model.JobCanceled, "error_code": "canceled_by_user", "error_message": message}).Error; err != nil {
+			return err
+		}
+		if err := tx.Model(&model.DeploymentRecord{}).Where("pipeline_run_id = ? AND workflow_node_id = ? AND status IN ?", run.ID, nodeID, []model.DeploymentStatus{model.DeploymentQueued, model.DeploymentRunning}).
+			Updates(map[string]any{"status": model.DeploymentFailed, "error_code": "pipeline_stopped", "error_message": message, "finished_at": now, "updated_at": now}).Error; err != nil {
+			return err
+		}
+		// 终止钩子处于 Worker 事务内，原子预留日志容量，不能绕过运行日志上限。
+		reserved := tx.Model(&model.PipelineRun{}).Where("id = ? AND log_truncated = ? AND log_bytes <= ?", run.ID, false, maximumPipelineRunLogBytes-len(pipelineRunLogTruncatedMessage)-len(message)).
+			UpdateColumn("log_bytes", gorm.Expr("log_bytes + ?", len(message)))
+		if reserved.Error != nil || reserved.RowsAffected == 0 {
+			return reserved.Error
+		}
+		return tx.Create(&model.PipelineRunLog{PipelineRunID: run.ID, Stage: "canceled", Level: "warning", Message: message, CreatedAt: now}).Error
+	}
 	if run.Status != model.PipelineRunRunning &&
 		!(run.Status == model.PipelineRunReady && (run.Stage == "task_succeeded" || run.Stage == "deploy_succeeded")) {
 		return nil

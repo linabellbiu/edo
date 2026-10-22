@@ -10,6 +10,7 @@ const props = defineProps<{
   currentNodeId?: string
   status: string
   stage?: string
+  compact?: boolean
 }>()
 const { t } = useI18n()
 const viewport = ref<HTMLDivElement | null>(null)
@@ -24,10 +25,11 @@ const nodeMeta = computed<Record<WorkflowNodeType, { label: string; color: strin
 }))
 
 const currentState = computed(() => {
+	if (props.stage === 'stopping') return { key: 'waiting', label: t('pipelineStop.stopping'), icon: Clock3 }
   if (props.status === 'succeeded') return { key: 'succeeded', label: t('pipelineRunGraph.state.succeeded'), icon: Check }
   if (props.status === 'failed') return { key: 'failed', label: t('pipelineRunGraph.state.failed'), icon: X }
   if (props.status === 'skipped') return { key: 'canceled', label: t('pipelineRunGraph.state.skipped'), icon: Check }
-  if (props.status === 'canceled') return { key: 'canceled', label: t('pipelineRunGraph.state.canceled'), icon: X }
+  if (props.status === 'canceled') return { key: 'canceled', label: t('pipelineStop.stopped'), icon: X }
   if (props.status === 'blocked') return { key: 'waiting', label: t('pipelineRunGraph.state.blocked'), icon: Clock3 }
   if (props.status === 'awaiting_approval') return { key: 'waiting', label: t('pipelineRunGraph.state.awaitingApproval'), icon: Clock3 }
   if (props.stage === 'manual') return { key: 'waiting', label: t('pipelineRunGraph.state.awaitingManual'), icon: Clock3 }
@@ -64,7 +66,7 @@ watch(() => [props.currentNodeId, nodes.value.length], async () => {
 </script>
 
 <template>
-  <section class="run-graph" :aria-label="t('pipelineRunGraph.ariaLabel')">
+  <section class="run-graph" :class="{'is-compact':compact}" :aria-label="t('pipelineRunGraph.ariaLabel')">
     <header>
       <div>
         <strong>{{ t('pipelineRunGraph.title') }}</strong>
@@ -135,6 +137,8 @@ watch(() => [props.currentNodeId, nodes.value.length], async () => {
 .run-node{--state-color:var(--edo-primary);display:grid;width:194px;height:68px;align-items:center;grid-template-columns:36px minmax(0,1fr) 20px;gap:9px;padding:9px 10px;border:1px solid color-mix(in srgb,var(--edo-border) 90%,transparent);border-radius:10px;color:var(--edo-text);background:var(--edo-surface);box-shadow:0 1px 2px rgb(28 36 55 / 4%),0 6px 17px rgb(28 36 55 / 6%)}.run-node.source{width:184px}.node-icon{display:grid;width:36px;height:36px;place-items:center;border:1px solid color-mix(in srgb,var(--node-color) 13%,transparent);border-radius:9px;color:var(--node-color);background:color-mix(in srgb,var(--node-color) 12%,var(--edo-surface))}.node-copy{min-width:0}.node-copy small,.node-copy strong{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.node-copy small{color:var(--edo-muted);font-size:10px}.node-copy strong{margin-top:3px;font-size:12.5px}.node-state{display:grid;width:20px;height:20px;place-items:center;border:1px solid color-mix(in srgb,var(--state-color) 16%,transparent);border-radius:50%;color:var(--state-color);background:color-mix(in srgb,var(--state-color) 12%,var(--edo-surface))}.node-breathing-light{width:7px;height:7px;border-radius:50%;background:currentColor;animation:state-light-breathe 1.9s ease-in-out infinite}
 .run-node.current{border-color:color-mix(in srgb,var(--state-color) 84%,var(--edo-border));box-shadow:0 0 0 3px color-mix(in srgb,var(--state-color) 7%,transparent),0 10px 24px rgb(30 45 75 / 11%)}.run-node.current.running{--state-color:#4f7df3;animation:running-border-breathe 2.2s ease-in-out infinite;will-change:border-color,box-shadow}.run-node.current.waiting{--state-color:#d99a2b}.run-node.current.succeeded{--state-color:#28aa70}.run-node.current.failed{--state-color:#e65361}.run-node.current.canceled,.run-node.current.pending{--state-color:#8e96a3}
 .graph-empty{display:flex;min-height:128px;align-items:center;justify-content:center;gap:8px;color:var(--edo-muted);font-size:12px}
+.is-compact>header{min-height:42px;padding:6px 10px}.is-compact .topology-viewport{padding:10px}.is-compact .run-stage{padding:7px 8px 9px}.is-compact .run-stage>header{margin-bottom:6px}
+.is-compact .run-node{width:172px;height:56px;grid-template-columns:28px minmax(0,1fr) 18px;gap:7px;padding:7px 8px;border-radius:8px}.is-compact .run-node.source{width:162px}.is-compact .node-icon{width:28px;height:28px;border-radius:7px}.is-compact .node-copy strong{font-size:12px}.is-compact .stage-arrow{margin:0 6px}.is-compact .graph-empty{min-height:90px}
 @keyframes state-light-breathe{0%,100%{opacity:.58;transform:scale(.78);box-shadow:0 0 0 2px color-mix(in srgb,currentColor 9%,transparent)}50%{opacity:1;transform:scale(1);box-shadow:0 0 0 5px color-mix(in srgb,currentColor 15%,transparent),0 0 11px color-mix(in srgb,currentColor 36%,transparent)}}
 @keyframes running-border-breathe{0%,100%{border-color:color-mix(in srgb,var(--state-color) 58%,var(--edo-border));box-shadow:0 0 0 2px color-mix(in srgb,var(--state-color) 4%,transparent),0 8px 20px rgb(30 45 75 / 8%)}50%{border-color:var(--state-color);box-shadow:0 0 0 4px color-mix(in srgb,var(--state-color) 14%,transparent),0 0 20px color-mix(in srgb,var(--state-color) 13%,transparent),0 11px 26px rgb(30 45 75 / 12%)}}
 @media(max-width:640px){.run-graph>header{align-items:flex-start;flex-direction:column}.current-summary{align-self:flex-start}.topology-viewport{padding:12px}}

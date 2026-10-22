@@ -150,7 +150,11 @@ func (h deploymentHandler) controlRuntime(c *gin.Context, input deployment.Runti
 }
 
 func (h deploymentHandler) writeRuntimeError(c *gin.Context, operation string, err error) {
-	h.logger.Warn("部署实例运行操作失败", "operation", operation, "request_id", requestIDFrom(c),
+	message := "部署实例运行操作失败"
+	if operation == "deployment_runtime_state" {
+		message = "读取部署实例运行状态失败"
+	}
+	h.logger.Warn(message, "operation", operation, "request_id", requestIDFrom(c),
 		"deployment_id", c.Param("id"), "err", err)
 	switch {
 	case errors.Is(err, deployment.ErrDeploymentNotFound):

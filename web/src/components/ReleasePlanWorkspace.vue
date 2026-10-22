@@ -1,10 +1,9 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { Empty as AntEmpty } from 'ant-design-vue'
 import {
   Boxes,
-  CalendarDays,
   ChevronRight,
   Clock3,
   GitBranch,
@@ -18,9 +17,12 @@ import {
   Route,
   TerminalSquare,
   Trash2,
-  UsersRound,
 } from 'lucide-vue-next'
 import { formatDateTime, formatRelativeTime } from '@/utils/time'
+import { useResourceList } from '@/utils/resourceList'
+import ResourceDetailDrawer from '@/components/ResourceDetailDrawer.vue'
+import ResourceRowActions from '@/components/ResourceRowActions.vue'
+import '@/styles/plan-list.css'
 
 type PlanTone = 'neutral' | 'info' | 'success' | 'danger'
 
@@ -118,22 +120,22 @@ const emit = defineEmits<{
   openApplicationResources: [planID: string, applicationID: string, pipelineRunID: string]
 }>()
 const { t, locale } = useI18n()
-const selectedPlanID = ref('')
-
-const selectedPlan = computed(() => props.plans.find((plan) => plan.id === selectedPlanID.value) || props.plans[0] || null)
-const selectedGroup = computed(() => selectedPlan.value?.groups?.[0] || null)
-
-watch(
-  () => ({ ids: props.plans.map((plan) => plan.id), activePlanID: props.activePlanID || '' }),
-  ({ ids, activePlanID }) => {
-    if (activePlanID && ids.includes(activePlanID)) {
-      selectedPlanID.value = activePlanID
-      return
-    }
-    if (!ids.includes(selectedPlanID.value)) selectedPlanID.value = ids[0] || ''
-  },
-  { immediate: true },
+const { detailID: selectedPlanID, detailOpen, selected: detailPlan, pagination: planPagination, openDetails, changePage: changePlanPage } = useResourceList(
+  () => props.plans,
+  () => props.activePlanID || '',
 )
+const planColumns = computed(() => [
+  { key: 'name', title: t('planList.releaseName'), width: 250 },
+  { key: 'status', title: t('planList.status'), width: 120 },
+  { key: 'applications', title: t('planList.applications'), width: 250 },
+  { key: 'mode', title: t('planList.mode'), width: 160 },
+  { key: 'updated', title: t('planList.updated'), width: 180 },
+  { key: 'actions', title: t('planList.actions'), width: 235, fixed: 'right' as const, align: 'right' as const },
+])
+
+function primaryGroup(plan: ReleasePlanItem) {
+  return plan.groups?.[0]
+}
 
 function planTitle(plan: ReleasePlanItem) {
   const legacyName = plan.name?.trim()
@@ -277,167 +279,47 @@ function sourceMeta(item: ReleaseGroupApplication) {
     <a-skeleton active :paragraph="{ rows: 8 }" />
   </div>
 
-  <div v-else-if="plans.length" class="plan-workspace vben-card">
-    <aside class="plan-index">
-      <header>
-        <div>
-          <strong>{{ t('releasePlan.listTitle') }}</strong>
-          <small>{{ t('releasePlan.planCount', { count: plans.length }) }}</small>
+  <div v-else-if="plans.length" class="expandable-plan-list vben-card">
+    <a-table
+      class="plan-table resource-list-table" row-key="id" size="small" table-layout="fixed" :columns="planColumns" :data-source="plans"
+      :pagination="planPagination" :scroll="{ x: 1300 }"
+      :row-class-name="(plan: ReleasePlanItem) => detailOpen && selectedPlanID === plan.id ? 'resource-selected' : ''"
+      @change="changePlanPage"
+    >
+      <template #bodyCell="{ column, record: plan }">
+        <div v-if="column.key === 'name'" class="plan-cell">
+          <button class="resource-name" :title="planTitle(plan)" @click="openDetails(plan)">{{ planTitle(plan) }}</button>
+          <small>{{ t('releasePlan.createdAt', { time: formatTime(plan.created_at) }) }}</small>
         </div>
-        <span><ListChecks :size="16" /></span>
-      </header>
-
-      <div class="plan-index-list">
-        <button
-          v-for="plan in plans"
-          :key="plan.id"
-          type="button"
-          :class="[{ active: selectedPlan?.id === plan.id }, `tone-${planStatus(visiblePlanStatus(plan)).tone}`]"
-          @click="selectedPlanID = plan.id"
-        >
-          <i :class="{ live: planStatus(visiblePlanStatus(plan)).live }" />
-          <span class="plan-index-copy">
-            <strong :title="planTitle(plan)">{{ planTitle(plan) }}</strong>
-            <span>状态：{{ planStatus(visiblePlanStatus(plan)).label }}；{{ t('releasePlan.applicationCount', { count: applicationCount(plan) }) }}</span>
-            <small>{{ formatTime(planDisplayTime(plan)) }}</small>
-          </span>
-          <ChevronRight :size="16" />
-        </button>
-      </div>
-    </aside>
-
-    <main v-if="selectedPlan" class="plan-detail" :class="`tone-${planStatus(visiblePlanStatus(selectedPlan)).tone}`">
-      <header class="plan-detail-heading">
-        <div class="plan-identity">
-          <span class="plan-mark"><ListChecks /></span>
-          <div>
-            <small>{{ t('releasePlan.eyebrow') }}</small>
-            <h2>{{ planTitle(selectedPlan) }}</h2>
-            <p><CalendarDays :size="14" />{{ t('releasePlan.createdAt', { time: formatTime(selectedPlan.created_at) }) }}</p>
+        <span v-else-if="column.key === 'status'" class="plan-status" :class="[`tone-${planStatus(visiblePlanStatus(plan)).tone}`, { live: planStatus(visiblePlanStatus(plan)).live }]" :title="planStatus(visiblePlanStatus(plan)).hint">
+          <i />{{ planStatus(visiblePlanStatus(plan)).label }}
+        </span>
+        <div v-else-if="column.key === 'applications'" class="plan-cell">
+          <div class="plan-app-preview" :title="planApplications(plan).map(applicationName).join('、')">
+            <span v-for="item in planApplications(plan).slice(0, 2)" :key="item.id">{{ applicationName(item) }}</span>
+            <small v-if="applicationCount(plan) > 2">{{ t('planList.applicationOverflow', { count: applicationCount(plan) - 2 }) }}</small>
           </div>
+          <small>{{ t('releasePlan.applicationCount', { count: applicationCount(plan) }) }} · {{ t('planList.manualCount', { count: manualApplicationCount(plan) }) }}</small>
         </div>
-        <div class="plan-detail-actions">
-          <div class="plan-state" :class="{ live: planStatus(visiblePlanStatus(selectedPlan)).live }">
-            <i />
-            <span><small>{{ planStatus(visiblePlanStatus(selectedPlan)).hint }}</small><strong>{{ planStatus(visiblePlanStatus(selectedPlan)).label }}</strong></span>
-          </div>
-          <a-button v-if="canExecute && canExecutePlan(selectedPlan)" type="primary" @click="emit('execute', selectedPlan.id)">
-            <Play :size="14" />{{ t('releasePlan.execute') }}
-          </a-button>
-          <a-button v-if="canUpdate && !planMutationBlocked(selectedPlan)" :disabled="mutatingPlanID === selectedPlan.id" @click="emit('edit', selectedPlan.id)">
-            <Pencil :size="14" />{{ t('releasePlan.actions.edit') }}
-          </a-button>
-          <a-button
-            v-if="canUpdate"
-            :loading="mutatingPlanID === selectedPlan.id"
-            @click="emit('toggle', selectedPlan.id, selectedPlan.is_active === false)"
-          >
-            <Power v-if="selectedPlan.is_active === false" :size="14" />
-            <PowerOff v-else :size="14" />
-            {{ selectedPlan.is_active === false ? t('releasePlan.actions.enable') : t('releasePlan.actions.disable') }}
-          </a-button>
-          <a-button v-if="canDelete && !planMutationBlocked(selectedPlan)" danger :disabled="mutatingPlanID === selectedPlan.id" @click="emit('remove', selectedPlan.id)">
-            <Trash2 :size="14" />{{ t('releasePlan.actions.remove') }}
-          </a-button>
+        <div v-else-if="column.key === 'mode'" class="plan-cell">
+          <strong>{{ groupMode(primaryGroup(plan)?.mode || 'parallel') }}</strong>
+          <small>{{ failurePolicy(primaryGroup(plan)?.failure_policy || 'stop') }}</small>
         </div>
-      </header>
-
-      <dl class="plan-summary">
-        <div>
-          <dt><ListChecks />{{ t('releasePlan.summaryExecution') }}</dt>
-          <dd class="summary-rule">{{ groupMode(selectedGroup?.mode || 'parallel') }}</dd>
-          <small>{{ failurePolicy(selectedGroup?.failure_policy || 'stop') }}</small>
+        <div v-else-if="column.key === 'updated'" class="plan-cell">
+          <time :datetime="planDisplayTime(plan)">{{ formatTime(planDisplayTime(plan)) }}</time><small>{{ relativeTime(planDisplayTime(plan)) }}</small>
         </div>
-        <div>
-          <dt><UsersRound />{{ t('releasePlan.summaryApplications') }}</dt>
-          <dd>{{ applicationCount(selectedPlan) }}</dd>
-          <small>{{ t('releasePlan.summaryApplicationsHint') }}</small>
-        </div>
-        <div>
-          <dt><GitBranch />{{ t('releasePlan.summaryManual') }}</dt>
-          <dd>{{ manualApplicationCount(selectedPlan) }}</dd>
-          <small>{{ t('releasePlan.summaryManualHint') }}</small>
-        </div>
-      </dl>
-
-      <section class="plan-groups">
-        <header>
-          <div><small>{{ t('releasePlan.orchestration') }}</small><h3>{{ t('releasePlan.applicationsTitle') }}</h3></div>
-          <div class="plan-group-heading-actions">
-            <span>{{ t('releasePlan.applicationCount', { count: applicationCount(selectedPlan) }) }}</span>
-            <a-button v-if="selectedGroup && canUpdate && !planMutationBlocked(selectedPlan)" size="small" type="text" :disabled="mutatingPlanID === selectedPlan.id" @click="emit('addApplication', selectedPlan.id, selectedGroup.id)">
-              <Plus :size="13" />{{ t('releasePlan.editor.addApplication') }}
-            </a-button>
-          </div>
-        </header>
-
-        <div v-if="selectedGroup" class="plan-group-list">
-          <article class="plan-group-row">
-            <div v-if="selectedGroup.applications?.length" class="plan-application-grid">
-              <div v-for="item in selectedGroup.applications" :key="item.application_id" class="plan-application">
-                <span class="plan-app-mark"><Boxes /></span>
-                <div class="plan-app-copy">
-                  <strong :title="applicationName(item)">{{ applicationName(item) }}</strong>
-                  <span :title="item.source_value">
-                    <component :is="sourceMeta(item).icon" />
-                    {{ sourceMeta(item).label }}：{{ sourceMeta(item).value }}
-                  </span>
-                  <span v-if="executionItem(selectedPlan, item)" class="plan-app-execution" :class="`tone-${executionItemStatus(executionItem(selectedPlan, item)?.status).tone}`">
-                    <Route />{{ executionItemStatus(executionItem(selectedPlan, item)?.status).label }}
-                  </span>
-                  <time v-if="latestApplicationRun(item)" class="plan-app-time" :datetime="latestApplicationRun(item)!.created_at" :title="formatTime(latestApplicationRun(item)!.created_at)">
-                    <Clock3 /><span>{{ formatTime(latestApplicationRun(item)!.created_at) }}</span><em>{{ relativeTime(latestApplicationRun(item)!.created_at) }}</em>
-                  </time>
-                </div>
-                <div class="plan-app-actions">
-                  <em :class="{ disabled: !applicationEnabled(item) }">{{ applicationEnabled(item) ? t('releasePlan.enabled') : t('releasePlan.disabled') }}</em>
-                  <a-button
-                    v-if="canExecute && canExecuteApplication(selectedPlan, item)"
-                    type="text"
-                    size="small"
-                    @click="emit('executeApplication', selectedPlan.id, item.id)"
-                  >
-                    <Play :size="13" />{{ t('releasePlan.executeApplication') }}
-                  </a-button>
-                  <a-button
-                    v-if="executionItem(selectedPlan, item)?.pipeline_run_id"
-                    type="text"
-                    size="small"
-                    @click="emit('openApplicationRun', selectedPlan.id, item.application_id, executionItem(selectedPlan, item)!.pipeline_run_id)"
-                  >
-                    <ListChecks :size="13" />流水线记录
-                  </a-button>
-                  <a-button
-                    v-if="executionItem(selectedPlan, item)?.pipeline_run_id && canReadDeployments"
-                    type="text"
-                    size="small"
-                    @click="emit('openApplicationResources', selectedPlan.id, item.application_id, executionItem(selectedPlan, item)!.pipeline_run_id)"
-                  >
-                    <TerminalSquare :size="13" />部署资源
-                  </a-button>
-                  <em v-else-if="executionItem(selectedPlan, item)?.pipeline_run_id && !canReadDeployments" class="disabled">无部署权限</em>
-                  <a-popconfirm
-                    v-if="canUpdate && !planMutationBlocked(selectedPlan)"
-                    :title="t('releasePlan.editor.removeApplicationConfirm', { name: applicationName(item) })"
-                    :description="t('releasePlan.editor.removeApplicationHint')"
-                    :ok-text="t('releasePlan.editor.remove')"
-                    :cancel-text="t('releasePlan.editor.cancel')"
-                    ok-type="danger"
-                    @confirm="emit('removeApplication', selectedPlan.id, selectedGroup.id, item.application_id)"
-                  >
-                    <a-button danger type="text" size="small" :disabled="mutatingPlanID === selectedPlan.id">
-                      <Trash2 :size="13" />{{ t('releasePlan.editor.removeApplication') }}
-                    </a-button>
-                  </a-popconfirm>
-                </div>
-              </div>
-            </div>
-            <a-empty v-else :image="AntEmpty.PRESENTED_IMAGE_SIMPLE" :description="t('releasePlan.emptyApplications')" />
-          </article>
-        </div>
-        <a-empty v-else :image="AntEmpty.PRESENTED_IMAGE_SIMPLE" :description="t('releasePlan.emptyApplications')" />
-      </section>
-    </main>
+        <ResourceRowActions v-else-if="column.key === 'actions'" :more="canUpdate || canDelete" :loading="mutatingPlanID === plan.id">
+          <a-button size="small" @click="openDetails(plan)">{{ t('resourceList.details') }}</a-button>
+          <a-button v-if="canExecute && canExecutePlan(plan)" size="small" @click="emit('execute', plan.id)"><Play :size="14" />{{ t('releasePlan.execute') }}</a-button>
+          <template #more>
+            <a-menu-item v-if="canUpdate && !planMutationBlocked(plan)" @click="emit('edit', plan.id)">{{ t('releasePlan.actions.edit') }}</a-menu-item>
+            <a-menu-item v-if="canUpdate" :disabled="mutatingPlanID === plan.id" @click="emit('toggle', plan.id, plan.is_active === false)">{{ plan.is_active === false ? t('releasePlan.actions.enable') : t('releasePlan.actions.disable') }}</a-menu-item>
+            <a-menu-divider v-if="canDelete" />
+            <a-menu-item v-if="canDelete && !planMutationBlocked(plan)" danger :disabled="mutatingPlanID === plan.id" @click="emit('remove', plan.id)">{{ t('releasePlan.actions.remove') }}</a-menu-item>
+          </template>
+        </ResourceRowActions>
+      </template>
+    </a-table>
   </div>
 
   <div v-else class="plan-empty vben-card">
@@ -446,23 +328,107 @@ function sourceMeta(item: ReleaseGroupApplication) {
     <p>{{ t('releasePlan.emptyDescription') }}</p>
     <a-button v-if="canCreate" type="primary" @click="emit('create')">{{ t('releasePlan.create') }}</a-button>
   </div>
+  <ResourceDetailDrawer v-model:open="detailOpen" :title="detailPlan ? planTitle(detailPlan) : ''">
+    <template #actions>
+      <a-button v-if="detailPlan && canExecute && canExecutePlan(detailPlan)" size="small" type="primary" @click="emit('execute', detailPlan.id)"><Play :size="14" />{{ t('releasePlan.execute') }}</a-button>
+      <a-button v-if="detailPlan && canUpdate && !planMutationBlocked(detailPlan)" size="small" @click="emit('edit', detailPlan.id)">{{ t('releasePlan.actions.edit') }}</a-button>
+      <span v-if="detailPlan" class="resource-secondary">{{ groupMode(primaryGroup(detailPlan)?.mode || 'parallel') }} · {{ failurePolicy(primaryGroup(detailPlan)?.failure_policy || 'stop') }}</span>
+    </template>
+    <section v-for="plan in detailPlan ? [detailPlan] : []" :key="plan.id" :id="`release-plan-${plan.id}`" :aria-label="planTitle(plan)" class="resource-detail-section" :class="{ 'is-current': selectedPlanID === plan.id }">
+          <section class="plan-groups">
+            <header>
+              <h3>{{ t('releasePlan.applicationsTitle') }}</h3>
+              <div class="plan-group-heading-actions">
+                <span>{{ t('releasePlan.applicationCount', { count: applicationCount(plan) }) }}</span>
+                <a-button v-if="primaryGroup(plan) && canUpdate && !planMutationBlocked(plan)" size="small" type="text" :disabled="mutatingPlanID === plan.id" @click="emit('addApplication', plan.id, primaryGroup(plan)!.id)">
+                  <Plus :size="13" />{{ t('releasePlan.editor.addApplication') }}
+                </a-button>
+              </div>
+            </header>
+
+            <div v-if="primaryGroup(plan)" class="plan-group-list">
+              <article class="plan-group-row">
+                <div v-if="primaryGroup(plan)!.applications?.length" class="plan-application-grid">
+                  <div v-for="item in primaryGroup(plan)!.applications" :key="item.application_id" class="plan-application">
+                    <span class="plan-app-mark"><Boxes /></span>
+                    <div class="plan-app-copy">
+                      <strong :title="applicationName(item)">{{ applicationName(item) }}</strong>
+                      <span :title="item.source_value">
+                        <component :is="sourceMeta(item).icon" />
+                        {{ sourceMeta(item).label }}：{{ sourceMeta(item).value }}
+                      </span>
+                      <span v-if="executionItem(plan, item)" class="plan-app-execution" :class="`tone-${executionItemStatus(executionItem(plan, item)?.status).tone}`">
+                        <Route />{{ executionItemStatus(executionItem(plan, item)?.status).label }}
+                      </span>
+                      <time v-if="latestApplicationRun(item)" class="plan-app-time" :datetime="latestApplicationRun(item)!.created_at" :title="formatTime(latestApplicationRun(item)!.created_at)">
+                        <Clock3 /><span>{{ formatTime(latestApplicationRun(item)!.created_at) }}</span><em>{{ relativeTime(latestApplicationRun(item)!.created_at) }}</em>
+                      </time>
+                    </div>
+                    <div class="plan-app-actions">
+                      <em :class="{ disabled: !applicationEnabled(item) }">{{ applicationEnabled(item) ? t('releasePlan.enabled') : t('releasePlan.disabled') }}</em>
+                      <a-button
+                        v-if="canExecute && canExecuteApplication(plan, item)"
+                        type="text"
+                        size="small"
+                        @click="emit('executeApplication', plan.id, item.id)"
+                      >
+                        <Play :size="13" />{{ t('releasePlan.executeApplication') }}
+                      </a-button>
+                      <a-button
+                        v-if="executionItem(plan, item)?.pipeline_run_id"
+                        type="text"
+                        size="small"
+                        @click="emit('openApplicationRun', plan.id, item.application_id, executionItem(plan, item)!.pipeline_run_id)"
+                      >
+                        <ListChecks :size="13" />流水线记录
+                      </a-button>
+                      <a-button
+                        v-if="executionItem(plan, item)?.pipeline_run_id && canReadDeployments"
+                        type="text"
+                        size="small"
+                        @click="emit('openApplicationResources', plan.id, item.application_id, executionItem(plan, item)!.pipeline_run_id)"
+                      >
+                        <TerminalSquare :size="13" />部署资源
+                      </a-button>
+                      <em v-else-if="executionItem(plan, item)?.pipeline_run_id && !canReadDeployments" class="disabled">无部署权限</em>
+                      <a-popconfirm
+                        v-if="canUpdate && !planMutationBlocked(plan)"
+                        :title="t('releasePlan.editor.removeApplicationConfirm', { name: applicationName(item) })"
+                        :description="t('releasePlan.editor.removeApplicationHint')"
+                        :ok-text="t('releasePlan.editor.remove')"
+                        :cancel-text="t('releasePlan.editor.cancel')"
+                        ok-type="danger"
+                        @confirm="emit('removeApplication', plan.id, primaryGroup(plan)!.id, item.application_id)"
+                      >
+                        <a-button danger type="text" size="small" :disabled="mutatingPlanID === plan.id">
+                          <Trash2 :size="13" />{{ t('releasePlan.editor.removeApplication') }}
+                        </a-button>
+                      </a-popconfirm>
+                    </div>
+                  </div>
+                </div>
+                <a-empty v-else :image="AntEmpty.PRESENTED_IMAGE_SIMPLE" :description="t('releasePlan.emptyApplications')" />
+              </article>
+            </div>
+            <a-empty v-else :image="AntEmpty.PRESENTED_IMAGE_SIMPLE" :description="t('releasePlan.emptyApplications')" />
+          </section>
+        </section>
+  </ResourceDetailDrawer>
 </template>
 
 <style scoped>
-.plan-loading{min-height:460px;padding:24px}.plan-workspace{display:grid;min-height:clamp(460px,calc(100vh - 224px),620px);grid-template-columns:290px minmax(0,1fr);gap:8px;overflow:hidden;padding:8px;background:var(--edo-surface-soft)}
-.plan-index,.plan-detail{min-width:0;border-radius:11px;background:var(--edo-surface)}.plan-index{overflow:hidden}.plan-index>header{display:flex;min-height:66px;align-items:center;justify-content:space-between;padding:11px 14px;border-bottom:1px solid var(--edo-border)}.plan-index>header strong,.plan-index>header small{display:block}.plan-index>header small{margin-top:2px;color:var(--edo-muted);font-size:11px}.plan-index>header>span{display:grid;width:32px;height:32px;place-items:center;border-radius:9px;color:var(--edo-primary);background:var(--edo-primary-soft)}
-.plan-index-list{max-height:calc(100vh - 250px);overflow-y:auto;padding:7px;scrollbar-width:thin}.plan-index-list>button{--plan-tone:#9ba1ad;display:grid;width:100%;min-height:88px;align-items:center;grid-template-columns:10px minmax(0,1fr) 17px;gap:10px;margin:3px 0;padding:10px 9px;border:0;border-radius:11px;outline:0;color:var(--edo-text);background:transparent;cursor:pointer;text-align:left;transition:background-color 160ms ease,box-shadow 160ms ease}.plan-index-list>button.tone-info{--plan-tone:#4f7df3}.plan-index-list>button.tone-success{--plan-tone:#2ab573}.plan-index-list>button.tone-danger{--plan-tone:#ed5965}.plan-index-list>button:hover{background:var(--edo-surface-soft)}.plan-index-list>button:focus-visible{box-shadow:inset 0 0 0 2px color-mix(in srgb,var(--edo-primary) 45%,transparent)}.plan-index-list>button.active{background:var(--edo-primary-soft);box-shadow:inset 3px 0 var(--edo-primary)}.plan-index-list>button>i{width:8px;height:8px;border-radius:50%;background:var(--plan-tone);box-shadow:0 0 0 4px color-mix(in srgb,var(--plan-tone) 10%,transparent)}.plan-index-list>button>i.live{animation:plan-pulse 2s ease-out infinite}.plan-index-list>button>svg{color:var(--edo-muted)}
-.plan-index-copy{min-width:0}.plan-index-copy strong,.plan-index-copy span,.plan-index-copy small{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.plan-index-copy strong{font-size:13px}.plan-index-copy span{margin-top:4px;color:var(--edo-text);font-size:11px}.plan-index-copy small{margin-top:3px;color:var(--edo-muted);font-size:10px}
-.plan-detail{--plan-tone:#9ba1ad;padding:20px}.plan-detail.tone-info{--plan-tone:#4f7df3}.plan-detail.tone-success{--plan-tone:#2ab573}.plan-detail.tone-danger{--plan-tone:#ed5965}.plan-detail-heading{display:flex;align-items:flex-start;justify-content:space-between;gap:20px;padding-bottom:18px;border-bottom:1px solid var(--edo-border)}.plan-identity{display:flex;min-width:0;align-items:flex-start;gap:13px}.plan-mark{display:grid;width:44px;height:44px;flex:0 0 44px;place-items:center;border-radius:13px;color:var(--plan-tone);background:color-mix(in srgb,var(--plan-tone) 10%,var(--edo-surface))}.plan-mark svg{width:21px}.plan-identity>div{min-width:0}.plan-identity small{color:var(--edo-primary);font-size:11px;font-weight:600;letter-spacing:.08em}.plan-identity h2{overflow:hidden;margin:2px 0 0;text-overflow:ellipsis;font-size:20px;line-height:1.35}.plan-identity p{display:flex;align-items:center;gap:5px;margin:6px 0 0;color:var(--edo-muted);font-size:11px}
-.plan-detail-actions{display:flex;flex:0 0 auto;align-items:center;gap:8px}.plan-detail-actions :deep(.ant-btn){display:inline-flex;align-items:center;gap:5px}.plan-state{display:flex;flex:0 0 auto;align-items:center;gap:9px;padding:8px 11px;border-radius:10px;color:var(--plan-tone);background:color-mix(in srgb,var(--plan-tone) 9%,var(--edo-surface))}.plan-state>i{width:8px;height:8px;flex:0 0 8px;border-radius:50%;background:currentColor;box-shadow:0 0 0 4px color-mix(in srgb,currentColor 10%,transparent)}.plan-state.live>i{animation:plan-pulse 2s ease-out infinite}.plan-state small,.plan-state strong{display:block}.plan-state small{color:var(--edo-muted);font-size:10px;font-weight:400}.plan-state strong{font-size:13px}
-.plan-summary{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:9px;margin:16px 0}.plan-summary>div{min-width:0;padding:12px 13px;border:1px solid var(--edo-border);border-radius:11px;background:var(--edo-surface-soft)}.plan-summary dt{display:flex;align-items:center;gap:6px;color:var(--edo-muted);font-size:11px}.plan-summary dt svg{width:14px;color:var(--edo-primary)}.plan-summary dd{margin:4px 0 0;font-size:21px;font-weight:650;line-height:1.2}.plan-summary dd.summary-rule{font-size:16px}.plan-summary small{display:block;margin-top:3px;color:var(--edo-muted);font-size:10px}
-.plan-groups{overflow:hidden;border:1px solid var(--edo-border);border-radius:12px}.plan-groups>header{display:flex;align-items:center;justify-content:space-between;padding:13px 15px;background:var(--edo-surface-soft)}.plan-groups>header small,.plan-groups>header h3{display:block;margin:0}.plan-groups>header small{color:var(--edo-muted);font-size:10px}.plan-groups>header h3{margin-top:1px;font-size:14px}.plan-group-heading-actions{display:flex;align-items:center;gap:7px}.plan-group-heading-actions>span{padding:4px 8px;border-radius:999px;color:var(--edo-muted);background:var(--edo-surface);font-size:10px}.plan-group-heading-actions :deep(.ant-btn),.plan-group-actions :deep(.ant-btn){display:inline-flex;align-items:center;gap:4px}
-.plan-group-list{padding:0 15px 4px}.plan-group-row{padding:15px 0}
-.plan-application-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(380px,100%),1fr));gap:7px;margin-top:11px}.plan-application{display:grid;min-width:0;align-items:center;grid-template-columns:34px minmax(0,1fr) auto;gap:9px;padding:9px 10px;border:1px solid var(--edo-border);border-radius:10px;background:var(--edo-surface-soft)}.plan-app-mark{display:grid;width:34px;height:34px;place-items:center;border-radius:9px;color:var(--edo-primary);background:var(--edo-surface)}.plan-app-mark svg{width:16px}.plan-app-copy{min-width:0}.plan-app-copy strong,.plan-app-copy>span{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.plan-app-copy strong{font-size:12px}.plan-app-copy>span{display:flex;align-items:center;gap:4px;margin-top:3px;color:var(--edo-muted);font-size:10px}.plan-app-copy>span svg{width:12px;flex:0 0 12px}.plan-app-copy .plan-app-execution.tone-info{color:#3768d8}.plan-app-copy .plan-app-execution.tone-success{color:#168b57}.plan-app-copy .plan-app-execution.tone-danger{color:#d94150}.plan-app-time{display:flex;min-width:0;align-items:center;gap:4px;margin-top:3px;color:var(--edo-muted);font-size:9px}.plan-app-time svg{width:11px;flex:0 0 11px}.plan-app-time span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.plan-app-time em{flex:0 0 auto;color:color-mix(in srgb,var(--edo-primary) 72%,var(--edo-muted));font-style:normal;white-space:nowrap}.plan-app-actions{display:flex;align-items:center;justify-content:flex-end;gap:3px}.plan-app-actions em{padding:3px 6px;border-radius:999px;color:#168b57;background:color-mix(in srgb,#2ab573 10%,var(--edo-surface));font-size:9px;font-style:normal;white-space:nowrap}.plan-app-actions em.disabled{color:var(--edo-muted);background:var(--edo-surface)}.plan-app-actions :deep(.ant-btn){display:inline-flex;align-items:center;gap:4px;padding-inline:5px}
+.plan-loading{padding:20px}
+.plan-status{display:inline-flex;align-items:center;gap:7px;color:var(--edo-muted);font-size:12px}.plan-status i{width:7px;height:7px;border-radius:50%;background:currentColor}
+.plan-status.tone-info{color:var(--edo-primary)}.plan-status.tone-success{color:var(--edo-success,#2ab573)}.plan-status.tone-danger{color:var(--edo-danger,#ed5965)}
+.plan-status.live i{animation:plan-pulse 2s ease-out infinite}@keyframes plan-pulse{0%{box-shadow:0 0 0 0 color-mix(in srgb,currentColor 30%,transparent)}70%{box-shadow:0 0 0 6px transparent}100%{box-shadow:0 0 0 0 transparent}}@media(prefers-reduced-motion:reduce){.plan-status.live i{animation:none}}
+.plan-app-preview{display:flex;min-width:0;align-items:center;gap:5px}.plan-app-preview>span{max-width:100px;overflow:hidden;padding:2px 6px;border-radius:4px;background:var(--edo-surface-soft);font-size:12px;text-overflow:ellipsis;white-space:nowrap}.plan-app-preview>small{flex-shrink:0;margin:0}
+.plan-groups{overflow:hidden;border:1px solid var(--edo-border);border-radius:8px}.plan-groups>header{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:10px 12px;background:var(--edo-surface-soft)}.plan-groups>header small{display:none}.plan-groups>header h3{margin:0;font-size:13px}.plan-group-heading-actions{display:flex;align-items:center;gap:7px}.plan-group-heading-actions>span{color:var(--edo-muted);font-size:12px}.plan-group-heading-actions :deep(.ant-btn){display:inline-flex;align-items:center;gap:4px}
+.plan-application-grid{display:grid;grid-template-columns:1fr}.plan-application{display:grid;min-width:0;align-items:center;grid-template-columns:30px minmax(0,1fr) auto;gap:10px;padding:10px 12px;background:var(--edo-surface)}.plan-application+.plan-application{border-top:1px solid var(--edo-border)}.plan-app-mark{display:grid;width:30px;height:30px;place-items:center;border-radius:7px;color:var(--edo-primary);background:var(--edo-primary-soft)}.plan-app-mark svg{width:16px}
+.plan-app-copy{display:grid;min-width:0;grid-template-columns:minmax(140px,1fr) minmax(220px,1fr);gap:4px 20px}.plan-app-copy strong,.plan-app-copy>span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.plan-app-copy strong{grid-column:1;grid-row:1;font-size:13px}.plan-app-copy>span{display:flex;align-items:center;gap:4px;grid-column:1;grid-row:2;color:var(--edo-muted);font-size:12px}.plan-app-copy>span svg{width:13px;height:13px;flex:0 0 13px}.plan-app-copy>.plan-app-execution{grid-column:2;grid-row:1}.plan-app-copy .tone-info{color:var(--edo-primary)}.plan-app-copy .tone-success{color:var(--edo-success,#2ab573)}.plan-app-copy .tone-danger{color:var(--edo-danger,#ed5965)}
+.plan-app-time{display:flex;min-width:0;align-items:center;gap:4px;grid-column:2;grid-row:2;color:var(--edo-muted);font-size:12px}.plan-app-time svg{width:12px;flex:0 0 12px}.plan-app-time span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.plan-app-time em{flex:0 0 auto;font-style:normal;white-space:nowrap}
+.plan-app-actions{display:flex;align-items:center;justify-content:flex-end;gap:3px}.plan-app-actions em{padding:3px 6px;border-radius:4px;color:var(--edo-success,#2ab573);background:var(--edo-surface-soft);font-size:12px;font-style:normal;white-space:nowrap}.plan-app-actions em.disabled{color:var(--edo-muted)}.plan-app-actions :deep(.ant-btn){display:inline-flex;align-items:center;gap:4px;padding-inline:5px}
 .plan-empty{display:grid;min-height:460px;place-items:center;align-content:center;padding:32px;text-align:center}.plan-empty>span{display:grid;width:58px;height:58px;place-items:center;border-radius:18px;color:var(--edo-primary);background:var(--edo-primary-soft)}.plan-empty>span svg{width:25px}.plan-empty h3{margin:15px 0 0;font-size:16px}.plan-empty p{max-width:420px;margin:6px 0 16px;color:var(--edo-muted);font-size:12px}
-@keyframes plan-pulse{0%{box-shadow:0 0 0 0 color-mix(in srgb,currentColor 30%,transparent)}70%{box-shadow:0 0 0 7px transparent}100%{box-shadow:0 0 0 0 transparent}}
-@media(max-width:980px){.plan-workspace{grid-template-columns:250px minmax(0,1fr)}.plan-application-grid{grid-template-columns:1fr}}
-@media(max-width:760px){.plan-workspace{grid-template-columns:1fr;min-height:0}.plan-index-list{display:flex;max-height:none;overflow-x:auto;overflow-y:hidden;padding:7px}.plan-index-list>button{width:260px;flex:0 0 260px}.plan-detail{padding:16px}.plan-detail-heading{align-items:flex-start}.plan-summary{grid-template-columns:repeat(3,minmax(100px,1fr));overflow-x:auto}}
-@media(max-width:520px){.plan-detail-heading{flex-direction:column}.plan-detail-actions{width:100%;align-items:stretch;flex-direction:column}.plan-state{align-self:stretch}.plan-detail-actions :deep(.ant-btn){justify-content:center}.plan-summary{grid-template-columns:1fr}.plan-application{grid-template-columns:34px minmax(0,1fr)}.plan-app-actions{grid-column:2;justify-self:start}}
-@media(prefers-reduced-motion:reduce){.plan-index-list>button>i.live,.plan-state.live>i{animation:none}}
+@media(max-width:1100px){.plan-app-copy{grid-template-columns:minmax(0,1fr)}.plan-app-copy>.plan-app-execution{grid-column:1;grid-row:3}.plan-app-time{grid-column:1;grid-row:4}}
+@media(max-width:760px){.plan-application{grid-template-columns:30px minmax(0,1fr)}.plan-app-actions{grid-column:2;justify-content:flex-start;flex-wrap:wrap}.plan-groups>header{flex-wrap:wrap}}
+.plan-groups>header h3{font-size:14px}.plan-application{min-height:64px}.plan-app-actions{flex-wrap:wrap}.plan-app-actions :deep(.ant-btn){font-size:12px}.plan-app-copy strong{font-size:13px}
 </style>

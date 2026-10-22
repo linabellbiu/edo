@@ -689,6 +689,7 @@ func (s *Service) ReconcileReleasePlanExecution(ctx context.Context, executionID
 		for itemID, message := range skips {
 			item := itemByID[itemID]
 			item.Status, item.Message, item.FinishedAt, item.UpdatedAt = model.ReleasePlanExecutionItemSkipped, message, &now, now
+			s.realtime.Changed(ctx, "pipeline_runs", item.PipelineRunID)
 		}
 		blockedGroups, _ = releasePlanExecutionSkips(snapshot, itemByID)
 	}
@@ -714,6 +715,7 @@ func (s *Service) ReconcileReleasePlanExecution(ctx context.Context, executionID
 			s.logReleasePlanExecutionError("release_plan_execution_reconcile_complete", executionID, err)
 			return nil, ErrReleasePlanExecutionTemporarilyFailed
 		}
+		s.realtime.Changed(ctx, "release_plans", execution.ReleasePlanID)
 		return s.FindReleasePlanExecution(ctx, executionID)
 	}
 
@@ -760,6 +762,9 @@ func (s *Service) ReconcileReleasePlanExecution(ctx context.Context, executionID
 				_ = s.failCurrentExecution(ctx, claimed[i].PipelineRunID, "发布计划启动流水线失败", err)
 			}
 		}
+	}
+	if len(claimed) > 0 {
+		s.realtime.Changed(ctx, "release_plans", execution.ReleasePlanID)
 	}
 	return s.FindReleasePlanExecution(ctx, executionID)
 }

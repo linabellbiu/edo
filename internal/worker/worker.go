@@ -22,6 +22,7 @@ import (
 	"edo/internal/database"
 	"edo/internal/messaging"
 	"edo/internal/model"
+	"edo/internal/realtime"
 	"edo/internal/task"
 )
 
@@ -50,7 +51,10 @@ type Worker struct {
 	succeeded atomic.Uint64
 	failed    atomic.Uint64
 	retried   atomic.Uint64
+	realtime  *realtime.Bus
 }
+
+func (w *Worker) ConfigureRealtime(bus *realtime.Bus) { w.realtime = bus }
 
 type RuntimeStats struct {
 	Instances int    `json:"instances"`
@@ -239,6 +243,15 @@ func (w *Worker) process(runContext context.Context, message queueMessage) {
 	cancel()
 	<-heartbeatDone
 
+	var current model.Job
+	if err := w.db.WithContext(context.WithoutCancel(jobContext)).Select("status").First(&current, "id = ?", job.ID).Error; err != nil {
+		w.logger.Error("检查任务停止结果失败", "operation", "worker_cancel_result", "job_id", job.ID, "err", err)
+	} else if current.Status == model.JobCanceled {
+		w.logger.Info("任务已停止", "operation", "worker_canceled", "job_id", job.ID, "kind", job.Kind)
+		w.term(message, job.ID)
+		return
+	}
+
 	if executionErr == nil {
 		if err := w.finishSuccess(context.WithoutCancel(jobContext), taskMessage.JobID); err != nil {
 			w.logger.Error("记录任务成功状态失败", "operation", "worker_finish_success", "job_id", taskMessage.JobID, "attempt", attempt, "err", err)
@@ -385,6 +398,7 @@ func (w *Worker) scheduleRetry(ctx context.Context, jobID, code, publicMessage s
 
 func (w *Worker) finishFailure(ctx context.Context, queueMessage queueMessage, message task.Message, attempt int, code, publicMessage string) {
 	failedAt := time.Now().UTC()
+	var failedRunID string
 	err := w.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var job model.Job
 		if err := tx.First(&job, "id = ? AND status = ? AND lease_owner = ?", message.JobID, model.JobRunning, w.ownerID).Error; err != nil {
@@ -418,6 +432,19 @@ func (w *Worker) finishFailure(ctx context.Context, queueMessage queueMessage, m
 			if err := hook(ctx, tx, job, code, publicMessage); err != nil {
 				return fmt.Errorf("收敛关联业务状态失败: %w", err)
 			}
+			var payload struct {
+				PipelineRunID string `json:"pipeline_run_id"`
+			}
+			if json.Unmarshal(job.Payload, &payload) == nil {
+				failedRunID = payload.PipelineRunID
+			}
+			var reconciled model.Job
+			if err := tx.Select("status").First(&reconciled, "id = ?", job.ID).Error; err != nil {
+				return err
+			}
+			if reconciled.Status == model.JobCanceled {
+				return nil
+			}
 		}
 		return tx.Create(&model.OutboxEvent{
 			DepartmentID: job.DepartmentID,
@@ -429,6 +456,9 @@ func (w *Worker) finishFailure(ctx context.Context, queueMessage queueMessage, m
 		w.logger.Error("记录任务失败和死信失败", "operation", "worker_finish_failure", "job_id", message.JobID, "attempt", attempt, "err", err)
 		w.nak(queueMessage, retryDelay(attempt), "finish_failure")
 		return
+	}
+	if failedRunID != "" {
+		w.realtime.Changed(ctx, "pipeline_runs", failedRunID)
 	}
 	w.term(queueMessage, message.JobID)
 }

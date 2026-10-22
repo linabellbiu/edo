@@ -1,6 +1,7 @@
 import 'ant-design-vue/dist/reset.css'
 import '@xterm/xterm/css/xterm.css'
 import './styles/vben.css'
+import './styles/resource-list.css'
 
 import { createPinia } from 'pinia'
 import { createApp } from 'vue'

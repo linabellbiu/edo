@@ -1585,6 +1585,10 @@ func (s *Service) ensureReleasePlanRunAdvanceAllowed(ctx context.Context, run *m
 }
 
 func (s *Service) advanceLoadedRun(ctx context.Context, run *model.PipelineRun, actorID, targetNodeID string) (*model.PipelineRun, error) {
+	defer s.realtime.Changed(ctx, "pipeline_runs", run.ID)
+	if run.Stage == stoppingStage || run.Status == model.PipelineRunCanceled || run.Status == model.PipelineRunFailed || run.Status == model.PipelineRunSkipped || run.Status == model.PipelineRunSucceeded {
+		return nil, ErrInvalidWorkflowTransition
+	}
 	snapshot, err := parseWorkflowSnapshot(run)
 	if err != nil {
 		return nil, err
@@ -1629,11 +1633,15 @@ func (s *Service) advanceLoadedRun(ctx context.Context, run *model.PipelineRun, 
 		now := time.Now().UTC()
 		message := "当前任务：" + current.Name + "；状态：已完成"
 		if err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-			if err := tx.Model(run).Updates(map[string]any{
+			result := tx.Model(run).Where("status = ? AND stage = ? AND current_node_id = ? AND execution_job_id = ?", run.Status, run.Stage, run.CurrentNodeID, run.ExecutionJobID).Updates(map[string]any{
 				"status": model.PipelineRunSucceeded, "stage": "completed",
 				"message": message, "updated_at": now,
-			}).Error; err != nil {
-				return err
+			})
+			if result.Error != nil {
+				return result.Error
+			}
+			if result.RowsAffected != 1 {
+				return ErrInvalidWorkflowTransition
 			}
 			return tx.Model(&model.PipelineRunRepository{}).Where("pipeline_run_id = ?", run.ID).
 				Updates(map[string]any{"status": model.PipelineRunRepositorySucceeded, "updated_at": now}).Error
@@ -1668,8 +1676,12 @@ func (s *Service) advanceLoadedRun(ctx context.Context, run *model.PipelineRun, 
 		"current_node_id": target.ID, "environment": "",
 		"status": status, "stage": stage, "message": message, "updated_at": now,
 	}
-	if err := s.db.WithContext(ctx).Model(run).Updates(updates).Error; err != nil {
-		return nil, err
+	result := s.db.WithContext(ctx).Model(run).Where("status = ? AND stage = ? AND current_node_id = ? AND execution_job_id = ?", run.Status, run.Stage, run.CurrentNodeID, run.ExecutionJobID).Updates(updates)
+	if result.Error != nil {
+		return nil, result.Error
+	}
+	if result.RowsAffected != 1 {
+		return nil, ErrInvalidWorkflowTransition
 	}
 	run.CurrentNodeID, run.Environment, run.Status = target.ID, "", status
 	run.Stage, run.Message, run.UpdatedAt = stage, message, now
@@ -1712,7 +1724,7 @@ func (s *Service) enqueueBuildExecution(ctx context.Context, run *model.Pipeline
 			return err
 		}
 		jobID = job.ID
-		result := tx.Model(&model.PipelineRun{}).Where("id = ? AND status <> ?", run.ID, model.PipelineRunSucceeded).
+		result := tx.Model(&model.PipelineRun{}).Where("id = ? AND status NOT IN ? AND stage <> ?", run.ID, []model.PipelineRunStatus{model.PipelineRunSucceeded, model.PipelineRunFailed, model.PipelineRunSkipped, model.PipelineRunCanceled}, stoppingStage).
 			Updates(map[string]any{
 				"current_node_id": node.ID, "status": model.PipelineRunRunning, "stage": "queued",
 				"execution_job_id": job.ID, "message": "当前任务：" + node.Name + "；状态：等待执行", "updated_at": now,
@@ -1763,7 +1775,7 @@ func (s *Service) enqueueDeployExecution(ctx context.Context, run *model.Pipelin
 			return err
 		}
 		jobID = job.ID
-		result := tx.Model(&model.PipelineRun{}).Where("id = ? AND status <> ?", run.ID, model.PipelineRunSucceeded).
+		result := tx.Model(&model.PipelineRun{}).Where("id = ? AND status NOT IN ? AND stage <> ?", run.ID, []model.PipelineRunStatus{model.PipelineRunSucceeded, model.PipelineRunFailed, model.PipelineRunSkipped, model.PipelineRunCanceled}, stoppingStage).
 			Updates(map[string]any{
 				"current_node_id": node.ID, "environment": "",
 				"status": model.PipelineRunRunning, "stage": "queued",

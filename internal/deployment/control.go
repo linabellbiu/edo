@@ -205,6 +205,11 @@ func (s *Service) ControlRuntime(
 		}()
 	}
 
+	// 等锁期间可能有新部署上线，取得锁后必须重新确认操作对象。
+	record, err = s.currentDeployment(ctx, deploymentID)
+	if err != nil {
+		return nil, err
+	}
 	state, err := s.executeRuntimeControl(ctx, record, actorID, input)
 	if err != nil {
 		if errors.Is(err, ErrLifecycleScriptRequired) || errors.Is(err, ErrRuntimeControlUnsupported) || errors.Is(err, ErrRuntimeControlInvalid) {
@@ -463,26 +468,17 @@ func (s *Service) currentDeployment(ctx context.Context, deploymentID string) (*
 		}
 		record.ApplicationID = run.ApplicationID
 	}
+	// 新旧数据共同参与排序，不能在存在带 application_id 的记录时漏掉更晚的旧格式记录。
+	legacyRuns := s.db.WithContext(ctx).Model(&model.PipelineRun{}).Select("id").
+		Where("department_id = ? AND application_id = ?", record.DepartmentID, record.ApplicationID)
 	var latest model.DeploymentRecord
 	query := s.db.WithContext(ctx).Model(&model.DeploymentRecord{}).
-		Where("application_id = ? AND deployment_plan_id = ? AND target_id = ? AND status = ?",
-			record.ApplicationID, record.DeploymentPlanID, record.TargetID, model.DeploymentSucceeded).
-		Order("created_at DESC").Limit(1).Find(&latest)
+		Where("department_id = ? AND deployment_plan_id = ? AND target_id = ? AND status = ?",
+			record.DepartmentID, record.DeploymentPlanID, record.TargetID, model.DeploymentSucceeded).
+		Where("application_id = ? OR (application_id = ? AND pipeline_run_id IN (?))", record.ApplicationID, "", legacyRuns).
+		Order("created_at DESC").Order("id DESC").Limit(1).Find(&latest)
 	if query.Error != nil {
 		return nil, fmt.Errorf("确认当前部署实例失败: %w", query.Error)
-	}
-	if latest.ID == "" {
-		// 升级前的记录可能尚未持久化 application_id，使用流水线运行的稳定外键关联，
-		// 但绝不能回退为应用名称匹配。
-		query = s.db.WithContext(ctx).Table("deployment_records AS deployment").
-			Select("deployment.*").
-			Joins("JOIN pipeline_runs AS run ON run.id = deployment.pipeline_run_id").
-			Where("deployment.department_id = ? AND run.department_id = ? AND run.application_id = ? AND deployment.deployment_plan_id = ? AND deployment.target_id = ? AND deployment.status = ?",
-				record.DepartmentID, record.DepartmentID, record.ApplicationID, record.DeploymentPlanID, record.TargetID, model.DeploymentSucceeded).
-			Order("deployment.created_at DESC").Limit(1).Scan(&latest)
-		if query.Error != nil {
-			return nil, fmt.Errorf("确认历史部署实例关联失败: %w", query.Error)
-		}
 	}
 	if latest.ID != record.ID {
 		return nil, ErrDeploymentNotCurrent

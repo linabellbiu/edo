@@ -1,13 +1,55 @@
 <script setup lang="ts">
 import { nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import client from '@/api/client'
+import { openLiveSocket } from '@/utils/liveSocket'
 
 interface PipelineLog{id:number;stage:string;level:string;message:string;created_at:string}
 const props=defineProps<{open:boolean;runID:string;title:string;initialStatus:string}>(),emit=defineEmits<{'update:open':[value:boolean]}>()
 const logs=ref<PipelineLog[]>([]),status=ref(''),connection=ref<'connecting'|'connected'|'complete'|'error'>('connecting'),error=ref(''),viewport=ref<HTMLDivElement|null>(null)
 let dispose:undefined|(()=>void)
-async function connect(){dispose?.();logs.value=[];status.value=props.initialStatus;error.value='';connection.value='connecting';let closed=false,completed=false,afterID=0,reconnect=0,socket:WebSocket|null=null;try{const history=(await client.get<{logs:PipelineLog[];status:string;next_after_id:number}>(`/pipeline-runs/${encodeURIComponent(props.runID)}/logs?limit=500`)).data;logs.value=history.logs||[];status.value=history.status||props.initialStatus;afterID=history.next_after_id||0}catch{/* WebSocket 仍可提供实时日志。 */}const open=()=>{if(closed)return;const protocol=location.protocol==='https:'?'wss:':'ws:';socket=new WebSocket(`${protocol}//${location.host}/api/v1/pipeline-runs/${encodeURIComponent(props.runID)}/logs/ws?after_id=${afterID}`,'edo-pipeline-logs-v1');socket.onopen=()=>{connection.value='connected';error.value=''};socket.onmessage=async(event)=>{try{const payload=JSON.parse(String(event.data)) as {type:string;logs?:PipelineLog[];status?:string;message?:string};if(payload.status)status.value=payload.status;if(payload.logs?.length){afterID=payload.logs.at(-1)?.id||afterID;logs.value.push(...payload.logs);await nextTick();if(viewport.value)viewport.value.scrollTop=viewport.value.scrollHeight}if(payload.type==='complete'){completed=true;connection.value='complete'}if(payload.type==='error'){connection.value='error';error.value=payload.message||'读取流水线日志失败'}}catch{connection.value='error';error.value='收到无法识别的日志事件'}};socket.onclose=()=>{if(closed||completed)return;connection.value='error';error.value='日志连接已断开，正在重连…';reconnect=window.setTimeout(open,1200)};socket.onerror=()=>{connection.value='error';error.value='流水线日志连接失败'}};open();dispose=()=>{closed=true;clearTimeout(reconnect);socket?.close(1000,'用户关闭流水线日志')}}
-watch(()=>props.open,(open)=>{if(open)void connect();else{dispose?.();dispose=undefined}})
+async function connect() {
+  dispose?.()
+  const runID = props.runID
+  const controller = new AbortController()
+  let closed = false
+  let stopSocket: (() => void) | undefined
+  let afterID = 0
+  // 在等待历史请求前注册清理，迟到响应不能重建已关闭的连接。
+  dispose = () => { closed = true; controller.abort(); stopSocket?.() }
+  logs.value = []; status.value = props.initialStatus; error.value = ''; connection.value = 'connecting'
+  try {
+    const history = (await client.get<{logs: PipelineLog[]; status: string; next_after_id: number}>(
+      `/pipeline-runs/${encodeURIComponent(runID)}/logs?limit=500`, {signal: controller.signal},
+    )).data
+    if (closed) return
+    logs.value = history.logs || []; status.value = history.status || props.initialStatus; afterID = history.next_after_id || 0
+  } catch { /* 历史请求失败时仍尝试由日志连接按游标补齐。 */ }
+  if (closed) return
+  stopSocket = openLiveSocket({
+    get path() { return `/api/v1/pipeline-runs/${encodeURIComponent(runID)}/logs/ws?after_id=${afterID}` },
+    protocol: 'edo-pipeline-logs-v1',
+    onState: value => {
+      if (closed || value === 'stopped') return
+      connection.value = value === 'disconnected' ? 'error' : value
+      error.value = value === 'disconnected' ? '日志连接已断开，正在重连…' : ''
+    },
+    onDenied: () => { connection.value = 'error'; error.value = '登录或权限已变化，请重新登录' },
+    onEvent: data => {
+      if (closed) return false
+      const payload = data as {type: string; logs?: PipelineLog[]; status?: string; message?: string}
+      if (payload.status) status.value = payload.status
+      if (payload.logs?.length) {
+        const fresh = payload.logs.filter(log => log.id > afterID)
+        logs.value.push(...fresh)
+        afterID = fresh.at(-1)?.id || afterID
+        void nextTick().then(() => { if (!closed && viewport.value) viewport.value.scrollTop = viewport.value.scrollHeight })
+      }
+      if (payload.type === 'complete') { connection.value = 'complete'; return false }
+      if (payload.type === 'error') { connection.value = 'error'; error.value = payload.message || '读取流水线日志失败'; return false }
+    },
+  })
+}
+watch(()=>[props.open,props.runID],()=>{if(props.open&&props.runID)void connect();else{dispose?.();dispose=undefined}},{immediate:true})
 onBeforeUnmount(()=>dispose?.())
 </script>
 <template><a-drawer :open="open" :title="title" width="min(920px,94vw)" @close="emit('update:open',false)"><template #extra><a-tag :color="connection==='connected'?'processing':connection==='complete'?'success':'error'">{{ connection==='connected'?'实时连接':connection==='complete'?'执行结束':connection==='connecting'?'连接中':'连接异常' }}</a-tag></template><div class="log-meta"><span>运行 ID：<code>{{ runID }}</code></span><span>状态：{{ status }}</span><span>{{ logs.length }} 条</span><b v-if="error">{{ error }}</b></div><div ref="viewport" class="log-viewport"><div v-for="log in logs" :key="log.id" :class="`log-line level-${log.level}`"><time>{{ new Date(log.created_at).toLocaleTimeString('zh-CN',{hour12:false}) }}</time><span>{{ log.stage||'pipeline' }}</span><code>{{ log.message }}</code></div><a-empty v-if="!logs.length" description="等待流水线输出日志…"/></div></a-drawer></template>

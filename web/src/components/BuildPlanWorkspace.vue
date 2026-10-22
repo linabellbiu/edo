@@ -1,13 +1,16 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, reactive, ref, watch } from 'vue'
+import { useI18n } from 'vue-i18n'
 import type { UploadProps } from 'ant-design-vue'
 import {
-  Boxes, Clock3, Cpu, Download, FileCode2, FolderOpen,
-  Package, RefreshCw, Settings2, Upload,
+  Download, FileCode2, Package, RefreshCw, Upload,
 } from 'lucide-vue-next'
 
 import type { ResourceRecord } from '@/api/resources'
 import ResourceTable from '@/components/ResourceTable.vue'
+import ResourceDetailDrawer from '@/components/ResourceDetailDrawer.vue'
+import ResourceRowActions from '@/components/ResourceRowActions.vue'
+import '@/styles/plan-list.css'
 
 type BuildPlanView = 'overview' | 'artifacts'
 
@@ -59,6 +62,7 @@ const props = withDefaults(defineProps<{
   artifacts: Artifact[]
   registries: Registry[]
   selectedID: string
+  requestedID?: string
   activeView: BuildPlanView
   selectedApplicationID: string
   loading?: boolean
@@ -78,6 +82,7 @@ const props = withDefaults(defineProps<{
   canCreate: false,
   canUpdate: false,
   canDelete: false,
+  requestedID: '',
 })
 
 const emit = defineEmits<{
@@ -92,7 +97,43 @@ const emit = defineEmits<{
   download: [artifact: Artifact]
 }>()
 
+const { t } = useI18n()
 const selected = computed(() => props.plans.find(item => item.id === props.selectedID))
+const overviewID = ref('')
+const overviewOpen = ref(false)
+const overviewPlan = computed(() => props.plans.find(plan => plan.id === overviewID.value))
+const drawerPlan = computed(() => artifactsOpen.value ? selected.value : overviewPlan.value)
+const artifactsOpen = computed(() => Boolean(selected.value && props.activeView === 'artifacts'))
+const pageState = reactive({ current: 1, pageSize: 10 })
+const highlightedID = ref('')
+const planPagination = computed(() => ({
+  ...pageState,
+  showSizeChanger: true,
+  pageSizeOptions: ['10', '20', '50', '100'],
+  showTotal: (total: number) => t('planList.total', { count: total }),
+}))
+const planColumns = computed(() => [
+  { key: 'name', title: t('nav.buildPlans'), width: 260 },
+  { key: 'entry', title: t('buildPlanWorkspace.entry'), width: 185 },
+  { key: 'directory', title: t('buildPlanWorkspace.directory'), width: 160 },
+  { key: 'artifact', title: t('buildPlanWorkspace.artifact'), width: 230 },
+  { key: 'architecture', title: t('buildPlanWorkspace.architecture'), width: 160 },
+  { key: 'timeout', title: t('buildPlanWorkspace.timeout'), width: 100 },
+  { key: 'updated', title: t('buildPlanWorkspace.updated'), width: 165 },
+  { key: 'actions', title: t('planList.actions'), width: 245, align: 'right' as const, fixed: 'right' as const },
+])
+let revealedID = ''
+watch(() => ({ ids: props.plans.map(plan => plan.id), requested: props.requestedID }), ({ ids, requested }) => {
+  pageState.current = Math.min(pageState.current, Math.max(1, Math.ceil(ids.length / pageState.pageSize)))
+  if (!ids.includes(highlightedID.value)) highlightedID.value = ''
+  if (!ids.includes(overviewID.value)) overviewOpen.value = false
+  if (!requested) revealedID = ''
+  else if (requested !== revealedID && ids.includes(requested)) {
+    pageState.current = Math.floor(ids.indexOf(requested) / pageState.pageSize) + 1
+    highlightedID.value = requested
+    revealedID = requested
+  }
+}, { immediate: true })
 const selectedApplication = computed(() => props.applications.find(item => item.id === props.selectedApplicationID))
 const uploadDisabled = computed(() => !selected.value?.is_active || !selectedApplication.value?.is_active)
 const artifactColumns = [
@@ -111,8 +152,37 @@ const beforeArtifactUpload: UploadProps['beforeUpload'] = (file) => {
   return false
 }
 
-function selectPlan(id: string) {
-  if (id !== props.selectedID) emit('select-plan', id)
+function changePlanPage(page: { current?: number; pageSize?: number }) {
+  const pageSize = page.pageSize || pageState.pageSize
+  pageState.current = pageSize === pageState.pageSize ? page.current || 1 : 1
+  pageState.pageSize = pageSize
+  highlightedID.value = ''
+}
+
+function openArtifacts(plan: BuildPlan) {
+  if (props.artifactUploading) return
+  overviewOpen.value = false
+  highlightedID.value = plan.id
+  if (plan.id !== props.selectedID) {
+    emit('select-plan', plan.id)
+    emit('update:selectedApplicationID', '')
+  }
+  emit('select-view', 'artifacts')
+}
+
+function openOverview(plan: BuildPlan) {
+  if (props.artifactUploading) return
+  emit('select-view', 'overview')
+  overviewID.value = plan.id
+  overviewOpen.value = true
+}
+function closeDrawer() {
+  if (props.artifactUploading) return
+  overviewOpen.value = false
+  closeArtifacts()
+}
+function closeArtifacts() {
+  if (!props.artifactUploading) emit('select-view', 'overview')
 }
 
 function applicationName(id: string) {
@@ -175,93 +245,133 @@ function formatTime(value: string) {
 </script>
 
 <template>
-  <div class="build-plan-layout vben-card">
-    <aside class="build-plan-tree">
-      <header>
-        <div><strong>构建方案</strong><small>制品归属于具体方案</small></div>
-        <span>{{ plans.length }}</span>
-      </header>
-      <div class="build-plan-tree-scroll">
-        <div v-for="plan in plans" :key="plan.id" class="build-plan-tree-item" :class="{ selected: selectedID === plan.id }">
-          <button type="button" class="build-plan-select" @click="selectPlan(plan.id)">
-            <span class="build-plan-icon" :class="plan.kind"><Boxes v-if="plan.kind === 'dockerfile'" /><FileCode2 v-else /></span>
-            <span class="build-plan-copy">
-              <strong>{{ plan.name }}</strong>
-              <small><span>构建方式：{{ buildPlanKindLabel(plan.kind) }}</span><span>制品：{{ buildPlanArtifact(plan) }}</span></small>
-            </span>
-            <i :class="{ inactive: !plan.is_active }" />
-          </button>
-          <div v-if="selectedID === plan.id" class="build-plan-children">
-            <button type="button" :class="{ active: activeView === 'overview' }" @click="emit('select-view', 'overview')"><Settings2 />方案概览</button>
-            <button type="button" :class="{ active: activeView === 'artifacts' }" @click="emit('select-view', 'artifacts')"><Package />构建制品</button>
+  <div class="expandable-plan-list build-plan-list vben-card">
+    <a-table
+      class="plan-table resource-list-table" row-key="id" size="small" table-layout="fixed"
+      :columns="planColumns" :data-source="plans" :loading="loading"
+      :pagination="planPagination" :scroll="{ x: 1505 }"
+      :row-class-name="(plan: BuildPlan) => ['plan-table-row', highlightedID === plan.id ? 'is-current' : ''].join(' ')"
+      :locale="{ emptyText: t('buildPlanWorkspace.empty') }"
+      @change="changePlanPage"
+    >
+      <template #bodyCell="{ column, record: plan }">
+        <div v-if="column.key === 'name'" class="plan-cell">
+          <div class="build-plan-name">
+            <a-tooltip :title="plan.name" :mouse-enter-delay="0.1"><button class="resource-name" @click="openOverview(plan)">{{ plan.name }}</button></a-tooltip>
+            <a-tag :color="plan.is_active ? 'success' : 'default'">{{ plan.is_active ? t('planList.enabled') : t('planList.disabled') }}</a-tag>
           </div>
+          <a-tooltip v-if="plan.description" :title="plan.description" :mouse-enter-delay="0.1" :trigger="['hover', 'focus']">
+            <small class="build-description" tabindex="0">{{ plan.description }}</small>
+          </a-tooltip>
+          <small v-else>{{ t('planList.descriptionEmpty') }}</small>
         </div>
-        <a-empty v-if="!plans.length && !loading" description="还没有构建方案" />
-      </div>
-    </aside>
-
-    <main v-if="selected" class="build-plan-detail">
-      <header class="build-plan-detail-head">
-        <div>
-          <span>{{ buildPlanKindLabel(selected.kind) }}</span>
-          <h3>{{ selected.name }}</h3>
-          <p>{{ selected.description || '尚未填写说明' }}</p>
+        <div v-else-if="column.key === 'entry'" class="plan-cell">
+          <div class="build-plan-kind"><FileCode2 :size="15" /><strong>{{ buildPlanKindLabel(plan.kind) }}</strong></div>
+          <a-tooltip :title="buildPlanEntry(plan)" :mouse-enter-delay="0.1"><small>{{ buildPlanEntry(plan) }}</small></a-tooltip>
         </div>
-        <div>
-          <a-tag :color="selected.is_active ? 'success' : 'default'">{{ selected.is_active ? '已启用' : '已停用' }}</a-tag>
-          <a-button v-if="canUpdate" :loading="mutationID === selected.id" @click="emit('toggle', selected)">{{ selected.is_active ? '停用' : '启用' }}</a-button>
-          <a-button v-if="canUpdate" @click="emit('edit', selected)">编辑</a-button>
-          <a-button v-if="canDelete" danger :disabled="mutationID === selected.id" @click="emit('remove', selected)">删除</a-button>
+        <div v-else-if="column.key === 'directory'" class="plan-cell">
+          <a-tooltip :title="buildPlanDirectory(plan)" :mouse-enter-delay="0.1"><code class="build-path">{{ buildPlanDirectory(plan) }}</code></a-tooltip>
         </div>
-      </header>
-
-      <section v-if="activeView === 'overview'" class="build-plan-overview">
-        <div class="build-plan-summary">
-          <article><span><FileCode2 /></span><div><small>构建入口</small><strong>{{ buildPlanEntry(selected) }}</strong></div></article>
-          <article><span><FolderOpen /></span><div><small>执行目录</small><strong>{{ buildPlanDirectory(selected) }}</strong></div></article>
-          <article><span><Package /></span><div><small>制品类型</small><strong>{{ buildPlanArtifact(selected) }}</strong></div></article>
-          <article><span><Boxes /></span><div><small>存储位置</small><strong>{{ buildPlanRegistry(selected) }}</strong></div></article>
-          <article><span><Cpu /></span><div><small>目标架构</small><strong>自动跟随部署主机</strong></div></article>
+        <div v-else-if="column.key === 'artifact'" class="plan-cell">
+          <a-tooltip :title="buildPlanArtifact(plan)" :mouse-enter-delay="0.1"><strong>{{ buildPlanArtifact(plan) }}</strong></a-tooltip>
+          <a-tooltip :title="buildPlanRegistry(plan)" :mouse-enter-delay="0.1"><small>{{ buildPlanRegistry(plan) }}</small></a-tooltip>
         </div>
-        <div class="build-plan-limit"><Clock3 /><span><small>构建超时</small><strong>{{ selected.timeout_seconds }} 秒</strong></span><p>最近修改 {{ formatTime(selected.updated_at) }}</p></div>
-      </section>
-
-      <section v-else class="build-plan-artifacts">
-        <header class="artifact-toolbar">
-          <div><strong>构建制品</strong></div>
-          <div>
-            <a-select
-              :value="selectedApplicationID || undefined"
-              allow-clear
-              show-search
-              option-filter-prop="label"
-              placeholder="全部应用"
-              :options="applications.map(item => ({ value: item.id, label: item.name }))"
-              @update:value="emit('update:selectedApplicationID', String($event || ''))"
-            />
-            <a-button :loading="artifactLoading" @click="emit('refresh-artifacts')"><RefreshCw />刷新</a-button>
-            <a-upload v-if="canCreate" :show-upload-list="false" :before-upload="beforeArtifactUpload" :disabled="uploadDisabled || artifactUploading">
-              <a-button type="primary" :loading="artifactUploading" :disabled="uploadDisabled"><Upload />上传制品</a-button>
-            </a-upload>
-          </div>
-        </header>
-        <ResourceTable :rows="artifacts" :columns="artifactColumns" :loading="artifactLoading" empty-text="该构建方案还没有制品">
-          <template #cell-application_id="{ value }">{{ applicationName(String(value)) }}</template>
-          <template #cell-kind="{ value }"><a-tag color="blue">{{ artifactKindLabel(value as Artifact['kind']) }}</a-tag></template>
-          <template #cell-status="{ value }"><a-tag :color="value === 'available' ? 'success' : value === 'corrupt' ? 'error' : 'default'">{{ artifactStatusLabel(value as Artifact['status']) }}</a-tag></template>
-          <template #cell-size_bytes="{ row }">{{ formatArtifactSize(row as Artifact) }}</template>
-          <template #cell-storage_kind="{ value }">{{ artifactStorageLabel(value as Artifact['storage_kind']) }}</template>
-          <template #cell-digest="{ value }"><code class="artifact-digest" :title="String(value)">{{ String(value).slice(0, 19) }}…</code></template>
-          <template #actions="{ row }"><a-button v-if="(row as Artifact).storage_kind === 'local_file' && (row as Artifact).status === 'available'" type="link" :loading="artifactDownloadingID === String(row.id)" @click="emit('download', row as Artifact)"><Download />下载</a-button></template>
-        </ResourceTable>
-      </section>
-    </main>
-    <div v-else class="build-plan-empty"><a-empty description="选择或新建构建方案" /></div>
+        <span v-else-if="column.key === 'architecture'">{{ t('buildPlanWorkspace.followHost') }}</span>
+        <span v-else-if="column.key === 'timeout'">{{ t('planList.seconds', { count: plan.timeout_seconds }) }}</span>
+        <div v-else-if="column.key === 'updated'" class="plan-cell"><time :datetime="plan.updated_at">{{ formatTime(plan.updated_at) }}</time></div>
+        <ResourceRowActions v-else-if="column.key === 'actions'" :more="canUpdate || canDelete" :loading="mutationID === plan.id">
+          <a-button size="small" @click="openOverview(plan)">{{ t('resourceList.details') }}</a-button>
+          <a-button size="small" :disabled="artifactUploading" @click="openArtifacts(plan)">{{ t('buildPlanWorkspace.artifacts') }}</a-button>
+          <template #more>
+            <a-menu-item v-if="canUpdate" @click="emit('edit', plan)">{{ t('planList.edit') }}</a-menu-item>
+            <a-menu-item v-if="canUpdate" :disabled="mutationID === plan.id" @click="emit('toggle', plan)">{{ plan.is_active ? t('planList.disable') : t('planList.enable') }}</a-menu-item>
+            <a-menu-divider v-if="canDelete" />
+            <a-menu-item v-if="canDelete" danger :disabled="mutationID === plan.id" @click="emit('remove', plan)">{{ t('planList.remove') }}</a-menu-item>
+          </template>
+        </ResourceRowActions>
+      </template>
+    </a-table>
   </div>
+
+  <ResourceDetailDrawer :open="overviewOpen || artifactsOpen" :title="drawerPlan?.name" :mask-closable="!artifactUploading" :closable="!artifactUploading" :keyboard="!artifactUploading" @update:open="!$event && closeDrawer()">
+    <template #actions>
+      <a-tag v-if="drawerPlan" :color="drawerPlan.is_active ? 'success' : 'default'">{{ drawerPlan.is_active ? t('planList.enabled') : t('planList.disabled') }}</a-tag>
+      <a-button v-if="drawerPlan && artifactsOpen" size="small" @click="openOverview(drawerPlan)">{{ t('resourceList.basic') }}</a-button>
+      <a-button v-if="drawerPlan && !artifactsOpen" size="small" @click="openArtifacts(drawerPlan)">{{ t('buildPlanWorkspace.artifacts') }}</a-button>
+      <a-button v-if="drawerPlan && canUpdate" size="small" @click="emit('edit', drawerPlan)">{{ t('planList.edit') }}</a-button>
+    </template>
+    <section v-if="!artifactsOpen && drawerPlan" class="resource-detail-section">
+      <h4>{{ t('resourceList.configuration') }}</h4>
+      <dl class="resource-facts">
+        <div><dt>{{ t('buildPlanWorkspace.entry') }}</dt><dd>{{ buildPlanEntry(drawerPlan) }}</dd></div>
+        <div><dt>{{ t('buildPlanWorkspace.directory') }}</dt><dd>{{ buildPlanDirectory(drawerPlan) }}</dd></div>
+        <div><dt>{{ t('buildPlanWorkspace.artifact') }}</dt><dd>{{ buildPlanArtifact(drawerPlan) }}</dd></div>
+        <div><dt>{{ t('buildPlanWorkspace.storage') }}</dt><dd>{{ buildPlanRegistry(drawerPlan) }}</dd></div>
+        <div><dt>{{ t('buildPlanWorkspace.architecture') }}</dt><dd>{{ t('buildPlanWorkspace.followHost') }}</dd></div>
+        <div><dt>{{ t('buildPlanWorkspace.timeout') }}</dt><dd>{{ t('planList.seconds', { count: drawerPlan.timeout_seconds }) }}</dd></div>
+        <div><dt>{{ t('buildPlanWorkspace.updated') }}</dt><dd>{{ formatTime(drawerPlan.updated_at) }}</dd></div>
+        <div class="resource-facts-wide"><dt>{{ t('resourceList.description') }}</dt><dd>{{ drawerPlan.description || '—' }}</dd></div>
+      </dl>
+      <pre v-if="drawerPlan.kind === 'script'" class="resource-code">{{ drawerPlan.script }}</pre>
+    </section>
+    <section v-else class="build-plan-artifacts resource-detail-section">
+      <header class="artifact-toolbar">
+        <strong>{{ t('buildPlanWorkspace.artifacts') }}</strong>
+        <div>
+          <a-select
+            :value="selectedApplicationID || undefined"
+            allow-clear show-search option-filter-prop="label" :disabled="artifactUploading"
+            placeholder="全部应用"
+            :options="applications.map(item => ({ value: item.id, label: item.name }))"
+            @update:value="emit('update:selectedApplicationID', String($event || ''))"
+          />
+          <a-button :loading="artifactLoading" @click="emit('refresh-artifacts')"><RefreshCw />刷新</a-button>
+          <a-upload v-if="canCreate" :show-upload-list="false" :before-upload="beforeArtifactUpload" :disabled="uploadDisabled || artifactUploading">
+            <a-button type="primary" :loading="artifactUploading" :disabled="uploadDisabled"><Upload />上传制品</a-button>
+          </a-upload>
+        </div>
+      </header>
+      <ResourceTable :rows="artifacts" :columns="artifactColumns" :loading="artifactLoading" empty-text="该构建方案还没有制品">
+        <template #cell-application_id="{ value }">{{ applicationName(String(value)) }}</template>
+        <template #cell-kind="{ value }"><a-tag color="blue">{{ artifactKindLabel(value as Artifact['kind']) }}</a-tag></template>
+        <template #cell-status="{ value }"><a-tag :color="value === 'available' ? 'success' : value === 'corrupt' ? 'error' : 'default'">{{ artifactStatusLabel(value as Artifact['status']) }}</a-tag></template>
+        <template #cell-size_bytes="{ row }">{{ formatArtifactSize(row as Artifact) }}</template>
+        <template #cell-storage_kind="{ value }">{{ artifactStorageLabel(value as Artifact['storage_kind']) }}</template>
+        <template #cell-digest="{ value }"><code class="artifact-digest" :title="String(value)">{{ String(value).slice(0, 19) }}…</code></template>
+        <template #actions="{ row }"><a-button v-if="(row as Artifact).storage_kind === 'local_file' && (row as Artifact).status === 'available'" type="link" :loading="artifactDownloadingID === String(row.id)" @click="emit('download', row as Artifact)"><Download :size="14" />下载</a-button></template>
+      </ResourceTable>
+    </section>
+  </ResourceDetailDrawer>
 </template>
 
 <style scoped>
-.build-plan-layout{display:grid;min-height:570px;grid-template-columns:286px minmax(0,1fr);overflow:hidden}.build-plan-tree{border-right:1px solid var(--edo-border);background:var(--edo-surface-soft)}.build-plan-tree>header{display:flex;height:64px;align-items:center;justify-content:space-between;padding:0 16px}.build-plan-tree>header strong,.build-plan-tree>header small{display:block}.build-plan-tree>header small{margin-top:2px;color:var(--edo-muted);font-size:11px}.build-plan-tree>header>span{min-width:28px;padding:3px 8px;border-radius:999px;color:var(--edo-muted);background:var(--edo-surface);text-align:center}.build-plan-tree-scroll{max-height:calc(100vh - 230px);overflow-y:auto;padding:0 7px 10px}.build-plan-tree-item{margin:3px 0;border-radius:11px}.build-plan-tree-item.selected{background:var(--edo-surface)}.build-plan-select{display:grid;width:100%;min-height:68px;align-items:center;grid-template-columns:38px minmax(0,1fr) 8px;gap:10px;padding:9px 10px;border:0;border-radius:10px;color:var(--edo-text);background:transparent;cursor:pointer;text-align:left}.build-plan-select:hover{background:color-mix(in srgb,var(--edo-primary) 5%,var(--edo-surface))}.build-plan-tree-item.selected>.build-plan-select{box-shadow:inset 3px 0 var(--edo-primary)}.build-plan-icon{display:grid;width:38px;height:38px;place-items:center;border-radius:11px;color:#4f72f2;background:var(--edo-primary-soft)}.build-plan-icon.script{color:#9b6fe8;background:color-mix(in srgb,#9b6fe8 10%,var(--edo-surface))}.build-plan-icon svg{width:19px}.build-plan-copy{min-width:0}.build-plan-copy strong,.build-plan-copy small{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.build-plan-copy small{display:flex;gap:8px;margin-top:3px;color:var(--edo-muted);font-size:11px}.build-plan-select>i{width:8px;height:8px;border-radius:50%;background:#28b66e}.build-plan-select>i.inactive{background:#a8adb7}.build-plan-children{position:relative;display:grid;gap:2px;margin:0 8px 7px 27px;padding:3px 0 3px 17px}.build-plan-children::before{position:absolute;top:0;bottom:0;left:5px;width:1px;background:var(--edo-border);content:""}.build-plan-children>button{position:relative;display:flex;height:34px;align-items:center;gap:8px;padding:0 10px;border:0;border-radius:8px;color:var(--edo-muted);background:transparent;cursor:pointer;text-align:left}.build-plan-children>button::before{position:absolute;top:50%;left:-12px;width:12px;height:1px;background:var(--edo-border);content:""}.build-plan-children>button:hover,.build-plan-children>button.active{color:var(--edo-primary);background:var(--edo-primary-soft)}.build-plan-children svg{width:15px}.build-plan-detail{min-width:0;padding:22px}.build-plan-detail-head{display:flex;align-items:flex-start;justify-content:space-between;gap:20px;padding-bottom:18px;border-bottom:1px solid var(--edo-border)}.build-plan-detail-head>div:first-child{min-width:0}.build-plan-detail-head span,.build-plan-detail-head p{color:var(--edo-muted)}.build-plan-detail-head h3{overflow:hidden;margin:3px 0 2px;font-size:21px;text-overflow:ellipsis;white-space:nowrap}.build-plan-detail-head p{overflow:hidden;margin:0;text-overflow:ellipsis;white-space:nowrap}.build-plan-detail-head>div:last-child{display:flex;flex:0 0 auto;align-items:center;gap:7px}.build-plan-overview{padding-top:20px}.build-plan-summary{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:11px}.build-plan-summary article{display:flex;min-width:0;align-items:center;gap:12px;padding:15px;border:1px solid var(--edo-border);border-radius:11px;background:var(--edo-surface-soft)}.build-plan-summary article>span{display:grid;width:38px;height:38px;flex:0 0 38px;place-items:center;border-radius:10px;color:var(--edo-primary);background:var(--edo-surface)}.build-plan-summary svg{width:19px}.build-plan-summary article>div{min-width:0}.build-plan-summary small,.build-plan-summary strong{display:block}.build-plan-summary small{color:var(--edo-muted);font-size:11px}.build-plan-summary strong{overflow:hidden;margin-top:3px;text-overflow:ellipsis;white-space:nowrap}.build-plan-limit{display:flex;align-items:center;gap:12px;margin-top:12px;padding:14px 16px;border-radius:10px;background:var(--edo-primary-soft)}.build-plan-limit>svg{width:20px;color:var(--edo-primary)}.build-plan-limit small,.build-plan-limit strong{display:block}.build-plan-limit small{color:var(--edo-muted);font-size:11px}.build-plan-limit p{margin:0 0 0 auto;color:var(--edo-muted);font-size:12px}.build-plan-artifacts{padding-top:18px}.artifact-toolbar{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:12px}.artifact-toolbar>div:first-child strong{display:block}.artifact-toolbar>div:last-child{display:flex;flex:0 0 auto;align-items:center;gap:8px}.artifact-toolbar :deep(.ant-select){width:210px}.artifact-toolbar :deep(.ant-btn){display:inline-flex;align-items:center;gap:5px}.artifact-toolbar svg,.table-actions svg{width:14px}.artifact-digest{white-space:nowrap}.build-plan-empty{display:grid;place-items:center}
-@media(max-width:900px){.build-plan-layout{grid-template-columns:1fr}.build-plan-tree{max-height:310px;border-right:0;border-bottom:1px solid var(--edo-border)}.build-plan-tree-scroll{max-height:240px}.build-plan-detail{padding:17px}}
-@media(max-width:720px){.build-plan-detail-head,.artifact-toolbar{align-items:flex-start;flex-direction:column}.build-plan-detail-head>div:last-child,.artifact-toolbar>div:last-child{width:100%;flex-wrap:wrap}.artifact-toolbar :deep(.ant-select){min-width:190px;flex:1}.build-plan-summary{grid-template-columns:1fr}.build-plan-limit{align-items:flex-start;flex-wrap:wrap}.build-plan-limit p{width:100%;margin:0}}
+.build-plan-list :deep(.plan-table-row) { cursor: default; }
+.build-plan-name { display: flex; align-items: center; gap: 8px; }
+.build-plan-name strong { min-width: 0; }
+.build-plan-name :deep(.ant-tag) { flex-shrink: 0; margin-inline-end: 0; font-size: 11px; line-height: 18px; }
+.build-plan-list .plan-cell .build-description {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  cursor: help;
+}
+.build-description:focus-visible { outline: 2px solid var(--edo-primary); outline-offset: 2px; border-radius: 3px; }
+.build-plan-kind { display: flex; align-items: center; gap: 7px; }
+.build-plan-kind svg { flex-shrink: 0; color: var(--edo-muted); }
+.build-path { display: block; overflow: hidden; font-size: 12px; white-space: nowrap; text-overflow: ellipsis; }
+.plan-cell time { font-variant-numeric: tabular-nums; }
+.artifact-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
+.artifact-toolbar > div { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.artifact-toolbar :deep(.ant-select) { width: 210px; }
+.artifact-toolbar :deep(.ant-btn) { display: inline-flex; align-items: center; gap: 5px; }
+.artifact-toolbar svg { width: 14px; }
+.artifact-digest { white-space: nowrap; }
+@media (max-width: 720px) {
+  .artifact-toolbar { align-items: flex-start; flex-direction: column; }
+  .artifact-toolbar > div { width: 100%; }
+  .artifact-toolbar :deep(.ant-select) { min-width: 160px; flex: 1; }
+}
 </style>

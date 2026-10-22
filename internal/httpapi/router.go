@@ -33,6 +33,7 @@ import (
 	"edo/internal/monitor"
 	"edo/internal/notification"
 	"edo/internal/pipeline"
+	"edo/internal/realtime"
 	"edo/internal/repository"
 	"edo/internal/scheduler"
 	"edo/internal/systemmetrics"
@@ -60,6 +61,7 @@ type Dependencies struct {
 	Identities       *identity.Service
 	Repositories     *repository.Service
 	Pipelines        *pipeline.Service
+	Realtime         *realtime.Bus
 	Artifacts        *artifactmanager.Service
 	Docker           *dockerengine.Service
 	Kubernetes       *kube.Service
@@ -113,6 +115,8 @@ func NewRouter(deps Dependencies) *gin.Engine {
 
 	protected := api.Group("")
 	protected.Use(requireAuth(deps.Accounts, deps.Sessions, deps.Logger, deps.AuthConfig.CookieName))
+	protected.Use(realtimeMutation(deps.Realtime))
+	protected.GET("/events/ws", requirePermission(deps.Access, deps.Logger, access.PermissionDeliveryRead), streamState(deps))
 	protected.GET("/auth/me", authHandler.handleMe)
 	protected.PUT("/auth/password", auditAction(deps.Audits, deps.Logger, "auth.password.change", "user"), authHandler.handleChangePassword)
 	protected.GET("/system/info", requirePermission(deps.Access, deps.Logger, access.PermissionSystemRead), func(c *gin.Context) {
@@ -199,7 +203,7 @@ func NewRouter(deps Dependencies) *gin.Engine {
 	protected.GET("/repositories/:id/webhook-deliveries", requirePermission(deps.Access, deps.Logger, access.PermissionRepositoryRead), repositoryAPI.listDeliveries)
 	protected.GET("/repositories/:id/webhook", auditAction(deps.Audits, deps.Logger, "repository.webhook.reveal", "repository"), requirePermission(deps.Access, deps.Logger, access.PermissionRepositorySecretRead), repositoryAPI.webhookConfiguration)
 
-	pipelineAPI := pipelineHandler{service: deps.Pipelines, logger: deps.Logger}
+	pipelineAPI := pipelineHandler{service: deps.Pipelines, logger: deps.Logger, realtime: deps.Realtime, streamAuth: func(c *gin.Context) func() bool { return streamAuthorization(deps, c, access.PermissionDeliveryRead) }}
 	artifactAPI := artifactHandler{service: deps.Artifacts, logger: deps.Logger}
 	protected.GET("/applications", requirePermission(deps.Access, deps.Logger, access.PermissionDeliveryRead), pipelineAPI.listApplications)
 	protected.POST("/applications", auditAction(deps.Audits, deps.Logger, "application.create", "application"), requirePermission(deps.Access, deps.Logger, access.PermissionDeliveryCreate), pipelineAPI.createApplication)
@@ -257,6 +261,7 @@ func NewRouter(deps Dependencies) *gin.Engine {
 	protected.GET("/pipeline-runs/:id/logs", requirePermission(deps.Access, deps.Logger, access.PermissionDeliveryRead), pipelineAPI.listRunLogs)
 	protected.GET("/pipeline-runs/:id/logs/ws", requirePermission(deps.Access, deps.Logger, access.PermissionDeliveryRead), pipelineAPI.streamRunLogs)
 	protected.POST("/pipeline-runs/:id/execute", auditAction(deps.Audits, deps.Logger, "workflow_run.execute", "pipeline_run"), requirePermission(deps.Access, deps.Logger, access.PermissionDeliveryExecute), pipelineAPI.executeRun)
+	protected.POST("/pipeline-runs/:id/stop", auditAction(deps.Audits, deps.Logger, "workflow_run.stop", "pipeline_run"), requirePermission(deps.Access, deps.Logger, access.PermissionDeliveryExecute), pipelineAPI.stopRun)
 	protected.GET("/pipeline-runs/:id/retry-options", requirePermission(deps.Access, deps.Logger, access.PermissionDeliveryRead), pipelineAPI.listRetryRunOptions)
 	protected.POST("/pipeline-runs/:id/retry", auditAction(deps.Audits, deps.Logger, "workflow_run.retry", "pipeline_run"), requirePermission(deps.Access, deps.Logger, access.PermissionDeliveryExecute), pipelineAPI.retryRun)
 	protected.POST("/pipeline-runs/:id/advance", auditAction(deps.Audits, deps.Logger, "workflow_run.advance", "pipeline_run"), requirePermission(deps.Access, deps.Logger, access.PermissionDeliveryExecute), pipelineAPI.advanceRun)

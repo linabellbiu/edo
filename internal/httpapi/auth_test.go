@@ -14,6 +14,7 @@ import (
 
 	miniredis "github.com/alicebob/miniredis/v2"
 	"github.com/gin-gonic/gin"
+	"gorm.io/gorm"
 
 	"edo/internal/access"
 	"edo/internal/account"
@@ -32,6 +33,7 @@ import (
 	"edo/internal/logging"
 	"edo/internal/model"
 	"edo/internal/pipeline"
+	"edo/internal/realtime"
 	"edo/internal/repository"
 	"edo/internal/secret"
 )
@@ -111,7 +113,7 @@ func TestChangePasswordInvalidatesCurrentSession(t *testing.T) {
 	}
 }
 
-func newAuthTestRouter(t *testing.T) (*gin.Engine, func()) {
+func newAuthTestRouter(t *testing.T, configure ...func(*Dependencies, *gorm.DB)) (*gin.Engine, func()) {
 	t.Helper()
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	db, err := database.Open(context.Background(), config.Database{
@@ -209,19 +211,27 @@ func newAuthTestRouter(t *testing.T) (*gin.Engine, func()) {
 	}
 	sqlDB, _ := db.DB()
 	_, runtimeLogs := logging.NewRuntime("info")
-	router := NewRouter(Dependencies{
+	realtimeBus := realtime.New(db, redisClient.Client(), redisClient.Key("realtime"), logger)
+	pipelineService.ConfigureRealtime(realtimeBus)
+	deps := Dependencies{
 		Environment: "test", Database: sqlDB, Redis: healthyDependency{}, NATS: healthyDependency{},
 		Logger: logger, RuntimeLogs: runtimeLogs, Version: "test", AuthConfig: authConfig,
 		Accounts: accounts, Login: login, LoginLimiter: limiter, Sessions: sessions,
 		Access: accessService, Audits: auditService,
 		Departments: departmentService,
 		Credentials: credentialService, Repositories: repositoryService, Pipelines: pipelineService,
+		Realtime:       realtimeBus,
 		Artifacts:      artifactService,
 		Kubernetes:     kubernetesService,
 		Deployments:    deploymentService,
 		Configurations: configurationService,
-	})
+	}
+	for _, option := range configure {
+		option(&deps, db)
+	}
+	router := NewRouter(deps)
 	return router, func() {
+		realtimeBus.Close()
 		_ = redisClient.Close()
 		_ = database.Close(db)
 	}

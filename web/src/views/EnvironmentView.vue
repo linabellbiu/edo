@@ -16,6 +16,10 @@ import {
 import { apiErrorMessage } from '@/api/resources'
 import PageToolbar from '@/components/PageToolbar.vue'
 import RuntimeBrandIcon from '@/components/RuntimeBrandIcon.vue'
+import ResourceDetailDrawer from '@/components/ResourceDetailDrawer.vue'
+import ResourceRowActions from '@/components/ResourceRowActions.vue'
+import { useResourceList } from '@/utils/resourceList'
+import { formatDateTime } from '@/utils/time'
 import { useAuthStore } from '@/stores/auth'
 
 const auth = useAuthStore()
@@ -25,7 +29,16 @@ const { t } = useI18n()
 type EnvironmentFormMode = 'create' | 'details' | 'hosts'
 const environments = ref<InfrastructureEnvironment[]>([])
 const hosts = ref<InfrastructureHost[]>([])
-const selectedID = ref('')
+const { detailID: selectedID, detailOpen, selected, pagination, openDetails, changePage } = useResourceList(() => environments.value, () => typeof route.query.environment === 'string' ? route.query.environment : '')
+const mutatingID = ref('')
+const columns = computed(() => [
+  { key: 'name', title: t('nav.environments'), width: 260 },
+  { key: 'status', title: t('resourceList.status'), width: 110 },
+  { key: 'hosts', title: t('resourceList.hosts'), width: 300 },
+  { key: 'capabilities', title: t('resourceList.capabilities'), width: 220 },
+  { key: 'updated', title: t('resourceList.updated'), width: 175 },
+  { key: 'actions', title: t('planList.actions'), width: 235, fixed: 'right' as const, align: 'right' as const },
+])
 const formOpen = ref(false)
 const editingID = ref('')
 const loading = ref(false)
@@ -33,7 +46,6 @@ const saving = ref(false)
 const formMode = ref<EnvironmentFormMode>('create')
 const form = reactive({ name: '', description: '', host_ids: [] as string[] })
 
-const selected = computed(() => environments.value.find(item => item.id === selectedID.value))
 const formTitle = computed(() => {
   if (formMode.value === 'details') return t('environment.drawer.editDetails')
   if (formMode.value === 'hosts') return t('environment.drawer.adjustHosts', { name: form.name })
@@ -53,12 +65,6 @@ const hostOptions = computed(() => hosts.value
     }
   }))
 
-function syncRequestedEnvironment() {
-  const requested = typeof route.query.environment === 'string' ? route.query.environment : ''
-  if (requested && environments.value.some(item => item.id === requested)) selectedID.value = requested
-  else if (!environments.value.some(item => item.id === selectedID.value)) selectedID.value = environments.value[0]?.id ?? ''
-}
-
 function resourceViewHref(path: string, query: Record<string, string>) {
   return router.resolve({ path, query }).href
 }
@@ -69,7 +75,6 @@ async function refresh() {
     const [environmentItems, hostItems] = await Promise.all([listEnvironments(), listHosts()])
     environments.value = environmentItems
     hosts.value = hostItems
-    syncRequestedEnvironment()
   } catch (error) {
     message.error(apiErrorMessage(error))
   } finally {
@@ -136,12 +141,14 @@ async function save() {
 }
 
 async function toggle(environment: InfrastructureEnvironment) {
+  if (mutatingID.value) return
+  mutatingID.value = environment.id
   try {
     await client.patch(`/environments/${environment.id}/status`, { active: !environment.is_active })
     await refresh()
   } catch (error) {
     message.error(apiErrorMessage(error))
-  }
+  } finally { mutatingID.value = '' }
 }
 
 function createHost() {
@@ -167,7 +174,6 @@ watch([() => route.query.create, () => auth.loaded], ([value]) => {
   delete query.create
   void router.replace({ query })
 }, { immediate: true })
-watch(() => route.query.environment, syncRequestedEnvironment)
 
 onMounted(refresh)
 </script>
@@ -179,75 +185,61 @@ onMounted(refresh)
       <a-button v-if="auth.canAny(['deployment.create'])" type="primary" @click="create"><Plus :size="15" />创建环境</a-button>
     </PageToolbar>
 
-    <div class="environment-layout vben-card">
-      <aside class="environment-list">
-        <header>
-          <div><strong>环境</strong><small>自定义基础设施分组</small></div>
-          <span>{{ environments.length }}</span>
-        </header>
-        <div class="environment-list-scroll">
-          <button
-            v-for="environment in environments"
-            :key="environment.id"
-            :class="{ active: selectedID === environment.id }"
-            @click="selectedID = environment.id"
-          >
-            <span class="environment-icon"><Boxes /></span>
-            <span>
-              <strong>{{ environment.name }}</strong>
-              <small>{{ environment.hosts.length }} 台主机</small>
-            </span>
-            <i :class="{ inactive: !environment.is_active }" />
-          </button>
-          <a-empty v-if="!environments.length && !loading" description="还没有环境" />
-        </div>
-      </aside>
-
-      <main v-if="selected" class="environment-detail">
-        <header class="detail-header">
-          <div>
-            <span>基础设施环境</span>
-            <h3>{{ selected.name }}</h3>
-            <p>{{ selected.description || '尚未填写说明' }}</p>
+    <div class="vben-card">
+      <a-table class="resource-list-table" :columns="columns" :data-source="environments" :loading="loading" :pagination="pagination" :scroll="{ x: 1300 }" row-key="id" table-layout="fixed" :locale="{ emptyText: t('resourceList.environmentEmpty') }" :row-class-name="(row: InfrastructureEnvironment) => detailOpen && selectedID === row.id ? 'resource-selected' : ''" @change="changePage">
+        <template #bodyCell="{ column, record: environment }">
+          <div v-if="column.key === 'name'">
+            <button class="resource-name" @click="openDetails(environment)">{{ environment.name }}</button>
+            <a-tooltip :title="environment.description" :mouse-enter-delay="0.1"><small class="resource-secondary resource-description">{{ environment.description || t('planList.descriptionEmpty') }}</small></a-tooltip>
           </div>
-          <div class="detail-actions">
-            <a-tag :color="selected.is_active ? 'success' : 'default'">{{ selected.is_active ? '已启用' : '已停用' }}</a-tag>
-            <a-button v-if="auth.canAny(['deployment.update'])" @click="edit(selected, 'details')"><Pencil :size="14" />{{ t('environment.actions.editDetails') }}</a-button>
-            <a-button v-if="auth.canAny(['deployment.update'])" @click="toggle(selected)">{{ selected.is_active ? '停用' : '启用' }}</a-button>
+          <a-tag v-else-if="column.key === 'status'" :color="environment.is_active ? 'success' : 'default'">{{ environment.is_active ? t('planList.enabled') : t('planList.disabled') }}</a-tag>
+          <div v-else-if="column.key === 'hosts'">
+            <span>{{ environment.hosts.length }} {{ t('resourceList.hosts') }}</span>
+            <a-tooltip :title="environment.hosts.map((host: InfrastructureHost) => host.name).join('、')" :mouse-enter-delay="0.1"><small class="resource-secondary">{{ environment.hosts.map((host: InfrastructureHost) => host.name).join('、') || '—' }}</small></a-tooltip>
           </div>
-        </header>
-
-        <div class="environment-summary">
-          <div><Server /><span><small>主机数量</small><strong>{{ selected.hosts.length }}</strong></span></div>
-          <div><Boxes /><span><small>主机能力</small><strong>{{ selected.hosts.reduce((total, host) => total + host.capabilities.length, 0) }}</strong></span></div>
-        </div>
-
-        <section class="assigned-hosts">
-          <header>
-            <div><h4>所属主机</h4><p>{{ t('environment.hosts.sharedDescription') }}</p></div>
-            <a-button v-if="auth.canAny(['deployment.update'])" size="small" @click="edit(selected, 'hosts')">{{ t('environment.actions.adjustHosts') }}</a-button>
-          </header>
-          <div class="host-grid">
-            <article v-for="host in selected.hosts" :key="host.id">
-              <span class="host-status" :class="{ inactive: !host.is_active }" />
-              <div class="host-main">
-                <strong>{{ host.name }}</strong>
-                <small>{{ host.is_builtin ? '位置：本地' : `连接地址：${host.address}:${host.ssh_port}` }}</small>
-                <small v-if="!host.is_builtin">SSH 用户：{{ host.ssh_username }}</small>
-              </div>
-              <div class="host-runtime-icons">
-                <span v-for="capability in host.capabilities" :key="capability.kind" :title="capabilityName(capability.kind)">
-                  <RuntimeBrandIcon :kind="capability.kind" />
-                </span>
-              </div>
-              <small class="capability-label">{{ capabilityLabel(host) }}</small>
-            </article>
-            <a-empty v-if="!selected.hosts.length" description="该环境还没有主机" />
-          </div>
-        </section>
-      </main>
-      <div v-else class="empty-panel"><a-empty description="选择或创建环境" /></div>
+          <span v-else-if="column.key === 'capabilities'">{{ [...new Set(environment.hosts.flatMap((host: InfrastructureHost) => host.capabilities.map(cap => capabilityName(cap.kind))))].join(' / ') || '—' }}</span>
+          <time v-else-if="column.key === 'updated'">{{ formatDateTime(environment.updated_at || environment.created_at) }}</time>
+          <ResourceRowActions v-else-if="column.key === 'actions'" :more="auth.canAny(['deployment.update'])" :loading="mutatingID === environment.id">
+            <a-button size="small" @click="openDetails(environment)">{{ t('resourceList.details') }}</a-button>
+            <a-button v-if="auth.canAny(['deployment.update'])" size="small" @click="edit(environment, 'hosts')">{{ t('environment.actions.adjustHosts') }}</a-button>
+            <template #more>
+              <a-menu-item @click="edit(environment, 'details')">{{ t('environment.actions.editDetails') }}</a-menu-item>
+              <a-menu-item :disabled="Boolean(mutatingID)" @click="toggle(environment)">{{ environment.is_active ? t('planList.disable') : t('planList.enable') }}</a-menu-item>
+            </template>
+          </ResourceRowActions>
+        </template>
+      </a-table>
     </div>
+
+    <ResourceDetailDrawer v-model:open="detailOpen" :title="selected?.name">
+      <template #actions>
+        <a-tag v-if="selected" :color="selected.is_active ? 'success' : 'default'">{{ selected.is_active ? t('planList.enabled') : t('planList.disabled') }}</a-tag>
+        <a-button v-if="selected && auth.canAny(['deployment.update'])" size="small" @click="edit(selected, 'details')">{{ t('environment.actions.editDetails') }}</a-button>
+        <a-button v-if="selected && auth.canAny(['deployment.update'])" size="small" @click="edit(selected, 'hosts')">{{ t('environment.actions.adjustHosts') }}</a-button>
+      </template>
+      <section v-if="selected" class="resource-detail-section">
+        <h4>{{ t('resourceList.basic') }}</h4>
+        <dl class="resource-facts">
+          <div><dt>{{ t('resourceList.name') }}</dt><dd>{{ selected.name }}</dd></div>
+          <div><dt>{{ t('resourceList.status') }}</dt><dd>{{ selected.is_active ? t('planList.enabled') : t('planList.disabled') }}</dd></div>
+          <div><dt>{{ t('resourceList.hostCount') }}</dt><dd>{{ selected.hosts.length }}</dd></div>
+          <div><dt>{{ t('resourceList.created') }}</dt><dd>{{ formatDateTime(selected.created_at) }}</dd></div>
+          <div><dt>{{ t('resourceList.updated') }}</dt><dd>{{ formatDateTime(selected.updated_at) }}</dd></div>
+          <div class="resource-facts-wide"><dt>{{ t('resourceList.description') }}</dt><dd>{{ selected.description || '—' }}</dd></div>
+        </dl>
+      </section>
+      <section v-if="selected" class="resource-detail-section">
+        <h4>{{ t('resourceList.hosts') }}</h4>
+        <a-table class="resource-list-table" :data-source="selected.hosts" row-key="id" :pagination="false" :scroll="{ x: 650 }" :columns="[{ key: 'name', title: t('resourceList.name'), width: 210 }, { key: 'location', title: t('planList.destination'), width: 220 }, { key: 'capabilities', title: t('resourceList.capabilities'), width: 220 }, { key: 'status', title: t('resourceList.status'), width: 100 }]">
+          <template #bodyCell="{ column, record: host }">
+            <button v-if="column.key === 'name'" class="resource-name" :disabled="!auth.canAny(['cluster.read'])" @click="router.push({ path: '/hosts', query: { host: host.id } })">{{ host.name }}</button>
+            <span v-else-if="column.key === 'location'">{{ host.is_builtin ? '本地' : host.address + ':' + host.ssh_port }}</span>
+            <div v-else-if="column.key === 'capabilities'" class="resource-inline-tags"><a-tag v-for="capability in host.capabilities" :key="capability.kind"><RuntimeBrandIcon :kind="capability.kind" :size="13" /> {{ capabilityName(capability.kind) }}</a-tag></div>
+            <a-tag v-else-if="column.key === 'status'" :color="host.is_active ? 'success' : 'default'">{{ host.is_active ? t('planList.enabled') : t('planList.disabled') }}</a-tag>
+          </template>
+        </a-table>
+      </section>
+    </ResourceDetailDrawer>
 
     <a-drawer v-model:open="formOpen" :title="formTitle" width="600">
       <a-form layout="vertical">
@@ -303,5 +295,5 @@ onMounted(refresh)
 </template>
 
 <style scoped>
-.environment-layout{display:grid;min-height:590px;grid-template-columns:290px minmax(0,1fr);overflow:hidden}.environment-list{border-right:1px solid var(--edo-border);background:var(--edo-surface-soft)}.environment-list>header{display:flex;height:64px;align-items:center;justify-content:space-between;padding:0 16px}.environment-list>header strong,.environment-list>header small{display:block}.environment-list>header small{margin-top:2px;color:var(--edo-muted);font-size:12px}.environment-list>header>span{min-width:27px;padding:3px 8px;border-radius:999px;color:var(--edo-muted);background:var(--edo-surface);text-align:center}.environment-list-scroll{max-height:calc(100vh - 230px);overflow-y:auto;padding:0 8px 10px}.environment-list-scroll>button{display:grid;width:100%;min-height:68px;align-items:center;grid-template-columns:38px minmax(0,1fr) 8px;gap:10px;margin:3px 0;padding:9px 10px;border:0;border-radius:10px;background:transparent;cursor:pointer;text-align:left}.environment-list-scroll>button:hover{background:var(--edo-surface)}.environment-list-scroll>button.active{background:var(--edo-primary-soft);box-shadow:inset 3px 0 var(--edo-primary)}.environment-list-scroll>button span:nth-child(2){min-width:0}.environment-list-scroll>button strong,.environment-list-scroll>button small{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.environment-list-scroll>button small{margin-top:3px;color:var(--edo-muted);font-size:12px}.environment-icon{display:grid;width:38px;height:38px;place-items:center;border-radius:11px;color:#4f6ef7;background:var(--edo-surface)}.environment-icon svg{width:19px}.environment-list-scroll>button i{width:8px;height:8px;border-radius:50%;background:#28b66e}.environment-list-scroll>button i.inactive{background:#a8adb7}.environment-detail{min-width:0;padding:24px}.detail-header{display:flex;align-items:flex-start;justify-content:space-between;gap:20px}.detail-header>div:first-child>span,.detail-header p{color:var(--edo-muted)}.detail-header h3{margin:3px 0 1px;font-size:22px}.detail-header p{margin:0}.detail-actions{display:flex;align-items:center;gap:8px}.environment-summary{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;margin-top:24px}.environment-summary>div{display:flex;align-items:center;gap:12px;padding:15px;border:1px solid var(--edo-border);border-radius:11px;background:var(--edo-surface-soft)}.environment-summary svg{width:21px;color:var(--edo-primary)}.environment-summary small,.environment-summary strong{display:block}.environment-summary small{color:var(--edo-muted)}.environment-summary strong{font-size:18px}.assigned-hosts{margin-top:28px}.assigned-hosts>header{display:flex;align-items:flex-start;justify-content:space-between}.assigned-hosts h4,.assigned-hosts p{margin:0}.assigned-hosts p{margin-top:3px;color:var(--edo-muted)}.host-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;margin-top:14px}.host-grid article{display:grid;min-height:86px;align-items:center;grid-template-columns:9px minmax(0,1fr) auto;gap:10px;padding:14px;border:1px solid var(--edo-border);border-radius:12px;background:var(--edo-surface-soft)}.host-status{width:8px;height:8px;border-radius:50%;background:#28b66e}.host-status.inactive{background:#a8adb7}.host-main{min-width:0}.host-main strong,.host-main small{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.host-main small,.capability-label{color:var(--edo-muted)}.host-runtime-icons{display:flex;gap:5px}.host-runtime-icons span{display:grid;width:28px;height:28px;place-items:center;border-radius:8px;background:var(--edo-surface)}.host-runtime-icons :deep(svg){width:18px;height:18px}.capability-label{grid-column:2/-1;font-size:12px}.form-grid{display:grid;grid-template-columns:1fr 1fr;gap:0 14px}.span-2{grid-column:1/-1}.relation-select{display:flex;gap:8px}.relation-select>.ant-select{min-width:0;flex:1}.create-relation{width:34px;flex:0 0 34px;padding:0}.host-option-copy{min-width:0;flex:1}.host-option-copy strong,.host-option-copy small{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.host-option-copy small{color:var(--edo-muted);font-size:11px}.field-hint{margin-top:6px;color:var(--edo-muted);font-size:12px}.host-selection-hint{display:flex;align-items:flex-start;justify-content:space-between;gap:12px}.host-selection-hint strong{flex:0 0 auto;color:var(--edo-text);font-weight:600}@media(max-width:900px){.environment-layout{grid-template-columns:1fr}.environment-list{max-height:270px;border-right:0;border-bottom:1px solid var(--edo-border)}.environment-list-scroll{max-height:200px}.environment-summary,.host-grid{grid-template-columns:1fr}}@media(max-width:640px){.environment-detail{padding:16px}.detail-header{flex-direction:column}.form-grid{grid-template-columns:1fr}.span-2{grid-column:auto}.host-selection-hint{flex-direction:column;gap:3px}}
+.form-grid{display:grid;grid-template-columns:1fr 1fr;gap:0 14px}.span-2{grid-column:1/-1}.relation-select{display:flex;gap:8px}.relation-select>.ant-select{min-width:0;flex:1}.create-relation{width:34px;flex:0 0 34px;padding:0}.host-option-copy{min-width:0;flex:1}.host-option-copy strong,.host-option-copy small{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.host-option-copy small{color:var(--edo-muted);font-size:12px}.field-hint{margin-top:6px;color:var(--edo-muted);font-size:12px}.host-selection-hint{display:flex;align-items:flex-start;justify-content:space-between;gap:12px}.host-selection-hint strong{flex:0 0 auto;color:var(--edo-text);font-weight:600}.resource-inline-tags :deep(svg){vertical-align:middle}@media(max-width:640px){.form-grid{grid-template-columns:1fr}.span-2{grid-column:auto}.host-selection-hint{flex-direction:column;gap:3px}}
 </style>

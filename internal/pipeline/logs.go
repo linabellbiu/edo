@@ -169,6 +169,9 @@ func (s *Service) appendRunLog(ctx context.Context, runID, stage, level, message
 	if err != nil && s.logger != nil {
 		s.logger.Error("写入流水线执行日志失败", "operation", "pipeline_log_append", "pipeline_run_id", runID, "stage", stage, "err", err)
 	}
+	if err == nil {
+		s.realtime.LogsChanged(ctx, runID)
+	}
 }
 
 func truncateUTF8Bytes(value string, limit int) string {

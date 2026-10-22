@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { message, Modal } from 'ant-design-vue'
-import { Box, ChevronRight, Clock3, FileCode2, FileUp, FolderOpen, MapPin, Plus, RefreshCw, Trash2 } from 'lucide-vue-next'
+import { FileUp, Plus, RefreshCw, Trash2 } from 'lucide-vue-next'
 import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
 
@@ -9,8 +9,13 @@ import client from '@/api/client'
 import { environmentIDsOf, listEnvironments, listHosts, type InfrastructureEnvironment, type InfrastructureHost } from '@/api/infrastructure'
 import { apiErrorMessage, type ResourceRecord } from '@/api/resources'
 import PageToolbar from '@/components/PageToolbar.vue'
+import ResourceDetailDrawer from '@/components/ResourceDetailDrawer.vue'
+import ResourceRowActions from '@/components/ResourceRowActions.vue'
+import { useResourceList } from '@/utils/resourceList'
 import RuntimeBrandIcon from '@/components/RuntimeBrandIcon.vue'
 import { useAuthStore } from '@/stores/auth'
+import { formatDateTime } from '@/utils/time'
+import '@/styles/plan-list.css'
 
 type PlanKind = 'script' | 'docker' | 'compose' | 'kubernetes'
 type Platform = 'ssh' | 'docker' | 'kubernetes'
@@ -33,6 +38,8 @@ interface DeploymentPlan extends ResourceRecord {
   name: string
   kind: PlanKind
   description: string
+  created_at?: string
+  updated_at?: string
   script?: string
   compose_yaml?: string
   service_name?: string
@@ -118,7 +125,7 @@ interface DeploymentDraft {
 }
 
 const auth = useAuthStore()
-const { t } = useI18n()
+const { t, locale } = useI18n()
 const route = useRoute()
 const router = useRouter()
 const plans = ref<DeploymentPlan[]>([])
@@ -126,7 +133,54 @@ const hosts = ref<InfrastructureHost[]>([])
 const environments = ref<InfrastructureEnvironment[]>([])
 const docker = ref<Runtime[]>([])
 const clusters = ref<Runtime[]>([])
-const selectedID = ref('')
+const { detailOpen, selected: detailPlan, openDetails } = useResourceList(() => plans.value)
+const selectedPlanID = ref('')
+const pageState = reactive({ current: 1, pageSize: 10 })
+const tooltipDelay = 0.1
+const planPagination = computed(() => ({
+  ...pageState,
+  showSizeChanger: true,
+  pageSizeOptions: ['10', '20', '50', '100'],
+  showTotal: (total: number) => t('planList.total', { count: total }),
+}))
+const planColumns = computed(() => [
+  { key: 'name', title: t('planList.deploymentName'), width: 250 },
+  { key: 'status', title: t('planList.status'), width: 90 },
+  { key: 'kind', title: t('planList.mode'), width: 150 },
+  { key: 'environment', title: t('deploymentList.environment'), width: 150 },
+  { key: 'destination', title: t('planList.destination'), width: 200 },
+  { key: 'configuration', title: t('deploymentList.configuration'), width: 260 },
+  { key: 'timeout', title: t('planList.timeout'), width: 105 },
+  { key: 'updated', title: t('planList.updated'), width: 155 },
+  { key: 'actions', title: t('planList.actions'), width: 190, fixed: 'right' as const, align: 'right' as const },
+])
+let revealedPlanID = ''
+
+function revealPlan(id: string) {
+  const index = plans.value.findIndex(plan => plan.id === id)
+  if (index < 0) return false
+  pageState.current = Math.floor(index / pageState.pageSize) + 1
+  selectedPlanID.value = id
+  return true
+}
+
+function changePlanPage(page: { current?: number; pageSize?: number }) {
+  const pageSize = page.pageSize || pageState.pageSize
+  pageState.current = pageSize === pageState.pageSize ? page.current || 1 : 1
+  pageState.pageSize = pageSize
+  selectedPlanID.value = ''
+}
+
+function planRowClass(plan: DeploymentPlan) {
+  return `plan-table-row${selectedPlanID.value === plan.id ? ' is-current' : ''}`
+}
+
+watch(() => ({ ids: plans.value.map(plan => plan.id), requested: route.query.plan }), ({ ids, requested }) => {
+  if (!ids.includes(selectedPlanID.value)) selectedPlanID.value = ''
+  pageState.current = Math.min(pageState.current, Math.max(1, Math.ceil(ids.length / pageState.pageSize)))
+  if (typeof requested !== 'string' || !requested) revealedPlanID = ''
+  else if (requested !== revealedPlanID && revealPlan(requested)) revealedPlanID = requested
+})
 const formOpen = ref(false)
 const editingID = ref('')
 const loading = ref(false)
@@ -171,7 +225,7 @@ const kindOptions: Array<{ value: PlanKind; label: string; hint: string }> = [
   { value: 'kubernetes', label: 'Kubernetes Deployment', hint: '更新 Deployment 中的容器' },
 ]
 const kindNames: Record<PlanKind, string> = Object.fromEntries(kindOptions.map(item => [item.value, item.label])) as Record<PlanKind, string>
-const selected = computed(() => plans.value.find(item => item.id === selectedID.value))
+function kindName(plan: DeploymentPlan) { return kindNames[plan.kind] }
 const canCreate = computed(() => auth.canAny(['delivery.create']))
 const canUpdate = computed(() => auth.canAny(['delivery.update']))
 const canDelete = computed(() => auth.canAny(['delivery.delete']))
@@ -294,43 +348,51 @@ function destinationName(plan: DeploymentPlan) {
   return target.platform === 'docker' ? 'Docker 运行时不可用' : 'Kubernetes 集群不可用'
 }
 
-function destinationDetail(plan: DeploymentPlan) {
+function environmentName(plan: DeploymentPlan) {
+  const id = targetOf(plan)?.environment_id
+  if (!id) return t('deploymentList.noEnvironment')
+  return environmentByID.value.get(id)?.name || t('deploymentList.environmentUnavailable')
+}
+
+function destinationAddress(plan: DeploymentPlan) {
   const target = targetOf(plan)
-  if (!target) return '编辑方案后补全部署信息'
-  const details: string[] = []
-  const environmentName = environmentByID.value.get(target.environment_id)?.name
-  if (environmentName) details.push(`环境：${environmentName}`)
+  if (!target) return t('deploymentList.noLocation')
   const host = hostByID.value.get(target.host_id)
-  if (host) details.push(host.mode === 'local' ? '位置：本地' : `连接地址：${host.address}:${host.ssh_port}`)
-  if (target.platform === 'ssh') return details.join('；') || '无法读取主机信息'
+  if (host) return host.mode === 'local' ? t('deploymentList.localExecution') : `${host.address}:${host.ssh_port}`
   const runtime = runtimeOf(plan)
-  if (!runtime) return details.join('；') || '无法读取连接信息'
-  if (target.platform === 'docker') details.push(runtime.local ? '运行时：本地 Docker' : `运行时地址：${runtime.host || '未记录'}`)
-  else details.push(`API Server：${runtime.api_server || '未记录'}`)
-  return details.join('；')
+  if (runtime?.local) return t('deploymentList.localExecution')
+  return runtime?.api_server || runtime?.host || t('deploymentList.locationUnavailable')
 }
 
-function objectName(plan: DeploymentPlan) {
+function deploymentConfiguration(plan: DeploymentPlan) {
   const target = targetOf(plan)
-  if (!target) return '尚未配置'
-  if (target.platform === 'ssh') return target.working_directory || '执行用户主目录'
-  if (target.platform === 'docker') return target.workload_name || plan.service_name || '未指定容器'
-  return target.workload_name || '未指定 Deployment'
+  if (!target) return { summary: t('deploymentList.noLocation'), detail: '' }
+  if (plan.kind === 'script') return {
+    summary: t('deploymentList.directory', { value: target.working_directory || t('deploymentList.homeDirectory') }),
+    detail: t('deploymentList.savedScript'),
+  }
+  if (plan.kind === 'compose') return {
+    summary: t('deploymentList.service', { value: plan.service_name || t('deploymentList.notConfigured') }),
+    detail: t('deploymentList.composeFile'),
+  }
+  if (plan.kind === 'kubernetes') return {
+    summary: t('deploymentList.workload', { value: target.workload_name || t('deploymentList.notConfigured') }),
+    detail: t('deploymentList.kubernetesScope', { namespace: target.namespace || 'default', container: target.container_name || t('deploymentList.notConfigured') }),
+  }
+  const config = plan.docker_config
+  if (config?.deployment_script?.trim()) return {
+    summary: t('deploymentList.customCommand'),
+    detail: t('deploymentList.customCommandHint'),
+  }
+  const ports = (config?.port_mappings || []).map(port => `${port.host_ip || '127.0.0.1'}:${port.host_port} → ${port.container_port}/${(port.protocol || 'tcp').toUpperCase()}`)
+  return {
+    summary: ports.length ? t('deploymentList.ports', { value: ports.join('；') }) : t('deploymentList.noPorts'),
+    detail: t('deploymentList.configCounts', { variables: Object.keys(config?.environment_variables || {}).length, volumes: config?.volume_mounts?.length || 0 }),
+  }
 }
 
-function objectDetail(plan: DeploymentPlan) {
-  const target = targetOf(plan)
-  if (!target) return '—'
-  if (target.platform === 'ssh') return '执行方案中的部署脚本'
-  if (target.platform === 'docker') return 'Docker 容器'
-  return `命名空间：${target.namespace || 'default'}；容器：${target.container_name || '未指定'}`
-}
-
-function executionFile(plan: DeploymentPlan) {
-  if (plan.kind === 'script') return '部署脚本'
-  if (plan.kind === 'compose') return `内联 Compose YAML（服务：${plan.service_name || '未指定'}）`
-  if (plan.kind === 'kubernetes') return 'Deployment 镜像更新'
-  return '容器镜像更新'
+function updatedTime(plan: DeploymentPlan) {
+  return formatDateTime(plan.updated_at || plan.created_at, locale.value)
 }
 
 function reset() {
@@ -365,9 +427,6 @@ async function refresh() {
     clusters.value = clusterResponse.data.clusters || []
     hosts.value = hostItems
     environments.value = environmentItems
-    const requested = typeof route.query.plan === 'string' ? route.query.plan : ''
-    if (requested && plans.value.some(item => item.id === requested)) selectedID.value = requested
-    else if (!plans.value.some(item => item.id === selectedID.value)) selectedID.value = plans.value[0]?.id || ''
   } catch (error) {
     message.error(apiErrorMessage(error))
   } finally {
@@ -818,11 +877,11 @@ async function save() {
       message.error('部署连接未保存，请确认后端已更新并重试')
       return
     }
-    selectedID.value = savedPlan.id
     message.success(editingID.value ? '部署方案已更新' : '部署方案已创建')
     formOpen.value = false
     reset()
     await refresh()
+    revealPlan(savedPlan.id)
   } catch (error) {
     message.error(apiErrorMessage(error))
   } finally {
@@ -843,50 +902,73 @@ onMounted(refresh)
 
 <template>
   <section>
-    <PageToolbar description="一个方案包含完整的执行方式、运行环境和更新对象，流水线部署任务只需选择方案。">
+    <PageToolbar :description="t('deploymentList.description')">
       <a-button :loading="loading" @click="refresh"><RefreshCw :size="15" />刷新</a-button>
       <a-button v-if="canCreate" type="primary" @click="create"><Plus :size="15" />新建部署方案</a-button>
     </PageToolbar>
 
-    <div class="plan-layout vben-card">
-      <aside>
-        <header><strong>部署方案</strong><small>{{ plans.length }} 个方案</small></header>
-        <div v-for="plan in plans" :key="plan.id" class="plan-list-item" :class="{ active: selectedID === plan.id }">
-          <button class="plan-select" @click="selectedID = plan.id">
-            <span class="brand" :class="planPlatform(plan.kind)"><RuntimeBrandIcon :kind="planPlatform(plan.kind)" /></span>
-            <span class="plan-list-copy"><strong>{{ plan.name }}</strong><small>执行方式：{{ kindNames[plan.kind] }}</small><em>运行位置：{{ destinationName(plan) }}</em><em>更新对象：{{ objectName(plan) }}</em></span>
-            <i :class="{ inactive: !plan.is_active || !plan.deployment_target }" />
-          </button>
-          <div v-if="canUpdate || canDelete" class="plan-list-actions">
-            <a-button v-if="canUpdate" type="link" size="small" :loading="mutatingID === plan.id" @click="confirmPlanStatus(plan)">{{ plan.is_active ? '停用' : '启用' }}</a-button>
-            <a-button v-if="canDelete" type="link" size="small" danger :disabled="mutatingID === plan.id" @click="confirmDeletePlan(plan)">删除</a-button>
+    <div class="expandable-plan-list deployment-plan-list vben-card">
+      <a-table
+        class="plan-table resource-list-table" row-key="id" size="small" table-layout="fixed" :columns="planColumns" :data-source="plans"
+        :loading="loading" :pagination="planPagination" :scroll="{ x: 1520 }" :row-class-name="planRowClass"
+        :locale="{ emptyText: t('planList.deploymentEmpty') }"
+        @change="changePlanPage"
+      >
+        <template #bodyCell="{ column, record: plan }">
+          <div v-if="column.key === 'name'" class="plan-cell">
+            <a-tooltip :title="plan.name" :mouse-enter-delay="tooltipDelay"><button class="resource-name" @click="openDetails(plan)">{{ plan.name }}</button></a-tooltip>
+            <a-tooltip v-if="plan.description" :title="plan.description" :mouse-enter-delay="tooltipDelay" :trigger="['hover', 'focus']">
+              <small class="deployment-description" tabindex="0">{{ plan.description }}</small>
+            </a-tooltip>
+            <small v-else>{{ t('planList.descriptionEmpty') }}</small>
           </div>
-        </div>
-        <a-empty v-if="!plans.length && !loading" description="还没有部署方案" />
-      </aside>
-
-      <main v-if="selected">
-        <header class="detail-header">
-          <div><span>{{ kindNames[selected.kind] }}</span><h3>{{ selected.name }}</h3><p>{{ selected.description || '尚未填写说明' }}</p></div>
-          <div>
-            <a-tag :color="selected.is_active && selected.deployment_target ? 'success' : 'default'">{{ selected.deployment_target ? (selected.is_active ? '已启用' : '已停用') : '待补全' }}</a-tag>
-            <a-button v-if="canUpdate" :loading="mutatingID === selected.id" @click="confirmPlanStatus(selected)">{{ selected.is_active ? '停用' : '启用' }}</a-button>
-            <a-button v-if="canUpdate" @click="edit(selected)">编辑</a-button>
-            <a-button v-if="canDelete" danger :disabled="mutatingID === selected.id" @click="confirmDeletePlan(selected)">删除</a-button>
+          <a-tag v-else-if="column.key === 'status'" :color="plan.is_active && plan.deployment_target ? 'success' : 'default'">
+            {{ plan.deployment_target ? (plan.is_active ? t('planList.enabled') : t('planList.disabled')) : t('planList.incomplete') }}
+          </a-tag>
+          <div v-else-if="column.key === 'kind'" class="deployment-kind"><RuntimeBrandIcon :kind="planPlatform(plan.kind)" /><span>{{ kindName(plan) }}</span></div>
+          <div v-else-if="column.key === 'environment'" class="plan-cell">
+            <a-tooltip :title="environmentName(plan)" :mouse-enter-delay="tooltipDelay"><strong>{{ environmentName(plan) }}</strong></a-tooltip>
           </div>
-        </header>
-
-        <div class="deployment-path">
-          <article><span><FileCode2 /></span><div><small>执行方式</small><strong>{{ kindNames[selected.kind] }}</strong><p>{{ executionFile(selected) }}</p></div></article>
-          <ChevronRight class="path-arrow" />
-          <article><span><MapPin /></span><div><small>运行位置</small><strong>{{ destinationName(selected) }}</strong><p>{{ destinationDetail(selected) }}</p></div></article>
-          <ChevronRight class="path-arrow" />
-          <article><span><FolderOpen v-if="planPlatform(selected.kind) === 'ssh'" /><Box v-else /></span><div><small>{{ planPlatform(selected.kind) === 'ssh' ? '执行目录' : '更新对象' }}</small><strong>{{ objectName(selected) }}</strong><p>{{ objectDetail(selected) }}</p></div></article>
-        </div>
-        <div class="plan-limit"><Clock3 /><span><small>最长执行时间</small><strong>{{ selected.timeout_seconds }} 秒</strong></span><p>超过时间后停止本次部署并标记失败。</p></div>
-      </main>
-      <div v-else class="empty-panel"><a-empty description="选择或新建部署方案" /></div>
+          <div v-else-if="column.key === 'destination'" class="plan-cell">
+            <a-tooltip :title="destinationName(plan)" :mouse-enter-delay="tooltipDelay"><strong>{{ destinationName(plan) }}</strong></a-tooltip>
+            <a-tooltip :title="destinationAddress(plan)" :mouse-enter-delay="tooltipDelay"><small>{{ destinationAddress(plan) }}</small></a-tooltip>
+          </div>
+          <div v-else-if="column.key === 'configuration'" class="plan-cell deployment-configuration">
+            <a-tooltip :title="deploymentConfiguration(plan).summary" :mouse-enter-delay="tooltipDelay"><span>{{ deploymentConfiguration(plan).summary }}</span></a-tooltip>
+            <a-tooltip :title="deploymentConfiguration(plan).detail" :mouse-enter-delay="tooltipDelay"><small>{{ deploymentConfiguration(plan).detail }}</small></a-tooltip>
+          </div>
+          <span v-else-if="column.key === 'timeout'">{{ t('planList.seconds', { count: plan.timeout_seconds }) }}</span>
+          <div v-else-if="column.key === 'updated'" class="plan-cell">
+            <time :datetime="plan.updated_at || plan.created_at">{{ updatedTime(plan) }}</time>
+          </div>
+          <ResourceRowActions v-else-if="column.key === 'actions'" :more="canUpdate || canDelete" :loading="mutatingID === plan.id">
+            <a-button size="small" @click="openDetails(plan)">{{ t('resourceList.details') }}</a-button>
+            <a-button v-if="canUpdate" size="small" @click="edit(plan)">{{ t('planList.edit') }}</a-button>
+            <template #more>
+              <a-menu-item v-if="canUpdate" :disabled="mutatingID === plan.id" @click="confirmPlanStatus(plan)">{{ plan.is_active ? t('planList.disable') : t('planList.enable') }}</a-menu-item>
+              <a-menu-item v-if="canDelete" danger :disabled="mutatingID === plan.id" @click="confirmDeletePlan(plan)">{{ t('planList.remove') }}</a-menu-item>
+            </template>
+          </ResourceRowActions>
+        </template>
+      </a-table>
     </div>
+
+    <ResourceDetailDrawer v-model:open="detailOpen" :title="detailPlan?.name">
+      <template #actions><a-tag v-if="detailPlan" :color="detailPlan.is_active ? 'success' : 'default'">{{ detailPlan.is_active ? t('planList.enabled') : t('planList.disabled') }}</a-tag><a-button v-if="detailPlan && canUpdate" size="small" @click="edit(detailPlan)">{{ t('planList.edit') }}</a-button></template>
+      <section v-if="detailPlan" class="resource-detail-section">
+        <h4>{{ t('resourceList.configuration') }}</h4>
+        <dl class="resource-facts">
+          <div><dt>{{ t('planList.mode') }}</dt><dd>{{ kindName(detailPlan) }}</dd></div>
+          <div><dt>{{ t('deploymentList.environment') }}</dt><dd>{{ environmentName(detailPlan) }}</dd></div>
+          <div><dt>{{ t('planList.destination') }}</dt><dd>{{ destinationName(detailPlan) }}</dd></div>
+          <div><dt>{{ t('planList.timeout') }}</dt><dd>{{ t('planList.seconds', { count: detailPlan.timeout_seconds }) }}</dd></div>
+          <div><dt>{{ t('resourceList.updated') }}</dt><dd>{{ updatedTime(detailPlan) }}</dd></div>
+          <div><dt>{{ t('deploymentList.configuration') }}</dt><dd>{{ deploymentConfiguration(detailPlan).summary }}</dd></div>
+          <div class="resource-facts-wide"><dt>{{ t('resourceList.description') }}</dt><dd>{{ detailPlan.description || '—' }}</dd></div>
+        </dl>
+      </section>
+      <section v-if="detailPlan && (detailPlan.script || detailPlan.compose_yaml)" class="resource-detail-section"><h4>{{ t('deploymentList.configuration') }}</h4><pre class="resource-code">{{ detailPlan.kind === 'compose' ? detailPlan.compose_yaml : detailPlan.script }}</pre></section>
+    </ResourceDetailDrawer>
 
     <a-drawer v-model:open="formOpen" :title="editingID ? '编辑部署方案' : '新建部署方案'" width="720">
       <a-form layout="vertical">
@@ -937,7 +1019,7 @@ onMounted(refresh)
             </a-radio-group>
           </a-form-item>
           <template v-if="form.environment_id && availableKindOptions.length">
-            <div class="form-subtitle">运行位置与更新对象</div>
+            <div class="form-subtitle">{{ t('deploymentList.configuration') }}</div>
             <a-alert
               v-if="executionTargetError"
               class="span-2"
@@ -1119,5 +1201,10 @@ onMounted(refresh)
 </template>
 
 <style scoped>
-.plan-layout{display:grid;min-height:560px;grid-template-columns:300px minmax(0,1fr);overflow:hidden}.plan-layout>aside{border-right:1px solid var(--edo-border);background:var(--edo-surface-soft)}aside>header{display:flex;align-items:center;justify-content:space-between;padding:16px}aside>header small{color:var(--edo-muted)}.plan-list-item{width:calc(100% - 12px);margin:6px;border-radius:10px;background:transparent}.plan-list-item:hover,.plan-list-item.active{background:var(--edo-primary-soft)}.plan-select{display:grid;width:100%;min-height:86px;align-items:center;grid-template-columns:38px minmax(0,1fr) 8px;gap:10px;padding:9px 10px;border:0;border-radius:10px;color:var(--edo-text);background:transparent;cursor:pointer;text-align:left}.plan-select i{width:7px;height:7px;border-radius:50%;background:#28b66e}.plan-select i.inactive{background:#a8adb7}.plan-list-actions{display:flex;justify-content:flex-end;padding:0 5px 5px}.plan-list-actions :deep(.ant-btn){height:24px;padding:0 6px;font-size:11px}.plan-list-copy{min-width:0}.plan-list-copy strong,.plan-list-copy small,.plan-list-copy em{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.plan-list-copy small{margin-top:2px;color:var(--edo-muted);font-size:12px}.plan-list-copy em{margin-top:2px;color:var(--edo-muted);font-size:10px;font-style:normal}.brand{display:grid;width:36px;height:36px;place-items:center;border-radius:10px;background:var(--edo-surface)}.brand.ssh{color:var(--edo-muted)}.brand.docker{color:#2496ed}.brand.kubernetes{color:#326ce5}.brand :deep(svg){width:21px;height:21px}.plan-layout>main{min-width:0;padding:24px}.detail-header{display:flex;align-items:flex-start;justify-content:space-between;gap:18px;margin-bottom:24px}.detail-header h3,.detail-header p{margin:0}.detail-header p,.detail-header span{color:var(--edo-muted)}.detail-header h3{margin:2px 0;font-size:22px}.detail-header>div:last-child{display:flex;flex:0 0 auto;align-items:center;gap:8px}.deployment-path{display:grid;align-items:center;grid-template-columns:minmax(0,1fr) 20px minmax(0,1fr) 20px minmax(0,1fr);gap:10px}.deployment-path article{display:flex;min-width:0;min-height:108px;align-items:center;gap:13px;padding:16px;border:1px solid var(--edo-border);border-radius:12px;background:var(--edo-surface-soft)}.deployment-path article>span{display:grid;width:40px;height:40px;flex:0 0 40px;place-items:center;border-radius:11px;color:var(--edo-primary);background:var(--edo-surface)}.deployment-path article>span svg{width:20px}.deployment-path article>div{min-width:0}.deployment-path small,.deployment-path strong,.deployment-path p{display:block;overflow:hidden;margin:0;text-overflow:ellipsis;white-space:nowrap}.deployment-path small{color:var(--edo-muted);font-size:11px}.deployment-path strong{margin:3px 0;font-size:15px}.deployment-path p{color:var(--edo-muted);font-size:11px}.path-arrow{width:17px;justify-self:center;color:var(--edo-muted)}.plan-limit{display:flex;align-items:center;gap:12px;margin-top:16px;padding:14px 16px;border-radius:10px;background:var(--edo-primary-soft)}.plan-limit>svg{width:20px;color:var(--edo-primary)}.plan-limit small,.plan-limit strong{display:block}.plan-limit small{color:var(--edo-muted);font-size:11px}.plan-limit p{margin:0 0 0 auto;color:var(--edo-muted)}.empty-panel{display:grid;place-items:center}.form-section{margin-bottom:14px;padding:15px 16px 4px;border:1px solid var(--edo-border);border-radius:11px;background:var(--edo-surface-soft)}.form-section>header{display:flex;align-items:center;gap:10px;margin-bottom:14px}.form-section>header b{display:grid;width:26px;height:26px;flex:0 0 26px;place-items:center;border-radius:8px;color:var(--edo-primary);background:var(--edo-primary-soft)}.form-section>header strong,.form-section>header small{display:block}.form-section>header small{margin-top:1px;color:var(--edo-muted);font-size:11px}.form-subtitle{margin:3px 0 12px;padding-top:12px;border-top:1px solid var(--edo-border);color:var(--edo-muted);font-size:12px;font-weight:600}.form-grid{display:grid;grid-template-columns:1fr 1fr;gap:0 14px}.span-2{grid-column:1/-1}.form-grid :deep(.ant-input-number){width:100%}.resource-select{display:grid;grid-template-columns:minmax(0,1fr) 34px;gap:8px}.resource-select>.ant-btn{padding:0}.runtime-option-copy{min-width:0;flex:1}.runtime-option-copy strong,.runtime-option-copy small{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.runtime-option-copy small{color:var(--edo-muted);font-size:11px}.permission-note,.field-help{margin:-4px 0 13px;color:var(--edo-muted);font-size:12px}.kind-picker{display:grid!important;width:100%;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}.kind-picker :deep(.ant-radio-button-wrapper){display:flex;height:70px;align-items:center;gap:10px;padding:9px 11px;border:1px solid var(--edo-border)!important;border-radius:10px!important;background:var(--edo-surface);box-shadow:none!important;line-height:1.3}.kind-picker :deep(.ant-radio-button-wrapper::before){display:none}.kind-picker :deep(.ant-radio-button-wrapper-checked){border-color:color-mix(in srgb,var(--edo-primary) 65%,var(--edo-border))!important;background:var(--edo-primary-soft)}.kind-picker :deep(.ant-radio-button-wrapper>svg){width:24px;height:24px;flex:0 0 24px}.kind-picker :deep(.ant-radio-button-wrapper span){min-width:0}.kind-picker :deep(.ant-radio-button-wrapper strong),.kind-picker :deep(.ant-radio-button-wrapper small){display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.kind-picker :deep(.ant-radio-button-wrapper small){margin-top:3px;color:var(--edo-muted);font-size:10px}.artifact-image-notice{margin-bottom:12px}.runtime-inputs{display:grid;gap:10px;margin-bottom:12px}.runtime-input-block{padding:13px 14px 2px;border:1px solid var(--edo-border);border-radius:10px;background:var(--edo-surface)}.runtime-input-block>header{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:10px}.runtime-input-block>header span strong,.runtime-input-block>header span small{display:block}.runtime-input-block>header span small{margin-top:2px;color:var(--edo-muted);font-size:11px}.runtime-input-block>header>.ant-btn{height:24px;padding:0}.runtime-input-block>.ant-form-item{margin-bottom:12px}.docker-row{display:grid;align-items:center;gap:8px;margin-bottom:8px}.docker-port-input-row{grid-template-columns:minmax(0,1fr) 112px 112px 86px 32px}.docker-port-input-row :deep(.ant-input-number){width:100%}.docker-key-value-row{grid-template-columns:minmax(0,1fr) minmax(0,1.4fr) 32px}.docker-volume-row{display:grid;align-items:center;grid-template-columns:minmax(0,1fr) minmax(0,1.35fr) auto 32px;gap:8px;margin-bottom:8px}.input-empty{margin:4px 0 10px;padding:12px;border:1px dashed var(--edo-border);border-radius:8px;color:var(--edo-muted);background:var(--edo-surface-soft);font-size:12px;text-align:center}.input-block-help{margin:4px 0 10px}.docker-advanced{border:1px solid var(--edo-border);border-radius:10px;background:var(--edo-surface-soft)}.docker-advanced :deep(.ant-collapse-header){align-items:center!important;padding:13px 14px!important;font-weight:650}.docker-advanced :deep(.ant-collapse-content-box){display:grid;gap:10px;padding:0 10px 10px!important}.health-toggle{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;margin:2px 0 12px}.health-toggle span strong,.health-toggle span small{display:block}.health-toggle span small{margin-top:3px;color:var(--edo-muted);font-size:11px}.health-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px}.health-grid :deep(.ant-input-number){width:100%}.compose-import{display:flex;align-items:center;gap:8px;margin-bottom:10px}.compose-import span{color:var(--edo-muted);font-size:12px}.file-input{display:none!important}.drawer-actions{display:flex;justify-content:flex-end;gap:8px}@media(max-width:1080px){.deployment-path{grid-template-columns:1fr}.path-arrow{transform:rotate(90deg)}}@media(max-width:760px){.plan-layout{grid-template-columns:1fr}.plan-layout>aside{max-height:300px;border-right:0;border-bottom:1px solid var(--edo-border)}.form-grid,.kind-picker,.health-grid{grid-template-columns:1fr}.span-2{grid-column:auto}.detail-header{flex-direction:column}.plan-layout>main{padding:18px}.plan-limit{align-items:flex-start;flex-wrap:wrap}.plan-limit p{width:100%;margin:0}.docker-port-input-row,.docker-volume-row{grid-template-columns:1fr}.docker-key-value-row{grid-template-columns:1fr 32px}.docker-key-value-row>:nth-child(2){grid-column:1/-1}.compose-import{align-items:flex-start;flex-direction:column}}
+.deployment-kind{display:flex;align-items:center;gap:7px;font-size:12px}.deployment-kind :deep(svg){width:18px;height:18px;flex:0 0 18px}
+.deployment-plan-list :deep(.plan-table-row){cursor:default}
+.deployment-plan-list .plan-cell .deployment-description{display:-webkit-box;overflow:hidden;-webkit-box-orient:vertical;-webkit-line-clamp:2;white-space:normal;overflow-wrap:anywhere;line-height:1.5;cursor:help}
+.deployment-plan-list .deployment-description:focus-visible{outline:2px solid var(--edo-primary);outline-offset:2px;border-radius:3px}
+.deployment-configuration>span{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px}
+.form-section{margin-bottom:14px;padding:15px 16px 4px;border:1px solid var(--edo-border);border-radius:11px;background:var(--edo-surface-soft)}.form-section>header{display:flex;align-items:center;gap:10px;margin-bottom:14px}.form-section>header b{display:grid;width:26px;height:26px;flex:0 0 26px;place-items:center;border-radius:8px;color:var(--edo-primary);background:var(--edo-primary-soft)}.form-section>header strong,.form-section>header small{display:block}.form-section>header small{margin-top:1px;color:var(--edo-muted);font-size:11px}.form-subtitle{margin:3px 0 12px;padding-top:12px;border-top:1px solid var(--edo-border);color:var(--edo-muted);font-size:12px;font-weight:600}.form-grid{display:grid;grid-template-columns:1fr 1fr;gap:0 14px}.span-2{grid-column:1/-1}.form-grid :deep(.ant-input-number){width:100%}.resource-select{display:grid;grid-template-columns:minmax(0,1fr) 34px;gap:8px}.resource-select>.ant-btn{padding:0}.runtime-option-copy{min-width:0;flex:1}.runtime-option-copy strong,.runtime-option-copy small{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.runtime-option-copy small{color:var(--edo-muted);font-size:11px}.permission-note,.field-help{margin:-4px 0 13px;color:var(--edo-muted);font-size:12px}.kind-picker{display:grid!important;width:100%;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}.kind-picker :deep(.ant-radio-button-wrapper){display:flex;height:70px;align-items:center;gap:10px;padding:9px 11px;border:1px solid var(--edo-border)!important;border-radius:10px!important;background:var(--edo-surface);box-shadow:none!important;line-height:1.3}.kind-picker :deep(.ant-radio-button-wrapper::before){display:none}.kind-picker :deep(.ant-radio-button-wrapper-checked){border-color:color-mix(in srgb,var(--edo-primary) 65%,var(--edo-border))!important;background:var(--edo-primary-soft)}.kind-picker :deep(.ant-radio-button-wrapper>svg){width:24px;height:24px;flex:0 0 24px}.kind-picker :deep(.ant-radio-button-wrapper span){min-width:0}.kind-picker :deep(.ant-radio-button-wrapper strong),.kind-picker :deep(.ant-radio-button-wrapper small){display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.kind-picker :deep(.ant-radio-button-wrapper small){margin-top:3px;color:var(--edo-muted);font-size:10px}.artifact-image-notice{margin-bottom:12px}.runtime-inputs{display:grid;gap:10px;margin-bottom:12px}.runtime-input-block{padding:13px 14px 2px;border:1px solid var(--edo-border);border-radius:10px;background:var(--edo-surface)}.runtime-input-block>header{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:10px}.runtime-input-block>header span strong,.runtime-input-block>header span small{display:block}.runtime-input-block>header span small{margin-top:2px;color:var(--edo-muted);font-size:11px}.runtime-input-block>header>.ant-btn{height:24px;padding:0}.runtime-input-block>.ant-form-item{margin-bottom:12px}.docker-row{display:grid;align-items:center;gap:8px;margin-bottom:8px}.docker-port-input-row{grid-template-columns:minmax(0,1fr) 112px 112px 86px 32px}.docker-port-input-row :deep(.ant-input-number){width:100%}.docker-key-value-row{grid-template-columns:minmax(0,1fr) minmax(0,1.4fr) 32px}.docker-volume-row{display:grid;align-items:center;grid-template-columns:minmax(0,1fr) minmax(0,1.35fr) auto 32px;gap:8px;margin-bottom:8px}.input-empty{margin:4px 0 10px;padding:12px;border:1px dashed var(--edo-border);border-radius:8px;color:var(--edo-muted);background:var(--edo-surface-soft);font-size:12px;text-align:center}.input-block-help{margin:4px 0 10px}.docker-advanced{border:1px solid var(--edo-border);border-radius:10px;background:var(--edo-surface-soft)}.docker-advanced :deep(.ant-collapse-header){align-items:center!important;padding:13px 14px!important;font-weight:650}.docker-advanced :deep(.ant-collapse-content-box){display:grid;gap:10px;padding:0 10px 10px!important}.health-toggle{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;margin:2px 0 12px}.health-toggle span strong,.health-toggle span small{display:block}.health-toggle span small{margin-top:3px;color:var(--edo-muted);font-size:11px}.health-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px}.health-grid :deep(.ant-input-number){width:100%}.compose-import{display:flex;align-items:center;gap:8px;margin-bottom:10px}.compose-import span{color:var(--edo-muted);font-size:12px}.file-input{display:none!important}.drawer-actions{display:flex;justify-content:flex-end;gap:8px}@media(max-width:760px){.form-grid,.kind-picker,.health-grid{grid-template-columns:1fr}.span-2{grid-column:auto}.docker-port-input-row,.docker-volume-row{grid-template-columns:1fr}.docker-key-value-row{grid-template-columns:1fr 32px}.docker-key-value-row>:nth-child(2){grid-column:1/-1}.compose-import{align-items:flex-start;flex-direction:column}}
 </style>

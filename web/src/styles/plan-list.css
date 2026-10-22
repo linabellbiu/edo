@@ -1,0 +1,32 @@
+.expandable-plan-list { overflow: hidden; }
+.expandable-plan-list .plan-list-hint { margin: 0; padding: 10px 16px; border-bottom: 1px solid var(--edo-border); color: var(--edo-muted); font-size: 12px; }
+.expandable-plan-list .plan-table .ant-table-thead > tr > th { padding: 10px; color: var(--edo-muted); font-size: 12px; }
+.expandable-plan-list .plan-table .plan-table-row > td { height: 64px; padding: 8px 10px; border-bottom: 1px solid var(--edo-border); background: var(--edo-surface); }
+.expandable-plan-list .plan-table-row { cursor: pointer; }
+.expandable-plan-list .plan-table .plan-table-row.is-expanded > td { background: color-mix(in srgb, var(--edo-primary) 4%, var(--edo-surface)); }
+.expandable-plan-list .plan-table .plan-table-row.is-current > td:first-child { box-shadow: inset 3px 0 var(--edo-primary); }
+.expandable-plan-list .plan-table .ant-table.ant-table-small .ant-table-tbody > tr.ant-table-expanded-row > td { padding: 12px 16px 18px 42px; background: var(--edo-bg) !important; }
+.expandable-plan-list .plan-table .ant-table-pagination { margin: 12px 16px; }
+.expandable-plan-list .plan-expand-toggle { display: grid; width: 28px; height: 28px; place-items: center; padding: 0; border: 1px solid var(--edo-border); border-radius: 6px; color: var(--edo-muted); background: var(--edo-surface); cursor: pointer; }
+.expandable-plan-list .plan-expand-toggle[aria-expanded=true] { color: var(--edo-primary); border-color: color-mix(in srgb, var(--edo-primary) 40%, var(--edo-border)); }
+.expandable-plan-list .plan-expand-toggle[aria-expanded=true] svg { transform: rotate(90deg); }
+.expandable-plan-list .plan-expand-toggle:focus-visible { outline: 2px solid var(--edo-primary); outline-offset: 2px; }
+.expandable-plan-list .plan-cell { min-width: 0; }
+.expandable-plan-list .plan-cell strong, .expandable-plan-list .plan-cell small, .expandable-plan-list .plan-cell time { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.expandable-plan-list .plan-cell strong { font-size: 13px; font-weight: 600; }
+.expandable-plan-list .plan-cell small { margin-top: 3px; color: var(--edo-muted); font-size: 12px; }
+.expandable-plan-list .plan-cell time { font-size: 12px; }
+.expandable-plan-list .plan-row-actions { display: flex; align-items: center; justify-content: flex-end; gap: 3px; }
+.expandable-plan-list .plan-row-actions .ant-btn { display: inline-flex; align-items: center; gap: 4px; padding-inline: 6px; }
+.expandable-plan-list .plan-expanded-panel { min-width: 0; padding: 14px 16px; border: 1px solid var(--edo-border); border-left: 3px solid color-mix(in srgb, var(--edo-primary) 35%, var(--edo-border)); border-radius: 8px; background: var(--edo-surface); }
+.expandable-plan-list .plan-expanded-panel.is-current { border-left-color: var(--edo-primary); }
+.expandable-plan-list .plan-expanded-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; margin-bottom: 14px; padding-bottom: 12px; border-bottom: 1px solid var(--edo-border); }
+.expandable-plan-list .plan-expanded-heading > div { min-width: 0; }
+.expandable-plan-list .plan-expanded-heading small { display: block; color: var(--edo-muted); font-size: 12px; }
+.expandable-plan-list .plan-expanded-heading h3 { margin: 3px 0; font-size: 14px; overflow-wrap: anywhere; }
+.expandable-plan-list .plan-expanded-heading p { margin: 4px 0 0; color: var(--edo-muted); font-size: 12px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.expandable-plan-list .plan-expanded-heading > .ant-btn { flex-shrink: 0; }
+@media (max-width: 760px) {
+  .expandable-plan-list .plan-table .ant-table.ant-table-small .ant-table-tbody > tr.ant-table-expanded-row > td { padding: 10px; }
+  .expandable-plan-list .plan-expanded-panel { padding: 12px; }
+}

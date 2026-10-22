@@ -51,6 +51,7 @@ import (
 	"edo/internal/notification"
 	"edo/internal/outbox"
 	"edo/internal/pipeline"
+	"edo/internal/realtime"
 	"edo/internal/repository"
 	"edo/internal/scheduler"
 	"edo/internal/secret"
@@ -508,6 +509,9 @@ func runServer(ctx context.Context, cfg config.Config, logger *slog.Logger, runt
 	}
 	identityService := identity.NewService(resources.Database, resources.Redis, secretManager, accounts, loginService, limiter)
 	pipelineService := pipeline.NewService(resources.Database, repositoryService, secretManager)
+	realtimeBus := realtime.New(resources.Database, resources.Redis.Client(), resources.Redis.Key("realtime"), logger)
+	defer realtimeBus.Close()
+	pipelineService.ConfigureRealtime(realtimeBus)
 	artifactService, err := artifactmanager.NewService(
 		resources.Database, cfg.Artifacts.Directory, cfg.Artifacts.MaxBytes, logger,
 		artifactmanager.WithBuildDirectory(cfg.Artifacts.BuildDirectory),
@@ -571,6 +575,7 @@ func runServer(ctx context.Context, cfg config.Config, logger *slog.Logger, runt
 		return errors.New("后台任务服务初始化失败")
 	}
 	systemMetricsService := systemmetrics.New(resources.Database, resources.SQL, taskWorker, resources.NATS, logger)
+	taskWorker.ConfigureRealtime(realtimeBus)
 	departmentService := department.NewService(resources.Database)
 
 	router := httpapi.NewRouter(httpapi.Dependencies{
@@ -592,6 +597,7 @@ func runServer(ctx context.Context, cfg config.Config, logger *slog.Logger, runt
 		Identities:       identityService,
 		Repositories:     repositoryService,
 		Pipelines:        pipelineService,
+		Realtime:         realtimeBus,
 		Artifacts:        artifactService,
 		Docker:           dockerService,
 		Kubernetes:       kubernetesService,
