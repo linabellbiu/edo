@@ -575,6 +575,7 @@ func runServer(ctx context.Context, cfg config.Config, logger *slog.Logger, runt
 		return errors.New("后台任务服务初始化失败")
 	}
 	systemMetricsService := systemmetrics.New(resources.Database, resources.SQL, taskWorker, resources.NATS, logger)
+	systemMetricsService.ConfigureHistory(resources.Redis.Client(), resources.Redis.Key("system", "metrics"), cfg.Server.Address)
 	taskWorker.ConfigureRealtime(realtimeBus)
 	departmentService := department.NewService(resources.Database)
 
@@ -648,6 +649,7 @@ func runServer(ctx context.Context, cfg config.Config, logger *slog.Logger, runt
 		}()
 	}
 	publisher := outbox.New(resources.Database, resources.NATS, logger, cfg.NATS.MaxAttempts)
+	startBackground("server_system_metrics", func() error { return systemMetricsService.Run(serviceCtx) })
 	startBackground("server_outbox", func() error { return publisher.Run(serviceCtx) })
 	startBackground("server_task_consumer", func() error { return taskWorker.Run(serviceCtx) })
 	startBackground("server_application_watcher", func() error {

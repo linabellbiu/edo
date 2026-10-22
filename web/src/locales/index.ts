@@ -81,6 +81,7 @@ export const messages = {
     },
     dashboard: { title: '分析页', healthy: '运行正常', checking: '正在检查', updated: '最近更新' },
     systemMonitor: {
+      history: { description: '每 5 秒采集节点、进程、Worker、队列与数据库指标，只保留最近 3 天，过期自动清理。', range: '历史范围', minutes15: '15 分钟', hour1: '1 小时', hours6: '6 小时', hours24: '24 小时', days3: '3 天', empty: '等待历史采样', chartLabel: '{name}历史折线图，可用左右方向键查看', unitHint: '单位：{unit}', count: '个', sampling: '采样：{seconds} 秒', note: '长窗口每分钟保留最后一次采样；断线、不可用和进程重启处不补点。计数器展示累计值。', error: '历史数据读取失败，已保留最近一次结果。', refresh: '立即刷新', noData: '正在读取系统指标…', retry: '重试', updating: '正在同步', unavailable: '部分指标暂不可用：{items}' },
       deadLetters: {
         clear: '清空死信', confirmTitle: '清空全部死信？',
         confirmDescription: '将永久删除当前 {count} 条死信。正常任务、待处理消息和正在执行的任务不会受影响。',
@@ -305,6 +306,7 @@ export const messages = {
     },
     dashboard: { title: 'Analytics', healthy: 'Healthy', checking: 'Checking', updated: 'Updated' },
     systemMonitor: {
+      history: { description: 'Collect node, process, worker, queue and database metrics every 5 seconds. Keep only the last 3 days and automatically expire older samples.', range: 'History range', minutes15: '15 min', hour1: '1 hour', hours6: '6 hours', hours24: '24 hours', days3: '3 days', empty: 'Waiting for samples', chartLabel: '{name} history chart; use arrow keys to inspect', unitHint: 'Unit: {unit}', count: 'count', sampling: 'Sample: {seconds}s', note: 'Long ranges keep the last sample per minute. Gaps and process restarts are not interpolated. Counters show cumulative values.', error: 'History could not be loaded. The last result is retained.', refresh: 'Refresh now', noData: 'Loading system metrics…', retry: 'Retry', updating: 'Syncing', unavailable: 'Some metrics are unavailable: {items}' },
       deadLetters: {
         clear: 'Clear dead letters', confirmTitle: 'Clear all dead letters?',
         confirmDescription: 'This permanently deletes the current {count} dead letters. Normal, pending, and running tasks are not affected.',

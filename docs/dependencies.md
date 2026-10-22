@@ -17,6 +17,7 @@
 | 发布并发锁 | `github.com/bsm/redislock` | 基于现有 go-redis/v9 的令牌锁、原子释放和有限 TTL，避免自行维护易出错的 SET NX/Lua 协议 | 锁粒度固定为发布目标；构建阶段不持锁，不同目标可并行，同一目标部署串行；等待受任务 Context 限制，TTL 由发布超时推导 |
 | OCI 镜像仓库认证 | `github.com/regclient/regclient` | 成熟实现 OCI Distribution API、Basic/Bearer 认证挑战和 Registry 兼容处理 | 地址与 HTTP 安全校验、请求超时、权限审计、凭据加密和安全错误文案 |
 | 主机与进程指标 | `github.com/shirou/gopsutil/v4` | BSD-3-Clause，在 EDO 支持的 Linux、macOS 上持续维护；复用成熟的 CPU、内存和进程采集实现，避免维护多套平台专用系统调用 | 只读取本机指标，不发起网络请求；Go 堆与 GC 使用标准库，Worker、任务和队列业务指标由 EDO 自身定义 |
+| 监控历史折线图 | `echarts` 6.1.0 | Apache-2.0、成熟维护，按需加载折线、坐标系、提示和 Canvas 渲染模块；仅在监控路由加载 | 采样、三天保留期限、权限、缺失值、增量合并和进程重启边界仍由 EDO 定义，图表封装在 `MetricTrend.vue`，可独立替换 |
 | 前端运行时、路由与状态 | `vue`、`vue-router`、`pinia` | 与 Vben Admin 5 `web-antd` 使用同一套 Vue 3 技术栈；均为 MIT 许可、维护活跃，路由元数据和组合式 Store 可以直接承载菜单、面包屑、历史标签和权限状态 | EDO 的有效权限、菜单层级、标签关闭策略和 API 契约仍由项目定义 |
 | UI、图标与动效 | `ant-design-vue`、`lucide-vue-next`、`@vueuse/motion` | 对齐 Vben `web-antd` 的成熟组件与主题能力；图标和动效包均可按需打包，避免维护自制表单、弹层和动画基础设施 | EDO 主题令牌、简体中文文案、业务状态色、减少动效偏好和可访问性规则 |
 | Vue 组件按需导入 | `unplugin-vue-components` | MIT 许可、持续维护并提供 Ant Design Vue Resolver；构建时生成显式组件导入，避免全量注册 UI 库造成超大首屏入口包 | 只在 Vite 构建阶段工作，不参与浏览器运行；组件选型和页面行为仍由 EDO 控制 |
@@ -26,6 +27,12 @@
 `go-git` 同时负责远端引用查询和指定 Commit 检出。运行镜像不再安装 `git` 和 `openssh-client`，SSH 私钥也不再写入临时文件。已有 Argon2id PHC 摘要不需要迁移。
 
 系统指标使用 `gopsutil/v4` 的 CPU、内存、进程、负载和运行时间子包。当前固定在 v4.26.6，依赖体积中等且不需要常驻 Agent 或 CGO；采集被封装在系统指标服务中，后续可以按平台替换而不改变内置 API。即使单项采集失败，页面仍返回其余指标，并只在服务端日志记录原始错误。
+
+历史图表按用户要求使用 [Apache ECharts](https://github.com/apache/echarts)，采用官方 [按需导入方案](https://echarts.apache.org/handbook/en/basics/import/)，只注册 LineChart、GridComponent、TooltipComponent 和 CanvasRenderer，不导入地图、编辑器等无关模块。6.1.0 为稳定版本，Apache-2.0 许可兼容，依赖 zrender 6.1.0 与 tslib，支持当前 Linux/macOS 开发及现代浏览器，运行时不下载远程脚本。评估过更轻量的 uPlot，但最终遵循项目明确选型统一使用 ECharts；代价是图表分包较大，因此仅在监控路由加载。维护风险是大量小图的重绘成本、提示交互和 API 升级，由三天窗口上限、关闭装饰动画、复用实例、卸载释放、回归测试和浏览器检查约束。图表不改变 API 或存储格式，后续可独立替换。现有 Vue、Axios、Vite 等依赖仍有安全告警，本次没有顺带升级既有技术栈，不能把构建通过当作完整安全审计通过。
+
+历史存储复用现有 `go-redis/v9` 的 [Sorted Set](https://redis.io/docs/latest/develop/data-types/sorted-sets/) 与事务管道，按时间范围读取、原子替换分钟采样、限制点数并设置过期时间；不自建时序数据库、图表引擎或外部采集服务。Redis 是短期运行趋势缓存，不替代长期监控归档。
+
+2026-10-23 的生产构建中，ECharts 监控路由分包约 512 kB（gzip 174 kB）；这是按需加载的监控页成本，不进入首页入口包。npm 官方源的生产依赖审计未列出 echarts、zrender、tslib 告警；全项目仍有 8 项既有告警（7 项高危、1 项中危），未通过一次图表修改顺带执行无边界升级。
 
 发布锁使用 `bsm/redislock` v0.10.0，Apache-2.0 许可证与项目兼容，直接复用现有 go-redis/v9 客户端且依赖体积小。它只封装通用锁协议；目标锁 Key、等待边界、部署状态机、失败文案和审计仍由 EDO 控制，后续可替换而不改变业务表结构。
 

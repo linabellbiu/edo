@@ -124,6 +124,7 @@ func NewRouter(deps Dependencies) *gin.Engine {
 	})
 	systemMetricsAPI := systemMetricsHandler{service: deps.SystemMetrics, logger: deps.Logger}
 	protected.GET("/system/metrics", requirePermission(deps.Access, deps.Logger, access.PermissionMonitorRead), systemMetricsAPI.snapshot)
+	protected.GET("/system/metrics/history", requirePermission(deps.Access, deps.Logger, access.PermissionMonitorRead), systemMetricsAPI.history)
 	protected.DELETE("/system/metrics/queue/dead-messages", auditAction(deps.Audits, deps.Logger, "monitor.dead_letter.clear", "message_queue"), requirePermission(deps.Access, deps.Logger, access.PermissionMonitorExecute), systemMetricsAPI.purgeDeadLetters)
 	systemLogsAPI := systemLogHandler{service: deps.RuntimeLogs, logger: deps.Logger}
 	protected.GET("/logs", requirePermission(deps.Access, deps.Logger, access.PermissionMonitorRead), systemLogsAPI.list)

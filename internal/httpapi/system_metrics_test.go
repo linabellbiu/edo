@@ -9,9 +9,14 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
+	"github.com/alicebob/miniredis/v2"
 	"github.com/gin-gonic/gin"
+	"github.com/redis/go-redis/v9"
+	"gorm.io/gorm"
 
+	"edo/internal/access"
 	"edo/internal/messaging"
 	"edo/internal/systemmetrics"
 )
@@ -19,6 +24,75 @@ import (
 type purgeQueueStub struct {
 	purged uint64
 	err    error
+}
+
+func TestMetricsHistoryRejectsInvalidRangesAndHidesInternalErrors(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	for _, query := range []string{"?window=9999999999999999999999", "?window=10", "?window=900&after=not-a-time"} {
+		response := httptest.NewRecorder()
+		ctx, _ := gin.CreateTestContext(response)
+		ctx.Request = httptest.NewRequest(http.MethodGet, "/system/metrics/history"+query, nil)
+		(systemMetricsHandler{logger: logger}).history(ctx)
+		if response.Code != http.StatusBadRequest {
+			t.Fatalf("无效范围未拒绝: %s status=%d", query, response.Code)
+		}
+	}
+	response := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(response)
+	ctx.Request = httptest.NewRequest(http.MethodGet, "/system/metrics/history", nil)
+	(systemMetricsHandler{logger: logger}).history(ctx)
+	var body errorResponse
+	if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if response.Code != http.StatusServiceUnavailable || body.Message != systemmetrics.ErrHistoryUnavailable.Error() {
+		t.Fatalf("历史错误不是安全的稳定文案: %+v status=%d", body, response.Code)
+	}
+}
+
+func TestMetricsHistoryRequiresMonitorReadAndDoesNotGrantQueueActions(t *testing.T) {
+	server := miniredis.RunT(t)
+	client := redis.NewClient(&redis.Options{Addr: server.Addr()})
+	defer client.Close()
+	var dependencies Dependencies
+	router, cleanup := newAuthTestRouter(t, func(deps *Dependencies, db *gorm.DB) {
+		sqlDB, _ := db.DB()
+		deps.SystemMetrics = systemmetrics.New(db, sqlDB, nil, nil, deps.Logger)
+		deps.SystemMetrics.ConfigureHistory(client, "test:history", ":8080")
+		dependencies = *deps
+	})
+	defer cleanup()
+	path := "/api/v1/system/metrics/history?window=900"
+	if result := performJSONRequest(t, router, http.MethodGet, path, nil, nil); result.Code != http.StatusUnauthorized {
+		t.Fatalf("未登录可以读取监控历史: %d", result.Code)
+	}
+	user, err := dependencies.Accounts.CreateUser(context.Background(), "metrics-reader", "指标读者", "correct horse battery staple")
+	if err != nil {
+		t.Fatal(err)
+	}
+	login := performJSONRequest(t, router, http.MethodPost, "/api/v1/auth/login", map[string]string{"username": "metrics-reader", "password": "correct horse battery staple"}, nil)
+	if login.Code != http.StatusOK {
+		t.Fatalf("登录失败: %d", login.Code)
+	}
+	cookie := login.Result().Cookies()[0]
+	if result := performJSONRequest(t, router, http.MethodGet, path, nil, cookie); result.Code != http.StatusForbidden {
+		t.Fatalf("没有查看权限可以读取历史: %d", result.Code)
+	}
+	if err := dependencies.Access.SetUserPermissions(context.Background(), user.ID, access.UserPermissionOverrides{Allow: []string{access.PermissionMonitorRead}}); err != nil {
+		t.Fatal(err)
+	}
+	result := performJSONRequest(t, router, http.MethodGet, path, nil, cookie)
+	var data systemmetrics.History
+	if err := json.Unmarshal(result.Body.Bytes(), &data); err != nil {
+		t.Fatal(err)
+	}
+	if result.Code != http.StatusOK || data.IntervalSeconds != 5 || data.Points == nil || time.Since(data.Latest.CollectedAt) > time.Minute {
+		t.Fatalf("历史响应不完整: status=%d data=%+v", result.Code, data)
+	}
+	if result := performJSONRequest(t, router, http.MethodDelete, "/api/v1/system/metrics/queue/dead-messages", nil, cookie); result.Code != http.StatusForbidden {
+		t.Fatal("查看历史权限意外授予了清空死信能力")
+	}
 }
 
 func (q *purgeQueueStub) QueueStats(context.Context, string) (messaging.QueueStats, error) {

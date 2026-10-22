@@ -123,6 +123,9 @@ type Service struct {
 	wasSampled     bool
 	errorMu        sync.Mutex
 	lastErrorLog   map[string]time.Time
+	history        *historyStore
+	latestMu       sync.RWMutex
+	latest         *Snapshot
 }
 
 func New(db *gorm.DB, sqlDB *sql.DB, taskWorker workerStatsProvider, queue queueStatsProvider, logger *slog.Logger) *Service {

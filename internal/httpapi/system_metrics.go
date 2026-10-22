@@ -4,6 +4,8 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"strconv"
+	"time"
 
 	"github.com/gin-gonic/gin"
 
@@ -21,7 +23,33 @@ func (h systemMetricsHandler) snapshot(c *gin.Context) {
 		writeError(c, http.StatusServiceUnavailable, "metrics_unavailable", "系统监控暂不可用")
 		return
 	}
-	c.JSON(http.StatusOK, h.service.Snapshot(c.Request.Context()))
+	c.JSON(http.StatusOK, h.service.Current(c.Request.Context()))
+}
+
+func (h systemMetricsHandler) history(c *gin.Context) {
+	window, err := strconv.Atoi(c.DefaultQuery("window", "900"))
+	after, afterErr := strconv.ParseInt(c.DefaultQuery("after", "0"), 10, 64)
+	if err != nil || afterErr != nil || (window != 900 && window != 3600 && window != 21600 && window != 86400 && window != 259200) {
+		h.logger.Warn("监控历史查询参数无效", "operation", "system_metrics_history", "window", c.Query("window"), "after", c.Query("after"), "err", errors.Join(err, afterErr))
+		writeError(c, http.StatusBadRequest, "invalid_range", systemmetrics.ErrInvalidHistoryRange.Error())
+		return
+	}
+	if h.service == nil {
+		h.logger.Error("监控历史服务未初始化", "operation", "system_metrics_history")
+		writeError(c, http.StatusServiceUnavailable, "metrics_history_unavailable", systemmetrics.ErrHistoryUnavailable.Error())
+		return
+	}
+	history, err := h.service.History(c.Request.Context(), time.Duration(window)*time.Second, after)
+	if err != nil {
+		h.logger.Error("查询监控历史失败", "operation", "system_metrics_history", "window", window, "after", after, "err", err)
+		if errors.Is(err, systemmetrics.ErrInvalidHistoryRange) {
+			writeError(c, http.StatusBadRequest, "invalid_range", systemmetrics.ErrInvalidHistoryRange.Error())
+			return
+		}
+		writeError(c, http.StatusServiceUnavailable, "metrics_history_unavailable", systemmetrics.ErrHistoryUnavailable.Error())
+		return
+	}
+	c.JSON(http.StatusOK, history)
 }
 
 func (h systemMetricsHandler) purgeDeadLetters(c *gin.Context) {
