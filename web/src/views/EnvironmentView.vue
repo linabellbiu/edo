@@ -167,6 +167,10 @@ function capabilityName(kind: InfrastructureHost['capabilities'][number]['kind']
   return 'Kubernetes'
 }
 
+function environmentCapabilityKinds(environment: InfrastructureEnvironment) {
+  return [...new Set(environment.hosts.flatMap(host => host.capabilities.map(capability => capability.kind)))]
+}
+
 watch([() => route.query.create, () => auth.loaded], ([value]) => {
   if (value !== '1' || !auth.canAny(['deployment.create'])) return
   create()
@@ -197,7 +201,12 @@ onMounted(refresh)
             <span>{{ environment.hosts.length }} {{ t('resourceList.hosts') }}</span>
             <a-tooltip :title="environment.hosts.map((host: InfrastructureHost) => host.name).join('、')" :mouse-enter-delay="0.1"><small class="resource-secondary">{{ environment.hosts.map((host: InfrastructureHost) => host.name).join('、') || '—' }}</small></a-tooltip>
           </div>
-          <span v-else-if="column.key === 'capabilities'">{{ [...new Set(environment.hosts.flatMap((host: InfrastructureHost) => host.capabilities.map(cap => capabilityName(cap.kind))))].join(' / ') || '—' }}</span>
+          <div v-else-if="column.key === 'capabilities'" class="capability-logos">
+            <a-tooltip v-for="kind in environmentCapabilityKinds(environment)" :key="kind" :title="capabilityName(kind)" :mouse-enter-delay="0.1" :trigger="['hover', 'focus']">
+              <span class="capability-logo" :class="kind" role="img" :aria-label="capabilityName(kind)" tabindex="0"><RuntimeBrandIcon :kind="kind" /></span>
+            </a-tooltip>
+            <span v-if="!environmentCapabilityKinds(environment).length">—</span>
+          </div>
           <time v-else-if="column.key === 'updated'">{{ formatDateTime(environment.updated_at || environment.created_at) }}</time>
           <ResourceRowActions v-else-if="column.key === 'actions'" :more="auth.canAny(['deployment.update'])" :loading="mutatingID === environment.id">
             <a-button size="small" @click="openDetails(environment)">{{ t('resourceList.details') }}</a-button>
@@ -234,7 +243,12 @@ onMounted(refresh)
           <template #bodyCell="{ column, record: host }">
             <button v-if="column.key === 'name'" class="resource-name" :disabled="!auth.canAny(['cluster.read'])" @click="router.push({ path: '/hosts', query: { host: host.id } })">{{ host.name }}</button>
             <span v-else-if="column.key === 'location'">{{ host.is_builtin ? '本地' : host.address + ':' + host.ssh_port }}</span>
-            <div v-else-if="column.key === 'capabilities'" class="resource-inline-tags"><a-tag v-for="capability in host.capabilities" :key="capability.kind"><RuntimeBrandIcon :kind="capability.kind" :size="13" /> {{ capabilityName(capability.kind) }}</a-tag></div>
+            <div v-else-if="column.key === 'capabilities'" class="capability-logos">
+              <a-tooltip v-for="capability in host.capabilities" :key="capability.kind" :title="capabilityName(capability.kind)" :mouse-enter-delay="0.1" :trigger="['hover', 'focus']">
+                <span class="capability-logo" :class="capability.kind" role="img" :aria-label="capabilityName(capability.kind)" tabindex="0"><RuntimeBrandIcon :kind="capability.kind" /></span>
+              </a-tooltip>
+              <span v-if="!host.capabilities.length">—</span>
+            </div>
             <a-tag v-else-if="column.key === 'status'" :color="host.is_active ? 'success' : 'default'">{{ host.is_active ? t('planList.enabled') : t('planList.disabled') }}</a-tag>
           </template>
         </a-table>
@@ -295,5 +309,9 @@ onMounted(refresh)
 </template>
 
 <style scoped>
+.capability-logos{display:flex;align-items:center;gap:8px;color:var(--edo-muted)}
+.capability-logo{display:inline-flex;width:28px;height:28px;align-items:center;justify-content:center;flex:0 0 28px;border:1px solid var(--edo-border);border-radius:5px;background:var(--edo-surface-soft);font-size:20px}
+.capability-logo.docker{color:#2496ed}.capability-logo.kubernetes{color:#326ce5}
+.capability-logo:focus-visible{outline:2px solid var(--edo-primary);outline-offset:2px}
 .form-grid{display:grid;grid-template-columns:1fr 1fr;gap:0 14px}.span-2{grid-column:1/-1}.relation-select{display:flex;gap:8px}.relation-select>.ant-select{min-width:0;flex:1}.create-relation{width:34px;flex:0 0 34px;padding:0}.host-option-copy{min-width:0;flex:1}.host-option-copy strong,.host-option-copy small{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.host-option-copy small{color:var(--edo-muted);font-size:12px}.field-hint{margin-top:6px;color:var(--edo-muted);font-size:12px}.host-selection-hint{display:flex;align-items:flex-start;justify-content:space-between;gap:12px}.host-selection-hint strong{flex:0 0 auto;color:var(--edo-text);font-weight:600}.resource-inline-tags :deep(svg){vertical-align:middle}@media(max-width:640px){.form-grid{grid-template-columns:1fr}.span-2{grid-column:auto}.host-selection-hint{flex-direction:column;gap:3px}}
 </style>
