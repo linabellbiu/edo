@@ -184,7 +184,7 @@ onMounted(refresh)
 
 <template>
   <section>
-    <PageToolbar description="环境是可自定义的基础设施分组，用来明确主机归属；命令部署和运行时能力统一在“主机与集群”中维护。">
+    <PageToolbar description="按环境对主机分组，主机连接和运行资源在“主机与集群”中管理。">
       <a-button :loading="loading" @click="refresh"><RefreshCw :size="15" />刷新</a-button>
       <a-button v-if="auth.canAny(['deployment.create'])" type="primary" @click="create"><Plus :size="15" />创建环境</a-button>
     </PageToolbar>

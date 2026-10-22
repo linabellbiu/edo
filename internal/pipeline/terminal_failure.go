@@ -11,9 +11,8 @@ import (
 	"edo/internal/model"
 )
 
-// HandleTerminalTaskFailure 在 Worker 确认任务不会再次执行时，与 Job 失败状态同事务
-// 收敛流水线。它只信任数据库中的 Job 类型和参数，并以任务、节点、状态三项 CAS
-// 防止旧消息覆盖已经推进的运行。
+// HandleTerminalTaskFailure 在任务最终失败时，在同一事务中将关联流水线标记为失败。
+// 使用数据库中的任务类型和参数，并通过任务、节点和状态条件防止旧消息覆盖新进度。
 func (s *Service) HandleTerminalTaskFailure(
 	ctx context.Context,
 	tx *gorm.DB,
@@ -71,7 +70,7 @@ func (s *Service) HandleTerminalTaskFailure(
 	}
 	if err != nil {
 		if s.logger != nil {
-			s.logger.Error("读取待收敛流水线状态失败", "operation", "pipeline_terminal_failure_load",
+			s.logger.Error("读取关联流水线状态失败", "operation", "pipeline_terminal_failure_load",
 				"pipeline_run_id", runID, "job_id", job.ID, "workflow_node_id", nodeID, "err", err)
 		}
 		return err

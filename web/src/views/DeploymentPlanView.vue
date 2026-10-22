@@ -219,7 +219,7 @@ const form = reactive({
 })
 
 const kindOptions: Array<{ value: PlanKind; label: string; hint: string }> = [
-  { value: 'script', label: '主机脚本', hint: '连接主机执行受控脚本' },
+  { value: 'script', label: '主机脚本', hint: '通过 SSH 执行部署脚本' },
   { value: 'docker', label: 'Docker 容器', hint: '更新指定容器镜像' },
   { value: 'compose', label: 'Docker Compose', hint: '使用内联 Compose YAML 部署' },
   { value: 'kubernetes', label: 'Kubernetes Deployment', hint: '更新 Deployment 中的容器' },
@@ -506,7 +506,7 @@ function confirmPlanStatus(plan: DeploymentPlan) {
     title: `${active ? '启用' : '停用'}部署方案“${plan.name}”？`,
     content: active
       ? '启用后，新流水线可以再次选择该方案。'
-      : '停用后，新流水线不能使用该方案；已启动的运行继续使用当时的不可变快照。',
+      : '停用后不能用于新运行，正在执行的流水线不受影响。',
     okText: active ? '启用' : '停用',
     cancelText: '取消',
     onOk: () => setPlanStatus(plan, active),
@@ -530,7 +530,7 @@ async function deletePlan(plan: DeploymentPlan) {
 function confirmDeletePlan(plan: DeploymentPlan) {
   Modal.confirm({
     title: `删除部署方案“${plan.name}”？`,
-    content: '删除后不再出现在方案列表，历史运行和快照仍保留用于审计。如果流水线仍在引用，服务端会拒绝删除。',
+    content: '仍被流水线引用的方案不能删除。删除后保留运行历史。',
     okText: '删除',
     okType: 'danger',
     cancelText: '取消',
@@ -1007,7 +1007,7 @@ onMounted(refresh)
         </div>
 
         <div class="form-section">
-          <header><b>3</b><div><strong>执行方式与配置</strong><small>只展示当前环境真实可用的执行方式。</small></div></header>
+          <header><b>3</b><div><strong>执行方式与配置</strong><small>根据环境中的主机能力选择。</small></div></header>
           <a-alert v-if="!form.environment_id" type="info" show-icon message="请先选择目标环境" description="选择后会根据环境内主机和集群的已就绪能力显示可用的部署方式。" />
           <a-alert v-else-if="!availableKindOptions.length" type="warning" show-icon message="当前环境没有可用的执行方式" description="请先为环境关联主机，并检查 SSH、Docker 或 Kubernetes 能力是否就绪。" />
           <a-form-item v-else label="部署方式" required>
@@ -1068,7 +1068,7 @@ onMounted(refresh)
               type="info"
               show-icon
               message="镜像来自上游构建制品，无需填写镜像地址"
-              description="运行时会固定并校验不可变镜像，再按下面的输入参数创建或更新容器。"
+              description="使用流水线构建的镜像，按以下参数创建或更新容器。"
             />
             <div class="runtime-inputs">
               <div class="runtime-input-block">
@@ -1097,7 +1097,7 @@ onMounted(refresh)
                 <a-collapse-panel key="advanced" header="高级配置">
               <div class="runtime-input-block">
                 <header>
-                  <span><strong>环境变量</strong><small>每项明确填写变量名和值。</small></span>
+                  <span><strong>环境变量</strong><small>填写变量名和值。</small></span>
                   <a-button type="link" size="small" @click="addDockerVariable"><Plus :size="14" />添加变量</a-button>
                 </header>
                 <div v-for="(item, index) in form.docker_environment_variables" :key="`env-${index}`" class="docker-row docker-key-value-row">
@@ -1168,7 +1168,7 @@ onMounted(refresh)
               type="info"
               show-icon
               message="镜像来自上游构建制品，无需在 Compose 中填写 image"
-              description="EDO 会在执行时把不可变镜像安全注入目标服务；固定镜像地址和 build 配置会被拒绝。"
+              description="部署时自动填入流水线镜像，请勿填写固定镜像地址或 build 配置。"
             />
             <div class="compose-import">
               <input ref="composeFileInput" class="file-input" type="file" accept=".yml,.yaml,application/yaml,text/yaml" @change="readComposeFile" />
@@ -1185,7 +1185,7 @@ onMounted(refresh)
               description="不会读取代码仓库中的 Compose 文件；所选执行主机必须安装 Docker Compose v2 插件。"
             />
           </template>
-          <a-alert v-if="form.kind === 'kubernetes'" type="info" show-icon message="流水线会使用上游镜像制品的不可变 Digest，更新指定 Deployment 中的容器；对应构建方案必须绑定集群可访问的镜像仓库。" />
+          <a-alert v-if="form.kind === 'kubernetes'" type="info" show-icon message="使用构建产物的镜像摘要更新 Deployment。构建方案需绑定集群能访问的镜像仓库。" />
           </template>
         </div>
       </a-form>

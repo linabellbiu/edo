@@ -39,7 +39,7 @@ type buildExecutionError struct {
 func (e *buildExecutionError) Error() string { return e.cause.Error() }
 func (e *buildExecutionError) Unwrap() error { return e.cause }
 
-// IsRetryableBuildError 只识别 Docker/BuildKit 边界产生的类型化临时故障。
+// IsRetryableBuildError 判断 Docker/BuildKit 错误是否允许重试。
 // 业务层不解析错误文案，Dockerfile 或参数错误仍会立即终止。
 func IsRetryableBuildError(err error) bool {
 	var buildError *buildExecutionError
@@ -76,7 +76,7 @@ type BuildOptions struct {
 	Labels       map[string]string
 }
 
-// BuiltImage 是构建运行时返回的不可变镜像信息。
+// BuiltImage 保存构建结果的镜像 ID、摘要和大小。
 // 多架构镜像直接推送到仓库时，本地运行时没有完整镜像，因此 SizeBytes 可能为 0。
 type BuiltImage struct {
 	ImageID   string

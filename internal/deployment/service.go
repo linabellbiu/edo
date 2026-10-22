@@ -35,12 +35,12 @@ var (
 	ErrTargetExists                 = errors.New("部署配置名称已存在")
 	ErrTargetNotFound               = errors.New("部署配置不存在")
 	ErrInvalidImage                 = errors.New("容器镜像引用无效")
-	ErrImmutableImageRequired       = errors.New("镜像仓库或 Kubernetes 发布必须使用带摘要的不可变镜像")
+	ErrImmutableImageRequired       = errors.New("通过镜像仓库或 Kubernetes 发布时，镜像地址必须包含 Digest")
 	ErrDeploymentNotFound           = errors.New("发布记录不存在")
 	ErrInvalidDeploymentState       = errors.New("发布记录当前状态不允许此操作")
 	ErrRollbackUnavailable          = errors.New("该发布记录没有可回滚的上一镜像")
 	ErrCommandPipelineRequired      = errors.New("命令脚本发布必须从流水线部署节点发起")
-	ErrPipelineReleaseIdentity      = errors.New("流水线发布缺少幂等标识")
+	ErrPipelineReleaseIdentity      = errors.New("缺少流水线发布请求标识")
 	ErrPipelineReleaseRunning       = errors.New("该流水线节点已有发布正在执行，不能重复发布")
 	ErrPipelineReleaseFailed        = errors.New("该流水线节点的发布已经失败，请重新执行流水线")
 	ErrPipelineReleaseConflict      = errors.New("该流水线节点已经创建发布记录，不能重复发布")
@@ -313,8 +313,8 @@ func (s *Service) RequestAndRun(ctx context.Context, actorID string, input Reque
 	return s.requestAndRun(ctx, actorID, input, target)
 }
 
-// RequestSnapshotAndRun 只供流水线执行器使用。target 必须来自服务端创建运行时保存的
-// 不可变快照，执行过程中不再读取可能已被修改的部署目标。
+// RequestSnapshotAndRun 供流水线执行器使用。target 使用运行创建时保存的配置，
+// 不重新读取部署目标，以免中途修改配置影响本次部署。
 func (s *Service) RequestSnapshotAndRun(
 	ctx context.Context,
 	actorID string,
@@ -594,7 +594,7 @@ func (s *Service) createPipelineReleaseRecord(
 		return nil, false, fmt.Errorf("读取流水线发布记录失败: %w", err)
 	}
 	if !samePipelineReleaseSemantics(&existing, record) {
-		s.logger.Error("流水线发布幂等标识对应的执行语义不一致", "operation", "pipeline_release_idempotency",
+		s.logger.Error("同一流水线发布请求的配置不一致", "operation", "pipeline_release_idempotency",
 			"pipeline_run_id", record.PipelineRunID, "workflow_node_id", record.WorkflowNodeID,
 			"deployment_id", existing.ID, "err", ErrPipelineReleaseConflict)
 		return &existing, false, ErrPipelineReleaseConflict
@@ -761,7 +761,7 @@ func (s *Service) createRollbackAttempt(
 			}
 			if existing.Operation != model.DeploymentRollback || existing.RollbackSourceID != source.ID ||
 				existing.RollbackAttempt != attempt {
-				return fmt.Errorf("回滚幂等标识对应的执行语义不一致: deployment_id=%s", existing.ID)
+				return fmt.Errorf("同一回滚请求的配置不一致: deployment_id=%s", existing.ID)
 			}
 			selected = &existing
 			return nil
@@ -810,7 +810,7 @@ func findLatestRollbackAttempt(tx *gorm.DB, sourceID, legacyKey string) (*model.
 		legacy.RollbackAttempt = 1
 	}
 	if legacy.RollbackSourceID != sourceID || legacy.RollbackAttempt != 1 {
-		return nil, fmt.Errorf("历史回滚幂等标识对应的执行语义不一致: deployment_id=%s", legacy.ID)
+		return nil, fmt.Errorf("历史回滚请求的配置不一致: deployment_id=%s", legacy.ID)
 	}
 	return &legacy, nil
 }
@@ -1488,8 +1488,8 @@ func (s *Service) resolveEnvironmentTarget(
 }
 
 // ResolveDockerWorkloadName 固定 Docker 容器部署在本次运行中使用的容器名称。
-// 用户未配置名称时，名称稳定绑定应用、部署方案和内部目标，流水线快照与发布记录
-// 必须共同使用这个结果，避免执行阶段生成名称后破坏不可变快照的一致性。
+// 名称留空时，根据应用、部署方案和目标生成固定名称。
+// 运行配置和发布记录共用这个名称，保证后续更新命中同一容器。
 func ResolveDockerWorkloadName(configuredName, applicationName, applicationID, deploymentPlanID, targetID string) (string, error) {
 	configuredName = strings.TrimSpace(configuredName)
 	if configuredName != "" {

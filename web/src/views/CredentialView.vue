@@ -31,7 +31,7 @@ onMounted(refresh)
 
 <template>
   <section>
-    <PageToolbar description="每个账户只能查看和管理自己保存的令牌，仓库只保存引用关系。"><a-button :loading="loading" @click="refresh"><RefreshCw :size="15" />刷新</a-button><a-button v-if="auth.canAny(['credential.create'])" type="primary" @click="create"><Plus :size="15" />保存令牌</a-button></PageToolbar>
+    <PageToolbar description="管理自己的 Git 令牌和 SSH 私钥。"><a-button :loading="loading" @click="refresh"><RefreshCw :size="15" />刷新</a-button><a-button v-if="auth.canAny(['credential.create'])" type="primary" @click="create"><Plus :size="15" />保存令牌</a-button></PageToolbar>
     <div class="vben-card"><ResourceTable :rows="items" :columns="columns" :loading="loading">
       <template #cell-provider="{ value }"><a-tag color="blue">{{ providerNames[String(value)] || value }}</a-tag></template>
       <template #cell-auth_type="{ value }">{{ value === 'ssh_key' ? 'SSH 私钥' : '访问令牌' }}</template>

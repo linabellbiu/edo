@@ -118,7 +118,7 @@ type DeploymentRecord struct {
 func (DeploymentRecord) TableName() string { return "deployment_records" }
 
 // DeploymentInstanceControl 保存某个应用在一个部署方案及目标组合下的 Shell 运行控制命令。
-// 它属于当前逻辑部署实例，不写入应用全局配置，也不篡改不可变的历史发布快照。
+// 命令按实例保存，不修改应用配置或历史发布记录。
 type DeploymentInstanceControl struct {
 	ID               string    `gorm:"type:varchar(36);primaryKey" json:"id"`
 	ApplicationID    string    `gorm:"type:varchar(36);not null;index;uniqueIndex:idx_deployment_instance_control,priority:1" json:"application_id"`

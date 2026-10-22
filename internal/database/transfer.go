@@ -402,12 +402,11 @@ func copyDatabaseSnapshot(
 
 	return source.WithContext(ctx).Transaction(func(snapshot *gorm.DB) error {
 		return target.WithContext(ctx).Transaction(func(destination *gorm.DB) error {
-			// 新库迁移同样会创建确定性的默认部门；源库快照才是权威数据。
+			// 目标库已初始化默认部门，先移除，再从源库复制。
 			if err := destination.Delete(&model.Department{}, "id = ?", DefaultDepartmentID).Error; err != nil {
 				return fmt.Errorf("清理目标库默认部门失败: %w", err)
 			}
-			// 新库迁移会创建内置本地主机。复制前先移除这两条确定性的种子记录，
-			// 由源库快照恢复，避免主键冲突，也不会把真实业务数据误判为空库。
+			// 目标库的内置主机和能力也由源库复制，先移除初始化记录以免主键冲突。
 			if err := destination.Where("host_id = ?", model.BuiltinLocalHostID).
 				Delete(&model.HostCapability{}).Error; err != nil {
 				return fmt.Errorf("清理目标库内置主机能力失败: %w", err)

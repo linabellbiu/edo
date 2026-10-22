@@ -74,7 +74,7 @@ const (
 	ArtifactStorageKindDockerDaemon ArtifactStorageKind = "docker_daemon"
 )
 
-// Artifact 是构建和部署之间的不可变边界。available 后只允许变更生命周期状态。
+// Artifact 保存构建产物。进入 available 状态后，不再修改内容和来源，只更新状态。
 type Artifact struct {
 	ID              string              `gorm:"type:varchar(36);primaryKey" json:"id"`
 	ApplicationID   string              `gorm:"type:varchar(36);not null;index" json:"application_id"`

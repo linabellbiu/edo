@@ -792,7 +792,7 @@ onMounted(refresh)
       <article>
         <span><Building2 :size="18" /></span>
         <div><strong>{{ canAccessDepartments ? departments.length : '—' }}</strong><small>部门</small></div>
-        <em>{{ canAccessDepartments ? '数据隔离边界' : '无权查看' }}</em>
+        <em>{{ canAccessDepartments ? '组织归属' : '无权查看' }}</em>
       </article>
       <article>
         <span><ShieldCheck :size="18" /></span>
@@ -1052,7 +1052,7 @@ onMounted(refresh)
             <a-input v-model:value="roleForm.display_name" placeholder="例如：发布管理员" />
           </a-form-item>
           <a-form-item label="说明">
-            <a-textarea v-model:value="roleForm.description" :rows="3" placeholder="说明该角色的职责和适用成员" />
+            <a-textarea v-model:value="roleForm.description" :rows="3" placeholder="例如：负责应用构建和发布" />
           </a-form-item>
         </section>
 
@@ -1060,7 +1060,7 @@ onMounted(refresh)
           <a-alert
             type="info"
             show-icon
-            message="角色是全局复用的权限集合，部门只控制业务数据范围。权限变更会立即影响关联用户的后续请求。"
+            message="修改后，对已分配此角色的用户立即生效。项目角色请在项目成员中分配。"
           />
           <div class="permission-editor-toolbar">
             <a-input v-model:value="rolePermissionQuery" allow-clear placeholder="搜索权限名称、说明或代码">

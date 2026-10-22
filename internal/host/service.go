@@ -257,7 +257,7 @@ func (s *Service) RefreshLocalCapabilities(ctx context.Context) error {
 	return s.refreshLocalCapabilities(ctx, true)
 }
 
-// RefreshRuntimeStatuses 检查已关联运行时的真实连接状态。探测并行执行，
+// RefreshRuntimeStatuses 并行检查已关联运行时的连接状态，
 // 单台不可达主机不会拖慢其余主机的状态刷新。
 func (s *Service) RefreshRuntimeStatuses(ctx context.Context) ([]RuntimeStatusChange, error) {
 	var hosts []model.Host

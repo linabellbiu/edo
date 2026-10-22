@@ -168,7 +168,7 @@ EDO_COMPOSE_DATABASE_DSN=postgresql://postgres:your-password@db.example.com:5432
 注意：
 
 - 已导出的同名进程环境变量优先于 `.env`。
-- `EDO_SECRETS_KEY` 用于加密凭据。实例开始使用后必须固定保存并备份，不能静默更换。
+- `EDO_SECRETS_KEY` 用于加密凭据。请妥善保存并备份；更换密钥后将无法解密已有凭据。
 - 宿主机连接使用 `EDO_DATABASE_*`、`EDO_REDIS_URL` 和 `EDO_NATS_URL`。
 - Compose 容器连接使用 `EDO_COMPOSE_*`，不要把宿主机的 `127.0.0.1` 地址直接传给容器。
 - `.env` 包含敏感信息，已经被 Git 忽略，不要提交。

@@ -65,7 +65,7 @@ onMounted(async () => {
     </div>
     <section class="login-visual">
       <div class="visual-brand"><span class="logo-mark"><span>Z</span></span><strong>EDO</strong></div>
-      <div class="visual-copy"><p>持续交付与运行管理平台</p><h1>让每一次变更<br>都有清晰路径。</h1><span>从代码检查、镜像构建到环境发布，把复杂流程收进一个可靠的工作台。</span></div>
+      <div class="visual-copy"><p>EasyDevOps</p><h1>应用构建<br>自动部署</h1><span>连接仓库，配置流水线，自动完成测试、构建和发布。</span></div>
       <div class="visual-orbits"><i /><i /><i /></div>
     </section>
     <section class="login-panel">

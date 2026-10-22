@@ -430,7 +430,7 @@ func (w *Worker) finishFailure(ctx context.Context, queueMessage queueMessage, m
 		}
 		if hook, ok := w.registry.TerminalFailureHook(job.Kind); ok {
 			if err := hook(ctx, tx, job, code, publicMessage); err != nil {
-				return fmt.Errorf("收敛关联业务状态失败: %w", err)
+				return fmt.Errorf("更新关联业务状态失败: %w", err)
 			}
 			var payload struct {
 				PipelineRunID string `json:"pipeline_run_id"`

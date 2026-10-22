@@ -1694,8 +1694,8 @@ func (s *Service) enqueueBuildExecution(ctx context.Context, run *model.Pipeline
 	if node.Type != model.WorkflowNodeBuild && node.Type != model.WorkflowNodeShell {
 		return nil, ErrInvalidWorkflowTransition
 	}
-	// Shell 和脚本构建可能产生外部副作用，同一消息最多执行一次。Dockerfile 构建以固定
-	// Commit 和不可变制品登记为幂等边界，才允许有限重试。
+	// 脚本重复执行可能影响外部服务，因此不自动重试。
+	// Dockerfile 构建使用固定 Commit，制品登记会去重，可以重试。
 	maxAttempts, idempotent := 1, false
 	if node.Type == model.WorkflowNodeBuild {
 		snapshot, err := parseWorkflowSnapshot(run)
@@ -1706,7 +1706,7 @@ func (s *Service) enqueueBuildExecution(ctx context.Context, run *model.Pipeline
 		if !ok || plan.ID != node.Config.BuildPlanID {
 			return nil, ErrPipelineExecutionConfig
 		}
-		// Dockerfile 构建以固定 Commit 和不可变制品登记为幂等边界；任意脚本默认不自动重试。
+		// Dockerfile 构建最多尝试 4 次，脚本只执行一次。
 		if plan.Kind == model.BuildPlanDockerfile {
 			maxAttempts, idempotent = 4, true
 		}

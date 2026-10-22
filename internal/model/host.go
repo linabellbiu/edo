@@ -22,7 +22,7 @@ const (
 )
 
 // NormalizeHostArchitecture 将操作系统和容器运行时常见的架构名称统一为 OCI 架构名。
-// EDO 当前只支持最常见的 AMD64 与 ARM64，未知架构不得静默回退到构建机架构。
+// 仅支持 AMD64 和 ARM64，无法识别时返回空值和 false。
 func NormalizeHostArchitecture(value string) (HostArchitecture, bool) {
 	switch strings.ToLower(strings.TrimSpace(value)) {
 	case "amd64", "x86_64", "x86-64":
@@ -104,7 +104,7 @@ type Host struct {
 	SSHHostKeyFingerprint   string           `gorm:"type:varchar(128);not null;default:''" json:"ssh_host_key_fingerprint"`
 	Architecture            HostArchitecture `gorm:"type:varchar(16);not null;default:''" json:"architecture,omitempty"`
 	// EnvironmentID 仅保留旧数据库列兼容，新代码使用 environment_hosts 关联表。
-	// Deprecated: 不再读取或写入该字段的业务语义。
+	// Deprecated: 业务代码不再读写此字段。
 	EnvironmentID string    `gorm:"type:varchar(36);not null;default:'';index" json:"-"`
 	IsBuiltin     bool      `gorm:"not null;default:false;index" json:"is_builtin"`
 	IsActive      bool      `gorm:"not null;default:true;index" json:"is_active"`

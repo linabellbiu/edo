@@ -2,7 +2,7 @@ package model
 
 import "time"
 
-// Department 是用户与业务资源的数据隔离边界。
+// Department 保存用户和资源所属的部门。
 // 功能权限仍由 Casbin 管理；DepartmentID 只决定用户可以看到和操作哪一组数据。
 type Department struct {
 	ParentID    string    `gorm:"type:varchar(36);not null;default:'';index" json:"parent_id"`

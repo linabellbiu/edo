@@ -79,7 +79,7 @@ const taskDefinitions: TaskDefinition[] = [
   { id: 'approval', type: 'approval', label: '发布审核', hint: '等待其他成员审核通过后继续', group: '发布', color: '#df962e', icon: ShieldCheck },
   { id: 'manual', type: 'manual', label: '人工放行', hint: '由操作人员确认后继续执行', group: '发布', color: '#8a62d2', icon: CheckCircle2 },
   { id: 'deploy', type: 'deploy', label: '部署', hint: '用部署方案把上游制品更新到目标环境', group: '部署', color: '#28a875', icon: Rocket },
-  { id: 'shell', type: 'shell', label: 'Shell 脚本执行', hint: '在受控构建环境执行非交互脚本', group: '工具', color: '#3985c6', icon: TerminalSquare, presetScript: 'set -eu\n' },
+  { id: 'shell', type: 'shell', label: 'Shell 脚本执行', hint: '在构建容器中运行脚本', group: '工具', color: '#3985c6', icon: TerminalSquare, presetScript: 'set -eu\n' },
 ]
 
 const taskMeta = Object.fromEntries(
@@ -1440,7 +1440,7 @@ onBeforeRouteLeave(async () => {
 
         <footer class="board-footer">
           <div><a-tag :color="issues.length || !draftStructureValid ? 'warning' : 'success'">{{ issues.length ? `${issues.length} 个问题` : draftStructureValid ? '结构正常' : '流程尚未完成' }}</a-tag><span>{{ saveState }}</span></div>
-          <small>拖动阶段调整流程顺序；拖动任务调整分支排列，运行会保存当前配置快照。</small>
+          <small>拖动阶段可调整执行顺序，拖动任务可调整并行分支的位置。</small>
         </footer>
       </main>
 
@@ -1597,7 +1597,7 @@ onBeforeRouteLeave(async () => {
                 </div>
               </a-form-item>
               <a-alert v-if="!activeBuildPlans.length" class="panel-alert" type="warning" show-icon message="还没有可用构建方案，请先创建构建方案。" />
-              <p class="panel-note">构建方案负责生成并登记不可变镜像或文件制品，部署任务只消费该制品。</p>
+              <p class="panel-note">构建方案生成镜像或文件，部署任务使用构建结果。</p>
             </template>
 
             <template v-else-if="selectedNode.type === 'shell'">
@@ -1691,7 +1691,7 @@ onBeforeRouteLeave(async () => {
                     <a-textarea :value="rule.message" :rows="9" :maxlength="8192" :disabled="!canEdit" placeholder="请输入通知内容" @focus="selectNotificationTemplateField(rule.id, 'message')" @update:value="updateNotificationRule(rule.id, { message: String($event) })" />
                   </a-form-item>
                   <section class="node-notification-variables">
-                    <header><strong>流水线变量</strong><small>点击插入模板。只有被标题或内容引用的变量才会替换为本次运行的真实值。</small></header>
+                    <header><strong>流水线变量</strong><small>点击变量插入通知标题或内容。</small></header>
                     <div v-if="notificationTemplateVariables.length">
                       <button v-for="variable in notificationTemplateVariables" :key="variable.value" type="button" :disabled="!canEdit" :title="`插入${variable.label}`" @click="insertNotificationVariable(rule, variable.value)">
                         <code>{{ variable.value }}</code><span>{{ variable.label }}</span>
@@ -1705,7 +1705,7 @@ onBeforeRouteLeave(async () => {
             </section>
             <a-divider v-if="selectedTask && selectedNode.type !== 'deploy'" class="node-notification-divider" />
             <template v-if="selectedNode.type === 'shell'">
-              <a-form-item label="运行镜像"><a-auto-complete :value="selectedNode.config.runtime_image || DEFAULT_RUNTIME_IMAGE" :options="runtimeImageOptions" :disabled="!canUpdate || Boolean(selectedNode.config.toolchain_language)" placeholder="alpine:3.22" @update:value="updateSelectedNode({}, { runtime_image: String($event) })" /><small class="field-hint">{{ selectedNode.config.toolchain_language ? '运行镜像由模板中所选语言版本固定。' : '镜像必须提供 /bin/sh，并使用明确 tag 或 digest；不接受裸镜像名和 latest。' }}</small></a-form-item>
+              <a-form-item label="运行镜像"><a-auto-complete :value="selectedNode.config.runtime_image || DEFAULT_RUNTIME_IMAGE" :options="runtimeImageOptions" :disabled="!canUpdate || Boolean(selectedNode.config.toolchain_language)" placeholder="alpine:3.22" @update:value="updateSelectedNode({}, { runtime_image: String($event) })" /><small class="field-hint">{{ selectedNode.config.toolchain_language ? '运行镜像由模板中所选语言版本固定。' : '镜像需包含 /bin/sh，并指定版本 Tag 或 Digest，不能使用 latest。' }}</small></a-form-item>
               <a-form-item label="工作目录"><a-input :value="selectedNode.config.working_directory" :disabled="!canUpdate" placeholder="." @update:value="updateSelectedNode({}, { working_directory: String($event) })" /></a-form-item>
               <a-form-item label="超时（秒）"><a-input-number :value="selectedNode.config.timeout_seconds || 600" :min="30" :max="7200" :disabled="!canUpdate" @update:value="updateSelectedNode({}, { timeout_seconds: Number($event || 600) })" /></a-form-item>
               <a-form-item
@@ -1723,7 +1723,7 @@ onBeforeRouteLeave(async () => {
               type="info"
               show-icon
               message="代码检查由 EDO 后台主动执行"
-              description="检查间隔由应用配置；Webhook 只用于降低触发延迟，不改变分支、PR/MR 或 Tag 的匹配规则。"
+              description="检查间隔在应用中设置，也可配置 Webhook 及时接收更新。"
             />
             <a-alert
               v-else-if="selectedNode.type === 'build'"
@@ -1731,7 +1731,7 @@ onBeforeRouteLeave(async () => {
               type="info"
               show-icon
               message="构建参数由构建方案统一管理"
-              description="任务只绑定可复用方案，流水线运行会保存当时实际使用的完整方案快照。"
+              description="在构建方案中设置 Dockerfile、构建目录等参数。"
             />
             <a-alert v-else-if="selectedNode.type !== 'deploy'" class="panel-alert" type="info" show-icon message="当前任务没有额外高级配置" />
           </a-form>
@@ -1751,7 +1751,7 @@ onBeforeRouteLeave(async () => {
       :keyboard="!saveConfirmSubmitting"
       :mask-closable="!saveConfirmSubmitting"
     >
-      <p class="save-confirm-copy">新启动的运行将使用更新后的配置；已经启动的运行仍使用原快照。</p>
+      <p class="save-confirm-copy">保存后对新运行生效，不影响正在执行的流水线。</p>
       <template #footer>
         <a-button html-type="button" :disabled="saveConfirmSubmitting" @click="saveConfirmOpen = false">取消</a-button>
         <a-button type="primary" html-type="button" :loading="saveConfirmSubmitting" @click.stop="confirmSaveUpdate">保存并启用</a-button>

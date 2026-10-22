@@ -24,7 +24,7 @@ x-edo-environment: &edo-environment
   # Git 对象缓存与 Tag/Commit 隔离工作区随 data 卷持久化，避免每次流水线重新 Clone。
   EDO_GIT_DIRECTORY: ${EDO_COMPOSE_GIT_DIRECTORY:-/app/data/repositories}
   EDO_GIT_CACHE_DIRECTORY: ${EDO_COMPOSE_GIT_CACHE_DIRECTORY:-/app/data/cache}
-  # redis 和 nats 是本文件中的默认容器服务名；URL 也可在 .env 中改为受控的外部服务。
+  # redis 和 nats 是本文件中的默认容器服务名；也可在 .env 中填写外部 Redis 和 NATS 地址。
   EDO_REDIS_URL: ${EDO_COMPOSE_REDIS_URL:-redis://redis:6379/0}
   EDO_NATS_URL: ${EDO_COMPOSE_NATS_URL:-nats://nats:4222}
   # 所有本地启动方式共用根目录 .env，缺失时必须停止，避免使用错误密钥损坏既有凭据。

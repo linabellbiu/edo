@@ -16,10 +16,10 @@ EDO 默认使用 SQLite。数据量、并发写入或高可用需求增长后，
 
 1. 停止新的发布和配置修改，确认任务中心无待执行或运行中任务。
 2. 在系统设置中选择 MySQL 或 PostgreSQL，填写目标库地址、端口、用户名、密码和数据库名，并点击“测试连接”。目标库不存在时会在此步骤自动创建。
-3. 点击“开始迁移”，在中文确认弹窗中确认目标数据库后启动迁移，等待状态变为“已完成”。
+3. 点击“开始迁移”，确认目标数据库后开始迁移，等待状态变为“已完成”。
 4. 立即停止当前 EDO 服务，避免快照完成后 SQLite 继续产生新写入。
-5. 设置 `EDO_DATABASE_DRIVER=mysql` 或 `EDO_DATABASE_DRIVER=postgres`，并把同一目标库 DSN 写入受控的 `EDO_DATABASE_DSN` 运行配置。
-6. 执行 `edo migrate` 做幂等的结构校验，然后启动 `edo server`。
+5. 设置 `EDO_DATABASE_DRIVER=mysql` 或 `EDO_DATABASE_DRIVER=postgres`，并在 `EDO_DATABASE_DSN` 中填写该目标库的连接串。
+6. 执行 `edo migrate` 检查并更新表结构，然后启动 `edo server`。
 7. 验证登录、任务、日志、流水线和发布记录后，再恢复自动触发。
 
 ## 兼容性与回退

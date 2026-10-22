@@ -21,7 +21,7 @@ var (
 )
 
 // validatedRolePermissionSet 校验角色存在性并返回角色携带的全部权限。
-// 委派边界必须检查角色全集，不能依赖目标用户的 deny 抵消越权角色。
+// 分配角色时逐项检查权限，不能用用户拒绝项抵消越权授权。
 func validatedRolePermissionSet(tx *gorm.DB, roleIDs []string) (map[string]struct{}, error) {
 	result := make(map[string]struct{})
 	if len(roleIDs) == 0 {
@@ -47,7 +47,7 @@ func validatedRolePermissionSet(tx *gorm.DB, roleIDs []string) (map[string]struc
 	return result, nil
 }
 
-// validateAccessDelegation 使用数据库中的当前权限计算委派边界，避免依赖可能尚未同步的 Casbin 内存快照。
+// validateAccessDelegation 从数据库读取当前权限，防止 Casbin 缓存尚未同步时越权授权。
 func validateAccessDelegation(
 	tx *gorm.DB,
 	actor *model.User,
@@ -144,8 +144,7 @@ func effectivePermissionSetFromDB(tx *gorm.DB, userID string) (map[string]struct
 }
 
 // syncUserAccessOrDisable 处理数据库提交后的策略同步失败。
-// 用户访问配置可能包含撤权，因此同步失败时停用目标账户并递增认证版本，
-// 让所有实例的身份校验都从数据库 fail closed，而不是向调用方返回可盲目重试的普通失败。
+// 同步失败可能遗留已撤销的权限，因此停用账户并递增认证版本，使各实例拒绝旧会话。
 func (s *Service) syncUserAccessOrDisable(ctx context.Context, userID, operation string) error {
 	if err := s.syncPolicy(operation); err == nil {
 		return nil

@@ -927,7 +927,7 @@ func migrateDeploymentIdempotency(tx *gorm.DB) error {
 
 func migrateDeploymentImageIdentity(tx *gorm.DB) error {
 	// 历史记录没有可信的 Docker Image ID，保持空值并由回滚入口拒绝，
-	// 不能根据可变标签猜测或补造不可变身份。
+	// 标签可能已指向其他镜像，不能用来补填历史镜像 ID 或摘要。
 	return addColumns(tx, &model.DeploymentRecord{}, []string{"ExpectedImageID", "PreviousImageID"})
 }
 
@@ -1033,7 +1033,7 @@ func migrateEnvironmentHosts(tx *gorm.DB) error {
 			return err
 		}
 	}
-	// 旧单值列必须清空，避免后续代码或外部工具把它误认为权威关系。
+	// 清空旧单值列，后续关联只读取多流水线关系表。
 	return tx.Model(&model.Host{}).Where("environment_id <> ''").Update("environment_id", "").Error
 }
 
@@ -1151,7 +1151,7 @@ func migrateHostsAndEnvironments(tx *gorm.DB) error {
 		localHost.Name = "本地"
 	}
 	// Docker 能力只是新安装的初始选择。之后是否启用由用户管理，
-	// 重跑迁移不得把已经关闭的能力静默恢复。
+	// 重跑迁移时保留用户已关闭的能力。
 	if createLocalHost.RowsAffected == 0 {
 		return migrateLegacySSHDockerHosts(tx, now)
 	}

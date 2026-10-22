@@ -146,7 +146,7 @@ func (s *Service) Create(ctx context.Context, actorID string, input Input) (*Det
 		ID:          uuid.NewString(),
 		Name:        input.Name,
 		Description: input.Description,
-		Level:       "", // 旧数据库列仍有 NOT NULL 约束，但不再承载业务语义。
+		Level:       "", // 旧列仍为 NOT NULL，保留空值以满足约束。
 		IsActive:    true,
 		CreatedBy:   strings.TrimSpace(actorID),
 		CreatedAt:   now,

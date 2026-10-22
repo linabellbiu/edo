@@ -468,7 +468,7 @@ async function startMigration() {
   const testToken = testResult.value.test_token;
   Modal.confirm({
     title: `开始迁移到 ${database.databaseName}？`,
-    content: "EDO 将把当前 SQLite 数据快照复制到目标数据库。迁移完成后需要停止当前服务、切换数据库配置并重启。",
+    content: "将当前 SQLite 数据复制到目标数据库。完成后需停止服务、修改数据库配置，再重新启动。",
     okText: "开始迁移",
     cancelText: "取消",
     async onOk() {
@@ -604,11 +604,11 @@ onBeforeUnmount(() => clearInterval(migrationTimer));
         <span><Braces /></span>
         <div>
           <h3>EDO 内置变量目录</h3>
-          <p>统一查看通知模板、流水线脚本、构建和部署当前已经支持的变量及其可用条件。</p>
+          <p>查看通知、脚本、构建和部署可用的变量。</p>
         </div>
         <a-tag color="blue">只读目录</a-tag>
       </header>
-      <a-alert class="variable-catalog-alert" type="info" show-icon message="变量只在标明的运行阶段注入实际值；目录不会展示运行值或密钥，也不会自动把变量集合加入通知。通知模板只替换你主动引用的变量。" />
+      <a-alert class="variable-catalog-alert" type="info" show-icon message="这里不显示变量值或密钥。通知中需要用到的变量，请在模板里填写。" />
       <div class="variable-catalog-toolbar">
         <a-input v-model:value="variableSearch" allow-clear placeholder="搜索变量名、用途或适用范围">
           <template #prefix><Search :size="15" /></template>
@@ -639,7 +639,6 @@ onBeforeUnmount(() => clearInterval(migrationTimer));
           </section>
         </div>
       </a-spin>
-      <p class="variable-catalog-footnote">这里仅枚举 EDO 当前已经实现的内置变量。未来增加全局、流水线或任务级变量时，会继续纳入同一目录并明确快照与覆盖规则。</p>
     </article>
     <template v-if="active === 'storage'">
       <article v-if="runtimeDirectories" class="setting-card vben-card">
@@ -647,7 +646,7 @@ onBeforeUnmount(() => clearInterval(migrationTimer));
           <span><FolderCog /></span>
           <div>
             <h3>运行目录</h3>
-            <p>仓库工作区、构建中间输出、Git 对象缓存和本地文件产物分开存放，保存后新任务立即使用新目录。</p>
+            <p>分别设置工作区、构建、缓存和产物目录。保存后对新任务生效。</p>
           </div>
         </header>
         <div class="settings-form storage-form">
@@ -754,7 +753,7 @@ onBeforeUnmount(() => clearInterval(migrationTimer));
         <span><Database /></span>
         <div>
           <h3>SQLite 迁移到 MySQL / PostgreSQL</h3>
-          <p>将当前 SQLite 数据快照复制到已创建的空数据库，连接信息不会保存或记录。</p>
+          <p>将 SQLite 数据复制到空数据库，连接信息不会保存。</p>
         </div>
         <a-tag :color="migrationStatePresentation.color">{{ migrationStatePresentation.label }}</a-tag>
       </header>
@@ -1038,10 +1037,6 @@ dd {
   gap: 5px;
   margin-top: 10px;
   font-size: 11px;
-}
-.variable-catalog-footnote {
-  margin-top: 14px !important;
-  font-size: 12px;
 }
 .database-migration-card {
   padding: 24px;

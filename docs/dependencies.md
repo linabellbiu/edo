@@ -1,10 +1,10 @@
 # EDO 第三方依赖决策
 
-本文件记录通用能力的依赖选型。业务规则、权限边界和审计语义仍由 EDO 定义；第三方包只负责经过验证的通用机制。
+这里记录第三方库的用途和选型原因。组织规则、权限和审计由 EDO 自身处理。
 
 ## 已采用
 
-| 能力 | 依赖 | 采用原因 | EDO 保留的边界 |
+| 能力 | 依赖 | 采用原因 | EDO 负责的部分 |
 | --- | --- | --- | --- |
 | 环境变量解析 | `github.com/caarlos0/env/v11` | 零运行时依赖，支持结构体标签、数值、布尔值和 `time.Duration`，替代手写类型转换 | 默认值、跨字段校验、显式空值检查和安全错误文案 |
 | Git 远端引用与认证 | `github.com/go-git/go-git/v5` | 纯 Go、持续维护、支持 HTTPS Basic Auth、SSH 私钥和 `known_hosts` | 仓库地址白名单、不安全 HTTP 显式确认、凭据所有权和引用数量上限 |
@@ -28,11 +28,11 @@
 
 系统指标使用 `gopsutil/v4` 的 CPU、内存、进程、负载和运行时间子包。当前固定在 v4.26.6，依赖体积中等且不需要常驻 Agent 或 CGO；采集被封装在系统指标服务中，后续可以按平台替换而不改变内置 API。即使单项采集失败，页面仍返回其余指标，并只在服务端日志记录原始错误。
 
-历史图表按用户要求使用 [Apache ECharts](https://github.com/apache/echarts)，采用官方 [按需导入方案](https://echarts.apache.org/handbook/en/basics/import/)，只注册 LineChart、GridComponent、TooltipComponent 和 CanvasRenderer，不导入地图、编辑器等无关模块。6.1.0 为稳定版本，Apache-2.0 许可兼容，依赖 zrender 6.1.0 与 tslib，支持当前 Linux/macOS 开发及现代浏览器，运行时不下载远程脚本。评估过更轻量的 uPlot，但最终遵循项目明确选型统一使用 ECharts；代价是图表分包较大，因此仅在监控路由加载。维护风险是大量小图的重绘成本、提示交互和 API 升级，由三天窗口上限、关闭装饰动画、复用实例、卸载释放、回归测试和浏览器检查约束。图表不改变 API 或存储格式，后续可独立替换。现有 Vue、Axios、Vite 等依赖仍有安全告警，本次没有顺带升级既有技术栈，不能把构建通过当作完整安全审计通过。
+历史图表使用 [Apache ECharts](https://github.com/apache/echarts)，采用官方 [按需导入方案](https://echarts.apache.org/handbook/en/basics/import/)，只注册 LineChart、GridComponent、TooltipComponent 和 CanvasRenderer，不导入地图、编辑器等无关模块。6.1.0 为稳定版本，Apache-2.0 许可兼容，依赖 zrender 6.1.0 与 tslib，支持当前 Linux/macOS 开发及现代浏览器，运行时不下载远程脚本。也评估了更小的 uPlot，最终使用 ECharts。图表包较大，仅在打开监控页时加载。维护风险是大量小图的重绘成本、提示交互和 API 升级，由三天窗口上限、关闭装饰动画、复用实例、卸载释放、回归测试和浏览器检查约束。图表不改变 API 或存储格式，后续可独立替换。现有 Vue、Axios、Vite 等依赖仍有安全告警，本次没有顺带升级既有技术栈，构建成功不表示这些安全告警已修复。
 
 历史存储复用现有 `go-redis/v9` 的 [Sorted Set](https://redis.io/docs/latest/develop/data-types/sorted-sets/) 与事务管道，按时间范围读取、原子替换分钟采样、限制点数并设置过期时间；不自建时序数据库、图表引擎或外部采集服务。Redis 是短期运行趋势缓存，不替代长期监控归档。
 
-2026-10-23 的生产构建中，ECharts 监控路由分包约 512 kB（gzip 174 kB）；这是按需加载的监控页成本，不进入首页入口包。npm 官方源的生产依赖审计未列出 echarts、zrender、tslib 告警；全项目仍有 8 项既有告警（7 项高危、1 项中危），未通过一次图表修改顺带执行无边界升级。
+2026-10-23 的生产构建中，ECharts 监控路由分包约 512 kB（gzip 174 kB）；这是按需加载的监控页成本，不进入首页入口包。npm 官方源的生产依赖审计未列出 echarts、zrender、tslib 告警；全项目仍有 8 项既有告警（7 项高危、1 项中危），未在本次图表修改中升级其他依赖。
 
 发布锁使用 `bsm/redislock` v0.10.0，Apache-2.0 许可证与项目兼容，直接复用现有 go-redis/v9 客户端且依赖体积小。它只封装通用锁协议；目标锁 Key、等待边界、部署状态机、失败文案和审计仍由 EDO 控制，后续可替换而不改变业务表结构。
 
@@ -44,7 +44,7 @@
 
 实时状态与流水线日志继续复用已有 `gorilla/websocket` 和官方 `go-redis/v9`，不增加 Redis/NATS 之外的服务或新的依赖。关闭握手、控制帧和并发约束按 [Gorilla 文档](https://pkg.go.dev/github.com/gorilla/websocket#hdr-Control_Messages) 实现；通知通过 Redis Pub/Sub 传递资源失效信号，业务数据仍以数据库和原有权限接口为准。Pub/Sub 的 [至多一次语义](https://redis.io/docs/latest/develop/pubsub/#delivery-semantics) 由重连补同步、日志游标和低频校准兜底。有限缓冲只用于合并突发通知，不代替 Redis；过载或断连不会阻塞业务任务。沿用已有固定版本和兼容许可证，不增加下载体积或平台兼容负担；通道适配封装在 `internal/realtime`，可独立替换。
 
-前端评估了 VueUse `useWebSocket`（MIT、持续维护、支持 Vue 3 的重连与心跳）。本次使用浏览器原生 WebSocket，仅封装 EDO 的结束事件、权限失效停止、动态日志游标和共享订阅计数，未新增直接依赖。连接生命周期由项目维护，以假时钟回归及真实 Vite 代理测试覆盖；未来扩大到更多协议和连接策略时应重新评估复用该库，避免持续扩展自建连接框架。
+前端评估了 VueUse `useWebSocket`（MIT、持续维护、支持 Vue 3 的重连与心跳）。本次使用浏览器原生 WebSocket，仅封装 EDO 的结束事件、权限失效停止、动态日志游标和共享订阅计数，未新增直接依赖。连接生命周期由项目维护，以假时钟回归及真实 Vite 代理测试覆盖；如果后续需要支持更多协议，再评估是否改用该库。
 
 ## 评估后未采用
 
@@ -58,7 +58,7 @@
 | Gin 通用中间件合集 | 请求 ID、结构化访问日志和安全响应头都很短，并与 EDO 的中文错误边界及 `slog` 字段约定绑定；整包替换收益低。 |
 | Prometheus `client_golang` 与 Grafana | 两者适合外部抓取、长期存储和集中看板，但不能直接满足 EDO 内登录后查看基础运行状态的产品要求。本次使用受权限保护的快照 API 和内置页面；未来可增加可选导出，但不能替代内置监控。 |
 | 直接复制 `vbenjs/vue-vben-admin` 完整 Monorepo 与内部 `@vben/*` 工作区包 | Vben Admin 5 为 MIT 许可且维护活跃，本次已采用其 `web-antd` 技术栈和交互基线；但完整仓库依赖 pnpm workspace、Turbo 和大量内部包，直接嵌入会破坏 EDO 当前 npm 单应用、Docker 构建及 Go `embed` 链路。EDO 因此使用同版本线的 Vue、Pinia、Vue Router、Ant Design Vue、Vue I18n 与 Motion 公开包自行组织单应用，不复制不可独立发布的 `workspace:*` 包。 |
-| Vue Flow、AntV X6、LogicFlow 等通用图编辑器 | 三者均有持续维护且许可证兼容的开源实现，适合自由连线、分支、缩放和平移画布；但 EDO 当前故意限制为类 Gitee 的唯一代码源与串行阶段。引入图引擎会增加依赖体积、可访问性和交互约束成本，且会诱导用户创建后端不支持的拓扑；因此复用现有 SortableJS，只实现领域化阶段/任务视图，不自行重造通用图引擎。若执行器未来真实支持 DAG，再重新评估。 |
+| Vue Flow、AntV X6、LogicFlow 等通用图编辑器 | 三者均有持续维护且许可证兼容的开源实现，适合自由连线、分支、缩放和平移画布；但 EDO 当前故意限制为类 Gitee 的唯一代码源与串行阶段。引入图引擎会增加依赖体积、可访问性和交互约束成本，且会诱导用户创建后端不支持的拓扑；因此复用现有 SortableJS，只实现项目需要的阶段和任务视图。执行器支持 DAG 后再评估图编辑器。 |
 | [`github.com/otiai10/copy`](https://github.com/otiai10/copy) | 该项目持续维护、采用 MIT 许可，能处理通用目录递归复制、符号链接、权限和时间戳。EDO 的目录热切换只复制内容寻址存储中的不可变普通文件，还必须拒绝符号链接、响应 Context 取消、校验目标摘要，并在配置提交前持有制品写锁；通用复制器的大部分语义用不上，接入后仍需保留这些业务边界。因此使用 Go 标准库 `filepath.WalkDir`、`io.CopyBuffer` 和 `os.Root` 实现受限复制与清理，不新增运行依赖。维护风险是跨文件系统复制和异常中断恢复需由 EDO 自己保证，当前通过临时文件原子替换、目录用途标记、旧目录延后清理以及迁移后下载测试覆盖。 |
 
 ## 升级原则

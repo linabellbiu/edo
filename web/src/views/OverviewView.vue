@@ -21,7 +21,7 @@ const points = computed(() => {
 const cards = computed(() => [
   { key: 'overall', label: '平台可用性', value: `${healthPercent.value}%`, detail: `${healthyCount.value} / ${checkCount.value} 项基础服务正常`, icon: Activity, status: system.ready?.status === 'ok' ? 'ok' : 'failed' },
   { key: 'database', label: '数据服务', value: system.ready?.checks.database === 'ok' ? '正常' : '异常', detail: '业务数据读写', icon: Database, status: system.ready?.checks.database },
-  { key: 'redis', label: '缓存服务', value: system.ready?.checks.redis === 'ok' ? '正常' : '异常', detail: '会话、缓存与协同状态', icon: Server, status: system.ready?.checks.redis },
+  { key: 'redis', label: '缓存服务', value: system.ready?.checks.redis === 'ok' ? '正常' : '异常', detail: '登录会话和缓存', icon: Server, status: system.ready?.checks.redis },
   { key: 'nats', label: '任务服务', value: system.ready?.checks.nats === 'ok' ? '正常' : '异常', detail: '任务投递与失败重试', icon: RadioTower, status: system.ready?.checks.nats },
 ])
 
@@ -39,7 +39,7 @@ onBeforeUnmount(() => window.clearInterval(timer))
 
 <template>
   <div class="analytics-page">
-    <PageToolbar description="平台基础服务、任务与交付状态会在这里持续更新。">
+    <PageToolbar description="查看基础服务的连接状态。">
       <a-button :loading="system.loading" @click="refresh"><RefreshCw :size="15" />{{ t('common.refresh') }}</a-button>
     </PageToolbar>
     <a-alert v-if="system.error" type="error" show-icon :message="system.error" class="dashboard-alert" />
@@ -53,7 +53,7 @@ onBeforeUnmount(() => window.clearInterval(timer))
     </div>
 
     <section class="trend-card vben-card">
-      <div class="card-heading"><div><strong>当前会话可用性</strong><span>每 15 秒采样一次基础服务状态</span></div><a-tag :color="system.ready?.status === 'ok' ? 'success' : 'warning'">{{ system.ready?.status === 'ok' ? t('dashboard.healthy') : t('dashboard.checking') }}</a-tag></div>
+      <div class="card-heading"><div><strong>服务状态趋势</strong><span>每 15 秒检查一次，仅显示当前页面记录</span></div><a-tag :color="system.ready?.status === 'ok' ? 'success' : 'warning'">{{ system.ready?.status === 'ok' ? t('dashboard.healthy') : t('dashboard.checking') }}</a-tag></div>
       <div class="trend-chart">
         <div v-for="line in 5" :key="line" class="grid-line" :style="{ top: `${line * 16}%` }"><span>{{ 100 - line * 20 }}%</span></div>
         <svg viewBox="0 0 100 100" preserveAspectRatio="none" aria-label="服务可用性趋势">
@@ -65,8 +65,8 @@ onBeforeUnmount(() => window.clearInterval(timer))
     </section>
 
     <div class="dashboard-bottom">
-      <section class="vben-card quick-status"><div class="card-heading"><div><strong>交付保障</strong><span>关键执行边界</span></div><Users /></div><ul><li><span>仓库变更监听</span><a-tag color="blue">主动检查</a-tag></li><li><span>任务失败处理</span><a-tag color="orange">有限重试</a-tag></li><li><span>生产发布路径</span><a-tag color="green">审计留痕</a-tag></li></ul></section>
-      <section class="vben-card update-card"><div class="card-heading"><div><strong>状态同步</strong><span>最后一次成功请求</span></div></div><div class="update-time">{{ system.updatedAt?.toLocaleTimeString('zh-CN', { hour12: false }) || '—' }}</div><p>页面保持可见时会自动刷新，无需手动重新载入。</p></section>
+      <section class="vben-card quick-status"><div class="card-heading"><div><strong>发布功能</strong><span>仓库检查、失败重试和操作记录</span></div><Users /></div><ul><li><span>仓库变更监听</span><a-tag color="blue">主动检查</a-tag></li><li><span>任务失败处理</span><a-tag color="orange">有限重试</a-tag></li><li><span>发布操作</span><a-tag color="green">记录审计日志</a-tag></li></ul></section>
+      <section class="vben-card update-card"><div class="card-heading"><div><strong>状态同步</strong><span>最后一次成功请求</span></div></div><div class="update-time">{{ system.updatedAt?.toLocaleTimeString('zh-CN', { hour12: false }) || '—' }}</div><p>每 15 秒自动刷新。</p></section>
     </div>
   </div>
 </template>

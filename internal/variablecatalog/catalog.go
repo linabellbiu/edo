@@ -54,8 +54,8 @@ type Catalog struct {
 
 var kindOptions = []Option{
 	{Key: string(KindTemplate), Label: "模板变量", Description: "在通知标题或内容中按需引用，发送前替换为本次运行的实际值。"},
-	{Key: string(KindEnvironment), Label: "Shell 环境变量", Description: "由 EDO 在相应脚本进程中注入，通过 Shell 环境变量读取。"},
-	{Key: string(KindBuildArgument), Label: "Dockerfile 构建参数", Description: "由语言版本配置生成，并作为 Dockerfile Build Arg 传入。"},
+	{Key: string(KindEnvironment), Label: "Shell 环境变量", Description: "在脚本中通过环境变量读取。"},
+	{Key: string(KindBuildArgument), Label: "Dockerfile 构建参数", Description: "所选语言版本对应的 Dockerfile 构建参数。"},
 	{Key: string(KindDeploymentPlaceholder), Label: "部署占位符", Description: "只在部署配置解析时替换，不会作为应用容器的环境变量注入。"},
 }
 
@@ -75,7 +75,7 @@ var definitions = []Definition{
 	template("task_name", "task.name", "任务名称", "触发当前通知的任务名称。", "任务", "任务开始执行后可用"),
 	template("task_status", "task.status", "任务状态", "触发当前通知的任务结果，当前为“成功”或“失败”。", "任务", "任务产生最终结果后可用"),
 	template("git_ref", "git.ref", "代码版本", "带类型说明的代码版本，例如 branch: main 或 tag: v1.2.3。", "代码", "本次运行固定代码版本后可用"),
-	template("git_commit", "git.commit", "短 Commit", "本次运行固定 Commit 的前 12 位；通知展示使用，不等同于完整 SHA。", "代码", "本次运行固定 Commit 后可用"),
+	template("git_commit", "git.commit", "短 Commit", "本次运行的 Commit 前 12 位。", "代码", "本次运行固定 Commit 后可用"),
 	template("git_message", "git.message", "提交说明", "本次运行固定 Commit 对应的提交说明。", "代码", "仓库提供提交说明时可用"),
 	template("run_trigger", "run.trigger", "触发方式", "本次运行的中文触发方式，例如手动执行、分支推送或流水线重试。", "运行", "运行创建后可用"),
 	template("run_created_at", "run.created_at", "执行时间", "本次运行的创建时间，按 Asia/Shanghai 格式化为日期和时间。", "运行", "运行创建后可用"),
@@ -105,7 +105,7 @@ var definitions = []Definition{
 	buildArgument("node_version", "NODE_VERSION", "Node.js 版本", "Node.js 模板所选工具链版本，由 EDO 覆盖同名自定义构建参数。", "Node.js 流水线选择语言版本后可用"),
 	buildArgument("python_version", "PYTHON_VERSION", "Python 版本", "Python 模板所选工具链版本，由 EDO 覆盖同名自定义构建参数。", "Python 流水线选择语言版本后可用"),
 
-	placeholder("image", "EDO_IMAGE", "制品镜像", "本次部署固定的 OCI 镜像引用。Docker 与 Compose 配置只允许在受控位置引用。", []Scope{ScopeDockerDeployment, ScopeComposeDeployment}, "部署任务固定镜像制品后可用"),
+	placeholder("image", "EDO_IMAGE", "制品镜像", "本次部署使用的镜像，供 Docker 命令和 Compose 镜像字段引用。", []Scope{ScopeDockerDeployment, ScopeComposeDeployment}, "部署任务固定镜像制品后可用"),
 	placeholder("container_name", "EDO_CONTAINER_NAME", "容器名称", "EDO 为当前 Docker 单容器部署生成并校验的容器名称。", []Scope{ScopeDockerDeployment}, "Docker 单容器部署创建命令时可用"),
 }
 
@@ -141,7 +141,7 @@ func placeholder(id, name, label, description string, scopes []Scope, availabili
 	}
 }
 
-// Snapshot 返回只读目录的副本。目录只描述语义，不读取或返回任何运行时值。
+// Snapshot 返回变量说明的副本，不包含运行时的变量值。
 func Snapshot() Catalog {
 	result := Catalog{SchemaVersion: 1, Kinds: append([]Option(nil), kindOptions...), Scopes: append([]Option(nil), scopeOptions...)}
 	result.Variables = make([]Definition, len(definitions))
@@ -152,7 +152,7 @@ func Snapshot() Catalog {
 	return result
 }
 
-// RenderNotificationTemplate 只替换模板中明确引用且目录已登记的变量；未知占位符保持原样。
+// RenderNotificationTemplate 替换模板中的已知变量，其他占位符保持原样。
 func RenderNotificationTemplate(input string, values map[string]string) string {
 	result := input
 	for _, definition := range definitions {

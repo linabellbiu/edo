@@ -52,11 +52,11 @@ export function selectCurrentDeploymentInstances<T extends InstanceRecord>(
   const plansByID = new Map(plans.map(plan => [plan.id, plan]))
   const seen = new Set<string>()
   return [...records].sort(compareNewestFirst).filter(record => {
-    // 新记录直接使用稳定应用外键；升级前的记录才回退到运行关联。
+    // 优先读取 application_id，旧记录通过流水线运行查找应用。
     const related = record.application_id ? record.application_id === applicationID : relatedRunIDs.has(record.pipeline_run_id || '')
     const planID = record.deployment_plan_id || ''
     if (!related || !record.pipeline_run_id || record.status !== 'succeeded' || !currentPlanIDs.has(planID)) return false
-    // 与后端当前实例保护一致，先选最新成功记录，再检查删除标记和目标快照。
+    // 先选最新成功记录，再检查是否已删除、是否仍对应当前目标。
     // 最新实例删除、重命名或位置变化后，不能回退到更早的历史记录。
     const key = JSON.stringify([applicationID, planID, record.target_id])
     if (seen.has(key)) return false

@@ -27,7 +27,7 @@ type UsageReport struct {
 	Bytes int64 `json:"bytes"`
 }
 
-// Prepare 将路径解析为真实绝对路径，并用用途标记限制后续清理范围。
+// Prepare 解析绝对路径和符号链接，并校验目录用途标记，防止清理时删错目录。
 // adopt 只用于启动配置，以兼容升级前已经存在的数据目录；界面新选目录必须为空。
 func Prepare(directory, kind string, adopt bool) (string, error) {
 	directory, kind = strings.TrimSpace(directory), strings.TrimSpace(kind)

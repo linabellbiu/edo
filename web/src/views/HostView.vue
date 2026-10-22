@@ -552,7 +552,7 @@ function capabilityDescription(host: InfrastructureHost, kind: HostCapabilityKin
   const capability = capabilityOf(host, kind)
   if (!capability) return ''
   if (kind === 'ssh') return capability.status === 'ready' ? '已验证，可执行部署方案脚本' : 'SSH 连接尚未验证'
-  if (kind === 'local_exec') return capability.status === 'ready' ? '可在本地直接执行受控部署脚本' : '当前运行方式不支持终端执行'
+  if (kind === 'local_exec') return capability.status === 'ready' ? '可在本地执行已保存的部署脚本' : '当前运行方式不支持终端执行'
   if (capability.status === 'unreachable') return '运行时不可达'
   if (capability.status === 'ready') return capability.version || '运行时已连接'
   if (capability.runtime_id) return '正在检查'
@@ -606,7 +606,7 @@ onBeforeUnmount(() => {
 
 <template>
   <section>
-    <PageToolbar description="按分组管理主机接入和运行时能力；容器、Pod、日志和终端可直接在对应主机中查看。">
+    <PageToolbar description="管理主机连接，在主机详情中查看容器、Pod、日志和终端。">
       <a-button v-if="canReadGroups && auth.canAny(['deployment.create'])" @click="createGroup"><Plus :size="15" />新建主机分组</a-button>
       <a-button v-if="canReadResources" @click="openAllResources"><Container :size="15" />全部运行资源</a-button>
     </PageToolbar>

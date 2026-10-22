@@ -71,9 +71,8 @@ var composeTopLevelKeys = map[string]struct{}{
 	"name": {}, "services": {}, "version": {}, "volumes": {},
 }
 
-// Compose 的完整规范包含能够读取宿主机文件、复用 Engine API Socket、加入其他
-// 容器命名空间或调用运行时插件的入口。EDO 只开放发布常用且不突破主机边界的子集；
-// 未知字段必须拒绝，不能在解析结构体时丢弃后再把原始 YAML 交给 Compose。
+// Compose 支持宿主机文件、Docker Socket 等高权限配置，此处只接受白名单字段。
+// 未知字段直接拒绝，不能忽略后再将原始 YAML 交给 Compose。
 var composeServiceKeys = map[string]struct{}{
 	"cap_drop": {}, "command": {}, "cpus": {}, "depends_on": {}, "dns": {}, "dns_opt": {},
 	"dns_search": {}, "domainname": {}, "entrypoint": {}, "environment": {}, "expose": {},
@@ -571,7 +570,7 @@ type ComposeDeployInput struct {
 }
 
 // DeployCompose 通过官方 Docker Compose CLI 执行固定的 up 命令。配置从标准输入传入，
-// 不创建任意命令入口；本地、Unix Socket、mTLS TCP 和 SSH Docker 连接使用同一套语义。
+// 仅执行已校验的 Compose 配置，本地、Unix Socket、mTLS TCP 和 SSH 连接共用此逻辑。
 func (s *Service) DeployCompose(ctx context.Context, input ComposeDeployInput) (string, error) {
 	if s == nil || strings.TrimSpace(input.EndpointID) == "" || strings.TrimSpace(input.TargetID) == "" ||
 		strings.TrimSpace(input.DeploymentID) == "" || input.Timeout < 30*time.Second || input.Timeout > time.Hour {

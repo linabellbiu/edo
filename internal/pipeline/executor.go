@@ -369,8 +369,8 @@ func (s *Service) loadArtifactDeploymentExecution(ctx context.Context, payload D
 	return result, nil
 }
 
-// artifactAvailableToPipelineRun 允许手动执行显式固定之前的不可变制品。
-// 当前运行持有的 ArtifactID 是选择边界；自动构建产生的制品仍必须属于当前运行。
+// artifactAvailableToPipelineRun 检查制品是否属于本次运行或用户选择的历史制品。
+// 手动执行可复用旧制品，自动构建的制品必须属于当前运行。
 func artifactAvailableToPipelineRun(run model.PipelineRun, stored *model.Artifact) bool {
 	if stored == nil || run.ArtifactID == "" || stored.ID != run.ArtifactID {
 		return false

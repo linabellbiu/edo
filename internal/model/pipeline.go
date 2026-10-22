@@ -356,7 +356,7 @@ const (
 	PipelineRunRepositoryFailed    PipelineRunRepositoryStatus = "failed"
 )
 
-// PipelineRunRepository 保存运行创建时的仓库、版本和应用方案快照，后续修改应用配置不会改变历史执行语义。
+// PipelineRunRepository 保存运行创建时的仓库、版本和方案，后续修改应用配置不影响此记录。
 type PipelineRunRepository struct {
 	ID                           string                      `gorm:"type:varchar(36);primaryKey" json:"id"`
 	PipelineRunID                string                      `gorm:"type:varchar(36);not null;index;uniqueIndex:idx_run_repository,priority:1" json:"pipeline_run_id"`

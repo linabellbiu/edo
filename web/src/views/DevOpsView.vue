@@ -118,7 +118,7 @@ const buildImagePathPreview=computed(()=>{
  const namespace=(registry?.namespace||'[命名空间]').replace(/^\/+|\/+$/g,'')
  return `${endpoint}/${namespace}/[应用名]:[版本标签]`
 })
-const copy:Record<Section,{description:string}>={applications:{description:'一个应用对应一个代码仓库，可以拥有多条独立流水线；每条流水线分别定义触发、构建和部署流程。'},repositories:{description:'统一管理 Git 来源和可选 Webhook；凭据来自当前用户自己的令牌。'},'build-plans':{description:'保存可复用的 Dockerfile 或脚本构建配置。'},'image-registries':{description:'管理 Harbor、Docker Hub 或其他 OCI Registry；保存前必须完成真实登录测试。'},'release-plans':{description:'发布计划组织人工批量发布；流水线运行与发布记录独立展示。'}}
+const copy:Record<Section,{description:string}>={applications:{description:'创建应用，关联仓库并配置流水线。'},repositories:{description:'管理代码仓库、Git 凭据和 Webhook。'},'build-plans':{description:'保存可复用的 Dockerfile 或脚本构建配置。'},'image-registries':{description:'管理镜像仓库，保存前请先测试连接。'},'release-plans':{description:'选择多个应用一起发布，或查看流水线运行记录。'}}
 const releaseView=computed(()=>route.query.view==='runs'?'runs':'plans')
 const requestedRunID=computed(()=>typeof route.query.run==='string'?route.query.run:'')
 const sectionPermission=computed(()=>props.section==='build-plans'?'build_plan':props.section==='image-registries'?'image_registry':props.section==='release-plans'?(route.query.view==='runs'?'pipeline_run':'release_plan'):'application')
@@ -420,7 +420,7 @@ async function loadDeploymentRuntime(record:DeploymentRecord,force=false){
   const code=isAxiosError(error)?error.response?.data?.code:''
   if(code==='deployment_not_current'||code==='runtime_instance_removed'){
    staleDeploymentIDs.add(record.id)
-   // 列表读取和运行态读取之间可能刚好完成新部署，停止追问旧 ID 并同步新列表。
+   // 检查期间可能已完成新部署，重新加载列表，不再请求旧实例。
    void refreshApplicationState()
   }
  }finally{delete deploymentRuntimeLoading.value[record.id]}
@@ -1964,7 +1964,7 @@ onBeforeUnmount(()=>{stopDeliveryEvents?.();clearTimeout(deliveryRefreshTimer);r
   </div>
   <div v-else class="form-grid">
    <a-form-item class="span2" label="构建脚本" required><a-textarea v-model:value="buildForm.script" :rows="8" placeholder="例如：npm ci&#10;npm run build"/></a-form-item>
-	   <a-form-item class="span2" label="运行镜像" required><a-auto-complete v-model:value="buildForm.runtime_image" :options="runtimeImageOptions" placeholder="alpine:3.22"/><small class="field-hint">默认 alpine:3.22，也可输入其他镜像。镜像必须提供 /bin/sh，并使用明确 tag 或 digest；不接受裸镜像名和 latest。</small></a-form-item>
+	   <a-form-item class="span2" label="运行镜像" required><a-auto-complete v-model:value="buildForm.runtime_image" :options="runtimeImageOptions" placeholder="alpine:3.22"/><small class="field-hint">默认 alpine:3.22，也可输入其他镜像。镜像需包含 /bin/sh，并指定版本 Tag 或 Digest，不能使用 latest。</small></a-form-item>
 	   <a-form-item label="工作目录" required><a-input v-model:value="buildForm.working_directory" placeholder="."/></a-form-item>
 	   <a-form-item label="保存产物"><a-switch v-model:checked="buildSaveArtifact"/><small class="field-hint">关闭时只执行 Shell 构建，不登记文件制品。</small></a-form-item>
 	   <a-form-item v-if="buildSaveArtifact" class="span2" label="产物路径" required><a-input v-model:value="buildForm.artifact_path" placeholder="例如 dist 或 bin/server"/></a-form-item>

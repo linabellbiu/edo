@@ -96,7 +96,7 @@ func (h *historyStore) append(ctx context.Context, snapshot Snapshot) error {
 		pipe.ZRemRangeByScore(ctx, fine, "-inf", strconv.FormatInt(now.Add(-time.Hour).UnixMilli(), 10))
 		pipe.ZRemRangeByRank(ctx, fine, 0, -722)
 		pipe.Expire(ctx, fine, time.Hour+time.Minute)
-		// 长窗口每分钟只保留最后一个真实采样，不将它伪装成分钟平均值。
+		// 分钟历史取该分钟的最后一个采样值。
 		pipe.ZRemRangeByScore(ctx, coarse, strconv.FormatInt(minute, 10), "("+strconv.FormatInt(minute+60_000, 10))
 		pipe.ZAdd(ctx, coarse, redis.Z{Score: score, Member: data})
 		pipe.ZRemRangeByScore(ctx, coarse, "-inf", strconv.FormatInt(now.Add(-HistoryRetention).UnixMilli(), 10))
