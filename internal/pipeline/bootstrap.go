@@ -94,7 +94,7 @@ func (s *Service) EnsureInitialDeliverySettings(ctx context.Context) (InitialDel
 			now := time.Now().UTC()
 			environment := model.Environment{
 				ID: initialDeploymentEnvironmentID, Name: initialDeploymentEnvironmentName,
-				Description: "当前 EDO 内置本地主机的默认环境。", IsActive: true,
+				IsActive:  true,
 				CreatedBy: initialDeliveryActor, CreatedAt: now, UpdatedAt: now,
 			}
 			if err := tx.Where("id = ?", environment.ID).FirstOrCreate(&environment).Error; err != nil {

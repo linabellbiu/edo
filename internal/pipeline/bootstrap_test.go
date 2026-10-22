@@ -21,6 +21,14 @@ func TestEnsureInitialDeliverySettingsCreatesCompleteLocalDockerFlow(t *testing.
 		t.Fatalf("默认交付设置不完整: %+v", settings)
 	}
 
+	var environment model.Environment
+	if err := db.First(&environment, "id = ?", initialDeploymentEnvironmentID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if environment.Description != "" {
+		t.Fatalf("默认环境不应包含预设说明: %q", environment.Description)
+	}
+
 	result, err := service.GetWorkflowTemplate(ctx, settings.WorkflowTemplateID)
 	if err != nil {
 		t.Fatal(err)
