@@ -1,4 +1,4 @@
-<script setup lang="ts">
+<script setup lang="ts" generic="T extends ResourceRecord">
 import type { ResourceRecord } from '@/api/resources'
 import { computed, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
@@ -11,7 +11,7 @@ export interface ResourceColumn {
 }
 
 const props = withDefaults(defineProps<{
-  rows: ResourceRecord[]
+  rows: T[]
   columns: ResourceColumn[]
   loading?: boolean
   emptyText?: string
@@ -22,7 +22,7 @@ const props = withDefaults(defineProps<{
 }>(), { loading: false, emptyText: '暂无数据', rowKey: 'id', details: true, pagination: true })
 const { t } = useI18n()
 const current = ref(1), pageSize = ref(10), detailID = ref(''), detailOpen = ref(false)
-const keyOf = (row: ResourceRecord, index: number) => String(row[props.rowKey] ?? props.rows.indexOf(row) ?? index)
+const keyOf = (row: T, index: number) => String(row[props.rowKey] ?? props.rows.indexOf(row) ?? index)
 const visibleRows = computed(() => props.pagination ? props.rows.slice((current.value - 1) * pageSize.value, current.value * pageSize.value) : props.rows)
 const selected = computed(() => props.rows.find((row, index) => keyOf(row, index) === detailID.value))
 watch(() => props.rows, rows => {
@@ -33,7 +33,7 @@ watch(() => props.activeRowKey, value => {
   const index = props.rows.findIndex((row, position) => keyOf(row, position) === value)
   if (index >= 0) current.value = Math.floor(index / pageSize.value) + 1
 })
-function openDetails(row: ResourceRecord) {
+function openDetails(row: T) {
   detailID.value = keyOf(row, props.rows.indexOf(row))
   detailOpen.value = true
 }

@@ -22,6 +22,7 @@ test('中英文文案的键和占位参数一致', () => {
   const workspace = loadLocale('../src/locales/workspace.ts')
   const { messages } = loadLocale('../src/locales/index.ts', {
     './workspace': workspace,
+    './kubernetes': loadLocale('../src/locales/kubernetes.ts'),
     'vue-i18n': { createI18n: options => options },
   })
   const parameters = value => [...value.matchAll(/\{(\w+)\}/g)].map(match => match[1]).sort()

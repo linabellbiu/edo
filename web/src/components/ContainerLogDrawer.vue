@@ -35,7 +35,7 @@ async function connect() {
   dispose = undefined
   connection.value = 'connecting'
   await nextTick()
-  if (!container.value || !props.path) return
+  if (!props.open || !container.value || !props.path) return
 
   const terminal = new Terminal({
     convertEol: true,
@@ -132,7 +132,7 @@ watch(() => props.open, open => {
     dispose?.()
     dispose = undefined
   }
-})
+}, { immediate: true })
 
 onBeforeUnmount(() => dispose?.())
 </script>

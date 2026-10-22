@@ -65,6 +65,11 @@ func TestPermissionCatalogContainsOnlyImplementedCapabilities(t *testing.T) {
 		"release_plan.read", "release_plan.create", "release_plan.update", "release_plan.delete", "release_plan.execute",
 		"pipeline_run.read", "pipeline_run.execute", "artifact.read", "artifact.create")
 	got := make(map[string]struct{}, len(catalog))
+	want = append(want, "kubernetes.node.read", "kubernetes.node.update",
+		"kubernetes.workload.read", "kubernetes.workload.create", "kubernetes.workload.update", "kubernetes.workload.delete", "kubernetes.workload.execute",
+		"kubernetes.config.read", "kubernetes.config.create", "kubernetes.config.update", "kubernetes.config.delete",
+		"kubernetes.storage.read", "kubernetes.storage.create", "kubernetes.storage.update", "kubernetes.storage.delete",
+		"kubernetes.network.read", "kubernetes.network.create", "kubernetes.network.update", "kubernetes.network.delete", "kubernetes.secret.read")
 	for _, item := range Catalog() {
 		got[item.Code] = struct{}{}
 	}

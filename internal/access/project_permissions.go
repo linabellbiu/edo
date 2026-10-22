@@ -21,6 +21,19 @@ func workspacePermissions() []Permission {
 			result = append(result, permission(resource.code+"."+action.code, "持续交付", resource.code, resource.name, action.code, action.name, action.name+resource.name, action.code == "delete" || action.code == "execute"))
 		}
 	}
+	for _, resource := range []struct{ code, name, actions string }{
+		{"node", "集群节点", "read update"},
+		{"workload", "工作负载", "read create update delete execute"},
+		{"config", "集群配置", "read create update delete"},
+		{"storage", "集群存储", "read create update delete"},
+		{"network", "服务与网络", "read create update delete"},
+	} {
+		for _, action := range strings.Fields(resource.actions) {
+			name := map[string]string{"read": "查看", "create": "创建", "update": "修改", "delete": "删除", "execute": "执行"}[action]
+			result = append(result, permission("kubernetes."+resource.code+"."+action, "Kubernetes", "kubernetes."+resource.code, resource.name, action, name, name+resource.name, action != "read"))
+		}
+	}
+	result = append(result, permission("kubernetes.secret.read", "Kubernetes", "kubernetes.secret", "集群密钥内容", "read", "查看", "查看 Secret 内容并记录审计", true))
 	return result
 }
 
@@ -30,7 +43,7 @@ func ProjectPermission(code string) bool {
 	}
 	prefix, _, _ := strings.Cut(code, ".")
 	switch prefix {
-	case "application", "workflow", "build_plan", "image_registry", "deployment_plan", "release_plan", "pipeline_run", "artifact", "repository", "delivery", "deployment", "cluster", "terminal", "task", "dns", "notification", "scheduler":
+	case "application", "workflow", "build_plan", "image_registry", "deployment_plan", "release_plan", "pipeline_run", "artifact", "repository", "delivery", "deployment", "cluster", "kubernetes", "terminal", "task", "dns", "notification", "scheduler":
 		return IsKnown(code)
 	}
 	return false

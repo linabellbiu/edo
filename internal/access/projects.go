@@ -355,7 +355,7 @@ func (s *Service) EnsureProjectRoles(ctx context.Context) error {
 				if !ProjectPermission(item.Code) || strings.HasPrefix(item.Code, "delivery.") {
 					continue
 				}
-				include := preset.id == ProjectOwnerRoleID || item.Action == "read" && !item.Dangerous || preset.name == "edo_project_developer" && (strings.HasSuffix(item.Code, ".create") || strings.HasSuffix(item.Code, ".update") || item.Code == "pipeline_run.execute" || item.Code == "application.execute") && item.Resource != "project"
+				include := preset.id == ProjectOwnerRoleID || item.Action == "read" && !item.Dangerous || preset.name == "edo_project_developer" && (strings.HasSuffix(item.Code, ".create") || strings.HasSuffix(item.Code, ".update") || item.Code == "pipeline_run.execute" || item.Code == "application.execute") && item.Resource != "project" && !strings.HasPrefix(item.Code, "kubernetes.")
 				if include {
 					if err := tx.Create(&model.RolePermission{RoleID: role.ID, Permission: item.Code, CreatedAt: now}).Error; err != nil {
 						return err

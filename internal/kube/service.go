@@ -34,7 +34,7 @@ var (
 	ErrClusterUnreachable = errors.New("无法连接 Kubernetes API，请检查集群凭据和网络")
 )
 
-var clusterNamePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_. -]{1,127}$`)
+var clusterNamePattern = regexp.MustCompile(`^[\p{L}\p{N}][\p{L}\p{N}_. -]{1,127}$`)
 
 type Input struct {
 	Name             string

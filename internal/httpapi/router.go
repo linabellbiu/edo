@@ -290,15 +290,27 @@ func NewRouter(deps Dependencies) *gin.Engine {
 	containerLogsAPI := containerLogHandler{docker: deps.Docker, audits: deps.Audits, logger: deps.Logger, streamAuth: func(c *gin.Context) func() bool { return streamAuthorization(deps, c, access.PermissionClusterRead) }}
 	protected.GET("/docker/endpoints/:id/containers/:container_id/logs/ws", requirePermission(deps.Access, deps.Logger, access.PermissionClusterRead), containerLogsAPI.stream)
 
-	protected.GET("/kubernetes/clusters", requirePermission(deps.Access, deps.Logger, access.PermissionClusterRead), clusterAPI.listKubernetesClusters)
+	kubernetesReads := []string{access.PermissionClusterRead, "kubernetes.node.read", "kubernetes.workload.read", "kubernetes.config.read", "kubernetes.storage.read", "kubernetes.network.read"}
+	protected.GET("/kubernetes/clusters", requireAnyPermission(deps.Access, deps.Logger, kubernetesReads...), clusterAPI.listKubernetesClusters)
 	protected.POST("/kubernetes/clusters/test", auditAction(deps.Audits, deps.Logger, "kubernetes.cluster.test_input", "kubernetes_cluster"), requirePermission(deps.Access, deps.Logger, access.PermissionClusterExecute), clusterAPI.testKubernetesCluster)
 	protected.POST("/kubernetes/clusters", auditAction(deps.Audits, deps.Logger, "kubernetes.cluster.create", "kubernetes_cluster"), requirePermission(deps.Access, deps.Logger, access.PermissionClusterCreate), clusterAPI.createKubernetesCluster)
 	protected.PUT("/kubernetes/clusters/:id", auditAction(deps.Audits, deps.Logger, "kubernetes.cluster.update", "kubernetes_cluster"), requirePermission(deps.Access, deps.Logger, access.PermissionClusterUpdate), clusterAPI.updateKubernetesCluster)
 	protected.PATCH("/kubernetes/clusters/:id/status", auditAction(deps.Audits, deps.Logger, "kubernetes.cluster.status.update", "kubernetes_cluster"), requirePermission(deps.Access, deps.Logger, access.PermissionClusterUpdate), clusterAPI.setKubernetesStatus)
 	protected.POST("/kubernetes/clusters/:id/ping", auditAction(deps.Audits, deps.Logger, "kubernetes.cluster.test", "kubernetes_cluster"), requirePermission(deps.Access, deps.Logger, access.PermissionClusterExecute), clusterAPI.pingKubernetes)
-	protected.GET("/kubernetes/clusters/:id/namespaces", requirePermission(deps.Access, deps.Logger, access.PermissionClusterRead), clusterAPI.listNamespaces)
+	protected.GET("/kubernetes/clusters/:id/namespaces", requireAnyPermission(deps.Access, deps.Logger, kubernetesReads...), clusterAPI.listNamespaces)
 	protected.GET("/kubernetes/clusters/:id/pods", requirePermission(deps.Access, deps.Logger, access.PermissionClusterRead), clusterAPI.listPods)
 	protected.GET("/kubernetes/clusters/:id/deployments", requirePermission(deps.Access, deps.Logger, access.PermissionClusterRead), clusterAPI.listDeployments)
+	k8sResourcePath := "/kubernetes/clusters/:id/resources/:resource"
+	protected.GET(k8sResourcePath, requireKubernetesResource(deps.Access, deps.Logger, "read"), clusterAPI.resourceList)
+	protected.GET(k8sResourcePath+"/:name", requireKubernetesResource(deps.Access, deps.Logger, "read"), clusterAPI.resourceGet)
+	protected.GET(k8sResourcePath+"/:name/events", requireKubernetesResource(deps.Access, deps.Logger, "read"), clusterAPI.resourceEvents)
+	protected.GET(k8sResourcePath+"/:name/secret", auditAction(deps.Audits, deps.Logger, "kubernetes.secret.reveal", "kubernetes_resource"), requireKubernetesResource(deps.Access, deps.Logger, "read"), requirePermission(deps.Access, deps.Logger, "kubernetes.secret.read"), clusterAPI.resourceReveal)
+	protected.POST(k8sResourcePath+"/:name", auditAction(deps.Audits, deps.Logger, "kubernetes.resource.create", "kubernetes_resource"), requireKubernetesResource(deps.Access, deps.Logger, "create"), clusterAPI.resourceSave)
+	protected.PATCH(k8sResourcePath+"/:name", auditAction(deps.Audits, deps.Logger, "kubernetes.resource.update", "kubernetes_resource"), requireKubernetesResource(deps.Access, deps.Logger, "update"), clusterAPI.resourceSave)
+	protected.DELETE(k8sResourcePath+"/:name", auditAction(deps.Audits, deps.Logger, "kubernetes.resource.delete", "kubernetes_resource"), requireKubernetesResource(deps.Access, deps.Logger, "delete"), clusterAPI.resourceDelete)
+	protected.POST(k8sResourcePath+"/:name/actions", auditAction(deps.Audits, deps.Logger, "kubernetes.resource.execute", "kubernetes_resource"), requireKubernetesResource(deps.Access, deps.Logger, "execute"), clusterAPI.resourceAction)
+	k8sLogsAPI := kubernetesLogHandler{kube: deps.Kubernetes, logger: deps.Logger, audits: deps.Audits, streamAuth: func(c *gin.Context) func() bool { return streamAuthorization(deps, c, "kubernetes.workload.read") }}
+	protected.GET("/kubernetes/clusters/:id/namespaces/:namespace/pods/:pod/containers/:container/logs/ws", requirePermission(deps.Access, deps.Logger, "kubernetes.workload.read"), k8sLogsAPI.stream)
 
 	hostAPI := hostHandler{service: deps.Hosts, logger: deps.Logger}
 	protected.GET("/hosts", requireAnyPermission(deps.Access, deps.Logger, access.PermissionClusterRead, access.PermissionDeploymentRead), hostAPI.list)
