@@ -30,17 +30,23 @@ func (s *Service) syncRolePermissionsOrDisable(ctx context.Context, roleID, oper
 		safeContext = database.WithDepartmentScope(safeContext, database.DepartmentScope{AllDepartments: true})
 		safetyErr := s.db.WithContext(safeContext).Transaction(func(tx *gorm.DB) error {
 			countMemberIDs := tx.Model(&model.UserRole{}).Select("user_id").Where("role_id = ?", roleID)
+			var projectMemberIDs []string
+			if tx.Migrator().HasTable(&model.ProjectMember{}) {
+				if err := tx.Model(&model.ProjectMember{}).Where("role_id = ?", roleID).Pluck("user_id", &projectMemberIDs).Error; err != nil {
+					return err
+				}
+			}
 			var expected int64
 			if countErr := tx.Model(&model.User{}).
 				Where("is_superuser = ?", false).
-				Where("id IN (?)", countMemberIDs).
+				Where("(id IN (?) OR id IN ?)", countMemberIDs, projectMemberIDs).
 				Count(&expected).Error; countErr != nil {
 				return fmt.Errorf("统计待安全停用的角色成员失败: %w", countErr)
 			}
 			updateMemberIDs := tx.Model(&model.UserRole{}).Select("user_id").Where("role_id = ?", roleID)
 			result := tx.Model(&model.User{}).
 				Where("is_superuser = ?", false).
-				Where("id IN (?)", updateMemberIDs).
+				Where("(id IN (?) OR id IN ?)", updateMemberIDs, projectMemberIDs).
 				Updates(map[string]any{
 					"is_active": false, "auth_version": gorm.Expr("auth_version + ?", 1), "updated_at": time.Now().UTC(),
 				})

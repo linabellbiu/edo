@@ -291,7 +291,7 @@ func (s *Service) loadArtifactDeploymentExecution(ctx context.Context, payload D
 	if !hasPlan || !hasTarget || plan.ID != node.Config.DeploymentPlanID || target.ID == "" {
 		return nil, ErrPipelineExecutionConfig
 	}
-	if target.DepartmentID != "" && target.DepartmentID != run.DepartmentID {
+	if target.DepartmentID != "" && target.DepartmentID != run.DepartmentID || target.ProjectID != "" && target.ProjectID != run.ProjectID {
 		return nil, ErrPipelineExecutionConfig
 	}
 	result := &executionContext{run: run, node: node, snapshot: *snapshot}
@@ -302,7 +302,7 @@ func (s *Service) loadArtifactDeploymentExecution(ctx context.Context, payload D
 		TimeoutSeconds: plan.TimeoutSeconds,
 	}
 	result.target = model.DeploymentTarget{
-		ID: target.ID, DepartmentID: run.DepartmentID,
+		ID: target.ID, ProjectID: run.ProjectID, DepartmentID: run.DepartmentID,
 		Name: target.Name, Platform: target.Platform, EnvironmentID: target.EnvironmentID,
 		HostID: target.HostID, RuntimeID: target.RuntimeID, WorkingDirectory: target.WorkingDirectory,
 		Namespace: target.Namespace, WorkloadName: target.WorkloadName, ContainerName: target.ContainerName,

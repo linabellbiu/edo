@@ -335,7 +335,7 @@ func (s *Service) prepareReleasePlanExecution(
 	prepared := &preparedReleasePlanExecution{
 		execution: model.ReleasePlanExecution{
 			ID: executionID, ReleasePlanID: plan.ID, RequestID: input.RequestID,
-			Status: model.ReleasePlanExecutionPending, DepartmentID: plan.DepartmentID,
+			Status: model.ReleasePlanExecutionPending, ProjectID: plan.ProjectID, DepartmentID: plan.DepartmentID,
 			CreatedBy: actorID, CreatedAt: now, UpdatedAt: now,
 		},
 		items:         make([]preparedReleasePlanExecutionItem, 0, len(selectionByApplication)),
@@ -386,7 +386,7 @@ func (s *Service) prepareReleasePlanExecution(
 				}
 				return nil, ErrInvalidReleasePlanExecution
 			}
-			if application.DepartmentID != plan.DepartmentID {
+			if application.DepartmentID != plan.DepartmentID || application.ProjectID != plan.ProjectID {
 				return nil, ErrInvalidReleasePlanExecution
 			}
 			workflow, err := s.FindApplicationWorkflow(ctx, application.ID, selection.WorkflowID)

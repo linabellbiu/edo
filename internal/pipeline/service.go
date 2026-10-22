@@ -1204,7 +1204,7 @@ func (s *Service) createManualSelectionRun(ctx context.Context, application *mod
 func (s *Service) createPendingRun(ctx context.Context, application *model.Application, workflow *model.ReleaseWorkflow, actorID, message string) (*model.PipelineRun, error) {
 	now := time.Now().UTC()
 	run := &model.PipelineRun{
-		ID: uuid.NewString(), DepartmentID: application.DepartmentID,
+		ID: uuid.NewString(), ProjectID: application.ProjectID, DepartmentID: application.DepartmentID,
 		ApplicationID: application.ID, Trigger: "manual",
 		WorkflowID: workflow.ID, WorkflowRevision: workflow.Revision,
 		Ref: "", CommitSHA: "",

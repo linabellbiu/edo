@@ -344,6 +344,7 @@ var migrations = []migration{
 		version: "202608040065",
 		up:      migrateRepeatableReleasePlanExecutions,
 	},
+	{version: "202610230066", up: migrateProjectSpaces},
 }
 
 // migrateRepeatableReleasePlanExecutions 取消“一个发布计划只能执行一次”的旧约束，
@@ -455,7 +456,7 @@ func migrateDepartmentDataScope(tx *gorm.DB) error {
 		return fmt.Errorf("创建部门表失败: %w", err)
 	}
 	defaultDepartment := model.Department{
-		ID: DefaultDepartmentID, Name: "默认部门", Description: "升级前已有用户和资源的默认归属",
+		ID: DefaultDepartmentID, Name: "默认部门", Description: "公司初始部门",
 		IsActive: true, CreatedAt: now, UpdatedAt: now,
 	}
 	if err := tx.Where("id = ?", DefaultDepartmentID).FirstOrCreate(&defaultDepartment).Error; err != nil {

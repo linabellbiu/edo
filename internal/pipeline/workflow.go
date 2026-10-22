@@ -108,6 +108,7 @@ type workflowDeploymentPlanSnapshot struct {
 }
 
 type workflowDeploymentTargetSnapshot struct {
+	ProjectID        string                   `json:"project_id,omitempty"`
 	ID               string                   `json:"id"`
 	DepartmentID     string                   `json:"department_id,omitempty"`
 	Name             string                   `json:"name"`
@@ -1048,7 +1049,7 @@ func (s *Service) newStageResolvedWorkflowRunWithDatabase(
 	now time.Time,
 ) (*model.PipelineRun, error) {
 	if application == nil || workflow == nil || application.DepartmentID == "" ||
-		(workflow.DepartmentID != "" && workflow.DepartmentID != application.DepartmentID) {
+		(workflow.DepartmentID != "" && workflow.DepartmentID != application.DepartmentID) || (workflow.ProjectID != "" && workflow.ProjectID != application.ProjectID) {
 		return nil, ErrInvalidWorkflow
 	}
 	if workflow.SchemaVersion != model.WorkflowSchemaVersion || node.ID != workflow.Source.ID || node.Type != model.WorkflowNodeTrigger {
@@ -1070,7 +1071,7 @@ func (s *Service) newStageResolvedWorkflowRunWithDatabase(
 				var plan model.BuildPlan
 				if current.Config.BuildPlanID == "" || database.WithContext(ctx).
 					First(&plan, "id = ? AND is_active = ?", current.Config.BuildPlanID, true).Error != nil ||
-					plan.DepartmentID != application.DepartmentID {
+					plan.DepartmentID != application.DepartmentID || plan.ProjectID != application.ProjectID {
 					return nil, ErrInvalidWorkflow
 				}
 				buildPlans[current.ID] = buildPlanSnapshot(plan)
@@ -1079,13 +1080,13 @@ func (s *Service) newStageResolvedWorkflowRunWithDatabase(
 				var plan model.DeploymentPlan
 				if current.Config.DeploymentPlanID == "" || database.WithContext(ctx).
 					First(&plan, "id = ? AND is_active = ?", current.Config.DeploymentPlanID, true).Error != nil ||
-					plan.DepartmentID != application.DepartmentID {
+					plan.DepartmentID != application.DepartmentID || plan.ProjectID != application.ProjectID {
 					return nil, ErrInvalidWorkflow
 				}
 				var target model.DeploymentTarget
 				if plan.DeploymentTargetID == "" || database.WithContext(ctx).
 					First(&target, "id = ? AND is_active = ?", plan.DeploymentTargetID, true).Error != nil ||
-					target.DepartmentID != application.DepartmentID ||
+					target.DepartmentID != application.DepartmentID || target.ProjectID != application.ProjectID ||
 					!deploymentPlanSupportsTarget(plan.Kind, target.Platform) {
 					return nil, ErrInvalidWorkflow
 				}
@@ -1120,7 +1121,7 @@ func (s *Service) newStageResolvedWorkflowRunWithDatabase(
 					TimeoutSeconds: plan.TimeoutSeconds,
 				}
 				deploymentTargets[current.ID] = workflowDeploymentTargetSnapshot{
-					ID: target.ID, DepartmentID: target.DepartmentID, Name: target.Name, Platform: target.Platform,
+					ID: target.ID, ProjectID: target.ProjectID, DepartmentID: target.DepartmentID, Name: target.Name, Platform: target.Platform,
 					EnvironmentID: target.EnvironmentID, HostID: target.HostID, Architecture: architecture, RuntimeID: target.RuntimeID,
 					WorkingDirectory: target.WorkingDirectory, Namespace: target.Namespace,
 					WorkloadName: target.WorkloadName, ContainerName: target.ContainerName,
@@ -1195,7 +1196,7 @@ func newWorkflowRun(application *model.Application, workflow *model.ReleaseWorkf
 		return nil, err
 	}
 	return &model.PipelineRun{
-		ID: uuid.NewString(), DepartmentID: application.DepartmentID,
+		ID: uuid.NewString(), ProjectID: application.ProjectID, DepartmentID: application.DepartmentID,
 		ApplicationID: application.ID, Trigger: trigger,
 		Ref: ref, CommitSHA: commitSHA, Status: model.PipelineRunDetected,
 		Stage: string(node.Type), Environment: "",
@@ -1714,8 +1715,8 @@ func (s *Service) enqueueBuildExecution(ctx context.Context, run *model.Pipeline
 	var jobID string
 	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		job, err := task.NewService(tx, 4).Create(ctx, task.CreateInput{
-			DepartmentID: run.DepartmentID,
-			Kind:         "pipeline.build", Subject: "edo.task.pipeline.build",
+			ProjectID: run.ProjectID, DepartmentID: run.DepartmentID,
+			Kind: "pipeline.build", Subject: "edo.task.pipeline.build",
 			Payload:        BuildTaskPayload{PipelineRunID: run.ID, WorkflowNodeID: node.ID},
 			IdempotencyKey: "pipeline:" + run.ID + ":task:" + node.ID,
 			MaxAttempts:    maxAttempts, Idempotent: idempotent,
@@ -1765,8 +1766,8 @@ func (s *Service) enqueueDeployExecution(ctx context.Context, run *model.Pipelin
 	var jobID string
 	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		job, err := task.NewService(tx, 1).Create(ctx, task.CreateInput{
-			DepartmentID: run.DepartmentID,
-			Kind:         "pipeline.deploy", Subject: "edo.task.pipeline.deploy",
+			ProjectID: run.ProjectID, DepartmentID: run.DepartmentID,
+			Kind: "pipeline.deploy", Subject: "edo.task.pipeline.deploy",
 			Payload:        DeployTaskPayload{PipelineRunID: run.ID, WorkflowNodeID: node.ID},
 			IdempotencyKey: "pipeline:" + run.ID + ":deploy:" + node.ID,
 			MaxAttempts:    1, Idempotent: false,

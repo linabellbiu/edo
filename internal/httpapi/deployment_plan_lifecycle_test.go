@@ -74,7 +74,7 @@ func TestDeploymentPlanLifecycleRequiresManagePermission(t *testing.T) {
 		t.Fatalf("创建权限测试方案失败: status=%d body=%s", created.Code, created.Body.String())
 	}
 	role := performJSONRequest(t, router, http.MethodPost, "/api/v1/roles", map[string]any{
-		"name": "deployment-plan-reader", "display_name": "部署方案只读", "permissions": []string{"delivery.read"},
+		"name": "deployment-plan-reader", "display_name": "部署方案只读", "permissions": []string{"deployment_plan.read"},
 	}, adminCookie)
 	var rolePayload struct {
 		Role struct {
@@ -91,6 +91,7 @@ func TestDeploymentPlanLifecycleRequiresManagePermission(t *testing.T) {
 	if user.Code != http.StatusCreated {
 		t.Fatalf("创建只读用户失败: status=%d body=%s", user.Code, user.Body.String())
 	}
+	joinCreatedUserProjectForTest(t, router, adminCookie, user, []string{rolePayload.Role.ID})
 	readerLogin := performJSONRequest(t, router, http.MethodPost, "/api/v1/auth/login", map[string]string{
 		"username": "deployment-reader", "password": "correct horse battery staple",
 	}, nil)
@@ -98,7 +99,7 @@ func TestDeploymentPlanLifecycleRequiresManagePermission(t *testing.T) {
 	planPath := "/api/v1/deployment-plans/" + createdPayload.DeploymentPlan.ID
 	listed := performJSONRequest(t, router, http.MethodGet, "/api/v1/deployment-plans", nil, readerCookie)
 	if listed.Code != http.StatusOK {
-		t.Fatalf("具有 delivery.read 的用户无法查看方案: status=%d body=%s", listed.Code, listed.Body.String())
+		t.Fatalf("具有 deployment_plan.read 的用户无法查看方案: status=%d body=%s", listed.Code, listed.Body.String())
 	}
 	status := performJSONRequest(t, router, http.MethodPatch, planPath+"/status", map[string]any{"active": false}, readerCookie)
 	if status.Code != http.StatusForbidden {

@@ -38,9 +38,10 @@ var roleNamePattern = regexp.MustCompile(`^[a-z][a-z0-9_.-]{2,63}$`)
 
 type RoleWithPermissions struct {
 	model.Role
-	Permissions        []string `json:"permissions"`
-	InUse              bool     `json:"-"`
-	VisibleMemberCount int64    `json:"-"`
+	Permissions               []string `json:"permissions"`
+	InUse                     bool     `json:"-"`
+	VisibleMemberCount        int64    `json:"-"`
+	VisibleProjectMemberCount int64    `json:"-"`
 }
 
 type RoleInput struct {
@@ -125,7 +126,8 @@ func (s *Service) HasPermission(ctx context.Context, user *model.User, permissio
 	if err := ctx.Err(); err != nil {
 		return false, err
 	}
-	allowed, err := s.enforcer.Enforce(userSubject(user.ID), permission)
+	scope, _ := database.DepartmentScopeFromContext(ctx)
+	allowed, err := s.enforcer.Enforce(userSubject(user.ID), permission, scope.ProjectID)
 	if err != nil {
 		return false, fmt.Errorf("执行 Casbin 权限判定失败: %w", err)
 	}
@@ -144,7 +146,7 @@ func (s *Service) UserPermissions(ctx context.Context, user *model.User) ([]stri
 	}
 	permissions := make([]string, 0, len(catalog))
 	for _, item := range catalog {
-		allowed, err := s.enforcer.Enforce(userSubject(user.ID), item.Code)
+		allowed, err := s.HasPermission(ctx, user, item.Code)
 		if err != nil {
 			return nil, fmt.Errorf("计算 Casbin 有效权限失败: %w", err)
 		}
@@ -175,8 +177,16 @@ func (s *Service) ListRoles(ctx context.Context) ([]RoleWithPermissions, error) 
 		if err != nil {
 			return nil, err
 		}
+		var projectMembers int64
+		if s.db.Migrator().HasTable(&model.ProjectMember{}) {
+			memberIDs := s.db.Model(&model.ProjectMember{}).Select("user_id").Where("role_id = ?", role.ID)
+			if err := s.db.WithContext(ctx).Model(&model.User{}).Where("id IN (?)", memberIDs).Count(&projectMembers).Error; err != nil {
+				return nil, fmt.Errorf("统计项目角色成员失败: %w", err)
+			}
+		}
 		result = append(result, RoleWithPermissions{
-			Role: role, Permissions: permissions,
+			VisibleProjectMemberCount: projectMembers,
+			Role:                      role, Permissions: permissions,
 			InUse: rolesInUse[role.ID], VisibleMemberCount: visibleMemberCounts[role.ID],
 		})
 	}
@@ -199,6 +209,13 @@ func (s *Service) roleMemberSummary(
 		Group("role_id").
 		Pluck("role_id", &usedRoleIDs).Error; err != nil {
 		return nil, nil, fmt.Errorf("检查角色使用状态失败: %w", err)
+	}
+	if s.db.Migrator().HasTable(&model.ProjectMember{}) {
+		var projectRoles []string
+		if err := s.db.WithContext(ctx).Model(&model.ProjectMember{}).Where("role_id IN ?", roleIDs).Distinct().Pluck("role_id", &projectRoles).Error; err != nil {
+			return nil, nil, err
+		}
+		usedRoleIDs = append(usedRoleIDs, projectRoles...)
 	}
 	for _, roleID := range usedRoleIDs {
 		inUse[roleID] = true
@@ -448,6 +465,12 @@ func (s *Service) DeleteRole(ctx context.Context, roleID string) error {
 		if count > 0 {
 			return ErrRoleInUse
 		}
+		if err := tx.Model(&model.ProjectMember{}).Where("role_id = ?", roleID).Count(&count).Error; err != nil {
+			return fmt.Errorf("检查项目角色使用状态失败: %w", err)
+		}
+		if count > 0 || roleID == ProjectOwnerRoleID {
+			return ErrRoleInUse
+		}
 		if err := tx.Where("role_id = ?", roleID).Delete(&model.RolePermission{}).Error; err != nil {
 			return fmt.Errorf("删除角色权限失败: %w", err)
 		}
@@ -487,6 +510,9 @@ func (s *Service) DeleteUser(ctx context.Context, userID string) error {
 		}
 		if err := tx.Where("user_id = ?", user.ID).Delete(&model.UserPermission{}).Error; err != nil {
 			return fmt.Errorf("删除用户权限覆盖失败: %w", err)
+		}
+		if err := tx.Where("user_id = ?", user.ID).Delete(&model.ProjectMember{}).Error; err != nil {
+			return fmt.Errorf("删除用户项目成员关系失败: %w", err)
 		}
 		if err := tx.Where("user_id = ?", user.ID).Delete(&model.ExternalIdentity{}).Error; err != nil {
 			return fmt.Errorf("删除用户外部身份失败: %w", err)
@@ -712,11 +738,22 @@ func (s *Service) UserPermissionOverrides(ctx context.Context, userID string) (U
 	result := UserPermissionOverrides{Allow: []string{}, Deny: []string{}}
 	for _, item := range items {
 		if item.Effect == model.PermissionAllow {
-			result.Allow = append(result.Allow, item.Permission)
+			codes, _ := normalizePermissionCodes([]string{item.Permission})
+			result.Allow = append(result.Allow, codes...)
 		} else if item.Effect == model.PermissionDeny {
-			result.Deny = append(result.Deny, item.Permission)
+			codes, _ := normalizePermissionCodes([]string{item.Permission})
+			result.Deny = append(result.Deny, codes...)
 		}
 	}
+	deny := permissionCodeSet(result.Deny)
+	filtered := result.Allow[:0]
+	for _, code := range result.Allow {
+		if _, exists := deny[code]; !exists {
+			filtered = append(filtered, code)
+		}
+	}
+	result.Allow = uniqueSorted(filtered)
+	result.Deny = uniqueSorted(result.Deny)
 	return result, nil
 }
 
@@ -826,7 +863,7 @@ func (s *Service) rolePermissions(ctx context.Context, roleID string) ([]string,
 		Order("permission ASC").Pluck("permission", &permissions).Error; err != nil {
 		return nil, fmt.Errorf("查询角色权限失败: %w", err)
 	}
-	return permissions, nil
+	return normalizeRolePermissions(permissions)
 }
 
 func normalizeRoleInput(input RoleInput) (RoleInput, error) {
@@ -889,15 +926,14 @@ func normalizeUserPermissionOverrides(overrides UserPermissionOverrides) (UserPe
 	return overrides, nil
 }
 
-// normalizePermissionCodes 在写入数据库前把旧聚合权限展开为当前细粒度权限。
-// 同时提交旧码和对应新码时会自动去重，便于前后端滚动升级。
+// normalizePermissionCodes 只接受当前权限目录中的精确权限，不推断或转换旧授权。
 func normalizePermissionCodes(permissions []string) ([]string, bool) {
 	expanded := make([]string, 0, len(permissions))
 	for _, permission := range uniqueSorted(permissions) {
 		if !IsKnown(permission) {
 			return nil, false
 		}
-		expanded = append(expanded, ExpandLegacyPermission(permission)...)
+		expanded = append(expanded, permission)
 	}
 	return uniqueSorted(expanded), true
 }

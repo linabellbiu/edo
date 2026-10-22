@@ -9,8 +9,9 @@ export interface PageTab {
   pinned: boolean
 }
 
-const storageKey = 'edo.tabs'
-const historyStorageKey = 'edo.navigation-history'
+const projectKey = typeof localStorage !== 'undefined' && typeof localStorage.getItem === 'function' ? localStorage.getItem('edo.project') || 'default' : 'default'
+const storageKey = `edo.tabs:${projectKey}`
+const historyStorageKey = `edo.navigation-history:${projectKey}`
 const overview: PageTab = { key: '/', title: 'nav.overview', path: '/', pinned: true }
 
 export interface PageVisit {

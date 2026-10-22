@@ -75,6 +75,7 @@ func (s *Service) ListExecutionLogs(ctx context.Context, filter ExecutionLogFilt
 		}
 		query = query.Where("run.department_id = ?", scope.DepartmentID)
 	}
+	if scope, ok := database.DepartmentScopeFromContext(ctx); ok && scope.ProjectID != "" { query=query.Where("run.project_id = ?",scope.ProjectID) }
 	if filter.BeforeID > 0 {
 		query = query.Where("log.id < ?", filter.BeforeID)
 	}

@@ -40,6 +40,7 @@ func TestRollbackRequiresDeploymentExecuteInsteadOfReview(t *testing.T) {
 	if userResponse.Code != http.StatusCreated || json.Unmarshal(userResponse.Body.Bytes(), &userPayload) != nil || userPayload.User.ID == "" {
 		t.Fatalf("创建发布审核用户失败: status=%d body=%s", userResponse.Code, userResponse.Body.String())
 	}
+	joinCreatedUserProjectForTest(t, router, adminCookie, userResponse, []string{rolePayload.Role.ID})
 	reviewerLogin := performJSONRequest(t, router, http.MethodPost, "/api/v1/auth/login", map[string]string{
 		"username": "deployment-reviewer", "password": "correct horse battery staple",
 	}, nil)

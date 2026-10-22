@@ -25,11 +25,11 @@ func newAuthorizationModel() (casbinmodel.Model, error) {
 		name    string
 		value   string
 	}{
-		{"r", "r", "sub, perm"},
-		{"p", "p", "sub, perm, eft"},
-		{"g", "g", "_, _"},
+		{"r", "r", "sub, perm, project"},
+		{"p", "p", "sub, perm, eft, scope"},
+		{"g", "g", "_, _, _"},
 		{"e", "e", "some(where (p.eft == allow)) && !some(where (p.eft == deny))"},
-		{"m", "m", "(r.sub == p.sub || g(r.sub, p.sub)) && r.perm == p.perm"},
+		{"m", "m", `(r.sub == p.sub || (g(r.sub, p.sub, "") && p.scope == "platform") || (r.project != "" && g(r.sub, p.sub, r.project))) && r.perm == p.perm`},
 	}
 	for _, definition := range definitions {
 		if !result.AddDef(definition.section, definition.name, definition.value) {
@@ -51,10 +51,22 @@ func (a *policyAdapter) LoadPolicy(target casbinmodel.Model) error {
 		return fmt.Errorf("加载角色权限策略失败: %w", err)
 	}
 	for _, item := range rolePermissions {
-		if err := persist.LoadPolicyArray([]string{
-			"p", roleSubject(item.RoleID), item.Permission, string(model.PermissionAllow),
-		}, target); err != nil {
-			return fmt.Errorf("装载角色权限策略失败: %w", err)
+		for _, code := range []string{item.Permission} {
+			if !IsKnown(code) {
+				continue
+			}
+			scope := "platform"
+			if ProjectPermission(code) {
+				scope = "project"
+				if err := persist.LoadPolicyArray([]string{"p", "project-role:" + item.RoleID, code, string(model.PermissionAllow), scope}, target); err != nil {
+					return err
+				}
+			}
+			if err := persist.LoadPolicyArray([]string{
+				"p", roleSubject(item.RoleID), code, string(model.PermissionAllow), scope,
+			}, target); err != nil {
+				return fmt.Errorf("装载角色权限策略失败: %w", err)
+			}
 		}
 	}
 
@@ -63,10 +75,12 @@ func (a *policyAdapter) LoadPolicy(target casbinmodel.Model) error {
 		return fmt.Errorf("加载用户权限覆盖失败: %w", err)
 	}
 	for _, item := range userPermissions {
-		if err := persist.LoadPolicyArray([]string{
-			"p", userSubject(item.UserID), item.Permission, string(item.Effect),
-		}, target); err != nil {
-			return fmt.Errorf("装载用户权限覆盖失败: %w", err)
+		for _, code := range []string{item.Permission} {
+			if err := persist.LoadPolicyArray([]string{
+				"p", userSubject(item.UserID), code, string(item.Effect), "direct",
+			}, target); err != nil {
+				return fmt.Errorf("装载用户权限覆盖失败: %w", err)
+			}
 		}
 	}
 
@@ -76,9 +90,21 @@ func (a *policyAdapter) LoadPolicy(target casbinmodel.Model) error {
 	}
 	for _, item := range assignments {
 		if err := persist.LoadPolicyArray([]string{
-			"g", userSubject(item.UserID), roleSubject(item.RoleID),
+			"g", userSubject(item.UserID), roleSubject(item.RoleID), "",
 		}, target); err != nil {
 			return fmt.Errorf("装载用户角色关系失败: %w", err)
+		}
+	}
+	var members []model.ProjectMember
+	if !a.db.Migrator().HasTable(&model.ProjectMember{}) {
+		return nil
+	}
+	if err := a.db.Find(&members).Error; err != nil {
+		return fmt.Errorf("加载项目成员策略失败: %w", err)
+	}
+	for _, item := range members {
+		if err := persist.LoadPolicyArray([]string{"g", userSubject(item.UserID), "project-role:" + item.RoleID, item.ProjectID}, target); err != nil {
+			return fmt.Errorf("装载项目成员策略失败: %w", err)
 		}
 	}
 	return nil

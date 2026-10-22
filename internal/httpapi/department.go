@@ -16,6 +16,7 @@ type departmentHandler struct {
 }
 
 type departmentRequest struct {
+	ParentID    string `json:"parent_id" binding:"max=36"`
 	Name        string `json:"name" binding:"required,max=64"`
 	Description string `json:"description" binding:"max=255"`
 }
@@ -37,7 +38,7 @@ func (h departmentHandler) create(c *gin.Context) {
 		writeError(c, http.StatusBadRequest, "invalid_department", department.ErrInvalidDepartment.Error())
 		return
 	}
-	item, err := h.service.Create(c.Request.Context(), department.Input{Name: request.Name, Description: request.Description})
+	item, err := h.service.Create(c.Request.Context(), department.Input{ParentID: request.ParentID, Name: request.Name, Description: request.Description})
 	if err != nil {
 		h.writeError(c, "department_create", err)
 		return
@@ -53,7 +54,7 @@ func (h departmentHandler) update(c *gin.Context) {
 		writeError(c, http.StatusBadRequest, "invalid_department", department.ErrInvalidDepartment.Error())
 		return
 	}
-	item, err := h.service.Update(c.Request.Context(), c.Param("id"), department.Input{Name: request.Name, Description: request.Description})
+	item, err := h.service.Update(c.Request.Context(), c.Param("id"), department.Input{ParentID: request.ParentID, Name: request.Name, Description: request.Description})
 	if err != nil {
 		h.writeError(c, "department_update", err)
 		return

@@ -92,6 +92,7 @@ func TestRepositoryAPICredentialIsIsolatedByCurrentUser(t *testing.T) {
 	if userResponse.Code != http.StatusCreated {
 		t.Fatalf("创建仓库凭据用户失败: status=%d body=%s", userResponse.Code, userResponse.Body.String())
 	}
+	joinCreatedUserProjectForTest(t, router, adminCookie, userResponse, []string{role.Role.ID})
 	userLogin := performJSONRequest(t, router, http.MethodPost, "/api/v1/auth/login", map[string]string{
 		"username": "repository-credential-user", "password": "correct horse battery staple",
 	}, nil)

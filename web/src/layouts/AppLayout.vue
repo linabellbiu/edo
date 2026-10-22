@@ -12,6 +12,7 @@ import { flatNavigation, navigation, type NavBranch, type NavItem } from '@/rout
 import { useAuthStore } from '@/stores/auth'
 import { usePreferencesStore } from '@/stores/preferences'
 import { useTabsStore } from '@/stores/tabs'
+import ProjectSelector from '@/components/ProjectSelector.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -43,7 +44,18 @@ const selectedKeys = computed(() => {
 })
 
 const currentNavItem = computed(() => flatNavigation().find((candidate) => candidate.path === selectedKeys.value[0]))
-const recentVisits = computed(() => tabsStore.recent(route.fullPath))
+function allowedHistoryPath(path: string) {
+  const target = new URL(path, 'http://edo.local')
+  const item = flatNavigation().find((candidate) => {
+    const entry = new URL(candidate.path, 'http://edo.local')
+    return entry.pathname === target.pathname && [...entry.searchParams].every(([key, value]) => target.searchParams.get(key) === value)
+  })
+  if (item) return allowed(item)
+  const resolved = router.resolve(path)
+  return Boolean(resolved.name) && auth.canAny((resolved.meta.permissions as string[] | undefined) ?? [])
+}
+const visibleTabs = computed(() => tabsStore.tabs.filter(tab => allowedHistoryPath(tab.path)))
+const recentVisits = computed(() => tabsStore.recent(route.fullPath).filter(item => allowedHistoryPath(item.path)))
 const canGoBack = computed(() => tabsStore.canGoBack(route.fullPath))
 
 const breadcrumbs = computed(() => {
@@ -240,6 +252,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', keyboard))
         </div>
 
         <div class="header-actions">
+		  <ProjectSelector />
           <button class="header-search" type="button" @click="openSearch">
             <Search :size="17" /><span>{{ t('common.search') }}</span><kbd><Command :size="12" /> K</kbd>
           </button>
@@ -268,7 +281,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', keyboard))
 
       <div class="vben-tabs">
         <div class="tab-scroller">
-          <a-dropdown v-for="tab in tabsStore.tabs" :key="tab.key" :trigger="['contextmenu']">
+          <a-dropdown v-for="tab in visibleTabs" :key="tab.key" :trigger="['contextmenu']">
             <div
               class="page-tab"
               :class="{ active: route.path === tab.key, pinned: tab.pinned }"

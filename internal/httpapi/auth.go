@@ -48,6 +48,7 @@ type userResponse struct {
 	IsSuperuser    bool       `json:"is_superuser"`
 	LastLoginAt    *time.Time `json:"last_login_at,omitempty"`
 	Permissions    []string   `json:"permissions"`
+	ProjectID      string     `json:"project_id,omitempty"`
 }
 
 func (h authHandler) handleLogin(c *gin.Context) {
@@ -111,6 +112,8 @@ func (h authHandler) handleMe(c *gin.Context) {
 		return
 	}
 	response := toUserResponse(user)
+	scope, _ := database.DepartmentScopeFromContext(c.Request.Context())
+	response.ProjectID = scope.ProjectID
 	response.Permissions = permissions
 	c.JSON(http.StatusOK, gin.H{"user": response})
 }

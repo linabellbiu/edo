@@ -20,11 +20,12 @@ const (
 type ReleasePlan struct {
 	ID              string                `gorm:"type:varchar(36);primaryKey" json:"id"`
 	Name            string                `gorm:"type:varchar(128);not null" json:"name"`
-	Version         string                `gorm:"type:varchar(64);not null;uniqueIndex:ux_release_plans_department_version,priority:2" json:"version"`
+	Version         string                `gorm:"type:varchar(64);not null;uniqueIndex:ux_release_plans_department_version,priority:2;uniqueIndex:ux_release_plans_project_version,priority:2" json:"version"`
 	Description     string                `gorm:"type:varchar(500);not null;default:''" json:"description"`
 	Status          ReleasePlanStatus     `gorm:"type:varchar(16);not null;default:'draft';index" json:"status"`
 	IsActive        bool                  `gorm:"not null;default:true;index" json:"is_active"`
 	DepartmentID    string                `gorm:"type:varchar(36);not null;default:'00000000-0000-0000-0000-000000000001';index;uniqueIndex:ux_release_plans_department_version,priority:1" json:"department_id"`
+	ProjectID       string                `gorm:"type:varchar(36);not null;default:'';index;uniqueIndex:ux_release_plans_project_version,priority:1" json:"project_id"`
 	CreatedBy       string                `gorm:"type:varchar(36);not null;index" json:"created_by"`
 	UpdatedBy       string                `gorm:"type:varchar(36);not null;index" json:"updated_by"`
 	CreatedAt       time.Time             `gorm:"not null;index" json:"created_at"`
@@ -54,6 +55,7 @@ type ReleasePlanExecution struct {
 	Status        ReleasePlanExecutionStatus `gorm:"type:varchar(16);not null;default:'pending';index" json:"status"`
 	Snapshot      string                     `gorm:"type:text;not null" json:"-"`
 	DepartmentID  string                     `gorm:"type:varchar(36);not null;default:'00000000-0000-0000-0000-000000000001';index" json:"department_id"`
+	ProjectID     string                     `gorm:"type:varchar(36);not null;default:'';index" json:"project_id"`
 	CreatedBy     string                     `gorm:"type:varchar(36);not null;index" json:"created_by"`
 	StartedAt     *time.Time                 `json:"started_at,omitempty"`
 	FinishedAt    *time.Time                 `json:"finished_at,omitempty"`

@@ -32,19 +32,19 @@ export const navigation: NavSection[] = [
     label: 'nav.delivery',
     branches: [
       { key: 'applications-code', label: 'nav.applicationsCode', icon: AppWindow, items: [
-        { label: 'nav.applications', path: '/applications', permissions: ['delivery.read'], icon: PanelsTopLeft },
+        { label: 'nav.applications', path: '/applications', permissions: ['application.read'], icon: PanelsTopLeft },
         { label: 'nav.repositories', path: '/repositories', permissions: ['repository.read'], icon: GitBranch },
         { label: 'nav.credentials', path: '/credentials', permissions: ['credential.read'], icon: KeyRound },
       ] },
       { key: 'build-artifacts', label: 'nav.buildArtifacts', icon: PackageCheck, items: [
-        { label: 'nav.buildPlans', path: '/build-plans', permissions: ['delivery.read'], icon: Boxes },
-        { label: 'nav.registries', path: '/image-registries', permissions: ['delivery.read'], icon: Box },
+        { label: 'nav.buildPlans', path: '/build-plans', permissions: ['build_plan.read'], icon: Boxes },
+        { label: 'nav.registries', path: '/image-registries', permissions: ['image_registry.read'], icon: Box },
       ] },
       { key: 'release-management', label: 'nav.releaseManagement', icon: Rocket, items: [
-        { label: 'nav.pipelinePlans', path: '/pipeline-plans', permissions: ['delivery.read'], icon: Workflow },
-        { label: 'nav.deploymentPlans', path: '/deployment-plans', permissions: ['delivery.read'], icon: CloudCog },
-        { label: 'nav.releasePlans', path: '/release-plans?view=plans', permissions: ['delivery.read'], icon: ListChecks },
-        { label: 'nav.pipelineRuns', path: '/release-plans?view=runs', permissions: ['delivery.read'], icon: Play },
+        { label: 'nav.pipelinePlans', path: '/pipeline-plans', permissions: ['workflow.read'], icon: Workflow },
+        { label: 'nav.deploymentPlans', path: '/deployment-plans', permissions: ['deployment_plan.read'], icon: CloudCog },
+        { label: 'nav.releasePlans', path: '/release-plans?view=plans', permissions: ['release_plan.read'], icon: ListChecks },
+        { label: 'nav.pipelineRuns', path: '/release-plans?view=runs', permissions: ['pipeline_run.read'], icon: Play },
       ] },
     ],
   },
@@ -56,6 +56,10 @@ export const navigation: NavSection[] = [
         { label: 'nav.environments', path: '/environments', permissions: ['deployment.read'], icon: ServerCog },
         { label: 'nav.hosts', path: '/hosts', permissions: ['cluster.read', 'deployment.read'], icon: Server },
       ] },
+      { key: 'organization', label:'workspace.organization', icon:Building2, items:[
+ {label:'workspace.projects',path:'/projects',permissions:[],icon:Boxes},
+ {label:'workspace.organization',path:'/organization',permissions:['organization.read','organization.update','department.read','department.create','department.update','department.delete'],icon:Building2},
+] },
       { key: 'security', label: 'nav.security', icon: ShieldCheck, items: [
         { label: 'nav.settings', path: '/settings', permissions: [], icon: Settings },
         { label: 'nav.monitor', path: '/system-monitor', permissions: ['monitor.read'], icon: Activity },

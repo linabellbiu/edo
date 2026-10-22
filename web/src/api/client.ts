@@ -8,6 +8,7 @@ export interface ReadyResponse {
 }
 
 export interface User {
+	project_id?: string
   id: string
   username: string
   nickname: string
@@ -32,6 +33,12 @@ const client = axios.create({
   baseURL: '/api/v1',
   timeout: 10_000,
   withCredentials: true,
+})
+
+client.interceptors.request.use(config => {
+  const project = typeof localStorage === 'undefined' ? '' : localStorage.getItem('edo.project')
+  if (project) config.headers.set('X-EDO-Project-ID', project)
+  return config
 })
 
 export async function getReadyStatus(): Promise<ReadyResponse> {

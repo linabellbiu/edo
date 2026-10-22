@@ -43,10 +43,10 @@ const loading = ref(false)
 const busyID = ref('')
 const presetOpen = ref(false)
 
-const canCreate = computed(() => auth.canAny(['delivery.create']))
-const canUpdate = computed(() => auth.canAny(['delivery.update']))
-const canDelete = computed(() => auth.canAny(['delivery.delete']))
-const canExecute = computed(() => auth.canAny(['delivery.execute']))
+const canCreate = computed(() => auth.canAny(['workflow.create']))
+const canUpdate = computed(() => auth.canAny(['workflow.update']))
+const canDelete = computed(() => auth.canAny(['workflow.delete']))
+const canExecute = computed(() => auth.canAny(['workflow.execute']))
 const usageCount = computed(() => {
   const result = new Map<string, number>()
   applications.value.forEach((application) => {
@@ -82,7 +82,7 @@ async function refresh() {
   try {
     const [templateResult, applicationResult] = await Promise.all([
       client.get<{ workflow_templates: WorkflowTemplate[] }>('/workflow-templates'),
-      client.get<{ applications: ApplicationReference[] }>('/applications'),
+      auth.canAny(['application.read']) ? client.get<{ applications: ApplicationReference[] }>('/applications') : Promise.resolve({data:{applications:[]}}),
     ])
     templates.value = templateResult.data.workflow_templates || []
     applications.value = applicationResult.data.applications || []

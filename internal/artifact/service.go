@@ -94,6 +94,7 @@ func (l *BuildDirectoryLease) Release() {
 }
 
 type BuildMetadata struct {
+	ProjectID      string
 	DepartmentID   string
 	ApplicationID  string
 	PipelineRunID  string
@@ -613,7 +614,7 @@ func (s *Service) register(
 	}
 	now := time.Now().UTC()
 	build := model.BuildRun{
-		ID: uuid.NewString(), DepartmentID: metadata.DepartmentID, ApplicationID: metadata.ApplicationID,
+		ID: uuid.NewString(), DepartmentID: metadata.DepartmentID, ProjectID: metadata.ProjectID, ApplicationID: metadata.ApplicationID,
 		PipelineRunID: metadata.PipelineRunID, RepositoryID: metadata.RepositoryID,
 		WorkflowNodeID: metadata.WorkflowNodeID, IdempotencyKey: idempotencyKey, BuildPlanID: metadata.BuildPlanID,
 		ProducerKind: metadata.ProducerKind, Ref: metadata.Ref, CommitSHA: metadata.CommitSHA,
@@ -742,7 +743,7 @@ func (s *Service) validateBuildMetadata(ctx context.Context, metadata *BuildMeta
 		return ErrInvalidArtifact
 	}
 	var application model.Application
-	if err := s.db.WithContext(ctx).Select("id", "department_id", "is_active").
+	if err := s.db.WithContext(ctx).Select("id", "department_id", "project_id", "is_active").
 		First(&application, "id = ? AND is_active = ?", metadata.ApplicationID, true).Error; err != nil {
 		if !errors.Is(err, gorm.ErrRecordNotFound) {
 			s.logger.Error("检查制品所属应用失败", "operation", "artifact_application_guard", "application_id", metadata.ApplicationID, "err", err)
@@ -753,6 +754,11 @@ func (s *Service) validateBuildMetadata(ctx context.Context, metadata *BuildMeta
 		s.logger.Warn("制品生产上下文与应用部门不一致", "operation", "artifact_department_validate", "application_id", metadata.ApplicationID)
 		return ErrInvalidArtifact
 	}
+	if metadata.ProjectID != "" && metadata.ProjectID != application.ProjectID {
+		s.logger.Warn("制品生产上下文与应用项目不一致", "operation", "artifact_project_validate", "application_id", metadata.ApplicationID)
+		return ErrInvalidArtifact
+	}
+	metadata.ProjectID = application.ProjectID
 	metadata.DepartmentID = application.DepartmentID
 	return nil
 }

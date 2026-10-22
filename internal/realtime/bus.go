@@ -131,21 +131,29 @@ func (b *Bus) publishChanged(ctx context.Context, resource, id string) {
 	defer cancel()
 	scope, _ := database.DepartmentScopeFromContext(ctx)
 	departmentID := scope.DepartmentID
+	projectID := scope.ProjectID
+	if projectID == "" && departmentID != "" {
+		projectID = database.DefaultProjectID(departmentID)
+	}
 	if id != "" {
 		// 软删除后仍从原资源读取冻结的部门，不能按管理员当前部门推断。
-		var row struct{ DepartmentID string }
-		if err := b.db.WithContext(ctx).Unscoped().Model(record).Select("department_id").Where("id = ?", id).Take(&row).Error; err != nil {
+		var row struct{ DepartmentID, ProjectID string }
+		if err := b.db.WithContext(ctx).Unscoped().Model(record).Select("department_id", "project_id").Where("id = ?", id).Take(&row).Error; err != nil {
 			if err != gorm.ErrRecordNotFound {
 				b.logger.Warn("读取实时通知归属失败", "operation", "realtime_scope", "resource", resource, "resource_id", id, "err", err)
 			}
 			return
 		}
 		departmentID = row.DepartmentID
+		projectID = row.ProjectID
 	}
 	if departmentID == "" {
 		return
 	}
 	pipe := b.client.Pipeline()
+	if projectID != "" {
+		pipe.Publish(ctx, b.prefix+"project:"+projectID, resource)
+	}
 	pipe.Publish(ctx, b.prefix+"department:"+departmentID, resource)
 	pipe.Publish(ctx, b.prefix+"administrators", resource)
 	if _, err := pipe.Exec(ctx); err != nil {
@@ -171,6 +179,14 @@ func (b *Bus) publishLogs(ctx context.Context, runID string) {
 	if err := b.client.Publish(ctx, b.prefix+"logs:"+runID, "changed").Err(); err != nil {
 		b.logger.Warn("发送日志变更通知失败", "operation", "realtime_log_publish", "pipeline_run_id", runID, "err", err)
 	}
+}
+
+func (b *Bus) SubscribeProject(ctx context.Context) (*redis.PubSub, error) {
+	scope, _ := database.DepartmentScopeFromContext(ctx)
+	if scope.ProjectID == "" {
+		return nil, fmt.Errorf("项目范围未指定")
+	}
+	return b.subscribe(ctx, "project:"+scope.ProjectID)
 }
 
 func (b *Bus) SubscribeState(ctx context.Context, departmentID string, administrator bool) (*redis.PubSub, error) {

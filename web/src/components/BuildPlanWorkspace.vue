@@ -70,6 +70,8 @@ const props = withDefaults(defineProps<{
   artifactUploading?: boolean
   artifactDownloadingID?: string
   mutationID?: string
+  canReadArtifacts?: boolean
+  canUploadArtifacts?: boolean
   canCreate?: boolean
   canUpdate?: boolean
   canDelete?: boolean
@@ -79,6 +81,8 @@ const props = withDefaults(defineProps<{
   artifactUploading: false,
   artifactDownloadingID: '',
   mutationID: '',
+  canReadArtifacts: false,
+  canUploadArtifacts: false,
   canCreate: false,
   canUpdate: false,
   canDelete: false,
@@ -281,7 +285,7 @@ function formatTime(value: string) {
         <div v-else-if="column.key === 'updated'" class="plan-cell"><time :datetime="plan.updated_at">{{ formatTime(plan.updated_at) }}</time></div>
         <ResourceRowActions v-else-if="column.key === 'actions'" :more="canUpdate || canDelete" :loading="mutationID === plan.id">
           <a-button size="small" @click="openOverview(plan)">{{ t('resourceList.details') }}</a-button>
-          <a-button size="small" :disabled="artifactUploading" @click="openArtifacts(plan)">{{ t('buildPlanWorkspace.artifacts') }}</a-button>
+          <a-button v-if="canReadArtifacts" size="small" :disabled="artifactUploading" @click="openArtifacts(plan)">{{ t('buildPlanWorkspace.artifacts') }}</a-button>
           <template #more>
             <a-menu-item v-if="canUpdate" @click="emit('edit', plan)">{{ t('planList.edit') }}</a-menu-item>
             <a-menu-item v-if="canUpdate" :disabled="mutationID === plan.id" @click="emit('toggle', plan)">{{ plan.is_active ? t('planList.disable') : t('planList.enable') }}</a-menu-item>
@@ -297,7 +301,7 @@ function formatTime(value: string) {
     <template #actions>
       <a-tag v-if="drawerPlan" :color="drawerPlan.is_active ? 'success' : 'default'">{{ drawerPlan.is_active ? t('planList.enabled') : t('planList.disabled') }}</a-tag>
       <a-button v-if="drawerPlan && artifactsOpen" size="small" @click="openOverview(drawerPlan)">{{ t('resourceList.basic') }}</a-button>
-      <a-button v-if="drawerPlan && !artifactsOpen" size="small" @click="openArtifacts(drawerPlan)">{{ t('buildPlanWorkspace.artifacts') }}</a-button>
+      <a-button v-if="drawerPlan && !artifactsOpen && canReadArtifacts" size="small" @click="openArtifacts(drawerPlan)">{{ t('buildPlanWorkspace.artifacts') }}</a-button>
       <a-button v-if="drawerPlan && canUpdate" size="small" @click="emit('edit', drawerPlan)">{{ t('planList.edit') }}</a-button>
     </template>
     <section v-if="!artifactsOpen && drawerPlan" class="resource-detail-section">
@@ -326,7 +330,7 @@ function formatTime(value: string) {
             @update:value="emit('update:selectedApplicationID', String($event || ''))"
           />
           <a-button :loading="artifactLoading" @click="emit('refresh-artifacts')"><RefreshCw />刷新</a-button>
-          <a-upload v-if="canCreate" :show-upload-list="false" :before-upload="beforeArtifactUpload" :disabled="uploadDisabled || artifactUploading">
+          <a-upload v-if="canUploadArtifacts" :show-upload-list="false" :before-upload="beforeArtifactUpload" :disabled="uploadDisabled || artifactUploading">
             <a-button type="primary" :loading="artifactUploading" :disabled="uploadDisabled"><Upload />上传制品</a-button>
           </a-upload>
         </div>

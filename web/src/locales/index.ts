@@ -1,7 +1,9 @@
 import { createI18n } from 'vue-i18n'
+import { workspaceZh, workspaceEn } from './workspace'
 
 export const messages = {
   'zh-CN': {
+	workspace: workspaceZh,
     resourceList: { details: '详情', more: '更多操作', basic: '基本信息', configuration: '配置信息', name: '名称', description: '说明', hosts: '所属主机', hostCount: '主机数量', capabilities: '主机能力', environmentEmpty: '还没有环境', status: '状态', resources: '运行资源', created: '创建时间', updated: '最近更新', close: '关闭', artifacts: '构建制品', workflows: '关联流水线', instances: '部署实例' },
     buildPlanWorkspace: { entry: '构建入口', directory: '执行目录', artifact: '构建产物', storage: '存储位置', architecture: '目标架构', followHost: '自动跟随部署主机', timeout: '构建超时', updated: '最近修改', artifacts: '构建制品', empty: '还没有构建方案' },
     deploymentList: { description: '配置部署方式、环境和执行参数，流水线部署任务直接选择方案。', environment: '环境', configuration: '部署配置', noEnvironment: '未配置环境', environmentUnavailable: '环境信息不可用', noLocation: '尚未配置运行位置', locationUnavailable: '连接信息不可用', localExecution: '本地执行', directory: '目录：{value}', homeDirectory: '执行用户主目录', savedScript: '执行已保存的部署脚本', service: '服务：{value}', notConfigured: '未配置', composeFile: '内联 Compose YAML', workload: 'Deployment：{value}', kubernetesScope: '命名空间：{namespace}；容器：{container}', customCommand: '自定义部署命令', customCommandHint: '通过已保存的命令配置容器', ports: '端口：{value}', noPorts: '未配置端口映射', configCounts: '环境变量：{variables} 个；命名卷：{volumes} 个' },
@@ -227,6 +229,7 @@ export const messages = {
     },
   },
   'en-US': {
+	workspace: workspaceEn,
     resourceList: { details: 'Details', more: 'More actions', basic: 'Basic information', configuration: 'Configuration', name: 'Name', description: 'Description', hosts: 'Hosts', hostCount: 'Host count', capabilities: 'Capabilities', environmentEmpty: 'No environments yet', status: 'Status', resources: 'Resources', created: 'Created', updated: 'Last updated', close: 'Close', artifacts: 'Build artifacts', workflows: 'Workflows', instances: 'Deployment instances' },
     buildPlanWorkspace: { entry: 'Build entry', directory: 'Directory', artifact: 'Build output', storage: 'Storage', architecture: 'Architecture', followHost: 'Follow deployment host', timeout: 'Build timeout', updated: 'Last modified', artifacts: 'Artifacts', empty: 'No build plans yet' },
     deploymentList: { description: 'Configure the deployment method, environment and parameters, then select this plan in a pipeline deployment task.', environment: 'Environment', configuration: 'Deployment configuration', noEnvironment: 'No environment configured', environmentUnavailable: 'Environment unavailable', noLocation: 'No location configured', locationUnavailable: 'Connection details unavailable', localExecution: 'Local execution', directory: 'Directory: {value}', homeDirectory: 'Execution user home', savedScript: 'Run the saved deployment script', service: 'Service: {value}', notConfigured: 'Not configured', composeFile: 'Inline Compose YAML', workload: 'Deployment: {value}', kubernetesScope: 'Namespace: {namespace}; container: {container}', customCommand: 'Custom deployment command', customCommandHint: 'Container configured by the saved command', ports: 'Ports: {value}', noPorts: 'No port mappings', configCounts: 'Environment variables: {variables}; named volumes: {volumes}' },

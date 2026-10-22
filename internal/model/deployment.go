@@ -21,7 +21,7 @@ const (
 
 type DeploymentTarget struct {
 	ID               string             `gorm:"type:varchar(36);primaryKey" json:"id"`
-	Name             string             `gorm:"type:varchar(128);not null;uniqueIndex:ux_deployment_targets_department_name,priority:2" json:"name"`
+	Name             string             `gorm:"type:varchar(128);not null;uniqueIndex:ux_deployment_targets_department_name,priority:2;uniqueIndex:ux_deployment_targets_project_name,priority:2" json:"name"`
 	Description      string             `gorm:"type:varchar(500);not null;default:''" json:"description"`
 	Platform         DeploymentPlatform `gorm:"type:varchar(16);not null;index" json:"platform"`
 	EnvironmentID    string             `gorm:"type:varchar(36);not null;default:'';index" json:"environment_id,omitempty"`
@@ -34,6 +34,7 @@ type DeploymentTarget struct {
 	RolloutTimeout   int                `gorm:"not null;default:300" json:"rollout_timeout"`
 	IsActive         bool               `gorm:"not null;default:true;index" json:"is_active"`
 	DepartmentID     string             `gorm:"type:varchar(36);not null;default:'00000000-0000-0000-0000-000000000001';index;uniqueIndex:ux_deployment_targets_department_name,priority:1" json:"department_id"`
+	ProjectID        string             `gorm:"type:varchar(36);not null;default:'';index;uniqueIndex:ux_deployment_targets_project_name,priority:1" json:"project_id"`
 	CreatedBy        string             `gorm:"type:varchar(36);not null;index" json:"created_by"`
 	CreatedAt        time.Time          `gorm:"not null" json:"created_at"`
 	UpdatedAt        time.Time          `gorm:"not null" json:"updated_at"`
@@ -62,6 +63,7 @@ const (
 type DeploymentRecord struct {
 	ID                 string                `gorm:"type:varchar(36);primaryKey" json:"id"`
 	DepartmentID       string                `gorm:"type:varchar(36);not null;default:'00000000-0000-0000-0000-000000000001';index" json:"department_id"`
+	ProjectID          string                `gorm:"type:varchar(36);not null;default:'';index" json:"project_id"`
 	IdempotencyKey     *string               `gorm:"type:varchar(64);uniqueIndex:idx_deployment_records_idempotency_key" json:"-"`
 	RollbackSourceID   string                `gorm:"type:varchar(36);not null;default:'';index:idx_deployment_records_rollback_source_attempt,priority:1" json:"rollback_source_id,omitempty"`
 	RollbackAttempt    int                   `gorm:"not null;default:0;index:idx_deployment_records_rollback_source_attempt,priority:2" json:"rollback_attempt,omitempty"`

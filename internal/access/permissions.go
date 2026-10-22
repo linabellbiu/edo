@@ -1,6 +1,9 @@
 package access
 
+import "strings"
+
 type Permission struct {
+	Scope        string `json:"scope"`
 	Code         string `json:"code"`
 	Group        string `json:"group"`
 	Description  string `json:"description"`
@@ -132,7 +135,7 @@ func permission(code, group, resource, resourceName, action, actionName, descrip
 	}
 }
 
-var catalog = []Permission{
+var catalog = append([]Permission{
 	permission(PermissionSystemRead, "系统", "system", "系统运行信息", "read", "查看", "查看系统版本和运行信息", false),
 
 	permission(PermissionUserRead, "身份与权限", "user", "用户", "read", "查看", "查看当前权限范围内的用户", false),
@@ -161,7 +164,7 @@ var catalog = []Permission{
 	permission(PermissionRepositoryUpdate, "代码仓库", "repository", "代码仓库", "update", "修改", "修改或启停代码仓库连接", false),
 	permission(PermissionRepositoryDelete, "代码仓库", "repository", "代码仓库", "delete", "删除", "删除代码仓库连接", true),
 	permission(PermissionRepositoryExecute, "代码仓库", "repository", "代码仓库操作", "execute", "执行", "测试代码仓库连接或触发同步", true),
-	permission(PermissionRepositorySecretRead, "代码仓库", "repository", "代码仓库 Webhook 密钥", "read_secret", "查看", "查看 Webhook 回调地址和签名密钥", true),
+	permission(PermissionRepositorySecretRead, "代码仓库", "repository", "代码仓库 Webhook 密钥", "read_secret", "查看密钥", "查看 Webhook 回调地址和签名密钥", true),
 
 	permission(PermissionCredentialRead, "个人令牌", "credential", "个人 Git 令牌", "read", "查看", "查看本人保存的 Git 令牌", false),
 	permission(PermissionCredentialCreate, "个人令牌", "credential", "个人 Git 令牌", "create", "创建", "创建本人 Git 令牌", false),
@@ -173,12 +176,6 @@ var catalog = []Permission{
 	permission(PermissionDNSUpdate, "域名解析", "dns", "域名解析", "update", "修改", "修改或启停 DNS 配置", false),
 	permission(PermissionDNSDelete, "域名解析", "dns", "域名解析", "delete", "删除", "删除 DNS 厂商账号、域名或解析记录", true),
 	permission(PermissionDNSExecute, "域名解析", "dns", "DNS 连接测试", "execute", "执行", "测试 DNS 厂商连接", true),
-
-	permission(PermissionDeliveryRead, "持续交付", "delivery", "持续交付资源", "read", "查看", "查看应用、流水线、构建方案和发布计划", false),
-	permission(PermissionDeliveryCreate, "持续交付", "delivery", "持续交付资源", "create", "创建", "创建应用、流水线、构建或发布方案", false),
-	permission(PermissionDeliveryUpdate, "持续交付", "delivery", "持续交付资源", "update", "修改", "修改或启停应用、流水线、构建或发布方案", false),
-	permission(PermissionDeliveryDelete, "持续交付", "delivery", "持续交付资源", "delete", "删除", "删除流水线、构建或发布方案", true),
-	permission(PermissionDeliveryExecute, "持续交付", "delivery", "流水线与发布计划", "execute", "执行", "检查代码更新并创建、执行、重试或推进流水线和发布计划", true),
 
 	permission(PermissionDeploymentRead, "发布", "deployment", "发布环境与记录", "read", "查看", "查看发布环境、发布记录和运行状态", false),
 	permission(PermissionDeploymentCreate, "发布", "deployment", "发布环境与配置", "create", "创建", "创建发布环境和部署配置", false),
@@ -215,7 +212,7 @@ var catalog = []Permission{
 	permission(PermissionSchedulerRead, "调度", "scheduler", "定时任务", "read", "查看", "查看定时任务", false),
 	permission(PermissionSchedulerCreate, "调度", "scheduler", "定时任务", "create", "创建", "创建定时任务", false),
 	permission(PermissionSchedulerUpdate, "调度", "scheduler", "定时任务", "update", "修改", "修改或启停定时任务", false),
-}
+}, workspacePermissions()...)
 
 // LegacyPermissionExpansions 供迁移代码把旧的聚合权限展开为细粒度权限。
 // 返回值保留旧权限实际覆盖的能力，避免升级后无意扩大权限范围。
@@ -241,17 +238,27 @@ var LegacyPermissionExpansions = map[string][]string{
 var knownPermissions = func() map[string]struct{} {
 	result := make(map[string]struct{}, len(catalog)+len(LegacyPermissionExpansions))
 	for _, permission := range catalog {
-		result[permission.Code] = struct{}{}
+		if !strings.HasPrefix(permission.Code, "delivery.") {
+			result[permission.Code] = struct{}{}
+		}
 	}
-	for permission := range LegacyPermissionExpansions {
-		result[permission] = struct{}{}
-	}
+
 	return result
 }()
 
 func Catalog() []Permission {
-	result := make([]Permission, len(catalog))
-	copy(result, catalog)
+	result := make([]Permission, 0, len(catalog))
+	for _, item := range catalog {
+		if !strings.HasPrefix(item.Code, "delivery.") {
+			result = append(result, item)
+		}
+	}
+	for i := range result {
+		result[i].Scope = "platform"
+		if ProjectPermission(result[i].Code) {
+			result[i].Scope = "project"
+		}
+	}
 	return result
 }
 

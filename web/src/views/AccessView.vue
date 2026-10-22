@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
 import { Modal, message } from 'ant-design-vue'
 import {
@@ -13,7 +14,9 @@ import PageToolbar from '@/components/PageToolbar.vue'
 import ResourceTable from '@/components/ResourceTable.vue'
 import { useAuthStore } from '@/stores/auth'
 
+const {t}=useI18n()
 interface Permission {
+ scope?:'project'|'platform'
   code: string
   group: string
   resource: string
@@ -37,6 +40,7 @@ interface PermissionGroup {
 }
 
 interface Department extends ResourceRecord {
+  parent_id?: string
   id: string
   name: string
   description: string
@@ -55,6 +59,7 @@ interface Role extends ResourceRecord {
   permissions: string[]
   in_use: boolean
   visible_member_count?: number
+  visible_project_member_count?: number
   updated_at: string
 }
 
@@ -123,7 +128,7 @@ const userForm = reactive({
   department_id: '',
   role_ids: [] as string[],
 })
-const departmentForm = reactive({ name: '', description: '' })
+const departmentForm = reactive({ name: '', description: '',parent_id:'' })
 const userDepartmentForm = reactive({ department_id: '' })
 const roleForm = reactive({
   name: '',
@@ -166,10 +171,11 @@ const activeDepartments = computed(() => departments.value.filter((item) => item
 const departmentOptions = computed(() => activeDepartments.value.map((item) => ({ value: item.id, label: item.name })))
 const roleOptions = computed(() => roles.value.map((item) => ({ value: item.id, label: item.display_name })))
 const delegableRoleOptions = computed(() => roles.value.map((item) => {
-  const disabled = !item.permissions.every((permission) => canDelegatePermission(permission))
+  const projectOnly=item.permissions.length>0&&item.permissions.every(code=>permissions.value.find(permission=>permission.code===code)?.scope==='project')
+  const disabled = projectOnly || !item.permissions.every((permission) => canDelegatePermission(permission))
   return {
     value: item.id,
-    label: disabled ? `${item.display_name}（超出可委派范围）` : item.display_name,
+    label: projectOnly ? `${item.display_name}（${t('workspace.projectScope')}）` : disabled ? `${item.display_name}（超出可委派范围）` : item.display_name,
     disabled,
   }
 }))
@@ -303,7 +309,7 @@ const auditColumns = [
 const toolbarDescription = computed(() => {
   if (active.value === 'audit') return '查看身份、资源、操作结果和请求来源，不展示任何密钥内容。'
   if (active.value === 'roles') return '按查看、创建、修改、删除和执行等动作组合可复用的角色权限。'
-  if (active.value === 'departments') return '部门用于隔离业务数据；普通用户只能访问本部门成员创建的资源。'
+  if (active.value === 'departments') return t('workspace.departmentHint')
   return '维护账户所属部门、状态、角色和用户级允许或拒绝例外。'
 })
 
@@ -422,12 +428,12 @@ async function createUser() {
 }
 
 function resetDepartment() {
-  Object.assign(departmentForm, { name: '', description: '' })
+  Object.assign(departmentForm, { name: '', description: '',parent_id:'' })
   editingDepartmentID.value = ''
 }
 
 function editDepartment(item: Department) {
-  Object.assign(departmentForm, { name: item.name, description: item.description || '' })
+  Object.assign(departmentForm, { name: item.name, description: item.description || '',parent_id:item.parent_id||'' })
   editingDepartmentID.value = item.id
   departmentFormOpen.value = true
 }
@@ -910,7 +916,10 @@ onMounted(refresh)
         empty-text="没有符合筛选条件的角色"
       >
         <template #cell-visible_member_count="{ row, value }">
-          <a-button v-if="canReadUsers && value !== undefined" type="link" @click="openMembers('role', row as Role)">{{ value || 0 }} 人</a-button>
+          <template v-if="canReadUsers && value !== undefined">
+            <a-button type="link" @click="openMembers('role', row as Role)">{{t('workspace.platformCount',{count:value||0})}}</a-button>
+            <span v-if="row.visible_project_member_count" class="field-hint">{{t('workspace.projectCount',{count:row.visible_project_member_count})}}</span>
+          </template>
           <span v-else>无权查看</span>
         </template>
         <template #cell-permissions="{ value }">
@@ -974,14 +983,14 @@ onMounted(refresh)
         <a-form-item label="初始密码" required>
           <a-input-password v-model:value="userForm.password" minlength="12" maxlength="128" />
         </a-form-item>
-        <a-form-item label="角色">
+        <a-form-item :label="t('workspace.platformRoles')">
           <a-select
             v-model:value="userForm.role_ids"
             mode="multiple"
             placeholder="可选择多个角色"
             :options="delegableRoleOptions"
           />
-          <small class="field-hint">多个角色的允许权限会合并，用户级明确拒绝仍然优先。</small>
+          <small class="field-hint">{{t('workspace.platformRoleHint')}}</small>
         </a-form-item>
       </a-form>
     </a-modal>
@@ -1071,7 +1080,7 @@ onMounted(refresh)
                   :disabled="!resource.items.some((item) => canDelegatePermission(item.code))"
                   @change="toggleRoleResource(resource, Boolean($event.target.checked))"
                 >{{ resource.name }}</a-checkbox>
-                <small>{{ resource.items.filter((item) => roleForm.permissions.includes(item.code)).length }} / {{ resource.items.length }}</small>
+                <small><a-tag>{{t(resource.items[0]?.scope==='project'?'workspace.projectScope':'workspace.platformScope')}}</a-tag>{{ resource.items.filter((item) => roleForm.permissions.includes(item.code)).length }} / {{ resource.items.length }}</small>
               </header>
               <div class="permission-options">
                 <a-checkbox
@@ -1111,7 +1120,7 @@ onMounted(refresh)
         message="角色和用户权限例外会原子保存；用户级拒绝优先于角色允许，“继承”不会创建用户规则。"
       />
       <section class="access-role-section">
-        <header><div><h3>角色</h3><small>可组合多个职责角色，允许权限取并集。</small></div><a-tag color="blue">{{ accessForm.role_ids.length }} 个</a-tag></header>
+        <header><div><h3>{{t('workspace.platformRoles')}}</h3><small>{{t('workspace.platformRoleHint')}}</small></div><a-tag color="blue">{{ accessForm.role_ids.length }} 个</a-tag></header>
         <a-checkbox-group v-model:value="accessForm.role_ids" :options="delegableRoleOptions" />
       </section>
       <div class="access-impact-summary">

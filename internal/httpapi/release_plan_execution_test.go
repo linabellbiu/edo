@@ -47,7 +47,7 @@ func TestReleasePlanExecutionRequiresDeliveryExecute(t *testing.T) {
 	adminCookie := adminLogin.Result().Cookies()[0]
 
 	roleResponse := performJSONRequest(t, router, http.MethodPost, "/api/v1/roles", map[string]any{
-		"name": "release-plan-reader", "display_name": "发布计划查看员", "permissions": []string{"delivery.read"},
+		"name": "release-plan-reader", "display_name": "发布计划查看员", "permissions": []string{"release_plan.read"},
 	}, adminCookie)
 	var rolePayload struct {
 		Role struct {
@@ -71,6 +71,7 @@ func TestReleasePlanExecutionRequiresDeliveryExecute(t *testing.T) {
 		t.Fatalf("创建测试用户失败: status=%d body=%s", userResponse.Code, userResponse.Body.String())
 	}
 
+	joinCreatedUserProjectForTest(t, router, adminCookie, userResponse, []string{rolePayload.Role.ID})
 	readerLogin := performJSONRequest(t, router, http.MethodPost, "/api/v1/auth/login", map[string]string{
 		"username": "release-plan-reader", "password": "correct horse battery staple",
 	}, nil)
@@ -81,18 +82,18 @@ func TestReleasePlanExecutionRequiresDeliveryExecute(t *testing.T) {
 
 	denied := performJSONRequest(t, router, http.MethodPost, "/api/v1/release-plans/not-found/executions", map[string]any{}, readerCookie)
 	if denied.Code != http.StatusForbidden {
-		t.Fatalf("缺少 delivery.execute 时未拒绝执行发布计划: status=%d body=%s", denied.Code, denied.Body.String())
+		t.Fatalf("缺少 release_plan.execute 时未拒绝执行发布计划: status=%d body=%s", denied.Code, denied.Body.String())
 	}
 
 	grant := performJSONRequest(t, router, http.MethodPut, "/api/v1/users/"+userPayload.User.ID+"/permissions", map[string]any{
-		"allow": []string{"delivery.execute"}, "deny": []string{},
+		"allow": []string{"release_plan.execute"}, "deny": []string{},
 	}, adminCookie)
 	if grant.Code != http.StatusNoContent {
-		t.Fatalf("授予 delivery.execute 失败: status=%d body=%s", grant.Code, grant.Body.String())
+		t.Fatalf("授予 release_plan.execute 失败: status=%d body=%s", grant.Code, grant.Body.String())
 	}
 	invalid := performJSONRequest(t, router, http.MethodPost, "/api/v1/release-plans/not-found/executions", map[string]any{}, readerCookie)
 	if invalid.Code != http.StatusBadRequest || !strings.Contains(invalid.Body.String(), `"code":"invalid_release_plan_execution"`) {
-		t.Fatalf("授予 delivery.execute 后应进入请求校验并返回 400: status=%d body=%s", invalid.Code, invalid.Body.String())
+		t.Fatalf("授予 release_plan.execute 后应进入请求校验并返回 400: status=%d body=%s", invalid.Code, invalid.Body.String())
 	}
 }
 

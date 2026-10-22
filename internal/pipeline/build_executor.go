@@ -378,7 +378,7 @@ func (s *Service) executePipelineBuild(ctx context.Context, prepared *buildExecu
 		return nil, ErrPipelineExecutionConfig
 	}
 	metadata := artifact.BuildMetadata{
-		DepartmentID:  prepared.run.DepartmentID,
+		ProjectID: prepared.run.ProjectID, DepartmentID: prepared.run.DepartmentID,
 		ApplicationID: prepared.application.ID, PipelineRunID: prepared.run.ID,
 		RepositoryID: prepared.component.RepositoryID, WorkflowNodeID: prepared.node.ID,
 		BuildPlanID: prepared.plan.ID, Ref: prepared.run.Ref, CommitSHA: prepared.run.CommitSHA,

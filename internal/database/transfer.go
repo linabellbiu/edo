@@ -14,6 +14,7 @@ import (
 
 	"github.com/google/uuid"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
 	"edo/internal/config"
 	"edo/internal/model"
@@ -334,6 +335,10 @@ func ensureEmptyTransferTarget(db *gorm.DB) error {
 		switch table {
 		case model.Department{}.TableName():
 			query = query.Where("id <> ?", DefaultDepartmentID)
+		case model.Organization{}.TableName():
+			query = query.Where("id <> ?", DefaultDepartmentID)
+		case model.Project{}.TableName():
+			query = query.Where("id <> ?", DefaultProjectID(DefaultDepartmentID))
 		case model.Host{}.TableName():
 			query = query.Where("id <> ?", model.BuiltinLocalHostID)
 		case model.HostCapability{}.TableName():
@@ -453,7 +458,18 @@ func copyTable(source, target *gorm.DB, table, targetDriver string) (int64, erro
 		if len(batch) == 0 {
 			return nil
 		}
-		if err := target.Table(table).Create(&batch).Error; err != nil {
+		writer := target.Table(table)
+		// 目标库已通过空库校验；保留迁移生成的初始行，并用源库快照同步其字段。
+		if table == "organizations" || table == "projects" {
+			updates := make([]string, 0, len(columns))
+			for _, column := range columns {
+				if column != "id" {
+					updates = append(updates, column)
+				}
+			}
+			writer = writer.Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "id"}}, DoUpdates: clause.AssignmentColumns(updates)})
+		}
+		if err := writer.Create(&batch).Error; err != nil {
 			return fmt.Errorf("写入目标数据表 %s 失败: %w", table, err)
 		}
 		copied += int64(len(batch))
@@ -558,6 +574,7 @@ func resetPostgresSequences(db *gorm.DB) error {
 }
 
 var orderedTransferTables = []string{
+	"organizations", "projects", "project_members",
 	"departments", "users", "roles", "role_permissions", "user_roles", "user_permissions",
 	"git_credentials", "identity_providers", "external_identities",
 	"configurations", "configuration_revisions", "audit_logs",

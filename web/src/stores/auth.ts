@@ -3,6 +3,7 @@ import { computed, ref } from 'vue'
 import { defineStore } from 'pinia'
 
 import {
+  default as client,
   getCurrentUser,
   login as loginRequest,
   loginLDAP as loginLDAPRequest,
@@ -24,6 +25,7 @@ export const useAuthStore = defineStore('auth', () => {
 
     loadPromise = (async () => {
       try {
+        await restoreProject()
         user.value = await getCurrentUser()
         loaded.value = true
         loadFailed.value = false
@@ -45,14 +47,28 @@ export const useAuthStore = defineStore('auth', () => {
     return loadPromise
   }
 
+  async function restoreProject() {
+    const {data}=await client.get<{projects:Array<{id:string;is_active:boolean}>}>('/projects')
+    const active=data.projects.filter(item=>item.is_active)
+    const saved=localStorage.getItem('edo.project')
+    if(!active.some(item=>item.id===saved)) {
+      if(active[0])localStorage.setItem('edo.project',active[0].id)
+      else localStorage.removeItem('edo.project')
+    }
+  }
+
   async function login(username: string, password: string) {
-    user.value = await loginRequest(username, password)
+    await loginRequest(username, password)
+    await restoreProject()
+    user.value = await getCurrentUser()
     loaded.value = true
     loadFailed.value = false
   }
 
   async function loginLDAP(providerID: string, username: string, password: string) {
-    user.value = await loginLDAPRequest(providerID, username, password)
+    await loginLDAPRequest(providerID, username, password)
+    await restoreProject()
+    user.value = await getCurrentUser()
     loaded.value = true
     loadFailed.value = false
   }

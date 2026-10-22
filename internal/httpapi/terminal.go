@@ -23,9 +23,10 @@ import (
 const terminalSubprotocol = "edo-terminal-v1"
 
 type terminalHandler struct {
-	service *terminalservice.Service
-	audits  *audit.Service
-	logger  *slog.Logger
+	streamAuth func(*gin.Context) func() bool
+	service    *terminalservice.Service
+	audits     *audit.Service
+	logger     *slog.Logger
 }
 
 type terminalControl struct {
@@ -96,6 +97,24 @@ func (h terminalHandler) open(
 	sessionID := uuid.NewString()
 	sessionContext, cancel := context.WithTimeout(c.Request.Context(), h.service.MaxDuration())
 	defer cancel()
+	if h.streamAuth != nil {
+		authorized := h.streamAuth(c)
+		go func() {
+			ticker := time.NewTicker(10 * time.Second)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-sessionContext.Done():
+					return
+				case <-ticker.C:
+					if !authorized() {
+						cancel()
+						return
+					}
+				}
+			}
+		}()
+	}
 	session, err := opener(sessionContext, shell, size)
 	if err != nil {
 		h.logger.Error("打开容器终端失败", "operation", "terminal_open", "request_id", requestIDFrom(c), "session_id", sessionID, "target_type", targetType, "resource_id", resourceID, "err", err)

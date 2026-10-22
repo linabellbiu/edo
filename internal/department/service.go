@@ -10,6 +10,7 @@ import (
 
 	"github.com/google/uuid"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
 	"edo/internal/database"
 	"edo/internal/model"
@@ -30,6 +31,7 @@ type View struct {
 }
 
 type Input struct {
+	ParentID    string
 	Name        string
 	Description string
 }
@@ -70,10 +72,22 @@ func (s *Service) Create(ctx context.Context, input Input) (*View, error) {
 	}
 	now := time.Now().UTC()
 	item := model.Department{
-		ID: uuid.NewString(), Name: input.Name, Description: input.Description,
+		ParentID: input.ParentID,
+		ID:       uuid.NewString(), Name: input.Name, Description: input.Description,
 		IsActive: true, CreatedAt: now, UpdatedAt: now,
 	}
-	if err := s.db.WithContext(ctx).Create(&item).Error; err != nil {
+	if err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := lockCompany(tx); err != nil {
+			return err
+		}
+		if err := validateParent(tx, item.ID, input.ParentID); err != nil {
+			return err
+		}
+		if err := tx.Create(&item).Error; err != nil {
+			return err
+		}
+		return database.EnsureDepartmentProject(tx, item.ID)
+	}); err != nil {
 		if errors.Is(err, gorm.ErrDuplicatedKey) {
 			return nil, ErrDepartmentNameExist
 		}
@@ -87,18 +101,28 @@ func (s *Service) Update(ctx context.Context, id string, input Input) (*View, er
 	if err != nil {
 		return nil, err
 	}
-	query := s.allowedDepartment(ctx, id)
-	result := query.Updates(map[string]any{
-		"name": input.Name, "description": input.Description, "updated_at": time.Now().UTC(),
-	})
-	if result.Error != nil {
-		if errors.Is(result.Error, gorm.ErrDuplicatedKey) {
-			return nil, ErrDepartmentNameExist
+
+	err = s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := lockCompany(tx); err != nil {
+			return err
 		}
-		return nil, fmt.Errorf("更新部门失败: %w", result.Error)
-	}
-	if result.RowsAffected != 1 {
-		return nil, ErrDepartmentNotFound
+		if err := validateParent(tx, id, input.ParentID); err != nil {
+			return err
+		}
+		result := (&Service{db: tx}).allowedDepartment(ctx, id).Updates(map[string]any{"name": input.Name, "description": input.Description, "parent_id": input.ParentID, "updated_at": time.Now().UTC()})
+		if errors.Is(result.Error, gorm.ErrDuplicatedKey) {
+			return ErrDepartmentNameExist
+		}
+		if result.Error != nil {
+			return fmt.Errorf("更新部门失败: %w", result.Error)
+		}
+		if result.RowsAffected != 1 {
+			return ErrDepartmentNotFound
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
 	}
 	return s.find(ctx, id)
 }
@@ -107,28 +131,64 @@ func (s *Service) Delete(ctx context.Context, id string) error {
 	if id == database.DefaultDepartmentID {
 		return ErrDefaultDepartment
 	}
-	item, err := s.find(ctx, id)
-	if err != nil {
-		return err
-	}
-	if item.MemberCount > 0 {
-		return ErrDepartmentInUse
-	}
-	for _, table := range departmentResourceTables {
-		var count int64
-		if err := s.db.WithContext(ctx).Table(table).Where("department_id = ?", id).Limit(1).Count(&count).Error; err != nil {
-			return fmt.Errorf("检查部门资源失败: %w", err)
+	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := lockCompany(tx); err != nil {
+			return err
 		}
-		if count > 0 {
+		service := &Service{db: tx}
+		item, err := service.find(ctx, id)
+		if err != nil {
+			return err
+		}
+		if item.MemberCount > 0 {
 			return ErrDepartmentInUse
 		}
-	}
-	result := s.allowedDepartment(ctx, id).Delete(&model.Department{})
-	if result.Error != nil {
-		return fmt.Errorf("删除部门失败: %w", result.Error)
-	}
-	if result.RowsAffected != 1 {
-		return ErrDepartmentNotFound
+		var children int64
+		if err := tx.Model(&model.Department{}).Where("parent_id = ?", id).Count(&children).Error; err != nil {
+			return fmt.Errorf("检查下级部门失败: %w", err)
+		}
+		if children > 0 {
+			return ErrDepartmentInUse
+		}
+		for _, table := range departmentResourceTables {
+			var count int64
+			if err := tx.Table(table).Where("department_id = ?", id).Count(&count).Error; err != nil {
+				return fmt.Errorf("检查部门资源失败: %w", err)
+			}
+			if count > 0 {
+				return ErrDepartmentInUse
+			}
+		}
+		var projects int64
+		if err := tx.Model(&model.Project{}).Where("department_id = ? AND is_default = ?", id, false).Count(&projects).Error; err != nil {
+			return fmt.Errorf("检查部门项目失败: %w", err)
+		}
+		if projects > 0 {
+			return ErrDepartmentInUse
+		}
+		// 用户删除空部门时，只清理该部门没有业务资源的初始空间和成员关联。
+		projectID := database.DefaultProjectID(id)
+		if err := tx.Where("project_id = ?", projectID).Delete(&model.ProjectMember{}).Error; err != nil {
+			return fmt.Errorf("清理空部门项目成员失败: %w", err)
+		}
+		if err := tx.Where("id = ? AND department_id = ?", projectID, id).Delete(&model.Project{}).Error; err != nil {
+			return fmt.Errorf("清理空部门初始空间失败: %w", err)
+		}
+		result := service.allowedDepartment(ctx, id).Delete(&model.Department{})
+		if result.Error != nil {
+			return fmt.Errorf("删除部门失败: %w", result.Error)
+		}
+		if result.RowsAffected != 1 {
+			return ErrDepartmentNotFound
+		}
+		return nil
+	})
+}
+
+func lockCompany(tx *gorm.DB) error {
+	var company model.Organization
+	if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&company, "id = ?", database.DefaultDepartmentID).Error; err != nil {
+		return fmt.Errorf("锁定组织结构失败: %w", err)
 	}
 	return nil
 }
@@ -161,6 +221,7 @@ func (s *Service) allowedDepartment(ctx context.Context, id string) *gorm.DB {
 }
 
 func normalize(input Input) (Input, error) {
+	input.ParentID = strings.TrimSpace(input.ParentID)
 	input.Name = strings.TrimSpace(input.Name)
 	input.Description = strings.TrimSpace(input.Description)
 	if input.Name == "" || utf8.RuneCountInString(input.Name) > 64 || utf8.RuneCountInString(input.Description) > 255 {
@@ -175,4 +236,23 @@ var departmentResourceTables = []string{
 	"docker_endpoints", "kubernetes_clusters", "deployment_targets", "dns_provider_accounts", "dns_domains",
 	"notification_channels", "monitor_rules", "scheduled_tasks", "pipeline_runs", "build_runs", "artifacts",
 	"deployment_records", "release_plan_executions", "jobs", "audit_logs", "notifications",
+}
+
+func validateParent(tx *gorm.DB, id, parent string) error {
+	visited := map[string]bool{id: true}
+	for parent != "" {
+		if visited[parent] {
+			return ErrInvalidDepartment
+		}
+		visited[parent] = true
+		var item model.Department
+		if err := tx.First(&item, "id = ?", parent).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return ErrInvalidDepartment
+			}
+			return fmt.Errorf("读取上级部门失败: %w", err)
+		}
+		parent = item.ParentID
+	}
+	return nil
 }

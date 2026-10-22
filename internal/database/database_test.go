@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log/slog"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -186,8 +187,8 @@ func TestDepartmentScopedUniqueIndexMigration(t *testing.T) {
 	}
 
 	for _, item := range departmentScopedUniqueIndexes {
-		if !db.Migrator().HasIndex(item.model, item.newIndex) {
-			t.Fatalf("%s未创建部门组合唯一索引 %s", item.description, item.newIndex)
+		if !db.Migrator().HasIndex(item.model, strings.Replace(item.newIndex, "_department_", "_project_", 1)) {
+			t.Fatalf("%s未创建项目组合唯一索引 %s", item.description, item.newIndex)
 		}
 		if db.Migrator().HasIndex(item.model, item.oldIndex) {
 			t.Fatalf("%s仍保留旧全局唯一索引 %s", item.description, item.oldIndex)
@@ -197,7 +198,7 @@ func TestDepartmentScopedUniqueIndexMigration(t *testing.T) {
 	// 模拟已经执行 063 的旧数据库：它仍保留 name 全局唯一索引，064 必须先创建
 	// 新组合索引，再按显式名称删除旧索引。
 	repositoryIndex := departmentScopedUniqueIndexes[0]
-	if err := db.Migrator().DropIndex(repositoryIndex.model, repositoryIndex.newIndex); err != nil {
+	if err := db.Migrator().DropIndex(repositoryIndex.model, strings.Replace(repositoryIndex.newIndex, "_department_", "_project_", 1)); err != nil {
 		t.Fatalf("移除测试组合索引失败: %v", err)
 	}
 	if err := db.Exec("CREATE UNIQUE INDEX " + repositoryIndex.oldIndex + " ON " + repositoryIndex.table + " (" + repositoryIndex.field + ")").Error; err != nil {

@@ -26,16 +26,17 @@ func TestStopPipelineEndpointRequiresPermissionAndDepartment(t *testing.T) {
 	if err := db.First(&user, "username = ?", "admin").Error; err != nil {
 		t.Fatal(err)
 	}
+	grantProjectMembershipForTest(t, deps, &user)
 	if err := db.Model(&user).Update("is_superuser", false).Error; err != nil {
 		t.Fatal(err)
 	}
-	if err := deps.Access.SetUserPermissions(context.Background(), user.ID, access.UserPermissionOverrides{Allow: []string{access.PermissionDeliveryRead}}); err != nil {
+	if err := deps.Access.SetUserPermissions(context.Background(), user.ID, access.UserPermissionOverrides{Allow: []string{"pipeline_run.read"}}); err != nil {
 		t.Fatal(err)
 	}
 	if response := performJSONRequest(t, router, http.MethodPost, path, nil, cookie); response.Code != http.StatusForbidden {
 		t.Fatalf("只读用户可停止: %d", response.Code)
 	}
-	if err := deps.Access.SetUserPermissions(context.Background(), user.ID, access.UserPermissionOverrides{Allow: []string{access.PermissionDeliveryRead, access.PermissionDeliveryExecute}}); err != nil {
+	if err := deps.Access.SetUserPermissions(context.Background(), user.ID, access.UserPermissionOverrides{Allow: []string{"pipeline_run.read", "pipeline_run.execute"}}); err != nil {
 		t.Fatal(err)
 	}
 	if err := db.Model(&run).Update("department_id", "other-department").Error; err != nil {

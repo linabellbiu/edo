@@ -20,6 +20,7 @@ import (
 var namePattern = regexp.MustCompile(`^[a-z][a-z0-9_.-]{1,63}$`)
 
 type CreateInput struct {
+	ProjectID      string
 	DepartmentID   string
 	Kind           string
 	Subject        string
@@ -90,8 +91,8 @@ func (s *Service) Create(ctx context.Context, input CreateInput) (*model.Job, er
 	now := time.Now().UTC()
 	jobID := uuid.NewString()
 	job := &model.Job{
-		ID:           jobID,
-		DepartmentID: input.DepartmentID,
+		ID:        jobID,
+		ProjectID: input.ProjectID, DepartmentID: input.DepartmentID,
 		Kind:         input.Kind,
 		Subject:      input.Subject,
 		Status:       model.JobPending,
@@ -105,7 +106,7 @@ func (s *Service) Create(ctx context.Context, input CreateInput) (*model.Job, er
 		job.IdempotencyKey = &input.IdempotencyKey
 	}
 	event := &model.OutboxEvent{
-		DepartmentID:  input.DepartmentID,
+		ProjectID: input.ProjectID, DepartmentID: input.DepartmentID,
 		EventID:       uuid.NewString(),
 		AggregateID:   jobID,
 		Subject:       input.Subject,

@@ -19,6 +19,7 @@ const (
 type Job struct {
 	ID             string         `gorm:"type:varchar(36);primaryKey"`
 	DepartmentID   string         `gorm:"type:varchar(36);not null;default:'00000000-0000-0000-0000-000000000001';index"`
+	ProjectID      string         `gorm:"type:varchar(36);not null;default:'';index" json:"project_id"`
 	Kind           string         `gorm:"type:varchar(64);not null;index"`
 	Subject        string         `gorm:"type:varchar(128);not null"`
 	Status         JobStatus      `gorm:"type:varchar(16);not null;index"`
@@ -42,6 +43,7 @@ func (Job) TableName() string { return "jobs" }
 type OutboxEvent struct {
 	ID              uint64         `gorm:"primaryKey;autoIncrement"`
 	DepartmentID    string         `gorm:"type:varchar(36);not null;default:'00000000-0000-0000-0000-000000000001';index"`
+	ProjectID       string         `gorm:"type:varchar(36);not null;default:'';index" json:"project_id"`
 	EventID         string         `gorm:"type:varchar(36);not null;uniqueIndex"`
 	AggregateID     string         `gorm:"type:varchar(36);not null;index"`
 	Subject         string         `gorm:"type:varchar(128);not null;index"`

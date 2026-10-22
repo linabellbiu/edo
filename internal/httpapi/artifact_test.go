@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"bytes"
+	"edo/internal/database"
 	"encoding/json"
 	"io"
 	"mime/multipart"
@@ -184,6 +185,7 @@ func performArtifactUpload(
 	}
 	request := httptest.NewRequest(http.MethodPost, path, &body)
 	request.Header.Set("Content-Type", writer.FormDataContentType())
+	request.Header.Set("X-EDO-Project-ID", database.DefaultProjectID(database.DefaultDepartmentID))
 	if cookie != nil {
 		request.AddCookie(cookie)
 	}

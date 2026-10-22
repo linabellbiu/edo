@@ -8,6 +8,7 @@ import (
 
 	"gorm.io/gorm"
 
+	"edo/internal/database"
 	"edo/internal/model"
 )
 
@@ -39,7 +40,9 @@ func validatedRolePermissionSet(tx *gorm.DB, roleIDs []string) (map[string]struc
 		return nil, fmt.Errorf("查询待分配角色权限失败: %w", err)
 	}
 	for _, permission := range permissions {
-		result[permission] = struct{}{}
+		for _, code := range []string{permission} {
+			result[code] = struct{}{}
+		}
 	}
 	return result, nil
 }
@@ -78,13 +81,17 @@ func validateAccessDelegation(
 		return ErrAccessDelegationDenied
 	}
 	for permission := range rolePermissions {
-		if _, ok := effective[permission]; !ok {
-			return ErrAccessDelegationDenied
+		for _, code := range []string{permission} {
+			if _, ok := effective[code]; !ok {
+				return ErrAccessDelegationDenied
+			}
 		}
 	}
 	for _, permission := range directAllow {
-		if _, ok := effective[permission]; !ok {
-			return ErrAccessDelegationDenied
+		for _, code := range []string{permission} {
+			if _, ok := effective[code]; !ok {
+				return ErrAccessDelegationDenied
+			}
 		}
 	}
 	return nil
@@ -101,20 +108,36 @@ func effectivePermissionSetFromDB(tx *gorm.DB, userID string) (map[string]struct
 		return nil, fmt.Errorf("查询操作者角色权限失败: %w", err)
 	}
 	for _, permission := range rolePermissions {
-		result[permission] = struct{}{}
+		if !ProjectPermission(permission) {
+			result[permission] = struct{}{}
+		}
+	}
+	scope, _ := database.DepartmentScopeFromContext(tx.Statement.Context)
+	if scope.ProjectID != "" {
+		projectSet, err := projectPermissionSetFromDB(tx, userID, scope.ProjectID)
+		if err != nil {
+			return nil, err
+		}
+		for code := range projectSet {
+			result[code] = struct{}{}
+		}
 	}
 	var overrides []model.UserPermission
 	if err := tx.Where("user_id = ?", userID).Find(&overrides).Error; err != nil {
 		return nil, fmt.Errorf("查询操作者权限例外失败: %w", err)
 	}
 	for _, item := range overrides {
-		if item.Effect == model.PermissionAllow {
-			result[item.Permission] = struct{}{}
+		if item.Effect == model.PermissionAllow && (!ProjectPermission(item.Permission) || scope.ProjectID != "") {
+			for _, code := range []string{item.Permission} {
+				result[code] = struct{}{}
+			}
 		}
 	}
 	for _, item := range overrides {
 		if item.Effect == model.PermissionDeny {
-			delete(result, item.Permission)
+			for _, code := range []string{item.Permission} {
+				delete(result, code)
+			}
 		}
 	}
 	return result, nil

@@ -222,7 +222,7 @@ func (s *Service) Enqueue(ctx context.Context, input EnqueueInput) (*model.Notif
 	}
 	now := time.Now().UTC()
 	notification := &model.Notification{
-		ID: uuid.NewString(), DepartmentID: channel.DepartmentID,
+		ID: uuid.NewString(), ProjectID: channel.ProjectID, DepartmentID: channel.DepartmentID,
 		ChannelID: input.ChannelID, Title: input.Title, Message: input.Message,
 		Severity: input.Severity, Source: input.Source, SourceID: input.SourceID,
 		Status: model.NotificationQueued, CreatedAt: now, UpdatedAt: now,
@@ -235,8 +235,8 @@ func (s *Service) Enqueue(ctx context.Context, input EnqueueInput) (*model.Notif
 			return err
 		}
 		job, err := task.NewService(tx, s.maxAttempts).Create(ctx, task.CreateInput{
-			DepartmentID: notification.DepartmentID,
-			Kind:         "notification.dispatch", Subject: "edo.task.notification.dispatch",
+			ProjectID: notification.ProjectID, DepartmentID: notification.DepartmentID,
+			Kind: "notification.dispatch", Subject: "edo.task.notification.dispatch",
 			Payload:        TaskPayload{NotificationID: notification.ID},
 			IdempotencyKey: "notification:" + notification.ID, Idempotent: true,
 		})

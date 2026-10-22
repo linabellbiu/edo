@@ -73,39 +73,19 @@ func TestRolePermissionAndAtomicUserCreation(t *testing.T) {
 	if err != nil || len(effective) != 1 || effective[0] != PermissionRoleUpdate {
 		t.Fatalf("用户有效权限计算错误: permissions=%v err=%v", effective, err)
 	}
-	legacyRole, err := service.CreateRole(ctx, RoleInput{
-		Name: "legacy-identity", DisplayName: "旧版登录方式管理员", Permissions: []string{PermissionIdentityManage},
-	})
-	if err != nil {
-		t.Fatalf("旧权限创建角色失败: %v", err)
+	_, err = service.CreateRole(ctx, RoleInput{Name: "unsupported-role", DisplayName: "不支持聚合权限", Permissions: []string{PermissionIdentityManage}})
+	if !errors.Is(err, ErrInvalidPermission) {
+		t.Fatalf("旧权限必须拒绝，不能转换: %v", err)
 	}
-	wantLegacyRolePermissions := []string{PermissionIdentityCreate, PermissionIdentityUpdate}
-	if len(legacyRole.Permissions) != len(wantLegacyRolePermissions) ||
-		legacyRole.Permissions[0] != wantLegacyRolePermissions[0] || legacyRole.Permissions[1] != wantLegacyRolePermissions[1] {
-		t.Fatalf("旧角色权限未按真实 API 能力展开: got=%v want=%v", legacyRole.Permissions, wantLegacyRolePermissions)
+	if err := service.SetUserPermissions(ctx, user.ID, UserPermissionOverrides{Allow: []string{PermissionCredentialManage}}); !errors.Is(err, ErrInvalidUserPermissions) {
+		t.Fatalf("旧权限覆盖必须拒绝: %v", err)
 	}
-	if err := service.SetUserPermissions(ctx, user.ID, UserPermissionOverrides{
-		Allow: []string{PermissionRepositoryManage}, Deny: []string{PermissionRepositoryExecute},
-	}); !errors.Is(err, ErrInvalidUserPermissions) {
-		t.Fatalf("旧权限展开后的允许/拒绝冲突未被拒绝: %v", err)
-	}
-	if err := service.SetUserPermissions(ctx, user.ID, UserPermissionOverrides{
-		Allow: []string{PermissionCredentialManage, PermissionCredentialCreate},
-	}); err != nil {
-		t.Fatalf("旧权限覆盖写入失败: %v", err)
+	if err := service.SetUserPermissions(ctx, user.ID, UserPermissionOverrides{Allow: []string{PermissionCredentialCreate, PermissionCredentialCreate}}); err != nil {
+		t.Fatal(err)
 	}
 	overrides, err := service.UserPermissionOverrides(ctx, user.ID)
-	if err != nil {
-		t.Fatalf("读取展开后的用户权限覆盖失败: %v", err)
-	}
-	wantOverrides := []string{PermissionCredentialCreate, PermissionCredentialDelete, PermissionCredentialUpdate}
-	if len(overrides.Allow) != len(wantOverrides) {
-		t.Fatalf("旧用户权限未展开为新权限: got=%v want=%v", overrides.Allow, wantOverrides)
-	}
-	for index := range wantOverrides {
-		if overrides.Allow[index] != wantOverrides[index] {
-			t.Fatalf("旧用户权限展开结果错误: got=%v want=%v", overrides.Allow, wantOverrides)
-		}
+	if err != nil || !slices.Equal(overrides.Allow, []string{PermissionCredentialCreate}) {
+		t.Fatalf("精确权限应仅去重: %+v %v", overrides, err)
 	}
 
 	_, err = service.CreateUser(ctx, "orphan", "不应创建", "correct horse battery staple", []string{"missing-role"})
@@ -404,7 +384,7 @@ func TestDeleteUserCleansIdentityButKeepsSharedRoles(t *testing.T) {
 		t.Fatalf("初始化权限服务失败: %v", err)
 	}
 	role, err := service.CreateRole(ctx, RoleInput{
-		Name: "developer", DisplayName: "开发人员", Permissions: []string{PermissionDeliveryRead},
+		Name: "developer", DisplayName: "开发人员", Permissions: []string{"application.read"},
 	})
 	if err != nil {
 		t.Fatalf("创建角色失败: %v", err)
@@ -413,7 +393,7 @@ func TestDeleteUserCleansIdentityButKeepsSharedRoles(t *testing.T) {
 	if err != nil {
 		t.Fatalf("创建用户失败: %v", err)
 	}
-	if err := service.SetUserPermissions(ctx, user.ID, UserPermissionOverrides{Allow: []string{PermissionDeliveryUpdate}}); err != nil {
+	if err := service.SetUserPermissions(ctx, user.ID, UserPermissionOverrides{Allow: []string{"application.update"}}); err != nil {
 		t.Fatalf("创建用户权限覆盖失败: %v", err)
 	}
 	now := time.Now().UTC()

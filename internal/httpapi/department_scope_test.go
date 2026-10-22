@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"edo/internal/access"
+	"edo/internal/database"
 )
 
 func TestDepartmentScopeSeparatesRepositoryAndApplicationHTTPResources(t *testing.T) {
@@ -21,9 +22,9 @@ func TestDepartmentScopeSeparatesRepositoryAndApplicationHTTPResources(t *testin
 		access.PermissionRepositoryCreate,
 		access.PermissionRepositoryUpdate,
 		access.PermissionRepositoryDelete,
-		access.PermissionDeliveryRead,
-		access.PermissionDeliveryCreate,
-		access.PermissionDeliveryUpdate,
+		"application.read",
+		"application.create",
+		"application.update",
 	})
 	createUserForHTTPTest(t, router, adminCookie, "dept-a-owner", departmentA, []string{roleID})
 	createUserForHTTPTest(t, router, adminCookie, "dept-b-owner", departmentB, []string{roleID})
@@ -58,8 +59,9 @@ func TestDepartmentScopeSeparatesRepositoryAndApplicationHTTPResources(t *testin
 		t.Fatalf("跨部门修改应用未按不存在处理: status=%d body=%s", foreignApplicationUpdate.Code, foreignApplicationUpdate.Body.String())
 	}
 
-	assertListContainsAllResources(t, router, adminCookie, "/api/v1/repositories", repositoryA, repositoryB)
-	assertListContainsAllResources(t, router, adminCookie, "/api/v1/applications", applicationA, applicationB)
+	assertListContainsOnlyDepartmentResource(t, router, adminCookie, "/api/v1/repositories?project_id="+database.DefaultProjectID(departmentA), "repositories", repositoryA, repositoryB)
+	assertListContainsOnlyDepartmentResource(t, router, adminCookie, "/api/v1/repositories?project_id="+database.DefaultProjectID(departmentB), "repositories", repositoryB, repositoryA)
+	assertListContainsOnlyDepartmentResource(t, router, adminCookie, "/api/v1/applications?project_id="+database.DefaultProjectID(departmentA), "applications", applicationA, applicationB)
 }
 
 func TestDepartmentUserCreationMovementAndVisibilityHTTPPermissions(t *testing.T) {
@@ -213,7 +215,17 @@ func loginForDepartmentTest(t *testing.T, router http.Handler, username string) 
 	if response.Code != http.StatusOK || len(response.Result().Cookies()) == 0 {
 		t.Fatalf("用户 %s 登录失败: status=%d body=%s", username, response.Code, response.Body.String())
 	}
-	return response.Result().Cookies()[0]
+	cookie := response.Result().Cookies()[0]
+	var body struct {
+		User struct {
+			DepartmentID string `json:"department_id"`
+		}
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	testProjectScopes.Store(cookie.Value, database.DefaultProjectID(body.User.DepartmentID))
+	return cookie
 }
 
 func createDepartmentForHTTPTest(t *testing.T, router http.Handler, cookie *http.Cookie, name string) string {
@@ -250,6 +262,9 @@ func createRoleForHTTPTest(t *testing.T, router http.Handler, cookie *http.Cooki
 
 func createUserForHTTPTest(t *testing.T, router http.Handler, cookie *http.Cookie, username, departmentID string, roleIDs []string) string {
 	t.Helper()
+	if departmentID == "" {
+		departmentID = database.DefaultDepartmentID
+	}
 	response := performJSONRequest(t, router, http.MethodPost, "/api/v1/users", map[string]any{
 		"username": username, "nickname": username, "password": "correct horse battery staple",
 		"department_id": departmentID, "role_ids": roleIDs,
@@ -261,6 +276,39 @@ func createUserForHTTPTest(t *testing.T, router http.Handler, cookie *http.Cooki
 	}
 	if response.Code != http.StatusCreated || json.Unmarshal(response.Body.Bytes(), &payload) != nil || payload.User.ID == "" {
 		t.Fatalf("创建测试用户 %s 失败: status=%d body=%s", username, response.Code, response.Body.String())
+	}
+
+	// 测试用户显式加入初始项目，平台角色不会自动赋予项目能力。
+	if len(roleIDs) > 0 {
+		roles := performJSONRequest(t, router, http.MethodGet, "/api/v1/roles", nil, cookie)
+		var roleList struct {
+			Roles []struct {
+				ID          string
+				Permissions []string
+			}
+		}
+		if err := json.Unmarshal(roles.Body.Bytes(), &roleList); err != nil {
+			t.Fatal(err)
+		}
+		var codes []string
+		for _, r := range roleList.Roles {
+			for _, id := range roleIDs {
+				if r.ID == id {
+					for _, code := range r.Permissions {
+						if access.ProjectPermission(code) {
+							codes = append(codes, code)
+						}
+					}
+				}
+			}
+		}
+		if len(codes) > 0 {
+			projectRole := createRoleForHTTPTest(t, router, cookie, "project-"+username, codes)
+			assigned := performJSONRequest(t, router, http.MethodPut, "/api/v1/projects/"+database.DefaultProjectID(departmentID)+"/members/"+payload.User.ID, map[string]string{"role_id": projectRole}, cookie)
+			if assigned.Code != 204 {
+				t.Fatal(assigned.Code, assigned.Body.String())
+			}
+		}
 	}
 	return payload.User.ID
 }

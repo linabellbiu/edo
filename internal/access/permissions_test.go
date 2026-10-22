@@ -22,8 +22,8 @@ func TestPermissionCatalogUsesReadableFineGrainedActions(t *testing.T) {
 		if _, ok := seen[legacy]; ok {
 			t.Fatalf("旧权限不应出现在权限目录: %s", legacy)
 		}
-		if !IsKnown(legacy) {
-			t.Fatalf("旧权限应在迁移期间保持可识别: %s", legacy)
+		if IsKnown(legacy) {
+			t.Fatalf("运行时不得接受旧权限: %s", legacy)
 		}
 		if len(ExpandLegacyPermission(legacy)) == 0 {
 			t.Fatalf("旧权限缺少迁移目标: %s", legacy)
@@ -45,7 +45,6 @@ func TestPermissionCatalogContainsOnlyImplementedCapabilities(t *testing.T) {
 		PermissionRepositoryExecute, PermissionRepositorySecretRead,
 		PermissionCredentialRead, PermissionCredentialCreate, PermissionCredentialUpdate, PermissionCredentialDelete,
 		PermissionDNSRead, PermissionDNSCreate, PermissionDNSUpdate, PermissionDNSDelete, PermissionDNSExecute,
-		PermissionDeliveryRead, PermissionDeliveryCreate, PermissionDeliveryUpdate, PermissionDeliveryDelete, PermissionDeliveryExecute,
 		PermissionDeploymentRead, PermissionDeploymentCreate, PermissionDeploymentUpdate, PermissionDeploymentDelete,
 		PermissionDeploymentExecute, PermissionDeploymentReview,
 		PermissionClusterRead, PermissionClusterCreate, PermissionClusterUpdate, PermissionClusterDelete, PermissionClusterExecute,
@@ -57,6 +56,14 @@ func TestPermissionCatalogContainsOnlyImplementedCapabilities(t *testing.T) {
 		PermissionSchedulerRead, PermissionSchedulerCreate, PermissionSchedulerUpdate,
 	}
 
+	want = append(want, "organization.read", "organization.update", "project.read", "project.create", "project.update", "project.delete", "project.member.update",
+		"application.read", "application.create", "application.update", "application.execute",
+		"workflow.read", "workflow.create", "workflow.update", "workflow.delete", "workflow.execute",
+		"build_plan.read", "build_plan.create", "build_plan.update", "build_plan.delete",
+		"image_registry.read", "image_registry.create", "image_registry.execute",
+		"deployment_plan.read", "deployment_plan.create", "deployment_plan.update", "deployment_plan.delete",
+		"release_plan.read", "release_plan.create", "release_plan.update", "release_plan.delete", "release_plan.execute",
+		"pipeline_run.read", "pipeline_run.execute", "artifact.read", "artifact.create")
 	got := make(map[string]struct{}, len(catalog))
 	for _, item := range Catalog() {
 		got[item.Code] = struct{}{}

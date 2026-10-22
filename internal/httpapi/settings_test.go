@@ -55,7 +55,7 @@ func TestBuiltinVariableCatalogIsReadableAndContainsNoRuntimeValues(t *testing.T
 	}
 
 	role := performJSONRequest(t, router, http.MethodPost, "/api/v1/roles", map[string]any{
-		"name": "builtin-variable-reader", "display_name": "内置变量查看员", "permissions": []string{"delivery.read"},
+		"name": "builtin-variable-reader", "display_name": "内置变量查看员", "permissions": []string{"workflow.read"},
 	}, adminCookie)
 	var rolePayload struct {
 		Role struct {
@@ -72,13 +72,14 @@ func TestBuiltinVariableCatalogIsReadableAndContainsNoRuntimeValues(t *testing.T
 	if user.Code != http.StatusCreated {
 		t.Fatalf("创建内置变量查看用户失败: status=%d body=%s", user.Code, user.Body.String())
 	}
+	joinCreatedUserProjectForTest(t, router, adminCookie, user, []string{rolePayload.Role.ID})
 	readerLogin := performJSONRequest(t, router, http.MethodPost, "/api/v1/auth/login", map[string]string{
 		"username": "builtin-variable-reader", "password": "correct horse battery staple",
 	}, nil)
 	readerCookie := readerLogin.Result().Cookies()[0]
 	readerResponse := performJSONRequest(t, router, http.MethodGet, "/api/v1/settings/builtin-variables", nil, readerCookie)
 	if readerResponse.Code != http.StatusOK {
-		t.Fatalf("具有 delivery.read 的用户无法读取内置变量目录: status=%d body=%s", readerResponse.Code, readerResponse.Body.String())
+		t.Fatalf("具有 workflow.read 的用户无法读取内置变量目录: status=%d body=%s", readerResponse.Code, readerResponse.Body.String())
 	}
 }
 

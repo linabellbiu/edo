@@ -75,6 +75,7 @@ type ReleaseWorkflow struct {
 	Source                   WorkflowNode             `gorm:"serializer:json;type:text;not null" json:"source"`
 	Stages                   []WorkflowStage          `gorm:"serializer:json;type:text;not null" json:"stages"`
 	DepartmentID             string                   `gorm:"type:varchar(36);not null;default:'00000000-0000-0000-0000-000000000001';index" json:"department_id"`
+	ProjectID                string                   `gorm:"type:varchar(36);not null;default:'';index" json:"project_id"`
 	CreatedBy                string                   `gorm:"type:varchar(36);not null;index" json:"created_by"`
 	UpdatedBy                string                   `gorm:"type:varchar(36);not null;index" json:"updated_by"`
 	CreatedAt                time.Time                `gorm:"not null" json:"created_at"`
@@ -90,13 +91,14 @@ func (ReleaseWorkflow) TableName() string { return "release_workflows" }
 type ReleaseWorkflowTemplate struct {
 	ID            string          `gorm:"type:varchar(36);primaryKey" json:"id"`
 	SchemaVersion uint16          `gorm:"not null;default:1" json:"schema_version"`
-	Name          string          `gorm:"type:varchar(128);not null;uniqueIndex:ux_release_workflow_templates_department_name,priority:2" json:"name"`
+	Name          string          `gorm:"type:varchar(128);not null;uniqueIndex:ux_release_workflow_templates_department_name,priority:2;uniqueIndex:ux_release_workflow_templates_project_name,priority:2" json:"name"`
 	Description   string          `gorm:"type:varchar(500);not null;default:''" json:"description"`
 	Revision      uint64          `gorm:"not null;default:1" json:"revision"`
 	IsActive      bool            `gorm:"not null;default:false;index" json:"is_active"`
 	Source        WorkflowNode    `gorm:"serializer:json;type:text;not null" json:"source"`
 	Stages        []WorkflowStage `gorm:"serializer:json;type:text;not null" json:"stages"`
 	DepartmentID  string          `gorm:"type:varchar(36);not null;default:'00000000-0000-0000-0000-000000000001';index;uniqueIndex:ux_release_workflow_templates_department_name,priority:1" json:"department_id"`
+	ProjectID     string          `gorm:"type:varchar(36);not null;default:'';index;uniqueIndex:ux_release_workflow_templates_project_name,priority:1" json:"project_id"`
 	CreatedBy     string          `gorm:"type:varchar(36);not null;index" json:"created_by"`
 	UpdatedBy     string          `gorm:"type:varchar(36);not null;index" json:"updated_by"`
 	CreatedAt     time.Time       `gorm:"not null" json:"created_at"`

@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 	"time"
 
@@ -247,6 +248,8 @@ func (authTestWorkflowRuntimeManager) PrepareScriptRuntimeImage(_ context.Contex
 	return dockerengine.ScriptRuntimeImageStatus{Image: image, ImageID: "sha256:test-runtime", Installed: true}, nil
 }
 
+var testProjectScopes sync.Map
+
 func performJSONRequest(t *testing.T, handler http.Handler, method, path string, payload any, cookie *http.Cookie) *httptest.ResponseRecorder {
 	t.Helper()
 	var body io.Reader
@@ -259,6 +262,15 @@ func performJSONRequest(t *testing.T, handler http.Handler, method, path string,
 	}
 	request := httptest.NewRequest(method, path, body)
 	request.Header.Set("Content-Type", "application/json")
+	if request.URL.Query().Get("project_id") == "" {
+		projectID := database.DefaultProjectID(database.DefaultDepartmentID)
+		if cookie != nil {
+			if value, ok := testProjectScopes.Load(cookie.Value); ok {
+				projectID = value.(string)
+			}
+		}
+		request.Header.Set("X-EDO-Project-ID", projectID)
+	}
 	if cookie != nil {
 		request.AddCookie(cookie)
 	}

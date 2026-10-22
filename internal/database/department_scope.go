@@ -17,6 +17,7 @@ const DefaultDepartmentID = "00000000-0000-0000-0000-000000000001"
 var ErrDepartmentScopeRequired = errors.New("当前账户尚未分配部门")
 
 type DepartmentScope struct {
+	ProjectID      string
 	UserID         string
 	DepartmentID   string
 	AllDepartments bool
@@ -113,5 +114,5 @@ func registerDepartmentScope(db *gorm.DB) error {
 	if err := db.Callback().Row().Before("gorm:row").Register("edo:department_row", filter); err != nil {
 		return fmt.Errorf("注册部门行查询范围失败: %w", err)
 	}
-	return nil
+	return registerProjectScope(db)
 }

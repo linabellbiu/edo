@@ -122,7 +122,7 @@ const password = reactive({ current: "", next: "", confirm: "" }),
   });
 let migrationTimer = 0;
 const canConfig = computed(() => auth.canAny(["config.read"])),
-  canViewVariables = computed(() => auth.canAny(["config.read", "delivery.read"])),
+  canViewVariables = computed(() => auth.canAny(["config.read", "application.read","workflow.read","build_plan.read","deployment_plan.read"])),
   canUpdate = computed(() => auth.canAny(["config.update"])),
   canExecute = computed(() => auth.canAny(["config.execute"])),
   canIdentity = computed(() => auth.canAny(["identity.read"])),

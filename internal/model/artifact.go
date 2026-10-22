@@ -41,6 +41,7 @@ type BuildRun struct {
 	ErrorCode      string               `gorm:"type:varchar(64);not null;default:''" json:"error_code,omitempty"`
 	ErrorMessage   string               `gorm:"type:varchar(255);not null;default:''" json:"error_message,omitempty"`
 	DepartmentID   string               `gorm:"type:varchar(36);not null;default:'00000000-0000-0000-0000-000000000001';index" json:"department_id"`
+	ProjectID      string               `gorm:"type:varchar(36);not null;default:'';index" json:"project_id"`
 	CreatedBy      string               `gorm:"type:varchar(36);not null;index" json:"created_by"`
 	CreatedAt      time.Time            `gorm:"not null;index" json:"created_at"`
 	UpdatedAt      time.Time            `gorm:"not null" json:"updated_at"`
@@ -93,6 +94,7 @@ type Artifact struct {
 	RuntimeID       string              `gorm:"type:varchar(36);not null;default:'';index" json:"runtime_id,omitempty"`
 	LocalImageID    string              `gorm:"type:varchar(71);not null;default:''" json:"local_image_id,omitempty"`
 	DepartmentID    string              `gorm:"type:varchar(36);not null;default:'00000000-0000-0000-0000-000000000001';index" json:"department_id"`
+	ProjectID       string              `gorm:"type:varchar(36);not null;default:'';index" json:"project_id"`
 	CreatedBy       string              `gorm:"type:varchar(36);not null;index" json:"created_by"`
 	CreatedAt       time.Time           `gorm:"not null;index" json:"created_at"`
 	UpdatedAt       time.Time           `gorm:"not null" json:"updated_at"`

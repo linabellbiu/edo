@@ -30,6 +30,7 @@ func dialRealtime(t *testing.T, serverURL, path, protocol string, cookie *http.C
 	header := http.Header{}
 	if cookie != nil {
 		header.Set("Cookie", cookie.String())
+		header.Set("X-EDO-Project-ID", database.DefaultProjectID(database.DefaultDepartmentID))
 	}
 	dialer := websocket.Dialer{Subprotocols: []string{protocol}}
 	connection, response, err := dialer.Dial("ws"+strings.TrimPrefix(serverURL, "http")+path, header)
@@ -119,17 +120,18 @@ func TestStateAndLogsWebSocketEnforceDepartmentAndPermission(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	grantProjectMembershipForTest(t, deps, user)
 	login := performJSONRequest(t, router, http.MethodPost, "/api/v1/auth/login", map[string]string{"username": "ws-reader", "password": "correct horse battery staple"}, nil)
 	cookie := login.Result().Cookies()[0]
 	server := httptest.NewServer(router)
 	defer server.Close()
-	header := http.Header{"Cookie": []string{cookie.String()}}
+	header := http.Header{"Cookie": []string{cookie.String()}, "X-EDO-Project-ID": []string{database.DefaultProjectID(database.DefaultDepartmentID)}}
 	dialer := websocket.Dialer{Subprotocols: []string{stateSubprotocol}}
 	_, response, err := dialer.Dial("ws"+strings.TrimPrefix(server.URL, "http")+"/api/v1/events/ws", header)
 	if err == nil || response.StatusCode != http.StatusForbidden {
 		t.Fatalf("无权限订阅未被拒绝: %v %v", response, err)
 	}
-	if err := deps.Access.SetUserPermissions(context.Background(), user.ID, access.UserPermissionOverrides{Allow: []string{access.PermissionDeliveryRead}}); err != nil {
+	if err := deps.Access.SetUserPermissions(context.Background(), user.ID, access.UserPermissionOverrides{Allow: []string{"application.read", "pipeline_run.read"}}); err != nil {
 		t.Fatal(err)
 	}
 	connection := dialRealtime(t, server.URL, "/api/v1/events/ws", stateSubprotocol, cookie)
@@ -153,7 +155,7 @@ func TestStateAndLogsWebSocketEnforceDepartmentAndPermission(t *testing.T) {
 	if err == nil || response.StatusCode != http.StatusNotFound {
 		t.Fatalf("跨部门日志未在握手前拒绝: %v %v", response, err)
 	}
-	if err := deps.Access.SetUserPermissions(context.Background(), user.ID, access.UserPermissionOverrides{Deny: []string{access.PermissionDeliveryRead}}); err != nil {
+	if err := deps.Access.SetUserPermissions(context.Background(), user.ID, access.UserPermissionOverrides{Deny: []string{"application.read", "pipeline_run.read"}}); err != nil {
 		t.Fatal(err)
 	}
 	deps.Realtime.Changed(current, "applications", "")

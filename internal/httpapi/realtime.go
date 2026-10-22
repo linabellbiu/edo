@@ -13,6 +13,7 @@ import (
 	"github.com/redis/go-redis/v9"
 
 	"edo/internal/access"
+	"edo/internal/database"
 	"edo/internal/model"
 	"edo/internal/realtime"
 )
@@ -40,12 +41,13 @@ func realtimeMutation(bus *realtime.Bus) gin.HandlerFunc {
 }
 
 // 长连接继续检查会话、权限与部门；调动部门或注销后不沿用握手时的权限。
-func streamAuthorization(deps Dependencies, c *gin.Context, permission string) func() bool {
+func streamAuthorization(deps Dependencies, c *gin.Context, permissions ...string) func() bool {
 	initial, ok := currentUser(c)
 	if !ok {
 		return func() bool { return false }
 	}
 	identity := *initial
+	initialScope, _ := database.DepartmentScopeFromContext(c.Request.Context())
 	token, _ := c.Cookie(deps.AuthConfig.CookieName)
 	return func() bool {
 		ctx, cancel := context.WithTimeout(c.Request.Context(), 3*time.Second)
@@ -57,9 +59,22 @@ func streamAuthorization(deps Dependencies, c *gin.Context, permission string) f
 			if err == nil && (user.ID != identity.ID || !user.IsActive || session.AuthVersion != user.AuthVersion || user.DepartmentID != identity.DepartmentID || user.IsSuperuser != identity.IsSuperuser) {
 				err = errors.New("实时会话的用户或部门已变化")
 			}
+			if err == nil && initialScope.ProjectID != "" {
+				project, scopeErr := deps.Access.ResolveProject(ctx, user, initialScope.ProjectID)
+				if scopeErr != nil {
+					err = scopeErr
+				} else if !project.IsActive {
+					err = errors.New("项目已停用")
+				}
+			}
 			if err == nil {
 				var allowed bool
-				allowed, err = deps.Access.HasPermission(ctx, user, permission)
+				for _, permission := range permissions {
+					allowed, err = deps.Access.HasPermission(ctx, user, permission)
+					if err != nil || allowed {
+						break
+					}
+				}
 				if err == nil && !allowed {
 					err = errors.New("实时会话的读取权限已撤销")
 				}
@@ -80,7 +95,7 @@ func streamState(deps Dependencies) gin.HandlerFunc {
 			return
 		}
 		user, _ := currentUser(c)
-		subscription, err := deps.Realtime.SubscribeState(c.Request.Context(), user.DepartmentID, user.IsSuperuser)
+		subscription, err := deps.Realtime.SubscribeProject(c.Request.Context())
 		if err != nil {
 			deps.Logger.Warn("订阅状态通知失败", "operation", "realtime_subscribe", "request_id", requestIDFrom(c), "err", err)
 			writeError(c, http.StatusServiceUnavailable, "realtime_unavailable", "实时状态暂不可用，已使用定时同步")
@@ -97,7 +112,7 @@ func streamState(deps Dependencies) gin.HandlerFunc {
 		logger := deps.Logger.With("operation", "realtime_state_stream", "request_id", requestIDFrom(c), "user_id", user.ID)
 		done := readSocketControl(connection, logger)
 		defer closeSocketNormally(connection, done)
-		authorized := streamAuthorization(deps, c, access.PermissionDeliveryRead)
+		authorized := streamAuthorization(deps, c, "application.read", "pipeline_run.read", "release_plan.read", "deployment_plan.read", access.PermissionDeploymentRead)
 		write := func(event stateEvent) error {
 			err := connection.SetWriteDeadline(time.Now().Add(5 * time.Second))
 			if err == nil {
@@ -152,7 +167,7 @@ func streamState(deps Dependencies) gin.HandlerFunc {
 				}
 				resources := make([]string, 0, len(dirty))
 				for resource := range dirty {
-					permission := access.PermissionDeliveryRead
+					permission := map[string]string{"applications": "application.read", "application_sync": "application.read", "pipeline_runs": "pipeline_run.read", "release_plans": "release_plan.read", "deployment_plans": "deployment_plan.read"}[resource]
 					if resource == "deployments" {
 						permission = access.PermissionDeploymentRead
 					}

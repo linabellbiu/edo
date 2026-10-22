@@ -285,7 +285,7 @@ func (s *Service) Request(ctx context.Context, actorID string, input RequestInpu
 	}
 	now := time.Now().UTC()
 	record := &model.DeploymentRecord{
-		ID: uuid.NewString(), DepartmentID: target.DepartmentID,
+		ID: uuid.NewString(), ProjectID: target.ProjectID, DepartmentID: target.DepartmentID,
 		PipelineRunID: input.PipelineRunID, WorkflowNodeID: input.WorkflowNodeID,
 		ArtifactID: input.ArtifactID, TargetID: target.ID, Operation: model.DeploymentRelease,
 		Image: image, Status: model.DeploymentQueued, RequestedBy: actorID, CreatedAt: now, UpdatedAt: now,
@@ -398,7 +398,7 @@ func (s *Service) requestAndRun(
 	}
 	now := time.Now().UTC()
 	record := &model.DeploymentRecord{
-		ID: uuid.NewString(), DepartmentID: target.DepartmentID, IdempotencyKey: &idempotencyKey,
+		ID: uuid.NewString(), ProjectID: target.ProjectID, DepartmentID: target.DepartmentID, IdempotencyKey: &idempotencyKey,
 		PipelineRunID: input.PipelineRunID, ApplicationID: strings.TrimSpace(input.ApplicationID), WorkflowNodeID: input.WorkflowNodeID,
 		ArtifactID: input.ArtifactID, TargetID: target.ID, Operation: model.DeploymentRelease,
 		Image: image, ImageDisplay: strings.TrimSpace(input.ImageDisplay),
@@ -482,7 +482,7 @@ func (s *Service) requestCommandAndRun(
 	}
 	now := time.Now().UTC()
 	record := &model.DeploymentRecord{
-		ID: uuid.NewString(), DepartmentID: target.DepartmentID, IdempotencyKey: &idempotencyKey,
+		ID: uuid.NewString(), ProjectID: target.ProjectID, DepartmentID: target.DepartmentID, IdempotencyKey: &idempotencyKey,
 		PipelineRunID: input.PipelineRunID, ApplicationID: strings.TrimSpace(input.ApplicationID), WorkflowNodeID: input.WorkflowNodeID,
 		ArtifactID: input.ArtifactID, TargetID: target.ID, Operation: model.DeploymentRelease, Status: model.DeploymentQueued,
 		RequestedBy: actorID, CreatedAt: now, UpdatedAt: now,
@@ -675,8 +675,8 @@ func (s *Service) Rollback(ctx context.Context, sourceID, actorID string) (*mode
 	}
 	now := time.Now().UTC()
 	prototype := &model.DeploymentRecord{
-		DepartmentID: source.DepartmentID,
-		TargetID:     source.TargetID, Operation: model.DeploymentRollback,
+		ProjectID: source.ProjectID, DepartmentID: source.DepartmentID,
+		TargetID: source.TargetID, Operation: model.DeploymentRollback,
 		Image: image, ExpectedImageID: expectedImageID, Status: model.DeploymentQueued,
 		DeploymentPlanID: source.DeploymentPlanID, DeploymentPlanKind: source.DeploymentPlanKind,
 		DockerConfig: source.DockerConfig, DockerConfigDigest: source.DockerConfigDigest,
@@ -1233,8 +1233,8 @@ func executionRegistryAuth(execution *commandExecution) dockerengine.RegistryAut
 
 func (s *Service) enqueue(ctx context.Context, tx *gorm.DB, record *model.DeploymentRecord, kind string) error {
 	job, err := task.NewService(tx, 1).Create(ctx, task.CreateInput{
-		DepartmentID: record.DepartmentID,
-		Kind:         kind, Subject: "edo.task." + kind, Payload: TaskPayload{DeploymentID: record.ID},
+		ProjectID: record.ProjectID, DepartmentID: record.DepartmentID,
+		Kind: kind, Subject: "edo.task." + kind, Payload: TaskPayload{DeploymentID: record.ID},
 		IdempotencyKey: "deployment:" + record.ID,
 	})
 	if err != nil {

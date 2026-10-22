@@ -439,6 +439,10 @@ func runServer(ctx context.Context, cfg config.Config, logger *slog.Logger, runt
 		return errors.New("权限服务初始化失败")
 	}
 	auditService := audit.NewService(resources.Database)
+	if err := accessService.EnsureProjectRoles(serviceCtx); err != nil {
+		logger.Error("初始化项目角色失败", "operation", "project_roles_bootstrap", "err", err)
+		return errors.New("项目角色初始化失败")
+	}
 	configurationService := configuration.NewService(resources.Database, secretManager)
 	runtimeLogSettings, err := configurationService.GetRuntimeLoggingSettings(
 		serviceCtx, cfg.LogLevel, true,

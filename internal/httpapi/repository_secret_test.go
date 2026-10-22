@@ -39,6 +39,7 @@ func TestWebhookSecretRequiresPermissionAndCanBeReadRepeatedly(t *testing.T) {
 	if user.Code != http.StatusCreated || json.Unmarshal(user.Body.Bytes(), &userPayload) != nil {
 		t.Fatalf("创建仓库用户失败: status=%d body=%s", user.Code, user.Body.String())
 	}
+	joinCreatedUserProjectForTest(t, router, adminCookie, user, []string{rolePayload.Role.ID})
 	userLogin := performJSONRequest(t, router, http.MethodPost, "/api/v1/auth/login", map[string]string{
 		"username": "repository-user", "password": "correct horse battery staple",
 	}, nil)

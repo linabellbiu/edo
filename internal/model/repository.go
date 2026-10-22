@@ -22,7 +22,7 @@ const (
 
 type GitRepository struct {
 	ID                      string      `gorm:"type:varchar(36);primaryKey" json:"id"`
-	Name                    string      `gorm:"type:varchar(128);not null;uniqueIndex:ux_git_repositories_department_name,priority:2" json:"name"`
+	Name                    string      `gorm:"type:varchar(128);not null;uniqueIndex:ux_git_repositories_department_name,priority:2;uniqueIndex:ux_git_repositories_project_name,priority:2" json:"name"`
 	Provider                GitProvider `gorm:"type:varchar(16);not null;index" json:"provider"`
 	CloneURL                string      `gorm:"type:varchar(1024);not null" json:"clone_url"`
 	DefaultBranch           string      `gorm:"type:varchar(255);not null;default:''" json:"default_branch"`
@@ -36,6 +36,7 @@ type GitRepository struct {
 	AllowInsecureHTTP       bool        `gorm:"not null;default:false" json:"allow_insecure_http"`
 	IsActive                bool        `gorm:"not null;default:true;index" json:"is_active"`
 	DepartmentID            string      `gorm:"type:varchar(36);not null;default:'00000000-0000-0000-0000-000000000001';index;uniqueIndex:ux_git_repositories_department_name,priority:1" json:"department_id"`
+	ProjectID               string      `gorm:"type:varchar(36);not null;default:'';index;uniqueIndex:ux_git_repositories_project_name,priority:1" json:"project_id"`
 	CreatedBy               string      `gorm:"type:varchar(36);not null;index" json:"created_by"`
 	CreatedAt               time.Time   `gorm:"not null" json:"created_at"`
 	UpdatedAt               time.Time   `gorm:"not null" json:"updated_at"`

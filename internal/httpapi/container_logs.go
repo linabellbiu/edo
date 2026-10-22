@@ -28,9 +28,10 @@ type dockerContainerLogService interface {
 }
 
 type containerLogHandler struct {
-	docker dockerContainerLogService
-	audits *audit.Service
-	logger *slog.Logger
+	streamAuth func(*gin.Context) func() bool
+	docker     dockerContainerLogService
+	audits     *audit.Service
+	logger     *slog.Logger
 }
 
 type containerLogEvent struct {
@@ -111,6 +112,10 @@ func (h containerLogHandler) stream(c *gin.Context) {
 			_ = writer.event(containerLogEvent{Type: "complete", Message: "日志流已结束"})
 			return
 		case <-ping.C:
+			if h.streamAuth != nil && !h.streamAuth(c)() {
+				cancel()
+				return
+			}
 			if err := writer.ping(); err != nil {
 				cancel()
 				return

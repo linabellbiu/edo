@@ -121,10 +121,11 @@ const buildImagePathPreview=computed(()=>{
 const copy:Record<Section,{description:string}>={applications:{description:'一个应用对应一个代码仓库，可以拥有多条独立流水线；每条流水线分别定义触发、构建和部署流程。'},repositories:{description:'统一管理 Git 来源和可选 Webhook；凭据来自当前用户自己的令牌。'},'build-plans':{description:'保存可复用的 Dockerfile 或脚本构建配置。'},'image-registries':{description:'管理 Harbor、Docker Hub 或其他 OCI Registry；保存前必须完成真实登录测试。'},'release-plans':{description:'发布计划组织人工批量发布；流水线运行与发布记录独立展示。'}}
 const releaseView=computed(()=>route.query.view==='runs'?'runs':'plans')
 const requestedRunID=computed(()=>typeof route.query.run==='string'?route.query.run:'')
-const canCreate=computed(()=>props.section==='repositories'?auth.canAny(['repository.create']):auth.canAny(['delivery.create']))
-const canUpdate=computed(()=>props.section==='repositories'?auth.canAny(['repository.update']):auth.canAny(['delivery.update']))
-const canDelete=computed(()=>props.section==='repositories'?auth.canAny(['repository.delete']):auth.canAny(['delivery.delete']))
-const canExecute=computed(()=>props.section==='repositories'?auth.canAny(['repository.execute']):auth.canAny(['delivery.execute']))
+const sectionPermission=computed(()=>props.section==='build-plans'?'build_plan':props.section==='image-registries'?'image_registry':props.section==='release-plans'?(route.query.view==='runs'?'pipeline_run':'release_plan'):'application')
+const canCreate=computed(()=>props.section==='repositories'?auth.canAny(['repository.create']):auth.canAny([`${sectionPermission.value}.create`]))
+const canUpdate=computed(()=>props.section==='repositories'?auth.canAny(['repository.update']):auth.canAny([`${sectionPermission.value}.update`]))
+const canDelete=computed(()=>props.section==='repositories'?auth.canAny(['repository.delete']):auth.canAny([`${sectionPermission.value}.delete`]))
+const canExecute=computed(()=>props.section==='repositories'?auth.canAny(['repository.execute']):auth.canAny([`${sectionPermission.value}.execute`]))
 const canSaveCurrent=computed(()=>creatingApplicationRepository.value?auth.canAny(['repository.create']):editingID.value?canUpdate.value:canCreate.value)
 const releasePlanAddApplicationTarget=computed(()=>{
  const plan=releasePlans.value.find(item=>item.id===releasePlanAddApplicationPlanID.value)
@@ -699,13 +700,13 @@ function changeRunPage(pagination:{current?:number;pageSize?:number}){
  if(requestedRunID.value)void router.replace({path:'/release-plans',query:{view:'runs'}})
 }
 
-async function refresh(){const locatedRun=runs.value.find(item=>item.id===requestedRunID.value);loading.value=true;try{const requests=await Promise.all([auth.canAny(['delivery.read'])?client.get<{applications:Application[]}>('/applications'):null,auth.canAny(['repository.read'])?client.get<{repositories:Repository[]}>('/repositories'):null,auth.canAny(['credential.read'])?client.get<{credentials:Credential[]}>('/git-credentials'):null,auth.canAny(['delivery.read'])?client.get<{build_plans:BuildPlan[]}>('/build-plans'):null,auth.canAny(['delivery.read'])?client.get<{image_registries:Registry[]}>('/image-registries'):null,auth.canAny(['delivery.read'])?client.get<{pipeline_runs:Run[]}>('/pipeline-runs?limit=200'):null,auth.canAny(['delivery.read'])?client.get<{release_plans:ReleasePlan[]}>('/release-plans'):null,canReadDeployments.value?client.get<{deployments:DeploymentRecord[]}>('/deployments?limit=200'):null,auth.canAny(['delivery.read'])?client.get<{deployment_plans:DeploymentPlan[]}>('/deployment-plans'):null,auth.canAny(['delivery.read'])?client.get<{workflow_templates:WorkflowTemplate[]}>('/workflow-templates'):null]);applications.value=requests[0]?.data.applications||[];repositories.value=requests[1]?.data.repositories||[];credentials.value=requests[2]?.data.credentials||[];buildPlans.value=requests[3]?.data.build_plans||[];registries.value=requests[4]?.data.image_registries||[];runs.value=requests[5]?.data.pipeline_runs||[];if(locatedRun&&!runs.value.some(item=>item.id===locatedRun.id))runs.value=[locatedRun,...runs.value];releasePlans.value=requests[6]?.data.release_plans||[];deployments.value=requests[7]?.data.deployments||[];deploymentPlans.value=requests[8]?.data.deployment_plans||[];workflowTemplates.value=requests[9]?.data.workflow_templates||[];if(requestedRunID.value)void revealRequestedRun()}catch(error){message.error(apiErrorMessage(error))}finally{loading.value=false}}
+async function refresh(){const locatedRun=runs.value.find(item=>item.id===requestedRunID.value);loading.value=true;try{const requests=await Promise.all([auth.canAny(['application.read'])?client.get<{applications:Application[]}>('/applications'):null,auth.canAny(['repository.read'])?client.get<{repositories:Repository[]}>('/repositories'):null,auth.canAny(['credential.read'])?client.get<{credentials:Credential[]}>('/git-credentials'):null,auth.canAny(['build_plan.read'])?client.get<{build_plans:BuildPlan[]}>('/build-plans'):null,auth.canAny(['image_registry.read'])?client.get<{image_registries:Registry[]}>('/image-registries'):null,auth.canAny(['pipeline_run.read'])?client.get<{pipeline_runs:Run[]}>('/pipeline-runs?limit=200'):null,auth.canAny(['release_plan.read'])?client.get<{release_plans:ReleasePlan[]}>('/release-plans'):null,canReadDeployments.value?client.get<{deployments:DeploymentRecord[]}>('/deployments?limit=200'):null,auth.canAny(['deployment_plan.read'])?client.get<{deployment_plans:DeploymentPlan[]}>('/deployment-plans'):null,auth.canAny(['workflow.read'])?client.get<{workflow_templates:WorkflowTemplate[]}>('/workflow-templates'):null]);applications.value=requests[0]?.data.applications||[];repositories.value=requests[1]?.data.repositories||[];credentials.value=requests[2]?.data.credentials||[];buildPlans.value=requests[3]?.data.build_plans||[];registries.value=requests[4]?.data.image_registries||[];runs.value=requests[5]?.data.pipeline_runs||[];if(locatedRun&&!runs.value.some(item=>item.id===locatedRun.id))runs.value=[locatedRun,...runs.value];releasePlans.value=requests[6]?.data.release_plans||[];deployments.value=requests[7]?.data.deployments||[];deploymentPlans.value=requests[8]?.data.deployment_plans||[];workflowTemplates.value=requests[9]?.data.workflow_templates||[];if(requestedRunID.value)void revealRequestedRun()}catch(error){message.error(apiErrorMessage(error))}finally{loading.value=false}}
 let stateRefreshing=false
 async function refreshApplicationState(){
- if(stateRefreshing||!auth.canAny(['delivery.read']))return
+ if(stateRefreshing||!auth.canAny([`${sectionPermission.value}.read`]))return
  stateRefreshing=true
  try{
- const [applicationResult,runResult,deploymentResult,deploymentPlanResult]=await Promise.all([client.get<{applications:Application[]}>('/applications'),client.get<{pipeline_runs:Run[]}>('/pipeline-runs?limit=200'),canReadDeployments.value?client.get<{deployments:DeploymentRecord[]}>('/deployments?limit=200'):null,client.get<{deployment_plans:DeploymentPlan[]}>('/deployment-plans')])
+ const [applicationResult,runResult,deploymentResult,deploymentPlanResult]=await Promise.all([auth.canAny(['application.read'])?client.get<{applications:Application[]}>('/applications'):Promise.resolve({data:{applications:[] as Application[]}}),auth.canAny(['pipeline_run.read'])?client.get<{pipeline_runs:Run[]}>('/pipeline-runs?limit=200'):Promise.resolve({data:{pipeline_runs:[] as Run[]}}),canReadDeployments.value?client.get<{deployments:DeploymentRecord[]}>('/deployments?limit=200'):null,auth.canAny(['deployment_plan.read'])?client.get<{deployment_plans:DeploymentPlan[]}>('/deployment-plans'):Promise.resolve({data:{deployment_plans:[] as DeploymentPlan[]}})])
   applications.value=applicationResult.data.applications||[]
   runs.value=runResult.data.pipeline_runs||[]
   if(deploymentResult)deployments.value=deploymentResult.data.deployments||[]
@@ -720,12 +721,12 @@ function refreshVisibleDeploymentRuntime(){
  for(const record of visibleRecords)void loadDeploymentRuntime(record,true)
 }
 async function refreshReleasePlanState(){
- if(stateRefreshing||!auth.canAny(['delivery.read']))return
+ if(stateRefreshing||!auth.canAny([`${sectionPermission.value}.read`]))return
  stateRefreshing=true
  try{
   const [appResult,runResult,planResult]=await Promise.all([
-   client.get<{applications:Application[]}>('/applications'),
-   client.get<{pipeline_runs:Run[]}>('/pipeline-runs?limit=200'),
+   auth.canAny(['application.read'])?client.get<{applications:Application[]}>('/applications'):Promise.resolve({data:{applications:[] as Application[]}}),
+   auth.canAny(['pipeline_run.read'])?client.get<{pipeline_runs:Run[]}>('/pipeline-runs?limit=200'):Promise.resolve({data:{pipeline_runs:[] as Run[]}}),
    client.get<{release_plans:ReleasePlan[]}>('/release-plans'),
   ])
   applications.value=appResult.data.applications||[]
@@ -734,11 +735,11 @@ async function refreshReleasePlanState(){
  }catch{}finally{stateRefreshing=false}
 }
 async function refreshRunState(){
- if(stateRefreshing||!auth.canAny(['delivery.read']))return
+ if(stateRefreshing||!auth.canAny([`${sectionPermission.value}.read`]))return
  stateRefreshing=true
  try{
   const locatedRun=runs.value.find(item=>item.id===requestedRunID.value)
-  runs.value=(await client.get<{pipeline_runs:Run[]}>('/pipeline-runs?limit=200')).data.pipeline_runs||[]
+  runs.value=(await (auth.canAny(['pipeline_run.read'])?client.get<{pipeline_runs:Run[]}>('/pipeline-runs?limit=200'):Promise.resolve({data:{pipeline_runs:[] as Run[]}}))).data.pipeline_runs||[]
   if(locatedRun&&!runs.value.some(item=>item.id===locatedRun.id))runs.value=[locatedRun,...runs.value]
   if(requestedRunID.value)void revealRequestedRun()
  }catch{}finally{stateRefreshing=false}
@@ -941,7 +942,7 @@ function registryRequestPayload(){return {...registryForm,endpoint:dockerHubRegi
 async function loadArtifacts(){
  const buildPlanID=selectedBuildPlanID.value
  const applicationID=artifactApplicationID.value
- if(props.section!=='build-plans'||buildPlanView.value!=='artifacts'||!buildPlanID||!auth.canAny(['delivery.read'])){artifacts.value=[];return}
+ if(props.section!=='build-plans'||buildPlanView.value!=='artifacts'||!buildPlanID||!auth.canAny(['artifact.read'])){artifacts.value=[];return}
  const requestKey=`${buildPlanID}:${applicationID}`
  artifactLoading.value=true
  try{
@@ -1005,7 +1006,7 @@ async function testRegistry(){testing.value=true;registryTested.value=false;try{
 async function action(path:string){try{await client.post(path,undefined,{timeout:35000});await refresh()}catch(error){message.error(apiErrorMessage(error))}}
 function canStopRun(run:Run){return ['detected','ready','blocked','awaiting_approval','running'].includes(run.status)}
 function confirmStopRun(run:Run){
- if(!auth.canAny(['delivery.execute'])||!canStopRun(run)||run.stage==='stopping'||stoppingRunID.value)return
+ if(!auth.canAny(['pipeline_run.execute'])||!canStopRun(run)||run.stage==='stopping'||stoppingRunID.value)return
  const runID=run.id
  Modal.confirm({
   title:t('pipelineStop.title'),content:t('pipelineStop.hint'),okText:t('pipelineStop.confirm'),cancelText:t('pipelineStop.cancel'),okType:'danger',
@@ -1486,7 +1487,7 @@ function queueDeliveryRefresh(syncOnly=false){
   if(!applicationSyncOnly)lastDeliverySync=Date.now()
   if(props.section==='applications'&&applicationSyncOnly){
    stateRefreshing=true
-   try{applications.value=(await client.get<{applications:Application[]}>('/applications')).data.applications||[]}catch{}finally{stateRefreshing=false}
+   try{applications.value=(await (auth.canAny(['application.read'])?client.get<{applications:Application[]}>('/applications'):Promise.resolve({data:{applications:[] as Application[]}}))).data.applications||[]}catch{}finally{stateRefreshing=false}
   }
   else if(props.section==='applications')await refreshApplicationState()
   else if(props.section==='release-plans'&&releaseView.value==='runs')await refreshRunState()
@@ -1500,7 +1501,7 @@ function onDeliveryPageVisible(){
 function connectDeliveryEvents(){
  stopDeliveryEvents?.();stopDeliveryEvents=undefined;deliveryConnected=false
  clearTimeout(deliveryRefreshTimer);deliveryRefreshTimer=undefined
- if(!['applications','release-plans'].includes(props.section)||!auth.canAny(['delivery.read']))return
+ if(!['applications','release-plans'].includes(props.section)||!auth.canAny([`${sectionPermission.value}.read`]))return
  stopDeliveryEvents=subscribeDeliveryEvents({
   event:event=>{
    if(event.type==='resync'){queueDeliveryRefresh();return}
@@ -1713,10 +1714,12 @@ onBeforeUnmount(()=>{stopDeliveryEvents?.();clearTimeout(deliveryRefreshTimer);r
  :artifactLoading="artifactLoading"
  :artifactUploading="artifactUploading"
  :artifactDownloadingID="artifactDownloadingID"
+ :can-read-artifacts="auth.canAny(['artifact.read'])"
+ :can-upload-artifacts="auth.canAny(['artifact.create'])"
  :mutationID="resourceMutationID"
- :can-create="auth.canAny(['delivery.create'])"
- :can-update="auth.canAny(['delivery.update'])"
- :can-delete="auth.canAny(['delivery.delete'])"
+ :can-create="auth.canAny([`${sectionPermission}.create`])"
+ :can-update="auth.canAny([`${sectionPermission}.update`])"
+ :can-delete="auth.canAny([`${sectionPermission}.delete`])"
  @select-plan="selectBuildPlan"
  @select-view="buildPlanView=$event"
  @update:selectedApplicationID="artifactApplicationID=$event"
@@ -1821,10 +1824,10 @@ onBeforeUnmount(()=>{stopDeliveryEvents?.();clearTimeout(deliveryRefreshTimer);r
             </dl>
             <footer class="run-actions">
               <a-button @click="openLogs(run)">查看实时日志</a-button>
-              <a-button v-if="canStopRun(run)&&auth.canAny(['delivery.execute'])" danger :loading="stoppingRunID===run.id||run.stage==='stopping'" :disabled="!!stoppingRunID||run.stage==='stopping'" @click="confirmStopRun(run)">{{ t(run.stage==='stopping'?'pipelineStop.stopping':'pipelineStop.confirm') }}</a-button>
-              <a-button v-if="run.status==='failed'&&auth.canAny(['delivery.execute'])" type="primary" @click="openRetry(run)">重试流水线</a-button>
+              <a-button v-if="canStopRun(run)&&auth.canAny(['pipeline_run.execute'])" danger :loading="stoppingRunID===run.id||run.stage==='stopping'" :disabled="!!stoppingRunID||run.stage==='stopping'" @click="confirmStopRun(run)">{{ t(run.stage==='stopping'?'pipelineStop.stopping':'pipelineStop.confirm') }}</a-button>
+              <a-button v-if="run.status==='failed'&&auth.canAny(['pipeline_run.execute'])" type="primary" @click="openRetry(run)">重试流水线</a-button>
               <a-button v-if="run.status==='awaiting_approval'&&auth.canAny(['deployment.review'])" type="primary" @click="action(`/pipeline-runs/${run.id}/approve`)">通过审核</a-button>
-              <a-button v-if="run.stage==='manual'&&auth.canAny(['delivery.execute'])" type="primary" @click="action(`/pipeline-runs/${run.id}/advance`)">放行并继续</a-button>
+              <a-button v-if="run.stage==='manual'&&auth.canAny(['pipeline_run.execute'])" type="primary" @click="action(`/pipeline-runs/${run.id}/advance`)">放行并继续</a-button>
             </footer>
           </section>
         </article>
@@ -1838,10 +1841,10 @@ onBeforeUnmount(()=>{stopDeliveryEvents?.();clearTimeout(deliveryRefreshTimer);r
  :applications="applications"
  :pipeline-runs="runs"
  :loading="loading"
- :can-create="auth.canAny(['delivery.create'])"
- :can-update="auth.canAny(['delivery.update'])"
- :can-delete="auth.canAny(['delivery.delete'])"
- :can-execute="auth.canAny(['delivery.execute'])"
+ :can-create="auth.canAny([`${sectionPermission}.create`])"
+ :can-update="auth.canAny([`${sectionPermission}.update`])"
+ :can-delete="auth.canAny([`${sectionPermission}.delete`])"
+ :can-execute="auth.canAny([`${sectionPermission}.execute`])"
  :can-read-deployments="canReadDeployments"
  :activePlanID="activeReleasePlanID"
  :runnable-counts="releasePlanRunnableCounts"
@@ -1887,8 +1890,8 @@ onBeforeUnmount(()=>{stopDeliveryEvents?.();clearTimeout(deliveryRefreshTimer);r
      <span class="workflow-association-copy"><strong>{{ workflowDisplayName(workflow) }}</strong><small>{{ workflowOriginLabel(workflow) }}</small></span>
      <span class="workflow-association-actions">
       <a-tag :color="workflow.is_active?'green':'default'">{{ workflow.is_active?'已启用':'未启用' }}</a-tag>
-      <a-button v-if="auth.canAny(['delivery.update'])" size="small" @click="editApplicationWorkflow(editingID,workflow.id)">编辑</a-button>
-      <a-button v-if="auth.canAny(['delivery.delete'])" size="small" danger :loading="workflowRemovalID===workflow.id" :disabled="Boolean(workflowRemovalID)&&workflowRemovalID!==workflow.id" @click="removeApplicationWorkflow(workflow)"><Trash2/>{{ workflow.workflow_template_id?'解除':'删除' }}</a-button>
+      <a-button v-if="auth.canAny(['workflow.update'])" size="small" @click="editApplicationWorkflow(editingID,workflow.id)">编辑</a-button>
+      <a-button v-if="auth.canAny(['workflow.delete'])" size="small" danger :loading="workflowRemovalID===workflow.id" :disabled="Boolean(workflowRemovalID)&&workflowRemovalID!==workflow.id" @click="removeApplicationWorkflow(workflow)"><Trash2/>{{ workflow.workflow_template_id?'解除':'删除' }}</a-button>
      </span>
     </div>
    </div>
@@ -2012,7 +2015,7 @@ onBeforeUnmount(()=>{stopDeliveryEvents?.();clearTimeout(deliveryRefreshTimer);r
  </div>
  <a-alert v-if="registryTested" type="success" show-icon message="镜像仓库登录测试成功"/>
 </template>
-</a-form><template #footer><div class="drawer-actions"><a-button :disabled="saving||testing" @click="closeForm">{{ creatingApplicationRepository?t('applicationForm.backToApplication'):'取消' }}</a-button><a-button v-if="formSection==='repositories'&&auth.canAny(['repository.execute'])" :loading="testing" :disabled="saving" @click="testRepository">测试连接</a-button><a-button v-if="props.section==='image-registries'&&auth.canAny(['delivery.execute'])" :loading="testing" @click="testRegistry">测试登录</a-button><a-button v-if="canSaveCurrent" type="primary" :loading="saving" :disabled="testing||(props.section==='image-registries'&&!registryTested)" @click="save">保存</a-button></div></template></a-drawer>
+</a-form><template #footer><div class="drawer-actions"><a-button :disabled="saving||testing" @click="closeForm">{{ creatingApplicationRepository?t('applicationForm.backToApplication'):'取消' }}</a-button><a-button v-if="formSection==='repositories'&&auth.canAny(['repository.execute'])" :loading="testing" :disabled="saving" @click="testRepository">测试连接</a-button><a-button v-if="props.section==='image-registries'&&auth.canAny([`${sectionPermission}.execute`])" :loading="testing" @click="testRegistry">测试登录</a-button><a-button v-if="canSaveCurrent" type="primary" :loading="saving" :disabled="testing||(props.section==='image-registries'&&!registryTested)" @click="save">保存</a-button></div></template></a-drawer>
 <GitCredentialDrawer v-model:open="credentialCreation.open" :provider="credentialCreation.provider" :auth-type="credentialCreation.authType" lock-context @saved="repositoryCredentialSaved"/>
 <a-modal v-model:open="manualOpen" :title="t('manualRun.title')" :confirm-loading="saving" :ok-button-props="{disabled:!manualApplicationID||!manualWorkflowID}" :ok-text="t('manualRun.chooseVersion')" @ok="nextManual" @cancel="resetManualFlow"><a-form layout="vertical"><a-form-item :label="t('manualRun.application')"><a-select :value="manualApplicationID" :options="manualApplications.map(item=>({value:item.id,label:item.name}))" @change="updateManualApplication(String($event))"/></a-form-item><a-form-item label="流水线" required><a-select v-model:value="manualWorkflowID" :options="applicationManualWorkflows(manualApplications.find(item=>item.id===manualApplicationID)).map(item=>({value:item.id,label:workflowDisplayName(item)}))"/></a-form-item></a-form></a-modal>
 <a-modal v-model:open="commitOpen" :title="t('manualRun.versionTitle')" :confirm-loading="saving" :ok-button-props="{disabled:!selectedSource||(manualExecutionMode==='code'?!selectedRef:!selectedArtifactID)}" :ok-text="t('manualRun.confirm')" @ok="executeCommit" @cancel="resetManualFlow">

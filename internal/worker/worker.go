@@ -214,7 +214,7 @@ func (w *Worker) process(runContext context.Context, message queueMessage) {
 		return
 	}
 	jobContext := database.WithDepartmentScope(runContext, database.DepartmentScope{
-		DepartmentID: job.DepartmentID,
+		ProjectID: job.ProjectID, DepartmentID: job.DepartmentID,
 	})
 
 	if attempt > job.MaxAttempts {
@@ -447,8 +447,8 @@ func (w *Worker) finishFailure(ctx context.Context, queueMessage queueMessage, m
 			}
 		}
 		return tx.Create(&model.OutboxEvent{
-			DepartmentID: job.DepartmentID,
-			EventID:      uuid.NewString(), AggregateID: job.ID, Subject: w.nats.DeadSubject,
+			ProjectID: job.ProjectID, DepartmentID: job.DepartmentID,
+			EventID: uuid.NewString(), AggregateID: job.ID, Subject: w.nats.DeadSubject,
 			Payload: datatypes.JSON(payload), NextAttemptAt: failedAt, CreatedAt: failedAt,
 		}).Error
 	})

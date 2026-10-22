@@ -160,12 +160,12 @@ let stageListElement: HTMLElement | null = null
 const taskListElements = new Map<string, HTMLElement>()
 const taskSortables = new Map<string, Sortable>()
 
-const canCreate = computed(() => auth.canAny(['delivery.create']))
-const canUpdate = computed(() => auth.canAny(['delivery.update']))
-const canExecute = computed(() => auth.canAny(['delivery.execute']))
+const canCreate = computed(() => auth.canAny(['workflow.create']))
+const canUpdate = computed(() => auth.canAny(['workflow.update']))
+const canExecute = computed(() => auth.canAny(['workflow.execute']))
 const canEdit = computed(() => canUpdate.value && !saving.value)
-const canCreateBuildPlan = computed(() => auth.canAny(['delivery.create']))
-const canCreateDeploymentPlan = computed(() => auth.canAny(['delivery.create']))
+const canCreateBuildPlan = computed(() => auth.canAny(['build_plan.create']))
+const canCreateDeploymentPlan = computed(() => auth.canAny(['deployment_plan.create']))
 const canReadNotificationChannels = computed(() => auth.canAny(['notification.read']))
 const canCreateNotificationChannels = computed(() => auth.canAny(['notification.create']))
 const canTestNotificationChannels = computed(() => auth.canAny(['notification.execute']))
@@ -404,10 +404,10 @@ async function loadResources() {
       ? client.get<{ channels: NotificationChannel[] }>('/notification-channels')
       : Promise.resolve({ data: { channels: [] as NotificationChannel[] } })
     const [applicationResult, templateResult, buildPlanResult, deploymentPlanResult, notificationChannelResult] = await Promise.all([
-      client.get<{ applications: ApplicationRecord[] }>('/applications'),
+      auth.canAny(['application.read']) ? client.get<{ applications: ApplicationRecord[] }>('/applications') : Promise.resolve({data:{applications:[]}}),
       client.get<{ workflow_templates: Workflow[] }>('/workflow-templates'),
-      client.get<{ build_plans: PipelineBuildPlan[] }>('/build-plans'),
-      client.get<{ deployment_plans: DeploymentPlan[] }>('/deployment-plans'),
+      auth.canAny(['build_plan.read']) ? client.get<{ build_plans: PipelineBuildPlan[] }>('/build-plans') : Promise.resolve({data:{build_plans:[]}}),
+      auth.canAny(['deployment_plan.read']) ? client.get<{ deployment_plans: DeploymentPlan[] }>('/deployment-plans') : Promise.resolve({data:{deployment_plans:[]}}),
       notificationChannelRequest,
     ])
     applications.value = applicationResult.data.applications || []

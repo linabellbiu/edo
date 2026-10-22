@@ -73,8 +73,9 @@ type rolePermissionsRequest struct {
 
 type listedRoleResponse struct {
 	access.RoleWithPermissions
-	InUse              bool   `json:"in_use"`
-	VisibleMemberCount *int64 `json:"visible_member_count,omitempty"`
+	InUse                     bool   `json:"in_use"`
+	VisibleMemberCount        *int64 `json:"visible_member_count,omitempty"`
+	VisibleProjectMemberCount *int64 `json:"visible_project_member_count,omitempty"`
 }
 
 type managedUserResponse struct {
@@ -403,6 +404,8 @@ func (h accessHandler) listRoles(c *gin.Context) {
 		if canReadUsers {
 			count := roles[i].VisibleMemberCount
 			item.VisibleMemberCount = &count
+			projectCount := roles[i].VisibleProjectMemberCount
+			item.VisibleProjectMemberCount = &projectCount
 		}
 		result = append(result, item)
 	}

@@ -226,9 +226,9 @@ const kindOptions: Array<{ value: PlanKind; label: string; hint: string }> = [
 ]
 const kindNames: Record<PlanKind, string> = Object.fromEntries(kindOptions.map(item => [item.value, item.label])) as Record<PlanKind, string>
 function kindName(plan: DeploymentPlan) { return kindNames[plan.kind] }
-const canCreate = computed(() => auth.canAny(['delivery.create']))
-const canUpdate = computed(() => auth.canAny(['delivery.update']))
-const canDelete = computed(() => auth.canAny(['delivery.delete']))
+const canCreate = computed(() => auth.canAny(['deployment_plan.create']))
+const canUpdate = computed(() => auth.canAny(['deployment_plan.update']))
+const canDelete = computed(() => auth.canAny(['deployment_plan.delete']))
 const platform = computed<Platform>(() => planPlatform(form.kind))
 const canReadHosts = computed(() => auth.canAny(['cluster.read', 'deployment.read']))
 const canReadEnvironments = computed(() => auth.canAny(['deployment.read']))

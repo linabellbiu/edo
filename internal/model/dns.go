@@ -28,13 +28,14 @@ const (
 // DNSProviderAccount 保存 DNS 厂商接入配置。公开配置与加密凭据分开存储，接口不得返回密文。
 type DNSProviderAccount struct {
 	ID                     string         `gorm:"type:varchar(36);primaryKey"`
-	Name                   string         `gorm:"type:varchar(128);not null;uniqueIndex:ux_dns_provider_accounts_department_name,priority:2"`
+	Name                   string         `gorm:"type:varchar(128);not null;uniqueIndex:ux_dns_provider_accounts_department_name,priority:2;uniqueIndex:ux_dns_provider_accounts_project_name,priority:2"`
 	Provider               DNSProvider    `gorm:"type:varchar(32);not null;index"`
 	PublicConfig           datatypes.JSON `gorm:"type:text;not null"`
 	SecretCiphertext       string         `gorm:"type:text;not null"`
 	ConfiguredSecretFields datatypes.JSON `gorm:"type:text;not null"`
 	IsActive               bool           `gorm:"not null;default:true;index"`
 	DepartmentID           string         `gorm:"type:varchar(36);not null;default:'00000000-0000-0000-0000-000000000001';index;uniqueIndex:ux_dns_provider_accounts_department_name,priority:1"`
+	ProjectID              string         `gorm:"type:varchar(36);not null;default:'';index;uniqueIndex:ux_dns_provider_accounts_project_name,priority:1" json:"project_id"`
 	CreatedBy              string         `gorm:"type:varchar(36);not null;index"`
 	CreatedAt              time.Time      `gorm:"not null"`
 	UpdatedAt              time.Time      `gorm:"not null"`
@@ -50,6 +51,7 @@ type DNSDomain struct {
 	Description  string             `gorm:"type:varchar(512);not null;default:''"`
 	IsActive     bool               `gorm:"not null;default:true;index"`
 	DepartmentID string             `gorm:"type:varchar(36);not null;default:'00000000-0000-0000-0000-000000000001';index"`
+	ProjectID    string             `gorm:"type:varchar(36);not null;default:'';index" json:"project_id"`
 	CreatedBy    string             `gorm:"type:varchar(36);not null;index"`
 	CreatedAt    time.Time          `gorm:"not null"`
 	UpdatedAt    time.Time          `gorm:"not null"`
