@@ -31,7 +31,8 @@ function socketHarness() {
     setTimeout: (callback, delay) => { timers.set(++nextTimer, {callback, delay}); return nextTimer },
     clearTimeout: id => timers.delete(id),
   }
-  const socketModule = loadSource('../src/utils/liveSocket.ts', {}, globals)
+  const socketUrl = loadSource('../src/utils/socketUrl.ts', {}, globals)
+  const socketModule = loadSource('../src/utils/liveSocket.ts', { './socketUrl': socketUrl }, globals)
   const stop = socketModule.openLiveSocket({path: '/api/v1/events/ws', protocol: 'edo-state-v1', onState: value => states.push(value), onEvent: value => { events.push(value); return value.type !== 'complete' }, onDenied: () => denied++})
   assert.equal(new URL(sockets[0].url).searchParams.get('project_id'),'project-test')
   function fireTimer(match) {

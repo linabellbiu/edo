@@ -1,3 +1,5 @@
+import { projectSocketUrl } from './socketUrl'
+
 export type LiveSocketState = 'connecting' | 'connected' | 'disconnected' | 'stopped'
 
 export function openLiveSocket(options: {
@@ -68,10 +70,7 @@ export function openLiveSocket(options: {
   function connect() {
     if (stopped) return
     options.onState('connecting')
-    const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:'
-    const project = typeof localStorage === 'undefined' ? '' : localStorage.getItem('edo.project')
-    const path = options.path + (project ? (options.path.includes('?') ? '&' : '?') + 'project_id=' + encodeURIComponent(project) : '')
-    const current = new WebSocket(`${protocol}//${location.host}${path}`, options.protocol)
+    const current = new WebSocket(projectSocketUrl(options.path), options.protocol)
     socket = current
     watchConnection(10_000)
     current.onopen = () => {

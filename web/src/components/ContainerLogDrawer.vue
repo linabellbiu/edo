@@ -4,6 +4,7 @@ import { FitAddon } from '@xterm/addon-fit'
 import { Terminal } from '@xterm/xterm'
 import { RefreshCw, Trash2 } from 'lucide-vue-next'
 import { useI18n } from 'vue-i18n'
+import { projectSocketUrl } from '@/utils/socketUrl'
 
 const props = defineProps<{ open: boolean; title: string; path: string }>()
 const emit = defineEmits<{ 'update:open': [value: boolean] }>()
@@ -58,15 +59,8 @@ async function connect() {
 
   let closed = false
   let completed = false
-  const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:'
-  const separator = props.path.includes('?') ? '&' : '?'
-  const query = new URLSearchParams({
-    tail: String(tail.value),
-    follow: String(follow.value),
-    timestamps: 'true',
-  })
   const socket = new WebSocket(
-    `${protocol}//${location.host}${props.path}${separator}${query}`,
+    projectSocketUrl(props.path, { tail: tail.value, follow: follow.value, timestamps: true }),
     'edo-container-logs-v1',
   )
   const decoder = new TextDecoder()
