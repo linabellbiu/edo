@@ -4,14 +4,15 @@ import { useI18n } from 'vue-i18n'
 import ResourceRowActions from './ResourceRowActions.vue'
 import type { KubeObject, KubeType } from '@/api/kubernetes'
 const props=defineProps<{object:KubeObject;type:KubeType;can:(permission:string)=>boolean;loading?:boolean;disabled?:boolean;inDrawer?:boolean}>()
-const emit=defineEmits<{details:[];edit:[];action:[action:string];remove:[];removeNode:[];scale:[];logs:[];terminal:[];pods:[]}>()
+const emit=defineEmits<{details:[];edit:[];action:[action:string];remove:[];removeNode:[];scale:[];logs:[];terminal:[];pods:[];link:[]}>()
 const {t}=useI18n()
 const executable=computed(()=>props.can('kubernetes.workload.execute'))
 const controller=computed(()=>props.type.group==='workloads'&&props.type.resource!=='pods')
 const editable=computed(()=>props.type.update&&props.can(`${props.type.permission}.update`))
 const removable=computed(()=>props.type.delete&&props.can(`${props.type.permission}.delete`))
 const nodeActions=computed(()=>props.type.resource==='nodes'&&(props.can('kubernetes.node.update')||props.can('kubernetes.node.delete')))
-const more=computed(()=>editable.value&&!props.inDrawer||removable.value||nodeActions.value||controller.value&&executable.value||props.type.resource==='pods'&&props.can('terminal.open'))
+const linkable=computed(()=>props.type.resource==='deployments'&&['application.read','application.update','workflow.create','workflow.read','deployment_plan.create','deployment_plan.read','build_plan.read','cluster.read','deployment.read'].every(permission=>props.can(permission)))
+const more=computed(()=>linkable.value||editable.value&&!props.inDrawer||removable.value||nodeActions.value||controller.value&&executable.value||props.type.resource==='pods'&&props.can('terminal.open'))
 </script>
 <template>
   <ResourceRowActions :more="more" :loading="loading">
@@ -20,6 +21,7 @@ const more=computed(()=>editable.value&&!props.inDrawer||removable.value||nodeAc
     <a-button v-if="type.resource==='pods'" size="small" :disabled="disabled" @click="emit('logs')">{{ t('k8s.logs') }}</a-button>
     <a-button v-if="inDrawer&&editable" size="small" :disabled="disabled" @click="emit('edit')">{{ t('k8s.edit') }}</a-button>
     <template #more>
+      <a-menu-item v-if="linkable" :disabled="disabled" @click="emit('link')">{{ t('delivery.link') }}</a-menu-item>
       <a-menu-item v-if="editable&&!inDrawer" :disabled="disabled" @click="emit('edit')">{{ t('k8s.edit') }}</a-menu-item>
       <a-menu-item v-if="type.resource==='nodes'&&can('kubernetes.node.update')" :disabled="disabled" @click="emit('action',object.spec?.unschedulable?'uncordon':'cordon')">{{ t(object.spec?.unschedulable?'k8s.uncordon':'k8s.cordon') }}</a-menu-item>
       <a-menu-item v-if="['deployments','statefulsets','daemonsets'].includes(type.resource)&&executable" :disabled="disabled" @click="emit('action','restart')">{{ t('k8s.restart') }}</a-menu-item>

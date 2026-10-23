@@ -1231,6 +1231,9 @@ func TestExternalDatabaseMigration(t *testing.T) {
 				!db.Migrator().HasTable(&model.Artifact{}) {
 				t.Fatalf("%s 核心表不完整", test.name)
 			}
+			if !db.Migrator().HasTable(&model.DeliveryDefault{}) || !db.Migrator().HasIndex(&model.DeliveryDefault{}, "ux_delivery_default") {
+				t.Fatalf("%s 发布默认项表或项目类型唯一索引未创建", test.name)
+			}
 			assertStructuredWorkflowSchema(t, db, test.name)
 			if !db.Migrator().HasColumn(&model.DeploymentRecord{}, "idempotency_key") ||
 				!db.Migrator().HasIndex(&model.DeploymentRecord{}, "IdempotencyKey") {

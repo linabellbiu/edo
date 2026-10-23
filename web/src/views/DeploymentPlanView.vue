@@ -8,6 +8,7 @@ import { useRoute, useRouter } from 'vue-router'
 import client from '@/api/client'
 import { environmentIDsOf, listEnvironments, listHosts, type InfrastructureEnvironment, type InfrastructureHost } from '@/api/infrastructure'
 import { apiErrorMessage, type ResourceRecord } from '@/api/resources'
+import DeliveryDefaultsDrawer from '@/components/DeliveryDefaultsDrawer.vue'
 import PageToolbar from '@/components/PageToolbar.vue'
 import ResourceDetailDrawer from '@/components/ResourceDetailDrawer.vue'
 import ResourceRowActions from '@/components/ResourceRowActions.vue'
@@ -181,6 +182,11 @@ watch(() => ({ ids: plans.value.map(plan => plan.id), requested: route.query.pla
   if (typeof requested !== 'string' || !requested) revealedPlanID = ''
   else if (requested !== revealedPlanID && revealPlan(requested)) revealedPlanID = requested
 })
+const defaultsOpen = ref(false)
+const defaultPlanID = ref('')
+const defaultKind = ref<PlanKind>('docker')
+const canDefaults = computed(() => auth.canAny(['workflow.read']) && auth.canAny(['deployment_plan.read']))
+function openDefaults(plan?: DeploymentPlan) { defaultPlanID.value = plan?.id || ''; defaultKind.value = plan?.kind || 'docker'; defaultsOpen.value = true }
 const formOpen = ref(false)
 const editingID = ref('')
 const loading = ref(false)
@@ -192,6 +198,7 @@ const deploymentDrafts: Partial<Record<PlanKind, DeploymentDraft>> = {}
 const defaultComposeYAML = 'services:\n  app:\n    restart: unless-stopped\n'
 
 const form = reactive({
+  reusable: true,
   name: '',
   description: '',
   kind: 'docker' as PlanKind,
@@ -243,7 +250,7 @@ const environmentOptions = computed(() => environments.value
   .map(environment => ({ value: environment.id, label: environment.name })))
 const environmentHosts = computed(() => hosts.value
   .filter(host => host.is_active && environmentIDsOf(host).includes(form.environment_id)))
-const availableKindOptions = computed(() => kindOptions.filter(option => environmentSupportsKind(option.value)))
+const availableKindOptions = computed(() => form.reusable ? kindOptions : kindOptions.filter(option => environmentSupportsKind(option.value)))
 const executionHosts = computed(() => environmentHosts.value.filter(host => hostSupportsKind(host, form.kind)))
 const kubernetesRuntimeOptions = computed(() => {
   const seen = new Set<string>()
@@ -397,7 +404,7 @@ function updatedTime(plan: DeploymentPlan) {
 
 function reset() {
   Object.assign(form, {
-    name: '', description: '', kind: 'docker', script: '', compose_yaml: defaultComposeYAML,
+    reusable: true, name: '', description: '', kind: 'docker', script: '', compose_yaml: defaultComposeYAML,
     environment_id: '', host_id: '', working_directory: '', runtime_id: '',
     namespace: 'default', workload_name: '', container_name: '', timeout_seconds: 600,
     docker_port_mappings: [emptyDockerPort()], docker_environment_variables: [], docker_volume_mounts: [],
@@ -453,6 +460,7 @@ function edit(plan: DeploymentPlan) {
     protocol: item.protocol === 'udp' ? 'udp' as const : 'tcp' as const,
   }))
   Object.assign(form, {
+    reusable: !plan.deployment_target_id,
     name: plan.name,
     description: plan.description || '',
     kind: plan.kind,
@@ -621,6 +629,7 @@ function changeEnvironment(environmentID: unknown) {
 }
 
 function reconcileExecutionTarget() {
+  if (form.reusable) return
 	if (!form.environment_id) {
 		form.host_id = ''
 		form.runtime_id = ''
@@ -744,6 +753,11 @@ function validateDockerConfig() {
 function validate() {
   reconcileExecutionTarget()
   if (!form.name.trim()) return '请输入方案名称'
+  if (form.reusable) {
+    if (form.kind === 'script' && !form.script.trim()) return '请输入部署脚本'
+    if (form.kind === 'compose' && (!form.workload_name.trim() || !form.compose_yaml.trim())) return '请输入 Compose 服务名称和 YAML'
+    return form.kind === 'docker' ? validateDockerConfig() : ''
+  }
   if (!form.environment_id) return t('environment.deployment.environmentRequired')
   if (!availableKindOptions.value.some(option => option.value === form.kind)) return '当前环境不支持所选部署方式'
   if (executionTargetError.value) return executionTargetError.value
@@ -765,6 +779,7 @@ function validate() {
 }
 
 function savedTargetMatchesForm(plan: DeploymentPlan) {
+  if (form.reusable) return !plan.deployment_target_id
   const target = plan.deployment_target
   if (!plan.deployment_target_id || !target || target.id !== plan.deployment_target_id || target.platform !== platform.value) return false
   if (target.environment_id !== form.environment_id || target.host_id !== form.host_id) return false
@@ -867,7 +882,8 @@ async function save() {
       service_name: form.kind === 'docker' || form.kind === 'compose' ? form.workload_name.trim() : '',
       docker_config: form.kind === 'docker' ? dockerConfigPayload() : {},
       timeout_seconds: form.timeout_seconds,
-      deployment_target: target,
+      reusable: form.reusable,
+      deployment_target: form.reusable ? undefined : target,
     }
     const response = editingID.value
       ? await client.put<{ deployment_plan: DeploymentPlan }>(`/deployment-plans/${editingID.value}`, payload)
@@ -903,6 +919,7 @@ onMounted(refresh)
 <template>
   <section>
     <PageToolbar :description="t('deploymentList.description')">
+      <a-button v-if="canDefaults" @click="openDefaults()">{{ t('delivery.defaults') }}</a-button>
       <a-button :loading="loading" @click="refresh"><RefreshCw :size="15" />刷新</a-button>
       <a-button v-if="canCreate" type="primary" @click="create"><Plus :size="15" />新建部署方案</a-button>
     </PageToolbar>
@@ -922,15 +939,15 @@ onMounted(refresh)
             </a-tooltip>
             <small v-else>{{ t('planList.descriptionEmpty') }}</small>
           </div>
-          <a-tag v-else-if="column.key === 'status'" :color="plan.is_active && plan.deployment_target ? 'success' : 'default'">
-            {{ plan.deployment_target ? (plan.is_active ? t('planList.enabled') : t('planList.disabled')) : t('planList.incomplete') }}
+          <a-tag v-else-if="column.key === 'status'" :color="plan.is_active ? 'success' : 'default'">
+            {{ plan.is_active ? t('planList.enabled') : t('planList.disabled') }}
           </a-tag>
           <div v-else-if="column.key === 'kind'" class="deployment-kind"><RuntimeBrandIcon :kind="planPlatform(plan.kind)" /><span>{{ kindName(plan) }}</span></div>
           <div v-else-if="column.key === 'environment'" class="plan-cell">
             <a-tooltip :title="environmentName(plan)" :mouse-enter-delay="tooltipDelay"><strong>{{ environmentName(plan) }}</strong></a-tooltip>
           </div>
           <div v-else-if="column.key === 'destination'" class="plan-cell">
-            <a-tooltip :title="destinationName(plan)" :mouse-enter-delay="tooltipDelay"><strong>{{ destinationName(plan) }}</strong></a-tooltip>
+            <a-tooltip :title="destinationName(plan)" :mouse-enter-delay="tooltipDelay"><strong>{{ plan.deployment_target_id ? destinationName(plan) : t('delivery.reusable') }}</strong></a-tooltip>
             <a-tooltip :title="destinationAddress(plan)" :mouse-enter-delay="tooltipDelay"><small>{{ destinationAddress(plan) }}</small></a-tooltip>
           </div>
           <div v-else-if="column.key === 'configuration'" class="plan-cell deployment-configuration">
@@ -945,6 +962,7 @@ onMounted(refresh)
             <a-button size="small" @click="openDetails(plan)">{{ t('resourceList.details') }}</a-button>
             <a-button v-if="canUpdate" size="small" @click="edit(plan)">{{ t('planList.edit') }}</a-button>
             <template #more>
+              <a-menu-item v-if="canDefaults && canUpdate && auth.canAny(['workflow.update']) && plan.is_active" @click="openDefaults(plan)">{{ t('delivery.setDefault') }}</a-menu-item>
               <a-menu-item v-if="canUpdate" :disabled="mutatingID === plan.id" @click="confirmPlanStatus(plan)">{{ plan.is_active ? t('planList.disable') : t('planList.enable') }}</a-menu-item>
               <a-menu-item v-if="canDelete" danger :disabled="mutatingID === plan.id" @click="confirmDeletePlan(plan)">{{ t('planList.remove') }}</a-menu-item>
             </template>
@@ -977,11 +995,12 @@ onMounted(refresh)
           <div class="form-grid">
             <a-form-item label="方案名称" required><a-input v-model:value="form.name" placeholder="例如：生产后端部署" /></a-form-item>
             <a-form-item label="最长执行时间（秒）"><a-input-number v-model:value="form.timeout_seconds" :min="30" :max="3600" /></a-form-item>
+            <a-form-item class="span-2" :help="t('delivery.reusableHint')"><a-checkbox v-model:checked="form.reusable" :disabled="Boolean(editingID && plans.find(item=>item.id===editingID)?.deployment_target_id)">{{ t('delivery.reusable') }}</a-checkbox></a-form-item>
             <a-form-item class="span-2" label="说明"><a-input v-model:value="form.description" placeholder="这套方案用于哪些应用或场景" /></a-form-item>
           </div>
         </div>
 
-        <div class="form-section">
+        <div v-if="!form.reusable" class="form-section">
           <header><b>2</b><div><strong>目标环境</strong><small>执行方式由环境内已就绪的主机和集群能力决定。</small></div></header>
           <a-form-item :label="t('environment.deployment.environment')" required>
             <div class="resource-select">
@@ -1008,7 +1027,7 @@ onMounted(refresh)
 
         <div class="form-section">
           <header><b>3</b><div><strong>执行方式与配置</strong><small>根据环境中的主机能力选择。</small></div></header>
-          <a-alert v-if="!form.environment_id" type="info" show-icon message="请先选择目标环境" description="选择后会根据环境内主机和集群的已就绪能力显示可用的部署方式。" />
+          <a-alert v-if="!form.reusable && !form.environment_id" type="info" show-icon message="请先选择目标环境" description="选择后会根据环境内主机和集群的已就绪能力显示可用的部署方式。" />
           <a-alert v-else-if="!availableKindOptions.length" type="warning" show-icon message="当前环境没有可用的执行方式" description="请先为环境关联主机，并检查 SSH、Docker 或 Kubernetes 能力是否就绪。" />
           <a-form-item v-else label="部署方式" required>
             <a-radio-group :value="form.kind" class="kind-picker">
@@ -1018,10 +1037,10 @@ onMounted(refresh)
               </a-radio-button>
             </a-radio-group>
           </a-form-item>
-          <template v-if="form.environment_id && availableKindOptions.length">
+          <template v-if="(form.reusable || form.environment_id) && availableKindOptions.length">
             <div class="form-subtitle">{{ t('deploymentList.configuration') }}</div>
             <a-alert
-              v-if="executionTargetError"
+              v-if="!form.reusable && executionTargetError"
               class="span-2"
               type="warning"
               show-icon
@@ -1029,7 +1048,7 @@ onMounted(refresh)
               :description="executionTargetError"
             />
             <div class="form-grid">
-              <a-form-item v-if="platform === 'kubernetes'" class="span-2" label="Kubernetes 集群" required>
+              <a-form-item v-if="!form.reusable && platform === 'kubernetes'" class="span-2" label="Kubernetes 集群" required>
                 <div :class="{ 'resource-select': auth.canAny(['cluster.create']) }">
                   <a-select :value="form.runtime_id" show-search :disabled="!canReadRuntimes" :options="kubernetesRuntimeOptions" placeholder="选择当前环境关联的 Kubernetes 集群" @change="changeKubernetesRuntime">
                     <template #option="{ value, label, hostName }">
@@ -1048,19 +1067,19 @@ onMounted(refresh)
                 </div>
               </a-form-item>
 
-              <a-form-item v-if="platform === 'ssh'" class="span-2" label="工作目录">
+              <a-form-item v-if="!form.reusable && platform === 'ssh'" class="span-2" label="工作目录">
                 <a-input v-model:value="form.working_directory" placeholder="例如：/srv/apps/edo；留空使用执行用户主目录" />
               </a-form-item>
               <a-form-item v-if="form.kind === 'compose'" class="span-2" label="Compose 目标服务名称" required>
                 <a-input v-model:value="form.workload_name" placeholder="例如：app（必须与 services 下的名称一致）" />
               </a-form-item>
-              <template v-if="platform === 'kubernetes'">
+              <template v-if="!form.reusable && platform === 'kubernetes'">
                 <a-form-item label="命名空间" required><a-input v-model:value="form.namespace" placeholder="default" /></a-form-item>
                 <a-form-item label="Deployment 名称" required><a-input v-model:value="form.workload_name" placeholder="例如：backend-web" /></a-form-item>
                 <a-form-item class="span-2" label="容器名称" required><a-input v-model:value="form.container_name" placeholder="Deployment Pod 模板中的容器名" /></a-form-item>
               </template>
             </div>
-            <div v-if="!canReadHosts || (platform === 'kubernetes' && !canReadRuntimes)" class="permission-note">需要主机与集群查看权限才能读取当前环境的执行能力。</div>
+            <div v-if="!form.reusable && (!canReadHosts || (platform === 'kubernetes' && !canReadRuntimes))" class="permission-note">需要主机与集群查看权限才能读取当前环境的执行能力。</div>
             <div class="form-subtitle">{{ form.kind === 'docker' ? '容器输入参数' : form.kind === 'compose' ? 'Compose 输入参数' : '部署参数' }}</div>
             <template v-if="form.kind === 'docker'">
             <a-alert
@@ -1071,7 +1090,7 @@ onMounted(refresh)
               description="使用流水线构建的镜像，按以下参数创建或更新容器。"
             />
             <div class="runtime-inputs">
-              <div class="runtime-input-block">
+              <div v-if="!form.reusable" class="runtime-input-block">
                 <header><span><strong>Docker 容器名称</strong><small>可选；留空时使用应用名加短隔离标识，同一应用可在同一主机部署多次。</small></span></header>
                 <a-form-item label="容器名称（可选）">
                   <a-input v-model:value="form.workload_name" placeholder="留空自动生成，例如 order_api-a1b2c3d4" />
@@ -1192,11 +1211,12 @@ onMounted(refresh)
       <template #footer>
         <div class="drawer-actions">
           <a-button :disabled="saving || testing" @click="formOpen = false">取消</a-button>
-          <a-button v-if="canTestInfrastructure" :loading="testing" :disabled="saving" @click="testConnection">检查连接</a-button>
+          <a-button v-if="!form.reusable && canTestInfrastructure" :loading="testing" :disabled="saving" @click="testConnection">检查连接</a-button>
           <a-button type="primary" :loading="saving" :disabled="testing" @click="save">保存部署方案</a-button>
         </div>
       </template>
     </a-drawer>
+    <DeliveryDefaultsDrawer v-model:open="defaultsOpen" :plan-id="defaultPlanID" :initial-kind="defaultKind"/>
   </section>
 </template>
 

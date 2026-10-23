@@ -26,6 +26,7 @@ type applicationRequest struct {
 	Description         string `json:"description" binding:"max=500"`
 	RepositoryID        string `json:"repository_id" binding:"required,max=36"`
 	WorkflowTemplateID  string `json:"workflow_template_id" binding:"max=36"`
+	EmptyWorkflow       bool   `json:"empty_workflow"`
 	PollIntervalSeconds int    `json:"poll_interval_seconds" binding:"omitempty,oneof=3 5 10 60"`
 }
 
@@ -105,9 +106,10 @@ type registryRequest struct {
 }
 
 type deploymentPlanRequest struct {
+	Reusable         bool                        `json:"reusable"`
 	Name             string                      `json:"name" binding:"required,max=128"`
 	Kind             model.DeploymentPlanKind    `json:"kind" binding:"required,max=16"`
-	DeploymentTarget *deploymentTargetRequest    `json:"deployment_target" binding:"required"`
+	DeploymentTarget *deploymentTargetRequest    `json:"deployment_target"`
 	Description      string                      `json:"description" binding:"max=500"`
 	Script           string                      `json:"script" binding:"max=262144"`
 	ComposeYAML      string                      `json:"compose_yaml" binding:"max=524288"`
@@ -622,9 +624,13 @@ func (h pipelineHandler) createDeploymentPlan(c *gin.Context) {
 		return
 	}
 	actor, _ := currentUser(c)
-	target := toDeploymentTargetInput(*request.DeploymentTarget)
+	var target *deployment.TargetInput
+	if request.DeploymentTarget != nil {
+		value := toDeploymentTargetInput(*request.DeploymentTarget)
+		target = &value
+	}
 	plan, err := h.service.CreateDeploymentPlan(c.Request.Context(), actor.ID, pipeline.DeploymentPlanInput{
-		Name: request.Name, Kind: request.Kind, DeploymentTarget: &target,
+		Name: request.Name, Kind: request.Kind, DeploymentTarget: target, Reusable: request.Reusable,
 		Description: request.Description, Script: request.Script,
 		ComposeYAML: request.ComposeYAML,
 		ServiceName: request.ServiceName, DockerConfig: request.DockerConfig, TimeoutSeconds: request.TimeoutSeconds,
@@ -644,9 +650,13 @@ func (h pipelineHandler) updateDeploymentPlan(c *gin.Context) {
 		writeError(c, http.StatusBadRequest, "invalid_deployment_plan", pipeline.ErrInvalidDeploymentPlan.Error())
 		return
 	}
-	target := toDeploymentTargetInput(*request.DeploymentTarget)
+	var target *deployment.TargetInput
+	if request.DeploymentTarget != nil {
+		value := toDeploymentTargetInput(*request.DeploymentTarget)
+		target = &value
+	}
 	plan, err := h.service.UpdateDeploymentPlan(c.Request.Context(), c.Param("id"), pipeline.DeploymentPlanInput{
-		Name: request.Name, Kind: request.Kind, DeploymentTarget: &target,
+		Name: request.Name, Kind: request.Kind, DeploymentTarget: target, Reusable: request.Reusable,
 		Description: request.Description, Script: request.Script,
 		ComposeYAML: request.ComposeYAML,
 		ServiceName: request.ServiceName, DockerConfig: request.DockerConfig, TimeoutSeconds: request.TimeoutSeconds,
@@ -813,7 +823,7 @@ func toRegistryInput(request registryRequest) pipeline.RegistryInput {
 func toApplicationInput(request applicationRequest) pipeline.ApplicationInput {
 	return pipeline.ApplicationInput{
 		Name: request.Name, Description: request.Description, RepositoryID: request.RepositoryID,
-		WorkflowTemplateID: request.WorkflowTemplateID, PollIntervalSeconds: request.PollIntervalSeconds,
+		WorkflowTemplateID: request.WorkflowTemplateID, EmptyWorkflow: request.EmptyWorkflow, PollIntervalSeconds: request.PollIntervalSeconds,
 	}
 }
 

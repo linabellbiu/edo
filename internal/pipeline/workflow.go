@@ -558,7 +558,6 @@ func (s *Service) validateWorkflow(
 	source model.WorkflowNode,
 	stages []model.WorkflowStage,
 ) []WorkflowIssue {
-	_ = application
 	issues := make([]WorkflowIssue, 0)
 	if schemaVersion != model.WorkflowSchemaVersion {
 		return []WorkflowIssue{{Code: "unsupported_schema_version", Message: "流水线结构版本无效"}}
@@ -727,6 +726,12 @@ func (s *Service) validateWorkflow(
 					issues = append(issues, WorkflowIssue{Code: "missing_deployment_plan", Message: fmt.Sprintf("部署任务“%s”需要选择可用的部署方案", node.Name), NodeID: node.ID, StageID: stage.ID})
 					break
 				}
+				if plan.Kind == model.DeploymentPlanScript && strings.TrimSpace(plan.Script) == strings.TrimSpace(builtinDeliveryScript) {
+					issues = append(issues, WorkflowIssue{Code: "missing_deployment_script", Message: "请先编辑部署方案，将示例脚本替换为该应用的实际部署脚本", NodeID: node.ID, StageID: stage.ID})
+				}
+				if application == nil && plan.DeploymentTargetID == "" {
+					break // 公共方案仅校验通用规则，实际目标由应用创建发布流程时绑定。
+				}
 				target, ok := activeTargets[plan.DeploymentTargetID]
 				if !ok {
 					issues = append(issues, WorkflowIssue{Code: "missing_deployment_target", Message: fmt.Sprintf("部署任务“%s”的部署方案配置不完整", node.Name), NodeID: node.ID, StageID: stage.ID})
@@ -815,6 +820,17 @@ func validateWorkflowArtifactFlow(
 			}
 			deploymentPlan, planOK := deploymentPlans[next.Config.DeploymentPlanID]
 			target, targetOK := targets[deploymentPlan.DeploymentTargetID]
+			if planOK && deploymentPlan.DeploymentTargetID == "" {
+				targetOK = true
+				switch deploymentPlan.Kind {
+				case model.DeploymentPlanScript:
+					target.Platform = model.DeploymentSSH
+				case model.DeploymentPlanKubernetes:
+					target.Platform = model.DeploymentKubernetes
+				default:
+					target.Platform = model.DeploymentDocker
+				}
+			}
 			if !planOK || !targetOK {
 				break
 			}

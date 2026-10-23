@@ -2,10 +2,12 @@ import { createI18n } from 'vue-i18n'
 import { workspaceZh, workspaceEn } from './workspace'
 import { kubernetesZh, kubernetesEn } from './kubernetes'
 import { loginZh, loginEn } from './login'
+import { deliveryZh, deliveryEn } from './delivery'
 import { yamlZh, yamlEn } from './yaml'
 
 export const messages = {
   'zh-CN': {
+	delivery: deliveryZh,
 	yamlEditor: yamlZh,
 	loginAuth: loginZh,
 	k8s: kubernetesZh,
@@ -235,6 +237,7 @@ export const messages = {
     },
   },
   'en-US': {
+	delivery: deliveryEn,
 	yamlEditor: yamlEn,
 	loginAuth: loginEn,
 	k8s: kubernetesEn,

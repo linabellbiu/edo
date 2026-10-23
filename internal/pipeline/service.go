@@ -80,6 +80,7 @@ type ApplicationInput struct {
 	RepositoryID        string
 	PollIntervalSeconds int
 	WorkflowTemplateID  string
+	EmptyWorkflow       bool
 }
 
 type BuildPlanInput struct {
@@ -112,6 +113,7 @@ type RegistryInput struct {
 }
 
 type DeploymentPlanInput struct {
+	Reusable         bool
 	Name             string
 	Kind             model.DeploymentPlanKind
 	DeploymentTarget *deployment.TargetInput
@@ -233,9 +235,12 @@ func (s *Service) CreateApplication(ctx context.Context, actorID string, input A
 	}
 	application.WorkflowTemplateID = input.WorkflowTemplateID
 	repositoryLink := buildApplicationRepositoryModel(application.ID, input.RepositoryID, now)
-	workflow, err := s.newApplicationWorkflow(ctx, application, actorID, now)
-	if err != nil {
-		return nil, err
+	var workflow *model.ReleaseWorkflow
+	if !input.EmptyWorkflow || input.WorkflowTemplateID != "" {
+		workflow, err = s.newApplicationWorkflow(ctx, application, actorID, now)
+		if err != nil {
+			return nil, err
+		}
 	}
 	if err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if err := tx.Create(application).Error; err != nil {
@@ -244,7 +249,10 @@ func (s *Service) CreateApplication(ctx context.Context, actorID string, input A
 		if err := tx.Create(&repositoryLink).Error; err != nil {
 			return err
 		}
-		return tx.Create(workflow).Error
+		if workflow != nil {
+			return tx.Create(workflow).Error
+		}
+		return nil
 	}); err != nil {
 		if errors.Is(err, gorm.ErrDuplicatedKey) {
 			return nil, ErrApplicationExists
@@ -828,7 +836,7 @@ func normalizeDeploymentPlanInput(input DeploymentPlanInput) (DeploymentPlanInpu
 		input.Kind == model.DeploymentPlanKubernetes ||
 		(input.Kind == model.DeploymentPlanCompose && input.ComposeYAML != "" && input.ServiceName != "") ||
 		input.Kind == model.DeploymentPlanDocker
-	if input.DeploymentTarget == nil || !validResourceName(input.Name) || !validKind || input.TimeoutSeconds < 30 || input.TimeoutSeconds > 3600 ||
+	if (!input.Reusable && input.DeploymentTarget == nil) || (input.Reusable && input.DeploymentTarget != nil) || !validResourceName(input.Name) || !validKind || input.TimeoutSeconds < 30 || input.TimeoutSeconds > 3600 ||
 		len(input.Script) > 256*1024 || len(input.ComposeYAML) > dockerengine.MaximumComposeYAMLBytes ||
 		utf8.RuneCountInString(input.Description) > 500 {
 		return input, ErrInvalidDeploymentPlan
@@ -868,6 +876,9 @@ func (s *Service) CreateDeploymentPlan(ctx context.Context, actorID string, inpu
 		IsActive:     true, CreatedBy: actorID, CreatedAt: now, UpdatedAt: now,
 	}
 	err = s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if input.Reusable {
+			return tx.Create(plan).Error
+		}
 		if s.deployments == nil || !deploymentPlanSupportsTarget(input.Kind, input.DeploymentTarget.Platform) {
 			return ErrDeploymentPlanTargetMismatch
 		}
@@ -905,6 +916,15 @@ func (s *Service) UpdateDeploymentPlan(ctx context.Context, id string, input Dep
 			return findErr
 		}
 		targetID := plan.DeploymentTargetID
+		if input.Reusable {
+			if targetID != "" {
+				return ErrInvalidDeploymentPlan
+			}
+			plan.Name, plan.Kind, plan.Description = input.Name, input.Kind, input.Description
+			plan.Script, plan.ComposeYAML, plan.ServiceName = input.Script, input.ComposeYAML, input.ServiceName
+			plan.DockerConfig, plan.TimeoutSeconds, plan.UpdatedAt = input.DockerConfig, input.TimeoutSeconds, time.Now().UTC()
+			return tx.Save(&plan).Error
+		}
 		if s.deployments == nil || !deploymentPlanSupportsTarget(input.Kind, input.DeploymentTarget.Platform) {
 			return ErrDeploymentPlanTargetMismatch
 		}

@@ -203,7 +203,7 @@ const buildPlanOptions = computed(() => activeBuildPlans.value.map(item => ({
   detail: `制品类型：${item.kind === 'dockerfile' ? 'OCI 镜像' : '文件制品'}`,
 })))
 const activeDeploymentPlans = computed(() => deploymentPlans.value.filter(item =>
-  item.is_active && Boolean(item.deployment_target_id || item.deployment_target?.id) && item.deployment_target?.is_active !== false))
+  item.is_active && (!applicationID.value || Boolean(item.deployment_target_id || item.deployment_target?.id)) && item.deployment_target?.is_active !== false))
 const activeNotificationChannels = computed(() => notificationChannels.value.filter(item => item.is_active))
 const notificationTemplateVariables = computed(() => builtinVariables.value
   .filter(item => item.kind === 'template' && item.scopes.includes('notification_template'))

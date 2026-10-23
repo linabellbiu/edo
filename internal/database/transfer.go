@@ -585,7 +585,7 @@ var orderedTransferTables = []string{
 	"release_plans", "release_groups", "release_group_applications", "release_group_dependencies", "release_plan_executions", "release_plan_execution_items",
 	"pipeline_runs", "pipeline_run_repositories", "pipeline_run_approvals", "pipeline_run_logs", "build_runs", "artifacts", "deployment_records", "deployment_instance_controls",
 	"notification_channels", "notifications", "scheduled_tasks", "monitor_rules", "monitor_checks",
-	"jobs", "outbox_events",
+	"jobs", "outbox_events", "delivery_defaults",
 }
 
 func knownTransferTableSet() map[string]struct{} {

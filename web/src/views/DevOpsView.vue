@@ -9,6 +9,9 @@ import { ArrowUpRight, Box, Boxes, ChevronDown, ChevronRight, Clock3, FileText, 
 import client from '@/api/client'
 import { subscribeDeliveryEvents } from '@/utils/deliveryEvents'
 import { apiErrorMessage, type ResourceRecord } from '@/api/resources'
+import DeliveryWorkflowDrawer from '@/components/DeliveryWorkflowDrawer.vue'
+import type {DeliveryKind} from '@/api/delivery'
+import type {WorkflowResponse} from '@/types/pipeline'
 import BuildPlanWorkspace from '@/components/BuildPlanWorkspace.vue'
 import ResourceDetailDrawer from '@/components/ResourceDetailDrawer.vue'
 import ResourceRowActions from '@/components/ResourceRowActions.vue'
@@ -32,6 +35,12 @@ import { formatDateTime, formatRelativeTime } from '@/utils/time'
 type Section='applications'|'repositories'|'build-plans'|'image-registries'|'release-plans'
 const props=defineProps<{section:Section}>(),route=useRoute(),router=useRouter(),auth=useAuthStore()
 const {t,locale}=useI18n()
+const deliveryOpen=ref(false), deliveryApplicationID=ref('')
+const canConfigureDelivery=computed(()=>['application.read','application.update','workflow.read','workflow.create','deployment_plan.create','deployment_plan.read','build_plan.read','cluster.read','deployment.read'].every(permission=>auth.canAny([permission])))
+function configureDelivery(applicationID=''){deliveryApplicationID.value=applicationID;deliveryOpen.value=true}
+async function deliveryCreated(result:WorkflowResponse){await refresh();await router.push({path:'/pipeline-plans/editor',query:{application:result.workflow.application_id,workflow:result.workflow.id}})}
+function consumeDeliveryRequest(){if(props.section==='applications'&&route.query.delivery_kind&&canConfigureDelivery.value)configureDelivery(typeof route.query.application==='string'?route.query.application:'')}
+
 interface Repository extends ResourceRecord{id:string;name:string;provider:string;clone_url:string;default_branch:string;webhook_enabled:boolean;webhook_url?:string;is_active:boolean;auth_type:string;username?:string;allow_insecure_http:boolean;has_credential?:boolean;credential_id?:string;api_credential_id?:string}
 interface BuildPlan extends ResourceRecord{id:string;name:string;kind:'dockerfile'|'script';description:string;script?:string;dockerfile_path?:string;context_path:string;working_directory:string;artifact_path?:string;runtime_image?:string;image_registry_id?:string;target_stage?:string;pull:boolean;cache_enabled:boolean;build_args:Record<string,string>;environment_variables:Record<string,string>;timeout_seconds:number;is_active:boolean;created_at:string;updated_at:string;image_registry?:Registry}
 type RegistryProvider='harbor'|'docker_hub'|'generic'
@@ -854,7 +863,7 @@ async function save(){
    if(!validApplicationName(appForm.name)){message.error('应用名必须以小写英文字母开头，只能使用小写英文字母和单个下划线');return}
    if(!appForm.repository_id){message.error('请选择代码仓库');return}
    endpoint=editingID.value?`/applications/${editingID.value}`:'/applications'
-   payload=editingID.value?{name:appForm.name,description:appForm.description,repository_id:appForm.repository_id,poll_interval_seconds:appForm.poll_interval_seconds}:{...appForm,workflow_template_id:appForm.workflow_template_id||''}
+   payload=editingID.value?{name:appForm.name,description:appForm.description,repository_id:appForm.repository_id,poll_interval_seconds:appForm.poll_interval_seconds}:{...appForm,workflow_template_id:appForm.workflow_template_id||'',empty_workflow:!appForm.workflow_template_id}
    pendingWorkflowTemplateID=editingID.value?selectedWorkflowTemplateID.value:''
    method=editingID.value?'put':'post'
   }
@@ -890,6 +899,7 @@ async function save(){
    if(!registryTested.value){message.error('请先测试镜像仓库登录');return}
    endpoint='/image-registries';payload=registryRequestPayload()
   }
+  const creatingDeliveryApplication=section==='applications'&&!editingID.value&&!appForm.workflow_template_id
   const response=await client[method](endpoint,payload)
   if(section==='applications'&&editingID.value&&pendingWorkflowTemplateID){
    await client.post(`/applications/${editingID.value}/workflows`,{workflow_template_id:pendingWorkflowTemplateID})
@@ -906,6 +916,7 @@ async function save(){
   }else{
    message.success('配置已保存');formOpen.value=false;resetForms();await refresh()
   }
+  if(creatingDeliveryApplication&&canConfigureDelivery.value){configureDelivery((response.data as {application:Application}).application.id)}
   if(savedWebhookAPI)Modal.info({title:'Webhook 已启用',width:650,okText:'关闭',content:()=>`Webhook API：${savedWebhookAPI}`})
  }catch(error){message.error(apiErrorMessage(error))}finally{saving.value=false}
 }
@@ -1540,7 +1551,7 @@ function consumeBuildCreateRequest(){
  void router.replace({query})
 }
 
-watch(()=>props.section,()=>{formOpen.value=false;resetForms();resetManualFlow();resetPlanExecution();syncBuildPlanSelection();void refresh().then(()=>{syncBuildPlanSelection();consumeBuildCreateRequest();void revealActiveApplication()})})
+watch(()=>props.section,()=>{formOpen.value=false;resetForms();resetManualFlow();resetPlanExecution();syncBuildPlanSelection();void refresh().then(()=>{syncBuildPlanSelection();consumeBuildCreateRequest();consumeDeliveryRequest();void revealActiveApplication()})})
 watch(()=>registryForm,()=>registryTested.value=false,{deep:true})
 watch(()=>registryForm.provider,(provider,previous)=>{
  if(provider==='docker_hub'){
@@ -1562,10 +1573,11 @@ watch(()=>applications.value.map(item=>item.id).join(','),syncBuildPlanSelection
 watch([selectedBuildPlanID,artifactApplicationID,buildPlanView],()=>{void loadArtifacts()})
 watch(()=>route.query.create,consumeBuildCreateRequest)
 watch(()=>route.query.application,()=>{void revealActiveApplication()})
+watch(()=>route.query.delivery_kind,consumeDeliveryRequest)
 watch(()=>route.query.run,()=>{void revealRequestedRun()})
 watch(()=>runListEntries.value.length,()=>{runPagination.current=Math.min(runPagination.current,Math.max(1,Math.ceil(runListEntries.value.length/runPagination.pageSize)))})
 watch(()=>props.section,connectDeliveryEvents)
-onMounted(()=>{connectDeliveryEvents();void refresh().then(()=>{lastDeliverySync=Date.now();syncBuildPlanSelection();consumeBuildCreateRequest();void revealActiveApplication()});releaseTimer=window.setInterval(refreshVisibleState,5000);document.addEventListener('visibilitychange',onDeliveryPageVisible);window.addEventListener('focus',onDeliveryPageVisible)})
+onMounted(()=>{connectDeliveryEvents();void refresh().then(()=>{lastDeliverySync=Date.now();syncBuildPlanSelection();consumeBuildCreateRequest();consumeDeliveryRequest();void revealActiveApplication()});releaseTimer=window.setInterval(refreshVisibleState,5000);document.addEventListener('visibilitychange',onDeliveryPageVisible);window.addEventListener('focus',onDeliveryPageVisible)})
 onBeforeUnmount(()=>{stopDeliveryEvents?.();clearTimeout(deliveryRefreshTimer);resetPlanExecution();clearInterval(releaseTimer);document.removeEventListener('visibilitychange',onDeliveryPageVisible);window.removeEventListener('focus',onDeliveryPageVisible)})
 </script>
 
@@ -1622,6 +1634,7 @@ onBeforeUnmount(()=>{stopDeliveryEvents?.();clearTimeout(deliveryRefreshTimer);r
       <template v-if="applicationDrawerCard">
         <a-button size="small" :type="applicationDetailTab(applicationDrawerID)==='workflows'?'primary':'default'" @click="toggleApplicationDetails(applicationDrawerCard,'workflows')">{{ t('resourceList.workflows') }} ({{ applicationDrawerCard.workflowSummaries.length }})</a-button>
         <a-button size="small" :type="applicationDetailTab(applicationDrawerID)==='deployments'?'primary':'default'" @click="toggleApplicationDetails(applicationDrawerCard,'deployments')">{{ t('resourceList.instances') }} ({{ applicationDrawerCard.deploymentInstances.length }})</a-button>
+        <a-button v-if="canConfigureDelivery" size="small" @click="configureDelivery(applicationDrawerCard.application.id)">{{ t('delivery.configure') }}</a-button>
         <a-button v-if="canUpdate" size="small" @click="edit(applicationDrawerCard.application)">{{ t('applicationCard.configure') }}</a-button>
       </template>
     </template>
@@ -1902,7 +1915,7 @@ onBeforeUnmount(()=>{stopDeliveryEvents?.();clearTimeout(deliveryRefreshTimer);r
    </a-form-item>
   </template>
   <a-form-item v-else label="选择流水线">
-   <a-select v-model:value="appForm.workflow_template_id" allow-clear show-search option-filter-prop="label" placeholder="可选；不选择则创建空白流水线" :options="workflowTemplates.filter(item=>item.is_active).map(item=>({value:item.id,label:item.name}))"/>
+   <a-select v-model:value="appForm.workflow_template_id" allow-clear show-search option-filter-prop="label" placeholder="可选；不选择则下一步配置发布流程" :options="workflowTemplates.filter(item=>item.is_active).map(item=>({value:item.id,label:item.name}))"/>
   </a-form-item>
  </section>
  <section class="application-form-section">
@@ -2017,6 +2030,7 @@ onBeforeUnmount(()=>{stopDeliveryEvents?.();clearTimeout(deliveryRefreshTimer);r
 </template>
 </a-form><template #footer><div class="drawer-actions"><a-button :disabled="saving||testing" @click="closeForm">{{ creatingApplicationRepository?t('applicationForm.backToApplication'):'取消' }}</a-button><a-button v-if="formSection==='repositories'&&auth.canAny(['repository.execute'])" :loading="testing" :disabled="saving" @click="testRepository">测试连接</a-button><a-button v-if="props.section==='image-registries'&&auth.canAny([`${sectionPermission}.execute`])" :loading="testing" @click="testRegistry">测试登录</a-button><a-button v-if="canSaveCurrent" type="primary" :loading="saving" :disabled="testing||(props.section==='image-registries'&&!registryTested)" @click="save">保存</a-button></div></template></a-drawer>
 <GitCredentialDrawer v-model:open="credentialCreation.open" :provider="credentialCreation.provider" :auth-type="credentialCreation.authType" lock-context @saved="repositoryCredentialSaved"/>
+<DeliveryWorkflowDrawer v-model:open="deliveryOpen" :application-id="deliveryApplicationID" :initial-kind="typeof route.query.delivery_kind==='string'?route.query.delivery_kind as DeliveryKind:undefined" :initial-cluster="typeof route.query.cluster==='string'?route.query.cluster:undefined" :initial-namespace="typeof route.query.namespace==='string'?route.query.namespace:undefined" :initial-workload="typeof route.query.workload==='string'?route.query.workload:undefined" :initial-container="typeof route.query.container==='string'?route.query.container:undefined" @created="deliveryCreated"/>
 <a-modal v-model:open="manualOpen" :title="t('manualRun.title')" :confirm-loading="saving" :ok-button-props="{disabled:!manualApplicationID||!manualWorkflowID}" :ok-text="t('manualRun.chooseVersion')" @ok="nextManual" @cancel="resetManualFlow"><a-form layout="vertical"><a-form-item :label="t('manualRun.application')"><a-select :value="manualApplicationID" :options="manualApplications.map(item=>({value:item.id,label:item.name}))" @change="updateManualApplication(String($event))"/></a-form-item><a-form-item label="流水线" required><a-select v-model:value="manualWorkflowID" :options="applicationManualWorkflows(manualApplications.find(item=>item.id===manualApplicationID)).map(item=>({value:item.id,label:workflowDisplayName(item)}))"/></a-form-item></a-form></a-modal>
 <a-modal v-model:open="commitOpen" :title="t('manualRun.versionTitle')" :confirm-loading="saving" :ok-button-props="{disabled:!selectedSource||(manualExecutionMode==='code'?!selectedRef:!selectedArtifactID)}" :ok-text="t('manualRun.confirm')" @ok="executeCommit" @cancel="resetManualFlow">
  <a-form layout="vertical">

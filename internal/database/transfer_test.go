@@ -77,9 +77,19 @@ func TestCopyDatabaseSnapshotCopiesAllRowsWithoutSchemaHistory(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	defaults := model.DeliveryDefault{ID: "delivery-default", ProjectID: DefaultProjectID(DefaultDepartmentID), DepartmentID: DefaultDepartmentID, Kind: model.DeploymentPlanDocker, WorkflowTemplateID: "custom-workflow", DeploymentPlanID: "custom-plan", Version: 7, UpdatedBy: user.ID, CreatedAt: now, UpdatedAt: now}
+	if err := source.Create(&defaults).Error; err != nil {
+		t.Fatal(err)
+	}
+
 	if err := copyDatabaseSnapshot(ctx, source, target, "sqlite", func(int, int, int64) {}); err != nil {
 		t.Fatalf("复制数据快照失败: %v", err)
 	}
+	var copiedDefaults model.DeliveryDefault
+	if err := target.First(&copiedDefaults, "id = ?", defaults.ID).Error; err != nil || copiedDefaults.Version != 7 || copiedDefaults.DeploymentPlanID != defaults.DeploymentPlanID {
+		t.Fatalf("默认发布方案未完整迁移: %+v %v", copiedDefaults, err)
+	}
+
 	var copiedUser model.User
 	if err := target.First(&copiedUser, "id = ?", user.ID).Error; err != nil {
 		t.Fatalf("目标库未找到用户: %v", err)

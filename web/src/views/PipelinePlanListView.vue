@@ -11,6 +11,7 @@ import ResourceDetailDrawer from '@/components/ResourceDetailDrawer.vue'
 import ResourceRowActions from '@/components/ResourceRowActions.vue'
 import { useResourceList } from '@/utils/resourceList'
 import { useI18n } from 'vue-i18n'
+import DeliveryDefaultsDrawer from '@/components/DeliveryDefaultsDrawer.vue'
 import WorkflowPresetModal from '@/components/WorkflowPresetModal.vue'
 import { useAuthStore } from '@/stores/auth'
 import type { Workflow, WorkflowNode, WorkflowStage } from '@/types/pipeline'
@@ -42,6 +43,9 @@ const { detailOpen, selected, pagination, openDetails, changePage } = useResourc
 const loading = ref(false)
 const busyID = ref('')
 const presetOpen = ref(false)
+const defaultsOpen = ref(false), defaultWorkflowID = ref('')
+const canDefaults = computed(() => auth.canAny(['workflow.read']) && auth.canAny(['deployment_plan.read']))
+function openDefaults(id='') { defaultWorkflowID.value=id; defaultsOpen.value=true }
 
 const canCreate = computed(() => auth.canAny(['workflow.create']))
 const canUpdate = computed(() => auth.canAny(['workflow.update']))
@@ -183,6 +187,7 @@ async function openCreatedTemplate(result: import('@/types/pipeline').WorkflowTe
 <template>
   <section class="pipeline-plan-page">
     <PageToolbar :description="`${templates.length} 条流水线；应用使用已启用流水线的最新版本。`">
+      <a-button v-if="canDefaults" @click="openDefaults()">{{ t('delivery.defaults') }}</a-button>
       <a-button v-if="canCreate" type="primary" @click="presetOpen = true">
         新建流水线
       </a-button>
@@ -216,6 +221,7 @@ async function openCreatedTemplate(result: import('@/types/pipeline').WorkflowTe
               <a-button size="small" @click="openDetails(record)">{{ t('resourceList.details') }}</a-button>
               <a-button v-if="canUpdate" size="small" @click="router.push(`/pipeline-plans/editor?template=${record.id}`)">{{ t('planList.edit') }}</a-button>
               <template #more>
+                <a-menu-item v-if="canDefaults && canUpdate && auth.canAny(['deployment_plan.update']) && record.is_active" @click="openDefaults(record.id)">{{ t('delivery.setDefault') }}</a-menu-item>
                 <a-menu-item v-if="canCreate" @click="duplicate(record)"><Copy :size="14" />复制</a-menu-item>
                 <a-menu-item v-if="canUpdate" @click="setActive(record, !record.is_active)">{{ record.is_active ? t('planList.disable') : t('planList.enable') }}</a-menu-item>
                 <a-menu-divider v-if="canDelete" />
@@ -250,6 +256,7 @@ async function openCreatedTemplate(result: import('@/types/pipeline').WorkflowTe
       </section>
     </ResourceDetailDrawer>
     <WorkflowPresetModal v-model:open="presetOpen" :can-create="canCreate" :can-execute="canExecute" @created="openCreatedTemplate" />
+    <DeliveryDefaultsDrawer v-model:open="defaultsOpen" :workflow-id="defaultWorkflowID"/>
   </section>
 </template>
 
