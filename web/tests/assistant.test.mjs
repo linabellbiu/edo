@@ -31,6 +31,39 @@ test('排障工具名称提供本地化标签，未知名称不直接展示', as
   }
 })
 
+test('新操作必须查看计划后确认，YAML预览和未知能力不可执行', async t => {
+  const { state, calls } = harness(t, 'AssistantPanel')
+  await flush()
+  const value = { ...action(), kind: 'workflow_create', preview: { yaml: 'kind: workflow_create', changes: ['创建草稿'], warnings: ['不启用'], checks: ['权限'] } }
+  state.actions.value = [value]
+  assert.equal(state.safeActions.value.length, 1)
+  await state.resolveAction(value, 'confirm')
+  assert.equal(state.previewID.value, value.id)
+  assert.equal(calls.filter(item => item[0] === 'action').length, 0)
+  await state.resolveAction(value, 'confirm')
+  assert.equal(calls.filter(item => item[0] === 'action').length, 1)
+  const yaml = { ...value, id: 'yaml', kind: 'yaml_draft', status: 'draft' }
+  state.previewID.value = yaml.id
+  await state.resolveAction(yaml, 'confirm')
+  assert.equal(calls.filter(item => item[0] === 'action').length, 1)
+})
+
+test('能力清单与预览在切换项目时关闭，迟到响应不泄露旧项目', async t => {
+  let complete
+  const { state, changeProject } = harness(t, 'AssistantPanel', { getAssistantCapabilities: () => new Promise(resolve => { complete = resolve }) })
+  await flush()
+  const loading = state.showCapabilities()
+  state.previewID.value = 'old-action'
+  assert.equal(state.capabilitiesOpen.value, true)
+  changeProject('project-2')
+  await flush()
+  complete([{ id: 'old-capability', supported: true }])
+  await loading
+  assert.equal(state.capabilitiesOpen.value, false)
+  assert.equal(state.previewID.value, '')
+  assert.deepEqual(state.capabilities.value, [])
+})
+
 function harness(t, component, api = {}, permissions = ['assistant.read', 'assistant.execute', 'config.read', 'config.update']) {
   const hooks = [], mounted = [], calls = [], scope = vue.effectScope()
   let project = 'project-1'

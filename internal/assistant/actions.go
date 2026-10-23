@@ -21,6 +21,12 @@ type actionSnapshot struct {
 
 func actionView(row model.AssistantAction) ActionView {
 	view := ActionView{ID: row.ID, Kind: row.Kind, Title: row.Title, Summary: row.Summary, Status: row.Status, TargetName: row.TargetName, ExpiresAt: row.ExpiresAt}
+	if operationKind(row.Kind) || row.Kind == "yaml_draft" {
+		var stored operationSnapshot
+		if json.Unmarshal([]byte(row.Snapshot), &stored) == nil {
+			view.Preview = &stored.Preview
+		}
+	}
 	if row.Status == "pending" && time.Now().After(row.ExpiresAt) {
 		view.Status = "expired"
 	}
@@ -208,7 +214,27 @@ func (s *Service) action(ctx context.Context, user *model.User, id string) (mode
 	if _, err := s.conversation(ctx, user, row.ConversationID); err != nil {
 		return row, err
 	}
+	if err := s.authorizeAction(ctx, user, row); err != nil {
+		return row, err
+	}
 	return row, nil
+}
+
+func (s *Service) authorizeAction(ctx context.Context, user *model.User, row model.AssistantAction) error {
+	permissions := []string{"pipeline_run.read"}
+	if operationKind(row.Kind) || row.Kind == "yaml_draft" {
+		var stored operationSnapshot
+		if json.Unmarshal([]byte(row.Snapshot), &stored) != nil || len(stored.ReadPermissions) == 0 {
+			return s.failure(ctx, "assistant_action_permissions", ErrForbidden, ErrForbidden)
+		}
+		permissions = stored.ReadPermissions
+	}
+	for _, permission := range permissions {
+		if _, err := s.authorize(ctx, user, permission); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (s *Service) RejectAction(ctx context.Context, user *model.User, id string) (ActionView, error) {
@@ -234,7 +260,7 @@ func (s *Service) RejectAction(ctx context.Context, user *model.User, id string)
 }
 
 func (s *Service) ConfirmAction(ctx context.Context, user *model.User, id string) (ActionView, error) {
-	for _, permission := range []string{"assistant.execute", "pipeline_run.read", "pipeline_run.execute"} {
+	for _, permission := range []string{"assistant.execute"} {
 		if _, err := s.authorize(ctx, user, permission); err != nil {
 			return ActionView{}, err
 		}
@@ -249,6 +275,17 @@ func (s *Service) ConfirmAction(ctx context.Context, user *model.User, id string
 	row, err := s.action(ctx, user, id)
 	if err != nil {
 		return ActionView{}, err
+	}
+	if operationKind(row.Kind) {
+		return s.confirmOperation(ctx, user, row)
+	}
+	if row.Kind != "pipeline_retry" && row.Kind != "pipeline_stop" {
+		return ActionView{}, s.failure(ctx, "assistant_action_whitelist", ErrForbidden, ErrForbidden)
+	}
+	for _, permission := range []string{"pipeline_run.read", "pipeline_run.execute"} {
+		if _, err := s.authorize(ctx, user, permission); err != nil {
+			return ActionView{}, err
+		}
 	}
 	var expected actionSnapshot
 	if err := json.Unmarshal([]byte(row.Snapshot), &expected); err != nil {

@@ -24,6 +24,8 @@ export interface AssistantSettingsInput {
 export interface AssistantStatus { enabled: boolean; configured: boolean; reason?: string }
 export interface AssistantConversation { id: string; title: string; updated_at?: string; created_at?: string }
 export interface AssistantMessage { id: string; role: string; content: string; status?: string; created_at?: string }
+export interface AssistantCapability { id: string; version: string; name: string; supported: boolean; available: boolean; confirmation: boolean; reason?: string }
+export interface AssistantOperationPreview { yaml: string; changes: string[]; warnings: string[]; checks: string[] }
 export interface AssistantAction {
   id: string
   kind: string
@@ -32,7 +34,8 @@ export interface AssistantAction {
   status: string
   target_name: string
   expires_at: string
-  result?: { pipeline_run_id?: string; message?: string }
+  preview?: AssistantOperationPreview
+  result?: { pipeline_run_id?: string; application_id?: string; workflow_id?: string; message?: string }
 }
 export interface AssistantDetail { conversation: AssistantConversation; messages: AssistantMessage[]; actions: AssistantAction[] }
 export interface AssistantEvent {
@@ -59,6 +62,9 @@ export async function testAssistantSettings(input: AssistantSettingsInput, signa
 }
 export async function getAssistantStatus(signal?: AbortSignal): Promise<AssistantStatus> {
   return (await client.get('/assistant/status', { signal })).data
+}
+export async function getAssistantCapabilities(signal?: AbortSignal): Promise<AssistantCapability[]> {
+  return (await client.get('/assistant/capabilities', { signal })).data.capabilities ?? []
 }
 export async function listAssistantConversations(signal?: AbortSignal): Promise<AssistantConversation[]> {
   return (await client.get('/assistant/conversations', { signal })).data.conversations ?? []

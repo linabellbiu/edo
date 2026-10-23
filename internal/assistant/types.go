@@ -103,19 +103,29 @@ type MessageView struct {
 }
 
 type ActionView struct {
-	ID         string        `json:"id"`
-	Kind       string        `json:"kind"`
-	Title      string        `json:"title"`
-	Summary    string        `json:"summary"`
-	Status     string        `json:"status"`
-	TargetName string        `json:"target_name"`
-	ExpiresAt  time.Time     `json:"expires_at"`
-	Result     *ActionResult `json:"result,omitempty"`
+	ID         string            `json:"id"`
+	Kind       string            `json:"kind"`
+	Title      string            `json:"title"`
+	Summary    string            `json:"summary"`
+	Status     string            `json:"status"`
+	TargetName string            `json:"target_name"`
+	ExpiresAt  time.Time         `json:"expires_at"`
+	Result     *ActionResult     `json:"result,omitempty"`
+	Preview    *OperationPreview `json:"preview,omitempty"`
 }
 
 type ActionResult struct {
 	PipelineRunID string `json:"pipeline_run_id,omitempty"`
+	ApplicationID string `json:"application_id,omitempty"`
+	WorkflowID    string `json:"workflow_id,omitempty"`
 	Message       string `json:"message,omitempty"`
+}
+
+type OperationPreview struct {
+	YAML     string   `json:"yaml,omitempty"`
+	Changes  []string `json:"changes"`
+	Warnings []string `json:"warnings"`
+	Checks   []string `json:"checks"`
 }
 
 type DetailView struct {

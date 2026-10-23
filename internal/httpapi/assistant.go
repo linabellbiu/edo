@@ -44,6 +44,7 @@ func registerAssistantRoutes(protected *gin.RouterGroup, deps Dependencies) {
 	settings.POST("/test", requirePermission(deps.Access, deps.Logger, access.PermissionConfigUpdate), auditAction(deps.Audits, deps.Logger, "assistant.settings.test", "settings"), h.testSettings)
 	chat := protected.Group("/assistant", available, requirePermission(deps.Access, deps.Logger, access.PermissionAssistantRead))
 	chat.GET("/status", h.status)
+	chat.GET("/capabilities", h.capabilities)
 	chat.GET("/conversations", h.list)
 	chat.POST("/conversations", requirePermission(deps.Access, deps.Logger, access.PermissionAssistantExecute), h.create)
 	chat.GET("/conversations/:id", h.detail)
@@ -149,6 +150,17 @@ func (h assistantHandler) status(c *gin.Context) {
 	}
 	c.Header("Cache-Control", "no-store")
 	c.JSON(http.StatusOK, result)
+}
+
+func (h assistantHandler) capabilities(c *gin.Context) {
+	user, _ := currentUser(c)
+	items, err := h.service.Capabilities(c.Request.Context(), user)
+	if err != nil {
+		h.fail(c, "assistant_capabilities", err)
+		return
+	}
+	c.Header("Cache-Control", "no-store")
+	c.JSON(http.StatusOK, gin.H{"capabilities": items})
 }
 
 func (h assistantHandler) list(c *gin.Context) {

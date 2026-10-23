@@ -17,7 +17,7 @@ import (
 func newID() string { return uuid.NewString() }
 
 func defaultSettings() model.AssistantSettings {
-	return model.AssistantSettings{ID: settingsID, BaseURL: "https://api.openai.com/v1", MaxSteps: 6, TimeoutSeconds: 90}
+	return model.AssistantSettings{ID: settingsID, BaseURL: "https://api.openai.com/v1", MaxSteps: 12, TimeoutSeconds: 90}
 }
 
 func (s *Service) settings(ctx context.Context) (model.AssistantSettings, error) {
@@ -66,12 +66,12 @@ func normalizeSettings(input SettingsInput) (SettingsInput, error) {
 	}
 	input.BaseURL = strings.TrimRight(input.BaseURL, "/")
 	if input.MaxSteps == 0 {
-		input.MaxSteps = 6
+		input.MaxSteps = 12
 	}
 	if input.TimeoutSeconds == 0 {
 		input.TimeoutSeconds = 90
 	}
-	if input.MaxSteps < 1 || input.MaxSteps > 10 || input.TimeoutSeconds < 10 || input.TimeoutSeconds > 180 || (input.Enabled && input.Model == "") {
+	if input.MaxSteps < 1 || input.MaxSteps > 20 || input.TimeoutSeconds < 10 || input.TimeoutSeconds > 180 || (input.Enabled && input.Model == "") {
 		return input, ErrInvalidInput
 	}
 	return input, nil

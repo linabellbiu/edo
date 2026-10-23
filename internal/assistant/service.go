@@ -212,11 +212,9 @@ func (s *Service) Conversation(ctx context.Context, user *model.User, id string)
 		}
 		view.Messages = append(view.Messages, message)
 	}
-	if len(actions) > 0 {
-		if _, err := s.authorize(ctx, user, "pipeline_run.read"); err == nil {
-			for _, action := range actions {
-				view.Actions = append(view.Actions, actionView(action))
-			}
+	for _, action := range actions {
+		if s.authorizeAction(ctx, user, action) == nil {
+			view.Actions = append(view.Actions, actionView(action))
 		}
 	}
 	return view, nil

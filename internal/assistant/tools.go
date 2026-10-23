@@ -13,6 +13,7 @@ import (
 	"edo/internal/database"
 	"edo/internal/kube"
 	"edo/internal/model"
+	"edo/internal/pipeline"
 	"github.com/cloudwego/eino/components/tool"
 	"github.com/cloudwego/eino/schema"
 )
@@ -47,18 +48,23 @@ func redact(value string, secrets ...string) string {
 }
 
 type toolInput struct {
-	ApplicationID string `json:"application_id,omitempty"`
-	RunID         string `json:"run_id,omitempty"`
-	ClusterID     string `json:"cluster_id,omitempty"`
-	Resource      string `json:"resource,omitempty"`
-	Namespace     string `json:"namespace,omitempty"`
-	Name          string `json:"name,omitempty"`
-	UID           string `json:"uid,omitempty"`
-	Query         string `json:"query,omitempty"`
-	DeploymentID  string `json:"deployment_id,omitempty"`
-	JobID         string `json:"job_id,omitempty"`
-	Container     string `json:"container,omitempty"`
-	Previous      bool   `json:"previous,omitempty"`
+	ApplicationID string                           `json:"application_id,omitempty"`
+	RunID         string                           `json:"run_id,omitempty"`
+	ClusterID     string                           `json:"cluster_id,omitempty"`
+	Resource      string                           `json:"resource,omitempty"`
+	Namespace     string                           `json:"namespace,omitempty"`
+	Name          string                           `json:"name,omitempty"`
+	UID           string                           `json:"uid,omitempty"`
+	Query         string                           `json:"query,omitempty"`
+	DeploymentID  string                           `json:"deployment_id,omitempty"`
+	JobID         string                           `json:"job_id,omitempty"`
+	Container     string                           `json:"container,omitempty"`
+	Previous      bool                             `json:"previous,omitempty"`
+	WorkflowID    string                           `json:"workflow_id,omitempty"`
+	ActionID      string                           `json:"action_id,omitempty"`
+	YAML          string                           `json:"yaml,omitempty"`
+	Workflow      *pipeline.AssistantWorkflowInput `json:"workflow,omitempty"`
+	Selection     *pipeline.AssistantRunInput      `json:"selection,omitempty"`
 }
 
 type assistantTool struct {
@@ -86,7 +92,11 @@ func (t *assistantTool) InvokableRun(ctx context.Context, raw string, _ ...tool.
 	t.budget.count++
 	count := t.budget.count
 	t.budget.mu.Unlock()
-	if count > 20 || len(raw) > 4096 {
+	limit := 4096
+	if t.name == "preview_kubernetes_yaml" || t.name == "prepare_workflow" {
+		limit = 20 * 1024
+	}
+	if count > 40 || len(raw) > limit {
 		return "", t.service.failure(ctx, "assistant_tool_limit", ErrOutputLimit, ErrOutputLimit)
 	}
 	input := toolInput{}
@@ -106,6 +116,9 @@ func (t *assistantTool) InvokableRun(ctx context.Context, raw string, _ ...tool.
 	}
 	t.emit(Event{Type: "tool_start", ToolName: t.name})
 	result, err := t.call(ctx, input)
+	if err == nil {
+		err = t.service.authorizeUsed(ctx, t.user)
+	}
 	auditResult := model.AuditSucceeded
 	if err != nil {
 		auditResult = model.AuditFailed
@@ -172,6 +185,8 @@ func (t *assistantTool) call(ctx context.Context, input toolInput) (any, error) 
 	s := t.service
 	scope, _ := database.DepartmentScopeFromContext(ctx)
 	switch t.name {
+	case "edo_capabilities", "delivery_catalog", "knowledge_search", "workflow_refs", "operation_status", "prepare_workflow", "prepare_deploy", "prepare_workflow_activation", "preview_kubernetes_yaml":
+		return t.native(ctx, input)
 	case "project_resources", "project_tasks", "application_deployments", "deployment_diagnostics", "deployment_logs", "kubernetes_pod_logs", "kubernetes_diagnostics", "platform_diagnostics":
 		return t.diagnostics(ctx, input)
 	case "list_applications":
@@ -346,6 +361,20 @@ func (s *Service) tools(user *model.User, conversationID string, emit func(Event
 		result = append(result, &assistantTool{service: s, user: user, conversationID: conversationID, name: name, description: description, parameters: params, emit: emit, budget: budget})
 	}
 	add("list_applications", "只读查询当前项目应用，最多50条", nil)
+	descriptions := map[string]string{
+		"edo_capabilities":            "规划前先查EDO真实能力。supported=false时直接告知目前还没有这个功能，不能编造或用命令绕过",
+		"delivery_catalog":            "查当前项目仓库、方案、环境、镜像仓库、流水线及默认设置；只返回元数据，不返回凭据和脚本",
+		"knowledge_search":            "只读检索EDO说明、项目资源说明、本人可授权历史问题及历史失败运行；历史不是实时证据，不导入外部文档",
+		"workflow_refs":               "查指定流水线真实分支、Tag及可用制品。准备部署必须使用这里返回的完整引用和Commit，不猜版本",
+		"operation_status":            "查询本人操作确认记录的真实结果；创建、启用、受理和部署成功是不同状态",
+		"prepare_workflow":            "生成待用户确认的创建草稿计划，可组合新应用、Dockerfile构建和Docker/Kubernetes部署方案。不启用、不部署、不覆盖已有流水线；不接收自定义脚本",
+		"prepare_deploy":              "生成待用户确认的固定版本部署计划；只走已有启用流水线，保留审核、产物和真实运行记录，不直接执行",
+		"prepare_workflow_activation": "单独生成启用流水线确认卡，提示后续代码事件可能自动执行任务；本次不部署",
+		"preview_kubernetes_yaml":     "对单个现有资源YAML做格式、身份、版本和服务端dry-run校验，提供只读预览；不应用、不修改、不创建资源，不处理Secret、RBAC或节点",
+	}
+	for name, params := range nativeToolParameters() {
+		add(name, descriptions[name], params)
+	}
 	add("project_resources", "按名称或ID查当前项目资源；resource只能是applications/hosts/clusters/domains，不返回凭据；域名结果不代表DNS已验证", map[string]*schema.ParameterInfo{"resource": parameter("资源类别", true), "query": parameter("名称或ID片段，可选", false)})
 	add("project_tasks", "读取当前项目最近20条任务状态、重试次数与脱敏错误，不读任务参数；可指定job_id", map[string]*schema.ParameterInfo{"job_id": parameter("任务ID，可选", false)})
 	add("application_deployments", "按已查到的应用ID定位最近部署记录、运行位置、容器或工作负载名称和错误；不是实时健康检查", map[string]*schema.ParameterInfo{"application_id": parameter("应用ID", true)})
