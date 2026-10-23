@@ -220,7 +220,7 @@ func (s *Service) Chat(ctx context.Context, user *model.User, id, content string
 		return s.modelFailure(ctx, "assistant_model_create", err, key)
 	}
 	agent, err := adk.NewChatModelAgent(ctx, &adk.ChatModelAgentConfig{Name: "edo_assistant", Description: "EDO 当前项目只读诊断与待确认操作助手", Instruction: assistantInstruction, Model: &boundedModel{base: provider, service: s, user: user}, MaxIterations: settings.MaxSteps, ToolsConfig: adk.ToolsConfig{ToolsNodeConfig: compose.ToolsNodeConfig{Tools: s.tools(user, id, safeEmit), ExecuteSequentially: true}}, GenModelInput: func(_ context.Context, instruction string, input *adk.AgentInput) ([]*schema.Message, error) {
-		return append([]*schema.Message{schema.SystemMessage(instruction)}, input.Messages...), nil
+		return append([]*schema.Message{schema.SystemMessage(instruction + "\n\n" + deletionNavigationInstruction)}, input.Messages...), nil
 	}})
 	if err != nil {
 		return s.modelFailure(ctx, "assistant_agent_create", err, key)

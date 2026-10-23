@@ -1,4 +1,5 @@
 export const assistantZh = {
+  openManagement: '前往{page}', navigationHint: '链接只打开管理页，删除仍需在页面中确认。', navigationDenied: '暂无访问权限',
   title: '对话助手', description: '查看项目状态、分析运行日志，操作前由你确认。', open: '打开对话助手', fullPage: '在独立页面打开',
   settings: '模型设置', settingsHint: '使用兼容 OpenAI 的模型服务。模型调用会发送当前对话及获准读取的项目数据。',
   enabled: '启用助手', baseURL: '服务地址', baseURLHint: '填写兼容接口的基础地址，例如 https://example.com/v1。', model: '模型名称',
@@ -21,6 +22,7 @@ export const assistantZh = {
 }
 
 export const assistantEn: Record<keyof typeof assistantZh, string> = {
+  openManagement: 'Open {page}', navigationHint: 'Links only open management pages. Deletion still requires confirmation on that page.', navigationDenied: 'No access',
   title: 'Assistant', description: 'Inspect project status and run logs. You confirm before any action.', open: 'Open assistant', fullPage: 'Open full page',
   settings: 'Model settings', settingsHint: 'Use an OpenAI-compatible service. Requests include this conversation and project data you are permitted to read.',
   enabled: 'Enable assistant', baseURL: 'Base URL', baseURLHint: 'An API base URL, such as https://example.com/v1.', model: 'Model',
