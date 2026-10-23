@@ -178,6 +178,16 @@ func resourceView(resource string, item *unstructured.Unstructured, reveal bool)
 }
 
 func (s *Service) SaveResource(ctx context.Context, clusterID, resource, namespace, name string, object map[string]any, create bool) (map[string]any, error) {
+	return s.saveResource(ctx, clusterID, resource, namespace, name, object, create, false)
+}
+
+// 使用与保存相同的字段和权限边界，由集群执行校验，但不持久化资源。
+func (s *Service) ValidateResource(ctx context.Context, clusterID, resource, namespace, name string, object map[string]any) error {
+	_, err := s.saveResource(ctx, clusterID, resource, namespace, name, object, false, true)
+	return err
+}
+
+func (s *Service) saveResource(ctx context.Context, clusterID, resource, namespace, name string, object map[string]any, create, dryRun bool) (map[string]any, error) {
 	client, def, err := s.resourceClient(ctx, clusterID, resource, namespace, false)
 	if err != nil {
 		return nil, err
@@ -189,14 +199,18 @@ func (s *Service) SaveResource(ctx context.Context, clusterID, resource, namespa
 		return nil, err
 	}
 	var result *unstructured.Unstructured
+	var dryRunOptions []string
+	if dryRun {
+		dryRunOptions = []string{metav1.DryRunAll}
+	}
 	if create {
-		result, err = client.Create(ctx, &unstructured.Unstructured{Object: object}, metav1.CreateOptions{FieldManager: "edo", FieldValidation: "Strict"})
+		result, err = client.Create(ctx, &unstructured.Unstructured{Object: object}, metav1.CreateOptions{FieldManager: "edo", FieldValidation: "Strict", DryRun: dryRunOptions})
 	} else {
 		body, encodeErr := json.Marshal(object)
 		if encodeErr != nil {
 			return nil, ErrInvalidResource
 		}
-		result, err = client.Patch(ctx, name, types.MergePatchType, body, metav1.PatchOptions{FieldManager: "edo", FieldValidation: "Strict"})
+		result, err = client.Patch(ctx, name, types.MergePatchType, body, metav1.PatchOptions{FieldManager: "edo", FieldValidation: "Strict", DryRun: dryRunOptions})
 	}
 	if err != nil {
 		return nil, resourceError(resource, err)

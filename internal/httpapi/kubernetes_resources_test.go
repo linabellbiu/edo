@@ -50,6 +50,7 @@ func TestKubernetesResourcePermissionsAndSecretAudit(t *testing.T) {
 		{http.MethodPatch, base, map[string]any{}},
 		{http.MethodDelete, base, map[string]any{"uid": "uid-1", "resource_version": "1"}},
 		{http.MethodPost, base, map[string]any{}},
+		{http.MethodPost, "/api/v1/kubernetes/clusters/" + result.Cluster.ID + "/resources/secrets/private/validate?namespace=default", map[string]any{}},
 		{http.MethodPost, "/api/v1/kubernetes/clusters/" + result.Cluster.ID + "/resources/deployments/web/actions?namespace=default", map[string]any{"action": "restart", "uid": "uid-1", "resource_version": "1"}},
 		{http.MethodGet, "/api/v1/kubernetes/clusters/" + result.Cluster.ID + "/resources/nodes", nil},
 		{http.MethodPost, "/api/v1/kubernetes/clusters/" + result.Cluster.ID + "/node-joins", map[string]any{"provider": "k3s", "minutes": 15}},
@@ -63,11 +64,18 @@ func TestKubernetesResourcePermissionsAndSecretAudit(t *testing.T) {
 	if resourceCalls.Load() != before {
 		t.Fatal("拒绝的请求仍然访问了集群")
 	}
+	validation := performJSONRequest(t, router, http.MethodPost, "/api/v1/kubernetes/clusters/"+result.Cluster.ID+"/resources/secrets/private/validate?namespace=default", map[string]any{"apiVersion": "v1", "kind": "Secret", "metadata": map[string]any{"name": "private", "namespace": "default", "uid": "uid-1", "resourceVersion": "1"}}, admin)
+	if validation.Code != 200 || strings.TrimSpace(validation.Body.String()) != `{"valid":true}` {
+		t.Fatal("校验返回了资源或未成功", validation.Code, validation.Body.String())
+	}
 	reveal := performJSONRequest(t, router, http.MethodGet, "/api/v1/kubernetes/clusters/"+result.Cluster.ID+"/resources/secrets/private/secret?namespace=default", nil, admin)
 	if reveal.Code != 200 || !strings.Contains(reveal.Body.String(), "cHJpdmF0ZS") {
 		t.Fatal("已授权查看密钥失败", reveal.Code, reveal.Body.String())
 	}
 	audits := performJSONRequest(t, router, http.MethodGet, "/api/v1/audit-logs", nil, admin)
+	if !strings.Contains(audits.Body.String(), "kubernetes.resource.validate") {
+		t.Fatal("资源校验缺少独立审计")
+	}
 	if !strings.Contains(audits.Body.String(), "kubernetes.secret.reveal") || !strings.Contains(audits.Body.String(), "secrets/default/private") || strings.Contains(audits.Body.String(), "cHJpdmF0ZS") || strings.Contains(audits.Body.String(), "private-password") {
 		t.Fatal("密钥审计缺失或包含密钥", audits.Body.String())
 	}

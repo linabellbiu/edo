@@ -1,0 +1,12 @@
+export const yamlZh = {
+  title: 'YAML', edit: '编辑 YAML', format: '格式化', check: '检查语法', clusterCheck: '集群校验', syntaxOK: 'YAML 语法正确', pending: '正在检查…', line: '第 {line} 行，第 {column} 列', errors: '{count} 处错误',
+  clusterOK: '集群校验通过，尚未保存。', clusterFailed: '集群校验未通过：{message}', stale: '内容已修改，请重新校验。', checkHint: '保存前会再次校验，校验不会修改集群资源。', editHint: '可编辑配置。资源名称、命名空间、UID 和版本号不能修改。',
+  save: '校验并保存', confirm: '保存 YAML 配置？', confirmHint: '{kind} · {name}。配置会立即应用到集群。', cancel: '取消', close: '关闭', saved: '配置已保存', discard: '放弃未保存的修改？', discardOK: '放弃修改', secret: 'Secret 内容已隐藏，请在数据页查看或修改。', label: 'Kubernetes YAML 配置',
+  error: { syntax: 'YAML 格式有误，请检查缩进、引号和冒号。', duplicate: '键名重复，请保留一个。', tag: '不支持自定义 YAML 标签。', alias: 'YAML 引用过多或无法解析。', value: '配置包含循环引用、非有限数值或过深的嵌套。', size: '配置不能超过 2 MiB。', document: '请填写一个完整的资源对象，不支持多文档或列表。', identity: '资源类型和身份字段不能修改。', readonly: '此字段只读或不在可编辑范围内。' },
+}
+export const yamlEn = {
+  title: 'YAML', edit: 'Edit YAML', format: 'Format', check: 'Check syntax', clusterCheck: 'Validate with cluster', syntaxOK: 'YAML syntax is valid', pending: 'Checking…', line: 'Line {line}, column {column}', errors: '{count} errors',
+  clusterOK: 'Cluster validation passed. Changes are not saved.', clusterFailed: 'Cluster validation failed: {message}', stale: 'Content changed. Validate again.', checkHint: 'Saving runs validation again. Validation does not change cluster resources.', editHint: 'Edit configuration only. Name, namespace, UID and resource version cannot change.',
+  save: 'Validate and save', confirm: 'Save YAML configuration?', confirmHint: '{kind} · {name}. Changes take effect immediately.', cancel: 'Cancel', close: 'Close', saved: 'Configuration saved', discard: 'Discard unsaved changes?', discardOK: 'Discard changes', secret: 'Secret contents are hidden. Use the data tab to view or edit them.', label: 'Kubernetes YAML configuration',
+  error: { syntax: 'Invalid YAML. Check indentation, quotes and colons.', duplicate: 'Duplicate key. Keep only one.', tag: 'Custom YAML tags are not supported.', alias: 'YAML references exceed the limit or cannot be resolved.', value: 'Configuration contains cycles, non-finite numbers or excessive nesting.', size: 'Configuration must not exceed 2 MiB.', document: 'Enter a single resource object. Multiple documents and lists are not supported.', identity: 'Resource type and identity fields cannot change.', readonly: 'This field is read-only or outside the editable configuration.' },
+}

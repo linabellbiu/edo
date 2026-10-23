@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, h, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, defineAsyncComponent, h, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { Modal, message } from 'ant-design-vue'
 import { Boxes, Plus, RefreshCw, Search, Server, Network, Database, LayoutDashboard, ArrowLeft, Filter } from 'lucide-vue-next'
 import { useI18n } from 'vue-i18n'
@@ -22,6 +22,11 @@ import ContainerLogDrawer from '@/components/ContainerLogDrawer.vue'
 import TerminalDrawer from '@/components/TerminalDrawer.vue'
 import { useAuthStore } from '@/stores/auth'
 import { formatDateTime } from '@/utils/time'
+
+const KubeYamlManifest = defineAsyncComponent(() => import('@/components/KubeYamlManifest.vue'))
+const KubeYamlDrawer = defineAsyncComponent(() => import('@/components/KubeYamlDrawer.vue'))
+const yamlOpen=ref(false),yamlContext=ref<{cluster:string;type:KubeType;object:KubeObject}>()
+function editYaml(){if(detail.value&&detailType.value&&detailType.value.update&&detail.value.kind!=='Secret'&&can(`${detailType.value.permission}.update`)){yamlContext.value={cluster:cluster.value,type:detailType.value,object:JSON.parse(JSON.stringify(detail.value))};yamlOpen.value=true}}
 
 const auth = useAuthStore(), route = useRoute(), router=useRouter(), { t } = useI18n()
 const group = computed(() => ['nodes','workloads','config','network'].includes(String(route.query.view)) ? String(route.query.view) : 'overview')
@@ -98,7 +103,7 @@ function refreshAll(){void refresh();void refreshOverview()}
 watch(()=>`${cluster.value}:${namespace.value}`,()=>{overviewRevision++;overviewController?.abort();overviewLoading.value=false;overviewPending=false;overview.value=null;overviewError.value='';lastOverview=0;void refreshOverview()})
 watch(types, items=>{ if(!items.some(item=>item.resource===resource.value)) resource.value=items[0]?.resource ?? '' },{immediate:true})
 watch(cluster,()=>{ namespace.value=clusterInfo.value?.default_namespace ?? 'default'; namespaces.value=[]; void loadNamespaces() })
-watch(contextKey,()=>{ revision++; controller?.abort(); rows.value=[]; continuation.value=''; error.value='';lastRefreshed.value='';clearFilters(); closeDetails(); editorOpen.value=false; scaleOpen.value=false; stream.value.open=false; nodeRemoval.value=undefined; void refresh() })
+watch(contextKey,()=>{ revision++; controller?.abort(); rows.value=[]; continuation.value=''; error.value='';lastRefreshed.value='';clearFilters(); closeDetails(); editorOpen.value=false; yamlOpen.value=false; scaleOpen.value=false; stream.value.open=false; nodeRemoval.value=undefined; void refresh() })
 watch(()=>route.query.cluster,()=>{if(route.query.cluster && clusters.value.some(item=>item.id===route.query.cluster)) cluster.value=String(route.query.cluster)})
 
 function closeDetails() { detailRevision++;detailController?.abort(); detailOpen.value=false; detail.value=undefined;detailType.value=undefined;detailOrigin.value='';detailHistory.value=[]; secretValues.value=undefined; relatedPods.value=[]; events.value=[]; detailError.value='';detailSyncError.value='';relatedLoading.value=false }
@@ -231,7 +236,7 @@ async function syncDetails(){
     if(detailTab.value==='pods'&&hasRelatedPods.value&&Date.now()-lastRelatedSync>10_000)void loadRelatedPods(cluster.value,data.object,current,signal)
   }catch(err){if(mounted&&current===detailRevision&&!signal.aborted)detailSyncError.value=kubeErrorMessage(err)}finally{detailSyncing=false}
 }
-function syncVisible(){if(!document.hidden&&autoRefresh.value&&Date.now()-lastVisibleSync>750){lastVisibleSync=Date.now();void refresh(true);if(!editorOpen.value&&!joinOpen.value&&!nodeRemoval.value&&!busy.value){void syncDetails();if(Date.now()-lastOverview>30_000)void refreshOverview(true)}}}
+function syncVisible(){if(!yamlOpen.value&&!document.hidden&&autoRefresh.value&&Date.now()-lastVisibleSync>750){lastVisibleSync=Date.now();void refresh(true);if(!editorOpen.value&&!joinOpen.value&&!nodeRemoval.value&&!busy.value){void syncDetails();if(Date.now()-lastOverview>30_000)void refreshOverview(true)}}}
 onMounted(()=>{void loadClusters();timer=setInterval(syncVisible,5000);document.addEventListener('visibilitychange',syncVisible);window.addEventListener('focus',syncVisible)})
 onBeforeUnmount(()=>{mounted=false;revision++;detailRevision++;overviewRevision++;controller?.abort();detailController?.abort();overviewController?.abort();document.removeEventListener('visibilitychange',syncVisible);window.removeEventListener('focus',syncVisible);if(timer)clearInterval(timer);secretValues.value=undefined;stream.value.open=false})
 </script>
@@ -302,10 +307,11 @@ onBeforeUnmount(()=>{mounted=false;revision++;detailRevision++;overviewRevision+
         </section></a-tab-pane>
         <a-tab-pane key="metadata" :tab="t('k8s.metadata')"><section class="resource-detail-section"><dl class="resource-facts"><div v-for="fact in facts" :key="fact.label"><dt>{{ fact.label }}</dt><dd>{{ fact.value||'—' }}</dd></div></dl></section><section class="resource-detail-section"><h4>{{ t('k8s.labels') }}</h4><div class="detail-labels"><a-tag v-for="(value,key) in detail.metadata.labels??{}" :key="key">{{ key }}={{ value }}</a-tag><span v-if="!Object.keys(detail.metadata.labels??{}).length" class="secondary">—</span></div></section><section v-if="annotations.length" class="resource-detail-section"><h4>{{ t('k8s.annotations') }}</h4><div v-for="[key,value] in annotations" :key="key" class="annotation-row"><code>{{ key }}</code><span>{{ value }}</span></div></section></a-tab-pane>
         <a-tab-pane v-if="detail.kind!=='Secret'" key="events" :tab="t('k8s.events')"><section class="resource-detail-section"><a-alert v-if="eventsError" type="warning" :message="t('k8s.eventsUnavailable')" /><a-empty v-else-if="!events.length" :description="t('k8s.noEvents')" /><div v-for="event in events" :key="event.metadata.uid" class="event-row"><a-tag :color="event.type==='Warning'?'warning':'default'">{{ event.reason }}</a-tag><span>{{ event.message }}</span><span class="secondary">×{{ event.count??1 }} · {{ formatDateTime(event.lastTimestamp??event.eventTime??event.metadata.creationTimestamp) }}</span></div></section></a-tab-pane>
-        <a-tab-pane key="manifest" :tab="t('k8s.manifest')"><section class="resource-detail-section"><pre class="manifest">{{ JSON.stringify(detail,null,2) }}</pre></section></a-tab-pane>
+        <a-tab-pane key="manifest" :tab="t('yamlEditor.title')"><section class="resource-detail-section"><KubeYamlManifest v-if="detailTab==='manifest'" :object="detail" :editable="Boolean(detailType?.update&&detail.kind!=='Secret'&&can(`${detailType.permission}.update`))" @edit="editYaml" /></section></a-tab-pane>
       </a-tabs></a-spin>
     </ResourceDetailDrawer>
     <KubeResourceEditor v-if="editorContext" v-model:open="editorOpen" :cluster="editorContext.cluster" :namespace="editorContext.namespace" :type="editorContext.type" :object="editorContext.object" @saved="saved" />
+    <KubeYamlDrawer v-if="yamlContext" v-model:open="yamlOpen" :cluster="yamlContext.cluster" :type="yamlContext.type" :object="yamlContext.object" :allowed="can(`${yamlContext.type.permission}.update`)" @saved="saved" />
     <KubernetesClusterDrawer v-model:open="clusterDrawer" :can-test="can('cluster.execute')" @created="async item=>{await loadClusters();cluster=item.id}" />
     <KubeNodeJoinDrawer v-model:open="joinOpen" :cluster="cluster" :endpoint="clusterInfo?.api_server??''" />
     <a-modal :open="Boolean(nodeRemoval)" :title="t('k8s.removeNode')" :confirm-loading="Boolean(busy)" :ok-text="t('k8s.removeNode')" :cancel-text="t('k8s.cancel')" :ok-button-props="{danger:true,disabled:!agentStopped||nodeName!==nodeRemoval?.object.metadata.name}" :closable="!busy" :mask-closable="!busy" @cancel="nodeRemoval=undefined" @ok="removeNode"><a-alert type="warning" show-icon :message="t('k8s.removeNodeHint')" /><p class="node-removal-context">{{ clusterInfo?.name }} / {{ nodeRemoval?.object.metadata.name }}</p><p>{{ t('k8s.removeBlocked') }}</p><a-checkbox v-model:checked="agentStopped">{{ t('k8s.agentStopped') }}</a-checkbox><a-form-item :label="t('k8s.typeNodeName')" class="node-removal-name"><a-input v-model:value="nodeName" :placeholder="nodeRemoval?.object.metadata.name" :disabled="Boolean(busy)" /></a-form-item></a-modal>
