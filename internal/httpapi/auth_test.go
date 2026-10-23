@@ -30,6 +30,7 @@ import (
 	"edo/internal/department"
 	"edo/internal/deployment"
 	"edo/internal/dockerengine"
+	"edo/internal/identity"
 	"edo/internal/kube"
 	"edo/internal/logging"
 	"edo/internal/model"
@@ -218,7 +219,8 @@ func newAuthTestRouter(t *testing.T, configure ...func(*Dependencies, *gorm.DB))
 		Environment: "test", Database: sqlDB, Redis: healthyDependency{}, NATS: healthyDependency{},
 		Logger: logger, RuntimeLogs: runtimeLogs, Version: "test", AuthConfig: authConfig,
 		Accounts: accounts, Login: login, LoginLimiter: limiter, Sessions: sessions,
-		Access: accessService, Audits: auditService,
+		Identities: identity.NewService(db, redisClient, secretManager, accounts, login, limiter),
+		Access:     accessService, Audits: auditService,
 		Departments: departmentService,
 		Credentials: credentialService, Repositories: repositoryService, Pipelines: pipelineService,
 		Realtime:       realtimeBus,

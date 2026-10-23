@@ -66,3 +66,9 @@
 - 依赖升级必须通过 `go test -race ./...`、`go vet ./...` 和前端生产构建。
 - Git、认证、授权和加密依赖升级时必须额外验证现有数据兼容性及拒绝路径。
 - 不采用预发布主版本；例如 `go-git/v6` 稳定前继续使用 v5 稳定线。
+
+## 企业身份与邮箱验证码登录（2026-10-23）
+
+邮件发送采用 [wneessen/go-mail v0.8.1](https://github.com/wneessen/go-mail/releases/tag/v0.8.1)，MIT 许可，仍有发布和安全维护；已核对其 [地址编码安全公告](https://github.com/wneessen/go-mail/security/advisories/GHSA-wpwj-69cm-q9c5)，修复从 v0.7.1 提供。只增加此直接依赖，复用项目已有的 x/crypto 和 x/text，不新增常驻服务；支持 Linux/macOS、Context 超时、强制 STARTTLS 和隐式 TLS，可在单一发件适配函数中替换。邮件地址、验证码生成、Redis 原子消费、发送频率、身份绑定和权限继续由 EDO 负责。评估了冻结维护的标准库 net/smtp 和旧 gomail：前者仍需自行处理 MIME、超时与 TLS 协商，后者维护状态不适合新接入，因此不自行实现 SMTP 协议。后续升级需持续核对 SMTP 认证行为、邮件地址编码及安全公告。
+
+飞书复用已有 Go 官方 x/oauth2 与项目现有 JSON 令牌适配；钉钉新增薄适配器处理官方接口的 camelCase 字段、authCode 回调和专用令牌请求头。已评估 [钉钉官方 Go SDK](https://github.com/alibabacloud-go/dingtalk)（Apache-2.0）及飞书完整 SDK：本次只使用换令牌与用户信息两个接口，全量 SDK 会扩大生成代码与通用 RPC 依赖，因此继续复用现有 OAuth 库与 net/http；维护风险是平台协议变化，使用两套平台响应的 HTTP 契约测试约束，并以[钉钉官方授权流程](https://opensource.dingtalk.com/developerpedia/docs/develop/permission/token/browser/get_user_app_token_browser/)和[飞书授权码文档](https://open.feishu.cn/document/authentication-management/access-token/obtain-oauth-code)为更新依据。通用 OAuth 继续使用 PKCE；钉钉采用其公开的机密客户端授权流程与一次性 state，不假定支持 PKCE。

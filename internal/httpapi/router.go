@@ -108,6 +108,8 @@ func NewRouter(deps Dependencies) *gin.Engine {
 	authAPI.POST("/logout", auditAction(deps.Audits, deps.Logger, "auth.logout", "session"), authHandler.handleLogout)
 	authAPI.GET("/providers", identityAPI.listPublic)
 	authAPI.POST("/ldap/:id/login", auditAction(deps.Audits, deps.Logger, "auth.ldap.login", "session"), identityAPI.loginLDAP)
+	authAPI.POST("/email/:id/code", auditAction(deps.Audits, deps.Logger, "auth.email.code", "session"), identityAPI.sendEmailCode)
+	authAPI.POST("/email/:id/login", auditAction(deps.Audits, deps.Logger, "auth.email.login", "session"), identityAPI.loginEmail)
 	authAPI.GET("/oauth/:id/start", identityAPI.startOAuth)
 	authAPI.GET("/oauth/:id/callback", identityAPI.callbackOAuth)
 	repositoryAPI := repositoryHandler{service: deps.Repositories, access: deps.Access, logger: deps.Logger}

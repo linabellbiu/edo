@@ -39,7 +39,7 @@ func (s *Service) StartOAuth(ctx context.Context, providerID, returnTo, clientIP
 	if err != nil {
 		return "", err
 	}
-	if provider.Type == TypeLDAP {
+	if provider.Type == TypeLDAP || provider.Type == TypeEmail {
 		return "", ErrInvalidProvider
 	}
 	allowed, err := s.allowOAuthStart(ctx, provider.ID, clientIP)
@@ -73,7 +73,7 @@ func (s *Service) StartOAuth(ctx context.Context, providerID, returnTo, clientIP
 	if provider.Type == TypeFeishu {
 		parsed, _ := url.Parse(provider.AuthorizationURL)
 		query := parsed.Query()
-		query.Set("app_id", provider.ClientID)
+		query.Set("client_id", provider.ClientID)
 		query.Set("redirect_uri", provider.RedirectURL)
 		query.Set("response_type", "code")
 		query.Set("state", state)
@@ -86,6 +86,9 @@ func (s *Service) StartOAuth(ctx context.Context, providerID, returnTo, clientIP
 		return parsed.String(), nil
 	}
 	config := oauthConfig(provider, clientSecret)
+	if provider.Type == TypeDingTalk {
+		return config.AuthCodeURL(state, oauth2.SetAuthURLParam("prompt", "consent")), nil
+	}
 	return config.AuthCodeURL(state,
 		oauth2.SetAuthURLParam("code_challenge", base64.RawURLEncoding.EncodeToString(challenge[:])),
 		oauth2.SetAuthURLParam("code_challenge_method", "S256"),
@@ -126,7 +129,7 @@ func (s *Service) CompleteOAuth(ctx context.Context, providerID, state, code, cl
 		return account.LoginResult{}, transaction.ReturnTo, ErrExternalLogin
 	}
 	provider, err := s.getActive(ctx, providerID)
-	if err != nil || provider.Type == TypeLDAP || transaction.ProviderID != provider.ID {
+	if err != nil || provider.Type == TypeLDAP || provider.Type == TypeEmail || transaction.ProviderID != provider.ID {
 		return account.LoginResult{}, transaction.ReturnTo, ErrProviderDisabled
 	}
 	clientSecret, err := s.secrets.Decrypt(provider.ClientSecretCiphertext, []byte("identity-provider:"+provider.ID+":client-secret"))
@@ -136,18 +139,29 @@ func (s *Service) CompleteOAuth(ctx context.Context, providerID, state, code, cl
 	var token *oauth2.Token
 	if provider.Type == TypeFeishu {
 		token, err = s.exchangeFeishu(ctx, provider.TokenURL, provider.ClientID, clientSecret, provider.RedirectURL, code, transaction.Verifier)
+	} else if provider.Type == TypeDingTalk {
+		token, err = s.exchangeDingTalk(ctx, provider, clientSecret, code)
 	} else {
 		config := oauthConfig(provider, clientSecret)
 		exchangeCtx := context.WithValue(ctx, oauth2.HTTPClient, s.httpClient)
 		token, err = config.Exchange(exchangeCtx, code, oauth2.VerifierOption(transaction.Verifier))
 	}
 	if err != nil {
+		// OAuth 库的原始错误可能包含响应正文与令牌，仅保留安全诊断信息。
+		var retrieveError *oauth2.RetrieveError
+		if errors.As(err, &retrieveError) {
+			status := 0
+			if retrieveError.Response != nil {
+				status = retrieveError.Response.StatusCode
+			}
+			err = fmt.Errorf("令牌接口状态异常: status=%d", status)
+		}
 		return account.LoginResult{}, transaction.ReturnTo, fmt.Errorf("%w：换取访问令牌失败: %v", ErrExternalLogin, err)
 	}
 	if token == nil || token.AccessToken == "" {
 		return account.LoginResult{}, transaction.ReturnTo, ErrExternalLogin
 	}
-	claims, err := s.fetchUserInfo(ctx, provider.UserInfoURL, token.AccessToken)
+	claims, err := s.fetchUserInfo(ctx, provider.UserInfoURL, token.AccessToken, provider.Type)
 	if err != nil {
 		return account.LoginResult{}, transaction.ReturnTo, fmt.Errorf("%w：读取外部用户信息失败: %v", ErrExternalLogin, err)
 	}
@@ -220,12 +234,51 @@ func (s *Service) exchangeFeishu(ctx context.Context, tokenURL, clientID, client
 	return token, nil
 }
 
-func (s *Service) fetchUserInfo(ctx context.Context, endpoint, accessToken string) (map[string]any, error) {
+func (s *Service) exchangeDingTalk(ctx context.Context, provider *model.IdentityProvider, clientSecret, code string) (*oauth2.Token, error) {
+	payload, _ := json.Marshal(map[string]string{
+		"clientId": provider.ClientID, "clientSecret": clientSecret, "code": code, "grantType": "authorization_code",
+	})
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, provider.TokenURL, bytes.NewReader(payload))
+	if err != nil {
+		return nil, err
+	}
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Accept", "application/json")
+	response, err := s.httpClient.Do(request)
+	if err != nil {
+		return nil, err
+	}
+	defer response.Body.Close()
+	var body struct {
+		AccessToken string `json:"accessToken"`
+		ExpireIn    int64  `json:"expireIn"`
+	}
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		return nil, fmt.Errorf("钉钉令牌接口状态异常: status=%d", response.StatusCode)
+	}
+	if err := decodeLimitedJSON(response.Body, &body); err != nil {
+		return nil, errors.New("钉钉令牌响应格式无效")
+	}
+	if body.AccessToken == "" {
+		return nil, ErrExternalLogin
+	}
+	token := &oauth2.Token{AccessToken: body.AccessToken, TokenType: "Bearer"}
+	if body.ExpireIn > 0 {
+		token.Expiry = time.Now().Add(time.Duration(body.ExpireIn) * time.Second)
+	}
+	return token, nil
+}
+
+func (s *Service) fetchUserInfo(ctx context.Context, endpoint, accessToken, providerType string) (map[string]any, error) {
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
 		return nil, err
 	}
-	request.Header.Set("Authorization", "Bearer "+accessToken)
+	if providerType == TypeDingTalk {
+		request.Header.Set("x-acs-dingtalk-access-token", accessToken)
+	} else {
+		request.Header.Set("Authorization", "Bearer "+accessToken)
+	}
 	request.Header.Set("Accept", "application/json")
 	request.Header.Set("User-Agent", "EDO")
 	response, err := s.httpClient.Do(request)

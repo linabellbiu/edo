@@ -1,9 +1,11 @@
 import { createI18n } from 'vue-i18n'
 import { workspaceZh, workspaceEn } from './workspace'
 import { kubernetesZh, kubernetesEn } from './kubernetes'
+import { loginZh, loginEn } from './login'
 
 export const messages = {
   'zh-CN': {
+	loginAuth: loginZh,
 	k8s: kubernetesZh,
 	workspace: workspaceZh,
     resourceList: { details: '详情', more: '更多操作', basic: '基本信息', configuration: '配置信息', name: '名称', description: '说明', hosts: '所属主机', hostCount: '主机数量', capabilities: '主机能力', environmentEmpty: '还没有环境', status: '状态', resources: '运行资源', created: '创建时间', updated: '最近更新', close: '关闭', artifacts: '构建制品', workflows: '关联流水线', instances: '部署实例' },
@@ -231,6 +233,7 @@ export const messages = {
     },
   },
   'en-US': {
+	loginAuth: loginEn,
 	k8s: kubernetesEn,
 	workspace: workspaceEn,
     resourceList: { details: 'Details', more: 'More actions', basic: 'Basic information', configuration: 'Configuration', name: 'Name', description: 'Description', hosts: 'Hosts', hostCount: 'Host count', capabilities: 'Capabilities', environmentEmpty: 'No environments yet', status: 'Status', resources: 'Resources', created: 'Created', updated: 'Last updated', close: 'Close', artifacts: 'Build artifacts', workflows: 'Workflows', instances: 'Deployment instances' },

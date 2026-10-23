@@ -25,7 +25,7 @@ interface UserResponse {
 
 export interface LoginProvider {
   id: string
-  type: 'ldap' | 'generic_oauth' | 'feishu' | 'google' | 'github' | 'gitlab'
+  type: 'ldap' | 'generic_oauth' | 'feishu' | 'dingtalk' | 'email' | 'google' | 'github' | 'gitlab'
   display_name: string
 }
 

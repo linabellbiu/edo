@@ -1,10 +1,11 @@
 <script setup lang="ts">
 import axios from 'axios'
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
 import { Languages, LockKeyhole, Moon, Sun, UserRound } from 'lucide-vue-next'
 
-import { getLoginProviders, type LoginProvider } from '@/api/client'
+import client, { getLoginProviders, type LoginProvider } from '@/api/client'
 import { useAuthStore } from '@/stores/auth'
 import { usePreferencesStore } from '@/stores/preferences'
 
@@ -12,35 +13,57 @@ const route = useRoute()
 const router = useRouter()
 const auth = useAuthStore()
 const preferences = usePreferencesStore()
+const { t } = useI18n()
 const username = ref('')
 const password = ref('')
 const provider = ref('local')
 const providers = ref<LoginProvider[]>([])
 const loading = ref(false)
 const error = ref('')
+const email = ref(''), code = ref(''), sendingCode = ref(false), codeMessage = ref('')
+const resendAt = ref(0), now = ref(Date.now())
+let timer: ReturnType<typeof setInterval> | undefined
 
 const ldapProviders = computed(() => providers.value.filter((item) => item.type === 'ldap'))
-const oauthProviders = computed(() => providers.value.filter((item) => item.type !== 'ldap'))
+const emailProviders = computed(() => providers.value.filter(item => item.type === 'email'))
+const isEmail = computed(() => emailProviders.value.some(item => item.id === provider.value))
+const formOptions = computed(() => [{ label: t('loginAuth.account'), value: 'local' }, ...[...emailProviders.value, ...ldapProviders.value].map(item => ({ label: item.display_name, value: item.id }))])
+const oauthProviders = computed(() => providers.value.filter((item) => item.type !== 'ldap' && item.type !== 'email'))
+const resendSeconds = computed(() => Math.max(0, Math.ceil((resendAt.value - now.value) / 1000)))
+watch(provider, () => { error.value = ''; codeMessage.value = ''; code.value = '' })
+
+async function sendCode() {
+  if (!email.value.trim()) { error.value = t('loginAuth.emailAddressRequired'); return }
+  sendingCode.value = true; error.value = ''; codeMessage.value = ''
+  try {
+    const { data } = await client.post<{ retry_after: number }>(`/auth/email/${encodeURIComponent(provider.value)}/code`, { email: email.value }, { timeout: 15_000 })
+    now.value = Date.now(); resendAt.value = now.value + data.retry_after * 1000
+    codeMessage.value = t('loginAuth.codeSent')
+  } catch (sendError) {
+    error.value = axios.isAxiosError(sendError) ? sendError.response?.data?.message || t('loginAuth.unavailable') : t('loginAuth.unavailable')
+  } finally { sendingCode.value = false }
+}
 
 function safeRedirect(value: unknown) {
   return typeof value === 'string' && value.startsWith('/') && !value.startsWith('//') && !value.includes('\\') ? value : '/'
 }
 
 async function submit() {
-  if (!username.value.trim() || !password.value) {
-    error.value = '请输入用户名和密码。'
+  if (isEmail.value ? !email.value.trim() || !/^\d{6}$/.test(code.value) : !username.value.trim() || !password.value) {
+    error.value = t(isEmail.value ? 'loginAuth.emailRequired' : 'loginAuth.credentialsRequired')
     return
   }
   loading.value = true
   error.value = ''
   try {
-    if (provider.value === 'local') await auth.login(username.value, password.value)
+    if (isEmail.value) await auth.loginEmail(provider.value, email.value, code.value)
+    else if (provider.value === 'local') await auth.login(username.value, password.value)
     else await auth.loginLDAP(provider.value, username.value, password.value)
     await router.replace(safeRedirect(route.query.redirect))
   } catch (submitError) {
     error.value = axios.isAxiosError(submitError)
-      ? (submitError.response?.data as { message?: string } | undefined)?.message || '登录服务暂时不可用，请稍后重试。'
-      : '登录服务暂时不可用，请稍后重试。'
+      ? (submitError.response?.data as { message?: string } | undefined)?.message || t('loginAuth.unavailable')
+      : t('loginAuth.unavailable')
   } finally {
     loading.value = false
   }
@@ -52,9 +75,15 @@ function externalLogin(item: LoginProvider) {
 }
 
 onMounted(async () => {
+  timer = setInterval(() => { now.value = Date.now() }, 1000)
   try { providers.value = await getLoginProviders() } catch { providers.value = [] }
-  if (route.query.reason === 'unavailable') error.value = '暂时无法读取登录状态，请确认 EDO 服务已启动。'
+  if (route.query.reason === 'unavailable') error.value = t('loginAuth.statusUnavailable')
+  if (route.query.external_error) {
+    const errors: Record<string, string> = { expired: 'expired', not_bound: 'notBound', cancelled: 'cancelled', email_unverified: 'unverified' }
+    error.value = t(`loginAuth.${errors[String(route.query.external_error)] || 'externalFailed'}`)
+  }
 })
+onUnmounted(() => { if (timer) clearInterval(timer) })
 </script>
 
 <template>
@@ -70,13 +99,20 @@ onMounted(async () => {
     </section>
     <section class="login-panel">
       <form class="login-card" @submit.prevent="submit">
-        <div class="login-card-head"><h2>欢迎回来</h2><p>登录 EDO 继续工作</p></div>
+        <div class="login-card-head"><h2>{{ t('loginAuth.welcome') }}</h2><p>{{ t('loginAuth.welcomeHint') }}</p></div>
         <a-alert v-if="error" type="error" show-icon :message="error" />
-        <a-segmented v-if="ldapProviders.length" v-model:value="provider" block :options="[{ label: 'EDO 账号', value: 'local' }, ...ldapProviders.map((item) => ({ label: item.display_name, value: item.id }))]" />
-        <label><span>用户名</span><a-input v-model:value="username" size="large" autocomplete="username" placeholder="请输入用户名"><template #prefix><UserRound /></template></a-input></label>
-        <label><span>密码</span><a-input-password v-model:value="password" size="large" autocomplete="current-password" placeholder="请输入密码"><template #prefix><LockKeyhole /></template></a-input-password></label>
-        <a-button type="primary" html-type="submit" size="large" block :loading="loading">登录</a-button>
-        <template v-if="oauthProviders.length"><a-divider>其他登录方式</a-divider><div class="oauth-list"><a-button v-for="item in oauthProviders" :key="item.id" @click="externalLogin(item)">{{ item.display_name }}</a-button></div></template>
+        <a-select v-if="formOptions.length > 1" v-model:value="provider" size="large" :aria-label="t('loginAuth.title')" :options="formOptions" />
+        <template v-if="isEmail">
+          <a-alert v-if="codeMessage" type="success" show-icon :message="codeMessage" />
+          <label><span>{{ t('loginAuth.emailAddress') }}</span><a-input v-model:value="email" type="email" size="large" autocomplete="email" :placeholder="t('loginAuth.emailPlaceholder')" :maxlength="254" /></label>
+          <label><span>{{ t('loginAuth.code') }}</span><div class="email-code-row"><a-input v-model:value="code" inputmode="numeric" size="large" autocomplete="one-time-code" :maxlength="6" :placeholder="t('loginAuth.codePlaceholder')" /><a-button size="large" :loading="sendingCode" :disabled="resendSeconds > 0" @click="sendCode">{{ resendSeconds > 0 ? t('loginAuth.resend', { seconds: resendSeconds }) : t('loginAuth.sendCode') }}</a-button></div></label>
+        </template>
+        <template v-else>
+          <label><span>{{ t('loginAuth.username') }}</span><a-input v-model:value="username" size="large" autocomplete="username" :placeholder="t('loginAuth.usernamePlaceholder')"><template #prefix><UserRound /></template></a-input></label>
+          <label><span>{{ t('loginAuth.password') }}</span><a-input-password v-model:value="password" size="large" autocomplete="current-password" :placeholder="t('loginAuth.passwordPlaceholder')"><template #prefix><LockKeyhole /></template></a-input-password></label>
+        </template>
+        <a-button type="primary" html-type="submit" size="large" block :loading="loading">{{ t('loginAuth.login') }}</a-button>
+        <template v-if="oauthProviders.length"><a-divider>{{ t('loginAuth.other') }}</a-divider><div class="oauth-list"><a-button v-for="item in oauthProviders" :key="item.id" @click="externalLogin(item)">{{ item.display_name }}</a-button></div></template>
       </form>
       <p class="login-copyright">EDO · 安全、清晰、可追踪</p>
     </section>
@@ -106,5 +142,6 @@ onMounted(async () => {
 label { display: grid; gap: 7px; color: var(--edo-text); font-weight: 500; }
 label :deep(.ant-input-prefix) svg { width: 17px; color: var(--edo-muted); }
 .oauth-list { display: flex; flex-wrap: wrap; gap: 8px; }.login-copyright { margin-top: 58px; color: var(--edo-muted); font-size: 12px; }
+.email-code-row { display: flex; gap: 8px; min-width: 0; }.email-code-row > :first-child { min-width: 0; }
 @media (max-width: 820px) { .vben-login-page { display: block; background: var(--edo-bg); }.login-visual { display: none; }.login-panel { background: var(--edo-bg); }.login-card { padding: 26px; border: 1px solid var(--edo-border); border-radius: 10px; background: var(--edo-surface); box-shadow: var(--edo-shadow); } }
 </style>

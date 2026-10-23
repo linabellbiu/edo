@@ -1,6 +1,9 @@
 package httpapi
 
 import (
+	"crypto/sha256"
+	"crypto/subtle"
+	"encoding/hex"
 	"errors"
 	"log/slog"
 	"net/http"
@@ -32,6 +35,55 @@ type providerStatusRequest struct {
 	IsActive *bool `json:"is_active" binding:"required"`
 }
 
+type emailLoginRequest struct {
+	Email string `json:"email" binding:"required,max=254"`
+	Code  string `json:"code" binding:"required,len=6,numeric"`
+}
+
+func (h identityHandler) sendEmailCode(c *gin.Context) {
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 4096)
+	var request struct {
+		Email string `json:"email" binding:"required,max=254"`
+	}
+	if err := c.ShouldBindJSON(&request); err != nil {
+		h.logger.Warn("邮箱验证码请求无效", "operation", "auth_email_code_validate", "request_id", requestIDFrom(c))
+		writeError(c, http.StatusBadRequest, "invalid_request", "请输入有效的邮箱地址")
+		return
+	}
+	if err := h.service.SendEmailCode(c.Request.Context(), c.Param("id"), request.Email, c.ClientIP()); err != nil {
+		h.writeLoginError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"message": "若该邮箱符合登录条件，验证码将发送到你的邮箱，5 分钟内有效", "retry_after": 60})
+}
+
+func (h identityHandler) loginEmail(c *gin.Context) {
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 4096)
+	var request emailLoginRequest
+	if err := c.ShouldBindJSON(&request); err != nil {
+		h.logger.Warn("邮箱登录请求无效", "operation", "auth_email_login_validate", "request_id", requestIDFrom(c))
+		writeError(c, http.StatusBadRequest, "invalid_request", "请输入邮箱和六位验证码")
+		return
+	}
+	result, err := h.service.LoginEmail(c.Request.Context(), c.Param("id"), request.Email, request.Code, c.ClientIP())
+	if err != nil {
+		h.writeLoginError(c, err)
+		return
+	}
+	permissions, err := h.auth.access.UserPermissions(c.Request.Context(), result.User)
+	if err != nil {
+		_ = h.auth.sessions.Delete(c.Request.Context(), result.Token)
+		h.logger.Error("读取邮箱登录用户权限失败", "operation", "auth_email_permissions", "user_id", result.User.ID, "err", err)
+		writeInternalError(c)
+		return
+	}
+	h.auth.setSessionCookie(c, result.Token, result.ExpiresAt)
+	c.Set(currentUserKey, result.User)
+	response := toUserResponse(result.User)
+	response.Permissions = permissions
+	c.JSON(http.StatusOK, gin.H{"user": response})
+}
+
 func (h identityHandler) listPublic(c *gin.Context) {
 	providers, err := h.service.ListPublic(c.Request.Context())
 	if err != nil {
@@ -56,6 +108,7 @@ func (h identityHandler) create(c *gin.Context) {
 	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 64*1024)
 	var request identity.ProviderInput
 	if err := c.ShouldBindJSON(&request); err != nil {
+		h.logger.Warn("登录方式配置请求无效", "operation", "identity_provider_create_validate", "request_id", requestIDFrom(c), "err", err)
 		writeError(c, http.StatusBadRequest, "invalid_request", "请检查登录方式配置")
 		return
 	}
@@ -73,6 +126,7 @@ func (h identityHandler) update(c *gin.Context) {
 	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 64*1024)
 	var request identity.ProviderInput
 	if err := c.ShouldBindJSON(&request); err != nil {
+		h.logger.Warn("登录方式配置请求无效", "operation", "identity_provider_update_validate", "provider_id", c.Param("id"), "request_id", requestIDFrom(c), "err", err)
 		writeError(c, http.StatusBadRequest, "invalid_request", "请检查登录方式配置")
 		return
 	}
@@ -128,17 +182,38 @@ func (h identityHandler) startOAuth(c *gin.Context) {
 		h.writeLoginError(c, err)
 		return
 	}
+	parsed, err := url.Parse(location)
+	if err != nil || parsed.Query().Get("state") == "" {
+		h.logger.Error("生成外部登录跳转失败", "operation", "identity_oauth_start", "provider_id", c.Param("id"), "err", err)
+		writeInternalError(c)
+		return
+	}
+	state := parsed.Query().Get("state")
+	http.SetCookie(c.Writer, &http.Cookie{Name: oauthCookieName(state), Value: state, Path: "/api/v1/auth/oauth", MaxAge: 600, HttpOnly: true, Secure: h.auth.config.CookieSecure, SameSite: http.SameSiteLaxMode})
 	c.Redirect(http.StatusFound, location)
 }
 
 func (h identityHandler) callbackOAuth(c *gin.Context) {
+	state := c.Query("state")
+	cookie, cookieErr := c.Cookie(oauthCookieName(state))
+	if cookieErr != nil || len(state) < 32 || len(state) > 128 || subtle.ConstantTimeCompare([]byte(cookie), []byte(state)) != 1 {
+		h.logger.Warn("外部登录浏览器状态不匹配", "operation", "identity_oauth_browser_state", "provider_id", c.Param("id"), "request_id", requestIDFrom(c))
+		h.recordOAuthAudit(c, "", model.AuditFailed, "expired")
+		c.Redirect(http.StatusFound, externalLoginErrorURL("/", "expired"))
+		return
+	}
+	http.SetCookie(c.Writer, &http.Cookie{Name: oauthCookieName(state), Value: "", Path: "/api/v1/auth/oauth", MaxAge: -1, HttpOnly: true, Secure: h.auth.config.CookieSecure, SameSite: http.SameSiteLaxMode})
 	providerError := c.Query("error")
 	codeValue := c.Query("code")
+	if codeValue == "" {
+		codeValue = c.Query("authCode")
+	}
 	if providerError != "" {
 		codeValue = ""
 	}
 	result, returnTo, err := h.service.CompleteOAuth(c.Request.Context(), c.Param("id"), c.Query("state"), codeValue, c.ClientIP())
 	if err != nil || providerError != "" {
+		h.logger.Warn("外部登录回调失败", "operation", "identity_oauth_callback", "provider_id", c.Param("id"), "request_id", requestIDFrom(c), "err", err)
 		code := "failed"
 		if errors.Is(err, identity.ErrInvalidState) {
 			code = "expired"
@@ -159,6 +234,7 @@ func (h identityHandler) callbackOAuth(c *gin.Context) {
 }
 
 func (h identityHandler) writeProviderError(c *gin.Context, err error) {
+	h.logger.Warn("登录方式配置操作失败", "operation", "identity_provider_save", "provider_id", c.Param("id"), "request_id", requestIDFrom(c), "err", err)
 	switch {
 	case errors.Is(err, identity.ErrInvalidProvider):
 		c.JSON(http.StatusBadRequest, errorResponse{Code: "invalid_provider", Message: err.Error(), RequestID: requestIDFrom(c)})
@@ -173,7 +249,17 @@ func (h identityHandler) writeProviderError(c *gin.Context, err error) {
 }
 
 func (h identityHandler) writeLoginError(c *gin.Context, err error) {
+	h.logger.Warn("登录方式验证失败", "operation", "identity_login", "provider_id", c.Param("id"), "request_id", requestIDFrom(c), "err", err)
 	switch {
+	case errors.Is(err, identity.ErrEmailRateLimited):
+		c.Header("Retry-After", "60")
+		writeError(c, http.StatusTooManyRequests, "email_rate_limited", identity.ErrEmailRateLimited.Error())
+	case errors.Is(err, identity.ErrInvalidEmail):
+		writeError(c, http.StatusBadRequest, "invalid_email", identity.ErrInvalidEmail.Error())
+	case errors.Is(err, identity.ErrInvalidEmailCode):
+		writeError(c, http.StatusUnauthorized, "invalid_email_code", identity.ErrInvalidEmailCode.Error())
+	case errors.Is(err, identity.ErrEmailUnavailable):
+		writeError(c, http.StatusServiceUnavailable, "email_unavailable", identity.ErrEmailUnavailable.Error())
 	case errors.Is(err, identity.ErrInvalidCredentials), errors.Is(err, account.ErrInvalidCredentials):
 		c.JSON(http.StatusUnauthorized, errorResponse{Code: "invalid_credentials", Message: "用户名或密码错误", RequestID: requestIDFrom(c)})
 	case errors.Is(err, account.ErrTooManyAttempts):
@@ -204,4 +290,9 @@ func externalLoginErrorURL(returnTo, code string) string {
 		query.Set("redirect", returnTo)
 	}
 	return "/login?" + query.Encode()
+}
+
+func oauthCookieName(state string) string {
+	digest := sha256.Sum256([]byte(state))
+	return "edo_oauth_" + hex.EncodeToString(digest[:8])
 }

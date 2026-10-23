@@ -83,10 +83,18 @@ export const useAuthStore = defineStore('auth', () => {
     }
   }
 
+  async function loginEmail(providerID: string, email: string, code: string) {
+    await client.post(`/auth/email/${encodeURIComponent(providerID)}/login`, { email, code })
+    await restoreProject()
+    user.value = await getCurrentUser()
+    loaded.value = true
+    loadFailed.value = false
+  }
+
   function canAny(required: string[]) {
     if (user.value?.is_superuser || required.length === 0) return true
     return required.some((permission) => permissions.value.has(permission))
   }
 
-  return { user, loaded, loadFailed, permissions, ensureLoaded, login, loginLDAP, logout, canAny }
+  return { user, loaded, loadFailed, permissions, ensureLoaded, login, loginLDAP, loginEmail, logout, canAny }
 })

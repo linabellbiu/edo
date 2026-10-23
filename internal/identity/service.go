@@ -30,6 +30,8 @@ const (
 	TypeLDAP         = "ldap"
 	TypeGenericOAuth = "generic_oauth"
 	TypeFeishu       = "feishu"
+	TypeDingTalk     = "dingtalk"
+	TypeEmail        = "email"
 	TypeGoogle       = "google"
 	TypeGitHub       = "github"
 	TypeGitLab       = "gitlab"
@@ -48,12 +50,13 @@ var (
 )
 
 type ProviderInput struct {
-	Type          string `json:"type"`
-	Name          string `json:"name"`
-	DisplayName   string `json:"display_name"`
-	IsActive      bool   `json:"is_active"`
-	AutoCreate    bool   `json:"auto_create"`
-	DefaultRoleID string `json:"default_role_id"`
+	Email         *EmailSettings `json:"email,omitempty"`
+	Type          string         `json:"type"`
+	Name          string         `json:"name"`
+	DisplayName   string         `json:"display_name"`
+	IsActive      bool           `json:"is_active"`
+	AutoCreate    bool           `json:"auto_create"`
+	DefaultRoleID string         `json:"default_role_id"`
 
 	ClientID           string  `json:"client_id"`
 	ClientSecret       *string `json:"client_secret"`
@@ -82,8 +85,9 @@ type ProviderInput struct {
 
 type ProviderView struct {
 	model.IdentityProvider
-	HasClientSecret bool `json:"has_client_secret"`
-	HasBindPassword bool `json:"has_bind_password"`
+	Email           *EmailSettingsView `json:"email,omitempty"`
+	HasClientSecret bool               `json:"has_client_secret"`
+	HasBindPassword bool               `json:"has_bind_password"`
 }
 
 type PublicProvider struct {
@@ -107,11 +111,13 @@ type Service struct {
 	login      *account.LoginService
 	limiter    *auth.LoginRateLimiter
 	httpClient *http.Client
+	sendEmail  func(context.Context, EmailSettings, string, string) error
 }
 
 func NewService(db *gorm.DB, redis *cache.Redis, secrets *secret.Manager, accounts *account.Service, login *account.LoginService, limiter *auth.LoginRateLimiter) *Service {
 	return &Service{
 		db: db, cache: redis, secrets: secrets, accounts: accounts, login: login, limiter: limiter,
+		sendEmail: sendLoginEmail,
 		httpClient: &http.Client{
 			Timeout:       12 * time.Second,
 			CheckRedirect: func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse },
@@ -126,7 +132,11 @@ func (s *Service) List(ctx context.Context) ([]ProviderView, error) {
 	}
 	result := make([]ProviderView, 0, len(providers))
 	for _, provider := range providers {
-		result = append(result, providerView(provider))
+		view, err := s.providerView(provider)
+		if err != nil {
+			return nil, err
+		}
+		result = append(result, view)
 	}
 	return result, nil
 }
@@ -161,8 +171,8 @@ func (s *Service) Create(ctx context.Context, input ProviderInput, createdBy str
 		}
 		return nil, fmt.Errorf("创建登录方式失败: %w", err)
 	}
-	view := providerView(*provider)
-	return &view, nil
+	view, err := s.providerView(*provider)
+	return &view, err
 }
 
 func (s *Service) Update(ctx context.Context, id string, input ProviderInput) (*ProviderView, error) {
@@ -192,8 +202,8 @@ func (s *Service) Update(ctx context.Context, id string, input ProviderInput) (*
 		}
 		return nil, fmt.Errorf("更新登录方式失败: %w", err)
 	}
-	view := providerView(*provider)
-	return &view, nil
+	view, err := s.providerView(*provider)
+	return &view, err
 }
 
 func (s *Service) SetActive(ctx context.Context, id string, active bool) error {
@@ -260,7 +270,13 @@ func (s *Service) normalize(ctx context.Context, input ProviderInput, current *m
 		LDAPNicknameAttribute: strings.TrimSpace(input.LDAPNicknameAttribute), LDAPEmailAttribute: strings.TrimSpace(input.LDAPEmailAttribute),
 		LDAPStartTLS: input.LDAPStartTLS, AllowInsecure: input.AllowInsecure,
 	}
-	if input.Type == TypeLDAP {
+	if input.Type == TypeEmail {
+		encoded, err := s.normalizeEmail(input.Email, current)
+		if err != nil {
+			return nil, nil, nil, err
+		}
+		return provider, &encoded, nil, nil
+	} else if input.Type == TypeLDAP {
 		if err := validateLDAP(provider); err != nil {
 			return nil, nil, nil, err
 		}
@@ -365,13 +381,23 @@ func (s *Service) resolveUser(ctx context.Context, provider *model.IdentityProvi
 	return &user, nil
 }
 
-func providerView(provider model.IdentityProvider) ProviderView {
-	return ProviderView{IdentityProvider: provider, HasClientSecret: provider.ClientSecretCiphertext != "", HasBindPassword: provider.LDAPBindPasswordCiphertext != ""}
+func (s *Service) providerView(provider model.IdentityProvider) (ProviderView, error) {
+	view := ProviderView{IdentityProvider: provider, HasClientSecret: provider.Type != TypeEmail && provider.ClientSecretCiphertext != "", HasBindPassword: provider.LDAPBindPasswordCiphertext != ""}
+	if provider.Type == TypeEmail {
+		settings, err := s.emailSettings(&provider)
+		if err != nil {
+			return ProviderView{}, err
+		}
+		hasPassword := settings.Password != nil && *settings.Password != ""
+		settings.Password = nil
+		view.Email = &EmailSettingsView{EmailSettings: settings, HasPassword: hasPassword}
+	}
+	return view, nil
 }
 
 func isKnownType(value string) bool {
 	switch value {
-	case TypeLDAP, TypeGenericOAuth, TypeFeishu, TypeGoogle, TypeGitHub, TypeGitLab:
+	case TypeLDAP, TypeGenericOAuth, TypeFeishu, TypeDingTalk, TypeEmail, TypeGoogle, TypeGitHub, TypeGitLab:
 		return true
 	default:
 		return false
@@ -459,6 +485,15 @@ func applyPreset(input *ProviderInput) {
 		set(&input.SubjectField, "open_id")
 		set(&input.UsernameField, "email")
 		set(&input.NicknameField, "name")
+		set(&input.EmailField, "email")
+	case TypeDingTalk:
+		set(&input.AuthorizationURL, "https://login.dingtalk.com/oauth2/auth")
+		set(&input.TokenURL, "https://api.dingtalk.com/v1.0/oauth2/userAccessToken")
+		set(&input.UserInfoURL, "https://api.dingtalk.com/v1.0/contact/users/me")
+		set(&input.Scopes, "openid")
+		set(&input.SubjectField, "unionId")
+		set(&input.UsernameField, "nick")
+		set(&input.NicknameField, "nick")
 		set(&input.EmailField, "email")
 	case TypeGenericOAuth:
 		set(&input.SubjectField, "sub")
