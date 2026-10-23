@@ -52,6 +52,7 @@ type Worker struct {
 	failed    atomic.Uint64
 	retried   atomic.Uint64
 	realtime  *realtime.Bus
+	ackPeriod time.Duration
 }
 
 func (w *Worker) ConfigureRealtime(bus *realtime.Bus) { w.realtime = bus }
@@ -92,6 +93,7 @@ func New(
 	return &Worker{
 		db: db, messages: messages, registry: registry, logger: logger,
 		nats: natsConfig, config: workerConfig, ownerID: uuid.NewString(),
+		ackPeriod: workerConfig.LeaseDuration / 3,
 	}
 }
 
@@ -101,6 +103,16 @@ func (w *Worker) Run(ctx context.Context) error {
 	)
 	if err != nil {
 		return fmt.Errorf("初始化任务 Consumer 失败: %w", err)
+	}
+	info := consumer.CachedInfo()
+	if err := w.configureHeartbeat(info); err != nil {
+		actualConfig := jetstream.ConsumerConfig{}
+		if info != nil {
+			actualConfig = info.Config
+		}
+		w.logger.Error("初始化任务心跳失败", "operation", "worker_heartbeat_configure", "consumer", ConsumerName,
+			"ack_wait", actualConfig.AckWait, "backoff", actualConfig.BackOff, "lease_duration", w.config.LeaseDuration, "err", err)
+		return fmt.Errorf("初始化任务心跳失败: %w", err)
 	}
 	executionCtx, cancelExecutions := context.WithCancel(context.WithoutCancel(ctx))
 	defer cancelExecutions()
@@ -236,6 +248,7 @@ func (w *Worker) process(runContext context.Context, message queueMessage) {
 
 	taskContext, cancel := context.WithTimeout(jobContext, w.config.TaskTimeout)
 	heartbeatDone := make(chan struct{})
+	w.ackProgress(message, taskMessage.JobID)
 	go w.heartbeat(taskContext, message, taskMessage.JobID, heartbeatDone)
 	w.active.Add(1)
 	w.executed.Add(1)
@@ -331,7 +344,11 @@ func (w *Worker) claim(ctx context.Context, message task.Message, attempt int) (
 
 func (w *Worker) heartbeat(ctx context.Context, message queueMessage, jobID string, done chan<- struct{}) {
 	defer close(done)
-	interval := w.config.LeaseDuration / 3
+	interval := w.ackPeriod
+	if interval <= 0 {
+		w.logger.Error("任务心跳周期无效", "operation", "worker_heartbeat_interval", "job_id", jobID)
+		return
+	}
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	for {
@@ -339,9 +356,7 @@ func (w *Worker) heartbeat(ctx context.Context, message queueMessage, jobID stri
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			if err := message.InProgress(); err != nil {
-				w.logger.Error("续期 NATS 任务确认时间失败", "operation", "worker_ack_progress", "job_id", jobID, "err", err)
-			}
+			w.ackProgress(message, jobID)
 			leaseExpiresAt := time.Now().UTC().Add(w.config.LeaseDuration)
 			result := w.db.WithContext(ctx).Model(&model.Job{}).
 				Where("id = ? AND status = ? AND lease_owner = ?", jobID, model.JobRunning, w.ownerID).
@@ -350,6 +365,43 @@ func (w *Worker) heartbeat(ctx context.Context, message queueMessage, jobID stri
 				w.logger.Error("续期任务数据库租约失败", "operation", "worker_lease_renew", "job_id", jobID, "err", result.Error)
 			}
 		}
+	}
+}
+
+func (w *Worker) configureHeartbeat(info *jetstream.ConsumerInfo) error {
+	if info == nil {
+		return errors.New("任务 Consumer 状态不可用")
+	}
+	ackDeadline := info.Config.AckWait
+	if len(info.Config.BackOff) > 0 {
+		// BackOff 覆盖 AckWait，取所有投递阶段的最短期限，不假设退避值递增。
+		ackDeadline = info.Config.BackOff[0]
+		for _, delay := range info.Config.BackOff {
+			if delay <= 0 {
+				return errors.New("任务 Consumer 确认超时无效")
+			}
+			if delay < ackDeadline {
+				ackDeadline = delay
+			}
+		}
+	}
+	if ackDeadline <= 0 || w.config.LeaseDuration <= 0 {
+		return errors.New("任务 Consumer 确认超时或租约无效")
+	}
+	interval := w.config.LeaseDuration / 3
+	if ackDeadline/3 < interval {
+		interval = ackDeadline / 3
+	}
+	if interval <= 0 {
+		return errors.New("任务心跳周期无效")
+	}
+	w.ackPeriod = interval
+	return nil
+}
+
+func (w *Worker) ackProgress(message queueMessage, jobID string) {
+	if err := message.InProgress(); err != nil {
+		w.logger.Error("续期 NATS 任务确认时间失败", "operation", "worker_ack_progress", "job_id", jobID, "err", err)
 	}
 }
 
