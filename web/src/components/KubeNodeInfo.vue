@@ -19,4 +19,5 @@ const capacities=computed(()=>[['cpu','CPU'],['memory',t('k8s.memoryUsage')],['e
 </template>
 <style scoped>
 h4{margin:0 0 12px;font-size:14px}.node-facts{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:0 24px;margin:0}.node-facts>div{padding:12px 0;border-bottom:1px solid var(--edo-border)}dt{color:var(--edo-muted);font-size:12px}dd{margin:6px 0 0;overflow-wrap:anywhere;font-size:13px}.secondary{font-size:12px;line-height:1.8}@media(max-width:850px){.node-facts{grid-template-columns:repeat(2,minmax(0,1fr))}}@media(max-width:540px){.node-facts{grid-template-columns:1fr}}
+.detail-table-scroll{overflow-x:auto}.kube-detail-table{width:100%;border-collapse:collapse;text-align:left;font-size:13px}.kube-detail-table th{background:var(--edo-bg);color:var(--edo-muted);font-size:12px;font-weight:500;white-space:nowrap}.kube-detail-table th,.kube-detail-table td{padding:10px 12px;border:1px solid var(--edo-border);vertical-align:top;min-width:90px;line-height:1.6}
 </style>
