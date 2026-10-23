@@ -19,19 +19,29 @@ const { t, locale } = useI18n()
 let timer = 0, revision = 0, loadedWindow = 0, disposed = false, controller: AbortController | undefined
 const canExecuteQueueAction = computed(() => auth.canAny(['monitor.execute']))
 const ranges = computed(() => [900, 3600, 21600, 86400, 259200].map((value, i) => ({ value, label: t('systemMonitor.history.' + ['minutes15', 'hour1', 'hours6', 'hours24', 'days3'][i]) })))
-const definition = (key: string) => monitorMetrics.find(item => item.key === key)!
-const summaries = [
+const metricNameKeys: Record<string, string> = {
+  cpu: 'systemMonitor.memory.hostCPU',
+  memory: 'systemMonitor.memory.hostUsed',
+  rss: 'systemMonitor.memory.processRSS',
+}
+const definition = (key: string) => {
+  const item = monitorMetrics.find(item => item.key === key)!
+  const nameKey = metricNameKeys[key]
+  return nameKey ? { ...item, name: t(nameKey) } : item
+}
+const summaries = computed(() => [
   { ...definition('cpu'), icon: Cpu, definitions: [definition('cpu'), definition('processCPU')] },
+  { ...definition('rss'), icon: MemoryStick, definitions: [definition('rss')] },
   { ...definition('memory'), icon: MemoryStick, definitions: [definition('memory')] },
   { ...definition('worker'), icon: Gauge, definitions: [definition('worker')] },
   { ...definition('pending'), icon: RadioTower, definitions: [definition('pending')] },
-]
-const panels = [
+])
+const panels = computed(() => [
   { name: 'Worker 与任务', subtitle: '任务执行', icon: Gauge, keys: ['active', 'jobsPending', 'succeeded', 'failed', 'retried', 'outbox'] },
   { name: '消息队列', subtitle: 'JetStream', icon: RadioTower, keys: ['stored', 'storedBytes', 'consumers', 'redelivered', 'dead', 'deadBytes'] },
   { name: 'EDO 进程与 GC', subtitle: 'Go Runtime', icon: TimerReset, keys: ['rss', 'goroutines', 'heap', 'sys', 'gc', 'uptime'] },
   { name: '节点与数据库', subtitle: '基础资源', icon: Database, keys: ['load1', 'load5', 'connections', 'inUse', 'idle', 'wait'] },
-].map(panel => ({ ...panel, definitions: panel.keys.map(definition) }))
+].map(panel => ({ ...panel, definitions: panel.keys.map(definition) })))
 
 function currentValue(item: MetricDefinition) {
   if (!metrics.value) return '—'
@@ -45,7 +55,8 @@ function summaryDescription(key: string) {
   const data = metrics.value
   if (!data) return ''
   if (key === 'cpu') return data.host.logical_cpus + ' 个逻辑核心 · EDO ' + formatMetric(metricValue(data, definition('processCPU')), 'percent')
-  if (key === 'memory') return '总计 ' + formatMetric(data.host.memory_total_bytes, 'bytes')
+  if (key === 'rss') return t('systemMonitor.memory.processHeap', { heap: formatMetric(metricValue(data, definition('heap')), 'bytes', locale.value) })
+  if (key === 'memory') return t('systemMonitor.memory.hostTotal', { total: formatMetric(data.unavailable?.includes('host_memory') ? null : data.host.memory_total_bytes, 'bytes', locale.value) })
   if (key === 'worker') return data.worker.instances + ' 个实例 · 累计 ' + data.worker.executed + ' 次'
   return data.queue.pending_messages + ' 待投递 · ' + data.queue.ack_pending + ' 待确认'
 }
@@ -156,5 +167,5 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
-.metrics-time{color:var(--edo-muted);font-size:12px}.metric-alert{margin-bottom:14px}.monitor-history-toolbar{display:flex;align-items:center;flex-wrap:wrap;gap:12px;margin-bottom:14px}.sampling-label{color:var(--edo-muted);font-size:12px;white-space:nowrap}.metric-cards{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:14px}.metric-card{min-width:0;padding:16px 18px 12px}.metric-card>header{display:flex;align-items:center;gap:8px;color:var(--edo-muted);font-size:13px}.metric-card header svg{width:18px;height:18px;color:var(--edo-primary)}.metric-card strong{display:block;margin:14px 0 4px;font-size:25px;line-height:32px}.metric-card p{min-height:18px;margin:0 0 4px;color:var(--edo-muted);font-size:12px}.monitor-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px;margin-top:14px}.monitor-panel{min-width:0;padding:16px 18px}.monitor-panel>header{display:flex;align-items:center;justify-content:space-between;gap:10px}.monitor-panel header span{color:var(--edo-muted);font-size:12px}.monitor-panel h3{margin:2px 0 0;font-size:15px}.monitor-panel header>svg{width:20px;color:var(--edo-primary)}.queue-actions{display:flex;align-items:center;gap:8px}.queue-actions .ant-tag{margin-inline-end:0}dl{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));margin:14px 0 0}dl>div{min-width:0;padding:10px 12px 4px;border-top:1px solid var(--edo-border);border-right:1px solid var(--edo-border)}dl>div:nth-child(3n){border-right:0}dt{color:var(--edo-muted);font-size:12px}dd{margin:4px 0 2px;font-weight:650;font-size:15px;line-height:21px}.danger{color:var(--edo-danger,#e94f5f)}@media(max-width:1150px){.metric-cards{grid-template-columns:repeat(2,minmax(0,1fr))}}@media(max-width:760px){.metric-cards,.monitor-grid{grid-template-columns:1fr}}@media(max-width:460px){dl{grid-template-columns:repeat(2,minmax(0,1fr))}dl>div:nth-child(3n){border-right:1px solid var(--edo-border)}dl>div:nth-child(2n){border-right:0}.metric-card{padding:14px}}
+.metrics-time{color:var(--edo-muted);font-size:12px}.metric-alert{margin-bottom:14px}.monitor-history-toolbar{display:flex;align-items:center;flex-wrap:wrap;gap:12px;margin-bottom:14px}.sampling-label{color:var(--edo-muted);font-size:12px;white-space:nowrap}.metric-cards{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:14px}.metric-card{min-width:0;padding:16px 18px 12px}.metric-card>header{display:flex;align-items:center;gap:8px;color:var(--edo-muted);font-size:13px}.metric-card header svg{width:18px;height:18px;color:var(--edo-primary)}.metric-card strong{display:block;margin:14px 0 4px;font-size:25px;line-height:32px}.metric-card p{min-height:18px;margin:0 0 4px;color:var(--edo-muted);font-size:12px}.monitor-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px;margin-top:14px}.monitor-panel{min-width:0;padding:16px 18px}.monitor-panel>header{display:flex;align-items:center;justify-content:space-between;gap:10px}.monitor-panel header span{color:var(--edo-muted);font-size:12px}.monitor-panel h3{margin:2px 0 0;font-size:15px}.monitor-panel header>svg{width:20px;color:var(--edo-primary)}.queue-actions{display:flex;align-items:center;gap:8px}.queue-actions .ant-tag{margin-inline-end:0}dl{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));margin:14px 0 0}dl>div{min-width:0;padding:10px 12px 4px;border-top:1px solid var(--edo-border);border-right:1px solid var(--edo-border)}dl>div:nth-child(3n){border-right:0}dt{color:var(--edo-muted);font-size:12px}dd{margin:4px 0 2px;font-weight:650;font-size:15px;line-height:21px}.danger{color:var(--edo-danger,#e94f5f)}@media(max-width:1150px){.metric-cards{grid-template-columns:repeat(2,minmax(0,1fr))}}@media(max-width:760px){.metric-cards,.monitor-grid{grid-template-columns:1fr}}@media(max-width:460px){dl{grid-template-columns:repeat(2,minmax(0,1fr))}dl>div:nth-child(3n){border-right:1px solid var(--edo-border)}dl>div:nth-child(2n){border-right:0}.metric-card{padding:14px}}
 </style>

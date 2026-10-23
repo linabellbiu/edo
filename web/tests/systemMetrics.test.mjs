@@ -48,7 +48,7 @@ function harness(t) {
   const requests = [], failures = [], unmount = []
   const modules = {
     vue: { ...vue, onMounted() {}, onBeforeUnmount: fn => unmount.push(fn) },
-    'vue-i18n': { useI18n: () => ({ t: key => key, locale: vue.ref('zh-CN') }) },
+    'vue-i18n': { useI18n: () => ({ t: (key, values) => values ? key + ':' + JSON.stringify(values) : key, locale: vue.ref('zh-CN') }) },
     'ant-design-vue': { message: { error: value => failures.push(value) }, Modal: {} },
     '@/stores/auth': { useAuthStore: () => ({ canAny: () => false }) },
     '@/api/resources': { apiErrorMessage: () => '历史读取失败' },
@@ -64,6 +64,32 @@ function harness(t) {
   t.after(() => { unmount.forEach(fn => fn()); scope.stop() })
   return { state, requests, failures, unmount }
 }
+
+test('首屏分开展示服务器内存与 EDO RSS，不把整机用量当成进程用量', t => {
+  const { state } = harness(t)
+  const base = sample(0)
+  state.metrics.value = sample(0, {
+    host: { ...base.host, memory_used_bytes: 4 * 1024 ** 3, memory_total_bytes: 32 * 1024 ** 3 },
+    process: { ...base.process, rss_bytes: 128 * 1024 ** 2 },
+    runtime: { ...base.runtime, heap_alloc_bytes: 32 * 1024 ** 2 },
+  })
+  const summary = key => state.summaries.value.find(item => item.key === key)
+  assert.equal(state.summaries.value.length, 5)
+  assert.equal(summary('rss').name, 'systemMonitor.memory.processRSS')
+  assert.equal(summary('memory').name, 'systemMonitor.memory.hostUsed')
+  assert.equal(state.currentValue(summary('memory')), '4.0 GiB')
+  assert.equal(state.currentValue(summary('rss')), '128.0 MiB')
+  assert.equal(summary('rss').definitions[0].read(state.metrics.value), 128 * 1024 ** 2)
+  assert.equal(state.summaryDescription('rss'), 'systemMonitor.memory.processHeap:{"heap":"32.0 MiB"}')
+  assert.equal(state.summaryDescription('memory'), 'systemMonitor.memory.hostTotal:{"total":"32.0 GiB"}')
+  assert.equal(state.panels.value.find(panel => panel.subtitle === 'Go Runtime').definitions[0].name, summary('rss').name)
+
+  state.metrics.value = { ...state.metrics.value, unavailable: ['process_memory', 'runtime', 'host_memory'] }
+  assert.equal(state.currentValue(summary('rss')), '—')
+  assert.equal(state.currentValue(summary('memory')), '—')
+  assert.equal(state.summaryDescription('rss'), 'systemMonitor.memory.processHeap:{"heap":"—"}')
+  assert.equal(state.summaryDescription('memory'), 'systemMonitor.memory.hostTotal:{"total":"—"}')
+})
 
 test('首次读取完整历史，后续使用采样游标；时间范围失败后仍重新读取完整窗口', async t => {
   const { state, requests } = harness(t)

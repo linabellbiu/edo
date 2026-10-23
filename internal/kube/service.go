@@ -420,7 +420,8 @@ func safeRESTConfig(data []byte) (*rest.Config, error) {
 			return nil, ErrUnsafeKubeconfig
 		}
 	}
-	result, err := clientcmd.RESTConfigFromKubeConfig(data)
+	// 使用已校验的配置构造连接，避免官方字节入口再次解析同一份 kubeconfig。
+	result, err := clientcmd.NewNonInteractiveClientConfig(*rawConfig, "", &clientcmd.ConfigOverrides{}, nil).ClientConfig()
 	if err != nil {
 		return nil, ErrInvalidCluster
 	}

@@ -29,7 +29,8 @@ func newAuthorizationModel() (casbinmodel.Model, error) {
 		{"p", "p", "sub, perm, eft, scope"},
 		{"g", "g", "_, _, _"},
 		{"e", "e", "some(where (p.eft == allow)) && !some(where (p.eft == deny))"},
-		{"m", "m", `(r.sub == p.sub || (g(r.sub, p.sub, "") && p.scope == "platform") || (r.project != "" && g(r.sub, p.sub, r.project))) && r.perm == p.perm`},
+		// 权限码先匹配，避免为无关策略计算角色和项目关系。
+		{"m", "m", `r.perm == p.perm && (r.sub == p.sub || (g(r.sub, p.sub, "") && p.scope == "platform") || (r.project != "" && g(r.sub, p.sub, r.project)))`},
 	}
 	for _, definition := range definitions {
 		if !result.AddDef(definition.section, definition.name, definition.value) {

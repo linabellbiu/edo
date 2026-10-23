@@ -20,6 +20,11 @@ type MessagePublisher interface {
 	Publish(ctx context.Context, subject string, payload []byte, messageID string) error
 }
 
+const (
+	maximumPublishBatchSize = 100
+	payloadBatchSize        = 10
+)
+
 type Publisher struct {
 	db            *gorm.DB
 	messages      MessagePublisher
@@ -42,7 +47,7 @@ func (p *Publisher) Run(ctx context.Context) error {
 	ticker := time.NewTicker(p.interval)
 	defer ticker.Stop()
 	for {
-		if err := p.PublishBatch(ctx, 100); err != nil {
+		if err := p.PublishBatch(ctx, maximumPublishBatchSize); err != nil {
 			p.logger.Error("投递 Outbox 消息失败", "operation", "outbox_publish_batch", "err", err)
 		}
 		select {
@@ -54,22 +59,43 @@ func (p *Publisher) Run(ctx context.Context) error {
 }
 
 func (p *Publisher) PublishBatch(ctx context.Context, limit int) error {
-	var events []model.OutboxEvent
+	if limit <= 0 {
+		return nil
+	}
+	limit = min(limit, maximumPublishBatchSize)
+	var ids []uint64
 	now := time.Now().UTC()
-	if err := p.db.WithContext(ctx).
+	if err := p.db.WithContext(ctx).Model(&model.OutboxEvent{}).
 		Where("published_at IS NULL AND failed_at IS NULL AND next_attempt_at <= ?", now).
-		Order("id ASC").Limit(limit).Find(&events).Error; err != nil {
+		Order("id ASC").Limit(limit).Pluck("id", &ids).Error; err != nil {
 		return fmt.Errorf("读取待投递消息失败: %w", err)
 	}
-	for i := range events {
-		if err := p.publishOne(ctx, &events[i]); err != nil {
-			p.logger.Error("投递 Outbox 消息失败",
-				"operation", "outbox_publish",
-				"event_id", events[i].EventID,
-				"aggregate_id", events[i].AggregateID,
-				"attempt", events[i].PublishAttempts+1,
-				"err", err,
-			)
+	// 先固定本轮 ID，再小批读取大字段；失败、退避及新插入事件都不会改写本轮集合。
+	var events []model.OutboxEvent
+	for offset := 0; offset < len(ids); offset += payloadBatchSize {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		batch := ids[offset:min(offset+payloadBatchSize, len(ids))]
+		if err := p.db.WithContext(ctx).Omit("last_error").
+			Where("id IN ?", batch).Order("id ASC").Find(&events).Error; err != nil {
+			return fmt.Errorf("读取待投递消息失败: %w", err)
+		}
+		for i := range events {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			if err := p.publishOne(ctx, &events[i]); err != nil {
+				p.logger.Error("投递 Outbox 消息失败",
+					"operation", "outbox_publish",
+					"event_id", events[i].EventID,
+					"aggregate_id", events[i].AggregateID,
+					"attempt", events[i].PublishAttempts+1,
+					"err", err,
+				)
+			}
+			// 不等整轮发布结束就解除已处理载荷的引用。
+			events[i] = model.OutboxEvent{}
 		}
 	}
 	return nil

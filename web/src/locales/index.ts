@@ -93,6 +93,7 @@ export const messages = {
     },
     dashboard: { title: '分析页', healthy: '运行正常', checking: '正在检查', updated: '最近更新' },
     systemMonitor: {
+      memory: { hostCPU: '服务器 CPU', hostUsed: '服务器已用内存', processRSS: 'EDO 进程内存（RSS）', processHeap: 'Go 堆 {heap}', hostTotal: '服务器总内存 {total}' },
       history: { description: '每 5 秒更新，历史记录保留 3 天。', range: '历史范围', minutes15: '15 分钟', hour1: '1 小时', hours6: '6 小时', hours24: '24 小时', days3: '3 天', empty: '暂无历史数据', chartLabel: '{name}历史折线图，可用左右方向键查看', unitHint: '单位：{unit}', count: '个', sampling: '间隔：{seconds} 秒', error: '历史数据加载失败，当前显示上次结果。', refresh: '立即刷新', noData: '正在读取系统指标…', retry: '重试', updating: '正在同步', unavailable: '部分指标暂不可用：{items}' },
       deadLetters: {
         clear: '清空死信', confirmTitle: '清空全部死信？',
@@ -325,6 +326,7 @@ export const messages = {
     },
     dashboard: { title: 'Analytics', healthy: 'Healthy', checking: 'Checking', updated: 'Updated' },
     systemMonitor: {
+      memory: { hostCPU: 'Server CPU', hostUsed: 'Server memory used', processRSS: 'EDO process memory (RSS)', processHeap: 'Go heap {heap}', hostTotal: 'Server total memory {total}' },
       history: { description: 'Updated every 5 seconds. History is kept for 3 days.', range: 'History range', minutes15: '15 min', hour1: '1 hour', hours6: '6 hours', hours24: '24 hours', days3: '3 days', empty: 'Waiting for samples', chartLabel: '{name} history chart; use arrow keys to inspect', unitHint: 'Unit: {unit}', count: 'count', sampling: 'Sample: {seconds}s', error: 'History could not be loaded. The last result is retained.', refresh: 'Refresh now', noData: 'Loading system metrics…', retry: 'Retry', updating: 'Syncing', unavailable: 'Some metrics are unavailable: {items}' },
       deadLetters: {
         clear: 'Clear dead letters', confirmTitle: 'Clear all dead letters?',
