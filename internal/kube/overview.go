@@ -2,6 +2,7 @@ package kube
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -23,10 +24,14 @@ type ResourceUsage struct {
 	Timestamp string  `json:"timestamp"`
 }
 type NodeStatistics struct {
-	Name   string  `json:"name"`
-	Ready  bool    `json:"ready"`
-	CPU    float64 `json:"cpu"`
-	Memory float64 `json:"memory"`
+	Name        string  `json:"name"`
+	UID         string  `json:"uid"`
+	Ready       bool    `json:"ready"`
+	CPU         float64 `json:"cpu"`
+	Memory      float64 `json:"memory"`
+	PodCapacity *int64  `json:"pod_capacity"`
+	Pods        *int64  `json:"pods"`
+	PodState    string  `json:"pod_state"`
 }
 type Overview struct {
 	Counts       map[string]ResourceCount            `json:"counts"`
@@ -68,6 +73,11 @@ func (s *Service) Overview(ctx context.Context, clusterID, namespace string, all
 		return nil, err
 	}
 	result := &Overview{Counts: map[string]ResourceCount{}, Nodes: []NodeStatistics{}, Phases: map[string]int{}, Usage: map[string]map[string]ResourceUsage{}, MetricsState: map[string]string{}, CollectedAt: time.Now().UTC(), Errors: map[string]error{}}
+	podsByNode := map[string]int64{}
+	podState := "no_permission"
+	if allowed["kubernetes.workload.read"] {
+		podState = "unavailable"
+	}
 	for _, def := range resourceDefinitions {
 		if !allowed[def.Permission+".read"] {
 			continue
@@ -100,7 +110,15 @@ func (s *Service) Overview(ctx context.Context, clusterID, namespace string, all
 							ready = condition["status"] == "True"
 						}
 					}
-					result.Nodes = append(result.Nodes, NodeStatistics{Name: item.GetName(), Ready: ready, CPU: quantity(alloc["cpu"]), Memory: quantity(alloc["memory"])})
+					var podCapacity *int64
+					if text, ok := alloc["pods"].(string); ok {
+						if q, err := resource.ParseQuantity(text); err == nil {
+							if value, ok := q.AsInt64(); ok && value > 0 {
+								podCapacity = &value
+							}
+						}
+					}
+					result.Nodes = append(result.Nodes, NodeStatistics{Name: item.GetName(), UID: string(item.GetUID()), Ready: ready, CPU: quantity(alloc["cpu"]), Memory: quantity(alloc["memory"]), PodCapacity: podCapacity})
 				}
 				if def.Resource == "pods" {
 					phase, _, _ := unstructured.NestedString(item.Object, "status", "phase")
@@ -111,6 +129,9 @@ func (s *Service) Overview(ctx context.Context, clusterID, namespace string, all
 						phase = "Unknown"
 					}
 					result.Phases[phase]++
+					if namespace == "*" {
+						countNodePod(podsByNode, &item)
+					}
 				}
 			}
 			continuation = items.GetContinue()
@@ -131,6 +152,26 @@ func (s *Service) Overview(ctx context.Context, clusterID, namespace string, all
 			}
 		}
 		result.Counts[def.Resource] = count
+		if def.Resource == "pods" && namespace == "*" && count.State == "ok" {
+			podState = "ok"
+		}
+	}
+	if allowed["kubernetes.node.read"] && allowed["kubernetes.workload.read"] && namespace != "*" {
+		// 节点用量不跟随命名空间筛选，避免把局部数量当成整个节点的占用。
+		var err error
+		podsByNode, err = listNodePodCounts(ctx, client)
+		if err != nil {
+			result.Errors["node_pods"] = resourceError("pods", err)
+		} else {
+			podState = "ok"
+		}
+	}
+	for i := range result.Nodes {
+		result.Nodes[i].PodState = podState
+		if podState == "ok" {
+			count := podsByNode[result.Nodes[i].Name]
+			result.Nodes[i].Pods = &count
+		}
 	}
 	for _, kind := range []string{"nodes", "pods"} {
 		def, _ := ResourceType(kind)
@@ -209,6 +250,32 @@ func (s *Service) Overview(ctx context.Context, clusterID, namespace string, all
 		}
 	}
 	return result, nil
+}
+
+func countNodePod(counts map[string]int64, pod *unstructured.Unstructured) {
+	if node, _, _ := unstructured.NestedString(pod.Object, "spec", "nodeName"); node != "" {
+		counts[node]++
+	}
+}
+
+func listNodePodCounts(ctx context.Context, client dynamic.Interface) (map[string]int64, error) {
+	counts := map[string]int64{}
+	api := client.Resource(schema.GroupVersionResource{Version: "v1", Resource: "pods"}).Namespace("")
+	continuation := ""
+	for page := 0; page < 20; page++ {
+		list, err := api.List(ctx, metav1.ListOptions{Limit: 500, Continue: continuation})
+		if err != nil {
+			return nil, err
+		}
+		for i := range list.Items {
+			countNodePod(counts, &list.Items[i])
+		}
+		continuation = list.GetContinue()
+		if continuation == "" {
+			return counts, nil
+		}
+	}
+	return nil, errors.New("节点 Pod 统计超过数量上限")
 }
 
 func validUsage(values map[string]any) bool {

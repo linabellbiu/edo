@@ -14,6 +14,37 @@ function load(path,modules){
  return module.exports
 }
 const api=load('../src/api/kubernetes.ts',{})
+test('节点三条用量条显示已用与可分配量，0 值有效，超量只截取条宽不截取数值',()=>{
+ const now=Date.now(),node={kind:'Node',metadata:{name:'worker',uid:'node-1',creationTimestamp:new Date(now-3600_000).toISOString()}}
+ const data={nodes:[{name:'worker',uid:'node-1',cpu:4,memory:8*1073741824,pod_capacity:110,pods:26,pod_state:'ok'}],usage:{nodes:{worker:{cpu:.229,memory:3.7*1073741824,timestamp:new Date(now).toISOString()}}},collected_at:new Date(now).toISOString()}
+ let meters=api.nodeResourceUsage(data,node,false,now)
+ assert.equal(meters.length,3);assert.ok(Math.abs(meters[0].percent-5.725)<1e-10);assert.equal(meters[1].percent,46.25);assert.equal(meters[2].percent,26/110*100)
+ data.usage.nodes.worker.cpu=0;data.nodes[0].pods=0;meters=api.nodeResourceUsage(data,node,false,now)
+ assert.equal(meters[0].percent,0);assert.equal(meters[0].state,'ok');assert.equal(meters[2].state,'ok')
+ data.usage.nodes.worker.cpu=5;meters=api.nodeResourceUsage(data,node,false,now)
+ assert.equal(meters[0].percent,125);assert.equal(meters[0].width,100);assert.equal(meters[0].used,5)
+})
+test('节点用量遇到旧 UID、过期采样、读取错误或无权限时显示空缺，不伪造零',()=>{
+ const now=Date.now(),node={kind:'Node',metadata:{name:'worker',uid:'node-1',creationTimestamp:new Date(now-3600_000).toISOString()}}
+ const data={nodes:[{name:'worker',uid:'node-1',cpu:4,memory:8*1073741824,pod_capacity:110,pods:null,pod_state:'no_permission'}],usage:{nodes:{worker:{cpu:1,memory:1024,timestamp:new Date(now-180_000).toISOString()}}},collected_at:new Date(now).toISOString()}
+ let meters=api.nodeResourceUsage(data,node,false,now)
+ assert.equal(meters[0].used,undefined);assert.equal(meters[2].used,undefined);assert.equal(meters[2].state,'no_permission')
+ data.usage.nodes.worker.timestamp=new Date(now).toISOString()
+ assert.equal(api.nodeResourceUsage(data,node,true,now)[0].used,undefined)
+ data.nodes[0].uid='old-node';assert.equal(api.nodeResourceUsage(data,node,false,now)[0].total,undefined)
+ data.nodes[0].uid='node-1';data.collected_at=new Date(now-180_000).toISOString();assert.equal(api.nodeResourceUsage(data,node,false,now)[0].used,undefined)
+ data.collected_at=new Date(now).toISOString();data.nodes[0].cpu=0
+ meters=api.nodeResourceUsage(data,node,false,now);assert.equal(meters[0].percent,undefined);assert.equal(meters[0].state,'missing_capacity')
+})
+test('资源条的悬浮提示保留完整数值和统计口径，键盘聚焦可查看',()=>{
+ const component=load('../src/components/KubeNodeUsage.vue',{vue,'vue-i18n':{useI18n:()=>({t:key=>key})},'@/api/kubernetes':api}).default
+ const now=Date.now(),node={kind:'Node',metadata:{name:'worker',uid:'1'}},overview={collected_at:new Date(now).toISOString(),nodes:[{name:'worker',uid:'1',cpu:4,memory:8*1073741824,pod_capacity:110,pods:26,pod_state:'ok'}],usage:{nodes:{worker:{cpu:.229,memory:3.7*1073741824,timestamp:new Date(now).toISOString()}}}}
+ const state=component.setup({node,overview},{expose(){}})
+ assert.equal(state.numbers(state.meters.value[0]),'0.229 / 4');assert.equal(state.numbers(state.meters.value[1]),'3.7 / 8 GiB')
+ assert.match(state.description.value,/CPU 5.7%/);assert.match(state.description.value,/26 \/ 110/)
+ const source=readFileSync(new URL('../src/components/KubeNodeUsage.vue',import.meta.url),'utf8')
+ assert.match(source,/tabindex="0"/);assert.match(source,/\['hover','focus'\]/);assert.match(source,/:mouse-enter-delay="0.1"/)
+})
 test('独立 Pod 直接创建 spec，支持重启策略和节点标签，不套工作负载模板',()=>{
  const state=editor('Pod');state.form.name='standalone';state.form.containers[0].image='nginx:stable-alpine';state.restartPolicy.value='Never';state.nodeSelector.value=[{key:'pool',value:'test'}]
  const object=state.buildObject()

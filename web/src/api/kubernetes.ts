@@ -35,22 +35,46 @@ export const identityOf = (object: KubeObject) => ({ uid: object.metadata.uid, r
 export const kubeKey = (object: KubeObject) => String(object.metadata.uid)
 
 export interface KubeUsage { cpu:number; memory:number; timestamp:string }
+export interface KubeNodeStatistics {name:string;uid:string;ready:boolean;cpu:number;memory:number;pod_capacity:number|null;pods:number|null;pod_state:'ok'|'unavailable'|'no_permission'}
 export interface KubeOverview {
   counts:Record<string,{count:number;state:'ok'|'partial'|'unavailable'}>
-  nodes:Array<{name:string;ready:boolean;cpu:number;memory:number}> | null
+  nodes:KubeNodeStatistics[] | null
   phases:Record<string,number> | null
   usage:Record<string,Record<string,KubeUsage>>
   metrics_state:Record<string,string>
   collected_at:string
 }
-export function usageFor(data:KubeOverview|null,object:KubeObject):KubeUsage|undefined {
+export function usageFor(data:KubeOverview|null,object:KubeObject,now=Date.now()):KubeUsage|undefined {
   const kind=object.kind==='Node'?'nodes':object.kind==='Pod'?'pods':''
   const key=kind==='pods'?`${object.metadata.namespace}/${object.metadata.name}`:object.metadata.name
   const usage=data?.usage[kind]?.[key]
-  return usage && Date.now()-Date.parse(usage.timestamp)<=120_000 && Date.parse(usage.timestamp)>=Date.parse(object.metadata.creationTimestamp ?? '1970-01-01') ? usage : undefined
+  return usage && now-Date.parse(usage.timestamp)<=120_000 && Date.parse(usage.timestamp)<=now+60_000 && Date.parse(usage.timestamp)>=Date.parse(object.metadata.creationTimestamp ?? '1970-01-01') ? usage : undefined
 }
 export function formatKubeCPU(value:number|undefined) { return value===undefined?'—':value<1?`${Math.round(value*1000)} m`:`${Number(value.toFixed(2))} CPU` }
 export function formatKubeMemory(value:number|undefined) { return value===undefined?'—':value>=1073741824?`${(value/1073741824).toFixed(1)} GiB`:`${(value/1048576).toFixed(0)} MiB` }
+
+export interface NodeResourceUsage {
+  key:'cpu'|'memory'|'pods'
+  used:number|undefined
+  total:number|undefined
+  percent:number|undefined
+  width:number
+  state:'ok'|'loading'|'unavailable'|'no_permission'|'missing_capacity'
+}
+export function nodeResourceUsage(data:KubeOverview|null,node:KubeObject,failed=false,now=Date.now()):NodeResourceUsage[] {
+  const stats=data?.nodes?.find(item=>item.name===node.metadata.name&&item.uid===node.metadata.uid)
+  const at=Date.parse(data?.collected_at??'')
+  const fresh=Number.isFinite(at)&&now-at<=120_000&&at<=now+60_000
+  const usage=!failed&&fresh&&stats?usageFor(data,node,now):undefined
+  const valid=(value:unknown):value is number=>typeof value==='number'&&Number.isFinite(value)&&value>=0
+  const row=(key:NodeResourceUsage['key'],used:unknown,total:unknown,state:NodeResourceUsage['state']):NodeResourceUsage=>{
+    const amount=valid(used)?used:undefined,capacity=valid(total)&&total>0?total:undefined
+    const percent=amount!==undefined&&capacity!==undefined?amount/capacity*100:undefined
+    return {key,used:amount,total:capacity,percent,width:percent===undefined?0:Math.min(100,percent),state:amount!==undefined&&capacity!==undefined?'ok':amount!==undefined?'missing_capacity':state}
+  }
+  const state=failed||data?'unavailable':'loading'
+  return [row('cpu',usage?.cpu,stats?.cpu,state),row('memory',usage?.memory,stats?.memory,state),row('pods',!failed&&fresh&&stats?.pod_state==='ok'?stats.pods:undefined,stats?.pod_capacity,stats?.pod_state==='no_permission'?'no_permission':state)]
+}
 
 function canonical(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(canonical)
