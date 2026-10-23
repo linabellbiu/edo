@@ -9,7 +9,7 @@ const value=(text:string|undefined)=>!text||text==='—'?'—':props.date?format
 </script>
 <template>
   <a-tooltip :mouse-enter-delay="0.1" :trigger="['hover','focus']">
-    <template #title><span>{{ value(cell?.text) }}</span><br v-if="cell?.secondary" /><span v-if="cell?.secondary">{{ value(cell.secondary) }}</span></template>
+    <template #title><span>{{ value(cell?.text) }}</span><br v-if="cell?.secondary" /><span v-if="cell?.secondary">{{ value(cell.secondary) }}</span><template v-if="cell?.raw"><br /><span>{{ t('k8s.quantityOriginal') }}: {{ cell.raw }}</span></template></template>
     <div class="kube-cell" :class="{numeric:cell?.progress!==undefined||cell?.badge}" :tabindex="cell?.reference&&canFollow?undefined:0">
       <button v-if="cell?.reference&&canFollow" class="cell-link" @click="emit('follow',cell.reference)">{{ value(cell.text) }}</button><span v-else class="cell-primary" :class="cell?.badge?['kube-ready-badge',`is-${cell.badge}`]:undefined">{{ value(cell?.text) }}</span>
       <span v-if="!cell?.badge&&cell?.secondary&&cell.secondary!=='—'" class="cell-secondary">{{ value(cell.secondary) }}</span>

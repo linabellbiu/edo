@@ -3,7 +3,7 @@ import { computed } from 'vue'
 import {nodeConditionState} from '@/utils/kubernetesNode'
 import {formatDateTime} from '@/utils/time'
 import { useI18n } from 'vue-i18n'
-import { podSpec, type KubeObject, type KubeType } from '@/api/kubernetes'
+import { formatKubeQuantity, podSpec, type KubeObject, type KubeType } from '@/api/kubernetes'
 import { resourceCells, resourceColumns, ingressRoutes, podReferences, policyDirections, policyPeer, type KubeReference } from '@/utils/kubernetesPresentation'
 import KubeResourceCell from './KubeResourceCell.vue'
 const props=defineProps<{object:KubeObject;type:KubeType;canFollow:(reference?:KubeReference)=>boolean}>()
@@ -21,12 +21,13 @@ const containerState=(container:KubeObject)=>{
   const state=[...(props.object.status?.containerStatuses??[]),...(props.object.status?.initContainerStatuses??[])].find((item:KubeObject)=>item.name===container.name)
   return state?.state?.waiting?.reason??state?.state?.terminated?.reason??(state?.state?.running?t('k8s.state_running'):'—')
 }
-const resources=(container:KubeObject,field:string)=>['cpu','memory','ephemeral-storage'].filter(key=>container.resources?.[field]?.[key]!==undefined).map(key=>`${key}: ${container.resources[field][key]}`).join(' · ')||'—'
+const resources=(container:KubeObject,field:string)=>Object.entries(container.resources?.[field]??{}).map(([key,value])=>`${key}: ${formatKubeQuantity(key,value)}`).join(' · ')||'—'
+const rawResources=(container:KubeObject,field:string)=>Object.entries(container.resources?.[field]??{}).map(([key,value])=>`${key}: ${value}`).join(' · ')
 </script>
 <template>
   <section v-if="fields.length" class="resource-detail-section kube-facts-section"><h4>{{ t('k8s.resourceSettings') }}</h4><dl class="kube-detail-facts"><div v-for="field in fields" :key="field.key"><dt>{{ field.label }}</dt><dd><KubeResourceCell :cell="cells[field.key]" :date="['jobTiming','lastSchedule'].includes(field.key)" :can-follow="canFollow(cells[field.key]?.reference)" @follow="emit('follow',$event)" /></dd></div></dl></section>
 
-  <section v-if="containers.length" class="resource-detail-section"><h4>{{ t('k8s.containers') }}</h4><div class="detail-table-scroll"><table class="kube-detail-table"><thead><tr><th>{{ t('k8s.container') }}</th><th>{{ t('k8s.image') }}</th><th>{{ t('k8s.ports') }}</th><th>{{ t('k8s.resourceRequests') }}</th><th>{{ t('k8s.resourceLimits') }}</th><th v-if="object.kind==='Pod'">{{ t('k8s.status') }}</th></tr></thead><tbody><tr v-for="container in containers" :key="container.name"><td><strong>{{ container.name }}</strong><span v-if="container.init" class="muted">Init</span></td><td><code>{{ container.image }}</code></td><td>{{ (container.ports??[]).map((item:KubeObject)=>`${item.containerPort}/${item.protocol??'TCP'}`).join(' · ')||'—' }}</td><td>{{ resources(container,'requests') }}</td><td>{{ resources(container,'limits') }}</td><td v-if="object.kind==='Pod'">{{ containerState(container) }}</td></tr></tbody></table></div></section>
+  <section v-if="containers.length" class="resource-detail-section"><h4>{{ t('k8s.containers') }}</h4><div class="detail-table-scroll"><table class="kube-detail-table"><thead><tr><th>{{ t('k8s.container') }}</th><th>{{ t('k8s.image') }}</th><th>{{ t('k8s.ports') }}</th><th>{{ t('k8s.resourceRequests') }}</th><th>{{ t('k8s.resourceLimits') }}</th><th v-if="object.kind==='Pod'">{{ t('k8s.status') }}</th></tr></thead><tbody><tr v-for="container in containers" :key="container.name"><td><strong>{{ container.name }}</strong><span v-if="container.init" class="muted">Init</span></td><td><code>{{ container.image }}</code></td><td>{{ (container.ports??[]).map((item:KubeObject)=>`${item.containerPort}/${item.protocol??'TCP'}`).join(' · ')||'—' }}</td><td :title="rawResources(container,'requests')">{{ resources(container,'requests') }}</td><td :title="rawResources(container,'limits')">{{ resources(container,'limits') }}</td><td v-if="object.kind==='Pod'">{{ containerState(container) }}</td></tr></tbody></table></div></section>
 
   <section v-if="references.length" class="resource-detail-section"><h4>{{ t('k8s.referencedResources') }}</h4><div class="reference-list"><div v-for="reference in references" :key="`${reference.resource}/${reference.name}`"><span class="muted">{{ t(`k8s.type_${reference.resource}`) }}</span><button v-if="canFollow(reference)" class="detail-link" @click="emit('follow',reference)">{{ reference.name }}</button><span v-else>{{ reference.name }}</span></div></div></section>
 

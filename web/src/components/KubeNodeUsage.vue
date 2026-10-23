@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { nodeResourceUsage, type KubeObject, type KubeOverview, type NodeResourceUsage } from '@/api/kubernetes'
+import { formatKubeCPU, formatKubeMemory, nodeResourceUsage, type KubeObject, type KubeOverview, type NodeResourceUsage } from '@/api/kubernetes'
 import { formatDateTime } from '@/utils/time'
 
 const props=defineProps<{node:KubeObject;overview:KubeOverview|null;failed?:boolean}>()
@@ -11,10 +11,11 @@ const name=(key:string)=>({cpu:'CPU',memory:'Mem',pods:'Pod'}[key]??key)
 const percent=(meter:NodeResourceUsage)=>meter.percent===undefined?'—':`${meter.percent.toFixed(1)}%`
 function amount(value:number|undefined,key:string,exact=false){
   if(value===undefined)return '—'
-  if(key==='memory'){const gib=value/1073741824;return String(Number(gib.toFixed(exact?6:gib>0&&gib<0.1?3:2)))}
-  return String(Number(value.toFixed(key==='cpu'?(exact?9:3):0)))
+  if(key==='memory')return `${formatKubeMemory(value,exact)}${exact?` (${value} B)`:''}`
+  if(key==='cpu')return formatKubeCPU(value,exact)
+  return String(value)
 }
-function numbers(meter:NodeResourceUsage,exact=false){return `${amount(meter.used,meter.key,exact)} / ${amount(meter.total,meter.key,exact)}${meter.key==='memory'?' GiB':''}`}
+function numbers(meter:NodeResourceUsage,exact=false){return `${amount(meter.used,meter.key,exact)} / ${amount(meter.total,meter.key,exact)}`}
 function hint(meter:NodeResourceUsage){
   if(meter.state==='ok')return t(meter.key==='cpu'?'k8s.cpuUsageHint':meter.key==='memory'?'k8s.memoryUsageHint':'k8s.nodePodsHint')
   return t(meter.state==='loading'?'k8s.loading':meter.state==='no_permission'?'k8s.nodePodsNoPermission':meter.state==='missing_capacity'?'k8s.capacityMissing':meter.key==='pods'?'k8s.nodePodsUnavailable':'k8s.metricsUnavailable')

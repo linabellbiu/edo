@@ -50,8 +50,36 @@ export function usageFor(data:KubeOverview|null,object:KubeObject,now=Date.now()
   const usage=data?.usage[kind]?.[key]
   return usage && now-Date.parse(usage.timestamp)<=120_000 && Date.parse(usage.timestamp)<=now+60_000 && Date.parse(usage.timestamp)>=Date.parse(object.metadata.creationTimestamp ?? '1970-01-01') ? usage : undefined
 }
-export function formatKubeCPU(value:number|undefined) { return value===undefined?'—':value<1?`${Math.round(value*1000)} m`:`${Number(value.toFixed(2))} CPU` }
-export function formatKubeMemory(value:number|undefined) { return value===undefined?'—':value>=1073741824?`${(value/1073741824).toFixed(1)} GiB`:`${(value/1048576).toFixed(0)} MiB` }
+const validResourceAmount = (value:unknown):value is number => typeof value==='number'&&Number.isFinite(value)&&value>=0
+const quantityFactors:Record<string,number>={n:1e-9,u:1e-6,m:1e-3,k:1e3,M:1e6,G:1e9,T:1e12,P:1e15,E:1e18,Ki:1024,Mi:1024**2,Gi:1024**3,Ti:1024**4,Pi:1024**5,Ei:1024**6}
+// 仅为只读展示换算数量；配置校验和写入仍使用 Kubernetes 原始 Quantity。
+export function parseKubeQuantity(value:unknown):number|undefined {
+  if(typeof value==='number')return validResourceAmount(value)?value:undefined
+  if(typeof value!=='string')return undefined
+  const match=/^([+-]?(?:\d+(?:\.\d*)?|\.\d+))([eE][+-]?\d+|[numkMGTPE]|[KMGTPE]i)?$/.exec(value.trim())
+  if(!match)return undefined
+  const suffix=match[2]??'',factor=suffix===''?1:/^[eE][+-]?\d+$/.test(suffix)?10**Number(suffix.slice(1)):quantityFactors[suffix]!
+  const amount=Number(match[1])*factor
+  return validResourceAmount(amount)&&!(Number(match[1])>0&&amount===0)?amount:undefined
+}
+function resourceNumber(value:number,exact=false) {
+  const digits=exact?6:2,minimum=10**-digits
+  return value>0&&value<minimum?`<${minimum.toFixed(digits)}`:String(Number(value.toFixed(digits)))
+}
+export function formatKubeCPU(value:unknown,exact=false) {
+  return !validResourceAmount(value)?'—':value<1?`${resourceNumber(value*1000,exact)} m`:`${resourceNumber(value,exact)} CPU`
+}
+export function formatKubeMemory(value:unknown,exact=false) {
+  if(!validResourceAmount(value))return '—'
+  const gib=value>=1024**3
+  return `${resourceNumber(value/(gib?1024**3:1024**2),exact)} ${gib?'GiB':'MiB'}`
+}
+export function formatKubeQuantity(resource:string,value:unknown) {
+  const amount=parseKubeQuantity(value)
+  if(resource==='cpu')return formatKubeCPU(amount)
+  if(['memory','storage','ephemeral-storage'].includes(resource)||resource.startsWith('hugepages-'))return formatKubeMemory(amount)
+  return amount!==undefined&&Number.isInteger(amount)?String(amount):'—'
+}
 
 export interface NodeResourceUsage {
   key:'cpu'|'memory'|'pods'
@@ -110,7 +138,7 @@ export function kubeSummary(object: KubeObject): {status: string; tone: string; 
       const ready = status.conditions?.find((item: KubeObject) => item.type === 'Ready')?.status === 'True'
       summary.status = ready ? 'Ready' : 'NotReady'; summary.tone = ready ? 'success' : 'error'
       summary.primary = (status.addresses ?? []).filter((item: KubeObject) => item.type === 'InternalIP').map((item: KubeObject) => item.address).join(', ')
-      summary.secondary = `${status.nodeInfo?.kubeletVersion ?? '—'} · ${status.nodeInfo?.architecture ?? '—'} · CPU ${status.allocatable?.cpu ?? '—'} / RAM ${status.allocatable?.memory ?? '—'}`
+      summary.secondary = `${status.nodeInfo?.kubeletVersion ?? '—'} · ${status.nodeInfo?.architecture ?? '—'} · ${formatKubeQuantity('cpu',status.allocatable?.cpu)} / RAM ${formatKubeQuantity('memory',status.allocatable?.memory)}`
       break
     }
     case 'Deployment': case 'StatefulSet': case 'DaemonSet': {
@@ -129,8 +157,8 @@ export function kubeSummary(object: KubeObject): {status: string; tone: string; 
     case 'CronJob': summary.status = spec.suspend ? 'Suspended' : 'Active'; summary.tone = spec.suspend ? 'default' : 'success'; summary.primary = spec.schedule ?? ''; summary.secondary = status.lastScheduleTime ?? '—'; break
     case 'ConfigMap': summary.status = `${Object.keys(object.data ?? {}).length + Object.keys(object.binaryData ?? {}).length} keys`; summary.primary = Object.keys(object.data ?? {}).join(', '); break
     case 'Secret': summary.status = `${object.keys?.length ?? 0} keys`; summary.primary = object.type ?? 'Opaque'; summary.secondary = (object.keys ?? []).join(', '); break
-    case 'PersistentVolumeClaim': summary.status = status.phase ?? 'Pending'; summary.tone = status.phase === 'Bound' ? 'success' : 'processing'; summary.primary = `${status.capacity?.storage ?? spec.resources?.requests?.storage ?? '—'} · ${spec.storageClassName ?? 'default'}`; summary.secondary = spec.volumeName ?? '—'; break
-    case 'PersistentVolume': summary.status = status.phase ?? '—'; summary.tone = status.phase === 'Bound' ? 'success' : 'default'; summary.primary = `${spec.capacity?.storage ?? '—'} · ${spec.storageClassName ?? '—'}`; summary.secondary = `${spec.persistentVolumeReclaimPolicy ?? '—'} · ${spec.claimRef?.namespace ?? ''}/${spec.claimRef?.name ?? ''}`; break
+    case 'PersistentVolumeClaim': summary.status = status.phase ?? 'Pending'; summary.tone = status.phase === 'Bound' ? 'success' : 'processing'; summary.primary = `${formatKubeQuantity('storage',status.capacity?.storage ?? spec.resources?.requests?.storage)} · ${spec.storageClassName ?? 'default'}`; summary.secondary = spec.volumeName ?? '—'; break
+    case 'PersistentVolume': summary.status = status.phase ?? '—'; summary.tone = status.phase === 'Bound' ? 'success' : 'default'; summary.primary = `${formatKubeQuantity('storage',spec.capacity?.storage)} · ${spec.storageClassName ?? '—'}`; summary.secondary = `${spec.persistentVolumeReclaimPolicy ?? '—'} · ${spec.claimRef?.namespace ?? ''}/${spec.claimRef?.name ?? ''}`; break
     case 'StorageClass': summary.status = object.reclaimPolicy ?? 'Delete'; summary.primary = object.provisioner ?? ''; summary.secondary = object.volumeBindingMode ?? 'Immediate'; break
     case 'Service': summary.status = spec.type ?? 'ClusterIP'; summary.primary = spec.clusterIP ?? '—'; summary.secondary = (spec.ports ?? []).map((item: KubeObject) => `${item.port} → ${item.targetPort} / ${item.protocol ?? 'TCP'}${item.nodePort ? ` :${item.nodePort}` : ''}`).join(', '); break
     case 'Ingress': summary.status = spec.ingressClassName ?? 'default'; summary.primary = (spec.rules ?? []).map((item: KubeObject) => item.host || '*').join(', '); summary.secondary = (status.loadBalancer?.ingress ?? []).map((item: KubeObject) => item.ip ?? item.hostname).join(', '); break

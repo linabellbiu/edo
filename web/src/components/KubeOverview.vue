@@ -27,12 +27,13 @@ const categories=computed(()=>[
   {key:'network',icon:Network,resources:['services','ingresses','networkpolicies']},
 ].map(group=>({...group,cards:cards.value.filter(card=>group.resources.includes(card.key))})).filter(group=>group.cards.length))
 const totals=computed(()=>{
-  const nodes=props.data?.nodes??[], all=props.data?.counts.nodes?.state==='ok', usages=Object.fromEntries(nodes.map(node=>[node.name,usageFor(props.data,{kind:'Node',metadata:{name:node.name}})]))
+  const nodes=props.data?.nodes??[], all=props.data?.counts.nodes?.state==='ok'&&Array.isArray(props.data?.nodes), usages=Object.fromEntries(nodes.map(node=>[node.name,usageFor(props.data,{kind:'Node',metadata:{name:node.name}})]))
   const complete=!props.error&&all&&nodes.length>0&&nodes.every(node=>usages[node.name])
-  return {cpu:all?nodes.reduce((sum,node)=>sum+node.cpu,0):undefined,memory:all?nodes.reduce((sum,node)=>sum+node.memory,0):undefined,cpuUsed:complete?nodes.reduce((sum,node)=>sum+usages[node.name]!.cpu,0):undefined,memoryUsed:complete?nodes.reduce((sum,node)=>sum+usages[node.name]!.memory,0):undefined,ready:nodes.filter(node=>node.ready).length,nodes:nodes.length}
+  const sum=(values:unknown[])=>values.every((value):value is number=>typeof value==='number'&&Number.isFinite(value)&&value>=0)?values.reduce((total,value)=>total+value,0):undefined
+  return {cpu:all?sum(nodes.map(node=>node.cpu)):undefined,memory:all?sum(nodes.map(node=>node.memory)):undefined,cpuUsed:complete?sum(nodes.map(node=>usages[node.name]!.cpu)):undefined,memoryUsed:complete?sum(nodes.map(node=>usages[node.name]!.memory)):undefined,ready:nodes.filter(node=>node.ready).length,nodes:nodes.length}
 })
 const phases=computed(()=>Object.entries(props.data?.phases??{}).map(([name,value])=>({name,value})))
-const percentage=(used:number|undefined,total:number|undefined)=>used===undefined||!total?'—':`${(used/total*100).toFixed(1)}%`
+const percentage=(used:number|undefined,total:number|undefined)=>used===undefined||total===undefined||total<=0?'—':`${(used/total*100).toFixed(1)}%`
 const colors=['#22b978','#e5a11c','#ef5a6e','#708198','#8191ff','#9f7aea']
 async function render(){
   await nextTick();if(disposed||!root.value)return
@@ -42,7 +43,7 @@ async function render(){
     const chart=charts[i]??(charts[i]=init(element,undefined,{renderer:'canvas'}))
     const used=i===0?totals.value.cpuUsed:totals.value.memoryUsed,total=i===0?totals.value.cpu:totals.value.memory
     const data=i===2?phases.value:(used===undefined||!total?[]:[{name:t('k8s.used'),value:used},{name:t('k8s.available'),value:Math.max(0,total-used)}])
-    chart.setOption({animation:false,aria:{enabled:true},tooltip:{trigger:'item',renderMode:'richText',textStyle:{fontSize:12,color:text},backgroundColor:style.getPropertyValue('--edo-surface').trim(),borderColor:track},series:[{type:'pie',radius:['72%','92%'],center:['50%','50%'],silent:false,label:{show:false},emphasis:{scale:false},data:data.length?data.map((entry,index)=>({...entry,itemStyle:{color:i===2?colors[index%colors.length]:index===0?'#526aff':track}})):[{value:1,itemStyle:{color:track},tooltip:{show:false}}]}]},{notMerge:true})
+    chart.setOption({animation:false,aria:{enabled:true},tooltip:{trigger:'item',renderMode:'richText',valueFormatter:(value:unknown)=>i===0?formatKubeCPU(value):i===1?formatKubeMemory(value):String(value),textStyle:{fontSize:12,color:text},backgroundColor:style.getPropertyValue('--edo-surface').trim(),borderColor:track},series:[{type:'pie',radius:['72%','92%'],center:['50%','50%'],silent:false,label:{show:false},emphasis:{scale:false},data:data.length?data.map((entry,index)=>({...entry,itemStyle:{color:i===2?colors[index%colors.length]:index===0?'#526aff':track}})):[{value:1,itemStyle:{color:track},tooltip:{show:false}}]}]},{notMerge:true})
     chart.resize()
   }
 }

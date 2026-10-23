@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import {computed} from 'vue'
 import {useI18n} from 'vue-i18n'
-import type {KubeObject} from '@/api/kubernetes'
+import {formatKubeQuantity,type KubeObject} from '@/api/kubernetes'
 const props=defineProps<{node:KubeObject}>(),{t}=useI18n()
 const info=computed(()=>props.node.status?.nodeInfo??{})
 const facts=computed(()=>[
@@ -14,7 +14,7 @@ const capacities=computed(()=>[['cpu','CPU'],['memory',t('k8s.nodeMemory')],['ep
 </script>
 <template>
  <section class="resource-detail-section"><h4>{{ t('k8s.nodeInfo') }}</h4><dl class="node-facts"><div v-for="[label,value] in facts" :key="label"><dt>{{ label }}</dt><dd>{{ value||'—' }}</dd></div><div v-for="address in node.status?.addresses??[]" :key="`${address.type}/${address.address}`"><dt>{{ address.type }}</dt><dd>{{ address.address }}</dd></div></dl></section>
- <section class="resource-detail-section"><h4>{{ t('k8s.nodeCapacity') }}</h4><div class="detail-table-scroll"><table class="kube-detail-table"><thead><tr><th>{{ t('k8s.name') }}</th><th>{{ t('k8s.nodeAllocatable') }}</th><th>{{ t('k8s.nodeTotalCapacity') }}</th></tr></thead><tbody><tr v-for="[key,label] in capacities" :key="key"><td>{{ label }}</td><td>{{ node.status?.allocatable?.[key!]??'—' }}</td><td>{{ node.status?.capacity?.[key!]??'—' }}</td></tr></tbody></table></div><p class="secondary">{{ t('k8s.nodeCapacityHint') }}</p></section>
+ <section class="resource-detail-section"><h4>{{ t('k8s.nodeCapacity') }}</h4><div class="detail-table-scroll"><table class="kube-detail-table"><thead><tr><th>{{ t('k8s.name') }}</th><th>{{ t('k8s.nodeAllocatable') }}</th><th>{{ t('k8s.nodeTotalCapacity') }}</th></tr></thead><tbody><tr v-for="[key,label] in capacities" :key="key"><td>{{ label }}</td><td :title="String(node.status?.allocatable?.[key!]??'')">{{ formatKubeQuantity(key!,node.status?.allocatable?.[key!]) }}</td><td :title="String(node.status?.capacity?.[key!]??'')">{{ formatKubeQuantity(key!,node.status?.capacity?.[key!]) }}</td></tr></tbody></table></div><p class="secondary">{{ t('k8s.nodeCapacityHint') }}</p></section>
  <section class="resource-detail-section"><h4>{{ t('k8s.taints') }}</h4><div v-if="node.spec?.taints?.length" class="detail-table-scroll"><table class="kube-detail-table"><thead><tr><th>{{ t('k8s.name') }}</th><th>{{ t('k8s.nodeTaintValue') }}</th><th>{{ t('k8s.nodeTaintEffect') }}</th></tr></thead><tbody><tr v-for="taint in node.spec.taints" :key="`${taint.key}/${taint.effect}`"><td>{{ taint.key }}</td><td>{{ taint.value||'—' }}</td><td>{{ taint.effect }}</td></tr></tbody></table></div><span v-else class="secondary">{{ t('k8s.nodeNoTaints') }}</span></section>
 </template>
 <style scoped>

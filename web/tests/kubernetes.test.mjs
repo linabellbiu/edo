@@ -15,6 +15,41 @@ function load(path,modules){
 }
 const api=load('../src/api/kubernetes.ts',{})
 const presentation=load('../src/utils/kubernetesPresentation.ts',{'@/api/kubernetes':api})
+test('资源数量按原始 SI、二进制及指数含义换算，截图中的 Ki 和无单位字节统一可读',()=>{
+ for(const [input,bytes] of [['2147483Ki',2147483*1024],['955574586848',955574586848],['982292956Ki',982292956*1024],['1.5Gi',1.5*1024**3],['.5Mi',.5*1024**2],['128Mi',128*1024**2],['1G',1e9],['1M',1e6],['1e6',1e6],['1E+6',1e6],['1E',1e18],['1Ti',1024**4],['400m',.4],['10u',.00001],['100n',.0000001]])assert.ok(Math.abs(api.parseKubeQuantity(input)-bytes)<=Number.EPSILON*bytes,input)
+ assert.equal(api.formatKubeQuantity('memory','2147483Ki'),'2.05 GiB')
+ assert.equal(api.formatKubeQuantity('ephemeral-storage','955574586848'),'889.95 GiB')
+ assert.equal(api.formatKubeQuantity('storage','982292956Ki'),'936.79 GiB')
+ assert.equal(api.formatKubeQuantity('storage','1G'),'953.67 MiB')
+ assert.equal(api.formatKubeQuantity('memory','1.5Gi'),'1.5 GiB')
+ assert.equal(api.formatKubeQuantity('memory','1M'),'0.95 MiB')
+})
+test('容量阈值、微小非零值和缺失值有明确区别，CPU 与计数不使用存储单位',()=>{
+ for(const bad of [undefined,null,'',' ','bad','1GB','1MiB','1e3Mi','1ki','NaN',NaN,Infinity,-1,'-1Gi','1e999','1e-999']){
+  assert.equal(api.parseKubeQuantity(bad),undefined,String(bad));assert.equal(api.formatKubeQuantity('memory',bad),'—',String(bad))
+ }
+ assert.equal(api.formatKubeMemory(0),'0 MiB');assert.equal(api.formatKubeMemory(1024**3),'1 GiB')
+ assert.equal(api.formatKubeMemory(128*1024**2),'128 MiB');assert.equal(api.formatKubeMemory(300*1024),'0.29 MiB');assert.equal(api.formatKubeMemory(1),'<0.01 MiB')
+ for(const bad of [null,NaN,Infinity,-1]){assert.equal(api.formatKubeMemory(bad),'—');assert.equal(api.formatKubeCPU(bad),'—')}
+ assert.equal(api.formatKubeCPU(.0000001),'<0.01 m');assert.equal(api.formatKubeQuantity('cpu','250m'),'250 m');assert.equal(api.formatKubeQuantity('cpu','16'),'16 CPU')
+ assert.equal(api.formatKubeQuantity('pods','110'),'110');assert.equal(api.formatKubeQuantity('nvidia.com/gpu','2'),'2');assert.equal(api.formatKubeQuantity('nvidia.com/gpu','0'),'0')
+ assert.equal(api.formatKubeQuantity('nvidia.com/gpu','1.5'),'—');assert.equal(api.formatKubeQuantity('hugepages-2Mi','0'),'0 MiB');assert.equal(api.formatKubeQuantity('hugepages-1Gi','2Gi'),'2 GiB')
+})
+test('Pod 与工作负载详情统一请求和限制，并展示 GPU、大页内存，原始配置不变',()=>{
+ const object={kind:'Pod',metadata:{name:'worker'},spec:{containers:[{name:'app',resources:{requests:{cpu:'100m',memory:'128Mi','ephemeral-storage':'1G','nvidia.com/gpu':'2'},limits:{memory:'1.5Gi','hugepages-2Mi':'80Mi'}}}]}}
+ const before=JSON.stringify(object)
+ const component=load('../src/components/KubeResourceDetails.vue',{vue,'vue-i18n':{useI18n:()=>({t:key=>key})},'@/api/kubernetes':api,'@/utils/kubernetesPresentation':presentation}).default
+ const state=component.setup({object,type:api.kubeTypes.find(item=>item.kind==='Pod'),canFollow:()=>false},{expose(){},emit(){}})
+ assert.equal(state.resources(state.containers.value[0],'requests'),'cpu: 100 m · memory: 128 MiB · ephemeral-storage: 953.67 MiB · nvidia.com/gpu: 2')
+ assert.equal(state.resources(state.containers.value[0],'limits'),'memory: 1.5 GiB · hugepages-2Mi: 80 MiB')
+ assert.equal(state.resources({},'requests'),'—');assert.match(state.rawResources(state.containers.value[0],'limits'),/1.5Gi/)
+ assert.equal(JSON.stringify(object),before)
+ const pvc={kind:'PersistentVolumeClaim',metadata:{},spec:{resources:{requests:{storage:'1536Mi'}}},status:{capacity:{storage:'2Gi'}}}
+ assert.equal(presentation.resourceCells(pvc,key=>key).capacity.text,'1.5 GiB');assert.match(presentation.resourceCells(pvc,key=>key).capacity.secondary,/2 GiB/)
+ assert.match(api.kubeSummary(pvc).primary,/2 GiB/)
+ assert.equal(presentation.resourceCells({...pvc,status:{}},key=>key).capacity.secondary,'k8s.allocated: —')
+ assert.match(api.kubeSummary({kind:'PersistentVolume',spec:{capacity:{storage:'512Mi'}},metadata:{}}).primary,/512 MiB/)
+})
 test('节点三条用量条显示已用与可分配量，0 值有效，超量只截取条宽不截取数值',()=>{
  const now=Date.now(),node={kind:'Node',metadata:{name:'worker',uid:'node-1',creationTimestamp:new Date(now-3600_000).toISOString()}}
  const data={nodes:[{name:'worker',uid:'node-1',cpu:4,memory:8*1073741824,pod_capacity:110,pods:26,pod_state:'ok'}],usage:{nodes:{worker:{cpu:.229,memory:3.7*1073741824,timestamp:new Date(now).toISOString()}}},collected_at:new Date(now).toISOString()}
@@ -41,8 +76,10 @@ test('资源条的悬浮提示保留完整数值和统计口径，键盘聚焦�
  const component=load('../src/components/KubeNodeUsage.vue',{vue,'vue-i18n':{useI18n:()=>({t:key=>key})},'@/api/kubernetes':api}).default
  const now=Date.now(),node={kind:'Node',metadata:{name:'worker',uid:'1'}},overview={collected_at:new Date(now).toISOString(),nodes:[{name:'worker',uid:'1',cpu:4,memory:8*1073741824,pod_capacity:110,pods:26,pod_state:'ok'}],usage:{nodes:{worker:{cpu:.229,memory:3.7*1073741824,timestamp:new Date(now).toISOString()}}}}
  const state=component.setup({node,overview},{expose(){}})
- assert.equal(state.numbers(state.meters.value[0]),'0.229 / 4');assert.equal(state.numbers(state.meters.value[1]),'3.7 / 8 GiB')
+ assert.equal(state.numbers(state.meters.value[0]),'229 m / 4 CPU');assert.equal(state.numbers(state.meters.value[1]),'3.7 GiB / 8 GiB')
  assert.match(state.description.value,/CPU 5.7%/);assert.match(state.description.value,/26 \/ 110/)
+ assert.equal(state.numbers({...state.meters.value[1],used:300*1024,total:1024**3}),'0.29 MiB / 1 GiB')
+ assert.match(state.numbers({...state.meters.value[1],used:300*1024},true),/307200 B/)
  const source=readFileSync(new URL('../src/components/KubeNodeUsage.vue',import.meta.url),'utf8')
  assert.match(source,/tabindex="0"/);assert.match(source,/\['hover','focus'\]/);assert.match(source,/:mouse-enter-delay="0.1"/)
 })
@@ -70,6 +107,11 @@ test('总览只展示获准资源，缺少一个节点的用量时不把部分�
  // 替换 props.data 使该纯函数测试触发 Vue 计算属性重新求值。
  const next=component.setup({...props,data:{...props.data}},{expose(){},emit(){}})
  assert.equal(next.totals.value.cpuUsed,1.5);assert.equal(next.totals.value.memoryUsed,300)
+ props.data.usage.nodes.b.memory=null
+ const incomplete=component.setup({...props,data:{...props.data}},{expose(){},emit(){}})
+ assert.equal(incomplete.totals.value.memoryUsed,undefined);assert.equal(incomplete.totals.value.cpuUsed,1.5)
+ const missing=component.setup({...props,data:{...props.data,nodes:null}},{expose(){},emit(){}})
+ assert.equal(missing.totals.value.memory,undefined);assert.equal(missing.percentage(undefined,undefined),'—')
 })
 function editor(kind,object){
  const watchers=[]
@@ -174,7 +216,7 @@ test('工作负载状态等待控制器确认版本，Running 但未就绪不显
 test('存储和网络单元格完整展示绑定、命名端口、多条路径，不把无状态当健康',()=>{
  const pvc={kind:'PersistentVolumeClaim',metadata:{name:'data',namespace:'team'},spec:{resources:{requests:{storage:'5Gi'}},storageClassName:'fast',volumeName:'pv-1',accessModes:['ReadWriteOnce']},status:{phase:'Bound',capacity:{storage:'8Gi'}}}
  const cells=presentation.resourceCells(pvc,translate)
- assert.equal(cells.capacity.text,'5Gi');assert.match(cells.capacity.secondary,/8Gi/);assert.equal(cells.volume.reference.resource,'persistentvolumes')
+ assert.equal(cells.capacity.text,'5 GiB');assert.match(cells.capacity.secondary,/8 GiB/);assert.equal(cells.capacity.raw,'5Gi / 8Gi');assert.equal(cells.volume.reference.resource,'persistentvolumes')
  assert.deepEqual(cells.storageClass.reference,{resource:'storageclasses',name:'fast',namespace:undefined})
  const service={kind:'Service',metadata:{},spec:{type:'NodePort',clusterIPs:['10.0.0.1','fd00::1'],ports:[{port:80,targetPort:'http',nodePort:30080},{port:53,targetPort:53,protocol:'UDP'}]}}
  const ports=presentation.resourceCells(service,translate).servicePorts.text;assert.match(ports,/80 → http\/TCP \(:30080\)/);assert.match(ports,/53 → 53\/UDP/)

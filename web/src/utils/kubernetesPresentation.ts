@@ -1,8 +1,8 @@
-import { kubeTypes, podSpec, type KubeObject, type KubeType } from '@/api/kubernetes'
+import { formatKubeQuantity, kubeTypes, podSpec, type KubeObject, type KubeType } from '@/api/kubernetes'
 
 type Translate = (key:string, values?:Record<string,unknown>)=>string
 export interface KubeReference { resource:string; name:string; namespace?:string; uid?:string }
-export interface KubeCell { text:string; secondary?:string; reference?:KubeReference; progress?:number; badge?:'success'|'warning'|'danger'|'neutral' }
+export interface KubeCell { text:string; secondary?:string; raw?:string; reference?:KubeReference; progress?:number; badge?:'success'|'warning'|'danger'|'neutral' }
 export interface KubeStatus { key:string; text:string; tone:string; reason?:string }
 const joined = (values:unknown[]) => values.filter(value=>value!==undefined&&value!==null&&value!=='').join(' · ') || '—'
 const entries = (value:Record<string,unknown>={}) => Object.entries(value).map(([key,value])=>`${key}=${value}`)
@@ -104,7 +104,7 @@ export function resourceCells(object:KubeObject,t:Translate):Record<string,KubeC
     completions:cell(`${count(status.succeeded??0)} / ${count(spec.completions)}`,`${t('k8s.activeJobs')}: ${status.active??0}`),
     jobTiming:cell(status.startTime,status.completionTime),schedule:cell(spec.schedule,spec.timeZone),activeJobs:cell(spec.active?.length??status.active?.length??0),lastSchedule:cell(status.lastScheduleTime),
     secretType:cell(object.type),dataKeys:cell(t('k8s.keyCount',{count:kind==='Secret'?(object.keys??[]).length:Object.keys(object.data??{}).length+Object.keys(object.binaryData??{}).length}),joined(kind==='Secret'?object.keys??[]:[...Object.keys(object.data??{}),...Object.keys(object.binaryData??{})])),
-    capacity:cell(kind==='PersistentVolumeClaim'?spec.resources?.requests?.storage:spec.capacity?.storage,kind==='PersistentVolumeClaim'?`${t('k8s.allocated')}: ${status.capacity?.storage??'—'}`:spec.volumeMode??'Filesystem'),
+    capacity:cell(formatKubeQuantity('storage',kind==='PersistentVolumeClaim'?spec.resources?.requests?.storage:spec.capacity?.storage),kind==='PersistentVolumeClaim'?`${t('k8s.allocated')}: ${formatKubeQuantity('storage',status.capacity?.storage)}`:spec.volumeMode??'Filesystem'),
     accessModes:cell(joined(spec.accessModes??[])),storageClass:cell(spec.storageClassName,undefined,ref('storageclasses',spec.storageClassName)),
     volume:cell(spec.volumeName,undefined,ref('persistentvolumes',spec.volumeName)),
     claim:cell(spec.claimRef?.name,spec.claimRef?.namespace, spec.claimRef?.name?{resource:'persistentvolumeclaims',name:spec.claimRef.name,namespace:spec.claimRef.namespace,uid:spec.claimRef.uid}:undefined),
@@ -119,6 +119,7 @@ export function resourceCells(object:KubeObject,t:Translate):Record<string,KubeC
     ingressRules:cell(policyDirections(object).includes('Ingress')?t(spec.ingress?.length?'k8s.ruleCount':'k8s.denyAll',{count:spec.ingress?.length??0}):t('k8s.notRestricted')),
     egressRules:cell(policyDirections(object).includes('Egress')?t(spec.egress?.length?'k8s.ruleCount':'k8s.denyAll',{count:spec.egress?.length??0}):t('k8s.notRestricted')),
   }
+  if(kind==='PersistentVolumeClaim'||kind==='PersistentVolume')cells.capacity!.raw=String(kind==='PersistentVolumeClaim'?`${spec.resources?.requests?.storage??'—'} / ${status.capacity?.storage??'—'}`:spec.capacity?.storage??'—')
   if(kind==='Node') {
     cells.address=cell(joined((status.addresses??[]).filter((item:KubeObject)=>item.type==='InternalIP').map((item:KubeObject)=>item.address)),joined((status.addresses??[]).filter((item:KubeObject)=>item.type==='ExternalIP').map((item:KubeObject)=>item.address)))
     cells.nodeVersion=cell(status.nodeInfo?.kubeletVersion,joined([status.nodeInfo?.containerRuntimeVersion,status.nodeInfo?.architecture]))
