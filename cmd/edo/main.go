@@ -587,6 +587,7 @@ func runServer(ctx context.Context, cfg config.Config, logger *slog.Logger, runt
 	assistantService := assistant.NewService(assistant.Dependencies{
 		Database: resources.Database, Secrets: secretManager, Access: accessService,
 		Pipeline: pipelineService, Kubernetes: kubernetesService, Audits: auditService, Logger: logger,
+		Deployments: deploymentService, Docker: dockerService, Metrics: systemMetricsService, RuntimeLogs: runtimeLogs,
 	})
 
 	router := httpapi.NewRouter(httpapi.Dependencies{

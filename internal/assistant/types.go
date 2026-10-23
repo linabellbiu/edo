@@ -2,26 +2,56 @@ package assistant
 
 import (
 	"context"
+	"io"
 	"log/slog"
 	"time"
 
 	"edo/internal/access"
 	"edo/internal/audit"
+	"edo/internal/deployment"
+	"edo/internal/dockerengine"
 	"edo/internal/kube"
+	"edo/internal/logging"
 	"edo/internal/model"
 	"edo/internal/pipeline"
 	"edo/internal/secret"
+	"edo/internal/systemmetrics"
 	"gorm.io/gorm"
+	corev1 "k8s.io/api/core/v1"
 )
 
 type Dependencies struct {
-	Database   *gorm.DB
-	Secrets    *secret.Manager
-	Access     *access.Service
-	Pipeline   *pipeline.Service
-	Kubernetes *kube.Service
-	Audits     *audit.Service
-	Logger     *slog.Logger
+	Database    *gorm.DB
+	Secrets     *secret.Manager
+	Access      *access.Service
+	Pipeline    *pipeline.Service
+	Kubernetes  KubernetesReader
+	Deployments DeploymentReader
+	Docker      DockerReader
+	Metrics     MetricsReader
+	RuntimeLogs *logging.RuntimeController
+	Audits      *audit.Service
+	Logger      *slog.Logger
+}
+
+// 排障依赖只暴露读取方法，不把执行客户端或资源修改接口交给工具。
+type KubernetesReader interface {
+	ListResources(context.Context, string, string, string, string) (*kube.ResourceList, error)
+	GetResource(context.Context, string, string, string, string, bool) (map[string]any, error)
+	ResourceEvents(context.Context, string, string, string, string, string) ([]corev1.Event, error)
+	ResourceDiagnostics(context.Context, string, string, string, string, string) (*kube.ResourceDiagnostics, error)
+	PodLogSnapshot(context.Context, string, string, string, string, int64, bool) (io.ReadCloser, error)
+}
+
+type DeploymentReader interface {
+	RuntimeState(context.Context, string) (*deployment.RuntimeState, error)
+}
+type DockerReader interface {
+	InspectManagedContainer(context.Context, string, string, string, string, string) (*dockerengine.ContainerDiagnostic, error)
+	ContainerLogs(context.Context, string, string, dockerengine.ContainerLogOptions) (*dockerengine.ContainerLogStream, error)
+}
+type MetricsReader interface {
+	Snapshot(context.Context) systemmetrics.Snapshot
 }
 
 type SettingsView struct {

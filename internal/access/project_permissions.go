@@ -38,6 +38,9 @@ func workspacePermissions() []Permission {
 }
 
 func ProjectPermission(code string) bool {
+	if code == PermissionAssistantPlatformRead {
+		return false
+	}
 	if code == "project.read" || code == "project.update" || code == "project.delete" || code == "project.member.update" {
 		return true
 	}

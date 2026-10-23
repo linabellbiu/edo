@@ -364,6 +364,15 @@ func (s *Service) ResourceEvents(ctx context.Context, clusterID, resource, names
 }
 
 func (s *Service) PodLogs(ctx context.Context, clusterID, namespace, pod, container string, tail int64, follow, timestamps bool) (io.ReadCloser, error) {
+	return s.podLogs(ctx, clusterID, namespace, pod, container, tail, follow, timestamps, false)
+}
+
+// PodLogSnapshot 只读取有限历史日志，允许查看上一次退出的容器，不订阅后续输出。
+func (s *Service) PodLogSnapshot(ctx context.Context, clusterID, namespace, pod, container string, tail int64, previous bool) (io.ReadCloser, error) {
+	return s.podLogs(ctx, clusterID, namespace, pod, container, tail, false, true, previous)
+}
+
+func (s *Service) podLogs(ctx context.Context, clusterID, namespace, pod, container string, tail int64, follow, timestamps, previous bool) (io.ReadCloser, error) {
 	if len(validation.IsDNS1123Label(namespace)) != 0 || len(validation.IsDNS1123Subdomain(pod)) != 0 || len(validation.IsDNS1123Label(container)) != 0 || tail < 1 || tail > 5000 {
 		return nil, ErrInvalidResource
 	}
@@ -377,7 +386,7 @@ func (s *Service) PodLogs(ctx context.Context, clusterID, namespace, pod, contai
 	if err != nil {
 		return nil, err
 	}
-	stream, err := client.CoreV1().Pods(namespace).GetLogs(pod, &corev1.PodLogOptions{Container: container, TailLines: &tail, Follow: follow, Timestamps: timestamps}).Stream(ctx)
+	stream, err := client.CoreV1().Pods(namespace).GetLogs(pod, &corev1.PodLogOptions{Container: container, TailLines: &tail, Follow: follow, Timestamps: timestamps, Previous: previous}).Stream(ctx)
 	if err != nil {
 		return nil, resourceError("pods", err)
 	}

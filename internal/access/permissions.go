@@ -16,9 +16,10 @@ type Permission struct {
 }
 
 const (
-	PermissionSystemRead       = "system.read"
-	PermissionAssistantRead    = "assistant.read"
-	PermissionAssistantExecute = "assistant.execute"
+	PermissionSystemRead            = "system.read"
+	PermissionAssistantRead         = "assistant.read"
+	PermissionAssistantExecute      = "assistant.execute"
+	PermissionAssistantPlatformRead = "assistant.platform.read"
 
 	PermissionUserRead   = "user.read"
 	PermissionUserCreate = "user.create"
@@ -196,6 +197,7 @@ var catalog = append([]Permission{
 	permission(PermissionTaskRead, "任务", "task", "后台任务", "read", "查看", "查看任务状态和输出", false),
 	permission(PermissionAssistantRead, "助手", "assistant", "对话助手", "read", "查看", "查看当前项目内自己的助手会话", false),
 	permission(PermissionAssistantExecute, "助手", "assistant", "对话助手", "execute", "使用", "使用助手；工具操作仍需对应资源权限和明确确认", false),
+	permission(PermissionAssistantPlatformRead, "助手", "assistant.platform", "平台排障信息", "read", "查看", "允许助手读取 EDO 平台运行指标及脱敏系统日志，包含跨项目运行信息", false),
 	permission(PermissionTaskExecute, "任务", "task", "后台任务操作", "execute", "执行", "取消或重新投递允许重试的任务", true),
 
 	permission(PermissionConfigRead, "配置", "config", "系统配置", "read", "查看", "查看非敏感系统配置", false),

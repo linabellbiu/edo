@@ -18,6 +18,19 @@ const storedSettings = { enabled: false, base_url: 'https://model.example/v1', m
 const conversation = id => ({ id, title: `对话 ${id}` })
 const action = () => ({ id: 'action-1', kind: 'pipeline_stop', title: '停止流水线', summary: '停止当前运行', target_name: '发布任务', status: 'pending', expires_at: new Date(Date.now() + 60000).toISOString() })
 
+test('排障工具名称提供本地化标签，未知名称不直接展示', async t => {
+  const { state } = harness(t, 'AssistantPanel')
+  assert.equal(state.toolLabel('deployment_logs'), 'assistant.toolContainerLogs')
+  assert.equal(state.toolLabel('kubernetes_pod_logs'), 'assistant.toolPodLogs')
+  assert.equal(state.toolLabel('platform_diagnostics'), 'assistant.toolPlatform')
+  assert.equal(state.toolLabel('<script>unknown</script>'), 'assistant.tool')
+  const locales = load('../src/locales/assistant.ts')
+  for (const key of ['promptDiagnose', 'toolContainerLogs', 'toolPlatform', 'toolPodLogs']) {
+    assert.ok(locales.assistantZh[key])
+    assert.ok(locales.assistantEn[key])
+  }
+})
+
 function harness(t, component, api = {}, permissions = ['assistant.read', 'assistant.execute', 'config.read', 'config.update']) {
   const hooks = [], mounted = [], calls = [], scope = vue.effectScope()
   let project = 'project-1'
