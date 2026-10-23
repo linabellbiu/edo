@@ -58,6 +58,23 @@ test('命名空间树筛选不改变选择，父节点支持全选、半选与�
  state.toggleAll({id:'other',name:'other',is_active:true});assert.deepEqual(events.pop(),['cluster','other',true])
  scope.stop()
 })
+
+test('集群级资源只搜索和选择集群，不显示或修改已保留的命名空间',async()=>{
+ const events=[],scope=vue.effectScope(),props=vue.reactive({clusters:[{id:'a',name:'k3s',is_active:true},{id:'b',name:'staging',is_active:true}],cluster:'a',namespaces:['prod','test'],selected:['prod','test'],namespaced:false})
+ const component=load('../src/components/KubeNamespaceTree.vue',{vue,'vue-i18n':{useI18n:()=>({t:translate})}}).default
+ let state;scope.run(()=>{state=component.setup(props,{expose(){},emit:(...args)=>events.push(args)})})
+ assert.equal(state.namespaceEnabled.value,false)
+ assert.deepEqual(state.visibleNamespaces.value,[])
+ state.search.value='prod';assert.deepEqual(state.visibleClusters.value,[])
+ state.search.value='staging';assert.deepEqual(state.visibleClusters.value.map(item=>item.id),['b'])
+ state.toggleNamespace('prod',false);state.toggleAll(props.clusters[0]);assert.equal(events.length,0)
+ state.chooseCluster('b');assert.deepEqual(events.pop(),['cluster','b'])
+ assert.deepEqual(props.selected,['prod','test'])
+ props.namespaced=true;await vue.nextTick()
+ assert.equal(state.search.value,'');assert.deepEqual(state.visibleNamespaces.value,['prod','test'])
+ assert.deepEqual(props.selected,['prod','test'])
+ scope.stop()
+})
 test('就绪徽标区分健康、更新、故障、未知和缩至零，不把缺失数值标绿',()=>{
  const object={kind:'Deployment',metadata:{generation:3},spec:{replicas:3},status:{observedGeneration:3,readyReplicas:3,updatedReplicas:3}}
  const cell=()=>presentation.resourceCells(object,translate).replicas
@@ -112,5 +129,37 @@ test('从节点或集群级存储返回总览时重新读取所选命名空间�
  route.query={...route.query,view:'workloads',resource:'pods'};await settle()
  assert.deepEqual(requests.splice(0),['prod','test'])
  assert.deepEqual(state.selectedNamespaces.value,['prod','test'])
+ scope.stop()
+})
+
+test('节点、Namespace、PV、StorageClass 不请求命名空间列表，切回 Pod 恢复多选',async()=>{
+ const route=vue.reactive({query:{view:'nodes',cluster:'a',namespace:['prod','test']}}),namespaceCalls=[],scope=vue.effectScope()
+ const component=load('../src/views/KubernetesView.vue',{
+  vue:{...vue,onMounted(){},onBeforeUnmount(){}},'vue-i18n':{useI18n:()=>({t:translate})},'@/stores/auth':{useAuthStore:()=>({canAny:()=>true})},
+  '@/api/kubernetes':{...api,listKubeResourceScopes:async()=>({items:[],cursor:{}})},
+  'vue-router':{useRoute:()=>route,useRouter:()=>({replace:value=>{route.query=value.query}})},
+  '@/api/client':{__esModule:true,default:{get:async(path)=>{
+   if(path.endsWith('/namespaces')){namespaceCalls.push(path);return {data:{namespaces:['prod','test']}}}
+   return {data:overview('prod',1)}
+  }}},
+ }).default
+ let state;scope.run(()=>{state=component.setup({}, {expose(){}})})
+ const settle=async()=>{await vue.nextTick();await new Promise(resolve=>setImmediate(resolve))}
+ state.clusters.value=[{id:'a',is_active:true,default_namespace:'default'},{id:'b',is_active:true,default_namespace:'system'}];state.cluster.value='a';await settle()
+ for(const resource of ['nodes','namespaces','persistentvolumes','storageclasses']){
+  route.query={...route.query,view:api.kubeTypes.find(item=>item.resource===resource).group,resource};await settle()
+  assert.equal(state.namespaceScoped.value,false)
+  assert.equal(namespaceCalls.length,0)
+  assert.deepEqual(state.selectedNamespaces.value,['prod','test'])
+ }
+ state.selectCluster('b');await settle();state.selectCluster('a');await settle()
+ assert.equal(namespaceCalls.length,0);assert.deepEqual(state.selectedNamespaces.value,['prod','test'])
+ route.query={...route.query,view:'workloads',resource:'pods'};await settle()
+ assert.equal(state.namespaceScoped.value,true);assert.equal(namespaceCalls.length,1)
+ assert.deepEqual(state.selectedNamespaces.value,['prod','test'])
+ route.query={...route.query,view:'nodes',resource:'nodes'};await settle()
+ const key=state.contextKey.value
+ route.query={...route.query,namespace:'prod'};await settle()
+ assert.equal(state.contextKey.value,key);assert.equal(namespaceCalls.length,1)
  scope.stop()
 })
