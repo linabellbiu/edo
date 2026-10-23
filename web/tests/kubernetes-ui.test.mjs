@@ -75,3 +75,9 @@ test('总览状态颜色按 Pod 阶段固定，不因结果顺序变化把失败
  const state=component.setup(props,{expose(){},emit(){}});assert.equal(state.phases.value[0].color,'#ef5a6e');assert.equal(state.phases.value[1].color,'#708198')
  props.data.phases={Running:1,Unknown:1,Failed:1};assert.equal(state.phases.value.find(p=>p.phase==='Failed').color,'#ef5a6e');assert.equal(state.phases.value.find(p=>p.phase==='Running').color,'#22b978')
 })
+test('修改筛选后立即切换资源，后退仍恢复最后一次输入',async()=>{
+ const {state,router,route,stop}=await workspaceHarness();state.query.value='old';state.persistList();await settle()
+ state.query.value='latest';state.selectResource('services');await settle()
+ await new Promise(resolve=>{const off=router.afterEach(()=>{off();resolve()});router.back()});await settle()
+ assert.equal(state.query.value,'latest');assert.equal(route.query.q,'latest');stop()
+})

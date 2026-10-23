@@ -45,7 +45,7 @@ let overviewRevision=0,overviewController:AbortController|undefined,lastOverview
 function selectResource(value:string){
   const type=kubeTypes.find(item=>item.resource===value)
   if(!type||contextDisabled.value||!can(`${type.permission}.read`))return
-  rememberList();cancelListPersist()
+  rememberPendingList();rememberList();cancelListPersist()
   const key=`${cluster.value}:${type.resource}:${type.namespaced?scopeKey.value:'*'}`
   const query:LocationQueryRaw={...withoutKubeListQuery(route.query),...listContexts.get(key)&&kubeListQuery(listContexts.get(key)!),view:type.group,resource:value}
   if(group.value==='overview')query.from='overview'
@@ -77,7 +77,7 @@ const initialList=readKubeListState(route.query)
 const rows = ref<KubeObject[]>([]), query = ref(initialList.query), labelFilter=ref(initialList.label), statusFilter=ref(initialList.status), lastRefreshed=ref(''), continuation = ref<Record<string,string>>({}), loading = ref(false), error = ref(''), autoRefresh = ref(true), busy = ref('')
 const sortKey=ref(initialList.sort),sortOrder=ref<'asc'|'desc'>(initialList.order),currentPage=ref(initialList.page),pageSize=ref(initialList.limit)
 const resourcePanel=ref<HTMLElement>(),lastViewedRow=ref(''),editorRef=ref<InstanceType<typeof KubeResourceEditor>>()
-const listContexts=new Map<string,KubeListState>();let restoringList=false,listPersistTimer:ReturnType<typeof setTimeout>|undefined
+const listContexts=new Map<string,KubeListState>(),listSnapshots=new Map<string,{path:string;position:unknown}>();let restoringList=false,listPersistTimer:ReturnType<typeof setTimeout>|undefined
 const presented=computed<KubeObject[]>(()=>rows.value.map(object=>({...object,id:kubeKey(object),name:object.metadata.name,namespace:object.metadata.namespace??'—',cells:resourceCells(object,t),state:resourceStatus(object,t)})))
 const statusOptions=computed(()=>[...new Map(presented.value.map(row=>[row.state.key,{value:row.state.key,label:`${row.state.text} (${presented.value.filter(item=>item.state.key===row.state.key).length})`}])).values()])
 const displayRows=computed(()=>sortKubeRows(presented.value.filter(row=>(!statusFilter.value||row.state.key===statusFilter.value)&&matchesLabelFilter(row,labelFilter.value)&&(!query.value.trim()||resourceSearchText(row,t).includes(query.value.trim().toLowerCase()))),sortKey.value,sortOrder.value))
@@ -167,6 +167,7 @@ watch(scopeKey,storeScope)
 watch(namespaceScoped,enabled=>{namespaceRevision++;namespaceController?.abort();namespaceLoading.value=false;namespaceError.value='';if(enabled&&cluster.value&&!namespaces.value.length)void loadNamespaces()})
 function currentList():KubeListState{return {query:query.value,label:labelFilter.value,status:statusFilter.value,sort:sortKey.value,order:sortOrder.value,page:currentPage.value,limit:pageSize.value}}
 function rememberList(){if(cluster.value&&group.value!=='overview')listContexts.set(contextKey.value,currentList())}
+function rememberPendingList(){if(typeof route.fullPath==='string'&&JSON.stringify(kubeListQuery(currentList()))!==JSON.stringify(kubeListQuery(readKubeListState(route.query))))listSnapshots.set(contextKey.value,{path:route.fullPath,position:router.options?.history?.state?.position})}
 function cancelListPersist(){if(listPersistTimer)clearTimeout(listPersistTimer);listPersistTimer=undefined}
 function restoreList(state:KubeListState){restoringList=true;query.value=state.query;labelFilter.value=state.label;statusFilter.value=state.status;sortKey.value=state.sort;sortOrder.value=state.order;currentPage.value=state.page;pageSize.value=state.limit;restoringList=false}
 function persistList(){
@@ -183,7 +184,10 @@ watch(contextKey,(next,previous)=>{
   if(previous&&!previous.startsWith(':'))listContexts.set(previous,currentList())
   cancelListPersist();revision++;controller?.abort();rows.value=[];continuation.value={};error.value='';lastRefreshed.value='';lastViewedRow.value=''
   const explicit=kubeListQueryKeys.some(key=>route.query[key]!==undefined)
-  restoreList(explicit?readKubeListState(route.query):listContexts.get(next)??readKubeListState({}))
+  // 连续输入后立即切换时，URL 防抖可能尚未完成；同一历史记录优先恢复最后的内存状态。
+  const snapshot=listSnapshots.get(next),sameEntry=snapshot?.path===route.fullPath&&typeof snapshot?.path==='string'&&(typeof snapshot.position!=='number'||snapshot.position===router.options?.history?.state?.position)
+  listSnapshots.delete(next)
+  restoreList(explicit&&!sameEntry?readKubeListState(route.query):listContexts.get(next)??readKubeListState({}))
   closeDetails();editorOpen.value=false;yamlOpen.value=false;scaleOpen.value=false;stream.value.open=false;nodeRemoval.value=undefined
   void refresh();persistList()
 })
@@ -364,7 +368,7 @@ onBeforeUnmount(()=>{mounted=false;cancelListPersist();namespaceRevision++;names
           <div v-if="column.key==='name'" class="resource-identity"><button class="resource-name" :title="row.metadata.name" :class="{deleting:row.metadata.deletionTimestamp}" @click="openDetails(row)">{{ row.metadata.name }}</button><a-tooltip :mouse-enter-delay="0.1" :title="Object.entries(row.metadata.labels??{}).map(([key,value])=>`${key}=${value}`).join(', ')"><span class="secondary">{{ Object.entries(row.metadata.labels??{}).slice(0,2).map(([key,value])=>`${key}=${value}`).join(' · ') || row.kind }}</span></a-tooltip></div>
           <div v-else-if="column.key==='status'" class="status-cell"><a-tag :color="row.state.tone">{{ row.state.text }}</a-tag><span v-if="row.state.reason" class="secondary status-reason">{{ row.state.reason }}</span><span v-if="row.spec?.unschedulable" class="secondary">{{ t('k8s.schedulingDisabled') }}</span></div>
           <span v-else-if="column.key==='namespace'" class="namespace-value kube-namespace-badge">{{ row.metadata.namespace }}</span>
-          <span v-else-if="column.key==='created'" class="created-at">{{ formatDateTime(row.metadata.creationTimestamp) }}</span>
+          <span v-else-if="column.key==='created'" class="created-at" :title="formatDateTime(row.metadata.creationTimestamp)">{{ formatDateTime(row.metadata.creationTimestamp) }}</span>
           <template v-else-if="column.key==='usage'"><KubeNodeUsage v-if="row.kind==='Node'" :node="row" :overview="overview" :failed="Boolean(overviewError)" /><div v-else class="usage-cell"><span>{{ formatKubeCPU(overviewError?undefined:usageFor(overview,row)?.cpu) }}</span><span class="secondary">{{ formatKubeMemory(overviewError?undefined:usageFor(overview,row)?.memory) }}</span></div></template>
           <KubeResourceCell v-else :cell="row.cells[column.key]" :date="['jobTiming','lastSchedule'].includes(column.key)" :can-follow="canFollow(row.cells[column.key]?.reference)" @follow="followFromRow(row,$event)" />
         </template>
