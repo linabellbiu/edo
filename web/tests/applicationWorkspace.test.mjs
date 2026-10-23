@@ -13,14 +13,15 @@ const { outputText } = ts.transpileModule(compileScript(parse(source).descriptor
 const workflow = (id, name) => ({ id, name, is_active: true, source: { config: { branch: 'main', events: ['push'] } }, stages: [] })
 const application = (id, changes = {}) => ({ id, name: id, description: '', repository_id: 'repo', is_active: true, sync_status: 'synced', workflows: [workflow(`${id}-flow`, `${id} 流水线`)], ...changes })
 
-function harness({ allowed = true } = {}) {
-  const requests = [], pending = [], runtimePending = [], errors = [], navigation = [], scrolls = []
+function harness({ allowed = true, executeAllowed = true } = {}) {
+  const requests = [], submissions = [], pending = [], runtimePending = [], errors = [], navigation = [], scrolls = []
   const route = vue.reactive({ query: {} })
   let state
   const client = {
-    post: path => new Promise((resolve, reject) => { requests.push(path); pending.push({ resolve, reject }) }),
+    post: (path, payload) => new Promise((resolve, reject) => { requests.push(path); submissions.push({ path, payload }); pending.push({ resolve, reject }) }),
     get: async path => {
       requests.push(path)
+      if (path.endsWith('/repository-refs')) return { data: { branches: [{ name: 'main', sha: 'commit-main' }], tags: [], manual_sources: [{ id: 'source', name: '代码源' }], artifacts: [{ id: 'old-artifact', name: '已有镜像', kind: 'oci_image' }] } }
       if (path.endsWith('/runtime')) return new Promise((resolve, reject) => runtimePending.push({ resolve, reject }))
       return { data: { applications: [...state.applications.value], pipeline_runs: [...state.runs.value], deployment_plans: [...state.deploymentPlans.value], deployments: [...state.deployments.value], containers: [] } }
     },
@@ -29,9 +30,9 @@ function harness({ allowed = true } = {}) {
     vue: { ...vue, onMounted() {}, onBeforeUnmount() {}, watch() {} },
     'vue-router': { useRoute: () => route, useRouter: () => ({ push: value => navigation.push(value) }) },
     'vue-i18n': { useI18n: () => ({ t: key => key, locale: vue.ref('zh-CN') }) },
-    'ant-design-vue': { Modal: {}, message: { error: value => errors.push(value) } },
+    'ant-design-vue': { Modal: {}, message: { error: value => errors.push(value), warning: value => errors.push(value), success() {} } },
     axios: { isAxiosError: () => false },
-    '@/stores/auth': { useAuthStore: () => ({ canAny: () => allowed }) },
+    '@/stores/auth': { useAuthStore: () => ({ canAny: permissions => allowed && (!permissions.includes('pipeline_run.execute') || executeAllowed) }) },
     '@/api/client': { __esModule: true, default: client },
     '@/api/resources': { apiErrorMessage: () => '检查更新失败' },
     '@/utils/deploymentInstances': instances,
@@ -43,8 +44,89 @@ function harness({ allowed = true } = {}) {
   state = module.exports.default.setup({ section: 'applications' }, { expose() {} })
   state.applications.value = [application('api'), application('web', { is_active: false })]
   state.repositories.value = [{ id: 'repo', name: 'Platform' }]
-  return { state, requests, pending, runtimePending, errors, navigation, route, scrolls }
+  return { state, requests, submissions, pending, runtimePending, errors, navigation, route, scrolls }
 }
+
+function allowManual(application, id = 'second-flow') {
+  const flow = { ...workflow(id, id), source: { id: 'source', type: 'trigger', config: { events: ['manual', 'push'], branch: 'main' } } }
+  application.workflows.push(flow)
+  return flow
+}
+
+test('应用流水线行手动执行绑定准确流水线，选完版本前不创建运行，确认后复用完整执行链', async () => {
+  const { state, requests, submissions, pending } = harness()
+  allowManual(state.applications.value[0], 'first-flow')
+  allowManual(state.applications.value[0], 'second-flow')
+  await state.openManual('api', 'second-flow')
+  assert.equal(state.manualWorkflowID.value, 'second-flow')
+  assert.equal(state.manualApplicationID.value, 'api')
+  assert.equal(state.commitOpen.value, true)
+  assert.deepEqual(requests, ['/applications/api/workflows/second-flow/repository-refs'])
+  assert.equal(submissions.length, 0)
+  const execution = state.executeCommit()
+  assert.equal(submissions[0].path, '/applications/api/workflows/second-flow/pipeline-runs')
+  pending[0].resolve({ data: { pipeline_run: { id: 'run-second', workflow_id: 'second-flow' } } })
+  await new Promise(resolve => setImmediate(resolve))
+  assert.deepEqual(submissions[1], { path: '/pipeline-runs/run-second/execute', payload: { ref: 'refs/heads/main', commit_sha: 'commit-main', source_node_id: 'source' } })
+  pending[1].resolve({ data: {} })
+  await execution
+  assert.equal(state.commitOpen.value, false)
+  assert.equal(state.manualWorkflowID.value, '')
+})
+
+test('行内手动执行支持已有制品，执行参数不混入代码版本', async () => {
+  const { state, submissions, pending } = harness()
+  allowManual(state.applications.value[0])
+  await state.openManual('api', 'second-flow')
+  state.manualExecutionMode.value = 'artifact'
+  state.selectedArtifactID.value = 'old-artifact'
+  const execution = state.executeCommit()
+  pending[0].resolve({ data: { pipeline_run: { id: 'artifact-run' } } })
+  await new Promise(resolve => setImmediate(resolve))
+  assert.deepEqual(submissions[1], { path: '/pipeline-runs/artifact-run/execute', payload: { artifact_id: 'old-artifact', source_node_id: 'source' } })
+  pending[1].resolve({ data: {} })
+  await execution
+})
+
+test('无执行权限、应用停用、流水线未启用或关闭手动启动时，展示准确原因且禁止读取版本和执行', async () => {
+  for (const variant of ['permission', 'application', 'workflow', 'manual', 'missing']) {
+    const { state, requests } = harness({ executeAllowed: variant !== 'permission' })
+    const application = state.applications.value[0], flow = allowManual(application)
+    if (variant === 'application') application.is_active = false
+    if (variant === 'workflow') flow.is_active = false
+    if (variant === 'manual') flow.source.config.events = ['push']
+    const requested = variant === 'missing' ? 'deleted-flow' : flow.id
+    const reason = state.manualWorkflowUnavailableReason(application, variant === 'missing' ? undefined : flow)
+    assert.ok(reason)
+    assert.equal(reason, ({ permission: 'manualRun.permissionDenied', application: 'releasePlanExecution.reason.applicationDisabled', workflow: 'manualRun.workflowDisabled', manual: 'releasePlanExecution.reason.manualSourceMissing', missing: 'manualRun.workflowMissing' })[variant])
+    await state.openManual('api', requested)
+    assert.deepEqual(requests, [])
+    assert.equal(state.commitOpen.value, false)
+  }
+})
+
+test('执行前重新校验当前流水线状态，取消读取后迟到响应不会重开弹窗', async () => {
+  const { state, submissions } = harness()
+  const flow = allowManual(state.applications.value[0])
+  const opening = state.openManual('api', flow.id)
+  state.resetManualFlow()
+  await opening
+  assert.equal(state.commitOpen.value, false)
+  await state.openManual('api', flow.id)
+  flow.is_active = false
+  await state.executeCommit()
+  assert.equal(submissions.length, 0)
+})
+
+test('手动执行只放在对应流水线行，显示条件和调用均绑定本行应用及流水线', () => {
+  const nodes = []
+  function walk(node) { if (node.type === 1) nodes.push(node); for (const child of node.children || []) walk(child) }
+  walk(parse(source).descriptor.template.ast)
+  const actions = nodes.filter(node => node.props.some(prop => prop.type === 7 && prop.name === 'on' && prop.exp?.content.startsWith('openManual(')))
+  assert.equal(actions.length, 1)
+  assert.equal(actions[0].props.find(prop => prop.type === 7 && prop.name === 'on').exp.content, 'openManual(card.application.id,item.workflow.id)')
+  assert.equal(actions[0].props.find(prop => prop.type === 7 && prop.name === 'if').exp.content, '!manualWorkflowUnavailableReason(card.application,item.workflow)')
+})
 
 test('应用摘要按运行时间选取最新记录，名称和入口定位该次绑定的流水线', () => {
   const { state, navigation } = harness()

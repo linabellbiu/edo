@@ -75,7 +75,7 @@ interface PlanExecutionGroup{id:string;name:string;mode:string;failurePolicy:str
 interface ReleasePlanEditorValue{id:string;description:string;groups:Array<{id:string;name:string;mode:'parallel'|'sequential';failure_policy:'stop'|'continue';depends_on_group_ids:string[];applications:Array<{application_id:string;manual_deploy:boolean;source_type:string;source_value:string}>}>}
 
 const applications=ref<Application[]>([]),repositories=ref<Repository[]>([]),credentials=ref<Credential[]>([]),workflowTemplates=ref<WorkflowTemplate[]>([]),buildPlans=ref<BuildPlan[]>([]),registries=ref<Registry[]>([]),runs=ref<Run[]>([]),releasePlans=ref<ReleasePlan[]>([]),deployments=ref<DeploymentRecord[]>([]),deploymentPlans=ref<DeploymentPlan[]>([]),artifacts=ref<Artifact[]>([])
-const loading=ref(false),saving=ref(false),workflowRemovalID=ref(''),resourceMutationID=ref(''),formOpen=ref(false),editingID=ref(''),selectedWorkflowTemplateID=ref(''),registryTested=ref(false),testing=ref(false),repositoryTestingID=ref(''),manualOpen=ref(false),manualApplicationID=ref(''),manualWorkflowID=ref(''),manualApplications=ref<Application[]>([]),commitOpen=ref(false),commitOptions=ref<Array<{ref:string;name:string;sha:string;kind:'branch'|'tag'}>>([]),manualArtifacts=ref<ManualArtifact[]>([]),manualExecutionMode=ref<'code'|'artifact'>('code'),selectedArtifactID=ref(''),manualReferenceError=ref(''),selectedRef=ref(''),selectedSource=ref(''),manualSources=ref<Array<{id:string;name:string;environment?:string}>>([]),currentRun=ref<Run|null>(null),currentRunSelectionKey=ref(''),selectedRunID=ref(''),log=ref({open:false,runID:'',title:'',status:''})
+const loading=ref(false),saving=ref(false),workflowRemovalID=ref(''),resourceMutationID=ref(''),formOpen=ref(false),editingID=ref(''),selectedWorkflowTemplateID=ref(''),registryTested=ref(false),testing=ref(false),repositoryTestingID=ref(''),manualApplicationID=ref(''),manualWorkflowID=ref(''),commitOpen=ref(false),commitOptions=ref<Array<{ref:string;name:string;sha:string;kind:'branch'|'tag'}>>([]),manualArtifacts=ref<ManualArtifact[]>([]),manualExecutionMode=ref<'code'|'artifact'>('code'),selectedArtifactID=ref(''),manualReferenceError=ref(''),selectedRef=ref(''),selectedSource=ref(''),manualSources=ref<Array<{id:string;name:string;environment?:string}>>([]),currentRun=ref<Run|null>(null),currentRunSelectionKey=ref(''),selectedRunID=ref(''),log=ref({open:false,runID:'',title:'',status:''})
 const expandedApplications=ref<Record<string,boolean>>({}),expandedDeployments=ref<Record<string,boolean>>({}),dockerRuntimeContainers=ref<Record<string,DockerContainerRecord[]>>({}),dockerRuntimeLoading=ref<Record<string,boolean>>({}),dockerRuntimeLoaded=ref<Record<string,boolean>>({}),dockerRuntimeErrors=ref<Record<string,string>>({})
 type ApplicationFilter='all'|'running'|'attention'|'inactive'
 type ApplicationDetailTab='workflows'|'deployments'
@@ -284,6 +284,7 @@ const applicationWorkflowColumns=computed(()=>[
  {key:'tasks',title:t('applicationWorkspace.columns.tasks'),width:210},
  {key:'status',title:t('applicationCard.latestRun'),width:100},
  {key:'time',title:t('applicationWorkspace.columns.runTime'),width:175},
+ {key:'actions',title:t('applicationWorkspace.columns.actions'),width:135,fixed:'right' as const},
 ])
 function applicationTableRow(card:ApplicationCard){return {id:`application-${card.application.id}`}}
 function applicationTableRowClass(card:ApplicationCard){return ['apps-table-row',applicationDetailsOpen(card.application.id)?'is-expanded':'',activeApplicationID.value===card.application.id?'is-linked':''].join(' ')}
@@ -337,7 +338,7 @@ function workflowSourceLabel(workflow:ApplicationWorkflow){
  const events=(workflow.source.config.events||[]).map(event=>t(`applicationCard.trigger.${event}`)).join('、')
  return `分支：${branch}；触发：${events||t('applicationCard.trigger.none')}`
 }
-function workflowDisplayName(workflow:ApplicationWorkflow){return workflow.name||workflow.workflow_template?.name||t('applicationCard.customWorkflow')}
+function workflowDisplayName(workflow?:ApplicationWorkflow){return workflow?.name||workflow?.workflow_template?.name||t('applicationCard.customWorkflow')}
 function workflowOriginLabel(workflow:ApplicationWorkflow){return workflow.workflow_template?'公共流水线':'自定义流水线'}
 function deploymentKind(record:DeploymentRecord){
  const kind=record.deployment_plan_kind||record.platform
@@ -588,6 +589,15 @@ async function openDeploymentTerminal(record:DeploymentRecord){
 function workflowSupportsManualRelease(workflow?:PipelineWorkflow){return Boolean(workflow?.is_active&&workflow.source?.type==='trigger'&&workflow.source.config?.events?.includes('manual'))}
 function applicationManualWorkflows(application?:Application){return (application?.workflows||[]).filter(workflowSupportsManualRelease)}
 function applicationCanManualRelease(application?:Application){return Boolean(application?.is_active&&applicationManualWorkflows(application).length)}
+function manualWorkflowUnavailableReason(application?:Application,workflow?:ApplicationWorkflow){
+ if(!auth.canAny(['pipeline_run.execute']))return t('manualRun.permissionDenied')
+ if(!application)return t('releasePlanExecution.reason.applicationMissing')
+ if(!application.is_active)return t('releasePlanExecution.reason.applicationDisabled')
+ if(!workflow)return t('manualRun.workflowMissing')
+ if(!workflow.is_active)return t('manualRun.workflowDisabled')
+ if(!workflowSupportsManualRelease(workflow))return t('releasePlanExecution.reason.manualSourceMissing')
+ return ''
+}
 function releasePlanManualApplicationCount(plan:ReleasePlan){
  return (plan.groups||[]).flatMap(group=>group.applications||[]).filter(item=>applicationCanManualRelease(applications.value.find(application=>application.id===item.application_id))).length
 }
@@ -1057,11 +1067,9 @@ async function executeRetry(){
 }
 function openLogs(run:Run){log.value={open:true,runID:run.id,title:`流水线日志：${applications.value.find(item=>item.id===run.application_id)?.name||'应用'}`,status:run.status}}
 function resetManualFlow(){
- manualOpen.value=false
  commitOpen.value=false
  manualApplicationID.value=''
  manualWorkflowID.value=''
-	 manualApplications.value=[]
 	 commitOptions.value=[]
 	 manualArtifacts.value=[]
 	 manualExecutionMode.value='code'
@@ -1073,23 +1081,24 @@ function resetManualFlow(){
  currentRun.value=null
  currentRunSelectionKey.value=''
 }
-function openManual(){
+async function openManual(applicationID:string,workflowID:string){
+ if(saving.value)return
+ const application=applications.value.find(item=>item.id===applicationID)
+ const workflow=application?.workflows.find(item=>item.id===workflowID)
+ const reason=manualWorkflowUnavailableReason(application,workflow)
+ if(reason){message.warning(reason);return}
  resetManualFlow()
- manualApplications.value=applications.value.filter(applicationCanManualRelease)
- if(!manualApplications.value.length){message.warning(t('manualRun.noApplication'));return}
- manualApplicationID.value=manualApplications.value[0].id
- manualWorkflowID.value=applicationManualWorkflows(manualApplications.value[0])[0]?.id||''
- manualOpen.value=true
-}
-function updateManualApplication(value:string){
- manualApplicationID.value=value
- manualWorkflowID.value=applicationManualWorkflows(manualApplications.value.find(item=>item.id===value))[0]?.id||''
+ manualApplicationID.value=applicationID
+ manualWorkflowID.value=workflowID
+ await nextManual()
 }
 async function nextManual(){
-	if(!manualApplicationID.value||!manualWorkflowID.value)return
+	if(!manualApplicationID.value||!manualWorkflowID.value||saving.value)return
+ const applicationID=manualApplicationID.value,workflowID=manualWorkflowID.value
  saving.value=true
  try{
-			const data=(await client.get<RefResult>(`/applications/${manualApplicationID.value}/workflows/${manualWorkflowID.value}/repository-refs`,{timeout:35000})).data
+			const data=(await client.get<RefResult>(`/applications/${applicationID}/workflows/${workflowID}/repository-refs`,{timeout:35000})).data
+  if(applicationID!==manualApplicationID.value||workflowID!==manualWorkflowID.value)return
 	  commitOptions.value=[...(data.branches||[]).map(item=>({ref:`refs/heads/${item.name}`,name:item.name,sha:item.sha,kind:'branch' as const})),...(data.tags||[]).map(item=>({ref:`refs/tags/${item.name}`,name:item.name,sha:item.sha,kind:'tag' as const}))]
 	  manualArtifacts.value=data.artifacts||[]
 	  manualReferenceError.value=data.reference_error||''
@@ -1100,11 +1109,14 @@ async function nextManual(){
 	  manualExecutionMode.value=commitOptions.value.length?'code':'artifact'
 	  selectedArtifactID.value=manualArtifacts.value.length===1?manualArtifacts.value[0].id:''
 	  if((!commitOptions.value.length&&!manualArtifacts.value.length)||!manualSources.value.length){message.warning(t('manualRun.noVersionOrSource'));return}
-  manualOpen.value=false
   commitOpen.value=true
  }catch(error){message.error(apiErrorMessage(error))}finally{saving.value=false}
 }
 async function executeCommit(){
+ if(saving.value)return
+ const application=applications.value.find(item=>item.id===manualApplicationID.value)
+ const reason=manualWorkflowUnavailableReason(application,application?.workflows.find(item=>item.id===manualWorkflowID.value))
+ if(reason){message.warning(reason);return}
 	 const selected=commitOptions.value.find(item=>item.ref===selectedRef.value)
 	 const selectedArtifact=manualArtifacts.value.find(item=>item.id===selectedArtifactID.value)
 		if(!selectedSource.value||!manualApplicationID.value||!manualWorkflowID.value||
@@ -1652,7 +1664,7 @@ onBeforeUnmount(()=>{stopDeliveryEvents?.();clearTimeout(deliveryRefreshTimer);r
       <section v-if="applicationDetailsOpen(card.application.id)" :id="`application-details-${card.application.id}`" class="apps-details-content resource-detail-section" :aria-label="card.application.name+' · '+(applicationDetailTab(card.application.id)==='workflows'?t('applicationCard.linkedWorkflows'):t('applicationCard.deploymentInstances'))">
         <template v-if="applicationDetailTab(card.application.id)==='workflows'">
           <a-table v-if="card.workflowSummaries.length" class="apps-workflow-table" size="small" table-layout="fixed"
-            :columns="applicationWorkflowColumns" :data-source="card.workflowSummaries" :row-key="(item:ApplicationCard['workflowSummaries'][number])=>item.workflow.id" :pagination="false" :scroll="{x:1300}">
+            :columns="applicationWorkflowColumns" :data-source="card.workflowSummaries" :row-key="(item:ApplicationCard['workflowSummaries'][number])=>item.workflow.id" :pagination="false" :scroll="{x:1435}">
             <template #bodyCell="{column:workflowColumn,record:item}">
               <a-tooltip v-if="workflowColumn.key==='name'" :title="workflowDisplayName(item.workflow)" :mouse-enter-delay="0.1"><button type="button" class="apps-workflow-name" @click="openApplicationWorkflow(card.application.id,item.workflow.id)"><Workflow :size="15"/><span>{{ workflowDisplayName(item.workflow) }}</span></button></a-tooltip>
               <span v-else-if="workflowColumn.key==='enabled'" class="apps-enabled" :class="{'is-inactive':!item.workflow.is_active}">{{ item.workflow.is_active?t('applicationCard.active'):t('applicationCard.inactive') }}</span>
@@ -1661,6 +1673,10 @@ onBeforeUnmount(()=>{stopDeliveryEvents?.();clearTimeout(deliveryRefreshTimer);r
               <span v-else-if="workflowColumn.key==='tasks'" class="apps-workflow-facts"><span>{{ t('applicationCard.taskCount',{count:item.taskCount}) }}</span><span>{{ t('applicationCard.buildCount',{count:item.buildCount}) }}</span><span>{{ t('applicationCard.deployCount',{count:item.deployCount}) }}</span></span>
               <span v-else-if="workflowColumn.key==='status'" class="apps-status" :class="[`tone-${item.state.tone}`,{'is-live':item.state.live}]"><i/>{{ item.state.label }}</span>
               <time v-else-if="workflowColumn.key==='time'" class="apps-time">{{ formatApplicationTime(item.latestRun?.created_at) }}</time>
+              <template v-else-if="workflowColumn.key==='actions'">
+                <a-button v-if="!manualWorkflowUnavailableReason(card.application,item.workflow)" size="small" :loading="saving&&manualApplicationID===card.application.id&&manualWorkflowID===item.workflow.id" :disabled="saving" @click="openManual(card.application.id,item.workflow.id)">{{ t('manualRun.execute') }}</a-button>
+                <span v-else class="resource-secondary">{{ manualWorkflowUnavailableReason(card.application,item.workflow) }}</span>
+              </template>
             </template>
           </a-table>
           <div v-else class="apps-empty-inline"><Workflow :size="20"/><span>{{ t('applicationCard.noWorkflows') }}</span></div>
@@ -1895,7 +1911,7 @@ onBeforeUnmount(()=>{stopDeliveryEvents?.();clearTimeout(deliveryRefreshTimer);r
   </div>
  </section>
  <section class="application-form-section application-workflow-association">
-  <header><strong>关联流水线</strong><small>{{ editingID?'查看应用已有流水线，或继续选择已启用的公共流水线。':'选择创建应用时使用的公共流水线；不选择则创建一条空白流水线。' }}</small></header>
+  <header><strong>关联流水线</strong><small>{{ editingID?'查看应用已有流水线，或继续选择已启用的公共流水线。':'可选择已启用的公共流水线；不选择则在保存应用后配置发布流程。' }}</small></header>
   <template v-if="editingID">
    <div v-if="editingApplication?.workflows?.length" class="workflow-association-list">
     <div v-for="workflow in editingApplication.workflows" :key="workflow.id" class="workflow-association-item">
@@ -2031,9 +2047,9 @@ onBeforeUnmount(()=>{stopDeliveryEvents?.();clearTimeout(deliveryRefreshTimer);r
 </a-form><template #footer><div class="drawer-actions"><a-button :disabled="saving||testing" @click="closeForm">{{ creatingApplicationRepository?t('applicationForm.backToApplication'):'取消' }}</a-button><a-button v-if="formSection==='repositories'&&auth.canAny(['repository.execute'])" :loading="testing" :disabled="saving" @click="testRepository">测试连接</a-button><a-button v-if="props.section==='image-registries'&&auth.canAny([`${sectionPermission}.execute`])" :loading="testing" @click="testRegistry">测试登录</a-button><a-button v-if="canSaveCurrent" type="primary" :loading="saving" :disabled="testing||(props.section==='image-registries'&&!registryTested)" @click="save">保存</a-button></div></template></a-drawer>
 <GitCredentialDrawer v-model:open="credentialCreation.open" :provider="credentialCreation.provider" :auth-type="credentialCreation.authType" lock-context @saved="repositoryCredentialSaved"/>
 <DeliveryWorkflowDrawer v-model:open="deliveryOpen" :application-id="deliveryApplicationID" :initial-kind="typeof route.query.delivery_kind==='string'?route.query.delivery_kind as DeliveryKind:undefined" :initial-cluster="typeof route.query.cluster==='string'?route.query.cluster:undefined" :initial-namespace="typeof route.query.namespace==='string'?route.query.namespace:undefined" :initial-workload="typeof route.query.workload==='string'?route.query.workload:undefined" :initial-container="typeof route.query.container==='string'?route.query.container:undefined" @created="deliveryCreated"/>
-<a-modal v-model:open="manualOpen" :title="t('manualRun.title')" :confirm-loading="saving" :ok-button-props="{disabled:!manualApplicationID||!manualWorkflowID}" :ok-text="t('manualRun.chooseVersion')" @ok="nextManual" @cancel="resetManualFlow"><a-form layout="vertical"><a-form-item :label="t('manualRun.application')"><a-select :value="manualApplicationID" :options="manualApplications.map(item=>({value:item.id,label:item.name}))" @change="updateManualApplication(String($event))"/></a-form-item><a-form-item label="流水线" required><a-select v-model:value="manualWorkflowID" :options="applicationManualWorkflows(manualApplications.find(item=>item.id===manualApplicationID)).map(item=>({value:item.id,label:workflowDisplayName(item)}))"/></a-form-item></a-form></a-modal>
 <a-modal v-model:open="commitOpen" :title="t('manualRun.versionTitle')" :confirm-loading="saving" :ok-button-props="{disabled:!selectedSource||(manualExecutionMode==='code'?!selectedRef:!selectedArtifactID)}" :ok-text="t('manualRun.confirm')" @ok="executeCommit" @cancel="resetManualFlow">
  <a-form layout="vertical">
+  <a-form-item :label="t('manualRun.title')"><strong>{{ applications.find(item=>item.id===manualApplicationID)?.name }} / {{ workflowDisplayName(applications.find(item=>item.id===manualApplicationID)?.workflows.find(item=>item.id===manualWorkflowID)) }}</strong></a-form-item>
   <a-alert class="manual-release-note" type="info" show-icon :message="manualExecutionMode==='artifact'?t('manualRun.artifactHint'):t('manualRun.executionHint')"/>
   <a-form-item v-if="manualSources.length" :label="t('manualRun.source')">
    <a-select v-model:value="selectedSource" :options="manualSourceOptions">

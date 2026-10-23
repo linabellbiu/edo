@@ -128,6 +128,7 @@ const issues = ref<WorkflowIssue[]>([])
 const loading = ref(true)
 const switching = ref(false)
 const saving = ref(false)
+const autoSaving = ref(false)
 const saveConfirmOpen = ref(false)
 const saveConfirmSubmitting = ref(false)
 const dirty = ref(false)
@@ -163,7 +164,7 @@ const taskSortables = new Map<string, Sortable>()
 const canCreate = computed(() => auth.canAny(['workflow.create']))
 const canUpdate = computed(() => auth.canAny(['workflow.update']))
 const canExecute = computed(() => auth.canAny(['workflow.execute']))
-const canEdit = computed(() => canUpdate.value && !saving.value)
+const canEdit = computed(() => canUpdate.value && (!saving.value || autoSaving.value))
 const canCreateBuildPlan = computed(() => auth.canAny(['build_plan.create']))
 const canCreateDeploymentPlan = computed(() => auth.canAny(['deployment_plan.create']))
 const canReadNotificationChannels = computed(() => auth.canAny(['notification.read']))
@@ -486,7 +487,7 @@ function confirmDiscardChanges() {
 async function settleDraftBeforeNavigation() {
   if (!dirty.value) return true
   if (workflow.value && !workflow.value.is_active && draftReady(false)) {
-    if (await save(false, true)) return true
+    if (await save(false, true) && !dirty.value) return true
   }
   return confirmDiscardChanges()
 }
@@ -602,6 +603,7 @@ async function validateGraph() {
 
 async function save(activate: boolean, automatic = false): Promise<boolean> {
   if (!workflow.value || saving.value || !draftReady(!automatic)) return false
+  if (automatic && (activate || workflow.value.is_active)) return false
   if (!ensureEnvironmentVariablesValid(!automatic)) {
     if (automatic) autoSaveFailed.value = true
     return false
@@ -610,6 +612,7 @@ async function save(activate: boolean, automatic = false): Promise<boolean> {
   const requestWorkflowID = workflow.value.id
   const requestPayload = payload(activate)
   const previousTemplateID = selectedTemplateID.value
+  autoSaving.value = automatic
   saving.value = true
   window.clearTimeout(autoSaveTimer)
   try {
@@ -623,7 +626,13 @@ async function save(activate: boolean, automatic = false): Promise<boolean> {
       const templateIndex = templates.value.findIndex(item => item.id === saved.id)
       if (templateIndex >= 0) templates.value[templateIndex] = saved
     } else updateApplicationWorkflow(saved)
-    if (editVersion === requestVersion && workflow.value?.id === requestWorkflowID) {
+    if (automatic && workflow.value?.id === requestWorkflowID) {
+      // 自动保存只同步持久化元数据，保留输入控件和尚未提交的新草稿。
+      workflow.value = { ...saved, name: workflow.value.name, description: workflow.value.description }
+      dirty.value = editVersion !== requestVersion
+      if (!dirty.value) issues.value = result.data.issues || []
+      autoSaveFailed.value = false
+    } else if (editVersion === requestVersion && workflow.value?.id === requestWorkflowID) {
       loadGraph(saved, result.data.issues || [])
     } else if (workflow.value?.id === requestWorkflowID) {
       workflow.value = {
@@ -644,12 +653,14 @@ async function save(activate: boolean, automatic = false): Promise<boolean> {
   } catch (error) {
     const responseIssues = (error as { response?: { data?: { issues?: WorkflowIssue[] } } }).response?.data?.issues
     if (responseIssues?.length) {
-      issues.value = responseIssues
-      const nodeIssue = responseIssues.find(item => item.node_id)
-      if (nodeIssue?.node_id) selectNode(nodeIssue.node_id)
-      else {
-        const stageIssue = responseIssues.find(item => item.stage_id)
-        if (stageIssue?.stage_id) selectStage(stageIssue.stage_id)
+      if (editVersion === requestVersion && workflow.value?.id === requestWorkflowID) issues.value = responseIssues
+      if (!automatic) {
+        const nodeIssue = responseIssues.find(item => item.node_id)
+        if (nodeIssue?.node_id) selectNode(nodeIssue.node_id)
+        else {
+          const stageIssue = responseIssues.find(item => item.stage_id)
+          if (stageIssue?.stage_id) selectStage(stageIssue.stage_id)
+        }
       }
       message.error(`${activate ? '无法启用' : '无法保存'}：${summarizeIssues(responseIssues)}`)
     } else {
@@ -659,6 +670,7 @@ async function save(activate: boolean, automatic = false): Promise<boolean> {
     return false
   } finally {
     saving.value = false
+    autoSaving.value = false
     if (dirty.value) scheduleAutoSave()
   }
 }
@@ -1329,7 +1341,7 @@ onBeforeRouteLeave(async () => {
       <a-button v-else-if="!publicMode" type="primary" @click="router.push('/applications')">返回应用配置</a-button>
     </a-empty>
 
-    <div v-else class="pipeline-studio" :class="{ immersive, 'panel-open': panelMode !== 'closed' }" :inert="saving">
+    <div v-else class="pipeline-studio" :class="{ immersive, 'panel-open': panelMode !== 'closed' }" :inert="saving && !autoSaving">
       <main class="pipeline-board-shell vben-card">
         <header class="board-toolbar">
           <div>

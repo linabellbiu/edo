@@ -230,6 +230,7 @@ export const messages = {
       started: '发布计划已开始执行', submitted: '已提交，正在创建运行记录', selectionInvalid: '执行参数不完整，请重新选择代码版本或制品', submitFailed: '提交失败：{message}', acceptedWithoutRuns: '发布计划已受理，但响应中没有流水线运行记录，请刷新后重试',
     },
     manualRun: {
+	      execute: '手动执行', permissionDenied: '无手动执行权限', workflowMissing: '流水线不存在或已被删除', workflowDisabled: '流水线未启用',
 	      title: '手动执行流水线', chooseVersion: '选择执行内容', versionTitle: '选择代码版本或已有制品', confirm: '确认并执行',
       application: '应用', source: '发布路径', ref: '分支或 Tag', branch: '分支', tag: 'Tag',
 	      executionHint: '使用所选代码版本重新构建并发布。', artifactHint: '使用所选制品，跳过对应构建和后续脚本检查。',
@@ -460,6 +461,7 @@ export const messages = {
       started: 'Release plan execution started', submitted: 'Submitted. The release plan is being accepted in the background.', selectionInvalid: 'Execution parameters are incomplete. Select a code version or artifact again.', submitFailed: 'Background submission failed: {message}', acceptedWithoutRuns: 'The release plan was accepted without any pipeline run records. Refresh and try again.',
     },
     manualRun: {
+	      execute: 'Run manually', permissionDenied: 'No permission to run manually', workflowMissing: 'The pipeline no longer exists', workflowDisabled: 'The pipeline is not enabled',
 	      title: 'Run pipeline manually', chooseVersion: 'Choose execution input', versionTitle: 'Choose a code version or artifact', confirm: 'Confirm and run',
       application: 'Application', source: 'Release path', ref: 'Branch or tag', branch: 'Branches', tag: 'Tags',
 	      executionHint: 'Rebuild and deploy the selected revision.', artifactHint: 'Use the selected artifact and skip its build and following shell checks.',
