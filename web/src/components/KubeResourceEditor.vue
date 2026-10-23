@@ -9,7 +9,7 @@ import KubeKeyValues, { type KeyValue } from './KubeKeyValues.vue'
 const props = defineProps<{open:boolean; cluster:string; type:KubeType; namespace:string; object?:KubeObject}>()
 const emit = defineEmits<{'update:open':[value:boolean]; saved:[]}>()
 const { t } = useI18n()
-const saving = ref(false), error = ref('')
+const saving = ref(false), confirming=ref(false),error = ref('')
 const editing = computed(() => Boolean(props.object))
 const workload = computed(() => ['Deployment','StatefulSet','DaemonSet','Job','CronJob','Pod'].includes(props.type.kind))
 const restartPolicy=ref('Always'), nodeSelector=ref<KeyValue[]>([])
@@ -102,13 +102,15 @@ function buildObject(): KubeObject {
   return object
 }
 async function save() {
+  if(saving.value||confirming.value)return
   error.value=''
   let object:KubeObject
   try { object=buildObject() } catch (err) { error.value=err instanceof Error ? err.message : t('k8s.invalidForm'); return }
   const url=resourceURL(props.cluster,props.type,form.name), namespace=props.type.namespaced?form.namespace:'', method=editing.value?'PATCH':'POST'
   if (props.type.kind==='Node'||props.type.group==='network'||props.type.permission==='kubernetes.storage'||workload.value&&editing.value) {
-    Modal.confirm({title:t('k8s.confirmTitle',{action:t('k8s.save'),name:form.name}),content:h('div',[h('p',`${props.type.kind} / ${namespace||'Cluster'}`),h('p',t(props.type.kind==='Node'?'k8s.editNodeHint':'k8s.confirmHint'))]),okText:t('k8s.save'),cancelText:t('k8s.cancel'),onOk:()=>submit(url,namespace,method,object)})
-  } else await submit(url,namespace,method,object)
+    confirming.value=true
+    Modal.confirm({title:t('k8s.confirmTitle',{action:t('k8s.save'),name:form.name}),content:h('div',[h('p',`${props.type.kind} / ${namespace||t('k8s.clusterScope')}`),h('p',t(props.type.kind==='Node'?'k8s.editNodeHint':'k8s.confirmHint'))]),okText:t('k8s.save'),cancelText:t('k8s.cancel'),afterClose(){confirming.value=false},onOk:()=>submit(url,namespace,method,object)})
+  } else try{await submit(url,namespace,method,object)}catch{}
 }
 async function submit(url:string,namespace:string,method:string,object:KubeObject) {
   saving.value=true
@@ -117,14 +119,15 @@ async function submit(url:string,namespace:string,method:string,object:KubeObjec
     if (method==='PATCH'&&props.object) await withFreshKubeResource(props.cluster,props.type,props.object,t('k8s.resourceChanged'),current=>send({...object,metadata:{...object.metadata,resourceVersion:current.metadata.resourceVersion}}))
     else await send(object)
     message.success(t('k8s.saved')); emit('update:open',false); emit('saved')
-  } catch (err) { error.value=kubeErrorMessage(err) } finally { saving.value=false }
+  } catch (err) { error.value=kubeErrorMessage(err);throw err } finally { saving.value=false }
 }
 </script>
 
 <template>
-  <a-drawer :open="open" :title="`${t(editing?'k8s.edit':'k8s.create')} ${type.kind}`" width="min(760px,94vw)" :mask-closable="!saving" :closable="!saving" @close="emit('update:open',false)">
+  <a-drawer :open="open" :title="`${t(editing?'k8s.edit':'k8s.create')}${t(`k8s.type_${type.resource}`)}`" width="min(800px,94vw)" :mask-closable="!saving&&!confirming" :closable="!saving&&!confirming" :keyboard="!saving&&!confirming" @close="emit('update:open',false)">
+    <div class="editor-context"><a-tag>{{ type.kind }}</a-tag><span>{{ type.namespaced?form.namespace:t('k8s.clusterScope') }}</span><strong v-if="editing">{{ object?.metadata.name }}</strong></div>
     <a-alert v-if="error" type="error" show-icon :message="error" class="editor-alert" />
-    <a-form layout="vertical" :disabled="saving" @finish="save">
+    <a-form layout="vertical" :disabled="saving||confirming" @finish="save">
       <div class="form-grid"><a-form-item :label="t('k8s.name')" required><a-input v-model:value="form.name" :disabled="editing" :maxlength="253" /></a-form-item><a-form-item v-if="type.namespaced" :label="t('k8s.namespace')" required><a-input v-model:value="form.namespace" :disabled="editing" :maxlength="63" /></a-form-item></div>
       <a-form-item :label="t('k8s.labels')"><KubeKeyValues v-model="form.labels" :disabled="saving" /></a-form-item>
       <template v-if="workload">
@@ -146,7 +149,7 @@ async function submit(url:string,namespace:string,method:string,object:KubeObjec
       <template v-if="['ConfigMap','Secret'].includes(type.kind)">
         <a-form-item v-if="type.kind==='Secret'" :label="t('k8s.secretType')"><a-input v-model:value="form.secretType" :disabled="editing" /></a-form-item>
         <a-alert v-if="type.kind==='Secret'&&editing" class="editor-alert" type="info" :message="t('k8s.secretKeep')" />
-        <a-form-item :label="t('k8s.data')"><KubeKeyValues v-model="form.data" :secret="type.kind==='Secret'" :disabled="saving" /></a-form-item>
+        <a-form-item :label="t('k8s.data')"><KubeKeyValues v-model="form.data" :secret="type.kind==='Secret'" :disabled="saving||Boolean(object?.immutable)" /><span v-if="object?.immutable" class="secondary">{{ t('k8s.state_immutable') }}</span></a-form-item>
       </template>
       <template v-if="type.kind==='PersistentVolumeClaim'">
         <div class="form-grid"><a-form-item :label="t('k8s.capacity')" required><a-input v-model:value="form.storage" placeholder="1Gi" /></a-form-item><a-form-item label="StorageClass"><a-input v-model:value="form.storageClass" :disabled="editing" :placeholder="t('k8s.defaultClass')" /></a-form-item></div>
@@ -170,9 +173,12 @@ async function submit(url:string,namespace:string,method:string,object:KubeObjec
         <a-alert type="warning" :message="t('k8s.policyHint')" />
       </template>
     </a-form>
-    <template #footer><div class="editor-footer"><a-button :disabled="saving" @click="emit('update:open',false)">{{ t('k8s.cancel') }}</a-button><a-button type="primary" :loading="saving" @click="save">{{ t('k8s.save') }}</a-button></div></template>
+    <template #footer><div class="editor-footer"><span>{{ type.kind }}</span><a-button :disabled="saving||confirming" @click="emit('update:open',false)">{{ t('k8s.cancel') }}</a-button><a-button type="primary" :loading="saving" :disabled="confirming&&!saving" @click="save">{{ t('k8s.save') }}</a-button></div></template>
   </a-drawer>
 </template>
 <style scoped>
 .form-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:0 16px}.editor-alert{margin-bottom:16px}.container-form{padding:16px;margin-bottom:14px;border:1px solid var(--edo-border);border-radius:6px;background:var(--edo-bg)}.section-heading{display:flex;justify-content:space-between;align-items:center;margin-bottom:14px}.container-form :deep(.ant-form-item:last-child){margin-bottom:0}.taint-row{display:grid;grid-template-columns:1fr 1fr 160px 32px;gap:8px;margin-bottom:8px}.editor-footer{display:flex;justify-content:flex-end;gap:8px}@media(max-width:640px){.form-grid{grid-template-columns:1fr}.taint-row{grid-template-columns:1fr 1fr}.taint-row :deep(.ant-select){min-width:130px}}
+</style>
+<style scoped>
+.editor-context{display:flex;align-items:center;gap:10px;padding:11px 14px;background:var(--edo-bg);border:1px solid var(--edo-border);border-radius:5px;margin-bottom:20px;font-size:12px;color:var(--edo-muted)}.editor-context strong{margin-left:auto;color:var(--edo-text);font-size:13px;overflow-wrap:anywhere}.editor-footer{align-items:center}.editor-footer>span{margin-right:auto;color:var(--edo-muted);font-size:12px}.container-form{background:var(--edo-surface)}:deep(.ant-form-item){margin-bottom:18px}:deep(.ant-form-item-label>label){font-size:13px}.form-grid :deep(.ant-input-number){width:100%}
 </style>

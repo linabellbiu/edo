@@ -14,6 +14,7 @@ function load(path,modules){
  return module.exports
 }
 const api=load('../src/api/kubernetes.ts',{})
+const presentation=load('../src/utils/kubernetesPresentation.ts',{'@/api/kubernetes':api})
 test('节点三条用量条显示已用与可分配量，0 值有效，超量只截取条宽不截取数值',()=>{
  const now=Date.now(),node={kind:'Node',metadata:{name:'worker',uid:'node-1',creationTimestamp:new Date(now-3600_000).toISOString()}}
  const data={nodes:[{name:'worker',uid:'node-1',cpu:4,memory:8*1073741824,pod_capacity:110,pods:26,pod_state:'ok'}],usage:{nodes:{worker:{cpu:.229,memory:3.7*1073741824,timestamp:new Date(now).toISOString()}}},collected_at:new Date(now).toISOString()}
@@ -76,6 +77,7 @@ function editor(kind,object){
   vue:{...vue,watch:(source,callback)=>watchers.push(callback)},
   'vue-i18n':{useI18n:()=>({t:key=>key})},
   '@/api/kubernetes':api,
+  '@/utils/kubernetesPresentation':presentation,
  }).default
  const props={open:true,cluster:'cluster-a',namespace:'team',type:api.kubeTypes.find(item=>item.kind===kind),object}
  const state=component.setup(props,{expose(){},emit(){}})
@@ -115,6 +117,7 @@ test('集群页面关闭详情或切换记录后丢弃旧响应，不重新打�
   'vue-router':{useRoute:()=>({query:{view:'nodes'}}),useRouter:()=>({})},
   '@/stores/auth':{useAuthStore:()=>({canAny:()=>true})},
   '@/api/kubernetes':api,
+  '@/utils/kubernetesPresentation':presentation,
   '@/api/client':{__esModule:true,default:{get:()=>new Promise(resolve=>pending.push(resolve))}},
  }).default
  const state=component.setup({}, {expose(){}})
@@ -126,6 +129,111 @@ test('集群页面关闭详情或切换记录后丢弃旧响应，不重新打�
  pending[1]({data:{object:object('b')}});await b
  pending[0]({data:{object:object('a')}});await a
  assert.equal(state.detail.value.metadata.name,'b')
+})
+
+const translate=(key,values={})=>key+Object.entries(values).map(([key,value])=>` ${key}=${value}`).join('')
+test('后台总览同步不闪加载，不重复请求；首屏仍有加载反馈',async()=>{
+ const pending=[]
+ const component=load('../src/views/KubernetesView.vue',{
+  vue:{...vue,onMounted(){},onBeforeUnmount(){},watch(){}},'vue-i18n':{useI18n:()=>({t:translate})},
+  'vue-router':{useRoute:()=>({query:{view:'overview'}}),useRouter:()=>({})},'@/stores/auth':{useAuthStore:()=>({canAny:()=>true})},
+  '@/api/kubernetes':api,'@/utils/kubernetesPresentation':presentation,
+  '@/api/client':{__esModule:true,default:{get:()=>new Promise(resolve=>pending.push(resolve))}},
+ }).default
+ const state=component.setup({}, {expose(){}})
+ state.cluster.value='a';state.clusters.value=[{id:'a',is_active:true}];state.overview.value={counts:{}}
+ const sync=state.refreshOverview(true);assert.equal(state.overviewLoading.value,false)
+ await state.refreshOverview(true);assert.equal(pending.length,1)
+ pending.shift()({data:{counts:{pods:{count:2,state:'ok'}}}});await sync;assert.equal(state.overview.value.counts.pods.count,2)
+ state.overview.value=null;const initial=state.refreshOverview(true);assert.equal(state.overviewLoading.value,true)
+ pending.shift()({data:{counts:{}}});await initial;assert.equal(state.overviewLoading.value,false)
+})
+test('所有资源使用各自的关键列，不再用通用配置列代替',()=>{
+ for(const type of api.kubeTypes){
+  const columns=presentation.resourceColumns(type,translate),keys=columns.map(column=>column.key)
+  assert.equal(keys[0],'name');assert.equal(keys.at(-1),'created');assert.equal(new Set(keys).size,keys.length)
+  assert.equal(keys.includes('configuration'),false);assert.equal(keys.includes('namespace'),type.namespaced)
+ }
+ const columns=resource=>presentation.resourceColumns(api.kubeTypes.find(type=>type.resource===resource),translate).map(column=>column.key)
+ assert.ok(columns('deployments').includes('replicas'));assert.ok(columns('pods').includes('restarts'))
+ assert.ok(columns('persistentvolumeclaims').includes('volume'));assert.ok(columns('storageclasses').includes('binding'))
+ assert.ok(columns('services').includes('servicePorts'));assert.ok(columns('ingresses').includes('routes'));assert.ok(columns('networkpolicies').includes('egressRules'))
+})
+test('工作负载状态等待控制器确认版本，Running 但未就绪不显示成功',()=>{
+ const object={kind:'Deployment',metadata:{generation:3},spec:{replicas:2},status:{observedGeneration:2,readyReplicas:2,updatedReplicas:2}}
+ assert.equal(presentation.resourceStatus(object,translate).key,'updating')
+ object.status.observedGeneration=3;assert.equal(presentation.resourceStatus(object,translate).key,'ready')
+ object.status.updatedReplicas=1;assert.equal(presentation.resourceStatus(object,translate).key,'updating')
+ object.spec.replicas=0;assert.equal(presentation.resourceStatus(object,translate).key,'scaledDown')
+ const pod={kind:'Pod',metadata:{},spec:{containers:[{name:'app'}]},status:{phase:'Running',conditions:[{type:'Ready',status:'False'}],containerStatuses:[{name:'app',ready:false,state:{waiting:{reason:'ImagePullBackOff'}}}]}}
+ assert.equal(presentation.resourceStatus(pod,translate).reason,'ImagePullBackOff');assert.notEqual(presentation.resourceStatus(pod,translate).tone,'success')
+ assert.equal(presentation.resourceCells({kind:'Pod',metadata:{},spec:{containers:[{name:'app'}]}},translate).replicas.text,'— / 1')
+ pod.metadata.deletionTimestamp='2026-10-23T00:00:00Z';assert.equal(presentation.resourceStatus(pod,translate).key,'terminating')
+ for(const kind of ['Service','Ingress','NetworkPolicy'])assert.equal(presentation.resourceStatus({kind,metadata:{},spec:{}},translate).key,'configured')
+})
+test('存储和网络单元格完整展示绑定、命名端口、多条路径，不把无状态当健康',()=>{
+ const pvc={kind:'PersistentVolumeClaim',metadata:{name:'data',namespace:'team'},spec:{resources:{requests:{storage:'5Gi'}},storageClassName:'fast',volumeName:'pv-1',accessModes:['ReadWriteOnce']},status:{phase:'Bound',capacity:{storage:'8Gi'}}}
+ const cells=presentation.resourceCells(pvc,translate)
+ assert.equal(cells.capacity.text,'5Gi');assert.match(cells.capacity.secondary,/8Gi/);assert.equal(cells.volume.reference.resource,'persistentvolumes')
+ assert.deepEqual(cells.storageClass.reference,{resource:'storageclasses',name:'fast',namespace:undefined})
+ const service={kind:'Service',metadata:{},spec:{type:'NodePort',clusterIPs:['10.0.0.1','fd00::1'],ports:[{port:80,targetPort:'http',nodePort:30080},{port:53,targetPort:53,protocol:'UDP'}]}}
+ const ports=presentation.resourceCells(service,translate).servicePorts.text;assert.match(ports,/80 → http\/TCP \(:30080\)/);assert.match(ports,/53 → 53\/UDP/)
+ const ingress={spec:{rules:[{host:'a.test',http:{paths:[{path:'/api',pathType:'Prefix',backend:{service:{name:'api',port:{name:'http'}}}}]}},{host:'b.test',http:{paths:[{path:'/',backend:{service:{name:'web',port:{number:80}}}}]}}],defaultBackend:{service:{name:'fallback',port:{number:8080}}}}}
+ assert.equal(presentation.ingressRoutes(ingress).length,3);assert.equal(presentation.ingressRoutes(ingress)[0].port,'http');assert.equal(presentation.ingressRoutes(ingress)[2].service,'fallback')
+})
+test('搜索只使用资源摘要，Secret 和 ConfigMap 的数据原文不进入索引',()=>{
+ for(const kind of ['ConfigMap','Secret']){
+  const object={kind,metadata:{name:'settings',labels:{app:'web'}},keys:['password'],data:{password:'do-not-index-this'},stringData:{password:'nor-this'},binaryData:{cert:'or-this'}}
+  const text=presentation.resourceSearchText(object,translate)
+  assert.match(text,/settings/);assert.match(text,/app=web/);assert.doesNotMatch(text,/do-not-index-this|nor-this|or-this/)
+  assert.ok(presentation.matchesLabelFilter(object,'app=web, app'));assert.equal(presentation.matchesLabelFilter(object,'app=api'),false)
+ }
+})
+test('关联 Pod 严格使用选择器、命名空间、实际引用和任务归属，不用节点选择器冒充 Pod 标签',()=>{
+ const pod={kind:'Pod',metadata:{name:'web',namespace:'team',labels:{app:'web',tier:'api'},ownerReferences:[{kind:'Job',uid:'job-1'}]},spec:{nodeName:'worker',containers:[{name:'app',env:[{name:'TOKEN',valueFrom:{secretKeyRef:{name:'token',key:'value'}}}],envFrom:[{configMapRef:{name:'env'}}]}],volumes:[{persistentVolumeClaim:{claimName:'data'}},{projected:{sources:[{secret:{name:'projected'}},{configMap:{name:'files'}}]}}],imagePullSecrets:[{name:'registry'}]}}
+ assert.equal(presentation.relatedPodMatch({kind:'Node',metadata:{name:'worker'}},pod),true)
+ assert.equal(presentation.relatedPodMatch({kind:'Service',metadata:{namespace:'team'},spec:{}},pod),false)
+ assert.equal(presentation.relatedPodMatch({kind:'NetworkPolicy',metadata:{namespace:'team'},spec:{podSelector:{}}},pod),true)
+ assert.equal(presentation.relatedPodMatch({kind:'Deployment',metadata:{namespace:'team'},spec:{selector:{matchLabels:{app:'web'},matchExpressions:[{key:'tier',operator:'NotIn',values:['frontend']}]}}},pod),true)
+ assert.equal(presentation.relatedPodMatch({kind:'Deployment',metadata:{namespace:'team'},spec:{template:{spec:{nodeSelector:{app:'web'}}}}},pod),false)
+ for(const [kind,name] of [['Secret','token'],['Secret','registry'],['Secret','projected'],['ConfigMap','env'],['ConfigMap','files'],['PersistentVolumeClaim','data']]){
+  assert.equal(presentation.relatedPodMatch({kind,metadata:{name,namespace:'team'}},pod),true)
+  assert.equal(presentation.relatedPodMatch({kind,metadata:{name,namespace:'other'}},pod),false)
+ }
+ assert.equal(presentation.relatedPodMatch({kind:'CronJob',metadata:{namespace:'team'}},pod,['job-1']),true)
+ assert.equal(presentation.relatedPodMatch({kind:'CronJob',metadata:{namespace:'team'}},pod,['another-job']),false)
+ assert.equal(presentation.matchesSelector({}, {matchExpressions:[{key:'tier',operator:'NotIn',values:['api']}]}),true)
+ assert.equal(presentation.matchesSelector({},undefined),false)
+})
+test('跨类型详情使用自己的资源路径和权限，返回时保留原列表和筛选',async()=>{
+ const paths=[]
+ const component=load('../src/views/KubernetesView.vue',{
+  vue:{...vue,onMounted(){},onBeforeUnmount(){},watch(){}},'vue-i18n':{useI18n:()=>({t:translate})},
+  'vue-router':{useRoute:()=>({query:{view:'network'}}),useRouter:()=>({})},'@/stores/auth':{useAuthStore:()=>({canAny:permissions=>!permissions.includes('kubernetes.config.read')})},
+  '@/api/kubernetes':api,'@/utils/kubernetesPresentation':presentation,
+  '@/api/client':{__esModule:true,default:{get:async(path,options)=>{paths.push(path);if(path.endsWith('/events'))return {data:{items:[]}};const name=path.split('/').at(-1);return {data:{object:{kind:path.includes('/services/')?'Service':'Ingress',metadata:{name,namespace:options.params.namespace,uid:name}}}}}}},
+ }).default
+ const state=component.setup({}, {expose(){}})
+ state.cluster.value='cluster-a';state.clusters.value=[{id:'cluster-a',is_active:true}];state.resource.value='ingresses';state.query.value='keep-filter'
+ const ingress={kind:'Ingress',metadata:{name:'public',namespace:'team',uid:'public'}}
+ await state.openDetails(ingress)
+ await state.followReference({resource:'services',name:'api',namespace:'team'})
+ assert.equal(state.detailType.value.resource,'services');assert.equal(state.activeType.value.resource,'ingresses');assert.equal(state.query.value,'keep-filter');assert.equal(state.detailOrigin.value,'public')
+ assert.equal(state.detailHistory.value.length,1);assert.ok(paths.some(path=>path.endsWith('/resources/services/api')))
+ const before=paths.length;await state.followReference({resource:'secrets',name:'token',namespace:'team'});assert.equal(paths.length,before)
+ state.backDetail();await new Promise(resolve=>setImmediate(resolve));assert.equal(state.detail.value.metadata.name,'public');assert.equal(state.detailHistory.value.length,0)
+ state.closeDetails();assert.equal(state.detailHistory.value.length,0);assert.equal(state.detailOrigin.value,'');assert.equal(state.query.value,'keep-filter')
+})
+test('表单提交失败向确认窗口返回拒绝，并保留错误和编辑内容',async()=>{
+ const component=load('../src/components/KubeResourceEditor.vue',{
+  vue:{...vue,watch(){}},'vue-i18n':{useI18n:()=>({t:translate})},'ant-design-vue':{message:{success(){}}},
+  '@/api/kubernetes':{...api,kubeErrorMessage:()=> '保存失败，请重试'},
+  '@/api/client':{__esModule:true,default:{request:async()=>{throw Error('private infrastructure error')}}},
+ }).default
+ const state=component.setup({open:true,cluster:'a',namespace:'team',type:api.kubeTypes.find(type=>type.kind==='Service')},{expose(){},emit(){throw Error('失败时不应关闭抽屉')}})
+ state.form.name='keep-name'
+ await assert.rejects(state.submit('/url','team','POST',{}))
+ assert.equal(state.error.value,'保存失败，请重试');assert.equal(state.saving.value,false);assert.equal(state.form.name,'keep-name')
 })
 test('Pod 摘要优先显示容器故障原因，不把未就绪的 Running 当成功',()=>{
  const summary=api.kubeSummary({kind:'Pod',metadata:{},spec:{},status:{phase:'Running',containerStatuses:[{ready:false,state:{waiting:{reason:'CrashLoopBackOff'}}}]}})

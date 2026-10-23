@@ -11,6 +11,7 @@ function loadLocale(path, imports = {}) {
   const module = { exports: {} }
   new Function('require', 'module', 'exports', code)(
     name => {
+      if (name.startsWith('./')) return loadLocale(new URL(`${name}.ts`, new URL(path, import.meta.url)), imports)
       assert.ok(name in imports, `缺少测试依赖：${name}`)
       return imports[name]
     }, module, module.exports,
@@ -19,10 +20,7 @@ function loadLocale(path, imports = {}) {
 }
 
 test('中英文文案的键和占位参数一致', () => {
-  const workspace = loadLocale('../src/locales/workspace.ts')
   const { messages } = loadLocale('../src/locales/index.ts', {
-    './workspace': workspace,
-    './kubernetes': loadLocale('../src/locales/kubernetes.ts'),
     'vue-i18n': { createI18n: options => options },
   })
   const parameters = value => [...value.matchAll(/\{(\w+)\}/g)].map(match => match[1]).sort()
