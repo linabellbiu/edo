@@ -2,13 +2,18 @@ package outbox
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"gorm.io/gorm"
 
+	"edo/internal/config"
 	"edo/internal/model"
+	"edo/internal/task"
 )
 
 type MessagePublisher interface {
@@ -16,17 +21,20 @@ type MessagePublisher interface {
 }
 
 type Publisher struct {
-	db          *gorm.DB
-	messages    MessagePublisher
-	logger      *slog.Logger
-	maxAttempts int
-	interval    time.Duration
+	db            *gorm.DB
+	messages      MessagePublisher
+	logger        *slog.Logger
+	maxAttempts   int
+	interval      time.Duration
+	subjectPrefix string
+	deadSubject   string
 }
 
-func New(db *gorm.DB, messages MessagePublisher, logger *slog.Logger, maxAttempts int) *Publisher {
+func New(db *gorm.DB, messages MessagePublisher, logger *slog.Logger, natsConfig config.NATS) *Publisher {
 	return &Publisher{
 		db: db, messages: messages, logger: logger,
-		maxAttempts: maxAttempts, interval: 500 * time.Millisecond,
+		maxAttempts: natsConfig.MaxAttempts, interval: 500 * time.Millisecond,
+		subjectPrefix: natsConfig.SubjectPrefix, deadSubject: natsConfig.DeadSubject,
 	}
 }
 
@@ -68,7 +76,10 @@ func (p *Publisher) PublishBatch(ctx context.Context, limit int) error {
 }
 
 func (p *Publisher) publishOne(ctx context.Context, event *model.OutboxEvent) error {
-	err := p.messages.Publish(ctx, event.Subject, event.Payload, event.EventID)
+	subject, err := p.transportSubject(event)
+	if err == nil {
+		err = p.messages.Publish(ctx, subject, event.Payload, event.EventID)
+	}
 	now := time.Now().UTC()
 	if err == nil {
 		return p.db.WithContext(ctx).Model(event).Updates(map[string]any{
@@ -105,6 +116,21 @@ func (p *Publisher) publishOne(ctx context.Context, event *model.OutboxEvent) er
 		return fmt.Errorf("记录消息投递失败状态时发生错误: %v；原始错误: %w", updateErr, err)
 	}
 	return err
+}
+
+func (p *Publisher) transportSubject(event *model.OutboxEvent) (string, error) {
+	if event.Subject == p.deadSubject || !strings.HasPrefix(event.Subject, task.LogicalSubjectPrefix+".") {
+		return event.Subject, nil
+	}
+	var message task.Message
+	if err := json.Unmarshal(event.Payload, &message); err != nil {
+		return "", fmt.Errorf("解析任务消息封套失败: %w", err)
+	}
+	if message.Version != 1 || message.JobID == "" || message.JobID != event.AggregateID ||
+		message.MaxAttempts < 1 || message.Payload == nil {
+		return "", errors.New("任务消息封套与 Outbox 记录不一致")
+	}
+	return task.TransportSubject(event.Subject, message.Kind, p.subjectPrefix)
 }
 
 func retryDelay(attempt int) time.Duration {

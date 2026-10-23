@@ -653,7 +653,7 @@ func runServer(ctx context.Context, cfg config.Config, logger *slog.Logger, runt
 			}
 		}()
 	}
-	publisher := outbox.New(resources.Database, resources.NATS, logger, cfg.NATS.MaxAttempts)
+	publisher := outbox.New(resources.Database, resources.NATS, logger, cfg.NATS)
 	startBackground("server_system_metrics", func() error { return systemMetricsService.Run(serviceCtx) })
 	startBackground("server_kubernetes_node_metrics", func() error { return kubernetesService.RunNodeMonitoring(serviceCtx) })
 	startBackground("server_outbox", func() error { return publisher.Run(serviceCtx) })

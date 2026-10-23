@@ -221,8 +221,9 @@ func (w *Worker) process(runContext context.Context, message queueMessage) {
 		w.finishFailure(jobContext, message, taskMessage, attempt, "attempts_exhausted", "任务已达到最大执行次数")
 		return
 	}
-	if job.Kind != taskMessage.Kind || job.MaxAttempts != taskMessage.MaxAttempts || job.Subject != message.Subject() {
-		w.logger.Error("任务消息与数据库记录不一致", "operation", "worker_message_mismatch", "job_id", taskMessage.JobID, "attempt", attempt)
+	expectedSubject, subjectErr := task.TransportSubject(job.Subject, job.Kind, w.nats.SubjectPrefix)
+	if subjectErr != nil || job.Kind != taskMessage.Kind || job.MaxAttempts != taskMessage.MaxAttempts || expectedSubject != message.Subject() {
+		w.logger.Error("任务消息与数据库记录不一致", "operation", "worker_message_mismatch", "job_id", taskMessage.JobID, "attempt", attempt, "err", subjectErr)
 		w.finishFailure(jobContext, message, taskMessage, attempt, "message_mismatch", "任务消息校验失败")
 		return
 	}
