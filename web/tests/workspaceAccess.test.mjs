@@ -70,7 +70,7 @@ test('无权访问的固定标签和历史入口不显示，查询参数区分�
   vue:{...vue,onMounted(){},onBeforeUnmount(){},watch(){}},
   'vue-i18n':{useI18n:()=>({t:key=>key})},
   'vue-router':{useRoute:()=>({fullPath:'/projects'}),useRouter:()=>({resolve:()=>({name:'pipeline-editor',meta:{permissions:['workflow.read']}})})},
-  '@/router/navigation':{flatNavigation:()=>items,navigation:[]},
+  '@/router/navigation':{flatNavigation:()=>items,navigation:[],findNavigationItem:path=>items.find(item=>item.path===path),navigationTrail:()=>[],visibleNavigationItems:items=>items},
   '@/stores/auth':{useAuthStore:()=>({canAny:codes=>codes.length===0||codes.includes('pipeline_run.read')})},
   '@/stores/preferences':{usePreferencesStore:()=>({})},
   '@/stores/tabs':{useTabsStore:()=>({tabs:visits,recent:()=>visits,canGoBack:()=>false})},

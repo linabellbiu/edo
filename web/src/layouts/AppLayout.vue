@@ -8,7 +8,7 @@ import {
   Pin, Settings, Sun, X,
 } from 'lucide-vue-next'
 
-import { flatNavigation, navigation, type NavBranch, type NavItem } from '@/router/navigation'
+import { flatNavigation, navigation, findNavigationItem, navigationTrail, visibleNavigationItems, type NavBranch, type NavItem } from '@/router/navigation'
 import { useAuthStore } from '@/stores/auth'
 import { usePreferencesStore } from '@/stores/preferences'
 import { useTabsStore } from '@/stores/tabs'
@@ -27,29 +27,44 @@ const contentMaximized = ref(false)
 const reloadKey = ref(0)
 const mobileMenuOpen = ref(false)
 const openKeys = ref<string[]>([])
+let menuRevealPending = false
+
+function expandCurrentMenu() {
+  for (const item of navigationTrail(route.fullPath)) {
+    if (item.key && !openKeys.value.includes(item.key)) openKeys.value.push(item.key)
+  }
+  menuRevealPending = true
+}
+
+function revealCurrentMenu() {
+  if (!menuRevealPending || preferences.sidebarCollapsed || typeof document === 'undefined') return
+  const nav = document.querySelector<HTMLElement>('.vben-navigation'), selected = nav?.querySelector<HTMLElement>('.ant-menu-item-selected')
+  if (!nav || !selected || !selected.getBoundingClientRect().height) return
+  const bounds = nav.getBoundingClientRect(), row = selected.getBoundingClientRect()
+  if (row.bottom > bounds.bottom - 8) nav.scrollTop += row.bottom - bounds.bottom + 8
+  else if (row.top < bounds.top + 8) nav.scrollTop += row.top - bounds.top - 8
+  const visible = selected.getBoundingClientRect()
+  if (visible.top >= bounds.top && visible.bottom <= bounds.bottom) menuRevealPending = false
+}
+
+function updateOpenKeys(keys: string[]) {
+  if (!preferences.sidebarCollapsed) openKeys.value = keys
+}
 
 const allowed = (item: NavItem) => auth.canAny(item.permissions)
 const allowedBranches = (sectionIndex: number): NavBranch[] =>
   (navigation[sectionIndex]?.branches ?? [])
-    .map((branch) => ({ ...branch, items: branch.items.filter(allowed) }))
+    .map((branch) => ({ ...branch, items: visibleNavigationItems(branch.items, permissions => auth.canAny(permissions)) }))
     .filter((branch) => branch.items.length > 0)
 
 const selectedKeys = computed(() => {
-  const item = flatNavigation().find((candidate) => {
-    const target = new URL(candidate.path, 'http://edo.local')
-    if (target.pathname !== route.path) return false
-    return [...target.searchParams].every(([key, value]) => (route.query[key] ?? '') === value)
-  })
+  const item = findNavigationItem(route.fullPath)
   return item ? [item.path] : []
 })
 
 const currentNavItem = computed(() => flatNavigation().find((candidate) => candidate.path === selectedKeys.value[0]))
 function allowedHistoryPath(path: string) {
-  const target = new URL(path, 'http://edo.local')
-  const item = flatNavigation().find((candidate) => {
-    const entry = new URL(candidate.path, 'http://edo.local')
-    return entry.pathname === target.pathname && [...entry.searchParams].every(([key, value]) => target.searchParams.get(key) === value)
-  })
+  const item = findNavigationItem(path)
   if (item) return allowed(item)
   const resolved = router.resolve(path)
   return Boolean(resolved.name) && auth.canAny((resolved.meta.permissions as string[] | undefined) ?? [])
@@ -59,19 +74,8 @@ const recentVisits = computed(() => tabsStore.recent(route.fullPath).filter(item
 const canGoBack = computed(() => tabsStore.canGoBack(route.fullPath))
 
 const breadcrumbs = computed(() => {
-  for (const section of navigation) {
-    const direct = section.items?.find((item) => item.path === selectedKeys.value[0])
-    if (direct) return [{ label: direct.label }]
-    for (const branch of section.branches ?? []) {
-      const item = branch.items.find((candidate) => candidate.path === selectedKeys.value[0])
-      if (item) return [
-        section.label ? { label: section.label } : null,
-        { label: branch.label },
-        { label: item.label },
-      ].filter((value): value is { label: string } => Boolean(value))
-    }
-  }
-  return [{ label: String(route.meta.title || 'nav.overview') }]
+  const trail = navigationTrail(route.fullPath)
+  return trail.length ? trail : [{ label: String(route.meta.title || 'nav.overview') }]
 })
 
 const searchableItems = computed(() => flatNavigation()
@@ -79,33 +83,20 @@ const searchableItems = computed(() => flatNavigation()
   .filter((item) => t(item.label).toLowerCase().includes(searchText.value.trim().toLowerCase())))
 
 function tabIcon(path: string) {
-  const target = new URL(path, 'http://edo.local')
-  return flatNavigation().find((item) => {
-    const candidate = new URL(item.path, 'http://edo.local')
-    if (candidate.pathname !== target.pathname) return false
-    return [...candidate.searchParams].every(([key, value]) => target.searchParams.get(key) === value)
-  })?.icon
+  return findNavigationItem(path)?.icon
 }
 
 function historyContext(path: string) {
-  const target = new URL(path, 'http://edo.local')
-  const selectedPath = flatNavigation().find((item) => {
-    const candidate = new URL(item.path, 'http://edo.local')
-    if (candidate.pathname !== target.pathname) return false
-    return [...candidate.searchParams].every(([key, value]) => target.searchParams.get(key) === value)
-  })?.path
-  if (!selectedPath) return ''
-  for (const section of navigation) {
-    if (section.items?.some(item => item.path === selectedPath)) return section.label ? t(section.label) : ''
-    const branch = section.branches?.find(item => item.items.some(candidate => candidate.path === selectedPath))
-    if (!branch) continue
-    return [section.label, branch.label].filter(Boolean).map(label => t(label!)).join(' > ')
-  }
-  return ''
+  return navigationTrail(path).slice(0, -1).map(item => t(item.label)).join(' > ')
 }
 
 function navigate(path: string) {
   mobileMenuOpen.value = false
+  const target = new URL(path, 'http://edo.local')
+  if (route.path === '/kubernetes' && target.pathname === route.path) {
+    void router.push({ path: target.pathname, query: { ...route.query, ...Object.fromEntries(target.searchParams) } })
+    return
+  }
   void router.push(path)
 }
 
@@ -152,13 +143,20 @@ function keyboard(event: KeyboardEvent) {
   if (event.key === 'Escape' && contentMaximized.value) contentMaximized.value = false
 }
 
-watch(() => route.fullPath, () => {
+watch(() => route.fullPath, async () => {
   tabsStore.visit(route)
   tabsStore.add(route)
-  const branch = navigation.flatMap((section) => section.branches ?? [])
-    .find((item) => item.items.some((candidate) => candidate.path === selectedKeys.value[0]))
-  if (branch && !openKeys.value.includes(branch.key)) openKeys.value.push(branch.key)
+  expandCurrentMenu()
+  await nextTick()
+  revealCurrentMenu()
 }, { immediate: true })
+
+watch(() => preferences.sidebarCollapsed, async collapsed => {
+  if (collapsed) return
+  expandCurrentMenu()
+  await nextTick()
+  revealCurrentMenu()
+})
 
 watch(searchOpen, async (open) => {
   if (!open) return
@@ -166,12 +164,12 @@ watch(searchOpen, async (open) => {
   document.querySelector<HTMLInputElement>('.command-search input')?.focus()
 })
 
-onMounted(() => window.addEventListener('keydown', keyboard))
-onBeforeUnmount(() => window.removeEventListener('keydown', keyboard))
+onMounted(() => { window.addEventListener('keydown', keyboard); revealCurrentMenu() })
+onBeforeUnmount(() => { menuRevealPending = false; window.removeEventListener('keydown', keyboard) })
 </script>
 
 <template>
-  <div class="vben-app" :class="{ 'content-maximized': contentMaximized, 'sidebar-collapsed': preferences.sidebarCollapsed }">
+  <div class="vben-app" :class="{ 'content-maximized': contentMaximized, 'sidebar-collapsed': preferences.sidebarCollapsed, 'kube-navigation-active': route.path === '/kubernetes' }">
     <aside class="vben-sidebar" :class="{ collapsed: preferences.sidebarCollapsed, 'mobile-open': mobileMenuOpen }">
       <button class="mobile-close" type="button" aria-label="关闭导航" @click="mobileMenuOpen = false"><X /></button>
       <div class="vben-logo" @click="navigate('/')">
@@ -179,13 +177,13 @@ onBeforeUnmount(() => window.removeEventListener('keydown', keyboard))
         <strong>EDO</strong>
       </div>
 
-      <nav class="vben-navigation">
+      <nav class="vben-navigation" @transitionend="revealCurrentMenu">
         <a-menu
           :selected-keys="selectedKeys"
           :open-keys="preferences.sidebarCollapsed ? [] : openKeys"
           mode="inline"
           :inline-collapsed="preferences.sidebarCollapsed"
-          @open-change="(keys: string[]) => openKeys = keys"
+          @open-change="updateOpenKeys"
         >
           <a-menu-item v-for="item in navigation[0]?.items?.filter(allowed)" :key="item.path" @click="navigate(item.path)">
             <template #icon><component :is="item.icon" :size="18" /></template>
@@ -200,15 +198,25 @@ onBeforeUnmount(() => window.removeEventListener('keydown', keyboard))
             :open-keys="preferences.sidebarCollapsed ? [] : openKeys"
             mode="inline"
             :inline-collapsed="preferences.sidebarCollapsed"
-            @open-change="(keys: string[]) => openKeys = keys"
+            @open-change="updateOpenKeys"
           >
             <a-sub-menu v-for="branch in allowedBranches(sectionIndex + 1)" :key="branch.key">
               <template #icon><component :is="branch.icon" :size="18" /></template>
               <template #title>{{ t(branch.label) }}</template>
-              <a-menu-item v-for="item in branch.items" :key="item.path" @click="navigate(item.path)">
-                <template #icon><component :is="item.icon" :size="16" /></template>
-                {{ t(item.label) }}
-              </a-menu-item>
+              <template v-for="item in branch.items" :key="item.path">
+                <a-sub-menu v-if="item.children" :key="item.path" class="kube-sidebar-menu">
+                  <template #icon><component :is="item.icon" :size="16" /></template>
+                  <template #title>{{ t(item.label) }}</template>
+                  <a-menu-item v-for="child in item.children" :key="child.path" @click="navigate(child.path)">
+                    <template #icon><component :is="child.icon" :size="15" /></template>
+                    {{ t(child.label) }}
+                  </a-menu-item>
+                </a-sub-menu>
+                <a-menu-item v-else :key="item.path" @click="navigate(item.path)">
+                  <template #icon><component :is="item.icon" :size="16" /></template>
+                  {{ t(item.label) }}
+                </a-menu-item>
+              </template>
             </a-sub-menu>
           </a-menu>
         </template>

@@ -2,6 +2,7 @@ import { createRouter, createWebHistory, type RouteRecordRaw } from 'vue-router'
 
 import i18n from '@/locales'
 import { useAuthStore } from '@/stores/auth'
+import { findNavigationItem } from './navigation'
 
 const routes: RouteRecordRaw[] = [
   { path: '/login', name: 'login', component: () => import('@/views/LoginView.vue'), meta: { public: true } },
@@ -58,8 +59,12 @@ router.beforeEach(async (to) => {
     const reason = auth.loadFailed ? '&reason=unavailable' : ''
     return `/login?redirect=${encodeURIComponent(to.fullPath)}${reason}`
   }
-  const required = to.path === '/release-plans' && to.query.view === 'runs' ? ['pipeline_run.read'] : (to.meta.permissions as string[] | undefined) ?? []
+  const item = findNavigationItem(to.fullPath)
+  let required = (to.meta.permissions as string[] | undefined) ?? []
+  if (to.path === '/kubernetes' && item) required = item.permissions
+  else if (to.path === '/release-plans' && to.query.view === 'runs') required = ['pipeline_run.read']
   if (!auth.canAny(required)) return '/projects'
+  if (to.path === '/kubernetes' && item) to.meta.title = item.label
   return true
 })
 

@@ -67,6 +67,11 @@ button { color: inherit; }
 .breadcrumb-label { display: inline-flex; align-items: center; gap: 6px; }
 .breadcrumb-label svg { color: var(--edo-muted); stroke-width: 1.8; }
 .breadcrumb-label.current { color: var(--edo-text); }
+.kube-navigation-active .ant-breadcrumb ol { flex-wrap: nowrap; }
+.kube-navigation-active .ant-breadcrumb li { white-space: nowrap; }
+.kube-navigation-active .header-actions { flex-shrink: 0; }
+@media (max-width: 1280px) { .kube-navigation-active .ant-breadcrumb li:nth-last-child(n+3) { display: none; } }
+@media (max-width: 900px) { .kube-navigation-active .ant-breadcrumb li:nth-last-child(n+2) { display: none; } }
 .breadcrumb-history { display: flex; height: 30px; align-items: stretch; margin: 0 3px; overflow: hidden; border: 1px solid var(--edo-border); border-radius: 7px; background: var(--edo-surface); }
 .breadcrumb-history > button, .breadcrumb-history .ant-dropdown-trigger { display: grid; width: 28px; place-items: center; padding: 0; border: 0; color: var(--edo-muted); background: transparent; cursor: pointer; }
 .breadcrumb-history .ant-dropdown-trigger { width: 18px; border-left: 1px solid var(--edo-border); }
