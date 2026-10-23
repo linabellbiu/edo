@@ -8,6 +8,12 @@
 - 总览、列表、详情、监控和图表提示复用同一套格式；容器资源不再只展示 CPU、内存、临时存储，扩展资源也展示。
 - 换算只用于只读显示，不更改 API 原始对象、YAML、编辑表单及提交值。PV/PVC 的请求量和已分配容量保持独立，节点容量仍不表示当前剩余空间。
 
+## 节点监控图表
+
+CPU、内存使用同一坐标系的四条横向柱比较使用量、可分配量、资源申请和已配置限制，Pod 比较数量与可分配上限；图内数值与悬浮提示继续复用统一单位。柱长反映真实比例，可分配量有参考线，超配不截断，未知值不生成零柱。下方保留使用率趋势。复用现有 Apache ECharts 的 BarChart、MarkLine 和 LineChart，不新增依赖；正常界面删除采集周期、保留时长、来源与统计时间等说明文字，权限、过期与失败提示继续保留。
+
+统计与采集规则保持不变：后台每 30 秒采集、历史保留 3 天；CPU/内存来自 Metrics API，Pod 数量包含全部命名空间的已分配但未删除记录；请求与已配置限制汇总未结束的 Pod（包含 Init、Sidecar 和 Pod Overhead），未配置限制不代表零限制。磁盘仍只有容量，没有磁盘使用率、网络及系统负载采样。仅改变展示，无数据迁移。
+
 ## 解析方案评估（2026-10-23）
 
 研究了 [Kubernetes 官方 Quantity 格式](https://kubernetes.io/docs/reference/kubernetes-api/definitions/quantity-resource/)、[官方 JavaScript 客户端](https://github.com/kubernetes-client/javascript/blob/main/src/util.ts) 及 [k8s-resource-parser](https://github.com/etiennedi/kubernetes-resource-parser)。
