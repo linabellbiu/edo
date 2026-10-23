@@ -95,8 +95,12 @@ function navigate(path: string) {
   mobileMenuOpen.value = false
   const target = new URL(path, 'http://edo.local')
   if (route.path === '/kubernetes' && target.pathname === route.path) {
-    const query = { ...route.query, ...Object.fromEntries(target.searchParams) }
-    if (target.searchParams.get('view') !== 'storage') delete query.resource
+    const query = { ...route.query }
+    for (const key of target.searchParams.keys()) {
+      const values = target.searchParams.getAll(key)
+      query[key] = values.length > 1 ? values : values[0]!
+    }
+    if (!target.searchParams.has('resource')) delete query.resource
     void router.push({ path: target.pathname, query })
     return
   }

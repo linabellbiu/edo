@@ -4,6 +4,7 @@ import { test } from 'node:test'
 import ts from 'typescript'
 import * as vue from 'vue'
 import { parse, compileScript } from '@vue/compiler-sfc'
+import { createRouter, createMemoryHistory } from 'vue-router'
 
 function load(path, modules = {}) {
   const source = readFileSync(new URL(path, import.meta.url), 'utf8')
@@ -121,10 +122,10 @@ test('集群与命名空间使用独立筛选树，内容区不再重复展示�
   assert.match(template,/@click="selectResource\(type.resource\)"/)
 })
 test('存储列表跟随导航和浏览历史，刷新恢复准确类型，无效类型回到存储卷声明', async () => {
-  const route=vue.reactive({query:{view:'storage',resource:'storageclasses'}}), replacements=[], scope=vue.effectScope()
+  const route=vue.reactive({query:{view:'storage',resource:'storageclasses'}}), pushes=[], scope=vue.effectScope()
   const component=load('../src/views/KubernetesView.vue',{
     vue:{...vue,onMounted(){},onBeforeUnmount(){}},'vue-i18n':{useI18n:()=>({t:key=>key})},
-    'vue-router':{useRoute:()=>route,useRouter:()=>({replace:value=>replacements.push(value)})},
+    'vue-router':{useRoute:()=>route,useRouter:()=>({push:value=>pushes.push(value)})},
     '@/api/kubernetes':api,'@/stores/auth':{useAuthStore:()=>({canAny:()=>true})},
   }).default
   let state
@@ -143,6 +144,80 @@ test('存储列表跟随导航和浏览历史，刷新恢复准确类型，无�
   route.query.view='config';await vue.nextTick()
   assert.deepEqual(state.types.value.map(item=>item.resource),['configmaps','secrets','namespaces'])
   state.selectResource('storageclasses')
-  assert.deepEqual(replacements[0].query,{view:'storage',resource:'storageclasses'})
+  assert.deepEqual(pushes[0].query,{view:'storage',resource:'storageclasses'})
   scope.stop()
+})
+
+test('总览所有资源入口和资源页签进入真实历史，后退、前进及刷新恢复准确资源与范围', async () => {
+  const router=createRouter({history:createMemoryHistory(),routes:[{path:'/kubernetes',component:{}}]})
+  const origin='/kubernetes?view=overview&cluster=test&namespace=prod&namespace=team'
+  await router.push(origin)
+  const route=new Proxy({}, {get:(_target,key)=>router.currentRoute.value[key]})
+  const component=load('../src/views/KubernetesView.vue',{
+    vue:{...vue,onMounted(){},onBeforeUnmount(){}},'vue-i18n':{useI18n:()=>({t:key=>key})},
+    'vue-router':{useRoute:()=>route,useRouter:()=>router},
+    '@/api/kubernetes':api,'@/stores/auth':{useAuthStore:()=>({canAny:()=>true})},
+  }).default
+  function state(){const scope=vue.effectScope();let value;scope.run(()=>{value=component.setup({}, {expose(){}})});return {value,stop:()=>scope.stop()}}
+  const navigate=action=>new Promise((resolve,reject)=>{const remove=router.afterEach((_to,_from,failure)=>{remove();failure?reject(failure):resolve()});action()})
+  const page=state()
+  for(const type of api.kubeTypes){
+    await navigate(()=>page.value.selectResource(type.resource))
+    assert.equal(page.value.activeType.value.resource,type.resource)
+    assert.equal(router.currentRoute.value.query.view,type.group)
+    assert.equal(router.currentRoute.value.query.resource,type.resource)
+    assert.equal(router.currentRoute.value.query.cluster,'test')
+    assert.deepEqual(router.currentRoute.value.query.namespace,['prod','team'])
+    const restored=state()
+    assert.equal(restored.value.activeType.value.resource,type.resource)
+    restored.stop()
+    await navigate(()=>router.back())
+    assert.equal(router.currentRoute.value.fullPath,origin)
+    assert.equal(page.value.activeType.value,undefined)
+    await navigate(()=>router.forward())
+    assert.equal(router.currentRoute.value.query.resource,type.resource)
+    assert.equal(page.value.activeType.value.resource,type.resource)
+    await navigate(()=>router.back())
+  }
+  page.stop()
+})
+
+test('返回总览优先沿真实历史返回，深链接打开时提供明确总览入口且保留范围', () => {
+  const pushes=[],backs=[],route={query:{view:'workloads',resource:'pods',cluster:'test',namespace:['prod','team']}}
+  const target='/kubernetes?view=overview&cluster=test&namespace=prod&namespace=team'
+  const router={options:{history:{state:{back:target}}},resolve:()=>({fullPath:target}),push:value=>pushes.push(value),back:()=>backs.push(true)}
+  const component=load('../src/views/KubernetesView.vue',{
+    vue:{...vue,onMounted(){},onBeforeUnmount(){}},'vue-i18n':{useI18n:()=>({t:key=>key})},
+    'vue-router':{useRoute:()=>route,useRouter:()=>router},'@/api/kubernetes':api,'@/stores/auth':{useAuthStore:()=>({canAny:()=>true})},
+  }).default
+  const scope=vue.effectScope();let state;scope.run(()=>{state=component.setup({}, {expose(){}})})
+  state.backToOverview();assert.equal(backs.length,1);assert.equal(pushes.length,0)
+  router.options.history.state.back='/applications'
+  state.backToOverview()
+  assert.deepEqual(pushes[0].query,{view:'overview',resource:undefined,cluster:'test',namespace:['prod','team']})
+  state.editorOpen.value=true;state.backToOverview();state.selectResource('deployments');assert.equal(pushes.length,1)
+  scope.stop()
+})
+
+test('侧栏和页面标签保留显式资源类型，分类入口清除上一分类的类型', () => {
+  const {state,pushes,stop}=layoutHarness()
+  state.navigate('/kubernetes?view=config&resource=secrets&cluster=test&namespace=team')
+  assert.equal(pushes[0].query.resource,'secrets')
+  state.navigate('/kubernetes?view=workloads')
+  assert.equal(pushes[1].query.resource,undefined)
+  assert.deepEqual(pushes[1].query.namespace,'team')
+  state.navigate('/kubernetes?view=workloads&resource=pods&cluster=test&namespace=prod&namespace=team')
+  assert.deepEqual(pushes[2].query.namespace,['prod','team'])
+  assert.equal(pushes[2].query.resource,'pods')
+  stop()
+})
+
+test('集群和命名空间地址同步保留滚动，分类与资源切换回顶，后退使用保存位置', () => {
+  let scroll
+  load('../src/router/index.ts',{'vue-router':{createRouter:options=>{scroll=options.scrollBehavior;return {beforeEach(){},afterEach(){}}},createWebHistory(){}},'./navigation':nav})
+  const from={path:'/kubernetes',query:{view:'workloads',resource:'pods',cluster:'a'}}
+  assert.equal(scroll({...from,query:{...from.query,cluster:'b',namespace:['prod','team']}},from),false)
+  assert.deepEqual(scroll({...from,query:{...from.query,resource:'deployments'}},from),{top:0})
+  assert.deepEqual(scroll({...from,query:{view:'overview'}},from),{top:0})
+  const saved={top:420,left:0};assert.equal(scroll(from,from,saved),saved)
 })

@@ -17,6 +17,7 @@ const overview: PageTab = { key: '/', title: 'nav.overview', path: '/', pinned: 
 export interface PageVisit {
   title: string
   path: string
+  position?: number
 }
 
 function pageKey(path: string) {
@@ -88,19 +89,33 @@ export const useTabsStore = defineStore('tabs', () => {
 
   function visit(route: RouteLocationNormalizedLoaded) {
     if (route.meta.public) return
-    const entry = { title: String(route.meta.title || 'nav.overview'), path: currentTabPath(route.fullPath) }
+    const position = window.history.state?.position
+    const entry: PageVisit = { title: String(route.meta.title || 'nav.overview'), path: currentTabPath(route.fullPath) }
+    if (typeof position === 'number' && Number.isFinite(position)) entry.position = position
     const current = history.value.at(-1)
-    if (current?.path === entry.path) {
+    const existing = entry.position === undefined ? -1 : history.value.findIndex(item => item.position === entry.position)
+    if (existing >= 0) {
+      // replace 和浏览器前进后退复用原记录，避免生成虚假的返回步骤。
+      history.value[existing] = entry
+      if (window.history.state?.forward === null) history.value.splice(existing + 1)
+    } else if (entry.position !== undefined) {
+      const nextPosition = entry.position
+      history.value = history.value.filter(item => item.position !== undefined && item.position < nextPosition)
+      history.value.push(entry)
+    } else if (current?.path === entry.path) {
       current.title = entry.title
     } else {
       history.value.push(entry)
-      if (history.value.length > 40) history.value.splice(0, history.value.length - 40)
     }
+    if (history.value.length > 40) history.value.splice(0, history.value.length - 40)
     persistHistory()
   }
 
   function currentHistoryIndex(currentPath: string) {
     const path = currentTabPath(currentPath)
+    const position = window.history.state?.position
+    const positioned = typeof position === 'number' ? history.value.findIndex(item => item.position === position && item.path === path) : -1
+    if (positioned >= 0) return positioned
     for (let index = history.value.length - 1; index >= 0; index -= 1) {
       if (history.value[index]?.path === path) return index
     }
@@ -137,8 +152,6 @@ export const useTabsStore = defineStore('tabs', () => {
     const targetIndex = previousHistoryIndex(currentPath)
     const target = history.value[targetIndex]
     if (currentIndex < 0 || !target) return
-    history.value.splice(targetIndex + 1)
-    persistHistory()
     if (window.history.state?.back === target.path) {
       router.back()
       return

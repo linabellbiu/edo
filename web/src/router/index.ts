@@ -47,6 +47,8 @@ const router = createRouter({
     if (savedPosition) return savedPosition
     // 运行详情通过查询参数定位，行内交互不能被当成页面切换而回顶。
     if (to.path === '/release-plans' && from.path === to.path && to.query.view === 'runs' && from.query.view === 'runs') return false
+    // 自动补齐集群和命名空间时保留位置；分类及资源切换仍从列表顶部开始。
+    if (to.path === '/kubernetes' && from.path === to.path && to.query.view === from.query.view && to.query.resource === from.query.resource) return false
     return { top: 0 }
   },
 })

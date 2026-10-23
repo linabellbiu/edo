@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, defineAsyncComponent, h, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { Modal, message } from 'ant-design-vue'
-import { Boxes, Plus, RefreshCw, Search, Server, Network, Database, Settings, LayoutDashboard, ArrowLeft, Filter } from 'lucide-vue-next'
+import { Plus, RefreshCw, Search, ArrowLeft, Filter } from 'lucide-vue-next'
 import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
 import client from '@/api/client'
@@ -33,15 +33,23 @@ function editYaml(){if(detail.value&&detailType.value&&detailType.value.update&&
 function linkApplication(object:KubeObject){void router.push({path:'/applications',query:{delivery_kind:'kubernetes',cluster:cluster.value,namespace:object.metadata.namespace||'default',workload:object.metadata.name,container:object.spec?.template?.spec?.containers?.[0]?.name||''}})}
 const auth = useAuthStore(), route = useRoute(), router=useRouter(), { t } = useI18n()
 const group = computed(() => ['nodes','workloads','config','storage','network'].includes(String(route.query.view)) ? String(route.query.view) : 'overview')
-const icon = computed(() => ({overview:LayoutDashboard,nodes:Server,workloads:Boxes,config:Settings,storage:Database,network:Network}[group.value]))
 const can = (permission:string) => auth.canAny([permission])
 const overview=ref<OverviewData|null>(null),overviewLoading=ref(false),overviewError=ref(''),joinOpen=ref(false)
 const nodeRemoval=ref<{cluster:string;object:KubeObject}>(),nodeName=ref(''),agentStopped=ref(false)
 let overviewRevision=0,overviewController:AbortController|undefined,lastOverview=0,overviewPending=false
-function selectResource(value:string){const type=kubeTypes.find(item=>item.resource===value);if(type){resource.value=value;void router.replace({query:{...route.query,view:type.group,resource:type.group==='storage'?value:undefined}})}}
+function selectResource(value:string){
+  const type=kubeTypes.find(item=>item.resource===value)
+  if(!type||contextDisabled.value||!can(`${type.permission}.read`))return
+  void router.push({query:{...route.query,view:type.group,resource:value}})
+}
+function backToOverview(){
+  if(contextDisabled.value)return
+  const target={query:{...route.query,view:'overview',resource:undefined}}
+  if(router.options.history.state.back===router.resolve(target).fullPath)router.back()
+  else void router.push(target)
+}
 const types = computed(() => kubeTypes.filter(item=>item.group===group.value && can(`${item.permission}.read`)))
-const resource = ref('nodes')
-const activeType = computed(() => types.value.find(item=>item.resource===resource.value) ?? types.value[0])
+const activeType = computed(() => types.value.find(item=>item.resource===route.query.resource) ?? types.value[0])
 const clusters = ref<KubeCluster[]>([]), cluster = ref(''), namespaces = ref<string[]>([]), selectedNamespaces = ref<string[]>(namespaceSelection(route.query.namespace)), namespaceLoading=ref(false), namespaceError=ref('')
 const rows = ref<KubeObject[]>([]), query = ref(''), labelFilter=ref(''), statusFilter=ref(''), lastRefreshed=ref(''), continuation = ref<Record<string,string>>({}), loading = ref(false), error = ref(''), autoRefresh = ref(true), busy = ref('')
 const presented=computed<KubeObject[]>(()=>rows.value.map(object=>({...object,id:kubeKey(object),name:object.metadata.name,namespace:object.metadata.namespace??'—',cells:resourceCells(object,t),state:resourceStatus(object,t)})))
@@ -58,12 +66,12 @@ let namespaceRevision=0,namespaceController:AbortController|undefined
 let revision=0, detailRevision=0, controller:AbortController|undefined,detailController:AbortController|undefined, timer:ReturnType<typeof setInterval>|undefined, mounted=true
 let detailSyncing=false,lastRelatedSync=0,lastVisibleSync=0
 const scopeKey=computed(()=>selectedNamespaces.value.join(','))
+const overviewNamespaces=computed(()=>group.value!=='overview'&&activeType.value&&!activeType.value.namespaced?['*']:selectedNamespaces.value)
 const namespace=computed(()=>selectedNamespaces.value.length===1&&selectedNamespaces.value[0]!=='*'?selectedNamespaces.value[0]!:'')
 const hasContinuation=computed(()=>Object.keys(continuation.value).length>0)
 const contextKey = computed(()=>`${cluster.value}:${activeType.value?.resource}:${scopeKey.value}`)
 const contextDisabled=computed(()=>editorOpen.value||yamlOpen.value||joinOpen.value||Boolean(nodeRemoval.value)||Boolean(busy.value))
 const knownNamespaces=computed(()=>[...new Set([...namespaces.value,...selectedNamespaces.value.filter(name=>name!=='*')])].sort())
-const scopeLabel=computed(()=>selectedNamespaces.value.includes('*')?t('k8s.allNamespaces'):selectedNamespaces.value.length?selectedNamespaces.value.join(', '):t('k8s.selectNamespaces'))
 const clusterScopes=new Map<string,string[]>()
 function selectCluster(id:string,all=false){if(!contextDisabled.value){if(all)clusterScopes.set(id,['*']);cluster.value=id}}
 function selectNamespaces(names:string[]){if(!contextDisabled.value)selectedNamespaces.value=namespaceSelection(names)}
@@ -111,7 +119,7 @@ async function refresh(silent=false, more=false) {
   finally { if(mounted&&current===revision) loading.value=false }
 }
 async function refreshOverview(silent=false){
-  const id=cluster.value,selection=group.value!=='overview'&&!activeType.value?.namespaced?['*']:[...selectedNamespaces.value]
+  const id=cluster.value,selection=[...overviewNamespaces.value]
   if(!id||!clusterInfo.value?.is_active||overviewPending||!selection.length)return
   const current=++overviewRevision
   overviewController?.abort();overviewController=new AbortController();const request=overviewController;overviewPending=true;if(!silent||!overview.value)overviewLoading.value=true
@@ -120,18 +128,14 @@ async function refreshOverview(silent=false){
   finally{if(current===overviewRevision){overviewLoading.value=false;overviewPending=false}}
 }
 function refreshAll(){void refresh();void refreshOverview()}
-watch(()=>`${cluster.value}:${scopeKey.value}`,()=>{overviewRevision++;overviewController?.abort();overviewLoading.value=false;overviewPending=false;overview.value=null;overviewError.value='';lastOverview=0;void refreshOverview()})
-watch([types,()=>route.query.resource], ([items,requested])=>{
-  if(group.value==='storage') resource.value=items.find(item=>item.resource===requested)?.resource ?? items[0]?.resource ?? ''
-  else if(!items.some(item=>item.resource===resource.value)) resource.value=items[0]?.resource ?? ''
-},{immediate:true})
+watch(()=>`${cluster.value}:${overviewNamespaces.value.join(',')}`,()=>{overviewRevision++;overviewController?.abort();overviewLoading.value=false;overviewPending=false;overview.value=null;overviewError.value='';lastOverview=0;void refreshOverview()})
 watch(cluster,(id,previous)=>{
   if(previous)clusterScopes.set(previous,[...selectedNamespaces.value])
   selectedNamespaces.value=route.query.cluster===id?namespaceSelection(route.query.namespace,clusterInfo.value?.default_namespace??'default'):clusterScopes.get(id)??[clusterInfo.value?.default_namespace??'default']
   namespaces.value=[];void loadNamespaces();storeScope()
 })
 watch(scopeKey,storeScope)
-watch(contextKey,()=>{ revision++; controller?.abort(); rows.value=[]; continuation.value={}; error.value='';lastRefreshed.value='';clearFilters(); closeDetails(); editorOpen.value=false; yamlOpen.value=false; scaleOpen.value=false; stream.value.open=false; nodeRemoval.value=undefined; void refresh();if(activeType.value&&!activeType.value.namespaced)void refreshOverview() })
+watch(contextKey,()=>{ revision++; controller?.abort(); rows.value=[]; continuation.value={}; error.value='';lastRefreshed.value='';clearFilters(); closeDetails(); editorOpen.value=false; yamlOpen.value=false; scaleOpen.value=false; stream.value.open=false; nodeRemoval.value=undefined; void refresh() })
 watch(()=>[route.query.cluster,route.query.namespace],()=>{
   if(typeof route.query.cluster==='string'&&clusters.value.some(item=>item.id===route.query.cluster)) {
     if(cluster.value!==route.query.cluster)cluster.value=route.query.cluster
@@ -283,9 +287,8 @@ onBeforeUnmount(()=>{mounted=false;namespaceRevision++;namespaceController?.abor
     <div class="kube-workspace-grid">
     <KubeNamespaceTree :clusters="clusters" :cluster="cluster" :namespaces="knownNamespaces" :selected="selectedNamespaces" :loading="namespaceLoading" :error="namespaceError" :disabled="contextDisabled" @cluster="selectCluster" @selection="selectNamespaces" @retry="loadNamespaces"/>
     <section class="resource-panel">
-      <div class="kube-filters">
-        <component :is="icon" :size="18" class="kube-icon" />
-        <div class="kube-context-summary"><strong>{{ clusterInfo?.name||t('k8s.selectCluster') }}</strong><span>{{ group==='overview'||activeType?.namespaced?scopeLabel:t('k8s.clusterScope') }}</span></div>
+      <div v-if="group!=='overview'||can('cluster.create')" class="kube-filters">
+        <a-button v-if="group!=='overview'" :disabled="contextDisabled" @click="backToOverview"><template #icon><ArrowLeft :size="14" /></template>{{ t('k8s.backOverview') }}</a-button>
         <span class="kube-filter-spacer" aria-hidden="true" />
         <a-button v-if="group==='overview'&&can('cluster.create')" type="primary" @click="clusterDrawer=true"><template #icon><Plus :size="14" /></template>{{ t('k8s.addCluster') }}</a-button>
         <a-button v-if="group==='nodes'&&can('kubernetes.node.create')" type="primary" :disabled="!cluster||!clusterInfo?.is_active" @click="joinOpen=true"><template #icon><Plus :size="14" /></template>{{ t('k8s.addNode') }}</a-button>
@@ -358,13 +361,11 @@ onBeforeUnmount(()=>{mounted=false;namespaceRevision++;namespaceController?.abor
 <style scoped>
 .kube-workspace{min-width:0}
 .kube-workspace-grid{display:grid;grid-template-columns:210px minmax(0,1fr);gap:14px;align-items:start}
-.kube-context-summary{display:flex;align-items:center;gap:12px;min-width:0;font-size:13px}.kube-context-summary span{font-size:12px;color:var(--edo-muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:520px}
-@media(max-width:1000px){.kube-workspace-grid{grid-template-columns:1fr}.kube-context-summary{flex-wrap:wrap;gap:4px 12px}.kube-context-summary span{max-width:100%}}
+@media(max-width:1000px){.kube-workspace-grid{grid-template-columns:1fr}}
 .kube-sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
 .resource-panel{border:1px solid var(--edo-border);border-radius:7px;background:var(--edo-surface);overflow:hidden}
 .kube-filters{display:flex;align-items:center;flex-wrap:wrap;border-bottom:1px solid var(--edo-border)}
 .kube-context-field{display:flex;align-items:center;gap:8px;min-width:0}.kube-context-field label{font-size:13px;color:var(--edo-muted);white-space:nowrap}.kube-filter-spacer{flex:1}
-.kube-icon{color:var(--edo-primary)}
 .cluster-select{width:230px}.namespace-select{width:190px}
 .resource-type-tabs{display:flex;gap:20px;padding:0 18px;border-bottom:1px solid var(--edo-border);overflow-x:auto}
 .resource-type-tabs button{padding:13px 0 11px;border:0;border-bottom:2px solid transparent;background:none;white-space:nowrap;font-size:13px;color:var(--edo-muted);cursor:pointer;transition:color .12s,border-color .12s}

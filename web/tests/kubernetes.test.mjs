@@ -209,12 +209,12 @@ test('跨类型详情使用自己的资源路径和权限，返回时保留原�
  const paths=[]
  const component=load('../src/views/KubernetesView.vue',{
   vue:{...vue,onMounted(){},onBeforeUnmount(){},watch(){}},'vue-i18n':{useI18n:()=>({t:translate})},
-  'vue-router':{useRoute:()=>({query:{view:'network'}}),useRouter:()=>({})},'@/stores/auth':{useAuthStore:()=>({canAny:permissions=>!permissions.includes('kubernetes.config.read')})},
+  'vue-router':{useRoute:()=>({query:{view:'network',resource:'ingresses'}}),useRouter:()=>({})},'@/stores/auth':{useAuthStore:()=>({canAny:permissions=>!permissions.includes('kubernetes.config.read')})},
   '@/api/kubernetes':api,'@/utils/kubernetesPresentation':presentation,
   '@/api/client':{__esModule:true,default:{get:async(path,options)=>{paths.push(path);if(path.endsWith('/events'))return {data:{items:[]}};const name=path.split('/').at(-1);return {data:{object:{kind:path.includes('/services/')?'Service':'Ingress',metadata:{name,namespace:options.params.namespace,uid:name}}}}}}},
  }).default
  const state=component.setup({}, {expose(){}})
- state.cluster.value='cluster-a';state.clusters.value=[{id:'cluster-a',is_active:true}];state.resource.value='ingresses';state.query.value='keep-filter'
+ state.cluster.value='cluster-a';state.clusters.value=[{id:'cluster-a',is_active:true}];state.query.value='keep-filter'
  const ingress={kind:'Ingress',metadata:{name:'public',namespace:'team',uid:'public'}}
  await state.openDetails(ingress)
  await state.followReference({resource:'services',name:'api',namespace:'team'})

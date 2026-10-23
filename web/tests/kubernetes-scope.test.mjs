@@ -86,3 +86,31 @@ test('多选范围在分类、浏览历史和集群切换后保留',async()=>{
  route.query={...route.query,namespace:'prod'};await vue.nextTick();assert.deepEqual(state.selectedNamespaces.value,['prod'])
  assert.ok(replacements.length>0);scope.stop()
 })
+
+test('从节点或集群级存储返回总览时重新读取所选命名空间统计',async()=>{
+ const route=vue.reactive({query:{view:'overview',cluster:'a',namespace:['prod','test']}}),requests=[],scope=vue.effectScope()
+ const component=load('../src/views/KubernetesView.vue',{
+  vue:{...vue,onMounted(){},onBeforeUnmount(){}},'vue-i18n':{useI18n:()=>({t:translate})},'@/stores/auth':{useAuthStore:()=>({canAny:()=>true})},
+  '@/api/kubernetes':{...api,listKubeResourceScopes:async()=>({items:[],cursor:{}})},
+  'vue-router':{useRoute:()=>route,useRouter:()=>({replace:value=>{route.query=value.query}})},
+  '@/api/client':{__esModule:true,default:{get:async(path,options)=>{
+   if(path.endsWith('/namespaces'))return {data:{namespaces:['prod','test']}}
+   requests.push(options.params.namespace);return {data:overview(options.params.namespace,1)}
+  }}},
+ }).default
+ let state;scope.run(()=>{state=component.setup({}, {expose(){}})})
+ const settle=async()=>{await vue.nextTick();await new Promise(resolve=>setImmediate(resolve))}
+ state.clusters.value=[{id:'a',is_active:true,default_namespace:'default'}];state.cluster.value='a';await settle()
+ assert.deepEqual(requests.splice(0),['prod','test'])
+ route.query={...route.query,view:'nodes',resource:'nodes'};await settle()
+ assert.deepEqual(requests.splice(0),['*'])
+ route.query={...route.query,view:'overview',resource:undefined};await settle()
+ assert.deepEqual(requests.splice(0),['prod','test'])
+ assert.equal(state.overview.value.counts.pods.count,2)
+ route.query={...route.query,view:'storage',resource:'persistentvolumes'};await settle()
+ assert.deepEqual(requests.splice(0),['*'])
+ route.query={...route.query,view:'workloads',resource:'pods'};await settle()
+ assert.deepEqual(requests.splice(0),['prod','test'])
+ assert.deepEqual(state.selectedNamespaces.value,['prod','test'])
+ scope.stop()
+})

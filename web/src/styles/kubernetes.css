@@ -15,6 +15,9 @@
 .kube-resource-table .resource-table td {
   border-right: 1px solid color-mix(in srgb, var(--edo-text) 7%, var(--edo-border));
 }
+.kube-resource-table .resource-table tbody tr:last-child td {
+  border-bottom: 1px solid var(--edo-border);
+}
 .kube-resource-table .resource-table th:last-child,
 .kube-resource-table .resource-table td:last-child { border-right: 0; }
 .kube-resource-table .resource-table th {
