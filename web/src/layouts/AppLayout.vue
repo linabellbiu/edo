@@ -13,6 +13,7 @@ import { useAuthStore } from '@/stores/auth'
 import { usePreferencesStore } from '@/stores/preferences'
 import { useTabsStore } from '@/stores/tabs'
 import ProjectSelector from '@/components/ProjectSelector.vue'
+import SidebarNavItem from '@/components/SidebarNavItem.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -94,7 +95,9 @@ function navigate(path: string) {
   mobileMenuOpen.value = false
   const target = new URL(path, 'http://edo.local')
   if (route.path === '/kubernetes' && target.pathname === route.path) {
-    void router.push({ path: target.pathname, query: { ...route.query, ...Object.fromEntries(target.searchParams) } })
+    const query = { ...route.query, ...Object.fromEntries(target.searchParams) }
+    if (target.searchParams.get('view') !== 'storage') delete query.resource
+    void router.push({ path: target.pathname, query })
     return
   }
   void router.push(path)
@@ -197,26 +200,14 @@ onBeforeUnmount(() => { menuRevealPending = false; window.removeEventListener('k
             :selected-keys="selectedKeys"
             :open-keys="preferences.sidebarCollapsed ? [] : openKeys"
             mode="inline"
+            :inline-indent="16"
             :inline-collapsed="preferences.sidebarCollapsed"
             @open-change="updateOpenKeys"
           >
             <a-sub-menu v-for="branch in allowedBranches(sectionIndex + 1)" :key="branch.key">
               <template #icon><component :is="branch.icon" :size="18" /></template>
               <template #title>{{ t(branch.label) }}</template>
-              <template v-for="item in branch.items" :key="item.path">
-                <a-sub-menu v-if="item.children" :key="item.path" class="kube-sidebar-menu">
-                  <template #icon><component :is="item.icon" :size="16" /></template>
-                  <template #title>{{ t(item.label) }}</template>
-                  <a-menu-item v-for="child in item.children" :key="child.path" @click="navigate(child.path)">
-                    <template #icon><component :is="child.icon" :size="15" /></template>
-                    {{ t(child.label) }}
-                  </a-menu-item>
-                </a-sub-menu>
-                <a-menu-item v-else :key="item.path" @click="navigate(item.path)">
-                  <template #icon><component :is="item.icon" :size="16" /></template>
-                  {{ t(item.label) }}
-                </a-menu-item>
-              </template>
+              <SidebarNavItem v-for="item in branch.items" :key="item.path" :item="item" @navigate="navigate" />
             </a-sub-menu>
           </a-menu>
         </template>

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, defineAsyncComponent, h, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { Modal, message } from 'ant-design-vue'
-import { Boxes, Plus, RefreshCw, Search, Server, Network, Database, LayoutDashboard, ArrowLeft, Filter } from 'lucide-vue-next'
+import { Boxes, Plus, RefreshCw, Search, Server, Network, Database, Settings, LayoutDashboard, ArrowLeft, Filter } from 'lucide-vue-next'
 import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
 import client from '@/api/client'
@@ -30,14 +30,13 @@ function editYaml(){if(detail.value&&detailType.value&&detailType.value.update&&
 
 function linkApplication(object:KubeObject){void router.push({path:'/applications',query:{delivery_kind:'kubernetes',cluster:cluster.value,namespace:object.metadata.namespace||'default',workload:object.metadata.name,container:object.spec?.template?.spec?.containers?.[0]?.name||''}})}
 const auth = useAuthStore(), route = useRoute(), router=useRouter(), { t } = useI18n()
-const group = computed(() => ['nodes','workloads','config','network'].includes(String(route.query.view)) ? String(route.query.view) : 'overview')
-const icon = computed(() => ({overview:LayoutDashboard,nodes:Server,workloads:Boxes,config:Database,network:Network}[group.value]))
+const group = computed(() => ['nodes','workloads','config','storage','network'].includes(String(route.query.view)) ? String(route.query.view) : 'overview')
+const icon = computed(() => ({overview:LayoutDashboard,nodes:Server,workloads:Boxes,config:Settings,storage:Database,network:Network}[group.value]))
 const can = (permission:string) => auth.canAny([permission])
 const overview=ref<OverviewData|null>(null),overviewLoading=ref(false),overviewError=ref(''),joinOpen=ref(false)
 const nodeRemoval=ref<{cluster:string;object:KubeObject}>(),nodeName=ref(''),agentStopped=ref(false)
 let overviewRevision=0,overviewController:AbortController|undefined,lastOverview=0,overviewPending=false
-function setGroup(view:string){void router.replace({query:{...route.query,view}})}
-function selectResource(value:string){const type=kubeTypes.find(item=>item.resource===value);if(type){resource.value=value;setGroup(type.group)}}
+function selectResource(value:string){const type=kubeTypes.find(item=>item.resource===value);if(type){resource.value=value;void router.replace({query:{...route.query,view:type.group,resource:type.group==='storage'?value:undefined}})}}
 const types = computed(() => kubeTypes.filter(item=>item.group===group.value && can(`${item.permission}.read`)))
 const resource = ref('nodes')
 const activeType = computed(() => types.value.find(item=>item.resource===resource.value) ?? types.value[0])
@@ -101,7 +100,10 @@ async function refreshOverview(silent=false){
 }
 function refreshAll(){void refresh();void refreshOverview()}
 watch(()=>`${cluster.value}:${namespace.value}`,()=>{overviewRevision++;overviewController?.abort();overviewLoading.value=false;overviewPending=false;overview.value=null;overviewError.value='';lastOverview=0;void refreshOverview()})
-watch(types, items=>{ if(!items.some(item=>item.resource===resource.value)) resource.value=items[0]?.resource ?? '' },{immediate:true})
+watch([types,()=>route.query.resource], ([items,requested])=>{
+  if(group.value==='storage') resource.value=items.find(item=>item.resource===requested)?.resource ?? items[0]?.resource ?? ''
+  else if(!items.some(item=>item.resource===resource.value)) resource.value=items[0]?.resource ?? ''
+},{immediate:true})
 watch(cluster,()=>{ namespace.value=clusterInfo.value?.default_namespace ?? 'default'; namespaces.value=[]; void loadNamespaces() })
 watch(contextKey,()=>{ revision++; controller?.abort(); rows.value=[]; continuation.value=''; error.value='';lastRefreshed.value='';clearFilters(); closeDetails(); editorOpen.value=false; yamlOpen.value=false; scaleOpen.value=false; stream.value.open=false; nodeRemoval.value=undefined; void refresh() })
 watch(()=>route.query.cluster,()=>{if(route.query.cluster && clusters.value.some(item=>item.id===route.query.cluster)) cluster.value=String(route.query.cluster)})
@@ -259,7 +261,7 @@ onBeforeUnmount(()=>{mounted=false;revision++;detailRevision++;overviewRevision+
       </div>
       <template v-if="group==='overview'"><p class="statistics-scope">{{ t('k8s.statisticsScope') }}</p><KubeOverview :data="overview" :loading="overviewLoading" :error="overviewError" @select="selectResource" /><a-empty v-if="!cluster&&!overviewLoading" :description="t('k8s.noCluster')" class="workspace-empty" /></template>
       <template v-else>
-      <div v-if="types.length>1" class="resource-type-tabs" role="tablist" :aria-label="t('k8s.resources')"><button v-for="type in types" :key="type.resource" role="tab" :aria-selected="activeType?.resource===type.resource" :class="{selected:activeType?.resource===type.resource}" @click="resource=type.resource">{{ t(`k8s.type_${type.resource}`) }}<span v-if="t(`k8s.type_${type.resource}`)!==type.kind" class="resource-kind">{{ type.kind }}</span><span v-if="overview?.counts[type.resource]?.state==='ok'" class="type-count">{{ overview.counts[type.resource]?.count }}</span></button></div>
+      <div v-if="group!=='storage'&&types.length>1" class="resource-type-tabs" role="tablist" :aria-label="t('k8s.resources')"><button v-for="type in types" :key="type.resource" role="tab" :aria-selected="activeType?.resource===type.resource" :class="{selected:activeType?.resource===type.resource}" @click="resource=type.resource">{{ t(`k8s.type_${type.resource}`) }}<span v-if="t(`k8s.type_${type.resource}`)!==type.kind" class="resource-kind">{{ type.kind }}</span><span v-if="overview?.counts[type.resource]?.state==='ok'" class="type-count">{{ overview.counts[type.resource]?.count }}</span></button></div>
       <div class="list-filters"><Search :size="14" class="secondary" /><a-input v-model:value="query" allow-clear :placeholder="t('k8s.search')" :aria-label="t('k8s.search')" class="resource-search" /><label v-if="columns.some(column=>column.key==='status')" for="kube-workspace-status" class="kube-sr-only">{{ t('k8s.status') }}</label><a-select id="kube-workspace-status" :default-open="false" v-if="columns.some(column=>column.key==='status')" v-model:value="statusFilter" class="status-select" :options="[{value:'',label:t('k8s.filterStatus')},...statusOptions]" /><a-input v-model:value="labelFilter" allow-clear :placeholder="t('k8s.labelFilter')" :aria-label="t('k8s.labels')" class="label-search"><template #prefix><Filter :size="13" /></template></a-input><a-button v-if="filtersActive" type="link" size="small" @click="clearFilters">{{ t('k8s.clearFilters') }}</a-button></div>
       <div class="list-meta"><span><strong>{{ activeType?.kind }}</strong>{{ t('k8s.filteredCount',{visible:displayRows.length,total:rows.length}) }}<a-tooltip v-if="continuation" :mouse-enter-delay="0.1" :title="t('k8s.searchLoaded')"><span class="partial-badge">{{ t('k8s.partial') }}</span></a-tooltip></span><span>{{ t('k8s.lastRefreshed') }} {{ lastRefreshed?formatDateTime(lastRefreshed):'—' }}</span></div>
       <a-alert v-if="error" type="error" show-icon :message="error" class="list-alert"><template #action><a-button size="small" @click="refresh()">{{ t('k8s.refresh') }}</a-button></template></a-alert>

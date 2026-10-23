@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { Server, Boxes, Box, Database, Network, FileKey2, Layers, Cpu, MemoryStick, Activity } from 'lucide-vue-next'
+import { Server, Boxes, Box, Database, Network, FileKey2, Layers, Cpu, MemoryStick, Activity, Settings } from 'lucide-vue-next'
 import { init, use, type EChartsType } from 'echarts/core'
 import { PieChart } from 'echarts/charts'
 import { TooltipComponent } from 'echarts/components'
@@ -20,9 +20,10 @@ const cards=computed(()=>[
   ['nodes','k8s.nodes',Server],['pods','Pod',Box],['deployments','Deployment',Boxes],['statefulsets','StatefulSet',Layers],['daemonsets','DaemonSet',Layers],['jobs','Job',Activity],['cronjobs','CronJob',Activity],['namespaces','Namespace',Boxes],['services','Service',Network],['ingresses','Ingress',Network],['configmaps','ConfigMap',Database],['secrets','Secret',FileKey2],['persistentvolumeclaims','PVC',Database],['persistentvolumes','PV',Database],['storageclasses','StorageClass',Database],['networkpolicies','NetworkPolicy',Network],
 ].filter(([key])=>Object.hasOwn(props.data?.counts??{},String(key))).map(([key,label,icon])=>({key:String(key),label:String(label).startsWith('k8s.')?t(String(label)):String(label),icon,count:props.data!.counts[String(key)]!})))
 const categories=computed(()=>[
-  {key:'nodes',icon:Server,resources:['nodes','namespaces']},
+  {key:'nodes',icon:Server,resources:['nodes']},
   {key:'workloads',icon:Boxes,resources:['deployments','statefulsets','daemonsets','jobs','cronjobs','pods']},
-  {key:'config',icon:Database,resources:['configmaps','secrets','persistentvolumeclaims','persistentvolumes','storageclasses']},
+  {key:'config',icon:Settings,resources:['configmaps','secrets','namespaces']},
+  {key:'storage',icon:Database,resources:['storageclasses','persistentvolumes','persistentvolumeclaims']},
   {key:'network',icon:Network,resources:['services','ingresses','networkpolicies']},
 ].map(group=>({...group,cards:cards.value.filter(card=>group.resources.includes(card.key))})).filter(group=>group.cards.length))
 const totals=computed(()=>{
