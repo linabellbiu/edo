@@ -3,7 +3,7 @@ import { computed, defineAsyncComponent, h, onBeforeUnmount, onMounted, ref, wat
 import { Modal, message } from 'ant-design-vue'
 import { Plus, RefreshCw, Search, ArrowLeft, Filter } from 'lucide-vue-next'
 import { useI18n } from 'vue-i18n'
-import { useRoute, useRouter } from 'vue-router'
+import { useRoute, useRouter, type LocationQueryRaw } from 'vue-router'
 import client from '@/api/client'
 import { identityOf, kubeKey, kubeTypes, listKubeResources, listKubeResourceScopes, namespaceSelection, mapNamespaceRequests, mergeNamespaceOverviews, resourceURL, withFreshKubeResource, kubeErrorMessage, KubeResourceChanged, usageFor, formatKubeCPU, formatKubeMemory, type KubeOverview as OverviewData, type KubeCluster, type KubeObject, type KubeType } from '@/api/kubernetes'
 import { resourceColumns, resourceCells, resourceStatus, resourceSearchText, matchesLabelFilter, relatedPodMatch, type KubeReference } from '@/utils/kubernetesPresentation'
@@ -34,6 +34,7 @@ function editYaml(){if(detail.value&&detailType.value&&detailType.value.update&&
 function linkApplication(object:KubeObject){void router.push({path:'/applications',query:{delivery_kind:'kubernetes',cluster:cluster.value,namespace:object.metadata.namespace||'default',workload:object.metadata.name,container:object.spec?.template?.spec?.containers?.[0]?.name||''}})}
 const auth = useAuthStore(), route = useRoute(), router=useRouter(), { t } = useI18n()
 const group = computed(() => ['nodes','workloads','config','storage','network'].includes(String(route.query.view)) ? String(route.query.view) : 'overview')
+const fromOverview = computed(() => group.value!=='overview'&&route.query.from==='overview')
 const can = (permission:string) => auth.canAny([permission])
 const overview=ref<OverviewData|null>(null),overviewLoading=ref(false),overviewError=ref(''),joinOpen=ref(false)
 const nodeRemoval=ref<{cluster:string;object:KubeObject}>(),nodeName=ref(''),agentStopped=ref(false)
@@ -41,16 +42,22 @@ let overviewRevision=0,overviewController:AbortController|undefined,lastOverview
 function selectResource(value:string){
   const type=kubeTypes.find(item=>item.resource===value)
   if(!type||contextDisabled.value||!can(`${type.permission}.read`))return
-  void router.push({query:{...route.query,view:type.group,resource:value}})
+  const query:LocationQueryRaw={...route.query,view:type.group,resource:value}
+  if(group.value==='overview')query.from='overview'
+  void router.push({query})
 }
 function backToOverview(){
-  if(contextDisabled.value)return
-  const target={query:{...route.query,view:'overview',resource:undefined}}
+  if(!fromOverview.value||contextDisabled.value)return
+  const target={query:{...route.query,view:'overview',resource:undefined,from:undefined}}
   if(router.options.history.state.back===router.resolve(target).fullPath)router.back()
   else void router.push(target)
 }
 const types = computed(() => kubeTypes.filter(item=>item.group===group.value && can(`${item.permission}.read`)))
 const activeType = computed(() => types.value.find(item=>item.resource===route.query.resource) ?? types.value[0])
+const showResourceToolbar = computed(()=>fromOverview.value
+  ||group.value==='overview'&&can('cluster.create')
+  ||group.value==='nodes'&&can('kubernetes.node.create')
+  ||group.value!=='overview'&&Boolean(activeType.value?.create&&can(`${activeType.value.permission}.create`)))
 const clusters = ref<KubeCluster[]>([]), cluster = ref(''), namespaces = ref<string[]>([]), selectedNamespaces = ref<string[]>(namespaceSelection(route.query.namespace)), namespaceLoading=ref(false), namespaceError=ref('')
 const rows = ref<KubeObject[]>([]), query = ref(''), labelFilter=ref(''), statusFilter=ref(''), lastRefreshed=ref(''), continuation = ref<Record<string,string>>({}), loading = ref(false), error = ref(''), autoRefresh = ref(true), busy = ref('')
 const presented=computed<KubeObject[]>(()=>rows.value.map(object=>({...object,id:kubeKey(object),name:object.metadata.name,namespace:object.metadata.namespace??'—',cells:resourceCells(object,t),state:resourceStatus(object,t)})))
@@ -288,8 +295,8 @@ onBeforeUnmount(()=>{mounted=false;namespaceRevision++;namespaceController?.abor
     <div class="kube-workspace-grid">
     <KubeNamespaceTree :clusters="clusters" :cluster="cluster" :namespaces="knownNamespaces" :selected="selectedNamespaces" :loading="namespaceLoading" :error="namespaceError" :disabled="contextDisabled" @cluster="selectCluster" @selection="selectNamespaces" @retry="loadNamespaces"/>
     <section class="resource-panel">
-      <div v-if="group!=='overview'||can('cluster.create')" class="kube-filters">
-        <a-button v-if="group!=='overview'" :disabled="contextDisabled" @click="backToOverview"><template #icon><ArrowLeft :size="14" /></template>{{ t('k8s.backOverview') }}</a-button>
+      <div v-if="showResourceToolbar" class="kube-filters">
+        <a-button v-if="fromOverview" :disabled="contextDisabled" @click="backToOverview"><template #icon><ArrowLeft :size="14" /></template>{{ t('k8s.backOverview') }}</a-button>
         <span class="kube-filter-spacer" aria-hidden="true" />
         <a-button v-if="group==='overview'&&can('cluster.create')" type="primary" @click="clusterDrawer=true"><template #icon><Plus :size="14" /></template>{{ t('k8s.addCluster') }}</a-button>
         <a-button v-if="group==='nodes'&&can('kubernetes.node.create')" type="primary" :disabled="!cluster||!clusterInfo?.is_active" @click="joinOpen=true"><template #icon><Plus :size="14" /></template>{{ t('k8s.addNode') }}</a-button>

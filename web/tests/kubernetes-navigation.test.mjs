@@ -166,14 +166,18 @@ test('总览所有资源入口和资源页签进入真实历史，后退、前�
     assert.equal(page.value.activeType.value.resource,type.resource)
     assert.equal(router.currentRoute.value.query.view,type.group)
     assert.equal(router.currentRoute.value.query.resource,type.resource)
+    assert.equal(router.currentRoute.value.query.from,'overview')
+    assert.equal(page.value.fromOverview.value,true)
     assert.equal(router.currentRoute.value.query.cluster,'test')
     assert.deepEqual(router.currentRoute.value.query.namespace,['prod','team'])
     const restored=state()
     assert.equal(restored.value.activeType.value.resource,type.resource)
+    assert.equal(restored.value.fromOverview.value,true)
     restored.stop()
     await navigate(()=>router.back())
     assert.equal(router.currentRoute.value.fullPath,origin)
     assert.equal(page.value.activeType.value,undefined)
+    assert.equal(page.value.fromOverview.value,false)
     await navigate(()=>router.forward())
     assert.equal(router.currentRoute.value.query.resource,type.resource)
     assert.equal(page.value.activeType.value.resource,type.resource)
@@ -182,8 +186,8 @@ test('总览所有资源入口和资源页签进入真实历史，后退、前�
   page.stop()
 })
 
-test('返回总览优先沿真实历史返回，深链接打开时提供明确总览入口且保留范围', () => {
-  const pushes=[],backs=[],route={query:{view:'workloads',resource:'pods',cluster:'test',namespace:['prod','team']}}
+test('只有总览来源显示返回入口，直接打开不显示；返回清除来源且保留范围', () => {
+  const pushes=[],backs=[],route=vue.reactive({query:{view:'workloads',resource:'pods',cluster:'test',namespace:['prod','team']}})
   const target='/kubernetes?view=overview&cluster=test&namespace=prod&namespace=team'
   const router={options:{history:{state:{back:target}}},resolve:()=>({fullPath:target}),push:value=>pushes.push(value),back:()=>backs.push(true)}
   const component=load('../src/views/KubernetesView.vue',{
@@ -191,25 +195,54 @@ test('返回总览优先沿真实历史返回，深链接打开时提供明确�
     'vue-router':{useRoute:()=>route,useRouter:()=>router},'@/api/kubernetes':api,'@/stores/auth':{useAuthStore:()=>({canAny:()=>true})},
   }).default
   const scope=vue.effectScope();let state;scope.run(()=>{state=component.setup({}, {expose(){}})})
+  assert.equal(state.fromOverview.value,false)
+  state.backToOverview();assert.equal(backs.length,0);assert.equal(pushes.length,0)
+  route.query.from='overview'
+  assert.equal(state.fromOverview.value,true)
   state.backToOverview();assert.equal(backs.length,1);assert.equal(pushes.length,0)
   router.options.history.state.back='/applications'
   state.backToOverview()
-  assert.deepEqual(pushes[0].query,{view:'overview',resource:undefined,cluster:'test',namespace:['prod','team']})
-  state.editorOpen.value=true;state.backToOverview();state.selectResource('deployments');assert.equal(pushes.length,1)
+  assert.deepEqual(pushes[0].query,{view:'overview',resource:undefined,from:undefined,cluster:'test',namespace:['prod','team']})
+  state.selectResource('deployments');assert.equal(pushes[1].query.from,'overview')
+  state.editorOpen.value=true;state.backToOverview();state.selectResource('deployments');assert.equal(pushes.length,2)
   scope.stop()
 })
 
-test('侧栏和页面标签保留显式资源类型，分类入口清除上一分类的类型', () => {
-  const {state,pushes,stop}=layoutHarness()
+test('侧栏分类清除总览来源，页面标签保留显式来源和资源类型', () => {
+  const {state,route,pushes,stop}=layoutHarness()
+  route.query.from='overview'
   state.navigate('/kubernetes?view=config&resource=secrets&cluster=test&namespace=team')
   assert.equal(pushes[0].query.resource,'secrets')
+  assert.equal(pushes[0].query.from,undefined)
   state.navigate('/kubernetes?view=workloads')
   assert.equal(pushes[1].query.resource,undefined)
   assert.deepEqual(pushes[1].query.namespace,'team')
-  state.navigate('/kubernetes?view=workloads&resource=pods&cluster=test&namespace=prod&namespace=team')
+  state.navigate('/kubernetes?view=workloads&resource=pods&cluster=test&namespace=prod&namespace=team&from=overview')
   assert.deepEqual(pushes[2].query.namespace,['prod','team'])
   assert.equal(pushes[2].query.resource,'pods')
+  assert.equal(pushes[2].query.from,'overview')
   stop()
+})
+
+test('各分类直接进入不显示返回总览，只读用户没有空操作栏',async()=>{
+  const route=vue.reactive({query:{view:'overview'}}),scope=vue.effectScope()
+  const component=load('../src/views/KubernetesView.vue',{
+    vue:{...vue,onMounted(){},onBeforeUnmount(){}},'vue-i18n':{useI18n:()=>({t:key=>key})},
+    'vue-router':{useRoute:()=>route,useRouter:()=>({})},'@/api/kubernetes':api,
+    '@/stores/auth':{useAuthStore:()=>({canAny:permissions=>permissions.some(permission=>permission.endsWith('.read'))})},
+  }).default
+  let state;scope.run(()=>{state=component.setup({}, {expose(){}})})
+  for(const type of api.kubeTypes){
+    route.query={view:type.group,resource:type.resource};await vue.nextTick()
+    assert.equal(state.fromOverview.value,false)
+    assert.equal(state.showResourceToolbar.value,false)
+    route.query.from='overview';await vue.nextTick()
+    assert.equal(state.fromOverview.value,true)
+    assert.equal(state.showResourceToolbar.value,true)
+  }
+  route.query={view:'workloads',from:['overview','overview']};await vue.nextTick()
+  assert.equal(state.fromOverview.value,false)
+  scope.stop()
 })
 
 test('集群和命名空间地址同步保留滚动，分类与资源切换回顶，后退使用保存位置', () => {

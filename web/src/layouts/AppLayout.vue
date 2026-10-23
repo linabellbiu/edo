@@ -101,6 +101,7 @@ function navigate(path: string) {
       query[key] = values.length > 1 ? values : values[0]!
     }
     if (!target.searchParams.has('resource')) delete query.resource
+    if (!target.searchParams.has('from')) delete query.from
     void router.push({ path: target.pathname, query })
     return
   }
