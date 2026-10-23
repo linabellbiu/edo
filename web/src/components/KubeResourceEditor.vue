@@ -3,8 +3,10 @@ import { computed, h, reactive, ref, watch } from 'vue'
 import { Modal, message } from 'ant-design-vue'
 import { useI18n } from 'vue-i18n'
 import client from '@/api/client'
-import { podSpec, resourceURL, withFreshKubeResource, kubeErrorMessage, type KubeObject, type KubeType } from '@/api/kubernetes'
+import { podSpec, resourceURL, kubeTypes, listKubeResources, withFreshKubeResource, kubeErrorMessage, type KubeObject, type KubeType } from '@/api/kubernetes'
 import KubeKeyValues, { type KeyValue } from './KubeKeyValues.vue'
+import KubeConfigEntries from './KubeConfigEntries.vue'
+import { inspectConfigFile } from '@/utils/kubernetesConfig'
 
 const props = defineProps<{open:boolean; cluster:string; type:KubeType; namespace:string; object?:KubeObject}>()
 const emit = defineEmits<{'update:open':[value:boolean]; saved:[]}>()
@@ -12,23 +14,53 @@ const { t } = useI18n()
 const saving = ref(false), confirming=ref(false),error = ref('')
 const editing = computed(() => Boolean(props.object))
 const workload = computed(() => ['Deployment','StatefulSet','DaemonSet','Job','CronJob','Pod'].includes(props.type.kind))
+const configuration = computed(() => ['ConfigMap','Secret'].includes(props.type.kind))
+const configTab = ref('basic')
+const storageClasses = ref<KubeObject[]>([]), classesLoading = ref(false), classesError = ref('')
+let classRevision = 0
+const classOptions = computed(() => [
+  { value: '', label: t('k8s.storageClassDefault') },
+  { value: '__none__', label: t('k8s.storageClassNone') },
+  ...storageClasses.value.map(item => ({ value: item.metadata.name, label: `${item.metadata.name}${item.metadata.annotations?.['storageclass.kubernetes.io/is-default-class'] === 'true' ? ` · ${t('k8s.storageClassDefaultTag')}` : ''}` })),
+])
 const restartPolicy=ref('Always'), nodeSelector=ref<KeyValue[]>([])
 const entries = (object: Record<string, unknown> = {}): KeyValue[] => Object.entries(object).map(([key,value])=>({key,value:String(value)}))
-const form = reactive({name:'', namespace:'', labels:[] as KeyValue[], data:[] as KeyValue[], selector:[] as KeyValue[], peer:[] as KeyValue[], taints:[] as Array<{key:string;value:string;effect:string}>, containers:[] as Array<{name:string;image:string;port:string;env:KeyValue[]}>, replicas:1, serviceName:'', schedule:'*/5 * * * *', suspend:false, storage:'1Gi', storageClass:'', accessMode:'ReadWriteOnce', secretType:'Opaque', serviceType:'ClusterIP', port:80, targetPort:'80', hostname:'', path:'/', backend:'', ingressClass:'', policyPort:80, denyAll:false})
+const form = reactive({name:'', namespace:'', labels:[] as KeyValue[], annotations:[] as KeyValue[], data:[] as KeyValue[], selector:[] as KeyValue[], peer:[] as KeyValue[], taints:[] as Array<{key:string;value:string;effect:string}>, containers:[] as Array<{name:string;image:string;port:string;env:KeyValue[]}>, replicas:1, serviceName:'', schedule:'*/5 * * * *', suspend:false, storage:'1Gi', storageClass:'', accessModes:['ReadWriteOnce'], volumeMode:'Filesystem', secretType:'Opaque', serviceType:'ClusterIP', port:80, targetPort:'80', hostname:'', path:'/', backend:'', ingressClass:'', policyPort:80, denyAll:false})
 watch(() => props.open, open => {
+  classRevision++
   if (!open) return
   error.value = ''
+  configTab.value = 'basic'
   const object = props.object ?? {}, spec = object.spec ?? {}, rule = spec.rules?.[0], ingressPath = rule?.http?.paths?.[0]
   restartPolicy.value=podSpec(object).restartPolicy ?? 'Always'; nodeSelector.value=entries(podSpec(object).nodeSelector)
-  Object.assign(form, {name:object.metadata?.name ?? '', namespace:object.metadata?.namespace ?? (props.namespace === '*' ? 'default' : props.namespace), labels:entries(object.metadata?.labels), data:props.type.kind === 'Secret' ? (object.keys ?? []).map((key:string)=>({key,value:''})) : entries(object.data), selector:entries(spec.selector?.matchLabels ?? spec.selector), peer:[], taints:(spec.taints ?? []).map((item:KubeObject)=>({...item})), containers:(podSpec(object).containers ?? [{name:'app',image:'',ports:[]}]).map((item:KubeObject)=>({name:item.name,image:item.image,port:(item.ports ?? []).map((port:KubeObject)=>port.containerPort).join(','),env:entries(Object.fromEntries((item.env ?? []).filter((env:KubeObject)=>env.value !== undefined).map((env:KubeObject)=>[env.name,env.value])))})), replicas:spec.replicas ?? 1, serviceName:spec.serviceName ?? '', schedule:spec.schedule ?? '*/5 * * * *', suspend:spec.suspend ?? false, storage:spec.resources?.requests?.storage ?? '1Gi', storageClass:spec.storageClassName ?? '', accessMode:spec.accessModes?.[0] ?? 'ReadWriteOnce', secretType:object.type ?? 'Opaque', serviceType:spec.type ?? 'ClusterIP', port:spec.ports?.[0]?.port ?? 80, targetPort:String(spec.ports?.[0]?.targetPort ?? 80), hostname:rule?.host ?? '', path:ingressPath?.path ?? '/', backend:ingressPath?.backend?.service?.name ?? '', ingressClass:spec.ingressClassName ?? '', policyPort:80, denyAll:false})
+  Object.assign(form, {name:object.metadata?.name ?? '', namespace:object.metadata?.namespace ?? (props.namespace === '*' ? 'default' : props.namespace), labels:entries(object.metadata?.labels), annotations:entries(object.metadata?.annotations), data:props.type.kind === 'Secret' ? (object.keys ?? []).map((key:string)=>({key,value:''})) : entries(object.data), selector:entries(spec.selector?.matchLabels ?? spec.selector), peer:[], taints:(spec.taints ?? []).map((item:KubeObject)=>({...item})), containers:(podSpec(object).containers ?? [{name:'app',image:'',ports:[]}]).map((item:KubeObject)=>({name:item.name,image:item.image,port:(item.ports ?? []).map((port:KubeObject)=>port.containerPort).join(','),env:entries(Object.fromEntries((item.env ?? []).filter((env:KubeObject)=>env.value !== undefined).map((env:KubeObject)=>[env.name,env.value])))})), replicas:spec.replicas ?? 1, serviceName:spec.serviceName ?? '', schedule:spec.schedule ?? '*/5 * * * *', suspend:spec.suspend ?? false, storage:spec.resources?.requests?.storage ?? '1Gi', storageClass:spec.storageClassName ?? '', accessModes:[...(spec.accessModes ?? ['ReadWriteOnce'])], volumeMode:spec.volumeMode ?? 'Filesystem', secretType:object.type ?? 'Opaque', serviceType:spec.type ?? 'ClusterIP', port:spec.ports?.[0]?.port ?? 80, targetPort:String(spec.ports?.[0]?.targetPort ?? 80), hostname:rule?.host ?? '', path:ingressPath?.path ?? '/', backend:ingressPath?.backend?.service?.name ?? '', ingressClass:spec.ingressClassName ?? '', policyPort:80, denyAll:false})
+  storageClasses.value = []; classesError.value = ''; classesLoading.value = false
+  if (props.type.kind === 'PersistentVolumeClaim' && !editing.value) void loadStorageClasses()
 }, {immediate:true})
+async function loadStorageClasses() {
+  const revision = ++classRevision, cluster = props.cluster
+  classesLoading.value = true; classesError.value = ''
+  try {
+    const type = kubeTypes.find(item => item.resource === 'storageclasses')!
+    const items: KubeObject[] = []
+    let continuation = ''
+    do {
+      const page = await listKubeResources(cluster, type, '', continuation)
+      if (revision !== classRevision || !props.open || cluster !== props.cluster) return
+      items.push(...page.items); continuation = page.continue ?? ''
+    } while (continuation)
+    storageClasses.value = items
+  } catch {
+    if (revision === classRevision) classesError.value = t('k8s.storageClassFailed')
+  } finally { if (revision === classRevision) classesLoading.value = false }
+}
 function mapping(rows: KeyValue[]) {
-  const result: Record<string,string> = {}
+  const keys = new Set<string>()
   for (const row of rows) {
-    if (!row.key.trim() || Object.hasOwn(result,row.key.trim())) throw new Error(t('k8s.invalidKeys'))
-    result[row.key.trim()] = row.value
+    if (!row.key.trim() || keys.has(row.key.trim())) throw new Error(t('k8s.invalidKeys'))
+    keys.add(row.key.trim())
   }
-  return result
+  return Object.fromEntries(rows.map(row => [row.key.trim(), row.value]))
 }
 function buildObject(): KubeObject {
   const original = props.object ?? {}, kind = props.type.kind
@@ -38,6 +70,11 @@ function buildObject(): KubeObject {
   for (const key of Object.keys(original.metadata?.labels ?? {})) if (!Object.hasOwn(labels,key)) labels[key]=null
   const object: KubeObject = {apiVersion:props.type.apiVersion,kind,metadata:{name:form.name,namespace:props.type.namespaced ? form.namespace : '',labels}}
   if (editing.value) Object.assign(object.metadata,{uid:original.metadata.uid,resourceVersion:original.metadata.resourceVersion})
+  if (kind === 'ConfigMap') {
+    const annotations: Record<string,string|null> = mapping(form.annotations)
+    for (const key of Object.keys(original.metadata?.annotations ?? {})) if (!Object.hasOwn(annotations,key)) annotations[key] = null
+    object.metadata.annotations = annotations
+  }
   if (workload.value) {
     if (!form.containers.length) throw new Error(t('k8s.imageRequired'))
     const originalContainers: KubeObject[] = podSpec(original).containers ?? []
@@ -73,6 +110,11 @@ function buildObject(): KubeObject {
     object.spec={taints}
   } else if (kind==='ConfigMap') {
     const data: Record<string,string|null> = mapping(form.data)
+    for (const [key, value] of Object.entries(data)) {
+      if (value === original.data?.[key]) continue
+      const issue = inspectConfigFile(key, value!).issues[0]
+      if (issue) throw new Error(t('k8s.configFileError', { key, message: t(`yamlEditor.error.${issue.code}`), line: issue.line, column: issue.column }))
+    }
     for (const key of Object.keys(original.data ?? {})) if (!Object.hasOwn(data,key)) data[key]=null
     object.data=data
   } else if (kind==='Secret') {
@@ -84,7 +126,14 @@ function buildObject(): KubeObject {
   } else if (kind==='PersistentVolumeClaim') {
     if (!/^\d+(\.\d+)?(Ei|Pi|Ti|Gi|Mi|Ki|E|P|T|G|M|k)?$/.test(form.storage)) throw new Error(t('k8s.invalidStorage'))
     object.spec={resources:{requests:{storage:form.storage}}}
-    if (!editing.value) { object.spec.accessModes=[form.accessMode]; if (form.storageClass.trim()) object.spec.storageClassName=form.storageClass.trim() }
+    if (!editing.value) {
+      const allowed = ['ReadWriteOnce','ReadOnlyMany','ReadWriteMany','ReadWriteOncePod']
+      if (!form.accessModes.length || form.accessModes.some(mode => !allowed.includes(mode))) throw new Error(t('k8s.accessModeRequired'))
+      object.spec.accessModes = [...new Set(form.accessModes)]
+      object.spec.volumeMode = form.volumeMode
+      if (form.storageClass === '__none__') object.spec.storageClassName = ''
+      else if (form.storageClass.trim()) object.spec.storageClassName = form.storageClass.trim()
+    }
   } else if (kind==='Service') {
     if (!Number.isInteger(form.port)||form.port<1||form.port>65535||!form.targetPort.trim()) throw new Error(t('k8s.invalidPort'))
     const targetPort=/^\d+$/.test(form.targetPort) ? Number(form.targetPort) : form.targetPort.trim()
@@ -128,8 +177,10 @@ async function submit(url:string,namespace:string,method:string,object:KubeObjec
     <div class="editor-context"><a-tag>{{ type.kind }}</a-tag><span>{{ type.namespaced?form.namespace:t('k8s.clusterScope') }}</span><strong v-if="editing">{{ object?.metadata.name }}</strong></div>
     <a-alert v-if="error" type="error" show-icon :message="error" class="editor-alert" />
     <a-form layout="vertical" :disabled="saving||confirming" @finish="save">
-      <div class="form-grid"><a-form-item :label="t('k8s.name')" required><a-input v-model:value="form.name" :disabled="editing" :maxlength="253" /></a-form-item><a-form-item v-if="type.namespaced" :label="t('k8s.namespace')" required><a-input v-model:value="form.namespace" :disabled="editing" :maxlength="63" /></a-form-item></div>
-      <a-form-item :label="t('k8s.labels')"><KubeKeyValues v-model="form.labels" :disabled="saving" /></a-form-item>
+      <template v-if="!configuration">
+        <div class="form-grid"><a-form-item :label="t('k8s.name')" required><a-input v-model:value="form.name" :disabled="editing" :maxlength="253" /></a-form-item><a-form-item v-if="type.namespaced" :label="t('k8s.namespace')" required><a-input v-model:value="form.namespace" :disabled="editing" :maxlength="63" /></a-form-item></div>
+        <a-form-item :label="t('k8s.labels')"><KubeKeyValues v-model="form.labels" :disabled="saving||confirming" /></a-form-item>
+      </template>
       <template v-if="workload">
         <template v-if="type.kind==='Pod'"><a-alert type="info" show-icon :message="t('k8s.standalonePod')" class="editor-alert" /><a-form-item :label="t('k8s.restartPolicy')"><a-select v-model:value="restartPolicy" :options="['Always','OnFailure','Never'].map(value=>({value}))" /></a-form-item><a-form-item :label="t('k8s.nodeSelector')"><KubeKeyValues v-model="nodeSelector" :disabled="saving" /></a-form-item></template>
         <div class="form-grid"><a-form-item v-if="['Deployment','StatefulSet'].includes(type.kind)" :label="t('k8s.replicas')" required><a-input-number v-model:value="form.replicas" :min="0" :max="1000" :precision="0" /></a-form-item><a-form-item v-if="type.kind==='StatefulSet'" :label="t('k8s.serviceName')" required><a-input v-model:value="form.serviceName" :disabled="editing" /></a-form-item></div>
@@ -146,14 +197,25 @@ async function submit(url:string,namespace:string,method:string,object:KubeObjec
         <a-form-item :label="t('k8s.taints')"><div v-for="(taint,index) in form.taints" :key="index" class="taint-row"><a-input v-model:value="taint.key" placeholder="Key" /><a-input v-model:value="taint.value" placeholder="Value" /><a-select v-model:value="taint.effect" :options="['NoSchedule','PreferNoSchedule','NoExecute'].map(value=>({value}))" /><a-button @click="form.taints.splice(index,1)">−</a-button></div><a-button size="small" @click="form.taints.push({key:'',value:'',effect:'NoSchedule'})">+ {{ t('k8s.addEntry') }}</a-button></a-form-item>
         <a-alert type="warning" show-icon :message="t('k8s.taintWarning')" />
       </template>
-      <template v-if="['ConfigMap','Secret'].includes(type.kind)">
-        <a-form-item v-if="type.kind==='Secret'" :label="t('k8s.secretType')"><a-input v-model:value="form.secretType" :disabled="editing" /></a-form-item>
-        <a-alert v-if="type.kind==='Secret'&&editing" class="editor-alert" type="info" :message="t('k8s.secretKeep')" />
-        <a-form-item :label="t('k8s.data')"><KubeKeyValues v-model="form.data" :secret="type.kind==='Secret'" :disabled="saving||Boolean(object?.immutable)" /><span v-if="object?.immutable" class="secondary">{{ t('k8s.state_immutable') }}</span></a-form-item>
+      <template v-if="configuration">
+        <a-tabs v-model:active-key="configTab" :animated="false" class="config-editor-tabs">
+          <a-tab-pane key="basic" :tab="t('k8s.basic')" force-render>
+            <div class="form-grid"><a-form-item :label="t('k8s.name')" required><a-input v-model:value="form.name" :disabled="editing" :maxlength="253" /></a-form-item><a-form-item :label="t('k8s.namespace')" required><a-input v-model:value="form.namespace" :disabled="editing" :maxlength="63" /></a-form-item></div>
+            <a-form-item v-if="type.kind==='Secret'" :label="t('k8s.secretType')"><a-input v-model:value="form.secretType" :disabled="editing" /></a-form-item>
+            <a-form-item :label="t('k8s.labels')"><KubeKeyValues v-model="form.labels" :disabled="saving||confirming" /></a-form-item>
+            <a-form-item v-if="type.kind==='ConfigMap'" :label="t('k8s.annotations')"><KubeKeyValues v-model="form.annotations" :disabled="saving||confirming" /></a-form-item>
+          </a-tab-pane>
+          <a-tab-pane key="data" :tab="`${t('k8s.configContent')} (${form.data.length})`" force-render>
+            <a-alert v-if="object?.immutable" class="editor-alert" type="info" :message="t('k8s.state_immutable')" />
+            <template v-if="type.kind==='Secret'"><a-alert v-if="editing" class="editor-alert" type="info" :message="t('k8s.secretKeep')" /><KubeKeyValues v-model="form.data" secret :disabled="saving||confirming||Boolean(object?.immutable)" /></template>
+            <KubeConfigEntries v-else v-model="form.data" :disabled="saving||confirming||Boolean(object?.immutable)" />
+          </a-tab-pane>
+        </a-tabs>
       </template>
       <template v-if="type.kind==='PersistentVolumeClaim'">
-        <div class="form-grid"><a-form-item :label="t('k8s.capacity')" required><a-input v-model:value="form.storage" placeholder="1Gi" /></a-form-item><a-form-item label="StorageClass"><a-input v-model:value="form.storageClass" :disabled="editing" :placeholder="t('k8s.defaultClass')" /></a-form-item></div>
-        <a-form-item :label="t('k8s.accessMode')"><a-select v-model:value="form.accessMode" :disabled="editing" :options="['ReadWriteOnce','ReadOnlyMany','ReadWriteMany','ReadWriteOncePod'].map(value=>({value}))" /></a-form-item>
+        <div class="form-grid"><a-form-item :label="t('k8s.capacity')" required><a-input v-model:value="form.storage" placeholder="1Gi" /></a-form-item><a-form-item :label="t('k8s.storageClass')"><a-input v-if="editing" :value="form.storageClass || '—'" disabled /><a-select v-else v-model:value="form.storageClass" :loading="classesLoading" :options="classOptions" show-search option-filter-prop="label" /></a-form-item></div>
+        <a-alert v-if="classesError" class="editor-alert" type="warning" :message="classesError"><template #action><a-button size="small" :loading="classesLoading" @click="loadStorageClasses">{{ t('k8s.storageClassRetry') }}</a-button></template></a-alert>
+        <div class="form-grid"><a-form-item :label="t('k8s.accessMode')" required><a-select v-model:value="form.accessModes" mode="multiple" :disabled="editing" :options="['ReadWriteOnce','ReadOnlyMany','ReadWriteMany','ReadWriteOncePod'].map(value=>({value}))" /></a-form-item><a-form-item :label="t('k8s.volumeMode')"><a-select v-model:value="form.volumeMode" :disabled="editing" :options="['Filesystem','Block'].map(value=>({value}))" /></a-form-item></div>
         <a-alert v-if="editing" type="warning" :message="t('k8s.expandHint')" />
       </template>
       <template v-if="type.kind==='Service'">
@@ -181,4 +243,5 @@ async function submit(url:string,namespace:string,method:string,object:KubeObjec
 </style>
 <style scoped>
 .editor-context{display:flex;align-items:center;gap:10px;padding:11px 14px;background:var(--edo-bg);border:1px solid var(--edo-border);border-radius:5px;margin-bottom:20px;font-size:12px;color:var(--edo-muted)}.editor-context strong{margin-left:auto;color:var(--edo-text);font-size:13px;overflow-wrap:anywhere}.editor-footer{align-items:center}.editor-footer>span{margin-right:auto;color:var(--edo-muted);font-size:12px}.container-form{background:var(--edo-surface)}:deep(.ant-form-item){margin-bottom:18px}:deep(.ant-form-item-label>label){font-size:13px}.form-grid :deep(.ant-input-number){width:100%}
+.config-editor-tabs :deep(.ant-tabs-nav){margin-top:-8px}.config-editor-tabs :deep(.ant-tabs-tab){padding:10px 0}.config-editor-tabs :deep(.ant-tabs-tabpane){min-height:330px}
 </style>
