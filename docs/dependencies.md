@@ -75,6 +75,12 @@
 
 评估过 pgxmock 和 go-txdb：前者主要针对 pgx 接口，不直接匹配当前多驱动 GORM 使用方式；后者仍需真实数据库，不能解决业务测试启动外部数据库的成本。这里不自行实现 SQL 驱动，也不让 Mock 模拟数据库约束、方言、权限回调或真实事务隔离；这些继续由独立 SQLite 集成与三种真实数据库迁移测试覆盖。维护风险是 SQL 文本随 GORM 升级改变，预期仅限定当前测试关心的操作，避免复制整套 ORM 实现。详见 [测试说明](testing.md)。
 
+## 性能优化的缓存与聚合
+
+Git 元数据继续使用已固定版本的 [go-git 文件存储](https://pkg.go.dev/github.com/go-git/go-git/v5/storage/filesystem) 与 [ObjectLRU](https://pkg.go.dev/github.com/go-git/go-git/v5/plumbing/cache)，复用已存在的 bare 对象缓存，不引入 Redis 缓存框架或第二套 Git 运行时。官方内存存储明确提醒大仓库可能耗尽内存；本轮采用磁盘存储、4 MiB 解码对象 LRU 与大对象流式读取。依赖版本、许可证和平台兼容面不变，可通过现有客户端接口替换；维护风险是 pack 索引仍随仓库增长、协议能力和并发写需要受控，固定 SHA、真实传输失败、互斥及缓存失效测试覆盖这些边界。
+
+日志环形缓冲复用现有标准库实现，补充文本字节、单条大小和字段数量限制；本地资源锁复用 `sync.Mutex` / `sync.Once`，增加租约引用回收。[singleflight](https://pkg.go.dev/golang.org/x/sync/singleflight) 适合合并同一计算并共享结果，不能直接替代独立构建与域名写操作的租约；通用内存缓存也不负责其互斥语义，所以不为这两个生命周期修复增加依赖。节点汇总继续复用已有官方 Kubernetes resource helper，数据库列表复用 GORM 及三种引擎共同支持的窗口函数。没有新增依赖或常驻服务，业务范围、审计和缓存访问规则仍由 EDO 负责。详见 [性能与内存检查](performance.md)。
+
 ## 升级原则
 
 - 依赖升级必须通过 `go test -race ./...`、`go vet ./...` 和前端生产构建。

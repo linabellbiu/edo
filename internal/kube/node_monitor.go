@@ -36,6 +36,12 @@ type NodeAllocation struct {
 	MemoryRequests float64 `json:"memory_requests"`
 	MemoryLimits   float64 `json:"memory_limits"`
 }
+
+type nodePodAllocation struct {
+	count      int64
+	allocation NodeAllocation
+}
+
 type NodeSample struct {
 	CollectedAt       time.Time       `json:"collected_at"`
 	MetricsAt         string          `json:"metrics_at"`
@@ -143,11 +149,7 @@ func (s *Service) collectClusterNodes(ctx context.Context, clusterID string) err
 		return err
 	}
 	metrics, metricsErr := readNodeMetrics(ctx, dyn)
-	pods, podsErr := readNodePods(ctx, client)
-	podsByNode := make(map[string][]corev1.Pod)
-	for _, pod := range pods {
-		podsByNode[pod.Spec.NodeName] = append(podsByNode[pod.Spec.NodeName], pod)
-	}
+	podsByNode, podsErr := readNodePods(ctx, client)
 	now := time.Now().UTC()
 	for i := range nodes.Items {
 		node := &nodes.Items[i]
@@ -203,24 +205,54 @@ func readNodeMetrics(ctx context.Context, client dynamic.Interface) (map[string]
 	}
 	return result, nil
 }
-func readNodePods(ctx context.Context, client kubernetes.Interface) ([]corev1.Pod, error) {
-	pods := []corev1.Pod{}
+func readNodePods(ctx context.Context, client kubernetes.Interface) (map[string]nodePodAllocation, error) {
+	allocations := map[string]nodePodAllocation{}
+	options := resourcehelper.PodResourcesOptions{UseStatusResources: true, Reuse: corev1.ResourceList{}}
 	next := ""
+	count := 0
 	for range 20 {
 		page, err := client.CoreV1().Pods("").List(ctx, metav1.ListOptions{Limit: 500, Continue: next})
 		if err != nil {
 			return nil, err
 		}
-		pods = append(pods, page.Items...)
+		count += len(page.Items)
+		if count > 10000 {
+			return nil, errors.New("节点 Pod 统计超过数量上限")
+		}
+		// 每页只保留节点计数和资源总量，避免跨分页持有全部 Pod 及其配置。
+		for i := range page.Items {
+			accumulateNodePod(allocations, &page.Items[i], options)
+		}
 		next = page.Continue
 		if next == "" {
-			return pods, nil
+			return allocations, nil
 		}
 	}
 	return nil, errors.New("节点 Pod 统计超过数量上限")
 }
-func buildNodeSample(node *corev1.Node, pods []corev1.Pod, usage ResourceUsage, now time.Time) NodeSample {
-	sample := NodeSample{CollectedAt: now, MetricsState: "missing", PodsState: "ok", Allocation: &NodeAllocation{}}
+
+func accumulateNodePod(allocations map[string]nodePodAllocation, pod *corev1.Pod, options resourcehelper.PodResourcesOptions) {
+	if pod.Spec.NodeName == "" {
+		return
+	}
+	total := allocations[pod.Spec.NodeName]
+	total.count++
+	// 已结束记录仍计入节点 Pod 数量，但不再占调度请求。
+	if pod.Status.Phase != corev1.PodSucceeded && pod.Status.Phase != corev1.PodFailed {
+		// 官方实现处理 Init、Sidecar、Overhead 和 Pod 级资源；提取数值后才能复用资源表。
+		requests := resourcehelper.PodRequests(pod, options)
+		total.allocation.CPURequests += requests.Cpu().AsApproximateFloat64()
+		total.allocation.MemoryRequests += requests.Memory().AsApproximateFloat64()
+		limits := resourcehelper.PodLimits(pod, options)
+		total.allocation.CPULimits += limits.Cpu().AsApproximateFloat64()
+		total.allocation.MemoryLimits += limits.Memory().AsApproximateFloat64()
+	}
+	allocations[pod.Spec.NodeName] = total
+}
+
+func buildNodeSample(node *corev1.Node, pods nodePodAllocation, usage ResourceUsage, now time.Time) NodeSample {
+	allocation := pods.allocation
+	sample := NodeSample{CollectedAt: now, MetricsState: "missing", PodsState: "ok", Allocation: &allocation}
 	for key, target := range map[corev1.ResourceName]**float64{corev1.ResourceCPU: &sample.CPUAllocatable, corev1.ResourceMemory: &sample.MemoryAllocatable} {
 		if q, ok := node.Status.Allocatable[key]; ok && q.Sign() > 0 {
 			v := q.AsApproximateFloat64()
@@ -238,25 +270,7 @@ func buildNodeSample(node *corev1.Node, pods []corev1.Pod, usage ResourceUsage, 
 		sample.MetricsAt = usage.Timestamp
 		sample.MetricsState = "ok"
 	}
-	var count int64
-	for i := range pods {
-		pod := &pods[i]
-		if pod.Spec.NodeName != node.Name {
-			continue
-		}
-		count++
-		// 已结束记录仍占列表数量，但不再占调度请求；官方实现处理 Init、Sidecar、Overhead 和 Pod 级资源。
-		if pod.Status.Phase == corev1.PodSucceeded || pod.Status.Phase == corev1.PodFailed {
-			continue
-		}
-		options := resourcehelper.PodResourcesOptions{UseStatusResources: true}
-		req, lim := resourcehelper.PodRequests(pod, options), resourcehelper.PodLimits(pod, options)
-		sample.Allocation.CPURequests += req.Cpu().AsApproximateFloat64()
-		sample.Allocation.CPULimits += lim.Cpu().AsApproximateFloat64()
-		sample.Allocation.MemoryRequests += req.Memory().AsApproximateFloat64()
-		sample.Allocation.MemoryLimits += lim.Memory().AsApproximateFloat64()
-	}
-	sample.Pods = &count
+	sample.Pods = &pods.count
 	return sample
 }
 func (m *nodeMonitor) key(clusterID, uid string) string {

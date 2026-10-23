@@ -103,7 +103,7 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
-      - name: 空库迁移、幂等升级与兼容性验证
+      - name: 空库迁移、幂等升级与业务查询兼容性验证
         shell: bash
         env:
           EDO_TEST_DATABASE_DRIVER: ${{ matrix.driver }}
@@ -114,6 +114,8 @@ jobs:
             go test -race -count=1 -timeout=20m ./internal/database
           else
             go test -race -count=1 -timeout=20m ./internal/database -run '^TestExternalDatabaseMigration$'
+            # 先完成迁移，再验证真实方言下的窗口查询及项目范围，不能与建表并行。
+            go test -race -count=1 -timeout=20m ./internal/pipeline -run '^TestLatestReleasePlanExecutionsExternalDatabases$'
           fi
 
   go-checks:

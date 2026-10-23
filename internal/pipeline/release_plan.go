@@ -111,10 +111,17 @@ func (s *Service) attachLatestReleasePlanExecutions(ctx context.Context, plans [
 	for i := range plans {
 		planIDs = append(planIDs, plans[i].ID)
 	}
+	// 排名在带部门和项目范围的子查询中完成，历史执行不会全部进入进程内存。
+	// 创建时间相同的记录按 ID 排序，保证重复读取时选择一致。
+	ranked := s.db.WithContext(ctx).Model(&model.ReleasePlanExecution{}).
+		Select("id, ROW_NUMBER() OVER (PARTITION BY release_plan_id ORDER BY created_at DESC, id DESC) AS execution_rank").
+		Where("release_plan_id IN ?", planIDs)
+	latestIDs := s.db.WithContext(ctx).Table("(?) AS ranked_executions", ranked).
+		Select("id").Where("execution_rank = ?", 1)
 	var executions []model.ReleasePlanExecution
 	if err := s.db.WithContext(ctx).
 		Select("id", "release_plan_id", "request_id", "status", "created_by", "started_at", "finished_at", "created_at", "updated_at").
-		Where("release_plan_id IN ?", planIDs).Order("created_at DESC").Find(&executions).Error; err != nil {
+		Where("id IN (?)", latestIDs).Order("created_at DESC, id DESC").Find(&executions).Error; err != nil {
 		return fmt.Errorf("查询发布计划最近执行失败: %w", err)
 	}
 	latest := make(map[string]*model.ReleasePlanExecution, len(executions))

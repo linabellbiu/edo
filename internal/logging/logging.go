@@ -12,6 +12,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 )
 
 var (
@@ -19,7 +20,17 @@ var (
 	ErrInvalidQuery = errors.New("系统日志查询条件无效")
 )
 
-const defaultBufferCapacity = 5000
+const (
+	defaultBufferCapacity  = 5000
+	maximumBufferBytes     = 8 * 1024 * 1024
+	maximumEntryBytes      = 16 * 1024
+	maximumMessageBytes    = 8 * 1024
+	maximumOperationBytes  = 256
+	maximumFieldKeyBytes   = 128
+	maximumFieldValueBytes = 2 * 1024
+	maximumEntryFields     = 32
+	cacheTruncatedMessage  = "\n…系统日志缓存已截断"
+)
 
 // Entry 是提供给系统日志页面的当前进程结构化日志快照。
 type Entry struct {
@@ -41,28 +52,101 @@ type Query struct {
 type buffer struct {
 	mu      sync.RWMutex
 	entries []Entry
+	sizes   []int
 	next    int
 	count   int
 	nextID  uint64
+	bytes   int
 }
 
 func newBuffer(capacity int) *buffer {
 	if capacity < 1 {
 		capacity = defaultBufferCapacity
 	}
-	return &buffer{entries: make([]Entry, capacity)}
+	return &buffer{entries: make([]Entry, capacity), sizes: make([]int, capacity)}
 }
 
 func (b *buffer) append(entry Entry) {
+	entry, size := normalizeCachedEntry(entry)
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	// 条数和文本字节同时有界；清空被淘汰槽位，立即解除旧字符串和字段引用。
+	for b.count > 0 && (b.count == len(b.entries) || b.bytes+size > maximumBufferBytes) {
+		oldest := (b.next - b.count + len(b.entries)) % len(b.entries)
+		b.bytes -= b.sizes[oldest]
+		b.entries[oldest] = Entry{}
+		b.sizes[oldest] = 0
+		b.count--
+	}
 	b.nextID++
 	entry.ID = b.nextID
 	b.entries[b.next] = entry
+	b.sizes[b.next] = size
+	b.bytes += size
 	b.next = (b.next + 1) % len(b.entries)
-	if b.count < len(b.entries) {
-		b.count++
+	b.count++
+}
+
+// 只缩减页面缓存，完整记录仍由后续 Handler 写入标准输出与文件。
+// 所有字符串均复制，避免短子串让原始的大对象一直存活。
+func normalizeCachedEntry(entry Entry) (Entry, int) {
+	var truncated, changed bool
+	entry.Level, truncated = cloneCachedText(entry.Level, 32)
+	entry.Operation, changed = cloneCachedText(entry.Operation, maximumOperationBytes)
+	truncated = truncated || changed
+	entry.Message, changed = cloneCachedText(entry.Message, maximumMessageBytes)
+	truncated = truncated || changed
+	size := len(entry.Level) + len(entry.Operation) + len(entry.Message)
+	remaining := maximumEntryBytes - size - len(cacheTruncatedMessage)
+	var fields map[string]string
+	if len(entry.Fields) > 0 {
+		fields = make(map[string]string, min(len(entry.Fields), maximumEntryFields))
 	}
+	for key, value := range entry.Fields {
+		if len(fields) == maximumEntryFields || remaining <= 0 {
+			truncated = true
+			break
+		}
+		key, changed = cloneCachedText(key, min(maximumFieldKeyBytes, remaining))
+		truncated = truncated || changed
+		if _, exists := fields[key]; exists {
+			truncated = true
+			continue
+		}
+		value, changed = cloneCachedText(value, min(maximumFieldValueBytes, remaining-len(key)))
+		truncated = truncated || changed
+		fields[key] = value
+		fieldSize := len(key) + len(value)
+		size += fieldSize
+		remaining -= fieldSize
+	}
+	entry.Fields = fields
+	if truncated {
+		entry.Message += cacheTruncatedMessage
+		size += len(cacheTruncatedMessage)
+	}
+	return entry, size
+}
+
+func cloneCachedText(value string, limit int) (string, bool) {
+	if limit <= 0 {
+		return "", value != ""
+	}
+	truncated := len(value) > limit
+	if truncated {
+		value = value[:limit]
+	}
+	if !utf8.ValidString(value) {
+		value = strings.ToValidUTF8(value, "�")
+		truncated = true
+	}
+	if len(value) > limit {
+		value = value[:limit]
+		for !utf8.ValidString(value) {
+			value = value[:len(value)-1]
+		}
+	}
+	return strings.Clone(value), truncated
 }
 
 func (b *buffer) list(query Query) ([]Entry, bool, error) {

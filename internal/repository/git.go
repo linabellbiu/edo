@@ -142,55 +142,14 @@ func (c *GitClient) HistoricalCommitMessage(
 	return c.commitMessage(ctx, repository, credential, ref, commitSHA, 100)
 }
 
-// 使用内存仓库避免把仅用于展示的 Git 对象写入工作目录。
+// 未配置持久缓存时使用独立临时磁盘仓库，避免仅为标题把整个 pack 保存在内存。
 func (c *GitClient) commitMessage(
 	ctx context.Context,
 	repository model.GitRepository,
 	credential, ref, commitSHA string,
 	depth int,
 ) (string, error) {
-	queryContext, cancel := context.WithTimeout(ctx, c.config.Timeout)
-	defer cancel()
-	auth, err := c.authMethod(repository, credential)
-	if err != nil {
-		return "", err
-	}
-	referenceName := plumbing.ReferenceName(strings.TrimSpace(ref))
-	if !referenceName.IsBranch() && !referenceName.IsTag() && !isPullRequestRef(referenceName.String()) {
-		return "", errors.New("Git 引用格式无效")
-	}
-	hash := plumbing.NewHash(strings.TrimSpace(commitSHA))
-	if hash.IsZero() {
-		return "", errors.New("Git Commit 格式无效")
-	}
-	memoryRepository, err := git.Init(memory.NewStorage(), nil)
-	if err != nil {
-		return "", fmt.Errorf("初始化 Git 元数据仓库失败: %w", err)
-	}
-	remote, err := memoryRepository.CreateRemote(&gitconfig.RemoteConfig{Name: "origin", URLs: []string{repository.CloneURL}})
-	if err != nil {
-		return "", fmt.Errorf("创建 Git 元数据远端失败: %w", err)
-	}
-	localReference := plumbing.ReferenceName("refs/edo/commit-message")
-	refspec := gitconfig.RefSpec("+" + referenceName.String() + ":" + localReference.String())
-	if err := remote.FetchContext(queryContext, &git.FetchOptions{
-		Auth: auth, RefSpecs: []gitconfig.RefSpec{refspec}, Depth: depth, Tags: git.NoTags,
-	}); err != nil && !errors.Is(err, git.NoErrAlreadyUpToDate) {
-		return "", fmt.Errorf("读取 Git 提交信息失败: %w", err)
-	}
-	commit, err := memoryRepository.CommitObject(hash)
-	if err != nil {
-		tag, tagErr := memoryRepository.TagObject(hash)
-		if tagErr != nil {
-			return "", fmt.Errorf("读取 Git Commit 失败: %w", err)
-		}
-		commit, err = memoryRepository.CommitObject(tag.Target)
-		if err != nil {
-			return "", fmt.Errorf("读取 Git Tag 目标 Commit 失败: %w", err)
-		}
-	}
-	message := strings.TrimSpace(strings.SplitN(commit.Message, "\n", 2)[0])
-	return truncateString(message, 255), nil
+	return c.commitMessageCachedAt(ctx, repository, credential, ref, commitSHA, "", depth)
 }
 
 func (c *GitClient) Checkout(

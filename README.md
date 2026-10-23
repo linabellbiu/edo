@@ -498,6 +498,7 @@ docker compose version
 - [旧数据迁移](docs/migration.md)
 - [架构与重构说明](docs/refactor.md)
 - [第三方依赖决策](docs/dependencies.md)
+- [性能与内存检查](docs/performance.md)
 
 ## 许可
 

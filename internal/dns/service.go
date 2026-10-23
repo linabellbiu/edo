@@ -100,7 +100,13 @@ type Service struct {
 	db       *gorm.DB
 	secrets  *secret.Manager
 	registry *Registry
-	locks    sync.Map
+	locksMu  sync.Mutex
+	locks    map[string]*domainOperationLock
+}
+
+type domainOperationLock struct {
+	mutex      sync.Mutex
+	references int
 }
 
 func NewService(db *gorm.DB, secrets *secret.Manager, registry *Registry) *Service {
@@ -345,9 +351,8 @@ func (s *Service) DeleteDomain(ctx context.Context, id string) error {
 }
 
 func (s *Service) ListRecords(ctx context.Context, domainID string) ([]Record, error) {
-	lock := s.domainLock(domainID)
-	lock.Lock()
-	defer lock.Unlock()
+	release := s.domainLock(domainID)
+	defer release()
 	domain, provider, zone, err := s.domainProvider(ctx, domainID)
 	if err != nil {
 		return nil, err
@@ -362,9 +367,8 @@ func (s *Service) ListRecords(ctx context.Context, domainID string) ([]Record, e
 }
 
 func (s *Service) CreateRecord(ctx context.Context, domainID string, input RecordInput) (*Record, error) {
-	lock := s.domainLock(domainID)
-	lock.Lock()
-	defer lock.Unlock()
+	release := s.domainLock(domainID)
+	defer release()
 	domain, provider, zone, err := s.domainProvider(ctx, domainID)
 	if err != nil {
 		return nil, err
@@ -409,9 +413,8 @@ func (s *Service) CreateRecord(ctx context.Context, domainID string, input Recor
 }
 
 func (s *Service) UpdateRecord(ctx context.Context, domainID, recordID string, input RecordInput) (*Record, error) {
-	lock := s.domainLock(domainID)
-	lock.Lock()
-	defer lock.Unlock()
+	release := s.domainLock(domainID)
+	defer release()
 	domain, provider, zone, err := s.domainProvider(ctx, domainID)
 	if err != nil {
 		return nil, err
@@ -489,9 +492,8 @@ func (s *Service) UpdateRecord(ctx context.Context, domainID, recordID string, i
 }
 
 func (s *Service) DeleteRecord(ctx context.Context, domainID, recordID string) error {
-	lock := s.domainLock(domainID)
-	lock.Lock()
-	defer lock.Unlock()
+	release := s.domainLock(domainID)
+	defer release()
 	domain, provider, zone, err := s.domainProvider(ctx, domainID)
 	if err != nil {
 		return err
@@ -584,9 +586,32 @@ func (s *Service) decodeAccountConfig(account *model.DNSProviderAccount) (map[st
 	return publicConfig, secretConfig, nil
 }
 
-func (s *Service) domainLock(domainID string) *sync.Mutex {
-	value, _ := s.locks.LoadOrStore(domainID, &sync.Mutex{})
-	return value.(*sync.Mutex)
+func (s *Service) domainLock(domainID string) func() {
+	s.locksMu.Lock()
+	if s.locks == nil {
+		s.locks = make(map[string]*domainOperationLock)
+	}
+	lock := s.locks[domainID]
+	if lock == nil {
+		lock = &domainOperationLock{}
+		s.locks[domainID] = lock
+	}
+	// 等待者先登记引用，避免持有者退出时删掉仍在使用的互斥锁。
+	lock.references++
+	s.locksMu.Unlock()
+	lock.mutex.Lock()
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			lock.mutex.Unlock()
+			s.locksMu.Lock()
+			defer s.locksMu.Unlock()
+			lock.references--
+			if lock.references == 0 {
+				delete(s.locks, domainID)
+			}
+		})
+	}
 }
 
 func normalizeDomainInput(input DomainInput) (string, string, error) {

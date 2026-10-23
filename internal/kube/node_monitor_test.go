@@ -19,6 +19,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/types"
+	resourcehelper "k8s.io/component-helpers/resource"
 )
 
 func testNodeMonitor(t *testing.T, s *Service) *miniredis.Miniredis {
@@ -41,7 +42,11 @@ func TestNodeSampleUsesOfficialSchedulingResourcesAndRealMetrics(t *testing.T) {
 	completed.Status.Phase = corev1.PodSucceeded
 	other := pod.DeepCopy()
 	other.Spec.NodeName = "other"
-	point := buildNodeSample(node, []corev1.Pod{pod, *completed, *other}, ResourceUsage{CPU: 0, Memory: 1024, Timestamp: now.Format(time.RFC3339Nano)}, now)
+	allocations := map[string]nodePodAllocation{}
+	for _, item := range []*corev1.Pod{&pod, completed, other} {
+		accumulateNodePod(allocations, item, resourcehelper.PodResourcesOptions{UseStatusResources: true})
+	}
+	point := buildNodeSample(node, allocations[node.Name], ResourceUsage{CPU: 0, Memory: 1024, Timestamp: now.Format(time.RFC3339Nano)}, now)
 	if point.CPU == nil || *point.CPU != 0 || point.MetricsState != "ok" || *point.Pods != 2 {
 		t.Fatalf("真实零值或全命名空间 Pod 记录不正确: %+v", point)
 	}
@@ -49,7 +54,7 @@ func TestNodeSampleUsesOfficialSchedulingResourcesAndRealMetrics(t *testing.T) {
 		t.Fatalf("Init/Sidecar/Overhead 汇总错误: %+v", point.Allocation)
 	}
 	for _, at := range []string{now.Add(-3 * time.Minute).Format(time.RFC3339), now.Add(2 * time.Minute).Format(time.RFC3339), "bad"} {
-		point = buildNodeSample(node, nil, ResourceUsage{Timestamp: at}, now)
+		point = buildNodeSample(node, nodePodAllocation{}, ResourceUsage{Timestamp: at}, now)
 		if point.CPU != nil || point.Memory != nil || point.MetricsState == "ok" {
 			t.Fatal("过期或无效指标伪装成零")
 		}

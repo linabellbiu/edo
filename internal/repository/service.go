@@ -73,7 +73,12 @@ type Service struct {
 	cacheDirectory     string
 	maintenance        sync.RWMutex
 	checkoutLocksMu    sync.Mutex
-	checkoutLocks      map[string]chan struct{}
+	checkoutLocks      map[string]*checkoutLock
+}
+
+type checkoutLock struct {
+	semaphore  chan struct{}
+	references int
 }
 
 const (
@@ -137,7 +142,7 @@ func WithCacheDirectory(directory string) Option {
 func NewService(db *gorm.DB, secrets *secret.Manager, credentials *credential.Service, git refLister, defaultMaxAttempts int, options ...Option) *Service {
 	service := &Service{
 		db: db, secrets: secrets, credentials: credentials, git: git, defaultMaxAttempts: defaultMaxAttempts,
-		checkoutLocks: make(map[string]chan struct{}),
+		checkoutLocks: make(map[string]*checkoutLock),
 	}
 	for _, option := range options {
 		option(service)
@@ -546,19 +551,39 @@ func (s *Service) AcquireCheckout(ctx context.Context, id, ref, commitSHA string
 }
 
 func (s *Service) acquireCheckoutLock(ctx context.Context, key string) (func(), error) {
-	s.checkoutLocksMu.Lock()
-	semaphore := s.checkoutLocks[key]
-	if semaphore == nil {
-		semaphore = make(chan struct{}, 1)
-		s.checkoutLocks[key] = semaphore
+	if err := ctx.Err(); err != nil {
+		return nil, err
 	}
+	s.checkoutLocksMu.Lock()
+	lock := s.checkoutLocks[key]
+	if lock == nil {
+		lock = &checkoutLock{semaphore: make(chan struct{}, 1)}
+		s.checkoutLocks[key] = lock
+	}
+	// 等待者也持有引用，避免持有者释放后为同一个路径创建第二把锁。
+	lock.references++
 	s.checkoutLocksMu.Unlock()
 	select {
-	case semaphore <- struct{}{}:
+	case lock.semaphore <- struct{}{}:
 		var once sync.Once
-		return func() { once.Do(func() { <-semaphore }) }, nil
+		return func() {
+			once.Do(func() {
+				<-lock.semaphore
+				s.releaseCheckoutLockReference(key, lock)
+			})
+		}, nil
 	case <-ctx.Done():
+		s.releaseCheckoutLockReference(key, lock)
 		return nil, ctx.Err()
+	}
+}
+
+func (s *Service) releaseCheckoutLockReference(key string, lock *checkoutLock) {
+	s.checkoutLocksMu.Lock()
+	defer s.checkoutLocksMu.Unlock()
+	lock.references--
+	if lock.references == 0 {
+		delete(s.checkoutLocks, key)
 	}
 }
 
@@ -604,6 +629,28 @@ func (s *Service) commitMessage(ctx context.Context, id, ref, commitSHA string, 
 	credential, err := s.resolveCredential(ctx, repository)
 	if err != nil {
 		return "", err
+	}
+	if client, ok := s.git.(cachedCommitMessageClient); ok {
+		// 先完成范围、启用状态与凭据检查，再使用缓存；清理不能与读取并发，本次读取固定目录快照。
+		s.maintenance.RLock()
+		defer s.maintenance.RUnlock()
+		directories := s.Directories()
+		digest := sha256.Sum256([]byte(strings.TrimSpace(repository.CloneURL)))
+		key := hex.EncodeToString(digest[:])
+		directory := ""
+		if directories.CacheDirectory != "" && directories.CacheDirectory != "." {
+			directory = filepath.Join(directories.CacheDirectory, key)
+		} else if directories.WorkspaceDirectory != "" && directories.WorkspaceDirectory != "." {
+			directory = filepath.Join(directories.WorkspaceDirectory, key, ".cache")
+		}
+		if directory != "" {
+			release, err := s.acquireCheckoutLock(ctx, "repository:"+directory)
+			if err != nil {
+				return "", err
+			}
+			defer release()
+		}
+		return client.CommitMessageCachedAt(ctx, *repository, credential, ref, commitSHA, directory, historical)
 	}
 	if historical {
 		client, ok := s.git.(historicalCommitMessageClient)
