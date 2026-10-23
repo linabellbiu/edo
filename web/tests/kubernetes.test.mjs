@@ -14,6 +14,7 @@ function load(path,modules){
  return module.exports
 }
 const api=load('../src/api/kubernetes.ts',{})
+const workloadForm=load('../src/utils/kubernetesWorkloadForm.ts',{'@/api/kubernetes':api})
 const presentation=load('../src/utils/kubernetesPresentation.ts',{'@/api/kubernetes':api})
 test('资源数量按原始 SI、二进制及指数含义换算，截图中的 Ki 和无单位字节统一可读',()=>{
  for(const [input,bytes] of [['2147483Ki',2147483*1024],['955574586848',955574586848],['982292956Ki',982292956*1024],['1.5Gi',1.5*1024**3],['.5Mi',.5*1024**2],['128Mi',128*1024**2],['1G',1e9],['1M',1e6],['1e6',1e6],['1E+6',1e6],['1E',1e18],['1Ti',1024**4],['400m',.4],['10u',.00001],['100n',.0000001]])assert.ok(Math.abs(api.parseKubeQuantity(input)-bytes)<=Number.EPSILON*bytes,input)
@@ -119,6 +120,7 @@ function editor(kind,object){
   vue:{...vue,watch:(source,callback)=>watchers.push(callback)},
   'vue-i18n':{useI18n:()=>({t:key=>key})},
   '@/api/kubernetes':api,
+  '@/utils/kubernetesWorkloadForm':workloadForm,
   '@/utils/kubernetesPresentation':presentation,
  }).default
  const props={open:true,cluster:'cluster-a',namespace:'team',type:api.kubeTypes.find(item=>item.kind===kind),object}
@@ -321,4 +323,11 @@ test('无事件的 null 返回显示空状态，读取失败后再次成功可�
  await loadEvents();assert.equal(state.events.value[0].metadata.uid,'new')
  failed=true;await loadEvents();assert.equal(state.eventsError.value,true)
  failed=false;result={items:[]};await loadEvents();assert.equal(state.eventsError.value,false);assert.deepEqual(state.events.value,[])
+})
+test('Deployment 表单组合 Init、卷挂载和更新策略，Recreate 清理旧 rollingUpdate，保留模板其他配置',()=>{
+ const original={kind:'Deployment',metadata:{name:'web',namespace:'team',uid:'d1',resourceVersion:'2'},spec:{replicas:2,strategy:{type:'RollingUpdate',rollingUpdate:{maxSurge:'50%',maxUnavailable:0}},minReadySeconds:5,progressDeadlineSeconds:60,revisionHistoryLimit:3,template:{metadata:{labels:{app:'web'}},spec:{containers:[{name:'app',image:'app:1',volumeMounts:[{name:'config',mountPath:'/config'}]}],initContainers:[{name:'init',image:'busybox:1',command:['true']}],volumes:[{name:'config',configMap:{name:'config',items:[{key:'app.yaml',path:'app.yaml'}]}}],imagePullSecrets:[{name:'registry'}]}}}}
+ const state=editor('Deployment',original);state.form.strategy='Recreate';state.form.containers[0].memoryRequest='128Mi';state.form.containers[0].memoryLimit='512Mi'
+ const object=state.buildObject();assert.deepEqual(object.spec.strategy,{type:'Recreate',rollingUpdate:null});assert.equal(object.spec.template.spec.initContainers[0].name,'init');assert.equal(object.spec.template.spec.volumes[0].configMap.items[0].key,'app.yaml');assert.equal(object.spec.template.spec.imagePullSecrets[0].name,'registry');assert.equal(object.spec.minReadySeconds,5);assert.equal(object.spec.revisionHistoryLimit,3);assert.equal(object.spec.template.spec.containers[0].resources.requests.memory,'128Mi')
+ state.form.strategy='RollingUpdate';state.form.maxSurge='0';state.form.maxUnavailable='0';assert.throws(()=>state.buildObject(),/invalidStrategy/)
+ state.form.maxSurge='25%';state.form.initContainers[0].name='app';assert.throws(()=>state.buildObject(),/invalidKeys/)
 })

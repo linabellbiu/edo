@@ -314,6 +314,7 @@ func NewRouter(deps Dependencies) *gin.Engine {
 	protected.GET(k8sResourcePath, requireKubernetesResource(deps.Access, deps.Logger, "read"), clusterAPI.resourceList)
 	protected.GET(k8sResourcePath+"/:name", requireKubernetesResource(deps.Access, deps.Logger, "read"), clusterAPI.resourceGet)
 	protected.GET(k8sResourcePath+"/:name/events", requireKubernetesResource(deps.Access, deps.Logger, "read"), clusterAPI.resourceEvents)
+	protected.GET(k8sResourcePath+"/:name/diagnostics", requireKubernetesResource(deps.Access, deps.Logger, "read"), clusterAPI.resourceDiagnostics)
 	protected.GET(k8sResourcePath+"/:name/secret", auditAction(deps.Audits, deps.Logger, "kubernetes.secret.reveal", "kubernetes_resource"), requireKubernetesResource(deps.Access, deps.Logger, "read"), requirePermission(deps.Access, deps.Logger, "kubernetes.secret.read"), clusterAPI.resourceReveal)
 	protected.POST(k8sResourcePath+"/:name", auditAction(deps.Audits, deps.Logger, "kubernetes.resource.create", "kubernetes_resource"), requireKubernetesResource(deps.Access, deps.Logger, "create"), clusterAPI.resourceSave)
 	protected.PATCH(k8sResourcePath+"/:name", auditAction(deps.Audits, deps.Logger, "kubernetes.resource.update", "kubernetes_resource"), requireKubernetesResource(deps.Access, deps.Logger, "update"), clusterAPI.resourceSave)

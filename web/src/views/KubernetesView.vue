@@ -28,6 +28,7 @@ import TerminalDrawer from '@/components/TerminalDrawer.vue'
 import { useAuthStore } from '@/stores/auth'
 import { formatDateTime } from '@/utils/time'
 
+const KubeResourceDiagnostics = defineAsyncComponent(() => import('@/components/KubeResourceDiagnostics.vue'))
 const KubeYamlManifest = defineAsyncComponent(() => import('@/components/KubeYamlManifest.vue'))
 const KubeYamlDrawer = defineAsyncComponent(() => import('@/components/KubeYamlDrawer.vue'))
 const yamlOpen=ref(false),yamlContext=ref<{cluster:string;type:KubeType;object:KubeObject}>()
@@ -339,6 +340,7 @@ onBeforeUnmount(()=>{mounted=false;namespaceRevision++;namespaceController?.abor
       <a-alert v-if="detailSyncError" type="warning" show-icon :message="detailSyncError" />
       <a-skeleton v-if="detailLoading&&!detail?.apiVersion" active :paragraph="{rows:6}" class="detail-skeleton" /><a-spin :spinning="detailLoading"><a-tabs v-if="detail&&detail.apiVersion&&detailType&&!detailError" v-model:active-key="detailTab" class="detail-tabs">
         <a-tab-pane v-if="detail.kind==='Node'" key="monitor" :tab="t('k8s.nodeMonitoring')"><KubeNodeMonitor v-if="detailTab==='monitor'" :key="cluster+detail.metadata.uid" :cluster="cluster" :node="detail" :auto-refresh="autoRefresh" :workloads="can('kubernetes.workload.read')" /></a-tab-pane>
+        <a-tab-pane v-if="['Service','Deployment','Pod'].includes(detail.kind)" key="diagnostics" :tab="t(detail.kind==='Service'?'k8s.serviceEndpoints':detail.kind==='Deployment'?'k8s.deploymentHistory':'k8s.podDiagnostics')"><KubeResourceDiagnostics v-if="detailTab==='diagnostics'" :key="cluster+detail.metadata.uid" :cluster="cluster" :object="detail" :type="detailType" :auto-refresh="autoRefresh" :can-follow="canFollow" @follow="followReference" /></a-tab-pane>
         <a-tab-pane key="basic" :tab="t('k8s.resourceSettings')">
           <KubeResourceDetails :object="detail" :type="detailType" :can-follow="canFollow" @follow="followReference" />
           <KubeNodeInfo v-if="detail.kind==='Node'" :node="detail" />

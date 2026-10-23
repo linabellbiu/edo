@@ -16,6 +16,7 @@ function load(path, modules = {}) {
 }
 const config = load('../src/utils/kubernetesConfig.ts', { yaml: YAML })
 const api = load('../src/api/kubernetes.ts')
+const workloadForm=load('../src/utils/kubernetesWorkloadForm.ts',{'@/api/kubernetes':api})
 const i18n = { useI18n: () => ({ t: (key, values = {}) => `${key} ${JSON.stringify(values)}` }) }
 
 test('配置文件按扩展名检查，允许 YAML 列表、标量和多文档，格式化保留注释', () => {
@@ -78,7 +79,7 @@ test('格式错误不覆盖草稿，格式化只改本地内容；只读和保�
 })
 function editor(kind, object, list = async () => ({ items: [], continue: '' })) {
   const component = load('../src/components/KubeResourceEditor.vue', {
-    vue, 'vue-i18n': i18n, '@/api/kubernetes': { ...api, listKubeResources: list }, '@/utils/kubernetesConfig': config,
+    vue, 'vue-i18n': i18n, '@/utils/kubernetesWorkloadForm':workloadForm, '@/api/kubernetes': { ...api, listKubeResources: list }, '@/utils/kubernetesConfig': config,
   }).default
   const props = vue.reactive({ open: true, cluster: 'a', namespace: 'team', type: api.kubeTypes.find(type => type.kind === kind), object })
   let state
