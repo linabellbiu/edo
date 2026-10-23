@@ -263,3 +263,20 @@ test('仅状态更新时重读版本；配置改变、资源重建或 Secret 变
  await assert.rejects(sdk.withFreshKubeResource('test',secretType,original,'changed',mutate),/changed/)
  assert.equal(mutations,3)
 })
+
+test('无事件的 null 返回显示空状态，读取失败后再次成功可恢复',async()=>{
+ let result={items:null},failed=false
+ const component=load('../src/views/KubernetesView.vue',{
+  vue:{...vue,onMounted(){},onBeforeUnmount(){},watch(){}},'vue-i18n':{useI18n:()=>({t:key=>key})},
+  'vue-router':{useRoute:()=>({query:{view:'nodes'}}),useRouter:()=>({})},'@/stores/auth':{useAuthStore:()=>({canAny:()=>true})},
+  '@/api/kubernetes':api,'@/utils/kubernetesPresentation':presentation,
+  '@/api/client':{__esModule:true,default:{get:async()=>{if(failed)throw new Error('读取失败');return{data:result}}}},
+ }).default
+ const state=component.setup({}, {expose(){}}),node={kind:'Node',metadata:{name:'worker',uid:'uid-1'}}
+ const loadEvents=()=>state.loadEvents('cluster',api.kubeTypes[0],node,0,new AbortController().signal)
+ await loadEvents();assert.equal(state.eventsError.value,false);assert.deepEqual(state.events.value,[])
+ result={items:[{metadata:{uid:'old'},lastTimestamp:'2026-10-23T00:00:00Z'},{metadata:{uid:'new'},lastTimestamp:'2026-10-23T01:00:00Z'}]}
+ await loadEvents();assert.equal(state.events.value[0].metadata.uid,'new')
+ failed=true;await loadEvents();assert.equal(state.eventsError.value,true)
+ failed=false;result={items:[]};await loadEvents();assert.equal(state.eventsError.value,false);assert.deepEqual(state.events.value,[])
+})

@@ -357,6 +357,9 @@ func (s *Service) ResourceEvents(ctx context.Context, clusterID, resource, names
 	if err != nil {
 		return nil, resourceError(resource, err)
 	}
+	if events.Items == nil {
+		return []corev1.Event{}, nil
+	}
 	return events.Items, nil
 }
 

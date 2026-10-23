@@ -226,3 +226,30 @@ func TestPodLogsDoNotUseOrdinaryRequestTimeout(t *testing.T) {
 		t.Fatal("日志流被普通请求超时截断", string(body), err)
 	}
 }
+
+func TestResourceEventsNormalizesEmptyLists(t *testing.T) {
+	server := resourceTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/nodes/worker":
+			_, _ = io.WriteString(w, `{"apiVersion":"v1","kind":"Node","metadata":{"name":"worker","uid":"uid-1"}}`)
+		case "/api/v1/events":
+			if r.URL.Query().Get("fieldSelector") != "involvedObject.uid=uid-1" {
+				t.Error("事件查询缺少 UID 范围")
+			}
+			_, _ = io.WriteString(w, `{"apiVersion":"v1","kind":"EventList","items":null}`)
+		default:
+			t.Errorf("意外路径 %s", r.URL.Path)
+			w.WriteHeader(404)
+		}
+	})
+	service := newKubeTestService(t, time.Second)
+	id := createKubeTestCluster(t, service, server)
+	events, err := service.ResourceEvents(context.Background(), id, "nodes", "", "worker", "uid-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := json.Marshal(events)
+	if string(body) != "[]" {
+		t.Fatalf("无事件不应返回 null: %s", body)
+	}
+}

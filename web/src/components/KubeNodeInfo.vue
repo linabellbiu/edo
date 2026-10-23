@@ -10,7 +10,7 @@ const facts=computed(()=>[
  ['Pod CIDR',(props.node.spec?.podCIDRs??[props.node.spec?.podCIDR]).filter(Boolean).join(', ')],[t('k8s.nodeProvider'),props.node.spec?.providerID],
  [t('k8s.nodeScheduling'),t(props.node.spec?.unschedulable?'k8s.schedulingDisabled':'k8s.nodeSchedulingEnabled')],
 ])
-const capacities=computed(()=>[['cpu','CPU'],['memory',t('k8s.memoryUsage')],['ephemeral-storage',t('k8s.nodeEphemeralStorage')],['pods',t('k8s.nodePodCount')],...Object.keys(props.node.status?.capacity??{}).filter(key=>!['cpu','memory','ephemeral-storage','pods'].includes(key)).map(key=>[key,key])])
+const capacities=computed(()=>[['cpu','CPU'],['memory',t('k8s.nodeMemory')],['ephemeral-storage',t('k8s.nodeEphemeralStorage')],['pods',t('k8s.nodePodCount')],...Object.keys(props.node.status?.capacity??{}).filter(key=>!['cpu','memory','ephemeral-storage','pods'].includes(key)).map(key=>[key,key])])
 </script>
 <template>
  <section class="resource-detail-section"><h4>{{ t('k8s.nodeInfo') }}</h4><dl class="node-facts"><div v-for="[label,value] in facts" :key="label"><dt>{{ label }}</dt><dd>{{ value||'—' }}</dd></div><div v-for="address in node.status?.addresses??[]" :key="`${address.type}/${address.address}`"><dt>{{ address.type }}</dt><dd>{{ address.address }}</dd></div></dl></section>
