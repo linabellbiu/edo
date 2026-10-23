@@ -23,9 +23,12 @@ const (
 )
 
 // 通过真实 client-go HTTP 编解码模拟 Update 后观察到的集群对象，不替换发布逻辑。
-func deployReadinessFixture(t *testing.T, observe func(*appsv1.Deployment)) (*Service, string) {
+func deployReadinessFixture(t *testing.T, observe func(*appsv1.Deployment), interceptors ...func(http.ResponseWriter, *http.Request, bool) bool) (*Service, string) {
+	return deployReadinessFixtureForReplicas(t, 2, observe, interceptors...)
+}
+
+func deployReadinessFixtureForReplicas(t *testing.T, replicas int32, observe func(*appsv1.Deployment), interceptors ...func(http.ResponseWriter, *http.Request, bool) bool) (*Service, string) {
 	t.Helper()
-	replicas := int32(2)
 	current := &appsv1.Deployment{
 		TypeMeta: metav1.TypeMeta{APIVersion: "apps/v1", Kind: "Deployment"},
 		ObjectMeta: metav1.ObjectMeta{
@@ -53,6 +56,11 @@ func deployReadinessFixture(t *testing.T, observe func(*appsv1.Deployment)) (*Se
 		}
 		mu.Lock()
 		defer mu.Unlock()
+		for _, intercept := range interceptors {
+			if intercept(w, r, updated) {
+				return
+			}
+		}
 		switch r.Method {
 		case http.MethodGet:
 			observed := current.DeepCopy()
@@ -82,7 +90,7 @@ func deployReadinessFixture(t *testing.T, observe func(*appsv1.Deployment)) (*Se
 			}
 			next.Generation = 2
 			next.ResourceVersion = "12"
-			next.Status = appsv1.DeploymentStatus{ObservedGeneration: 2, Replicas: 2, UpdatedReplicas: 2, ReadyReplicas: 2, AvailableReplicas: 2}
+			next.Status = appsv1.DeploymentStatus{ObservedGeneration: 2, Replicas: replicas, UpdatedReplicas: replicas, ReadyReplicas: replicas, AvailableReplicas: replicas}
 			current = next
 			updated = true
 			_ = json.NewEncoder(w).Encode(next)

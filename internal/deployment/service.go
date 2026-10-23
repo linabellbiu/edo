@@ -1187,8 +1187,12 @@ func kubernetesFailureDetails(err error) (string, string) {
 		return "kubernetes_update_failed", "Kubernetes 部署失败：集群拒绝更新目标工作负载，请检查权限和资源状态"
 	case errors.Is(err, kube.ErrDeploymentStatusUnavailable):
 		return "kubernetes_status_unavailable", "Kubernetes 部署失败：更新后无法读取工作负载状态，请检查集群连接"
-	case errors.Is(err, kube.ErrDeploymentRolloutTimeout), errors.Is(err, context.DeadlineExceeded):
+	case errors.Is(err, kube.ErrDeploymentProgressDeadline):
+		return "kubernetes_progress_deadline_exceeded", "Kubernetes 部署失败：工作负载已超过发布进度期限，请检查 Pod 状态和事件"
+	case errors.Is(err, kube.ErrDeploymentRolloutTimeout):
 		return "kubernetes_rollout_timeout", "Kubernetes 部署超时：工作负载未在规定时间内就绪"
+	case errors.Is(err, context.DeadlineExceeded):
+		return "kubernetes_deployment_timeout", "Kubernetes 部署超时：执行任务已超过规定期限，请核对工作负载状态"
 	case errors.Is(err, context.Canceled):
 		return "kubernetes_deployment_canceled", "Kubernetes 部署已取消"
 	default:

@@ -4,8 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
+	appsv1 "k8s.io/api/apps/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/util/retry"
@@ -17,6 +20,7 @@ var (
 	ErrDeploymentUpdateFailed      = errors.New("更新 Kubernetes 工作负载失败")
 	ErrDeploymentStatusUnavailable = errors.New("无法读取 Kubernetes 工作负载状态")
 	ErrDeploymentRolloutTimeout    = errors.New("等待 Kubernetes 工作负载就绪超时")
+	ErrDeploymentProgressDeadline  = errors.New("Kubernetes 工作负载已超过发布进度期限")
 )
 
 func (s *Service) DeployImage(
@@ -32,17 +36,30 @@ func (s *Service) deployImage(
 	clusterID, namespace, deploymentName, containerName, image, deploymentID string,
 	timeout time.Duration,
 	expected *DeploymentImageIdentity,
-) (string, error) {
+) (previousImage string, resultErr error) {
+	defer func() {
+		if resultErr != nil {
+			slog.ErrorContext(ctx, "Kubernetes 镜像发布未完成", "operation", "kubernetes_deploy_image",
+				"cluster_id", clusterID, "namespace", namespace, "workload_name", deploymentName,
+				"container_name", containerName, "deployment_id", deploymentID, "err", resultErr)
+		}
+	}()
+	if ctx.Err() != nil {
+		return "", ctx.Err()
+	}
 	namespace, err := normalizeNamespace(namespace)
 	if err != nil {
 		return "", fmt.Errorf("%w: %v", ErrDeploymentConfigInvalid, err)
 	}
 	clientset, err := s.Clientset(ctx, clusterID)
 	if err != nil {
+		if ctx.Err() != nil {
+			return "", ctx.Err()
+		}
 		return "", err
 	}
-	var previousImage string
 	var generation int64
+	var targetUID, targetContainer string
 	err = retry.RetryOnConflict(retry.DefaultRetry, func() error {
 		current, err := clientset.AppsV1().Deployments(namespace).Get(ctx, deploymentName, metav1.GetOptions{})
 		if err != nil {
@@ -75,35 +92,79 @@ func (s *Service) deployImage(
 		})
 		if err == nil {
 			generation = updated.Generation
+			targetUID = string(updated.UID)
+			targetContainer = current.Spec.Template.Spec.Containers[containerIndex].Name
 		}
 		return err
 	})
 	if err != nil {
+		if ctx.Err() != nil {
+			return previousImage, ctx.Err()
+		}
 		if errors.Is(err, ErrDeploymentContainerNotFound) || errors.Is(err, ErrDeploymentTargetChanged) {
 			return previousImage, err
 		}
 		return previousImage, fmt.Errorf("%w: %v", ErrDeploymentUpdateFailed, err)
+	}
+	if targetUID == "" || generation < 1 {
+		return previousImage, ErrDeploymentStatusUnavailable
 	}
 
 	var lastReadErr error
 	err = wait.PollUntilContextTimeout(ctx, 2*time.Second, timeout, true, func(waitContext context.Context) (bool, error) {
 		current, err := clientset.AppsV1().Deployments(namespace).Get(waitContext, deploymentName, metav1.GetOptions{})
 		if err != nil {
+			if apierrors.IsNotFound(err) {
+				return false, ErrDeploymentTargetChanged
+			}
+			if apierrors.IsForbidden(err) || apierrors.IsUnauthorized(err) || apierrors.IsBadRequest(err) {
+				return false, fmt.Errorf("%w: %v", ErrDeploymentStatusUnavailable, err)
+			}
 			lastReadErr = err
 			return false, nil
 		}
 		lastReadErr = nil
+		if string(current.UID) != targetUID || current.Generation != generation ||
+			current.Spec.Template.Annotations["edo.io/deployment-id"] != deploymentID {
+			return false, ErrDeploymentTargetChanged
+		}
+		matchingContainer := false
+		for _, container := range current.Spec.Template.Spec.Containers {
+			if container.Name == targetContainer {
+				matchingContainer = container.Image == image
+				break
+			}
+		}
+		if !matchingContainer {
+			return false, ErrDeploymentTargetChanged
+		}
+		if current.Status.ObservedGeneration < generation {
+			return false, nil
+		}
+		for _, condition := range current.Status.Conditions {
+			if condition.Type == appsv1.DeploymentProgressing && condition.Reason == "ProgressDeadlineExceeded" {
+				return false, ErrDeploymentProgressDeadline
+			}
+		}
 		desired := int32(1)
 		if current.Spec.Replicas != nil {
 			desired = *current.Spec.Replicas
 		}
-		ready := current.Status.ObservedGeneration >= generation &&
-			current.Status.UpdatedReplicas >= desired &&
-			current.Status.AvailableReplicas >= desired &&
+		// 与 kubectl rollout status 一致，旧副本退出且全部新副本可用后才完成。
+		// 精确数量校验同时防止不一致的状态快照被误判为成功，缩容为零仍需等待副本清空。
+		ready := current.Status.UpdatedReplicas == desired &&
+			current.Status.Replicas == current.Status.UpdatedReplicas &&
+			current.Status.AvailableReplicas == current.Status.UpdatedReplicas &&
 			current.Status.UnavailableReplicas == 0
 		return ready, nil
 	})
 	if err != nil {
+		if ctx.Err() != nil {
+			return previousImage, ctx.Err()
+		}
+		if errors.Is(err, ErrDeploymentTargetChanged) || errors.Is(err, ErrDeploymentProgressDeadline) || errors.Is(err, ErrDeploymentStatusUnavailable) {
+			return previousImage, err
+		}
 		if lastReadErr != nil {
 			return previousImage, fmt.Errorf("%w: %v", ErrDeploymentStatusUnavailable, lastReadErr)
 		}

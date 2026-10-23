@@ -1515,7 +1515,7 @@ function runWorkflowName(run:Run){
 }
 function releasePlanForRun(run:Run){return releasePlans.value.find(item=>item.id===run.release_plan_id)}
 function runReleasePlanName(run:Run){
- if(!run.release_plan_id)return '未通过发布计划'
+ if(!run.release_plan_id)return '未关联发布计划'
  const plan=releasePlanForRun(run)
  return plan?releasePlanTitle(plan):`发布计划 ${run.release_plan_id.slice(0,8)}`
 }
@@ -1856,7 +1856,7 @@ onBeforeUnmount(()=>{stopDeliveryEvents?.();clearTimeout(deliveryRefreshTimer);r
       </template>
       <template v-else-if="column.key==='release_plan'">
         <button v-if="record.release_plan_id" type="button" class="run-resource-link" :title="runReleasePlanName(record)" @click.stop="openReleasePlanFromRun(record)">{{ runReleasePlanName(record) }}</button>
-        <span v-else class="run-cell-muted">未通过发布计划</span>
+        <span v-else class="run-cell-muted">未关联发布计划</span>
       </template>
       <template v-else-if="column.key==='application'">
         <button type="button" class="run-resource-link" :disabled="!record.application_id" :title="applicationName(record)" @click.stop="openApplicationFromRun(record)">{{ applicationName(record) }}</button>
@@ -1900,7 +1900,7 @@ onBeforeUnmount(()=>{stopDeliveryEvents?.();clearTimeout(deliveryRefreshTimer);r
             <dl class="run-facts">
               <div><dt>发布应用</dt><dd>{{ applicationName(run) }}</dd></div>
               <div><dt>应用流水线</dt><dd>{{ runWorkflowName(run) }}</dd></div>
-              <div><dt>发布计划</dt><dd>{{ run.release_plan_id ? runReleasePlanName(run) : '未通过发布计划' }}</dd></div>
+              <div><dt>发布计划</dt><dd>{{ run.release_plan_id ? runReleasePlanName(run) : '未关联发布计划' }}</dd></div>
               <div><dt>当前任务</dt><dd>{{ run.current_node_name||run.current_node_id||'尚未开始' }}</dd></div>
               <div><dt>状态说明</dt><dd :title="run.message||runStatusLabel(run.status,run.stage)">{{ run.message||runStatusLabel(run.status,run.stage) }}</dd></div>
               <div><dt>运行编号</dt><dd :title="run.id">{{ run.id }}</dd></div>

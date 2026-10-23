@@ -445,7 +445,7 @@ func (s *Service) executePipelineBuild(ctx context.Context, prepared *buildExecu
 			},
 		}
 		if options.Platform != "" {
-			s.appendRunLog(ctx, prepared.run.ID, "build", "info", "已根据部署目标主机选择构建平台 "+options.Platform)
+			s.appendRunLog(ctx, prepared.run.ID, "build", "info", "已根据部署目标选择构建平台 "+options.Platform)
 		}
 		timeout := time.Duration(prepared.plan.TimeoutSeconds) * time.Second
 		if prepared.plan.ImageRegistryID == "" {
