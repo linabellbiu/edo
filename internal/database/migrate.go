@@ -346,6 +346,9 @@ var migrations = []migration{
 	},
 	{version: "202610230066", up: migrateProjectSpaces},
 	{version: "202610230067", up: func(tx *gorm.DB) error { return tx.AutoMigrate(&model.DeliveryDefault{}) }},
+	{version: "202610240068", up: func(tx *gorm.DB) error {
+		return tx.AutoMigrate(&model.AssistantSettings{}, &model.AssistantConversation{}, &model.AssistantMessage{}, &model.AssistantAction{})
+	}},
 }
 
 // migrateRepeatableReleasePlanExecutions 取消“一个发布计划只能执行一次”的旧约束，

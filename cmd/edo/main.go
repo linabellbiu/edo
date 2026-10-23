@@ -26,6 +26,7 @@ import (
 	"edo/internal/access"
 	"edo/internal/account"
 	artifactmanager "edo/internal/artifact"
+	"edo/internal/assistant"
 	"edo/internal/audit"
 	"edo/internal/auth"
 	"edo/internal/bootstrap"
@@ -583,6 +584,10 @@ func runServer(ctx context.Context, cfg config.Config, logger *slog.Logger, runt
 	systemMetricsService.ConfigureHistory(resources.Redis.Client(), resources.Redis.Key("system", "metrics"), cfg.Server.Address)
 	taskWorker.ConfigureRealtime(realtimeBus)
 	departmentService := department.NewService(resources.Database)
+	assistantService := assistant.NewService(assistant.Dependencies{
+		Database: resources.Database, Secrets: secretManager, Access: accessService,
+		Pipeline: pipelineService, Kubernetes: kubernetesService, Audits: auditService, Logger: logger,
+	})
 
 	router := httpapi.NewRouter(httpapi.Dependencies{
 		Environment:      cfg.Environment,
@@ -595,6 +600,7 @@ func runServer(ctx context.Context, cfg config.Config, logger *slog.Logger, runt
 		WebRoot:          cfg.Server.WebRoot,
 		AuthConfig:       cfg.Auth,
 		Accounts:         accounts,
+		Assistant:        assistantService,
 		Login:            loginService,
 		LoginLimiter:     limiter,
 		Sessions:         sessions,

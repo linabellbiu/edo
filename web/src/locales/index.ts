@@ -4,9 +4,11 @@ import { kubernetesZh, kubernetesEn } from './kubernetes'
 import { loginZh, loginEn } from './login'
 import { deliveryZh, deliveryEn } from './delivery'
 import { yamlZh, yamlEn } from './yaml'
+import { assistantZh, assistantEn } from './assistant'
 
 export const messages = {
   'zh-CN': {
+    assistant: assistantZh,
 	delivery: deliveryZh,
 	yamlEditor: yamlZh,
 	loginAuth: loginZh,
@@ -238,6 +240,7 @@ export const messages = {
     },
   },
   'en-US': {
+    assistant: assistantEn,
 	delivery: deliveryEn,
 	yamlEditor: yamlEn,
 	loginAuth: loginEn,

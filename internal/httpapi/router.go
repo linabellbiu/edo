@@ -14,6 +14,7 @@ import (
 	"edo/internal/access"
 	"edo/internal/account"
 	artifactmanager "edo/internal/artifact"
+	"edo/internal/assistant"
 	"edo/internal/audit"
 	"edo/internal/auth"
 	"edo/internal/config"
@@ -80,6 +81,7 @@ type Dependencies struct {
 	SystemMetrics    *systemmetrics.Service
 	LogRetention     *logretention.Service
 	DatabaseTransfer *database.TransferService
+	Assistant        *assistant.Service
 }
 
 type errorResponse struct {
@@ -128,6 +130,7 @@ func NewRouter(deps Dependencies) *gin.Engine {
 	protected.GET("/organization", requireAnyPermission(deps.Access, deps.Logger, "organization.read", "organization.update"), projectAPI.organization)
 	protected.PUT("/organization", auditAction(deps.Audits, deps.Logger, "organization.update", "organization"), requirePermission(deps.Access, deps.Logger, "organization.update"), projectAPI.saveOrganization)
 	protected.Use(realtimeMutation(deps.Realtime))
+	registerAssistantRoutes(protected, deps)
 	protected.GET("/events/ws", requireAnyPermission(deps.Access, deps.Logger, "application.read", "pipeline_run.read", "release_plan.read", "deployment_plan.read", access.PermissionDeploymentRead), streamState(deps))
 	protected.GET("/auth/me", authHandler.handleMe)
 	protected.PUT("/auth/password", auditAction(deps.Audits, deps.Logger, "auth.password.change", "user"), authHandler.handleChangePassword)

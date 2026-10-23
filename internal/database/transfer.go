@@ -220,6 +220,27 @@ func (s *TransferService) Start(input TransferTarget, testToken string) (Transfe
 		s.resetPreparing(status.ID)
 		return TransferStatus{}, ErrActiveJobs
 	}
+	var activeAssistant int64
+	if err := s.source.WithContext(s.ctx).Model(&model.AssistantConversation{}).
+		Where("lease_until > ?", time.Now().UTC()).Count(&activeAssistant).Error; err != nil {
+		s.resetPreparing(status.ID)
+		s.logger.Error("检查助手会话失败", "operation", "database_transfer_assistant", "err", err)
+		return TransferStatus{}, errors.New("无法检查助手运行状态，请稍后重试")
+	}
+	if activeAssistant > 0 {
+		s.resetPreparing(status.ID)
+		return TransferStatus{}, ErrActiveJobs
+	}
+	if err := s.source.WithContext(s.ctx).Model(&model.AssistantAction{}).
+		Where("status = ?", "executing").Count(&activeAssistant).Error; err != nil {
+		s.resetPreparing(status.ID)
+		s.logger.Error("检查助手操作失败", "operation", "database_transfer_assistant_action", "err", err)
+		return TransferStatus{}, errors.New("无法检查助手运行状态，请稍后重试")
+	}
+	if activeAssistant > 0 {
+		s.resetPreparing(status.ID)
+		return TransferStatus{}, ErrActiveJobs
+	}
 
 	s.updateStatus(status.ID, func(current *TransferStatus) { current.Message = "正在准备目标数据库" })
 
@@ -586,6 +607,7 @@ var orderedTransferTables = []string{
 	"pipeline_runs", "pipeline_run_repositories", "pipeline_run_approvals", "pipeline_run_logs", "build_runs", "artifacts", "deployment_records", "deployment_instance_controls",
 	"notification_channels", "notifications", "scheduled_tasks", "monitor_rules", "monitor_checks",
 	"jobs", "outbox_events", "delivery_defaults",
+	"assistant_settings", "assistant_conversations", "assistant_messages", "assistant_actions",
 }
 
 func knownTransferTableSet() map[string]struct{} {

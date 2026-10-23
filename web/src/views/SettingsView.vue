@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
+import { useI18n } from "vue-i18n";
 import { Modal, message } from "ant-design-vue";
 import { Braces, Database, FolderCog, KeyRound, RefreshCw, ScrollText, Search, ShieldCheck, Trash2 } from "lucide-vue-next";
 
@@ -8,6 +9,7 @@ import client from "@/api/client";
 import { apiErrorMessage } from "@/api/resources";
 import PageToolbar from "@/components/PageToolbar.vue";
 import IdentityProvidersView from "@/views/IdentityProvidersView.vue";
+import AssistantSettings from "@/components/AssistantSettings.vue";
 import { useAuthStore } from "@/stores/auth";
 import type { BuiltinVariableCatalog, BuiltinVariableDefinition } from "@/types/builtinVariables";
 
@@ -86,6 +88,7 @@ interface DatabaseTargetForm {
   databaseName: string;
 }
 
+const { t } = useI18n();
 const route = useRoute(),
   router = useRouter(),
   auth = useAuthStore(),
@@ -132,6 +135,7 @@ const sections = computed(() => [
   ...(canConfig.value
     ? [
         { key: "general", label: "安全与接入" },
+        { key: "assistant", label: t("assistant.settings") },
       ]
     : []),
   ...(canViewVariables.value ? [{ key: "variables", label: "环境变量" }] : []),
@@ -823,6 +827,7 @@ onBeforeUnmount(() => clearInterval(migrationTimer));
         {{ migration?.message || "尚未执行数据库迁移" }}
       </p>
     </article>
+    <AssistantSettings v-if="active === 'assistant' && canConfig" />
     <IdentityProvidersView v-if="active === 'identity'" />
   </section>
 </template>

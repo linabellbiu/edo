@@ -2,6 +2,8 @@ package pipeline
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -35,6 +37,7 @@ var (
 	ErrPipelineRunNotFound            = errors.New("流水线运行不存在")
 	ErrPipelineRunNotRetryable        = errors.New("只有失败的流水线运行可以重新执行")
 	ErrRetryArtifactInvalid           = errors.New("所选制品不是此次失败运行已经构建的可用制品，请重新选择")
+	ErrRetrySnapshotChanged           = errors.New("流水线配置已变化，请重新确认后再执行")
 	ErrPipelineRunAwaitingReleasePlan = errors.New("流水线运行由发布计划统一调度")
 )
 
@@ -1442,6 +1445,51 @@ func (s *Service) RetryRun(ctx context.Context, runID, actorID string) (*model.P
 // RetryRunSelection 不接受新的分支或 Commit。选择制品时只允许使用原失败运行已经构建的制品，
 // 并从该构建之后继续；不选择制品时仍以原运行固定的代码版本重新构建。
 func (s *Service) RetryRunSelection(ctx context.Context, runID, actorID, artifactID string) (*model.PipelineRun, error) {
+	return s.retryRunSelection(ctx, runID, actorID, artifactID, "", false)
+}
+
+// PreviewRetryRun 只解析重试配置，不创建运行或投递任务。
+func (s *Service) PreviewRetryRun(ctx context.Context, runID, actorID, artifactID string) (string, error) {
+	run, err := s.retryRunSelection(ctx, runID, actorID, artifactID, "", true)
+	if err != nil {
+		return "", err
+	}
+	return retryRunFingerprint(run)
+}
+
+// RetryRunSelectionExpected 只执行与已确认指纹一致的解析结果，不再二次读取方案。
+func (s *Service) RetryRunSelectionExpected(ctx context.Context, runID, actorID, artifactID, expectedFingerprint string) (*model.PipelineRun, error) {
+	if expectedFingerprint == "" {
+		if s.logger != nil {
+			s.logger.Warn("流水线重试缺少确认指纹", "operation", "pipeline_retry_expected", "pipeline_run_id", runID, "err", ErrRetrySnapshotChanged)
+		}
+		return nil, ErrRetrySnapshotChanged
+	}
+	return s.retryRunSelection(ctx, runID, actorID, artifactID, expectedFingerprint, false)
+}
+
+func retryRunFingerprint(run *model.PipelineRun) (string, error) {
+	stable := *run
+	stable.ID, stable.Message = "", ""
+	stable.CreatedAt, stable.UpdatedAt = time.Time{}, time.Time{}
+	stable.Repositories = append([]model.PipelineRunRepository(nil), run.Repositories...)
+	for i := range stable.Repositories {
+		item := &stable.Repositories[i]
+		item.ID, item.PipelineRunID = "", ""
+		item.CreatedAt, item.UpdatedAt = time.Time{}, time.Time{}
+	}
+	data, err := json.Marshal(struct {
+		Run      model.PipelineRun `json:"run"`
+		Snapshot string            `json:"snapshot"`
+	}{Run: stable, Snapshot: stable.WorkflowSnapshot})
+	if err != nil {
+		return "", fmt.Errorf("生成流水线重试指纹失败: %w", err)
+	}
+	digest := sha256.Sum256(data)
+	return hex.EncodeToString(digest[:]), nil
+}
+
+func (s *Service) retryRunSelection(ctx context.Context, runID, actorID, artifactID, expectedFingerprint string, preview bool) (*model.PipelineRun, error) {
 	var failed model.PipelineRun
 	if err := s.db.WithContext(ctx).First(&failed, "id = ?", runID).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -1515,6 +1563,24 @@ func (s *Service) RetryRunSelection(ctx context.Context, runID, actorID, artifac
 	if err != nil {
 		return nil, err
 	}
+	run.Repositories = components
+	if preview {
+		return run, nil
+	}
+	if expectedFingerprint != "" {
+		fingerprint, err := retryRunFingerprint(run)
+		if err != nil {
+			return nil, err
+		}
+		if fingerprint != expectedFingerprint {
+			if s.logger != nil {
+				s.logger.Warn("流水线重试配置与确认内容不一致", "operation", "pipeline_retry_expected", "pipeline_run_id", runID, "err", ErrRetrySnapshotChanged)
+			}
+			return nil, ErrRetrySnapshotChanged
+		}
+	}
+	// 关联记录显式写入，避免 GORM 自动保存已解析对象时重复创建仓库条目。
+	run.Repositories = nil
 	if err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if err := tx.Create(run).Error; err != nil {
 			return err

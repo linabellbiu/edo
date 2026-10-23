@@ -46,6 +46,16 @@
 
 前端评估了 VueUse `useWebSocket`（MIT、持续维护、支持 Vue 3 的重连与心跳）。本次使用浏览器原生 WebSocket，仅封装 EDO 的结束事件、权限失效停止、动态日志游标和共享订阅计数，未新增直接依赖。连接生命周期由项目维护，以假时钟回归及真实 Vite 代理测试覆盖；如果后续需要支持更多协议，再评估是否改用该库。
 
+## 对话助手
+
+助手使用 CloudWeGo 官方 [Eino](https://github.com/cloudwego/eino) v0.9.22 和 [OpenAI 兼容模型组件](https://github.com/cloudwego/eino-ext/tree/main/components/model/openai) v0.1.13。二者采用 Apache-2.0 许可证，版本线持续维护，最低 Go 版本低于项目当前版本，可在现有 Linux/macOS 构建链中使用。复用 ADK 的 ChatModelAgent、工具调度与执行步数限制，不另写模型推理循环。
+
+新增依赖主要是模型适配、JSON Schema 与 Sonic 相关组件，不增加常驻服务；接口封装在 `internal/assistant`，更换模型适配器不改变会话表、权限或确认规则。引入前核对官方模块、发布版本与许可证；本地编译、模拟接口和三种数据库测试不能代替真实模型兼容性或完整供应链安全审计。后续升级需重跑工具调用、错误脱敏、取消和确认回归。
+
+官方模型组件间接依赖 `github.com/meguminnnnnnnnn/go-openai` v0.1.2。它不是 EDO 自选的额外模型框架，但仍属于供应链范围；升级时需核对上游维护情况、许可证和安全公告，不能仅因为来自官方适配器就忽略该依赖。
+
+也评估了 LangChainGo 与自行组织工具调用循环；本项目按选定的 Eino 接入，避免并存两套编排框架。SSE 使用 Go HTTP 和浏览器原生流读取，不新增前端聊天 SDK。项目归属、权限复核、敏感信息处理、确认状态机及审计均保留在 EDO 代码中，不交给模型或框架决定。
+
 ## 评估后未采用
 
 | 候选 | 结论 |

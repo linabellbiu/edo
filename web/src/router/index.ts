@@ -29,6 +29,7 @@ const routes: RouteRecordRaw[] = [
       { path: 'logs', name: 'logs', component: () => import('@/views/LogsView.vue'), meta: { title: 'nav.logs', permissions: ['monitor.read'] } },
       { path: 'operations', name: 'operations', component: () => import('@/views/TaskCenterView.vue'), meta: { title: 'nav.tasks', permissions: ['task.read'] } },
       { path: 'settings', name: 'settings', component: () => import('@/views/SettingsView.vue'), meta: { title: 'nav.settings', permissions: [] } },
+      { path: 'assistant', name: 'assistant', component: () => import('@/views/AssistantView.vue'), meta: { title: 'assistant.title', permissions: ['assistant.read'] } },
       { path: 'projects', name: 'projects', component: () => import('@/views/ProjectsView.vue'), meta: {title:'workspace.projects', permissions:[]} },
       { path: 'organization', name:'organization', component: () => import('@/views/OrganizationView.vue'), meta:{title:'workspace.organization',permissions:['organization.read','organization.update','department.read','department.create','department.update','department.delete']} },
       { path: 'access', name: 'access', component: () => import('@/views/AccessView.vue'), meta: { title: 'nav.users', permissions: ['user.read', 'user.create', 'user.update', 'user.delete', 'department.read', 'department.create', 'department.update', 'department.delete', 'role.read', 'role.create', 'role.update', 'role.delete', 'audit.read'] } },

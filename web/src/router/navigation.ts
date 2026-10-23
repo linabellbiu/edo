@@ -1,6 +1,6 @@
 import type { Component } from 'vue'
 import {
-  Activity, AppWindow, Boxes, Box, Building2, ChartNoAxesCombined, CloudCog,
+  Activity, AppWindow, Bot, Boxes, Box, Building2, ChartNoAxesCombined, CloudCog,
   Container, FileText, GitBranch, KeyRound, ListChecks, PackageCheck,
   PanelsTopLeft, Play, Rocket, ScrollText, Server, ServerCog, Settings, ShieldCheck,
   Tags, UsersRound, Workflow, LayoutDashboard, Database, Network,
@@ -28,7 +28,10 @@ export interface NavSection {
 }
 
 export const navigation: NavSection[] = [
-  { items: [{ label: 'nav.overview', path: '/', permissions: ['system.read'], icon: ChartNoAxesCombined }] },
+  { items: [
+    { label: 'nav.overview', path: '/', permissions: ['system.read'], icon: ChartNoAxesCombined },
+    { label: 'assistant.title', path: '/assistant', permissions: ['assistant.read'], icon: Bot },
+  ] },
   {
     label: 'nav.delivery',
     branches: [

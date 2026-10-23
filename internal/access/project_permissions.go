@@ -43,7 +43,7 @@ func ProjectPermission(code string) bool {
 	}
 	prefix, _, _ := strings.Cut(code, ".")
 	switch prefix {
-	case "application", "workflow", "build_plan", "image_registry", "deployment_plan", "release_plan", "pipeline_run", "artifact", "repository", "delivery", "deployment", "cluster", "kubernetes", "terminal", "task", "dns", "notification", "scheduler":
+	case "application", "workflow", "build_plan", "image_registry", "deployment_plan", "release_plan", "pipeline_run", "artifact", "repository", "delivery", "deployment", "cluster", "kubernetes", "terminal", "task", "dns", "notification", "scheduler", "assistant":
 		return IsKnown(code)
 	}
 	return false

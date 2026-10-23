@@ -327,6 +327,19 @@ func (s *Service) DeleteProject(ctx context.Context, user *model.User, id string
 				return ErrProjectInUse
 			}
 		}
+		var activeAssistant int64
+		if err := tx.Model(&model.AssistantConversation{}).Where("project_id = ? AND lease_until > ?", id, time.Now().UTC()).Count(&activeAssistant).Error; err != nil {
+			return fmt.Errorf("检查助手运行状态失败: %w", err)
+		}
+		if activeAssistant > 0 {
+			return ErrProjectInUse
+		}
+		if err := tx.Model(&model.AssistantAction{}).Where("project_id = ? AND (status = ? OR (status = ? AND expires_at > ?))", id, "executing", "pending", time.Now().UTC()).Count(&activeAssistant).Error; err != nil {
+			return fmt.Errorf("检查助手确认状态失败: %w", err)
+		}
+		if activeAssistant > 0 {
+			return ErrProjectInUse
+		}
 		if err := tx.Where("project_id = ?", id).Delete(&model.ProjectMember{}).Error; err != nil {
 			return err
 		}
