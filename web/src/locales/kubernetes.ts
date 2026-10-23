@@ -1,4 +1,10 @@
 export const kubernetesZh = {
+  endpointPort:"端点端口",
+  endpointTarget:"目标资源",
+  endpointReady:"就绪",
+  endpointServing:"可提供服务",
+  endpointTerminating:"正在终止",
+
   currentContainerInstance:"当前运行",
   previousContainerInstance:"上次运行",
   containerStarted:"启动",
@@ -101,6 +107,12 @@ export const kubernetesZh = {
   resourceChanged:'资源配置已变化，请刷新后再操作', title:'Kubernetes', nodes:'集群节点', workloads:'工作负载', configStorage:'配置与存储',config:'配置中心', network:'服务与网络', description:'查看集群资源，管理调度、应用和网络。', cluster:'集群', namespace:'命名空间', allNamespaces:'全部命名空间', selectCluster:'选择集群', addCluster:'接入集群', resources:'资源', search:'搜索当前列表的名称、标签、镜像或地址', refresh:'刷新', autoRefresh:'自动刷新', loading:'正在读取资源', loadMore:'加载更多', loaded:'已加载 {count} 条', empty:'没有符合条件的资源', noCluster:'还没有接入集群', inactive:'连接已停用', failed:'读取失败，当前保留上次结果', details:'详情', create:'新建', edit:'编辑', remove:'删除', save:'保存', cancel:'取消', saved:'已保存', submitted:'操作已提交', name:'名称', status:'状态', summary:'配置', labels:'标签', age:'创建时间', actions:'操作', basic:'基本信息', conditions:'状态条件', events:'事件', containers:'容器', container:'容器', image:'镜像', ports:'容器端口', env:'环境变量', replicas:'副本数', serviceName:'关联 Service', schedule:'执行计划', suspend:'暂停', data:'数据', secretType:'Secret 类型', reveal:'查看密钥', secretHidden:'密钥内容已隐藏', secretKeep:'已有键留空时保留原值；移除一行会删除该键。', secretConfirm:'查看 Secret 内容？', secretAudit:'此次查看会记录审计日志。', addEntry:'添加一项', capacity:'存储容量', accessMode:'访问模式', defaultClass:'留空使用默认 StorageClass', expandHint:'只能扩容，StorageClass 需要允许卷扩容。', serviceType:'Service 类型', selector:'目标 Pod 标签', servicePort:'服务端口', targetPort:'目标端口或名称', hostname:'域名', path:'路径', backend:'后端 Service', ingressClass:'IngressClass', allowedPort:'允许的 TCP 端口', denyIngress:'拒绝全部入站流量', allowPods:'允许访问的同命名空间 Pod 标签', policyHint:'此表单创建入站规则。标签留空表示所有 Pod；请确认范围后保存。', firstPortHint:'此处修改第一个端口，其余端口保持不变。', firstRuleHint:'此处修改第一条路径，其余路径、规则和 TLS 配置保持不变。', taints:'污点', taintWarning:'NoExecute 污点可能驱逐现有 Pod，请确认后保存。', cordon:'停止调度', uncordon:'恢复调度', schedulingDisabled:'已停调度', restart:'滚动重启', scale:'调整副本', resume:'恢复', logs:'日志', terminal:'终端', manifest:'资源配置', relatedPods:'关联 Pod', noEvents:'暂无事件', noPods:'暂无关联 Pod', reason:'原因', message:'内容', count:'次数', lastSeen:'最近出现', confirmTitle:'{action} {name}？', confirmHint:'请确认集群、命名空间和资源。', deleteStorage:'删除存储资源可能导致数据丢失，请先确认备份和回收策略。', deleteNamespace:'删除命名空间会删除其中的全部资源。', deleteHint:'删除后无法撤销。由控制器管理的 Pod 会重新创建。', editNodeConfirm:'保存节点配置？', editNodeHint:'标签和污点变更会影响 Pod 的调度。', invalidKeys:'键不能为空或重复', invalidName:'名称只能包含小写字母、数字、连字符和点', invalidNamespace:'请输入有效的命名空间', imageRequired:'请填写容器名称和镜像', invalidPort:'端口必须为 1 至 65535 的整数', invalidReplicas:'副本数必须为 0 至 1000 的整数', backendRequired:'请填写有效的后端服务、路径和端口', scheduleRequired:'请填写 Cron 表达式', invalidStorage:'请输入有效容量，例如 1Gi', invalidForm:'请检查表单', nodeIP:'节点地址', nodeVersion:'版本与可分配资源', nodeInfo:'节点信息', os:'操作系统', runtime:'容器运行时', addresses:'地址', cpu:'可分配 CPU', memory:'可分配内存', pods:'可分配 Pod', paused:'自动刷新已暂停', readonlyStorage:'PV 和 StorageClass 由集群管理员配置，此处提供查看和删除。', noPermission:'没有此类资源的查看权限', seconds:'秒', scaleTitle:'调整 {name} 的副本数', missingSelection:'请先选择集群和命名空间', viewPods:'查看 Pod', refreshed:'已刷新', storage:'存储', updateImage:'更新镜像', more:'更多', detailFailed:'详情读取失败，请重试', keys:'键名', pending:'等待中', clusterInfo:'集群信息', provisioner:'存储驱动', note:'说明', resourceVersion:'资源版本', uid:'UID', endpoint:'API 地址', connection:'集群连接', close:'关闭', eventsUnavailable:'事件暂时不可用', scope:'范围', notScheduled:'尚未调度', newNamespace:'新建命名空间', noTerminal:'需要终端权限', nodeUnschedulable:'停止调度不会驱逐已运行的 Pod。', systemNamespace:'系统命名空间不能在这里删除', emptyData:'没有数据项', secretPlaintext:'以下是密钥原文，关闭抽屉后清除。', immutableJob:'Job 的容器配置不可修改，可重新创建。', defaultNamespace:'默认命名空间', kubernetes:'Kubernetes',
 }
 export const kubernetesEn: Record<keyof typeof kubernetesZh,string> = {
+  endpointPort:"Endpoint port",
+  endpointTarget:"Target resource",
+  endpointReady:"Ready",
+  endpointServing:"Serving",
+  endpointTerminating:"Terminating",
+
   currentContainerInstance:"Current instance",
   previousContainerInstance:"Previous instance",
   containerStarted:"Started",
