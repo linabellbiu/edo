@@ -5,7 +5,7 @@
 本轮针对 EDO 全部功能目录、已注册 API、后台流程及角色权限建立验收清单，不能以“已有测试文件”判定完成。自动化、真实服务和浏览器页面分别记录；没有条件运行的项目保留为待验，不默认为通过。
 
 - 初始基线：`44793d1`；前端另复测 `6a993a59`。
-- 最终修复候选：基于 `f73d9d4`，包含已提交的 `20b521e` 自增行号与 UUID 关联调整，仅加入本轮测试及已确认缺陷修复。使用独立源码快照完成全量测试，其他会话仍未提交的助手、流水线及仓库改动不属于该验收版本。
+- 最终修复候选：基于 `2cf2e2c`，包含已提交的 `20b521e` 自增行号与 UUID 关联调整、首批补测提交 `b924fd0` 及最新助手功能，再加入本轮审计分页修复。使用独立源码快照完成全量测试，其他会话仍未提交的流水线、仓库和依赖整理不属于该验收版本。
 - 原 Go 全量：46 个包通过 `-race`；1008 个 pass、10 个 skip 事件（包含父子用例，不等于互不重复的功能数）；跨包语句覆盖率 60.0%。
 - 原前端：213 项通过；新增 45 项脚本交互后，在 `6a993a59` 为 263 项通过。脚本执行真实 Vue 响应式业务方法，但 HTTP、Router、Modal 为测试桩，不替代浏览器验收。
 - 已运行独立 PostgreSQL 18、MySQL 8.4 的迁移、助手升级及最新发布计划查询测试；SQLite 真实查询、隔离与事务在全量测试中执行。
@@ -22,18 +22,22 @@
 | SEC-004 | P1 | 监控与定时任务可引用其他项目、已停用或不存在的通知渠道 | cache_query_audit | 创建与更新均按当前项目验证已启用渠道；拒绝时不写配置、通知、Job 或 Outbox |
 | UI-001 | P2 | 删除角色/部门失败时确认回调吞异常；浏览器拦截删除请求后角色确认框仍关闭 | kube_memory_audit / root | 失败 Promise 拒绝，弹窗和上下文保留；成功才关闭 |
 | UI-002 | P2 | 日志新筛选先返回后被旧请求覆盖，筛选条件和显示内容不一致 | kube_memory_audit | 迟到成功/错误不改新列表、loading 和错误状态 |
+| UI-003 | P2 | 审计后端返回 `succeeded`，前端却只把 `success` 识别为成功，成功记录全部标红 | root / kube_memory_audit | 真实枚举对应准确中文与颜色；未知结果保持中性，不伪装成功 |
+| DATA-002 | P2 | 审计按行号倒序却用时间翻页，同时间戳或时间倒序时漏记录；页面仅在最近 100 条内分页 | root / cache_query_audit / kube_memory_audit | 使用稳定行号字符串游标；同时间戳、并发新增及删除上一页末条不重不漏；页面真正请求后续页且失败保留上下文 |
 | TEST-001 | P2 | Docker 缓存测试以镜像 ID 相同判断缓存命中，实际 COPY/RUN 命中缓存仍被误判失败 | runtime_memory_audit | 检查实际层缓存、配置和 RootFS，不关闭构建证明来迎合断言 |
 | TEST-002 | P2 | 自增主键调整后，外部迁移测试清理未按业务 UUID 限定，助手升级样本与复制样本的行号冲突 | root | 只清理本用例准确 UUID 样本，检查删除行数；升级与空目标复制分别断言，再测复制后继续写入 |
 | CI-001 | P2 | 真实集成门禁漏选助手迁移、三种行标识测试及跨目录 Docker 缓存测试 | runtime_memory_audit | 补齐选择器与竞争检测；行标识三种模式各用独立空库；合同测试检查实际测试函数未被漏选 |
 
 TEST-001 已读取真实 BuildKit 输出并 inspect：业务 manifest、配置、文件系统层相同，构建证明不同导致最终 OCI index 不同；官方格式说明见 [Docker attestation storage](https://docs.docker.com/build/metadata/attestations/attestation-storage/)。这是根据运行结果作出的诊断，不是把失败改为跳过。
 
+DATA-002 保持审计按自增行号倒序，不改变已有记录或表结构。`GET /audit-logs` 新增 `cursor`，响应增加 `has_more` 和字符串 `next_cursor`，避免浏览器整数精度丢失；后续页使用实际返回末行的行号，不依赖该行继续存在。旧 `before` 时间过滤保持兼容，可与行号游标组合使用；新分页客户端应沿用 `next_cursor`，不再从时间戳自行推导下一页。两种筛选均保留原有部门范围，游标不替代权限。页面只保存当前页及游标栈；网络或服务故障保留当前页供重试，明确收到 401/403 则清空旧记录并提示权限错误。
+
 ## 认证、角色和范围清单
 
 | 检查项 | 已执行的验证 | 证据/剩余条件 |
 | --- | --- | --- |
-| 全 API 匿名门禁 | 从真实 Gin Routes 枚举 262 条 API；11 条明确公开，251 条受保护接口全部匿名 401 | `route_authentication_inventory_test.go`，明确断言 authentication_required；未检查路由为 0 |
-| 全 API 无权限门禁 | 已登录且加入有效项目、无动作权限用户，247 条接口拒绝 403；4 条个人/项目成员自助入口单独验证 | 明确检查 permission_denied / superuser_required，不能以项目准入失败冒充动作权限通过 |
+| 全 API 匿名门禁 | 从真实 Gin Routes 枚举 263 条 API；11 条明确公开，252 条受保护接口全部匿名 401 | `route_authentication_inventory_test.go`，明确断言 authentication_required；未检查路由为 0 |
+| 全 API 无权限门禁 | 已登录且加入有效项目、无动作权限用户，248 条接口拒绝 403；4 条个人/项目成员自助入口单独验证 | 明确检查 permission_denied / superuser_required，不能以项目准入失败冒充动作权限通过 |
 | 角色/个人覆盖 | Casbin 优先级、个人 deny 优先、不可越权委派、平台角色不能授予项目权限、项目 owner 不能读取平台资源 | 现有 access 测试及新增会话/范围测试；平台/项目权限不能混为一个角色 |
 | 会话 | 双设备改密码失效、停用账号、调部门使旧会话失效、角色更新后已有会话立即生效 | 新增 auth_session_boundaries；Redis TTL、记录过期、坏 JSON、不可用分别测试 |
 | 部门/项目 | 普通用户的范围、历史资源冻结、Header 与 Query 冲突不回退、两项目均为成员仍不能错范围读写 | 数据库真实 SQLite + HTTP；不是只测超级管理员 |
@@ -51,7 +55,7 @@ TEST-001 已读取真实 BuildKit 输出并 inspect：业务 manifest、配置�
 | --- | --- | --- |
 | 登录、账号、LDAP/OAuth/邮箱 | 本地认证、锁定开关、加密、提供方启停、回调校验；新增多设备与故障分支 | 真 LDAP 协议、飞书/钉钉/邮箱验证码送达及真实回调 |
 | 公司、部门、项目、成员 | 部门树、委派、项目成员、范围与事务；新增表单失败保留/准确目标 | 普通账号在真实页面的所有可见/禁用按钮及跨角色完整操作 |
-| 角色、用户覆盖、审计 | allow/deny、中文权限目录、越权拒绝、原子更新；新增角色/用户表单交互 | 在用角色删除保护完整 HTTP、审计分页过滤和敏感信息页面 |
+| 角色、用户覆盖、审计 | allow/deny、中文权限目录、越权拒绝、原子更新；新增角色/用户表单交互；在用及内置项目管理员角色删除拒绝、完整关联保留、故障事务回滚；审计部门范围、游标边界与凭据操作脱敏 | 更多业务角色的逐按钮真实页面及多实例权限传播；不能用 API 脱敏断言替代全部页面验收 |
 | 应用、多流水线、公共模板 | CRUD、方案绑定、启停、固定快照、默认方案；原应用概览脚本 | 全任务类型画布拖拽和表单、实际仓库事件后台监听/恢复 |
 | 仓库、个人 Git 凭据、Webhook | 真实本地 Git 固定 SHA；托管平台假 HTTP；新增留空/轮换、所有者拒绝、引用保护、投递门禁 | 四平台真实 clone、PR/MR、Push/Tag/Webhook、真实 Token/SSH |
 | 构建方案、OCI、Shell 产物 | 摘要、路径、上限、隔离、取消；真 Dockerfile 构建/Compose 与 Shell 产物回收 | 真私有 Registry push/pull、多架构、远端传输完整链路 |
@@ -72,8 +76,8 @@ TEST-001 已读取真实 BuildKit 输出并 inspect：业务 manifest、配置�
 
 ## 新增测试位置
 
-- 后端：`internal/httpapi/{auth_session_boundaries,stream_authorization_boundaries,route_authentication_inventory,operations_lifecycle_contract,tasks_lifecycle_boundaries,credentials_lifecycle_boundaries,channel_reference_scope_regression}_test.go`，以及项目隔离回归测试。
-- 前端：`web/tests/{routePermissionsAcceptance,accessControlAcceptance,frontendFormsAcceptance,infrastructureFormsAcceptance,organizationFormsAcceptance}.test.mjs`、共用脚本测试工具，以及缺陷专用回归。
+- 后端：`internal/httpapi/{auth_session_boundaries,stream_authorization_boundaries,route_authentication_inventory,operations_lifecycle_contract,tasks_lifecycle_boundaries,credentials_lifecycle_boundaries,channel_reference_scope_regression,access_lifecycle_acceptance}_test.go`，以及项目隔离回归测试。
+- 前端：`web/tests/{routePermissionsAcceptance,accessControlAcceptance,frontendFormsAcceptance,infrastructureFormsAcceptance,organizationFormsAcceptance,auditPaginationAcceptance}.test.mjs`、共用脚本测试工具，以及缺陷专用回归。
 - 前端路由及全部侧栏叶子逐项检查权限，发布计划/运行、用户/角色/审计共享路径的 Query 权限分别验证；重定向保留准确上下文。
 - CI：`mage_ci_contract_test.go` 检查真实数据库及 Docker 门禁选择器与实际测试函数的对应关系；`.github/workflows/ci.yml` 分离真实数据库三种行标识模式，命令与运行前提见 [测试说明](testing.md)。
 
@@ -91,22 +95,23 @@ npm run build --prefix web
 
 ## 浏览器证据与边界
 
-本地验收运行在独立 SQLite、Redis、NATS，仅监听回环地址。登录、概览、组织部门、角色列表及新建测试角色已实际操作；角色删除网络失败已截图录屏，记录未删除。其他页面只读冒烟与修复后回归另记录实际 URL 和截图。浏览器验收基于本轮较早的页面候选，最终 UUID 版本另完成全量自动化、构建和真实数据库验收；没有把本地页面当成生产发布证明。
+本地验收运行在独立 SQLite、Redis、NATS，仅监听回环地址。登录、概览、组织部门、角色列表及新建测试角色已实际操作；角色删除网络失败已截图录屏，记录未删除。其他页面只读冒烟与修复后回归另记录实际 URL 和截图。28 个页面的导航验收基于本轮较早候选；最新 UUID/助手版本另完成全量自动化，并以 205 条明确标记的隔离审计样本验证真实三页浏览、返回、离线错误保留、刷新、状态色与 390px 窄屏。没有把本地页面当成生产发布证明。
 
 脚本中的 Modal/HTTP 桩不能证明 DOM 按钮可见性、AntD 表单校验、布局或真实浏览器历史。没有测试账号、外部凭据、可丢弃目标或调用预算时，必须说明前提，不能对生产做破坏性测试。
 
 ## 最终结果
 
-已确认的 SEC-001/002/003/004、DATA-001、UI-001/002、TEST-001/002 及 CI-001 均已修复，原失败用例已转为正式回归，不再排除或跳过。
+已确认的 SEC-001/002/003/004、DATA-001/002、UI-001/002/003、TEST-001/002 及 CI-001 均已修复，原失败用例已转为正式回归，不再排除或跳过。
 
-- 最终候选 Go 全量 46 包 `-race` 通过，1145 个 pass 事件、10 个条件 skip 事件；跨包语句覆盖率 62.8%。父子用例计数不能替代功能完成率。
+- 最终候选 Go 全量 46 包 `-race` 通过，1173 个 pass 事件、10 个条件 skip 事件；跨包语句覆盖率 63.0%。父子用例计数不能替代功能完成率。
 - 10 个条件跳过项均另开真实服务补跑：PostgreSQL 18 / MySQL 8.4 迁移、助手升级、发布计划查询，Dockerfile/Compose、跨目录缓存、Shell 产物和真实容器停止均通过。两种外部数据库的行标识全新建库、旧结构升级、跨库复制另以六个独立空库全部通过。
-- 最终前端 278/278，包含本轮新增的 45 项验收与 9 项确定性回归；类型检查及生产构建通过。
+- 最终前端 301/301，包含本轮新增的 45 项验收、9 项确定性回归与 21 项审计回归；类型检查及生产构建通过。
 - Go vet、全量构建、Mage 入口测试通过。
-- 测试条件完成数据库列映射兼容调整后，整个 HTTP API 包再次 `-race` 通过，耗时 199.3 秒，不只单跑新用例。
-- 普通用户与无权限角色的 251 条匿名门禁、247 条动作拒绝及 4 条自助例外通过；真实 WebSocket 撤权与跨项目缺陷均完成红转绿。
+- 最新助手与审计修复快照的整个 HTTP API 包 `-race` 通过，耗时 223.047 秒，不只单跑新用例。
+- 普通用户与无权限角色的 252 条匿名门禁、248 条动作拒绝及 4 条自助例外通过；真实 WebSocket 撤权与跨项目缺陷均完成红转绿。
 - 新增测试的主键条件改为 GORM 结构体查询，兼容模型 ID 对应的数据库列；最终全量测试已使用新的 UUID 结构，不把旧结构测试结果冒充新结构验收。
 - 真实浏览器完成 28 个非角色入口只读导航及画布，另检查存储设置、390px 窄屏与深色；角色创建、编辑、删除失败保留和成功关闭已验收，日志筛选可用。确定性乱序网络与卸载场景由专用脚本回归验证，未伪称浏览器模拟过全部竞态。
 - 另通过 UI 新建无平台角色的普通测试用户，在默认项目授予内置只读角色：应用可读但无创建/执行入口，运行记录无手动执行；系统菜单不显示用户、角色及系统监控。直接访问用户/角色/系统监控 URL 均退回项目目录；项目详情明确无成员管理权限。仅操作本地隔离实例，未改现有管理员权限。
+- 最新审计页面实际读取 205 条同时间戳测试记录跨三页且无重复遗漏；离线刷新保留第二页，恢复后刷新回首页。通过同会话另一标签正常退出登录，再操作未刷新的审计标签得到真实 401，旧记录及游标立即清空；未知结果中性显示，成功/失败/拒绝有准确中文和颜色。最终浏览器 console 与 JS 错误均为空。
 
 上述不等于“全部外部功能无遗漏通过”。功能目录中列出的真实登录/通知/DNS/模型提供商、可丢弃 SSH/Kubernetes 发布目标，以及长时间趋势等仍需相应测试资源和持续验收；管理员空态冒烟不能替代它们。当前没有对生产服务器重新部署或修改已有业务数据。

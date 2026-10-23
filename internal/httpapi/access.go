@@ -517,6 +517,28 @@ func (h accessHandler) deleteRole(c *gin.Context) {
 
 func (h accessHandler) listAuditLogs(c *gin.Context) {
 	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "50"))
+	var cursor uint64
+	if values, present := c.Request.URL.Query()["cursor"]; present {
+		value := ""
+		if len(values) == 1 {
+			value = values[0]
+		}
+		// 各数据库共同支持有符号 BIGINT 行号；字符串游标避免浏览器丢失整数精度。
+		parsed, err := strconv.ParseUint(value, 10, 63)
+		if err != nil || parsed == 0 || strconv.FormatUint(parsed, 10) != value {
+			// 只记录解析失败原因，不把客户端提交的原始游标带入日志。
+			if numberError, ok := err.(*strconv.NumError); ok {
+				err = numberError.Err
+			}
+			if err == nil {
+				err = errors.New("分页游标超出有效范围")
+			}
+			h.logger.Warn("审计日志行号游标无效", "operation", "audit_list_cursor", "request_id", requestIDFrom(c), "err", err)
+			writeError(c, http.StatusBadRequest, "invalid_cursor", "审计日志分页游标无效")
+			return
+		}
+		cursor = parsed
+	}
 	var before time.Time
 	if value := c.Query("before"); value != "" {
 		parsed, err := time.Parse(time.RFC3339Nano, value)
@@ -527,13 +549,13 @@ func (h accessHandler) listAuditLogs(c *gin.Context) {
 		}
 		before = parsed
 	}
-	logs, err := h.audits.List(c.Request.Context(), limit, before)
+	page, err := h.audits.ListPage(c.Request.Context(), limit, before, cursor)
 	if err != nil {
 		h.logger.Error("查询审计日志失败", "operation", "audit_list", "request_id", requestIDFrom(c), "err", err)
 		writeInternalError(c)
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"audit_logs": logs})
+	c.JSON(http.StatusOK, page)
 }
 
 func (h accessHandler) writeRoleError(c *gin.Context, operation string, err error) {

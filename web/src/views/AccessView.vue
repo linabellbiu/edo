@@ -1,8 +1,9 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
 import { Modal, message } from 'ant-design-vue'
+import { isAxiosError } from 'axios'
 import {
   Building2, MoreHorizontal, Plus, RefreshCw, Search,
   ShieldCheck, UserRound, UsersRound,
@@ -87,6 +88,12 @@ interface AuditLog extends ResourceRecord {
   created_at: string
 }
 
+interface AuditPage {
+  audit_logs: AuditLog[]
+  has_more: boolean
+  next_cursor: string
+}
+
 const route = useRoute()
 const router = useRouter()
 const auth = useAuthStore()
@@ -96,6 +103,16 @@ const departments = ref<Department[]>([])
 const roles = ref<Role[]>([])
 const permissions = ref<Permission[]>([])
 const audits = ref<AuditLog[]>([])
+const auditPageSize = 100
+const auditCursorStack = ref<string[]>([''])
+const auditNextCursor = ref('')
+const auditHasMore = ref(false)
+const auditLoading = ref(false)
+const auditError = ref('')
+const auditPage = computed(() => auditCursorStack.value.length)
+let auditRevision = 0
+let auditDisposed = false
+let auditController: AbortController | undefined
 const loading = ref(false)
 const saving = ref(false)
 const userQuery = ref('')
@@ -159,6 +176,16 @@ const active = computed(() =>
     ? String(route.query.view)
     : tabs.value[0]?.key || '',
 )
+
+const auditContext = computed(() => JSON.stringify([
+  route.query.view,
+  active.value,
+  auth.user?.id,
+  auth.user?.department_id,
+  auth.user?.project_id,
+  auth.user?.is_superuser,
+  [...auth.permissions].sort(),
+]))
 
 const canReadUsers = computed(() => canAny(['user.read', 'user.create', 'user.update', 'user.delete']))
 const canAccessDepartments = computed(() => canAny([
@@ -337,7 +364,18 @@ function userInitial(row: ResourceRecord) {
   return value.slice(0, 1).toLocaleUpperCase()
 }
 
+function auditResult(value: unknown) {
+  if (value === 'succeeded') return { label: '成功', color: 'success' }
+  if (value === 'failed') return { label: '失败', color: 'error' }
+  if (value === 'denied') return { label: '拒绝', color: 'warning' }
+  return { label: '未知', color: 'default' }
+}
+
 async function refresh() {
+  if (active.value === 'audit') {
+    await loadAuditPage([''])
+    return
+  }
   loading.value = true
   try {
     const canLoadUsers = canAny(['user.read', 'user.create', 'user.update', 'user.delete'])
@@ -358,26 +396,83 @@ async function refresh() {
       'user.update',
     ])
     const canLoadPermissions = canAny(['role.read', 'role.create', 'role.update', 'role.delete', 'user.update'])
-    const [userResponse, departmentResponse, roleResponse, permissionResponse, auditResponse] =
+    const [userResponse, departmentResponse, roleResponse, permissionResponse] =
       await Promise.all([
         canLoadUsers ? loadAllUsers() : null,
         canLoadDepartments ? client.get<{ departments: Department[] }>('/departments') : null,
         canLoadRoles ? client.get<{ roles: Role[] }>('/roles') : null,
         canLoadPermissions ? client.get<{ permissions: Permission[] }>('/permissions') : null,
-        canAny(['audit.read'])
-          ? client.get<{ audit_logs: AuditLog[] }>('/audit-logs?limit=100')
-          : null,
       ])
     users.value = userResponse || []
     departments.value = departmentResponse?.data.departments || []
     roles.value = roleResponse?.data.roles || []
     permissions.value = permissionResponse?.data.permissions || []
-    audits.value = auditResponse?.data.audit_logs || []
   } catch (error) {
     message.error(apiErrorMessage(error))
   } finally {
     loading.value = false
   }
+}
+
+function resetAuditPagination() {
+  auditRevision += 1
+  auditController?.abort()
+  auditController = undefined
+  audits.value = []
+  auditCursorStack.value = ['']
+  auditNextCursor.value = ''
+  auditHasMore.value = false
+  auditLoading.value = false
+  auditError.value = ''
+}
+
+async function loadAuditPage(cursors: string[]) {
+  if (auditDisposed || active.value !== 'audit' || !canAny(['audit.read'])) return
+  auditController?.abort()
+  const controller = new AbortController()
+  auditController = controller
+  const revision = ++auditRevision
+  const context = auditContext.value
+  const nextStack = [...cursors]
+  const cursor = nextStack.at(-1) || ''
+  const isCurrent = () => !auditDisposed && revision === auditRevision && !controller.signal.aborted
+    && context === auditContext.value && active.value === 'audit' && canAny(['audit.read'])
+  auditLoading.value = true
+  auditError.value = ''
+  try {
+    const response = await client.get<AuditPage>(
+      `/audit-logs?limit=${auditPageSize}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`,
+      { signal: controller.signal },
+    )
+    if (!isCurrent()) return
+    const nextCursor = typeof response.data.next_cursor === 'string' ? response.data.next_cursor : ''
+    audits.value = response.data.audit_logs || []
+    auditCursorStack.value = nextStack
+    auditNextCursor.value = nextCursor
+    auditHasMore.value = Boolean(response.data.has_more && nextCursor)
+  } catch (error) {
+    if (!isCurrent()) return
+    if (isAxiosError(error) && (error.response?.status === 401 || error.response?.status === 403)) {
+      resetAuditPagination()
+    }
+    auditError.value = apiErrorMessage(error)
+    message.error(auditError.value)
+  } finally {
+    if (revision === auditRevision) {
+      auditLoading.value = false
+      auditController = undefined
+    }
+  }
+}
+
+async function nextAuditPage() {
+  if (auditLoading.value || !auditHasMore.value || !auditNextCursor.value) return
+  await loadAuditPage([...auditCursorStack.value, auditNextCursor.value])
+}
+
+async function previousAuditPage() {
+  if (auditLoading.value || auditCursorStack.value.length <= 1) return
+  await loadAuditPage(auditCursorStack.value.slice(0, -1))
 }
 
 async function loadAllUsers() {
@@ -740,18 +835,29 @@ function effectivePermissionSummary(value: unknown) {
 
 watch(
   active,
-  (value) => {
+  (value, previous) => {
     if (value && route.query.view !== value) selectTab(value)
+    if (previous === 'audit' && value && value !== 'audit') void refresh()
   },
   { immediate: true },
 )
+watch(auditContext, () => {
+  resetAuditPagination()
+  if (active.value === 'audit' && canAny(['audit.read'])) void loadAuditPage([''])
+}, { flush: 'sync' })
+onBeforeUnmount(() => {
+  auditDisposed = true
+  auditRevision += 1
+  auditController?.abort()
+  auditController = undefined
+})
 onMounted(refresh)
 </script>
 
 <template>
   <section>
     <PageToolbar :description="toolbarDescription">
-      <a-button :loading="loading" @click="refresh">
+      <a-button :loading="loading || auditLoading" @click="refresh">
         <RefreshCw :size="15" />刷新
       </a-button>
       <a-button
@@ -951,11 +1057,21 @@ onMounted(refresh)
         </template>
       </ResourceTable>
 
-      <ResourceTable v-else :rows="audits" :columns="auditColumns" :loading="loading">
-        <template #cell-result="{ value }">
-          <a-tag :color="value === 'success' ? 'success' : 'error'">{{ value }}</a-tag>
-        </template>
-      </ResourceTable>
+      <template v-else-if="active === 'audit'">
+        <a-alert v-if="auditError" type="error" :message="auditError" show-icon class="audit-error" />
+        <ResourceTable :rows="audits" :columns="auditColumns" :loading="auditLoading" :pagination="false">
+          <template #cell-result="{ value }">
+            <a-tag :color="auditResult(value).color">{{ auditResult(value).label }}</a-tag>
+          </template>
+        </ResourceTable>
+        <div class="audit-pagination" aria-label="审计日志分页">
+          <span>第 {{ auditPage }} 页 · 本页 {{ audits.length }} 条（每页 {{ auditPageSize }} 条）</span>
+          <a-space>
+            <a-button :disabled="auditLoading || auditPage <= 1" @click="previousAuditPage">上一页</a-button>
+            <a-button :disabled="auditLoading || !auditHasMore" @click="nextAuditPage">下一页</a-button>
+          </a-space>
+        </div>
+      </template>
     </div>
 
     <a-modal
@@ -1194,6 +1310,20 @@ onMounted(refresh)
 </template>
 
 <style scoped>
+.audit-error {
+  margin-bottom: 12px;
+}
+
+.audit-pagination {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 12px;
+  color: var(--edo-muted);
+}
+
 .access-summary {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"time"
 
 	"github.com/google/uuid"
@@ -53,10 +54,27 @@ func (s *Service) Record(ctx context.Context, input RecordInput) error {
 }
 
 func (s *Service) List(ctx context.Context, limit int, before time.Time) ([]model.AuditLog, error) {
+	page, err := s.ListPage(ctx, limit, before, 0)
+	if err != nil {
+		return nil, err
+	}
+	return page.Logs, nil
+}
+
+type Page struct {
+	Logs       []model.AuditLog `json:"audit_logs"`
+	HasMore    bool             `json:"has_more"`
+	NextCursor string           `json:"next_cursor"`
+}
+
+func (s *Service) ListPage(ctx context.Context, limit int, before time.Time, cursor uint64) (*Page, error) {
 	if limit < 1 || limit > 200 {
 		limit = 50
 	}
-	query := s.db.WithContext(ctx).Order("id DESC").Limit(limit)
+	query := s.db.WithContext(ctx).Order("id DESC").Limit(limit + 1)
+	if cursor != 0 {
+		query = query.Where("id < ?", cursor)
+	}
 	if !before.IsZero() {
 		query = query.Where("created_at < ?", before.UTC())
 	}
@@ -64,5 +82,11 @@ func (s *Service) List(ctx context.Context, limit int, before time.Time) ([]mode
 	if err := query.Find(&entries).Error; err != nil {
 		return nil, fmt.Errorf("查询审计日志失败: %w", err)
 	}
-	return entries, nil
+	page := &Page{Logs: entries, HasMore: len(entries) > limit}
+	if page.HasMore {
+		page.Logs = entries[:limit]
+		// 使用实际返回末行的行号，不用时间作为游标，避免同时间戳或时间倒序时漏记录。
+		page.NextCursor = strconv.FormatUint(page.Logs[len(page.Logs)-1].RowID, 10)
+	}
+	return page, nil
 }
