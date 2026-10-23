@@ -92,6 +92,9 @@ const lifecycleOutput=reactive({open:false,title:'',output:''})
 const dockerRuntimeRequests=new Map<string,Promise<void>>()
 const containerLogs=ref({open:false,title:'',path:''}),terminal=ref({open:false,title:'',path:''})
 const releasePlanResources=reactive({open:false,loading:false,planID:'',applicationID:'',pipelineRunID:'',title:'',error:'',records:[] as DeploymentRecord[]})
+const runDeploymentRecords=ref<Record<string,DeploymentRecord[]>>({}),runDeploymentLoading=ref<Record<string,boolean>>({}),runDeploymentErrors=ref<Record<string,string>>({})
+const runDeploymentRequests=new Map<string,AbortController>()
+let releasePlanResourcesController:AbortController|null=null
 const buildImageDestination=ref<'local'|'registry'>('local'),buildSaveArtifact=ref(false),buildArgsText=ref(''),buildEnvironmentText=ref(''),selectedBuildPlanID=ref(''),buildPlanView=ref<'overview'|'artifacts'>(route.query.view==='artifacts'?'artifacts':'overview'),artifactApplicationID=ref(''),artifactLoading=ref(false),artifactUploading=ref(false),artifactDownloadingID=ref('')
 const planExecutionOpen=ref(false),planExecutionPlanID=ref(''),planExecutionTitle=ref(''),planExecutionExpectedUpdatedAt=ref(''),planExecutionRequestID=ref(''),planExecutionGroups=ref<PlanExecutionGroup[]>([])
 const executingReleasePlanIDs=ref<string[]>([])
@@ -194,6 +197,44 @@ const canReadContainerLogs=computed(()=>auth.canAny(['cluster.read']))
 const canOpenContainerTerminal=computed(()=>auth.canAny(['terminal.open']))
 const canUpdateDeployments=computed(()=>auth.canAny(['deployment.update']))
 const canControlDeployments=computed(()=>auth.canAny(['deployment.execute']))
+function visibleDeploymentRunIDs(){
+ if(props.section!=='release-plans'||releaseView.value!=='runs'||!canReadDeployments.value||!runDrawerOpen.value||!runDrawerEntry.value)return []
+ return runEntryRecords(runDrawerEntry.value).filter(run=>expandedRunIDs.value.includes(run.id)).map(run=>run.id)
+}
+function runHasDeployments(runID:string){return canReadDeployments.value&&Boolean(runDeploymentRecords.value[runID]?.length)}
+async function loadRunDeploymentRecords(runID:string){
+ if(!visibleDeploymentRunIDs().includes(runID))return
+ runDeploymentRequests.get(runID)?.abort()
+ const controller=new AbortController()
+ runDeploymentRequests.set(runID,controller)
+ runDeploymentLoading.value[runID]=true
+ delete runDeploymentErrors.value[runID]
+ const current=()=>runDeploymentRequests.get(runID)===controller&&!controller.signal.aborted&&visibleDeploymentRunIDs().includes(runID)
+ try{
+  const response=await client.get<{deployments:DeploymentRecord[]}>(`/deployments?pipeline_run_id=${encodeURIComponent(runID)}&limit=200`,{signal:controller.signal,timeout:35_000})
+  if(!current())return
+  const records=(response.data.deployments||[]).filter(record=>record.pipeline_run_id===runID)
+  runDeploymentRecords.value[runID]=records
+  const ids=new Set(records.map(record=>record.id))
+  deployments.value=[...records,...deployments.value.filter(record=>!ids.has(record.id))]
+ }catch(error){
+  if(!current())return
+  runDeploymentRecords.value[runID]=[]
+  runDeploymentErrors.value[runID]=apiErrorMessage(error)
+ }finally{
+  if(runDeploymentRequests.get(runID)===controller){runDeploymentRequests.delete(runID);delete runDeploymentLoading.value[runID]}
+ }
+}
+async function refreshVisibleRunDeployments(){await Promise.all(visibleDeploymentRunIDs().map(loadRunDeploymentRecords))}
+watch(()=>visibleDeploymentRunIDs().join(','),()=>{
+ const visible=new Set(visibleDeploymentRunIDs())
+ for(const [runID,controller] of runDeploymentRequests)if(!visible.has(runID)){controller.abort();runDeploymentRequests.delete(runID);delete runDeploymentLoading.value[runID]}
+ for(const runID of Object.keys(runDeploymentRecords.value))if(!visible.has(runID))delete runDeploymentRecords.value[runID]
+ for(const runID of Object.keys(runDeploymentErrors.value))if(!visible.has(runID))delete runDeploymentErrors.value[runID]
+ for(const runID of visible)if(!runDeploymentLoading.value[runID]&&!runDeploymentRecords.value[runID])void loadRunDeploymentRecords(runID)
+},{immediate:true})
+watch(()=>releasePlanResources.open,open=>{if(!open){releasePlanResourcesController?.abort();releasePlanResourcesController=null;releasePlanResources.loading=false}})
+onBeforeUnmount(()=>{for(const controller of runDeploymentRequests.values())controller.abort();runDeploymentRequests.clear();releasePlanResourcesController?.abort();releasePlanResourcesController=null})
 const activeRows=computed<ResourceRecord[]>(()=>props.section==='applications'?applications.value:props.section==='repositories'?repositories.value:props.section==='image-registries'?registries.value:[])
 const editingApplication=computed(()=>applications.value.find(item=>item.id===editingID.value))
 const availableWorkflowTemplates=computed(()=>{
@@ -753,7 +794,7 @@ function changeRunPage(pagination:{current?:number;pageSize?:number}){
  if(requestedRunID.value)void router.replace({path:'/release-plans',query:{view:'runs'}})
 }
 
-async function refresh(){const locatedRun=runs.value.find(item=>item.id===requestedRunID.value);loading.value=true;try{const requests=await Promise.all([auth.canAny(['application.read'])?client.get<{applications:Application[]}>('/applications'):null,auth.canAny(['repository.read'])?client.get<{repositories:Repository[]}>('/repositories'):null,auth.canAny(['credential.read'])?client.get<{credentials:Credential[]}>('/git-credentials'):null,auth.canAny(['build_plan.read'])?client.get<{build_plans:BuildPlan[]}>('/build-plans'):null,auth.canAny(['image_registry.read'])?client.get<{image_registries:Registry[]}>('/image-registries'):null,auth.canAny(['pipeline_run.read'])?client.get<{pipeline_runs:Run[]}>('/pipeline-runs?limit=200'):null,auth.canAny(['release_plan.read'])?client.get<{release_plans:ReleasePlan[]}>('/release-plans'):null,canReadDeployments.value?client.get<{deployments:DeploymentRecord[]}>('/deployments?limit=200'):null,auth.canAny(['deployment_plan.read'])?client.get<{deployment_plans:DeploymentPlan[]}>('/deployment-plans'):null,auth.canAny(['workflow.read'])?client.get<{workflow_templates:WorkflowTemplate[]}>('/workflow-templates'):null]);applications.value=requests[0]?.data.applications||[];repositories.value=requests[1]?.data.repositories||[];credentials.value=requests[2]?.data.credentials||[];buildPlans.value=requests[3]?.data.build_plans||[];registries.value=requests[4]?.data.image_registries||[];runs.value=requests[5]?.data.pipeline_runs||[];if(locatedRun&&!runs.value.some(item=>item.id===locatedRun.id))runs.value=[locatedRun,...runs.value];releasePlans.value=requests[6]?.data.release_plans||[];deployments.value=requests[7]?.data.deployments||[];deploymentPlans.value=requests[8]?.data.deployment_plans||[];workflowTemplates.value=requests[9]?.data.workflow_templates||[];if(requestedRunID.value)void revealRequestedRun()}catch(error){message.error(apiErrorMessage(error))}finally{loading.value=false}}
+async function refresh(){const locatedRun=runs.value.find(item=>item.id===requestedRunID.value);loading.value=true;try{const requests=await Promise.all([auth.canAny(['application.read'])?client.get<{applications:Application[]}>('/applications'):null,auth.canAny(['repository.read'])?client.get<{repositories:Repository[]}>('/repositories'):null,auth.canAny(['credential.read'])?client.get<{credentials:Credential[]}>('/git-credentials'):null,auth.canAny(['build_plan.read'])?client.get<{build_plans:BuildPlan[]}>('/build-plans'):null,auth.canAny(['image_registry.read'])?client.get<{image_registries:Registry[]}>('/image-registries'):null,auth.canAny(['pipeline_run.read'])?client.get<{pipeline_runs:Run[]}>('/pipeline-runs?limit=200'):null,auth.canAny(['release_plan.read'])?client.get<{release_plans:ReleasePlan[]}>('/release-plans'):null,canReadDeployments.value?client.get<{deployments:DeploymentRecord[]}>('/deployments?limit=200'):null,auth.canAny(['deployment_plan.read'])?client.get<{deployment_plans:DeploymentPlan[]}>('/deployment-plans'):null,auth.canAny(['workflow.read'])?client.get<{workflow_templates:WorkflowTemplate[]}>('/workflow-templates'):null]);applications.value=requests[0]?.data.applications||[];repositories.value=requests[1]?.data.repositories||[];credentials.value=requests[2]?.data.credentials||[];buildPlans.value=requests[3]?.data.build_plans||[];registries.value=requests[4]?.data.image_registries||[];runs.value=requests[5]?.data.pipeline_runs||[];if(locatedRun&&!runs.value.some(item=>item.id===locatedRun.id))runs.value=[locatedRun,...runs.value];releasePlans.value=requests[6]?.data.release_plans||[];deployments.value=requests[7]?.data.deployments||[];deploymentPlans.value=requests[8]?.data.deployment_plans||[];workflowTemplates.value=requests[9]?.data.workflow_templates||[];if(requestedRunID.value)void revealRequestedRun();await refreshVisibleRunDeployments()}catch(error){message.error(apiErrorMessage(error))}finally{loading.value=false}}
 let stateRefreshing=false
 async function refreshApplicationState(){
  if(stateRefreshing||!auth.canAny([`${sectionPermission.value}.read`]))return
@@ -795,6 +836,7 @@ async function refreshRunState(){
   runs.value=(await (auth.canAny(['pipeline_run.read'])?client.get<{pipeline_runs:Run[]}>('/pipeline-runs?limit=200'):Promise.resolve({data:{pipeline_runs:[] as Run[]}}))).data.pipeline_runs||[]
   if(locatedRun&&!runs.value.some(item=>item.id===locatedRun.id))runs.value=[locatedRun,...runs.value]
   if(requestedRunID.value)void revealRequestedRun()
+  await refreshVisibleRunDeployments()
   if(rollbackDialog.open||releasePlanResources.open)await refreshRollbackRecords()
  }catch{}finally{stateRefreshing=false}
 }
@@ -1206,19 +1248,26 @@ async function revealActiveApplication(){
 }
 async function loadReleasePlanApplicationResources(){
  if(!canReadDeployments.value||!releasePlanResources.pipelineRunID)return
+ const pipelineRunID=releasePlanResources.pipelineRunID,applicationID=releasePlanResources.applicationID
+ releasePlanResourcesController?.abort()
+ const controller=new AbortController()
+ releasePlanResourcesController=controller
+ const current=()=>releasePlanResourcesController===controller&&!controller.signal.aborted&&releasePlanResources.open&&releasePlanResources.pipelineRunID===pipelineRunID&&releasePlanResources.applicationID===applicationID
  releasePlanResources.loading=true
  releasePlanResources.error=''
  try{
-  const response=await client.get<{deployments:DeploymentRecord[]}>(`/deployments?pipeline_run_id=${encodeURIComponent(releasePlanResources.pipelineRunID)}&limit=200`)
-  releasePlanResources.records=response.data.deployments||[]
+  const response=await client.get<{deployments:DeploymentRecord[]}>(`/deployments?pipeline_run_id=${encodeURIComponent(pipelineRunID)}&limit=200`,{signal:controller.signal,timeout:35_000})
+  if(!current())return
+  releasePlanResources.records=(response.data.deployments||[]).filter(record=>record.pipeline_run_id===pipelineRunID)
   if(canReadContainerLogs.value){
    const runtimeIDs=new Set(releasePlanResources.records.filter(record=>deploymentKind(record)==='docker').map(record=>record.runtime_id).filter(Boolean))
    await Promise.all([...runtimeIDs].map(runtimeID=>loadDockerRuntime(runtimeID,true)))
   }
  }catch(error){
+  if(!current())return
   releasePlanResources.records=[]
   releasePlanResources.error=apiErrorMessage(error)
- }finally{releasePlanResources.loading=false}
+ }finally{if(releasePlanResourcesController===controller){releasePlanResourcesController=null;releasePlanResources.loading=false}}
 }
 function openReleasePlanApplicationRun(planID:string,applicationID:string,pipelineRunID:string){
  const plan=releasePlans.value.find(item=>item.id===planID)
@@ -1576,7 +1625,7 @@ function connectDeliveryEvents(){
   event:event=>{
    if(event.type==='resync'){queueDeliveryRefresh();return}
    const resources=event.resources||[]
-   if(props.section!=='applications'&&!rollbackDialog.open&&!releasePlanResources.open&&resources.every(resource=>resource==='application_sync'||resource==='deployments'||resource==='deployment_plans'))return
+   if(props.section!=='applications'&&!rollbackDialog.open&&!releasePlanResources.open&&resources.every(resource=>resource==='application_sync'||resource==='deployments'||resource==='deployment_plans')&&(!visibleDeploymentRunIDs().length||!resources.includes('deployments')))return
    queueDeliveryRefresh(resources.length>0&&resources.every(resource=>resource==='application_sync'))
   },
   state:value=>{deliveryConnected=value==='connected'},
@@ -1905,11 +1954,15 @@ onBeforeUnmount(()=>{stopDeliveryEvents?.();clearTimeout(deliveryRefreshTimer);r
               <div><dt>状态说明</dt><dd :title="run.message||runStatusLabel(run.status,run.stage)">{{ run.message||runStatusLabel(run.status,run.stage) }}</dd></div>
               <div><dt>运行编号</dt><dd :title="run.id">{{ run.id }}</dd></div>
             </dl>
+            <a-alert v-if="canReadDeployments&&runDeploymentErrors[run.id]" type="error" show-icon :message="rollbackT('rollback.recordsReadFailed')" :description="runDeploymentErrors[run.id]">
+              <template #action><a-button size="small" :loading="runDeploymentLoading[run.id]" @click="loadRunDeploymentRecords(run.id)">{{ rollbackT('rollback.retryRecords') }}</a-button></template>
+            </a-alert>
             <footer class="run-actions">
               <a-button @click="openLogs(run)">查看实时日志</a-button>
               <a-button v-if="canStopRun(run)&&auth.canAny(['pipeline_run.execute'])" danger :loading="stoppingRunID===run.id||run.stage==='stopping'" :disabled="!!stoppingRunID||run.stage==='stopping'" @click="confirmStopRun(run)">{{ t(run.stage==='stopping'?'pipelineStop.stopping':'pipelineStop.confirm') }}</a-button>
               <a-button v-if="run.status==='failed'&&auth.canAny(['pipeline_run.execute'])" type="primary" @click="openRetry(run)">重试流水线</a-button>
-              <a-button v-if="run.deployment_id&&canReadDeployments" @click="openReleasePlanApplicationResources('',run.application_id,run.id)">{{ rollbackT('rollback.recordsAndRollback') }}</a-button>
+              <a-button v-if="runHasDeployments(run.id)" @click="openReleasePlanApplicationResources('',run.application_id,run.id)">{{ rollbackT('rollback.recordsAndRollback') }}</a-button>
+              <span v-else-if="canReadDeployments&&runDeploymentLoading[run.id]" class="resource-secondary">{{ rollbackT('rollback.recordsLoading') }}</span>
               <a-button v-if="run.status==='awaiting_approval'&&auth.canAny(['deployment.review'])" type="primary" @click="action(`/pipeline-runs/${run.id}/approve`)">通过审核</a-button>
               <a-button v-if="run.stage==='manual'&&auth.canAny(['pipeline_run.execute'])" type="primary" @click="action(`/pipeline-runs/${run.id}/advance`)">放行并继续</a-button>
             </footer>

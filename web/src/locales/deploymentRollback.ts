@@ -8,6 +8,7 @@ export const deploymentRollbackZh = {
   queued: '回退已提交，等待执行', running: '正在回退并等待副本就绪', awaiting_approval: '回退正在等待审核',
   succeeded: '已回退，副本就绪检查通过', failed: '回退失败，请检查错误及工作负载状态',
   recentFailure: '最近失败部署', failureFallback: '部署失败，请检查部署记录', viewRecords: '查看部署记录', recordsAndRollback: '部署记录与回退',
+  recordsReadFailed: '读取关联部署记录失败', retryRecords: '重新读取', recordsLoading: '正在检查关联部署记录',
 }
 
 export const deploymentRollbackEn = {
@@ -20,4 +21,5 @@ export const deploymentRollbackEn = {
   queued: 'Rollback queued', running: 'Rolling back and waiting for ready replicas', awaiting_approval: 'Rollback awaiting approval',
   succeeded: 'Rollback completed and replica readiness verified', failed: 'Rollback failed. Check the error and workload state.',
   recentFailure: 'Latest failed deployment', failureFallback: 'Deployment failed. Check the deployment record.', viewRecords: 'View deployment records', recordsAndRollback: 'Deployment records and rollback',
+  recordsReadFailed: 'Could not read associated deployments', retryRecords: 'Try again', recordsLoading: 'Checking associated deployments',
 }
