@@ -75,6 +75,31 @@ export function selectCurrentDeploymentInstances<T extends InstanceRecord>(
   })
 }
 
+export function selectLatestFailedDeploymentAttempts<T extends InstanceRecord>(
+  applicationID: string,
+  records: T[],
+  relatedRunIDs: Set<string>,
+  currentPlanIDs: Set<string>,
+  plans: InstancePlan[],
+): T[] {
+  const plansByID = new Map(plans.map(plan => [plan.id, plan]))
+  const seen = new Set<string>()
+  return [...records].sort(compareNewestFirst).filter(record => {
+    const related = record.application_id ? record.application_id === applicationID : relatedRunIDs.has(record.pipeline_run_id || '')
+    const planID = record.deployment_plan_id || ''
+    if (!related || !record.pipeline_run_id || !currentPlanIDs.has(planID)) return false
+    const key = JSON.stringify([applicationID, planID, record.target_id])
+    if (seen.has(key)) return false
+    seen.add(key)
+    const target = plansByID.get(planID)?.deployment_target
+    return record.platform === 'kubernetes' && record.status === 'failed' && !record.runtime_deleted_at && Boolean(target) &&
+      record.target_id === target?.id && record.platform === target.platform && record.runtime_id === target.runtime_id &&
+      (record.host_id || '') === (target.host_id || '') && (record.environment_id || '') === (target.environment_id || '') &&
+      (!target.namespace || record.namespace === target.namespace) && (!target.workload_name || record.workload_name === target.workload_name) &&
+      (!target.container_name || record.container_name === target.container_name)
+  })
+}
+
 export function retainCurrentDeploymentState<T>(state: Record<string, T>, currentIDs: Set<string>): Record<string, T> {
   return Object.fromEntries(Object.entries(state).filter(([id]) => currentIDs.has(id)))
 }

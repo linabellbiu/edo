@@ -24,6 +24,15 @@ func (s *Service) DeployImage(
 	clusterID, namespace, deploymentName, containerName, image, deploymentID string,
 	timeout time.Duration,
 ) (string, error) {
+	return s.deployImage(ctx, clusterID, namespace, deploymentName, containerName, image, deploymentID, timeout, nil)
+}
+
+func (s *Service) deployImage(
+	ctx context.Context,
+	clusterID, namespace, deploymentName, containerName, image, deploymentID string,
+	timeout time.Duration,
+	expected *DeploymentImageIdentity,
+) (string, error) {
 	namespace, err := normalizeNamespace(namespace)
 	if err != nil {
 		return "", fmt.Errorf("%w: %v", ErrDeploymentConfigInvalid, err)
@@ -50,6 +59,11 @@ func (s *Service) DeployImage(
 		if containerIndex < 0 {
 			return ErrDeploymentContainerNotFound
 		}
+		if expected != nil && (string(current.UID) != expected.UID ||
+			current.Spec.Template.Spec.Containers[containerIndex].Image != expected.Image ||
+			current.Spec.Template.Annotations["edo.io/deployment-id"] != expected.DeploymentID) {
+			return ErrDeploymentTargetChanged
+		}
 		previousImage = current.Spec.Template.Spec.Containers[containerIndex].Image
 		current.Spec.Template.Spec.Containers[containerIndex].Image = image
 		if current.Spec.Template.Annotations == nil {
@@ -65,7 +79,7 @@ func (s *Service) DeployImage(
 		return err
 	})
 	if err != nil {
-		if errors.Is(err, ErrDeploymentContainerNotFound) {
+		if errors.Is(err, ErrDeploymentContainerNotFound) || errors.Is(err, ErrDeploymentTargetChanged) {
 			return previousImage, err
 		}
 		return previousImage, fmt.Errorf("%w: %v", ErrDeploymentUpdateFailed, err)

@@ -58,6 +58,7 @@ func deploymentPlanTargetInput(t *testing.T, service *Service, target model.Depl
 		if err := service.db.Where("id = ?", cluster.ID).FirstOrCreate(&cluster).Error; err != nil {
 			t.Fatal(err)
 		}
+		configureKubernetesArchitectureFixture(t, service, cluster.ID)
 	case model.DeploymentSSH:
 		environment := model.Environment{ID: target.EnvironmentID, Name: "environment-" + target.EnvironmentID, IsActive: true, CreatedBy: "admin", CreatedAt: now, UpdatedAt: now}
 		host := model.Host{ID: target.HostID, Name: "host-" + target.HostID, Mode: model.HostModeSSH, Architecture: model.HostArchitectureAMD64, SSHPort: 22, IsActive: true, CreatedBy: "admin", CreatedAt: now, UpdatedAt: now}

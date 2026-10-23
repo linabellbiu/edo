@@ -641,16 +641,21 @@ func samePipelineReleaseSemantics(existing, requested *model.DeploymentRecord) b
 }
 
 func (s *Service) Rollback(ctx context.Context, sourceID, actorID string) (*model.DeploymentRecord, error) {
-	var source model.DeploymentRecord
-	if err := s.db.WithContext(ctx).First(&source, "id = ?", sourceID).Error; err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return nil, ErrDeploymentNotFound
-		}
-		s.logger.Error("查询待回滚发布记录失败", "operation", "deployment_rollback_source", "source_deployment_id", sourceID, "err", err)
-		return nil, fmt.Errorf("查询待回滚发布记录失败: %w", err)
+	return s.rollback(ctx, sourceID, actorID, nil)
+}
+
+func (s *Service) RollbackChecked(ctx context.Context, sourceID, actorID string, expected RollbackConfirmation) (*model.DeploymentRecord, error) {
+	return s.rollback(ctx, sourceID, actorID, &expected)
+}
+
+func (s *Service) rollback(ctx context.Context, sourceID, actorID string, expected *RollbackConfirmation) (*model.DeploymentRecord, error) {
+	stored, err := s.rollbackSource(ctx, sourceID)
+	if err != nil {
+		return nil, err
 	}
+	source := *stored
 	if source.Platform == model.DeploymentSSH || source.DeploymentPlanKind == model.DeploymentPlanCompose ||
-		source.Status != model.DeploymentSucceeded || source.PreviousImage == "" {
+		(source.Status != model.DeploymentSucceeded && !(source.Platform == model.DeploymentKubernetes && source.Status == model.DeploymentFailed)) || source.PreviousImage == "" {
 		return nil, ErrRollbackUnavailable
 	}
 	image := strings.TrimSpace(source.PreviousImage)
@@ -670,18 +675,51 @@ func (s *Service) Rollback(ctx context.Context, sourceID, actorID string) (*mode
 		if err != nil {
 			return nil, ErrRollbackUnavailable
 		}
+		if !rollbackConfirmationMatches(&source, expected) {
+			return nil, ErrRollbackTargetChanged
+		}
+		legacyKey, _ := rollbackIdempotencyKey(source.ID, 1)
+		latest, err := findLatestRollbackAttempt(s.db.WithContext(ctx), source.ID, legacyKey)
+		if err != nil {
+			return nil, s.rollbackValidationError(&source, "deployment_rollback_existing", err)
+		}
+		if latest != nil && latest.Status != model.DeploymentFailed {
+			if latest.ApplicationID != source.ApplicationID || latest.PipelineRunID != source.PipelineRunID ||
+				latest.ProjectID != source.ProjectID || latest.DepartmentID != source.DepartmentID ||
+				latest.Image != image || latest.KubernetesUID != source.KubernetesUID || latest.TargetID != source.TargetID {
+				s.logger.Warn("既有回退记录与来源归属不一致", "operation", "deployment_rollback_existing_identity", "source_deployment_id", source.ID, "rollback_deployment_id", latest.ID)
+				return nil, ErrRollbackTargetChanged
+			}
+			return latest, nil
+		}
+		reason, err := s.validateKubernetesRollback(ctx, &source)
+		if err != nil {
+			return nil, err
+		}
+		if reason != "" {
+			s.logger.Warn("拒绝不安全的 Kubernetes 镜像回退", "operation", "deployment_rollback_validate", "deployment_id", source.ID, "reason", reason)
+			return nil, ErrRollbackTargetChanged
+		}
 	default:
 		return nil, ErrRollbackUnavailable
 	}
 	now := time.Now().UTC()
 	prototype := &model.DeploymentRecord{
 		ProjectID: source.ProjectID, DepartmentID: source.DepartmentID,
-		TargetID: source.TargetID, Operation: model.DeploymentRollback,
+		ApplicationID: source.ApplicationID, PipelineRunID: source.PipelineRunID, WorkflowNodeID: source.WorkflowNodeID,
+		KubernetesUID: source.KubernetesUID,
+		TargetID:      source.TargetID, Operation: model.DeploymentRollback,
 		Image: image, ExpectedImageID: expectedImageID, Status: model.DeploymentQueued,
 		DeploymentPlanID: source.DeploymentPlanID, DeploymentPlanKind: source.DeploymentPlanKind,
 		DockerConfig: source.DockerConfig, DockerConfigDigest: source.DockerConfigDigest,
 		RequestedBy: actorID, ApprovedBy: &actorID, ApprovedAt: &now,
 		CreatedAt: now, UpdatedAt: now,
+	}
+	if source.Platform == model.DeploymentKubernetes {
+		prototype.ArtifactID, err = s.rollbackArtifactID(ctx, &source, image)
+		if err != nil {
+			return nil, err
+		}
 	}
 	copyTargetSnapshot(prototype, &source)
 
@@ -968,9 +1006,14 @@ func (s *Service) run(ctx context.Context, deploymentID, expectedImageID string,
 			}
 		}
 	case model.DeploymentKubernetes:
-		previousImage, err = s.kube.DeployImage(
+		var identity kube.DeploymentImageIdentity
+		identity, err = s.kubernetesExecutionIdentity(ctx, &record)
+		if err != nil {
+			break
+		}
+		previousImage, err = s.kube.DeployImageIfCurrent(
 			ctx, record.RuntimeID, record.Namespace, record.WorkloadName,
-			record.ContainerName, record.Image, record.ID, timeout,
+			record.ContainerName, record.Image, record.ID, timeout, identity,
 		)
 	default:
 		err = ErrInvalidTarget
@@ -1138,6 +1181,8 @@ func kubernetesFailureDetails(err error) (string, string) {
 		return "kubernetes_cluster_unreachable", "Kubernetes 部署失败：无法连接集群 API，请检查集群网络和凭据"
 	case errors.Is(err, kube.ErrDeploymentContainerNotFound):
 		return "kubernetes_container_not_found", "Kubernetes 部署失败：工作负载中找不到目标容器"
+	case errors.Is(err, kube.ErrDeploymentTargetChanged), errors.Is(err, ErrRollbackTargetChanged):
+		return "kubernetes_target_changed", "Kubernetes 工作负载或镜像已变化，请重新确认发布目标"
 	case errors.Is(err, kube.ErrDeploymentUpdateFailed):
 		return "kubernetes_update_failed", "Kubernetes 部署失败：集群拒绝更新目标工作负载，请检查权限和资源状态"
 	case errors.Is(err, kube.ErrDeploymentStatusUnavailable):
@@ -1177,13 +1222,25 @@ func (s *Service) acquireTargetLock(ctx context.Context, record *model.Deploymen
 	}
 	return s.locks.Obtain(
 		ctx,
-		s.lockKeyPrefix+":"+record.TargetID,
+		s.lockKeyPrefix+":"+deploymentRuntimeLockIdentity(record),
 		rolloutTimeout+2*time.Minute,
 		&redislock.Options{
 			RetryStrategy: redislock.ExponentialBackoff(50*time.Millisecond, time.Second),
 			Metadata:      record.ID,
 		},
 	)
+}
+
+func deploymentRuntimeLockIdentity(record *model.DeploymentRecord) string {
+	if record.Platform != model.DeploymentKubernetes {
+		return record.TargetID
+	}
+	namespace := record.Namespace
+	if namespace == "" {
+		namespace = "default"
+	}
+	identity := record.RuntimeID + "\x00" + namespace + "\x00" + record.WorkloadName
+	return fmt.Sprintf("kubernetes:%x", sha256.Sum256([]byte(identity)))
 }
 
 func effectiveSSHTimeout(record *model.DeploymentRecord) (time.Duration, bool) {
@@ -1256,8 +1313,8 @@ func (s *Service) findTarget(ctx context.Context, id string) (*model.DeploymentT
 }
 
 // ReconcileEnvironmentTargets 在环境主机集合变更后重新固定当前部署方案的执行目标。
-// 该方法必须与环境成员关系更新共享事务：任一部署方案无法解析唯一可用主机时，
-// 调用方会回滚环境关系，避免保存出“环境已变更、部署方案仍指向旧主机”的半成品状态。
+// 该方法必须与环境成员关系更新共享事务：Docker/脚本无法解析唯一可用主机时，
+// 调用方会回滚环境关系；独立 Kubernetes 集群不随主机成员关系迁移。
 func (s *Service) ReconcileEnvironmentTargets(ctx context.Context, tx *gorm.DB, environmentID string) error {
 	environmentID = strings.TrimSpace(environmentID)
 	if environmentID == "" || tx == nil {
@@ -1378,8 +1435,8 @@ func (s *Service) normalizeTarget(ctx context.Context, input TargetInput) (Targe
 	return input, nil
 }
 
-// resolveEnvironmentTarget 根据环境归属和已就绪能力解析唯一执行主机。
-// 部署方案不接受客户端指定主机，避免环境与主机重复配置或被请求参数绕过。
+// resolveEnvironmentTarget 为 Docker/脚本解析唯一执行主机；Kubernetes 直接绑定独立集群。
+// 部署方案不接受客户端指定主机，集群也不能通过其他项目的环境绕过归属校验。
 func (s *Service) resolveEnvironmentTarget(
 	ctx context.Context,
 	environmentID string,
@@ -1387,9 +1444,21 @@ func (s *Service) resolveEnvironmentTarget(
 	runtimeID string,
 ) (model.Host, model.HostCapability, error) {
 	var environment model.Environment
-	if err := s.db.WithContext(ctx).Select("id").First(&environment, "id = ? AND is_active = ?", environmentID, true).Error; err != nil {
+	if err := s.db.WithContext(ctx).First(&environment, "id = ? AND is_active = ?", environmentID, true).Error; err != nil {
 		s.logger.Warn("解析环境执行主机失败", "operation", "deployment_target_resolve", "environment_id", environmentID, "platform", platform, "err", err)
 		return model.Host{}, model.HostCapability{}, ErrInvalidTarget
+	}
+	if platform == model.DeploymentKubernetes {
+		if s.kube == nil || strings.TrimSpace(runtimeID) == "" {
+			s.logger.Warn("独立集群部署配置无效", "operation", "deployment_cluster_resolve", "environment_id", environmentID)
+			return model.Host{}, model.HostCapability{}, ErrInvalidTarget
+		}
+		cluster, err := s.kube.Find(ctx, runtimeID)
+		if err != nil || !cluster.IsActive || cluster.ProjectID != environment.ProjectID || cluster.DepartmentID != environment.DepartmentID {
+			s.logger.Warn("独立集群不可用于当前环境", "operation", "deployment_cluster_resolve", "environment_id", environmentID, "cluster_id", runtimeID, "err", err)
+			return model.Host{}, model.HostCapability{}, ErrInvalidTarget
+		}
+		return model.Host{}, model.HostCapability{Kind: model.HostCapabilityKubernetes, RuntimeID: cluster.ID, Status: model.HostCapabilityReady}, nil
 	}
 	var memberships []model.EnvironmentHost
 	if err := s.db.WithContext(ctx).Where("environment_id = ?", environmentID).Find(&memberships).Error; err != nil {

@@ -1274,6 +1274,7 @@ func TestExternalDatabaseMigration(t *testing.T) {
 				t.Fatalf("%s PR 监听动作游标字段未创建", test.name)
 			}
 			exerciseDeploymentEnvironmentColumnUpgrade(t, ctx, db, test.driver)
+			exerciseKubernetesIdentityColumnUpgrade(t, db, test.driver)
 			exerciseExternalExecutionConfigUpgrade(t, db, test.driver)
 			exerciseRepositoryObservationEnvironmentUpgrade(t, ctx, db, test.driver)
 		})

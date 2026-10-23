@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"errors"
+	"io"
 	"log/slog"
 	"net/http"
 	"strconv"
@@ -65,13 +66,28 @@ func (h deploymentHandler) list(c *gin.Context) {
 
 func (h deploymentHandler) rollback(c *gin.Context) {
 	actor, _ := currentUser(c)
-	record, err := h.service.Rollback(c.Request.Context(), c.Param("id"), actor.ID)
+	var request deployment.RollbackConfirmation
+	if err := c.ShouldBindJSON(&request); err != nil && !errors.Is(err, io.EOF) {
+		h.logger.Warn("镜像回退确认参数无效", "operation", "deployment_rollback_bind", "request_id", requestIDFrom(c), "deployment_id", c.Param("id"), "err", err)
+		writeError(c, http.StatusBadRequest, "invalid_rollback_confirmation", "请重新确认镜像回退信息")
+		return
+	}
+	record, err := h.service.RollbackChecked(c.Request.Context(), c.Param("id"), actor.ID, request)
 	if err != nil {
 		h.writeDeploymentError(c, "deployment_rollback", err)
 		return
 	}
 	setAuditResourceID(c, record.ID)
 	c.JSON(http.StatusAccepted, gin.H{"deployment": record})
+}
+
+func (h deploymentHandler) rollbackPreview(c *gin.Context) {
+	preview, err := h.service.RollbackPreview(c.Request.Context(), c.Param("id"))
+	if err != nil {
+		h.writeDeploymentError(c, "deployment_rollback_preview", err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"rollback": preview})
 }
 
 func (h deploymentHandler) runtimeState(c *gin.Context) {
@@ -195,6 +211,8 @@ func (h deploymentHandler) writeDeploymentError(c *gin.Context, operation string
 		writeError(c, http.StatusConflict, "invalid_deployment_state", deployment.ErrInvalidDeploymentState.Error())
 	case errors.Is(err, deployment.ErrRollbackUnavailable):
 		writeError(c, http.StatusConflict, "rollback_unavailable", deployment.ErrRollbackUnavailable.Error())
+	case errors.Is(err, deployment.ErrRollbackTargetChanged):
+		writeError(c, http.StatusConflict, "rollback_target_changed", deployment.ErrRollbackTargetChanged.Error())
 	case errors.Is(err, deployment.ErrCommandPipelineRequired):
 		writeError(c, http.StatusConflict, "ssh_command_pipeline_required", deployment.ErrCommandPipelineRequired.Error())
 	default:

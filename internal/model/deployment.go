@@ -81,6 +81,7 @@ type DeploymentRecord struct {
 	Namespace          string                `gorm:"type:varchar(253);not null;default:''" json:"namespace"`
 	WorkloadName       string                `gorm:"type:varchar(253);not null" json:"workload_name"`
 	ContainerName      string                `gorm:"type:varchar(253);not null;default:''" json:"container_name"`
+	KubernetesUID      string                `gorm:"type:varchar(64);not null;default:''" json:"kubernetes_uid,omitempty"`
 	RolloutTimeout     int                   `gorm:"not null;default:300" json:"rollout_timeout"`
 	Operation          DeploymentOperation   `gorm:"type:varchar(16);not null;index" json:"operation"`
 	Image              string                `gorm:"type:varchar(1024);not null" json:"image"`

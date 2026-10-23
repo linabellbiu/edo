@@ -48,6 +48,10 @@ func TestRollbackRequiresDeploymentExecuteInsteadOfReview(t *testing.T) {
 		t.Fatalf("发布审核用户登录失败: status=%d body=%s", reviewerLogin.Code, reviewerLogin.Body.String())
 	}
 	reviewerCookie := reviewerLogin.Result().Cookies()[0]
+	previewDenied := performJSONRequest(t, router, http.MethodGet, "/api/v1/deployments/not-found/rollback-preview", nil, reviewerCookie)
+	if previewDenied.Code != http.StatusForbidden {
+		t.Fatalf("没有 deployment.read 仍可预检回退目标: status=%d body=%s", previewDenied.Code, previewDenied.Body.String())
+	}
 
 	denied := performJSONRequest(t, router, http.MethodPost, "/api/v1/deployments/not-found/rollback", nil, reviewerCookie)
 	if denied.Code != http.StatusForbidden {
@@ -108,5 +112,15 @@ func TestRollbackRequiresDeploymentExecuteInsteadOfReview(t *testing.T) {
 	removed = performJSONRequest(t, router, http.MethodDelete, "/api/v1/deployments/not-found/runtime", nil, reviewerCookie)
 	if removed.Code != http.StatusNotFound {
 		t.Fatalf("授予 deployment.execute 后未进入删除容器实例业务校验: status=%d body=%s", removed.Code, removed.Body.String())
+	}
+	readGrant := performJSONRequest(t, router, http.MethodPut, "/api/v1/users/"+userPayload.User.ID+"/permissions", map[string]any{
+		"allow": []string{"deployment.execute", "deployment.read"}, "deny": []string{},
+	}, adminCookie)
+	if readGrant.Code != http.StatusNoContent {
+		t.Fatalf("授予回退预检读取权限失败: %d", readGrant.Code)
+	}
+	previewAllowed := performJSONRequest(t, router, http.MethodGet, "/api/v1/deployments/not-found/rollback-preview", nil, reviewerCookie)
+	if previewAllowed.Code != http.StatusNotFound {
+		t.Fatalf("授予 deployment.read 后未进入预检资源隔离校验: status=%d body=%s", previewAllowed.Code, previewAllowed.Body.String())
 	}
 }

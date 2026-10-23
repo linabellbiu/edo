@@ -10,6 +10,7 @@ import client from '@/api/client'
 import { subscribeDeliveryEvents } from '@/utils/deliveryEvents'
 import { apiErrorMessage, type ResourceRecord } from '@/api/resources'
 import DeliveryWorkflowDrawer from '@/components/DeliveryWorkflowDrawer.vue'
+import DeploymentRollbackModal from '@/components/DeploymentRollbackModal.vue'
 import type {DeliveryKind} from '@/api/delivery'
 import type {WorkflowResponse} from '@/types/pipeline'
 import BuildPlanWorkspace from '@/components/BuildPlanWorkspace.vue'
@@ -29,12 +30,15 @@ import { useAuthStore } from '@/stores/auth'
 import type { GitCredential as Credential } from '@/types/credential'
 import type { PipelineExecutionGraph, Workflow as PipelineWorkflow } from '@/types/pipeline'
 import { formatGitReference } from '@/utils/gitReference'
-import { retainCurrentDeploymentState, selectCurrentDeploymentInstances } from '@/utils/deploymentInstances'
+import { retainCurrentDeploymentState, selectCurrentDeploymentInstances, selectLatestFailedDeploymentAttempts } from '@/utils/deploymentInstances'
+import type { RollbackRecord } from '@/types/deploymentRollback'
+import { deploymentRollbackEn, deploymentRollbackZh } from '@/locales/deploymentRollback'
 import { formatDateTime, formatRelativeTime } from '@/utils/time'
 
 type Section='applications'|'repositories'|'build-plans'|'image-registries'|'release-plans'
 const props=defineProps<{section:Section}>(),route=useRoute(),router=useRouter(),auth=useAuthStore()
 const {t,locale}=useI18n()
+const {t:rollbackT}=useI18n({messages:{'zh-CN':{rollback:deploymentRollbackZh},'en-US':{rollback:deploymentRollbackEn}}})
 const deliveryOpen=ref(false), deliveryApplicationID=ref('')
 const canConfigureDelivery=computed(()=>['application.read','application.update','workflow.read','workflow.create','deployment_plan.create','deployment_plan.read','build_plan.read','cluster.read','deployment.read'].every(permission=>auth.canAny([permission])))
 function configureDelivery(applicationID=''){deliveryApplicationID.value=applicationID;deliveryOpen.value=true}
@@ -93,6 +97,8 @@ const planExecutionOpen=ref(false),planExecutionPlanID=ref(''),planExecutionTitl
 const executingReleasePlanIDs=ref<string[]>([])
 const retryOpen=ref(false),retryLoading=ref(false),retrySubmitting=ref(false),retryRunID=ref(''),retryOptions=ref<RetryRunOptions|null>(null),retryMode=ref<'rebuild'|'artifact'>('rebuild'),retryArtifactID=ref('')
 const stoppingRunID=ref('')
+const manualPicker=reactive({open:false,applicationID:'',workflowID:''})
+const rollbackDialog=reactive({open:false,sourceID:'',pipelineRunID:''})
 const releasePlanEditorOpen=ref(false),releasePlanEditorPlan=ref<ReleasePlan|null>(null),releasePlanMutationID=ref('')
 const releasePlanAddApplicationOpen=ref(false),releasePlanAddApplicationPlanID=ref(''),releasePlanAddApplicationGroupID=ref(''),releasePlanAddApplicationIDs=ref<string[]>([])
 let releaseTimer=0
@@ -218,6 +224,11 @@ function currentApplicationDeployments(application:Application,relatedRuns:Run[]
  const currentPlanIDs=new Set((application.workflows||[]).flatMap(workflow=>workflow.stages.flatMap(stage=>stage.tasks)).filter(task=>task.type==='deploy').map(task=>task.config.deployment_plan_id).filter((id):id is string=>Boolean(id)))
  return selectCurrentDeploymentInstances(application.id,deployments.value,runIDs,currentPlanIDs,deploymentPlans.value)
 }
+function failedApplicationDeployments(application:Application){
+ const runIDs=new Set(runs.value.filter(run=>run.application_id===application.id).map(run=>run.id))
+ const planIDs=new Set((application.workflows||[]).flatMap(workflow=>workflow.stages.flatMap(stage=>stage.tasks)).filter(task=>task.type==='deploy').map(task=>task.config.deployment_plan_id).filter((id):id is string=>Boolean(id)))
+ return selectLatestFailedDeploymentAttempts(application.id,deployments.value,runIDs,planIDs,deploymentPlans.value)
+}
 
 const applicationCards=computed(()=>applications.value.map(application=>{
  const related=runs.value.filter(run=>run.application_id===application.id).sort((left,right)=>Date.parse(right.created_at)-Date.parse(left.created_at))
@@ -284,7 +295,6 @@ const applicationWorkflowColumns=computed(()=>[
  {key:'tasks',title:t('applicationWorkspace.columns.tasks'),width:210},
  {key:'status',title:t('applicationCard.latestRun'),width:100},
  {key:'time',title:t('applicationWorkspace.columns.runTime'),width:175},
- {key:'actions',title:t('applicationWorkspace.columns.actions'),width:135,fixed:'right' as const},
 ])
 function applicationTableRow(card:ApplicationCard){return {id:`application-${card.application.id}`}}
 function applicationTableRowClass(card:ApplicationCard){return ['apps-table-row',applicationDetailsOpen(card.application.id)?'is-expanded':'',activeApplicationID.value===card.application.id?'is-linked':''].join(' ')}
@@ -414,6 +424,30 @@ function lifecycleScriptAvailable(record:DeploymentRecord,action:'restart'|'stop
  return Boolean(action==='restart'?runtime?.restart_configured:runtime?.stop_configured)
 }
 function runtimeActionKey(record:DeploymentRecord,action:string){return `${record.id}:${action}`}
+function openDeploymentRollback(record:DeploymentRecord){
+ if(!canReadDeployments.value||!canControlDeployments.value||deploymentKind(record)!=='kubernetes')return
+ rollbackDialog.sourceID=record.id;rollbackDialog.pipelineRunID=record.pipeline_run_id||'';rollbackDialog.open=true
+}
+function acceptRollbackRecord(record:RollbackRecord){
+ const existing=deployments.value.find(item=>item.id===record.id)
+ deployments.value=[{...existing,...record} as DeploymentRecord,...deployments.value.filter(item=>item.id!==record.id)]
+ if(releasePlanResources.open&&record.pipeline_run_id===releasePlanResources.pipelineRunID){
+  releasePlanResources.records=[{...existing,...record} as DeploymentRecord,...releasePlanResources.records.filter(item=>item.id!==record.id)]
+ }
+ queueDeliveryRefresh()
+}
+function completeRollbackRecord(record:RollbackRecord){
+ if(record.status==='succeeded'&&props.section==='applications')expandedDeployments.value[record.id]=true
+ queueDeliveryRefresh()
+}
+async function refreshRollbackRecords(){
+ const pipelineRunID=rollbackDialog.open?rollbackDialog.pipelineRunID:releasePlanResources.open?releasePlanResources.pipelineRunID:''
+ if(!canReadDeployments.value||!pipelineRunID)return
+ const response=await client.get<{deployments:DeploymentRecord[]}>(`/deployments?pipeline_run_id=${encodeURIComponent(pipelineRunID)}&limit=200`)
+ const records=response.data.deployments||[],ids=new Set(records.map(record=>record.id))
+ deployments.value=[...records,...deployments.value.filter(record=>!ids.has(record.id))]
+ if(releasePlanResources.open&&pipelineRunID===releasePlanResources.pipelineRunID)releasePlanResources.records=records
+}
 async function loadDeploymentRuntime(record:DeploymentRecord,force=false){
  if(record.runtime_deleted_at||!currentDeploymentIDs.value.has(record.id)||staleDeploymentIDs.has(record.id)||!canReadDeployments.value||deploymentRuntimeLoading.value[record.id]||(!force&&deploymentRuntimeStates.value[record.id]))return
  deploymentRuntimeLoading.value[record.id]=true
@@ -761,6 +795,7 @@ async function refreshRunState(){
   runs.value=(await (auth.canAny(['pipeline_run.read'])?client.get<{pipeline_runs:Run[]}>('/pipeline-runs?limit=200'):Promise.resolve({data:{pipeline_runs:[] as Run[]}}))).data.pipeline_runs||[]
   if(locatedRun&&!runs.value.some(item=>item.id===locatedRun.id))runs.value=[locatedRun,...runs.value]
   if(requestedRunID.value)void revealRequestedRun()
+  if(rollbackDialog.open||releasePlanResources.open)await refreshRollbackRecords()
  }catch{}finally{stateRefreshing=false}
 }
 function formatVariableText(values?:Record<string,string>){return Object.entries(values||{}).map(([name,value])=>`${name}=${value}`).join('\n')}
@@ -1080,6 +1115,18 @@ function resetManualFlow(){
  manualSources.value=[]
  currentRun.value=null
  currentRunSelectionKey.value=''
+}
+const manualApplicationOptions=computed(()=>applications.value.filter(applicationCanManualRelease).map(application=>({value:application.id,label:application.name})))
+const manualWorkflowOptions=computed(()=>applicationManualWorkflows(applications.value.find(application=>application.id===manualPicker.applicationID)).map(workflow=>({value:workflow.id,label:workflowDisplayName(workflow)})))
+function openManualPicker(){
+ if(!auth.canAny(['pipeline_run.execute'])||!auth.canAny(['application.read'])||saving.value)return
+ resetManualFlow();manualPicker.applicationID='';manualPicker.workflowID='';manualPicker.open=true
+}
+function changeManualApplication(applicationID:string){manualPicker.applicationID=applicationID;manualPicker.workflowID=''}
+async function continueManualPicker(){
+ if(!manualPicker.applicationID||!manualPicker.workflowID)return
+ await openManual(manualPicker.applicationID,manualPicker.workflowID)
+ if(commitOpen.value)manualPicker.open=false
 }
 async function openManual(applicationID:string,workflowID:string){
  if(saving.value)return
@@ -1529,7 +1576,7 @@ function connectDeliveryEvents(){
   event:event=>{
    if(event.type==='resync'){queueDeliveryRefresh();return}
    const resources=event.resources||[]
-   if(props.section!=='applications'&&resources.every(resource=>resource==='application_sync'||resource==='deployments'||resource==='deployment_plans'))return
+   if(props.section!=='applications'&&!rollbackDialog.open&&!releasePlanResources.open&&resources.every(resource=>resource==='application_sync'||resource==='deployments'||resource==='deployment_plans'))return
    queueDeliveryRefresh(resources.length>0&&resources.every(resource=>resource==='application_sync'))
   },
   state:value=>{deliveryConnected=value==='connected'},
@@ -1593,7 +1640,7 @@ onMounted(()=>{connectDeliveryEvents();void refresh().then(()=>{lastDeliverySync
 onBeforeUnmount(()=>{stopDeliveryEvents?.();clearTimeout(deliveryRefreshTimer);resetPlanExecution();clearInterval(releaseTimer);document.removeEventListener('visibilitychange',onDeliveryPageVisible);window.removeEventListener('focus',onDeliveryPageVisible)})
 </script>
 
-<template><section :class="{'applications-page':props.section==='applications'}"><PageToolbar :description="props.section==='applications'?t('applicationWorkspace.description'):currentDescription"><a-tag v-if="props.section==='applications'||props.section==='release-plans'" color="processing">{{ t('applicationCard.autoRefresh') }}</a-tag><a-button :loading="loading" @click="refresh"><RefreshCw :size="15"/>刷新</a-button><a-button v-if="canCreate&&(props.section!=='release-plans'||releaseView==='plans')" type="primary" @click="create"><Plus :size="15"/>{{ props.section==='release-plans'?'创建发布计划':props.section==='applications'?t('applicationWorkspace.create'):'新建' }}</a-button></PageToolbar>
+<template><section :class="{'applications-page':props.section==='applications'}"><PageToolbar :description="props.section==='applications'?t('applicationWorkspace.description'):currentDescription"><a-tag v-if="props.section==='applications'||props.section==='release-plans'" color="processing">{{ t('applicationCard.autoRefresh') }}</a-tag><a-button :loading="loading" @click="refresh"><RefreshCw :size="15"/>刷新</a-button><a-button v-if="props.section==='release-plans'&&releaseView==='runs'&&auth.canAny(['pipeline_run.execute'])&&auth.canAny(['application.read'])" type="primary" :disabled="saving" @click="openManualPicker">{{ t('manualRun.execute') }}</a-button><a-button v-if="canCreate&&(props.section!=='release-plans'||releaseView==='plans')" type="primary" @click="create"><Plus :size="15"/>{{ props.section==='release-plans'?'创建发布计划':props.section==='applications'?t('applicationWorkspace.create'):'新建' }}</a-button></PageToolbar>
 <div v-if="props.section==='applications'" class="apps-workspace">
   <div class="apps-filter-bar">
     <a-input v-model:value="applicationSearch" allow-clear :placeholder="t('applicationWorkspace.search')" :aria-label="t('applicationWorkspace.search')" class="apps-search"><template #prefix><Search :size="16"/></template></a-input>
@@ -1673,10 +1720,6 @@ onBeforeUnmount(()=>{stopDeliveryEvents?.();clearTimeout(deliveryRefreshTimer);r
               <span v-else-if="workflowColumn.key==='tasks'" class="apps-workflow-facts"><span>{{ t('applicationCard.taskCount',{count:item.taskCount}) }}</span><span>{{ t('applicationCard.buildCount',{count:item.buildCount}) }}</span><span>{{ t('applicationCard.deployCount',{count:item.deployCount}) }}</span></span>
               <span v-else-if="workflowColumn.key==='status'" class="apps-status" :class="[`tone-${item.state.tone}`,{'is-live':item.state.live}]"><i/>{{ item.state.label }}</span>
               <time v-else-if="workflowColumn.key==='time'" class="apps-time">{{ formatApplicationTime(item.latestRun?.created_at) }}</time>
-              <template v-else-if="workflowColumn.key==='actions'">
-                <a-button v-if="!manualWorkflowUnavailableReason(card.application,item.workflow)" size="small" :loading="saving&&manualApplicationID===card.application.id&&manualWorkflowID===item.workflow.id" :disabled="saving" @click="openManual(card.application.id,item.workflow.id)">{{ t('manualRun.execute') }}</a-button>
-                <span v-else class="resource-secondary">{{ manualWorkflowUnavailableReason(card.application,item.workflow) }}</span>
-              </template>
             </template>
           </a-table>
           <div v-else class="apps-empty-inline"><Workflow :size="20"/><span>{{ t('applicationCard.noWorkflows') }}</span></div>
@@ -1709,6 +1752,7 @@ onBeforeUnmount(()=>{stopDeliveryEvents?.();clearTimeout(deliveryRefreshTimer);r
                   <a-button v-if="canControlDeployments" size="small" danger :loading="deploymentRuntimeAction===runtimeActionKey(record,'stop')" :disabled="Boolean(deploymentRuntimeAction)||!lifecycleScriptAvailable(record,'stop')" :title="lifecycleScriptAvailable(record,'stop')?'':'请先在该 Shell 部署实例中保存停止命令'" @click="confirmDeploymentRuntimeAction(record,'stop')"><Power/>停止</a-button>
                   <a-button v-if="canControlDeployments" size="small" :loading="deploymentRuntimeAction===runtimeActionKey(record,'restart')" :disabled="Boolean(deploymentRuntimeAction)||!lifecycleScriptAvailable(record,'restart')" :title="lifecycleScriptAvailable(record,'restart')?'':'请先在该 Shell 部署实例中保存重启命令'" @click="confirmDeploymentRuntimeAction(record,'restart')"><RotateCw/>重启</a-button>
                   <a-button v-if="canControlDeployments&&deploymentKind(record)==='kubernetes'" size="small" :disabled="Boolean(deploymentRuntimeAction)" @click="openScaleDialog(record)"><Minus/>扩缩容</a-button>
+                  <a-button v-if="canReadDeployments&&canControlDeployments&&deploymentKind(record)==='kubernetes'" size="small" :disabled="Boolean(deploymentRuntimeAction)" @click="openDeploymentRollback(record)"><RotateCw/>{{ rollbackT('rollback.title') }}</a-button>
                   <a-button v-if="canControlDeployments&&deploymentKind(record)==='docker'" size="small" danger :loading="deploymentRuntimeAction===runtimeActionKey(record,'remove')" :disabled="Boolean(deploymentRuntimeAction)" @click="confirmDeploymentRuntimeRemoval(record)"><Trash2/>删除实例</a-button>
                 </div>
               </div>
@@ -1716,6 +1760,16 @@ onBeforeUnmount(()=>{stopDeliveryEvents?.();clearTimeout(deliveryRefreshTimer);r
           </div>
         </div>
         <p v-else class="apps-empty-inline">{{ t('applicationCard.noDeployments') }}</p>
+        <section v-if="canReadDeployments&&failedApplicationDeployments(card.application).length" class="application-failed-deployments" :aria-label="rollbackT('rollback.recentFailure')">
+          <h4>{{ rollbackT('rollback.recentFailure') }}</h4>
+          <article v-for="record in failedApplicationDeployments(card.application)" :key="record.id">
+            <strong>{{ deploymentInstanceName(record) }}</strong>
+            <p>{{ record.target_name }} · {{ record.namespace }} / {{ record.workload_name }} / {{ record.container_name }}</p>
+            <p class="resource-secondary">{{ record.error_message || rollbackT('rollback.failureFallback') }}</p>
+            <a-button v-if="canControlDeployments" size="small" @click="openDeploymentRollback(record)"><RotateCw :size="13"/>{{ rollbackT('rollback.title') }}</a-button>
+            <a-button v-if="record.pipeline_run_id" size="small" @click="openReleasePlanApplicationResources('',card.application.id,record.pipeline_run_id)">{{ rollbackT('rollback.viewRecords') }}</a-button>
+          </article>
+        </section>
         </div>
       </section>
 
@@ -1855,6 +1909,7 @@ onBeforeUnmount(()=>{stopDeliveryEvents?.();clearTimeout(deliveryRefreshTimer);r
               <a-button @click="openLogs(run)">查看实时日志</a-button>
               <a-button v-if="canStopRun(run)&&auth.canAny(['pipeline_run.execute'])" danger :loading="stoppingRunID===run.id||run.stage==='stopping'" :disabled="!!stoppingRunID||run.stage==='stopping'" @click="confirmStopRun(run)">{{ t(run.stage==='stopping'?'pipelineStop.stopping':'pipelineStop.confirm') }}</a-button>
               <a-button v-if="run.status==='failed'&&auth.canAny(['pipeline_run.execute'])" type="primary" @click="openRetry(run)">重试流水线</a-button>
+              <a-button v-if="run.deployment_id&&canReadDeployments" @click="openReleasePlanApplicationResources('',run.application_id,run.id)">{{ rollbackT('rollback.recordsAndRollback') }}</a-button>
               <a-button v-if="run.status==='awaiting_approval'&&auth.canAny(['deployment.review'])" type="primary" @click="action(`/pipeline-runs/${run.id}/approve`)">通过审核</a-button>
               <a-button v-if="run.stage==='manual'&&auth.canAny(['pipeline_run.execute'])" type="primary" @click="action(`/pipeline-runs/${run.id}/advance`)">放行并继续</a-button>
             </footer>
@@ -2047,6 +2102,14 @@ onBeforeUnmount(()=>{stopDeliveryEvents?.();clearTimeout(deliveryRefreshTimer);r
 </a-form><template #footer><div class="drawer-actions"><a-button :disabled="saving||testing" @click="closeForm">{{ creatingApplicationRepository?t('applicationForm.backToApplication'):'取消' }}</a-button><a-button v-if="formSection==='repositories'&&auth.canAny(['repository.execute'])" :loading="testing" :disabled="saving" @click="testRepository">测试连接</a-button><a-button v-if="props.section==='image-registries'&&auth.canAny([`${sectionPermission}.execute`])" :loading="testing" @click="testRegistry">测试登录</a-button><a-button v-if="canSaveCurrent" type="primary" :loading="saving" :disabled="testing||(props.section==='image-registries'&&!registryTested)" @click="save">保存</a-button></div></template></a-drawer>
 <GitCredentialDrawer v-model:open="credentialCreation.open" :provider="credentialCreation.provider" :auth-type="credentialCreation.authType" lock-context @saved="repositoryCredentialSaved"/>
 <DeliveryWorkflowDrawer v-model:open="deliveryOpen" :application-id="deliveryApplicationID" :initial-kind="typeof route.query.delivery_kind==='string'?route.query.delivery_kind as DeliveryKind:undefined" :initial-cluster="typeof route.query.cluster==='string'?route.query.cluster:undefined" :initial-namespace="typeof route.query.namespace==='string'?route.query.namespace:undefined" :initial-workload="typeof route.query.workload==='string'?route.query.workload:undefined" :initial-container="typeof route.query.container==='string'?route.query.container:undefined" @created="deliveryCreated"/>
+<DeploymentRollbackModal v-model:open="rollbackDialog.open" :sourceID="rollbackDialog.sourceID" :records="deployments" :canExecute="canReadDeployments&&canControlDeployments" @accepted="acceptRollbackRecord" @completed="completeRollbackRecord"/>
+<a-modal v-model:open="manualPicker.open" :title="t('manualRun.title')" :confirm-loading="saving" :ok-button-props="{disabled:!manualPicker.applicationID||!manualPicker.workflowID}" :ok-text="t('manualRun.chooseVersion')" @ok="continueManualPicker" @cancel="resetManualFlow">
+ <a-form layout="vertical">
+  <a-form-item :label="t('manualRun.application')" required><a-select :value="manualPicker.applicationID||undefined" show-search option-filter-prop="label" :options="manualApplicationOptions" @change="changeManualApplication"/></a-form-item>
+  <a-form-item :label="t('applicationCard.workflow')" required><a-select v-model:value="manualPicker.workflowID" :disabled="!manualPicker.applicationID" show-search option-filter-prop="label" :options="manualWorkflowOptions"/></a-form-item>
+  <a-alert v-if="!manualApplicationOptions.length" type="info" show-icon :message="t('manualRun.noApplication')"/>
+ </a-form>
+</a-modal>
 <a-modal v-model:open="commitOpen" :title="t('manualRun.versionTitle')" :confirm-loading="saving" :ok-button-props="{disabled:!selectedSource||(manualExecutionMode==='code'?!selectedRef:!selectedArtifactID)}" :ok-text="t('manualRun.confirm')" @ok="executeCommit" @cancel="resetManualFlow">
  <a-form layout="vertical">
   <a-form-item :label="t('manualRun.title')"><strong>{{ applications.find(item=>item.id===manualApplicationID)?.name }} / {{ workflowDisplayName(applications.find(item=>item.id===manualApplicationID)?.workflows.find(item=>item.id===manualWorkflowID)) }}</strong></a-form-item>
@@ -2172,6 +2235,9 @@ onBeforeUnmount(()=>{stopDeliveryEvents?.();clearTimeout(deliveryRefreshTimer);r
      <span v-if="!canReadContainerLogs" class="release-plan-resource-permission">没有 cluster.read 权限，无法读取容器实时状态和日志。</span>
      <span v-else-if="!canOpenContainerTerminal" class="release-plan-resource-permission">没有 terminal.open 权限，无法打开容器终端。</span>
     </div>
+    <div v-else-if="deploymentKind(record)==='kubernetes'" class="release-plan-resource-actions">
+     <a-button v-if="canReadDeployments&&canControlDeployments" @click="openDeploymentRollback(record)"><RotateCw :size="14"/>{{ rollbackT('rollback.title') }}</a-button>
+    </div>
     <small v-else class="release-plan-resource-hint">当前仅支持从 Docker 单容器部署记录直接打开容器日志和终端。</small>
    </article>
   </div>
@@ -2184,6 +2250,8 @@ onBeforeUnmount(()=>{stopDeliveryEvents?.();clearTimeout(deliveryRefreshTimer);r
 </section></template>
 
 <style scoped>
+.application-failed-deployments{margin-top:14px}.application-failed-deployments h4{margin:0 0 8px;color:var(--edo-text)}.application-failed-deployments article{padding:12px;border:1px solid var(--edo-border);border-radius:8px}.application-failed-deployments article+article{margin-top:8px}.application-failed-deployments p{margin:6px 0;overflow-wrap:anywhere}.application-failed-deployments .ant-btn{margin:4px 6px 0 0}
+
 .resource-option{display:grid;gap:2px;padding-block:2px}.resource-option strong{overflow:hidden;color:var(--edo-text);font-weight:600;text-overflow:ellipsis;white-space:nowrap}.resource-option small{overflow:hidden;color:var(--edo-muted);font-size:11px;text-overflow:ellipsis;white-space:nowrap}
 .form-grid{display:grid;grid-template-columns:1fr 1fr;gap:0 14px}.span2{grid-column:1/-1}.drawer-actions{display:flex;justify-content:flex-end;gap:8px}.release-plan-add-hint{display:block;margin-top:6px;color:var(--edo-muted);font-size:11px}
 .webhook-api-field{display:flex;gap:8px}.webhook-api-field :deep(.ant-input){min-width:0}.webhook-api-field :deep(.ant-btn){flex:0 0 auto}
@@ -2192,7 +2260,7 @@ onBeforeUnmount(()=>{stopDeliveryEvents?.();clearTimeout(deliveryRefreshTimer);r
 .resource-section-stack{display:grid;gap:14px}
 .build-form-section,.application-form-section{margin-bottom:16px;padding:15px 15px 0;border:1px solid var(--edo-border);border-radius:12px;background:var(--edo-surface-soft)}.build-form-section>header,.application-form-section>header{margin-bottom:13px}.build-form-section>header strong,.build-form-section>header small,.application-form-section>header strong,.application-form-section>header small{display:block}.build-form-section>header strong,.application-form-section>header strong{font-size:14px}.build-form-section>header small,.application-form-section>header small{margin-top:3px;color:var(--edo-muted);font-size:11px}.resource-picker{display:flex;align-items:stretch;gap:8px}.resource-picker :deep(.ant-select){min-width:0;flex:1}.resource-create{width:34px;flex:0 0 34px;padding:0}.build-advanced{margin-bottom:12px;border:1px solid var(--edo-border);border-radius:12px;background:var(--edo-surface-soft)}.build-advanced :deep(.ant-collapse-header){align-items:center!important}.build-advanced :deep(.ant-collapse-content-box){padding-top:4px!important}.build-advanced-title{display:flex;align-items:baseline;gap:9px}.build-advanced-title small,.field-hint{color:var(--edo-muted);font-size:11px}.field-hint{display:block;margin-top:5px}.build-form-section :deep(.ant-alert),.application-form-section :deep(.ant-alert){margin-bottom:16px}
 .workflow-association-list{display:grid;gap:8px;margin-bottom:16px}.workflow-association-item{display:grid;min-width:0;align-items:center;grid-template-columns:34px minmax(0,1fr) auto;gap:9px;padding:9px;border:1px solid var(--edo-border);border-radius:10px;background:var(--edo-surface)}.workflow-association-icon{display:grid;width:34px;height:34px;place-items:center;border-radius:9px;color:var(--edo-primary);background:var(--edo-primary-soft)}.workflow-association-icon svg{width:17px}.workflow-association-copy{min-width:0}.workflow-association-copy strong,.workflow-association-copy small{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.workflow-association-copy strong{font-size:13px}.workflow-association-copy small{margin-top:2px;color:var(--edo-muted);font-size:11px}.workflow-association-actions{display:flex;align-items:center;gap:6px}.workflow-association-actions :deep(.ant-tag){margin-inline-end:0}.workflow-association-actions :deep(.ant-btn){display:inline-flex;align-items:center;gap:4px}.workflow-association-actions svg{width:13px}.workflow-association-empty{margin-bottom:16px;padding:15px;border:1px dashed var(--edo-border);border-radius:10px;color:var(--edo-muted);background:var(--edo-surface);text-align:center}.application-workflow-association .resource-picker :deep(.ant-btn){display:inline-flex;align-items:center;gap:5px}.application-workflow-association .resource-picker svg{width:14px}
-.image-path-preview{display:block;overflow-wrap:anywhere;color:var(--edo-text);font-size:12px}.image-path-alert .field-hint{line-height:1.55}.application-deployment-list{display:grid;max-height:360px;gap:6px;overflow-y:auto;scrollbar-width:thin}.application-deployment-icon{display:grid;width:30px;height:30px;place-items:center;border-radius:8px;color:var(--edo-primary);background:var(--edo-primary-soft)}.application-deployment-icon svg{width:15px}.application-deployment-state{display:grid;min-width:70px;grid-template-columns:7px auto;align-items:center;column-gap:5px;color:#949aa5}.application-deployment-state>i{width:6px;height:6px;border-radius:50%;background:currentColor}.application-deployment-state strong{font-size:10px;white-space:nowrap}.application-deployment-state time{grid-column:1/-1;margin-top:2px;color:var(--edo-muted);font-size:9px;white-space:nowrap}.application-deployment-state.tone-info{color:#4f7df3}.application-deployment-state.tone-success{color:#2ab573}.application-deployment-state.tone-warning{color:#dfa126}.application-deployment-state.tone-danger{color:#ed5965}.application-deployment-state.is-live>i{animation:application-pulse 2s ease-out infinite}.application-deployment-item{min-width:0;overflow:hidden;border-radius:9px;background:var(--edo-surface)}.application-deployment-summary{display:grid;width:100%;min-width:0;align-items:center;grid-template-columns:30px minmax(0,1fr) auto 14px;gap:8px;padding:8px;border:0;color:var(--edo-text);background:transparent;cursor:pointer;text-align:left}.application-deployment-summary:hover{background:color-mix(in srgb,var(--edo-primary) 4%,var(--edo-surface))}.application-deployment-summary:focus-visible{outline:2px solid color-mix(in srgb,var(--edo-primary) 45%,transparent);outline-offset:-2px}.application-deployment-summary>svg{width:14px;color:var(--edo-muted);transition:transform 180ms ease}.application-deployment-summary>svg.expanded{transform:rotate(180deg)}.application-deployment-icon.kind-compose{color:#1677ff;background:color-mix(in srgb,#1677ff 10%,var(--edo-surface))}.application-deployment-icon.kind-kubernetes{color:#326ce5;background:color-mix(in srgb,#326ce5 10%,var(--edo-surface))}.application-deployment-icon.kind-script{color:#596273;background:color-mix(in srgb,#596273 10%,var(--edo-surface))}.application-deployment-copy{min-width:0}.application-deployment-copy strong,.application-deployment-copy small{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.application-deployment-copy strong{font-size:12px}.application-deployment-copy small{margin-top:2px;color:var(--edo-muted);font-size:10px}.application-deployment-details{padding:0 9px 9px 47px}.application-deployment-details dl{display:grid;gap:5px;margin:0;padding:8px 9px;border-radius:8px;background:var(--edo-surface-soft)}.application-deployment-details dl>div{display:grid;min-width:0;grid-template-columns:62px minmax(0,1fr);gap:8px}.application-deployment-details dt{color:var(--edo-muted);font-size:10px}.application-deployment-details dd{overflow:hidden;margin:0;text-overflow:ellipsis;white-space:nowrap;font-size:10px}.application-deployment-actions{display:flex;justify-content:flex-end;gap:6px;margin-top:7px}.application-deployment-actions :deep(.ant-btn){display:inline-flex;align-items:center;gap:4px}.application-deployment-actions svg{width:13px}.deployment-details-enter-active,.deployment-details-leave-active{transition:opacity 140ms ease,transform 160ms ease}.deployment-details-enter-from,.deployment-details-leave-to{opacity:0;transform:translateY(-3px)}
+.image-path-preview{display:block;overflow-wrap:anywhere;color:var(--edo-text);font-size:12px}.image-path-alert .field-hint{line-height:1.55}.application-deployment-list{display:grid;max-height:360px;gap:6px;overflow-y:auto;scrollbar-width:thin}.application-deployment-icon{display:grid;width:30px;height:30px;place-items:center;border-radius:8px;color:var(--edo-primary);background:var(--edo-primary-soft)}.application-deployment-icon svg{width:15px}.application-deployment-state{display:grid;min-width:70px;grid-template-columns:7px auto;align-items:center;column-gap:5px;color:#949aa5}.application-deployment-state>i{width:6px;height:6px;border-radius:50%;background:currentColor}.application-deployment-state strong{font-size:10px;white-space:nowrap}.application-deployment-state time{grid-column:1/-1;margin-top:2px;color:var(--edo-muted);font-size:9px;white-space:nowrap}.application-deployment-state.tone-info{color:#4f7df3}.application-deployment-state.tone-success{color:#2ab573}.application-deployment-state.tone-warning{color:#dfa126}.application-deployment-state.tone-danger{color:#ed5965}.application-deployment-state.is-live>i{animation:application-pulse 2s ease-out infinite}.application-deployment-item{min-width:0;overflow:hidden;border-radius:9px;background:var(--edo-surface)}.application-deployment-summary{display:grid;width:100%;min-width:0;align-items:center;grid-template-columns:30px minmax(0,1fr) auto 14px;gap:8px;padding:8px;border:0;color:var(--edo-text);background:transparent;cursor:pointer;text-align:left}.application-deployment-summary:hover{background:color-mix(in srgb,var(--edo-primary) 4%,var(--edo-surface))}.application-deployment-summary:focus-visible{outline:2px solid color-mix(in srgb,var(--edo-primary) 45%,transparent);outline-offset:-2px}.application-deployment-summary>svg{width:14px;color:var(--edo-muted);transition:transform 180ms ease}.application-deployment-summary>svg.expanded{transform:rotate(180deg)}.application-deployment-icon.kind-compose{color:#1677ff;background:color-mix(in srgb,#1677ff 10%,var(--edo-surface))}.application-deployment-icon.kind-kubernetes{color:#326ce5;background:color-mix(in srgb,#326ce5 10%,var(--edo-surface))}.application-deployment-icon.kind-script{color:#596273;background:color-mix(in srgb,#596273 10%,var(--edo-surface))}.application-deployment-copy{min-width:0}.application-deployment-copy strong,.application-deployment-copy small{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.application-deployment-copy strong{font-size:12px}.application-deployment-copy small{margin-top:2px;color:var(--edo-muted);font-size:10px}.application-deployment-details{padding:0 9px 9px 47px}.application-deployment-details dl{display:grid;gap:5px;margin:0;padding:8px 9px;border-radius:8px;background:var(--edo-surface-soft)}.application-deployment-details dl>div{display:grid;min-width:0;grid-template-columns:62px minmax(0,1fr);gap:8px}.application-deployment-details dt{color:var(--edo-muted);font-size:10px}.application-deployment-details dd{overflow:hidden;margin:0;text-overflow:ellipsis;white-space:nowrap;font-size:10px}.application-deployment-actions{display:flex;flex-wrap:wrap;justify-content:flex-end;gap:6px;margin-top:7px}.application-deployment-actions :deep(.ant-btn){display:inline-flex;align-items:center;gap:4px}.application-deployment-actions svg{width:13px}.deployment-details-enter-active,.deployment-details-leave-active{transition:opacity 140ms ease,transform 160ms ease}.deployment-details-enter-from,.deployment-details-leave-to{opacity:0;transform:translateY(-3px)}
 .run-workspace{min-width:0;overflow:hidden;background:var(--edo-surface)}
 .run-list-heading{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:10px 14px;border-bottom:1px solid var(--edo-border)}
 .run-list-heading>span{display:flex;align-items:center;gap:12px;font-size:13px}.run-list-heading small{color:var(--edo-muted);font-size:12px}

@@ -119,6 +119,7 @@ type workflowDeploymentTargetSnapshot struct {
 	EnvironmentID    string                   `json:"environment_id,omitempty"`
 	HostID           string                   `json:"host_id,omitempty"`
 	Architecture     model.HostArchitecture   `json:"architecture,omitempty"`
+	Architectures    []model.HostArchitecture `json:"architectures,omitempty"`
 	RuntimeID        string                   `json:"runtime_id,omitempty"`
 	WorkingDirectory string                   `json:"working_directory,omitempty"`
 	Namespace        string                   `json:"namespace,omitempty"`
@@ -1109,12 +1110,15 @@ func (s *Service) newStageResolvedWorkflowRunWithDatabase(
 					!deploymentPlanSupportsTarget(plan.Kind, target.Platform) {
 					return nil, ErrInvalidWorkflow
 				}
-				architecture, architectureErr := deploymentTargetArchitecture(ctx, database, target.HostID)
+				architectures, architectureErr := s.deploymentTargetArchitectures(ctx, database, target)
 				if architectureErr != nil {
 					if s.logger != nil {
-						s.logger.Error("部署目标主机架构不可用", "operation", "pipeline_target_architecture_resolve",
+						s.logger.Error("部署目标架构不可用", "operation", "pipeline_target_architecture_resolve",
 							"application_id", application.ID, "workflow_id", workflow.ID,
-							"deployment_target_id", target.ID, "host_id", target.HostID, "err", architectureErr)
+							"deployment_target_id", target.ID, "host_id", target.HostID, "runtime_id", target.RuntimeID, "err", architectureErr)
+					}
+					if target.Platform == model.DeploymentKubernetes {
+						return nil, fmt.Errorf("%w：%s", ErrInvalidWorkflow, architectureErr.Error())
 					}
 					return nil, ErrInvalidWorkflow
 				}
@@ -1141,7 +1145,7 @@ func (s *Service) newStageResolvedWorkflowRunWithDatabase(
 				}
 				deploymentTargets[current.ID] = workflowDeploymentTargetSnapshot{
 					ID: target.ID, ProjectID: target.ProjectID, DepartmentID: target.DepartmentID, Name: target.Name, Platform: target.Platform,
-					EnvironmentID: target.EnvironmentID, HostID: target.HostID, Architecture: architecture, RuntimeID: target.RuntimeID,
+					EnvironmentID: target.EnvironmentID, HostID: target.HostID, Architecture: singleTargetArchitecture(architectures), Architectures: architectures, RuntimeID: target.RuntimeID,
 					WorkingDirectory: target.WorkingDirectory, Namespace: target.Namespace,
 					WorkloadName: target.WorkloadName, ContainerName: target.ContainerName,
 					RolloutTimeout: target.RolloutTimeout,

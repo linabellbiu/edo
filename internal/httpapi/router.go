@@ -351,6 +351,7 @@ func NewRouter(deps Dependencies) *gin.Engine {
 	protected.DELETE("/environments/:id", auditAction(deps.Audits, deps.Logger, "environment.delete", "environment"), requirePermission(deps.Access, deps.Logger, access.PermissionDeploymentDelete), environmentAPI.remove)
 	protected.GET("/deployments", requirePermission(deps.Access, deps.Logger, access.PermissionDeploymentRead), deploymentAPI.list)
 	protected.POST("/deployments/:id/rollback", auditAction(deps.Audits, deps.Logger, "deployment.rollback", "deployment"), requirePermission(deps.Access, deps.Logger, access.PermissionDeploymentExecute), deploymentAPI.rollback)
+	protected.GET("/deployments/:id/rollback-preview", requirePermission(deps.Access, deps.Logger, access.PermissionDeploymentRead), deploymentAPI.rollbackPreview)
 	protected.GET("/deployments/:id/runtime", requirePermission(deps.Access, deps.Logger, access.PermissionDeploymentRead), deploymentAPI.runtimeState)
 	protected.GET("/deployments/:id/runtime/configuration", requirePermission(deps.Access, deps.Logger, access.PermissionDeploymentRead), deploymentAPI.runtimeConfiguration)
 	protected.PUT("/deployments/:id/runtime/configuration", auditAction(deps.Audits, deps.Logger, "deployment.runtime.configuration.update", "deployment"), requirePermission(deps.Access, deps.Logger, access.PermissionDeploymentUpdate), deploymentAPI.saveRuntimeConfiguration)

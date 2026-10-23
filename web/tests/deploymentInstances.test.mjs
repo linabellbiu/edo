@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { retainCurrentDeploymentState, selectCurrentDeploymentInstances } from '../src/utils/deploymentInstances.ts'
+import { retainCurrentDeploymentState, selectCurrentDeploymentInstances, selectLatestFailedDeploymentAttempts } from '../src/utils/deploymentInstances.ts'
 
 const target = { id: 'target', platform: 'docker', host_id: 'host', environment_id: 'env', runtime_id: 'docker' }
 const plans = [{ id: 'plan', kind: 'docker', deployment_target: target }]
@@ -84,4 +84,18 @@ test('两个当前部署方案各自保留一条最新实例', () => {
     plans: [...plans, otherPlan], planIDs: new Set(['plan', 'other-plan']),
   })
   assert.deepEqual(new Set(selected.map(item => item.id)), new Set(['one', 'two']))
+})
+
+test('最新 K8s 失败尝试独立展示，成功回退或后续排队后不复活旧失败', () => {
+  const kubeTarget = { ...target, platform: 'kubernetes', runtime_id: 'cluster', namespace: 'test', workload_name: 'api' }
+  const kubePlans = [{ id: 'plan', kind: 'kubernetes', deployment_target: kubeTarget }]
+  const success = record('success', { ...kubeTarget, id: 'success', target_id: 'target' })
+  const failed = record('failed', { ...kubeTarget, id: 'failed', target_id: 'target', status: 'failed', created_at: '2026-09-08T04:43:00Z' })
+  const select = records => selectLatestFailedDeploymentAttempts('app', records, new Set(), new Set(['plan']), kubePlans)
+  assert.deepEqual(select([success, failed]).map(item => item.id), ['failed'])
+  assert.deepEqual(select([success, failed, { ...success, id: 'rollback', created_at: '2026-09-08T04:44:00Z' }]), [])
+  assert.deepEqual(select([success, failed, { ...failed, id: 'queued', status: 'queued', created_at: '2026-09-08T04:44:00Z' }]), [])
+  assert.deepEqual(select([{ ...failed, application_id: 'other' }]), [])
+  assert.deepEqual(select([{ ...failed, namespace: 'old-location' }]), [])
+  assert.deepEqual(selectLatestFailedDeploymentAttempts('app', [failed], new Set(), new Set(), kubePlans), [])
 })

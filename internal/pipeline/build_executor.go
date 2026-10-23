@@ -352,11 +352,17 @@ func workflowBuildPlatform(snapshot workflowSnapshot, buildNodeID string, plan w
 		if !exists {
 			return "", ErrPipelineExecutionConfig
 		}
-		platform := target.Architecture.OCIPlatform()
-		if platform == "" {
-			return "", ErrPipelineExecutionConfig
+		architectures := target.Architectures
+		if len(architectures) == 0 {
+			architectures = []model.HostArchitecture{target.Architecture}
 		}
-		platformSet[platform] = struct{}{}
+		for _, architecture := range architectures {
+			platform := architecture.OCIPlatform()
+			if platform == "" {
+				return "", ErrPipelineExecutionConfig
+			}
+			platformSet[platform] = struct{}{}
+		}
 	}
 	platforms := make([]string, 0, len(platformSet))
 	for platform := range platformSet {

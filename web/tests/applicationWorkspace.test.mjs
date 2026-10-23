@@ -39,6 +39,7 @@ function harness({ allowed = true, executeAllowed = true } = {}) {
   }
   const module = { exports: {} }
   new Function('require', 'module', 'exports', 'document', outputText)(name => modules[name] || {}, module, module.exports, {
+    hidden: true,
     getElementById: id => ({ scrollIntoView: options => scrolls.push({ id, options }) }),
   })
   state = module.exports.default.setup({ section: 'applications' }, { expose() {} })
@@ -53,7 +54,7 @@ function allowManual(application, id = 'second-flow') {
   return flow
 }
 
-test('应用流水线行手动执行绑定准确流水线，选完版本前不创建运行，确认后复用完整执行链', async () => {
+test('手动执行绑定准确流水线，选完版本前不创建运行，确认后复用完整执行链', async () => {
   const { state, requests, submissions, pending } = harness()
   allowManual(state.applications.value[0], 'first-flow')
   allowManual(state.applications.value[0], 'second-flow')
@@ -74,7 +75,7 @@ test('应用流水线行手动执行绑定准确流水线，选完版本前不�
   assert.equal(state.manualWorkflowID.value, '')
 })
 
-test('行内手动执行支持已有制品，执行参数不混入代码版本', async () => {
+test('手动执行支持已有制品，执行参数不混入代码版本', async () => {
   const { state, submissions, pending } = harness()
   allowManual(state.applications.value[0])
   await state.openManual('api', 'second-flow')
@@ -118,14 +119,48 @@ test('执行前重新校验当前流水线状态，取消读取后迟到响应�
   assert.equal(submissions.length, 0)
 })
 
-test('手动执行只放在对应流水线行，显示条件和调用均绑定本行应用及流水线', () => {
+test('手动执行入口只在流水线运行页，应用详情不保留重复入口', () => {
   const nodes = []
   function walk(node) { if (node.type === 1) nodes.push(node); for (const child of node.children || []) walk(child) }
   walk(parse(source).descriptor.template.ast)
   const actions = nodes.filter(node => node.props.some(prop => prop.type === 7 && prop.name === 'on' && prop.exp?.content.startsWith('openManual(')))
-  assert.equal(actions.length, 1)
-  assert.equal(actions[0].props.find(prop => prop.type === 7 && prop.name === 'on').exp.content, 'openManual(card.application.id,item.workflow.id)')
-  assert.equal(actions[0].props.find(prop => prop.type === 7 && prop.name === 'if').exp.content, '!manualWorkflowUnavailableReason(card.application,item.workflow)')
+  assert.equal(actions.length, 0)
+  const picker = nodes.filter(node => node.props.some(prop => prop.type === 7 && prop.name === 'on' && prop.exp?.content === 'openManualPicker'))
+  assert.equal(picker.length, 1)
+  assert.match(picker[0].props.find(prop => prop.type === 7 && prop.name === 'if').exp.content, /props.section==='release-plans'&&releaseView==='runs'/)
+})
+
+test('运行页先显式选择应用和流水线，不默认取第一条；切换应用清除旧流水线', async () => {
+  const { state, requests, pending } = harness()
+  allowManual(state.applications.value[0], 'first-flow')
+  allowManual(state.applications.value[0], 'second-flow')
+  state.openManualPicker()
+  assert.equal(state.manualPicker.open, true)
+  assert.equal(state.manualPicker.applicationID, '')
+  assert.equal(state.manualPicker.workflowID, '')
+  await state.continueManualPicker()
+  assert.deepEqual(requests, [])
+  state.changeManualApplication('api')
+  assert.equal(state.manualPicker.workflowID, '')
+  assert.deepEqual(state.manualWorkflowOptions.value.map(item => item.value), ['first-flow', 'second-flow'])
+  state.manualPicker.workflowID = 'second-flow'
+  await state.continueManualPicker()
+  assert.equal(state.manualWorkflowID.value, 'second-flow')
+  assert.equal(state.commitOpen.value, true)
+  assert.equal(state.manualPicker.open, false)
+  assert.deepEqual(requests, ['/applications/api/workflows/second-flow/repository-refs'])
+  assert.equal(pending.length, 0)
+  state.changeManualApplication('web')
+  assert.equal(state.manualPicker.workflowID, '')
+})
+
+test('没有执行或应用读取权限时不能从运行页打开手动执行选择', () => {
+  for (const options of [{ allowed: false }, { executeAllowed: false }]) {
+    const { state, requests } = harness(options)
+    state.openManualPicker()
+    assert.equal(state.manualPicker.open, false)
+    assert.deepEqual(requests, [])
+  }
 })
 
 test('应用摘要按运行时间选取最新记录，名称和入口定位该次绑定的流水线', () => {
@@ -296,4 +331,39 @@ test('仅刷新当前抽屉的部署资源，筛选列表不影响详情，关�
   const closed = requests.length
   state.refreshVisibleDeploymentRuntime()
   assert.equal(requests.length, closed, '关闭抽屉后不继续请求资源')
+})
+
+test('失败部署与当前成功实例分开展示，回退保留来源运行、筛选及应用抽屉上下文', () => {
+  const { state, navigation, submissions } = harness()
+  const target = { id: 'target', platform: 'kubernetes', runtime_id: 'cluster', namespace: 'test', workload_name: 'api', container_name: 'api' }
+  state.deploymentPlans.value = [{ id: 'plan', kind: 'kubernetes', deployment_target: target }]
+  const app = state.applications.value[0]
+  app.workflows[0].stages = [{ tasks: [{ type: 'deploy', config: { deployment_plan_id: 'plan' } }] }]
+  const success = { ...target, id: 'good', application_id: 'api', pipeline_run_id: 'old-run', deployment_plan_id: 'plan', target_id: 'target', status: 'succeeded', image: 'registry/api@good', created_at: '2026-10-24T01:00:00Z' }
+  const failed = { ...success, id: 'failed', pipeline_run_id: 'failed-run', status: 'failed', image: 'registry/api@bad', created_at: '2026-10-24T01:01:00Z' }
+  state.deployments.value = [success, failed]
+  state.runs.value = [{ id: 'failed-run', application_id: 'api', status: 'failed' }]
+  const card = state.applicationCards.value[0]
+  state.toggleApplicationDetails(card, 'deployments')
+  state.applicationSearch.value = 'web'
+  state.applicationPageState.current = 2
+  assert.deepEqual(card.deploymentInstances.map(item => item.id), ['good'])
+  assert.deepEqual(state.failedApplicationDeployments(app).map(item => item.id), ['failed'])
+  state.openDeploymentRollback(failed)
+  assert.equal(state.rollbackDialog.sourceID, 'failed')
+  assert.equal(state.rollbackDialog.pipelineRunID, 'failed-run')
+  assert.deepEqual(submissions, [], '打开回退入口本身不能写入')
+  const task = { ...failed, id: 'rollback', operation: 'rollback', rollback_source_id: failed.id, image: success.image, status: 'queued', created_at: '2026-10-24T01:02:00Z' }
+  state.acceptRollbackRecord(task)
+  assert.deepEqual(state.applicationCards.value[0].deploymentInstances.map(item => item.id), ['good'])
+  assert.equal(state.runs.value[0].status, 'failed', '回退不改写原失败运行')
+  state.deployments.value = state.deployments.value.map(item => item.id === task.id ? { ...task, status: 'succeeded' } : item)
+  state.completeRollbackRecord({ ...task, status: 'succeeded' })
+  assert.deepEqual(state.applicationCards.value[0].deploymentInstances.map(item => item.id), ['rollback'])
+  assert.equal(state.expandedDeployments.value.rollback, true)
+  assert.equal(state.applicationDrawerID.value, 'api')
+  assert.equal(state.applicationDetailTab('api'), 'deployments')
+  assert.equal(state.applicationSearch.value, 'web')
+  assert.equal(state.applicationPageState.current, 2)
+  assert.deepEqual(navigation, [])
 })

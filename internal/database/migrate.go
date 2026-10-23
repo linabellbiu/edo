@@ -349,6 +349,7 @@ var migrations = []migration{
 	{version: "202610240068", up: func(tx *gorm.DB) error {
 		return tx.AutoMigrate(&model.AssistantSettings{}, &model.AssistantConversation{}, &model.AssistantMessage{}, &model.AssistantAction{})
 	}},
+	{version: "202610240069", up: migrateKubernetesDeploymentIdentity},
 }
 
 // migrateRepeatableReleasePlanExecutions 取消“一个发布计划只能执行一次”的旧约束，
