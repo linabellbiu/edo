@@ -17,13 +17,13 @@ import (
 
 	"edo/internal/config"
 	"edo/internal/credential"
-	"edo/internal/database"
 	"edo/internal/deployment"
 	"edo/internal/dockerengine"
 	"edo/internal/kube"
 	"edo/internal/model"
 	"edo/internal/repository"
 	"edo/internal/secret"
+	"edo/internal/testutil"
 )
 
 func TestApplicationOwnsIndependentWorkflows(t *testing.T) {
@@ -428,7 +428,7 @@ func TestDockerHubRegistryUsesFixedEndpoint(t *testing.T) {
 }
 
 func TestDockerHubRegistryRejectsThirdPartyEndpoint(t *testing.T) {
-	service, _, _, _ := newPipelineTestService(t)
+	service, _ := newPipelineMockService(t)
 	_, err := service.CreateRegistry(context.Background(), "admin", RegistryInput{
 		Name: "错误类型", Provider: model.RegistryDockerHub,
 		Endpoint: "https://registry.cn-shenzhen.aliyuncs.com", Namespace: "edo-team",
@@ -439,7 +439,7 @@ func TestDockerHubRegistryRejectsThirdPartyEndpoint(t *testing.T) {
 }
 
 func TestCreateRegistryReturnsFieldSpecificValidationErrors(t *testing.T) {
-	service, _, _, _ := newPipelineTestService(t)
+	service, _ := newPipelineMockService(t)
 	tests := []struct {
 		name  string
 		input RegistryInput
@@ -979,17 +979,7 @@ func createTestImageRegistry(t *testing.T, service *Service, name string) *model
 func newPipelineTestService(t *testing.T) (*Service, *gorm.DB, *secret.Manager, string) {
 	t.Helper()
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	db, err := database.Open(context.Background(), config.Database{
-		Driver: "sqlite", DSN: "file:" + t.Name() + "?mode=memory&cache=shared",
-		MaxOpenConns: 1, MaxIdleConns: 1, ConnMaxLifetime: time.Minute,
-	}, logger)
-	if err != nil {
-		t.Fatalf("打开流水线测试数据库失败: %v", err)
-	}
-	t.Cleanup(func() { _ = database.Close(db) })
-	if err := database.Migrate(context.Background(), db); err != nil {
-		t.Fatalf("迁移流水线测试数据库失败: %v", err)
-	}
+	db := testutil.NewDatabase(t)
 	key := base64.StdEncoding.EncodeToString([]byte("0123456789abcdef0123456789abcdef"))
 	secretManager, err := secret.New(key)
 	if err != nil {

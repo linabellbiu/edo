@@ -7,6 +7,7 @@ import (
 	"errors"
 	"log/slog"
 	"strings"
+	"sync"
 	"time"
 
 	"gorm.io/gorm"
@@ -36,13 +37,19 @@ type LoginService struct {
 	dummyHash string
 }
 
+// 未知账号的占位摘要只需生成一次；每次登录仍执行等成本的真实密码校验。
+// 不缓存用户密码或用户摘要，也不改变 Argon2id 参数与随机盐生成规则。
+var loginDummyHash = sync.OnceValues(func() (string, error) {
+	return auth.HashPassword("edo-invalid-password-placeholder")
+})
+
 func NewLoginService(
 	accounts *Service,
 	sessions *auth.SessionStore,
 	limiter *auth.LoginRateLimiter,
 	logger *slog.Logger,
 ) (*LoginService, error) {
-	dummyHash, err := auth.HashPassword("edo-invalid-password-placeholder")
+	dummyHash, err := loginDummyHash()
 	if err != nil {
 		return nil, err
 	}

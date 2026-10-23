@@ -1194,6 +1194,12 @@ func TestEnvironmentHostMigrationBackfillsLegacyMembership(t *testing.T) {
 }
 
 func TestExternalDatabaseMigration(t *testing.T) {
+	selected := os.Getenv("EDO_TEST_DATABASE_DRIVER")
+	switch selected {
+	case "", "sqlite", "postgres", "mysql":
+	default:
+		t.Fatal("数据库测试驱动必须为 sqlite、postgres 或 mysql")
+	}
 	tests := []struct {
 		name   string
 		driver string
@@ -1204,8 +1210,15 @@ func TestExternalDatabaseMigration(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
+			// CI 指定驱动时必须真实执行，缺少连接配置不能静默跳过而假绿。
+			if selected != "" && selected != test.driver {
+				t.Skip("当前任务验证其他数据库")
+			}
 			dsn := os.Getenv(test.env)
 			if dsn == "" {
+				if selected == test.driver {
+					t.Fatalf("数据库兼容性任务缺少 %s", test.env)
+				}
 				t.Skipf("未设置 %s", test.env)
 			}
 			ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)

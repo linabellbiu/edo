@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -16,9 +15,9 @@ import (
 	"time"
 
 	"edo/internal/config"
-	"edo/internal/database"
 	"edo/internal/model"
 	"edo/internal/secret"
+	"edo/internal/testutil"
 )
 
 const safeKubeconfig = `apiVersion: v1
@@ -194,19 +193,7 @@ func TestPingHonorsContextDeadline(t *testing.T) {
 
 func newKubeTestService(t *testing.T, requestTimeout time.Duration) *Service {
 	t.Helper()
-	ctx := context.Background()
-	dsn := "file:" + strings.ReplaceAll(t.Name(), "/", "_") + "?mode=memory&cache=shared"
-	db, err := database.Open(ctx, config.Database{
-		Driver: "sqlite", DSN: dsn,
-		MaxOpenConns: 1, MaxIdleConns: 1, ConnMaxLifetime: time.Minute,
-	}, slog.New(slog.NewTextHandler(io.Discard, nil)))
-	if err != nil {
-		t.Fatalf("打开 Kubernetes 测试数据库失败: %v", err)
-	}
-	t.Cleanup(func() { database.Close(db) })
-	if err := database.Migrate(ctx, db); err != nil {
-		t.Fatalf("迁移 Kubernetes 测试数据库失败: %v", err)
-	}
+	db := testutil.NewDatabase(t)
 	manager, err := secret.New(base64.StdEncoding.EncodeToString([]byte("0123456789abcdef0123456789abcdef")))
 	if err != nil {
 		t.Fatalf("初始化 Kubernetes 测试密钥失败: %v", err)

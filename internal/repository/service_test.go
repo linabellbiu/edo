@@ -9,8 +9,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
-	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -22,9 +20,9 @@ import (
 
 	"edo/internal/config"
 	"edo/internal/credential"
-	"edo/internal/database"
 	"edo/internal/model"
 	"edo/internal/secret"
+	"edo/internal/testutil"
 )
 
 func TestRepositorySecretsAreEncryptedAndURLsAreValidated(t *testing.T) {
@@ -675,18 +673,7 @@ func TestRepositoryInputCanBeTestedWithoutSaving(t *testing.T) {
 
 func newRepositoryTestService(t *testing.T) (*Service, *gorm.DB) {
 	t.Helper()
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	db, err := database.Open(context.Background(), config.Database{
-		Driver: "sqlite", DSN: "file:" + t.Name() + "?mode=memory&cache=shared",
-		MaxOpenConns: 1, MaxIdleConns: 1, ConnMaxLifetime: time.Minute,
-	}, logger)
-	if err != nil {
-		t.Fatalf("打开仓库测试数据库失败: %v", err)
-	}
-	t.Cleanup(func() { _ = database.Close(db) })
-	if err := database.Migrate(context.Background(), db); err != nil {
-		t.Fatalf("迁移仓库测试数据库失败: %v", err)
-	}
+	db := testutil.NewDatabase(t)
 	key := base64.StdEncoding.EncodeToString([]byte("0123456789abcdef0123456789abcdef"))
 	secretManager, err := secret.New(key)
 	if err != nil {

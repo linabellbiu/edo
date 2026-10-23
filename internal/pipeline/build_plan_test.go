@@ -100,7 +100,8 @@ func TestBuildPlanCanBeUpdatedDisabledAndSoftDeleted(t *testing.T) {
 }
 
 func TestScriptBuildPlanPreservesExactBytes(t *testing.T) {
-	service, _, _, _ := newPipelineTestService(t)
+	service, mock := newPipelineMockService(t)
+	expectBuildPlanInsert(mock)
 	original := "\n  set -eu\n  printf 'build' > dist/app  \n\n"
 	plan, err := service.CreateBuildPlan(context.Background(), "admin", BuildPlanInput{
 		Name: "保留构建脚本字节", Kind: model.BuildPlanScript,
@@ -118,7 +119,8 @@ func TestScriptBuildPlanPreservesExactBytes(t *testing.T) {
 }
 
 func TestScriptBuildPlanAllowsRunningWithoutSavedArtifact(t *testing.T) {
-	service, _, _, _ := newPipelineTestService(t)
+	service, mock := newPipelineMockService(t)
+	expectBuildPlanInsert(mock)
 	plan, err := service.CreateBuildPlan(context.Background(), "admin", BuildPlanInput{
 		Name: "只执行 Shell 构建", Kind: model.BuildPlanScript,
 		Script: "go test ./...", TimeoutSeconds: 120,
@@ -132,13 +134,14 @@ func TestScriptBuildPlanAllowsRunningWithoutSavedArtifact(t *testing.T) {
 }
 
 func TestScriptBuildPlanRuntimeImageMustBePinned(t *testing.T) {
-	service, _, _, _ := newPipelineTestService(t)
+	service, mock := newPipelineMockService(t)
 	valid := []string{
 		"alpine:3.22",
 		"registry.example.com/team/build:v1.2.3",
 		"alpine@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
 	}
 	for index, runtimeImage := range valid {
+		expectBuildPlanInsert(mock)
 		plan, err := service.CreateBuildPlan(context.Background(), "admin", BuildPlanInput{
 			Name: "固定运行镜像 " + string(rune('A'+index)), Kind: model.BuildPlanScript,
 			Script: "printf done > output", ArtifactPath: "output", RuntimeImage: runtimeImage,
@@ -160,7 +163,7 @@ func TestScriptBuildPlanRuntimeImageMustBePinned(t *testing.T) {
 }
 
 func TestScriptBuildPlanRejectsReservedEnvironmentVariables(t *testing.T) {
-	service, _, _, _ := newPipelineTestService(t)
+	service, _ := newPipelineMockService(t)
 	for _, name := range []string{
 		"CI", "HOME", "TMPDIR", "EDO_PIPELINE_RUN_ID", "EDO_APPLICATION_ID", "EDO_GIT_REF", "EDO_COMMIT_SHA",
 	} {
@@ -176,7 +179,7 @@ func TestScriptBuildPlanRejectsReservedEnvironmentVariables(t *testing.T) {
 }
 
 func TestDockerBuildPlanRejectsDockerRuntimeControlArguments(t *testing.T) {
-	service, _, _, _ := newPipelineTestService(t)
+	service, _ := newPipelineMockService(t)
 	for _, name := range []string{"DOCKER_CONFIG", "DOCKER_HOST", "BUILDX_BUILDER", "BUILDKIT_HOST", "PATH", "HOME"} {
 		_, err := service.CreateBuildPlan(context.Background(), "admin", BuildPlanInput{
 			Name: "非法参数 " + name, Kind: model.BuildPlanDockerfile,

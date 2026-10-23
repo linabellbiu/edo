@@ -7,17 +7,75 @@ on:
 permissions:
   contents: read
 
+# 同一分支或 PR 只保留最新检查，不让过时提交重复占用 Runner。
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
+  # 保留原 test 检查名，避免已有分支保护规则因拆分任务一直等待旧检查。
   test:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 5
+    if: ${{ always() }}
+    needs: [business, database, go-checks, web, docker]
+    steps:
+      - name: 汇总全部检查结果
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+        run: |
+          if ! jq -e 'all(.[]; .result == "success")' <<< "$RESULTS"; then
+            echo "存在失败、取消或跳过的检查，请查看对应任务。"
+            exit 1
+          fi
+
+  business:
+    name: 业务测试（${{ matrix.suite }}）
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    strategy:
+      # 一个分片失败仍收集其他分片结果；不移除竞争检测。
+      fail-fast: false
+      matrix:
+        suite: [core, pipeline, httpapi, kube, repository]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: 业务单元与 SQLite 集成测试
+        shell: bash
+        env:
+          SUITE: ${{ matrix.suite }}
+        run: |
+          if [[ "$SUITE" == core ]]; then
+            packages=$(go list ./... | grep -Ev '^edo/internal/(database|pipeline|httpapi|kube|repository)$')
+          else
+            packages="./internal/$SUITE"
+          fi
+          # Go 的单包超时与 Actions 的任务超时独立，显式设置并保留总时限。
+          go test -race -count=1 -timeout=20m $packages
+
+  database:
+    name: 真实数据库（${{ matrix.driver }}）
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        driver: [sqlite, postgres, mysql]
+    # 数据库只在兼容性任务中启动，空镜像表示当前分片不需要该服务。
+    # 使用 Runner 临时存储和专用测试凭据，绝不连接开发或生产数据库。
     services:
       postgres:
-        image: postgres:17-bookworm
+        image: ${{ matrix.driver == 'postgres' && 'postgres:18-bookworm' || '' }}
         env:
           POSTGRES_USER: edo
           POSTGRES_PASSWORD: edo_test
           POSTGRES_DB: edo
+          TZ: Asia/Shanghai
+          PGTZ: Asia/Shanghai
         ports:
           - 5432:5432
         options: >-
@@ -26,10 +84,11 @@ jobs:
           --health-timeout 3s
           --health-retries 20
       mysql:
-        image: mysql:8.4
+        image: ${{ matrix.driver == 'mysql' && 'mysql:8.4' || '' }}
         env:
           MYSQL_ROOT_PASSWORD: edo_test
           MYSQL_DATABASE: edo
+          TZ: Asia/Shanghai
         ports:
           - 3306:3306
         options: >-
@@ -44,25 +103,66 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
-      - uses: actions/setup-node@v7
-        with:
-          node-version: 24
-          cache: npm
-          cache-dependency-path: web/package-lock.json
-      - name: Go 单元与集成测试
+      - name: 空库迁移、幂等升级与兼容性验证
+        shell: bash
         env:
-          EDO_TEST_POSTGRES_DSN: host=127.0.0.1 port=5432 user=edo password=edo_test dbname=edo sslmode=disable
-          EDO_TEST_MYSQL_DSN: root:edo_test@tcp(127.0.0.1:3306)/edo?charset=utf8mb4&parseTime=True&loc=UTC
-        run: go test -race ./...
+          EDO_TEST_DATABASE_DRIVER: ${{ matrix.driver }}
+          EDO_TEST_POSTGRES_DSN: ${{ matrix.driver == 'postgres' && 'host=127.0.0.1 port=5432 user=edo password=edo_test dbname=edo sslmode=disable TimeZone=Asia/Shanghai' || '' }}
+          EDO_TEST_MYSQL_DSN: ${{ matrix.driver == 'mysql' && 'root:edo_test@tcp(127.0.0.1:3306)/edo?charset=utf8mb4&parseTime=True&loc=Asia%2FShanghai' || '' }}
+        run: |
+          if [[ "$EDO_TEST_DATABASE_DRIVER" == sqlite ]]; then
+            go test -race -count=1 -timeout=20m ./internal/database
+          else
+            go test -race -count=1 -timeout=20m ./internal/database -run '^TestExternalDatabaseMigration$'
+          fi
+
+  go-checks:
+    name: Go 静态检查与构建
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
       - name: Go 静态检查
         run: go vet ./...
       - name: Go 全量构建
         run: go build ./...
       - name: Mage 构建入口测试
-        run: go test -tags mage .
-      - name: Vue 构建
-        run: npm ci --prefix web && npm run build --prefix web
+        run: go test -count=1 -timeout=10m -tags mage .
+
+  web:
+    name: 前端测试与构建
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: 安装前端依赖
+        run: npm ci --prefix web
+      - name: 前端回归测试
+        run: node --test web/tests/*.test.mjs
+      - name: Vue 类型检查与构建
+        run: npm run build --prefix web
+
+  docker:
+    name: Docker 真实构建与发布链路
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
       - name: Dockerfile 与脚本构建到发布的真实链路
         env:
           EDO_TEST_DOCKER_INTEGRATION: "1"
-        run: go test ./internal/dockerengine -run '^Test(DockerBuildAndCompose|ScriptContainer)Integration$' -count=1
+        # 仅在临时 Runner 上创建测试容器，和业务、数据库及前端检查互不阻塞。
+        run: go test ./internal/dockerengine -run '^Test(DockerBuildAndCompose|ScriptContainer)Integration$' -count=1 -timeout=20m

@@ -32,6 +32,7 @@ import (
 	"edo/internal/pipeline"
 	"edo/internal/repository"
 	"edo/internal/secret"
+	"edo/internal/testutil"
 )
 
 func TestReleasePlanExecutionRequiresDeliveryExecute(t *testing.T) {
@@ -363,16 +364,7 @@ type releasePlanExecutionHTTPFixture struct {
 func newReleasePlanExecutionHTTPFixture(t *testing.T, commitSHA string) releasePlanExecutionHTTPFixture {
 	t.Helper()
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	db, err := database.Open(context.Background(), config.Database{
-		Driver: "sqlite", DSN: "file:" + uuid.NewString() + "?mode=memory&cache=shared", MaxOpenConns: 1,
-		MaxIdleConns: 1, ConnMaxLifetime: time.Minute,
-	}, logger)
-	if err != nil {
-		t.Fatalf("打开测试数据库失败: %v", err)
-	}
-	if err := database.Migrate(context.Background(), db); err != nil {
-		t.Fatalf("迁移测试数据库失败: %v", err)
-	}
+	db := testutil.NewDatabase(t)
 	accounts := account.NewService(db)
 	accessService, err := access.NewService(db)
 	if err != nil {
@@ -396,9 +388,7 @@ func newReleasePlanExecutionHTTPFixture(t *testing.T, commitSHA string) releaseP
 		deployment.NewService(db, dockerService, nil, nil, nil, "", logger),
 		logger,
 	)
-	if _, err := accounts.CreateAdmin(context.Background(), "admin", "管理员", "correct horse battery staple"); err != nil {
-		t.Fatalf("创建测试管理员失败: %v", err)
-	}
+	testutil.CreateAdmin(t, db)
 	server := miniredis.RunT(t)
 	redisClient, err := cache.Open(context.Background(), config.Redis{
 		URL: "redis://" + server.Addr() + "/0", KeyPrefix: "edo:", Timeout: time.Second,

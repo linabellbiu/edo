@@ -69,6 +69,12 @@
 
 服务端校验复用官方 client-go 的 `DryRunAll` 与 `FieldValidation: Strict`，不再引入 Go YAML 解析器。编辑投影、资源身份、字段白名单、并发保护和审计仍由 EDO 控制。对比过 RFC 7396 通用 `json-merge-patch` 方案；这里只比较可编辑资源投影中的 JSON 字段，用小型差异函数将明确移除的键转成 null，避免通用全资源补丁越过状态和节点身份边界。数组按整体替换，新增键、删除键、状态版本变化由测试覆盖；这部分维护风险是 Kubernetes 可变字段变化，最终由集群 dry-run 和真实保存共同检查。
 
+## SQL 交互 Mock（仅测试）
+
+采用 [DATA-DOG/go-sqlmock](https://github.com/DATA-DOG/go-sqlmock) v1.5.2（BSD-3-Clause），通过 `database/sql` 接入现有 GORM 驱动，不增加生产服务或运行时依赖。该库成熟稳定，但发布频率较低且上游征集维护者，不应宣称维护活跃；本次仅用于测试调用边界，封装于 `internal/testutil`，便于替换。纯 Go 实现适用于 Linux/macOS，库运行代码仅依赖标准库，体积小；固定版本与校验和，构建成功不代表完成漏洞审计，后续升级需检查上游安全公告及 Go 漏洞库。
+
+评估过 pgxmock 和 go-txdb：前者主要针对 pgx 接口，不直接匹配当前多驱动 GORM 使用方式；后者仍需真实数据库，不能解决业务测试启动外部数据库的成本。这里不自行实现 SQL 驱动，也不让 Mock 模拟数据库约束、方言、权限回调或真实事务隔离；这些继续由独立 SQLite 集成与三种真实数据库迁移测试覆盖。维护风险是 SQL 文本随 GORM 升级改变，预期仅限定当前测试关心的操作，避免复制整套 ORM 实现。详见 [测试说明](testing.md)。
+
 ## 升级原则
 
 - 依赖升级必须通过 `go test -race ./...`、`go vet ./...` 和前端生产构建。

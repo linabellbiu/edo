@@ -3,6 +3,7 @@ module edo
 go 1.26.5
 
 require (
+	github.com/DATA-DOG/go-sqlmock v1.5.2
 	github.com/alicebob/miniredis/v2 v2.38.0
 	github.com/bsm/redislock v0.10.0
 	github.com/caarlos0/env/v11 v11.4.1
