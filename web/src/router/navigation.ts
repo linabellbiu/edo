@@ -60,11 +60,9 @@ export const navigation: NavSection[] = [
           { label: 'k8s.overview', path: '/kubernetes?view=overview', permissions: ['kubernetes.node.read','kubernetes.workload.read','kubernetes.config.read','kubernetes.storage.read','kubernetes.network.read'], icon: LayoutDashboard },
           { label: 'k8s.nodes', path: '/kubernetes?view=nodes', permissions: ['kubernetes.node.read'], icon: Server },
           { label: 'k8s.workloads', path: '/kubernetes?view=workloads', permissions: ['kubernetes.workload.read'], icon: Boxes },
-          { label: 'k8s.config', path: '/kubernetes?view=config', permissions: ['kubernetes.config.read'], icon: Settings },
-          { label: 'k8s.storage', path: '/kubernetes?view=storage', permissions: [], icon: Database, children: [
-            { label: 'k8s.type_storageclasses', path: '/kubernetes?view=storage&resource=storageclasses', permissions: ['kubernetes.storage.read'], icon: Box },
-            { label: 'k8s.type_persistentvolumes', path: '/kubernetes?view=storage&resource=persistentvolumes', permissions: ['kubernetes.storage.read'], icon: Database },
-            { label: 'k8s.type_persistentvolumeclaims', path: '/kubernetes?view=storage&resource=persistentvolumeclaims', permissions: ['kubernetes.storage.read'], icon: Database },
+          { label: 'k8s.configStorage', path: '/kubernetes?section=config-storage', permissions: [], icon: Database, children: [
+            { label: 'k8s.config', path: '/kubernetes?view=config', permissions: ['kubernetes.config.read'], icon: Settings },
+            { label: 'k8s.storage', path: '/kubernetes?view=storage', permissions: ['kubernetes.storage.read'], icon: Database },
           ] },
           { label: 'k8s.network', path: '/kubernetes?view=network', permissions: ['kubernetes.network.read'], icon: Network },
         ] },
@@ -106,7 +104,6 @@ export function findNavigationItem(path: string): NavItem | undefined {
   const target = new URL(path, 'http://edo.local')
   if (target.pathname === '/kubernetes') {
     if (target.searchParams.getAll('view').length !== 1 || !['overview','nodes','workloads','config','storage','network'].includes(target.searchParams.get('view') ?? '')) target.searchParams.set('view', 'overview')
-    if (target.searchParams.get('view') === 'storage' && (target.searchParams.getAll('resource').length !== 1 || !['storageclasses','persistentvolumes','persistentvolumeclaims'].includes(target.searchParams.get('resource') ?? ''))) target.searchParams.set('resource', 'persistentvolumeclaims')
   }
   return flatNavigation().find(item => {
     const candidate = new URL(item.path, 'http://edo.local')
