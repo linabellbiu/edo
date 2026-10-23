@@ -99,7 +99,7 @@ func (s *Service) ListWorkflowTemplates(ctx context.Context) ([]model.ReleaseWor
 
 func (s *Service) GetWorkflowTemplate(ctx context.Context, id string) (*WorkflowTemplateResult, error) {
 	var template model.ReleaseWorkflowTemplate
-	if err := s.db.WithContext(ctx).First(&template, "id = ?", id).Error; err != nil {
+	if err := s.db.WithContext(ctx).First(&template, "uuid = ?", id).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, ErrWorkflowTemplateNotFound
 		}
@@ -152,7 +152,7 @@ func (s *Service) SaveWorkflowTemplate(ctx context.Context, id, actorID string, 
 		return nil, err
 	}
 	var existingForValidation model.ReleaseWorkflowTemplate
-	if err := s.db.WithContext(ctx).First(&existingForValidation, "id = ?", id).Error; err != nil {
+	if err := s.db.WithContext(ctx).First(&existingForValidation, "uuid = ?", id).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, ErrWorkflowTemplateNotFound
 		}
@@ -175,7 +175,7 @@ func (s *Service) SaveWorkflowTemplate(ctx context.Context, id, actorID string, 
 	var saved model.ReleaseWorkflowTemplate
 	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var existing model.ReleaseWorkflowTemplate
-		if err := tx.First(&existing, "id = ?", id).Error; err != nil {
+		if err := tx.First(&existing, "uuid = ?", id).Error; err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
 				return ErrWorkflowTemplateNotFound
 			}
@@ -185,7 +185,7 @@ func (s *Service) SaveWorkflowTemplate(ctx context.Context, id, actorID string, 
 			return ErrWorkflowTemplateRevisionConflict
 		}
 		result := tx.Model(&model.ReleaseWorkflowTemplate{}).
-			Where("id = ? AND revision = ?", id, input.Revision).
+			Where("uuid = ? AND revision = ?", id, input.Revision).
 			Updates(map[string]any{
 				"schema_version": input.SchemaVersion, "name": input.Name, "description": input.Description,
 				"source": string(sourceJSON), "stages": string(stagesJSON),
@@ -201,7 +201,7 @@ func (s *Service) SaveWorkflowTemplate(ctx context.Context, id, actorID string, 
 		if result.RowsAffected != 1 {
 			return ErrWorkflowTemplateRevisionConflict
 		}
-		if err := tx.First(&saved, "id = ?", id).Error; err != nil {
+		if err := tx.First(&saved, "uuid = ?", id).Error; err != nil {
 			return err
 		}
 		if saved.IsActive {
@@ -237,7 +237,7 @@ func syncLinkedApplicationWorkflows(tx *gorm.DB, template *model.ReleaseWorkflow
 	}
 	for i := range workflows {
 		result := tx.Model(&model.ReleaseWorkflow{}).
-			Where("id = ? AND revision = ?", workflows[i].ID, workflows[i].Revision).
+			Where("uuid = ? AND revision = ?", workflows[i].ID, workflows[i].Revision).
 			Updates(map[string]any{
 				"name":           template.Name,
 				"schema_version": template.SchemaVersion,
@@ -258,7 +258,7 @@ func syncLinkedApplicationWorkflows(tx *gorm.DB, template *model.ReleaseWorkflow
 func (s *Service) DeleteWorkflowTemplate(ctx context.Context, id string) error {
 	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var template model.ReleaseWorkflowTemplate
-		if err := tx.First(&template, "id = ?", id).Error; err != nil {
+		if err := tx.First(&template, "uuid = ?", id).Error; err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
 				return ErrWorkflowTemplateNotFound
 			}
@@ -302,7 +302,7 @@ func (s *Service) newApplicationWorkflow(ctx context.Context, application *model
 		return defaultWorkflow(application, actorID, now), nil
 	}
 	var template model.ReleaseWorkflowTemplate
-	if err := s.db.WithContext(ctx).First(&template, "id = ? AND is_active = ?", application.WorkflowTemplateID, true).Error; err != nil {
+	if err := s.db.WithContext(ctx).First(&template, "uuid = ? AND is_active = ?", application.WorkflowTemplateID, true).Error; err != nil {
 		return nil, ErrWorkflowTemplateNotFound
 	}
 	stages := cloneWorkflowStages(template.Stages)

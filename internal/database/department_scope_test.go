@@ -56,11 +56,11 @@ func TestDepartmentScopeFiltersAndAssignsResources(t *testing.T) {
 		t.Fatalf("部门 A 查询或创建归属错误: %#v", departmentA)
 	}
 	var hidden model.Environment
-	if err := db.WithContext(ctxA).First(&hidden, "id = ?", "environment-b").Error; !errors.Is(err, gorm.ErrRecordNotFound) {
+	if err := db.WithContext(ctxA).First(&hidden, "uuid = ?", "environment-b").Error; !errors.Is(err, gorm.ErrRecordNotFound) {
 		t.Fatalf("跨部门详情应按不存在处理，得到 %v", err)
 	}
 	result := db.WithContext(ctxA).Model(&model.Environment{}).
-		Where("id = ?", "environment-b").Update("description", "越权修改")
+		Where("uuid = ?", "environment-b").Update("description", "越权修改")
 	if result.Error != nil || result.RowsAffected != 0 {
 		t.Fatalf("跨部门修改未被拦截: rows=%d err=%v", result.RowsAffected, result.Error)
 	}

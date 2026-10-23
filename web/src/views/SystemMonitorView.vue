@@ -7,6 +7,7 @@ import client from '@/api/client'
 import { apiErrorMessage } from '@/api/resources'
 import PageToolbar from '@/components/PageToolbar.vue'
 import MetricTrend from '@/components/MetricTrend.vue'
+import FailedTasksMetric from '@/components/FailedTasksMetric.vue'
 import { useAuthStore } from '@/stores/auth'
 import type { MetricsHistory, SystemMetrics } from '@/types/systemMetrics'
 import { formatMetric, mergeMetricsHistory, metricValue, monitorMetrics, type MetricDefinition } from '@/utils/systemMetrics'
@@ -155,8 +156,9 @@ onBeforeUnmount(() => {
               <component v-else :is="panel.icon" />
             </header>
             <dl><div v-for="item in panel.definitions" :key="item.key">
-              <dt>{{ item.name }}</dt><dd :class="{ danger: ['failed', 'dead'].includes(item.key) }">{{ currentValue(item) }}</dd>
-              <MetricTrend :history="history" :definitions="[item]" />
+              <FailedTasksMetric v-if="item.key === 'failed'" :count="metricValue(metrics, item)" :label="item.name" :display="currentValue(item)"><MetricTrend :history="history" :definitions="[item]" /></FailedTasksMetric>
+              <template v-else><dt>{{ item.name }}</dt><dd :class="{ danger: ['failed', 'dead'].includes(item.key) }">{{ currentValue(item) }}</dd>
+              <MetricTrend :history="history" :definitions="[item]" /></template>
             </div></dl>
           </article>
         </div>

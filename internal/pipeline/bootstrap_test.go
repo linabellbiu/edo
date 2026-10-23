@@ -22,7 +22,7 @@ func TestEnsureInitialDeliverySettingsCreatesCompleteLocalDockerFlow(t *testing.
 	}
 
 	var environment model.Environment
-	if err := db.First(&environment, "id = ?", initialDeploymentEnvironmentID).Error; err != nil {
+	if err := db.First(&environment, "uuid = ?", initialDeploymentEnvironmentID).Error; err != nil {
 		t.Fatal(err)
 	}
 	if environment.Description != "" {
@@ -153,7 +153,7 @@ func TestInitialDeliveryUsesBuiltinLocalDockerRuntime(t *testing.T) {
 		t.Fatal(err)
 	}
 	var plan model.DeploymentPlan
-	if err := service.db.Preload("DeploymentTarget").First(&plan, "id = ?", settings.DeploymentPlanID).Error; err != nil {
+	if err := service.db.Preload("DeploymentTarget").First(&plan, "uuid = ?", settings.DeploymentPlanID).Error; err != nil {
 		t.Fatal(err)
 	}
 	if plan.DeploymentTarget == nil || plan.DeploymentTarget.RuntimeID != dockerengine.LocalEndpointID ||

@@ -86,19 +86,19 @@ func TestCopyDatabaseSnapshotCopiesAllRowsWithoutSchemaHistory(t *testing.T) {
 		t.Fatalf("复制数据快照失败: %v", err)
 	}
 	var copiedDefaults model.DeliveryDefault
-	if err := target.First(&copiedDefaults, "id = ?", defaults.ID).Error; err != nil || copiedDefaults.Version != 7 || copiedDefaults.DeploymentPlanID != defaults.DeploymentPlanID {
+	if err := target.First(&copiedDefaults, "uuid = ?", defaults.ID).Error; err != nil || copiedDefaults.Version != 7 || copiedDefaults.DeploymentPlanID != defaults.DeploymentPlanID {
 		t.Fatalf("默认发布方案未完整迁移: %+v %v", copiedDefaults, err)
 	}
 
 	var copiedUser model.User
-	if err := target.First(&copiedUser, "id = ?", user.ID).Error; err != nil {
+	if err := target.First(&copiedUser, "uuid = ?", user.ID).Error; err != nil {
 		t.Fatalf("目标库未找到用户: %v", err)
 	}
 	if copiedUser.AuthVersion != user.AuthVersion || copiedUser.Username != user.Username {
 		t.Fatalf("用户数据不一致: %+v", copiedUser)
 	}
 	var copiedHost model.Host
-	if err := target.First(&copiedHost, "id = ?", host.ID).Error; err != nil {
+	if err := target.First(&copiedHost, "uuid = ?", host.ID).Error; err != nil {
 		t.Fatalf("目标库未找到主机: %v", err)
 	}
 	if copiedHost.SSHCredentialCiphertext != host.SSHCredentialCiphertext {
@@ -111,7 +111,7 @@ func TestCopyDatabaseSnapshotCopiesAllRowsWithoutSchemaHistory(t *testing.T) {
 		t.Fatalf("目标库未找到环境主机关联: %v", err)
 	}
 	var copiedEndpoint model.DockerEndpoint
-	if err := target.First(&copiedEndpoint, "id = ?", endpoint.ID).Error; err != nil {
+	if err := target.First(&copiedEndpoint, "uuid = ?", endpoint.ID).Error; err != nil {
 		t.Fatalf("目标库未找到 Docker 连接: %v", err)
 	}
 	var copiedCapability model.HostCapability

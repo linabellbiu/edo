@@ -17,6 +17,15 @@ type taskHandler struct {
 	logger  *slog.Logger
 }
 
+func (h taskHandler) get(c *gin.Context) {
+	item, err := h.service.Get(c.Request.Context(), c.Param("id"))
+	if err != nil {
+		h.writeError(c, "task_get", err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"task": item})
+}
+
 func (h taskHandler) list(c *gin.Context) {
 	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "100"))
 	items, err := h.service.List(c.Request.Context(), model.JobStatus(c.Query("status")), limit)

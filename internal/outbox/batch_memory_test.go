@@ -180,7 +180,7 @@ func TestPublishBatchPreservesExhaustedRetryAndJobFailure(t *testing.T) {
 	if err := db.First(&event).Error; err != nil {
 		t.Fatal(err)
 	}
-	if err := db.First(&job, "id = ?", job.ID).Error; err != nil {
+	if err := db.First(&job, "uuid = ?", job.ID).Error; err != nil {
 		t.Fatal(err)
 	}
 	if sent != 1 || event.PublishAttempts != 4 || event.FailedAt == nil || event.PublishedAt != nil ||

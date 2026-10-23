@@ -657,7 +657,7 @@ func TestRemovingHostDoesNotTreatIndependentKubernetesTargetAsHostReference(t *t
 	if err := service.Remove(ctx, created.Host.ID); err != nil {
 		t.Fatalf("独立 Kubernetes 集群目标不应阻止删除主机关系: %v", err)
 	}
-	if err := db.First(&target, "id = ?", target.ID).Error; err != nil {
+	if err := db.First(&target, "uuid = ?", target.ID).Error; err != nil {
 		t.Fatalf("删除主机不应删除独立集群发布目标: %v", err)
 	}
 }
@@ -687,7 +687,7 @@ func TestListStatusesReturnsOnlyCurrentHostState(t *testing.T) {
 	if err := db.Create(&hosts).Error; err != nil {
 		t.Fatalf("创建状态测试主机失败: %v", err)
 	}
-	if err := db.Model(&model.Host{}).Where("id = ?", hosts[1].ID).Update("is_active", false).Error; err != nil {
+	if err := db.Model(&model.Host{}).Where("uuid = ?", hosts[1].ID).Update("is_active", false).Error; err != nil {
 		t.Fatalf("停用状态测试主机失败: %v", err)
 	}
 	capability := model.HostCapability{

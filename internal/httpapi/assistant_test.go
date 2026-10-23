@@ -148,7 +148,7 @@ func TestAssistantHTTPPermissionsDraftSettingsAndIsolation(t *testing.T) {
 	input.APIKey, input.ExpectedVersion = "fixture-private-api-key", view.Version
 	view = f.save(t, input)
 	var encrypted model.AssistantSettings
-	if err := f.db.First(&encrypted, "id = ?", "global").Error; err != nil {
+	if err := f.db.First(&encrypted, "uuid = ?", "global").Error; err != nil {
 		t.Fatal(err)
 	}
 	plain, err := f.secrets.Decrypt(encrypted.APIKeyCiphertext, []byte("assistant:global:api_key"))
@@ -162,7 +162,7 @@ func TestAssistantHTTPPermissionsDraftSettingsAndIsolation(t *testing.T) {
 	input.APIKey, input.ExpectedVersion, input.Model = "", view.Version, "http-updated-model"
 	view = f.save(t, input)
 	var kept model.AssistantSettings
-	if err := f.db.First(&kept, "id = ?", "global").Error; err != nil || kept.APIKeyCiphertext != encrypted.APIKeyCiphertext || !view.HasAPIKey {
+	if err := f.db.First(&kept, "uuid = ?", "global").Error; err != nil || kept.APIKeyCiphertext != encrypted.APIKeyCiphertext || !view.HasAPIKey {
 		t.Fatalf("空密钥输入未保留原密钥: %v", err)
 	}
 	conflict := performJSONRequest(t, f.router, http.MethodPut, "/api/v1/settings/assistant", input, f.admin)
@@ -175,7 +175,7 @@ func TestAssistantHTTPPermissionsDraftSettingsAndIsolation(t *testing.T) {
 		t.Fatal("明确清除后仍报告存在密钥")
 	}
 	var cleared model.AssistantSettings
-	if err := f.db.First(&cleared, "id = ?", "global").Error; err != nil || cleared.APIKeyCiphertext != "" {
+	if err := f.db.First(&cleared, "uuid = ?", "global").Error; err != nil || cleared.APIKeyCiphertext != "" {
 		t.Fatalf("明确清除未删除密文: %v", err)
 	}
 	otherCookie := f.session(t, true)
@@ -341,7 +341,7 @@ func TestAssistantHTTPRealEinoSSEAndSessionRevocation(t *testing.T) {
 	deadline := time.Now().Add(2 * time.Second)
 	for {
 		var row model.AssistantConversation
-		if err := f.db.First(&row, "id = ?", blockedID).Error; err != nil {
+		if err := f.db.First(&row, "uuid = ?", blockedID).Error; err != nil {
 			t.Fatal(err)
 		}
 		if row.LeaseUntil == nil {

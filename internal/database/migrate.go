@@ -350,6 +350,16 @@ var migrations = []migration{
 		return tx.AutoMigrate(&model.AssistantSettings{}, &model.AssistantConversation{}, &model.AssistantMessage{}, &model.AssistantAction{})
 	}},
 	{version: "202610240069", up: migrateKubernetesDeploymentIdentity},
+	{version: "202610240070", up: func(tx *gorm.DB) error {
+		for _, value := range persistedIdentityModels {
+			if !tx.Migrator().HasTable(value) {
+				if err := tx.AutoMigrate(value); err != nil {
+					return err
+				}
+			}
+		}
+		return verifyRowIdentities(tx)
+	}},
 }
 
 // migrateRepeatableReleasePlanExecutions 取消“一个发布计划只能执行一次”的旧约束，
@@ -464,7 +474,7 @@ func migrateDepartmentDataScope(tx *gorm.DB) error {
 		ID: DefaultDepartmentID, Name: "默认部门", Description: "公司初始部门",
 		IsActive: true, CreatedAt: now, UpdatedAt: now,
 	}
-	if err := tx.Where("id = ?", DefaultDepartmentID).FirstOrCreate(&defaultDepartment).Error; err != nil {
+	if err := tx.Where("uuid = ?", DefaultDepartmentID).FirstOrCreate(&defaultDepartment).Error; err != nil {
 		return fmt.Errorf("初始化默认部门失败: %w", err)
 	}
 	departmentModels := []any{
@@ -571,11 +581,11 @@ func migrateApplicationRuntimeControls(tx *gorm.DB) error {
 	return tx.Exec(`UPDATE deployment_records
 		SET application_id = (
 			SELECT pipeline_runs.application_id FROM pipeline_runs
-			WHERE pipeline_runs.id = deployment_records.pipeline_run_id
+			WHERE pipeline_runs.uuid = deployment_records.pipeline_run_id
 		)
 		WHERE application_id = '' AND pipeline_run_id <> ''
 		AND EXISTS (
-			SELECT 1 FROM pipeline_runs WHERE pipeline_runs.id = deployment_records.pipeline_run_id
+			SELECT 1 FROM pipeline_runs WHERE pipeline_runs.uuid = deployment_records.pipeline_run_id
 		)`).Error
 }
 
@@ -588,7 +598,7 @@ func migrateLinkedWorkflowNames(tx *gorm.DB) error {
 	}
 
 	var workflows []model.ReleaseWorkflow
-	if err := tx.Select("id", "workflow_template_id", "name").
+	if err := tx.Select("uuid", "workflow_template_id", "name").
 		Where("workflow_template_id <> ?", "").Find(&workflows).Error; err != nil {
 		return fmt.Errorf("查询关联公共方案的流水线失败: %w", err)
 	}
@@ -606,7 +616,7 @@ func migrateLinkedWorkflowNames(tx *gorm.DB) error {
 		templateIDs = append(templateIDs, workflows[i].WorkflowTemplateID)
 	}
 	var templates []model.ReleaseWorkflowTemplate
-	if err := tx.Select("id", "name").Where("id IN ?", templateIDs).Find(&templates).Error; err != nil {
+	if err := tx.Select("uuid", "name").Where("uuid IN ?", templateIDs).Find(&templates).Error; err != nil {
 		return fmt.Errorf("查询流水线公共方案名称失败: %w", err)
 	}
 	templateNames := make(map[string]string, len(templates))
@@ -619,7 +629,7 @@ func migrateLinkedWorkflowNames(tx *gorm.DB) error {
 			continue
 		}
 		if err := tx.Model(&model.ReleaseWorkflow{}).
-			Where("id = ? AND workflow_template_id = ?", workflows[i].ID, workflows[i].WorkflowTemplateID).
+			Where("uuid = ? AND workflow_template_id = ?", workflows[i].ID, workflows[i].WorkflowTemplateID).
 			Update("name", name).Error; err != nil {
 			return fmt.Errorf("修正关联流水线名称失败: %w", err)
 		}
@@ -646,7 +656,7 @@ func migrateImageRegistryProviderSemantics(tx *gorm.DB) error {
 		} else {
 			updates["provider"] = model.RegistryGeneric
 		}
-		if err := tx.Model(&model.ImageRegistry{}).Where("id = ?", registries[i].ID).Updates(updates).Error; err != nil {
+		if err := tx.Model(&model.ImageRegistry{}).Where("uuid = ?", registries[i].ID).Updates(updates).Error; err != nil {
 			return fmt.Errorf("修正镜像仓库类型失败: %w", err)
 		}
 	}
@@ -1017,7 +1027,7 @@ func migrateEnvironmentHosts(tx *gorm.DB) error {
 		CreatedAt     time.Time `gorm:"column:created_at"`
 	}
 	if err := tx.Model(&model.Host{}).
-		Select("id AS host_id", "environment_id", "created_at").
+		Select("uuid AS host_id", "environment_id", "created_at").
 		Where("environment_id <> ''").
 		Scan(&legacy).Error; err != nil {
 		return err
@@ -1080,14 +1090,14 @@ func migrateSSHDeploymentTargets(tx *gorm.DB) error {
 	}
 	for i := range targets {
 		var endpoint model.DockerEndpoint
-		if err := tx.Select("host_id").First(&endpoint, "id = ?", targets[i].RuntimeID).Error; err != nil {
+		if err := tx.Select("host_id").First(&endpoint, "uuid = ?", targets[i].RuntimeID).Error; err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
 				continue
 			}
 			return err
 		}
 		if endpoint.HostID != "" {
-			if err := tx.Model(&model.DeploymentTarget{}).Where("id = ?", targets[i].ID).Update("host_id", endpoint.HostID).Error; err != nil {
+			if err := tx.Model(&model.DeploymentTarget{}).Where("uuid = ?", targets[i].ID).Update("host_id", endpoint.HostID).Error; err != nil {
 				return err
 			}
 		}
@@ -1143,13 +1153,13 @@ func migrateHostsAndEnvironments(tx *gorm.DB) error {
 		SSHPort: 22, IsBuiltin: true, IsActive: true, CreatedBy: "system",
 		CreatedAt: now, UpdatedAt: now,
 	}
-	createLocalHost := tx.Where("id = ?", localHost.ID).FirstOrCreate(&localHost)
+	createLocalHost := tx.Where("uuid = ?", localHost.ID).FirstOrCreate(&localHost)
 	if createLocalHost.Error != nil {
 		return createLocalHost.Error
 	}
 	// 只迁移历史版本写入的精确默认名，不覆盖管理员后续设置的自定义名称。
 	if localHost.Name == "EDO 本机" {
-		if err := tx.Model(&model.Host{}).Where("id = ? AND name = ?", localHost.ID, "EDO 本机").
+		if err := tx.Model(&model.Host{}).Where("uuid = ? AND name = ?", localHost.ID, "EDO 本机").
 			Updates(map[string]any{"name": "本地", "updated_at": now}).Error; err != nil {
 			return err
 		}
@@ -1201,7 +1211,7 @@ func migrateLegacySSHDockerHosts(tx *gorm.DB, now time.Time) error {
 			CreatedAt: endpoint.CreatedAt, UpdatedAt: endpoint.UpdatedAt,
 		}
 		var count int64
-		if err := tx.Model(&model.Host{}).Where("id = ?", host.ID).Count(&count).Error; err != nil {
+		if err := tx.Model(&model.Host{}).Where("uuid = ?", host.ID).Count(&count).Error; err != nil {
 			return err
 		}
 		if count == 0 {
@@ -1217,7 +1227,7 @@ func migrateLegacySSHDockerHosts(tx *gorm.DB, now time.Time) error {
 			FirstOrCreate(&capability).Error; err != nil {
 			return err
 		}
-		if err := tx.Model(&model.DockerEndpoint{}).Where("id = ? AND host_id = ''", endpoint.ID).
+		if err := tx.Model(&model.DockerEndpoint{}).Where("uuid = ? AND host_id = ''", endpoint.ID).
 			Update("host_id", host.ID).Error; err != nil {
 			return err
 		}
@@ -1378,6 +1388,10 @@ func migrateReleasePlanning(tx *gorm.DB) error {
 }
 
 func Migrate(ctx context.Context, db *gorm.DB) error {
+	if err := migrateRowIdentities(ctx, db); err != nil {
+		return fmt.Errorf("升级数据库行号失败: %w", err)
+	}
+
 	if err := db.WithContext(ctx).AutoMigrate(&model.SchemaMigration{}); err != nil {
 		return fmt.Errorf("初始化迁移记录失败: %w", err)
 	}

@@ -85,7 +85,7 @@ func TestRunHostDeploymentScriptExecutesLocalSnapshot(t *testing.T) {
 	if err := db.Create(&environment).Error; err != nil {
 		t.Fatalf("创建本地命令测试环境失败: %v", err)
 	}
-	if err := db.Model(&model.Host{}).Where("id = ?", model.BuiltinLocalHostID).
+	if err := db.Model(&model.Host{}).Where("uuid = ?", model.BuiltinLocalHostID).
 		Update("is_active", true).Error; err != nil {
 		t.Fatalf("绑定本地主机测试环境失败: %v", err)
 	}
@@ -109,7 +109,7 @@ func TestRunHostDeploymentScriptExecutesLocalSnapshot(t *testing.T) {
 		t.Fatalf("初始化测试密钥失败: %v", err)
 	}
 	service := NewService(db, secretManager, config.Runtime{})
-	if err := db.Model(&model.Environment{}).Where("id = ?", environment.ID).
+	if err := db.Model(&model.Environment{}).Where("uuid = ?", environment.ID).
 		Update("level", model.EnvironmentProduction).Error; err != nil {
 		t.Fatalf("修改旧环境安全级别兼容列失败: %v", err)
 	}

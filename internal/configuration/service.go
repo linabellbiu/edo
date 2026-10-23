@@ -221,7 +221,7 @@ func (s *Service) Update(ctx context.Context, id, actorID string, input UpdateIn
 	var updated model.Configuration
 	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var current model.Configuration
-		if err := tx.First(&current, "id = ?", id).Error; err != nil {
+		if err := tx.First(&current, "uuid = ?", id).Error; err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
 				return ErrConfigurationNotFound
 			}
@@ -237,7 +237,7 @@ func (s *Service) Update(ctx context.Context, id, actorID string, input UpdateIn
 		now := time.Now().UTC()
 		nextVersion := current.Version + 1
 		result := tx.Model(&model.Configuration{}).
-			Where("id = ? AND version = ?", current.ID, current.Version).
+			Where("uuid = ? AND version = ?", current.ID, current.Version).
 			Updates(map[string]any{
 				"value": value, "secret_ciphertext": ciphertext, "is_secret": input.IsSecret,
 				"version": nextVersion, "updated_by": actorID, "updated_at": now,
@@ -272,7 +272,7 @@ func (s *Service) SetActive(ctx context.Context, id, actorID string, active bool
 	}
 	var updated model.Configuration
 	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		if err := tx.First(&updated, "id = ?", id).Error; err != nil {
+		if err := tx.First(&updated, "uuid = ?", id).Error; err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
 				return ErrConfigurationNotFound
 			}
@@ -282,7 +282,7 @@ func (s *Service) SetActive(ctx context.Context, id, actorID string, active bool
 			return ErrVersionConflict
 		}
 		now := time.Now().UTC()
-		result := tx.Model(&model.Configuration{}).Where("id = ? AND version = ?", id, expectedVersion).
+		result := tx.Model(&model.Configuration{}).Where("uuid = ? AND version = ?", id, expectedVersion).
 			Updates(map[string]any{"is_active": active, "version": expectedVersion + 1, "updated_by": actorID, "updated_at": now})
 		if result.Error != nil {
 			return result.Error
@@ -308,7 +308,7 @@ func (s *Service) Revisions(ctx context.Context, id string, limit int) ([]Revisi
 		limit = 50
 	}
 	var count int64
-	if err := s.db.WithContext(ctx).Model(&model.Configuration{}).Where("id = ?", id).Count(&count).Error; err != nil {
+	if err := s.db.WithContext(ctx).Model(&model.Configuration{}).Where("uuid = ?", id).Count(&count).Error; err != nil {
 		return nil, fmt.Errorf("查询配置失败: %w", err)
 	}
 	if count == 0 {
@@ -564,7 +564,7 @@ func (s *Service) UpdateRuntimeLoggingSettings(
 		}
 		now := time.Now().UTC()
 		nextVersion := current.Version + 1
-		result := tx.Model(&model.Configuration{}).Where("id = ? AND version = ?", current.ID, current.Version).
+		result := tx.Model(&model.Configuration{}).Where("uuid = ? AND version = ?", current.ID, current.Version).
 			Updates(map[string]any{
 				"value": string(encoded), "secret_ciphertext": "", "is_secret": false,
 				"is_active": true, "version": nextVersion, "updated_by": actorID, "updated_at": now,
@@ -740,7 +740,7 @@ func (s *Service) updateSystemJSONSettings(
 		}
 		now := time.Now().UTC()
 		nextVersion := current.Version + 1
-		result := tx.Model(&model.Configuration{}).Where("id = ? AND version = ?", current.ID, current.Version).
+		result := tx.Model(&model.Configuration{}).Where("uuid = ? AND version = ?", current.ID, current.Version).
 			Updates(map[string]any{
 				"value": value, "secret_ciphertext": "", "is_secret": false, "is_active": true,
 				"version": nextVersion, "updated_by": actorID, "updated_at": now,
@@ -844,7 +844,7 @@ func (s *Service) UpdateLogRetentionSettings(
 		}
 		now := time.Now().UTC()
 		nextVersion := current.Version + 1
-		result := tx.Model(&model.Configuration{}).Where("id = ? AND version = ?", current.ID, current.Version).
+		result := tx.Model(&model.Configuration{}).Where("uuid = ? AND version = ?", current.ID, current.Version).
 			Updates(map[string]any{
 				"value": string(encoded), "secret_ciphertext": "", "is_secret": false,
 				"is_active": true, "version": nextVersion, "updated_by": actorID, "updated_at": now,
@@ -953,7 +953,7 @@ func (s *Service) updateSystemBooleanSettings(
 		now := time.Now().UTC()
 		nextVersion := current.Version + 1
 		result := tx.Model(&model.Configuration{}).
-			Where("id = ? AND version = ?", current.ID, current.Version).
+			Where("uuid = ? AND version = ?", current.ID, current.Version).
 			Updates(map[string]any{
 				"value": value, "secret_ciphertext": "", "is_secret": false, "is_active": true,
 				"version": nextVersion, "updated_by": actorID, "updated_at": now,

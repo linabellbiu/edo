@@ -166,7 +166,7 @@ func TestEmailSettingsPreservePasswordAndRejectInsecureTransport(t *testing.T) {
 		t.Fatal("配置更新后旧验证码仍可使用")
 	}
 	var stored model.IdentityProvider
-	db.First(&stored, "id = ?", view.ID)
+	db.First(&stored, "uuid = ?", view.ID)
 	settings, err := s.emailSettings(&stored)
 	if err != nil || settings.Password == nil || *settings.Password != "smtp-test-password" {
 		t.Fatal("未保留原邮件密码")

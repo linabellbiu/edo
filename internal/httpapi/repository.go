@@ -217,8 +217,7 @@ func (h repositoryHandler) listDeliveries(c *gin.Context) {
 	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "50"))
 	deliveries, err := h.service.ListDeliveries(c.Request.Context(), c.Param("id"), limit)
 	if err != nil {
-		h.logger.Error("查询 Webhook 投递记录失败", "operation", "repository_delivery_list", "request_id", requestIDFrom(c), "repository_id", c.Param("id"), "err", err)
-		writeInternalError(c)
+		h.writeServiceError(c, "repository_delivery_list", err)
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"deliveries": deliveries})

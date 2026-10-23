@@ -148,7 +148,7 @@ func TestProjectRoleCannotGrantPlatformPermissionAfterRoleEdit(t *testing.T) {
 		t.Fatal(err)
 	}
 	var stored model.User
-	if err = s.db.First(&stored, "id = ?", user.ID).Error; err != nil {
+	if err = s.db.First(&stored, "uuid = ?", user.ID).Error; err != nil {
 		t.Fatal(err)
 	}
 	if stored.IsActive {

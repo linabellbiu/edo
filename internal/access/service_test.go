@@ -197,7 +197,7 @@ func TestSetUserAccessIsAtomicAndDepartmentScoped(t *testing.T) {
 	}
 
 	var beforeSyncFailure model.User
-	if err := db.First(&beforeSyncFailure, "id = ?", user.ID).Error; err != nil {
+	if err := db.First(&beforeSyncFailure, "uuid = ?", user.ID).Error; err != nil {
 		t.Fatalf("读取同步失败前用户状态失败: %v", err)
 	}
 	service.watcher = &countingAccessWatcher{err: errors.New("测试策略广播失败")}
@@ -205,7 +205,7 @@ func TestSetUserAccessIsAtomicAndDepartmentScoped(t *testing.T) {
 		t.Fatalf("权限同步失败未返回已保存且停用提示: %v", err)
 	}
 	var afterSyncFailure model.User
-	if err := db.First(&afterSyncFailure, "id = ?", user.ID).Error; err != nil {
+	if err := db.First(&afterSyncFailure, "uuid = ?", user.ID).Error; err != nil {
 		t.Fatalf("读取同步失败后用户状态失败: %v", err)
 	}
 	if afterSyncFailure.IsActive || afterSyncFailure.AuthVersion <= beforeSyncFailure.AuthVersion {
@@ -216,7 +216,7 @@ func TestSetUserAccessIsAtomicAndDepartmentScoped(t *testing.T) {
 		t.Fatalf("创建后同步失败未保留已创建结果: user=%+v err=%v", createdWithPendingSync, err)
 	}
 	var storedPendingUser model.User
-	if err := db.First(&storedPendingUser, "id = ?", createdWithPendingSync.ID).Error; err != nil || !storedPendingUser.IsActive {
+	if err := db.First(&storedPendingUser, "uuid = ?", createdWithPendingSync.ID).Error; err != nil || !storedPendingUser.IsActive {
 		t.Fatalf("同步待恢复用户未正确保存: user=%+v err=%v", storedPendingUser, err)
 	}
 }
@@ -418,7 +418,7 @@ func TestDeleteUserCleansIdentityButKeepsSharedRoles(t *testing.T) {
 	if err := service.DeleteUser(ctx, user.ID); !errors.Is(err, account.ErrUserCredentialUsed) {
 		t.Fatalf("仍被仓库引用的用户令牌未阻止删除: %v", err)
 	}
-	if err := db.Model(&model.GitRepository{}).Where("id = ?", repository.ID).
+	if err := db.Model(&model.GitRepository{}).Where("uuid = ?", repository.ID).
 		Updates(map[string]any{"credential_id": nil, "api_credential_id": nil}).Error; err != nil {
 		t.Fatalf("解除仓库令牌引用失败: %v", err)
 	}
@@ -432,7 +432,7 @@ func TestDeleteUserCleansIdentityButKeepsSharedRoles(t *testing.T) {
 		var count int64
 		query := db.Model(value)
 		if label == "用户" {
-			query = query.Where("id = ?", user.ID)
+			query = query.Where("uuid = ?", user.ID)
 		} else {
 			query = query.Where("user_id = ?", user.ID)
 		}
@@ -441,11 +441,11 @@ func TestDeleteUserCleansIdentityButKeepsSharedRoles(t *testing.T) {
 		}
 	}
 	var roleCount int64
-	if err := db.Model(&model.Role{}).Where("id = ?", role.ID).Count(&roleCount).Error; err != nil || roleCount != 1 {
+	if err := db.Model(&model.Role{}).Where("uuid = ?", role.ID).Count(&roleCount).Error; err != nil || roleCount != 1 {
 		t.Fatalf("删除用户不应删除共享角色: count=%d err=%v", roleCount, err)
 	}
 	var repositoryCount int64
-	if err := db.Model(&model.GitRepository{}).Where("id = ?", repository.ID).Count(&repositoryCount).Error; err != nil || repositoryCount != 1 {
+	if err := db.Model(&model.GitRepository{}).Where("uuid = ?", repository.ID).Count(&repositoryCount).Error; err != nil || repositoryCount != 1 {
 		t.Fatalf("删除用户不应删除部门业务资源: count=%d err=%v", repositoryCount, err)
 	}
 

@@ -126,7 +126,7 @@ func TestProviderCredentialsAreEncryptedAndDomainPreventsDeletion(t *testing.T) 
 		t.Fatal("DNS 厂商凭据未加密")
 	}
 	var stored model.DNSProviderAccount
-	if err := db.First(&stored, "id = ?", account.ID).Error; err != nil {
+	if err := db.First(&stored, "uuid = ?", account.ID).Error; err != nil {
 		t.Fatalf("读取 DNS 厂商账号失败: %v", err)
 	}
 	if string(stored.PublicConfig) != `{}` {

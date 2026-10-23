@@ -138,7 +138,7 @@ func (s *Service) GetDeliveryDefaults(ctx context.Context) ([]DeliveryDefaultVie
 
 func (s *Service) deliveryTemplate(ctx context.Context, id string) (*model.ReleaseWorkflowTemplate, error) {
 	var item model.ReleaseWorkflowTemplate
-	if err := s.db.WithContext(ctx).First(&item, "id = ? AND is_active = ?", id, true).Error; err != nil {
+	if err := s.db.WithContext(ctx).First(&item, "uuid = ? AND is_active = ?", id, true).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, ErrDeliveryDefaultUnavailable
 		}
@@ -161,7 +161,7 @@ func (s *Service) deliveryTemplate(ctx context.Context, id string) (*model.Relea
 
 func (s *Service) deliveryPlan(ctx context.Context, kind model.DeploymentPlanKind, id string) (*model.DeploymentPlan, error) {
 	var item model.DeploymentPlan
-	if err := s.db.WithContext(ctx).First(&item, "id = ? AND is_active = ?", id, true).Error; err != nil {
+	if err := s.db.WithContext(ctx).First(&item, "uuid = ? AND is_active = ?", id, true).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, ErrDeliveryDefaultUnavailable
 		}
@@ -185,7 +185,7 @@ func (s *Service) SetDeliveryDefault(ctx context.Context, actorID string, kind m
 		service := s.deliveryTransaction(tx)
 		// 先锁定项目，使切换默认和创建应用配置使用同一默认版本。
 		var project model.Project
-		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&project, "id = ?", scope.ProjectID).Error; err != nil {
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&project, "uuid = ?", scope.ProjectID).Error; err != nil {
 			return err
 		}
 		if input.WorkflowTemplateID != "" {
@@ -215,7 +215,7 @@ func (s *Service) SetDeliveryDefault(ctx context.Context, actorID string, kind m
 				return err
 			}
 		}
-		result := tx.Model(&model.DeliveryDefault{}).Where("id = ? AND version = ?", current.ID, current.Version).Updates(map[string]any{"workflow_template_id": input.WorkflowTemplateID, "deployment_plan_id": input.DeploymentPlanID, "version": current.Version + 1, "updated_by": actorID, "updated_at": now})
+		result := tx.Model(&model.DeliveryDefault{}).Where("uuid = ? AND version = ?", current.ID, current.Version).Updates(map[string]any{"workflow_template_id": input.WorkflowTemplateID, "deployment_plan_id": input.DeploymentPlanID, "version": current.Version + 1, "updated_by": actorID, "updated_at": now})
 		if result.Error != nil {
 			return result.Error
 		}
@@ -246,7 +246,7 @@ func (s *Service) CreateDeliveryWorkflow(ctx context.Context, applicationID, act
 	var createdID string
 	err = s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var project model.Project
-		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&project, "id = ?", scope.ProjectID).Error; err != nil {
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&project, "uuid = ?", scope.ProjectID).Error; err != nil {
 			return err
 		}
 		service := s.deliveryTransaction(tx)
@@ -255,7 +255,7 @@ func (s *Service) CreateDeliveryWorkflow(ctx context.Context, applicationID, act
 			return err
 		}
 		var locked model.Application
-		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&locked, "id = ?", applicationID).Error; err != nil {
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&locked, "uuid = ?", applicationID).Error; err != nil {
 			return err
 		}
 		var defaults model.DeliveryDefault
@@ -289,7 +289,7 @@ func (s *Service) CreateDeliveryWorkflow(ctx context.Context, applicationID, act
 			definition.Deployment = *plan
 		}
 		var build model.BuildPlan
-		if err := tx.First(&build, "id = ? AND is_active = ?", input.BuildPlanID, true).Error; err != nil {
+		if err := tx.First(&build, "uuid = ? AND is_active = ?", input.BuildPlanID, true).Error; err != nil {
 			return ErrInvalidBuildPlan
 		}
 		if (input.Kind == model.DeploymentPlanScript && (build.Kind != model.BuildPlanScript || build.ArtifactPath == "")) || (input.Kind != model.DeploymentPlanScript && build.Kind != model.BuildPlanDockerfile) || (input.Kind == model.DeploymentPlanKubernetes && build.ImageRegistryID == "") {

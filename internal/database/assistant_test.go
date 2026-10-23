@@ -113,7 +113,7 @@ func exerciseAssistantMigration(t *testing.T, db *gorm.DB) {
 	}
 	assertAssistantSchema(t, db)
 	var retained model.User
-	if err := db.First(&retained, "id = ?", user.ID).Error; err != nil || retained.Username != user.Username || retained.Nickname != user.Nickname || retained.AuthVersion != user.AuthVersion {
+	if err := db.First(&retained, "uuid = ?", user.ID).Error; err != nil || retained.Username != user.Username || retained.Nickname != user.Nickname || retained.AuthVersion != user.AuthVersion {
 		t.Fatalf("助手升级未保留既有账户: %v", err)
 	}
 	fixture := seedAssistantMigrationFixture(t, db)
@@ -219,19 +219,19 @@ func seedAssistantMigrationFixture(t *testing.T, db *gorm.DB) assistantMigration
 func assertAssistantFixture(t *testing.T, db *gorm.DB, fixture assistantMigrationFixture) {
 	t.Helper()
 	var settings model.AssistantSettings
-	if err := db.First(&settings, "id = ?", fixture.settings.ID).Error; err != nil || settings.APIKeyCiphertext != fixture.settings.APIKeyCiphertext || settings.Version != fixture.settings.Version || settings.Enabled != fixture.settings.Enabled {
+	if err := db.First(&settings, "uuid = ?", fixture.settings.ID).Error; err != nil || settings.APIKeyCiphertext != fixture.settings.APIKeyCiphertext || settings.Version != fixture.settings.Version || settings.Enabled != fixture.settings.Enabled {
 		t.Fatalf("助手设置未完整保留: %v", err)
 	}
 	var conversation model.AssistantConversation
-	if err := db.First(&conversation, "id = ?", fixture.conversation.ID).Error; err != nil || conversation.UserID != fixture.conversation.UserID || conversation.ProjectID != fixture.conversation.ProjectID || conversation.LeaseToken != fixture.conversation.LeaseToken || conversation.LeaseUntil == nil || !conversation.LeaseUntil.Equal(*fixture.conversation.LeaseUntil) {
+	if err := db.First(&conversation, "uuid = ?", fixture.conversation.ID).Error; err != nil || conversation.UserID != fixture.conversation.UserID || conversation.ProjectID != fixture.conversation.ProjectID || conversation.LeaseToken != fixture.conversation.LeaseToken || conversation.LeaseUntil == nil || !conversation.LeaseUntil.Equal(*fixture.conversation.LeaseUntil) {
 		t.Fatalf("助手会话及并发租约未完整保留: %v", err)
 	}
 	var message model.AssistantMessage
-	if err := db.First(&message, "id = ?", fixture.message.ID).Error; err != nil || message.ConversationID != fixture.conversation.ID || message.Content != fixture.message.Content || message.RequiredPermissions != fixture.message.RequiredPermissions || message.UserID != fixture.message.UserID || message.ProjectID != fixture.message.ProjectID || message.DepartmentID != fixture.message.DepartmentID {
+	if err := db.First(&message, "uuid = ?", fixture.message.ID).Error; err != nil || message.ConversationID != fixture.conversation.ID || message.Content != fixture.message.Content || message.RequiredPermissions != fixture.message.RequiredPermissions || message.UserID != fixture.message.UserID || message.ProjectID != fixture.message.ProjectID || message.DepartmentID != fixture.message.DepartmentID {
 		t.Fatalf("助手消息及归属未完整保留: %v", err)
 	}
 	var action model.AssistantAction
-	if err := db.First(&action, "id = ?", fixture.action.ID).Error; err != nil || action.Snapshot != fixture.action.Snapshot || action.Result != fixture.action.Result || action.Status != fixture.action.Status || action.UserID != fixture.action.UserID || action.ProjectID != fixture.action.ProjectID || action.DepartmentID != fixture.action.DepartmentID || !action.ExpiresAt.Equal(fixture.action.ExpiresAt) {
+	if err := db.First(&action, "uuid = ?", fixture.action.ID).Error; err != nil || action.Snapshot != fixture.action.Snapshot || action.Result != fixture.action.Result || action.Status != fixture.action.Status || action.UserID != fixture.action.UserID || action.ProjectID != fixture.action.ProjectID || action.DepartmentID != fixture.action.DepartmentID || !action.ExpiresAt.Equal(fixture.action.ExpiresAt) {
 		t.Fatalf("助手确认记录及有效期未完整保留: %v", err)
 	}
 }

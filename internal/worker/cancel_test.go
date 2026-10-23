@@ -15,7 +15,7 @@ func TestWorkerDoesNotRetryOrDeadLetterStoppedTask(t *testing.T) {
 	db := openWorkerTestDB(t, "worker_stop")
 	registry := NewRegistry()
 	if err := registry.Register("pipeline.build", func(ctx context.Context, message task.Message) error {
-		if err := db.WithContext(ctx).Model(&model.Job{}).Where("id = ?", message.JobID).Update("status", model.JobCanceled).Error; err != nil {
+		if err := db.WithContext(ctx).Model(&model.Job{}).Where("uuid = ?", message.JobID).Update("status", model.JobCanceled).Error; err != nil {
 			return err
 		}
 		return NewRetryableError("interrupted", "任务中断", errors.New("测试停止后的迟到错误"))
@@ -26,7 +26,7 @@ func TestWorkerDoesNotRetryOrDeadLetterStoppedTask(t *testing.T) {
 	worker := newTestWorker(db, registry)
 	worker.process(context.Background(), message)
 	var stored model.Job
-	db.First(&stored, "id = ?", job.ID)
+	db.First(&stored, "uuid = ?", job.ID)
 	if stored.Status != model.JobCanceled || !message.terminated || message.naked || message.acked {
 		t.Fatalf("停止任务被重试或覆盖: %+v %+v", stored, message)
 	}
@@ -63,18 +63,18 @@ func TestStoppedPipelineRecoversWithoutDeadLetterAfterWorkerLoss(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := db.Model(&model.Job{}).Where("id = ?", job.ID).Update("payload", payload).Error; err != nil {
+	if err := db.Model(&model.Job{}).Where("uuid = ?", job.ID).Update("payload", payload).Error; err != nil {
 		t.Fatal(err)
 	}
 	message.deliveries = 5
 	worker := newTestWorker(db, registry)
 	worker.process(context.Background(), message)
 	var run model.PipelineRun
-	if err := db.First(&run, "id = ?", "stop-run").Error; err != nil {
+	if err := db.First(&run, "uuid = ?", "stop-run").Error; err != nil {
 		t.Fatal(err)
 	}
 	var stored model.Job
-	if err := db.First(&stored, "id = ?", job.ID).Error; err != nil {
+	if err := db.First(&stored, "uuid = ?", job.ID).Error; err != nil {
 		t.Fatal(err)
 	}
 	if run.Status != model.PipelineRunCanceled || stored.Status != model.JobCanceled || !message.terminated {

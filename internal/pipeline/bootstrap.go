@@ -97,7 +97,7 @@ func (s *Service) EnsureInitialDeliverySettings(ctx context.Context) (InitialDel
 				IsActive:  true,
 				CreatedBy: initialDeliveryActor, CreatedAt: now, UpdatedAt: now,
 			}
-			if err := tx.Where("id = ?", environment.ID).FirstOrCreate(&environment).Error; err != nil {
+			if err := tx.Where("uuid = ?", environment.ID).FirstOrCreate(&environment).Error; err != nil {
 				return fmt.Errorf("创建默认本地环境失败: %w", err)
 			}
 			membership := model.EnvironmentHost{EnvironmentID: environment.ID, HostID: model.BuiltinLocalHostID, CreatedAt: now}

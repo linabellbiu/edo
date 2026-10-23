@@ -131,7 +131,7 @@ func (i *Importer) importUsers(ctx context.Context, report *Report) (map[int64]s
 		}
 		id := legacyID("user", row.ID)
 		var existing model.User
-		err := i.destination.WithContext(ctx).Where("id = ? OR username = ?", id, username).First(&existing).Error
+		err := i.destination.WithContext(ctx).Where("uuid = ? OR username = ?", id, username).First(&existing).Error
 		if err == nil {
 			result[row.ID] = existing.ID
 			report.Users.Existing++
@@ -160,7 +160,7 @@ func (i *Importer) importUsers(ctx context.Context, report *Report) (map[int64]s
 			if err := tx.Create(&user).Error; err != nil {
 				return err
 			}
-			return tx.Model(&model.User{}).Where("id = ?", user.ID).UpdateColumn("is_active", false).Error
+			return tx.Model(&model.User{}).Where("uuid = ?", user.ID).UpdateColumn("is_active", false).Error
 		}); err != nil {
 			return nil, fmt.Errorf("写入迁移用户失败: %w", err)
 		}
@@ -197,7 +197,7 @@ func (i *Importer) importRoles(ctx context.Context, report *Report) (map[int64]s
 			report.RolePermissionsRequireReview++
 		}
 		var existing model.Role
-		err := i.destination.WithContext(ctx).Where("id = ? OR name = ?", id, name).First(&existing).Error
+		err := i.destination.WithContext(ctx).Where("uuid = ? OR name = ?", id, name).First(&existing).Error
 		if err == nil {
 			result[row.ID] = existing.ID
 			report.Roles.Existing++
@@ -457,7 +457,7 @@ func (i *Importer) importRepositories(ctx context.Context, users map[int64]strin
 		id := legacyStringID("repository", cloneURL)
 		var count int64
 		if err := i.destination.WithContext(ctx).Model(&model.GitRepository{}).
-			Where("id = ? OR clone_url = ?", id, cloneURL).Count(&count).Error; err != nil {
+			Where("uuid = ? OR clone_url = ?", id, cloneURL).Count(&count).Error; err != nil {
 			return fmt.Errorf("检查 Git 仓库迁移状态失败: %w", err)
 		}
 		if count > 0 {
@@ -478,7 +478,7 @@ func (i *Importer) importRepositories(ctx context.Context, users map[int64]strin
 			if err := tx.Create(&repository).Error; err != nil {
 				return err
 			}
-			return tx.Model(&model.GitRepository{}).Where("id = ?", repository.ID).UpdateColumn("is_active", false).Error
+			return tx.Model(&model.GitRepository{}).Where("uuid = ?", repository.ID).UpdateColumn("is_active", false).Error
 		}); err != nil {
 			return fmt.Errorf("写入迁移 Git 仓库失败: %w", err)
 		}

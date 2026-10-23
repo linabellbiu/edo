@@ -94,14 +94,14 @@ func TestStopExecutingPipelineWaitsForCleanupAndPreventsLateResults(t *testing.T
 				t.Fatal("执行器未退出")
 			}
 			var stored model.PipelineRun
-			if err := db.First(&stored, "id = ?", run.ID).Error; err != nil {
+			if err := db.First(&stored, "uuid = ?", run.ID).Error; err != nil {
 				t.Fatal(err)
 			}
 			if stored.Status != model.PipelineRunCanceled || stored.CurrentNodeID != node.ID {
 				t.Fatalf("停止结果被覆盖或执行了后续节点: %+v", stored)
 			}
 			var job model.Job
-			if err := db.First(&job, "id = ?", run.ExecutionJobID).Error; err != nil || job.Status != model.JobCanceled {
+			if err := db.First(&job, "uuid = ?", run.ExecutionJobID).Error; err != nil || job.Status != model.JobCanceled {
 				t.Fatalf("任务未停止: %+v %v", job, err)
 			}
 			var logs []model.PipelineRunLog
@@ -142,7 +142,7 @@ func TestStopQueuedPipelineAndRejectCompletedRun(t *testing.T) {
 		t.Fatal(err)
 	}
 	var job model.Job
-	db.First(&job, "id = ?", run.ExecutionJobID)
+	db.First(&job, "uuid = ?", run.ExecutionJobID)
 	if job.Status != model.JobCanceled {
 		t.Fatalf("排队任务仍可领取: %+v", job)
 	}
@@ -156,17 +156,17 @@ func TestStopQueuedPipelineAndRejectCompletedRun(t *testing.T) {
 		t.Fatalf("迟到完成覆盖停止: %v", err)
 	}
 	// 人工放行保留的上一任务 ID 不能使无执行器的运行卡在停止中。
-	if err := db.Model(&model.Job{}).Where("id = ?", job.ID).Update("status", model.JobRunning).Error; err != nil {
+	if err := db.Model(&model.Job{}).Where("uuid = ?", job.ID).Update("status", model.JobRunning).Error; err != nil {
 		t.Fatal(err)
 	}
-	if err := db.Model(&model.PipelineRun{}).Where("id = ?", run.ID).Updates(map[string]any{"status": model.PipelineRunRunning, "stage": "manual"}).Error; err != nil {
+	if err := db.Model(&model.PipelineRun{}).Where("uuid = ?", run.ID).Updates(map[string]any{"status": model.PipelineRunRunning, "stage": "manual"}).Error; err != nil {
 		t.Fatal(err)
 	}
 	stopped, err = service.StopRun(context.Background(), run.ID, "admin")
 	if err != nil || stopped.Status != model.PipelineRunCanceled {
 		t.Fatalf("人工放行停止卡在旧任务: %+v %v", stopped, err)
 	}
-	if err := db.Model(&model.PipelineRun{}).Where("id = ?", run.ID).Updates(map[string]any{"status": model.PipelineRunSucceeded, "stage": "completed"}).Error; err != nil {
+	if err := db.Model(&model.PipelineRun{}).Where("uuid = ?", run.ID).Updates(map[string]any{"status": model.PipelineRunSucceeded, "stage": "completed"}).Error; err != nil {
 		t.Fatal(err)
 	}
 	if _, err := service.StopRun(context.Background(), run.ID, "admin"); !errors.Is(err, ErrPipelineStopState) {

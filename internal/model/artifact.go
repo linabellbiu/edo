@@ -22,7 +22,8 @@ const (
 
 // BuildRun 保存一次制品生产过程。上传也作为一种生产方式进入同一条审计链路。
 type BuildRun struct {
-	ID             string `gorm:"type:varchar(36);primaryKey" json:"id"`
+	RowID          uint64 `gorm:"column:id;primaryKey;autoIncrement" json:"row_id"`
+	ID             string `gorm:"column:uuid;type:varchar(36);not null;uniqueIndex" json:"id"`
 	ApplicationID  string `gorm:"type:varchar(36);not null;index" json:"application_id"`
 	PipelineRunID  string `gorm:"type:varchar(36);not null;default:'';index" json:"pipeline_run_id,omitempty"`
 	RepositoryID   string `gorm:"type:varchar(36);not null;default:'';index" json:"repository_id,omitempty"`
@@ -76,7 +77,8 @@ const (
 
 // Artifact 保存构建产物。进入 available 状态后，不再修改内容和来源，只更新状态。
 type Artifact struct {
-	ID              string              `gorm:"type:varchar(36);primaryKey" json:"id"`
+	RowID           uint64              `gorm:"column:id;primaryKey;autoIncrement" json:"row_id"`
+	ID              string              `gorm:"column:uuid;type:varchar(36);not null;uniqueIndex" json:"id"`
 	ApplicationID   string              `gorm:"type:varchar(36);not null;index" json:"application_id"`
 	BuildRunID      string              `gorm:"type:varchar(36);not null;index" json:"build_run_id"`
 	PipelineRunID   string              `gorm:"type:varchar(36);not null;default:'';index" json:"pipeline_run_id,omitempty"`

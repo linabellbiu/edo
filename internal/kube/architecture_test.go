@@ -119,7 +119,7 @@ func TestNodeArchitecturesScopeAndInactiveClusterPreventRequests(t *testing.T) {
 	if _, err := service.NodeArchitectures(scoped, id, cluster.ProjectID); !errors.Is(err, ErrClusterNotFound) {
 		t.Fatalf("请求项目边界失效: %v", err)
 	}
-	if err := service.db.Model(&model.KubernetesCluster{}).Where("id = ?", id).Update("is_active", false).Error; err != nil {
+	if err := service.db.Model(&model.KubernetesCluster{}).Where("uuid = ?", id).Update("is_active", false).Error; err != nil {
 		t.Fatal(err)
 	}
 	if _, err := service.NodeArchitectures(context.Background(), id, cluster.ProjectID); !errors.Is(err, ErrClusterNotFound) || calls.Load() != 0 {

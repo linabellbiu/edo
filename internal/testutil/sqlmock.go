@@ -25,7 +25,7 @@ func NewSQLMock(t testing.TB) (*gorm.DB, sqlmock.Sqlmock) {
 			t.Errorf("关闭 SQL Mock 失败: %v", err)
 		}
 	})
-	db, err := gorm.Open(postgres.New(postgres.Config{Conn: conn}), &gorm.Config{
+	db, err := gorm.Open(postgres.New(postgres.Config{Conn: conn, WithoutReturning: true}), &gorm.Config{
 		DisableAutomaticPing: true, Logger: logger.Default.LogMode(logger.Silent),
 	})
 	if err != nil {

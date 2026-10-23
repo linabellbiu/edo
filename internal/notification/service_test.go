@@ -34,7 +34,7 @@ func TestNotificationSecretsAndSuccessfulDispatch(t *testing.T) {
 		t.Fatal("通知渠道未标记已配置 Token")
 	}
 	var storedChannel model.NotificationChannel
-	if err := db.First(&storedChannel, "id = ?", channel.ID).Error; err != nil {
+	if err := db.First(&storedChannel, "uuid = ?", channel.ID).Error; err != nil {
 		t.Fatalf("读取通知渠道失败: %v", err)
 	}
 	if storedChannel.EndpointCiphertext == endpoint || storedChannel.TokenCiphertext == token {
@@ -52,7 +52,7 @@ func TestNotificationSecretsAndSuccessfulDispatch(t *testing.T) {
 		t.Fatalf("发送通知失败: %v", err)
 	}
 	var job model.Job
-	if err := db.First(&job, "id = ?", item.JobID).Error; err != nil {
+	if err := db.First(&job, "uuid = ?", item.JobID).Error; err != nil {
 		t.Fatalf("读取通知任务失败: %v", err)
 	}
 	if item.DepartmentID != storedChannel.DepartmentID || job.DepartmentID != storedChannel.DepartmentID {
@@ -63,7 +63,7 @@ func TestNotificationSecretsAndSuccessfulDispatch(t *testing.T) {
 		t.Fatalf("通知请求头错误: %+v", client.request)
 	}
 	var sent model.Notification
-	if err := db.First(&sent, "id = ?", item.ID).Error; err != nil {
+	if err := db.First(&sent, "uuid = ?", item.ID).Error; err != nil {
 		t.Fatalf("读取通知记录失败: %v", err)
 	}
 	if sent.Status != model.NotificationSucceeded || sent.SentAt == nil {
@@ -95,7 +95,7 @@ func TestNotificationFiniteRetryState(t *testing.T) {
 		t.Fatalf("创建重试通知失败: %v", err)
 	}
 	for attempt := 1; attempt <= 2; attempt++ {
-		if err := db.Model(&model.Job{}).Where("id = ?", item.JobID).Update("attempt", attempt).Error; err != nil {
+		if err := db.Model(&model.Job{}).Where("uuid = ?", item.JobID).Update("attempt", attempt).Error; err != nil {
 			t.Fatalf("设置通知任务执行次数失败: %v", err)
 		}
 		err := service.Dispatch(context.Background(), item.ID, item.JobID)
@@ -104,7 +104,7 @@ func TestNotificationFiniteRetryState(t *testing.T) {
 		}
 	}
 	var failed model.Notification
-	if err := db.First(&failed, "id = ?", item.ID).Error; err != nil {
+	if err := db.First(&failed, "uuid = ?", item.ID).Error; err != nil {
 		t.Fatalf("读取失败通知状态失败: %v", err)
 	}
 	if failed.Status != model.NotificationFailed || failed.Attempts != 2 || strings.Contains(failed.ErrorMessage, "500") {

@@ -125,7 +125,7 @@ func (s *Service) SaveRuntimeConfiguration(
 			return nil, ErrRuntimeControlFailed
 		}
 	} else if err := s.db.WithContext(ctx).Model(&model.DeploymentInstanceControl{}).
-		Where("id = ?", configuration.ID).
+		Where("uuid = ?", configuration.ID).
 		Updates(map[string]any{
 			"restart_script": input.RestartScript, "stop_script": input.StopScript,
 			"timeout_seconds": input.TimeoutSeconds, "updated_by": actorID, "updated_at": now,
@@ -274,7 +274,7 @@ func (s *Service) RemoveRuntime(ctx context.Context, deploymentID, actorID strin
 	}
 	deletedAt := time.Now().UTC()
 	result := s.db.WithContext(ctx).Model(&model.DeploymentRecord{}).
-		Where("id = ? AND runtime_deleted_at IS NULL", record.ID).
+		Where("uuid = ? AND runtime_deleted_at IS NULL", record.ID).
 		Update("runtime_deleted_at", deletedAt)
 	if result.Error != nil || result.RowsAffected != 1 {
 		s.logger.Error("保存容器实例退出监控状态失败", "operation", "deployment_runtime_remove_persist",
@@ -395,7 +395,7 @@ func (s *Service) executeLifecycleScript(
 	defer cancel()
 	applicationName := ""
 	var application model.Application
-	if err := s.db.WithContext(ctx).Select("name").First(&application, "id = ?", record.ApplicationID).Error; err == nil {
+	if err := s.db.WithContext(ctx).Select("name").First(&application, "uuid = ?", record.ApplicationID).Error; err == nil {
 		applicationName = application.Name
 	}
 	result, err := s.ssh.RunHostDeploymentScript(commandContext, sshdeploy.Input{
@@ -449,7 +449,7 @@ func (s *Service) currentDeployment(ctx context.Context, deploymentID string) (*
 		return nil, ErrDeploymentNotFound
 	}
 	var record model.DeploymentRecord
-	if err := s.db.WithContext(ctx).First(&record, "id = ?", deploymentID).Error; err != nil {
+	if err := s.db.WithContext(ctx).First(&record, "uuid = ?", deploymentID).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, ErrDeploymentNotFound
 		}
@@ -463,20 +463,20 @@ func (s *Service) currentDeployment(ctx context.Context, deploymentID string) (*
 	}
 	if record.ApplicationID == "" {
 		var run model.PipelineRun
-		if err := s.db.WithContext(ctx).Select("application_id").First(&run, "id = ?", record.PipelineRunID).Error; err != nil || run.ApplicationID == "" {
+		if err := s.db.WithContext(ctx).Select("application_id").First(&run, "uuid = ?", record.PipelineRunID).Error; err != nil || run.ApplicationID == "" {
 			return nil, ErrDeploymentNotCurrent
 		}
 		record.ApplicationID = run.ApplicationID
 	}
 	// 新旧数据共同参与排序，不能在存在带 application_id 的记录时漏掉更晚的旧格式记录。
-	legacyRuns := s.db.WithContext(ctx).Model(&model.PipelineRun{}).Select("id").
+	legacyRuns := s.db.WithContext(ctx).Model(&model.PipelineRun{}).Select("uuid").
 		Where("department_id = ? AND application_id = ?", record.DepartmentID, record.ApplicationID)
 	var latest model.DeploymentRecord
 	query := s.db.WithContext(ctx).Model(&model.DeploymentRecord{}).
 		Where("department_id = ? AND deployment_plan_id = ? AND target_id = ? AND status = ?",
 			record.DepartmentID, record.DeploymentPlanID, record.TargetID, model.DeploymentSucceeded).
 		Where("application_id = ? OR (application_id = ? AND pipeline_run_id IN (?))", record.ApplicationID, "", legacyRuns).
-		Order("created_at DESC").Order("id DESC").Limit(1).Find(&latest)
+		Order("id DESC").Limit(1).Find(&latest)
 	if query.Error != nil {
 		return nil, fmt.Errorf("确认当前部署实例失败: %w", query.Error)
 	}

@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/gin-gonic/gin"
 
@@ -694,13 +695,53 @@ func (h pipelineHandler) deleteDeploymentPlan(c *gin.Context) {
 }
 
 func (h pipelineHandler) listRuns(c *gin.Context) {
-	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "50"))
-	runs, err := h.service.ListRuns(c.Request.Context(), limit)
+	options := pipeline.RunQueryOptions{Status: model.PipelineRunStatus(c.Query("status")), Order: c.Query("order"), Page: 1, PageSize: 50}
+	options.ReleasePlanExecutionID = c.Query("release_plan_execution_id")
+	invalid := func(field string, err error) {
+		h.logger.WarnContext(c.Request.Context(), "流水线运行筛选参数无效", "operation", "pipeline_run_list", "request_id", requestIDFrom(c), "field", field, "err", err)
+		writeError(c, http.StatusBadRequest, "invalid_run_query", pipeline.ErrInvalidRunQuery.Error())
+	}
+	for _, field := range []struct {
+		name  string
+		value *int
+	}{{"page", &options.Page}, {"page_size", &options.PageSize}} {
+		if value, exists := c.GetQuery(field.name); exists {
+			parsed, err := strconv.Atoi(value)
+			if err != nil || parsed < 1 {
+				invalid(field.name, pipeline.ErrInvalidRunQuery)
+				return
+			}
+			*field.value = parsed
+		}
+	}
+	if _, exists := c.GetQuery("page_size"); !exists {
+		if limit, err := strconv.Atoi(c.Query("limit")); err == nil && limit >= 1 && limit <= 200 {
+			options.PageSize = limit
+		}
+	}
+	for _, field := range []struct {
+		name  string
+		value **time.Time
+	}{{"from", &options.From}, {"to", &options.To}} {
+		if value, exists := c.GetQuery(field.name); exists {
+			parsed, err := time.Parse(time.RFC3339Nano, value)
+			if err != nil {
+				invalid(field.name, pipeline.ErrInvalidRunQuery)
+				return
+			}
+			*field.value = &parsed
+		}
+	}
+	result, err := h.service.QueryRuns(c.Request.Context(), options)
 	if err != nil {
+		if errors.Is(err, pipeline.ErrInvalidRunQuery) {
+			invalid("query", err)
+			return
+		}
 		h.writeError(c, "pipeline_run_list", err)
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"pipeline_runs": runs})
+	c.JSON(http.StatusOK, result)
 }
 
 func (h pipelineHandler) getRun(c *gin.Context) {

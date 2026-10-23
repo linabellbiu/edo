@@ -56,7 +56,7 @@ func (s *Service) List(ctx context.Context, limit int, before time.Time) ([]mode
 	if limit < 1 || limit > 200 {
 		limit = 50
 	}
-	query := s.db.WithContext(ctx).Order("created_at DESC, id DESC").Limit(limit)
+	query := s.db.WithContext(ctx).Order("id DESC").Limit(limit)
 	if !before.IsZero() {
 		query = query.Where("created_at < ?", before.UTC())
 	}

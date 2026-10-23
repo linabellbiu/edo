@@ -21,7 +21,8 @@ const (
 )
 
 type GitRepository struct {
-	ID                      string      `gorm:"type:varchar(36);primaryKey" json:"id"`
+	RowID                   uint64      `gorm:"column:id;primaryKey;autoIncrement" json:"row_id"`
+	ID                      string      `gorm:"column:uuid;type:varchar(36);not null;uniqueIndex" json:"id"`
 	Name                    string      `gorm:"type:varchar(128);not null;uniqueIndex:ux_git_repositories_department_name,priority:2;uniqueIndex:ux_git_repositories_project_name,priority:2" json:"name"`
 	Provider                GitProvider `gorm:"type:varchar(16);not null;index" json:"provider"`
 	CloneURL                string      `gorm:"type:varchar(1024);not null" json:"clone_url"`
@@ -53,7 +54,8 @@ const (
 )
 
 type GitWebhookDelivery struct {
-	ID           string                `gorm:"type:varchar(36);primaryKey"`
+	RowID        uint64                `gorm:"column:id;primaryKey;autoIncrement" json:"row_id"`
+	ID           string                `gorm:"column:uuid;type:varchar(36);not null;uniqueIndex"`
 	RepositoryID string                `gorm:"type:varchar(36);not null;index;uniqueIndex:idx_git_delivery,priority:1"`
 	DeliveryID   string                `gorm:"type:varchar(128);not null;uniqueIndex:idx_git_delivery,priority:2"`
 	EventType    string                `gorm:"type:varchar(32);not null;index"`

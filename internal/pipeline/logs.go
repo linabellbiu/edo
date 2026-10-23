@@ -66,8 +66,8 @@ func (s *Service) ListExecutionLogs(ctx context.Context, filter ExecutionLogFilt
 		Select(`log.id, log.pipeline_run_id, run.application_id,
 			COALESCE(application.name, '') AS application_name,
 			log.stage, log.level, log.message, log.created_at`).
-		Joins("JOIN pipeline_runs AS run ON run.id = log.pipeline_run_id").
-		Joins("LEFT JOIN applications AS application ON application.id = run.application_id").
+		Joins("JOIN pipeline_runs AS run ON run.uuid = log.pipeline_run_id").
+		Joins("LEFT JOIN applications AS application ON application.uuid = run.application_id").
 		Order("log.id DESC").Limit(filter.Limit)
 	if scope, ok := database.DepartmentScopeFromContext(ctx); ok && !scope.AllDepartments {
 		if scope.DepartmentID == "" {
@@ -75,7 +75,9 @@ func (s *Service) ListExecutionLogs(ctx context.Context, filter ExecutionLogFilt
 		}
 		query = query.Where("run.department_id = ?", scope.DepartmentID)
 	}
-	if scope, ok := database.DepartmentScopeFromContext(ctx); ok && scope.ProjectID != "" { query=query.Where("run.project_id = ?",scope.ProjectID) }
+	if scope, ok := database.DepartmentScopeFromContext(ctx); ok && scope.ProjectID != "" {
+		query = query.Where("run.project_id = ?", scope.ProjectID)
+	}
 	if filter.BeforeID > 0 {
 		query = query.Where("log.id < ?", filter.BeforeID)
 	}
@@ -103,7 +105,7 @@ func (s *Service) ListRunLogs(
 		limit = 200
 	}
 	var run model.PipelineRun
-	if err := s.db.WithContext(ctx).Select("id", "status").First(&run, "id = ?", strings.TrimSpace(runID)).Error; err != nil {
+	if err := s.db.WithContext(ctx).Select("uuid", "status").First(&run, "uuid = ?", strings.TrimSpace(runID)).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, "", ErrPipelineRunNotFound
 		}
@@ -131,7 +133,7 @@ func (s *Service) appendRunLog(ctx context.Context, runID, stage, level, message
 	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var run model.PipelineRun
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
-			Select("id", "log_bytes", "log_truncated").First(&run, "id = ?", runID).Error; err != nil {
+			Select("uuid", "log_bytes", "log_truncated").First(&run, "uuid = ?", runID).Error; err != nil {
 			return err
 		}
 		if run.LogTruncated {
@@ -164,7 +166,7 @@ func (s *Service) appendRunLog(ctx context.Context, runID, stage, level, message
 			run.LogBytes += uint64(len(pipelineRunLogTruncatedMessage))
 			run.LogTruncated = true
 		}
-		return tx.Model(&model.PipelineRun{}).Where("id = ?", runID).
+		return tx.Model(&model.PipelineRun{}).Where("uuid = ?", runID).
 			Updates(map[string]any{"log_bytes": run.LogBytes, "log_truncated": run.LogTruncated}).Error
 	})
 	if err != nil && s.logger != nil {

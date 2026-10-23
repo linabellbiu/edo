@@ -39,7 +39,7 @@ func deploymentPlanTargetInput(t *testing.T, service *Service, target model.Depl
 			HostID: target.HostID, IsActive: true, CreatedBy: "admin", CreatedAt: now, UpdatedAt: now,
 		}
 		if !dockerengine.IsLocalEndpointID(target.RuntimeID) {
-			if err := service.db.Where("id = ?", endpoint.ID).FirstOrCreate(&endpoint).Error; err != nil {
+			if err := service.db.Where("uuid = ?", endpoint.ID).FirstOrCreate(&endpoint).Error; err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -55,7 +55,7 @@ func deploymentPlanTargetInput(t *testing.T, service *Service, target model.Depl
 			ID: target.RuntimeID, Name: "cluster-" + target.RuntimeID, Mode: model.KubernetesKubeconfig,
 			DefaultNamespace: "default", IsActive: true, CreatedBy: "admin", CreatedAt: now, UpdatedAt: now,
 		}
-		if err := service.db.Where("id = ?", cluster.ID).FirstOrCreate(&cluster).Error; err != nil {
+		if err := service.db.Where("uuid = ?", cluster.ID).FirstOrCreate(&cluster).Error; err != nil {
 			t.Fatal(err)
 		}
 		configureKubernetesArchitectureFixture(t, service, cluster.ID)
@@ -65,7 +65,7 @@ func deploymentPlanTargetInput(t *testing.T, service *Service, target model.Depl
 		capability := model.HostCapability{HostID: host.ID, Kind: model.HostCapabilitySSH, Status: model.HostCapabilityReady, CreatedAt: now, UpdatedAt: now}
 		membership := model.EnvironmentHost{EnvironmentID: environment.ID, HostID: host.ID, CreatedAt: now}
 		for _, value := range []any{&environment, &host, &capability, &membership} {
-			if err := service.db.FirstOrCreate(value).Error; err != nil {
+			if err := service.db.Where(deploymentFixtureKey(value)).FirstOrCreate(value).Error; err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -95,7 +95,7 @@ func createDeploymentPlanTestEnvironmentHost(
 	capability := model.HostCapability{HostID: host.ID, Kind: capabilityKind, RuntimeID: runtimeID, Status: model.HostCapabilityReady, CreatedAt: now, UpdatedAt: now}
 	membership := model.EnvironmentHost{EnvironmentID: environment.ID, HostID: host.ID, CreatedAt: now}
 	for _, value := range []any{&environment, &host, &capability, &membership} {
-		if err := service.db.FirstOrCreate(value).Error; err != nil {
+		if err := service.db.Where(deploymentFixtureKey(value)).FirstOrCreate(value).Error; err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -384,11 +384,11 @@ func TestPipelineRunResolvesDeploymentPlanTargetIntoSnapshot(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := db.Model(&model.DeploymentTarget{}).Where("id = ?", target.ID).
+	if err := db.Model(&model.DeploymentTarget{}).Where("uuid = ?", target.ID).
 		Update("working_directory", "/srv/new").Error; err != nil {
 		t.Fatal(err)
 	}
-	if err := db.Model(&model.DeploymentPlan{}).Where("id = ?", plan.ID).
+	if err := db.Model(&model.DeploymentPlan{}).Where("uuid = ?", plan.ID).
 		Update("script", "./deploy-new.sh\n").Error; err != nil {
 		t.Fatal(err)
 	}
@@ -411,12 +411,27 @@ func TestPipelineRunResolvesDeploymentPlanTargetIntoSnapshot(t *testing.T) {
 	if prepared.target.WorkingDirectory != "/srv/old" || prepared.deploymentPlan.Script != "./deploy.sh\n" {
 		t.Fatalf("执行器没有继续使用运行启动时的方案快照: target=%+v plan=%+v", prepared.target, prepared.deploymentPlan)
 	}
-	if err := db.Model(&model.PipelineRun{}).Where("id = ?", run.ID).Update("artifact_id", "").Error; err != nil {
+	if err := db.Model(&model.PipelineRun{}).Where("uuid = ?", run.ID).Update("artifact_id", "").Error; err != nil {
 		t.Fatal(err)
 	}
 	if _, err := service.loadExecution(ctx, DeployTaskPayload{
 		PipelineRunID: run.ID, WorkflowNodeID: deployNode.ID,
 	}, run.ExecutionJobID); !errors.Is(err, ErrPipelineExecutionConfig) {
 		t.Fatalf("主机脚本部署缺少文件制品时未被拒绝: %v", err)
+	}
+}
+
+func deploymentFixtureKey(value any) map[string]any {
+	switch row := value.(type) {
+	case *model.Environment:
+		return map[string]any{"uuid": row.ID}
+	case *model.Host:
+		return map[string]any{"uuid": row.ID}
+	case *model.HostCapability:
+		return map[string]any{"host_id": row.HostID, "kind": row.Kind}
+	case *model.EnvironmentHost:
+		return map[string]any{"environment_id": row.EnvironmentID, "host_id": row.HostID}
+	default:
+		panic("不支持的部署测试资源")
 	}
 }

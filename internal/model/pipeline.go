@@ -19,7 +19,8 @@ const (
 )
 
 type BuildPlan struct {
-	ID               string        `gorm:"type:varchar(36);primaryKey" json:"id"`
+	RowID            uint64        `gorm:"column:id;primaryKey;autoIncrement" json:"row_id"`
+	ID               string        `gorm:"column:uuid;type:varchar(36);not null;uniqueIndex" json:"id"`
 	Name             string        `gorm:"type:varchar(128);not null;uniqueIndex:ux_build_plans_department_name,priority:2;uniqueIndex:ux_build_plans_project_name,priority:2" json:"name"`
 	Kind             BuildPlanKind `gorm:"type:varchar(16);not null;index" json:"kind"`
 	ConfigVersion    uint16        `gorm:"not null;default:1" json:"config_version"`
@@ -47,7 +48,7 @@ type BuildPlan struct {
 	CreatedAt            time.Time         `gorm:"not null" json:"created_at"`
 	UpdatedAt            time.Time         `gorm:"not null" json:"updated_at"`
 	DeletedAt            gorm.DeletedAt    `gorm:"index" json:"-"`
-	ImageRegistry        *ImageRegistry    `gorm:"foreignKey:ImageRegistryID;-:migration" json:"image_registry,omitempty"`
+	ImageRegistry        *ImageRegistry    `gorm:"foreignKey:ImageRegistryID;references:ID;-:migration" json:"image_registry,omitempty"`
 }
 
 func (BuildPlan) TableName() string { return "build_plans" }
@@ -65,7 +66,8 @@ const (
 )
 
 type ImageRegistry struct {
-	ID                   string           `gorm:"type:varchar(36);primaryKey" json:"id"`
+	RowID                uint64           `gorm:"column:id;primaryKey;autoIncrement" json:"row_id"`
+	ID                   string           `gorm:"column:uuid;type:varchar(36);not null;uniqueIndex" json:"id"`
 	Name                 string           `gorm:"type:varchar(128);not null;uniqueIndex:ux_image_registries_department_name,priority:2;uniqueIndex:ux_image_registries_project_name,priority:2" json:"name"`
 	Provider             RegistryProvider `gorm:"type:varchar(24);not null;index" json:"provider"`
 	Endpoint             string           `gorm:"type:varchar(1024);not null" json:"endpoint"`
@@ -130,7 +132,8 @@ type DockerContainerConfig struct {
 }
 
 type DeploymentPlan struct {
-	ID                 string                `gorm:"type:varchar(36);primaryKey" json:"id"`
+	RowID              uint64                `gorm:"column:id;primaryKey;autoIncrement" json:"row_id"`
+	ID                 string                `gorm:"column:uuid;type:varchar(36);not null;uniqueIndex" json:"id"`
 	Name               string                `gorm:"type:varchar(128);not null;uniqueIndex:ux_deployment_plans_department_name,priority:2;uniqueIndex:ux_deployment_plans_project_name,priority:2" json:"name"`
 	Kind               DeploymentPlanKind    `gorm:"type:varchar(16);not null;index" json:"kind"`
 	DeploymentTargetID string                `gorm:"type:varchar(36);not null;default:'';index" json:"deployment_target_id,omitempty"`
@@ -147,7 +150,7 @@ type DeploymentPlan struct {
 	CreatedAt          time.Time             `gorm:"not null" json:"created_at"`
 	UpdatedAt          time.Time             `gorm:"not null" json:"updated_at"`
 	DeletedAt          gorm.DeletedAt        `gorm:"index" json:"-"`
-	DeploymentTarget   *DeploymentTarget     `gorm:"foreignKey:DeploymentTargetID;-:migration" json:"deployment_target,omitempty"`
+	DeploymentTarget   *DeploymentTarget     `gorm:"foreignKey:DeploymentTargetID;references:ID;-:migration" json:"deployment_target,omitempty"`
 }
 
 func (DeploymentPlan) TableName() string { return "deployment_plans" }
@@ -182,7 +185,8 @@ const (
 
 // ApplicationRepository 保存应用唯一代码仓库的监听基线。
 type ApplicationRepository struct {
-	ID                 string                             `gorm:"type:varchar(36);primaryKey" json:"id"`
+	RowID              uint64                             `gorm:"column:id;primaryKey;autoIncrement" json:"row_id"`
+	ID                 string                             `gorm:"column:uuid;type:varchar(36);not null;uniqueIndex" json:"id"`
 	ApplicationID      string                             `gorm:"type:varchar(36);not null;uniqueIndex" json:"application_id"`
 	RepositoryID       string                             `gorm:"type:varchar(36);not null;index" json:"repository_id"`
 	LastObservedRef    string                             `gorm:"type:varchar(512);not null;default:''" json:"last_observed_ref,omitempty"`
@@ -190,14 +194,15 @@ type ApplicationRepository struct {
 	LastCheckedAt      *time.Time                         `json:"last_checked_at,omitempty"`
 	CreatedAt          time.Time                          `gorm:"not null" json:"created_at"`
 	UpdatedAt          time.Time                          `gorm:"not null" json:"updated_at"`
-	Repository         GitRepository                      `gorm:"foreignKey:RepositoryID" json:"repository"`
-	Observations       []ApplicationRepositoryObservation `gorm:"foreignKey:ApplicationRepositoryID" json:"observations,omitempty"`
+	Repository         GitRepository                      `gorm:"foreignKey:RepositoryID;references:ID" json:"repository"`
+	Observations       []ApplicationRepositoryObservation `gorm:"foreignKey:ApplicationRepositoryID;references:ID" json:"observations,omitempty"`
 }
 
 func (ApplicationRepository) TableName() string { return "application_repositories" }
 
 type ApplicationRepositoryObservation struct {
-	ID                      string     `gorm:"type:varchar(36);primaryKey" json:"id"`
+	RowID                   uint64     `gorm:"column:id;primaryKey;autoIncrement" json:"row_id"`
+	ID                      string     `gorm:"column:uuid;type:varchar(36);not null;uniqueIndex" json:"id"`
 	ApplicationRepositoryID string     `gorm:"type:varchar(36);not null;index;uniqueIndex:idx_repository_watch,priority:1" json:"application_repository_id"`
 	WatchKey                string     `gorm:"type:varchar(64);not null;default:'';index;uniqueIndex:idx_repository_watch,priority:2" json:"watch_key"`
 	WorkflowID              string     `gorm:"type:varchar(36);not null;index" json:"workflow_id"`
@@ -216,7 +221,8 @@ func (ApplicationRepositoryObservation) TableName() string {
 }
 
 type Application struct {
-	ID                  string                  `gorm:"type:varchar(36);primaryKey" json:"id"`
+	RowID               uint64                  `gorm:"column:id;primaryKey;autoIncrement" json:"row_id"`
+	ID                  string                  `gorm:"column:uuid;type:varchar(36);not null;uniqueIndex" json:"id"`
 	Name                string                  `gorm:"type:varchar(128);not null;uniqueIndex:ux_applications_department_name,priority:2;uniqueIndex:ux_applications_project_name,priority:2" json:"name"`
 	Description         string                  `gorm:"type:varchar(500);not null;default:''" json:"description"`
 	RepositoryID        string                  `gorm:"type:varchar(36);not null;index" json:"repository_id"`
@@ -230,9 +236,9 @@ type Application struct {
 	CreatedBy           string                  `gorm:"type:varchar(36);not null;index" json:"created_by"`
 	CreatedAt           time.Time               `gorm:"not null" json:"created_at"`
 	UpdatedAt           time.Time               `gorm:"not null" json:"updated_at"`
-	Repository          GitRepository           `gorm:"foreignKey:RepositoryID" json:"repository,omitempty"`
-	Workflows           []ReleaseWorkflow       `gorm:"foreignKey:ApplicationID" json:"workflows"`
-	Repositories        []ApplicationRepository `gorm:"foreignKey:ApplicationID" json:"-"`
+	Repository          GitRepository           `gorm:"foreignKey:RepositoryID;references:ID" json:"repository,omitempty"`
+	Workflows           []ReleaseWorkflow       `gorm:"foreignKey:ApplicationID;references:ID" json:"workflows"`
+	Repositories        []ApplicationRepository `gorm:"foreignKey:ApplicationID;references:ID" json:"-"`
 
 	// Workflow 只为包内旧测试和渐进迁移保留，不参与持久化或接口序列化；
 	// 业务代码必须通过 Workflows 或明确的 workflow_id 访问流水线。
@@ -289,7 +295,8 @@ type PipelineRunSelectedArtifact struct {
 }
 
 type PipelineRun struct {
-	ID                         string                       `gorm:"type:varchar(36);primaryKey" json:"id"`
+	RowID                      uint64                       `gorm:"column:id;primaryKey;autoIncrement" json:"row_id"`
+	ID                         string                       `gorm:"column:uuid;type:varchar(36);not null;uniqueIndex" json:"id"`
 	DepartmentID               string                       `gorm:"type:varchar(36);not null;default:'00000000-0000-0000-0000-000000000001';index" json:"department_id"`
 	ProjectID                  string                       `gorm:"type:varchar(36);not null;default:'';index" json:"project_id"`
 	ApplicationID              string                       `gorm:"type:varchar(36);not null;index" json:"application_id"`
@@ -328,8 +335,8 @@ type PipelineRun struct {
 	SelectedArtifact           *PipelineRunSelectedArtifact `gorm:"-" json:"selected_artifact,omitempty"`
 	CreatedAt                  time.Time                    `gorm:"not null;index" json:"created_at"`
 	UpdatedAt                  time.Time                    `gorm:"not null" json:"updated_at"`
-	Application                Application                  `gorm:"foreignKey:ApplicationID" json:"application,omitempty"`
-	Repositories               []PipelineRunRepository      `gorm:"foreignKey:PipelineRunID" json:"repositories"`
+	Application                Application                  `gorm:"foreignKey:ApplicationID;references:ID" json:"application,omitempty"`
+	Repositories               []PipelineRunRepository      `gorm:"foreignKey:PipelineRunID;references:ID" json:"repositories"`
 }
 
 func (PipelineRun) TableName() string { return "pipeline_runs" }
@@ -358,7 +365,8 @@ const (
 
 // PipelineRunRepository 保存运行创建时的仓库、版本和方案，后续修改应用配置不影响此记录。
 type PipelineRunRepository struct {
-	ID                           string                      `gorm:"type:varchar(36);primaryKey" json:"id"`
+	RowID                        uint64                      `gorm:"column:id;primaryKey;autoIncrement" json:"row_id"`
+	ID                           string                      `gorm:"column:uuid;type:varchar(36);not null;uniqueIndex" json:"id"`
 	PipelineRunID                string                      `gorm:"type:varchar(36);not null;index;uniqueIndex:idx_run_repository,priority:1" json:"pipeline_run_id"`
 	RepositoryID                 string                      `gorm:"type:varchar(36);not null;index;uniqueIndex:idx_run_repository,priority:2" json:"repository_id"`
 	SortOrder                    int                         `gorm:"not null;default:0;index" json:"sort_order"`
@@ -374,10 +382,10 @@ type PipelineRunRepository struct {
 	Status                       PipelineRunRepositoryStatus `gorm:"type:varchar(16);not null;default:'pending';index" json:"status"`
 	CreatedAt                    time.Time                   `gorm:"not null" json:"created_at"`
 	UpdatedAt                    time.Time                   `gorm:"not null" json:"updated_at"`
-	Repository                   GitRepository               `gorm:"foreignKey:RepositoryID" json:"repository"`
-	BuildPlan                    *BuildPlan                  `gorm:"foreignKey:BuildPlanID;-:migration" json:"build_plan,omitempty"`
-	ImageRegistry                *ImageRegistry              `gorm:"foreignKey:ImageRegistryID;-:migration" json:"image_registry,omitempty"`
-	DeploymentPlan               *DeploymentPlan             `gorm:"foreignKey:DeploymentPlanID;-:migration" json:"deployment_plan,omitempty"`
+	Repository                   GitRepository               `gorm:"foreignKey:RepositoryID;references:ID" json:"repository"`
+	BuildPlan                    *BuildPlan                  `gorm:"foreignKey:BuildPlanID;references:ID;-:migration" json:"build_plan,omitempty"`
+	ImageRegistry                *ImageRegistry              `gorm:"foreignKey:ImageRegistryID;references:ID;-:migration" json:"image_registry,omitempty"`
+	DeploymentPlan               *DeploymentPlan             `gorm:"foreignKey:DeploymentPlanID;references:ID;-:migration" json:"deployment_plan,omitempty"`
 }
 
 func (PipelineRunRepository) TableName() string { return "pipeline_run_repositories" }

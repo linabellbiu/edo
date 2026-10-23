@@ -167,7 +167,7 @@ func TestWorkflowNotificationFailureDoesNotChangePipelineResult(t *testing.T) {
 	service.notifyWorkflowNode(context.Background(), run, node, workflowNotificationSucceeded, "部署完成")
 
 	var persisted model.PipelineRun
-	if err := db.First(&persisted, "id = ?", run.ID).Error; err != nil {
+	if err := db.First(&persisted, "uuid = ?", run.ID).Error; err != nil {
 		t.Fatal(err)
 	}
 	if persisted.Status != model.PipelineRunSucceeded {

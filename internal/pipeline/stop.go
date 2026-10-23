@@ -26,7 +26,7 @@ func (s *Service) StopRun(ctx context.Context, runID, actorID string) (*model.Pi
 	var run model.PipelineRun
 	changed := false
 	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		if err := tx.First(&run, "id = ?", runID).Error; err != nil {
+		if err := tx.First(&run, "uuid = ?", runID).Error; err != nil {
 			return err
 		}
 		if run.Status == model.PipelineRunCanceled || run.Stage == stoppingStage {
@@ -41,12 +41,12 @@ func (s *Service) StopRun(ctx context.Context, runID, actorID string) (*model.Pi
 		active := s.runningExecutions[run.ExecutionJobID] != nil
 		if run.ExecutionJobID != "" {
 			// 与 Worker 领取任务的条件更新竞争，先取消待执行任务，不能先查后改。
-			if err := tx.Model(&model.Job{}).Where("id = ? AND status = ?", run.ExecutionJobID, model.JobPending).
+			if err := tx.Model(&model.Job{}).Where("uuid = ? AND status = ?", run.ExecutionJobID, model.JobPending).
 				Updates(map[string]any{"status": model.JobCanceled, "error_code": "canceled_by_user", "error_message": "流水线已由用户停止", "finished_at": now, "updated_at": now}).Error; err != nil {
 				return err
 			}
 			var job model.Job
-			err := tx.Select("id", "status").First(&job, "id = ?", run.ExecutionJobID).Error
+			err := tx.Select("uuid", "status").First(&job, "uuid = ?", run.ExecutionJobID).Error
 			if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
 				return err
 			}
@@ -61,7 +61,7 @@ func (s *Service) StopRun(ctx context.Context, runID, actorID string) (*model.Pi
 			status, stage, message = model.PipelineRunRunning, stoppingStage, "正在停止当前任务并清理执行资源，请等待确认"
 		}
 		result := tx.Model(&model.PipelineRun{}).
-			Where("id = ? AND status = ? AND stage = ? AND current_node_id = ? AND execution_job_id = ?", run.ID, run.Status, run.Stage, run.CurrentNodeID, run.ExecutionJobID).
+			Where("uuid = ? AND status = ? AND stage = ? AND current_node_id = ? AND execution_job_id = ?", run.ID, run.Status, run.Stage, run.CurrentNodeID, run.ExecutionJobID).
 			Updates(map[string]any{"status": status, "stage": stage, "message": message, "updated_at": now})
 		if result.Error != nil {
 			return result.Error
@@ -105,7 +105,7 @@ func (s *Service) ExecuteDeployTask(ctx context.Context, payload DeployTaskPaylo
 func (s *Service) withRunCancellation(ctx context.Context, runID, jobID string, execute func(context.Context) error) (resultErr error) {
 	s.pipelineAdvanceMu.Lock()
 	var run model.PipelineRun
-	err := s.db.WithContext(ctx).Select("id", "stage", "status", "execution_job_id").First(&run, "id = ?", runID).Error
+	err := s.db.WithContext(ctx).Select("uuid", "stage", "status", "execution_job_id").First(&run, "uuid = ?", runID).Error
 	if err != nil || run.ExecutionJobID != jobID {
 		s.pipelineAdvanceMu.Unlock()
 		return execute(ctx)
@@ -135,7 +135,7 @@ func (s *Service) withRunCancellation(ctx context.Context, runID, jobID string, 
 			case <-ticker.C:
 				checkCtx, checkCancel := context.WithTimeout(executionCtx, 2*time.Second)
 				var current model.PipelineRun
-				err := s.db.WithContext(checkCtx).Select("stage", "status").First(&current, "id = ? AND execution_job_id = ?", runID, jobID).Error
+				err := s.db.WithContext(checkCtx).Select("stage", "status").First(&current, "uuid = ? AND execution_job_id = ?", runID, jobID).Error
 				checkCancel()
 				if err == nil && (current.Stage == stoppingStage || current.Status == model.PipelineRunCanceled) {
 					cancel()
@@ -178,13 +178,13 @@ func (s *Service) finishStoppedRunLocked(ctx context.Context, runID, jobID strin
 	message := "流水线已停止；不会执行后续节点。已提交的部署操作可能已经生效，请确认目标环境，系统不会自动回滚"
 	err := s.db.WithContext(updateCtx).Transaction(func(tx *gorm.DB) error {
 		now := time.Now().UTC()
-		result := tx.Model(&model.PipelineRun{}).Where("id = ? AND execution_job_id = ? AND stage = ? AND status = ?", runID, jobID, stoppingStage, model.PipelineRunRunning).
+		result := tx.Model(&model.PipelineRun{}).Where("uuid = ? AND execution_job_id = ? AND stage = ? AND status = ?", runID, jobID, stoppingStage, model.PipelineRunRunning).
 			Updates(map[string]any{"status": model.PipelineRunCanceled, "stage": "canceled", "message": message, "updated_at": now})
 		if result.Error != nil || result.RowsAffected == 0 {
 			return result.Error
 		}
 		changed = true
-		return tx.Model(&model.Job{}).Where("id = ? AND status IN ?", jobID, []model.JobStatus{model.JobPending, model.JobRunning}).
+		return tx.Model(&model.Job{}).Where("uuid = ? AND status IN ?", jobID, []model.JobStatus{model.JobPending, model.JobRunning}).
 			Updates(map[string]any{"status": model.JobCanceled, "error_code": "canceled_by_user", "error_message": "流水线已由用户停止", "lease_owner": "", "lease_expires_at": nil, "finished_at": now, "updated_at": now}).Error
 	})
 	if err != nil {

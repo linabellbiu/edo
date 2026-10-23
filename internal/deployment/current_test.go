@@ -24,6 +24,7 @@ func TestCurrentDeploymentRejectsReplacedAndDeletedInstances(t *testing.T) {
 		t.Fatalf("当前记录应可读取: %v", err)
 	}
 	latest := old
+	latest.RowID = 0
 	latest.ID = "current-b"
 	// 完全相同创建时间也必须有稳定的选择顺序。
 	if err := db.Create(&latest).Error; err != nil {

@@ -219,7 +219,7 @@ func TestStageWorkflowValidatesDeploymentPlanOwnedTarget(t *testing.T) {
 	if err := db.Create(&targets).Error; err != nil {
 		t.Fatal(err)
 	}
-	if err := db.Model(&model.DeploymentTarget{}).Where("id = ?", targets[2].ID).Update("is_active", false).Error; err != nil {
+	if err := db.Model(&model.DeploymentTarget{}).Where("uuid = ?", targets[2].ID).Update("is_active", false).Error; err != nil {
 		t.Fatal(err)
 	}
 	plans := []model.DeploymentPlan{

@@ -166,14 +166,14 @@ func TestCreateReleasePlanExecutionReturnsAccepted(t *testing.T) {
 		t.Fatalf("202 响应缺少完整的发布计划执行: %+v body=%s", payload.Execution, response.Body.String())
 	}
 	var run model.PipelineRun
-	if err := fixture.db.First(&run, "id = ?", payload.Execution.Items[0].PipelineRunID).Error; err != nil {
+	if err := fixture.db.First(&run, "uuid = ?", payload.Execution.Items[0].PipelineRunID).Error; err != nil {
 		t.Fatalf("读取发布计划创建的流水线运行失败: %v", err)
 	}
 	if run.Status != model.PipelineRunRunning || run.CurrentNodeID != "build" || run.Stage != "queued" || run.ExecutionJobID == "" {
 		t.Fatalf("发布计划没有先进入构建任务: %+v", run)
 	}
 	var job model.Job
-	if err := fixture.db.First(&job, "id = ?", run.ExecutionJobID).Error; err != nil {
+	if err := fixture.db.First(&job, "uuid = ?", run.ExecutionJobID).Error; err != nil {
 		t.Fatalf("读取发布计划构建任务失败: %v", err)
 	}
 	if job.Kind != "pipeline.build" || job.Subject != "edo.task.pipeline.build" {
@@ -268,7 +268,7 @@ func TestManualAndReleasePlanHTTPCanSelectPreviousArtifact(t *testing.T) {
 		t.Fatalf("发布计划使用历史制品失败: status=%d body=%s", release.Code, release.Body.String())
 	}
 	var releaseRun model.PipelineRun
-	if err := fixture.db.First(&releaseRun, "id = ?", releasePayload.Execution.Items[0].PipelineRunID).Error; err != nil {
+	if err := fixture.db.First(&releaseRun, "uuid = ?", releasePayload.Execution.Items[0].PipelineRunID).Error; err != nil {
 		t.Fatalf("读取发布计划流水线失败: %v", err)
 	}
 	if releaseRun.ArtifactID != artifact.ID || releaseRun.CurrentNodeID != "approval" || releaseRun.Status != model.PipelineRunAwaitingApproval {
@@ -314,7 +314,7 @@ func TestRetryRunHTTPCanSelectOriginalRunArtifactWithoutRefInput(t *testing.T) {
 		t.Fatalf("创建失败运行失败: %v", err)
 	}
 	artifact := createReleasePlanExecutionHTTPArtifact(t, fixture.db, application, commitSHA, failed.ID)
-	if err := fixture.db.Model(&model.PipelineRun{}).Where("id = ?", failed.ID).Update("artifact_id", artifact.ID).Error; err != nil {
+	if err := fixture.db.Model(&model.PipelineRun{}).Where("uuid = ?", failed.ID).Update("artifact_id", artifact.ID).Error; err != nil {
 		t.Fatalf("关联失败运行制品失败: %v", err)
 	}
 	login := performJSONRequest(t, fixture.router, http.MethodPost, "/api/v1/auth/login", map[string]string{

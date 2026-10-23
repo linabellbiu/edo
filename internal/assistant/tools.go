@@ -184,7 +184,7 @@ func (t *assistantTool) call(ctx context.Context, input toolInput) (any, error) 
 			IsActive  bool   `json:"is_active"`
 			UpdatedAt string `json:"updated_at"`
 		}
-		err := s.deps.Database.WithContext(ctx).Model(&model.Application{}).Select("id", "name", "is_active", "updated_at").Where("project_id = ? AND department_id = ?", scope.ProjectID, scope.DepartmentID).Order("name ASC").Limit(50).Scan(&rows).Error
+		err := s.deps.Database.WithContext(ctx).Model(&model.Application{}).Select("uuid AS id", "name", "is_active", "updated_at").Where("project_id = ? AND department_id = ?", scope.ProjectID, scope.DepartmentID).Order("name ASC").Limit(50).Scan(&rows).Error
 		if err != nil {
 			return nil, s.failure(ctx, "assistant_applications", err, ErrStorage)
 		}
@@ -198,7 +198,7 @@ func (t *assistantTool) call(ctx context.Context, input toolInput) (any, error) 
 			query = query.Where("application_id = ?", input.ApplicationID)
 		}
 		var rows []model.PipelineRun
-		if err := query.Select("id", "application_id", "workflow_id", "status", "stage", "ref", "commit_sha", "created_at", "updated_at").Order("created_at DESC").Limit(30).Find(&rows).Error; err != nil {
+		if err := query.Select("uuid", "application_id", "workflow_id", "status", "stage", "ref", "commit_sha", "created_at", "updated_at").Order("id DESC").Limit(30).Find(&rows).Error; err != nil {
 			return nil, s.failure(ctx, "assistant_runs", err, ErrStorage)
 		}
 		result := make([]map[string]any, 0, len(rows))
@@ -255,7 +255,7 @@ func (t *assistantTool) call(ctx context.Context, input toolInput) (any, error) 
 			Name     string `json:"name"`
 			IsActive bool   `json:"is_active"`
 		}
-		if err := s.deps.Database.WithContext(ctx).Model(&model.KubernetesCluster{}).Select("id", "name", "is_active").Where("project_id = ? AND department_id = ?", scope.ProjectID, scope.DepartmentID).Limit(50).Scan(&rows).Error; err != nil {
+		if err := s.deps.Database.WithContext(ctx).Model(&model.KubernetesCluster{}).Select("uuid AS id", "name", "is_active").Where("project_id = ? AND department_id = ?", scope.ProjectID, scope.DepartmentID).Limit(50).Scan(&rows).Error; err != nil {
 			return nil, s.failure(ctx, "assistant_clusters", err, ErrStorage)
 		}
 		return rows, nil
@@ -268,7 +268,7 @@ func (t *assistantTool) call(ctx context.Context, input toolInput) (any, error) 
 			return nil, err
 		}
 		var cluster model.KubernetesCluster
-		if err := s.deps.Database.WithContext(ctx).Where("project_id = ? AND department_id = ?", scope.ProjectID, scope.DepartmentID).First(&cluster, "id = ? AND is_active = ?", input.ClusterID, true).Error; err != nil {
+		if err := s.deps.Database.WithContext(ctx).Where("project_id = ? AND department_id = ?", scope.ProjectID, scope.DepartmentID).First(&cluster, "uuid = ? AND is_active = ?", input.ClusterID, true).Error; err != nil {
 			return nil, s.failure(ctx, "assistant_cluster_scope", err, ErrNotFound)
 		}
 		if t.name == "kubernetes_resources" {

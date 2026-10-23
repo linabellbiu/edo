@@ -156,7 +156,7 @@ func TestKubernetesRollbackPreservesOwnershipAndPreviousArtifact(t *testing.T) {
 				t.Fatalf("重复确认触发了重复回退: %+v %v writes=%d", reused, err, f.writes)
 			}
 			var original model.DeploymentRecord
-			if err := f.db.First(&original, "id = ?", f.source.ID).Error; err != nil || original.Status != status || original.ArtifactID != "bad-artifact" || original.Image != rollbackBadImage {
+			if err := f.db.First(&original, "uuid = ?", f.source.ID).Error; err != nil || original.Status != status || original.ArtifactID != "bad-artifact" || original.Image != rollbackBadImage {
 				t.Fatalf("回退改写了来源历史: %+v %v", original, err)
 			}
 			records, err := f.service.ListForPipelineRun(context.Background(), f.source.PipelineRunID, 50)
@@ -173,7 +173,7 @@ func TestKubernetesRollbackRejectsChangedIdentityAndScope(t *testing.T) {
 		change func(*rollbackFixture, *RollbackConfirmation)
 	}{
 		{"旧记录没有UID", func(f *rollbackFixture, c *RollbackConfirmation) {
-			f.db.Model(&model.DeploymentRecord{}).Where("id = ?", f.source.ID).Update("kubernetes_uid", "")
+			f.db.Model(&model.DeploymentRecord{}).Where("uuid = ?", f.source.ID).Update("kubernetes_uid", "")
 		}},
 		{"同名对象重建", func(f *rollbackFixture, c *RollbackConfirmation) { f.live.UID = "replacement-uid" }},
 		{"镜像被其他操作更改", func(f *rollbackFixture, c *RollbackConfirmation) {
@@ -183,14 +183,14 @@ func TestKubernetesRollbackRejectsChangedIdentityAndScope(t *testing.T) {
 			f.live.Spec.Template.Annotations["edo.io/deployment-id"] = "foreign-release"
 		}},
 		{"方案目标迁移", func(f *rollbackFixture, c *RollbackConfirmation) {
-			f.db.Model(&model.DeploymentTarget{}).Where("id = ?", f.source.TargetID).Update("namespace", "other")
+			f.db.Model(&model.DeploymentTarget{}).Where("uuid = ?", f.source.TargetID).Update("namespace", "other")
 		}},
 		{"来源运行属于其他应用", func(f *rollbackFixture, c *RollbackConfirmation) {
 			other := model.Application{ID: "foreign-app", Name: "foreign_app", RepositoryID: "rollback-repo", ProjectID: f.source.ProjectID, DepartmentID: f.source.DepartmentID}
 			if err := f.db.Create(&other).Error; err != nil {
 				t.Fatal(err)
 			}
-			if err := f.db.Model(&model.PipelineRun{}).Where("id = ?", f.source.PipelineRunID).Update("application_id", other.ID).Error; err != nil {
+			if err := f.db.Model(&model.PipelineRun{}).Where("uuid = ?", f.source.PipelineRunID).Update("application_id", other.ID).Error; err != nil {
 				t.Fatal(err)
 			}
 		}},
@@ -223,7 +223,7 @@ func TestKubernetesRollbackRejectsChangedIdentityAndScope(t *testing.T) {
 
 func TestKubernetesRollbackRechecksAfterQueueAndNeverInventsArtifact(t *testing.T) {
 	f := newKubernetesRollbackFixture(t, model.DeploymentFailed)
-	if err := f.db.Delete(&model.Artifact{}, "id = ?", "good-artifact").Error; err != nil {
+	if err := f.db.Delete(&model.Artifact{}, "uuid = ?", "good-artifact").Error; err != nil {
 		t.Fatal(err)
 	}
 	other := model.Application{ID: "other-artifact-app", Name: "other_artifact_app", RepositoryID: "rollback-repo", ProjectID: f.source.ProjectID, DepartmentID: f.source.DepartmentID}
@@ -243,14 +243,14 @@ func TestKubernetesRollbackRechecksAfterQueueAndNeverInventsArtifact(t *testing.
 		t.Fatal("排队后目标变化仍执行了回退")
 	}
 	var stored model.DeploymentRecord
-	if err := f.db.First(&stored, "id = ?", record.ID).Error; err != nil || stored.Status != model.DeploymentFailed || f.writes != 0 {
+	if err := f.db.First(&stored, "uuid = ?", record.ID).Error; err != nil || stored.Status != model.DeploymentFailed || f.writes != 0 {
 		t.Fatalf("失效回退没有安全终止: %+v %v writes=%d", stored, err, f.writes)
 	}
 }
 
 func TestKubernetesReleaseSavesIdentityEvenWhenReadinessFails(t *testing.T) {
 	f := newKubernetesRollbackFixture(t, model.DeploymentQueued)
-	if err := f.db.Model(&model.DeploymentRecord{}).Where("id = ?", f.source.ID).
+	if err := f.db.Model(&model.DeploymentRecord{}).Where("uuid = ?", f.source.ID).
 		Updates(map[string]any{"kubernetes_uid": "", "previous_image": "", "rollout_timeout": 1}).Error; err != nil {
 		t.Fatal(err)
 	}
@@ -261,7 +261,7 @@ func TestKubernetesReleaseSavesIdentityEvenWhenReadinessFails(t *testing.T) {
 		t.Fatal("未就绪的新镜像被报告为成功")
 	}
 	var record model.DeploymentRecord
-	if err := f.db.First(&record, "id = ?", f.source.ID).Error; err != nil {
+	if err := f.db.First(&record, "uuid = ?", f.source.ID).Error; err != nil {
 		t.Fatal(err)
 	}
 	if record.KubernetesUID != "original-uid" || record.PreviousImage != rollbackGoodImage || record.Status != model.DeploymentFailed || f.writes != 1 {

@@ -77,7 +77,7 @@ type ReleaseGroupConfigurationInput struct {
 
 func (s *Service) ListReleasePlans(ctx context.Context) ([]model.ReleasePlan, error) {
 	var plans []model.ReleasePlan
-	err := releasePlanQuery(s.db.WithContext(ctx)).Order("created_at DESC").Find(&plans).Error
+	err := releasePlanQuery(s.db.WithContext(ctx)).Order("id DESC").Find(&plans).Error
 	if err != nil {
 		return nil, fmt.Errorf("查询发布计划失败: %w", err)
 	}
@@ -89,7 +89,7 @@ func (s *Service) ListReleasePlans(ctx context.Context) ([]model.ReleasePlan, er
 
 func (s *Service) FindReleasePlan(ctx context.Context, id string) (*model.ReleasePlan, error) {
 	var plan model.ReleasePlan
-	if err := releasePlanQuery(s.db.WithContext(ctx)).First(&plan, "id = ?", id).Error; err != nil {
+	if err := releasePlanQuery(s.db.WithContext(ctx)).First(&plan, "uuid = ?", id).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, ErrReleasePlanNotFound
 		}
@@ -112,16 +112,16 @@ func (s *Service) attachLatestReleasePlanExecutions(ctx context.Context, plans [
 		planIDs = append(planIDs, plans[i].ID)
 	}
 	// 排名在带部门和项目范围的子查询中完成，历史执行不会全部进入进程内存。
-	// 创建时间相同的记录按 ID 排序，保证重复读取时选择一致。
+	// 数据库自增行号确定写入顺序，UUID 只用来关联运行。
 	ranked := s.db.WithContext(ctx).Model(&model.ReleasePlanExecution{}).
-		Select("id, ROW_NUMBER() OVER (PARTITION BY release_plan_id ORDER BY created_at DESC, id DESC) AS execution_rank").
+		Select("uuid, ROW_NUMBER() OVER (PARTITION BY release_plan_id ORDER BY id DESC) AS execution_rank").
 		Where("release_plan_id IN ?", planIDs)
 	latestIDs := s.db.WithContext(ctx).Table("(?) AS ranked_executions", ranked).
-		Select("id").Where("execution_rank = ?", 1)
+		Select("uuid").Where("execution_rank = ?", 1)
 	var executions []model.ReleasePlanExecution
 	if err := s.db.WithContext(ctx).
-		Select("id", "release_plan_id", "request_id", "status", "created_by", "started_at", "finished_at", "created_at", "updated_at").
-		Where("id IN (?)", latestIDs).Order("created_at DESC, id DESC").Find(&executions).Error; err != nil {
+		Select("id", "uuid", "release_plan_id", "request_id", "status", "created_by", "started_at", "finished_at", "created_at", "updated_at").
+		Where("uuid IN (?)", latestIDs).Order("id DESC").Find(&executions).Error; err != nil {
 		return fmt.Errorf("查询发布计划最近执行失败: %w", err)
 	}
 	latest := make(map[string]*model.ReleasePlanExecution, len(executions))
@@ -240,7 +240,7 @@ func (s *Service) normalizeNewReleaseGroups(ctx context.Context, inputs []Releas
 func (s *Service) UpdateReleasePlan(ctx context.Context, id, actorID string, input ReleasePlanInput) (*model.ReleasePlan, error) {
 	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var plan model.ReleasePlan
-		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&plan, "id = ?", id).Error; err != nil {
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&plan, "uuid = ?", id).Error; err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
 				return ErrReleasePlanNotFound
 			}
@@ -306,7 +306,7 @@ func normalizeReleasePlanInput(input ReleasePlanInput, creating bool) (ReleasePl
 
 // SetReleasePlanActive 只控制后续是否允许创建执行，不改变发布计划及历史执行的生命周期状态。
 func (s *Service) SetReleasePlanActive(ctx context.Context, id, actorID string, active bool) (*model.ReleasePlan, error) {
-	result := s.db.WithContext(ctx).Model(&model.ReleasePlan{}).Where("id = ?", id).Updates(map[string]any{
+	result := s.db.WithContext(ctx).Model(&model.ReleasePlan{}).Where("uuid = ?", id).Updates(map[string]any{
 		"is_active": active, "updated_by": actorID, "updated_at": time.Now().UTC(),
 	})
 	if result.Error != nil {
@@ -372,7 +372,7 @@ func (s *Service) SaveReleasePlanConfiguration(
 
 	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var plan model.ReleasePlan
-		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&plan, "id = ?", id).Error; err != nil {
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&plan, "uuid = ?", id).Error; err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
 				return ErrReleasePlanNotFound
 			}
@@ -412,7 +412,7 @@ func (s *Service) SaveReleasePlanConfiguration(
 			if err := tx.Where("release_group_id IN ?", existingIDs).Delete(&model.ReleaseGroupApplication{}).Error; err != nil {
 				return err
 			}
-			if err := tx.Where("id IN ?", existingIDs).Delete(&model.ReleaseGroup{}).Error; err != nil {
+			if err := tx.Where("uuid IN ?", existingIDs).Delete(&model.ReleaseGroup{}).Error; err != nil {
 				return err
 			}
 		}
@@ -478,7 +478,7 @@ func ensureReleasePlanNotRunning(tx *gorm.DB, planID string) error {
 func (s *Service) DeleteReleasePlan(ctx context.Context, id string) error {
 	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var plan model.ReleasePlan
-		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&plan, "id = ?", id).Error; err != nil {
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&plan, "uuid = ?", id).Error; err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
 				return ErrReleasePlanNotFound
 			}
@@ -512,7 +512,7 @@ func (s *Service) saveReleaseGroup(ctx context.Context, planID, groupID string, 
 	}
 	err = s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var plan model.ReleasePlan
-		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&plan, "id = ?", planID).Error; err != nil {
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&plan, "uuid = ?", planID).Error; err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
 				return ErrReleasePlanNotFound
 			}
@@ -538,7 +538,7 @@ func (s *Service) saveReleaseGroup(ctx context.Context, planID, groupID string, 
 		}
 		{
 			var existing model.ReleaseGroup
-			if err := tx.First(&existing, "id = ? AND release_plan_id = ?", groupID, planID).Error; err != nil {
+			if err := tx.First(&existing, "uuid = ? AND release_plan_id = ?", groupID, planID).Error; err != nil {
 				if errors.Is(err, gorm.ErrRecordNotFound) {
 					return ErrReleaseGroupNotFound
 				}
@@ -563,7 +563,7 @@ func (s *Service) saveReleaseGroup(ctx context.Context, planID, groupID string, 
 				return err
 			}
 		}
-		return tx.Model(&model.ReleasePlan{}).Where("id = ?", plan.ID).
+		return tx.Model(&model.ReleasePlan{}).Where("uuid = ?", plan.ID).
 			Update("updated_at", now).Error
 	})
 	if err != nil {
@@ -624,7 +624,7 @@ func (s *Service) normalizeReleaseGroupInput(ctx context.Context, planID, groupI
 		}
 		var dependencyCount int64
 		if err := s.db.WithContext(ctx).Model(&model.ReleaseGroup{}).
-			Where("release_plan_id = ? AND id IN ?", planID, input.DependsOnGroupIDs).Count(&dependencyCount).Error; err != nil {
+			Where("release_plan_id = ? AND uuid IN ?", planID, input.DependsOnGroupIDs).Count(&dependencyCount).Error; err != nil {
 			return input, fmt.Errorf("检查发布计划应用依赖失败: %w", err)
 		}
 		if dependencyCount != int64(len(input.DependsOnGroupIDs)) {
@@ -643,7 +643,7 @@ func ensureReleaseApplicationsUnassigned(tx *gorm.DB, planID, groupID string, ap
 		applicationIDs = append(applicationIDs, application.ApplicationID)
 	}
 	query := tx.Table("release_group_applications AS group_application").
-		Joins("JOIN release_groups AS release_group ON release_group.id = group_application.release_group_id").
+		Joins("JOIN release_groups AS release_group ON release_group.uuid = group_application.release_group_id").
 		Where("release_group.release_plan_id = ? AND group_application.application_id IN ?", planID, applicationIDs)
 	if groupID != "" {
 		query = query.Where("group_application.release_group_id <> ?", groupID)
@@ -700,7 +700,7 @@ func (s *Service) normalizeReleaseApplications(ctx context.Context, inputs []Rel
 	}
 	var applicationCount int64
 	if err := s.db.WithContext(ctx).Model(&model.Application{}).
-		Where("id IN ? AND is_active = ?", applicationIDs, true).Count(&applicationCount).Error; err != nil {
+		Where("uuid IN ? AND is_active = ?", applicationIDs, true).Count(&applicationCount).Error; err != nil {
 		return nil, fmt.Errorf("检查发布计划应用失败: %w", err)
 	}
 	if applicationCount != int64(len(applicationIDs)) {

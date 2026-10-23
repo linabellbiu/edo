@@ -71,7 +71,7 @@ func (s *Service) authorize(ctx context.Context, user *model.User, permission st
 		return scope, s.failure(ctx, "assistant_authorize", ErrForbidden, ErrForbidden)
 	}
 	var current model.User
-	if err := s.deps.Database.WithContext(ctx).First(&current, "id = ?", user.ID).Error; err != nil {
+	if err := s.deps.Database.WithContext(ctx).First(&current, "uuid = ?", user.ID).Error; err != nil {
 		return scope, s.failure(ctx, "assistant_identity", err, ErrForbidden, "actor_id", user.ID)
 	}
 	if !current.IsActive || current.AuthVersion != user.AuthVersion {
@@ -178,7 +178,7 @@ func (s *Service) CreateConversation(ctx context.Context, user *model.User, titl
 
 func (s *Service) conversation(ctx context.Context, user *model.User, id string) (model.AssistantConversation, error) {
 	var row model.AssistantConversation
-	if err := s.owned(ctx, user).First(&row, "id = ?", id).Error; err != nil {
+	if err := s.owned(ctx, user).First(&row, "uuid = ?", id).Error; err != nil {
 		public := ErrStorage
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			public = ErrNotFound
@@ -198,7 +198,7 @@ func (s *Service) Conversation(ctx context.Context, user *model.User, id string)
 	}
 	var messages []model.AssistantMessage
 	var actions []model.AssistantAction
-	if err := s.owned(ctx, user).Where("conversation_id = ?", id).Order("created_at DESC, id DESC").Limit(200).Find(&messages).Error; err != nil {
+	if err := s.owned(ctx, user).Where("conversation_id = ?", id).Order("id DESC").Limit(200).Find(&messages).Error; err != nil {
 		return DetailView{}, s.failure(ctx, "assistant_messages", err, ErrStorage)
 	}
 	if err := s.owned(ctx, user).Where("conversation_id = ?", id).Order("created_at ASC, id ASC").Limit(100).Find(&actions).Error; err != nil {

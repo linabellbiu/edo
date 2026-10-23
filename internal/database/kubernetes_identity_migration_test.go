@@ -52,6 +52,9 @@ func exerciseKubernetesIdentityColumnUpgrade(t *testing.T, db *gorm.DB, name str
 	} else if err := db.Create(&legacy).Error; err != nil {
 		t.Fatalf("%s 创建旧表数据失败: %v", name, err)
 	}
+	if err := migrateRowIdentities(context.Background(), db); err != nil {
+		t.Fatal(err)
+	}
 	for range 2 {
 		if err := migrateKubernetesDeploymentIdentity(db); err != nil {
 			t.Fatalf("%s 升级对象身份列失败: %v", name, err)
@@ -63,13 +66,13 @@ func exerciseKubernetesIdentityColumnUpgrade(t *testing.T, db *gorm.DB, name str
 		Status        string
 		KubernetesUID string
 	}
-	if err := db.Table("deployment_records").Select("image, previous_image, status, kubernetes_uid").Where("id = ?", legacy.ID).Scan(&stored).Error; err != nil {
+	if err := db.Table("deployment_records").Select("image, previous_image, status, kubernetes_uid").Where("uuid = ?", legacy.ID).Scan(&stored).Error; err != nil {
 		t.Fatal(err)
 	}
 	if stored.KubernetesUID != "" || stored.Image != legacy.Image || stored.PreviousImage != legacy.PreviousImage || stored.Status != legacy.Status {
 		t.Fatalf("%s 迁移伪造了 UID 或改变了历史: %+v", name, stored)
 	}
-	if err := db.Where("id = ?", legacy.ID).Delete(&legacyKubernetesIdentityRecord{}).Error; err != nil {
+	if err := db.Where("uuid = ?", legacy.ID).Delete(&legacyKubernetesIdentityRecord{}).Error; err != nil {
 		t.Fatal(err)
 	}
 }

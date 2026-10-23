@@ -39,14 +39,14 @@ func (s *Service) syncRolePermissionsOrDisable(ctx context.Context, roleID, oper
 			var expected int64
 			if countErr := tx.Model(&model.User{}).
 				Where("is_superuser = ?", false).
-				Where("(id IN (?) OR id IN ?)", countMemberIDs, projectMemberIDs).
+				Where("(uuid IN (?) OR uuid IN ?)", countMemberIDs, projectMemberIDs).
 				Count(&expected).Error; countErr != nil {
 				return fmt.Errorf("统计待安全停用的角色成员失败: %w", countErr)
 			}
 			updateMemberIDs := tx.Model(&model.UserRole{}).Select("user_id").Where("role_id = ?", roleID)
 			result := tx.Model(&model.User{}).
 				Where("is_superuser = ?", false).
-				Where("(id IN (?) OR id IN ?)", updateMemberIDs, projectMemberIDs).
+				Where("(uuid IN (?) OR uuid IN ?)", updateMemberIDs, projectMemberIDs).
 				Updates(map[string]any{
 					"is_active": false, "auth_version": gorm.Expr("auth_version + ?", 1), "updated_at": time.Now().UTC(),
 				})

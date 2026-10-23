@@ -297,7 +297,7 @@ func (s *Service) ListByApplication(ctx context.Context, applicationID string) (
 	}
 	artifacts := make([]model.Artifact, 0)
 	if err := s.db.WithContext(ctx).Where("application_id = ?", applicationID).
-		Order("created_at DESC").Find(&artifacts).Error; err != nil {
+		Order("id DESC").Find(&artifacts).Error; err != nil {
 		s.logger.Error("查询应用制品失败", "operation", "artifact_list", "application_id", applicationID, "err", err)
 		return nil, fmt.Errorf("查询应用制品失败: %w", err)
 	}
@@ -320,7 +320,7 @@ func (s *Service) ListByBuildPlan(ctx context.Context, buildPlanID, applicationI
 
 	artifacts := make([]model.Artifact, 0)
 	query := s.db.WithContext(ctx).Model(&model.Artifact{}).
-		Joins("JOIN build_runs ON build_runs.id = artifacts.build_run_id").
+		Joins("JOIN build_runs ON build_runs.uuid = artifacts.build_run_id").
 		Where("build_runs.build_plan_id = ?", buildPlanID)
 	if applicationID != "" {
 		query = query.Where("artifacts.application_id = ?", applicationID)
@@ -339,7 +339,7 @@ func (s *Service) Find(ctx context.Context, id string) (*model.Artifact, error) 
 		return nil, ErrArtifactNotFound
 	}
 	var artifact model.Artifact
-	if err := s.db.WithContext(ctx).First(&artifact, "id = ?", id).Error; err != nil {
+	if err := s.db.WithContext(ctx).First(&artifact, "uuid = ?", id).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			s.logger.Warn("查询的制品不存在", "operation", "artifact_find", "artifact_id", id)
 			return nil, ErrArtifactNotFound
@@ -473,7 +473,7 @@ func (s *Service) CreateImage(ctx context.Context, input ImageInput) (*model.Art
 			return nil, ErrInvalidArtifact
 		}
 		var registry model.ImageRegistry
-		if err := s.db.WithContext(ctx).First(&registry, "id = ? AND is_active = ?", input.ImageRegistryID, true).Error; err != nil {
+		if err := s.db.WithContext(ctx).First(&registry, "uuid = ? AND is_active = ?", input.ImageRegistryID, true).Error; err != nil {
 			s.logger.Error("读取镜像制品绑定的仓库失败", "operation", "artifact_image_registry_find",
 				"application_id", input.ApplicationID, "pipeline_run_id", input.PipelineRunID,
 				"workflow_node_id", input.WorkflowNodeID, "image_registry_id", input.ImageRegistryID, "err", err)
@@ -623,6 +623,7 @@ func (s *Service) register(
 		CreatedAt: now, UpdatedAt: now, StartedAt: &now, FinishedAt: &now,
 	}
 	artifact.ID = uuid.NewString()
+	artifact.RowID = 0
 	artifact.DepartmentID = metadata.DepartmentID
 	artifact.ApplicationID = metadata.ApplicationID
 	artifact.BuildRunID = build.ID
@@ -743,8 +744,8 @@ func (s *Service) validateBuildMetadata(ctx context.Context, metadata *BuildMeta
 		return ErrInvalidArtifact
 	}
 	var application model.Application
-	if err := s.db.WithContext(ctx).Select("id", "department_id", "project_id", "is_active").
-		First(&application, "id = ? AND is_active = ?", metadata.ApplicationID, true).Error; err != nil {
+	if err := s.db.WithContext(ctx).Select("uuid", "department_id", "project_id", "is_active").
+		First(&application, "uuid = ? AND is_active = ?", metadata.ApplicationID, true).Error; err != nil {
 		if !errors.Is(err, gorm.ErrRecordNotFound) {
 			s.logger.Error("检查制品所属应用失败", "operation", "artifact_application_guard", "application_id", metadata.ApplicationID, "err", err)
 		}
@@ -768,7 +769,7 @@ func (s *Service) ensureApplication(ctx context.Context, applicationID string, a
 		s.logger.Warn("制品所属应用标识无效", "operation", "artifact_application_guard", "application_id", applicationID)
 		return ErrApplicationNotFound
 	}
-	query := s.db.WithContext(ctx).Model(&model.Application{}).Where("id = ?", applicationID)
+	query := s.db.WithContext(ctx).Model(&model.Application{}).Where("uuid = ?", applicationID)
 	if active {
 		query = query.Where("is_active = ?", true)
 	}
@@ -789,7 +790,7 @@ func (s *Service) ensureBuildPlan(ctx context.Context, buildPlanID string, activ
 		s.logger.Warn("制品所属构建方案标识无效", "operation", "artifact_build_plan_guard", "build_plan_id", buildPlanID)
 		return ErrBuildPlanNotFound
 	}
-	query := s.db.WithContext(ctx).Model(&model.BuildPlan{}).Where("id = ?", buildPlanID)
+	query := s.db.WithContext(ctx).Model(&model.BuildPlan{}).Where("uuid = ?", buildPlanID)
 	if active {
 		query = query.Where("is_active = ?", true)
 	}

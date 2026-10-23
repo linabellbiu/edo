@@ -46,13 +46,13 @@ func TestProjectScopeCRUDAndDerivedRecords(t *testing.T) {
 			t.Fatalf("列表跨项目泄露: %+v %v", rows, err)
 		}
 		var foreign model.Application
-		if err = db.WithContext(ctx).First(&foreign, "id = ?", appB.ID).Error; !errors.Is(err, gorm.ErrRecordNotFound) {
+		if err = db.WithContext(ctx).First(&foreign, "uuid = ?", appB.ID).Error; !errors.Is(err, gorm.ErrRecordNotFound) {
 			t.Fatal("跨项目详情必须不存在", err)
 		}
-		if r := db.WithContext(ctx).Model(&model.Application{}).Where("id = ?", appB.ID).Update("description", "不能修改"); r.Error != nil || r.RowsAffected != 0 {
+		if r := db.WithContext(ctx).Model(&model.Application{}).Where("uuid = ?", appB.ID).Update("description", "不能修改"); r.Error != nil || r.RowsAffected != 0 {
 			t.Fatalf("跨项目更新: %+v", r)
 		}
-		if r := db.WithContext(ctx).Where("id = ?", appB.ID).Delete(&model.Application{}); r.Error != nil || r.RowsAffected != 0 {
+		if r := db.WithContext(ctx).Where("uuid = ?", appB.ID).Delete(&model.Application{}); r.Error != nil || r.RowsAffected != 0 {
 			t.Fatalf("跨项目删除: %+v", r)
 		}
 	}
@@ -101,7 +101,7 @@ func TestProjectSchemaDoesNotAdoptHistoricalResources(t *testing.T) {
 		}
 	}
 	var stored model.Application
-	if err = db.First(&stored, "id = ?", app.ID).Error; err != nil {
+	if err = db.First(&stored, "uuid = ?", app.ID).Error; err != nil {
 		t.Fatal(err)
 	}
 	if stored.Name != app.Name || stored.Description != app.Description || stored.RepositoryID != app.RepositoryID || stored.CreatedBy != app.CreatedBy || stored.ProjectID != "" {

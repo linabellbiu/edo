@@ -180,7 +180,7 @@ func (s *Service) ListRoles(ctx context.Context) ([]RoleWithPermissions, error) 
 		var projectMembers int64
 		if s.db.Migrator().HasTable(&model.ProjectMember{}) {
 			memberIDs := s.db.Model(&model.ProjectMember{}).Select("user_id").Where("role_id = ?", role.ID)
-			if err := s.db.WithContext(ctx).Model(&model.User{}).Where("id IN (?)", memberIDs).Count(&projectMembers).Error; err != nil {
+			if err := s.db.WithContext(ctx).Model(&model.User{}).Where("uuid IN (?)", memberIDs).Count(&projectMembers).Error; err != nil {
 				return nil, fmt.Errorf("统计项目角色成员失败: %w", err)
 			}
 		}
@@ -227,8 +227,8 @@ func (s *Service) roleMemberSummary(
 	var rows []roleMemberCount
 	// 以 users 为查询模型，使数据库层的 DepartmentScope 自动限制为当前调用者可见用户。
 	if err := s.db.WithContext(ctx).Model(&model.User{}).
-		Select("user_roles.role_id AS role_id, COUNT(DISTINCT users.id) AS member_count").
-		Joins("JOIN user_roles ON user_roles.user_id = users.id").
+		Select("user_roles.role_id AS role_id, COUNT(DISTINCT users.uuid) AS member_count").
+		Joins("JOIN user_roles ON user_roles.user_id = users.uuid").
 		Where("user_roles.role_id IN ?", roleIDs).
 		Group("user_roles.role_id").
 		Scan(&rows).Error; err != nil {
@@ -320,7 +320,7 @@ func (s *Service) updateRole(
 		); err != nil {
 			return err
 		}
-		if err := tx.First(&role, "id = ?", roleID).Error; err != nil {
+		if err := tx.First(&role, "uuid = ?", roleID).Error; err != nil {
 			return err
 		}
 		if err := tx.Model(&role).Updates(map[string]any{
@@ -364,7 +364,7 @@ func (s *Service) UpdateRoleBasic(
 	now := time.Now().UTC()
 	var role model.Role
 	if err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		if err := tx.First(&role, "id = ?", roleID).Error; err != nil {
+		if err := tx.First(&role, "uuid = ?", roleID).Error; err != nil {
 			return err
 		}
 		return tx.Model(&role).Updates(map[string]any{
@@ -428,7 +428,7 @@ func (s *Service) updateRolePermissions(
 		); err != nil {
 			return err
 		}
-		if err := tx.First(&role, "id = ?", roleID).Error; err != nil {
+		if err := tx.First(&role, "uuid = ?", roleID).Error; err != nil {
 			return err
 		}
 		if err := replacePermissions(tx, role.ID, permissions, now); err != nil {
@@ -452,7 +452,7 @@ func (s *Service) updateRolePermissions(
 func (s *Service) DeleteRole(ctx context.Context, roleID string) error {
 	if err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var role model.Role
-		if err := tx.First(&role, "id = ?", roleID).Error; err != nil {
+		if err := tx.First(&role, "uuid = ?", roleID).Error; err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
 				return ErrRoleNotFound
 			}
@@ -493,7 +493,7 @@ func (s *Service) DeleteRole(ctx context.Context, roleID string) error {
 func (s *Service) DeleteUser(ctx context.Context, userID string) error {
 	if err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var user model.User
-		if err := tx.First(&user, "id = ?", userID).Error; err != nil {
+		if err := tx.First(&user, "uuid = ?", userID).Error; err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
 				return account.ErrUserNotFound
 			}
@@ -542,7 +542,7 @@ func (s *Service) setUserRoles(ctx context.Context, actor *model.User, userID st
 	roleIDs = uniqueSorted(roleIDs)
 	if err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var user model.User
-		if err := tx.First(&user, "id = ?", userID).Error; err != nil {
+		if err := tx.First(&user, "uuid = ?", userID).Error; err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
 				return account.ErrUserNotFound
 			}
@@ -593,7 +593,7 @@ func (s *Service) setUserPermissions(ctx context.Context, actor *model.User, use
 	}
 	if err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var user model.User
-		if err := tx.First(&user, "id = ?", userID).Error; err != nil {
+		if err := tx.First(&user, "uuid = ?", userID).Error; err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
 				return account.ErrUserNotFound
 			}
@@ -671,7 +671,7 @@ func (s *Service) setUserAccess(
 	}
 	if err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var user model.User
-		if err := tx.First(&user, "id = ?", userID).Error; err != nil {
+		if err := tx.First(&user, "uuid = ?", userID).Error; err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
 				return account.ErrUserNotFound
 			}
@@ -763,7 +763,7 @@ func (s *Service) ValidateRoleIDs(ctx context.Context, roleIDs []string) error {
 		return nil
 	}
 	var count int64
-	if err := s.db.WithContext(ctx).Model(&model.Role{}).Where("id IN ?", roleIDs).Count(&count).Error; err != nil {
+	if err := s.db.WithContext(ctx).Model(&model.Role{}).Where("uuid IN ?", roleIDs).Count(&count).Error; err != nil {
 		return fmt.Errorf("查询待分配角色失败: %w", err)
 	}
 	if count != int64(len(roleIDs)) {

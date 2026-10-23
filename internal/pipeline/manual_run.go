@@ -112,7 +112,7 @@ func (s *Service) ExecuteRun(ctx context.Context, runID, actorID, ref, commitSHA
 
 func (s *Service) ExecuteRunSelection(ctx context.Context, runID, actorID, ref, commitSHA, sourceNodeID, artifactID string) (*model.PipelineRun, error) {
 	var run model.PipelineRun
-	if err := s.db.WithContext(ctx).First(&run, "id = ?", runID).Error; err != nil {
+	if err := s.db.WithContext(ctx).First(&run, "uuid = ?", runID).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, ErrPipelineRunNotFound
 		}
@@ -228,7 +228,7 @@ func (s *Service) ExecuteRunSelection(ctx context.Context, runID, actorID, ref, 
 	}
 	err = s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		result := tx.Model(&model.PipelineRun{}).
-			Where("id = ? AND status = ? AND commit_sha = ?", run.ID, model.PipelineRunBlocked, run.CommitSHA).
+			Where("uuid = ? AND status = ? AND commit_sha = ?", run.ID, model.PipelineRunBlocked, run.CommitSHA).
 			Updates(map[string]any{
 				"trigger": prepared.Trigger, "ref": prepared.Ref, "commit_sha": prepared.CommitSHA, "commit_message": prepared.CommitMessage,
 				"status": prepared.Status, "stage": prepared.Stage, "environment": prepared.Environment,
@@ -271,7 +271,7 @@ func (s *Service) listWorkflowArtifacts(ctx context.Context, application *model.
 		query = query.Where("pipeline_run_id = ?", pipelineRunID)
 	}
 	if err := query.
-		Order("created_at DESC").Limit(100).Find(&artifacts).Error; err != nil {
+		Order("id DESC").Limit(100).Find(&artifacts).Error; err != nil {
 		if s.logger != nil {
 			s.logger.Error("查询手动执行可选制品失败", "operation", "pipeline_manual_artifacts", "application_id", application.ID, "workflow_id", workflow.ID, "err", err)
 		}
@@ -285,7 +285,7 @@ func (s *Service) listWorkflowArtifacts(ctx context.Context, application *model.
 		buildIDs = append(buildIDs, artifacts[i].BuildRunID)
 	}
 	var builds []model.BuildRun
-	if err := s.db.WithContext(ctx).Where("id IN ? AND status = ?", buildIDs, model.BuildRunStatusSucceeded).Find(&builds).Error; err != nil {
+	if err := s.db.WithContext(ctx).Where("uuid IN ? AND status = ?", buildIDs, model.BuildRunStatusSucceeded).Find(&builds).Error; err != nil {
 		if s.logger != nil {
 			s.logger.Error("查询手动执行制品生产记录失败", "operation", "pipeline_manual_artifact_builds", "application_id", application.ID, "workflow_id", workflow.ID, "err", err)
 		}
@@ -301,7 +301,7 @@ func (s *Service) listWorkflowArtifacts(ctx context.Context, application *model.
 	}
 	var plans []model.BuildPlan
 	if len(planIDs) > 0 {
-		if err := s.db.WithContext(ctx).Where("id IN ? AND is_active = ?", planIDs, true).Find(&plans).Error; err != nil {
+		if err := s.db.WithContext(ctx).Where("uuid IN ? AND is_active = ?", planIDs, true).Find(&plans).Error; err != nil {
 			if s.logger != nil {
 				s.logger.Error("查询手动执行制品构建方案失败", "operation", "pipeline_manual_artifact_plans", "application_id", application.ID, "workflow_id", workflow.ID, "err", err)
 			}
@@ -341,14 +341,14 @@ func (s *Service) validateManualArtifactSelection(ctx context.Context, applicati
 		return nil, ErrManualArtifactInvalid
 	}
 	var stored model.Artifact
-	if err := s.db.WithContext(ctx).First(&stored, "id = ?", artifactID).Error; err != nil {
+	if err := s.db.WithContext(ctx).First(&stored, "uuid = ?", artifactID).Error; err != nil {
 		if s.logger != nil {
 			s.logger.Warn("手动执行选择的制品不存在", "operation", "pipeline_manual_artifact_validate", "application_id", application.ID, "artifact_id", artifactID, "err", err)
 		}
 		return nil, ErrManualArtifactInvalid
 	}
 	var build model.BuildRun
-	if err := s.db.WithContext(ctx).First(&build, "id = ?", stored.BuildRunID).Error; err != nil {
+	if err := s.db.WithContext(ctx).First(&build, "uuid = ?", stored.BuildRunID).Error; err != nil {
 		if s.logger != nil {
 			s.logger.Error("手动执行选择的制品缺少生产记录", "operation", "pipeline_manual_artifact_validate", "application_id", application.ID, "artifact_id", artifactID, "build_run_id", stored.BuildRunID, "err", err)
 		}
@@ -361,7 +361,7 @@ func (s *Service) validateManualArtifactSelection(ctx context.Context, applicati
 		}
 		return nil, ErrManualArtifactInvalid
 	}
-	if err := s.db.WithContext(ctx).First(&plan, "id = ? AND is_active = ?", build.BuildPlanID, true).Error; err != nil {
+	if err := s.db.WithContext(ctx).First(&plan, "uuid = ? AND is_active = ?", build.BuildPlanID, true).Error; err != nil {
 		if s.logger != nil {
 			s.logger.Warn("手动执行选择的制品构建方案不可用", "operation", "pipeline_manual_artifact_validate", "application_id", application.ID, "artifact_id", artifactID, "build_plan_id", build.BuildPlanID, "err", err)
 		}
@@ -481,7 +481,7 @@ func (s *Service) saveBlockedManualSelection(
 	}
 	err = s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		result := tx.Model(&model.PipelineRun{}).
-			Where("id = ? AND status = ? AND commit_sha = ?", run.ID, model.PipelineRunBlocked, "").
+			Where("uuid = ? AND status = ? AND commit_sha = ?", run.ID, model.PipelineRunBlocked, "").
 			Updates(map[string]any{
 				"trigger": "manual", "ref": ref, "commit_sha": commitSHA, "commit_message": commitMessage,
 				"status": model.PipelineRunBlocked, "stage": "configured", "environment": "",

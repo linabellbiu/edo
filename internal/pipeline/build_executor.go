@@ -200,7 +200,7 @@ func (s *Service) recoverCompletedBuildArtifact(
 
 func (s *Service) resumeCompletedBuildTask(ctx context.Context, payload BuildTaskPayload, jobID string) error {
 	var run model.PipelineRun
-	if err := s.db.WithContext(ctx).First(&run, "id = ? AND execution_job_id = ?", payload.PipelineRunID, jobID).Error; err != nil {
+	if err := s.db.WithContext(ctx).First(&run, "uuid = ? AND execution_job_id = ?", payload.PipelineRunID, jobID).Error; err != nil {
 		if obsolete, obsoleteErr := s.executionTaskObsolete(ctx, payload.PipelineRunID, jobID, payload.WorkflowNodeID); obsoleteErr == nil && obsolete {
 			return nil
 		}
@@ -241,7 +241,7 @@ func (s *Service) finishBuildTaskFailure(
 	retryable := allowRetry && transientBuildError(cause)
 	if retryable {
 		var job model.Job
-		if err := s.db.WithContext(context.WithoutCancel(ctx)).First(&job, "id = ?", expected.jobID).Error; err == nil && job.Attempt < job.MaxAttempts {
+		if err := s.db.WithContext(context.WithoutCancel(ctx)).First(&job, "uuid = ?", expected.jobID).Error; err == nil && job.Attempt < job.MaxAttempts {
 			now := time.Now().UTC()
 			retryMessage := message + "；系统将自动重试"
 			updateContext, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
@@ -252,7 +252,7 @@ func (s *Service) finishBuildTaskFailure(
 			}
 			result := s.db.WithContext(updateContext).Model(&model.PipelineRun{}).
 				Where("stage <> ?", stoppingStage).
-				Where("id = ? AND execution_job_id = ? AND current_node_id = ? AND status = ?",
+				Where("uuid = ? AND execution_job_id = ? AND current_node_id = ? AND status = ?",
 					expected.runID, expected.jobID, expected.nodeID, expected.status).Updates(updates)
 			if result.Error == nil && result.RowsAffected == 1 {
 				s.appendRunLog(updateContext, expected.runID, "retrying", "warning", retryMessage)
@@ -287,7 +287,7 @@ func (s *Service) loadBuildExecution(ctx context.Context, payload BuildTaskPaylo
 		return nil, ErrPipelineExecutionConfig
 	}
 	var run model.PipelineRun
-	if err := s.db.WithContext(ctx).First(&run, "id = ? AND execution_job_id = ?", payload.PipelineRunID, jobID).Error; err != nil {
+	if err := s.db.WithContext(ctx).First(&run, "uuid = ? AND execution_job_id = ?", payload.PipelineRunID, jobID).Error; err != nil {
 		return nil, err
 	}
 	if run.CurrentNodeID == payload.WorkflowNodeID && (run.Stage == "task_succeeded" || run.Status == model.PipelineRunSucceeded) {
@@ -305,7 +305,7 @@ func (s *Service) loadBuildExecution(ctx context.Context, payload BuildTaskPaylo
 		return nil, ErrPipelineExecutionConfig
 	}
 	result := &buildExecutionContext{run: run, node: node, snapshot: *snapshot}
-	if err := s.db.WithContext(ctx).First(&result.application, "id = ? AND is_active = ?", run.ApplicationID, true).Error; err != nil {
+	if err := s.db.WithContext(ctx).First(&result.application, "uuid = ? AND is_active = ?", run.ApplicationID, true).Error; err != nil {
 		return nil, err
 	}
 	if err := s.db.WithContext(ctx).First(&result.component, "pipeline_run_id = ?", run.ID).Error; err != nil {
@@ -469,7 +469,7 @@ func (s *Service) executePipelineBuild(ctx context.Context, prepared *buildExecu
 			})
 		}
 		var registry model.ImageRegistry
-		if err := s.db.WithContext(ctx).First(&registry, "id = ? AND is_active = ?", prepared.plan.ImageRegistryID, true).Error; err != nil {
+		if err := s.db.WithContext(ctx).First(&registry, "uuid = ? AND is_active = ?", prepared.plan.ImageRegistryID, true).Error; err != nil {
 			return nil, err
 		}
 		execution := &executionContext{run: prepared.run, application: prepared.application, registry: registry}
@@ -684,7 +684,7 @@ func (s *Service) completeBuildExecution(ctx context.Context, prepared *buildExe
 	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		result := tx.Model(&model.PipelineRun{}).
 			Where("stage <> ?", stoppingStage).
-			Where("id = ? AND execution_job_id = ? AND status = ?", prepared.run.ID, prepared.run.ExecutionJobID, model.PipelineRunRunning).
+			Where("uuid = ? AND execution_job_id = ? AND status = ?", prepared.run.ID, prepared.run.ExecutionJobID, model.PipelineRunRunning).
 			Updates(updates)
 		if result.Error != nil {
 			return result.Error

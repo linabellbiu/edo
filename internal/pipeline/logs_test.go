@@ -100,7 +100,7 @@ func TestPipelineRunLogsShareOneRunLevelBudget(t *testing.T) {
 	}
 	service.appendRunLog(context.Background(), run.ID, "build", "output", "0123456789")
 	var stored model.PipelineRun
-	if err := db.Select("log_bytes", "log_truncated").First(&stored, "id = ?", run.ID).Error; err != nil {
+	if err := db.Select("log_bytes", "log_truncated").First(&stored, "uuid = ?", run.ID).Error; err != nil {
 		t.Fatal(err)
 	}
 	if stored.LogBytes != maximumPipelineRunLogBytes || !stored.LogTruncated {

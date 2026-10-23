@@ -64,7 +64,8 @@ type WorkflowStage struct {
 }
 
 type ReleaseWorkflow struct {
-	ID                       string                   `gorm:"type:varchar(36);primaryKey" json:"id"`
+	RowID                    uint64                   `gorm:"column:id;primaryKey;autoIncrement" json:"row_id"`
+	ID                       string                   `gorm:"column:uuid;type:varchar(36);not null;uniqueIndex" json:"id"`
 	ApplicationID            string                   `gorm:"type:varchar(36);not null;index" json:"application_id"`
 	WorkflowTemplateID       string                   `gorm:"type:varchar(36);not null;default:'';index" json:"workflow_template_id,omitempty"`
 	WorkflowTemplateRevision uint64                   `gorm:"not null;default:0" json:"workflow_template_revision,omitempty"`
@@ -81,7 +82,7 @@ type ReleaseWorkflow struct {
 	CreatedAt                time.Time                `gorm:"not null" json:"created_at"`
 	UpdatedAt                time.Time                `gorm:"not null" json:"updated_at"`
 	DeletedAt                gorm.DeletedAt           `gorm:"index" json:"-"`
-	WorkflowTemplate         *ReleaseWorkflowTemplate `gorm:"foreignKey:WorkflowTemplateID;-:migration" json:"workflow_template,omitempty"`
+	WorkflowTemplate         *ReleaseWorkflowTemplate `gorm:"foreignKey:WorkflowTemplateID;references:ID;-:migration" json:"workflow_template,omitempty"`
 }
 
 func (ReleaseWorkflow) TableName() string { return "release_workflows" }
@@ -89,7 +90,8 @@ func (ReleaseWorkflow) TableName() string { return "release_workflows" }
 // ReleaseWorkflowTemplate 是可以被多个应用复用的流水线方案。
 // 已关联的应用跟随启用版本；直接修改应用流水线时解除关联，保留独立配置。
 type ReleaseWorkflowTemplate struct {
-	ID            string          `gorm:"type:varchar(36);primaryKey" json:"id"`
+	RowID         uint64          `gorm:"column:id;primaryKey;autoIncrement" json:"row_id"`
+	ID            string          `gorm:"column:uuid;type:varchar(36);not null;uniqueIndex" json:"id"`
 	SchemaVersion uint16          `gorm:"not null;default:1" json:"schema_version"`
 	Name          string          `gorm:"type:varchar(128);not null;uniqueIndex:ux_release_workflow_templates_department_name,priority:2;uniqueIndex:ux_release_workflow_templates_project_name,priority:2" json:"name"`
 	Description   string          `gorm:"type:varchar(500);not null;default:''" json:"description"`
@@ -108,7 +110,8 @@ type ReleaseWorkflowTemplate struct {
 func (ReleaseWorkflowTemplate) TableName() string { return "release_workflow_templates" }
 
 type PipelineRunApproval struct {
-	ID            string    `gorm:"type:varchar(36);primaryKey" json:"id"`
+	RowID         uint64    `gorm:"column:id;primaryKey;autoIncrement" json:"row_id"`
+	ID            string    `gorm:"column:uuid;type:varchar(36);not null;uniqueIndex" json:"id"`
 	PipelineRunID string    `gorm:"type:varchar(36);not null;uniqueIndex:idx_run_approval_node" json:"pipeline_run_id"`
 	NodeID        string    `gorm:"type:varchar(64);not null;uniqueIndex:idx_run_approval_node" json:"node_id"`
 	RequestedBy   string    `gorm:"type:varchar(36);not null;default:'';index" json:"requested_by,omitempty"`

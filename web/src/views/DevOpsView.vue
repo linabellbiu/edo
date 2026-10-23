@@ -34,6 +34,7 @@ import { retainCurrentDeploymentState, selectCurrentDeploymentInstances, selectL
 import type { RollbackRecord } from '@/types/deploymentRollback'
 import { deploymentRollbackEn, deploymentRollbackZh } from '@/locales/deploymentRollback'
 import { formatDateTime, formatRelativeTime } from '@/utils/time'
+import { parsePipelineRunFilters, pipelineRunDateBounds, pipelineRunDateRange, pipelineRunRequestParams, pipelineRunRouteQuery, type PipelineRunFilters } from '@/utils/pipelineRunFilters'
 
 type Section='applications'|'repositories'|'build-plans'|'image-registries'|'release-plans'
 const props=defineProps<{section:Section}>(),route=useRoute(),router=useRouter(),auth=useAuthStore()
@@ -53,7 +54,7 @@ interface Artifact extends ResourceRecord{id:string;application_id:string;build_
 interface ApplicationWorkflow extends PipelineWorkflow{workflow_template?:{id:string;name:string}}
 interface WorkflowTemplate extends PipelineWorkflow{description?:string}
 interface Application extends ResourceRecord{id:string;name:string;description:string;repository_id:string;poll_interval_seconds:number;last_observed_commit?:string;sync_status:string;sync_message?:string;last_checked_at?:string;is_active:boolean;repository?:Repository;workflows:ApplicationWorkflow[]}
-interface Run extends ResourceRecord{id:string;application_id:string;workflow_id?:string;deployment_id?:string;release_plan_id?:string;release_plan_execution_id?:string;release_plan_execution_item_id?:string;retry_of_id?:string;artifact_id?:string;selected_artifact?:{id:string;name:string;kind:'oci_image'|'file_bundle';digest:string};trigger:string;ref:string;commit_sha:string;commit_message?:string;status:string;stage:string;message?:string;created_at:string;updated_at?:string;application?:Application;environment?:string;current_node_id?:string;current_node_name?:string;created_by?:string;image?:string;execution_graph?:PipelineExecutionGraph}
+interface Run extends ResourceRecord{row_id?:number;id:string;application_id:string;workflow_id?:string;deployment_id?:string;release_plan_id?:string;release_plan_execution_id?:string;release_plan_execution_item_id?:string;retry_of_id?:string;artifact_id?:string;selected_artifact?:{id:string;name:string;kind:'oci_image'|'file_bundle';digest:string};trigger:string;ref:string;commit_sha:string;commit_message?:string;status:string;stage:string;message?:string;created_at:string;updated_at?:string;application?:Application;environment?:string;current_node_id?:string;current_node_name?:string;created_by?:string;image?:string;execution_graph?:PipelineExecutionGraph}
 interface DeploymentTarget extends ResourceRecord{id:string;platform:string;environment_id:string;host_id:string;runtime_id:string;namespace?:string;workload_name?:string;container_name?:string}
 interface DeploymentPlan extends ResourceRecord{id:string;kind?:string;service_name?:string;deployment_target_id:string;deployment_target?:DeploymentTarget}
 interface DeploymentRecord extends ResourceRecord{id:string;pipeline_run_id?:string;application_id?:string;target_id:string;target_name:string;platform:string;environment_id:string;host_id:string;runtime_id:string;namespace:string;workload_name:string;container_name:string;deployment_plan_id?:string;deployment_plan_kind?:string;compose_service?:string;operation:string;image:string;image_display?:string;status:string;error_message?:string;runtime_deleted_at?:string;created_at:string;updated_at:string;finished_at?:string}
@@ -174,12 +175,18 @@ const runListEntries=computed<RunListEntry[]>(()=>{
  }
  return entries
 })
-const runPagination=reactive({current:1,pageSize:10,showSizeChanger:true,pageSizeOptions:['10','20','50','100'],showTotal:(total:number)=>`共 ${total} 项执行`})
+const runFilters=computed(()=>parsePipelineRunFilters(route.query))
+const runDateRange=computed(()=>pipelineRunDateRange(runFilters.value))
+const runTotal=ref(0),runListLoading=ref(false),runListError=ref('')
+let runQueryRevision=0,runListController:AbortController|undefined,executionRevision=0,executionController:AbortController|undefined,lastRunQuery=''
+const runPagination=computed(()=>({current:runFilters.value.page,pageSize:runFilters.value.pageSize,total:runTotal.value,showSizeChanger:true,pageSizeOptions:['10','20','50','100'],showTotal:(total:number)=>`共 ${total} 条运行记录`}))
+const runQueryKey=computed(()=>`${props.section}:${releaseView.value}:${JSON.stringify(pipelineRunRequestParams(runFilters.value))}`)
 const expandedRunIDs=ref<string[]>([])
 const expandedExecutionIDs=ref<string[]>([])
 const expandedRunListKeys=computed(()=>[...expandedExecutionIDs.value,...expandedRunIDs.value])
 const runDrawerEntryID=ref('')
-const runDrawerEntry=computed(()=>runListEntries.value.find(entry=>entry.id===runDrawerEntryID.value))
+const detachedRun=ref<Run|null>(null),executionDrawer=ref<RunExecutionGroup|null>(null),executionDrawerLoading=ref(false),executionDrawerError=ref('')
+const runDrawerEntry=computed(()=>executionDrawer.value?.id===runDrawerEntryID.value?executionDrawer.value:runListEntries.value.find(entry=>entry.id===runDrawerEntryID.value)||(detachedRun.value?.id===runDrawerEntryID.value?detachedRun.value:undefined))
 const runDrawerOpen=computed({get:()=>Boolean(runDrawerEntryID.value&&runDrawerEntry.value),set:(open:boolean)=>{if(!open){runDrawerEntryID.value='';collapseAllRuns()}}})
 const runWorkspace=ref<HTMLElement|null>(null)
 const runColumns=[
@@ -696,37 +703,80 @@ let requestedRunRequestID='',revealedRunID=''
 async function revealRequestedRun(){
  const runID=requestedRunID.value
  if(props.section!=='release-plans'||releaseView.value!=='runs')return
- if(!runID){selectedRunID.value='';expandedRunIDs.value=[];revealedRunID='';return}
+ if(!runID){selectedRunID.value='';expandedRunIDs.value=[];runDrawerEntryID.value='';detachedRun.value=null;executionDrawer.value=null;revealedRunID='';return}
  if(revealedRunID===runID)return
- const existing=runs.value.find(item=>item.id===runID)
+ const existing=runs.value.find(item=>item.id===runID)||executionDrawer.value?.runs.find(item=>item.id===runID)
  if(existing){revealPipelineRun(runID);return}
  if(requestedRunRequestID===runID)return
  requestedRunRequestID=runID
  try{
   const run=(await client.get<{pipeline_run:Run}>(`/pipeline-runs/${encodeURIComponent(runID)}`)).data.pipeline_run
   if(requestedRunID.value!==runID)return
-  runs.value=[run,...runs.value.filter(item=>item.id!==run.id)]
-  revealPipelineRun(runID)
- }catch(error){
-  if(requestedRunID.value===runID)message.error(`无法定位流水线运行：${apiErrorMessage(error)}`)
- }finally{
-  if(requestedRunRequestID===runID)requestedRunRequestID=''
- }
+  detachedRun.value=run
+  runDrawerEntryID.value=run.id
+  selectedRunID.value=run.id
+  expandedRunIDs.value=[run.id]
+  revealedRunID=run.id
+ }catch(error){if(requestedRunID.value===runID)message.error(`无法定位流水线运行：${apiErrorMessage(error)}`)}
+ finally{if(requestedRunRequestID===runID)requestedRunRequestID=''}
 }
 function revealPipelineRun(runID:string){
  selectedRunID.value=runID
  revealedRunID=runID
- const index=runListEntries.value.findIndex(item=>isRunExecutionGroup(item)?item.runs.some(run=>run.id===runID):item.id===runID)
- if(index>=0){
-  const page=Math.floor(index/runPagination.pageSize)+1
-  if(page!==runPagination.current){expandedRunIDs.value=[];expandedExecutionIDs.value=[]}
-  runPagination.current=page
-  const entry=runListEntries.value[index]!
+ const entry=runListEntries.value.find(item=>isRunExecutionGroup(item)?item.runs.some(run=>run.id===runID):item.id===runID)
+ if(entry){
   runDrawerEntryID.value=entry.id
-  if(isRunExecutionGroup(entry)&&!expandedExecutionIDs.value.includes(entry.id))expandedExecutionIDs.value.push(entry.id)
+  if(isRunExecutionGroup(entry)){
+   if(!expandedExecutionIDs.value.includes(entry.id))expandedExecutionIDs.value.push(entry.id)
+   void loadExecutionGroup(entry)
+  }
  }
  if(!expandedRunIDs.value.includes(runID))expandedRunIDs.value.push(runID)
 }
+async function loadExecutionGroup(group:RunExecutionGroup){
+ executionController?.abort()
+ const controller=new AbortController(),request=++executionRevision
+ executionController=controller
+ executionDrawer.value=group
+ executionDrawerLoading.value=true;executionDrawerError.value=''
+ try{
+  const records:Run[]=[]
+  for(let page=1;;page++){
+   const {data}=await client.get<{pipeline_runs:Run[];total:number}>('/pipeline-runs',{params:{release_plan_execution_id:group.release_plan_execution_id,order:'desc',page,page_size:200},signal:controller.signal})
+   if(request!==executionRevision||controller.signal.aborted)return
+   records.push(...data.pipeline_runs)
+   if(records.length>=data.total||!data.pipeline_runs.length)break
+  }
+  if(request===executionRevision&&runDrawerEntryID.value===group.id)executionDrawer.value={...group,runs:records}
+ }catch(error){if(!controller.signal.aborted&&request===executionRevision)executionDrawerError.value=apiErrorMessage(error)}
+ finally{if(request===executionRevision)executionDrawerLoading.value=false}
+}
+async function loadRunPage(reportError=false){
+ if(props.section!=='release-plans'||releaseView.value!=='runs'||!auth.canAny(['pipeline_run.read']))return
+ runListController?.abort()
+ const controller=new AbortController(),request=++runQueryRevision,key=runQueryKey.value
+ runListController=controller;runListLoading.value=true;runListError.value=''
+ if(lastRunQuery!==key){runs.value=[];runTotal.value=0;lastRunQuery=key}
+ try{
+  const {data}=await client.get<{pipeline_runs:Run[];total:number}>('/pipeline-runs',{params:pipelineRunRequestParams(runFilters.value),signal:controller.signal})
+  if(request!==runQueryRevision||key!==runQueryKey.value||controller.signal.aborted)return
+  runs.value=data.pipeline_runs;runTotal.value=data.total
+  const finalPage=Math.max(1,Math.ceil(data.total/runFilters.value.pageSize))
+  if(runFilters.value.page>finalPage){void router.replace({query:pipelineRunRouteQuery(route.query,{...runFilters.value,page:finalPage})});return}
+  if(executionDrawer.value&&runDrawerEntryID.value===executionDrawer.value.id)void loadExecutionGroup(executionDrawer.value)
+  if(requestedRunID.value)void revealRequestedRun()
+ }catch(error){
+  if(controller.signal.aborted||request!==runQueryRevision)return
+  runListError.value=apiErrorMessage(error)
+  if(reportError)message.error(runListError.value)
+ }finally{if(request===runQueryRevision)runListLoading.value=false}
+}
+function changeRunFilters(patch:Partial<PipelineRunFilters>){
+ const filters={...runFilters.value,...patch,page:1}
+ void router.push({query:pipelineRunRouteQuery(route.query,filters)})
+}
+function changeRunDates(_value:unknown,dates:string[]){changeRunFilters(pipelineRunDateBounds(dates))}
+function resetRunFilters(){changeRunFilters({status:'',from:'',to:'',order:'desc'})}
 function isRunExecutionGroup(entry:RunListEntry):entry is RunExecutionGroup{return entry.executionGroup===true}
 function runEntryRecords(entry:RunListEntry){return isRunExecutionGroup(entry)?entry.runs:[entry]}
 function runEntryPlanName(entry:RunListEntry){return runReleasePlanName(runEntryRecords(entry)[0]!)}
@@ -744,6 +794,9 @@ function expandRunListEntry(expanded:boolean,entry:RunListEntry){
  if(!isRunExecutionGroup(entry)){expandPipelineRun(expanded,entry);return}
  if(expanded){
   if(!expandedExecutionIDs.value.includes(entry.id))expandedExecutionIDs.value.push(entry.id)
+  void loadExecutionGroup(entry)
+  const first=entry.runs[0]
+  if(first){selectedRunID.value=first.id;revealedRunID=first.id;void router.push({query:{...route.query,view:'runs',run:first.id}})}
  }else{
   expandedExecutionIDs.value=expandedExecutionIDs.value.filter(id=>id!==entry.id)
   const childIDs=new Set(entry.runs.map(run=>run.id))
@@ -751,7 +804,7 @@ function expandRunListEntry(expanded:boolean,entry:RunListEntry){
   if(childIDs.has(selectedRunID.value)){
    selectedRunID.value=expandedRunIDs.value.at(-1)||''
    revealedRunID=selectedRunID.value
-   void router.replace({path:'/release-plans',query:{view:'runs',...(selectedRunID.value?{run:selectedRunID.value}:{})}})
+   void router.replace({path:'/release-plans',query:{...route.query,view:'runs',run:selectedRunID.value||undefined}})
   }
  }
 }
@@ -765,7 +818,7 @@ function expandPipelineRun(expanded:boolean,run:Run){
   if(selectedRunID.value===run.id)selectedRunID.value=expandedRunIDs.value.at(-1)||''
  }
  revealedRunID=selectedRunID.value
- void router.replace({path:'/release-plans',query:{view:'runs',...(selectedRunID.value?{run:selectedRunID.value}:{})}})
+ void router.replace({path:'/release-plans',query:{...route.query,view:'runs',run:selectedRunID.value||undefined}})
 }
 async function collapseRunDetail(run:Run){
  expandPipelineRun(false,run)
@@ -780,27 +833,24 @@ function collapseAllRuns(){
  expandedRunIDs.value=[]
  selectedRunID.value=''
  revealedRunID=''
- if(requestedRunID.value)void router.replace({path:'/release-plans',query:{view:'runs'}})
+ executionController?.abort();executionRevision++;executionDrawer.value=null;detachedRun.value=null
+ if(requestedRunID.value)void router.replace({path:'/release-plans',query:{...route.query,view:'runs',run:undefined}})
 }
 function changeRunPage(pagination:{current?:number;pageSize?:number}){
- runDrawerEntryID.value=''
  const pageSize=pagination.pageSize||10
- runPagination.current=pageSize!==runPagination.pageSize?1:pagination.current||1
- runPagination.pageSize=pageSize
- expandedExecutionIDs.value=[]
- expandedRunIDs.value=[]
- selectedRunID.value=''
- revealedRunID=''
- if(requestedRunID.value)void router.replace({path:'/release-plans',query:{view:'runs'}})
+ const filters={...runFilters.value,pageSize,page:pageSize!==runFilters.value.pageSize?1:pagination.current||1}
+ void router.push({query:pipelineRunRouteQuery(route.query,filters)})
 }
 
-async function refresh(){const locatedRun=runs.value.find(item=>item.id===requestedRunID.value);loading.value=true;try{const requests=await Promise.all([auth.canAny(['application.read'])?client.get<{applications:Application[]}>('/applications'):null,auth.canAny(['repository.read'])?client.get<{repositories:Repository[]}>('/repositories'):null,auth.canAny(['credential.read'])?client.get<{credentials:Credential[]}>('/git-credentials'):null,auth.canAny(['build_plan.read'])?client.get<{build_plans:BuildPlan[]}>('/build-plans'):null,auth.canAny(['image_registry.read'])?client.get<{image_registries:Registry[]}>('/image-registries'):null,auth.canAny(['pipeline_run.read'])?client.get<{pipeline_runs:Run[]}>('/pipeline-runs?limit=200'):null,auth.canAny(['release_plan.read'])?client.get<{release_plans:ReleasePlan[]}>('/release-plans'):null,canReadDeployments.value?client.get<{deployments:DeploymentRecord[]}>('/deployments?limit=200'):null,auth.canAny(['deployment_plan.read'])?client.get<{deployment_plans:DeploymentPlan[]}>('/deployment-plans'):null,auth.canAny(['workflow.read'])?client.get<{workflow_templates:WorkflowTemplate[]}>('/workflow-templates'):null]);applications.value=requests[0]?.data.applications||[];repositories.value=requests[1]?.data.repositories||[];credentials.value=requests[2]?.data.credentials||[];buildPlans.value=requests[3]?.data.build_plans||[];registries.value=requests[4]?.data.image_registries||[];runs.value=requests[5]?.data.pipeline_runs||[];if(locatedRun&&!runs.value.some(item=>item.id===locatedRun.id))runs.value=[locatedRun,...runs.value];releasePlans.value=requests[6]?.data.release_plans||[];deployments.value=requests[7]?.data.deployments||[];deploymentPlans.value=requests[8]?.data.deployment_plans||[];workflowTemplates.value=requests[9]?.data.workflow_templates||[];if(requestedRunID.value)void revealRequestedRun();await refreshVisibleRunDeployments()}catch(error){message.error(apiErrorMessage(error))}finally{loading.value=false}}
+async function refresh(){const section=props.section,view=releaseView.value;loading.value=true;try{const requests=await Promise.all([auth.canAny(['application.read'])?client.get<{applications:Application[]}>('/applications'):null,auth.canAny(['repository.read'])?client.get<{repositories:Repository[]}>('/repositories'):null,auth.canAny(['credential.read'])?client.get<{credentials:Credential[]}>('/git-credentials'):null,auth.canAny(['build_plan.read'])?client.get<{build_plans:BuildPlan[]}>('/build-plans'):null,auth.canAny(['image_registry.read'])?client.get<{image_registries:Registry[]}>('/image-registries'):null,auth.canAny(['pipeline_run.read'])&&!(section==='release-plans'&&view==='runs')?client.get<{pipeline_runs:Run[]}>('/pipeline-runs?limit=200'):null,auth.canAny(['release_plan.read'])?client.get<{release_plans:ReleasePlan[]}>('/release-plans'):null,canReadDeployments.value?client.get<{deployments:DeploymentRecord[]}>('/deployments?limit=200'):null,auth.canAny(['deployment_plan.read'])?client.get<{deployment_plans:DeploymentPlan[]}>('/deployment-plans'):null,auth.canAny(['workflow.read'])?client.get<{workflow_templates:WorkflowTemplate[]}>('/workflow-templates'):null]);if(section!==props.section||view!==releaseView.value)return;applications.value=requests[0]?.data.applications||[];repositories.value=requests[1]?.data.repositories||[];credentials.value=requests[2]?.data.credentials||[];buildPlans.value=requests[3]?.data.build_plans||[];registries.value=requests[4]?.data.image_registries||[];if(!(section==='release-plans'&&view==='runs'))runs.value=requests[5]?.data.pipeline_runs||[];releasePlans.value=requests[6]?.data.release_plans||[];deployments.value=requests[7]?.data.deployments||[];deploymentPlans.value=requests[8]?.data.deployment_plans||[];workflowTemplates.value=requests[9]?.data.workflow_templates||[];if(section==='release-plans'&&view==='runs')await loadRunPage(true);if(requestedRunID.value)void revealRequestedRun();await refreshVisibleRunDeployments()}catch(error){message.error(apiErrorMessage(error))}finally{loading.value=false}}
 let stateRefreshing=false
 async function refreshApplicationState(){
+ const section=props.section,view=releaseView.value
  if(stateRefreshing||!auth.canAny([`${sectionPermission.value}.read`]))return
  stateRefreshing=true
  try{
  const [applicationResult,runResult,deploymentResult,deploymentPlanResult]=await Promise.all([auth.canAny(['application.read'])?client.get<{applications:Application[]}>('/applications'):Promise.resolve({data:{applications:[] as Application[]}}),auth.canAny(['pipeline_run.read'])?client.get<{pipeline_runs:Run[]}>('/pipeline-runs?limit=200'):Promise.resolve({data:{pipeline_runs:[] as Run[]}}),canReadDeployments.value?client.get<{deployments:DeploymentRecord[]}>('/deployments?limit=200'):null,auth.canAny(['deployment_plan.read'])?client.get<{deployment_plans:DeploymentPlan[]}>('/deployment-plans'):Promise.resolve({data:{deployment_plans:[] as DeploymentPlan[]}})])
+  if(section!==props.section||view!==releaseView.value)return
   applications.value=applicationResult.data.applications||[]
   runs.value=runResult.data.pipeline_runs||[]
   if(deploymentResult)deployments.value=deploymentResult.data.deployments||[]
@@ -815,6 +865,7 @@ function refreshVisibleDeploymentRuntime(){
  for(const record of visibleRecords)void loadDeploymentRuntime(record,true)
 }
 async function refreshReleasePlanState(){
+ const section=props.section,view=releaseView.value
  if(stateRefreshing||!auth.canAny([`${sectionPermission.value}.read`]))return
  stateRefreshing=true
  try{
@@ -823,23 +874,19 @@ async function refreshReleasePlanState(){
    auth.canAny(['pipeline_run.read'])?client.get<{pipeline_runs:Run[]}>('/pipeline-runs?limit=200'):Promise.resolve({data:{pipeline_runs:[] as Run[]}}),
    client.get<{release_plans:ReleasePlan[]}>('/release-plans'),
   ])
+  if(section!==props.section||view!==releaseView.value)return
   applications.value=appResult.data.applications||[]
   runs.value=runResult.data.pipeline_runs||[]
   releasePlans.value=planResult.data.release_plans||[]
  }catch{}finally{stateRefreshing=false}
 }
 async function refreshRunState(){
- if(stateRefreshing||!auth.canAny([`${sectionPermission.value}.read`]))return
+ if(stateRefreshing||!auth.canAny(['pipeline_run.read']))return
  stateRefreshing=true
- try{
-  const locatedRun=runs.value.find(item=>item.id===requestedRunID.value)
-  runs.value=(await (auth.canAny(['pipeline_run.read'])?client.get<{pipeline_runs:Run[]}>('/pipeline-runs?limit=200'):Promise.resolve({data:{pipeline_runs:[] as Run[]}}))).data.pipeline_runs||[]
-  if(locatedRun&&!runs.value.some(item=>item.id===locatedRun.id))runs.value=[locatedRun,...runs.value]
-  if(requestedRunID.value)void revealRequestedRun()
-  await refreshVisibleRunDeployments()
-  if(rollbackDialog.open||releasePlanResources.open)await refreshRollbackRecords()
- }catch{}finally{stateRefreshing=false}
+ try{await loadRunPage();await refreshVisibleRunDeployments();if(rollbackDialog.open||releasePlanResources.open)await refreshRollbackRecords()}
+ finally{stateRefreshing=false}
 }
+
 function formatVariableText(values?:Record<string,string>){return Object.entries(values||{}).map(([name,value])=>`${name}=${value}`).join('\n')}
 function parseVariableText(source:string,label:string){
  const values:Record<string,string>={}
@@ -1137,9 +1184,8 @@ async function executeRetry(){
   const retried=(await client.post<{pipeline_run:Run}>(`/pipeline-runs/${retryRunID.value}/retry`,retryMode.value==='artifact'?{artifact_id:retryArtifactID.value}:{},{timeout:35000})).data.pipeline_run
   message.success(retryMode.value==='artifact'?'已使用原运行制品创建重试':'已按原固定版本重新构建')
   resetRetry();await refresh()
-  if(!runs.value.some(item=>item.id===retried.id))runs.value=[retried,...runs.value]
-  revealPipelineRun(retried.id)
-  void router.replace({path:'/release-plans',query:{view:'runs',run:retried.id}})
+  detachedRun.value=retried
+  void router.replace({path:'/release-plans',query:{...route.query,view:'runs',run:retried.id}})
  }catch(error){message.error(apiErrorMessage(error))}finally{retrySubmitting.value=false}
 }
 function openLogs(run:Run){log.value={open:true,runID:run.id,title:`流水线日志：${applications.value.find(item=>item.id===run.application_id)?.name||'应用'}`,status:run.status}}
@@ -1527,6 +1573,7 @@ async function applyAcceptedReleasePlanExecution(planID:string,execution:Release
  const acceptedRuns=results.flatMap(result=>result.status==='fulfilled'&&result.value.data.pipeline_run?[result.value.data.pipeline_run]:[])
  if(acceptedRuns.length){
   const acceptedIDs=new Set(acceptedRuns.map(run=>run.id))
+  if(releaseView.value==='runs'){await loadRunPage();return}
   runs.value=[...acceptedRuns,...runs.value.filter(run=>!acceptedIDs.has(run.id))].sort((left,right)=>new Date(right.created_at).getTime()-new Date(left.created_at).getTime())
  }
 }
@@ -1683,10 +1730,10 @@ watch(()=>route.query.create,consumeBuildCreateRequest)
 watch(()=>route.query.application,()=>{void revealActiveApplication()})
 watch(()=>route.query.delivery_kind,consumeDeliveryRequest)
 watch(()=>route.query.run,()=>{void revealRequestedRun()})
-watch(()=>runListEntries.value.length,()=>{runPagination.current=Math.min(runPagination.current,Math.max(1,Math.ceil(runListEntries.value.length/runPagination.pageSize)))})
+watch(runQueryKey,()=>{runDrawerEntryID.value='';expandedRunIDs.value=[];expandedExecutionIDs.value=[];selectedRunID.value='';revealedRunID='';detachedRun.value=null;executionDrawer.value=null;executionController?.abort();executionRevision++;void loadRunPage(true)})
 watch(()=>props.section,connectDeliveryEvents)
 onMounted(()=>{connectDeliveryEvents();void refresh().then(()=>{lastDeliverySync=Date.now();syncBuildPlanSelection();consumeBuildCreateRequest();consumeDeliveryRequest();void revealActiveApplication()});releaseTimer=window.setInterval(refreshVisibleState,5000);document.addEventListener('visibilitychange',onDeliveryPageVisible);window.addEventListener('focus',onDeliveryPageVisible)})
-onBeforeUnmount(()=>{stopDeliveryEvents?.();clearTimeout(deliveryRefreshTimer);resetPlanExecution();clearInterval(releaseTimer);document.removeEventListener('visibilitychange',onDeliveryPageVisible);window.removeEventListener('focus',onDeliveryPageVisible)})
+onBeforeUnmount(()=>{runListController?.abort();executionController?.abort();runQueryRevision++;executionRevision++;stopDeliveryEvents?.();clearTimeout(deliveryRefreshTimer);resetPlanExecution();clearInterval(releaseTimer);document.removeEventListener('visibilitychange',onDeliveryPageVisible);window.removeEventListener('focus',onDeliveryPageVisible)})
 </script>
 
 <template><section :class="{'applications-page':props.section==='applications'}"><PageToolbar :description="props.section==='applications'?t('applicationWorkspace.description'):currentDescription"><a-tag v-if="props.section==='applications'||props.section==='release-plans'" color="processing">{{ t('applicationCard.autoRefresh') }}</a-tag><a-button :loading="loading" @click="refresh"><RefreshCw :size="15"/>刷新</a-button><a-button v-if="props.section==='release-plans'&&releaseView==='runs'&&auth.canAny(['pipeline_run.execute'])&&auth.canAny(['application.read'])" type="primary" :disabled="saving" @click="openManualPicker">{{ t('manualRun.execute') }}</a-button><a-button v-if="canCreate&&(props.section!=='release-plans'||releaseView==='plans')" type="primary" @click="create"><Plus :size="15"/>{{ props.section==='release-plans'?'创建发布计划':props.section==='applications'?t('applicationWorkspace.create'):'新建' }}</a-button></PageToolbar>
@@ -1879,20 +1926,27 @@ onBeforeUnmount(()=>{stopDeliveryEvents?.();clearTimeout(deliveryRefreshTimer);r
  </div>
 </div>
 <div v-else-if="releaseView==='runs'" ref="runWorkspace" class="run-workspace vben-card">
-  <header class="run-list-heading"><span>共 {{ runs.length }} 条流水线记录<a-tag v-if="activeRunCount" color="processing">{{ activeRunCount }} 个进行中</a-tag></span><small class="resource-secondary">同次发布归为一组</small></header>
+  <div class="run-filter-toolbar">
+    <label>状态<a-select :value="runFilters.status" aria-label="运行状态" :options="[{value:'',label:'全部状态'},{value:'succeeded',label:'成功'},{value:'failed',label:'失败'}]" @change="(value: unknown)=>changeRunFilters({status:value as PipelineRunFilters['status']})" /></label>
+    <label>时间<a-range-picker :value="runDateRange" value-format="YYYY-MM-DD" :placeholder="['开始日期','结束日期']" aria-label="运行时间范围" @change="changeRunDates" /></label>
+    <label>排序<a-select :value="runFilters.order" aria-label="运行记录排序" :options="[{value:'desc',label:'最新在前'},{value:'asc',label:'最早在前'}]" @change="(value: unknown)=>changeRunFilters({order:value as PipelineRunFilters['order']})" /></label>
+    <a-button @click="resetRunFilters">重置</a-button>
+  </div>
+  <a-alert v-if="runListError" type="error" show-icon :message="runListError" class="run-filter-error"><template #action><a-button size="small" @click="loadRunPage(true)">重试</a-button></template></a-alert>
+  <header class="run-list-heading"><span>共 {{ runTotal }} 条流水线记录<a-tag v-if="activeRunCount" color="processing">{{ activeRunCount }} 个进行中</a-tag></span><small class="resource-secondary">同次发布归为一组</small></header>
   <a-table
     class="run-table resource-list-table"
     row-key="id"
     table-layout="fixed"
     :columns="runColumns"
     :data-source="runListEntries"
-    :loading="loading&&!runs.length"
+    :loading="runListLoading||(loading&&!runs.length)"
     :pagination="runPagination"
     :scroll="{x:1340}"
     :row-class-name="runListRowClass"
     @change="changeRunPage"
   >
-    <template #emptyText><a-empty description="还没有流水线运行"/></template>
+    <template #emptyText><a-empty :description="runFilters.status||runFilters.from||runFilters.to?'没有符合条件的运行记录':'还没有流水线运行'"/></template>
     <template #bodyCell="{column,record}">
       <ResourceRowActions v-if="column.key==='actions'" :more="false"><a-button size="small" @click="expandRunListEntry(true,record)">详情</a-button><a-button v-if="!record.executionGroup" size="small" @click="openLogs(record)">日志</a-button></ResourceRowActions>
       <template v-else-if="record.executionGroup">
@@ -1928,6 +1982,8 @@ onBeforeUnmount(()=>{stopDeliveryEvents?.();clearTimeout(deliveryRefreshTimer);r
     </template>
   </a-table>
   <ResourceDetailDrawer v-model:open="runDrawerOpen" :title="runDrawerEntry ? (isRunExecutionGroup(runDrawerEntry) ? runEntryPlanName(runDrawerEntry) : applicationName(runDrawerEntry)) : '运行详情'">
+    <a-alert v-if="executionDrawerError" type="error" show-icon :message="executionDrawerError" />
+    <a-spin v-if="executionDrawerLoading" />
     <template v-for="record in runDrawerEntry ? [runDrawerEntry] : []" :key="record.id">
       <div :id="`run-entry-${record.id}`" :class="{'run-execution-detail':record.executionGroup}">
         <header v-if="isRunExecutionGroup(record)" class="run-group-caption"><span><Layers3 :size="15"/>本次发布的应用</span><small :title="record.release_plan_execution_id">执行编号：{{ record.release_plan_execution_id.slice(0,8) }}；已加载 {{ record.runs.length }} 条运行记录</small></header>
@@ -2303,6 +2359,8 @@ onBeforeUnmount(()=>{stopDeliveryEvents?.();clearTimeout(deliveryRefreshTimer);r
 </section></template>
 
 <style scoped>
+.run-filter-toolbar{display:flex;flex-wrap:wrap;align-items:flex-end;gap:12px;padding:16px;border-bottom:1px solid var(--edo-border)}.run-filter-toolbar label{display:flex;align-items:center;gap:8px;color:var(--edo-muted);font-size:13px}.run-filter-toolbar :deep(.ant-select){min-width:140px}.run-filter-error{margin:12px 16px}@media(max-width:640px){.run-filter-toolbar label{width:100%;justify-content:space-between}.run-filter-toolbar :deep(.ant-select),.run-filter-toolbar :deep(.ant-picker){flex:1;min-width:0}}
+
 .application-failed-deployments{margin-top:14px}.application-failed-deployments h4{margin:0 0 8px;color:var(--edo-text)}.application-failed-deployments article{padding:12px;border:1px solid var(--edo-border);border-radius:8px}.application-failed-deployments article+article{margin-top:8px}.application-failed-deployments p{margin:6px 0;overflow-wrap:anywhere}.application-failed-deployments .ant-btn{margin:4px 6px 0 0}
 
 .resource-option{display:grid;gap:2px;padding-block:2px}.resource-option strong{overflow:hidden;color:var(--edo-text);font-weight:600;text-overflow:ellipsis;white-space:nowrap}.resource-option small{overflow:hidden;color:var(--edo-muted);font-size:11px;text-overflow:ellipsis;white-space:nowrap}

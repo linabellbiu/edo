@@ -133,7 +133,7 @@ func (s *Service) SetDepartment(ctx context.Context, userID, departmentID string
 		return ErrInvalidUser
 	}
 	var user model.User
-	if err := s.db.WithContext(ctx).First(&user, "id = ?", userID).Error; err != nil {
+	if err := s.db.WithContext(ctx).First(&user, "uuid = ?", userID).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return ErrUserNotFound
 		}
@@ -147,7 +147,7 @@ func (s *Service) SetDepartment(ctx context.Context, userID, departmentID string
 	}
 	var departmentCount int64
 	if err := s.db.WithContext(ctx).Model(&model.Department{}).
-		Where("id = ? AND is_active = ?", departmentID, true).Count(&departmentCount).Error; err != nil {
+		Where("uuid = ? AND is_active = ?", departmentID, true).Count(&departmentCount).Error; err != nil {
 		return fmt.Errorf("查询目标部门失败: %w", err)
 	}
 	if departmentCount != 1 {
@@ -166,7 +166,7 @@ func (s *Service) SetDepartment(ctx context.Context, userID, departmentID string
 func (s *Service) EnsureCredentialsUnreferenced(ctx context.Context, userID, departmentID string) error {
 	var credentialIDs []string
 	if err := s.db.WithContext(ctx).Model(&model.GitCredential{}).
-		Where("user_id = ?", userID).Pluck("id", &credentialIDs).Error; err != nil {
+		Where("user_id = ?", userID).Pluck("uuid", &credentialIDs).Error; err != nil {
 		return fmt.Errorf("查询用户个人 Git 令牌失败: %w", err)
 	}
 	if len(credentialIDs) == 0 {
@@ -201,7 +201,7 @@ func (s *Service) List(ctx context.Context, limit, offset int) ([]model.User, er
 
 func (s *Service) SetActive(ctx context.Context, userID string, active bool) error {
 	var user model.User
-	if err := s.db.WithContext(ctx).First(&user, "id = ?", userID).Error; err != nil {
+	if err := s.db.WithContext(ctx).First(&user, "uuid = ?", userID).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return ErrUserNotFound
 		}
@@ -220,7 +220,7 @@ func (s *Service) SetActive(ctx context.Context, userID string, active bool) err
 
 func (s *Service) FindByID(ctx context.Context, id string) (*model.User, error) {
 	var user model.User
-	if err := s.db.WithContext(ctx).First(&user, "id = ?", id).Error; err != nil {
+	if err := s.db.WithContext(ctx).First(&user, "uuid = ?", id).Error; err != nil {
 		return nil, err
 	}
 	return &user, nil
@@ -235,7 +235,7 @@ func (s *Service) FindByUsername(ctx context.Context, username string) (*model.U
 }
 
 func (s *Service) MarkLogin(ctx context.Context, userID string, at time.Time) error {
-	return s.db.WithContext(ctx).Model(&model.User{}).Where("id = ?", userID).
+	return s.db.WithContext(ctx).Model(&model.User{}).Where("uuid = ?", userID).
 		Updates(map[string]any{"last_login_at": at, "updated_at": at}).Error
 }
 
@@ -283,7 +283,7 @@ func (s *Service) ChangePassword(ctx context.Context, userID, currentPassword, n
 	}
 
 	var user model.User
-	if err := s.db.WithContext(ctx).First(&user, "id = ?", userID).Error; err != nil {
+	if err := s.db.WithContext(ctx).First(&user, "uuid = ?", userID).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return ErrUserNotFound
 		}
@@ -309,7 +309,7 @@ func (s *Service) ChangePassword(ctx context.Context, userID, currentPassword, n
 	}
 	now := time.Now().UTC()
 	result := s.db.WithContext(ctx).Model(&model.User{}).
-		Where("id = ? AND auth_version = ?", user.ID, user.AuthVersion).
+		Where("uuid = ? AND auth_version = ?", user.ID, user.AuthVersion).
 		Updates(map[string]any{
 			"password_hash": passwordHash,
 			"auth_version":  gorm.Expr("auth_version + ?", 1),

@@ -7,7 +7,8 @@ type NotificationChannelType string
 const NotificationChannelWebhook NotificationChannelType = "webhook"
 
 type NotificationChannel struct {
-	ID                 string                  `gorm:"type:varchar(36);primaryKey"`
+	RowID              uint64                  `gorm:"column:id;primaryKey;autoIncrement" json:"row_id"`
+	ID                 string                  `gorm:"column:uuid;type:varchar(36);not null;uniqueIndex"`
 	Name               string                  `gorm:"type:varchar(128);not null;uniqueIndex:ux_notification_channels_department_name,priority:2;uniqueIndex:ux_notification_channels_project_name,priority:2"`
 	Type               NotificationChannelType `gorm:"type:varchar(16);not null;index"`
 	EndpointCiphertext string                  `gorm:"type:text;not null"`
@@ -39,7 +40,8 @@ const (
 )
 
 type Notification struct {
-	ID           string               `gorm:"type:varchar(36);primaryKey" json:"id"`
+	RowID        uint64               `gorm:"column:id;primaryKey;autoIncrement" json:"row_id"`
+	ID           string               `gorm:"column:uuid;type:varchar(36);not null;uniqueIndex" json:"id"`
 	DepartmentID string               `gorm:"type:varchar(36);not null;default:'00000000-0000-0000-0000-000000000001';index" json:"department_id"`
 	ProjectID    string               `gorm:"type:varchar(36);not null;default:'';index" json:"project_id"`
 	ChannelID    string               `gorm:"type:varchar(36);not null;index" json:"channel_id"`

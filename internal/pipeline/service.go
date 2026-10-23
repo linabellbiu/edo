@@ -173,7 +173,7 @@ func (s *Service) ListApplications(ctx context.Context) ([]model.Application, er
 	var applications []model.Application
 	err := s.db.WithContext(ctx).
 		Preload("Repository").
-		Preload("Workflows", func(db *gorm.DB) *gorm.DB { return db.Order("created_at ASC") }).
+		Preload("Workflows", func(db *gorm.DB) *gorm.DB { return db.Order("id ASC") }).
 		Preload("Workflows.WorkflowTemplate").
 		Preload("Repositories").
 		Preload("Repositories.Observations").
@@ -192,12 +192,12 @@ func (s *Service) FindApplication(ctx context.Context, id string) (*model.Applic
 	var application model.Application
 	err := s.db.WithContext(ctx).
 		Preload("Repository").
-		Preload("Workflows", func(db *gorm.DB) *gorm.DB { return db.Order("created_at ASC") }).
+		Preload("Workflows", func(db *gorm.DB) *gorm.DB { return db.Order("id ASC") }).
 		Preload("Workflows.WorkflowTemplate").
 		Preload("Repositories").
 		Preload("Repositories.Observations").
 		Preload("Repositories.Repository").
-		First(&application, "id = ?", id).Error
+		First(&application, "uuid = ?", id).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return nil, ErrApplicationNotFound
 	}
@@ -282,7 +282,7 @@ func (s *Service) UpdateApplication(ctx context.Context, id string, input Applic
 		updates["last_checked_at"] = nil
 	}
 	if err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		if err := tx.Model(&model.Application{}).Where("id = ?", existing.ID).Updates(updates).Error; err != nil {
+		if err := tx.Model(&model.Application{}).Where("uuid = ?", existing.ID).Updates(updates).Error; err != nil {
 			return err
 		}
 		if err := saveApplicationRepository(tx, existing, input.RepositoryID, time.Now().UTC()); err != nil {
@@ -299,7 +299,7 @@ func (s *Service) UpdateApplication(ctx context.Context, id string, input Applic
 }
 
 func (s *Service) SetApplicationActive(ctx context.Context, id string, active bool) error {
-	result := s.db.WithContext(ctx).Model(&model.Application{}).Where("id = ?", id).
+	result := s.db.WithContext(ctx).Model(&model.Application{}).Where("uuid = ?", id).
 		Updates(map[string]any{"is_active": active, "updated_at": time.Now().UTC()})
 	if result.Error != nil {
 		return fmt.Errorf("修改应用状态失败: %w", result.Error)
@@ -322,12 +322,12 @@ func (s *Service) normalizeApplication(ctx context.Context, input ApplicationInp
 		return input, ErrInvalidApplication
 	}
 	var activeRepository model.GitRepository
-	if err := s.db.WithContext(ctx).First(&activeRepository, "id = ? AND is_active = ?", input.RepositoryID, true).Error; err != nil {
+	if err := s.db.WithContext(ctx).First(&activeRepository, "uuid = ? AND is_active = ?", input.RepositoryID, true).Error; err != nil {
 		return input, ErrInvalidApplication
 	}
 	if input.WorkflowTemplateID != "" {
 		var template model.ReleaseWorkflowTemplate
-		if err := s.db.WithContext(ctx).First(&template, "id = ? AND is_active = ?", input.WorkflowTemplateID, true).Error; err != nil {
+		if err := s.db.WithContext(ctx).First(&template, "uuid = ? AND is_active = ?", input.WorkflowTemplateID, true).Error; err != nil {
 			return input, ErrWorkflowTemplateNotFound
 		}
 	}
@@ -386,7 +386,7 @@ func saveApplicationRepository(tx *gorm.DB, application *model.Application, repo
 			return err
 		}
 	}
-	return tx.Model(&model.ApplicationRepository{}).Where("id = ?", link.ID).Updates(updates).Error
+	return tx.Model(&model.ApplicationRepository{}).Where("uuid = ?", link.ID).Updates(updates).Error
 }
 
 func (s *Service) ListBuildPlans(ctx context.Context) ([]model.BuildPlan, error) {
@@ -545,7 +545,7 @@ func (s *Service) validateBuildPlanRegistry(ctx context.Context, registryID stri
 	}
 	var count int64
 	if err := s.db.WithContext(ctx).Model(&model.ImageRegistry{}).
-		Where("id = ? AND is_active = ?", registryID, true).Count(&count).Error; err != nil {
+		Where("uuid = ? AND is_active = ?", registryID, true).Count(&count).Error; err != nil {
 		return fmt.Errorf("校验构建镜像仓库失败: %w", err)
 	}
 	if count != 1 {
@@ -560,7 +560,7 @@ func (s *Service) UpdateBuildPlan(ctx context.Context, id string, input BuildPla
 		return nil, err
 	}
 	var existing model.BuildPlan
-	if err := s.db.WithContext(ctx).First(&existing, "id = ?", id).Error; err != nil {
+	if err := s.db.WithContext(ctx).First(&existing, "uuid = ?", id).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, ErrBuildPlanNotFound
 		}
@@ -577,7 +577,7 @@ func (s *Service) UpdateBuildPlan(ctx context.Context, id string, input BuildPla
 	if err != nil {
 		return nil, ErrInvalidBuildPlan
 	}
-	result := s.db.WithContext(ctx).Model(&model.BuildPlan{}).Where("id = ?", id).Updates(map[string]any{
+	result := s.db.WithContext(ctx).Model(&model.BuildPlan{}).Where("uuid = ?", id).Updates(map[string]any{
 		"name": input.Name, "kind": input.Kind, "description": input.Description,
 		"script": input.Script, "dockerfile_path": input.DockerfilePath, "context_path": input.ContextPath,
 		"working_directory": input.WorkingDirectory, "artifact_path": input.ArtifactPath, "runtime_image": input.RuntimeImage,
@@ -594,7 +594,7 @@ func (s *Service) UpdateBuildPlan(ctx context.Context, id string, input BuildPla
 		return nil, fmt.Errorf("更新构建方案失败: %w", err)
 	}
 	var plan model.BuildPlan
-	if err := s.db.WithContext(ctx).Preload("ImageRegistry").First(&plan, "id = ?", id).Error; err != nil {
+	if err := s.db.WithContext(ctx).Preload("ImageRegistry").First(&plan, "uuid = ?", id).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, ErrBuildPlanNotFound
 		}
@@ -605,13 +605,13 @@ func (s *Service) UpdateBuildPlan(ctx context.Context, id string, input BuildPla
 
 func (s *Service) SetBuildPlanActive(ctx context.Context, id string, active bool) error {
 	var plan model.BuildPlan
-	if err := s.db.WithContext(ctx).First(&plan, "id = ?", id).Error; err != nil {
+	if err := s.db.WithContext(ctx).First(&plan, "uuid = ?", id).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return ErrBuildPlanNotFound
 		}
 		return fmt.Errorf("读取待修改状态的构建方案失败: %w", err)
 	}
-	result := s.db.WithContext(ctx).Model(&model.BuildPlan{}).Where("id = ?", id).
+	result := s.db.WithContext(ctx).Model(&model.BuildPlan{}).Where("uuid = ?", id).
 		Updates(map[string]any{"is_active": active, "updated_at": time.Now().UTC()})
 	if result.Error != nil {
 		return fmt.Errorf("修改构建方案状态失败: %w", result.Error)
@@ -622,7 +622,7 @@ func (s *Service) SetBuildPlanActive(ctx context.Context, id string, active bool
 func (s *Service) DeleteBuildPlan(ctx context.Context, id string) error {
 	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var plan model.BuildPlan
-		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&plan, "id = ?", id).Error; err != nil {
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&plan, "uuid = ?", id).Error; err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
 				return ErrBuildPlanNotFound
 			}
@@ -909,7 +909,7 @@ func (s *Service) UpdateDeploymentPlan(ctx context.Context, id string, input Dep
 	}
 	var plan model.DeploymentPlan
 	err = s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		if findErr := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&plan, "id = ?", strings.TrimSpace(id)).Error; findErr != nil {
+		if findErr := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&plan, "uuid = ?", strings.TrimSpace(id)).Error; findErr != nil {
 			if errors.Is(findErr, gorm.ErrRecordNotFound) {
 				return ErrDeploymentPlanNotFound
 			}
@@ -969,7 +969,7 @@ func (s *Service) UpdateDeploymentPlan(ctx context.Context, id string, input Dep
 func (s *Service) SetDeploymentPlanActive(ctx context.Context, id string, active bool) error {
 	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var plan model.DeploymentPlan
-		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&plan, "id = ?", strings.TrimSpace(id)).Error; err != nil {
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&plan, "uuid = ?", strings.TrimSpace(id)).Error; err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
 				return ErrDeploymentPlanNotFound
 			}
@@ -978,7 +978,7 @@ func (s *Service) SetDeploymentPlanActive(ctx context.Context, id string, active
 		if plan.IsActive == active {
 			return nil
 		}
-		if err := tx.Model(&model.DeploymentPlan{}).Where("id = ?", plan.ID).
+		if err := tx.Model(&model.DeploymentPlan{}).Where("uuid = ?", plan.ID).
 			Updates(map[string]any{"is_active": active, "updated_at": time.Now().UTC()}).Error; err != nil {
 			return fmt.Errorf("修改部署方案状态失败: %w", err)
 		}
@@ -989,7 +989,7 @@ func (s *Service) SetDeploymentPlanActive(ctx context.Context, id string, active
 func (s *Service) DeleteDeploymentPlan(ctx context.Context, id string) error {
 	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var plan model.DeploymentPlan
-		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&plan, "id = ?", strings.TrimSpace(id)).Error; err != nil {
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&plan, "uuid = ?", strings.TrimSpace(id)).Error; err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
 				return ErrDeploymentPlanNotFound
 			}
@@ -1015,7 +1015,7 @@ func (s *Service) DeleteDeploymentPlan(ctx context.Context, id string) error {
 				return fmt.Errorf("检查部署位置关联失败: %w", err)
 			}
 			if otherPlans == 0 {
-				if err := tx.Delete(&model.DeploymentTarget{}, "id = ?", plan.DeploymentTargetID).Error; err != nil {
+				if err := tx.Delete(&model.DeploymentTarget{}, "uuid = ?", plan.DeploymentTargetID).Error; err != nil {
 					return fmt.Errorf("清理部署方案执行位置失败: %w", err)
 				}
 			}
@@ -1030,7 +1030,7 @@ func (s *Service) ListRuns(ctx context.Context, limit int) ([]model.PipelineRun,
 	}
 	var runs []model.PipelineRun
 	if err := pipelineRunQuery(s.db.WithContext(ctx)).
-		Order("created_at DESC").Limit(limit).Find(&runs).Error; err != nil {
+		Order("id DESC").Limit(limit).Find(&runs).Error; err != nil {
 		return nil, fmt.Errorf("查询流水线运行失败: %w", err)
 	}
 	if err := s.enrichPipelineRuns(ctx, runs); err != nil {
@@ -1041,7 +1041,7 @@ func (s *Service) ListRuns(ctx context.Context, limit int) ([]model.PipelineRun,
 
 func (s *Service) FindRun(ctx context.Context, id string) (*model.PipelineRun, error) {
 	var run model.PipelineRun
-	if err := pipelineRunQuery(s.db.WithContext(ctx)).First(&run, "id = ?", strings.TrimSpace(id)).Error; err != nil {
+	if err := pipelineRunQuery(s.db.WithContext(ctx)).First(&run, "uuid = ?", strings.TrimSpace(id)).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, ErrPipelineRunNotFound
 		}
@@ -1123,7 +1123,7 @@ func (s *Service) attachRunSelectedArtifacts(ctx context.Context, runs []model.P
 		return nil
 	}
 	var artifacts []model.Artifact
-	if err := s.db.WithContext(ctx).Where("id IN ?", artifactIDs).Find(&artifacts).Error; err != nil {
+	if err := s.db.WithContext(ctx).Where("uuid IN ?", artifactIDs).Find(&artifacts).Error; err != nil {
 		return fmt.Errorf("读取流水线选择制品失败: %w", err)
 	}
 	artifactByID := make(map[string]model.Artifact, len(artifacts))
@@ -1160,7 +1160,7 @@ func (s *Service) attachRunReleasePlanIDs(ctx context.Context, runs []model.Pipe
 		return nil
 	}
 	var executions []model.ReleasePlanExecution
-	if err := s.db.WithContext(ctx).Select("id", "release_plan_id").Where("id IN ?", executionIDs).Find(&executions).Error; err != nil {
+	if err := s.db.WithContext(ctx).Select("uuid", "release_plan_id").Where("uuid IN ?", executionIDs).Find(&executions).Error; err != nil {
 		return fmt.Errorf("查询流水线关联发布计划失败: %w", err)
 	}
 	planIDs := make(map[string]string, len(executions))
@@ -1260,7 +1260,7 @@ func (s *Service) SyncApplication(ctx context.Context, applicationID, trigger st
 		return application, nil, ErrApplicationNotFound
 	}
 	now := time.Now().UTC()
-	_ = s.db.WithContext(ctx).Model(&model.Application{}).Where("id = ?", application.ID).
+	_ = s.db.WithContext(ctx).Model(&model.Application{}).Where("uuid = ?", application.ID).
 		Updates(map[string]any{"sync_status": model.ApplicationSyncChecking, "sync_message": "", "updated_at": now}).Error
 	pollSources := applicationPollSources(application)
 	link, err := applicationRepositoryLink(application)
@@ -1367,7 +1367,7 @@ func (s *Service) SyncApplication(ctx context.Context, applicationID, trigger st
 				observedByWatchKey[watchKey] = observation
 				observedByEventRef[observationEventRefKey(workflow.ID, candidate.Event, candidate.Ref)] = observation
 				link.LastObservedRef, link.LastObservedCommit, link.LastCheckedAt = candidate.Ref, candidate.Commit, &now
-				if err := s.db.WithContext(ctx).Model(&model.ApplicationRepository{}).Where("id = ?", link.ID).Updates(map[string]any{
+				if err := s.db.WithContext(ctx).Model(&model.ApplicationRepository{}).Where("uuid = ?", link.ID).Updates(map[string]any{
 					"last_observed_ref": candidate.Ref, "last_observed_commit": candidate.Commit, "last_checked_at": now, "updated_at": now,
 				}).Error; err != nil {
 					return application, nil, fmt.Errorf("更新应用仓库监听状态失败: %w", err)
@@ -1430,7 +1430,7 @@ func (s *Service) SyncApplication(ctx context.Context, applicationID, trigger st
 		"last_checked_at": now, "sync_status": status,
 		"sync_message": message, "updated_at": now,
 	}
-	if err := s.db.WithContext(ctx).Model(&model.Application{}).Where("id = ?", application.ID).Updates(updates).Error; err != nil {
+	if err := s.db.WithContext(ctx).Model(&model.Application{}).Where("uuid = ?", application.ID).Updates(updates).Error; err != nil {
 		return application, nil, fmt.Errorf("更新应用监听状态失败: %w", err)
 	}
 	application.LastCheckedAt, application.SyncStatus, application.SyncMessage = &now, status, message
@@ -1635,10 +1635,10 @@ func (s *Service) HandleRepositoryEvent(ctx context.Context, input repository.We
 				"last_checked_at": now, "sync_status": model.ApplicationSyncChanged,
 				"sync_message": "Webhook 检测到新的代码版本", "updated_at": now,
 			}
-			if err := tx.Model(&model.Application{}).Where("id = ?", application.ID).Updates(applicationUpdates).Error; err != nil {
+			if err := tx.Model(&model.Application{}).Where("uuid = ?", application.ID).Updates(applicationUpdates).Error; err != nil {
 				return err
 			}
-			if err := tx.Model(&model.ApplicationRepository{}).Where("id = ?", applicationRepository.ID).Updates(map[string]any{
+			if err := tx.Model(&model.ApplicationRepository{}).Where("uuid = ?", applicationRepository.ID).Updates(map[string]any{
 				"last_observed_ref": input.Ref, "last_observed_commit": input.CommitSHA,
 				"last_checked_at": now, "updated_at": now,
 			}).Error; err != nil {
@@ -1759,14 +1759,14 @@ func (s *Service) markSyncFailure(ctx context.Context, applicationID string, syn
 	if utf8.RuneCountInString(message) > 255 {
 		message = string([]rune(message)[:255])
 	}
-	_ = s.db.WithContext(ctx).Model(&model.Application{}).Where("id = ?", applicationID).Updates(map[string]any{
+	_ = s.db.WithContext(ctx).Model(&model.Application{}).Where("uuid = ?", applicationID).Updates(map[string]any{
 		"sync_status": model.ApplicationSyncFailed, "sync_message": message,
 		"last_checked_at": now, "updated_at": now,
 	}).Error
 }
 
 func (s *Service) markSyncReadable(ctx context.Context, application *model.Application, now time.Time, message string) error {
-	if err := s.db.WithContext(ctx).Model(&model.Application{}).Where("id = ?", application.ID).Updates(map[string]any{
+	if err := s.db.WithContext(ctx).Model(&model.Application{}).Where("uuid = ?", application.ID).Updates(map[string]any{
 		"sync_status": model.ApplicationSyncSynced, "sync_message": message,
 		"last_checked_at": now, "updated_at": now,
 	}).Error; err != nil {

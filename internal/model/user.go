@@ -3,7 +3,8 @@ package model
 import "time"
 
 type User struct {
-	ID           string `gorm:"type:varchar(36);primaryKey"`
+	RowID        uint64 `gorm:"column:id;primaryKey;autoIncrement" json:"row_id"`
+	ID           string `gorm:"column:uuid;type:varchar(36);not null;uniqueIndex"`
 	Username     string `gorm:"type:varchar(32);not null;uniqueIndex"`
 	Nickname     string `gorm:"type:varchar(64);not null"`
 	DepartmentID string `gorm:"type:varchar(36);not null;default:'00000000-0000-0000-0000-000000000001';index"`

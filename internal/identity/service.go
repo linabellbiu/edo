@@ -177,7 +177,7 @@ func (s *Service) Create(ctx context.Context, input ProviderInput, createdBy str
 
 func (s *Service) Update(ctx context.Context, id string, input ProviderInput) (*ProviderView, error) {
 	var current model.IdentityProvider
-	if err := s.db.WithContext(ctx).First(&current, "id = ?", id).Error; err != nil {
+	if err := s.db.WithContext(ctx).First(&current, "uuid = ?", id).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, ErrProviderNotFound
 		}
@@ -188,6 +188,7 @@ func (s *Service) Update(ctx context.Context, id string, input ProviderInput) (*
 		return nil, err
 	}
 	provider.ID = current.ID
+	provider.RowID = current.RowID
 	provider.CreatedBy = current.CreatedBy
 	provider.CreatedAt = current.CreatedAt
 	provider.UpdatedAt = time.Now().UTC()
@@ -207,7 +208,7 @@ func (s *Service) Update(ctx context.Context, id string, input ProviderInput) (*
 }
 
 func (s *Service) SetActive(ctx context.Context, id string, active bool) error {
-	result := s.db.WithContext(ctx).Model(&model.IdentityProvider{}).Where("id = ?", id).
+	result := s.db.WithContext(ctx).Model(&model.IdentityProvider{}).Where("uuid = ?", id).
 		Updates(map[string]any{"is_active": active, "updated_at": time.Now().UTC()})
 	if result.Error != nil {
 		return fmt.Errorf("修改登录方式状态失败: %w", result.Error)
@@ -220,7 +221,7 @@ func (s *Service) SetActive(ctx context.Context, id string, active bool) error {
 
 func (s *Service) getActive(ctx context.Context, id string) (*model.IdentityProvider, error) {
 	var provider model.IdentityProvider
-	if err := s.db.WithContext(ctx).First(&provider, "id = ? OR name = ?", id, strings.ToLower(strings.TrimSpace(id))).Error; err != nil {
+	if err := s.db.WithContext(ctx).First(&provider, "uuid = ? OR name = ?", id, strings.ToLower(strings.TrimSpace(id))).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, ErrProviderNotFound
 		}
@@ -245,7 +246,7 @@ func (s *Service) normalize(ctx context.Context, input ProviderInput, current *m
 	}
 	if input.DefaultRoleID != "" {
 		var count int64
-		if err := s.db.WithContext(ctx).Model(&model.Role{}).Where("id = ?", input.DefaultRoleID).Count(&count).Error; err != nil {
+		if err := s.db.WithContext(ctx).Model(&model.Role{}).Where("uuid = ?", input.DefaultRoleID).Count(&count).Error; err != nil {
 			return nil, nil, nil, fmt.Errorf("检查默认角色失败: %w", err)
 		}
 		if count != 1 {
@@ -323,7 +324,7 @@ func (s *Service) resolveUser(ctx context.Context, provider *model.IdentityProvi
 		err := tx.First(&identity, "provider_id = ? AND subject = ?", provider.ID, profile.Subject).Error
 		now := time.Now().UTC()
 		if err == nil {
-			if err := tx.First(&user, "id = ?", identity.UserID).Error; err != nil {
+			if err := tx.First(&user, "uuid = ?", identity.UserID).Error; err != nil {
 				return err
 			}
 			return tx.Model(&identity).Updates(map[string]any{

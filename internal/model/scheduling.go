@@ -11,7 +11,8 @@ type ScheduleAction string
 const ScheduleNotification ScheduleAction = "notification"
 
 type ScheduledTask struct {
-	ID             string         `gorm:"type:varchar(36);primaryKey" json:"id"`
+	RowID          uint64         `gorm:"column:id;primaryKey;autoIncrement" json:"row_id"`
+	ID             string         `gorm:"column:uuid;type:varchar(36);not null;uniqueIndex" json:"id"`
 	Name           string         `gorm:"type:varchar(128);not null;uniqueIndex:ux_scheduled_tasks_department_name,priority:2;uniqueIndex:ux_scheduled_tasks_project_name,priority:2" json:"name"`
 	CronExpression string         `gorm:"type:varchar(128);not null" json:"cron_expression"`
 	Timezone       string         `gorm:"type:varchar(64);not null" json:"timezone"`
@@ -39,7 +40,8 @@ const (
 )
 
 type MonitorRule struct {
-	ID                    string        `gorm:"type:varchar(36);primaryKey"`
+	RowID                 uint64        `gorm:"column:id;primaryKey;autoIncrement" json:"row_id"`
+	ID                    string        `gorm:"column:uuid;type:varchar(36);not null;uniqueIndex"`
 	Name                  string        `gorm:"type:varchar(128);not null;uniqueIndex:ux_monitor_rules_department_name,priority:2;uniqueIndex:ux_monitor_rules_project_name,priority:2"`
 	EndpointCiphertext    string        `gorm:"type:text;not null"`
 	EndpointDisplay       string        `gorm:"type:varchar(1024);not null"`
@@ -69,7 +71,8 @@ type MonitorRule struct {
 func (MonitorRule) TableName() string { return "monitor_rules" }
 
 type MonitorCheck struct {
-	ID             string        `gorm:"type:varchar(36);primaryKey" json:"id"`
+	RowID          uint64        `gorm:"column:id;primaryKey;autoIncrement" json:"row_id"`
+	ID             string        `gorm:"column:uuid;type:varchar(36);not null;uniqueIndex" json:"id"`
 	RuleID         string        `gorm:"type:varchar(36);not null;index" json:"rule_id"`
 	JobID          string        `gorm:"type:varchar(36);not null;uniqueIndex" json:"job_id"`
 	Status         MonitorStatus `gorm:"type:varchar(16);not null;index" json:"status"`

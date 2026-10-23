@@ -26,7 +26,7 @@ var (
 func (s *Service) Projects(ctx context.Context, user *model.User) ([]model.Project, error) {
 	query := s.db.WithContext(ctx).Model(&model.Project{})
 	if !user.IsSuperuser {
-		query = query.Where("department_id = ? AND (id IN (?))", user.DepartmentID, s.db.Model(&model.ProjectMember{}).Select("project_id").Where("user_id = ?", user.ID))
+		query = query.Where("department_id = ? AND (uuid IN (?))", user.DepartmentID, s.db.Model(&model.ProjectMember{}).Select("project_id").Where("user_id = ?", user.ID))
 	}
 	var result []model.Project
 	if err := query.Order("is_default DESC, name ASC").Find(&result).Error; err != nil {
@@ -38,7 +38,7 @@ func (s *Service) Projects(ctx context.Context, user *model.User) ([]model.Proje
 	}
 	if len(departmentIDs) > 0 {
 		var departments []model.Department
-		if err := s.db.WithContext(ctx).Select("id", "name").Where("id IN ?", departmentIDs).Find(&departments).Error; err != nil {
+		if err := s.db.WithContext(ctx).Select("uuid", "name").Where("uuid IN ?", departmentIDs).Find(&departments).Error; err != nil {
 			return nil, fmt.Errorf("读取项目所属部门失败: %w", err)
 		}
 		names := make(map[string]string, len(departments))
@@ -57,7 +57,7 @@ func (s *Service) ResolveProject(ctx context.Context, user *model.User, id strin
 		return nil, ErrProjectNotFound
 	}
 	var project model.Project
-	if err := s.db.WithContext(ctx).First(&project, "id = ?", id).Error; err != nil {
+	if err := s.db.WithContext(ctx).First(&project, "uuid = ?", id).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, ErrProjectNotFound
 		}
@@ -97,7 +97,7 @@ func (s *Service) CreateProject(ctx context.Context, user *model.User, name, des
 		departmentID = user.DepartmentID
 	}
 	var department model.Department
-	if err := s.db.WithContext(ctx).First(&department, "id = ? AND is_active = ?", departmentID, true).Error; err != nil {
+	if err := s.db.WithContext(ctx).First(&department, "uuid = ? AND is_active = ?", departmentID, true).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, ErrProjectInvalid
 		}
@@ -143,7 +143,7 @@ func (s *Service) UpdateProject(ctx context.Context, user *model.User, id, name,
 	if name == "" || utf8.RuneCountInString(name) > 96 || utf8.RuneCountInString(description) > 255 {
 		return ErrProjectInvalid
 	}
-	if err := s.db.WithContext(ctx).Model(&model.Project{}).Where("id = ?", id).Updates(map[string]any{"name": name, "description": description, "is_active": active, "updated_at": time.Now().UTC()}).Error; err != nil {
+	if err := s.db.WithContext(ctx).Model(&model.Project{}).Where("uuid = ?", id).Updates(map[string]any{"name": name, "description": description, "is_active": active, "updated_at": time.Now().UTC()}).Error; err != nil {
 		if errors.Is(err, gorm.ErrDuplicatedKey) {
 			return ErrProjectConflict
 		}
@@ -194,10 +194,10 @@ func (s *Service) ProjectAccess(ctx context.Context, user *model.User, id string
 	if !allowed {
 		return result, nil
 	}
-	if err := s.db.WithContext(ctx).Table("project_members").Select("project_members.*, users.username, users.nickname, roles.display_name AS role_name").Joins("JOIN users ON users.id = project_members.user_id").Joins("JOIN roles ON roles.id = project_members.role_id").Where("project_members.project_id = ?", id).Scan(&result.Members).Error; err != nil {
+	if err := s.db.WithContext(ctx).Table("project_members").Select("project_members.*, users.username, users.nickname, roles.display_name AS role_name").Joins("JOIN users ON users.uuid = project_members.user_id").Joins("JOIN roles ON roles.uuid = project_members.role_id").Where("project_members.project_id = ?", id).Scan(&result.Members).Error; err != nil {
 		return nil, fmt.Errorf("读取项目成员列表失败: %w", err)
 	}
-	if err := s.db.WithContext(ctx).Model(&model.User{}).Select("id, username, nickname").Where("department_id = ? AND is_active = ?", project.DepartmentID, true).Find(&result.Users).Error; err != nil {
+	if err := s.db.WithContext(ctx).Model(&model.User{}).Select("uuid AS id, username, nickname").Where("department_id = ? AND is_active = ?", project.DepartmentID, true).Find(&result.Users).Error; err != nil {
 		return nil, fmt.Errorf("读取可选项目成员失败: %w", err)
 	}
 	roles, err := s.ListRoles(ctx)
@@ -238,7 +238,7 @@ func (s *Service) SetProjectMember(ctx context.Context, user *model.User, projec
 	}
 	err = s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var currentActor model.User
-		if err := tx.First(&currentActor, "id = ?", user.ID).Error; err != nil && !user.IsSuperuser {
+		if err := tx.First(&currentActor, "uuid = ?", user.ID).Error; err != nil && !user.IsSuperuser {
 			return ErrAccessDelegationDenied
 		}
 		actorPermissions, err := projectPermissionSetFromDB(tx, user.ID, projectID)
@@ -254,7 +254,7 @@ func (s *Service) SetProjectMember(ctx context.Context, user *model.User, projec
 			}
 		}
 		var target model.User
-		if err := tx.First(&target, "id = ?", userID).Error; err != nil {
+		if err := tx.First(&target, "uuid = ?", userID).Error; err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
 				return ErrProjectMember
 			}
@@ -267,7 +267,7 @@ func (s *Service) SetProjectMember(ctx context.Context, user *model.User, projec
 			return tx.Where("project_id = ? AND user_id = ?", projectID, userID).Delete(&model.ProjectMember{}).Error
 		}
 		var role model.Role
-		if err := tx.First(&role, "id = ?", roleID).Error; err != nil {
+		if err := tx.First(&role, "uuid = ?", roleID).Error; err != nil {
 			return ErrProjectMember
 		}
 		var permissions []string
@@ -294,7 +294,7 @@ func (s *Service) SetProjectMember(ctx context.Context, user *model.User, projec
 	// 成员关系在每次请求和长连接授权时重读；同步失败也不能继续访问已移除项目。
 	if err := s.syncPolicy("project_member_update"); err != nil {
 		var target model.User
-		if readErr := s.db.WithContext(ctx).First(&target, "id = ?", userID).Error; readErr == nil && target.IsSuperuser {
+		if readErr := s.db.WithContext(ctx).First(&target, "uuid = ?", userID).Error; readErr == nil && target.IsSuperuser {
 			return ErrPolicySync
 		}
 		return s.syncUserAccessOrDisable(ctx, userID, "project_member_update")
@@ -343,7 +343,7 @@ func (s *Service) DeleteProject(ctx context.Context, user *model.User, id string
 		if err := tx.Where("project_id = ?", id).Delete(&model.ProjectMember{}).Error; err != nil {
 			return err
 		}
-		return tx.Delete(&model.Project{}, "id = ?", id).Error
+		return tx.Delete(&model.Project{}, "uuid = ?", id).Error
 	})
 }
 
@@ -353,7 +353,7 @@ func (s *Service) EnsureProjectRoles(ctx context.Context) error {
 	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		for _, preset := range []struct{ id, name, label string }{{ProjectOwnerRoleID, "edo_project_owner", "项目管理员"}, {"bbf0404f-7165-5119-8620-194a3fab6c02", "edo_project_viewer", "项目只读成员"}, {"bbf0404f-7165-5119-8620-194a3fab6c03", "edo_project_developer", "项目开发成员"}} {
 			var count int64
-			if err := tx.Model(&model.Role{}).Where("id = ?", preset.id).Count(&count).Error; err != nil {
+			if err := tx.Model(&model.Role{}).Where("uuid = ?", preset.id).Count(&count).Error; err != nil {
 				return err
 			}
 			if count > 0 {
@@ -386,7 +386,7 @@ func (s *Service) EnsureProjectRoles(ctx context.Context) error {
 
 func (s *Service) Organization(ctx context.Context) (*model.Organization, error) {
 	var result model.Organization
-	if err := s.db.WithContext(ctx).First(&result, "id = ?", database.DefaultDepartmentID).Error; err != nil {
+	if err := s.db.WithContext(ctx).First(&result, "uuid = ?", database.DefaultDepartmentID).Error; err != nil {
 		return nil, fmt.Errorf("读取公司资料失败: %w", err)
 	}
 	return &result, nil
@@ -397,7 +397,7 @@ func (s *Service) UpdateOrganization(ctx context.Context, name, description stri
 	if name == "" || utf8.RuneCountInString(name) > 96 || utf8.RuneCountInString(description) > 255 {
 		return ErrProjectInvalid
 	}
-	if err := s.db.WithContext(ctx).Model(&model.Organization{}).Where("id = ?", database.DefaultDepartmentID).Updates(map[string]any{"name": name, "description": description, "updated_at": time.Now().UTC()}).Error; err != nil {
+	if err := s.db.WithContext(ctx).Model(&model.Organization{}).Where("uuid = ?", database.DefaultDepartmentID).Updates(map[string]any{"name": name, "description": description, "updated_at": time.Now().UTC()}).Error; err != nil {
 		return fmt.Errorf("保存公司资料失败: %w", err)
 	}
 	return nil

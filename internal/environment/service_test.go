@@ -36,7 +36,7 @@ func TestEnvironmentLifecycleAndHostReplacement(t *testing.T) {
 	if created.Environment.Level != "" {
 		t.Fatalf("新环境不应写入安全级别: %q", created.Environment.Level)
 	}
-	if err := db.Model(&model.Environment{}).Where("id = ?", created.Environment.ID).
+	if err := db.Model(&model.Environment{}).Where("uuid = ?", created.Environment.ID).
 		Update("level", model.EnvironmentProduction).Error; err != nil {
 		t.Fatalf("准备旧版安全级别失败: %v", err)
 	}
@@ -160,7 +160,7 @@ func TestReplaceHostsReconcilesDeploymentTargetInSameTransaction(t *testing.T) {
 		if len(memberships) != 1 || memberships[0].HostID != hostB.ID {
 			return errors.New("协调器未读取到事务内的新主机关系")
 		}
-		return tx.WithContext(ctx).Model(&model.DeploymentTarget{}).Where("id = ?", target.ID).
+		return tx.WithContext(ctx).Model(&model.DeploymentTarget{}).Where("uuid = ?", target.ID).
 			Updates(map[string]any{"host_id": hostB.ID, "runtime_id": "new-runtime"}).Error
 	})
 	service := NewService(db, reconciler)
@@ -171,7 +171,7 @@ func TestReplaceHostsReconcilesDeploymentTargetInSameTransaction(t *testing.T) {
 	if len(updated.Hosts) != 1 || updated.Hosts[0].ID != hostB.ID {
 		t.Fatalf("环境主机未迁移: %+v", updated.Hosts)
 	}
-	if err := db.First(&target, "id = ?", target.ID).Error; err != nil {
+	if err := db.First(&target, "uuid = ?", target.ID).Error; err != nil {
 		t.Fatal(err)
 	}
 	if target.HostID != hostB.ID || target.RuntimeID != "new-runtime" {

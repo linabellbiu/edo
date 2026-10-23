@@ -3,7 +3,8 @@ package model
 import "time"
 
 type IdentityProvider struct {
-	ID            string `gorm:"type:varchar(36);primaryKey" json:"id"`
+	RowID         uint64 `gorm:"column:id;primaryKey;autoIncrement" json:"row_id"`
+	ID            string `gorm:"column:uuid;type:varchar(36);not null;uniqueIndex" json:"id"`
 	Type          string `gorm:"type:varchar(24);not null;index" json:"type"`
 	Name          string `gorm:"type:varchar(64);not null;uniqueIndex" json:"name"`
 	DisplayName   string `gorm:"type:varchar(64);not null" json:"display_name"`
@@ -43,7 +44,8 @@ type IdentityProvider struct {
 func (IdentityProvider) TableName() string { return "identity_providers" }
 
 type ExternalIdentity struct {
-	ID             string     `gorm:"type:varchar(36);primaryKey" json:"id"`
+	RowID          uint64     `gorm:"column:id;primaryKey;autoIncrement" json:"row_id"`
+	ID             string     `gorm:"column:uuid;type:varchar(36);not null;uniqueIndex" json:"id"`
 	ProviderID     string     `gorm:"type:varchar(36);not null;uniqueIndex:idx_external_identity,priority:1;index" json:"provider_id"`
 	Subject        string     `gorm:"type:varchar(512);not null;uniqueIndex:idx_external_identity,priority:2" json:"subject"`
 	UserID         string     `gorm:"type:varchar(36);not null;index" json:"user_id"`

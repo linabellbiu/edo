@@ -4,7 +4,8 @@ import "time"
 
 // AssistantSettings 独立保存全局模型配置，普通配置中心无法读取或覆盖。
 type AssistantSettings struct {
-	ID               string    `gorm:"type:varchar(36);primaryKey" json:"-"`
+	RowID            uint64    `gorm:"column:id;primaryKey;autoIncrement" json:"row_id"`
+	ID               string    `gorm:"column:uuid;type:varchar(36);not null;uniqueIndex" json:"-"`
 	Enabled          bool      `gorm:"not null" json:"-"`
 	BaseURL          string    `gorm:"type:varchar(1024);not null" json:"-"`
 	Model            string    `gorm:"type:varchar(128);not null" json:"-"`
@@ -19,7 +20,8 @@ type AssistantSettings struct {
 func (AssistantSettings) TableName() string { return "assistant_settings" }
 
 type AssistantConversation struct {
-	ID           string `gorm:"type:varchar(36);primaryKey"`
+	RowID        uint64 `gorm:"column:id;primaryKey;autoIncrement" json:"row_id"`
+	ID           string `gorm:"column:uuid;type:varchar(36);not null;uniqueIndex"`
 	UserID       string `gorm:"type:varchar(36);not null;index:idx_assistant_conversation_scope,priority:1"`
 	ProjectID    string `gorm:"type:varchar(36);not null;index:idx_assistant_conversation_scope,priority:2"`
 	DepartmentID string `gorm:"type:varchar(36);not null;index"`
@@ -33,7 +35,8 @@ type AssistantConversation struct {
 func (AssistantConversation) TableName() string { return "assistant_conversations" }
 
 type AssistantMessage struct {
-	ID                  string    `gorm:"type:varchar(36);primaryKey"`
+	RowID               uint64    `gorm:"column:id;primaryKey;autoIncrement" json:"row_id"`
+	ID                  string    `gorm:"column:uuid;type:varchar(36);not null;uniqueIndex"`
 	ConversationID      string    `gorm:"type:varchar(36);not null;index:idx_assistant_message_conversation,priority:1"`
 	UserID              string    `gorm:"type:varchar(36);not null;index"`
 	ProjectID           string    `gorm:"type:varchar(36);not null;index"`
@@ -48,7 +51,8 @@ type AssistantMessage struct {
 func (AssistantMessage) TableName() string { return "assistant_messages" }
 
 type AssistantAction struct {
-	ID             string    `gorm:"type:varchar(36);primaryKey"`
+	RowID          uint64    `gorm:"column:id;primaryKey;autoIncrement" json:"row_id"`
+	ID             string    `gorm:"column:uuid;type:varchar(36);not null;uniqueIndex"`
 	ConversationID string    `gorm:"type:varchar(36);not null;index"`
 	UserID         string    `gorm:"type:varchar(36);not null;index"`
 	ProjectID      string    `gorm:"type:varchar(36);not null;index"`

@@ -355,17 +355,17 @@ func withArtifactEnvironment(environment map[string]string, artifactPath, digest
 
 func (s *Service) loadHost(ctx context.Context, input Input) (model.Host, sshclient.Bundle, error) {
 	var host model.Host
-	if err := s.db.WithContext(ctx).First(&host, "id = ? AND is_active = ?", input.HostID, true).Error; err != nil {
+	if err := s.db.WithContext(ctx).First(&host, "uuid = ? AND is_active = ?", input.HostID, true).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return host, sshclient.Bundle{}, ErrHostUnavailable
 		}
 		return host, sshclient.Bundle{}, fmt.Errorf("查询命令发布主机失败: %w", err)
 	}
 	var environment model.Environment
-	if err := s.db.WithContext(ctx).Select("environments.id").
-		Joins("JOIN environment_hosts AS membership ON membership.environment_id = environments.id").
+	if err := s.db.WithContext(ctx).Select("environments.uuid").
+		Joins("JOIN environment_hosts AS membership ON membership.environment_id = environments.uuid").
 		First(&environment,
-			"environments.id = ? AND environments.is_active = ? AND membership.host_id = ?",
+			"environments.uuid = ? AND environments.is_active = ? AND membership.host_id = ?",
 			input.EnvironmentID, true, host.ID,
 		).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {

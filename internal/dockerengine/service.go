@@ -127,7 +127,7 @@ func NewService(db *gorm.DB, secrets *secret.Manager, cfg config.Runtime) *Servi
 
 func (s *Service) List(ctx context.Context) ([]model.DockerEndpoint, error) {
 	var endpoints []model.DockerEndpoint
-	if err := s.db.WithContext(ctx).Where("id <> ?", LocalEndpointID).Order("name ASC").Find(&endpoints).Error; err != nil {
+	if err := s.db.WithContext(ctx).Where("uuid <> ?", LocalEndpointID).Order("name ASC").Find(&endpoints).Error; err != nil {
 		return nil, fmt.Errorf("查询 Docker 连接失败: %w", err)
 	}
 	local, err := s.localEndpoint(ctx)
@@ -146,7 +146,7 @@ func (s *Service) Find(ctx context.Context, id string) (*model.DockerEndpoint, e
 		return &endpoint, nil
 	}
 	var endpoint model.DockerEndpoint
-	if err := s.db.WithContext(ctx).First(&endpoint, "id = ?", id).Error; err != nil {
+	if err := s.db.WithContext(ctx).First(&endpoint, "uuid = ?", id).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, ErrEndpointNotFound
 		}
@@ -218,7 +218,7 @@ func (s *Service) Rename(ctx context.Context, id, value string) (*model.DockerEn
 			CreatedBy: "system", CreatedAt: now, UpdatedAt: now,
 		}
 		if err := s.db.WithContext(ctx).Clauses(clause.OnConflict{
-			Columns:   []clause.Column{{Name: "id"}},
+			Columns:   []clause.Column{{Name: "uuid"}},
 			DoUpdates: clause.AssignmentColumns([]string{"name", "host", "is_active", "updated_at"}),
 		}).Create(&endpoint).Error; err != nil {
 			if errors.Is(err, gorm.ErrDuplicatedKey) {
@@ -234,7 +234,7 @@ func (s *Service) Rename(ctx context.Context, id, value string) (*model.DockerEn
 		return &updated, nil
 	}
 
-	result := s.db.WithContext(ctx).Model(&model.DockerEndpoint{}).Where("id = ?", id).
+	result := s.db.WithContext(ctx).Model(&model.DockerEndpoint{}).Where("uuid = ?", id).
 		Updates(map[string]any{"name": name, "updated_at": time.Now().UTC()})
 	if result.Error != nil {
 		if errors.Is(result.Error, gorm.ErrDuplicatedKey) {
@@ -253,7 +253,7 @@ func (s *Service) SetActive(ctx context.Context, id string, active bool) error {
 	if IsLocalEndpointID(id) {
 		return ErrInvalidEndpoint
 	}
-	result := s.db.WithContext(ctx).Model(&model.DockerEndpoint{}).Where("id = ?", id).
+	result := s.db.WithContext(ctx).Model(&model.DockerEndpoint{}).Where("uuid = ?", id).
 		Updates(map[string]any{"is_active": active, "updated_at": time.Now().UTC()})
 	if result.Error != nil {
 		return fmt.Errorf("修改 Docker 连接状态失败: %w", result.Error)
@@ -469,8 +469,8 @@ func (s *Service) monitorRevision(ctx context.Context, endpoint *model.DockerEnd
 		return revision, nil
 	}
 	var assigned model.Host
-	if err := s.db.WithContext(ctx).Select("id", "is_active", "updated_at").
-		First(&assigned, "id = ?", endpoint.HostID).Error; err != nil {
+	if err := s.db.WithContext(ctx).Select("uuid", "is_active", "updated_at").
+		First(&assigned, "uuid = ?", endpoint.HostID).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return monitorClientRevision{}, ErrEndpointNotFound
 		}
@@ -528,7 +528,7 @@ func (s *Service) localEndpoint(ctx context.Context) (model.DockerEndpoint, erro
 		endpoint.IsActive = capability.Status == model.HostCapabilityReady
 	}
 	var saved model.DockerEndpoint
-	if err := s.db.WithContext(ctx).First(&saved, "id = ?", LocalEndpointID).Error; err != nil {
+	if err := s.db.WithContext(ctx).First(&saved, "uuid = ?", LocalEndpointID).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return endpoint, nil
 		}
@@ -759,7 +759,7 @@ func (s *Service) sshConfiguration(
 	aad := sshAAD(endpoint.ID)
 	if endpoint.HostID != "" {
 		var assigned model.Host
-		if err := s.db.WithContext(ctx).First(&assigned, "id = ? AND is_active = ?", endpoint.HostID, true).Error; err != nil {
+		if err := s.db.WithContext(ctx).First(&assigned, "uuid = ? AND is_active = ?", endpoint.HostID, true).Error; err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
 				return "", SSHBundle{}, "", ErrEndpointNotFound
 			}

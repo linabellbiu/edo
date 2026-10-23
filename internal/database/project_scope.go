@@ -23,7 +23,7 @@ var projectModels = []any{&model.AuditLog{}, &model.Job{}, &model.OutboxEvent{},
 func EnsureDepartmentProject(tx *gorm.DB, departmentID string) error {
 	now := time.Now().UTC()
 	project := model.Project{ID: DefaultProjectID(departmentID), DepartmentID: departmentID, Name: "默认项目", Description: "部门的初始项目空间", IsActive: true, IsDefault: true, CreatedAt: now, UpdatedAt: now}
-	return tx.Where("id = ?", project.ID).FirstOrCreate(&project).Error
+	return tx.Where("uuid = ?", project.ID).FirstOrCreate(&project).Error
 }
 
 func migrateProjectSpaces(tx *gorm.DB) error {
@@ -34,7 +34,7 @@ func migrateProjectSpaces(tx *gorm.DB) error {
 		return err
 	}
 	organization := model.Organization{ID: DefaultDepartmentID, Name: "我的公司", Description: "", UpdatedAt: time.Now().UTC()}
-	if err := tx.Where("id = ?", organization.ID).FirstOrCreate(&organization).Error; err != nil {
+	if err := tx.Where("uuid = ?", organization.ID).FirstOrCreate(&organization).Error; err != nil {
 		return err
 	}
 	var departments []model.Department
@@ -142,7 +142,7 @@ func registerProjectScope(db *gorm.DB) error {
 						continue
 					}
 					var row struct{ ProjectID string }
-					query := tx.Session(&gorm.Session{NewDB: true}).Table(parent.table).Select("project_id").Where("id = ?", id).Take(&row)
+					query := tx.Session(&gorm.Session{NewDB: true}).Table(parent.table).Select("project_id").Where("uuid = ?", id).Take(&row)
 					if query.Error == nil && row.ProjectID != "" {
 						projectID = row.ProjectID
 						break

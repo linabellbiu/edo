@@ -2,6 +2,7 @@ package task
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -19,25 +20,39 @@ var (
 )
 
 type View struct {
-	ID           string          `json:"id"`
-	Kind         string          `json:"kind"`
-	Status       model.JobStatus `json:"status"`
-	Attempt      int             `json:"attempt"`
-	MaxAttempts  int             `json:"max_attempts"`
-	IsIdempotent bool            `json:"is_idempotent"`
-	ErrorCode    string          `json:"error_code"`
-	ErrorMessage string          `json:"error_message"`
-	CreatedAt    time.Time       `json:"created_at"`
-	UpdatedAt    time.Time       `json:"updated_at"`
-	StartedAt    *time.Time      `json:"started_at,omitempty"`
-	FinishedAt   *time.Time      `json:"finished_at,omitempty"`
+	ID            string          `json:"id"`
+	RowID         uint64          `json:"row_id"`
+	PipelineRunID string          `json:"pipeline_run_id,omitempty"`
+	Kind          string          `json:"kind"`
+	Status        model.JobStatus `json:"status"`
+	Attempt       int             `json:"attempt"`
+	MaxAttempts   int             `json:"max_attempts"`
+	IsIdempotent  bool            `json:"is_idempotent"`
+	ErrorCode     string          `json:"error_code"`
+	ErrorMessage  string          `json:"error_message"`
+	CreatedAt     time.Time       `json:"created_at"`
+	UpdatedAt     time.Time       `json:"updated_at"`
+	StartedAt     *time.Time      `json:"started_at,omitempty"`
+	FinishedAt    *time.Time      `json:"finished_at,omitempty"`
+}
+
+func (s *Service) Get(ctx context.Context, id string) (*View, error) {
+	var job model.Job
+	if err := s.db.WithContext(ctx).Where("uuid = ?", id).First(&job).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, ErrJobNotFound
+		}
+		return nil, fmt.Errorf("查询任务详情失败: %w", err)
+	}
+	view := toView(&job)
+	return &view, nil
 }
 
 func (s *Service) List(ctx context.Context, status model.JobStatus, limit int) ([]View, error) {
 	if limit < 1 || limit > 500 {
 		limit = 100
 	}
-	query := s.db.WithContext(ctx).Order("created_at DESC").Limit(limit)
+	query := s.db.WithContext(ctx).Order("id DESC").Limit(limit)
 	if status != "" {
 		query = query.Where("status = ?", status)
 	}
@@ -55,7 +70,7 @@ func (s *Service) List(ctx context.Context, status model.JobStatus, limit int) (
 func (s *Service) Cancel(ctx context.Context, id string) error {
 	now := time.Now().UTC()
 	result := s.db.WithContext(ctx).Model(&model.Job{}).
-		Where("id = ? AND status = ?", id, model.JobPending).
+		Where("uuid = ? AND status = ?", id, model.JobPending).
 		Updates(map[string]any{
 			"status": model.JobCanceled, "finished_at": now, "updated_at": now,
 			"error_code": "canceled_by_user", "error_message": "任务已由用户取消",
@@ -67,7 +82,7 @@ func (s *Service) Cancel(ctx context.Context, id string) error {
 		return nil
 	}
 	var count int64
-	if err := s.db.WithContext(ctx).Model(&model.Job{}).Where("id = ?", id).Count(&count).Error; err != nil {
+	if err := s.db.WithContext(ctx).Model(&model.Job{}).Where("uuid = ?", id).Count(&count).Error; err != nil {
 		return fmt.Errorf("检查任务状态失败: %w", err)
 	}
 	if count == 0 {
@@ -78,7 +93,7 @@ func (s *Service) Cancel(ctx context.Context, id string) error {
 
 func (s *Service) Retry(ctx context.Context, id string) (*model.Job, error) {
 	var source model.Job
-	if err := s.db.WithContext(ctx).First(&source, "id = ?", id).Error; err != nil {
+	if err := s.db.WithContext(ctx).First(&source, "uuid = ?", id).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, ErrJobNotFound
 		}
@@ -99,11 +114,22 @@ func (s *Service) Retry(ctx context.Context, id string) (*model.Job, error) {
 }
 
 func toView(job *model.Job) View {
-	return View{
-		ID: job.ID, Kind: job.Kind, Status: job.Status, Attempt: job.Attempt,
+	view := View{
+		ID: job.ID, RowID: job.RowID, Kind: job.Kind, Status: job.Status, Attempt: job.Attempt,
 		MaxAttempts: job.MaxAttempts, IsIdempotent: job.IsIdempotent,
 		ErrorCode: job.ErrorCode, ErrorMessage: job.ErrorMessage,
 		CreatedAt: job.CreatedAt, UpdatedAt: job.UpdatedAt,
 		StartedAt: job.StartedAt, FinishedAt: job.FinishedAt,
 	}
+	if job.Kind == "pipeline.build" || job.Kind == "pipeline.deploy" {
+		var payload struct {
+			PipelineRunID string `json:"pipeline_run_id"`
+		}
+		if json.Unmarshal(job.Payload, &payload) == nil {
+			if id, err := uuid.Parse(payload.PipelineRunID); err == nil {
+				view.PipelineRunID = id.String()
+			}
+		}
+	}
+	return view
 }

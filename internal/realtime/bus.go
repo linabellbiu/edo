@@ -138,7 +138,7 @@ func (b *Bus) publishChanged(ctx context.Context, resource, id string) {
 	if id != "" {
 		// 软删除后仍从原资源读取冻结的部门，不能按管理员当前部门推断。
 		var row struct{ DepartmentID, ProjectID string }
-		if err := b.db.WithContext(ctx).Unscoped().Model(record).Select("department_id", "project_id").Where("id = ?", id).Take(&row).Error; err != nil {
+		if err := b.db.WithContext(ctx).Unscoped().Model(record).Select("department_id", "project_id").Where("uuid = ?", id).Take(&row).Error; err != nil {
 			if err != gorm.ErrRecordNotFound {
 				b.logger.Warn("读取实时通知归属失败", "operation", "realtime_scope", "resource", resource, "resource_id", id, "err", err)
 			}

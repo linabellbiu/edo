@@ -17,7 +17,8 @@ const (
 )
 
 type Job struct {
-	ID             string         `gorm:"type:varchar(36);primaryKey"`
+	RowID          uint64         `gorm:"column:id;primaryKey;autoIncrement" json:"row_id"`
+	ID             string         `gorm:"column:uuid;type:varchar(36);not null;uniqueIndex"`
 	DepartmentID   string         `gorm:"type:varchar(36);not null;default:'00000000-0000-0000-0000-000000000001';index"`
 	ProjectID      string         `gorm:"type:varchar(36);not null;default:'';index" json:"project_id"`
 	Kind           string         `gorm:"type:varchar(64);not null;index"`
@@ -59,7 +60,8 @@ type OutboxEvent struct {
 func (OutboxEvent) TableName() string { return "outbox_events" }
 
 type SchemaMigration struct {
-	Version   string    `gorm:"type:varchar(32);primaryKey"`
+	RowID     uint64    `gorm:"column:id;primaryKey;autoIncrement" json:"row_id"`
+	Version   string    `gorm:"type:varchar(32);not null;uniqueIndex:ux_schema_migration_identity"`
 	AppliedAt time.Time `gorm:"not null"`
 }
 

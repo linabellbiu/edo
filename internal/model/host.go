@@ -66,7 +66,8 @@ const (
 )
 
 type Environment struct {
-	ID          string `gorm:"type:varchar(36);primaryKey" json:"id"`
+	RowID       uint64 `gorm:"column:id;primaryKey;autoIncrement" json:"row_id"`
+	ID          string `gorm:"column:uuid;type:varchar(36);not null;uniqueIndex" json:"id"`
 	Name        string `gorm:"type:varchar(128);not null;uniqueIndex:ux_environments_department_name,priority:2;uniqueIndex:ux_environments_project_name,priority:2" json:"name"`
 	Description string `gorm:"type:varchar(500);not null;default:''" json:"description"`
 	// Level 仅保留旧数据库列兼容。环境现在只负责基础设施分组，不再具有安全级别。
@@ -85,15 +86,17 @@ func (Environment) TableName() string { return "environments" }
 // EnvironmentHost 保存环境与主机的多对多关系。环境只是用户定义的基础设施分组，
 // 同一台主机可以被多个环境复用；具体部署配置仍需各自避免服务端口冲突。
 type EnvironmentHost struct {
-	EnvironmentID string    `gorm:"type:varchar(36);primaryKey;index" json:"environment_id"`
-	HostID        string    `gorm:"type:varchar(36);primaryKey;index" json:"host_id"`
+	RowID         uint64    `gorm:"column:id;primaryKey;autoIncrement" json:"row_id"`
+	EnvironmentID string    `gorm:"type:varchar(36);not null;uniqueIndex:ux_environment_host_identity;index" json:"environment_id"`
+	HostID        string    `gorm:"type:varchar(36);not null;uniqueIndex:ux_environment_host_identity;index" json:"host_id"`
 	CreatedAt     time.Time `gorm:"not null" json:"created_at"`
 }
 
 func (EnvironmentHost) TableName() string { return "environment_hosts" }
 
 type Host struct {
-	ID                      string           `gorm:"type:varchar(36);primaryKey" json:"id"`
+	RowID                   uint64           `gorm:"column:id;primaryKey;autoIncrement" json:"row_id"`
+	ID                      string           `gorm:"column:uuid;type:varchar(36);not null;uniqueIndex" json:"id"`
 	Name                    string           `gorm:"type:varchar(128);not null;uniqueIndex:ux_hosts_department_name,priority:2;uniqueIndex:ux_hosts_project_name,priority:2" json:"name"`
 	Mode                    HostMode         `gorm:"type:varchar(16);not null;index" json:"mode"`
 	Address                 string           `gorm:"type:varchar(1024);not null;default:''" json:"address"`
@@ -118,8 +121,9 @@ type Host struct {
 func (Host) TableName() string { return "hosts" }
 
 type HostCapability struct {
-	HostID    string               `gorm:"type:varchar(36);primaryKey" json:"host_id"`
-	Kind      HostCapabilityKind   `gorm:"type:varchar(16);primaryKey" json:"kind"`
+	RowID     uint64               `gorm:"column:id;primaryKey;autoIncrement" json:"row_id"`
+	HostID    string               `gorm:"type:varchar(36);not null;uniqueIndex:ux_host_capability_identity" json:"host_id"`
+	Kind      HostCapabilityKind   `gorm:"type:varchar(16);not null;uniqueIndex:ux_host_capability_identity" json:"kind"`
 	RuntimeID string               `gorm:"type:varchar(36);not null;default:'';index" json:"runtime_id"`
 	Status    HostCapabilityStatus `gorm:"type:varchar(16);not null;default:'unchecked';index" json:"status"`
 	Version   string               `gorm:"type:varchar(128);not null;default:''" json:"version"`

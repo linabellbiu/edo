@@ -258,7 +258,7 @@ func (w *Worker) process(runContext context.Context, message queueMessage) {
 	<-heartbeatDone
 
 	var current model.Job
-	if err := w.db.WithContext(context.WithoutCancel(jobContext)).Select("status").First(&current, "id = ?", job.ID).Error; err != nil {
+	if err := w.db.WithContext(context.WithoutCancel(jobContext)).Select("status").First(&current, "uuid = ?", job.ID).Error; err != nil {
 		w.logger.Error("检查任务停止结果失败", "operation", "worker_cancel_result", "job_id", job.ID, "err", err)
 	} else if current.Status == model.JobCanceled {
 		w.logger.Info("任务已停止", "operation", "worker_canceled", "job_id", job.ID, "kind", job.Kind)
@@ -306,7 +306,7 @@ func (w *Worker) RuntimeStats() RuntimeStats {
 
 func (w *Worker) claim(ctx context.Context, message task.Message, attempt int) (model.Job, bool, error) {
 	var job model.Job
-	if err := w.db.WithContext(ctx).First(&job, "id = ?", message.JobID).Error; err != nil {
+	if err := w.db.WithContext(ctx).First(&job, "uuid = ?", message.JobID).Error; err != nil {
 		return job, false, err
 	}
 	if job.Status == model.JobSucceeded || job.Status == model.JobFailed || job.Status == model.JobCanceled {
@@ -323,14 +323,14 @@ func (w *Worker) claim(ctx context.Context, message task.Message, attempt int) (
 		updates["started_at"] = now
 	}
 	result := w.db.WithContext(ctx).Model(&model.Job{}).
-		Where("id = ?", message.JobID).
+		Where("uuid = ?", message.JobID).
 		Where("status = ? OR (status = ? AND (lease_expires_at IS NULL OR lease_expires_at < ?))", model.JobPending, model.JobRunning, now).
 		Updates(updates)
 	if result.Error != nil {
 		return job, false, result.Error
 	}
 	if result.RowsAffected == 0 {
-		if err := w.db.WithContext(ctx).First(&job, "id = ?", message.JobID).Error; err != nil {
+		if err := w.db.WithContext(ctx).First(&job, "uuid = ?", message.JobID).Error; err != nil {
 			return job, false, err
 		}
 		return job, false, nil
@@ -359,7 +359,7 @@ func (w *Worker) heartbeat(ctx context.Context, message queueMessage, jobID stri
 			w.ackProgress(message, jobID)
 			leaseExpiresAt := time.Now().UTC().Add(w.config.LeaseDuration)
 			result := w.db.WithContext(ctx).Model(&model.Job{}).
-				Where("id = ? AND status = ? AND lease_owner = ?", jobID, model.JobRunning, w.ownerID).
+				Where("uuid = ? AND status = ? AND lease_owner = ?", jobID, model.JobRunning, w.ownerID).
 				Updates(map[string]any{"lease_expires_at": leaseExpiresAt, "updated_at": time.Now().UTC()})
 			if result.Error != nil {
 				w.logger.Error("续期任务数据库租约失败", "operation", "worker_lease_renew", "job_id", jobID, "err", result.Error)
@@ -418,7 +418,7 @@ func (w *Worker) invoke(ctx context.Context, handler Handler, message task.Messa
 func (w *Worker) finishSuccess(ctx context.Context, jobID string) error {
 	now := time.Now().UTC()
 	result := w.db.WithContext(ctx).Model(&model.Job{}).
-		Where("id = ? AND status = ? AND lease_owner = ?", jobID, model.JobRunning, w.ownerID).
+		Where("uuid = ? AND status = ? AND lease_owner = ?", jobID, model.JobRunning, w.ownerID).
 		Updates(map[string]any{
 			"status": model.JobSucceeded, "finished_at": now, "updated_at": now,
 			"lease_owner": "", "lease_expires_at": nil, "error_code": "", "error_message": "",
@@ -435,7 +435,7 @@ func (w *Worker) finishSuccess(ctx context.Context, jobID string) error {
 func (w *Worker) scheduleRetry(ctx context.Context, jobID, code, publicMessage string) error {
 	now := time.Now().UTC()
 	result := w.db.WithContext(ctx).Model(&model.Job{}).
-		Where("id = ? AND status = ? AND lease_owner = ?", jobID, model.JobRunning, w.ownerID).
+		Where("uuid = ? AND status = ? AND lease_owner = ?", jobID, model.JobRunning, w.ownerID).
 		Updates(map[string]any{
 			"status": model.JobPending, "updated_at": now, "lease_owner": "", "lease_expires_at": nil,
 			"error_code": code, "error_message": truncate(publicMessage, 255),
@@ -454,7 +454,7 @@ func (w *Worker) finishFailure(ctx context.Context, queueMessage queueMessage, m
 	var failedRunID string
 	err := w.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var job model.Job
-		if err := tx.First(&job, "id = ? AND status = ? AND lease_owner = ?", message.JobID, model.JobRunning, w.ownerID).Error; err != nil {
+		if err := tx.First(&job, "uuid = ? AND status = ? AND lease_owner = ?", message.JobID, model.JobRunning, w.ownerID).Error; err != nil {
 			return err
 		}
 		authoritativeMessage := task.Message{
@@ -469,7 +469,7 @@ func (w *Worker) finishFailure(ctx context.Context, queueMessage queueMessage, m
 			return fmt.Errorf("序列化任务死信失败: %w", err)
 		}
 		result := tx.Model(&model.Job{}).
-			Where("id = ? AND status = ? AND lease_owner = ?", job.ID, model.JobRunning, w.ownerID).
+			Where("uuid = ? AND status = ? AND lease_owner = ?", job.ID, model.JobRunning, w.ownerID).
 			Updates(map[string]any{
 				"status": model.JobFailed, "finished_at": failedAt, "updated_at": failedAt,
 				"lease_owner": "", "lease_expires_at": nil,
@@ -492,7 +492,7 @@ func (w *Worker) finishFailure(ctx context.Context, queueMessage queueMessage, m
 				failedRunID = payload.PipelineRunID
 			}
 			var reconciled model.Job
-			if err := tx.Select("status").First(&reconciled, "id = ?", job.ID).Error; err != nil {
+			if err := tx.Select("status").First(&reconciled, "uuid = ?", job.ID).Error; err != nil {
 				return err
 			}
 			if reconciled.Status == model.JobCanceled {

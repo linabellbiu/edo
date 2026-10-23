@@ -14,7 +14,6 @@ import (
 
 	"github.com/google/uuid"
 	"gorm.io/gorm"
-	"gorm.io/gorm/clause"
 
 	"edo/internal/config"
 	"edo/internal/model"
@@ -355,13 +354,13 @@ func ensureEmptyTransferTarget(db *gorm.DB) error {
 		query := db.Table(table)
 		switch table {
 		case model.Department{}.TableName():
-			query = query.Where("id <> ?", DefaultDepartmentID)
+			query = query.Where("uuid <> ?", DefaultDepartmentID)
 		case model.Organization{}.TableName():
-			query = query.Where("id <> ?", DefaultDepartmentID)
+			query = query.Where("uuid <> ?", DefaultDepartmentID)
 		case model.Project{}.TableName():
-			query = query.Where("id <> ?", DefaultProjectID(DefaultDepartmentID))
+			query = query.Where("uuid <> ?", DefaultProjectID(DefaultDepartmentID))
 		case model.Host{}.TableName():
-			query = query.Where("id <> ?", model.BuiltinLocalHostID)
+			query = query.Where("uuid <> ?", model.BuiltinLocalHostID)
 		case model.HostCapability{}.TableName():
 			query = query.Where(
 				"host_id <> ? OR kind <> ? OR runtime_id <> ?",
@@ -423,8 +422,19 @@ func copyDatabaseSnapshot(
 
 	return source.WithContext(ctx).Transaction(func(snapshot *gorm.DB) error {
 		return target.WithContext(ctx).Transaction(func(destination *gorm.DB) error {
+			for _, seed := range []struct {
+				value any
+				uuid  string
+			}{
+				{&model.Project{}, DefaultProjectID(DefaultDepartmentID)},
+				{&model.Organization{}, DefaultDepartmentID},
+			} {
+				if err := destination.Delete(seed.value, "uuid = ?", seed.uuid).Error; err != nil {
+					return fmt.Errorf("清理目标库初始化记录失败: %w", err)
+				}
+			}
 			// 目标库已初始化默认部门，先移除，再从源库复制。
-			if err := destination.Delete(&model.Department{}, "id = ?", DefaultDepartmentID).Error; err != nil {
+			if err := destination.Delete(&model.Department{}, "uuid = ?", DefaultDepartmentID).Error; err != nil {
 				return fmt.Errorf("清理目标库默认部门失败: %w", err)
 			}
 			// 目标库的内置主机和能力也由源库复制，先移除初始化记录以免主键冲突。
@@ -432,7 +442,7 @@ func copyDatabaseSnapshot(
 				Delete(&model.HostCapability{}).Error; err != nil {
 				return fmt.Errorf("清理目标库内置主机能力失败: %w", err)
 			}
-			if err := destination.Delete(&model.Host{}, "id = ?", model.BuiltinLocalHostID).Error; err != nil {
+			if err := destination.Delete(&model.Host{}, "uuid = ?", model.BuiltinLocalHostID).Error; err != nil {
 				return fmt.Errorf("清理目标库内置主机失败: %w", err)
 			}
 			var copiedRows int64
@@ -479,16 +489,6 @@ func copyTable(source, target *gorm.DB, table, targetDriver string) (int64, erro
 			return nil
 		}
 		writer := target.Table(table)
-		// 目标库已通过空库校验；保留迁移生成的初始行，并用源库快照同步其字段。
-		if table == "organizations" || table == "projects" {
-			updates := make([]string, 0, len(columns))
-			for _, column := range columns {
-				if column != "id" {
-					updates = append(updates, column)
-				}
-			}
-			writer = writer.Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "id"}}, DoUpdates: clause.AssignmentColumns(updates)})
-		}
 		if err := writer.Create(&batch).Error; err != nil {
 			return fmt.Errorf("写入目标数据表 %s 失败: %w", table, err)
 		}
@@ -581,7 +581,12 @@ func parseTransferTime(value any) (time.Time, bool) {
 }
 
 func resetPostgresSequences(db *gorm.DB) error {
-	for _, table := range []string{"pipeline_run_logs", "outbox_events"} {
+	for _, value := range persistedIdentityModels {
+		stmt := &gorm.Statement{DB: db}
+		if err := stmt.Parse(value); err != nil {
+			return err
+		}
+		table := stmt.Table
 		statement := fmt.Sprintf(
 			`SELECT setval(pg_get_serial_sequence('%s', 'id'), COALESCE(MAX(id), 1), COUNT(*) > 0) FROM "%s"`,
 			table, table,

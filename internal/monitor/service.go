@@ -146,7 +146,7 @@ func (s *Service) Create(ctx context.Context, actorID string, input Input) (*Vie
 
 func (s *Service) Update(ctx context.Context, id string, input Input) (*View, error) {
 	var rule model.MonitorRule
-	if err := s.db.WithContext(ctx).First(&rule, "id = ?", id).Error; err != nil {
+	if err := s.db.WithContext(ctx).First(&rule, "uuid = ?", id).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, ErrRuleNotFound
 		}
@@ -186,7 +186,7 @@ func (s *Service) SetActive(ctx context.Context, id string, active bool) error {
 	if active {
 		updates["next_run_at"] = time.Now().UTC()
 	}
-	result := s.db.WithContext(ctx).Model(&model.MonitorRule{}).Where("id = ?", id).Updates(updates)
+	result := s.db.WithContext(ctx).Model(&model.MonitorRule{}).Where("uuid = ?", id).Updates(updates)
 	if result.Error != nil {
 		return fmt.Errorf("修改监控规则状态失败: %w", result.Error)
 	}
@@ -197,6 +197,16 @@ func (s *Service) SetActive(ctx context.Context, id string, active bool) error {
 }
 
 func (s *Service) ListChecks(ctx context.Context, ruleID string, limit int) ([]model.MonitorCheck, error) {
+	if ruleID == "" {
+		return nil, ErrRuleNotFound
+	}
+	var rule model.MonitorRule
+	if err := s.db.WithContext(ctx).Select("ID").Where(&model.MonitorRule{ID: ruleID}).Take(&rule).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, ErrRuleNotFound
+		}
+		return nil, fmt.Errorf("查询监控规则失败: %w", err)
+	}
 	if limit < 1 || limit > 500 {
 		limit = 100
 	}
@@ -232,7 +242,7 @@ func (s *Service) Execute(ctx context.Context, payload TaskPayload, jobID string
 		return fmt.Errorf("检查监控任务幂等状态失败: %w", err)
 	}
 	var rule model.MonitorRule
-	if err := s.db.WithContext(ctx).First(&rule, "id = ?", payload.RuleID).Error; err != nil {
+	if err := s.db.WithContext(ctx).First(&rule, "uuid = ?", payload.RuleID).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return ErrRuleNotFound
 		}
@@ -302,7 +312,7 @@ func (s *Service) enqueueOne(ctx context.Context, rule *model.MonitorRule, now t
 	nextRunAt := now.Add(time.Duration(rule.IntervalSeconds) * time.Second)
 	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		result := tx.Model(&model.MonitorRule{}).
-			Where("id = ? AND is_active = ? AND next_run_at = ?", rule.ID, true, rule.NextRunAt).
+			Where("uuid = ? AND is_active = ? AND next_run_at = ?", rule.ID, true, rule.NextRunAt).
 			Updates(map[string]any{"next_run_at": nextRunAt, "last_run_at": scheduledAt, "updated_at": now})
 		if result.Error != nil {
 			return result.Error
@@ -311,6 +321,7 @@ func (s *Service) enqueueOne(ctx context.Context, rule *model.MonitorRule, now t
 			return nil
 		}
 		job, err := task.NewService(tx, s.maxAttempts).Create(ctx, task.CreateInput{
+			ProjectID:    rule.ProjectID,
 			DepartmentID: rule.DepartmentID,
 			Kind:         "monitor.check", Subject: "edo.task.monitor.check", Idempotent: true,
 			IdempotencyKey: "monitor:" + rule.ID + ":" + scheduledAt.Format(time.RFC3339),
@@ -319,7 +330,7 @@ func (s *Service) enqueueOne(ctx context.Context, rule *model.MonitorRule, now t
 		if err != nil {
 			return err
 		}
-		return tx.Model(&model.MonitorRule{}).Where("id = ?", rule.ID).Update("last_job_id", job.ID).Error
+		return tx.Model(&model.MonitorRule{}).Where("uuid = ?", rule.ID).Update("last_job_id", job.ID).Error
 	})
 }
 
@@ -343,7 +354,7 @@ func (s *Service) recordResult(
 	}
 	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var current model.MonitorRule
-		if err := tx.First(&current, "id = ?", rule.ID).Error; err != nil {
+		if err := tx.First(&current, "uuid = ?", rule.ID).Error; err != nil {
 			return err
 		}
 		updates := map[string]any{"updated_at": now}
@@ -380,7 +391,7 @@ func (s *Service) recordResult(
 		if err := tx.Create(check).Error; err != nil {
 			return err
 		}
-		return tx.Model(&model.MonitorRule{}).Where("id = ?", current.ID).Updates(updates).Error
+		return tx.Model(&model.MonitorRule{}).Where("uuid = ?", current.ID).Updates(updates).Error
 	})
 	if err != nil {
 		if errors.Is(err, gorm.ErrDuplicatedKey) {
@@ -399,7 +410,7 @@ func (s *Service) deliverPendingAlert(ctx context.Context, check *model.MonitorC
 		return nil
 	}
 	var rule model.MonitorRule
-	if err := s.db.WithContext(ctx).First(&rule, "id = ?", check.RuleID).Error; err != nil {
+	if err := s.db.WithContext(ctx).First(&rule, "uuid = ?", check.RuleID).Error; err != nil {
 		return fmt.Errorf("查询监控告警规则失败: %w", err)
 	}
 	title := "监控告警：" + rule.Name
@@ -418,7 +429,7 @@ func (s *Service) deliverPendingAlert(ctx context.Context, check *model.MonitorC
 	if err != nil {
 		return fmt.Errorf("创建监控告警通知失败: %w", err)
 	}
-	if err := s.db.WithContext(ctx).Model(&model.MonitorCheck{}).Where("id = ? AND notification_id = ''", check.ID).
+	if err := s.db.WithContext(ctx).Model(&model.MonitorCheck{}).Where("uuid = ? AND notification_id = ''", check.ID).
 		Update("notification_id", item.ID).Error; err != nil {
 		return fmt.Errorf("关联监控告警通知失败: %w", err)
 	}
@@ -437,7 +448,7 @@ func (s *Service) normalize(id string, existing *model.MonitorRule, input Input)
 	}
 	if input.NotificationChannelID != "" {
 		var count int64
-		if err := s.db.Model(&model.NotificationChannel{}).Where("id = ? AND is_active = ?", input.NotificationChannelID, true).Count(&count).Error; err != nil || count != 1 {
+		if err := s.db.Model(&model.NotificationChannel{}).Where("uuid = ? AND is_active = ?", input.NotificationChannelID, true).Count(&count).Error; err != nil || count != 1 {
 			return Input{}, "", "", ErrInvalidRule
 		}
 	}

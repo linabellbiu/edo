@@ -52,7 +52,7 @@ func (s *Service) List(ctx context.Context, userID string) ([]model.GitCredentia
 
 func (s *Service) FindOwned(ctx context.Context, userID, id string) (*model.GitCredential, error) {
 	var credential model.GitCredential
-	if err := s.db.WithContext(ctx).First(&credential, "id = ? AND user_id = ?", id, userID).Error; err != nil {
+	if err := s.db.WithContext(ctx).First(&credential, "uuid = ? AND user_id = ?", id, userID).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, ErrCredentialNotFound
 		}
@@ -135,7 +135,7 @@ func (s *Service) Update(ctx context.Context, userID, id string, input Input) (*
 func (s *Service) Delete(ctx context.Context, userID, id string) error {
 	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var credential model.GitCredential
-		if err := tx.First(&credential, "id = ? AND user_id = ?", id, userID).Error; err != nil {
+		if err := tx.First(&credential, "uuid = ? AND user_id = ?", id, userID).Error; err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
 				return ErrCredentialNotFound
 			}
@@ -167,7 +167,7 @@ func (s *Service) RevealOwned(ctx context.Context, userID, id string) (string, e
 // Resolve 仅供已通过权限校验的仓库运行时解析引用，不用于面向用户的读取接口。
 func (s *Service) Resolve(ctx context.Context, id string) (*model.GitCredential, string, error) {
 	var credential model.GitCredential
-	if err := s.db.WithContext(ctx).First(&credential, "id = ?", id).Error; err != nil {
+	if err := s.db.WithContext(ctx).First(&credential, "uuid = ?", id).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, "", ErrCredentialNotFound
 		}

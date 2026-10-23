@@ -3,7 +3,8 @@ package model
 import "time"
 
 type DockerEndpoint struct {
-	ID                      string    `gorm:"type:varchar(36);primaryKey"`
+	RowID                   uint64    `gorm:"column:id;primaryKey;autoIncrement" json:"row_id"`
+	ID                      string    `gorm:"column:uuid;type:varchar(36);not null;uniqueIndex"`
 	Name                    string    `gorm:"type:varchar(128);not null;uniqueIndex:ux_docker_endpoints_department_name,priority:2;uniqueIndex:ux_docker_endpoints_project_name,priority:2"`
 	HostID                  string    `gorm:"type:varchar(36);not null;default:'';index"`
 	Host                    string    `gorm:"type:varchar(1024);not null"`
@@ -27,7 +28,8 @@ const (
 )
 
 type KubernetesCluster struct {
-	ID                   string         `gorm:"type:varchar(36);primaryKey"`
+	RowID                uint64         `gorm:"column:id;primaryKey;autoIncrement" json:"row_id"`
+	ID                   string         `gorm:"column:uuid;type:varchar(36);not null;uniqueIndex"`
 	Name                 string         `gorm:"type:varchar(128);not null;uniqueIndex:ux_kubernetes_clusters_department_name,priority:2;uniqueIndex:ux_kubernetes_clusters_project_name,priority:2"`
 	Mode                 KubernetesMode `gorm:"type:varchar(16);not null"`
 	APIServer            string         `gorm:"type:varchar(1024);not null;default:''"`

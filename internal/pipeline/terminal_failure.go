@@ -63,8 +63,8 @@ func (s *Service) HandleTerminalTaskFailure(
 
 	var run model.PipelineRun
 	err := tx.WithContext(ctx).
-		Select("id", "execution_job_id", "current_node_id", "status", "stage").
-		First(&run, "id = ? AND execution_job_id = ? AND current_node_id = ?", runID, job.ID, nodeID).Error
+		Select("uuid", "execution_job_id", "current_node_id", "status", "stage").
+		First(&run, "uuid = ? AND execution_job_id = ? AND current_node_id = ?", runID, job.ID, nodeID).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return nil
 	}
@@ -78,12 +78,12 @@ func (s *Service) HandleTerminalTaskFailure(
 	if run.Status == model.PipelineRunRunning && run.Stage == stoppingStage {
 		now := time.Now().UTC()
 		message := "流水线已停止；执行进程已中断，请确认目标环境，系统不会自动回滚"
-		result := tx.Model(&model.PipelineRun{}).Where("id = ? AND execution_job_id = ? AND stage = ?", run.ID, job.ID, stoppingStage).
+		result := tx.Model(&model.PipelineRun{}).Where("uuid = ? AND execution_job_id = ? AND stage = ?", run.ID, job.ID, stoppingStage).
 			Updates(map[string]any{"status": model.PipelineRunCanceled, "stage": "canceled", "message": message, "updated_at": now})
 		if result.Error != nil || result.RowsAffected == 0 {
 			return result.Error
 		}
-		if err := tx.Model(&model.Job{}).Where("id = ?", job.ID).Updates(map[string]any{"status": model.JobCanceled, "error_code": "canceled_by_user", "error_message": message}).Error; err != nil {
+		if err := tx.Model(&model.Job{}).Where("uuid = ?", job.ID).Updates(map[string]any{"status": model.JobCanceled, "error_code": "canceled_by_user", "error_message": message}).Error; err != nil {
 			return err
 		}
 		if err := tx.Model(&model.DeploymentRecord{}).Where("pipeline_run_id = ? AND workflow_node_id = ? AND status IN ?", run.ID, nodeID, []model.DeploymentStatus{model.DeploymentQueued, model.DeploymentRunning}).
@@ -91,7 +91,7 @@ func (s *Service) HandleTerminalTaskFailure(
 			return err
 		}
 		// 终止钩子处于 Worker 事务内，原子预留日志容量，不能绕过运行日志上限。
-		reserved := tx.Model(&model.PipelineRun{}).Where("id = ? AND log_truncated = ? AND log_bytes <= ?", run.ID, false, maximumPipelineRunLogBytes-len(pipelineRunLogTruncatedMessage)-len(message)).
+		reserved := tx.Model(&model.PipelineRun{}).Where("uuid = ? AND log_truncated = ? AND log_bytes <= ?", run.ID, false, maximumPipelineRunLogBytes-len(pipelineRunLogTruncatedMessage)-len(message)).
 			UpdateColumn("log_bytes", gorm.Expr("log_bytes + ?", len(message)))
 		if reserved.Error != nil || reserved.RowsAffected == 0 {
 			return reserved.Error
@@ -112,7 +112,7 @@ func (s *Service) HandleTerminalTaskFailure(
 
 	now := time.Now().UTC()
 	result := tx.WithContext(ctx).Model(&model.PipelineRun{}).
-		Where("id = ? AND execution_job_id = ? AND current_node_id = ? AND status = ? AND stage = ?",
+		Where("uuid = ? AND execution_job_id = ? AND current_node_id = ? AND status = ? AND stage = ?",
 			run.ID, job.ID, nodeID, run.Status, run.Stage).
 		Updates(map[string]any{
 			"status": model.PipelineRunFailed, "stage": "failed", "message": message, "updated_at": now,

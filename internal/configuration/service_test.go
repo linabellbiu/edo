@@ -29,7 +29,7 @@ func TestSecretConfigurationIsEncryptedAndNeverReturned(t *testing.T) {
 		t.Fatalf("密钥配置被 API 回显或状态错误: %+v", created)
 	}
 	var stored model.Configuration
-	if err := service.db.First(&stored, "id = ?", created.ID).Error; err != nil {
+	if err := service.db.First(&stored, "uuid = ?", created.ID).Error; err != nil {
 		t.Fatalf("读取密钥配置失败: %v", err)
 	}
 	if stored.Value != "" || stored.SecretCiphertext == "" || stored.SecretCiphertext == secretValue {

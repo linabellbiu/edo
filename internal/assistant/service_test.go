@@ -164,6 +164,7 @@ func TestEinoChatIsBoundedRedactedAndOwned(t *testing.T) {
 		t.Fatalf("无完成事件: %+v", events)
 	}
 	other := *user
+	other.RowID = 0
 	other.ID = newID()
 	other.Username = "assistant-other"
 	if err := db.Create(&other).Error; err != nil {
@@ -191,11 +192,11 @@ func TestConversationLeaseAndCancellation(t *testing.T) {
 		t.Fatal(err)
 	}
 	lease := time.Now().Add(time.Minute)
-	db.Model(&model.AssistantConversation{}).Where("id = ?", conversation.ID).Update("lease_until", lease)
+	db.Model(&model.AssistantConversation{}).Where("uuid = ?", conversation.ID).Update("lease_until", lease)
 	if err := s.Chat(ctx, user, conversation.ID, "测试", nil); !errors.Is(err, ErrBusy) {
 		t.Fatalf("并发会话未拒绝: %v", err)
 	}
-	db.Model(&model.AssistantConversation{}).Where("id = ?", conversation.ID).Update("lease_until", nil)
+	db.Model(&model.AssistantConversation{}).Where("uuid = ?", conversation.ID).Update("lease_until", nil)
 	started := make(chan struct{})
 	s.newModel = func(context.Context, model.AssistantSettings, string) (einomodel.BaseChatModel, error) {
 		return &fakeModel{respond: func(ctx context.Context, _ []*schema.Message) (*schema.Message, error) {
@@ -218,7 +219,7 @@ func TestConversationLeaseAndCancellation(t *testing.T) {
 		t.Fatal("取消未传到模型")
 	}
 	var row model.AssistantConversation
-	db.First(&row, "id = ?", conversation.ID)
+	db.First(&row, "uuid = ?", conversation.ID)
 	if row.LeaseUntil != nil {
 		t.Fatal("取消未释放会话锁")
 	}
@@ -263,16 +264,16 @@ func TestActionConfirmationCASRejectsReplayAndStaleState(t *testing.T) {
 	if _, err := s.ConfirmAction(ctx, user, action.ID); !errors.Is(err, ErrActionState) {
 		t.Fatalf("重复确认未拒绝: %v", err)
 	}
-	db.WithContext(ctx).Model(&model.PipelineRun{}).Where("id = ?", run.ID).Updates(map[string]any{"status": model.PipelineRunDetected, "stage": "detected"})
+	db.WithContext(ctx).Model(&model.PipelineRun{}).Where("uuid = ?", run.ID).Updates(map[string]any{"status": model.PipelineRunDetected, "stage": "detected"})
 	action, err = s.propose(ctx, user, conversation.ID, "pipeline_stop", run.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	db.WithContext(ctx).Model(&model.PipelineRun{}).Where("id = ?", run.ID).Update("stage", "changed")
+	db.WithContext(ctx).Model(&model.PipelineRun{}).Where("uuid = ?", run.ID).Update("stage", "changed")
 	if _, err := s.ConfirmAction(ctx, user, action.ID); !errors.Is(err, ErrActionState) {
 		t.Fatalf("旧快照仍可执行: %v", err)
 	}
-	db.Model(&model.AssistantAction{}).Where("id = ?", action.ID).Update("expires_at", time.Now().Add(-time.Second))
+	db.Model(&model.AssistantAction{}).Where("uuid = ?", action.ID).Update("expires_at", time.Now().Add(-time.Second))
 	if _, err := s.ConfirmAction(ctx, user, action.ID); !errors.Is(err, ErrActionExpired) {
 		t.Fatalf("过期确认仍可执行: %v", err)
 	}

@@ -96,7 +96,7 @@ func (s *Service) List(ctx context.Context) ([]Detail, error) {
 	hostsByEnvironment := make(map[string][]model.Host, len(environments))
 	if len(hostIDs) > 0 {
 		var hosts []model.Host
-		if err := s.db.WithContext(ctx).Where("id IN ?", hostIDs).Order("name ASC").Find(&hosts).Error; err != nil {
+		if err := s.db.WithContext(ctx).Where("uuid IN ?", hostIDs).Order("name ASC").Find(&hosts).Error; err != nil {
 			return nil, fmt.Errorf("查询环境所属主机失败: %w", err)
 		}
 		for i := range hosts {
@@ -123,7 +123,7 @@ func (s *Service) Get(ctx context.Context, id string) (*Detail, error) {
 		return nil, ErrEnvironmentNotFound
 	}
 	var environment model.Environment
-	if err := s.db.WithContext(ctx).First(&environment, "id = ?", id).Error; err != nil {
+	if err := s.db.WithContext(ctx).First(&environment, "uuid = ?", id).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, ErrEnvironmentNotFound
 		}
@@ -186,7 +186,7 @@ func (s *Service) Update(ctx context.Context, id string, input Input) (*Detail, 
 	now := time.Now().UTC()
 	err = s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var existing model.Environment
-		if err := tx.First(&existing, "id = ?", id).Error; err != nil {
+		if err := tx.First(&existing, "uuid = ?", id).Error; err != nil {
 			return err
 		}
 		if err := ensureHostsExist(tx, input.HostIDs); err != nil {
@@ -236,7 +236,7 @@ func (s *Service) UpdateProfile(ctx context.Context, id string, input ProfileInp
 	}
 	result := s.db.WithContext(ctx).
 		Model(&model.Environment{}).
-		Where("id = ?", id).
+		Where("uuid = ?", id).
 		Updates(map[string]any{
 			"name":        input.Name,
 			"description": input.Description,
@@ -266,7 +266,7 @@ func (s *Service) ReplaceHosts(ctx context.Context, id string, hostIDs []string)
 	now := time.Now().UTC()
 	err = s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var existing model.Environment
-		if err := tx.First(&existing, "id = ?", id).Error; err != nil {
+		if err := tx.First(&existing, "uuid = ?", id).Error; err != nil {
 			return err
 		}
 		if err := ensureHostsExist(tx, hostIDs); err != nil {
@@ -306,7 +306,7 @@ func (s *Service) SetActive(ctx context.Context, id string, active bool) error {
 	}
 	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var existing model.Environment
-		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&existing, "id = ?", id).Error; err != nil {
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&existing, "uuid = ?", id).Error; err != nil {
 			return err
 		}
 		if !active {
@@ -342,7 +342,7 @@ func (s *Service) Remove(ctx context.Context, id string) error {
 	}
 	if err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var existing model.Environment
-		if err := tx.First(&existing, "id = ?", id).Error; err != nil {
+		if err := tx.First(&existing, "uuid = ?", id).Error; err != nil {
 			return err
 		}
 		var targetCount int64
@@ -416,8 +416,8 @@ func activeWorkflowReferencesEnvironment(tx *gorm.DB, environmentID string) (boo
 	}
 	var count int64
 	if err := tx.Table("deployment_plans AS plan").
-		Joins("JOIN deployment_targets AS target ON target.id = plan.deployment_target_id").
-		Where("plan.id IN ? AND target.environment_id = ?", ids, environmentID).
+		Joins("JOIN deployment_targets AS target ON target.uuid = plan.deployment_target_id").
+		Where("plan.uuid IN ? AND target.environment_id = ?", ids, environmentID).
 		Count(&count).Error; err != nil {
 		return false, err
 	}
@@ -471,7 +471,7 @@ func ensureHostsExist(tx *gorm.DB, hostIDs []string) error {
 		return nil
 	}
 	var count int64
-	if err := tx.Model(&model.Host{}).Where("id IN ?", hostIDs).Count(&count).Error; err != nil {
+	if err := tx.Model(&model.Host{}).Where("uuid IN ?", hostIDs).Count(&count).Error; err != nil {
 		return fmt.Errorf("查询所选主机失败: %w", err)
 	}
 	if count != int64(len(hostIDs)) {
@@ -603,7 +603,7 @@ func activeWorkflowReferencesHostMembership(
 			ids = append(ids, id)
 		}
 		var plans []model.DeploymentPlan
-		if err := tx.Select("deployment_target_id").Where("id IN ?", ids).Find(&plans).Error; err != nil {
+		if err := tx.Select("deployment_target_id").Where("uuid IN ?", ids).Find(&plans).Error; err != nil {
 			return false, err
 		}
 		for i := range plans {
@@ -621,7 +621,7 @@ func activeWorkflowReferencesHostMembership(
 	}
 	var count int64
 	if err := tx.Model(&model.DeploymentTarget{}).
-		Where("id IN ? AND environment_id = ? AND platform = ? AND host_id IN ?", ids, environmentID, model.DeploymentDocker, hostIDs).
+		Where("uuid IN ? AND environment_id = ? AND platform = ? AND host_id IN ?", ids, environmentID, model.DeploymentDocker, hostIDs).
 		Count(&count).Error; err != nil {
 		return false, err
 	}
@@ -631,7 +631,7 @@ func activeWorkflowReferencesHostMembership(
 func listHosts(ctx context.Context, db *gorm.DB, environmentID string) ([]model.Host, error) {
 	hosts := make([]model.Host, 0)
 	if err := db.WithContext(ctx).
-		Joins("JOIN environment_hosts AS membership ON membership.host_id = hosts.id").
+		Joins("JOIN environment_hosts AS membership ON membership.host_id = hosts.uuid").
 		Where("membership.environment_id = ?", environmentID).
 		Order("hosts.name ASC").
 		Find(&hosts).Error; err != nil {

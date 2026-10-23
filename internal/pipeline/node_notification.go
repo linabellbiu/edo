@@ -92,14 +92,14 @@ func (s *Service) workflowNotificationContext(
 		view.Status = "失败"
 	}
 	var application model.Application
-	if err := s.db.WithContext(ctx).Select("id", "name").First(&application, "id = ?", run.ApplicationID).Error; err == nil {
+	if err := s.db.WithContext(ctx).Select("uuid", "name").First(&application, "uuid = ?", run.ApplicationID).Error; err == nil {
 		view.ApplicationName = application.Name
 	} else if !errors.Is(err, gorm.ErrRecordNotFound) && s.logger != nil {
 		s.logger.Error("读取流水线通知应用失败", "operation", "pipeline_task_notification_context", "pipeline_run_id", run.ID, "application_id", run.ApplicationID, "err", err)
 	}
 	if run.WorkflowID != "" {
 		var workflow model.ReleaseWorkflow
-		if err := s.db.WithContext(ctx).Select("id", "name").First(&workflow, "id = ?", run.WorkflowID).Error; err == nil {
+		if err := s.db.WithContext(ctx).Select("uuid", "name").First(&workflow, "uuid = ?", run.WorkflowID).Error; err == nil {
 			view.WorkflowName = workflow.Name
 		} else if !errors.Is(err, gorm.ErrRecordNotFound) && s.logger != nil {
 			s.logger.Error("读取流水线通知名称失败", "operation", "pipeline_task_notification_context", "pipeline_run_id", run.ID, "workflow_id", run.WorkflowID, "err", err)

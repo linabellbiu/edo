@@ -269,7 +269,7 @@ func (s *Service) loadArtifactDeploymentExecution(ctx context.Context, payload D
 		return nil, ErrPipelineExecutionConfig
 	}
 	var run model.PipelineRun
-	if err := s.db.WithContext(ctx).First(&run, "id = ? AND execution_job_id = ?", payload.PipelineRunID, jobID).Error; err != nil {
+	if err := s.db.WithContext(ctx).First(&run, "uuid = ? AND execution_job_id = ?", payload.PipelineRunID, jobID).Error; err != nil {
 		return nil, err
 	}
 	if run.Status == model.PipelineRunSucceeded && run.DeploymentID != "" {
@@ -319,7 +319,7 @@ func (s *Service) loadArtifactDeploymentExecution(ctx context.Context, payload D
 		!normalizeDockerDeploymentPlanSnapshot(&result.deploymentPlan, &result.target) {
 		return nil, ErrPipelineExecutionConfig
 	}
-	if err := s.db.WithContext(ctx).First(&result.application, "id = ? AND is_active = ?", run.ApplicationID, true).Error; err != nil {
+	if err := s.db.WithContext(ctx).First(&result.application, "uuid = ? AND is_active = ?", run.ApplicationID, true).Error; err != nil {
 		return nil, err
 	}
 	if err := s.db.WithContext(ctx).First(&result.component, "pipeline_run_id = ?", run.ID).Error; err != nil {
@@ -354,7 +354,7 @@ func (s *Service) loadArtifactDeploymentExecution(ctx context.Context, payload D
 	result.artifact = *stored
 	if stored.StorageKind == model.ArtifactStorageKindRegistry {
 		if stored.ImageRegistryID == "" || s.db.WithContext(ctx).
-			First(&result.registry, "id = ? AND is_active = ?", stored.ImageRegistryID, true).Error != nil {
+			First(&result.registry, "uuid = ? AND is_active = ?", stored.ImageRegistryID, true).Error != nil {
 			return nil, ErrPipelineExecutionConfig
 		}
 		if !artifact.RegistryImageMatches(stored.ImageRef, stored.Digest, result.registry.Endpoint, result.registry.Namespace) {
@@ -520,7 +520,7 @@ func (s *Service) updateExecutionPhase(ctx context.Context, run *model.PipelineR
 	now := time.Now().UTC()
 	result := s.db.WithContext(ctx).Model(&model.PipelineRun{}).
 		Where("stage <> ?", stoppingStage).
-		Where("id = ? AND execution_job_id = ? AND status = ?", run.ID, run.ExecutionJobID, model.PipelineRunRunning).
+		Where("uuid = ? AND execution_job_id = ? AND status = ?", run.ID, run.ExecutionJobID, model.PipelineRunRunning).
 		Updates(map[string]any{"stage": stage, "message": message, "updated_at": now})
 	if result.Error != nil {
 		return result.Error
@@ -556,7 +556,7 @@ func (s *Service) completeExecution(ctx context.Context, prepared *executionCont
 	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		result := tx.Model(&model.PipelineRun{}).
 			Where("stage <> ?", stoppingStage).
-			Where("id = ? AND execution_job_id = ? AND status = ?", prepared.run.ID, prepared.run.ExecutionJobID, model.PipelineRunRunning).
+			Where("uuid = ? AND execution_job_id = ? AND status = ?", prepared.run.ID, prepared.run.ExecutionJobID, model.PipelineRunRunning).
 			Updates(map[string]any{
 				"status": status, "stage": stage, "message": message,
 				"deployment_id": record.ID, "image": record.Image, "updated_at": now,
@@ -656,7 +656,7 @@ func (s *Service) failExecutionWithStageLog(
 	err := s.db.WithContext(updateContext).Transaction(func(tx *gorm.DB) error {
 		result := tx.Model(&model.PipelineRun{}).
 			Where("stage <> ?", stoppingStage).
-			Where("id = ? AND execution_job_id = ? AND current_node_id = ? AND status = ?",
+			Where("uuid = ? AND execution_job_id = ? AND current_node_id = ? AND status = ?",
 				expected.runID, expected.jobID, expected.nodeID, expected.status).
 			Updates(map[string]any{"status": model.PipelineRunFailed, "stage": "failed", "message": message, "updated_at": now})
 		if result.Error != nil {
@@ -698,7 +698,7 @@ func (s *Service) failExecutionWithStageLog(
 
 func (s *Service) notifyFailedWorkflowNode(ctx context.Context, runID, nodeID, detail string) {
 	var run model.PipelineRun
-	if err := s.db.WithContext(ctx).First(&run, "id = ?", runID).Error; err != nil {
+	if err := s.db.WithContext(ctx).First(&run, "uuid = ?", runID).Error; err != nil {
 		if s.logger != nil {
 			s.logger.Error("读取失败任务通知快照失败", "operation", "pipeline_task_notification_failure_context",
 				"pipeline_run_id", runID, "workflow_node_id", nodeID, "err", err)
@@ -726,7 +726,7 @@ func (s *Service) notifyFailedWorkflowNode(ctx context.Context, runID, nodeID, d
 
 func (s *Service) failCurrentExecution(ctx context.Context, runID, message string, cause error) error {
 	var run model.PipelineRun
-	if err := s.db.WithContext(ctx).Select("id", "execution_job_id", "current_node_id", "status").First(&run, "id = ?", runID).Error; err != nil {
+	if err := s.db.WithContext(ctx).Select("uuid", "execution_job_id", "current_node_id", "status").First(&run, "uuid = ?", runID).Error; err != nil {
 		if s.logger != nil {
 			s.logger.Error("读取流水线失败状态前置条件失败", "operation", "pipeline_execute_failure_state",
 				"pipeline_run_id", runID, "err", err)
@@ -738,7 +738,7 @@ func (s *Service) failCurrentExecution(ctx context.Context, runID, message strin
 
 func (s *Service) executionTaskObsolete(ctx context.Context, runID, jobID, nodeID string) (bool, error) {
 	var run model.PipelineRun
-	if err := s.db.WithContext(ctx).Select("id", "execution_job_id", "current_node_id", "status").First(&run, "id = ?", runID).Error; err != nil {
+	if err := s.db.WithContext(ctx).Select("uuid", "execution_job_id", "current_node_id", "status").First(&run, "uuid = ?", runID).Error; err != nil {
 		return false, err
 	}
 	if run.ExecutionJobID != jobID || run.CurrentNodeID != nodeID {

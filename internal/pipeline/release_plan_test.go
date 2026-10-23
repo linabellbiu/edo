@@ -225,7 +225,7 @@ func TestReleasePlanDetailsStatusAndDeletion(t *testing.T) {
 		t.Fatalf("普通查询仍返回已删除发布计划: %v", err)
 	}
 	var deletedPlan model.ReleasePlan
-	if err := db.Unscoped().First(&deletedPlan, "id = ?", plan.ID).Error; err != nil || !deletedPlan.DeletedAt.Valid {
+	if err := db.Unscoped().First(&deletedPlan, "uuid = ?", plan.ID).Error; err != nil || !deletedPlan.DeletedAt.Valid {
 		t.Fatalf("发布计划没有软删除保留: plan=%+v err=%v", deletedPlan, err)
 	}
 	var groupCount int64
@@ -359,7 +359,7 @@ func TestReleasePlanWithCompletedExecutionCanBeSoftDeleted(t *testing.T) {
 		}
 	}
 	var deletedPlan model.ReleasePlan
-	if err := db.Unscoped().First(&deletedPlan, "id = ?", plan.ID).Error; err != nil || !deletedPlan.DeletedAt.Valid {
+	if err := db.Unscoped().First(&deletedPlan, "uuid = ?", plan.ID).Error; err != nil || !deletedPlan.DeletedAt.Valid {
 		t.Fatalf("软删除计划审计记录缺失: plan=%+v err=%v", deletedPlan, err)
 	}
 	var groupCount int64

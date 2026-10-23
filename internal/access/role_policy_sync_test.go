@@ -67,7 +67,7 @@ func TestRolePermissionSyncFailureDisablesMembersAcrossDepartments(t *testing.T)
 	}
 	for _, user := range []*model.User{memberA, memberB} {
 		var stored model.User
-		if queryErr := db.First(&stored, "id = ?", user.ID).Error; queryErr != nil {
+		if queryErr := db.First(&stored, "uuid = ?", user.ID).Error; queryErr != nil {
 			t.Fatalf("查询安全停用成员失败: %v", queryErr)
 		}
 		if stored.IsActive || stored.AuthVersion != user.AuthVersion+1 {
@@ -75,7 +75,7 @@ func TestRolePermissionSyncFailureDisablesMembersAcrossDepartments(t *testing.T)
 		}
 	}
 	var storedAdmin model.User
-	if err := db.First(&storedAdmin, "id = ?", admin.ID).Error; err != nil || !storedAdmin.IsActive || storedAdmin.AuthVersion != admin.AuthVersion {
+	if err := db.First(&storedAdmin, "uuid = ?", admin.ID).Error; err != nil || !storedAdmin.IsActive || storedAdmin.AuthVersion != admin.AuthVersion {
 		t.Fatalf("超级管理员不应因角色同步失败被停用: admin=%+v err=%v", storedAdmin, err)
 	}
 	permissions, err := service.rolePermissions(ctx, role.ID)
@@ -90,7 +90,7 @@ func TestRolePermissionSyncFailureDisablesMembersAcrossDepartments(t *testing.T)
 		t.Fatalf("整包更新同步失败未返回安全停用语义: role=%+v err=%v", updated, err)
 	}
 	var storedFullMember model.User
-	if err := db.First(&storedFullMember, "id = ?", fullMember.ID).Error; err != nil || storedFullMember.IsActive {
+	if err := db.First(&storedFullMember, "uuid = ?", fullMember.ID).Error; err != nil || storedFullMember.IsActive {
 		t.Fatalf("整包更新关联成员未被安全停用: member=%+v err=%v", storedFullMember, err)
 	}
 
@@ -101,14 +101,14 @@ func TestRolePermissionSyncFailureDisablesMembersAcrossDepartments(t *testing.T)
 		t.Fatalf("创建角色同步失败未返回已提交警告: role=%+v err=%v", created, err)
 	}
 	var createdCount int64
-	if err := db.Model(&model.Role{}).Where("id = ?", created.ID).Count(&createdCount).Error; err != nil || createdCount != 1 {
+	if err := db.Model(&model.Role{}).Where("uuid = ?", created.ID).Count(&createdCount).Error; err != nil || createdCount != 1 {
 		t.Fatalf("同步失败后角色创建结果未保留: count=%d err=%v", createdCount, err)
 	}
 	if err := service.DeleteRole(ctx, emptyRole.ID); !errors.Is(err, ErrRoleDeletedSyncPending) {
 		t.Fatalf("删除角色同步失败未返回已提交警告: %v", err)
 	}
 	var deletedCount int64
-	if err := db.Model(&model.Role{}).Where("id = ?", emptyRole.ID).Count(&deletedCount).Error; err != nil || deletedCount != 0 {
+	if err := db.Model(&model.Role{}).Where("uuid = ?", emptyRole.ID).Count(&deletedCount).Error; err != nil || deletedCount != 0 {
 		t.Fatalf("同步失败后角色删除结果未保留: count=%d err=%v", deletedCount, err)
 	}
 }
@@ -142,7 +142,7 @@ func TestRolePermissionSyncFailureReportsUnsafeDisable(t *testing.T) {
 		t.Fatalf("无法安全停用时未返回明确错误: role=%+v err=%v", updated, err)
 	}
 	var stored model.User
-	if err := db.First(&stored, "id = ?", member.ID).Error; err != nil || !stored.IsActive {
+	if err := db.First(&stored, "uuid = ?", member.ID).Error; err != nil || !stored.IsActive {
 		t.Fatalf("安全停用失败测试的成员状态异常: member=%+v err=%v", stored, err)
 	}
 	permissions, err := service.rolePermissions(ctx, role.ID)

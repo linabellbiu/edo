@@ -147,7 +147,7 @@ func (s *Service) ListApplicationWorkflows(ctx context.Context, applicationID st
 	}
 	var workflows []model.ReleaseWorkflow
 	if err := s.db.WithContext(ctx).Preload("WorkflowTemplate").
-		Where("application_id = ?", applicationID).Order("created_at ASC").Find(&workflows).Error; err != nil {
+		Where("application_id = ?", applicationID).Order("id ASC").Find(&workflows).Error; err != nil {
 		if s.logger != nil {
 			s.logger.Error("查询应用流水线失败", "operation", "application_workflow_list", "application_id", applicationID, "err", err)
 		}
@@ -163,7 +163,7 @@ func (s *Service) FindApplicationWorkflow(ctx context.Context, applicationID, wo
 	}
 	var workflow model.ReleaseWorkflow
 	err := s.db.WithContext(ctx).Preload("WorkflowTemplate").
-		First(&workflow, "id = ? AND application_id = ?", workflowID, applicationID).Error
+		First(&workflow, "uuid = ? AND application_id = ?", workflowID, applicationID).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return nil, ErrWorkflowNotFound
 	}
@@ -350,7 +350,7 @@ func (s *Service) SaveApplicationWorkflow(ctx context.Context, applicationID, wo
 	var saved model.ReleaseWorkflow
 	err = s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var existing model.ReleaseWorkflow
-		err := tx.First(&existing, "id = ? AND application_id = ?", workflow.ID, application.ID).Error
+		err := tx.First(&existing, "uuid = ? AND application_id = ?", workflow.ID, application.ID).Error
 		if err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
 				return ErrWorkflowNotFound
@@ -361,7 +361,7 @@ func (s *Service) SaveApplicationWorkflow(ctx context.Context, applicationID, wo
 			return ErrWorkflowRevisionConflict
 		}
 		result := tx.Model(&model.ReleaseWorkflow{}).
-			Where("id = ? AND revision = ?", existing.ID, existing.Revision).
+			Where("uuid = ? AND revision = ?", existing.ID, existing.Revision).
 			Updates(map[string]any{
 				"schema_version": input.SchemaVersion, "name": input.Name,
 				"source": string(sourceJSON), "stages": string(stagesJSON), "is_active": input.Activate,
@@ -374,7 +374,7 @@ func (s *Service) SaveApplicationWorkflow(ctx context.Context, applicationID, wo
 		if result.RowsAffected != 1 {
 			return ErrWorkflowRevisionConflict
 		}
-		return tx.First(&saved, "id = ?", existing.ID).Error
+		return tx.First(&saved, "uuid = ?", existing.ID).Error
 	})
 	if err != nil {
 		return nil, err
@@ -590,7 +590,7 @@ func (s *Service) validateWorkflow(
 	activeNotificationChannels := make(map[string]struct{}, len(notificationChannelIDs))
 	if len(notificationChannelIDs) > 0 {
 		var channels []model.NotificationChannel
-		if err := s.db.WithContext(ctx).Where("id IN ? AND is_active = ?", notificationChannelIDs, true).Find(&channels).Error; err != nil {
+		if err := s.db.WithContext(ctx).Where("uuid IN ? AND is_active = ?", notificationChannelIDs, true).Find(&channels).Error; err != nil {
 			if s.logger != nil {
 				s.logger.Error("校验流水线通知渠道失败", "operation", "pipeline_workflow_validate_notification_channel", "err", err)
 			}
@@ -603,7 +603,7 @@ func (s *Service) validateWorkflow(
 	activeBuildPlans := make(map[string]model.BuildPlan, len(buildPlanIDs))
 	if len(buildPlanIDs) > 0 {
 		var plans []model.BuildPlan
-		if err := s.db.WithContext(ctx).Where("id IN ? AND is_active = ?", buildPlanIDs, true).Find(&plans).Error; err != nil {
+		if err := s.db.WithContext(ctx).Where("uuid IN ? AND is_active = ?", buildPlanIDs, true).Find(&plans).Error; err != nil {
 			if s.logger != nil {
 				s.logger.Error("校验流水线构建方案失败", "operation", "pipeline_workflow_validate_build_plan", "err", err)
 			}
@@ -617,7 +617,7 @@ func (s *Service) validateWorkflow(
 	activeTargets := make(map[string]model.DeploymentTarget)
 	if len(deploymentPlanIDs) > 0 {
 		var plans []model.DeploymentPlan
-		if err := s.db.WithContext(ctx).Where("id IN ? AND is_active = ?", deploymentPlanIDs, true).Find(&plans).Error; err != nil {
+		if err := s.db.WithContext(ctx).Where("uuid IN ? AND is_active = ?", deploymentPlanIDs, true).Find(&plans).Error; err != nil {
 			if s.logger != nil {
 				s.logger.Error("校验流水线部署方案失败", "operation", "pipeline_workflow_validate_deployment_plan", "err", err)
 			}
@@ -631,7 +631,7 @@ func (s *Service) validateWorkflow(
 			}
 			if len(targetIDs) > 0 {
 				var targets []model.DeploymentTarget
-				if err := s.db.WithContext(ctx).Where("id IN ? AND is_active = ?", targetIDs, true).Find(&targets).Error; err == nil {
+				if err := s.db.WithContext(ctx).Where("uuid IN ? AND is_active = ?", targetIDs, true).Find(&targets).Error; err == nil {
 					for i := range targets {
 						activeTargets[targets[i].ID] = targets[i]
 					}
@@ -1090,7 +1090,7 @@ func (s *Service) newStageResolvedWorkflowRunWithDatabase(
 			case model.WorkflowNodeBuild:
 				var plan model.BuildPlan
 				if current.Config.BuildPlanID == "" || database.WithContext(ctx).
-					First(&plan, "id = ? AND is_active = ?", current.Config.BuildPlanID, true).Error != nil ||
+					First(&plan, "uuid = ? AND is_active = ?", current.Config.BuildPlanID, true).Error != nil ||
 					plan.DepartmentID != application.DepartmentID || plan.ProjectID != application.ProjectID {
 					return nil, ErrInvalidWorkflow
 				}
@@ -1099,13 +1099,13 @@ func (s *Service) newStageResolvedWorkflowRunWithDatabase(
 			case model.WorkflowNodeDeploy:
 				var plan model.DeploymentPlan
 				if current.Config.DeploymentPlanID == "" || database.WithContext(ctx).
-					First(&plan, "id = ? AND is_active = ?", current.Config.DeploymentPlanID, true).Error != nil ||
+					First(&plan, "uuid = ? AND is_active = ?", current.Config.DeploymentPlanID, true).Error != nil ||
 					plan.DepartmentID != application.DepartmentID || plan.ProjectID != application.ProjectID {
 					return nil, ErrInvalidWorkflow
 				}
 				var target model.DeploymentTarget
 				if plan.DeploymentTargetID == "" || database.WithContext(ctx).
-					First(&target, "id = ? AND is_active = ?", plan.DeploymentTargetID, true).Error != nil ||
+					First(&target, "uuid = ? AND is_active = ?", plan.DeploymentTargetID, true).Error != nil ||
 					target.DepartmentID != application.DepartmentID || target.ProjectID != application.ProjectID ||
 					!deploymentPlanSupportsTarget(plan.Kind, target.Platform) {
 					return nil, ErrInvalidWorkflow
@@ -1190,8 +1190,8 @@ func deploymentTargetArchitecture(ctx context.Context, database *gorm.DB, hostID
 		return "", errors.New("部署目标未关联主机")
 	}
 	var host model.Host
-	if err := database.WithContext(ctx).Select("id", "architecture", "is_active").
-		First(&host, "id = ? AND is_active = ?", strings.TrimSpace(hostID), true).Error; err != nil {
+	if err := database.WithContext(ctx).Select("uuid", "architecture", "is_active").
+		First(&host, "uuid = ? AND is_active = ?", strings.TrimSpace(hostID), true).Error; err != nil {
 		return "", fmt.Errorf("读取部署目标主机失败: %w", err)
 	}
 	architecture, valid := model.NormalizeHostArchitecture(string(host.Architecture))
@@ -1409,7 +1409,7 @@ type RetryRunOptions struct {
 // ListRetryRunOptions 只返回原失败运行已经固定的代码版本，以及该次运行实际构建成功的可用制品。
 func (s *Service) ListRetryRunOptions(ctx context.Context, runID string) (RetryRunOptions, error) {
 	var failed model.PipelineRun
-	if err := s.db.WithContext(ctx).First(&failed, "id = ?", strings.TrimSpace(runID)).Error; err != nil {
+	if err := s.db.WithContext(ctx).First(&failed, "uuid = ?", strings.TrimSpace(runID)).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return RetryRunOptions{}, ErrPipelineRunNotFound
 		}
@@ -1495,7 +1495,7 @@ func retryRunFingerprint(run *model.PipelineRun) (string, error) {
 
 func (s *Service) retryRunSelection(ctx context.Context, runID, actorID, artifactID, expectedFingerprint string, preview bool) (*model.PipelineRun, error) {
 	var failed model.PipelineRun
-	if err := s.db.WithContext(ctx).First(&failed, "id = ?", runID).Error; err != nil {
+	if err := s.db.WithContext(ctx).First(&failed, "uuid = ?", runID).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, ErrPipelineRunNotFound
 		}
@@ -1608,7 +1608,7 @@ func (s *Service) AdvanceRun(ctx context.Context, runID, actorID, targetNodeID s
 	s.pipelineAdvanceMu.Lock()
 	defer s.pipelineAdvanceMu.Unlock()
 	var run model.PipelineRun
-	if err := s.db.WithContext(ctx).First(&run, "id = ?", runID).Error; err != nil {
+	if err := s.db.WithContext(ctx).First(&run, "uuid = ?", runID).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, ErrInvalidWorkflowTransition
 		}
@@ -1630,7 +1630,7 @@ func (s *Service) advanceRunIfCurrent(
 	s.pipelineAdvanceMu.Lock()
 	defer s.pipelineAdvanceMu.Unlock()
 	var run model.PipelineRun
-	if err := s.db.WithContext(ctx).First(&run, "id = ?", expected.ID).Error; err != nil {
+	if err := s.db.WithContext(ctx).First(&run, "uuid = ?", expected.ID).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, false, ErrInvalidWorkflowTransition
 		}
@@ -1657,7 +1657,7 @@ func (s *Service) ensureReleasePlanRunAdvanceAllowed(ctx context.Context, run *m
 	var count int64
 	if err := s.db.WithContext(ctx).Model(&model.ReleasePlanExecutionItem{}).
 		Where(
-			"id = ? AND release_plan_execution_id = ? AND pipeline_run_id = ? AND status = ?",
+			"uuid = ? AND release_plan_execution_id = ? AND pipeline_run_id = ? AND status = ?",
 			run.ReleasePlanExecutionItemID, run.ReleasePlanExecutionID, run.ID, model.ReleasePlanExecutionItemRunning,
 		).Count(&count).Error; err != nil {
 		if s.logger != nil {
@@ -1811,7 +1811,7 @@ func (s *Service) enqueueBuildExecution(ctx context.Context, run *model.Pipeline
 			return err
 		}
 		jobID = job.ID
-		result := tx.Model(&model.PipelineRun{}).Where("id = ? AND status NOT IN ? AND stage <> ?", run.ID, []model.PipelineRunStatus{model.PipelineRunSucceeded, model.PipelineRunFailed, model.PipelineRunSkipped, model.PipelineRunCanceled}, stoppingStage).
+		result := tx.Model(&model.PipelineRun{}).Where("uuid = ? AND status NOT IN ? AND stage <> ?", run.ID, []model.PipelineRunStatus{model.PipelineRunSucceeded, model.PipelineRunFailed, model.PipelineRunSkipped, model.PipelineRunCanceled}, stoppingStage).
 			Updates(map[string]any{
 				"current_node_id": node.ID, "status": model.PipelineRunRunning, "stage": "queued",
 				"execution_job_id": job.ID, "message": "当前任务：" + node.Name + "；状态：等待执行", "updated_at": now,
@@ -1862,7 +1862,7 @@ func (s *Service) enqueueDeployExecution(ctx context.Context, run *model.Pipelin
 			return err
 		}
 		jobID = job.ID
-		result := tx.Model(&model.PipelineRun{}).Where("id = ? AND status NOT IN ? AND stage <> ?", run.ID, []model.PipelineRunStatus{model.PipelineRunSucceeded, model.PipelineRunFailed, model.PipelineRunSkipped, model.PipelineRunCanceled}, stoppingStage).
+		result := tx.Model(&model.PipelineRun{}).Where("uuid = ? AND status NOT IN ? AND stage <> ?", run.ID, []model.PipelineRunStatus{model.PipelineRunSucceeded, model.PipelineRunFailed, model.PipelineRunSkipped, model.PipelineRunCanceled}, stoppingStage).
 			Updates(map[string]any{
 				"current_node_id": node.ID, "environment": "",
 				"status": model.PipelineRunRunning, "stage": "queued",
@@ -1890,7 +1890,7 @@ func (s *Service) enqueueDeployExecution(ctx context.Context, run *model.Pipelin
 func (s *Service) ApproveRun(ctx context.Context, runID, actorID string) (*model.PipelineRun, error) {
 	var run model.PipelineRun
 	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		if err := tx.First(&run, "id = ?", runID).Error; err != nil {
+		if err := tx.First(&run, "uuid = ?", runID).Error; err != nil {
 			return ErrInvalidWorkflowTransition
 		}
 		snapshot, err := parseWorkflowSnapshot(&run)
@@ -1916,7 +1916,7 @@ func (s *Service) ApproveRun(ctx context.Context, runID, actorID string) (*model
 			return err
 		}
 		result := tx.Model(&model.PipelineRun{}).
-			Where("id = ? AND status = ?", run.ID, model.PipelineRunAwaitingApproval).
+			Where("uuid = ? AND status = ?", run.ID, model.PipelineRunAwaitingApproval).
 			Updates(map[string]any{
 				"status": model.PipelineRunRunning, "approved_by": actorID, "approved_at": now,
 				"message": "审核通过", "updated_at": now,

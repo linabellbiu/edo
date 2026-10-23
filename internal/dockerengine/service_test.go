@@ -145,7 +145,7 @@ func TestDockerEndpointSecurityDefaults(t *testing.T) {
 	if err := db.Create(&host).Error; err != nil {
 		t.Fatalf("创建 Docker 所属主机失败: %v", err)
 	}
-	if err := db.Model(&model.DockerEndpoint{}).Where("id = ?", sshEndpoint.ID).
+	if err := db.Model(&model.DockerEndpoint{}).Where("uuid = ?", sshEndpoint.ID).
 		Update("host_id", host.ID).Error; err != nil {
 		t.Fatalf("绑定 Docker 所属主机失败: %v", err)
 	}
@@ -166,7 +166,7 @@ func TestDockerEndpointSecurityDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatalf("加密主机 SSH 凭据失败: %v", err)
 	}
-	if err := db.Model(&model.Host{}).Where("id = ?", host.ID).
+	if err := db.Model(&model.Host{}).Where("uuid = ?", host.ID).
 		Updates(map[string]any{
 			"ssh_auth_type":             model.SSHAuthPassword,
 			"ssh_credential_ciphertext": hostCiphertext,

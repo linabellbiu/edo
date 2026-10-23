@@ -47,7 +47,7 @@ func TestCreateReleasePlanExecutionAllowsConcurrentRepositoryPollStateUpdate(t *
 			refs: repository.RefResult{Branches: []repository.GitRef{{Name: "main", SHA: commitSHA}}},
 			mutate: func() error {
 				now := time.Now().UTC().Add(time.Second)
-				return db.Model(&model.Application{}).Where("id = ?", application.applicationID).Updates(map[string]any{
+				return db.Model(&model.Application{}).Where("uuid = ?", application.applicationID).Updates(map[string]any{
 					"sync_status": model.ApplicationSyncSynced, "sync_message": "后台轮询已完成",
 					"last_checked_at": now, "updated_at": now,
 				}).Error
@@ -106,7 +106,7 @@ func TestReleasePlanExecutionStartsParallelApplicationsTogether(t *testing.T) {
 		t.Fatalf("全部应用成功后计划执行没有完成: %+v", execution)
 	}
 	var storedPlan model.ReleasePlan
-	if err := db.First(&storedPlan, "id = ?", plan.ID).Error; err != nil {
+	if err := db.First(&storedPlan, "uuid = ?", plan.ID).Error; err != nil {
 		t.Fatal(err)
 	}
 	if storedPlan.Status != model.ReleasePlanActive {
@@ -217,7 +217,7 @@ func TestReleasePlanExecutionSkipsDownstreamWhenBranchDoesNotMatch(t *testing.T)
 		t.Fatalf("分支不匹配没有把后续节点标记为跳过: %+v", execution.Items)
 	}
 	var run model.PipelineRun
-	if err := db.First(&run, "id = ?", execution.Items[0].PipelineRunID).Error; err != nil {
+	if err := db.First(&run, "uuid = ?", execution.Items[0].PipelineRunID).Error; err != nil {
 		t.Fatal(err)
 	}
 	if run.Status != model.PipelineRunSkipped || run.Stage != "skipped" || !strings.Contains(run.Message, "分支条件") || run.ExecutionJobID != "" {
@@ -303,7 +303,7 @@ func TestReleasePlanExecutionQueuesBuildFromStageSnapshot(t *testing.T) {
 		t.Fatal(err)
 	}
 	var run model.PipelineRun
-	if err := db.First(&run, "id = ?", execution.Items[0].PipelineRunID).Error; err != nil {
+	if err := db.First(&run, "uuid = ?", execution.Items[0].PipelineRunID).Error; err != nil {
 		t.Fatal(err)
 	}
 	if run.CurrentNodeID != "build" || run.Status != model.PipelineRunRunning || run.Stage != "queued" || run.ExecutionJobID == "" {
@@ -339,7 +339,7 @@ func TestReleasePlanExecutionCanSelectPreviousArtifact(t *testing.T) {
 		t.Fatal(err)
 	}
 	var run model.PipelineRun
-	if err := db.First(&run, "id = ?", execution.Items[0].PipelineRunID).Error; err != nil {
+	if err := db.First(&run, "uuid = ?", execution.Items[0].PipelineRunID).Error; err != nil {
 		t.Fatal(err)
 	}
 	if run.ArtifactID != stored.ID || run.CurrentNodeID != "shell" || run.Stage != "task_succeeded" || run.Status != model.PipelineRunBlocked {
@@ -349,7 +349,7 @@ func TestReleasePlanExecutionCanSelectPreviousArtifact(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := db.First(&run, "id = ?", execution.Items[0].PipelineRunID).Error; err != nil {
+	if err := db.First(&run, "uuid = ?", execution.Items[0].PipelineRunID).Error; err != nil {
 		t.Fatal(err)
 	}
 	if run.ArtifactID != stored.ID || run.CurrentNodeID != "approval" || run.Status != model.PipelineRunAwaitingApproval || run.ExecutionJobID != "" {
@@ -439,7 +439,7 @@ func TestCreateReleasePlanExecutionPreflightIsAtomic(t *testing.T) {
 		t.Fatalf("预检失败后写入了流水线运行: count=%d err=%v", runCount, err)
 	}
 	var storedPlan model.ReleasePlan
-	if err := db.First(&storedPlan, "id = ?", plan.ID).Error; err != nil {
+	if err := db.First(&storedPlan, "uuid = ?", plan.ID).Error; err != nil {
 		t.Fatal(err)
 	}
 	if storedPlan.Status != model.ReleasePlanDraft {
@@ -524,7 +524,7 @@ func TestCreateReleasePlanExecutionIsIdempotent(t *testing.T) {
 		t.Fatal(err)
 	}
 	var firstRun model.PipelineRun
-	if err := db.First(&firstRun, "id = ?", first.Items[0].PipelineRunID).Error; err != nil {
+	if err := db.First(&firstRun, "uuid = ?", first.Items[0].PipelineRunID).Error; err != nil {
 		t.Fatal(err)
 	}
 	if first.DepartmentID != plan.DepartmentID || firstRun.DepartmentID != plan.DepartmentID {
@@ -609,7 +609,7 @@ func TestReleasePlanExecutionRecoversClaimedBlockedRunFromSnapshot(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := db.Model(&model.ReleasePlanExecutionItem{}).Where("id = ?", execution.Items[0].ID).
+	if err := db.Model(&model.ReleasePlanExecutionItem{}).Where("uuid = ?", execution.Items[0].ID).
 		Update("status", model.ReleasePlanExecutionItemRunning).Error; err != nil {
 		t.Fatal(err)
 	}
@@ -625,7 +625,7 @@ func TestReleasePlanExecutionRecoversClaimedBlockedRunFromSnapshot(t *testing.T)
 		t.Fatalf("已领取但未启动的执行项没有恢复并重新启动: %+v", execution.Items[0])
 	}
 	var run model.PipelineRun
-	if err := db.First(&run, "id = ?", execution.Items[0].PipelineRunID).Error; err != nil {
+	if err := db.First(&run, "uuid = ?", execution.Items[0].PipelineRunID).Error; err != nil {
 		t.Fatal(err)
 	}
 	if run.Status != model.PipelineRunRunning || run.CurrentNodeID != "build" || run.ExecutionJobID == "" {
@@ -784,7 +784,7 @@ func assertReleasePlanRunsBlocked(t *testing.T, db *gorm.DB, items []model.Relea
 	t.Helper()
 	for i := range items {
 		var run model.PipelineRun
-		if err := db.First(&run, "id = ?", items[i].PipelineRunID).Error; err != nil {
+		if err := db.First(&run, "uuid = ?", items[i].PipelineRunID).Error; err != nil {
 			t.Fatal(err)
 		}
 		if run.Status != model.PipelineRunBlocked || run.WorkflowSnapshot == "" ||
@@ -825,7 +825,7 @@ func markReleasePlanExecutionRuns(
 	if status == model.PipelineRunFailed {
 		stage = "failed"
 	}
-	if err := db.Model(&model.PipelineRun{}).Where("id IN ?", ids).
+	if err := db.Model(&model.PipelineRun{}).Where("uuid IN ?", ids).
 		Updates(map[string]any{"status": status, "stage": stage}).Error; err != nil {
 		t.Fatal(err)
 	}

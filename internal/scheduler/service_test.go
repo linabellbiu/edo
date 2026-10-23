@@ -32,7 +32,7 @@ func TestScheduleEnqueuesOnceAndExecutesIdempotently(t *testing.T) {
 		t.Fatalf("创建定时任务失败: %v", err)
 	}
 	dueAt := time.Now().UTC().Add(-time.Minute).Truncate(time.Second)
-	if err := db.Model(&model.ScheduledTask{}).Where("id = ?", item.ID).Update("next_run_at", dueAt).Error; err != nil {
+	if err := db.Model(&model.ScheduledTask{}).Where("uuid = ?", item.ID).Update("next_run_at", dueAt).Error; err != nil {
 		t.Fatalf("设置定时任务到期时间失败: %v", err)
 	}
 	for range 2 {

@@ -151,7 +151,7 @@ func (s *Service) Chat(ctx context.Context, user *model.User, id, content string
 	ctx = context.WithValue(ctx, permissionUsageKey{}, &permissionUsage{permissions: map[string]bool{}})
 	now, token := time.Now().UTC(), newID()
 	lease := now.Add(time.Duration(settings.TimeoutSeconds+15) * time.Second)
-	claimed := s.owned(ctx, user).Model(&model.AssistantConversation{}).Where("id = ? AND (lease_until IS NULL OR lease_until < ?)", id, now).Updates(map[string]any{"lease_token": token, "lease_until": lease})
+	claimed := s.owned(ctx, user).Model(&model.AssistantConversation{}).Where("uuid = ? AND (lease_until IS NULL OR lease_until < ?)", id, now).Updates(map[string]any{"lease_token": token, "lease_until": lease})
 	if claimed.Error != nil {
 		return s.failure(ctx, "assistant_chat_lease", claimed.Error, ErrStorage)
 	}
@@ -161,7 +161,7 @@ func (s *Service) Chat(ctx context.Context, user *model.User, id, content string
 	defer func() {
 		finish, close := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 		defer close()
-		result := s.owned(finish, user).Model(&model.AssistantConversation{}).Where("id = ? AND lease_token = ?", id, token).Updates(map[string]any{"lease_token": "", "lease_until": nil})
+		result := s.owned(finish, user).Model(&model.AssistantConversation{}).Where("uuid = ? AND lease_token = ?", id, token).Updates(map[string]any{"lease_token": "", "lease_until": nil})
 		if result.Error != nil {
 			s.failure(finish, "assistant_chat_release", result.Error, ErrStorage)
 		}
@@ -195,7 +195,7 @@ func (s *Service) Chat(ctx context.Context, user *model.User, id, content string
 		emit(event)
 	}
 	var history []model.AssistantMessage
-	if err := s.owned(ctx, user).Where("conversation_id = ? AND status = ?", id, "completed").Order("created_at DESC, id DESC").Limit(20).Find(&history).Error; err != nil {
+	if err := s.owned(ctx, user).Where("conversation_id = ? AND status = ?", id, "completed").Order("id DESC").Limit(20).Find(&history).Error; err != nil {
 		return s.failure(ctx, "assistant_chat_history", err, ErrStorage)
 	}
 	messages := []*schema.Message{}
@@ -329,7 +329,7 @@ func (s *Service) Chat(ctx context.Context, user *model.User, id, content string
 	if conversation.Title == "新的会话" {
 		updated["title"] = safeText(content, 120)
 	}
-	if err := s.owned(finish, user).Model(&model.AssistantConversation{}).Where("id = ? AND lease_token = ?", id, token).Updates(updated).Error; err != nil {
+	if err := s.owned(finish, user).Model(&model.AssistantConversation{}).Where("uuid = ? AND lease_token = ?", id, token).Updates(updated).Error; err != nil {
 		return s.failure(finish, "assistant_chat_touch", err, ErrStorage)
 	}
 	if publicErr != nil {

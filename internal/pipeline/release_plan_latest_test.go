@@ -28,7 +28,7 @@ func TestLatestReleasePlanExecutionsKeepOnlySelectedLatestRows(t *testing.T) {
 	second := latestExecutionFixture(plans[1].ID, base.Add(time.Hour))
 	old := latestExecutionFixture(plans[0].ID, base.Add(-time.Hour))
 	outside := latestExecutionFixture(uuid.NewString(), base.Add(2*time.Hour))
-	for _, execution := range []*model.ReleasePlanExecution{first, second, old, outside} {
+	for _, execution := range []*model.ReleasePlanExecution{old, first, second, outside} {
 		if err := db.Create(execution).Error; err != nil {
 			t.Fatal(err)
 		}
@@ -65,7 +65,7 @@ func TestLatestReleasePlanExecutionsBreakTimeTiesByID(t *testing.T) {
 	low := latestExecutionFixture(plans[0].ID, now)
 	high := latestExecutionFixture(plans[0].ID, now)
 	low.ID, high.ID = "00000000-0000-0000-0000-000000000001", "00000000-0000-0000-0000-000000000002"
-	// 反向插入，避免依赖插入顺序得到预期结果。
+	// UUID 顺序与写入顺序相反，必须按数据库生成的整数行号选择。
 	for _, execution := range []*model.ReleasePlanExecution{high, low} {
 		if err := db.Create(execution).Error; err != nil {
 			t.Fatal(err)
@@ -75,7 +75,7 @@ func TestLatestReleasePlanExecutionsBreakTimeTiesByID(t *testing.T) {
 		if err := service.attachLatestReleasePlanExecutions(context.Background(), plans); err != nil {
 			t.Fatal(err)
 		}
-		if plans[0].LatestExecution == nil || plans[0].LatestExecution.ID != high.ID {
+		if plans[0].LatestExecution == nil || plans[0].LatestExecution.ID != low.ID {
 			t.Fatalf("相同创建时间没有按 ID 稳定选择: %+v", plans[0].LatestExecution)
 		}
 	}
@@ -163,7 +163,7 @@ func assertLatestExecutionExternalOrdering(t *testing.T, db *gorm.DB) {
 			t.Fatal(err)
 		}
 	}
-	expected[plans[0].ID] = high.ID
+	expected[plans[0].ID] = low.ID
 	service := &Service{db: db}
 	if err := service.attachLatestReleasePlanExecutions(context.Background(), plans); err != nil {
 		t.Fatal(err)
@@ -195,7 +195,7 @@ func assertLatestExecutionScope(t *testing.T, db *gorm.DB) {
 		}
 	}
 	t.Cleanup(func() {
-		if err := db.Where("id IN ?", ids).Delete(&model.ReleasePlanExecution{}).Error; err != nil {
+		if err := db.Where("uuid IN ?", ids).Delete(&model.ReleasePlanExecution{}).Error; err != nil {
 			t.Error("清理测试执行记录失败")
 		}
 	})
@@ -292,7 +292,7 @@ func BenchmarkLatestReleasePlanExecutions(b *testing.B) {
 // 保留原始全历史查询作为基准，比较相同返回字段和应用项查询的分配量。
 func attachLatestExecutionLegacyBenchmark(db *gorm.DB, plans []model.ReleasePlan, planIDs []string) error {
 	var executions []model.ReleasePlanExecution
-	if err := db.Select("id", "release_plan_id", "request_id", "status", "created_by", "started_at", "finished_at", "created_at", "updated_at").
+	if err := db.Select("uuid", "release_plan_id", "request_id", "status", "created_by", "started_at", "finished_at", "created_at", "updated_at").
 		Where("release_plan_id IN ?", planIDs).Order("created_at DESC").Find(&executions).Error; err != nil {
 		return err
 	}

@@ -203,7 +203,7 @@ func (s *Service) ListStatuses(ctx context.Context) ([]Status, error) {
 		return nil, err
 	}
 	var hosts []model.Host
-	if err := s.db.WithContext(ctx).Select("id", "is_active").Order("is_builtin DESC, name ASC").Find(&hosts).Error; err != nil {
+	if err := s.db.WithContext(ctx).Select("uuid", "is_active").Order("is_builtin DESC, name ASC").Find(&hosts).Error; err != nil {
 		return nil, fmt.Errorf("查询主机状态失败: %w", err)
 	}
 	capabilities, err := s.listCapabilities(ctx, hostIDs(hosts))
@@ -228,7 +228,7 @@ func (s *Service) Get(ctx context.Context, id string) (*Detail, error) {
 		}
 	}
 	var current model.Host
-	if err := s.db.WithContext(ctx).First(&current, "id = ?", id).Error; err != nil {
+	if err := s.db.WithContext(ctx).First(&current, "uuid = ?", id).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, ErrHostNotFound
 		}
@@ -461,7 +461,7 @@ func (s *Service) refreshLocalCapabilities(ctx context.Context, force bool) erro
 	now := time.Now().UTC()
 	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if localArchitecture != "" {
-			if err := tx.Model(&model.Host{}).Where("id = ? AND architecture <> ?", model.BuiltinLocalHostID, localArchitecture).
+			if err := tx.Model(&model.Host{}).Where("uuid = ? AND architecture <> ?", model.BuiltinLocalHostID, localArchitecture).
 				Updates(map[string]any{"architecture": localArchitecture, "updated_at": now}).Error; err != nil {
 				return err
 			}
@@ -575,7 +575,7 @@ func (s *Service) Test(ctx context.Context, input Input) (TestResult, error) {
 // TestExisting 使用服务端已加密保存的凭据重新测试远程主机，前端无需再次取得或提交原密码。
 func (s *Service) TestExisting(ctx context.Context, id string, input Input) (TestResult, error) {
 	var existing model.Host
-	if err := s.db.WithContext(ctx).First(&existing, "id = ?", strings.TrimSpace(id)).Error; err != nil {
+	if err := s.db.WithContext(ctx).First(&existing, "uuid = ?", strings.TrimSpace(id)).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return TestResult{}, ErrHostNotFound
 		}
@@ -718,7 +718,7 @@ func (s *Service) persistPingArchitecture(ctx context.Context, hostID string, re
 	if result.Architecture == "" {
 		return PingResult{}, dockerengine.ErrUnsupportedArchitecture
 	}
-	if err := s.db.WithContext(ctx).Model(&model.Host{}).Where("id = ?", hostID).
+	if err := s.db.WithContext(ctx).Model(&model.Host{}).Where("uuid = ?", hostID).
 		Updates(map[string]any{"architecture": result.Architecture, "updated_at": time.Now().UTC()}).Error; err != nil {
 		return PingResult{}, fmt.Errorf("更新主机架构失败: %w", err)
 	}
@@ -809,7 +809,7 @@ func (s *Service) Create(ctx context.Context, actorID string, input Input) (*Det
 func (s *Service) Update(ctx context.Context, id string, input Input) (*Detail, error) {
 	id = strings.TrimSpace(id)
 	var existing model.Host
-	if err := s.db.WithContext(ctx).First(&existing, "id = ?", id).Error; err != nil {
+	if err := s.db.WithContext(ctx).First(&existing, "uuid = ?", id).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, ErrHostNotFound
 		}
@@ -835,7 +835,7 @@ func (s *Service) Update(ctx context.Context, id string, input Input) (*Detail, 
 	}
 	now := time.Now().UTC()
 	err = s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		if err := tx.Model(&model.Host{}).Where("id = ?", existing.ID).Updates(map[string]any{
+		if err := tx.Model(&model.Host{}).Where("uuid = ?", existing.ID).Updates(map[string]any{
 			"name": normalized.Name, "address": normalized.Address, "ssh_port": normalized.SSHPort,
 			"ssh_username": normalized.SSHUsername, "ssh_auth_type": normalized.SSHAuthType,
 			"ssh_credential_ciphertext": ciphertext, "ssh_host_key_fingerprint": tested.Fingerprint,
@@ -888,7 +888,7 @@ func (s *Service) updateLocal(ctx context.Context, existing *model.Host, input I
 	now := time.Now().UTC()
 	var capabilities []model.HostCapability
 	err = s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		if err := tx.Model(&model.Host{}).Where("id = ?", existing.ID).
+		if err := tx.Model(&model.Host{}).Where("uuid = ?", existing.ID).
 			Updates(map[string]any{"name": normalized.Name, "updated_at": now}).Error; err != nil {
 			return err
 		}
@@ -939,7 +939,7 @@ func (s *Service) updateLocal(ctx context.Context, existing *model.Host, input I
 				return err
 			}
 		}
-		return tx.Model(&model.DockerEndpoint{}).Where("id = ?", dockerengine.LocalEndpointID).
+		return tx.Model(&model.DockerEndpoint{}).Where("uuid = ?", dockerengine.LocalEndpointID).
 			Updates(map[string]any{"name": normalized.Name, "updated_at": now}).Error
 	})
 	if err != nil {
@@ -992,7 +992,7 @@ func (s *Service) prepareUpdateInput(existing *model.Host, input Input) (Input, 
 func (s *Service) SetActive(ctx context.Context, id string, active bool) error {
 	id = strings.TrimSpace(id)
 	var current model.Host
-	if err := s.db.WithContext(ctx).First(&current, "id = ?", id).Error; err != nil {
+	if err := s.db.WithContext(ctx).First(&current, "uuid = ?", id).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return ErrHostNotFound
 		}
@@ -1003,7 +1003,7 @@ func (s *Service) SetActive(ctx context.Context, id string, active bool) error {
 	}
 	now := time.Now().UTC()
 	if err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		result := tx.Model(&model.Host{}).Where("id = ?", id).
+		result := tx.Model(&model.Host{}).Where("uuid = ?", id).
 			Updates(map[string]any{"is_active": active, "updated_at": now})
 		if result.Error != nil {
 			return result.Error
@@ -1025,7 +1025,7 @@ func (s *Service) SetActive(ctx context.Context, id string, active bool) error {
 func (s *Service) Remove(ctx context.Context, id string) error {
 	id = strings.TrimSpace(id)
 	var current model.Host
-	if err := s.db.WithContext(ctx).First(&current, "id = ?", id).Error; err != nil {
+	if err := s.db.WithContext(ctx).First(&current, "uuid = ?", id).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return ErrHostNotFound
 		}
@@ -1064,7 +1064,7 @@ func (s *Service) Remove(ctx context.Context, id string) error {
 		if err := tx.Where("host_id = ?", id).Delete(&model.HostCapability{}).Error; err != nil {
 			return err
 		}
-		return tx.Delete(&model.Host{}, "id = ?", id).Error
+		return tx.Delete(&model.Host{}, "uuid = ?", id).Error
 	}); err != nil {
 		return fmt.Errorf("删除主机失败: %w", err)
 	}
@@ -1161,7 +1161,7 @@ func (s *Service) replaceCapabilities(
 			return nil, ErrHostReferenced
 		}
 		if capability.Kind == model.HostCapabilityDocker && capability.RuntimeID != "" {
-			if err := tx.Model(&model.DockerEndpoint{}).Where("id = ?", capability.RuntimeID).
+			if err := tx.Model(&model.DockerEndpoint{}).Where("uuid = ?", capability.RuntimeID).
 				Updates(map[string]any{"is_active": false, "updated_at": now}).Error; err != nil {
 				return nil, err
 			}
@@ -1195,7 +1195,7 @@ func (s *Service) upsertDockerEndpoint(
 		}
 		return runtimeID, nil
 	}
-	result := tx.Model(&model.DockerEndpoint{}).Where("id = ?", runtimeID).Updates(map[string]any{
+	result := tx.Model(&model.DockerEndpoint{}).Where("uuid = ?", runtimeID).Updates(map[string]any{
 		"host_id": current.ID, "name": current.Name, "host": hostURL,
 		"ssh_host_key_fingerprint": fingerprint, "is_active": current.IsActive, "updated_at": now,
 	})

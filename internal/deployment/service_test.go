@@ -157,6 +157,7 @@ func TestShellRuntimeControlUsesOnlySavedDeploymentInstanceCommand(t *testing.T)
 		t.Fatalf("Shell 生命周期命令没有使用部署实例配置与发布快照: state=%+v input=%+v", state, runner.input)
 	}
 	isolated := record
+	isolated.RowID = 0
 	isolated.ID = "deployment-lifecycle-other-target"
 	isolated.TargetID = "target-lifecycle-other"
 	isolated.TargetName = "另一台 Shell 主机"
@@ -175,6 +176,7 @@ func TestShellRuntimeControlUsesOnlySavedDeploymentInstanceCommand(t *testing.T)
 		t.Fatalf("Shell 部署不应允许扩缩容: %v", err)
 	}
 	later := record
+	later.RowID = 0
 	later.ID = "deployment-lifecycle-later"
 	later.CreatedAt = now.Add(time.Second)
 	later.UpdatedAt = later.CreatedAt
@@ -212,7 +214,7 @@ func TestRegistryDeploymentRequiresDigestAndQueuesWithoutImplicitApproval(t *tes
 		t.Fatalf("发布目标不应隐式增加审批状态: %+v", record)
 	}
 	var job model.Job
-	if err := db.First(&job, "id = ?", record.JobID).Error; err != nil {
+	if err := db.First(&job, "uuid = ?", record.JobID).Error; err != nil {
 		t.Fatalf("读取发布任务失败: %v", err)
 	}
 	if job.MaxAttempts != 1 {
@@ -267,7 +269,7 @@ func TestDeploymentUsesApprovedTargetSnapshot(t *testing.T) {
 		t.Fatalf("更新发布目标失败: %v", err)
 	}
 	var stored model.DeploymentRecord
-	if err := service.db.First(&stored, "id = ?", record.ID).Error; err != nil {
+	if err := service.db.First(&stored, "uuid = ?", record.ID).Error; err != nil {
 		t.Fatalf("读取发布快照失败: %v", err)
 	}
 	if stored.WorkloadName != "api-v1" || stored.RolloutTimeout != 120 {
@@ -494,7 +496,7 @@ func TestLoadPipelineReleaseResultReturnsPersistedFailureReason(t *testing.T) {
 		t.Fatal(err)
 	}
 	const message = "Docker 容器启动失败：容器启动后退出并进入重启，请查看容器日志"
-	if err := db.Model(&model.DeploymentRecord{}).Where("id = ?", record.ID).Updates(map[string]any{
+	if err := db.Model(&model.DeploymentRecord{}).Where("uuid = ?", record.ID).Updates(map[string]any{
 		"status": model.DeploymentFailed, "error_code": "docker_container_restarted", "error_message": message,
 	}).Error; err != nil {
 		t.Fatal(err)
@@ -623,7 +625,7 @@ func TestSSHDeploymentUsesSelectedMembershipAndExactPlanSnapshot(t *testing.T) {
 		t.Fatalf("SSH 执行输入未保持不可变快照: %+v", runner.input)
 	}
 	var stored model.DeploymentRecord
-	if err := db.First(&stored, "id = ?", record.ID).Error; err != nil {
+	if err := db.First(&stored, "uuid = ?", record.ID).Error; err != nil {
 		t.Fatalf("读取 SSH 发布记录失败: %v", err)
 	}
 	if stored.Status != model.DeploymentFailed || stored.CommandScript != script || stored.CommandDigest != digest ||
@@ -649,7 +651,7 @@ func TestPipelineDeploymentExecutesImmutableTargetSnapshot(t *testing.T) {
 		t.Fatal(err)
 	}
 	snapshot := *target
-	if err := db.Model(&model.DeploymentTarget{}).Where("id = ?", target.ID).Updates(map[string]any{
+	if err := db.Model(&model.DeploymentTarget{}).Where("uuid = ?", target.ID).Updates(map[string]any{
 		"host_id": "changed-host", "environment_id": "changed-environment",
 		"working_directory": "/srv/changed", "rollout_timeout": 300,
 	}).Error; err != nil {
@@ -776,7 +778,7 @@ func TestRollbackRequiresImmutableImageIdentityAndIsIdempotent(t *testing.T) {
 		t.Fatalf("创建固定镜像身份的回滚失败: %v", err)
 	}
 	var storedRollback model.DeploymentRecord
-	if err := db.First(&storedRollback, "id = ?", first.ID).Error; err != nil || storedRollback.IdempotencyKey == nil {
+	if err := db.First(&storedRollback, "uuid = ?", first.ID).Error; err != nil || storedRollback.IdempotencyKey == nil {
 		t.Fatalf("回滚任务未保存幂等标识: record=%+v err=%v", storedRollback, err)
 	}
 	expectedRollbackKey, _ := rollbackIdempotencyKey(source.ID, 1)
@@ -799,7 +801,7 @@ func TestRollbackRequiresImmutableImageIdentityAndIsIdempotent(t *testing.T) {
 		t.Fatalf("重复回滚创建了多条执行记录: count=%d err=%v", count, err)
 	}
 
-	if err := db.Model(&model.DeploymentRecord{}).Where("id = ?", first.ID).
+	if err := db.Model(&model.DeploymentRecord{}).Where("uuid = ?", first.ID).
 		Updates(map[string]any{"status": model.DeploymentFailed, "error_code": "rollback_failed"}).Error; err != nil {
 		t.Fatalf("标记首次回滚失败失败: %v", err)
 	}
@@ -846,7 +848,7 @@ func TestRollbackRequiresImmutableImageIdentityAndIsIdempotent(t *testing.T) {
 		t.Fatalf("失败后的并发重试未收敛为一次新尝试: count=%d err=%v", count, err)
 	}
 	var retry model.DeploymentRecord
-	if err := db.First(&retry, "id = ?", retryID).Error; err != nil {
+	if err := db.First(&retry, "uuid = ?", retryID).Error; err != nil {
 		t.Fatalf("读取第 2 次回滚尝试失败: %v", err)
 	}
 	expectedRetryKey, _ := rollbackIdempotencyKey(source.ID, 2)
@@ -854,7 +856,7 @@ func TestRollbackRequiresImmutableImageIdentityAndIsIdempotent(t *testing.T) {
 		t.Fatalf("第 2 次回滚尝试的幂等标识或任务错误: %+v", retry)
 	}
 	for _, status := range []model.DeploymentStatus{model.DeploymentRunning, model.DeploymentSucceeded} {
-		if err := db.Model(&model.DeploymentRecord{}).Where("id = ?", retry.ID).Update("status", status).Error; err != nil {
+		if err := db.Model(&model.DeploymentRecord{}).Where("uuid = ?", retry.ID).Update("status", status).Error; err != nil {
 			t.Fatalf("更新回滚状态为 %s 失败: %v", status, err)
 		}
 		reused, err := service.Rollback(context.Background(), source.ID, "operator")
@@ -869,6 +871,7 @@ func TestRollbackRequiresImmutableImageIdentityAndIsIdempotent(t *testing.T) {
 	}
 
 	missingIdentity := source
+	missingIdentity.RowID = 0
 	missingIdentity.ID = "docker-release-without-image-id"
 	missingIdentity.PreviousImageID = ""
 	if err := db.Create(&missingIdentity).Error; err != nil {
@@ -879,6 +882,7 @@ func TestRollbackRequiresImmutableImageIdentityAndIsIdempotent(t *testing.T) {
 	}
 
 	mutableKubernetes := source
+	mutableKubernetes.RowID = 0
 	mutableKubernetes.ID = "kubernetes-release-with-tag"
 	mutableKubernetes.Platform = model.DeploymentKubernetes
 	mutableKubernetes.RuntimeID = "cluster-1"
@@ -933,7 +937,7 @@ func TestRollbackAdoptsLegacyFailedRecordBeforeCreatingRetry(t *testing.T) {
 	if retry.ID == legacy.ID || retry.RollbackSourceID != source.ID || retry.RollbackAttempt != 2 {
 		t.Fatalf("旧结构失败回滚没有创建第 2 次尝试: %+v", retry)
 	}
-	if err := db.First(&legacy, "id = ?", legacy.ID).Error; err != nil {
+	if err := db.First(&legacy, "uuid = ?", legacy.ID).Error; err != nil {
 		t.Fatalf("重新读取旧结构回滚失败: %v", err)
 	}
 	if legacy.RollbackSourceID != source.ID || legacy.RollbackAttempt != 1 || legacy.Status != model.DeploymentFailed {
@@ -1094,7 +1098,7 @@ func TestLocalCommandTargetRequiresBuiltinReadyCapability(t *testing.T) {
 	if err := db.Create(&environment).Error; err != nil {
 		t.Fatalf("创建本地命令环境失败: %v", err)
 	}
-	if err := db.Model(&model.Host{}).Where("id = ?", model.BuiltinLocalHostID).
+	if err := db.Model(&model.Host{}).Where("uuid = ?", model.BuiltinLocalHostID).
 		Update("is_active", true).Error; err != nil {
 		t.Fatalf("绑定本地主机环境失败: %v", err)
 	}
@@ -1231,7 +1235,7 @@ func TestReconcileEnvironmentTargetsMigratesCurrentDeploymentPlan(t *testing.T) 
 	}); err != nil {
 		t.Fatalf("重新解析环境部署目标失败: %v", err)
 	}
-	if err := db.First(target, "id = ?", target.ID).Error; err != nil {
+	if err := db.First(target, "uuid = ?", target.ID).Error; err != nil {
 		t.Fatal(err)
 	}
 	if target.HostID != newHost.ID || target.RuntimeID != newEndpoint.ID || target.RuntimeID == oldEndpointID {

@@ -94,7 +94,7 @@ func TestPipelineKeepsRunningWhenDuplicateDeliveryFindsActiveRelease(t *testing.
 	if err := service.handleDeploymentExecutionError(context.Background(), failureStateForRun(run), "发布执行失败", cause); !errors.Is(err, cause) {
 		t.Fatalf("重复投递没有返回类型化幂等错误: %v", err)
 	}
-	if err := db.First(&run, "id = ?", run.ID).Error; err != nil {
+	if err := db.First(&run, "uuid = ?", run.ID).Error; err != nil {
 		t.Fatal(err)
 	}
 	if run.Status != model.PipelineRunRunning || run.Stage != "deploy" {
@@ -124,7 +124,7 @@ func TestPipelineMarksRunFailedWhenExistingReleaseAlreadyFailed(t *testing.T) {
 	if err := service.handleDeploymentExecutionError(context.Background(), failureStateForRun(run), "发布已经失败", cause); !errors.Is(err, cause) {
 		t.Fatalf("失败记录没有返回类型化幂等错误: %v", err)
 	}
-	if err := db.First(&run, "id = ?", run.ID).Error; err != nil {
+	if err := db.First(&run, "uuid = ?", run.ID).Error; err != nil {
 		t.Fatal(err)
 	}
 	if run.Status != model.PipelineRunFailed || run.Stage != "failed" {
@@ -174,13 +174,13 @@ func TestFailExecutionDoesNotOverwriteNewTaskState(t *testing.T) {
 	); !errors.Is(err, cause) {
 		t.Fatalf("旧任务失败应保留原始错误: %v", err)
 	}
-	if err := db.First(&run, "id = ?", run.ID).Error; err != nil {
+	if err := db.First(&run, "uuid = ?", run.ID).Error; err != nil {
 		t.Fatal(err)
 	}
 	if run.Status != model.PipelineRunRunning || run.CurrentNodeID != "new-node" || run.ExecutionJobID != "new-job" {
 		t.Fatalf("过期失败结果覆盖了当前任务: %+v", run)
 	}
-	if err := db.First(&component, "id = ?", component.ID).Error; err != nil {
+	if err := db.First(&component, "uuid = ?", component.ID).Error; err != nil {
 		t.Fatal(err)
 	}
 	if component.Status != model.PipelineRunRepositoryReady {
@@ -342,7 +342,7 @@ func TestCompletedDeploymentAutomaticallyAdvancesOrdinaryPipeline(t *testing.T) 
 				t.Fatalf("部署完成后推进失败: %v", err)
 			}
 			var updated model.PipelineRun
-			if err := db.First(&updated, "id = ?", run.ID).Error; err != nil {
+			if err := db.First(&updated, "uuid = ?", run.ID).Error; err != nil {
 				t.Fatal(err)
 			}
 			if updated.CurrentNodeID != test.next.ID || updated.Status != test.wantStatus || updated.Stage != test.wantStage {
@@ -353,7 +353,7 @@ func TestCompletedDeploymentAutomaticallyAdvancesOrdinaryPipeline(t *testing.T) 
 					t.Fatalf("后续可执行任务未创建新 Job: %+v", updated)
 				}
 				var job model.Job
-				if err := db.First(&job, "id = ?", updated.ExecutionJobID).Error; err != nil {
+				if err := db.First(&job, "uuid = ?", updated.ExecutionJobID).Error; err != nil {
 					t.Fatal(err)
 				}
 				if test.next.Type == model.WorkflowNodeShell && job.MaxAttempts != 1 {
@@ -445,7 +445,7 @@ func TestLoadExecutionRejectsRegistryArtifactOutsideBoundRegistry(t *testing.T) 
 		t.Fatalf("部署前未拒绝与登记仓库主机不匹配的制品: %v", err)
 	}
 	validImage := "registry.example.com/team/api@" + digest
-	if err := db.Model(&model.Artifact{}).Where("id = ?", storedArtifact.ID).Update("image_ref", validImage).Error; err != nil {
+	if err := db.Model(&model.Artifact{}).Where("uuid = ?", storedArtifact.ID).Update("image_ref", validImage).Error; err != nil {
 		t.Fatal(err)
 	}
 	prepared, err := service.loadExecution(context.Background(), payload, run.ExecutionJobID)

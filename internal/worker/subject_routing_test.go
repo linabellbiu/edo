@@ -42,7 +42,7 @@ func TestWorkerAcceptsConfiguredTransportSubject(t *testing.T) {
 	message.subject = worker.nats.SubjectPrefix + ".system.noop"
 	worker.process(context.Background(), message)
 	var stored model.Job
-	if err := db.First(&stored, "id = ?", job.ID).Error; err != nil {
+	if err := db.First(&stored, "uuid = ?", job.ID).Error; err != nil {
 		t.Fatal(err)
 	}
 	if stored.Status != model.JobSucceeded || !message.acked || worker.RuntimeStats().Executed != 1 {
@@ -113,7 +113,7 @@ func TestOutboxToWorkerRespectsConfiguredNamespaceAndRetryScope(t *testing.T) {
 			first := &fakeQueueMessage{data: wire.payload, subject: wire.subject, deliveries: 1}
 			worker.process(context.Background(), first)
 			var pending model.Job
-			if err := db.First(&pending, "id = ?", job.ID).Error; err != nil {
+			if err := db.First(&pending, "uuid = ?", job.ID).Error; err != nil {
 				t.Fatal(err)
 			}
 			if !first.naked || pending.Status != model.JobPending || pending.Attempt != 1 || pending.MaxAttempts != 2 || pending.Subject != original.Subject || pending.ProjectID != projectID {
@@ -122,10 +122,10 @@ func TestOutboxToWorkerRespectsConfiguredNamespaceAndRetryScope(t *testing.T) {
 			second := &fakeQueueMessage{data: wire.payload, subject: wire.subject, deliveries: 2}
 			worker.process(context.Background(), second)
 			var completed, untouched model.Job
-			if err := db.First(&completed, "id = ?", job.ID).Error; err != nil {
+			if err := db.First(&completed, "uuid = ?", job.ID).Error; err != nil {
 				t.Fatal(err)
 			}
-			if err := db.First(&untouched, "id = ?", other.ID).Error; err != nil {
+			if err := db.First(&untouched, "uuid = ?", other.ID).Error; err != nil {
 				t.Fatal(err)
 			}
 			var published model.OutboxEvent
@@ -160,7 +160,7 @@ func TestWorkerRejectsWrongTransportPrefixAndPreservesDeadSubject(t *testing.T) 
 	worker.nats.DeadSubject = "edo.task.dead.v1"
 	worker.process(context.Background(), message)
 	var stored model.Job
-	if err := db.First(&stored, "id = ?", job.ID).Error; err != nil {
+	if err := db.First(&stored, "uuid = ?", job.ID).Error; err != nil {
 		t.Fatal(err)
 	}
 	if stored.Status != model.JobFailed || stored.ErrorCode != "message_mismatch" || !message.terminated || worker.RuntimeStats().Executed != 0 {

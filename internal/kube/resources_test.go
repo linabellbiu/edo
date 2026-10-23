@@ -172,7 +172,7 @@ func TestResourcesHonorProjectScopeBeforeConnecting(t *testing.T) {
 	server := resourceTestServer(t, func(w http.ResponseWriter, r *http.Request) { calls.Add(1); t.Error("跨项目访问了集群") })
 	service := newKubeTestService(t, time.Second)
 	id := createKubeTestCluster(t, service, server)
-	if err := service.db.Model(&model.KubernetesCluster{}).Where("id = ?", id).Update("project_id", "project-a").Error; err != nil {
+	if err := service.db.Model(&model.KubernetesCluster{}).Where("uuid = ?", id).Update("project_id", "project-a").Error; err != nil {
 		t.Fatal(err)
 	}
 	ctx := database.WithDepartmentScope(context.Background(), database.DepartmentScope{ProjectID: "project-b", DepartmentID: database.DefaultDepartmentID, AllDepartments: true})

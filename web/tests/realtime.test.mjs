@@ -1,3 +1,4 @@
+import {runFilterModule} from './pipelineRunTestHarness.mjs'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { test } from 'node:test'
@@ -10,7 +11,7 @@ function loadSource(path, modules = {}, globals = {}) {
   const code = path.endsWith('.vue') ? compileScript(parse(source).descriptor, {id: 'realtime-test'}).content : source
   const compiled = ts.transpileModule(code, {compilerOptions: {module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022}}).outputText
   const module = {exports: {}}
-  new Function('require', 'module', 'exports', ...Object.keys(globals), compiled)(name => modules[name] || {}, module, module.exports, ...Object.values(globals))
+  new Function('require', 'module', 'exports', ...Object.keys(globals), compiled)(name => modules[name] || (name === '@/utils/pipelineRunFilters' ? runFilterModule : {}), module, module.exports, ...Object.values(globals))
   return module.exports
 }
 
@@ -183,7 +184,7 @@ test('流水线列表连接正常时不再每 5 秒请求；变更、重新可�
     'vue-router': {useRoute: () => ({query: {view: 'runs'}}), useRouter: () => ({})},
     'vue-i18n': {useI18n: () => ({t: key => key, locale: vue.ref('zh-CN')})},
     '@/stores/auth': {useAuthStore: () => ({canAny: () => true})},
-    '@/api/client': {default: {get: async path => { requests.push(path); return {data: {pipeline_runs: []}} }}},
+    '@/api/client': {default: {get: async path => { requests.push(path); return {data: {pipeline_runs: [],total:0}} }}},
     '@/utils/deliveryEvents': {subscribeDeliveryEvents: value => { subscriber = value; return () => {} }},
   }
   const component = loadSource('../src/views/DevOpsView.vue', modules, {

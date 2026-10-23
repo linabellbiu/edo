@@ -233,7 +233,7 @@ func TestDeliveryCustomDefaultCopiesRulesWithoutOriginalTarget(t *testing.T) {
 func deliveryTestPlan(t *testing.T, s *Service, ctx context.Context, id string) (*model.DeploymentPlan, error) {
 	t.Helper()
 	var plan model.DeploymentPlan
-	err := s.db.WithContext(ctx).Preload("DeploymentTarget").First(&plan, "id = ?", id).Error
+	err := s.db.WithContext(ctx).Preload("DeploymentTarget").First(&plan, "uuid = ?", id).Error
 	return &plan, err
 }
 

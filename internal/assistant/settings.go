@@ -22,7 +22,7 @@ func defaultSettings() model.AssistantSettings {
 
 func (s *Service) settings(ctx context.Context) (model.AssistantSettings, error) {
 	row := defaultSettings()
-	err := s.deps.Database.WithContext(ctx).First(&row, "id = ?", settingsID).Error
+	err := s.deps.Database.WithContext(ctx).First(&row, "uuid = ?", settingsID).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return defaultSettings(), nil
 	}
@@ -107,7 +107,7 @@ func (s *Service) configuredInput(ctx context.Context, input SettingsInput) (mod
 
 func (s *Service) SaveSettings(ctx context.Context, actorID string, input SettingsInput) (SettingsView, error) {
 	var actor model.User
-	if err := s.deps.Database.WithContext(ctx).First(&actor, "id = ? AND is_active = ?", actorID, true).Error; err != nil {
+	if err := s.deps.Database.WithContext(ctx).First(&actor, "uuid = ? AND is_active = ?", actorID, true).Error; err != nil {
 		return SettingsView{}, s.failure(ctx, "assistant_settings_actor", err, ErrForbidden)
 	}
 	if s.deps.Access == nil {
@@ -131,7 +131,7 @@ func (s *Service) SaveSettings(ctx context.Context, actorID string, input Settin
 				return s.failure(ctx, "assistant_settings_create", err, ErrConflict)
 			}
 		} else {
-			result := tx.Model(&model.AssistantSettings{}).Where("id = ? AND version = ?", settingsID, input.ExpectedVersion).Select("*").Updates(&row)
+			result := tx.Model(&model.AssistantSettings{}).Where("uuid = ? AND version = ?", settingsID, input.ExpectedVersion).Select("*").Updates(&row)
 			if result.Error != nil {
 				return s.failure(ctx, "assistant_settings_save", result.Error, ErrStorage)
 			}

@@ -123,7 +123,7 @@ func TestMonitorClientInvalidatesWithEndpointLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := db.Delete(&model.DockerEndpoint{}, "id = ?", endpoint.ID).Error; err != nil {
+	if err := db.Delete(&model.DockerEndpoint{}, "uuid = ?", endpoint.ID).Error; err != nil {
 		t.Fatalf("删除 Docker endpoint 失败: %v", err)
 	}
 	if _, err := service.PingForMonitor(ctx, endpoint.ID); !errors.Is(err, ErrEndpointNotFound) {
@@ -152,7 +152,7 @@ func TestMonitorClientTracksAssignedHostVersion(t *testing.T) {
 		t.Fatal(err)
 	}
 	first := monitorClientForTest(t, service, endpoint.ID)
-	if err := db.Model(&model.Host{}).Where("id = ?", host.ID).
+	if err := db.Model(&model.Host{}).Where("uuid = ?", host.ID).
 		Update("updated_at", now.Add(time.Second)).Error; err != nil {
 		t.Fatalf("更新 Docker 所属主机版本失败: %v", err)
 	}

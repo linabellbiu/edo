@@ -88,7 +88,7 @@ func TestDeploymentPlansAndReleasePlansAreSeparateResources(t *testing.T) {
 	if applicationCreated.Code != http.StatusCreated || json.Unmarshal(applicationCreated.Body.Bytes(), &applicationPayload) != nil || applicationPayload.Application.ID == "" {
 		t.Fatalf("创建发布计划测试应用失败: status=%d body=%s", applicationCreated.Code, applicationCreated.Body.String())
 	}
-	if !strings.Contains(applicationCreated.Body.String(), `"repository":{"id":"`+repositoryPayload.Repository.ID+`","name":"发布计划测试仓库"`) ||
+	if !strings.Contains(applicationCreated.Body.String(), `"id":"`+repositoryPayload.Repository.ID+`","name":"发布计划测试仓库"`) ||
 		strings.Contains(applicationCreated.Body.String(), "CredentialCiphertext") ||
 		strings.Contains(applicationCreated.Body.String(), "WebhookSecretCiphertext") {
 		t.Fatalf("应用接口没有安全回显小写仓库摘要: status=%d body=%s", applicationCreated.Code, applicationCreated.Body.String())

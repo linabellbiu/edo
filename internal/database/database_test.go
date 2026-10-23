@@ -282,7 +282,7 @@ func TestRepeatableReleasePlanExecutionMigration(t *testing.T) {
 		!db.Migrator().HasIndex(&model.ReleasePlanExecution{}, "ReleasePlanID") {
 		t.Fatal("发布计划执行幂等索引或查询索引缺失")
 	}
-	if err := db.First(&plan, "id = ?", plan.ID).Error; err != nil || plan.Status != model.ReleasePlanActive {
+	if err := db.First(&plan, "uuid = ?", plan.ID).Error; err != nil || plan.Status != model.ReleasePlanActive {
 		t.Fatalf("旧的已完成计划没有恢复为可执行状态: status=%s err=%v", plan.Status, err)
 	}
 	second := model.ReleasePlanExecution{
@@ -293,6 +293,7 @@ func TestRepeatableReleasePlanExecutionMigration(t *testing.T) {
 		t.Fatalf("同一发布计划不能保存第二次执行: %v", err)
 	}
 	duplicate := second
+	duplicate.RowID = 0
 	duplicate.ID = "repeatable-execution-duplicate"
 	if err := db.Create(&duplicate).Error; !errors.Is(err, gorm.ErrDuplicatedKey) {
 		t.Fatalf("同一请求号没有保持幂等唯一约束: %v", err)
@@ -365,13 +366,13 @@ func TestLinkedWorkflowNameMigrationUsesTemplateName(t *testing.T) {
 	}
 
 	var linked, custom model.ReleaseWorkflow
-	if err := db.First(&linked, "id = ?", "linked-workflow").Error; err != nil {
+	if err := db.First(&linked, "uuid = ?", "linked-workflow").Error; err != nil {
 		t.Fatalf("读取关联流水线失败: %v", err)
 	}
 	if linked.Name != template.Name {
 		t.Fatalf("关联流水线仍保留拼接名称: got=%q want=%q", linked.Name, template.Name)
 	}
-	if err := db.First(&custom, "id = ?", "custom-workflow").Error; err != nil {
+	if err := db.First(&custom, "uuid = ?", "custom-workflow").Error; err != nil {
 		t.Fatalf("读取自定义流水线失败: %v", err)
 	}
 	if custom.Name != "我的自定义流水线" {
@@ -410,7 +411,7 @@ func TestDeploymentEnvironmentMigrationRemovesLegacyColumns(t *testing.T) {
 	}
 	now := time.Now().UTC()
 	if err := db.Exec(`INSERT INTO deployment_targets
-		(id,name,platform,environment,runtime_id,workload_name,is_active,created_by,created_at,updated_at)
+		(uuid,name,platform,environment,runtime_id,workload_name,is_active,created_by,created_at,updated_at)
 		VALUES (?,?,?,?,?,?,?,?,?,?)`,
 		"legacy-target", "旧部署目标", model.DeploymentDocker, model.EnvironmentDevelopment,
 		"legacy-runtime", "legacy-app", true, "admin", now, now,
@@ -418,7 +419,7 @@ func TestDeploymentEnvironmentMigrationRemovesLegacyColumns(t *testing.T) {
 		t.Fatalf("写入旧部署目标失败: %v", err)
 	}
 	if err := db.Exec(`INSERT INTO deployment_records
-		(id,target_id,target_name,platform,environment,runtime_id,workload_name,operation,image,
+		(uuid,target_id,target_name,platform,environment,runtime_id,workload_name,operation,image,
 		 command_script,compose_yaml,docker_config,status,requested_by,created_at,updated_at)
 		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		"legacy-record", "legacy-target", "旧部署目标", model.DeploymentDocker, model.EnvironmentDevelopment,
@@ -442,7 +443,7 @@ func TestDeploymentEnvironmentMigrationRemovesLegacyColumns(t *testing.T) {
 	}
 	for _, value := range []any{&model.DeploymentTarget{}, &model.DeploymentRecord{}} {
 		var count int64
-		if err := db.Model(value).Where("id LIKE ?", "legacy-%").Count(&count).Error; err != nil {
+		if err := db.Model(value).Where("uuid LIKE ?", "legacy-%").Count(&count).Error; err != nil {
 			t.Fatalf("检查迁移后的历史部署数据失败: %v", err)
 		}
 		if count != 1 {
@@ -509,13 +510,13 @@ func TestImageRegistryProviderMigrationRepairsConflictingRows(t *testing.T) {
 		t.Fatalf("执行镜像仓库语义迁移失败: %v", err)
 	}
 	var aliyun, dockerHub model.ImageRegistry
-	if err := db.First(&aliyun, "id = ?", "aliyun-wrong-provider").Error; err != nil {
+	if err := db.First(&aliyun, "uuid = ?", "aliyun-wrong-provider").Error; err != nil {
 		t.Fatalf("读取阿里云仓库失败: %v", err)
 	}
 	if aliyun.Provider != model.RegistryGeneric || aliyun.Endpoint != "https://registry.cn-shenzhen.aliyuncs.com" {
 		t.Fatalf("阿里云仓库没有保留地址并修正类型: %+v", aliyun)
 	}
-	if err := db.First(&dockerHub, "id = ?", "docker-hub-alias").Error; err != nil {
+	if err := db.First(&dockerHub, "uuid = ?", "docker-hub-alias").Error; err != nil {
 		t.Fatalf("读取 Docker Hub 仓库失败: %v", err)
 	}
 	if dockerHub.Provider != model.RegistryDockerHub || dockerHub.Endpoint != model.DockerHubEndpoint || dockerHub.AllowInsecureHTTP {
@@ -608,7 +609,7 @@ func TestSQLiteRepositoryObservationUpgradeRebuildsWorkflowScopedCursor(t *testi
 		t.Fatalf("升级后 applications 仍保留唯一流水线方案字段: %s", ddl)
 	}
 	var observation model.ApplicationRepositoryObservation
-	if err := db.First(&observation, "id = ?", "observation-legacy").Error; !errors.Is(err, gorm.ErrRecordNotFound) {
+	if err := db.First(&observation, "uuid = ?", "observation-legacy").Error; !errors.Is(err, gorm.ErrRecordNotFound) {
 		t.Fatalf("旧的应用级监听游标不应进入多流水线模型: %v", err)
 	}
 	observation = model.ApplicationRepositoryObservation{
@@ -702,6 +703,9 @@ func TestDeploymentRollbackAttemptMigrationPreservesLegacyRecords(t *testing.T) 
 	if err := db.Exec(`INSERT INTO deployment_records (id) VALUES (?)`, "legacy-rollback").Error; err != nil {
 		t.Fatal(err)
 	}
+	if err := migrateRowIdentities(context.Background(), db); err != nil {
+		t.Fatal(err)
+	}
 	if err := migrateDeploymentRollbackAttempts(db); err != nil {
 		t.Fatalf("升级历史回滚尝试字段失败: %v", err)
 	}
@@ -713,7 +717,7 @@ func TestDeploymentRollbackAttemptMigrationPreservesLegacyRecords(t *testing.T) 
 	var sourceID string
 	var attempt int
 	if err := db.Table("deployment_records").Select("rollback_source_id", "rollback_attempt").
-		Where("id = ?", "legacy-rollback").Row().Scan(&sourceID, &attempt); err != nil {
+		Where("uuid = ?", "legacy-rollback").Row().Scan(&sourceID, &attempt); err != nil {
 		t.Fatalf("读取迁移后的历史回滚记录失败: %v", err)
 	}
 	if sourceID != "" || attempt != 0 {
@@ -736,6 +740,9 @@ func TestDeploymentPlanLifecycleMigrationPreservesLegacyPlans(t *testing.T) {
 	if err := db.Exec(`INSERT INTO deployment_plans (id) VALUES (?), (?)`, "legacy-a", "legacy-b").Error; err != nil {
 		t.Fatal(err)
 	}
+	if err := migrateRowIdentities(context.Background(), db); err != nil {
+		t.Fatal(err)
+	}
 	if err := migrateDeploymentPlanLifecycle(db); err != nil {
 		t.Fatalf("升级历史部署方案失败: %v", err)
 	}
@@ -747,7 +754,7 @@ func TestDeploymentPlanLifecycleMigrationPreservesLegacyPlans(t *testing.T) {
 	if err := db.Table("deployment_plans").Where("deleted_at IS NULL").Count(&nullCount).Error; err != nil || nullCount != 2 {
 		t.Fatalf("历史部署方案不应被标记为已删除: count=%d err=%v", nullCount, err)
 	}
-	if err := db.Delete(&model.DeploymentPlan{ID: "legacy-a"}).Error; err != nil {
+	if err := db.Delete(&model.DeploymentPlan{}, "uuid = ?", "legacy-a").Error; err != nil {
 		t.Fatalf("新软删除字段无法使用: %v", err)
 	}
 	var visible, all int64
@@ -825,21 +832,21 @@ func TestExecutionConfigMigrationsUpgradeNonemptySQLiteTables(t *testing.T) {
 	}
 
 	var migratedPlan model.DeploymentPlan
-	if err := db.First(&migratedPlan, "id = ?", deploymentPlan.ID).Error; err != nil {
+	if err := db.First(&migratedPlan, "uuid = ?", deploymentPlan.ID).Error; err != nil {
 		t.Fatalf("读取升级后的部署方案失败: %v", err)
 	}
 	if migratedPlan.ComposeYAML != "" || migratedPlan.DockerConfig.Network != "" {
 		t.Fatalf("旧部署方案执行配置回填错误: %+v", migratedPlan)
 	}
 	var migratedRecord model.DeploymentRecord
-	if err := db.First(&migratedRecord, "id = ?", deploymentRecord.ID).Error; err != nil {
+	if err := db.First(&migratedRecord, "uuid = ?", deploymentRecord.ID).Error; err != nil {
 		t.Fatalf("读取升级后的部署记录失败: %v", err)
 	}
 	if migratedRecord.ComposeYAML != "" || migratedRecord.DockerConfig.Network != "" {
 		t.Fatalf("旧部署记录执行快照回填错误: %+v", migratedRecord)
 	}
 	var migratedBuild model.BuildPlan
-	if err := db.First(&migratedBuild, "id = ?", buildPlan.ID).Error; err != nil {
+	if err := db.First(&migratedBuild, "uuid = ?", buildPlan.ID).Error; err != nil {
 		t.Fatalf("读取升级后的构建方案失败: %v", err)
 	}
 	if !migratedBuild.Pull || !migratedBuild.CacheEnabled || len(migratedBuild.BuildArgs) != 0 || len(migratedBuild.EnvironmentVariables) != 0 {
@@ -953,7 +960,7 @@ func TestDockerSSHMigrationUpgradesExistingDatabase(t *testing.T) {
 		t.Fatal("发布环境说明字段没有迁移")
 	}
 	var endpoint model.DockerEndpoint
-	if err := db.First(&endpoint, "id = ?", "docker-old").Error; err != nil {
+	if err := db.First(&endpoint, "uuid = ?", "docker-old").Error; err != nil {
 		t.Fatalf("迁移后读取旧 Docker 连接失败: %v", err)
 	}
 	if endpoint.SSHCredentialCiphertext != "" || endpoint.SSHHostKeyFingerprint != "" {
@@ -1005,6 +1012,9 @@ func TestHostMigrationBackfillsLegacySSHDockerEndpoints(t *testing.T) {
 		}
 	}
 
+	if err := migrateRowIdentities(context.Background(), db); err != nil {
+		t.Fatal(err)
+	}
 	for range 2 {
 		if err := migrateHostsAndEnvironments(db); err != nil {
 			t.Fatalf("执行主机模型迁移失败: %v", err)
@@ -1102,7 +1112,7 @@ func TestHostMigrationKeepsDisabledBuiltinCapabilities(t *testing.T) {
 	if err := migrateHostsAndEnvironments(db); err != nil {
 		t.Fatalf("首次执行主机模型迁移失败: %v", err)
 	}
-	if err := db.Model(&model.Host{}).Where("id = ?", model.BuiltinLocalHostID).
+	if err := db.Model(&model.Host{}).Where("uuid = ?", model.BuiltinLocalHostID).
 		Update("name", "EDO 本机").Error; err != nil {
 		t.Fatalf("准备历史默认名失败: %v", err)
 	}
@@ -1115,7 +1125,7 @@ func TestHostMigrationKeepsDisabledBuiltinCapabilities(t *testing.T) {
 		t.Fatalf("重复执行主机模型迁移失败: %v", err)
 	}
 	var host model.Host
-	if err := db.First(&host, "id = ?", model.BuiltinLocalHostID).Error; err != nil {
+	if err := db.First(&host, "uuid = ?", model.BuiltinLocalHostID).Error; err != nil {
 		t.Fatalf("读取内置本地主机失败: %v", err)
 	}
 	if host.Name != "本地" {
@@ -1137,7 +1147,7 @@ func TestHostMigrationKeepsDisabledBuiltinCapabilities(t *testing.T) {
 	if err := migrateHostsAndEnvironments(db); err != nil {
 		t.Fatalf("自定义名称后重跑迁移失败: %v", err)
 	}
-	if err := db.First(&host, "id = ?", model.BuiltinLocalHostID).Error; err != nil {
+	if err := db.First(&host, "uuid = ?", model.BuiltinLocalHostID).Error; err != nil {
 		t.Fatalf("读取自定义本地主机失败: %v", err)
 	}
 	if host.Name != "开发机" {
@@ -1185,7 +1195,7 @@ func TestEnvironmentHostMigrationBackfillsLegacyMembership(t *testing.T) {
 	if len(memberships) != 1 || memberships[0].EnvironmentID != environment.ID || memberships[0].HostID != host.ID {
 		t.Fatalf("旧主机环境归属未准确回填: %+v", memberships)
 	}
-	if err := db.First(&host, "id = ?", host.ID).Error; err != nil {
+	if err := db.First(&host, "uuid = ?", host.ID).Error; err != nil {
 		t.Fatal(err)
 	}
 	if host.EnvironmentID != "" {
@@ -1399,7 +1409,7 @@ func exerciseExternalExecutionConfigUpgrade(t *testing.T, db *gorm.DB, prefix st
 	}
 
 	var migratedBuild model.BuildPlan
-	if err := db.First(&migratedBuild, "id = ?", buildPlan.ID).Error; err != nil {
+	if err := db.First(&migratedBuild, "uuid = ?", buildPlan.ID).Error; err != nil {
 		t.Fatalf("读取 %s 升级后的构建方案失败: %v", prefix, err)
 	}
 	if !migratedBuild.Pull || !migratedBuild.CacheEnabled || len(migratedBuild.BuildArgs) != 0 || len(migratedBuild.EnvironmentVariables) != 0 {

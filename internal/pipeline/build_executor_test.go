@@ -144,7 +144,7 @@ func TestExecuteScriptBuildProducesFileBundleAndAdvances(t *testing.T) {
 	}
 
 	var updated model.PipelineRun
-	if err := db.First(&updated, "id = ?", run.ID).Error; err != nil {
+	if err := db.First(&updated, "uuid = ?", run.ID).Error; err != nil {
 		t.Fatal(err)
 	}
 	if updated.ArtifactID == "" {
@@ -155,7 +155,7 @@ func TestExecuteScriptBuildProducesFileBundleAndAdvances(t *testing.T) {
 		t.Fatalf("脚本构建完成后没有自动推进到下一任务: %+v", updated)
 	}
 	var nextJob model.Job
-	if err := db.First(&nextJob, "id = ?", updated.ExecutionJobID).Error; err != nil {
+	if err := db.First(&nextJob, "uuid = ?", updated.ExecutionJobID).Error; err != nil {
 		t.Fatal(err)
 	}
 	if nextJob.MaxAttempts != 1 || nextJob.IsIdempotent {
@@ -176,7 +176,7 @@ func TestExecuteScriptBuildProducesFileBundleAndAdvances(t *testing.T) {
 	}
 
 	var buildRun model.BuildRun
-	if err := db.First(&buildRun, "id = ?", stored.BuildRunID).Error; err != nil {
+	if err := db.First(&buildRun, "uuid = ?", stored.BuildRunID).Error; err != nil {
 		t.Fatal(err)
 	}
 	if buildRun.ProducerKind != model.BuildRunProducerScript || buildRun.Status != model.BuildRunStatusSucceeded ||
@@ -225,7 +225,7 @@ func TestExecuteShellTaskUsesWorkingDirectoryAndEnvironment(t *testing.T) {
 		t.Fatalf("执行 Shell 任务失败: %v", err)
 	}
 	var updated model.PipelineRun
-	if err := db.First(&updated, "id = ?", run.ID).Error; err != nil {
+	if err := db.First(&updated, "uuid = ?", run.ID).Error; err != nil {
 		t.Fatal(err)
 	}
 	if updated.Status != model.PipelineRunSucceeded || updated.Stage != "completed" {
@@ -265,7 +265,7 @@ func TestStaleBuildDeliveryAfterAdvanceIsNoOp(t *testing.T) {
 		ApprovalEnabled: true,
 	}, nil)
 	oldJobID := run.ExecutionJobID
-	if err := db.Model(&model.PipelineRun{}).Where("id = ?", run.ID).Updates(map[string]any{
+	if err := db.Model(&model.PipelineRun{}).Where("uuid = ?", run.ID).Updates(map[string]any{
 		"current_node_id": nextNode.ID, "execution_job_id": "job-next", "status": model.PipelineRunAwaitingApproval,
 		"stage": string(model.WorkflowNodeApproval), "message": "等待其他成员审核",
 	}).Error; err != nil {
@@ -282,7 +282,7 @@ func TestStaleBuildDeliveryAfterAdvanceIsNoOp(t *testing.T) {
 		t.Fatalf("旧构建消息重投应安全忽略: %v", err)
 	}
 	var updated model.PipelineRun
-	if err := db.First(&updated, "id = ?", run.ID).Error; err != nil {
+	if err := db.First(&updated, "uuid = ?", run.ID).Error; err != nil {
 		t.Fatal(err)
 	}
 	if updated.CurrentNodeID != nextNode.ID || updated.ExecutionJobID != "job-next" ||
@@ -336,7 +336,7 @@ func TestScriptBuildJobRunsAtMostOnce(t *testing.T) {
 		t.Fatalf("投递脚本构建失败: %v", err)
 	}
 	var job model.Job
-	if err := db.First(&job, "id = ?", queued.ExecutionJobID).Error; err != nil {
+	if err := db.First(&job, "uuid = ?", queued.ExecutionJobID).Error; err != nil {
 		t.Fatal(err)
 	}
 	if job.MaxAttempts != 1 || job.IsIdempotent {
@@ -391,7 +391,7 @@ func TestExecuteBuildTaskRecoversRegisteredArtifactWithoutRebuilding(t *testing.
 		t.Fatalf("已有制品时仍然重复执行失败脚本: %v", err)
 	}
 	var updated model.PipelineRun
-	if err := db.First(&updated, "id = ?", run.ID).Error; err != nil {
+	if err := db.First(&updated, "uuid = ?", run.ID).Error; err != nil {
 		t.Fatal(err)
 	}
 	if updated.Status != model.PipelineRunSucceeded || updated.ArtifactID != stored.ID {

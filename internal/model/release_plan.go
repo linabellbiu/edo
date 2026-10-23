@@ -18,7 +18,8 @@ const (
 // ReleasePlan 表示一次人工组织的批量发布。Name 和 Version 是服务端生成的内部唯一标识；
 // 用户填写 Description，并通过 Groups 编排应用，计划本身不直接关联应用。
 type ReleasePlan struct {
-	ID              string                `gorm:"type:varchar(36);primaryKey" json:"id"`
+	RowID           uint64                `gorm:"column:id;primaryKey;autoIncrement" json:"row_id"`
+	ID              string                `gorm:"column:uuid;type:varchar(36);not null;uniqueIndex" json:"id"`
 	Name            string                `gorm:"type:varchar(128);not null" json:"name"`
 	Version         string                `gorm:"type:varchar(64);not null;uniqueIndex:ux_release_plans_department_version,priority:2;uniqueIndex:ux_release_plans_project_version,priority:2" json:"version"`
 	Description     string                `gorm:"type:varchar(500);not null;default:''" json:"description"`
@@ -31,7 +32,7 @@ type ReleasePlan struct {
 	CreatedAt       time.Time             `gorm:"not null;index" json:"created_at"`
 	UpdatedAt       time.Time             `gorm:"not null" json:"updated_at"`
 	DeletedAt       gorm.DeletedAt        `gorm:"index" json:"-"`
-	Groups          []ReleaseGroup        `gorm:"foreignKey:ReleasePlanID" json:"groups,omitempty"`
+	Groups          []ReleaseGroup        `gorm:"foreignKey:ReleasePlanID;references:ID" json:"groups,omitempty"`
 	LatestExecution *ReleasePlanExecution `gorm:"-" json:"latest_execution,omitempty"`
 }
 
@@ -49,7 +50,8 @@ const (
 // ReleasePlanExecution 固化发布计划的一次整体或单应用执行。
 // RequestID 在同一发布计划内识别客户端重试，Snapshot 保证后续调和不受计划编辑影响。
 type ReleasePlanExecution struct {
-	ID            string                     `gorm:"type:varchar(36);primaryKey" json:"id"`
+	RowID         uint64                     `gorm:"column:id;primaryKey;autoIncrement" json:"row_id"`
+	ID            string                     `gorm:"column:uuid;type:varchar(36);not null;uniqueIndex" json:"id"`
 	ReleasePlanID string                     `gorm:"type:varchar(36);not null;index;uniqueIndex:idx_release_plan_execution_request,priority:1" json:"release_plan_id"`
 	RequestID     string                     `gorm:"type:varchar(128);not null;uniqueIndex:idx_release_plan_execution_request,priority:2" json:"request_id"`
 	Status        ReleasePlanExecutionStatus `gorm:"type:varchar(16);not null;default:'pending';index" json:"status"`
@@ -61,7 +63,7 @@ type ReleasePlanExecution struct {
 	FinishedAt    *time.Time                 `json:"finished_at,omitempty"`
 	CreatedAt     time.Time                  `gorm:"not null;index" json:"created_at"`
 	UpdatedAt     time.Time                  `gorm:"not null" json:"updated_at"`
-	Items         []ReleasePlanExecutionItem `gorm:"foreignKey:ReleasePlanExecutionID" json:"items,omitempty"`
+	Items         []ReleasePlanExecutionItem `gorm:"foreignKey:ReleasePlanExecutionID;references:ID" json:"items,omitempty"`
 }
 
 func (ReleasePlanExecution) TableName() string { return "release_plan_executions" }
@@ -80,7 +82,8 @@ const (
 // ReleasePlanExecutionItem 保存发布计划中单个应用的一次执行记录。
 // PipelineRun 提前创建，调度时按已保存的配置决定启动时间。
 type ReleasePlanExecutionItem struct {
-	ID                        string                         `gorm:"type:varchar(36);primaryKey" json:"id"`
+	RowID                     uint64                         `gorm:"column:id;primaryKey;autoIncrement" json:"row_id"`
+	ID                        string                         `gorm:"column:uuid;type:varchar(36);not null;uniqueIndex" json:"id"`
 	ReleasePlanExecutionID    string                         `gorm:"type:varchar(36);not null;index;uniqueIndex:idx_release_plan_execution_item,priority:1" json:"release_plan_execution_id"`
 	ReleaseGroupID            string                         `gorm:"type:varchar(36);not null;index" json:"release_group_id"`
 	ReleaseGroupApplicationID string                         `gorm:"type:varchar(36);not null;index;uniqueIndex:idx_release_plan_execution_item,priority:2" json:"release_group_application_id"`
@@ -124,7 +127,8 @@ const (
 
 // ReleaseGroup 编排一组应用。同组应用按 Mode 并行或串行执行，组间依赖单独保存。
 type ReleaseGroup struct {
-	ID            string                    `gorm:"type:varchar(36);primaryKey" json:"id"`
+	RowID         uint64                    `gorm:"column:id;primaryKey;autoIncrement" json:"row_id"`
+	ID            string                    `gorm:"column:uuid;type:varchar(36);not null;uniqueIndex" json:"id"`
 	ReleasePlanID string                    `gorm:"type:varchar(36);not null;index;uniqueIndex:idx_release_group_name,priority:1" json:"release_plan_id"`
 	Name          string                    `gorm:"type:varchar(128);not null;uniqueIndex:idx_release_group_name,priority:2" json:"name"`
 	Mode          ReleaseGroupMode          `gorm:"type:varchar(16);not null;default:'parallel'" json:"mode"`
@@ -132,14 +136,15 @@ type ReleaseGroup struct {
 	SortOrder     int                       `gorm:"not null;default:0;index" json:"sort_order"`
 	CreatedAt     time.Time                 `gorm:"not null" json:"created_at"`
 	UpdatedAt     time.Time                 `gorm:"not null" json:"updated_at"`
-	Applications  []ReleaseGroupApplication `gorm:"foreignKey:ReleaseGroupID" json:"applications,omitempty"`
-	Dependencies  []ReleaseGroupDependency  `gorm:"foreignKey:ReleaseGroupID" json:"dependencies,omitempty"`
+	Applications  []ReleaseGroupApplication `gorm:"foreignKey:ReleaseGroupID;references:ID" json:"applications,omitempty"`
+	Dependencies  []ReleaseGroupDependency  `gorm:"foreignKey:ReleaseGroupID;references:ID" json:"dependencies,omitempty"`
 }
 
 func (ReleaseGroup) TableName() string { return "release_groups" }
 
 type ReleaseGroupApplication struct {
-	ID             string                       `gorm:"type:varchar(36);primaryKey" json:"id"`
+	RowID          uint64                       `gorm:"column:id;primaryKey;autoIncrement" json:"row_id"`
+	ID             string                       `gorm:"column:uuid;type:varchar(36);not null;uniqueIndex" json:"id"`
 	ReleaseGroupID string                       `gorm:"type:varchar(36);not null;index;uniqueIndex:idx_release_group_application,priority:1" json:"release_group_id"`
 	ApplicationID  string                       `gorm:"type:varchar(36);not null;index;uniqueIndex:idx_release_group_application,priority:2" json:"application_id"`
 	ManualDeploy   bool                         `gorm:"not null;default:false" json:"manual_deploy"`
@@ -147,14 +152,15 @@ type ReleaseGroupApplication struct {
 	SourceValue    string                       `gorm:"type:varchar(255);not null;default:''" json:"source_value,omitempty"`
 	SortOrder      int                          `gorm:"not null;default:0;index" json:"sort_order"`
 	CreatedAt      time.Time                    `gorm:"not null" json:"created_at"`
-	Application    Application                  `gorm:"foreignKey:ApplicationID" json:"application"`
+	Application    Application                  `gorm:"foreignKey:ApplicationID;references:ID" json:"application"`
 }
 
 func (ReleaseGroupApplication) TableName() string { return "release_group_applications" }
 
 type ReleaseGroupDependency struct {
-	ReleaseGroupID   string `gorm:"type:varchar(36);primaryKey" json:"release_group_id"`
-	DependsOnGroupID string `gorm:"type:varchar(36);primaryKey;index" json:"depends_on_group_id"`
+	RowID            uint64 `gorm:"column:id;primaryKey;autoIncrement" json:"row_id"`
+	ReleaseGroupID   string `gorm:"type:varchar(36);not null;uniqueIndex:ux_release_group_dependency_identity" json:"release_group_id"`
+	DependsOnGroupID string `gorm:"type:varchar(36);not null;uniqueIndex:ux_release_group_dependency_identity;index" json:"depends_on_group_id"`
 }
 
 func (ReleaseGroupDependency) TableName() string { return "release_group_dependencies" }

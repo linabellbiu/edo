@@ -35,7 +35,7 @@ func TestBuildPlanCanBeUpdatedDisabledAndSoftDeleted(t *testing.T) {
 		t.Fatalf("停用构建方案失败: %v", err)
 	}
 	var disabled model.BuildPlan
-	if err := db.First(&disabled, "id = ?", plan.ID).Error; err != nil || disabled.IsActive {
+	if err := db.First(&disabled, "uuid = ?", plan.ID).Error; err != nil || disabled.IsActive {
 		t.Fatalf("构建方案停用状态未保存: plan=%+v err=%v", disabled, err)
 	}
 	if err := service.SetBuildPlanActive(ctx, plan.ID, true); err != nil {
@@ -94,7 +94,7 @@ func TestBuildPlanCanBeUpdatedDisabledAndSoftDeleted(t *testing.T) {
 		}
 	}
 	var deleted model.BuildPlan
-	if err := db.Unscoped().First(&deleted, "id = ?", plan.ID).Error; err != nil || !deleted.DeletedAt.Valid {
+	if err := db.Unscoped().First(&deleted, "uuid = ?", plan.ID).Error; err != nil || !deleted.DeletedAt.Valid {
 		t.Fatalf("构建方案没有软删除保留: plan=%+v err=%v", deleted, err)
 	}
 }

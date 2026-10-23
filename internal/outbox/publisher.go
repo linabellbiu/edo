@@ -128,7 +128,7 @@ func (p *Publisher) publishOne(ctx context.Context, event *model.OutboxEvent) er
 			return updateErr
 		}
 		if attempts >= p.maxAttempts {
-			return tx.Model(&model.Job{}).Where("id = ? AND status = ?", event.AggregateID, model.JobPending).
+			return tx.Model(&model.Job{}).Where("uuid = ? AND status = ?", event.AggregateID, model.JobPending).
 				Updates(map[string]any{
 					"status":        model.JobFailed,
 					"error_code":    "queue_publish_failed",

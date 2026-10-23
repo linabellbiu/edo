@@ -235,7 +235,7 @@ func (s *Service) List(ctx context.Context) ([]model.GitRepository, error) {
 
 func (s *Service) Find(ctx context.Context, id string) (*model.GitRepository, error) {
 	var repository model.GitRepository
-	if err := s.db.WithContext(ctx).First(&repository, "id = ?", id).Error; err != nil {
+	if err := s.db.WithContext(ctx).First(&repository, "uuid = ?", id).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, ErrRepositoryNotFound
 		}
@@ -245,6 +245,9 @@ func (s *Service) Find(ctx context.Context, id string) (*model.GitRepository, er
 }
 
 func (s *Service) ListDeliveries(ctx context.Context, repositoryID string, limit int) ([]model.GitWebhookDelivery, error) {
+	if _, err := s.Find(ctx, repositoryID); err != nil {
+		return nil, err
+	}
 	if limit < 1 || limit > 200 {
 		limit = 50
 	}
@@ -327,7 +330,7 @@ func (s *Service) Update(ctx context.Context, actorID, id string, input Input) (
 }
 
 func (s *Service) SetActive(ctx context.Context, id string, active bool) error {
-	result := s.db.WithContext(ctx).Model(&model.GitRepository{}).Where("id = ?", id).
+	result := s.db.WithContext(ctx).Model(&model.GitRepository{}).Where("uuid = ?", id).
 		Updates(map[string]any{"is_active": active, "updated_at": time.Now().UTC()})
 	if result.Error != nil {
 		return fmt.Errorf("修改代码仓库状态失败: %w", result.Error)
@@ -341,7 +344,7 @@ func (s *Service) SetActive(ctx context.Context, id string, active bool) error {
 func (s *Service) Delete(ctx context.Context, id string) error {
 	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var existing model.GitRepository
-		if err := tx.First(&existing, "id = ?", id).Error; err != nil {
+		if err := tx.First(&existing, "uuid = ?", id).Error; err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
 				return ErrRepositoryNotFound
 			}

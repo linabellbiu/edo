@@ -131,7 +131,7 @@ func TestDeploymentPlanLifecycleAndReferenceProtection(t *testing.T) {
 		t.Fatalf("软删除方案仍出现在普通列表: plans=%+v err=%v", plans, err)
 	}
 	var deleted model.DeploymentPlan
-	if err := db.Unscoped().First(&deleted, "id = ?", plan.ID).Error; err != nil || !deleted.DeletedAt.Valid {
+	if err := db.Unscoped().First(&deleted, "uuid = ?", plan.ID).Error; err != nil || !deleted.DeletedAt.Valid {
 		t.Fatalf("部署方案未软删除: plan=%+v err=%v", deleted, err)
 	}
 	if err := service.SetDeploymentPlanActive(ctx, plan.ID, true); !errors.Is(err, ErrDeploymentPlanNotFound) {
@@ -147,7 +147,7 @@ func TestDeploymentPlanLifecycleAndReferenceProtection(t *testing.T) {
 		t.Fatalf("重复删除未返回不存在: %v", err)
 	}
 	var targetCount int64
-	if err := db.Model(&model.DeploymentTarget{}).Where("id = ?", plan.DeploymentTargetID).Count(&targetCount).Error; err != nil || targetCount != 0 {
+	if err := db.Model(&model.DeploymentTarget{}).Where("uuid = ?", plan.DeploymentTargetID).Count(&targetCount).Error; err != nil || targetCount != 0 {
 		t.Fatalf("删除方案应清理无法独立管理的内部执行位置: count=%d err=%v", targetCount, err)
 	}
 }

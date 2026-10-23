@@ -7,7 +7,8 @@ import (
 )
 
 type Role struct {
-	ID          string    `gorm:"type:varchar(36);primaryKey" json:"id"`
+	RowID       uint64    `gorm:"column:id;primaryKey;autoIncrement" json:"row_id"`
+	ID          string    `gorm:"column:uuid;type:varchar(36);not null;uniqueIndex" json:"id"`
 	Name        string    `gorm:"type:varchar(64);not null;uniqueIndex" json:"name"`
 	DisplayName string    `gorm:"type:varchar(64);not null" json:"display_name"`
 	Description string    `gorm:"type:varchar(255);not null;default:''" json:"description"`
@@ -18,16 +19,18 @@ type Role struct {
 func (Role) TableName() string { return "roles" }
 
 type RolePermission struct {
-	RoleID     string    `gorm:"type:varchar(36);primaryKey;index"`
-	Permission string    `gorm:"type:varchar(96);primaryKey;index"`
+	RowID      uint64    `gorm:"column:id;primaryKey;autoIncrement" json:"row_id"`
+	RoleID     string    `gorm:"type:varchar(36);not null;uniqueIndex:ux_role_permission_identity;index"`
+	Permission string    `gorm:"type:varchar(96);not null;uniqueIndex:ux_role_permission_identity;index"`
 	CreatedAt  time.Time `gorm:"not null"`
 }
 
 func (RolePermission) TableName() string { return "role_permissions" }
 
 type UserRole struct {
-	UserID    string    `gorm:"type:varchar(36);primaryKey;index"`
-	RoleID    string    `gorm:"type:varchar(36);primaryKey;index"`
+	RowID     uint64    `gorm:"column:id;primaryKey;autoIncrement" json:"row_id"`
+	UserID    string    `gorm:"type:varchar(36);not null;uniqueIndex:ux_user_role_identity;index"`
+	RoleID    string    `gorm:"type:varchar(36);not null;uniqueIndex:ux_user_role_identity;index"`
 	CreatedAt time.Time `gorm:"not null"`
 }
 
@@ -42,8 +45,9 @@ const (
 
 // UserPermission 是角色权限之外的用户级例外；显式拒绝优先于角色授权。
 type UserPermission struct {
-	UserID     string           `gorm:"type:varchar(36);primaryKey;index"`
-	Permission string           `gorm:"type:varchar(96);primaryKey;index"`
+	RowID      uint64           `gorm:"column:id;primaryKey;autoIncrement" json:"row_id"`
+	UserID     string           `gorm:"type:varchar(36);not null;uniqueIndex:ux_user_permission_identity;index"`
+	Permission string           `gorm:"type:varchar(96);not null;uniqueIndex:ux_user_permission_identity;index"`
 	Effect     PermissionEffect `gorm:"type:varchar(8);not null;index"`
 	CreatedAt  time.Time        `gorm:"not null"`
 	UpdatedAt  time.Time        `gorm:"not null"`
@@ -60,7 +64,8 @@ const (
 )
 
 type AuditLog struct {
-	ID           string         `gorm:"type:varchar(36);primaryKey" json:"id"`
+	RowID        uint64         `gorm:"column:id;primaryKey;autoIncrement" json:"row_id"`
+	ID           string         `gorm:"column:uuid;type:varchar(36);not null;uniqueIndex" json:"id"`
 	DepartmentID string         `gorm:"type:varchar(36);not null;default:'00000000-0000-0000-0000-000000000001';index" json:"department_id"`
 	ProjectID    string         `gorm:"type:varchar(36);not null;default:'';index" json:"project_id"`
 	ActorUserID  *string        `gorm:"type:varchar(36);index" json:"actor_user_id,omitempty"`

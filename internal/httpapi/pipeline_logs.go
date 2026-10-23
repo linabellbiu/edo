@@ -118,16 +118,21 @@ func (h pipelineHandler) streamRunLogs(c *gin.Context) {
 	logger := h.logger.With("operation", "pipeline_log_stream", "request_id", requestIDFrom(c), "pipeline_run_id", c.Param("id"))
 	done := readSocketControl(connection, logger)
 	defer closeSocketNormally(connection, done)
+	authorized := func() bool { return true }
+	if h.streamAuth != nil {
+		authorized = h.streamAuth(c)
+	}
 	write := func(event pipelineLogEvent) error {
+		// 查询期间也可能注销或撤权，发送任何正文与状态前都要重新检查。
+		if !authorized() {
+			closeSocketPolicy(connection)
+			return errors.New("流水线日志访问权限已失效")
+		}
 		err := writePipelineLogEvent(connection, event)
 		if err != nil {
 			logger.Warn("发送流水线日志事件失败", "event_type", event.Type, "err", err)
 		}
 		return err
-	}
-	authorized := func() bool { return true }
-	if h.streamAuth != nil {
-		authorized = h.streamAuth(c)
 	}
 
 	// 日志落库后唤醒；低频补读覆盖 Pub/Sub 暂时不可用和遗漏通知。
@@ -137,6 +142,11 @@ func (h pipelineHandler) streamRunLogs(c *gin.Context) {
 	defer pingTicker.Stop()
 	var previousStatus model.PipelineRunStatus
 	for {
+		// 历史补读和 Pub/Sub 唤醒都经过这里，不沿用握手时的授权。
+		if !authorized() {
+			closeSocketPolicy(connection)
+			return
+		}
 		logs, status, readErr := h.service.ListRunLogs(c.Request.Context(), c.Param("id"), afterID, 200)
 		if readErr != nil {
 			h.logger.Error("推送流水线执行日志失败", "operation", "pipeline_log_stream", "request_id", requestIDFrom(c), "pipeline_run_id", c.Param("id"), "err", readErr)

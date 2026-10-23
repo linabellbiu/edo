@@ -53,7 +53,7 @@ func TestStopPipelineEndpointRequiresPermissionAndDepartment(t *testing.T) {
 			t.Fatalf("停止请求失败: %d %s", response.Code, response.Body.String())
 		}
 	}
-	if err := db.First(&run, "id = ?", run.ID).Error; err != nil || run.Status != model.PipelineRunCanceled {
+	if err := db.First(&run, "uuid = ?", run.ID).Error; err != nil || run.Status != model.PipelineRunCanceled {
 		t.Fatalf("等待审核的流水线未停止: %+v %v", run, err)
 	}
 	var count int64

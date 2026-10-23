@@ -42,14 +42,14 @@ func NewService(db *gorm.DB) *Service { return &Service{db: db} }
 
 func (s *Service) List(ctx context.Context) ([]View, error) {
 	query := s.db.WithContext(ctx).Model(&model.Department{}).
-		Select("departments.*, COUNT(users.id) AS member_count").
-		Joins("LEFT JOIN users ON users.department_id = departments.id").
-		Group("departments.id").Order("departments.name ASC")
+		Select("departments.*, COUNT(users.uuid) AS member_count").
+		Joins("LEFT JOIN users ON users.department_id = departments.uuid").
+		Group("departments.uuid").Order("departments.name ASC")
 	if scope, ok := database.DepartmentScopeFromContext(ctx); ok && !scope.AllDepartments {
 		if scope.DepartmentID == "" {
 			return nil, database.ErrDepartmentScopeRequired
 		}
-		query = query.Where("departments.id = ?", scope.DepartmentID)
+		query = query.Where("departments.uuid = ?", scope.DepartmentID)
 	}
 	var result []View
 	if err := query.Scan(&result).Error; err != nil {
@@ -171,7 +171,7 @@ func (s *Service) Delete(ctx context.Context, id string) error {
 		if err := tx.Where("project_id = ?", projectID).Delete(&model.ProjectMember{}).Error; err != nil {
 			return fmt.Errorf("清理空部门项目成员失败: %w", err)
 		}
-		if err := tx.Where("id = ? AND department_id = ?", projectID, id).Delete(&model.Project{}).Error; err != nil {
+		if err := tx.Where("uuid = ? AND department_id = ?", projectID, id).Delete(&model.Project{}).Error; err != nil {
 			return fmt.Errorf("清理空部门初始空间失败: %w", err)
 		}
 		result := service.allowedDepartment(ctx, id).Delete(&model.Department{})
@@ -187,7 +187,7 @@ func (s *Service) Delete(ctx context.Context, id string) error {
 
 func lockCompany(tx *gorm.DB) error {
 	var company model.Organization
-	if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&company, "id = ?", database.DefaultDepartmentID).Error; err != nil {
+	if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&company, "uuid = ?", database.DefaultDepartmentID).Error; err != nil {
 		return fmt.Errorf("锁定组织结构失败: %w", err)
 	}
 	return nil
@@ -196,11 +196,11 @@ func lockCompany(tx *gorm.DB) error {
 func (s *Service) find(ctx context.Context, id string) (*View, error) {
 	var item View
 	query := s.db.WithContext(ctx).Model(&model.Department{}).
-		Select("departments.*, COUNT(users.id) AS member_count").
-		Joins("LEFT JOIN users ON users.department_id = departments.id").
-		Where("departments.id = ?", id).Group("departments.id")
+		Select("departments.*, COUNT(users.uuid) AS member_count").
+		Joins("LEFT JOIN users ON users.department_id = departments.uuid").
+		Where("departments.uuid = ?", id).Group("departments.uuid")
 	if scope, ok := database.DepartmentScopeFromContext(ctx); ok && !scope.AllDepartments {
-		query = query.Where("departments.id = ?", scope.DepartmentID)
+		query = query.Where("departments.uuid = ?", scope.DepartmentID)
 	}
 	if err := query.Scan(&item).Error; err != nil {
 		return nil, fmt.Errorf("查询部门失败: %w", err)
@@ -213,9 +213,9 @@ func (s *Service) find(ctx context.Context, id string) (*View, error) {
 }
 
 func (s *Service) allowedDepartment(ctx context.Context, id string) *gorm.DB {
-	query := s.db.WithContext(ctx).Model(&model.Department{}).Where("id = ?", id)
+	query := s.db.WithContext(ctx).Model(&model.Department{}).Where("uuid = ?", id)
 	if scope, ok := database.DepartmentScopeFromContext(ctx); ok && !scope.AllDepartments {
-		query = query.Where("id = ?", scope.DepartmentID)
+		query = query.Where("uuid = ?", scope.DepartmentID)
 	}
 	return query
 }
@@ -246,7 +246,7 @@ func validateParent(tx *gorm.DB, id, parent string) error {
 		}
 		visited[parent] = true
 		var item model.Department
-		if err := tx.First(&item, "id = ?", parent).Error; err != nil {
+		if err := tx.First(&item, "uuid = ?", parent).Error; err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
 				return ErrInvalidDepartment
 			}

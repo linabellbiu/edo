@@ -91,8 +91,7 @@ func (h monitorHandler) checks(c *gin.Context) {
 	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "100"))
 	checks, err := h.service.ListChecks(c.Request.Context(), c.Param("id"), limit)
 	if err != nil {
-		h.logger.Error("查询监控记录失败", "operation", "monitor_check_list", "request_id", requestIDFrom(c), "rule_id", c.Param("id"), "err", err)
-		writeInternalError(c)
+		h.writeError(c, "monitor_check_list", err)
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"checks": checks})

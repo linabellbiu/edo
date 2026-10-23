@@ -66,7 +66,7 @@ func rollbackPreviewFor(source *model.DeploymentRecord) *RollbackPreview {
 
 func (s *Service) rollbackSource(ctx context.Context, sourceID string) (*model.DeploymentRecord, error) {
 	var source model.DeploymentRecord
-	if err := s.db.WithContext(ctx).First(&source, "id = ?", sourceID).Error; err != nil {
+	if err := s.db.WithContext(ctx).First(&source, "uuid = ?", sourceID).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, ErrDeploymentNotFound
 		}
@@ -93,7 +93,7 @@ func (s *Service) validateKubernetesRollback(ctx context.Context, source *model.
 		return "该记录缺少应用流水线归属，无法安全回退", nil
 	}
 	var run model.PipelineRun
-	if err := s.db.WithContext(ctx).First(&run, "id = ? AND application_id = ? AND project_id = ? AND department_id = ?",
+	if err := s.db.WithContext(ctx).First(&run, "uuid = ? AND application_id = ? AND project_id = ? AND department_id = ?",
 		source.PipelineRunID, source.ApplicationID, source.ProjectID, source.DepartmentID).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return "发布记录的应用流水线归属已变化", nil
@@ -101,7 +101,7 @@ func (s *Service) validateKubernetesRollback(ctx context.Context, source *model.
 		return "", s.rollbackValidationError(source, "deployment_rollback_run", err)
 	}
 	var plan model.DeploymentPlan
-	if err := s.db.WithContext(ctx).First(&plan, "id = ? AND project_id = ? AND department_id = ? AND is_active = ?",
+	if err := s.db.WithContext(ctx).First(&plan, "uuid = ? AND project_id = ? AND department_id = ? AND is_active = ?",
 		source.DeploymentPlanID, source.ProjectID, source.DepartmentID, true).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return "部署方案已删除或停用，无法回退历史目标", nil
@@ -109,7 +109,7 @@ func (s *Service) validateKubernetesRollback(ctx context.Context, source *model.
 		return "", s.rollbackValidationError(source, "deployment_rollback_plan", err)
 	}
 	var target model.DeploymentTarget
-	if err := s.db.WithContext(ctx).First(&target, "id = ? AND project_id = ? AND department_id = ? AND is_active = ?",
+	if err := s.db.WithContext(ctx).First(&target, "uuid = ? AND project_id = ? AND department_id = ? AND is_active = ?",
 		plan.DeploymentTargetID, source.ProjectID, source.DepartmentID, true).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return "部署目标已删除或停用，无法回退历史目标", nil
@@ -160,7 +160,7 @@ func (s *Service) rollbackArtifactID(ctx context.Context, source *model.Deployme
 	var artifact model.Artifact
 	err := s.db.WithContext(ctx).Where("application_id = ? AND project_id = ? AND department_id = ? AND image_ref = ? AND kind = ? AND status = ?",
 		source.ApplicationID, source.ProjectID, source.DepartmentID, image, model.ArtifactKindOCIImage, model.ArtifactStatusAvailable).
-		Order("created_at DESC").Order("id DESC").First(&artifact).Error
+		Order("id DESC").First(&artifact).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return "", nil
 	}
@@ -197,7 +197,7 @@ func (s *Service) kubernetesExecutionIdentity(ctx context.Context, record *model
 		return kube.DeploymentImageIdentity{}, err
 	}
 	// 小范围增量字段只为新发布保存真实 UID；历史记录保持空值且禁止猜测补齐。
-	if err := s.db.WithContext(ctx).Model(&model.DeploymentRecord{}).Where("id = ?", record.ID).Update("kubernetes_uid", identity.UID).Error; err != nil {
+	if err := s.db.WithContext(ctx).Model(&model.DeploymentRecord{}).Where("uuid = ?", record.ID).Update("kubernetes_uid", identity.UID).Error; err != nil {
 		return kube.DeploymentImageIdentity{}, s.rollbackValidationError(record, "deployment_kubernetes_identity_save", err)
 	}
 	record.KubernetesUID = identity.UID

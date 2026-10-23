@@ -45,7 +45,7 @@ func configureKubernetesArchitectureFixture(t *testing.T, service *Service, clus
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := service.db.Model(&model.KubernetesCluster{}).Where("id = ?", clusterID).
+	if err := service.db.Model(&model.KubernetesCluster{}).Where("uuid = ?", clusterID).
 		Updates(map[string]any{"api_server": server.URL, "kubeconfig_ciphertext": ciphertext}).Error; err != nil {
 		t.Fatal(err)
 	}

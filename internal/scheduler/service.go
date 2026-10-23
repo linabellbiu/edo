@@ -94,7 +94,7 @@ func (s *Service) Create(ctx context.Context, actorID string, input Input) (*mod
 
 func (s *Service) Update(ctx context.Context, id string, input Input) (*model.ScheduledTask, error) {
 	var item model.ScheduledTask
-	if err := s.db.WithContext(ctx).First(&item, "id = ?", id).Error; err != nil {
+	if err := s.db.WithContext(ctx).First(&item, "uuid = ?", id).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, ErrScheduleNotFound
 		}
@@ -121,7 +121,7 @@ func (s *Service) Update(ctx context.Context, id string, input Input) (*model.Sc
 
 func (s *Service) SetActive(ctx context.Context, id string, active bool) error {
 	var item model.ScheduledTask
-	if err := s.db.WithContext(ctx).First(&item, "id = ?", id).Error; err != nil {
+	if err := s.db.WithContext(ctx).First(&item, "uuid = ?", id).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return ErrScheduleNotFound
 		}
@@ -197,7 +197,7 @@ func (s *Service) enqueueOne(ctx context.Context, due *model.ScheduledTask, now 
 	}
 	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		result := tx.Model(&model.ScheduledTask{}).
-			Where("id = ? AND is_active = ? AND next_run_at = ?", due.ID, true, due.NextRunAt).
+			Where("uuid = ? AND is_active = ? AND next_run_at = ?", due.ID, true, due.NextRunAt).
 			Updates(map[string]any{"next_run_at": nextRunAt, "last_run_at": scheduledAt, "updated_at": now})
 		if result.Error != nil {
 			return result.Error
@@ -206,6 +206,7 @@ func (s *Service) enqueueOne(ctx context.Context, due *model.ScheduledTask, now 
 			return nil
 		}
 		job, err := task.NewService(tx, s.maxAttempts).Create(ctx, task.CreateInput{
+			ProjectID:    due.ProjectID,
 			DepartmentID: due.DepartmentID,
 			Kind:         "scheduler.execute", Subject: "edo.task.scheduler.execute", Idempotent: true,
 			IdempotencyKey: "schedule:" + due.ID + ":" + scheduledAt.Format(time.RFC3339),
@@ -217,7 +218,7 @@ func (s *Service) enqueueOne(ctx context.Context, due *model.ScheduledTask, now 
 		if err != nil {
 			return err
 		}
-		return tx.Model(&model.ScheduledTask{}).Where("id = ?", due.ID).Update("last_job_id", job.ID).Error
+		return tx.Model(&model.ScheduledTask{}).Where("uuid = ?", due.ID).Update("last_job_id", job.ID).Error
 	})
 }
 

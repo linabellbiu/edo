@@ -89,7 +89,7 @@ func TestEnsureInitialAdminDoesNotModifyExistingUsers(t *testing.T) {
 		t.Fatal("已有账户的数据库不应补建默认管理员")
 	}
 	var stored model.User
-	if err := db.First(&stored, "id = ?", existing.ID).Error; err != nil {
+	if err := db.First(&stored, "uuid = ?", existing.ID).Error; err != nil {
 		t.Fatalf("读取已有用户失败: %v", err)
 	}
 	if stored.PasswordHash != existing.PasswordHash || stored.AuthVersion != existing.AuthVersion {
@@ -135,7 +135,7 @@ func TestSetDepartmentRequiresRepositoryCredentialHandover(t *testing.T) {
 	if err := service.SetDepartment(ctx, user.ID, "department-target"); !errors.Is(err, ErrUserCredentialUsed) {
 		t.Fatalf("仓库令牌尚未交接时仍允许调动部门: %v", err)
 	}
-	if err := db.Model(&model.GitRepository{}).Where("id = ?", repository.ID).
+	if err := db.Model(&model.GitRepository{}).Where("uuid = ?", repository.ID).
 		Updates(map[string]any{"credential_id": nil, "api_credential_id": nil}).Error; err != nil {
 		t.Fatalf("解除仓库令牌引用失败: %v", err)
 	}

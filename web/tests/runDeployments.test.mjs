@@ -1,3 +1,4 @@
+import {runFilterModule} from './pipelineRunTestHarness.mjs'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { test } from 'node:test'
@@ -26,7 +27,7 @@ function harness(t, records = [run('failed-run')]) {
   const client = { get(path, options) {
     requests.push(path)
     if (path.startsWith('/deployments?pipeline_run_id=')) return new Promise((resolve, reject) => pending.push({ path, options, resolve, reject }))
-    if (path === '/pipeline-runs?limit=200') return Promise.resolve({ data: { pipeline_runs: serverRuns } })
+    if (path === '/pipeline-runs?limit=200' || path === '/pipeline-runs') return Promise.resolve({ data: { pipeline_runs: serverRuns,total:serverRuns.length } })
     return Promise.resolve({ data: { applications: [...state.applications.value], pipeline_runs: serverRuns, deployments: [], deployment_plans: [], repositories: [], credentials: [], build_plans: [], image_registries: [], release_plans: [], workflow_templates: [] } })
   } }
   const modules = {
@@ -38,6 +39,7 @@ function harness(t, records = [run('failed-run')]) {
     '@/stores/auth': { useAuthStore: () => ({ canAny: permissions => permissions.some(permission => permission !== 'deployment.read' || allowed.value) }) },
     '@/api/client': { __esModule: true, default: client },
     '@/api/resources': { apiErrorMessage: () => '部署记录暂时无法读取' },
+    '@/utils/pipelineRunFilters': runFilterModule,
     '@/utils/deploymentInstances': instances,
     '@/utils/deliveryEvents': { subscribeDeliveryEvents: value => { subscription = value; return () => { subscription = undefined } } },
   }
@@ -51,6 +53,7 @@ function harness(t, records = [run('failed-run')]) {
   const scope = vue.effectScope()
   state = scope.run(() => module.exports.default.setup(props, { expose() {} }))
   state.runs.value = [...records]
+  state.lastRunQuery = state.runQueryKey.value
   state.applications.value = [{ id: 'api', name: '前后端验收', workflows: [] }]
   t.after(() => { destructors.forEach(callback => callback()); scope.stop(); timers.clear() })
   return {

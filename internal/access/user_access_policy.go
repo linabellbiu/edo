@@ -28,7 +28,7 @@ func validatedRolePermissionSet(tx *gorm.DB, roleIDs []string) (map[string]struc
 		return result, nil
 	}
 	var roleCount int64
-	if err := tx.Model(&model.Role{}).Where("id IN ?", roleIDs).Count(&roleCount).Error; err != nil {
+	if err := tx.Model(&model.Role{}).Where("uuid IN ?", roleIDs).Count(&roleCount).Error; err != nil {
 		return nil, fmt.Errorf("查询待分配角色失败: %w", err)
 	}
 	if roleCount != int64(len(roleIDs)) {
@@ -61,7 +61,7 @@ func validateAccessDelegation(
 		return nil
 	}
 	var storedActor model.User
-	if err := tx.First(&storedActor, "id = ?", actor.ID).Error; err != nil {
+	if err := tx.First(&storedActor, "uuid = ?", actor.ID).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return ErrAccessDelegationDenied
 		}
@@ -151,7 +151,7 @@ func (s *Service) syncUserAccessOrDisable(ctx context.Context, userID, operation
 	} else {
 		safeContext, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 		defer cancel()
-		result := s.db.WithContext(safeContext).Model(&model.User{}).Where("id = ?", userID).Updates(map[string]any{
+		result := s.db.WithContext(safeContext).Model(&model.User{}).Where("uuid = ?", userID).Updates(map[string]any{
 			"is_active": false, "auth_version": gorm.Expr("auth_version + ?", 1), "updated_at": time.Now().UTC(),
 		})
 		if result.Error != nil || result.RowsAffected != 1 {

@@ -35,7 +35,7 @@ func TestMonitorThresholdAlertRecoveryAndEndpointProtection(t *testing.T) {
 		t.Fatal("监控目标查询参数被 API 回显")
 	}
 	var stored model.MonitorRule
-	if err := db.First(&stored, "id = ?", rule.ID).Error; err != nil {
+	if err := db.First(&stored, "uuid = ?", rule.ID).Error; err != nil {
 		t.Fatalf("读取监控规则失败: %v", err)
 	}
 	if stored.EndpointCiphertext == endpoint || strings.Contains(stored.EndpointDisplay, "access_token") {
@@ -48,12 +48,12 @@ func TestMonitorThresholdAlertRecoveryAndEndpointProtection(t *testing.T) {
 			t.Fatalf("执行第 %d 次监控探针失败: %v", index, err)
 		}
 		if index == 1 {
-			if err := db.First(&stored, "id = ?", rule.ID).Error; err != nil || stored.Status != model.MonitorUnknown {
+			if err := db.First(&stored, "uuid = ?", rule.ID).Error; err != nil || stored.Status != model.MonitorUnknown {
 				t.Fatalf("首次失败不应立即告警: rule=%+v err=%v", stored, err)
 			}
 		}
 	}
-	if err := db.First(&stored, "id = ?", rule.ID).Error; err != nil {
+	if err := db.First(&stored, "uuid = ?", rule.ID).Error; err != nil {
 		t.Fatalf("读取最终监控状态失败: %v", err)
 	}
 	if stored.Status != model.MonitorHealthy || stored.ConsecutiveSuccesses != 2 {

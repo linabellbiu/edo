@@ -38,7 +38,7 @@ func TestApprovedRetryUsesResolvedSnapshot(t *testing.T) {
 		t.Fatal("预览不应创建运行")
 	}
 	var original model.BuildPlan
-	if err := db.Where("id = ?", workflowTasks(app.Workflow.Stages)[0].Config.BuildPlanID).First(&original).Error; err != nil {
+	if err := db.Where("uuid = ?", workflowTasks(app.Workflow.Stages)[0].Config.BuildPlanID).First(&original).Error; err != nil {
 		t.Fatal(err)
 	}
 	if err := db.Model(&original).Update("dockerfile_path", "Dockerfile.changed").Error; err != nil {

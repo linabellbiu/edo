@@ -293,7 +293,7 @@ func (s *Service) ProcessWebhookTask(ctx context.Context, payload json.RawMessag
 	}
 	now := time.Now().UTC()
 	result := s.db.WithContext(ctx).Model(&model.GitWebhookDelivery{}).
-		Where("id = ? AND repository_id = ? AND status = ?", input.DeliveryID, input.RepositoryID, model.WebhookReceived).
+		Where("uuid = ? AND repository_id = ? AND status = ?", input.DeliveryID, input.RepositoryID, model.WebhookReceived).
 		Updates(map[string]any{"status": model.WebhookProcessed, "processed_at": now})
 	if result.Error != nil {
 		return fmt.Errorf("更新 Webhook 处理状态失败: %w", result.Error)
@@ -302,7 +302,7 @@ func (s *Service) ProcessWebhookTask(ctx context.Context, payload json.RawMessag
 		return nil
 	}
 	var delivery model.GitWebhookDelivery
-	if err := s.db.WithContext(ctx).First(&delivery, "id = ? AND repository_id = ?", input.DeliveryID, input.RepositoryID).Error; err != nil {
+	if err := s.db.WithContext(ctx).First(&delivery, "uuid = ? AND repository_id = ?", input.DeliveryID, input.RepositoryID).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return ErrInvalidTaskPayload
 		}

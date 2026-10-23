@@ -103,7 +103,7 @@ func TestLongTaskRenewsBeforeEachAckDeadlineAndStopsAfterCompletion(t *testing.T
 		t.Fatalf("任务结束前确认已超时：gap=%v", gap)
 	}
 	var stored model.Job
-	if err := db.First(&stored, "id = ?", job.ID).Error; err != nil {
+	if err := db.First(&stored, "uuid = ?", job.ID).Error; err != nil {
 		t.Fatal(err)
 	}
 	if stored.Status != model.JobSucceeded || stored.Attempt != 1 || !message.acked {

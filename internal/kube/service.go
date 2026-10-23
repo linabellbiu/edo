@@ -103,7 +103,7 @@ func (s *Service) List(ctx context.Context) ([]model.KubernetesCluster, error) {
 
 func (s *Service) Find(ctx context.Context, id string) (*model.KubernetesCluster, error) {
 	var cluster model.KubernetesCluster
-	if err := s.db.WithContext(ctx).First(&cluster, "id = ?", id).Error; err != nil {
+	if err := s.db.WithContext(ctx).First(&cluster, "uuid = ?", id).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, ErrClusterNotFound
 		}
@@ -201,7 +201,7 @@ func (s *Service) Update(ctx context.Context, id string, input Input) (*model.Ku
 }
 
 func (s *Service) SetActive(ctx context.Context, id string, active bool) error {
-	result := s.db.WithContext(ctx).Model(&model.KubernetesCluster{}).Where("id = ?", id).
+	result := s.db.WithContext(ctx).Model(&model.KubernetesCluster{}).Where("uuid = ?", id).
 		Updates(map[string]any{"is_active": active, "updated_at": time.Now().UTC()})
 	if result.Error != nil {
 		return fmt.Errorf("修改 Kubernetes 集群状态失败: %w", result.Error)

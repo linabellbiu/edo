@@ -92,7 +92,7 @@ func TestStopPipelineWithRealDockerContainer(t *testing.T) {
 		}
 	}
 	var stored model.PipelineRun
-	if err := db.First(&stored, "id = ?", run.ID).Error; err != nil || stored.Status != model.PipelineRunCanceled {
+	if err := db.First(&stored, "uuid = ?", run.ID).Error; err != nil || stored.Status != model.PipelineRunCanceled {
 		t.Fatalf("运行没有停止: %+v %v", stored, err)
 	}
 	var logs []model.PipelineRunLog

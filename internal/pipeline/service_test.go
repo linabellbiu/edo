@@ -289,7 +289,7 @@ func TestWorkflowDraftRejectsDeploymentPlanTargetMismatch(t *testing.T) {
 	if err := db.Create(&dockerTarget).Error; err != nil {
 		t.Fatal(err)
 	}
-	if err := db.Model(&model.DeploymentPlan{}).Where("id = ?", plan.ID).
+	if err := db.Model(&model.DeploymentPlan{}).Where("uuid = ?", plan.ID).
 		Update("deployment_target_id", dockerTarget.ID).Error; err != nil {
 		t.Fatal(err)
 	}
@@ -671,7 +671,7 @@ func TestRepositoryEventTriggersEveryMatchingApplicationWorkflow(t *testing.T) {
 	}
 	var observations []model.ApplicationRepositoryObservation
 	if err := db.Where("application_repository_id IN (?)",
-		db.Model(&model.ApplicationRepository{}).Select("id").Where("application_id = ?", application.ID),
+		db.Model(&model.ApplicationRepository{}).Select("uuid").Where("application_id = ?", application.ID),
 	).Find(&observations).Error; err != nil {
 		t.Fatal(err)
 	}
@@ -860,7 +860,7 @@ func TestPublicWorkflowTemplateSyncsLinkedApplications(t *testing.T) {
 		t.Fatalf("启用方案的新版本没有同步到关联应用: workflow=%+v err=%v", stored, err)
 	}
 	var repositoryBoundApplication model.Application
-	if err := db.First(&repositoryBoundApplication, "id = ?", application.ID).Error; err != nil || repositoryBoundApplication.RepositoryID != repositoryID {
+	if err := db.First(&repositoryBoundApplication, "uuid = ?", application.ID).Error; err != nil || repositoryBoundApplication.RepositoryID != repositoryID {
 		t.Fatalf("方案版本同步不应改写应用代码仓库: application=%+v err=%v", repositoryBoundApplication, err)
 	}
 	updatedApplication, err := service.UpdateApplication(ctx, application.ID, ApplicationInput{
@@ -888,7 +888,7 @@ func TestPublicWorkflowTemplateSyncsLinkedApplications(t *testing.T) {
 		t.Fatalf("单独修改应用流水线后没有解除方案关联: workflow=%+v err=%v", custom, err)
 	}
 	var detached model.Application
-	if err := db.First(&detached, "id = ?", application.ID).Error; err != nil || detached.WorkflowTemplateID != "" {
+	if err := db.First(&detached, "uuid = ?", application.ID).Error; err != nil || detached.WorkflowTemplateID != "" {
 		t.Fatalf("应用仍然引用已经解除关联的流水线方案: application=%+v err=%v", detached, err)
 	}
 

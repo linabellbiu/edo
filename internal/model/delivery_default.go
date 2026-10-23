@@ -4,7 +4,8 @@ import "time"
 
 // DeliveryDefault 保存项目内各部署方式的新建预选，不改变既有应用配置。
 type DeliveryDefault struct {
-	ID                 string             `gorm:"type:varchar(36);primaryKey" json:"id"`
+	RowID              uint64             `gorm:"column:id;primaryKey;autoIncrement" json:"row_id"`
+	ID                 string             `gorm:"column:uuid;type:varchar(36);not null;uniqueIndex" json:"id"`
 	ProjectID          string             `gorm:"type:varchar(36);not null;uniqueIndex:ux_delivery_default,priority:1" json:"project_id"`
 	DepartmentID       string             `gorm:"type:varchar(36);not null;index" json:"department_id"`
 	Kind               DeploymentPlanKind `gorm:"type:varchar(16);not null;uniqueIndex:ux_delivery_default,priority:2" json:"kind"`

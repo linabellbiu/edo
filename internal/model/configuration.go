@@ -3,7 +3,8 @@ package model
 import "time"
 
 type Configuration struct {
-	ID               string          `gorm:"type:varchar(36);primaryKey"`
+	RowID            uint64          `gorm:"column:id;primaryKey;autoIncrement" json:"row_id"`
+	ID               string          `gorm:"column:uuid;type:varchar(36);not null;uniqueIndex"`
 	Namespace        string          `gorm:"type:varchar(64);not null;uniqueIndex:ux_configuration_key"`
 	Environment      EnvironmentType `gorm:"type:varchar(16);not null;uniqueIndex:ux_configuration_key;index"`
 	Key              string          `gorm:"type:varchar(128);not null;uniqueIndex:ux_configuration_key"`
@@ -21,7 +22,8 @@ type Configuration struct {
 func (Configuration) TableName() string { return "configurations" }
 
 type ConfigurationRevision struct {
-	ID string `gorm:"type:varchar(36);primaryKey"`
+	RowID uint64 `gorm:"column:id;primaryKey;autoIncrement" json:"row_id"`
+	ID    string `gorm:"column:uuid;type:varchar(36);not null;uniqueIndex"`
 
 	ConfigurationID  string          `gorm:"type:varchar(36);not null;uniqueIndex:ux_configuration_revision;index"`
 	Version          int             `gorm:"not null;uniqueIndex:ux_configuration_revision"`

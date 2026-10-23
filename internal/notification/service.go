@@ -145,7 +145,7 @@ func (s *Service) CreateChannel(ctx context.Context, actorID string, input Chann
 
 func (s *Service) UpdateChannel(ctx context.Context, id string, input ChannelInput) (*ChannelView, error) {
 	var channel model.NotificationChannel
-	if err := s.db.WithContext(ctx).First(&channel, "id = ?", id).Error; err != nil {
+	if err := s.db.WithContext(ctx).First(&channel, "uuid = ?", id).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, ErrChannelNotFound
 		}
@@ -172,7 +172,7 @@ func (s *Service) UpdateChannel(ctx context.Context, id string, input ChannelInp
 }
 
 func (s *Service) SetChannelActive(ctx context.Context, id string, active bool) error {
-	result := s.db.WithContext(ctx).Model(&model.NotificationChannel{}).Where("id = ?", id).
+	result := s.db.WithContext(ctx).Model(&model.NotificationChannel{}).Where("uuid = ?", id).
 		Updates(map[string]any{"is_active": active, "updated_at": time.Now().UTC()})
 	if result.Error != nil {
 		return fmt.Errorf("修改通知渠道状态失败: %w", result.Error)
@@ -188,7 +188,7 @@ func (s *Service) List(ctx context.Context, limit int) ([]model.Notification, er
 		limit = 50
 	}
 	var notifications []model.Notification
-	if err := s.db.WithContext(ctx).Order("created_at DESC").Limit(limit).Find(&notifications).Error; err != nil {
+	if err := s.db.WithContext(ctx).Order("id DESC").Limit(limit).Find(&notifications).Error; err != nil {
 		return nil, fmt.Errorf("查询通知记录失败: %w", err)
 	}
 	return notifications, nil
@@ -206,7 +206,7 @@ func (s *Service) Enqueue(ctx context.Context, input EnqueueInput) (*model.Notif
 		return nil, ErrInvalidNotification
 	}
 	var channel model.NotificationChannel
-	if err := s.db.WithContext(ctx).First(&channel, "id = ? AND is_active = ?", input.ChannelID, true).Error; err != nil {
+	if err := s.db.WithContext(ctx).First(&channel, "uuid = ? AND is_active = ?", input.ChannelID, true).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, ErrChannelNotFound
 		}
@@ -260,7 +260,7 @@ func (s *Service) Enqueue(ctx context.Context, input EnqueueInput) (*model.Notif
 
 func (s *Service) Dispatch(ctx context.Context, notificationID, jobID string) error {
 	var item model.Notification
-	if err := s.db.WithContext(ctx).First(&item, "id = ?", notificationID).Error; err != nil {
+	if err := s.db.WithContext(ctx).First(&item, "uuid = ?", notificationID).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return ErrNotificationNotFound
 		}
@@ -270,7 +270,7 @@ func (s *Service) Dispatch(ctx context.Context, notificationID, jobID string) er
 		return nil
 	}
 	var channel model.NotificationChannel
-	if err := s.db.WithContext(ctx).First(&channel, "id = ? AND is_active = ?", item.ChannelID, true).Error; err != nil {
+	if err := s.db.WithContext(ctx).First(&channel, "uuid = ? AND is_active = ?", item.ChannelID, true).Error; err != nil {
 		return s.failDispatch(ctx, &item, jobID, false, "通知渠道不可用", err)
 	}
 	endpoint, err := s.secrets.Decrypt(channel.EndpointCiphertext, channelEndpointAAD(channel.ID))
@@ -313,7 +313,7 @@ func (s *Service) Dispatch(ctx context.Context, notificationID, jobID string) er
 		return s.failDispatch(ctx, &item, jobID, retryable, "通知渠道拒绝了本次发送", fmt.Errorf("Webhook HTTP 状态码 %d", response.StatusCode))
 	}
 	now := time.Now().UTC()
-	if err := s.db.WithContext(ctx).Model(&model.Notification{}).Where("id = ?", item.ID).
+	if err := s.db.WithContext(ctx).Model(&model.Notification{}).Where("uuid = ?", item.ID).
 		Updates(map[string]any{
 			"status": model.NotificationSucceeded, "sent_at": now, "updated_at": now,
 			"error_message": "",
@@ -333,7 +333,7 @@ func (s *Service) failDispatch(
 ) error {
 	attempt, maxAttempts := item.Attempts+1, s.maxAttempts
 	var job model.Job
-	if err := s.db.WithContext(ctx).Select("attempt", "max_attempts").First(&job, "id = ?", jobID).Error; err == nil {
+	if err := s.db.WithContext(ctx).Select("attempt", "max_attempts").First(&job, "uuid = ?", jobID).Error; err == nil {
 		attempt, maxAttempts = job.Attempt, job.MaxAttempts
 	}
 	status := model.NotificationQueued
@@ -343,7 +343,7 @@ func (s *Service) failDispatch(
 	now := time.Now().UTC()
 	updateContext, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 	defer cancel()
-	if err := s.db.WithContext(updateContext).Model(&model.Notification{}).Where("id = ?", item.ID).
+	if err := s.db.WithContext(updateContext).Model(&model.Notification{}).Where("uuid = ?", item.ID).
 		Updates(map[string]any{
 			"status": status, "attempts": attempt, "error_message": publicMessage, "updated_at": now,
 		}).Error; err != nil {

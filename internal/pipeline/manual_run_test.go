@@ -287,7 +287,7 @@ func TestExecuteManualRunRejectsStaleCommit(t *testing.T) {
 	if !errors.Is(err, ErrManualCommitNotFound) {
 		t.Fatalf("远端已经变化时应拒绝执行: %v", err)
 	}
-	if err := db.First(run, "id = ?", run.ID).Error; err != nil {
+	if err := db.First(run, "uuid = ?", run.ID).Error; err != nil {
 		t.Fatal(err)
 	}
 	if run.Status != model.PipelineRunBlocked || run.CommitSHA != "" {
@@ -420,7 +420,7 @@ func TestPipelineRunKeepsExactSSHDeploymentPlanSnapshot(t *testing.T) {
 		model.DeploymentPlanExecutionDigest(stored.Kind, stored.Script, stored.TimeoutSeconds) != wantDigest {
 		t.Fatalf("SSH 部署方案没有按原始字节创建不可变快照: %+v", stored)
 	}
-	if err := db.Model(&model.DeploymentPlan{}).Where("id = ?", plan.ID).
+	if err := db.Model(&model.DeploymentPlan{}).Where("uuid = ?", plan.ID).
 		Updates(map[string]any{"script": "echo modified\n", "timeout_seconds": 30}).Error; err != nil {
 		t.Fatal(err)
 	}
@@ -462,14 +462,14 @@ func TestRetryFailedRunCreatesNewAuditedExecution(t *testing.T) {
 		t.Fatalf("重新执行没有提交新的真实任务: %+v", retried)
 	}
 	var original model.PipelineRun
-	if err := db.First(&original, "id = ?", failed.ID).Error; err != nil {
+	if err := db.First(&original, "uuid = ?", failed.ID).Error; err != nil {
 		t.Fatal(err)
 	}
 	if original.Status != model.PipelineRunFailed || original.ExecutionJobID != "" {
 		t.Fatalf("重新执行不应覆盖原失败记录: %+v", original)
 	}
 	var job model.Job
-	if err := db.First(&job, "id = ?", retried.ExecutionJobID).Error; err != nil {
+	if err := db.First(&job, "uuid = ?", retried.ExecutionJobID).Error; err != nil {
 		t.Fatal(err)
 	}
 	if job.Kind != "pipeline.build" || job.MaxAttempts != 4 || !job.IsIdempotent {
@@ -499,13 +499,13 @@ func TestRetryFailedRunCanUseArtifactBuiltByOriginalRun(t *testing.T) {
 	if _, err := service.RetryRunSelection(context.Background(), failed.ID, "operator", stored.ID); !errors.Is(err, ErrRetryArtifactInvalid) {
 		t.Fatalf("重试使用其他运行的制品未被拒绝: %v", err)
 	}
-	if err := db.Model(&model.BuildRun{}).Where("id = ?", stored.BuildRunID).Update("pipeline_run_id", failed.ID).Error; err != nil {
+	if err := db.Model(&model.BuildRun{}).Where("uuid = ?", stored.BuildRunID).Update("pipeline_run_id", failed.ID).Error; err != nil {
 		t.Fatal(err)
 	}
-	if err := db.Model(&model.Artifact{}).Where("id = ?", stored.ID).Update("pipeline_run_id", failed.ID).Error; err != nil {
+	if err := db.Model(&model.Artifact{}).Where("uuid = ?", stored.ID).Update("pipeline_run_id", failed.ID).Error; err != nil {
 		t.Fatal(err)
 	}
-	if err := db.Model(&model.PipelineRun{}).Where("id = ?", failed.ID).Update("artifact_id", stored.ID).Error; err != nil {
+	if err := db.Model(&model.PipelineRun{}).Where("uuid = ?", failed.ID).Update("artifact_id", stored.ID).Error; err != nil {
 		t.Fatal(err)
 	}
 	options, err := service.ListRetryRunOptions(context.Background(), failed.ID)
@@ -715,7 +715,7 @@ func stageWorkflowGraph(buildPlanID, deploymentPlanID string, events []string, b
 func assertPipelineBuildJob(t *testing.T, db *gorm.DB, jobID string) {
 	t.Helper()
 	var job model.Job
-	if err := db.First(&job, "id = ?", jobID).Error; err != nil {
+	if err := db.First(&job, "uuid = ?", jobID).Error; err != nil {
 		t.Fatal(err)
 	}
 	if job.Kind != "pipeline.build" || job.MaxAttempts != 4 || !job.IsIdempotent {

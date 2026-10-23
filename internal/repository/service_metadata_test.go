@@ -149,12 +149,12 @@ func TestServiceMetadataCacheStillChecksProjectActiveStateAndCredentials(t *test
 				}
 			case "失效凭据引用":
 				want = credential.ErrCredentialNotFound
-				if err := db.Model(&model.GitRepository{}).Where("id = ?", repository.ID).Updates(map[string]any{"auth_type": model.GitAuthToken, "credential_id": "deleted-credential"}).Error; err != nil {
+				if err := db.Model(&model.GitRepository{}).Where("uuid = ?", repository.ID).Updates(map[string]any{"auth_type": model.GitAuthToken, "credential_id": "deleted-credential"}).Error; err != nil {
 					t.Fatal(err)
 				}
 			case "损坏凭据密文":
 				want = nil
-				if err := db.Model(&model.GitRepository{}).Where("id = ?", repository.ID).Updates(map[string]any{"auth_type": model.GitAuthToken, "credential_ciphertext": "invalid-ciphertext"}).Error; err != nil {
+				if err := db.Model(&model.GitRepository{}).Where("uuid = ?", repository.ID).Updates(map[string]any{"auth_type": model.GitAuthToken, "credential_ciphertext": "invalid-ciphertext"}).Error; err != nil {
 					t.Fatal(err)
 				}
 			}

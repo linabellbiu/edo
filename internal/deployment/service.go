@@ -199,7 +199,7 @@ func (s *Service) CreateTarget(ctx context.Context, actorID string, input Target
 
 func (s *Service) UpdateTarget(ctx context.Context, id string, input TargetInput) (*model.DeploymentTarget, error) {
 	var existing model.DeploymentTarget
-	if err := s.db.WithContext(ctx).First(&existing, "id = ?", id).Error; err != nil {
+	if err := s.db.WithContext(ctx).First(&existing, "uuid = ?", id).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, ErrTargetNotFound
 		}
@@ -233,7 +233,7 @@ func (s *Service) UpdateTarget(ctx context.Context, id string, input TargetInput
 }
 
 func (s *Service) SetTargetActive(ctx context.Context, id string, active bool) error {
-	result := s.db.WithContext(ctx).Model(&model.DeploymentTarget{}).Where("id = ?", id).
+	result := s.db.WithContext(ctx).Model(&model.DeploymentTarget{}).Where("uuid = ?", id).
 		Updates(map[string]any{"is_active": active, "updated_at": time.Now().UTC()})
 	if result.Error != nil {
 		return fmt.Errorf("修改发布目标状态失败: %w", result.Error)
@@ -265,7 +265,7 @@ func (s *Service) list(ctx context.Context, pipelineRunID string, limit int) ([]
 	if pipelineRunID != "" {
 		query = query.Where("pipeline_run_id = ?", pipelineRunID)
 	}
-	if err := query.Order("created_at DESC").Order("id DESC").Limit(limit).Find(&records).Error; err != nil {
+	if err := query.Order("id DESC").Limit(limit).Find(&records).Error; err != nil {
 		return nil, fmt.Errorf("查询发布记录失败: %w", err)
 	}
 	return records, nil
@@ -529,7 +529,7 @@ func (s *Service) loadPipelineReleaseResult(
 		loadContext, cancel = context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 	}
 	defer cancel()
-	if err := s.db.WithContext(loadContext).First(record, "id = ?", record.ID).Error; err != nil {
+	if err := s.db.WithContext(loadContext).First(record, "uuid = ?", record.ID).Error; err != nil {
 		if executionErr != nil {
 			s.logger.Error("读取流水线发布失败结果失败", "operation", "pipeline_release_result_load",
 				"deployment_id", record.ID, "err", err, "cause", executionErr)
@@ -754,7 +754,7 @@ func (s *Service) createRollbackAttempt(
 		// 在读取最近尝试之前先用不改变值的 UPDATE 获取写锁。PostgreSQL/MySQL
 		// 只锁定来源行；SQLite 没有行锁，但提前取得写锁可避免多个读事务随后
 		// 同时升级为写事务。幂等键唯一索引仍是最后一道并发保护。
-		if err := tx.Model(&model.DeploymentRecord{}).Where("id = ?", source.ID).
+		if err := tx.Model(&model.DeploymentRecord{}).Where("uuid = ?", source.ID).
 			UpdateColumn("updated_at", gorm.Expr("updated_at")).Error; err != nil {
 			return fmt.Errorf("锁定回滚来源发布记录失败: %w", err)
 		}
@@ -782,6 +782,7 @@ func (s *Service) createRollbackAttempt(
 		}
 		record := *prototype
 		record.ID = uuid.NewString()
+		record.RowID = 0
 		record.IdempotencyKey = &idempotencyKey
 		record.RollbackSourceID = source.ID
 		record.RollbackAttempt = attempt
@@ -839,7 +840,7 @@ func findLatestRollbackAttempt(tx *gorm.DB, sourceID, legacyKey string) (*model.
 	}
 	if legacy.RollbackSourceID == "" && legacy.RollbackAttempt == 0 {
 		result := tx.Model(&model.DeploymentRecord{}).
-			Where("id = ? AND rollback_source_id = ? AND rollback_attempt = ?", legacy.ID, "", 0).
+			Where("uuid = ? AND rollback_source_id = ? AND rollback_attempt = ?", legacy.ID, "", 0).
 			Updates(map[string]any{"rollback_source_id": sourceID, "rollback_attempt": 1})
 		if result.Error != nil {
 			return nil, fmt.Errorf("补齐历史回滚任务关联失败: %w", result.Error)
@@ -876,7 +877,7 @@ func (s *Service) Run(ctx context.Context, deploymentID string) error {
 
 func (s *Service) run(ctx context.Context, deploymentID, expectedImageID string, command *commandExecution) error {
 	var record model.DeploymentRecord
-	if err := s.db.WithContext(ctx).First(&record, "id = ?", deploymentID).Error; err != nil {
+	if err := s.db.WithContext(ctx).First(&record, "uuid = ?", deploymentID).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return ErrDeploymentNotFound
 		}
@@ -900,14 +901,14 @@ func (s *Service) run(ctx context.Context, deploymentID, expectedImageID string,
 
 	now := time.Now().UTC()
 	result := s.db.WithContext(ctx).Model(&model.DeploymentRecord{}).
-		Where("id = ? AND status = ?", deploymentID, model.DeploymentQueued).
+		Where("uuid = ? AND status = ?", deploymentID, model.DeploymentQueued).
 		Updates(map[string]any{"status": model.DeploymentRunning, "started_at": now, "updated_at": now})
 	if result.Error != nil {
 		return fmt.Errorf("领取发布任务失败: %w", result.Error)
 	}
 	if result.RowsAffected != 1 {
 		var existing model.DeploymentRecord
-		if err := s.db.WithContext(ctx).First(&existing, "id = ?", deploymentID).Error; err != nil {
+		if err := s.db.WithContext(ctx).First(&existing, "uuid = ?", deploymentID).Error; err != nil {
 			return ErrDeploymentNotFound
 		}
 		if existing.Status == model.DeploymentSucceeded {
@@ -916,7 +917,7 @@ func (s *Service) run(ctx context.Context, deploymentID, expectedImageID string,
 		return ErrInvalidDeploymentState
 	}
 
-	if err := s.db.WithContext(ctx).First(&record, "id = ?", deploymentID).Error; err != nil {
+	if err := s.db.WithContext(ctx).First(&record, "uuid = ?", deploymentID).Error; err != nil {
 		return s.markFailed(ctx, deploymentID, "deployment_record_missing", "发布记录读取失败", err, "", nil)
 	}
 	expectedImageID = strings.TrimSpace(expectedImageID)
@@ -1053,7 +1054,7 @@ func (s *Service) run(ctx context.Context, deploymentID, expectedImageID string,
 		previousImageID = ""
 	}
 	finishedAt := time.Now().UTC()
-	if err := s.db.WithContext(ctx).Model(&model.DeploymentRecord{}).Where("id = ?", deploymentID).
+	if err := s.db.WithContext(ctx).Model(&model.DeploymentRecord{}).Where("uuid = ?", deploymentID).
 		Updates(map[string]any{
 			"status": model.DeploymentSucceeded, "previous_image": previousImage, "previous_image_id": previousImageID,
 			"finished_at": finishedAt, "updated_at": finishedAt,
@@ -1307,7 +1308,7 @@ func (s *Service) enqueue(ctx context.Context, tx *gorm.DB, record *model.Deploy
 
 func (s *Service) findTarget(ctx context.Context, id string) (*model.DeploymentTarget, error) {
 	var target model.DeploymentTarget
-	if err := s.db.WithContext(ctx).First(&target, "id = ? AND is_active = ?", id, true).Error; err != nil {
+	if err := s.db.WithContext(ctx).First(&target, "uuid = ? AND is_active = ?", id, true).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, ErrTargetNotFound
 		}
@@ -1340,7 +1341,7 @@ func (s *Service) ReconcileEnvironmentTargets(ctx context.Context, tx *gorm.DB, 
 
 	var targets []model.DeploymentTarget
 	if err := service.db.WithContext(ctx).
-		Where("environment_id = ? AND id IN ?", environmentID, targetIDs).
+		Where("environment_id = ? AND uuid IN ?", environmentID, targetIDs).
 		Order("id ASC").
 		Find(&targets).Error; err != nil {
 		service.logger.Error("查询环境关联部署目标失败", "operation", "deployment_target_reconcile", "environment_id", environmentID, "err", err)
@@ -1448,7 +1449,7 @@ func (s *Service) resolveEnvironmentTarget(
 	runtimeID string,
 ) (model.Host, model.HostCapability, error) {
 	var environment model.Environment
-	if err := s.db.WithContext(ctx).First(&environment, "id = ? AND is_active = ?", environmentID, true).Error; err != nil {
+	if err := s.db.WithContext(ctx).First(&environment, "uuid = ? AND is_active = ?", environmentID, true).Error; err != nil {
 		s.logger.Warn("解析环境执行主机失败", "operation", "deployment_target_resolve", "environment_id", environmentID, "platform", platform, "err", err)
 		return model.Host{}, model.HostCapability{}, ErrInvalidTarget
 	}
@@ -1478,7 +1479,7 @@ func (s *Service) resolveEnvironmentTarget(
 		return model.Host{}, model.HostCapability{}, ErrEnvironmentTargetUnavailable
 	}
 	var hosts []model.Host
-	if err := s.db.WithContext(ctx).Where("id IN ? AND is_active = ?", hostIDs, true).Order("id ASC").Find(&hosts).Error; err != nil {
+	if err := s.db.WithContext(ctx).Where("uuid IN ? AND is_active = ?", hostIDs, true).Order("id ASC").Find(&hosts).Error; err != nil {
 		s.logger.Error("查询环境可用主机失败", "operation", "deployment_target_resolve", "environment_id", environmentID, "platform", platform, "err", err)
 		return model.Host{}, model.HostCapability{}, fmt.Errorf("查询环境执行主机失败: %w", err)
 	}
@@ -1597,7 +1598,7 @@ func (s *Service) markFailed(ctx context.Context, id, code, message string, caus
 	now := time.Now().UTC()
 	updateContext, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 	defer cancel()
-	if err := s.db.WithContext(updateContext).Model(&model.DeploymentRecord{}).Where("id = ?", id).
+	if err := s.db.WithContext(updateContext).Model(&model.DeploymentRecord{}).Where("uuid = ?", id).
 		Updates(map[string]any{
 			"status": model.DeploymentFailed, "previous_image": previousImage,
 			"error_code": code, "error_message": message,

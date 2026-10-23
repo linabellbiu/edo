@@ -37,7 +37,7 @@ func TestServiceUploadCreatesBuildRunAndDownloadableArtifact(t *testing.T) {
 		t.Fatalf("上传制品登记结果错误: %+v", item)
 	}
 	var build model.BuildRun
-	if err := db.First(&build, "id = ?", item.BuildRunID).Error; err != nil {
+	if err := db.First(&build, "uuid = ?", item.BuildRunID).Error; err != nil {
 		t.Fatalf("查询上传构建记录失败: %v", err)
 	}
 	if build.ProducerKind != model.BuildRunProducerUpload || build.Status != model.BuildRunStatusSucceeded ||
@@ -94,7 +94,7 @@ func TestServiceUploadEnforcesLimitAndActiveApplication(t *testing.T) {
 	if _, err := service.Upload(context.Background(), application.ID, "user-1", "large.bin", "", strings.NewReader("12345")); !errors.Is(err, ErrTooLarge) {
 		t.Fatalf("超限上传未被拒绝: %v", err)
 	}
-	if err := db.Model(&model.Application{}).Where("id = ?", application.ID).Update("is_active", false).Error; err != nil {
+	if err := db.Model(&model.Application{}).Where("uuid = ?", application.ID).Update("is_active", false).Error; err != nil {
 		t.Fatalf("停用测试应用失败: %v", err)
 	}
 	if _, err := service.Upload(context.Background(), application.ID, "user-1", "small.bin", "", strings.NewReader("1234")); !errors.Is(err, ErrApplicationNotFound) {
@@ -147,6 +147,7 @@ func TestServiceArchivesDirectoriesDeterministicallyAndIdempotently(t *testing.T
 	if err := db.First(&storedBuild).Error; err != nil {
 		t.Fatalf("读取节点构建记录失败: %v", err)
 	}
+	storedBuild.RowID = 0
 	storedBuild.ID = "duplicate-build-run"
 	if err := db.Create(&storedBuild).Error; !errors.Is(err, gorm.ErrDuplicatedKey) {
 		t.Fatalf("数据库未阻止同一流水线节点重复构建: %v", err)

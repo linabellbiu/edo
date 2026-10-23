@@ -125,7 +125,7 @@ func (s *Service) ListProviderAccounts(ctx context.Context) ([]model.DNSProvider
 
 func (s *Service) FindProviderAccount(ctx context.Context, id string) (*model.DNSProviderAccount, error) {
 	var account model.DNSProviderAccount
-	if err := s.db.WithContext(ctx).First(&account, "id = ?", id).Error; err != nil {
+	if err := s.db.WithContext(ctx).First(&account, "uuid = ?", id).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, ErrProviderAccountMissing
 		}
@@ -203,7 +203,7 @@ func (s *Service) UpdateProviderAccount(ctx context.Context, id string, input Pr
 }
 
 func (s *Service) SetProviderAccountActive(ctx context.Context, id string, active bool) error {
-	result := s.db.WithContext(ctx).Model(&model.DNSProviderAccount{}).Where("id = ?", id).
+	result := s.db.WithContext(ctx).Model(&model.DNSProviderAccount{}).Where("uuid = ?", id).
 		Updates(map[string]any{"is_active": active, "updated_at": time.Now().UTC()})
 	if result.Error != nil {
 		return fmt.Errorf("修改 DNS 厂商账号状态失败: %w", result.Error)
@@ -217,7 +217,7 @@ func (s *Service) SetProviderAccountActive(ctx context.Context, id string, activ
 func (s *Service) DeleteProviderAccount(ctx context.Context, id string) error {
 	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var account model.DNSProviderAccount
-		if err := tx.First(&account, "id = ?", id).Error; err != nil {
+		if err := tx.First(&account, "uuid = ?", id).Error; err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
 				return ErrProviderAccountMissing
 			}
@@ -263,7 +263,7 @@ func (s *Service) ListDomains(ctx context.Context) ([]model.DNSDomain, error) {
 
 func (s *Service) FindDomain(ctx context.Context, id string) (*model.DNSDomain, error) {
 	var domain model.DNSDomain
-	if err := s.db.WithContext(ctx).Preload("Account").First(&domain, "dns_domains.id = ?", id).Error; err != nil {
+	if err := s.db.WithContext(ctx).Preload("Account").First(&domain, "dns_domains.uuid = ?", id).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, ErrDomainNotFound
 		}
@@ -328,7 +328,7 @@ func (s *Service) UpdateDomain(ctx context.Context, id string, input DomainInput
 }
 
 func (s *Service) SetDomainActive(ctx context.Context, id string, active bool) error {
-	result := s.db.WithContext(ctx).Model(&model.DNSDomain{}).Where("id = ?", id).
+	result := s.db.WithContext(ctx).Model(&model.DNSDomain{}).Where("uuid = ?", id).
 		Updates(map[string]any{"is_active": active, "updated_at": time.Now().UTC()})
 	if result.Error != nil {
 		return fmt.Errorf("修改域名状态失败: %w", result.Error)
@@ -340,7 +340,7 @@ func (s *Service) SetDomainActive(ctx context.Context, id string, active bool) e
 }
 
 func (s *Service) DeleteDomain(ctx context.Context, id string) error {
-	result := s.db.WithContext(ctx).Delete(&model.DNSDomain{}, "id = ?", id)
+	result := s.db.WithContext(ctx).Delete(&model.DNSDomain{}, "uuid = ?", id)
 	if result.Error != nil {
 		return fmt.Errorf("删除域名失败: %w", result.Error)
 	}

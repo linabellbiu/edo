@@ -57,7 +57,7 @@ func TestWorkerCompletesTaskAndAcknowledges(t *testing.T) {
 	worker.process(context.Background(), message)
 
 	var stored model.Job
-	if err := db.First(&stored, "id = ?", job.ID).Error; err != nil {
+	if err := db.First(&stored, "uuid = ?", job.ID).Error; err != nil {
 		t.Fatalf("读取任务失败: %v", err)
 	}
 	if stored.Status != model.JobSucceeded || stored.Attempt != 1 || !message.acked {
@@ -86,7 +86,7 @@ func TestWorkerRetriesThenWritesDeadLetter(t *testing.T) {
 	second := &fakeQueueMessage{data: first.data, subject: first.subject, deliveries: 2}
 	worker.process(context.Background(), second)
 	var stored model.Job
-	if err := db.First(&stored, "id = ?", job.ID).Error; err != nil {
+	if err := db.First(&stored, "uuid = ?", job.ID).Error; err != nil {
 		t.Fatalf("读取失败任务失败: %v", err)
 	}
 	if stored.Status != model.JobFailed || stored.Attempt != 2 || !second.terminated {
@@ -173,25 +173,25 @@ func TestAttemptsExhaustedConvergesPipelineAndDeploymentInSameFailure(t *testing
 	message := &fakeQueueMessage{data: event.Payload, subject: job.Subject, deliveries: 2}
 	newTestWorker(db, registry).process(context.Background(), message)
 
-	if err := db.First(job, "id = ?", job.ID).Error; err != nil {
+	if err := db.First(job, "uuid = ?", job.ID).Error; err != nil {
 		t.Fatal(err)
 	}
 	if job.Status != model.JobFailed || !message.terminated {
 		t.Fatalf("耗尽执行次数后 Job 未终止: job=%+v terminated=%v", job, message.terminated)
 	}
-	if err := db.First(&run, "id = ?", run.ID).Error; err != nil {
+	if err := db.First(&run, "uuid = ?", run.ID).Error; err != nil {
 		t.Fatal(err)
 	}
 	if run.Status != model.PipelineRunFailed || run.Stage != "failed" || run.Message != "部署执行中断，目标状态需人工确认" {
 		t.Fatalf("中断的部署 Job 没有收敛流水线: %+v", run)
 	}
-	if err := db.First(&component, "id = ?", component.ID).Error; err != nil {
+	if err := db.First(&component, "uuid = ?", component.ID).Error; err != nil {
 		t.Fatal(err)
 	}
 	if component.Status != model.PipelineRunRepositoryFailed {
 		t.Fatalf("中断的部署 Job 没有收敛仓库状态: %+v", component)
 	}
-	if err := db.First(&record, "id = ?", record.ID).Error; err != nil {
+	if err := db.First(&record, "uuid = ?", record.ID).Error; err != nil {
 		t.Fatal(err)
 	}
 	if record.Status != model.DeploymentFailed || record.ErrorCode != "pipeline_task_interrupted" ||
@@ -253,7 +253,7 @@ func TestAttemptsExhaustedConvergesNonIdempotentBuildTask(t *testing.T) {
 		t.Fatal(err)
 	}
 	leaseExpiresAt := time.Now().UTC().Add(30 * time.Second)
-	if err := db.Model(&model.Job{}).Where("id = ?", job.ID).Updates(map[string]any{
+	if err := db.Model(&model.Job{}).Where("uuid = ?", job.ID).Updates(map[string]any{
 		"status": model.JobRunning, "attempt": 1, "lease_owner": "dead-worker", "lease_expires_at": leaseExpiresAt,
 	}).Error; err != nil {
 		t.Fatal(err)
@@ -265,18 +265,18 @@ func TestAttemptsExhaustedConvergesNonIdempotentBuildTask(t *testing.T) {
 		t.Fatalf("旧进程租约未过期时不应短间隔耗尽投递次数: naked=%v delay=%v", busyDelivery.naked, busyDelivery.delay)
 	}
 	expired := time.Now().UTC().Add(-time.Second)
-	if err := db.Model(&model.Job{}).Where("id = ?", job.ID).Update("lease_expires_at", expired).Error; err != nil {
+	if err := db.Model(&model.Job{}).Where("uuid = ?", job.ID).Update("lease_expires_at", expired).Error; err != nil {
 		t.Fatal(err)
 	}
 	terminalDelivery := &fakeQueueMessage{data: event.Payload, subject: job.Subject, deliveries: 3}
 	taskWorker.process(context.Background(), terminalDelivery)
-	if err := db.First(&run, "id = ?", run.ID).Error; err != nil {
+	if err := db.First(&run, "uuid = ?", run.ID).Error; err != nil {
 		t.Fatal(err)
 	}
 	if run.Status != model.PipelineRunFailed || run.Stage != "failed" || run.Message != "任务执行中断，请重新执行流水线" {
 		t.Fatalf("耗尽执行次数后 Shell 流水线仍悬挂: %+v", run)
 	}
-	if err := db.First(&component, "id = ?", component.ID).Error; err != nil {
+	if err := db.First(&component, "uuid = ?", component.ID).Error; err != nil {
 		t.Fatal(err)
 	}
 	if component.Status != model.PipelineRunRepositoryFailed || !terminalDelivery.terminated {

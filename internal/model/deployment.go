@@ -20,7 +20,8 @@ const (
 )
 
 type DeploymentTarget struct {
-	ID               string             `gorm:"type:varchar(36);primaryKey" json:"id"`
+	RowID            uint64             `gorm:"column:id;primaryKey;autoIncrement" json:"row_id"`
+	ID               string             `gorm:"column:uuid;type:varchar(36);not null;uniqueIndex" json:"id"`
 	Name             string             `gorm:"type:varchar(128);not null;uniqueIndex:ux_deployment_targets_department_name,priority:2;uniqueIndex:ux_deployment_targets_project_name,priority:2" json:"name"`
 	Description      string             `gorm:"type:varchar(500);not null;default:''" json:"description"`
 	Platform         DeploymentPlatform `gorm:"type:varchar(16);not null;index" json:"platform"`
@@ -61,7 +62,8 @@ const (
 )
 
 type DeploymentRecord struct {
-	ID                 string                `gorm:"type:varchar(36);primaryKey" json:"id"`
+	RowID              uint64                `gorm:"column:id;primaryKey;autoIncrement" json:"row_id"`
+	ID                 string                `gorm:"column:uuid;type:varchar(36);not null;uniqueIndex" json:"id"`
 	DepartmentID       string                `gorm:"type:varchar(36);not null;default:'00000000-0000-0000-0000-000000000001';index" json:"department_id"`
 	ProjectID          string                `gorm:"type:varchar(36);not null;default:'';index" json:"project_id"`
 	IdempotencyKey     *string               `gorm:"type:varchar(64);uniqueIndex:idx_deployment_records_idempotency_key" json:"-"`
@@ -121,7 +123,8 @@ func (DeploymentRecord) TableName() string { return "deployment_records" }
 // DeploymentInstanceControl 保存某个应用在一个部署方案及目标组合下的 Shell 运行控制命令。
 // 命令按实例保存，不修改应用配置或历史发布记录。
 type DeploymentInstanceControl struct {
-	ID               string    `gorm:"type:varchar(36);primaryKey" json:"id"`
+	RowID            uint64    `gorm:"column:id;primaryKey;autoIncrement" json:"row_id"`
+	ID               string    `gorm:"column:uuid;type:varchar(36);not null;uniqueIndex" json:"id"`
 	ApplicationID    string    `gorm:"type:varchar(36);not null;index;uniqueIndex:idx_deployment_instance_control,priority:1" json:"application_id"`
 	DeploymentPlanID string    `gorm:"type:varchar(36);not null;index;uniqueIndex:idx_deployment_instance_control,priority:2" json:"deployment_plan_id"`
 	TargetID         string    `gorm:"type:varchar(36);not null;index;uniqueIndex:idx_deployment_instance_control,priority:3" json:"target_id"`

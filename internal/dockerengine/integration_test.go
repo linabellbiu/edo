@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -350,11 +351,47 @@ func TestDockerBuildCacheAcrossIsolatedContexts(t *testing.T) {
 	if err != nil {
 		t.Fatalf("第二个隔离工作区构建失败: %v\n%s", err, secondOutput.String())
 	}
-	if firstID != secondID {
-		t.Fatalf("内容相同但目录不同的构建结果不一致: first=%s second=%s", firstID, secondID)
+	firstInspect, err := apiClient.ImageInspect(ctx, images[0])
+	if err != nil {
+		t.Fatalf("读取首次构建镜像失败: %v", err)
 	}
-	if !strings.Contains(secondOutput.String(), "CACHED") || strings.Contains(secondOutput.String(), "load remote build context") {
-		t.Fatalf("不同 Tag/Commit 目录没有复用本地 BuildKit 缓存:\n%s", secondOutput.String())
+	secondInspect, err := apiClient.ImageInspect(ctx, images[1])
+	if err != nil {
+		t.Fatalf("读取第二次构建镜像失败: %v", err)
+	}
+	if firstInspect.ID != firstID || secondInspect.ID != secondID {
+		t.Fatal("构建返回的镜像身份与对应隔离标签不一致")
+	}
+	// 构建证明包含每次构建的信息，可改变 OCI 索引 ID；业务配置和文件系统层才应一致。
+	if !reflect.DeepEqual(firstInspect.RootFS, secondInspect.RootFS) || !reflect.DeepEqual(firstInspect.Config, secondInspect.Config) ||
+		firstInspect.Os != secondInspect.Os || firstInspect.Architecture != secondInspect.Architecture {
+		t.Fatalf("相同内容的隔离构建改变了业务镜像配置或文件系统层: first=%s second=%s", firstID, secondID)
+	}
+	lines := strings.Split(secondOutput.String(), "\n")
+	for _, step := range []string{"COPY fixture.txt /fixture.txt", "RUN sha256sum /fixture.txt > /fixture.sha256"} {
+		stepID := ""
+		for _, line := range lines {
+			line = strings.TrimSpace(line)
+			if strings.HasPrefix(line, "#") && strings.HasSuffix(line, "] "+step) {
+				stepID, _, _ = strings.Cut(line, " ")
+				break
+			}
+		}
+		cached := false
+		if stepID != "" {
+			for _, line := range lines {
+				if strings.TrimSpace(line) == stepID+" CACHED" {
+					cached = true
+					break
+				}
+			}
+		}
+		if !cached {
+			t.Fatalf("隔离工作区的构建步骤没有复用缓存: step=%s\n%s", step, secondOutput.String())
+		}
+	}
+	if strings.Contains(secondOutput.String(), "load remote build context") {
+		t.Fatalf("本地隔离工作区意外使用远程构建上下文:\n%s", secondOutput.String())
 	}
 }
 

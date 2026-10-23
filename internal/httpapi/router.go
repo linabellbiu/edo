@@ -414,6 +414,7 @@ func NewRouter(deps Dependencies) *gin.Engine {
 
 	taskAPI := taskHandler{service: deps.Tasks, logger: deps.Logger}
 	protected.GET("/tasks", requirePermission(deps.Access, deps.Logger, access.PermissionTaskRead), taskAPI.list)
+	protected.GET("/tasks/:id", requirePermission(deps.Access, deps.Logger, access.PermissionTaskRead), taskAPI.get)
 	protected.POST("/tasks/:id/cancel", auditAction(deps.Audits, deps.Logger, "task.cancel", "task"), requirePermission(deps.Access, deps.Logger, access.PermissionTaskExecute), taskAPI.cancel)
 	protected.POST("/tasks/:id/retry", auditAction(deps.Audits, deps.Logger, "task.retry", "task"), requirePermission(deps.Access, deps.Logger, access.PermissionTaskExecute), taskAPI.retry)
 	webIndex := installWebUI(router, deps.WebRoot, deps.Logger)

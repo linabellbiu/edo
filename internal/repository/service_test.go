@@ -40,7 +40,7 @@ func TestRepositorySecretsAreEncryptedAndURLsAreValidated(t *testing.T) {
 		t.Fatal("代码仓库密钥未加密或未生成")
 	}
 	var stored model.GitRepository
-	if err := db.First(&stored, "id = ?", repo.ID).Error; err != nil {
+	if err := db.First(&stored, "uuid = ?", repo.ID).Error; err != nil {
 		t.Fatalf("读取代码仓库失败: %v", err)
 	}
 	if stored.CredentialCiphertext == token || stored.WebhookSecretCiphertext == webhookSecret {
@@ -404,7 +404,7 @@ func TestWebhookProvidersSignatureAndDeduplication(t *testing.T) {
 				t.Fatalf("Webhook 去重失败: result=%+v err=%v", duplicate, err)
 			}
 			var jobCount int64
-			if err := db.Model(&model.Job{}).Where("id = ?", result.Delivery.JobID).Count(&jobCount).Error; err != nil || jobCount != 1 {
+			if err := db.Model(&model.Job{}).Where("uuid = ?", result.Delivery.JobID).Count(&jobCount).Error; err != nil || jobCount != 1 {
 				t.Fatalf("Webhook 任务数量错误: count=%d err=%v", jobCount, err)
 			}
 
@@ -509,7 +509,7 @@ func TestWebhookProvidersNormalizePullRequestHeadRefs(t *testing.T) {
 				t.Fatalf("%s PR Ref 归一化错误: %+v", tt.provider, result.Delivery)
 			}
 			var job model.Job
-			if err := db.First(&job, "id = ?", result.Delivery.JobID).Error; err != nil {
+			if err := db.First(&job, "uuid = ?", result.Delivery.JobID).Error; err != nil {
 				t.Fatalf("读取 Webhook 任务失败: %v", err)
 			}
 			var payload WebhookTaskPayload
