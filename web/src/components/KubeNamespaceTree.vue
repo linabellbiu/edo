@@ -7,7 +7,8 @@ import type { KubeCluster } from '@/api/kubernetes'
 const props = defineProps<{ clusters: KubeCluster[]; cluster: string; namespaces: string[]; selected: string[]; namespaced?: boolean; loading?: boolean; error?: string; disabled?: boolean }>()
 const emit = defineEmits<{ cluster: [id: string, all?: boolean]; selection: [names: string[]]; retry: [] }>()
 const { t } = useI18n()
-const search = ref(''), expanded = ref('')
+const search = ref(''), expanded = ref(''),mobileOpen=ref(false)
+const currentCluster=computed(()=>props.clusters.find(item=>item.id===props.cluster))
 const namespaceEnabled = computed(() => props.namespaced !== false)
 watch(() => props.cluster, id => { expanded.value = id }, { immediate: true })
 watch(namespaceEnabled, () => { search.value = '' })
@@ -37,7 +38,7 @@ function toggleNamespace(name: string, checked: boolean) {
 
 <template>
   <aside class="kube-namespace-tree" :aria-label="t(namespaceEnabled?'k8s.clusterNamespace':'k8s.cluster')">
-    <h3>{{ t(namespaceEnabled?'k8s.clusterNamespace':'k8s.cluster') }}</h3>
+    <div class="scope-heading"><h3>{{ t(namespaceEnabled?'k8s.clusterNamespace':'k8s.cluster') }}</h3><button class="scope-toggle" :aria-expanded="mobileOpen" aria-controls="kube-scope-options" :disabled="disabled" @click="mobileOpen=!mobileOpen"><span>{{ currentCluster?.name||t('k8s.selectCluster') }}<small v-if="namespaceEnabled"> · {{ t(all?'k8s.allNamespaces':'k8s.namespaceSelected',{count:selected.length}) }}</small></span><ChevronDown :size="14" :class="{expanded:mobileOpen}" /></button></div><div id="kube-scope-options" class="scope-options" :class="{'is-open':mobileOpen}">
     <a-input v-model:value="search" allow-clear :placeholder="t(namespaceEnabled?'k8s.namespaceSearch':'k8s.clusterSearch')" :aria-label="t(namespaceEnabled?'k8s.namespaceSearch':'k8s.clusterSearch')"><template #prefix><Search :size="14" /></template></a-input>
     <div class="namespace-tree-scroll">
       <section v-for="item in visibleClusters" :key="item.id" class="namespace-tree-branch" :class="{active:item.id===cluster}">
@@ -59,6 +60,7 @@ function toggleNamespace(name: string, checked: boolean) {
       <p v-if="!visibleClusters.length" class="namespace-empty">{{ t(!clusters.length?'k8s.noCluster':namespaceEnabled?'k8s.noNamespaceMatches':'k8s.noClusterMatches') }}</p>
     </div>
     <p v-if="namespaceEnabled" class="namespace-selection-hint">{{ t(all?'k8s.allNamespaces':'k8s.namespaceSelected',{count:selected.length}) }}</p>
+    </div>
   </aside>
 </template>
 
@@ -82,4 +84,8 @@ h3{margin:0 2px;font-size:13px;font-weight:600;color:var(--edo-muted)}
 .namespace-empty,.namespace-error{font-size:12px;color:var(--edo-muted);overflow-wrap:anywhere;padding:8px 0;margin:0}
 .namespace-loading{padding:12px}.namespace-error{color:var(--kube-danger)}
 @media(max-width:1000px){.kube-namespace-tree{position:static;max-height:260px}.namespace-tree-scroll{max-height:170px;min-height:0}}
+</style>
+
+<style scoped>
+.scope-heading{display:flex;align-items:center;gap:10px}.scope-options{display:flex;flex-direction:column;gap:12px;min-height:0;flex:1}.scope-toggle{display:none}.scope-toggle:focus-visible{outline:2px solid var(--edo-primary);outline-offset:3px}@media(max-width:1000px){.kube-namespace-tree{padding:12px}.scope-heading{flex-wrap:wrap}.scope-toggle{display:flex;align-items:center;justify-content:space-between;flex:1;gap:8px;min-width:180px;border:0;background:none;color:var(--edo-text);font:inherit;font-size:12px;text-align:right;cursor:pointer}.scope-toggle>span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.scope-toggle small{font:inherit;color:var(--edo-muted)}.scope-toggle svg{flex-shrink:0;transition:transform .12s}.scope-toggle svg.expanded{transform:rotate(180deg)}.scope-options:not(.is-open){display:none}}
 </style>

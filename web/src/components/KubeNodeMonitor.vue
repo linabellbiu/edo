@@ -10,7 +10,7 @@ import client from '@/api/client'
 import {formatKubeCPU,formatKubeMemory,kubeErrorMessage,type KubeObject} from '@/api/kubernetes'
 import {nodeChartPoints,nodeMetricValue,nodeSampleFresh,type NodeHistory} from '@/utils/kubernetesNode'
 import {usePreferencesStore} from '@/stores/preferences'
-const props=defineProps<{cluster:string;node:KubeObject;autoRefresh:boolean;workloads:boolean}>()
+const props=defineProps<{cluster:string;node:KubeObject;autoRefresh:boolean;workloads:boolean;embedded?:boolean;refreshToken?:number}>()
 const {t,locale}=useI18n(),preferences=usePreferencesStore()
 use([BarChart,LineChart,GridComponent,MarkLineComponent,TooltipComponent,CanvasRenderer])
 const root=ref<HTMLElement>(),history=ref<NodeHistory|null>(null),windowSeconds=ref(900),error=ref(''),loading=ref(false)
@@ -56,12 +56,14 @@ function refreshVisible(){now.value=Date.now();if(!document.hidden&&props.autoRe
 watch(windowSeconds,()=>{history.value=null;void load()})
 watch([()=>props.cluster,()=>props.node.metadata.uid],()=>{history.value=null;void load()})
 watch([history,cards,()=>preferences.theme,locale],()=>void render())
+watch(()=>props.refreshToken,()=>void load())
+watch(()=>props.autoRefresh,(enabled,previous)=>{if(enabled&&!previous)void load()})
 onMounted(()=>{void load();observer=new ResizeObserver(()=>void render());if(root.value)observer.observe(root.value);timer=setInterval(refreshVisible,30000);document.addEventListener('visibilitychange',refreshVisible)})
 onBeforeUnmount(()=>{disposed=true;revision++;request?.abort();if(timer)clearInterval(timer);document.removeEventListener('visibilitychange',refreshVisible);observer?.disconnect();charts.forEach(chart=>chart.dispose())})
 </script>
 <template>
- <section ref="root" class="node-monitor resource-detail-section">
-  <div class="monitor-toolbar"><h4>{{ t('k8s.nodeMonitoring') }}</h4><label>{{ t('k8s.nodeTimeRange') }}<a-select v-model:value="windowSeconds" :options="ranges" /></label><a-button size="small" :loading="loading" @click="load"><RefreshCw :size="13" />{{ t('k8s.refresh') }}</a-button></div>
+ <section ref="root" class="node-monitor resource-detail-section" :aria-busy="loading">
+  <div class="monitor-toolbar"><h4 v-if="!embedded">{{ t('k8s.nodeMonitoring') }}</h4><label>{{ t('k8s.nodeTimeRange') }}<a-select v-model:value="windowSeconds" :options="ranges" /></label><a-button v-if="!embedded" size="small" :loading="loading" @click="load"><RefreshCw :size="13" />{{ t('k8s.refresh') }}</a-button></div>
   <a-alert v-if="error" type="warning" show-icon :message="error" />
   <a-alert v-else-if="!loading&&!current" type="info" show-icon :message="t(latest?'k8s.nodeSampleStale':'k8s.nodeWaitingSamples')" />
   <a-alert v-else-if="current&&current.metrics_state!=='ok'" type="warning" show-icon :message="t(current.metrics_state==='forbidden'?'k8s.nodeMetricsForbidden':'k8s.metricsMissing')" />

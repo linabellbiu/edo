@@ -8,9 +8,8 @@ const template = parse(source).descriptor.template.content
 
 test('接入集群入口位于总览内容区，不在公共工具栏中', () => {
   const toolbar = template.match(/<PageToolbar\b[\s\S]*?<\/PageToolbar>/)?.[0]
-  assert.ok(toolbar)
-  assert.doesNotMatch(toolbar, /k8s\.addCluster|clusterDrawer/)
-  const panel = template.match(/<section class="resource-panel">[\s\S]*?<\/section>/)?.[0]
+  if(toolbar)assert.doesNotMatch(toolbar, /k8s\.addCluster|clusterDrawer/)
+  const panel = template.match(/<section[^>]*class="resource-panel">[\s\S]*?<\/section>/)?.[0]
   assert.ok(panel)
   assert.match(panel, /@click="clusterDrawer=true"/)
   assert.equal(template.match(/t\('k8s\.addCluster'\)/g)?.length, 1)

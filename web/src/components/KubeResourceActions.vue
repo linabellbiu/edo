@@ -4,29 +4,27 @@ import { useI18n } from 'vue-i18n'
 import ResourceRowActions from './ResourceRowActions.vue'
 import type { KubeObject, KubeType } from '@/api/kubernetes'
 const props=defineProps<{object:KubeObject;type:KubeType;can:(permission:string)=>boolean;loading?:boolean;disabled?:boolean;inDrawer?:boolean}>()
-const emit=defineEmits<{details:[];edit:[];yaml:[];action:[action:string];remove:[];removeNode:[];scale:[];logs:[];terminal:[];pods:[];link:[]}>()
+const emit=defineEmits<{edit:[];yaml:[];action:[action:string];remove:[];removeNode:[];scale:[];logs:[];terminal:[];pods:[];link:[]}>()
 const {t}=useI18n()
 const executable=computed(()=>props.can('kubernetes.workload.execute'))
 const controller=computed(()=>props.type.group==='workloads'&&props.type.resource!=='pods')
 const editable=computed(()=>props.type.update&&props.can(`${props.type.permission}.update`))
 const configuration=computed(()=>['config','storage'].includes(props.type.group))
 const yamlShortcut=computed(()=>configuration.value&&!props.inDrawer&&props.can(`${props.type.permission}.read`))
-const editShortcut=computed(()=>editable.value&&(props.inDrawer||configuration.value))
+const editShortcut=computed(()=>editable.value)
 const removable=computed(()=>props.type.delete&&props.can(`${props.type.permission}.delete`))
 const nodeActions=computed(()=>props.type.resource==='nodes'&&(props.can('kubernetes.node.update')||props.can('kubernetes.node.delete')))
 const linkable=computed(()=>props.type.resource==='deployments'&&['application.read','application.update','workflow.create','workflow.read','deployment_plan.create','deployment_plan.read','build_plan.read','cluster.read','deployment.read'].every(permission=>props.can(permission)))
-const more=computed(()=>linkable.value||editable.value&&!editShortcut.value||removable.value||nodeActions.value||controller.value&&executable.value||props.type.resource==='pods'&&props.can('terminal.open'))
+const more=computed(()=>linkable.value||removable.value||nodeActions.value||controller.value&&executable.value||props.type.resource==='pods'&&props.can('terminal.open'))
 </script>
 <template>
   <ResourceRowActions class="kube-resource-actions" :more="more" :loading="loading">
-    <a-button v-if="!inDrawer" class="kube-action" size="small" :disabled="disabled" @click="emit('details')">{{ t('k8s.details') }}</a-button>
-    <a-button v-if="controller" class="kube-action kube-action-success" size="small" :disabled="disabled" @click="emit('pods')">{{ t('k8s.viewPods') }}</a-button>
+    <a-button v-if="controller&&!inDrawer" class="kube-action kube-action-success" size="small" :disabled="disabled" @click="emit('pods')">{{ t('k8s.viewPods') }}</a-button>
     <a-button v-if="type.resource==='pods'" class="kube-action kube-action-info" size="small" :disabled="disabled" @click="emit('logs')">{{ t('k8s.logs') }}</a-button>
     <a-button v-if="editShortcut" class="kube-action kube-action-warning" size="small" :disabled="disabled" @click="emit('edit')">{{ t('k8s.edit') }}</a-button>
     <a-button v-if="yamlShortcut" class="kube-action kube-action-info" size="small" :disabled="disabled" @click="emit('yaml')">YAML</a-button>
     <template #more>
       <a-menu-item class="kube-menu-item" v-if="linkable" :disabled="disabled" @click="emit('link')">{{ t('delivery.link') }}</a-menu-item>
-      <a-menu-item class="kube-menu-item kube-menu-warning" v-if="editable&&!editShortcut" :disabled="disabled" @click="emit('edit')">{{ t('k8s.edit') }}</a-menu-item>
       <a-menu-item class="kube-menu-item kube-menu-warning" v-if="type.resource==='nodes'&&can('kubernetes.node.update')" :disabled="disabled" @click="emit('action',object.spec?.unschedulable?'uncordon':'cordon')">{{ t(object.spec?.unschedulable?'k8s.uncordon':'k8s.cordon') }}</a-menu-item>
       <a-menu-item class="kube-menu-item kube-menu-warning" v-if="['deployments','statefulsets','daemonsets'].includes(type.resource)&&executable" :disabled="disabled" @click="emit('action','restart')">{{ t('k8s.restart') }}</a-menu-item>
       <a-menu-item class="kube-menu-item kube-menu-warning" v-if="['deployments','statefulsets'].includes(type.resource)&&executable" :disabled="disabled" @click="emit('scale')">{{ t('k8s.scale') }}</a-menu-item>

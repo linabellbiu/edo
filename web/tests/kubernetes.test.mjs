@@ -10,7 +10,7 @@ function load(path,modules){
  const code=path.endsWith('.vue')?compileScript(parse(source).descriptor,{id:'kubernetes-test'}).content:source
  const output=ts.transpileModule(code,{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022,esModuleInterop:true}}).outputText
  const module={exports:{}}
- new Function('require','module','exports',output)(key=>modules[key]||{},module,module.exports)
+ new Function('require','module','exports',output)(key=>modules[key]||(key==='@/utils/kubernetesWorkspace'?load('../src/utils/kubernetesWorkspace.ts',{}):{}),module,module.exports)
  return module.exports
 }
 const api=load('../src/api/kubernetes.ts',{})

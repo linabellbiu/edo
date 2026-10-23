@@ -8,6 +8,7 @@ export interface ResourceColumn {
   key: string
   label: string
   width?: string
+  sortable?: boolean
 }
 
 const props = withDefaults(defineProps<{
@@ -19,19 +20,28 @@ const props = withDefaults(defineProps<{
   activeRowKey?: string
   details?: boolean
   pagination?: boolean
+  keepHeader?: boolean
+  currentPage?: number
+  rowsPerPage?: number
+  sortKey?: string
+  sortOrder?: 'asc' | 'desc'
 }>(), { loading: false, emptyText: '暂无数据', rowKey: 'id', details: true, pagination: true })
+const emit = defineEmits<{ 'update:currentPage': [page:number]; 'update:rowsPerPage': [size:number]; sort: [key:string] }>()
 const { t } = useI18n()
 const current = ref(1), pageSize = ref(10), detailID = ref(''), detailOpen = ref(false)
+const page = computed({get:()=>props.currentPage??current.value,set:(value:number)=>{current.value=value;emit('update:currentPage',value)}})
+const limit = computed({get:()=>props.rowsPerPage??pageSize.value,set:(value:number)=>{pageSize.value=value;emit('update:rowsPerPage',value)}})
 const keyOf = (row: T, index: number) => String(row[props.rowKey] ?? props.rows.indexOf(row) ?? index)
-const visibleRows = computed(() => props.pagination ? props.rows.slice((current.value - 1) * pageSize.value, current.value * pageSize.value) : props.rows)
+const visibleRows = computed(() => props.pagination ? props.rows.slice((page.value - 1) * limit.value, page.value * limit.value) : props.rows)
 const selected = computed(() => props.rows.find((row, index) => keyOf(row, index) === detailID.value))
 watch(() => props.rows, rows => {
-  current.value = Math.min(current.value, Math.max(1, Math.ceil(rows.length / pageSize.value)))
+  if(props.currentPage===undefined)current.value=Math.min(current.value,Math.max(1,Math.ceil(rows.length/limit.value)))
+  else if(!props.loading&&rows.length)page.value=Math.min(page.value,Math.max(1,Math.ceil(rows.length/limit.value)))
   if (detailOpen.value && !selected.value) detailOpen.value = false
 })
 watch(() => props.activeRowKey, value => {
   const index = props.rows.findIndex((row, position) => keyOf(row, position) === value)
-  if (index >= 0) current.value = Math.floor(index / pageSize.value) + 1
+  if (index >= 0) page.value = Math.floor(index / limit.value) + 1
 })
 function openDetails(row: T) {
   detailID.value = keyOf(row, props.rows.indexOf(row))
@@ -54,12 +64,13 @@ function displayValue(value: unknown): string {
 <template>
   <div v-bind="$attrs" class="resource-table-wrap">
     <a-spin :spinning="loading">
-      <div v-if="rows.length === 0" class="empty-panel"><a-empty :description="emptyText" /></div>
+      <div v-if="rows.length === 0&&!keepHeader" class="empty-panel"><slot name="empty"><a-empty :description="emptyText" /></slot></div>
       <div v-else class="table-scroll">
         <table class="resource-table">
-          <thead><tr><th v-for="column in columns" :key="column.key" :style="{ width: column.width }">{{ column.label }}</th><th v-if="$slots.actions || details" class="table-action-heading">{{ t('planList.actions') }}</th></tr></thead>
+          <thead><tr><th v-for="column in columns" :key="column.key" :style="{ width: column.width }" :aria-sort="column.sortable?(sortKey===column.key?(sortOrder==='desc'?'descending':'ascending'):'none'):undefined"><button v-if="column.sortable" class="column-sort" :aria-label="`${column.label} · ${t('resourceList.sort')}`" @click="emit('sort',column.key)">{{ column.label }}<span aria-hidden="true">{{ sortKey===column.key?(sortOrder==='desc'?'↓':'↑'):'↕' }}</span></button><template v-else>{{ column.label }}</template></th><th v-if="$slots.actions || details" class="table-action-heading">{{ t('planList.actions') }}</th></tr></thead>
           <tbody>
-            <tr v-for="(row, index) in visibleRows" :key="keyOf(row,index)" :class="{ active: (activeRowKey && keyOf(row,index) === activeRowKey) || (detailOpen && selected === row) }">
+            <tr v-if="!rows.length"><td :colspan="columns.length+($slots.actions||details?1:0)" class="table-empty-cell"><slot name="empty"><a-empty :description="emptyText" /></slot></td></tr>
+            <tr v-for="(row, index) in visibleRows" :key="keyOf(row,index)" :data-resource-key="keyOf(row,index)" :class="{ active: (activeRowKey && keyOf(row,index) === activeRowKey) || (detailOpen && selected === row) }">
               <td v-for="column in columns" :key="column.key">
                 <slot :name="`cell-${column.key}`" :row="row" :value="row[column.key]">
                   <a-tag v-if="typeof row[column.key] === 'boolean'" :color="row[column.key] ? 'success' : 'default'">{{ row[column.key] ? '启用' : '停用' }}</a-tag>
@@ -72,7 +83,7 @@ function displayValue(value: unknown): string {
           </tbody>
         </table>
       </div>
-      <a-pagination v-if="pagination && rows.length" v-model:current="current" v-model:page-size="pageSize" :total="rows.length" show-size-changer :page-size-options="['10', '20', '50', '100']" :show-total="(count: number) => t('planList.total', { count })" class="resource-pagination" @show-size-change="current = 1" />
+      <a-pagination v-if="pagination && rows.length" v-model:current="page" v-model:page-size="limit" :total="rows.length" show-size-changer :page-size-options="['10', '20', '50', '100']" :show-total="(count: number) => t('planList.total', { count })" class="resource-pagination" @show-size-change="page = 1" />
     </a-spin>
   </div>
   <ResourceDetailDrawer v-if="details" v-model:open="detailOpen" :title="String(selected?.name || selected?.nickname || t('resourceList.details'))">
@@ -96,4 +107,5 @@ tbody tr.active td:first-child { box-shadow: inset 3px 0 var(--edo-primary); }
 .table-actions,.table-action-heading { position:sticky; right:0; width:1%; white-space:nowrap; background:var(--edo-surface); box-shadow:-5px 0 7px -5px rgb(31 35 41 / 16%); }
 .resource-pagination { display:flex; justify-content:flex-end; margin:14px 16px; }
 .table-actions :deep(.ant-btn) { padding-inline: 5px; }
+.column-sort{display:flex;align-items:center;gap:8px;padding:0;border:0;background:none;color:inherit;font:inherit;cursor:pointer}.column-sort span{color:var(--edo-muted)}.column-sort:focus-visible{outline:2px solid var(--edo-primary);outline-offset:4px}.table-empty-cell{height:220px!important;text-align:center}
 </style>

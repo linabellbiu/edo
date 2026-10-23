@@ -70,3 +70,10 @@
 .kube-menu-warning:not(.ant-dropdown-menu-item-disabled) .ant-dropdown-menu-title-content { color: var(--kube-warning); }
 :root[data-theme='dark'] .kube-menu-success:not(.ant-dropdown-menu-item-disabled) .ant-dropdown-menu-title-content { color: #5bdcb8; }
 :root[data-theme='dark'] .kube-menu-warning:not(.ant-dropdown-menu-item-disabled) .ant-dropdown-menu-title-content { color: #e9b665; }
+
+/* 详情工具栏固定，页签在内容区独立滚动，避免长详情遮住返回和常用操作。 */
+.kube-detail-drawer .ant-drawer-body{display:flex;flex-direction:column;overflow:hidden}
+.kube-detail-drawer .resource-detail-toolbar{position:static;flex-shrink:0;padding:10px 16px}
+.kube-detail-drawer .resource-detail-content{display:block;overflow:auto;min-height:0;flex:1;padding:12px 16px 20px}
+.kube-detail-drawer .resource-detail-section{padding:14px}
+@media(max-width:640px){.kube-detail-drawer .resource-detail-content{padding:10px}.kube-detail-drawer .resource-detail-toolbar{padding:10px}}

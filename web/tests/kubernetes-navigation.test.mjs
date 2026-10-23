@@ -11,7 +11,7 @@ function load(path, modules = {}) {
   const code = path.endsWith('.vue') ? compileScript(parse(source).descriptor, { id: 'kube-navigation' }).content : source
   const output = ts.transpileModule(code, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, esModuleInterop: true } }).outputText
   const module = { exports: {} }
-  new Function('require', 'module', 'exports', output)(key => modules[key] ?? {}, module, module.exports)
+  new Function('require', 'module', 'exports', output)(key => modules[key] ?? (key==='@/utils/kubernetesWorkspace'?load('../src/utils/kubernetesWorkspace.ts',{}):{}), module, module.exports)
   return module.exports
 }
 const nav = load('../src/router/navigation.ts')
@@ -118,7 +118,7 @@ test('集群与命名空间使用独立筛选树，内容区不再重复展示�
   assert.match(template, /:selected="selectedNamespaces"/)
   assert.doesNotMatch(template, /kube-workspace-namespace|kube-workspace-cluster/)
   assert.doesNotMatch(template,/workspace-tabs|v-for="item in groups"|context-scope/)
-  assert.match(template,/v-if="types.length>1" class="resource-type-tabs"/)
+  assert.match(template,/v-if="types.length>1[^"]*" class="resource-type-tabs"/)
   assert.match(template,/@click="selectResource\(type.resource\)"/)
 })
 test('存储列表跟随导航和浏览历史，刷新恢复准确类型，无效类型回到存储卷声明', async () => {

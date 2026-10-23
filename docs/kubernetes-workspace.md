@@ -21,3 +21,15 @@
 新增只读接口：`GET /kubernetes/clusters/:id/resources/:resource/:name/diagnostics?namespace=...&uid=...`，只支持 services/deployments/pods，继承对应的 network/workload 读取权限和项目范围，查询后再次验证 UID，禁止任意资源透传。集群凭据还需有读取 EndpointSlice、ReplicaSet、Pod 及 Pod metrics 的 Kubernetes RBAC 权限；拒绝读取时展示对应失败或部分结果，不自动扩大权限。分页查询上限 10000 条，超出明确提示部分结果。无数据库结构变更或历史业务数据迁移。
 
 实现复用项目已使用的官方 client-go、Kubernetes API 类型/语义比较及 ECharts；未引入新运行依赖或额外监控组件。EndpointSlice 条件和 Deployment 模板识别参考 [Kubernetes EndpointSlice 文档](https://kubernetes.io/docs/concepts/services-networking/endpoint-slices/) 与 [Deployment 文档](https://kubernetes.io/docs/concepts/workloads/controllers/deployment/)。
+
+## UI 与交互流程
+
+资源类型导航、自动刷新、刷新和创建入口合并到内容区同一工具栏。列表采用紧凑行高，名称是唯一详情入口，编辑、日志和关联 Pod 保留快捷操作，删除和运行操作继续遵守权限与确认。只读网络、节点等没有可用行操作时不显示空操作列。节点等集群资源继续只选择集群；窄屏的范围树可折叠，并在树标题内显示当前选择。
+
+列表支持名称、命名空间、状态和创建时间排序。搜索、标签、状态、排序和分页写入当前 URL，使用 replace 避免制造浏览历史；切换资源、浏览器返回和刷新恢复相应上下文，不把其他资源的筛选条件混入当前列表。排序仅作用于已经加载的数据，存在下一页时继续显示部分加载提示。异步刷新不因临时空列表重置分页，过滤后无结果可直接清除筛选；关闭详情后保留原行与键盘焦点。
+
+详情保留固定工具栏，页签随内容区独立滚动。关联资源沿用当前抽屉及返回栈；编辑、YAML 和日志打开期间隐藏详情抽屉，结束后恢复原资源和页签，避免叠加多个详情层。Pod 日志直接打开，多个普通容器时在工具栏明确选择容器。监控和诊断使用详情统一刷新入口，恢复显示时立即补同步，避免两个刷新按钮或返回后的陈旧指标。
+
+工作负载表单分为基本信息、容器、Pod 配置与存储卷、部署策略。编辑默认进入容器页签，校验失败自动切到对应分组。只有修改过配置才允许保存；关闭或离开页面时，仅对未保存的草稿提醒确认，取消则保留原内容。草稿只保留在当前内存，不写浏览器存储。该调整不改变资源写入、UID/resourceVersion、权限、确认或审计规则。
+
+总览把节点与网络、工作负载、配置与存储安排为三个紧凑分栏，避免较长分类撑出整排空白。Pod 状态颜色按阶段固定，失败为红色、等待为橙色、未知为灰色，不再按接口返回顺序分配颜色。组件继续复用 Vue Router、Ant Design Vue 和 ECharts，没有引入新运行依赖或数据库变更。

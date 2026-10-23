@@ -138,7 +138,7 @@ test('配置和存储的编辑、YAML 快捷按钮检查权限，不重复放入
     assert.equal(denied.editShortcut.value, false); assert.equal(denied.yamlShortcut.value, false)
   }
   const source = readFileSync(new URL('../src/components/KubeResourceActions.vue', import.meta.url), 'utf8')
-  assert.match(source, /v-if="editable&&!editShortcut"/)
+  assert.doesNotMatch(source, /v-if="editable&&!editShortcut"/)
   const view = readFileSync(new URL('../src/views/KubernetesView.vue', import.meta.url), 'utf8')
   assert.match(view, /@yaml="openDetails\(row,'manifest'\)"/)
 })

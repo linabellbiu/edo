@@ -96,6 +96,7 @@ function navigate(path: string) {
   const target = new URL(path, 'http://edo.local')
   if (route.path === '/kubernetes' && target.pathname === route.path) {
     const query = { ...route.query }
+    for(const key of ['q','label','status','sort','order','page','limit'])delete query[key]
     for (const key of target.searchParams.keys()) {
       const values = target.searchParams.getAll(key)
       query[key] = values.length > 1 ? values : values[0]!
