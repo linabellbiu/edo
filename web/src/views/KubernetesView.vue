@@ -248,7 +248,6 @@ onBeforeUnmount(()=>{mounted=false;revision++;detailRevision++;overviewRevision+
     <PageToolbar :description="t('k8s.description')">
       <a-checkbox v-model:checked="autoRefresh">{{ t('k8s.autoRefresh') }}</a-checkbox>
       <a-button :loading="loading||overviewLoading" @click="refreshAll"><template #icon><RefreshCw :size="14" /></template>{{ t('k8s.refresh') }}</a-button>
-      <a-button v-if="can('cluster.create')" @click="clusterDrawer=true"><template #icon><Plus :size="14" /></template>{{ t('k8s.addCluster') }}</a-button>
     </PageToolbar>
     <section class="resource-panel">
       <div class="kube-filters">
@@ -256,6 +255,7 @@ onBeforeUnmount(()=>{mounted=false;revision++;detailRevision++;overviewRevision+
         <div class="kube-context-field"><label for="kube-workspace-cluster">{{ t('k8s.cluster') }}</label><a-select id="kube-workspace-cluster" :default-open="false" v-model:value="cluster" show-search option-filter-prop="label" class="cluster-select" :placeholder="t('k8s.selectCluster')" :disabled="editorOpen||joinOpen||Boolean(nodeRemoval)||Boolean(busy)" :options="clusters.map(item=>({value:item.id,label:item.name,disabled:!item.is_active}))" /></div>
         <div v-if="group==='overview'||activeType?.namespaced" class="kube-context-field"><label for="kube-workspace-namespace">{{ t('k8s.namespace') }}</label><a-select id="kube-workspace-namespace" :default-open="false" v-model:value="namespace" show-search class="namespace-select" :disabled="editorOpen||Boolean(busy)" :options="[{value:'*',label:t('k8s.allNamespaces')},...namespaces.map(value=>({value,label:value}))]" /></div>
         <span class="kube-filter-spacer" aria-hidden="true" />
+        <a-button v-if="group==='overview'&&can('cluster.create')" type="primary" @click="clusterDrawer=true"><template #icon><Plus :size="14" /></template>{{ t('k8s.addCluster') }}</a-button>
         <a-button v-if="group==='nodes'&&can('kubernetes.node.create')" type="primary" :disabled="!cluster||!clusterInfo?.is_active" @click="joinOpen=true"><template #icon><Plus :size="14" /></template>{{ t('k8s.addNode') }}</a-button>
         <a-button v-if="group!=='overview'&&activeType?.create&&can(`${activeType.permission}.create`)" type="primary" :disabled="!cluster||!clusterInfo?.is_active" @click="edit()"><template #icon><Plus :size="14" /></template>{{ t('k8s.create') }}{{ t(`k8s.type_${activeType.resource}`) }}</a-button>
       </div>
