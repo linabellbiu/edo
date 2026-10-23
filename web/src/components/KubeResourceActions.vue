@@ -15,19 +15,19 @@ const linkable=computed(()=>props.type.resource==='deployments'&&['application.r
 const more=computed(()=>linkable.value||editable.value&&!props.inDrawer||removable.value||nodeActions.value||controller.value&&executable.value||props.type.resource==='pods'&&props.can('terminal.open'))
 </script>
 <template>
-  <ResourceRowActions :more="more" :loading="loading">
-    <a-button v-if="!inDrawer" size="small" :disabled="disabled" @click="emit('details')">{{ t('k8s.details') }}</a-button>
-    <a-button v-if="controller" size="small" :disabled="disabled" @click="emit('pods')">{{ t('k8s.viewPods') }}</a-button>
-    <a-button v-if="type.resource==='pods'" size="small" :disabled="disabled" @click="emit('logs')">{{ t('k8s.logs') }}</a-button>
-    <a-button v-if="inDrawer&&editable" size="small" :disabled="disabled" @click="emit('edit')">{{ t('k8s.edit') }}</a-button>
+  <ResourceRowActions class="kube-resource-actions" :more="more" :loading="loading">
+    <a-button v-if="!inDrawer" class="kube-action" size="small" :disabled="disabled" @click="emit('details')">{{ t('k8s.details') }}</a-button>
+    <a-button v-if="controller" class="kube-action kube-action-success" size="small" :disabled="disabled" @click="emit('pods')">{{ t('k8s.viewPods') }}</a-button>
+    <a-button v-if="type.resource==='pods'" class="kube-action kube-action-info" size="small" :disabled="disabled" @click="emit('logs')">{{ t('k8s.logs') }}</a-button>
+    <a-button v-if="inDrawer&&editable" class="kube-action kube-action-warning" size="small" :disabled="disabled" @click="emit('edit')">{{ t('k8s.edit') }}</a-button>
     <template #more>
-      <a-menu-item v-if="linkable" :disabled="disabled" @click="emit('link')">{{ t('delivery.link') }}</a-menu-item>
-      <a-menu-item v-if="editable&&!inDrawer" :disabled="disabled" @click="emit('edit')">{{ t('k8s.edit') }}</a-menu-item>
-      <a-menu-item v-if="type.resource==='nodes'&&can('kubernetes.node.update')" :disabled="disabled" @click="emit('action',object.spec?.unschedulable?'uncordon':'cordon')">{{ t(object.spec?.unschedulable?'k8s.uncordon':'k8s.cordon') }}</a-menu-item>
-      <a-menu-item v-if="['deployments','statefulsets','daemonsets'].includes(type.resource)&&executable" :disabled="disabled" @click="emit('action','restart')">{{ t('k8s.restart') }}</a-menu-item>
-      <a-menu-item v-if="['deployments','statefulsets'].includes(type.resource)&&executable" :disabled="disabled" @click="emit('scale')">{{ t('k8s.scale') }}</a-menu-item>
-      <a-menu-item v-if="type.resource==='cronjobs'&&executable" :disabled="disabled" @click="emit('action',object.spec?.suspend?'resume':'suspend')">{{ t(object.spec?.suspend?'k8s.resume':'k8s.suspend') }}</a-menu-item>
-      <a-menu-item v-if="type.resource==='pods'&&can('terminal.open')" :disabled="disabled||object.status?.phase!=='Running'" @click="emit('terminal')">{{ t('k8s.terminal') }}</a-menu-item>
+      <a-menu-item class="kube-menu-item" v-if="linkable" :disabled="disabled" @click="emit('link')">{{ t('delivery.link') }}</a-menu-item>
+      <a-menu-item class="kube-menu-item kube-menu-warning" v-if="editable&&!inDrawer" :disabled="disabled" @click="emit('edit')">{{ t('k8s.edit') }}</a-menu-item>
+      <a-menu-item class="kube-menu-item kube-menu-warning" v-if="type.resource==='nodes'&&can('kubernetes.node.update')" :disabled="disabled" @click="emit('action',object.spec?.unschedulable?'uncordon':'cordon')">{{ t(object.spec?.unschedulable?'k8s.uncordon':'k8s.cordon') }}</a-menu-item>
+      <a-menu-item class="kube-menu-item kube-menu-warning" v-if="['deployments','statefulsets','daemonsets'].includes(type.resource)&&executable" :disabled="disabled" @click="emit('action','restart')">{{ t('k8s.restart') }}</a-menu-item>
+      <a-menu-item class="kube-menu-item kube-menu-warning" v-if="['deployments','statefulsets'].includes(type.resource)&&executable" :disabled="disabled" @click="emit('scale')">{{ t('k8s.scale') }}</a-menu-item>
+      <a-menu-item class="kube-menu-item kube-menu-warning" v-if="type.resource==='cronjobs'&&executable" :disabled="disabled" @click="emit('action',object.spec?.suspend?'resume':'suspend')">{{ t(object.spec?.suspend?'k8s.resume':'k8s.suspend') }}</a-menu-item>
+      <a-menu-item class="kube-menu-item kube-menu-success" v-if="type.resource==='pods'&&can('terminal.open')" :disabled="disabled||object.status?.phase!=='Running'" @click="emit('terminal')">{{ t('k8s.terminal') }}</a-menu-item>
       <a-menu-item v-if="type.resource==='nodes'&&can('kubernetes.node.delete')" danger :disabled="disabled" @click="emit('removeNode')">{{ t('k8s.removeNode') }}</a-menu-item>
       <a-menu-item v-if="removable" danger :disabled="disabled||type.resource==='namespaces'&&(object.metadata.name==='default'||object.metadata.name.startsWith('kube-'))" @click="emit('remove')">{{ t('k8s.remove') }}</a-menu-item>
     </template>

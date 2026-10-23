@@ -139,3 +139,50 @@ export function kubeSummary(object: KubeObject): {status: string; tone: string; 
   }
   return summary
 }
+
+// 空数组表示未选择；星号表示整个集群，不能与具体命名空间混用。
+export function namespaceSelection(value: unknown, fallback = 'default'): string[] {
+  if (value === undefined || value === null) return [fallback]
+  const values = Array.isArray(value) ? value : [value]
+  if (values.includes('*')) return ['*']
+  return [...new Set(values.filter((item): item is string => typeof item === 'string' && item.length <= 63 && /^[a-z0-9]([-a-z0-9]*[a-z0-9])?$/.test(item)))].sort()
+}
+
+export async function mapNamespaceRequests<T>(names: string[], request: (namespace: string) => Promise<T>, signal?: AbortSignal): Promise<T[]> {
+  const result = new Array<T>(names.length)
+  let next = 0, failed = false
+  // 多选仍限制同时请求数，避免命名空间较多时集中冲击集群 API。
+  await Promise.all(Array.from({length: Math.min(4, names.length)}, async () => {
+    while (!failed && next < names.length) {
+      signal?.throwIfAborted()
+      const index = next++
+      try { result[index] = await request(names[index]!) } catch (error) { failed = true; throw error }
+    }
+  }))
+  return result
+}
+
+export async function listKubeResourceScopes(cluster: string, type: KubeType, selection: string[], cursor?: Record<string,string>, signal?: AbortSignal) {
+  const names = cursor ? Object.keys(cursor) : type.namespaced ? selection : ['*']
+  const pages = await mapNamespaceRequests(names, async namespace => ({namespace, ...await listKubeResources(cluster, type, namespace, cursor?.[namespace] ?? '', signal)}), signal)
+  return {items: pages.flatMap(page => page.items), cursor: Object.fromEntries(pages.filter(page => page.continue).map(page => [page.namespace, page.continue]))}
+}
+
+// 节点和集群级资源只保留一份；仅累加命名空间资源，缺失统计不补零。
+export function mergeNamespaceOverviews(results: KubeOverview[]): KubeOverview | null {
+  const first = results[0]
+  if (!first || results.length === 1) return first ?? null
+  const counts: KubeOverview['counts'] = {...first.counts}
+  for (const type of kubeTypes.filter(type => type.namespaced)) {
+    const values = results.map(result => result.counts[type.resource])
+    if (values.every(value => !value)) continue
+    const unavailable = values.some(value => !value || value.state === 'unavailable')
+    counts[type.resource] = {count: unavailable ? 0 : values.reduce((total,value) => total + value!.count, 0), state: unavailable ? 'unavailable' : values.some(value => value?.state === 'partial') ? 'partial' : 'ok'}
+  }
+  const phases = results.every(result => result.phases !== null) ? results.reduce<Record<string,number>>((sum,result) => {
+    for (const [phase,count] of Object.entries(result.phases!)) sum[phase] = (sum[phase] ?? 0) + count
+    return sum
+  }, {}) : null
+  const pods = Object.assign({}, ...results.map(result => result.usage?.pods ?? {}))
+  return {...first, counts, phases, usage: {...first.usage, pods}, metrics_state: {...first.metrics_state, pods: results.every(result => result.metrics_state?.pods === 'ok') ? 'ok' : 'unavailable'}, collected_at: results.map(result => result.collected_at).sort()[0]!}
+}

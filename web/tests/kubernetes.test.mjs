@@ -167,7 +167,7 @@ test('工作负载状态等待控制器确认版本，Running 但未就绪不显
  object.spec.replicas=0;assert.equal(presentation.resourceStatus(object,translate).key,'scaledDown')
  const pod={kind:'Pod',metadata:{},spec:{containers:[{name:'app'}]},status:{phase:'Running',conditions:[{type:'Ready',status:'False'}],containerStatuses:[{name:'app',ready:false,state:{waiting:{reason:'ImagePullBackOff'}}}]}}
  assert.equal(presentation.resourceStatus(pod,translate).reason,'ImagePullBackOff');assert.notEqual(presentation.resourceStatus(pod,translate).tone,'success')
- assert.equal(presentation.resourceCells({kind:'Pod',metadata:{},spec:{containers:[{name:'app'}]}},translate).replicas.text,'— / 1')
+ assert.equal(presentation.resourceCells({kind:'Pod',metadata:{},spec:{containers:[{name:'app'}]}},translate).replicas.text,'—/1')
  pod.metadata.deletionTimestamp='2026-10-23T00:00:00Z';assert.equal(presentation.resourceStatus(pod,translate).key,'terminating')
  for(const kind of ['Service','Ingress','NetworkPolicy'])assert.equal(presentation.resourceStatus({kind,metadata:{},spec:{}},translate).key,'configured')
 })

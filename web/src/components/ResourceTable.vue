@@ -52,7 +52,7 @@ function displayValue(value: unknown): string {
 </script>
 
 <template>
-  <div class="resource-table-wrap">
+  <div v-bind="$attrs" class="resource-table-wrap">
     <a-spin :spinning="loading">
       <div v-if="rows.length === 0" class="empty-panel"><a-empty :description="emptyText" /></div>
       <div v-else class="table-scroll">

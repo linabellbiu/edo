@@ -1,0 +1,69 @@
+:root {
+  --kube-success: #008566;
+  --kube-warning: #a96008;
+  --kube-danger: #c83c52;
+  --kube-badge-text: #fff;
+}
+:root[data-theme='dark'] {
+  --kube-success: #087d66;
+  --kube-warning: #945b0d;
+  --kube-danger: #b9354e;
+}
+
+/* 表格的分列和表头只作用于 Kubernetes，保持其他业务列表的布局。 */
+.kube-resource-table .resource-table th,
+.kube-resource-table .resource-table td {
+  border-right: 1px solid color-mix(in srgb, var(--edo-text) 7%, var(--edo-border));
+}
+.kube-resource-table .resource-table th:last-child,
+.kube-resource-table .resource-table td:last-child { border-right: 0; }
+.kube-resource-table .resource-table th {
+  color: var(--edo-text);
+  background: color-mix(in srgb, var(--edo-primary) 8%, var(--edo-surface-soft));
+  font-weight: 600;
+  border-bottom: 1px solid color-mix(in srgb, var(--edo-primary) 20%, var(--edo-border));
+}
+.kube-resource-table .resource-table .table-action-heading { background: color-mix(in srgb, var(--edo-primary) 8%, var(--edo-surface-soft)); }
+.kube-resource-table .resource-table .table-actions { border-left: 1px solid var(--edo-border); }
+.kube-ready-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 48px;
+  padding: 4px 9px;
+  border-radius: 5px;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 20px;
+  font-variant-numeric: tabular-nums;
+  color: var(--kube-badge-text);
+  background: var(--kube-success);
+}
+.kube-ready-badge.is-warning { background: var(--kube-warning); }
+.kube-ready-badge.is-danger { background: var(--kube-danger); }
+.kube-ready-badge.is-neutral { background: var(--edo-surface-soft); color: var(--edo-muted); border: 1px solid var(--edo-border); }
+.kube-namespace-badge {
+  display: inline-block;
+  padding: 3px 7px;
+  border: 1px solid color-mix(in srgb, var(--edo-primary) 22%, var(--edo-border));
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--edo-primary) 6%, var(--edo-surface));
+  color: var(--edo-text);
+  font-size: 12px;
+}
+.kube-action.ant-btn:not(:disabled),
+.kube-resource-actions .resource-more-button.ant-btn:not(:disabled) {
+  color: var(--edo-primary);
+  border-color: color-mix(in srgb, var(--edo-primary) 35%, var(--edo-border));
+  background: color-mix(in srgb, var(--edo-primary) 6%, var(--edo-surface));
+}
+.kube-action-success.ant-btn:not(:disabled) { color: var(--kube-success); border-color: color-mix(in srgb,var(--kube-success) 32%,var(--edo-border)); background: color-mix(in srgb,var(--kube-success) 7%,var(--edo-surface)); }
+.kube-action-warning.ant-btn:not(:disabled) { color: var(--kube-warning); border-color: color-mix(in srgb,var(--kube-warning) 32%,var(--edo-border)); background: color-mix(in srgb,var(--kube-warning) 7%,var(--edo-surface)); }
+.kube-action.ant-btn:not(:disabled):hover { filter: brightness(.94); }
+:root[data-theme='dark'] .kube-action-success.ant-btn:not(:disabled) { color: #5bdcb8; }
+:root[data-theme='dark'] .kube-action-warning.ant-btn:not(:disabled) { color: #e9b665; }
+.kube-menu-item:not(.ant-dropdown-menu-item-disabled) .ant-dropdown-menu-title-content { color: var(--edo-primary); }
+.kube-menu-success:not(.ant-dropdown-menu-item-disabled) .ant-dropdown-menu-title-content { color: var(--kube-success); }
+.kube-menu-warning:not(.ant-dropdown-menu-item-disabled) .ant-dropdown-menu-title-content { color: var(--kube-warning); }
+:root[data-theme='dark'] .kube-menu-success:not(.ant-dropdown-menu-item-disabled) .ant-dropdown-menu-title-content { color: #5bdcb8; }
+:root[data-theme='dark'] .kube-menu-warning:not(.ant-dropdown-menu-item-disabled) .ant-dropdown-menu-title-content { color: #e9b665; }

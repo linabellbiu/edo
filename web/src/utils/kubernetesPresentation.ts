@@ -2,7 +2,7 @@ import { kubeTypes, podSpec, type KubeObject, type KubeType } from '@/api/kubern
 
 type Translate = (key:string, values?:Record<string,unknown>)=>string
 export interface KubeReference { resource:string; name:string; namespace?:string; uid?:string }
-export interface KubeCell { text:string; secondary?:string; reference?:KubeReference; progress?:number }
+export interface KubeCell { text:string; secondary?:string; reference?:KubeReference; progress?:number; badge?:'success'|'warning'|'danger'|'neutral' }
 export interface KubeStatus { key:string; text:string; tone:string; reason?:string }
 const joined = (values:unknown[]) => values.filter(value=>value!==undefined&&value!==null&&value!=='').join(' · ') || '—'
 const entries = (value:Record<string,unknown>={}) => Object.entries(value).map(([key,value])=>`${key}=${value}`)
@@ -127,7 +127,9 @@ export function resourceCells(object:KubeObject,t:Translate):Record<string,KubeC
   if(['Deployment','StatefulSet','DaemonSet','Pod'].includes(kind)) {
     const desired=kind==='Pod'?containers.length:kind==='DaemonSet'?status.desiredNumberScheduled:spec.replicas??1
     const ready=kind==='Pod'?Array.isArray(status.containerStatuses)?status.containerStatuses.filter((item:KubeObject)=>item.ready).length:undefined:kind==='DaemonSet'?status.numberReady:status.readyReplicas??(status.replicas!==undefined?0:undefined)
-    cells.replicas={text:`${count(ready)} / ${count(desired)}`,secondary:kind==='Pod'?undefined:`${t('k8s.updated')}: ${count(kind==='DaemonSet'?status.updatedNumberScheduled:status.updatedReplicas)}`,progress:ready!==undefined&&desired>0?Math.min(100,ready/desired*100):undefined}
+    const state=resourceStatus(object,t)
+    const known=typeof ready==='number'&&Number.isFinite(ready)&&typeof desired==='number'&&Number.isFinite(desired)
+    cells.replicas={text:`${count(ready)}/${count(desired)}`,secondary:kind==='Pod'?undefined:`${t('k8s.updated')}: ${count(kind==='DaemonSet'?status.updatedNumberScheduled:status.updatedReplicas)}`,badge:!known||desired===0||object.metadata?.deletionTimestamp?'neutral':state.tone==='error'?'danger':ready===desired&&state.tone==='success'?'success':'warning'}
   }
   return cells
 }

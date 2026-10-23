@@ -10,10 +10,10 @@ const value=(text:string|undefined)=>!text||text==='—'?'—':props.date?format
 <template>
   <a-tooltip :mouse-enter-delay="0.1" :trigger="['hover','focus']">
     <template #title><span>{{ value(cell?.text) }}</span><br v-if="cell?.secondary" /><span v-if="cell?.secondary">{{ value(cell.secondary) }}</span></template>
-    <div class="kube-cell" :class="{numeric:cell?.progress!==undefined}" :tabindex="cell?.reference&&canFollow?undefined:0">
-      <button v-if="cell?.reference&&canFollow" class="cell-link" @click="emit('follow',cell.reference)">{{ value(cell.text) }}</button><span v-else class="cell-primary">{{ value(cell?.text) }}</span>
-      <span v-if="cell?.secondary&&cell.secondary!=='—'" class="cell-secondary">{{ value(cell.secondary) }}</span>
-      <div v-if="cell?.progress!==undefined" class="replica-track" role="meter" :aria-label="t('k8s.readyReplicas')" :aria-valuenow="cell.progress" aria-valuemin="0" aria-valuemax="100" :aria-valuetext="cell.text"><i :style="{width:`${cell.progress}%`}" /></div>
+    <div class="kube-cell" :class="{numeric:cell?.progress!==undefined||cell?.badge}" :tabindex="cell?.reference&&canFollow?undefined:0">
+      <button v-if="cell?.reference&&canFollow" class="cell-link" @click="emit('follow',cell.reference)">{{ value(cell.text) }}</button><span v-else class="cell-primary" :class="cell?.badge?['kube-ready-badge',`is-${cell.badge}`]:undefined">{{ value(cell?.text) }}</span>
+      <span v-if="!cell?.badge&&cell?.secondary&&cell.secondary!=='—'" class="cell-secondary">{{ value(cell.secondary) }}</span>
+      <div v-if="!cell?.badge&&cell?.progress!==undefined" class="replica-track" role="meter" :aria-label="t('k8s.readyReplicas')" :aria-valuenow="cell.progress" aria-valuemin="0" aria-valuemax="100" :aria-valuetext="cell.text"><i :style="{width:`${cell.progress}%`}" /></div>
     </div>
   </a-tooltip>
 </template>

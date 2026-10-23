@@ -110,11 +110,12 @@ test('Kubernetes 分类深链接使用自身查看权限，分类名称进入页
   assert.equal(await guard(overview),true);assert.equal(overview.meta.title,'k8s.overview')
   assert.equal(typeof after,'function')
 })
-test('集群与命名空间使用可见标签，内容区不再重复展示分类菜单', () => {
+test('集群与命名空间使用独立筛选树，内容区不再重复展示分类菜单', () => {
   const source=readFileSync(new URL('../src/views/KubernetesView.vue',import.meta.url),'utf8')
   const template=parse(source).descriptor.template.content
-  assert.match(template, /<label for="kube-workspace-cluster">/)
-  assert.match(template, /<label for="kube-workspace-namespace">/)
+  assert.match(template, /<KubeNamespaceTree /)
+  assert.match(template, /:selected="selectedNamespaces"/)
+  assert.doesNotMatch(template, /kube-workspace-namespace|kube-workspace-cluster/)
   assert.doesNotMatch(template,/workspace-tabs|v-for="item in groups"|context-scope/)
   assert.match(template,/v-if="types.length>1" class="resource-type-tabs"/)
   assert.match(template,/@click="selectResource\(type.resource\)"/)
