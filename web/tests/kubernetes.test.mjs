@@ -14,6 +14,31 @@ function load(path,modules){
  return module.exports
 }
 const api=load('../src/api/kubernetes.ts',{})
+test('独立 Pod 直接创建 spec，支持重启策略和节点标签，不套工作负载模板',()=>{
+ const state=editor('Pod');state.form.name='standalone';state.form.containers[0].image='nginx:stable-alpine';state.restartPolicy.value='Never';state.nodeSelector.value=[{key:'pool',value:'test'}]
+ const object=state.buildObject()
+ assert.equal(object.kind,'Pod');assert.equal(object.spec.containers[0].image,'nginx:stable-alpine');assert.equal(object.spec.template,undefined)
+ assert.equal(object.spec.restartPolicy,'Never');assert.deepEqual(object.spec.nodeSelector,{pool:'test'})
+ assert.equal(api.kubeTypes.find(type=>type.kind==='Pod').create,true)
+ assert.equal(api.kubeTypes.find(type=>type.kind==='Node').create,false)
+})
+test('资源指标不向同名新 Pod 套用旧采样，缺失指标不显示为零',()=>{
+ const object={kind:'Pod',metadata:{name:'app',namespace:'team',creationTimestamp:'2026-10-23T02:00:00Z'}}
+ const data={usage:{pods:{'team/app':{cpu:.02,memory:1024,timestamp:'2026-10-23T01:00:00Z'}}}}
+ assert.equal(api.usageFor(data,object),undefined);assert.equal(api.formatKubeCPU(undefined),'—');assert.equal(api.formatKubeMemory(undefined),'—')
+ data.usage.pods['team/app'].timestamp=new Date().toISOString();assert.equal(api.usageFor(data,object).cpu,.02)
+})
+test('总览只展示获准资源，缺少一个节点的用量时不把部分用量当成全局',()=>{
+ const component=load('../src/components/KubeOverview.vue',{vue:{...vue,onMounted(){},onBeforeUnmount(){},watch(){}},'vue-i18n':{useI18n:()=>({t:key=>key,locale:vue.ref('zh-CN')})},'echarts/core':{use(){}},'@/stores/preferences':{usePreferencesStore:()=>({theme:'light'})},'@/api/kubernetes':api}).default
+ const props={data:{counts:{nodes:{count:2,state:'ok'},pods:{count:0,state:'unavailable'}},nodes:[{name:'a',ready:true,cpu:2,memory:1024},{name:'b',ready:false,cpu:2,memory:1024}],phases:{},usage:{nodes:{a:{cpu:1,memory:100,timestamp:new Date().toISOString()}}}},loading:false,error:''}
+ const state=component.setup(props,{expose(){},emit(){}})
+ assert.equal(state.totals.value.cpu,4);assert.equal(state.totals.value.cpuUsed,undefined)
+ assert.equal(state.cards.value.some(card=>card.key==='secrets'),false)
+ props.data.usage.nodes.b={cpu:.5,memory:200,timestamp:new Date().toISOString()}
+ // 替换 props.data 使该纯函数测试触发 Vue 计算属性重新求值。
+ const next=component.setup({...props,data:{...props.data}},{expose(){},emit(){}})
+ assert.equal(next.totals.value.cpuUsed,1.5);assert.equal(next.totals.value.memoryUsed,300)
+})
 function editor(kind,object){
  const watchers=[]
  const component=load('../src/components/KubeResourceEditor.vue',{

@@ -55,12 +55,7 @@ export const navigation: NavSection[] = [
         { label: 'nav.domains', path: '/domains', permissions: ['dns.read'], icon: Tags },
         { label: 'nav.environments', path: '/environments', permissions: ['deployment.read'], icon: ServerCog },
         { label: 'nav.hosts', path: '/hosts', permissions: ['cluster.read', 'deployment.read'], icon: Server },
-      ] },
-      { key: 'kubernetes', label: 'k8s.title', icon: Boxes, items: [
-        { label: 'k8s.nodes', path: '/kubernetes?view=nodes', permissions: ['kubernetes.node.read'], icon: Server },
-        { label: 'k8s.workloads', path: '/kubernetes?view=workloads', permissions: ['kubernetes.workload.read'], icon: Boxes },
-        { label: 'k8s.config', path: '/kubernetes?view=config', permissions: ['kubernetes.config.read','kubernetes.storage.read'], icon: Box },
-        { label: 'k8s.network', path: '/kubernetes?view=network', permissions: ['kubernetes.network.read'], icon: CloudCog },
+        { label: 'k8s.title', path: '/kubernetes', permissions: ['kubernetes.node.read','kubernetes.workload.read','kubernetes.config.read','kubernetes.storage.read','kubernetes.network.read'], icon: Boxes },
       ] },
       { key: 'organization', label:'workspace.organization', icon:Building2, items:[
  {label:'workspace.projects',path:'/projects',permissions:[],icon:Boxes},

@@ -48,7 +48,7 @@ var resourceDefinitions = []ResourceDefinition{
 	{"daemonsets", "DaemonSet", "apps/v1", "workloads", true, "kubernetes.workload", true, true, true},
 	{"jobs", "Job", "batch/v1", "workloads", true, "kubernetes.workload", true, false, true},
 	{"cronjobs", "CronJob", "batch/v1", "workloads", true, "kubernetes.workload", true, true, true},
-	{"pods", "Pod", "v1", "workloads", true, "kubernetes.workload", false, false, true},
+	{"pods", "Pod", "v1", "workloads", true, "kubernetes.workload", true, false, true},
 	{"configmaps", "ConfigMap", "v1", "config", true, "kubernetes.config", true, true, true},
 	{"secrets", "Secret", "v1", "config", true, "kubernetes.config", true, true, true},
 	{"persistentvolumeclaims", "PersistentVolumeClaim", "v1", "config", true, "kubernetes.storage", true, true, true},

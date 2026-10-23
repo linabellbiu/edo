@@ -52,6 +52,8 @@ func TestKubernetesResourcePermissionsAndSecretAudit(t *testing.T) {
 		{http.MethodPost, base, map[string]any{}},
 		{http.MethodPost, "/api/v1/kubernetes/clusters/" + result.Cluster.ID + "/resources/deployments/web/actions?namespace=default", map[string]any{"action": "restart", "uid": "uid-1", "resource_version": "1"}},
 		{http.MethodGet, "/api/v1/kubernetes/clusters/" + result.Cluster.ID + "/resources/nodes", nil},
+		{http.MethodPost, "/api/v1/kubernetes/clusters/" + result.Cluster.ID + "/node-joins", map[string]any{"provider": "k3s", "minutes": 15}},
+		{http.MethodDelete, "/api/v1/kubernetes/clusters/" + result.Cluster.ID + "/nodes/worker", map[string]any{"uid": "uid-1", "resource_version": "1", "agent_stopped": true, "name": "worker"}},
 	} {
 		response := performJSONRequest(t, router, target.method, target.path, target.body, reader)
 		if response.Code != 403 {

@@ -301,6 +301,10 @@ func NewRouter(deps Dependencies) *gin.Engine {
 	protected.GET("/kubernetes/clusters/:id/pods", requirePermission(deps.Access, deps.Logger, access.PermissionClusterRead), clusterAPI.listPods)
 	protected.GET("/kubernetes/clusters/:id/deployments", requirePermission(deps.Access, deps.Logger, access.PermissionClusterRead), clusterAPI.listDeployments)
 	k8sResourcePath := "/kubernetes/clusters/:id/resources/:resource"
+	protected.GET("/kubernetes/clusters/:id/overview", requireAnyPermission(deps.Access, deps.Logger, kubernetesReads[1:]...), clusterAPI.overview(deps.Access))
+	protected.POST("/kubernetes/clusters/:id/node-joins", auditAction(deps.Audits, deps.Logger, "kubernetes.node.join", "kubernetes_node"), requirePermission(deps.Access, deps.Logger, "kubernetes.node.create"), clusterAPI.nodeJoin)
+	protected.DELETE("/kubernetes/clusters/:id/node-joins/:join", auditAction(deps.Audits, deps.Logger, "kubernetes.node.join.revoke", "kubernetes_node"), requirePermission(deps.Access, deps.Logger, "kubernetes.node.create"), clusterAPI.nodeJoinRevoke)
+	protected.DELETE("/kubernetes/clusters/:id/nodes/:name", auditAction(deps.Audits, deps.Logger, "kubernetes.node.delete", "kubernetes_node"), requirePermission(deps.Access, deps.Logger, "kubernetes.node.delete"), clusterAPI.nodeDelete)
 	protected.GET(k8sResourcePath, requireKubernetesResource(deps.Access, deps.Logger, "read"), clusterAPI.resourceList)
 	protected.GET(k8sResourcePath+"/:name", requireKubernetesResource(deps.Access, deps.Logger, "read"), clusterAPI.resourceGet)
 	protected.GET(k8sResourcePath+"/:name/events", requireKubernetesResource(deps.Access, deps.Logger, "read"), clusterAPI.resourceEvents)

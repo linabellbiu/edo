@@ -11,13 +11,15 @@ const emit = defineEmits<{'update:open':[value:boolean]; saved:[]}>()
 const { t } = useI18n()
 const saving = ref(false), error = ref('')
 const editing = computed(() => Boolean(props.object))
-const workload = computed(() => ['Deployment','StatefulSet','DaemonSet','Job','CronJob'].includes(props.type.kind))
+const workload = computed(() => ['Deployment','StatefulSet','DaemonSet','Job','CronJob','Pod'].includes(props.type.kind))
+const restartPolicy=ref('Always'), nodeSelector=ref<KeyValue[]>([])
 const entries = (object: Record<string, unknown> = {}): KeyValue[] => Object.entries(object).map(([key,value])=>({key,value:String(value)}))
 const form = reactive({name:'', namespace:'', labels:[] as KeyValue[], data:[] as KeyValue[], selector:[] as KeyValue[], peer:[] as KeyValue[], taints:[] as Array<{key:string;value:string;effect:string}>, containers:[] as Array<{name:string;image:string;port:string;env:KeyValue[]}>, replicas:1, serviceName:'', schedule:'*/5 * * * *', suspend:false, storage:'1Gi', storageClass:'', accessMode:'ReadWriteOnce', secretType:'Opaque', serviceType:'ClusterIP', port:80, targetPort:'80', hostname:'', path:'/', backend:'', ingressClass:'', policyPort:80, denyAll:false})
 watch(() => props.open, open => {
   if (!open) return
   error.value = ''
   const object = props.object ?? {}, spec = object.spec ?? {}, rule = spec.rules?.[0], ingressPath = rule?.http?.paths?.[0]
+  restartPolicy.value=podSpec(object).restartPolicy ?? 'Always'; nodeSelector.value=entries(podSpec(object).nodeSelector)
   Object.assign(form, {name:object.metadata?.name ?? '', namespace:object.metadata?.namespace ?? (props.namespace === '*' ? 'default' : props.namespace), labels:entries(object.metadata?.labels), data:props.type.kind === 'Secret' ? (object.keys ?? []).map((key:string)=>({key,value:''})) : entries(object.data), selector:entries(spec.selector?.matchLabels ?? spec.selector), peer:[], taints:(spec.taints ?? []).map((item:KubeObject)=>({...item})), containers:(podSpec(object).containers ?? [{name:'app',image:'',ports:[]}]).map((item:KubeObject)=>({name:item.name,image:item.image,port:(item.ports ?? []).map((port:KubeObject)=>port.containerPort).join(','),env:entries(Object.fromEntries((item.env ?? []).filter((env:KubeObject)=>env.value !== undefined).map((env:KubeObject)=>[env.name,env.value])))})), replicas:spec.replicas ?? 1, serviceName:spec.serviceName ?? '', schedule:spec.schedule ?? '*/5 * * * *', suspend:spec.suspend ?? false, storage:spec.resources?.requests?.storage ?? '1Gi', storageClass:spec.storageClassName ?? '', accessMode:spec.accessModes?.[0] ?? 'ReadWriteOnce', secretType:object.type ?? 'Opaque', serviceType:spec.type ?? 'ClusterIP', port:spec.ports?.[0]?.port ?? 80, targetPort:String(spec.ports?.[0]?.targetPort ?? 80), hostname:rule?.host ?? '', path:ingressPath?.path ?? '/', backend:ingressPath?.backend?.service?.name ?? '', ingressClass:spec.ingressClassName ?? '', policyPort:80, denyAll:false})
 }, {immediate:true})
 function mapping(rows: KeyValue[]) {
@@ -64,6 +66,7 @@ function buildObject(): KubeObject {
         object.spec = {schedule:form.schedule.trim(),suspend:form.suspend,jobTemplate:{spec:{template}}}
       }
     }
+    if (kind==='Pod') object.spec={containers,restartPolicy:restartPolicy.value,nodeSelector:mapping(nodeSelector.value)}
   } else if (kind==='Node') {
     const taints=form.taints.map(item=>({...original.spec?.taints?.find((taint:KubeObject)=>taint.key===item.key&&taint.effect===item.effect),key:item.key.trim(),value:item.value,effect:item.effect}))
     if (taints.some(item=>!item.key)) throw new Error(t('k8s.invalidKeys'))
@@ -125,6 +128,7 @@ async function submit(url:string,namespace:string,method:string,object:KubeObjec
       <div class="form-grid"><a-form-item :label="t('k8s.name')" required><a-input v-model:value="form.name" :disabled="editing" :maxlength="253" /></a-form-item><a-form-item v-if="type.namespaced" :label="t('k8s.namespace')" required><a-input v-model:value="form.namespace" :disabled="editing" :maxlength="63" /></a-form-item></div>
       <a-form-item :label="t('k8s.labels')"><KubeKeyValues v-model="form.labels" :disabled="saving" /></a-form-item>
       <template v-if="workload">
+        <template v-if="type.kind==='Pod'"><a-alert type="info" show-icon :message="t('k8s.standalonePod')" class="editor-alert" /><a-form-item :label="t('k8s.restartPolicy')"><a-select v-model:value="restartPolicy" :options="['Always','OnFailure','Never'].map(value=>({value}))" /></a-form-item><a-form-item :label="t('k8s.nodeSelector')"><KubeKeyValues v-model="nodeSelector" :disabled="saving" /></a-form-item></template>
         <div class="form-grid"><a-form-item v-if="['Deployment','StatefulSet'].includes(type.kind)" :label="t('k8s.replicas')" required><a-input-number v-model:value="form.replicas" :min="0" :max="1000" :precision="0" /></a-form-item><a-form-item v-if="type.kind==='StatefulSet'" :label="t('k8s.serviceName')" required><a-input v-model:value="form.serviceName" :disabled="editing" /></a-form-item></div>
         <div v-if="type.kind==='CronJob'" class="form-grid"><a-form-item label="Cron" required><a-input v-model:value="form.schedule" /></a-form-item><a-form-item :label="t('k8s.suspend')"><a-switch v-model:checked="form.suspend" /></a-form-item></div>
         <section v-for="(container,index) in form.containers" :key="index" class="container-form">

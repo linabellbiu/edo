@@ -13,7 +13,7 @@ export const kubeTypes = [
   type('daemonsets', 'DaemonSet', 'apps/v1', 'workloads', 'workload'),
   type('jobs', 'Job', 'batch/v1', 'workloads', 'workload', true, true, false),
   type('cronjobs', 'CronJob', 'batch/v1', 'workloads', 'workload'),
-  type('pods', 'Pod', 'v1', 'workloads', 'workload', true, false, false),
+  type('pods', 'Pod', 'v1', 'workloads', 'workload', true, true, false),
   type('configmaps', 'ConfigMap', 'v1', 'config', 'config'),
   type('secrets', 'Secret', 'v1', 'config', 'config'),
   type('namespaces', 'Namespace', 'v1', 'config', 'config', false),
@@ -33,6 +33,24 @@ export async function listKubeResources(cluster: string, type: KubeType, namespa
 }
 export const identityOf = (object: KubeObject) => ({ uid: object.metadata.uid, resource_version: object.metadata.resourceVersion })
 export const kubeKey = (object: KubeObject) => String(object.metadata.uid)
+
+export interface KubeUsage { cpu:number; memory:number; timestamp:string }
+export interface KubeOverview {
+  counts:Record<string,{count:number;state:'ok'|'partial'|'unavailable'}>
+  nodes:Array<{name:string;ready:boolean;cpu:number;memory:number}> | null
+  phases:Record<string,number> | null
+  usage:Record<string,Record<string,KubeUsage>>
+  metrics_state:Record<string,string>
+  collected_at:string
+}
+export function usageFor(data:KubeOverview|null,object:KubeObject):KubeUsage|undefined {
+  const kind=object.kind==='Node'?'nodes':object.kind==='Pod'?'pods':''
+  const key=kind==='pods'?`${object.metadata.namespace}/${object.metadata.name}`:object.metadata.name
+  const usage=data?.usage[kind]?.[key]
+  return usage && Date.now()-Date.parse(usage.timestamp)<=120_000 && Date.parse(usage.timestamp)>=Date.parse(object.metadata.creationTimestamp ?? '1970-01-01') ? usage : undefined
+}
+export function formatKubeCPU(value:number|undefined) { return value===undefined?'—':value<1?`${Math.round(value*1000)} m`:`${Number(value.toFixed(2))} CPU` }
+export function formatKubeMemory(value:number|undefined) { return value===undefined?'—':value>=1073741824?`${(value/1073741824).toFixed(1)} GiB`:`${(value/1048576).toFixed(0)} MiB` }
 
 function canonical(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(canonical)

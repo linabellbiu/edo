@@ -22,7 +22,7 @@ func workspacePermissions() []Permission {
 		}
 	}
 	for _, resource := range []struct{ code, name, actions string }{
-		{"node", "集群节点", "read update"},
+		{"node", "集群节点", "read create update delete"},
 		{"workload", "工作负载", "read create update delete execute"},
 		{"config", "集群配置", "read create update delete"},
 		{"storage", "集群存储", "read create update delete"},
