@@ -113,10 +113,37 @@ jobs:
           if [[ "$EDO_TEST_DATABASE_DRIVER" == sqlite ]]; then
             go test -race -count=1 -timeout=20m ./internal/database
           else
-            go test -race -count=1 -timeout=20m ./internal/database -run '^TestExternalDatabaseMigration$'
+            go test -race -count=1 -timeout=20m ./internal/database -run '^TestExternal(Database|Assistant)Migration$'
             # 先完成迁移，再验证真实方言下的窗口查询及项目范围，不能与建表并行。
             go test -race -count=1 -timeout=20m ./internal/pipeline -run '^TestLatestReleasePlanExecutionsExternalDatabases$'
           fi
+
+      - name: 自增行号新库、升级与跨库复制验证
+        if: ${{ matrix.driver != 'sqlite' }}
+        shell: bash
+        env:
+          EDO_ID_TEST_DRIVER: ${{ matrix.driver }}
+          POSTGRES_SERVICE_ID: ${{ job.services.postgres.id }}
+          MYSQL_SERVICE_ID: ${{ job.services.mysql.id }}
+        run: |
+          set -euo pipefail
+          # 三种模式都要求空库；每个模式创建独立数据库，不能复用迁移步骤已有的 edo 库。
+          # 只使用本任务的临时数据库容器与一次性测试凭据，不接触外部环境。
+          for spec in fresh:TestRowIdentitiesFresh upgrade:TestRowIdentitiesUpgrade transfer:TestRowIdentityTransfer; do
+            mode="${spec%%:*}"
+            test_name="${spec#*:}"
+            database_name="edo_identity_${mode}"
+            if [[ "$EDO_ID_TEST_DRIVER" == postgres ]]; then
+              docker exec -e PGPASSWORD=edo_test "$POSTGRES_SERVICE_ID" \
+                createdb --host=127.0.0.1 --username=edo --template=template0 "$database_name"
+              dsn="host=127.0.0.1 port=5432 user=edo password=edo_test dbname=${database_name} sslmode=disable TimeZone=Asia/Shanghai"
+            else
+              docker exec -e MYSQL_PWD=edo_test "$MYSQL_SERVICE_ID" \
+                mysql --user=root --execute="CREATE DATABASE ${database_name} CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci"
+              dsn="root:edo_test@tcp(127.0.0.1:3306)/${database_name}?charset=utf8mb4&parseTime=True&loc=Asia%2FShanghai"
+            fi
+            EDO_ID_TEST_DSN="$dsn" go test -race -count=1 -timeout=20m ./internal/database -run "^${test_name}$"
+          done
 
   go-checks:
     name: Go 静态检查与构建
@@ -167,4 +194,12 @@ jobs:
         env:
           EDO_TEST_DOCKER_INTEGRATION: "1"
         # 仅在临时 Runner 上创建测试容器，和业务、数据库及前端检查互不阻塞。
-        run: go test ./internal/dockerengine -run '^Test(DockerBuildAndCompose|ScriptContainer)Integration$' -count=1 -timeout=20m
+        run: go test -race -count=1 -timeout=20m ./internal/dockerengine -run '^Test(DockerBuildAndComposeIntegration|DockerBuildCacheAcrossIsolatedContexts|ScriptContainerIntegration)$'
+      - name: 准备流水线停止测试镜像
+        timeout-minutes: 5
+        # 停止测试只使用已存在的镜像，避免把镜像下载时间混入停止耗时。
+        run: docker pull alpine:3.22
+      - name: 真实流水线取消与容器回收
+        env:
+          EDO_TEST_DOCKER_STOP: "1"
+        run: go test -race -count=1 -timeout=20m ./internal/pipeline -run '^TestStopPipelineWithRealDockerContainer$'

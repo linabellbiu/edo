@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { message } from 'ant-design-vue'
 import { RefreshCw, Search } from 'lucide-vue-next'
 import { useI18n } from 'vue-i18n'
@@ -27,6 +27,7 @@ const nextBeforeID = ref(0)
 const hasMore = ref(false)
 const loading = ref(false)
 const loadingMore = ref(false)
+let revision = 0, disposed = false, controller: AbortController | undefined
 
 const levelLabels = computed<Record<string, string>>(() => ({
   debug: t('systemLogs.level.debug'),
@@ -47,7 +48,13 @@ function formatTime(value: string) {
 }
 
 async function load(append = false) {
-  append ? loadingMore.value = true : loading.value = true
+  if (disposed || (append && (loading.value || loadingMore.value))) return
+  controller?.abort()
+  const currentController = new AbortController()
+  controller = currentController
+  const request = ++revision
+  loading.value = !append
+  loadingMore.value = append
   try {
     const response = await client.get<LogResponse>('/logs', {
       params: {
@@ -56,15 +63,20 @@ async function load(append = false) {
         query: query.value || undefined,
         before_id: append && nextBeforeID.value ? nextBeforeID.value : undefined,
       },
+      signal: currentController.signal,
     })
+    if (disposed || request !== revision || currentController.signal.aborted) return
     items.value = append ? [...items.value, ...response.data.items] : response.data.items
     nextBeforeID.value = response.data.next_before_id || 0
     hasMore.value = response.data.has_more
   } catch (error) {
-    message.error(apiErrorMessage(error))
+    if (!disposed && request === revision && !currentController.signal.aborted) message.error(apiErrorMessage(error))
   } finally {
-    loading.value = false
-    loadingMore.value = false
+    if (request === revision) {
+      loading.value = false
+      loadingMore.value = false
+      controller = undefined
+    }
   }
 }
 
@@ -75,6 +87,7 @@ function search() {
 
 watch(level, () => void load(false))
 onMounted(() => void load(false))
+onBeforeUnmount(() => { disposed = true; revision++; controller?.abort(); controller = undefined })
 </script>
 
 <template>

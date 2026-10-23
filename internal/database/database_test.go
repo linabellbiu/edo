@@ -1371,8 +1371,12 @@ func exerciseExternalExecutionConfigUpgrade(t *testing.T, db *gorm.DB, prefix st
 		Operation: model.DeploymentRelease, Status: model.DeploymentSucceeded,
 		DockerConfig: model.DockerContainerConfig{}, RequestedBy: "admin", CreatedAt: now, UpdatedAt: now,
 	}
-	for _, value := range []any{&deploymentRecord, &deploymentPlan, &buildPlan} {
-		if err := db.Unscoped().Delete(value).Error; err != nil {
+	for _, value := range []any{
+		&model.DeploymentRecord{ID: deploymentRecord.ID},
+		&model.DeploymentPlan{ID: deploymentPlan.ID},
+		&model.BuildPlan{ID: buildPlan.ID},
+	} {
+		if err := db.Unscoped().Where(value).Delete(value).Error; err != nil {
 			t.Fatalf("清理 %s 升级测试数据失败: %v", prefix, err)
 		}
 	}

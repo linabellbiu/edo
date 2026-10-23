@@ -479,6 +479,7 @@ function removeDepartment(item: Department) {
         await refresh()
       } catch (error) {
         message.error(apiErrorMessage(error))
+        throw error
       }
     },
   })
@@ -599,6 +600,7 @@ function removeRole(item: Role) {
         await refresh()
       } catch (error) {
         message.error(apiErrorMessage(error))
+        throw error
       }
     },
   })

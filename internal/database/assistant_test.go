@@ -57,7 +57,19 @@ func TestExternalAssistantMigration(t *testing.T) {
 			}
 			// 与现有外部迁移测试相同，这里只接受可丢弃的专用测试库。
 			db := openAssistantMigrationDatabase(t, item.driver, dsn)
-			exerciseAssistantMigration(t, db)
+			fixture := exerciseAssistantMigration(t, db)
+			// 升级保留断言完成后，复制阶段使用空目标，避免两套样本的自增行号碰撞。
+			for _, value := range []any{
+				&model.AssistantAction{ID: fixture.action.ID},
+				&model.AssistantMessage{ID: fixture.message.ID},
+				&model.AssistantConversation{ID: fixture.conversation.ID},
+				&model.AssistantSettings{ID: fixture.settings.ID},
+			} {
+				result := db.Where(value).Delete(value)
+				if result.Error != nil || result.RowsAffected != 1 {
+					t.Fatalf("准备助手复制空目标失败: %T: 删除行数=%d: %v", value, result.RowsAffected, result.Error)
+				}
+			}
 			source := openAssistantMigrationDatabase(t, "sqlite", filepath.Join(t.TempDir(), "assistant-source.db"))
 			assertAssistantTableTransfer(t, source, db, item.driver)
 		})
@@ -93,7 +105,7 @@ func assistantMigrationModels() []any {
 	return []any{&model.AssistantSettings{}, &model.AssistantConversation{}, &model.AssistantMessage{}, &model.AssistantAction{}}
 }
 
-func exerciseAssistantMigration(t *testing.T, db *gorm.DB) {
+func exerciseAssistantMigration(t *testing.T, db *gorm.DB) assistantMigrationFixture {
 	t.Helper()
 	assertAssistantSchema(t, db)
 	// 只回退这次新表的迁移状态，验证从已有 EDO 数据升级时不会改写旧记录。
@@ -124,6 +136,7 @@ func exerciseAssistantMigration(t *testing.T, db *gorm.DB) {
 		t.Fatalf("助手迁移版本不完整: %v", err)
 	}
 	assertAssistantFixture(t, db, fixture)
+	return fixture
 }
 
 func assertAssistantSchema(t *testing.T, db *gorm.DB) {

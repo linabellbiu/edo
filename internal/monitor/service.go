@@ -120,7 +120,7 @@ func (s *Service) List(ctx context.Context) ([]View, error) {
 
 func (s *Service) Create(ctx context.Context, actorID string, input Input) (*View, error) {
 	id := uuid.NewString()
-	normalized, endpointCiphertext, endpointDisplay, err := s.normalize(id, nil, input)
+	normalized, endpointCiphertext, endpointDisplay, err := s.normalize(ctx, id, nil, input)
 	if err != nil {
 		return nil, err
 	}
@@ -152,7 +152,7 @@ func (s *Service) Update(ctx context.Context, id string, input Input) (*View, er
 		}
 		return nil, fmt.Errorf("查询监控规则失败: %w", err)
 	}
-	normalized, endpointCiphertext, endpointDisplay, err := s.normalize(id, &rule, input)
+	normalized, endpointCiphertext, endpointDisplay, err := s.normalize(ctx, id, &rule, input)
 	if err != nil {
 		return nil, err
 	}
@@ -436,7 +436,7 @@ func (s *Service) deliverPendingAlert(ctx context.Context, check *model.MonitorC
 	return nil
 }
 
-func (s *Service) normalize(id string, existing *model.MonitorRule, input Input) (Input, string, string, error) {
+func (s *Service) normalize(ctx context.Context, id string, existing *model.MonitorRule, input Input) (Input, string, string, error) {
 	input.Name = strings.TrimSpace(input.Name)
 	input.Method = strings.ToUpper(strings.TrimSpace(input.Method))
 	input.NotificationChannelID = strings.TrimSpace(input.NotificationChannelID)
@@ -448,7 +448,11 @@ func (s *Service) normalize(id string, existing *model.MonitorRule, input Input)
 	}
 	if input.NotificationChannelID != "" {
 		var count int64
-		if err := s.db.Model(&model.NotificationChannel{}).Where("uuid = ? AND is_active = ?", input.NotificationChannelID, true).Count(&count).Error; err != nil || count != 1 {
+		if err := s.db.WithContext(ctx).Model(&model.NotificationChannel{}).
+			Where(&model.NotificationChannel{ID: input.NotificationChannelID, IsActive: true}).Count(&count).Error; err != nil {
+			return Input{}, "", "", fmt.Errorf("校验监控通知渠道失败: %w", err)
+		}
+		if count != 1 {
 			return Input{}, "", "", ErrInvalidRule
 		}
 	}

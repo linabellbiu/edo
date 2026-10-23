@@ -73,7 +73,7 @@ func (s *Service) List(ctx context.Context) ([]model.ScheduledTask, error) {
 }
 
 func (s *Service) Create(ctx context.Context, actorID string, input Input) (*model.ScheduledTask, error) {
-	name, expression, timezone, action, payload, nextRunAt, err := normalizeInput(input, time.Now().UTC())
+	name, expression, timezone, action, payload, nextRunAt, err := s.normalizeInput(ctx, input, time.Now().UTC())
 	if err != nil {
 		return nil, err
 	}
@@ -100,7 +100,7 @@ func (s *Service) Update(ctx context.Context, id string, input Input) (*model.Sc
 		}
 		return nil, fmt.Errorf("查询定时任务失败: %w", err)
 	}
-	name, expression, timezone, action, payload, nextRunAt, err := normalizeInput(input, time.Now().UTC())
+	name, expression, timezone, action, payload, nextRunAt, err := s.normalizeInput(ctx, input, time.Now().UTC())
 	if err != nil {
 		return nil, err
 	}
@@ -222,7 +222,7 @@ func (s *Service) enqueueOne(ctx context.Context, due *model.ScheduledTask, now 
 	})
 }
 
-func normalizeInput(input Input, after time.Time) (string, string, string, model.ScheduleAction, []byte, time.Time, error) {
+func (s *Service) normalizeInput(ctx context.Context, input Input, after time.Time) (string, string, string, model.ScheduleAction, []byte, time.Time, error) {
 	name := strings.TrimSpace(input.Name)
 	expression := strings.TrimSpace(input.CronExpression)
 	timezone := strings.TrimSpace(input.Timezone)
@@ -242,6 +242,14 @@ func normalizeInput(input Input, after time.Time) (string, string, string, model
 	}
 	nextRunAt, err := nextTime(expression, timezone, after)
 	if err != nil {
+		return "", "", "", "", nil, time.Time{}, ErrInvalidSchedule
+	}
+	var count int64
+	if err := s.db.WithContext(ctx).Model(&model.NotificationChannel{}).
+		Where(&model.NotificationChannel{ID: action.ChannelID, IsActive: true}).Count(&count).Error; err != nil {
+		return "", "", "", "", nil, time.Time{}, fmt.Errorf("校验定时通知渠道失败: %w", err)
+	}
+	if count != 1 {
 		return "", "", "", "", nil, time.Time{}, ErrInvalidSchedule
 	}
 	return name, expression, timezone, input.Action, payload, nextRunAt, nil
