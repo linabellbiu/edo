@@ -1,12 +1,48 @@
 package httpapi
 
 import (
+	"errors"
 	"net/http"
+	"strconv"
+	"time"
 
 	"edo/internal/access"
 	"edo/internal/kube"
 	"github.com/gin-gonic/gin"
 )
+
+func (h clusterHandler) nodeHistory(service *access.Service) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		window, err := strconv.Atoi(c.DefaultQuery("window", "900"))
+		if err != nil || (window != 900 && window != 3600 && window != 21600 && window != 86400 && window != 259200) {
+			h.resourceError(c, "kubernetes_node_history_range", kube.ErrNodeHistoryRange)
+			return
+		}
+		user, ok := currentUser(c)
+		if !ok {
+			h.logger.Error("节点监控缺少当前用户", "operation", "kubernetes_node_history")
+			writeInternalError(c)
+			return
+		}
+		workloads, err := service.HasPermission(c.Request.Context(), user, "kubernetes.workload.read")
+		if err != nil {
+			h.resourceError(c, "kubernetes_node_history_permission", err)
+			return
+		}
+		result, err := h.kube.NodeHistory(c.Request.Context(), c.Param("id"), c.Param("name"), c.Query("uid"), time.Duration(window)*time.Second, workloads)
+		if err != nil {
+			if errors.Is(err, kube.ErrNodeHistoryUnavailable) {
+				h.logger.Error("读取节点监控失败", "operation", "kubernetes_node_history", "cluster_id", c.Param("id"), "name", c.Param("name"), "err", err)
+				writeError(c, http.StatusServiceUnavailable, "node_metrics_unavailable", kube.ErrNodeHistoryUnavailable.Error())
+				return
+			}
+			h.resourceError(c, "kubernetes_node_history", err)
+			return
+		}
+		c.Header("Cache-Control", "no-store")
+		c.JSON(http.StatusOK, result)
+	}
+}
 
 func (h clusterHandler) overview(service *access.Service) gin.HandlerFunc {
 	return func(c *gin.Context) {

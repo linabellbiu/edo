@@ -53,6 +53,7 @@ func TestKubernetesResourcePermissionsAndSecretAudit(t *testing.T) {
 		{http.MethodPost, "/api/v1/kubernetes/clusters/" + result.Cluster.ID + "/resources/secrets/private/validate?namespace=default", map[string]any{}},
 		{http.MethodPost, "/api/v1/kubernetes/clusters/" + result.Cluster.ID + "/resources/deployments/web/actions?namespace=default", map[string]any{"action": "restart", "uid": "uid-1", "resource_version": "1"}},
 		{http.MethodGet, "/api/v1/kubernetes/clusters/" + result.Cluster.ID + "/resources/nodes", nil},
+		{http.MethodGet, "/api/v1/kubernetes/clusters/" + result.Cluster.ID + "/nodes/worker/metrics?uid=n1", nil},
 		{http.MethodPost, "/api/v1/kubernetes/clusters/" + result.Cluster.ID + "/node-joins", map[string]any{"provider": "k3s", "minutes": 15}},
 		{http.MethodDelete, "/api/v1/kubernetes/clusters/" + result.Cluster.ID + "/nodes/worker", map[string]any{"uid": "uid-1", "resource_version": "1", "agent_stopped": true, "name": "worker"}},
 	} {

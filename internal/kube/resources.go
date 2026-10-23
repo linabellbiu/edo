@@ -159,6 +159,11 @@ func resourceView(resource string, item *unstructured.Unstructured, reveal bool)
 	unstructured.RemoveNestedField(copy.Object, "metadata", "managedFields")
 	annotations := copy.GetAnnotations()
 	delete(annotations, "kubectl.kubernetes.io/last-applied-configuration")
+	if resource == "nodes" {
+		// K3s / RKE2 的节点环境注解可能带有加入令牌，不进入普通详情及 YAML。
+		delete(annotations, "k3s.io/node-env")
+		delete(annotations, "rke2.io/node-env")
+	}
 	copy.SetAnnotations(annotations)
 	if resource == "secrets" {
 		keys := []any{}

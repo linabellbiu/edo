@@ -72,9 +72,10 @@ type Deployment struct {
 }
 
 type Service struct {
-	db      *gorm.DB
-	secrets *secret.Manager
-	config  config.Runtime
+	db          *gorm.DB
+	secrets     *secret.Manager
+	config      config.Runtime
+	nodeMonitor *nodeMonitor
 }
 
 // WithTransaction 让集群连接校验与上层聚合资源共享同一个数据库事务。

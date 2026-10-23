@@ -136,6 +136,8 @@ func (h clusterHandler) resourceError(c *gin.Context, operation string, err erro
 	h.logger.Error("Kubernetes 资源操作失败", "operation", operation, "cluster_id", c.Param("id"), "resource", c.Param("resource"), "namespace", c.Query("namespace"), "name", c.Param("name"), "request_id", requestIDFrom(c), "err", err)
 	status, code, message := http.StatusBadGateway, "kubernetes_unavailable", kube.ErrClusterUnreachable.Error()
 	switch {
+	case errors.Is(err, kube.ErrNodeHistoryRange):
+		status, code, message = http.StatusBadRequest, "invalid_node_metrics_range", kube.ErrNodeHistoryRange.Error()
 	case errors.Is(err, kube.ErrNodeRemovalUnsafe), errors.Is(err, kube.ErrJoinUnsupported):
 		status, code, message = http.StatusBadRequest, "kubernetes_node_operation_blocked", err.Error()
 	case errors.Is(err, kube.ErrInvalidResource), errors.Is(err, kube.ErrResourceProtected):
