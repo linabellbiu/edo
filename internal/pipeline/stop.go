@@ -23,6 +23,13 @@ type runExecutionControl struct{ cancel context.CancelFunc }
 func (s *Service) StopRun(ctx context.Context, runID, actorID string) (*model.PipelineRun, error) {
 	s.pipelineAdvanceMu.Lock()
 	defer s.pipelineAdvanceMu.Unlock()
+	var parallelCount int64
+	if err := s.db.WithContext(ctx).Model(&model.PipelineNodeRun{}).Where("pipeline_run_id = ?", runID).Count(&parallelCount).Error; err != nil {
+		return nil, ErrPipelineStopFailed
+	}
+	if parallelCount > 0 {
+		return s.stopParallelRun(ctx, runID, actorID)
+	}
 	var run model.PipelineRun
 	changed := false
 	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
@@ -106,12 +113,17 @@ func (s *Service) withRunCancellation(ctx context.Context, runID, jobID string, 
 	s.pipelineAdvanceMu.Lock()
 	var run model.PipelineRun
 	err := s.db.WithContext(ctx).Select("uuid", "stage", "status", "execution_job_id").First(&run, "uuid = ?", runID).Error
-	if err != nil || run.ExecutionJobID != jobID {
+	isNodeJob := s.hasNodeJob(ctx, runID, jobID)
+	if err != nil || (run.ExecutionJobID != jobID && !isNodeJob) {
 		s.pipelineAdvanceMu.Unlock()
 		return execute(ctx)
 	}
-	if run.Stage == stoppingStage || run.Status == model.PipelineRunCanceled {
+	if run.Stage == stoppingStage || run.Status == model.PipelineRunCanceled || (isNodeJob && run.Status == model.PipelineRunFailed) {
 		s.pipelineAdvanceMu.Unlock()
+		if isNodeJob {
+			_, err := s.finishStoppedNode(ctx, runID, jobID)
+			return err
+		}
 		_, err := s.finishStoppedRun(ctx, runID, jobID)
 		return err
 	}
@@ -135,9 +147,13 @@ func (s *Service) withRunCancellation(ctx context.Context, runID, jobID string, 
 			case <-ticker.C:
 				checkCtx, checkCancel := context.WithTimeout(executionCtx, 2*time.Second)
 				var current model.PipelineRun
-				err := s.db.WithContext(checkCtx).Select("stage", "status").First(&current, "uuid = ? AND execution_job_id = ?", runID, jobID).Error
+				query := s.db.WithContext(checkCtx).Select("stage", "status").Where("uuid = ?", runID)
+				if !isNodeJob {
+					query = query.Where("execution_job_id = ?", jobID)
+				}
+				err := query.First(&current).Error
 				checkCancel()
-				if err == nil && (current.Stage == stoppingStage || current.Status == model.PipelineRunCanceled) {
+				if err == nil && (current.Stage == stoppingStage || current.Status == model.PipelineRunCanceled || (isNodeJob && current.Status == model.PipelineRunFailed)) {
 					cancel()
 					return
 				}
@@ -154,6 +170,15 @@ func (s *Service) withRunCancellation(ctx context.Context, runID, jobID string, 
 		defer s.pipelineAdvanceMu.Unlock()
 		if s.runningExecutions[jobID] == control {
 			delete(s.runningExecutions, jobID)
+		}
+		if isNodeJob {
+			stopped, err := s.finishStoppedNode(context.WithoutCancel(ctx), runID, jobID)
+			if err != nil {
+				resultErr = err
+			} else if stopped {
+				resultErr = nil
+			}
+			return
 		}
 		stopped, stopErr := s.finishStoppedRunLocked(ctx, runID, jobID)
 		if stopErr != nil {

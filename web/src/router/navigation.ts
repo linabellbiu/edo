@@ -39,6 +39,9 @@ export const navigation: NavSection[] = [
         { label: 'nav.applications', path: '/applications', permissions: ['application.read'], icon: PanelsTopLeft },
         { label: 'nav.repositories', path: '/repositories', permissions: ['repository.read'], icon: GitBranch },
         { label: 'nav.credentials', path: '/credentials', permissions: ['credential.read'], icon: KeyRound },
+        {label:'nav.applicationDatabases',path:'/application-databases',permissions:['application_database.read'],icon:Database},
+        {label:'nav.environmentPolicies',path:'/environment-policies',permissions:['environment_policy.read'],icon:ShieldCheck},
+        { label: 'nav.deliveryVariables', path: '/delivery-variables', permissions: ['delivery_variable.read'], icon: KeyRound },
       ] },
       { key: 'build-artifacts', label: 'nav.buildArtifacts', icon: PackageCheck, items: [
         { label: 'nav.buildPlans', path: '/build-plans', permissions: ['build_plan.read'], icon: Boxes },

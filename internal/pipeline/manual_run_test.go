@@ -2,6 +2,7 @@ package pipeline
 
 import (
 	"context"
+ "encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -868,6 +869,16 @@ func TestExplicitApprovalNodeControlsWorkflowRun(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	legacySnapshot, parseErr := parseWorkflowSnapshot(run)
+	if parseErr != nil {
+		t.Fatal(parseErr)
+	}
+	legacySnapshot.ExecutionVersion = 0
+	snapshotJSON, marshalErr := json.Marshal(legacySnapshot)
+	if marshalErr != nil {
+		t.Fatal(marshalErr)
+	}
+	run.WorkflowSnapshot = string(snapshotJSON)
 	run.CurrentNodeID = "approval"
 	run.Status = model.PipelineRunAwaitingApproval
 	run.Stage = string(model.WorkflowNodeApproval)

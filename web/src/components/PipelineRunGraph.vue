@@ -3,13 +3,14 @@ import { computed, nextTick, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { Check, ChevronRight, CircleDot, Clock3, GitBranch, Hand, Package, Rocket, ShieldCheck, TerminalSquare, X } from 'lucide-vue-next'
 
-import type { PipelineExecutionGraph, PipelineRunGraphNode, WorkflowNodeType } from '@/types/pipeline'
+import type { PipelineExecutionGraph, PipelineExecutionStage, PipelineRunGraphNode, WorkflowNodeType } from '@/types/pipeline'
 
 const props = defineProps<{
   graph?: PipelineExecutionGraph
   currentNodeId?: string
   status: string
   stage?: string
+  tasks?: Array<{node_id:string;status:string;stage:string;message:string}>
   compact?: boolean
 }>()
 const { t } = useI18n()
@@ -48,10 +49,17 @@ const nodes = computed(() => {
   return result
 })
 
-function nodeClasses(node: PipelineRunGraphNode) {
-  const current = node.id === props.currentNodeId
-  return [{ current }, current ? currentState.value.key : 'idle']
+function nodeState(node:PipelineRunGraphNode){
+ const task=props.tasks?.find(item=>item.node_id===node.id)
+ if(!task)return node.id===props.currentNodeId?currentState.value:null
+ const meta:Record<string,{key:string;label:string;icon:typeof Check}>={succeeded:{key:'succeeded',label:'成功',icon:Check},failed:{key:'failed',label:'失败',icon:X},canceled:{key:'canceled',label:'已停止',icon:X},skipped:{key:'canceled',label:'已跳过',icon:Check},running:{key:task.stage==='queued'?'waiting':'running',label:task.stage==='queued'?'排队中':'执行中',icon:CircleDot},awaiting_approval:{key:'waiting',label:'等待审核',icon:Clock3},blocked:{key:'waiting',label:'等待放行',icon:Clock3}}
+ return meta[task.status]||null
 }
+function stageBatches(stage:PipelineExecutionStage){
+ if(!stage.batches?.length)return stage.tasks.map(node=>[node])
+ return stage.batches.map(ids=>ids.flatMap(id=>{const node=stage.tasks.find(node=>node.id===id);return node?[node]:[]}))
+}
+function nodeClasses(node:PipelineRunGraphNode){const state=nodeState(node);return [{current:!!state},state?.key||'idle']}
 
 watch(() => [props.currentNodeId, nodes.value.length], async () => {
   await nextTick()
@@ -98,8 +106,10 @@ watch(() => [props.currentNodeId, nodes.value.length], async () => {
           <section class="run-stage">
             <header><strong>{{ pipelineStage.name }}</strong><small>阶段 {{ stageIndex + 1 }}</small></header>
             <div class="run-task-chain">
-              <template v-for="(node, taskIndex) in pipelineStage.tasks" :key="node.id">
-                <ChevronRight v-if="taskIndex" class="task-arrow" :size="17" />
+              <template v-for="(batch, batchIndex) in stageBatches(pipelineStage)" :key="batchIndex">
+                <ChevronRight v-if="batchIndex" class="task-arrow" :size="17" />
+                <div class="run-batch"><small v-if="batch.length>1" class="parallel-label">并行任务</small>
+                <template v-for="node in batch" :key="node.id">
                 <article
                   class="run-node"
                   :class="nodeClasses(node)"
@@ -111,11 +121,12 @@ watch(() => [props.currentNodeId, nodes.value.length], async () => {
                     <small>{{ nodeMeta[node.type]?.label }}<template v-if="node.environment">，环境：{{ node.environment }}</template></small>
                     <strong>{{ node.name }}</strong>
                   </span>
-                  <span v-if="node.id === currentNodeId" class="node-state" :title="currentState.label">
-                    <i v-if="currentState.key === 'running'" class="node-breathing-light" aria-hidden="true" />
-                    <component v-else :is="currentState.icon" :size="13" />
+                  <span v-if="nodeState(node)" class="node-state" :title="nodeState(node)?.label">
+                    <i v-if="nodeState(node)?.key === 'running'" class="node-breathing-light" aria-hidden="true" />
+                    <component v-else :is="nodeState(node)?.icon" :size="13" />
                   </span>
                 </article>
+                </template></div>
               </template>
             </div>
           </section>
@@ -133,7 +144,7 @@ watch(() => [props.currentNodeId, nodes.value.length], async () => {
 .run-graph>header strong,.run-graph>header span{display:block}.run-graph>header strong{font-size:13px}.run-graph>header>div span{margin-top:1px;color:var(--edo-muted);font-size:11px}
 .current-summary{display:flex!important;align-items:center;gap:6px;padding:5px 9px;border-radius:999px;color:var(--edo-muted);background:var(--edo-surface-soft);font-size:12px;font-weight:600;white-space:nowrap}.current-summary.running{color:var(--edo-primary);background:var(--edo-primary-soft)}.summary-breathing-light{width:8px;height:8px;flex:0 0 8px;border-radius:50%;background:currentColor;animation:state-light-breathe 1.9s ease-in-out infinite}.current-summary.waiting{color:#b97813;background:color-mix(in srgb,#e7a33b 14%,var(--edo-surface))}.current-summary.succeeded{color:#188e59;background:color-mix(in srgb,#28b66e 13%,var(--edo-surface))}.current-summary.failed{color:#d94b58;background:color-mix(in srgb,#ed5965 12%,var(--edo-surface))}.current-summary.canceled{color:var(--edo-muted);background:var(--edo-surface-soft)}
 .topology-viewport{overflow-x:auto;padding:18px;background-image:radial-gradient(circle,color-mix(in srgb,var(--edo-muted) 13%,transparent) 1px,transparent 1.2px);background-size:18px 18px;scrollbar-width:thin}.topology-flow{display:flex;width:max-content;min-width:100%;align-items:center}.stage-arrow,.task-arrow{flex:0 0 auto;color:color-mix(in srgb,var(--edo-muted) 58%,var(--edo-border))}.stage-arrow{margin:0 10px}.task-arrow{margin:0 6px}
-.run-stage{padding:10px 12px 13px;border:1px solid var(--edo-border);border-radius:10px;background:color-mix(in srgb,var(--edo-surface) 92%,transparent)}.run-stage>header{display:flex;align-items:center;justify-content:space-between;gap:18px;margin-bottom:9px}.run-stage>header strong{font-size:11px}.run-stage>header small{color:var(--edo-muted);font-size:9px}.run-task-chain{display:flex;align-items:center}
+.run-stage{padding:10px 12px 13px;border:1px solid var(--edo-border);border-radius:10px;background:color-mix(in srgb,var(--edo-surface) 92%,transparent)}.run-stage>header{display:flex;align-items:center;justify-content:space-between;gap:18px;margin-bottom:9px}.run-stage>header strong{font-size:11px}.run-stage>header small{color:var(--edo-muted);font-size:9px}.run-task-chain{display:flex;align-items:center}.run-batch{display:grid;gap:8px}.parallel-label{font-size:12px;color:var(--edo-muted)}
 .run-node{--state-color:var(--edo-primary);display:grid;width:194px;height:68px;align-items:center;grid-template-columns:36px minmax(0,1fr) 20px;gap:9px;padding:9px 10px;border:1px solid color-mix(in srgb,var(--edo-border) 90%,transparent);border-radius:10px;color:var(--edo-text);background:var(--edo-surface);box-shadow:0 1px 2px rgb(28 36 55 / 4%),0 6px 17px rgb(28 36 55 / 6%)}.run-node.source{width:184px}.node-icon{display:grid;width:36px;height:36px;place-items:center;border:1px solid color-mix(in srgb,var(--node-color) 13%,transparent);border-radius:9px;color:var(--node-color);background:color-mix(in srgb,var(--node-color) 12%,var(--edo-surface))}.node-copy{min-width:0}.node-copy small,.node-copy strong{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.node-copy small{color:var(--edo-muted);font-size:10px}.node-copy strong{margin-top:3px;font-size:12.5px}.node-state{display:grid;width:20px;height:20px;place-items:center;border:1px solid color-mix(in srgb,var(--state-color) 16%,transparent);border-radius:50%;color:var(--state-color);background:color-mix(in srgb,var(--state-color) 12%,var(--edo-surface))}.node-breathing-light{width:7px;height:7px;border-radius:50%;background:currentColor;animation:state-light-breathe 1.9s ease-in-out infinite}
 .run-node.current{border-color:color-mix(in srgb,var(--state-color) 84%,var(--edo-border));box-shadow:0 0 0 3px color-mix(in srgb,var(--state-color) 7%,transparent),0 10px 24px rgb(30 45 75 / 11%)}.run-node.current.running{--state-color:#4f7df3;animation:running-border-breathe 2.2s ease-in-out infinite;will-change:border-color,box-shadow}.run-node.current.waiting{--state-color:#d99a2b}.run-node.current.succeeded{--state-color:#28aa70}.run-node.current.failed{--state-color:#e65361}.run-node.current.canceled,.run-node.current.pending{--state-color:#8e96a3}
 .graph-empty{display:flex;min-height:128px;align-items:center;justify-content:center;gap:8px;color:var(--edo-muted);font-size:12px}

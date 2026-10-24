@@ -55,7 +55,7 @@ func TestBuildTransferTargetUsesDatabaseDefaultsAndEscapesCredentials(t *testing
 				}
 				if configuration.Addr != test.wantHost+":"+strconv.Itoa(test.wantPort) || configuration.User != test.input.Username ||
 					configuration.Passwd != test.input.Password || configuration.DBName != test.input.Database ||
-					!configuration.ParseTime || configuration.Loc.String() != TransferTimeZone || configuration.Params["charset"] != "utf8mb4" {
+					!configuration.ParseTime || configuration.Loc.String() != TransferTimeZone || !strings.Contains(configuration.FormatDSN(), "charset=utf8mb4") {
 					t.Fatalf("MySQL 连接配置不一致: %+v", configuration)
 				}
 			case "postgres":

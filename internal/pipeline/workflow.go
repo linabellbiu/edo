@@ -15,6 +15,7 @@ import (
 	"github.com/google/uuid"
 	"gorm.io/gorm"
 
+	"edo/internal/cicd"
 	"edo/internal/deployment"
 	"edo/internal/dockerengine"
 	"edo/internal/model"
@@ -70,6 +71,10 @@ type WorkflowResult struct {
 }
 
 type workflowSnapshot struct {
+	ExecutionVersion  int                                         `json:"execution_version,omitempty"`
+	VariableBindings  map[string][]model.DeliveryVariableBinding  `json:"variable_bindings,omitempty"`
+	ReleasePolicies   map[string]model.EnvironmentReleasePolicy   `json:"release_policies,omitempty"`
+	AuthorityID       string                                      `json:"authority_id,omitempty"`
 	SchemaVersion     uint16                                      `json:"schema_version"`
 	Source            model.WorkflowNode                          `json:"source"`
 	Stages            []model.WorkflowStage                       `json:"stages"`
@@ -483,6 +488,32 @@ func sanitizeWorkflowInput(input *WorkflowInput) error {
 }
 
 func sanitizeWorkflowNode(node *model.WorkflowNode) error {
+	if node.Config.Migration != nil {
+		if node.Type != model.WorkflowNodeShell || node.Config.Check != nil || node.Config.Cache != nil || len(node.Config.Reports) > 0 || len(node.Config.VariableNames) > 0 || node.Config.Migration.DatabaseID == "" || !cicd.ValidRelativePath(node.Config.Migration.Directory) {
+			return ErrInvalidWorkflow
+		}
+		node.Config.Script = "echo 数据库迁移由 EDO 执行"
+		node.Config.RuntimeImage = model.DefaultRuntimeImage
+	}
+
+	if err := cicd.PrepareCheck(node); err != nil {
+		return err
+	}
+	if err := cicd.ValidateCache(node.Config.Cache); err != nil {
+		return err
+	}
+	if err := cicd.ValidateReportConfig(node.Config.Reports); err != nil {
+		return err
+	}
+	if len(node.Config.VariableNames) > 100 {
+		return ErrInvalidWorkflow
+	}
+	for _, name := range node.Config.VariableNames {
+		if !buildVariableNamePattern.MatchString(name) {
+			return ErrInvalidWorkflow
+		}
+	}
+
 	node.ID = strings.TrimSpace(node.ID)
 	node.Name = strings.TrimSpace(node.Name)
 	node.Config.Branch = strings.TrimSpace(node.Config.Branch)
@@ -713,6 +744,9 @@ func (s *Service) validateWorkflow(
 			issues = append(issues, validateWorkflowNotificationRules(node, stage.ID, activeNotificationChannels)...)
 			switch node.Type {
 			case model.WorkflowNodeBuild:
+				if plan, ok := activeBuildPlans[node.Config.BuildPlanID]; ok && plan.Kind == model.BuildPlanDockerfile && (len(node.Config.Reports) > 0 || node.Config.Cache != nil) {
+					issues = append(issues, WorkflowIssue{Code: "unsupported_build_controls", Message: "Dockerfile 构建使用构建方案中的镜像缓存；检查报告和依赖缓存请放在独立脚本任务中", NodeID: node.ID, StageID: stage.ID})
+				}
 				if _, ok := activeBuildPlans[node.Config.BuildPlanID]; !ok {
 					issues = append(issues, WorkflowIssue{Code: "missing_build_plan", Message: fmt.Sprintf("构建任务“%s”需要选择可用的构建方案", node.Name), NodeID: node.ID, StageID: stage.ID})
 				}
@@ -748,6 +782,9 @@ func (s *Service) validateWorkflow(
 				issues = append(issues, WorkflowIssue{Code: "invalid_node_type", Message: "任务类型无效", NodeID: node.ID, StageID: stage.ID})
 			}
 		}
+	}
+	if _, err := artifactSources(stages); err != nil {
+		issues = append(issues, WorkflowIssue{Code: "ambiguous_artifact_source", Message: "部署任务需要选择已完成阶段的构建制品；并行构建时请明确选择来源任务"})
 	}
 	issues = append(issues, validateWorkflowArtifactFlow(tasks, activeBuildPlans, activeDeploymentPlans, activeTargets)...)
 	return uniqueIssues(issues)
@@ -812,6 +849,17 @@ func validateWorkflowArtifactFlow(
 				artifactPlan = &plan
 			}
 		case model.WorkflowNodeDeploy:
+			if next.Config.ArtifactNodeID != "" {
+				artifactPlan = nil
+				for _, candidate := range tasks {
+					if candidate.ID == next.Config.ArtifactNodeID && candidate.Type == model.WorkflowNodeBuild {
+						if plan, ok := buildPlans[candidate.Config.BuildPlanID]; ok {
+							artifactPlan = &plan
+						}
+						break
+					}
+				}
+			}
 			if artifactPlan == nil {
 				// 构建任务已存在但方案无效时，前面的 missing_build_plan 已经给出准确原因，
 				// 不再追加“缺少构建任务”这一条误导性的重复问题。
@@ -1077,6 +1125,16 @@ func (s *Service) newStageResolvedWorkflowRunWithDatabase(
 	}
 	resolved := *workflow
 	resolved.Stages = cloneWorkflowStages(workflow.Stages)
+	delivery := cicd.New(database, s.secrets, s.logger)
+	variableBindings := make(map[string][]model.DeliveryVariableBinding)
+	policies := make(map[string]model.EnvironmentReleasePolicy)
+	authorityID := actorID
+	if authorityID == "" || authorityID == "system" {
+		authorityID = workflow.UpdatedBy
+		if authorityID == "" {
+			authorityID = workflow.CreatedBy
+		}
+	}
 	buildPlans := make(map[string]workflowBuildPlanSnapshot)
 	deploymentPlans := make(map[string]workflowDeploymentPlanSnapshot)
 	deploymentTargets := make(map[string]workflowDeploymentTargetSnapshot)
@@ -1155,6 +1213,38 @@ func (s *Service) newStageResolvedWorkflowRunWithDatabase(
 			}
 		}
 	}
+	for _, stage := range resolved.Stages {
+		for _, task := range stage.Tasks {
+			if len(task.Config.VariableNames) == 0 {
+				continue
+			}
+			usage, envID := "build", task.Config.VariableEnvironmentID
+			if task.Type == model.WorkflowNodeDeploy {
+				usage = "deploy"
+				envID = deploymentTargets[task.ID].EnvironmentID
+			}
+			if permissionErr := s.requireDeliveryPermissionWithDatabase(ctx, database, authorityID, "delivery_variable.execute"); permissionErr != nil {
+				return nil, permissionErr
+			}
+			binding, bindingErr := delivery.FreezeVariables(ctx, application.ProjectID, application.ID, envID, usage, ref, task.Config.VariableNames)
+			if bindingErr != nil {
+				return nil, bindingErr
+			}
+			variableBindings[task.ID] = binding
+		}
+	}
+	sources, sourceErr := artifactSources(resolved.Stages)
+	if sourceErr != nil {
+		return nil, sourceErr
+	}
+	for i := range resolved.Stages {
+		for j := range resolved.Stages[i].Tasks {
+			task := &resolved.Stages[i].Tasks[j]
+			if source := sources[task.ID]; source != "" {
+				task.Config.ArtifactNodeID = source
+			}
+		}
+	}
 	// 方案是独立可编辑资源，流水线启用后其类型或镜像仓库仍可能改变。
 	// 每次创建运行快照前都重新校验完整制品链，避免先执行昂贵构建，
 	// 到部署节点才发现文件/镜像类型已不匹配。
@@ -1168,12 +1258,54 @@ func (s *Service) newStageResolvedWorkflowRunWithDatabase(
 		}
 		return nil, ErrInvalidWorkflow
 	}
+	for i := range resolved.Stages {
+		var tasks []model.WorkflowNode
+		for _, task := range resolved.Stages[i].Tasks {
+			envID := task.Config.VariableEnvironmentID
+			if task.Type == model.WorkflowNodeDeploy {
+				envID = deploymentTargets[task.ID].EnvironmentID
+			}
+			if task.Config.Migration != nil {
+				if permissionErr := s.requireDeliveryPermissionWithDatabase(ctx, database, authorityID, "application_database.execute"); permissionErr != nil {
+					return nil, permissionErr
+				}
+				target, err := delivery.FindDatabase(ctx, application.ProjectID, application.ID, task.Config.Migration.DatabaseID)
+				if err != nil {
+					return nil, err
+				}
+				task.Config.Migration.Version = target.Version
+				task.Config.Migration.Fingerprint = target.Fingerprint
+				envID = target.EnvironmentID
+			}
+			if task.Type == model.WorkflowNodeDeploy || task.Config.Migration != nil {
+				policy, policyErr := delivery.Policy(ctx, application.ProjectID, envID, ref, now)
+				if policyErr != nil {
+					return nil, policyErr
+				}
+				if policy != nil {
+					policies[task.ID] = *policy
+					if policy.RequireApproval {
+						gateID := "policy-" + sha256Digest([]byte(task.ID))[:24]
+						tasks = append(tasks, model.WorkflowNode{ID: gateID, Name: "环境发布审核", Type: model.WorkflowNodeApproval})
+						policies[gateID] = *policy
+					}
+				}
+				if task.Config.Migration != nil {
+					gateID := "database-" + sha256Digest([]byte(task.ID))[:24]
+					tasks = append(tasks, model.WorkflowNode{ID: gateID, Name: "数据库变更审核", Type: model.WorkflowNodeApproval})
+				}
+			}
+			tasks = append(tasks, task)
+		}
+		resolved.Stages[i].Tasks = tasks
+	}
 	run, err := newWorkflowRun(application, &resolved, node, trigger, ref, commitSHA, actorID, message, now)
 	if err != nil {
 		return nil, err
 	}
 	snapshot, err := json.Marshal(workflowSnapshot{
 		SchemaVersion: resolved.SchemaVersion, Source: resolved.Source, Stages: resolved.Stages,
+		ExecutionVersion: 2, VariableBindings: variableBindings, ReleasePolicies: policies, AuthorityID: authorityID,
 		BuildPlans:      buildPlans,
 		DeploymentPlans: deploymentPlans, DeploymentTargets: deploymentTargets,
 		ApprovalEnabled: workflowHasApprovalNode(resolved.Stages),
@@ -1220,7 +1352,8 @@ func newWorkflowRun(application *model.Application, workflow *model.ReleaseWorkf
 	}
 	return &model.PipelineRun{
 		ID: uuid.NewString(), ProjectID: application.ProjectID, DepartmentID: application.DepartmentID,
-		ApplicationID: application.ID, Trigger: trigger,
+		StatusWriteback: workflow.Source.Config.StatusWriteback,
+		ApplicationID:   application.ID, Trigger: trigger,
 		Ref: ref, CommitSHA: commitSHA, Status: model.PipelineRunDetected,
 		Stage: string(node.Type), Environment: "",
 		WorkflowID: workflow.ID, WorkflowRevision: workflow.Revision,
@@ -1680,6 +1813,9 @@ func (s *Service) advanceLoadedRun(ctx context.Context, run *model.PipelineRun, 
 	if err != nil {
 		return nil, err
 	}
+	if snapshot.ExecutionVersion >= 2 {
+		return s.advanceParallelRun(ctx, run, snapshot, actorID, targetNodeID)
+	}
 	current, ok := workflowFindNode(snapshot.Source, snapshot.Stages, run.CurrentNodeID)
 	if !ok {
 		return nil, ErrInvalidWorkflowTransition
@@ -1901,8 +2037,12 @@ func (s *Service) ApproveRun(ctx context.Context, runID, actorID string) (*model
 		if !found || current.Type != model.WorkflowNodeApproval || !snapshot.ApprovalEnabled || run.Status != model.PipelineRunAwaitingApproval {
 			return ErrInvalidWorkflowTransition
 		}
-		if run.CreatedBy != "" && run.CreatedBy == actorID {
+		if (run.CreatedBy != "" && run.CreatedBy == actorID) || (snapshot.AuthorityID != "" && snapshot.AuthorityID == actorID) {
 			return ErrWorkflowSelfApproval
+		}
+		policy, protected := snapshot.ReleasePolicies[current.ID]
+		if protected && !cicd.PolicyReviewer(policy, actorID) {
+			return cicd.ErrReleaseProtected
 		}
 		now := time.Now().UTC()
 		approval := model.PipelineRunApproval{
@@ -1914,6 +2054,15 @@ func (s *Service) ApproveRun(ctx context.Context, runID, actorID string) (*model
 				return ErrInvalidWorkflowTransition
 			}
 			return err
+		}
+		if protected && policy.MinimumApprovals > 1 {
+			var approvals int64
+			if err := tx.Model(&model.PipelineRunApproval{}).Where("pipeline_run_id = ? AND node_id = ?", run.ID, current.ID).Count(&approvals).Error; err != nil {
+				return err
+			}
+			if approvals < int64(policy.MinimumApprovals) {
+				return nil
+			}
 		}
 		result := tx.Model(&model.PipelineRun{}).
 			Where("uuid = ? AND status = ?", run.ID, model.PipelineRunAwaitingApproval).
@@ -1933,6 +2082,9 @@ func (s *Service) ApproveRun(ctx context.Context, runID, actorID string) (*model
 	})
 	if err != nil {
 		return nil, err
+	}
+	if run.Status == model.PipelineRunAwaitingApproval {
+		return s.FindRun(ctx, run.ID)
 	}
 	advanceContext, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 	defer cancel()

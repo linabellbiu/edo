@@ -64,6 +64,10 @@ func TestPermissionCatalogContainsOnlyImplementedCapabilities(t *testing.T) {
 		"deployment_plan.read", "deployment_plan.create", "deployment_plan.update", "deployment_plan.delete",
 		"release_plan.read", "release_plan.create", "release_plan.update", "release_plan.delete", "release_plan.execute",
 		"pipeline_run.read", "pipeline_run.execute", "artifact.read", "artifact.create")
+	want = append(want,
+		"delivery_variable.read", "delivery_variable.create", "delivery_variable.update", "delivery_variable.delete", "delivery_variable.execute",
+		"application_database.read", "application_database.create", "application_database.update", "application_database.delete", "application_database.execute",
+		"environment_policy.read", "environment_policy.update")
 	got := make(map[string]struct{}, len(catalog))
 	want = append(want, "assistant.read", "assistant.execute", "assistant.platform.read", "kubernetes.node.read", "kubernetes.node.create", "kubernetes.node.update", "kubernetes.node.delete",
 		"kubernetes.workload.read", "kubernetes.workload.create", "kubernetes.workload.update", "kubernetes.workload.delete", "kubernetes.workload.execute",

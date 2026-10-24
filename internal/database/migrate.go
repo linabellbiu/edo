@@ -360,6 +360,24 @@ var migrations = []migration{
 		}
 		return verifyRowIdentities(tx)
 	}},
+	{version: "202610240071", up: func(tx *gorm.DB) error {
+		// 本次只调整已列出的表，避免 GORM 递归重建关联资源的索引。
+		migrationDB := tx.Session(&gorm.Session{})
+		migrationConfig := *tx.Config
+		migrationConfig.IgnoreRelationshipsWhenMigrating = true
+		migrationDB.Config = &migrationConfig
+		if tx.Migrator().HasIndex(&model.PipelineRunApproval{}, "idx_run_approval_node") {
+			if err := tx.Migrator().DropIndex(&model.PipelineRunApproval{}, "idx_run_approval_node"); err != nil {
+				return err
+			}
+		}
+		if err := migrationDB.AutoMigrate(&model.PipelineRunApproval{}, &model.PipelineRun{}, &model.PipelineRunLog{}, &model.DeploymentRecord{}); err != nil {
+			return err
+		}
+		return migrationDB.AutoMigrate(&model.DeliveryVariable{}, &model.DeliveryVariableRevision{},
+			&model.PipelineNodeRun{}, &model.PipelineCheckReport{}, &model.EnvironmentReleasePolicy{},
+			&model.ApplicationDatabase{}, &model.ApplicationDatabaseMigration{}, &model.RepositoryCheckDelivery{})
+	}},
 }
 
 // migrateRepeatableReleasePlanExecutions 取消“一个发布计划只能执行一次”的旧约束，

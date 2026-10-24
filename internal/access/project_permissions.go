@@ -34,6 +34,14 @@ func workspacePermissions() []Permission {
 		}
 	}
 	result = append(result, permission("kubernetes.secret.read", "Kubernetes", "kubernetes.secret", "集群密钥内容", "read", "查看", "查看 Secret 内容并记录审计", true))
+	for _, resource := range []struct{ code, name string }{{"delivery_variable", "变量与密钥"}, {"application_database", "应用数据库"}, {"environment_policy", "环境发布保护"}} {
+		for _, action := range []struct{ code, name string }{{"read", "查看"}, {"create", "创建"}, {"update", "修改"}, {"delete", "删除"}, {"execute", "使用"}} {
+			if resource.code == "environment_policy" && action.code != "read" && action.code != "update" {
+				continue
+			}
+			result = append(result, permission(resource.code+"."+action.code, "持续交付", resource.code, resource.name, action.code, action.name, action.name+resource.name, action.code == "delete" || action.code == "execute"))
+		}
+	}
 	return result
 }
 
@@ -46,7 +54,7 @@ func ProjectPermission(code string) bool {
 	}
 	prefix, _, _ := strings.Cut(code, ".")
 	switch prefix {
-	case "application", "workflow", "build_plan", "image_registry", "deployment_plan", "release_plan", "pipeline_run", "artifact", "repository", "delivery", "deployment", "cluster", "kubernetes", "terminal", "task", "dns", "notification", "scheduler", "assistant":
+	case "delivery_variable", "application_database", "environment_policy", "application", "workflow", "build_plan", "image_registry", "deployment_plan", "release_plan", "pipeline_run", "artifact", "repository", "delivery", "deployment", "cluster", "kubernetes", "terminal", "task", "dns", "notification", "scheduler", "assistant":
 		return IsKnown(code)
 	}
 	return false

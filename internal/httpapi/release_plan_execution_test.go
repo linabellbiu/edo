@@ -169,7 +169,7 @@ func TestCreateReleasePlanExecutionReturnsAccepted(t *testing.T) {
 	if err := fixture.db.First(&run, "uuid = ?", payload.Execution.Items[0].PipelineRunID).Error; err != nil {
 		t.Fatalf("读取发布计划创建的流水线运行失败: %v", err)
 	}
-	if run.Status != model.PipelineRunRunning || run.CurrentNodeID != "build" || run.Stage != "queued" || run.ExecutionJobID == "" {
+	if run.Status != model.PipelineRunRunning || run.CurrentNodeID != "build" || run.Stage != "parallel" || run.ExecutionJobID == "" {
 		t.Fatalf("发布计划没有先进入构建任务: %+v", run)
 	}
 	var job model.Job

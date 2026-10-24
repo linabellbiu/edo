@@ -64,47 +64,49 @@ type TargetInput struct {
 }
 
 type RequestInput struct {
-	TargetID           string
-	ApplicationID      string
-	ApplicationName    string
-	ArtifactID         string
-	Image              string
-	ImageDisplay       string
-	ExpectedImageID    string
-	PipelineRunID      string
-	WorkflowNodeID     string
-	ApprovedBy         string
-	DeploymentPlanID   string
-	PlanKind           model.DeploymentPlanKind
-	ComposeYAML        string
-	ComposeService     string
-	ComposeDigest      string
-	DockerConfig       model.DockerContainerConfig
-	DockerConfigDigest string
-	RegistryAuth       dockerengine.RegistryAuth
-	TimeoutSeconds     int
-	Stdout             io.Writer
-	Stderr             io.Writer
+	UsesDeliveryVariables bool
+	TargetID              string
+	ApplicationID         string
+	ApplicationName       string
+	ArtifactID            string
+	Image                 string
+	ImageDisplay          string
+	ExpectedImageID       string
+	PipelineRunID         string
+	WorkflowNodeID        string
+	ApprovedBy            string
+	DeploymentPlanID      string
+	PlanKind              model.DeploymentPlanKind
+	ComposeYAML           string
+	ComposeService        string
+	ComposeDigest         string
+	DockerConfig          model.DockerContainerConfig
+	DockerConfigDigest    string
+	RegistryAuth          dockerengine.RegistryAuth
+	TimeoutSeconds        int
+	Stdout                io.Writer
+	Stderr                io.Writer
 }
 
 type CommandRequestInput struct {
-	TargetID         string
-	ApplicationID    string
-	ArtifactID       string
-	PipelineRunID    string
-	WorkflowNodeID   string
-	ApprovedBy       string
-	DeploymentPlanID string
-	PlanKind         model.DeploymentPlanKind
-	Script           string
-	ScriptDigest     string
-	TimeoutSeconds   int
-	Environment      map[string]string
-	Artifact         io.Reader
-	ArtifactName     string
-	ArtifactDigest   string
-	Stdout           io.Writer
-	Stderr           io.Writer
+	UsesDeliveryVariables bool
+	TargetID              string
+	ApplicationID         string
+	ArtifactID            string
+	PipelineRunID         string
+	WorkflowNodeID        string
+	ApprovedBy            string
+	DeploymentPlanID      string
+	PlanKind              model.DeploymentPlanKind
+	Script                string
+	ScriptDigest          string
+	TimeoutSeconds        int
+	Environment           map[string]string
+	Artifact              io.Reader
+	ArtifactName          string
+	ArtifactDigest        string
+	Stdout                io.Writer
+	Stderr                io.Writer
 }
 
 type TaskPayload struct {
@@ -116,6 +118,7 @@ type hostScriptRunner interface {
 }
 
 type Service struct {
+	variables     *releaseVariablesResolver
 	db            *gorm.DB
 	docker        *dockerengine.Service
 	kube          *kube.Service
@@ -399,7 +402,7 @@ func (s *Service) requestAndRun(
 	now := time.Now().UTC()
 	record := &model.DeploymentRecord{
 		ID: uuid.NewString(), ProjectID: target.ProjectID, DepartmentID: target.DepartmentID, IdempotencyKey: &idempotencyKey,
-		PipelineRunID: input.PipelineRunID, ApplicationID: strings.TrimSpace(input.ApplicationID), WorkflowNodeID: input.WorkflowNodeID,
+		UsesDeliveryVariables: input.UsesDeliveryVariables, PipelineRunID: input.PipelineRunID, ApplicationID: strings.TrimSpace(input.ApplicationID), WorkflowNodeID: input.WorkflowNodeID,
 		ArtifactID: input.ArtifactID, TargetID: target.ID, Operation: model.DeploymentRelease,
 		Image: image, ImageDisplay: strings.TrimSpace(input.ImageDisplay),
 		ExpectedImageID: strings.TrimSpace(input.ExpectedImageID),
@@ -483,7 +486,7 @@ func (s *Service) requestCommandAndRun(
 	now := time.Now().UTC()
 	record := &model.DeploymentRecord{
 		ID: uuid.NewString(), ProjectID: target.ProjectID, DepartmentID: target.DepartmentID, IdempotencyKey: &idempotencyKey,
-		PipelineRunID: input.PipelineRunID, ApplicationID: strings.TrimSpace(input.ApplicationID), WorkflowNodeID: input.WorkflowNodeID,
+		UsesDeliveryVariables: input.UsesDeliveryVariables, PipelineRunID: input.PipelineRunID, ApplicationID: strings.TrimSpace(input.ApplicationID), WorkflowNodeID: input.WorkflowNodeID,
 		ArtifactID: input.ArtifactID, TargetID: target.ID, Operation: model.DeploymentRelease, Status: model.DeploymentQueued,
 		RequestedBy: actorID, CreatedAt: now, UpdatedAt: now,
 		DeploymentPlanID: input.DeploymentPlanID, DeploymentPlanKind: input.PlanKind,
@@ -622,7 +625,7 @@ func samePipelineReleaseSemantics(existing, requested *model.DeploymentRecord) b
 	if existing == nil || requested == nil {
 		return false
 	}
-	return existing.DepartmentID == requested.DepartmentID && existing.Operation == requested.Operation &&
+	return existing.UsesDeliveryVariables == requested.UsesDeliveryVariables && existing.DepartmentID == requested.DepartmentID && existing.Operation == requested.Operation &&
 		existing.PipelineRunID == requested.PipelineRunID && existing.WorkflowNodeID == requested.WorkflowNodeID &&
 		existing.ArtifactID == requested.ArtifactID && existing.TargetID == requested.TargetID &&
 		existing.TargetName == requested.TargetName && existing.Platform == requested.Platform &&
@@ -706,7 +709,7 @@ func (s *Service) rollback(ctx context.Context, sourceID, actorID string, expect
 	now := time.Now().UTC()
 	prototype := &model.DeploymentRecord{
 		ProjectID: source.ProjectID, DepartmentID: source.DepartmentID,
-		ApplicationID: source.ApplicationID, PipelineRunID: source.PipelineRunID, WorkflowNodeID: source.WorkflowNodeID,
+		UsesDeliveryVariables: source.UsesDeliveryVariables, ApplicationID: source.ApplicationID, PipelineRunID: source.PipelineRunID, WorkflowNodeID: source.WorkflowNodeID,
 		KubernetesUID: source.KubernetesUID,
 		TargetID:      source.TargetID, Operation: model.DeploymentRollback,
 		Image: image, ExpectedImageID: expectedImageID, Status: model.DeploymentQueued,
@@ -920,6 +923,14 @@ func (s *Service) run(ctx context.Context, deploymentID, expectedImageID string,
 	if err := s.db.WithContext(ctx).First(&record, "uuid = ?", deploymentID).Error; err != nil {
 		return s.markFailed(ctx, deploymentID, "deployment_record_missing", "发布记录读取失败", err, "", nil)
 	}
+	if record.UsesDeliveryVariables && releaseEnvironment(ctx) == nil {
+		values, resolveErr := s.resolveRecordVariables(ctx, &record)
+		if resolveErr != nil {
+			s.logger.Error("恢复发布变量失败", "operation", "deployment_variables_resolve", "deployment_id", record.ID, "err", resolveErr)
+			return s.markFailed(ctx, record.ID, "deployment_variables_unavailable", "发布变量已撤销或授权失效，请检查原运行", resolveErr, "", nil)
+		}
+		ctx = WithReleaseEnvironment(ctx, values)
+	}
 	expectedImageID = strings.TrimSpace(expectedImageID)
 	if record.ExpectedImageID != "" {
 		if expectedImageID != "" && expectedImageID != record.ExpectedImageID {
@@ -977,6 +988,7 @@ func (s *Service) run(ctx context.Context, deploymentID, expectedImageID string,
 				Image: record.Image, ExpectedImageID: expectedImageID,
 				DeploymentID: record.ID, Timeout: composeTimeout,
 				RegistryAuth: executionRegistryAuth(command),
+				Environment:  releaseEnvironment(ctx),
 				Stdout:       executionOutput(command, true), Stderr: executionOutput(command, false),
 			})
 		} else {
@@ -989,6 +1001,14 @@ func (s *Service) run(ctx context.Context, deploymentID, expectedImageID string,
 			if configErr != nil {
 				err = ErrInvalidTarget
 				break
+			}
+			if values := releaseEnvironment(ctx); len(values) > 0 {
+				if dockerConfig.EnvironmentVariables == nil {
+					dockerConfig.EnvironmentVariables = map[string]string{}
+				}
+				for key, value := range values {
+					dockerConfig.EnvironmentVariables[key] = value
+				}
 			}
 			if expectedImageID == "" {
 				previous, deployWarning, deployErr := s.docker.DeployContainer(
@@ -1011,6 +1031,9 @@ func (s *Service) run(ctx context.Context, deploymentID, expectedImageID string,
 		identity, err = s.kubernetesExecutionIdentity(ctx, &record)
 		if err != nil {
 			break
+		}
+		if values := releaseEnvironment(ctx); values != nil {
+			ctx = kube.WithReleaseVariables(ctx, values)
 		}
 		previousImage, err = s.kube.DeployImageIfCurrent(
 			ctx, record.RuntimeID, record.Namespace, record.WorkloadName,

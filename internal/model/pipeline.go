@@ -272,9 +272,10 @@ type PipelineRunGraph struct {
 }
 
 type PipelineRunGraphStage struct {
-	ID    string                 `json:"id"`
-	Name  string                 `json:"name"`
-	Tasks []PipelineRunGraphNode `json:"tasks"`
+	Batches [][]string             `json:"batches,omitempty"`
+	ID      string                 `json:"id"`
+	Name    string                 `json:"name"`
+	Tasks   []PipelineRunGraphNode `json:"tasks"`
 }
 
 type PipelineRunGraphNode struct {
@@ -333,6 +334,9 @@ type PipelineRun struct {
 	CurrentNodeName            string                       `gorm:"-" json:"current_node_name,omitempty"`
 	ExecutionGraph             *PipelineRunGraph            `gorm:"-" json:"execution_graph,omitempty"`
 	SelectedArtifact           *PipelineRunSelectedArtifact `gorm:"-" json:"selected_artifact,omitempty"`
+	StatusWriteback            bool                         `gorm:"not null;default:false;index" json:"status_writeback"`
+	RepositoryCheckState       string                       `gorm:"type:varchar(16);not null;default:''" json:"repository_check_state"`
+	NodeExecution              bool                         `gorm:"-" json:"-"`
 	CreatedAt                  time.Time                    `gorm:"not null;index" json:"created_at"`
 	UpdatedAt                  time.Time                    `gorm:"not null" json:"updated_at"`
 	Application                Application                  `gorm:"foreignKey:ApplicationID;references:ID" json:"application,omitempty"`
@@ -344,6 +348,7 @@ func (PipelineRun) TableName() string { return "pipeline_runs" }
 // PipelineRunLog 是流水线运行的追加式日志。自增 ID 同时作为跨数据库兼容的游标，
 // WebSocket 重连时可以从最后一条继续读取，避免重复或遗漏构建输出。
 type PipelineRunLog struct {
+	NodeID        string    `gorm:"type:varchar(64);not null;default:'';index" json:"node_id,omitempty"`
 	ID            uint64    `gorm:"primaryKey;autoIncrement;index:idx_pipeline_run_log_cursor,priority:2" json:"id"`
 	PipelineRunID string    `gorm:"type:varchar(36);not null;index:idx_pipeline_run_log_cursor,priority:1" json:"pipeline_run_id"`
 	Stage         string    `gorm:"type:varchar(32);not null;default:'';index" json:"stage"`

@@ -40,7 +40,7 @@ var (
 	ErrEnvironmentChanged   = errors.New("命令发布主机所属环境已变化")
 )
 
-var environmentKeyPattern = regexp.MustCompile(`^EDO_[A-Z0-9_]{1,60}$`)
+var environmentKeyPattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]{0,127}$`)
 
 type Input struct {
 	HostID           string
@@ -500,7 +500,7 @@ func localShellPath(lookPath func(string) (string, error)) (string, error) {
 func deploymentScriptInput(input Input) (string, error) {
 	keys := make([]string, 0, len(input.Environment))
 	for key, value := range input.Environment {
-		if !environmentKeyPattern.MatchString(key) || len(value) > 4096 || strings.ContainsRune(value, '\x00') {
+		if !safeDeploymentEnvironmentName(key) || len(value) > 65536 || strings.ContainsRune(value, '\x00') {
 			return "", ErrInvalidScript
 		}
 		keys = append(keys, key)
@@ -540,4 +540,15 @@ func normalizeWorkingDirectory(value string) string {
 
 func shellQuote(value string) string {
 	return "'" + strings.ReplaceAll(value, "'", "'\"'\"'") + "'"
+}
+
+func safeDeploymentEnvironmentName(key string) bool {
+	if !environmentKeyPattern.MatchString(key) {
+		return false
+	}
+	switch strings.ToUpper(key) {
+	case "PATH", "HOME", "TMPDIR", "SHELL", "BASH_ENV", "ENV", "IFS", "LD_PRELOAD", "LD_LIBRARY_PATH":
+		return false
+	}
+	return !strings.HasPrefix(strings.ToUpper(key), "DOCKER_") && !strings.HasPrefix(strings.ToUpper(key), "BUILDX_") && !strings.HasPrefix(strings.ToUpper(key), "BUILDKIT_")
 }

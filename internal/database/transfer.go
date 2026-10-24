@@ -599,6 +599,8 @@ func resetPostgresSequences(db *gorm.DB) error {
 }
 
 var orderedTransferTables = []string{
+	"delivery_variables", "delivery_variable_revisions", "pipeline_node_runs", "pipeline_check_reports",
+	"environment_release_policies", "application_databases", "application_database_migrations", "repository_check_deliveries",
 	"organizations", "projects", "project_members",
 	"departments", "users", "roles", "role_permissions", "user_roles", "user_permissions",
 	"git_credentials", "identity_providers", "external_identities",

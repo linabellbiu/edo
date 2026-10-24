@@ -102,3 +102,12 @@ Git 元数据继续使用已固定版本的 [go-git 文件存储](https://pkg.go
 邮件发送采用 [wneessen/go-mail v0.8.1](https://github.com/wneessen/go-mail/releases/tag/v0.8.1)，MIT 许可，仍有发布和安全维护；已核对其 [地址编码安全公告](https://github.com/wneessen/go-mail/security/advisories/GHSA-wpwj-69cm-q9c5)，修复从 v0.7.1 提供。只增加此直接依赖，复用项目已有的 x/crypto 和 x/text，不新增常驻服务；支持 Linux/macOS、Context 超时、强制 STARTTLS 和隐式 TLS，可在单一发件适配函数中替换。邮件地址、验证码生成、Redis 原子消费、发送频率、身份绑定和权限继续由 EDO 负责。评估了冻结维护的标准库 net/smtp 和旧 gomail：前者仍需自行处理 MIME、超时与 TLS 协商，后者维护状态不适合新接入，因此不自行实现 SMTP 协议。后续升级需持续核对 SMTP 认证行为、邮件地址编码及安全公告。
 
 飞书复用已有 Go 官方 x/oauth2 与项目现有 JSON 令牌适配；钉钉新增薄适配器处理官方接口的 camelCase 字段、authCode 回调和专用令牌请求头。已评估 [钉钉官方 Go SDK](https://github.com/alibabacloud-go/dingtalk)（Apache-2.0）及飞书完整 SDK：本次只使用换令牌与用户信息两个接口，全量 SDK 会扩大生成代码与通用 RPC 依赖，因此继续复用现有 OAuth 库与 net/http；维护风险是平台协议变化，使用两套平台响应的 HTTP 契约测试约束，并以[钉钉官方授权流程](https://opensource.dingtalk.com/developerpedia/docs/develop/permission/token/browser/get_user_app_token_browser/)和[飞书授权码文档](https://open.feishu.cn/document/authentication-management/access-token/obtain-oauth-code)为更新依据。通用 OAuth 继续使用 PKCE；钉钉采用其公开的机密客户端授权流程与一次性 state，不假定支持 PKCE。
+
+## 流水线检查与数据库变更
+
+- [Goose v3.27.0](https://github.com/pressly/goose/tree/v3.27.0)，MIT：使用实例级 Provider 解析和执行 SQL 迁移，关闭全局注册，不采用平台命令行或 Go 动态脚本。库支持 PostgreSQL、MySQL 和 SQLite，EDO 的应用数据库目标只开放 PostgreSQL/MySQL。v3.29.0 会连带升级 Moby 和 SQLite 等运行依赖，本次采用变更范围较小的 v3.27.0；仍需要随主项目维护 MySQL、OpenTelemetry 等间接依赖。业务授权、审批、脚本摘要、分布式锁及失败后的处理由 EDO 负责。
+- [SQLFluff 4.4.0](https://github.com/sqlfluff/sqlfluff)，MIT；[Trivy 0.76.1](https://github.com/aquasecurity/trivy)，Apache-2.0；[Gitleaks 8.30.1](https://github.com/gitleaks/gitleaks)，MIT：使用有版本号的官方项目容器，按任务运行，可分别升级或替换。EDO 主程序不引入 Python 或扫描器 SDK，不增加常驻组件。SQLFluff 镜像自带的解释器只在检查容器中使用。镜像和 Trivy 漏洞库会增加首次任务下载量；版本更新仍需验证报告格式和工具安全公告。
+- JUnit、Cobertura、LCOV、SARIF 和工具 JSON 报告使用 Go 标准库 `encoding/xml`、`encoding/json` 和 `bufio` 读取。没有引入完整质量平台或通用报告框架；只归一化有限字段并设置大小、条数与路径限制。格式适配代码由项目维护，新增格式需要真实工具报告集成测试。
+- 缓存复用官方 Moby archive API、Go `archive/tar` 和 `os.Root`。不引入额外缓存服务。归档边界、容量、过期时间和项目隔离属于 EDO 自身规则，必须持续测试路径穿越、链接、跟踪源码覆盖和并发清理。
+- 仓库状态写回复用已有平台 URL 解析和凭据解析，用标准 HTTP 客户端调用四个平台的小型状态接口；不为单一接口引入四套大型 SDK。需维护状态映射、请求格式、重试分类及平台 API 变动测试。自动跳转关闭，错误不记录响应正文和令牌。
+- 本次报告解析会使用 XML 解码器，按 Go 漏洞库检查结果将工具链更新到 Go 1.26.10、`golang.org/x/text` 更新到 v0.41.0，修复原版本可触达的解析、TLS 和证书问题；构建镜像与本地编译版本保持一致。

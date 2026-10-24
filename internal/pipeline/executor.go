@@ -14,6 +14,7 @@ import (
 	"gorm.io/gorm"
 
 	"edo/internal/artifact"
+	"edo/internal/cicd"
 	"edo/internal/deployment"
 	"edo/internal/dockerengine"
 	"edo/internal/model"
@@ -38,15 +39,17 @@ type BuildTaskPayload struct {
 }
 
 type executionContext struct {
-	run            model.PipelineRun
-	node           model.WorkflowNode
-	snapshot       workflowSnapshot
-	application    model.Application
-	component      model.PipelineRunRepository
-	deploymentPlan model.DeploymentPlan
-	registry       model.ImageRegistry
-	target         model.DeploymentTarget
-	artifact       model.Artifact
+	run                model.PipelineRun
+	node               model.WorkflowNode
+	snapshot           workflowSnapshot
+	application        model.Application
+	component          model.PipelineRunRepository
+	deploymentPlan     model.DeploymentPlan
+	registry           model.ImageRegistry
+	target             model.DeploymentTarget
+	artifact           model.Artifact
+	variables          map[string]string
+	variableRedactions []string
 }
 
 // executionFailureState 固定产生错误的任务身份。失败落库必须同时匹配任务、节点和状态，
@@ -82,7 +85,23 @@ func (s *Service) executeDeployTask(ctx context.Context, payload DeployTaskPaylo
 		return s.failDeploymentExecution(ctx, taskFailureState(payload.PipelineRunID, jobID, payload.WorkflowNodeID, model.PipelineRunRunning),
 			"流水线执行配置不完整，请检查任务、构建方案和部署方案", err)
 	}
+	ctx = withPipelineNodeLog(ctx, prepared.node.ID, prepared.node.Name)
 	failureState := failureStateForRun(prepared.run)
+	if err := s.validateReleasePolicy(ctx, prepared.run, prepared.node, prepared.snapshot, prepared.target.EnvironmentID); err != nil {
+		return s.failDeploymentExecution(ctx, failureState, "发布未满足环境保护规则", err)
+	}
+	bindings := prepared.snapshot.VariableBindings[prepared.node.ID]
+	if len(bindings) > 0 {
+		if err := s.requireDeliveryPermission(ctx, prepared.snapshot.AuthorityID, "delivery_variable.execute"); err != nil {
+			return s.failDeploymentExecution(ctx, failureState, "变量使用授权已失效", err)
+		}
+	}
+	values, files, redactions, variableErr := s.Delivery().ResolveVariables(ctx, prepared.run.ProjectID, prepared.run.Ref, bindings)
+	if variableErr != nil || len(files) > 0 {
+		return s.failDeploymentExecution(ctx, failureState, "部署变量无法读取，请检查变量配置", errors.Join(variableErr, cicd.ErrVariableUnavailable))
+	}
+	prepared.variables, prepared.variableRedactions = values, redactions
+	ctx = deployment.WithReleaseEnvironment(ctx, values)
 	s.appendRunLog(ctx, prepared.run.ID, "deploy", "info", "开始部署已构建制品")
 	approvedBy, err := s.latestExecutionApproval(ctx, prepared.run.ID)
 	if err != nil {
@@ -100,7 +119,7 @@ func (s *Service) executeDeployTask(ctx context.Context, payload DeployTaskPaylo
 		return s.failDeploymentExecution(ctx, failureState, "更新流水线部署状态失败，请稍后重试", err)
 	}
 	request := deployment.RequestInput{
-		TargetID: prepared.target.ID, ApplicationID: prepared.application.ID, ApplicationName: prepared.application.Name,
+		UsesDeliveryVariables: len(bindings) > 0, TargetID: prepared.target.ID, ApplicationID: prepared.application.ID, ApplicationName: prepared.application.Name,
 		ArtifactID: prepared.artifact.ID, Image: image, ImageDisplay: prepared.artifact.Name,
 		ExpectedImageID: expectedImageID,
 		PipelineRunID:   prepared.run.ID, WorkflowNodeID: prepared.node.ID, ApprovedBy: approvedBy,
@@ -114,7 +133,7 @@ func (s *Service) executeDeployTask(ctx context.Context, payload DeployTaskPaylo
 	}
 	var output io.WriteCloser
 	if prepared.deploymentPlan.Kind == model.DeploymentPlanCompose {
-		output = s.newExecutionLogWriter(ctx, prepared.run.ID, "deploy", "Docker Compose")
+		output = s.newExecutionLogWriter(ctx, prepared.run.ID, "deploy", "Docker Compose", prepared.variableRedactions...)
 		defer output.Close()
 		request.ComposeYAML = prepared.deploymentPlan.ComposeYAML
 		request.ComposeService = prepared.deploymentPlan.ServiceName
@@ -124,7 +143,7 @@ func (s *Service) executeDeployTask(ctx context.Context, payload DeployTaskPaylo
 		)
 		request.Stdout, request.Stderr = output, output
 	} else if prepared.deploymentPlan.Kind == model.DeploymentPlanDocker {
-		output = s.newExecutionLogWriter(ctx, prepared.run.ID, "deploy", "Docker")
+		output = s.newExecutionLogWriter(ctx, prepared.run.ID, "deploy", "Docker", prepared.variableRedactions...)
 		defer output.Close()
 		request.DockerConfig = prepared.deploymentPlan.DockerConfig
 		request.DockerConfigDigest = model.DockerContainerConfigDigest(request.DockerConfig)
@@ -179,7 +198,7 @@ func (s *Service) executeSSHDeployment(ctx context.Context, prepared *executionC
 	if err := s.updateExecutionPhase(ctx, &prepared.run, "deploy", "正在执行命令脚本并发布到“"+prepared.target.Name+"”"); err != nil {
 		return s.failDeploymentExecution(ctx, failureState, "更新流水线部署状态失败，请稍后重试", err)
 	}
-	output := s.newExecutionLogWriter(ctx, prepared.run.ID, "deploy", "命令部署")
+	output := s.newExecutionLogWriter(ctx, prepared.run.ID, "deploy", "命令部署", prepared.variableRedactions...)
 	defer output.Close()
 	if prepared.artifact.ID == "" || prepared.artifact.Kind != model.ArtifactKindFileBundle || s.artifacts == nil {
 		return s.failDeploymentExecution(ctx, failureState, "主机脚本部署失败：当前流水线没有可用的上游文件制品", ErrPipelineExecutionConfig)
@@ -190,7 +209,7 @@ func (s *Service) executeSSHDeployment(ctx context.Context, prepared *executionC
 	}
 	defer artifactFile.Close()
 	record, err := s.deployments.RequestCommandSnapshotAndRun(ctx, prepared.run.CreatedBy, prepared.target, deployment.CommandRequestInput{
-		TargetID: prepared.target.ID, ApplicationID: prepared.application.ID, ArtifactID: prepared.artifact.ID,
+		UsesDeliveryVariables: len(prepared.snapshot.VariableBindings[prepared.node.ID]) > 0, TargetID: prepared.target.ID, ApplicationID: prepared.application.ID, ArtifactID: prepared.artifact.ID,
 		PipelineRunID: prepared.run.ID, WorkflowNodeID: prepared.node.ID,
 		ApprovedBy: approvedBy, DeploymentPlanID: prepared.deploymentPlan.ID,
 		PlanKind: prepared.deploymentPlan.Kind, Script: prepared.deploymentPlan.Script,
@@ -198,14 +217,14 @@ func (s *Service) executeSSHDeployment(ctx context.Context, prepared *executionC
 			prepared.deploymentPlan.Kind, prepared.deploymentPlan.Script, prepared.deploymentPlan.TimeoutSeconds,
 		),
 		TimeoutSeconds: prepared.deploymentPlan.TimeoutSeconds,
-		Environment: map[string]string{
+		Environment: mergeDeploymentVariables(prepared.variables, map[string]string{
 			"EDO_PIPELINE_RUN_ID":      prepared.run.ID,
 			"EDO_APPLICATION_ID":       prepared.application.ID,
 			"EDO_APPLICATION_NAME":     prepared.application.Name,
 			"EDO_GIT_REF":              prepared.run.Ref,
 			"EDO_COMMIT_SHA":           prepared.run.CommitSHA,
 			"EDO_DEPLOYMENT_TARGET_ID": prepared.target.ID,
-		},
+		}),
 		Artifact: artifactFile, ArtifactName: prepared.artifact.Name, ArtifactDigest: prepared.artifact.Digest,
 		Stdout: output, Stderr: output,
 	})
@@ -269,7 +288,11 @@ func (s *Service) loadArtifactDeploymentExecution(ctx context.Context, payload D
 		return nil, ErrPipelineExecutionConfig
 	}
 	var run model.PipelineRun
-	if err := s.db.WithContext(ctx).First(&run, "uuid = ? AND execution_job_id = ?", payload.PipelineRunID, jobID).Error; err != nil {
+	if nodeRun, found, err := s.loadNodeExecution(ctx, payload.PipelineRunID, jobID, payload.WorkflowNodeID); err != nil {
+		return nil, err
+	} else if found {
+		run = *nodeRun
+	} else if err := s.db.WithContext(ctx).First(&run, "uuid = ? AND execution_job_id = ?", payload.PipelineRunID, jobID).Error; err != nil {
 		return nil, err
 	}
 	if run.Status == model.PipelineRunSucceeded && run.DeploymentID != "" {
@@ -501,6 +524,9 @@ func executionImageTag(run model.PipelineRun) (string, error) {
 	if commit == "" {
 		return "", ErrPipelineExecutionConfig
 	}
+	if run.NodeExecution {
+		commit += "-" + strings.TrimPrefix(sha256Digest([]byte(run.ID+":"+run.CurrentNodeID)), "sha256:")[:16]
+	}
 	return commit, nil
 }
 
@@ -517,6 +543,9 @@ func (s *Service) latestExecutionApproval(ctx context.Context, runID string) (st
 
 func (s *Service) updateExecutionPhase(ctx context.Context, run *model.PipelineRun, stage, message string) error {
 	defer s.realtime.Changed(ctx, "pipeline_runs", run.ID)
+	if run.NodeExecution {
+		return s.updateNodePhase(ctx, run, stage, message)
+	}
 	now := time.Now().UTC()
 	result := s.db.WithContext(ctx).Model(&model.PipelineRun{}).
 		Where("stage <> ?", stoppingStage).
@@ -540,6 +569,9 @@ func (s *Service) completeExecution(ctx context.Context, prepared *executionCont
 				"pipeline_run_id", prepared.run.ID, "workflow_node_id", prepared.node.ID, "err", ErrPipelineExecutionConfig)
 		}
 		return ErrPipelineExecutionConfig
+	}
+	if prepared.run.NodeExecution {
+		return s.completeNodeExecution(ctx, prepared.run, prepared.node, nil, record)
 	}
 	_, hasNext, terminal := workflowNextNode(prepared.snapshot.Source, prepared.snapshot.Stages, prepared.node.ID)
 	if !hasNext && !terminal {
@@ -650,6 +682,9 @@ func (s *Service) failExecutionWithStageLog(
 	message string,
 	cause error,
 ) error {
+	if s.hasNodeJob(ctx, expected.runID, expected.jobID) {
+		return s.finishNodeFailure(ctx, expected, false, message, cause)
+	}
 	now := time.Now().UTC()
 	updateContext, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 	defer cancel()
@@ -737,6 +772,13 @@ func (s *Service) failCurrentExecution(ctx context.Context, runID, message strin
 }
 
 func (s *Service) executionTaskObsolete(ctx context.Context, runID, jobID, nodeID string) (bool, error) {
+	if s.hasNodeJob(ctx, runID, jobID) {
+		_, _, err := s.loadNodeExecution(ctx, runID, jobID, nodeID)
+		if errors.Is(err, errPipelineExecutionComplete) || errors.Is(err, ErrInvalidWorkflowTransition) {
+			return true, nil
+		}
+		return false, err
+	}
 	var run model.PipelineRun
 	if err := s.db.WithContext(ctx).Select("uuid", "execution_job_id", "current_node_id", "status").First(&run, "uuid = ?", runID).Error; err != nil {
 		return false, err
@@ -750,4 +792,32 @@ func (s *Service) executionTaskObsolete(ctx context.Context, runID, jobID, nodeI
 	default:
 		return false, nil
 	}
+}
+
+func mergeDeploymentVariables(values, system map[string]string) map[string]string {
+	result := map[string]string{}
+	for key, value := range values {
+		result[key] = value
+	}
+	for key, value := range system {
+		result[key] = value
+	}
+	return result
+}
+func (s *Service) validateReleasePolicy(ctx context.Context, run model.PipelineRun, node model.WorkflowNode, snapshot workflowSnapshot, environmentID string) error {
+	live, err := s.Delivery().Policy(ctx, run.ProjectID, environmentID, run.Ref, time.Now())
+	if err != nil {
+		return err
+	}
+	frozen, exists := snapshot.ReleasePolicies[node.ID]
+	if !exists {
+		if live != nil {
+			return cicd.ErrReleaseProtected
+		}
+		return nil
+	}
+	if live == nil || live.Version != frozen.Version {
+		return cicd.ErrReleaseProtected
+	}
+	return nil
 }

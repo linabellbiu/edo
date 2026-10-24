@@ -988,3 +988,15 @@ func RegistryImageMatches(imageRef, digest, endpoint, namespace string) bool {
 	repositoryPath := distributionreference.Path(named)
 	return repositoryPath == prefix || strings.HasPrefix(repositoryPath, prefix+"/")
 }
+
+// AcquireDependencyCache 持有构建目录维护锁，防止执行期间目录被清理或切换。
+func (s *Service) AcquireDependencyCache() (*BuildDirectoryLease, error) {
+	s.buildMaintenance.RLock()
+	directory := filepath.Join(s.BuildRoot(), "dependency-cache")
+	if err := os.MkdirAll(directory, 0700); err != nil {
+		s.buildMaintenance.RUnlock()
+		s.logger.Error("创建依赖缓存目录失败", "operation", "dependency_cache_directory", "err", err)
+		return nil, ErrBuildDirectoryBusy
+	}
+	return &BuildDirectoryLease{Directory: directory, release: func() { s.buildMaintenance.RUnlock() }}, nil
+}

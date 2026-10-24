@@ -556,6 +556,7 @@ func validComposeScalarInterpolation(value string) bool {
 }
 
 type ComposeDeployInput struct {
+	Environment     map[string]string
 	EndpointID      string
 	TargetID        string
 	ServiceName     string
@@ -576,6 +577,11 @@ func (s *Service) DeployCompose(ctx context.Context, input ComposeDeployInput) (
 		strings.TrimSpace(input.DeploymentID) == "" || input.Timeout < 30*time.Second || input.Timeout > time.Hour {
 		return "", ErrInvalidComposeYAML
 	}
+	expanded, expandErr := composeWithEnvironment(input.YAML, input.ServiceName, input.Environment)
+	if expandErr != nil {
+		return "", expandErr
+	}
+	input.YAML = expanded
 	managedYAML, err := composeYAMLWithManagedImage(input.YAML, input.ServiceName)
 	if err != nil {
 		return "", err

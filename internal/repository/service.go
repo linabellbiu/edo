@@ -452,6 +452,18 @@ func (s *Service) Checkout(ctx context.Context, id, ref, commitSHA, destination 
 // their Git object cache; every Tag or Commit has an isolated directory that remains
 // locked until Release so concurrent pipelines can never switch each other's source.
 func (s *Service) AcquireCheckout(ctx context.Context, id, ref, commitSHA string) (*CheckoutLease, error) {
+	return s.acquireCheckout(ctx, id, ref, commitSHA, "")
+}
+
+// AcquireTaskCheckout 让同一版本的不同任务各自持有工作区，只共享 Git 对象缓存。
+func (s *Service) AcquireTaskCheckout(ctx context.Context, id, ref, commitSHA, executionKey string) (*CheckoutLease, error) {
+	if executionKey == "" || len(executionKey) > 256 {
+		return nil, errors.New("任务工作区标识无效")
+	}
+	return s.acquireCheckout(ctx, id, ref, commitSHA, executionKey)
+}
+
+func (s *Service) acquireCheckout(ctx context.Context, id, ref, commitSHA, executionKey string) (*CheckoutLease, error) {
 	repository, err := s.Find(ctx, id)
 	if err != nil {
 		return nil, err
@@ -479,6 +491,10 @@ func (s *Service) AcquireCheckout(ctx context.Context, id, ref, commitSHA string
 	repositoryHash := sha256.Sum256([]byte(strings.TrimSpace(repository.CloneURL)))
 	repositoryKey := hex.EncodeToString(repositoryHash[:])
 	version := checkoutDirectoryVersion(ref, commitSHA)
+	if executionKey != "" {
+		key := sha256.Sum256([]byte(executionKey))
+		version += "-task-" + hex.EncodeToString(key[:12])
+	}
 	directories := s.Directories()
 	root := directories.WorkspaceDirectory
 	removeRoot := false

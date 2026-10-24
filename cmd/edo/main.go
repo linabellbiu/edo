@@ -542,8 +542,11 @@ func runServer(ctx context.Context, cfg config.Config, logger *slog.Logger, runt
 		resources.Redis.Key("lock", "deployment"),
 		logger,
 	)
+	deploymentService.ConfigureReleaseVariables(secretManager, accessService)
 	environmentService := environmentmanager.NewService(resources.Database, deploymentService)
 	pipelineService.ConfigureExecution(dockerService, deploymentService, logger)
+	pipelineService.ConfigureDeliveryAccess(accessService)
+	pipelineService.ConfigureDeliveryLocks(redislock.New(resources.Redis.Client()), resources.Redis.Key("lock", "database-migration"))
 	pipelineService.ConfigureArtifacts(artifactService)
 	initialDelivery, err := pipelineService.EnsureInitialDeliverySettings(serviceCtx)
 	if err != nil {
@@ -665,6 +668,7 @@ func runServer(ctx context.Context, cfg config.Config, logger *slog.Logger, runt
 	startBackground("server_kubernetes_node_metrics", func() error { return kubernetesService.RunNodeMonitoring(serviceCtx) })
 	startBackground("server_outbox", func() error { return publisher.Run(serviceCtx) })
 	startBackground("server_task_consumer", func() error { return taskWorker.Run(serviceCtx) })
+	startBackground("server_repository_checks", func() error { pipelineService.RunRepositoryChecks(serviceCtx); return nil })
 	startBackground("server_application_watcher", func() error {
 		pipelineService.RunWatcher(serviceCtx, cfg.Scheduler.PollInterval)
 		return nil

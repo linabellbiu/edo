@@ -145,6 +145,27 @@ jobs:
             EDO_ID_TEST_DSN="$dsn" go test -race -count=1 -timeout=20m ./internal/database -run "^${test_name}$"
           done
 
+      - name: 应用数据库迁移、脚本摘要与防重复执行
+        if: ${{ matrix.driver != 'sqlite' }}
+        shell: bash
+        env:
+          EDO_APP_DB_TEST_DRIVER: ${{ matrix.driver }}
+          EDO_APP_DB_TEST_PORT: ${{ matrix.driver == 'postgres' && '5432' || '3306' }}
+          EDO_APP_DB_TEST_DATABASE: edo_application_migration
+          EDO_APP_DB_TEST_USER: ${{ matrix.driver == 'postgres' && 'edo' || 'root' }}
+          EDO_APP_DB_TEST_PASSWORD: edo_test
+          POSTGRES_SERVICE_ID: ${{ job.services.postgres.id }}
+          MYSQL_SERVICE_ID: ${{ job.services.mysql.id }}
+        run: |
+          set -euo pipefail
+          # 业务变更测试使用独立空库，不复用 EDO 的平台数据表。
+          if [[ "$EDO_APP_DB_TEST_DRIVER" == postgres ]]; then
+            docker exec -e PGPASSWORD=edo_test "$POSTGRES_SERVICE_ID" createdb -U edo -T template0 edo_application_migration
+          else
+            docker exec -e MYSQL_PWD=edo_test "$MYSQL_SERVICE_ID" mysql -uroot -e 'CREATE DATABASE edo_application_migration CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci'
+          fi
+          go test -race -count=1 -timeout=10m ./internal/cicd -run '^TestApplicationDatabaseMigrationExternal$'
+
   go-checks:
     name: Go 静态检查与构建
     runs-on: ubuntu-latest
@@ -183,7 +204,7 @@ jobs:
   docker:
     name: Docker 真实构建与发布链路
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 65
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
@@ -194,7 +215,12 @@ jobs:
         env:
           EDO_TEST_DOCKER_INTEGRATION: "1"
         # 仅在临时 Runner 上创建测试容器，和业务、数据库及前端检查互不阻塞。
-        run: go test -race -count=1 -timeout=20m ./internal/dockerengine -run '^Test(DockerBuildAndComposeIntegration|DockerBuildCacheAcrossIsolatedContexts|ScriptContainerIntegration)$'
+        run: go test -race -count=1 -timeout=20m ./internal/dockerengine -run '^Test(DockerBuildAndComposeIntegration|DockerBuildCacheAcrossIsolatedContexts|ScriptContainerIntegration|DeliverySandboxReportsSecretsAndCacheIntegration)$'
+      - name: SQL 与安全检查工具
+        env:
+          EDO_TEST_DELIVERY_TOOLS: "1"
+        # 工具镜像和漏洞库按需下载，失败必须保留真实报告或明确失败。
+        run: go test -race -count=1 -timeout=16m ./internal/dockerengine -run '^TestDeliveryCheckToolsIntegration$'
       - name: 准备流水线停止测试镜像
         timeout-minutes: 5
         # 停止测试只使用已存在的镜像，避免把镜像下载时间混入停止耗时。

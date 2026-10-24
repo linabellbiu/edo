@@ -55,7 +55,7 @@ docker compose --env-file .env up -d --build
 
 ## 本地启动
 
-本地开发和编译需要 Go 1.26.5、Node.js 24，以及上面的 Docker 工具。在项目根目录安装 Mage：
+本地开发和编译需要 Go 1.26.10、Node.js 24，以及上面的 Docker 工具。在项目根目录安装 Mage：
 
 ```bash
 go install github.com/magefile/mage@v1.17.2
@@ -99,6 +99,8 @@ mage start
 2. 创建流水线，选择要监听的分支、Tag 或 Pull Request。
 3. 配置测试、构建和部署任务，选择部署方案并填写发布位置。
 4. 启用流水线，提交代码或手动执行，在运行记录中查看进度和日志。
+
+需要时可以添加变量与密钥、并行检查、测试和覆盖率报告、SQL 检查、安全扫描、数据库变更和环境审核。检查失败会拦住后续任务，结果留在运行记录中。配置方法见[流水线检查与发布保护](docs/delivery-checks.md)。
 
 ## 配置与数据
 

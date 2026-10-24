@@ -20,23 +20,31 @@ const (
 )
 
 type WorkflowNodeConfig struct {
-	Branch               string                     `json:"branch,omitempty"`
-	Events               []string                   `json:"events,omitempty"`
-	TagPattern           string                     `json:"tag_pattern,omitempty"`
-	PRTargetPattern      string                     `json:"pr_target_pattern,omitempty"`
-	PRSourcePattern      string                     `json:"pr_source_pattern,omitempty"`
-	PRActions            []string                   `json:"pr_actions,omitempty"`
-	BuildPlanID          string                     `json:"build_plan_id,omitempty"`
-	DeploymentPlanID     string                     `json:"deployment_plan_id,omitempty"`
-	Script               string                     `json:"script,omitempty"`
-	RuntimeImage         string                     `json:"runtime_image,omitempty"`
-	ToolchainLanguage    string                     `json:"toolchain_language,omitempty"`
-	ToolchainVersion     string                     `json:"toolchain_version,omitempty"`
-	WorkingDirectory     string                     `json:"working_directory,omitempty"`
-	TimeoutSeconds       int                        `json:"timeout_seconds,omitempty"`
-	EnvironmentVariables map[string]string          `json:"environment_variables,omitempty"`
-	Description          string                     `json:"description,omitempty"`
-	Notifications        []WorkflowNotificationRule `json:"notifications,omitempty"`
+	StatusWriteback       bool                       `json:"status_writeback,omitempty"`
+	Branch                string                     `json:"branch,omitempty"`
+	Events                []string                   `json:"events,omitempty"`
+	TagPattern            string                     `json:"tag_pattern,omitempty"`
+	PRTargetPattern       string                     `json:"pr_target_pattern,omitempty"`
+	PRSourcePattern       string                     `json:"pr_source_pattern,omitempty"`
+	PRActions             []string                   `json:"pr_actions,omitempty"`
+	BuildPlanID           string                     `json:"build_plan_id,omitempty"`
+	DeploymentPlanID      string                     `json:"deployment_plan_id,omitempty"`
+	Script                string                     `json:"script,omitempty"`
+	RuntimeImage          string                     `json:"runtime_image,omitempty"`
+	ToolchainLanguage     string                     `json:"toolchain_language,omitempty"`
+	ToolchainVersion      string                     `json:"toolchain_version,omitempty"`
+	WorkingDirectory      string                     `json:"working_directory,omitempty"`
+	TimeoutSeconds        int                        `json:"timeout_seconds,omitempty"`
+	EnvironmentVariables  map[string]string          `json:"environment_variables,omitempty"`
+	VariableNames         []string                   `json:"variable_names,omitempty"`
+	VariableEnvironmentID string                     `json:"variable_environment_id,omitempty"`
+	ArtifactNodeID        string                     `json:"artifact_node_id,omitempty"`
+	Reports               []WorkflowReportConfig     `json:"reports,omitempty"`
+	Check                 *WorkflowCheckConfig       `json:"check,omitempty"`
+	Cache                 *WorkflowCacheConfig       `json:"cache,omitempty"`
+	Migration             *WorkflowMigrationConfig   `json:"migration,omitempty"`
+	Description           string                     `json:"description,omitempty"`
+	Notifications         []WorkflowNotificationRule `json:"notifications,omitempty"`
 }
 
 // WorkflowNotificationRule 定义单个任务结束后需要发送的通知。规则属于任务配置，
@@ -115,7 +123,7 @@ type PipelineRunApproval struct {
 	PipelineRunID string    `gorm:"type:varchar(36);not null;uniqueIndex:idx_run_approval_node" json:"pipeline_run_id"`
 	NodeID        string    `gorm:"type:varchar(64);not null;uniqueIndex:idx_run_approval_node" json:"node_id"`
 	RequestedBy   string    `gorm:"type:varchar(36);not null;default:'';index" json:"requested_by,omitempty"`
-	ApprovedBy    string    `gorm:"type:varchar(36);not null;index" json:"approved_by"`
+	ApprovedBy    string    `gorm:"type:varchar(36);not null;index;uniqueIndex:idx_run_approval_node" json:"approved_by"`
 	ApprovedAt    time.Time `gorm:"not null;index" json:"approved_at"`
 }
 

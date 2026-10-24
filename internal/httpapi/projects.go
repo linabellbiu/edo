@@ -27,7 +27,7 @@ func projectScope(service *access.Service, logger *slog.Logger) gin.HandlerFunc 
 			return
 		}
 		path := strings.TrimPrefix(c.Request.URL.Path, "/api/v1")
-		business := false
+		business := path == "/delivery-variables" || strings.HasPrefix(path, "/delivery-variables/") || path == "/application-databases" || strings.HasPrefix(path, "/application-databases/") || path == "/environment-policies" || strings.HasPrefix(path, "/environment-policies/")
 		for _, prefix := range []string{"/delivery-defaults", "/repositories", "/applications", "/workflow-templates", "/workflow-presets", "/workflow-runtime-versions", "/build-plans", "/image-registries", "/deployment-plans", "/release-plans", "/pipeline-runs", "/artifacts", "/docker", "/kubernetes", "/hosts", "/environments", "/deployments", "/terminals", "/dns", "/notification-channels", "/notifications", "/schedules", "/tasks", "/monitor-rules", "/events", "/assistant"} {
 			if path == prefix || strings.HasPrefix(path, prefix+"/") {
 				business = true

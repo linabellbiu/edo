@@ -121,6 +121,9 @@ func (s *Service) ListRunLogs(
 }
 
 func (s *Service) appendRunLog(ctx context.Context, runID, stage, level, message string) {
+	if node, ok := ctx.Value(pipelineNodeLogKey{}).(pipelineNodeLog); ok {
+		message = "[" + node.name + "] " + message
+	}
 	message = normalizeRunLogMessage(message)
 	if strings.TrimSpace(runID) == "" || message == "" {
 		return
@@ -149,7 +152,7 @@ func (s *Service) appendRunLog(ctx context.Context, runID, stage, level, message
 			}
 			if stored != "" {
 				if err := tx.Create(&model.PipelineRunLog{
-					PipelineRunID: runID, Stage: stage, Level: level, Message: stored, CreatedAt: time.Now().UTC(),
+					NodeID: func() string { node, _ := ctx.Value(pipelineNodeLogKey{}).(pipelineNodeLog); return node.id }(), PipelineRunID: runID, Stage: stage, Level: level, Message: stored, CreatedAt: time.Now().UTC(),
 				}).Error; err != nil {
 					return err
 				}
@@ -368,4 +371,11 @@ func redactLogBytes(message []byte, redactions [][]byte) []byte {
 		result = bytes.ReplaceAll(result, secret, []byte("[已脱敏]"))
 	}
 	return result
+}
+
+type pipelineNodeLogKey struct{}
+type pipelineNodeLog struct{ id, name string }
+
+func withPipelineNodeLog(ctx context.Context, id, name string) context.Context {
+	return context.WithValue(ctx, pipelineNodeLogKey{}, pipelineNodeLog{id: id, name: name})
 }

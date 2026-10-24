@@ -7,7 +7,7 @@ RUN npm ci
 COPY web/ ./
 RUN npm run build
 
-FROM golang:1.26.5-bookworm AS go-source
+FROM golang:1.26.10-bookworm AS go-source
 WORKDIR /src
 # Buildx 负责与 Docker-in-Docker 中的 BuildKit 建立双向 session；仅调用 HTTP build API 无法传输上下文和认证。
 COPY --from=docker-cli /usr/local/bin/docker /usr/local/bin/docker

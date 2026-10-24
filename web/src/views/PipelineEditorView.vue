@@ -10,6 +10,7 @@ import {
 } from 'lucide-vue-next'
 
 import client from '@/api/client'
+import PipelineTaskControls from '@/components/PipelineTaskControls.vue'
 import { apiErrorMessage } from '@/api/resources'
 import WorkflowPresetModal from '@/components/WorkflowPresetModal.vue'
 import { useAuthStore } from '@/stores/auth'
@@ -1558,6 +1559,7 @@ onBeforeRouteLeave(async () => {
                 <a-checkbox :checked="selectedNode.config.events?.includes('tag')" :disabled="!canUpdate" @change="toggleEvent('tag', $event.target.checked)">Tag</a-checkbox>
                 <a-checkbox :checked="selectedNode.config.events?.includes('manual')" :disabled="!canUpdate" @change="toggleEvent('manual', $event.target.checked)">手动发布</a-checkbox>
               </a-form-item>
+              <a-form-item><a-checkbox :checked="selectedNode.config.status_writeback" :disabled="!canEdit" @change="updateSelectedNode({},{status_writeback:$event.target.checked})">回写 Commit / PR 检查结果</a-checkbox><small class="field-hint">需要仓库的平台 API 令牌；SSH 私钥只用于获取代码。</small></a-form-item>
               <a-form-item v-if="triggerUsesBranch(selectedNode.config.events)" label="监听分支">
                 <a-input :value="selectedNode.config.branch" :disabled="!canUpdate" placeholder="main 或 release/*" @update:value="updateSelectedNode({}, { branch: String($event) })" />
               </a-form-item>
@@ -1612,7 +1614,7 @@ onBeforeRouteLeave(async () => {
               <p class="panel-note">构建方案生成镜像或文件，部署任务使用构建结果。</p>
             </template>
 
-            <template v-else-if="selectedNode.type === 'shell'">
+            <template v-else-if="selectedNode.type === 'shell' && !selectedNode.config.check && !selectedNode.config.migration">
               <a-alert
                 v-if="selectedNode.config.toolchain_language && selectedNode.config.toolchain_version"
                 class="panel-alert"
@@ -1715,8 +1717,9 @@ onBeforeRouteLeave(async () => {
               </div>
               <div v-else-if="canReadNotificationChannels" class="node-notification-empty">当前任务尚未配置通知；建议至少添加“失败”通知。</div>
             </section>
+            <PipelineTaskControls v-if="selectedTask" :key="selectedNode.id" :node="selectedNode" :disabled="!canEdit" :script-build="activeBuildPlans.find(plan=>plan.id===selectedNode?.config.build_plan_id)?.kind==='script'" :build-nodes="stages.flatMap(stage=>stage.tasks).filter(task=>task.type==='build')" @change="updateSelectedNode({},$event)"/>
             <a-divider v-if="selectedTask && selectedNode.type !== 'deploy'" class="node-notification-divider" />
-            <template v-if="selectedNode.type === 'shell'">
+            <template v-if="selectedNode.type === 'shell' && !selectedNode.config.check && !selectedNode.config.migration">
               <a-form-item label="运行镜像"><a-auto-complete :value="selectedNode.config.runtime_image || DEFAULT_RUNTIME_IMAGE" :options="runtimeImageOptions" :disabled="!canUpdate || Boolean(selectedNode.config.toolchain_language)" placeholder="alpine:3.22" @update:value="updateSelectedNode({}, { runtime_image: String($event) })" /><small class="field-hint">{{ selectedNode.config.toolchain_language ? '运行镜像由模板中所选语言版本固定。' : '镜像需包含 /bin/sh，并指定版本 Tag 或 Digest，不能使用 latest。' }}</small></a-form-item>
               <a-form-item label="工作目录"><a-input :value="selectedNode.config.working_directory" :disabled="!canUpdate" placeholder="." @update:value="updateSelectedNode({}, { working_directory: String($event) })" /></a-form-item>
               <a-form-item label="超时（秒）"><a-input-number :value="selectedNode.config.timeout_seconds || 600" :min="30" :max="7200" :disabled="!canUpdate" @update:value="updateSelectedNode({}, { timeout_seconds: Number($event || 600) })" /></a-form-item>
@@ -1745,7 +1748,7 @@ onBeforeRouteLeave(async () => {
               message="构建参数由构建方案统一管理"
               description="在构建方案中设置 Dockerfile、构建目录等参数。"
             />
-            <a-alert v-else-if="selectedNode.type !== 'deploy'" class="panel-alert" type="info" show-icon message="当前任务没有额外高级配置" />
+            <a-alert v-else-if="selectedNode.type !== 'deploy' && !selectedNode.config.check && !selectedNode.config.migration" class="panel-alert" type="info" show-icon message="当前任务没有额外高级配置" />
           </a-form>
           <a-alert v-for="(issue, index) in issues.filter(item => item.node_id === selectedNode?.id)" :key="`${issue.code}-${index}`" type="warning" :message="issue.message" show-icon />
         </template>

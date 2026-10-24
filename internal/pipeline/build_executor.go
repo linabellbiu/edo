@@ -17,8 +17,10 @@ import (
 	"gorm.io/gorm"
 
 	"edo/internal/artifact"
+	"edo/internal/cicd"
 	"edo/internal/dockerengine"
 	"edo/internal/model"
+	"edo/internal/repository"
 )
 
 type buildExecutionContext struct {
@@ -59,6 +61,9 @@ func (s *Service) executeBuildTask(ctx context.Context, payload BuildTaskPayload
 	prepared, err := s.loadBuildExecution(ctx, payload, jobID)
 	if err != nil {
 		if errors.Is(err, errPipelineExecutionComplete) {
+			if s.hasNodeJob(ctx, payload.PipelineRunID, jobID) {
+				return s.resumeNodeAdvance(ctx, payload.PipelineRunID)
+			}
 			return s.resumeCompletedBuildTask(ctx, payload, jobID)
 		}
 		if obsolete, obsoleteErr := s.executionTaskObsolete(ctx, payload.PipelineRunID, jobID, payload.WorkflowNodeID); obsoleteErr == nil && obsolete {
@@ -68,6 +73,7 @@ func (s *Service) executeBuildTask(ctx context.Context, payload BuildTaskPayload
 			taskFailureState(payload.PipelineRunID, jobID, payload.WorkflowNodeID, model.PipelineRunRunning), false,
 			"构建任务配置不完整，请检查流水线和构建方案", err)
 	}
+	ctx = withPipelineNodeLog(ctx, prepared.node.ID, prepared.node.Name)
 	runningState := failureStateForRun(prepared.run)
 	if prepared.node.Type == model.WorkflowNodeBuild {
 		recovered, recoverErr := s.recoverCompletedBuildArtifact(ctx, prepared)
@@ -92,9 +98,12 @@ func (s *Service) executeBuildTask(ctx context.Context, payload BuildTaskPayload
 	if err := s.updateExecutionPhase(ctx, &prepared.run, "checkout", "正在准备已固定 Commit 的隔离工作区"); err != nil {
 		return s.finishBuildTaskFailure(ctx, runningState, buildTaskCanRetry(prepared), "更新构建任务状态失败", err)
 	}
-	checkout, err := s.repositories.AcquireCheckout(
-		ctx, prepared.component.RepositoryID, pipelineRunCheckoutRef(prepared.run), prepared.run.CommitSHA,
-	)
+	var checkout *repository.CheckoutLease
+	if prepared.run.NodeExecution {
+		checkout, err = s.repositories.AcquireTaskCheckout(ctx, prepared.component.RepositoryID, pipelineRunCheckoutRef(prepared.run), prepared.run.CommitSHA, prepared.run.ID+":"+prepared.node.ID)
+	} else {
+		checkout, err = s.repositories.AcquireCheckout(ctx, prepared.component.RepositoryID, pipelineRunCheckoutRef(prepared.run), prepared.run.CommitSHA)
+	}
 	if err != nil {
 		return s.finishBuildTaskFailure(ctx, runningState, buildTaskCanRetry(prepared),
 			"获取代码失败，请检查仓库连接和所选 Commit", err)
@@ -111,6 +120,10 @@ func (s *Service) executeBuildTask(ctx context.Context, payload BuildTaskPayload
 	var produced *model.Artifact
 	switch prepared.node.Type {
 	case model.WorkflowNodeShell:
+		if prepared.node.Config.Migration != nil {
+			err = s.executeDatabaseTask(ctx, prepared, workspace)
+			break
+		}
 		_, err = s.executePipelineShell(ctx, prepared, workspace, prepared.node.Config.RuntimeImage, prepared.node.Config.Script,
 			prepared.node.Config.WorkingDirectory, prepared.node.Config.EnvironmentVariables,
 			prepared.node.Config.TimeoutSeconds, "shell", "脚本", "", "")
@@ -239,6 +252,9 @@ func (s *Service) finishBuildTaskFailure(
 	cause error,
 ) error {
 	retryable := allowRetry && transientBuildError(cause)
+	if s.hasNodeJob(ctx, expected.runID, expected.jobID) {
+		return s.finishNodeFailure(ctx, expected, allowRetry, message, cause)
+	}
 	if retryable {
 		var job model.Job
 		if err := s.db.WithContext(context.WithoutCancel(ctx)).First(&job, "uuid = ?", expected.jobID).Error; err == nil && job.Attempt < job.MaxAttempts {
@@ -287,7 +303,11 @@ func (s *Service) loadBuildExecution(ctx context.Context, payload BuildTaskPaylo
 		return nil, ErrPipelineExecutionConfig
 	}
 	var run model.PipelineRun
-	if err := s.db.WithContext(ctx).First(&run, "uuid = ? AND execution_job_id = ?", payload.PipelineRunID, jobID).Error; err != nil {
+	if nodeRun, found, err := s.loadNodeExecution(ctx, payload.PipelineRunID, jobID, payload.WorkflowNodeID); err != nil {
+		return nil, err
+	} else if found {
+		run = *nodeRun
+	} else if err := s.db.WithContext(ctx).First(&run, "uuid = ? AND execution_job_id = ?", payload.PipelineRunID, jobID).Error; err != nil {
 		return nil, err
 	}
 	if run.CurrentNodeID == payload.WorkflowNodeID && (run.Stage == "task_succeeded" || run.Status == model.PipelineRunSucceeded) {
@@ -342,11 +362,20 @@ func workflowBuildPlatform(snapshot workflowSnapshot, buildNodeID string, plan w
 	}
 	platformSet := make(map[string]struct{}, 2)
 	for index := buildIndex + 1; index < len(tasks); index++ {
-		if tasks[index].Type == model.WorkflowNodeBuild {
+		if tasks[index].Type == model.WorkflowNodeBuild && snapshot.ExecutionVersion < 2 {
 			break
 		}
 		if tasks[index].Type != model.WorkflowNodeDeploy {
 			continue
+		}
+		if snapshot.ExecutionVersion >= 2 {
+			sources, err := artifactSources(snapshot.Stages)
+			if err != nil {
+				return "", err
+			}
+			if sources[tasks[index].ID] != buildNodeID {
+				continue
+			}
 		}
 		target, exists := snapshot.DeploymentTargets[tasks[index].ID]
 		if !exists {
@@ -434,10 +463,37 @@ func (s *Service) executePipelineBuild(ctx context.Context, prepared *buildExecu
 		}
 		metadata.ProducerKind = model.BuildRunProducerDockerfile
 		buildArgs := effectiveDockerBuildArgs(prepared.node.Config, prepared.plan.BuildArgs)
+		if len(prepared.snapshot.VariableBindings[prepared.node.ID]) > 0 {
+			if err := s.requireDeliveryPermission(ctx, prepared.snapshot.AuthorityID, "delivery_variable.execute"); err != nil {
+				return nil, err
+			}
+		}
+		values, files, variableRedactions, variableErr := s.Delivery().ResolveVariables(ctx, prepared.run.ProjectID, prepared.run.Ref, prepared.snapshot.VariableBindings[prepared.node.ID])
+		if variableErr != nil {
+			return nil, variableErr
+		}
+		buildSecrets := maps.Clone(files)
+		if buildSecrets == nil {
+			buildSecrets = map[string]string{}
+		}
+		if buildArgs == nil {
+			buildArgs = map[string]string{}
+		}
+		for _, binding := range prepared.snapshot.VariableBindings[prepared.node.ID] {
+			if binding.Kind == "file" {
+				continue
+			}
+			if binding.IsSecret {
+				buildSecrets[binding.Name] = values[binding.Name]
+			} else {
+				buildArgs[binding.Name] = values[binding.Name]
+			}
+		}
+
 		options := dockerengine.BuildOptions{
 			Pull: prepared.plan.Pull, CacheEnabled: prepared.plan.CacheEnabled,
 			TargetStage: prepared.plan.TargetStage, Platform: prepared.plan.Platform,
-			BuildArgs: buildArgs,
+			BuildArgs: buildArgs, Secrets: buildSecrets,
 			Labels: map[string]string{
 				"io.edo.application.id":  prepared.application.ID,
 				"io.edo.pipeline.run.id": prepared.run.ID,
@@ -449,7 +505,7 @@ func (s *Service) executePipelineBuild(ctx context.Context, prepared *buildExecu
 		}
 		timeout := time.Duration(prepared.plan.TimeoutSeconds) * time.Second
 		if prepared.plan.ImageRegistryID == "" {
-			output := s.newBuildLogWriter(ctx, prepared.run.ID, "build", sensitiveVariableValues(buildArgs)...)
+			output := s.newBuildLogWriter(ctx, prepared.run.ID, "build", append(sensitiveVariableValues(buildArgs), variableRedactions...)...)
 			defer output.Close()
 			image, err := localExecutionImage(&executionContext{run: prepared.run, application: prepared.application})
 			if err != nil {
@@ -478,7 +534,7 @@ func (s *Service) executePipelineBuild(ctx context.Context, prepared *buildExecu
 		if err != nil {
 			return nil, err
 		}
-		redactions := sensitiveVariableValues(buildArgs)
+		redactions := append(sensitiveVariableValues(buildArgs), variableRedactions...)
 		if auth.Credential != "" {
 			redactions = append(redactions, auth.Credential)
 		}
@@ -572,17 +628,82 @@ func (s *Service) executePipelineShell(
 	if err := s.updateExecutionPhase(ctx, &prepared.run, stage, "正在执行“"+prepared.node.Name+"”"); err != nil {
 		return dockerengine.ScriptContainerResult{}, err
 	}
-	output := s.newExecutionLogWriter(ctx, prepared.run.ID, stage, outputName, sensitiveVariableValues(environment)...)
+	if len(prepared.snapshot.VariableBindings[prepared.node.ID]) > 0 {
+		if err := s.requireDeliveryPermission(ctx, prepared.snapshot.AuthorityID, "delivery_variable.execute"); err != nil {
+			return dockerengine.ScriptContainerResult{}, err
+		}
+	}
+	injected, files, redactions, variableErr := s.Delivery().ResolveVariables(ctx, prepared.run.ProjectID, prepared.run.Ref, prepared.snapshot.VariableBindings[prepared.node.ID])
+	if variableErr != nil {
+		return dockerengine.ScriptContainerResult{}, variableErr
+	}
+	environment = maps.Clone(environment)
+	if environment == nil {
+		environment = map[string]string{}
+	}
+	for key, value := range injected {
+		environment[key] = value
+	}
+	redactions = append(redactions, sensitiveVariableValues(environment)...)
+	var reportPaths []string
+	if err := cicd.ValidateReportConfig(prepared.node.Config.Reports); err != nil {
+		return dockerengine.ScriptContainerResult{}, err
+	}
+	for _, config := range prepared.node.Config.Reports {
+		reportPaths = append(reportPaths, config.Paths...)
+	}
+	cacheKey, cacheRoot, cacheOutput := "", "", ""
+	if config := prepared.node.Config.Cache; config != nil {
+		if s.artifacts == nil {
+			return dockerengine.ScriptContainerResult{}, ErrPipelineExecutionUnavailable
+		}
+		key, keyErr := cicd.CacheKey(ctx, prepared.run.ProjectID, prepared.component.RepositoryID, prepared.plan.Platform, runtimeImage, workspace, *config)
+		if keyErr != nil {
+			return dockerengine.ScriptContainerResult{}, keyErr
+		}
+		cacheKey = key
+		cacheLease, leaseErr := s.artifacts.AcquireDependencyCache()
+		if leaseErr != nil {
+			return dockerengine.ScriptContainerResult{}, leaseErr
+		}
+		defer cacheLease.Release()
+		cacheRoot = cacheLease.Directory
+		export, exportErr := s.artifacts.AcquireBuildDirectory("edo-cache-output-")
+		if exportErr != nil {
+			return dockerengine.ScriptContainerResult{}, exportErr
+		}
+		defer export.Release()
+		cacheOutput = export.Directory
+		hit, restoreErr := cicd.RestoreCache(cacheRoot, cacheKey, workspace, *config)
+		if restoreErr != nil {
+			s.logger.Warn("恢复依赖缓存失败", "operation", "pipeline_cache_restore", "run_id", prepared.run.ID, "err", restoreErr)
+			return dockerengine.ScriptContainerResult{}, cicd.ErrInvalidCache
+		}
+		if hit {
+			s.appendRunLog(ctx, prepared.run.ID, stage, "info", "已恢复当前项目的依赖缓存")
+		} else {
+			s.appendRunLog(ctx, prepared.run.ID, stage, "info", "未命中依赖缓存，将在任务成功后保存")
+		}
+	}
+	output := s.newExecutionLogWriter(ctx, prepared.run.ID, stage, outputName, redactions...)
 	defer output.Close()
 	result, err := s.scriptRunner.RunScriptContainer(ctx, dockerengine.ScriptContainerInput{
-		Image:             runtimeImage,
-		Platform:          prepared.plan.Platform,
-		Script:            script,
-		SourceDirectory:   workspace,
-		WorkingDirectory:  workingDirectory,
-		ArtifactPath:      artifactPath,
-		OutputDirectory:   outputDirectory,
-		Environment:       environment,
+		Image:            runtimeImage,
+		Platform:         prepared.plan.Platform,
+		Script:           script,
+		SourceDirectory:  workspace,
+		WorkingDirectory: workingDirectory,
+		ArtifactPath:     artifactPath,
+		OutputDirectory:  outputDirectory,
+		Environment:      environment,
+		FileVariables:    files, ReportPaths: reportPaths,
+		CacheOutputDirectory: cacheOutput,
+		CachePaths: func() []string {
+			if prepared.node.Config.Cache != nil {
+				return prepared.node.Config.Cache.Paths
+			}
+			return nil
+		}(),
 		SystemEnvironment: pipelineCommandEnvironment(prepared),
 		Labels: map[string]string{
 			"io.edo.application.id":   prepared.application.ID,
@@ -594,6 +715,19 @@ func (s *Service) executePipelineShell(
 		Stdout:  output,
 		Stderr:  output,
 	})
+	if err == nil && cacheKey != "" {
+		if cacheErr := cicd.SaveCache(cacheRoot, cacheKey, result.CachePaths); cacheErr != nil {
+			s.logger.Warn("保存依赖缓存失败", "operation", "pipeline_cache_save", "run_id", prepared.run.ID, "err", cacheErr)
+			s.appendRunLog(ctx, prepared.run.ID, stage, "warning", "依赖缓存未保存，本次任务结果不受影响")
+		}
+	}
+	if ctx.Err() != nil {
+		return result, errors.Join(err, ctx.Err())
+	}
+	reportErr := s.Delivery().SaveReports(context.WithoutCancel(ctx), prepared.run, prepared.node.ID, prepared.node.Config.Reports, result.Reports, redactions)
+	if reportErr != nil {
+		return result, errors.Join(err, reportErr)
+	}
 	if err != nil {
 		return result, err
 	}
@@ -664,6 +798,9 @@ func secureWorkspacePath(workspace, relative string) (string, error) {
 }
 
 func (s *Service) completeBuildExecution(ctx context.Context, prepared *buildExecutionContext, produced *model.Artifact) error {
+	if prepared.run.NodeExecution {
+		return s.completeNodeExecution(ctx, prepared.run, prepared.node, produced, nil)
+	}
 	_, hasNext, terminal := workflowNextNode(prepared.snapshot.Source, prepared.snapshot.Stages, prepared.node.ID)
 	if !hasNext && !terminal {
 		return ErrInvalidWorkflowTransition

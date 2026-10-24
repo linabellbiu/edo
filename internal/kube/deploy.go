@@ -81,6 +81,9 @@ func (s *Service) deployImage(
 			current.Spec.Template.Annotations["edo.io/deployment-id"] != expected.DeploymentID) {
 			return ErrDeploymentTargetChanged
 		}
+		if err := applyReleaseVariables(ctx, clientset, current, containerIndex, deploymentID); err != nil {
+			return err
+		}
 		previousImage = current.Spec.Template.Spec.Containers[containerIndex].Image
 		current.Spec.Template.Spec.Containers[containerIndex].Image = image
 		if current.Spec.Template.Annotations == nil {

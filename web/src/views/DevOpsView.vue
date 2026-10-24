@@ -20,7 +20,7 @@ import ContainerLogDrawer from '@/components/ContainerLogDrawer.vue'
 import GitCredentialDrawer from '@/components/GitCredentialDrawer.vue'
 import PageToolbar from '@/components/PageToolbar.vue'
 import PipelineLogDrawer from '@/components/PipelineLogDrawer.vue'
-import PipelineRunGraph from '@/components/PipelineRunGraph.vue'
+import PipelineTaskHistory from '@/components/PipelineTaskHistory.vue'
 import ReleasePlanEditorDrawer from '@/components/ReleasePlanEditorDrawer.vue'
 import ReleasePlanExecuteModal from '@/components/ReleasePlanExecuteModal.vue'
 import ReleasePlanWorkspace from '@/components/ReleasePlanWorkspace.vue'
@@ -2001,7 +2001,7 @@ onBeforeUnmount(()=>{runListController?.abort();executionController?.abort();run
               <div class="run-detail-identity"><span class="run-detail-label">{{ selectedRunID===run.id?'当前查看':'运行详情' }}</span><time :datetime="run.created_at">{{ formatRunTime(run.created_at) }}</time><span class="run-detail-version">{{ runReferenceLabel(run) }}</span></div>
               <a-button size="small" @click="runDrawerOpen=false">关闭详情</a-button>
             </header>
-            <PipelineRunGraph :key="run.id" compact :graph="run.execution_graph" :current-node-id="run.current_node_id" :status="run.status" :stage="run.stage"/>
+            <PipelineTaskHistory :key="run.id" :run-id="run.id" :updated-at="run.updated_at" :graph="run.execution_graph" :current-node-id="run.current_node_id" :status="run.status" :stage="run.stage"/>
             <dl class="run-facts">
               <div><dt>发布应用</dt><dd>{{ applicationName(run) }}</dd></div>
               <div><dt>应用流水线</dt><dd>{{ runWorkflowName(run) }}</dd></div>

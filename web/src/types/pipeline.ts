@@ -16,6 +16,7 @@ export interface WorkflowNotificationRule {
 }
 
 export interface WorkflowNodeConfig {
+ status_writeback?:boolean
   branch?: string
   events?: string[]
   tag_pattern?: string
@@ -31,6 +32,13 @@ export interface WorkflowNodeConfig {
   timeout_seconds?: number
   working_directory?: string
   environment_variables?: Record<string, string>
+  variable_names?: string[]
+  variable_environment_id?: string
+  artifact_node_id?: string
+  reports?: Array<{format:string;paths:string[];required:boolean;minimum_coverage?:number;fail_severity?:string}>
+  check?: {tool:string;dialect?:string;path:string;config_path?:string}
+  cache?: {key:string;lock_files:string[];paths:string[]}
+  migration?: {database_id:string;directory:string}
   description?: string
   notifications?: WorkflowNotificationRule[]
 }
@@ -90,6 +98,7 @@ export interface PipelineRunGraphNode {
 }
 
 export interface PipelineExecutionStage {
+ batches?:string[][]
   id: string
   name: string
   tasks: PipelineRunGraphNode[]

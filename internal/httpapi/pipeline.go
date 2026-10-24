@@ -9,6 +9,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"edo/internal/cicd"
 	"edo/internal/deployment"
 	"edo/internal/model"
 	"edo/internal/pipeline"
@@ -756,6 +757,11 @@ func (h pipelineHandler) getRun(c *gin.Context) {
 func (h pipelineHandler) writeError(c *gin.Context, operation string, err error) {
 	h.logger.Warn("持续交付操作失败", "operation", operation, "request_id", requestIDFrom(c), "resource_id", c.Param("id"), "err", err)
 	switch {
+	case errors.Is(err, cicd.ErrExecutionAuthorization):
+		writeError(c, http.StatusForbidden, "delivery_execution_denied", cicd.ErrExecutionAuthorization.Error())
+	case errors.Is(err, cicd.ErrVariableUnavailable), errors.Is(err, cicd.ErrInvalidVariable), errors.Is(err, cicd.ErrInvalidDatabase), errors.Is(err, cicd.ErrInvalidCheck), errors.Is(err, cicd.ErrInvalidCache), errors.Is(err, cicd.ErrInvalidReport):
+		writeError(c, http.StatusBadRequest, "invalid_delivery_configuration", err.Error())
+
 	case errors.Is(err, pipeline.ErrReleasePlanNotFound), errors.Is(err, pipeline.ErrReleaseGroupNotFound), errors.Is(err, pipeline.ErrReleasePlanExecutionNotFound):
 		writeError(c, http.StatusNotFound, "release_plan_not_found", err.Error())
 	case errors.Is(err, pipeline.ErrReleasePlanNotEditable), errors.Is(err, pipeline.ErrReleasePlanDisabled),
@@ -840,7 +846,7 @@ func (h pipelineHandler) writeError(c *gin.Context, operation string, err error)
 	case errors.Is(err, pipeline.ErrWorkflowInUse), errors.Is(err, pipeline.ErrWorkflowTemplateInUse):
 		writeError(c, http.StatusConflict, "workflow_template_in_use", err.Error())
 	case errors.Is(err, pipeline.ErrWorkflowNotActive), errors.Is(err, pipeline.ErrInvalidWorkflowTransition),
-		errors.Is(err, pipeline.ErrWorkflowApprovalRequired), errors.Is(err, pipeline.ErrWorkflowSelfApproval):
+		errors.Is(err, pipeline.ErrWorkflowApprovalRequired), errors.Is(err, pipeline.ErrWorkflowSelfApproval), errors.Is(err, cicd.ErrReleaseProtected):
 		writeError(c, http.StatusConflict, "workflow_transition_denied", err.Error())
 	case errors.Is(err, pipeline.ErrPipelineExecutionRunning):
 		writeError(c, http.StatusConflict, "pipeline_execution_running", err.Error())

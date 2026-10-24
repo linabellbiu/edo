@@ -25,6 +25,7 @@ import (
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 
+	"edo/internal/access"
 	"edo/internal/artifact"
 	"edo/internal/deployment"
 	"edo/internal/dockerengine"
@@ -126,6 +127,9 @@ type DeploymentPlanInput struct {
 }
 
 type Service struct {
+	deliveryAccess         *access.Service
+	deliveryLocks          deliveryLockManager
+	deliveryLockPrefix     string
 	db                     *gorm.DB
 	repositories           *repository.Service
 	secrets                *secret.Manager
@@ -1095,6 +1099,15 @@ func (s *Service) enrichPipelineRuns(ctx context.Context, runs []model.PipelineR
 					graphStage.Tasks = append(graphStage.Tasks, graphNode)
 					if node.ID == runs[i].CurrentNodeID {
 						runs[i].CurrentNodeName = node.Name
+					}
+				}
+				if snapshot.ExecutionVersion >= 2 {
+					for _, batch := range executionBatches([]model.WorkflowStage{stage}) {
+						ids := make([]string, 0, len(batch))
+						for _, node := range batch {
+							ids = append(ids, node.ID)
+						}
+						graphStage.Batches = append(graphStage.Batches, ids)
 					}
 				}
 				graph.Stages = append(graph.Stages, graphStage)

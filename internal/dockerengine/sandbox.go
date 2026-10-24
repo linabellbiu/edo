@@ -48,22 +48,28 @@ var reservedScriptContainerEnvironment = variablecatalog.ReservedScriptEnvironme
 // ScriptContainerInput 描述一次隔离的非交互脚本执行。源码通过 Docker archive API
 // 写入匿名卷，不允许调用方传入宿主机挂载或 Docker 连接凭据。
 type ScriptContainerInput struct {
-	Image             string
-	Platform          string
-	Script            string
-	SourceDirectory   string
-	WorkingDirectory  string
-	ArtifactPath      string
-	OutputDirectory   string
-	Environment       map[string]string
-	SystemEnvironment map[string]string
-	Labels            map[string]string
-	Timeout           time.Duration
-	Stdout            io.Writer
-	Stderr            io.Writer
+	Image                string
+	Platform             string
+	Script               string
+	SourceDirectory      string
+	WorkingDirectory     string
+	ArtifactPath         string
+	OutputDirectory      string
+	FileVariables        map[string]string
+	ReportPaths          []string
+	CachePaths           []string
+	CacheOutputDirectory string
+	Environment          map[string]string
+	SystemEnvironment    map[string]string
+	Labels               map[string]string
+	Timeout              time.Duration
+	Stdout               io.Writer
+	Stderr               io.Writer
 }
 
 type ScriptContainerResult struct {
+	Reports      map[string][]byte
+	CachePaths   map[string]string
 	ExitCode     int64
 	ImageID      string
 	ArtifactPath string
@@ -150,6 +156,14 @@ func (s *Service) RunScriptContainer(ctx context.Context, input ScriptContainerI
 		return ScriptContainerResult{}, fmt.Errorf("传入执行脚本失败: %w", err)
 	}
 
+	if len(input.FileVariables) > 0 {
+		if _, err := apiClient.CopyToContainer(executionContext, containerID, client.CopyToContainerOptions{
+			DestinationPath: scriptWorkspace, Content: scriptSecretArchive(input.FileVariables), CopyUIDGID: true,
+		}); err != nil {
+			return ScriptContainerResult{}, fmt.Errorf("传入文件密钥失败: %w", err)
+		}
+	}
+
 	waitResult := apiClient.ContainerWait(executionContext, containerID, client.ContainerWaitOptions{
 		Condition: container.WaitConditionNextExit,
 	})
@@ -182,6 +196,16 @@ func (s *Service) RunScriptContainer(ctx context.Context, input ScriptContainerI
 	result := ScriptContainerResult{ExitCode: waitResponse.StatusCode, ImageID: imageID}
 	if waitResponse.Error != nil {
 		return result, errors.New("脚本执行容器异常退出")
+	}
+	result.Reports, err = copyScriptReports(executionContext, apiClient, containerID, input.ReportPaths)
+	if err != nil {
+		return result, fmt.Errorf("收集检查报告失败: %w", err)
+	}
+	if waitResponse.StatusCode == 0 && len(input.CachePaths) > 0 {
+		result.CachePaths, err = copyScriptCache(executionContext, apiClient, containerID, input.CachePaths, input.CacheOutputDirectory)
+		if err != nil {
+			return result, fmt.Errorf("收集依赖缓存失败: %w", err)
+		}
 	}
 	if waitResponse.StatusCode != 0 {
 		return result, &ScriptContainerExitError{ExitCode: waitResponse.StatusCode}
@@ -281,6 +305,34 @@ func normalizeScriptContainerInput(input ScriptContainerInput) (ScriptContainerI
 		(input.ArtifactPath == "") != (input.OutputDirectory == "") || !validScriptEnvironment(input.Environment) ||
 		!validScriptSystemEnvironment(input.SystemEnvironment) {
 		return input, ErrInvalidScriptContainer
+	}
+	if len(input.CachePaths) > 4 || (len(input.CachePaths) > 0 && !emptyDirectory(input.CacheOutputDirectory)) {
+		return input, ErrInvalidScriptContainer
+	}
+	for _, name := range input.CachePaths {
+		if !validContainerRelativePath(name) || path.Clean(name) == "." {
+			return input, ErrInvalidScriptContainer
+		}
+	}
+	if len(input.ReportPaths) > 32 || len(input.FileVariables) > 100 {
+		return input, ErrInvalidScriptContainer
+	}
+	for _, name := range input.ReportPaths {
+		if !validContainerRelativePath(name) || path.Clean(name) == "." {
+			return input, ErrInvalidScriptContainer
+		}
+	}
+	for name, value := range input.FileVariables {
+		if !scriptEnvironmentNamePattern.MatchString(name) || len(value) > 65536 {
+			return input, ErrInvalidScriptContainer
+		}
+		if _, reserved := reservedScriptContainerEnvironment[name]; reserved {
+			return input, ErrInvalidScriptContainer
+		}
+		if input.Environment == nil {
+			input.Environment = map[string]string{}
+		}
+		input.Environment[name] = scriptWorkspace + "/.secrets/" + name
 	}
 	source, err := filepath.Abs(input.SourceDirectory)
 	if err != nil {

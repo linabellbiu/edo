@@ -73,6 +73,7 @@ type BuildOptions struct {
 	TargetStage  string
 	Platform     string
 	BuildArgs    map[string]string
+	Secrets      map[string]string
 	Labels       map[string]string
 }
 
@@ -456,7 +457,7 @@ func (s *Service) runBuildxCommand(
 	if _, err := exec.LookPath("docker"); err != nil {
 		return errors.New("Docker CLI 未安装，无法执行 BuildKit 构建")
 	}
-	if !ValidBuildArgs(options.BuildArgs) {
+	if !ValidBuildArgs(options.BuildArgs) || !validBuildSecrets(options.Secrets) {
 		return errors.New("Docker 构建参数无效或与构建运行时变量冲突")
 	}
 	// 每次构建都使用独立 Docker 配置。即使是本地或匿名构建，
@@ -475,7 +476,7 @@ func (s *Service) runBuildxCommand(
 		s.config.DockerBuilderHost,
 		s.config.DockerBuilderTLSCertPath,
 		configDirectory,
-		options.BuildArgs,
+		buildExecutionEnvironment(options),
 	)
 	diagnostic := &tailBuffer{limit: 16 * 1024}
 	commandOutput := io.Writer(diagnostic)
@@ -597,6 +598,7 @@ func dockerBuildxArgumentsWithOptions(
 	for name, value := range options.BuildArgs {
 		buildArgs[name] = value
 	}
+	arguments = appendBuildSecrets(arguments, options.Secrets)
 	arguments = appendSortedBuildArgNames(arguments, buildArgs)
 	arguments = appendSortedBuildValues(arguments, "--label", options.Labels)
 	arguments = append(arguments, "--tag", image)
@@ -626,6 +628,7 @@ func dockerBuildxPushArgumentsWithOptions(
 	if platform := strings.TrimSpace(options.Platform); platform != "" {
 		arguments = append(arguments, "--platform", platform)
 	}
+	arguments = appendBuildSecrets(arguments, options.Secrets)
 	arguments = appendSortedBuildArgNames(arguments, options.BuildArgs)
 	arguments = appendSortedBuildValues(arguments, "--label", options.Labels)
 	arguments = append(arguments, "--tag", image)
@@ -953,4 +956,37 @@ func dockerIgnoreMatcher(root string) (*patternmatcher.PatternMatcher, error) {
 		return nil, fmt.Errorf("解析 .dockerignore 规则失败: %w", err)
 	}
 	return matcher, nil
+}
+
+func validBuildSecrets(secrets map[string]string) bool {
+	if len(secrets) > 100 {
+		return false
+	}
+	for name, value := range secrets {
+		if !dockerBuildArgNamePattern.MatchString(name) || len(value) > 65536 || strings.ContainsRune(value, '\x00') {
+			return false
+		}
+	}
+	return true
+}
+func appendBuildSecrets(arguments []string, secrets map[string]string) []string {
+	keys := make([]string, 0, len(secrets))
+	for key := range secrets {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		arguments = append(arguments, "--secret", "id="+key+",env=EDO_BUILD_SECRET_"+key)
+	}
+	return arguments
+}
+func buildExecutionEnvironment(options BuildOptions) map[string]string {
+	values := make(map[string]string, len(options.BuildArgs)+len(options.Secrets))
+	for key, value := range options.BuildArgs {
+		values[key] = value
+	}
+	for key, value := range options.Secrets {
+		values["EDO_BUILD_SECRET_"+key] = value
+	}
+	return values
 }
