@@ -1,8 +1,12 @@
 # EDO
 
-EDO（EasyDevOps）是给中小团队用的自动发布工具。接入代码仓库，选好触发条件，配置测试、构建和部署步骤后，提交代码就能自动发布。
+**简单、轻量的自动发布工具。**
 
-发布按「应用 → 流水线 → 部署方案 → 运行资源」组织。Docker、Docker Compose 和 Kubernetes 都用同一套流程，也可以手动发起发布。
+EDO（EasyDevOps）面向中小团队。连接代码仓库，选好触发条件和测试、构建、部署步骤，提交代码就能自动发布。
+
+前后端打包在一个程序里，单进程运行。默认使用 SQLite，配合 Redis 和 NATS，可以通过 Docker Compose 一起启动。
+
+Docker、Docker Compose 和 Kubernetes 都按「应用 → 流水线 → 部署方案 → 运行资源」发布，也可以手动执行。
 
 ## Docker Compose 部署
 
