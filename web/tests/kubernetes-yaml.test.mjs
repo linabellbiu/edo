@@ -50,8 +50,8 @@ test('YAML 补丁明确删除键，数组整体替换，保留新的状态版本
   const after=yaml.editableKubeObject(deploymentType,before);after.spec.template.spec.containers.pop()
   assert.deepEqual(yaml.kubeYamlPatch(deploymentType,before,after,before).spec.template.spec.containers,[{name:'a',image:'old'}])
 })
-function drawer(client) {
-  const component = load('../src/components/KubeYamlDrawer.vue', {vue:{...vue,onBeforeUnmount(){}}, 'vue-i18n':{useI18n:()=>({t:key=>key})}, 'ant-design-vue':{Modal:{confirm:()=>({destroy(){}})},message:{success(){}}}, '@/api/client':{default:client,__esModule:true}, '@/api/kubernetes':{resourceURL:()=>'/resource',withFreshKubeResource:async(_c,_t,o,_message,fn)=>fn(o),kubeErrorMessage:()=> '安全提示'}, '@/utils/kubernetesYaml':yaml}).default
+function drawer(client,dialogs=[]) {
+  const component = load('../src/components/KubeYamlDrawer.vue', {vue:{...vue,onBeforeUnmount(){}}, 'vue-i18n':{useI18n:()=>({t:key=>key})}, 'ant-design-vue':{Modal:{confirm:options=>{dialogs.push(options);return{destroy(){}}}},message:{success(){}}}, '@/api/client':{default:client,__esModule:true}, '@/api/kubernetes':{resourceURL:()=>'/resource',withFreshKubeResource:async(_c,_t,o,_message,fn)=>fn(o),kubeErrorMessage:()=> '安全提示'}, '@/utils/kubernetesYaml':yaml}).default
   const props=vue.reactive({open:true,cluster:'test',type,object:original,allowed:true}),events=[]
   let state
   const scope=vue.effectScope();scope.run(()=>{state=component.setup(props,{expose(){},emit:(...args)=>events.push(args)})})
@@ -70,4 +70,112 @@ test('旧校验响应不会覆盖新的输入；保存永远先 dry-run 再 PATC
   const checking=state.checkCluster();await Promise.resolve();state.source.value+='\n# changed';await vue.nextTick();resolve();await checking
   assert.equal(state.checkStatus.value,'');assert.equal(events.length,0);assert.deepEqual(calls,['validate'])
   const saving=state.checkCluster(true);await Promise.resolve();resolve();await saving;assert.deepEqual(calls,['validate','validate','save']);assert.deepEqual(events,[['update:open',false],['saved']]);stop()
+})
+test('YAML离开确认取消不丢输入、确认不重复提交，校验中拒绝离开',async()=>{
+ const dialogs=[],{state,events,stop}=drawer({},dialogs);assert.equal(await state.confirmLeave(),true)
+ state.source.value+='\n# draft';await vue.nextTick();const denied=state.confirmLeave();dialogs[0].onCancel();dialogs[0].afterClose();assert.equal(await denied,false);assert.equal(events.length,0);assert.match(state.source.value,/# draft/)
+ const allowed=state.close();dialogs[1].onOk();dialogs[1].afterClose();await allowed;assert.deepEqual(events,[['update:open',false]])
+ state.checking.value=true;assert.equal(await state.confirmLeave(),false);assert.equal(dialogs.length,2);stop()
+})
+
+function freshDrawer({validate}={}){
+ const gets=[],validations=[],patches=[],events=[],successes=[],order=[],unmounts=[],dialogs=[]
+ const client={
+  get:(url,options)=>{order.push('get');return new Promise((resolve,reject)=>gets.push({url,options,resolve,reject}))},
+  post:async(url,body,options)=>{order.push('validate');validations.push({url,body,options});return validate?validate(url,body,options):{data:{valid:true}}},
+  patch:async(url,body,options)=>{order.push('patch');patches.push({url,body,options});return {data:{}}},
+ }
+ const api=load('../src/api/kubernetes.ts',{'./client':{__esModule:true,default:client},axios:{__esModule:true,default:{isAxiosError:err=>Boolean(err.response)}},'./resources':{apiErrorMessage:()=> '安全提示'}})
+ const component=load('../src/components/KubeYamlDrawer.vue',{
+  vue:{...vue,onBeforeUnmount:fn=>unmounts.push(fn)},'vue-i18n':{useI18n:()=>({t:key=>key})},
+  'ant-design-vue':{Modal:{confirm:options=>{const dialog={options,updates:[],destroyed:false};dialogs.push(dialog);return {update:update=>{dialog.updates.push(update);Object.assign(options,update)},destroy(){dialog.destroyed=true}}}},message:{success:value=>successes.push(value)}},
+  '@/api/client':{__esModule:true,default:client},'@/api/kubernetes':api,'@/utils/kubernetesYaml':yaml,
+ }).default
+ const props=vue.reactive({open:true,cluster:'test',type,object:JSON.parse(JSON.stringify(original)),allowed:true}),scope=vue.effectScope()
+ let state,stopped=false
+ scope.run(()=>{state=component.setup(props,{expose(){},emit:(...args)=>events.push(args)})})
+ const stop=()=>{if(stopped)return;stopped=true;unmounts.forEach(fn=>fn());scope.stop()}
+ return {state,props,gets,validations,patches,events,successes,order,dialogs,unmount:stop,stop}
+}
+
+test('YAML 保存通过真实 fresh helper 将同一取消信号传给 GET、dry-run 和 PATCH',async t=>{
+ const h=freshDrawer();t.after(h.stop);await vue.nextTick()
+ h.state.source.value+='\n# draft';await vue.nextTick()
+ const saving=h.state.checkCluster(true);assert.equal(h.gets.length,1);assert.ok(h.gets[0].options.signal instanceof AbortSignal)
+ h.gets[0].resolve({data:{object:{...original,metadata:{...original.metadata,resourceVersion:'14'}}}});await saving
+ assert.deepEqual(h.order,['get','validate','patch']);assert.equal(h.validations.length,1);assert.equal(h.patches.length,1)
+ assert.equal(h.gets[0].options.signal,h.validations[0].options.signal);assert.equal(h.gets[0].options.signal,h.patches[0].options.signal)
+ assert.equal(h.validations[0].body.metadata.resourceVersion,'14');assert.deepEqual(h.validations[0].body,h.patches[0].body)
+ assert.deepEqual(h.events,[['update:open',false],['saved']]);assert.deepEqual(h.successes,['yamlEditor.saved'])
+})
+
+test('YAML 读取新版本期间输入变化、关闭或卸载会中止 GET，迟到响应不验证、保存或污染新状态',async t=>{
+ for(const save of [false,true])for(const change of ['input','close','unmount']){
+  const h=freshDrawer();t.after(h.stop);await vue.nextTick()
+  const pending=h.state.checkCluster(save);assert.equal(h.gets.length,1);const signal=h.gets[0].options.signal
+  assert.ok(signal instanceof AbortSignal);assert.equal(signal.aborted,false)
+  if(change==='input')h.state.source.value+='\n# another draft'
+  else if(change==='close')h.props.open=false
+  else h.unmount()
+  await vue.nextTick();assert.equal(signal.aborted,true,`${save} ${change}`)
+  h.state.error.value='新上下文提示';h.state.checkStatus.value='新校验状态';h.state.checking.value=true;h.state.working.value=true
+  h.gets[0].resolve({data:{object:{...original,metadata:{...original.metadata,resourceVersion:'14'}}}});await pending;await vue.nextTick()
+  assert.deepEqual(h.order,['get']);assert.equal(h.validations.length,0);assert.equal(h.patches.length,0);assert.deepEqual(h.events,[]);assert.deepEqual(h.successes,[])
+  assert.equal(h.state.error.value,'新上下文提示');assert.equal(h.state.checkStatus.value,'新校验状态');assert.equal(h.state.checking.value,true);assert.equal(h.state.working.value,true)
+ }
+})
+
+const settle=async()=>{await vue.nextTick();await new Promise(resolve=>setImmediate(resolve));await vue.nextTick()}
+const freshObject=()=>({data:{object:{...original,metadata:{...original.metadata,resourceVersion:'14'}}}})
+
+test('YAML 保存校验期间锁定确认窗关闭入口，强行取消或关闭也中止本次保存',async t=>{
+ for(const action of ['onCancel','afterClose']){
+  let finish
+  const h=freshDrawer({validate:()=>new Promise(resolve=>{finish=resolve})});t.after(h.stop)
+  h.state.source.value+='\n# draft';await settle();h.state.save();const dialog=h.dialogs[0]
+  assert.equal(dialog.options.cancelButtonProps.disabled,false);assert.equal(dialog.options.keyboard,true);assert.equal(dialog.options.closable,true)
+  const saving=dialog.options.onOk()
+  assert.equal(dialog.options.cancelButtonProps.disabled,true);assert.equal(dialog.options.keyboard,false);assert.equal(dialog.options.maskClosable,false);assert.equal(dialog.options.closable,false)
+  h.gets[0].resolve(freshObject());await settle();assert.equal(h.validations.length,1)
+  const signal=h.validations[0].options.signal;dialog.options[action]();if(action==='onCancel')dialog.options.afterClose()
+  assert.equal(signal.aborted,true);assert.equal(h.state.working.value,false);assert.equal(h.state.confirming.value,false)
+  h.state.error.value='新上下文提示';h.state.checking.value=true;h.state.working.value=true
+  finish({data:{valid:true}});await saving;await settle()
+  assert.equal(h.patches.length,0);assert.deepEqual(h.events,[]);assert.deepEqual(h.successes,[]);assert.equal(h.state.error.value,'新上下文提示');assert.equal(h.state.checking.value,true);assert.equal(h.state.working.value,true)
+  await dialog.options.onOk();assert.equal(h.gets.length,1);assert.equal(h.validations.length,1)
+ }
+})
+
+test('YAML 同一确认窗校验失败恢复取消入口并可重试，保存中重复确认不双写',async t=>{
+ let attempts=0,finish
+ const h=freshDrawer({validate:()=>{if(++attempts===1)throw new Error('private validation failure');return new Promise(resolve=>{finish=resolve})}});t.after(h.stop)
+ h.state.source.value+='\n# draft';await settle();const draft=h.state.source.value;h.state.save();const dialog=h.dialogs[0]
+ const first=dialog.options.onOk();h.gets[0].resolve(freshObject());await assert.rejects(first)
+ assert.equal(dialog.options.cancelButtonProps.disabled,false);assert.equal(dialog.options.keyboard,true);assert.equal(dialog.options.maskClosable,false);assert.equal(dialog.options.closable,true)
+ assert.equal(h.state.working.value,false);assert.equal(h.state.confirming.value,true);assert.equal(h.state.source.value,draft);assert.equal(h.patches.length,0)
+ const retry=dialog.options.onOk();h.gets[1].resolve(freshObject());await settle();assert.equal(h.validations.length,2);assert.equal(dialog.options.cancelButtonProps.disabled,true)
+ await dialog.options.onOk();assert.equal(h.gets.length,2);assert.equal(h.validations.length,2);assert.equal(h.patches.length,0)
+ finish({data:{valid:true}});await retry
+ assert.deepEqual(h.order,['get','validate','get','validate','patch']);assert.equal(h.patches.length,1);assert.deepEqual(h.events,[['update:open',false],['saved']]);assert.deepEqual(h.successes,['yamlEditor.saved'])
+})
+
+test('YAML 保存校验失败后可以正常取消，已取消确认窗不能再次发起请求',async t=>{
+ const h=freshDrawer({validate:async()=>{throw new Error('private validation failure')}});t.after(h.stop)
+ h.state.source.value+='\n# draft';await settle();const draft=h.state.source.value;h.state.save();const dialog=h.dialogs[0]
+ const saving=dialog.options.onOk();h.gets[0].resolve(freshObject());await assert.rejects(saving)
+ dialog.options.onCancel();dialog.options.afterClose();assert.equal(h.state.confirming.value,false);assert.equal(h.state.source.value,draft)
+ await dialog.options.onOk();assert.equal(h.gets.length,1);assert.equal(h.validations.length,1);assert.equal(h.patches.length,0);assert.deepEqual(h.events,[]);assert.deepEqual(h.successes,[])
+})
+
+test('YAML 旧确认窗关闭和迟到校验不会取消或重置新确认窗请求',async t=>{
+ let finishOld,attempts=0
+ const h=freshDrawer({validate:()=>++attempts===1?new Promise(resolve=>{finishOld=resolve}):{data:{valid:true}}});t.after(h.stop)
+ h.state.source.value+='\n# old draft';await settle();h.state.save();const old=h.dialogs[0],oldSaving=old.options.onOk()
+ h.gets[0].resolve(freshObject());await settle();assert.equal(h.validations.length,1)
+ h.props.cluster='new-cluster';await settle();assert.equal(h.validations[0].options.signal.aborted,true)
+ h.state.source.value+='\n# new draft';await settle();const currentDraft=h.state.source.value;h.state.save();const current=h.dialogs[1],currentSaving=current.options.onOk()
+ assert.equal(h.gets.length,2);const currentSignal=h.gets[1].options.signal;h.state.error.value='新上下文提示'
+ old.options.afterClose();await old.options.onOk();assert.equal(currentSignal.aborted,false);assert.equal(h.state.confirming.value,true);assert.equal(h.state.working.value,true);assert.equal(h.state.error.value,'新上下文提示')
+ finishOld({data:{valid:true}});await oldSaving;assert.equal(h.patches.length,0);assert.equal(currentSignal.aborted,false);assert.equal(h.state.working.value,true);assert.equal(h.state.source.value,currentDraft);assert.deepEqual(h.events,[])
+ h.gets[1].resolve(freshObject());await currentSaving;assert.equal(h.patches.length,1);assert.deepEqual(h.events,[['update:open',false],['saved']]);assert.deepEqual(h.successes,['yamlEditor.saved'])
 })

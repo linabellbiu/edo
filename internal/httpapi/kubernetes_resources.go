@@ -105,6 +105,23 @@ func (h clusterHandler) resourceValidate(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"valid": true})
 }
 
+func (h clusterHandler) resourceValidateCreate(c *gin.Context) {
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 2*1024*1024)
+	var object map[string]any
+	if err := c.ShouldBindJSON(&object); err != nil {
+		h.logger.Warn("Kubernetes 新建校验请求解析失败", "operation", "kubernetes_resource_create_validate_bind", "cluster_id", c.Param("id"), "resource", c.Param("resource"), "name", c.Param("name"), "request_id", requestIDFrom(c), "err", err)
+		h.resourceError(c, "kubernetes_resource_create_validate_bind", kube.ErrInvalidResource)
+		return
+	}
+	if err := h.kube.ValidateResourceCreate(c.Request.Context(), c.Param("id"), c.Param("resource"), c.Query("namespace"), c.Param("name"), object); err != nil {
+		h.resourceError(c, "kubernetes_resource_create_validate", err)
+		return
+	}
+	c.Header("Cache-Control", "no-store")
+	// 创建校验只返回结果，不回显集群默认化后的对象或 Secret 内容。
+	c.JSON(http.StatusOK, gin.H{"valid": true})
+}
+
 func (h clusterHandler) resourceAction(c *gin.Context) {
 	var input kube.ResourceAction
 	if err := c.ShouldBindJSON(&input); err != nil {

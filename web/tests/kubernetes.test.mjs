@@ -16,6 +16,7 @@ function load(path,modules){
 const api=load('../src/api/kubernetes.ts',{})
 const workloadForm=load('../src/utils/kubernetesWorkloadForm.ts',{'@/api/kubernetes':api})
 const presentation=load('../src/utils/kubernetesPresentation.ts',{'@/api/kubernetes':api})
+const details=load('../src/utils/kubernetesDetails.ts',{'@/api/kubernetes':api})
 test('资源数量按原始 SI、二进制及指数含义换算，截图中的 Ki 和无单位字节统一可读',()=>{
  for(const [input,bytes] of [['2147483Ki',2147483*1024],['955574586848',955574586848],['982292956Ki',982292956*1024],['1.5Gi',1.5*1024**3],['.5Mi',.5*1024**2],['128Mi',128*1024**2],['1G',1e9],['1M',1e6],['1e6',1e6],['1E+6',1e6],['1E',1e18],['1Ti',1024**4],['400m',.4],['10u',.00001],['100n',.0000001]])assert.ok(Math.abs(api.parseKubeQuantity(input)-bytes)<=Number.EPSILON*bytes,input)
  assert.equal(api.formatKubeQuantity('memory','2147483Ki'),'2.05 GiB')
@@ -39,11 +40,11 @@ test('容量阈值、微小非零值和缺失值有明确区别，CPU 与计数�
 test('Pod 与工作负载详情统一请求和限制，并展示 GPU、大页内存，原始配置不变',()=>{
  const object={kind:'Pod',metadata:{name:'worker'},spec:{containers:[{name:'app',resources:{requests:{cpu:'100m',memory:'128Mi','ephemeral-storage':'1G','nvidia.com/gpu':'2'},limits:{memory:'1.5Gi','hugepages-2Mi':'80Mi'}}}]}}
  const before=JSON.stringify(object)
- const component=load('../src/components/KubeResourceDetails.vue',{vue,'vue-i18n':{useI18n:()=>({t:key=>key})},'@/api/kubernetes':api,'@/utils/kubernetesPresentation':presentation}).default
+ const component=load('../src/components/KubeResourceDetails.vue',{vue,'vue-i18n':{useI18n:()=>({t:key=>key})},'@/api/kubernetes':api,'@/utils/kubernetesPresentation':presentation,'@/utils/kubernetesDetails':details}).default
  const state=component.setup({object,type:api.kubeTypes.find(item=>item.kind==='Pod'),canFollow:()=>false},{expose(){},emit(){}})
- assert.equal(state.resources(state.containers.value[0],'requests'),'cpu: 100 m · memory: 128 MiB · ephemeral-storage: 953.67 MiB · nvidia.com/gpu: 2')
- assert.equal(state.resources(state.containers.value[0],'limits'),'memory: 1.5 GiB · hugepages-2Mi: 80 MiB')
- assert.equal(state.resources({},'requests'),'—');assert.match(state.rawResources(state.containers.value[0],'limits'),/1.5Gi/)
+ assert.equal(state.resources(state.containers.value[0].container,'requests'),'cpu: 100 m · memory: 128 MiB · ephemeral-storage: 953.67 MiB · nvidia.com/gpu: 2')
+ assert.equal(state.resources(state.containers.value[0].container,'limits'),'memory: 1.5 GiB · hugepages-2Mi: 80 MiB')
+ assert.equal(state.resources({},'requests'),'—');assert.match(state.rawResources(state.containers.value[0].container,'limits'),/1.5Gi/)
  assert.equal(JSON.stringify(object),before)
  const pvc={kind:'PersistentVolumeClaim',metadata:{},spec:{resources:{requests:{storage:'1536Mi'}}},status:{capacity:{storage:'2Gi'}}}
  assert.equal(presentation.resourceCells(pvc,key=>key).capacity.text,'1.5 GiB');assert.match(presentation.resourceCells(pvc,key=>key).capacity.secondary,/2 GiB/)
@@ -272,7 +273,8 @@ test('表单提交失败向确认窗口返回拒绝，并保留错误和编辑�
  const component=load('../src/components/KubeResourceEditor.vue',{
   vue:{...vue,watch(){}},'vue-i18n':{useI18n:()=>({t:translate})},'ant-design-vue':{message:{success(){}}},
   '@/api/kubernetes':{...api,kubeErrorMessage:()=> '保存失败，请重试'},
-  '@/api/client':{__esModule:true,default:{request:async()=>{throw Error('private infrastructure error')}}},
+  '@/utils/kubernetesWorkloadForm':workloadForm,
+  '@/api/client':{__esModule:true,default:{post:async()=>({data:{valid:true}}),request:async()=>{throw Error('private infrastructure error')}}},
  }).default
  const state=component.setup({open:true,cluster:'a',namespace:'team',type:api.kubeTypes.find(type=>type.kind==='Service')},{expose(){},emit(){throw Error('失败时不应关闭抽屉')}})
  state.form.name='keep-name'

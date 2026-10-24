@@ -116,9 +116,11 @@ export class KubeResourceChanged extends Error {}
 export function kubeErrorMessage(error:unknown):string { return error instanceof KubeResourceChanged ? error.message : apiErrorMessage(error) }
 
 // 只接受状态变化；配置变化或同名资源重建后，仍要求用户重新确认。
-export async function withFreshKubeResource<T>(cluster:string,type:KubeType,original:KubeObject,conflict:string,mutate:(current:KubeObject)=>Promise<T>):Promise<T> {
+export async function withFreshKubeResource<T>(cluster:string,type:KubeType,original:KubeObject,conflict:string,mutate:(current:KubeObject)=>Promise<T>,signal?:AbortSignal):Promise<T> {
   for(let attempt=0;attempt<2;attempt++) {
-    const {data}=await client.get<{object:KubeObject}>(resourceURL(cluster,type,original.metadata.name),{params:{namespace:original.metadata.namespace??''}})
+    signal?.throwIfAborted()
+    const {data}=await client.get<{object:KubeObject}>(resourceURL(cluster,type,original.metadata.name),{params:{namespace:original.metadata.namespace??''},signal})
+    signal?.throwIfAborted()
     const current=data.object
     if(current.metadata.uid!==original.metadata.uid||writableSnapshot(current)!==writableSnapshot(original)||type.resource==='secrets'&&current.metadata.resourceVersion!==original.metadata.resourceVersion) throw new KubeResourceChanged(conflict)
     try { return await mutate(current) } catch(error) {

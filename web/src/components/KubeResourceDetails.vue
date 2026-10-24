@@ -1,33 +1,77 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, ref, watch } from 'vue'
 import {nodeConditionState} from '@/utils/kubernetesNode'
 import {formatDateTime} from '@/utils/time'
 import { useI18n } from 'vue-i18n'
 import { formatKubeQuantity, podSpec, type KubeObject, type KubeType } from '@/api/kubernetes'
 import { resourceCells, resourceColumns, ingressRoutes, podReferences, policyDirections, policyPeer, type KubeReference } from '@/utils/kubernetesPresentation'
+import { kubeContainerDetails, kubeContainerProbes, kubeEnvironmentSources, kubeVolumeDetails } from '@/utils/kubernetesDetails'
 import KubeResourceCell from './KubeResourceCell.vue'
-const props=defineProps<{object:KubeObject;type:KubeType;canFollow:(reference?:KubeReference)=>boolean}>()
-const emit=defineEmits<{follow:[reference:KubeReference]}>()
+const props=defineProps<{object:KubeObject;type:KubeType;canFollow:(reference?:KubeReference)=>boolean;container?:string}>()
+const emit=defineEmits<{follow:[reference:KubeReference];container:[name:string]}>()
 const {t}=useI18n()
 const cells=computed(()=>resourceCells(props.object,t))
 const fields=computed(()=>resourceColumns(props.type,t).filter(item=>!['name','namespace','status','created','usage','images'].includes(item.key)))
-const containers=computed(()=>[...(podSpec(props.object).initContainers??[]).map((item:KubeObject)=>({...item,init:true})),...(podSpec(props.object).containers??[])])
+const containers=computed(()=>kubeContainerDetails(props.object))
+const selectedContainerKey=ref('')
+const selectedContainer=computed(()=>containers.value.find(item=>props.container?item.container.name===props.container:item.key===selectedContainerKey.value)??containers.value.find(item=>item.kind==='app')??containers.value[0])
+function selectContainer(key:string,name:string){selectedContainerKey.value=key;if(props.object.kind==='Pod')emit('container',name)}
+watch(()=>`${props.object.kind}/${props.object.metadata?.uid??props.object.metadata?.name}`,()=>{selectedContainerKey.value=''}, {immediate:true})
+const environment=computed(()=>kubeEnvironmentSources(selectedContainer.value?.container??{},props.object.metadata?.namespace))
+const probes=computed(()=>kubeContainerProbes(selectedContainer.value?.container??{}))
+const configuration=computed(()=>podSpec(props.object))
+const volumes=computed(()=>kubeVolumeDetails(props.object))
+const schedulingFields=computed(()=>[
+  ['nodeName','nodeAndIP'],['serviceAccountName','serviceAccount'],['priorityClassName','priorityClass'],
+  ['restartPolicy','restartPolicy'],['terminationGracePeriodSeconds','terminationGracePeriod'],['hostNetwork','hostNetwork'],['dnsPolicy','dnsPolicy'],
+].filter(([key])=>configuration.value[key!]!==undefined&&configuration.value[key!]!=='').map(([key,label])=>({key:key!,label:label!,value:configuration.value[key!]})))
+const schedulingRules=computed(()=>['affinity','tolerations','topologySpreadConstraints'].filter(key=>configuration.value[key]&&Object.keys(configuration.value[key]).length))
 const references=computed(()=>podReferences(props.object))
 const routes=computed(()=>ingressRoutes(props.object))
 const policyRules=computed(()=>policyDirections(props.object).flatMap(direction=>(props.object.spec?.[direction.toLowerCase()]??[]).map((rule:KubeObject,index:number)=>({direction,index,peers:rule[direction==='Ingress'?'from':'to']??[],ports:rule.ports??[]}))))
 const parameters=computed(()=>Object.entries(props.object.parameters??{}))
 const source=computed(()=>{const spec=props.object.spec??{};if(spec.csi)return {label:'CSI',value:`${spec.csi.driver} / ${spec.csi.volumeHandle}`};if(spec.nfs)return {label:'NFS',value:`${spec.nfs.server}:${spec.nfs.path}`};if(spec.local)return {label:'Local',value:spec.local.path};if(spec.hostPath)return {label:'HostPath',value:spec.hostPath.path};return undefined})
-const containerState=(container:KubeObject)=>{
-  const state=[...(props.object.status?.containerStatuses??[]),...(props.object.status?.initContainerStatuses??[])].find((item:KubeObject)=>item.name===container.name)
-  return state?.state?.waiting?.reason??state?.state?.terminated?.reason??(state?.state?.running?t('k8s.state_running'):'—')
-}
+const containerState=(runtime?:KubeObject)=>runtime?.state?.waiting?.reason??runtime?.state?.terminated?.reason??(runtime?.state?.running?t('k8s.containerRunning'):'—')
+const booleanValue=(value:unknown)=>typeof value==='boolean'?t(value?'k8s.yes':'k8s.no'):'—'
+const environmentSourceLabel=(kind:string)=>t(`k8s.${({direct:'directlyConfigured',field:'fieldReference',resource:'resourceReference',configmap:'type_configmaps',secret:'type_secrets'} as Record<string,string>)[kind]??'state_unknown'}`)
+const volumeTypeLabel=(kind:string)=>['emptyDir','configMap','secret','persistentVolumeClaim'].includes(kind)?t(`k8s.volume_${kind}`):kind||'—'
+const volumePropertyLabel=(key:string)=>t(`k8s.${({medium:'volumeMedium',sizeLimit:'sizeLimit',path:'path',type:'volumeType',driver:'volumeDriver',fsType:'fileSystem',readOnly:'readOnly',optional:'optionalReference',defaultMode:'fileMode'} as Record<string,string>)[key]}`)
+const volumeProperties=(volume:KubeObject)=>['medium','sizeLimit','path','type','driver','fsType','readOnly','optional','defaultMode'].filter(key=>volume.source[key]!==undefined).map(key=>({key,value:key==='sizeLimit'?formatKubeQuantity('storage',volume.source[key]):typeof volume.source[key]==='boolean'?booleanValue(volume.source[key]):String(volume.source[key])}))
 const resources=(container:KubeObject,field:string)=>Object.entries(container.resources?.[field]??{}).map(([key,value])=>`${key}: ${formatKubeQuantity(key,value)}`).join(' · ')||'—'
 const rawResources=(container:KubeObject,field:string)=>Object.entries(container.resources?.[field]??{}).map(([key,value])=>`${key}: ${value}`).join(' · ')
 </script>
 <template>
   <section v-if="fields.length" class="resource-detail-section kube-facts-section"><h4>{{ t('k8s.resourceSettings') }}</h4><dl class="kube-detail-facts"><div v-for="field in fields" :key="field.key"><dt>{{ field.label }}</dt><dd><KubeResourceCell :cell="cells[field.key]" :date="['jobTiming','lastSchedule'].includes(field.key)" :can-follow="canFollow(cells[field.key]?.reference)" @follow="emit('follow',$event)" /></dd></div></dl></section>
 
-  <section v-if="containers.length" class="resource-detail-section"><h4>{{ t('k8s.containers') }}</h4><div class="detail-table-scroll"><table class="kube-detail-table"><thead><tr><th>{{ t('k8s.container') }}</th><th>{{ t('k8s.image') }}</th><th>{{ t('k8s.ports') }}</th><th>{{ t('k8s.resourceRequests') }}</th><th>{{ t('k8s.resourceLimits') }}</th><th v-if="object.kind==='Pod'">{{ t('k8s.status') }}</th></tr></thead><tbody><tr v-for="container in containers" :key="container.name"><td><strong>{{ container.name }}</strong><span v-if="container.init" class="muted">Init</span></td><td><code>{{ container.image }}</code></td><td>{{ (container.ports??[]).map((item:KubeObject)=>`${item.containerPort}/${item.protocol??'TCP'}`).join(' · ')||'—' }}</td><td :title="rawResources(container,'requests')">{{ resources(container,'requests') }}</td><td :title="rawResources(container,'limits')">{{ resources(container,'limits') }}</td><td v-if="object.kind==='Pod'">{{ containerState(container) }}</td></tr></tbody></table></div></section>
+  <section v-if="containers.length" class="resource-detail-section kube-container-config">
+    <h4>{{ t('k8s.containers') }}</h4>
+    <div class="detail-table-scroll"><table class="kube-detail-table"><thead><tr><th>{{ t('k8s.container') }}</th><th>{{ t('k8s.image') }}</th><th>{{ t('k8s.resourceRequests') }}</th><th>{{ t('k8s.resourceLimits') }}</th><th v-if="object.kind==='Pod'">{{ t('k8s.status') }}</th></tr></thead><tbody>
+      <tr v-for="item in containers" :key="item.key" :class="{'is-selected':selectedContainer?.key===item.key}"><td><button class="detail-link" :aria-pressed="selectedContainer?.key===item.key" @click="selectContainer(item.key,item.container.name)">{{ item.container.name }}</button><div class="muted">{{ t(`k8s.containerKind_${item.kind}`) }}{{ item.container.restartPolicy==='Always'?` · ${t('k8s.nativeSidecar')}`:'' }}</div></td><td><code>{{ item.container.image||'—' }}</code></td><td :title="rawResources(item.container,'requests')">{{ resources(item.container,'requests') }}</td><td :title="rawResources(item.container,'limits')">{{ resources(item.container,'limits') }}</td><td v-if="object.kind==='Pod'">{{ containerState(item.runtime) }}<div v-if="item.runtime" class="muted">{{ t('k8s.restarts') }}: {{ item.runtime.restartCount??'—' }}</div></td></tr>
+    </tbody></table></div>
+    <div v-if="selectedContainer" :key="`${object.metadata.uid}/${selectedContainer.key}`" class="kube-container-summary">
+      <h4>{{ t('k8s.containerConfiguration') }} · {{ selectedContainer.container.name }}</h4>
+      <dl class="kube-detail-facts">
+        <div v-if="selectedContainer.container.imagePullPolicy"><dt>{{ t('k8s.imagePullPolicy') }}</dt><dd>{{ selectedContainer.container.imagePullPolicy }}</dd></div>
+        <div v-if="selectedContainer.container.workingDir"><dt>{{ t('k8s.workingDir') }}</dt><dd><code>{{ selectedContainer.container.workingDir }}</code></dd></div>
+        <div v-if="object.kind==='Pod'&&selectedContainer.runtime"><dt>{{ t('k8s.readyAndStarted') }}</dt><dd>{{ booleanValue(selectedContainer.runtime.ready) }} / {{ booleanValue(selectedContainer.runtime.started) }}</dd></div>
+        <div v-if="selectedContainer.runtime?.state?.running?.startedAt"><dt>{{ t('k8s.containerStarted') }}</dt><dd>{{ formatDateTime(selectedContainer.runtime.state.running.startedAt) }}</dd></div>
+        <div v-if="selectedContainer.runtime?.containerID"><dt>{{ t('k8s.containerID') }}</dt><dd><code>{{ selectedContainer.runtime.containerID }}</code></dd></div>
+        <div v-if="selectedContainer.runtime?.imageID"><dt>{{ t('k8s.imageID') }}</dt><dd><code>{{ selectedContainer.runtime.imageID }}</code></dd></div>
+        <div v-if="selectedContainer.runtime?.state?.waiting?.message"><dt>{{ t('k8s.containerWaiting') }}</dt><dd>{{ selectedContainer.runtime.state.waiting.message }}</dd></div>
+        <div v-if="selectedContainer.runtime?.state?.terminated"><dt>{{ t('k8s.currentContainerInstance') }}</dt><dd>{{ selectedContainer.runtime.state.terminated.reason||'—' }} · {{ t('k8s.exitCode') }}: {{ selectedContainer.runtime.state.terminated.exitCode??'—' }}<div>{{ formatDateTime(selectedContainer.runtime.state.terminated.finishedAt) }}</div></dd></div>
+        <div v-if="selectedContainer.runtime?.lastState?.terminated"><dt>{{ t('k8s.previousContainerInstance') }}</dt><dd>{{ selectedContainer.runtime.lastState.terminated.reason||'—' }} · {{ t('k8s.exitCode') }}: {{ selectedContainer.runtime.lastState.terminated.exitCode??'—' }}<div>{{ formatDateTime(selectedContainer.runtime.lastState.terminated.finishedAt) }}</div></dd></div>
+      </dl>
+      <template v-if="selectedContainer.container.command?.length||selectedContainer.container.args?.length"><h4>{{ t('k8s.startupAndEnv') }}</h4><dl class="kube-detail-facts"><div v-if="selectedContainer.container.command?.length"><dt>{{ t('k8s.commandLines') }}</dt><dd><code>{{ selectedContainer.container.command.join(' ') }}</code></dd></div><div v-if="selectedContainer.container.args?.length"><dt>{{ t('k8s.argumentLines') }}</dt><dd><code>{{ selectedContainer.container.args.join(' ') }}</code></dd></div></dl></template>
+      <template v-if="selectedContainer.container.ports?.length"><h4>{{ t('k8s.ports') }}</h4><div class="detail-table-scroll"><table class="kube-detail-table"><thead><tr><th>{{ t('k8s.name') }}</th><th>{{ t('k8s.protocol') }}</th><th>{{ t('k8s.ports') }}</th><th>{{ t('k8s.hostPort') }}</th></tr></thead><tbody><tr v-for="(port,index) in selectedContainer.container.ports" :key="index"><td>{{ port.name||'—' }}</td><td>{{ port.protocol??'TCP' }}</td><td>{{ port.containerPort??'—' }}</td><td>{{ port.hostPort!==undefined?`${port.hostIP?`${port.hostIP}:`:''}${port.hostPort}`:'—' }}</td></tr></tbody></table></div></template>
+      <template v-if="environment.length"><h4>{{ t('k8s.env') }}</h4><div class="detail-table-scroll"><table class="kube-detail-table"><thead><tr><th>{{ t('k8s.name') }}</th><th>{{ t('k8s.environmentSource') }}</th><th>{{ t('k8s.referenceName') }}</th></tr></thead><tbody><tr v-for="(env,index) in environment" :key="index"><td><code>{{ env.name }}</code><div v-if="env.prefix" class="muted">{{ t('k8s.environmentPrefix') }}: {{ env.prefix }}</div></td><td>{{ environmentSourceLabel(env.kind) }}<div v-if="env.optional!==undefined" class="muted">{{ t('k8s.optionalReference') }}: {{ booleanValue(env.optional) }}</div></td><td><template v-if="env.reference"><button v-if="canFollow(env.reference)" class="detail-link" @click="emit('follow',env.reference)">{{ env.reference.name }}</button><span v-else>{{ env.reference.name }}</span><span v-if="env.key"> / {{ env.key }}</span></template><code v-else>{{ env.field||'—' }}</code></td></tr></tbody></table></div></template>
+      <template v-if="probes.length"><h4>{{ t('k8s.healthProbes') }}</h4><div class="detail-table-scroll"><table class="kube-detail-table"><thead><tr><th>{{ t('k8s.probeKind') }}</th><th>{{ t('k8s.referenceName') }}</th><th>{{ t('k8s.resourceSettings') }}</th></tr></thead><tbody><tr v-for="probe in probes" :key="probe.key"><td>{{ t(`k8s.${probe.key}`) }}<div v-if="probe.method" class="muted">{{ t(`k8s.probe_${probe.method}`) }}</div></td><td><code>{{ probe.target||'—' }}</code></td><td><div v-for="timing in probe.timings" :key="timing.key">{{ t(`k8s.${timing.key}`) }}: {{ timing.value }}</div></td></tr></tbody></table></div></template>
+      <template v-if="selectedContainer.container.volumeMounts?.length"><h4>{{ t('k8s.volumeMounts') }}</h4><div class="detail-table-scroll"><table class="kube-detail-table"><thead><tr><th>{{ t('k8s.volumeName') }}</th><th>{{ t('k8s.mountPath') }}</th><th>{{ t('k8s.subPath') }}</th><th>{{ t('k8s.readOnly') }}</th></tr></thead><tbody><tr v-for="mount in selectedContainer.container.volumeMounts" :key="`${mount.name}/${mount.mountPath}`"><td>{{ mount.name }}</td><td><code>{{ mount.mountPath }}</code></td><td>{{ mount.subPath??mount.subPathExpr??'—' }}</td><td>{{ booleanValue(mount.readOnly) }}</td></tr></tbody></table></div></template>
+    </div>
+  </section>
+
+  <section v-if="containers.length&&(schedulingFields.length||Object.keys(configuration.nodeSelector??{}).length||schedulingRules.length)" class="resource-detail-section"><h4>{{ t('k8s.scheduling') }}</h4><dl class="kube-detail-facts"><div v-for="field in schedulingFields" :key="field.key"><dt>{{ t(`k8s.${field.label}`) }}</dt><dd><button v-if="field.key==='nodeName'&&canFollow({resource:'nodes',name:field.value})" class="detail-link" @click="emit('follow',{resource:'nodes',name:field.value})">{{ field.value }}</button><span v-else>{{ typeof field.value==='boolean'?booleanValue(field.value):field.value }}</span></dd></div><div v-if="Object.keys(configuration.nodeSelector??{}).length"><dt>{{ t('k8s.nodeSelector') }}</dt><dd><div v-for="(value,key) in configuration.nodeSelector" :key="key"><code>{{ key }}={{ value }}</code></div></dd></div></dl><details v-for="key in schedulingRules" :key="key" class="kube-scheduling-rule"><summary>{{ t(`k8s.${key==='topologySpreadConstraints'?'topologySpread':key}`) }}</summary><pre class="kube-detail-code">{{ JSON.stringify(configuration[key],null,2) }}</pre></details></section>
+
+  <section v-if="volumes.length" class="resource-detail-section"><h4>{{ t('k8s.volumes') }}</h4><div class="detail-table-scroll"><table class="kube-detail-table"><thead><tr><th>{{ t('k8s.volumeName') }}</th><th>{{ t('k8s.volumeType') }}</th><th>{{ t('k8s.referenceName') }}</th><th>{{ t('k8s.resourceSettings') }}</th></tr></thead><tbody><tr v-for="volume in volumes" :key="volume.name"><td>{{ volume.name }}</td><td>{{ volumeTypeLabel(volume.kind) }}</td><td><div v-for="reference in volume.references" :key="`${reference.resource}/${reference.name}`"><button v-if="canFollow(reference)" class="detail-link" @click="emit('follow',reference)">{{ reference.name }}</button><span v-else>{{ reference.name }}</span></div><span v-if="!volume.references.length">—</span></td><td><div v-for="property in volumeProperties(volume)" :key="property.key"><span class="muted">{{ volumePropertyLabel(property.key) }}: </span>{{ property.value }}</div></td></tr></tbody></table></div></section>
 
   <section v-if="references.length" class="resource-detail-section"><h4>{{ t('k8s.referencedResources') }}</h4><div class="reference-list"><div v-for="reference in references" :key="`${reference.resource}/${reference.name}`"><span class="muted">{{ t(`k8s.type_${reference.resource}`) }}</span><button v-if="canFollow(reference)" class="detail-link" @click="emit('follow',reference)">{{ reference.name }}</button><span v-else>{{ reference.name }}</span></div></div></section>
 

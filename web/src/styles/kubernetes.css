@@ -11,6 +11,17 @@
 }
 
 /* 表格的分列和表头只作用于 Kubernetes，保持其他业务列表的布局。 */
+.kube-resource-table table.resource-table {
+  border-collapse: separate;
+  border-spacing: 0;
+}
+/* 固定操作列必须覆盖滚动内容，悬停与选中时也保持不透明。 */
+.kube-resource-table table.resource-table tbody > tr > td { background: var(--edo-surface); }
+.kube-resource-table table.resource-table tbody > tr:nth-child(even) > td { background: color-mix(in srgb, var(--edo-primary) 3%, var(--edo-surface)); }
+.kube-resource-table table.resource-table tbody > tr:hover > td { background: color-mix(in srgb, var(--edo-primary) 3%, var(--edo-surface)); }
+.kube-resource-table table.resource-table tbody > tr.active > td { background: var(--edo-primary-soft); }
+.kube-resource-table table.resource-table .table-actions { z-index: 1; }
+.kube-resource-table table.resource-table .table-action-heading { z-index: 2; }
 .kube-resource-table .resource-table th,
 .kube-resource-table .resource-table td {
   border-right: 1px solid color-mix(in srgb, var(--edo-text) 7%, var(--edo-border));
@@ -76,4 +87,20 @@
 .kube-detail-drawer .resource-detail-toolbar{position:static;flex-shrink:0;padding:10px 16px}
 .kube-detail-drawer .resource-detail-content{display:block;overflow:auto;min-height:0;flex:1;padding:12px 16px 20px}
 .kube-detail-drawer .resource-detail-section{padding:14px}
+.kube-workspace .list-filter-field{display:flex;align-items:center;gap:8px;min-width:0}
+.kube-workspace .list-filter-field>span{flex-shrink:0;font-size:13px;color:var(--edo-muted);white-space:nowrap}
+.kube-workspace .list-filter-field>.ant-input-affix-wrapper,.kube-workspace .list-filter-field>.ant-select{flex:1;min-width:0}
+.kube-workspace .status-select{width:200px}
+.kube-workspace .label-search{width:260px}
+.kube-container-config .kube-detail-table tr.is-selected td{background:var(--edo-primary-soft)}
+.kube-container-config .detail-link:focus-visible{outline:2px solid var(--edo-primary);outline-offset:3px;border-radius:2px}
+.kube-container-summary{padding:14px 0 0}
+.kube-container-summary>h4{margin:0 0 12px;font-size:13px;line-height:1.6}
+.kube-container-summary .kube-detail-facts{margin-bottom:14px}
+.kube-container-summary .detail-table-scroll{margin-top:12px;border:1px solid var(--edo-border);border-radius:5px}
+.kube-detail-code{margin:8px 0 0;padding:10px 12px;background:var(--edo-surface-soft);border:1px solid var(--edo-border);border-radius:5px;max-height:220px;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;font-size:12px;line-height:1.7;color:var(--edo-text)}
+.kube-scheduling-rule{margin-top:14px}
+.kube-scheduling-rule>strong{font-size:13px;font-weight:500}
+@media(max-width:1100px){.kube-workspace .list-filter-field.resource-search{flex-basis:100%}.kube-workspace .list-filter-field.label-search{flex:1;min-width:220px}}
+@media(max-width:640px){.kube-workspace .list-filter-field.status-select{width:100%;flex-basis:100%}.kube-workspace .list-filter-field>span{width:76px}.kube-workspace .list-filter-field.label-search{min-width:100%}}
 @media(max-width:640px){.kube-detail-drawer .resource-detail-content{padding:10px}.kube-detail-drawer .resource-detail-toolbar{padding:10px}}

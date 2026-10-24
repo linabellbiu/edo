@@ -192,6 +192,12 @@ func (s *Service) ValidateResource(ctx context.Context, clusterID, resource, nam
 	return err
 }
 
+// 新建校验复用创建白名单及身份检查，不要求或接受已有对象的 UID 和版本。
+func (s *Service) ValidateResourceCreate(ctx context.Context, clusterID, resource, namespace, name string, object map[string]any) error {
+	_, err := s.saveResource(ctx, clusterID, resource, namespace, name, object, true, true)
+	return err
+}
+
 func (s *Service) saveResource(ctx context.Context, clusterID, resource, namespace, name string, object map[string]any, create, dryRun bool) (map[string]any, error) {
 	client, def, err := s.resourceClient(ctx, clusterID, resource, namespace, false)
 	if err != nil {

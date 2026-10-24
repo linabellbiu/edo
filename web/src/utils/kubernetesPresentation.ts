@@ -2,7 +2,7 @@ import { formatKubeQuantity, kubeTypes, podSpec, type KubeObject, type KubeType 
 
 type Translate = (key:string, values?:Record<string,unknown>)=>string
 export interface KubeReference { resource:string; name:string; namespace?:string; uid?:string }
-export interface KubeCell { text:string; secondary?:string; raw?:string; reference?:KubeReference; progress?:number; badge?:'success'|'warning'|'danger'|'neutral' }
+export interface KubeCell { text:string; secondary?:string; raw?:string; reference?:KubeReference; progress?:number; badge?:'success'|'warning'|'danger'|'neutral'; sortValue?:number }
 export interface KubeStatus { key:string; text:string; tone:string; reason?:string }
 const joined = (values:unknown[]) => values.filter(value=>value!==undefined&&value!==null&&value!=='').join(' · ') || '—'
 const entries = (value:Record<string,unknown>={}) => Object.entries(value).map(([key,value])=>`${key}=${value}`)
@@ -71,9 +71,9 @@ export function resourceColumns(type:KubeType,t:Translate) {
   const status=column('status','status','125px'),image=column('images','image','240px'),selector=column('selector','selectorShort','220px')
   const special:Record<string,ReturnType<typeof column>[]>={
     nodes:[status,column('address','nodeIP','150px'),column('usage','resourceUsage','318px'),column('nodeVersion','versionRuntime','190px')],
-    deployments:[status,column('replicas','readyReplicas','145px'),image,selector],
-    statefulsets:[status,column('replicas','readyReplicas','145px'),image,column('service','serviceName','170px')],
-    daemonsets:[status,column('replicas','readyNodesShort','145px'),image,selector],
+    deployments:[status,column('replicas','readyReplicas','100px'),column('updatedReplicas','updated','90px'),column('availableReplicas','availableReplicas','90px'),image],
+    statefulsets:[status,column('replicas','readyReplicas','100px'),column('updatedReplicas','updated','90px'),image,column('service','serviceName','170px')],
+    daemonsets:[status,column('replicas','readyNodesShort','100px'),column('currentReplicas','currentReplicas','90px'),column('updatedReplicas','updated','90px'),column('availableReplicas','availableReplicas','90px'),column('nodeSelector','nodeSelectorShort','180px')],
     pods:[status,column('replicas','readyContainers','110px'),column('restarts','restarts','90px'),column('placement','nodeAndIP','195px'),column('usage','usage','150px'),image],
     jobs:[status,column('completions','completions','135px'),image,column('jobTiming','executionTime','175px')],
     cronjobs:[status,column('schedule','schedule','175px'),column('activeJobs','activeJobs','110px'),image,column('lastSchedule','lastSchedule','170px')],
@@ -119,6 +119,15 @@ export function resourceCells(object:KubeObject,t:Translate):Record<string,KubeC
     ingressRules:cell(policyDirections(object).includes('Ingress')?t(spec.ingress?.length?'k8s.ruleCount':'k8s.denyAll',{count:spec.ingress?.length??0}):t('k8s.notRestricted')),
     egressRules:cell(policyDirections(object).includes('Egress')?t(spec.egress?.length?'k8s.ruleCount':'k8s.denyAll',{count:spec.egress?.length??0}):t('k8s.notRestricted')),
   }
+  cells.updatedReplicas=cell(kind==='DaemonSet'?status.updatedNumberScheduled:status.updatedReplicas)
+  cells.availableReplicas=cell(kind==='DaemonSet'?status.numberAvailable:status.availableReplicas)
+  cells.currentReplicas=cell(kind==='DaemonSet'?status.currentNumberScheduled:status.currentReplicas??status.replicas)
+  cells.nodeSelector=cell(joined(entries(podSpec(object).nodeSelector)))
+  for(const key of ['updatedReplicas','availableReplicas','currentReplicas','restarts','activeJobs']){
+    const amount=Number(cells[key]?.text)
+    if(cells[key]?.text!=='—'&&Number.isFinite(amount))cells[key]!.sortValue=amount
+  }
+  if(typeof status.succeeded==='number')cells.completions!.sortValue=status.succeeded
   if(kind==='PersistentVolumeClaim'||kind==='PersistentVolume')cells.capacity!.raw=String(kind==='PersistentVolumeClaim'?`${spec.resources?.requests?.storage??'—'} / ${status.capacity?.storage??'—'}`:spec.capacity?.storage??'—')
   if(kind==='Node') {
     cells.address=cell(joined((status.addresses??[]).filter((item:KubeObject)=>item.type==='InternalIP').map((item:KubeObject)=>item.address)),joined((status.addresses??[]).filter((item:KubeObject)=>item.type==='ExternalIP').map((item:KubeObject)=>item.address)))
@@ -130,7 +139,7 @@ export function resourceCells(object:KubeObject,t:Translate):Record<string,KubeC
     const ready=kind==='Pod'?Array.isArray(status.containerStatuses)?status.containerStatuses.filter((item:KubeObject)=>item.ready).length:undefined:kind==='DaemonSet'?status.numberReady:status.readyReplicas??(status.replicas!==undefined?0:undefined)
     const state=resourceStatus(object,t)
     const known=typeof ready==='number'&&Number.isFinite(ready)&&typeof desired==='number'&&Number.isFinite(desired)
-    cells.replicas={text:`${count(ready)}/${count(desired)}`,secondary:kind==='Pod'?undefined:`${t('k8s.updated')}: ${count(kind==='DaemonSet'?status.updatedNumberScheduled:status.updatedReplicas)}`,badge:!known||desired===0||object.metadata?.deletionTimestamp?'neutral':state.tone==='error'?'danger':ready===desired&&state.tone==='success'?'success':'warning'}
+    cells.replicas={text:`${count(ready)}/${count(desired)}`,sortValue:typeof ready==='number'?ready:undefined,badge:!known||desired===0||object.metadata?.deletionTimestamp?'neutral':state.tone==='error'?'danger':ready===desired&&state.tone==='success'?'success':'warning'}
   }
   return cells
 }

@@ -1,5 +1,6 @@
 import {parseKubeQuantity,type KubeObject} from '@/api/kubernetes'
 type Pair={key:string;value:string}
+export type WorkloadSettingsForm={parallelism:number|null;completions:number|null;backoffLimit:number|null;ttlSecondsAfterFinished:number|null;activeDeadlineSeconds:number|null;timeZone:string;concurrencyPolicy:string;successfulJobsHistoryLimit:number|null;failedJobsHistoryLimit:number|null;startingDeadlineSeconds:number|null;updateStrategy:string;partition:number|null;daemonMaxSurge:string;daemonMaxUnavailable:string;serviceAccountName:string;nodeSelector:Pair[]}
 export type ProbeForm={enabled:boolean;kind:string;path:string;port:string;command:string;scheme:string;initialDelaySeconds:number;periodSeconds:number;timeoutSeconds:number;successThreshold:number;failureThreshold:number;raw:KubeObject}
 export type ContainerForm={name:string;image:string;port:string;env:Pair[];imagePullPolicy:string;cpuRequest:string;cpuLimit:string;memoryRequest:string;memoryLimit:string;command:string;args:string;mounts:Array<{name:string;mountPath:string;subPath:string;readOnly:boolean;raw:KubeObject}>;probes:Record<string,ProbeForm>;sidecar:boolean;raw:KubeObject}
 const copy=(v:any)=>JSON.parse(JSON.stringify(v))
@@ -62,4 +63,97 @@ export function buildVolumes(rows:VolumeForm[],containers:KubeObject[]):KubeObje
  })
  for(const container of containers){const paths=new Set<string>();for(const mount of container.volumeMounts??[]){if(!names.has(mount.name)||paths.has(mount.mountPath))fail('invalidMount');paths.add(mount.mountPath)}}
  return result
+}
+
+export function workloadSettings(object:KubeObject,kind=object.kind??''):WorkloadSettingsForm {
+ const spec=object.spec??{},job=kind==='CronJob'?spec.jobTemplate?.spec??{}:spec
+ const pod=kind==='Pod'?spec:kind==='CronJob'?job.template?.spec??{}:spec.template?.spec??{}
+ const rolling=spec.updateStrategy?.rollingUpdate??{}
+ return {parallelism:job.parallelism??null,completions:job.completions??null,backoffLimit:job.backoffLimit??null,ttlSecondsAfterFinished:job.ttlSecondsAfterFinished??null,activeDeadlineSeconds:job.activeDeadlineSeconds??null,timeZone:spec.timeZone??'',concurrencyPolicy:spec.concurrencyPolicy??'',successfulJobsHistoryLimit:spec.successfulJobsHistoryLimit??null,failedJobsHistoryLimit:spec.failedJobsHistoryLimit??null,startingDeadlineSeconds:spec.startingDeadlineSeconds??null,updateStrategy:spec.updateStrategy?.type??'RollingUpdate',partition:rolling.partition??null,daemonMaxSurge:String(rolling.maxSurge??0),daemonMaxUnavailable:String(rolling.maxUnavailable??1),serviceAccountName:pod.serviceAccountName??'',nodeSelector:Object.entries(pod.nodeSelector??{}).map(([key,value])=>({key,value:String(value)}))}
+}
+
+type WorkloadNumberField='parallelism'|'completions'|'backoffLimit'|'ttlSecondsAfterFinished'|'activeDeadlineSeconds'|'successfulJobsHistoryLimit'|'failedJobsHistoryLimit'|'startingDeadlineSeconds'|'partition'
+const dnsSubdomain=/^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$/
+const labelPart=/^[a-zA-Z0-9]([-a-zA-Z0-9_.]*[a-zA-Z0-9])?$/
+function validSubdomain(value:string){return value.length<=253&&dnsSubdomain.test(value)}
+function validLabelKey(value:string){const parts=value.split('/'),name=parts.at(-1)!;return parts.length<=2&&name.length<=63&&labelPart.test(name)&&(parts.length===1||validSubdomain(parts[0]!))}
+function strategyAmount(value:string):string|number {
+ if(typeof value!=='string'||!/^(\d+%|0|[1-9]\d*)$/.test(value))fail('invalidWorkloadStrategy')
+ const amount=Number(value.replace('%',''))
+ if(!Number.isSafeInteger(amount)||amount>(value.endsWith('%')?100:2147483647))fail('invalidWorkloadStrategy')
+ return value.endsWith('%')?value:amount
+}
+
+export function buildWorkloadSettings(kind:string,settings:WorkloadSettingsForm,original:KubeObject={}):{spec:KubeObject;pod:KubeObject} {
+ const initial=workloadSettings(original,kind),spec:KubeObject={},pod:KubeObject={}
+ // 只提交改动，避免把服务端默认值或未曝光字段覆盖回去。
+ const numberField=(target:KubeObject,field:WorkloadNumberField,error:string)=>{
+  const value=settings[field]
+  if(Object.is(value,initial[field]))return
+  const maximum=field==='activeDeadlineSeconds'||field==='startingDeadlineSeconds'?Number.MAX_SAFE_INTEGER:2147483647
+  if(value!==null&&(!Number.isSafeInteger(value)||value<0||value>maximum))fail(error)
+  target[field]=value
+ }
+ if(kind==='Job'||kind==='CronJob'){
+  const job:KubeObject={}
+  for(const field of ['parallelism','completions','backoffLimit','ttlSecondsAfterFinished','activeDeadlineSeconds'] as const)numberField(job,field,'invalidJobSettings')
+  if(kind==='Job')Object.assign(spec,job)
+  else{
+   if(Object.keys(job).length)spec.jobTemplate={spec:job}
+   for(const field of ['successfulJobsHistoryLimit','failedJobsHistoryLimit','startingDeadlineSeconds'] as const)numberField(spec,field,'invalidCronJobSettings')
+   if(settings.concurrencyPolicy!==initial.concurrencyPolicy){
+    if(!['','Allow','Forbid','Replace'].includes(settings.concurrencyPolicy))fail('invalidCronJobSettings')
+    spec.concurrencyPolicy=settings.concurrencyPolicy||null
+   }
+   if(settings.timeZone!==initial.timeZone){
+    if(typeof settings.timeZone!=='string')fail('invalidCronJobSettings')
+    const timeZone=settings.timeZone.trim()
+    if(timeZone){
+     if(timeZone!=='UTC'&&!timeZone.includes('/'))fail('invalidCronJobSettings')
+     try{new Intl.DateTimeFormat('en-US',{timeZone})}catch{fail('invalidCronJobSettings')}
+    }
+    spec.timeZone=timeZone||null
+   }
+  }
+ }
+ if(kind==='StatefulSet'||kind==='DaemonSet'){
+  const strategyChanged=settings.updateStrategy!==initial.updateStrategy
+  const rollingChanged=kind==='StatefulSet'?settings.partition!==initial.partition:settings.daemonMaxSurge!==initial.daemonMaxSurge||settings.daemonMaxUnavailable!==initial.daemonMaxUnavailable
+  if(strategyChanged||rollingChanged){
+   if(!['RollingUpdate','OnDelete'].includes(settings.updateStrategy))fail('invalidWorkloadStrategy')
+   const strategy:KubeObject={}
+   if(strategyChanged)strategy.type=settings.updateStrategy
+   if(settings.updateStrategy==='OnDelete'){
+    if(strategyChanged)strategy.rollingUpdate=null
+   }else if(kind==='StatefulSet'){
+    const rolling:KubeObject={};numberField(rolling,'partition','invalidWorkloadStrategy')
+    if(Object.keys(rolling).length)strategy.rollingUpdate=rolling
+   }else{
+    const rolling:KubeObject={}
+    const surge=strategyAmount(settings.daemonMaxSurge),unavailable=strategyAmount(settings.daemonMaxUnavailable)
+    for(const [field,key,value] of [['daemonMaxSurge','maxSurge',surge],['daemonMaxUnavailable','maxUnavailable',unavailable]] as const){if(settings[field]!==initial[field])rolling[key]=value}
+    // DaemonSet 的两项预算必须恰好一项非零，与 Deployment 不同。
+    if((Number(String(surge).replace('%',''))===0)===(Number(String(unavailable).replace('%',''))===0))fail('invalidWorkloadStrategy')
+    if(Object.keys(rolling).length)strategy.rollingUpdate=rolling
+   }
+   if(Object.keys(strategy).length)spec.updateStrategy=strategy
+  }
+ }
+ if(settings.serviceAccountName!==initial.serviceAccountName){
+  if(typeof settings.serviceAccountName!=='string')fail('invalidServiceAccount')
+  const name=settings.serviceAccountName.trim()
+  if(name&&!validSubdomain(name))fail('invalidServiceAccount')
+  pod.serviceAccountName=name||null
+ }
+ if(JSON.stringify(settings.nodeSelector)!==JSON.stringify(initial.nodeSelector)){
+  if(!Array.isArray(settings.nodeSelector))fail('invalidNodeSelector')
+  const keys=new Set<string>(),rows:Array<[string,string|null]>=[]
+  for(const row of settings.nodeSelector){
+   if(typeof row?.key!=='string'||typeof row.value!=='string'||!validLabelKey(row.key)||keys.has(row.key)||row.value.length>63||row.value!==''&&!labelPart.test(row.value))fail('invalidNodeSelector')
+   keys.add(row.key);rows.push([row.key,row.value])
+  }
+  for(const {key} of initial.nodeSelector)if(!keys.has(key))rows.push([key,null])
+  pod.nodeSelector=Object.fromEntries(rows)
+ }
+ return {spec,pod}
 }

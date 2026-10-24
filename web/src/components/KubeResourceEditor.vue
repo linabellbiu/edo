@@ -7,7 +7,7 @@ import { podSpec, resourceURL, kubeTypes, listKubeResources, withFreshKubeResour
 import KubeKeyValues, { type KeyValue } from './KubeKeyValues.vue'
 import KubeConfigEntries from './KubeConfigEntries.vue'
 import KubeContainerFields from './KubeContainerFields.vue'
-import {containerForm,buildContainer,volumeForm,buildVolumes,type ContainerForm,type VolumeForm} from '@/utils/kubernetesWorkloadForm'
+import {containerForm,buildContainer,volumeForm,buildVolumes,workloadSettings,buildWorkloadSettings,type ContainerForm,type VolumeForm} from '@/utils/kubernetesWorkloadForm'
 import { inspectConfigFile } from '@/utils/kubernetesConfig'
 
 const props = defineProps<{open:boolean; cluster:string; type:KubeType; namespace:string; object?:KubeObject; returnToDetails?:boolean}>()
@@ -18,8 +18,10 @@ const editing = computed(() => Boolean(props.object))
 const workload = computed(() => ['Deployment','StatefulSet','DaemonSet','Job','CronJob','Pod'].includes(props.type.kind))
 const configuration = computed(() => ['ConfigMap','Secret'].includes(props.type.kind))
 const configTab = ref('basic'),editorTab=ref('basic'),initialDraft=ref(''),errorPanel=ref<HTMLElement>()
-let validationTab='basic',discardDialog:ReturnType<typeof Modal.confirm>|undefined
-const draft=()=>JSON.stringify({form,restartPolicy:restartPolicy.value,nodeSelector:nodeSelector.value})
+let validationTab='basic',discardDialog:ReturnType<typeof Modal.confirm>|undefined,saveDialog:ReturnType<typeof Modal.confirm>|undefined
+let editorRevision=0,submitRevision=0,submitController:AbortController|undefined,disposed=false
+const editorIdentity=()=>JSON.stringify([props.open,props.cluster,props.namespace,props.type.resource,props.object?.metadata.uid,props.object?.metadata.name,props.object?.metadata.namespace])
+const draft=()=>JSON.stringify({form,restartPolicy:restartPolicy.value,workloadOptions})
 const dirty=computed(()=>Boolean(initialDraft.value)&&draft()!==initialDraft.value)
 const storageClasses = ref<KubeObject[]>([]), classesLoading = ref(false), classesError = ref('')
 let classRevision = 0
@@ -28,21 +30,24 @@ const classOptions = computed(() => [
   { value: '__none__', label: t('k8s.storageClassNone') },
   ...storageClasses.value.map(item => ({ value: item.metadata.name, label: `${item.metadata.name}${item.metadata.annotations?.['storageclass.kubernetes.io/is-default-class'] === 'true' ? ` · ${t('k8s.storageClassDefaultTag')}` : ''}` })),
 ])
-const restartPolicy=ref('Always'), nodeSelector=ref<KeyValue[]>([])
+const workloadOptions=reactive(workloadSettings({},props.type.kind))
+const restartPolicy=ref('Always'), nodeSelector=computed<KeyValue[]>({get:()=>workloadOptions.nodeSelector,set:value=>{workloadOptions.nodeSelector=value}})
 const entries = (object: Record<string, unknown> = {}): KeyValue[] => Object.entries(object).map(([key,value])=>({key,value:String(value)}))
 const form = reactive({name:'', namespace:'', labels:[] as KeyValue[], annotations:[] as KeyValue[], data:[] as KeyValue[], selector:[] as KeyValue[], peer:[] as KeyValue[], taints:[] as Array<{key:string;value:string;effect:string}>, containers:[] as ContainerForm[], initContainers:[] as ContainerForm[], volumes:[] as VolumeForm[], imagePullSecrets:'', strategy:'RollingUpdate', maxSurge:'25%', maxUnavailable:'25%', minReadySeconds:0, revisionHistoryLimit:10, progressDeadlineSeconds:600, replicas:1, serviceName:'', schedule:'*/5 * * * *', suspend:false, storage:'1Gi', storageClass:'', accessModes:['ReadWriteOnce'], volumeMode:'Filesystem', secretType:'Opaque', serviceType:'ClusterIP', port:80, targetPort:'80', hostname:'', path:'/', backend:'', ingressClass:'', policyPort:80, denyAll:false})
-watch(() => props.open, open => {
+watch(editorIdentity, () => {
+  editorRevision++;submitRevision++;submitController?.abort();submitController=undefined;saving.value=false;saveDialog?.destroy?.();saveDialog=undefined;confirming.value=false
   classRevision++
-  if (!open) return
+  if (!props.open) return
   error.value = ''
   configTab.value = 'basic';editorTab.value=workload.value&&editing.value?'containers':'basic'
   const object = props.object ?? {}, spec = object.spec ?? {}, rule = spec.rules?.[0], ingressPath = rule?.http?.paths?.[0]
-  restartPolicy.value=podSpec(object).restartPolicy ?? 'Always'; nodeSelector.value=entries(podSpec(object).nodeSelector)
+  restartPolicy.value=podSpec(object).restartPolicy ?? 'Always'
+  Object.assign(workloadOptions,workloadSettings(object,props.type.kind))
   Object.assign(form, {name:object.metadata?.name ?? '', namespace:object.metadata?.namespace ?? (props.namespace === '*' ? 'default' : props.namespace), labels:entries(object.metadata?.labels), annotations:entries(object.metadata?.annotations), data:props.type.kind === 'Secret' ? (object.keys ?? []).map((key:string)=>({key,value:''})) : entries(object.data), selector:entries(spec.selector?.matchLabels ?? spec.selector), peer:[], taints:(spec.taints ?? []).map((item:KubeObject)=>({...item})), containers:(podSpec(object).containers ?? [{name:'app',image:''}]).map(containerForm), initContainers:(podSpec(object).initContainers??[]).map(containerForm),volumes:(podSpec(object).volumes??[]).map(volumeForm),imagePullSecrets:(podSpec(object).imagePullSecrets??[]).map((s:KubeObject)=>s.name).join(','),strategy:spec.strategy?.type??'RollingUpdate',maxSurge:String(spec.strategy?.rollingUpdate?.maxSurge??'25%'),maxUnavailable:String(spec.strategy?.rollingUpdate?.maxUnavailable??'25%'),minReadySeconds:spec.minReadySeconds??0,revisionHistoryLimit:spec.revisionHistoryLimit??10,progressDeadlineSeconds:spec.progressDeadlineSeconds??600, replicas:spec.replicas ?? 1, serviceName:spec.serviceName ?? '', schedule:spec.schedule ?? '*/5 * * * *', suspend:spec.suspend ?? false, storage:spec.resources?.requests?.storage ?? '1Gi', storageClass:spec.storageClassName ?? '', accessModes:[...(spec.accessModes ?? ['ReadWriteOnce'])], volumeMode:spec.volumeMode ?? 'Filesystem', secretType:object.type ?? 'Opaque', serviceType:spec.type ?? 'ClusterIP', port:spec.ports?.[0]?.port ?? 80, targetPort:String(spec.ports?.[0]?.targetPort ?? 80), hostname:rule?.host ?? '', path:ingressPath?.path ?? '/', backend:ingressPath?.backend?.service?.name ?? '', ingressClass:spec.ingressClassName ?? '', policyPort:80, denyAll:false})
   storageClasses.value = []; classesError.value = ''; classesLoading.value = false
   if (props.type.kind === 'PersistentVolumeClaim' && !editing.value) void loadStorageClasses()
   initialDraft.value=draft()
-}, {immediate:true})
+}, {immediate:true,flush:'sync'})
 async function loadStorageClasses() {
   const revision = ++classRevision, cluster = props.cluster
   classesLoading.value = true; classesError.value = ''
@@ -95,7 +100,14 @@ function buildObject(): KubeObject {
     validationTab='pod'
     const secretNames=form.imagePullSecrets.split(',').map(n=>n.trim()).filter(Boolean)
     if(secretNames.some(n=>!/^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$/.test(n)))throw new Error(t('k8s.invalidName'))
-    const podFields={containers,initContainers,volumes,imagePullSecrets:[...new Set(secretNames)].map(name=>({name}))}
+    let options:ReturnType<typeof buildWorkloadSettings>
+    try { options=buildWorkloadSettings(kind,workloadOptions,original) }
+    catch(err){
+      const key=err instanceof Error?err.message:'k8s.invalidForm'
+      validationTab=key==='k8s.invalidJobSettings'?'job':key==='k8s.invalidCronJobSettings'?'basic':key==='k8s.invalidWorkloadStrategy'?'strategy':'scheduling'
+      throw new Error(t(key))
+    }
+    const podFields={containers,initContainers,volumes,imagePullSecrets:[...new Set(secretNames)].map(name=>({name})),...options.pod}
     const template: KubeObject = {metadata:{labels:editing.value ? original.spec?.template?.metadata?.labels ?? original.spec?.jobTemplate?.spec?.template?.metadata?.labels : {app:form.name}},spec:podFields}
     validationTab='basic'
     if (['Deployment','StatefulSet'].includes(kind)) {
@@ -111,7 +123,7 @@ function buildObject(): KubeObject {
       template.spec.restartPolicy = podSpec(original).restartPolicy ?? 'OnFailure'
       if (kind==='CronJob') {
         if (!form.schedule.trim()) throw new Error(t('k8s.scheduleRequired'))
-        object.spec = {schedule:form.schedule.trim(),suspend:form.suspend,jobTemplate:{spec:{template}}}
+        object.spec = {schedule:form.schedule.trim(),suspend:form.suspend,jobTemplate:{spec:{...options.spec.jobTemplate?.spec,template}}}
       }
     }
     if(kind==='Deployment') {
@@ -121,7 +133,11 @@ function buildObject(): KubeObject {
       for(const field of ['minReadySeconds','revisionHistoryLimit','progressDeadlineSeconds'] as const){if(!Number.isInteger(form[field])||form[field]<(field==='progressDeadlineSeconds'?1:0))throw new Error(t('k8s.invalidStrategy'));object.spec[field]=form[field]}
       if(form.progressDeadlineSeconds<=form.minReadySeconds||form.strategy==='RollingUpdate'&&Number(form.maxSurge.replace('%',''))===0&&Number(form.maxUnavailable.replace('%',''))===0)throw new Error(t('k8s.invalidStrategy'))
     }
-    if (kind==='Pod') object.spec={...podFields,restartPolicy:restartPolicy.value,nodeSelector:mapping(nodeSelector.value)}
+    if (kind==='Pod') object.spec={...podFields,restartPolicy:restartPolicy.value}
+    if(kind==='CronJob') {
+      const {jobTemplate:_,...cronOptions}=options.spec
+      Object.assign(object.spec,cronOptions)
+    } else Object.assign(object.spec,options.spec)
   } else if (kind==='Node') {
     const taints=form.taints.map(item=>({...original.spec?.taints?.find((taint:KubeObject)=>taint.key===item.key&&taint.effect===item.effect),key:item.key.trim(),value:item.value,effect:item.effect}))
     if (taints.some(item=>!item.key)) throw new Error(t('k8s.invalidKeys'))
@@ -173,11 +189,24 @@ async function save() {
   error.value=''
   let object:KubeObject
   try { object=buildObject() } catch (err) { error.value=err instanceof Error ? err.message : t('k8s.invalidForm');editorTab.value=validationTab;void nextTick(()=>errorPanel.value?.focus());return }
-  const url=resourceURL(props.cluster,props.type,form.name), namespace=props.type.namespaced?form.namespace:'', method=editing.value?'PATCH':'POST'
+  const url=resourceURL(props.cluster,props.type,form.name), namespace=props.type.namespaced?form.namespace:'', method=editing.value?'PATCH':'POST', context=submissionContext()
   if (props.type.kind==='Node'||props.type.group==='network'||props.type.permission==='kubernetes.storage'||workload.value&&editing.value) {
     confirming.value=true
-    Modal.confirm({title:t('k8s.confirmTitle',{action:t('k8s.save'),name:form.name}),content:h('div',[h('p',`${props.type.kind} / ${namespace||t('k8s.clusterScope')}`),h('p',t(props.type.kind==='Node'?'k8s.editNodeHint':'k8s.confirmHint'))]),okText:t('k8s.save'),cancelText:t('k8s.cancel'),afterClose(){confirming.value=false},onOk:()=>submit(url,namespace,method,object)})
-  } else try{await submit(url,namespace,method,object)}catch{}
+    let active=true
+    const matches=()=>context.revision===editorRevision&&context.identity===editorIdentity()
+    const closed=()=>{
+      if(!active)return
+      active=false
+      if(matches()&&saveDialog===dialog){submitRevision++;submitController?.abort();submitController=undefined;saving.value=false;confirming.value=false;saveDialog=undefined}
+    }
+    const dialog=Modal.confirm({title:t('k8s.confirmTitle',{action:t('k8s.save'),name:form.name}),content:h('div',[h('p',`${props.type.kind} / ${namespace||t('k8s.clusterScope')}`),h('p',t(props.type.kind==='Node'?'k8s.editNodeHint':'k8s.confirmHint'))]),okText:t('k8s.save'),cancelText:t('k8s.cancel'),maskClosable:false,closable:false,keyboard:true,onCancel:closed,afterClose:closed,async onOk(){
+      if(!active||saving.value||!matches())return
+      dialog.update?.({cancelButtonProps:{disabled:true},keyboard:false})
+      try{return await submit(url,namespace,method,object,context)}
+      finally{if(active&&matches()&&saveDialog===dialog)dialog.update?.({cancelButtonProps:{disabled:false},keyboard:true})}
+    }})
+    saveDialog=dialog
+  } else try{await submit(url,namespace,method,object,context)}catch{}
 }
 function confirmLeave():Promise<boolean>{
  if(saving.value||confirming.value)return Promise.resolve(false)
@@ -188,17 +217,30 @@ function confirmLeave():Promise<boolean>{
 async function closeEditor(){if(await confirmLeave())emit('update:open',false)}
 function beforeUnload(event:BeforeUnloadEvent){if(props.open&&dirty.value){event.preventDefault();event.returnValue=''}}
 onMounted(()=>window.addEventListener('beforeunload',beforeUnload))
-onBeforeUnmount(()=>{window.removeEventListener('beforeunload',beforeUnload);discardDialog?.destroy()})
+onBeforeUnmount(()=>{disposed=true;editorRevision++;submitRevision++;submitController?.abort();window.removeEventListener('beforeunload',beforeUnload);discardDialog?.destroy();saveDialog?.destroy?.()})
 defineExpose({confirmLeave})
 
-async function submit(url:string,namespace:string,method:string,object:KubeObject) {
+function submissionContext(){return {cluster:props.cluster,type:{...props.type},original:props.object?JSON.parse(JSON.stringify(props.object)) as KubeObject:undefined,identity:editorIdentity(),revision:editorRevision}}
+async function submit(url:string,namespace:string,method:string,object:KubeObject,context=submissionContext()) {
+  if(disposed||saving.value||!props.open||context.identity!==editorIdentity()||context.revision!==editorRevision)return
+  submitController?.abort();const request=new AbortController();submitController=request;const current=++submitRevision
+  const payload=JSON.parse(JSON.stringify(object)) as KubeObject
+  const isCurrent=()=>!disposed&&props.open&&current===submitRevision&&!request.signal.aborted&&context.revision===editorRevision&&context.identity===editorIdentity()
   saving.value=true
+  error.value=''
   try {
-    const send=(data:KubeObject)=>client.request({method,url,params:{namespace},data,timeout:30_000})
-    if (method==='PATCH'&&props.object) await withFreshKubeResource(props.cluster,props.type,props.object,t('k8s.resourceChanged'),current=>send({...object,metadata:{...object.metadata,resourceVersion:current.metadata.resourceVersion}}))
-    else await send(object)
+    const send=async(data:KubeObject)=>{
+      if(!isCurrent())return
+      const options={params:{namespace},signal:request.signal,timeout:30_000}
+      await client.post(`${url}/${method==='POST'?'validate-create':'validate'}`,data,options)
+      if(!isCurrent())return
+      return client.request({method,url,data,...options})
+    }
+    if (method==='PATCH'&&context.original) await withFreshKubeResource(context.cluster,context.type,context.original,t('k8s.resourceChanged'),fresh=>send({...payload,metadata:{...payload.metadata,resourceVersion:fresh.metadata.resourceVersion}}),request.signal)
+    else await send(payload)
+    if(!isCurrent())return
     message.success(t('k8s.saved')); emit('update:open',false); emit('saved')
-  } catch (err) { error.value=kubeErrorMessage(err);throw err } finally { saving.value=false }
+  } catch (err) { if(isCurrent()){error.value=kubeErrorMessage(err);throw err} } finally { if(current===submitRevision){saving.value=false;submitController=undefined} }
 }
 </script>
 
@@ -208,16 +250,20 @@ async function submit(url:string,namespace:string,method:string,object:KubeObjec
     <div v-if="error" ref="errorPanel" tabindex="-1" role="alert" class="editor-error"><a-alert type="error" show-icon :message="error" class="editor-alert" /></div>
     <a-form layout="vertical" :disabled="saving||confirming" @finish="save">
       <template v-if="!configuration&&!workload">
-        <div class="form-grid"><a-form-item :label="t('k8s.name')" required><a-input v-model:value="form.name" :disabled="editing" :maxlength="253" /></a-form-item><a-form-item v-if="type.namespaced" :label="t('k8s.namespace')" required><a-input v-model:value="form.namespace" :disabled="editing" :maxlength="63" /></a-form-item></div>
+        <div class="form-grid"><a-form-item :label="t('k8s.name')" required><a-input :aria-label="t('k8s.name')" v-model:value="form.name" :disabled="editing" :maxlength="253" /></a-form-item><a-form-item v-if="type.namespaced" :label="t('k8s.namespace')" required><a-input :aria-label="t('k8s.namespace')" v-model:value="form.namespace" :disabled="editing" :maxlength="63" /></a-form-item></div>
         <a-form-item :label="t('k8s.labels')"><KubeKeyValues v-model="form.labels" :disabled="saving||confirming" /></a-form-item>
       </template>
       <a-tabs v-if="workload" v-model:active-key="editorTab" :animated="false" class="workload-editor-tabs">
         <a-tab-pane key="basic" :tab="t('k8s.basic')" force-render>
-        <div class="form-grid"><a-form-item :label="t('k8s.name')" required><a-input v-model:value="form.name" :disabled="editing" :maxlength="253" /></a-form-item><a-form-item v-if="type.namespaced" :label="t('k8s.namespace')" required><a-input v-model:value="form.namespace" :disabled="editing" :maxlength="63" /></a-form-item></div>
+        <div class="form-grid"><a-form-item :label="t('k8s.name')" required><a-input :aria-label="t('k8s.name')" v-model:value="form.name" :disabled="editing" :maxlength="253" /></a-form-item><a-form-item v-if="type.namespaced" :label="t('k8s.namespace')" required><a-input :aria-label="t('k8s.namespace')" v-model:value="form.namespace" :disabled="editing" :maxlength="63" /></a-form-item></div>
         <a-form-item :label="t('k8s.labels')"><KubeKeyValues v-model="form.labels" :disabled="saving||confirming" /></a-form-item>
 
-        <div class="form-grid"><a-form-item v-if="['Deployment','StatefulSet'].includes(type.kind)" :label="t('k8s.replicas')" required><a-input-number v-model:value="form.replicas" :min="0" :max="1000" :precision="0" /></a-form-item><a-form-item v-if="type.kind==='StatefulSet'" :label="t('k8s.serviceName')" required><a-input v-model:value="form.serviceName" :disabled="editing" /></a-form-item></div>
-        <div v-if="type.kind==='CronJob'" class="form-grid"><a-form-item label="Cron" required><a-input v-model:value="form.schedule" /></a-form-item><a-form-item :label="t('k8s.suspend')"><a-switch v-model:checked="form.suspend" /></a-form-item></div>
+        <div class="form-grid"><a-form-item v-if="['Deployment','StatefulSet'].includes(type.kind)" :label="t('k8s.replicas')" required><a-input-number :aria-label="t('k8s.replicas')" v-model:value="form.replicas" :min="0" :max="1000" :precision="0" /></a-form-item><a-form-item v-if="type.kind==='StatefulSet'" :label="t('k8s.serviceName')" required><a-input :aria-label="t('k8s.serviceName')" v-model:value="form.serviceName" :disabled="editing" /></a-form-item></div>
+        <template v-if="type.kind==='CronJob'">
+          <div class="form-grid"><a-form-item :label="t('k8s.schedule')" required><a-input :aria-label="t('k8s.schedule')" v-model:value="form.schedule" /></a-form-item><a-form-item :label="t('k8s.suspend')"><a-switch :aria-label="t('k8s.suspend')" v-model:checked="form.suspend" /></a-form-item></div>
+          <div class="form-grid"><a-form-item :label="t('k8s.cronTimeZone')"><a-input :aria-label="t('k8s.cronTimeZone')" v-model:value="workloadOptions.timeZone" placeholder="Asia/Shanghai" /><small class="editor-hint">{{ t('k8s.cronTimeZoneHint') }}</small></a-form-item><a-form-item :label="t('k8s.cronConcurrencyPolicy')"><a-select :aria-label="t('k8s.cronConcurrencyPolicy')" v-model:value="workloadOptions.concurrencyPolicy" :options="[{value:'',label:t('k8s.defaultValue')},...['Allow','Forbid','Replace'].map(value=>({value,label:t(`k8s.concurrency${value}`)}))]" /></a-form-item></div>
+          <div class="form-grid"><a-form-item :label="t('k8s.cronSuccessfulHistory')"><a-input-number :aria-label="t('k8s.cronSuccessfulHistory')" v-model:value="workloadOptions.successfulJobsHistoryLimit" :min="0" :precision="0" :placeholder="t('k8s.optionalClusterDefault')" /></a-form-item><a-form-item :label="t('k8s.cronFailedHistory')"><a-input-number :aria-label="t('k8s.cronFailedHistory')" v-model:value="workloadOptions.failedJobsHistoryLimit" :min="0" :precision="0" :placeholder="t('k8s.optionalClusterDefault')" /></a-form-item><a-form-item :label="t('k8s.cronStartingDeadlineSeconds')"><a-input-number :aria-label="t('k8s.cronStartingDeadlineSeconds')" v-model:value="workloadOptions.startingDeadlineSeconds" :min="0" :precision="0" :placeholder="t('k8s.optionalClusterDefault')" /></a-form-item></div>
+        </template>
         </a-tab-pane>
         <a-tab-pane key="containers" :tab="`${t('k8s.containers')} (${form.containers.length+form.initContainers.length})`" force-render>
         <section v-for="(container,index) in form.containers" :key="index" class="container-form">
@@ -230,25 +276,36 @@ async function submit(url:string,namespace:string,method:string,object:KubeObjec
         <a-button @click="form.initContainers.push(containerForm({name:'',image:''}))">+ {{ t('k8s.initContainers') }}</a-button>
         </a-tab-pane>
         <a-tab-pane key="pod" :tab="t('k8s.podSettings')" force-render>
-        <template v-if="type.kind==='Pod'"><a-alert type="info" show-icon :message="t('k8s.standalonePod')" class="editor-alert" /><a-form-item :label="t('k8s.restartPolicy')"><a-select v-model:value="restartPolicy" :options="['Always','OnFailure','Never'].map(value=>({value}))" /></a-form-item><a-form-item :label="t('k8s.nodeSelector')"><KubeKeyValues v-model="nodeSelector" :disabled="saving" /></a-form-item></template>
-          <a-form-item :label="t('k8s.imagePullSecrets')"><a-input v-model:value="form.imagePullSecrets" /></a-form-item>
-          <h4>{{ t('k8s.volumes') }}</h4><section v-for="(volume,index) in form.volumes" :key="index" class="container-form"><div class="form-grid"><a-form-item :label="t('k8s.volumeName')"><a-input v-model:value="volume.name" /></a-form-item><a-form-item :label="t('k8s.volumeType')"><a-select v-model:value="volume.kind" :disabled="volume.kind==='preserve'" :options="['emptyDir','configMap','secret','persistentVolumeClaim',...(volume.kind==='preserve'?['preserve']:[])].map(value=>({value,label:value==='preserve'?t('k8s.preservedVolume'):t(`k8s.volume_${value}`)}))" /></a-form-item></div><a-form-item v-if="!['emptyDir','preserve'].includes(volume.kind)" :label="t('k8s.referenceName')"><a-input v-model:value="volume.source" /></a-form-item><div v-if="volume.kind==='emptyDir'" class="form-grid"><a-form-item :label="t('k8s.volumeMedium')"><a-select v-model:value="volume.medium" :options="[{value:'',label:t('k8s.defaultValue')},{value:'Memory',label:'Memory'}]" /></a-form-item><a-form-item :label="t('k8s.sizeLimit')"><a-input v-model:value="volume.sizeLimit" placeholder="1Gi" /></a-form-item></div><a-button danger size="small" @click="form.volumes.splice(index,1)">{{ t('k8s.remove') }}</a-button></section>
+        <template v-if="type.kind==='Pod'"><a-alert type="info" show-icon :message="t('k8s.standalonePod')" class="editor-alert" /><a-form-item :label="t('k8s.restartPolicy')"><a-select :aria-label="t('k8s.restartPolicy')" v-model:value="restartPolicy" :options="['Always','OnFailure','Never'].map(value=>({value}))" /></a-form-item></template>
+          <a-form-item :label="t('k8s.imagePullSecrets')"><a-input :aria-label="t('k8s.imagePullSecrets')" v-model:value="form.imagePullSecrets" /></a-form-item>
+          <h4>{{ t('k8s.volumes') }}</h4><section v-for="(volume,index) in form.volumes" :key="index" class="container-form"><div class="form-grid"><a-form-item :label="t('k8s.volumeName')"><a-input :aria-label="t('k8s.volumeName')" v-model:value="volume.name" /></a-form-item><a-form-item :label="t('k8s.volumeType')"><a-select :aria-label="t('k8s.volumeType')" v-model:value="volume.kind" :disabled="volume.kind==='preserve'" :options="['emptyDir','configMap','secret','persistentVolumeClaim',...(volume.kind==='preserve'?['preserve']:[])].map(value=>({value,label:value==='preserve'?t('k8s.preservedVolume'):t(`k8s.volume_${value}`)}))" /></a-form-item></div><a-form-item v-if="!['emptyDir','preserve'].includes(volume.kind)" :label="t('k8s.referenceName')"><a-input :aria-label="t('k8s.referenceName')" v-model:value="volume.source" /></a-form-item><div v-if="volume.kind==='emptyDir'" class="form-grid"><a-form-item :label="t('k8s.volumeMedium')"><a-select :aria-label="t('k8s.volumeMedium')" v-model:value="volume.medium" :options="[{value:'',label:t('k8s.defaultValue')},{value:'Memory',label:'Memory'}]" /></a-form-item><a-form-item :label="t('k8s.sizeLimit')"><a-input :aria-label="t('k8s.sizeLimit')" v-model:value="volume.sizeLimit" placeholder="1Gi" /></a-form-item></div><a-button danger size="small" @click="form.volumes.splice(index,1)">{{ t('k8s.remove') }}</a-button></section>
           <a-button size="small" @click="form.volumes.push(volumeForm({name:'',emptyDir:{}}))">+ {{ t('k8s.volumes') }}</a-button>
+        </a-tab-pane>
+        <a-tab-pane key="scheduling" :tab="t('k8s.schedulingSettings')" force-render>
+          <a-form-item :label="t('k8s.serviceAccountName')"><a-input :aria-label="t('k8s.serviceAccountName')" v-model:value="workloadOptions.serviceAccountName" /><small class="editor-hint">{{ t('k8s.serviceAccountHint') }}</small></a-form-item>
+          <a-form-item :label="t('k8s.nodeSelector')"><KubeKeyValues v-model="nodeSelector" :disabled="saving||confirming" /></a-form-item>
+        </a-tab-pane>
+        <a-tab-pane v-if="['Job','CronJob'].includes(type.kind)" key="job" :tab="t('k8s.jobSettings')" force-render>
+          <div class="form-grid"><a-form-item :label="t('k8s.jobParallelism')"><a-input-number :aria-label="t('k8s.jobParallelism')" v-model:value="workloadOptions.parallelism" :min="0" :precision="0" :placeholder="t('k8s.optionalClusterDefault')" /></a-form-item><a-form-item :label="t('k8s.jobCompletions')"><a-input-number :aria-label="t('k8s.jobCompletions')" v-model:value="workloadOptions.completions" :min="0" :precision="0" :placeholder="t('k8s.optionalClusterDefault')" /></a-form-item><a-form-item :label="t('k8s.jobBackoffLimit')"><a-input-number :aria-label="t('k8s.jobBackoffLimit')" v-model:value="workloadOptions.backoffLimit" :min="0" :precision="0" :placeholder="t('k8s.optionalClusterDefault')" /></a-form-item><a-form-item :label="t('k8s.jobTTLSeconds')"><a-input-number :aria-label="t('k8s.jobTTLSeconds')" v-model:value="workloadOptions.ttlSecondsAfterFinished" :min="0" :precision="0" :placeholder="t('k8s.optionalClusterDefault')" /></a-form-item><a-form-item :label="t('k8s.jobActiveDeadlineSeconds')"><a-input-number :aria-label="t('k8s.jobActiveDeadlineSeconds')" v-model:value="workloadOptions.activeDeadlineSeconds" :min="0" :precision="0" :placeholder="t('k8s.optionalClusterDefault')" /></a-form-item></div>
         </a-tab-pane>
         <a-tab-pane v-if="type.kind==='Deployment'" key="strategy" :tab="t('k8s.deploymentStrategy')" force-render>
 
-          <a-form-item :label="t('k8s.deploymentStrategy')"><a-select v-model:value="form.strategy" :options="['RollingUpdate','Recreate'].map(value=>({value,label:t(`k8s.strategy_${value}`)}))" /></a-form-item><div v-if="form.strategy==='RollingUpdate'" class="form-grid"><a-form-item :label="t('k8s.maxSurge')"><a-input v-model:value="form.maxSurge" placeholder="25%" /></a-form-item><a-form-item :label="t('k8s.maxUnavailable')"><a-input v-model:value="form.maxUnavailable" placeholder="25%" /></a-form-item></div><div class="form-grid"><a-form-item v-for="field in ['minReadySeconds','revisionHistoryLimit','progressDeadlineSeconds'] as const" :key="field" :label="t(`k8s.${field}`)"><a-input-number v-model:value="form[field]" :min="0" :precision="0" /></a-form-item></div>
+          <a-form-item :label="t('k8s.deploymentStrategy')"><a-select :aria-label="t('k8s.deploymentStrategy')" v-model:value="form.strategy" :options="['RollingUpdate','Recreate'].map(value=>({value,label:t(`k8s.strategy_${value}`)}))" /></a-form-item><div v-if="form.strategy==='RollingUpdate'" class="form-grid"><a-form-item :label="t('k8s.maxSurge')"><a-input :aria-label="t('k8s.maxSurge')" v-model:value="form.maxSurge" placeholder="25%" /></a-form-item><a-form-item :label="t('k8s.maxUnavailable')"><a-input :aria-label="t('k8s.maxUnavailable')" v-model:value="form.maxUnavailable" placeholder="25%" /></a-form-item></div><div class="form-grid"><a-form-item v-for="field in ['minReadySeconds','revisionHistoryLimit','progressDeadlineSeconds'] as const" :key="field" :label="t(`k8s.${field}`)"><a-input-number :aria-label="t(`k8s.${field}`)" v-model:value="form[field]" :min="0" :precision="0" /></a-form-item></div>
+        </a-tab-pane>
+        <a-tab-pane v-if="['StatefulSet','DaemonSet'].includes(type.kind)" key="strategy" :tab="t('k8s.workloadUpdateStrategy')" force-render>
+          <a-form-item :label="t('k8s.workloadUpdateStrategy')"><a-select :aria-label="t('k8s.workloadUpdateStrategy')" v-model:value="workloadOptions.updateStrategy" :options="['RollingUpdate','OnDelete'].map(value=>({value,label:t(`k8s.strategy_${value}`)}))" /></a-form-item>
+          <template v-if="workloadOptions.updateStrategy==='RollingUpdate'"><a-form-item v-if="type.kind==='StatefulSet'" :label="t('k8s.statefulPartition')"><a-input-number :aria-label="t('k8s.statefulPartition')" v-model:value="workloadOptions.partition" :min="0" :precision="0" :placeholder="t('k8s.optionalClusterDefault')" /><small class="editor-hint">{{ t('k8s.statefulPartitionHint') }}</small></a-form-item><div v-else class="form-grid"><a-form-item :label="t('k8s.maxSurge')"><a-input :aria-label="t('k8s.maxSurge')" v-model:value="workloadOptions.daemonMaxSurge" placeholder="0" /></a-form-item><a-form-item :label="t('k8s.maxUnavailable')"><a-input :aria-label="t('k8s.maxUnavailable')" v-model:value="workloadOptions.daemonMaxUnavailable" placeholder="1" /></a-form-item></div></template>
         </a-tab-pane>
       </a-tabs>
       <template v-if="type.kind==='Node'">
-        <a-form-item :label="t('k8s.taints')"><div v-for="(taint,index) in form.taints" :key="index" class="taint-row"><a-input v-model:value="taint.key" placeholder="Key" /><a-input v-model:value="taint.value" placeholder="Value" /><a-select v-model:value="taint.effect" :options="['NoSchedule','PreferNoSchedule','NoExecute'].map(value=>({value}))" /><a-button @click="form.taints.splice(index,1)">−</a-button></div><a-button size="small" @click="form.taints.push({key:'',value:'',effect:'NoSchedule'})">+ {{ t('k8s.addEntry') }}</a-button></a-form-item>
+        <a-form-item :label="t('k8s.taints')"><div v-for="(taint,index) in form.taints" :key="index" class="taint-row"><a-input :aria-label="t('k8s.taints')" v-model:value="taint.key" placeholder="Key" /><a-input :aria-label="t('k8s.taints')" v-model:value="taint.value" placeholder="Value" /><a-select :aria-label="t('k8s.taints')" v-model:value="taint.effect" :options="['NoSchedule','PreferNoSchedule','NoExecute'].map(value=>({value}))" /><a-button @click="form.taints.splice(index,1)">−</a-button></div><a-button size="small" @click="form.taints.push({key:'',value:'',effect:'NoSchedule'})">+ {{ t('k8s.addEntry') }}</a-button></a-form-item>
         <a-alert type="warning" show-icon :message="t('k8s.taintWarning')" />
       </template>
       <template v-if="configuration">
         <a-tabs v-model:active-key="configTab" :animated="false" class="config-editor-tabs">
           <a-tab-pane key="basic" :tab="t('k8s.basic')" force-render>
-            <div class="form-grid"><a-form-item :label="t('k8s.name')" required><a-input v-model:value="form.name" :disabled="editing" :maxlength="253" /></a-form-item><a-form-item :label="t('k8s.namespace')" required><a-input v-model:value="form.namespace" :disabled="editing" :maxlength="63" /></a-form-item></div>
-            <a-form-item v-if="type.kind==='Secret'" :label="t('k8s.secretType')"><a-input v-model:value="form.secretType" :disabled="editing" /></a-form-item>
+            <div class="form-grid"><a-form-item :label="t('k8s.name')" required><a-input :aria-label="t('k8s.name')" v-model:value="form.name" :disabled="editing" :maxlength="253" /></a-form-item><a-form-item :label="t('k8s.namespace')" required><a-input :aria-label="t('k8s.namespace')" v-model:value="form.namespace" :disabled="editing" :maxlength="63" /></a-form-item></div>
+            <a-form-item v-if="type.kind==='Secret'" :label="t('k8s.secretType')"><a-input :aria-label="t('k8s.secretType')" v-model:value="form.secretType" :disabled="editing" /></a-form-item>
             <a-form-item :label="t('k8s.labels')"><KubeKeyValues v-model="form.labels" :disabled="saving||confirming" /></a-form-item>
             <a-form-item v-if="type.kind==='ConfigMap'" :label="t('k8s.annotations')"><KubeKeyValues v-model="form.annotations" :disabled="saving||confirming" /></a-form-item>
           </a-tab-pane>
@@ -260,25 +317,25 @@ async function submit(url:string,namespace:string,method:string,object:KubeObjec
         </a-tabs>
       </template>
       <template v-if="type.kind==='PersistentVolumeClaim'">
-        <div class="form-grid"><a-form-item :label="t('k8s.capacity')" required><a-input v-model:value="form.storage" placeholder="1Gi" /></a-form-item><a-form-item :label="t('k8s.storageClass')"><a-input v-if="editing" :value="form.storageClass || '—'" disabled /><a-select v-else v-model:value="form.storageClass" :loading="classesLoading" :options="classOptions" show-search option-filter-prop="label" /></a-form-item></div>
+        <div class="form-grid"><a-form-item :label="t('k8s.capacity')" required><a-input :aria-label="t('k8s.capacity')" v-model:value="form.storage" placeholder="1Gi" /></a-form-item><a-form-item :label="t('k8s.storageClass')"><a-input :aria-label="t('k8s.storageClass')" v-if="editing" :value="form.storageClass || '—'" disabled /><a-select :aria-label="t('k8s.storageClass')" v-else v-model:value="form.storageClass" :loading="classesLoading" :options="classOptions" show-search option-filter-prop="label" /></a-form-item></div>
         <a-alert v-if="classesError" class="editor-alert" type="warning" :message="classesError"><template #action><a-button size="small" :loading="classesLoading" @click="loadStorageClasses">{{ t('k8s.storageClassRetry') }}</a-button></template></a-alert>
-        <div class="form-grid"><a-form-item :label="t('k8s.accessMode')" required><a-select v-model:value="form.accessModes" mode="multiple" :disabled="editing" :options="['ReadWriteOnce','ReadOnlyMany','ReadWriteMany','ReadWriteOncePod'].map(value=>({value}))" /></a-form-item><a-form-item :label="t('k8s.volumeMode')"><a-select v-model:value="form.volumeMode" :disabled="editing" :options="['Filesystem','Block'].map(value=>({value}))" /></a-form-item></div>
+        <div class="form-grid"><a-form-item :label="t('k8s.accessMode')" required><a-select :aria-label="t('k8s.accessMode')" v-model:value="form.accessModes" mode="multiple" :disabled="editing" :options="['ReadWriteOnce','ReadOnlyMany','ReadWriteMany','ReadWriteOncePod'].map(value=>({value}))" /></a-form-item><a-form-item :label="t('k8s.volumeMode')"><a-select :aria-label="t('k8s.volumeMode')" v-model:value="form.volumeMode" :disabled="editing" :options="['Filesystem','Block'].map(value=>({value}))" /></a-form-item></div>
         <a-alert v-if="editing" type="warning" :message="t('k8s.expandHint')" />
       </template>
       <template v-if="type.kind==='Service'">
-        <a-form-item :label="t('k8s.serviceType')"><a-select v-model:value="form.serviceType" :options="['ClusterIP','NodePort','LoadBalancer'].map(value=>({value}))" /></a-form-item>
+        <a-form-item :label="t('k8s.serviceType')"><a-select :aria-label="t('k8s.serviceType')" v-model:value="form.serviceType" :options="['ClusterIP','NodePort','LoadBalancer'].map(value=>({value}))" /></a-form-item>
         <a-form-item :label="t('k8s.selector')"><KubeKeyValues v-model="form.selector" :disabled="saving" /></a-form-item>
-        <div class="form-grid"><a-form-item :label="t('k8s.servicePort')" required><a-input-number v-model:value="form.port" :min="1" :max="65535" :precision="0" /></a-form-item><a-form-item :label="t('k8s.targetPort')" required><a-input v-model:value="form.targetPort" /></a-form-item></div>
+        <div class="form-grid"><a-form-item :label="t('k8s.servicePort')" required><a-input-number :aria-label="t('k8s.servicePort')" v-model:value="form.port" :min="1" :max="65535" :precision="0" /></a-form-item><a-form-item :label="t('k8s.targetPort')" required><a-input :aria-label="t('k8s.targetPort')" v-model:value="form.targetPort" /></a-form-item></div>
         <a-alert v-if="editing&&(object?.spec?.ports?.length??0)>1" type="info" :message="t('k8s.firstPortHint')" />
       </template>
       <template v-if="type.kind==='Ingress'">
-        <div class="form-grid"><a-form-item :label="t('k8s.hostname')"><a-input v-model:value="form.hostname" /></a-form-item><a-form-item label="IngressClass"><a-input v-model:value="form.ingressClass" /></a-form-item><a-form-item :label="t('k8s.path')" required><a-input v-model:value="form.path" /></a-form-item><a-form-item :label="t('k8s.backend')" required><a-input v-model:value="form.backend" /></a-form-item><a-form-item :label="t('k8s.servicePort')" required><a-input-number v-model:value="form.port" :min="1" :max="65535" :precision="0" /></a-form-item></div>
+        <div class="form-grid"><a-form-item :label="t('k8s.hostname')"><a-input :aria-label="t('k8s.hostname')" v-model:value="form.hostname" /></a-form-item><a-form-item label="IngressClass"><a-input aria-label="IngressClass" v-model:value="form.ingressClass" /></a-form-item><a-form-item :label="t('k8s.path')" required><a-input :aria-label="t('k8s.path')" v-model:value="form.path" /></a-form-item><a-form-item :label="t('k8s.backend')" required><a-input :aria-label="t('k8s.backend')" v-model:value="form.backend" /></a-form-item><a-form-item :label="t('k8s.servicePort')" required><a-input-number :aria-label="t('k8s.servicePort')" v-model:value="form.port" :min="1" :max="65535" :precision="0" /></a-form-item></div>
         <a-alert v-if="editing" type="info" :message="t('k8s.firstRuleHint')" />
       </template>
       <template v-if="type.kind==='NetworkPolicy'">
         <a-form-item :label="t('k8s.selector')"><KubeKeyValues v-model="form.selector" :disabled="saving" /></a-form-item>
-        <a-form-item :label="t('k8s.denyIngress')"><a-switch v-model:checked="form.denyAll" /></a-form-item>
-        <template v-if="!form.denyAll"><a-form-item :label="t('k8s.allowPods')"><KubeKeyValues v-model="form.peer" :disabled="saving" /></a-form-item><a-form-item :label="t('k8s.allowedPort')" required><a-input-number v-model:value="form.policyPort" :min="1" :max="65535" :precision="0" /></a-form-item></template>
+        <a-form-item :label="t('k8s.denyIngress')"><a-switch :aria-label="t('k8s.denyIngress')" v-model:checked="form.denyAll" /></a-form-item>
+        <template v-if="!form.denyAll"><a-form-item :label="t('k8s.allowPods')"><KubeKeyValues v-model="form.peer" :disabled="saving" /></a-form-item><a-form-item :label="t('k8s.allowedPort')" required><a-input-number :aria-label="t('k8s.allowedPort')" v-model:value="form.policyPort" :min="1" :max="65535" :precision="0" /></a-form-item></template>
         <a-alert type="warning" :message="t('k8s.policyHint')" />
       </template>
     </a-form>
@@ -294,5 +351,5 @@ async function submit(url:string,namespace:string,method:string,object:KubeObjec
 </style>
 
 <style scoped>
-.workload-editor-tabs :deep(.ant-tabs-nav){position:sticky;top:-24px;z-index:2;background:var(--edo-surface);margin-bottom:20px}.workload-editor-tabs :deep(.ant-tabs-tab){font-size:13px;padding:12px 0}.workload-editor-tabs :deep(.ant-tabs-tabpane){min-height:320px}.editor-footer .changed{color:var(--kube-warning)}.editor-error:focus{outline:none}.editor-context{margin-bottom:12px}.workload-editor-tabs h4{font-size:13px;margin:20px 0 12px}
+.workload-editor-tabs :deep(.ant-tabs-nav){position:sticky;top:-24px;z-index:2;background:var(--edo-surface);margin-bottom:20px}.workload-editor-tabs :deep(.ant-tabs-tab){font-size:13px;padding:12px 0}.workload-editor-tabs :deep(.ant-tabs-tabpane){min-height:320px}.editor-footer .changed{color:var(--kube-warning)}.editor-error:focus{outline:none}.editor-context{margin-bottom:12px}.workload-editor-tabs h4{font-size:13px;margin:20px 0 12px}.editor-hint{display:block;margin-top:6px;color:var(--edo-muted);font-size:12px;line-height:1.6}
 </style>
