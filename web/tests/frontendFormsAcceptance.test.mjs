@@ -7,14 +7,14 @@ const writes=h=>h.requests.filter(item=>item.method!=='get')
 function harness(t,path,options={}) {const h=componentHarness(path,options);t.after(h.stop);return h}
 function settings(t,options={}) {return harness(t,'../src/views/SettingsView.vue',options)}
 
-test('个人设置始终可见，变量、登录方式、配置和数据库迁移分别按权限展开',t=>{
+test('个人设置始终可见，变量、登录方式和配置分别按权限展开',t=>{
   assert.deepEqual(settings(t).state.sections.value.map(item=>item.key),['account'])
   const app=settings(t,{codes:['application.read']})
   assert.deepEqual(app.state.sections.value.map(item=>item.key),['account','variables'])
   const identity=settings(t,{codes:['identity.read']})
   assert.deepEqual(identity.state.sections.value.map(item=>item.key),['account','identity'])
   const administrator=settings(t,{superuser:true})
-  assert.ok(administrator.state.sections.value.some(item=>item.key==='database'))
+  assert.ok(!administrator.state.sections.value.some(item=>item.key==='database'))
 })
 
 test('修改密码先校验长度和确认值，成功才跳转重新登录，失败保留表单',async t=>{
@@ -55,24 +55,6 @@ test('运行日志及四类目录保存携带版本，日志配置不混入数�
   h.state.runtimeDirectories.value={workspace_directory:'/tmp/workspaces',build_directory:'/tmp/builds',cache_directory:'/tmp/cache',local_artifact_directory:'/tmp/artifacts',version:4}
   await h.state.saveRuntimeDirectories()
   assert.deepEqual(writes(h)[1].body,{workspace_directory:'/tmp/workspaces',build_directory:'/tmp/builds',cache_directory:'/tmp/cache',local_artifact_directory:'/tmp/artifacts',expected_version:4})
-})
-
-test('数据库迁移必须先连接测试并使用真实测试凭据，改字段撤销旧测试令牌',async t=>{
-  const h=settings(t,{superuser:true,api:{post:async path=>path.endsWith('/test')?{data:{test_token:'test-only-ticket',database_created:true}}:{data:{state:'preparing',total_tables:10,completed_tables:0}}}})
-  assert.equal(h.state.database.port,5432);assert.equal(h.state.database.username,'postgres');assert.equal(h.state.database.databaseName,'edo')
-  await h.state.startMigration();assert.equal(h.confirmations.length,0)
-  Object.assign(h.state.database,{host:' db.example.com ',password:'synthetic-db-password'})
-  await h.state.testDatabase()
-  assert.equal(h.state.testResult.value.test_token,'test-only-ticket')
-  await h.state.startMigration();assert.equal(writes(h).length,1)
-  await h.confirmations[0].onOk()
-  assert.equal(writes(h)[1].path,'/settings/database-migration')
-  assert.deepEqual(writes(h)[1].body,{driver:'postgres',host:'db.example.com',port:5432,username:'postgres',password:'synthetic-db-password',database:'edo',test_token:'test-only-ticket'})
-  assert.equal(h.state.testResult.value,null)
-  h.state.testResult.value={test_token:'obsolete'};h.state.database.host='changed.example.com';await vue.nextTick()
-  assert.equal(h.state.testResult.value,null)
-  h.state.database.driver='mysql';await vue.nextTick()
-  assert.equal(h.state.database.port,3306);assert.equal(h.state.database.username,'root')
 })
 
 test('登录表单按本地、LDAP和邮箱验证码选择正确入口，并限制外部跳转',async t=>{

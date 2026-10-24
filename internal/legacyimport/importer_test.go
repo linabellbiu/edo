@@ -10,10 +10,13 @@ import (
 
 	"gorm.io/gorm"
 
+	"strings"
+
 	"edo/internal/config"
 	"edo/internal/database"
 	"edo/internal/model"
 	"edo/internal/secret"
+	"edo/internal/testutil"
 )
 
 func TestImporterMigratesSafeDataAndIsIdempotent(t *testing.T) {
@@ -106,6 +109,10 @@ func TestImporterRequiresEncryptionKeyForConfigurations(t *testing.T) {
 
 func openTestDatabase(t *testing.T, suffix string) *gorm.DB {
 	t.Helper()
+	// 导入源固定复现 SQLite 文件，目标使用本轮业务测试选定的数据库。
+	if strings.HasSuffix(suffix, "destination") {
+		return testutil.NewDatabase(t)
+	}
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	db, err := database.Open(context.Background(), config.Database{
 		Driver: "sqlite", DSN: "file:" + t.Name() + "-" + suffix + "?mode=memory&cache=shared",

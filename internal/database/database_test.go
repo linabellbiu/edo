@@ -1287,6 +1287,7 @@ func TestExternalDatabaseMigration(t *testing.T) {
 			exerciseKubernetesIdentityColumnUpgrade(t, db, test.driver)
 			exerciseExternalExecutionConfigUpgrade(t, db, test.driver)
 			exerciseRepositoryObservationEnvironmentUpgrade(t, ctx, db, test.driver)
+			exercisePipelineStatusUpgrade(t, db)
 		})
 	}
 }

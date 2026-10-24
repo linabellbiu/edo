@@ -284,34 +284,3 @@ func TestRowIdentityModelContract(t *testing.T) {
 		}
 	}
 }
-
-func TestRowIdentityTransfer(t *testing.T) {
-	target := identityTestDatabase(t)
-	if err := Migrate(context.Background(), target); err != nil {
-		t.Fatal(err)
-	}
-	source := openTransferTestDatabase(t, "identity-transfer-source")
-	user := model.User{RowID: 1000, ID: "00000000-0000-0000-0000-000000000301", Username: "identity-transfer-user", Nickname: "迁移账户", PasswordHash: "test-transfer-hash", IsActive: true}
-	role := model.Role{ID: "00000000-0000-0000-0000-000000000302", Name: "identity-transfer-role", DisplayName: "迁移角色"}
-	membership := model.UserRole{UserID: user.ID, RoleID: role.ID}
-	for _, value := range []any{&user, &role, &membership} {
-		if err := source.Create(value).Error; err != nil {
-			t.Fatal(err)
-		}
-	}
-	if err := ensureEmptyTransferTarget(target); err != nil {
-		t.Fatal(err)
-	}
-	if err := copyDatabaseSnapshot(context.Background(), source, target, target.Dialector.Name(), func(int, int, int64) {}); err != nil {
-		t.Fatal(err)
-	}
-	var copied model.User
-	if err := target.First(&copied, "uuid = ?", user.ID).Error; err != nil || copied.RowID != 1000 || copied.PasswordHash != user.PasswordHash {
-		t.Fatalf("复制改写了行号或账户内容: %+v %v", copied, err)
-	}
-	var joined int64
-	if err := target.Model(&model.UserRole{}).Joins("JOIN users ON users.uuid=user_roles.user_id").Joins("JOIN roles ON roles.uuid=user_roles.role_id").Where("user_roles.user_id = ?", user.ID).Count(&joined).Error; err != nil || joined != 1 {
-		t.Fatalf("跨库 UUID 关联丢失: %d %v", joined, err)
-	}
-	assertIdentityInsert(t, target)
-}

@@ -11,7 +11,6 @@ import (
 	"edo/internal/auth"
 	"edo/internal/config"
 	"edo/internal/configuration"
-	"edo/internal/database"
 	"edo/internal/logging"
 	"edo/internal/logretention"
 	"edo/internal/manageddirectory"
@@ -24,7 +23,6 @@ type settingsHandler struct {
 	loginLimiter *auth.LoginRateLimiter
 	authConfig   config.Auth
 	retention    *logretention.Service
-	migration    *database.TransferService
 	runtimeLogs  *logging.RuntimeController
 	repositories *repository.Service
 	artifacts    *artifactmanager.Service
@@ -53,103 +51,8 @@ type runtimeDirectoryResponse struct {
 	ArtifactUsage  directoryUsageResponse `json:"artifact_usage"`
 }
 
-type databaseMigrationRequest struct {
-	Driver    string `json:"driver" binding:"required,oneof=mysql postgres"`
-	Host      string `json:"host" binding:"max=255"`
-	Port      int    `json:"port" binding:"min=0,max=65535"`
-	Username  string `json:"username" binding:"max=256"`
-	Password  string `json:"password" binding:"max=1024"`
-	Database  string `json:"database" binding:"max=256"`
-	DSN       string `json:"dsn" binding:"max=4096"`
-	TestToken string `json:"test_token"`
-}
-
 func (h settingsHandler) builtinVariables(c *gin.Context) {
 	c.JSON(http.StatusOK, variablecatalog.Snapshot())
-}
-
-func (r databaseMigrationRequest) transferTarget() (database.TransferTarget, error) {
-	if r.DSN != "" {
-		if r.Host != "" || r.Port != 0 || r.Username != "" || r.Password != "" || r.Database != "" {
-			return database.TransferTarget{}, database.ErrInvalidTarget
-		}
-		return database.TransferTarget{Driver: r.Driver, DSN: r.DSN}, nil
-	}
-	return database.BuildTransferTarget(database.TransferConnection{
-		Driver: r.Driver, Host: r.Host, Port: r.Port, Username: r.Username,
-		Password: r.Password, Database: r.Database,
-	})
-}
-
-func (h settingsHandler) databaseMigrationStatus(c *gin.Context) {
-	if h.migration == nil {
-		h.logger.Error("数据库迁移服务未初始化", "operation", "database_transfer_status", "request_id", requestIDFrom(c))
-		writeInternalError(c)
-		return
-	}
-	c.JSON(http.StatusOK, h.migration.Status())
-}
-
-func (h settingsHandler) testDatabaseMigration(c *gin.Context) {
-	var request databaseMigrationRequest
-	if err := c.ShouldBindJSON(&request); err != nil {
-		h.logger.Warn("目标数据库测试参数无效", "operation", "database_transfer_test_bind", "request_id", requestIDFrom(c), "err", err)
-		writeError(c, http.StatusBadRequest, "invalid_database_target", database.ErrInvalidTarget.Error())
-		return
-	}
-	target, err := request.transferTarget()
-	if err != nil {
-		h.logger.Warn("目标数据库连接参数无效", "operation", "database_transfer_test_target", "request_id", requestIDFrom(c), "driver", request.Driver, "err", err)
-		writeError(c, http.StatusBadRequest, "invalid_database_target", database.ErrInvalidTarget.Error())
-		return
-	}
-	result, err := h.migration.TestTarget(c.Request.Context(), target)
-	if err != nil {
-		h.logger.Warn("测试目标数据库失败", "operation", "database_transfer_test", "request_id", requestIDFrom(c), "driver", request.Driver, "err", err)
-		switch {
-		case errors.Is(err, database.ErrTransferUnsupported):
-			writeError(c, http.StatusConflict, "database_transfer_unsupported", database.ErrTransferUnsupported.Error())
-		case errors.Is(err, database.ErrTargetNotEmpty):
-			writeError(c, http.StatusConflict, "database_target_not_empty", database.ErrTargetNotEmpty.Error())
-		case errors.Is(err, database.ErrInvalidTarget):
-			writeError(c, http.StatusBadRequest, "invalid_database_target", database.ErrInvalidTarget.Error())
-		default:
-			writeError(c, http.StatusBadGateway, "database_target_unavailable", "无法连接目标数据库，请检查地址、账号、密码和网络")
-		}
-		return
-	}
-	c.JSON(http.StatusOK, result)
-}
-
-func (h settingsHandler) startDatabaseMigration(c *gin.Context) {
-	var request databaseMigrationRequest
-	if err := c.ShouldBindJSON(&request); err != nil {
-		h.logger.Warn("启动数据库迁移参数无效", "operation", "database_transfer_start_bind", "request_id", requestIDFrom(c), "err", err)
-		writeError(c, http.StatusBadRequest, "invalid_database_target", database.ErrInvalidTarget.Error())
-		return
-	}
-	target, err := request.transferTarget()
-	if err != nil {
-		h.logger.Warn("目标数据库连接参数无效", "operation", "database_transfer_start_target", "request_id", requestIDFrom(c), "driver", request.Driver, "err", err)
-		writeError(c, http.StatusBadRequest, "invalid_database_target", database.ErrInvalidTarget.Error())
-		return
-	}
-	status, err := h.migration.Start(target, request.TestToken)
-	if err != nil {
-		h.logger.Warn("启动数据库迁移失败", "operation", "database_transfer_start", "request_id", requestIDFrom(c), "driver", request.Driver, "err", err)
-		switch {
-		case errors.Is(err, database.ErrTransferUnsupported), errors.Is(err, database.ErrActiveJobs), errors.Is(err, database.ErrTransferRunning):
-			writeError(c, http.StatusConflict, "database_transfer_unavailable", err.Error())
-		case errors.Is(err, database.ErrTargetTestRequired):
-			writeError(c, http.StatusPreconditionFailed, "database_target_test_required", err.Error())
-		case errors.Is(err, database.ErrInvalidTarget):
-			writeError(c, http.StatusBadRequest, "invalid_database_target", database.ErrInvalidTarget.Error())
-		default:
-			writeInternalError(c)
-		}
-		return
-	}
-	c.JSON(http.StatusAccepted, status)
 }
 
 func (h settingsHandler) loginLockout(c *gin.Context) {

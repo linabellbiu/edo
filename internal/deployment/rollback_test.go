@@ -122,6 +122,10 @@ func newKubernetesRollbackFixture(t *testing.T, status model.DeploymentStatus) *
 	if err := db.WithContext(ctx).Create(&f.source).Error; err != nil {
 		t.Fatal(err)
 	}
+	// 从数据库读取确认时间，遵循实际存储精度。
+	if err := db.WithContext(ctx).First(&f.source, "uuid = ?", f.source.ID).Error; err != nil {
+		t.Fatal(err)
+	}
 	return f
 }
 

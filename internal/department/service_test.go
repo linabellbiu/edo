@@ -2,19 +2,17 @@ package department
 
 import (
 	"context"
-	"edo/internal/config"
+	"errors"
+	"testing"
+
 	"edo/internal/database"
 	"edo/internal/model"
-	"errors"
-	"log/slog"
-	"path/filepath"
-	"testing"
-	"time"
+	"edo/internal/testutil"
 )
 
 func TestDepartmentHierarchyRejectsCyclesAndDeletesOnlyEmptyBranch(t *testing.T) {
 	ctx := context.Background()
-	db, err := database.Open(ctx, config.Database{Driver: "sqlite", DSN: filepath.Join(t.TempDir(), "organization.db"), MaxOpenConns: 1, MaxIdleConns: 1, ConnMaxLifetime: time.Minute}, slog.Default())
+	db, err := testutil.OpenDatabase(t)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
 	"gorm.io/gorm"
 
@@ -316,14 +317,16 @@ func TestHTTPProjectHeaderAndQueryKeepOneResourceScope(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	repositoryIDs := map[string]string{}
 	for _, project := range []*model.Project{f.project, other} {
 		repository := model.GitRepository{
-			ID: "scope-repository-" + project.ID, DepartmentID: project.DepartmentID, ProjectID: project.ID,
+			ID: uuid.NewString(), DepartmentID: project.DepartmentID, ProjectID: project.ID,
 			Name: "scope_repository", Provider: model.GitProviderGeneric, CloneURL: "https://example.com/scope.git",
 		}
 		if err := f.db.Create(&repository).Error; err != nil {
 			t.Fatal(err)
 		}
+		repositoryIDs[project.ID] = repository.ID
 	}
 	for _, test := range []struct {
 		name   string
@@ -356,7 +359,7 @@ func TestHTTPProjectHeaderAndQueryKeepOneResourceScope(t *testing.T) {
 				var payload struct {
 					Repositories []model.GitRepository `json:"repositories"`
 				}
-				if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil || len(payload.Repositories) != 1 || payload.Repositories[0].ID != "scope-repository-"+f.project.ID {
+				if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil || len(payload.Repositories) != 1 || payload.Repositories[0].ID != repositoryIDs[f.project.ID] {
 					t.Fatalf("项目列表范围发生混用: repositories=%+v err=%v", payload.Repositories, err)
 				}
 			}

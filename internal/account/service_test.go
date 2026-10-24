@@ -3,14 +3,14 @@ package account
 import (
 	"context"
 	"errors"
-	"log/slog"
 	"testing"
 	"time"
+
+	"edo/internal/testutil"
 
 	"gorm.io/gorm"
 
 	"edo/internal/auth"
-	"edo/internal/config"
 	"edo/internal/database"
 	"edo/internal/model"
 )
@@ -150,13 +150,7 @@ func TestSetDepartmentRequiresRepositoryCredentialHandover(t *testing.T) {
 
 func openAccountTestDatabase(t *testing.T, name string) *gorm.DB {
 	t.Helper()
-	db, err := database.Open(context.Background(), config.Database{
-		Driver:          "sqlite",
-		DSN:             "file:" + name + "?mode=memory&cache=shared",
-		MaxOpenConns:    1,
-		MaxIdleConns:    1,
-		ConnMaxLifetime: time.Minute,
-	}, slog.Default())
+	db, err := testutil.OpenDatabase(t)
 	if err != nil {
 		t.Fatalf("打开 SQLite 失败: %v", err)
 	}

@@ -14,10 +14,11 @@ import (
 	"testing"
 	"time"
 
+	"edo/internal/testutil"
+
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 
-	"edo/internal/config"
 	"edo/internal/database"
 	"edo/internal/model"
 )
@@ -392,10 +393,7 @@ func TestBuildDirectoryReportsUsageAndRejectsCleanupWhileActive(t *testing.T) {
 func newArtifactTestService(t *testing.T, maxBytes int64) (*Service, *gorm.DB, model.Application) {
 	t.Helper()
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	db, err := database.Open(context.Background(), config.Database{
-		Driver: "sqlite", DSN: filepath.Join(t.TempDir(), "artifact.db"), MaxOpenConns: 1,
-		MaxIdleConns: 1, ConnMaxLifetime: time.Minute,
-	}, logger)
+	db, err := testutil.OpenDatabase(t)
 	if err != nil {
 		t.Fatalf("打开制品测试数据库失败: %v", err)
 	}

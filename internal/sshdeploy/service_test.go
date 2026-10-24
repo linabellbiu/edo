@@ -5,11 +5,11 @@ import (
 	"context"
 	"encoding/base64"
 	"errors"
-	"io"
-	"log/slog"
 	"strings"
 	"testing"
 	"time"
+
+	"edo/internal/testutil"
 
 	"edo/internal/config"
 	"edo/internal/database"
@@ -66,10 +66,7 @@ func TestCommandErrorExposesStableCategoryAndExitCode(t *testing.T) {
 }
 
 func TestRunHostDeploymentScriptExecutesLocalSnapshot(t *testing.T) {
-	db, err := database.Open(context.Background(), config.Database{
-		Driver: "sqlite", DSN: "file:" + t.Name() + "?mode=memory&cache=shared",
-		MaxOpenConns: 1, MaxIdleConns: 1, ConnMaxLifetime: time.Minute,
-	}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	db, err := testutil.OpenDatabase(t)
 	if err != nil {
 		t.Fatalf("打开本地命令测试数据库失败: %v", err)
 	}

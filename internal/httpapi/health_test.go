@@ -9,11 +9,11 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
-	"time"
+
+	"edo/internal/testutil"
 
 	"github.com/gin-gonic/gin"
 
-	"edo/internal/config"
 	"edo/internal/database"
 )
 
@@ -62,10 +62,7 @@ func TestReadyStillFailsForRequiredDependencies(t *testing.T) {
 func newHealthTestHandler(t *testing.T) (healthHandler, func()) {
 	t.Helper()
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	db, err := database.Open(context.Background(), config.Database{
-		Driver: "sqlite", DSN: "file:health_ready_test?mode=memory&cache=shared",
-		MaxOpenConns: 1, MaxIdleConns: 1, ConnMaxLifetime: time.Minute,
-	}, logger)
+	db, err := testutil.OpenDatabase(t)
 	if err != nil {
 		t.Fatalf("打开 readiness 测试数据库失败: %v", err)
 	}

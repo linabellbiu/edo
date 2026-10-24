@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -15,6 +14,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"edo/internal/testutil"
 
 	"github.com/google/uuid"
 	"github.com/moby/moby/client"
@@ -33,11 +34,7 @@ func TestDockerBuildAndComposeIntegration(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	db, err := database.Open(ctx, config.Database{
-		Driver: "sqlite", DSN: "file:" + uuid.NewString() + "?mode=memory&cache=shared",
-		MaxOpenConns: 1, MaxIdleConns: 1, ConnMaxLifetime: 10 * time.Minute,
-	}, logger)
+	db, err := testutil.OpenDatabase(t)
 	if err != nil {
 		t.Fatalf("打开 Docker 集成测试数据库失败: %v", err)
 	}

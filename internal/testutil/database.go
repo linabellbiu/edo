@@ -42,28 +42,50 @@ var migratedSQLite = sync.OnceValues(func() ([]byte, error) {
 	return os.ReadFile(path)
 })
 
-// NewDatabase 为每个用例创建独立的真实 SQLite，保留生产连接配置和权限回调。
+// NewDatabase 按测试驱动为每个用例创建独立数据库，保留生产连接配置和权限回调。
 // 仅用于业务集成测试；迁移测试必须继续从空库执行，不得使用此模板。
 func NewDatabase(t testing.TB) *gorm.DB {
 	t.Helper()
+	db, err := OpenDatabase(t)
+	if err != nil {
+		t.Fatalf("创建业务测试数据库失败: %v", err)
+	}
+	return db
+}
+
+// OpenDatabase 供需要保留初始化错误分支的集成夹具使用；不读取生产数据库连接。
+func OpenDatabase(t testing.TB) (*gorm.DB, error) {
+	t.Helper()
+	switch driver := os.Getenv("EDO_TEST_BUSINESS_DRIVER"); driver {
+	case "", "sqlite":
+		return openSQLiteFixture(t)
+	case "mysql":
+		return openMySQLFixture(t)
+	default:
+		return nil, fmt.Errorf("业务测试数据库驱动无效: %s", driver)
+	}
+}
+
+func openSQLiteFixture(t testing.TB) (*gorm.DB, error) {
+	t.Helper()
 	data, err := migratedSQLite()
 	if err != nil {
-		t.Fatalf("读取测试数据库模板失败: %v", err)
+		return nil, fmt.Errorf("读取测试数据库模板失败: %w", err)
 	}
 	path := filepath.Join(t.TempDir(), "edo.db")
 	if err := os.WriteFile(path, data, 0o600); err != nil {
-		t.Fatalf("复制测试数据库失败: %v", err)
+		return nil, fmt.Errorf("复制测试数据库失败: %w", err)
 	}
 	db, err := openSQLite(path)
 	if err != nil {
-		t.Fatalf("打开测试数据库失败: %v", err)
+		return nil, fmt.Errorf("打开测试数据库失败: %w", err)
 	}
 	t.Cleanup(func() {
 		if err := database.Close(db); err != nil {
 			t.Errorf("关闭测试数据库失败: %v", err)
 		}
 	})
-	return db
+	return db, nil
 }
 
 func openSQLite(path string) (*gorm.DB, error) {

@@ -3,15 +3,14 @@ package environment
 import (
 	"context"
 	"errors"
-	"io"
-	"log/slog"
 	"slices"
 	"testing"
 	"time"
 
+	"edo/internal/testutil"
+
 	"gorm.io/gorm"
 
-	"edo/internal/config"
 	"edo/internal/database"
 	"edo/internal/model"
 )
@@ -276,6 +275,7 @@ func TestActiveWorkflowPreventsEnvironmentDisableAndDelete(t *testing.T) {
 	if err := db.Create(&plan).Error; err != nil {
 		t.Fatal(err)
 	}
+	seedEnvironmentWorkflowApplication(t, db, "environment-reference-app")
 	workflow := model.ReleaseWorkflow{
 		ID: "environment-reference-workflow", ApplicationID: "environment-reference-app",
 		Name: "环境引用流水线", Revision: 1, IsActive: true, SchemaVersion: model.WorkflowSchemaVersion,
@@ -391,6 +391,7 @@ func TestReplaceHostsRejectsDockerWorkflowMembership(t *testing.T) {
 	if err := db.Create(&plan).Error; err != nil {
 		t.Fatal(err)
 	}
+	seedEnvironmentWorkflowApplication(t, db, "docker-environment-app")
 	workflow := model.ReleaseWorkflow{
 		ID: "docker-environment-workflow", ApplicationID: "docker-environment-app",
 		Name: "Docker 环境流水线", Revision: 1, IsActive: true, SchemaVersion: model.WorkflowSchemaVersion,
@@ -534,14 +535,7 @@ func TestEnvironmentRemoveRejectsInactiveSSHDeploymentTargetReference(t *testing
 
 func newEnvironmentTestService(t *testing.T) (*Service, *gorm.DB) {
 	t.Helper()
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	db, err := database.Open(context.Background(), config.Database{
-		Driver:          "sqlite",
-		DSN:             "file:" + t.Name() + "?mode=memory&cache=shared",
-		MaxOpenConns:    1,
-		MaxIdleConns:    1,
-		ConnMaxLifetime: time.Minute,
-	}, logger)
+	db, err := testutil.OpenDatabase(t)
 	if err != nil {
 		t.Fatalf("打开环境测试数据库失败: %v", err)
 	}
@@ -591,5 +585,17 @@ func assertHostEnvironments(t *testing.T, db *gorm.DB, hostID string, environmen
 		if memberships[i].EnvironmentID != environmentIDs[i] {
 			t.Fatalf("主机环境归属错误: got=%+v want=%+v", memberships, environmentIDs)
 		}
+	}
+}
+
+func seedEnvironmentWorkflowApplication(t *testing.T, db *gorm.DB, id string) {
+	t.Helper()
+	repo := model.GitRepository{ID: id + "-repo", Name: id, IsActive: true}
+	if err := db.Create(&repo).Error; err != nil {
+		t.Fatal(err)
+	}
+	app := model.Application{ID: id, Name: id, RepositoryID: repo.ID, IsActive: true}
+	if err := db.Create(&app).Error; err != nil {
+		t.Fatal(err)
 	}
 }

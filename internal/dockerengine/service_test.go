@@ -9,11 +9,11 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"errors"
-	"io"
-	"log/slog"
 	"strings"
 	"testing"
 	"time"
+
+	"edo/internal/testutil"
 
 	"edo/internal/config"
 	"edo/internal/database"
@@ -24,10 +24,7 @@ import (
 
 func TestDockerEndpointSecurityDefaults(t *testing.T) {
 	ctx := context.Background()
-	db, err := database.Open(ctx, config.Database{
-		Driver: "sqlite", DSN: "file:docker_endpoint_test?mode=memory&cache=shared",
-		MaxOpenConns: 1, MaxIdleConns: 1, ConnMaxLifetime: time.Minute,
-	}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	db, err := testutil.OpenDatabase(t)
 	if err != nil {
 		t.Fatalf("打开 Docker 测试数据库失败: %v", err)
 	}

@@ -10,10 +10,11 @@ import (
 	"testing"
 	"time"
 
+	"edo/internal/testutil"
+
 	"gorm.io/datatypes"
 	"gorm.io/gorm"
 
-	"edo/internal/config"
 	"edo/internal/database"
 	"edo/internal/messaging"
 	"edo/internal/model"
@@ -125,10 +126,7 @@ func TestPurgeDeadLettersRejectsReadOnlyQueueProvider(t *testing.T) {
 func openMetricsTestDB(t *testing.T, name string) (*gorm.DB, *sql.DB, *slog.Logger) {
 	t.Helper()
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	db, err := database.Open(context.Background(), config.Database{
-		Driver: "sqlite", DSN: "file:" + name + "?mode=memory&cache=shared",
-		MaxOpenConns: 1, MaxIdleConns: 1, ConnMaxLifetime: time.Minute,
-	}, logger)
+	db, err := testutil.OpenDatabase(t)
 	if err != nil {
 		t.Fatalf("打开系统指标测试数据库失败: %v", err)
 	}

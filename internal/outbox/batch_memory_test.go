@@ -65,7 +65,7 @@ func TestPublishBatchKeepsIDSnapshotOrderAndHundredEventBoundary(t *testing.T) {
 
 func TestPublishBatchLoadsSmallPayloadBatchesAndDoesNotRepeatFailures(t *testing.T) {
 	db := testutil.NewDatabase(t)
-	wanted := seedBatchEvents(t, db, 25, 256, 64*1024)
+	wanted := seedBatchEvents(t, db, 25, 256, 60*1024)
 	var loaded []int
 	if err := db.Callback().Query().After("gorm:query").Register("outbox:test_payload_batches", func(tx *gorm.DB) {
 		if events, ok := tx.Statement.Dest.(*[]model.OutboxEvent); ok {
@@ -256,7 +256,7 @@ func BenchmarkOutboxBatchPeakMemory(b *testing.B) {
 	} {
 		b.Run(variant.name, func(b *testing.B) {
 			db := testutil.NewDatabase(b)
-			seedBatchEvents(b, db, maximumPublishBatchSize, 256*1024, 64*1024)
+			seedBatchEvents(b, db, maximumPublishBatchSize, 256*1024, 60*1024)
 			transport := &heapTrackingPublisher{}
 			publisher := newBatchTestPublisher(db, transport)
 			var highest uint64
@@ -265,7 +265,7 @@ func BenchmarkOutboxBatchPeakMemory(b *testing.B) {
 			for range b.N {
 				b.StopTimer()
 				if err := db.Model(&model.OutboxEvent{}).Where("1 = 1").Updates(map[string]any{
-					"published_at": nil, "last_error": strings.Repeat("e", 64*1024),
+					"published_at": nil, "last_error": strings.Repeat("e", 60*1024),
 				}).Error; err != nil {
 					b.Fatal(err)
 				}

@@ -2,12 +2,13 @@ package pipeline
 
 import (
 	"context"
- "encoding/json"
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"gorm.io/gorm"
 
 	"edo/internal/credential"
@@ -668,14 +669,14 @@ func createPreviousManualArtifact(t *testing.T, db *gorm.DB, application *model.
 	now := time.Now().UTC()
 	finishedAt := now
 	build := model.BuildRun{
-		ID: "build-" + application.ID, ApplicationID: application.ID, PipelineRunID: "previous-" + application.ID,
+		ID: uuid.NewString(), ApplicationID: application.ID, PipelineRunID: uuid.NewString(),
 		RepositoryID: application.RepositoryID, WorkflowNodeID: "build", BuildPlanID: buildPlanID,
 		ProducerKind: model.BuildRunProducerDockerfile, Ref: "refs/heads/main", CommitSHA: commitSHA,
 		Status: model.BuildRunStatusSucceeded, CreatedBy: "admin", CreatedAt: now, UpdatedAt: now, FinishedAt: &finishedAt,
 	}
 	digest := "sha256:" + strings.Repeat("a", 64)
 	stored := &model.Artifact{
-		ID: "artifact-" + application.ID, ApplicationID: application.ID, BuildRunID: build.ID,
+		ID: uuid.NewString(), ApplicationID: application.ID, BuildRunID: build.ID,
 		PipelineRunID: build.PipelineRunID, Kind: model.ArtifactKindOCIImage, Status: model.ArtifactStatusAvailable,
 		Name: "edo.local/" + application.Name + ":previous", Digest: digest,
 		StorageKind: model.ArtifactStorageKindDockerDaemon, ImageRef: "edo.local/" + application.Name + ":previous",

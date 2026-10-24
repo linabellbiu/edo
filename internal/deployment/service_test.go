@@ -13,6 +13,8 @@ import (
 	"testing"
 	"time"
 
+	"edo/internal/testutil"
+
 	"github.com/alicebob/miniredis/v2"
 	"github.com/bsm/redislock"
 	"github.com/redis/go-redis/v9"
@@ -1296,10 +1298,7 @@ func createSSHDeploymentResources(t *testing.T, db *gorm.DB) (model.Environment,
 func newDeploymentTestService(t *testing.T) (*Service, *gorm.DB, string) {
 	t.Helper()
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	db, err := database.Open(context.Background(), config.Database{
-		Driver: "sqlite", DSN: "file:" + t.Name() + "?mode=memory&cache=shared",
-		MaxOpenConns: 1, MaxIdleConns: 1, ConnMaxLifetime: time.Minute,
-	}, logger)
+	db, err := testutil.OpenDatabase(t)
 	if err != nil {
 		t.Fatalf("打开发布测试数据库失败: %v", err)
 	}

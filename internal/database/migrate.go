@@ -378,6 +378,14 @@ var migrations = []migration{
 			&model.PipelineNodeRun{}, &model.PipelineCheckReport{}, &model.EnvironmentReleasePolicy{},
 			&model.ApplicationDatabase{}, &model.ApplicationDatabaseMigration{}, &model.RepositoryCheckDelivery{})
 	}},
+	{version: "202610240072", up: func(tx *gorm.DB) error {
+		// 扩展状态字段并保留 SQLite 重建表后的索引，不递归调整关联表。
+		migrationDB := tx.Session(&gorm.Session{})
+		migrationConfig := *tx.Config
+		migrationConfig.IgnoreRelationshipsWhenMigrating = true
+		migrationDB.Config = &migrationConfig
+		return migrationDB.AutoMigrate(&model.PipelineRun{})
+	}},
 }
 
 // migrateRepeatableReleasePlanExecutions 取消“一个发布计划只能执行一次”的旧约束，

@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"io"
-	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -12,6 +11,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"edo/internal/testutil"
 
 	"gorm.io/gorm"
 
@@ -187,11 +188,7 @@ func newDockerPingServer(t *testing.T, status *atomic.Int32) (string, *countingL
 func newMonitorTestService(t *testing.T) (*Service, *gorm.DB) {
 	t.Helper()
 	ctx := context.Background()
-	dsn := "file:" + strings.ReplaceAll(t.Name(), "/", "_") + "?mode=memory&cache=shared"
-	db, err := database.Open(ctx, config.Database{
-		Driver: "sqlite", DSN: dsn,
-		MaxOpenConns: 1, MaxIdleConns: 1, ConnMaxLifetime: time.Minute,
-	}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	db, err := testutil.OpenDatabase(t)
 	if err != nil {
 		t.Fatalf("打开 Docker 监控测试数据库失败: %v", err)
 	}

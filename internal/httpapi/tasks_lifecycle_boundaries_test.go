@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -192,7 +193,7 @@ func TestOperationsTaskHTTPListsCancelsAndRetriesWithoutExecution(t *testing.T) 
 		t.Fatal(err)
 	}
 	if retryJob.Status != model.JobPending || retryJob.Attempt != 0 || retryJob.StartedAt != nil || retryJob.FinishedAt != nil ||
-		retryJob.ProjectID != failed.ProjectID || retryJob.DepartmentID != failed.DepartmentID || string(retryJob.Payload) != string(failed.Payload) ||
+		retryJob.ProjectID != failed.ProjectID || retryJob.DepartmentID != failed.DepartmentID || !sameTaskJSON(t, retryJob.Payload, failed.Payload) ||
 		original.Status != model.JobFailed || original.Attempt != 4 {
 		t.Fatal("重试改写了来源任务、丢失范围/参数，或在HTTP请求中执行了任务")
 	}
@@ -201,7 +202,7 @@ func TestOperationsTaskHTTPListsCancelsAndRetriesWithoutExecution(t *testing.T) 
 		t.Fatalf("重试没有创建待发布的同项目Outbox事件: err=%v", err)
 	}
 	var envelope task.Message
-	if err := json.Unmarshal(event.Payload, &envelope); err != nil || envelope.JobID != retryJob.ID || string(envelope.Payload) != string(retryJob.Payload) {
+	if err := json.Unmarshal(event.Payload, &envelope); err != nil || envelope.JobID != retryJob.ID || !sameTaskJSON(t, envelope.Payload, retryJob.Payload) {
 		t.Fatalf("重试事件与任务参数不一致: err=%v", err)
 	}
 	var jobs, events int64
@@ -214,4 +215,17 @@ func TestOperationsTaskHTTPListsCancelsAndRetriesWithoutExecution(t *testing.T) 
 	if jobs != 6 || events != 6 {
 		t.Fatalf("被拒绝的取消/重试产生了额外副作用: jobs=%d events=%d", jobs, events)
 	}
+}
+
+// MySQL 会规范化 JSON 的空格和键顺序，任务参数应按内容比较。
+func sameTaskJSON(t *testing.T, left, right []byte) bool {
+	t.Helper()
+	var a, b any
+	if err := json.Unmarshal(left, &a); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(right, &b); err != nil {
+		t.Fatal(err)
+	}
+	return reflect.DeepEqual(a, b)
 }

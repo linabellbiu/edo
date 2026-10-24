@@ -29,8 +29,6 @@ type assistantMigrationFixture struct {
 func TestAssistantSQLiteMigration(t *testing.T) {
 	db := openAssistantMigrationDatabase(t, "sqlite", filepath.Join(t.TempDir(), "assistant.db"))
 	exerciseAssistantMigration(t, db)
-	target := openAssistantMigrationDatabase(t, "sqlite", filepath.Join(t.TempDir(), "assistant-copy.db"))
-	assertAssistantTableTransfer(t, db, target, "sqlite")
 }
 
 func TestExternalAssistantMigration(t *testing.T) {
@@ -57,21 +55,7 @@ func TestExternalAssistantMigration(t *testing.T) {
 			}
 			// 与现有外部迁移测试相同，这里只接受可丢弃的专用测试库。
 			db := openAssistantMigrationDatabase(t, item.driver, dsn)
-			fixture := exerciseAssistantMigration(t, db)
-			// 升级保留断言完成后，复制阶段使用空目标，避免两套样本的自增行号碰撞。
-			for _, value := range []any{
-				&model.AssistantAction{ID: fixture.action.ID},
-				&model.AssistantMessage{ID: fixture.message.ID},
-				&model.AssistantConversation{ID: fixture.conversation.ID},
-				&model.AssistantSettings{ID: fixture.settings.ID},
-			} {
-				result := db.Where(value).Delete(value)
-				if result.Error != nil || result.RowsAffected != 1 {
-					t.Fatalf("准备助手复制空目标失败: %T: 删除行数=%d: %v", value, result.RowsAffected, result.Error)
-				}
-			}
-			source := openAssistantMigrationDatabase(t, "sqlite", filepath.Join(t.TempDir(), "assistant-source.db"))
-			assertAssistantTableTransfer(t, source, db, item.driver)
+			exerciseAssistantMigration(t, db)
 		})
 	}
 }
@@ -247,26 +231,4 @@ func assertAssistantFixture(t *testing.T, db *gorm.DB, fixture assistantMigratio
 	if err := db.First(&action, "uuid = ?", fixture.action.ID).Error; err != nil || action.Snapshot != fixture.action.Snapshot || action.Result != fixture.action.Result || action.Status != fixture.action.Status || action.UserID != fixture.action.UserID || action.ProjectID != fixture.action.ProjectID || action.DepartmentID != fixture.action.DepartmentID || !action.ExpiresAt.Equal(fixture.action.ExpiresAt) {
 		t.Fatalf("助手确认记录及有效期未完整保留: %v", err)
 	}
-}
-
-func assertAssistantTableTransfer(t *testing.T, source, target *gorm.DB, driver string) {
-	t.Helper()
-	fixture := seedAssistantMigrationFixture(t, source)
-	known := knownTransferTableSet()
-	for _, table := range []string{"assistant_settings", "assistant_conversations", "assistant_messages", "assistant_actions"} {
-		count := 0
-		for _, included := range orderedTransferTables {
-			if included == table {
-				count++
-			}
-		}
-		if _, exists := known[table]; !exists || count != 1 {
-			t.Fatalf("助手表未恰好一次纳入数据库转移清单: %s", table)
-		}
-		copied, err := copyTable(source, target, table, driver)
-		if err != nil || copied < 1 {
-			t.Fatalf("复制助手表失败: %s: %v", table, err)
-		}
-	}
-	assertAssistantFixture(t, target, fixture)
 }

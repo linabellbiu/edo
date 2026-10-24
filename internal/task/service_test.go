@@ -4,15 +4,13 @@ import (
 	"context"
 	"testing"
 
-	"gorm.io/driver/sqlite"
-	"gorm.io/gorm"
-
 	"edo/internal/config"
 	"edo/internal/model"
+	"edo/internal/testutil"
 )
 
 func TestCreateFreezesDepartmentOnJobAndOutbox(t *testing.T) {
-	db, err := gorm.Open(sqlite.Open("file:task_department?mode=memory&cache=shared"), &gorm.Config{})
+	db, err := testutil.OpenDatabase(t)
 	if err != nil {
 		t.Fatalf("打开任务测试数据库失败: %v", err)
 	}
@@ -38,7 +36,7 @@ func TestCreateFreezesDepartmentOnJobAndOutbox(t *testing.T) {
 }
 
 func TestCreateRejectsMissingDepartment(t *testing.T) {
-	db, err := gorm.Open(sqlite.Open("file:task_missing_department?mode=memory&cache=shared"), &gorm.Config{})
+	db, err := testutil.OpenDatabase(t)
 	if err != nil {
 		t.Fatalf("打开任务测试数据库失败: %v", err)
 	}

@@ -4,16 +4,16 @@ import (
 	"context"
 	"encoding/base64"
 	"errors"
-	"log/slog"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"edo/internal/testutil"
+
 	"github.com/libdns/libdns"
 	"gorm.io/gorm"
 
-	"edo/internal/config"
 	"edo/internal/database"
 	"edo/internal/model"
 	"edo/internal/secret"
@@ -282,13 +282,7 @@ func newDNSTestService(t *testing.T) (*Service, *gorm.DB, *fakeDNSProvider) {
 
 func newDNSTestServiceForProvider(t *testing.T, providerCode model.DNSProvider) (*Service, *gorm.DB, *fakeDNSProvider) {
 	t.Helper()
-	db, err := database.Open(context.Background(), config.Database{
-		Driver:          "sqlite",
-		DSN:             "file:" + t.Name() + "?mode=memory&cache=shared",
-		MaxOpenConns:    1,
-		MaxIdleConns:    1,
-		ConnMaxLifetime: time.Minute,
-	}, slog.Default())
+	db, err := testutil.OpenDatabase(t)
 	if err != nil {
 		t.Fatalf("打开测试数据库失败: %v", err)
 	}

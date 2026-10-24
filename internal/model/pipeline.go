@@ -312,7 +312,7 @@ type PipelineRun struct {
 	Ref                        string                       `gorm:"type:varchar(512);not null" json:"ref"`
 	CommitSHA                  string                       `gorm:"type:varchar(64);not null" json:"commit_sha"`
 	CommitMessage              string                       `gorm:"type:varchar(255);not null;default:''" json:"commit_message,omitempty"`
-	Status                     PipelineRunStatus            `gorm:"type:varchar(16);not null;index" json:"status"`
+	Status                     PipelineRunStatus            `gorm:"type:varchar(32);not null;index" json:"status"`
 	Stage                      string                       `gorm:"type:varchar(32);not null" json:"stage"`
 	Environment                string                       `gorm:"type:varchar(16);not null;default:'';index" json:"environment,omitempty"`
 	WorkflowID                 string                       `gorm:"type:varchar(36);not null;default:'';index" json:"workflow_id,omitempty"`

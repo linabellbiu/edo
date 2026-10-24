@@ -2,22 +2,17 @@ package access
 
 import (
 	"context"
-	"io"
-	"log/slog"
 	"slices"
 	"testing"
-	"time"
 
-	"edo/internal/config"
+	"edo/internal/testutil"
+
 	"edo/internal/database"
 )
 
 func TestRoleBasicAndPermissionUpdatesAreIndependent(t *testing.T) {
 	ctx := context.Background()
-	db, err := database.Open(ctx, config.Database{
-		Driver: "sqlite", DSN: "file:access_role_update_test?mode=memory&cache=shared",
-		MaxOpenConns: 1, MaxIdleConns: 1, ConnMaxLifetime: time.Minute,
-	}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	db, err := testutil.OpenDatabase(t)
 	if err != nil {
 		t.Fatalf("打开测试数据库失败: %v", err)
 	}

@@ -20,7 +20,6 @@ import (
 	"edo/internal/config"
 	"edo/internal/configuration"
 	"edo/internal/credential"
-	"edo/internal/database"
 	"edo/internal/department"
 	"edo/internal/deployment"
 	dnsmanager "edo/internal/dns"
@@ -44,44 +43,43 @@ import (
 )
 
 type Dependencies struct {
-	Environment      string
-	Database         *sql.DB
-	Redis            Pinger
-	NATS             Pinger
-	Logger           *slog.Logger
-	RuntimeLogs      *logging.RuntimeController
-	Version          string
-	WebRoot          string
-	AuthConfig       config.Auth
-	Accounts         *account.Service
-	Login            *account.LoginService
-	LoginLimiter     *auth.LoginRateLimiter
-	Sessions         *auth.SessionStore
-	Access           *access.Service
-	Audits           *audit.Service
-	Identities       *identity.Service
-	Repositories     *repository.Service
-	Pipelines        *pipeline.Service
-	Realtime         *realtime.Bus
-	Artifacts        *artifactmanager.Service
-	Docker           *dockerengine.Service
-	Kubernetes       *kube.Service
-	Hosts            *hostmanager.Service
-	Environments     *environmentmanager.Service
-	Deployments      *deployment.Service
-	Departments      *department.Service
-	Terminal         *terminal.Service
-	Configurations   *configuration.Service
-	Credentials      *credential.Service
-	DNS              *dnsmanager.Service
-	Notifications    *notification.Service
-	Monitors         *monitor.Service
-	Scheduler        *scheduler.Service
-	Tasks            *task.Service
-	SystemMetrics    *systemmetrics.Service
-	LogRetention     *logretention.Service
-	DatabaseTransfer *database.TransferService
-	Assistant        *assistant.Service
+	Environment    string
+	Database       *sql.DB
+	Redis          Pinger
+	NATS           Pinger
+	Logger         *slog.Logger
+	RuntimeLogs    *logging.RuntimeController
+	Version        string
+	WebRoot        string
+	AuthConfig     config.Auth
+	Accounts       *account.Service
+	Login          *account.LoginService
+	LoginLimiter   *auth.LoginRateLimiter
+	Sessions       *auth.SessionStore
+	Access         *access.Service
+	Audits         *audit.Service
+	Identities     *identity.Service
+	Repositories   *repository.Service
+	Pipelines      *pipeline.Service
+	Realtime       *realtime.Bus
+	Artifacts      *artifactmanager.Service
+	Docker         *dockerengine.Service
+	Kubernetes     *kube.Service
+	Hosts          *hostmanager.Service
+	Environments   *environmentmanager.Service
+	Deployments    *deployment.Service
+	Departments    *department.Service
+	Terminal       *terminal.Service
+	Configurations *configuration.Service
+	Credentials    *credential.Service
+	DNS            *dnsmanager.Service
+	Notifications  *notification.Service
+	Monitors       *monitor.Service
+	Scheduler      *scheduler.Service
+	Tasks          *task.Service
+	SystemMetrics  *systemmetrics.Service
+	LogRetention   *logretention.Service
+	Assistant      *assistant.Service
 }
 
 type errorResponse struct {
@@ -100,7 +98,6 @@ func NewRouter(deps Dependencies) *gin.Engine {
 
 	health := healthHandler{database: deps.Database, redis: deps.Redis, nats: deps.NATS, builder: deps.Docker, logger: deps.Logger}
 	api := router.Group("/api/v1")
-	api.Use(databaseTransferGuard(deps.DatabaseTransfer, deps.Logger))
 	api.GET("/health/live", health.live)
 	api.GET("/health/ready", health.ready)
 	authAPI := api.Group("/auth")
@@ -383,7 +380,7 @@ func NewRouter(deps Dependencies) *gin.Engine {
 	protected.GET("/terminals/kubernetes/:cluster_id/namespaces/:namespace/pods/:pod/containers/:container/ws", requirePermission(deps.Access, deps.Logger, access.PermissionTerminalOpen), terminalAPI.kubernetes)
 
 	configurationAPI := configurationHandler{service: deps.Configurations, logger: deps.Logger}
-	settingsAPI := settingsHandler{service: deps.Configurations, loginLimiter: deps.LoginLimiter, authConfig: deps.AuthConfig, retention: deps.LogRetention, migration: deps.DatabaseTransfer, runtimeLogs: deps.RuntimeLogs, repositories: deps.Repositories, artifacts: deps.Artifacts, logger: deps.Logger}
+	settingsAPI := settingsHandler{service: deps.Configurations, loginLimiter: deps.LoginLimiter, authConfig: deps.AuthConfig, retention: deps.LogRetention, runtimeLogs: deps.RuntimeLogs, repositories: deps.Repositories, artifacts: deps.Artifacts, logger: deps.Logger}
 	protected.GET("/settings/builtin-variables", requireAnyPermission(deps.Access, deps.Logger, access.PermissionConfigRead, "application.read", "workflow.read", "build_plan.read", "deployment_plan.read"), settingsAPI.builtinVariables)
 	protected.GET("/settings/external-git-webhook", requirePermission(deps.Access, deps.Logger, access.PermissionConfigRead), settingsAPI.externalGitWebhook)
 	protected.PUT("/settings/external-git-webhook", auditAction(deps.Audits, deps.Logger, "settings.git_webhook.update", "settings"), requirePermission(deps.Access, deps.Logger, access.PermissionConfigUpdate), settingsAPI.updateExternalGitWebhook)
@@ -400,9 +397,6 @@ func NewRouter(deps Dependencies) *gin.Engine {
 	protected.POST("/settings/runtime-directories/cleanup-builds", auditAction(deps.Audits, deps.Logger, "settings.builds.cleanup", "settings"), requirePermission(deps.Access, deps.Logger, access.PermissionConfigExecute), settingsAPI.cleanupBuilds)
 	protected.POST("/settings/runtime-directories/cleanup-cache", auditAction(deps.Audits, deps.Logger, "settings.repository_cache.cleanup", "settings"), requirePermission(deps.Access, deps.Logger, access.PermissionConfigExecute), settingsAPI.cleanupRepositoryCache)
 	protected.POST("/settings/runtime-directories/cleanup-artifacts", auditAction(deps.Audits, deps.Logger, "settings.local_artifacts.cleanup", "settings"), requirePermission(deps.Access, deps.Logger, access.PermissionConfigExecute), settingsAPI.cleanupLocalArtifacts)
-	protected.GET("/settings/database-migration", requireSuperuser(deps.Logger), settingsAPI.databaseMigrationStatus)
-	protected.POST("/settings/database-migration/test", auditAction(deps.Audits, deps.Logger, "settings.database_migration.test", "settings"), requireSuperuser(deps.Logger), settingsAPI.testDatabaseMigration)
-	protected.POST("/settings/database-migration", auditAction(deps.Audits, deps.Logger, "settings.database_migration.start", "settings"), requireSuperuser(deps.Logger), settingsAPI.startDatabaseMigration)
 	protected.GET("/configurations", requirePermission(deps.Access, deps.Logger, access.PermissionConfigRead), configurationAPI.list)
 	protected.POST("/configurations", auditAction(deps.Audits, deps.Logger, "configuration.create", "configuration"), requirePermission(deps.Access, deps.Logger, access.PermissionConfigCreate), configurationAPI.create)
 	protected.PUT("/configurations/:id", auditAction(deps.Audits, deps.Logger, "configuration.update", "configuration"), requirePermission(deps.Access, deps.Logger, access.PermissionConfigUpdate), configurationAPI.update)

@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"edo/internal/testutil"
+
 	"github.com/nats-io/nats.go/jetstream"
 	"gorm.io/gorm"
 
@@ -366,10 +368,7 @@ func TestWorkerProcessorsExecuteTasksConcurrently(t *testing.T) {
 
 func openWorkerTestDB(t *testing.T, name string) *gorm.DB {
 	t.Helper()
-	db, err := database.Open(context.Background(), config.Database{
-		Driver: "sqlite", DSN: "file:" + name + "?mode=memory&cache=shared",
-		MaxOpenConns: 1, MaxIdleConns: 1, ConnMaxLifetime: time.Minute,
-	}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	db, err := testutil.OpenDatabase(t)
 	if err != nil {
 		t.Fatalf("打开 Worker 测试数据库失败: %v", err)
 	}

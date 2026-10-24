@@ -4,12 +4,11 @@ import (
 	"context"
 	"encoding/base64"
 	"errors"
-	"io"
-	"log/slog"
 	"testing"
 	"time"
 
-	"edo/internal/config"
+	"edo/internal/testutil"
+
 	"edo/internal/database"
 	"edo/internal/model"
 	"edo/internal/secret"
@@ -249,8 +248,7 @@ func systemConfigurationID(t *testing.T, service *Service, key string) string {
 	t.Helper()
 	var item model.Configuration
 	if err := service.db.Where(
-		"namespace = ? AND environment = ? AND key = ?",
-		systemNamespace, model.EnvironmentGlobal, key,
+		map[string]any{"namespace": systemNamespace, "environment": model.EnvironmentGlobal, "key": key},
 	).First(&item).Error; err != nil {
 		t.Fatalf("读取系统设置配置失败: %v", err)
 	}
@@ -259,11 +257,7 @@ func systemConfigurationID(t *testing.T, service *Service, key string) string {
 
 func newConfigurationTestService(t *testing.T) *Service {
 	t.Helper()
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	db, err := database.Open(context.Background(), config.Database{
-		Driver: "sqlite", DSN: "file:" + t.Name() + "?mode=memory&cache=shared",
-		MaxOpenConns: 1, MaxIdleConns: 1, ConnMaxLifetime: time.Minute,
-	}, logger)
+	db, err := testutil.OpenDatabase(t)
 	if err != nil {
 		t.Fatalf("打开配置测试数据库失败: %v", err)
 	}

@@ -1,9 +1,9 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
+import { computed, onMounted, reactive, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { useI18n } from "vue-i18n";
 import { Modal, message } from "ant-design-vue";
-import { Braces, Database, FolderCog, KeyRound, RefreshCw, ScrollText, Search, ShieldCheck, Trash2 } from "lucide-vue-next";
+import { Braces, FolderCog, KeyRound, RefreshCw, ScrollText, Search, ShieldCheck, Trash2 } from "lucide-vue-next";
 
 import client from "@/api/client";
 import { apiErrorMessage } from "@/api/resources";
@@ -61,33 +61,6 @@ interface DirectoryCleanupReport {
   bytes_released: number;
   artifacts_expired?: number;
 }
-interface MigrationStatus {
-  id?: string;
-  source_driver: string;
-  target_driver?: string;
-  state: "idle" | "preparing" | "migrating" | "succeeded" | "failed";
-  message: string;
-  total_tables: number;
-  completed_tables: number;
-  copied_rows: number;
-  requires_restart: boolean;
-}
-interface TestResult {
-  test_token: string;
-  driver: string;
-  expires_at: string;
-  database_created: boolean;
-}
-type DatabaseDriver = "mysql" | "postgres";
-interface DatabaseTargetForm {
-  driver: DatabaseDriver;
-  host: string;
-  port: number | null;
-  username: string;
-  password: string;
-  databaseName: string;
-}
-
 const { t } = useI18n();
 const route = useRoute(),
   router = useRouter(),
@@ -100,36 +73,16 @@ const webhook = ref<WebhookSetting | null>(null),
   runtimeLogging = ref<RuntimeLoggingSetting | null>(null),
   runtimeDirectories = ref<RuntimeDirectorySetting | null>(null),
   retention = ref<RetentionSetting | null>(null),
-  migration = ref<MigrationStatus | null>(null),
-  testResult = ref<TestResult | null>(null),
   builtinVariableCatalog = ref<BuiltinVariableCatalog | null>(null),
   variableLoading = ref(false),
   variableSearch = ref(""),
   variableKind = ref("all");
-const databaseDefaultPorts: Record<DatabaseDriver, number> = {
-  mysql: 3306,
-  postgres: 5432,
-};
-const databaseDefaultUsernames: Record<DatabaseDriver, string> = {
-  mysql: "root",
-  postgres: "postgres",
-};
-const password = reactive({ current: "", next: "", confirm: "" }),
-  database = reactive<DatabaseTargetForm>({
-    driver: "postgres",
-    host: "",
-    port: databaseDefaultPorts.postgres,
-    username: databaseDefaultUsernames.postgres,
-    password: "",
-    databaseName: "edo",
-  });
-let migrationTimer = 0;
+const password = reactive({ current: "", next: "", confirm: "" });
 const canConfig = computed(() => auth.canAny(["config.read"])),
   canViewVariables = computed(() => auth.canAny(["config.read", "application.read","workflow.read","build_plan.read","deployment_plan.read"])),
   canUpdate = computed(() => auth.canAny(["config.update"])),
   canExecute = computed(() => auth.canAny(["config.execute"])),
-  canIdentity = computed(() => auth.canAny(["identity.read"])),
-  isSuperuser = computed(() => Boolean(auth.user?.is_superuser));
+  canIdentity = computed(() => auth.canAny(["identity.read"]));
 const sections = computed(() => [
   { key: "account", label: "修改密码" },
   ...(canConfig.value
@@ -145,7 +98,6 @@ const sections = computed(() => [
         { key: "storage", label: "存储目录" },
       ]
     : []),
-  ...(isSuperuser.value ? [{ key: "database", label: "数据库迁移" }] : []),
   ...(canIdentity.value ? [{ key: "identity", label: "登录方式" }] : []),
 ]);
 const active = computed(() => (sections.value.some((item) => item.key === route.query.section) ? String(route.query.section) : "account"));
@@ -164,51 +116,8 @@ const filteredBuiltinVariables = computed(() => {
     return `${item.name} ${item.syntax} ${item.label} ${item.description} ${item.category} ${item.availability} ${scopes}`.toLocaleLowerCase().includes(keyword);
   });
 });
-const migrationStatePresentation = computed(
-  () =>
-    ({
-      idle: { label: "未迁移", color: "default" },
-      preparing: { label: "准备中", color: "processing" },
-      migrating: { label: "迁移中", color: "processing" },
-      succeeded: { label: "已完成", color: "success" },
-      failed: { label: "迁移失败", color: "error" },
-    })[migration.value?.state || "idle"],
-);
-const migrationInProgress = computed(() => migration.value?.state === "preparing" || migration.value?.state === "migrating");
-const migrationProgressPercent = computed(() => {
-  const status = migration.value;
-  if (!status || status.state === "idle") return 0;
-  if (status.state === "succeeded") return 100;
-  if (status.total_tables > 0) return Math.min(100, Math.round((status.completed_tables / status.total_tables) * 100));
-  return 0;
-});
-const migrationProgressStatus = computed<"exception" | "success" | "active">(() => {
-  if (migration.value?.state === "failed") return "exception";
-  if (migration.value?.state === "succeeded") return "success";
-  return "active";
-});
-const migrationStageLabel = computed(() => {
-  switch (migration.value?.state) {
-    case "preparing":
-      return "检查任务并准备目标数据库";
-    case "migrating":
-      return "正在复制数据表";
-    case "succeeded":
-      return "迁移完成，等待切换数据库";
-    case "failed":
-      return "迁移已中止";
-    default:
-      return "等待开始";
-  }
-});
 function select(value: string) {
   void router.replace({ query: value === "account" ? {} : { section: value } });
-}
-function databaseDriverLabel(driver?: string) {
-  if (driver === "sqlite") return "SQLite";
-  if (driver === "mysql") return "MySQL";
-  if (driver === "postgres") return "PostgreSQL";
-  return "—";
 }
 async function load() {
   if (!canConfig.value) return;
@@ -240,14 +149,6 @@ async function loadBuiltinVariables(force = false) {
 function refreshActiveSection() {
   if (active.value === "variables") void loadBuiltinVariables(true);
   else void load();
-}
-async function loadMigration() {
-  if (!isSuperuser.value) return;
-  try {
-    migration.value = (await client.get<MigrationStatus>("/settings/database-migration")).data;
-  } catch (error) {
-    message.error(apiErrorMessage(error));
-  }
 }
 async function toggle(kind: "webhook" | "lockout") {
   const current = kind === "webhook" ? webhook.value : lockout.value;
@@ -432,105 +333,18 @@ function cleanup() {
     },
   });
 }
-function databaseTargetPayload() {
-  const host = database.host.trim(),
-    username = database.username.trim(),
-    databaseName = database.databaseName.trim(),
-    port = database.port;
-  if (!host || !username || !database.password || !databaseName || port === null || !Number.isInteger(port) || port < 1 || port > 65535) {
-    message.error("请完整填写数据库地址、端口、用户名、密码和数据库名。");
-    return null;
-  }
-  return {
-    driver: database.driver,
-    host,
-    port,
-    username,
-    password: database.password,
-    database: databaseName,
-  };
-}
-async function testDatabase() {
-  const target = databaseTargetPayload();
-  if (!target) return;
-  saving.value = "db-test";
-  try {
-    const result = (await client.post<TestResult>("/settings/database-migration/test", target)).data;
-    testResult.value = result;
-    message.success(result.database_created ? `已创建目标数据库 ${database.databaseName}，连接测试成功。` : "连接成功，且目标库为空库。测试结果 10 分钟内有效。");
-  } catch (error) {
-    testResult.value = null;
-    message.error(apiErrorMessage(error));
-  } finally {
-    saving.value = "";
-  }
-}
-async function startMigration() {
-  if (!testResult.value) return;
-  const target = databaseTargetPayload();
-  if (!target) return;
-  const testToken = testResult.value.test_token;
-  Modal.confirm({
-    title: `开始迁移到 ${database.databaseName}？`,
-    content: "将当前 SQLite 数据复制到目标数据库。完成后需停止服务、修改数据库配置，再重新启动。",
-    okText: "开始迁移",
-    cancelText: "取消",
-    async onOk() {
-      saving.value = "db-start";
-      try {
-        migration.value = (
-          await client.post<MigrationStatus>("/settings/database-migration", {
-            ...target,
-            test_token: testToken,
-          })
-        ).data;
-        testResult.value = null;
-        message.success("数据库迁移已启动");
-      } catch (error) {
-        message.error(apiErrorMessage(error));
-        throw error;
-      } finally {
-        saving.value = "";
-      }
-    },
-  });
-}
-watch(
-  () => database.driver,
-  (driver, previousDriver) => {
-    database.port = databaseDefaultPorts[driver];
-    if (!database.username || database.username === databaseDefaultUsernames[previousDriver]) {
-      database.username = databaseDefaultUsernames[driver];
-    }
-  },
-);
-watch(
-  () => [database.driver, database.host, database.port, database.username, database.password, database.databaseName],
-  () => {
-    testResult.value = null;
-  },
-);
-watch(
-  () => migration.value?.state,
-  (state) => {
-    clearInterval(migrationTimer);
-    if (state === "preparing" || state === "migrating") migrationTimer = window.setInterval(loadMigration, 1500);
-  },
-);
 watch(active, (section) => {
   if (section === "variables") void loadBuiltinVariables();
 });
 onMounted(() => {
   void load();
-  void loadMigration();
   if (active.value === "variables") void loadBuiltinVariables();
 });
-onBeforeUnmount(() => clearInterval(migrationTimer));
 </script>
 
 <template>
   <section>
-    <PageToolbar description="管理当前账户、内置变量、运行目录、日志保留、登录安全和数据库迁移。"
+    <PageToolbar description="管理账户、环境变量、存储目录、日志和登录方式。"
       ><a-button v-if="active === 'general' || active === 'variables' || active === 'logs' || active === 'storage'" :loading="active === 'variables' ? variableLoading : loading" @click="refreshActiveSection"><RefreshCw :size="15" />刷新</a-button></PageToolbar
     >
     <a-segmented :value="active" :options="sections.map((item) => ({ value: item.key, label: item.label }))" class="edo-page-tabs" aria-label="系统设置页面" @change="(value: string) => select(value)" />
@@ -752,81 +566,6 @@ onBeforeUnmount(() => clearInterval(migrationTimer));
         <footer><a-button danger :disabled="!canExecute || !retention.enabled" :loading="saving === 'cleanup'" @click="cleanup">立即清理</a-button><a-button type="primary" :disabled="!canUpdate" :loading="saving === 'retention'" @click="saveRetention">保存设置</a-button></footer>
       </article>
     </template>
-    <article v-if="active === 'database' && isSuperuser" class="setting-card database-migration-card vben-card">
-      <header>
-        <span><Database /></span>
-        <div>
-          <h3>SQLite 迁移到 MySQL / PostgreSQL</h3>
-          <p>将 SQLite 数据复制到空数据库，连接信息不会保存。</p>
-        </div>
-        <a-tag :color="migrationStatePresentation.color">{{ migrationStatePresentation.label }}</a-tag>
-      </header>
-      <div class="migration-overview">
-        <div>
-          <span>当前数据库</span><strong>{{ databaseDriverLabel(migration?.source_driver) }}</strong>
-        </div>
-        <div>
-          <span>目标数据库</span><strong>{{ databaseDriverLabel(migration?.target_driver) }}</strong>
-        </div>
-        <div>
-          <span>迁移进度</span
-          ><strong
-            >{{ migration?.completed_tables || 0 }} <small>/ {{ migration?.total_tables || 0 }} 表</small></strong
-          >
-        </div>
-        <div>
-          <span>已复制数据</span><strong>{{ migration?.copied_rows || 0 }} <small>行</small></strong>
-        </div>
-      </div>
-      <a-alert type="warning" show-icon class="migration-alert" message="迁移完成后必须停止当前服务，切换 EDO_DATABASE_DRIVER / EDO_DATABASE_DSN 并重启；禁止新旧库同时写入。" />
-      <section v-if="migration && migration.state !== 'idle'" class="migration-progress-panel" :class="`is-${migration.state}`">
-        <div class="migration-progress-heading">
-          <div class="migration-progress-title">
-            <i :class="{ pulsing: migrationInProgress }"></i>
-            <span><strong>{{ migrationStageLabel }}</strong><small>{{ migration.message }}</small></span>
-          </div>
-          <b>{{ migrationProgressPercent }}%</b>
-        </div>
-        <a-progress :percent="migrationProgressPercent" :show-info="false" :status="migrationProgressStatus" :stroke-width="8" />
-        <div class="migration-progress-meta">
-          <span>已完成 <b>{{ migration.completed_tables }}</b> / {{ migration.total_tables }} 张表</span>
-          <span>已复制 <b>{{ migration.copied_rows.toLocaleString() }}</b> 行</span>
-          <span v-if="migrationInProgress">状态每 1.5 秒自动更新</span>
-        </div>
-      </section>
-      <section class="database-connection-panel">
-        <div class="database-panel-heading">
-          <div><strong>目标数据库连接</strong><span>数据库不存在时将自动创建，请使用具有创建数据库权限的账户。</span></div>
-          <span
-            >默认端口 <b>{{ databaseDefaultPorts[database.driver] }}</b></span
-          >
-        </div>
-        <div class="database-target-form">
-          <a-form-item class="database-driver-field" label="数据库类型" required
-            ><a-select
-              v-model:value="database.driver"
-              :disabled="migrationInProgress"
-              :options="[
-                { value: 'mysql', label: 'MySQL 8+' },
-                { value: 'postgres', label: 'PostgreSQL 14+' },
-              ]" /></a-form-item
-          ><a-form-item class="database-host-field" label="地址" required><a-input v-model:value="database.host" :disabled="migrationInProgress" autocomplete="off" placeholder="例如：db.example.com" /></a-form-item><a-form-item class="database-port-field" label="端口" required><a-input-number v-model:value="database.port" :disabled="migrationInProgress" :min="1" :max="65535" :precision="0" :controls="false" /></a-form-item><a-form-item class="database-username-field" label="用户名" required><a-input v-model:value="database.username" :disabled="migrationInProgress" autocomplete="off" placeholder="数据库用户名" /></a-form-item><a-form-item class="database-password-field" label="密码" required><a-input-password v-model:value="database.password" :disabled="migrationInProgress" autocomplete="new-password" placeholder="数据库密码" /></a-form-item><a-form-item class="database-name-field" label="目标数据库名" required><a-input v-model:value="database.databaseName" :disabled="migrationInProgress" autocomplete="off" placeholder="默认 edo；不存在时自动创建" /></a-form-item>
-        </div>
-        <div class="database-action-bar">
-          <div class="database-test-state" :class="{ verified: Boolean(testResult) }">
-            <i></i
-            ><span
-              ><strong>{{ testResult ? "连接已验证" : "等待连接测试" }}</strong
-              ><small>{{ testResult ? "测试结果 10 分钟内有效；修改任一连接项后需重新测试。" : "测试连接时会自动创建不存在的目标库；已有目标库必须为空。" }}</small></span
-            >
-          </div>
-          <div class="database-actions"><a-button type="primary" ghost :disabled="migrationInProgress" :loading="saving === 'db-test'" @click="testDatabase">测试连接</a-button><a-button type="primary" :disabled="!testResult || migrationInProgress" :loading="saving === 'db-start' || migrationInProgress" @click="startMigration">{{ migrationInProgress ? "迁移中" : "开始迁移" }}</a-button></div>
-        </div>
-      </section>
-      <p class="migration-message">
-        {{ migration?.message || "尚未执行数据库迁移" }}
-      </p>
-    </article>
     <AssistantSettings v-if="active === 'assistant' && canConfig" />
     <IdentityProvidersView v-if="active === 'identity'" />
   </section>
@@ -1043,260 +782,8 @@ dd {
   margin-top: 10px;
   font-size: 11px;
 }
-.database-migration-card {
-  padding: 24px;
-}
-.migration-overview {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 1px;
-  margin-top: 20px;
-  overflow: hidden;
-  border: 1px solid var(--edo-border);
-  border-radius: 10px;
-  background: var(--edo-border);
-}
-.migration-overview > div {
-  min-height: 72px;
-  padding: 13px 16px;
-  background: var(--edo-surface-soft);
-}
-.migration-overview span,
-.migration-overview strong {
-  display: block;
-}
-.migration-overview span {
-  color: var(--edo-muted);
-  font-size: 11px;
-}
-.migration-overview strong {
-  margin-top: 5px;
-  font-size: 18px;
-  font-weight: 650;
-}
-.migration-overview small {
-  color: var(--edo-muted);
-  font-size: 12px;
-  font-weight: 500;
-}
-.migration-alert {
-  margin: 16px 0;
-}
-.migration-progress-panel {
-  max-width: 1180px;
-  margin: 0 auto 16px;
-  padding: 16px 18px;
-  border: 1px solid color-mix(in srgb, var(--edo-primary) 24%, var(--edo-border));
-  border-radius: 12px;
-  background: color-mix(in srgb, var(--edo-primary) 5%, var(--edo-surface));
-}
-.migration-progress-panel.is-succeeded {
-  border-color: color-mix(in srgb, #28b66e 30%, var(--edo-border));
-  background: color-mix(in srgb, #28b66e 5%, var(--edo-surface));
-}
-.migration-progress-panel.is-failed {
-  border-color: color-mix(in srgb, #ef4444 28%, var(--edo-border));
-  background: color-mix(in srgb, #ef4444 4%, var(--edo-surface));
-}
-.migration-progress-heading,
-.migration-progress-title,
-.migration-progress-meta {
-  display: flex;
-  align-items: center;
-}
-.migration-progress-heading {
-  justify-content: space-between;
-  gap: 16px;
-  margin-bottom: 10px;
-}
-.migration-progress-title {
-  min-width: 0;
-  gap: 10px;
-}
-.migration-progress-title > i {
-  width: 9px;
-  height: 9px;
-  flex: 0 0 9px;
-  border-radius: 50%;
-  background: var(--edo-primary);
-}
-.migration-progress-title > i.pulsing {
-  animation: migration-pulse 1.5s ease-in-out infinite;
-}
-.migration-progress-title span,
-.migration-progress-title strong,
-.migration-progress-title small {
-  display: block;
-}
-.migration-progress-title strong {
-  font-size: 13px;
-}
-.migration-progress-title small {
-  margin-top: 2px;
-  color: var(--edo-muted);
-  font-size: 12px;
-}
-.migration-progress-heading > b {
-  color: var(--edo-primary);
-  font-size: 18px;
-  font-variant-numeric: tabular-nums;
-}
-.migration-progress-meta {
-  flex-wrap: wrap;
-  gap: 8px 20px;
-  margin-top: 7px;
-  color: var(--edo-muted);
-  font-size: 11px;
-}
-.migration-progress-meta b {
-  color: var(--edo-text);
-  font-variant-numeric: tabular-nums;
-}
-@keyframes migration-pulse {
-  0%,
-  100% {
-    box-shadow: 0 0 0 0 color-mix(in srgb, var(--edo-primary) 30%, transparent);
-  }
-  50% {
-    box-shadow: 0 0 0 6px transparent;
-  }
-}
-.database-connection-panel {
-  max-width: 1180px;
-  margin: 0 auto;
-  padding: 18px;
-  border: 1px solid var(--edo-border);
-  border-radius: 12px;
-  background: var(--edo-surface-soft);
-}
-.database-panel-heading {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 16px;
-  margin-bottom: 16px;
-}
-.database-panel-heading strong,
-.database-panel-heading span {
-  display: block;
-}
-.database-panel-heading > div > span {
-  margin-top: 2px;
-  color: var(--edo-muted);
-  font-size: 12px;
-}
-.database-panel-heading > span {
-  padding: 4px 9px;
-  border: 1px solid var(--edo-border);
-  border-radius: 999px;
-  color: var(--edo-muted);
-  background: var(--edo-surface);
-  font-size: 11px;
-}
-.database-panel-heading b {
-  color: var(--edo-text);
-}
-.database-target-form {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 14px;
-}
-.database-host-field,
-.database-password-field {
-  grid-column: span 2;
-}
-.database-target-form :deep(.ant-form-item) {
-  margin-bottom: 0;
-}
-.database-target-form :deep(.ant-form-item-label) {
-  padding-bottom: 5px;
-}
-.database-target-form :deep(.ant-input-number) {
-  width: 100%;
-}
-.database-action-bar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 20px;
-  margin: 18px -18px -18px;
-  padding: 14px 18px;
-  border-top: 1px solid var(--edo-border);
-  border-radius: 0 0 12px 12px;
-  background: var(--edo-surface);
-}
-.database-test-state {
-  display: flex;
-  min-width: 0;
-  align-items: center;
-  gap: 10px;
-}
-.database-test-state > i {
-  width: 8px;
-  height: 8px;
-  flex: 0 0 8px;
-  border-radius: 50%;
-  background: #a8adb7;
-}
-.database-test-state.verified > i {
-  background: #28b66e;
-  box-shadow: 0 0 0 4px color-mix(in srgb, #28b66e 12%, transparent);
-}
-.database-test-state strong,
-.database-test-state small {
-  display: block;
-}
-.database-test-state strong {
-  font-size: 12px;
-}
-.database-test-state small {
-  margin-top: 1px;
-  color: var(--edo-muted);
-  font-size: 11px;
-}
-.database-actions {
-  display: flex;
-  flex: 0 0 auto;
-  gap: 8px;
-}
-.migration-message {
-  margin: 14px auto 0 !important;
-  max-width: 1180px;
-  font-size: 12px;
-}
-@media (max-width: 1050px) {
-  .database-target-form {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-  .database-host-field,
-  .database-password-field {
-    grid-column: auto;
-  }
-  .database-action-bar {
-    align-items: flex-start;
-    flex-direction: column;
-  }
-  .database-actions {
-    width: 100%;
-    justify-content: flex-end;
-  }
-}
 @media (max-width: 850px) {
-  .migration-overview {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-  .database-target-form,
-  .storage-form {
-    grid-template-columns: 1fr;
-  }
-  .database-panel-heading {
-    align-items: flex-start;
-    flex-direction: column;
-  }
-  .database-actions {
-    align-items: stretch;
-    flex-direction: column;
-  }
+  .storage-form,
   .settings-form.two,
   dl {
     grid-template-columns: 1fr;
@@ -1328,22 +815,6 @@ dd {
   .variable-entry-heading > div {
     align-items: flex-start;
     flex-wrap: wrap;
-  }
-  .database-migration-card {
-    padding: 16px;
-  }
-  .migration-overview {
-    grid-template-columns: 1fr;
-  }
-  .database-connection-panel {
-    padding: 14px;
-  }
-  .database-action-bar {
-    margin: 16px -14px -14px;
-    padding: 14px;
-  }
-  .database-test-state {
-    align-items: flex-start;
   }
 }
 </style>

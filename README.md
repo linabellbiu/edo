@@ -104,7 +104,7 @@ mage start
 
 ## 配置与数据
 
-默认使用 SQLite，也可以使用 PostgreSQL 或 MySQL。连接地址、端口和目录在 [.env.example](.env.example) 中都有说明，实际配置保存在 `.env`。
+首次启动前选择数据库，默认 SQLite，也可以选择 PostgreSQL 或 MySQL。连接地址、端口和目录在 [.env.example](.env.example) 中都有说明，实际配置保存在 `.env`。
 
 默认数据保存在 `data/`，包括数据库、Redis、NATS、仓库文件和构建制品；本地运行日志在 `logs/`。Compose 中的 EDO 日志保存在 `data/logs/`。
 

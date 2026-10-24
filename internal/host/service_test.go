@@ -5,17 +5,16 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
-	"io"
-	"log/slog"
 	"slices"
 	"sync"
 	"testing"
 	"time"
 
+	"edo/internal/testutil"
+
 	mobyclient "github.com/moby/moby/client"
 	"gorm.io/gorm"
 
-	"edo/internal/config"
 	"edo/internal/database"
 	"edo/internal/dockerengine"
 	"edo/internal/hostcredential"
@@ -582,7 +581,10 @@ func TestBuiltinLocalHostCapabilitiesCanBeEditedButHostCannotBeDeleted(t *testin
 		SSHPort: 22, IsBuiltin: true, IsActive: true, CreatedBy: "system",
 		CreatedAt: now, UpdatedAt: now,
 	}
-	if err := db.Create(&local).Error; err != nil {
+	if err := db.Where("host_id = ?", local.ID).Delete(&model.HostCapability{}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.First(&local, "uuid = ?", local.ID).Error; err != nil {
 		t.Fatal(err)
 	}
 	ctx := context.Background()
@@ -702,7 +704,7 @@ func TestListStatusesReturnsOnlyCurrentHostState(t *testing.T) {
 	if err != nil {
 		t.Fatalf("读取轻量主机状态失败: %v", err)
 	}
-	if len(statuses) != 2 {
+	if len(statuses) != 3 {
 		t.Fatalf("轻量主机状态数量错误: %+v", statuses)
 	}
 	statusByID := make(map[string]Status, len(statuses))
@@ -721,14 +723,7 @@ func TestListStatusesReturnsOnlyCurrentHostState(t *testing.T) {
 
 func newHostTestService(t *testing.T) (*Service, *gorm.DB, *secret.Manager) {
 	t.Helper()
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	db, err := database.Open(context.Background(), config.Database{
-		Driver:          "sqlite",
-		DSN:             "file:" + t.Name() + "?mode=memory&cache=shared",
-		MaxOpenConns:    1,
-		MaxIdleConns:    1,
-		ConnMaxLifetime: time.Minute,
-	}, logger)
+	db, err := testutil.OpenDatabase(t)
 	if err != nil {
 		t.Fatalf("打开主机测试数据库失败: %v", err)
 	}

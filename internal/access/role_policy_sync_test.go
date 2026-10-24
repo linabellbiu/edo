@@ -3,15 +3,14 @@ package access
 import (
 	"context"
 	"errors"
-	"io"
-	"log/slog"
 	"testing"
 	"time"
+
+	"edo/internal/testutil"
 
 	"gorm.io/gorm"
 
 	"edo/internal/account"
-	"edo/internal/config"
 	"edo/internal/database"
 	"edo/internal/model"
 )
@@ -154,10 +153,7 @@ func TestRolePermissionSyncFailureReportsUnsafeDisable(t *testing.T) {
 func newRolePolicySyncTestService(t *testing.T, databaseName string) (*gorm.DB, *Service) {
 	t.Helper()
 	ctx := context.Background()
-	db, err := database.Open(ctx, config.Database{
-		Driver: "sqlite", DSN: "file:" + databaseName + "?mode=memory&cache=shared",
-		MaxOpenConns: 1, MaxIdleConns: 1, ConnMaxLifetime: time.Minute,
-	}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	db, err := testutil.OpenDatabase(t)
 	if err != nil {
 		t.Fatalf("打开测试数据库失败: %v", err)
 	}

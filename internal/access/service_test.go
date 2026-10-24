@@ -3,11 +3,12 @@ package access
 import (
 	"context"
 	"errors"
-	"io"
 	"log/slog"
 	"slices"
 	"testing"
 	"time"
+
+	"edo/internal/testutil"
 
 	"github.com/alicebob/miniredis/v2"
 	"github.com/google/uuid"
@@ -15,17 +16,13 @@ import (
 	"gorm.io/gorm"
 
 	"edo/internal/account"
-	"edo/internal/config"
 	"edo/internal/database"
 	"edo/internal/model"
 )
 
 func TestRolePermissionAndAtomicUserCreation(t *testing.T) {
 	ctx := context.Background()
-	db, err := database.Open(ctx, config.Database{
-		Driver: "sqlite", DSN: "file:access_test?mode=memory&cache=shared",
-		MaxOpenConns: 1, MaxIdleConns: 1, ConnMaxLifetime: time.Minute,
-	}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	db, err := testutil.OpenDatabase(t)
 	if err != nil {
 		t.Fatalf("打开测试数据库失败: %v", err)
 	}
@@ -99,10 +96,7 @@ func TestRolePermissionAndAtomicUserCreation(t *testing.T) {
 
 func TestSetUserAccessIsAtomicAndDepartmentScoped(t *testing.T) {
 	ctx := context.Background()
-	db, err := database.Open(ctx, config.Database{
-		Driver: "sqlite", DSN: "file:access_atomic_update_test?mode=memory&cache=shared",
-		MaxOpenConns: 1, MaxIdleConns: 1, ConnMaxLifetime: time.Minute,
-	}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	db, err := testutil.OpenDatabase(t)
 	if err != nil {
 		t.Fatalf("打开测试数据库失败: %v", err)
 	}
@@ -223,10 +217,7 @@ func TestSetUserAccessIsAtomicAndDepartmentScoped(t *testing.T) {
 
 func TestDelegatedUserAccessCannotExceedActorPermissions(t *testing.T) {
 	ctx := context.Background()
-	db, err := database.Open(ctx, config.Database{
-		Driver: "sqlite", DSN: "file:access_delegation_test?mode=memory&cache=shared",
-		MaxOpenConns: 1, MaxIdleConns: 1, ConnMaxLifetime: time.Minute,
-	}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	db, err := testutil.OpenDatabase(t)
 	if err != nil {
 		t.Fatalf("打开测试数据库失败: %v", err)
 	}
@@ -320,10 +311,7 @@ func (*countingAccessWatcher) Close() {}
 
 func TestDistributedCasbinPolicySync(t *testing.T) {
 	ctx := context.Background()
-	db, err := database.Open(ctx, config.Database{
-		Driver: "sqlite", DSN: "file:access_distributed_test?mode=memory&cache=shared",
-		MaxOpenConns: 1, MaxIdleConns: 1, ConnMaxLifetime: time.Minute,
-	}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	db, err := testutil.OpenDatabase(t)
 	if err != nil {
 		t.Fatalf("打开测试数据库失败: %v", err)
 	}
@@ -368,10 +356,7 @@ func TestDistributedCasbinPolicySync(t *testing.T) {
 
 func TestDeleteUserCleansIdentityButKeepsSharedRoles(t *testing.T) {
 	ctx := context.Background()
-	db, err := database.Open(ctx, config.Database{
-		Driver: "sqlite", DSN: "file:access_delete_user_test?mode=memory&cache=shared",
-		MaxOpenConns: 1, MaxIdleConns: 1, ConnMaxLifetime: time.Minute,
-	}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	db, err := testutil.OpenDatabase(t)
 	if err != nil {
 		t.Fatalf("打开测试数据库失败: %v", err)
 	}

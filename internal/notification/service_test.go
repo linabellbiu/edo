@@ -4,15 +4,14 @@ import (
 	"context"
 	"encoding/base64"
 	"io"
-	"log/slog"
 	"net/http"
 	"strings"
 	"testing"
-	"time"
+
+	"edo/internal/testutil"
 
 	"gorm.io/gorm"
 
-	"edo/internal/config"
 	"edo/internal/database"
 	"edo/internal/model"
 	"edo/internal/secret"
@@ -126,11 +125,7 @@ func (c *fakeHTTPClient) Do(request *http.Request) (*http.Response, error) {
 
 func newNotificationTestService(t *testing.T, client HTTPDoer, maxAttempts int) (*Service, *gorm.DB) {
 	t.Helper()
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	db, err := database.Open(context.Background(), config.Database{
-		Driver: "sqlite", DSN: "file:" + t.Name() + "?mode=memory&cache=shared",
-		MaxOpenConns: 1, MaxIdleConns: 1, ConnMaxLifetime: time.Minute,
-	}, logger)
+	db, err := testutil.OpenDatabase(t)
 	if err != nil {
 		t.Fatalf("打开通知测试数据库失败: %v", err)
 	}

@@ -8,9 +8,10 @@ import (
 	"testing"
 	"time"
 
+	"edo/internal/testutil"
+
 	"gorm.io/datatypes"
 
-	"edo/internal/config"
 	"edo/internal/configuration"
 	"edo/internal/database"
 	"edo/internal/model"
@@ -20,10 +21,7 @@ import (
 func TestCleanupUsesIndependentRetentionWindows(t *testing.T) {
 	ctx := context.Background()
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	db, err := database.Open(ctx, config.Database{
-		Driver: "sqlite", DSN: "file:log-retention?mode=memory&cache=shared",
-		MaxOpenConns: 1, MaxIdleConns: 1, ConnMaxLifetime: time.Minute,
-	}, logger)
+	db, err := testutil.OpenDatabase(t)
 	if err != nil {
 		t.Fatal(err)
 	}

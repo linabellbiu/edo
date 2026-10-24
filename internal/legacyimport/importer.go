@@ -339,7 +339,7 @@ func (i *Importer) importConfigurations(ctx context.Context, users map[int64]str
 		key := normalizeConfigKey(row.Key, row.ID)
 		var count int64
 		if err := i.destination.WithContext(ctx).Model(&model.Configuration{}).Where(
-			"namespace = ? AND environment = ? AND key = ?", namespace, environment, key,
+			map[string]any{"namespace": namespace, "environment": environment, "key": key},
 		).Count(&count).Error; err != nil {
 			return fmt.Errorf("检查配置迁移状态失败: %w", err)
 		}

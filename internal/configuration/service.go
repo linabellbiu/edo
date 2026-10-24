@@ -14,6 +14,7 @@ import (
 
 	"github.com/google/uuid"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
 	"edo/internal/model"
 	"edo/internal/secret"
@@ -159,7 +160,7 @@ func NewService(db *gorm.DB, secrets *secret.Manager) *Service {
 }
 
 func (s *Service) List(ctx context.Context, namespace string, environment model.EnvironmentType) ([]View, error) {
-	query := s.db.WithContext(ctx).Order("namespace ASC, environment ASC, key ASC")
+	query := s.db.WithContext(ctx).Order("namespace ASC").Order("environment ASC").Order(clause.OrderByColumn{Column: clause.Column{Name: "key"}})
 	if namespace != "" {
 		query = query.Where("namespace = ?", strings.TrimSpace(namespace))
 	}
@@ -338,7 +339,7 @@ func (s *Service) Resolve(ctx context.Context, namespace string, environment mod
 	if err := s.db.WithContext(ctx).Where(
 		"namespace = ? AND environment IN ? AND is_active = ?", namespace,
 		[]model.EnvironmentType{model.EnvironmentGlobal, environment}, true,
-	).Order("key ASC").Find(&items).Error; err != nil {
+	).Order(clause.OrderByColumn{Column: clause.Column{Name: "key"}}).Find(&items).Error; err != nil {
 		return nil, fmt.Errorf("解析配置失败: %w", err)
 	}
 	result := make(map[string]string, len(items))
@@ -416,8 +417,7 @@ func (s *Service) GetLogRetentionSettings(ctx context.Context) (LogRetentionSett
 	defaults := LogRetentionSettings{PipelineLogDays: defaultPipelineLogDays, AuditLogDays: defaultAuditLogDays}
 	var item model.Configuration
 	err := s.db.WithContext(ctx).Where(
-		"namespace = ? AND environment = ? AND key = ?",
-		systemNamespace, model.EnvironmentGlobal, logRetentionSettingKey,
+		map[string]any{"namespace": systemNamespace, "environment": model.EnvironmentGlobal, "key": logRetentionSettingKey},
 	).First(&item).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return defaults, nil
@@ -469,8 +469,7 @@ func (s *Service) GetRuntimeLoggingSettings(
 	}
 	var item model.Configuration
 	err := s.db.WithContext(ctx).Where(
-		"namespace = ? AND environment = ? AND key = ?",
-		systemNamespace, model.EnvironmentGlobal, runtimeLoggingSettingKey,
+		map[string]any{"namespace": systemNamespace, "environment": model.EnvironmentGlobal, "key": runtimeLoggingSettingKey},
 	).First(&item).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return defaults, nil
@@ -531,8 +530,7 @@ func (s *Service) UpdateRuntimeLoggingSettings(
 	err = s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var current model.Configuration
 		err := tx.Where(
-			"namespace = ? AND environment = ? AND key = ?",
-			systemNamespace, model.EnvironmentGlobal, runtimeLoggingSettingKey,
+			map[string]any{"namespace": systemNamespace, "environment": model.EnvironmentGlobal, "key": runtimeLoggingSettingKey},
 		).First(&current).Error
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			if expectedVersion != 0 {
@@ -608,8 +606,7 @@ func (s *Service) GetRuntimeDirectorySettings(
 	}
 	var item model.Configuration
 	err := s.db.WithContext(ctx).Where(
-		"namespace = ? AND environment = ? AND key = ?",
-		systemNamespace, model.EnvironmentGlobal, runtimeDirectorySettingKey,
+		map[string]any{"namespace": systemNamespace, "environment": model.EnvironmentGlobal, "key": runtimeDirectorySettingKey},
 	).First(&item).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return defaults, nil
@@ -707,8 +704,7 @@ func (s *Service) updateSystemJSONSettings(
 	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var current model.Configuration
 		err := tx.Where(
-			"namespace = ? AND environment = ? AND key = ?",
-			systemNamespace, model.EnvironmentGlobal, key,
+			map[string]any{"namespace": systemNamespace, "environment": model.EnvironmentGlobal, "key": key},
 		).First(&current).Error
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			if expectedVersion != 0 {
@@ -811,8 +807,7 @@ func (s *Service) UpdateLogRetentionSettings(
 	err = s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var current model.Configuration
 		err := tx.Where(
-			"namespace = ? AND environment = ? AND key = ?",
-			systemNamespace, model.EnvironmentGlobal, logRetentionSettingKey,
+			map[string]any{"namespace": systemNamespace, "environment": model.EnvironmentGlobal, "key": logRetentionSettingKey},
 		).First(&current).Error
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			if expectedVersion != 0 {
@@ -883,8 +878,7 @@ func validLogRetention(value logRetentionValue) bool {
 func (s *Service) getSystemBooleanSettings(ctx context.Context, key, label string) (systemBooleanSettings, error) {
 	var item model.Configuration
 	err := s.db.WithContext(ctx).Where(
-		"namespace = ? AND environment = ? AND key = ?",
-		systemNamespace, model.EnvironmentGlobal, key,
+		map[string]any{"namespace": systemNamespace, "environment": model.EnvironmentGlobal, "key": key},
 	).First(&item).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return systemBooleanSettings{}, nil
@@ -919,8 +913,7 @@ func (s *Service) updateSystemBooleanSettings(
 	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var current model.Configuration
 		err := tx.Where(
-			"namespace = ? AND environment = ? AND key = ?",
-			systemNamespace, model.EnvironmentGlobal, key,
+			map[string]any{"namespace": systemNamespace, "environment": model.EnvironmentGlobal, "key": key},
 		).First(&current).Error
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			if expectedVersion != 0 {

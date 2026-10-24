@@ -263,7 +263,7 @@ func (s *Service) FreezeVariables(ctx context.Context, projectID, applicationID,
 		return nil, s.failure(ctx, "delivery_variable_freeze_scope", ErrScope, ErrScope)
 	}
 	var items []model.DeliveryVariable
-	err := s.db.WithContext(ctx).Where("project_id = ? AND usage = ? AND is_active = ?", projectID, usage, true).
+	err := s.db.WithContext(ctx).Where(map[string]any{"project_id": projectID, "usage": usage, "is_active": true}).
 		Where("application_id IN ? AND environment_id IN ?", []string{"", applicationID}, []string{"", environmentID}).Order("id ASC").Find(&items).Error
 	if err != nil {
 		return nil, s.failure(ctx, "delivery_variable_freeze", err, ErrStorage)

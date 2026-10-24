@@ -30,7 +30,7 @@ jobs:
           fi
 
   business:
-    name: 业务测试（${{ matrix.suite }}）
+    name: 业务测试（${{ matrix.driver }} / ${{ matrix.suite }}）
     runs-on: ubuntu-latest
     timeout-minutes: 35
     strategy:
@@ -38,16 +38,33 @@ jobs:
       fail-fast: false
       matrix:
         suite: [core, pipeline, httpapi, kube, repository]
+        driver: [sqlite, mysql]
+    # MySQL 业务用例各自创建并删除独立数据库，仅此临时实例授予建库权限。
+    services:
+      mysql:
+        image: ${{ matrix.driver == 'mysql' && 'mysql:8.4' || '' }}
+        env:
+          MYSQL_ROOT_PASSWORD: edo_test
+          TZ: Asia/Shanghai
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd "mysqladmin ping -h 127.0.0.1 -pedo_test"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 30
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
           cache: true
-      - name: 业务单元与 SQLite 集成测试
+      - name: 业务单元与真实数据库集成测试
         shell: bash
         env:
           SUITE: ${{ matrix.suite }}
+          EDO_TEST_BUSINESS_DRIVER: ${{ matrix.driver }}
+          EDO_TEST_MYSQL_ADMIN_DSN: ${{ matrix.driver == 'mysql' && 'root:edo_test@tcp(127.0.0.1:3306)/?charset=utf8mb4' || '' }}
         run: |
           if [[ "$SUITE" == core ]]; then
             packages=$(go list ./... | grep -Ev '^edo/internal/(database|pipeline|httpapi|kube|repository)$')
@@ -55,7 +72,7 @@ jobs:
             packages="./internal/$SUITE"
           fi
           # Go 的单包超时与 Actions 的任务超时独立，显式设置并保留总时限。
-          go test -race -count=1 -timeout=20m $packages
+          go test -race -p 2 -count=1 -timeout=20m $packages
 
   database:
     name: 真实数据库（${{ matrix.driver }}）
@@ -65,7 +82,7 @@ jobs:
       fail-fast: false
       matrix:
         driver: [sqlite, postgres, mysql]
-    # 数据库只在兼容性任务中启动，空镜像表示当前分片不需要该服务。
+    # 空镜像表示当前迁移分片不需要该服务。
     # 使用 Runner 临时存储和专用测试凭据，绝不连接开发或生产数据库。
     services:
       postgres:
@@ -118,7 +135,7 @@ jobs:
             go test -race -count=1 -timeout=20m ./internal/pipeline -run '^TestLatestReleasePlanExecutionsExternalDatabases$'
           fi
 
-      - name: 自增行号新库、升级与跨库复制验证
+      - name: 自增行号新库与升级验证
         if: ${{ matrix.driver != 'sqlite' }}
         shell: bash
         env:
@@ -127,9 +144,9 @@ jobs:
           MYSQL_SERVICE_ID: ${{ job.services.mysql.id }}
         run: |
           set -euo pipefail
-          # 三种模式都要求空库；每个模式创建独立数据库，不能复用迁移步骤已有的 edo 库。
+          # 两种模式都要求空库；每个模式创建独立数据库，不能复用迁移步骤已有的 edo 库。
           # 只使用本任务的临时数据库容器与一次性测试凭据，不接触外部环境。
-          for spec in fresh:TestRowIdentitiesFresh upgrade:TestRowIdentitiesUpgrade transfer:TestRowIdentityTransfer; do
+          for spec in fresh:TestRowIdentitiesFresh upgrade:TestRowIdentitiesUpgrade; do
             mode="${spec%%:*}"
             test_name="${spec#*:}"
             database_name="edo_identity_${mode}"

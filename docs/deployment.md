@@ -18,7 +18,7 @@ docker compose --env-file .env up -d --build
 
 这一行为用于提供可直接登录的统一初始化环境。升级已有数据库时不会修改现有账户、密码或会话；旧数据导入仍可在首次启动服务前写入空账户库，全新部署无需额外账户迁移步骤。公开或生产部署应通过网络访问控制限制登录入口，并按实际安全要求主动重置默认密码。
 
-Compose 默认使用持久化 SQLite，适合单机。需要横向扩容 EDO 实例时，将 `.env` 中的 `EDO_COMPOSE_DATABASE_DRIVER` 和 `EDO_COMPOSE_DATABASE_DSN` 改为 PostgreSQL 或 MySQL，并把 `EDO_COMPOSE_REDIS_URL`、`EDO_COMPOSE_NATS_URL` 指向高可用 Redis 与 NATS JetStream。连接 URL 可以携带认证信息，但 `.env` 不得提交且应限制为仅部署账户可读。每个实例都是包含 API 和后台任务 Goroutine 的完整单进程服务。
+Compose 默认使用持久化 SQLite，适合单机。需要运行多个 EDO 实例时，在首次初始化前将 `.env` 中的 `EDO_COMPOSE_DATABASE_DRIVER` 和 `EDO_COMPOSE_DATABASE_DSN` 改为 PostgreSQL 或 MySQL，并把 `EDO_COMPOSE_REDIS_URL`、`EDO_COMPOSE_NATS_URL` 指向高可用 Redis 与 NATS JetStream。连接 URL 可以携带认证信息，但 `.env` 不得提交且应限制为仅部署账户可读。每个实例都是包含 API 和后台任务 Goroutine 的完整单进程服务。
 
 ## Kubernetes
 
