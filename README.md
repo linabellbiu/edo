@@ -4,17 +4,6 @@ EDO（EasyDevOps）是给中小团队用的自动发布工具。接入代码仓�
 
 发布按「应用 → 流水线 → 部署方案 → 运行资源」组织。Docker、Docker Compose 和 Kubernetes 都用同一套流程，也可以手动发起发布。
 
-## 有什么用
-
-- **少做重复操作**：拉代码、测试、打包、部署交给流水线，不用每次手动执行。
-- **发布过程看得见**：实时查看日志，保留每次发布的版本和结果，出问题时方便排查。
-- **部署方式灵活**：可以发布到本地或远程 Docker，也可以接入 Kubernetes，查看容器、Pod 和工作负载。
-- **方便多人协作**：按部门和项目分配权限，需要时加上发布审批。
-- **登录方式可选**：支持账号、飞书、钉钉和邮箱验证码登录，由管理员按需开启。
-- **数据自己保管**：部署在自己的环境中，凭据加密保存，配置、制品和发布记录由自己管理，没有试用期限。
-
-支持 GitHub、GitLab、Gitea、Gitee 和普通 Git 仓库，可按 Push、Pull Request、Tag 触发流水线。
-
 ## Docker Compose 部署
 
 准备 Linux 或 macOS，安装 Git、Docker、Docker Compose v2 和 Buildx。Compose 会在镜像中完成编译，并启动 EDO、Redis 和 NATS。
@@ -138,13 +127,6 @@ mage start
 **监控：查看资源用量、任务和消息队列。**
 
 ![系统监控](docs/images/monitoring.jpg)
-
-## 更多文档
-
-- [部署说明](docs/deployment.md)
-- [Kubernetes 管理](docs/kubernetes.md)
-- [组织与项目权限](docs/access-control.md)
-- [数据库迁移](docs/database-migration.md)
 
 ## 许可
 
