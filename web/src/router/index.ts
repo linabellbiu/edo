@@ -14,6 +14,7 @@ const routes: RouteRecordRaw[] = [
       { path: 'applications', name: 'applications', component: () => import('@/views/DevOpsView.vue'), props: { section: 'applications' }, meta: { title: 'nav.applications', permissions: ['application.read'] } },
       { path: 'repositories', name: 'repositories', component: () => import('@/views/DevOpsView.vue'), props: { section: 'repositories' }, meta: { title: 'nav.repositories', permissions: ['repository.read'] } },
       { path: 'credentials', name: 'credentials', component: () => import('@/views/CredentialView.vue'), meta: { title: 'nav.credentials', permissions: ['credential.read'] } },
+      { path: 'sql-changes', name: 'sql-changes', component: () => import('@/views/SQLChangesView.vue'), meta: { title: 'nav.sqlAudit', permissions: ['sql_change.read'] } },
       {path:'application-databases',name:'application-databases',component:()=>import('@/views/DeliveryControlsView.vue'),meta:{title:'nav.applicationDatabases',permissions:['application_database.read']}},
       {path:'environment-policies',name:'environment-policies',component:()=>import('@/views/DeliveryControlsView.vue'),meta:{title:'nav.environmentPolicies',permissions:['environment_policy.read']}},
       { path: 'delivery-variables', name: 'delivery-variables', component: () => import('@/views/DeliveryVariablesView.vue'), meta: { title: 'nav.deliveryVariables', permissions: ['delivery_variable.read'] } },

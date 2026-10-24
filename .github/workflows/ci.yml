@@ -130,7 +130,7 @@ jobs:
           if [[ "$EDO_TEST_DATABASE_DRIVER" == sqlite ]]; then
             go test -race -count=1 -timeout=20m ./internal/database
           else
-            go test -race -count=1 -timeout=20m ./internal/database -run '^TestExternal(Database|Assistant)Migration$'
+            go test -race -count=1 -timeout=20m ./internal/database -run '^TestExternal(Database|Assistant)Migration$|^TestSQLChangeExternalMigration$'
             # 先完成迁移，再验证真实方言下的窗口查询及项目范围，不能与建表并行。
             go test -race -count=1 -timeout=20m ./internal/pipeline -run '^TestLatestReleasePlanExecutionsExternalDatabases$'
           fi
@@ -182,6 +182,12 @@ jobs:
             docker exec -e MYSQL_PWD=edo_test "$MYSQL_SERVICE_ID" mysql -uroot -e 'CREATE DATABASE edo_application_migration CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci'
           fi
           go test -race -count=1 -timeout=10m ./internal/cicd -run '^TestApplicationDatabaseMigrationExternal$'
+          EDO_SQL_CHANGE_TEST_DRIVER="$EDO_APP_DB_TEST_DRIVER" \
+          EDO_SQL_CHANGE_TEST_PORT="$EDO_APP_DB_TEST_PORT" \
+          EDO_SQL_CHANGE_TEST_DATABASE="$EDO_APP_DB_TEST_DATABASE" \
+          EDO_SQL_CHANGE_TEST_USER="$EDO_APP_DB_TEST_USER" \
+          EDO_SQL_CHANGE_TEST_PASSWORD="$EDO_APP_DB_TEST_PASSWORD" \
+            go test -race -count=1 -timeout=10m ./internal/sqlchange -run '^TestSQLChangeTargetRuntimeExternal$'
 
   go-checks:
     name: Go 静态检查与构建
@@ -238,6 +244,11 @@ jobs:
           EDO_TEST_DELIVERY_TOOLS: "1"
         # 工具镜像和漏洞库按需下载，失败必须保留真实报告或明确失败。
         run: go test -race -count=1 -timeout=16m ./internal/dockerengine -run '^TestDeliveryCheckToolsIntegration$'
+      - name: 手动 SQL 工单隔离审计
+        env:
+          EDO_SQL_CHECK_TEST: "1"
+        # 无数据库凭据和网络的临时检查容器，失败不得视为检查通过。
+        run: go test -race -count=1 -timeout=5m ./internal/sqlchange -run '^TestSQLFluffRuntimeExternal$'
       - name: 准备流水线停止测试镜像
         timeout-minutes: 5
         # 停止测试只使用已存在的镜像，避免把镜像下载时间混入停止耗时。

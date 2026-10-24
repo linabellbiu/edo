@@ -36,6 +36,7 @@ import (
 	"edo/internal/realtime"
 	"edo/internal/repository"
 	"edo/internal/scheduler"
+	"edo/internal/sqlchange"
 	"edo/internal/systemmetrics"
 	"edo/internal/task"
 	"edo/internal/terminal"
@@ -61,6 +62,7 @@ type Dependencies struct {
 	Identities     *identity.Service
 	Repositories   *repository.Service
 	Pipelines      *pipeline.Service
+	SQLChanges     *sqlchange.Service
 	Realtime       *realtime.Bus
 	Artifacts      *artifactmanager.Service
 	Docker         *dockerengine.Service
@@ -117,6 +119,7 @@ func NewRouter(deps Dependencies) *gin.Engine {
 	protected := api.Group("")
 	protected.Use(requireAuth(deps.Accounts, deps.Sessions, deps.Logger, deps.AuthConfig.CookieName))
 	protected.Use(projectScope(deps.Access, deps.Logger))
+	registerSQLChangeRoutes(protected, deps)
 	projectAPI := projectHandler{service: deps.Access, logger: deps.Logger}
 	protected.GET("/projects", projectAPI.list)
 	protected.POST("/projects", auditAction(deps.Audits, deps.Logger, "project.create", "project"), requirePermission(deps.Access, deps.Logger, "project.create"), projectAPI.create)

@@ -4,12 +4,12 @@ import { Modal, message } from 'ant-design-vue'
 import client from '@/api/client'
 import { apiErrorMessage } from '@/api/resources'
 import { useAuthStore } from '@/stores/auth'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import PageToolbar from '@/components/PageToolbar.vue'
 interface Choice{id:string;name:string}
 interface Database extends Choice {version:number;application_id:string;environment_id:string;driver:string;host:string;port:number;database:string;username:string;tls_mode:string;is_active:boolean}
 interface Policy {id:string;environment_id:string;version:number;allowed_refs:string[];require_approval:boolean;reviewer_ids:string[];minimum_approvals:number;window_start:string;window_end:string;is_active:boolean}
-const auth=useAuthStore(),route=useRoute(),policyMode=computed(()=>route.name==='environment-policies')
+const auth=useAuthStore(),route=useRoute(),router=useRouter(),policyMode=computed(()=>route.name==='environment-policies')
 const loading=ref(false),saving=ref(false),open=ref(false),tested=ref(false),error=ref(''),editingID=ref(''),version=ref(0)
 const databases=ref<Database[]>([]),policies=ref<Policy[]>([]),apps=ref<Choice[]>([]),environments=ref<Choice[]>([]),reviewers=ref<Choice[]>([]),history=ref<Array<Record<string,unknown>>>([]),historyOpen=ref(false)
 const dbForm=reactive({name:'',application_id:'',environment_id:'',driver:'postgres',host:'',port:5432,database:'',username:'',password:'',tls_mode:'verify-full',is_active:true})
@@ -18,10 +18,11 @@ const permission=computed(()=>policyMode.value?'environment_policy':'application
 let revision=0,disposed=false
 async function load(){const request=++revision;loading.value=true;error.value='';try{
  const [rows,a,e,r]=await Promise.all([client.get(policyMode.value?'/environment-policies':'/application-databases'),auth.canAny(['application.read'])?client.get('/applications'):Promise.resolve({data:{applications:[]}}),auth.canAny(['deployment.read'])?client.get('/environments'):Promise.resolve({data:{environments:[]}}),policyMode.value?client.get('/environment-policies/reviewers'):Promise.resolve({data:{reviewers:[]}})])
- if(disposed||request!==revision)return;if(policyMode.value)policies.value=rows.data.policies;else databases.value=rows.data.databases;apps.value=a.data.applications;environments.value=e.data.environments;reviewers.value=r.data.reviewers
+ if(disposed||request!==revision)return;if(policyMode.value)policies.value=rows.data.policies;else databases.value=rows.data.databases;apps.value=a.data.applications;environments.value=e.data.environments;reviewers.value=r.data.reviewers;consumeDatabaseCreateRequest()
 }catch(cause){if(!disposed&&request===revision)error.value=apiErrorMessage(cause)}finally{if(!disposed&&request===revision)loading.value=false}}
 function label(id:unknown,items:Choice[]){return items.find(v=>v.id===id)?.name||String(id||'—')}
 function editDatabase(row?:Database){editingID.value=row?.id||'';version.value=row?.version||0;Object.assign(dbForm,{name:row?.name||'',application_id:row?.application_id||'',environment_id:row?.environment_id||'',driver:row?.driver||'postgres',host:row?.host||'',port:row?.port||5432,database:row?.database||'',username:row?.username||'',password:'',tls_mode:row?.tls_mode||'verify-full',is_active:row?.is_active??true});tested.value=false;open.value=true}
+function consumeDatabaseCreateRequest(){if(policyMode.value||route.query.create!=='1'||!auth.canAny(['application_database.create'])||saving.value||open.value)return;editDatabase();const query={...route.query};delete query.create;void router.replace({query})}
 function editPolicy(row?:Policy){editingID.value=row?.id||'';version.value=row?.version||0;Object.assign(policyForm,{environment_id:row?.environment_id||'',allowed_refs:(row?.allowed_refs||[]).join('\n'),require_approval:row?.require_approval||false,reviewer_ids:row?.reviewer_ids||[],minimum_approvals:row?.minimum_approvals||1,window_start:row?.window_start||'',window_end:row?.window_end||'',is_active:row?.is_active||false});open.value=true}
 function payload(){return {...dbForm,password:dbForm.password||undefined,expected_version:version.value}}
 async function testDatabase(){const signature=JSON.stringify(payload()),project=auth.user?.project_id;saving.value=true;try{const url=editingID.value?`/application-databases/${encodeURIComponent(editingID.value)}/test`:'/application-databases/test';await client.post(url,payload());if(project!==auth.user?.project_id)return;if(signature!==JSON.stringify(payload())){message.warning('配置已变化，请重新测试连接');return};tested.value=true;message.success('连接正常')}catch(cause){message.error(apiErrorMessage(cause))}finally{saving.value=false}}
@@ -34,6 +35,7 @@ function remove(row:Database){Modal.confirm({title:`删除数据库配置“${ro
 async function showHistory(row:Database){try{const result=await client.get(`/application-databases/${encodeURIComponent(row.id)}/migrations`);history.value=result.data.migrations;historyOpen.value=true}catch(cause){message.error(apiErrorMessage(cause))}}
 watch(()=>[auth.user?.project_id,route.name],()=>{revision++;open.value=false;historyOpen.value=false;dbForm.password='';databases.value=[];policies.value=[];void load()},{immediate:true})
 watch(dbForm,()=>{tested.value=false},{deep:true})
+watch(()=>route.query.create,()=>{if(!loading.value)consumeDatabaseCreateRequest()})
 
 onBeforeUnmount(()=>{disposed=true;revision++;dbForm.password=''})
 </script>

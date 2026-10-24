@@ -1699,7 +1699,7 @@ function selectBuildPlan(id:string){
  buildPlanView.value='overview'
 }
 function consumeBuildCreateRequest(){
- if(!['build-plans','image-registries'].includes(props.section)||route.query.create!=='1'||!canCreate.value)return
+ if(!['applications','build-plans','image-registries'].includes(props.section)||route.query.create!=='1'||!canCreate.value)return
  create()
  const query={...route.query}
  delete query.create

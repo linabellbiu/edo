@@ -65,6 +65,7 @@ func TestPermissionCatalogContainsOnlyImplementedCapabilities(t *testing.T) {
 		"release_plan.read", "release_plan.create", "release_plan.update", "release_plan.delete", "release_plan.execute",
 		"pipeline_run.read", "pipeline_run.execute", "artifact.read", "artifact.create")
 	want = append(want,
+		"sql_change.read", "sql_change.create", "sql_change.update", "sql_change.delete", "sql_change.check", "sql_change.review", "sql_change.execute", "sql_change.skip",
 		"delivery_variable.read", "delivery_variable.create", "delivery_variable.update", "delivery_variable.delete", "delivery_variable.execute",
 		"application_database.read", "application_database.create", "application_database.update", "application_database.delete", "application_database.execute",
 		"environment_policy.read", "environment_policy.update")

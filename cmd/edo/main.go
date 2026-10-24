@@ -57,6 +57,7 @@ import (
 	"edo/internal/scheduler"
 	"edo/internal/secret"
 	"edo/internal/sshdeploy"
+	"edo/internal/sqlchange"
 	"edo/internal/systemmetrics"
 	"edo/internal/task"
 	"edo/internal/terminal"
@@ -574,9 +575,12 @@ func runServer(ctx context.Context, cfg config.Config, logger *slog.Logger, runt
 	monitorService := monitor.NewService(resources.Database, secretManager, notificationService, nil, cfg.NATS.MaxAttempts, logger)
 	schedulerService := scheduler.NewService(resources.Database, notificationService, cfg.NATS.MaxAttempts, logger)
 	taskService := task.NewService(resources.Database, cfg.NATS.MaxAttempts)
+	sqlChanges := sqlchange.New(resources.Database, secretManager, accessService, logger)
+	sqlChanges.ConfigureRunner(sqlchange.NewRuntime(cfg.Runtime, logger))
+	sqlChanges.ConfigureLocks(redislock.New(resources.Redis.Client()), resources.Redis.Key("lock", "database-migration"))
 	taskWorker, err := newBackgroundTaskWorker(
 		resources, cfg, logger, repositoryService, pipelineService, deploymentService,
-		notificationService, monitorService, schedulerService,
+		notificationService, monitorService, schedulerService, sqlChanges,
 	)
 	if err != nil {
 		logger.Error("初始化后台任务服务失败", "operation", "server_background_bootstrap", "err", err)
@@ -612,6 +616,7 @@ func runServer(ctx context.Context, cfg config.Config, logger *slog.Logger, runt
 		Identities:     identityService,
 		Repositories:   repositoryService,
 		Pipelines:      pipelineService,
+		SQLChanges:     sqlChanges,
 		Realtime:       realtimeBus,
 		Artifacts:      artifactService,
 		Docker:         dockerService,
@@ -809,8 +814,13 @@ func newBackgroundTaskWorker(
 	notificationService *notification.Service,
 	monitorService *monitor.Service,
 	schedulerService *scheduler.Service,
+	sqlChanges *sqlchange.Service,
 ) (*worker.Worker, error) {
 	registry := worker.NewRegistry()
+	if err := sqlChanges.Register(registry); err != nil {
+		logger.Error("注册 SQL 工单任务失败", "operation", "sql_change_worker_register", "err", err)
+		return nil, errors.New("SQL 工单后台任务初始化失败")
+	}
 	if err := registry.Register("system.noop", func(context.Context, task.Message) error { return nil }); err != nil {
 		logger.Error("注册内置任务处理器失败", "operation", "worker_register", "kind", "system.noop", "err", err)
 		return nil, errors.New("后台任务初始化失败")

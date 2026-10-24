@@ -386,6 +386,9 @@ var migrations = []migration{
 		migrationDB.Config = &migrationConfig
 		return migrationDB.AutoMigrate(&model.PipelineRun{})
 	}},
+	{version: "202610240073", up: func(tx *gorm.DB) error {
+		return tx.AutoMigrate(&model.SQLChange{}, &model.SQLChangeRevision{}, &model.SQLChangeReview{}, &model.SQLChangeExecution{})
+	}},
 }
 
 // migrateRepeatableReleasePlanExecutions 取消“一个发布计划只能执行一次”的旧约束，
