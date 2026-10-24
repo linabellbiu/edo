@@ -112,6 +112,24 @@ mage start
 
 备份时一起保存 `data/` 和 `.env`。`EDO_SECRETS_KEY` 用于解密凭据，请固定保存；更换后将无法读取此前保存的凭据。`.env` 含敏感信息，请勿提交到仓库。
 
+## 界面预览
+
+**应用：查看代码更新、最近运行和部署实例。**
+
+![应用与部署状态](docs/images/applications.jpg)
+
+**流水线：把构建和部署步骤连起来。**
+
+![流水线编排](docs/images/pipeline.jpg)
+
+**Kubernetes：按集群和命名空间查看工作负载。**
+
+![Kubernetes 工作负载](docs/images/kubernetes.jpg)
+
+**监控：查看资源用量、任务和消息队列。**
+
+![系统监控](docs/images/monitoring.jpg)
+
 ## 更多文档
 
 - [部署说明](docs/deployment.md)
