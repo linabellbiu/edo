@@ -57,10 +57,8 @@ export const navigation: NavSection[] = [
   {
     label: 'nav.platform',
     branches: [
-      { key: 'basic-settings', label: 'nav.basicSettings', icon: Settings, items: [
-        { label: 'nav.sqlAudit', path: '/sql-changes', permissions: ['sql_change.read'], icon: Database },
-      ] },
       { key: 'infrastructure', label: 'nav.infrastructure', icon: Container, items: [
+        { label: 'nav.sqlAudit', path: '/sql-changes', permissions: ['sql_change.read'], icon: Database },
         { label: 'nav.domains', path: '/domains', permissions: ['dns.read'], icon: Tags },
         { label: 'nav.environments', path: '/environments', permissions: ['deployment.read'], icon: ServerCog },
         { label: 'nav.hosts', path: '/hosts', permissions: ['cluster.read', 'deployment.read'], icon: Server },
