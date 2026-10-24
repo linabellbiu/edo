@@ -17,7 +17,7 @@ import (
 func newID() string { return uuid.NewString() }
 
 func defaultSettings() model.AssistantSettings {
-	return model.AssistantSettings{ID: settingsID, BaseURL: "https://api.openai.com/v1", MaxSteps: 12, TimeoutSeconds: 90}
+	return model.AssistantSettings{ID: settingsID, Enabled: false, BaseURL: "https://api.openai.com/v1", MaxSteps: 12, TimeoutSeconds: 90}
 }
 
 func (s *Service) settings(ctx context.Context) (model.AssistantSettings, error) {

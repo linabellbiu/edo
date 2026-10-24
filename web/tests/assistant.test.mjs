@@ -65,7 +65,9 @@ test('能力清单与预览在切换项目时关闭，迟到响应不泄露旧�
 })
 
 function harness(t, component, api = {}, permissions = ['assistant.read', 'assistant.execute', 'config.read', 'config.update']) {
-  const hooks = [], mounted = [], calls = [], scope = vue.effectScope()
+  const hooks = [], mounted = [], calls = [], events = [], scope = vue.effectScope()
+  const windowEvents = new EventTarget(), documentEvents = new EventTarget()
+  const route = vue.reactive({ path: '/applications', query: {}, hash: '' })
   let project = 'project-1'
   const auth = vue.reactive({ user: { id: 'user-1', project_id: project }, canAny: needed => !needed.length || needed.some(value => permissions.includes(value)) })
   const defaults = {
@@ -87,15 +89,91 @@ function harness(t, component, api = {}, permissions = ['assistant.read', 'assis
     '@/stores/auth': { useAuthStore: () => auth },
     '@/api/resources': { apiErrorMessage: cause => cause.message || '请求失败' },
     '@/api/assistant': apiModule,
+    'vue-router': { useRoute: () => route, useRouter: () => ({ replace: async value => { route.query = value.query } }) },
   }
-  const globals = { localStorage: { getItem: () => project }, window: { clearInterval() {}, removeEventListener() {} } }
+  const browserWindow = {
+    clearInterval() {}, setInterval() { return 1 },
+    addEventListener: (...args) => windowEvents.addEventListener(...args),
+    removeEventListener: (...args) => windowEvents.removeEventListener(...args),
+    dispatchEvent: event => { events.push(event.type); return windowEvents.dispatchEvent(event) },
+  }
+  const globals = { localStorage: { getItem: () => project }, window: browserWindow, document: {
+    visibilityState: 'visible', addEventListener: (...args) => documentEvents.addEventListener(...args), removeEventListener: (...args) => documentEvents.removeEventListener(...args),
+  } }
   const exported = load(`../src/components/${component}.vue`, modules, globals)
   const state = scope.run(() => exported.default.setup(vue.reactive({ compact: false }), { expose() {} }))
   let unmounted = false
   const unmount = () => { if (unmounted) return; unmounted = true; for (const hook of hooks) hook(); scope.stop() }
   t.after(unmount)
-  return { state, calls, auth, api: apiModule, mount: async () => { for (const hook of mounted) await hook(); await flush() }, unmount, changeProject: value => { project = value; auth.user.project_id = value } }
+  return { state, calls, events, auth, route, api: apiModule, settingsChanged: () => browserWindow.dispatchEvent(new Event('edo:assistant-settings-changed')), mount: async () => { for (const hook of mounted) await hook(); await flush() }, unmount, changeProject: value => { project = value; auth.user.project_id = value } }
 }
+
+test('助手只在启用且有权限时显示，首次点击才挂载对话，最小化保留实例', async t => {
+  const h = harness(t, 'FloatingAssistant')
+  await h.mount()
+  assert.equal(h.state.visible.value, true)
+  assert.equal(h.state.initialized.value, false)
+  await h.state.show()
+  assert.equal(h.state.open.value, true)
+  await h.state.minimize()
+  assert.equal(h.state.open.value, false)
+  assert.equal(h.state.initialized.value, true)
+  await h.state.show()
+  h.route.path = '/hosts'
+  await flush()
+  assert.equal(h.state.open.value, true)
+  h.auth.canAny = () => false
+  await flush()
+  assert.equal(h.state.visible.value, false)
+  assert.equal(h.state.initialized.value, false)
+})
+
+test('关闭助手隐藏悬浮入口并卸载对话，重新启用不自动展开', async t => {
+  let enabled = true
+  const h = harness(t, 'FloatingAssistant', { getAssistantStatus: async () => ({ enabled, configured: true }) })
+  await h.mount(); await h.state.show()
+  enabled = false; h.settingsChanged(); await flush()
+  assert.equal(h.state.visible.value, false)
+  assert.equal(h.state.open.value, false)
+  assert.equal(h.state.initialized.value, false)
+  enabled = true; h.settingsChanged(); await flush()
+  assert.equal(h.state.visible.value, true)
+  assert.equal(h.state.open.value, false)
+})
+
+test('无助手权限不查询状态，切换项目不接受迟到的启用响应', async t => {
+  let calls = 0, finish
+  const denied = harness(t, 'FloatingAssistant', { getAssistantStatus: async () => { calls++; return { enabled: true, configured: true } } }, [])
+  await denied.mount()
+  assert.equal(calls, 0)
+  assert.equal(denied.state.visible.value, false)
+  const h = harness(t, 'FloatingAssistant', { getAssistantStatus: () => ++calls === 1 ? new Promise(resolve => { finish = resolve }) : Promise.resolve({ enabled: false, configured: true }) })
+  await h.mount(); h.changeProject('project-2'); await flush()
+  finish({ enabled: true, configured: true }); await flush()
+  assert.equal(h.state.visible.value, false)
+})
+
+test('助手书签展开悬浮窗口后清理查询参数，状态不可用时隐藏入口', async t => {
+  const h = harness(t, 'FloatingAssistant')
+  await h.mount(); h.route.query = { assistant: 'open', keep: 'yes' }; await flush()
+  assert.equal(h.state.open.value, true)
+  assert.deepEqual({ ...h.route.query }, { keep: 'yes' })
+  h.api.getAssistantStatus = async () => { throw new Error('暂不可用') }
+  await h.state.refresh()
+  assert.equal(h.state.visible.value, false)
+})
+
+test('停用助手不强制补齐模型名称，保存后通知悬浮入口更新', async t => {
+  const h = harness(t, 'AssistantSettings')
+  await h.mount(); h.state.form.model = ''; h.state.form.enabled = false
+  await h.state.save()
+  assert.equal(h.state.error.value, '')
+  assert.equal(h.calls.filter(item => item[0] === 'save').length, 1)
+  assert.deepEqual(h.events, ['edo:assistant-settings-changed'])
+  h.state.form.enabled = true
+  await h.state.save()
+  assert.equal(h.state.error.value, 'assistant.required')
+})
 
 test('SSE 跨分块、CRLF、注释及无 delta 的 done 均可正确解析', () => {
   const api = load('../src/api/assistant.ts'), events = [], parser = api.createAssistantEventParser(event => events.push(event))

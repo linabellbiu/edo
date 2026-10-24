@@ -3,7 +3,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
 import {
-  Bell, Bot, ChevronDown, ChevronLeft, Command, Expand, Github, Languages, LockKeyhole, LogOut,
+  Bell, ChevronDown, ChevronLeft, Command, Expand, Github, Languages, LockKeyhole, LogOut,
   Maximize2, Menu, Moon, PanelLeftClose, PanelLeftOpen, RefreshCw, Search,
   Pin, Settings, Sun, X,
 } from 'lucide-vue-next'
@@ -14,7 +14,7 @@ import { usePreferencesStore } from '@/stores/preferences'
 import { useTabsStore } from '@/stores/tabs'
 import ProjectSelector from '@/components/ProjectSelector.vue'
 import SidebarNavItem from '@/components/SidebarNavItem.vue'
-import AssistantPanel from '@/components/AssistantPanel.vue'
+import FloatingAssistant from '@/components/FloatingAssistant.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -24,7 +24,6 @@ const tabsStore = useTabsStore()
 const { t } = useI18n()
 
 const searchOpen = ref(false)
-const assistantOpen = ref(false)
 const searchText = ref('')
 const contentMaximized = ref(false)
 const reloadKey = ref(0)
@@ -155,7 +154,6 @@ function keyboard(event: KeyboardEvent) {
 }
 
 watch(() => route.fullPath, async () => {
-  assistantOpen.value = false
   tabsStore.visit(route)
   tabsStore.add(route)
   expandCurrentMenu()
@@ -261,7 +259,6 @@ onBeforeUnmount(() => { menuRevealPending = false; window.removeEventListener('k
 
         <div class="header-actions">
 		  <ProjectSelector />
-          <a-tooltip v-if="auth.canAny(['assistant.read']) && route.path !== '/assistant'" :title="t('assistant.open')"><button class="icon-button" type="button" :aria-label="t('assistant.open')" @click="assistantOpen = true"><Bot /></button></a-tooltip>
           <button class="header-search" type="button" @click="openSearch">
             <Search :size="17" /><span>{{ t('common.search') }}</span><kbd><Command :size="12" /> K</kbd>
           </button>
@@ -334,10 +331,7 @@ onBeforeUnmount(() => { menuRevealPending = false; window.removeEventListener('k
       </section>
     </main>
 
-    <a-drawer v-model:open="assistantOpen" :title="t('assistant.title')" width="min(680px, 100vw)" :destroy-on-close="true" :body-style="{ padding: '16px', display: 'flex', flexDirection: 'column' }">
-      <template #extra><RouterLink to="/assistant">{{ t('assistant.fullPage') }}</RouterLink></template>
-      <AssistantPanel v-if="assistantOpen && auth.canAny(['assistant.read'])" compact />
-    </a-drawer>
+    <FloatingAssistant />
     <a-modal v-model:open="searchOpen" :footer="null" :closable="false" width="620px" wrap-class-name="command-modal">
       <div class="command-search"><Search /><input v-model="searchText" :placeholder="`${t('common.search')}...`" /></div>
       <div class="command-results">

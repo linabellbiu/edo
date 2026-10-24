@@ -22,8 +22,8 @@ function payload(): AssistantSettingsInput {
     ...(form.clear_api_key ? { clear_api_key: true } : form.api_key.trim() ? { api_key: form.api_key.trim() } : {}),
   }
 }
-function validate() {
-  if (!form.base_url.trim() || !form.model.trim()) { error.value = t('assistant.required'); return false }
+function validate(requireModel = form.enabled) {
+  if (!form.base_url.trim() || (requireModel && !form.model.trim())) { error.value = t('assistant.required'); return false }
   try {
     const url = new URL(form.base_url.trim())
     if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || url.search || url.hash) throw new Error()
@@ -53,12 +53,13 @@ async function save() {
     const result = await saveAssistantSettings(payload(), controller.signal)
     if (disposed || request !== revision) return
     settings.value = result; form.api_key = ''; form.clear_api_key = false
+    window.dispatchEvent(new Event('edo:assistant-settings-changed'))
     message.success(t('assistant.saved'))
   } catch (cause) { if (!disposed && request === revision) error.value = apiErrorMessage(cause) || t('assistant.saveFailed') }
   finally { if (!disposed && request === revision) saving.value = false }
 }
 async function testConnection() {
-  if (!canUpdate.value || busy.value || !settings.value || !hasKey.value || !validate()) return
+  if (!canUpdate.value || busy.value || !settings.value || !hasKey.value || !validate(true)) return
   const request = ++revision
   controller = new AbortController()
   testing.value = true; error.value = ''; testResult.value = ''
@@ -77,13 +78,14 @@ onBeforeUnmount(() => { disposed = true; revision++; controller?.abort(); form.a
 <template>
   <article v-if="canRead" class="assistant-settings vben-card">
     <header><Bot :size="22" /><div><h3>{{ t('assistant.settings') }}</h3><p>{{ t('assistant.settingsHint') }}</p></div><a-button :disabled="busy" :aria-label="t('assistant.refresh')" @click="load"><RefreshCw :size="15" /></a-button></header>
+    <a-alert type="warning" :message="t('assistant.developmentNotice')" show-icon />
     <a-alert v-if="error" type="error" :message="error" show-icon />
     <a-alert v-if="testResult" type="success" :message="testResult" show-icon />
     <a-spin :spinning="loading">
-      <a-form layout="vertical" :disabled="!canUpdate || busy || !settings" @finish="save">
-        <a-form-item :label="t('assistant.enabled')"><a-switch v-model:checked="form.enabled" /></a-form-item>
+      <a-form :model="form" layout="vertical" :disabled="!canUpdate || busy || !settings" @finish="save">
+        <a-form-item :label="t('assistant.enabled')" :extra="t('assistant.enabledHint')"><a-switch v-model:checked="form.enabled" :aria-label="t('assistant.enabled')" /></a-form-item>
         <a-form-item :label="t('assistant.baseURL')" required :extra="t('assistant.baseURLHint')"><a-input v-model:value="form.base_url" autocomplete="off" placeholder="https://example.com/v1" @change="testResult = ''" /></a-form-item>
-        <a-form-item :label="t('assistant.model')" required><a-input v-model:value="form.model" autocomplete="off" placeholder="model-name" @change="testResult = ''" /></a-form-item>
+        <a-form-item :label="t('assistant.model')" :required="form.enabled"><a-input v-model:value="form.model" autocomplete="off" placeholder="model-name" @change="testResult = ''" /></a-form-item>
         <a-form-item :label="t('assistant.apiKey')" :extra="t('assistant.keyHint')"><a-input-password v-model:value="form.api_key" :disabled="form.clear_api_key || !canUpdate || busy" :placeholder="t(settings?.has_api_key ? 'assistant.keySaved' : 'assistant.keyEmpty')" autocomplete="new-password" @change="testResult = ''" /></a-form-item>
         <a-form-item v-if="settings?.has_api_key" :extra="form.clear_api_key ? t('assistant.clearKeyHint') : ''"><a-checkbox v-model:checked="form.clear_api_key" @change="form.api_key = ''; testResult = ''">{{ t('assistant.clearKey') }}</a-checkbox></a-form-item>
         <div class="assistant-setting-limits"><a-form-item :label="t('assistant.maxSteps')"><a-input-number v-model:value="form.max_steps" :min="1" :max="20" :precision="0" /></a-form-item><a-form-item :label="t('assistant.timeout')"><a-input-number v-model:value="form.timeout_seconds" :min="10" :max="180" :precision="0" /></a-form-item></div>

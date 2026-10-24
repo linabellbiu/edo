@@ -74,6 +74,22 @@ func saveTestSettings(t *testing.T, s *Service, user *model.User, ctx context.Co
 	return view
 }
 
+func TestAssistantDefaultsToDisabled(t *testing.T) {
+	s, db, _, ctx := assistantFixture(t)
+	view, err := s.Settings(ctx)
+	if err != nil || view.Enabled || view.Version != 0 {
+		t.Fatalf("初始助手设置应为关闭: %+v %v", view, err)
+	}
+	status, err := s.Status(ctx)
+	if err != nil || status.Enabled || status.Reason != ErrDisabled.Error() {
+		t.Fatalf("初始助手状态应为关闭: %+v %v", status, err)
+	}
+	var count int64
+	if err := db.Model(&model.AssistantSettings{}).Count(&count).Error; err != nil || count != 0 {
+		t.Fatalf("读取默认设置不应写入数据库: %d %v", count, err)
+	}
+}
+
 func TestMissingKeyNeverCallsProviderAndDraftCanBeSaved(t *testing.T) {
 	s, _, user, ctx := assistantFixture(t)
 	var calls atomic.Int32
