@@ -20,6 +20,7 @@ interface Domain extends ResourceRecord{id:string;account_id:string;account_name
 interface DNSRecord extends ResourceRecord{id:string;name:string;fqdn:string;type:string;value:string;ttl:number;read_only:boolean}
 const auth=useAuthStore(),route=useRoute(),router=useRouter()
 const providers=ref<DNSProvider[]>([]),accounts=ref<DNSAccount[]>([]),domains=ref<Domain[]>([]),records=ref<DNSRecord[]>([]),selectedID=ref(''),query=ref(''),loading=ref(false),recordsLoading=ref(false),saving=ref(false),testingID=ref('')
+const domainSearch=ref(''),domainPage=ref(1)
 const scopeProvider=computed(()=>typeof route.query.provider==='string'?route.query.provider:'')
 const scopeAccounts=computed(()=>{
  const value=route.query.account
@@ -28,6 +29,7 @@ const scopeAccounts=computed(()=>{
 })
 const scopedAccounts=computed(()=>accounts.value.filter(item=>(!scopeProvider.value||item.provider===scopeProvider.value)&&(scopeAccounts.value.includes('*')||scopeAccounts.value.includes(item.id))))
 const scopedDomains=computed(()=>domains.value.filter(item=>(!scopeProvider.value||item.provider===scopeProvider.value)&&(scopeAccounts.value.includes('*')||scopeAccounts.value.includes(item.account_id))))
+const filteredDomains=computed(()=>{const value=domainSearch.value.trim().toLowerCase();return value?scopedDomains.value.filter(item=>[item.name,item.account_name,item.provider,providerName(item.provider),item.description].some(field=>String(field??'').toLowerCase().includes(value))):scopedDomains.value})
 const domainAccounts=computed(()=>accounts.value.filter(item=>item.id===domainForm.account_id||item.is_active&&(!scopeProvider.value||item.provider===scopeProvider.value)))
 const accountOpen=ref(false),domainOpen=ref(false),recordOpen=ref(false),editingAccountID=ref(''),editingDomainID=ref(''),editingRecordID=ref('')
 const detailOpen=ref(false),creatingAccountForDomain=ref(false),providerSearch=ref('')
@@ -62,16 +64,17 @@ function editRecord(item:DNSRecord){editingRecordID.value=item.id;Object.assign(
 async function saveRecord(){saving.value=true;try{if(editingRecordID.value)await client.put(`/dns/domains/${selectedID.value}/records/${editingRecordID.value}`,recordForm,{timeout:35000});else await client.post(`/dns/domains/${selectedID.value}/records`,recordForm,{timeout:35000});message.success('解析记录已保存');recordOpen.value=false;await loadRecords()}catch(error){message.error(apiErrorMessage(error))}finally{saving.value=false}}
 function removeRecord(item:DNSRecord){Modal.confirm({title:`删除 ${item.fqdn} 的 ${item.type} 记录？`,content:'此操作会立即修改厂商侧 DNS。',okType:'danger',async onOk(){try{await client.delete(`/dns/domains/${selectedID.value}/records/${item.id}`,{timeout:35000});await loadRecords()}catch(error){message.error(apiErrorMessage(error))}}})}
 watch([selectedID,detailOpen],()=>{records.value=[];void loadRecords()})
-watch(()=>[route.query.provider,route.query.account],()=>{detailOpen.value=false;records.value=[];query.value=''})
+watch(()=>[route.query.provider,route.query.account],()=>{detailOpen.value=false;records.value=[];query.value='';domainPage.value=1})
+watch(domainSearch,()=>{domainPage.value=1})
 onMounted(refresh)
 onBeforeUnmount(()=>{disposed=true;refreshRequest++;recordsRequest++;accountForm.config={}})
 </script>
 
 <template><section class="dns-workspace"><PageToolbar description="管理域名、DNS 厂商账号和解析记录。"><a-button :loading="loading" @click="refresh"><RefreshCw :size="15"/>刷新</a-button><a-button v-if="auth.canAny(['dns.create'])" type="primary" @click="newDomain"><Plus :size="15"/>添加域名</a-button></PageToolbar>
 <div class="dns-workspace-grid"><DNSProviderTree :providers="providers" :accounts="accounts" :provider="scopeProvider" :selected="scopeAccounts" :loading="loading" :can-create="auth.canAny(['dns.create'])" :can-update="auth.canAny(['dns.update'])" :can-delete="auth.canAny(['dns.delete'])" @selection="selectScope" @add="newAccount()" @manage="manageAccount"/><div class="dns-workspace-content">
-<div class="dns-summary"><div><strong>{{ scopedDomains.length }}</strong><span>域名</span></div><div><strong>{{ scopedAccounts.length }}</strong><span>厂商账号</span></div></div>
 <div class="vben-card">
-  <ResourceTable :rows="scopedDomains" :columns="domainColumns" :loading="loading" :details="false" :active-row-key="detailOpen?selectedID:''">
+  <div class="resource-filter-bar"><a-input v-model:value="domainSearch" allow-clear placeholder="搜索域名、账号、厂商或说明" aria-label="搜索域名列表"><template #prefix><Search :size="15"/></template></a-input></div>
+  <ResourceTable v-model:current-page="domainPage" :rows="filteredDomains" :columns="domainColumns" :loading="loading" :details="false" :active-row-key="detailOpen?selectedID:''" :empty-text="domainSearch.trim()?'没有匹配的域名':'暂无数据'">
     <template #cell-provider="{value}">{{ providerName(String(value)) }}</template>
     <template #cell-name="{row}"><button class="resource-name" @click="openDetails(row as Domain)">{{ row.name }}</button></template>
     <template #cell-description="{value}"><a-tooltip :title="String(value||'')" :mouse-enter-delay="0.1"><span class="domain-description">{{ value||'—' }}</span></a-tooltip></template>
@@ -119,11 +122,9 @@ onBeforeUnmount(()=>{disposed=true;refreshRequest++;recordsRequest++;accountForm
 <style scoped>
 .dns-workspace{min-width:0}.dns-workspace-grid{display:grid;grid-template-columns:230px minmax(0,1fr);gap:14px;align-items:start}.dns-workspace-content{min-width:0}.dns-account-select{display:flex;align-items:center;gap:8px}.dns-account-select>.ant-select{min-width:0;flex:1}.dns-drawer-actions{display:flex;justify-content:flex-end;gap:8px}
 .dns-provider-picker{display:flex;flex-direction:column;gap:16px}.dns-provider-picker>p{margin:0;color:var(--edo-muted);font-size:13px}.dns-provider-choices{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}.dns-provider-choice{display:flex;align-items:flex-start;gap:10px;min-width:0;padding:14px;border:1px solid var(--edo-border);border-radius:6px;background:var(--edo-surface);color:var(--edo-text);text-align:left;font:inherit;cursor:pointer}.dns-provider-choice>svg{flex-shrink:0;margin-top:1px;color:var(--edo-primary)}.dns-provider-choice>span{min-width:0}.dns-provider-choice strong{display:block;font-size:13px;font-weight:600}.dns-provider-choice small{display:block;margin-top:5px;font-size:12px;line-height:1.6;color:var(--edo-muted)}.dns-provider-choice:hover{border-color:var(--edo-primary);background:var(--edo-primary-soft)}.dns-provider-choice:focus-visible{outline:2px solid var(--edo-primary);outline-offset:2px}
-.dns-summary{display:flex;flex-wrap:wrap;gap:24px;margin-bottom:12px;padding:10px 16px;border:1px solid var(--edo-border);border-radius:6px;background:var(--edo-surface)}
-.dns-summary div{display:flex;align-items:center;gap:8px}.dns-summary strong{font-size:15px}.dns-summary span{font-size:12px;color:var(--edo-muted)}
 .domain-description{display:block;max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .form-grid{display:grid;grid-template-columns:1fr 1fr;gap:0 12px}.span2{grid-column:1/-1}
 @media(max-width:1000px){.dns-workspace-grid{grid-template-columns:1fr}}
-@media(max-width:720px){.dns-workspace :deep(.page-toolbar){flex-direction:column;align-items:flex-start;gap:10px}.dns-workspace :deep(.page-toolbar-actions){flex-wrap:wrap}.dns-summary{gap:12px}.form-grid{grid-template-columns:1fr}.span2{grid-column:auto}}
+@media(max-width:720px){.dns-workspace :deep(.page-toolbar){flex-direction:column;align-items:flex-start;gap:10px}.dns-workspace :deep(.page-toolbar-actions){flex-wrap:wrap}.form-grid{grid-template-columns:1fr}.span2{grid-column:auto}}
 @media(max-width:480px){.dns-provider-choices{grid-template-columns:1fr}}
 </style>

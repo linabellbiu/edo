@@ -46,6 +46,53 @@ test('厂商与账号范围同时筛选域名和账号，使用账号 ID 区分�
   assert.equal(h.state.scopedDomains.value.length, 0)
 })
 
+test('域名搜索覆盖名称、账号、厂商和说明，并与左侧范围共同筛选', t => {
+  const h = view(t)
+  h.state.domains.value = [
+    { ...domains[0], name: 'Portal.Example.com', account_name: '生产账号', description: '客户门户' },
+    { ...domains[1], name: 'test.example.com', account_name: '测试账号' },
+    { ...domains[3], name: 'ali.example.com', account_name: '生产账号', description: '客户门户' },
+  ]
+  h.state.domainSearch.value = '  PORTAL  '
+  assert.deepEqual(h.state.filteredDomains.value.map(item => item.id), ['domain-cf-a'])
+  h.state.domainSearch.value = '生产账号'
+  assert.deepEqual(h.state.filteredDomains.value.map(item => item.id), ['domain-cf-a', 'domain-ali-a'])
+  h.state.domainSearch.value = '阿里云'
+  assert.deepEqual(h.state.filteredDomains.value.map(item => item.id), ['domain-ali-a'])
+  h.state.domainSearch.value = 'CLOUDFLARE'
+  assert.deepEqual(h.state.filteredDomains.value.map(item => item.id), ['domain-cf-a', 'domain-cf-b'])
+  h.state.domainSearch.value = '客户门户'
+  h.route.query = { provider: 'cloudflare', account: 'cf-b' }
+  assert.deepEqual(h.state.filteredDomains.value, [])
+  h.route.query.account = ['cf-a', 'cf-b']
+  assert.deepEqual(h.state.filteredDomains.value.map(item => item.id), ['domain-cf-a'])
+  h.state.domainSearch.value = ''
+  assert.deepEqual(h.state.filteredDomains.value.map(item => item.id), ['domain-cf-a', 'domain-cf-b'])
+  assert.equal(h.requests.length, 0)
+})
+
+test('搜索后返回第一页，查看和关闭详情保留域名搜索，解析记录搜索独立', async t => {
+  const h = view(t)
+  h.state.domainPage.value = 3
+  h.state.domainSearch.value = 'example.com'
+  await settle()
+  assert.equal(h.state.domainPage.value, 1)
+  h.state.openDetails(domains[0])
+  await settle()
+  h.state.records.value = [{ id: 'a', name: 'www', type: 'A', value: '192.0.2.10' }, { id: 'b', name: 'mail', type: 'MX', value: 'mail.example.com' }]
+  h.state.query.value = 'MX'
+  assert.deepEqual(h.state.filteredRecords.value.map(item => item.id), ['b'])
+  assert.equal(h.state.filteredDomains.value.length, 4)
+  h.state.detailOpen.value = false
+  await settle()
+  assert.equal(h.state.domainSearch.value, 'example.com')
+  h.state.domainPage.value = 2
+  h.route.query = { provider: 'alidns' }
+  await settle()
+  assert.equal(h.state.domainPage.value, 1)
+  assert.equal(h.state.domainSearch.value, 'example.com')
+})
+
 test('分类写入访问历史并保留多选，进入单一域名列表时清理页签参数', async t => {
   const h = view(t, { query: { provider: 'cloudflare', account: ['cf-a', 'cf-b'], view: 'accounts', keep: 'yes' } })
   assert.deepEqual(h.state.scopeAccounts.value, ['cf-a', 'cf-b'])
