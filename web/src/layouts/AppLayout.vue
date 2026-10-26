@@ -95,6 +95,10 @@ function historyContext(path: string) {
 function navigate(path: string) {
   mobileMenuOpen.value = false
   const target = new URL(path, 'http://edo.local')
+  if (target.pathname === '/kubernetes' && route.path === '/hosts' && route.query.view === 'clusters' && typeof route.query.cluster === 'string') {
+    void router.push({ path: target.pathname, query: { ...Object.fromEntries(target.searchParams), cluster: route.query.cluster } })
+    return
+  }
   if (route.path === '/kubernetes' && target.pathname === route.path) {
     const query = { ...route.query }
     for(const key of ['q','label','status','sort','order','page','limit'])delete query[key]

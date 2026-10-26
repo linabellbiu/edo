@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, defineAsyncComponent, h, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { Modal, message } from 'ant-design-vue'
-import { Plus, RefreshCw, Search, ArrowLeft, Filter } from 'lucide-vue-next'
+import { Plus, RefreshCw, Search, ArrowLeft, Filter, Server, ChevronRight } from 'lucide-vue-next'
 import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter, onBeforeRouteLeave, onBeforeRouteUpdate, type LocationQueryRaw } from 'vue-router'
 import client from '@/api/client'
@@ -370,6 +370,17 @@ onBeforeUnmount(()=>{mounted=false;cancelPendingEdit();cancelListPersist();names
 
 <template>
   <div class="kube-workspace">
+    <header class="cluster-context-bar">
+      <div class="cluster-context-identity">
+        <a-button type="text" class="cluster-list-link" :disabled="contextDisabled" @click="router.push({path:'/hosts',query:{view:'clusters'}})"><ArrowLeft :size="15" />{{ t('k8s.clusterList') }}</a-button>
+        <ChevronRight v-if="clusterInfo" :size="14" class="context-separator" />
+        <div v-if="clusterInfo" class="cluster-context-name"><strong>{{ clusterInfo.name }}</strong><span>{{ clusterInfo.api_server }}</span></div>
+      </div>
+      <div v-if="clusterInfo" class="cluster-context-hosts">
+        <template v-if="clusterInfo.hosts?.length"><span class="context-label">{{ t('k8s.linkedHosts') }}</span><a-button v-for="host in clusterInfo.hosts" :key="host.id" type="text" size="small" :disabled="contextDisabled||!auth.canAny(['deployment.read','cluster.read'])" :title="host.address||host.name" @click="router.push({path:'/hosts',query:{view:'hosts',host:host.id}})"><Server :size="13" />{{ host.name }}</a-button></template>
+        <span v-else-if="clusterInfo.hosts" class="independent-cluster">{{ t('k8s.independentCluster') }}</span>
+      </div>
+    </header>
     <div class="kube-workspace-grid">
     <KubeNamespaceTree :clusters="clusters" :cluster="cluster" :namespaces="knownNamespaces" :selected="selectedNamespaces" :namespaced="namespaceScoped" :loading="namespaceLoading" :error="namespaceError" :disabled="contextDisabled" @cluster="selectCluster" @selection="selectNamespaces" @retry="loadNamespaces"/>
     <section ref="resourcePanel" class="resource-panel">

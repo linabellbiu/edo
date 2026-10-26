@@ -1,14 +1,22 @@
 # Kubernetes
 
-在“基础设施 → Kubernetes”中接入集群。顶部切换总览、节点、工作负载、配置与存储、服务与网络。集群跟随当前项目空间，切换项目后不会显示其他项目的连接。
+在“基础设施 → Kubernetes → 集群”中接入集群，通过菜单查看总览、节点、工作负载、配置与存储、服务与网络。集群跟随当前项目空间，切换项目后不会显示其他项目的连接。
 
 ## 接入集群
 
-点击“接入集群”，填写名称、默认命名空间和 kubeconfig，测试连接后保存。EDO 所在机器必须能访问 kubeconfig 中的 API 地址。
+点击“添加集群”，填写名称、默认命名空间，粘贴或导入 kubeconfig，测试连接后保存。关联主机可以留空。EDO 所在机器必须能访问 kubeconfig 中的 API 地址。
 
 kubeconfig 加密保存，不接受 exec 插件、外部证书文件、代理、身份模拟或跳过 TLS 校验。证书和密钥需要直接包含在 kubeconfig 中。不要为了接入 EDO 开放匿名访问。
 
 生产集群建议使用专用 ServiceAccount，按实际需要分配 Kubernetes RBAC。EDO 中的项目角色只控制控制台操作，不能替代集群自身的 RBAC。
+
+## 关联主机
+
+集群可独立接入，关联主机为可选项。每台远程主机可关联一个集群，同一集群可关联多台主机；关联到其他集群时会替换原有关系。内置本地主机不参与关联。
+
+`POST /api/v1/kubernetes/clusters` 可传 `host_ids`，集群与关联关系在同一事务中保存。`PUT /api/v1/kubernetes/clusters/:id/hosts` 使用完整的 `host_ids` 列表替换关联，传空数组解除全部关联，省略字段会返回参数错误。修改关联需要 `cluster.update` 权限，主机和集群必须属于同一项目和部门。
+
+关联仅记录 EDO 中的主机与集群关系，不代表 Kubernetes 节点成员校验。解除关联不会删除集群、修改 kubeconfig 或清除主机的 SSH、Docker 能力。集群列表的 `hosts` 提供主机名称、地址和启用状态；未关联主机时返回空数组，没有主机读取权限时返回 `null`。
 
 ## 管理入口
 
@@ -74,6 +82,6 @@ Secret 列表和普通详情只显示类型、键名，不返回值。查看内�
 
 ## 测试集群
 
-测试环境使用 [K3d](https://k3d.io/stable/) 在 Docker 中运行 K3s，与已有项目使用不同的容器、网络和数据卷。Kubernetes API 仅监听服务器本机，通过 EDO 或 SSH 隧道访问，不直接开放公网控制面端口。
+测试环境使用 [K3d](https://k3d.io/stable/) 在 Docker 中运行 K3s，与已有项目使用不同的容器、网络和数据卷。Kubernetes API 绑定服务器本机或指定内网地址，通过 EDO 或 SSH 隧道访问，不直接开放公网控制面端口。
 
 后端复用项目已有的官方 [client-go](https://github.com/kubernetes/client-go)，没有引入额外的集群管理服务。

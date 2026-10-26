@@ -9,6 +9,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"edo/internal/access"
 	"edo/internal/dockerengine"
 	"edo/internal/kube"
 	"edo/internal/model"
@@ -18,6 +19,7 @@ import (
 type clusterHandler struct {
 	docker *dockerengine.Service
 	kube   *kube.Service
+	access *access.Service
 	logger *slog.Logger
 }
 
@@ -57,6 +59,7 @@ type kubernetesClusterRequest struct {
 	Mode             model.KubernetesMode `json:"mode" binding:"required,max=16"`
 	DefaultNamespace string               `json:"default_namespace" binding:"max=63"`
 	Kubeconfig       *string              `json:"kubeconfig" binding:"omitempty,max=1048576"`
+	HostIDs          *[]string            `json:"host_ids" binding:"omitempty,max=500,dive,max=36"`
 }
 
 type kubernetesClusterResponse struct {
@@ -70,6 +73,11 @@ type kubernetesClusterResponse struct {
 	CreatedBy            string               `json:"created_by"`
 	CreatedAt            time.Time            `json:"created_at"`
 	UpdatedAt            time.Time            `json:"updated_at"`
+	Hosts                []kube.LinkedHost    `json:"hosts"`
+}
+
+type kubernetesClusterHostsRequest struct {
+	HostIDs *[]string `json:"host_ids" binding:"required,max=500,dive,max=36"`
 }
 
 func (h clusterHandler) listDockerEndpoints(c *gin.Context) {
@@ -207,8 +215,21 @@ func (h clusterHandler) listKubernetesClusters(c *gin.Context) {
 		return
 	}
 	response := make([]kubernetesClusterResponse, 0, len(clusters))
+	ids := make([]string, 0, len(clusters))
+	for _, cluster := range clusters {
+		ids = append(ids, cluster.ID)
+	}
+	hosts, err := h.clusterHostsForResponse(c, ids)
+	if err != nil {
+		h.writeKubernetesError(c, "kubernetes_cluster_hosts_list", err)
+		return
+	}
 	for i := range clusters {
-		response = append(response, toKubernetesClusterResponse(&clusters[i]))
+		item := toKubernetesClusterResponse(&clusters[i])
+		if hosts[clusters[i].ID] != nil {
+			item.Hosts = hosts[clusters[i].ID]
+		}
+		response = append(response, item)
 	}
 	c.JSON(http.StatusOK, gin.H{"clusters": response})
 }
@@ -236,13 +257,24 @@ func (h clusterHandler) createKubernetesCluster(c *gin.Context) {
 		return
 	}
 	actor, _ := currentUser(c)
+	if request.HostIDs != nil && len(*request.HostIDs) > 0 {
+		allowed, err := h.access.HasPermission(c.Request.Context(), actor, access.PermissionClusterUpdate)
+		if err != nil {
+			h.writeKubernetesError(c, "kubernetes_cluster_hosts_permission", err)
+			return
+		}
+		if !allowed {
+			writeError(c, http.StatusForbidden, "permission_denied", "没有修改主机关联的权限")
+			return
+		}
+	}
 	cluster, err := h.kube.Create(c.Request.Context(), actor.ID, toKubernetesInput(request))
 	if err != nil {
 		h.writeKubernetesError(c, "kubernetes_cluster_create", err)
 		return
 	}
 	setAuditResourceID(c, cluster.ID)
-	c.JSON(http.StatusCreated, gin.H{"cluster": toKubernetesClusterResponse(cluster)})
+	h.respondKubernetesCluster(c, http.StatusCreated, cluster)
 }
 
 func (h clusterHandler) updateKubernetesCluster(c *gin.Context) {
@@ -257,7 +289,55 @@ func (h clusterHandler) updateKubernetesCluster(c *gin.Context) {
 		h.writeKubernetesError(c, "kubernetes_cluster_update", err)
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"cluster": toKubernetesClusterResponse(cluster)})
+	h.respondKubernetesCluster(c, http.StatusOK, cluster)
+}
+
+func (h clusterHandler) setKubernetesHosts(c *gin.Context) {
+	var request kubernetesClusterHostsRequest
+	if err := c.ShouldBindJSON(&request); err != nil {
+		writeError(c, http.StatusBadRequest, "invalid_kubernetes_cluster_hosts", kube.ErrInvalidClusterHosts.Error())
+		return
+	}
+	if err := h.kube.SetHosts(c.Request.Context(), c.Param("id"), *request.HostIDs); err != nil {
+		h.writeKubernetesError(c, "kubernetes_cluster_hosts_update", err)
+		return
+	}
+	cluster, err := h.kube.Find(c.Request.Context(), c.Param("id"))
+	if err != nil {
+		h.writeKubernetesError(c, "kubernetes_cluster_hosts_find", err)
+		return
+	}
+	h.respondKubernetesCluster(c, http.StatusOK, cluster)
+}
+
+func (h clusterHandler) clusterHostsForResponse(c *gin.Context, ids []string) (map[string][]kube.LinkedHost, error) {
+	actor, ok := currentUser(c)
+	if !ok || h.access == nil {
+		return map[string][]kube.LinkedHost{}, nil
+	}
+	for _, permission := range []string{access.PermissionClusterRead, access.PermissionDeploymentRead} {
+		allowed, err := h.access.HasPermission(c.Request.Context(), actor, permission)
+		if err != nil {
+			return nil, err
+		}
+		if allowed {
+			return h.kube.LinkedHosts(c.Request.Context(), ids)
+		}
+	}
+	return map[string][]kube.LinkedHost{}, nil
+}
+
+func (h clusterHandler) respondKubernetesCluster(c *gin.Context, status int, cluster *model.KubernetesCluster) {
+	hosts, err := h.clusterHostsForResponse(c, []string{cluster.ID})
+	if err != nil {
+		h.writeKubernetesError(c, "kubernetes_cluster_hosts_response", err)
+		return
+	}
+	response := toKubernetesClusterResponse(cluster)
+	if hosts[cluster.ID] != nil {
+		response.Hosts = hosts[cluster.ID]
+	}
+	c.JSON(status, gin.H{"cluster": response})
 }
 
 func (h clusterHandler) setKubernetesStatus(c *gin.Context) {
@@ -348,6 +428,8 @@ func (h clusterHandler) writeKubernetesError(c *gin.Context, operation string, e
 	switch {
 	case errors.Is(err, kube.ErrInvalidCluster):
 		writeError(c, http.StatusBadRequest, "invalid_kubernetes_cluster", kube.ErrInvalidCluster.Error())
+	case errors.Is(err, kube.ErrInvalidClusterHosts):
+		writeError(c, http.StatusBadRequest, "invalid_kubernetes_cluster_hosts", kube.ErrInvalidClusterHosts.Error())
 	case errors.Is(err, kube.ErrUnsafeKubeconfig):
 		writeError(c, http.StatusBadRequest, "unsafe_kubeconfig", kube.ErrUnsafeKubeconfig.Error())
 	case errors.Is(err, kube.ErrKubeconfigRequired):
@@ -395,7 +477,7 @@ func toDockerInput(request dockerEndpointRequest) dockerengine.Input {
 
 func toKubernetesInput(request kubernetesClusterRequest) kube.Input {
 	return kube.Input{
-		Name: request.Name, Mode: request.Mode, DefaultNamespace: request.DefaultNamespace, Kubeconfig: request.Kubeconfig,
+		Name: request.Name, Mode: request.Mode, DefaultNamespace: request.DefaultNamespace, Kubeconfig: request.Kubeconfig, HostIDs: request.HostIDs,
 	}
 }
 

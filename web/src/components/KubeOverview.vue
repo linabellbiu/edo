@@ -14,7 +14,7 @@ const props=defineProps<{data:KubeOverview|null;loading:boolean;error:string}>()
 const emit=defineEmits<{select:[resource:string]}>()
 const {t,locale}=useI18n(), preferences=usePreferencesStore()
 const root=ref<HTMLElement>(), cpuChart=ref<HTMLElement>(),memoryChart=ref<HTMLElement>(),podChart=ref<HTMLElement>()
-const charts:EChartsType[]=[]
+const charts=new Map<HTMLElement,EChartsType>()
 let resize:ResizeObserver|undefined, disposed=false
 const cards=computed(()=>[
   ['nodes','k8s.nodes',Server],['pods','Pod',Box],['deployments','Deployment',Boxes],['statefulsets','StatefulSet',Layers],['daemonsets','DaemonSet',Layers],['jobs','Job',Activity],['cronjobs','CronJob',Activity],['namespaces','Namespace',Boxes],['services','Service',Network],['ingresses','Ingress',Network],['configmaps','ConfigMap',Database],['secrets','Secret',FileKey2],['persistentvolumeclaims','PVC',Database],['persistentvolumes','PV',Database],['storageclasses','StorageClass',Database],['networkpolicies','NetworkPolicy',Network],
@@ -39,19 +39,25 @@ const phases=computed(()=>Object.entries(props.data?.phases??{}).map(([phase,val
 const percentage=(used:number|undefined,total:number|undefined)=>used===undefined||total===undefined||total<=0?'—':`${(used/total*100).toFixed(1)}%`
 async function render(){
   await nextTick();if(disposed||!root.value)return
+  const elements=[cpuChart.value,memoryChart.value,podChart.value]
+  // 数据重载会重建容器，不能继续向已经移出页面的旧画布绘制。
+  for(const [element,chart] of charts){
+    if(!elements.includes(element)){chart.dispose();charts.delete(element)}
+  }
   const style=getComputedStyle(root.value), track=style.getPropertyValue('--edo-border').trim(), text=style.getPropertyValue('--edo-text').trim()
-  for(const [i,element] of [cpuChart.value,memoryChart.value,podChart.value].entries()){
-    if(!element||!element.clientWidth)continue
-    const chart=charts[i]??(charts[i]=init(element,undefined,{renderer:'canvas'}))
+  for(const [i,element] of elements.entries()){
+    if(!element||!element.clientWidth||!element.clientHeight)continue
+    let chart=charts.get(element)
+    if(!chart){chart=init(element,undefined,{renderer:'canvas'});charts.set(element,chart)}
     const used=i===0?totals.value.cpuUsed:totals.value.memoryUsed,total=i===0?totals.value.cpu:totals.value.memory
     const data=i===2?phases.value:(used===undefined||!total?[]:[{name:t('k8s.used'),value:used},{name:t('k8s.available'),value:Math.max(0,total-used)}])
     chart.setOption({animation:false,aria:{enabled:true},tooltip:{trigger:'item',renderMode:'richText',valueFormatter:(value:unknown)=>i===0?formatKubeCPU(value):i===1?formatKubeMemory(value):String(value),textStyle:{fontSize:12,color:text},backgroundColor:style.getPropertyValue('--edo-surface').trim(),borderColor:track},series:[{type:'pie',radius:['72%','92%'],center:['50%','50%'],silent:false,label:{show:false},emphasis:{scale:false},data:data.length?data.map((entry,index)=>({...entry,itemStyle:{color:i===2?phaseColors[phases.value[index]?.phase??'']??'#708198':index===0?'#526aff':track}})):[{value:1,itemStyle:{color:track},tooltip:{show:false}}]}]},{notMerge:true})
     chart.resize()
   }
 }
-watch([()=>props.data,()=>preferences.theme,locale],()=>void render(),{deep:true})
+watch([()=>props.data,()=>preferences.theme,locale,cpuChart,memoryChart,podChart],()=>void render(),{deep:true,flush:'post'})
 onMounted(()=>{void render();resize=new ResizeObserver(()=>void render());if(root.value)resize.observe(root.value)})
-onBeforeUnmount(()=>{disposed=true;resize?.disconnect();charts.forEach(chart=>chart.dispose())})
+onBeforeUnmount(()=>{disposed=true;resize?.disconnect();charts.forEach(chart=>chart.dispose());charts.clear()})
 </script>
 
 <template>

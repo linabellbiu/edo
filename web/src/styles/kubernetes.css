@@ -10,6 +10,10 @@
   --kube-danger: #b9354e;
 }
 
+.cluster-context-bar{display:flex;min-height:60px;align-items:center;justify-content:space-between;gap:14px;margin-bottom:16px;padding:10px 14px;border:1px solid var(--edo-border);border-radius:7px;background:var(--edo-surface)}
+.cluster-context-identity,.cluster-context-hosts{display:flex;min-width:0;align-items:center;gap:8px}.cluster-context-identity{flex:1}.cluster-context-name{min-width:0}.cluster-context-name strong,.cluster-context-name>span{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.cluster-context-name strong{font-size:14px;font-weight:600;color:var(--edo-text)}.cluster-context-name>span{margin-top:2px;font-size:11px;color:var(--edo-muted);font-family:var(--edo-font-mono,monospace)}.cluster-context-hosts{flex-wrap:wrap;justify-content:flex-end;max-width:50%}.context-label,.context-separator,.independent-cluster{color:var(--edo-muted);font-size:12px}.context-separator{flex-shrink:0}.cluster-context-bar .ant-btn{display:inline-flex;align-items:center;gap:6px}.cluster-list-link{flex-shrink:0}.independent-cluster{padding:4px 9px;border:1px solid var(--edo-border);border-radius:4px;background:var(--edo-surface-soft)}
+@media(max-width:760px){.cluster-context-bar{align-items:flex-start;flex-direction:column;gap:8px;padding:10px}.cluster-context-identity{width:100%}.cluster-context-hosts{max-width:none;justify-content:flex-start}.cluster-context-name>span{max-width:calc(100vw - 230px)}}
+
 /* 表格的分列和表头只作用于 Kubernetes，保持其他业务列表的布局。 */
 .kube-resource-table table.resource-table {
   border-collapse: separate;

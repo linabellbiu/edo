@@ -49,6 +49,32 @@ export interface InfrastructureHostStatus {
   capabilities: HostCapability[]
 }
 
+export interface ClusterHost {
+  id: string
+  name: string
+  address: string
+  is_active: boolean
+}
+
+export interface InfrastructureCluster {
+  id: string
+  name: string
+  api_server: string
+  default_namespace: string
+  is_active: boolean
+  hosts?: ClusterHost[] | null
+  created_at?: string
+  updated_at?: string
+}
+
+export async function setClusterHosts(clusterID: string, hostIDs: string[]) {
+  const response = await client.put<{ cluster: InfrastructureCluster }>(
+    `/kubernetes/clusters/${encodeURIComponent(clusterID)}/hosts`,
+    { host_ids: [...new Set(hostIDs)] },
+  )
+  return response.data.cluster
+}
+
 export interface InfrastructureEnvironment {
   id: string
   name: string

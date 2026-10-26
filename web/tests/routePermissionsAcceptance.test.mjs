@@ -62,6 +62,16 @@ test('匿名和身份加载失败保留完整深链接，超级管理员可进�
   for(const record of admin.records.filter(record=>record.name&&record.path!=='/login')) assert.equal(await admin.guard(record.path),true,record.path)
 })
 
+test('仅有 K8s 资源查看权限也能进入独立集群目录，不可进入主机目录',async()=>{
+  for (const permission of ['kubernetes.node.read','kubernetes.workload.read','kubernetes.config.read','kubernetes.storage.read','kubernetes.network.read']) {
+    const reader = routeHarness([permission])
+    assert.equal(await reader.guard('/hosts?view=clusters&cluster=standalone'), true)
+    assert.equal(await reader.guard('/hosts?view=hosts'), '/projects')
+  }
+  assert.equal(await routeHarness(['cluster.read']).guard('/hosts?view=clusters'), true)
+  assert.equal(await routeHarness(['deployment.read']).guard('/hosts?view=clusters'), '/projects')
+})
+
 test('侧栏全部叶子按精确有效权限过滤，无权限父级不会残留，平台与项目入口不混淆',()=>{
   const baseline=routeHarness(),leaves=baseline.navigation.flatNavigation()
   const flatten=items=>items.flatMap(item=>item.children?flatten(item.children):[item])

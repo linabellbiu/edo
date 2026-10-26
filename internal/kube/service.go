@@ -41,6 +41,7 @@ type Input struct {
 	Mode             model.KubernetesMode
 	DefaultNamespace string
 	Kubeconfig       *string
+	HostIDs          *[]string
 }
 
 type ConnectionTest struct {
@@ -127,7 +128,15 @@ func (s *Service) Create(ctx context.Context, actorID string, input Input) (*mod
 		DefaultNamespace: namespace, KubeconfigCiphertext: encrypted,
 		IsActive: true, CreatedBy: actorID, CreatedAt: now, UpdatedAt: now,
 	}
-	if err := s.db.WithContext(ctx).Create(cluster).Error; err != nil {
+	if err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Create(cluster).Error; err != nil {
+			return err
+		}
+		if input.HostIDs != nil {
+			return replaceClusterHosts(tx, cluster, *input.HostIDs)
+		}
+		return nil
+	}); err != nil {
 		if errors.Is(err, gorm.ErrDuplicatedKey) {
 			return nil, ErrClusterExists
 		}
@@ -186,10 +195,18 @@ func (s *Service) Update(ctx context.Context, id string, input Input) (*model.Ku
 		return nil, err
 	}
 	now := time.Now().UTC()
-	if err := s.db.WithContext(ctx).Model(existing).Updates(map[string]any{
-		"name": name, "mode": input.Mode, "api_server": apiServer,
-		"default_namespace": namespace, "kubeconfig_ciphertext": encrypted, "updated_at": now,
-	}).Error; err != nil {
+	if err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Model(existing).Updates(map[string]any{
+			"name": name, "mode": input.Mode, "api_server": apiServer,
+			"default_namespace": namespace, "kubeconfig_ciphertext": encrypted, "updated_at": now,
+		}).Error; err != nil {
+			return err
+		}
+		if input.HostIDs != nil {
+			return replaceClusterHosts(tx, existing, *input.HostIDs)
+		}
+		return nil
+	}); err != nil {
 		if errors.Is(err, gorm.ErrDuplicatedKey) {
 			return nil, ErrClusterExists
 		}

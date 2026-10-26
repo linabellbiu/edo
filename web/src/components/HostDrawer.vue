@@ -172,7 +172,7 @@ async function testConnection() {
     const path = editingRemote.value && props.host ? `/hosts/${props.host.id}/test` : '/hosts/test'
     const response = await client.post<HostTestResult>(path, payload(), { timeout: 35_000 })
     tested.value = response.data
-    message.success('主机连接与所选能力检查通过')
+    message.success('主机连接正常')
   } catch (error) {
     message.error(apiErrorMessage(error))
   } finally {
@@ -248,7 +248,7 @@ function close() {
               <span><strong>直接终端执行</strong><small>{{ localCapabilityHint('local_exec') }}</small></span>
             </a-checkbox>
           </a-checkbox-group>
-          <div class="field-hint">本地 Docker 由当前 EDO 运行方式自动检测；Linux/macOS 存在 sh 时可以启用直接终端执行。</div>
+          <div class="field-hint">按当前 EDO 运行环境检测可用能力。</div>
         </a-form-item>
 
         <template v-else>
@@ -266,7 +266,7 @@ function close() {
             <a-checkbox-group v-model:value="form.capability_kinds" class="capability-grid">
               <a-checkbox value="ssh" class="capability-option">
                 <span class="capability-brand ssh"><RuntimeBrandIcon kind="ssh" /></span>
-                <span><strong>SSH 命令部署</strong><small>执行部署方案中的受审计脚本</small></span>
+                <span><strong>SSH 命令部署</strong><small>执行部署脚本</small></span>
               </a-checkbox>
               <a-checkbox value="docker" class="capability-option">
                 <span class="capability-brand docker"><RuntimeBrandIcon kind="docker" /></span>
@@ -274,7 +274,7 @@ function close() {
               </a-checkbox>
               <a-checkbox value="kubernetes" class="capability-option">
                 <span class="capability-brand kubernetes"><RuntimeBrandIcon kind="kubernetes" /></span>
-                <span><strong>Kubernetes</strong><small>节点能力，可关联现有集群</small></span>
+                <span><strong>Kubernetes</strong><small>关联已有集群</small></span>
               </a-checkbox>
             </a-checkbox-group>
           </a-form-item>
@@ -289,12 +289,12 @@ function close() {
               />
               <a-button style="width:34px;padding:0" aria-label="创建 Kubernetes 集群" title="创建 Kubernetes 集群" @click="emit('create-cluster')">＋</a-button>
             </div>
-            <div class="field-hint">集群继续通过 kubeconfig/API 独立接入；主机只记录该集群的节点或管理关系。</div>
+            <div class="field-hint">集群使用已保存的 kubeconfig 连接。</div>
           </a-form-item>
 
           <a-form-item v-if="editingRemote" class="span-2">
             <div class="credential-toggle">
-              <div><strong>使用已保存的 SSH 凭据</strong><small>测试和保存时由服务端安全复用，不会返回密码或私钥。</small></div>
+              <div><strong>SSH 凭据</strong><small>保留当前凭据，或更换密码、私钥。</small></div>
               <a-switch v-model:checked="replaceCredential" checked-children="更换" un-checked-children="保留" />
             </div>
           </a-form-item>
@@ -337,7 +337,7 @@ function close() {
       class="test-result"
       type="success"
       show-icon
-      message="主机连接与能力检查通过"
+      message="主机连接正常"
     >
       <template #description>
         <div class="test-details">
@@ -353,7 +353,7 @@ function close() {
       class="test-result"
       type="info"
       show-icon
-      :message="editingRemote && !replaceCredential ? '将使用已保存的 SSH 凭据测试连接及所选能力。' : '保存前需要测试 SSH 连接及所有勾选的主机能力。'"
+      message="保存前请测试连接。"
     />
     <a-alert
       v-else-if="!isLocal"

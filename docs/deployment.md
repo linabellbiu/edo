@@ -2,6 +2,14 @@
 
 EDO 自身使用单文件程序或 Docker Compose 部署。单文件运行方式见 [README](../README.md#单文件运行)。
 
+## 更新发布
+
+发布顺序为：本地验证 → 提交并推送 GitHub → 远端拉取 → 远端构建 → 重启服务并验证。
+
+先在开发机提交本次修改并推送到 GitHub 的 `main` 分支，再在服务器的项目目录执行 `git pull --ff-only origin main`。远端有未提交改动时，先备份并整理，再同步代码。
+
+拉取完成后，在远端构建前端和后端，再按当前部署方式重新运行。Docker Compose 使用下面的构建启动命令；由 systemd 管理的单文件程序应先完成构建，再替换程序并重启对应服务。发布后检查 `/api/v1/health/ready` 和实际页面，并记录本次 Git 提交版本。
+
 ## Docker Compose
 
 复制根目录环境文件模板，生成密钥并填入 `.env` 的 `EDO_SECRETS_KEY`：

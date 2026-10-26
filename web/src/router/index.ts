@@ -69,9 +69,10 @@ router.beforeEach(async (to) => {
   const item = findNavigationItem(to.fullPath)
   let required = (to.meta.permissions as string[] | undefined) ?? []
   if (to.path === '/kubernetes' && item) required = item.permissions
+  else if (to.path === '/hosts' && to.query.view === 'clusters' && item) required = item.permissions
   else if (to.path === '/release-plans' && to.query.view === 'runs') required = ['pipeline_run.read']
   if (!auth.canAny(required)) return '/projects'
-  if (to.path === '/kubernetes' && item) to.meta.title = item.label
+  if ((to.path === '/kubernetes' || to.path === '/hosts') && item) to.meta.title = item.label
   return true
 })
 

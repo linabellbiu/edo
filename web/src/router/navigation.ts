@@ -63,6 +63,7 @@ export const navigation: NavSection[] = [
         { label: 'nav.environments', path: '/environments', permissions: ['deployment.read'], icon: ServerCog },
         { label: 'nav.hosts', path: '/hosts', permissions: ['cluster.read', 'deployment.read'], icon: Server },
         { label: 'k8s.title', path: '/kubernetes', permissions: [], icon: Boxes, children: [
+          { label: 'k8s.clusters', path: '/hosts?view=clusters', permissions: ['cluster.read','kubernetes.node.read','kubernetes.workload.read','kubernetes.config.read','kubernetes.storage.read','kubernetes.network.read'], icon: Boxes },
           { label: 'k8s.overview', path: '/kubernetes?view=overview', permissions: ['kubernetes.node.read','kubernetes.workload.read','kubernetes.config.read','kubernetes.storage.read','kubernetes.network.read'], icon: LayoutDashboard },
           { label: 'k8s.nodes', path: '/kubernetes?view=nodes', permissions: ['kubernetes.node.read'], icon: Server },
           { label: 'k8s.workloads', path: '/kubernetes?view=workloads', permissions: ['kubernetes.workload.read'], icon: Boxes },
@@ -111,10 +112,10 @@ export function findNavigationItem(path: string): NavItem | undefined {
   if (target.pathname === '/kubernetes') {
     if (target.searchParams.getAll('view').length !== 1 || !['overview','nodes','workloads','config','storage','network'].includes(target.searchParams.get('view') ?? '')) target.searchParams.set('view', 'overview')
   }
-  return flatNavigation().find(item => {
+  return flatNavigation().filter(item => {
     const candidate = new URL(item.path, 'http://edo.local')
     return candidate.pathname === target.pathname && [...candidate.searchParams].every(([key, value]) => target.searchParams.get(key) === value)
-  })
+  }).sort((left, right) => new URL(right.path, 'http://edo.local').searchParams.size - new URL(left.path, 'http://edo.local').searchParams.size)[0]
 }
 
 export function navigationTrail(path: string): Array<{ label: string; key?: string }> {

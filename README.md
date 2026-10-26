@@ -46,7 +46,7 @@ docker compose --env-file .env logs -f api
 docker compose --env-file .env down
 ```
 
-更新代码并重新部署：
+更新时，先在开发机提交修改并推送到 GitHub，再在服务器拉取代码、构建并重新部署：
 
 ```bash
 git pull --ff-only origin main
@@ -60,6 +60,8 @@ docker compose --env-file .env up -d --build
 ```bash
 go install github.com/magefile/mage@v1.17.2
 ```
+
+本地进程模式仅支持 Linux 和 macOS；Windows 请使用 `mage start --docker`，在容器中运行。
 
 如果已经通过 Compose 启动 EDO，请先执行上面的停止命令，再选择下面一种方式。
 
@@ -84,14 +86,59 @@ mage start
 
 `mage start` 会把前端打进 `bin/edo`，初始化数据库并在后台启动。访问 [http://127.0.0.1:8080](http://127.0.0.1:8080)。
 
-常用命令：
+### Mage 启动参数
+
+在项目根目录执行：
+
+```bash
+mage start [--dev | --docker] [--server | --web]
+```
+
+| 参数 | 用途 |
+| --- | --- |
+| 不带参数 | 构建内嵌前端的单文件程序，迁移数据库，然后在后台启动 |
+| `--dev` | 开发模式，在当前终端运行；启动后端时会先启动 Redis、NATS 并迁移数据库 |
+| `--docker` | 使用 `deploy/compose.dev.yml` 构建并在后台启动容器 |
+| `--server` | 只启动后端；Docker 模式会同时启动后端依赖 |
+| `--web` | 只启动前端，不启动后端及其依赖 |
+| `--help` / `-h` | 查看启动参数说明 |
+
+`--dev` 和 `--docker` 不能同时使用。不指定 `--server` 或 `--web` 时默认启动前后端，同时指定两者也会启动前后端。
+
+常见组合：
 
 | 命令 | 用途 |
 | --- | --- |
-| `mage status` | 查看运行状态 |
-| `mage log --tail 100` | 持续查看日志 |
-| `mage stop` | 停止前后端，保留 Redis、NATS 和数据 |
-| `mage start --docker` | 在容器中运行开发环境，网页端口为 5173 |
+| `mage start --server` | 只构建后端、迁移数据库并在后台启动，不构建前端 |
+| `mage start --web` | 构建前端并在后台启动预览服务，默认端口为 5173 |
+| `mage start --dev` | 在当前终端运行后端和 Vite，前端支持热更新 |
+| `mage start --dev --server` | 开发模式，只在当前终端运行后端 |
+| `mage start --dev --web` | 开发模式，只在当前终端运行 Vite |
+| `mage start --docker` | 在容器中启动完整开发环境，网页默认端口为 5173 |
+| `mage start --docker --server` | 在容器中启动后端、数据库迁移和后端依赖 |
+| `mage start --docker --web` | 只启动前端容器，不自动启动后端及其依赖 |
+
+`mage start` 和 `mage start --server` 需要事先启动 Redis、NATS，可使用“单文件运行”中的依赖启动命令。只启动前端时，需要另行启动后端才能使用登录等 API 功能。
+
+### 进程与日志管理
+
+| 命令 | 用途 |
+| --- | --- |
+| `mage status` | 查看本地服务的 PID、前后台模式、就绪状态及 Compose 服务状态 |
+| `mage log --tail 100` | 从本地服务日志最后 100 行开始持续监听，默认行数为 100 |
+| `mage stop` | 安全停止 Mage 管理的本地前后端和开发环境前后端容器，保留 Redis、NATS 和数据 |
+| `mage kill` | 强制结束上述前后端，用于安全停止超时等情况 |
+| `mage migrate` | 迁移 `.env` 指定的数据库，不启动其他服务 |
+| `mage help` | 查看常用命令 |
+| `mage -l` | 查看全部 Mage 任务 |
+
+本地进程记录保存在 `data/run/`，后台日志保存在 `logs/`。重复启动已运行的本地服务会报错，需要先执行 `mage stop`，再启动。开发模式也可以按 `Ctrl+C` 停止，或在另一终端执行 `mage stop`。
+
+`mage log` 监听本地日志文件，需要系统安装 `tail`。通过 `mage start --docker` 启动的容器请使用 Compose 查看日志：
+
+```bash
+docker compose --env-file .env -f deploy/compose.dev.yml logs --tail 100 -f api web
+```
 
 ## 开始发布
 
