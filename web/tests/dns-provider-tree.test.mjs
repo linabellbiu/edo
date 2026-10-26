@@ -46,14 +46,11 @@ test('厂商与账号范围同时筛选域名和账号，使用账号 ID 区分�
   assert.equal(h.state.scopedDomains.value.length, 0)
 })
 
-test('分类和页签写入访问历史，刷新或返回可从 URL 恢复多选，不额外请求接口', async t => {
+test('分类写入访问历史并保留多选，进入单一域名列表时清理页签参数', async t => {
   const h = view(t, { query: { provider: 'cloudflare', account: ['cf-a', 'cf-b'], view: 'accounts', keep: 'yes' } })
-  assert.equal(h.state.tab.value, 'accounts')
+  assert.deepEqual(h.state.scopeAccounts.value, ['cf-a', 'cf-b'])
   await h.state.selectScope('alidns', ['ali-a'])
-  assert.deepEqual(h.replacements.at(-1), { query: { provider: 'alidns', account: ['ali-a'], view: 'accounts', keep: 'yes' } })
-  h.state.tab.value = 'domains'
-  assert.deepEqual(h.replacements.at(-1).query.account, ['cf-a', 'cf-b'])
-  assert.equal(h.replacements.at(-1).query.view, undefined)
+  assert.deepEqual(h.replacements.at(-1), { query: { provider: 'alidns', account: ['ali-a'], view: undefined, keep: 'yes' } })
   await h.state.selectScope('cloudflare', [])
   assert.equal(h.replacements.at(-1).query.account, '')
   await h.state.selectScope('', ['*'])
@@ -146,10 +143,48 @@ test('未保存账号不产生左侧分类，保存后出现厂商，删除最�
   assert.deepEqual(h.state.treeData.value, [])
 })
 
-test('刷新后失效厂商范围使用替换历史恢复全部，保留页签和其他参数', async t => {
+test('刷新后失效厂商范围使用替换历史恢复全部，清理页签并保留其他参数', async t => {
   const h = view(t, { query: { provider: 'tencentcloud', account: 'deleted', view: 'accounts', keep: 'yes' } })
   await h.state.refresh()
-  assert.deepEqual(h.replacements.at(-1).query, { provider: undefined, account: undefined, view: 'accounts', keep: 'yes' })
+  assert.deepEqual(h.replacements.at(-1).query, { provider: undefined, account: undefined, view: undefined, keep: 'yes' })
+})
+
+test('刷新包含页签参数的链接仍保留有效厂商和账号选择', async t => {
+  const h = view(t, { query: { provider: 'cloudflare', account: ['cf-a', 'cf-b'], view: 'accounts' } })
+  await h.state.refresh()
+  assert.deepEqual(h.replacements.at(-1).query, { provider: 'cloudflare', account: ['cf-a', 'cf-b'], view: undefined })
+  assert.deepEqual(h.state.scopedDomains.value.map(item => item.id), ['domain-cf-a', 'domain-cf-b'])
+})
+
+test('左侧账号管理入口按操作权限分开控制，不对失效或加载中账号发出操作', t => {
+  const h = tree(t, { canUpdate: true, canDelete: false })
+  h.state.manageAccount('cf-a', 'edit')
+  assert.deepEqual(h.events.at(-1), { name: 'manage', args: ['cf-a', 'edit'] })
+  h.state.manageAccount('cf-a', 'remove')
+  h.state.manageAccount('missing', 'edit')
+  assert.equal(h.events.length, 1)
+  h.props.canUpdate = false
+  h.props.canDelete = true
+  h.state.manageAccount('cf-a', 'toggle')
+  assert.equal(h.events.length, 1)
+  h.state.manageAccount('cf-a', 'remove')
+  assert.deepEqual(h.events.at(-1), { name: 'manage', args: ['cf-a', 'remove'] })
+  h.props.loading = true
+  h.state.manageAccount('cf-a', 'remove')
+  assert.equal(h.events.length, 2)
+})
+
+test('从左侧管理账号直接打开编辑，不改变域名范围，缺少权限不打开表单', t => {
+  const h = view(t, { query: { provider: 'cloudflare', account: 'cf-a' } })
+  h.state.manageAccount('ali-a', 'edit')
+  assert.equal(h.state.accountOpen.value, true)
+  assert.equal(h.state.editingAccountID.value, 'ali-a')
+  assert.equal(h.state.accountForm.provider, 'alidns')
+  assert.equal(h.state.accountForm.config.access_key_secret, '')
+  assert.equal(h.replacements.length, 0)
+  const readOnly = view(t, { codes: ['dns.read'] })
+  readOnly.state.manageAccount('ali-a', 'edit')
+  assert.equal(readOnly.state.accountOpen.value, false)
 })
 
 test('搜索时取消一个账号仍保留未显示账号，半选基于完整厂商范围', t => {
@@ -209,7 +244,7 @@ test('新账号保存成功后定位账号分类，失败保留输入以便修�
   h.state.newAccount()
   h.state.changeProvider('alidns')
   await h.state.saveAccount()
-  assert.deepEqual(h.replacements.at(-1).query, { provider: 'alidns', account: ['new'], view: 'accounts' })
+  assert.deepEqual(h.replacements.at(-1).query, { provider: 'alidns', account: ['new'], view: undefined })
   const failed = view(t, { api: { post: async () => { throw new Error('账号保存失败') } } })
   failed.state.newAccount()
   failed.state.changeProvider('cloudflare')
