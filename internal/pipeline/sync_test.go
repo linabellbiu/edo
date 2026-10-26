@@ -3,6 +3,8 @@ package pipeline
 import (
 	"context"
 	"errors"
+	"io"
+	"net/url"
 	"strings"
 	"testing"
 
@@ -13,11 +15,56 @@ import (
 
 type pipelineRefLister struct {
 	refs           repository.RefResult
+	refErr         error
 	pullRequestErr error
 }
 
 func (l pipelineRefLister) ListRefs(context.Context, model.GitRepository, string) (repository.RefResult, error) {
-	return l.refs, nil
+	return l.refs, l.refErr
+}
+
+func TestSyncFailureKeepsSafeMessageAndPreservesPollingCursor(t *testing.T) {
+	service, db, secrets, repositoryID := newPipelineTestService(t)
+	lister := &pipelineRefLister{refs: repository.RefResult{Branches: []repository.GitRef{{Name: "main", SHA: "first-commit"}}}}
+	service.repositories = repository.NewService(db, secrets, credential.NewService(db, secrets), lister, 4)
+	application := createManualRunTestApplication(t, service, db, repositoryID, "poll_recovery")
+	if err := db.Model(&model.ReleaseWorkflow{}).Where("application_id = ?", application.ID).Update("is_active", true).Error; err != nil {
+		t.Fatal(err)
+	}
+	if _, run, err := service.SyncApplication(context.Background(), application.ID, "poll"); err != nil || run != nil {
+		t.Fatalf("建立基线失败: run=%+v err=%v", run, err)
+	}
+	lister.refErr = &url.Error{Op: "Get", URL: "https://private.invalid/repo.git/info/refs", Err: io.EOF}
+	if _, run, err := service.SyncApplication(context.Background(), application.ID, "poll"); !errors.Is(err, io.EOF) || run != nil {
+		t.Fatalf("引用不可读时不能创建运行，内部仍应保留诊断: run=%+v err=%v", run, err)
+	}
+	var stored model.Application
+	if err := db.First(&stored, "uuid = ?", application.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if stored.SyncMessage != "代码仓库暂时不可用，将在下次检查时重试" || stored.LastCheckedAt == nil || stored.SyncStatus != model.ApplicationSyncFailed {
+		t.Fatalf("没有保存安全的同步失败状态: %+v", stored)
+	}
+	var observations []model.ApplicationRepositoryObservation
+	if err := db.Find(&observations).Error; err != nil || len(observations) != 1 || observations[0].CommitSHA != "first-commit" {
+		t.Fatalf("读取失败不应改变原监听游标: observations=%+v err=%v", observations, err)
+	}
+	lister.refErr = nil
+	lister.refs.Branches[0].SHA = "second-commit"
+	if _, run, err := service.SyncApplication(context.Background(), application.ID, "poll"); err != nil || run == nil || run.CommitSHA != "second-commit" {
+		t.Fatalf("恢复后未正常触发真实变更: run=%+v err=%v", run, err)
+	}
+	if _, run, err := service.SyncApplication(context.Background(), application.ID, "poll"); err != nil || run != nil {
+		t.Fatalf("恢复后重复触发了相同变更: run=%+v err=%v", run, err)
+	}
+	var count int64
+	if err := db.Model(&model.PipelineRun{}).Where("application_id = ?", application.ID).Count(&count).Error; err != nil || count != 1 {
+		t.Fatalf("应只产生一条真实变更运行: count=%d err=%v", count, err)
+	}
+	service.markSyncFailure(context.Background(), application.ID, errors.New("credential failure: private diagnostic"))
+	if err := db.First(&stored, "uuid = ?", application.ID).Error; err != nil || stored.SyncMessage != "代码仓库检查失败，请检查仓库地址或凭据" {
+		t.Fatalf("永久错误不应暴露内部诊断: message=%q err=%v", stored.SyncMessage, err)
+	}
 }
 
 func (l pipelineRefLister) ListPullRequests(context.Context, model.GitRepository, string, string) ([]repository.PullRequestRef, error) {

@@ -56,8 +56,8 @@ import (
 	"edo/internal/repository"
 	"edo/internal/scheduler"
 	"edo/internal/secret"
-	"edo/internal/sshdeploy"
 	"edo/internal/sqlchange"
+	"edo/internal/sshdeploy"
 	"edo/internal/systemmetrics"
 	"edo/internal/task"
 	"edo/internal/terminal"
@@ -558,16 +558,8 @@ func runServer(ctx context.Context, cfg config.Config, logger *slog.Logger, runt
 			"默认交付设置已创建",
 			"operation", "delivery_settings_bootstrap",
 			"build_plan_id", initialDelivery.BuildPlanID,
-			"deployment_plan_id", initialDelivery.DeploymentPlanID,
 			"workflow_template_id", initialDelivery.WorkflowTemplateID,
-			"local_docker_deployment", initialDelivery.LocalDockerDeployment,
 		)
-		if !initialDelivery.LocalDockerDeployment {
-			logger.Warn(
-				"本地 Docker 不可用，快速开始流水线仅包含镜像构建",
-				"operation", "delivery_settings_bootstrap",
-			)
-		}
 	}
 	terminalService := terminal.NewService(dockerService, kubernetesService, cfg.Runtime.TerminalMaxDuration)
 	notificationService := notification.NewService(resources.Database, secretManager, nil, cfg.NATS.MaxAttempts)

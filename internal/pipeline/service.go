@@ -1298,6 +1298,9 @@ func (s *Service) SyncApplication(ctx context.Context, applicationID, trigger st
 		link := &links[linkIndex]
 		refs, err := s.repositories.PollState(ctx, link.RepositoryID, includePullRequests)
 		if err != nil {
+			s.logger.Error("检查应用代码仓库失败", "operation", "pipeline_sync_repository",
+				"application_id", application.ID, "repository_id", link.RepositoryID,
+				"transient", repository.IsTransientGitError(err), "err", err)
 			s.markSyncFailure(ctx, application.ID, err)
 			return application, nil, fmt.Errorf("读取仓库“%s”失败: %w", link.Repository.Name, err)
 		}
@@ -1768,14 +1771,17 @@ func (s *Service) scanDueApplications(ctx context.Context) {
 
 func (s *Service) markSyncFailure(ctx context.Context, applicationID string, syncErr error) {
 	now := time.Now().UTC()
-	message := syncErr.Error()
-	if utf8.RuneCountInString(message) > 255 {
-		message = string([]rune(message)[:255])
+	message := "代码仓库检查失败，请检查仓库地址或凭据"
+	if repository.IsTransientGitError(syncErr) {
+		message = "代码仓库暂时不可用，将在下次检查时重试"
 	}
-	_ = s.db.WithContext(ctx).Model(&model.Application{}).Where("uuid = ?", applicationID).Updates(map[string]any{
+	if err := s.db.WithContext(ctx).Model(&model.Application{}).Where("uuid = ?", applicationID).Updates(map[string]any{
 		"sync_status": model.ApplicationSyncFailed, "sync_message": message,
 		"last_checked_at": now, "updated_at": now,
-	}).Error
+	}).Error; err != nil {
+		s.logger.Error("保存应用代码检查失败状态失败", "operation", "pipeline_sync_failure_save",
+			"application_id", applicationID, "err", err)
+	}
 }
 
 func (s *Service) markSyncReadable(ctx context.Context, application *model.Application, now time.Time, message string) error {

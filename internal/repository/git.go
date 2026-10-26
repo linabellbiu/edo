@@ -11,6 +11,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"time"
 
 	git "github.com/go-git/go-git/v5"
 	gitconfig "github.com/go-git/go-git/v5/config"
@@ -115,14 +116,33 @@ func (c *GitClient) ListRefs(
 		Name: "origin",
 		URLs: []string{repository.CloneURL},
 	})
-	refs, err := remote.ListContext(queryContext, &git.ListOptions{
-		Auth:          auth,
-		PeelingOption: git.IgnorePeeled,
-	})
-	if err != nil {
-		return RefResult{}, fmt.Errorf("查询 Git 远程引用失败: %w", err)
+	// 查询引用是只读操作；重试共用原始总超时，不为每次尝试重新计时。
+	for attempt := 0; ; attempt++ {
+		if err := queryContext.Err(); err != nil {
+			return RefResult{}, fmt.Errorf("查询 Git 远程引用失败: %w", err)
+		}
+		refs, err := remote.ListContext(queryContext, &git.ListOptions{
+			Auth:          auth,
+			PeelingOption: git.IgnorePeeled,
+		})
+		if err == nil {
+			return refsToResult(refs)
+		}
+		if attempt == 2 || !IsTransientGitError(err) || queryContext.Err() != nil {
+			return RefResult{}, fmt.Errorf("查询 Git 远程引用失败: %w", err)
+		}
+		delay := time.Duration(attempt+1) * 200 * time.Millisecond
+		if retryAfter := gitRetryAfter(err); retryAfter > delay {
+			delay = retryAfter
+		}
+		timer := time.NewTimer(delay)
+		select {
+		case <-queryContext.Done():
+			timer.Stop()
+			return RefResult{}, fmt.Errorf("查询 Git 远程引用失败: %w", queryContext.Err())
+		case <-timer.C:
+		}
 	}
-	return refsToResult(refs)
 }
 
 func (c *GitClient) CommitMessage(

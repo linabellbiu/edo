@@ -3,38 +3,28 @@ package pipeline
 import (
 	"context"
 	"fmt"
-	"time"
 
 	"gorm.io/gorm"
 
-	"edo/internal/deployment"
-	"edo/internal/dockerengine"
 	"edo/internal/model"
 )
 
 const (
-	initialDeliveryActor               = "system"
-	initialBuildPlanName               = "快速开始 Dockerfile 构建"
-	initialDeploymentPlanName          = "快速开始 本地 Docker 部署"
-	initialDeploymentTargetName        = "快速开始 本地 Docker"
-	initialDeploymentEnvironmentID     = "edo-local-environment"
-	initialDeploymentEnvironmentName   = "本地环境"
-	initialWorkflowTemplateName        = "快速开始 Dockerfile 流水线"
-	initialBuildPlanDescription        = "默认读取仓库根目录的 Dockerfile，在当前 EDO 构建运行时生成本地 OCI 镜像。"
-	initialDeploymentPlanDescription   = "把上游镜像部署到当前 EDO 的本地 Docker，容器名在应用运行时自动生成。"
-	initialDeploymentTargetDescription = "当前 EDO 构建运行时中的本地 Docker，仅用于快速开始。"
+	initialDeliveryActor        = "system"
+	initialBuildPlanName        = "快速开始 Dockerfile 构建"
+	initialWorkflowTemplateName = "快速开始 Dockerfile 流水线"
+	initialBuildPlanDescription = "默认读取仓库根目录的 Dockerfile，在当前 EDO 构建运行时生成本地 OCI 镜像。"
 )
 
 type InitialDeliverySettings struct {
-	Created               bool
-	LocalDockerDeployment bool
-	BuildPlanID           string
-	DeploymentPlanID      string
-	WorkflowTemplateID    string
+	Created            bool
+	BuildPlanID        string
+	WorkflowTemplateID string
 }
 
 // EnsureInitialDeliverySettings 只在交付资源从未创建过时写入一次快速开始基线。
 // 构建和部署方案使用软删除，因此管理员删除默认资源后，后续启动也不会静默恢复。
+// 环境分组和部署位置必须由用户显式配置，初始化只提供构建流程。
 func (s *Service) EnsureInitialDeliverySettings(ctx context.Context) (InitialDeliverySettings, error) {
 	if s == nil || s.db == nil {
 		return InitialDeliverySettings{}, fmt.Errorf("初始化默认交付设置失败：流水线服务不可用")
@@ -46,19 +36,13 @@ func (s *Service) EnsureInitialDeliverySettings(ctx context.Context) (InitialDel
 	if exists {
 		return InitialDeliverySettings{}, nil
 	}
-	localDockerReady, err := s.localDockerReady(ctx)
-	if err != nil {
-		return InitialDeliverySettings{}, err
-	}
-
-	result := InitialDeliverySettings{LocalDockerDeployment: localDockerReady}
+	result := InitialDeliverySettings{}
 	err = s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		exists, err := deliveryResourcesExist(tx)
 		if err != nil {
 			return err
 		}
 		if exists {
-			result.LocalDockerDeployment = false
 			return nil
 		}
 
@@ -89,37 +73,6 @@ func (s *Service) EnsureInitialDeliverySettings(ctx context.Context) (InitialDel
 		}
 		result.BuildPlanID = buildPlan.ID
 
-		var deploymentPlan *model.DeploymentPlan
-		if localDockerReady {
-			now := time.Now().UTC()
-			environment := model.Environment{
-				ID: initialDeploymentEnvironmentID, Name: initialDeploymentEnvironmentName,
-				IsActive:  true,
-				CreatedBy: initialDeliveryActor, CreatedAt: now, UpdatedAt: now,
-			}
-			if err := tx.Where("uuid = ?", environment.ID).FirstOrCreate(&environment).Error; err != nil {
-				return fmt.Errorf("创建默认本地环境失败: %w", err)
-			}
-			membership := model.EnvironmentHost{EnvironmentID: environment.ID, HostID: model.BuiltinLocalHostID, CreatedAt: now}
-			if err := tx.FirstOrCreate(&membership).Error; err != nil {
-				return fmt.Errorf("关联默认本地主机失败: %w", err)
-			}
-			deploymentPlan, err = seed.CreateDeploymentPlan(ctx, initialDeliveryActor, DeploymentPlanInput{
-				Name: initialDeploymentPlanName, Kind: model.DeploymentPlanDocker,
-				Description: initialDeploymentPlanDescription,
-				DeploymentTarget: &deployment.TargetInput{
-					Name: initialDeploymentTargetName, Description: initialDeploymentTargetDescription,
-					Platform: model.DeploymentDocker, EnvironmentID: environment.ID,
-					HostID: model.BuiltinLocalHostID, RuntimeID: dockerengine.LocalEndpointID,
-					RolloutTimeout: 300,
-				},
-			})
-			if err != nil {
-				return fmt.Errorf("创建默认部署方案失败: %w", err)
-			}
-			result.DeploymentPlanID = deploymentPlan.ID
-		}
-
 		stages := []model.WorkflowStage{{
 			ID: "build", Name: "构建",
 			Tasks: []model.WorkflowNode{{
@@ -128,16 +81,6 @@ func (s *Service) EnsureInitialDeliverySettings(ctx context.Context) (InitialDel
 			}},
 		}}
 		description := "手动选择分支或 Tag 后，使用仓库根目录 Dockerfile 构建镜像。"
-		if deploymentPlan != nil {
-			stages = append(stages, model.WorkflowStage{
-				ID: "deploy", Name: "部署",
-				Tasks: []model.WorkflowNode{{
-					ID: "deploy-local-docker", Type: model.WorkflowNodeDeploy, Name: "部署到本地 Docker",
-					Config: model.WorkflowNodeConfig{DeploymentPlanID: deploymentPlan.ID},
-				}},
-			})
-			description = "手动选择分支或 Tag 后，使用仓库根目录 Dockerfile 构建镜像并部署到本地 Docker。"
-		}
 		template, err := seed.CreateWorkflowTemplate(ctx, initialDeliveryActor, WorkflowTemplateInput{
 			WorkflowInput: WorkflowInput{
 				SchemaVersion: model.WorkflowSchemaVersion, Name: initialWorkflowTemplateName, Activate: true,
@@ -166,17 +109,6 @@ func (s *Service) EnsureInitialDeliverySettings(ctx context.Context) (InitialDel
 		return InitialDeliverySettings{}, fmt.Errorf("初始化默认交付设置失败: %w", err)
 	}
 	return result, nil
-}
-
-func (s *Service) localDockerReady(ctx context.Context) (bool, error) {
-	if s.docker == nil || s.deployments == nil {
-		return false, nil
-	}
-	endpoint, err := s.docker.Find(ctx, dockerengine.LocalEndpointID)
-	if err != nil {
-		return false, fmt.Errorf("检查本地 Docker 默认交付能力失败: %w", err)
-	}
-	return endpoint != nil && endpoint.IsActive, nil
 }
 
 func deliveryResourcesExist(tx *gorm.DB) (bool, error) {
