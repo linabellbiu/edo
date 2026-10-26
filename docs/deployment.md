@@ -1,5 +1,7 @@
 # EDO 部署说明
 
+EDO 自身使用单文件程序或 Docker Compose 部署。单文件运行方式见 [README](../README.md#单文件运行)。
+
 ## Docker Compose
 
 复制根目录环境文件模板，生成密钥并填入 `.env` 的 `EDO_SECRETS_KEY`：
@@ -19,21 +21,6 @@ docker compose --env-file .env up -d --build
 这一行为用于提供可直接登录的统一初始化环境。升级已有数据库时不会修改现有账户、密码或会话；旧数据导入仍可在首次启动服务前写入空账户库，全新部署无需额外账户迁移步骤。公开或生产部署应通过网络访问控制限制登录入口，并按实际安全要求主动重置默认密码。
 
 Compose 默认使用持久化 SQLite，适合单机。需要运行多个 EDO 实例时，在首次初始化前将 `.env` 中的 `EDO_COMPOSE_DATABASE_DRIVER` 和 `EDO_COMPOSE_DATABASE_DSN` 改为 PostgreSQL 或 MySQL，并把 `EDO_COMPOSE_REDIS_URL`、`EDO_COMPOSE_NATS_URL` 指向高可用 Redis 与 NATS JetStream。连接 URL 可以携带认证信息，但 `.env` 不得提交且应限制为仅部署账户可读。每个实例都是包含 API 和后台任务 Goroutine 的完整单进程服务。
-
-## Kubernetes
-
-1. 将 `deploy/kubernetes/secret.example.yaml` 复制到集群外的密钥管理流程，替换 PostgreSQL、Redis、NATS 和加密密钥。
-2. 把 `deployment.yaml` 中的 `ghcr.io/example/edo:latest` 替换为自己的不可变镜像摘要。
-3. 先创建 Secret，再应用 Kustomize 资源：
-
-```bash
-kubectl apply -f secret.yaml
-kubectl apply -k deploy/kubernetes
-```
-
-示例只运行一个 EDO 主容器，数据库迁移由 initContainer 完成。主进程同时处理 HTTP/WebSocket 和后台任务，不需要单独的 Worker Deployment。`edo` ServiceAccount 的示例 ClusterRole 只允许读取 Namespace/Pod、执行 Pod Exec，以及读取和更新 Deployment；应按实际目标命名空间进一步缩小权限。
-
-Ingress 示例位于 `deploy/kubernetes/ingress.example.yaml`，为长连接设置了两小时代理超时。生产环境必须配置 TLS，否则 Secure Cookie 无法工作。
 
 EDO 按产品约定不校验 HTTP API 和终端 WebSocket 的 `Origin`、`Host` 或 `Sec-Fetch-Site`，跨来源请求会直接进入登录与权限校验。部署时必须通过 HTTPS、强密码、最小权限和网络访问控制保护服务；反向代理仍建议让前端与 API 使用同一站点，避免扩大浏览器会话的攻击面。
 
