@@ -22,6 +22,8 @@ var (
 	ErrExistingInstallation = errors.New("主机已有 Kubernetes 安装或配置，请接入现有集群")
 	ErrRemote               = errors.New("主机安装命令执行失败，请检查主机连接和服务日志")
 	ErrReadiness            = errors.New("等待 K3s 节点就绪超时，请检查主机上的 K3s 服务")
+	ErrPreflightFailed      = errors.New("节点前置检查未通过，请处理阻断项后重新检查")
+	ErrPreflightRequired    = errors.New("安装计划缺少当前前置检查，请重新检查并预览")
 )
 
 type ValidationError struct{ Message string }
@@ -38,6 +40,7 @@ func ValidationMessage(err error) string {
 
 type Input struct {
 	targetVersion string
+	targetCAData  []byte
 	Action        string         `json:"action"`
 	Profile       string         `json:"profile"`
 	Name          string         `json:"name"`
@@ -62,20 +65,21 @@ type Host struct {
 }
 
 type Plan struct {
-	ID            string    `json:"id"`
-	Action        string    `json:"action"`
-	Name          string    `json:"name"`
-	Status        string    `json:"status"`
-	ClusterID     string    `json:"cluster_id,omitempty"`
-	Endpoint      string    `json:"endpoint"`
-	Version       string    `json:"version"`
-	TargetVersion string    `json:"target_version,omitempty"`
-	ExpiresAt     time.Time `json:"expires_at"`
-	Hosts         []Host    `json:"hosts"`
-	ServerConfig  string    `json:"server_config"`
-	AgentConfig   string    `json:"agent_config"`
-	Commands      []string  `json:"commands"`
-	Warnings      []string  `json:"warnings"`
+	ID            string           `json:"id"`
+	Action        string           `json:"action"`
+	Name          string           `json:"name"`
+	Status        string           `json:"status"`
+	ClusterID     string           `json:"cluster_id,omitempty"`
+	Endpoint      string           `json:"endpoint"`
+	Version       string           `json:"version"`
+	TargetVersion string           `json:"target_version,omitempty"`
+	ExpiresAt     time.Time        `json:"expires_at"`
+	Hosts         []Host           `json:"hosts"`
+	ServerConfig  string           `json:"server_config"`
+	AgentConfig   string           `json:"agent_config"`
+	Commands      []string         `json:"commands"`
+	Warnings      []string         `json:"warnings"`
+	Preflight     *PreflightReport `json:"preflight,omitempty"`
 }
 
 type Cluster struct {

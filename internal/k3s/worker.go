@@ -185,7 +185,10 @@ func (s *Service) finish(ctx context.Context, record model.K3sInstallation, err 
 }
 
 func safeFailure(err error) string {
-	for _, safe := range []error{ErrPermission, ErrHostChanged, ErrTargetVersionChanged, ErrHostBusy, ErrExistingInstallation, ErrRemote, ErrReadiness, ErrInvalidInput, kube.ErrJoinUnsupported} {
+	if errors.Is(err, ErrPreflightFailed) {
+		return preflightFailureMessage(err)
+	}
+	for _, safe := range []error{ErrPermission, ErrHostChanged, ErrTargetVersionChanged, ErrPreflightRequired, ErrHostBusy, ErrExistingInstallation, ErrRemote, ErrReadiness, ErrInvalidInput, kube.ErrJoinUnsupported} {
 		if errors.Is(err, safe) {
 			return safe.Error()
 		}
@@ -229,25 +232,25 @@ func (s *Service) perform(ctx context.Context, record *model.K3sInstallation) er
 	if json.Unmarshal(record.Hosts, &hosts) != nil {
 		return ErrInvalidInput
 	}
-	// Validate every selected machine before installing the first one. Re-run
-	// the guard in each install shell to cover changes after preflight.
+	// Re-read every selected machine before installing the first one. The
+	// preview report is never used as a cache of current machine readiness.
 	for index, host := range hosts {
 		s.log(record, "检查主机："+host.Name)
 		s.hostProgress(record, hosts, index, "checking", "")
-		current, bundle, err := s.loadReviewedHost(ctx, snapshot, host.ID)
-		if err != nil {
-			return err
+	}
+	report, err := s.runPreflight(ctx, input, hosts)
+	if err != nil {
+		return err
+	}
+	for index, result := range report.Hosts {
+		if result.Passed {
+			s.hostProgress(record, hosts, index, "ready", "检查通过")
+		} else {
+			s.hostProgress(record, hosts, index, "failed", "前置检查未通过")
 		}
-		options := input.AgentOptions
-		if host.Role == "server" {
-			options = input.ServerOptions
-		}
-		result, err := s.transport.Read(ctx, current, bundle, preflightScript(input.Installer, options))
-		if err := classifyRemoteRead(result, err); err != nil {
-			s.hostProgress(record, hosts, index, "failed", safeFailure(err))
-			return err
-		}
-		s.hostProgress(record, hosts, index, "ready", "检查通过")
+	}
+	if err := requirePreflight(report); err != nil {
+		return err
 	}
 	if input.Action == "create" {
 		var serverIndex int
@@ -258,6 +261,10 @@ func (s *Service) perform(ctx context.Context, record *model.K3sInstallation) er
 			}
 		}
 		host := hosts[serverIndex]
+		installInput, err := s.beforeHostInstall(ctx, *record, snapshot, host)
+		if err != nil {
+			return err
+		}
 		s.log(record, "安装控制平面："+host.Name)
 		s.hostProgress(record, hosts, serverIndex, "installing", "")
 		current, bundle, err := s.loadReviewedHost(ctx, snapshot, host.ID)
@@ -269,7 +276,7 @@ func (s *Service) perform(ctx context.Context, record *model.K3sInstallation) er
 			return err
 		}
 		token := base64.RawURLEncoding.EncodeToString(key)
-		script, err := installScript(host, input, record.ID, token)
+		script, err := installScript(host, installInput, record.ID, token)
 		if err != nil {
 			return err
 		}
@@ -361,11 +368,15 @@ func (s *Service) installAgent(ctx context.Context, record *model.K3sInstallatio
 	if join.Token == "" {
 		return kube.ErrJoinUnsupported
 	}
+	input, err := s.beforeHostInstall(ctx, *record, snapshot, host)
+	if err != nil {
+		return err
+	}
 	current, bundle, err := s.loadReviewedHost(ctx, snapshot, host.ID)
 	if err != nil {
 		return err
 	}
-	script, err := installScript(host, snapshot.Input, record.ID, join.Token)
+	script, err := installScript(host, input, record.ID, join.Token)
 	if err != nil {
 		return err
 	}

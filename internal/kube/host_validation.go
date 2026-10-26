@@ -265,25 +265,13 @@ func normalizedIdentityID(value string) string {
 }
 
 func nodeMatchesHost(node nodeIdentity, host hostidentity.Identity) bool {
-	machineID, systemUUID := normalizedIdentityID(host.MachineID), normalizedIdentityID(host.SystemUUID)
-	// 容器可拥有独立 MachineID；可比较的硬件 UUID 优先，矛盾时不能由地址或名称绕过。
-	if node.systemUUID != "" && systemUUID != "" {
-		return node.systemUUID == systemUUID
+	addresses := make([]string, 0, len(node.addresses))
+	for _, address := range node.addresses {
+		addresses = append(addresses, address.String())
 	}
-	// Docker/K3d 节点可使用独立 MachineID，但仍共享宿主的内核启动身份。
-	bootID := normalizedIdentityID(host.BootID)
-	if node.bootID != "" && bootID != "" {
-		return node.bootID == bootID
-	}
-	if node.machineID != "" && machineID != "" {
-		return node.machineID == machineID
-	}
-	for _, address := range host.Addresses {
-		if ip, ok := identityIP(address); ok && slices.Contains(node.addresses, ip) {
-			return true
-		}
-	}
-	return false
+	return hostidentity.Matches(hostidentity.Identity{
+		Addresses: addresses, MachineID: node.machineID, SystemUUID: node.systemUUID, BootID: node.bootID,
+	}, host)
 }
 
 func sameHostConnection(before, after model.Host) bool {

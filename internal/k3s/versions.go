@@ -115,6 +115,9 @@ func (s *Service) recheckRuntime(ctx context.Context, record model.K3sInstallati
 	if err := s.recheck(ctx, record, snapshot); err != nil {
 		return err
 	}
+	if snapshot.PreflightVersion != preflightVersion {
+		return ErrPreflightRequired
+	}
 	if snapshot.Input.Action != "join" {
 		return nil
 	}

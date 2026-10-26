@@ -95,6 +95,8 @@ func (t *sshTransport) Run(ctx context.Context, host model.Host, bundle sshclien
 					return ErrExistingInstallation
 				case 43:
 					return ErrHostBusy
+				case 44:
+					return ErrPreflightFailed
 				}
 			}
 			return ErrRemote
@@ -196,7 +198,7 @@ func preflightScript(installer map[string]any, options map[string]any, ownedLock
 	if unitDir == "" {
 		unitDir = "/etc/systemd/system"
 	}
-	paths := []string{"/etc/rancher/k3s", "/etc/rancher/rke2", "/etc/kubernetes/kubelet.conf", "/var/lib/kubelet", "/var/snap/microk8s", dataDir}
+	paths := []string{"/etc/rancher/k3s", "/etc/rancher/rke2", "/var/lib/rancher/rke2", "/etc/kubernetes/kubelet.conf", "/etc/kubernetes/admin.conf", "/etc/kubernetes/manifests", "/var/lib/kubelet", "/var/snap/microk8s", dataDir}
 	if !preloadedBinary(installer) {
 		paths = append(paths, binaryPath(installer))
 	}
@@ -211,7 +213,7 @@ func preflightScript(installer map[string]any, options map[string]any, ownedLock
 	if preloadedBinary(installer) {
 		binary := shellQuote(binaryPath(installer))
 		version, _ := installer["INSTALL_K3S_VERSION"].(string)
-		script.WriteString("[ -x " + binary + " ]\n[ \"$(" + binary + " --version | head -n 1 | awk '{print $3}')\" = " + shellQuote(version) + " ]\n")
+		script.WriteString("[ -x " + binary + " ]\n[ \"$(timeout 3 " + binary + " --version | head -n 1 | awk '{print $3}')\" = " + shellQuote(version) + " ]\n")
 		script.WriteString("if command -v rke2 >/dev/null 2>&1; then printf 'EDO_K3S_EXISTS\\n'; exit 42; fi\n")
 	} else {
 		script.WriteString("if command -v k3s >/dev/null 2>&1 || command -v rke2 >/dev/null 2>&1; then printf 'EDO_K3S_EXISTS\\n'; exit 42; fi\n")
@@ -219,6 +221,7 @@ func preflightScript(installer map[string]any, options map[string]any, ownedLock
 	for _, directory := range []string{unitDir, "/etc/systemd/system", "/usr/lib/systemd/system", "/etc/init.d"} {
 		script.WriteString("for unit in " + shellQuote(directory) + "/k3s* " + shellQuote(directory) + "/rke2* " + shellQuote(directory) + "/kubelet.service; do if [ -e \"$unit\" ]; then printf 'EDO_K3S_EXISTS\\n'; exit 42; fi; done\n")
 	}
+	script.WriteString("if timeout 2 ps -eo comm= 2>/dev/null | awk '$1 ~ /^(k3s|rke2|kubelet|kube-apiserver|kube-controller|kube-scheduler|microk8s)(-|$)/ {found=1} END{exit !found}'; then printf 'EDO_K3S_EXISTS\\n'; exit 42; fi\n")
 	script.WriteString("printf 'EDO_K3S_PREFLIGHT_OK\\n'\n")
 	return script.String()
 }
@@ -289,8 +292,11 @@ func installScript(host Host, input Input, installationID, token string) (string
 	// Repeat the read-only guard in the same privileged shell immediately before
 	// writing configuration; a successful old preview is not install permission.
 	script := "set -eu\n[ \"$(id -u)\" = 0 ]\nif ! mkdir -m 700 /run/edo-k3s-install.lock; then printf 'EDO_K3S_BUSY\\n'; exit 43; fi\nwork=''\ncleanup() { if [ -n \"$work\" ]; then rm -f \"$work/install.sh\"; rmdir \"$work\"; fi; rmdir /run/edo-k3s-install.lock; }\ntrap cleanup EXIT\ntrap 'exit 130' HUP INT TERM\n"
-	script += preflightScript(input.Installer, options, true) + "\nwork=$(mktemp -d /tmp/edo-k3s-install.XXXXXX)\n"
+	script += preflightScript(input.Installer, options, true) + "\nset +e\n" + preflightEnvironmentScript(host, input, host.Role == "agent" || input.Action == "join") + "\nif [ \"$edo_failed\" != 0 ]; then exit 44; fi\nset -e\nwork=$(mktemp -d /tmp/edo-k3s-install.XXXXXX)\n"
 	script += "curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 --connect-timeout 15 --max-time 180 --retry 3 https://get.k3s.io -o \"$work/install.sh\"\n"
+	// Downloads may take minutes. An external installer does not honor EDO's
+	// lock, so repeat the lightweight guard after download and before writes.
+	script += preflightScript(input.Installer, options, true) + "\n"
 	script += "install -d -m 700 /etc/rancher/k3s\nprintf '%s' " + shellQuote(encoded) + " | base64 -d > /etc/rancher/k3s/config.yaml\nchmod 600 /etc/rancher/k3s/config.yaml\n"
 	script += installerCommand(host.Role, input.Installer, "\"$work/install.sh\"") + "\n"
 	if host.Role == "server" {

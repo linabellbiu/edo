@@ -21,6 +21,7 @@ import (
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/rest"
 
 	"edo/internal/config"
 	"edo/internal/database"
@@ -38,11 +39,12 @@ const executionTimeout = 45 * time.Minute
 var validName = regexp.MustCompile(`^[\p{L}\p{N}][\p{L}\p{N}_. -]{1,127}$`)
 
 type savedInput struct {
-	Input         Input             `json:"input"`
-	HostDigests   map[string]string `json:"host_digests"`
-	AuthVersion   uint64            `json:"auth_version"`
-	ClusterDigest string            `json:"cluster_digest,omitempty"`
-	TargetVersion string            `json:"target_version,omitempty"`
+	Input            Input             `json:"input"`
+	HostDigests      map[string]string `json:"host_digests"`
+	AuthVersion      uint64            `json:"auth_version"`
+	ClusterDigest    string            `json:"cluster_digest,omitempty"`
+	TargetVersion    string            `json:"target_version,omitempty"`
+	PreflightVersion int               `json:"preflight_version,omitempty"`
 }
 
 type clusterService interface {
@@ -53,6 +55,7 @@ type clusterService interface {
 	CreateNodeJoin(context.Context, string, kube.NodeJoinInput) (*kube.NodeJoin, error)
 	RevokeNodeJoin(context.Context, string, string, kube.ResourceIdentity) error
 	Clientset(context.Context, string) (*kubernetes.Clientset, error)
+	RESTConfig(context.Context, string) (*rest.Config, error)
 }
 
 type Service struct {
@@ -340,6 +343,10 @@ func (s *Service) normalize(ctx context.Context, input Input) (Input, []Host, ma
 }
 
 func (s *Service) Preview(ctx context.Context, actorID string, input Input) (*Plan, error) {
+	// Include authorization, live version reads and the final review in the
+	// same budget as SSH checks, so HTTP can always finish within its deadline.
+	ctx, cancel := context.WithTimeout(ctx, PreflightTimeout)
+	defer cancel()
 	actor, err := s.authorize(ctx, actorID, input.Action)
 	if err != nil {
 		return nil, err
@@ -349,6 +356,13 @@ func (s *Service) Preview(ctx context.Context, actorID string, input Input) (*Pl
 	}
 	input, hosts, digests, cluster, warnings, err := s.normalize(ctx, input)
 	if err != nil {
+		return nil, err
+	}
+	preflight, err := s.runPreflight(ctx, input, hosts)
+	if err != nil {
+		return nil, err
+	}
+	if err := requirePreflight(preflight); err != nil {
 		return nil, err
 	}
 	now := time.Now().UTC()
@@ -371,7 +385,7 @@ func (s *Service) Preview(ctx context.Context, actorID string, input Input) (*Pl
 		}
 	}
 	version, _ := input.Installer["INSTALL_K3S_VERSION"].(string)
-	plan := &Plan{ID: id, Action: input.Action, Name: input.Name, Status: "planned", ClusterID: input.ClusterID, Endpoint: input.Endpoint, Version: version, TargetVersion: input.targetVersion, ExpiresAt: now.Add(planTTL), Hosts: hosts, ServerConfig: server, AgentConfig: agent, Warnings: warnings, Commands: []string{}}
+	plan := &Plan{ID: id, Action: input.Action, Name: input.Name, Status: "planned", ClusterID: input.ClusterID, Endpoint: input.Endpoint, Version: version, TargetVersion: input.targetVersion, ExpiresAt: now.Add(planTTL), Hosts: hosts, ServerConfig: server, AgentConfig: agent, Warnings: warnings, Commands: []string{}, Preflight: preflight}
 	for _, host := range hosts {
 		plan.Commands = append(plan.Commands, previewCommand(host, input.Installer))
 	}
@@ -379,9 +393,15 @@ func (s *Service) Preview(ctx context.Context, actorID string, input Input) (*Pl
 	if disabled, _ := input.ServerOptions["disable-agent"].(bool); disabled {
 		plan.Warnings = append(plan.Warnings, "禁用 Server Agent 后不会注册该控制平面节点，该主机暂不自动关联。")
 	}
-	snapshot := savedInput{Input: input, HostDigests: digests, AuthVersion: actor.AuthVersion, TargetVersion: input.targetVersion}
+	snapshot := savedInput{Input: input, HostDigests: digests, AuthVersion: actor.AuthVersion, TargetVersion: input.targetVersion, PreflightVersion: preflightVersion}
 	if cluster != nil {
 		snapshot.ClusterDigest = clusterDigest(cluster)
+	}
+	// SSH checks can take time; scope, credentials and target version must still
+	// match the review before persisting an executable plan.
+	review := model.K3sInstallation{CreatedBy: actorID, Action: input.Action, Name: input.Name}
+	if err := s.recheckRuntime(ctx, review, snapshot); err != nil {
+		return nil, err
 	}
 	encoded, _ := json.Marshal(snapshot)
 	ciphertext, err := s.secrets.Encrypt(string(encoded), []byte("k3s-installation:"+id))

@@ -45,6 +45,26 @@ export interface K3sPlanHost {
   command?: string
   config?: string
 }
+export interface K3sPreflightCheck {
+  id: string
+  name: string
+  status: 'passed' | 'warning' | 'failed'
+  message: string
+}
+export interface K3sHostPreflight {
+  host_id: string
+  host_name: string
+  role: 'server' | 'agent'
+  hostname: string
+  passed: boolean
+  checks: K3sPreflightCheck[]
+}
+export interface K3sPreflightReport {
+  checked_at: string
+  passed: boolean
+  checks: K3sPreflightCheck[]
+  hosts: K3sHostPreflight[]
+}
 export interface K3sPlan {
   id: string
   expires_at: string
@@ -59,6 +79,7 @@ export interface K3sPlan {
   installer_config?: string
   commands?: string[]
   warnings?: string[]
+  preflight?: K3sPreflightReport
 }
 export interface K3sInstallation {
   id: string
@@ -80,7 +101,7 @@ export async function getK3sCatalog(clusterID = '', signal?: AbortSignal) {
   return (await client.get<K3sCatalog>('/kubernetes/k3s/options', { params:clusterID?{cluster_id:clusterID}:{},signal })).data
 }
 export async function previewK3sPlan(input: K3sPlanInput, signal?: AbortSignal) {
-  return (await client.post<K3sPlan>('/kubernetes/k3s/plans', input, { signal, timeout: 60_000 })).data
+  return (await client.post<K3sPlan>('/kubernetes/k3s/plans', input, { signal, timeout: 180_000 })).data
 }
 export async function startK3sInstallation(planID: string, signal?: AbortSignal) {
   return (await client.post<K3sInstallation>('/kubernetes/k3s/installations', { plan_id: planID }, { signal })).data

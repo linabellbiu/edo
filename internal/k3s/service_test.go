@@ -2,9 +2,11 @@ package k3s
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -37,6 +39,7 @@ func (a *testAuthorizer) HasPermission(context.Context, *model.User, string) (bo
 }
 
 type fakeTransport struct {
+	mu         sync.Mutex
 	writes     []string
 	reads      int
 	existing   bool
@@ -44,18 +47,32 @@ type fakeTransport struct {
 }
 
 func (f *fakeTransport) Run(_ context.Context, _ model.Host, _ sshclient.Bundle, script string, _ io.Writer) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.writes = append(f.writes, script)
 	return nil
 }
-func (f *fakeTransport) Read(_ context.Context, _ model.Host, _ sshclient.Bundle, script string) (string, error) {
+func (f *fakeTransport) Read(_ context.Context, host model.Host, _ sshclient.Bundle, script string) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.reads++
 	if strings.Contains(script, "cat /etc/rancher/k3s/k3s.yaml") {
 		return f.kubeconfig, nil
 	}
 	if f.existing {
-		return "EDO_K3S_EXISTS", ErrRemote
+		return strings.Replace(preflightFixtureOutput(host.ID), "EDO_K3S_CHECK\texisting_installation\tpassed", "EDO_K3S_CHECK\texisting_installation\tfailed", 1), nil
 	}
-	return "EDO_K3S_PREFLIGHT_OK", nil
+	return preflightFixtureOutput(host.ID), nil
+}
+
+func preflightFixtureOutput(id string) string {
+	var result strings.Builder
+	for _, definition := range hostPreflightDefinitions {
+		fmt.Fprintf(&result, "EDO_K3S_CHECK\t%s\tpassed\n", definition.id)
+	}
+	identity := sha256.Sum256([]byte(id))
+	fmt.Fprintf(&result, "EDO_K3S_HOSTNAME\thost-%x\nEDO_K3S_IDENTITY_BEGIN\naddresses\t192.0.2.10\nmachine_id\t%x\nsystem_uuid\t\nboot_id\t\nEDO_K3S_IDENTITY_END\nEDO_K3S_REPORT_END\n", identity[:4], identity[:16])
+	return result.String()
 }
 
 type fixture struct {
@@ -145,8 +162,8 @@ func TestPreviewUsesPinnedVersionFinalRedactedConfigAndEncryptedSnapshot(t *test
 	if snapshot.Input.Installer["INSTALL_K3S_VERSION"] != "v1.36.0+k3s1" {
 		t.Fatal("overrides must win")
 	}
-	if f.transport.reads != 0 || len(f.transport.writes) != 0 {
-		t.Fatal("preview must not connect or install")
+	if f.transport.reads != 1 || len(f.transport.writes) != 0 || plan.Preflight == nil || !plan.Preflight.Passed {
+		t.Fatal("preview must run read-only checks without installing")
 	}
 	defaultPlan, err := f.service.Preview(f.ctx, f.actor.ID, f.input())
 	if err != nil {
@@ -215,8 +232,8 @@ func TestDefaultPreviewIgnoresRetainedCustomOptions(t *testing.T) {
 			if !strings.Contains(plan.Commands[0], CatalogK3sVersion) {
 				t.Fatal("default installation command must pin the catalog version")
 			}
-			if f.transport.reads != 0 || len(f.transport.writes) != 0 {
-				t.Fatal("preview must not connect or install")
+			if f.transport.reads != 1 || len(f.transport.writes) != 0 || plan.Preflight == nil || !plan.Preflight.Passed {
+				t.Fatal("preview must run read-only checks without installing")
 			}
 		})
 	}
@@ -357,10 +374,10 @@ func TestWorkerRechecksRevokedPermissionAndDoesNotInstallExistingKubernetes(t *t
 			if finished.Status != "failed" || len(f.transport.writes) != 0 {
 				t.Fatalf("unsafe execution: %s, %d writes", finished.Status, len(f.transport.writes))
 			}
-			if scenario == "permission" && f.transport.reads != 0 {
+			if scenario == "permission" && f.transport.reads != 1 {
 				t.Fatal("revoked actor reached SSH")
 			}
-			if scenario == "existing" && !strings.Contains(finished.ErrorMessage, "已有") {
+			if scenario == "existing" && !strings.Contains(finished.ErrorMessage, "现有 Kubernetes") {
 				t.Fatal(finished.ErrorMessage)
 			}
 			var locks int64
@@ -471,9 +488,17 @@ func (k *fakeClusters) Clientset(context.Context, string) (*kubernetes.Clientset
 	return k.client, nil
 }
 
+func (k *fakeClusters) RESTConfig(context.Context, string) (*rest.Config, error) {
+	return &rest.Config{Host: k.cluster.APIServer}, nil
+}
+
 func fakeClusterClient(t *testing.T, f fixture) *fakeClusters {
 	t.Helper()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/readyz" {
+			_, _ = io.WriteString(w, "ok")
+			return
+		}
 		if r.URL.Path != "/api/v1/nodes" {
 			http.NotFound(w, r)
 			return

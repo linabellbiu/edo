@@ -11,7 +11,10 @@ const deferred=()=>{let resolve,reject;const promise=new Promise((yes,no)=>{reso
 const catalog={version:'v1.37.1+k3s1',default_version:'v1.37.1+k3s1',catalog_version:'2026-10-26',sources:['https://docs.k3s.io/cli/server'],server:[],agent:[],installer:[]}
 const targetVersion='v1.35.5+k3s1'
 const host=id=>({id,name:`Host ${id}`,mode:'ssh',address:`192.0.2.${id}`,is_builtin:false,is_active:true,capabilities:[],credential_configured:true})
-const plan=()=>({id:'plan-1',action:'create',expires_at:new Date(Date.now()+300000).toISOString(),hosts:[{id:'1',name:'Host 1',address:'192.0.2.1',role:'server'}],server_config:'disable: []',agent_config:'',commands:[],warnings:[]})
+const preflightCheck=(status='passed')=>({id:'memory',name:'内存',status,message:status==='failed'?'可用内存不足，请扩容后重试':'满足角色最低要求'})
+const preflightReport=(passed=true)=>({checked_at:new Date().toISOString(),passed,checks:[],hosts:[{host_id:'1',host_name:'Host 1',role:'server',hostname:'master-a',passed,checks:[preflightCheck(passed?'passed':'failed')]}]})
+const preflightFailure=report=>({message:'前置检查未通过',response:{status:409,data:{code:'k3s_preflight_failed',message:'前置检查未通过',preflight:report}}})
+const plan=()=>({id:'plan-1',action:'create',expires_at:new Date(Date.now()+300000).toISOString(),hosts:[{id:'1',name:'Host 1',address:'192.0.2.1',role:'server'}],server_config:'disable: []',agent_config:'',commands:[],warnings:[],preflight:preflightReport()})
 const permissions=['cluster.create','cluster.execute','cluster.update','cluster.read','kubernetes.node.create']
 
 function harness({action='create',codes=permissions,api={}}={}){
@@ -153,6 +156,79 @@ test('节点安装使用当前集群，选择工作节点是必要条件，缺�
   for(const missing of ['cluster.execute','cluster.update']){
     const denied=harness({codes:permissions.filter(code=>code!==missing)});try{await denied.open();denied.ready();await denied.state.preview();assert.equal(denied.requests.some(item=>item.method==='preview'),false)}finally{denied.stop()}
   }
+})
+
+test('前置检查失败展示逐主机阻断报告，不创建可执行计划，配置变化后清空结果',async()=>{
+  const report=preflightReport(false),ctx=harness({api:{previewK3sPlan:async()=>{throw preflightFailure(report)}}})
+  try{
+    await ctx.open();ctx.ready();await settle();await ctx.state.preview()
+    assert.deepEqual(ctx.state.visiblePreflight.value,report);assert.equal(ctx.state.plan.value,undefined)
+    assert.match(ctx.state.error.value,/前置检查/);await ctx.state.execute()
+    assert.equal(ctx.requests.some(item=>item.method==='start'),false)
+    ctx.state.form.agent_host_ids=['2'];await settle();assert.equal(ctx.state.visiblePreflight.value,undefined)
+    assert.equal(ctx.state.error.value,'')
+  }finally{ctx.stop()}
+})
+
+test('迟到的预检失败不能覆盖修改后的主机、项目或已关闭的配置',async()=>{
+  for(const change of ['host','project','close']){
+    const pending=deferred(),ctx=harness({api:{previewK3sPlan:()=>pending.promise}})
+    try{
+      await ctx.open();ctx.ready();await settle();const request=ctx.state.preview()
+      if(change==='host')ctx.state.form.server_host_id='2'
+      if(change==='project')ctx.storage.project='project-b'
+      if(change==='close')ctx.props.open=false
+      await settle();pending.reject(preflightFailure(preflightReport(false)));await request;await settle()
+      assert.equal(ctx.state.visiblePreflight.value,undefined,change);assert.equal(ctx.state.plan.value,undefined,change)
+      assert.equal(ctx.state.error.value,'',change)
+    }finally{ctx.stop()}
+  }
+})
+
+test('缺失、不完整或有阻断的旧预检不能开始安装，提示项允许已通过的计划执行',async()=>{
+  const ctx=harness()
+  try{
+    await ctx.open();ctx.ready();await settle()
+    const invalid=[undefined,{}, {...preflightReport(),hosts:[]}, {...preflightReport(),checked_at:'invalid'}, {...preflightReport(),checks:[preflightCheck('failed')]}, {...preflightReport(),hosts:[{...preflightReport().hosts[0],passed:false}]}, {...preflightReport(),hosts:[{...preflightReport().hosts[0],checks:[preflightCheck('failed')]}]}]
+    for(const report of invalid){
+      ctx.state.plan.value={...plan(),preflight:report};assert.equal(ctx.state.planPreflightPassed.value,false)
+      await ctx.state.execute();assert.equal(ctx.requests.some(item=>item.method==='start'),false)
+    }
+    const report=preflightReport();report.hosts[0].checks.push({...preflightCheck('warning'),id:'swap',name:'Swap',message:'Swap 已开启，请核对 kubelet 配置'})
+    ctx.state.plan.value={...plan(),preflight:report};assert.equal(ctx.state.planPreflightPassed.value,true)
+    await ctx.state.execute();assert.equal(ctx.requests.filter(item=>item.method==='start').length,1)
+  }finally{ctx.stop()}
+})
+
+test('开始安装时的预检冲突返回配置页显示新报告，重新检查前不能重用旧计划',async()=>{
+  const report=preflightReport(false),ctx=harness({api:{startK3sInstallation:async()=>{throw preflightFailure(report)}}})
+  try{
+    await ctx.open();ctx.ready();await settle();await ctx.state.preview();assert.equal(ctx.state.planPreflightPassed.value,true)
+    await ctx.state.execute();assert.equal(ctx.state.plan.value,undefined);assert.deepEqual(ctx.state.visiblePreflight.value,report)
+    assert.equal(ctx.state.installation.value,undefined);assert.equal(ctx.state.planPreflightPassed.value,false)
+    await ctx.state.execute();assert.equal(ctx.state.installation.value,undefined)
+    ctx.auth.user=null;await settle();assert.equal(ctx.state.visiblePreflight.value,undefined)
+  }finally{ctx.stop()}
+})
+
+test('报告按集群和 Master、Worker 分组，保留阻断原因和提示计数',()=>{
+  const report=preflightReport(false)
+  report.checks=[{id:'target',name:'目标集群',status:'passed',message:'集群版本已核对'}]
+  report.hosts.push({host_id:'2',host_name:'Host 2',role:'agent',hostname:'worker-a',passed:true,checks:[preflightCheck('warning')]})
+  const ctx=componentHarness('../src/components/K3sPreflightReport.vue',{props:{report},modules:{'@/utils/time':{formatDateTime:String}}})
+  try{
+    assert.deepEqual(ctx.state.groups.value.map(group=>group.role),['','控制平面（Master）','工作节点（Worker）'])
+    assert.equal(ctx.state.failed.value,1);assert.equal(ctx.state.warnings.value,1)
+    assert.match(ctx.state.groups.value[1].checks[0].message,/扩容/)
+    assert.equal(ctx.state.groups.value[2].hostname,'worker-a')
+  }finally{ctx.stop()}
+})
+
+test('预检预览沿用取消信号并给多主机检查预留请求预算',async()=>{
+  const requests=[],api=loadFrontend('../src/api/k3s.ts',{'@/api/client':{__esModule:true,default:{post:async(path,body,options)=>{requests.push({path,body,options});return {data:plan()}}}}})
+  const controller=new AbortController(),body={action:'create'}
+  await api.previewK3sPlan(body,controller.signal)
+  assert.equal(requests[0].options.signal,controller.signal);assert.equal(requests[0].options.timeout,180000)
 })
 
 test('安装任务可从最近记录恢复，轮询失败保留真实状态，恢复成功只通知一次',async()=>{

@@ -102,7 +102,7 @@ func TestSSHTransportClassifiesControlledInstallGuardFailures(t *testing.T) {
 	for _, scenario := range []struct {
 		code     uint32
 		expected error
-	}{{42, ErrExistingInstallation}, {43, ErrHostBusy}} {
+	}{{42, ErrExistingInstallation}, {43, ErrHostBusy}, {44, ErrPreflightFailed}} {
 		t.Run(fmt.Sprint(scenario.code), func(t *testing.T) {
 			host, _ := sshPeer(t, false, scenario.code)
 			transport := &sshTransport{timeout: time.Second}

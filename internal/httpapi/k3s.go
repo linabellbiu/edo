@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 
@@ -97,6 +98,11 @@ func (h k3sHandler) preview(c *gin.Context) {
 	if !h.authorize(c, input.Action) || !h.available(c) {
 		return
 	}
+	controller := http.NewResponseController(c.Writer)
+	if err := controller.SetWriteDeadline(time.Now().Add(k3s.PreflightTimeout + 15*time.Second)); err != nil && !errors.Is(err, http.ErrNotSupported) {
+		h.writeError(c, "k3s_preflight_deadline", err)
+		return
+	}
 	actor, _ := currentUser(c)
 	plan, err := h.service.Preview(c.Request.Context(), actor.ID, input)
 	if err != nil {
@@ -176,6 +182,14 @@ func (h k3sHandler) detail(c *gin.Context) {
 }
 
 func (h k3sHandler) writeError(c *gin.Context, operation string, err error) {
+	var preflight *k3s.PreflightError
+	if errors.As(err, &preflight) {
+		c.JSON(http.StatusConflict, struct {
+			errorResponse
+			Preflight *k3s.PreflightReport `json:"preflight"`
+		}{errorResponse: errorResponse{Code: "k3s_preflight_failed", Message: k3s.ErrPreflightFailed.Error(), RequestID: requestIDFrom(c)}, Preflight: preflight.Report})
+		return
+	}
 	status, code, message := http.StatusInternalServerError, "internal_error", "K3s 安装服务暂时不可用"
 	switch {
 	case errors.Is(err, k3s.ErrInvalidInput):
@@ -195,6 +209,10 @@ func (h k3sHandler) writeError(c *gin.Context, operation string, err error) {
 		status, code, message = http.StatusConflict, "k3s_plan_expired", k3s.ErrPlanExpired.Error()
 	case errors.Is(err, k3s.ErrPlanConsumed):
 		status, code, message = http.StatusConflict, "k3s_plan_consumed", k3s.ErrPlanConsumed.Error()
+	case errors.Is(err, k3s.ErrPreflightRequired):
+		status, code, message = http.StatusConflict, "k3s_preflight_required", k3s.ErrPreflightRequired.Error()
+	case errors.Is(err, k3s.ErrPreflightFailed):
+		status, code, message = http.StatusConflict, "k3s_preflight_failed", k3s.ErrPreflightFailed.Error()
 	case errors.Is(err, k3s.ErrHostBusy):
 		status, code, message = http.StatusConflict, "k3s_host_busy", k3s.ErrHostBusy.Error()
 	case errors.Is(err, k3s.ErrHostChanged):
