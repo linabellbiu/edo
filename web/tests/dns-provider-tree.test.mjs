@@ -5,8 +5,8 @@ import { componentHarness } from './acceptanceHarness.mjs'
 
 const providers = [
   { code: 'cloudflare', name: 'Cloudflare', fields: [{ key: 'api_token', secret: true }] },
-  { code: 'alidns', name: '阿里云 DNS', fields: [{ key: 'region', default: 'cn-hangzhou' }, { key: 'access_key_secret', secret: true }] },
-  { code: 'tencentcloud', name: '腾讯云 DNSPod', fields: [] },
+  { code: 'alidns', name: '阿里云 DNS', fields: [{ key: 'access_key_id' }, { key: 'access_key_secret', secret: true }] },
+  { code: 'tencentcloud', name: '腾讯云 DNSPod', fields: [{ key: 'secret_key', secret: true, default: 'synthetic-secret-default' }, { key: 'region', default: 'ap-guangzhou' }] },
 ]
 const accounts = [
   { id: 'cf-a', provider: 'cloudflare', name: '生产账号', is_active: true },
@@ -62,11 +62,23 @@ test('分类和页签写入访问历史，刷新或返回可从 URL 恢复多选
   assert.equal(h.requests.length, 0)
 })
 
-test('新增账号带入当前厂商，域名优先使用所选范围内的启用账号', t => {
+test('添加入口先选择支持厂商，域名表单内新增账号带入当前厂商', t => {
   const h = view(t, { query: { provider: 'alidns' } })
   h.state.newAccount()
+  assert.equal(h.state.accountForm.provider, '')
+  assert.deepEqual(h.state.accountForm.config, {})
+  assert.deepEqual(h.state.providerChoices.value.map(item => item.code), ['cloudflare', 'alidns', 'tencentcloud'])
+  h.state.providerSearch.value = '阿里'
+  assert.deepEqual(h.state.providerChoices.value.map(item => item.code), ['alidns'])
+  h.state.changeProvider('tencentcloud')
+  assert.equal(h.state.accountForm.provider, 'tencentcloud')
+  assert.equal(h.state.accountForm.config.region, 'ap-guangzhou')
+  assert.equal(h.state.accountForm.config.secret_key, '')
+  h.state.newAccount(true)
   assert.equal(h.state.accountForm.provider, 'alidns')
-  assert.equal(h.state.accountForm.config.region, 'cn-hangzhou')
+  assert.equal(h.state.accountForm.config.access_key_secret, '')
+  assert.equal(h.state.accountForm.config.region, undefined)
+  assert.equal(h.state.providerSearch.value, '')
   h.state.newDomain()
   assert.equal(h.state.domainForm.account_id, 'ali-a')
   h.route.query = { provider: 'cloudflare', account: 'cf-b' }
@@ -105,9 +117,11 @@ test('刷新只接受最新响应，旧响应不会重置厂商或账号列表',
   assert.equal(h.state.loading.value, false)
 })
 
-test('分类树搜索按厂商和账号名称匹配，保留空厂商及停用账号', t => {
+test('分类树只展示已配置厂商，搜索不会显示空厂商，停用账号仍保留', t => {
   const h = tree(t)
-  assert.equal(h.state.branches.value.find(item => item.key === 'provider:tencentcloud').count, 0)
+  assert.equal(h.state.branches.value.some(item => item.key === 'provider:tencentcloud'), false)
+  h.state.search.value = '腾讯'
+  assert.equal(h.state.branches.value.length, 0)
   h.state.search.value = '阿里'
   assert.deepEqual(h.state.branches.value.map(item => item.key), ['provider:alidns'])
   h.state.search.value = '生产账号'
@@ -117,6 +131,25 @@ test('分类树搜索按厂商和账号名称匹配，保留空厂商及停用�
   assert.equal(h.state.branches.value[0].children[0].inactive, true)
   h.state.search.value = '不存在'
   assert.equal(h.state.branches.value.length, 0)
+})
+
+test('未保存账号不产生左侧分类，保存后出现厂商，删除最后账号后移除分类', async t => {
+  const h = tree(t, { accounts: [], provider: '', selected: ['*'] })
+  assert.deepEqual(h.state.treeData.value, [])
+  assert.deepEqual(h.state.catalog.value, [])
+  h.props.accounts = [{ id: 'new-ali', provider: 'alidns', name: '阿里云', is_active: true }]
+  await settle()
+  assert.deepEqual(h.state.catalog.value.map(item => item.code), ['alidns'])
+  assert.deepEqual(h.state.treeData.value.map(item => item.key), ['all', 'provider:alidns'])
+  h.props.accounts = []
+  await settle()
+  assert.deepEqual(h.state.treeData.value, [])
+})
+
+test('刷新后失效厂商范围使用替换历史恢复全部，保留页签和其他参数', async t => {
+  const h = view(t, { query: { provider: 'tencentcloud', account: 'deleted', view: 'accounts', keep: 'yes' } })
+  await h.state.refresh()
+  assert.deepEqual(h.replacements.at(-1).query, { provider: undefined, account: undefined, view: 'accounts', keep: 'yes' })
 })
 
 test('搜索时取消一个账号仍保留未显示账号，半选基于完整厂商范围', t => {
@@ -130,10 +163,10 @@ test('搜索时取消一个账号仍保留未显示账号，半选基于完整�
   assert.deepEqual(h.events.at(-1).args, ['cloudflare', ['*']])
 })
 
-test('树节点选择支持全部厂商、单个厂商与多个账号，空厂商也可选中', t => {
+test('树节点选择支持全部已配置厂商、单个厂商与多个账号', t => {
   const h = tree(t)
-  h.state.selectNode([], { node: { key: 'provider:tencentcloud' } })
-  assert.deepEqual(h.events.at(-1).args, ['tencentcloud', ['*']])
+  h.state.selectNode([], { node: { key: 'provider:alidns' } })
+  assert.deepEqual(h.events.at(-1).args, ['alidns', ['*']])
   h.state.checkNode([], { node: { key: 'account:ali-a' }, checked: true })
   assert.deepEqual(h.events.at(-1).args, ['alidns', ['ali-a']])
   h.state.selectNode([], { node: { key: 'all' } })
@@ -174,10 +207,12 @@ test('保存当前范围外的域名后定位其账号分类，范围内保存�
 test('新账号保存成功后定位账号分类，失败保留输入以便修改', async t => {
   const h = view(t, { query: { provider: 'alidns' }, api: { post: async () => ({ data: { account: { id: 'new', provider: 'alidns' } } }) } })
   h.state.newAccount()
+  h.state.changeProvider('alidns')
   await h.state.saveAccount()
   assert.deepEqual(h.replacements.at(-1).query, { provider: 'alidns', account: ['new'], view: 'accounts' })
   const failed = view(t, { api: { post: async () => { throw new Error('账号保存失败') } } })
   failed.state.newAccount()
+  failed.state.changeProvider('cloudflare')
   failed.state.accountForm.config.api_token = 'synthetic-draft'
   await failed.state.saveAccount()
   assert.equal(failed.state.accountOpen.value, true)
