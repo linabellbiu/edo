@@ -133,6 +133,7 @@ jobs:
             go test -race -count=1 -timeout=20m ./internal/database -run '^TestExternal(Database|Assistant)Migration$|^TestSQLChangeExternalMigration$'
             # 先完成迁移，再验证真实方言下的窗口查询及项目范围，不能与建表并行。
             go test -race -count=1 -timeout=20m ./internal/pipeline -run '^TestLatestReleasePlanExecutionsExternalDatabases$'
+            go test -race -count=1 -timeout=10m ./internal/department -run '^TestDepartmentQueriesExternalDatabases$'
           fi
 
       - name: 自增行号新库与升级验证

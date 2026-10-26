@@ -44,7 +44,7 @@ func (s *Service) List(ctx context.Context) ([]View, error) {
 	query := s.db.WithContext(ctx).Model(&model.Department{}).
 		Select("departments.*, COUNT(users.uuid) AS member_count").
 		Joins("LEFT JOIN users ON users.department_id = departments.uuid").
-		Group("departments.uuid").Order("departments.name ASC")
+		Group("departments.id").Order("departments.name ASC")
 	if scope, ok := database.DepartmentScopeFromContext(ctx); ok && !scope.AllDepartments {
 		if scope.DepartmentID == "" {
 			return nil, database.ErrDepartmentScopeRequired
@@ -198,7 +198,7 @@ func (s *Service) find(ctx context.Context, id string) (*View, error) {
 	query := s.db.WithContext(ctx).Model(&model.Department{}).
 		Select("departments.*, COUNT(users.uuid) AS member_count").
 		Joins("LEFT JOIN users ON users.department_id = departments.uuid").
-		Where("departments.uuid = ?", id).Group("departments.uuid")
+		Where("departments.uuid = ?", id).Group("departments.id")
 	if scope, ok := database.DepartmentScopeFromContext(ctx); ok && !scope.AllDepartments {
 		query = query.Where("departments.uuid = ?", scope.DepartmentID)
 	}
