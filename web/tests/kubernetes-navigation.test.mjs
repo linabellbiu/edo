@@ -19,19 +19,19 @@ const api = load('../src/api/kubernetes.ts')
 const infrastructure = nav.navigation.flatMap(section => section.branches ?? []).find(branch => branch.key === 'infrastructure')
 test('配置与存储包含配置中心和存储，三个存储资源不进入主侧栏', () => {
   const kube = infrastructure.items.find(item => item.path === '/kubernetes')
-  assert.deepEqual(kube.children.map(item => item.label), ['k8s.clusters','k8s.overview','k8s.nodes','k8s.workloads','k8s.configStorage','k8s.network'])
+  assert.deepEqual(kube.children.map(item => item.label), ['nav.hosts','k8s.clusters','k8s.overview','k8s.nodes','k8s.workloads','k8s.configStorage','k8s.network'])
   assert.equal(nav.flatNavigation().some(item => item.path === '/kubernetes'), false)
   assert.equal(nav.findNavigationItem('/kubernetes').label, 'k8s.overview')
   assert.equal(nav.findNavigationItem('/kubernetes?view=unknown').label, 'k8s.overview')
   assert.equal(nav.findNavigationItem('/kubernetes?view=nodes&view=network').label, 'k8s.overview')
   for (const child of nav.flatNavigation().filter(item=>item.path.startsWith('/kubernetes?'))) assert.equal(nav.findNavigationItem(child.path+'&cluster=test&namespace=team').label, child.label)
-  assert.deepEqual(nav.navigationTrail('/kubernetes?view=nodes').map(item => item.label), ['nav.platform','nav.infrastructure','k8s.title','k8s.nodes'])
+  assert.deepEqual(nav.navigationTrail('/kubernetes?view=nodes').map(item => item.label), ['nav.platform','nav.infrastructure','nav.containers','k8s.nodes'])
   const configStorage=kube.children.find(item=>item.label==='k8s.configStorage')
   assert.deepEqual(configStorage.children.map(item=>item.label),['k8s.config','k8s.storage'])
   assert.ok(configStorage.children.every(item=>!item.children))
   assert.equal(nav.flatNavigation().some(item=>item.label.startsWith('k8s.type_')),false)
   for(const resource of ['', 'bad', 'storageclasses', 'persistentvolumes', 'persistentvolumeclaims']) assert.equal(nav.findNavigationItem('/kubernetes?view=storage&resource='+resource).label,'k8s.storage')
-  assert.deepEqual(nav.navigationTrail('/kubernetes?view=storage&resource=storageclasses').map(item=>item.label),['nav.platform','nav.infrastructure','k8s.title','k8s.configStorage','k8s.storage'])
+  assert.deepEqual(nav.navigationTrail('/kubernetes?view=storage&resource=storageclasses').map(item=>item.label),['nav.platform','nav.infrastructure','nav.containers','k8s.configStorage','k8s.storage'])
 })
 test('配置与存储分别检查权限，无权访问的资源和空父菜单不会展示', () => {
   const storageOnly = nav.visibleNavigationItems(infrastructure.items, permissions => permissions.includes('kubernetes.storage.read'))
@@ -49,7 +49,7 @@ test('配置与存储分别检查权限，无权访问的资源和空父菜单�
 test('集群目录有独立菜单和面包屑，主机详情仍选中主机入口', () => {
   assert.equal(nav.findNavigationItem('/hosts?view=clusters&cluster=test').label, 'k8s.clusters')
   assert.equal(nav.findNavigationItem('/hosts?view=hosts&host=test').label, 'nav.hosts')
-  assert.deepEqual(nav.navigationTrail('/hosts?view=clusters').map(item => item.label), ['nav.platform','nav.infrastructure','k8s.title','k8s.clusters'])
+  assert.deepEqual(nav.navigationTrail('/hosts?view=clusters').map(item => item.label), ['nav.platform','nav.infrastructure','nav.containers','k8s.clusters'])
 })
 
 test('从集群目录切换侧栏资源类型保留选中集群', () => {
@@ -83,7 +83,7 @@ test('详情路径打开时自动展开父菜单，分类切换保留当前集�
   assert.equal(visits.length,2)
   assert.equal(state.allowedHistoryPath('/kubernetes?view=nodes'),false)
   assert.equal(state.allowedHistoryPath('/kubernetes?view=config'),true)
-  assert.equal(state.historyContext('/kubernetes?view=config'),'nav.platform > nav.infrastructure > k8s.title > k8s.configStorage')
+  assert.equal(state.historyContext('/kubernetes?view=config'),'nav.platform > nav.infrastructure > nav.containers > k8s.configStorage')
   stop()
 })
 test('侧栏折叠时不覆盖已展开分支，恢复后重新展开当前 Kubernetes 分类', async () => {
