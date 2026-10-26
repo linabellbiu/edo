@@ -326,6 +326,70 @@ func (s *Service) perform(ctx context.Context, record *model.K3sInstallation) er
 		s.hostProgress(record, hosts, serverIndex, "succeeded", "控制平面已就绪")
 		s.log(record, "集群已接入 EDO")
 	}
+	if isServerJoin(input) {
+		host := hosts[0]
+		s.log(record, "安装加入控制平面："+host.Name)
+		s.hostProgress(record, hosts, 0, "installing", "")
+		installInput, err := s.beforeHostInstall(ctx, *record, snapshot, host)
+		if err != nil {
+			return err
+		}
+		current, bundle, err := s.loadReviewedHost(ctx, snapshot, host.ID)
+		if err != nil {
+			return err
+		}
+		download, err := serverInstallerDownloadScript(record.ID, installInput)
+		if err != nil {
+			return err
+		}
+		cleanup, err := serverInstallerCleanupScript(record.ID)
+		if err != nil {
+			return err
+		}
+		cleanupHost, cleanupBundle := current, bundle
+		defer func() {
+			cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Second)
+			defer cancel()
+			_ = s.transport.Run(cleanupCtx, cleanupHost, cleanupBundle, cleanup, io.Discard)
+		}()
+		if err = s.transport.Run(ctx, current, bundle, download, io.Discard); err != nil {
+			return err
+		}
+		// Downloads may take minutes. Re-read authorization, host identity,
+		// target version, configuration and membership before any K3s writes.
+		installInput, err = s.beforeHostInstall(ctx, *record, snapshot, host)
+		if err != nil {
+			return err
+		}
+		current, bundle, err = s.loadReviewedHost(ctx, snapshot, host.ID)
+		if err != nil {
+			return err
+		}
+		script, err := installScript(host, installInput, record.ID, installInput.ServerToken)
+		if err != nil {
+			return err
+		}
+		if err := s.recheckRuntime(ctx, *record, snapshot); err != nil {
+			return err
+		}
+		if err := s.transport.Run(ctx, current, bundle, script, io.Discard); err != nil {
+			return err
+		}
+		if err := s.waitForJoinedServer(ctx, record, snapshot, host); err != nil {
+			return err
+		}
+		// Membership now contains the reviewed node. Do not compare it against
+		// the pre-install set; waitForJoinedServer verified the exact addition.
+		if err := s.recheck(ctx, *record, snapshot); err != nil {
+			return err
+		}
+		if err := s.kubernetes.AppendHosts(ctx, record.ClusterID, []string{host.ID}); err != nil {
+			return err
+		}
+		s.hostProgress(record, hosts, 0, "succeeded", "Master 已就绪，etcd 成员已加入并关联")
+		s.log(record, "Master 加入完成")
+		return nil
+	}
 	// Mint short-lived, CA-bound bootstrap credentials, never read the original
 	// server token. Revoke this task's credential even when a node fails to join.
 	for index, host := range hosts {
@@ -342,7 +406,7 @@ func (s *Service) perform(ctx context.Context, record *model.K3sInstallation) er
 			return err
 		}
 		err = s.installAgent(ctx, record, snapshot, host, join)
-		revokeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+		revokeCtx, cancel := context.WithTimeout(kube.WithInternalClusterAccess(context.WithoutCancel(ctx), "node-bootstrap-cleanup"), 10*time.Second)
 		revokeErr := s.kubernetes.RevokeNodeJoin(revokeCtx, record.ClusterID, join.ID, join.ResourceIdentity)
 		cancel()
 		if err != nil {
@@ -390,7 +454,10 @@ func (s *Service) installAgent(ctx context.Context, record *model.K3sInstallatio
 }
 
 func (s *Service) waitForNode(ctx context.Context, clusterID, installationID, hostID string) error {
-	client, err := s.kubernetes.Clientset(ctx, clusterID)
+	if err := s.kubernetes.RequireClusterPermission(ctx, clusterID, "", "kubernetes.node.create"); err != nil {
+		return err
+	}
+	client, err := s.kubernetes.Clientset(kube.WithInternalClusterAccess(ctx, "node-bootstrap"), clusterID)
 	if err != nil {
 		return err
 	}

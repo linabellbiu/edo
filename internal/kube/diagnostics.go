@@ -73,6 +73,10 @@ func (s *Service) ResourceDiagnostics(ctx context.Context, clusterID, resource, 
 	}
 	ctx, cancel := context.WithTimeout(ctx, 25*time.Second)
 	defer cancel()
+	ctx, _, err := s.authorizeResourceOperation(ctx, clusterID, resource, namespace, "read", false)
+	if err != nil {
+		return nil, err
+	}
 	reader, _, err := s.resourceClient(ctx, clusterID, resource, namespace, false)
 	if err != nil {
 		return nil, err

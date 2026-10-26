@@ -53,7 +53,7 @@ func inventoryAPIPath(t *testing.T, pattern, projectID string) string {
 			if strings.HasPrefix(pattern, "/api/v1/projects/") {
 				parts[index] = projectID
 			}
-		case ":user_id", ":workflow_id", ":application_id", ":group_id", ":endpoint_id", ":cluster_id", ":join", ":record_id":
+		case ":user_id", ":workflow_id", ":application_id", ":group_id", ":endpoint_id", ":cluster_id", ":join", ":record_id", ":grant":
 			parts[index] = "fae9f5e6-eaae-4092-9cf7-97a0f5e05510"
 		case ":resource":
 			parts[index] = "deployments"
@@ -99,7 +99,7 @@ func inventoryAPIRequest(t *testing.T, router http.Handler, route gin.RouteInfo,
 func inventoryBusinessCounts(t *testing.T, db *gorm.DB) map[string]int64 {
 	t.Helper()
 	counts := make(map[string]int64)
-	for _, table := range []string{"users", "projects", "project_members", "jobs", "outbox_events", "pipeline_runs", "build_runs", "deployment_records", "artifacts", "notifications", "assistant_conversations", "assistant_actions"} {
+	for _, table := range []string{"users", "projects", "project_members", "jobs", "outbox_events", "pipeline_runs", "build_runs", "deployment_records", "artifacts", "notifications", "assistant_conversations", "assistant_actions", "kubernetes_rbac_policies", "kubernetes_role_grants", "kubernetes_rbac_subjects"} {
 		var count int64
 		if err := db.Table(table).Count(&count).Error; err != nil {
 			t.Fatalf("读取巡检前后记录数量失败: table=%s err=%v", table, err)

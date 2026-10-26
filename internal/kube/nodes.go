@@ -45,6 +45,10 @@ func (s *Service) CreateNodeJoin(ctx context.Context, clusterID string, input No
 	if (input.Provider != "k3s" && input.Provider != "kubeadm") || input.Minutes < 5 || input.Minutes > 60 {
 		return nil, ErrInvalidResource
 	}
+	if err := s.RequireClusterPermission(ctx, clusterID, "", "kubernetes.node.create"); err != nil {
+		return nil, err
+	}
+	ctx = WithInternalClusterAccess(ctx, "node-bootstrap")
 	cfg, err := s.RESTConfig(ctx, clusterID)
 	if err != nil {
 		return nil, err
@@ -141,6 +145,12 @@ func (s *Service) RevokeNodeJoin(ctx context.Context, clusterID, id string, iden
 	if !bootstraputil.IsValidBootstrapTokenID(id) || !identity.valid() {
 		return ErrInvalidResource
 	}
+	if purpose, _ := ctx.Value(internalClusterAccessKey{}).(string); purpose != "node-bootstrap-cleanup" {
+		if err := s.RequireClusterPermission(ctx, clusterID, "", "kubernetes.node.create"); err != nil {
+			return err
+		}
+	}
+	ctx = WithInternalClusterAccess(ctx, "node-bootstrap-cleanup")
 	client, err := s.Clientset(ctx, clusterID)
 	if err != nil {
 		return err
@@ -169,6 +179,10 @@ type NodeRemoval struct {
 func (s *Service) DeleteNode(ctx context.Context, clusterID, name string, input NodeRemoval) error {
 	if !input.valid() || !input.AgentStopped || input.Name != name || len(validation.IsDNS1123Subdomain(name)) != 0 {
 		return ErrInvalidResource
+	}
+	ctx, _, err := s.authorizeResourceOperation(ctx, clusterID, "nodes", "", "delete", false)
+	if err != nil {
+		return err
 	}
 	client, err := s.Clientset(ctx, clusterID)
 	if err != nil {

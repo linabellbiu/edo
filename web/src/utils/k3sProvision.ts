@@ -1,5 +1,5 @@
 import type { InfrastructureHost } from '@/api/infrastructure'
-import type { K3sInstallation, K3sOption } from '@/api/k3s'
+import type { K3sInstallation, K3sOption, K3sJoinRole } from '@/api/k3s'
 import { parseDocument } from 'yaml'
 
 export function k3sOptionGroups(options: K3sOption[], query: string) {
@@ -46,6 +46,13 @@ export function k3sInstallationLabel(status?: K3sInstallation['status']) {
   return ({planned:'待确认',pending:'等待执行',running:'正在安装',succeeded:'安装完成',failed:'安装失败',interrupted:'执行中断'} as const)[status ?? 'pending']
 }
 
+export function k3sHostRoleLabel(role?: string) {
+  return role === 'server' ? '控制平面（Master）' : role === 'agent' ? '工作节点（Worker）' : '节点'
+}
+
+export const k3sMasterRawArgumentOptions = ['etcd-arg','kube-apiserver-arg','kube-controller-manager-arg','kube-scheduler-arg','kube-cloud-controller-manager-arg','kube-controller-arg','kube-cloud-controller-arg','cloud-controller-manager-arg'] as const
+export const k3sMasterRawArgumentReason = '添加 Master 不能通过原始参数覆盖目标集群的成员、认证、TLS 和关键控制平面配置'
+
 export function k3sInstallationLogs(installation?: K3sInstallation) {
   return Array.isArray(installation?.logs) ? installation.logs.join('\n') : installation?.logs ?? ''
 }
@@ -70,7 +77,7 @@ export function k3sAutomaticEndpoint(host?: InfrastructureHost, options: Record<
   return `https://${address}:${number}`
 }
 
-export function validateK3sOverrides(source: string) {
+export function validateK3sOverrides(source: string, nodeRole?: K3sJoinRole) {
   if (!source.trim()) return
   const document = parseDocument(source, {uniqueKeys:true})
   if (document.errors.length) throw new Error(`覆盖配置不是有效的 YAML：${document.errors[0]?.message}`)
@@ -78,6 +85,13 @@ export function validateK3sOverrides(source: string) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('覆盖配置需要是 YAML 对象')
   for (const [scope, options] of Object.entries(value)) {
     if (!['server','agent','installer'].includes(scope)) throw new Error(`不支持的覆盖范围：${scope}`)
+    if (nodeRole && scope !== nodeRole && scope !== 'installer') throw new Error(`${k3sHostRoleLabel(nodeRole)}仅接受 ${nodeRole} 和 installer 覆盖配置`)
     if (!options || typeof options !== 'object' || Array.isArray(options)) throw new Error(`${scope} 需要是 YAML 对象`)
+    if (nodeRole === 'server' && scope === 'server') {
+      for (const name of k3sMasterRawArgumentOptions) {
+        const value=(options as Record<string,unknown>)[name]
+        if (value!==undefined&&value!==null&&value!==''&&!(Array.isArray(value)&&value.length===0)) throw new Error(k3sMasterRawArgumentReason)
+      }
+    }
   }
 }

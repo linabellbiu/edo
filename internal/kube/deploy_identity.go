@@ -23,13 +23,13 @@ func (s *Service) DeploymentImageIdentity(ctx context.Context, clusterID, namesp
 	if err != nil {
 		return DeploymentImageIdentity{}, ErrDeploymentConfigInvalid
 	}
-	client, err := s.Clientset(ctx, clusterID)
+	ctx, query, err := s.authorizeResourceOperation(ctx, clusterID, "deployments", namespace, "read", false)
 	if err != nil {
 		return DeploymentImageIdentity{}, err
 	}
-	current, err := client.AppsV1().Deployments(namespace).Get(ctx, name, metav1.GetOptions{})
+	current, err := query.typed.AppsV1().Deployments(namespace).Get(ctx, name, metav1.GetOptions{})
 	if err != nil {
-		return DeploymentImageIdentity{}, fmt.Errorf("%w: %v", ErrDeploymentStatusUnavailable, err)
+		return DeploymentImageIdentity{}, fmt.Errorf("%w: %w", ErrDeploymentStatusUnavailable, err)
 	}
 	if current.UID == "" {
 		return DeploymentImageIdentity{}, ErrDeploymentStatusUnavailable

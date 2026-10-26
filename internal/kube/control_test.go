@@ -10,18 +10,17 @@ import (
 	"testing"
 	"time"
 
+	jsonpatch "gopkg.in/evanphx/json-patch.v4"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime/serializer/protobuf"
-	"k8s.io/client-go/kubernetes/scheme"
 )
 
 func TestKubernetesRuntimeStopRestartAndScale(t *testing.T) {
 	replicas := int32(3)
 	current := appsv1.Deployment{
 		TypeMeta:   metav1.TypeMeta{APIVersion: "apps/v1", Kind: "Deployment"},
-		ObjectMeta: metav1.ObjectMeta{Name: "demo", Namespace: "default"},
+		ObjectMeta: metav1.ObjectMeta{Name: "demo", Namespace: "default", UID: "demo-uid", ResourceVersion: "1"},
 		Spec: appsv1.DeploymentSpec{
 			Replicas: &replicas,
 			Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"app": "demo"}},
@@ -49,16 +48,17 @@ func TestKubernetesRuntimeStopRestartAndScale(t *testing.T) {
 		switch request.Method {
 		case http.MethodGet:
 			_ = json.NewEncoder(response).Encode(current)
-		case http.MethodPut:
+		case http.MethodPatch:
 			payload, readErr := io.ReadAll(request.Body)
 			if readErr != nil {
 				http.Error(response, readErr.Error(), http.StatusBadRequest)
 				return
 			}
-			object, _, decodeErr := protobuf.NewSerializer(scheme.Scheme, scheme.Scheme).Decode(payload, nil, nil)
-			updated, ok := object.(*appsv1.Deployment)
-			if decodeErr != nil || !ok {
-				http.Error(response, "无法解析 Deployment Update", http.StatusBadRequest)
+			before, _ := json.Marshal(current)
+			merged, mergeErr := jsonpatch.MergePatch(before, payload)
+			updated := &appsv1.Deployment{}
+			if mergeErr != nil || json.Unmarshal(merged, updated) != nil {
+				http.Error(response, "无法解析 Deployment Patch", http.StatusBadRequest)
 				return
 			}
 			updated.Generation = current.Generation + 1

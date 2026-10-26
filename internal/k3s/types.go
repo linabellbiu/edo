@@ -6,6 +6,7 @@ import (
 	"io"
 	"time"
 
+	"edo/internal/kube"
 	"edo/internal/model"
 	"edo/internal/sshclient"
 )
@@ -16,8 +17,8 @@ var (
 	ErrNotFound             = errors.New("K3s 安装计划不存在")
 	ErrPlanExpired          = errors.New("安装计划已过期，请重新预览")
 	ErrPlanConsumed         = errors.New("安装计划已执行，请查看任务结果")
-	ErrHostBusy             = errors.New("所选主机正在执行其他安装任务")
-	ErrHostChanged          = errors.New("主机连接或所属范围已变化，请重新预览")
+	ErrHostBusy             = errors.New("目标主机或集群正在执行其他安装任务")
+	ErrHostChanged          = errors.New("主机连接、集群配置或所属范围已变化，请重新预览")
 	ErrTargetVersionChanged = errors.New("目标集群版本已变化或安装计划缺少版本记录，请重新预览")
 	ErrExistingInstallation = errors.New("主机已有 Kubernetes 安装或配置，请接入现有集群")
 	ErrRemote               = errors.New("主机安装命令执行失败，请检查主机连接和服务日志")
@@ -41,12 +42,16 @@ func ValidationMessage(err error) string {
 type Input struct {
 	targetVersion string
 	targetCAData  []byte
+	serverJoin    *kube.ServerJoinInfo
 	Action        string         `json:"action"`
 	Profile       string         `json:"profile"`
 	Name          string         `json:"name"`
 	ClusterID     string         `json:"cluster_id,omitempty"`
 	ServerHostID  string         `json:"server_host_id,omitempty"`
 	AgentHostIDs  []string       `json:"agent_host_ids"`
+	JoinRole      string         `json:"join_role,omitempty"`
+	JoinHostIDs   []string       `json:"join_host_ids,omitempty"`
+	ServerToken   string         `json:"server_token,omitempty"`
 	ServerOptions map[string]any `json:"server_options"`
 	AgentOptions  map[string]any `json:"agent_options"`
 	Installer     map[string]any `json:"installer"`
@@ -65,26 +70,33 @@ type Host struct {
 }
 
 type Plan struct {
-	ID            string           `json:"id"`
-	Action        string           `json:"action"`
-	Name          string           `json:"name"`
-	Status        string           `json:"status"`
-	ClusterID     string           `json:"cluster_id,omitempty"`
-	Endpoint      string           `json:"endpoint"`
-	Version       string           `json:"version"`
-	TargetVersion string           `json:"target_version,omitempty"`
-	ExpiresAt     time.Time        `json:"expires_at"`
-	Hosts         []Host           `json:"hosts"`
-	ServerConfig  string           `json:"server_config"`
-	AgentConfig   string           `json:"agent_config"`
-	Commands      []string         `json:"commands"`
-	Warnings      []string         `json:"warnings"`
-	Preflight     *PreflightReport `json:"preflight,omitempty"`
+	ID            string             `json:"id"`
+	Action        string             `json:"action"`
+	Name          string             `json:"name"`
+	Status        string             `json:"status"`
+	ClusterID     string             `json:"cluster_id,omitempty"`
+	Endpoint      string             `json:"endpoint"`
+	Version       string             `json:"version"`
+	TargetVersion string             `json:"target_version,omitempty"`
+	JoinRole      string             `json:"join_role,omitempty"`
+	ServerJoin    *ServerJoinSummary `json:"server_join,omitempty"`
+	ExpiresAt     time.Time          `json:"expires_at"`
+	Hosts         []Host             `json:"hosts"`
+	ServerConfig  string             `json:"server_config"`
+	AgentConfig   string             `json:"agent_config"`
+	Commands      []string           `json:"commands"`
+	Warnings      []string           `json:"warnings"`
+	Preflight     *PreflightReport   `json:"preflight,omitempty"`
 }
 
 type Cluster struct {
 	ID   string `json:"id"`
 	Name string `json:"name"`
+}
+
+type ServerJoinSummary struct {
+	Datastore   string `json:"datastore"`
+	EtcdMembers int    `json:"etcd_members"`
 }
 
 type Installation struct {

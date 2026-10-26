@@ -74,7 +74,7 @@ func TestPermissionCatalogContainsOnlyImplementedCapabilities(t *testing.T) {
 		"kubernetes.workload.read", "kubernetes.workload.create", "kubernetes.workload.update", "kubernetes.workload.delete", "kubernetes.workload.execute",
 		"kubernetes.config.read", "kubernetes.config.create", "kubernetes.config.update", "kubernetes.config.delete",
 		"kubernetes.storage.read", "kubernetes.storage.create", "kubernetes.storage.update", "kubernetes.storage.delete",
-		"kubernetes.network.read", "kubernetes.network.create", "kubernetes.network.update", "kubernetes.network.delete", "kubernetes.secret.read")
+		"kubernetes.network.read", "kubernetes.network.create", "kubernetes.network.update", "kubernetes.network.delete", "kubernetes.secret.read", "kubernetes.rbac.read", "kubernetes.rbac.update")
 	for _, item := range Catalog() {
 		got[item.Code] = struct{}{}
 	}

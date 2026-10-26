@@ -34,6 +34,10 @@ func workspacePermissions() []Permission {
 		}
 	}
 	result = append(result, permission("kubernetes.secret.read", "Kubernetes", "kubernetes.secret", "集群密钥内容", "read", "查看", "查看 Secret 内容并记录审计", true))
+	result = append(result,
+		permission("kubernetes.rbac.read", "Kubernetes", "kubernetes.rbac", "集群访问授权", "read", "查看", "查看项目角色到集群及命名空间的授权范围和同步状态", false),
+		permission("kubernetes.rbac.update", "Kubernetes", "kubernetes.rbac", "集群访问授权", "update", "配置", "配置项目角色的集群 RBAC 映射、启停和授权同步", true),
+	)
 	for _, action := range []struct{ code, name string }{
 		{"read", "查看"}, {"create", "创建"}, {"update", "修改"}, {"delete", "删除"},
 		{"check", "重新检查"}, {"review", "审核"}, {"execute", "执行"}, {"skip", "跳过"},

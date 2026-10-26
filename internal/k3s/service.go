@@ -39,12 +39,15 @@ const executionTimeout = 45 * time.Minute
 var validName = regexp.MustCompile(`^[\p{L}\p{N}][\p{L}\p{N}_. -]{1,127}$`)
 
 type savedInput struct {
-	Input            Input             `json:"input"`
-	HostDigests      map[string]string `json:"host_digests"`
-	AuthVersion      uint64            `json:"auth_version"`
-	ClusterDigest    string            `json:"cluster_digest,omitempty"`
-	TargetVersion    string            `json:"target_version,omitempty"`
-	PreflightVersion int               `json:"preflight_version,omitempty"`
+	Input                  Input                   `json:"input"`
+	HostDigests            map[string]string       `json:"host_digests"`
+	AuthVersion            uint64                  `json:"auth_version"`
+	ClusterDigest          string                  `json:"cluster_digest,omitempty"`
+	TargetVersion          string                  `json:"target_version,omitempty"`
+	PreflightVersion       int                     `json:"preflight_version,omitempty"`
+	ServerCriticalDigest   string                  `json:"server_critical_digest,omitempty"`
+	ServerMembershipDigest string                  `json:"server_membership_digest,omitempty"`
+	ServerMembers          []kube.ServerJoinMember `json:"server_members,omitempty"`
 }
 
 type clusterService interface {
@@ -56,6 +59,8 @@ type clusterService interface {
 	RevokeNodeJoin(context.Context, string, string, kube.ResourceIdentity) error
 	Clientset(context.Context, string) (*kubernetes.Clientset, error)
 	RESTConfig(context.Context, string) (*rest.Config, error)
+	RequireClusterPermission(context.Context, string, string, string) error
+	InspectServerJoin(context.Context, string, string, string) (*kube.ServerJoinInfo, error)
 }
 
 type Service struct {
@@ -192,7 +197,10 @@ func (s *Service) normalize(ctx context.Context, input Input) (Input, []Host, ma
 	if input.Action != "create" && input.Action != "join" {
 		return input, nil, nil, nil, nil, ErrInvalidInput
 	}
-	if len(input.Overrides) > 64*1024 || len(input.AgentHostIDs) > 20 {
+	if err := normalizeJoinSelection(&input); err != nil {
+		return input, nil, nil, nil, nil, err
+	}
+	if len(input.Overrides) > 64*1024 || len(input.AgentHostIDs) > 20 || len(input.JoinHostIDs) > 20 {
 		return input, nil, nil, nil, nil, ErrInvalidInput
 	}
 	if input.Profile == "default" {
@@ -247,11 +255,23 @@ func (s *Service) normalize(ctx context.Context, input Input) (Input, []Host, ma
 	input.Overrides = ""
 	warnings := append(OptionWarnings("server", input.ServerOptions), OptionWarnings("agent", input.AgentOptions)...)
 	ids := append([]string{}, input.AgentHostIDs...)
+	if input.Action == "join" {
+		ids = append([]string{}, input.JoinHostIDs...)
+	}
 	slices.Sort(ids)
 	ids = slices.Compact(ids)
-	input.AgentHostIDs = ids
+	if input.Action == "join" {
+		input.JoinHostIDs = ids
+		input.AgentHostIDs = nil
+	} else {
+		input.AgentHostIDs = ids
+	}
 	if len(ids) > 1 {
-		if name, _ := input.AgentOptions["node-name"].(string); name != "" {
+		options := input.AgentOptions
+		if isServerJoin(input) {
+			options = input.ServerOptions
+		}
+		if name, _ := options["node-name"].(string); name != "" {
 			return input, nil, nil, nil, nil, fmt.Errorf("%w：多台节点不能使用同一个自定义 node-name", ErrInvalidInput)
 		}
 	}
@@ -333,11 +353,20 @@ func (s *Service) normalize(ctx context.Context, input Input) (Input, []Host, ma
 		if err != nil {
 			return input, nil, nil, nil, nil, err
 		}
-		hosts = append(hosts, Host{ID: host.ID, Name: host.Name, Address: host.Address, Role: "agent"})
+		role := "agent"
+		if isServerJoin(input) {
+			role = "server"
+		}
+		hosts = append(hosts, Host{ID: host.ID, Name: host.Name, Address: host.Address, Role: role})
 		digests[host.ID] = hostDigest(host)
 	}
 	if len(hosts) == 0 {
 		return input, nil, nil, nil, nil, ErrInvalidInput
+	}
+	if isServerJoin(input) {
+		if err := s.prepareServerJoin(ctx, &input); err != nil {
+			return input, nil, nil, nil, nil, serverJoinPreflightError(hosts, err)
+		}
 	}
 	return input, hosts, digests, cluster, warnings, nil
 }
@@ -377,7 +406,11 @@ func (s *Service) Preview(ctx context.Context, actorID string, input Input) (*Pl
 		if _, err := installScript(host, input, id, "<后台生成的短期凭据>"); err != nil {
 			return nil, err
 		}
-		hosts[index].Config = redactedYAML(runtimeOptions(base, host, id, input.Endpoint, "<后台生成的凭据>"))
+		finalConfig := runtimeOptions(base, host, id, input.Endpoint, "<后台生成的凭据>")
+		if isServerJoin(input) {
+			finalConfig["server"] = input.Endpoint
+		}
+		hosts[index].Config = redactedYAML(finalConfig)
 		if host.Role == "server" {
 			server = hosts[index].Config
 		} else {
@@ -386,14 +419,28 @@ func (s *Service) Preview(ctx context.Context, actorID string, input Input) (*Pl
 	}
 	version, _ := input.Installer["INSTALL_K3S_VERSION"].(string)
 	plan := &Plan{ID: id, Action: input.Action, Name: input.Name, Status: "planned", ClusterID: input.ClusterID, Endpoint: input.Endpoint, Version: version, TargetVersion: input.targetVersion, ExpiresAt: now.Add(planTTL), Hosts: hosts, ServerConfig: server, AgentConfig: agent, Warnings: warnings, Commands: []string{}, Preflight: preflight}
+	if input.Action == "join" {
+		plan.JoinRole = input.JoinRole
+	}
+	if isServerJoin(input) {
+		plan.ServerJoin = &ServerJoinSummary{Datastore: input.serverJoin.Datastore, EtcdMembers: len(input.serverJoin.Members)}
+	}
 	for _, host := range hosts {
 		plan.Commands = append(plan.Commands, previewCommand(host, input.Installer))
 	}
 	plan.Warnings = append(plan.Warnings, "将在所选主机安装并启动 K3s 系统服务。已有 Kubernetes 安装的主机会被拒绝，请先检查主机用途和网络。")
+	if isServerJoin(input) {
+		plan.Warnings = append(plan.Warnings, "Master 使用经过 SHA256 与版本校验的暂存制品安装，安装阶段不再下载二进制或 SELinux RPM；启用 SELinux 的主机须预装 k3s-selinux 策略包。")
+	}
 	if disabled, _ := input.ServerOptions["disable-agent"].(bool); disabled {
 		plan.Warnings = append(plan.Warnings, "禁用 Server Agent 后不会注册该控制平面节点，该主机暂不自动关联。")
 	}
 	snapshot := savedInput{Input: input, HostDigests: digests, AuthVersion: actor.AuthVersion, TargetVersion: input.targetVersion, PreflightVersion: preflightVersion}
+	if isServerJoin(input) {
+		snapshot.ServerCriticalDigest = input.serverJoin.CriticalDigest
+		snapshot.ServerMembershipDigest = input.serverJoin.MembershipDigest
+		snapshot.ServerMembers = input.serverJoin.Members
+	}
 	if cluster != nil {
 		snapshot.ClusterDigest = clusterDigest(cluster)
 	}
@@ -427,6 +474,7 @@ func (s *Service) decode(record model.K3sInstallation) (savedInput, error) {
 	if err := json.Unmarshal([]byte(plaintext), &snapshot); err != nil {
 		return snapshot, ErrInvalidInput
 	}
+	snapshot.Input.targetVersion = snapshot.TargetVersion
 	return snapshot, nil
 }
 
@@ -534,6 +582,15 @@ func (s *Service) Execute(ctx context.Context, actorID, planID string) (*Install
 			}
 			if active > 0 {
 				return kube.ErrClusterExists
+			}
+		}
+		if record.Action == "join" {
+			var active int64
+			if err := tx.Model(&model.K3sInstallation{}).Where("action = ? AND cluster_id = ? AND status IN ?", "join", record.ClusterID, []string{"pending", "running"}).Count(&active).Error; err != nil {
+				return err
+			}
+			if active > 0 {
+				return ErrHostBusy
 			}
 		}
 		hostIDs := make([]string, 0, len(snapshot.HostDigests))

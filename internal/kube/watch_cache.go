@@ -3,6 +3,7 @@ package kube
 import (
 	"context"
 	"errors"
+	"slices"
 	"sort"
 	"strings"
 	"sync/atomic"
@@ -356,6 +357,30 @@ func (s *Service) listResourcePage(ctx context.Context, clusterID string, def Re
 	if err != nil {
 		return nil, err
 	}
+	// An actor with no namespace grant gets an empty selector without issuing
+	// a native namespace request. Actual namespace reads remain scope checked.
+	if q.authorization.enforced() && def.Resource == "namespaces" && !q.authorization.has("", "kubernetes.config.read") && len(q.authorization.Namespaces) == 0 {
+		return &unstructured.UnstructuredList{Items: []unstructured.Unstructured{}}, nil
+	}
+	ctx, _, err = authorizeResourceQuery(ctx, q, def, namespace, "read", true)
+	if err != nil {
+		return nil, err
+	}
+	if q.authorization.enforced() {
+		if def.Resource == "namespaces" && !q.authorization.has("", "kubernetes.config.read") {
+			return s.listScopedNamespaceObjects(ctx, q, options)
+		}
+		if def.Namespaced && namespace == "" {
+			return s.listScopedResourcePage(ctx, q, def, options, cacheLimit)
+		}
+		if def.Namespaced && !slices.Contains(q.authorization.readNamespaces(def), namespace) {
+			return nil, ErrRBACForbidden
+		}
+	}
+	return s.listResourcePageForQuery(ctx, q, def, namespace, options, cacheLimit)
+}
+
+func (s *Service) listResourcePageForQuery(ctx context.Context, q *clusterQueries, def ResourceDefinition, namespace string, options metav1.ListOptions, cacheLimit int64) (*unstructured.UnstructuredList, error) {
 	if s.watchingEnabled() && options.Continue == "" && options.LabelSelector == "" && options.FieldSelector == "" && options.ResourceVersion == "" && options.ResourceVersionMatch == "" && !freshResourceRead(ctx) {
 		if entry := q.observer(def, namespace); entry != nil {
 			if list, ok := entry.snapshot(ctx, cacheLimit); ok {
@@ -375,22 +400,26 @@ func (s *Service) invalidateResourceQueries(clusterID, resource string) {
 		return
 	}
 	s.queries.mu.Lock()
-	q := s.queries.clusters[clusterID]
-	s.queries.mu.Unlock()
-	if q == nil {
-		return
-	}
-	q.mu.Lock()
-	for key, entry := range q.watchers {
-		if resource == "namespaces" || entry.definition.Resource == resource {
-			entry.failed.Store(true)
-			entry.cancel()
-			delete(q.watchers, key)
+	queries := []*clusterQueries{}
+	for _, query := range s.queries.clusters {
+		if query.clusterID == clusterID {
+			queries = append(queries, query)
 		}
 	}
-	q.metricsEpoch.Add(1)
-	q.mu.Unlock()
-	q.publish(ResourceChange{Resource: resource, Type: "reset"})
+	s.queries.mu.Unlock()
+	for _, q := range queries {
+		q.mu.Lock()
+		for key, entry := range q.watchers {
+			if resource == "namespaces" || entry.definition.Resource == resource {
+				entry.failed.Store(true)
+				entry.cancel()
+				delete(q.watchers, key)
+			}
+		}
+		q.metricsEpoch.Add(1)
+		q.mu.Unlock()
+		q.publish(ResourceChange{Resource: resource, Type: "reset"})
+	}
 }
 
 func (s *Service) SubscribeResourceChanges(ctx context.Context, clusterID string, namespaces []string, allowed map[string]bool) (<-chan ResourceChange, error) {
@@ -421,6 +450,20 @@ func (s *Service) SubscribeResourceChanges(ctx context.Context, clusterID string
 	if err != nil {
 		return nil, err
 	}
+	if q.authorization.enforced() {
+		if selection["*"] {
+			selection = map[string]bool{}
+			for _, namespace := range q.authorization.Namespaces {
+				selection[namespace] = true
+			}
+		} else {
+			for namespace := range selection {
+				if !q.authorization.permitsNamespace(namespace) {
+					return nil, ErrRBACForbidden
+				}
+			}
+		}
+	}
 	channel := make(chan ResourceChange, 64)
 	keys := []string{}
 	for _, def := range resourceDefinitions {
@@ -428,9 +471,11 @@ func (s *Service) SubscribeResourceChanges(ctx context.Context, clusterID string
 			continue
 		}
 		if !def.Namespaced {
-			keys = append(keys, resourceWatchKey(def, ""))
+			if q.authorization.has("", def.Permission+".read") {
+				keys = append(keys, resourceWatchKey(def, ""))
+			}
 		} else {
-			for ns := range selection {
+			for _, ns := range watchedNamespaces(q.authorization, def, selection) {
 				keys = append(keys, resourceWatchKey(def, strings.ReplaceAll(ns, "*", "")))
 			}
 		}
@@ -446,10 +491,12 @@ func (s *Service) SubscribeResourceChanges(ctx context.Context, clusterID string
 			continue
 		}
 		if !def.Namespaced {
-			q.observer(def, "")
+			if q.authorization.has("", def.Permission+".read") {
+				q.observer(def, "")
+			}
 			continue
 		}
-		for ns := range selection {
+		for _, ns := range watchedNamespaces(q.authorization, def, selection) {
 			q.observer(def, strings.ReplaceAll(ns, "*", ""))
 		}
 	}
@@ -467,4 +514,20 @@ func (s *Service) SubscribeResourceChanges(ctx context.Context, clusterID string
 		}
 	}()
 	return channel, nil
+}
+
+func watchedNamespaces(authorization *clusterAuthorization, def ResourceDefinition, selection map[string]bool) []string {
+	result := []string{}
+	if !authorization.enforced() {
+		for namespace := range selection {
+			result = append(result, namespace)
+		}
+		return result
+	}
+	for _, namespace := range authorization.readNamespaces(def) {
+		if selection[namespace] || selection["*"] {
+			result = append(result, namespace)
+		}
+	}
+	return result
 }

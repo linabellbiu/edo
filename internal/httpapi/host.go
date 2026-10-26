@@ -215,6 +215,9 @@ func (h hostHandler) remove(c *gin.Context) {
 }
 
 func (h hostHandler) writeError(c *gin.Context, operation string, err error) {
+	if writeKubernetesAuthorizationError(c, err) {
+		return
+	}
 	h.logger.Warn("主机操作失败", "operation", operation, "request_id", requestIDFrom(c), "host_id", c.Param("id"), "err", err)
 	switch {
 	case errors.Is(err, hostmanager.ErrInvalidHost):

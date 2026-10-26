@@ -133,6 +133,9 @@ func (s *Service) validateHosts(ctx context.Context, cluster *model.KubernetesCl
 	if len(hosts) == 0 {
 		return nil
 	}
+	if err := s.requireHostValidationAuthorization(ctx, cluster); err != nil {
+		return err
+	}
 	ctx, cancel := s.hostValidationContext(ctx)
 	defer cancel()
 	if connection == nil {

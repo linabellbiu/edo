@@ -886,6 +886,10 @@ func (s *Service) run(ctx context.Context, deploymentID, expectedImageID string,
 		}
 		return fmt.Errorf("读取待执行发布记录失败: %w", err)
 	}
+	ctx, err := deploymentRequesterContext(ctx, record)
+	if err != nil {
+		return err
+	}
 	lock, err := s.acquireTargetLock(ctx, &record)
 	if err != nil {
 		internalErr := fmt.Errorf("获取发布环境并发锁失败: %w", err)

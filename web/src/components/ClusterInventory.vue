@@ -7,6 +7,7 @@ import client from '@/api/client'
 import type { ClusterHost, InfrastructureCluster, InfrastructureHost } from '@/api/infrastructure'
 import { apiErrorMessage } from '@/api/resources'
 import ClusterHostDrawer from '@/components/ClusterHostDrawer.vue'
+import ClusterRbacDrawer from '@/components/ClusterRbacDrawer.vue'
 import KubeHostRoleBadge from '@/components/KubeHostRoleBadge.vue'
 import ResourceDetailDrawer from '@/components/ResourceDetailDrawer.vue'
 import ResourceRowActions from '@/components/ResourceRowActions.vue'
@@ -25,6 +26,8 @@ const query = ref('')
 const association = ref('all')
 const associationOpen = ref(false)
 const associationCluster = ref<InfrastructureCluster>()
+const rbacCluster=ref(''),rbacOpen=ref(false)
+function openRbac(cluster:InfrastructureCluster){if(!auth.canAny(['kubernetes.rbac.read','kubernetes.rbac.update']))return;rbacCluster.value=cluster.id;rbacOpen.value=true}
 const checking = ref('')
 const updating = ref('')
 let mounted = true
@@ -139,7 +142,7 @@ onBeforeUnmount(() => { mounted = false })
         <template v-else-if="column.key === 'api_server'"><code class="api-address">{{ record.api_server }}</code></template>
         <template v-else-if="column.key === 'hosts'"><span v-if="!associationKnown(record)" class="muted">{{ unknownAssociationLabel() }}</span><div v-else-if="hostsForCluster(record, hosts).length" class="linked-hosts"><button v-for="host in hostsForCluster(record, hosts)" :key="host.id" type="button" class="host-link" :disabled="!canOpenHost(host)" @click="openHost(host)"><Server :size="13" />{{ host.name }}<KubeHostRoleBadge :cluster="record.id" :host="host.id" /></button></div><span v-else class="muted">未关联主机</span></template>
         <template v-else-if="column.key === 'status'"><a-tag v-if="!record.is_active">已停用</a-tag><span v-else-if="connection[record.id]" class="connection-state" :class="{ failed: !connection[record.id]?.ok }" :title="connection[record.id]?.error"><i />{{ connection[record.id]?.ok ? '连接正常' : '连接失败' }}</span><a-tag v-else color="success">已启用</a-tag></template>
-        <template v-else-if="column.key === 'actions'"><ResourceRowActions :more="auth.canAny(['cluster.update', 'cluster.execute'])"><a-button v-if="canManageResources" size="small" @click="manage(record)">管理<ArrowUpRight :size="13" /></a-button><a-button size="small" @click="openDetails(record)">详情</a-button><template #more><a-menu-item v-if="canEditAssociations" :disabled="!associationKnown(record)" @click="associate(record)">关联主机</a-menu-item><a-menu-item v-if="auth.canAny(['cluster.execute'])" :disabled="!record.is_active || Boolean(checking)" @click="ping(record)">测试连接</a-menu-item><a-menu-item v-if="auth.canAny(['cluster.update'])" :disabled="Boolean(updating)" @click="toggle(record)">{{ record.is_active ? '停用集群' : '启用集群' }}</a-menu-item></template></ResourceRowActions></template>
+        <template v-else-if="column.key === 'actions'"><ResourceRowActions :more="auth.canAny(['cluster.update', 'cluster.execute'])"><a-button v-if="canManageResources" size="small" @click="manage(record)">管理<ArrowUpRight :size="13" /></a-button><a-button size="small" @click="openDetails(record)">详情</a-button><a-button v-if="auth.canAny(['kubernetes.rbac.read','kubernetes.rbac.update'])" size="small" :disabled="!record.is_active" @click="openRbac(record)">授权</a-button><template #more><a-menu-item v-if="canEditAssociations" :disabled="!associationKnown(record)" @click="associate(record)">关联主机</a-menu-item><a-menu-item v-if="auth.canAny(['cluster.execute'])" :disabled="!record.is_active || Boolean(checking)" @click="ping(record)">测试连接</a-menu-item><a-menu-item v-if="auth.canAny(['cluster.update'])" :disabled="Boolean(updating)" @click="toggle(record)">{{ record.is_active ? '停用集群' : '启用集群' }}</a-menu-item></template></ResourceRowActions></template>
       </template>
       <template #emptyText><a-empty :description="error ? '集群列表加载失败' : query || association !== 'all' ? '没有匹配的集群' : '暂无 Kubernetes 集群'"><a-space v-if="!error && !query && association === 'all'"><a-button v-if="auth.canAny(['cluster.create'])" @click="emit('create')">接入集群</a-button><a-button v-if="canCreateK3s" type="primary" @click="emit('provision')">创建集群</a-button></a-space></a-empty></template>
     </a-table>
@@ -153,6 +156,7 @@ onBeforeUnmount(() => { mounted = false })
       </template>
     </ResourceDetailDrawer>
     <ClusterHostDrawer v-model:open="associationOpen" :cluster="associationCluster" :clusters="clusters" :hosts="hosts" @saved="emit('refresh')" />
+    <ClusterRbacDrawer v-model:open="rbacOpen" :cluster="rbacCluster" />
   </div>
 </template>
 

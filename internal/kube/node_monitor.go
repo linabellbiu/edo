@@ -14,6 +14,7 @@ import (
 	"edo/internal/database"
 	"edo/internal/model"
 	"github.com/redis/go-redis/v9"
+	authorizationv1 "k8s.io/api/authorization/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -110,6 +111,7 @@ func (s *Service) collectNodeMonitoring(ctx context.Context) {
 			defer pending.Done()
 			defer func() { <-slots }()
 			scoped := database.WithDepartmentScope(ctx, database.DepartmentScope{DepartmentID: cluster.DepartmentID, ProjectID: cluster.ProjectID})
+			scoped = WithInternalClusterAccess(scoped, "node-monitor")
 			collectCtx, cancel := context.WithTimeout(scoped, 25*time.Second)
 			defer cancel()
 			if err := s.collectClusterNodes(collectCtx, cluster.ID); err != nil && ctx.Err() == nil {
@@ -305,6 +307,18 @@ func (s *Service) NodeHistory(ctx context.Context, clusterID, name, uid string, 
 	if window != 15*time.Minute && window != time.Hour && window != 6*time.Hour && window != 24*time.Hour && window != NodeHistoryRetention {
 		return result, ErrNodeHistoryRange
 	}
+	if err := s.RequireClusterPermission(ctx, clusterID, "", "kubernetes.node.read"); err != nil {
+		return result, err
+	}
+	query, err := s.clusterQueries(ctx, clusterID)
+	if err != nil {
+		return result, err
+	}
+	if query.authorization.enforced() {
+		// Stored collector allocations are cluster-wide and cannot be projected
+		// into a user's namespaced workload grant without leaking other Pods.
+		workloads = false
+	}
 	node, err := s.GetResource(ctx, clusterID, "nodes", "", name, false)
 	if err != nil {
 		return result, err
@@ -318,6 +332,9 @@ func (s *Service) NodeHistory(ctx context.Context, clusterID, name, uid string, 
 	values, err := s.nodeMonitor.client.ZRangeByScore(ctx, s.nodeMonitor.key(clusterID, uid), &redis.ZRangeBy{Min: strconv.FormatInt(result.From.UnixMilli(), 10), Max: strconv.FormatInt(now.UnixMilli(), 10), Count: 4321}).Result()
 	if err != nil {
 		return result, fmt.Errorf("%w: %w", ErrNodeHistoryUnavailable, err)
+	}
+	if err := s.reviewCachedAuthorization(ctx, query, []authorizationv1.ResourceAttributes{{Resource: "nodes", Verb: "get", Name: name}}); err != nil {
+		return result, err
 	}
 	for _, value := range values {
 		var point NodeSample

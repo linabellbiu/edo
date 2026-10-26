@@ -75,13 +75,15 @@ type Deployment struct {
 }
 
 type Service struct {
-	db                *gorm.DB
-	secrets           *secret.Manager
-	config            config.Runtime
-	nodeMonitor       *nodeMonitor
-	topologyHosts *topologyHostIdentityCache
-	queries           *resourceQueryCache
-	hostIdentityProbe hostIdentityReader
+	db                    *gorm.DB
+	secrets               *secret.Manager
+	config                config.Runtime
+	nodeMonitor           *nodeMonitor
+	topologyHosts         *topologyHostIdentityCache
+	queries               *resourceQueryCache
+	hostIdentityProbe     hostIdentityReader
+	authorizationResolver func(context.Context, *model.KubernetesCluster, bool) (*clusterAuthorization, error)
+	queryTransaction      bool
 }
 
 // WithTransaction 让集群连接校验与上层聚合资源共享同一个数据库事务。
@@ -92,6 +94,9 @@ func (s *Service) WithTransaction(tx *gorm.DB) *Service {
 	}
 	clone := *s
 	clone.db = tx
+	// Transaction-bound transports cannot enter the process-wide client cache.
+	clone.queries = nil
+	clone.queryTransaction = true
 	return &clone
 }
 
@@ -225,6 +230,12 @@ func (s *Service) Update(ctx context.Context, id string, input Input) (*model.Ku
 	candidate := *existing
 	candidate.Name, candidate.DefaultNamespace, candidate.Mode = name, namespace, input.Mode
 	candidate.APIServer, candidate.KubeconfigCiphertext = apiServer, encrypted
+	connectionChanged := candidate.Mode != existing.Mode || candidate.APIServer != existing.APIServer || candidate.KubeconfigCiphertext != existing.KubeconfigCiphertext
+	if connectionChanged {
+		if err := s.RequireRBACManagementForConnectionChange(ctx, existing); err != nil {
+			return nil, err
+		}
+	}
 	var verified []model.Host
 	var hostIDs []string
 	checkExistingLinks := input.HostIDs == nil && input.Kubeconfig != nil
@@ -269,6 +280,11 @@ func (s *Service) Update(ctx context.Context, id string, input Input) (*model.Ku
 		}).Error; err != nil {
 			return err
 		}
+		if connectionChanged {
+			if err := s.WithTransaction(tx).MarkRBACConnectionChanged(ctx, existing.ID); err != nil {
+				return err
+			}
+		}
 		if input.HostIDs != nil {
 			return replaceClusterHosts(tx, existing, *input.HostIDs, verified)
 		}
@@ -286,6 +302,13 @@ func (s *Service) Update(ctx context.Context, id string, input Input) (*model.Ku
 }
 
 func (s *Service) SetActive(ctx context.Context, id string, active bool) error {
+	cluster, err := s.Find(ctx, id)
+	if err != nil {
+		return err
+	}
+	if err := s.RequireRBACManagementForConnectionChange(ctx, cluster); err != nil {
+		return err
+	}
 	result := s.db.WithContext(ctx).Model(&model.KubernetesCluster{}).Where("uuid = ?", id).
 		Updates(map[string]any{"is_active": active, "updated_at": time.Now().UTC()})
 	if result.Error != nil {
@@ -341,10 +364,11 @@ func (s *Service) Pods(ctx context.Context, id, namespace string) ([]Pod, error)
 	if err != nil {
 		return nil, err
 	}
-	clientset, err := s.Clientset(ctx, id)
+	ctx, query, err := s.authorizeResourceOperation(ctx, id, "pods", namespace, "read", false)
 	if err != nil {
 		return nil, err
 	}
+	clientset := query.typed
 	requestContext, cancel := context.WithTimeout(ctx, s.config.RequestTimeout)
 	defer cancel()
 	result, err := clientset.CoreV1().Pods(namespace).List(requestContext, metav1.ListOptions{Limit: 500})
@@ -371,10 +395,11 @@ func (s *Service) Deployments(ctx context.Context, id, namespace string) ([]Depl
 	if err != nil {
 		return nil, err
 	}
-	clientset, err := s.Clientset(ctx, id)
+	ctx, query, err := s.authorizeResourceOperation(ctx, id, "deployments", namespace, "read", false)
 	if err != nil {
 		return nil, err
 	}
+	clientset := query.typed
 	requestContext, cancel := context.WithTimeout(ctx, s.config.RequestTimeout)
 	defer cancel()
 	result, err := clientset.AppsV1().Deployments(namespace).List(requestContext, metav1.ListOptions{Limit: 500})

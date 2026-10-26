@@ -2,6 +2,7 @@ import client from '@/api/client'
 import type { InfrastructureCluster } from '@/api/infrastructure'
 
 export type K3sScope = 'server' | 'agent' | 'installer'
+export type K3sJoinRole = 'agent' | 'server'
 export interface K3sOption {
   name: string
   label: string
@@ -28,8 +29,11 @@ export interface K3sPlanInput {
   action: 'create' | 'join'
   cluster_id?: string
   name: string
-  server_host_id: string
-  agent_host_ids: string[]
+  server_host_id?: string
+  agent_host_ids?: string[]
+  join_role?: K3sJoinRole
+  join_host_ids?: string[]
+  server_token?: string
   profile: 'default' | 'custom'
   server_options: Record<string, unknown>
   agent_options: Record<string, unknown>

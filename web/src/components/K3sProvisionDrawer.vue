@@ -6,12 +6,12 @@ import { listHosts, type InfrastructureHost } from '@/api/infrastructure'
 import { apiErrorMessage } from '@/api/resources'
 import {
   getK3sCatalog, getK3sInstallation, listK3sInstallations, previewK3sPlan, startK3sInstallation,
-  type K3sCatalog, type K3sInstallation, type K3sPlan, type K3sPlanInput, type K3sPreflightReport, type K3sPreflightCheck,
+  type K3sCatalog, type K3sInstallation, type K3sPlan, type K3sPlanInput, type K3sPreflightReport, type K3sPreflightCheck, type K3sJoinRole,
 } from '@/api/k3s'
 import K3sOptionFields from '@/components/K3sOptionFields.vue'
 import K3sPreflightReportView from '@/components/K3sPreflightReport.vue'
 import { useAuthStore } from '@/stores/auth'
-import { availableK3sHosts, k3sAutomaticEndpoint, k3sHostDisabledReason, k3sHostStatusLabel, k3sInstallationLabel, k3sInstallationLogs, k3sInstallationRunning, validateK3sOverrides } from '@/utils/k3sProvision'
+import { availableK3sHosts, k3sAutomaticEndpoint, k3sHostDisabledReason, k3sHostRoleLabel, k3sHostStatusLabel, k3sInstallationLabel, k3sInstallationLogs, k3sInstallationRunning, k3sMasterRawArgumentOptions, k3sMasterRawArgumentReason, validateK3sOverrides } from '@/utils/k3sProvision'
 import { formatDateTime } from '@/utils/time'
 
 const props = withDefaults(defineProps<{open:boolean;action?:'create'|'join';cluster?:string;endpoint?:string;hosts?:InfrastructureHost[]}>(), {
@@ -32,6 +32,7 @@ const plan = ref<K3sPlan>(),installation = ref<K3sInstallation>(),optionTab = re
 const preflight = ref<K3sPreflightReport>()
 const form = reactive({
   name:'',server_host_id:'',agent_host_ids:[] as string[],profile:'default' as 'default'|'custom',endpoint:'',
+  join_role:'agent' as K3sJoinRole,join_host_ids:[] as string[],server_token:'',
   server_options:{} as Record<string,unknown>,agent_options:{} as Record<string,unknown>,installer:{} as Record<string,unknown>,overrides:'',
 })
 let mounted = true,revision = 0,request:AbortController|undefined,pollRequest:AbortController|undefined,recentRequest:AbortController|undefined
@@ -44,12 +45,19 @@ const hostOptions = computed(() => hostChoices.value.map(host=>({
   disabled:Boolean(k3sHostDisabledReason(host)),
 })))
 const agentOptions = computed(() => hostOptions.value.filter(option=>option.value!==form.server_host_id))
-const selectedHosts = computed(() => hosts.value.filter(host=>host.id===form.server_host_id||form.agent_host_ids.includes(host.id)))
+const joinMaster = computed(() => props.action==='join'&&form.join_role==='server')
+const joinHostSelection = computed({
+  get:()=>joinMaster.value?form.join_host_ids[0]:form.join_host_ids,
+  set:(value:string|string[]|undefined)=>{form.join_host_ids=Array.isArray(value)?value:value?[value]:[]},
+})
+const showServerOptions = computed(() => props.action==='create'||joinMaster.value)
+const showAgentOptions = computed(() => props.action==='create'||!joinMaster.value)
+const selectedHosts = computed(() => hosts.value.filter(host=>props.action==='join'?form.join_host_ids.includes(host.id):host.id===form.server_host_id||form.agent_host_ids.includes(host.id)))
 const hasHostConfig = computed(() => plan.value?.hosts?.some(host=>Boolean(host.config)))
 const endpointPlaceholder = computed(() => k3sAutomaticEndpoint(hosts.value.find(host=>host.id===form.server_host_id),form.profile==='custom'?form.server_options:{},form.profile==='custom'?form.overrides:'')||'https://192.168.1.10:6443')
 const canManageClusterResources = computed(() => auth.canAny(['kubernetes.node.read','kubernetes.workload.read','kubernetes.config.read','kubernetes.storage.read','kubernetes.network.read']))
 const canExecute = computed(() => auth.canAny([props.action==='create'?'cluster.create':'kubernetes.node.create'])&&auth.canAny(['cluster.execute'])&&auth.canAny(['cluster.update'])&&auth.canAny(['cluster.read','deployment.read']))
-const canPreview = computed(() => Boolean(catalog.value)&&!loadError.value&&canExecute.value&&!loading.value&&!busy.value&&(props.action==='create'?Boolean(form.name.trim()&&form.server_host_id):Boolean(props.cluster&&form.agent_host_ids.length)))
+const canPreview = computed(() => Boolean(catalog.value)&&!loadError.value&&canExecute.value&&!loading.value&&!busy.value&&(props.action==='create'?Boolean(form.name.trim()&&form.server_host_id):Boolean(props.cluster&&form.join_host_ids.length&&form.join_host_ids.length<=(joinMaster.value?1:20)&&(!joinMaster.value||form.server_token.trim()))))
 const running = computed(() => k3sInstallationRunning(installation.value))
 const planExpired = computed(() => Boolean(plan.value)&&(!Number.isFinite(Date.parse(plan.value!.expires_at))||Date.parse(plan.value!.expires_at)<=now.value))
 const visiblePreflight = computed(() => readPreflight(plan.value?.preflight)??preflight.value)
@@ -60,6 +68,12 @@ const planPreflightPassed = computed(() => {
 const currentStep = computed(() => installation.value?2:plan.value?1:0)
 const title = computed(() => props.action==='create'?'创建 K3s 集群':'添加 K3s 节点')
 const installerOptions = computed(() => catalog.value?.installer.filter(option=>!['INSTALL_K3S_VERSION','INSTALL_K3S_CHANNEL'].includes(option.name))??[])
+const serverOptionChoices = computed(() => catalog.value?.server.map(option=>{
+  if(!joinMaster.value)return option
+  if(k3sMasterRawArgumentOptions.some(name=>name===option.name))return {...option,unsupported_reason:k3sMasterRawArgumentReason}
+  if(['cluster-init','cluster-reset','cluster-reset-restore-path','disable-agent','disable-apiserver','disable-controller-manager','disable-scheduler','disable-etcd'].includes(option.name))return {...option,unsupported_reason:'加入已有控制平面时不允许初始化、重置或拆分控制平面角色。'}
+  return option
+})??[])
 const defaultVersion = computed(() => catalog.value?.default_version||catalog.value?.target_version||catalog.value?.version||'')
 const versionMismatch = computed(() => {
   const version=String(form.installer.version??'').trim()||defaultVersion.value
@@ -67,15 +81,14 @@ const versionMismatch = computed(() => {
 })
 const signature = computed(() => JSON.stringify(input()))
 const progressTone = computed(() => installation.value?.status==='succeeded'?'success':installation.value?.status==='failed'||installation.value?.status==='interrupted'?'error':'info')
-const overridesPlaceholder = computed(() => `${props.action==='create'?'server:\n  disable:\n    - traefik\n':''}agent:\n  node-label:\n    - environment=production\ninstaller:\n  version: ${defaultVersion.value||'v1.37.1+k3s1'}`)
+const overridesPlaceholder = computed(() => `${props.action==='create'?'server:\n  disable:\n    - traefik\nagent:':joinMaster.value?'server:':'agent:'}\n  node-label:\n    - environment=production\ninstaller:\n  version: ${defaultVersion.value||'v1.37.1+k3s1'}`)
 
 function input(): K3sPlanInput {
   const custom=form.profile==='custom'
   const installer=custom?Object.fromEntries(Object.entries(form.installer).filter(([key,value])=>!['version','channel'].includes(key)||String(value??'').trim())):{}
   return {
-    action:props.action,...(props.action==='join'?{cluster_id:props.cluster}:{}),name:form.name.trim(),
-    server_host_id:props.action==='create'?form.server_host_id:'',agent_host_ids:[...new Set(form.agent_host_ids)],
-    profile:form.profile,server_options:custom?{...form.server_options}:{},agent_options:custom?{...form.agent_options}:{},
+    action:props.action,...(props.action==='join'?{cluster_id:props.cluster,join_role:form.join_role,join_host_ids:[...new Set(form.join_host_ids)],...(joinMaster.value?{server_token:form.server_token}:{})}:{server_host_id:form.server_host_id,agent_host_ids:[...new Set(form.agent_host_ids)]}),name:form.name.trim(),
+    profile:form.profile,server_options:custom&&showServerOptions.value?{...form.server_options}:{},agent_options:custom&&showAgentOptions.value?{...form.agent_options}:{},
     installer,overrides:custom?form.overrides:'',endpoint:form.endpoint.trim(),
   }
 }
@@ -111,7 +124,7 @@ function stopPoll() {
 }
 function cancelRequests() {revision++;request?.abort();request=undefined;recentRequest?.abort();recentRequest=undefined;stopPoll()}
 function resetForm() {
-  Object.assign(form,{name:'',server_host_id:'',agent_host_ids:[],profile:'default',endpoint:props.action==='join'?props.endpoint:'',server_options:{},agent_options:{},installer:{},overrides:''})
+  Object.assign(form,{name:'',server_host_id:'',agent_host_ids:[],join_role:'agent',join_host_ids:[],server_token:'',profile:'default',endpoint:props.action==='join'?props.endpoint:'',server_options:{},agent_options:{},installer:{},overrides:''})
   optionTab.value=props.action==='join'?'agent':'server';plan.value=undefined;preflight.value=undefined;installation.value=undefined;completedID='';operationContext=context.value
   error.value='';pollError.value=''
 }
@@ -141,14 +154,14 @@ async function loadRecent() {
 }
 function viewInstallation(item:K3sInstallation) {
   if(busy.value)return
-  stopPoll();installation.value=item;plan.value=undefined;preflight.value=undefined;pollError.value='';operationContext=context.value
+  stopPoll();installation.value=item;form.server_token='';plan.value=undefined;preflight.value=undefined;pollError.value='';operationContext=context.value
   completedID=['succeeded','failed','interrupted'].includes(item.status)?item.id:''
   void refreshInstallation()
 }
 async function preview() {
   if(!syncProject()||!props.open||!canPreview.value||running.value)return
   error.value='';preflight.value=undefined;plan.value=undefined
-  try {if(form.profile==='custom')validateK3sOverrides(form.overrides)} catch(err) {error.value=err instanceof Error?err.message:'覆盖配置无效';return}
+  try {if(form.profile==='custom')validateK3sOverrides(form.overrides,props.action==='join'?form.join_role:undefined)} catch(err) {error.value=err instanceof Error?err.message:'覆盖配置无效';return}
   const payload=input(),currentSignature=signature.value,currentContext=context.value,current=revision,controller=new AbortController();request?.abort();request=controller;busy.value=true
   try {
     const result=await previewK3sPlan(payload,controller.signal)
@@ -162,7 +175,7 @@ async function execute() {
   try {
     const result=await startK3sInstallation(planID,controller.signal)
     if(!mounted||!props.open||current!==revision||!matchesContext(currentContext))return
-    installation.value=result;operationContext=context.value
+    installation.value=result;form.server_token='';operationContext=context.value
     handleProgress(result)
   } catch(err) {if(mounted&&props.open&&current===revision&&!controller.signal.aborted&&matchesContext(currentContext)){const report=failurePreflight(err);if(report){preflight.value=report;plan.value=undefined}error.value=apiErrorMessage(err);void loadRecent()}}
   finally {if(mounted&&current===revision)busy.value=false}
@@ -202,15 +215,22 @@ watch(signature,()=>{if(!installation.value){plan.value=undefined;preflight.valu
 watch(()=>form.server_host_id,id=>{
   form.agent_host_ids=form.agent_host_ids.filter(value=>value!==id)
 })
+watch(()=>form.join_role,()=>{
+  if(props.action!=='join'||installation.value)return
+  cancelRequests();busy.value=false;loading.value=false
+  Object.assign(form,{join_host_ids:[],server_token:'',server_options:{},agent_options:{},installer:{},overrides:''})
+  optionTab.value=joinMaster.value?'server':'agent';plan.value=undefined;preflight.value=undefined;error.value=''
+  if(props.open&&!catalog.value)void initialize()
+})
 watch(()=>props.open,open=>{
-  if(!open){cancelRequests();busy.value=false;loading.value=false;return}
+  if(!open){form.server_token='';cancelRequests();busy.value=false;loading.value=false;return}
   if(operationContext!==context.value||!installation.value)resetForm()
   void initialize()
 })
 watch(context,()=>{cancelRequests();busy.value=false;loading.value=false;recent.value=[];recentError.value='';recentLoading.value=false;catalog.value=undefined;hosts.value=[];loadError.value='';resetForm();if(props.open)void initialize()})
-watch(canExecute,allowed=>{if(!allowed){cancelRequests();busy.value=false;loading.value=false;loadError.value='';recentError.value='';recentLoading.value=false;plan.value=undefined;preflight.value=undefined;installation.value=undefined;recent.value=[];catalog.value=undefined;hosts.value=[]}else if(props.open)void initialize()})
+watch(canExecute,allowed=>{if(!allowed){form.server_token='';cancelRequests();busy.value=false;loading.value=false;loadError.value='';recentError.value='';recentLoading.value=false;plan.value=undefined;preflight.value=undefined;installation.value=undefined;recent.value=[];catalog.value=undefined;hosts.value=[]}else if(props.open)void initialize()})
 onMounted(()=>{window.addEventListener('storage',projectChanged);window.addEventListener('edo:projects-changed',projectChanged);clock=setInterval(()=>{if(props.open)now.value=Date.now()},1000);if(props.open){resetForm();void initialize()}})
-onBeforeUnmount(()=>{mounted=false;cancelRequests();window.removeEventListener('storage',projectChanged);window.removeEventListener('edo:projects-changed',projectChanged);if(clock)clearInterval(clock)})
+onBeforeUnmount(()=>{mounted=false;form.server_token='';cancelRequests();window.removeEventListener('storage',projectChanged);window.removeEventListener('edo:projects-changed',projectChanged);if(clock)clearInterval(clock)})
 </script>
 
 <template>
@@ -221,25 +241,25 @@ onBeforeUnmount(()=>{mounted=false;cancelRequests();window.removeEventListener('
       <a-alert v-if="loadError" type="error" show-icon message="安装配置读取失败" :description="loadError"><template #action><a-button size="small" @click="initialize">重试</a-button></template></a-alert>
       <a-alert v-if="error" type="error" show-icon :message="error" />
       <K3sPreflightReportView v-if="visiblePreflight&&!installation" :report="visiblePreflight" />
-      <section v-if="!installation&&(recent.length||recentError||recentLoading)" class="recent-operations"><details><summary>最近安装任务 <span v-if="recent.length">{{ recent.length }}</span><a-button type="link" size="small" :loading="recentLoading" @click.stop.prevent="loadRecent">刷新</a-button></summary><a-alert v-if="recentError" type="warning" message="最近任务读取失败" :description="recentError"><template #action><a-button size="small" @click="loadRecent">重试</a-button></template></a-alert><div v-for="item in recent" :key="item.id" class="recent-operation"><div><strong>{{ item.name||item.id }}</strong><small>{{ item.created_at?formatDateTime(item.created_at,'zh-CN'):item.id }}</small></div><a-tag>{{ k3sInstallationLabel(item.status) }}</a-tag><a-button size="small" :disabled="busy" @click="viewInstallation(item)">查看进度</a-button></div></details></section>
+      <section v-if="!installation&&(recent.length||recentError||recentLoading)" class="recent-operations"><details><summary>最近安装任务 <span v-if="recent.length">{{ recent.length }}</span><a-button type="link" size="small" :loading="recentLoading" @click.stop.prevent="loadRecent">刷新</a-button></summary><a-alert v-if="recentError" type="warning" message="最近任务读取失败" :description="recentError"><template #action><a-button size="small" @click="loadRecent">重试</a-button></template></a-alert><div v-for="item in recent" :key="item.id" class="recent-operation"><div><strong>{{ item.name||item.id }}</strong><small>{{ item.created_at?formatDateTime(item.created_at,'zh-CN'):item.id }}</small></div><a-tag v-if="item.action==='join'&&item.hosts?.length">{{ k3sHostRoleLabel(item.hosts[0]?.role) }}</a-tag><a-tag>{{ k3sInstallationLabel(item.status) }}</a-tag><a-button size="small" :disabled="busy" @click="viewInstallation(item)">查看进度</a-button></div></details></section>
       <a-spin :spinning="loading">
         <a-form v-if="!plan&&!installation" layout="vertical" :disabled="busy||!canExecute" class="provision-form">
           <div class="form-columns">
-            <a-form-item v-if="action==='create'" label="集群名称" required><a-input v-model:value="form.name" :maxlength="64" placeholder="例如：生产集群" /></a-form-item>
+            <a-form-item v-if="action==='join'" label="新增节点角色" required class="wide"><a-radio-group v-model:value="form.join_role" button-style="solid" aria-label="新增节点角色"><a-radio-button value="agent">工作节点（Worker）</a-radio-button><a-radio-button value="server">控制平面（Master）</a-radio-button></a-radio-group></a-form-item><a-form-item v-if="action==='create'" label="集群名称" required><a-input v-model:value="form.name" :maxlength="64" placeholder="例如：生产集群" /></a-form-item>
             <a-form-item :label="action==='create'?'API 地址（可选）':'API 地址'" :required="action==='join'" :class="{'wide':action==='join'}"><a-input v-model:value="form.endpoint" :placeholder="endpointPlaceholder" /><div class="field-help">{{ action==='create'?'留空使用控制平面主机地址和最终监听端口；可填写负载均衡或其他访问地址。':'EDO 和新节点都需要能访问此地址。' }}</div></a-form-item>
             <a-form-item v-if="action==='create'" label="控制平面主机" required><a-select v-model:value="form.server_host_id" show-search option-filter-prop="label" :options="hostOptions" placeholder="选择安装 K3s Server 的主机" /></a-form-item>
-            <a-form-item :label="action==='create'?'工作节点（可选）':'工作节点主机'" :required="action==='join'"><a-select v-model:value="form.agent_host_ids" mode="multiple" show-search option-filter-prop="label" :options="agentOptions" placeholder="选择安装 K3s Agent 的主机" /></a-form-item>
+            <a-form-item v-if="action==='create'" label="工作节点（可选）"><a-select v-model:value="form.agent_host_ids" mode="multiple" show-search option-filter-prop="label" :options="agentOptions" placeholder="选择安装 K3s Agent 的主机" /></a-form-item><a-form-item v-else :label="joinMaster?'控制平面主机（Master）':'工作节点主机（Worker）'" required><a-select v-model:value="joinHostSelection" :mode="joinMaster?undefined:'multiple'" show-search option-filter-prop="label" :options="hostOptions" :placeholder="joinMaster?'选择加入控制平面的新主机':'选择加入工作节点的新主机'" /><div class="field-help">{{ joinMaster?'Master 每个计划仅加入 1 台，须等待当前节点就绪后逐台添加。':'Worker 每次最多选择 20 台新主机。' }}</div></a-form-item><a-form-item v-if="joinMaster" label="目标集群 Server Token" required class="wide"><a-input-password v-model:value="form.server_token" aria-label="目标集群 Server Token" :visibility-toggle="false" :maxlength="4096" autocomplete="off" placeholder="输入目标集群的 Server Token" /><div class="field-help">仅用于本次控制平面加入。切换角色或关闭窗口后清除，不用于工作节点加入。</div></a-form-item>
           </div>
-          <a-alert v-if="!loading&&!loadError&&!hostChoices.length" type="info" show-icon message="暂无可安装的远程主机" description="请先在主机页面配置启用的 SSH 主机和登录凭据。" />
+          <a-alert v-if="joinMaster" type="warning" show-icon message="目标集群需已启用内嵌 etcd" description="预检会实时核对 Server Token、目标控制平面、etcd 成员与关键配置。SQLite、外置数据存储或无法确认的目标会被阻断；不会自动转换数据库。关键配置自动继承，冲突覆盖会被拒绝。" /><a-alert v-if="!loading&&!loadError&&!hostChoices.length" type="info" show-icon message="暂无可安装的远程主机" description="请先在主机页面配置启用的 SSH 主机和登录凭据。" />
           <a-form-item label="安装方式"><a-radio-group v-model:value="form.profile" button-style="solid"><a-radio-button value="default">默认安装</a-radio-button><a-radio-button value="custom">自定义安装</a-radio-button></a-radio-group></a-form-item>
-          <div v-if="form.profile==='default'" class="default-install"><Check :size="17" /><div><strong>使用 K3s 默认配置</strong><p>{{ action==='create'?'安装控制平面及所选工作节点，完成后自动接入集群并关联主机。':'在所选主机安装工作节点，加入当前集群并关联主机。' }}</p><small v-if="catalog">安装版本：{{ defaultVersion }}{{ action==='join'?'（跟随目标集群）':'' }}</small></div></div>
+          <div v-if="form.profile==='default'" class="default-install"><Check :size="17" /><div><strong>使用 K3s 默认配置</strong><p>{{ action==='create'?'安装控制平面及所选工作节点，完成后自动接入集群并关联主机。':joinMaster?'在所选主机添加控制平面，加入现有集群并继承已核对的关键配置。':'在所选主机安装工作节点，加入当前集群并关联主机。' }}</p><small v-if="catalog">安装版本：{{ defaultVersion }}{{ action==='join'?'（跟随目标集群）':'' }}</small></div></div>
           <template v-else-if="catalog">
             <div class="catalog-caption"><strong>K3s 安装选项</strong><span>参数基于 {{ catalog.version }} · {{ catalog.catalog_version }}</span></div>
-            <div class="form-columns"><a-form-item label="K3s 版本"><a-input v-model:value="form.installer.version" :placeholder="defaultVersion" /><div class="field-help">{{ action==='join'?`留空跟随目标集群 ${defaultVersion}；自定义版本需符合目标集群的版本偏差限制。`:`留空使用 ${defaultVersion}。` }}</div></a-form-item><a-form-item label="发布通道"><a-input v-model:value="form.installer.channel" placeholder="stable" /><div v-if="action==='join'" class="field-help">加入节点必须固定精确版本，不能仅填写通道；使用通道时请同时指定版本。</div></a-form-item></div>
+            <div class="form-columns"><a-form-item label="K3s 版本"><a-input v-model:value="form.installer.version" :placeholder="defaultVersion" /><div class="field-help">{{ action==='join'?joinMaster?`Master 必须与目标集群 ${defaultVersion} 的精确版本一致；留空自动跟随。`:`留空跟随目标集群 ${defaultVersion}；自定义版本需符合目标集群的版本偏差限制。`:`留空使用 ${defaultVersion}。` }}</div></a-form-item><a-form-item label="发布通道"><a-input v-model:value="form.installer.channel" placeholder="stable" /><div v-if="action==='join'" class="field-help">加入节点必须固定精确版本，不能仅填写通道；使用通道时请同时指定版本。</div></a-form-item></div>
             <a-alert v-if="versionMismatch" type="warning" show-icon message="安装版本与参数目录版本不同，请核对选项兼容性。" />
             <a-tabs v-model:active-key="optionTab" class="option-tabs">
-              <a-tab-pane v-if="action==='create'" key="server" :tab="`控制平面（${catalog.server.length}）`"><K3sOptionFields v-model:value="form.server_options" :options="catalog.server" :disabled="busy" /></a-tab-pane>
-              <a-tab-pane key="agent" :tab="`工作节点（${catalog.agent.length}）`"><K3sOptionFields v-model:value="form.agent_options" :options="catalog.agent" :disabled="busy" /></a-tab-pane>
+              <a-tab-pane v-if="showServerOptions" key="server" :tab="`控制平面（${serverOptionChoices.length}）`"><K3sOptionFields v-model:value="form.server_options" :options="serverOptionChoices" :disabled="busy" /></a-tab-pane>
+              <a-tab-pane v-if="showAgentOptions" key="agent" :tab="`工作节点（${catalog.agent.length}）`"><K3sOptionFields v-model:value="form.agent_options" :options="catalog.agent" :disabled="busy" /></a-tab-pane>
               <a-tab-pane key="installer" :tab="`安装器（${catalog.installer.length}）`"><K3sOptionFields v-model:value="form.installer" :options="installerOptions" :disabled="busy" /></a-tab-pane>
             </a-tabs>
             <a-form-item label="覆盖配置（YAML）" class="override-field"><a-textarea v-model:value="form.overrides" :rows="8" spellcheck="false" :placeholder="overridesPlaceholder" /><div class="field-help">优先级：K3s 默认值 → 上方选项 → 此处覆盖。使用 server、agent、installer 分组；false 和空列表会覆盖原值。最终配置在下一步显示。</div></a-form-item>
@@ -252,9 +272,9 @@ onBeforeUnmount(()=>{mounted=false;cancelRequests();window.removeEventListener('
           <a-alert v-if="planExpired" type="warning" show-icon message="计划已过期，请返回配置后重新预览。" />
           <a-alert v-if="!planPreflightPassed" type="error" show-icon message="缺少通过的前置检查，请返回配置后重新检查。" />
           <dl class="plan-facts"><div v-if="action==='create'"><dt>集群名称</dt><dd>{{ plan.name||form.name }}</dd></div><div v-if="plan.version"><dt>安装版本</dt><dd><code>{{ plan.version }}</code></dd></div><div v-if="plan.target_version"><dt>目标集群版本</dt><dd><code>{{ plan.target_version }}</code></dd></div><div><dt>API 地址</dt><dd><code>{{ plan.endpoint||form.endpoint }}</code></dd></div><div><dt>计划有效期</dt><dd>{{ formatDateTime(plan.expires_at,'zh-CN') }}</dd></div></dl>
-          <div class="plan-hosts"><div v-for="host in plan.hosts||selectedHosts" :key="host.id"><Server :size="16" /><strong>{{ host.name }}</strong><code>{{ host.address }}</code><a-tag>{{ 'role' in host&&host.role==='server'?'控制平面':'工作节点' }}</a-tag></div></div>
+          <div class="plan-hosts"><div v-for="host in plan.hosts||selectedHosts" :key="host.id"><Server :size="16" /><strong>{{ host.name }}</strong><code>{{ host.address }}</code><a-tag>{{ k3sHostRoleLabel('role' in host?String(host.role):undefined) }}</a-tag></div></div>
           <a-alert v-for="warning in plan.warnings" :key="warning" type="warning" show-icon :message="warning" />
-          <section v-if="hasHostConfig" class="host-configs"><h4>最终主机配置</h4><details v-for="host in plan.hosts?.filter(item=>item.config)" :key="host.id" open><summary>{{ host.name }} · {{ host.role==='server'?'控制平面':'工作节点' }}</summary><pre>{{ host.config }}</pre></details></section>
+          <section v-if="hasHostConfig" class="host-configs"><h4>最终主机配置</h4><details v-for="host in plan.hosts?.filter(item=>item.config)" :key="host.id" open><summary>{{ host.name }} · {{ k3sHostRoleLabel(host.role) }}</summary><pre>{{ host.config }}</pre></details></section>
           <section v-if="plan.server_config&&!hasHostConfig"><h4>控制平面最终配置</h4><pre>{{ plan.server_config }}</pre></section>
           <section v-if="plan.agent_config&&!hasHostConfig"><h4>工作节点最终配置</h4><pre>{{ plan.agent_config }}</pre></section>
           <section v-if="plan.installer_config"><h4>安装器配置</h4><pre>{{ plan.installer_config }}</pre></section>

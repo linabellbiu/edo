@@ -446,6 +446,7 @@ type fakeClusters struct {
 	revoked int
 	version string
 	onJoin  func()
+	inspect func() (*kube.ServerJoinInfo, error)
 }
 
 func (k *fakeClusters) Find(context.Context, string) (*model.KubernetesCluster, error) {
@@ -490,6 +491,17 @@ func (k *fakeClusters) Clientset(context.Context, string) (*kubernetes.Clientset
 
 func (k *fakeClusters) RESTConfig(context.Context, string) (*rest.Config, error) {
 	return &rest.Config{Host: k.cluster.APIServer}, nil
+}
+
+func (k *fakeClusters) RequireClusterPermission(context.Context, string, string, string) error {
+	return nil
+}
+
+func (k *fakeClusters) InspectServerJoin(context.Context, string, string, string) (*kube.ServerJoinInfo, error) {
+	if k.inspect != nil {
+		return k.inspect()
+	}
+	return nil, kube.ErrServerJoinUnsupported
 }
 
 func fakeClusterClient(t *testing.T, f fixture) *fakeClusters {

@@ -50,7 +50,7 @@ var hostPreflightDefinitions = []preflightCheckDefinition{
 	{"endpoint", "集群 API 连通性", "主机可使用目标集群 CA 通过 HTTPS 访问集群 API", "主机无法通过可信 HTTPS 访问集群 API，请检查地址、DNS、路由、端口和集群 CA", "创建集群后将再次检查工作节点到 API 的可信 HTTPS 连接"},
 	{"swap", "Swap", "未启用 Swap", "", "检测到 Swap，请核对目标 K3s 版本及 kubelet 的 Swap 配置；预检不会关闭 Swap"},
 	{"firewall", "防火墙", "未发现正在运行的常见主机防火墙", "", "请核对 API、节点间 CNI 和 kubelet 所需网络规则；预检不会修改防火墙，UDP 双向连通性需另行核验"},
-	{"selinux", "SELinux", "未启用强制 SELinux", "", "SELinux 处于 Enforcing，请核对 K3s SELinux 策略包；预检不会更改 SELinux"},
+	{"selinux", "SELinux", "SELinux 已禁用或已核对策略包", "Master 使用已校验制品安装；SELinux 启用时需预先安装 k3s-selinux 策略包", "SELinux 处于启用状态，请核对 K3s SELinux 策略包；预检不会更改 SELinux"},
 	{"existing_installation", "现有 Kubernetes 安装", "未发现现有 Kubernetes 安装、残留配置或其他 EDO 安装锁", "已发现现有 Kubernetes 安装、配置、进程或其他 EDO 安装锁，请接入或处理现有集群", ""},
 }
 
@@ -85,12 +85,17 @@ func preflightEnvironmentScript(host Host, input Input, endpointReady bool) stri
 	}
 	nodeName, _ := options["node-name"].(string)
 	var script strings.Builder
+	if isServerJoin(input) {
+		script.WriteString("edo_extra_tools='sha256sum ln install mktemp'\n")
+	} else {
+		script.WriteString("edo_extra_tools=''\n")
+	}
 	script.WriteString(`edo_failed=0
 edo_check() { printf 'EDO_K3S_CHECK\t%s\t%s\n' "$1" "$2"; if [ "$2" = failed ]; then edo_failed=1; fi; }
 if [ "$(id -u)" = 0 ]; then edo_check privilege passed; else edo_check privilege failed; fi
 if [ "$(uname -s)" = Linux ]; then edo_check os passed; else edo_check os failed; fi
 edo_tools=true
-for edo_tool in curl base64 awk df hostname ps ss getconf tr timeout; do command -v "$edo_tool" >/dev/null 2>&1 || edo_tools=false; done
+for edo_tool in curl base64 awk df hostname ps ss getconf tr timeout $edo_extra_tools; do command -v "$edo_tool" >/dev/null 2>&1 || edo_tools=false; done
 if "$edo_tools"; then edo_check tools passed; else edo_check tools failed; fi
 case "$(uname -m)" in x86_64|aarch64|arm64|armv7l|armv7*) edo_check architecture passed ;; *) edo_check architecture failed ;; esac
 if { [ -d /run/systemd/system ] && command -v systemctl >/dev/null 2>&1; } || [ -x /sbin/openrc-run ]; then edo_check supervisor passed; else edo_check supervisor failed; fi
@@ -117,6 +122,11 @@ edo_ram=$(awk '$1=="MemTotal:"{print $2;found=1;exit} END{if(!found)print 0}' /p
 if [ -n "$edo_hostname" ] && [ "${#edo_hostname}" -le 253 ] && printf '%s\n' "$edo_hostname" | awk -F. 'BEGIN{ok=1} {for(i=1;i<=NF;i++) if(length($i)<1 || length($i)>63 || $i!~/^[a-z0-9]([a-z0-9-]*[a-z0-9])?$/)ok=0} END{exit !ok}'; then printf 'EDO_K3S_HOSTNAME\t%s\n' "$edo_hostname"; edo_check hostname passed; else edo_check hostname failed; fi
 `)
 	ports, customPorts := preflightPorts(host, options)
+	if isServerJoin(input) {
+		ports = append(ports, 2379, 2380)
+		slices.Sort(ports)
+		ports = slices.Compact(ports)
+	}
 	script.WriteString("edo_listeners=$(timeout 3 ss -H -ltn 2>/dev/null)\nedo_ss_status=$?\nedo_ports_ok=true\nif [ \"$edo_ss_status\" != 0 ]; then edo_ports_ok=false; fi\n")
 	for _, port := range ports {
 		script.WriteString("if printf '%s\\n' \"$edo_listeners\" | awk '$4 ~ /:" + strconv.Itoa(port) + "$/ {found=1} END{exit !found}'; then edo_ports_ok=false; fi\n")
@@ -186,10 +196,12 @@ if [ -n "$edo_hostname" ] && [ "${#edo_hostname}" -le 253 ] && printf '%s\n' "$e
 	} else {
 		script.WriteString("edo_check endpoint warning\n")
 	}
-	script.WriteString(`if [ -r /proc/swaps ] && awk 'NR>1{found=1} END{exit !found}' /proc/swaps; then edo_check swap warning; else edo_check swap passed; fi
-edo_check firewall warning
-if command -v getenforce >/dev/null 2>&1 && [ "$(timeout 2 getenforce 2>/dev/null || true)" = Enforcing ]; then edo_check selinux warning; else edo_check selinux passed; fi
-`)
+	script.WriteString("if [ -r /proc/swaps ] && awk 'NR>1{found=1} END{exit !found}' /proc/swaps; then edo_check swap warning; else edo_check swap passed; fi\nedo_check firewall warning\n")
+	if isServerJoin(input) {
+		script.WriteString("edo_selinux=false\nif [ -r /sys/fs/selinux/enforce ]; then edo_selinux=true; fi\nif command -v getenforce >/dev/null 2>&1; then case \"$(timeout 2 getenforce 2>/dev/null || true)\" in Enforcing|Permissive) edo_selinux=true ;; esac; fi\nif \"$edo_selinux\"; then if command -v rpm >/dev/null 2>&1 && timeout 3 rpm -q k3s-selinux >/dev/null 2>&1; then edo_check selinux warning; else edo_check selinux failed; fi; else edo_check selinux passed; fi\n")
+	} else {
+		script.WriteString("if command -v getenforce >/dev/null 2>&1 && [ \"$(timeout 2 getenforce 2>/dev/null || true)\" = Enforcing ]; then edo_check selinux warning; else edo_check selinux passed; fi\n")
+	}
 	return script.String()
 }
 

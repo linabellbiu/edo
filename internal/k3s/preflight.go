@@ -13,6 +13,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"edo/internal/hostidentity"
+	"edo/internal/kube"
 	"edo/internal/model"
 )
 
@@ -45,11 +46,19 @@ func (s *Service) preparePreflightInput(ctx context.Context, input Input) (Input
 	if s.kubernetes == nil {
 		return input, ErrRemote
 	}
-	connection, err := s.kubernetes.RESTConfig(ctx, input.ClusterID)
+	if err := s.kubernetes.RequireClusterPermission(ctx, input.ClusterID, "", "kubernetes.node.create"); err != nil {
+		return input, err
+	}
+	connection, err := s.kubernetes.RESTConfig(kube.WithInternalClusterAccess(ctx, "node-bootstrap"), input.ClusterID)
 	if err != nil || connection == nil || connection.Insecure {
 		return input, ErrRemote
 	}
 	input.targetCAData = append([]byte(nil), connection.CAData...)
+	if isServerJoin(input) {
+		if err := s.prepareServerJoin(ctx, &input); err != nil {
+			return input, err
+		}
+	}
 	return input, nil
 }
 
@@ -63,7 +72,11 @@ func (s *Service) runPreflight(ctx context.Context, input Input, hosts []Host) (
 	clusterPrepared := false
 	var nodes []corev1.Node
 	if endpointReady {
-		clusterCtx, stop := context.WithTimeout(ctx, 15*time.Second)
+		clusterTimeout := 15 * time.Second
+		if isServerJoin(input) {
+			clusterTimeout = 45 * time.Second
+		}
+		clusterCtx, stop := context.WithTimeout(ctx, clusterTimeout)
 		prepared, err := s.preparePreflightInput(clusterCtx, input)
 		if err == nil {
 			input = prepared
@@ -71,7 +84,21 @@ func (s *Service) runPreflight(ctx context.Context, input Input, hosts []Host) (
 		}
 		stop()
 		if err != nil {
+			if isServerJoin(input) {
+				var blocked *PreflightError
+				failure := serverJoinPreflightError(hosts, err)
+				if errors.As(failure, &blocked) {
+					return blocked.Report, nil
+				}
+				return nil, failure
+			}
 			report.Checks = append(report.Checks, check("cluster_access", "目标集群健康与节点读取", "failed", "无法实时核对目标集群健康、证书或完整节点列表，请检查集群连接及节点读取权限"))
+		}
+	}
+	if isServerJoin(input) && clusterPrepared {
+		report.Checks = append(report.Checks, check("server_ha", "Master 高可用、凭据与关键配置", "passed", "已确认目标为 embedded-etcd，Server Token 有效，现有控制平面健康且关键配置可核对"))
+		if (len(input.serverJoin.Members)+1)%2 == 0 {
+			report.Checks = append(report.Checks, check("etcd_quorum", "etcd 成员数量", "warning", "加入后 etcd 成员为偶数，建议最终配置 3 或 5 个成员；请逐台添加并等待健康"))
 		}
 	}
 	// Bounded concurrency keeps multi-host previews within the request budget.
@@ -97,6 +124,19 @@ func (s *Service) runPreflight(ctx context.Context, input Input, hosts []Host) (
 			}
 			output, err := s.transport.Read(probeCtx, current, bundle, preflightProbeScript(selected, input, endpointReady))
 			report.Hosts[index] = parsePreflightProbe(selected, output, err)
+			if isServerJoin(input) && report.Hosts[index].Passed {
+				peerScript, peerErr := serverPeerProbeScript(input.serverJoin)
+				peerOutput := ""
+				if peerErr == nil {
+					peerOutput, peerErr = s.transport.Read(probeCtx, current, bundle, peerScript)
+				}
+				status, message := "passed", "从新 Master 到现有 etcd 成员的 2379/2380 TCP 连接可达"
+				if peerErr != nil || strings.TrimSpace(peerOutput) != "EDO_K3S_ETCD_PEERS_OK" {
+					status, message = "failed", "无法从新 Master 连接现有 etcd 成员的 2379/2380 端口；此检查需要 bash 与 timeout，请核对网络及工具"
+					report.Hosts[index].Passed = false
+				}
+				report.Hosts[index].Checks = append(report.Hosts[index].Checks, check("etcd_peers", "etcd 成员端口连通性", status, message))
+			}
 		}(index, selected)
 	}
 	workers.Wait()
@@ -134,7 +174,10 @@ func failedHostPreflight(host Host) HostPreflight {
 }
 
 func (s *Service) preflightNodes(ctx context.Context, clusterID string) ([]corev1.Node, error) {
-	client, err := s.kubernetes.Clientset(ctx, clusterID)
+	if err := s.kubernetes.RequireClusterPermission(ctx, clusterID, "", "kubernetes.node.create"); err != nil {
+		return nil, err
+	}
+	client, err := s.kubernetes.Clientset(kube.WithInternalClusterAccess(ctx, "node-bootstrap"), clusterID)
 	if err != nil || client == nil {
 		return nil, ErrRemote
 	}

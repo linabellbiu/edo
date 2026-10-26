@@ -40,7 +40,20 @@ func (s *Service) OpenKubernetes(
 	if err != nil {
 		return nil, err
 	}
-	restConfig, err := s.kube.RESTConfig(ctx, clusterID)
+	if err := s.kube.RequireResourcePermission(ctx, clusterID, "pods", namespace, "execute", false); err != nil {
+		return nil, err
+	}
+	authorizedContext, stopAuthorization, err := s.kube.WithClusterAuthorizationLease(ctx, clusterID)
+	if err != nil {
+		return nil, err
+	}
+	opened := false
+	defer func() {
+		if !opened {
+			stopAuthorization()
+		}
+	}()
+	restConfig, err := s.kube.RESTConfig(authorizedContext, clusterID)
 	if err != nil {
 		return nil, fmt.Errorf("加载 Kubernetes 终端连接失败: %w", err)
 	}
@@ -50,7 +63,7 @@ func (s *Service) OpenKubernetes(
 	if err != nil {
 		return nil, fmt.Errorf("创建 Kubernetes 终端客户端失败: %w", err)
 	}
-	pod, err := clientset.CoreV1().Pods(namespace).Get(ctx, podName, metav1.GetOptions{})
+	pod, err := clientset.CoreV1().Pods(namespace).Get(authorizedContext, podName, metav1.GetOptions{})
 	if err != nil {
 		return nil, fmt.Errorf("读取 Kubernetes Pod 状态失败: %w", err)
 	}
@@ -68,7 +81,11 @@ func (s *Service) OpenKubernetes(
 		return nil, fmt.Errorf("创建 Kubernetes Pod 终端执行器失败: %w", err)
 	}
 
-	sessionContext, cancel := context.WithCancel(ctx)
+	sessionContext, cancelSession := context.WithCancel(authorizedContext)
+	cancel := func() {
+		cancelSession()
+		stopAuthorization()
+	}
 	stdinReader, stdinWriter := io.Pipe()
 	stdoutReader, stdoutWriter := io.Pipe()
 	resizeQueue := newTerminalSizeQueue(sessionContext, size)
@@ -76,12 +93,14 @@ func (s *Service) OpenKubernetes(
 		input: stdinWriter, output: stdoutReader, resizeQueue: resizeQueue, cancel: cancel,
 	}
 	go func() {
+		defer cancel()
 		err := executor.StreamWithContext(sessionContext, remotecommand.StreamOptions{
 			Stdin: stdinReader, Stdout: stdoutWriter, Tty: true, TerminalSizeQueue: resizeQueue,
 		})
 		_ = stdinReader.CloseWithError(err)
 		_ = stdoutWriter.CloseWithError(err)
 	}()
+	opened = true
 	return session, nil
 }
 

@@ -33,11 +33,12 @@ func (s *Service) NodeArchitectures(ctx context.Context, clusterID, projectID st
 		logger.WarnContext(ctx, "部署集群不在当前项目范围内或已停用", "operation", "kubernetes_node_architectures_scope", "cluster_id", clusterID, "project_id", projectID, "err", ErrClusterNotFound)
 		return nil, ErrClusterNotFound
 	}
-	client, err := s.Clientset(ctx, clusterID)
+	ctx, query, err := s.authorizeResourceOperation(ctx, clusterID, "nodes", "", "read", false)
 	if err != nil {
 		logger.ErrorContext(ctx, "初始化部署集群架构客户端失败", "operation", "kubernetes_node_architectures_client", "cluster_id", clusterID, "project_id", projectID, "err", err)
 		return nil, ErrNodeArchitecturesUnavailable
 	}
+	client := query.typed
 	requestContext, cancel := context.WithTimeout(ctx, s.config.RequestTimeout)
 	defer cancel()
 	architectures := make(map[model.HostArchitecture]struct{}, 2)

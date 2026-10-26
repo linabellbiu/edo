@@ -34,7 +34,7 @@ function harness({action='create',codes=permissions,api={}}={}){
     globals:{window:{addEventListener:(name,fn)=>listeners.set(name,fn),removeEventListener:(name,fn)=>{if(listeners.get(name)===fn)listeners.delete(name)}},localStorage:{getItem:()=>storage.project},setTimeout:fn=>{timers.push(fn);return timers.length},clearTimeout(){},setInterval(){return 1},clearInterval(){}},
   })
   mounts.forEach(fn=>fn())
-  return {...ctx,auth,props,requests,timers,listeners,storage,stop(){unmounts.forEach(fn=>fn());ctx.stop()},async open(){props.open=true;await settle()},ready(){Object.assign(ctx.state.form,{name:'Production',server_host_id:'1',agent_host_ids:[]})}}
+  return {...ctx,auth,props,requests,timers,listeners,storage,stop(){unmounts.forEach(fn=>fn());ctx.stop()},async open(){props.open=true;await settle()},ready(){Object.assign(ctx.state.form,{name:'Production',server_host_id:action==='create'?'1':'',agent_host_ids:[],join_host_ids:action==='join'?['2']:[]})}}
 }
 
 test('K3s 参数目录按用途和搜索词筛选，默认值保留 false、0 和独立数组',()=>{
@@ -55,6 +55,135 @@ test('安装主机只显示启用的远程主机，已有 Kubernetes 关联与�
   assert.deepEqual(helpers.availableK3sHosts([host('1'),{...host('2'),is_active:false},{...host('3'),mode:'local'},{...host('4'),is_builtin:true}]).map(item=>item.id),['1'])
   assert.match(helpers.k3sHostDisabledReason({...host('1'),credential_configured:false}),/凭据/)
   assert.match(helpers.k3sHostDisabledReason({...host('1'),capabilities:[{kind:'kubernetes',runtime_id:'c'}]}),/已关联/)
+})
+
+test('K3s安装角色明确区分Master和Worker，未知值不推断为工作节点',()=>{
+  assert.equal(helpers.k3sHostRoleLabel('server'),'控制平面（Master）')
+  assert.equal(helpers.k3sHostRoleLabel('agent'),'工作节点（Worker）')
+  assert.equal(helpers.k3sHostRoleLabel(undefined),'节点')
+})
+
+test('添加Master需要明确Server凭据并发送统一join字段，创建流程保持原字段',async()=>{
+  const ctx=harness({action:'join'}),created=harness()
+  try{
+    await ctx.open();assert.equal(ctx.state.form.join_role,'agent')
+    ctx.state.form.join_role='server';await settle();ctx.state.form.join_host_ids=['1']
+    assert.equal(ctx.state.canPreview.value,false);ctx.state.form.server_token='   ';assert.equal(ctx.state.canPreview.value,false)
+    ctx.state.form.server_token='K10fixture-ca::server-fixture-password';assert.equal(ctx.state.canPreview.value,true)
+    await ctx.state.preview();const request=ctx.requests.find(item=>item.method==='preview').body
+    assert.equal(request.join_role,'server');assert.deepEqual(request.join_host_ids,['1']);assert.equal(request.server_token,'K10fixture-ca::server-fixture-password')
+    assert.equal('agent_host_ids' in request,false);assert.equal('server_host_id' in request,false)
+    assert.equal(ctx.state.showServerOptions.value,true);assert.equal(ctx.state.showAgentOptions.value,false);assert.equal(ctx.state.defaultVersion.value,targetVersion)
+    await created.open();created.ready();created.state.form.server_token='must-not-send';created.state.form.join_host_ids=['2'];await created.state.preview()
+    const create=created.requests.find(item=>item.method==='preview').body
+    assert.equal(create.server_host_id,'1');assert.deepEqual(create.agent_host_ids,[]);assert.equal('join_role' in create,false);assert.equal('join_host_ids' in create,false);assert.equal('server_token' in create,false)
+  }finally{ctx.stop();created.stop()}
+})
+
+test('Worker不发送Server凭据或隐藏控制平面参数，Master不发送工作节点参数',async()=>{
+  for(const role of ['agent','server']){
+    const ctx=harness({action:'join'});try{
+      await ctx.open();ctx.state.form.join_role=role;await settle();ctx.state.form.join_host_ids=['2'];ctx.state.form.profile='custom';ctx.state.form.server_token='fixture-server-credential'
+      ctx.state.form.server_options={'node-label':['master-only']};ctx.state.form.agent_options={'node-label':['worker-only']};await settle();await ctx.state.preview()
+      const request=ctx.requests.find(item=>item.method==='preview').body
+      assert.deepEqual(request.server_options,role==='server'?{'node-label':['master-only']}:{})
+      assert.deepEqual(request.agent_options,role==='agent'?{'node-label':['worker-only']}:{})
+      assert.equal('server_token' in request,role==='server')
+    }finally{ctx.stop()}
+  }
+})
+
+test('Master选项目录标明禁止初始化与拆分控制平面，覆盖配置按当前角色校验',async()=>{
+  const ctx=harness({action:'join',api:{getK3sCatalog:async()=>({...catalog,default_version:targetVersion,target_version:targetVersion,server:[{name:'cluster-init'},{name:'disable-agent'},{name:'node-label'}]})}})
+  try{
+    await ctx.open();ctx.state.form.join_role='server';await settle()
+    assert.ok(ctx.state.serverOptionChoices.value.find(item=>item.name==='cluster-init').unsupported_reason)
+    assert.ok(ctx.state.serverOptionChoices.value.find(item=>item.name==='disable-agent').unsupported_reason)
+    assert.equal(ctx.state.serverOptionChoices.value.find(item=>item.name==='node-label').unsupported_reason,undefined)
+    assert.match(ctx.state.overridesPlaceholder.value,/^server:/);assert.doesNotMatch(ctx.state.overridesPlaceholder.value,/^agent:/m)
+    helpers.validateK3sOverrides('server:\n  node-label: [master]\ninstaller:\n  version: v1.35.5+k3s1','server')
+    assert.throws(()=>helpers.validateK3sOverrides('agent:\n  node-label: [worker]','server'),/仅接受 server/)
+    assert.throws(()=>helpers.validateK3sOverrides('server:\n  disable: []','agent'),/仅接受 agent/)
+  }finally{ctx.stop()}
+})
+
+test('添加Master禁用原始组件参数并拒绝非空YAML，创建和Worker规则不变',async()=>{
+  const names=['etcd-arg','kube-apiserver-arg','kube-controller-manager-arg','kube-scheduler-arg','kube-cloud-controller-manager-arg','kube-controller-arg','kube-cloud-controller-arg']
+  const options=names.map(name=>({name,type:'string[]',description:'原始参数'}))
+  const create=harness({api:{getK3sCatalog:async()=>({...catalog,server:options})}})
+  const join=harness({action:'join',api:{getK3sCatalog:async()=>({...catalog,server:options})}})
+  try{
+    await create.open();assert.ok(create.state.serverOptionChoices.value.every(option=>!option.unsupported_reason))
+    await join.open();join.state.form.join_role='server';await settle()
+    for(const name of names){
+      assert.match(join.state.serverOptionChoices.value.find(option=>option.name===name).unsupported_reason,/原始参数覆盖目标集群/)
+      assert.throws(()=>helpers.validateK3sOverrides(`server:\n  ${name}: [unsafe=value]`,'server'),/成员、认证、TLS/)
+      assert.doesNotThrow(()=>helpers.validateK3sOverrides(`server:\n  ${name}: [custom=value]`))
+      assert.doesNotThrow(()=>helpers.validateK3sOverrides(`agent:\n  ${name}: [custom=value]`,'agent'))
+      assert.doesNotThrow(()=>helpers.validateK3sOverrides(`server:\n  ${name}: []`,'server'))
+      assert.doesNotThrow(()=>helpers.validateK3sOverrides(`server:\n  ${name}: null`,'server'))
+    }
+    assert.equal(join.state.serverOptionChoices.value.some(option=>option.name==='cloud-controller-manager-arg'),false)
+    join.state.form.join_host_ids=['1'];join.state.form.server_token='fixture-server-credential';join.state.form.profile='custom'
+    for(const name of [...names,'cloud-controller-manager-arg']){
+      join.state.form.overrides=`server:\n  ${name}: [unsafe=value]`;await settle();await join.state.preview()
+      assert.equal(join.requests.some(item=>item.method==='preview'),false,name);assert.match(join.state.error.value,/原始参数/)
+    }
+  }finally{create.stop();join.stop()}
+})
+
+test('切换节点角色清理目标主机、凭据、自定义参数与旧计划',async()=>{
+  const ctx=harness({action:'join'});try{
+    await ctx.open();ctx.state.form.join_role='server';await settle();Object.assign(ctx.state.form,{join_host_ids:['1'],server_token:'fixture-server-credential',profile:'custom',server_options:{'node-label':['master']},overrides:'server:\n  node-label: [master]'})
+    await settle();await ctx.state.preview();assert.ok(ctx.state.plan.value)
+    ctx.state.form.join_role='agent';await settle()
+    assert.equal(ctx.state.form.server_token,'');assert.deepEqual(ctx.state.form.join_host_ids,[]);assert.deepEqual(ctx.state.form.server_options,{});assert.deepEqual(ctx.state.form.agent_options,{});assert.equal(ctx.state.form.overrides,'')
+    assert.equal(ctx.state.plan.value,undefined);assert.equal(ctx.state.visiblePreflight.value,undefined);assert.equal(ctx.state.optionTab.value,'agent')
+  }finally{ctx.stop()}
+})
+
+test('Master凭据在关闭、项目或集群切换、权限撤销和卸载后清空',async()=>{
+  for(const change of ['close','project','cluster','permission','unmount']){
+    const ctx=harness({action:'join'});try{
+      await ctx.open();ctx.state.form.join_role='server';await settle();ctx.state.form.server_token='fixture-server-credential'
+      if(change==='close')ctx.props.open=false
+      if(change==='project'){ctx.storage.project='project-b';ctx.listeners.get('edo:projects-changed')?.({type:'edo:projects-changed'})}
+      if(change==='cluster')ctx.props.cluster='cluster-b'
+      if(change==='permission')ctx.auth.user=null
+      if(change==='unmount')ctx.stop()
+      await settle();assert.equal(ctx.state.form.server_token,'',change)
+    }finally{ctx.stop()}
+  }
+})
+
+test('角色切换后的迟到Master预览不能恢复旧计划，任务接收后清除凭据',async()=>{
+  const pending=deferred(),ctx=harness({action:'join',api:{previewK3sPlan:()=>pending.promise}})
+  const accepted=harness({action:'join'})
+  try{
+    await ctx.open();ctx.state.form.join_role='server';await settle();ctx.state.form.join_host_ids=['1'];ctx.state.form.server_token='fixture-server-credential';await settle()
+    const operation=ctx.state.preview();ctx.state.form.join_role='agent';await settle();pending.resolve(plan());await operation
+    assert.equal(ctx.state.plan.value,undefined);await ctx.state.execute();assert.equal(ctx.requests.some(item=>item.method==='start'),false)
+    await accepted.open();accepted.state.form.join_role='server';await settle();accepted.state.form.join_host_ids=['1'];accepted.state.form.server_token='fixture-server-credential';await settle();await accepted.state.preview();await accepted.state.execute()
+    assert.ok(accepted.state.installation.value);assert.equal(accepted.state.form.server_token,'')
+  }finally{ctx.stop();accepted.stop()}
+})
+
+test('Master与Worker的加入批次均不超过20台，凭据只通过密码控件输入',async()=>{
+  for(const role of ['agent','server']){const ctx=harness({action:'join'});try{await ctx.open();ctx.state.form.join_role=role;await settle();ctx.state.form.server_token='fixture-server-credential';ctx.state.form.join_host_ids=Array.from({length:21},(_,index)=>String(index));assert.equal(ctx.state.canPreview.value,false);await ctx.state.preview();assert.equal(ctx.requests.some(item=>item.method==='preview'),false)}finally{ctx.stop()}}
+  const source=readFileSync(new URL('../src/components/K3sProvisionDrawer.vue',import.meta.url),'utf8')
+  assert.match(source,/<a-input-password v-model:value="form.server_token"/);assert.doesNotMatch(source,/\{\{\s*form.server_token\s*\}\}/)
+  assert.match(source,/SQLite、外置数据存储或无法确认的目标会被阻断/)
+})
+
+test('Master每计划只能单台逐次加入，Worker保留多选并仍发送数组',async()=>{
+  const ctx=harness({action:'join'})
+  try{
+    await ctx.open();ctx.state.form.join_role='server';await settle();ctx.state.form.server_token='fixture-server-credential'
+    ctx.state.form.join_host_ids=['1','2'];assert.equal(ctx.state.canPreview.value,false);await ctx.state.preview();assert.equal(ctx.requests.some(item=>item.method==='preview'),false)
+    ctx.state.joinHostSelection.value='1';assert.deepEqual(ctx.state.form.join_host_ids,['1']);assert.equal(ctx.state.canPreview.value,true);await ctx.state.preview();assert.deepEqual(ctx.requests.find(item=>item.method==='preview').body.join_host_ids,['1'])
+    ctx.state.form.join_role='agent';await settle();ctx.state.joinHostSelection.value=['1','2'];assert.deepEqual(ctx.state.form.join_host_ids,['1','2']);assert.equal(ctx.state.canPreview.value,true);await ctx.state.preview();assert.deepEqual(ctx.requests.filter(item=>item.method==='preview').at(-1).body.join_host_ids,['1','2'])
+    const source=readFileSync(new URL('../src/components/K3sProvisionDrawer.vue',import.meta.url),'utf8');assert.match(source,/Master 每个计划仅加入 1 台/)
+  }finally{ctx.stop()}
 })
 
 test('默认安装不提交隐藏的自定义参数；自定义参数和覆盖文本完整进入预览',async()=>{
@@ -95,7 +224,7 @@ test('预览显示服务端确认的最终安装版本和目标版本，覆盖�
     const finalVersion=action==='join'?'v1.35.4+k3s1':'v1.36.2+k3s1'
     const ctx=harness({action,api:{previewK3sPlan:async()=>({...plan(),action,version:finalVersion,...(action==='join'?{target_version:targetVersion}:{})})}})
     try{
-      await ctx.open();ctx.ready();if(action==='join')ctx.state.form.agent_host_ids=['2']
+      await ctx.open();ctx.ready();if(action==='join')ctx.state.form.join_host_ids=['2']
       ctx.state.form.profile='custom';ctx.state.form.overrides=`installer:\n  version: ${finalVersion}`;await settle();await ctx.state.preview()
       assert.equal(ctx.state.plan.value.version,finalVersion)
       assert.equal(ctx.state.plan.value.target_version,action==='join'?targetVersion:undefined)
@@ -149,9 +278,9 @@ test('配置变更和关闭后返回的预览不覆盖新状态，过期计划�
 
 test('节点安装使用当前集群，选择工作节点是必要条件，缺少执行或关联权限不能预览',async()=>{
   const ctx=harness({action:'join'});try{
-    await ctx.open();assert.equal(ctx.state.canPreview.value,false);ctx.state.form.agent_host_ids=['2'];assert.equal(ctx.state.canPreview.value,true)
+    await ctx.open();assert.equal(ctx.state.canPreview.value,false);ctx.state.form.join_host_ids=['2'];assert.equal(ctx.state.canPreview.value,true)
     await ctx.state.preview();const payload=ctx.requests.find(item=>item.method==='preview').body
-    assert.equal(payload.action,'join');assert.equal(payload.cluster_id,'cluster-a');assert.equal(payload.server_host_id,'');assert.deepEqual(payload.agent_host_ids,['2'])
+    assert.equal(payload.action,'join');assert.equal(payload.cluster_id,'cluster-a');assert.equal(payload.join_role,'agent');assert.deepEqual(payload.join_host_ids,['2']);assert.equal('server_host_id' in payload,false);assert.equal('agent_host_ids' in payload,false);assert.equal('server_token' in payload,false)
   }finally{ctx.stop()}
   for(const missing of ['cluster.execute','cluster.update']){
     const denied=harness({codes:permissions.filter(code=>code!==missing)});try{await denied.open();denied.ready();await denied.state.preview();assert.equal(denied.requests.some(item=>item.method==='preview'),false)}finally{denied.stop()}

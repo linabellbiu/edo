@@ -117,7 +117,7 @@ func (s *Service) resourceClient(ctx context.Context, clusterID, resource, names
 }
 
 func (s *Service) ListResources(ctx context.Context, clusterID, resource, namespace, continuation string) (*ResourceList, error) {
-	if len(continuation) > 8192 {
+	if len(continuation) > 16384 || len(continuation) > 8192 && !strings.HasPrefix(continuation, scopedContinuationPrefix) {
 		return nil, ErrInvalidResource
 	}
 	def, ok := ResourceType(resource)
@@ -150,6 +150,14 @@ func (s *Service) ListResources(ctx context.Context, clusterID, resource, namesp
 func (s *Service) GetResource(ctx context.Context, clusterID, resource, namespace, name string, reveal bool) (map[string]any, error) {
 	if len(validation.IsDNS1123Subdomain(name)) != 0 {
 		return nil, ErrInvalidResource
+	}
+	scope := namespace
+	if resource == "namespaces" {
+		scope = name
+	}
+	ctx, _, err := s.authorizeResourceOperation(ctx, clusterID, resource, scope, "read", false)
+	if err != nil {
+		return nil, err
 	}
 	client, _, err := s.resourceClient(ctx, clusterID, resource, namespace, false)
 	if err != nil {
@@ -194,22 +202,36 @@ func resourceView(resource string, item *unstructured.Unstructured, reveal bool)
 }
 
 func (s *Service) SaveResource(ctx context.Context, clusterID, resource, namespace, name string, object map[string]any, create bool) (map[string]any, error) {
+	// Public writes never inherit a private execute intent from another call.
+	ctx = context.WithValue(ctx, resourceOperationIntentKey{}, resourceOperationIntent{})
 	return s.saveResource(ctx, clusterID, resource, namespace, name, object, create, false)
 }
 
 // 使用与保存相同的字段和权限边界，由集群执行校验，但不持久化资源。
 func (s *Service) ValidateResource(ctx context.Context, clusterID, resource, namespace, name string, object map[string]any) error {
+	ctx = context.WithValue(ctx, resourceOperationIntentKey{}, resourceOperationIntent{})
 	_, err := s.saveResource(ctx, clusterID, resource, namespace, name, object, false, true)
 	return err
 }
 
 // 新建校验复用创建白名单及身份检查，不要求或接受已有对象的 UID 和版本。
 func (s *Service) ValidateResourceCreate(ctx context.Context, clusterID, resource, namespace, name string, object map[string]any) error {
+	ctx = context.WithValue(ctx, resourceOperationIntentKey{}, resourceOperationIntent{})
 	_, err := s.saveResource(ctx, clusterID, resource, namespace, name, object, true, true)
 	return err
 }
 
 func (s *Service) saveResource(ctx context.Context, clusterID, resource, namespace, name string, object map[string]any, create, dryRun bool) (map[string]any, error) {
+	action := "update"
+	if create {
+		action = "create"
+	} else if intent, ok := ctx.Value(resourceOperationIntentKey{}).(resourceOperationIntent); ok && intent.clusterID == clusterID && intent.resource == resource && intent.namespace == namespace && intent.action == "execute" {
+		action = "execute"
+	}
+	ctx, query, err := s.authorizeResourceOperation(ctx, clusterID, resource, namespace, action, false)
+	if err != nil {
+		return nil, err
+	}
 	client, def, err := s.resourceClient(ctx, clusterID, resource, namespace, false)
 	if err != nil {
 		return nil, err
@@ -240,7 +262,13 @@ func (s *Service) saveResource(ctx context.Context, clusterID, resource, namespa
 	if !dryRun {
 		s.invalidateResourceQueries(clusterID, resource)
 	}
-	return resourceView(resource, result, false), nil
+	if query.authorization.enforced() {
+		if err := s.validateQueryAuthorization(ctx, query); err != nil {
+			query.stop()
+			return nil, err
+		}
+	}
+	return mutationResourceView(query.authorization, def, namespace, result), nil
 }
 
 func validateResourceObject(def ResourceDefinition, namespace, name string, object map[string]any, create bool) error {
@@ -298,6 +326,10 @@ func validateResourceObject(def ResourceDefinition, namespace, name string, obje
 func (s *Service) DeleteResource(ctx context.Context, clusterID, resource, namespace, name string, identity ResourceIdentity) error {
 	if !identity.valid() || len(validation.IsDNS1123Subdomain(name)) != 0 {
 		return ErrInvalidResource
+	}
+	ctx, _, err := s.authorizeResourceOperation(ctx, clusterID, resource, namespace, "delete", false)
+	if err != nil {
+		return err
 	}
 	client, def, err := s.resourceClient(ctx, clusterID, resource, namespace, false)
 	if err != nil {
@@ -357,13 +389,30 @@ func (s *Service) ResourceAction(ctx context.Context, clusterID, resource, names
 	default:
 		return nil, ErrInvalidResource
 	}
+	action := "execute"
+	if resource == "nodes" {
+		action = "update"
+	}
+	ctx, _, err := s.authorizeResourceOperation(ctx, clusterID, resource, namespace, action, false)
+	if err != nil {
+		return nil, err
+	}
 	object := map[string]any{"apiVersion": def.APIVersion, "kind": def.Kind, "metadata": map[string]any{"name": name, "namespace": namespace, "uid": input.UID, "resourceVersion": input.ResourceVersion}, "spec": spec}
-	return s.SaveResource(ctx, clusterID, resource, namespace, name, object, false)
+	return s.saveResource(ctx, clusterID, resource, namespace, name, object, false, false)
 }
 
 func (s *Service) ResourceEvents(ctx context.Context, clusterID, resource, namespace, name, uid string) ([]corev1.Event, error) {
 	if uid == "" || len(uid) > 128 {
 		return nil, ErrInvalidResource
+	}
+	ctx, _, err := s.authorizeResourceOperation(ctx, clusterID, resource, namespace, "read", false)
+	if err != nil {
+		return nil, err
+	}
+	// Events can contain Pod messages independently of the target object's
+	// resource family. Their native read dependency needs its own exact scope.
+	if err := s.RequireResourcePermission(ctx, clusterID, "pods", namespace, "read", namespace == ""); err != nil {
+		return nil, err
 	}
 	obj, err := s.GetResource(ctx, clusterID, resource, namespace, name, false)
 	if err != nil {
@@ -399,21 +448,32 @@ func (s *Service) podLogs(ctx context.Context, clusterID, namespace, pod, contai
 	if len(validation.IsDNS1123Label(namespace)) != 0 || len(validation.IsDNS1123Subdomain(pod)) != 0 || len(validation.IsDNS1123Label(container)) != 0 || tail < 1 || tail > 5000 {
 		return nil, ErrInvalidResource
 	}
-	cfg, err := s.RESTConfig(ctx, clusterID)
+	ctx, _, err := s.authorizeResourceOperation(ctx, clusterID, "pods", namespace, "read", false)
 	if err != nil {
+		return nil, err
+	}
+	lease, cancel, err := s.WithClusterAuthorizationLease(ctx, clusterID)
+	if err != nil {
+		return nil, err
+	}
+	cfg, err := s.RESTConfig(lease, clusterID)
+	if err != nil {
+		cancel()
 		return nil, err
 	}
 	// 日志流由请求取消和长连接授权控制，不使用普通 API 请求的总超时。
 	cfg.Timeout = 0
 	client, err := kubernetes.NewForConfig(cfg)
 	if err != nil {
+		cancel()
 		return nil, err
 	}
-	stream, err := client.CoreV1().Pods(namespace).GetLogs(pod, &corev1.PodLogOptions{Container: container, TailLines: &tail, Follow: follow, Timestamps: timestamps, Previous: previous}).Stream(ctx)
+	stream, err := client.CoreV1().Pods(namespace).GetLogs(pod, &corev1.PodLogOptions{Container: container, TailLines: &tail, Follow: follow, Timestamps: timestamps, Previous: previous}).Stream(lease)
 	if err != nil {
+		cancel()
 		return nil, resourceError("pods", err)
 	}
-	return stream, nil
+	return &authorizationReadCloser{ReadCloser: stream, stop: func() bool { return false }, cancel: cancel}, nil
 }
 
 // Secret 的 API 错误可能复述提交内容，只保留诊断所需的状态码和原因。
@@ -423,7 +483,7 @@ func resourceError(resource string, err error) error {
 	}
 	// Internal validation/scope errors are already stable and must retain their
 	// identity, especially when Secret API errors are deliberately redacted.
-	for _, stable := range []error{ErrClusterNotFound, ErrInvalidCluster, ErrInvalidResource, ErrResourceNotFound, ErrResourceConflict, ErrResourceForbidden, ErrResourceProtected} {
+	for _, stable := range []error{ErrClusterNotFound, ErrInvalidCluster, ErrInvalidResource, ErrResourceNotFound, ErrResourceConflict, ErrResourceForbidden, ErrResourceProtected, ErrRBACForbidden, ErrRBACSyncPending} {
 		if errors.Is(err, stable) {
 			return err
 		}

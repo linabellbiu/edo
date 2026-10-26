@@ -26,6 +26,7 @@ import type { NodeTopologyData } from '@/utils/kubernetesTopology'
 import KubeNodeMonitor from '@/components/KubeNodeMonitor.vue'
 import KubernetesClusterDrawer from '@/components/KubernetesClusterDrawer.vue'
 import K3sProvisionDrawer from '@/components/K3sProvisionDrawer.vue'
+import ClusterRbacDrawer from '@/components/ClusterRbacDrawer.vue'
 import type { K3sInstallation } from '@/api/k3s'
 import ContainerLogDrawer from '@/components/ContainerLogDrawer.vue'
 import TerminalDrawer from '@/components/TerminalDrawer.vue'
@@ -47,6 +48,7 @@ const fromOverview = computed(() => group.value!=='overview'&&route.query.from==
 const can = (permission:string) => auth.canAny([permission])
 const overview=ref<OverviewData|null>(null),overviewLoading=ref(false),overviewError=ref(''),joinOpen=ref(false)
 const provisionOpen=ref(false),provisionAction=ref<'create'|'join'>('create')
+const clusterRbacOpen=ref(false)
 function openProvision(action:'create'|'join'){provisionAction.value=action;provisionOpen.value=true}
 function provisionContext(){return JSON.stringify([auth.user?.id??'',auth.user?.project_id??'',typeof localStorage==='undefined'?'':localStorage.getItem('edo.project')??'',auth.user?.is_superuser??false,[...(auth.user?.permissions??[])].sort(),cluster.value])}
 async function provisionCompleted(installation:K3sInstallation){const context=provisionContext();const loaded=await loadClusters(true);if(!loaded||!mounted||context!==provisionContext())return;if(installation.action==='create'&&installation.cluster_id)cluster.value=installation.cluster_id;refreshAll()}
@@ -114,7 +116,7 @@ const overviewNamespaces=computed(()=>group.value!=='overview'&&activeType.value
 const namespace=computed(()=>selectedNamespaces.value.length===1&&selectedNamespaces.value[0]!=='*'?selectedNamespaces.value[0]!:'')
 const hasContinuation=computed(()=>Object.keys(continuation.value).length>0)
 const contextKey = computed(()=>`${cluster.value}:${activeType.value?.resource}:${namespaceScoped.value?scopeKey.value:'*'}`)
-const contextDisabled=computed(()=>editorOpen.value||yamlOpen.value||joinOpen.value||provisionOpen.value||Boolean(nodeRemoval.value)||Boolean(busy.value))
+const contextDisabled=computed(()=>editorOpen.value||yamlOpen.value||joinOpen.value||provisionOpen.value||clusterRbacOpen.value||Boolean(nodeRemoval.value)||Boolean(busy.value))
 const knownNamespaces=computed(()=>[...new Set([...namespaces.value,...selectedNamespaces.value.filter(name=>name!=='*')])].sort())
 const nodeView = computed(() => route.query.node_view === 'topology' ? 'topology' : 'list')
 const showNodeTopology = computed(() => group.value === 'nodes' && activeType.value?.resource === 'nodes' && nodeView.value === 'topology')
@@ -509,6 +511,7 @@ onBeforeUnmount(()=>{mounted=false;watchMounted=false;stopKubeWatch();watchDirty
         <h3 v-else>{{ t(group==='overview'?'k8s.overview':activeType?`k8s.type_${activeType.resource}`:'k8s.resources') }}</h3>
       <a-radio-group v-if="group==='nodes'&&activeType?.resource==='nodes'" :value="nodeView" :disabled="contextDisabled" :aria-label="t('k8sTopology.nodeView')" size="small" button-style="solid" @change="setNodeView($event.target.value)"><a-radio-button value="list">{{ t('k8sTopology.list') }}</a-radio-button><a-radio-button value="topology">{{ t('k8sTopology.mapView') }}</a-radio-button></a-radio-group>
       <div class="resource-heading-refresh"><a-checkbox v-model:checked="autoRefresh">{{ t('k8s.autoRefresh') }}</a-checkbox><a-button :loading="loading||overviewLoading||topologyLoading" @click="refreshAll"><RefreshCw :size="14" />{{ t('k8s.refresh') }}</a-button></div>
+        <a-button v-if="auth.canAny(['kubernetes.rbac.read','kubernetes.rbac.update'])" :disabled="!cluster||!clusterInfo?.is_active" @click="clusterRbacOpen=true">集群授权</a-button>
         <template v-if="group==='overview'&&can('cluster.create')"><a-button @click="clusterDrawer=true">接入集群</a-button><a-button v-if="can('cluster.execute')&&can('cluster.update')&&auth.canAny(['cluster.read','deployment.read'])" type="primary" @click="openProvision('create')"><Plus :size="14" />创建集群</a-button></template>
         <template v-else-if="group==='nodes'&&can('kubernetes.node.create')"><a-button :disabled="!cluster||!clusterInfo?.is_active" @click="joinOpen=true">生成加入命令</a-button><a-button v-if="can('cluster.execute')&&can('cluster.update')&&auth.canAny(['cluster.read','deployment.read'])" type="primary" :disabled="!cluster||!clusterInfo?.is_active" @click="openProvision('join')"><Plus :size="14" />{{ t('k8s.addNode') }}</a-button></template>
         <a-button v-else-if="group!=='overview'&&activeType?.create&&can(`${activeType.permission}.create`)" type="primary" :disabled="!cluster||!clusterInfo?.is_active" @click="edit()"><Plus :size="14" />{{ t('k8s.create') }}{{ t(`k8s.type_${activeType.resource}`) }}</a-button>
@@ -583,6 +586,7 @@ onBeforeUnmount(()=>{mounted=false;watchMounted=false;stopKubeWatch();watchDirty
     <KubernetesClusterDrawer v-model:open="clusterDrawer" :can-test="can('cluster.execute')" @created="async item=>{await loadClusters();cluster=item.id}" />
     <KubeNodeJoinDrawer v-model:open="joinOpen" :cluster="cluster" :endpoint="clusterInfo?.api_server??''" />
     <K3sProvisionDrawer v-model:open="provisionOpen" :action="provisionAction" :cluster="provisionAction==='join'?cluster:''" :endpoint="provisionAction==='join'?clusterInfo?.api_server??'':''" @completed="provisionCompleted" />
+    <ClusterRbacDrawer v-model:open="clusterRbacOpen" :cluster="cluster" @changed="refreshAll" />
     <a-modal :open="Boolean(nodeRemoval)" :title="t('k8s.removeNode')" :confirm-loading="Boolean(busy)" :ok-text="t('k8s.removeNode')" :cancel-text="t('k8s.cancel')" :ok-button-props="{danger:true,disabled:!agentStopped||nodeName!==nodeRemoval?.object.metadata.name}" :closable="!busy" :mask-closable="!busy" @cancel="nodeRemoval=undefined" @ok="removeNode"><a-alert type="warning" show-icon :message="t('k8s.removeNodeHint')" /><p class="node-removal-context">{{ clusterInfo?.name }} / {{ nodeRemoval?.object.metadata.name }}</p><p>{{ t('k8s.removeBlocked') }}</p><a-checkbox v-model:checked="agentStopped">{{ t('k8s.agentStopped') }}</a-checkbox><a-form-item :label="t('k8s.typeNodeName')" class="node-removal-name"><a-input v-model:value="nodeName" :placeholder="nodeRemoval?.object.metadata.name" :disabled="Boolean(busy)" /></a-form-item></a-modal>
     <a-modal v-model:open="scaleOpen" :title="t('k8s.scaleTitle',{name:scaleTarget?.object.metadata.name??''})" :confirm-loading="Boolean(busy)" :closable="!busy" :mask-closable="!busy" :keyboard="!busy" :ok-text="t('k8s.save')" :cancel-text="t('k8s.cancel')" @ok="scale"><p>{{ clusterInfo?.name }} / {{ scaleTarget?.object.metadata.namespace }}</p><a-form-item :label="t('k8s.replicas')"><a-input-number v-model:value="scaleValue" :min="0" :max="1000" :precision="0" :disabled="Boolean(busy)" /></a-form-item></a-modal>
     <ContainerLogDrawer v-if="!stream.terminal" :key="stream.path" v-model:open="stream.open" :title="stream.title" :path="stream.path" />

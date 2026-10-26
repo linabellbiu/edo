@@ -40,6 +40,10 @@ func (s *Service) TargetVersion(ctx context.Context, actorID, clusterID string) 
 }
 
 func (s *Service) liveTargetVersion(ctx context.Context, clusterID string) (string, error) {
+	if err := s.kubernetes.RequireClusterPermission(ctx, clusterID, "", "kubernetes.node.create"); err != nil {
+		return "", err
+	}
+	ctx = kube.WithInternalClusterAccess(ctx, "node-bootstrap")
 	cluster, err := s.kubernetes.Find(ctx, clusterID)
 	if err != nil {
 		return "", err
@@ -73,6 +77,9 @@ func selectInstallerVersion(input *Input) error {
 		}
 		if err := validateJoinVersion(version, input.targetVersion); err != nil {
 			return err
+		}
+		if isServerJoin(*input) && version != input.targetVersion {
+			return &ValidationError{Message: "新增 Master 的 K3s 版本必须与目标控制平面精确一致"}
 		}
 		// The exact version takes precedence in the official installer. Remove
 		// channel selection so the reviewed join cannot follow a moving release.
@@ -132,5 +139,15 @@ func (s *Service) recheckRuntime(ctx context.Context, record model.K3sInstallati
 		return ErrTargetVersionChanged
 	}
 	installed, _ := snapshot.Input.Installer["INSTALL_K3S_VERSION"].(string)
-	return validateJoinVersion(installed, version)
+	if err := validateJoinVersion(installed, version); err != nil {
+		return err
+	}
+	if isServerJoin(snapshot.Input) {
+		if installed != version {
+			return ErrTargetVersionChanged
+		}
+		_, err := s.checkReviewedServer(ctx, snapshot)
+		return err
+	}
+	return nil
 }

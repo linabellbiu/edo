@@ -17,6 +17,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
 	"edo/internal/account"
 	"edo/internal/database"
@@ -27,7 +28,7 @@ var (
 	ErrInvalidRole            = errors.New("角色信息无效")
 	ErrRoleNameExists         = errors.New("角色标识已存在")
 	ErrRoleNotFound           = errors.New("角色不存在")
-	ErrRoleInUse              = errors.New("角色仍被用户使用，不能删除")
+	ErrRoleInUse              = errors.New("角色仍被成员或集群授权使用，请先解除引用")
 	ErrInvalidPermission      = errors.New("角色包含未知权限")
 	ErrInvalidUserRoles       = errors.New("用户角色配置无效")
 	ErrInvalidUserPermissions = errors.New("用户权限覆盖配置无效")
@@ -216,6 +217,16 @@ func (s *Service) roleMemberSummary(
 			return nil, nil, err
 		}
 		usedRoleIDs = append(usedRoleIDs, projectRoles...)
+	}
+	if s.db.Migrator().HasTable(&model.KubernetesRoleGrant{}) {
+		var grantRoles []string
+		// Roles are global templates. Querying only their current-project model
+		// scope would hide references elsewhere and permit dangling grants. This
+		// returns a boolean usage signal, never another project's identity/count.
+		if err := s.db.WithContext(ctx).Table("kubernetes_role_grants").Where("role_id IN ?", roleIDs).Distinct().Pluck("role_id", &grantRoles).Error; err != nil {
+			return nil, nil, fmt.Errorf("检查集群授权角色使用状态失败: %w", err)
+		}
+		usedRoleIDs = append(usedRoleIDs, grantRoles...)
 	}
 	for _, roleID := range usedRoleIDs {
 		inUse[roleID] = true
@@ -452,7 +463,7 @@ func (s *Service) updateRolePermissions(
 func (s *Service) DeleteRole(ctx context.Context, roleID string) error {
 	if err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var role model.Role
-		if err := tx.First(&role, "uuid = ?", roleID).Error; err != nil {
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&role, "uuid = ?", roleID).Error; err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
 				return ErrRoleNotFound
 			}
@@ -469,6 +480,14 @@ func (s *Service) DeleteRole(ctx context.Context, roleID string) error {
 			return fmt.Errorf("检查项目角色使用状态失败: %w", err)
 		}
 		if count > 0 || roleID == ProjectOwnerRoleID {
+			return ErrRoleInUse
+		}
+		// As in roleMemberSummary, this role reference is global. Using Table
+		// deliberately avoids project/department callbacks on the grant model.
+		if err := tx.Table("kubernetes_role_grants").Where("role_id = ?", roleID).Count(&count).Error; err != nil {
+			return fmt.Errorf("检查集群授权角色使用状态失败: %w", err)
+		}
+		if count > 0 {
 			return ErrRoleInUse
 		}
 		if err := tx.Where("role_id = ?", roleID).Delete(&model.RolePermission{}).Error; err != nil {

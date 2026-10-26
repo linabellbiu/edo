@@ -92,10 +92,11 @@ func (s *Service) NodeTopology(ctx context.Context, clusterID string, allowed ma
 	}
 	ctx, cancel := s.hostValidationContext(ctx)
 	defer cancel()
-	client, err := s.Clientset(ctx, clusterID)
+	ctx, query, err := s.authorizeResourceOperation(ctx, clusterID, "nodes", "", "read", false)
 	if err != nil {
 		return nil, err
 	}
+	client := query.typed
 	nodes, err := listTopologyNodes(ctx, client)
 	if err != nil {
 		return nil, err
@@ -133,6 +134,11 @@ func (s *Service) NodeTopology(ctx context.Context, clusterID string, allowed ma
 	s.fillTopologyMetrics(ctx, clusterID, nodes, result)
 	if includeHosts {
 		s.fillTopologyHosts(ctx, clusterID, nodes, result)
+		// SSH identity lookup can outlive the native node read. Do not return
+		// cached host mappings after the caller's cluster access was revoked.
+		if err := s.RequireClusterPermission(ctx, clusterID, "", "kubernetes.node.read"); err != nil {
+			return nil, err
+		}
 	}
 	return result, nil
 }

@@ -108,7 +108,8 @@ func runPreflightShell(t *testing.T, input Input, host Host, extraEnv ...string)
 	writePreflightCommand(t, directory, "df", "printf 'Filesystem 1024-blocks Used Available Capacity Mounted\\nfixture 99999999 0 %s 0%% /\\n' \"${EDO_TEST_FREE:-99999999}\"\n")
 	writePreflightCommand(t, directory, "ss", "printf '%s\\n' \"${EDO_TEST_LISTENERS:-}\"\n")
 	writePreflightCommand(t, directory, "curl", "case \"$*\" in *api.example.test*) exit \"${EDO_TEST_ENDPOINT_STATUS:-0}\" ;; esac\nexit 0\n")
-	writePreflightCommand(t, directory, "getenforce", "printf Enforcing\n")
+	writePreflightCommand(t, directory, "getenforce", "printf '%s' \"${EDO_TEST_SELINUX:-Enforcing}\"\n")
+	writePreflightCommand(t, directory, "rpm", "exit \"${EDO_TEST_SELINUX_POLICY_STATUS:-1}\"\n")
 	script := preflightEnvironmentScript(host, input, true) + "edo_check existing_installation passed\nprintf 'EDO_K3S_IDENTITY_BEGIN\\naddresses\\t192.0.2.10\\nmachine_id\\t0123456789abcdef0123456789abcdef\\nsystem_uuid\\t\\nboot_id\\t\\nEDO_K3S_IDENTITY_END\\nEDO_K3S_REPORT_END\\n'\n"
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -140,6 +141,24 @@ func TestPreflightShellUsesRoleCapacityAndConfiguredPorts(t *testing.T) {
 	badCA := runPreflightShell(t, input, Host{Role: "agent"}, "EDO_TEST_ENDPOINT_STATUS=60")
 	if preflightStatus(badCA, "endpoint") != "failed" {
 		t.Fatal("untrusted endpoint certificate must block installation")
+	}
+}
+
+func TestMasterPreflightRequiresPreinstalledSELinuxPolicy(t *testing.T) {
+	input := Input{Action: "join", JoinRole: "server", Endpoint: "https://api.example.test:6443", Installer: map[string]any{"INSTALL_K3S_VERSION": "v1.35.5+k3s1"}}
+	for _, mode := range []string{"Enforcing", "Permissive"} {
+		missing := runPreflightShell(t, input, Host{Role: "server"}, "EDO_TEST_SELINUX="+mode)
+		if preflightStatus(missing, "selinux") != "failed" {
+			t.Fatalf("missing %s policy not blocked", mode)
+		}
+		ready := runPreflightShell(t, input, Host{Role: "server"}, "EDO_TEST_SELINUX="+mode, "EDO_TEST_SELINUX_POLICY_STATUS=0")
+		if preflightStatus(ready, "selinux") != "warning" {
+			t.Fatalf("preinstalled %s policy was not accepted", mode)
+		}
+	}
+	disabled := runPreflightShell(t, input, Host{Role: "server"}, "EDO_TEST_SELINUX=Disabled")
+	if preflightStatus(disabled, "selinux") != "passed" {
+		t.Fatal("disabled SELinux blocked")
 	}
 }
 

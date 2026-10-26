@@ -61,7 +61,8 @@ func (s *Service) Overview(ctx context.Context, clusterID, namespace string, all
 		return nil, ErrInvalidResource
 	}
 	// 先检查项目内集群归属，即使当前没有可查询的资源也不能绕过。
-	if _, err := s.dynamicClient(ctx, clusterID); err != nil {
+	query, err := s.clusterQueries(ctx, clusterID)
+	if err != nil {
 		return nil, err
 	}
 	result := &Overview{Counts: map[string]ResourceCount{}, Nodes: []NodeStatistics{}, Phases: map[string]int{}, Usage: map[string]map[string]ResourceUsage{}, MetricsState: map[string]string{}, CollectedAt: time.Now().UTC(), Errors: map[string]error{}}
@@ -154,6 +155,11 @@ func (s *Service) Overview(ctx context.Context, clusterID, namespace string, all
 			podState = "ok"
 		}
 	}
+	if query.authorization.enforced() {
+		// The aggregate contains only authorized namespaces. It is not a count
+		// of every Pod on a node and must never be labeled as such.
+		podState = "restricted"
+	}
 	for i := range result.Nodes {
 		result.Nodes[i].PodState = podState
 		if podState == "ok" {
@@ -225,6 +231,14 @@ func (s *Service) Overview(ctx context.Context, clusterID, namespace string, all
 			result.Usage[kind][key] = usage
 		}
 	}
+	if query.authorization.enforced() {
+		// Earlier statistics belong to this exact policy snapshot. A later
+		// failed subquery must not turn revoked data into a partial response.
+		if err := s.validateQueryAuthorization(ctx, query); err != nil {
+			query.stop()
+			return nil, err
+		}
+	}
 	return result, nil
 }
 
@@ -235,6 +249,13 @@ func countNodePod(counts map[string]int64, pod *unstructured.Unstructured) {
 }
 
 func (s *Service) listNodePodCounts(ctx context.Context, clusterID string) (map[string]int64, error) {
+	query, err := s.clusterQueries(ctx, clusterID)
+	if err != nil {
+		return nil, err
+	}
+	if query.authorization.enforced() {
+		return nil, ErrRBACForbidden
+	}
 	counts := map[string]int64{}
 	def, _ := ResourceType("pods")
 	continuation := ""

@@ -13,6 +13,7 @@ import client from '@/api/client'
 import { apiErrorMessage, type ResourceRecord } from '@/api/resources'
 import PageToolbar from '@/components/PageToolbar.vue'
 import ResourceTable from '@/components/ResourceTable.vue'
+import ClusterRbacDrawer from '@/components/ClusterRbacDrawer.vue'
 import { useAuthStore } from '@/stores/auth'
 
 const {t}=useI18n()
@@ -132,6 +133,8 @@ const userDepartmentOpen = ref(false)
 const roleFormOpen = ref(false)
 const accessOpen = ref(false)
 const memberDrawerOpen = ref(false)
+const clusterRbacOpen = ref(false),clusterRbacRoleID = ref('')
+function openClusterRbac(role:Role){clusterRbacRoleID.value=role.id;clusterRbacOpen.value=true}
 const editingDepartmentID = ref('')
 const editingRoleID = ref('')
 const editingUser = ref<ManagedUser | null>(null)
@@ -1046,12 +1049,13 @@ onMounted(refresh)
             :title="canManageRolePermissions(row as Role) ? '配置角色权限' : '该角色包含超出你可委派范围的权限'"
             @click="editRolePermissions(row as Role)"
           >权限配置</a-button>
+          <a-button v-if="canAny(['kubernetes.rbac.read','kubernetes.rbac.update'])" type="link" @click="openClusterRbac(row as Role)">集群授权</a-button>
           <a-button
             v-if="canAny(['role.delete'])"
             type="link"
             danger
             :disabled="Boolean(row.in_use)"
-            :title="row.in_use ? '仍有关联用户，不能删除' : '删除角色'"
+            :title="row.in_use ? '仍被成员或集群授权使用，不能删除' : '删除角色'"
             @click="removeRole(row as Role)"
           >删除</a-button>
         </template>
@@ -1284,6 +1288,7 @@ onMounted(refresh)
       <a-button class="drawer-save" type="primary" block :loading="saving" @click="saveAccess">保存角色与权限</a-button>
     </a-drawer>
 
+    <ClusterRbacDrawer v-model:open="clusterRbacOpen" :role-id="clusterRbacRoleID" />
     <a-drawer v-model:open="memberDrawerOpen" :title="`${memberContext.name} · 关联成员`" width="620">
       <div class="member-drawer-heading">
         <span><UsersRound :size="18" /></span>

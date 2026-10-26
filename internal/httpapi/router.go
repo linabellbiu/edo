@@ -133,6 +133,7 @@ func NewRouter(deps Dependencies) *gin.Engine {
 	protected.PUT("/organization", auditAction(deps.Audits, deps.Logger, "organization.update", "organization"), requirePermission(deps.Access, deps.Logger, "organization.update"), projectAPI.saveOrganization)
 	protected.Use(realtimeMutation(deps.Realtime))
 	registerK3sRoutes(protected, deps)
+	registerKubernetesRBACRoutes(protected, deps)
 	registerAssistantRoutes(protected, deps)
 	protected.GET("/events/ws", requireAnyPermission(deps.Access, deps.Logger, "application.read", "pipeline_run.read", "release_plan.read", "deployment_plan.read", access.PermissionDeploymentRead), streamState(deps))
 	protected.GET("/auth/me", authHandler.handleMe)
@@ -319,7 +320,8 @@ func NewRouter(deps Dependencies) *gin.Engine {
 	protected.GET("/docker/endpoints/:id/containers/:container_id/logs/ws", requirePermission(deps.Access, deps.Logger, access.PermissionClusterRead), containerLogsAPI.stream)
 
 	kubernetesReads := []string{access.PermissionClusterRead, "kubernetes.node.read", "kubernetes.workload.read", "kubernetes.config.read", "kubernetes.storage.read", "kubernetes.network.read"}
-	protected.GET("/kubernetes/clusters", requireAnyPermission(deps.Access, deps.Logger, kubernetesReads...), clusterAPI.listKubernetesClusters)
+	clusterListPermissions := append(append([]string(nil), kubernetesReads...), kubernetesRBACRead, kubernetesRBACManage)
+	protected.GET("/kubernetes/clusters", requireAnyPermission(deps.Access, deps.Logger, clusterListPermissions...), clusterAPI.listKubernetesClusters)
 	protected.POST("/kubernetes/clusters/test", auditAction(deps.Audits, deps.Logger, "kubernetes.cluster.test_input", "kubernetes_cluster"), requirePermission(deps.Access, deps.Logger, access.PermissionClusterExecute), clusterAPI.testKubernetesCluster)
 	protected.POST("/kubernetes/clusters", auditAction(deps.Audits, deps.Logger, "kubernetes.cluster.create", "kubernetes_cluster"), requirePermission(deps.Access, deps.Logger, access.PermissionClusterCreate), clusterAPI.createKubernetesCluster)
 	protected.PUT("/kubernetes/clusters/:id", auditAction(deps.Audits, deps.Logger, "kubernetes.cluster.update", "kubernetes_cluster"), requirePermission(deps.Access, deps.Logger, access.PermissionClusterUpdate), clusterAPI.updateKubernetesCluster)

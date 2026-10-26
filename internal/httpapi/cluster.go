@@ -440,6 +440,9 @@ func (h clusterHandler) writeDockerError(c *gin.Context, operation string, err e
 }
 
 func (h clusterHandler) writeKubernetesError(c *gin.Context, operation string, err error) {
+	if writeKubernetesAuthorizationError(c, err) {
+		return
+	}
 	h.logger.Warn("Kubernetes 集群操作失败", "operation", operation, "request_id", requestIDFrom(c), "cluster_id", c.Param("id"), "err", err)
 	switch {
 	case errors.Is(err, kube.ErrInvalidCluster):
@@ -468,6 +471,9 @@ func (h clusterHandler) writeKubernetesError(c *gin.Context, operation string, e
 }
 
 func (h clusterHandler) writeKubernetesReadError(c *gin.Context, operation string, err error) {
+	if writeKubernetesAuthorizationError(c, err) {
+		return
+	}
 	h.logger.Error("读取 Kubernetes 资源失败", "operation", operation, "request_id", requestIDFrom(c), "cluster_id", c.Param("id"), "namespace", c.Query("namespace"), "err", err)
 	if errors.Is(err, kube.ErrClusterNotFound) {
 		writeError(c, http.StatusNotFound, "kubernetes_cluster_not_found", kube.ErrClusterNotFound.Error())

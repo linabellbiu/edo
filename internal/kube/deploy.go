@@ -49,15 +49,36 @@ func (s *Service) deployImage(
 	}
 	namespace, err := normalizeNamespace(namespace)
 	if err != nil {
-		return "", fmt.Errorf("%w: %v", ErrDeploymentConfigInvalid, err)
+		return "", fmt.Errorf("%w: %w", ErrDeploymentConfigInvalid, err)
 	}
-	clientset, err := s.Clientset(ctx, clusterID)
+	operationContext, query, err := s.authorizeResourceOperation(ctx, clusterID, "deployments", namespace, "update", false)
 	if err != nil {
 		if ctx.Err() != nil {
 			return "", ctx.Err()
 		}
 		return "", err
 	}
+	ctx = operationContext
+	defer func() {
+		if !query.authorization.enforced() {
+			return
+		}
+		if err := s.validateQueryAuthorization(ctx, query); err != nil {
+			query.stop()
+			previousImage = ""
+			if resultErr == nil {
+				resultErr = err
+			}
+			return
+		}
+		// The old image is an implementation dependency of the update. It is
+		// not a public read result for an actor who only has update permission.
+		definition, _ := ResourceType("deployments")
+		if !query.authorization.permitsResourceOperation(definition, namespace, "read", false) {
+			previousImage = ""
+		}
+	}()
+	clientset := query.typed
 	var generation int64
 	var targetUID, targetContainer string
 	err = retry.RetryOnConflict(retry.DefaultRetry, func() error {
@@ -107,7 +128,7 @@ func (s *Service) deployImage(
 		if errors.Is(err, ErrDeploymentContainerNotFound) || errors.Is(err, ErrDeploymentTargetChanged) {
 			return previousImage, err
 		}
-		return previousImage, fmt.Errorf("%w: %v", ErrDeploymentUpdateFailed, err)
+		return previousImage, fmt.Errorf("%w: %w", ErrDeploymentUpdateFailed, err)
 	}
 	if targetUID == "" || generation < 1 {
 		return previousImage, ErrDeploymentStatusUnavailable
@@ -117,11 +138,14 @@ func (s *Service) deployImage(
 	err = wait.PollUntilContextTimeout(ctx, 2*time.Second, timeout, true, func(waitContext context.Context) (bool, error) {
 		current, err := clientset.AppsV1().Deployments(namespace).Get(waitContext, deploymentName, metav1.GetOptions{})
 		if err != nil {
+			if errors.Is(err, ErrRBACForbidden) || errors.Is(err, ErrRBACSyncPending) {
+				return false, err
+			}
 			if apierrors.IsNotFound(err) {
 				return false, ErrDeploymentTargetChanged
 			}
 			if apierrors.IsForbidden(err) || apierrors.IsUnauthorized(err) || apierrors.IsBadRequest(err) {
-				return false, fmt.Errorf("%w: %v", ErrDeploymentStatusUnavailable, err)
+				return false, fmt.Errorf("%w: %w", ErrDeploymentStatusUnavailable, err)
 			}
 			lastReadErr = err
 			return false, nil
@@ -165,11 +189,11 @@ func (s *Service) deployImage(
 		if ctx.Err() != nil {
 			return previousImage, ctx.Err()
 		}
-		if errors.Is(err, ErrDeploymentTargetChanged) || errors.Is(err, ErrDeploymentProgressDeadline) || errors.Is(err, ErrDeploymentStatusUnavailable) {
+		if errors.Is(err, ErrDeploymentTargetChanged) || errors.Is(err, ErrDeploymentProgressDeadline) || errors.Is(err, ErrDeploymentStatusUnavailable) || errors.Is(err, ErrRBACForbidden) || errors.Is(err, ErrRBACSyncPending) {
 			return previousImage, err
 		}
 		if lastReadErr != nil {
-			return previousImage, fmt.Errorf("%w: %v", ErrDeploymentStatusUnavailable, lastReadErr)
+			return previousImage, fmt.Errorf("%w: %w", ErrDeploymentStatusUnavailable, lastReadErr)
 		}
 		return previousImage, ErrDeploymentRolloutTimeout
 	}
