@@ -106,11 +106,7 @@ func (s *Service) resourceClient(ctx context.Context, clusterID, resource, names
 	} else if namespace != "" && namespace != "*" {
 		return nil, def, ErrInvalidResource
 	}
-	cfg, err := s.RESTConfig(ctx, clusterID)
-	if err != nil {
-		return nil, def, err
-	}
-	client, err := dynamic.NewForConfig(cfg)
+	client, err := s.dynamicClient(ctx, clusterID)
 	if err != nil {
 		return nil, def, err
 	}
@@ -124,11 +120,23 @@ func (s *Service) ListResources(ctx context.Context, clusterID, resource, namesp
 	if len(continuation) > 8192 {
 		return nil, ErrInvalidResource
 	}
-	client, _, err := s.resourceClient(ctx, clusterID, resource, namespace, true)
-	if err != nil {
-		return nil, err
+	def, ok := ResourceType(resource)
+	if !ok {
+		return nil, ErrInvalidResource
 	}
-	list, err := client.List(ctx, metav1.ListOptions{Limit: 500, Continue: continuation})
+	if def.Namespaced {
+		if namespace == "*" {
+			namespace = ""
+		} else if len(validation.IsDNS1123Label(namespace)) != 0 {
+			return nil, ErrInvalidResource
+		}
+	} else if namespace != "" && namespace != "*" {
+		return nil, ErrInvalidResource
+	}
+	if !def.Namespaced {
+		namespace = ""
+	}
+	list, err := s.listObservedResources(ctx, clusterID, def, namespace, metav1.ListOptions{Limit: 500, Continue: continuation})
 	if err != nil {
 		return nil, resourceError(resource, err)
 	}
@@ -166,12 +174,15 @@ func resourceView(resource string, item *unstructured.Unstructured, reveal bool)
 	}
 	copy.SetAnnotations(annotations)
 	if resource == "secrets" {
-		keys := []any{}
-		data, _, _ := unstructured.NestedMap(copy.Object, "data")
-		for key := range data {
-			keys = append(keys, key)
+		if data, present, _ := unstructured.NestedMap(copy.Object, "data"); present {
+			keys := []any{}
+			for key := range data {
+				keys = append(keys, key)
+			}
+			copy.Object["keys"] = keys
+		} else if _, ok := copy.Object["keys"]; !ok {
+			copy.Object["keys"] = []any{}
 		}
-		copy.Object["keys"] = keys
 		// 注解也可能带有密钥，不能通过普通详情绕过密钥查看权限。
 		copy.SetAnnotations(nil)
 		if !reveal {
@@ -225,6 +236,9 @@ func (s *Service) saveResource(ctx context.Context, clusterID, resource, namespa
 	}
 	if err != nil {
 		return nil, resourceError(resource, err)
+	}
+	if !dryRun {
+		s.invalidateResourceQueries(clusterID, resource)
 	}
 	return resourceView(resource, result, false), nil
 }
@@ -298,6 +312,9 @@ func (s *Service) DeleteResource(ctx context.Context, clusterID, resource, names
 	uid := types.UID(identity.UID)
 	policy := metav1.DeletePropagationBackground
 	err = client.Delete(ctx, name, metav1.DeleteOptions{Preconditions: &metav1.Preconditions{UID: &uid, ResourceVersion: &identity.ResourceVersion}, PropagationPolicy: &policy})
+	if err == nil {
+		s.invalidateResourceQueries(clusterID, resource)
+	}
 	return resourceError(resource, err)
 }
 
@@ -403,6 +420,13 @@ func (s *Service) podLogs(ctx context.Context, clusterID, namespace, pod, contai
 func resourceError(resource string, err error) error {
 	if err == nil {
 		return nil
+	}
+	// Internal validation/scope errors are already stable and must retain their
+	// identity, especially when Secret API errors are deliberately redacted.
+	for _, stable := range []error{ErrClusterNotFound, ErrInvalidCluster, ErrInvalidResource, ErrResourceNotFound, ErrResourceConflict, ErrResourceForbidden, ErrResourceProtected} {
+		if errors.Is(err, stable) {
+			return err
+		}
 	}
 	var stable error
 	switch {

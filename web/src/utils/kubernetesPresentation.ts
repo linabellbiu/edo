@@ -1,4 +1,5 @@
 import { formatKubeQuantity, kubeTypes, podSpec, type KubeObject, type KubeType } from '@/api/kubernetes'
+import { kubernetesNodeRoles, kubernetesNodeRoleKey } from '@/utils/kubernetesRoles'
 
 type Translate = (key:string, values?:Record<string,unknown>)=>string
 export interface KubeReference { resource:string; name:string; namespace?:string; uid?:string }
@@ -70,7 +71,7 @@ export function resourceColumns(type:KubeType,t:Translate) {
   const base=[column('name','name','230px'),...(type.namespaced?[column('namespace','namespace','145px')]:[])]
   const status=column('status','status','125px'),image=column('images','image','240px'),selector=column('selector','selectorShort','220px')
   const special:Record<string,ReturnType<typeof column>[]>={
-    nodes:[status,column('address','nodeIP','150px'),column('usage','resourceUsage','318px'),column('nodeVersion','versionRuntime','190px')],
+    nodes:[{key:'role',label:t('nodeRoles.role'),width:'200px'},status,column('address','nodeIP','150px'),column('usage','resourceUsage','318px'),column('nodeVersion','versionRuntime','190px')],
     deployments:[status,column('replicas','readyReplicas','100px'),column('updatedReplicas','updated','90px'),column('availableReplicas','availableReplicas','90px'),image],
     statefulsets:[status,column('replicas','readyReplicas','100px'),column('updatedReplicas','updated','90px'),image,column('service','serviceName','170px')],
     daemonsets:[status,column('replicas','readyNodesShort','100px'),column('currentReplicas','currentReplicas','90px'),column('updatedReplicas','updated','90px'),column('availableReplicas','availableReplicas','90px'),column('nodeSelector','nodeSelectorShort','180px')],
@@ -130,6 +131,8 @@ export function resourceCells(object:KubeObject,t:Translate):Record<string,KubeC
   if(typeof status.succeeded==='number')cells.completions!.sortValue=status.succeeded
   if(kind==='PersistentVolumeClaim'||kind==='PersistentVolume')cells.capacity!.raw=String(kind==='PersistentVolumeClaim'?`${spec.resources?.requests?.storage??'—'} / ${status.capacity?.storage??'—'}`:spec.capacity?.storage??'—')
   if(kind==='Node') {
+    const roles=kubernetesNodeRoles(object).map(role=>t(kubernetesNodeRoleKey(role)))
+    cells.role=cell(roles[0],roles.slice(1).join(' / ')||undefined)
     cells.address=cell(joined((status.addresses??[]).filter((item:KubeObject)=>item.type==='InternalIP').map((item:KubeObject)=>item.address)),joined((status.addresses??[]).filter((item:KubeObject)=>item.type==='ExternalIP').map((item:KubeObject)=>item.address)))
     cells.nodeVersion=cell(status.nodeInfo?.kubeletVersion,joined([status.nodeInfo?.containerRuntimeVersion,status.nodeInfo?.architecture]))
   } else if(kind==='Service')cells.address=cell(spec.type==='ExternalName'?spec.externalName:joined(spec.clusterIPs??[spec.clusterIP]),joined([...(spec.externalIPs??[]),...(status.loadBalancer?.ingress??[]).map((item:KubeObject)=>item.ip??item.hostname)]))

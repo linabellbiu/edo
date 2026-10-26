@@ -1,7 +1,6 @@
 package httpapi
 
 import (
-	"encoding/json"
 	"net/http"
 	"strings"
 	"testing"
@@ -33,14 +32,19 @@ func TestKubernetesHostAssociationAPIAllowsIndependentClustersAndReturnsSafeSumm
 		}
 	}
 	linked := performJSONRequest(t, router, http.MethodPut, path, map[string]any{"host_ids": []string{"httpapi-deployment-host"}}, admin)
-	var payload struct {
-		Cluster kubernetesClusterResponse `json:"cluster"`
+	if linked.Code != http.StatusBadGateway || !strings.Contains(linked.Body.String(), `"code":"kubernetes_cluster_host_check_unavailable"`) {
+		t.Fatalf("无法核对节点信息时必须拒绝关联: status=%d body=%s", linked.Code, linked.Body.String())
 	}
-	if linked.Code != http.StatusOK || json.Unmarshal(linked.Body.Bytes(), &payload) != nil || len(payload.Cluster.Hosts) != 1 {
-		t.Fatalf("关联主机失败: status=%d body=%s", linked.Code, linked.Body.String())
+	var count int64
+	if err := db.Model(&model.HostCapability{}).Where("kind = ? AND runtime_id = ?", model.HostCapabilityKubernetes, "cluster-links").Count(&count).Error; err != nil || count != 0 {
+		t.Fatalf("校验失败不能写入关联: %d, %v", count, err)
 	}
-	if payload.Cluster.Hosts[0].ID != "httpapi-deployment-host" || payload.Cluster.Hosts[0].Address != "192.0.2.20" || strings.Contains(linked.Body.String(), "ssh_username") || strings.Contains(linked.Body.String(), "credential") {
-		t.Fatalf("集群响应应仅含主机摘要: %s", linked.Body.String())
+	capability := model.HostCapability{HostID: "httpapi-deployment-host", Kind: model.HostCapabilityKubernetes, RuntimeID: "cluster-links", Status: model.HostCapabilityReady, CreatedAt: time.Now(), UpdatedAt: time.Now()}
+	if err := db.Create(&capability).Error; err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(linked.Body.String(), "ssh_username") || strings.Contains(linked.Body.String(), "credential") {
+		t.Fatalf("错误响应不应包含连接凭据: %s", linked.Body.String())
 	}
 	listed := performJSONRequest(t, router, http.MethodGet, "/api/v1/kubernetes/clusters", nil, admin)
 	if listed.Code != http.StatusOK || !strings.Contains(listed.Body.String(), `"hosts":[{"id":"httpapi-deployment-host"`) {
@@ -69,7 +73,7 @@ func TestKubernetesHostAssociationRequiresUpdateAndHostReadPermissionForSummary(
 	})
 	defer closeTest()
 	admin := loginForDepartmentTest(t, router, "admin")
-	roleID := createRoleForHTTPTest(t, router, admin, "kube-workload-reader", []string{access.PermissionClusterCreate, "kubernetes.workload.read"})
+	roleID := createRoleForHTTPTest(t, router, admin, "kube-workload-reader", []string{access.PermissionClusterCreate, access.PermissionClusterExecute, "kubernetes.workload.read"})
 	createUserForHTTPTest(t, router, admin, "kube-reader", "", []string{roleID})
 	reader := loginForDepartmentTest(t, router, "kube-reader")
 	path := "/api/v1/kubernetes/clusters/cluster-permissions/hosts"
@@ -82,6 +86,12 @@ func TestKubernetesHostAssociationRequiresUpdateAndHostReadPermissionForSummary(
 	}, reader)
 	if response.Code != http.StatusForbidden {
 		t.Fatalf("仅有创建权限时不能绕过主机关联修改权限: status=%d body=%s", response.Code, response.Body.String())
+	}
+	response = performJSONRequest(t, router, http.MethodPost, "/api/v1/kubernetes/clusters/test", map[string]any{
+		"name": "reader-host-check", "mode": "kubeconfig", "kubeconfig": "unused", "host_ids": []string{"httpapi-deployment-host"},
+	}, reader)
+	if response.Code != http.StatusForbidden {
+		t.Fatalf("仅有测试权限也不能利用主机凭据核对关联: status=%d body=%s", response.Code, response.Body.String())
 	}
 	listed := performJSONRequest(t, router, http.MethodGet, "/api/v1/kubernetes/clusters", nil, reader)
 	if listed.Code != http.StatusOK || !strings.Contains(listed.Body.String(), `"hosts":null`) || strings.Contains(listed.Body.String(), "192.0.2.20") {

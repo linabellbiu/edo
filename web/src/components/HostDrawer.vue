@@ -194,8 +194,8 @@ async function submit() {
   submitting.value = true
   try {
     const request = { ...payload(), test_token: tested.value?.test_token }
-    if (editing.value && props.host) await client.put(`/hosts/${props.host.id}`, request)
-    else await client.post('/hosts', request)
+    if (editing.value && props.host) await client.put(`/hosts/${props.host.id}`, request, { timeout: 35_000 })
+    else await client.post('/hosts', request, { timeout: 35_000 })
     message.success(editing.value ? '主机已更新' : '主机已添加')
     emit('saved')
     emit('update:open', false)
@@ -289,7 +289,7 @@ function close() {
               />
               <a-button style="width:34px;padding:0" aria-label="创建 Kubernetes 集群" title="创建 Kubernetes 集群" @click="emit('create-cluster')">＋</a-button>
             </div>
-            <div class="field-hint">集群使用已保存的 kubeconfig 连接。</div>
+            <div class="field-hint">测试时核对主机与集群节点信息，不匹配无法关联。</div>
           </a-form-item>
 
           <a-form-item v-if="editingRemote" class="span-2">

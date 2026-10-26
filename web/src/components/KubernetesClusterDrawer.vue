@@ -35,6 +35,7 @@ const readingFile = ref(false)
 const fileInput = ref<HTMLInputElement>()
 const testedSignature = ref('')
 const testResult = ref<ConnectionTest>()
+const requestError = ref('')
 
 const busy = computed(() => testing.value || submitting.value || readingFile.value)
 let formRevision = 0
@@ -43,6 +44,7 @@ const currentSignature = computed(() => JSON.stringify({
   name: form.name.trim(),
   default_namespace: form.default_namespace.trim() || 'default',
   kubeconfig: form.kubeconfig.trim(),
+  host_ids: props.canAssociate ? [...form.host_ids].sort() : [],
 }))
 const connectionTested = computed(() => Boolean(testResult.value) && testedSignature.value === currentSignature.value)
 
@@ -52,6 +54,7 @@ watch(() => props.open, open => {
   Object.assign(form, { name: '', default_namespace: 'default', kubeconfig: '', host_ids: [] })
   testedSignature.value = ''
   testResult.value = undefined
+  requestError.value = ''
 })
 
 async function readKubeconfigFile(file: File) {
@@ -95,6 +98,7 @@ function close() {
 onBeforeUnmount(() => { mounted = false; formRevision += 1 })
 
 watch(currentSignature, signature => {
+  requestError.value = ''
   if (testedSignature.value && testedSignature.value !== signature) {
     testedSignature.value = ''
     testResult.value = undefined
@@ -130,9 +134,10 @@ async function testConnection() {
   if (busy.value) return
   const signature = currentSignature.value
   const revision = formRevision
+  requestError.value = ''
   testing.value = true
   try {
-    const response = await client.post<ConnectionTest>('/kubernetes/clusters/test', payload())
+    const response = await client.post<ConnectionTest>('/kubernetes/clusters/test', payload(), { timeout: 35_000 })
     if (!mounted || !props.open || formRevision !== revision || currentSignature.value !== signature) return
     testedSignature.value = signature
     testResult.value = response.data
@@ -141,7 +146,8 @@ async function testConnection() {
     if (!mounted || !props.open || formRevision !== revision) return
     testedSignature.value = ''
     testResult.value = undefined
-    message.error(apiErrorMessage(error))
+    requestError.value = apiErrorMessage(error)
+    message.error(requestError.value)
   } finally {
     testing.value = false
   }
@@ -156,15 +162,19 @@ async function submit() {
     return
   }
   submitting.value = true
+  requestError.value = ''
   const revision = formRevision
   try {
-    const response = await client.post<{ cluster: KubernetesCluster }>('/kubernetes/clusters', payload())
+    const response = await client.post<{ cluster: KubernetesCluster }>('/kubernetes/clusters', payload(), { timeout: 35_000 })
     if (!mounted || !props.open || formRevision !== revision) return
     message.success(t('kubernetesCluster.message.created'))
     emit('created', response.data.cluster)
     emit('update:open', false)
   } catch (error) {
-    if (mounted && props.open && formRevision === revision) message.error(apiErrorMessage(error))
+    if (mounted && props.open && formRevision === revision) {
+      requestError.value = apiErrorMessage(error)
+      message.error(requestError.value)
+    }
   } finally {
     submitting.value = false
   }
@@ -215,9 +225,10 @@ async function submit() {
         />
         <a-form-item v-if="canAssociate" class="span-2" label="关联主机（可选）" name="host_ids">
           <a-select v-model:value="form.host_ids" mode="multiple" allow-clear placeholder="不关联主机" :options="hosts.filter(host => !host.is_builtin).map(host => ({ value: host.id, label: `${host.name}${host.is_active ? '' : '（已停用）'}` }))" />
-          <div class="field-hint">没有主机时留空，可直接管理集群。</div>
-          <div v-for="host in hosts.filter(host => form.host_ids.includes(host.id) && clusterForHost(host, clusters))" :key="host.id" class="host-transfer">{{ host.name }} 当前关联“{{ clusterForHost(host, clusters)?.name }}”，添加后转入本集群。</div>
+          <div class="field-hint">保存时核对主机与集群节点信息，不匹配无法关联。没有主机时留空。</div>
+          <div v-for="host in hosts.filter(host => form.host_ids.includes(host.id) && clusterForHost(host, clusters))" :key="host.id" class="host-transfer">{{ host.name }} 当前关联“{{ clusterForHost(host, clusters)?.name }}”，添加后关联到本集群。</div>
         </a-form-item>
+        <a-alert v-if="requestError" class="span-2" type="error" show-icon :message="requestError" />
       </div>
     </a-form>
     <template #footer>
@@ -225,7 +236,7 @@ async function submit() {
         <a-button :disabled="busy" @click="close">{{ t('kubernetesCluster.action.cancel') }}</a-button>
         <a-button v-if="canTest" :loading="testing" :disabled="submitting" @click="testConnection">{{ t('kubernetesCluster.action.test') }}</a-button>
         <a-button type="primary" :loading="submitting" :disabled="!canTest || !connectionTested || testing" @click="submit">
-          {{ t('kubernetesCluster.action.create') }}
+          {{ submitting && form.host_ids.length ? '校验并添加' : t('kubernetesCluster.action.create') }}
         </a-button>
       </div>
     </template>

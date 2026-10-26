@@ -71,6 +71,7 @@ export async function setClusterHosts(clusterID: string, hostIDs: string[]) {
   const response = await client.put<{ cluster: InfrastructureCluster }>(
     `/kubernetes/clusters/${encodeURIComponent(clusterID)}/hosts`,
     { host_ids: [...new Set(hostIDs)] },
+    { timeout: 35_000 },
   )
   return response.data.cluster
 }

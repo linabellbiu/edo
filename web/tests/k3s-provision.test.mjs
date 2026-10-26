@@ -13,7 +13,7 @@ const plan=()=>({id:'plan-1',action:'create',expires_at:new Date(Date.now()+3000
 const permissions=['cluster.create','cluster.execute','cluster.update','cluster.read','kubernetes.node.create']
 
 function harness({action='create',codes=permissions,api={}}={}){
-  const requests=[],timers=[]
+  const requests=[],timers=[],mounts=[],unmounts=[],listeners=new Map(),storage={project:'project-a'}
   const auth=vue.reactive({user:{id:'operator',project_id:'project-a'},canAny(required){return Boolean(this.user)&&required.some(code=>codes.includes(code))}})
   const props=vue.reactive({open:false,action,cluster:action==='join'?'cluster-a':'',endpoint:action==='join'?'https://cluster.example:6443':'',hosts:[host('1'),host('2')]})
   const methods={
@@ -25,10 +25,11 @@ function harness({action='create',codes=permissions,api={}}={}){
     ...api,
   }
   const ctx=componentHarness('../src/components/K3sProvisionDrawer.vue',{
-    codes,props,modules:{'@/api/k3s':methods,'@/utils/k3sProvision':helpers,'@/api/infrastructure':{listHosts:async()=>props.hosts},'@/utils/time':{formatDateTime:String},'@/stores/auth':{useAuthStore:()=>auth}},
-    globals:{setTimeout:fn=>{timers.push(fn);return timers.length},clearTimeout(){},setInterval(){return 1},clearInterval(){}},
+    codes,props,modules:{vue:{...vue,onMounted:fn=>mounts.push(fn),onBeforeUnmount:fn=>unmounts.push(fn)},'@/api/k3s':methods,'@/utils/k3sProvision':helpers,'@/api/infrastructure':{listHosts:async()=>{requests.push({method:'hosts',project:storage.project});return props.hosts}},'@/utils/time':{formatDateTime:String},'@/stores/auth':{useAuthStore:()=>auth}},
+    globals:{window:{addEventListener:(name,fn)=>listeners.set(name,fn),removeEventListener:(name,fn)=>{if(listeners.get(name)===fn)listeners.delete(name)}},localStorage:{getItem:()=>storage.project},setTimeout:fn=>{timers.push(fn);return timers.length},clearTimeout(){},setInterval(){return 1},clearInterval(){}},
   })
-  return {...ctx,auth,props,requests,timers,async open(){props.open=true;await settle()},ready(){Object.assign(ctx.state.form,{name:'Production',server_host_id:'1',agent_host_ids:[]})}}
+  mounts.forEach(fn=>fn())
+  return {...ctx,auth,props,requests,timers,listeners,storage,stop(){unmounts.forEach(fn=>fn());ctx.stop()},async open(){props.open=true;await settle()},ready(){Object.assign(ctx.state.form,{name:'Production',server_host_id:'1',agent_host_ids:[]})}}
 }
 
 test('K3s 参数目录按用途和搜索词筛选，默认值保留 false、0 和独立数组',()=>{
@@ -141,4 +142,69 @@ test('最近任务按动作在服务器分页前筛选，项目变化丢弃迟�
   const requests=[],api=loadFrontend('../src/api/k3s.ts',{'@/api/client':{__esModule:true,default:{get:async(path,options)=>{requests.push({path,options});return {data:{installations:[]}}}}}})
   await api.listK3sInstallations('cluster-a','join')
   assert.deepEqual(requests[0].options.params,{limit:10,action:'join',cluster_id:'cluster-a'})
+})
+
+test('跨标签页切换实际项目清空旧安装数据并取消请求，重新读取主机，不依赖旧 auth 项目',async()=>{
+  const pending=deferred(),ctx=harness({api:{previewK3sPlan:()=>pending.promise}})
+  try{
+    await ctx.open();ctx.ready();const request=ctx.state.preview(),signal=ctx.state.request
+    ctx.state.installation.value={id:'old-run',status:'running',logs:'private old-project log'}
+    ctx.state.recent.value=[{id:'old-history',status:'failed'}]
+    ctx.props.hosts=[host('3')];ctx.storage.project='project-b';ctx.listeners.get('storage')({type:'storage',key:'edo.project'});await settle()
+    assert.equal(signal.signal.aborted,true);assert.equal(ctx.state.installation.value,undefined);assert.deepEqual(ctx.state.recent.value,[])
+    assert.equal(ctx.state.form.name,'');assert.equal(ctx.auth.user.project_id,'project-a');assert.equal(ctx.requests.filter(item=>item.method==='hosts').at(-1).project,'project-b')
+    pending.resolve(plan());await request;assert.equal(ctx.state.plan.value,undefined)
+    ctx.state.plan.value=plan();ctx.storage.project='';ctx.listeners.get('storage')({type:'storage',key:null});await settle();assert.equal(ctx.state.plan.value,undefined)
+    ctx.state.plan.value=plan();ctx.storage.project='project-c';ctx.listeners.get('edo:projects-changed')({type:'edo:projects-changed'});await settle();assert.equal(ctx.state.plan.value,undefined)
+  }finally{ctx.stop()}
+  assert.equal(ctx.listeners.size,0)
+})
+
+test('未触发项目事件时也丢弃旧项目迟到响应并阻止提交旧计划',async()=>{
+  const pending=deferred(),ctx=harness({api:{previewK3sPlan:()=>pending.promise}})
+  try{
+    await ctx.open();ctx.ready();const request=ctx.state.preview();ctx.storage.project='project-b';pending.resolve(plan());await request;await settle()
+    assert.equal(ctx.state.plan.value,undefined);assert.equal(ctx.state.form.name,'')
+    ctx.state.plan.value=plan();ctx.storage.project='project-c';await ctx.state.execute();await settle()
+    assert.equal(ctx.requests.some(item=>item.method==='start'),false);assert.equal(ctx.state.plan.value,undefined)
+  }finally{ctx.stop()}
+})
+
+const kubeAPI=loadFrontend('../src/api/kubernetes.ts')
+const workspace=loadFrontend('../src/utils/kubernetesWorkspace.ts')
+function completionHarness(view){
+  const pending=deferred(),storage={project:'project-a'},auth=vue.reactive({user:{id:'operator',project_id:'project-a',permissions:[...permissions]},canAny:codes=>codes.some(code=>permissions.includes(code))})
+  const ctx=componentHarness(`../src/views/${view}.vue`,{codes:permissions,query:{view:view==='HostView'?'clusters':'overview'},api:{get:async()=>pending.promise},modules:{
+    '@/stores/auth':{useAuthStore:()=>auth},'@/api/kubernetes':kubeAPI,'@/utils/kubernetesWorkspace':workspace,
+    '@/utils/resourceList':{useResourceList:()=>({pagination:{},changePage(){}})},'@/api/infrastructure':{listHosts:async()=>[],listEnvironments:async()=>[]},
+  },globals:{localStorage:{getItem:()=>storage.project},document:{hidden:false}}})
+  return {...ctx,pending,storage,auth}
+}
+
+test('两个父页面的安装完成回调在等待刷新后核对用户、实际项目、权限和集群选择',async()=>{
+  for(const view of ['HostView','KubernetesView'])for(const change of ['project','user','permission','cluster']){
+    const ctx=completionHarness(view)
+    try{
+      const request=view==='HostView'?ctx.state.clusterProvisionCompleted({action:'create',status:'succeeded',cluster_id:'new-cluster'}):ctx.state.provisionCompleted({action:'create',status:'succeeded',cluster_id:'new-cluster'})
+      if(change==='project')ctx.storage.project='project-b'
+      if(change==='user')ctx.auth.user.id='other-user'
+      if(change==='permission')ctx.auth.user.permissions=[]
+      if(change==='cluster'){if(view==='HostView')ctx.route.query.cluster='user-picked';else ctx.state.cluster.value='user-picked'}
+      ctx.pending.resolve({data:{clusters:[{id:'new-cluster',is_active:true,default_namespace:'default'}]}});await request;await settle()
+      if(view==='HostView')assert.equal(ctx.replacements.length,0,`${view}:${change}`)
+      else assert.notEqual(ctx.state.cluster.value,'new-cluster',`${view}:${change}`)
+    }finally{ctx.stop()}
+  }
+})
+
+test('上下文保持不变时安装完成仍选中新集群',async()=>{
+  for(const view of ['HostView','KubernetesView']){
+    const ctx=completionHarness(view)
+    try{
+      const request=view==='HostView'?ctx.state.clusterProvisionCompleted({action:'create',status:'succeeded',cluster_id:'new-cluster'}):ctx.state.provisionCompleted({action:'create',status:'succeeded',cluster_id:'new-cluster'})
+      ctx.pending.resolve({data:{clusters:[{id:'old-cluster',is_active:true},{id:'new-cluster',is_active:true,default_namespace:'default'}]}});await request;await settle()
+      if(view==='HostView')assert.equal(ctx.replacements.at(-1).query.cluster,'new-cluster')
+      else assert.equal(ctx.state.cluster.value,'new-cluster')
+    }finally{ctx.stop()}
+  }
 })

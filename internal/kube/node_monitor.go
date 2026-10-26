@@ -18,8 +18,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-	"k8s.io/apimachinery/pkg/runtime/schema"
-	"k8s.io/client-go/dynamic"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/kubernetes"
 	resourcehelper "k8s.io/component-helpers/resource"
 )
@@ -121,35 +120,27 @@ func (s *Service) collectNodeMonitoring(ctx context.Context) {
 	pending.Wait()
 }
 func (s *Service) collectClusterNodes(ctx context.Context, clusterID string) error {
-	cfg, err := s.RESTConfig(ctx, clusterID)
-	if err != nil {
-		return err
-	}
-	client, err := kubernetes.NewForConfig(cfg)
-	if err != nil {
-		return err
-	}
-	nodes, err := client.CoreV1().Nodes().List(ctx, metav1.ListOptions{Limit: 500})
-	if err != nil {
+	var nodes corev1.NodeList
+	if err := s.monitorResourcePage(ctx, clusterID, "nodes", metav1.ListOptions{Limit: 500}, &nodes); err != nil {
 		return err
 	}
 	for next := nodes.Continue; next != ""; {
 		if len(nodes.Items) >= 10000 {
 			return errors.New("节点监控超过数量上限")
 		}
-		page, err := client.CoreV1().Nodes().List(ctx, metav1.ListOptions{Limit: 500, Continue: next})
-		if err != nil {
+		var page corev1.NodeList
+		if err := s.monitorResourcePage(ctx, clusterID, "nodes", metav1.ListOptions{Limit: 500, Continue: next}, &page); err != nil {
 			return err
 		}
 		nodes.Items = append(nodes.Items, page.Items...)
 		next = page.Continue
 	}
-	dyn, err := dynamic.NewForConfig(cfg)
-	if err != nil {
-		return err
-	}
-	metrics, metricsErr := readNodeMetrics(ctx, dyn)
-	podsByNode, podsErr := readNodePods(ctx, client)
+	metrics, metricsErr := s.readNodeMetrics(ctx, clusterID)
+	podsByNode, podsErr := readNodePodPages(ctx, func(ctx context.Context, options metav1.ListOptions) (*corev1.PodList, error) {
+		var page corev1.PodList
+		err := s.monitorResourcePage(ctx, clusterID, "pods", options, &page)
+		return &page, err
+	})
 	now := time.Now().UTC()
 	for i := range nodes.Items {
 		node := &nodes.Items[i]
@@ -184,34 +175,47 @@ func (s *Service) collectClusterNodes(ctx context.Context, clusterID string) err
 	}
 	return nil
 }
-func readNodeMetrics(ctx context.Context, client dynamic.Interface) (map[string]ResourceUsage, error) {
+
+func (s *Service) monitorResourcePage(ctx context.Context, clusterID, resource string, options metav1.ListOptions, result any) error {
+	def, ok := ResourceType(resource)
+	if !ok {
+		return ErrInvalidResource
+	}
+	page, err := s.listResourceSnapshotPage(ctx, clusterID, def, "", options)
+	if err != nil {
+		return err
+	}
+	return runtime.DefaultUnstructuredConverter.FromUnstructured(page.UnstructuredContent(), result)
+}
+
+func (s *Service) readNodeMetrics(ctx context.Context, clusterID string) (map[string]ResourceUsage, error) {
 	result := map[string]ResourceUsage{}
-	for _, version := range []string{"v1", "v1beta1"} {
-		list, err := client.Resource(schema.GroupVersionResource{Group: "metrics.k8s.io", Version: version, Resource: "nodes"}).List(ctx, metav1.ListOptions{})
-		if apierrors.IsNotFound(err) && version == "v1" {
-			continue
+	list, err := s.listMetrics(ctx, clusterID, "nodes", "")
+	if err != nil {
+		return result, err
+	}
+	for _, node := range list.Items {
+		timestamp, _, _ := unstructured.NestedString(node.Object, "timestamp")
+		values, _, _ := unstructured.NestedMap(node.Object, "usage")
+		if validUsage(values) {
+			result[node.GetName()] = ResourceUsage{CPU: quantity(values["cpu"]), Memory: quantity(values["memory"]), Timestamp: timestamp}
 		}
-		if err != nil {
-			return result, err
-		}
-		for _, node := range list.Items {
-			timestamp, _, _ := unstructured.NestedString(node.Object, "timestamp")
-			values, _, _ := unstructured.NestedMap(node.Object, "usage")
-			if validUsage(values) {
-				result[node.GetName()] = ResourceUsage{CPU: quantity(values["cpu"]), Memory: quantity(values["memory"]), Timestamp: timestamp}
-			}
-		}
-		break
 	}
 	return result, nil
 }
 func readNodePods(ctx context.Context, client kubernetes.Interface) (map[string]nodePodAllocation, error) {
+	return readNodePodPages(ctx, client.CoreV1().Pods("").List)
+}
+
+// Both direct-client tests and production observation use the same bounded,
+// streaming aggregation; only the official typed page reader differs.
+func readNodePodPages(ctx context.Context, list func(context.Context, metav1.ListOptions) (*corev1.PodList, error)) (map[string]nodePodAllocation, error) {
 	allocations := map[string]nodePodAllocation{}
 	options := resourcehelper.PodResourcesOptions{UseStatusResources: true, Reuse: corev1.ResourceList{}}
 	next := ""
 	count := 0
 	for range 20 {
-		page, err := client.CoreV1().Pods("").List(ctx, metav1.ListOptions{Limit: 500, Continue: next})
+		page, err := list(ctx, metav1.ListOptions{Limit: 500, Continue: next})
 		if err != nil {
 			return nil, err
 		}

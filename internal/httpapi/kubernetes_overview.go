@@ -52,18 +52,13 @@ func (h clusterHandler) overview(service *access.Service) gin.HandlerFunc {
 			writeInternalError(c)
 			return
 		}
-		allowed := map[string]bool{}
-		for _, category := range []string{"node", "workload", "config", "storage", "network"} {
-			permission := "kubernetes." + category + ".read"
-			value, err := service.HasPermission(c.Request.Context(), user, permission)
-			if err != nil {
-				h.logger.Error("查询集群统计权限失败", "operation", "kubernetes_overview_permission", "user_id", user.ID, "err", err)
-				writeInternalError(c)
-				return
-			}
-			allowed[permission] = value
+		allowed, err := kubernetesReadAccess(c.Request.Context(), service, user)
+		if err != nil {
+			h.logger.Error("查询集群统计权限失败", "operation", "kubernetes_overview_permission", "user_id", user.ID, "err", err)
+			writeInternalError(c)
+			return
 		}
-		result, err := h.kube.Overview(c.Request.Context(), c.Param("id"), c.Query("namespace"), allowed)
+		result, err := h.kube.Overview(kubernetesReadContext(c), c.Param("id"), c.Query("namespace"), allowed)
 		if err != nil {
 			h.resourceError(c, "kubernetes_overview", err)
 			return

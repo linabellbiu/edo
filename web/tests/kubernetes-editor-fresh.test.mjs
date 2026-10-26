@@ -15,7 +15,7 @@ function load(path,modules={},globals={}){
 }
 const api=load('../src/api/kubernetes.ts',{'./resources':{apiErrorMessage:()=> '资源读取失败，请重试'}})
 const workspace=load('../src/utils/kubernetesWorkspace.ts')
-const presentation=load('../src/utils/kubernetesPresentation.ts',{'@/api/kubernetes':api})
+const presentation=load('../src/utils/kubernetesPresentation.ts',{'@/api/kubernetes':api,'@/utils/kubernetesRoles':load('../src/utils/kubernetesRoles.ts')})
 const clone=value=>JSON.parse(JSON.stringify(value))
 const settle=async()=>{await vue.nextTick();await new Promise(resolve=>setImmediate(resolve));await vue.nextTick()}
 const statefulType=api.kubeTypes.find(type=>type.kind==='StatefulSet')

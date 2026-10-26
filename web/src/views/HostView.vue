@@ -42,6 +42,7 @@ import ResourceRowActions from '@/components/ResourceRowActions.vue'
 import { useResourceList } from '@/utils/resourceList'
 import KubernetesClusterDrawer from '@/components/KubernetesClusterDrawer.vue'
 import ClusterInventory from '@/components/ClusterInventory.vue'
+import KubeHostRoleBadge from '@/components/KubeHostRoleBadge.vue'
 import K3sProvisionDrawer from '@/components/K3sProvisionDrawer.vue'
 import type { K3sInstallation } from '@/api/k3s'
 import PageToolbar from '@/components/PageToolbar.vue'
@@ -71,6 +72,8 @@ const relationOpen = ref(false)
 const relationHost = ref<InfrastructureHost>()
 const relationClusterID = ref('')
 const relationSaving = ref(false)
+const relationError = ref('')
+watch(relationClusterID, () => { relationError.value = '' })
 const selectedID = ref('')
 const selectedGroupKey = ref<HostGroupKey>('all')
 const searchQuery = ref('')
@@ -324,9 +327,14 @@ async function hostSaved() {
   await refresh()
 }
 
+function provisionContext() {
+  return JSON.stringify([auth.user?.id??'',auth.user?.project_id??'',typeof localStorage==='undefined'?'':localStorage.getItem('edo.project')??'',auth.user?.is_superuser??false,[...(auth.user?.permissions??[])].sort(),route.path,route.query.view??'',route.query.cluster??''])
+}
+
 async function clusterCreated(cluster: Pick<ClusterOption, 'id'>) {
+  const context=provisionContext()
   await refresh()
-  if (drawerOpen.value) return
+  if (!mounted || drawerOpen.value || context!==provisionContext()) return
   void router.replace({ path: '/hosts', query: { view: 'clusters', cluster: cluster.id } })
 }
 
@@ -345,6 +353,7 @@ function editHostCluster(host: InfrastructureHost) {
   if (clusterLoadError.value || hostLoadError.value || !auth.canAny(['cluster.update']) || !canReadHosts.value) return
   relationHost.value = host
   relationClusterID.value = clusterForHost(host, clusters.value)?.id || ''
+  relationError.value = ''
   relationOpen.value = true
 }
 
@@ -354,7 +363,8 @@ async function saveHostCluster() {
   const current = clusterForHost(host, clusters.value)
   const target = clusters.value.find(cluster => cluster.id === relationClusterID.value)
   if (relationClusterID.value && !target) {
-    message.error('所选集群已不可用，请刷新后重试')
+    relationError.value = '所选集群已不可用，请刷新后重试'
+    message.error(relationError.value)
     return
   }
   if (current?.id === target?.id) {
@@ -362,6 +372,7 @@ async function saveHostCluster() {
     return
   }
   relationSaving.value = true
+  relationError.value = ''
   try {
     if (target) await setClusterHosts(target.id, clusterHostIDs(target, hosts.value, host.id, true))
     else if (current) await setClusterHosts(current.id, clusterHostIDs(current, hosts.value, host.id, false))
@@ -369,7 +380,8 @@ async function saveHostCluster() {
     relationOpen.value = false
     await refresh()
   } catch (error) {
-    message.error(apiErrorMessage(error))
+    relationError.value = apiErrorMessage(error)
+    message.error(relationError.value)
   } finally {
     relationSaving.value = false
   }
@@ -763,7 +775,7 @@ onBeforeUnmount(() => {
             <template v-else-if="column.key === 'architecture'">{{ record.architecture ? record.architecture.toUpperCase() : '—' }}</template>
             <template v-else-if="column.key === 'cluster'">
               <span v-if="clusterLoadError" class="muted-text">读取失败</span>
-              <button v-else-if="clusterForHost(record, clusters)" type="button" class="host-cluster-link" @click="manageCluster(clusterForHost(record, clusters)!)"><RuntimeBrandIcon kind="kubernetes" />{{ clusterForHost(record, clusters)?.name }}<ArrowUpRight :size="12" /></button>
+              <div v-else-if="clusterForHost(record, clusters)" class="host-cluster-cell"><button type="button" class="host-cluster-link" @click="manageCluster(clusterForHost(record, clusters)!)"><RuntimeBrandIcon kind="kubernetes" />{{ clusterForHost(record, clusters)?.name }}<ArrowUpRight :size="12" /></button><KubeHostRoleBadge :cluster="clusterForHost(record, clusters)!.id" :host="record.id" /></div>
               <span v-else class="muted-text">—</span>
             </template>
             <template v-else-if="column.key === 'status'">
@@ -857,9 +869,9 @@ onBeforeUnmount(() => {
           </div>
         </section>
         <section v-if="!selected.is_builtin && canReadClusters" class="resource-detail-section host-cluster-section">
-          <header><h4>关联集群</h4><a-button v-if="auth.canAny(['cluster.update'])" size="small" :disabled="Boolean(clusterLoadError || hostLoadError)" @click="editHostCluster(selected)"><Link2 :size="14" />{{ selectedCluster ? '调整关联' : '关联集群' }}</a-button></header>
+          <header><h4>关联集群</h4><a-button v-if="auth.canAny(['cluster.update'])" size="small" :disabled="Boolean(clusterLoadError || hostLoadError)" @click="editHostCluster(selected)"><Link2 :size="14" />{{ selectedCluster ? '更改关联集群' : '关联集群' }}</a-button></header>
           <a-alert v-if="clusterLoadError" type="error" message="集群关联加载失败" :description="clusterLoadError" />
-          <button v-else-if="selectedCluster" type="button" class="associated-cluster" @click="manageCluster(selectedCluster)"><span class="runtime-logo kubernetes"><RuntimeBrandIcon kind="kubernetes" /></span><span><strong>{{ selectedCluster.name }}</strong><small>{{ selectedCluster.api_server }}</small></span><a-tag :color="selectedCluster.is_active ? 'success' : undefined">{{ selectedCluster.is_active ? '已启用' : '已停用' }}</a-tag><ArrowUpRight :size="16" /></button>
+          <button v-else-if="selectedCluster" type="button" class="associated-cluster" @click="manageCluster(selectedCluster)"><span class="runtime-logo kubernetes"><RuntimeBrandIcon kind="kubernetes" /></span><span><strong>{{ selectedCluster.name }}</strong><small>{{ selectedCluster.api_server }}</small><KubeHostRoleBadge :cluster="selectedCluster.id" :host="selected.id" /></span><a-tag :color="selectedCluster.is_active ? 'success' : undefined">{{ selectedCluster.is_active ? '已启用' : '已停用' }}</a-tag><ArrowUpRight :size="16" /></button>
           <p v-else class="muted-text association-empty">未关联集群</p>
         </section>
       </template>
@@ -898,12 +910,13 @@ onBeforeUnmount(() => {
     <KubernetesClusterDrawer v-model:open="clusterCreateOpen" :hosts="hosts" :clusters="clusters" :can-associate="auth.canAny(['cluster.update']) && canReadHosts && !hostLoadError && !clusterLoadError" :can-test="auth.canAny(['cluster.execute'])" @created="clusterCreated" />
     <K3sProvisionDrawer v-model:open="clusterProvisionOpen" :hosts="hosts" @completed="clusterProvisionCompleted" />
 
-    <a-drawer :open="relationOpen" title="关联集群" width="min(520px, 100vw)" :mask-closable="!relationSaving" @close="!relationSaving && (relationOpen = false)">
+    <a-drawer :open="relationOpen" :title="relationHost && clusterForHost(relationHost, clusters) ? '更改关联集群' : '关联集群'" width="min(520px, 100vw)" :mask-closable="!relationSaving" @close="!relationSaving && (relationOpen = false)">
       <div v-if="relationHost" class="host-association-summary"><Server :size="20" /><div><strong>{{ relationHost.name }}</strong><small>{{ relationHost.address }}</small></div></div>
       <a-form layout="vertical"><a-form-item label="Kubernetes 集群"><a-select v-model:value="relationClusterID" :disabled="relationSaving" :options="[{ value: '', label: '不关联集群' }, ...clusters.map(cluster => ({ value: cluster.id, label: `${cluster.name}${cluster.is_active ? '' : '（已停用）'}` }))]" /></a-form-item></a-form>
-      <p class="field-hint">一个主机可关联一个集群，集群可关联多台主机。</p>
-      <a-alert v-if="relationHost && clusterForHost(relationHost, clusters) && relationClusterID && relationClusterID !== clusterForHost(relationHost, clusters)?.id" type="warning" show-icon :message="`保存后将从“${clusterForHost(relationHost, clusters)?.name}”转入所选集群。`" />
-      <template #footer><div class="drawer-actions"><a-button :disabled="relationSaving" @click="relationOpen = false">取消</a-button><a-button type="primary" :loading="relationSaving" @click="saveHostCluster">保存</a-button></div></template>
+      <p class="field-hint">保存时核对主机与集群节点信息，不匹配无法关联。解除关联不改变集群节点和资源。</p>
+      <a-alert v-if="relationHost && clusterForHost(relationHost, clusters) && relationClusterID && relationClusterID !== clusterForHost(relationHost, clusters)?.id" type="warning" show-icon :message="`保存后，EDO 中的关联将从“${clusterForHost(relationHost, clusters)?.name}”更改为所选集群。`" />
+      <a-alert v-if="relationError" type="error" show-icon :message="relationError" />
+      <template #footer><div class="drawer-actions"><a-button :disabled="relationSaving" @click="relationOpen = false">取消</a-button><a-button type="primary" :loading="relationSaving" @click="saveHostCluster">{{ relationClusterID ? '校验并保存' : '解除关联' }}</a-button></div></template>
     </a-drawer>
   </section>
 </template>
@@ -917,4 +930,8 @@ onBeforeUnmount(() => {
 
 .host-workspace{display:block;min-height:0}.table-toolbar{grid-template-columns:auto minmax(0,1fr) auto}.table-filters{flex-wrap:wrap;justify-content:flex-start}.host-table :deep(.resource-row-actions .ant-btn-link){border:1px solid var(--edo-border);color:var(--edo-text);padding:0 10px}.detail-view-switch{justify-content:flex-start;margin:0;padding:0 0 12px}.capability-section{margin-top:0}.capability-cards{gap:0;margin-top:12px}.capability-cards article{min-height:58px;grid-template-columns:28px minmax(0,1fr) 18px auto;gap:10px;padding:10px 0;border:0;border-bottom:1px solid var(--edo-border);border-radius:0;background:transparent}.runtime-logo{width:28px;height:28px;border-radius:5px}.runtime-logo :deep(svg){width:19px;height:19px}.capability-cards article small{font-size:12px}.host-name small,.two-line-cell small{font-size:12px}.host-icon{width:28px;height:28px;flex-basis:28px;border-radius:5px}
 @media(max-width:1100px){.table-toolbar{grid-template-columns:1fr auto}.table-filters{grid-column:1/-1;grid-row:2}}@media(max-width:640px){.table-toolbar{grid-template-columns:1fr}.table-actions{flex-wrap:wrap}.table-filters{grid-column:auto;grid-row:auto}}
+</style>
+
+<style scoped>
+.host-cluster-cell{display:flex;align-items:flex-start;flex-direction:column;gap:2px}
 </style>

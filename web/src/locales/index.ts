@@ -1,6 +1,8 @@
 import { createI18n } from 'vue-i18n'
 import { workspaceZh, workspaceEn } from './workspace'
 import { kubernetesZh, kubernetesEn } from './kubernetes'
+import { kubernetesRolesZh, kubernetesRolesEn } from './kubernetesRoles'
+import { kubernetesTopologyZh, kubernetesTopologyEn } from './kubernetesTopology'
 import { loginZh, loginEn } from './login'
 import { deliveryZh, deliveryEn } from './delivery'
 import { yamlZh, yamlEn } from './yaml'
@@ -15,6 +17,8 @@ export const messages = {
 	yamlEditor: yamlZh,
 	loginAuth: loginZh,
 	k8s: kubernetesZh,
+    nodeRoles: kubernetesRolesZh,
+    k8sTopology: kubernetesTopologyZh,
 	workspace: workspaceZh,
     resourceList: { sort:'排序', details: '详情', more: '更多操作', basic: '基本信息', configuration: '配置信息', name: '名称', description: '说明', hosts: '所属主机', hostCount: '主机数量', capabilities: '主机能力', environmentEmpty: '还没有环境', status: '状态', resources: '运行资源', created: '创建时间', updated: '最近更新', close: '关闭', artifacts: '构建制品', workflows: '关联流水线', instances: '部署实例' },
     buildPlanWorkspace: { entry: '构建入口', directory: '执行目录', artifact: '构建产物', storage: '存储位置', architecture: '目标架构', followHost: '自动跟随部署主机', timeout: '构建超时', updated: '最近修改', artifacts: '构建制品', empty: '还没有构建方案' },
@@ -249,6 +253,8 @@ export const messages = {
 	yamlEditor: yamlEn,
 	loginAuth: loginEn,
 	k8s: kubernetesEn,
+    nodeRoles: kubernetesRolesEn,
+    k8sTopology: kubernetesTopologyEn,
 	workspace: workspaceEn,
     resourceList: { sort:'Sort', details: 'Details', more: 'More actions', basic: 'Basic information', configuration: 'Configuration', name: 'Name', description: 'Description', hosts: 'Hosts', hostCount: 'Host count', capabilities: 'Capabilities', environmentEmpty: 'No environments yet', status: 'Status', resources: 'Resources', created: 'Created', updated: 'Last updated', close: 'Close', artifacts: 'Build artifacts', workflows: 'Workflows', instances: 'Deployment instances' },
     buildPlanWorkspace: { entry: 'Build entry', directory: 'Directory', artifact: 'Build output', storage: 'Storage', architecture: 'Architecture', followHost: 'Follow deployment host', timeout: 'Build timeout', updated: 'Last modified', artifacts: 'Artifacts', empty: 'No build plans yet' },

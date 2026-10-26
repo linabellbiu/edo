@@ -14,7 +14,7 @@ function load(path, modules = {}) {
   return module.exports
 }
 const api = load('../src/api/kubernetes.ts')
-const presentation = load('../src/utils/kubernetesPresentation.ts', {'@/api/kubernetes':api})
+const presentation = load('../src/utils/kubernetesPresentation.ts', {'@/api/kubernetes':api,'@/utils/kubernetesRoles':load('../src/utils/kubernetesRoles.ts')})
 const details = load('../src/utils/kubernetesDetails.ts', {'@/api/kubernetes':api})
 const component = load('../src/components/KubeResourceDetails.vue', {
   vue,

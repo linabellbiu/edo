@@ -241,6 +241,9 @@ func (h clusterHandler) testKubernetesCluster(c *gin.Context) {
 		writeError(c, http.StatusBadRequest, "invalid_request", kube.ErrInvalidCluster.Error())
 		return
 	}
+	if !h.authorizeKubernetesHostSelection(c, request.HostIDs) {
+		return
+	}
 	result, err := h.kube.Test(c.Request.Context(), toKubernetesInput(request))
 	if err != nil {
 		h.writeKubernetesError(c, "kubernetes_cluster_test_input", err)
@@ -257,16 +260,8 @@ func (h clusterHandler) createKubernetesCluster(c *gin.Context) {
 		return
 	}
 	actor, _ := currentUser(c)
-	if request.HostIDs != nil && len(*request.HostIDs) > 0 {
-		allowed, err := h.access.HasPermission(c.Request.Context(), actor, access.PermissionClusterUpdate)
-		if err != nil {
-			h.writeKubernetesError(c, "kubernetes_cluster_hosts_permission", err)
-			return
-		}
-		if !allowed {
-			writeError(c, http.StatusForbidden, "permission_denied", "没有修改主机关联的权限")
-			return
-		}
+	if !h.authorizeKubernetesHostSelection(c, request.HostIDs) {
+		return
 	}
 	cluster, err := h.kube.Create(c.Request.Context(), actor.ID, toKubernetesInput(request))
 	if err != nil {
@@ -275,6 +270,27 @@ func (h clusterHandler) createKubernetesCluster(c *gin.Context) {
 	}
 	setAuditResourceID(c, cluster.ID)
 	h.respondKubernetesCluster(c, http.StatusCreated, cluster)
+}
+
+func (h clusterHandler) authorizeKubernetesHostSelection(c *gin.Context, hostIDs *[]string) bool {
+	if hostIDs == nil || len(*hostIDs) == 0 {
+		return true
+	}
+	actor, ok := currentUser(c)
+	if !ok || h.access == nil {
+		writeError(c, http.StatusForbidden, "permission_denied", "没有修改主机关联的权限")
+		return false
+	}
+	allowed, err := h.access.HasPermission(c.Request.Context(), actor, access.PermissionClusterUpdate)
+	if err != nil {
+		h.writeKubernetesError(c, "kubernetes_cluster_hosts_permission", err)
+		return false
+	}
+	if !allowed {
+		writeError(c, http.StatusForbidden, "permission_denied", "没有修改主机关联的权限")
+		return false
+	}
+	return true
 }
 
 func (h clusterHandler) updateKubernetesCluster(c *gin.Context) {
@@ -369,7 +385,7 @@ func (h clusterHandler) pingKubernetes(c *gin.Context) {
 }
 
 func (h clusterHandler) listNamespaces(c *gin.Context) {
-	namespaces, err := h.kube.Namespaces(c.Request.Context(), c.Param("id"))
+	namespaces, err := h.kube.Namespaces(kubernetesReadContext(c), c.Param("id"))
 	if err != nil {
 		h.writeKubernetesReadError(c, "kubernetes_namespace_list", err)
 		return
@@ -430,6 +446,10 @@ func (h clusterHandler) writeKubernetesError(c *gin.Context, operation string, e
 		writeError(c, http.StatusBadRequest, "invalid_kubernetes_cluster", kube.ErrInvalidCluster.Error())
 	case errors.Is(err, kube.ErrInvalidClusterHosts):
 		writeError(c, http.StatusBadRequest, "invalid_kubernetes_cluster_hosts", kube.ErrInvalidClusterHosts.Error())
+	case errors.Is(err, kube.ErrClusterHostMismatch):
+		writeError(c, http.StatusBadRequest, "kubernetes_cluster_host_mismatch", kube.ErrClusterHostMismatch.Error())
+	case errors.Is(err, kube.ErrClusterHostCheckUnavailable):
+		writeError(c, http.StatusBadGateway, "kubernetes_cluster_host_check_unavailable", kube.ErrClusterHostCheckUnavailable.Error())
 	case errors.Is(err, kube.ErrUnsafeKubeconfig):
 		writeError(c, http.StatusBadRequest, "unsafe_kubeconfig", kube.ErrUnsafeKubeconfig.Error())
 	case errors.Is(err, kube.ErrKubeconfigRequired):

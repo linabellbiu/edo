@@ -1,4 +1,5 @@
 import client from './client'
+import { createSSEParser } from './sse'
 import axios from 'axios'
 import { apiErrorMessage } from './resources'
 import type { ClusterHost } from './infrastructure'
@@ -29,8 +30,8 @@ export const kubeTypes = [
 export function resourceURL(cluster: string, type: KubeType, name?: string) {
   return `/kubernetes/clusters/${encodeURIComponent(cluster)}/resources/${type.resource}${name ? `/${encodeURIComponent(name)}` : ''}`
 }
-export async function listKubeResources(cluster: string, type: KubeType, namespace: string, continuation = '', signal?: AbortSignal) {
-  return (await client.get<{items: KubeObject[]; continue: string}>(resourceURL(cluster, type), { params: {namespace: type.namespaced ? namespace : '', continue: continuation}, signal })).data
+export async function listKubeResources(cluster: string, type: KubeType, namespace: string, continuation = '', signal?: AbortSignal, fresh = false) {
+  return (await client.get<{items: KubeObject[]; continue: string}>(resourceURL(cluster, type), { params: {namespace: type.namespaced ? namespace : '', continue: continuation, ...(fresh ? {fresh: 1} : {})}, signal })).data
 }
 export const identityOf = (object: KubeObject) => ({ uid: object.metadata.uid, resource_version: object.metadata.resourceVersion })
 export const kubeKey = (object: KubeObject) => String(object.metadata.uid)
@@ -193,10 +194,45 @@ export async function mapNamespaceRequests<T>(names: string[], request: (namespa
   return result
 }
 
-export async function listKubeResourceScopes(cluster: string, type: KubeType, selection: string[], cursor?: Record<string,string>, signal?: AbortSignal) {
+export async function listKubeResourceScopes(cluster: string, type: KubeType, selection: string[], cursor?: Record<string,string>, signal?: AbortSignal, fresh = false) {
   const names = cursor ? Object.keys(cursor) : type.namespaced ? selection : ['*']
-  const pages = await mapNamespaceRequests(names, async namespace => ({namespace, ...await listKubeResources(cluster, type, namespace, cursor?.[namespace] ?? '', signal)}), signal)
+  const pages = await mapNamespaceRequests(names, async namespace => ({namespace, ...await listKubeResources(cluster, type, namespace, cursor?.[namespace] ?? '', signal, fresh)}), signal)
   return {items: pages.flatMap(page => page.items), cursor: Object.fromEntries(pages.filter(page => page.continue).map(page => [page.namespace, page.continue]))}
+}
+
+export type KubeWatchEvent = { type: 'ready' | 'ping' | 'reset' | 'degraded' | 'synced' } | { type: 'ADDED' | 'MODIFIED' | 'DELETED'; resource: string; namespace: string; name: string }
+export class KubeWatchError extends Error {
+  constructor(public status = 0) { super('Kubernetes watch unavailable') }
+}
+export async function streamKubeEvents(cluster: string, namespaces: string[], project: string, signal: AbortSignal, onEvent: (event: KubeWatchEvent) => void): Promise<void> {
+  const query = new URLSearchParams()
+  for (const namespace of namespaces) query.append('namespace', namespace)
+  const response = await fetch(`/api/v1/kubernetes/clusters/${encodeURIComponent(cluster)}/watch?${query}`, {
+    credentials: 'include', signal, headers: { Accept: 'text/event-stream', 'X-EDO-Project-ID': project },
+  })
+  if (!response.ok) throw new KubeWatchError(response.status)
+  if (!response.body || !response.headers.get('content-type')?.includes('text/event-stream')) throw new KubeWatchError()
+  const reader = response.body.getReader(), decoder = new TextDecoder()
+  const parser = createSSEParser((event, value) => {
+    if (signal.aborted) return
+    if (event === 'ready' || event === 'ping' || event === 'reset' || event === 'degraded' || event === 'synced') { onEvent({ type: event }); return }
+    if (event !== 'change' && event !== 'message') return
+    let change: KubeWatchEvent
+    try { change = JSON.parse(value) } catch { throw new KubeWatchError() }
+    if (change?.type === 'reset' || change?.type === 'degraded' || change?.type === 'synced') { onEvent({type: change.type}); return }
+    if (!change || !['ADDED', 'MODIFIED', 'DELETED'].includes(change.type) || !('resource' in change) || !kubeTypes.some(type => type.resource === change.resource) || typeof change.namespace !== 'string' || typeof change.name !== 'string') throw new KubeWatchError()
+    onEvent(change)
+  })
+  try {
+    while (!signal.aborted) {
+      const {value, done} = await reader.read()
+      if (signal.aborted) return
+      if (done) break
+      parser.push(decoder.decode(value, {stream: true}))
+    }
+    parser.push(decoder.decode()); parser.finish()
+    if (!signal.aborted) throw new KubeWatchError()
+  } finally { await reader.cancel().catch(() => {}); reader.releaseLock() }
 }
 
 // 节点和集群级资源只保留一份；仅累加命名空间资源，缺失统计不补零。

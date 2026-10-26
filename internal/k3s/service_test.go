@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -439,12 +440,13 @@ func (k *fakeClusters) Create(_ context.Context, _ string, input kube.Input) (*m
 	copy.Name = input.Name
 	return &copy, nil
 }
-func (k *fakeClusters) SetHosts(_ context.Context, _ string, ids []string) error {
-	k.linked = append([]string{}, ids...)
+func (k *fakeClusters) AppendHosts(_ context.Context, _ string, ids []string) error {
+	for _, id := range ids {
+		if !slices.Contains(k.linked, id) {
+			k.linked = append(k.linked, id)
+		}
+	}
 	return nil
-}
-func (k *fakeClusters) LinkedHosts(context.Context, []string) (map[string][]kube.LinkedHost, error) {
-	return map[string][]kube.LinkedHost{}, nil
 }
 func (k *fakeClusters) Ping(context.Context, string) (string, error) { return CatalogK3sVersion, nil }
 func (k *fakeClusters) CreateNodeJoin(context.Context, string, kube.NodeJoinInput) (*kube.NodeJoin, error) {
@@ -518,6 +520,7 @@ func TestWorkerCreatesImportsAndAssociatesReadyServer(t *testing.T) {
 func TestWorkerJoinsUsingShortLivedTokenAndRevokesIt(t *testing.T) {
 	f := newFixture(t)
 	clusters := fakeClusterClient(t, f)
+	clusters.linked = []string{"already-linked-offline-host"}
 	f.service.kubernetes = clusters
 	if err := f.db.WithContext(f.ctx).Create(&clusters.cluster).Error; err != nil {
 		t.Fatal(err)
@@ -539,7 +542,7 @@ func TestWorkerJoinsUsingShortLivedTokenAndRevokesIt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Status != "succeeded" || clusters.joins != 1 || clusters.revoked != 1 || clusters.created != 0 || len(clusters.linked) != 1 {
+	if result.Status != "succeeded" || clusters.joins != 1 || clusters.revoked != 1 || clusters.created != 0 || len(clusters.linked) != 2 || !slices.Contains(clusters.linked, "already-linked-offline-host") || !slices.Contains(clusters.linked, f.host.ID) {
 		t.Fatalf("incomplete join: %#v", result)
 	}
 	if strings.Contains(result.Logs, "short-lived-token") {

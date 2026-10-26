@@ -7,12 +7,14 @@ import (
 	"fmt"
 	"net/url"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 	"unicode/utf8"
 
 	"github.com/google/uuid"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/apimachinery/pkg/version"
@@ -73,10 +75,13 @@ type Deployment struct {
 }
 
 type Service struct {
-	db          *gorm.DB
-	secrets     *secret.Manager
-	config      config.Runtime
-	nodeMonitor *nodeMonitor
+	db                *gorm.DB
+	secrets           *secret.Manager
+	config            config.Runtime
+	nodeMonitor       *nodeMonitor
+	topologyHosts *topologyHostIdentityCache
+	queries           *resourceQueryCache
+	hostIdentityProbe hostIdentityReader
 }
 
 // WithTransaction 让集群连接校验与上层聚合资源共享同一个数据库事务。
@@ -91,7 +96,7 @@ func (s *Service) WithTransaction(tx *gorm.DB) *Service {
 }
 
 func NewService(db *gorm.DB, secrets *secret.Manager, cfg config.Runtime) *Service {
-	return &Service{db: db, secrets: secrets, config: cfg}
+	return &Service{db: db, secrets: secrets, config: cfg, queries: newResourceQueryCache(), topologyHosts: newTopologyHostIdentityCache()}
 }
 
 func (s *Service) List(ctx context.Context) ([]model.KubernetesCluster, error) {
@@ -114,12 +119,16 @@ func (s *Service) Find(ctx context.Context, id string) (*model.KubernetesCluster
 }
 
 func (s *Service) Create(ctx context.Context, actorID string, input Input) (*model.KubernetesCluster, error) {
+	ctx, cancel := s.hostValidationContext(ctx)
+	defer cancel()
 	id := uuid.NewString()
 	name, namespace, apiServer, encrypted, err := s.normalize(id, nil, input)
 	if err != nil {
 		return nil, err
 	}
-	if _, err := s.Test(ctx, input); err != nil {
+	connectionInput := input
+	connectionInput.HostIDs = nil
+	if _, err := s.Test(ctx, connectionInput); err != nil {
 		return nil, err
 	}
 	now := time.Now().UTC()
@@ -128,12 +137,20 @@ func (s *Service) Create(ctx context.Context, actorID string, input Input) (*mod
 		DefaultNamespace: namespace, KubeconfigCiphertext: encrypted,
 		IsActive: true, CreatedBy: actorID, CreatedAt: now, UpdatedAt: now,
 	}
+	cluster.DepartmentID, cluster.ProjectID = clusterScope(ctx)
+	var verified []model.Host
+	if input.HostIDs != nil {
+		verified, err = s.validateHostSelection(ctx, cluster, *input.HostIDs, nil)
+		if err != nil {
+			return nil, err
+		}
+	}
 	if err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if err := tx.Create(cluster).Error; err != nil {
 			return err
 		}
 		if input.HostIDs != nil {
-			return replaceClusterHosts(tx, cluster, *input.HostIDs)
+			return replaceClusterHosts(tx, cluster, *input.HostIDs, verified)
 		}
 		return nil
 	}); err != nil {
@@ -147,6 +164,8 @@ func (s *Service) Create(ctx context.Context, actorID string, input Input) (*mod
 
 // Test 使用尚未保存的连接配置访问 Kubernetes API，不写入 kubeconfig 或集群记录。
 func (s *Service) Test(ctx context.Context, input Input) (*ConnectionTest, error) {
+	ctx, cancelAll := s.hostValidationContext(ctx)
+	defer cancelAll()
 	name := strings.TrimSpace(input.Name)
 	if !clusterNamePattern.MatchString(name) || utf8.RuneCountInString(name) > 128 {
 		return nil, ErrInvalidCluster
@@ -182,10 +201,19 @@ func (s *Service) Test(ctx context.Context, input Input) (*ConnectionTest, error
 		}
 		return nil, fmt.Errorf("%w: 解析 Kubernetes API 版本失败: %w", ErrClusterUnreachable, err)
 	}
+	if input.HostIDs != nil && len(*input.HostIDs) > 0 {
+		departmentID, projectID := clusterScope(ctx)
+		candidate := &model.KubernetesCluster{Mode: input.Mode, APIServer: restConfig.Host, DepartmentID: departmentID, ProjectID: projectID, IsActive: true}
+		if _, err := s.validateHostSelection(ctx, candidate, *input.HostIDs, restConfig); err != nil {
+			return nil, err
+		}
+	}
 	return &ConnectionTest{APIServer: restConfig.Host, Version: info.GitVersion}, nil
 }
 
 func (s *Service) Update(ctx context.Context, id string, input Input) (*model.KubernetesCluster, error) {
+	ctx, cancel := s.hostValidationContext(ctx)
+	defer cancel()
 	existing, err := s.Find(ctx, id)
 	if err != nil {
 		return nil, err
@@ -194,8 +222,47 @@ func (s *Service) Update(ctx context.Context, id string, input Input) (*model.Ku
 	if err != nil {
 		return nil, err
 	}
+	candidate := *existing
+	candidate.Name, candidate.DefaultNamespace, candidate.Mode = name, namespace, input.Mode
+	candidate.APIServer, candidate.KubeconfigCiphertext = apiServer, encrypted
+	var verified []model.Host
+	var hostIDs []string
+	checkExistingLinks := input.HostIDs == nil && input.Kubeconfig != nil
+	if input.HostIDs != nil {
+		hostIDs = *input.HostIDs
+	} else if checkExistingLinks {
+		hostIDs, err = clusterLinkedHostIDs(s.db.WithContext(ctx), existing.ID)
+		if err != nil {
+			return nil, err
+		}
+	}
+	if input.HostIDs != nil || checkExistingLinks {
+		verified, err = s.validateHostSelection(ctx, &candidate, hostIDs, nil)
+		if err != nil {
+			return nil, err
+		}
+	}
 	now := time.Now().UTC()
 	if err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var current model.KubernetesCluster
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&current, "uuid = ?", existing.ID).Error; err != nil {
+			return err
+		}
+		if !sameClusterConnection(*existing, current) {
+			return ErrClusterHostCheckUnavailable
+		}
+		if checkExistingLinks {
+			currentIDs, err := clusterLinkedHostIDs(tx, existing.ID)
+			if err != nil {
+				return err
+			}
+			if !slices.Equal(currentIDs, hostIDs) {
+				return ErrClusterHostCheckUnavailable
+			}
+			if err := verifyHostSnapshots(tx, verified); err != nil {
+				return err
+			}
+		}
 		if err := tx.Model(existing).Updates(map[string]any{
 			"name": name, "mode": input.Mode, "api_server": apiServer,
 			"default_namespace": namespace, "kubeconfig_ciphertext": encrypted, "updated_at": now,
@@ -203,7 +270,7 @@ func (s *Service) Update(ctx context.Context, id string, input Input) (*model.Ku
 			return err
 		}
 		if input.HostIDs != nil {
-			return replaceClusterHosts(tx, existing, *input.HostIDs)
+			return replaceClusterHosts(tx, existing, *input.HostIDs, verified)
 		}
 		return nil
 	}); err != nil {
@@ -214,6 +281,7 @@ func (s *Service) Update(ctx context.Context, id string, input Input) (*model.Ku
 	}
 	existing.Name, existing.Mode, existing.APIServer = name, input.Mode, apiServer
 	existing.DefaultNamespace, existing.KubeconfigCiphertext, existing.UpdatedAt = namespace, encrypted, now
+	s.invalidateClusterQueries(id)
 	return existing, nil
 }
 
@@ -226,6 +294,7 @@ func (s *Service) SetActive(ctx context.Context, id string, active bool) error {
 	if result.RowsAffected != 1 {
 		return ErrClusterNotFound
 	}
+	s.invalidateClusterQueries(id)
 	return nil
 }
 
@@ -246,21 +315,25 @@ func (s *Service) Ping(ctx context.Context, id string) (string, error) {
 }
 
 func (s *Service) Namespaces(ctx context.Context, id string) ([]string, error) {
-	clientset, err := s.Clientset(ctx, id)
-	if err != nil {
-		return nil, err
-	}
 	requestContext, cancel := context.WithTimeout(ctx, s.config.RequestTimeout)
 	defer cancel()
-	result, err := clientset.CoreV1().Namespaces().List(requestContext, metav1.ListOptions{Limit: 500})
-	if err != nil {
-		return nil, fmt.Errorf("查询 Kubernetes 命名空间失败: %w", err)
+	def, _ := ResourceType("namespaces")
+	names := []string{}
+	continuation := ""
+	for range 20 {
+		result, err := s.listObservedResources(requestContext, id, def, "", metav1.ListOptions{Limit: 500, Continue: continuation})
+		if err != nil {
+			return nil, fmt.Errorf("查询 Kubernetes 命名空间失败: %w", err)
+		}
+		for _, item := range result.Items {
+			names = append(names, item.GetName())
+		}
+		continuation = result.GetContinue()
+		if continuation == "" {
+			return names, nil
+		}
 	}
-	names := make([]string, 0, len(result.Items))
-	for _, item := range result.Items {
-		names = append(names, item.Name)
-	}
-	return names, nil
+	return nil, fmt.Errorf("Kubernetes 命名空间超过数量上限")
 }
 
 func (s *Service) Pods(ctx context.Context, id, namespace string) ([]Pod, error) {
@@ -325,26 +398,25 @@ func (s *Service) Deployments(ctx context.Context, id, namespace string) ([]Depl
 }
 
 func (s *Service) Clientset(ctx context.Context, id string) (*kubernetes.Clientset, error) {
-	restConfig, err := s.RESTConfig(ctx, id)
+	connection, err := s.clusterQueries(ctx, id)
 	if err != nil {
 		return nil, err
 	}
-	clientset, err := kubernetes.NewForConfig(restConfig)
-	if err != nil {
-		return nil, fmt.Errorf("初始化 Kubernetes 客户端失败: %w", err)
-	}
-	return clientset, nil
+	return connection.typed, nil
 }
 
 func (s *Service) RESTConfig(ctx context.Context, id string) (*rest.Config, error) {
-	cluster, err := s.Find(ctx, id)
+	connection, err := s.clusterQueries(ctx, id)
 	if err != nil {
 		return nil, err
 	}
-	if !cluster.IsActive {
-		return nil, ErrClusterNotFound
-	}
+	// Callers such as PodLogs customize timeouts. Never share a mutable config.
+	return rest.CopyConfig(connection.config), nil
+}
+
+func (s *Service) restConfigForCluster(cluster *model.KubernetesCluster) (*rest.Config, error) {
 	var result *rest.Config
+	var err error
 	switch cluster.Mode {
 	case model.KubernetesKubeconfig:
 		var raw string

@@ -663,8 +663,9 @@ func runServer(ctx context.Context, cfg config.Config, logger *slog.Logger, runt
 	}
 	publisher := outbox.New(resources.Database, resources.NATS, logger, cfg.NATS)
 	startBackground("server_system_metrics", func() error { return systemMetricsService.Run(serviceCtx) })
-	startBackground("server_k3s_installations", func() error { return k3sService.Run(serviceCtx) })
+	startBackground("server_kubernetes_resource_watch", func() error { return kubernetesService.RunResourceWatching(serviceCtx) })
 	startBackground("server_kubernetes_node_metrics", func() error { return kubernetesService.RunNodeMonitoring(serviceCtx) })
+	startBackground("server_k3s_installations", func() error { return k3sService.Run(serviceCtx) })
 	startBackground("server_outbox", func() error { return publisher.Run(serviceCtx) })
 	startBackground("server_task_consumer", func() error { return taskWorker.Run(serviceCtx) })
 	startBackground("server_repository_checks", func() error { pipelineService.RunRepositoryChecks(serviceCtx); return nil })

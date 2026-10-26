@@ -65,6 +65,14 @@ type kubernetesProbe interface {
 	Ping(context.Context, string) (string, error)
 }
 
+type kubernetesHostValidator interface {
+	ValidateHost(context.Context, string, model.Host) error
+}
+
+type kubernetesHostSaveValidator interface {
+	ValidateHostForSave(context.Context, string, model.Host) (func(*gorm.DB) error, error)
+}
+
 type Input struct {
 	Name                string
 	Address             string
@@ -592,6 +600,8 @@ func (s *Service) TestExisting(ctx context.Context, id string, input Input) (Tes
 }
 
 func (s *Service) testRemoteInput(ctx context.Context, input Input, hostID string) (TestResult, error) {
+	ctx, cancel := context.WithTimeout(ctx, runtimeProbeTimeout)
+	defer cancel()
 	normalized, err := normalizeInput(input)
 	if err != nil {
 		return TestResult{}, err
@@ -623,6 +633,22 @@ func (s *Service) testRemoteInput(ctx context.Context, input Input, hostID strin
 			return TestResult{}, err
 		}
 		result.KubernetesVersion = version
+		identityID := hostID
+		if identityID == "" {
+			identityID = uuid.NewString()
+		}
+		ciphertext, err := s.encryptCredential(identityID, normalized.SSH)
+		if err != nil {
+			return TestResult{}, err
+		}
+		if err := s.validateKubernetesHost(ctx, normalized, model.Host{
+			ID: identityID, Name: normalized.Name, Mode: model.HostModeSSH,
+			Address: normalized.Address, SSHPort: normalized.SSHPort, SSHUsername: normalized.SSHUsername,
+			SSHAuthType: normalized.SSHAuthType, SSHCredentialCiphertext: ciphertext,
+			SSHHostKeyFingerprint: result.Fingerprint, Architecture: result.Architecture,
+		}); err != nil {
+			return TestResult{}, err
+		}
 	}
 	now := time.Now().UTC()
 	result.Token, result.ExpiresAt = uuid.NewString(), now.Add(testTTL)
@@ -785,8 +811,15 @@ func (s *Service) Create(ctx context.Context, actorID string, input Input) (*Det
 		SSHHostKeyFingerprint: tested.Fingerprint, Architecture: tested.Architecture, IsActive: true,
 		CreatedBy: actorID, CreatedAt: now, UpdatedAt: now,
 	}
+	associationGuard, err := s.prepareKubernetesHostSave(ctx, normalized, current)
+	if err != nil {
+		return nil, err
+	}
 	var capabilities []model.HostCapability
 	err = s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := associationGuard(tx); err != nil {
+			return err
+		}
 		if err := tx.Create(&current).Error; err != nil {
 			return err
 		}
@@ -833,8 +866,20 @@ func (s *Service) Update(ctx context.Context, id string, input Input) (*Detail, 
 			return nil, err
 		}
 	}
+	candidate := existing
+	candidate.Name, candidate.Address, candidate.SSHPort = normalized.Name, normalized.Address, normalized.SSHPort
+	candidate.SSHUsername, candidate.SSHAuthType = normalized.SSHUsername, normalized.SSHAuthType
+	candidate.SSHCredentialCiphertext, candidate.SSHHostKeyFingerprint = ciphertext, tested.Fingerprint
+	candidate.Architecture = tested.Architecture
+	associationGuard, err := s.prepareKubernetesHostSave(ctx, normalized, candidate)
+	if err != nil {
+		return nil, err
+	}
 	now := time.Now().UTC()
 	err = s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := associationGuard(tx); err != nil {
+			return err
+		}
 		if err := tx.Model(&model.Host{}).Where("uuid = ?", existing.ID).Updates(map[string]any{
 			"name": normalized.Name, "address": normalized.Address, "ssh_port": normalized.SSHPort,
 			"ssh_username": normalized.SSHUsername, "ssh_auth_type": normalized.SSHAuthType,
@@ -987,6 +1032,32 @@ func (s *Service) prepareUpdateInput(existing *model.Host, input Input) (Input, 
 	}
 	input.SSH, input.SSHAuthType = bundle, existing.SSHAuthType
 	return input, nil
+}
+
+func (s *Service) validateKubernetesHost(ctx context.Context, input Input, current model.Host) error {
+	if !slices.Contains(input.CapabilityKinds, model.HostCapabilityKubernetes) {
+		return nil
+	}
+	validator, ok := s.kubernetes.(kubernetesHostValidator)
+	if !ok {
+		return ErrCapabilityUnavailable
+	}
+	ctx, cancel := context.WithTimeout(ctx, runtimeProbeTimeout)
+	defer cancel()
+	return validator.ValidateHost(ctx, input.KubernetesClusterID, current)
+}
+
+func (s *Service) prepareKubernetesHostSave(ctx context.Context, input Input, current model.Host) (func(*gorm.DB) error, error) {
+	if !slices.Contains(input.CapabilityKinds, model.HostCapabilityKubernetes) {
+		return func(*gorm.DB) error { return nil }, nil
+	}
+	validator, ok := s.kubernetes.(kubernetesHostSaveValidator)
+	if !ok {
+		return nil, ErrCapabilityUnavailable
+	}
+	ctx, cancel := context.WithTimeout(ctx, runtimeProbeTimeout)
+	defer cancel()
+	return validator.ValidateHostForSave(ctx, input.KubernetesClusterID, current)
 }
 
 func (s *Service) SetActive(ctx context.Context, id string, active bool) error {

@@ -61,32 +61,36 @@ func (s *Service) LinkedHosts(ctx context.Context, clusterIDs []string) (map[str
 // SetHosts 只修改主机与集群的关系。每台主机最多关联一个集群，选中已关联的主机时原子转移关系。
 // 空列表解除当前集群的全部主机关联，集群连接与主机的 SSH/Docker 能力均保留。
 func (s *Service) SetHosts(ctx context.Context, id string, hostIDs []string) error {
+	ctx, cancel := s.hostValidationContext(ctx)
+	defer cancel()
+	cluster, err := s.Find(ctx, strings.TrimSpace(id))
+	if err != nil {
+		return err
+	}
+	verified, err := s.validateHostSelection(ctx, cluster, hostIDs, nil)
+	if err != nil {
+		return err
+	}
 	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		var cluster model.KubernetesCluster
-		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&cluster, "uuid = ?", strings.TrimSpace(id)).Error; err != nil {
+		var current model.KubernetesCluster
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&current, "uuid = ?", cluster.ID).Error; err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
 				return ErrClusterNotFound
 			}
 			return fmt.Errorf("查询 Kubernetes 集群失败: %w", err)
 		}
-		return replaceClusterHosts(tx, &cluster, hostIDs)
+		if !sameClusterConnection(*cluster, current) {
+			return ErrClusterHostCheckUnavailable
+		}
+		return replaceClusterHosts(tx, &current, hostIDs, verified)
 	})
 }
 
-func replaceClusterHosts(tx *gorm.DB, cluster *model.KubernetesCluster, requestedIDs []string) error {
-	if len(requestedIDs) > 500 {
-		return ErrInvalidClusterHosts
+func replaceClusterHosts(tx *gorm.DB, cluster *model.KubernetesCluster, requestedIDs []string, verified []model.Host) error {
+	hostIDs, err := normalizedHostIDs(requestedIDs)
+	if err != nil {
+		return err
 	}
-	hostIDs := make([]string, 0, len(requestedIDs))
-	for _, requestedID := range requestedIDs {
-		id := strings.TrimSpace(requestedID)
-		if id == "" || len(id) > 36 {
-			return ErrInvalidClusterHosts
-		}
-		hostIDs = append(hostIDs, id)
-	}
-	slices.Sort(hostIDs)
-	hostIDs = slices.Compact(hostIDs)
 	if len(hostIDs) > 0 {
 		var hosts []model.Host
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("uuid IN ?", hostIDs).
@@ -99,6 +103,10 @@ func replaceClusterHosts(tx *gorm.DB, cluster *model.KubernetesCluster, requeste
 		for _, host := range hosts {
 			if host.IsBuiltin || host.Mode != model.HostModeSSH || host.ProjectID != cluster.ProjectID || host.DepartmentID != cluster.DepartmentID {
 				return ErrInvalidClusterHosts
+			}
+			matched := slices.IndexFunc(verified, func(snapshot model.Host) bool { return snapshot.ID == host.ID })
+			if matched < 0 || !sameHostConnection(verified[matched], host) {
+				return ErrClusterHostCheckUnavailable
 			}
 		}
 	}

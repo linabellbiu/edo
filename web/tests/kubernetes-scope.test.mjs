@@ -12,7 +12,7 @@ function load(path,modules={}) {
  new Function('require','module','exports',output)(key=>modules[key]??(key==='@/utils/kubernetesWorkspace'?load('../src/utils/kubernetesWorkspace.ts',{}):{}),module,module.exports)
  return module.exports
 }
-const api=load('../src/api/kubernetes.ts'),presentation=load('../src/utils/kubernetesPresentation.ts',{'@/api/kubernetes':api})
+const api=load('../src/api/kubernetes.ts'),presentation=load('../src/utils/kubernetesPresentation.ts',{'@/api/kubernetes':api,'@/utils/kubernetesRoles':load('../src/utils/kubernetesRoles.ts')})
 const translate=key=>key
 const overview=(namespace,count)=>({counts:{nodes:{count:3,state:'ok'},namespaces:{count:10,state:'ok'},pods:{count,state:'ok'}},nodes:[{name:'worker',pods:99,pod_state:'ok'}],phases:{Running:count},usage:{nodes:{worker:{cpu:2}},pods:{[`${namespace}/api`]:{cpu:1}}},metrics_state:{pods:'ok'},collected_at:'2026-10-23T04:00:00Z'})
 test('多选统计只累加选中命名空间，节点及全局资源不重复计算',()=>{

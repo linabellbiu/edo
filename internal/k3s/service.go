@@ -47,8 +47,7 @@ type savedInput struct {
 type clusterService interface {
 	Find(context.Context, string) (*model.KubernetesCluster, error)
 	Create(context.Context, string, kube.Input) (*model.KubernetesCluster, error)
-	SetHosts(context.Context, string, []string) error
-	LinkedHosts(context.Context, []string) (map[string][]kube.LinkedHost, error)
+	AppendHosts(context.Context, string, []string) error
 	Ping(context.Context, string) (string, error)
 	CreateNodeJoin(context.Context, string, kube.NodeJoinInput) (*kube.NodeJoin, error)
 	RevokeNodeJoin(context.Context, string, string, kube.ResourceIdentity) error

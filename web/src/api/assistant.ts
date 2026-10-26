@@ -1,4 +1,5 @@
 import client from '@/api/client'
+import { createSSEParser } from './sse'
 
 export interface AssistantSettings {
   enabled: boolean
@@ -82,12 +83,7 @@ export async function resolveAssistantAction(id: string, decision: 'confirm' | '
 
 // 一个网络分块可能包含半个事件或多个事件，不能按读取次数切分 JSON。
 export function createAssistantEventParser(onEvent: (event: AssistantEvent) => void) {
-  let buffer = ''
-  let data: string[] = []
-  const dispatch = () => {
-    if (!data.length) return
-    const value = data.join('\n')
-    data = []
+  return createSSEParser((_name, value) => {
     if (value === '[DONE]') { onEvent({ type: 'done' }); return }
     let event: AssistantEvent
     try { event = JSON.parse(value) as AssistantEvent }
@@ -95,26 +91,7 @@ export function createAssistantEventParser(onEvent: (event: AssistantEvent) => v
     if (event?.type === 'start') return
     if (!event || !['delta', 'tool_start', 'tool_end', 'action_proposed', 'done', 'error'].includes(event.type)) throw new AssistantStreamError('助手响应格式无效，请重试')
     onEvent(event)
-  }
-  const line = (value: string) => {
-    if (!value) dispatch()
-    else if (value.startsWith('data:')) data.push(value.slice(5).replace(/^ /, ''))
-  }
-  return {
-    push(chunk: string) {
-      buffer += chunk
-      let end: number
-      while ((end = buffer.indexOf('\n')) >= 0) {
-        line(buffer.slice(0, end).replace(/\r$/, ''))
-        buffer = buffer.slice(end + 1)
-      }
-    },
-    finish() {
-      if (buffer) line(buffer.replace(/\r$/, ''))
-      buffer = ''
-      dispatch()
-    },
-  }
+  })
 }
 
 export async function streamAssistantMessage(id: string, content: string, projectID: string, signal: AbortSignal, onEvent: (event: AssistantEvent) => void): Promise<void> {

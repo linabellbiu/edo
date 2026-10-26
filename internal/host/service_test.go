@@ -48,6 +48,12 @@ func (kubernetesProbeStub) Ping(context.Context, string) (string, error) {
 	return "v1.31.2", nil
 }
 
+func (kubernetesProbeStub) ValidateHost(context.Context, string, model.Host) error { return nil }
+
+func (kubernetesProbeStub) ValidateHostForSave(context.Context, string, model.Host) (func(*gorm.DB) error, error) {
+	return func(*gorm.DB) error { return nil }, nil
+}
+
 type recordingDockerProbe struct {
 	fingerprint string
 	input       dockerengine.Input

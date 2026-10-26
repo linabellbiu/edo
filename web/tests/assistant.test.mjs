@@ -10,7 +10,7 @@ function load(path, modules = {}, globals = {}) {
   const source = path.endsWith('.vue') ? compileScript(parse(raw).descriptor, { id: 'assistant-test' }).content : raw
   const code = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, esModuleInterop: true } }).outputText
   const module = { exports: {} }
-  new Function('require', 'module', 'exports', ...Object.keys(globals), code)(name => modules[name] || {}, module, module.exports, ...Object.values(globals))
+  new Function('require', 'module', 'exports', ...Object.keys(globals), code)(name => modules[name] || (name === './sse' ? load('../src/api/sse.ts') : {}), module, module.exports, ...Object.values(globals))
   return module.exports
 }
 const flush = async () => { for (let i = 0; i < 5; i++) await new Promise(resolve => setImmediate(resolve)) }

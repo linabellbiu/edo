@@ -250,7 +250,6 @@ func (s *Service) perform(ctx context.Context, record *model.K3sInstallation) er
 		}
 		s.hostProgress(record, hosts, index, "ready", "检查通过")
 	}
-	linked := []string{}
 	if input.Action == "create" {
 		var serverIndex int
 		for index, host := range hosts {
@@ -308,11 +307,10 @@ func (s *Service) perform(ctx context.Context, record *model.K3sInstallation) er
 			if err := s.waitForNode(ctx, cluster.ID, record.ID, host.ID); err != nil {
 				return err
 			}
-			linked = append(linked, host.ID)
 			if err := s.recheck(ctx, *record, snapshot); err != nil {
 				return err
 			}
-			if err := s.kubernetes.SetHosts(ctx, cluster.ID, linked); err != nil {
+			if err := s.kubernetes.AppendHosts(ctx, cluster.ID, []string{host.ID}); err != nil {
 				return err
 			}
 		}
@@ -325,13 +323,6 @@ func (s *Service) perform(ctx context.Context, record *model.K3sInstallation) er
 		}
 		if !strings.Contains(version, "k3s") {
 			return kube.ErrJoinUnsupported
-		}
-		existing, err := s.kubernetes.LinkedHosts(ctx, []string{input.ClusterID})
-		if err != nil {
-			return err
-		}
-		for _, host := range existing[input.ClusterID] {
-			linked = append(linked, host.ID)
 		}
 	}
 	// Mint short-lived, CA-bound bootstrap credentials, never read the original
@@ -360,11 +351,10 @@ func (s *Service) perform(ctx context.Context, record *model.K3sInstallation) er
 		if revokeErr != nil {
 			return revokeErr
 		}
-		linked = append(linked, host.ID)
 		if err := s.recheck(ctx, *record, snapshot); err != nil {
 			return err
 		}
-		if err := s.kubernetes.SetHosts(ctx, record.ClusterID, linked); err != nil {
+		if err := s.kubernetes.AppendHosts(ctx, record.ClusterID, []string{host.ID}); err != nil {
 			return err
 		}
 		s.hostProgress(record, hosts, index, "succeeded", "节点已就绪并关联")

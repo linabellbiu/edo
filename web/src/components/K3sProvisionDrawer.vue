@@ -34,7 +34,8 @@ const form = reactive({
 })
 let mounted = true,revision = 0,request:AbortController|undefined,pollRequest:AbortController|undefined,recentRequest:AbortController|undefined
 let pollTimer:ReturnType<typeof setTimeout>|undefined,clock:ReturnType<typeof setInterval>|undefined,completedID = '',operationContext = ''
-const context = computed(() => `${auth.user?.id??''}:${auth.user?.project_id??''}:${props.action}:${props.cluster}`)
+const selectedProject = ref(readSelectedProject())
+const context = computed(() => JSON.stringify([auth.user?.id??'',auth.user?.project_id??'',selectedProject.value,props.action,props.cluster]))
 const hostChoices = computed(() => availableK3sHosts(hosts.value))
 const hostOptions = computed(() => hostChoices.value.map(host=>({
   value:host.id,label:`${host.name} · ${host.address}${k3sHostDisabledReason(host)?`（${k3sHostDisabledReason(host)}）`:''}`,
@@ -70,6 +71,17 @@ function input(): K3sPlanInput {
     installer,overrides:custom?form.overrides:'',endpoint:form.endpoint.trim(),
   }
 }
+function readSelectedProject() {return typeof localStorage==='undefined'?'':localStorage.getItem('edo.project')??''}
+function syncProject() {
+  const project=readSelectedProject()
+  if(project===selectedProject.value)return true
+  selectedProject.value=project;return false
+}
+function matchesContext(expected:string) {return syncProject()&&expected===context.value}
+function projectChanged(event:Event) {
+  if(event.type==='storage'&&(event as StorageEvent).key!==null&&(event as StorageEvent).key!=='edo.project')return
+  syncProject()
+}
 function stopPoll() {
   if(pollTimer)clearTimeout(pollTimer)
   pollTimer=undefined;pollRequest?.abort();pollRequest=undefined
@@ -81,27 +93,27 @@ function resetForm() {
   error.value='';pollError.value=''
 }
 async function initialize() {
-  if(!canExecute.value)return
-  cancelRequests();const current=revision,controller=new AbortController();request=controller
+  if(!syncProject()||!canExecute.value)return
+  cancelRequests();const current=revision,currentContext=context.value,controller=new AbortController();request=controller
   loading.value=true;loadError.value=''
   void loadRecent()
   try {
-    const [options,available]=await Promise.all([getK3sCatalog(controller.signal),props.hosts?Promise.resolve(props.hosts):listHosts()])
-    if(!mounted||!props.open||current!==revision)return
+    const [options,available]=await Promise.all([getK3sCatalog(controller.signal),listHosts()])
+    if(!mounted||!props.open||current!==revision||!matchesContext(currentContext))return
     catalog.value=options;hosts.value=available
     if(installation.value&&operationContext===context.value)void refreshInstallation()
   } catch(err) {
-    if(mounted&&props.open&&current===revision&&!controller.signal.aborted)loadError.value=apiErrorMessage(err)
+    if(mounted&&props.open&&current===revision&&!controller.signal.aborted&&matchesContext(currentContext))loadError.value=apiErrorMessage(err)
   } finally {if(mounted&&current===revision)loading.value=false}
 }
 async function loadRecent() {
-  if(!props.open||!canExecute.value)return
+  if(!syncProject()||!props.open||!canExecute.value)return
   recentRequest?.abort();const controller=new AbortController();recentRequest=controller;const current=revision,currentContext=context.value
   recentLoading.value=true;recentError.value=''
   try {
     const result=await listK3sInstallations(props.action==='join'?props.cluster:'',props.action,controller.signal)
-    if(mounted&&props.open&&current===revision&&currentContext===context.value)recent.value=result.filter(item=>!item.action||item.action===props.action)
-  } catch(err) {if(mounted&&props.open&&current===revision&&!controller.signal.aborted)recentError.value=apiErrorMessage(err)}
+    if(mounted&&props.open&&current===revision&&matchesContext(currentContext))recent.value=result.filter(item=>!item.action||item.action===props.action)
+  } catch(err) {if(mounted&&props.open&&current===revision&&!controller.signal.aborted&&matchesContext(currentContext))recentError.value=apiErrorMessage(err)}
   finally {if(mounted&&current===revision)recentLoading.value=false}
 }
 function viewInstallation(item:K3sInstallation) {
@@ -111,25 +123,25 @@ function viewInstallation(item:K3sInstallation) {
   void refreshInstallation()
 }
 async function preview() {
-  if(!props.open||!canPreview.value||running.value)return
+  if(!syncProject()||!props.open||!canPreview.value||running.value)return
   error.value=''
   try {if(form.profile==='custom')validateK3sOverrides(form.overrides)} catch(err) {error.value=err instanceof Error?err.message:'覆盖配置无效';return}
-  const payload=input(),currentSignature=signature.value,current=revision,controller=new AbortController();request?.abort();request=controller;busy.value=true
+  const payload=input(),currentSignature=signature.value,currentContext=context.value,current=revision,controller=new AbortController();request?.abort();request=controller;busy.value=true
   try {
     const result=await previewK3sPlan(payload,controller.signal)
-    if(mounted&&props.open&&current===revision&&signature.value===currentSignature){plan.value=result;now.value=Date.now()}
-  } catch(err) {if(mounted&&props.open&&current===revision&&!controller.signal.aborted)error.value=apiErrorMessage(err)}
+    if(mounted&&props.open&&current===revision&&signature.value===currentSignature&&matchesContext(currentContext)){plan.value=result;now.value=Date.now()}
+  } catch(err) {if(mounted&&props.open&&current===revision&&!controller.signal.aborted&&matchesContext(currentContext))error.value=apiErrorMessage(err)}
   finally {if(mounted&&current===revision)busy.value=false}
 }
 async function execute() {
-  if(!props.open||!plan.value||planExpired.value||busy.value||!canExecute.value)return
-  const planID=plan.value.id,current=revision,controller=new AbortController();request?.abort();request=controller;busy.value=true;error.value=''
+  if(!syncProject()||!props.open||!plan.value||planExpired.value||busy.value||!canExecute.value)return
+  const planID=plan.value.id,currentContext=context.value,current=revision,controller=new AbortController();request?.abort();request=controller;busy.value=true;error.value=''
   try {
     const result=await startK3sInstallation(planID,controller.signal)
-    if(!mounted||!props.open||current!==revision)return
+    if(!mounted||!props.open||current!==revision||!matchesContext(currentContext))return
     installation.value=result;operationContext=context.value
     handleProgress(result)
-  } catch(err) {if(mounted&&props.open&&current===revision&&!controller.signal.aborted){error.value=apiErrorMessage(err);void loadRecent()}}
+  } catch(err) {if(mounted&&props.open&&current===revision&&!controller.signal.aborted&&matchesContext(currentContext)){error.value=apiErrorMessage(err);void loadRecent()}}
   finally {if(mounted&&current===revision)busy.value=false}
 }
 function handleProgress(result:K3sInstallation) {
@@ -142,14 +154,14 @@ function handleProgress(result:K3sInstallation) {
 }
 async function refreshInstallation() {
   const id=installation.value?.id
-  if(!props.open||!id||!mounted)return
-  stopPoll();const current=revision,controller=new AbortController();pollRequest=controller
+  if(!syncProject()||!props.open||!id||!mounted)return
+  stopPoll();const current=revision,currentContext=context.value,controller=new AbortController();pollRequest=controller
   try {
     const result=await getK3sInstallation(id,controller.signal)
-    if(!mounted||!props.open||current!==revision||installation.value?.id!==id)return
+    if(!mounted||!props.open||current!==revision||installation.value?.id!==id||!matchesContext(currentContext))return
     installation.value=result;pollError.value='';handleProgress(result)
   } catch(err) {
-    if(mounted&&props.open&&current===revision&&!controller.signal.aborted)pollError.value=apiErrorMessage(err)
+    if(mounted&&props.open&&current===revision&&!controller.signal.aborted&&matchesContext(currentContext))pollError.value=apiErrorMessage(err)
   }
 }
 function configureAgain() {
@@ -172,10 +184,10 @@ watch(()=>props.open,open=>{
   if(operationContext!==context.value||!installation.value)resetForm()
   void initialize()
 })
-watch(context,()=>{cancelRequests();busy.value=false;recent.value=[];resetForm();if(props.open)void initialize()})
+watch(context,()=>{cancelRequests();busy.value=false;loading.value=false;recent.value=[];recentError.value='';recentLoading.value=false;catalog.value=undefined;hosts.value=[];loadError.value='';resetForm();if(props.open)void initialize()})
 watch(canExecute,allowed=>{if(!allowed){cancelRequests();busy.value=false;loading.value=false;loadError.value='';recentError.value='';recentLoading.value=false;plan.value=undefined;installation.value=undefined;recent.value=[];catalog.value=undefined;hosts.value=[]}else if(props.open)void initialize()})
-onMounted(()=>{clock=setInterval(()=>{if(props.open)now.value=Date.now()},1000);if(props.open){resetForm();void initialize()}})
-onBeforeUnmount(()=>{mounted=false;cancelRequests();if(clock)clearInterval(clock)})
+onMounted(()=>{window.addEventListener('storage',projectChanged);window.addEventListener('edo:projects-changed',projectChanged);clock=setInterval(()=>{if(props.open)now.value=Date.now()},1000);if(props.open){resetForm();void initialize()}})
+onBeforeUnmount(()=>{mounted=false;cancelRequests();window.removeEventListener('storage',projectChanged);window.removeEventListener('edo:projects-changed',projectChanged);if(clock)clearInterval(clock)})
 </script>
 
 <template>

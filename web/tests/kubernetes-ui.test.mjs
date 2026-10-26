@@ -10,7 +10,7 @@ function load(path,modules={}){
  const output=ts.transpileModule(source,{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022,esModuleInterop:true}}).outputText,module={exports:{}}
  new Function('require','module','exports',output)(key=>modules[key]??{},module,module.exports);return module.exports
 }
-const api=load('../src/api/kubernetes.ts',{'./resources':{apiErrorMessage:()=> '连接暂不可用'}}),workspace=load('../src/utils/kubernetesWorkspace.ts'),presentation=load('../src/utils/kubernetesPresentation.ts',{'@/api/kubernetes':api}),workload=load('../src/utils/kubernetesWorkloadForm.ts',{'@/api/kubernetes':api})
+const api=load('../src/api/kubernetes.ts',{'./resources':{apiErrorMessage:()=> '连接暂不可用'}}),workspace=load('../src/utils/kubernetesWorkspace.ts'),presentation=load('../src/utils/kubernetesPresentation.ts',{'@/api/kubernetes':api,'@/utils/kubernetesRoles':load('../src/utils/kubernetesRoles.ts')}),workload=load('../src/utils/kubernetesWorkloadForm.ts',{'@/api/kubernetes':api})
 const translate=key=>key,settle=async()=>{await vue.nextTick();await new Promise(resolve=>setImmediate(resolve));await vue.nextTick()}
 test('列表地址参数拒绝异常值，默认项不污染地址；排序按真实时间和自然名称且不改原列表',()=>{
  assert.deepEqual(workspace.readKubeListState({q:['private'],sort:'injected',order:['desc'],page:'-1',limit:['20']}),{query:'',label:'',status:'',sort:'name',order:'asc',page:1,limit:10})

@@ -15,7 +15,7 @@ function load(path,modules){
 }
 const api=load('../src/api/kubernetes.ts',{})
 const workloadForm=load('../src/utils/kubernetesWorkloadForm.ts',{'@/api/kubernetes':api})
-const presentation=load('../src/utils/kubernetesPresentation.ts',{'@/api/kubernetes':api})
+const presentation=load('../src/utils/kubernetesPresentation.ts',{'@/api/kubernetes':api,'@/utils/kubernetesRoles':load('../src/utils/kubernetesRoles.ts')})
 const details=load('../src/utils/kubernetesDetails.ts',{'@/api/kubernetes':api})
 test('资源数量按原始 SI、二进制及指数含义换算，截图中的 Ki 和无单位字节统一可读',()=>{
  for(const [input,bytes] of [['2147483Ki',2147483*1024],['955574586848',955574586848],['982292956Ki',982292956*1024],['1.5Gi',1.5*1024**3],['.5Mi',.5*1024**2],['128Mi',128*1024**2],['1G',1e9],['1M',1e6],['1e6',1e6],['1E+6',1e6],['1E',1e18],['1Ti',1024**4],['400m',.4],['10u',.00001],['100n',.0000001]])assert.ok(Math.abs(api.parseKubeQuantity(input)-bytes)<=Number.EPSILON*bytes,input)

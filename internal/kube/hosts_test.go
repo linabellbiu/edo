@@ -2,11 +2,15 @@ package kube
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
 	"edo/internal/database"
+	"edo/internal/hostidentity"
 	"edo/internal/model"
 )
 
@@ -101,7 +105,7 @@ func TestClusterHostsRejectInvalidSelectionWithoutLosingExistingLinks(t *testing
 
 func TestClusterCreationWithHostsIsAtomicAndIndependentClusterNeedsNoHost(t *testing.T) {
 	service := newKubeTestService(t, time.Second)
-	server := newKubeVersionServer(t)
+	server := newHostValidationServer(t, nil)
 	kubeconfig := kubeconfigForServer(server)
 	input := Input{Name: "new-cluster", Mode: model.KubernetesKubeconfig, DefaultNamespace: "default", Kubeconfig: &kubeconfig}
 	badIDs := []string{"missing-host"}
@@ -141,7 +145,12 @@ func TestClusterCreationWithHostsIsAtomicAndIndependentClusterNeedsNoHost(t *tes
 
 func linkedClusterFixture(t *testing.T, service *Service, id, projectID string) model.KubernetesCluster {
 	t.Helper()
-	cluster := model.KubernetesCluster{ID: id, Name: id, Mode: model.KubernetesKubeconfig, ProjectID: projectID, IsActive: true, CreatedAt: time.Now(), UpdatedAt: time.Now()}
+	server := newHostValidationServer(t, nil)
+	encrypted, err := service.secrets.Encrypt(kubeconfigForServer(server), kubeconfigAAD(id))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cluster := model.KubernetesCluster{ID: id, Name: id, Mode: model.KubernetesKubeconfig, APIServer: server.URL, KubeconfigCiphertext: encrypted, ProjectID: projectID, IsActive: true, CreatedAt: time.Now(), UpdatedAt: time.Now()}
 	if err := service.db.Create(&cluster).Error; err != nil {
 		t.Fatal(err)
 	}
@@ -150,9 +159,33 @@ func linkedClusterFixture(t *testing.T, service *Service, id, projectID string) 
 
 func linkedHostFixture(t *testing.T, service *Service, id, projectID string) model.Host {
 	t.Helper()
+	service.hostIdentityProbe = func(_ context.Context, host model.Host) (hostidentity.Identity, error) {
+		return hostidentity.Identity{Addresses: []string{host.Address}}, nil
+	}
 	host := model.Host{ID: id, Name: id, Mode: model.HostModeSSH, Address: "192.0.2.241", SSHPort: 22, ProjectID: projectID, IsActive: true, CreatedAt: time.Now(), UpdatedAt: time.Now()}
 	if err := service.db.Create(&host).Error; err != nil {
 		t.Fatal(err)
 	}
 	return host
+}
+
+func newHostValidationServer(t *testing.T, nodesHandler http.HandlerFunc) *httptest.Server {
+	t.Helper()
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/version":
+			_ = json.NewEncoder(w).Encode(map[string]string{"gitVersion": "v1.35.5"})
+		case "/api/v1/nodes":
+			if nodesHandler != nil {
+				nodesHandler(w, r)
+				return
+			}
+			_, _ = w.Write([]byte(`{"apiVersion":"v1","kind":"NodeList","items":[{"metadata":{"name":"node-a"},"status":{"addresses":[{"type":"InternalIP","address":"192.0.2.241"}]}}]}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(server.Close)
+	return server
 }

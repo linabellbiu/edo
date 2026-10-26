@@ -219,6 +219,12 @@ func (h hostHandler) writeError(c *gin.Context, operation string, err error) {
 	switch {
 	case errors.Is(err, hostmanager.ErrInvalidHost):
 		writeError(c, http.StatusBadRequest, "invalid_host", hostmanager.ErrInvalidHost.Error())
+	case errors.Is(err, kube.ErrClusterHostMismatch):
+		writeError(c, http.StatusBadRequest, "kubernetes_cluster_host_mismatch", kube.ErrClusterHostMismatch.Error())
+	case errors.Is(err, kube.ErrInvalidClusterHosts):
+		writeError(c, http.StatusBadRequest, "invalid_kubernetes_cluster_hosts", kube.ErrInvalidClusterHosts.Error())
+	case errors.Is(err, kube.ErrClusterHostCheckUnavailable):
+		writeError(c, http.StatusBadGateway, "kubernetes_cluster_host_check_unavailable", kube.ErrClusterHostCheckUnavailable.Error())
 	case errors.Is(err, hostmanager.ErrHostTestRequired):
 		writeError(c, http.StatusConflict, "host_test_required", hostmanager.ErrHostTestRequired.Error())
 	case errors.Is(err, hostmanager.ErrHostExists):

@@ -5,13 +5,10 @@ import (
 	"errors"
 	"time"
 
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/util/validation"
-	"k8s.io/client-go/dynamic"
 )
 
 type ResourceCount struct {
@@ -64,12 +61,7 @@ func (s *Service) Overview(ctx context.Context, clusterID, namespace string, all
 		return nil, ErrInvalidResource
 	}
 	// 先检查项目内集群归属，即使当前没有可查询的资源也不能绕过。
-	cfg, err := s.RESTConfig(ctx, clusterID)
-	if err != nil {
-		return nil, err
-	}
-	client, err := dynamic.NewForConfig(cfg)
-	if err != nil {
+	if _, err := s.dynamicClient(ctx, clusterID); err != nil {
 		return nil, err
 	}
 	result := &Overview{Counts: map[string]ResourceCount{}, Nodes: []NodeStatistics{}, Phases: map[string]int{}, Usage: map[string]map[string]ResourceUsage{}, MetricsState: map[string]string{}, CollectedAt: time.Now().UTC(), Errors: map[string]error{}}
@@ -86,14 +78,10 @@ func (s *Service) Overview(ctx context.Context, clusterID, namespace string, all
 		if def.Namespaced && namespace != "*" {
 			ns = namespace
 		}
-		var api dynamic.ResourceInterface = client.Resource(def.gvr())
-		if def.Namespaced {
-			api = client.Resource(def.gvr()).Namespace(ns)
-		}
 		count := ResourceCount{State: "ok"}
 		continuation := ""
 		for page := 0; ; page++ {
-			items, listErr := api.List(ctx, metav1.ListOptions{Limit: 500, Continue: continuation})
+			items, listErr := s.listResourceSnapshotPage(ctx, clusterID, def, ns, metav1.ListOptions{Limit: 500, Continue: continuation})
 			if listErr != nil {
 				count.State = "unavailable"
 				result.Errors[def.Resource] = resourceError(def.Resource, listErr)
@@ -159,7 +147,7 @@ func (s *Service) Overview(ctx context.Context, clusterID, namespace string, all
 	if allowed["kubernetes.node.read"] && allowed["kubernetes.workload.read"] && namespace != "*" {
 		// 节点用量不跟随命名空间筛选，避免把局部数量当成整个节点的占用。
 		var err error
-		podsByNode, err = listNodePodCounts(ctx, client)
+		podsByNode, err = s.listNodePodCounts(ctx, clusterID)
 		if err != nil {
 			result.Errors["node_pods"] = resourceError("pods", err)
 		} else {
@@ -183,19 +171,7 @@ func (s *Service) Overview(ctx context.Context, clusterID, namespace string, all
 		if ns == "*" {
 			ns = ""
 		}
-		var list *unstructured.UnstructuredList
-		var metricsErr error
-		for _, version := range []string{"v1", "v1beta1"} {
-			api := client.Resource(schema.GroupVersionResource{Group: "metrics.k8s.io", Version: version, Resource: kind})
-			var reader dynamic.ResourceInterface = api
-			if kind == "pods" {
-				reader = api.Namespace(ns)
-			}
-			list, metricsErr = reader.List(ctx, metav1.ListOptions{})
-			if !apierrors.IsNotFound(metricsErr) {
-				break
-			}
-		}
+		list, metricsErr := s.listMetrics(ctx, clusterID, kind, ns)
 		if metricsErr != nil {
 			result.MetricsState[kind] = "unavailable"
 			result.Errors["metrics/"+kind] = resourceError(kind, metricsErr)
@@ -258,12 +234,12 @@ func countNodePod(counts map[string]int64, pod *unstructured.Unstructured) {
 	}
 }
 
-func listNodePodCounts(ctx context.Context, client dynamic.Interface) (map[string]int64, error) {
+func (s *Service) listNodePodCounts(ctx context.Context, clusterID string) (map[string]int64, error) {
 	counts := map[string]int64{}
-	api := client.Resource(schema.GroupVersionResource{Version: "v1", Resource: "pods"}).Namespace("")
+	def, _ := ResourceType("pods")
 	continuation := ""
 	for page := 0; page < 20; page++ {
-		list, err := api.List(ctx, metav1.ListOptions{Limit: 500, Continue: continuation})
+		list, err := s.listResourceSnapshotPage(ctx, clusterID, def, "", metav1.ListOptions{Limit: 500, Continue: continuation})
 		if err != nil {
 			return nil, err
 		}

@@ -29,7 +29,7 @@ func requireKubernetesResource(service *access.Service, logger *slog.Logger, act
 }
 
 func (h clusterHandler) resourceList(c *gin.Context) {
-	result, err := h.kube.ListResources(c.Request.Context(), c.Param("id"), c.Param("resource"), c.Query("namespace"), c.Query("continue"))
+	result, err := h.kube.ListResources(kubernetesReadContext(c), c.Param("id"), c.Param("resource"), c.Query("namespace"), c.Query("continue"))
 	if err != nil {
 		h.resourceError(c, "kubernetes_resource_list", err)
 		return
