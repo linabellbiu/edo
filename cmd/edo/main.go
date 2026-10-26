@@ -42,6 +42,7 @@ import (
 	hostmanager "edo/internal/host"
 	"edo/internal/httpapi"
 	"edo/internal/identity"
+	"edo/internal/k3s"
 	"edo/internal/kube"
 	"edo/internal/legacyimport"
 	"edo/internal/logging"
@@ -528,6 +529,7 @@ func runServer(ctx context.Context, cfg config.Config, logger *slog.Logger, runt
 	dockerService := dockerengine.NewService(resources.Database, secretManager, cfg.Runtime)
 	kubernetesService := kube.NewService(resources.Database, secretManager, cfg.Runtime)
 	kubernetesService.ConfigureNodeMonitoring(resources.Redis.Client(), resources.Redis.Key("kubernetes", "node-metrics"), logger)
+	k3sService := k3s.NewService(resources.Database, secretManager, kubernetesService, accessService, cfg.Runtime)
 	sshDeploymentService := sshdeploy.NewService(resources.Database, secretManager, cfg.Runtime)
 	hostService := hostmanager.NewService(resources.Database, secretManager, dockerService, kubernetesService)
 	if err := hostService.RefreshLocalCapabilities(serviceCtx); err != nil {
@@ -613,6 +615,7 @@ func runServer(ctx context.Context, cfg config.Config, logger *slog.Logger, runt
 		Artifacts:      artifactService,
 		Docker:         dockerService,
 		Kubernetes:     kubernetesService,
+		K3s:            k3sService,
 		Hosts:          hostService,
 		Environments:   environmentService,
 		Deployments:    deploymentService,
@@ -660,6 +663,7 @@ func runServer(ctx context.Context, cfg config.Config, logger *slog.Logger, runt
 	}
 	publisher := outbox.New(resources.Database, resources.NATS, logger, cfg.NATS)
 	startBackground("server_system_metrics", func() error { return systemMetricsService.Run(serviceCtx) })
+	startBackground("server_k3s_installations", func() error { return k3sService.Run(serviceCtx) })
 	startBackground("server_kubernetes_node_metrics", func() error { return kubernetesService.RunNodeMonitoring(serviceCtx) })
 	startBackground("server_outbox", func() error { return publisher.Run(serviceCtx) })
 	startBackground("server_task_consumer", func() error { return taskWorker.Run(serviceCtx) })

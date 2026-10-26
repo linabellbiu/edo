@@ -27,6 +27,7 @@ import (
 	environmentmanager "edo/internal/environment"
 	hostmanager "edo/internal/host"
 	"edo/internal/identity"
+	"edo/internal/k3s"
 	"edo/internal/kube"
 	"edo/internal/logging"
 	"edo/internal/logretention"
@@ -67,6 +68,7 @@ type Dependencies struct {
 	Artifacts      *artifactmanager.Service
 	Docker         *dockerengine.Service
 	Kubernetes     *kube.Service
+	K3s            *k3s.Service
 	Hosts          *hostmanager.Service
 	Environments   *environmentmanager.Service
 	Deployments    *deployment.Service
@@ -130,6 +132,7 @@ func NewRouter(deps Dependencies) *gin.Engine {
 	protected.GET("/organization", requireAnyPermission(deps.Access, deps.Logger, "organization.read", "organization.update"), projectAPI.organization)
 	protected.PUT("/organization", auditAction(deps.Audits, deps.Logger, "organization.update", "organization"), requirePermission(deps.Access, deps.Logger, "organization.update"), projectAPI.saveOrganization)
 	protected.Use(realtimeMutation(deps.Realtime))
+	registerK3sRoutes(protected, deps)
 	registerAssistantRoutes(protected, deps)
 	protected.GET("/events/ws", requireAnyPermission(deps.Access, deps.Logger, "application.read", "pipeline_run.read", "release_plan.read", "deployment_plan.read", access.PermissionDeploymentRead), streamState(deps))
 	protected.GET("/auth/me", authHandler.handleMe)

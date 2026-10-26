@@ -35,6 +35,7 @@ type NodeJoinInput struct {
 type NodeJoin struct {
 	ID string `json:"id"`
 	ResourceIdentity
+	Token     string    `json:"-"`
 	Command   string    `json:"command"`
 	ExpiresAt time.Time `json:"expires_at"`
 }
@@ -129,7 +130,11 @@ func (s *Service) CreateNodeJoin(ctx context.Context, clusterID string, input No
 		// 凭据从标准输入写入 root 专用文件，不放进进程命令行。
 		command = fmt.Sprintf("sudo install -d -m 700 /etc/rancher/k3s\nprintf '%%s' '%s' | sudo sh -c 'umask 077; cat > /etc/rancher/k3s/edo-join-token'\nsudo k3s agent --server '%s' --token-file /etc/rancher/k3s/edo-join-token", "K10"+caHash+"::"+token, strings.TrimRight(endpoint, "/"))
 	}
-	return &NodeJoin{ID: id, ResourceIdentity: ResourceIdentity{UID: string(created.UID), ResourceVersion: created.ResourceVersion}, Command: command, ExpiresAt: expires}, nil
+	joinToken := token
+	if input.Provider == "k3s" {
+		joinToken = "K10" + caHash + "::" + token
+	}
+	return &NodeJoin{ID: id, ResourceIdentity: ResourceIdentity{UID: string(created.UID), ResourceVersion: created.ResourceVersion}, Token: joinToken, Command: command, ExpiresAt: expires}, nil
 }
 
 func (s *Service) RevokeNodeJoin(ctx context.Context, clusterID, id string, identity ResourceIdentity) error {

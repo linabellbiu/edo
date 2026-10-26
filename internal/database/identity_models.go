@@ -4,6 +4,7 @@ import "edo/internal/model"
 
 // persistedIdentityModels 同时用于主键升级、结构校验和数据迁移后的序列恢复。
 var persistedIdentityModels = []any{
+	&model.K3sInstallation{},
 	&model.SQLChange{},
 	&model.SQLChangeRevision{},
 	&model.SQLChangeReview{},

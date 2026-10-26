@@ -1,0 +1,1975 @@
+{
+  "version": "v1.37.1+k3s1",
+  "catalog_version": "2026-10-26",
+  "sources": [
+    "https://github.com/k3s-io/k3s/releases/tag/v1.37.1%2Bk3s1",
+    "https://github.com/k3s-io/k3s/blob/v1.37.1%2Bk3s1/pkg/cli/cmds/server.go",
+    "https://github.com/k3s-io/k3s/blob/v1.37.1%2Bk3s1/pkg/cli/cmds/agent.go",
+    "https://github.com/k3s-io/k3s/blob/v1.37.1%2Bk3s1/pkg/cli/cmds/root.go",
+    "https://github.com/k3s-io/k3s/blob/v1.37.1%2Bk3s1/pkg/cli/cmds/log.go",
+    "https://github.com/k3s-io/k3s/blob/v1.37.1%2Bk3s1/pkg/cli/cmds/config.go",
+    "https://github.com/k3s-io/k3s/blob/v1.37.1%2Bk3s1/install.sh",
+    "https://docs.k3s.io/installation/configuration"
+  ],
+  "server": [
+    {
+      "name": "config",
+      "label": "配置文件",
+      "group": "配置",
+      "type": "string",
+      "description": "Load configuration from `FILE`",
+      "source": "https://github.com/k3s-io/k3s/blob/v1.37.1%2Bk3s1/pkg/cli/cmds/config.go",
+      "default": "/etc/rancher/k3s/config.yaml",
+      "aliases": [
+        "c"
+      ],
+      "environment_variables": [
+        "K3S_CONFIG_FILE"
+      ],
+      "managed": true,
+      "unsupported_reason": "安装计划统一生成配置文件"
+    },
+    {
+      "name": "debug",
+      "label": "调试日志",
+      "group": "日志",
+      "type": "boolean",
+      "description": "Turn on debug logs",
+      "source": "https://github.com/k3s-io/k3s/blob/v1.37.1%2Bk3s1/pkg/cli/cmds/root.go",
+      "default": false,
+      "environment_variables": [
+        "K3S_DEBUG"
+      ]
+    },
+    {
+      "name": "v",
+      "label": "日志级别",
+      "group": "日志",
+      "type": "integer",
+      "description": "Number for the log level verbosity",
+      "source": "https://github.com/k3s-io/k3s/blob/v1.37.1%2Bk3s1/pkg/cli/cmds/log.go",
+      "default": 0
+    },
+    {
+      "name": "vmodule",
+      "label": "按文件设置日志级别",
+      "group": "日志",
+      "type": "string",
+      "description": "Comma-separated list of FILE_PATTERN=LOG_LEVEL settings for file-filtered logging",
+      "source": "https://github.com/k3s-io/k3s/blob/v1.37.1%2Bk3s1/pkg/cli/cmds/log.go"
+    },
+    {
+      "name": "log",
+      "label": "日志文件",
+      "group": "日志",
+      "type": "string",
+      "description": "Log to file",
+      "source": "https://github.com/k3s-io/k3s/blob/v1.37.1%2Bk3s1/pkg/cli/cmds/log.go",
+      "aliases": [
+        "l"
+      ]
+    },
+    {
+      "name": "alsologtostderr",
+      "label": "同时输出标准错误",
+      "group": "日志",
+      "type": "boolean",
+      "description": "Log to standard error as well as file (if set)",
+      "source": "https://github.com/k3s-io/k3s/blob/v1.37.1%2Bk3s1/pkg/cli/cmds/log.go",
+      "default": false
+    },
+    {
+      "name": "bind-address",
+      "label": "监听地址",
+      "group": "监听与证书",
+      "type": "string",
+      "description": "k3s bind address (default: 0.0.0.0)",
+      "source": "https://github.com/k3s-io/k3s/blob/v1.37.1%2Bk3s1/pkg/cli/cmds/agent.go"
+    },
+    {
+      "name": "https-listen-port",
+      "label": "API HTTPS 端口",
+      "group": "监听与证书",
+      "type": "integer",
+      "description": "HTTPS listen port",
+      "source": "https://github.com/k3s-io/k3s/blob/v1.37.1%2Bk3s1/pkg/cli/cmds/server.go",
+      "default": 6443
+    },
+    {
+      "name": "supervisor-port",
+      "label": "Supervisor 端口",
+      "group": "高级",
+      "type": "integer",
+      "description": "Supervisor listen port override",
+      "source": "https://github.com/k3s-io/k3s/blob/v1.37.1%2Bk3s1/pkg/cli/cmds/server.go",
+      "default": 0,
+      "environment_variables": [
+        "K3S_SUPERVISOR_PORT"
+      ],
+      "hidden": true
+    },
+    {
+      "name": "apiserver-port",
+      "label": "API 内部端口",
+      "group": "高级",
+      "type": "integer",
+      "description": "apiserver internal listen port override",
+      "source": "https://github.com/k3s-io/k3s/blob/v1.37.1%2Bk3s1/pkg/cli/cmds/server.go",
+      "default": 0,
+      "environment_variables": [
+        "K3S_APISERVER_PORT"
+      ],
+      "hidden": true
+    },
+    {
+      "name": "apiserver-bind-address",
+      "label": "API 内部监听地址",
+      "group": "高级",
+      "type": "string",
+      "description": "apiserver internal bind address override",
+      "source": "https://github.com/k3s-io/k3s/blob/v1.37.1%2Bk3s1/pkg/cli/cmds/server.go",
+      "environment_variables": [
+        "K3S_APISERVER_BIND_ADDRESS"
+      ],
+      "hidden": true
+    },
+    {
+      "name": "advertise-address",
+      "label": "API 广播地址",
+      "group": "监听与证书",
+      "type": "string",
+      "description": "IPv4/IPv6 address that apiserver uses to advertise to members of the cluster (default: node-external-ip/node-ip)",
+      "source": "https://github.com/k3s-io/k3s/blob/v1.37.1%2Bk3s1/pkg/cli/cmds/server.go"
+    },
+    {
+      "name": "advertise-port",
+      "label": "API 广播端口",
+      "group": "监听与证书",
+      "type": "integer",
+      "description": "Port that apiserver uses to advertise to members of the cluster (default: https-listen-port)",
+      "source": "https://github.com/k3s-io/k3s/blob/v1.37.1%2Bk3s1/pkg/cli/cmds/server.go",
+      "default": 0
+    },
+    {
+      "name": "tls-san",
+      "label": "证书附加域名与 IP",
+      "group": "监听与证书",
+      "type": "string[]",
+      "description": "Add additional hostnames or IPv4/IPv6 addresses as Subject Alternative Names on the server TLS cert",
+      "source": "https://github.com/k3s-io/k3s/blob/v1.37.1%2Bk3s1/pkg/cli/cmds/server.go"
+    },
+    {
+      "name": "tls-san-security",
+      "label": "校验证书附加地址",
+      "group": "监听与证书",
+      "type": "boolean",
+      "description": "Protect the server TLS cert by refusing to add Subject Alternative Names not associated with the kubernetes apiserver service, server nodes, or values of the tls-san option (default: true)",
+      "source": "https://github.com/k3s-io/k3s/blob/v1.37.1%2Bk3s1/pkg/cli/cmds/server.go",
+      "default": true
+    },
+    {
+      "name": "data-dir",
+      "label": "数据目录",
+      "group": "数据目录",
+      "type": "string",
+      "description": "Folder to hold state default /var/lib/rancher/k3s or ${HOME}/.rancher/k3s if not root",
+      "source": "https://github.com/k3s-io/k3s/blob/v1.37.1%2Bk3s1/pkg/cli/cmds/server.go",
+      "aliases": [
+        "d"
+      ],
+      "environment_variables": [
+        "K3S_DATA_DIR"
+      ]
+    },
+    {
+      "name": "cluster-cidr",
+      "label": "Pod 网段",
+      "group": "网络",
+      "type": "string[]",
+      "description": "IPv4/IPv6 network CIDRs to use for pod IPs (default: 10.42.0.0/16)",
+      "source": "https://github.com/k3s-io/k3s/blob/v1.37.1%2Bk3s1/pkg/cli/cmds/server.go"
+    },
+    {
+      "name": "service-cidr",
+      "label": "Service 网段",
+      "group": "网络",
+      "type": "string[]",
+      "description": "IPv4/IPv6 network CIDRs to use for service IPs (default: 10.43.0.0/16)",
+      "source": "https://github.com/k3s-io/k3s/blob/v1.37.1%2Bk3s1/pkg/cli/cmds/server.go"
+    },
+    {
+      "name": "service-node-port-range",
+      "label": "NodePort 端口范围",
+      "group": "网络",
+      "type": "string",
+      "description": "Port range to reserve for services with NodePort visibility",
+      "source": "https://github.com/k3s-io/k3s/blob/v1.37.1%2Bk3s1/pkg/cli/cmds/server.go",
+      "default": "30000-32767"
+    },
+    {
+      "name": "cluster-dns",
+      "label": "集群 DNS 地址",
+      "group": "网络",
+      "type": "string[]",
+      "description": "IPv4/IPv6 Cluster IP for coredns service. Should be in your service-cidr range (default: 10.43.0.10)",
+      "source": "https://github.com/k3s-io/k3s/blob/v1.37.1%2Bk3s1/pkg/cli/cmds/server.go"
+    },
+    {
+      "name": "cluster-domain",
+      "label": "集群域名",
+      "group": "网络",
+      "type": "string",
+      "description": "Cluster Domain",
+      "source": "https://github.com/k3s-io/k3s/blob/v1.37.1%2Bk3s1/pkg/cli/cmds/server.go",
+      "default": "cluster.local"
+    },
+    {
+      "name": "flannel-backend",
+      "label": "Flannel 后端",
+      "group": "网络",
+      "type": "string",
+      "description": "Backend (valid values: 'none', 'vxlan', 'host-gw', 'wireguard-native'",
+      "source": "https://github.com/k3s-io/k3s/blob/v1.37.1%2Bk3s1/pkg/cli/cmds/server.go",
+      "default": "vxlan",
+      "choices": [
+        "none",
+        "vxlan",
+        "host-gw",
+        "wireguard-native"
+      ]
+    },
+    {
+      "name": "flannel-ipv6-masq",
+      "label": "IPv6 地址伪装",
+      "group": "网络",
+      "type": "boolean",
+      "description": "Enable IPv6 masquerading for pod",
+      "source": "https://github.com/k3s-io/k3s/blob/v1.37.1%2Bk3s1/pkg/cli/cmds/server.go",
+      "default": false
+    },
+    {
+      "name": "flannel-external-ip",
+      "label": "Flannel 使用外网 IP",
+      "group": "网络",
+      "type": "boolean",
+      "description": "Use node external IP addresses for Flannel traffic",
+      "source": "https://github.com/k3s-io/k3s/blob/v1.37.1%2Bk3s1/pkg/cli/cmds/server.go",
+      "default": false
+    },
+    {
+      "name": "egress-selector-mode",
+      "label": "出口选择模式",
+      "group": "网络",
+      "type": "string",
+      "description": "One of 'agent', 'cluster', 'pod', 'disabled'",
+      "source": "https://github.com/k3s-io/k3s/blob/v1.37.1%2Bk3s1/pkg/cli/cmds/server.go",
+      "default": "agent",
+      "choices": [
+        "agent",
+        "cluster",
+        "pod",
+        "disabled"
+      ]
+    },
+    {
+      "name": "servicelb-namespace",
+      "label": "ServiceLB 命名空间",
+      "group": "网络",
+      "type": "string",
+      "description": "Namespace of the pods for the servicelb component",
+      "source": "https://github.com/k3s-io/k3s/blob/v1.37.1%2Bk3s1/pkg/cli/cmds/server.go",
+      "default": "kube-system"
+    },
+    {
+      "name": "write-kubeconfig",
+      "label": "导出 kubeconfig 路径",
+      "group": "访问配置",
+      "type": "string",
+      "description": "Write kubeconfig for admin client to this file",
+      "source": "https://github.com/k3s-io/k3s/blob/v1.37.1%2Bk3s1/pkg/cli/cmds/server.go",
+      "aliases": [
+        "o"
+      ],
+      "environment_variables": [
+        "K3S_KUBECONFIG_OUTPUT"
+      ],
+      "managed": true,
+      "unsupported_reason": "安装后自动读取并导入集群连接"
+    },
+    {
+      "name": "write-kubeconfig-mode",
+      "label": "kubeconfig 文件权限",
+      "group": "访问配置",
+      "type": "string",
+      "description": "Write kubeconfig with this mode",
+      "source": "https://github.com/k3s-io/k3s/blob/v1.37.1%2Bk3s1/pkg/cli/cmds/server.go",
+      "environment_variables": [
+        "K3S_KUBECONFIG_MODE"
+      ],
+      "managed": true,
+      "unsupported_reason": "安装计划将 kubeconfig 权限固定为 0600，以便安全读取并导入"
+    },
+    {
+      "name": "write-kubeconfig-group",
+      "label": "kubeconfig 文件属组",
+      "group": "访问配置",
+      "type": "string",
+      "description": "Write kubeconfig with this group",
+      "source": "https://github.com/k3s-io/k3s/blob/v1.37.1%2Bk3s1/pkg/cli/cmds/server.go",
+      "environment_variables": [
+        "K3S_KUBECONFIG_GROUP"
+      ]
+    },
+    {
+      "name": "write-kubeconfig-name",
+      "label": "kubeconfig 上下文名称",
+      "group": "访问配置",
+      "type": "string",
+      "description": "Write kubeconfig using this name for the generated cluster, user, and context",
+      "source": "https://github.com/k3s-io/k3s/blob/v1.37.1%2Bk3s1/pkg/cli/cmds/server.go",
+      "default": "default",
+      "environment_variables": [
+        "K3S_KUBECONFIG_NAME"
+      ]
+    },
+    {
+      "name": "helm-job-image",
+      "label": "Helm 任务镜像",
+      "group": "内置组件",
+      "type": "string",
+      "description": "(deprecated) Default image to use for helm jobs. Use --helm-controller-arg=default-job-image instead",
+      "source": "https://github.com/k3s-io/k3s/blob/v1.37.1%2Bk3s1/pkg/cli/cmds/server.go",
+      "deprecated": true
+    },
+    {
+      "name": "token",
+      "label": "集群加入令牌",
+      "group": "集群与凭据",
+      "type": "string",
+      "description": "Shared secret used to join a server or agent to a cluster",
+      "source": "https://github.com/k3s-io/k3s/blob/v1.37.1%2Bk3s1/pkg/cli/cmds/server.go",
+      "aliases": [
+        "t"
+      ],
+      "environment_variables": [
+        "K3S_TOKEN"
+      ],
+      "secret": true,
+      "managed": true,
+      "unsupported_reason": "由安装计划生成并加密传递"
+    },
+    {
+      "name": "token-file",
+      "label": "集群令牌文件",
+      "group": "集群与凭据",
+      "type": "string",
+      "description": "File containing the token",
+      "source": "https://github.com/k3s-io/k3s/blob/v1.37.1%2Bk3s1/pkg/cli/cmds/server.go",
+      "environment_variables": [
+        "K3S_TOKEN_FILE"
+      ],
+      "secret": true,
+      "managed": true,
+      "unsupported_reason": "由安装计划管理令牌文件"
+    },
+    {
+      "name": "agent-token",
+      "label": "工作节点加入令牌",
+      "group": "集群与凭据",
+      "type": "string",
+      "description": "Shared secret used to join agents to the cluster, but not servers",
+      "source": "https://github.com/k3s-io/k3s/blob/v1.37.1%2Bk3s1/pkg/cli/cmds/server.go",
+      "environment_variables": [
+        "K3S_AGENT_TOKEN"
+      ],
+      "secret": true,
+      "managed": true,
+      "unsupported_reason": "由安装计划生成并加密传递"
+    },
+    {
+      "name": "agent-token-file",
+      "label": "工作节点令牌文件",
+      "group": "集群与凭据",
+      "type": "string",
+      "description": "File containing the agent secret",
+      "source": "https://github.com/k3s-io/k3s/blob/v1.37.1%2Bk3s1/pkg/cli/cmds/server.go",
+      "environment_variables": [
+        "K3S_AGENT_TOKEN_FILE"
+      ],
+      "secret": true,
+      "managed": true,
+      "unsupported_reason": "由安装计划管理令牌文件"
+    },
+    {
+      "name": "server",
+      "label": "集群服务地址",
+      "group": "集群与凭据",
+      "type": "string",
+      "description": "Server to connect to, used to join a cluster",
+      "source": "https://github.com/k3s-io/k3s/blob/v1.37.1%2Bk3s1/pkg/cli/cmds/server.go",
+      "aliases": [
+        "s"
+      ],
+      "environment_variables": [
+        "K3S_URL"
+      ],
+      "managed": true,
+      "unsupported_reason": "由所选集群和访问地址确定"
+    },
+    {
+      "name": "cluster-init",
+      "label": "初始化内嵌 etcd",
+      "group": "集群与凭据",
+      "type": "boolean",
+      "description": "Initialize a new cluster using embedded Etcd",
+      "source": "https://github.com/k3s-io/k3s/blob/v1.37.1%2Bk3s1/pkg/cli/cmds/server.go",
+      "default": false,
+      "environment_variables": [
+        "K3S_CLUSTER_INIT"
+      ]
+    },
+    {
+      "name": "cluster-reset",
+      "label": "重置集群成员",
+      "group": "集群与凭据",
+      "type": "boolean",
+      "description": "Forget all peers and become sole member of a new cluster",
+      "source": "https://github.com/k3s-io/k3s/blob/v1.37.1%2Bk3s1/pkg/cli/cmds/server.go",
+      "default": false,
+      "environment_variables": [
+        "K3S_CLUSTER_RESET"
+      ],
+      "unsupported_reason": "这是已有集群的恢复操作，不适用于创建或添加节点"
+    },
+    {
+      "name": "cluster-reset-restore-path",
+      "label": "恢复快照路径",
+      "group": "数据库与备份",
+      "type": "string",
+      "description": "Path to snapshot file to be restored",
+      "source": "https://github.com/k3s-io/k3s/blob/v1.37.1%2Bk3s1/pkg/cli/cmds/server.go",
+      "unsupported_reason": "这是已有集群的恢复操作，不适用于创建或添加节点"
+    },
+    {
+      "name": "kube-apiserver-arg",
+      "label": "API Server 参数",
+      "group": "组件参数",
+      "type": "string[]",
+      "description": "Customized flag for kube-apiserver process",
+      "source": "https://github.com/k3s-io/k3s/blob/v1.37.1%2Bk3s1/pkg/cli/cmds/server.go"
+    },
+    {
+      "name": "etcd-arg",
+      "label": "etcd 参数",
+      "group": "组件参数",
+      "type": "string[]",
+      "description": "Customized flag for etcd process",
+      "source": "https://github.com/k3s-io/k3s/blob/v1.37.1%2Bk3s1/pkg/cli/cmds/server.go"
+    },
+    {
+      "name": "kube-controller-manager-arg",
+      "label": "Controller Manager 参数",
+      "group": "组件参数",
+      "type": "string[]",
+      "description": "Customized flag for kube-controller-manager process",
+      "source": "https://github.com/k3s-io/k3s/blob/v1.37.1%2Bk3s1/pkg/cli/cmds/server.go"
+    },
+    {
+      "name": "kube-scheduler-arg",
+      "label": "Scheduler 参数",
+      "group": "组件参数",
+      "type": "string[]",
+      "description": "Customized flag for kube-scheduler process",
+      "source": "https://github.com/k3s-io/k3s/blob/v1.37.1%2Bk3s1/pkg/cli/cmds/server.go"
+    },
+    {
+      "name": "helm-controller-arg",
+      "label": "Helm Controller 参数",
+      "group": "组件参数",
+      "type": "string[]",
+      "description": "Customized flag for helm-controller process",
+      "source": "https://github.com/k3s-io/k3s/blob/v1.37.1%2Bk3s1/pkg/cli/cmds/server.go"
+    },
+    {
+      "name": "kube-cloud-controller-manager-arg",
+      "label": "Cloud Controller 参数",
+      "group": "组件参数",
+      "type": "string[]",
+      "description": "Customized flag for kube-cloud-controller-manager process",
+      "source": "https://github.com/k3s-io/k3s/blob/v1.37.1%2Bk3s1/pkg/cli/cmds/server.go"
+    },
+    {
+      "name": "kine-tls",
+      "label": "Kine TLS",
+      "group": "数据库与备份",
+      "type": "boolean",
+      "description": "Enable TLS on the kine etcd server socket",
+      "source": "https://github.com/k3s-io/k3s/blob/v1.37.1%2Bk3s1/pkg/cli/cmds/server.go",
+      "default": false,
+      "hidden": true
+    },
+    {
+      "name": "datastore-endpoint",
+      "label": "外部数据库连接",
+      "group": "数据库与备份",
+      "type": "string",
+      "description": "Specify etcd, NATS, MySQL, Postgres, or SQLite (default) data source name",
+      "source": "https://github.com/k3s-io/k3s/blob/v1.37.1%2Bk3s1/pkg/cli/cmds/server.go",
+      "environment_variables": [
+        "K3S_DATASTORE_ENDPOINT"
+      ],
+      "secret": true
+    },
+    {
+      "name": "datastore-cafile",
+      "label": "数据库 CA 文件",
+      "group": "数据库与备份",
+      "type": "string",
+      "description": "TLS Certificate Authority file used to secure datastore backend communication",
+      "source": "https://github.com/k3s-io/k3s/blob/v1.37.1%2Bk3s1/pkg/cli/cmds/server.go",
+      "environment_variables": [
+        "K3S_DATASTORE_CAFILE"
+      ]
+    },
+    {
+      "name": "datastore-certfile",
+      "label": "数据库证书文件",
+      "group": "数据库与备份",
+      "type": "string",
+      "description": "TLS certification file used to secure datastore backend communication",
+      "source": "https://github.com/k3s-io/k3s/blob/v1.37.1%2Bk3s1/pkg/cli/cmds/server.go",
+      "environment_variables": [
+        "K3S_DATASTORE_CERTFILE"
+      ]
+    },
+    {
+      "name": "datastore-keyfile",
+      "label": "数据库私钥文件",
+      "group": "数据库与备份",
+      "type": "string",
+      "description": "TLS key file used to secure datastore backend communication",
+      "source": "https://github.com/k3s-io/k3s/blob/v1.37.1%2Bk3s1/pkg/cli/cmds/server.go",
+      "environment_variables": [
+        "K3S_DATASTORE_KEYFILE"
+      ],
+      "secret": true
+    },
+    {
+      "name": "etcd-expose-metrics",
+      "label": "开放 etcd 指标",
+      "group": "数据库与备份",
+      "type": "boolean",
+      "description": "Expose etcd metrics to client interface",
+      "source": "https://github.com/k3s-io/k3s/blob/v1.37.1%2Bk3s1/pkg/cli/cmds/server.go",
+      "default": false
+    },
+    {
+      "name": "etcd-disable-snapshots",
+      "label": "关闭自动快照",
+      "group": "数据库与备份",
+      "type": "boolean",
+      "description": "Disable automatic etcd snapshots",
+      "source": "https://github.com/k3s-io/k3s/blob/v1.37.1%2Bk3s1/pkg/cli/cmds/server.go",
+      "default": false
+    },
+    {
+      "name": "etcd-snapshot-name",
+      "label": "快照名称",
+      "group": "数据库与备份",
+      "type": "string",
+      "description": "Set the base name of etcd snapshots, appended with UNIX timestamp",
+      "source": "https://github.com/k3s-io/k3s/blob/v1.37.1%2Bk3s1/pkg/cli/cmds/server.go",
+      "default": "etcd-snapshot"
+    },
+    {
+      "name": "etcd-snapshot-schedule-cron",
+      "label": "快照 Cron 表达式",
+      "group": "数据库与备份",
+      "type": "string",
+      "description": "Snapshot interval time in cron spec. eg. every 5 hours '0 */5 * * *'",
+      "source": "https://github.com/k3s-io/k3s/blob/v1.37.1%2Bk3s1/pkg/cli/cmds/server.go",
+      "default": "0 */12 * * *"
+    },
+    {
+      "name": "etcd-snapshot-reconcile-interval",
+      "label": "快照协调周期",
+      "group": "数据库与备份",
+      "type": "string",
+      "description": "Snapshot reconcile interval",
+      "source": "https://github.com/k3s-io/k3s/blob/v1.37.1%2Bk3s1/pkg/cli/cmds/server.go",
+      "default": "10m",
+      "format": "duration"
+    },
+    {
+      "name": "etcd-snapshot-retention",
+      "label": "本地快照保留数",
+      "group": "数据库与备份",
+      "type": "integer",
+      "description": "Number of snapshots to retain",
+      "source": "https://github.com/k3s-io/k3s/blob/v1.37.1%2Bk3s1/pkg/cli/cmds/server.go",
+      "default": 5
+    },
+    {
+      "name": "etcd-snapshot-dir",
+      "label": "快照目录",
+      "group": "数据库与备份",
+      "type": "string",
+      "description": "Directory to save db snapshots. (default: ${data-dir}/server/db/snapshots)",
+      "source": "https://github.com/k3s-io/k3s/blob/v1.37.1%2Bk3s1/pkg/cli/cmds/server.go"
+    },
+    {
+      "name": "etcd-snapshot-compress",
+      "label": "压缩快照",
+      "group": "数据库与备份",
+      "type": "boolean",
+      "description": "Compress etcd snapshot",
+      "source": "https://github.com/k3s-io/k3s/blob/v1.37.1%2Bk3s1/pkg/cli/cmds/server.go",
+      "default": false
+    },
+    {
+      "name": "etcd-s3",
+      "label": "备份到 S3",
+      "group": "数据库与备份",
+      "type": "boolean",
+      "description": "Enable backup to S3",
+      "source": "https://github.com/k3s-io/k3s/blob/v1.37.1%2Bk3s1/pkg/cli/cmds/server.go",
+      "default": false
+    },
+    {
+      "name": "etcd-s3-endpoint",
+      "label": "S3 服务地址",
+      "group": "数据库与备份",
+      "type": "string",
+      "description": "S3 endpoint url",
+      "source": "https://github.com/k3s-io/k3s/blob/v1.37.1%2Bk3s1/pkg/cli/cmds/server.go",
+      "default": "s3.amazonaws.com"
+    },
+    {
+      "name": "etcd-s3-endpoint-ca",
+      "label": "S3 CA 证书",
+      "group": "数据库与备份",
+      "type": "string",
+      "description": "S3 custom CA cert to connect to S3 endpoint",
+      "source": "https://github.com/k3s-io/k3s/blob/v1.37.1%2Bk3s1/pkg/cli/cmds/server.go"
+    },
+    {
+      "name": "etcd-s3-skip-ssl-verify",
+      "label": "跳过 S3 证书校验",
+      "group": "数据库与备份",
+      "type": "boolean",
+      "description": "Disables S3 SSL certificate validation",
+      "source": "https://github.com/k3s-io/k3s/blob/v1.37.1%2Bk3s1/pkg/cli/cmds/server.go",
+      "default": false
+    },
+    {
+      "name": "etcd-s3-access-key",
+      "label": "S3 Access Key",
+      "group": "数据库与备份",
+      "type": "string",
+      "description": "S3 access key",
+      "source": "https://github.com/k3s-io/k3s/blob/v1.37.1%2Bk3s1/pkg/cli/cmds/server.go",
+      "environment_variables": [
+        "AWS_ACCESS_KEY_ID"
+      ],
+      "secret": true
+    },
+    {
+      "name": "etcd-s3-secret-key",
+      "label": "S3 Secret Key",
+      "group": "数据库与备份",
+      "type": "string",
+      "description": "S3 secret key",
+      "source": "https://github.com/k3s-io/k3s/blob/v1.37.1%2Bk3s1/pkg/cli/cmds/server.go",
+      "environment_variables": [
+        "AWS_SECRET_ACCESS_KEY"
+      ],
+      "secret": true
+    },
+    {
+      "name": "etcd-s3-session-token",
+      "label": "S3 会话令牌",
+      "group": "数据库与备份",
+      "type": "string",
+      "description": "S3 session token",
+      "source": "https://github.com/k3s-io/k3s/blob/v1.37.1%2Bk3s1/pkg/cli/cmds/server.go",
+      "environment_variables": [
+        "AWS_SESSION_TOKEN"
+      ],
+      "secret": true
+    },
+    {
+      "name": "etcd-s3-bucket",
+      "label": "S3 Bucket",
+      "group": "数据库与备份",
+      "type": "string",
+      "description": "S3 bucket name",
+      "source": "https://github.com/k3s-io/k3s/blob/v1.37.1%2Bk3s1/pkg/cli/cmds/server.go"
+    },
+    {
+      "name": "etcd-s3-bucket-lookup-type",
+      "label": "S3 Bucket 寻址方式",
+      "group": "数据库与备份",
+      "type": "string",
+      "description": "S3 bucket lookup type, one of 'auto', 'dns', 'path'; default is 'auto' if not set",
+      "source": "https://github.com/k3s-io/k3s/blob/v1.37.1%2Bk3s1/pkg/cli/cmds/server.go",
+      "choices": [
+        "auto",
+        "dns",
+        "path"
+      ]
+    },
+    {
+      "name": "etcd-s3-region",
+      "label": "S3 区域",
+      "group": "数据库与备份",
+      "type": "string",
+      "description": "S3 region / bucket location (optional)",
+      "source": "https://github.com/k3s-io/k3s/blob/v1.37.1%2Bk3s1/pkg/cli/cmds/server.go",
+      "default": "us-east-1"
+    },
+    {
+      "name": "etcd-s3-folder",
+      "label": "S3 目录",
+      "group": "数据库与备份",
+      "type": "string",
+      "description": "S3 folder",
+      "source": "https://github.com/k3s-io/k3s/blob/v1.37.1%2Bk3s1/pkg/cli/cmds/server.go"
+    },
+    {
+      "name": "etcd-s3-retention",
+      "label": "S3 快照保留数",
+      "group": "数据库与备份",
+      "type": "integer",
+      "description": "S3 retention limit",
+      "source": "https://github.com/k3s-io/k3s/blob/v1.37.1%2Bk3s1/pkg/cli/cmds/server.go",
+      "default": 5
+    },
+    {
+      "name": "etcd-s3-proxy",
+      "label": "S3 代理",
+      "group": "数据库与备份",
+      "type": "string",
+      "description": "Proxy server to use when connecting to S3, overriding any proxy-releated environment variables",
+      "source": "https://github.com/k3s-io/k3s/blob/v1.37.1%2Bk3s1/pkg/cli/cmds/server.go"
+    },
+    {
+      "name": "etcd-s3-config-secret",
+      "label": "S3 配置 Secret",
+      "group": "数据库与备份",
+      "type": "string",
+      "description": "Name of secret in the kube-system namespace used to configure S3, if etcd-s3 is enabled and no other etcd-s3 options are set",
+      "source": "https://github.com/k3s-io/k3s/blob/v1.37.1%2Bk3s1/pkg/cli/cmds/server.go"
+    },
+    {
+      "name": "etcd-s3-insecure",
+      "label": "S3 使用 HTTP",
+      "group": "数据库与备份",
+      "type": "boolean",
+      "description": "Disables S3 over HTTPS",
+      "source": "https://github.com/k3s-io/k3s/blob/v1.37.1%2Bk3s1/pkg/cli/cmds/server.go",
+      "default": false
+    },
+    {
+      "name": "etcd-s3-timeout",
+      "label": "S3 请求超时",
+      "group": "数据库与备份",
+      "type": "string",
+      "description": "S3 timeout",
+      "source": "https://github.com/k3s-io/k3s/blob/v1.37.1%2Bk3s1/pkg/cli/cmds/server.go",
+      "default": "5m",
+      "format": "duration"
+    },
+    {
+      "name": "default-local-storage-path",
+      "label": "默认本地存储目录",
+      "group": "存储",
+      "type": "string",
+      "description": "Default local storage path for local provisioner storage class",
+      "source": "https://github.com/k3s-io/k3s/blob/v1.37.1%2Bk3s1/pkg/cli/cmds/server.go"
+    },
+    {
+      "name": "disable",
+      "label": "停用内置组件",
+      "group": "内置组件",
+      "type": "string[]",
+      "description": "Do not deploy packaged components and delete any deployed components (valid values: coredns, local-storage, metrics-server, runtimes, servicelb, traefik)",
+      "source": "https://github.com/k3s-io/k3s/blob/v1.37.1%2Bk3s1/pkg/cli/cmds/server.go"
+    },
+    {
+      "name": "disable-scheduler",
+      "label": "停用默认 Scheduler",
+      "group": "内置组件",
+      "type": "boolean",
+      "description": "Disable Kubernetes default scheduler",
+      "source": "https://github.com/k3s-io/k3s/blob/v1.37.1%2Bk3s1/pkg/cli/cmds/server.go",
+      "default": false
+    },
+    {
+      "name": "disable-cloud-controller",
+      "label": "停用 Cloud Controller",
+      "group": "内置组件",
+      "type": "boolean",
+      "description": "Disable k3s default cloud controller manager",
+      "source": "https://github.com/k3s-io/k3s/blob/v1.37.1%2Bk3s1/pkg/cli/cmds/server.go",
+      "default": false
+    },
+    {
+      "name": "disable-kube-proxy",
+      "label": "停用 kube-proxy",
+      "group": "内置组件",
+      "type": "boolean",
+      "description": "Disable running kube-proxy",
+      "source": "https://github.com/k3s-io/k3s/blob/v1.37.1%2Bk3s1/pkg/cli/cmds/server.go",
+      "default": false
+    },
+    {
+      "name": "disable-network-policy",
+      "label": "停用网络策略控制器",
+      "group": "内置组件",
+      "type": "boolean",
+      "description": "Disable k3s default network policy controller",
+      "source": "https://github.com/k3s-io/k3s/blob/v1.37.1%2Bk3s1/pkg/cli/cmds/server.go",
+      "default": false
+    },
+    {
+      "name": "disable-helm-controller",
+      "label": "停用 Helm Controller",
+      "group": "内置组件",
+      "type": "boolean",
+      "description": "Disable Helm controller",
+      "source": "https://github.com/k3s-io/k3s/blob/v1.37.1%2Bk3s1/pkg/cli/cmds/server.go",
+      "default": false
+    },
+    {
+      "name": "disable-apiserver",
+      "label": "停用 API Server",
+      "group": "内置组件",
+      "type": "boolean",
+      "description": "Disable running api server",
+      "source": "https://github.com/k3s-io/k3s/blob/v1.37.1%2Bk3s1/pkg/cli/cmds/server.go",
+      "default": false,
+      "unsupported_reason": "创建集群需要可访问的 Kubernetes API",
+      "hidden": true
+    },
+    {
+      "name": "disable-controller-manager",
+      "label": "停用 Controller Manager",
+      "group": "内置组件",
+      "type": "boolean",
+      "description": "Disable running kube-controller-manager",
+      "source": "https://github.com/k3s-io/k3s/blob/v1.37.1%2Bk3s1/pkg/cli/cmds/server.go",
+      "default": false,
+      "hidden": true
+    },
+    {
+      "name": "disable-etcd",
+      "label": "停用 etcd",
+      "group": "内置组件",
+      "type": "boolean",
+      "description": "Disable running etcd",
+      "source": "https://github.com/k3s-io/k3s/blob/v1.37.1%2Bk3s1/pkg/cli/cmds/server.go",
+      "default": false,
+      "hidden": true
+    },
+    {
+      "name": "embedded-registry",
+      "label": "内嵌分布式镜像仓库",
+      "group": "内置组件",
+      "type": "boolean",
+      "description": "Enable embedded distributed container registry; requires use of embedded containerd; when enabled agents will also listen on the supervisor port",
+      "source": "https://github.com/k3s-io/k3s/blob/v1.37.1%2Bk3s1/pkg/cli/cmds/server.go",
+      "default": false
+    },
+    {
+      "name": "supervisor-metrics",
+      "label": "Supervisor 指标",
+      "group": "内置组件",
+      "type": "boolean",
+      "description": "Enable serving k3s internal metrics on the supervisor port; when enabled agents will also listen on the supervisor port",
+      "source": "https://github.com/k3s-io/k3s/blob/v1.37.1%2Bk3s1/pkg/cli/cmds/server.go",
+      "default": false
+    },
+    {
+      "name": "node-name",
+      "label": "节点名称",
+      "group": "节点",
+      "type": "string",
+      "description": "Node name",
+      "source": "https://github.com/k3s-io/k3s/blob/v1.37.1%2Bk3s1/pkg/cli/cmds/agent.go",
+      "environment_variables": [
+        "K3S_NODE_NAME"
+      ]
+    },
+    {
+      "name": "with-node-id",
+      "label": "节点名称附加 ID",
+      "group": "节点",
+      "type": "boolean",
+      "description": "Append id to node name",
+      "source": "https://github.com/k3s-io/k3s/blob/v1.37.1%2Bk3s1/pkg/cli/cmds/agent.go",
+      "default": false
+    },
+    {
+      "name": "node-label",
+      "label": "节点标签",
+      "group": "节点",
+      "type": "string[]",
+      "description": "Registering and starting kubelet with set of labels",
+      "source": "https://github.com/k3s-io/k3s/blob/v1.37.1%2Bk3s1/pkg/cli/cmds/agent.go"
+    },
+    {
+      "name": "node-taint",
+      "label": "节点污点",
+      "group": "节点",
+      "type": "string[]",
+      "description": "Registering kubelet with set of taints",
+      "source": "https://github.com/k3s-io/k3s/blob/v1.37.1%2Bk3s1/pkg/cli/cmds/agent.go"
+    },
+    {
+      "name": "image-credential-provider-bin-dir",
+      "label": "镜像凭据插件目录",
+      "group": "节点",
+      "type": "string",
+      "description": "The path to the directory where credential provider plugin binaries are located",
+      "source": "https://github.com/k3s-io/k3s/blob/v1.37.1%2Bk3s1/pkg/cli/cmds/agent.go",
+      "default": "/var/lib/rancher/credentialprovider/bin"
+    },
+    {
+      "name": "image-credential-provider-config",
+      "label": "镜像凭据插件配置",
+      "group": "节点",
+      "type": "string",
+      "description": "The path to the credential provider plugin config file",
+      "source": "https://github.com/k3s-io/k3s/blob/v1.37.1%2Bk3s1/pkg/cli/cmds/agent.go",
+      "default": "/var/lib/rancher/credentialprovider/config.yaml"
+    },
+    {
+      "name": "docker",
+      "label": "使用 cri-dockerd",
+      "group": "容器运行时",
+      "type": "boolean",
+      "description": "(experimental) Use cri-dockerd instead of containerd",
+      "source": "https://github.com/k3s-io/k3s/blob/v1.37.1%2Bk3s1/pkg/cli/cmds/agent.go",
+      "default": false,
+      "deprecated": true
+    },
+    {
+      "name": "container-runtime-endpoint",
+      "label": "容器运行时 CRI 地址",
+      "group": "容器运行时",
+      "type": "string",
+      "description": "Disable embedded containerd and use the CRI socket at the given path; when used with --docker this sets the docker socket path",
+      "source": "https://github.com/k3s-io/k3s/blob/v1.37.1%2Bk3s1/pkg/cli/cmds/agent.go"
+    },
+    {
+      "name": "default-runtime",
+      "label": "默认容器运行时",
+      "group": "容器运行时",
+      "type": "string",
+      "description": "Set the default runtime in containerd",
+      "source": "https://github.com/k3s-io/k3s/blob/v1.37.1%2Bk3s1/pkg/cli/cmds/agent.go"
+    },
+    {
+      "name": "image-service-endpoint",
+      "label": "镜像服务地址",
+      "group": "容器运行时",
+      "type": "string",
+      "description": "Disable embedded containerd image service and use remote image service socket at the given path. If not specified, defaults to --container-runtime-endpoint.",
+      "source": "https://github.com/k3s-io/k3s/blob/v1.37.1%2Bk3s1/pkg/cli/cmds/agent.go"
+    },
+    {
+      "name": "disable-default-registry-endpoint",
+      "label": "停用默认镜像仓库回退",
+      "group": "容器运行时",
+      "type": "boolean",
+      "description": "Disables containerd's fallback default registry endpoint when a mirror is configured for that registry",
+      "source": "https://github.com/k3s-io/k3s/blob/v1.37.1%2Bk3s1/pkg/cli/cmds/agent.go",
+      "default": false
+    },
+    {
+      "name": "nonroot-devices",
+      "label": "允许非 root Pod 访问设备",
+      "group": "容器运行时",
+      "type": "boolean",
+      "description": "Allows non-root pods to access devices by setting device_ownership_from_security_context=true in the containerd CRI config",
+      "source": "https://github.com/k3s-io/k3s/blob/v1.37.1%2Bk3s1/pkg/cli/cmds/agent.go",
+      "default": false
+    },
+    {
+      "name": "pause-image",
+      "label": "Pause 容器镜像",
+      "group": "容器运行时",
+      "type": "string",
+      "description": "Customized pause image for containerd or docker sandbox",
+      "source": "https://github.com/k3s-io/k3s/blob/v1.37.1%2Bk3s1/pkg/cli/cmds/agent.go",
+      "default": "rancher/mirrored-pause:3.10.2"
+    },
+    {
+      "name": "snapshotter",
+      "label": "Containerd Snapshotter",
+      "group": "容器运行时",
+      "type": "string",
+      "description": "Override default containerd snapshotter",
+      "source": "https://github.com/k3s-io/k3s/blob/v1.37.1%2Bk3s1/pkg/cli/cmds/agent.go",
+      "default": "overlayfs"
+    },
+    {
+      "name": "private-registry",
+      "label": "私有镜像仓库配置",
+      "group": "容器运行时",
+      "type": "string",
+      "description": "Private registry configuration file",
+      "source": "https://github.com/k3s-io/k3s/blob/v1.37.1%2Bk3s1/pkg/cli/cmds/agent.go",
+      "default": "/etc/rancher/k3s/registries.yaml"
+    },
+    {
+      "name": "system-default-registry",
+      "label": "系统镜像默认仓库",
+      "group": "容器运行时",
+      "type": "string",
+      "description": "Private registry to be used for all system images",
+      "source": "https://github.com/k3s-io/k3s/blob/v1.37.1%2Bk3s1/pkg/cli/cmds/server.go",
+      "environment_variables": [
+        "K3S_SYSTEM_DEFAULT_REGISTRY"
+      ]
+    },
+    {
+      "name": "airgap-extra-registry",
+      "label": "离线镜像附加仓库",
+      "group": "容器运行时",
+      "type": "string[]",
+      "description": "Additional registry to tag airgap images as being sourced from",
+      "source": "https://github.com/k3s-io/k3s/blob/v1.37.1%2Bk3s1/pkg/cli/cmds/agent.go",
+      "hidden": true
+    },
+    {
+      "name": "node-ip",
+      "label": "节点内网 IP",
+      "group": "网络",
+      "type": "string[]",
+      "description": "IPv4/IPv6 addresses to advertise for node",
+      "source": "https://github.com/k3s-io/k3s/blob/v1.37.1%2Bk3s1/pkg/cli/cmds/agent.go",
+      "aliases": [
+        "i"
+      ]
+    },
+    {
+      "name": "node-external-ip",
+      "label": "节点外网 IP",
+      "group": "网络",
+      "type": "string[]",
+      "description": "IPv4/IPv6 external IP addresses to advertise for node",
+      "source": "https://github.com/k3s-io/k3s/blob/v1.37.1%2Bk3s1/pkg/cli/cmds/agent.go"
+    },
+    {
+      "name": "node-internal-dns",
+      "label": "节点内网 DNS",
+      "group": "网络",
+      "type": "string[]",
+      "description": "internal DNS addresses to advertise for node",
+      "source": "https://github.com/k3s-io/k3s/blob/v1.37.1%2Bk3s1/pkg/cli/cmds/agent.go"
+    },
+    {
+      "name": "node-external-dns",
+      "label": "节点外网 DNS",
+      "group": "网络",
+      "type": "string[]",
+      "description": "external DNS addresses to advertise for node",
+      "source": "https://github.com/k3s-io/k3s/blob/v1.37.1%2Bk3s1/pkg/cli/cmds/agent.go"
+    },
+    {
+      "name": "resolv-conf",
+      "label": "节点 DNS 配置文件",
+      "group": "网络",
+      "type": "string",
+      "description": "Kubelet resolv.conf file",
+      "source": "https://github.com/k3s-io/k3s/blob/v1.37.1%2Bk3s1/pkg/cli/cmds/agent.go",
+      "environment_variables": [
+        "K3S_RESOLV_CONF"
+      ]
+    },
+    {
+      "name": "flannel-iface",
+      "label": "Flannel 网卡",
+      "group": "网络",
+      "type": "string",
+      "description": "Override default flannel interface",
+      "source": "https://github.com/k3s-io/k3s/blob/v1.37.1%2Bk3s1/pkg/cli/cmds/agent.go"
+    },
+    {
+      "name": "flannel-conf",
+      "label": "Flannel 配置文件",
+      "group": "网络",
+      "type": "string",
+      "description": "Override default flannel config file",
+      "source": "https://github.com/k3s-io/k3s/blob/v1.37.1%2Bk3s1/pkg/cli/cmds/agent.go"
+    },
+    {
+      "name": "flannel-cni-conf",
+      "label": "Flannel CNI 配置",
+      "group": "网络",
+      "type": "string",
+      "description": "Override default flannel cni config file",
+      "source": "https://github.com/k3s-io/k3s/blob/v1.37.1%2Bk3s1/pkg/cli/cmds/agent.go"
+    },
+    {
+      "name": "vpn-auth",
+      "label": "VPN 身份凭据",
+      "group": "网络",
+      "type": "string",
+      "description": "(experimental) Credentials for the VPN provider. It must include the provider name and join key in the format name=<vpn-provider>,joinKey=<key>[,controlServerURL=<url>][,extraArgs=<args>]",
+      "source": "https://github.com/k3s-io/k3s/blob/v1.37.1%2Bk3s1/pkg/cli/cmds/agent.go",
+      "environment_variables": [
+        "K3S_VPN_AUTH"
+      ],
+      "secret": true,
+      "deprecated": true
+    },
+    {
+      "name": "vpn-auth-file",
+      "label": "VPN 凭据文件",
+      "group": "网络",
+      "type": "string",
+      "description": "(experimental) File containing credentials for the VPN provider. It must include the provider name and join key in the format name=<vpn-provider>,joinKey=<key>[,controlServerURL=<url>][,extraArgs=<args>]",
+      "source": "https://github.com/k3s-io/k3s/blob/v1.37.1%2Bk3s1/pkg/cli/cmds/agent.go",
+      "environment_variables": [
+        "K3S_VPN_AUTH_FILE"
+      ],
+      "secret": true,
+      "deprecated": true
+    },
+    {
+      "name": "kubelet-arg",
+      "label": "Kubelet 参数",
+      "group": "组件参数",
+      "type": "string[]",
+      "description": "Customized flag for kubelet process",
+      "source": "https://github.com/k3s-io/k3s/blob/v1.37.1%2Bk3s1/pkg/cli/cmds/agent.go"
+    },
+    {
+      "name": "kube-proxy-arg",
+      "label": "kube-proxy 参数",
+      "group": "组件参数",
+      "type": "string[]",
+      "description": "Customized flag for kube-proxy process",
+      "source": "https://github.com/k3s-io/k3s/blob/v1.37.1%2Bk3s1/pkg/cli/cmds/agent.go"
+    },
+    {
+      "name": "protect-kernel-defaults",
+      "label": "保留内核默认配置",
+      "group": "节点",
+      "type": "boolean",
+      "description": "Kernel tuning behavior. If set, error if kernel tunables are different than kubelet defaults.",
+      "source": "https://github.com/k3s-io/k3s/blob/v1.37.1%2Bk3s1/pkg/cli/cmds/agent.go",
+      "default": false
+    },
+    {
+      "name": "secrets-encryption",
+      "label": "Secret 静态加密",
+      "group": "高级",
+      "type": "boolean",
+      "description": "Enable secret encryption at rest",
+      "source": "https://github.com/k3s-io/k3s/blob/v1.37.1%2Bk3s1/pkg/cli/cmds/server.go",
+      "default": false
+    },
+    {
+      "name": "enable-pprof",
+      "label": "开放性能分析端点",
+      "group": "高级",
+      "type": "boolean",
+      "description": "Enable pprof endpoint on supervisor port",
+      "source": "https://github.com/k3s-io/k3s/blob/v1.37.1%2Bk3s1/pkg/cli/cmds/agent.go",
+      "default": false
+    },
+    {
+      "name": "rootless",
+      "label": "无 root 模式",
+      "group": "高级",
+      "type": "boolean",
+      "description": "Run rootless",
+      "source": "https://github.com/k3s-io/k3s/blob/v1.37.1%2Bk3s1/pkg/cli/cmds/server.go",
+      "default": false,
+      "unsupported_reason": "自动安装使用所选主机的系统服务，暂不支持用户级 Rootless 服务"
+    },
+    {
+      "name": "secrets-encryption-provider",
+      "label": "Secret 加密方式",
+      "group": "高级",
+      "type": "string",
+      "description": "Secret encryption provider (valid values: 'aescbc', 'secretbox')",
+      "source": "https://github.com/k3s-io/k3s/blob/v1.37.1%2Bk3s1/pkg/cli/cmds/server.go",
+      "default": "aescbc",
+      "choices": [
+        "aescbc",
+        "secretbox"
+      ]
+    },
+    {
+      "name": "prefer-bundled-bin",
+      "label": "优先内置用户态工具",
+      "group": "高级",
+      "type": "boolean",
+      "description": "Prefer bundled userspace binaries over host binaries",
+      "source": "https://github.com/k3s-io/k3s/blob/v1.37.1%2Bk3s1/pkg/cli/cmds/root.go",
+      "default": false
+    },
+    {
+      "name": "selinux",
+      "label": "启用 SELinux",
+      "group": "节点",
+      "type": "boolean",
+      "description": "Enable SELinux in containerd",
+      "source": "https://github.com/k3s-io/k3s/blob/v1.37.1%2Bk3s1/pkg/cli/cmds/agent.go",
+      "default": false,
+      "environment_variables": [
+        "K3S_SELINUX"
+      ]
+    },
+    {
+      "name": "lb-server-port",
+      "label": "节点负载均衡端口",
+      "group": "节点",
+      "type": "integer",
+      "description": "Local port for supervisor client load-balancer. If the supervisor and apiserver are not colocated an additional port 1 less than this port will also be used for the apiserver client load-balancer.",
+      "source": "https://github.com/k3s-io/k3s/blob/v1.37.1%2Bk3s1/pkg/cli/cmds/agent.go",
+      "default": 6444,
+      "environment_variables": [
+        "K3S_LB_SERVER_PORT"
+      ]
+    },
+    {
+      "name": "disable-agent",
+      "label": "不运行本地 Agent",
+      "group": "高级",
+      "type": "boolean",
+      "description": "Do not run a local agent and register a local kubelet",
+      "source": "https://github.com/k3s-io/k3s/blob/v1.37.1%2Bk3s1/pkg/cli/cmds/server.go",
+      "default": false,
+      "hidden": true
+    },
+    {
+      "name": "kube-controller-arg",
+      "label": "旧版 Controller Manager 参数",
+      "group": "组件参数",
+      "type": "string[]",
+      "description": "Customized flag for kube-controller-manager process",
+      "source": "https://github.com/k3s-io/k3s/blob/v1.37.1%2Bk3s1/pkg/cli/cmds/server.go",
+      "hidden": true,
+      "deprecated": true
+    },
+    {
+      "name": "kube-cloud-controller-arg",
+      "label": "旧版 Cloud Controller 参数",
+      "group": "组件参数",
+      "type": "string[]",
+      "description": "Customized flag for kube-cloud-controller-manager process",
+      "source": "https://github.com/k3s-io/k3s/blob/v1.37.1%2Bk3s1/pkg/cli/cmds/server.go",
+      "hidden": true,
+      "deprecated": true
+    }
+  ],
+  "agent": [
+    {
+      "name": "config",
+      "label": "配置文件",
+      "group": "配置",
+      "type": "string",
+      "description": "Load configuration from `FILE`",
+      "source": "https://github.com/k3s-io/k3s/blob/v1.37.1%2Bk3s1/pkg/cli/cmds/config.go",
+      "default": "/etc/rancher/k3s/config.yaml",
+      "aliases": [
+        "c"
+      ],
+      "environment_variables": [
+        "K3S_CONFIG_FILE"
+      ],
+      "managed": true,
+      "unsupported_reason": "安装计划统一生成配置文件"
+    },
+    {
+      "name": "debug",
+      "label": "调试日志",
+      "group": "日志",
+      "type": "boolean",
+      "description": "Turn on debug logs",
+      "source": "https://github.com/k3s-io/k3s/blob/v1.37.1%2Bk3s1/pkg/cli/cmds/root.go",
+      "default": false,
+      "environment_variables": [
+        "K3S_DEBUG"
+      ]
+    },
+    {
+      "name": "v",
+      "label": "日志级别",
+      "group": "日志",
+      "type": "integer",
+      "description": "Number for the log level verbosity",
+      "source": "https://github.com/k3s-io/k3s/blob/v1.37.1%2Bk3s1/pkg/cli/cmds/log.go",
+      "default": 0
+    },
+    {
+      "name": "vmodule",
+      "label": "按文件设置日志级别",
+      "group": "日志",
+      "type": "string",
+      "description": "Comma-separated list of FILE_PATTERN=LOG_LEVEL settings for file-filtered logging",
+      "source": "https://github.com/k3s-io/k3s/blob/v1.37.1%2Bk3s1/pkg/cli/cmds/log.go"
+    },
+    {
+      "name": "log",
+      "label": "日志文件",
+      "group": "日志",
+      "type": "string",
+      "description": "Log to file",
+      "source": "https://github.com/k3s-io/k3s/blob/v1.37.1%2Bk3s1/pkg/cli/cmds/log.go",
+      "aliases": [
+        "l"
+      ]
+    },
+    {
+      "name": "alsologtostderr",
+      "label": "同时输出标准错误",
+      "group": "日志",
+      "type": "boolean",
+      "description": "Log to standard error as well as file (if set)",
+      "source": "https://github.com/k3s-io/k3s/blob/v1.37.1%2Bk3s1/pkg/cli/cmds/log.go",
+      "default": false
+    },
+    {
+      "name": "token",
+      "label": "集群加入令牌",
+      "group": "集群与凭据",
+      "type": "string",
+      "description": "Token to use for authentication",
+      "source": "https://github.com/k3s-io/k3s/blob/v1.37.1%2Bk3s1/pkg/cli/cmds/agent.go",
+      "aliases": [
+        "t"
+      ],
+      "environment_variables": [
+        "K3S_TOKEN"
+      ],
+      "secret": true,
+      "managed": true,
+      "unsupported_reason": "由安装计划生成并加密传递"
+    },
+    {
+      "name": "token-file",
+      "label": "集群令牌文件",
+      "group": "集群与凭据",
+      "type": "string",
+      "description": "Token file to use for authentication",
+      "source": "https://github.com/k3s-io/k3s/blob/v1.37.1%2Bk3s1/pkg/cli/cmds/agent.go",
+      "environment_variables": [
+        "K3S_TOKEN_FILE"
+      ],
+      "secret": true,
+      "managed": true,
+      "unsupported_reason": "由安装计划管理令牌文件"
+    },
+    {
+      "name": "server",
+      "label": "集群服务地址",
+      "group": "集群与凭据",
+      "type": "string",
+      "description": "Server to connect to",
+      "source": "https://github.com/k3s-io/k3s/blob/v1.37.1%2Bk3s1/pkg/cli/cmds/agent.go",
+      "aliases": [
+        "s"
+      ],
+      "environment_variables": [
+        "K3S_URL"
+      ],
+      "managed": true,
+      "unsupported_reason": "由所选集群和访问地址确定"
+    },
+    {
+      "name": "data-dir",
+      "label": "数据目录",
+      "group": "数据目录",
+      "type": "string",
+      "description": "Folder to hold state",
+      "source": "https://github.com/k3s-io/k3s/blob/v1.37.1%2Bk3s1/pkg/cli/cmds/agent.go",
+      "default": "/var/lib/rancher/k3s",
+      "aliases": [
+        "d"
+      ],
+      "environment_variables": [
+        "K3S_DATA_DIR"
+      ]
+    },
+    {
+      "name": "node-name",
+      "label": "节点名称",
+      "group": "节点",
+      "type": "string",
+      "description": "Node name",
+      "source": "https://github.com/k3s-io/k3s/blob/v1.37.1%2Bk3s1/pkg/cli/cmds/agent.go",
+      "environment_variables": [
+        "K3S_NODE_NAME"
+      ]
+    },
+    {
+      "name": "with-node-id",
+      "label": "节点名称附加 ID",
+      "group": "节点",
+      "type": "boolean",
+      "description": "Append id to node name",
+      "source": "https://github.com/k3s-io/k3s/blob/v1.37.1%2Bk3s1/pkg/cli/cmds/agent.go",
+      "default": false
+    },
+    {
+      "name": "node-label",
+      "label": "节点标签",
+      "group": "节点",
+      "type": "string[]",
+      "description": "Registering and starting kubelet with set of labels",
+      "source": "https://github.com/k3s-io/k3s/blob/v1.37.1%2Bk3s1/pkg/cli/cmds/agent.go"
+    },
+    {
+      "name": "node-taint",
+      "label": "节点污点",
+      "group": "节点",
+      "type": "string[]",
+      "description": "Registering kubelet with set of taints",
+      "source": "https://github.com/k3s-io/k3s/blob/v1.37.1%2Bk3s1/pkg/cli/cmds/agent.go"
+    },
+    {
+      "name": "image-credential-provider-bin-dir",
+      "label": "镜像凭据插件目录",
+      "group": "节点",
+      "type": "string",
+      "description": "The path to the directory where credential provider plugin binaries are located",
+      "source": "https://github.com/k3s-io/k3s/blob/v1.37.1%2Bk3s1/pkg/cli/cmds/agent.go",
+      "default": "/var/lib/rancher/credentialprovider/bin"
+    },
+    {
+      "name": "image-credential-provider-config",
+      "label": "镜像凭据插件配置",
+      "group": "节点",
+      "type": "string",
+      "description": "The path to the credential provider plugin config file",
+      "source": "https://github.com/k3s-io/k3s/blob/v1.37.1%2Bk3s1/pkg/cli/cmds/agent.go",
+      "default": "/var/lib/rancher/credentialprovider/config.yaml"
+    },
+    {
+      "name": "selinux",
+      "label": "启用 SELinux",
+      "group": "节点",
+      "type": "boolean",
+      "description": "Enable SELinux in containerd",
+      "source": "https://github.com/k3s-io/k3s/blob/v1.37.1%2Bk3s1/pkg/cli/cmds/agent.go",
+      "default": false,
+      "environment_variables": [
+        "K3S_SELINUX"
+      ]
+    },
+    {
+      "name": "lb-server-port",
+      "label": "节点负载均衡端口",
+      "group": "节点",
+      "type": "integer",
+      "description": "Local port for supervisor client load-balancer. If the supervisor and apiserver are not colocated an additional port 1 less than this port will also be used for the apiserver client load-balancer.",
+      "source": "https://github.com/k3s-io/k3s/blob/v1.37.1%2Bk3s1/pkg/cli/cmds/agent.go",
+      "default": 6444,
+      "environment_variables": [
+        "K3S_LB_SERVER_PORT"
+      ]
+    },
+    {
+      "name": "protect-kernel-defaults",
+      "label": "保留内核默认配置",
+      "group": "节点",
+      "type": "boolean",
+      "description": "Kernel tuning behavior. If set, error if kernel tunables are different than kubelet defaults.",
+      "source": "https://github.com/k3s-io/k3s/blob/v1.37.1%2Bk3s1/pkg/cli/cmds/agent.go",
+      "default": false
+    },
+    {
+      "name": "container-runtime-endpoint",
+      "label": "容器运行时 CRI 地址",
+      "group": "容器运行时",
+      "type": "string",
+      "description": "Disable embedded containerd and use the CRI socket at the given path; when used with --docker this sets the docker socket path",
+      "source": "https://github.com/k3s-io/k3s/blob/v1.37.1%2Bk3s1/pkg/cli/cmds/agent.go"
+    },
+    {
+      "name": "default-runtime",
+      "label": "默认容器运行时",
+      "group": "容器运行时",
+      "type": "string",
+      "description": "Set the default runtime in containerd",
+      "source": "https://github.com/k3s-io/k3s/blob/v1.37.1%2Bk3s1/pkg/cli/cmds/agent.go"
+    },
+    {
+      "name": "image-service-endpoint",
+      "label": "镜像服务地址",
+      "group": "容器运行时",
+      "type": "string",
+      "description": "Disable embedded containerd image service and use remote image service socket at the given path. If not specified, defaults to --container-runtime-endpoint.",
+      "source": "https://github.com/k3s-io/k3s/blob/v1.37.1%2Bk3s1/pkg/cli/cmds/agent.go"
+    },
+    {
+      "name": "pause-image",
+      "label": "Pause 容器镜像",
+      "group": "容器运行时",
+      "type": "string",
+      "description": "Customized pause image for containerd or docker sandbox",
+      "source": "https://github.com/k3s-io/k3s/blob/v1.37.1%2Bk3s1/pkg/cli/cmds/agent.go",
+      "default": "rancher/mirrored-pause:3.10.2"
+    },
+    {
+      "name": "snapshotter",
+      "label": "Containerd Snapshotter",
+      "group": "容器运行时",
+      "type": "string",
+      "description": "Override default containerd snapshotter",
+      "source": "https://github.com/k3s-io/k3s/blob/v1.37.1%2Bk3s1/pkg/cli/cmds/agent.go",
+      "default": "overlayfs"
+    },
+    {
+      "name": "private-registry",
+      "label": "私有镜像仓库配置",
+      "group": "容器运行时",
+      "type": "string",
+      "description": "Private registry configuration file",
+      "source": "https://github.com/k3s-io/k3s/blob/v1.37.1%2Bk3s1/pkg/cli/cmds/agent.go",
+      "default": "/etc/rancher/k3s/registries.yaml"
+    },
+    {
+      "name": "disable-default-registry-endpoint",
+      "label": "停用默认镜像仓库回退",
+      "group": "容器运行时",
+      "type": "boolean",
+      "description": "Disables containerd's fallback default registry endpoint when a mirror is configured for that registry",
+      "source": "https://github.com/k3s-io/k3s/blob/v1.37.1%2Bk3s1/pkg/cli/cmds/agent.go",
+      "default": false
+    },
+    {
+      "name": "nonroot-devices",
+      "label": "允许非 root Pod 访问设备",
+      "group": "容器运行时",
+      "type": "boolean",
+      "description": "Allows non-root pods to access devices by setting device_ownership_from_security_context=true in the containerd CRI config",
+      "source": "https://github.com/k3s-io/k3s/blob/v1.37.1%2Bk3s1/pkg/cli/cmds/agent.go",
+      "default": false
+    },
+    {
+      "name": "airgap-extra-registry",
+      "label": "离线镜像附加仓库",
+      "group": "容器运行时",
+      "type": "string[]",
+      "description": "Additional registry to tag airgap images as being sourced from",
+      "source": "https://github.com/k3s-io/k3s/blob/v1.37.1%2Bk3s1/pkg/cli/cmds/agent.go",
+      "hidden": true
+    },
+    {
+      "name": "node-ip",
+      "label": "节点内网 IP",
+      "group": "网络",
+      "type": "string[]",
+      "description": "IPv4/IPv6 addresses to advertise for node",
+      "source": "https://github.com/k3s-io/k3s/blob/v1.37.1%2Bk3s1/pkg/cli/cmds/agent.go",
+      "aliases": [
+        "i"
+      ]
+    },
+    {
+      "name": "bind-address",
+      "label": "监听地址",
+      "group": "监听与证书",
+      "type": "string",
+      "description": "k3s bind address (default: 0.0.0.0)",
+      "source": "https://github.com/k3s-io/k3s/blob/v1.37.1%2Bk3s1/pkg/cli/cmds/agent.go"
+    },
+    {
+      "name": "node-external-ip",
+      "label": "节点外网 IP",
+      "group": "网络",
+      "type": "string[]",
+      "description": "IPv4/IPv6 external IP addresses to advertise for node",
+      "source": "https://github.com/k3s-io/k3s/blob/v1.37.1%2Bk3s1/pkg/cli/cmds/agent.go"
+    },
+    {
+      "name": "node-internal-dns",
+      "label": "节点内网 DNS",
+      "group": "网络",
+      "type": "string[]",
+      "description": "internal DNS addresses to advertise for node",
+      "source": "https://github.com/k3s-io/k3s/blob/v1.37.1%2Bk3s1/pkg/cli/cmds/agent.go"
+    },
+    {
+      "name": "node-external-dns",
+      "label": "节点外网 DNS",
+      "group": "网络",
+      "type": "string[]",
+      "description": "external DNS addresses to advertise for node",
+      "source": "https://github.com/k3s-io/k3s/blob/v1.37.1%2Bk3s1/pkg/cli/cmds/agent.go"
+    },
+    {
+      "name": "resolv-conf",
+      "label": "节点 DNS 配置文件",
+      "group": "网络",
+      "type": "string",
+      "description": "Kubelet resolv.conf file",
+      "source": "https://github.com/k3s-io/k3s/blob/v1.37.1%2Bk3s1/pkg/cli/cmds/agent.go",
+      "environment_variables": [
+        "K3S_RESOLV_CONF"
+      ]
+    },
+    {
+      "name": "flannel-iface",
+      "label": "Flannel 网卡",
+      "group": "网络",
+      "type": "string",
+      "description": "Override default flannel interface",
+      "source": "https://github.com/k3s-io/k3s/blob/v1.37.1%2Bk3s1/pkg/cli/cmds/agent.go"
+    },
+    {
+      "name": "flannel-conf",
+      "label": "Flannel 配置文件",
+      "group": "网络",
+      "type": "string",
+      "description": "Override default flannel config file",
+      "source": "https://github.com/k3s-io/k3s/blob/v1.37.1%2Bk3s1/pkg/cli/cmds/agent.go"
+    },
+    {
+      "name": "flannel-cni-conf",
+      "label": "Flannel CNI 配置",
+      "group": "网络",
+      "type": "string",
+      "description": "Override default flannel cni config file",
+      "source": "https://github.com/k3s-io/k3s/blob/v1.37.1%2Bk3s1/pkg/cli/cmds/agent.go"
+    },
+    {
+      "name": "kubelet-arg",
+      "label": "Kubelet 参数",
+      "group": "组件参数",
+      "type": "string[]",
+      "description": "Customized flag for kubelet process",
+      "source": "https://github.com/k3s-io/k3s/blob/v1.37.1%2Bk3s1/pkg/cli/cmds/agent.go"
+    },
+    {
+      "name": "kube-proxy-arg",
+      "label": "kube-proxy 参数",
+      "group": "组件参数",
+      "type": "string[]",
+      "description": "Customized flag for kube-proxy process",
+      "source": "https://github.com/k3s-io/k3s/blob/v1.37.1%2Bk3s1/pkg/cli/cmds/agent.go"
+    },
+    {
+      "name": "enable-pprof",
+      "label": "开放性能分析端点",
+      "group": "高级",
+      "type": "boolean",
+      "description": "Enable pprof endpoint on supervisor port",
+      "source": "https://github.com/k3s-io/k3s/blob/v1.37.1%2Bk3s1/pkg/cli/cmds/agent.go",
+      "default": false
+    },
+    {
+      "name": "rootless",
+      "label": "无 root 模式",
+      "group": "高级",
+      "type": "boolean",
+      "description": "Run rootless",
+      "source": "https://github.com/k3s-io/k3s/blob/v1.37.1%2Bk3s1/pkg/cli/cmds/agent.go",
+      "default": false,
+      "unsupported_reason": "自动安装使用所选主机的系统服务，暂不支持用户级 Rootless 服务"
+    },
+    {
+      "name": "prefer-bundled-bin",
+      "label": "优先内置用户态工具",
+      "group": "高级",
+      "type": "boolean",
+      "description": "Prefer bundled userspace binaries over host binaries",
+      "source": "https://github.com/k3s-io/k3s/blob/v1.37.1%2Bk3s1/pkg/cli/cmds/root.go",
+      "default": false
+    },
+    {
+      "name": "docker",
+      "label": "使用 cri-dockerd",
+      "group": "容器运行时",
+      "type": "boolean",
+      "description": "(experimental) Use cri-dockerd instead of containerd",
+      "source": "https://github.com/k3s-io/k3s/blob/v1.37.1%2Bk3s1/pkg/cli/cmds/agent.go",
+      "default": false,
+      "deprecated": true
+    },
+    {
+      "name": "vpn-auth",
+      "label": "VPN 身份凭据",
+      "group": "网络",
+      "type": "string",
+      "description": "(experimental) Credentials for the VPN provider. It must include the provider name and join key in the format name=<vpn-provider>,joinKey=<key>[,controlServerURL=<url>][,extraArgs=<args>]",
+      "source": "https://github.com/k3s-io/k3s/blob/v1.37.1%2Bk3s1/pkg/cli/cmds/agent.go",
+      "environment_variables": [
+        "K3S_VPN_AUTH"
+      ],
+      "secret": true,
+      "deprecated": true
+    },
+    {
+      "name": "vpn-auth-file",
+      "label": "VPN 凭据文件",
+      "group": "网络",
+      "type": "string",
+      "description": "(experimental) File containing credentials for the VPN provider. It must include the provider name and join key in the format name=<vpn-provider>,joinKey=<key>[,controlServerURL=<url>][,extraArgs=<args>]",
+      "source": "https://github.com/k3s-io/k3s/blob/v1.37.1%2Bk3s1/pkg/cli/cmds/agent.go",
+      "environment_variables": [
+        "K3S_VPN_AUTH_FILE"
+      ],
+      "secret": true,
+      "deprecated": true
+    },
+    {
+      "name": "disable-apiserver-lb",
+      "label": "停用 API Server 负载均衡",
+      "group": "网络",
+      "type": "boolean",
+      "description": "(experimental) Disable the agent's client-side load-balancer and connect directly to the configured server address",
+      "source": "https://github.com/k3s-io/k3s/blob/v1.37.1%2Bk3s1/pkg/cli/cmds/agent.go",
+      "default": false,
+      "deprecated": true
+    }
+  ],
+  "installer": [
+    {
+      "name": "INSTALL_K3S_VERSION",
+      "label": "K3s 版本",
+      "group": "安装器",
+      "type": "string",
+      "default": "v1.37.1+k3s1",
+      "description": "指定下载的 K3s 版本；默认固定为当前选项目录版本。",
+      "environment_variables": [
+        "INSTALL_K3S_VERSION"
+      ],
+      "source": "https://github.com/k3s-io/k3s/blob/v1.37.1%2Bk3s1/install.sh"
+    },
+    {
+      "name": "INSTALL_K3S_CHANNEL",
+      "label": "发布通道",
+      "group": "安装器",
+      "type": "string",
+      "default": "stable",
+      "description": "未指定版本时，使用此通道解析发布版本。",
+      "environment_variables": [
+        "INSTALL_K3S_CHANNEL"
+      ],
+      "source": "https://github.com/k3s-io/k3s/blob/v1.37.1%2Bk3s1/install.sh"
+    },
+    {
+      "name": "INSTALL_K3S_CHANNEL_URL",
+      "label": "通道服务地址",
+      "group": "安装器",
+      "type": "string",
+      "default": "https://update.k3s.io/v1-release/channels",
+      "description": "用于查询发布通道的 HTTPS 地址。",
+      "environment_variables": [
+        "INSTALL_K3S_CHANNEL_URL"
+      ],
+      "source": "https://github.com/k3s-io/k3s/blob/v1.37.1%2Bk3s1/install.sh"
+    },
+    {
+      "name": "INSTALL_K3S_ARTIFACT_URL",
+      "label": "二进制下载地址",
+      "group": "安装器",
+      "type": "string",
+      "default": "https://github.com/k3s-io/k3s/releases/download",
+      "description": "K3s 发布制品的下载地址前缀。",
+      "environment_variables": [
+        "INSTALL_K3S_ARTIFACT_URL"
+      ],
+      "source": "https://github.com/k3s-io/k3s/blob/v1.37.1%2Bk3s1/install.sh"
+    },
+    {
+      "name": "INSTALL_K3S_SKIP_DOWNLOAD",
+      "label": "使用主机已有二进制",
+      "group": "安装器",
+      "type": "boolean",
+      "default": false,
+      "description": "跳过二进制与校验文件下载；主机需要预先准备兼容版本。",
+      "environment_variables": [
+        "INSTALL_K3S_SKIP_DOWNLOAD"
+      ],
+      "source": "https://github.com/k3s-io/k3s/blob/v1.37.1%2Bk3s1/install.sh"
+    },
+    {
+      "name": "INSTALL_K3S_FORCE_RESTART",
+      "label": "强制重启服务",
+      "group": "安装器",
+      "type": "boolean",
+      "default": false,
+      "description": "即使检测不到服务配置变化，也重新启动 K3s。",
+      "environment_variables": [
+        "INSTALL_K3S_FORCE_RESTART"
+      ],
+      "source": "https://github.com/k3s-io/k3s/blob/v1.37.1%2Bk3s1/install.sh"
+    },
+    {
+      "name": "INSTALL_K3S_SYMLINK",
+      "label": "命令链接策略",
+      "group": "安装器",
+      "type": "string",
+      "default": "",
+      "description": "留空时仅为主机不存在的命令建立链接。",
+      "environment_variables": [
+        "INSTALL_K3S_SYMLINK"
+      ],
+      "source": "https://github.com/k3s-io/k3s/blob/v1.37.1%2Bk3s1/install.sh",
+      "choices": [
+        "",
+        "skip",
+        "force"
+      ]
+    },
+    {
+      "name": "INSTALL_K3S_BIN_DIR",
+      "label": "程序安装目录",
+      "group": "安装器",
+      "type": "string",
+      "default": "/usr/local/bin",
+      "description": "K3s 程序、命令链接和卸载脚本的安装目录。",
+      "environment_variables": [
+        "INSTALL_K3S_BIN_DIR"
+      ],
+      "source": "https://github.com/k3s-io/k3s/blob/v1.37.1%2Bk3s1/install.sh"
+    },
+    {
+      "name": "INSTALL_K3S_BIN_DIR_READ_ONLY",
+      "label": "程序目录只读",
+      "group": "安装器",
+      "type": "boolean",
+      "default": false,
+      "description": "不向程序目录写入文件，同时跳过二进制下载。",
+      "environment_variables": [
+        "INSTALL_K3S_BIN_DIR_READ_ONLY"
+      ],
+      "source": "https://github.com/k3s-io/k3s/blob/v1.37.1%2Bk3s1/install.sh"
+    },
+    {
+      "name": "INSTALL_K3S_SYSTEMD_DIR",
+      "label": "Systemd 单元目录",
+      "group": "安装器",
+      "type": "string",
+      "default": "/etc/systemd/system",
+      "description": "服务和服务环境文件的安装目录。",
+      "environment_variables": [
+        "INSTALL_K3S_SYSTEMD_DIR"
+      ],
+      "source": "https://github.com/k3s-io/k3s/blob/v1.37.1%2Bk3s1/install.sh"
+    },
+    {
+      "name": "INSTALL_K3S_EXEC",
+      "label": "服务执行参数",
+      "group": "安装器",
+      "type": "string",
+      "default": "",
+      "description": "由安装计划生成 server 或 agent 执行参数。",
+      "environment_variables": [
+        "INSTALL_K3S_EXEC"
+      ],
+      "source": "https://github.com/k3s-io/k3s/blob/v1.37.1%2Bk3s1/install.sh",
+      "unsupported_reason": "由所选节点角色和最终配置生成，不能替换为其他命令"
+    },
+    {
+      "name": "INSTALL_K3S_NAME",
+      "label": "服务名称后缀",
+      "group": "安装器",
+      "type": "string",
+      "default": "",
+      "description": "指定后，安装器使用 k3s-加该后缀作为服务名称。",
+      "environment_variables": [
+        "INSTALL_K3S_NAME"
+      ],
+      "source": "https://github.com/k3s-io/k3s/blob/v1.37.1%2Bk3s1/install.sh"
+    },
+    {
+      "name": "INSTALL_K3S_TYPE",
+      "label": "Systemd 服务类型",
+      "group": "安装器",
+      "type": "string",
+      "default": "notify",
+      "description": "Systemd 服务的 Type 值。",
+      "environment_variables": [
+        "INSTALL_K3S_TYPE"
+      ],
+      "source": "https://github.com/k3s-io/k3s/blob/v1.37.1%2Bk3s1/install.sh",
+      "choices": ["notify", "simple", "exec"]
+    },
+    {
+      "name": "INSTALL_K3S_SKIP_ENABLE",
+      "label": "不启用服务",
+      "group": "安装器",
+      "type": "boolean",
+      "default": false,
+      "description": "安装服务文件但不启用或启动服务。",
+      "environment_variables": [
+        "INSTALL_K3S_SKIP_ENABLE"
+      ],
+      "source": "https://github.com/k3s-io/k3s/blob/v1.37.1%2Bk3s1/install.sh",
+      "unsupported_reason": "本流程需启动服务并验证集群连接，不适用于仅生成服务文件"
+    },
+    {
+      "name": "INSTALL_K3S_SKIP_START",
+      "label": "不启动服务",
+      "group": "安装器",
+      "type": "boolean",
+      "default": false,
+      "description": "安装并启用服务但不立即启动。",
+      "environment_variables": [
+        "INSTALL_K3S_SKIP_START"
+      ],
+      "source": "https://github.com/k3s-io/k3s/blob/v1.37.1%2Bk3s1/install.sh",
+      "unsupported_reason": "本流程需启动服务并验证集群连接，不适用于仅安装不启动"
+    },
+    {
+      "name": "INSTALL_K3S_SELINUX_WARN",
+      "label": "SELinux 缺少策略时继续",
+      "group": "安装器",
+      "type": "boolean",
+      "default": false,
+      "description": "缺少 K3s SELinux 策略时输出提醒并继续安装。",
+      "environment_variables": [
+        "INSTALL_K3S_SELINUX_WARN"
+      ],
+      "source": "https://github.com/k3s-io/k3s/blob/v1.37.1%2Bk3s1/install.sh"
+    },
+    {
+      "name": "INSTALL_K3S_SKIP_SELINUX_RPM",
+      "label": "跳过 SELinux RPM",
+      "group": "安装器",
+      "type": "boolean",
+      "default": false,
+      "description": "由主机自行准备所需 SELinux 策略包。",
+      "environment_variables": [
+        "INSTALL_K3S_SKIP_SELINUX_RPM"
+      ],
+      "source": "https://github.com/k3s-io/k3s/blob/v1.37.1%2Bk3s1/install.sh"
+    },
+    {
+      "name": "INSTALL_K3S_COMMIT",
+      "label": "开发版本提交",
+      "group": "安装器",
+      "type": "string",
+      "default": "",
+      "description": "从开发构建存储下载指定提交的构建。",
+      "environment_variables": [
+        "INSTALL_K3S_COMMIT"
+      ],
+      "source": "https://github.com/k3s-io/k3s/blob/v1.37.1%2Bk3s1/install.sh",
+      "unsupported_reason": "本流程按正式发布版本验证选项，不使用开发提交制品"
+    },
+    {
+      "name": "INSTALL_K3S_PR",
+      "label": "开发版本 PR",
+      "group": "安装器",
+      "type": "string",
+      "default": "",
+      "description": "从 GitHub Actions 制品下载指定 PR 的开发构建。",
+      "environment_variables": [
+        "INSTALL_K3S_PR"
+      ],
+      "source": "https://github.com/k3s-io/k3s/blob/v1.37.1%2Bk3s1/install.sh",
+      "unsupported_reason": "本流程按正式发布版本验证选项，不使用 PR 开发制品"
+    }
+  ]
+}

@@ -10,6 +10,8 @@ EDO 的前端和后端打包在一个程序里，网页服务和后台任务在�
 
 应用可以直接发布到 EDO 的本地 Docker 环境，也可以发布到远程主机或 Kubernetes 集群。Docker、Docker Compose 和 Kubernetes 都从应用开始，选择流水线和部署方案，再填好具体位置，统一按「应用 → 流水线 → 部署方案 → 运行资源」发布。
 
+在 Kubernetes 集群页面可以选择默认或自定义方式创建 K3s 集群，也可以为已有 K3s 集群添加节点。自定义安装提供 Server、Agent 和安装器参数，以及优先于表单的 YAML 覆盖框。操作前可预览最终配置，安装进度和结果可再次打开查看，详见[创建 K3s 集群与添加节点](docs/k3s-provisioning.md)。
+
 ## Docker Compose 部署
 
 准备 Linux 或 macOS，安装 Git、Docker、Docker Compose v2 和 Buildx。Compose 会在镜像中完成编译，并启动 EDO、Redis 和 NATS。

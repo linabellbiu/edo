@@ -42,6 +42,8 @@ import ResourceRowActions from '@/components/ResourceRowActions.vue'
 import { useResourceList } from '@/utils/resourceList'
 import KubernetesClusterDrawer from '@/components/KubernetesClusterDrawer.vue'
 import ClusterInventory from '@/components/ClusterInventory.vue'
+import K3sProvisionDrawer from '@/components/K3sProvisionDrawer.vue'
+import type { K3sInstallation } from '@/api/k3s'
 import PageToolbar from '@/components/PageToolbar.vue'
 import RuntimeBrandIcon from '@/components/RuntimeBrandIcon.vue'
 import RuntimeResourcePanel from '@/components/RuntimeResourcePanel.vue'
@@ -80,6 +82,7 @@ const detailTab = ref<DetailTab>('info')
 const resourceNode = ref('overview')
 const resourceHostID = ref('')
 const clusterCreateOpen = ref(false)
+const clusterProvisionOpen = ref(false)
 const editingHost = ref<InfrastructureHost>()
 const groupDrawerOpen = ref(false)
 const groupSaving = ref(false)
@@ -321,10 +324,16 @@ async function hostSaved() {
   await refresh()
 }
 
-async function clusterCreated(cluster: ClusterOption) {
+async function clusterCreated(cluster: Pick<ClusterOption, 'id'>) {
   await refresh()
   if (drawerOpen.value) return
   void router.replace({ path: '/hosts', query: { view: 'clusters', cluster: cluster.id } })
+}
+
+async function clusterProvisionCompleted(installation: K3sInstallation) {
+  const id = installation.cluster_id || installation.cluster?.id
+  if (id) await clusterCreated({ id })
+  else await refresh()
 }
 
 function manageCluster(cluster: InfrastructureCluster) {
@@ -681,7 +690,7 @@ onBeforeUnmount(() => {
       <router-link v-if="canReadClusters" to="/hosts?view=clusters" :class="{ active: activeWorkspace === 'clusters' }"><RuntimeBrandIcon kind="kubernetes" />集群<span>{{ clusters.length }}</span></router-link>
     </nav>
 
-    <ClusterInventory v-if="activeWorkspace === 'clusters'" :clusters="clusters" :hosts="hosts" :loading="loading" :error="clusterLoadError" :host-error="hostLoadError" @refresh="refresh" @create="clusterCreateOpen = true" @host="openDetails" />
+    <ClusterInventory v-if="activeWorkspace === 'clusters'" :clusters="clusters" :hosts="hosts" :loading="loading" :error="clusterLoadError" :host-error="hostLoadError" @refresh="refresh" @create="clusterCreateOpen = true" @provision="clusterProvisionOpen = true" @host="openDetails" />
 
     <div v-else class="host-workspace vben-card">
       <main class="host-table-panel">
@@ -887,6 +896,7 @@ onBeforeUnmount(() => {
 
     <HostDrawer v-model:open="drawerOpen" :host="editingHost" :clusters="clusters" :can-test="auth.canAny(['cluster.execute'])" @create-cluster="clusterCreateOpen = true" @saved="hostSaved" />
     <KubernetesClusterDrawer v-model:open="clusterCreateOpen" :hosts="hosts" :clusters="clusters" :can-associate="auth.canAny(['cluster.update']) && canReadHosts && !hostLoadError && !clusterLoadError" :can-test="auth.canAny(['cluster.execute'])" @created="clusterCreated" />
+    <K3sProvisionDrawer v-model:open="clusterProvisionOpen" :hosts="hosts" @completed="clusterProvisionCompleted" />
 
     <a-drawer :open="relationOpen" title="关联集群" width="min(520px, 100vw)" :mask-closable="!relationSaving" @close="!relationSaving && (relationOpen = false)">
       <div v-if="relationHost" class="host-association-summary"><Server :size="20" /><div><strong>{{ relationHost.name }}</strong><small>{{ relationHost.address }}</small></div></div>
