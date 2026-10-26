@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import {test} from 'node:test'
+import {readFileSync} from 'node:fs'
 import * as vue from 'vue'
 import * as yaml from 'yaml'
 import {loadFrontend,componentHarness} from './acceptanceHarness.mjs'
@@ -7,7 +8,8 @@ import {loadFrontend,componentHarness} from './acceptanceHarness.mjs'
 const helpers=loadFrontend('../src/utils/k3sProvision.ts',{yaml})
 const settle=async()=>{await vue.nextTick();await new Promise(resolve=>setImmediate(resolve));await vue.nextTick()}
 const deferred=()=>{let resolve,reject;const promise=new Promise((yes,no)=>{resolve=yes;reject=no});return {promise,resolve,reject}}
-const catalog={version:'v1.37.1+k3s1',catalog_version:'2026-10-26',sources:['https://docs.k3s.io/cli/server'],server:[],agent:[],installer:[]}
+const catalog={version:'v1.37.1+k3s1',default_version:'v1.37.1+k3s1',catalog_version:'2026-10-26',sources:['https://docs.k3s.io/cli/server'],server:[],agent:[],installer:[]}
+const targetVersion='v1.35.5+k3s1'
 const host=id=>({id,name:`Host ${id}`,mode:'ssh',address:`192.0.2.${id}`,is_builtin:false,is_active:true,capabilities:[],credential_configured:true})
 const plan=()=>({id:'plan-1',action:'create',expires_at:new Date(Date.now()+300000).toISOString(),hosts:[{id:'1',name:'Host 1',address:'192.0.2.1',role:'server'}],server_config:'disable: []',agent_config:'',commands:[],warnings:[]})
 const permissions=['cluster.create','cluster.execute','cluster.update','cluster.read','kubernetes.node.create']
@@ -17,7 +19,7 @@ function harness({action='create',codes=permissions,api={}}={}){
   const auth=vue.reactive({user:{id:'operator',project_id:'project-a'},canAny(required){return Boolean(this.user)&&required.some(code=>codes.includes(code))}})
   const props=vue.reactive({open:false,action,cluster:action==='join'?'cluster-a':'',endpoint:action==='join'?'https://cluster.example:6443':'',hosts:[host('1'),host('2')]})
   const methods={
-    getK3sCatalog:async signal=>{requests.push({method:'catalog',signal});return catalog},
+    getK3sCatalog:async(cluster,signal)=>{requests.push({method:'catalog',cluster,signal});return cluster?{...catalog,default_version:targetVersion,target_version:targetVersion}:catalog},
     listK3sInstallations:async(cluster,action,signal)=>{requests.push({method:'list',cluster,action,signal});return []},
     previewK3sPlan:async(body,signal)=>{requests.push({method:'preview',body,signal});return plan()},
     startK3sInstallation:async(id,signal)=>{requests.push({method:'start',id,signal});return {id:'run-1',action,status:'pending',hosts:[],logs:''}},
@@ -62,6 +64,52 @@ test('默认安装不提交隐藏的自定义参数；自定义参数和覆盖�
     assert.deepEqual(payload.server_options,{'secrets-encryption':false});assert.equal(payload.overrides,'server:\n  disable: []')
     assert.deepEqual(payload.installer,{version:'v1.37.1+k3s1',INSTALL_K3S_BIN_DIR:'/opt/bin'})
   }finally{ctx.stop()}
+})
+
+test('创建默认使用目录版本，加入旧集群默认跟随目标精确版本，参数目录基线保持独立',async()=>{
+  for(const action of ['create','join']){
+    const ctx=harness({action})
+    try{
+      await ctx.open();const expected=action==='join'?targetVersion:catalog.version
+      assert.equal(ctx.requests.find(item=>item.method==='catalog').cluster,action==='join'?'cluster-a':'')
+      assert.equal(ctx.state.defaultVersion.value,expected);assert.equal(ctx.state.catalog.value.version,catalog.version)
+      ctx.state.form.profile='custom';await settle()
+      assert.match(ctx.state.overridesPlaceholder.value,new RegExp(expected.replaceAll('+','\\+').replaceAll('.','\\.')))
+      assert.equal(Boolean(ctx.state.versionMismatch.value),action==='join')
+      assert.equal(ctx.state.input().installer.version,undefined)
+      ctx.state.form.installer.version=catalog.version;assert.equal(Boolean(ctx.state.versionMismatch.value),false)
+    }finally{ctx.stop()}
+  }
+  const template=readFileSync(new URL('../src/components/K3sProvisionDrawer.vue',import.meta.url),'utf8')
+  assert.match(template,/安装版本：\{\{ defaultVersion \}\}/)
+  assert.match(template,/:placeholder="defaultVersion"/)
+  assert.match(template,/参数基于 \{\{ catalog.version \}\}/)
+  assert.match(template,/加入节点必须固定精确版本，不能仅填写通道/)
+})
+
+test('预览显示服务端确认的最终安装版本和目标版本，覆盖选择不沿用表单默认猜测',async()=>{
+  for(const action of ['create','join']){
+    const finalVersion=action==='join'?'v1.35.4+k3s1':'v1.36.2+k3s1'
+    const ctx=harness({action,api:{previewK3sPlan:async()=>({...plan(),action,version:finalVersion,...(action==='join'?{target_version:targetVersion}:{})})}})
+    try{
+      await ctx.open();ctx.ready();if(action==='join')ctx.state.form.agent_host_ids=['2']
+      ctx.state.form.profile='custom';ctx.state.form.overrides=`installer:\n  version: ${finalVersion}`;await settle();await ctx.state.preview()
+      assert.equal(ctx.state.plan.value.version,finalVersion)
+      assert.equal(ctx.state.plan.value.target_version,action==='join'?targetVersion:undefined)
+      assert.notEqual(ctx.state.plan.value.version,ctx.state.defaultVersion.value)
+    }finally{ctx.stop()}
+  }
+  const template=readFileSync(new URL('../src/components/K3sProvisionDrawer.vue',import.meta.url),'utf8')
+  assert.match(template,/v-if="plan.version"><dt>安装版本<\/dt><dd><code>\{\{ plan.version \}\}/)
+  assert.match(template,/v-if="plan.target_version"><dt>目标集群版本<\/dt>/)
+})
+
+test('参数目录读取只为加入节点传递 cluster_id 并保留取消信号',async()=>{
+  const requests=[],api=loadFrontend('../src/api/k3s.ts',{'@/api/client':{__esModule:true,default:{get:async(path,options)=>{requests.push({path,options});return {data:catalog}}}}})
+  const controller=new AbortController()
+  await api.getK3sCatalog('',controller.signal);await api.getK3sCatalog('cluster/a',controller.signal)
+  assert.deepEqual(requests.map(item=>item.options.params),[{}, {cluster_id:'cluster/a'}])
+  assert.ok(requests.every(item=>item.path==='/kubernetes/k3s/options'&&item.options.signal===controller.signal))
 })
 
 test('自定义 YAML 无效时不调用预览，调整主机后清除重复工作节点并更新默认地址',async()=>{

@@ -47,6 +47,8 @@ type Option struct {
 
 type Catalog struct {
 	Version        string   `json:"version"`
+	DefaultVersion string   `json:"default_version"`
+	TargetVersion  string   `json:"target_version,omitempty"`
 	CatalogVersion string   `json:"catalog_version"`
 	Sources        []string `json:"sources"`
 	Server         []Option `json:"server"`
@@ -60,6 +62,7 @@ func OptionsCatalog() Catalog {
 	if err := json.Unmarshal(catalogJSON, &catalog); err != nil {
 		panic("invalid embedded K3s option catalogue")
 	}
+	catalog.DefaultVersion = catalog.Version
 	return catalog
 }
 

@@ -53,13 +53,14 @@ const planExpired = computed(() => Boolean(plan.value)&&(!Number.isFinite(Date.p
 const currentStep = computed(() => installation.value?2:plan.value?1:0)
 const title = computed(() => props.action==='create'?'创建 K3s 集群':'添加 K3s 节点')
 const installerOptions = computed(() => catalog.value?.installer.filter(option=>!['INSTALL_K3S_VERSION','INSTALL_K3S_CHANNEL'].includes(option.name))??[])
+const defaultVersion = computed(() => catalog.value?.default_version||catalog.value?.target_version||catalog.value?.version||'')
 const versionMismatch = computed(() => {
-  const version=String(form.installer.version??'').trim()
+  const version=String(form.installer.version??'').trim()||defaultVersion.value
   return form.profile==='custom'&&version&&catalog.value&&version!==catalog.value.version
 })
 const signature = computed(() => JSON.stringify(input()))
 const progressTone = computed(() => installation.value?.status==='succeeded'?'success':installation.value?.status==='failed'||installation.value?.status==='interrupted'?'error':'info')
-const overridesPlaceholder = computed(() => `${props.action==='create'?'server:\n  disable:\n    - traefik\n':''}agent:\n  node-label:\n    - environment=production\ninstaller:\n  version: ${catalog.value?.version??'v1.37.1+k3s1'}`)
+const overridesPlaceholder = computed(() => `${props.action==='create'?'server:\n  disable:\n    - traefik\n':''}agent:\n  node-label:\n    - environment=production\ninstaller:\n  version: ${defaultVersion.value||'v1.37.1+k3s1'}`)
 
 function input(): K3sPlanInput {
   const custom=form.profile==='custom'
@@ -98,7 +99,7 @@ async function initialize() {
   loading.value=true;loadError.value=''
   void loadRecent()
   try {
-    const [options,available]=await Promise.all([getK3sCatalog(controller.signal),listHosts()])
+    const [options,available]=await Promise.all([getK3sCatalog(props.action==='join'?props.cluster:'',controller.signal),listHosts()])
     if(!mounted||!props.open||current!==revision||!matchesContext(currentContext))return
     catalog.value=options;hosts.value=available
     if(installation.value&&operationContext===context.value)void refreshInstallation()
@@ -208,11 +209,11 @@ onBeforeUnmount(()=>{mounted=false;cancelRequests();window.removeEventListener('
           </div>
           <a-alert v-if="!loading&&!loadError&&!hostChoices.length" type="info" show-icon message="暂无可安装的远程主机" description="请先在主机页面配置启用的 SSH 主机和登录凭据。" />
           <a-form-item label="安装方式"><a-radio-group v-model:value="form.profile" button-style="solid"><a-radio-button value="default">默认安装</a-radio-button><a-radio-button value="custom">自定义安装</a-radio-button></a-radio-group></a-form-item>
-          <div v-if="form.profile==='default'" class="default-install"><Check :size="17" /><div><strong>使用 K3s 默认配置</strong><p>{{ action==='create'?'安装控制平面及所选工作节点，完成后自动接入集群并关联主机。':'在所选主机安装工作节点，加入当前集群并关联主机。' }}</p><small v-if="catalog">安装版本：{{ catalog.version }}</small></div></div>
+          <div v-if="form.profile==='default'" class="default-install"><Check :size="17" /><div><strong>使用 K3s 默认配置</strong><p>{{ action==='create'?'安装控制平面及所选工作节点，完成后自动接入集群并关联主机。':'在所选主机安装工作节点，加入当前集群并关联主机。' }}</p><small v-if="catalog">安装版本：{{ defaultVersion }}{{ action==='join'?'（跟随目标集群）':'' }}</small></div></div>
           <template v-else-if="catalog">
             <div class="catalog-caption"><strong>K3s 安装选项</strong><span>参数基于 {{ catalog.version }} · {{ catalog.catalog_version }}</span></div>
-            <div class="form-columns"><a-form-item label="K3s 版本"><a-input v-model:value="form.installer.version" :placeholder="catalog.version" /><div class="field-help">留空使用上方版本。</div></a-form-item><a-form-item label="发布通道"><a-input v-model:value="form.installer.channel" placeholder="stable" /></a-form-item></div>
-            <a-alert v-if="versionMismatch" type="warning" show-icon message="指定版本与参数目录版本不同，请在确认计划时核对兼容性。" />
+            <div class="form-columns"><a-form-item label="K3s 版本"><a-input v-model:value="form.installer.version" :placeholder="defaultVersion" /><div class="field-help">{{ action==='join'?`留空跟随目标集群 ${defaultVersion}；自定义版本需符合目标集群的版本偏差限制。`:`留空使用 ${defaultVersion}。` }}</div></a-form-item><a-form-item label="发布通道"><a-input v-model:value="form.installer.channel" placeholder="stable" /><div v-if="action==='join'" class="field-help">加入节点必须固定精确版本，不能仅填写通道；使用通道时请同时指定版本。</div></a-form-item></div>
+            <a-alert v-if="versionMismatch" type="warning" show-icon message="安装版本与参数目录版本不同，请核对选项兼容性。" />
             <a-tabs v-model:active-key="optionTab" class="option-tabs">
               <a-tab-pane v-if="action==='create'" key="server" :tab="`控制平面（${catalog.server.length}）`"><K3sOptionFields v-model:value="form.server_options" :options="catalog.server" :disabled="busy" /></a-tab-pane>
               <a-tab-pane key="agent" :tab="`工作节点（${catalog.agent.length}）`"><K3sOptionFields v-model:value="form.agent_options" :options="catalog.agent" :disabled="busy" /></a-tab-pane>
@@ -226,7 +227,7 @@ onBeforeUnmount(()=>{mounted=false;cancelRequests();window.removeEventListener('
         <div v-else-if="plan&&!installation" class="plan-review">
           <a-alert type="info" show-icon message="请核对目标主机和最终配置" description="点击开始安装后，将通过保存的 SSH 连接执行计划。" />
           <a-alert v-if="planExpired" type="warning" show-icon message="计划已过期，请返回配置后重新预览。" />
-          <dl class="plan-facts"><div v-if="action==='create'"><dt>集群名称</dt><dd>{{ plan.name||form.name }}</dd></div><div><dt>API 地址</dt><dd><code>{{ plan.endpoint||form.endpoint }}</code></dd></div><div><dt>计划有效期</dt><dd>{{ formatDateTime(plan.expires_at,'zh-CN') }}</dd></div></dl>
+          <dl class="plan-facts"><div v-if="action==='create'"><dt>集群名称</dt><dd>{{ plan.name||form.name }}</dd></div><div v-if="plan.version"><dt>安装版本</dt><dd><code>{{ plan.version }}</code></dd></div><div v-if="plan.target_version"><dt>目标集群版本</dt><dd><code>{{ plan.target_version }}</code></dd></div><div><dt>API 地址</dt><dd><code>{{ plan.endpoint||form.endpoint }}</code></dd></div><div><dt>计划有效期</dt><dd>{{ formatDateTime(plan.expires_at,'zh-CN') }}</dd></div></dl>
           <div class="plan-hosts"><div v-for="host in plan.hosts||selectedHosts" :key="host.id"><Server :size="16" /><strong>{{ host.name }}</strong><code>{{ host.address }}</code><a-tag>{{ 'role' in host&&host.role==='server'?'控制平面':'工作节点' }}</a-tag></div></div>
           <a-alert v-for="warning in plan.warnings" :key="warning" type="warning" show-icon :message="warning" />
           <section v-if="hasHostConfig" class="host-configs"><h4>最终主机配置</h4><details v-for="host in plan.hosts?.filter(item=>item.config)" :key="host.id" open><summary>{{ host.name }} · {{ host.role==='server'?'控制平面':'工作节点' }}</summary><pre>{{ host.config }}</pre></details></section>

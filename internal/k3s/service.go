@@ -42,6 +42,7 @@ type savedInput struct {
 	HostDigests   map[string]string `json:"host_digests"`
 	AuthVersion   uint64            `json:"auth_version"`
 	ClusterDigest string            `json:"cluster_digest,omitempty"`
+	TargetVersion string            `json:"target_version,omitempty"`
 }
 
 type clusterService interface {
@@ -240,24 +241,8 @@ func (s *Service) normalize(ctx context.Context, input Input) (Input, []Host, ma
 	if err != nil {
 		return input, nil, nil, nil, nil, &ValidationError{Message: err.Error()}
 	}
-	if _, version := input.Installer["INSTALL_K3S_VERSION"]; !version {
-		if _, channel := input.Installer["INSTALL_K3S_CHANNEL"]; !channel {
-			input.Installer["INSTALL_K3S_VERSION"] = OptionsCatalog().Version
-		}
-	}
-	if preloadedBinary(input.Installer) {
-		if version, _ := input.Installer["INSTALL_K3S_VERSION"].(string); version == "" {
-			return input, nil, nil, nil, nil, &ValidationError{Message: "使用预装二进制时需要指定准确的 K3s 版本"}
-		}
-	}
 	input.Overrides = ""
 	warnings := append(OptionWarnings("server", input.ServerOptions), OptionWarnings("agent", input.AgentOptions)...)
-	if _, channel := input.Installer["INSTALL_K3S_CHANNEL"]; channel {
-		warnings = append(warnings, "使用安装频道时实际版本可能变化，请核对最终配置与该版本的兼容性。")
-	}
-	if version, _ := input.Installer["INSTALL_K3S_VERSION"].(string); version != "" && version != OptionsCatalog().Version {
-		warnings = append(warnings, "自定义版本与选项目录版本不同，请核对该版本支持的配置。")
-	}
 	ids := append([]string{}, input.AgentHostIDs...)
 	slices.Sort(ids)
 	ids = slices.Compact(ids)
@@ -307,17 +292,24 @@ func (s *Service) normalize(ctx context.Context, input Input) (Input, []Host, ma
 		if !cluster.IsActive {
 			return input, nil, nil, nil, nil, ErrInvalidInput
 		}
-		version, err := s.kubernetes.Ping(ctx, input.ClusterID)
+		version, err := s.liveTargetVersion(ctx, input.ClusterID)
 		if err != nil {
 			return input, nil, nil, nil, nil, err
 		}
-		if !strings.Contains(version, "k3s") {
-			return input, nil, nil, nil, nil, kube.ErrJoinUnsupported
-		}
+		input.targetVersion = version
 		input.Name = cluster.Name
 		if input.Endpoint == "" {
 			input.Endpoint = cluster.APIServer
 		}
+	}
+	if err := selectInstallerVersion(&input); err != nil {
+		return input, nil, nil, nil, nil, err
+	}
+	if _, channel := input.Installer["INSTALL_K3S_CHANNEL"]; channel {
+		warnings = append(warnings, "使用安装频道时实际版本可能变化，请核对最终配置与该版本的兼容性。")
+	}
+	if version, _ := input.Installer["INSTALL_K3S_VERSION"].(string); version != "" && version != OptionsCatalog().Version {
+		warnings = append(warnings, "安装版本与选项目录版本不同，请核对该版本支持的自定义配置。")
 	}
 	input.Endpoint = strings.TrimRight(strings.TrimSpace(input.Endpoint), "/")
 	endpoint, err := url.Parse(input.Endpoint)
@@ -378,7 +370,8 @@ func (s *Service) Preview(ctx context.Context, actorID string, input Input) (*Pl
 			agent = hosts[index].Config
 		}
 	}
-	plan := &Plan{ID: id, Action: input.Action, Name: input.Name, Status: "planned", ClusterID: input.ClusterID, Endpoint: input.Endpoint, ExpiresAt: now.Add(planTTL), Hosts: hosts, ServerConfig: server, AgentConfig: agent, Warnings: warnings, Commands: []string{}}
+	version, _ := input.Installer["INSTALL_K3S_VERSION"].(string)
+	plan := &Plan{ID: id, Action: input.Action, Name: input.Name, Status: "planned", ClusterID: input.ClusterID, Endpoint: input.Endpoint, Version: version, TargetVersion: input.targetVersion, ExpiresAt: now.Add(planTTL), Hosts: hosts, ServerConfig: server, AgentConfig: agent, Warnings: warnings, Commands: []string{}}
 	for _, host := range hosts {
 		plan.Commands = append(plan.Commands, previewCommand(host, input.Installer))
 	}
@@ -386,7 +379,7 @@ func (s *Service) Preview(ctx context.Context, actorID string, input Input) (*Pl
 	if disabled, _ := input.ServerOptions["disable-agent"].(bool); disabled {
 		plan.Warnings = append(plan.Warnings, "禁用 Server Agent 后不会注册该控制平面节点，该主机暂不自动关联。")
 	}
-	snapshot := savedInput{Input: input, HostDigests: digests, AuthVersion: actor.AuthVersion}
+	snapshot := savedInput{Input: input, HostDigests: digests, AuthVersion: actor.AuthVersion, TargetVersion: input.targetVersion}
 	if cluster != nil {
 		snapshot.ClusterDigest = clusterDigest(cluster)
 	}
@@ -460,8 +453,30 @@ func (s *Service) recheck(ctx context.Context, record model.K3sInstallation, sna
 }
 
 func (s *Service) Execute(ctx context.Context, actorID, planID string) (*Installation, error) {
+	// Remote checks must run without a SQL transaction: Ping uses the shared
+	// Kubernetes service's database connection, which may have a one-slot pool.
+	var reviewed model.K3sInstallation
+	if err := s.db.WithContext(ctx).First(&reviewed, "uuid = ? AND created_by = ?", planID, actorID).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+	if reviewed.Status != "planned" {
+		return nil, ErrPlanConsumed
+	}
+	if !reviewed.ExpiresAt.After(time.Now().UTC()) {
+		return nil, ErrPlanExpired
+	}
+	checked, err := s.decode(reviewed)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.recheckRuntime(ctx, reviewed, checked); err != nil {
+		return nil, err
+	}
 	var record model.K3sInstallation
-	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	err = s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		scope, _ := database.DepartmentScopeFromContext(ctx)
 		var project model.Project
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&project, "uuid = ?", scope.ProjectID).Error; err != nil {
@@ -475,6 +490,9 @@ func (s *Service) Execute(ctx context.Context, actorID, planID string) (*Install
 		}
 		if record.Status != "planned" {
 			return ErrPlanConsumed
+		}
+		if record.InputCiphertext != reviewed.InputCiphertext {
+			return ErrTargetVersionChanged
 		}
 		now := time.Now().UTC()
 		if !record.ExpiresAt.After(now) {

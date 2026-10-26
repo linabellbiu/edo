@@ -18,6 +18,7 @@ var (
 	ErrPlanConsumed         = errors.New("安装计划已执行，请查看任务结果")
 	ErrHostBusy             = errors.New("所选主机正在执行其他安装任务")
 	ErrHostChanged          = errors.New("主机连接或所属范围已变化，请重新预览")
+	ErrTargetVersionChanged = errors.New("目标集群版本已变化或安装计划缺少版本记录，请重新预览")
 	ErrExistingInstallation = errors.New("主机已有 Kubernetes 安装或配置，请接入现有集群")
 	ErrRemote               = errors.New("主机安装命令执行失败，请检查主机连接和服务日志")
 	ErrReadiness            = errors.New("等待 K3s 节点就绪超时，请检查主机上的 K3s 服务")
@@ -36,6 +37,7 @@ func ValidationMessage(err error) string {
 }
 
 type Input struct {
+	targetVersion string
 	Action        string         `json:"action"`
 	Profile       string         `json:"profile"`
 	Name          string         `json:"name"`
@@ -60,18 +62,20 @@ type Host struct {
 }
 
 type Plan struct {
-	ID           string    `json:"id"`
-	Action       string    `json:"action"`
-	Name         string    `json:"name"`
-	Status       string    `json:"status"`
-	ClusterID    string    `json:"cluster_id,omitempty"`
-	Endpoint     string    `json:"endpoint"`
-	ExpiresAt    time.Time `json:"expires_at"`
-	Hosts        []Host    `json:"hosts"`
-	ServerConfig string    `json:"server_config"`
-	AgentConfig  string    `json:"agent_config"`
-	Commands     []string  `json:"commands"`
-	Warnings     []string  `json:"warnings"`
+	ID            string    `json:"id"`
+	Action        string    `json:"action"`
+	Name          string    `json:"name"`
+	Status        string    `json:"status"`
+	ClusterID     string    `json:"cluster_id,omitempty"`
+	Endpoint      string    `json:"endpoint"`
+	Version       string    `json:"version"`
+	TargetVersion string    `json:"target_version,omitempty"`
+	ExpiresAt     time.Time `json:"expires_at"`
+	Hosts         []Host    `json:"hosts"`
+	ServerConfig  string    `json:"server_config"`
+	AgentConfig   string    `json:"agent_config"`
+	Commands      []string  `json:"commands"`
+	Warnings      []string  `json:"warnings"`
 }
 
 type Cluster struct {

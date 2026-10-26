@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"strings"
 	"time"
 
 	"gorm.io/datatypes"
@@ -186,7 +185,7 @@ func (s *Service) finish(ctx context.Context, record model.K3sInstallation, err 
 }
 
 func safeFailure(err error) string {
-	for _, safe := range []error{ErrPermission, ErrHostChanged, ErrHostBusy, ErrExistingInstallation, ErrRemote, ErrReadiness, ErrInvalidInput, kube.ErrJoinUnsupported} {
+	for _, safe := range []error{ErrPermission, ErrHostChanged, ErrTargetVersionChanged, ErrHostBusy, ErrExistingInstallation, ErrRemote, ErrReadiness, ErrInvalidInput, kube.ErrJoinUnsupported} {
 		if errors.Is(err, safe) {
 			return safe.Error()
 		}
@@ -222,7 +221,7 @@ func (s *Service) perform(ctx context.Context, record *model.K3sInstallation) er
 	if err != nil {
 		return err
 	}
-	if err := s.recheck(ctx, *record, snapshot); err != nil {
+	if err := s.recheckRuntime(ctx, *record, snapshot); err != nil {
 		return err
 	}
 	input := snapshot.Input
@@ -274,6 +273,9 @@ func (s *Service) perform(ctx context.Context, record *model.K3sInstallation) er
 		if err != nil {
 			return err
 		}
+		if err := s.recheckRuntime(ctx, *record, snapshot); err != nil {
+			return err
+		}
 		if err := s.transport.Run(ctx, current, bundle, script, io.Discard); err != nil {
 			s.hostProgress(record, hosts, serverIndex, "failed", safeFailure(err))
 			return err
@@ -294,7 +296,7 @@ func (s *Service) perform(ctx context.Context, record *model.K3sInstallation) er
 			return err
 		}
 		value := string(encoded)
-		if err := s.recheck(ctx, *record, snapshot); err != nil {
+		if err := s.recheckRuntime(ctx, *record, snapshot); err != nil {
 			return err
 		}
 		cluster, err := s.kubernetes.Create(ctx, record.CreatedBy, kube.Input{Name: input.Name, Mode: model.KubernetesKubeconfig, DefaultNamespace: "default", Kubeconfig: &value})
@@ -307,7 +309,7 @@ func (s *Service) perform(ctx context.Context, record *model.K3sInstallation) er
 			if err := s.waitForNode(ctx, cluster.ID, record.ID, host.ID); err != nil {
 				return err
 			}
-			if err := s.recheck(ctx, *record, snapshot); err != nil {
+			if err := s.recheckRuntime(ctx, *record, snapshot); err != nil {
 				return err
 			}
 			if err := s.kubernetes.AppendHosts(ctx, cluster.ID, []string{host.ID}); err != nil {
@@ -316,14 +318,6 @@ func (s *Service) perform(ctx context.Context, record *model.K3sInstallation) er
 		}
 		s.hostProgress(record, hosts, serverIndex, "succeeded", "控制平面已就绪")
 		s.log(record, "集群已接入 EDO")
-	} else {
-		version, err := s.kubernetes.Ping(ctx, input.ClusterID)
-		if err != nil {
-			return err
-		}
-		if !strings.Contains(version, "k3s") {
-			return kube.ErrJoinUnsupported
-		}
 	}
 	// Mint short-lived, CA-bound bootstrap credentials, never read the original
 	// server token. Revoke this task's credential even when a node fails to join.
@@ -331,7 +325,7 @@ func (s *Service) perform(ctx context.Context, record *model.K3sInstallation) er
 		if host.Role != "agent" {
 			continue
 		}
-		if err := s.recheck(ctx, *record, snapshot); err != nil {
+		if err := s.recheckRuntime(ctx, *record, snapshot); err != nil {
 			return err
 		}
 		s.log(record, "安装工作节点："+host.Name)
@@ -351,7 +345,7 @@ func (s *Service) perform(ctx context.Context, record *model.K3sInstallation) er
 		if revokeErr != nil {
 			return revokeErr
 		}
-		if err := s.recheck(ctx, *record, snapshot); err != nil {
+		if err := s.recheckRuntime(ctx, *record, snapshot); err != nil {
 			return err
 		}
 		if err := s.kubernetes.AppendHosts(ctx, record.ClusterID, []string{host.ID}); err != nil {
@@ -373,6 +367,9 @@ func (s *Service) installAgent(ctx context.Context, record *model.K3sInstallatio
 	}
 	script, err := installScript(host, snapshot.Input, record.ID, join.Token)
 	if err != nil {
+		return err
+	}
+	if err := s.recheckRuntime(ctx, *record, snapshot); err != nil {
 		return err
 	}
 	if err := s.transport.Run(ctx, current, bundle, script, io.Discard); err != nil {

@@ -16,6 +16,8 @@ export interface K3sOption {
 }
 export interface K3sCatalog {
   version: string
+  default_version?: string
+  target_version?: string
   catalog_version: string
   sources: string[]
   server: K3sOption[]
@@ -49,6 +51,8 @@ export interface K3sPlan {
   action: 'create' | 'join'
   name?: string
   endpoint?: string
+  version?: string
+  target_version?: string
   hosts?: K3sPlanHost[]
   server_config?: string
   agent_config?: string
@@ -72,8 +76,8 @@ export interface K3sInstallation {
   hosts?: Array<{id: string; name: string; address?: string; role?: string; status?: string; message?: string}>
 }
 
-export async function getK3sCatalog(signal?: AbortSignal) {
-  return (await client.get<K3sCatalog>('/kubernetes/k3s/options', { signal })).data
+export async function getK3sCatalog(clusterID = '', signal?: AbortSignal) {
+  return (await client.get<K3sCatalog>('/kubernetes/k3s/options', { params:clusterID?{cluster_id:clusterID}:{},signal })).data
 }
 export async function previewK3sPlan(input: K3sPlanInput, signal?: AbortSignal) {
   return (await client.post<K3sPlan>('/kubernetes/k3s/plans', input, { signal, timeout: 60_000 })).data

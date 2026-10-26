@@ -427,6 +427,8 @@ type fakeClusters struct {
 	created int
 	joins   int
 	revoked int
+	version string
+	onJoin  func()
 }
 
 func (k *fakeClusters) Find(context.Context, string) (*model.KubernetesCluster, error) {
@@ -448,9 +450,17 @@ func (k *fakeClusters) AppendHosts(_ context.Context, _ string, ids []string) er
 	}
 	return nil
 }
-func (k *fakeClusters) Ping(context.Context, string) (string, error) { return CatalogK3sVersion, nil }
+func (k *fakeClusters) Ping(context.Context, string) (string, error) {
+	if k.version != "" {
+		return k.version, nil
+	}
+	return CatalogK3sVersion, nil
+}
 func (k *fakeClusters) CreateNodeJoin(context.Context, string, kube.NodeJoinInput) (*kube.NodeJoin, error) {
 	k.joins++
+	if k.onJoin != nil {
+		k.onJoin()
+	}
 	return &kube.NodeJoin{ID: "fixture-token-id", Token: "K10fixture-ca::short-lived-token", ResourceIdentity: kube.ResourceIdentity{UID: "fixture-secret", ResourceVersion: "1"}}, nil
 }
 func (k *fakeClusters) RevokeNodeJoin(context.Context, string, string, kube.ResourceIdentity) error {

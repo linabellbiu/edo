@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 
@@ -40,7 +41,20 @@ func (h k3sHandler) available(c *gin.Context) bool {
 
 func (h k3sHandler) options(c *gin.Context) {
 	c.Header("Cache-Control", "no-store")
-	c.JSON(http.StatusOK, k3s.OptionsCatalog())
+	catalog := k3s.OptionsCatalog()
+	if clusterID := strings.TrimSpace(c.Query("cluster_id")); clusterID != "" {
+		if !h.authorize(c, "join") || !h.available(c) {
+			return
+		}
+		actor, _ := currentUser(c)
+		version, err := h.service.TargetVersion(c.Request.Context(), actor.ID, clusterID)
+		if err != nil {
+			h.writeError(c, "k3s_options_target_version", err)
+			return
+		}
+		catalog.DefaultVersion, catalog.TargetVersion = version, version
+	}
+	c.JSON(http.StatusOK, catalog)
 }
 
 func (h k3sHandler) authorize(c *gin.Context, action string) bool {
@@ -185,6 +199,8 @@ func (h k3sHandler) writeError(c *gin.Context, operation string, err error) {
 		status, code, message = http.StatusConflict, "k3s_host_busy", k3s.ErrHostBusy.Error()
 	case errors.Is(err, k3s.ErrHostChanged):
 		status, code, message = http.StatusConflict, "k3s_host_changed", k3s.ErrHostChanged.Error()
+	case errors.Is(err, k3s.ErrTargetVersionChanged):
+		status, code, message = http.StatusConflict, "k3s_target_version_changed", k3s.ErrTargetVersionChanged.Error()
 	case errors.Is(err, k3s.ErrExistingInstallation):
 		status, code, message = http.StatusConflict, "k3s_already_installed", k3s.ErrExistingInstallation.Error()
 	case errors.Is(err, k3s.ErrReadiness):
