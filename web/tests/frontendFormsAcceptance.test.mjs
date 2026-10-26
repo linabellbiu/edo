@@ -144,7 +144,7 @@ test('DNS账号切换厂商重置字段，编辑留空密钥不要求清除已�
 
 test('DNS记录请求切换域名后丢弃迟到响应，关闭详情也不恢复旧记录',async t=>{
   const pending=[]
-  const h=harness(t,'../src/views/DomainView.vue',{api:{get:()=>new Promise(resolve=>pending.push(resolve))},modules:{vue:{...vue,onMounted(){},watch(){}}}})
+  const h=harness(t,'../src/views/DomainView.vue',{api:{get:()=>new Promise(resolve=>pending.push(resolve))},modules:{vue:{...vue,onMounted(){},onBeforeUnmount(){},watch(){}}}})
   h.state.selectedID.value='first';h.state.detailOpen.value=true;const first=h.state.loadRecords()
   h.state.selectedID.value='second';const second=h.state.loadRecords()
   pending[1]({data:{records:[{id:'second-record'}]}});await second
