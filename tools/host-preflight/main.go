@@ -1,4 +1,4 @@
-// host-preflight 只读取指定主机的运行基线，不提供任意远程命令入口。
+// host-preflight 默认只读；显式授权后可执行固定目标停机，不提供任意命令入口。
 package main
 
 import (
@@ -38,6 +38,7 @@ type options struct {
 	testSudo                                                          bool
 	k3dCluster                                                        string
 	backupStopK3d                                                     bool
+	stopOnlyK3d                                                       bool
 	backup                                                            backupStopOptions
 }
 
@@ -62,7 +63,8 @@ func parseOptions(args []string) (options, error) {
 	f.BoolVar(&o.testSudo, "test-sudo", false, "仅本次验证 sudo，不修改保存的配置；需操作者明确授权")
 	f.StringVar(&o.k3dCluster, "k3d-cluster", "", "显式读取指定 k3d 集群的元数据，不输出密钥或环境变量")
 	f.BoolVar(&o.backupStopK3d, "backup-stop-k3d", false, "明确授权旧测试集群停机备份；失败保留现场，不自动恢复")
-	f.StringVar(&o.backup.ContainerID, "expect-container-id", "", "停机备份时已核验的完整容器 ID")
+	f.BoolVar(&o.stopOnlyK3d, "stop-only-k3d", false, "明确授权仅停止旧测试集群，保留容器、网络与数据卷，不备份或安装")
+	f.StringVar(&o.backup.ContainerID, "expect-container-id", "", "明确停机时已核验的完整容器 ID")
 	f.StringVar(&o.backup.Directory, "backup-directory", "", "停机备份使用的全新持久目录")
 	f.StringVar(&o.backup.OperationID, "operation-id", "", "停机备份操作 UUID")
 	f.StringVar(&o.backup.ExpectedRestartingContainerID, "expect-restarting-container-id", "", "明确确认操作前已在持续重启的另一个完整容器 ID")
@@ -70,20 +72,22 @@ func parseOptions(args []string) (options, error) {
 		return o, err
 	}
 	invalidCluster := false
-	backupArguments, testSudoArgument := false, false
+	writeArguments, backupArguments, testSudoArgument := false, false, false
 	f.Visit(func(value *flag.Flag) {
 		if value.Name == "k3d-cluster" && !validK3dInventoryCluster(o.k3dCluster) {
 			invalidCluster = true
 		}
 		switch value.Name {
-		case "expect-container-id", "backup-directory", "operation-id", "expect-restarting-container-id":
+		case "expect-container-id", "expect-restarting-container-id":
+			writeArguments = true
+		case "backup-directory", "operation-id":
 			backupArguments = true
 		case "test-sudo":
 			testSudoArgument = true
 		}
 	})
-	if (backupArguments && !o.backupStopK3d) || (o.backupStopK3d && testSudoArgument) {
-		return o, errors.New("备份参数必须与显式停机备份模式一起使用，且不得使用临时 sudo 测试授权")
+	if (writeArguments && !o.backupStopK3d && !o.stopOnlyK3d) || (backupArguments && !o.backupStopK3d) || (o.backupStopK3d && o.stopOnlyK3d) || ((o.backupStopK3d || o.stopOnlyK3d) && testSudoArgument) {
+		return o, errors.New("停机参数必须与唯一显式停机模式一起使用，且不得使用临时 sudo 测试授权")
 	}
 	if invalidCluster {
 		return o, errors.New("k3d 集群名称必须为 1 至 63 位小写字母、数字或连字符，且首尾不能为连字符")
@@ -105,7 +109,17 @@ func (o options) backupOptions() backupStopOptions {
 	return backup
 }
 
+func (o options) stopOptions() stopOnlyOptions {
+	return stopOnlyOptions{Cluster: o.k3dCluster, ContainerID: o.backup.ContainerID, ExpectedRestartingContainerID: o.backup.ExpectedRestartingContainerID}
+}
+
 func scriptForOptions(o options) (string, error) {
+	if o.stopOnlyK3d {
+		if o.backupStopK3d || o.testSudo || o.backup.Directory != "" || o.backup.OperationID != "" {
+			return "", errors.New("仅停机模式不能与备份或临时 sudo 测试授权混用")
+		}
+		return buildStopOnlyScript(o.stopOptions())
+	}
 	if o.backupStopK3d {
 		if o.testSudo {
 			return "", errors.New("停机备份不能使用临时 sudo 测试授权")
@@ -122,7 +136,7 @@ func main() {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
 	o, err := parseOptions(os.Args[1:])
 	if errors.Is(err, flag.ErrHelp) {
-		fmt.Println("用法：host-preflight --env-file <绝对路径> --working-directory <EDO 工作目录> --host-id <UUID> --expect-address <IP> --expect-port <端口> --expect-user <用户名> --expect-fingerprint <完整 SHA256 指纹> [--timeout 2m] [--test-sudo] [--k3d-cluster <集群名称>]\n显式停机备份另加 --backup-stop-k3d --k3d-cluster edo-host-link --expect-container-id <完整 ID> --backup-directory <全新持久目录> --operation-id <UUID> [--expect-restarting-container-id <已确认持续重启的完整 ID>]；不能同时使用 --test-sudo。")
+		fmt.Println("用法：host-preflight --env-file <绝对路径> --working-directory <EDO 工作目录> --host-id <UUID> --expect-address <IP> --expect-port <端口> --expect-user <用户名> --expect-fingerprint <完整 SHA256 指纹> [--timeout 2m] [--test-sudo] [--k3d-cluster <集群名称>]\n显式仅停机另加 --stop-only-k3d --k3d-cluster edo-host-link --expect-container-id <完整 ID> [--expect-restarting-container-id <已确认持续重启的完整 ID>]。\n显式停机备份另加 --backup-stop-k3d --k3d-cluster edo-host-link --expect-container-id <完整 ID> --backup-directory <全新持久目录> --operation-id <UUID> [--expect-restarting-container-id <已确认持续重启的完整 ID>]；两个停机模式不能混用，也不能使用 --test-sudo。")
 		return
 	}
 	stage := "校验参数"
@@ -136,6 +150,8 @@ func main() {
 		operation, logMessage := "host_preflight", "主机只读预检失败"
 		if o.backupStopK3d {
 			operation, logMessage = "host_backup_stop_k3d", "旧测试集群停机备份失败"
+		} else if o.stopOnlyK3d {
+			operation, logMessage = "host_stop_only_k3d", "旧测试集群仅停机失败"
 		}
 		attributes := []any{"operation", operation, "stage", stage, "error_type", fmt.Sprintf("%T", err)}
 		var connection *connectionError
@@ -149,9 +165,15 @@ func main() {
 				attributes = append(attributes, "config_etc_readable", query.config.etcReadable, "config_output_readable", query.config.outputReadable, "config_etc_symlink", query.config.etcSymlink, "cache_null_character_device", query.config.nullCharacterDevice)
 			}
 		}
+		var stop *k3dStopError
+		if errors.As(err, &stop) {
+			attributes = append(attributes, "stop_failure", stop.reason, "remote_exit_code", stop.exitCode)
+		}
 		logger.Error(logMessage, attributes...)
 		if o.backupStopK3d {
 			fmt.Fprintln(os.Stderr, "旧测试集群停机备份未完成；目标容器可能已停止，已保留现场。请勿继续安装、删除或自动恢复，请核对私有证据与保存的授权。")
+		} else if o.stopOnlyK3d {
+			fmt.Fprintln(os.Stderr, "旧测试集群停止流程未完成；目标容器可能已停止，所有容器、网络和数据卷均保留。请勿继续安装、删除或自动恢复，请先核对当前状态。")
 		} else {
 			fmt.Fprintln(os.Stderr, "主机预检未完成；未执行安装或配置变更，请核对目标、连接和保存的授权。")
 		}
@@ -287,6 +309,9 @@ func run(ctx context.Context, o options, output io.Writer, stage *string) error 
 	if o.backupStopK3d && !bundle.UseSudo {
 		return errors.New("停机备份要求已测试并保存 sudo 授权")
 	}
+	if o.stopOnlyK3d && !bundle.UseSudo {
+		return errors.New("仅停机要求已测试并保存 sudo 授权")
+	}
 	// 仅供操作者明确授权后的只读提权测试，不写回或放宽主机的持久配置。
 	if o.testSudo {
 		bundle.UseSudo = true
@@ -340,6 +365,8 @@ func run(ctx context.Context, o options, output io.Writer, stage *string) error 
 	*stage = "创建固定只读预检通道"
 	if o.backupStopK3d {
 		*stage = "创建固定停机备份通道"
+	} else if o.stopOnlyK3d {
+		*stage = "创建固定仅停机通道"
 	}
 	session, err := client.NewSession()
 	if err != nil {
@@ -352,11 +379,16 @@ func run(ctx context.Context, o options, output io.Writer, stage *string) error 
 	*stage = "执行固定只读预检"
 	if o.backupStopK3d {
 		*stage = "执行明确授权的停机备份"
+	} else if o.stopOnlyK3d {
+		*stage = "执行明确授权的仅停机"
 	}
 	if err := session.Start(command); err != nil {
 		return err
 	}
 	commandErr := session.Wait()
+	if o.stopOnlyK3d {
+		return writeStopOnlyReport(output, buffer, diagnostics, commandErr, o.stopOptions())
+	}
 	if o.backupStopK3d {
 		return writeBackupStopReport(output, buffer, commandErr, o.backupOptions())
 	}

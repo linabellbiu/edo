@@ -174,6 +174,12 @@ func TestBackupRunRequiresPersistedSudoBeforeConnecting(t *testing.T) {
 	if err == nil || err.Error() != "停机备份要求已测试并保存 sudo 授权" || stage != "只读核对已保存的目标与凭据" {
 		t.Fatalf("未保存 sudo 授权仍连接或未安全拒绝: %v %s", err, stage)
 	}
+	o.backupStopK3d, o.stopOnlyK3d = false, true
+	o.backup.Directory, o.backup.OperationID = "", ""
+	err = run(context.Background(), o, io.Discard, &stage)
+	if err == nil || err.Error() != "仅停机要求已测试并保存 sudo 授权" || stage != "只读核对已保存的目标与凭据" {
+		t.Fatalf("仅停机未保存 sudo 授权仍连接或未安全拒绝: %v %s", err, stage)
+	}
 }
 
 func TestSQLiteReadOnlyAddressNeverCreatesMissingDatabase(t *testing.T) {
