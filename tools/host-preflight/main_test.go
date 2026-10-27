@@ -274,4 +274,8 @@ func TestLimitedConcurrentOutputAndSecretRedaction(t *testing.T) {
 	if strings.Contains(value, "fixture-password") || strings.Contains(value, "fixture-private-key-line") {
 		t.Fatal("凭据未脱敏")
 	}
+	connection := &connectionError{diagnostic: value}
+	if connection.Error() != "SSH 连接检查未通过" || strings.Contains(connection.Error(), "fixture-") {
+		t.Fatal("连接诊断不能成为用户错误提示")
+	}
 }

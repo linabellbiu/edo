@@ -37,6 +37,10 @@ type options struct {
 	timeout                                                           time.Duration
 }
 
+type connectionError struct{ diagnostic string }
+
+func (*connectionError) Error() string { return "SSH 连接检查未通过" }
+
 var validUser = regexp.MustCompile(`^[a-z_][a-z0-9_-]{0,31}$`)
 
 func parseOptions(args []string) (options, error) {
@@ -76,8 +80,13 @@ func main() {
 		err = run(ctx, o, os.Stdout, &stage)
 	}
 	if err != nil {
-		// 底层解析、数据库和远端错误可能含敏感值，只记录固定操作与错误类型。
-		logger.Error("主机只读预检失败", "operation", "host_preflight", "stage", stage, "error_type", fmt.Sprintf("%T", err))
+		// 底层错误可能含敏感值，默认只记录操作与类型；SSH 诊断已在连接边界脱敏。
+		attributes := []any{"operation", "host_preflight", "stage", stage, "error_type", fmt.Sprintf("%T", err)}
+		var connection *connectionError
+		if errors.As(err, &connection) {
+			attributes = append(attributes, "err", connection.diagnostic)
+		}
+		logger.Error("主机只读预检失败", attributes...)
 		fmt.Fprintln(os.Stderr, "主机预检未完成；未执行安装或配置变更，请核对目标、连接和保存的授权。")
 		os.Exit(1)
 	}
@@ -211,7 +220,12 @@ func run(ctx context.Context, o options, output io.Writer, stage *string) error 
 	*stage = "固定指纹连接目标"
 	client, err := connector.ConnectPinned(ctx)
 	if err != nil {
-		return err
+		// 只在服务器运维日志保留已脱敏的 SSH 诊断，不把底层连接细节作为用户提示。
+		diagnostic := redact(err.Error(), []string{cfg.DSN, key, host.SSHCredentialCiphertext, bundle.Password, bundle.SudoPassword, bundle.PrivateKey, bundle.Passphrase})
+		if len(diagnostic) > 2048 {
+			diagnostic = diagnostic[:2048] + "…"
+		}
+		return &connectionError{diagnostic: diagnostic}
 	}
 	defer client.Close()
 	done := make(chan struct{})
@@ -223,11 +237,14 @@ func run(ctx context.Context, o options, output io.Writer, stage *string) error 
 		case <-done:
 		}
 	}()
+	*stage = "SSH 已通过，检查保存的 sudo 授权"
 	passwordless := host.SSHUsername == "root"
 	if !passwordless {
 		if !bundle.UseSudo {
+			*stage = "SSH 已通过，主机尚未保存 sudo 授权"
 			return errors.New("该主机未保存 sudo 授权")
 		}
+		*stage = "核对保存的 sudo 认证"
 		probe, err := client.NewSession()
 		if err != nil {
 			return err
@@ -236,10 +253,12 @@ func run(ctx context.Context, o options, output io.Writer, stage *string) error 
 		passwordless = probe.Run("sudo -n -- true") == nil
 		_ = probe.Close()
 	}
+	*stage = "准备固定预检的 sudo 认证"
 	command, prefix, err := sudoCommand(host.SSHUsername, bundle, passwordless)
 	if err != nil {
 		return err
 	}
+	*stage = "创建固定只读预检通道"
 	session, err := client.NewSession()
 	if err != nil {
 		return err
