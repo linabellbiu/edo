@@ -67,7 +67,7 @@ func TestNativeServiceProbeOnlyReportsFixedShapeAndPID(t *testing.T) {
 	if !strings.Contains(preflightScript, nativeServiceProbe) || strings.Contains(nativeServiceProbe, "systemctl restart") || strings.Contains(nativeServiceProbe, "systemctl stop") {
 		t.Fatal("默认探针接线错误或发生写入")
 	}
-	if !strings.Contains(nativeSourceCommon, "[ \"$edo_command\" = \"$(printf '/usr/local/bin/k3s\\nserver\\n--config\\n/etc/rancher/k3s/config.yaml')\" ] || edo_fail service") {
+	if !strings.Contains(nativeSourceCommon, "[ \"$edo_command\" = \"$(printf '/usr/local/bin/k3s\\nserver\\n--config\\n/etc/rancher/k3s/config.yaml')\" ] || edo_fail service_process") {
 		t.Fatal("诊断修改放宽了原维护守卫")
 	}
 }

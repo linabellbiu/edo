@@ -218,7 +218,7 @@ func nativeSession(client *ssh.Client, command, prefix, script string) (string, 
 			for _, line := range strings.Split(value, "\n") {
 				if candidate, ok := strings.CutPrefix(line, "EDO_NATIVE_SOURCE_FAILED="); ok {
 					switch candidate {
-					case "prerequisites", "service", "version", "config_identity", "config_changed", "registry_connectivity", "guard", "write", "restart", "postcheck":
+					case "prerequisites", "service", "service_unit", "service_process", "service_path", "service_permissions", "version", "config_identity", "config_changed", "registry_connectivity", "guard", "write", "restart", "postcheck":
 						stage = candidate
 					}
 				}
@@ -235,7 +235,7 @@ func nativeSession(client *ssh.Client, command, prefix, script string) (string, 
 
 func nativeSourcePrefix(b nativeSourceBinding, restarting string) string {
 	quote := func(v string) string { return "'" + strings.ReplaceAll(v, "'", "'\"'\"'") + "'" }
-	return "edo_version=" + quote(b.Version) + "\nedo_restarting=" + quote(restarting) + "\n"
+	return "edo_version=" + quote(b.Version) + "\nedo_data_dir=" + quote(b.DataDir) + "\nedo_restarting=" + quote(restarting) + "\n"
 }
 
 func configureNativeChinaImages(ctx context.Context, o options, cfg config.Database, key string, host model.Host, client *ssh.Client, command, prefix string, output io.Writer, stage *string) error {
@@ -298,15 +298,11 @@ PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 export PATH
 edo_fail(){ printf 'EDO_NATIVE_SOURCE_FAILED=%s\n' "$1" >&2;exit 82; }
 [ "$(id -u)" = 0 ] || edo_fail prerequisites
-for tool in stat readlink sha256sum awk sort base64 tr curl timeout systemctl ps cat mktemp chmod mv rm;do command -v "$tool" >/dev/null 2>&1 || edo_fail prerequisites;done
+for tool in stat readlink sha256sum awk sort base64 tr curl timeout systemctl ps cat mktemp chmod mv rm dirname;do command -v "$tool" >/dev/null 2>&1 || edo_fail prerequisites;done
+` + nativeSourceServiceIdentity + `
 edo_check(){
   systemctl is-active --quiet k3s.service || edo_fail service
-  edo_pid=$(systemctl show k3s.service --property=ExecMainPID --value) || edo_fail service
-  case "$edo_pid" in ''|0|*[!0-9]*)edo_fail service;;esac
-  [ "$(readlink -f "/proc/$edo_pid/exe")" = /usr/local/bin/k3s ] || edo_fail service
-  edo_command=$(tr '\000' '\n' < "/proc/$edo_pid/cmdline") || edo_fail service
-  [ "$edo_command" = "$(printf '/usr/local/bin/k3s\nserver\n--config\n/etc/rancher/k3s/config.yaml')" ] || edo_fail service
-  [ "$(timeout 3 /usr/local/bin/k3s --version 2>/dev/null | awk 'NR==1{print $3}')" = "$edo_version" ] || edo_fail version
+  edo_service_identity
   for directory in /etc /etc/rancher /etc/rancher/k3s;do [ -d "$directory" ] && [ ! -L "$directory" ] && [ "$(stat -c '%u' "$directory")" = 0 ] || edo_fail config_identity;done
   [ "$(stat -c '%a' /etc/rancher/k3s)" = 700 ] || edo_fail config_identity
   [ -f /etc/rancher/k3s/config.yaml ] && [ ! -L /etc/rancher/k3s/config.yaml ] && [ "$(stat -c '%u:%g:%a:%h' /etc/rancher/k3s/config.yaml)" = 0:0:600:1 ] || edo_fail config_identity
@@ -352,6 +348,49 @@ EDO_CONTAINERS
 }
 edo_guard_hash(){ guard=$(edo_guard) || return 1;guard=$(printf '%s\n' "$guard" | LC_ALL=C sort) || return 1;printf '%s\n' "$guard" | sha256sum | awk '{print $1}'; }
 edo_check
+`
+
+// 官方启动器会切换到 data-dir 下的嵌入二进制并隐藏参数，仍需同时固定 unit、路径、权限和版本。
+const nativeSourceServiceIdentity = `edo_root_path(){
+  edo_path=$1
+  [ "$(readlink -f "$edo_path")" = "$edo_path" ] || edo_fail service_path
+  while :;do
+    [ ! -L "$edo_path" ] && [ "$(stat -c '%u' "$edo_path")" = 0 ] || edo_fail service_permissions
+    edo_mode=$(stat -c '%a' "$edo_path") || edo_fail service_permissions
+    case "$edo_mode" in ''|*[!0-7]*)edo_fail service_permissions;;esac
+    [ "${#edo_mode}" -le 4 ] && [ "$((0$edo_mode & 022))" = 0 ] || edo_fail service_permissions
+    [ "$edo_path" != / ] || break
+    edo_path=$(dirname "$edo_path") || edo_fail service_path
+  done
+}
+edo_service_identity(){
+  edo_unit=$(systemctl show k3s.service --property=ExecStart --value) || edo_fail service_unit
+  printf '%s\n' "$edo_unit" | awk -F ' ; ' '
+    NR!=1 || NF<4 || $1!="{ path=/usr/local/bin/k3s" || $2!="argv[]=/usr/local/bin/k3s server --config /etc/rancher/k3s/config.yaml" || $3!="ignore_errors=no"{exit 1}
+    {for(i=4;i<=NF;i++)if($i ~ /argv\[\]=|path=|\{/)exit 1}
+    END{if(NR!=1)exit 1}' || edo_fail service_unit
+  edo_pid=$(systemctl show k3s.service --property=ExecMainPID --value) || edo_fail service_process
+  case "$edo_pid" in ''|0|*[!0-9]*)edo_fail service_process;;esac
+  edo_exe=$(readlink -f "/proc/$edo_pid/exe") || edo_fail service_path
+  case "$edo_exe" in "$edo_data_dir"/data/*/bin/k3s):;;*)edo_fail service_path;;esac
+  edo_asset=${edo_exe#"$edo_data_dir"/data/}
+  edo_asset=${edo_asset%/bin/k3s}
+  [ "${#edo_asset}" = 64 ] || edo_fail service_path
+  case "$edo_asset" in *[!0-9a-f]*)edo_fail service_path;;esac
+  [ -f "$edo_exe" ] && [ -x "$edo_exe" ] && [ -f /usr/local/bin/k3s ] && [ -x /usr/local/bin/k3s ] || edo_fail service_permissions
+  edo_root_path /usr/local/bin/k3s
+  edo_root_path "$edo_exe"
+  edo_exe_identity=$(stat -c '%d:%i' "$edo_exe") || edo_fail service_process
+  [ "$(stat -Lc '%d:%i' "/proc/$edo_pid/exe")" = "$edo_exe_identity" ] || edo_fail service_process
+  edo_command=$(tr '\000' '\n' < "/proc/$edo_pid/cmdline") || edo_fail service_process
+  case "$edo_command" in '/usr/local/bin/k3s server'|'k3s server'):;;*)
+    [ "$edo_command" = "$(printf '/usr/local/bin/k3s\nserver\n--config\n/etc/rancher/k3s/config.yaml')" ] || edo_fail service_process;;esac
+  for edo_binary in /usr/local/bin/k3s "$edo_exe";do
+    edo_binary_version=$(timeout 3 "$edo_binary" --version 2>/dev/null) || edo_fail version
+    [ "$(printf '%s\n' "$edo_binary_version" | awk 'NR==1{print $3}')" = "$edo_version" ] || edo_fail version
+  done
+  [ "$(readlink -f "/proc/$edo_pid/exe")" = "$edo_exe" ] && [ "$(stat -Lc '%d:%i' "/proc/$edo_pid/exe")" = "$edo_exe_identity" ] && [ "$(systemctl show k3s.service --property=ExecMainPID --value)" = "$edo_pid" ] || edo_fail service_process
+}
 `
 
 const nativeSourceRead = `edo_phase=before

@@ -244,3 +244,110 @@ func TestNativeSourceWriteShellIsAtomicAndOnlyRestartsOwnedService(t *testing.T)
 		})
 	}
 }
+
+func TestNativeSourceServiceIdentityRequiresOwnedEmbeddedBinaryAndFixedUnit(t *testing.T) {
+	for _, mode := range []string{"original", "absolute-title", "basename-title", "wrong-data-dir", "bad-asset", "short-asset", "extra-unit-argument", "multiple-unit-commands", "unit-failed", "wrong-command", "launcher-version", "embedded-version", "version-failed", "writable-binary", "writable-parent", "nonroot-binary", "symlink-binary", "different-inode", "pid-changed"} {
+		t.Run(mode, func(t *testing.T) {
+			root, err := filepath.EvalSymlinks(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			bin := filepath.Join(root, "bin")
+			dataDir := filepath.Join(root, "data-dir")
+			asset := strings.Repeat("a", 64)
+			if mode == "bad-asset" {
+				asset = strings.Repeat("g", 64)
+			}
+			if mode == "short-asset" {
+				asset = strings.Repeat("a", 63)
+			}
+			exe := filepath.Join(dataDir, "data", asset, "bin", "k3s")
+			if mode == "wrong-data-dir" {
+				exe = filepath.Join(root, "other", "data", asset, "bin", "k3s")
+			}
+			launcher := filepath.Join(root, "launcher", "k3s")
+			proc := filepath.Join(root, "proc", "123")
+			for _, directory := range []string{bin, filepath.Dir(exe), filepath.Dir(launcher), proc} {
+				if err := os.MkdirAll(directory, 0700); err != nil {
+					t.Fatal(err)
+				}
+			}
+			for _, file := range []string{launcher, exe} {
+				if err := os.WriteFile(file, []byte("#!/bin/sh\nexit 0\n"), 0700); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if mode == "symlink-binary" {
+				if err := os.Remove(exe); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink(launcher, exe); err != nil {
+					t.Fatal(err)
+				}
+			}
+			command := []byte(launcher + "\x00server\x00--config\x00/etc/rancher/k3s/config.yaml\x00")
+			if mode == "absolute-title" {
+				command = []byte(launcher + " server\x00\x00")
+			}
+			if mode == "basename-title" {
+				command = []byte("k3s server\x00")
+			}
+			if mode == "wrong-command" {
+				command = []byte("k3s server --token PRIVATE_SECRET\x00")
+			}
+			if err := os.WriteFile(filepath.Join(proc, "cmdline"), command, 0600); err != nil {
+				t.Fatal(err)
+			}
+			unit := "{ path=" + launcher + " ; argv[]=" + launcher + " server --config /etc/rancher/k3s/config.yaml ; ignore_errors=no ; start_time=now ; stop_time=n/a ; pid=123 ; code=(null) ; status=0/0 }"
+			if mode == "extra-unit-argument" {
+				unit = strings.Replace(unit, "config.yaml ;", "config.yaml --token PRIVATE_SECRET ;", 1)
+			}
+			if mode == "multiple-unit-commands" {
+				unit += " ; { path=" + launcher + " ; argv[]=PRIVATE_SECRET ; ignore_errors=no }"
+			}
+			write := func(name, value string) {
+				t.Helper()
+				if err := os.WriteFile(filepath.Join(bin, name), []byte("#!/bin/sh\n"+value), 0700); err != nil {
+					t.Fatal(err)
+				}
+			}
+			write("systemctl", `case "$*" in
+*--property=ExecStart*) [ "$MODE" != unit-failed ] || exit 1;printf '%s\n' "$UNIT";;
+*--property=ExecMainPID*) if [ "$MODE" = pid-changed ] && [ -e "$COUNT" ];then printf '124\n';else : > "$COUNT";printf '123\n';fi;;
+*)exit 1;;esac
+`)
+			write("readlink", `case "$2" in */proc/123/exe)printf '%s\n' "$EXE";;*)printf '%s\n' "$2";;esac
+`)
+			write("stat", `case "$2" in
+%u) if [ "$MODE" = nonroot-binary ] && [ "$3" = "$EXE" ];then printf '1000\n';else printf '0\n';fi;;
+%a) if { [ "$MODE" = writable-binary ] && [ "$3" = "$EXE" ]; } || { [ "$MODE" = writable-parent ] && [ "$3" = "$DATADIR" ]; };then printf '777\n';else printf '755\n';fi;;
+%d:%i) if [ "$MODE" = different-inode ] && [ "$1" = -Lc ];then printf '1:3\n';else printf '1:2\n';fi;;
+*)exit 1;;esac
+`)
+			write("timeout", `if [ "$MODE" = version-failed ];then printf 'PRIVATE_SECRET\n' >&2;exit 1;fi
+if { [ "$MODE" = launcher-version ] && [ "$2" = "$LAUNCHER" ]; } || { [ "$MODE" = embedded-version ] && [ "$2" = "$EXE" ]; };then printf 'k3s version v0.0.0+k3s1\n';else printf 'k3s version v1.37.1+k3s1\n';fi
+`)
+			script := strings.ReplaceAll(nativeSourceServiceIdentity, "/usr/local/bin/k3s", launcher)
+			script = strings.ReplaceAll(script, "/proc/", filepath.Join(root, "proc")+"/")
+			cmd := exec.Command("sh", "-se")
+			cmd.Env = append(os.Environ(), "PATH="+bin+":"+os.Getenv("PATH"), "MODE="+mode, "EXE="+exe, "LAUNCHER="+launcher, "DATADIR="+dataDir, "UNIT="+unit, "COUNT="+filepath.Join(root, "count"))
+			cmd.Stdin = strings.NewReader("set -eu\nedo_fail(){ printf 'EDO_NATIVE_SOURCE_FAILED=%s\\n' \"$1\" >&2;exit 82; }\nedo_version='v1.37.1+k3s1'\nedo_data_dir='" + dataDir + "'\n" + script + "\nedo_service_identity\nprintf 'IDENTITY_OK\\n'\n")
+			var stdout, stderr bytes.Buffer
+			cmd.Stdout, cmd.Stderr = &stdout, &stderr
+			err = cmd.Run()
+			wantSuccess := mode == "original" || mode == "absolute-title" || mode == "basename-title"
+			if (err == nil) != wantSuccess {
+				t.Fatalf("身份守卫结果不符: %v stdout=%q stderr=%q", err, stdout.String(), stderr.String())
+			}
+			if strings.Contains(stdout.String()+stderr.String(), "PRIVATE_SECRET") {
+				t.Fatal("身份拒绝回显了秘密参数")
+			}
+			if wantSuccess && stdout.String() != "IDENTITY_OK\n" {
+				t.Fatal("身份成功回执不符")
+			}
+		})
+	}
+	if !strings.Contains(nativeSourcePrefix(sourceFixtureBinding(), ""), "edo_data_dir='/storage/edo-k3s/fixture'") || !strings.Contains(nativeSourceCommon, nativeSourceServiceIdentity) {
+		t.Fatal("未冻结数据目录或遗漏身份守卫")
+	}
+}
