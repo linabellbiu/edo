@@ -339,6 +339,133 @@ func TestK3dConnectionWaitStopsOnCancellationWithoutImport(t *testing.T) {
 	}
 }
 
+type k3dWaitCancelAuthorizer struct{ cancel context.CancelFunc }
+
+func (a k3dWaitCancelAuthorizer) HasPermission(context.Context, *model.User, string) (bool, error) {
+	a.cancel()
+	return false, context.Canceled
+}
+
+type k3dWaitCancelRead struct {
+	Transport
+	cancel context.CancelFunc
+}
+
+func (t k3dWaitCancelRead) Read(ctx context.Context, host model.Host, bundle sshclient.Bundle, script string) (string, error) {
+	value, err := t.Transport.Read(ctx, host, bundle, script)
+	t.cancel()
+	return value, err
+}
+
+func TestK3dWaitCancellationPriorityIsDeterministicAndNeverImports(t *testing.T) {
+	for _, phase := range []string{"connection", "nodes"} {
+		for _, mode := range []string{"already-canceled", "expired", "during-authorization", "permission-revoked", "api-canceled-success", "api-canceled-failure"} {
+			t.Run(phase+"/"+mode, func(t *testing.T) {
+				f, _, clusters, input := k3dFixture(t)
+				plan, err := f.service.Preview(f.ctx, f.actor.ID, input)
+				if err != nil {
+					t.Fatal(err)
+				}
+				var record model.K3sInstallation
+				if err := f.db.First(&record, "uuid = ?", plan.ID).Error; err != nil {
+					t.Fatal(err)
+				}
+				snapshot, err := f.service.decode(record)
+				if err != nil {
+					t.Fatal(err)
+				}
+				ctx, cancel := context.WithCancel(f.ctx)
+				defer cancel()
+				// tick 始终可用，不依赖随机 select 分支或测试机负载触发竞态。
+				f.service.k3dWaitInterval = time.Nanosecond
+				api := &k3dDelayedAPI{fakeClusters: clusters}
+				f.service.kubernetes = api
+				want := error(context.Canceled)
+				switch mode {
+				case "already-canceled":
+					cancel()
+				case "expired":
+					deadline, stop := context.WithDeadline(f.ctx, time.Now().Add(-time.Second))
+					defer stop()
+					ctx, want = deadline, ErrReadiness
+				case "during-authorization":
+					f.service.authorizer = k3dWaitCancelAuthorizer{cancel: cancel}
+				case "permission-revoked":
+					f.auth.denied = true
+					want = ErrPermission
+				case "api-canceled-success", "api-canceled-failure":
+					if phase == "connection" {
+						api.onTest = cancel
+						if mode == "api-canceled-failure" {
+							api.testErr = apierrors.NewUnauthorized("private-api-diagnostic")
+						}
+					} else {
+						api.onPing = cancel
+						if mode == "api-canceled-failure" {
+							api.pingErr = apierrors.NewForbidden(schema.GroupResource{Resource: "nodes"}, "private-node", errors.New("private-api-diagnostic"))
+						}
+					}
+				}
+				var value string
+				if phase == "connection" {
+					value, err = f.service.waitForK3dConnection(ctx, &record, snapshot, f.host, sshclient.Bundle{})
+				} else {
+					err = f.service.waitForK3d(ctx, &record, snapshot, 1)
+				}
+				if err != want || value != "" || clusters.created != 0 || len(clusters.linked) != 0 {
+					t.Fatalf("取消或真实撤权被错误归类/仍接入: got=%v want=%v valueLength=%d created=%d linked=%d", err, want, len(value), clusters.created, len(clusters.linked))
+				}
+				if !strings.HasPrefix(mode, "api-") && api.tests != 0 {
+					t.Fatal("取消或撤权后仍测试集群连接", api.tests)
+				}
+			})
+		}
+	}
+}
+
+func TestK3dWaitCancellationAfterReadOrNodeResponseNeverReturnsSuccess(t *testing.T) {
+	for _, phase := range []string{"read", "nodes"} {
+		t.Run(phase, func(t *testing.T) {
+			f, transport, clusters, input := k3dFixture(t)
+			plan, err := f.service.Preview(f.ctx, f.actor.ID, input)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var record model.K3sInstallation
+			if err := f.db.First(&record, "uuid = ?", plan.ID).Error; err != nil {
+				t.Fatal(err)
+			}
+			snapshot, err := f.service.decode(record)
+			if err != nil {
+				t.Fatal(err)
+			}
+			ctx, cancel := context.WithCancel(f.ctx)
+			defer cancel()
+			f.service.k3dWaitInterval = time.Nanosecond
+			var value string
+			if phase == "read" {
+				f.service.transport = k3dWaitCancelRead{Transport: transport, cancel: cancel}
+				value, err = f.service.waitForK3dConnection(ctx, &record, snapshot, f.host, sshclient.Bundle{})
+			} else {
+				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+					cancel()
+					w.Header().Set("Content-Type", "application/json")
+					_, _ = io.WriteString(w, `{"apiVersion":"v1","kind":"NodeList","items":[{"metadata":{"name":"fixture-node"},"status":{"conditions":[{"type":"Ready","status":"True"}]}}]}`)
+				}))
+				defer server.Close()
+				clusters.client, err = kubernetes.NewForConfig(&rest.Config{Host: server.URL})
+				if err != nil {
+					t.Fatal(err)
+				}
+				err = f.service.waitForK3d(ctx, &record, snapshot, 1)
+			}
+			if err != context.Canceled || value != "" || clusters.created != 0 || len(clusters.linked) != 0 {
+				t.Fatalf("异步响应取消后仍成功或接入: phase=%s err=%v valueLength=%d", phase, err, len(value))
+			}
+		})
+	}
+}
+
 func TestNativeModeKeepsOfficialHostInstallerWithoutContainerFallback(t *testing.T) {
 	f := newFixture(t)
 	input := f.input()

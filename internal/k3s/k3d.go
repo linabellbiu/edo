@@ -216,13 +216,26 @@ func (s *Service) waitForK3dConnection(ctx context.Context, record *model.K3sIns
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	for {
-		if err := s.recheckRuntime(ctx, *record, snapshot); err != nil {
+		if err := k3dWaitContextError(ctx); err != nil {
 			return "", err
 		}
-		if raw, err := s.transport.Read(ctx, host, bundle, k3dReadConfigScript(record.ID)); err == nil {
+		if err := s.recheckRuntime(ctx, *record, snapshot); err != nil {
+			if canceled := k3dWaitContextError(ctx); canceled != nil {
+				return "", canceled
+			}
+			return "", err
+		}
+		raw, readErr := s.transport.Read(ctx, host, bundle, k3dReadConfigScript(record.ID))
+		if err := k3dWaitContextError(ctx); err != nil {
+			return "", err
+		}
+		if readErr == nil {
 			value, err := rewriteKubeconfigEndpoint([]byte(raw), snapshot.Input.Endpoint)
 			if err == nil {
 				_, err = s.kubernetes.Test(ctx, kube.Input{Name: snapshot.Input.Name, Mode: model.KubernetesKubeconfig, DefaultNamespace: "default", Kubeconfig: &value})
+				if canceled := k3dWaitContextError(ctx); canceled != nil {
+					return "", canceled
+				}
 				if err == nil {
 					return value, nil
 				}
@@ -236,18 +249,29 @@ func (s *Service) waitForK3dConnection(ctx context.Context, record *model.K3sIns
 		}
 		select {
 		case <-ctx.Done():
-			if errors.Is(ctx.Err(), context.Canceled) {
-				return "", ctx.Err()
-			}
-			return "", ErrReadiness
+			return "", k3dWaitContextError(ctx)
 		case <-ticker.C:
 		}
 	}
 }
 
+func k3dWaitContextError(ctx context.Context) error {
+	err := ctx.Err()
+	if errors.Is(err, context.DeadlineExceeded) {
+		return ErrReadiness
+	}
+	return err
+}
+
 func (s *Service) waitForK3d(ctx context.Context, record *model.K3sInstallation, snapshot savedInput, expected int) error {
+	if err := k3dWaitContextError(ctx); err != nil {
+		return err
+	}
 	client, err := s.kubernetes.Clientset(kube.WithInternalClusterAccess(ctx, "node-bootstrap"), record.ClusterID)
 	if err != nil {
+		if canceled := k3dWaitContextError(ctx); canceled != nil {
+			return canceled
+		}
 		return err
 	}
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
@@ -259,11 +283,24 @@ func (s *Service) waitForK3d(ctx context.Context, record *model.K3sInstallation,
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	for {
-		if err := s.recheckRuntime(ctx, *record, snapshot); err != nil {
+		if err := k3dWaitContextError(ctx); err != nil {
 			return err
 		}
-		if _, err := s.kubernetes.Ping(ctx, record.ClusterID); err == nil {
+		if err := s.recheckRuntime(ctx, *record, snapshot); err != nil {
+			if canceled := k3dWaitContextError(ctx); canceled != nil {
+				return canceled
+			}
+			return err
+		}
+		_, pingErr := s.kubernetes.Ping(ctx, record.ClusterID)
+		if err := k3dWaitContextError(ctx); err != nil {
+			return err
+		}
+		if pingErr == nil {
 			nodes, err := client.CoreV1().Nodes().List(ctx, metav1.ListOptions{LabelSelector: "edo.dev/installation=" + record.ID})
+			if canceled := k3dWaitContextError(ctx); canceled != nil {
+				return canceled
+			}
 			if apierrors.IsUnauthorized(err) || apierrors.IsForbidden(err) {
 				return ErrPermission
 			}
@@ -280,15 +317,12 @@ func (s *Service) waitForK3d(ctx context.Context, record *model.K3sInstallation,
 					return nil
 				}
 			}
-		} else if apierrors.IsUnauthorized(err) || apierrors.IsForbidden(err) {
+		} else if apierrors.IsUnauthorized(pingErr) || apierrors.IsForbidden(pingErr) {
 			return ErrPermission
 		}
 		select {
 		case <-ctx.Done():
-			if errors.Is(ctx.Err(), context.Canceled) {
-				return ctx.Err()
-			}
-			return ErrReadiness
+			return k3dWaitContextError(ctx)
 		case <-ticker.C:
 		}
 	}

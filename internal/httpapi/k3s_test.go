@@ -35,7 +35,7 @@ type k3sHTTPTestTransport struct {
 }
 
 var k3sHTTPPreflightCheckIDs = []string{
-	"privilege", "os", "tools", "architecture", "supervisor", "cgroup", "cpu", "memory", "disk", "hostname", "ports", "download", "endpoint", "swap", "firewall", "selinux", "existing_installation",
+	"privilege", "os", "tools", "architecture", "supervisor", "cgroup", "cpu", "memory", "disk", "hostname", "ports", "download", "system_registry", "endpoint", "swap", "firewall", "selinux", "existing_installation",
 }
 
 func (transport *k3sHTTPTestTransport) Read(ctx context.Context, _ model.Host, _ sshclient.Bundle, script string) (string, error) {
@@ -64,6 +64,9 @@ func (transport *k3sHTTPTestTransport) Read(ctx context.Context, _ model.Host, _
 		status := transport.statuses[id]
 		if status == "" {
 			status = "passed"
+			if id == "system_registry" && strings.Contains(script, "edo_check system_registry warning\n") {
+				status = "warning"
+			}
 		}
 		output.WriteString("EDO_K3S_CHECK\t" + id + "\t" + status + "\n")
 	}
@@ -75,6 +78,24 @@ func (transport *k3sHTTPTestTransport) Read(ctx context.Context, _ model.Host, _
 func (transport *k3sHTTPTestTransport) Run(context.Context, model.Host, sshclient.Bundle, string, io.Writer) error {
 	transport.runs.Add(1)
 	return errors.New("unexpected SSH installation during HTTP test")
+}
+
+func TestK3sHTTPFixtureSystemRegistryReflectsProbeSelection(t *testing.T) {
+	for _, scenario := range []struct {
+		name, script, configured, expected string
+	}{
+		{name: "默认或继承不冒充已探测", script: "edo_check system_registry warning\n", expected: "warning"},
+		{name: "选定仓库返回已探测夹具", script: "edo_registry_status=200\nedo_check system_registry passed\n", expected: "passed"},
+		{name: "显式阻断保持失败", script: "edo_check system_registry warning\n", configured: "failed", expected: "failed"},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			transport := &k3sHTTPTestTransport{statuses: map[string]string{"system_registry": scenario.configured}}
+			output, err := transport.Read(context.Background(), model.Host{}, sshclient.Bundle{}, scenario.script+"EDO_K3S_REPORT_END\n")
+			if err != nil || !strings.Contains(output, "EDO_K3S_CHECK\tsystem_registry\t"+scenario.expected+"\n") || transport.runs.Load() != 0 {
+				t.Fatalf("系统镜像检查夹具状态不准确：期望 %s，错误 %v", scenario.expected, err)
+			}
+		})
+	}
 }
 
 func newK3sHTTPTestRouter(t *testing.T, transports ...k3s.Transport) (*gin.Engine, func()) {
@@ -143,9 +164,13 @@ func TestK3sHTTPPreviewQueuesReviewedPlanAndRejectsDuplicate(t *testing.T) {
 	}
 	for _, id := range append(append([]string{}, k3sHTTPPreflightCheckIDs...), "identity", "machine_unique", "node_name_unique") {
 		found := false
+		want := "passed"
+		if id == "system_registry" {
+			want = "warning"
+		}
 		for _, check := range plan.Preflight.Hosts[0].Checks {
 			if check.ID == id {
-				found = check.Status == "passed" && check.Name != "" && check.Message != ""
+				found = check.Status == want && check.Name != "" && check.Message != ""
 			}
 		}
 		if !found {
@@ -367,6 +392,9 @@ func TestK3sHTTPFailedPreflightReturnsCompleteReportWithoutCreatingPlanOrTask(t 
 	for _, id := range k3sHTTPPreflightCheckIDs {
 		check, exists := checks[id]
 		want := "passed"
+		if id == "system_registry" {
+			want = "warning"
+		}
 		if status := transport.statuses[id]; status != "" {
 			want = status
 		}
@@ -463,7 +491,11 @@ func TestK3sHTTPPreflightExtendsRealServerWriteDeadline(t *testing.T) {
 		checks[check.ID] = check
 	}
 	for _, id := range append(append([]string{}, k3sHTTPPreflightCheckIDs...), "identity", "machine_unique", "node_name_unique") {
-		if check, ok := checks[id]; !ok || check.Status != "passed" || check.Name == "" || check.Message == "" {
+		want := "passed"
+		if id == "system_registry" {
+			want = "warning"
+		}
+		if check, ok := checks[id]; !ok || check.Status != want || check.Name == "" || check.Message == "" {
 			t.Fatalf("delayed response omitted check %s: %+v", id, checks)
 		}
 	}
