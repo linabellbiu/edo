@@ -19,6 +19,10 @@ func joinVersionFixture(t *testing.T, version string) (fixture, *fakeClusters, I
 	if err := f.db.WithContext(f.ctx).Create(&clusters.cluster).Error; err != nil {
 		t.Fatal(err)
 	}
+	// 与真实集群查询保持一致，避免 MySQL 时间精度使测试快照产生误差。
+	if err := f.db.WithContext(f.ctx).First(&clusters.cluster, "uuid = ?", clusters.cluster.ID).Error; err != nil {
+		t.Fatal(err)
+	}
 	return f, clusters, Input{Action: "join", Profile: "default", ClusterID: clusters.cluster.ID, AgentHostIDs: []string{f.host.ID}}
 }
 

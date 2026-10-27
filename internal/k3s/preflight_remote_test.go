@@ -101,6 +101,16 @@ func runPreflightShell(t *testing.T, input Input, host Host, extraEnv ...string)
 		t.Skip("POSIX shell unavailable")
 	}
 	directory := t.TempDir()
+	// 这里只模拟 root 身份，数据目录使用测试账户实际可写的路径。
+	options := map[string]any{"data-dir": directory}
+	for key, value := range optionsForHost(host, input) {
+		options[key] = value
+	}
+	if host.Role == "server" {
+		input.ServerOptions = options
+	} else {
+		input.AgentOptions = options
+	}
 	writePreflightCommand(t, directory, "uname", "if [ \"${1:-}\" = -s ]; then printf Linux; else printf x86_64; fi\n")
 	writePreflightCommand(t, directory, "id", "printf 0\n")
 	writePreflightCommand(t, directory, "hostname", "printf worker-a\n")

@@ -572,6 +572,10 @@ func TestWorkerJoinsUsingShortLivedTokenAndRevokesIt(t *testing.T) {
 	if err := f.db.WithContext(f.ctx).Create(&clusters.cluster).Error; err != nil {
 		t.Fatal(err)
 	}
+	// 测试替身读取落库后的值，保留数据库实际使用的时间精度。
+	if err := f.db.WithContext(f.ctx).First(&clusters.cluster, "uuid = ?", clusters.cluster.ID).Error; err != nil {
+		t.Fatal(err)
+	}
 	input := Input{Action: "join", Profile: "default", ClusterID: clusters.cluster.ID, AgentHostIDs: []string{f.host.ID}}
 	plan, err := f.service.Preview(f.ctx, f.actor.ID, input)
 	if err != nil {
