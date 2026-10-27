@@ -35,6 +35,7 @@ type options struct {
 	envFile, workingDirectory, hostID, address, username, fingerprint string
 	port                                                              int
 	timeout                                                           time.Duration
+	testSudo                                                          bool
 }
 
 type connectionError struct{ diagnostic string }
@@ -55,6 +56,7 @@ func parseOptions(args []string) (options, error) {
 	f.StringVar(&o.username, "expect-user", "", "必须与保存记录一致的 SSH 用户名")
 	f.StringVar(&o.fingerprint, "expect-fingerprint", "", "必须与保存记录一致的完整 SHA256 指纹")
 	f.DurationVar(&o.timeout, "timeout", 2*time.Minute, "总时限，1 秒至 10 分钟")
+	f.BoolVar(&o.testSudo, "test-sudo", false, "仅本次验证 sudo，不修改保存的配置；需操作者明确授权")
 	if err := f.Parse(args); err != nil {
 		return o, err
 	}
@@ -211,6 +213,10 @@ func run(ctx context.Context, o options, output io.Writer, stage *string) error 
 	host, bundle, err := loadTarget(ctx, o, cfg, key)
 	if err != nil {
 		return err
+	}
+	// 仅供操作者明确授权后的只读提权测试，不写回或放宽主机的持久配置。
+	if o.testSudo {
+		bundle.UseSudo = true
 	}
 	endpoint := (&url.URL{Scheme: "ssh", User: url.User(host.SSHUsername), Host: net.JoinHostPort(host.Address, strconv.Itoa(host.SSHPort))}).String()
 	connector, err := sshclient.NewConnector(endpoint, bundle, o.fingerprint, 10*time.Second)

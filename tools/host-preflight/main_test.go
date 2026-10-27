@@ -62,6 +62,12 @@ func TestParametersRequireExplicitMatchingIdentityAndNoCommand(t *testing.T) {
 	if _, err := parseOptions(append(fixtureArgs(), "id")); err == nil {
 		t.Fatal("接受额外命令")
 	}
+	if o, err := parseOptions(fixtureArgs()); err != nil || o.testSudo {
+		t.Fatal("默认不能改变保存的 sudo 选择")
+	}
+	if o, err := parseOptions(append(fixtureArgs(), "--test-sudo")); err != nil || !o.testSudo {
+		t.Fatal("显式只读提权测试参数无效")
+	}
 }
 
 func TestSQLiteReadOnlyAddressNeverCreatesMissingDatabase(t *testing.T) {

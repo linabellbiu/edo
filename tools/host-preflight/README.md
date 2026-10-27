@@ -20,6 +20,8 @@ go build -o /tmp/edo-host-preflight ./tools/host-preflight
 
 SSH 凭据只在服务器进程内存及必要的 SSH/sudo 标准输入中使用，不输出、不写文件。非 root 需要已保存 sudo 授权；不修改 sudoers 或禁用认证策略。固定脚本不接受外部脚本、命令或 Docker 地址；Docker 只访问所选主机的 `/var/run/docker.sock`，不继承 Context、TLS 或远端 daemon 环境。
 
+操作者已明确授权验证提权、但尚未保存 sudo 配置时，可额外传入 `--test-sudo`，仅在本次进程中启用测试并复用已有登录凭据。它不改数据库、sudoers 或保存的授权，不能代替 EDO 页面中的连接测试与配置保存。
+
 默认上下文时限 2 分钟（`--timeout` 可设 1 秒至 10 分钟），输出最多 256 KiB。数据库驱动初始化和 GORM 自动 Ping 不完全受此上下文约束；Linux 服务器运行时建议另加进程级兜底：`timeout --kill-after=5s 150s /tmp/edo-host-preflight <上述必填参数>`。
 
 可选命令缺失或查询失败会明确标记 `UNAVAILABLE`，不当成零值或安装通过；Docker 已安装但本地 Socket/daemon 不可读时阻断。失败、取消、缺少结束标记或输出超限时不打印部分远端输出。错误日志默认只记录操作阶段与类型，SSH 连接失败时额外保留已脱敏且有长度限制的原始诊断；用户提示不含这些细节。报告只收集基线，不给出“可安装”结论，仍含运行拓扑等运维信息，应妥善保存。本工具不提供备份、替换集群或其他写入功能。
