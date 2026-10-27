@@ -98,13 +98,22 @@ for edo_tool in docker sort awk sha256sum; do command -v "$edo_tool" >/dev/null 
 edo_docker_binary=$(command -v docker)
 edo_docker() { env -i PATH="$PATH" HOME=/var/empty DOCKER_HOST=unix:///var/run/docker.sock "$edo_docker_binary" --host=unix:///var/run/docker.sock "$@" 2>/dev/null; }
 edo_valid_id() { [ "${#1}" = 64 ] || return 1; case "$1" in *[!0-9a-f]*) return 1;; esac; }
+# Docker 的 Mounts 来自无序映射；逐条完整 JSON 排序，不删除字段或重复项。
+edo_inspect_projection() {
+  edo_projection=$(edo_docker inspect --type container --format "$1" "$2") || return 1
+  edo_projection_header=$(printf '%s\n' "$edo_projection" | awk 'NR == 1 {print}') || return 1
+  edo_projection_mounts=$(printf '%s\n' "$edo_projection" | awk 'NR > 1 {print}') || return 1
+  edo_projection_sorted=$(printf '%s\n' "$edo_projection_mounts" | LC_ALL=C sort) || return 1
+  edo_projection_json=$(printf '%s\n' "$edo_projection_sorted" | awk 'BEGIN {printf "["} NF {if (count++) printf ","; printf "%s", $0} END {printf "]"}') || return 1
+  printf '%s|%s\n' "$edo_projection_header" "$edo_projection_json"
+}
 edo_target_template='{{.Id}}|{{.Name}}|{{index .Config.Labels "app"}}|{{index .Config.Labels "k3d.cluster"}}|{{index .Config.Labels "k3d.role"}}|{{.State.Running}}|{{.HostConfig.AutoRemove}}'
 edo_running_identity="$edo_stop_id|/k3d-$edo_stop_cluster-server-0|k3d|$edo_stop_cluster|server|true|false"
 edo_stopped_identity="$edo_stop_id|/k3d-$edo_stop_cluster-server-0|k3d|$edo_stop_cluster|server|false|false"
 [ "$(edo_docker inspect --type container --format "$edo_target_template" "$edo_stop_id")" = "$edo_running_identity" ] || edo_fail container_identity
 [ "$(edo_docker ps -a --no-trunc --quiet --filter "label=k3d.cluster=$edo_stop_cluster")" = "$edo_stop_id" ] || edo_fail cluster_not_exclusive
-edo_configuration_template='{{.Id}}|{{json .Name}}|{{json .Config.Labels}}|{{.HostConfig.AutoRemove}}|{{json .HostConfig.RestartPolicy}}|{{json .HostConfig.NetworkMode}}|{{json .Mounts}}'
-edo_target_configuration=$(edo_docker inspect --type container --format "$edo_configuration_template" "$edo_stop_id") || edo_fail target_configuration
+edo_configuration_template='{{.Id}}|{{json .Name}}|{{json .Config.Labels}}|{{.HostConfig.AutoRemove}}|{{json .HostConfig.RestartPolicy}}|{{json .HostConfig.NetworkMode}}{{"\n"}}{{range .Mounts}}{{json .}}{{"\n"}}{{end}}'
+edo_target_configuration=$(edo_inspect_projection "$edo_configuration_template" "$edo_stop_id") || edo_fail target_configuration
 edo_other_ids() {
   edo_ids=$(edo_docker ps -a --no-trunc --quiet) || return 1
   edo_sorted_ids=$(printf '%s\n' "$edo_ids" | sort) || return 1
@@ -122,7 +131,7 @@ edo_other_snapshot() {
   edo_snapshot_ids=$(edo_other_ids) || return 1
   while IFS= read -r edo_other_id; do
     [ -n "$edo_other_id" ] || continue
-    edo_docker inspect --type container --format '{{.Id}}|{{json .Name}}|{{.State.Pid}}|{{.State.StartedAt}}|{{.RestartCount}}|{{.State.Status}}|{{json .HostConfig.NetworkMode}}|{{json .Mounts}}|{{range $name,$network := .NetworkSettings.Networks}}{{printf "%q:%s," $name $network.NetworkID}}{{end}}' "$edo_other_id" || return 1
+    edo_inspect_projection '{{.Id}}|{{json .Name}}|{{.State.Pid}}|{{.State.StartedAt}}|{{.RestartCount}}|{{.State.Status}}|{{json .HostConfig.NetworkMode}}|{{range $name,$network := .NetworkSettings.Networks}}{{printf "%q:%s," $name $network.NetworkID}}{{end}}{{"\n"}}{{range .Mounts}}{{json .}}{{"\n"}}{{end}}' "$edo_other_id" || return 1
   done <<EDO_OTHER_IDS
 $edo_snapshot_ids
 EDO_OTHER_IDS
@@ -154,14 +163,14 @@ edo_other_before=$(printf '%s\n' "$edo_other_raw_before" | edo_normalize_snapsho
 # 紧邻唯一一次停机再次核验，其他容器的原始投影只保存在当前 Shell 内存。
 [ "$(edo_docker inspect --type container --format "$edo_target_template" "$edo_stop_id")" = "$edo_running_identity" ] || edo_fail changed_identity
 [ "$(edo_docker ps -a --no-trunc --quiet --filter "label=k3d.cluster=$edo_stop_cluster")" = "$edo_stop_id" ] || edo_fail changed_cluster
-[ "$(edo_docker inspect --type container --format "$edo_configuration_template" "$edo_stop_id")" = "$edo_target_configuration" ] || edo_fail changed_target_configuration
+[ "$(edo_inspect_projection "$edo_configuration_template" "$edo_stop_id")" = "$edo_target_configuration" ] || edo_fail changed_target_configuration
 edo_other_raw_recheck=$(edo_other_snapshot) || edo_fail other_snapshot
 edo_other_recheck=$(printf '%s\n' "$edo_other_raw_recheck" | edo_normalize_snapshot recheck) || edo_fail restarting_baseline
 [ "$edo_other_recheck" = "$edo_other_before" ] || edo_fail other_containers_changed_before_stop
 edo_docker stop --time 60 "$edo_stop_id" >/dev/null || edo_fail stop_failed
 [ "$(edo_docker inspect --type container --format "$edo_target_template" "$edo_stop_id")" = "$edo_stopped_identity" ] || edo_fail not_stopped
 [ "$(edo_docker inspect --type container --format '{{.State.Pid}}' "$edo_stop_id")" = 0 ] || edo_fail not_stopped
-[ "$(edo_docker inspect --type container --format "$edo_configuration_template" "$edo_stop_id")" = "$edo_target_configuration" ] || edo_fail changed_target_after_stop
+[ "$(edo_inspect_projection "$edo_configuration_template" "$edo_stop_id")" = "$edo_target_configuration" ] || edo_fail changed_target_after_stop
 [ "$(edo_docker ps -a --no-trunc --quiet --filter "label=k3d.cluster=$edo_stop_cluster")" = "$edo_stop_id" ] || edo_fail changed_cluster
 edo_other_raw_after=$(edo_other_snapshot) || edo_fail other_snapshot
 edo_other_after=$(printf '%s\n' "$edo_other_raw_after" | edo_normalize_snapshot after) || edo_fail restarting_after

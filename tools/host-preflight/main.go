@@ -387,6 +387,7 @@ func run(ctx context.Context, o options, output io.Writer, stage *string) error 
 	}
 	commandErr := session.Wait()
 	if o.stopOnlyK3d {
+		// 远端仅规范化无序挂载集合，完整配置和其他运行基线仍须严格相等。
 		return writeStopOnlyReport(output, buffer, diagnostics, commandErr, o.stopOptions())
 	}
 	if o.backupStopK3d {

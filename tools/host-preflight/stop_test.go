@@ -120,7 +120,7 @@ func TestStopOnlyFailureDiagnosticsAndReceiptNeverExposeRawOutput(t *testing.T) 
 }
 
 func TestStopOnlyShellGuardsExactTargetAndOtherContainers(t *testing.T) {
-	for _, mode := range []string{"success", "non-root", "wrong-id", "auto-remove", "already-stopped", "extra-agent", "list-failed", "sort-failed", "inspect-failed", "changed-target", "changed-before", "stop-failed", "not-stopped", "target-config-after", "stable-restarted", "other-disappeared", "new-other", "expected-flapping", "unconfirmed-flapping", "stable-marked-flapping", "flapping-config-changed", "flapping-count-decreased", "flapping-disappeared", "wrong-flapping-id", "private-stderr"} {
+	for _, mode := range []string{"success", "non-root", "wrong-id", "auto-remove", "already-stopped", "extra-agent", "list-failed", "sort-failed", "inspect-failed", "changed-target", "changed-before", "stop-failed", "not-stopped", "target-config-after", "stable-restarted", "other-disappeared", "new-other", "expected-flapping", "unconfirmed-flapping", "stable-marked-flapping", "flapping-config-changed", "flapping-count-decreased", "flapping-disappeared", "wrong-flapping-id", "private-stderr", "mount-order", "target-mount-order", "mount-source-changed", "mount-rw-changed", "mount-driver-changed", "mount-propagation-changed", "mount-name-changed", "mount-added", "mount-removed", "mount-duplicate-added"} {
 		t.Run(mode, func(t *testing.T) {
 			root := t.TempDir()
 			bin := filepath.Join(root, "bin")
@@ -173,8 +173,8 @@ func TestStopOnlyShellGuardsExactTargetAndOtherContainers(t *testing.T) {
 			err = cmd.Run()
 			log, _ := os.ReadFile(calls)
 			stops := strings.Count(string(log), "stop --time 60 "+o.ContainerID+"\n")
-			wantSuccess := mode == "success" || mode == "expected-flapping" || mode == "private-stderr"
-			wantStop := wantSuccess || mode == "stop-failed" || mode == "not-stopped" || mode == "target-config-after" || mode == "stable-restarted" || mode == "other-disappeared" || mode == "new-other" || mode == "flapping-config-changed" || mode == "flapping-count-decreased" || mode == "flapping-disappeared"
+			wantSuccess := mode == "success" || mode == "expected-flapping" || mode == "private-stderr" || mode == "mount-order" || mode == "target-mount-order"
+			wantStop := wantSuccess || mode == "stop-failed" || mode == "not-stopped" || mode == "target-config-after" || mode == "stable-restarted" || mode == "other-disappeared" || mode == "new-other" || mode == "flapping-config-changed" || mode == "flapping-count-decreased" || mode == "flapping-disappeared" || (strings.HasPrefix(mode, "mount-") && mode != "mount-order")
 			if (err == nil) != wantSuccess || (stops == 1) != wantStop {
 				t.Fatalf("守卫或停机次数错误 mode=%s err=%v stops=%d stdout=%q stderr=%q calls=%s", mode, err, stops, stdout.String(), stderr.String(), log)
 			}
@@ -212,6 +212,29 @@ other=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
 flapping=cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
 after=false
 [ ! -e "$state" ] || after=true
+emit_mounts() {
+  mount_a='{"Type":"volume","Name":"volume-a","Source":"/data/a","Destination":"/a","Driver":"local","Mode":"z","RW":true,"Propagation":"rprivate"}'
+  mount_b='{"Type":"bind","Source":"/data/b","Destination":"/b","Mode":"ro","RW":false,"Propagation":"rprivate"}'
+  if [ "$after" = true ] && [ "$id" = "$other" ]; then
+    case "$mode" in
+      mount-source-changed) mount_a='{"Type":"volume","Name":"volume-a","Source":"/changed","Destination":"/a","Driver":"local","Mode":"z","RW":true,"Propagation":"rprivate"}';;
+      mount-rw-changed) mount_a='{"Type":"volume","Name":"volume-a","Source":"/data/a","Destination":"/a","Driver":"local","Mode":"z","RW":false,"Propagation":"rprivate"}';;
+      mount-driver-changed) mount_a='{"Type":"volume","Name":"volume-a","Source":"/data/a","Destination":"/a","Driver":"changed","Mode":"z","RW":true,"Propagation":"rprivate"}';;
+      mount-propagation-changed) mount_a='{"Type":"volume","Name":"volume-a","Source":"/data/a","Destination":"/a","Driver":"local","Mode":"z","RW":true,"Propagation":"shared"}';;
+      mount-name-changed) mount_a='{"Type":"volume","Name":"changed","Source":"/data/a","Destination":"/a","Driver":"local","Mode":"z","RW":true,"Propagation":"rprivate"}';;
+      mount-added) printf '%s\n' '{"Type":"volume","Name":"volume-c","Destination":"/c"}';;
+      mount-duplicate-added) printf '%s\n' "$mount_a";;
+      mount-removed) printf '%s\n' "$mount_b"; return;;
+    esac
+  fi
+  if [ "$conf" = CHANGED ]; then mount_a='{"Source":"/configuration-changed"}'; fi
+  if { [ "$mode" = mount-order ] && [ "$id" = "$other" ]; } || { [ "$mode" = target-mount-order ] && [ "$id" = "$target" ]; }; then
+    mount_count=0; [ ! -e "$counter.mount.$id" ] || mount_count=$(cat "$counter.mount.$id")
+    mount_count=$((mount_count+1)); printf '%s' "$mount_count" > "$counter.mount.$id"
+    if [ $((mount_count % 2)) = 0 ]; then printf '%s\n%s\n' "$mount_b" "$mount_a"; return; fi
+  fi
+  printf '%s\n%s\n' "$mount_a" "$mount_b"
+}
 case "$1" in
  ps)
    [ "$mode" != list-failed ] || exit 41
@@ -242,7 +265,8 @@ case "$1" in
        *RestartPolicy*)
          conf=UNCHANGED
          if [ "$mode" = target-config-after ] && [ "$after" = true ]; then conf=CHANGED; fi
-         printf '%s|"/k3d-edo-host-link-server-0"|{}|false|{}|"network"|%s\n' "$target" "$conf";;
+         printf '%s|"/k3d-edo-host-link-server-0"|{}|false|{}|"network"\n' "$target"
+         emit_mounts;;
        '{{.State.Pid}}') printf '0\n';;
        *) exit 43;;
      esac
@@ -263,7 +287,8 @@ case "$1" in
        fi
      fi
      if [ "$mode" = private-stderr ]; then printf 'PRIVATE_SECRET=must-not-escape\n' >&2; fi
-     printf '%s|"/fixture"|%s|%s|%s|%s|"bridge"|%s|"bridge":networkid,\n' "$id" "$pid" "$started" "$count" "$status" "$conf"
+     printf '%s|"/fixture"|%s|%s|%s|%s|"bridge"|"bridge":networkid,\n' "$id" "$pid" "$started" "$count" "$status"
+     emit_mounts
    fi;;
  stop)
    [ "$*" = "stop --time 60 $target" ] || exit 44
