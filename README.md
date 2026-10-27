@@ -50,7 +50,7 @@ docker compose --env-file .env logs -f api
 docker compose --env-file .env down
 ```
 
-更新时，先在开发机提交修改并推送到 GitHub，再在服务器拉取代码、构建并重新部署：
+更新时，先完成本地测试与构建，再在开发机提交修改并推送到 GitHub，最后在服务器拉取代码、构建并重新部署；发布无需等待 GitHub Actions。现有 systemd 服务的备份、切换及回滚流程见 [EDO 保护发布](tools/release-activate/README.md)。Docker Compose 更新示例：
 
 ```bash
 git pull --ff-only origin main
