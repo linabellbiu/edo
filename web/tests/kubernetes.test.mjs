@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import {readFileSync} from 'node:fs'
-import {test} from 'node:test'
+import {afterEach,test} from 'node:test'
 import {parse,compileScript} from '@vue/compiler-sfc'
 import ts from 'typescript'
 import * as vue from 'vue'
@@ -115,18 +115,20 @@ test('总览只展示获准资源，缺少一个节点的用量时不把部分�
  const missing=component.setup({...props,data:{...props.data,nodes:null}},{expose(){},emit(){}})
  assert.equal(missing.totals.value.memory,undefined);assert.equal(missing.percentage(undefined,undefined),'—')
 })
+const editorScopes=[]
+afterEach(()=>{for(const scope of editorScopes.splice(0))scope.stop()})
 function editor(kind,object){
- const watchers=[]
  const component=load('../src/components/KubeResourceEditor.vue',{
-  vue:{...vue,watch:(source,callback)=>watchers.push(callback)},
+  vue:{...vue,onMounted(){},onBeforeUnmount(){}},
   'vue-i18n':{useI18n:()=>({t:key=>key})},
   '@/api/kubernetes':api,
   '@/utils/kubernetesWorkloadForm':workloadForm,
   '@/utils/kubernetesPresentation':presentation,
  }).default
- const props={open:true,cluster:'cluster-a',namespace:'team',type:api.kubeTypes.find(item=>item.kind===kind),object}
- const state=component.setup(props,{expose(){},emit(){}})
- watchers[0](true)
+ const props=vue.reactive({open:true,cluster:'cluster-a',namespace:'team',type:api.kubeTypes.find(item=>item.kind===kind),object})
+ const scope=vue.effectScope();editorScopes.push(scope)
+ let state
+ scope.run(()=>{state=component.setup(props,{expose(){},emit(){}})})
  return state
 }
 test('工作负载编辑保留探针、资源限制、Secret 引用和其他容器字段，不提交服务端状态',()=>{
