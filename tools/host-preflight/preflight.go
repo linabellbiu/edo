@@ -71,7 +71,7 @@ func redact(value string, secrets []string) string {
 	return value
 }
 
-// 固定脚本只查询运行状态；不读取容器环境变量、完整命令行、密钥或 kubeconfig。
+// 固定脚本只查询运行状态；不输出容器环境、命令行、密钥或 kubeconfig。
 const preflightScript = `set -eu
 PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 export PATH
@@ -88,7 +88,7 @@ if command -v systemctl >/dev/null 2>&1; then
   edo_query system_state systemctl is-system-running
   edo_query docker_service systemctl show docker -p ActiveState -p MainPID -p ExecMainStartTimestamp -p NRestarts
   edo_query k3s_service systemctl show k3s -p LoadState -p ActiveState -p MainPID
-fi
+` + nativeServiceProbe + `fi
 if command -v rc-status >/dev/null 2>&1; then edo_query openrc_services rc-status; fi
 printf 'HOST_CAPACITY\n'
 edo_query cpu getconf _NPROCESSORS_ONLN
