@@ -11,6 +11,24 @@ function load(path,modules={},inlineTemplate=false){
  new Function('require','module','exports',output)(key=>modules[key]??{},module,module.exports);return module.exports
 }
 const api=load('../src/api/kubernetes.ts'),form=load('../src/utils/kubernetesWorkloadForm.ts',{'@/api/kubernetes':api}),diagnostics=load('../src/utils/kubernetesDiagnostics.ts',{'@/api/kubernetes':api})
+function metricSummaryHarness(){
+ const sampledAt=Date.parse('2026-10-27T04:00:00Z')
+ const labels={'k8s.nodeUsed':'使用量','k8s.resourceRequests':'资源申请','k8s.nodeDeclaredLimits':'已配置限制'}
+ const component=load('../src/components/KubeResourceDiagnostics.vue',{
+  vue:{...vue,onMounted(){},onBeforeUnmount(){},watch(){}},
+  'vue-i18n':{useI18n:()=>({t:key=>labels[key]??key,te:()=>false,locale:vue.ref('zh-CN')})},
+  'echarts/core':{use(){}},
+  '@/stores/preferences':{usePreferencesStore:()=>({theme:'light'})},
+  '@/api/kubernetes':api,'@/utils/kubernetesDiagnostics':diagnostics,
+ }).default
+ const props=vue.reactive({cluster:'cluster',object:{kind:'Pod',metadata:{name:'web',namespace:'team',uid:'pod-current',creationTimestamp:'2026-10-27T03:00:00Z'},spec:{containers:[
+  {name:'app',resources:{requests:{cpu:'100m'},limits:{memory:'1Gi'}}},
+  {name:'sidecar',resources:{requests:{cpu:'50m',memory:'16Mi'},limits:{cpu:'200m',memory:'64Mi'}}},
+ ]}},type:api.kubeTypes.find(type=>type.kind==='Pod'),autoRefresh:false,canFollow:()=>false,compact:true})
+ const state=component.setup(props,{expose(){},emit(){}})
+ state.now.value=sampledAt
+ return {state,props,sampledAt,sample(containers,changes={}){state.data.value={uid:'pod-current',state:'ok',metrics_at:new Date(sampledAt).toISOString(),containers,...changes}}}
+}
 test('容器表单编辑镜像时保留原探针、扩展资源、密钥引用、启动参数和挂载选项',()=>{
  const raw={name:'app',image:'old:1',resources:{requests:{cpu:'100m','nvidia.com/gpu':'1'},limits:{cpu:'1','nvidia.com/gpu':'1'}},readinessProbe:{httpGet:{path:'/ready',port:'http',httpHeaders:[{name:'X-Probe',value:'yes'}]}},env:[{name:'TOKEN',valueFrom:{secretKeyRef:{name:'private',key:'token'}}}],envFrom:[{secretRef:{name:'private'}}],securityContext:{runAsNonRoot:true},command:['sh','-c','echo one\necho two'],volumeMounts:[{name:'data',mountPath:'/data',subPathExpr:'$(POD_NAME)',mountPropagation:'HostToContainer'}]}
  const original=JSON.stringify(raw),state=form.containerForm(raw);state.image='new:2'
@@ -39,6 +57,41 @@ test('Pod 指标缺失、旧采样、同名新 UID 不伪造零，Init 和临时
  const metrics={uid:'p1',state:'ok',metrics_at:new Date(now).toISOString(),containers:[{name:'app',cpu:0,memory:128*1024**2}]}
  let rows=diagnostics.podMetricRows(pod,metrics,now);assert.equal(rows.length,3);assert.equal(rows[0].cpu.used,0);assert.equal(rows[0].cpu.requests,.1);assert.equal(rows[0].cpu.limits,null);assert.equal(rows[1].cpu.used,null)
  for(const change of [{uid:'old'},{state:'unavailable'},{metrics_at:new Date(now-180000).toISOString()}])assert.equal(diagnostics.podMetricRows(pod,{...metrics,...change},now)[0].cpu.used,null)
+})
+test('Pod 指标标题区分完整的真实零、完整总量与没有容器的数据',()=>{
+ const h=metricSummaryHarness()
+ h.sample([{name:'app',cpu:0,memory:0},{name:'sidecar',cpu:0,memory:0}])
+ assert.equal(h.state.metricTotal('cpu'),'0 m');assert.equal(h.state.metricTotal('memory'),'0 MiB')
+ h.sample([{name:'app',cpu:.1,memory:32*1024**2},{name:'sidecar',cpu:.05,memory:16*1024**2}])
+ assert.equal(h.state.metricTotal('cpu'),'150 m');assert.equal(h.state.metricTotal('memory'),'48 MiB')
+ h.props.object.spec.containers=[]
+ assert.equal(h.state.metricTotal('cpu'),'—');assert.equal(h.state.metricTotal('memory'),'—')
+})
+test('Pod 指标标题不能把缺测容器、旧采样或其他 UID 的部分用量当作总量',()=>{
+ const h=metricSummaryHarness(),complete=[{name:'app',cpu:.1,memory:32*1024**2},{name:'sidecar',cpu:.05,memory:16*1024**2}]
+ for(const [containers,changes] of [
+  [[complete[0]],{}],
+  [complete,{metrics_at:new Date(h.sampledAt-120001).toISOString()}],
+  [complete,{uid:'previous-pod'}],
+  [complete,{state:'unavailable'}],
+ ]){
+  h.sample(containers,changes)
+  assert.equal(h.state.metricTotal('cpu'),'—');assert.equal(h.state.metricTotal('memory'),'—')
+ }
+ h.sample([complete[0],{name:'sidecar',cpu:0}])
+ assert.equal(h.state.metricTotal('cpu'),'100 m');assert.equal(h.state.metricTotal('memory'),'—')
+ h.sample(complete);h.state.now.value=h.sampledAt+120001
+ assert.equal(h.state.metricTotal('cpu'),'—');assert.equal(h.state.metricTotal('memory'),'—')
+})
+test('Pod 指标无采样时可访问描述仍保留各容器申请与限制，并用破折号表示缺失',()=>{
+ const h=metricSummaryHarness()
+ h.sample([{name:'app',cpu:.1,memory:32*1024**2}],{metrics_at:new Date(h.sampledAt-120001).toISOString()})
+ const cpu=h.state.metricDescription('cpu'),memory=h.state.metricDescription('memory')
+ assert.match(cpu,/app: 使用量 —/);assert.match(cpu,/资源申请 100 m/);assert.match(cpu,/已配置限制 —/)
+ assert.match(cpu,/sidecar: 使用量 —/);assert.match(cpu,/资源申请 50 m/);assert.match(cpu,/已配置限制 200 m/)
+ assert.match(memory,/app: 使用量 —/);assert.match(memory,/资源申请 —/);assert.match(memory,/已配置限制 1 GiB/)
+ assert.match(memory,/sidecar: 使用量 —/);assert.match(memory,/资源申请 16 MiB/);assert.match(memory,/已配置限制 64 MiB/)
+ assert.doesNotMatch(cpu,/使用量 0 m/);assert.doesNotMatch(memory,/使用量 0 MiB/)
 })
 test('生命周期按真实时间排序并区分当前与上次退出，不补造就绪时间',()=>{
  const pod={metadata:{creationTimestamp:'2026-01-01T00:00:00Z'},spec:{containers:[{name:'app'}]},status:{conditions:[{type:'Ready',status:'False',lastTransitionTime:'2026-01-01T00:02:00Z',reason:'ContainersNotReady'},{type:'Unknown'}],containerStatuses:[{name:'app',state:{waiting:{reason:'CrashLoopBackOff'}},lastState:{terminated:{exitCode:137,reason:'OOMKilled',startedAt:'2026-01-01T00:00:30Z',finishedAt:'2026-01-01T00:01:00Z'}}}]}}
@@ -214,6 +267,7 @@ test('折线使用真实时间轴、断档不连线且单点可见，默认诊�
   const single=options.at(-2);assert.equal(single.xAxis.min,now-30000);assert.equal(single.xAxis.max,now+30000);assert.deepEqual(single.series[0].data,[[now,200]])
   state.data.value={uid:'p1',state:'forbidden'};assert.equal(state.trendHint.value,'k8s.podTrendForbidden');assert.equal(state.history.value.points.length,1)
   props.trend=false;await state.render();assert.equal(options.at(-2).xAxis.type,'value');assert.ok(options.at(-2).series.every(series=>series.type==='bar'))
+  assert.equal(options.at(-2).series[1].itemStyle.color,'#93a6c3');assert.equal(options.at(-2).series[2].itemStyle.color,'#cdd5e1');assert.equal(state.chartHeight.value,262)
  }finally{globalThis.getComputedStyle=previousStyle}
 })
 test('诊断请求冻结完整对象范围，集群切换但 UID 相同也丢弃迟到结果与错误',async()=>{
@@ -251,7 +305,7 @@ test('紧凑趋势的资源核对默认折叠，普通趋势默认展开且所�
  const props={cluster:'cluster',object:{kind:'Pod',metadata:{name:'web',namespace:'team',uid:'p1'},spec:{containers:[{name:'web',resources:{requests:{cpu:'100m'},limits:{memory:'1Gi'}}}],initContainers:[{name:'prepare',resources:{requests:{cpu:'25m'}}}]}},type:api.kubeTypes.find(type=>type.kind==='Pod'),trend:true,autoRefresh:false,canFollow:()=>true}
  const render=async compact=>{
   const app=vue.createSSRApp(component,{...props,compact}),stub={setup:(_props,{slots})=>()=>vue.h('div',slots.default?.())}
-  for(const name of ['a-alert','a-button','a-tag','a-timeline','a-timeline-item'])app.component(name,stub)
+  for(const name of ['a-alert','a-button','a-card','a-tag','a-timeline','a-timeline-item'])app.component(name,stub)
   return renderToString(app)
  }
  const compact=await render(true),expanded=await render(false)

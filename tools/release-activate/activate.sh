@@ -81,9 +81,16 @@ ready() {
   done
   return 1
 }
+check_validation() {
+  local marker
+  for marker in validation.ok ci.ok; do
+    if [[ -f "$release/$marker" && "$(<"$release/$marker")" == "$target" ]]; then return 0; fi
+  done
+  fail '缺少同一版本的测试/构建验证凭据'
+}
 check_candidate() {
   local branch revision status version metadata
-  [[ "$(<"$release/ci.ok")" == "$target" ]] || fail '缺少同一版本的 CI 成功凭据'
+  check_validation
   branch=$(git -C "$repo" symbolic-ref --short HEAD) || return 1
   revision=$(git -C "$repo" rev-parse HEAD) || return 1
   status=$(git -C "$repo" status --porcelain) || return 1

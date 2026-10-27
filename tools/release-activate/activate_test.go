@@ -185,6 +185,37 @@ func TestContainerSnapshotRejectsFailuresAndUnexpectedIDs(t *testing.T) {
 	}
 }
 
+func TestValidationAcceptsMatchingLocalOrCIEvidence(t *testing.T) {
+	target := strings.Repeat("a", 40)
+	for _, scenario := range []struct {
+		name, local, ci string
+		wantOK          bool
+	}{
+		{name: "local", local: target, wantOK: true},
+		{name: "ci_compatible", ci: target, wantOK: true},
+		{name: "ci_fallback", local: strings.Repeat("b", 40), ci: target, wantOK: true},
+		{name: "wrong_revision", local: strings.Repeat("b", 40)},
+		{name: "missing"},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			root := t.TempDir()
+			if scenario.local != "" {
+				putFixture(t, filepath.Join(root, "validation.ok"), scenario.local+"\n", 0600)
+			}
+			if scenario.ci != "" {
+				putFixture(t, filepath.Join(root, "ci.ok"), scenario.ci+"\n", 0600)
+			}
+			out, err := bashFixture(t, "release="+shellQuote(root)+"\ntarget="+shellQuote(target)+"\ncheck_validation")
+			if (err == nil) != scenario.wantOK {
+				t.Fatalf("validation=%q err=%v, want success=%t", out, err, scenario.wantOK)
+			}
+			if !scenario.wantOK && !strings.Contains(out, "测试/构建验证凭据") {
+				t.Fatalf("missing validation failure: %q", out)
+			}
+		})
+	}
+}
+
 func TestReleaseGuardScriptContract(t *testing.T) {
 	source, err := os.ReadFile("activate.sh")
 	if err != nil {
@@ -192,7 +223,7 @@ func TestReleaseGuardScriptContract(t *testing.T) {
 	}
 	text := string(source)
 	for _, required := range []string{
-		"flock -n 9", "ci.ok", "symbolic-ref --short HEAD", "status --porcelain", "vcs.modified=", "vcs.revision=",
+		"flock -n 9", "validation.ok", "ci.ok", "symbolic-ref --short HEAD", "status --porcelain", "vcs.modified=", "vcs.revision=",
 		"previous-config.sha256", "artifacts.sha256", "pending", "pipeline_runs", "k3s_installations",
 		"pg_dump -Fc", "pg_restore -l", "mv -- \"$repo/bin/edo.next\" \"$repo/bin/edo\"", "trap rollback EXIT",
 		"/api/v1/health/ready", "same_binary \"/proc/$pid/exe\"", "runners-before", "container-starts-before",
