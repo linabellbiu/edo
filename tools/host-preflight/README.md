@@ -79,3 +79,11 @@ Docker inspect 的挂载数组不保证顺序。比较前按固定字符顺序�
 **失败可能发生在容器停止之后。** 没有完成凭据就不得继续安装，不自动启动、删除或清理现场，也不应把部分归档视为可恢复备份。成功备份不等于完成恢复演练；替换及最终删除仍需独立核对目标与授权。原生安装继续由 EDO 调用官方 `get.k3s.io` 脚本完成，本工具不安装 K3s。
 
 验证：`go test -race ./tools/host-preflight`。复用项目现有数据库、加密、SSH 和 dotenv 库，不新增依赖。
+
+## 已失败自有原生集群的受限镜像源维护
+
+在全部基础主机身份参数之外显式添加 `--configure-native-k3s-china-images --expect-native-installation-id '<原失败安装 UUID>' --expect-native-cluster-id '<该任务已接入的集群 UUID>'`。仅允许当前主机关联的、状态为 failed/interrupted 的原生 create 记录；使用已保存 sudo、完整指纹和只读数据库事务，不改变安装任务或集群业务记录。不能与 k3d、备份、停机或 `--test-sudo` 混用；如另有已确认持续重启的容器，仍需显式提供 `--expect-restarting-container-id '<完整 ID>'`，其余运行基线必须保持一致。
+
+工具核对加密快照中的固定版本、data-dir、node-name、集群连接及 EDO 安装/主机标签。只私下读取固定 `/etc/rancher/k3s/config.yaml`，通过 YAML 节点保留其他字段和凭据；仅将 `system-default-registry` 设置为 `registry.cn-hangzhou.aliyuncs.com`。未知既存仓库、配置覆盖目录、符号链接、所有权/权限异常或读取后身份/内容变化均拒绝。配置以同目录私有临时文件原子替换，只重启 `k3s.service`；不重启 Docker，不改 DNS、防火墙、Swap 或其他容器，不安装、删除或自动恢复。
+
+NAS 侧只对固定仓库执行保留 TLS 校验的 HTTPS `/v2/` 连通检查，200/401 不能证明每个镜像层均可拉取。成功回执仅确认配置摘要、K3s 服务和固定版本及其他服务/容器基线；实际 API/UI 和系统 Pod Ready 必须另行验收。失败可能已更新配置或重启服务，保留现场，不将旧失败任务改称成功；配置原文、凭据和远端原始错误不进入输出或新报告。

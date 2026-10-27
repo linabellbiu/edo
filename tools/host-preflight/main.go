@@ -39,6 +39,8 @@ type options struct {
 	k3dCluster                                                        string
 	backupStopK3d                                                     bool
 	stopOnlyK3d                                                       bool
+	configureNativeImages                                             bool
+	nativeInstallationID, nativeClusterID                             string
 	backup                                                            backupStopOptions
 }
 
@@ -64,6 +66,9 @@ func parseOptions(args []string) (options, error) {
 	f.StringVar(&o.k3dCluster, "k3d-cluster", "", "显式读取指定 k3d 集群的元数据，不输出密钥或环境变量")
 	f.BoolVar(&o.backupStopK3d, "backup-stop-k3d", false, "明确授权旧测试集群停机备份；失败保留现场，不自动恢复")
 	f.BoolVar(&o.stopOnlyK3d, "stop-only-k3d", false, "明确授权仅停止旧测试集群，保留容器、网络与数据卷，不备份或安装")
+	f.BoolVar(&o.configureNativeImages, "configure-native-k3s-china-images", false, "仅维护已失败且已接入的自有原生集群系统镜像源，不改安装任务")
+	f.StringVar(&o.nativeInstallationID, "expect-native-installation-id", "", "已核验的失败原生安装任务 UUID")
+	f.StringVar(&o.nativeClusterID, "expect-native-cluster-id", "", "该任务已接入的集群 UUID")
 	f.StringVar(&o.backup.ContainerID, "expect-container-id", "", "明确停机时已核验的完整容器 ID")
 	f.StringVar(&o.backup.Directory, "backup-directory", "", "停机备份使用的全新持久目录")
 	f.StringVar(&o.backup.OperationID, "operation-id", "", "停机备份操作 UUID")
@@ -72,7 +77,7 @@ func parseOptions(args []string) (options, error) {
 		return o, err
 	}
 	invalidCluster := false
-	writeArguments, backupArguments, testSudoArgument := false, false, false
+	writeArguments, backupArguments, testSudoArgument, nativeArguments := false, false, false, false
 	f.Visit(func(value *flag.Flag) {
 		if value.Name == "k3d-cluster" && !validK3dInventoryCluster(o.k3dCluster) {
 			invalidCluster = true
@@ -84,9 +89,11 @@ func parseOptions(args []string) (options, error) {
 			backupArguments = true
 		case "test-sudo":
 			testSudoArgument = true
+		case "expect-native-installation-id", "expect-native-cluster-id":
+			nativeArguments = true
 		}
 	})
-	if (writeArguments && !o.backupStopK3d && !o.stopOnlyK3d) || (backupArguments && !o.backupStopK3d) || (o.backupStopK3d && o.stopOnlyK3d) || ((o.backupStopK3d || o.stopOnlyK3d) && testSudoArgument) {
+	if (writeArguments && !o.backupStopK3d && !o.stopOnlyK3d && !o.configureNativeImages) || (backupArguments && !o.backupStopK3d) || (o.backupStopK3d && o.stopOnlyK3d) || ((o.backupStopK3d || o.stopOnlyK3d || o.configureNativeImages) && testSudoArgument) || (nativeArguments && !o.configureNativeImages) {
 		return o, errors.New("停机参数必须与唯一显式停机模式一起使用，且不得使用临时 sudo 测试授权")
 	}
 	if invalidCluster {
@@ -114,6 +121,12 @@ func (o options) stopOptions() stopOnlyOptions {
 }
 
 func scriptForOptions(o options) (string, error) {
+	if o.configureNativeImages {
+		return "", validNativeSourceOptions(o)
+	}
+	if o.nativeInstallationID != "" || o.nativeClusterID != "" {
+		return "", errors.New("原生安装身份参数只能用于明确授权的镜像源维护")
+	}
 	if o.stopOnlyK3d {
 		if o.backupStopK3d || o.testSudo || o.backup.Directory != "" || o.backup.OperationID != "" {
 			return "", errors.New("仅停机模式不能与备份或临时 sudo 测试授权混用")
@@ -137,6 +150,7 @@ func main() {
 	o, err := parseOptions(os.Args[1:])
 	if errors.Is(err, flag.ErrHelp) {
 		fmt.Println("用法：host-preflight --env-file <绝对路径> --working-directory <EDO 工作目录> --host-id <UUID> --expect-address <IP> --expect-port <端口> --expect-user <用户名> --expect-fingerprint <完整 SHA256 指纹> [--timeout 2m] [--test-sudo] [--k3d-cluster <集群名称>]\n显式仅停机另加 --stop-only-k3d --k3d-cluster edo-host-link --expect-container-id <完整 ID> [--expect-restarting-container-id <已确认持续重启的完整 ID>]。\n显式停机备份另加 --backup-stop-k3d --k3d-cluster edo-host-link --expect-container-id <完整 ID> --backup-directory <全新持久目录> --operation-id <UUID> [--expect-restarting-container-id <已确认持续重启的完整 ID>]；两个停机模式不能混用，也不能使用 --test-sudo。")
+		fmt.Println("维护已失败自有原生集群的系统镜像源：另加 --configure-native-k3s-china-images --expect-native-installation-id <原安装 UUID> --expect-native-cluster-id <已接入集群 UUID>；不改旧任务状态，不与其他运维模式混用。")
 		return
 	}
 	stage := "校验参数"
@@ -152,6 +166,8 @@ func main() {
 			operation, logMessage = "host_backup_stop_k3d", "旧测试集群停机备份失败"
 		} else if o.stopOnlyK3d {
 			operation, logMessage = "host_stop_only_k3d", "旧测试集群仅停机失败"
+		} else if o.configureNativeImages {
+			operation, logMessage = "host_native_k3s_china_images", "原生集群镜像源维护失败"
 		}
 		attributes := []any{"operation", operation, "stage", stage, "error_type", fmt.Sprintf("%T", err)}
 		var connection *connectionError
@@ -169,11 +185,17 @@ func main() {
 		if errors.As(err, &stop) {
 			attributes = append(attributes, "stop_failure", stop.reason, "remote_exit_code", stop.exitCode)
 		}
+		var source *nativeSourceError
+		if errors.As(err, &source) {
+			attributes = append(attributes, "source_stage", source.stage, "remote_exit_code", source.code)
+		}
 		logger.Error(logMessage, attributes...)
 		if o.backupStopK3d {
 			fmt.Fprintln(os.Stderr, "旧测试集群停机备份未完成；目标容器可能已停止，已保留现场。请勿继续安装、删除或自动恢复，请核对私有证据与保存的授权。")
 		} else if o.stopOnlyK3d {
 			fmt.Fprintln(os.Stderr, "旧测试集群停止流程未完成；目标容器可能已停止，所有容器、网络和数据卷均保留。请勿继续安装、删除或自动恢复，请先核对当前状态。")
+		} else if o.configureNativeImages {
+			fmt.Fprintln(os.Stderr, "原生集群镜像源维护未完成；配置可能已更新或服务可能已重启，请先核对实际状态，不自动恢复，也不修改原安装任务。")
 		} else {
 			fmt.Fprintln(os.Stderr, "主机预检未完成；未执行安装或配置变更，请核对目标、连接和保存的授权。")
 		}
@@ -312,6 +334,9 @@ func run(ctx context.Context, o options, output io.Writer, stage *string) error 
 	if o.stopOnlyK3d && !bundle.UseSudo {
 		return errors.New("仅停机要求已测试并保存 sudo 授权")
 	}
+	if o.configureNativeImages && !bundle.UseSudo {
+		return errors.New("原生镜像源维护要求已测试并保存 sudo 授权")
+	}
 	// 仅供操作者明确授权后的只读提权测试，不写回或放宽主机的持久配置。
 	if o.testSudo {
 		bundle.UseSudo = true
@@ -361,6 +386,9 @@ func run(ctx context.Context, o options, output io.Writer, stage *string) error 
 	command, prefix, err := sudoCommand(host.SSHUsername, bundle, passwordless)
 	if err != nil {
 		return err
+	}
+	if o.configureNativeImages {
+		return configureNativeChinaImages(ctx, o, cfg, key, host, client, command, prefix, output, stage)
 	}
 	*stage = "创建固定只读预检通道"
 	if o.backupStopK3d {

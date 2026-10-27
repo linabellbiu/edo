@@ -16,8 +16,9 @@ const host=id=>({id,name:`Host ${id}`,mode:'ssh',address:`192.0.2.${id}`,is_buil
 const preflightCheck=(status='passed')=>({id:'memory',name:'内存',status,message:status==='failed'?'可用内存不足，请扩容后重试':'满足角色最低要求'})
 const preflightReport=(passed=true)=>({checked_at:new Date().toISOString(),passed,checks:[],hosts:[{host_id:'1',host_name:'Host 1',role:'server',hostname:'master-a',passed,checks:[preflightCheck(passed?'passed':'failed')]}]})
 const preflightFailure=report=>({message:'前置检查未通过',response:{status:409,data:{code:'k3s_preflight_failed',message:'前置检查未通过',preflight:report}}})
-const plan=()=>({id:'plan-1',action:'create',expires_at:new Date(Date.now()+300000).toISOString(),hosts:[{id:'1',name:'Host 1',address:'192.0.2.1',role:'server'}],server_config:'disable: []',agent_config:'',commands:[],warnings:[],preflight:preflightReport()})
-const k3dPlan=(config={agents:1,api_port:16443,bind_address:'192.0.2.1'})=>({...plan(),mode:'k3d',k3d:{...config},endpoint:`https://${config.bind_address}:${config.api_port}`,hosts:[{id:'1',name:'Host 1',address:'192.0.2.1',role:'host'}],preflight:{...preflightReport(),hosts:[{...preflightReport().hosts[0],role:'host'}]}})
+const nativeSources=(download_source='official',system_image_registry='')=>({download_source,installer_url:download_source==='official_cn'?'https://rancher-mirror.rancher.cn/k3s/k3s-install.sh':'https://get.k3s.io',artifact_url:download_source==='official_cn'?'https://rancher-mirror.rancher.cn/k3s':'https://github.com/k3s-io/k3s/releases/download',...(download_source==='official_cn'?{mirror:'cn'}:{}),system_image_registry})
+const plan=()=>({id:'plan-1',action:'create',sources:nativeSources(),expires_at:new Date(Date.now()+300000).toISOString(),hosts:[{id:'1',name:'Host 1',address:'192.0.2.1',role:'server'}],server_config:'disable: []',agent_config:'',commands:[],warnings:[],preflight:preflightReport()})
+const k3dPlan=(config={agents:1,api_port:16443,bind_address:'192.0.2.1'})=>({...plan(),sources:undefined,mode:'k3d',k3d:{...config},endpoint:`https://${config.bind_address}:${config.api_port}`,hosts:[{id:'1',name:'Host 1',address:'192.0.2.1',role:'host'}],preflight:{...preflightReport(),hosts:[{...preflightReport().hosts[0],role:'host'}]}})
 const permissions=['cluster.create','cluster.execute','cluster.update','cluster.read','kubernetes.node.create']
 
 function harness({action='create',codes=permissions,api={}}={}){
@@ -28,7 +29,13 @@ function harness({action='create',codes=permissions,api={}}={}){
   const methods={
     getK3sCatalog:async(cluster,signal)=>{requests.push({method:'catalog',cluster,signal});return cluster?{...catalog,default_version:targetVersion,target_version:targetVersion}:catalog},
     listK3sInstallations:async(cluster,action,signal)=>{requests.push({method:'list',cluster,action,signal});return []},
-    previewK3sPlan:async(body,signal)=>{requests.push({method:'preview',body,signal});previewed=body;return body.mode==='k3d'?k3dPlan(body.k3d):plan()},
+    previewK3sPlan:async(body,signal)=>{
+      requests.push({method:'preview',body,signal});previewed=body
+      if(body.mode==='k3d')return k3dPlan(body.k3d)
+      const sources=nativeSources(body.download_source,body.system_image_registry)
+      if(body.action==='join')delete sources.system_image_registry
+      return {...plan(),sources}
+    },
     startK3sInstallation:async(id,signal)=>{requests.push({method:'start',id,signal});return {id:'run-1',action,mode:previewed?.mode,k3d:previewed?.k3d,status:'pending',hosts:[],logs:''}},
     getK3sInstallation:async(id,signal)=>{requests.push({method:'poll',id,signal});return {id,action,mode:previewed?.mode,k3d:previewed?.k3d,status:'running',hosts:[],logs:'installing'}},
     ...api,
@@ -360,6 +367,165 @@ test('默认安装不提交隐藏的自定义参数；自定义参数和覆盖�
     assert.deepEqual(payload.server_options,{'secrets-encryption':false});assert.equal(payload.overrides,'server:\n  disable: []')
     assert.deepEqual(payload.installer,{version:'v1.37.1+k3s1',INSTALL_K3S_BIN_DIR:'/opt/bin'})
   }finally{ctx.stop()}
+})
+
+test('原生默认与自定义均显式发送下载源，系统镜像源独立选择且国内前缀不重复rancher路径',async()=>{
+  for(const profile of ['default','custom']){
+    const ctx=harness()
+    try{
+      await ctx.open();ctx.ready();ctx.state.form.profile=profile
+      assert.equal(ctx.state.input().download_source,'official')
+      assert.equal(ctx.state.input().system_image_registry,'')
+      ctx.state.form.download_source='official_cn'
+      assert.equal(ctx.state.form.system_image_source,'official')
+      assert.equal(ctx.state.input().system_image_registry,'')
+      await ctx.state.preview()
+      assert.equal(ctx.state.plan.value.sources.download_source,'official_cn')
+      assert.equal(ctx.state.planSourceValid.value,true)
+      ctx.state.form.system_image_source='community_cn'
+      assert.equal(ctx.state.plan.value,undefined)
+      assert.equal(ctx.state.visiblePreflight.value,undefined)
+      const domestic=ctx.state.input()
+      assert.equal(domestic.profile,profile)
+      assert.equal(domestic.download_source,'official_cn')
+      assert.equal(domestic.system_image_registry,'registry.cn-hangzhou.aliyuncs.com')
+      ctx.state.form.system_image_source='custom'
+      assert.equal(ctx.state.canPreview.value,false)
+      ctx.state.form.custom_system_image_registry=' registry.example.com:5000/team '
+      assert.equal(ctx.state.canPreview.value,true)
+      assert.equal(ctx.state.input().system_image_registry,'registry.example.com:5000/team')
+      await ctx.state.preview()
+      assert.equal(ctx.state.planSourceValid.value,true)
+    }finally{ctx.stop()}
+  }
+})
+
+test('加入Master和Worker均能选国内下载源，但默认与自定义都不发送顶层系统镜像源',async()=>{
+  for(const role of ['agent','server'])for(const profile of ['default','custom']){
+    const ctx=harness({action:'join'})
+    try{
+      await ctx.open();ctx.state.form.join_role=role;await settle();ctx.ready()
+      Object.assign(ctx.state.form,{profile,server_token:role==='server'?'explicit-test-token':'',download_source:'official_cn',system_image_source:'custom',custom_system_image_registry:'must-not-send.example/team'})
+      const input=ctx.state.input()
+      assert.equal(input.download_source,'official_cn')
+      assert.equal(Object.hasOwn(input,'system_image_registry'),false)
+      await ctx.state.preview()
+      assert.equal(ctx.state.planSourceValid.value,true)
+      assert.equal(ctx.state.sourceFacts.value.find(item=>item.label==='k8s.systemImageSource').value,'k8s.systemImageInheritedUnrecorded')
+    }finally{ctx.stop()}
+  }
+})
+
+test('仅新建时系统镜像高级选项由常规控件管理，加入Master保留原有高级校验入口',async()=>{
+  for(const action of ['create','join']){
+    const ctx=harness({action,api:{getK3sCatalog:async()=>({...catalog,server:[{name:'system-default-registry',type:'string'}]})}})
+    try{
+      await ctx.open();ctx.state.form.join_role='server';await settle()
+      assert.equal(Boolean(ctx.state.serverOptionChoices.value[0].managed),action==='create')
+    }finally{ctx.stop()}
+  }
+})
+
+test('下载源和系统镜像源往返切换均取消旧预检，旧成功或失败不能恢复计划',async()=>{
+  for(const field of ['download_source','system_image_source','custom_system_image_registry'])for(const failure of [false,true]){
+    const pending=deferred(),signals=[]
+    const ctx=harness({api:{previewK3sPlan:(_,signal)=>{signals.push(signal);return pending.promise}}})
+    try{
+      await ctx.open();ctx.ready()
+      if(field==='custom_system_image_registry')Object.assign(ctx.state.form,{system_image_source:'custom',custom_system_image_registry:'one.example/team'})
+      const previous=ctx.state.form[field],request=ctx.state.preview()
+      assert.equal(ctx.state.busy.value,true)
+      ctx.state.form[field]=field==='download_source'?'official_cn':field==='system_image_source'?'community_cn':'two.example/team'
+      assert.equal(signals[0].aborted,true)
+      assert.equal(ctx.state.busy.value,false)
+      ctx.state.form[field]=previous
+      if(failure)pending.reject(preflightFailure(preflightReport(false)))
+      else pending.resolve({...plan(),sources:nativeSources('official',field==='custom_system_image_registry'?'one.example/team':'')})
+      await request;await settle()
+      assert.equal(ctx.state.plan.value,undefined)
+      assert.equal(ctx.state.visiblePreflight.value,undefined)
+      assert.equal(ctx.state.error.value,'')
+      await ctx.state.execute()
+      assert.ok(!ctx.requests.some(item=>item.method==='start'))
+    }finally{ctx.stop()}
+  }
+})
+
+test('k3d完全省略原生来源字段并隔离草稿，切回native恢复明确来源选择',async()=>{
+  const ctx=harness()
+  try{
+    await ctx.open();ctx.ready()
+    Object.assign(ctx.state.form,{download_source:'official_cn',system_image_source:'community_cn'})
+    ctx.state.form.mode='k3d';await settle();ctx.ready();await settle()
+    Object.assign(ctx.state.form,{download_source:'official_cn',system_image_source:'custom',custom_system_image_registry:'hidden.example/team'})
+    const input=ctx.state.input()
+    assert.equal(Object.hasOwn(input,'download_source'),false)
+    assert.equal(Object.hasOwn(input,'system_image_registry'),false)
+    await ctx.state.preview()
+    assert.equal(ctx.state.planSourceValid.value,true)
+    ctx.state.form.mode='native';await settle()
+    assert.equal(ctx.state.plan.value,undefined)
+    assert.equal(ctx.state.form.download_source,'official_cn')
+    assert.equal(ctx.state.form.system_image_source,'community_cn')
+    assert.equal(ctx.state.input().system_image_registry,'registry.cn-hangzhou.aliyuncs.com')
+  }finally{ctx.stop()}
+})
+
+test('原生计划来源缺失或与选择不符不能确认，完整的服务端来源才可执行',async()=>{
+  for(const sources of [undefined,{...nativeSources(),download_source:'official_cn'},{...nativeSources(),installer_url:''},{...nativeSources(),artifact_url:''},{...nativeSources(),system_image_registry:'other.example'},(({system_image_registry,...rest})=>rest)(nativeSources())]){
+    const ctx=harness({api:{previewK3sPlan:async()=>({...plan(),sources})}})
+    try{
+      await ctx.open();ctx.ready();await ctx.state.preview()
+      assert.equal(ctx.state.plan.value,undefined)
+      assert.equal(ctx.state.error.value,'k8s.installSourceMismatch')
+      ctx.state.plan.value={...plan(),sources}
+      assert.equal(ctx.state.planSourceValid.value,false)
+      await ctx.state.execute()
+      assert.ok(!ctx.requests.some(item=>item.method==='start'))
+    }finally{ctx.stop()}
+  }
+  const ctx=harness()
+  try{
+    await ctx.open();ctx.ready();await ctx.state.preview();await ctx.state.execute()
+    assert.equal(ctx.requests.find(item=>item.method==='start').id,'plan-1')
+  }finally{ctx.stop()}
+})
+
+test('计划和执行结果仅展示冻结来源，旧记录未记录且加入继承不伪造为官方',async()=>{
+  for(const action of ['create','join']){
+    const ctx=harness({action})
+    try{
+      await ctx.open();ctx.ready();await ctx.state.preview()
+      assert.equal(ctx.state.frozenSources.value.download_source,'official')
+      const sources=nativeSources('official_cn','frozen.example/team')
+      ctx.state.installation.value={id:'recorded-run',status:'succeeded',sources}
+      Object.assign(ctx.state.form,{download_source:'official',system_image_source:'official',custom_system_image_registry:''})
+      assert.deepEqual(ctx.state.frozenSources.value,sources)
+      assert.equal(ctx.state.sourceFacts.value.find(item=>item.label==='k8s.systemImageSource').value,'frozen.example/team')
+      assert.equal(ctx.state.sourceFacts.value.find(item=>item.label==='k8s.installDownloadSource').value,'k8s.downloadOfficialCn')
+      ctx.state.installation.value={id:'old-run',status:'succeeded'}
+      assert.equal(ctx.state.frozenSources.value,undefined)
+      assert.equal(ctx.state.sourceFacts.value.find(item=>item.label==='k8s.installDownloadSource').value,'k8s.sourceNotRecorded')
+      assert.equal(ctx.state.sourceFacts.value.find(item=>item.label==='k8s.systemImageSource').value,action==='join'?'k8s.systemImageInheritedUnrecorded':'k8s.sourceNotRecorded')
+    }finally{ctx.stop()}
+  }
+})
+
+test('来源常规控件在原生默认自定义分支外可见，中英文语义区分下载与系统镜像',()=>{
+  const source=readFileSync(new URL('../src/components/K3sProvisionDrawer.vue',import.meta.url),'utf8')
+  const {descriptor}=parse(source)
+  assert.deepEqual(compileTemplate({source:descriptor.template.content,filename:'K3sProvisionDrawer.vue',id:'k3s-sources'}).errors,[])
+  assert.ok(source.indexOf('class="form-columns source-options"')<source.indexOf('<a-form-item label="安装方式">'))
+  assert.match(source,/v-if="action==='create'" v-model:value="form.system_image_source"/)
+  assert.match(source,/v-else :value="t\('k8s.systemImageInherited'\)" disabled/)
+  assert.equal((source.match(/v-for="fact in sourceFacts"/g)||[]).length,2)
+  const {kubernetesZh:zh,kubernetesEn:en}=loadFrontend('../src/locales/kubernetes.ts')
+  for(const key of ['installDownloadSource','downloadOfficial','downloadOfficialCn','downloadSourceHint','systemImageSource','systemImageOfficial','systemImageCommunityCn','systemImageCustom','systemImagePrefixHint','systemImageJoinHint','sourceIndependentHint','sourceNotRecorded','installSourceMismatch']){
+    assert.equal(typeof zh[key],'string',key);assert.equal(typeof en[key],'string',key)
+  }
+  assert.match(zh.downloadSourceHint,/不会自动修改/)
+  assert.match(en.downloadSourceHint,/does not change/)
+  assert.match(zh.sourceIndependentHint,/仍使用官方/)
 })
 
 test('创建默认使用目录版本，加入旧集群默认跟随目标精确版本，参数目录基线保持独立',async()=>{

@@ -299,7 +299,7 @@ func TestInstallScriptRechecksSharedEnvironmentBeforeWritingConfiguration(t *tes
 	if guard < 0 || write < guard || !strings.Contains(script, "edo_check endpoint failed") {
 		t.Fatal("shared preflight must complete before configuration writes")
 	}
-	download := strings.Index(script, "--retry 3 https://get.k3s.io -o")
+	download := strings.Index(script, "--retry 3 'https://get.k3s.io' -o")
 	finalGuard := strings.LastIndex(script, "if [ -e '/etc/rancher/k3s'")
 	if download < 0 || finalGuard < download || finalGuard > write {
 		t.Fatal("existing-installation guard must run again after script download and before configuration writes")
@@ -413,7 +413,7 @@ func TestPreflightDownloadProbeUsesSelectedChannelAndArchitecture(t *testing.T) 
 		t.Fatal("selected release channel ignored")
 	}
 	script = preflightProbeScript(Host{Role: "agent"}, Input{Installer: map[string]any{"INSTALL_K3S_VERSION": "v1.35.5+k3s1"}}, false)
-	if !strings.Contains(script, "aarch64|arm64) edo_arch=arm64") || !strings.Contains(script, "armv7*) edo_arch=arm") || !strings.Contains(script, "/v1.35.5+k3s1/sha256sum-") {
+	if !strings.Contains(script, "aarch64|arm64) edo_arch=arm64") || !strings.Contains(script, "armv7*) edo_arch=arm") || !strings.Contains(script, "/v1.35.5%2Bk3s1/sha256sum-") {
 		t.Fatal("release architecture mapping ignored")
 	}
 	ports, _ := preflightPorts(Host{Role: "server"}, map[string]any{"disable-agent": true, "disable-controller-manager": true, "disable-cloud-controller": true, "disable-scheduler": true})

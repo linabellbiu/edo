@@ -7,7 +7,7 @@ import { listHosts, type InfrastructureHost } from '@/api/infrastructure'
 import { apiErrorMessage } from '@/api/resources'
 import {
   getK3sCatalog, getK3sInstallation, listK3sInstallations, previewK3sPlan, startK3sInstallation,
-  type K3sCatalog, type K3sInstallation, type K3sPlan, type K3sPlanInput, type K3sPreflightReport, type K3sPreflightCheck, type K3sJoinRole, type K3sInstallMode, type K3dConfig,
+  type K3sCatalog, type K3sInstallation, type K3sPlan, type K3sPlanInput, type K3sPreflightReport, type K3sPreflightCheck, type K3sJoinRole, type K3sInstallMode, type K3dConfig, type K3sDownloadSource,
 } from '@/api/k3s'
 import K3sOptionFields from '@/components/K3sOptionFields.vue'
 import K3sPreflightReportView from '@/components/K3sPreflightReport.vue'
@@ -35,6 +35,7 @@ const plan = ref<K3sPlan>(),installation = ref<K3sInstallation>(),optionTab = re
 const preflight = ref<K3sPreflightReport>()
 const emptyForm = () => ({
   mode:'native' as K3sInstallMode,k3d:{agents:1,api_port:16443,bind_address:''} as K3dConfig,
+  download_source:'official' as K3sDownloadSource,system_image_source:'official' as 'official'|'community_cn'|'custom',custom_system_image_registry:'',
   name:'',server_host_id:'',agent_host_ids:[] as string[],profile:'default' as 'default'|'custom',endpoint:'',
   join_role:'agent' as K3sJoinRole,join_host_ids:[] as string[],server_token:'',
   server_options:{} as Record<string,unknown>,agent_options:{} as Record<string,unknown>,installer:{} as Record<string,unknown>,overrides:'',
@@ -54,6 +55,19 @@ const agentOptions = computed(() => hostOptions.value.filter(option=>option.valu
 const isK3d = computed(() => props.action==='create'&&form.mode==='k3d')
 const displayMode = computed(() => installation.value?modeOf(installation.value):plan.value?modeOf(plan.value):isK3d.value?'k3d':'native')
 const k3dConfig = computed(() => installation.value?installation.value.k3d:plan.value?.k3d)
+const systemImageRegistry = computed(() => form.system_image_source==='community_cn'?'registry.cn-hangzhou.aliyuncs.com':form.system_image_source==='custom'?form.custom_system_image_registry.trim():'')
+const sourceInputValid = computed(() => isK3d.value||(['official','official_cn'].includes(form.download_source)&&(props.action==='join'||form.system_image_source!=='custom'||Boolean(systemImageRegistry.value))))
+const frozenSources = computed(() => installation.value?installation.value.sources:plan.value?.sources)
+const sourceFacts = computed(() => {
+  const sources=frozenSources.value
+  return [
+    {label:t('k8s.installDownloadSource'),value:sources?.download_source==='official'?t('k8s.downloadOfficial'):sources?.download_source==='official_cn'?t('k8s.downloadOfficialCn'):t('k8s.sourceNotRecorded')},
+    {label:t('k8s.installerSourceURL'),value:sources?.installer_url||t('k8s.sourceNotRecorded')},
+    {label:t('k8s.artifactSourceURL'),value:sources?.artifact_url||t('k8s.sourceNotRecorded')},
+    {label:t('k8s.systemImageSource'),value:typeof sources?.system_image_registry==='string'?(sources.system_image_registry||t('k8s.systemImageOfficial')):t(props.action==='join'?'k8s.systemImageInheritedUnrecorded':'k8s.sourceNotRecorded')},
+    ...(sources?.mirror?[{label:t('k8s.installerMirror'),value:sources.mirror}]:[]),
+  ]
+})
 const k3dEndpoint = computed(() => {const address=form.k3d.bind_address.trim();return validK3dBindAddress(address)?`https://${address}:${form.k3d.api_port}`:''})
 const joinMaster = computed(() => props.action==='join'&&form.join_role==='server')
 const joinHostSelection = computed({
@@ -67,7 +81,7 @@ const hasHostConfig = computed(() => plan.value?.hosts?.some(host=>Boolean(host.
 const endpointPlaceholder = computed(() => k3sAutomaticEndpoint(hosts.value.find(host=>host.id===form.server_host_id),form.profile==='custom'?form.server_options:{},form.profile==='custom'?form.overrides:'')||'https://192.168.1.10:6443')
 const canManageClusterResources = computed(() => auth.canAny(['kubernetes.node.read','kubernetes.workload.read','kubernetes.config.read','kubernetes.storage.read','kubernetes.network.read']))
 const canExecute = computed(() => auth.canAny([props.action==='create'?'cluster.create':'kubernetes.node.create'])&&auth.canAny(['cluster.execute'])&&auth.canAny(['cluster.update'])&&auth.canAny(['cluster.read','deployment.read']))
-const canPreview = computed(() => Boolean(catalog.value)&&!loadError.value&&canExecute.value&&!loading.value&&!busy.value&&(props.action==='create'?Boolean(form.name.trim()&&form.server_host_id&&(!isK3d.value||validK3dConfig(form.k3d))):Boolean(props.cluster&&form.join_host_ids.length&&form.join_host_ids.length<=(joinMaster.value?1:20)&&(!joinMaster.value||form.server_token.trim()))))
+const canPreview = computed(() => Boolean(catalog.value)&&!loadError.value&&canExecute.value&&!loading.value&&!busy.value&&sourceInputValid.value&&(props.action==='create'?Boolean(form.name.trim()&&form.server_host_id&&(!isK3d.value||validK3dConfig(form.k3d))):Boolean(props.cluster&&form.join_host_ids.length&&form.join_host_ids.length<=(joinMaster.value?1:20)&&(!joinMaster.value||form.server_token.trim()))))
 const running = computed(() => k3sInstallationRunning(installation.value))
 const planExpired = computed(() => Boolean(plan.value)&&(!Number.isFinite(Date.parse(plan.value!.expires_at))||Date.parse(plan.value!.expires_at)<=now.value))
 const visiblePreflight = computed(() => readPreflight(plan.value?.preflight)??preflight.value)
@@ -76,10 +90,12 @@ const planPreflightPassed = computed(() => {
   return Boolean(report?.passed&&report.hosts.length&&report.hosts.every(host=>host.passed&&host.checks.length&&host.checks.every(check=>check.status!=='failed'))&&report.checks.every(check=>check.status!=='failed'))
 })
 const planModeValid = computed(() => !!plan.value&&modeOf(plan.value)===(isK3d.value?'k3d':'native')&&(modeOf(plan.value)!=='k3d'||k3dPlanMatches(plan.value)))
+const planSourceValid = computed(() => !!plan.value&&(modeOf(plan.value)==='k3d'||nativeSourcesMatch(plan.value,input())))
 const currentStep = computed(() => installation.value?2:plan.value?1:0)
 const title = computed(() => props.action==='create'?t('k8s.createClusterTitle'):'添加 K3s 节点')
 const installerOptions = computed(() => catalog.value?.installer.filter(option=>!['INSTALL_K3S_VERSION','INSTALL_K3S_CHANNEL'].includes(option.name))??[])
 const serverOptionChoices = computed(() => catalog.value?.server.map(option=>{
+  if(props.action==='create'&&option.name==='system-default-registry')return {...option,managed:true,description:t('k8s.systemImageManaged')}
   if(!joinMaster.value)return option
   if(k3sMasterRawArgumentOptions.some(name=>name===option.name))return {...option,unsupported_reason:k3sMasterRawArgumentReason}
   if(['cluster-init','cluster-reset','cluster-reset-restore-path','disable-agent','disable-apiserver','disable-controller-manager','disable-scheduler','disable-etcd'].includes(option.name))return {...option,unsupported_reason:'加入已有控制平面时不允许初始化、重置或拆分控制平面角色。'}
@@ -99,12 +115,16 @@ function input(): K3sPlanInput {
   const custom=form.profile==='custom'
   const installer=custom?Object.fromEntries(Object.entries(form.installer).filter(([key,value])=>!['version','channel'].includes(key)||String(value??'').trim())):{}
   return {
-    action:props.action,mode:'native',...(props.action==='join'?{cluster_id:props.cluster,join_role:form.join_role,join_host_ids:[...new Set(form.join_host_ids)],...(joinMaster.value?{server_token:form.server_token}:{})}:{server_host_id:form.server_host_id,agent_host_ids:[...new Set(form.agent_host_ids)]}),name:form.name.trim(),
+    action:props.action,mode:'native',download_source:form.download_source,...(props.action==='join'?{cluster_id:props.cluster,join_role:form.join_role,join_host_ids:[...new Set(form.join_host_ids)],...(joinMaster.value?{server_token:form.server_token}:{})}:{server_host_id:form.server_host_id,agent_host_ids:[...new Set(form.agent_host_ids)],system_image_registry:systemImageRegistry.value}),name:form.name.trim(),
     profile:form.profile,server_options:custom&&showServerOptions.value?{...form.server_options}:{},agent_options:custom&&showAgentOptions.value?{...form.agent_options}:{},
     installer,overrides:custom?form.overrides:'',endpoint:form.endpoint.trim(),
   }
 }
 function modeOf(value:{mode?:K3sInstallMode}) {return value.mode==='k3d'?'k3d':'native'}
+function nativeSourcesMatch(value:K3sPlan,payload:K3sPlanInput) {
+  const sources=value.sources
+  return !!sources&&sources.download_source===payload.download_source&&Boolean(sources.installer_url&&sources.artifact_url)&&(payload.action!=='create'||typeof sources.system_image_registry==='string'&&sources.system_image_registry===payload.system_image_registry)
+}
 function validK3dConfig(value?:K3dConfig) {return !!value&&Number.isInteger(value.agents)&&value.agents>=0&&value.agents<=8&&Number.isInteger(value.api_port)&&value.api_port>=1024&&value.api_port<=65535&&validK3dBindAddress(value.bind_address)}
 function k3dPlanMatches(value:K3sPlan) {const config=value.k3d;return validK3dConfig(config)&&value.hosts?.length===1&&value.hosts[0]?.role==='host'&&value.hosts[0]?.id===form.server_host_id&&config?.agents===form.k3d.agents&&config?.api_port===form.k3d.api_port&&config?.bind_address===form.k3d.bind_address.trim()&&value.endpoint===k3dEndpoint.value}
 function readPreflight(value:unknown):K3sPreflightReport|undefined {
@@ -182,13 +202,14 @@ async function preview() {
     const result=await previewK3sPlan(payload,controller.signal)
     if(mounted&&props.open&&current===revision&&signature.value===currentSignature&&matchesContext(currentContext)){
       if(modeOf(result)!==payload.mode||payload.mode==='k3d'&&!k3dPlanMatches(result)){error.value=t('k8s.installModeMismatch');return}
+      if(payload.mode==='native'&&!nativeSourcesMatch(result,payload)){error.value=t('k8s.installSourceMismatch');return}
       plan.value=result;now.value=Date.now()
     }
   } catch(err) {if(mounted&&props.open&&current===revision&&signature.value===currentSignature&&!controller.signal.aborted&&matchesContext(currentContext)){preflight.value=failurePreflight(err);error.value=apiErrorMessage(err)}}
   finally {if(mounted&&current===revision)busy.value=false}
 }
 async function execute() {
-  if(!syncProject()||!props.open||!plan.value||planExpired.value||!planPreflightPassed.value||!planModeValid.value||busy.value||!canExecute.value)return
+  if(!syncProject()||!props.open||!plan.value||planExpired.value||!planPreflightPassed.value||!planModeValid.value||!planSourceValid.value||busy.value||!canExecute.value)return
   const planID=plan.value.id,currentContext=context.value,current=revision,controller=new AbortController();request?.abort();request=controller;busy.value=true;error.value=''
   try {
     const result=await startK3sInstallation(planID,controller.signal)
@@ -231,7 +252,7 @@ function manageCreatedCluster() {
   void router.push(canManageClusterResources.value?{path:'/kubernetes',query:{cluster:id,view:'overview'}}:{path:'/hosts',query:{cluster:id,view:'clusters'}})
   close()
 }
-watch(signature,()=>{if(!installation.value){plan.value=undefined;preflight.value=undefined;error.value=''}})
+watch(signature,()=>{if(!installation.value){if(busy.value){cancelRequests();busy.value=false}plan.value=undefined;preflight.value=undefined;error.value=''}},{flush:'sync'})
 watch(()=>form.mode,(mode,previous)=>{
   if(restoringMode||props.action!=='create')return
   modeDrafts[previous]={...JSON.parse(JSON.stringify(form)),mode:previous}
@@ -284,7 +305,19 @@ onBeforeUnmount(()=>{mounted=false;form.server_token='';cancelRequests();window.
           </div>
           <a-alert v-if="joinMaster" type="warning" show-icon message="目标集群需已启用内嵌 etcd" description="预检会实时核对 Server Token、目标控制平面、etcd 成员与关键配置。SQLite、外置数据存储或无法确认的目标会被阻断；不会自动转换数据库。关键配置自动继承，冲突覆盖会被拒绝。" /><a-alert v-if="!loading&&!loadError&&!hostChoices.length" type="info" show-icon message="暂无可安装的远程主机" description="请先在主机页面配置启用的 SSH 主机和登录凭据。" />
           <a-alert v-if="isK3d" type="warning" show-icon :message="t('k8s.k3dSingleHostWarning')" />
-          <template v-else><a-form-item label="安装方式"><a-radio-group v-model:value="form.profile" button-style="solid"><a-radio-button value="default">默认安装</a-radio-button><a-radio-button value="custom">自定义安装</a-radio-button></a-radio-group></a-form-item>
+          <template v-else>
+          <div class="form-columns source-options">
+            <a-form-item :label="t('k8s.installDownloadSource')" required><a-select v-model:value="form.download_source" :aria-label="t('k8s.installDownloadSource')" :options="[{value:'official',label:t('k8s.downloadOfficial')},{value:'official_cn',label:t('k8s.downloadOfficialCn')}]" /><div class="field-help">{{ t('k8s.downloadSourceHint') }}</div></a-form-item>
+            <a-form-item :label="t('k8s.systemImageSource')" :required="action==='create'">
+              <a-select v-if="action==='create'" v-model:value="form.system_image_source" :aria-label="t('k8s.systemImageSource')" :options="[{value:'official',label:t('k8s.systemImageOfficial')},{value:'community_cn',label:t('k8s.systemImageCommunityCn')},{value:'custom',label:t('k8s.systemImageCustom')}]" />
+              <a-input v-else :value="t('k8s.systemImageInherited')" disabled :aria-label="t('k8s.systemImageSource')" />
+              <code v-if="action==='create'&&form.system_image_source==='community_cn'" class="field-help">{{ systemImageRegistry }}</code>
+              <div class="field-help">{{ t(action==='create'?'k8s.systemImageSourceHint':'k8s.systemImageJoinHint') }}</div>
+            </a-form-item>
+            <a-form-item v-if="action==='create'&&form.system_image_source==='custom'" :label="t('k8s.systemImageRegistryPrefix')" required class="wide"><a-input v-model:value="form.custom_system_image_registry" :aria-label="t('k8s.systemImageRegistryPrefix')" placeholder="registry.example.com:5000/team" :maxlength="512" /><div class="field-help">{{ t('k8s.systemImagePrefixHint') }}</div></a-form-item>
+            <div v-if="action==='create'&&form.download_source==='official_cn'&&form.system_image_source==='official'" class="field-help source-suggestion wide">{{ t('k8s.sourceIndependentHint') }}</div>
+          </div>
+          <a-form-item label="安装方式"><a-radio-group v-model:value="form.profile" button-style="solid"><a-radio-button value="default">默认安装</a-radio-button><a-radio-button value="custom">自定义安装</a-radio-button></a-radio-group></a-form-item>
           <div v-if="form.profile==='default'" class="default-install"><Check :size="17" /><div><strong>使用 K3s 默认配置</strong><p>{{ action==='create'?'安装控制平面及所选工作节点，完成后自动接入集群并关联主机。':joinMaster?'在所选主机添加控制平面，加入现有集群并继承已核对的关键配置。':'在所选主机安装工作节点，加入当前集群并关联主机。' }}</p><p>{{ t('k8s.nativeRuntimeHint') }}</p><small v-if="catalog">安装版本：{{ defaultVersion }}{{ action==='join'?'（跟随目标集群）':'' }}</small></div></div>
           <template v-else-if="catalog">
             <div class="catalog-caption"><strong>K3s 安装选项</strong><span>参数基于 {{ catalog.version }} · {{ catalog.catalog_version }}</span></div>
@@ -305,7 +338,9 @@ onBeforeUnmount(()=>{mounted=false;form.server_token='';cancelRequests();window.
           <a-alert v-if="displayMode==='native'" type="info" show-icon :message="t('k8s.nativeInstallConfirmTitle')" :description="t('k8s.nativeInstallConfirmHint')" />
           <a-alert v-else type="warning" show-icon :message="t('k8s.k3dInstallConfirmTitle')" :description="t('k8s.k3dSingleHostWarning')" />
           <a-alert v-if="!planModeValid" type="error" show-icon :message="t('k8s.installModeMismatch')" />
+          <a-alert v-if="!planSourceValid" type="error" show-icon :message="t('k8s.installSourceMismatch')" />
           <dl class="plan-facts"><div><dt>{{ t('k8s.installMode') }}</dt><dd>{{ t(displayMode==='k3d'?'k8s.installModeK3d':'k8s.installModeNative') }}</dd></div><template v-if="displayMode==='k3d'"><div><dt>{{ t('k8s.k3dTopologyLabel') }}</dt><dd>{{ t('k8s.k3dTopology', { agents: k3dConfig?.agents ?? '—' }) }}</dd></div><div><dt>{{ t('k8s.k3dBindAddress') }}</dt><dd>{{ k3dConfig?.bind_address || '—' }}</dd></div><div><dt>{{ t('k8s.k3dApiPort') }}</dt><dd>{{ k3dConfig?.api_port ?? '—' }}</dd></div></template></dl>
+          <dl v-if="displayMode==='native'" class="plan-facts source-facts"><div v-for="fact in sourceFacts" :key="fact.label"><dt>{{ fact.label }}</dt><dd><code>{{ fact.value }}</code></dd></div></dl>
           <a-alert v-if="planExpired" type="warning" show-icon message="计划已过期，请返回配置后重新预览。" />
           <a-alert v-if="!planPreflightPassed" type="error" show-icon message="缺少通过的前置检查，请返回配置后重新检查。" />
           <dl class="plan-facts"><div v-if="action==='create'"><dt>集群名称</dt><dd>{{ plan.name||form.name }}</dd></div><div v-if="plan.version"><dt>安装版本</dt><dd><code>{{ plan.version }}</code></dd></div><div v-if="action==='join'&&plan.target_version"><dt>目标集群版本</dt><dd><code>{{ plan.target_version }}</code></dd></div><div><dt>API 地址</dt><dd><code>{{ plan.endpoint||form.endpoint }}</code></dd></div><div><dt>计划有效期</dt><dd>{{ formatDateTime(plan.expires_at,'zh-CN') }}</dd></div></dl>
@@ -320,6 +355,7 @@ onBeforeUnmount(()=>{mounted=false;form.server_token='';cancelRequests();window.
 
         <div v-else-if="installation" class="installation-result">
           <a-tag>{{ t(displayMode==='k3d'?'k8s.installModeK3d':'k8s.installModeNative') }}</a-tag><a-alert v-if="displayMode==='k3d'" type="info" :message="t('k8s.k3dTopology', { agents: k3dConfig?.agents ?? '—' })" :description="t('k8s.k3dSingleHostWarning')" />
+          <dl v-if="displayMode==='native'" class="plan-facts source-facts"><div v-for="fact in sourceFacts" :key="fact.label"><dt>{{ fact.label }}</dt><dd><code>{{ fact.value }}</code></dd></div></dl>
           <a-alert :type="progressTone" show-icon :message="k3sInstallationLabel(installation.status)" :description="installation.error||installation.message||installation.phase||(running?'可以关闭窗口，安装会继续执行。':'')" />
           <a-alert v-if="installation.status==='failed'&&installation.cluster&&displayMode==='native'" type="warning" show-icon :message="action==='create'?'集群已创建，部分安装步骤未完成':'部分节点未完成加入'" description="已完成的节点会保留。请进入集群检查状态，再从添加节点中选择剩余主机。" />
           <a-alert v-else-if="installation.status==='failed'&&displayMode==='k3d'" type="warning" show-icon :message="t('k8s.k3dFailureTitle')" :description="t('k8s.k3dFailureHint')" />
@@ -331,11 +367,12 @@ onBeforeUnmount(()=>{mounted=false;form.server_token='';cancelRequests();window.
         </div>
       </a-spin>
     </div>
-    <template #footer><div class="provision-footer"><a-button :disabled="busy" @click="close">{{ running?'关闭窗口':'关闭' }}</a-button><a-button v-if="plan&&!installation" :disabled="busy" @click="plan=undefined;preflight=undefined"><ChevronLeft :size="14" />返回配置</a-button><a-button v-if="installation&&!running" :disabled="busy" @click="configureAgain">{{ displayMode==='k3d'?t('k8s.k3dConfigureAgain'):installation.status==='succeeded'?'继续添加':'重新配置' }}</a-button><a-button v-if="!plan&&!installation" type="primary" :loading="busy" :disabled="!canPreview" @click="preview">检查并预览安装计划</a-button><a-button v-else-if="plan&&!installation" type="primary" :loading="busy" :disabled="planExpired||!canExecute||!planPreflightPassed||!planModeValid" @click="execute">开始安装</a-button></div></template>
+    <template #footer><div class="provision-footer"><a-button :disabled="busy" @click="close">{{ running?'关闭窗口':'关闭' }}</a-button><a-button v-if="plan&&!installation" :disabled="busy" @click="plan=undefined;preflight=undefined"><ChevronLeft :size="14" />返回配置</a-button><a-button v-if="installation&&!running" :disabled="busy" @click="configureAgain">{{ displayMode==='k3d'?t('k8s.k3dConfigureAgain'):installation.status==='succeeded'?'继续添加':'重新配置' }}</a-button><a-button v-if="!plan&&!installation" type="primary" :loading="busy" :disabled="!canPreview" @click="preview">检查并预览安装计划</a-button><a-button v-else-if="plan&&!installation" type="primary" :loading="busy" :disabled="planExpired||!canExecute||!planPreflightPassed||!planModeValid||!planSourceValid" @click="execute">开始安装</a-button></div></template>
   </a-drawer>
 </template>
 
 <style scoped>
+.source-options{margin-top:16px}.source-options :deep(.ant-select){width:100%}.source-suggestion{margin-top:-10px;margin-bottom:22px}.source-facts{padding:14px;border:1px solid var(--edo-border);border-radius:6px;background:var(--edo-bg)}
 .host-configs details+details{margin-top:12px}.host-configs summary{padding:9px 0;cursor:pointer;font-size:12px}.recent-operations summary>.ant-btn{float:right;margin-top:-4px}
 .recent-operations{border:1px solid var(--edo-border);border-radius:6px}.recent-operations summary{cursor:pointer;padding:11px 14px;font-size:12px;background:var(--edo-bg)}.recent-operations summary>span{margin-left:6px;color:var(--edo-muted)}.recent-operation{display:flex;align-items:center;gap:12px;padding:12px 14px;border-top:1px solid var(--edo-border)}.recent-operation>div{flex:1;min-width:0}.recent-operation strong,.recent-operation small{display:block;overflow-wrap:anywhere}.recent-operation strong{font-size:12px;font-weight:500}.recent-operation small{margin-top:4px;font-size:11px;color:var(--edo-muted)}
 .provision-content{display:grid;gap:22px}.provision-form{margin-top:6px}.form-columns{display:grid;grid-template-columns:1fr 1fr;gap:0 16px}.wide{grid-column:1/-1}.field-help{margin-top:6px;font-size:12px;line-height:1.65;color:var(--edo-muted)}.default-install{display:flex;gap:12px;padding:18px;border:1px solid var(--edo-border);border-radius:6px;background:var(--edo-bg)}.default-install>svg{color:#1d9459;flex:none;margin-top:3px}.default-install strong{font-size:13px;font-weight:600}.default-install p{margin:5px 0;font-size:12px;line-height:1.7;color:var(--edo-muted)}.default-install small{color:var(--edo-muted);font-size:11px}.install-note{padding-top:18px;font-size:12px;color:var(--edo-muted);line-height:1.7}.catalog-caption{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:14px}.catalog-caption strong{font-size:14px;font-weight:600}.catalog-caption span{font-size:11px;color:var(--edo-muted)}.option-tabs{margin:8px 0 20px}.override-field{margin-top:22px}.override-field :deep(textarea){font-family:Consolas,monospace;font-size:12px}.provision-footer{display:flex;align-items:center;justify-content:flex-end;gap:8px}.plan-review,.installation-result{display:grid;gap:16px}.plan-facts{margin:0;display:grid;grid-template-columns:1fr 1fr;gap:14px}.plan-facts div{min-width:0}.plan-facts dt{color:var(--edo-muted);font-size:12px;margin-bottom:5px}.plan-facts dd{margin:0;font-size:13px;overflow-wrap:anywhere}.plan-hosts{border:1px solid var(--edo-border);border-radius:6px}.plan-hosts>div{display:flex;align-items:center;gap:10px;padding:12px;border-bottom:1px solid var(--edo-border);flex-wrap:wrap;font-size:12px}.plan-hosts>div:last-child{border:0}.plan-hosts strong{font-weight:500}.plan-hosts code{color:var(--edo-muted)}.plan-hosts .ant-tag{margin-left:auto}.plan-review h4,.installation-result h4{margin:0 0 8px;font-size:13px;font-weight:600}.plan-review pre,.installation-logs{margin:0;padding:14px;border:1px solid var(--edo-border);border-radius:6px;background:var(--edo-bg);font-size:12px;line-height:1.7;white-space:pre-wrap;overflow-wrap:anywhere;max-height:360px;overflow:auto}.plan-review pre+pre{margin-top:10px}.operation-id{font-size:11px;color:var(--edo-muted);margin:0;overflow-wrap:anywhere}.operation-hosts>div{display:flex;align-items:center;gap:10px;padding:12px 0;flex-wrap:wrap;border-bottom:1px solid var(--edo-border)}.operation-hosts span{flex:1}.operation-hosts strong,.operation-hosts small{display:block}.operation-hosts strong{font-size:13px;font-weight:500}.operation-hosts small{font-size:11px;color:var(--edo-muted);margin-top:3px}.operation-hosts p{flex-basis:100%;margin:0 0 0 26px;font-size:12px;color:var(--edo-muted)}@media(max-width:650px){.form-columns,.plan-facts{grid-template-columns:1fr}.catalog-caption{align-items:flex-start;flex-direction:column}.provision-footer{flex-wrap:wrap}}

@@ -31,7 +31,7 @@ func k3dAgents(options *K3dOptions) int {
 }
 
 func (s *Service) normalizeK3d(ctx context.Context, input Input) (Input, []Host, map[string]string, *model.KubernetesCluster, []string, error) {
-	if input.Action != "create" || (input.Profile != "default" && input.Profile != "custom") || input.ServerHostID == "" || input.ClusterID != "" || len(input.AgentHostIDs) != 0 || len(input.JoinHostIDs) != 0 || input.JoinRole != "" || input.ServerToken != "" || len(input.ServerOptions) != 0 || len(input.AgentOptions) != 0 || len(input.Installer) != 0 || strings.TrimSpace(input.Overrides) != "" {
+	if input.Action != "create" || (input.Profile != "default" && input.Profile != "custom") || input.ServerHostID == "" || input.ClusterID != "" || len(input.AgentHostIDs) != 0 || len(input.JoinHostIDs) != 0 || input.JoinRole != "" || input.ServerToken != "" || len(input.ServerOptions) != 0 || len(input.AgentOptions) != 0 || len(input.Installer) != 0 || strings.TrimSpace(input.Overrides) != "" || input.DownloadSource != "" || input.SystemImageRegistry != nil {
 		return input, nil, nil, nil, nil, &ValidationError{Message: "k3d 只支持在一台 SSH 主机创建集群，不接受原生安装参数或加入节点配置"}
 	}
 	input.Name = strings.TrimSpace(input.Name)

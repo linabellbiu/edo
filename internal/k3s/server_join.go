@@ -146,21 +146,21 @@ func serverInstallerStage(installationID string) (string, error) {
 }
 
 func serverInstallerDownloadScript(installationID string, input Input) (string, error) {
+	sources, err := sourcesForInput(input)
+	if err != nil {
+		return "", err
+	}
 	stage, err := serverInstallerStage(installationID)
 	if err != nil {
 		return "", err
 	}
-	script := "set -eu\n[ \"$(id -u)\" = 0 ]\numask 077\nstage=" + shellQuote(stage) + "\nmkdir -m 700 \"$stage\"\nedo_stage_ready=false\ncleanup_stage() { if ! \"$edo_stage_ready\"; then rm -f \"$stage/install.sh\" \"$stage/k3s\" \"$stage/sha256sum.txt\" \"$stage/k3s.sha256\"; rmdir \"$stage\"; fi; }\ntrap cleanup_stage EXIT\ntrap 'exit 130' HUP INT TERM\ncurl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' --tlsv1.2 --connect-timeout 15 --max-time 180 --retry 3 https://get.k3s.io -o \"$stage/install.sh\"\nchmod 600 \"$stage/install.sh\"\n"
+	script := "set -eu\n[ \"$(id -u)\" = 0 ]\numask 077\nstage=" + shellQuote(stage) + "\nmkdir -m 700 \"$stage\"\nedo_stage_ready=false\ncleanup_stage() { if ! \"$edo_stage_ready\"; then rm -f \"$stage/install.sh\" \"$stage/k3s\" \"$stage/sha256sum.txt\" \"$stage/k3s.sha256\"; rmdir \"$stage\"; fi; }\ntrap cleanup_stage EXIT\ntrap 'exit 130' HUP INT TERM\ncurl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' --tlsv1.2 --connect-timeout 15 --max-time 180 --retry 3 " + shellQuote(sources.InstallerURL) + " -o \"$stage/install.sh\"\nchmod 600 \"$stage/install.sh\"\n"
 	if !preloadedBinary(input.Installer) {
-		base, err := serverArtifactBase(input.Installer)
-		if err != nil {
-			return "", err
-		}
 		version, _ := input.Installer["INSTALL_K3S_VERSION"].(string)
 		if _, ok := parseK3sVersion(version); !ok {
 			return "", ErrInvalidInput
 		}
-		script += "command -v sha256sum >/dev/null\ncase \"$(uname -m)\" in x86_64|amd64) edo_arch=amd64; edo_asset=k3s ;; aarch64|arm64) edo_arch=arm64; edo_asset=k3s-arm64 ;; armv7*) edo_arch=arm; edo_asset=k3s-armhf ;; *) exit 44 ;; esac\nedo_release=" + shellQuote(base+"/"+strings.ReplaceAll(version, "+", "%2B")) + "\n"
+		script += "command -v sha256sum >/dev/null\ncase \"$(uname -m)\" in x86_64|amd64) edo_arch=amd64; edo_asset=k3s ;; aarch64|arm64) edo_arch=arm64; edo_asset=k3s-arm64 ;; armv7*) edo_arch=arm; edo_asset=k3s-armhf ;; *) exit 44 ;; esac\nedo_release=" + shellQuote(sourceReleaseURL(sources, version)) + "\n"
 		curl := "curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' --tlsv1.2 --connect-timeout 15 --max-time 180 --retry 3 "
 		script += curl + "--max-filesize 1048576 \"$edo_release/sha256sum-$edo_arch.txt\" -o \"$stage/sha256sum.txt\"\n"
 		script += "edo_hash=$(awk -v asset=\"$edo_asset\" '$2==asset {hash=$1;count++} END {if(count!=1)exit 1;print hash}' \"$stage/sha256sum.txt\")\nprintf '%s\\n' \"$edo_hash\" | awk 'length($0)==64 && $0 !~ /[^a-fA-F0-9]/ {ok=1} END{exit !ok}'\n"
@@ -172,7 +172,7 @@ func serverInstallerDownloadScript(installationID string, input Input) (string, 
 func serverArtifactBase(installer map[string]any) (string, error) {
 	base, _ := installer["INSTALL_K3S_ARTIFACT_URL"].(string)
 	if base == "" {
-		base = "https://github.com/k3s-io/k3s/releases/download"
+		base = officialArtifactURL
 	}
 	u, err := url.Parse(base)
 	if err != nil || u.Scheme != "https" || u.Hostname() == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || strings.ContainsAny(base, "\r\n\x00 ") {

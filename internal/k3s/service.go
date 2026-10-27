@@ -50,6 +50,7 @@ type savedInput struct {
 	ServerMembers          []kube.ServerJoinMember `json:"server_members,omitempty"`
 	K3dVersion             string                  `json:"k3d_version,omitempty"`
 	K3dK3sVersion          string                  `json:"k3d_k3s_version,omitempty"`
+	Sources                *Sources                `json:"sources,omitempty"`
 }
 
 type clusterService interface {
@@ -232,6 +233,9 @@ func (s *Service) normalize(ctx context.Context, input Input) (Input, []Host, ma
 	if input.Action != "create" && input.Action != "join" {
 		return input, nil, nil, nil, nil, ErrInvalidInput
 	}
+	if err := validateSourceSelection(input); err != nil {
+		return input, nil, nil, nil, nil, err
+	}
 	if err := normalizeJoinSelection(&input); err != nil {
 		return input, nil, nil, nil, nil, err
 	}
@@ -286,6 +290,9 @@ func (s *Service) normalize(ctx context.Context, input Input) (Input, []Host, ma
 	input.Installer, err = ValidateAndMergeInstallerOptions(input.Installer, installerOverride)
 	if err != nil {
 		return input, nil, nil, nil, nil, &ValidationError{Message: err.Error()}
+	}
+	if err := resolveInstallSources(&input); err != nil {
+		return input, nil, nil, nil, nil, err
 	}
 	input.Overrides = ""
 	warnings := append(OptionWarnings("server", input.ServerOptions), OptionWarnings("agent", input.AgentOptions)...)
@@ -459,7 +466,7 @@ func (s *Service) Preview(ctx context.Context, actorID string, input Input) (*Pl
 		}
 	}
 	version, _ := input.Installer["INSTALL_K3S_VERSION"].(string)
-	plan := &Plan{ID: id, Action: input.Action, Mode: input.Mode, K3d: input.K3d, Name: input.Name, Status: "planned", ClusterID: input.ClusterID, Endpoint: input.Endpoint, Version: version, TargetVersion: input.targetVersion, ExpiresAt: now.Add(planTTL), Hosts: hosts, ServerConfig: server, AgentConfig: agent, Warnings: warnings, Commands: []string{}, Preflight: preflight}
+	plan := &Plan{ID: id, Action: input.Action, Mode: input.Mode, K3d: input.K3d, Sources: input.sources, Name: input.Name, Status: "planned", ClusterID: input.ClusterID, Endpoint: input.Endpoint, Version: version, TargetVersion: input.targetVersion, ExpiresAt: now.Add(planTTL), Hosts: hosts, ServerConfig: server, AgentConfig: agent, Warnings: warnings, Commands: []string{}, Preflight: preflight}
 	if input.Action == "join" {
 		plan.JoinRole = input.JoinRole
 	}
@@ -467,7 +474,14 @@ func (s *Service) Preview(ctx context.Context, actorID string, input Input) (*Pl
 		plan.ServerJoin = &ServerJoinSummary{Datastore: input.serverJoin.Datastore, EtcdMembers: len(input.serverJoin.Members)}
 	}
 	for _, host := range hosts {
-		plan.Commands = append(plan.Commands, previewCommand(host, input.Installer))
+		if input.Mode == "k3d" {
+			continue
+		}
+		command, err := previewCommand(host, input)
+		if err != nil {
+			return nil, err
+		}
+		plan.Commands = append(plan.Commands, command)
 	}
 	plan.Warnings = append(plan.Warnings, "将在所选主机安装并启动 K3s 系统服务。已有 Kubernetes 安装的主机会被拒绝，请先检查主机用途和网络。")
 	if input.Mode == "k3d" {
@@ -482,7 +496,7 @@ func (s *Service) Preview(ctx context.Context, actorID string, input Input) (*Pl
 	if disabled, _ := input.ServerOptions["disable-agent"].(bool); disabled {
 		plan.Warnings = append(plan.Warnings, "禁用 Server Agent 后不会注册该控制平面节点，该主机暂不自动关联。")
 	}
-	snapshot := savedInput{Input: input, HostDigests: digests, AuthVersion: actor.AuthVersion, TargetVersion: input.targetVersion, PreflightVersion: preflightVersion}
+	snapshot := savedInput{Input: input, Sources: input.sources, HostDigests: digests, AuthVersion: actor.AuthVersion, TargetVersion: input.targetVersion, PreflightVersion: preflightVersion}
 	if input.Mode == "k3d" {
 		snapshot.K3dVersion, snapshot.K3dK3sVersion = k3dVersion, k3dK3sVersion
 	}
@@ -525,6 +539,7 @@ func (s *Service) decode(record model.K3sInstallation) (savedInput, error) {
 		return snapshot, ErrInvalidInput
 	}
 	snapshot.Input.targetVersion = snapshot.TargetVersion
+	snapshot.Input.sources = snapshot.Sources
 	return snapshot, nil
 }
 
@@ -745,8 +760,11 @@ func (s *Service) present(record model.K3sInstallation) *Installation {
 	_ = json.Unmarshal(record.Hosts, &hosts)
 	result := &Installation{ID: record.ID, Action: record.Action, Mode: "native", Name: record.Name, Status: record.Status, ClusterID: record.ClusterID, ExpiresAt: record.ExpiresAt, CreatedAt: record.CreatedAt, StartedAt: record.StartedAt, FinishedAt: record.FinishedAt, Hosts: hosts, Logs: record.Logs, Error: record.ErrorMessage}
 	var preview Plan
-	if json.Unmarshal(record.Preview, &preview) == nil && preview.Mode == "k3d" {
-		result.Mode, result.K3d = "k3d", preview.K3d
+	if json.Unmarshal(record.Preview, &preview) == nil {
+		result.Sources = preview.Sources
+		if preview.Mode == "k3d" {
+			result.Mode, result.K3d = "k3d", preview.K3d
+		}
 	}
 	if record.ClusterID != "" {
 		result.Cluster = &Cluster{ID: record.ClusterID, Name: record.Name}

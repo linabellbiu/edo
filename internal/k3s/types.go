@@ -40,25 +40,36 @@ func ValidationMessage(err error) string {
 }
 
 type Input struct {
-	targetVersion string
-	targetCAData  []byte
-	serverJoin    *kube.ServerJoinInfo
-	Action        string         `json:"action"`
-	Mode          string         `json:"mode,omitempty"`
-	K3d           *K3dOptions    `json:"k3d,omitempty"`
-	Profile       string         `json:"profile"`
-	Name          string         `json:"name"`
-	ClusterID     string         `json:"cluster_id,omitempty"`
-	ServerHostID  string         `json:"server_host_id,omitempty"`
-	AgentHostIDs  []string       `json:"agent_host_ids"`
-	JoinRole      string         `json:"join_role,omitempty"`
-	JoinHostIDs   []string       `json:"join_host_ids,omitempty"`
-	ServerToken   string         `json:"server_token,omitempty"`
-	ServerOptions map[string]any `json:"server_options"`
-	AgentOptions  map[string]any `json:"agent_options"`
-	Installer     map[string]any `json:"installer"`
-	Endpoint      string         `json:"endpoint"`
-	Overrides     string         `json:"overrides"`
+	targetVersion       string
+	targetCAData        []byte
+	serverJoin          *kube.ServerJoinInfo
+	sources             *Sources
+	Action              string         `json:"action"`
+	Mode                string         `json:"mode,omitempty"`
+	K3d                 *K3dOptions    `json:"k3d,omitempty"`
+	DownloadSource      string         `json:"download_source,omitempty"`
+	SystemImageRegistry *string        `json:"system_image_registry,omitempty"`
+	Profile             string         `json:"profile"`
+	Name                string         `json:"name"`
+	ClusterID           string         `json:"cluster_id,omitempty"`
+	ServerHostID        string         `json:"server_host_id,omitempty"`
+	AgentHostIDs        []string       `json:"agent_host_ids"`
+	JoinRole            string         `json:"join_role,omitempty"`
+	JoinHostIDs         []string       `json:"join_host_ids,omitempty"`
+	ServerToken         string         `json:"server_token,omitempty"`
+	ServerOptions       map[string]any `json:"server_options"`
+	AgentOptions        map[string]any `json:"agent_options"`
+	Installer           map[string]any `json:"installer"`
+	Endpoint            string         `json:"endpoint"`
+	Overrides           string         `json:"overrides"`
+}
+
+type Sources struct {
+	DownloadSource      string  `json:"download_source"`
+	InstallerURL        string  `json:"installer_url"`
+	ArtifactURL         string  `json:"artifact_url"`
+	Mirror              string  `json:"mirror,omitempty"`
+	SystemImageRegistry *string `json:"system_image_registry,omitempty"`
 }
 
 type K3dOptions struct {
@@ -82,6 +93,7 @@ type Plan struct {
 	Action        string             `json:"action"`
 	Mode          string             `json:"mode"`
 	K3d           *K3dOptions        `json:"k3d,omitempty"`
+	Sources       *Sources           `json:"sources,omitempty"`
 	Name          string             `json:"name"`
 	Status        string             `json:"status"`
 	ClusterID     string             `json:"cluster_id,omitempty"`
@@ -114,6 +126,7 @@ type Installation struct {
 	Action     string      `json:"action"`
 	Mode       string      `json:"mode"`
 	K3d        *K3dOptions `json:"k3d,omitempty"`
+	Sources    *Sources    `json:"sources,omitempty"`
 	Name       string      `json:"name"`
 	Status     string      `json:"status"`
 	ClusterID  string      `json:"cluster_id,omitempty"`

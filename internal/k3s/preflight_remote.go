@@ -47,6 +47,7 @@ var hostPreflightDefinitions = []preflightCheckDefinition{
 	{"hostname", "节点名称", "节点名称格式有效", "节点名称必须是有效且唯一的 DNS 名称", ""},
 	{"ports", "本地端口", "当前配置所需的本地 TCP 端口未被占用", "当前配置所需的本地 TCP 端口已被占用，或无法读取监听端口", "部分自定义组件端口无法可靠确定，尚未核验这些端口；请核对最终配置，已明确的 API、LB 和组件端口仍会阻断冲突"},
 	{"download", "安装源连通性", "安装脚本和指定发布源可通过 HTTPS 访问", "无法通过 HTTPS 访问安装脚本或指定发布源，请检查 DNS、出站网络和 CA 信任", "使用预装二进制，已跳过发布源下载检查；安装脚本仍需通过 HTTPS 访问"},
+	{"system_registry", "系统镜像仓库基础连通性", "所选仓库 HTTPS 基础端点可达，尚未验证登录、镜像标签及平台内容", "无法访问所选仓库的 HTTPS 基础端点，请检查仓库地址、DNS、出站网络和 CA 信任", "未指定独立系统镜像仓库，沿用 K3s 默认或现有集群设置；此项未探测"},
 	{"endpoint", "集群 API 连通性", "主机可使用目标集群 CA 通过 HTTPS 访问集群 API", "主机无法通过可信 HTTPS 访问集群 API，请检查地址、DNS、路由、端口和集群 CA", "创建集群后将再次检查工作节点到 API 的可信 HTTPS 连接"},
 	{"swap", "Swap", "未启用 Swap", "", "检测到 Swap，请核对目标 K3s 版本及 kubelet 的 Swap 配置；预检不会关闭 Swap"},
 	{"firewall", "防火墙", "未发现正在运行的常见主机防火墙", "", "请核对 API、节点间 CNI 和 kubelet 所需网络规则；预检不会修改防火墙，UDP 双向连通性需另行核验"},
@@ -142,25 +143,28 @@ if [ -n "$edo_hostname" ] && [ "${#edo_hostname}" -le 253 ] && printf '%s\n' "$e
 	// Downloads follow bounded HTTPS redirects; the cluster API never redirects.
 	curlProbe := "timeout 5 curl --fail --silent --output /dev/null --head --proto '=https' --tlsv1.2 --connect-timeout 2 --max-time 4 "
 	downloadProbe := curlProbe + "--location --proto-redir '=https' --max-redirs 5 "
-	script.WriteString("edo_download_ok=true\n" + downloadProbe + "https://get.k3s.io >/dev/null 2>&1 || edo_download_ok=false\n")
+	sources, sourceErr := sourcesForInput(input)
+	script.WriteString("edo_download_ok=true\n")
+	if sourceErr != nil {
+		script.WriteString("edo_download_ok=false\n")
+	} else {
+		script.WriteString(downloadProbe + shellQuote(sources.InstallerURL) + " >/dev/null 2>&1 || edo_download_ok=false\n")
+	}
 	if !preloadedBinary(input.Installer) {
-		artifact, _ := input.Installer["INSTALL_K3S_ARTIFACT_URL"].(string)
-		if artifact == "" {
-			artifact = "https://github.com/k3s-io/k3s/releases/download"
+		artifact := ""
+		if sources != nil {
+			artifact = sources.ArtifactURL
 		}
-		if parsed, err := url.Parse(artifact); err != nil || parsed.Scheme != "https" || parsed.User != nil || parsed.Host == "" {
+		if parsed, err := url.Parse(artifact); sourceErr != nil || err != nil || parsed.Scheme != "https" || parsed.User != nil || parsed.Host == "" {
 			script.WriteString("edo_download_ok=false\n")
 		} else {
 			version, _ := input.Installer["INSTALL_K3S_VERSION"].(string)
 			if version != "" {
 				script.WriteString("case \"$(uname -m)\" in x86_64) edo_arch=amd64 ;; aarch64|arm64) edo_arch=arm64 ;; armv7*) edo_arch=arm ;; *) edo_arch=unsupported ;; esac\n")
 				// Probe release checksum headers; never download or execute a binary.
-				script.WriteString(downloadProbe + shellQuote(strings.TrimRight(artifact, "/")+"/"+version+"/sha256sum-") + "\"$edo_arch\".txt >/dev/null 2>&1 || edo_download_ok=false\n")
+				script.WriteString(downloadProbe + shellQuote(sourceReleaseURL(sources, version)+"/sha256sum-") + "\"$edo_arch\".txt >/dev/null 2>&1 || edo_download_ok=false\n")
 			} else {
-				channelURL, _ := input.Installer["INSTALL_K3S_CHANNEL_URL"].(string)
-				if channelURL == "" {
-					channelURL = "https://update.k3s.io/v1-release/channels"
-				}
+				channelURL := sourceChannelURL(sources, input.Installer)
 				parsedChannel, parseErr := url.Parse(channelURL)
 				if parseErr != nil || parsedChannel.Scheme != "https" || parsedChannel.Host == "" || parsedChannel.User != nil {
 					script.WriteString("edo_download_ok=false\n")
@@ -180,6 +184,7 @@ if [ -n "$edo_hostname" ] && [ "${#edo_hostname}" -le 253 ] && printf '%s\n' "$e
 	} else {
 		script.WriteString("if \"$edo_download_ok\"; then edo_check download passed; else edo_check download failed; fi\n")
 	}
+	script.WriteString(systemRegistryProbeScript(input))
 	if endpointReady && input.Endpoint != "" {
 		endpoint, err := url.Parse(input.Endpoint)
 		if err != nil || endpoint.Scheme != "https" || endpoint.User != nil || endpoint.Host == "" {

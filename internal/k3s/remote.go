@@ -179,8 +179,16 @@ func installerCommand(role string, installer map[string]any, scriptPath string) 
 	return command + " sh " + scriptPath + " " + role + " --config /etc/rancher/k3s/config.yaml"
 }
 
-func previewCommand(host Host, installer map[string]any) string {
-	return "# " + host.Name + " (" + host.Address + ")\n" + "curl --fail --location https://get.k3s.io -o /tmp/edo-k3s-install.sh\nsudo " + installerCommand(host.Role, RedactOptions(installer), "/tmp/edo-k3s-install.sh")
+func previewCommand(host Host, input Input) (string, error) {
+	sources, err := sourcesForInput(input)
+	if err != nil {
+		return "", err
+	}
+	installer, err := installerForSource(input)
+	if err != nil {
+		return "", err
+	}
+	return "# " + host.Name + " (" + host.Address + ")\n" + "curl --fail --location --proto '=https' --proto-redir '=https' " + shellQuote(sources.InstallerURL) + " -o /tmp/edo-k3s-install.sh\nsudo " + installerCommand(host.Role, RedactOptions(installer), "/tmp/edo-k3s-install.sh"), nil
 }
 
 func binaryPath(installer map[string]any) string {
@@ -282,6 +290,10 @@ func contains(values []string, value string) bool {
 }
 
 func installScript(host Host, input Input, installationID, token string) (string, error) {
+	sources, err := sourcesForInput(input)
+	if err != nil {
+		return "", err
+	}
 	version, _ := input.Installer["INSTALL_K3S_VERSION"].(string)
 	if _, valid := parseK3sVersion(version); !valid {
 		return "", &ValidationError{Message: "一键安装需要固定精确 K3s 版本，不能仅指定发布通道"}
@@ -318,7 +330,7 @@ func installScript(host Host, input Input, installationID, token string) (string
 		script += "work=" + shellQuote(stage) + "\n[ -d \"$work\" ] && [ ! -L \"$work\" ]\n[ -s \"$work/install.sh\" ] && [ ! -L \"$work/install.sh\" ]\n"
 	} else {
 		script += "work=$(mktemp -d /tmp/edo-k3s-install.XXXXXX)\n"
-		script += "curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 --connect-timeout 15 --max-time 180 --retry 3 https://get.k3s.io -o \"$work/install.sh\"\n"
+		script += "curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' --tlsv1.2 --connect-timeout 15 --max-time 180 --retry 3 " + shellQuote(sources.InstallerURL) + " -o \"$work/install.sh\"\n"
 	}
 	// Downloads may take minutes. An external installer does not honor EDO's
 	// lock, so repeat the lightweight guard after download and before writes.
@@ -340,7 +352,10 @@ func installScript(host Host, input Input, installationID, token string) (string
 	} else {
 		script += "install -d -m 700 /etc/rancher/k3s\nprintf '%s' " + shellQuote(encoded) + " | base64 -d > /etc/rancher/k3s/config.yaml\nchmod 600 /etc/rancher/k3s/config.yaml\n"
 	}
-	installer := input.Installer
+	installer, err := installerForSource(input)
+	if err != nil {
+		return "", err
+	}
 	if isServerJoin(input) {
 		installer = maps.Clone(installer)
 		installer["INSTALL_K3S_SKIP_DOWNLOAD"] = true

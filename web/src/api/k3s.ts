@@ -4,6 +4,14 @@ import type { InfrastructureCluster } from '@/api/infrastructure'
 export type K3sScope = 'server' | 'agent' | 'installer'
 export type K3sJoinRole = 'agent' | 'server'
 export type K3sInstallMode = 'native' | 'k3d'
+export type K3sDownloadSource = 'official' | 'official_cn'
+export interface K3sInstallSources {
+  download_source: K3sDownloadSource
+  installer_url: string
+  artifact_url: string
+  mirror?: string
+  system_image_registry?: string
+}
 export interface K3dConfig { agents: number; api_port: number; bind_address: string }
 export interface K3sOption {
   name: string
@@ -31,6 +39,8 @@ export interface K3sPlanInput {
   action: 'create' | 'join'
   mode?: K3sInstallMode
   k3d?: K3dConfig
+  download_source?: K3sDownloadSource
+  system_image_registry?: string
   cluster_id?: string
   name: string
   server_host_id?: string
@@ -79,6 +89,7 @@ export interface K3sPlan {
   action: 'create' | 'join'
   mode?: K3sInstallMode
   k3d?: K3dConfig
+  sources?: K3sInstallSources
   name?: string
   endpoint?: string
   version?: string
@@ -95,6 +106,7 @@ export interface K3sInstallation {
   id: string
   mode?: K3sInstallMode
   k3d?: K3dConfig
+  sources?: K3sInstallSources
   status: 'planned' | 'pending' | 'running' | 'succeeded' | 'failed' | 'interrupted'
   phase?: string
   message?: string
