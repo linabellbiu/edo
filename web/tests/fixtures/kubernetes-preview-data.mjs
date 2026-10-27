@@ -1,0 +1,45 @@
+const ago = milliseconds => new Date(Date.now() - milliseconds).toISOString()
+const metadata = (name, namespace, extra = {}) => ({ name, namespace, uid: `preview-${namespace || 'cluster'}-${name}`, resourceVersion: '1042', creationTimestamp: ago(3 * 86400_000), labels: { app: name }, ...extra })
+
+export function createKubernetesPreviewData() {
+  const containers = [{ name: 'web', image: 'registry.example.com/team/web:2026.10.28', ports: [{ name: 'http', containerPort: 8080 }], resources: { requests: { cpu: '100m', memory: '128Mi' }, limits: { cpu: '1', memory: '512Mi' } }, envFrom: [{ configMapRef: { name: 'web-settings' } }] }, { name: 'metrics', image: 'registry.example.com/team/metrics:1', resources: { requests: { cpu: '10m', memory: '16Mi' }, limits: { cpu: '100m', memory: '64Mi' } } }]
+  const deployment = { apiVersion: 'apps/v1', kind: 'Deployment', metadata: metadata('web', 'preview', { annotations: { 'deployment.kubernetes.io/revision': '3' } }), spec: { replicas: 2, revisionHistoryLimit: 10, selector: { matchLabels: { app: 'web' } }, strategy: { type: 'RollingUpdate', rollingUpdate: { maxSurge: '25%', maxUnavailable: '25%' } }, template: { metadata: { labels: { app: 'web' } }, spec: { containers, volumes: [{ name: 'settings', configMap: { name: 'web-settings' } }], restartPolicy: 'Always' } } }, status: { replicas: 2, readyReplicas: 1, updatedReplicas: 2, availableReplicas: 1, conditions: [{ type: 'Available', status: 'False', reason: 'MinimumReplicasUnavailable' }, { type: 'Progressing', status: 'True', reason: 'ReplicaSetUpdated' }] } }
+  const revisions = ['3', '2', '1'].map((revision, index) => ({ uid: `preview-rs-${revision}`, name: `web-${['85568b959f', '6576849cbf', '8fbc5bf55'][index]}`, revision, current: index === 0, created: ago((index + 1) * 3600_000), desired: index === 0 ? 2 : 0, replicas: index === 0 ? 2 : 0, ready: index === 0 ? 1 : 0, images: containers.map(item => item.image) }))
+  const pods = [0, 1].map(index => ({ apiVersion: 'v1', kind: 'Pod', metadata: metadata(`web-85568b959f-${index ? 'd7k2q' : '8cs4p'}`, 'preview', { labels: { app: 'web' }, ownerReferences: [{ kind: 'ReplicaSet', controller: true, uid: revisions[0].uid }] }), spec: { containers, nodeName: `worker-${index + 1}`, restartPolicy: 'Always' }, status: { phase: index ? 'Pending' : 'Running', podIP: index ? undefined : '10.42.1.59', conditions: [{ type: 'PodScheduled', status: 'True' }, { type: 'Initialized', status: 'True' }, { type: 'Ready', status: index ? 'False' : 'True', reason: index ? 'ContainersNotReady' : undefined }], containerStatuses: containers.map(item => ({ name: item.name, ready: !index, restartCount: index ? 3 : 0, state: index ? { waiting: { reason: 'ImagePullBackOff', message: '无法从镜像仓库拉取当前版本' } } : { running: { startedAt: ago(3600_000) } } })) } }))
+  const nodes = [1, 2].map(index => ({ apiVersion: 'v1', kind: 'Node', metadata: metadata(`worker-${index}`, undefined, { labels: { 'kubernetes.io/hostname': `worker-${index}`, 'kubernetes.io/os': 'linux' } }), spec: { podCIDR: `10.42.${index}.0/24` }, status: { addresses: [{ type: 'InternalIP', address: `192.0.2.${10 + index}` }], capacity: { cpu: '8', memory: '16Gi', pods: '110' }, allocatable: { cpu: '7800m', memory: '15Gi', pods: '110' }, conditions: [{ type: 'Ready', status: 'True', reason: 'KubeletReady', message: 'kubelet 已就绪', lastHeartbeatTime: ago(10_000) }], nodeInfo: { kubeletVersion: 'v1.34.1+k3s1', architecture: 'amd64', operatingSystem: 'linux', osImage: 'Ubuntu 24.04 LTS', containerRuntimeVersion: 'containerd://2.1.4' }, images: [{ names: ['registry.example.com/team/web:2026.10.28'], sizeBytes: 137 * 1024 ** 2 }] } }))
+  const resources = {
+    deployments: [deployment], pods, nodes,
+    statefulsets: [], daemonsets: [], jobs: [], cronjobs: [],
+    configmaps: [{ apiVersion: 'v1', kind: 'ConfigMap', metadata: metadata('web-settings', 'preview'), data: { 'app.yaml': 'server:\n  port: 8080\nlog:\n  level: info', 'PUBLIC_PATH': '/assets' } }],
+    secrets: [{ apiVersion: 'v1', kind: 'Secret', metadata: metadata('registry-auth', 'preview'), type: 'kubernetes.io/dockerconfigjson', keys: ['.dockerconfigjson'] }],
+    namespaces: ['preview', 'staging'].map(name => ({ apiVersion: 'v1', kind: 'Namespace', metadata: metadata(name), status: { phase: 'Active' } })),
+    storageclasses: [{ apiVersion: 'storage.k8s.io/v1', kind: 'StorageClass', metadata: metadata('local-path'), provisioner: 'rancher.io/local-path', reclaimPolicy: 'Delete', volumeBindingMode: 'WaitForFirstConsumer', allowVolumeExpansion: true }],
+    persistentvolumes: [{ apiVersion: 'v1', kind: 'PersistentVolume', metadata: metadata('web-data-volume'), spec: { capacity: { storage: '20Gi' }, accessModes: ['ReadWriteOnce'], storageClassName: 'local-path', persistentVolumeReclaimPolicy: 'Retain', claimRef: { name: 'web-data', namespace: 'preview' }, hostPath: { path: '/var/lib/rancher/k3s/storage/web-data' } }, status: { phase: 'Bound' } }],
+    persistentvolumeclaims: [{ apiVersion: 'v1', kind: 'PersistentVolumeClaim', metadata: metadata('web-data', 'preview'), spec: { accessModes: ['ReadWriteOnce'], storageClassName: 'local-path', volumeName: 'web-data-volume', resources: { requests: { storage: '20Gi' } } }, status: { phase: 'Bound', capacity: { storage: '20Gi' } } }],
+    services: [{ apiVersion: 'v1', kind: 'Service', metadata: metadata('web', 'preview'), spec: { type: 'ClusterIP', clusterIP: '10.43.32.8', selector: { app: 'web' }, ports: [{ name: 'http', port: 80, targetPort: 'http', protocol: 'TCP' }] } }],
+    ingresses: [{ apiVersion: 'networking.k8s.io/v1', kind: 'Ingress', metadata: metadata('web', 'preview'), spec: { ingressClassName: 'traefik', rules: [{ host: 'web.example.com', http: { paths: [{ path: '/', pathType: 'Prefix', backend: { service: { name: 'web', port: { number: 8080 } } } }] } }], tls: [{ hosts: ['web.example.com'], secretName: 'web-tls' }] }, status: { loadBalancer: { ingress: [{ ip: '192.0.2.11' }] } } }],
+    networkpolicies: [{ apiVersion: 'networking.k8s.io/v1', kind: 'NetworkPolicy', metadata: metadata('web-ingress', 'preview'), spec: { podSelector: { matchLabels: { app: 'web' } }, policyTypes: ['Ingress'], ingress: [{ from: [{ podSelector: { matchLabels: { app: 'gateway' } } }], ports: [{ port: 8080, protocol: 'TCP' }] }] } }],
+  }
+  const event = (uid, reason, message, index = 0, warning = false) => ({ metadata: metadata(`event-${uid}-${index}`), involvedObject: { uid }, type: warning ? 'Warning' : 'Normal', reason, count: warning ? 3 : 1, lastTimestamp: ago((index + 1) * 60_000), message })
+  function eventsFor(object) {
+    if (object.metadata.uid === deployment.metadata.uid) return [event(object.metadata.uid, 'ScalingReplicaSet', 'Scaled up replica set web-85568b959f from 0 to 2')]
+    if (object.metadata.uid === pods[1].metadata.uid) return [event(object.metadata.uid, 'Failed', 'Failed to pull image "registry.example.com/team/web:2026.10.28": connection timed out while waiting for the image registry response. Check the repository address and image pull credentials before retrying.', 0, true)]
+    return ['Started', 'Created', 'Pulled', 'Scheduled'].map((reason, index) => event(object.metadata.uid, reason, `${reason} container web`, index))
+  }
+  function overview(namespace = '') {
+    const visiblePods = pods.filter(pod => !namespace || pod.metadata.namespace === namespace)
+    return {
+      counts: Object.fromEntries(Object.entries(resources).map(([key, rows]) => [key, { count: rows.filter(row => !namespace || !row.metadata.namespace || row.metadata.namespace === namespace).length, state: 'ok' }])),
+      nodes: nodes.map((node, index) => ({ name: node.metadata.name, uid: node.metadata.uid, ready: true, cpu: 7.8, memory: 15 * 1024 ** 3, pod_capacity: 110, pods: index ? 6 : 8, pod_state: 'ok' })),
+      phases: visiblePods.reduce((result, pod) => ({ ...result, [pod.status.phase]: (result[pod.status.phase] || 0) + 1 }), {}),
+      usage: { nodes: Object.fromEntries(nodes.map((node, index) => [node.metadata.name, { cpu: index ? 1.2 : .8, memory: (index ? 3.1 : 2.4) * 1024 ** 3, timestamp: ago(0) }])), pods: { 'preview/web-85568b959f-8cs4p': { cpu: .021, memory: 162 * 1024 ** 2, timestamp: ago(0) } } },
+      metrics_state: { nodes: 'ok', pods: 'ok' }, collected_at: ago(0),
+    }
+  }
+  function nodeHistory(name) {
+    const node = nodes.find(item => item.metadata.name === name)
+    if (!node) throw new Error('预览节点不存在')
+    return { uid: node.metadata.uid, from: ago(900_000), to: ago(0), interval_seconds: 30, points: Array.from({ length: 31 }, (_, index) => ({ collected_at: ago((30 - index) * 30_000), metrics_at: ago((30 - index) * 30_000), cpu: .8 + index % 5 * .04, memory: (2.4 + index % 7 * .02) * 1024 ** 3, cpu_allocatable: 7.8, memory_allocatable: 15 * 1024 ** 3, pod_capacity: 110, pods: 8, allocation: { cpu_requests: 1.4, cpu_limits: 4, memory_requests: 3 * 1024 ** 3, memory_limits: 6 * 1024 ** 3 }, metrics_state: 'ok', pods_state: 'ok' })) }
+  }
+  return { resources, deployment, revisions, pods, nodes, eventsFor, overview, nodeHistory }
+}

@@ -18,13 +18,13 @@ test('Kubernetes 固定操作列不使用合并边框，滚动时不透出其他
 })
 
 test('普通、隔行和悬停使用实色底板，选中状态保留主题颜色',()=>{
- assert.equal(declarations(`${table} tbody > tr > td`).background,'var(--edo-surface)')
- for(const state of [':nth-child(even)',':hover']){
+ assert.equal(declarations(`${table} tbody > tr > td`).background,'var(--kube-surface)')
+ for(const [state,token] of [[':nth-child(even)','--kube-stripe'],[':hover','--kube-hover']]){
   const value=declarations(`${table} tbody > tr${state} > td`).background
-  assert.match(value,/var\(--edo-surface\)/)
+  assert.equal(value,`var(${token})`)
   assert.doesNotMatch(value,/transparent|rgba?\(/)
  }
- assert.equal(declarations(`${table} tbody > tr.active > td`).background,'var(--edo-primary-soft)')
+ assert.equal(declarations(`${table} tbody > tr.active > td`).background,'var(--kube-selected)')
  const rules=[];css.walkRules(rule=>rules.push(rule.selector))
  assert.ok(rules.indexOf(`${table} tbody > tr.active > td`)>rules.indexOf(`${table} tbody > tr:hover > td`))
 })

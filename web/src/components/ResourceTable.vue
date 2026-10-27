@@ -83,7 +83,9 @@ function displayValue(value: unknown): string {
           </tbody>
         </table>
       </div>
-      <a-pagination v-if="pagination && rows.length" v-model:current="page" v-model:page-size="limit" :total="rows.length" show-size-changer :page-size-options="['10', '20', '50', '100']" :show-total="(count: number) => t('planList.total', { count })" class="resource-pagination" @show-size-change="page = 1" />
+      <slot v-if="pagination && rows.length" name="pagination" :page="page" :limit="limit" :total="rows.length" :change-page="(value: number) => page = value" :change-limit="(value: number) => { limit = value; page = 1 }">
+        <a-pagination v-model:current="page" v-model:page-size="limit" :total="rows.length" show-size-changer :page-size-options="['10', '20', '50', '100']" :show-total="(count: number) => t('planList.total', { count })" class="resource-pagination" @show-size-change="page = 1" />
+      </slot>
     </a-spin>
   </div>
   <ResourceDetailDrawer v-if="details" v-model:open="detailOpen" :title="String(selected?.name || selected?.nickname || t('resourceList.details'))">

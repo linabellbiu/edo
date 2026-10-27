@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { computed, defineAsyncComponent, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, defineAsyncComponent, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { Box, ChevronRight, RefreshCw } from 'lucide-vue-next'
+import { Box, ChevronRight, Network, RefreshCw, Server } from 'lucide-vue-next'
 import client from '@/api/client'
 import { kubeErrorMessage, resourceURL, type KubeObject, type KubeType } from '@/api/kubernetes'
 import { resourceStatus, type KubeReference } from '@/utils/kubernetesPresentation'
@@ -25,6 +25,7 @@ const props = defineProps<{
   can: (permission: string) => boolean
   canFollow: (reference: KubeReference) => boolean
   disabled?: boolean
+  visible?: boolean
   selection?: WorkloadExplorerSelection
 }>()
 const emit = defineEmits<{
@@ -40,6 +41,8 @@ const readable = computed(() => props.can('kubernetes.workload.read'))
 const namespace = computed(() => String(props.object.metadata?.namespace ?? ''))
 const revisions = ref<WorkloadRevision[]>([]), historyLoading = ref(false), historyError = ref(''), historyState = ref('')
 const revisionUID = ref(''), podUID = ref(''), containerName = ref(''), podTab = ref('summary')
+const root = ref<HTMLElement>()
+let restoreRevision = false, restorePod = false
 let revisionChosen = false, podChosen = false, disposed = false, revision = 0
 let request: AbortController | undefined, timer: ReturnType<typeof setInterval> | undefined
 const context = computed(() => `${props.cluster}/${props.type.resource}/${namespace.value}/${props.object.metadata?.uid ?? ''}`)
@@ -54,13 +57,38 @@ const selectedContainer = computed(() => choices.value.find(container => contain
 const actionDisabled = computed(() => Boolean(props.disabled) || props.podsLoading || Boolean(props.podsError) || deployment.value && Boolean(historyError.value) || !readable.value || !selectedPod.value || !selectedContainer.value)
 
 function count(value: unknown) { return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? String(value) : '—' }
+function revealInColumn(column: HTMLElement, item: HTMLElement) {
+  const bounds = column.getBoundingClientRect(), target = item.getBoundingClientRect()
+  const top = bounds.top + (column.querySelector('header')?.getBoundingClientRect().height ?? 0) + 6
+  if (target.top < top) column.scrollTop += target.top - top
+  else if (target.bottom > bounds.bottom - 6) column.scrollTop += target.bottom - bounds.bottom + 6
+}
+async function restoreVisibleSelection() {
+  const identity = context.value
+  await nextTick()
+  if (disposed || identity !== context.value || props.disabled || props.visible === false || !readable.value || !root.value || root.value.clientHeight === 0) return
+  for (const [pending, selector] of [[restoreRevision, '.revision-column'], [restorePod, '.pod-column']] as const) {
+    if (!pending) continue
+    const column = root.value.querySelector<HTMLElement>(selector), selected = column?.querySelector<HTMLElement>('button.selected')
+    if (!column || !selected) continue
+    revealInColumn(column, selected)
+    if (selector === '.revision-column') restoreRevision = false
+    else restorePod = false
+  }
+}
+function revealFocused(event: FocusEvent) {
+  const target = event.target as HTMLElement | null, column = target?.closest<HTMLElement>('.explorer-column')
+  if (column && target) revealInColumn(column, target)
+}
 function podState(pod: KubeObject) { return resourceStatus(pod, t) }
 function choosePod(pod: KubeObject) {
   if (props.disabled || !readable.value || !selectedWorkloadPod(visiblePods.value, pod.metadata?.uid, namespace.value)) return
+  restorePod = false
   podUID.value = pod.metadata.uid; podChosen = true; containerName.value = ''; podTab.value = 'summary'
 }
 function chooseRevision(item: WorkloadRevision) {
   if (props.disabled || !revisions.value.some(revision => revision.uid === item.uid)) return
+  restoreRevision = false; restorePod = false
   revisionUID.value = item.uid; revisionChosen = true
   podUID.value = ''; podChosen = false; containerName.value = ''; podTab.value = 'summary'
 }
@@ -111,6 +139,7 @@ watch(context, () => {
   const saved = props.selection
   revisionUID.value = saved?.revisionUID ?? ''; podUID.value = saved?.podUID ?? ''; containerName.value = saved?.containerName ?? ''; podTab.value = saved?.podTab === 'diagnostics' ? 'diagnostics' : 'summary'
   revisionChosen = Boolean(revisionUID.value); podChosen = Boolean(podUID.value)
+  restoreRevision = revisionChosen; restorePod = podChosen
   void loadHistory()
 }, { immediate: true })
 watch([revisionUID, podUID, containerName, podTab], () => emit('selection', {
@@ -122,29 +151,30 @@ watch([visiblePods, () => props.disabled, () => props.podsLoading], ([pods]) => 
 watch(choices, containers => {
   if (!containerName.value && containers.length) containerName.value = containers.find(container => container.kind === 'app')?.name ?? containers[0]!.name
 }, { immediate: true })
+watch([revisionUID, podUID, historyLoading, () => props.podsLoading, readable, () => props.disabled, () => props.visible], () => { void restoreVisibleSelection() }, { flush: 'post' })
 watch(() => props.refreshToken, () => { if (deployment.value) void loadHistory() })
 watch(readable, value => {
   if (value) { if (deployment.value) void loadHistory() }
   else { revision++; request?.abort(); historyLoading.value = false; historyState.value = ''; revisions.value = []; revisionUID.value = ''; podUID.value = ''; containerName.value = ''; revisionChosen = false; podChosen = false }
 })
 function syncVisible() { if (!document.hidden && props.autoRefresh && !props.disabled && !historyLoading.value && deployment.value) void loadHistory() }
-onMounted(() => { timer = setInterval(syncVisible, 30_000); document.addEventListener('visibilitychange', syncVisible) })
+onMounted(() => { void restoreVisibleSelection(); timer = setInterval(syncVisible, 30_000); document.addEventListener('visibilitychange', syncVisible) })
 onBeforeUnmount(() => { disposed = true; revision++; request?.abort(); if (timer) clearInterval(timer); document.removeEventListener('visibilitychange', syncVisible) })
 </script>
 
 <template>
-  <section class="workload-explorer" :class="{ 'is-deployment': deployment }" aria-label="工作负载运行状态">
+  <section ref="root" class="workload-explorer" :class="{ 'is-deployment': deployment }" aria-label="工作负载运行状态" @focusin="revealFocused">
     <aside v-if="deployment" class="explorer-column revision-column">
       <header><h4>历史版本</h4><span class="history-limit">最多 {{ object.spec?.revisionHistoryLimit ?? '—' }} 个</span><a-button size="small" type="text" :loading="historyLoading" :disabled="disabled || !readable" aria-label="刷新历史版本" @click="loadHistory"><RefreshCw :size="13" /></a-button></header>
       <a-alert v-if="historyError" class="column-alert" type="error" show-icon :message="historyError"><template #action><a-button size="small" :disabled="disabled" @click="loadHistory">重试</a-button></template></a-alert>
       <a-alert v-else-if="historyState==='partial' || historyState==='pods_unavailable'" class="column-alert" type="warning" show-icon :message="historyState==='partial'?'历史版本数据尚未完整加载':'暂时无法读取历史版本关联的 Pod，请核对关联 Pod 列表'" />
       <a-spin :spinning="historyLoading">
         <div v-if="revisions.length" class="revision-list" role="list" aria-label="ReplicaSet 历史版本">
-          <div v-for="item in revisions" :key="item.uid" class="revision-entry" :class="{ selected: item.uid === revisionUID }">
+          <div v-for="item in revisions" :key="item.uid" class="revision-entry" role="listitem" :class="{ selected: item.uid === revisionUID }">
             <span class="revision-created" :title="formatDateTime(item.created)">已创建：{{ formatRelativeTime(item.created) }}</span>
             <button class="revision-item" :class="{ selected: item.uid === revisionUID }" :disabled="disabled" :aria-pressed="item.uid === revisionUID" :title="(item.images ?? []).join('\n')" @click="chooseRevision(item)">
-              <span class="revision-heading"><strong>{{ item.name }}</strong><span>#{{ item.revision ?? '—' }}</span></span>
-              <span class="replica-counts"><span>期望：<b>{{ count(item.desired) }}</b></span><span>当前：<b>{{ count(item.replicas) }}</b></span><span>就绪：<b>{{ count(item.ready) }}</b></span><span v-if="item.current" class="revision-current">当前</span></span>
+              <span class="revision-heading"><strong>{{ item.name }}</strong><span>#{{ item.revision ?? '—' }}</span><span v-if="item.current" class="revision-current">当前</span></span>
+              <span class="replica-counts"><span>期望<b>{{ count(item.desired) }}</b></span><span>当前<b>{{ count(item.replicas) }}</b></span><span>就绪<b>{{ count(item.ready) }}</b></span></span>
             </button>
           </div>
         </div>
@@ -160,12 +190,11 @@ onBeforeUnmount(() => { disposed = true; revision++; request?.abort(); if (timer
       <a-alert v-else-if="podsPartial" class="column-alert" type="warning" show-icon message="关联 Pod 尚未完整加载" />
       <a-spin :spinning="podsLoading">
         <div v-if="visiblePods.length" class="pod-list" role="list" aria-label="关联 Pod">
-          <button v-for="pod in visiblePods" :key="pod.metadata.uid" class="pod-item" :class="{ selected: pod.metadata.uid === podUID }" :disabled="disabled || !readable" :aria-pressed="pod.metadata.uid === podUID" @click="choosePod(pod)">
+          <div v-for="pod in visiblePods" :key="pod.metadata.uid" role="listitem"><button class="pod-item" :class="{ selected: pod.metadata.uid === podUID }" :disabled="disabled || !readable" :aria-pressed="pod.metadata.uid === podUID" @click="choosePod(pod)">
             <span class="pod-heading"><Box :size="14" /><strong :title="pod.metadata.name">{{ pod.metadata.name }}</strong><a-tag :color="podState(pod).tone">{{ podState(pod).text }}</a-tag><ChevronRight :size="12" /></span>
-            <span class="pod-created" :title="formatDateTime(pod.metadata.creationTimestamp)">{{ formatRelativeTime(pod.metadata.creationTimestamp) }}</span>
-            <span class="pod-placement"><span><i>C</i><code>{{ pod.status?.podIP || '—' }}</code></span><span :title="pod.spec?.nodeName"><i>H</i><span>{{ pod.spec?.nodeName || '未调度' }}</span></span></span>
+            <span class="pod-placement"><span title="Pod IP"><Network :size="12" aria-hidden="true" /><code>{{ pod.status?.podIP || '—' }}</code></span><span :title="pod.spec?.nodeName"><Server :size="12" aria-hidden="true" /><span>{{ pod.spec?.nodeName || '未调度' }}</span></span><time class="pod-created" :title="formatDateTime(pod.metadata.creationTimestamp)">{{ formatRelativeTime(pod.metadata.creationTimestamp) }}</time></span>
             <span v-if="podState(pod).reason" class="pod-reason">{{ podState(pod).reason }}</span>
-          </button>
+          </button></div>
         </div>
         <a-empty v-else-if="!podsLoading && !podsError" :description="deployment && !selectedRevision ? '请选择历史版本' : '暂无关联 Pod'" :image-style="{ height: '40px' }" />
       </a-spin>
@@ -180,15 +209,76 @@ onBeforeUnmount(() => { disposed = true; revision++; request?.abort(); if (timer
 </template>
 
 <style scoped>
-.workload-explorer{--edo-kube-accent:#415c87;display:grid;grid-template-columns:minmax(230px,1fr) minmax(0,2fr);gap:10px;padding:12px;background:var(--edo-surface);border:1px solid var(--edo-border);border-radius:5px;height:clamp(470px,calc(100dvh - 350px),780px);overflow:hidden}
-.workload-explorer.is-deployment{grid-template-columns:minmax(220px,1fr) minmax(230px,1fr) minmax(0,1.9fr)}
-.explorer-column{min-width:0;min-height:0;overflow-y:auto;overscroll-behavior:contain;background:var(--edo-surface-soft);scrollbar-gutter:stable}
-.explorer-column>header{min-height:32px;padding:3px 9px;display:flex;align-items:center;justify-content:space-between;gap:5px;position:sticky;top:0;background:var(--edo-surface-soft);z-index:1;border-bottom:1px solid var(--edo-border)}
-.explorer-column h4{font-size:12px;margin:0;font-weight:600}.heading-count,.history-limit{font-size:11px;color:var(--edo-muted);font-weight:400}.history-limit{margin-left:auto;background:var(--edo-surface);padding:1px 5px;border:1px solid var(--edo-border);border-radius:2px}.revision-list{position:relative;padding:5px 9px 16px 28px}.revision-list::before{content:'';position:absolute;left:14px;top:21px;bottom:28px;width:1px;background:var(--edo-border)}.revision-entry{position:relative;margin:0 0 20px}.revision-entry::before{content:'';position:absolute;left:-19px;top:6px;width:10px;height:10px;border-radius:50%;background:var(--edo-muted);border:1px solid var(--edo-surface-soft)}.revision-entry.selected::before{background:#55b69b}.revision-created{display:block;padding:4px 0 8px;font-size:11px;color:var(--edo-muted)}
-.revision-item,.pod-item{position:relative;width:100%;border:1px solid transparent;border-radius:4px;background:color-mix(in srgb,#39b89b 10%,var(--edo-surface));text-align:left;padding:10px;display:flex;flex-direction:column;gap:7px;font:inherit;color:var(--edo-text);cursor:pointer;min-width:0}.revision-item.selected,.pod-item.selected{background:var(--edo-kube-accent);color:#fff}.revision-item.selected::after,.pod-item.selected::after{content:'';position:absolute;right:-7px;top:calc(50% - 7px);border-top:7px solid transparent;border-bottom:7px solid transparent;border-left:7px solid var(--edo-kube-accent)}
-.revision-item:hover:not(.selected),.pod-item:hover:not(.selected){border-color:var(--edo-primary)}button:focus-visible{outline:2px solid var(--edo-primary);outline-offset:2px}button:disabled{cursor:not-allowed;opacity:.65}.revision-heading,.pod-heading{display:flex;align-items:center;gap:7px;min-width:0}.revision-heading strong{font-size:12px;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-family:var(--edo-font-mono,monospace)}.revision-heading>span{font-size:12px;flex:none}.replica-counts{display:flex;align-items:center;gap:8px;font-size:11px;flex-wrap:wrap}.replica-counts b{font-weight:600}.revision-current{font-size:10px;margin-left:auto;border:1px solid currentColor;border-radius:2px;padding:0 3px;opacity:.8}.selected-revision{font-size:11px;margin:6px 10px 8px;color:var(--edo-muted);overflow-wrap:anywhere}.selected-revision>strong{color:var(--edo-kube-accent);font-weight:600}.pod-list{padding:4px 12px 16px 9px;display:grid;gap:10px}.pod-heading strong{font-size:12px;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-family:var(--edo-font-mono,monospace)}.pod-heading>svg{flex:none}.pod-heading :deep(.ant-tag){font-size:10px;line-height:16px;padding:0 4px;margin:0}.pod-created{font-size:11px}.pod-placement{display:flex;flex-wrap:wrap;gap:5px 12px;font-size:11px;min-width:0}.pod-placement>span{display:flex;align-items:center;gap:4px;min-width:0}.pod-placement>span>span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:180px}.pod-placement i{font-style:normal;background:var(--edo-surface);color:var(--edo-kube-accent);padding:0 2px;font-size:9px;border-radius:2px}.pod-placement code{font:inherit}.pod-reason{font-size:11px;overflow-wrap:anywhere}.pod-detail-column{background:var(--edo-surface);padding-inline:0 2px}.pod-detail-column>header{background:var(--edo-surface);padding-left:0;margin-bottom:8px}.pod-detail-column>header :deep(.ant-btn){font-size:11px;height:25px;padding-inline:4px}.column-alert{margin:8px}.column-note{font-size:12px;color:var(--edo-muted);padding:0 9px;line-height:1.6}.workload-explorer :deep(.ant-empty){margin:24px 9px}.pod-detail-column :deep(.diagnostics){padding:0;border:0;background:transparent}.pod-detail-column :deep(.diagnostic-charts){gap:8px;margin:0 0 9px}.pod-detail-column :deep(.diagnostic-charts article){padding:8px;border-radius:3px}.pod-detail-column :deep(.diagnostic-charts h4){font-size:11px}
-.selected-revision>strong{color:var(--edo-primary)}
-:global(:root[data-theme='dark']) .workload-explorer{--edo-kube-accent:#365477}
-@media(max-width:1100px){.workload-explorer.is-deployment{grid-template-columns:1fr 1fr;height:auto}.is-deployment .revision-column,.is-deployment .pod-column{max-height:300px}.is-deployment .pod-detail-column{grid-column:1/-1;max-height:none;overflow:visible}.pod-detail-column{scrollbar-gutter:auto}}
-@media(max-width:680px){.workload-explorer,.workload-explorer.is-deployment{grid-template-columns:minmax(0,1fr);height:auto;padding:8px;gap:8px}.explorer-column{max-height:280px}.pod-detail-column{grid-column:auto;max-height:none;overflow:visible}.replica-counts{gap:12px}.history-limit{margin-left:auto}}
+.workload-explorer {
+  display: grid;
+  grid-template-columns: minmax(230px, 1fr) minmax(0, 2fr);
+  gap: 12px;
+  height: clamp(470px, calc(100dvh - 350px), 780px);
+  padding: 10px;
+  overflow: hidden;
+  border: 1px solid var(--workload-border);
+  border-radius: 4px;
+  background: var(--workload-column);
+  color: var(--workload-text);
+}
+.workload-explorer.is-deployment { grid-template-columns: minmax(210px, .94fr) minmax(240px, 1.04fr) minmax(0, 1.8fr); }
+.explorer-column { min-width: 0; min-height: 0; overflow-y: auto; overscroll-behavior: contain; scrollbar-gutter: stable; scroll-padding-top: 48px; background: var(--workload-column); }
+.explorer-column>header { display: flex; position: sticky; top: 0; z-index: 1; align-items: center; justify-content: space-between; gap: 6px; min-height: 36px; padding: 5px 10px; border-bottom: 1px solid var(--workload-border); background: var(--workload-heading); color: var(--workload-title); }
+.explorer-column h4 { margin: 0; font-size: 13px; font-weight: 650; line-height: 22px; }
+.heading-count { margin-left: 4px; color: var(--workload-muted); font-size: 12px; font-weight: 500; font-variant-numeric: tabular-nums; }
+.history-limit { margin-left: auto; color: var(--workload-muted); font-size: 12px; white-space: nowrap; }
+.explorer-column>header :deep(.ant-btn) { display: grid; width: 26px; height: 26px; place-items: center; padding: 0; color: var(--workload-muted); }
+.explorer-column>header :deep(.ant-btn:not(:disabled):hover) { color: var(--workload-link); background: var(--workload-column); }
+.revision-list { position: relative; padding: 8px 8px 12px 22px; }
+.revision-list::before { position: absolute; top: 23px; bottom: 30px; left: 9px; width: 1px; background: var(--workload-border); content: ''; }
+.revision-entry { position: relative; margin: 0 0 12px; }
+.revision-entry::before { position: absolute; top: 9px; left: -16px; width: 7px; height: 7px; border: 1px solid var(--workload-column); border-radius: 50%; background: var(--workload-muted); content: ''; }
+.revision-entry.selected::before { background: var(--workload-accent); }
+.revision-created { display: block; padding: 3px 0 6px; color: var(--workload-muted); font-size: 12px; line-height: 18px; }
+.revision-item,.pod-item { position: relative; display: flex; flex-direction: column; gap: 6px; width: 100%; min-width: 0; padding: 10px 12px; border: 1px solid var(--workload-idle-border); border-radius: 3px; background: var(--workload-idle); color: var(--workload-text); font: inherit; text-align: left; cursor: pointer; }
+.revision-item.selected,.pod-item.selected { border-color: var(--workload-selected-border); background: var(--workload-selected); color: var(--workload-text); box-shadow: inset 2px 0 var(--workload-accent); }
+.revision-item.selected .revision-heading strong,.pod-item.selected .pod-heading strong { color: var(--workload-on-selected); }
+.revision-item:hover:not(.selected):not(:disabled),.pod-item:hover:not(.selected):not(:disabled) { border-color: var(--workload-hover-border); background: var(--workload-hover); color: var(--workload-text); }
+button:focus-visible { outline: 2px solid var(--workload-focus); outline-offset: 2px; }
+button:disabled { opacity: .6; cursor: not-allowed; }
+.revision-heading,.pod-heading { display: flex; align-items: center; gap: 6px; min-width: 0; line-height: 20px; }
+.revision-heading strong,.pod-heading strong { flex: 1; min-width: 0; color: var(--workload-title); font-size: 13px; font-weight: 600; white-space: normal; overflow-wrap: anywhere; font-family: var(--edo-font-mono, ui-monospace, monospace); }
+.revision-heading>span { flex: none; color: var(--workload-muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+.replica-counts { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 8px; color: var(--workload-muted); font-size: 12px; line-height: 20px; }
+.replica-counts>span { display: flex; align-items: baseline; gap: 6px; min-width: 0; white-space: nowrap; }
+.replica-counts b { color: var(--workload-text); font-size: 12px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.revision-heading .revision-current { padding: 0 5px; border-radius: 2px; background: var(--workload-column); color: var(--workload-link); font-size: 12px; line-height: 18px; }
+.selected-revision { margin: 0 0 8px; padding: 7px 10px; border-bottom: 1px solid var(--workload-border); color: var(--workload-muted); font-size: 12px; line-height: 18px; overflow-wrap: anywhere; }
+.selected-revision>strong { color: var(--workload-link); font-weight: 500; }
+.pod-list { display: grid; gap: 8px; padding: 0 8px 12px; }
+.pod-heading>svg { flex: none; color: var(--workload-muted); }
+.pod-heading :deep(.ant-tag) { margin: 0; padding: 0 5px; font-size: 12px; line-height: 18px; }
+.pod-placement { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 12px; min-width: 0; color: var(--workload-muted); font-size: 12px; line-height: 18px; }
+.pod-placement>span { display: inline-flex; align-items: center; gap: 4px; min-width: 0; }
+.pod-placement svg { flex: none; color: var(--workload-muted); }
+.pod-placement code { color: var(--workload-text); font: inherit; font-variant-numeric: tabular-nums; }
+.pod-placement>span>span { max-width: 100%; overflow-wrap: anywhere; }
+.pod-created { margin-left: auto; color: var(--workload-muted); font-size: 12px; white-space: nowrap; }
+.pod-reason { color: var(--workload-muted); font-size: 12px; overflow-wrap: anywhere; }
+.pod-column,.pod-detail-column { padding-left: 12px; border-left: 1px solid var(--workload-divider); }
+.pod-detail-column { padding-right: 2px; background: var(--workload-column); }
+.column-alert { margin: 8px; }
+.column-note { padding: 0 9px; color: var(--workload-muted); font-size: 12px; line-height: 1.6; }
+.workload-explorer :deep(.ant-empty) { margin: 24px 9px; }
+.pod-detail-column :deep(.diagnostics) { padding: 0; border: 0; background: transparent; }
+.pod-detail-column :deep(.diagnostic-charts) { gap: 8px; margin: 0 0 10px; }
+.pod-detail-column :deep(.diagnostic-charts article) { padding: 8px; border-radius: 3px; }
+.pod-detail-column :deep(.diagnostic-charts h4) { font-size: 12px; }
+@media(max-width:1100px) {
+  .workload-explorer.is-deployment { grid-template-columns: 1fr 1fr; height: auto; }
+  .is-deployment .revision-column,.is-deployment .pod-column { max-height: 320px; }
+  .is-deployment .pod-detail-column { grid-column: 1/-1; max-height: none; overflow: visible; }
+  .pod-detail-column { scrollbar-gutter: auto; }
+}
+@media(max-width:680px) {
+  .workload-explorer,.workload-explorer.is-deployment { grid-template-columns: minmax(0,1fr); height: auto; padding: 8px; gap: 12px; }
+  .explorer-column,.is-deployment .revision-column,.is-deployment .pod-column { max-height: none; overflow: visible; }
+  .pod-column,.pod-detail-column { border-top: 1px solid var(--workload-divider); border-left: 0; padding-top: 8px; padding-left: 0; }
+  .pod-detail-column { grid-column: auto; max-height: none; overflow: visible; }
+}
 </style>

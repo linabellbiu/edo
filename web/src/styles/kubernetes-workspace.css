@@ -1,0 +1,187 @@
+/* Kubernetes 局部令牌，不覆盖应用外壳和其他业务的 Ant 主题。 */
+:root {
+  --kube-surface: #ffffff;
+  --kube-surface-soft: #f7f9fc;
+  --kube-heading: #eef2f6;
+  --kube-stripe: #fafbfd;
+  --kube-text: #263446;
+  --kube-muted: #59697e;
+  --kube-border: #d9e1eb;
+  --kube-control-border: #8092aa;
+  --kube-link: #315fae;
+  --kube-focus: #315fae;
+  --kube-hover: #f1f5fa;
+  --kube-selected: #eaf1ff;
+  --kube-selected-border: #bfd0ed;
+  --kube-success: #24644d;
+  --kube-success-bg: #eaf6ef;
+  --kube-success-border: #b9dbc9;
+  --kube-warning: #855414;
+  --kube-warning-bg: #fff7e8;
+  --kube-warning-border: #e7d5b2;
+  --kube-danger: #a23448;
+  --kube-danger-bg: #fff0f1;
+  --kube-danger-border: #e4c5cd;
+  --kube-meter-cpu: #28705b;
+  --kube-meter-memory: #355b85;
+  --kube-meter-pods: #2b6b72;
+  --kube-meter-warning: #855414;
+  --kube-meter-danger: #a23448;
+  --kube-meter-unknown: #5d6e84;
+  --kube-meter-label: #ffffff;
+  --kube-chart-requests: #8a661a;
+  --kube-chart-limits: #8961a7;
+}
+
+:root[data-theme='dark'] {
+  --kube-surface: #1b2532;
+  --kube-surface-soft: #202d3c;
+  --kube-heading: #253242;
+  --kube-stripe: #202b39;
+  --kube-text: #edf3fa;
+  --kube-muted: #b4c0ce;
+  --kube-border: #3a495c;
+  --kube-control-border: #71849c;
+  --kube-link: #b7cef5;
+  --kube-focus: #c6e0ff;
+  --kube-hover: #28394d;
+  --kube-selected: #253a57;
+  --kube-selected-border: #536e94;
+  --kube-success: #a1d9c3;
+  --kube-success-bg: #19392f;
+  --kube-success-border: #365f51;
+  --kube-warning: #e5c998;
+  --kube-warning-bg: #403624;
+  --kube-warning-border: #66543a;
+  --kube-danger: #edb1bf;
+  --kube-danger-bg: #412b35;
+  --kube-danger-border: #714450;
+  --kube-meter-cpu: #347b66;
+  --kube-meter-memory: #476b97;
+  --kube-meter-pods: #367680;
+  --kube-meter-warning: #8c621e;
+  --kube-meter-danger: #a8465b;
+  --kube-meter-unknown: #5a6d84;
+  --kube-chart-requests: #e1c37e;
+  --kube-chart-limits: #cfb5ed;
+}
+
+.kube-workspace .resource-panel.resource-panel {
+  border-color: var(--kube-border);
+  background: var(--kube-surface);
+  color: var(--kube-text);
+}
+.kube-workspace .resource-panel > .resource-panel-heading {
+  min-height: 52px;
+  background: var(--kube-surface-soft);
+  border-bottom: 1px solid var(--kube-border);
+}
+.kube-workspace .resource-panel .resource-type-tabs button {
+  min-height: 36px;
+  color: var(--kube-muted);
+  font-size: 13px;
+  border-radius: 3px 3px 0 0;
+}
+.kube-workspace .resource-panel .resource-type-tabs button:not(:disabled):hover {
+  color: var(--kube-link);
+  background: var(--kube-hover);
+}
+.kube-workspace .resource-panel .resource-type-tabs button.selected {
+  color: var(--kube-link);
+  border-bottom-color: var(--kube-link);
+}
+.kube-workspace .resource-panel .resource-type-tabs button:disabled {
+  color: var(--kube-muted);
+  opacity: .55;
+  cursor: not-allowed;
+}
+.kube-workspace .resource-panel .resource-type-tabs button:focus-visible,
+.kube-workspace .resource-panel .resource-name:focus-visible,
+.kube-workspace .partial-badge:focus-visible {
+  outline: 2px solid var(--kube-focus);
+  outline-offset: 2px;
+}
+.kube-workspace .resource-panel .list-meta {
+  font-size: 12px;
+  color: var(--kube-muted);
+  border-color: var(--kube-border);
+}
+.kube-workspace .partial-badge {
+  display: inline-flex;
+  align-items: center;
+  min-height: 26px;
+  padding: 2px 7px;
+  border: 1px solid var(--kube-control-border);
+  border-radius: 4px;
+  background: var(--kube-surface);
+  color: var(--kube-muted);
+  font: inherit;
+  cursor: pointer;
+}
+.kube-workspace .partial-badge:not(:disabled):hover {
+  color: var(--kube-link);
+  background: var(--kube-hover);
+}
+.kube-workspace .partial-badge:disabled { cursor: not-allowed; opacity: .55; }
+.kube-workspace .resource-panel .resource-name { color: var(--kube-link); min-height: 24px; }
+.kube-workspace .resource-panel .resource-name:not(:disabled):hover { color: var(--kube-link); }
+.kube-workspace .resource-panel .secondary,
+.kube-workspace .resource-panel .created-at,
+.kube-workspace .resource-panel .namespace-value,
+.kube-workspace .resource-panel .status-reason,
+.kube-workspace .resource-panel .list-filter-field > span { color: var(--kube-muted); }
+.kube-workspace .resource-panel .type-count { font-size: 12px; color: var(--kube-muted); background: var(--kube-heading); }
+.kube-detail-drawer .resource-detail-toolbar { border-color: var(--kube-border); background: var(--kube-surface); }
+.kube-detail-drawer .resource-detail-content { scroll-padding-block: 56px 20px; background: var(--kube-surface-soft); }
+.kube-detail-drawer .resource-detail-content .resource-detail-section { border-color: var(--kube-border); background: var(--kube-surface); }
+.kube-detail-drawer .resource-detail-content .detail-tabs .ant-tabs-nav { background: var(--kube-surface-soft); }
+.kube-detail-drawer .resource-detail-content .annotation-row { border-color: var(--kube-border); }
+.kube-detail-drawer .resource-detail-content .annotation-row code { color: var(--kube-muted); }
+
+.kube-workspace .ant-tag-processing,
+.kube-workspace .ant-tag-blue,
+.kube-detail-drawer .ant-tag-processing,
+.kube-detail-drawer .ant-tag-blue {
+  color: var(--kube-link);
+  background: var(--kube-selected);
+  border-color: var(--kube-selected-border);
+}
+.kube-workspace .ant-tag-success,
+.kube-workspace .ant-tag-green,
+.kube-detail-drawer .ant-tag-success,
+.kube-detail-drawer .ant-tag-green {
+  color: var(--kube-success);
+  background: var(--kube-success-bg);
+  border-color: var(--kube-success-border);
+}
+.kube-workspace .ant-tag-warning,
+.kube-workspace .ant-tag-orange,
+.kube-detail-drawer .ant-tag-warning,
+.kube-detail-drawer .ant-tag-orange {
+  color: var(--kube-warning);
+  background: var(--kube-warning-bg);
+  border-color: var(--kube-warning-border);
+}
+.kube-workspace .ant-tag-error,
+.kube-workspace .ant-tag-red,
+.kube-detail-drawer .ant-tag-error,
+.kube-detail-drawer .ant-tag-red {
+  color: var(--kube-danger);
+  background: var(--kube-danger-bg);
+  border-color: var(--kube-danger-border);
+}
+.kube-workspace .ant-tabs .ant-tabs-tab.ant-tabs-tab-active .ant-tabs-tab-btn,
+.kube-detail-drawer .ant-tabs .ant-tabs-tab.ant-tabs-tab-active .ant-tabs-tab-btn {
+  color: var(--kube-link);
+}
+.kube-workspace .ant-tabs .ant-tabs-tab:not(.ant-tabs-tab-disabled):hover,
+.kube-detail-drawer .ant-tabs .ant-tabs-tab:not(.ant-tabs-tab-disabled):hover {
+  color: var(--kube-link);
+}
+.kube-workspace .ant-tabs .ant-tabs-ink-bar,
+.kube-detail-drawer .ant-tabs .ant-tabs-ink-bar { background: var(--kube-link); }
+
+@media (max-width: 640px) {
+  .kube-workspace .resource-panel .list-meta { row-gap: 8px; }
+  .kube-workspace .resource-panel .resource-type-tabs { scroll-padding-inline: 8px; }
+}

@@ -11,6 +11,7 @@ import { podExplorerEvents, workloadConditionTone, type WorkloadContainerTarget 
 import { formatDateTime } from '@/utils/time'
 import KubeResourceDiagnostics from './KubeResourceDiagnostics.vue'
 import KubeWorkloadEvents from './KubeWorkloadEvents.vue'
+import KubeSelect from './KubeSelect.vue'
 
 const props = defineProps<{
   cluster: string
@@ -35,7 +36,10 @@ const context = computed(() => `${props.cluster}/${props.pod.metadata.namespace}
 const containers = computed(() => readable.value ? podRuntimeContainers(props.pod) : [])
 const state = computed(() => resourceStatus(props.pod, t))
 const events = ref<KubeObject[]>([]), eventsLoading = ref(false), eventsError = ref('')
+const eventsExpanded = ref(false), warningCount = computed(() => events.value.filter(event => event.type === 'Warning').length)
+let eventsDisclosureTouched = false
 const missingContainer = computed(() => Boolean(props.container) && !containers.value.some(item => item.name === props.container))
+const containerOptions = computed(() => containers.value.map(item => ({ value: item.name, label: `${item.name} · ${item.containerKind === 'init' ? 'Init 容器' : item.containerKind === 'ephemeral' ? '临时容器' : '容器'}` })))
 let revision = 0, disposed = false, controller: AbortController | undefined, timer: ReturnType<typeof setInterval> | undefined
 
 const conditionLabel = (type: string) => ({ Initialized: '已初始化', PodScheduled: '已调度', PodReadyToStartContainers: '可启动容器', Ready: '容器组已就绪', ContainersReady: '容器已就绪', DisruptionTarget: '正在中断' } as Record<string, string>)[type] ?? type
@@ -71,6 +75,8 @@ function openLogs(name: string, terminal = false) {
 function follow(reference: KubeReference) {
   if (!props.disabled && readable.value && props.canFollow(reference)) emit('follow', reference, containerTarget(props.container))
 }
+function retryEvents() { if (!props.disabled && readable.value && !eventsLoading.value) void loadEvents() }
+function toggleEvents() { eventsDisclosureTouched = true; eventsExpanded.value = !eventsExpanded.value }
 async function loadEvents() {
   if (!readable.value || !props.cluster || !props.pod.metadata.uid) return
   controller?.abort()
@@ -88,8 +94,10 @@ async function loadEvents() {
 }
 watch([context, readable], () => {
   revision++; controller?.abort(); events.value = []; eventsError.value = ''; eventsLoading.value = false
+  eventsDisclosureTouched = false; eventsExpanded.value = false
   if (readable.value) void loadEvents()
 }, { immediate: true })
+watch([warningCount, eventsError], ([warnings, error]) => { if ((warnings > 0 || error) && !eventsDisclosureTouched) eventsExpanded.value = true })
 watch(() => props.refreshToken, () => { void loadEvents() })
 function syncVisible() { if (!document.hidden && props.autoRefresh && !props.disabled && !eventsLoading.value) void loadEvents() }
 onMounted(() => { timer = setInterval(syncVisible, 30_000); document.addEventListener('visibilitychange', syncVisible) })
@@ -98,10 +106,14 @@ onBeforeUnmount(() => { disposed = true; revision++; controller?.abort(); if (ti
 
 <template>
   <div class="workload-pod-runtime" :aria-busy="eventsLoading">
-    <section class="runtime-events" aria-label="所选 Pod 事件">
-      <KubeWorkloadEvents :events="events" :error="Boolean(eventsError)" :error-text="eventsError" :loading="eventsLoading" compact empty-text="该 Pod 暂无事件" />
-    </section>
-    <KubeResourceDiagnostics v-if="readable" :key="context" :cluster="cluster" :object="pod" :type="podType" :auto-refresh="autoRefresh && !disabled" :refresh-token="refreshToken" :can-follow="canFollow" embedded compact trend @follow="follow" />
+    <p class="runtime-target"><strong>{{ pod.metadata.name }}</strong></p>
+    <div class="runtime-actions" aria-label="所选 Pod 容器操作"><label>容器<KubeSelect :value="container" :options="containerOptions" :disabled="disabled || !readable || !containers.length" aria-label="日志与终端目标容器" @update:value="chooseContainer(String($event))" /></label><div class="container-action-bar"><a-button :disabled="!allowedContainer(container)" @click="openLogs(container)"><FileText :size="14" />追踪日志</a-button><a-button v-if="can('terminal.open')" :disabled="!allowedTerminal(container)" @click="openLogs(container,true)"><TerminalSquare :size="14" />终端</a-button></div></div>
+    <a-alert v-if="eventsError" type="warning" show-icon message="Pod 事件读取失败"><template #action><a-button size="small" :disabled="disabled || !readable" :loading="eventsLoading" @click="retryEvents">重试</a-button></template></a-alert>
+    <p v-if="can('terminal.open') && !allowedTerminal(container)" class="runtime-action-hint">{{ containers.find(item=>item.name===container)?.containerKind==='init' ? 'Init 容器只支持查看日志，不支持终端。' : '所选容器未运行或当前不可操作，终端暂不可用。' }}</p>
+    <details class="runtime-events" :open="eventsExpanded" aria-label="所选 Pod 事件"><summary @click.prevent="toggleEvents">Pod 事件 <span>{{ eventsLoading ? '读取中' : eventsError ? '读取失败' : `${events.length} 条` }}</span><span v-if="warningCount" class="event-warning-count">{{ warningCount }} 条警告</span></summary>
+      <KubeWorkloadEvents :events="events" :error="Boolean(eventsError)" :error-text="eventsError" :loading="eventsLoading" compact empty-text="该 Pod 暂无事件"><template #actions><a-button size="small" :disabled="disabled || !readable" :loading="eventsLoading" @click="retryEvents">刷新</a-button></template></KubeWorkloadEvents>
+    </details>
+    <KubeResourceDiagnostics v-if="readable" :key="context" :cluster="cluster" :object="pod" :type="podType" :auto-refresh="autoRefresh && !disabled" :refresh-token="refreshToken" :can-follow="canFollow" embedded compact trend disclosure @follow="follow" />
 
     <section class="runtime-pod-card">
       <header class="runtime-pod-title">
@@ -133,7 +145,6 @@ onBeforeUnmount(() => { disposed = true; revision++; controller?.abort(); if (ti
             <p v-if="containerState(item).message" class="runtime-message">{{ containerState(item).message }}</p>
             <p v-if="containerState(item).exit!==undefined" class="runtime-message">退出码 {{ containerState(item).exit }}</p>
             <div v-if="item.runtime?.lastState?.terminated" class="previous-state"><span>上次退出</span><strong>{{ item.runtime.lastState.terminated.reason || '—' }}</strong><span>exit {{ item.runtime.lastState.terminated.exitCode ?? '—' }}</span><time>{{ formatDateTime(item.runtime.lastState.terminated.finishedAt) }}</time></div>
-            <div class="container-action-bar"><a-button :disabled="!allowedContainer(item.name)" @click="openLogs(item.name)"><FileText :size="14" />追踪日志</a-button><a-button v-if="can('terminal.open')" :disabled="!allowedTerminal(item.name)" :title="allowedTerminal(item.name)?undefined:item.containerKind==='init'?'Init 容器只支持查看日志，不支持终端':'容器未运行或当前不可操作'" @click="openLogs(item.name,true)"><TerminalSquare :size="14" />终端</a-button></div>
           </template>
         </article>
       </div>
@@ -142,5 +153,64 @@ onBeforeUnmount(() => { disposed = true; revision++; controller?.abort(); if (ti
 </template>
 
 <style scoped>
-.workload-pod-runtime{min-width:0;color:var(--edo-text)}.runtime-events{padding:0 0 8px}.runtime-pod-card{border:1px solid var(--edo-border);background:var(--edo-surface);border-radius:4px;overflow:hidden}.runtime-pod-title{display:flex;align-items:center;gap:8px;background:var(--edo-kube-accent,#415c87);color:#fff;padding:8px 12px;font-size:12px;min-width:0}.runtime-pod-title>strong{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-family:var(--edo-font-mono,monospace)}.pod-detail-link{display:flex;align-items:center;gap:2px;color:inherit;border:1px solid #ffffff55;border-radius:3px;background:#ffffff12;padding:2px 6px;white-space:nowrap;font:inherit;cursor:pointer}.runtime-pod-facts{display:grid;grid-template-columns:minmax(0,1.25fr) minmax(0,1fr) minmax(0,.8fr) minmax(0,.7fr);gap:12px;margin:0;padding:14px 14px 10px}.runtime-pod-facts>div{min-width:0}.runtime-pod-facts dt{font-size:12px;color:var(--edo-muted);margin-bottom:6px}.runtime-pod-facts dd{font-size:12px;margin:0;overflow-wrap:anywhere;font-weight:600}.runtime-pod-facts :deep(.ant-tag){margin:0}.runtime-link{color:var(--edo-primary);background:none;border:0;padding:0;cursor:pointer;text-align:left;font:inherit}.runtime-conditions{padding:4px 14px 10px;display:grid;gap:5px}.runtime-condition{display:flex;align-items:center;gap:7px;padding:5px 8px;background:var(--edo-surface-soft);font-size:11px;min-width:0}.runtime-condition strong{font-weight:500;min-width:108px}.runtime-condition time{margin-left:auto;color:var(--edo-muted)}.condition-dot{width:7px;height:7px;border-radius:50%;background:var(--edo-muted);margin:0 3px}.condition-success>svg{color:var(--edo-success,#23ad8c)}.condition-warning>.condition-dot{background:#d69222}.condition-error>.condition-dot{background:#d74757}.runtime-empty{color:var(--edo-muted);font-size:12px}.runtime-containers{display:grid;gap:10px;padding:0 14px 14px}.runtime-container{border:1px solid var(--edo-border);border-radius:4px;background:var(--edo-surface);padding:12px;min-width:0}.runtime-container.selected{box-shadow:inset 3px 0 var(--edo-kube-accent,#415c87)}.container-heading{display:flex;align-items:center;gap:8px;width:100%;border:0;background:none;padding:0;color:inherit;font:inherit;cursor:pointer;text-align:left}.container-heading>strong{flex:1;min-width:0;overflow-wrap:anywhere;font-weight:600}.container-heading :deep(.ant-tag){margin:0;font-size:11px}.container-heading>svg{color:var(--edo-muted);flex:none}.container-image{display:flex;align-items:center;gap:4px 12px;color:var(--edo-muted);font-size:11px;line-height:1.6;margin:8px 0 10px;min-width:0;flex-wrap:wrap}.container-image>span:last-child{min-width:0;overflow-wrap:anywhere}.container-image code{font:inherit}.container-current-state,.previous-state{display:flex;gap:4px 8px;align-items:center;flex-wrap:wrap;background:var(--edo-surface-soft);padding:5px 7px;font-size:11px;color:var(--edo-muted)}.container-current-state :deep(.ant-tag){font-size:10px;line-height:17px;margin:0}.previous-state{margin-top:6px}.runtime-message{font-size:12px;overflow-wrap:anywhere;margin:8px 0}.container-action-bar{display:flex;gap:0;margin-top:9px}.container-action-bar :deep(.ant-btn){display:flex;align-items:center;gap:5px;border-radius:0;font-size:12px;height:29px}.container-action-bar :deep(.ant-btn:first-child){border-radius:3px 0 0 3px}.container-action-bar :deep(.ant-btn:last-child){border-radius:0 3px 3px 0}.container-action-bar :deep(.ant-btn:not(:disabled)){background:var(--edo-kube-accent,#415c87);color:#fff;border-color:var(--edo-kube-accent,#415c87)}button:focus-visible{outline:2px solid var(--edo-primary);outline-offset:2px}button:disabled{cursor:not-allowed;opacity:.55}.runtime-pod-card>:deep(.ant-alert){margin:0 14px 12px}@media(max-width:1100px){.runtime-pod-facts{grid-template-columns:repeat(2,minmax(0,1fr))}.runtime-pod-title{flex-wrap:wrap}.runtime-pod-title>strong{flex-basis:70%}}@media(max-width:540px){.runtime-conditions time{width:100%;margin-left:20px}.runtime-condition{flex-wrap:wrap}.runtime-pod-facts{padding:10px}.runtime-containers{padding:0 10px 10px}.runtime-container{padding:10px}}
+.workload-pod-runtime { min-width: 0; color: var(--workload-text); }
+.runtime-target { margin: 0 0 8px; font-size: 13px; overflow-wrap: anywhere; }
+.runtime-action-hint { margin: 0 0 10px; color: var(--workload-muted); font-size: 12px; }
+.runtime-actions { display: flex; align-items: flex-end; flex-wrap: wrap; gap: 8px 12px; padding: 10px; margin-bottom: 10px; border: 1px solid var(--workload-border); border-radius: 3px; background: var(--workload-column); }
+.runtime-actions>label { display: grid; flex: 1; gap: 4px; min-width: 140px; color: var(--workload-muted); font-size: 12px; }
+.runtime-actions .container-action-bar { margin-top: 0; }
+.runtime-events>summary { display: flex; align-items: baseline; gap: 8px; padding: 8px 10px; color: var(--workload-title); background: var(--workload-heading); font-size: 13px; cursor: pointer; }
+.runtime-events>summary::before { content: ''; align-self: center; width: 6px; height: 6px; border-right: 1px solid currentColor; border-bottom: 1px solid currentColor; transform: rotate(-45deg); }
+.runtime-events[open]>summary::before { transform: rotate(45deg); }
+.runtime-events>summary>span { color: var(--workload-muted); font-size: 12px; }
+.runtime-events>summary>.event-warning-count { color: var(--workload-warning-text); }
+.runtime-events>summary:focus-visible { outline: 2px solid var(--workload-focus); outline-offset: 2px; }
+.runtime-events { padding-bottom: 10px; }
+.runtime-pod-card { overflow: hidden; border: 1px solid var(--workload-border); border-radius: 4px; background: var(--workload-column); }
+.runtime-pod-title { display: flex; align-items: center; gap: 7px; min-width: 0; padding: 8px 10px; border-bottom: 1px solid var(--workload-border); background: var(--workload-heading); color: var(--workload-title); font-size: 12px; }
+.runtime-pod-title>strong { flex: 1; min-width: 0; font-weight: 600; white-space: normal; overflow-wrap: anywhere; font-family: var(--edo-font-mono, ui-monospace, monospace); }
+.pod-detail-link { display: flex; align-items: center; gap: 2px; padding: 2px 6px; border: 1px solid var(--workload-idle-border); border-radius: 3px; background: var(--workload-column); color: var(--workload-link); font: inherit; white-space: nowrap; cursor: pointer; }
+.pod-detail-link:hover:not(:disabled) { border-color: var(--workload-hover-border); background: var(--workload-hover); }
+.runtime-pod-facts { display: grid; grid-template-columns: minmax(0,1.25fr) minmax(0,1fr) minmax(0,.8fr) minmax(0,.7fr); gap: 12px; margin: 0; padding: 12px 12px 10px; border-bottom: 1px solid var(--workload-border); }
+.runtime-pod-facts>div { min-width: 0; }
+.runtime-pod-facts dt { margin-bottom: 4px; color: var(--workload-muted); font-size: 12px; }
+.runtime-pod-facts dd { margin: 0; font-size: 12px; font-weight: 500; overflow-wrap: anywhere; }
+.runtime-pod-facts :deep(.ant-tag) { margin: 0; }
+.runtime-link { padding: 0; border: 0; background: none; color: var(--workload-link); font: inherit; text-align: left; cursor: pointer; }
+.runtime-link:hover:not(:disabled) { text-decoration: underline; text-underline-offset: 3px; }
+.runtime-conditions { display: grid; gap: 0; padding: 4px 12px 8px; }
+.runtime-condition { display: flex; align-items: center; gap: 7px; min-width: 0; padding: 5px 0; border-bottom: 1px solid var(--workload-border); color: var(--workload-text); font-size: 12px; }
+.runtime-condition:last-child { border-bottom: 0; }
+.runtime-condition strong { min-width: 108px; font-weight: 500; }
+.runtime-condition time { margin-left: auto; color: var(--workload-muted); font-variant-numeric: tabular-nums; }
+.condition-dot { width: 7px; height: 7px; margin: 0 3px; border-radius: 50%; background: var(--workload-muted); }
+.condition-success>svg { color: var(--workload-ready-text); }
+.condition-warning>.condition-dot { background: var(--workload-warning-text); }
+.condition-error>.condition-dot { background: var(--workload-error-text); }
+.runtime-empty { color: var(--workload-muted); font-size: 12px; }
+.runtime-containers { display: grid; gap: 8px; padding: 0 12px 12px; }
+.runtime-container { min-width: 0; padding: 10px; border: 1px solid var(--workload-idle-border); border-radius: 3px; background: var(--workload-column); }
+.runtime-container.selected { border-color: var(--workload-selected-border); background: var(--workload-column); box-shadow: none; }
+.container-heading { display: flex; align-items: center; gap: 7px; width: 100%; padding: 0; border: 0; background: none; color: var(--workload-title); font: inherit; text-align: left; cursor: pointer; }
+.container-heading>strong { flex: 1; min-width: 0; font-size: 13px; font-weight: 600; overflow-wrap: anywhere; }
+.runtime-container.selected .container-heading>strong { color: var(--workload-on-selected); }
+.container-heading:hover:not(:disabled)>strong { color: var(--workload-link); text-decoration: underline; text-underline-offset: 3px; }
+.container-heading :deep(.ant-tag) { margin: 0; font-size: 12px; }
+.container-heading>svg { flex: none; color: var(--workload-muted); }
+.container-image { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 12px; min-width: 0; margin: 6px 0 8px; color: var(--workload-muted); font-size: 12px; line-height: 1.6; }
+.container-image>span:last-child { min-width: 0; overflow-wrap: anywhere; }
+.container-image code { font: inherit; }
+.container-current-state,.previous-state { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 8px; padding: 6px 0; border-top: 1px solid var(--workload-border); color: var(--workload-muted); font-size: 12px; }
+.container-current-state :deep(.ant-tag) { margin: 0; font-size: 12px; line-height: 17px; }
+.previous-state { margin-top: 4px; }
+.runtime-message { margin: 8px 0; font-size: 12px; overflow-wrap: anywhere; }
+.container-action-bar { display: flex; gap: 8px; margin-top: 8px; }
+.container-action-bar :deep(.ant-btn) { display: flex; align-items: center; gap: 5px; height: 28px; border-radius: 3px; font-size: 12px; }
+.container-action-bar :deep(.ant-btn:not(:disabled)) { border-color: var(--workload-idle-border); background: var(--workload-column); color: var(--workload-link); }
+.container-action-bar :deep(.ant-btn:not(:disabled):hover) { border-color: var(--workload-selected-border); background: var(--workload-selected); color: var(--workload-link); }
+button:focus-visible { outline: 2px solid var(--workload-focus); outline-offset: 2px; }
+button:disabled { opacity: .55; cursor: not-allowed; }
+.runtime-pod-card>:deep(.ant-alert) { margin: 0 12px 10px; }
+@media(max-width:1100px) { .runtime-pod-facts { grid-template-columns: repeat(2,minmax(0,1fr)); } .runtime-pod-title { flex-wrap: wrap; } .runtime-pod-title>strong { flex-basis: 70%; } }
+@media(max-width:540px) { .runtime-condition { flex-wrap: wrap; } .runtime-conditions time { width: 100%; margin-left: 20px; } .runtime-pod-facts { padding: 10px; } .runtime-containers { padding: 0 10px 10px; } }
 </style>

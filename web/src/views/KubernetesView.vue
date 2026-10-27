@@ -10,6 +10,7 @@ import { resourceColumns, resourceCells, resourceStatus, resourceSearchText, mat
 import KubeNamespaceTree from '@/components/KubeNamespaceTree.vue'
 import '@/styles/kubernetes.css'
 import ResourceTable from '@/components/ResourceTable.vue'
+import KubeSelect from '@/components/KubeSelect.vue'
 import ResourceDetailDrawer from '@/components/ResourceDetailDrawer.vue'
 import KubeResourceActions from '@/components/KubeResourceActions.vue'
 import KubeResourceCell from '@/components/KubeResourceCell.vue'
@@ -549,11 +550,11 @@ onBeforeUnmount(()=>{mounted=false;watchMounted=false;stopKubeWatch();watchDirty
       <template v-else>
       <div class="list-filters" :class="{'workload-list-filters':group==='workloads'}">
         <label class="list-filter-field resource-search"><span>{{ t('k8s.nameOrImage') }}</span><a-input v-model:value="query" allow-clear :placeholder="t(activeType?.resource==='nodes'?'k8s.nodeSearch':'k8s.search')" :aria-label="t(activeType?.resource==='nodes'?'k8s.nodeSearch':'k8s.search')"><template #prefix><Search :size="14" /></template></a-input></label>
-        <label v-if="columns.some(column=>column.key==='status')" class="list-filter-field status-select" for="kube-workspace-status"><span>{{ t('k8s.status') }}</span><a-select id="kube-workspace-status" :default-open="false" v-model:value="statusFilter" :options="[{value:'',label:t('k8s.filterStatus')},...statusOptions]" /></label>
+        <label v-if="columns.some(column=>column.key==='status')" class="list-filter-field status-select" for="kube-workspace-status"><span>{{ t('k8s.status') }}</span><KubeSelect id="kube-workspace-status" v-model:value="statusFilter" :options="[{value:'',label:t('k8s.filterStatus')},...statusOptions]" /></label>
         <label class="list-filter-field label-search"><span>{{ t('k8s.labels') }}</span><a-input v-model:value="labelFilter" allow-clear :placeholder="t('k8s.labelFilter')" :aria-label="t('k8s.labels')"><template #prefix><Filter :size="13" /></template></a-input></label>
         <a-button :disabled="!filtersActive" @click="clearFilters">{{ t('k8s.clearFilters') }}</a-button>
       </div>
-      <div class="list-meta"><span><strong>{{ activeType?.kind }}</strong>{{ t('k8s.filteredCount',{visible:displayRows.length,total:rows.length}) }}<a-tooltip v-if="hasContinuation" :mouse-enter-delay="0.1" :title="t('k8s.searchLoaded')"><span class="partial-badge">{{ t('k8s.partial') }}</span></a-tooltip></span><span>{{ t('k8s.lastRefreshed') }} {{ lastRefreshed?formatDateTime(lastRefreshed):'—' }}</span></div>
+      <div class="list-meta"><span><strong>{{ activeType?.kind }}</strong>{{ t('k8s.filteredCount',{visible:displayRows.length,total:rows.length}) }}<a-tooltip v-if="hasContinuation" :trigger="['hover','focus','click']" :mouse-enter-delay="0.1" :title="t('k8s.searchLoaded')"><button type="button" class="partial-badge" :aria-label="t('k8s.searchLoaded')">{{ t('k8s.partial') }}</button></a-tooltip></span><span>{{ t('k8s.lastRefreshed') }} {{ lastRefreshed?formatDateTime(lastRefreshed):'—' }}</span></div>
       <a-alert v-if="error" type="error" show-icon :message="error" class="list-alert"><template #action><a-button size="small" @click="refresh(false,false,true)">{{ t('k8s.refresh') }}</a-button></template></a-alert>
       <a-alert v-if="overviewError&&activeType?.resource==='nodes'" type="warning" show-icon :message="overviewError" class="list-alert" />
       <a-alert v-if="activeType&&['persistentvolumes','storageclasses'].includes(activeType.resource)" type="info" :message="t('k8s.readonlyStorage')" class="list-alert" />
@@ -570,6 +571,7 @@ onBeforeUnmount(()=>{mounted=false;watchMounted=false;stopKubeWatch();watchDirty
           <KubeResourceCell v-else :cell="row.cells[column.key]" :date="['jobTiming','lastSchedule'].includes(column.key)" :can-follow="canFollow(row.cells[column.key]?.reference)" @follow="followFromRow(row,$event)" />
         </template>
         <template v-if="hasRowActions" #actions="{row}"><KubeResourceActions v-if="activeType" :object="row" :type="activeType" :can="can" :terminal-ready="selectedPodContainer(row)?.running" :loading="busy===row.metadata.uid" :disabled="Boolean(busy)" @details="openDetails(row)" @link="linkApplication(row)" @yaml="openDetails(row,'manifest')" @edit="edit(row)" @pods="openDetails(row,'pods')" @logs="openStream(row)" @terminal="openStream(row,true)" @action="confirmAction(row,$event)" @scale="showScale(row)" @remove="remove(row)" @remove-node="showRemoveNode(row)" /></template>
+        <template #pagination="{page,limit,total,changePage,changeLimit}"><div class="kube-pagination"><a-pagination :current="page" :page-size="limit" :total="total" :show-size-changer="false" :show-total="(count:number)=>t('planList.total',{count})" @change="changePage" /><label>{{ t('k8s.rowsPerPage') }}<KubeSelect :value="limit" :aria-label="t('k8s.rowsPerPage')" :options="[10,20,50,100].map(value=>({value,label:String(value)}))" @update:value="(value:unknown)=>changeLimit(Number(value))" /></label></div></template>
       </ResourceTable>
       <div v-if="hasContinuation" class="load-more"><span>{{ t('k8s.loaded',{count:rows.length}) }}</span><a-button :loading="loading" @click="refresh(false,true)">{{ t('k8s.loadMore') }}</a-button></div>
       </template>
@@ -585,7 +587,7 @@ onBeforeUnmount(()=>{mounted=false;watchMounted=false;stopKubeWatch();watchDirty
 
         <a-tab-pane key="basic" :tab="t(workloadDetail?'k8s.workloadOverview':'k8s.resourceSettings')">
           <KubeWorkloadSummary v-if="workloadDetail" :object="detail" :type="detailType" :events="events" :events-error="eventsError" :events-loading="detailLoading||eventsLoading" @events="detailTab='events'" />
-          <KubeWorkloadExplorer v-if="workloadExplorer" v-show="detailTab==='basic'" :key="cluster+detail.metadata.uid" :cluster="cluster" :object="detail" :type="detailType" :selection="workloadSelections[cluster+detail.metadata.uid]" @selection="value=>workloadSelections[cluster+detail!.metadata.uid]=value" :pods="relatedPods" :pods-loading="relatedLoading" :pods-error="relatedError" :pods-partial="relatedPartial" :events="events" :events-error="eventsError" :auto-refresh="autoRefresh&&detailPresented&&detailTab==='basic'" :refresh-token="detailRefresh" :can="can" :can-follow="canFollow" :disabled="Boolean(busy)||detailLoading||Boolean(detailSyncError)||relatedLoading" @follow="followReference" @logs="(pod,container)=>openWorkloadStream(pod,container)" @terminal="(pod,container)=>openWorkloadStream(pod,container,true)" @retry-pods="retryRelatedPods" />
+          <KubeWorkloadExplorer v-if="workloadExplorer" v-show="detailTab==='basic'" :visible="detailPresented&&detailTab==='basic'" :key="cluster+detail.metadata.uid" :cluster="cluster" :object="detail" :type="detailType" :selection="workloadSelections[cluster+detail.metadata.uid]" @selection="value=>workloadSelections[cluster+detail!.metadata.uid]=value" :pods="relatedPods" :pods-loading="relatedLoading" :pods-error="relatedError" :pods-partial="relatedPartial" :events="events" :events-error="eventsError" :auto-refresh="autoRefresh&&detailPresented&&detailTab==='basic'" :refresh-token="detailRefresh" :can="can" :can-follow="canFollow" :disabled="Boolean(busy)||detailLoading||Boolean(detailSyncError)||relatedLoading" @follow="followReference" @logs="(pod,container)=>openWorkloadStream(pod,container)" @terminal="(pod,container)=>openWorkloadStream(pod,container,true)" @retry-pods="retryRelatedPods" />
           <KubeResourceDiagnostics v-else-if="detail.kind==='Pod'&&detailTab==='basic'" :key="cluster+detail.metadata.uid" :cluster="cluster" :object="detail" :type="detailType" :auto-refresh="autoRefresh&&detailPresented" embedded :refresh-token="detailRefresh" :can-follow="canFollow" @follow="followReference" />
           <KubeResourceDetails v-else-if="!workloadDetail" :object="detail" :type="detailType" :container="detail.kind==='Pod'?selectedPodContainer(detail)?.name:undefined" :can-follow="canFollow" @container="value=>selectedContainer[kubeKey(detail!)]=value" @follow="followReference" />
           <KubeNodeInfo v-if="detail.kind==='Node'" :node="detail" />
@@ -631,6 +633,7 @@ onBeforeUnmount(()=>{mounted=false;watchMounted=false;stopKubeWatch();watchDirty
 
 <style scoped>
 .kube-workspace{min-width:0}
+.kube-pagination{display:flex;align-items:center;justify-content:flex-end;flex-wrap:wrap;gap:12px;padding:12px 14px}.kube-pagination>label{display:flex;align-items:center;gap:8px;white-space:nowrap;font-size:12px;color:var(--edo-muted)}.kube-pagination :deep(.kube-select){width:74px}
 .kube-workspace-grid{display:grid;grid-template-columns:210px minmax(0,1fr);gap:14px;align-items:start}
 @media(max-width:1000px){.kube-workspace-grid{grid-template-columns:1fr}}
 .kube-sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}

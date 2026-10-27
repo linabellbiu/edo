@@ -1,0 +1,116 @@
+/* 工作负载以中性分区、紧凑信息行和浅蓝选中建立层次；绿色只表达真实健康状态。 */
+:root {
+  --workload-accent: #4673c4;
+  --workload-accent-hover: #3865b5;
+  --workload-on-accent: #fff;
+  --workload-selected: #edf3fc;
+  --workload-on-selected: #315fae;
+  --workload-selected-border: #8aa7d0;
+  --workload-idle: #fff;
+  --workload-idle-border: #d3dbe6;
+  --workload-hover: #f3f6fa;
+  --workload-on-hover: #27364b;
+  --workload-hover-border: #aebed1;
+  --workload-column: #fff;
+  --workload-heading: #e6ecf3;
+  --workload-title: #1d2d44;
+  --workload-border: #ccd5e1;
+  --workload-divider: #c4cfdd;
+  --workload-stripe: #f8f9fb;
+  --workload-text: #27364b;
+  --workload-muted: #58677b;
+  --workload-link: #315fae;
+  --workload-focus: #315fae;
+  --workload-ready-bg: #e6f4ed;
+  --workload-ready-text: #28624e;
+  --workload-ready-border: #b9dacb;
+  --workload-warning-bg: #fff7e8;
+  --workload-warning-text: #8a5a16;
+  --workload-warning-border: #e8d5ae;
+  --workload-error-bg: #fff0f1;
+  --workload-error-text: #a23b51;
+  --workload-error-border: #e5c4cc;
+  --workload-neutral-bg: #f2f4f7;
+  --workload-neutral-text: #626c7a;
+  --workload-neutral-border: #dce1e7;
+  --workload-progress-bg: #eaf1ff;
+  --workload-progress-text: #315fae;
+  --workload-progress-border: #c3d3ef;
+  --workload-container-bg: #eaf1ff;
+  --workload-container-text: #315fae;
+  --workload-host-bg: #fff4df;
+  --workload-host-text: #805c28;
+  --workload-chart-cpu: #258870;
+}
+
+:root[data-theme='dark'] {
+  --workload-accent: #5077b6;
+  --workload-accent-hover: #6087c6;
+  --workload-on-accent: #fff;
+  --workload-selected: #263d5d;
+  --workload-on-selected: #c6dbff;
+  --workload-selected-border: #6887b0;
+  --workload-idle: #1b2532;
+  --workload-idle-border: #344253;
+  --workload-hover: #263448;
+  --workload-on-hover: #e1e8f2;
+  --workload-hover-border: #61748d;
+  --workload-column: #1b2532;
+  --workload-heading: #293548;
+  --workload-title: #f1f5fb;
+  --workload-border: #42526b;
+  --workload-divider: #42526b;
+  --workload-stripe: #202a36;
+  --workload-text: #e1e8f2;
+  --workload-muted: #abb9ca;
+  --workload-link: #a8c7ff;
+  --workload-focus: #c6e0ff;
+  --workload-ready-bg: #19392f;
+  --workload-ready-text: #a1d9c3;
+  --workload-ready-border: #365f51;
+  --workload-warning-bg: #403624;
+  --workload-warning-text: #e5c998;
+  --workload-warning-border: #66543a;
+  --workload-error-bg: #412b35;
+  --workload-error-text: #edb1bf;
+  --workload-error-border: #714450;
+  --workload-neutral-bg: #283342;
+  --workload-neutral-text: #d1d9e5;
+  --workload-neutral-border: #415164;
+  --workload-progress-bg: #21324b;
+  --workload-progress-text: #b7cdf5;
+  --workload-progress-border: #3e5678;
+  --workload-container-bg: #273c56;
+  --workload-container-text: #c3d7f5;
+  --workload-host-bg: #433724;
+  --workload-host-text: #e5c998;
+  --workload-chart-cpu: #5bbba1;
+}
+
+/* 状态色只跟随真实 tone，不因版本或 Pod 被选中、悬停而变成健康。 */
+:is(.workload-explorer, .workload-pod-runtime) .ant-tag-success,
+:is(.workload-explorer, .workload-pod-runtime) .ant-tag-green {
+  color: var(--workload-ready-text);
+  background: var(--workload-ready-bg);
+  border-color: var(--workload-ready-border);
+}
+:is(.workload-explorer, .workload-pod-runtime) .ant-tag-warning {
+  color: var(--workload-warning-text);
+  background: var(--workload-warning-bg);
+  border-color: var(--workload-warning-border);
+}
+:is(.workload-explorer, .workload-pod-runtime) .ant-tag-error {
+  color: var(--workload-error-text);
+  background: var(--workload-error-bg);
+  border-color: var(--workload-error-border);
+}
+:is(.workload-explorer, .workload-pod-runtime) .ant-tag-default {
+  color: var(--workload-neutral-text);
+  background: var(--workload-neutral-bg);
+  border-color: var(--workload-neutral-border);
+}
+:is(.workload-explorer, .workload-pod-runtime) .ant-tag-processing {
+  color: var(--workload-progress-text);
+  background: var(--workload-progress-bg);
+  border-color: var(--workload-progress-border);
+}

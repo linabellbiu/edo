@@ -37,8 +37,13 @@ const description=computed(()=>meters.value.map(meter=>`${name(meter.key)} ${per
 </template>
 
 <style scoped>
-.node-usage{width:286px;display:grid;gap:3px;font-variant-numeric:tabular-nums;border-radius:5px;outline-offset:3px}.node-usage:focus-visible{outline:2px solid var(--edo-primary)}.usage-meter{--meter-color:#07896c;position:relative;isolation:isolate;display:grid;grid-template-columns:43px 54px minmax(0,1fr);height:21px;border-radius:4px;overflow:hidden;background:color-mix(in srgb,var(--edo-muted) 13%,var(--edo-surface));color:var(--edo-text);font-size:12px;line-height:21px;white-space:nowrap}.meter-fill{position:absolute;inset:0 auto 0 0;background:color-mix(in srgb,var(--meter-color) 22%,transparent);z-index:-1;pointer-events:none}.meter-name{font-weight:600;text-align:center;background:var(--meter-color);color:#fff;letter-spacing:.1px}.meter-percent{text-align:right;padding-right:7px;font-weight:600}.meter-values{padding:0 8px 0 3px;text-align:right;overflow:hidden;text-overflow:ellipsis}.tone-memory{--meter-color:#355b85}.tone-pods{--meter-color:#087f7a}.tone-warning{--meter-color:#9b6200}.tone-danger{--meter-color:#c43849}.tone-unknown{--meter-color:#687588}.usage-tooltip{display:grid;gap:8px;max-width:420px;font-size:12px;line-height:1.6;font-variant-numeric:tabular-nums}.usage-tooltip>div{display:grid;gap:2px}.usage-tooltip strong{font-weight:600}.usage-tooltip span,.usage-tooltip small{opacity:.8}.usage-tooltip small{border-top:1px solid currentColor;padding-top:6px;font-size:11px}
-</style>
-<style scoped>
-.meter-track{position:absolute;inset:0 0 0 43px;z-index:-1;pointer-events:none}.meter-track .meter-fill{display:block;height:100%}
+.node-usage{width:286px;display:grid;gap:3px;font-variant-numeric:tabular-nums;border-radius:4px;outline-offset:3px}
+.node-usage:focus-visible{outline:2px solid var(--kube-focus)}
+.usage-meter{--meter-color:var(--kube-meter-cpu);position:relative;isolation:isolate;display:grid;grid-template-columns:43px 54px minmax(0,1fr);height:24px;border-radius:3px;overflow:hidden;background:var(--kube-surface-soft);color:var(--kube-text);font-size:12px;line-height:24px;white-space:nowrap}
+.meter-track{position:absolute;inset:0 0 0 43px;z-index:-1;pointer-events:none}
+.meter-fill{position:absolute;inset:0 auto 0 0;height:100%;background:color-mix(in srgb,var(--meter-color) 18%,var(--kube-surface));z-index:-1;pointer-events:none}
+.meter-name{font-weight:600;text-align:center;background:var(--meter-color);color:var(--kube-meter-label)}
+.meter-percent{text-align:right;padding-right:7px;font-weight:600}.meter-values{padding:0 8px 0 3px;text-align:right;overflow:hidden;text-overflow:ellipsis}
+.tone-memory{--meter-color:var(--kube-meter-memory)}.tone-pods{--meter-color:var(--kube-meter-pods)}.tone-warning{--meter-color:var(--kube-meter-warning)}.tone-danger{--meter-color:var(--kube-meter-danger)}.tone-unknown{--meter-color:var(--kube-meter-unknown)}
+.usage-tooltip{display:grid;gap:8px;max-width:420px;font-size:12px;line-height:1.6;font-variant-numeric:tabular-nums}.usage-tooltip>div{display:grid;gap:2px}.usage-tooltip strong{font-weight:600}.usage-tooltip span,.usage-tooltip small{opacity:.9}.usage-tooltip small{border-top:1px solid currentColor;padding-top:6px;font-size:12px}
 </style>

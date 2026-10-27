@@ -9,10 +9,14 @@ import KubeConfigEntries from './KubeConfigEntries.vue'
 import KubeContainerFields from './KubeContainerFields.vue'
 import {containerForm,buildContainer,volumeForm,buildVolumes,workloadSettings,buildWorkloadSettings,type ContainerForm,type VolumeForm} from '@/utils/kubernetesWorkloadForm'
 import { inspectConfigFile } from '@/utils/kubernetesConfig'
+import { ingressForm, ingressFormPatch, networkPolicyForm, networkPolicyFormPatch } from '@/utils/kubernetesNetworkForm'
 
 const props = defineProps<{open:boolean; cluster:string; type:KubeType; namespace:string; object?:KubeObject; returnToDetails?:boolean}>()
 const emit = defineEmits<{'update:open':[value:boolean]; saved:[]}>()
-const { t } = useI18n()
+const { t } = useI18n({ messages: {
+  'zh-CN': { networkEditor: { port: '服务端口或名称', invalidIngressPort: '请输入 1 至 65535 的端口，或有效的服务端口名称', readonly: '此资源的网络规则无法由当前表单无损编辑，规则保持只读；仍可修改标签。', originalRules: '当前网络规则（只读）' } },
+  'en-US': { networkEditor: { port: 'Service port or name', invalidIngressPort: 'Enter a port from 1 to 65535 or a valid service port name', readonly: 'This form cannot edit these network rules without losing information. Rules are read-only; labels can still be edited.', originalRules: 'Current network rules (read-only)' } },
+} })
 const saving = ref(false), confirming=ref(false),error = ref('')
 const editing = computed(() => Boolean(props.object))
 const workload = computed(() => ['Deployment','StatefulSet','DaemonSet','Job','CronJob','Pod'].includes(props.type.kind))
@@ -38,7 +42,9 @@ const classOptions = computed(() => [
 const workloadOptions=reactive(workloadSettings({},props.type.kind))
 const restartPolicy=ref('Always'), nodeSelector=computed<KeyValue[]>({get:()=>workloadOptions.nodeSelector,set:value=>{workloadOptions.nodeSelector=value}})
 const entries = (object: Record<string, unknown> = {}): KeyValue[] => Object.entries(object).map(([key,value])=>({key,value:String(value)}))
-const form = reactive({name:'', namespace:'', labels:[] as KeyValue[], annotations:[] as KeyValue[], data:[] as KeyValue[], selector:[] as KeyValue[], peer:[] as KeyValue[], taints:[] as Array<{key:string;value:string;effect:string}>, containers:[] as ContainerForm[], initContainers:[] as ContainerForm[], volumes:[] as VolumeForm[], imagePullSecrets:'', strategy:'RollingUpdate', maxSurge:'25%', maxUnavailable:'25%', minReadySeconds:0, revisionHistoryLimit:10, progressDeadlineSeconds:600, replicas:1, serviceName:'', schedule:'*/5 * * * *', suspend:false, storage:'1Gi', storageClass:'', accessModes:['ReadWriteOnce'], volumeMode:'Filesystem', secretType:'Opaque', serviceType:'ClusterIP', port:80, targetPort:'80', hostname:'', path:'/', backend:'', ingressClass:'', policyPort:80, denyAll:false})
+const form = reactive({name:'', namespace:'', labels:[] as KeyValue[], annotations:[] as KeyValue[], data:[] as KeyValue[], selector:[] as KeyValue[], peer:[] as KeyValue[], taints:[] as Array<{key:string;value:string;effect:string}>, containers:[] as ContainerForm[], initContainers:[] as ContainerForm[], volumes:[] as VolumeForm[], imagePullSecrets:'', strategy:'RollingUpdate', maxSurge:'25%', maxUnavailable:'25%', minReadySeconds:0, revisionHistoryLimit:10, progressDeadlineSeconds:600, replicas:1, serviceName:'', schedule:'*/5 * * * *', suspend:false, storage:'1Gi', storageClass:'', accessModes:['ReadWriteOnce'], volumeMode:'Filesystem', secretType:'Opaque', serviceType:'ClusterIP', port:80, targetPort:'80', hostname:'', path:'/', backend:'', ingressClass:'', ingressPort:'80', policyPort:80 as number|null, denyAll:false})
+const networkReadOnly = computed(() => props.type.kind === 'Ingress' ? ingressForm(props.object).readonly : props.type.kind === 'NetworkPolicy' ? networkPolicyForm(props.object).readonly : false)
+const networkRulePreview = computed(() => JSON.stringify(props.object?.spec??{},null,2))
 const selectedContainer=computed(()=>form[activeContainerGroup.value][activeContainerIndex.value])
 function selectContainer(group:'containers'|'initContainers',index:number){activeContainerGroup.value=group;activeContainerIndex.value=index}
 function addContainer(group:'containers'|'initContainers'){
@@ -62,6 +68,11 @@ watch(editorIdentity, () => {
   restartPolicy.value=podSpec(object).restartPolicy ?? 'Always'
   Object.assign(workloadOptions,workloadSettings(object,props.type.kind))
   Object.assign(form, {name:object.metadata?.name ?? '', namespace:object.metadata?.namespace ?? (props.namespace === '*' ? 'default' : props.namespace), labels:entries(object.metadata?.labels), annotations:entries(object.metadata?.annotations), data:props.type.kind === 'Secret' ? (object.keys ?? []).map((key:string)=>({key,value:''})) : entries(object.data), selector:entries(spec.selector?.matchLabels ?? spec.selector), peer:[], taints:(spec.taints ?? []).map((item:KubeObject)=>({...item})), containers:(podSpec(object).containers ?? [{name:'app',image:''}]).map(containerForm), initContainers:(podSpec(object).initContainers??[]).map(containerForm),volumes:(podSpec(object).volumes??[]).map(volumeForm),imagePullSecrets:(podSpec(object).imagePullSecrets??[]).map((s:KubeObject)=>s.name).join(','),strategy:spec.strategy?.type??'RollingUpdate',maxSurge:String(spec.strategy?.rollingUpdate?.maxSurge??'25%'),maxUnavailable:String(spec.strategy?.rollingUpdate?.maxUnavailable??'25%'),minReadySeconds:spec.minReadySeconds??0,revisionHistoryLimit:spec.revisionHistoryLimit??10,progressDeadlineSeconds:spec.progressDeadlineSeconds??600, replicas:spec.replicas ?? 1, serviceName:spec.serviceName ?? '', schedule:spec.schedule ?? '*/5 * * * *', suspend:spec.suspend ?? false, storage:spec.resources?.requests?.storage ?? '1Gi', storageClass:spec.storageClassName ?? '', accessModes:[...(spec.accessModes ?? ['ReadWriteOnce'])], volumeMode:spec.volumeMode ?? 'Filesystem', secretType:object.type ?? 'Opaque', serviceType:spec.type ?? 'ClusterIP', port:spec.ports?.[0]?.port ?? 80, targetPort:String(spec.ports?.[0]?.targetPort ?? 80), hostname:rule?.host ?? '', path:ingressPath?.path ?? '/', backend:ingressPath?.backend?.service?.name ?? '', ingressClass:spec.ingressClassName ?? '', policyPort:80, denyAll:false})
+  if (props.type.kind === 'Ingress') Object.assign(form, ingressForm(props.object).fields)
+  if (props.type.kind === 'NetworkPolicy') {
+    const fields = networkPolicyForm(props.object).fields
+    Object.assign(form, { ...fields, selector: entries(fields.selector), peer: entries(fields.peer) })
+  }
   storageClasses.value = []; classesError.value = ''; classesLoading.value = false
   if (props.type.kind === 'PersistentVolumeClaim' && !editing.value) void loadStorageClasses()
   initialDraft.value=draft()
@@ -193,13 +204,15 @@ function buildObject(): KubeObject {
     if (typeof targetPort==='number'&&(targetPort<1||targetPort>65535)) throw new Error(t('k8s.invalidPort'))
     object.spec={type:form.serviceType,selector:mapping(form.selector),ports:[{...original.spec?.ports?.[0],port:form.port,targetPort},...(original.spec?.ports ?? []).slice(1)]}
   } else if (kind==='Ingress') {
-    if (!form.backend.trim()||!form.path.startsWith('/')||!Number.isInteger(form.port)||form.port<1||form.port>65535) throw new Error(t('k8s.backendRequired'))
-    const firstRule=original.spec?.rules?.[0] ?? {}, firstPath=firstRule.http?.paths?.[0] ?? {}
-    object.spec={rules:[{...firstRule,...(form.hostname ? {host:form.hostname} : {}),http:{paths:[{...firstPath,path:form.path,pathType:firstPath.pathType ?? 'Prefix',backend:{service:{name:form.backend.trim(),port:{number:form.port}}}},...(firstRule.http?.paths ?? []).slice(1)]}},...(original.spec?.rules ?? []).slice(1)]}
-    if (form.ingressClass.trim()) object.spec.ingressClassName=form.ingressClass.trim()
+    try {
+      const spec=ingressFormPatch(props.object,{hostname:form.hostname,path:form.path,backend:form.backend,ingressClass:form.ingressClass,ingressPort:form.ingressPort})
+      if(spec)object.spec=spec
+    } catch(err){throw new Error(t(err instanceof Error?err.message:'k8s.invalidForm'))}
   } else if (kind==='NetworkPolicy') {
-    if (!Number.isInteger(form.policyPort)||form.policyPort<1||form.policyPort>65535) throw new Error(t('k8s.invalidPort'))
-    object.spec={podSelector:{matchLabels:mapping(form.selector)},policyTypes:['Ingress'],ingress:form.denyAll ? [] : [{from:[{podSelector:{matchLabels:mapping(form.peer)}}],ports:[{port:form.policyPort,protocol:'TCP'}]}]}
+    try {
+      const spec=networkPolicyFormPatch(props.object,{selector:mapping(form.selector),peer:mapping(form.peer),policyPort:form.policyPort,denyAll:form.denyAll})
+      if(spec)object.spec=spec
+    } catch(err){throw new Error(t(err instanceof Error?err.message:'k8s.invalidForm'))}
   }
   return object
 }
@@ -361,15 +374,18 @@ async function submit(url:string,namespace:string,method:string,object:KubeObjec
         <a-alert v-if="editing&&(object?.spec?.ports?.length??0)>1" type="info" :message="t('k8s.firstPortHint')" />
       </template>
       <template v-if="type.kind==='Ingress'">
-        <div class="form-grid"><a-form-item :label="t('k8s.hostname')"><a-input :aria-label="t('k8s.hostname')" v-model:value="form.hostname" /></a-form-item><a-form-item label="IngressClass"><a-input aria-label="IngressClass" v-model:value="form.ingressClass" /></a-form-item><a-form-item :label="t('k8s.path')" required><a-input :aria-label="t('k8s.path')" v-model:value="form.path" /></a-form-item><a-form-item :label="t('k8s.backend')" required><a-input :aria-label="t('k8s.backend')" v-model:value="form.backend" /></a-form-item><a-form-item :label="t('k8s.servicePort')" required><a-input-number :aria-label="t('k8s.servicePort')" v-model:value="form.port" :min="1" :max="65535" :precision="0" /></a-form-item></div>
-        <a-alert v-if="editing" type="info" :message="t('k8s.firstRuleHint')" />
+        <div v-if="!networkReadOnly" class="form-grid"><a-form-item :label="t('k8s.hostname')"><a-input :aria-label="t('k8s.hostname')" v-model:value="form.hostname" /></a-form-item><a-form-item label="IngressClass"><a-input aria-label="IngressClass" v-model:value="form.ingressClass" /></a-form-item><a-form-item :label="t('k8s.path')" required><a-input :aria-label="t('k8s.path')" v-model:value="form.path" /></a-form-item><a-form-item :label="t('k8s.backend')" required><a-input :aria-label="t('k8s.backend')" v-model:value="form.backend" /></a-form-item><a-form-item :label="t('networkEditor.port')" required><a-input :aria-label="t('networkEditor.port')" v-model:value="form.ingressPort" /></a-form-item></div>
+        <a-alert v-if="editing&&!networkReadOnly" type="info" :message="t('k8s.firstRuleHint')" />
       </template>
       <template v-if="type.kind==='NetworkPolicy'">
+        <template v-if="!networkReadOnly">
         <a-form-item :label="t('k8s.selector')"><KubeKeyValues v-model="form.selector" :disabled="saving" /></a-form-item>
         <a-form-item :label="t('k8s.denyIngress')"><a-switch :aria-label="t('k8s.denyIngress')" v-model:checked="form.denyAll" /></a-form-item>
         <template v-if="!form.denyAll"><a-form-item :label="t('k8s.allowPods')"><KubeKeyValues v-model="form.peer" :disabled="saving" /></a-form-item><a-form-item :label="t('k8s.allowedPort')" required><a-input-number :aria-label="t('k8s.allowedPort')" v-model:value="form.policyPort" :min="1" :max="65535" :precision="0" /></a-form-item></template>
         <a-alert type="warning" :message="t('k8s.policyHint')" />
+        </template>
       </template>
+      <template v-if="networkReadOnly"><a-alert type="info" show-icon :message="t('networkEditor.readonly')" /><h4 class="network-rule-heading">{{ t('networkEditor.originalRules') }}</h4><pre class="network-rule-preview" tabindex="0" role="region" :aria-label="t('networkEditor.originalRules')">{{ networkRulePreview }}</pre></template>
     </a-form>
     <template #footer><div class="editor-footer"><span :class="{changed:dirty}">{{ t(dirty?'k8s.unsavedChanges':'k8s.noChanges') }}</span><a-button :disabled="saving||confirming" @click="closeEditor">{{ t(returnToDetails?'k8s.backToDetails':'k8s.cancel') }}</a-button><a-button type="primary" :loading="saving" :disabled="confirming&&!saving||editing&&!dirty" @click="save">{{ t('k8s.save') }}</a-button></div></template>
   </a-drawer>
@@ -377,6 +393,7 @@ async function submit(url:string,namespace:string,method:string,object:KubeObjec
 <style scoped>
 .form-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:0 16px}.editor-alert{margin-bottom:16px}.container-form{padding:16px;margin-bottom:14px;border:1px solid var(--edo-border);border-radius:6px;background:var(--edo-bg)}.section-heading{display:flex;justify-content:space-between;align-items:center;margin-bottom:14px}.container-form :deep(.ant-form-item:last-child){margin-bottom:0}.taint-row{display:grid;grid-template-columns:1fr 1fr 160px 32px;gap:8px;margin-bottom:8px}.editor-footer{display:flex;justify-content:flex-end;gap:8px}@media(max-width:640px){.form-grid{grid-template-columns:1fr}.taint-row{grid-template-columns:1fr 1fr}.taint-row :deep(.ant-select){min-width:130px}}
 .container-count{padding:1px 7px;border-radius:10px;font-size:11px;background:var(--edo-surface-soft);color:var(--edo-muted)}
+.network-rule-heading{margin:16px 0 8px;font-size:13px}.network-rule-preview{max-height:320px;overflow:auto;padding:12px;border:1px solid var(--edo-border);border-radius:5px;background:var(--edo-surface-soft);color:var(--edo-text);font-size:12px;line-height:1.6;white-space:pre-wrap;overflow-wrap:anywhere}.network-rule-preview:focus-visible{outline:2px solid var(--edo-primary);outline-offset:2px}
 </style>
 <style scoped>
 .workload-advanced{margin-top:20px}.editor-context{display:flex;align-items:center;gap:10px;padding:11px 14px;background:var(--edo-bg);border:1px solid var(--edo-border);border-radius:5px;margin-bottom:20px;font-size:12px;color:var(--edo-muted)}.editor-context strong{margin-left:auto;color:var(--edo-text);font-size:13px;overflow-wrap:anywhere}.editor-footer{align-items:center}.editor-footer>span{margin-right:auto;color:var(--edo-muted);font-size:12px}.container-form{background:var(--edo-surface)}:deep(.ant-form-item){margin-bottom:18px}:deep(.ant-form-item-label>label){font-size:13px}.form-grid :deep(.ant-input-number){width:100%}
