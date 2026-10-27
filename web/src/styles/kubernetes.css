@@ -108,3 +108,5 @@
 @media(max-width:1100px){.kube-workspace .list-filter-field.resource-search{flex-basis:100%}.kube-workspace .list-filter-field.label-search{flex:1;min-width:220px}}
 @media(max-width:640px){.kube-workspace .list-filter-field.status-select{width:100%;flex-basis:100%}.kube-workspace .list-filter-field>span{width:76px}.kube-workspace .list-filter-field.label-search{min-width:100%}}
 @media(max-width:640px){.kube-detail-drawer .resource-detail-content{padding:10px}.kube-detail-drawer .resource-detail-toolbar{padding:10px}}
+
+.workload-template-nav{margin-bottom:14px;display:flex;flex-wrap:wrap}.workload-template-nav .ant-radio-button-wrapper{flex-shrink:0}

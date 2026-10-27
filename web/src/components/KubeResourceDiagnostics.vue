@@ -12,13 +12,14 @@ import {usePreferencesStore} from '@/stores/preferences'
 import {formatDateTime} from '@/utils/time'
 import ResourceTable from './ResourceTable.vue'
 import type {KubeReference} from '@/utils/kubernetesPresentation'
-const props=defineProps<{cluster:string;object:KubeObject;type:KubeType;autoRefresh:boolean;canFollow:(reference:KubeReference)=>boolean;embedded?:boolean;refreshToken?:number}>()
+const props=defineProps<{cluster:string;object:KubeObject;type:KubeType;autoRefresh:boolean;canFollow:(reference:KubeReference)=>boolean;embedded?:boolean;compact?:boolean;refreshToken?:number}>()
 const emit=defineEmits<{follow:[reference:KubeReference]}>()
 const {t,te,locale}=useI18n(),preferences=usePreferencesStore()
 use([BarChart,GridComponent,TooltipComponent,LegendComponent,CanvasRenderer])
 const data=ref<KubeObject|null>(null),error=ref(''),loading=ref(false),root=ref<HTMLElement>(),now=ref(Date.now())
 let revision=0,request:AbortController|undefined,disposed=false,timer:ReturnType<typeof setInterval>|undefined,observer:ResizeObserver|undefined
 const charts=new Map<string,EChartsType>()
+let observedWidth=0
 const endpoints=computed<KubeObject[]>(()=>(data.value?.endpoints??[]).map((e:KubeObject,i:number)=>({...e,id:i})))
 const revisions=computed<KubeObject[]>(()=>data.value?.revisions??[])
 const tableRows=computed<KubeObject[]>(()=>props.object.kind==='Service'?endpoints.value:revisions.value)
@@ -61,7 +62,7 @@ watch(()=>`${props.cluster}:${props.object.metadata.uid}`,()=>{data.value=null;e
 watch([rows,()=>preferences.theme,locale],()=>void render())
 watch(()=>props.refreshToken,()=>void load())
 watch(()=>props.autoRefresh,(enabled,previous)=>{if(enabled&&!previous)void load()})
-onMounted(()=>{void load();observer=new ResizeObserver(()=>void render());if(root.value)observer.observe(root.value);timer=setInterval(sync,30000);document.addEventListener('visibilitychange',sync)})
+onMounted(()=>{void load();observer=new ResizeObserver(entries=>{const width=entries[0]?.contentRect.width??0;if(width>0&&Math.abs(width-observedWidth)>.5){observedWidth=width;void render()}});if(root.value)observer.observe(root.value);timer=setInterval(sync,30000);document.addEventListener('visibilitychange',sync)})
 onBeforeUnmount(()=>{disposed=true;revision++;request?.abort();if(timer)clearInterval(timer);document.removeEventListener('visibilitychange',sync);observer?.disconnect();charts.forEach(c=>c.dispose())})
 </script>
 <template>
@@ -71,14 +72,14 @@ onBeforeUnmount(()=>{disposed=true;revision++;request?.abort();if(timer)clearInt
   <a-alert v-else-if="data?.state==='partial'||data?.state==='pods_unavailable'" type="warning" show-icon :message="t(data.state==='partial'?'k8s.relatedPartial':'k8s.revisionPodsUnavailable')" />
   <template v-if="object.kind==='Pod'">
    <a-alert v-if="!error&&data&&data.state!=='ok'" type="warning" :message="t(data.state==='forbidden'?'k8s.nodeMetricsForbidden':'k8s.podMetricsMissing')" />
-   <div class="diagnostic-charts"><article v-for="kind in ['cpu','memory']" :key="kind"><h4>{{ kind==='cpu'?'CPU':t('k8s.nodeMemory') }}</h4><div :data-metric="kind" :style="{height:`${Math.max(190,rows.length*90+70)}px`}" role="img" :aria-label="rows.map(r=>`${r.name}: ${Object.entries(r[kind as 'cpu'|'memory']).map(([k,v])=>`${t(k==='used'?'k8s.nodeUsed':k==='requests'?'k8s.resourceRequests':'k8s.nodeDeclaredLimits')} ${kind==='cpu'?formatKubeCPU(v??undefined):formatKubeMemory(v??undefined)}`).join('; ')}`).join('; ')" /></article></div>
-   <h4>{{ t('k8s.containerRuntime') }}</h4><ResourceTable class="kube-resource-table" :rows="containers" :columns="[{key:'name',label:t('k8s.container')},{key:'state',label:t('k8s.status')},{key:'ready',label:t('k8s.readyAndStarted')},{key:'restarts',label:t('k8s.restarts')},{key:'previous',label:t('k8s.lastTermination')}]" :details="false" :pagination="containers.length>10">
+   <div class="diagnostic-charts"><article v-for="kind in ['cpu','memory']" :key="kind"><h4>{{ kind==='cpu'?'CPU':t('k8s.nodeMemory') }}</h4><div :data-metric="kind" :style="{height:`${compact?Math.max(180,rows.length*46+70):Math.max(190,rows.length*90+70)}px`}" role="img" :aria-label="rows.map(r=>`${r.name}: ${Object.entries(r[kind as 'cpu'|'memory']).map(([k,v])=>`${t(k==='used'?'k8s.nodeUsed':k==='requests'?'k8s.resourceRequests':'k8s.nodeDeclaredLimits')} ${kind==='cpu'?formatKubeCPU(v??undefined):formatKubeMemory(v??undefined)}`).join('; ')}`).join('; ')" /></article></div>
+   <template v-if="!compact"><h4>{{ t('k8s.containerRuntime') }}</h4><ResourceTable class="kube-resource-table" :rows="containers" :columns="[{key:'name',label:t('k8s.container')},{key:'state',label:t('k8s.status')},{key:'ready',label:t('k8s.readyAndStarted')},{key:'restarts',label:t('k8s.restarts')},{key:'previous',label:t('k8s.lastTermination')}]" :details="false" :pagination="containers.length>10">
     <template #cell-name="{row}"><strong>{{ row.name }}</strong><div class="secondary">{{ t(`k8s.containerKind_${row.containerKind}`) }}{{ row.restartPolicy==='Always'?' · Sidecar':'' }}</div></template>
     <template #cell-state="{row}"><template v-if="row.runtime?.state?.waiting"><a-tag color="warning">{{ t('k8s.containerWaiting') }}</a-tag>{{ row.runtime.state.waiting.reason }}<div class="secondary">{{ row.runtime.state.waiting.message }}</div></template><template v-else-if="row.runtime?.state?.terminated"><a-tag :color="row.runtime.state.terminated.exitCode===0?'default':'error'">{{ t('k8s.containerTerminated') }}</a-tag>{{ row.runtime.state.terminated.reason }} · exit {{ row.runtime.state.terminated.exitCode }}<div class="secondary">{{ formatDateTime(row.runtime.state.terminated.finishedAt) }}</div></template><template v-else-if="row.runtime?.state?.running"><a-tag color="success">{{ t('k8s.containerRunning') }}</a-tag><div class="secondary">{{ formatDateTime(row.runtime.state.running.startedAt) }}</div></template><span v-else>—</span></template>
     <template #cell-ready="{row}">{{ condition(row.runtime?.ready) }} / {{ condition(row.runtime?.started) }}</template><template #cell-restarts="{row}">{{ row.runtime?.restartCount??'—' }}</template>
     <template #cell-previous="{row}"><template v-if="row.runtime?.lastState?.terminated">{{ row.runtime.lastState.terminated.reason||'—' }} · exit {{ row.runtime.lastState.terminated.exitCode??'—' }} · signal {{ row.runtime.lastState.terminated.signal??'—' }}<div class="secondary">{{ formatDateTime(row.runtime.lastState.terminated.finishedAt) }}</div></template><span v-else>—</span></template>
    </ResourceTable>
-   <h4 class="lifecycle-heading">{{ t('k8s.podLifecycle') }}</h4><a-timeline><a-timeline-item v-for="(point,index) in lifecycle" :key="index" :color="point.status==='True'?'green':point.status==='False'?'red':'gray'"><strong>{{ lifecycleLabel(point.key) }}</strong> <span class="secondary">{{ formatDateTime(point.at) }}</span><div>{{ point.reason }}</div></a-timeline-item></a-timeline>
+   <h4 class="lifecycle-heading">{{ t('k8s.podLifecycle') }}</h4><a-timeline><a-timeline-item v-for="(point,index) in lifecycle" :key="index" :color="point.status==='True'?'green':point.status==='False'?'red':'gray'"><strong>{{ lifecycleLabel(point.key) }}</strong> <span class="secondary">{{ formatDateTime(point.at) }}</span><div>{{ point.reason }}</div></a-timeline-item></a-timeline></template>
   </template>
   <ResourceTable v-else class="kube-resource-table" :rows="tableRows" :row-key="object.kind==='Service'?'id':'uid'" :columns="columns" :details="false" keep-header :pagination="tableRows.length>10" :loading="loading" :empty-text="loading?t('k8s.loading'):error?t('k8s.unavailable'):t(object.kind==='Service'?'k8s.noEndpoints':'k8s.noRevisions')">
    <template #cell-addresses="{row}"><div v-for="address in row.addresses" :key="address"><code>{{ address }}</code></div><span class="secondary">{{ row.address_type }} · {{ row.node_name||'—' }}</span></template>

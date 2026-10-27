@@ -18,6 +18,11 @@ const editing = computed(() => Boolean(props.object))
 const workload = computed(() => ['Deployment','StatefulSet','DaemonSet','Job','CronJob','Pod'].includes(props.type.kind))
 const configuration = computed(() => ['ConfigMap','Secret'].includes(props.type.kind))
 const configTab = ref('basic'),editorTab=ref('basic'),initialDraft=ref(''),errorPanel=ref<HTMLElement>()
+const lastTemplateTab=ref('containers'),activeContainerGroup=ref<'containers'|'initContainers'>('containers'),activeContainerIndex=ref(0)
+const templateTabs=['containers','pod','scheduling','options']
+const editorSection=computed({get:()=>templateTabs.includes(editorTab.value)?'template':editorTab.value,set:value=>{editorTab.value=value==='template'?lastTemplateTab.value:value}})
+const templateTab=computed({get:()=>templateTabs.includes(editorTab.value)?editorTab.value:lastTemplateTab.value,set:value=>{lastTemplateTab.value=value;editorTab.value=value}})
+watch(editorTab,value=>{if(templateTabs.includes(value))lastTemplateTab.value=value},{flush:'sync'})
 let validationTab='basic',discardDialog:ReturnType<typeof Modal.confirm>|undefined,saveDialog:ReturnType<typeof Modal.confirm>|undefined
 let editorRevision=0,submitRevision=0,submitController:AbortController|undefined,disposed=false
 const editorIdentity=()=>JSON.stringify([props.open,props.cluster,props.namespace,props.type.resource,props.object?.metadata.uid,props.object?.metadata.name,props.object?.metadata.namespace])
@@ -34,12 +39,25 @@ const workloadOptions=reactive(workloadSettings({},props.type.kind))
 const restartPolicy=ref('Always'), nodeSelector=computed<KeyValue[]>({get:()=>workloadOptions.nodeSelector,set:value=>{workloadOptions.nodeSelector=value}})
 const entries = (object: Record<string, unknown> = {}): KeyValue[] => Object.entries(object).map(([key,value])=>({key,value:String(value)}))
 const form = reactive({name:'', namespace:'', labels:[] as KeyValue[], annotations:[] as KeyValue[], data:[] as KeyValue[], selector:[] as KeyValue[], peer:[] as KeyValue[], taints:[] as Array<{key:string;value:string;effect:string}>, containers:[] as ContainerForm[], initContainers:[] as ContainerForm[], volumes:[] as VolumeForm[], imagePullSecrets:'', strategy:'RollingUpdate', maxSurge:'25%', maxUnavailable:'25%', minReadySeconds:0, revisionHistoryLimit:10, progressDeadlineSeconds:600, replicas:1, serviceName:'', schedule:'*/5 * * * *', suspend:false, storage:'1Gi', storageClass:'', accessModes:['ReadWriteOnce'], volumeMode:'Filesystem', secretType:'Opaque', serviceType:'ClusterIP', port:80, targetPort:'80', hostname:'', path:'/', backend:'', ingressClass:'', policyPort:80, denyAll:false})
+const selectedContainer=computed(()=>form[activeContainerGroup.value][activeContainerIndex.value])
+function selectContainer(group:'containers'|'initContainers',index:number){activeContainerGroup.value=group;activeContainerIndex.value=index}
+function addContainer(group:'containers'|'initContainers'){
+  if(saving.value||confirming.value)return
+  form[group].push(containerForm({name:'',image:''}));selectContainer(group,form[group].length-1)
+}
+function removeContainer(){
+  if(saving.value||confirming.value||activeContainerGroup.value==='containers'&&form.containers.length<=1)return
+  const rows=form[activeContainerGroup.value]
+  rows.splice(activeContainerIndex.value,1)
+  if(!rows.length)selectContainer('containers',0)
+  else activeContainerIndex.value=Math.min(activeContainerIndex.value,rows.length-1)
+}
 watch(editorIdentity, () => {
   editorRevision++;submitRevision++;submitController?.abort();submitController=undefined;saving.value=false;saveDialog?.destroy?.();saveDialog=undefined;confirming.value=false
   classRevision++
   if (!props.open) return
   error.value = ''
-  configTab.value = 'basic';editorTab.value=workload.value&&editing.value?'containers':'basic'
+  configTab.value = 'basic';lastTemplateTab.value='containers';editorTab.value=workload.value&&editing.value?'containers':'basic';selectContainer('containers',0)
   const object = props.object ?? {}, spec = object.spec ?? {}, rule = spec.rules?.[0], ingressPath = rule?.http?.paths?.[0]
   restartPolicy.value=podSpec(object).restartPolicy ?? 'Always'
   Object.assign(workloadOptions,workloadSettings(object,props.type.kind))
@@ -92,12 +110,13 @@ function buildObject(): KubeObject {
     if (!form.containers.length) throw new Error(t('k8s.imageRequired'))
     let containers:KubeObject[],initContainers:KubeObject[],volumes:KubeObject[]
     try {
-      containers=form.containers.map(c=>buildContainer(c));initContainers=form.initContainers.map(c=>buildContainer(c,true))
+      const buildRows=(group:'containers'|'initContainers')=>form[group].map((container,index)=>{try{return buildContainer(container,group==='initContainers')}catch(err){selectContainer(group,index);throw err}})
+      containers=buildRows('containers');initContainers=buildRows('initContainers')
       if(new Set([...containers,...initContainers].map(c=>c.name)).size!==containers.length+initContainers.length)throw new Error('k8s.invalidKeys')
       validationTab='pod'
       volumes=buildVolumes(form.volumes,[...containers,...initContainers])
     } catch(err){throw new Error(t(err instanceof Error?err.message:'k8s.invalidForm'))}
-    validationTab='pod'
+    validationTab='options'
     const secretNames=form.imagePullSecrets.split(',').map(n=>n.trim()).filter(Boolean)
     if(secretNames.some(n=>!/^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$/.test(n)))throw new Error(t('k8s.invalidName'))
     let options:ReturnType<typeof buildWorkloadSettings>
@@ -245,7 +264,7 @@ async function submit(url:string,namespace:string,method:string,object:KubeObjec
 </script>
 
 <template>
-  <a-drawer :open="open" :title="`${t(editing?'k8s.edit':'k8s.create')}${t(`k8s.type_${type.resource}`)}`" width="min(800px,94vw)" :mask-closable="!saving&&!confirming" :closable="!saving&&!confirming" :keyboard="!saving&&!confirming" @close="closeEditor">
+  <a-drawer :open="open" :title="`${t(editing?'k8s.edit':'k8s.create')}${t(`k8s.type_${type.resource}`)}`" :width="workload?'min(1120px,96vw)':'min(800px,94vw)'" :mask-closable="!saving&&!confirming" :closable="!saving&&!confirming" :keyboard="!saving&&!confirming" @close="closeEditor">
     <div class="editor-context"><a-tag>{{ type.kind }}</a-tag><span>{{ type.namespaced?form.namespace:t('k8s.clusterScope') }}</span><strong v-if="editing">{{ object?.metadata.name }}</strong></div>
     <div v-if="error" ref="errorPanel" tabindex="-1" role="alert" class="editor-error"><a-alert type="error" show-icon :message="error" class="editor-alert" /></div>
     <a-form layout="vertical" :disabled="saving||confirming" @finish="save">
@@ -253,7 +272,7 @@ async function submit(url:string,namespace:string,method:string,object:KubeObjec
         <div class="form-grid"><a-form-item :label="t('k8s.name')" required><a-input :aria-label="t('k8s.name')" v-model:value="form.name" :disabled="editing" :maxlength="253" /></a-form-item><a-form-item v-if="type.namespaced" :label="t('k8s.namespace')" required><a-input :aria-label="t('k8s.namespace')" v-model:value="form.namespace" :disabled="editing" :maxlength="63" /></a-form-item></div>
         <a-form-item :label="t('k8s.labels')"><KubeKeyValues v-model="form.labels" :disabled="saving||confirming" /></a-form-item>
       </template>
-      <a-tabs v-if="workload" v-model:active-key="editorTab" :animated="false" class="workload-editor-tabs">
+      <a-tabs v-if="workload" v-model:active-key="editorSection" :animated="false" class="workload-editor-tabs">
         <a-tab-pane key="basic" :tab="t('k8s.basic')" force-render>
         <div class="form-grid"><a-form-item :label="t('k8s.name')" required><a-input :aria-label="t('k8s.name')" v-model:value="form.name" :disabled="editing" :maxlength="253" /></a-form-item><a-form-item v-if="type.namespaced" :label="t('k8s.namespace')" required><a-input :aria-label="t('k8s.namespace')" v-model:value="form.namespace" :disabled="editing" :maxlength="63" /></a-form-item></div>
         <a-form-item :label="t('k8s.labels')"><KubeKeyValues v-model="form.labels" :disabled="saving||confirming" /></a-form-item>
@@ -265,29 +284,6 @@ async function submit(url:string,namespace:string,method:string,object:KubeObjec
           <div class="form-grid"><a-form-item :label="t('k8s.cronSuccessfulHistory')"><a-input-number :aria-label="t('k8s.cronSuccessfulHistory')" v-model:value="workloadOptions.successfulJobsHistoryLimit" :min="0" :precision="0" :placeholder="t('k8s.optionalClusterDefault')" /></a-form-item><a-form-item :label="t('k8s.cronFailedHistory')"><a-input-number :aria-label="t('k8s.cronFailedHistory')" v-model:value="workloadOptions.failedJobsHistoryLimit" :min="0" :precision="0" :placeholder="t('k8s.optionalClusterDefault')" /></a-form-item><a-form-item :label="t('k8s.cronStartingDeadlineSeconds')"><a-input-number :aria-label="t('k8s.cronStartingDeadlineSeconds')" v-model:value="workloadOptions.startingDeadlineSeconds" :min="0" :precision="0" :placeholder="t('k8s.optionalClusterDefault')" /></a-form-item></div>
         </template>
         </a-tab-pane>
-        <a-tab-pane key="containers" :tab="`${t('k8s.containers')} (${form.containers.length+form.initContainers.length})`" force-render>
-        <section v-for="(container,index) in form.containers" :key="index" class="container-form">
-          <div class="section-heading"><strong>{{ t('k8s.container') }} {{ index+1 }}</strong><a-button v-if="form.containers.length>1" size="small" danger @click="form.containers.splice(index,1)">{{ t('k8s.remove') }}</a-button></div>
-          <KubeContainerFields :container="container" :editing="editing&&Boolean(container.raw?.name)" :disabled="saving||confirming" :volumes="form.volumes.map(v=>v.name)" />
-        </section>
-        <a-button @click="form.containers.push(containerForm({name:'',image:''}))">+ {{ t('k8s.container') }}</a-button>
-        <h4>{{ t('k8s.initContainers') }}</h4>
-        <section v-for="(container,index) in form.initContainers" :key="index" class="container-form"><div class="section-heading"><strong>Init {{ index+1 }}</strong><a-button danger size="small" @click="form.initContainers.splice(index,1)">{{ t('k8s.remove') }}</a-button></div><KubeContainerFields :container="container" :editing="editing&&Boolean(container.raw?.name)" init :disabled="saving||confirming" :volumes="form.volumes.map(v=>v.name)" /></section>
-        <a-button @click="form.initContainers.push(containerForm({name:'',image:''}))">+ {{ t('k8s.initContainers') }}</a-button>
-        </a-tab-pane>
-        <a-tab-pane key="pod" :tab="t('k8s.podSettings')" force-render>
-        <template v-if="type.kind==='Pod'"><a-alert type="info" show-icon :message="t('k8s.standalonePod')" class="editor-alert" /><a-form-item :label="t('k8s.restartPolicy')"><a-select :aria-label="t('k8s.restartPolicy')" v-model:value="restartPolicy" :options="['Always','OnFailure','Never'].map(value=>({value}))" /></a-form-item></template>
-          <a-form-item :label="t('k8s.imagePullSecrets')"><a-input :aria-label="t('k8s.imagePullSecrets')" v-model:value="form.imagePullSecrets" /></a-form-item>
-          <h4>{{ t('k8s.volumes') }}</h4><section v-for="(volume,index) in form.volumes" :key="index" class="container-form"><div class="form-grid"><a-form-item :label="t('k8s.volumeName')"><a-input :aria-label="t('k8s.volumeName')" v-model:value="volume.name" /></a-form-item><a-form-item :label="t('k8s.volumeType')"><a-select :aria-label="t('k8s.volumeType')" v-model:value="volume.kind" :disabled="volume.kind==='preserve'" :options="['emptyDir','configMap','secret','persistentVolumeClaim',...(volume.kind==='preserve'?['preserve']:[])].map(value=>({value,label:value==='preserve'?t('k8s.preservedVolume'):t(`k8s.volume_${value}`)}))" /></a-form-item></div><a-form-item v-if="!['emptyDir','preserve'].includes(volume.kind)" :label="t('k8s.referenceName')"><a-input :aria-label="t('k8s.referenceName')" v-model:value="volume.source" /></a-form-item><div v-if="volume.kind==='emptyDir'" class="form-grid"><a-form-item :label="t('k8s.volumeMedium')"><a-select :aria-label="t('k8s.volumeMedium')" v-model:value="volume.medium" :options="[{value:'',label:t('k8s.defaultValue')},{value:'Memory',label:'Memory'}]" /></a-form-item><a-form-item :label="t('k8s.sizeLimit')"><a-input :aria-label="t('k8s.sizeLimit')" v-model:value="volume.sizeLimit" placeholder="1Gi" /></a-form-item></div><a-button danger size="small" @click="form.volumes.splice(index,1)">{{ t('k8s.remove') }}</a-button></section>
-          <a-button size="small" @click="form.volumes.push(volumeForm({name:'',emptyDir:{}}))">+ {{ t('k8s.volumes') }}</a-button>
-        </a-tab-pane>
-        <a-tab-pane key="scheduling" :tab="t('k8s.schedulingSettings')" force-render>
-          <a-form-item :label="t('k8s.serviceAccountName')"><a-input :aria-label="t('k8s.serviceAccountName')" v-model:value="workloadOptions.serviceAccountName" /><small class="editor-hint">{{ t('k8s.serviceAccountHint') }}</small></a-form-item>
-          <a-form-item :label="t('k8s.nodeSelector')"><KubeKeyValues v-model="nodeSelector" :disabled="saving||confirming" /></a-form-item>
-        </a-tab-pane>
-        <a-tab-pane v-if="['Job','CronJob'].includes(type.kind)" key="job" :tab="t('k8s.jobSettings')" force-render>
-          <div class="form-grid"><a-form-item :label="t('k8s.jobParallelism')"><a-input-number :aria-label="t('k8s.jobParallelism')" v-model:value="workloadOptions.parallelism" :min="0" :precision="0" :placeholder="t('k8s.optionalClusterDefault')" /></a-form-item><a-form-item :label="t('k8s.jobCompletions')"><a-input-number :aria-label="t('k8s.jobCompletions')" v-model:value="workloadOptions.completions" :min="0" :precision="0" :placeholder="t('k8s.optionalClusterDefault')" /></a-form-item><a-form-item :label="t('k8s.jobBackoffLimit')"><a-input-number :aria-label="t('k8s.jobBackoffLimit')" v-model:value="workloadOptions.backoffLimit" :min="0" :precision="0" :placeholder="t('k8s.optionalClusterDefault')" /></a-form-item><a-form-item :label="t('k8s.jobTTLSeconds')"><a-input-number :aria-label="t('k8s.jobTTLSeconds')" v-model:value="workloadOptions.ttlSecondsAfterFinished" :min="0" :precision="0" :placeholder="t('k8s.optionalClusterDefault')" /></a-form-item><a-form-item :label="t('k8s.jobActiveDeadlineSeconds')"><a-input-number :aria-label="t('k8s.jobActiveDeadlineSeconds')" v-model:value="workloadOptions.activeDeadlineSeconds" :min="0" :precision="0" :placeholder="t('k8s.optionalClusterDefault')" /></a-form-item></div>
-        </a-tab-pane>
         <a-tab-pane v-if="type.kind==='Deployment'" key="strategy" :tab="t('k8s.deploymentStrategy')" force-render>
 
           <a-form-item :label="t('k8s.deploymentStrategy')"><a-select :aria-label="t('k8s.deploymentStrategy')" v-model:value="form.strategy" :options="['RollingUpdate','Recreate'].map(value=>({value,label:t(`k8s.strategy_${value}`)}))" /></a-form-item><div v-if="form.strategy==='RollingUpdate'" class="form-grid"><a-form-item :label="t('k8s.maxSurge')"><a-input :aria-label="t('k8s.maxSurge')" v-model:value="form.maxSurge" placeholder="25%" /></a-form-item><a-form-item :label="t('k8s.maxUnavailable')"><a-input :aria-label="t('k8s.maxUnavailable')" v-model:value="form.maxUnavailable" placeholder="25%" /></a-form-item></div><div class="form-grid"><a-form-item v-for="field in ['minReadySeconds','revisionHistoryLimit','progressDeadlineSeconds'] as const" :key="field" :label="t(`k8s.${field}`)"><a-input-number :aria-label="t(`k8s.${field}`)" v-model:value="form[field]" :min="0" :precision="0" /></a-form-item></div>
@@ -295,6 +291,42 @@ async function submit(url:string,namespace:string,method:string,object:KubeObjec
         <a-tab-pane v-if="['StatefulSet','DaemonSet'].includes(type.kind)" key="strategy" :tab="t('k8s.workloadUpdateStrategy')" force-render>
           <a-form-item :label="t('k8s.workloadUpdateStrategy')"><a-select :aria-label="t('k8s.workloadUpdateStrategy')" v-model:value="workloadOptions.updateStrategy" :options="['RollingUpdate','OnDelete'].map(value=>({value,label:t(`k8s.strategy_${value}`)}))" /></a-form-item>
           <template v-if="workloadOptions.updateStrategy==='RollingUpdate'"><a-form-item v-if="type.kind==='StatefulSet'" :label="t('k8s.statefulPartition')"><a-input-number :aria-label="t('k8s.statefulPartition')" v-model:value="workloadOptions.partition" :min="0" :precision="0" :placeholder="t('k8s.optionalClusterDefault')" /><small class="editor-hint">{{ t('k8s.statefulPartitionHint') }}</small></a-form-item><div v-else class="form-grid"><a-form-item :label="t('k8s.maxSurge')"><a-input :aria-label="t('k8s.maxSurge')" v-model:value="workloadOptions.daemonMaxSurge" placeholder="0" /></a-form-item><a-form-item :label="t('k8s.maxUnavailable')"><a-input :aria-label="t('k8s.maxUnavailable')" v-model:value="workloadOptions.daemonMaxUnavailable" placeholder="1" /></a-form-item></div></template>
+        </a-tab-pane>
+        <a-tab-pane v-if="['Job','CronJob'].includes(type.kind)" key="job" :tab="t('k8s.jobSettings')" force-render>
+          <div class="form-grid"><a-form-item :label="t('k8s.jobParallelism')"><a-input-number :aria-label="t('k8s.jobParallelism')" v-model:value="workloadOptions.parallelism" :min="0" :precision="0" :placeholder="t('k8s.optionalClusterDefault')" /></a-form-item><a-form-item :label="t('k8s.jobCompletions')"><a-input-number :aria-label="t('k8s.jobCompletions')" v-model:value="workloadOptions.completions" :min="0" :precision="0" :placeholder="t('k8s.optionalClusterDefault')" /></a-form-item><a-form-item :label="t('k8s.jobBackoffLimit')"><a-input-number :aria-label="t('k8s.jobBackoffLimit')" v-model:value="workloadOptions.backoffLimit" :min="0" :precision="0" :placeholder="t('k8s.optionalClusterDefault')" /></a-form-item><a-form-item :label="t('k8s.jobTTLSeconds')"><a-input-number :aria-label="t('k8s.jobTTLSeconds')" v-model:value="workloadOptions.ttlSecondsAfterFinished" :min="0" :precision="0" :placeholder="t('k8s.optionalClusterDefault')" /></a-form-item><a-form-item :label="t('k8s.jobActiveDeadlineSeconds')"><a-input-number :aria-label="t('k8s.jobActiveDeadlineSeconds')" v-model:value="workloadOptions.activeDeadlineSeconds" :min="0" :precision="0" :placeholder="t('k8s.optionalClusterDefault')" /></a-form-item></div>
+        </a-tab-pane>
+        <a-tab-pane key="template" :tab="t('k8s.workloadPodTemplate')" force-render>
+          <a-tabs v-model:active-key="templateTab" :animated="false" class="pod-template-tabs">
+          <a-tab-pane key="containers" :tab="`${t('k8s.containers')} (${form.containers.length+form.initContainers.length})`" force-render>
+            <div class="container-workspace">
+              <nav class="container-navigation" :aria-label="t('k8s.containers')">
+                <section v-for="group in ['containers','initContainers'] as const" :key="group">
+                  <div class="container-navigation-heading"><strong>{{ t(`k8s.${group}`) }}</strong><span class="container-count">{{ form[group].length }}</span></div>
+                  <a-button v-for="(container,index) in form[group]" :key="index" html-type="button" class="container-navigation-item" :class="{active:activeContainerGroup===group&&activeContainerIndex===index}" :aria-pressed="activeContainerGroup===group&&activeContainerIndex===index" @click="selectContainer(group,index)">
+                    <span>{{ container.name || `${t('k8s.container')} ${index+1}` }}</span><small>{{ container.image || '—' }}</small>
+                  </a-button>
+                  <a-button block type="dashed" size="small" html-type="button" :disabled="saving||confirming" :aria-label="`${t('k8s.addEntry')} · ${t(`k8s.${group}`)}`" @click="addContainer(group)">+ {{ t(`k8s.${group}`) }}</a-button>
+                </section>
+              </nav>
+              <section v-if="selectedContainer" class="container-editor-panel">
+                <div class="section-heading"><div><a-tag v-if="activeContainerGroup==='initContainers'">Init</a-tag><strong>{{ selectedContainer.name || t('k8s.container') }}</strong></div><a-button v-if="activeContainerGroup==='initContainers'||form.containers.length>1" html-type="button" size="small" danger :disabled="saving||confirming" @click="removeContainer">{{ t('k8s.remove') }}</a-button></div>
+                <KubeContainerFields :key="`${activeContainerGroup}:${activeContainerIndex}`" :container="selectedContainer" :editing="editing&&Boolean(selectedContainer.raw?.name)" :init="activeContainerGroup==='initContainers'" :disabled="saving||confirming" :volumes="form.volumes.map(v=>v.name)" />
+              </section>
+            </div>
+          </a-tab-pane>
+          <a-tab-pane key="pod" :tab="`${t('k8s.volumes')} (${form.volumes.length})`" force-render>
+          <h4>{{ t('k8s.volumes') }}</h4><section v-for="(volume,index) in form.volumes" :key="index" class="container-form"><div class="form-grid"><a-form-item :label="t('k8s.volumeName')"><a-input :aria-label="t('k8s.volumeName')" v-model:value="volume.name" /></a-form-item><a-form-item :label="t('k8s.volumeType')"><a-select :aria-label="t('k8s.volumeType')" v-model:value="volume.kind" :disabled="volume.kind==='preserve'" :options="['emptyDir','configMap','secret','persistentVolumeClaim',...(volume.kind==='preserve'?['preserve']:[])].map(value=>({value,label:value==='preserve'?t('k8s.preservedVolume'):t(`k8s.volume_${value}`)}))" /></a-form-item></div><a-form-item v-if="!['emptyDir','preserve'].includes(volume.kind)" :label="t('k8s.referenceName')"><a-input :aria-label="t('k8s.referenceName')" v-model:value="volume.source" /></a-form-item><div v-if="volume.kind==='emptyDir'" class="form-grid"><a-form-item :label="t('k8s.volumeMedium')"><a-select :aria-label="t('k8s.volumeMedium')" v-model:value="volume.medium" :options="[{value:'',label:t('k8s.defaultValue')},{value:'Memory',label:'Memory'}]" /></a-form-item><a-form-item :label="t('k8s.sizeLimit')"><a-input :aria-label="t('k8s.sizeLimit')" v-model:value="volume.sizeLimit" placeholder="1Gi" /></a-form-item></div><a-button danger size="small" @click="form.volumes.splice(index,1)">{{ t('k8s.remove') }}</a-button></section>
+          <a-button size="small" @click="form.volumes.push(volumeForm({name:'',emptyDir:{}}))">+ {{ t('k8s.volumes') }}</a-button>
+          </a-tab-pane>
+        <a-tab-pane key="scheduling" :tab="t('k8s.schedulingSettings')" force-render>
+          <a-form-item :label="t('k8s.serviceAccountName')"><a-input :aria-label="t('k8s.serviceAccountName')" v-model:value="workloadOptions.serviceAccountName" /><small class="editor-hint">{{ t('k8s.serviceAccountHint') }}</small></a-form-item>
+          <a-form-item :label="t('k8s.nodeSelector')"><KubeKeyValues v-model="nodeSelector" :disabled="saving||confirming" /></a-form-item>
+        </a-tab-pane>
+          <a-tab-pane key="options" :tab="t('k8s.workloadPodOptions')" force-render>
+        <template v-if="type.kind==='Pod'"><a-alert type="info" show-icon :message="t('k8s.standalonePod')" class="editor-alert" /><a-form-item :label="t('k8s.restartPolicy')"><a-select :aria-label="t('k8s.restartPolicy')" v-model:value="restartPolicy" :options="['Always','OnFailure','Never'].map(value=>({value}))" /></a-form-item></template>
+          <a-form-item :label="t('k8s.imagePullSecrets')"><a-input :aria-label="t('k8s.imagePullSecrets')" v-model:value="form.imagePullSecrets" /></a-form-item>
+          </a-tab-pane>
+          </a-tabs>
         </a-tab-pane>
       </a-tabs>
       <template v-if="type.kind==='Node'">
@@ -344,12 +376,17 @@ async function submit(url:string,namespace:string,method:string,object:KubeObjec
 </template>
 <style scoped>
 .form-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:0 16px}.editor-alert{margin-bottom:16px}.container-form{padding:16px;margin-bottom:14px;border:1px solid var(--edo-border);border-radius:6px;background:var(--edo-bg)}.section-heading{display:flex;justify-content:space-between;align-items:center;margin-bottom:14px}.container-form :deep(.ant-form-item:last-child){margin-bottom:0}.taint-row{display:grid;grid-template-columns:1fr 1fr 160px 32px;gap:8px;margin-bottom:8px}.editor-footer{display:flex;justify-content:flex-end;gap:8px}@media(max-width:640px){.form-grid{grid-template-columns:1fr}.taint-row{grid-template-columns:1fr 1fr}.taint-row :deep(.ant-select){min-width:130px}}
+.container-count{padding:1px 7px;border-radius:10px;font-size:11px;background:var(--edo-surface-soft);color:var(--edo-muted)}
 </style>
 <style scoped>
 .workload-advanced{margin-top:20px}.editor-context{display:flex;align-items:center;gap:10px;padding:11px 14px;background:var(--edo-bg);border:1px solid var(--edo-border);border-radius:5px;margin-bottom:20px;font-size:12px;color:var(--edo-muted)}.editor-context strong{margin-left:auto;color:var(--edo-text);font-size:13px;overflow-wrap:anywhere}.editor-footer{align-items:center}.editor-footer>span{margin-right:auto;color:var(--edo-muted);font-size:12px}.container-form{background:var(--edo-surface)}:deep(.ant-form-item){margin-bottom:18px}:deep(.ant-form-item-label>label){font-size:13px}.form-grid :deep(.ant-input-number){width:100%}
 .config-editor-tabs :deep(.ant-tabs-nav){margin-top:-8px}.config-editor-tabs :deep(.ant-tabs-tab){padding:10px 0}.config-editor-tabs :deep(.ant-tabs-tabpane){min-height:330px}
+.container-count{padding:1px 7px;border-radius:10px;font-size:11px;background:var(--edo-surface-soft);color:var(--edo-muted)}
 </style>
 
 <style scoped>
-.workload-editor-tabs :deep(.ant-tabs-nav){position:sticky;top:-24px;z-index:2;background:var(--edo-surface);margin-bottom:20px}.workload-editor-tabs :deep(.ant-tabs-tab){font-size:13px;padding:12px 0}.workload-editor-tabs :deep(.ant-tabs-tabpane){min-height:320px}.editor-footer .changed{color:var(--kube-warning)}.editor-error:focus{outline:none}.editor-context{margin-bottom:12px}.workload-editor-tabs h4{font-size:13px;margin:20px 0 12px}.editor-hint{display:block;margin-top:6px;color:var(--edo-muted);font-size:12px;line-height:1.6}
+.workload-editor-tabs > :deep(.ant-tabs-nav){position:sticky;top:-24px;z-index:2;background:var(--edo-surface);margin-bottom:20px}.workload-editor-tabs :deep(.ant-tabs-tab){font-size:13px;padding:12px 0}.workload-editor-tabs :deep(.ant-tabs-tabpane){min-height:320px}.editor-footer .changed{color:var(--kube-warning)}.editor-error:focus{outline:none}.editor-context{margin-bottom:12px}.workload-editor-tabs h4{font-size:13px;margin:20px 0 12px}.editor-hint{display:block;margin-top:6px;color:var(--edo-muted);font-size:12px;line-height:1.6}
+.pod-template-tabs > :deep(.ant-tabs-nav){margin-top:-12px;margin-bottom:18px}.pod-template-tabs > :deep(.ant-tabs-nav) .ant-tabs-tab{padding:9px 0}.container-workspace{display:grid;grid-template-columns:220px minmax(0,1fr);gap:22px;align-items:start}.container-navigation{display:grid;gap:24px;padding-right:18px;border-right:1px solid var(--edo-border);min-width:0}.container-navigation-heading{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:10px;color:var(--edo-muted);font-size:12px}.container-navigation-item{display:flex;flex-direction:column;align-items:flex-start;width:100%;height:auto;padding:9px 10px;margin-bottom:8px;white-space:normal;text-align:left;border-color:var(--edo-border);background:var(--edo-surface)}.container-navigation-item span,.container-navigation-item small{display:block;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.container-navigation-item small{margin-top:3px;font-size:11px;color:var(--edo-muted)}.container-navigation-item.active{color:var(--edo-primary);border-color:var(--edo-primary);background:var(--edo-primary-soft)}.container-navigation-item:focus-visible{outline:2px solid var(--edo-primary);outline-offset:2px}.container-editor-panel{min-width:0}.container-editor-panel>.section-heading{padding-bottom:13px;border-bottom:1px solid var(--edo-border)}
+@media(max-width:760px){.container-workspace{grid-template-columns:1fr;gap:18px}.container-navigation{grid-template-columns:repeat(2,minmax(0,1fr));gap:14px;padding-right:0;padding-bottom:16px;border-right:0;border-bottom:1px solid var(--edo-border)}.editor-footer{flex-wrap:wrap}.editor-footer>span{flex-basis:100%;margin-right:0}.workload-editor-tabs > :deep(.ant-tabs-nav){top:-16px}}
+.container-count{padding:1px 7px;border-radius:10px;font-size:11px;background:var(--edo-surface-soft);color:var(--edo-muted)}
 </style>
