@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, defineAsyncComponent, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { Box, ChevronRight, FileText, RefreshCw, TerminalSquare } from 'lucide-vue-next'
+import { Box, ChevronRight, FileText, History, RefreshCw, TerminalSquare } from 'lucide-vue-next'
 import client from '@/api/client'
 import { kubeErrorMessage, kubeTypes, resourceURL, type KubeObject, type KubeType } from '@/api/kubernetes'
 import { resourceStatus, type KubeReference } from '@/utils/kubernetesPresentation'
@@ -51,6 +51,10 @@ const selectedPod = computed(() => selectedWorkloadPod(visiblePods.value, podUID
 const podMissing = computed(() => podChosen && Boolean(podUID.value) && !selectedPod.value)
 const choices = computed(() => selectedPod.value ? podContainerChoices(selectedPod.value) : [])
 const selectedContainer = computed(() => choices.value.find(container => container.name === containerName.value))
+const selectedContainerImage = computed(() => {
+  const spec = selectedPod.value?.spec
+  return [...(spec?.containers ?? []), ...(spec?.initContainers ?? []), ...(spec?.ephemeralContainers ?? [])].find(container => container.name === containerName.value)?.image
+})
 const selectedPodState = computed(() => selectedPod.value ? resourceStatus(selectedPod.value, t) : undefined)
 const podType = kubeTypes.find(type => type.resource === 'pods')!
 const actionDisabled = computed(() => Boolean(props.disabled) || props.podsLoading || Boolean(props.podsError) || deployment.value && Boolean(historyError.value) || !readable.value || !selectedPod.value || !selectedContainer.value)
@@ -58,6 +62,12 @@ const terminalAllowed = computed(() => props.can('terminal.open') && selectedCon
 
 function count(value: unknown) { return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? String(value) : '—' }
 function podState(pod: KubeObject) { return resourceStatus(pod, t) }
+function badgeStatus(tone?: string): 'success' | 'warning' | 'error' | 'default' | 'processing' {
+  return tone === 'success' || tone === 'warning' || tone === 'error' ? tone : tone === 'processing' || tone === 'blue' ? 'processing' : 'default'
+}
+function conditionLabel(type: string) {
+  return ({ PodReadyToStartContainers: '容器环境', Initialized: '初始化', Ready: '就绪检查', ContainersReady: '容器就绪', PodScheduled: '节点调度' } as Record<string, string>)[type] ?? type
+}
 function reference(pod: KubeObject): KubeReference { return { resource: 'pods', name: pod.metadata.name, namespace: pod.metadata.namespace, uid: pod.metadata.uid } }
 function followPod() { if (selectedPod.value && !props.disabled && props.canFollow(reference(selectedPod.value))) emit('follow', reference(selectedPod.value)) }
 function followNode() {
@@ -124,61 +134,145 @@ onBeforeUnmount(() => { disposed = true; revision++; request?.abort(); if (timer
 
 <template>
   <section class="workload-explorer" :class="{ 'is-deployment': deployment }" aria-label="工作负载运行状态">
-    <aside v-if="deployment" class="explorer-column revision-column">
-      <header><h4>历史版本</h4><a-button size="small" type="text" :loading="historyLoading" :disabled="disabled || !readable" aria-label="刷新历史版本" @click="loadHistory"><RefreshCw :size="14" /></a-button></header>
-      <a-alert v-if="historyError" class="column-alert" type="error" show-icon :message="historyError"><template #action><a-button size="small" :disabled="disabled" @click="loadHistory">重试</a-button></template></a-alert>
-      <a-alert v-else-if="historyState==='partial' || historyState==='pods_unavailable'" class="column-alert" type="warning" show-icon :message="historyState==='partial'?'历史版本数据尚未完整加载':'暂时无法读取历史版本关联的 Pod，请核对关联 Pod 列表'" />
-      <a-spin :spinning="historyLoading">
-        <div v-if="revisions.length" class="revision-list" role="list" aria-label="ReplicaSet 历史版本">
-          <button v-for="item in revisions" :key="item.uid" class="revision-item" :class="{ selected: item.uid === revisionUID }" :disabled="disabled" :aria-pressed="item.uid === revisionUID" @click="chooseRevision(item)">
-            <span class="revision-heading"><strong>版本 {{ item.revision ?? '—' }}</strong><a-tag v-if="item.current" color="blue">当前</a-tag></span>
-            <span class="secondary">{{ formatDateTime(item.created) }}</span><span class="revision-name">{{ item.name }}</span>
-            <span class="replica-counts"><span>期望 <b>{{ count(item.desired) }}</b></span><span>当前 <b>{{ count(item.replicas) }}</b></span><span>就绪 <b>{{ count(item.ready) }}</b></span></span>
-          </button>
-        </div>
-        <a-empty v-else-if="!historyLoading && !historyError" :description="!readable ? '没有查看工作负载的权限' : historyState==='partial' || historyState==='pods_unavailable' ? '历史数据尚未完整获取' : '暂无历史版本'" :image-style="{ height: '40px' }" />
-      </a-spin>
-      <p v-if="revisionChosen && revisionUID && !selectedRevision" class="column-note" role="status">所选历史版本已不存在，请重新选择。</p>
+    <aside class="explorer-navigation" aria-label="版本与 Pod 导航">
+      <a-card v-if="deployment" class="explorer-card revision-column" size="small">
+        <template #title><span class="section-title"><History :size="15" />历史版本<a-tag :bordered="false">{{ revisions.length }}</a-tag></span></template>
+        <template #extra><a-tooltip title="刷新历史版本"><a-button size="small" type="text" :loading="historyLoading" :disabled="disabled || !readable" aria-label="刷新历史版本" @click="loadHistory"><RefreshCw :size="14" /></a-button></a-tooltip></template>
+        <a-alert v-if="historyError" class="column-alert" type="error" show-icon :message="historyError"><template #action><a-button size="small" :disabled="disabled" @click="loadHistory">重试</a-button></template></a-alert>
+        <a-alert v-else-if="historyState==='partial' || historyState==='pods_unavailable'" class="column-alert" type="warning" show-icon :message="historyState==='partial'?'历史版本数据尚未完整加载':'暂时无法读取历史版本关联的 Pod，请核对关联 Pod 列表'" />
+        <a-spin :spinning="historyLoading">
+          <a-list v-if="revisions.length" class="revision-list" :data-source="revisions" :split="false" size="small" aria-label="ReplicaSet 历史版本">
+            <template #renderItem="{ item }"><a-list-item>
+              <button class="revision-item navigation-item" :class="{ selected: item.uid === revisionUID }" :disabled="disabled" :aria-pressed="item.uid === revisionUID" @click="chooseRevision(item)">
+                <span class="revision-heading"><strong>版本 {{ item.revision ?? '—' }}</strong><a-tag v-if="item.current" color="blue" :bordered="false">当前</a-tag><ChevronRight :size="14" class="selection-chevron" /></span>
+                <span class="revision-name" :title="item.name">{{ item.name }}</span>
+                <span class="replica-counts"><span>期望 <b>{{ count(item.desired) }}</b></span><span>当前 <b>{{ count(item.replicas) }}</b></span><span>就绪 <b>{{ count(item.ready) }}</b></span></span>
+                <time class="secondary">{{ formatDateTime(item.created) }}</time>
+              </button>
+            </a-list-item></template>
+          </a-list>
+          <a-empty v-else-if="!historyLoading && !historyError" :description="!readable ? '没有查看工作负载的权限' : historyState==='partial' || historyState==='pods_unavailable' ? '历史数据尚未完整获取' : '暂无历史版本'" :image-style="{ height: '36px' }" />
+        </a-spin>
+        <p v-if="revisionChosen && revisionUID && !selectedRevision" class="column-note" role="status">所选历史版本已不存在，请重新选择。</p>
+      </a-card>
+
+      <a-card class="explorer-card pod-column" size="small">
+        <template #title><span class="section-title"><Box :size="15" />Pod<a-tag :bordered="false">{{ podsError||podsLoading?'—':`${visiblePods.length}${podsPartial?'+':''}` }}</a-tag></span></template>
+        <template #extra><a-tooltip title="刷新关联 Pod"><a-button size="small" type="text" :disabled="disabled || !readable" :loading="podsLoading" aria-label="刷新关联 Pod" @click="emit('retryPods')"><RefreshCw :size="14" /></a-button></a-tooltip></template>
+        <a-alert v-if="podsError" class="column-alert" type="error" show-icon :message="podsError"><template #action><a-button size="small" :disabled="disabled" @click="emit('retryPods')">重试</a-button></template></a-alert>
+        <a-alert v-else-if="podsPartial" class="column-alert" type="warning" show-icon message="关联 Pod 尚未完整加载" />
+        <a-spin :spinning="podsLoading">
+          <a-list v-if="visiblePods.length" class="pod-list" :data-source="visiblePods" :split="false" size="small" aria-label="关联 Pod">
+            <template #renderItem="{ item: pod }"><a-list-item>
+              <button class="pod-item navigation-item" :class="{ selected: pod.metadata.uid === podUID }" :disabled="disabled || !readable" :aria-pressed="pod.metadata.uid === podUID" @click="choosePod(pod)">
+                <span class="pod-heading"><strong :title="pod.metadata.name">{{ pod.metadata.name }}</strong><ChevronRight :size="14" class="selection-chevron" /></span>
+                <span class="pod-status"><a-badge :status="badgeStatus(podState(pod).tone)" :text="podState(pod).text" /><span v-if="podState(pod).reason" class="secondary">{{ podState(pod).reason }}</span></span>
+                <span class="pod-placement"><span>IP</span><code>{{ pod.status?.podIP || '—' }}</code></span>
+                <span class="pod-placement"><span>节点</span><span :title="pod.spec?.nodeName">{{ pod.spec?.nodeName || '未调度' }}</span></span>
+              </button>
+            </a-list-item></template>
+          </a-list>
+          <a-empty v-else-if="!podsLoading && !podsError" :description="deployment && !selectedRevision ? '请选择历史版本' : '暂无关联 Pod'" :image-style="{ height: '36px' }" />
+        </a-spin>
+      </a-card>
     </aside>
 
-    <section class="explorer-column pod-column">
-      <header><h4>Pod <span class="heading-count">{{ podsError||podsLoading?'—':`${visiblePods.length}${podsPartial?'+':''}` }}</span></h4><a-button size="small" type="text" :disabled="disabled || !readable" :loading="podsLoading" aria-label="刷新关联 Pod" @click="emit('retryPods')"><RefreshCw :size="14" /></a-button></header>
-      <a-alert v-if="podsError" class="column-alert" type="error" show-icon :message="podsError"><template #action><a-button size="small" :disabled="disabled" @click="emit('retryPods')">重试</a-button></template></a-alert>
-      <a-alert v-else-if="podsPartial" class="column-alert" type="warning" show-icon message="关联 Pod 尚未完整加载" />
-      <a-spin :spinning="podsLoading">
-        <div v-if="visiblePods.length" class="pod-list" role="list" aria-label="关联 Pod">
-          <button v-for="pod in visiblePods" :key="pod.metadata.uid" class="pod-item" :class="{ selected: pod.metadata.uid === podUID }" :disabled="disabled || !readable" :aria-pressed="pod.metadata.uid === podUID" @click="choosePod(pod)">
-            <span class="pod-heading"><Box :size="15" /><strong>{{ pod.metadata.name }}</strong><ChevronRight :size="14" /></span>
-            <span class="pod-status"><a-tag :color="podState(pod).tone">{{ podState(pod).text }}</a-tag><span v-if="podState(pod).reason" class="secondary">{{ podState(pod).reason }}</span></span>
-            <span class="pod-placement"><span>IP</span><code>{{ pod.status?.podIP || '—' }}</code></span><span class="pod-placement"><span>节点</span><span>{{ pod.spec?.nodeName || '未调度' }}</span></span>
-          </button>
-        </div>
-        <a-empty v-else-if="!podsLoading && !podsError" :description="deployment && !selectedRevision ? '请选择历史版本' : '暂无关联 Pod'" :image-style="{ height: '40px' }" />
-      </a-spin>
-    </section>
-
-    <section class="explorer-column pod-detail-column">
-      <header><h4>Pod 详情</h4><a-button v-if="selectedPod && canFollow(reference(selectedPod))" type="link" size="small" :disabled="disabled" @click="followPod">完整详情 <ChevronRight :size="13" /></a-button></header>
+    <a-card class="explorer-card pod-detail-column" size="small">
+      <template #title>
+        <div class="pod-detail-identity"><span class="pod-kind-icon"><Box :size="19" /></span><div><span class="kind-label">Pod 详情</span><h3>{{ selectedPod?.metadata.name || '运行状态' }}</h3></div></div>
+      </template>
+      <template #extra><a-space class="pod-detail-actions" :size="12" wrap>
+        <a-badge v-if="selectedPodState" :status="badgeStatus(selectedPodState.tone)" :text="selectedPodState.text" />
+        <a-button v-if="selectedPod && canFollow(reference(selectedPod))" type="link" size="small" :disabled="disabled" @click="followPod">完整详情<ChevronRight :size="13" /></a-button>
+      </a-space></template>
       <a-alert v-if="podMissing" class="column-alert" type="warning" show-icon message="所选 Pod 已删除或不在当前副本组中，请重新选择 Pod。" />
       <template v-if="selectedPod && readable">
-        <div class="pod-detail-heading"><strong>{{ selectedPod.metadata.name }}</strong><a-tag :color="selectedPodState?.tone">{{ selectedPodState?.text }}</a-tag></div>
-        <a-tabs v-model:active-key="podTab" size="small" class="pod-detail-tabs" :animated="false">
+        <a-tabs v-model:active-key="podTab" class="pod-detail-tabs" :animated="false">
           <a-tab-pane key="summary" tab="运行信息">
-            <dl class="pod-facts"><div><dt>命名空间</dt><dd>{{ selectedPod.metadata.namespace }}</dd></div><div><dt>Pod IP</dt><dd>{{ selectedPod.status?.podIP || '—' }}</dd></div><div><dt>节点</dt><dd><button v-if="selectedPod.spec?.nodeName && canFollow({resource:'nodes',name:selectedPod.spec.nodeName})" class="inline-link" :disabled="disabled" @click="followNode">{{ selectedPod.spec.nodeName }}</button><span v-else>{{ selectedPod.spec?.nodeName || '未调度' }}</span></dd></div><div><dt>创建时间</dt><dd>{{ formatDateTime(selectedPod.metadata.creationTimestamp) }}</dd></div></dl>
-            <div class="container-toolbar"><label :for="`explorer-container-${object.metadata.uid}`">容器</label><a-select :id="`explorer-container-${object.metadata.uid}`" v-model:value="containerName" aria-label="Pod 容器" :disabled="disabled || !choices.length" :options="choices.map(container => ({value:container.name,label:container.kind==='app'?container.name:`${container.name} (${container.kind==='init'?'Init':'临时容器'})`}))" /><a-button :disabled="actionDisabled" @click="openContainer()"><FileText :size="13" />日志</a-button><a-button v-if="can('terminal.open')" :disabled="actionDisabled || !terminalAllowed" @click="openContainer(true)"><TerminalSquare :size="13" />终端</a-button></div>
-            <div class="container-images"><div v-for="container in selectedPod.spec?.containers ?? []" :key="container.name"><span class="secondary">{{ container.name }}</span><code>{{ container.image || '—' }}</code></div></div>
+            <a-descriptions class="pod-facts" size="small" :column="{ xs: 1, sm: 2, xl: 4 }" layout="vertical" :colon="false">
+              <a-descriptions-item label="命名空间"><span class="namespace-value">{{ selectedPod.metadata.namespace }}</span></a-descriptions-item>
+              <a-descriptions-item label="Pod IP"><code>{{ selectedPod.status?.podIP || '—' }}</code></a-descriptions-item>
+              <a-descriptions-item label="节点"><button v-if="selectedPod.spec?.nodeName && canFollow({resource:'nodes',name:selectedPod.spec.nodeName})" class="inline-link" :disabled="disabled" @click="followNode">{{ selectedPod.spec.nodeName }}</button><span v-else>{{ selectedPod.spec?.nodeName || '未调度' }}</span></a-descriptions-item>
+              <a-descriptions-item label="创建时间">{{ formatDateTime(selectedPod.metadata.creationTimestamp) }}</a-descriptions-item>
+            </a-descriptions>
+
+            <section class="container-section" aria-label="容器运行信息">
+              <div class="container-toolbar">
+                <label :for="`explorer-container-${object.metadata.uid}`">容器</label>
+                <a-select :id="`explorer-container-${object.metadata.uid}`" v-model:value="containerName" aria-label="Pod 容器" :disabled="disabled || !choices.length" :options="choices.map(container => ({value:container.name,label:container.kind==='app'?container.name:`${container.name} (${container.kind==='init'?'Init':'临时容器'})`}))" />
+                <a-space :size="8" class="container-actions">
+                  <a-button :disabled="actionDisabled" @click="openContainer()"><FileText :size="14" />日志</a-button>
+                  <a-button v-if="can('terminal.open')" :disabled="actionDisabled || !terminalAllowed" @click="openContainer(true)"><TerminalSquare :size="14" />终端</a-button>
+                </a-space>
+              </div>
+              <div class="container-image"><span class="secondary">镜像</span><code>{{ selectedContainerImage || '—' }}</code></div>
+            </section>
+
             <KubeResourceDiagnostics v-if="podTab==='summary'" :key="`${cluster}/${selectedPod.metadata.uid}/summary`" :cluster="cluster" :object="selectedPod" :type="podType" :auto-refresh="autoRefresh && !disabled" :refresh-token="refreshToken" :can-follow="canFollow" embedded compact @follow="emit('follow',$event)" />
-            <h5>健康状态</h5><div class="conditions"><div v-for="condition in selectedPod.status?.conditions ?? []" :key="condition.type"><span>{{ condition.type }}</span><a-tag :color="workloadConditionTone(condition)">{{ ['True','False'].includes(condition.status)?condition.status:'Unknown' }}</a-tag><span v-if="condition.reason || condition.message" class="condition-message">{{ condition.message || condition.reason }}</span></div><p v-if="!selectedPod.status?.conditions?.length" class="secondary">暂无健康状态</p></div>
+
+            <section class="health-section" aria-label="Pod 健康状态">
+              <div class="health-heading"><h4>状态检查</h4><span class="secondary">{{ selectedPod.status?.conditions?.length ?? 0 }} 项</span></div>
+              <div v-if="selectedPod.status?.conditions?.length" class="health-grid">
+                <div v-for="condition in selectedPod.status.conditions" :key="condition.type" class="health-item">
+                  <div class="condition-heading"><a-tooltip :title="condition.type"><a-badge :status="badgeStatus(workloadConditionTone(condition))" :text="conditionLabel(condition.type)" /></a-tooltip><span class="condition-value">{{ ['True','False'].includes(condition.status)?condition.status:'Unknown' }}</span></div>
+                  <p v-if="condition.reason || condition.message" class="condition-message">{{ condition.message || condition.reason }}</p>
+                </div>
+              </div>
+              <a-empty v-else description="暂无健康状态" :image-style="{ height: '32px' }" />
+            </section>
           </a-tab-pane>
           <a-tab-pane key="diagnostics" tab="运行诊断"><KubeResourceDiagnostics v-if="podTab==='diagnostics'" :key="`${cluster}/${selectedPod.metadata.uid}`" :cluster="cluster" :object="selectedPod" :type="podType" :auto-refresh="autoRefresh && !disabled" :refresh-token="refreshToken" :can-follow="canFollow" embedded @follow="emit('follow',$event)" /></a-tab-pane>
         </a-tabs>
       </template>
-      <a-empty v-else-if="!podMissing" :description="readable ? '选择 Pod 查看运行状态' : '没有查看工作负载的权限'" :image-style="{ height: '40px' }" />
-    </section>
+      <a-empty v-else-if="!podMissing" class="detail-empty" :description="readable ? '选择 Pod 查看运行状态' : '没有查看工作负载的权限'" :image-style="{ height: '48px' }" />
+    </a-card>
   </section>
 </template>
 
 <style scoped>
-.revision-list{position:relative}.revision-list::before{content:'';position:absolute;left:16px;top:24px;bottom:24px;width:1px;background:var(--edo-border)}.revision-list .revision-item{padding-left:29px}.revision-item::before{content:'';position:absolute;left:9px;top:17px;width:9px;height:9px;border-radius:50%;border:2px solid var(--edo-surface);background:var(--edo-border)}.revision-item.selected::before{background:var(--edo-primary)}
-.workload-explorer{display:grid;grid-template-columns:minmax(240px,.85fr) minmax(0,1.7fr);border:1px solid var(--edo-border);border-radius:6px;overflow:hidden;background:var(--edo-surface)}.workload-explorer.is-deployment{grid-template-columns:220px minmax(250px,.9fr) minmax(0,1.6fr)}.explorer-column{min-width:0;min-height:300px;border-right:1px solid var(--edo-border)}.pod-detail-column{border-right:0}.explorer-column>header{height:48px;padding:8px 14px;border-bottom:1px solid var(--edo-border);background:var(--edo-surface-soft);display:flex;align-items:center;justify-content:space-between;gap:6px}.explorer-column h4,.workload-events h4{font-size:13px;margin:0;font-weight:600}.heading-count{font-size:12px;color:var(--edo-muted);font-weight:400;margin-left:5px}.revision-list,.pod-list{padding:6px 0;max-height:670px;overflow-y:auto}.revision-item,.pod-item{position:relative;width:100%;border:0;border-left:3px solid transparent;border-bottom:1px solid var(--edo-border);background:none;text-align:left;padding:12px 13px;display:flex;flex-direction:column;gap:7px;font:inherit;color:var(--edo-text);cursor:pointer;overflow-wrap:anywhere}.revision-item:hover,.pod-item:hover{background:var(--edo-surface-soft)}.revision-item.selected,.pod-item.selected{background:color-mix(in srgb,var(--edo-primary) 8%,var(--edo-surface));border-left-color:var(--edo-primary)}button:focus-visible{outline:2px solid var(--edo-primary);outline-offset:-3px}button:disabled{cursor:not-allowed;opacity:.65}.revision-heading,.pod-heading,.pod-status{display:flex;align-items:center;gap:7px}.revision-heading strong{font-size:13px}.revision-name{font-size:11px;color:var(--edo-muted)}.secondary{font-size:11px;color:var(--edo-muted)}.replica-counts{display:flex;gap:11px;font-size:11px;color:var(--edo-muted)}.replica-counts b{font-weight:500;color:var(--edo-text)}.pod-heading strong{font-size:12px;flex:1;min-width:0}.pod-heading>svg{flex:none}.pod-placement{display:grid;grid-template-columns:30px minmax(0,1fr);gap:6px;font-size:11px;color:var(--edo-muted)}.pod-placement code{font:inherit}.column-alert{margin:10px}.column-note{font-size:12px;color:var(--edo-muted);padding:0 12px;line-height:1.6}.pod-detail-heading{padding:14px 14px 0;display:flex;align-items:flex-start;gap:8px;font-size:13px;overflow-wrap:anywhere}.pod-detail-heading strong{flex:1;min-width:0}.pod-detail-tabs{padding:0 14px}.pod-detail-tabs :deep(.ant-tabs-tab){font-size:12px;padding-block:11px}.pod-detail-tabs :deep(.ant-tabs-nav){margin-bottom:8px}.pod-facts{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin:8px 0 18px}.pod-facts>div{min-width:0}.pod-facts dt{font-size:11px;color:var(--edo-muted);margin-bottom:4px}.pod-facts dd{font-size:12px;margin:0;overflow-wrap:anywhere}.inline-link{padding:0;border:0;background:none;color:var(--edo-primary);cursor:pointer;text-align:left;font:inherit}.container-toolbar{display:flex;align-items:center;gap:6px;flex-wrap:wrap;border-top:1px solid var(--edo-border);padding-top:12px;font-size:12px}.container-toolbar :deep(.ant-select){flex:1;min-width:120px}.container-toolbar :deep(.ant-btn){display:flex;align-items:center;gap:4px;padding-inline:8px;font-size:12px}.container-images{display:grid;gap:9px;margin:12px 0 18px}.container-images>div{display:grid;gap:3px;min-width:0}.container-images code{font-size:11px;overflow-wrap:anywhere}h5{font-size:12px;margin:12px 0 8px}.conditions>div{display:flex;align-items:center;gap:8px;padding:8px 0;border-bottom:1px solid var(--edo-border);font-size:11px;flex-wrap:wrap}.condition-message{flex-basis:100%;color:var(--edo-muted);line-height:1.6;overflow-wrap:anywhere}.workload-events{grid-column:1/-1;border-top:1px solid var(--edo-border);padding:12px 14px}.explorer-event{padding:10px 0;display:flex;align-items:flex-start;gap:8px;font-size:12px;border-bottom:1px solid var(--edo-border);overflow-wrap:anywhere;flex-wrap:wrap}.explorer-event p{margin:0;flex:1}.explorer-event>.secondary{margin-left:auto}.workload-events h4{margin-bottom:8px}.workload-explorer :deep(.ant-empty){margin:30px 12px}.workload-explorer :deep(.ant-tag){margin-inline-end:0;font-size:11px}.pod-detail-tabs :deep(.diagnostics){padding:0;border:0;background:transparent}.pod-detail-tabs :deep(.diagnostic-charts){grid-template-columns:repeat(auto-fit,minmax(min(100%,280px),1fr));gap:10px}.pod-detail-tabs :deep(.resource-table){min-width:670px}@media(max-width:1050px){.workload-explorer.is-deployment{grid-template-columns:220px minmax(0,1fr)}.is-deployment .pod-column{border-right:0}.is-deployment .pod-detail-column{grid-column:1/-1;border-top:1px solid var(--edo-border)}.is-deployment .revision-list,.is-deployment .pod-list{max-height:350px}}@media(max-width:680px){.workload-explorer,.workload-explorer.is-deployment{grid-template-columns:minmax(0,1fr)}.explorer-column{border-right:0;border-bottom:1px solid var(--edo-border);min-height:120px}.pod-detail-column{border-bottom:0}.is-deployment .pod-detail-column{border-top:0}.revision-list,.pod-list,.is-deployment .revision-list,.is-deployment .pod-list{max-height:280px}.pod-facts{grid-template-columns:1fr}.replica-counts{gap:20px}}
+.workload-explorer{display:grid;grid-template-columns:280px minmax(0,1fr);gap:16px;align-items:start;color:var(--edo-text)}
+.explorer-navigation{display:flex;flex-direction:column;gap:14px;min-width:0}
+.explorer-card{min-width:0;border-color:var(--edo-border);border-radius:8px;background:var(--edo-surface);overflow:hidden;box-shadow:none}
+.explorer-card :deep(.ant-card-head){padding:0 16px;min-height:48px;border-bottom-color:var(--edo-border)}
+.explorer-card :deep(.ant-card-head-title){padding:12px 0;font-size:13px;font-weight:600}
+.explorer-card :deep(.ant-card-extra){padding:8px 0}
+.explorer-navigation :deep(.ant-card-body){padding:6px}
+.section-title{display:flex;align-items:center;gap:8px}.section-title>svg{color:var(--edo-muted)}
+.section-title :deep(.ant-tag){margin:0;padding:0 6px;line-height:20px;font-size:12px;color:var(--edo-muted);background:var(--edo-surface-soft)}
+.explorer-card :deep(.ant-btn){display:inline-flex;align-items:center;justify-content:center;gap:6px}
+.revision-list{max-height:300px;overflow-y:auto}.pod-list{max-height:520px;overflow-y:auto}
+.explorer-navigation :deep(.ant-list-item){padding:2px 0;border:0}
+.navigation-item{position:relative;width:100%;padding:12px;border:0;border-radius:5px;background:transparent;color:var(--edo-text);text-align:left;display:flex;flex-direction:column;gap:7px;font:inherit;cursor:pointer;overflow-wrap:anywhere;transition:background .15s}
+.navigation-item:hover{background:var(--edo-surface-soft)}
+.navigation-item.selected{background:var(--edo-primary-soft);box-shadow:inset 2px 0 var(--edo-primary)}
+.navigation-item:focus-visible,.inline-link:focus-visible{outline:2px solid var(--edo-primary);outline-offset:-2px}
+.navigation-item:disabled,.inline-link:disabled{cursor:not-allowed;opacity:.6}
+.revision-heading,.pod-heading,.pod-status{display:flex;align-items:center;gap:8px;min-width:0}
+.revision-heading strong,.pod-heading strong{font-size:13px;font-weight:600;line-height:1.5;min-width:0}
+.pod-heading strong{flex:1;overflow-wrap:anywhere}.selection-chevron{flex:none;margin-left:auto;color:var(--edo-muted);opacity:0}.selected .selection-chevron{opacity:1;color:var(--edo-primary)}
+.revision-heading :deep(.ant-tag){font-size:11px;line-height:20px;margin:0}
+.revision-name{color:var(--edo-muted);font-size:12px;overflow-wrap:anywhere}
+.secondary{font-size:12px;line-height:1.5;color:var(--edo-muted)}
+.replica-counts{display:flex;gap:12px;font-size:12px;color:var(--edo-muted)}.replica-counts b{font-weight:500;color:var(--edo-text);font-variant-numeric:tabular-nums}
+.pod-status{flex-wrap:wrap}.pod-status :deep(.ant-badge-status-text){font-size:12px}
+.pod-placement{display:grid;grid-template-columns:30px minmax(0,1fr);gap:8px;font-size:12px;line-height:1.5;color:var(--edo-muted)}.pod-placement code{font-size:12px;color:var(--edo-text)}.pod-placement>span:last-child{overflow-wrap:anywhere}
+.column-alert{margin:8px}.column-note{padding:4px 10px;font-size:12px;line-height:1.6;color:var(--edo-muted)}
+.explorer-navigation :deep(.ant-empty){margin:24px 8px}.explorer-navigation :deep(.ant-empty-description){font-size:12px;color:var(--edo-muted)}
+.pod-detail-column :deep(.ant-card-head){padding:0 20px}.pod-detail-column :deep(.ant-card-head-wrapper){align-items:center;gap:16px;flex-wrap:wrap}.pod-detail-column :deep(.ant-card-head-title){white-space:normal;min-width:0;padding:16px 0}.pod-detail-column :deep(.ant-card-body){padding:0 20px 20px}
+.pod-detail-identity{display:flex;align-items:center;gap:12px;min-width:0}.pod-detail-identity>div{min-width:0}
+.pod-kind-icon{display:grid;place-items:center;width:36px;height:36px;border-radius:7px;background:var(--edo-surface-soft);color:var(--edo-muted);flex:none}
+.kind-label{font-size:11px;line-height:1.5;font-weight:400;color:var(--edo-muted)}.pod-detail-identity h3{margin:3px 0 0;font-size:16px;line-height:1.5;font-weight:600;overflow-wrap:anywhere}
+.pod-detail-actions :deep(.ant-badge-status-text){font-size:12px}.pod-detail-actions :deep(.ant-btn-link){padding-inline:0;font-size:12px}
+.pod-detail-tabs :deep(.ant-tabs-nav){margin:0 0 18px}.pod-detail-tabs :deep(.ant-tabs-tab){font-size:13px;padding:14px 0}.pod-detail-tabs :deep(.ant-tabs-nav::before){border-bottom-color:var(--edo-border)}
+.pod-facts{margin-bottom:4px}.pod-facts :deep(.ant-descriptions-item){padding-bottom:16px}.pod-facts :deep(.ant-descriptions-item-label){font-size:12px;color:var(--edo-muted);padding-bottom:5px}.pod-facts :deep(.ant-descriptions-item-content){font-size:13px;color:var(--edo-text);overflow-wrap:anywhere}.pod-facts code{font-size:12px}.namespace-value{font-size:12px;background:var(--edo-surface-soft);padding:2px 7px;border-radius:4px}
+.inline-link{padding:0;border:0;background:none;color:var(--edo-primary);text-align:left;font:inherit;cursor:pointer;overflow-wrap:anywhere}
+.container-section{margin:4px 0 18px;padding:16px 0;border-top:1px solid var(--edo-border);border-bottom:1px solid var(--edo-border)}
+.container-toolbar{display:flex;align-items:center;gap:12px;flex-wrap:wrap}.container-toolbar label{font-size:13px;font-weight:500}.container-toolbar :deep(.ant-select){width:260px;max-width:100%;min-width:140px}.container-actions{margin-left:auto}.container-actions :deep(.ant-btn){font-size:12px}
+.container-image{display:flex;align-items:baseline;gap:12px;margin-top:12px;min-width:0}.container-image>.secondary{flex-shrink:0}.container-image code{font-size:12px;line-height:1.7;overflow-wrap:anywhere;color:var(--edo-muted)}
+.health-section{margin-top:20px}.health-heading{display:flex;align-items:center;gap:8px;margin-bottom:12px}.health-heading h4{margin:0;font-size:13px;font-weight:600}.health-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:10px 24px}.health-item{min-width:0;padding:8px 0}.condition-heading{display:flex;align-items:center;justify-content:space-between;gap:10px}.condition-heading :deep(.ant-badge-status-text){font-size:12px;color:var(--edo-text)}.condition-value{font-size:12px;color:var(--edo-muted);font-variant-numeric:tabular-nums}.condition-message{font-size:12px;line-height:1.6;color:var(--edo-muted);margin:7px 0 0;overflow-wrap:anywhere}
+.pod-detail-tabs :deep(.diagnostics){padding:0;border:0;background:transparent}.pod-detail-tabs :deep(.diagnostic-charts){margin:0;gap:14px}.pod-detail-tabs :deep(.resource-table){min-width:670px}.detail-empty{padding:56px 12px}
+@media(min-width:1500px){.workload-explorer{grid-template-columns:300px minmax(0,1fr)}}
+@media(max-width:1050px){.workload-explorer{grid-template-columns:250px minmax(0,1fr);gap:12px}.pod-detail-column :deep(.ant-card-head){padding:0 16px}.pod-detail-column :deep(.ant-card-body){padding:0 16px 16px}.pod-detail-identity h3{font-size:14px}.pod-kind-icon{display:none}.container-actions{margin-left:0}.pod-detail-actions{gap:6px!important}}
+@media(max-width:760px){.workload-explorer{grid-template-columns:minmax(0,1fr)}.is-deployment .explorer-navigation{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.3fr);gap:12px}.revision-list,.pod-list{max-height:260px}.pod-detail-column :deep(.ant-card-head-wrapper){gap:0}.pod-detail-column :deep(.ant-card-extra){padding-top:0}.pod-facts :deep(.ant-descriptions-item){padding-bottom:12px}.health-grid{grid-template-columns:repeat(auto-fit,minmax(180px,1fr))}}
+@media(max-width:500px){.is-deployment .explorer-navigation{grid-template-columns:minmax(0,1fr)}.container-toolbar{gap:10px}.container-toolbar :deep(.ant-select){flex:1;width:auto}.container-actions{flex-basis:100%;margin-left:0}.pod-detail-identity h3{font-size:14px}.pod-detail-column :deep(.ant-card-head-title){padding-bottom:10px}.container-image{align-items:flex-start}.health-grid{grid-template-columns:minmax(0,1fr)}}
 </style>
