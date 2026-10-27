@@ -99,6 +99,13 @@ func main() {
 		if errors.As(err, &connection) {
 			attributes = append(attributes, "err", connection.diagnostic)
 		}
+		var query *preflightQueryError
+		if errors.As(err, &query) {
+			attributes = append(attributes, "query_stage", query.stage, "remote_exit_code", query.exitCode, "query_exit_code", query.queryExitCode, "query_failure", query.reason)
+			if query.config != nil {
+				attributes = append(attributes, "config_etc_readable", query.config.etcReadable, "config_output_readable", query.config.outputReadable, "config_etc_symlink", query.config.etcSymlink, "cache_null_character_device", query.config.nullCharacterDevice)
+			}
+		}
 		logger.Error("主机只读预检失败", attributes...)
 		fmt.Fprintln(os.Stderr, "主机预检未完成；未执行安装或配置变更，请核对目标、连接和保存的授权。")
 		os.Exit(1)
@@ -287,22 +294,32 @@ func run(ctx context.Context, o options, output io.Writer, stage *string) error 
 	}
 	defer session.Close()
 	buffer := &limitedBuffer{}
-	session.Stdin, session.Stdout, session.Stderr = strings.NewReader(prefix+script), buffer, buffer
+	diagnostics := &limitedBuffer{}
+	session.Stdin, session.Stdout, session.Stderr = strings.NewReader(prefix+script), buffer, diagnostics
 	*stage = "执行固定只读预检"
 	if err := session.Start(command); err != nil {
 		return err
 	}
-	return writePreflightReport(output, buffer, session.Wait(), []string{cfg.DSN, key, host.SSHCredentialCiphertext, bundle.Password, bundle.SudoPassword, bundle.PrivateKey, bundle.Passphrase})
+	err = writePreflightReport(output, buffer, session.Wait(), []string{cfg.DSN, key, host.SSHCredentialCiphertext, bundle.Password, bundle.SudoPassword, bundle.PrivateKey, bundle.Passphrase})
+	var query *preflightQueryError
+	if errors.As(err, &query) {
+		query.stage, query.queryExitCode = readPreflightDiagnostics(diagnostics)
+		query.config = readPreflightConfigMetadata(diagnostics)
+	}
+	return err
 }
 
 // kubectl 模板失败时可能输出完整对象；远端命令失败后必须整体丢弃，不能返回部分结果。
 func writePreflightReport(output io.Writer, buffer *limitedBuffer, commandErr error, secrets []string) error {
 	if commandErr != nil {
-		return errors.New("固定只读查询失败，未输出不完整库存")
+		return &preflightQueryError{stage: "unknown", exitCode: preflightExitCode(commandErr), queryExitCode: -1, reason: "command_failed"}
 	}
 	value, exceeded := buffer.snapshot()
-	if exceeded || !strings.HasSuffix(value, "HOST_PREFLIGHT_END\n") {
-		return errors.New("预检输出不完整或超过限制")
+	if exceeded {
+		return &preflightQueryError{stage: "unknown", exitCode: 0, queryExitCode: -1, reason: "output_limit"}
+	}
+	if !strings.HasSuffix(value, "HOST_PREFLIGHT_END\n") {
+		return &preflightQueryError{stage: "unknown", exitCode: 0, queryExitCode: -1, reason: "missing_end_marker"}
 	}
 	value = redact(value, secrets)
 	_, err := io.WriteString(output, value)

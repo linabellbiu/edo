@@ -124,7 +124,7 @@ func TestFailedInventoryNeverEmitsPartialObjectsOrCredentials(t *testing.T) {
 }
 
 func TestInventoryShellChecksExactContainerIdentityBeforeFixedReadCommands(t *testing.T) {
-	for _, scenario := range []string{"success", "wrong-name", "wrong-app", "wrong-cluster", "wrong-role", "stopped", "bad-id", "inspect-failed", "query-failed"} {
+	for _, scenario := range []string{"success", "wrong-name", "wrong-app", "wrong-cluster", "wrong-role", "stopped", "bad-id", "inspect-failed", "probe-failed", "probe-invalid", "probe-null-invalid", "query-failed"} {
 		t.Run(scenario, func(t *testing.T) {
 			directory, err := os.MkdirTemp("", "ei-")
 			if err != nil {
@@ -150,7 +150,13 @@ inspect)
   case "$EDO_FIXTURE_MODE" in wrong-name) name=/unrelated;; wrong-app) app=other;; wrong-cluster) cluster=other;; wrong-role) role=agent;; stopped) running=false;; bad-id) id=bad;; esac
   printf '%s|%s|%s|%s|%s|%s\n' "$id" "$name" "$app" "$cluster" "$role" "$running";;
 exec)
-  [ "$2" = aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa ] && [ "$3" = k3s ] && [ "$4" = kubectl ] || exit 93
+  [ "$2" = aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa ] || exit 93
+  if [ "$3" = /bin/sh ]; then
+    [ "$4" = -c ] && [ "$#" = 5 ] || exit 99
+    case "$EDO_FIXTURE_MODE" in probe-failed) printf 'DO_NOT_PRINT_PROBE_FAILURE\n'; exit 126;; probe-invalid) printf 'DO_NOT_PRINT_INVALID_META\n';; probe-null-invalid) printf '1100\n';; *) printf '1101\n';; esac
+    exit 0
+  fi
+  [ "$3" = k3s ] && [ "$4" = kubectl ] || exit 93
   [ "$5" = --kubeconfig=/etc/rancher/k3s/k3s.yaml ] && [ "$6" = --cache-dir=/dev/null ] && [ "$7" = --request-timeout=15s ] && [ "$8" = get ] || exit 94
   case "$9" in namespaces|deployments.apps,statefulsets.apps,daemonsets.apps,replicasets.apps,replicationcontrollers|pods|jobs.batch|cronjobs.batch|statefulsets.apps|persistentvolumes|persistentvolumeclaims|customresourcedefinitions.apiextensions.k8s.io) :;; *) exit 95;; esac
   [ "${10}" = --all-namespaces ] && [ "${11}" = --chunk-size=200 ] && [ "${12}" = --output ] && [ "$#" = 13 ] || exit 96
@@ -175,8 +181,8 @@ esac
 			process := exec.CommandContext(ctx, "/bin/sh", "-s")
 			process.Stdin = strings.NewReader(prefix + script)
 			process.Env = append(os.Environ(), "EDO_FIXTURE_MODE="+scenario, "EDO_FIXTURE_DOCKER="+docker, "EDO_FIXTURE_CALLS="+calls)
-			var buffer limitedBuffer
-			process.Stdout, process.Stderr = &buffer, &buffer
+			var buffer, diagnostics limitedBuffer
+			process.Stdout, process.Stderr = &buffer, &diagnostics
 			commandErr := process.Run()
 			var output bytes.Buffer
 			err = writePreflightReport(&output, &buffer, commandErr, nil)
@@ -185,7 +191,7 @@ esac
 				t.Fatal(readErr)
 			}
 			if scenario == "success" {
-				if err != nil || strings.Count(string(commands), "exec ") != len(k3dInventoryQueries) || !strings.Contains(output.String(), "K3D_INVENTORY_COMPLETE") {
+				if err != nil || strings.Count(string(commands), "exec ") != len(k3dInventoryQueries)+1 || !strings.Contains(output.String(), "K3D_INVENTORY_COMPLETE") || !strings.Contains(output.String(), "K3D_CONFIG_META=1101") {
 					value, _ := buffer.snapshot()
 					t.Fatalf("固定库存执行失败: %v %v %s %s", err, commandErr, commands, value)
 				}
@@ -193,10 +199,26 @@ esac
 				if err == nil || output.Len() != 0 {
 					t.Fatal("身份不匹配或查询失败仍返回库存")
 				}
-				if scenario != "query-failed" && strings.Contains(string(commands), "exec ") {
+				stage, queryCode := readPreflightDiagnostics(&diagnostics)
+				var remoteError *preflightQueryError
+				if !errors.As(err, &remoteError) || remoteError.exitCode < 76 || remoteError.exitCode > 83 {
+					t.Fatal("远端固定退出码未保留")
+				}
+				if scenario == "query-failed" {
+					if stage != "K3D_NAMESPACES" || queryCode != 97 || remoteError.exitCode != 80 {
+						t.Fatalf("查询故障阶段未准确保留: %q %d %d", stage, queryCode, remoteError.exitCode)
+					}
+				} else if strings.HasPrefix(scenario, "probe-") {
+					if stage != "k3d_config_probe" || scenario == "probe-failed" && queryCode != 126 {
+						t.Fatal("探针故障未安全定位")
+					}
+				} else if stage != "k3d_identity" || queryCode != -1 {
+					t.Fatal("身份故障被错误归入查询阶段")
+				}
+				if scenario != "query-failed" && !strings.HasPrefix(scenario, "probe-") && strings.Contains(string(commands), "exec ") {
 					t.Fatal("身份未核验便执行容器命令")
 				}
-				if scenario == "query-failed" && strings.Count(string(commands), "exec ") != 1 {
+				if scenario == "query-failed" && strings.Count(string(commands), "exec ") != 2 || strings.HasPrefix(scenario, "probe-") && strings.Count(string(commands), "exec ") != 1 {
 					t.Fatal("查询失败后继续其他命令")
 				}
 			}

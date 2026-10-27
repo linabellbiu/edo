@@ -19,7 +19,7 @@ func buildPreflightScript(cluster string) (string, error) {
 	if !strings.HasSuffix(preflightScript, preflightEnd) {
 		return "", errors.New("固定预检脚本结束标记缺失")
 	}
-	script := strings.TrimSuffix(preflightScript, preflightEnd) + nativePreparationScript
+	script := "printf 'EDO_HOST_PREFLIGHT_STAGE=baseline\\n' >&2\n" + strings.TrimSuffix(preflightScript, preflightEnd) + "printf 'EDO_HOST_PREFLIGHT_STAGE=native_preparation\\n' >&2\n" + nativePreparationScript
 	if cluster != "" {
 		// 名称仅允许严格 slug；没有任意容器、路径、命令或脚本参数。
 		script += "edo_k3d_cluster='" + cluster + "'\n" + k3dInventoryPrelude
@@ -50,7 +50,8 @@ printf 'HOST_NATIVE_K3S_PORTS\n'
 edo_query native_k3s_ports ss -H -lntup '( sport = :80 or sport = :443 or sport = :2379 or sport = :2380 or sport = :6443 or sport = :8472 or sport = :9345 or sport = :10250 or sport = :10257 or sport = :10259 or sport = :16443 or sport = :51820 or sport = :51821 )'
 `
 
-const k3dInventoryPrelude = `printf 'K3D_INVENTORY_TARGET\n'
+const k3dInventoryPrelude = `printf 'EDO_HOST_PREFLIGHT_STAGE=k3d_identity\n' >&2
+printf 'K3D_INVENTORY_TARGET\n'
 [ -n "$edo_docker_binary" ] && [ -S /var/run/docker.sock ] || exit 76
 edo_k3d_name="k3d-$edo_k3d_cluster-server-0"
 edo_k3d_identity=$(edo_docker inspect --type container --format '{{.Id}}|{{.Name}}|{{index .Config.Labels "app"}}|{{index .Config.Labels "k3d.cluster"}}|{{index .Config.Labels "k3d.role"}}|{{.State.Running}}' "$edo_k3d_name" 2>/dev/null) || exit 77
@@ -59,11 +60,18 @@ case "$edo_k3d_id" in ''|*[!0-9a-f]*) exit 78;; esac
 [ "${#edo_k3d_id}" = 64 ] || exit 78
 [ "$edo_k3d_identity" = "$edo_k3d_id|/$edo_k3d_name|k3d|$edo_k3d_cluster|server|true" ] || exit 79
 printf 'ID=%s NAME=%s CLUSTER=%s ROLE=server\n' "$edo_k3d_id" "$edo_k3d_name" "$edo_k3d_cluster"
+printf 'EDO_HOST_PREFLIGHT_STAGE=k3d_config_probe\n' >&2
+if edo_k3d_meta=$(edo_docker exec "$edo_k3d_id" /bin/sh -c 'edo_meta=""; if [ -f /etc/rancher/k3s/k3s.yaml ] && [ -r /etc/rancher/k3s/k3s.yaml ]; then edo_meta="${edo_meta}1"; else edo_meta="${edo_meta}0"; fi; if [ -f /output/kubeconfig.yaml ] && [ -r /output/kubeconfig.yaml ]; then edo_meta="${edo_meta}1"; else edo_meta="${edo_meta}0"; fi; if [ -L /etc/rancher/k3s/k3s.yaml ]; then edo_meta="${edo_meta}1"; else edo_meta="${edo_meta}0"; fi; if [ -c /dev/null ]; then edo_meta="${edo_meta}1"; else edo_meta="${edo_meta}0"; fi; printf "%s\n" "$edo_meta"' 2>/dev/null); then :; else edo_probe_exit=$?; printf 'EDO_HOST_PREFLIGHT_QUERY_EXIT=%s\n' "$edo_probe_exit" >&2; exit 81; fi
+case "$edo_k3d_meta" in [01][01][01][01]) :;; *) exit 82;; esac
+printf 'EDO_HOST_PREFLIGHT_CONFIG_META=%s\n' "$edo_k3d_meta" >&2
+printf 'K3D_CONFIG_META=%s\n' "$edo_k3d_meta"
+case "$edo_k3d_meta" in ???1) :;; *) exit 83;; esac
 edo_k3d_query() {
+  printf 'EDO_HOST_PREFLIGHT_STAGE=%s\n' "$1" >&2
   printf '%s\n' "$1"
   # 不使用交互 Shell，不继承容器 KUBECONFIG；禁用可落盘的发现缓存。
   # 模板失败的 kubectl 可能把完整对象写入 stdout，必须让整个预检失败并丢弃输出。
-  if edo_docker exec "$edo_k3d_id" k3s kubectl --kubeconfig=/etc/rancher/k3s/k3s.yaml --cache-dir=/dev/null --request-timeout=15s get "$2" --all-namespaces --chunk-size=200 --output "$3" 2>/dev/null; then :; else return 80; fi
+  if edo_docker exec "$edo_k3d_id" k3s kubectl --kubeconfig=/etc/rancher/k3s/k3s.yaml --cache-dir=/dev/null --request-timeout=15s get "$2" --all-namespaces --chunk-size=200 --output "$3" 2>/dev/null; then :; else edo_query_exit=$?; printf 'EDO_HOST_PREFLIGHT_QUERY_EXIT=%s\n' "$edo_query_exit" >&2; return 80; fi
 }
 `
 
