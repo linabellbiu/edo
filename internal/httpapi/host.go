@@ -63,6 +63,7 @@ type hostResponse struct {
 	Capabilities          []hostCapabilityResponse       `json:"capabilities"`
 	CapabilityOptions     []hostmanager.CapabilityOption `json:"capability_options,omitempty"`
 	CredentialConfigured  bool                           `json:"credential_configured"`
+	UseSudo               bool                           `json:"use_sudo"`
 	CreatedBy             string                         `json:"created_by"`
 	CreatedAt             time.Time                      `json:"created_at"`
 	UpdatedAt             time.Time                      `json:"updated_at"`
@@ -222,6 +223,8 @@ func (h hostHandler) writeError(c *gin.Context, operation string, err error) {
 	switch {
 	case errors.Is(err, hostmanager.ErrInvalidHost):
 		writeError(c, http.StatusBadRequest, "invalid_host", hostmanager.ErrInvalidHost.Error())
+	case errors.Is(err, hostmanager.ErrHostFingerprintRequired):
+		writeError(c, http.StatusConflict, "host_ssh_fingerprint_required", hostmanager.ErrHostFingerprintRequired.Error())
 	case errors.Is(err, kube.ErrClusterHostMismatch):
 		writeError(c, http.StatusBadRequest, "kubernetes_cluster_host_mismatch", kube.ErrClusterHostMismatch.Error())
 	case errors.Is(err, kube.ErrInvalidClusterHosts):
@@ -246,6 +249,8 @@ func (h hostHandler) writeError(c *gin.Context, operation string, err error) {
 		writeError(c, http.StatusBadGateway, "host_ssh_unreachable", dockerengine.ErrSSHUnreachable.Error())
 	case errors.Is(err, dockerengine.ErrSSHDockerDenied):
 		writeError(c, http.StatusBadGateway, "host_docker_unavailable", dockerengine.ErrSSHDockerDenied.Error())
+	case errors.Is(err, dockerengine.ErrSSHSudoDenied):
+		writeError(c, http.StatusBadGateway, "host_sudo_denied", dockerengine.ErrSSHSudoDenied.Error())
 	case errors.Is(err, dockerengine.ErrUnsupportedArchitecture):
 		writeError(c, http.StatusConflict, "host_architecture_unsupported", dockerengine.ErrUnsupportedArchitecture.Error())
 	case errors.Is(err, kube.ErrClusterNotFound):
@@ -302,6 +307,7 @@ func toHostResponse(detail hostmanager.Detail) hostResponse {
 		IsActive:  detail.Host.IsActive, Capabilities: capabilities,
 		CapabilityOptions:    detail.CapabilityOptions,
 		CredentialConfigured: detail.Host.SSHCredentialCiphertext != "",
+		UseSudo:              detail.UseSudo,
 		CreatedBy:            detail.Host.CreatedBy, CreatedAt: detail.Host.CreatedAt, UpdatedAt: detail.Host.UpdatedAt,
 	}
 }

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/url"
 	"os/exec"
@@ -25,16 +26,18 @@ import (
 	"edo/internal/hostcredential"
 	"edo/internal/model"
 	"edo/internal/secret"
+	"edo/internal/sshclient"
 )
 
 var (
-	ErrInvalidHost           = errors.New("主机配置无效")
-	ErrHostExists            = errors.New("主机名称已存在")
-	ErrHostNotFound          = errors.New("主机不存在")
-	ErrHostTestRequired      = errors.New("请先完成主机及所选能力测试")
-	ErrHostReferenced        = errors.New("主机或能力仍被部署配置引用，无法删除或移除")
-	ErrCapabilityUnavailable = errors.New("当前运行环境不支持所选主机能力")
-	ErrBuiltinHost           = errors.New("内置主机不允许执行此操作")
+	ErrInvalidHost             = errors.New("主机配置无效")
+	ErrHostExists              = errors.New("主机名称已存在")
+	ErrHostNotFound            = errors.New("主机不存在")
+	ErrHostTestRequired        = errors.New("请先完成主机及所选能力测试")
+	ErrHostReferenced          = errors.New("主机或能力仍被部署配置引用，无法删除或移除")
+	ErrCapabilityUnavailable   = errors.New("当前运行环境不支持所选主机能力")
+	ErrBuiltinHost             = errors.New("内置主机不允许执行此操作")
+	ErrHostFingerprintRequired = errors.New("已保存的 SSH 主机指纹缺失或无效，请先重新核验主机身份")
 )
 
 const (
@@ -85,6 +88,7 @@ type Input struct {
 	TestToken           string
 	ReuseCredential     bool
 	UseSudo             *bool
+	pinnedFingerprint   string
 }
 
 type TestResult struct {
@@ -127,6 +131,7 @@ type Detail struct {
 	EnvironmentIDs    []string
 	Capabilities      []model.HostCapability
 	CapabilityOptions []CapabilityOption
+	UseSudo           bool
 }
 
 // Status 只包含主机列表实时刷新所需的数据，避免轮询时重复加载环境归属和完整主机配置。
@@ -201,6 +206,9 @@ func (s *Service) List(ctx context.Context) ([]Detail, error) {
 		if hosts[i].ID == model.BuiltinLocalHostID {
 			s.decorateLocalDetail(ctx, &detail)
 		}
+		if err := s.readCredentialSummary(ctx, &detail); err != nil {
+			return nil, err
+		}
 		result = append(result, detail)
 	}
 	return result, nil
@@ -257,7 +265,23 @@ func (s *Service) Get(ctx context.Context, id string) (*Detail, error) {
 	if current.ID == model.BuiltinLocalHostID {
 		s.decorateLocalDetail(ctx, detail)
 	}
+	if err := s.readCredentialSummary(ctx, detail); err != nil {
+		return nil, err
+	}
 	return detail, nil
+}
+
+func (s *Service) readCredentialSummary(ctx context.Context, detail *Detail) error {
+	if detail.Host.Mode != model.HostModeSSH || detail.Host.SSHCredentialCiphertext == "" {
+		return nil
+	}
+	bundle, err := s.decryptCredential(&detail.Host)
+	if err != nil {
+		slog.ErrorContext(ctx, "读取主机授权摘要失败", "operation", "host_credential_summary", "host_id", detail.Host.ID, "err", err)
+		return err
+	}
+	detail.UseSudo = bundle.UseSudo
+	return nil
 }
 
 // RefreshLocalCapabilities 只刷新用户已经启用的本地能力状态，不会替用户自动启用能力。
@@ -612,13 +636,13 @@ func (s *Service) testRemoteInput(ctx context.Context, input Input, hostID strin
 	hostURL := dockerHostURL(normalized)
 	result := TestResult{}
 	if slices.Contains(normalized.CapabilityKinds, model.HostCapabilityDocker) {
-		tested, err := s.docker.TestSSH(ctx, dockerengine.Input{Host: hostURL, SSH: normalized.SSH})
+		tested, err := s.docker.TestSSH(ctx, dockerengine.Input{Host: hostURL, SSH: normalized.SSH, SSHHostKeyFingerprint: normalized.pinnedFingerprint})
 		if err != nil {
 			return TestResult{}, err
 		}
 		result.Fingerprint, result.DockerVersion, result.Architecture = tested.Fingerprint, tested.DockerVersion, tested.Architecture
 	} else {
-		tested, err := s.docker.TestSSHConnection(ctx, dockerengine.Input{Host: hostURL, SSH: normalized.SSH})
+		tested, err := s.docker.TestSSHConnection(ctx, dockerengine.Input{Host: hostURL, SSH: normalized.SSH, SSHHostKeyFingerprint: normalized.pinnedFingerprint})
 		if err != nil {
 			return TestResult{}, err
 		}
@@ -836,7 +860,7 @@ func (s *Service) Create(ctx context.Context, actorID string, input Input) (*Det
 		}
 		return nil, fmt.Errorf("创建主机失败: %w", err)
 	}
-	return &Detail{Host: current, EnvironmentIDs: []string{}, Capabilities: capabilities}, nil
+	return &Detail{Host: current, EnvironmentIDs: []string{}, Capabilities: capabilities, UseSudo: normalized.SSH.UseSudo}, nil
 }
 
 func (s *Service) Update(ctx context.Context, id string, input Input) (*Detail, error) {
@@ -1015,6 +1039,11 @@ func (s *Service) prepareUpdateInput(existing *model.Host, input Input) (Input, 
 	}
 	if existing == nil || existing.Mode != model.HostModeSSH {
 		return Input{}, ErrInvalidHost
+	}
+	input.pinnedFingerprint = strings.TrimSpace(existing.SSHHostKeyFingerprint)
+	if !sshclient.ValidFingerprint(input.pinnedFingerprint) {
+		slog.Warn("复用主机凭据前缺少有效指纹", "operation", "host_reuse_fingerprint", "host_id", existing.ID, "err", ErrHostFingerprintRequired)
+		return Input{}, ErrHostFingerprintRequired
 	}
 	if input.SSH != nil && (input.SSH.Password != "" || strings.TrimSpace(input.SSH.PrivateKey) != "" ||
 		input.SSH.Passphrase != "" || input.SSH.SudoPassword != "") {
@@ -1455,11 +1484,13 @@ func inputDigest(input Input) [32]byte {
 		SSH                                                    *dockerengine.SSHBundle
 		Capabilities                                           []model.HostCapabilityKind
 		ReuseCredential                                        bool
+		PinnedFingerprint                                      string
 	}{
 		Name: input.Name, Address: input.Address, Port: input.SSHPort,
 		Username: input.SSHUsername, AuthType: string(input.SSHAuthType), SSH: input.SSH,
 		Capabilities: input.CapabilityKinds, KubernetesClusterID: input.KubernetesClusterID,
-		ReuseCredential: input.ReuseCredential,
+		ReuseCredential:   input.ReuseCredential,
+		PinnedFingerprint: input.pinnedFingerprint,
 	})
 	return sha256.Sum256(payload)
 }

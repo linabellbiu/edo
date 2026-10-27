@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, reactive, ref, watch } from 'vue'
 import { message } from 'ant-design-vue'
+import { useI18n } from 'vue-i18n'
 
 import client from '@/api/client'
 import type { HostCapabilityKind, InfrastructureHost } from '@/api/infrastructure'
@@ -41,6 +42,7 @@ const emit = defineEmits<{
 }>()
 
 const formRef = ref<{ validate: () => Promise<void> }>()
+const { t } = useI18n()
 const form = reactive({
   name: '',
   address: '',
@@ -64,7 +66,6 @@ const editing = computed(() => Boolean(props.host))
 const isLocal = computed(() => props.host?.mode === 'local')
 const editingRemote = computed(() => editing.value && !isLocal.value)
 const needsCredential = computed(() => !editingRemote.value || replaceCredential.value)
-const hasDocker = computed(() => form.capability_kinds.includes('docker'))
 const hasKubernetes = computed(() => form.capability_kinds.includes('kubernetes'))
 
 function localCapabilityOption(kind: 'docker' | 'local_exec') {
@@ -106,7 +107,7 @@ watch(() => [props.open, props.host] as const, ([open]) => {
     password: '',
     private_key: '',
     passphrase: '',
-    use_sudo: Boolean(host?.capabilities.find(item => item.kind === 'docker')?.use_sudo),
+    use_sudo: host?.use_sudo ?? Boolean(host?.capabilities.find(item => item.kind === 'docker')?.use_sudo),
     capability_kinds: host
       ? host.capabilities.map(item => item.kind)
       : ['ssh'],
@@ -125,14 +126,14 @@ function payload() {
       capability_kinds: form.capability_kinds.filter(kind => kind === 'docker' || kind === 'local_exec'),
     }
   }
-  const useDockerSudo = hasDocker.value && form.use_sudo
+  const useSudo = form.use_sudo
   const ssh = needsCredential.value
     ? form.ssh_auth_type === 'password'
-      ? { password: form.password, use_sudo: useDockerSudo }
+      ? { password: form.password, use_sudo: useSudo }
       : {
           private_key: form.private_key,
           passphrase: form.passphrase || undefined,
-          use_sudo: useDockerSudo,
+          use_sudo: useSudo,
         }
     : undefined
   return {
@@ -143,7 +144,7 @@ function payload() {
     ssh_username: form.ssh_username.trim(),
     ssh_auth_type: form.ssh_auth_type,
     ssh,
-    use_sudo: useDockerSudo,
+    use_sudo: useSudo,
     reuse_credential: editingRemote.value && !replaceCredential.value,
     capability_kinds: form.capability_kinds,
     kubernetes_cluster_id: hasKubernetes.value ? form.kubernetes_cluster_id || undefined : undefined,
@@ -324,9 +325,9 @@ function close() {
               </a-form-item>
             </template>
           </template>
-          <a-form-item v-if="hasDocker" class="span-2 sudo-toggle" name="use_sudo">
-            <a-checkbox v-model:checked="form.use_sudo">Docker 操作使用 sudo</a-checkbox>
-            <div class="field-hint">只用于受限的 Docker 操作；密码认证复用 SSH 密码，私钥认证需配置免密 sudo。SSH 部署脚本不会自动提权。</div>
+          <a-form-item class="span-2 sudo-toggle" name="use_sudo">
+            <a-checkbox v-model:checked="form.use_sudo">{{ t('hostForm.installUseSudo') }}</a-checkbox>
+            <div class="field-hint">{{ t('hostForm.installSudoHint') }}</div>
           </a-form-item>
         </template>
       </div>

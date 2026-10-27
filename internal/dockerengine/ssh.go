@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/url"
 	"os"
@@ -166,7 +167,44 @@ func (s *Service) TestSSHConnection(ctx context.Context, input Input) (SSHConnec
 	if err != nil {
 		return SSHConnectionTestResult{}, err
 	}
+	if input.SSH.UseSudo {
+		if err := testSSHRootPrivilege(testContext, client, *input.SSH); err != nil {
+			return SSHConnectionTestResult{}, err
+		}
+	}
 	return SSHConnectionTestResult{Fingerprint: fingerprint, Architecture: architecture}, nil
+}
+
+// 只验证已明确启用的提权授权，不执行部署脚本，也不依赖 Docker 已安装。
+func testSSHRootPrivilege(ctx context.Context, client *ssh.Client, bundle SSHBundle) error {
+	command := "sudo -n -- id -u"
+	if client.User() == "root" {
+		command = "id -u"
+	}
+	output := &limitedOutput{remaining: 64}
+	err := runSSHCommandWithStreams(ctx, client, command, nil, output, io.Discard)
+	if err == nil && strings.TrimSpace(output.String()) == "0" {
+		return nil
+	}
+	if ctx.Err() == nil && client.User() != "root" {
+		password := bundle.SudoPassword
+		if password == "" {
+			password = bundle.Password
+		}
+		if password != "" {
+			output = &limitedOutput{remaining: 64}
+			err = runSSHCommandWithStreams(ctx, client, "sudo -S -p '' -- id -u", strings.NewReader(password+"\n"), output, io.Discard)
+			if err == nil && strings.TrimSpace(output.String()) == "0" {
+				return nil
+			}
+		}
+	}
+	if err == nil {
+		err = errors.New("保存的提权授权未返回 root 身份")
+	}
+	// 远端输出可能含敏感信息，诊断只保留 SSH 执行错误，不记录输出或凭据。
+	slog.WarnContext(ctx, "测试主机 sudo 授权失败", "operation", "host_ssh_sudo_test", "err", err)
+	return ErrSSHSudoDenied
 }
 
 func probeSSHArchitecture(ctx context.Context, client *ssh.Client) (model.HostArchitecture, error) {

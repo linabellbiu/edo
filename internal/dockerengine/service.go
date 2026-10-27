@@ -40,6 +40,7 @@ var (
 	ErrInvalidSSH              = errors.New("SSH Docker 连接配置无效")
 	ErrSSHUnreachable          = errors.New("无法通过 SSH 连接 Docker，请检查地址、端口、用户名和凭据")
 	ErrSSHDockerDenied         = errors.New("SSH 登录成功，但无法执行 Docker，请检查 sudo 配置和 Docker 权限")
+	ErrSSHSudoDenied           = errors.New("SSH 登录成功，但无法使用保存的 sudo 授权取得 root 权限")
 	ErrUnsupportedArchitecture = errors.New("仅支持 AMD64 或 ARM64 主机架构")
 )
 

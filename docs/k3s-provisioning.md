@@ -23,6 +23,8 @@
 
 目标需为已启用、配置登录凭据、核对过 SSH 指纹且连接正常的 Linux 主机。非 root 账号需在主机凭据中启用 sudo。创建集群需要主机读取权限，以及 `cluster.create`、`cluster.execute`、`cluster.update`。
 
+在主机编辑页勾选“安装操作使用 sudo”，测试通过后保存。仅有 SSH 能力的主机也可设置，不需要额外启用 Docker；测试会实际验证 root 权限。密码认证复用已保存的登录密码，私钥认证需要免密 sudo。复用已有凭据重测时继续核对原 SSH 指纹；此设置不会让 SSH 部署脚本自动提权。
+
 安装前会检查全部目标，安装前再次检查当前主机。已有 Kubernetes 安装、配置或服务的主机应通过接入方式管理。预加载 K3s 二进制的安装方式会核对指定版本，并继续检查已有配置和服务。
 
 安装复用 [K3s 官方快速入门](https://docs.k3s.io/zh/quick-start)的安装器 `https://get.k3s.io`，以固定版本及计划内参数安装系统服务，不通过 Docker/k3d 容器安装。配置保存在 `/etc/rancher/k3s/config.yaml`，安装完成后读取 `/etc/rancher/k3s/k3s.yaml` 接入 EDO；凭据不进入日志。

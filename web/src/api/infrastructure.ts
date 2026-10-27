@@ -39,6 +39,7 @@ export interface InfrastructureHost {
   capabilities: HostCapability[]
   capability_options?: HostCapabilityOption[]
   credential_configured?: boolean
+  use_sudo?: boolean
   created_at?: string
   updated_at?: string
 }
