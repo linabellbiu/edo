@@ -36,6 +36,7 @@ type options struct {
 	port                                                              int
 	timeout                                                           time.Duration
 	testSudo                                                          bool
+	k3dCluster                                                        string
 }
 
 type connectionError struct{ diagnostic string }
@@ -57,8 +58,18 @@ func parseOptions(args []string) (options, error) {
 	f.StringVar(&o.fingerprint, "expect-fingerprint", "", "必须与保存记录一致的完整 SHA256 指纹")
 	f.DurationVar(&o.timeout, "timeout", 2*time.Minute, "总时限，1 秒至 10 分钟")
 	f.BoolVar(&o.testSudo, "test-sudo", false, "仅本次验证 sudo，不修改保存的配置；需操作者明确授权")
+	f.StringVar(&o.k3dCluster, "k3d-cluster", "", "显式读取指定 k3d 集群的元数据，不输出密钥或环境变量")
 	if err := f.Parse(args); err != nil {
 		return o, err
+	}
+	invalidCluster := false
+	f.Visit(func(value *flag.Flag) {
+		if value.Name == "k3d-cluster" && !validK3dInventoryCluster(o.k3dCluster) {
+			invalidCluster = true
+		}
+	})
+	if invalidCluster {
+		return o, errors.New("k3d 集群名称必须为 1 至 63 位小写字母、数字或连字符，且首尾不能为连字符")
 	}
 	parsedID, err := uuid.Parse(o.hostID)
 	address, addressErr := netip.ParseAddr(o.address)
@@ -72,7 +83,7 @@ func main() {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
 	o, err := parseOptions(os.Args[1:])
 	if errors.Is(err, flag.ErrHelp) {
-		fmt.Println("用法：host-preflight --env-file <绝对路径> --working-directory <EDO 工作目录> --host-id <UUID> --expect-address <IP> --expect-port <端口> --expect-user <用户名> --expect-fingerprint <完整 SHA256 指纹> [--timeout 2m]")
+		fmt.Println("用法：host-preflight --env-file <绝对路径> --working-directory <EDO 工作目录> --host-id <UUID> --expect-address <IP> --expect-port <端口> --expect-user <用户名> --expect-fingerprint <完整 SHA256 指纹> [--timeout 2m] [--test-sudo] [--k3d-cluster <集群名称>]")
 		return
 	}
 	stage := "校验参数"
@@ -204,6 +215,11 @@ func loadTarget(ctx context.Context, o options, cfg config.Database, key string)
 }
 
 func run(ctx context.Context, o options, output io.Writer, stage *string) error {
+	*stage = "校验固定只读查询范围"
+	script, err := buildPreflightScript(o.k3dCluster)
+	if err != nil {
+		return err
+	}
 	*stage = "读取运行连接配置"
 	cfg, key, err := readConfiguration(o)
 	if err != nil {
@@ -271,19 +287,24 @@ func run(ctx context.Context, o options, output io.Writer, stage *string) error 
 	}
 	defer session.Close()
 	buffer := &limitedBuffer{}
-	session.Stdin, session.Stdout, session.Stderr = strings.NewReader(prefix+preflightScript), buffer, buffer
+	session.Stdin, session.Stdout, session.Stderr = strings.NewReader(prefix+script), buffer, buffer
 	*stage = "执行固定只读预检"
 	if err := session.Start(command); err != nil {
 		return err
 	}
-	if err := session.Wait(); err != nil {
-		return err
+	return writePreflightReport(output, buffer, session.Wait(), []string{cfg.DSN, key, host.SSHCredentialCiphertext, bundle.Password, bundle.SudoPassword, bundle.PrivateKey, bundle.Passphrase})
+}
+
+// kubectl 模板失败时可能输出完整对象；远端命令失败后必须整体丢弃，不能返回部分结果。
+func writePreflightReport(output io.Writer, buffer *limitedBuffer, commandErr error, secrets []string) error {
+	if commandErr != nil {
+		return errors.New("固定只读查询失败，未输出不完整库存")
 	}
 	value, exceeded := buffer.snapshot()
 	if exceeded || !strings.HasSuffix(value, "HOST_PREFLIGHT_END\n") {
 		return errors.New("预检输出不完整或超过限制")
 	}
-	value = redact(value, []string{cfg.DSN, key, host.SSHCredentialCiphertext, bundle.Password, bundle.SudoPassword, bundle.PrivateKey, bundle.Passphrase})
-	_, err = io.WriteString(output, value)
+	value = redact(value, secrets)
+	_, err := io.WriteString(output, value)
 	return err
 }

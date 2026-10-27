@@ -26,6 +26,9 @@ import (
 
 type sshTransport struct{ timeout time.Duration }
 
+// 先消费密码帧，再认证和执行脚本，避免 sudo 缓存变化时把密码当作脚本。
+const sudoFramedCommand = `sh -c 'IFS= read -r edo_sudo_password || exit 70; printf "%s\n" "$edo_sudo_password" | sudo -S -p "" -v || exit 71; unset edo_sudo_password; sudo -n -- sh -se; edo_status=$?; exit "$edo_status"'`
+
 func (t *sshTransport) Run(ctx context.Context, host model.Host, bundle sshclient.Bundle, script string, output io.Writer) error {
 	endpoint := (&url.URL{Scheme: "ssh", User: url.User(host.SSHUsername), Host: net.JoinHostPort(host.Address, strconv.Itoa(host.SSHPort))}).String()
 	connector, err := sshclient.NewConnector(endpoint, bundle, host.SSHHostKeyFingerprint, t.timeout)
@@ -65,10 +68,10 @@ func (t *sshTransport) Run(ctx context.Context, host model.Host, bundle sshclien
 			if password == "" {
 				password = bundle.Password
 			}
-			if password == "" {
+			if password == "" || strings.ContainsAny(password, "\r\n\x00") {
 				return ErrRemote
 			}
-			command = "sudo -S -p '' -- sh -se"
+			command = sudoFramedCommand
 			input = io.MultiReader(strings.NewReader(password+"\n"), input)
 		}
 	}
