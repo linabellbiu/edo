@@ -94,14 +94,16 @@ func (t *sshTransport) Run(ctx context.Context, host model.Host, bundle sshclien
 		if err != nil {
 			var remoteExit *ssh.ExitError
 			if errors.As(err, &remoteExit) {
+				cause := ErrRemote
 				switch remoteExit.ExitStatus() {
 				case 42:
-					return ErrExistingInstallation
+					cause = ErrExistingInstallation
 				case 43:
-					return ErrHostBusy
+					cause = ErrHostBusy
 				case 44:
-					return ErrPreflightFailed
+					cause = ErrPreflightFailed
 				}
+				return &remoteExitError{code: remoteExit.ExitStatus(), cause: cause}
 			}
 			return ErrRemote
 		}
@@ -280,6 +282,10 @@ func contains(values []string, value string) bool {
 }
 
 func installScript(host Host, input Input, installationID, token string) (string, error) {
+	version, _ := input.Installer["INSTALL_K3S_VERSION"].(string)
+	if _, valid := parseK3sVersion(version); !valid {
+		return "", &ValidationError{Message: "一键安装需要固定精确 K3s 版本，不能仅指定发布通道"}
+	}
 	options := input.AgentOptions
 	if host.Role == "server" {
 		options = input.ServerOptions
@@ -302,8 +308,8 @@ func installScript(host Host, input Input, installationID, token string) (string
 	encoded := base64.StdEncoding.EncodeToString(config)
 	// Repeat the read-only guard in the same privileged shell immediately before
 	// writing configuration; a successful old preview is not install permission.
-	script := "set -eu\n[ \"$(id -u)\" = 0 ]\nif ! mkdir -m 700 /run/edo-k3s-install.lock; then printf 'EDO_K3S_BUSY\\n'; exit 43; fi\nwork=''\nedo_binary_stage=''\ncleanup() { if [ -n \"$edo_binary_stage\" ]; then rm -f \"$edo_binary_stage\"; fi; if [ -n \"$work\" ]; then rm -f \"$work/install.sh\" \"$work/k3s\" \"$work/sha256sum.txt\" \"$work/k3s.sha256\"; rmdir \"$work\"; fi; rmdir /run/edo-k3s-install.lock; }\ntrap cleanup EXIT\ntrap 'exit 130' HUP INT TERM\n"
-	script += preflightScript(input.Installer, options, true) + "\nset +e\n" + preflightEnvironmentScript(host, input, host.Role == "agent" || input.Action == "join") + "\nif [ \"$edo_failed\" != 0 ]; then exit 44; fi\nset -e\n"
+	script := "set -eu\nprintf 'EDO_K3S_STAGE\\tguard\\n'\n[ \"$(id -u)\" = 0 ]\nif ! mkdir -m 700 /run/edo-k3s-install.lock; then printf 'EDO_K3S_BUSY\\n'; exit 43; fi\nwork=''\nedo_binary_stage=''\ncleanup() { if [ -n \"$edo_binary_stage\" ]; then rm -f \"$edo_binary_stage\"; fi; if [ -n \"$work\" ]; then rm -f \"$work/install.sh\" \"$work/k3s\" \"$work/sha256sum.txt\" \"$work/k3s.sha256\"; rmdir \"$work\"; fi; rmdir /run/edo-k3s-install.lock; }\ntrap cleanup EXIT\ntrap 'exit 130' HUP INT TERM\n"
+	script += preflightScript(input.Installer, options, true) + "\nprintf 'EDO_K3S_STAGE\\tpreflight\\n'\nset +e\n" + preflightEnvironmentScript(host, input, host.Role == "agent" || input.Action == "join") + "\nif [ \"$edo_failed\" != 0 ]; then exit 44; fi\nset -e\nprintf 'EDO_K3S_STAGE\\tdownload\\n'\n"
 	if isServerJoin(input) {
 		stage, err := serverInstallerStage(installationID)
 		if err != nil {
@@ -328,6 +334,7 @@ func installScript(host Host, input Input, installationID, token string) (string
 			script += serverInstallBinaryScript(input.Installer)
 		}
 	}
+	script += "printf 'EDO_K3S_STAGE\\tconfiguration\\n'\n"
 	if isServerJoin(input) {
 		script += "mkdir -p /etc/rancher\nif ! mkdir -m 700 /etc/rancher/k3s; then printf 'EDO_K3S_EXISTS\\n'; exit 42; fi\n(set -C; printf '%s' " + shellQuote(encoded) + " | base64 -d > /etc/rancher/k3s/config.yaml)\nchmod 600 /etc/rancher/k3s/config.yaml\n"
 	} else {
@@ -339,9 +346,9 @@ func installScript(host Host, input Input, installationID, token string) (string
 		installer["INSTALL_K3S_SKIP_DOWNLOAD"] = true
 		installer["INSTALL_K3S_SKIP_SELINUX_RPM"] = true
 	}
-	script += installerCommand(host.Role, installer, "\"$work/install.sh\"") + "\n"
+	script += "printf 'EDO_K3S_STAGE\\tinstaller\\n'\n" + installerCommand(host.Role, installer, "\"$work/install.sh\"") + "\n" + postInstallVerificationScript(host, input)
 	if host.Role == "server" {
-		script += "ready=false\nfor attempt in $(seq 1 90); do if " + shellQuote(binaryPath(input.Installer)) + " kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml --request-timeout=3s get --raw=/readyz >/dev/null 2>&1; then ready=true; break; fi; sleep 2; done\n\"$ready\"\n"
+		script += "printf 'EDO_K3S_STAGE\\tapi\\n'\nready=false\nfor attempt in $(seq 1 90); do if " + shellQuote(binaryPath(input.Installer)) + " kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml --request-timeout=3s get --raw=/readyz >/dev/null 2>&1; then ready=true; break; fi; sleep 2; done\n\"$ready\"\n"
 	}
 	return script, nil
 }

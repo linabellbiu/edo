@@ -124,7 +124,9 @@ func (s *Service) performK3d(ctx context.Context, record *model.K3sInstallation,
 		return ErrInvalidInput
 	}
 	host = hosts[0]
-	s.hostProgress(record, hosts, 0, "checking", "")
+	if err := s.hostProgress(record, hosts, 0, "checking", ""); err != nil {
+		return err
+	}
 	report, err := s.runK3dPreflight(ctx, input, hosts)
 	if err != nil {
 		return err
@@ -143,8 +145,12 @@ func (s *Service) performK3d(ctx context.Context, record *model.K3sInstallation,
 	if err := s.recheckRuntime(ctx, *record, snapshot); err != nil {
 		return err
 	}
-	s.log(record, "创建 k3d 集群："+k3dResourceName(record.ID))
-	s.hostProgress(record, hosts, 0, "installing", "")
+	if err := s.log(record, "创建 k3d 集群："+k3dResourceName(record.ID)); err != nil {
+		return err
+	}
+	if err := s.hostProgress(record, hosts, 0, "installing", ""); err != nil {
+		return err
+	}
 	if err := s.transport.Run(ctx, current, bundle, prepare, io.Discard); err != nil {
 		return err
 	}
@@ -194,9 +200,10 @@ func (s *Service) performK3d(ctx context.Context, record *model.K3sInstallation,
 	if err := s.recheckRuntime(ctx, *record, snapshot); err != nil {
 		return err
 	}
-	s.hostProgress(record, hosts, 0, "succeeded", "k3d 容器集群已就绪，未关联物理节点")
-	s.log(record, "k3d 集群已独立接入 EDO："+k3dResourceName(record.ID))
-	return nil
+	if err := s.hostProgress(record, hosts, 0, "succeeded", "k3d 容器集群已就绪，未关联物理节点"); err != nil {
+		return err
+	}
+	return s.log(record, "k3d 集群已独立接入 EDO："+k3dResourceName(record.ID))
 }
 
 func (s *Service) waitForK3dConnection(ctx context.Context, record *model.K3sInstallation, snapshot savedInput, host model.Host, bundle sshclient.Bundle) (string, error) {

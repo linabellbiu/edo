@@ -112,7 +112,15 @@ func (s *Service) runInstallation(parent context.Context, record model.K3sInstal
 		return
 	}
 	ctx = database.WithDepartmentScope(ctx, database.DepartmentScope{ProjectID: record.ProjectID, DepartmentID: record.DepartmentID, UserID: record.CreatedBy, AllDepartments: actor.IsSuperuser})
+	snapshot, err := s.decode(record)
+	if err != nil {
+		s.finish(parent, record, err)
+		return
+	}
+	// 心跳只使用不可变授权快照，不并发读取安装过程中变化的 ClusterID 和 Hosts。
+	installationID, actorID, action := record.ID, record.CreatedBy, record.Action
 	heartbeatDone := make(chan struct{})
+	heartbeatFailure := make(chan error, 1)
 	go func() {
 		defer close(heartbeatDone)
 		ticker := time.NewTicker(10 * time.Second)
@@ -122,22 +130,45 @@ func (s *Service) runInstallation(parent context.Context, record model.K3sInstal
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				lease := time.Now().UTC().Add(leaseTTL)
-				updated := s.db.WithContext(ctx).Model(&model.K3sInstallation{}).Where("uuid = ? AND status = ? AND lease_owner = ?", record.ID, "running", s.owner).Update("lease_expires_at", lease)
-				if updated.Error != nil || updated.RowsAffected != 1 {
+				if err := s.recheckInstallationAuthority(ctx, actorID, action, snapshot); err != nil {
+					if ctx.Err() != nil {
+						return
+					}
+					heartbeatFailure <- installationError("guard", err)
 					cancel()
 					return
 				}
-				if err := s.db.WithContext(ctx).Model(&model.K3sInstallationHostLock{}).Where("installation_id = ?", record.ID).Update("expires_at", lease).Error; err != nil {
+				lease := time.Now().UTC().Add(leaseTTL)
+				updated := s.db.WithContext(ctx).Model(&model.K3sInstallation{}).Where("uuid = ? AND status = ? AND lease_owner = ?", installationID, "running", s.owner).Update("lease_expires_at", lease)
+				if updated.Error != nil || updated.RowsAffected != 1 {
+					if ctx.Err() != nil {
+						return
+					}
+					slog.ErrorContext(ctx, "续租 K3s 安装任务失败", "operation", "k3s_heartbeat", "installation_id", installationID, "err", updated.Error)
+					heartbeatFailure <- installationError("record", ErrRemote)
+					cancel()
+					return
+				}
+				if err := s.db.WithContext(ctx).Model(&model.K3sInstallationHostLock{}).Where("installation_id = ?", installationID).Update("expires_at", lease).Error; err != nil {
+					if ctx.Err() != nil {
+						return
+					}
+					slog.ErrorContext(ctx, "续租 K3s 安装主机锁失败", "operation", "k3s_heartbeat", "installation_id", installationID, "err", err)
+					heartbeatFailure <- installationError("record", ErrRemote)
 					cancel()
 					return
 				}
 			}
 		}
 	}()
-	err := s.perform(ctx, &record)
+	err = s.perform(ctx, &record)
 	cancel()
 	<-heartbeatDone
+	select {
+	case heartbeatErr := <-heartbeatFailure:
+		err = heartbeatErr
+	default:
+	}
 	s.finish(context.WithoutCancel(parent), record, err)
 }
 
@@ -147,16 +178,28 @@ func (s *Service) finish(ctx context.Context, record model.K3sInstallation, err 
 	if err != nil {
 		status = "failed"
 		message = safeFailure(err)
-		slog.ErrorContext(ctx, "K3s 安装任务失败", "operation", "k3s_installation", "installation_id", record.ID, "err", err)
+		attributes := []any{"operation", "k3s_installation", "installation_id", record.ID, "err", err}
+		var failure *installationFailure
+		if errors.As(err, &failure) {
+			attributes = append(attributes, "stage", failure.stage)
+			if failure.code >= 0 {
+				attributes = append(attributes, "exit_code", failure.code)
+			}
+		}
+		slog.ErrorContext(ctx, "K3s 安装任务失败", attributes...)
 		var hosts []Host
 		_ = json.Unmarshal(record.Hosts, &hosts)
 		for index := range hosts {
 			if hosts[index].Status == "succeeded" {
 				continue
 			}
-			if hosts[index].Status == "installing" || hosts[index].Status == "checking" {
+			installedServer := hosts[index].Status == "ready" && hosts[index].Role == "server" && record.Action == "create" && record.ClusterID != ""
+			if hosts[index].Status == "installing" || hosts[index].Status == "checking" || installedServer {
 				hosts[index].Status = "failed"
 				hosts[index].Message = message
+				if installedServer {
+					hosts[index].Message = "控制平面已安装，集群验收未通过：" + message
+				}
 			} else {
 				hosts[index].Status = "not_started"
 				hosts[index].Message = "前序步骤未完成"
@@ -184,6 +227,10 @@ func (s *Service) finish(ctx context.Context, record model.K3sInstallation, err 
 }
 
 func safeFailure(err error) string {
+	var failure *installationFailure
+	if errors.As(err, &failure) {
+		return failure.Error()
+	}
 	if errors.Is(err, ErrPreflightFailed) {
 		return preflightFailureMessage(err)
 	}
@@ -201,21 +248,34 @@ func safeFailure(err error) string {
 	return "安装未完成，请检查主机服务、集群连接和安装配置。"
 }
 
-func (s *Service) log(record *model.K3sInstallation, message string) {
-	line := time.Now().Format("15:04:05") + " " + message + "\n"
-	if len(record.Logs)+len(line) > 64*1024 {
-		return
+func (s *Service) persistProgress(record *model.K3sInstallation, updates map[string]any) error {
+	result := s.db.Model(&model.K3sInstallation{}).Where("uuid = ? AND lease_owner = ? AND status = ?", record.ID, s.owner, "running").Updates(updates)
+	if result.Error != nil || result.RowsAffected != 1 {
+		err := result.Error
+		if err == nil {
+			err = ErrHostChanged
+		}
+		slog.Error("保存 K3s 安装进度失败", "operation", "k3s_progress", "installation_id", record.ID, "err", err)
+		return installationError("record", ErrRemote)
 	}
-	record.Logs += line
-	_ = s.db.Model(&model.K3sInstallation{}).Where("uuid = ? AND lease_owner = ? AND status = ?", record.ID, s.owner, "running").Update("logs", record.Logs).Error
+	return nil
 }
 
-func (s *Service) hostProgress(record *model.K3sInstallation, hosts []Host, index int, status, message string) {
+func (s *Service) log(record *model.K3sInstallation, message string) error {
+	line := time.Now().Format("15:04:05") + " " + message + "\n"
+	if len(record.Logs)+len(line) > 64*1024 {
+		return installationError("record", ErrRemote)
+	}
+	record.Logs += line
+	return s.persistProgress(record, map[string]any{"logs": record.Logs})
+}
+
+func (s *Service) hostProgress(record *model.K3sInstallation, hosts []Host, index int, status, message string) error {
 	hosts[index].Status = status
 	hosts[index].Message = message
 	encoded, _ := json.Marshal(hosts)
 	record.Hosts = datatypes.JSON(encoded)
-	_ = s.db.Model(&model.K3sInstallation{}).Where("uuid = ? AND lease_owner = ? AND status = ?", record.ID, s.owner, "running").Update("hosts", record.Hosts).Error
+	return s.persistProgress(record, map[string]any{"hosts": record.Hosts})
 }
 
 func (s *Service) perform(ctx context.Context, record *model.K3sInstallation) error {
@@ -234,28 +294,36 @@ func (s *Service) perform(ctx context.Context, record *model.K3sInstallation) er
 	if json.Unmarshal(record.Hosts, &hosts) != nil {
 		return ErrInvalidInput
 	}
+	serverIndex := -1
 	// Re-read every selected machine before installing the first one. The
 	// preview report is never used as a cache of current machine readiness.
 	for index, host := range hosts {
-		s.log(record, "检查主机："+host.Name)
-		s.hostProgress(record, hosts, index, "checking", "")
+		if err := s.log(record, "检查主机："+host.Name); err != nil {
+			return err
+		}
+		if err := s.hostProgress(record, hosts, index, "checking", ""); err != nil {
+			return err
+		}
 	}
 	report, err := s.runPreflight(ctx, input, hosts)
 	if err != nil {
 		return err
 	}
 	for index, result := range report.Hosts {
+		var err error
 		if result.Passed {
-			s.hostProgress(record, hosts, index, "ready", "检查通过")
+			err = s.hostProgress(record, hosts, index, "ready", "检查通过")
 		} else {
-			s.hostProgress(record, hosts, index, "failed", "前置检查未通过")
+			err = s.hostProgress(record, hosts, index, "failed", "前置检查未通过")
+		}
+		if err != nil {
+			return err
 		}
 	}
 	if err := requirePreflight(report); err != nil {
 		return err
 	}
 	if input.Action == "create" {
-		var serverIndex int
 		for index, host := range hosts {
 			if host.Role == "server" {
 				serverIndex = index
@@ -267,8 +335,12 @@ func (s *Service) perform(ctx context.Context, record *model.K3sInstallation) er
 		if err != nil {
 			return err
 		}
-		s.log(record, "安装控制平面："+host.Name)
-		s.hostProgress(record, hosts, serverIndex, "installing", "")
+		if err := s.log(record, "安装控制平面："+host.Name); err != nil {
+			return err
+		}
+		if err := s.hostProgress(record, hosts, serverIndex, "installing", ""); err != nil {
+			return err
+		}
 		current, bundle, err := s.loadReviewedHost(ctx, snapshot, host.ID)
 		if err != nil {
 			return err
@@ -285,45 +357,55 @@ func (s *Service) perform(ctx context.Context, record *model.K3sInstallation) er
 		if err := s.recheckRuntime(ctx, *record, snapshot); err != nil {
 			return err
 		}
-		if err := s.transport.Run(ctx, current, bundle, script, io.Discard); err != nil {
-			s.hostProgress(record, hosts, serverIndex, "failed", safeFailure(err))
-			return err
+		diagnostics := &installationDiagnostics{}
+		if err := s.transport.Run(ctx, current, bundle, script, diagnostics); err != nil {
+			return diagnostics.failure(err)
 		}
 		kubeconfig, err := s.transport.Read(ctx, current, bundle, "set -eu\ncat /etc/rancher/k3s/k3s.yaml\n")
 		if err != nil {
-			return err
+			return installationError("import", err)
 		}
 		value, err := rewriteKubeconfigEndpoint([]byte(kubeconfig), input.Endpoint)
 		if err != nil {
-			return err
+			return installationError("import", err)
 		}
 		if err := s.recheckRuntime(ctx, *record, snapshot); err != nil {
 			return err
 		}
 		cluster, err := s.kubernetes.Create(ctx, record.CreatedBy, kube.Input{Name: input.Name, Mode: model.KubernetesKubeconfig, DefaultNamespace: "default", Kubeconfig: &value})
 		if err != nil {
-			return err
+			return installationError("import", err)
 		}
 		record.ClusterID = cluster.ID
-		_ = s.db.WithContext(ctx).Model(&model.K3sInstallation{}).Where("uuid = ? AND lease_owner = ?", record.ID, s.owner).Update("cluster_id", record.ClusterID).Error
+		if err := s.persistProgress(record, map[string]any{"cluster_id": record.ClusterID}); err != nil {
+			return err
+		}
 		if disabled, _ := input.ServerOptions["disable-agent"].(bool); !disabled {
 			if err := s.waitForNode(ctx, cluster.ID, record.ID, host.ID); err != nil {
-				return err
+				return installationError("node", err)
 			}
 			if err := s.recheckRuntime(ctx, *record, snapshot); err != nil {
 				return err
 			}
 			if err := s.kubernetes.AppendHosts(ctx, cluster.ID, []string{host.ID}); err != nil {
-				return err
+				return installationError("association", err)
 			}
 		}
-		s.hostProgress(record, hosts, serverIndex, "succeeded", "控制平面已就绪")
-		s.log(record, "集群已接入 EDO")
+		if err := s.hostProgress(record, hosts, serverIndex, "ready", "控制平面已安装，等待集群验收"); err != nil {
+			return err
+		}
+		if err := s.log(record, "集群已接入 EDO，等待系统组件就绪"); err != nil {
+			return err
+		}
 	}
 	if isServerJoin(input) {
 		host := hosts[0]
-		s.log(record, "安装加入控制平面："+host.Name)
-		s.hostProgress(record, hosts, 0, "installing", "")
+		if err := s.log(record, "安装加入控制平面："+host.Name); err != nil {
+			return err
+		}
+		if err := s.hostProgress(record, hosts, 0, "installing", ""); err != nil {
+			return err
+		}
 		installInput, err := s.beforeHostInstall(ctx, *record, snapshot, host)
 		if err != nil {
 			return err
@@ -366,11 +448,12 @@ func (s *Service) perform(ctx context.Context, record *model.K3sInstallation) er
 		if err := s.recheckRuntime(ctx, *record, snapshot); err != nil {
 			return err
 		}
-		if err := s.transport.Run(ctx, current, bundle, script, io.Discard); err != nil {
-			return err
+		diagnostics := &installationDiagnostics{}
+		if err := s.transport.Run(ctx, current, bundle, script, diagnostics); err != nil {
+			return diagnostics.failure(err)
 		}
 		if err := s.waitForJoinedServer(ctx, record, snapshot, host); err != nil {
-			return err
+			return installationError("node", err)
 		}
 		// Membership now contains the reviewed node. Do not compare it against
 		// the pre-install set; waitForJoinedServer verified the exact addition.
@@ -378,11 +461,12 @@ func (s *Service) perform(ctx context.Context, record *model.K3sInstallation) er
 			return err
 		}
 		if err := s.kubernetes.AppendHosts(ctx, record.ClusterID, []string{host.ID}); err != nil {
+			return installationError("association", err)
+		}
+		if err := s.hostProgress(record, hosts, 0, "succeeded", "Master 已就绪，etcd 成员已加入并关联"); err != nil {
 			return err
 		}
-		s.hostProgress(record, hosts, 0, "succeeded", "Master 已就绪，etcd 成员已加入并关联")
-		s.log(record, "Master 加入完成")
-		return nil
+		return s.log(record, "Master 加入完成")
 	}
 	// Mint short-lived, CA-bound bootstrap credentials, never read the original
 	// server token. Revoke this task's credential even when a node fails to join.
@@ -393,8 +477,12 @@ func (s *Service) perform(ctx context.Context, record *model.K3sInstallation) er
 		if err := s.recheckRuntime(ctx, *record, snapshot); err != nil {
 			return err
 		}
-		s.log(record, "安装工作节点："+host.Name)
-		s.hostProgress(record, hosts, index, "installing", "")
+		if err := s.log(record, "安装工作节点："+host.Name); err != nil {
+			return err
+		}
+		if err := s.hostProgress(record, hosts, index, "installing", ""); err != nil {
+			return err
+		}
 		join, err := s.kubernetes.CreateNodeJoin(ctx, record.ClusterID, kube.NodeJoinInput{Provider: "k3s", Endpoint: input.Endpoint, Minutes: 15})
 		if err != nil {
 			return err
@@ -404,7 +492,6 @@ func (s *Service) perform(ctx context.Context, record *model.K3sInstallation) er
 		revokeErr := s.kubernetes.RevokeNodeJoin(revokeCtx, record.ClusterID, join.ID, join.ResourceIdentity)
 		cancel()
 		if err != nil {
-			s.hostProgress(record, hosts, index, "failed", safeFailure(err))
 			return err
 		}
 		if revokeErr != nil {
@@ -414,12 +501,21 @@ func (s *Service) perform(ctx context.Context, record *model.K3sInstallation) er
 			return err
 		}
 		if err := s.kubernetes.AppendHosts(ctx, record.ClusterID, []string{host.ID}); err != nil {
+			return installationError("association", err)
+		}
+		if err := s.hostProgress(record, hosts, index, "succeeded", "节点已就绪并关联"); err != nil {
 			return err
 		}
-		s.hostProgress(record, hosts, index, "succeeded", "节点已就绪并关联")
 	}
-	s.log(record, "K3s 安装完成")
-	return nil
+	if err := s.waitForCreatedComponents(ctx, record, snapshot); err != nil {
+		return err
+	}
+	if serverIndex >= 0 {
+		if err := s.hostProgress(record, hosts, serverIndex, "succeeded", "控制平面和系统组件已就绪"); err != nil {
+			return err
+		}
+	}
+	return s.log(record, "K3s 安装完成")
 }
 
 func (s *Service) installAgent(ctx context.Context, record *model.K3sInstallation, snapshot savedInput, host Host, join *kube.NodeJoin) error {
@@ -441,10 +537,11 @@ func (s *Service) installAgent(ctx context.Context, record *model.K3sInstallatio
 	if err := s.recheckRuntime(ctx, *record, snapshot); err != nil {
 		return err
 	}
-	if err := s.transport.Run(ctx, current, bundle, script, io.Discard); err != nil {
-		return err
+	diagnostics := &installationDiagnostics{}
+	if err := s.transport.Run(ctx, current, bundle, script, diagnostics); err != nil {
+		return diagnostics.failure(err)
 	}
-	return s.waitForNode(ctx, record.ClusterID, record.ID, host.ID)
+	return installationError("node", s.waitForNode(ctx, record.ClusterID, record.ID, host.ID))
 }
 
 func (s *Service) waitForNode(ctx context.Context, clusterID, installationID, hostID string) error {
@@ -452,7 +549,10 @@ func (s *Service) waitForNode(ctx context.Context, clusterID, installationID, ho
 		return err
 	}
 	client, err := s.kubernetes.Clientset(kube.WithInternalClusterAccess(ctx, "node-bootstrap"), clusterID)
-	if err != nil {
+	if err != nil || client == nil {
+		if err == nil {
+			err = ErrRemote
+		}
 		return err
 	}
 	readyCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
@@ -460,7 +560,13 @@ func (s *Service) waitForNode(ctx context.Context, clusterID, installationID, ho
 	ticker := time.NewTicker(3 * time.Second)
 	defer ticker.Stop()
 	for {
+		if err := s.kubernetes.RequireClusterPermission(readyCtx, clusterID, "", "kubernetes.node.create"); err != nil {
+			return err
+		}
 		list, err := client.CoreV1().Nodes().List(readyCtx, metav1.ListOptions{LabelSelector: "edo.dev/installation=" + installationID + ",edo.dev/host=" + hostID})
+		if terminalReadinessError(err) {
+			return ErrPermission
+		}
 		if err == nil {
 			for _, node := range list.Items {
 				for _, condition := range node.Status.Conditions {

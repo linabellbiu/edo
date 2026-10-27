@@ -137,6 +137,25 @@ func (s *Service) authorize(ctx context.Context, actorID, action string) (*model
 	return &actor, nil
 }
 
+func needsNativeNodePermission(input Input) bool {
+	if input.Mode == "k3d" {
+		return false
+	}
+	disabled, _ := input.ServerOptions["disable-agent"].(bool)
+	return input.Action == "join" || input.Action == "create" && (!disabled || len(input.AgentHostIDs) > 0)
+}
+
+func (s *Service) authorizeNativeNodes(ctx context.Context, actor *model.User, input Input) error {
+	if !needsNativeNodePermission(input) {
+		return nil
+	}
+	allowed, err := s.authorizer.HasPermission(ctx, actor, "kubernetes.node.create")
+	if err != nil || !allowed {
+		return ErrPermission
+	}
+	return nil
+}
+
 func hostDigest(host model.Host) string {
 	value, _ := json.Marshal(host)
 	// Host credentials have json:"-" on the public model; include their identity
@@ -403,6 +422,9 @@ func (s *Service) Preview(ctx context.Context, actorID string, input Input) (*Pl
 	if err != nil {
 		return nil, err
 	}
+	if err := s.authorizeNativeNodes(ctx, actor, input); err != nil {
+		return nil, err
+	}
 	preflight, err := s.runPreflight(ctx, input, hosts)
 	if err != nil {
 		return nil, err
@@ -506,13 +528,16 @@ func (s *Service) decode(record model.K3sInstallation) (savedInput, error) {
 	return snapshot, nil
 }
 
-func (s *Service) recheck(ctx context.Context, record model.K3sInstallation, snapshot savedInput) error {
-	actor, err := s.authorize(ctx, record.CreatedBy, record.Action)
+func (s *Service) recheckInstallationAuthority(ctx context.Context, actorID, action string, snapshot savedInput) error {
+	actor, err := s.authorize(ctx, actorID, action)
 	if err != nil {
 		return err
 	}
 	if actor.AuthVersion != snapshot.AuthVersion {
 		return ErrPermission
+	}
+	if err := s.authorizeNativeNodes(ctx, actor, snapshot.Input); err != nil {
+		return err
 	}
 	for id, digest := range snapshot.HostDigests {
 		host, _, err := s.loadHost(ctx, id)
@@ -522,6 +547,13 @@ func (s *Service) recheck(ctx context.Context, record model.K3sInstallation, sna
 		if hostDigest(host) != digest {
 			return ErrHostChanged
 		}
+	}
+	return nil
+}
+
+func (s *Service) recheck(ctx context.Context, record model.K3sInstallation, snapshot savedInput) error {
+	if err := s.recheckInstallationAuthority(ctx, record.CreatedBy, record.Action, snapshot); err != nil {
+		return err
 	}
 	if snapshot.Input.Action == "join" {
 		var current model.KubernetesCluster

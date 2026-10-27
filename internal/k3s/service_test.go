@@ -511,6 +511,12 @@ func fakeClusterClient(t *testing.T, f fixture) *fakeClusters {
 			_, _ = io.WriteString(w, "ok")
 			return
 		}
+		if strings.HasPrefix(r.URL.Path, "/apis/apps/v1/namespaces/kube-system/deployments/") {
+			w.Header().Set("Content-Type", "application/json")
+			name := r.URL.Path[strings.LastIndex(r.URL.Path, "/")+1:]
+			_, _ = fmt.Fprintf(w, `{"apiVersion":"apps/v1","kind":"Deployment","metadata":{"name":%q,"namespace":"kube-system","uid":%q,"generation":1},"spec":{"replicas":1},"status":{"observedGeneration":1,"replicas":1,"updatedReplicas":1,"readyReplicas":1,"availableReplicas":1,"conditions":[{"type":"Available","status":"True"}]}}`, name, "fixture-"+name)
+			return
+		}
 		if r.URL.Path != "/api/v1/nodes" {
 			http.NotFound(w, r)
 			return

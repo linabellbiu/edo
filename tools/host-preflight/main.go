@@ -37,6 +37,8 @@ type options struct {
 	timeout                                                           time.Duration
 	testSudo                                                          bool
 	k3dCluster                                                        string
+	backupStopK3d                                                     bool
+	backup                                                            backupStopOptions
 }
 
 type connectionError struct{ diagnostic string }
@@ -59,15 +61,30 @@ func parseOptions(args []string) (options, error) {
 	f.DurationVar(&o.timeout, "timeout", 2*time.Minute, "总时限，1 秒至 10 分钟")
 	f.BoolVar(&o.testSudo, "test-sudo", false, "仅本次验证 sudo，不修改保存的配置；需操作者明确授权")
 	f.StringVar(&o.k3dCluster, "k3d-cluster", "", "显式读取指定 k3d 集群的元数据，不输出密钥或环境变量")
+	f.BoolVar(&o.backupStopK3d, "backup-stop-k3d", false, "明确授权旧测试集群停机备份；失败保留现场，不自动恢复")
+	f.StringVar(&o.backup.ContainerID, "expect-container-id", "", "停机备份时已核验的完整容器 ID")
+	f.StringVar(&o.backup.Directory, "backup-directory", "", "停机备份使用的全新持久目录")
+	f.StringVar(&o.backup.OperationID, "operation-id", "", "停机备份操作 UUID")
+	f.StringVar(&o.backup.ExpectedRestartingContainerID, "expect-restarting-container-id", "", "明确确认操作前已在持续重启的另一个完整容器 ID")
 	if err := f.Parse(args); err != nil {
 		return o, err
 	}
 	invalidCluster := false
+	backupArguments, testSudoArgument := false, false
 	f.Visit(func(value *flag.Flag) {
 		if value.Name == "k3d-cluster" && !validK3dInventoryCluster(o.k3dCluster) {
 			invalidCluster = true
 		}
+		switch value.Name {
+		case "expect-container-id", "backup-directory", "operation-id", "expect-restarting-container-id":
+			backupArguments = true
+		case "test-sudo":
+			testSudoArgument = true
+		}
 	})
+	if (backupArguments && !o.backupStopK3d) || (o.backupStopK3d && testSudoArgument) {
+		return o, errors.New("备份参数必须与显式停机备份模式一起使用，且不得使用临时 sudo 测试授权")
+	}
 	if invalidCluster {
 		return o, errors.New("k3d 集群名称必须为 1 至 63 位小写字母、数字或连字符，且首尾不能为连字符")
 	}
@@ -76,14 +93,36 @@ func parseOptions(args []string) (options, error) {
 	if f.NArg() != 0 || err != nil || parsedID == uuid.Nil || parsedID.String() != o.hostID || addressErr != nil || address.Zone() != "" || !address.IsGlobalUnicast() || address.IsLoopback() || address.IsLinkLocalUnicast() || address.String() != o.address || o.port < 1 || o.port > 65535 || !validUser.MatchString(o.username) || !sshclient.ValidFingerprint(o.fingerprint) || strings.TrimSpace(o.fingerprint) != o.fingerprint || !filepath.IsAbs(o.envFile) || !filepath.IsAbs(o.workingDirectory) || strings.ContainsAny(o.envFile+o.workingDirectory, "\r\n\x00") || o.timeout < time.Second || o.timeout > 10*time.Minute {
 		return o, errors.New("请显式提供有效的环境文件、工作目录、主机 UUID、IP、端口、用户名和完整指纹")
 	}
+	if _, err := scriptForOptions(o); err != nil {
+		return o, err
+	}
 	return o, nil
+}
+
+func (o options) backupOptions() backupStopOptions {
+	backup := o.backup
+	backup.Cluster = o.k3dCluster
+	return backup
+}
+
+func scriptForOptions(o options) (string, error) {
+	if o.backupStopK3d {
+		if o.testSudo {
+			return "", errors.New("停机备份不能使用临时 sudo 测试授权")
+		}
+		return buildBackupStopScript(o.backupOptions())
+	}
+	if o.backup != (backupStopOptions{}) {
+		return "", errors.New("未启用停机备份模式时不得提供备份参数")
+	}
+	return buildPreflightScript(o.k3dCluster)
 }
 
 func main() {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
 	o, err := parseOptions(os.Args[1:])
 	if errors.Is(err, flag.ErrHelp) {
-		fmt.Println("用法：host-preflight --env-file <绝对路径> --working-directory <EDO 工作目录> --host-id <UUID> --expect-address <IP> --expect-port <端口> --expect-user <用户名> --expect-fingerprint <完整 SHA256 指纹> [--timeout 2m] [--test-sudo] [--k3d-cluster <集群名称>]")
+		fmt.Println("用法：host-preflight --env-file <绝对路径> --working-directory <EDO 工作目录> --host-id <UUID> --expect-address <IP> --expect-port <端口> --expect-user <用户名> --expect-fingerprint <完整 SHA256 指纹> [--timeout 2m] [--test-sudo] [--k3d-cluster <集群名称>]\n显式停机备份另加 --backup-stop-k3d --k3d-cluster edo-host-link --expect-container-id <完整 ID> --backup-directory <全新持久目录> --operation-id <UUID> [--expect-restarting-container-id <已确认持续重启的完整 ID>]；不能同时使用 --test-sudo。")
 		return
 	}
 	stage := "校验参数"
@@ -94,7 +133,11 @@ func main() {
 	}
 	if err != nil {
 		// 底层错误可能含敏感值，默认只记录操作与类型；SSH 诊断已在连接边界脱敏。
-		attributes := []any{"operation", "host_preflight", "stage", stage, "error_type", fmt.Sprintf("%T", err)}
+		operation, logMessage := "host_preflight", "主机只读预检失败"
+		if o.backupStopK3d {
+			operation, logMessage = "host_backup_stop_k3d", "旧测试集群停机备份失败"
+		}
+		attributes := []any{"operation", operation, "stage", stage, "error_type", fmt.Sprintf("%T", err)}
 		var connection *connectionError
 		if errors.As(err, &connection) {
 			attributes = append(attributes, "err", connection.diagnostic)
@@ -106,8 +149,12 @@ func main() {
 				attributes = append(attributes, "config_etc_readable", query.config.etcReadable, "config_output_readable", query.config.outputReadable, "config_etc_symlink", query.config.etcSymlink, "cache_null_character_device", query.config.nullCharacterDevice)
 			}
 		}
-		logger.Error("主机只读预检失败", attributes...)
-		fmt.Fprintln(os.Stderr, "主机预检未完成；未执行安装或配置变更，请核对目标、连接和保存的授权。")
+		logger.Error(logMessage, attributes...)
+		if o.backupStopK3d {
+			fmt.Fprintln(os.Stderr, "旧测试集群停机备份未完成；目标容器可能已停止，已保留现场。请勿继续安装、删除或自动恢复，请核对私有证据与保存的授权。")
+		} else {
+			fmt.Fprintln(os.Stderr, "主机预检未完成；未执行安装或配置变更，请核对目标、连接和保存的授权。")
+		}
 		os.Exit(1)
 	}
 }
@@ -222,8 +269,8 @@ func loadTarget(ctx context.Context, o options, cfg config.Database, key string)
 }
 
 func run(ctx context.Context, o options, output io.Writer, stage *string) error {
-	*stage = "校验固定只读查询范围"
-	script, err := buildPreflightScript(o.k3dCluster)
+	*stage = "校验固定运维范围"
+	script, err := scriptForOptions(o)
 	if err != nil {
 		return err
 	}
@@ -236,6 +283,9 @@ func run(ctx context.Context, o options, output io.Writer, stage *string) error 
 	host, bundle, err := loadTarget(ctx, o, cfg, key)
 	if err != nil {
 		return err
+	}
+	if o.backupStopK3d && !bundle.UseSudo {
+		return errors.New("停机备份要求已测试并保存 sudo 授权")
 	}
 	// 仅供操作者明确授权后的只读提权测试，不写回或放宽主机的持久配置。
 	if o.testSudo {
@@ -288,6 +338,9 @@ func run(ctx context.Context, o options, output io.Writer, stage *string) error 
 		return err
 	}
 	*stage = "创建固定只读预检通道"
+	if o.backupStopK3d {
+		*stage = "创建固定停机备份通道"
+	}
 	session, err := client.NewSession()
 	if err != nil {
 		return err
@@ -297,10 +350,17 @@ func run(ctx context.Context, o options, output io.Writer, stage *string) error 
 	diagnostics := &limitedBuffer{}
 	session.Stdin, session.Stdout, session.Stderr = strings.NewReader(prefix+script), buffer, diagnostics
 	*stage = "执行固定只读预检"
+	if o.backupStopK3d {
+		*stage = "执行明确授权的停机备份"
+	}
 	if err := session.Start(command); err != nil {
 		return err
 	}
-	err = writePreflightReport(output, buffer, session.Wait(), []string{cfg.DSN, key, host.SSHCredentialCiphertext, bundle.Password, bundle.SudoPassword, bundle.PrivateKey, bundle.Passphrase})
+	commandErr := session.Wait()
+	if o.backupStopK3d {
+		return writeBackupStopReport(output, buffer, commandErr, o.backupOptions())
+	}
+	err = writePreflightReport(output, buffer, commandErr, []string{cfg.DSN, key, host.SSHCredentialCiphertext, bundle.Password, bundle.SudoPassword, bundle.PrivateKey, bundle.Passphrase})
 	var query *preflightQueryError
 	if errors.As(err, &query) {
 		query.stage, query.queryExitCode = readPreflightDiagnostics(diagnostics)

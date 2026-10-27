@@ -70,6 +70,112 @@ func TestParametersRequireExplicitMatchingIdentityAndNoCommand(t *testing.T) {
 	}
 }
 
+func fixtureBackupArgs() []string {
+	o := backupFixtureOptions()
+	return append(fixtureArgs(), "--backup-stop-k3d", "--k3d-cluster", o.Cluster, "--expect-container-id", o.ContainerID, "--backup-directory", o.Directory, "--operation-id", o.OperationID)
+}
+
+func TestBackupFlagsRequireExplicitModeCompleteTargetAndSavedAuthorization(t *testing.T) {
+	parsed, err := parseOptions(fixtureBackupArgs())
+	if err != nil || !parsed.backupStopK3d || parsed.testSudo || parsed.backupOptions() != backupFixtureOptions() {
+		t.Fatal("显式备份参数没有准确绑定目标")
+	}
+	for _, required := range []string{"--k3d-cluster", "--expect-container-id", "--backup-directory", "--operation-id"} {
+		args := fixtureBackupArgs()
+		for index, value := range args {
+			if value == required {
+				args = append(args[:index], args[index+2:]...)
+				break
+			}
+		}
+		if _, err := parseOptions(args); err == nil {
+			t.Fatalf("缺少 %s 仍允许停机备份", required)
+		}
+	}
+	for _, extra := range [][]string{
+		{"--test-sudo"}, {"--test-sudo=false"}, {"--k3d-cluster", "other"},
+		{"--expect-container-id", "short"}, {"--operation-id", "invalid"}, {"--backup-directory", "/"},
+		{"--expect-restarting-container-id", backupFixtureOptions().ContainerID},
+	} {
+		if _, err := parseOptions(append(fixtureBackupArgs(), extra...)); err == nil {
+			t.Fatal("冲突授权或不完整目标仍被允许")
+		}
+	}
+	for _, flag := range []string{"--expect-container-id", "--backup-directory", "--operation-id", "--expect-restarting-container-id"} {
+		for _, value := range []string{"", "fixture"} {
+			if _, err := parseOptions(append(fixtureArgs(), flag, value)); err == nil {
+				t.Fatal("只读模式接受备份参数")
+			}
+		}
+	}
+	other := strings.Repeat("b", 64)
+	if parsed, err := parseOptions(append(fixtureBackupArgs(), "--expect-restarting-container-id", other)); err != nil || parsed.backup.ExpectedRestartingContainerID != other {
+		t.Fatal("明确确认的预存重启 ID 没有冻结到备份参数")
+	}
+	readOnly, err := scriptForOptions(fixtureOptions())
+	if err != nil || strings.Contains(readOnly, "edo_docker stop") || !strings.HasSuffix(readOnly, preflightEnd) {
+		t.Fatal("默认模式不再保持只读")
+	}
+	writeScript, err := scriptForOptions(parsed)
+	if err != nil || !strings.Contains(writeScript, "edo_docker stop --time 60") || strings.Contains(writeScript, "k3s kubectl") {
+		t.Fatal("停机备份没有进入独立固定脚本")
+	}
+}
+
+func TestRunRejectsBackupModeConflictsBeforeReadingConfiguration(t *testing.T) {
+	for _, o := range []options{
+		{backupStopK3d: true, testSudo: true, backup: backupFixtureOptions()},
+		{backup: backupFixtureOptions()},
+	} {
+		stage := ""
+		err := run(context.Background(), o, io.Discard, &stage)
+		if err == nil || stage != "校验固定运维范围" || strings.Contains(err.Error(), "open ") {
+			t.Fatal("run 绕过了模式授权防守")
+		}
+	}
+}
+
+func TestBackupRunRequiresPersistedSudoBeforeConnecting(t *testing.T) {
+	o := fixtureOptions()
+	o.workingDirectory = t.TempDir()
+	o.envFile = filepath.Join(o.workingDirectory, "runtime.env")
+	o.backupStopK3d, o.backup = true, backupFixtureOptions()
+	o.k3dCluster = o.backup.Cluster
+	key := base64.StdEncoding.EncodeToString(make([]byte, 32))
+	manager, _ := secret.New(key)
+	plain, _ := json.Marshal(sshclient.Bundle{Password: "fixture-password", UseSudo: false})
+	ciphertext, err := manager.Encrypt(string(plain), hostcredential.AAD(o.hostID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(o.workingDirectory, "fixture.db")
+	db, err := database.Open(context.Background(), config.Database{Driver: "sqlite", DSN: path, MaxOpenConns: 1}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&model.Host{}, &model.HostCapability{}); err != nil {
+		t.Fatal(err)
+	}
+	host := model.Host{ID: o.hostID, Name: "Fixture host", Mode: model.HostModeSSH, Address: o.address, SSHPort: o.port, SSHUsername: o.username, SSHAuthType: model.SSHAuthPassword, SSHHostKeyFingerprint: o.fingerprint, SSHCredentialCiphertext: ciphertext, ProjectID: uuid.NewString(), DepartmentID: uuid.NewString(), IsActive: true}
+	if err := db.Create(&host).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&model.HostCapability{HostID: host.ID, Kind: model.HostCapabilitySSH, Status: model.HostCapabilityReady}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := database.Close(db); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(o.envFile, []byte("EDO_DATABASE_DRIVER=sqlite\nEDO_DATABASE_DSN="+path+"\nEDO_SECRETS_KEY="+key+"\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	stage := ""
+	err = run(context.Background(), o, io.Discard, &stage)
+	if err == nil || err.Error() != "停机备份要求已测试并保存 sudo 授权" || stage != "只读核对已保存的目标与凭据" {
+		t.Fatalf("未保存 sudo 授权仍连接或未安全拒绝: %v %s", err, stage)
+	}
+}
+
 func TestSQLiteReadOnlyAddressNeverCreatesMissingDatabase(t *testing.T) {
 	directory := t.TempDir()
 	path := filepath.Join(directory, "fixture.db")
