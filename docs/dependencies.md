@@ -38,6 +38,14 @@
 
 前端版本线按 Vben Admin 5.7 的 `web-antd` 工作区核对，当前固定 Vue 3.5、Pinia 3、Ant Design Vue 4.2、Vue I18n 11、VueUse Motion 3 和 Vue Router 5。上述包均为 MIT 许可、持续维护且不包含浏览器端远程代码加载；Vite 按路由拆包，组件和图标只打入实际引用的导出。EDO 只在布局、主题和页面组件边界依赖这些公开 API，后续可以逐包升级或替换，不会改变 Go API、权限或数据库模型。
 
+## K3s 与 k3d 安装
+
+原生模式复用 [K3s 官方安装器](https://docs.k3s.io/zh/quick-start)和现有固定指纹 SSH 传输；k3d 模式复用官方 [k3d CLI v5.9.0](https://github.com/k3d-io/k3d/releases/tag/v5.9.0)，不自行维护 K3s Docker 节点、网络和证书生成流程。K3s 为 Apache-2.0、k3d 为 [MIT](https://github.com/k3d-io/k3d/blob/v5.9.0/LICENSE)，与项目兼容。核对官方版本、资产校验和及安全公告后固定版本；上游未发布公告不表示不存在漏洞，升级仍需重新评估与真实安装回归。
+
+不增加 Go 模块或 EDO 常驻管理服务。目标主机只在选择 k3d 时使用 Docker、CLI 和节点容器，新增成本是版本明确的 CLI、K3s 镜像及容器资源；Linux 架构需要匹配发布资产。权限、安装确认、计划过期、租约、主机锁、脱敏、资源上限及失败后的人工处理由 EDO 维护。CLI 与版本适配封装在安装模块中，可单独替换，不影响既有集群连接。
+
+评估过直接用 Moby API 拼装 K3s 容器，以及引入完整集群管理平台：前者重复维护 k3d 已有的网络、节点启动与 kubeconfig 处理，长期兼容风险高；后者为简单安装增加常驻组件和运维成本，均未采用。官方 CLI 不能设置创建时 CPU 上限，EDO 只在创建后对本次精确标记的容器补充限制；启动窗口、Docker 权限和官方 CLI/K3s 镜像组合兼容性是保留的维护风险，需预览提示、失败回归及真实集群验收，不能用 Mock 通过冒充已验证。
+
 ## 实时通知与连接
 
 流水线停止复用 Go 标准库 [Context 取消](https://pkg.go.dev/context#WithCancel)、[exec.Cmd.Cancel 与 WaitDelay](https://pkg.go.dev/os/exec#Cmd)、现有 Moby API 和 [SSH Session.Signal](https://pkg.go.dev/golang.org/x/crypto/ssh#Session.Signal)。这些能力由 Go 官方及既有 SDK 维护，不增加依赖、常驻服务或平台兼容面；仅支持既定 Linux/macOS，Shell 使用独立进程组控制子进程。持久化停止状态、权限、幂等和审计属于 EDO 业务规则，不引入另一套任务编排框架。维护风险是已提交远程操作无法撤回，因此保留人工确认提示，并用真实隔离 Docker 容器及本地 Shell 取消测试覆盖正常退出路径。

@@ -56,7 +56,11 @@ func (transport *k3sHTTPTestTransport) Read(ctx context.Context, _ model.Host, _
 		return "", errors.New("unexpected non-preflight SSH read")
 	}
 	var output strings.Builder
-	for _, id := range k3sHTTPPreflightCheckIDs {
+	checks := k3sHTTPPreflightCheckIDs
+	if strings.Contains(script, "edo_docker_binary=") {
+		checks = []string{"privilege", "os", "architecture", "tools", "docker", "bind_address", "ports", "cpu", "memory", "disk", "download", "installation_lock", "hostname"}
+	}
+	for _, id := range checks {
 		status := transport.statuses[id]
 		if status == "" {
 			status = "passed"

@@ -14,7 +14,6 @@ import (
 	"gorm.io/datatypes"
 	"gorm.io/gorm"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/client-go/tools/clientcmd"
 
 	"edo/internal/database"
 	"edo/internal/kube"
@@ -228,6 +227,9 @@ func (s *Service) perform(ctx context.Context, record *model.K3sInstallation) er
 		return err
 	}
 	input := snapshot.Input
+	if input.Mode == "k3d" {
+		return s.performK3d(ctx, record, snapshot)
+	}
 	var hosts []Host
 	if json.Unmarshal(record.Hosts, &hosts) != nil {
 		return ErrInvalidInput
@@ -291,18 +293,10 @@ func (s *Service) perform(ctx context.Context, record *model.K3sInstallation) er
 		if err != nil {
 			return err
 		}
-		config, err := clientcmd.Load([]byte(kubeconfig))
-		if err != nil {
-			return ErrRemote
-		}
-		for _, cluster := range config.Clusters {
-			cluster.Server = input.Endpoint
-		}
-		encoded, err := clientcmd.Write(*config)
+		value, err := rewriteKubeconfigEndpoint([]byte(kubeconfig), input.Endpoint)
 		if err != nil {
 			return err
 		}
-		value := string(encoded)
 		if err := s.recheckRuntime(ctx, *record, snapshot); err != nil {
 			return err
 		}

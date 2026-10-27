@@ -3,9 +3,11 @@ import {test} from 'node:test'
 import {readFileSync} from 'node:fs'
 import * as vue from 'vue'
 import * as yaml from 'yaml'
+import {parse,compileTemplate} from '@vue/compiler-sfc'
 import {loadFrontend,componentHarness} from './acceptanceHarness.mjs'
 
 const helpers=loadFrontend('../src/utils/k3sProvision.ts',{yaml})
+const k3dHelpers=loadFrontend('../src/utils/k3dProvision.ts')
 const settle=async()=>{await vue.nextTick();await new Promise(resolve=>setImmediate(resolve));await vue.nextTick()}
 const deferred=()=>{let resolve,reject;const promise=new Promise((yes,no)=>{resolve=yes;reject=no});return {promise,resolve,reject}}
 const catalog={version:'v1.37.1+k3s1',default_version:'v1.37.1+k3s1',catalog_version:'2026-10-26',sources:['https://docs.k3s.io/cli/server'],server:[],agent:[],installer:[]}
@@ -15,22 +17,24 @@ const preflightCheck=(status='passed')=>({id:'memory',name:'内存',status,messa
 const preflightReport=(passed=true)=>({checked_at:new Date().toISOString(),passed,checks:[],hosts:[{host_id:'1',host_name:'Host 1',role:'server',hostname:'master-a',passed,checks:[preflightCheck(passed?'passed':'failed')]}]})
 const preflightFailure=report=>({message:'前置检查未通过',response:{status:409,data:{code:'k3s_preflight_failed',message:'前置检查未通过',preflight:report}}})
 const plan=()=>({id:'plan-1',action:'create',expires_at:new Date(Date.now()+300000).toISOString(),hosts:[{id:'1',name:'Host 1',address:'192.0.2.1',role:'server'}],server_config:'disable: []',agent_config:'',commands:[],warnings:[],preflight:preflightReport()})
+const k3dPlan=(config={agents:1,api_port:16443,bind_address:'192.0.2.1'})=>({...plan(),mode:'k3d',k3d:{...config},endpoint:`https://${config.bind_address}:${config.api_port}`,hosts:[{id:'1',name:'Host 1',address:'192.0.2.1',role:'host'}],preflight:{...preflightReport(),hosts:[{...preflightReport().hosts[0],role:'host'}]}})
 const permissions=['cluster.create','cluster.execute','cluster.update','cluster.read','kubernetes.node.create']
 
 function harness({action='create',codes=permissions,api={}}={}){
   const requests=[],timers=[],mounts=[],unmounts=[],listeners=new Map(),storage={project:'project-a'}
+  let previewed
   const auth=vue.reactive({user:{id:'operator',project_id:'project-a'},canAny(required){return Boolean(this.user)&&required.some(code=>codes.includes(code))}})
   const props=vue.reactive({open:false,action,cluster:action==='join'?'cluster-a':'',endpoint:action==='join'?'https://cluster.example:6443':'',hosts:[host('1'),host('2')]})
   const methods={
     getK3sCatalog:async(cluster,signal)=>{requests.push({method:'catalog',cluster,signal});return cluster?{...catalog,default_version:targetVersion,target_version:targetVersion}:catalog},
     listK3sInstallations:async(cluster,action,signal)=>{requests.push({method:'list',cluster,action,signal});return []},
-    previewK3sPlan:async(body,signal)=>{requests.push({method:'preview',body,signal});return plan()},
-    startK3sInstallation:async(id,signal)=>{requests.push({method:'start',id,signal});return {id:'run-1',action,status:'pending',hosts:[],logs:''}},
-    getK3sInstallation:async(id,signal)=>{requests.push({method:'poll',id,signal});return {id,action,status:'running',hosts:[],logs:'installing'}},
+    previewK3sPlan:async(body,signal)=>{requests.push({method:'preview',body,signal});previewed=body;return body.mode==='k3d'?k3dPlan(body.k3d):plan()},
+    startK3sInstallation:async(id,signal)=>{requests.push({method:'start',id,signal});return {id:'run-1',action,mode:previewed?.mode,k3d:previewed?.k3d,status:'pending',hosts:[],logs:''}},
+    getK3sInstallation:async(id,signal)=>{requests.push({method:'poll',id,signal});return {id,action,mode:previewed?.mode,k3d:previewed?.k3d,status:'running',hosts:[],logs:'installing'}},
     ...api,
   }
   const ctx=componentHarness('../src/components/K3sProvisionDrawer.vue',{
-    codes,props,modules:{vue:{...vue,onMounted:fn=>mounts.push(fn),onBeforeUnmount:fn=>unmounts.push(fn)},'@/api/k3s':methods,'@/utils/k3sProvision':helpers,'@/api/infrastructure':{listHosts:async()=>{requests.push({method:'hosts',project:storage.project});return props.hosts}},'@/utils/time':{formatDateTime:String},'@/stores/auth':{useAuthStore:()=>auth}},
+    codes,props,modules:{vue:{...vue,onMounted:fn=>mounts.push(fn),onBeforeUnmount:fn=>unmounts.push(fn)},'@/api/k3s':methods,'@/utils/k3sProvision':helpers,'@/utils/k3dProvision':k3dHelpers,'@/api/infrastructure':{listHosts:async()=>{requests.push({method:'hosts',project:storage.project});return props.hosts}},'@/utils/time':{formatDateTime:String},'@/stores/auth':{useAuthStore:()=>auth}},
     globals:{window:{addEventListener:(name,fn)=>listeners.set(name,fn),removeEventListener:(name,fn)=>{if(listeners.get(name)===fn)listeners.delete(name)}},localStorage:{getItem:()=>storage.project},setTimeout:fn=>{timers.push(fn);return timers.length},clearTimeout(){},setInterval(){return 1},clearInterval(){}},
   })
   mounts.forEach(fn=>fn())
@@ -55,6 +59,166 @@ test('安装主机只显示启用的远程主机，已有 Kubernetes 关联与�
   assert.deepEqual(helpers.availableK3sHosts([host('1'),{...host('2'),is_active:false},{...host('3'),mode:'local'},{...host('4'),is_builtin:true}]).map(item=>item.id),['1'])
   assert.match(helpers.k3sHostDisabledReason({...host('1'),credential_configured:false}),/凭据/)
   assert.match(helpers.k3sHostDisabledReason({...host('1'),capabilities:[{kind:'kubernetes',runtime_id:'c'}]}),/已关联/)
+})
+
+test('表单与确认计划明确官方脚本、宿主机原生服务和默认containerd，中英文模板均有效',()=>{
+  const source=readFileSync(new URL('../src/components/K3sProvisionDrawer.vue',import.meta.url),'utf8')
+  const {descriptor,errors}=parse(source)
+  assert.deepEqual(errors,[])
+  assert.deepEqual(compileTemplate({source:descriptor.template.content,filename:'K3sProvisionDrawer.vue',id:'native-k3s-install'}).errors,[])
+  const {kubernetesZh:zh,kubernetesEn:en}=loadFrontend('../src/locales/kubernetes.ts')
+  for(const key of ['nativeInstallTitle','nativeInstallHint','nativeRuntimeHint','nativeInstallConfirmTitle','nativeInstallConfirmHint']){
+    assert.equal(typeof zh[key],'string',key);assert.equal(typeof en[key],'string',key)
+    assert.ok(descriptor.template.content.includes(`t('k8s.${key}')`),key)
+  }
+  for(const locale of [zh,en]){
+    assert.match(locale.nativeInstallHint,/https:\/\/get\.k3s\.io/)
+    assert.match(locale.nativeInstallHint,/SSH/);assert.match(locale.nativeInstallHint,/systemd\/OpenRC/)
+    assert.match(locale.nativeInstallHint,/Docker\/k3d/);assert.match(locale.nativeRuntimeHint,/containerd/)
+  }
+  assert.match(zh.nativeInstallHint,/宿主机/);assert.match(zh.nativeInstallHint,/不.*Docker\/k3d/)
+  assert.match(en.nativeInstallHint,/host/);assert.match(en.nativeInstallHint,/No Docker\/k3d/)
+})
+
+test('原生安装不要求Docker主机能力，默认不注入运行时参数且保留官方自选cri-dockerd',async()=>{
+  const ctx=harness({api:{getK3sCatalog:async()=>({...catalog,server:[{name:'docker',type:'boolean',default:false}]})}})
+  try{
+    await ctx.open();ctx.ready();assert.deepEqual(ctx.props.hosts[0].capabilities,[])
+    assert.equal(ctx.state.hostOptions.value.find(item=>item.value==='1').disabled,false)
+    assert.equal(ctx.state.canPreview.value,true);await ctx.state.preview()
+    const input=ctx.requests.find(item=>item.method==='preview').body
+    assert.deepEqual(input.server_options,{});assert.deepEqual(input.agent_options,{});assert.deepEqual(input.installer,{})
+    ctx.state.form.profile='custom';ctx.state.form.server_options={docker:true};await settle()
+    assert.equal(ctx.state.serverOptionChoices.value.find(item=>item.name==='docker').unsupported_reason,undefined)
+    assert.deepEqual(ctx.state.input().server_options,{docker:true})
+  }finally{ctx.stop()}
+})
+
+test('官方主机命令预览不触发安装或容器回退，确认仅提交计划ID且受理不冒充成功',async()=>{
+  const commands=['curl --fail --location https://get.k3s.io -o /tmp/edo-k3s-install.sh\nsudo env INSTALL_K3S_VERSION=v1.37.1+k3s1 sh /tmp/edo-k3s-install.sh server --config /etc/rancher/k3s/config.yaml']
+  const starts=[],pending=deferred(),ctx=harness({api:{previewK3sPlan:async()=>({...plan(),commands}),startK3sInstallation:(id,signal)=>{starts.push({id,signal});return pending.promise}}})
+  try{
+    await ctx.open();ctx.ready();await ctx.state.preview()
+    assert.deepEqual(ctx.state.plan.value.commands,commands);assert.deepEqual(starts,[])
+    const source=readFileSync(new URL('../src/components/K3sProvisionDrawer.vue',import.meta.url),'utf8')
+    assert.match(source,/v-for="\(command,index\) in plan.commands"[^>]*>\{\{ command \}\}/)
+    const saving=ctx.state.execute();await ctx.state.execute();assert.equal(starts.length,1)
+    assert.equal(starts[0].id,'plan-1');assert.equal(starts[0].signal.aborted,false)
+    pending.resolve({id:'native-install-1',action:'create',status:'pending',hosts:[],logs:''});await saving
+    assert.equal(ctx.state.installation.value.status,'pending')
+    assert.ok(!ctx.events.some(event=>['created','completed'].includes(event.name)))
+    assert.ok(!ctx.requests.some(item=>/docker|k3d|container/i.test(item.method)))
+  }finally{ctx.stop()}
+})
+
+test('原生创建仍要求全部动作权限，deployment.read可替代cluster.read而不放宽写权限',async()=>{
+  const required=['cluster.create','cluster.execute','cluster.update','cluster.read']
+  for(const missing of required){
+    const ctx=harness({codes:permissions.filter(code=>code!==missing)})
+    try{await ctx.open();ctx.ready();assert.equal(ctx.state.canExecute.value,false,missing);await ctx.state.preview();assert.ok(!ctx.requests.some(item=>item.method==='preview'),missing)}finally{ctx.stop()}
+  }
+  const ctx=harness({codes:[...permissions.filter(code=>code!=='cluster.read'),'deployment.read']})
+  try{await ctx.open();ctx.ready();assert.equal(ctx.state.canExecute.value,true);await ctx.state.preview();assert.equal(ctx.requests.filter(item=>item.method==='preview').length,1)}finally{ctx.stop()}
+})
+
+test('创建提供原生与k3d模式，k3d只发送单宿主和容器配置，切换分别保留草稿',async()=>{
+  const ctx=harness()
+  try{
+    await ctx.open();ctx.ready();assert.equal(ctx.state.form.mode,'native')
+    Object.assign(ctx.state.form,{name:'Native draft',agent_host_ids:['2'],profile:'custom',server_options:{disable:['traefik']},agent_options:{'node-label':['worker']},installer:{version:'v1.37.1+k3s1'},overrides:'server:\n  disable: []',endpoint:'https://native.example:6443'})
+    ctx.state.form.mode='k3d';await settle();Object.assign(ctx.state.form,{name:'Container draft',server_host_id:'1'});await settle()
+    assert.equal(ctx.state.form.k3d.bind_address,'192.0.2.1');assert.equal(ctx.state.form.k3d.agents,1);assert.equal(ctx.state.form.k3d.api_port,16443)
+    ctx.state.form.k3d.agents=3;await ctx.state.preview()
+    const payload=ctx.requests.find(item=>item.method==='preview').body
+    assert.deepEqual(payload,{action:'create',mode:'k3d',name:'Container draft',server_host_id:'1',profile:'default',endpoint:'https://192.0.2.1:16443',k3d:{agents:3,api_port:16443,bind_address:'192.0.2.1'}})
+    assert.equal(ctx.state.showServerOptions.value,false);assert.equal(ctx.state.showAgentOptions.value,false);assert.deepEqual(ctx.state.selectedHosts.value.map(host=>host.id),['1'])
+    ctx.state.form.mode='native';await settle();assert.equal(ctx.state.plan.value,undefined);assert.equal(ctx.state.form.name,'Native draft');assert.deepEqual(ctx.state.form.agent_host_ids,['2'])
+    assert.deepEqual(ctx.state.form.server_options,{disable:['traefik']});assert.equal(ctx.state.form.endpoint,'https://native.example:6443');assert.equal(ctx.state.input().mode,'native');assert.equal('k3d' in ctx.state.input(),false)
+    ctx.state.form.mode='k3d';await settle();assert.equal(ctx.state.form.name,'Container draft');assert.equal(ctx.state.form.k3d.agents,3)
+  }finally{ctx.stop()}
+})
+
+test('加入节点固定原生模式，不允许切换字段泄漏k3d或绕过原生参数',async()=>{
+  const ctx=harness({action:'join'})
+  try{
+    await ctx.open();ctx.ready();ctx.state.form.mode='k3d';ctx.state.form.k3d.agents=8;await settle();await ctx.state.preview()
+    const payload=ctx.requests.find(item=>item.method==='preview').body
+    assert.equal(payload.mode,'native');assert.equal('k3d' in payload,false);assert.equal(ctx.state.isK3d.value,false);assert.equal(ctx.state.showAgentOptions.value,true)
+    const source=readFileSync(new URL('../src/components/K3sProvisionDrawer.vue',import.meta.url),'utf8')
+    assert.match(source,/<a-form-item v-if="action==='create'" :label="t\('k8s.installMode'\)"/)
+  }finally{ctx.stop()}
+})
+
+test('k3d地址必须显式IP且节点数端口有界，域名SSH地址不猜NAS网卡，零worker可用',async()=>{
+  const ctx=harness()
+  try{
+    await ctx.open();ctx.props.hosts[0].address='nas-forward.example';ctx.state.form.mode='k3d';await settle();ctx.ready();await settle()
+    assert.equal(ctx.state.form.k3d.bind_address,'');assert.equal(ctx.state.canPreview.value,false)
+    for(const address of ['0.0.0.0','127.0.0.1','::1','nas.example','192.0.2.1:16443']){ctx.state.form.k3d.bind_address=address;assert.equal(ctx.state.canPreview.value,false,address)}
+    ctx.state.form.k3d.bind_address='192.168.10.24'
+    for(const [key,value] of [['agents',-1],['agents',9],['agents',1.5],['api_port',0],['api_port',1],['api_port',1023],['api_port',65536]]){
+      const previous=ctx.state.form.k3d[key];ctx.state.form.k3d[key]=value;assert.equal(ctx.state.canPreview.value,false,`${key}=${value}`);ctx.state.form.k3d[key]=previous
+    }
+    ctx.state.form.k3d.agents=0;ctx.state.form.k3d.api_port=1024;assert.equal(ctx.state.canPreview.value,true);await ctx.state.preview()
+    assert.equal(ctx.requests.find(item=>item.method==='preview').body.k3d.agents,0)
+    assert.equal(ctx.requests.find(item=>item.method==='preview').body.k3d.api_port,1024)
+  }finally{ctx.stop()}
+})
+
+test('切换模式取消旧预览并清除计划，切回相同草稿也不接受旧响应',async()=>{
+  const pending=deferred(),ctx=harness({api:{previewK3sPlan:()=>pending.promise}})
+  try{
+    await ctx.open();ctx.ready();const waiting=ctx.state.preview(),old=ctx.state.input()
+    ctx.state.form.mode='k3d';await settle();assert.equal(ctx.state.busy.value,false);assert.equal(ctx.state.plan.value,undefined)
+    ctx.state.form.mode='native';await settle();assert.deepEqual(ctx.state.input(),old)
+    pending.resolve(plan());await waiting;assert.equal(ctx.state.plan.value,undefined)
+  }finally{ctx.stop()}
+})
+
+test('k3d预览必须回显正确模式、单宿主和完整配置，旧native或不完整响应不允许确认',async()=>{
+  for(const response of [plan(),{...k3dPlan(),k3d:undefined},{...k3dPlan(),hosts:[]},{...k3dPlan(),hosts:[...k3dPlan().hosts,...k3dPlan().hosts]},{...k3dPlan(),hosts:[{...k3dPlan().hosts[0],id:'wrong-host'}]},{...k3dPlan(),hosts:[{...k3dPlan().hosts[0],role:'server'}]},{...k3dPlan(),endpoint:'https://wrong.example:16443'},k3dPlan({agents:7,api_port:16443,bind_address:'192.0.2.1'})]){
+    const ctx=harness({api:{previewK3sPlan:async()=>response}})
+    try{await ctx.open();ctx.state.form.mode='k3d';await settle();ctx.ready();await settle();await ctx.state.preview();assert.equal(ctx.state.plan.value,undefined);assert.equal(ctx.state.error.value,'k8s.installModeMismatch');await ctx.state.execute();assert.ok(!ctx.requests.some(item=>item.method==='start'))}finally{ctx.stop()}
+  }
+})
+
+test('k3d接受host角色预检但不绕过失败项，确认使用plan ID且安装显示服务端模式',async()=>{
+  const ctx=harness()
+  try{
+    await ctx.open();ctx.state.form.mode='k3d';await settle();ctx.ready();await settle();await ctx.state.preview()
+    assert.equal(ctx.state.planPreflightPassed.value,true);assert.equal(ctx.state.planModeValid.value,true);assert.equal(ctx.state.displayMode.value,'k3d');assert.equal(ctx.state.k3dConfig.value.agents,1)
+    ctx.state.plan.value.preflight.hosts[0].checks[0].status='failed';await ctx.state.execute();assert.ok(!ctx.requests.some(item=>item.method==='start'))
+    ctx.state.plan.value.preflight.hosts[0].checks[0].status='passed';await ctx.state.execute()
+    assert.equal(ctx.requests.find(item=>item.method==='start').id,'plan-1');assert.equal(ctx.state.installation.value.status,'pending');assert.equal(ctx.state.displayMode.value,'k3d')
+    assert.ok(!ctx.events.some(event=>event.name==='created'))
+    const report=componentHarness('../src/components/K3sPreflightReport.vue',{props:{report:k3dPlan().preflight},modules:{'@/utils/time':{formatDateTime:String}}})
+    try{assert.equal(report.state.groups.value[0].role,'k8s.installationHost')}finally{report.stop()}
+  }finally{ctx.stop()}
+})
+
+test('历史缺少mode按native显示，k3d详情只显示服务端容器数量，不沿用当前草稿',async()=>{
+  const ctx=harness()
+  try{
+    await ctx.open();ctx.state.form.mode='k3d';await settle();ctx.state.form.k3d.agents=8
+    ctx.state.installation.value={id:'legacy',status:'succeeded'};assert.equal(ctx.state.displayMode.value,'native');assert.equal(ctx.state.k3dConfig.value,undefined)
+    ctx.state.installation.value={id:'k3d-run',mode:'k3d',k3d:{agents:2,api_port:17443,bind_address:'192.168.10.24'},status:'succeeded'}
+    assert.equal(ctx.state.displayMode.value,'k3d');assert.equal(ctx.state.k3dConfig.value.agents,2);assert.equal(ctx.state.k3dConfig.value.api_port,17443)
+    ctx.state.form.mode='native';await settle();ctx.state.configureAgain();assert.equal(ctx.state.form.mode,'k3d');assert.equal(ctx.state.installation.value,undefined)
+  }finally{ctx.stop()}
+})
+
+test('k3d计划不渲染原生主机安装器YAML，新建不冒充已有目标版本',()=>{
+  const {descriptor}=parse(readFileSync(new URL('../src/components/K3sProvisionDrawer.vue',import.meta.url),'utf8'))
+  const elements=[]
+  function visit(node){if(node.type===1)elements.push(node);for(const child of node.children??[])visit(child)}
+  visit(descriptor.template.ast)
+  const heading=node=>node.children?.find(child=>child.tag==='h4'||child.tag==='dt')?.children?.map(child=>child.content??'').join('')
+  for(const title of ['最终主机配置','控制平面最终配置','工作节点最终配置','安装器配置']){
+    const node=elements.find(node=>node.tag==='section'&&heading(node)===title)
+    assert.ok(node,title);assert.match(node.props.find(prop=>prop.type===7&&prop.name==='if').exp.content,/^displayMode==='native'&&/)
+  }
+  const target=elements.find(node=>node.tag==='div'&&heading(node)==='目标集群版本')
+  assert.equal(target.props.find(prop=>prop.type===7&&prop.name==='if').exp.content,"action==='join'&&plan.target_version")
 })
 
 test('K3s安装角色明确区分Master和Worker，未知值不推断为工作节点',()=>{
@@ -233,7 +397,7 @@ test('预览显示服务端确认的最终安装版本和目标版本，覆盖�
   }
   const template=readFileSync(new URL('../src/components/K3sProvisionDrawer.vue',import.meta.url),'utf8')
   assert.match(template,/v-if="plan.version"><dt>安装版本<\/dt><dd><code>\{\{ plan.version \}\}/)
-  assert.match(template,/v-if="plan.target_version"><dt>目标集群版本<\/dt>/)
+  assert.match(template,/v-if="action==='join'&&plan.target_version"><dt>目标集群版本<\/dt>/)
 })
 
 test('参数目录读取只为加入节点传递 cluster_id 并保留取消信号',async()=>{

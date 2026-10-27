@@ -314,6 +314,10 @@ func componentPreflightPorts(arguments []string, proxy bool) ([]int, bool) {
 }
 
 func parsePreflightProbe(host Host, output string, err error) HostPreflight {
+	return parseHostPreflight(host, output, err, hostPreflightDefinitions)
+}
+
+func parseHostPreflight(host Host, output string, err error, definitions []preflightCheckDefinition) HostPreflight {
 	report := HostPreflight{HostID: host.ID, HostName: host.Name, Role: host.Role, Passed: true, Checks: []PreflightCheck{}}
 	if err != nil {
 		report.Passed = false
@@ -376,7 +380,7 @@ func parsePreflightProbe(host Host, output string, err error) HostPreflight {
 			}
 		}
 	}
-	for _, definition := range hostPreflightDefinitions {
+	for _, definition := range definitions {
 		status, ok := statuses[definition.id]
 		if !ok {
 			valid = false
@@ -408,7 +412,7 @@ func parsePreflightProbe(host Host, output string, err error) HostPreflight {
 		report.Identity = identity
 		report.Checks = append(report.Checks, PreflightCheck{ID: "identity", Name: "物理主机身份", Status: "passed", Message: "已读取主机身份供重复主机和集群成员核对"})
 	}
-	if !complete || !valid || len(statuses) != len(hostPreflightDefinitions) {
+	if !complete || !valid || len(statuses) != len(definitions) {
 		report.Passed = false
 		report.Checks = append(report.Checks, PreflightCheck{ID: "report", Name: "预检结果完整性", Status: "failed", Message: "主机返回的预检结果不完整或格式无效，请重新检查"})
 	}

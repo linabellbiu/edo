@@ -22,7 +22,7 @@ var (
 	ErrTargetVersionChanged = errors.New("目标集群版本已变化或安装计划缺少版本记录，请重新预览")
 	ErrExistingInstallation = errors.New("主机已有 Kubernetes 安装或配置，请接入现有集群")
 	ErrRemote               = errors.New("主机安装命令执行失败，请检查主机连接和服务日志")
-	ErrReadiness            = errors.New("等待 K3s 节点就绪超时，请检查主机上的 K3s 服务")
+	ErrReadiness            = errors.New("等待集群节点就绪超时，请检查安装任务、节点状态和集群连接")
 	ErrPreflightFailed      = errors.New("节点前置检查未通过，请处理阻断项后重新检查")
 	ErrPreflightRequired    = errors.New("安装计划缺少当前前置检查，请重新检查并预览")
 )
@@ -44,6 +44,8 @@ type Input struct {
 	targetCAData  []byte
 	serverJoin    *kube.ServerJoinInfo
 	Action        string         `json:"action"`
+	Mode          string         `json:"mode,omitempty"`
+	K3d           *K3dOptions    `json:"k3d,omitempty"`
 	Profile       string         `json:"profile"`
 	Name          string         `json:"name"`
 	ClusterID     string         `json:"cluster_id,omitempty"`
@@ -59,6 +61,12 @@ type Input struct {
 	Overrides     string         `json:"overrides"`
 }
 
+type K3dOptions struct {
+	Agents      *int   `json:"agents,omitempty"`
+	APIPort     int    `json:"api_port"`
+	BindAddress string `json:"bind_address"`
+}
+
 type Host struct {
 	ID      string `json:"id"`
 	Name    string `json:"name"`
@@ -72,6 +80,8 @@ type Host struct {
 type Plan struct {
 	ID            string             `json:"id"`
 	Action        string             `json:"action"`
+	Mode          string             `json:"mode"`
+	K3d           *K3dOptions        `json:"k3d,omitempty"`
 	Name          string             `json:"name"`
 	Status        string             `json:"status"`
 	ClusterID     string             `json:"cluster_id,omitempty"`
@@ -100,19 +110,21 @@ type ServerJoinSummary struct {
 }
 
 type Installation struct {
-	ID         string     `json:"id"`
-	Action     string     `json:"action"`
-	Name       string     `json:"name"`
-	Status     string     `json:"status"`
-	ClusterID  string     `json:"cluster_id,omitempty"`
-	ExpiresAt  time.Time  `json:"expires_at"`
-	CreatedAt  time.Time  `json:"created_at"`
-	StartedAt  *time.Time `json:"started_at,omitempty"`
-	FinishedAt *time.Time `json:"finished_at,omitempty"`
-	Hosts      []Host     `json:"hosts"`
-	Logs       string     `json:"logs"`
-	Error      string     `json:"error,omitempty"`
-	Cluster    *Cluster   `json:"cluster,omitempty"`
+	ID         string      `json:"id"`
+	Action     string      `json:"action"`
+	Mode       string      `json:"mode"`
+	K3d        *K3dOptions `json:"k3d,omitempty"`
+	Name       string      `json:"name"`
+	Status     string      `json:"status"`
+	ClusterID  string      `json:"cluster_id,omitempty"`
+	ExpiresAt  time.Time   `json:"expires_at"`
+	CreatedAt  time.Time   `json:"created_at"`
+	StartedAt  *time.Time  `json:"started_at,omitempty"`
+	FinishedAt *time.Time  `json:"finished_at,omitempty"`
+	Hosts      []Host      `json:"hosts"`
+	Logs       string      `json:"logs"`
+	Error      string      `json:"error,omitempty"`
+	Cluster    *Cluster    `json:"cluster,omitempty"`
 }
 
 type Authorizer interface {

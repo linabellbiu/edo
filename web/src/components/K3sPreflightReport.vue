@@ -1,12 +1,14 @@
 <script setup lang="ts">
 import { computed } from 'vue'
+import { useI18n } from 'vue-i18n'
 import type { K3sPreflightReport } from '@/api/k3s'
 import { formatDateTime } from '@/utils/time'
 
 const props = defineProps<{report:K3sPreflightReport}>()
+const { t } = useI18n()
 const groups = computed(() => [
   ...(props.report.checks.length?[{id:'cluster',name:'集群检查',role:'',hostname:'',checks:props.report.checks}]:[]),
-  ...props.report.hosts.map(host=>({id:host.host_id,name:host.host_name,role:host.role==='server'?'控制平面（Master）':'工作节点（Worker）',hostname:host.hostname,checks:host.checks})),
+  ...props.report.hosts.map(host=>({id:host.host_id,name:host.host_name,role:host.role==='host'?t('k8s.installationHost'):host.role==='server'?'控制平面（Master）':'工作节点（Worker）',hostname:host.hostname,checks:host.checks})),
 ])
 const checks = computed(() => groups.value.flatMap(group=>group.checks))
 const failed = computed(() => checks.value.filter(check=>check.status==='failed').length)

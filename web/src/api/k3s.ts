@@ -3,6 +3,8 @@ import type { InfrastructureCluster } from '@/api/infrastructure'
 
 export type K3sScope = 'server' | 'agent' | 'installer'
 export type K3sJoinRole = 'agent' | 'server'
+export type K3sInstallMode = 'native' | 'k3d'
+export interface K3dConfig { agents: number; api_port: number; bind_address: string }
 export interface K3sOption {
   name: string
   label: string
@@ -27,6 +29,8 @@ export interface K3sCatalog {
 }
 export interface K3sPlanInput {
   action: 'create' | 'join'
+  mode?: K3sInstallMode
+  k3d?: K3dConfig
   cluster_id?: string
   name: string
   server_host_id?: string
@@ -35,10 +39,10 @@ export interface K3sPlanInput {
   join_host_ids?: string[]
   server_token?: string
   profile: 'default' | 'custom'
-  server_options: Record<string, unknown>
-  agent_options: Record<string, unknown>
-  installer: Record<string, unknown>
-  overrides: string
+  server_options?: Record<string, unknown>
+  agent_options?: Record<string, unknown>
+  installer?: Record<string, unknown>
+  overrides?: string
   endpoint: string
 }
 export interface K3sPlanHost {
@@ -58,7 +62,7 @@ export interface K3sPreflightCheck {
 export interface K3sHostPreflight {
   host_id: string
   host_name: string
-  role: 'server' | 'agent'
+  role: 'server' | 'agent' | 'host'
   hostname: string
   passed: boolean
   checks: K3sPreflightCheck[]
@@ -73,6 +77,8 @@ export interface K3sPlan {
   id: string
   expires_at: string
   action: 'create' | 'join'
+  mode?: K3sInstallMode
+  k3d?: K3dConfig
   name?: string
   endpoint?: string
   version?: string
@@ -87,6 +93,8 @@ export interface K3sPlan {
 }
 export interface K3sInstallation {
   id: string
+  mode?: K3sInstallMode
+  k3d?: K3dConfig
   status: 'planned' | 'pending' | 'running' | 'succeeded' | 'failed' | 'interrupted'
   phase?: string
   message?: string

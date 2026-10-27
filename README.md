@@ -10,7 +10,7 @@ EDO 的前端和后端打包在一个程序里，网页服务和后台任务在�
 
 应用可以直接发布到 EDO 的本地 Docker 环境，也可以发布到远程主机或 Kubernetes 集群。Docker、Docker Compose 和 Kubernetes 都从应用开始，选择流水线和部署方案，再填好具体位置，统一按「应用 → 流水线 → 部署方案 → 运行资源」发布。
 
-在 Kubernetes 集群页面可以选择默认或自定义方式创建 K3s 集群，也可以为已有 K3s 集群添加 Master 或 Worker。Master 逐台加入经过验证的嵌入式 etcd 集群，需显式提供 Server Token；不会自动转换 SQLite。自定义安装提供 Server、Agent 和安装器参数，以及优先于表单的 YAML 覆盖框。操作前先执行只读预检并预览最终配置，安装进度和结果可再次打开查看，详见[创建 K3s 集群与添加节点](docs/k3s-provisioning.md)。
+在 Kubernetes 集群页面创建集群时，可选择“原生 K3s”或“k3d”。默认原生 K3s 使用官方安装器，在 Linux 主机上运行系统服务；k3d 在一台已有 Docker 的主机中运行隔离的 K3s 容器，适合测试，不代表多台物理机的高可用集群。原生模式支持默认或自定义参数，也可以为已有 K3s 集群添加 Master 或 Worker；Master 逐台加入经过验证的嵌入式 etcd 集群，需显式提供 Server Token，不会自动转换 SQLite。操作前先检查并预览配置，任务在后台安装，进度可再次打开查看，详见[创建 K3s 集群与添加节点](docs/k3s-provisioning.md)。
 
 项目角色可按集群、命名空间和操作范围映射到 Kubernetes 原生 RBAC。映射默认关闭，显式配置并同步成功后生效；用户请求使用受控身份，授权变更同时影响缓存和长连接。详见[集群 RBAC 授权](docs/kubernetes-rbac.md)。
 

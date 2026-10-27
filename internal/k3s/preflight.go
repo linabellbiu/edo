@@ -65,6 +65,9 @@ func (s *Service) preparePreflightInput(ctx context.Context, input Input) (Input
 // Every invocation reads the machines and the target API anew. A displayed
 // report is evidence for review, never a reusable authorization to install.
 func (s *Service) runPreflight(ctx context.Context, input Input, hosts []Host) (*PreflightReport, error) {
+	if input.Mode == "k3d" {
+		return s.runK3dPreflight(ctx, input, hosts)
+	}
 	ctx, cancel := context.WithTimeout(ctx, PreflightTimeout)
 	defer cancel()
 	report := &PreflightReport{CheckedAt: time.Now().UTC(), Checks: []PreflightCheck{}, Hosts: make([]HostPreflight, len(hosts))}
