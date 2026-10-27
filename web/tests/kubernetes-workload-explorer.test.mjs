@@ -122,6 +122,50 @@ test('日志允许已结束 Init；终端重新核对权限、运行状态与正
  h.stop()
 })
 
+test('运行面板迟到的旧Pod目标不能选择或打开新Pod同名容器',async()=>{
+ const h=harness();await h.history()
+ const previous={cluster:'cluster-a',namespace:'team',podUID:'pod-a',container:'metrics'}
+ h.state.choosePod(h.props.pods[1]);await flush()
+ assert.equal(h.state.podUID.value,'pod-b');assert.equal(h.state.containerName.value,'app')
+ h.state.chooseRuntimeContainer(previous);h.state.openRuntimeContainer(previous);h.state.openRuntimeContainer(previous,true)
+ assert.equal(h.state.containerName.value,'app');assert.deepEqual(h.events,[])
+ const current={...previous,podUID:'pod-b'}
+ h.state.chooseRuntimeContainer(current);assert.equal(h.state.containerName.value,'metrics')
+ h.state.openRuntimeContainer(current);assert.equal(h.events[0].name,'logs');assert.equal(h.events[0].args[0].metadata.uid,'pod-b');assert.equal(h.events[0].args[1],'metrics')
+ h.state.openRuntimeContainer(current,true);assert.equal(h.events[1].name,'terminal');assert.equal(h.events[1].args[0].metadata.uid,'pod-b');h.stop()
+})
+
+test('切换集群或命名空间后即使PodUID和容器名相同也拒绝旧运行目标',async()=>{
+ const h=harness();await h.history()
+ const clusterA={cluster:'cluster-a',namespace:'team',podUID:'pod-a',container:'metrics'}
+ h.props.cluster='cluster-b';await flush();await h.history(1)
+ assert.equal(h.state.selectedPod.value.metadata.uid,'pod-a');assert.equal(h.state.containerName.value,'app')
+ h.state.chooseRuntimeContainer(clusterA);h.state.openRuntimeContainer(clusterA);h.state.openRuntimeContainer(clusterA,true)
+ assert.equal(h.state.containerName.value,'app');assert.deepEqual(h.events,[])
+ const namespaceTeam={...clusterA,cluster:'cluster-b'}
+ h.props.object={...deployment,metadata:{...deployment.metadata,namespace:'other'}}
+ h.props.pods=[pod('pod-a','rs-current','other')];await flush();await h.history(2)
+ assert.equal(h.state.selectedPod.value.metadata.namespace,'other');assert.equal(h.state.containerName.value,'app')
+ h.state.chooseRuntimeContainer(namespaceTeam);h.state.openRuntimeContainer(namespaceTeam);h.state.openRuntimeContainer(namespaceTeam,true)
+ assert.equal(h.state.containerName.value,'app');assert.deepEqual(h.events,[])
+ const current={...namespaceTeam,namespace:'other'}
+ h.state.openRuntimeContainer(current);assert.equal(h.events[0].args[0].metadata.namespace,'other');assert.equal(h.events[0].args[1],'metrics');h.stop()
+})
+
+test('身份匹配的运行目标仍须逐次检查容器存在、权限、禁用及终端运行状态',async()=>{
+ const h=harness();await h.history()
+ const target={cluster:'cluster-a',namespace:'team',podUID:'pod-a',container:'metrics'}
+ h.props.disabled=true;h.state.chooseRuntimeContainer(target);h.state.openRuntimeContainer(target)
+ assert.equal(h.state.containerName.value,'app');assert.deepEqual(h.events,[])
+ h.props.disabled=false;h.permissions.delete('terminal.open');h.state.openRuntimeContainer(target,true);assert.deepEqual(h.events,[])
+ h.permissions.add('terminal.open');h.props.pods[0].status.containerStatuses[1].state={terminated:{exitCode:0}}
+ h.state.openRuntimeContainer(target,true);assert.deepEqual(h.events,[])
+ h.state.openRuntimeContainer(target);assert.equal(h.events[0].name,'logs')
+ h.props.pods[0].spec.containers=h.props.pods[0].spec.containers.filter(item=>item.name!=='metrics');await flush()
+ h.state.openRuntimeContainer(target);assert.equal(h.events.length,1)
+ h.permissions.delete('kubernetes.workload.read');h.state.openRuntimeContainer({...target,container:'app'});assert.equal(h.events.length,1);h.stop()
+})
+
 test('切换工作负载会取消旧请求，迟到响应与 UID 错配不能污染新详情',async()=>{
  const h=harness();h.props.object={...deployment,metadata:{...deployment.metadata,uid:'deployment-b',name:'other'}};await flush()
  assert.equal(h.requests[0].options.signal.aborted,true)
@@ -271,10 +315,32 @@ test('关联详情返回保留工作负载选择与模板分区，关闭后清�
  assert.equal(h.state.detail.value.kind,'Pod');assert.deepEqual(h.state.workloadSelections.value['testdeployment-a'],selection)
  await h.state.backDetail();await settleView();assert.equal(h.state.detail.value.metadata.uid,'deployment-a');assert.deepEqual(h.state.workloadSelections.value['testdeployment-a'],selection)
  h.state.detailTab.value='template';h.state.templateSection.value='storage'
+ h.state.rememberTemplateContainer('app/metrics')
+ assert.equal(h.state.templateIdentity.value,'test/deployment-a');assert.equal(h.state.templateContainerSelections.value['test/deployment-a'],'app/metrics')
  await h.state.followReference({resource:'persistentvolumeclaims',name:'data',namespace:'team',uid:'pvc-a'});await settleView()
  assert.equal(h.state.detail.value.metadata.uid,'pvc-a')
+ assert.equal(h.state.detailHistory.value.at(-1).templateIdentity,'test/deployment-a');assert.equal(h.state.detailHistory.value.at(-1).templateContainerKey,'app/metrics')
+ h.state.templateContainerSelections.value['test/deployment-a']='app/app'
  await h.state.backDetail();await settleView();assert.equal(h.state.detailTab.value,'template');assert.equal(h.state.templateSection.value,'storage')
- h.state.closeDetails();assert.deepEqual(h.state.workloadSelections.value,{});assert.deepEqual(h.state.detailHistory.value,[]);h.stop()
+ assert.equal(h.state.templateContainerSelections.value['test/deployment-a'],'app/metrics')
+ h.state.closeDetails();assert.deepEqual(h.state.workloadSelections.value,{});assert.deepEqual(h.state.templateContainerSelections.value,{});assert.deepEqual(h.state.detailHistory.value,[]);h.stop()
+})
+
+test('模板容器选择只接受当前资源的真实容器和读取权限，刷新删除目标仍保留失效标识',async()=>{
+ const h=await viewHarness();await h.state.openDetails(h.workload);await settleView()
+ h.state.rememberTemplateContainer('init/prepare');assert.equal(h.state.templateContainerSelections.value['test/deployment-a'],'init/prepare')
+ for(const key of ['app/not-found','init/app','app/metrics/other'])h.state.rememberTemplateContainer(key)
+ h.state.rememberTemplateContainer('app/metrics','other-cluster/deployment-a')
+ h.state.rememberTemplateContainer('app/metrics','test/other-workload')
+ assert.equal(h.state.templateContainerSelections.value['test/deployment-a'],'init/prepare')
+ h.blocked.add('kubernetes.workload.read');h.state.rememberTemplateContainer('app/metrics');assert.equal(h.state.templateContainerSelections.value['test/deployment-a'],'init/prepare');h.blocked.delete('kubernetes.workload.read')
+ h.state.detailTab.value='template';h.state.templateSection.value='containers'
+ await h.state.followReference({resource:'persistentvolumeclaims',name:'data',namespace:'team',uid:'pvc-a'});await settleView()
+ h.workload.spec.template.spec.initContainers=[]
+ await h.state.backDetail();await settleView()
+ assert.equal(h.state.templateContainerSelections.value['test/deployment-a'],'init/prepare');assert.equal(h.state.detail.value.spec.template.spec.initContainers.length,0)
+ assert.equal(h.state.templateContainerSelections.value['test/pvc-a'],undefined)
+ h.stop()
 })
 
 test('工作负载摘要保留显式零策略和中性缩容状态，缺失副本数不显示成功',()=>{

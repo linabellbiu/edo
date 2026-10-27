@@ -5,7 +5,7 @@ import { Plus, RefreshCw, Search, ArrowLeft, Filter, Server, ChevronRight } from
 import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter, onBeforeRouteLeave, onBeforeRouteUpdate, type LocationQueryRaw } from 'vue-router'
 import client from '@/api/client'
-import { identityOf, kubeKey, kubeTypes, listKubeResources, listKubeResourceScopes, namespaceSelection, mapNamespaceRequests, mergeNamespaceOverviews, resourceURL, withFreshKubeResource, kubeErrorMessage, KubeResourceChanged, streamKubeEvents, KubeWatchError, usageFor, formatKubeCPU, formatKubeMemory, type KubeWatchEvent, type KubeOverview as OverviewData, type KubeCluster, type KubeObject, type KubeType } from '@/api/kubernetes'
+import { identityOf, kubeKey, kubeTypes, listKubeResources, listKubeResourceScopes, namespaceSelection, mapNamespaceRequests, mergeNamespaceOverviews, resourceURL, withFreshKubeResource, kubeErrorMessage, KubeResourceChanged, streamKubeEvents, KubeWatchError, usageFor, formatKubeCPU, formatKubeMemory, podSpec, type KubeWatchEvent, type KubeOverview as OverviewData, type KubeCluster, type KubeObject, type KubeType } from '@/api/kubernetes'
 import { resourceColumns, resourceCells, resourceStatus, resourceSearchText, matchesLabelFilter, relatedPodMatch, type KubeReference } from '@/utils/kubernetesPresentation'
 import KubeNamespaceTree from '@/components/KubeNamespaceTree.vue'
 import '@/styles/kubernetes.css'
@@ -102,8 +102,17 @@ function clearFilters(){query.value='';labelFilter.value='';statusFilter.value='
 const clusterInfo = computed(() => clusters.value.find(item=>item.id===cluster.value))
 const hasRowActions=computed(()=>{const type=activeType.value;if(!type)return false;return type.group==='workloads'||['config','storage'].includes(type.group)||type.update&&can(`${type.permission}.update`)||type.delete&&can(`${type.permission}.delete`)||type.resource==='nodes'&&can('kubernetes.node.delete')})
 const columns = computed(() => activeType.value?resourceColumns(activeType.value,t).map(column=>({...column,sortable:kubeSortableColumns.includes(column.key)})):[])
-const detail = ref<KubeObject>(),detailType=ref<KubeType>(),detailOrigin=ref(''),detailHistory=ref<Array<{object:KubeObject;type:KubeType;tab:string;templateSection?:'containers'|'storage'|'scheduling'}>>([]),detailOpen = ref(false), detailLoading = ref(false), detailError = ref(''),detailSyncError=ref(''), detailTab = ref('basic'), events = ref<KubeObject[]>([]), eventsError = ref(false), relatedPods = ref<KubeObject[]>([]),relatedLoading=ref(false),relatedError=ref(''),relatedPartial=ref(false),relatedLoaded=ref(false)
+const detail = ref<KubeObject>(),detailType=ref<KubeType>(),detailOrigin=ref(''),detailHistory=ref<Array<{object:KubeObject;type:KubeType;tab:string;templateSection?:'containers'|'storage'|'scheduling';templateIdentity?:string;templateContainerKey?:string}>>([]),detailOpen = ref(false), detailLoading = ref(false), detailError = ref(''),detailSyncError=ref(''), detailTab = ref('basic'), events = ref<KubeObject[]>([]), eventsError = ref(false), relatedPods = ref<KubeObject[]>([]),relatedLoading=ref(false),relatedError=ref(''),relatedPartial=ref(false),relatedLoaded=ref(false)
 const workloadSelections=ref<Record<string,WorkloadExplorerSelection>>({})
+const eventsLoading=ref(false)
+const templateContainerSelections=ref<Record<string,string>>({})
+const templateIdentity=computed(()=>detail.value?.metadata?.uid?`${cluster.value}/${detail.value.metadata.uid}`:'')
+function rememberTemplateContainer(key:string,identity=templateIdentity.value){
+  if(!detail.value||!detailType.value||!templateIdentity.value||identity!==templateIdentity.value||!can(`${detailType.value.permission}.read`))return
+  const spec=podSpec(detail.value),groups={app:'containers',init:'initContainers',ephemeral:'ephemeralContainers'}
+  const valid=Object.entries(groups).some(([kind,field])=>(spec[field]??[]).some((container:KubeObject)=>`${kind}/${container.name}`===key))
+  if(valid)templateContainerSelections.value[templateIdentity.value]=key
+}
 const detailRefresh=ref(0),templateSection=ref<'containers'|'storage'|'scheduling'>('containers')
 const workloadDetail=computed(()=>detailType.value?.group==='workloads')
 const workloadExplorer=computed(()=>workloadDetail.value&&detail.value?.kind!=='Pod')
@@ -269,11 +278,12 @@ watch(()=>[route.query.cluster,route.query.namespace],()=>{
   }
 },{deep:true})
 
-function closeDetails() { cancelPendingEdit();const origin=lastViewedRow.value;void nextTick(()=>{const row=[...resourcePanel.value?.querySelectorAll<HTMLElement>('[data-resource-key]')??[]].find(item=>item.dataset.resourceKey===origin);row?.querySelector<HTMLButtonElement>('.resource-name')?.focus({preventScroll:true})}); detailRevision++;detailController?.abort(); detailOpen.value=false; detail.value=undefined;detailType.value=undefined;detailOrigin.value='';detailHistory.value=[]; workloadSelections.value={}; secretValues.value=undefined; relatedPods.value=[]; events.value=[]; detailError.value='';detailSyncError.value='';relatedLoading.value=false }
+function closeDetails() { cancelPendingEdit();const origin=lastViewedRow.value;void nextTick(()=>{const row=[...resourcePanel.value?.querySelectorAll<HTMLElement>('[data-resource-key]')??[]].find(item=>item.dataset.resourceKey===origin);row?.querySelector<HTMLButtonElement>('.resource-name')?.focus({preventScroll:true})}); detailRevision++;detailController?.abort(); detailOpen.value=false; detail.value=undefined;detailType.value=undefined;detailOrigin.value='';detailHistory.value=[]; workloadSelections.value={};templateContainerSelections.value={}; secretValues.value=undefined; relatedPods.value=[]; events.value=[]; detailError.value='';detailSyncError.value='';relatedLoading.value=false }
 function nsOf(object:KubeObject) { return object.metadata.namespace ?? '' }
 async function openDetails(object:KubeObject, tab='basic',type=activeType.value,follow=false) {
   if (!type||!can(`${type.permission}.read`)) return
   cancelPendingEdit()
+  eventsLoading.value=false
   if(!follow){detailHistory.value=[];detailOrigin.value=kubeKey(object);lastViewedRow.value=kubeKey(object)}
   const preserve=follow&&detail.value?.metadata.uid===object.metadata.uid&&detailType.value?.resource===type.resource
   const current=++detailRevision, id=cluster.value
@@ -294,7 +304,7 @@ function canFollow(reference?:KubeReference){const type=kubeTypes.find(item=>ite
 async function followReference(reference:KubeReference){
   const type=kubeTypes.find(item=>item.resource===reference.resource)
   if(!type||!canFollow(reference)||detailLoading.value)return
-  if(detail.value&&detailType.value)detailHistory.value.push({object:detail.value,type:detailType.value,tab:detailTab.value,templateSection:templateSection.value})
+  if(detail.value&&detailType.value)detailHistory.value.push({object:detail.value,type:detailType.value,tab:detailTab.value,templateSection:templateSection.value,templateIdentity:templateIdentity.value,templateContainerKey:templateContainerSelections.value[templateIdentity.value]})
   await openDetails({kind:type.kind,metadata:{name:reference.name,namespace:reference.namespace,uid:reference.uid}},'basic',type,true)
 }
 async function followFromRow(object:KubeObject,reference:KubeReference){
@@ -302,10 +312,12 @@ async function followFromRow(object:KubeObject,reference:KubeReference){
   detailOrigin.value=kubeKey(object);detailHistory.value=[{object,type:activeType.value,tab:'basic'}]
   await followReference(reference)
 }
-async function backDetail(){const previous=detailHistory.value.pop();if(previous){await openDetails(previous.object,previous.tab,previous.type,true);if(detail.value?.metadata.uid===previous.object.metadata.uid)templateSection.value=previous.templateSection??'containers'}}
+async function backDetail(){const previous=detailHistory.value.pop();if(previous){await openDetails(previous.object,previous.tab,previous.type,true);if(!detailError.value&&detail.value?.metadata.uid===previous.object.metadata.uid){templateSection.value=previous.templateSection??'containers';if(previous.templateIdentity===templateIdentity.value&&previous.templateContainerKey)templateContainerSelections.value[templateIdentity.value]=previous.templateContainerKey}}}
 async function loadEvents(id:string,type:KubeType,object:KubeObject,current:number,signal:AbortSignal) {
+  if(current===detailRevision)eventsLoading.value=true
   try { const {data}=await client.get<{items:KubeObject[]|null}>(`${resourceURL(id,type,object.metadata.name)}/events`,{params:{namespace:nsOf(object),uid:object.metadata.uid},signal}); if(mounted&&current===detailRevision){events.value=(data.items??[]).sort((a,b)=>String(b.lastTimestamp ?? b.eventTime).localeCompare(String(a.lastTimestamp ?? a.eventTime)));eventsError.value=false} }
   catch { if(mounted&&current===detailRevision&&!signal.aborted) eventsError.value=true }
+  finally {if(mounted&&current===detailRevision)eventsLoading.value=false}
 }
 const hasRelatedPods=computed(()=>can('kubernetes.workload.read')&&['Node','Deployment','StatefulSet','DaemonSet','Job','CronJob','ConfigMap','Secret','PersistentVolumeClaim','Service','NetworkPolicy'].includes(detail.value?.kind??''))
 async function listRelatedResources(id:string,resource:string,ns:string,signal:AbortSignal){
@@ -572,7 +584,7 @@ onBeforeUnmount(()=>{mounted=false;watchMounted=false;stopKubeWatch();watchDirty
         <a-tab-pane v-if="detail.kind==='Node'" key="monitor" :tab="t('k8s.nodeMonitoring')"><KubeNodeMonitor v-if="detailTab==='monitor'" :key="cluster+detail.metadata.uid" :cluster="cluster" :node="detail" :auto-refresh="autoRefresh&&detailPresented" embedded :refresh-token="detailRefresh" :workloads="can('kubernetes.workload.read')" /></a-tab-pane>
 
         <a-tab-pane key="basic" :tab="t(workloadDetail?'k8s.workloadOverview':'k8s.resourceSettings')">
-          <KubeWorkloadSummary v-if="workloadDetail" :object="detail" :type="detailType" :events="events" :events-error="eventsError" @events="detailTab='events'" />
+          <KubeWorkloadSummary v-if="workloadDetail" :object="detail" :type="detailType" :events="events" :events-error="eventsError" :events-loading="detailLoading||eventsLoading" @events="detailTab='events'" />
           <KubeWorkloadExplorer v-if="workloadExplorer" v-show="detailTab==='basic'" :key="cluster+detail.metadata.uid" :cluster="cluster" :object="detail" :type="detailType" :selection="workloadSelections[cluster+detail.metadata.uid]" @selection="value=>workloadSelections[cluster+detail!.metadata.uid]=value" :pods="relatedPods" :pods-loading="relatedLoading" :pods-error="relatedError" :pods-partial="relatedPartial" :events="events" :events-error="eventsError" :auto-refresh="autoRefresh&&detailPresented&&detailTab==='basic'" :refresh-token="detailRefresh" :can="can" :can-follow="canFollow" :disabled="Boolean(busy)||detailLoading||Boolean(detailSyncError)||relatedLoading" @follow="followReference" @logs="(pod,container)=>openWorkloadStream(pod,container)" @terminal="(pod,container)=>openWorkloadStream(pod,container,true)" @retry-pods="retryRelatedPods" />
           <KubeResourceDiagnostics v-else-if="detail.kind==='Pod'&&detailTab==='basic'" :key="cluster+detail.metadata.uid" :cluster="cluster" :object="detail" :type="detailType" :auto-refresh="autoRefresh&&detailPresented" embedded :refresh-token="detailRefresh" :can-follow="canFollow" @follow="followReference" />
           <KubeResourceDetails v-else-if="!workloadDetail" :object="detail" :type="detailType" :container="detail.kind==='Pod'?selectedPodContainer(detail)?.name:undefined" :can-follow="canFollow" @container="value=>selectedContainer[kubeKey(detail!)]=value" @follow="followReference" />
@@ -581,7 +593,7 @@ onBeforeUnmount(()=>{mounted=false;watchMounted=false;stopKubeWatch();watchDirty
         <a-tab-pane v-if="detail.kind==='Service'" key="diagnostics" :tab="t(detail.kind==='Service'?'k8s.serviceEndpoints':detail.kind==='Deployment'?'k8s.deploymentHistory':'k8s.podDiagnostics')"><KubeResourceDiagnostics v-if="detailTab==='diagnostics'" :key="cluster+detail.metadata.uid" :cluster="cluster" :object="detail" :type="detailType" :auto-refresh="autoRefresh&&detailPresented" embedded :refresh-token="detailRefresh" :can-follow="canFollow" @follow="followReference" /></a-tab-pane>
         <a-tab-pane v-if="workloadDetail" key="template" :tab="t('k8s.workloadPodTemplate')">
           <a-radio-group v-model:value="templateSection" class="workload-template-nav" :aria-label="t('k8s.workloadSelectSection')" button-style="solid"><a-radio-button value="containers">{{ t('k8s.containers') }}</a-radio-button><a-radio-button value="storage">{{ t('k8s.volumes') }}</a-radio-button><a-radio-button value="scheduling">{{ t('k8s.scheduling') }}</a-radio-button></a-radio-group>
-          <KubeResourceDetails :object="detail" :type="detailType" :section="templateSection" :container="detail.kind==='Pod'?selectedPodContainer(detail)?.name:undefined" :can-follow="canFollow" @container="value=>selectedContainer[kubeKey(detail!)]=value" @follow="followReference" />
+          <KubeResourceDetails :key="templateIdentity" :object="detail" :type="detailType" :section="templateSection" :selection-identity="templateIdentity" :container-key="templateContainerSelections[templateIdentity]" :container="detail.kind==='Pod'?selectedPodContainer(detail)?.name:undefined" :can-follow="canFollow" @container="value=>selectedContainer[kubeKey(detail!)]=value" @container-key="rememberTemplateContainer" @follow="followReference" />
         </a-tab-pane>
         <a-tab-pane v-if="['ConfigMap','Secret'].includes(detail.kind)" key="data" :tab="t('k8s.dataTab')">
           <section v-if="detail.kind==='ConfigMap'" class="resource-detail-section"><KubeConfigEntries v-if="Object.keys(detail.data??{}).length || !Object.keys(detail.binaryData??{}).length" :model-value="Object.entries(detail.data??{}).map(([key,value])=>({key,value:String(value)}))" readonly /><div v-for="(_,key) in detail.binaryData??{}" :key="key" class="config-entry"><strong>{{ key }} <a-tag>{{ t('k8s.binaryData') }}</a-tag></strong><p class="secondary">{{ t('k8s.binaryHidden') }}</p></div></section>

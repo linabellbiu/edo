@@ -7,16 +7,43 @@ import { formatKubeQuantity, podSpec, type KubeObject, type KubeType } from '@/a
 import { resourceCells, resourceColumns, ingressRoutes, podReferences, policyDirections, policyPeer, type KubeReference } from '@/utils/kubernetesPresentation'
 import { kubeContainerDetails, kubeContainerProbes, kubeEnvironmentSources, kubeVolumeDetails } from '@/utils/kubernetesDetails'
 import KubeResourceCell from './KubeResourceCell.vue'
-const props=defineProps<{object:KubeObject;type:KubeType;canFollow:(reference?:KubeReference)=>boolean;container?:string;section?:'all'|'containers'|'storage'|'scheduling'}>()
-const emit=defineEmits<{follow:[reference:KubeReference];container:[name:string]}>()
+const props=defineProps<{object:KubeObject;type:KubeType;canFollow:(reference?:KubeReference)=>boolean;container?:string;containerKey?:string;selectionIdentity?:string;section?:'all'|'containers'|'storage'|'scheduling'}>()
+const emit=defineEmits<{follow:[reference:KubeReference];container:[name:string];containerKey:[key:string,identity?:string]}>()
 const {t}=useI18n()
 const cells=computed(()=>resourceCells(props.object,t))
 const fields=computed(()=>resourceColumns(props.type,t).filter(item=>!['name','namespace','status','created','usage','images'].includes(item.key)))
 const containers=computed(()=>kubeContainerDetails(props.object))
+const containerGroups=computed(()=>(['app','init','ephemeral'] as const).map(kind=>({kind,items:containers.value.filter(item=>item.kind===kind)})).filter(group=>group.items.length))
 const selectedContainerKey=ref('')
-const selectedContainer=computed(()=>containers.value.find(item=>props.container?item.container.name===props.container:item.key===selectedContainerKey.value)??containers.value.find(item=>item.kind==='app')??containers.value[0])
-function selectContainer(key:string,name:string){selectedContainerKey.value=key;if(props.object.kind==='Pod')emit('container',name)}
-watch(()=>`${props.object.kind}/${props.object.metadata?.uid??props.object.metadata?.name}`,()=>{selectedContainerKey.value=''}, {immediate:true})
+const selectedContainer=computed(()=>containers.value.find(item=>item.key===selectedContainerKey.value))
+const containerMissing=computed(()=>Boolean(selectedContainerKey.value)&&!selectedContainer.value)
+function initialContainerKey(){
+  if(props.containerKey)return props.containerKey
+  if(props.container)return containers.value.find(item=>item.container.name===props.container)?.key??`missing/${props.container}`
+  return containers.value.find(item=>item.kind==='app')?.key??containers.value[0]?.key??''
+}
+function selectContainer(key:string,name?:string){
+  const item=containers.value.find(container=>container.key===key)
+  if(!item||name!==undefined&&item.container.name!==name)return
+  selectedContainerKey.value=key
+  if(props.object.kind==='Pod')emit('container',item.container.name)
+}
+function containerKeydown(event:KeyboardEvent){
+  if(!['ArrowUp','ArrowDown','Home','End'].includes(event.key))return
+  const items=containerGroups.value.flatMap(group=>group.items)
+  if(!items.length)return
+  const current=items.findIndex(item=>item.key===selectedContainerKey.value)
+  const index=event.key==='Home'?0:event.key==='End'?items.length-1:current<0?(event.key==='ArrowUp'?items.length-1:0):event.key==='ArrowUp'?(current-1+items.length)%items.length:(current+1)%items.length
+  event.preventDefault();selectContainer(items[index]!.key)
+  const root=event.currentTarget as HTMLElement|null
+  root?.querySelectorAll<HTMLButtonElement>('[data-container-key]')[index]?.focus()
+}
+watch(()=>`${props.selectionIdentity??''}/${props.object.kind}/${props.object.metadata?.uid??props.object.metadata?.name}`,()=>{selectedContainerKey.value=initialContainerKey()}, {immediate:true})
+watch(()=>props.containerKey,key=>{if(key!==undefined)selectedContainerKey.value=key||initialContainerKey()},{flush:'sync'})
+watch(()=>props.container,name=>{if(name!==undefined&&props.containerKey===undefined)selectedContainerKey.value=initialContainerKey()},{flush:'sync'})
+watch(containers,()=>{if(!selectedContainerKey.value)selectedContainerKey.value=initialContainerKey()})
+// 已保存的选择失效时保留原标识并提示，不能静默切到另一个容器。
+watch(selectedContainerKey,key=>{if(key&&props.section&&props.section!=='all'&&containers.value.some(item=>item.key===key)){if(props.selectionIdentity)emit('containerKey',key,props.selectionIdentity);else emit('containerKey',key)}},{immediate:true})
 const environment=computed(()=>kubeEnvironmentSources(selectedContainer.value?.container??{},props.object.metadata?.namespace))
 const probes=computed(()=>kubeContainerProbes(selectedContainer.value?.container??{}))
 const configuration=computed(()=>podSpec(props.object))
@@ -43,14 +70,26 @@ const rawResources=(container:KubeObject,field:string)=>Object.entries(container
 <template>
   <section v-if="(!section||section==='all')&&fields.length" class="resource-detail-section kube-facts-section"><h4>{{ t('k8s.resourceSettings') }}</h4><dl class="kube-detail-facts"><div v-for="field in fields" :key="field.key"><dt>{{ field.label }}</dt><dd><KubeResourceCell :cell="cells[field.key]" :date="['jobTiming','lastSchedule'].includes(field.key)" :can-follow="canFollow(cells[field.key]?.reference)" @follow="emit('follow',$event)" /></dd></div></dl></section>
 
-  <section v-if="(!section||section==='all'||section==='containers')&&containers.length" class="resource-detail-section kube-container-config">
-    <h4>{{ t('k8s.containers') }}</h4>
-    <div class="detail-table-scroll"><table class="kube-detail-table"><thead><tr><th>{{ t('k8s.container') }}</th><th>{{ t('k8s.image') }}</th><th>{{ t('k8s.resourceRequests') }}</th><th>{{ t('k8s.resourceLimits') }}</th><th v-if="object.kind==='Pod'">{{ t('k8s.status') }}</th></tr></thead><tbody>
-      <tr v-for="item in containers" :key="item.key" :class="{'is-selected':selectedContainer?.key===item.key}"><td><button class="detail-link" :aria-pressed="selectedContainer?.key===item.key" @click="selectContainer(item.key,item.container.name)">{{ item.container.name }}</button><div class="muted">{{ t(`k8s.containerKind_${item.kind}`) }}{{ item.container.restartPolicy==='Always'?` · ${t('k8s.nativeSidecar')}`:'' }}</div></td><td><code>{{ item.container.image||'—' }}</code></td><td :title="rawResources(item.container,'requests')">{{ resources(item.container,'requests') }}</td><td :title="rawResources(item.container,'limits')">{{ resources(item.container,'limits') }}</td><td v-if="object.kind==='Pod'">{{ containerState(item.runtime) }}<div v-if="item.runtime" class="muted">{{ t('k8s.restarts') }}: {{ item.runtime.restartCount??'—' }}</div></td></tr>
-    </tbody></table></div>
-    <div v-if="selectedContainer" :key="`${object.metadata.uid}/${selectedContainer.key}`" class="kube-container-summary">
-      <h4>{{ t('k8s.containerConfiguration') }} · {{ selectedContainer.container.name }}</h4>
+  <section v-if="(!section||section==='all'||section==='containers')&&(containers.length||containerMissing||section==='containers')" class="resource-detail-section kube-container-config">
+    <div class="kube-container-layout">
+      <nav class="kube-container-list" :aria-label="t('k8s.containers')" @keydown="containerKeydown">
+        <section v-for="group in containerGroups" :key="group.kind" class="kube-container-group">
+          <h4>{{ t(`k8s.containerKind_${group.kind}`) }} <span>{{ group.items.length }}</span></h4>
+          <button v-for="item in group.items" :key="item.key" type="button" :data-container-key="item.key" class="kube-container-choice" :class="{'is-selected':selectedContainer?.key===item.key}" :aria-pressed="selectedContainer?.key===item.key" @click="selectContainer(item.key,item.container.name)">
+            <strong>{{ item.container.name }}</strong><span v-if="item.container.restartPolicy==='Always'">{{ t('k8s.nativeSidecar') }}</span>
+          </button>
+        </section>
+      </nav>
+      <div class="kube-container-content">
+        <a-alert v-if="containerMissing" type="warning" show-icon message="所选容器已不存在，请在左侧重新选择容器。" />
+        <a-empty v-else-if="!selectedContainer" :description="t('k8s.emptyData')" />
+        <div v-if="selectedContainer" :key="`${object.metadata.uid}/${selectedContainer.key}`" class="kube-container-summary">
+      <header class="kube-container-heading"><h4>{{ selectedContainer.container.name }}</h4><a-tag>{{ t(`k8s.containerKind_${selectedContainer.kind}`) }}</a-tag></header>
       <dl class="kube-detail-facts">
+        <div class="container-image"><dt>{{ t('k8s.image') }}</dt><dd><code>{{ selectedContainer.container.image||'—' }}</code></dd></div>
+        <div :title="rawResources(selectedContainer.container,'requests')"><dt>{{ t('k8s.resourceRequests') }}</dt><dd>{{ resources(selectedContainer.container,'requests') }}</dd></div>
+        <div :title="rawResources(selectedContainer.container,'limits')"><dt>{{ t('k8s.resourceLimits') }}</dt><dd>{{ resources(selectedContainer.container,'limits') }}</dd></div>
+        <div v-if="object.kind==='Pod'"><dt>{{ t('k8s.status') }}</dt><dd>{{ containerState(selectedContainer.runtime) }}<div v-if="selectedContainer.runtime" class="muted">{{ t('k8s.restarts') }}: {{ selectedContainer.runtime.restartCount??'—' }}</div></dd></div>
         <div v-if="selectedContainer.container.imagePullPolicy"><dt>{{ t('k8s.imagePullPolicy') }}</dt><dd>{{ selectedContainer.container.imagePullPolicy }}</dd></div>
         <div v-if="selectedContainer.container.workingDir"><dt>{{ t('k8s.workingDir') }}</dt><dd><code>{{ selectedContainer.container.workingDir }}</code></dd></div>
         <div v-if="object.kind==='Pod'&&selectedContainer.runtime"><dt>{{ t('k8s.readyAndStarted') }}</dt><dd>{{ booleanValue(selectedContainer.runtime.ready) }} / {{ booleanValue(selectedContainer.runtime.started) }}</dd></div>
@@ -66,6 +105,8 @@ const rawResources=(container:KubeObject,field:string)=>Object.entries(container
       <template v-if="environment.length"><h4>{{ t('k8s.env') }}</h4><div class="detail-table-scroll"><table class="kube-detail-table"><thead><tr><th>{{ t('k8s.name') }}</th><th>{{ t('k8s.environmentSource') }}</th><th>{{ t('k8s.referenceName') }}</th></tr></thead><tbody><tr v-for="(env,index) in environment" :key="index"><td><code>{{ env.name }}</code><div v-if="env.prefix" class="muted">{{ t('k8s.environmentPrefix') }}: {{ env.prefix }}</div></td><td>{{ environmentSourceLabel(env.kind) }}<div v-if="env.optional!==undefined" class="muted">{{ t('k8s.optionalReference') }}: {{ booleanValue(env.optional) }}</div></td><td><template v-if="env.reference"><button v-if="canFollow(env.reference)" class="detail-link" @click="emit('follow',env.reference)">{{ env.reference.name }}</button><span v-else>{{ env.reference.name }}</span><span v-if="env.key"> / {{ env.key }}</span></template><code v-else>{{ env.field||'—' }}</code></td></tr></tbody></table></div></template>
       <template v-if="probes.length"><h4>{{ t('k8s.healthProbes') }}</h4><div class="detail-table-scroll"><table class="kube-detail-table"><thead><tr><th>{{ t('k8s.probeKind') }}</th><th>{{ t('k8s.referenceName') }}</th><th>{{ t('k8s.resourceSettings') }}</th></tr></thead><tbody><tr v-for="probe in probes" :key="probe.key"><td>{{ t(`k8s.${probe.key}`) }}<div v-if="probe.method" class="muted">{{ t(`k8s.probe_${probe.method}`) }}</div></td><td><code>{{ probe.target||'—' }}</code></td><td><div v-for="timing in probe.timings" :key="timing.key">{{ t(`k8s.${timing.key}`) }}: {{ timing.value }}</div></td></tr></tbody></table></div></template>
       <template v-if="selectedContainer.container.volumeMounts?.length"><h4>{{ t('k8s.volumeMounts') }}</h4><div class="detail-table-scroll"><table class="kube-detail-table"><thead><tr><th>{{ t('k8s.volumeName') }}</th><th>{{ t('k8s.mountPath') }}</th><th>{{ t('k8s.subPath') }}</th><th>{{ t('k8s.readOnly') }}</th></tr></thead><tbody><tr v-for="mount in selectedContainer.container.volumeMounts" :key="`${mount.name}/${mount.mountPath}`"><td>{{ mount.name }}</td><td><code>{{ mount.mountPath }}</code></td><td>{{ mount.subPath??mount.subPathExpr??'—' }}</td><td>{{ booleanValue(mount.readOnly) }}</td></tr></tbody></table></div></template>
+        </div>
+      </div>
     </div>
   </section>
 
@@ -86,8 +127,9 @@ const rawResources=(container:KubeObject,field:string)=>Object.entries(container
 
   <section v-if="object.kind==='PersistentVolume'||object.kind==='StorageClass'" class="resource-detail-section"><h4>{{ t('k8s.storageSettings') }}</h4><dl class="kube-detail-facts"><div v-if="source"><dt>{{ source.label }}</dt><dd>{{ source.value }}</dd></div><div><dt>{{ t('k8s.mountOptions') }}</dt><dd>{{ (object.mountOptions??object.spec?.mountOptions??[]).join(', ')||'—' }}</dd></div><div v-for="[key,value] in parameters" :key="key"><dt>{{ key }}</dt><dd>{{ value }}</dd></div></dl></section>
 
-  <section v-if="object.status?.conditions?.length" class="resource-detail-section"><h4>{{ t('k8s.conditions') }}</h4><div class="detail-table-scroll"><table class="kube-detail-table"><thead><tr><th>{{ t('k8s.conditionType') }}</th><th>{{ t('k8s.status') }}</th><th>{{ t('k8s.reason') }}</th><th>{{ t('k8s.message') }}</th><th>{{ t('k8s.nodeHeartbeat') }}</th><th>{{ t('k8s.nodeTransition') }}</th></tr></thead><tbody><tr v-for="condition in object.status.conditions" :key="condition.type"><td>{{ condition.type }}</td><td><a-tag :color="object.kind==='Node'?nodeConditionState(condition):'default'">{{ condition.status }}</a-tag></td><td>{{ condition.reason||'—' }}</td><td>{{ condition.message||'—' }}</td><td>{{ formatDateTime(condition.lastHeartbeatTime) }}</td><td>{{ formatDateTime(condition.lastTransitionTime) }}</td></tr></tbody></table></div></section>
+  <section v-if="(!section||section==='all')&&object.status?.conditions?.length" class="resource-detail-section"><h4>{{ t('k8s.conditions') }}</h4><div class="detail-table-scroll"><table class="kube-detail-table"><thead><tr><th>{{ t('k8s.conditionType') }}</th><th>{{ t('k8s.status') }}</th><th>{{ t('k8s.reason') }}</th><th>{{ t('k8s.message') }}</th><th>{{ t('k8s.nodeHeartbeat') }}</th><th>{{ t('k8s.nodeTransition') }}</th></tr></thead><tbody><tr v-for="condition in object.status.conditions" :key="condition.type"><td>{{ condition.type }}</td><td><a-tag :color="object.kind==='Node'?nodeConditionState(condition):'default'">{{ condition.status }}</a-tag></td><td>{{ condition.reason||'—' }}</td><td>{{ condition.message||'—' }}</td><td>{{ formatDateTime(condition.lastHeartbeatTime) }}</td><td>{{ formatDateTime(condition.lastTransitionTime) }}</td></tr></tbody></table></div></section>
 </template>
 <style scoped>
+.kube-container-config{padding:0;overflow:hidden}.kube-container-layout{display:grid;grid-template-columns:220px minmax(0,1fr);min-width:0;border:1px solid var(--edo-border);border-radius:6px;background:var(--edo-surface)}.kube-container-list{min-width:0;border-right:1px solid var(--edo-border);background:var(--edo-surface-soft);padding:12px 0}.kube-container-group+ .kube-container-group{margin-top:18px}.kube-container-group h4{display:flex;align-items:center;justify-content:space-between;padding:0 16px;font-size:12px;color:var(--edo-muted);margin-bottom:8px}.kube-container-group h4 span{font-weight:400}.kube-container-choice{width:100%;display:flex;flex-direction:column;gap:5px;text-align:left;padding:13px 16px;border:0;border-left:3px solid transparent;color:var(--edo-text);background:transparent;cursor:pointer;overflow-wrap:anywhere;font:inherit}.kube-container-choice strong{font-size:13px;font-weight:500}.kube-container-choice>span{font-size:11px;color:var(--edo-muted)}.kube-container-choice:hover{background:var(--edo-surface)}.kube-container-choice.is-selected{border-left-color:var(--edo-primary);background:var(--edo-surface);color:var(--edo-primary)}.kube-container-choice:focus-visible{outline:2px solid var(--edo-primary);outline-offset:-3px}.kube-container-content{min-width:0;padding:20px}.kube-container-heading{display:flex;align-items:center;gap:12px;padding-bottom:12px;border-bottom:1px solid var(--edo-border)}.kube-container-heading h4{margin:0;font-size:15px;overflow-wrap:anywhere}.kube-container-heading :deep(.ant-tag){margin:0;flex-shrink:0}.kube-container-summary>h4{margin-top:22px}.kube-container-summary>.kube-detail-facts{grid-template-columns:repeat(2,minmax(0,1fr));margin-bottom:8px}.container-image{grid-column:1/-1}.container-image code{font-size:12px}.kube-container-content :deep(.ant-alert){margin-bottom:0}@media(max-width:760px){.kube-container-layout{grid-template-columns:minmax(0,1fr)}.kube-container-list{border-right:0;border-bottom:1px solid var(--edo-border);max-height:260px;overflow-y:auto}.kube-container-group{display:flex;flex-wrap:wrap;gap:4px 8px;padding:0 12px}.kube-container-group h4{flex-basis:100%;padding:0 4px}.kube-container-choice{width:auto;max-width:100%;border-left:0;border-bottom:2px solid transparent;padding:10px 12px;border-radius:4px}.kube-container-choice.is-selected{border-bottom-color:var(--edo-primary)}.kube-container-content{padding:16px}.kube-container-summary>.kube-detail-facts{grid-template-columns:minmax(0,1fr)}}
 h4{font-size:13px;margin:0 0 12px}.kube-detail-facts{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:0 24px;margin:0}.kube-detail-facts>div{padding:11px 0;border-bottom:1px solid var(--edo-border);min-width:0}dt{color:var(--edo-muted);font-size:12px;margin-bottom:7px}dd{font-size:13px;margin:0;overflow-wrap:anywhere}.additional-facts{margin-top:10px}.detail-table-scroll{overflow-x:auto}.kube-detail-table{width:100%;border-collapse:collapse;font-size:13px;text-align:left}.kube-detail-table th{background:var(--edo-bg);color:var(--edo-muted);font-size:12px;font-weight:500;white-space:nowrap}.kube-detail-table th,.kube-detail-table td{padding:10px 12px;border-bottom:1px solid var(--edo-border);vertical-align:top;min-width:90px;line-height:1.6}.kube-detail-table code{display:block;min-width:200px;max-width:330px;overflow-wrap:anywhere;font-size:12px}.muted{color:var(--edo-muted);font-size:12px;margin-left:5px}.detail-hint{font-size:12px;color:var(--edo-muted);margin:12px 0 0;line-height:1.7}.detail-link{border:0;background:none;padding:0;color:var(--edo-primary);cursor:pointer;text-align:left;font:inherit;overflow-wrap:anywhere}.detail-link:hover{text-decoration:underline}.reference-list{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}.reference-list>div{display:grid;gap:6px;font-size:13px;min-width:0}.reference-list .muted{margin:0}.tls-list{margin-top:12px;display:grid;gap:8px;font-size:13px}.tls-list>div{display:flex;align-items:center;gap:12px;flex-wrap:wrap}@media(max-width:800px){.kube-detail-facts,.reference-list{grid-template-columns:repeat(2,minmax(0,1fr))}}@media(max-width:480px){.kube-detail-facts,.reference-list{grid-template-columns:1fr}}
 </style>

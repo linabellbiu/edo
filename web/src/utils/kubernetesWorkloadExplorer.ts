@@ -7,6 +7,13 @@ export interface WorkloadExplorerSelection {
   podTab: string
 }
 
+export interface WorkloadContainerTarget {
+  cluster: string
+  namespace: string
+  podUID: string
+  container: string
+}
+
 export interface WorkloadRevision {
   uid: string
   name: string

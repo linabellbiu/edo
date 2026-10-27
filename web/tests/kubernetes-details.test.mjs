@@ -26,12 +26,13 @@ const component = load('../src/components/KubeResourceDetails.vue', {
   '@/utils/time':{formatDateTime:value=>value??'—'},
 }).default
 
-function harness(object) {
-  const props = vue.reactive({object,type:api.kubeTypes.find(type=>type.kind===object.kind),canFollow:()=>false})
+function harness(object, overrides={}) {
+  const events=[]
+  const props = vue.reactive({object,type:api.kubeTypes.find(type=>type.kind===object.kind),canFollow:()=>false,...overrides})
   const scope = vue.effectScope()
   let state
-  scope.run(()=>{state=component.setup(props,{expose(){},emit(){}})})
-  return {state,props,stop:()=>scope.stop()}
+  scope.run(()=>{state=component.setup(props,{expose(){},emit:(...args)=>events.push(args)})})
+  return {state,props,events,stop:()=>scope.stop()}
 }
 
 test('容器按 Init、普通、临时种类展示，同名状态只来自对应状态数组',()=>{
@@ -136,6 +137,39 @@ test('Pod详情容器跟随日志工具栏选择，内部选择发出准确容�
  scope.run(()=>{state=component.setup(props,{expose(){},emit:(...args)=>events.push(args)})})
  assert.equal(state.selectedContainer.value.container.name,'app');props.container='prepare';assert.equal(state.selectedContainer.value.kind,'init')
  state.selectContainer('app/app','app');assert.deepEqual(events,[['container','app']]);scope.stop()
+})
+
+test('模板按容器类型和名称恢复选择，删除已选容器时警告而不换成其他容器',async()=>{
+ const object={kind:'Deployment',metadata:{uid:'deployment'},spec:{template:{spec:{containers:[{name:'app',image:'app:1'},{name:'metrics',image:'metrics:1'}],initContainers:[{name:'prepare',image:'init:1'}],ephemeralContainers:[{name:'debug',image:'debug:1'}]}}}}
+ const h=harness(object,{section:'containers',containerKey:'init/prepare'})
+ assert.equal(h.state.selectedContainer.value.key,'init/prepare');assert.deepEqual(h.state.containerGroups.value.map(group=>group.kind),['app','init','ephemeral'])
+ assert.deepEqual(h.events,[['containerKey','init/prepare']])
+ h.props.object={...object,spec:{template:{spec:{...object.spec.template.spec,initContainers:[]}}}};await vue.nextTick()
+ assert.equal(h.state.selectedContainerKey.value,'init/prepare');assert.equal(h.state.selectedContainer.value,undefined);assert.equal(h.state.containerMissing.value,true);assert.deepEqual(h.state.environment.value,[])
+ h.state.selectContainer('app/metrics','wrong-name');assert.equal(h.state.selectedContainerKey.value,'init/prepare')
+ h.state.selectContainer('app/metrics','metrics');await vue.nextTick()
+ assert.equal(h.state.selectedContainer.value.key,'app/metrics');assert.equal(h.state.containerMissing.value,false);assert.deepEqual(h.events.at(-1),['containerKey','app/metrics'])
+ h.props.containerKey='ephemeral/debug';assert.equal(h.state.selectedContainer.value.key,'ephemeral/debug')
+ h.stop()
+})
+
+test('模板容器支持上下和首尾键选择，同名跨类型容器不混用；无效保存选择保持失效',()=>{
+ const object={kind:'Deployment',metadata:{uid:'deployment'},spec:{template:{spec:{containers:[{name:'same',image:'app:1'}],initContainers:[{name:'same',image:'init:1'}],ephemeralContainers:[{name:'same',image:'debug:1'}]}}}}
+ const h=harness(object,{section:'containers'}),focused=[]
+ const key=code=>{let prevented=false;h.state.containerKeydown({key:code,preventDefault(){prevented=true},currentTarget:{querySelectorAll:()=>[0,1,2].map(index=>({focus:()=>focused.push(index)}))}});return prevented}
+ assert.equal(h.state.selectedContainer.value.key,'app/same');assert.equal(key('ArrowDown'),true);assert.equal(h.state.selectedContainer.value.key,'init/same')
+ key('End');assert.equal(h.state.selectedContainer.value.key,'ephemeral/same');key('Home');assert.equal(h.state.selectedContainer.value.key,'app/same')
+ key('ArrowUp');assert.equal(h.state.selectedContainer.value.key,'ephemeral/same');assert.equal(key('Tab'),false);assert.deepEqual(focused,[1,2,0,2]);h.stop()
+ const missing=harness(object,{section:'containers',containerKey:'init/removed'})
+ assert.equal(missing.state.selectedContainer.value,undefined);assert.equal(missing.state.containerMissing.value,true);assert.deepEqual(missing.events,[])
+ missing.state.containerKeydown({key:'ArrowUp',preventDefault(){},currentTarget:null});assert.equal(missing.state.selectedContainer.value.key,'ephemeral/same');missing.stop()
+})
+
+test('模板只渲染左侧分类容器选择和右侧配置，不保留原全宽容器表',()=>{
+ const template=parse(readFileSync(new URL('../src/components/KubeResourceDetails.vue',import.meta.url),'utf8')).descriptor.template.content
+ assert.match(template,/<nav class="kube-container-list"/);assert.match(template,/@keydown="containerKeydown"/);assert.match(template,/class="kube-container-content"/)
+ assert.match(template,/v-if="containerMissing"/);assert.match(template,/v-for="group in containerGroups"/)
+ assert.doesNotMatch(template,/<tr v-for="item in containers"/)
 })
 
 test('缺失状态不补零，false/退出码零保持真实含义；资源单位沿用统一格式',()=>{
