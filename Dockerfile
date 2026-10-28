@@ -1,12 +1,5 @@
 FROM docker:28.3.3-cli AS docker-cli
 
-FROM node:24.16.0-bookworm-slim AS web-builder
-WORKDIR /src/web
-COPY web/package.json web/package-lock.json ./
-RUN npm ci
-COPY web/ ./
-RUN npm run build
-
 FROM golang:1.26.10-bookworm AS go-source
 WORKDIR /src
 # Buildx 负责与 Docker-in-Docker 中的 BuildKit 建立双向 session；仅调用 HTTP build API 无法传输上下文和认证。
@@ -35,8 +28,7 @@ FROM go-source AS go-builder
 ARG EDO_VERSION=dev
 RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w -X main.version=${EDO_VERSION}" -o /out/edo ./cmd/edo
 
-# 默认 API 镜像只依赖 Go 构建图；独立 Web 镜像由 web/Dockerfile 构建。
-# 上面的 web-builder 仅保留给 Vite 开发 Compose，不参与默认 API 构建。
+# API 镜像只编译 Go；生产与开发 Web 均由 web/Dockerfile 独立构建。
 FROM debian:bookworm-slim AS api-runtime
 COPY --from=docker-cli /usr/local/bin/docker /usr/local/bin/docker
 COPY --from=docker-cli /usr/local/libexec/docker/cli-plugins/docker-buildx /usr/local/libexec/docker/cli-plugins/docker-buildx

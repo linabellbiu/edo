@@ -110,16 +110,15 @@ func TestDockerAPIRuntimeDoesNotDependOnWebBuild(t *testing.T) {
 		t.Fatal("默认最终阶段必须是独立 API 运行时")
 	}
 	for _, required := range []string{
-		"FROM node:24.16.0-bookworm-slim AS web-builder",
 		"FROM golang:1.26.10-bookworm AS go-source",
 		"FROM go-source AS go-builder",
 		"COPY --from=go-builder --chown=edo:edo /out/edo /app/edo",
 	} {
 		if !strings.Contains(dockerfile, required) {
-			t.Errorf("缺少 API 构建或开发兼容契约: %s", required)
+			t.Errorf("缺少 API 构建契约: %s", required)
 		}
 	}
-	for _, forbidden := range []string{"--from=web-builder", "-tags=edo_web", "go-release-builder", "EDO_WEB_ROOT"} {
+	for _, forbidden := range []string{"FROM node:", "RUN npm", "--from=web-builder", "-tags=edo_web", "go-release-builder", "EDO_WEB_ROOT"} {
 		if strings.Contains(dockerfile, forbidden) {
 			t.Errorf("默认 API 构建不得依赖前端产物或内嵌标签: %s", forbidden)
 		}
@@ -144,7 +143,7 @@ func TestDockerAPIRuntimeDoesNotDependOnWebBuild(t *testing.T) {
 		}
 	}
 	dev := separationComposeServices(t, "deploy/compose.dev.yml")
-	if dev["api"].Build.Target != "go-builder" || dev["web"].Build.Target != "web-builder" || !slices.Equal(dev["web"].Ports, []string{"127.0.0.1:${EDO_WEB_PORT:-5173}:5173"}) || !slices.Equal(dev["api"].Ports, []string{"127.0.0.1:${EDO_HTTP_PORT:-8080}:8080"}) {
+	if dev["api"].Build.Dockerfile != "Dockerfile" || dev["api"].Build.Target != "go-builder" || dev["web"].Build.Dockerfile != "web/Dockerfile" || dev["web"].Build.Target != "web-builder" || !slices.Equal(dev["web"].Ports, []string{"127.0.0.1:${EDO_WEB_PORT:-5173}:5173"}) || !slices.Equal(dev["api"].Ports, []string{"127.0.0.1:${EDO_HTTP_PORT:-8080}:8080"}) {
 		t.Fatal("正式分离部署不得改变 Vite 开发模式的构建目标或端口")
 	}
 }
@@ -155,7 +154,7 @@ func TestWebImageUsesIndependentNonRootRuntime(t *testing.T) {
 	if len(parts) != 2 {
 		t.Fatal("Web 必须使用版本固定的 NGINX 官方稳定镜像")
 	}
-	for _, required := range []string{"RUN npm ci", "RUN npm run build", "COPY web/nginx.conf /etc/nginx/nginx.conf", "COPY --from=web-builder /src/web/dist/ /usr/share/nginx/html/", "USER 101:101", "ENTRYPOINT [\"nginx\"]", "CMD [\"-g\", \"daemon off;\"]"} {
+	for _, required := range []string{"FROM node:24.16.0-bookworm-slim AS web-builder", "RUN npm ci", "RUN npm run build", "COPY web/nginx.conf /etc/nginx/nginx.conf", "COPY --from=web-builder /src/web/dist/ /usr/share/nginx/html/", "USER 101:101", "ENTRYPOINT [\"nginx\"]", "CMD [\"-g\", \"daemon off;\"]"} {
 		if !strings.Contains(dockerfile, required) {
 			t.Errorf("缺少 Web 镜像隔离契约: %s", required)
 		}
