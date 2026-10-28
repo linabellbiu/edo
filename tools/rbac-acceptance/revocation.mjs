@@ -101,10 +101,14 @@ function authorizeMutation(method, path, body) {
 class Client {
   constructor(label, credential) { this.label = label; this.credential = credential; this.cookies = new Map(); }
   cookieHeader() { return [...this.cookies].map(([key, value]) => `${key}=${value}`).join('; '); }
-  async request(method, path, { project, body } = {}) {
+  async request(method, path, { project, body, query } = {}) {
     if (!path.startsWith('/') || path.startsWith('//') || path.includes('?')) throw new Error('请求路径无效');
     authorizeMutation(method, path, body);
     const url = new URL(`/api/v1${path}`, base);
+    for (const [key, value] of Object.entries(query || {})) {
+      if (!['limit', 'offset'].includes(key) || !Number.isSafeInteger(value) || value < 0) throw new Error('分页参数无效');
+      url.searchParams.set(key, String(value));
+    }
     const headers = { Accept: 'application/json' };
     if (project) headers['X-EDO-Project-ID'] = project;
     if (body !== undefined) headers['Content-Type'] = 'application/json';
@@ -129,6 +133,15 @@ class Client {
 const admin = new Client('admin', adminCredential);
 const clients = [];
 let worker, peer, ownershipConfirmed = false;
+async function managedUsers(id) {
+  const users = new Map();
+  for (let offset = 0; offset < 10000; offset += 200) {
+    const result = requireResult(`${id}.page-${offset / 200 + 1}`, await admin.request('GET', '/users', { query: { limit: 200, offset } }), 200, (data) => Array.isArray(data?.users));
+    for (const user of result.data.users) if (uuid(user.id)) users.set(user.id, user);
+    if (result.data.users.length < 200) return [...users.values()];
+  }
+  throw new Error('用户数量超出专项安全分页上限');
+}
 async function create(id, path, body, key) {
   const result = await admin.request('POST', path, { body });
   requireResult(id, result, 201, (data) => uuid(data?.[key]?.id));
@@ -175,7 +188,7 @@ async function validateOwnership() {
   for (const id of Object.values(manifest.roles)) if (!ownID('role', id) || !roles.some((item) => item.id === id && item.name.startsWith(manifest.prefix) && item.description === manifest.prefix)) throw new Error('专项角色身份校验失败');
   const projects = requireResult('ownership.projects-readable', await admin.request('GET', '/projects'), 200, (data) => Array.isArray(data?.projects)).data.projects;
   for (const id of Object.values(manifest.projects)) if (!ownID('project', id) || !projects.some((item) => item.id === id && item.name.startsWith(manifest.prefix) && item.description === manifest.prefix)) throw new Error('专项项目身份校验失败');
-  const users = requireResult('ownership.users-readable', await admin.request('GET', '/users'), 200, (data) => Array.isArray(data?.users)).data.users;
+  const users = await managedUsers('ownership.users-readable');
   for (const [key, id] of Object.entries(manifest.users)) if (!ownID('user', id) || !users.some((item) => item.id === id && item.nickname.startsWith(manifest.prefix) && !item.is_superuser && item.username === credentials[key]?.username && typeof credentials[key]?.password === 'string' && credentials[key].password.length > 0)) throw new Error('专项用户身份校验失败');
   ownershipConfirmed = true;
 }
@@ -184,7 +197,7 @@ async function resetOwnState(prefix) {
   for (const project of ['A', 'B']) await setProject(project, true, `${prefix}.project.${project}`);
   for (const key of ['worker', 'peer']) {
     requireResult(`${prefix}.user.${key}.active`, await admin.request('PATCH', `/users/${manifest.users[key]}/status`, { body: { active: true } }), 204);
-    const users = requireResult(`${prefix}.user.${key}.inspect`, await admin.request('GET', '/users'), 200, (data) => Array.isArray(data?.users)).data.users;
+    const users = await managedUsers(`${prefix}.user.${key}.inspect`);
     const current = users.find((item) => item.id === manifest.users[key]);
     if (!current) throw new Error('专项恢复目标缺失');
     if (current.department_id !== manifest.departments.D1) requireResult(`${prefix}.user.${key}.department`, await admin.request('PUT', `/users/${manifest.users[key]}/department`, { body: { department_id: manifest.departments.D1 } }), 204);
@@ -193,7 +206,7 @@ async function resetOwnState(prefix) {
   }
 }
 async function snapshotOwnState() {
-  const users = requireResult('final-state.users-readable', await admin.request('GET', '/users'), 200, (data) => Array.isArray(data?.users)).data.users;
+  const users = await managedUsers('final-state.users-readable');
   const roles = requireResult('final-state.roles-readable', await admin.request('GET', '/roles'), 200, (data) => Array.isArray(data?.roles)).data.roles;
   const state = { users: [], roles: [], projects: [], memberships: [] };
   for (const user of users) if (ownID('user', user.id)) state.users.push({ id: user.id, departmentID: user.department_id, active: user.is_active, allow: (user.permission_overrides?.allow || []).map(safeCode).filter(Boolean), deny: (user.permission_overrides?.deny || []).map(safeCode).filter(Boolean) });

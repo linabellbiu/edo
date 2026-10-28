@@ -306,6 +306,11 @@ async function matrix() {
   if (variableAdmin) await variableCases(variableAdmin, developer, viewer);
   await credentialCases();
   await approvalCases(projectAdmin, developer);
+  await sameNameScopeCases();
+  if (projectAdmin) {
+    expect('docker.no-local-host-no-builtin-endpoint', await projectAdmin.request('GET', '/docker/endpoints', { project }), 200, (data) => Array.isArray(data?.endpoints) && !data.endpoints.some((item) => item.id === 'edo-local-docker'));
+    expect('docker.no-local-host-direct-containers-denied', await projectAdmin.request('GET', '/docker/endpoints/edo-local-docker/containers', { project }), 404);
+  }
   const builtin = await getClient('builtin_developer');
   if (builtin) {
     const me = await builtin.request('GET', '/auth/me', { project });
@@ -315,6 +320,28 @@ async function matrix() {
   if (projectAdmin) {
     const result = await projectAdmin.request('POST', '/roles', { project, body: { name: ownName(`project-role-${randomBytes(3).toString('hex')}`), display_name: ownName('越权平台角色'), description: manifest.prefix, permissions: ['config.update'] } });
     expect('project-admin-cannot-create-platform-role', result, 403);
+  }
+}
+async function sameNameScopeCases() {
+  const suffix = randomBytes(4).toString('hex');
+  for (const resource of [
+    { path: '/repositories', key: 'repository', list: 'repositories', body: repositoryBody(`same-${suffix}`) },
+    { path: '/environments', key: 'environment', list: 'environments', body: environmentBody(`same-${suffix}`) },
+    { path: '/build-plans', key: 'build_plan', list: 'build_plans', body: { name: ownName(`same-${suffix}`), kind: 'script', script: 'printf RBAC_SCOPE', context_path: '.', working_directory: '.', artifact_path: 'dist', timeout_seconds: 30 } },
+    { path: '/delivery-variables', key: 'variable', list: 'variables', body: variableBody(`RBAC_SAME_${suffix.toUpperCase()}`) },
+  ]) {
+    const ids = {};
+    for (const [projectKey, project] of Object.entries(manifest.projects)) {
+      ids[projectKey] = await create(admin, `same-name.${resource.key}.${projectKey}.create`, resource.path, resource.body, resource.key, project);
+    }
+    for (const [projectKey, project] of Object.entries(manifest.projects)) {
+      const foreignIDs = Object.entries(ids).filter(([key]) => key !== projectKey).map(([, id]) => id).filter(Boolean);
+      expect(`same-name.${resource.key}.${projectKey}.list-isolated`, await admin.request('GET', resource.path, { project }), 200, (data) => {
+        const items = data?.[resource.list];
+        return Boolean(ids[projectKey]) && Array.isArray(items) && items.some((item) => item.id === ids[projectKey]) && !items.some((item) => foreignIDs.includes(item.id));
+      });
+    }
+    if (ids.A) expect(`same-name.${resource.key}.same-project-duplicate-denied`, await admin.request('POST', resource.path, { project: manifest.projects.A, body: resource.body }), 409);
   }
 }
 async function delegation(actor) {

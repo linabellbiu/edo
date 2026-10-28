@@ -122,4 +122,3 @@ test('制品容量统一使用二进制 GiB 与 MiB，保留微小非零值和�
   assert.equal(state.formatArtifactSize({ kind: 'oci_image', size_bytes: 0 }), '未知')
   assert.equal(state.formatArtifactSize({ kind: 'file_bundle', size_bytes: 0 }), '0 MiB')
 })
-
