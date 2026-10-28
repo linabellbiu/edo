@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"edo/internal/access"
 	"edo/internal/audit"
 	"edo/internal/database"
 	"edo/internal/model"
@@ -82,8 +83,15 @@ func (s *Service) authorize(ctx context.Context, user *model.User, permission st
 		return scope, s.failure(ctx, "assistant_project", err, ErrForbidden, "actor_id", user.ID, "project_id", scope.ProjectID)
 	}
 	allowed, err := s.deps.Access.HasPermission(ctx, &current, permission)
+	if err == nil && allowed && access.ProjectPermission(permission) {
+		// 基础会话权限不能代替子工具的资源动作，撤权不等待跨实例策略通知。
+		allowed, err = s.deps.Access.HasCurrentProjectPermission(ctx, &current, permission)
+	}
 	if err != nil || !allowed {
-		return scope, s.failure(ctx, "assistant_permission", err, ErrForbidden, "actor_id", user.ID, "project_id", scope.ProjectID, "permission", permission)
+		if err == nil {
+			err = ErrForbidden
+		}
+		return scope, s.failure(ctx, "assistant_permission", err, ErrForbidden, "actor_id", user.ID, "project_id", scope.ProjectID, "department_id", scope.DepartmentID, "permission", permission)
 	}
 	return scope, nil
 }
