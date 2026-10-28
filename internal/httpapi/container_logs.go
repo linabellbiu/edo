@@ -53,6 +53,10 @@ func (h containerLogHandler) stream(c *gin.Context) {
 	if err != nil {
 		h.logger.Error("打开 Docker 容器日志失败", "operation", "docker_container_logs_open", "request_id", requestIDFrom(c), "endpoint_id", c.Param("id"), "container_id", c.Param("container_id"), "err", err)
 		h.recordAudit(c, "container.logs.open", sessionID, options, model.AuditFailed, 0)
+		if errors.Is(err, dockerengine.ErrEndpointNotFound) {
+			writeError(c, http.StatusNotFound, "endpoint_not_found", dockerengine.ErrEndpointNotFound.Error())
+			return
+		}
 		writeError(c, http.StatusBadGateway, "container_logs_unavailable", "无法读取容器日志，请检查容器和 Docker 连接")
 		return
 	}

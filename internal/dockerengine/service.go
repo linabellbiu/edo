@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/url"
@@ -25,6 +26,7 @@ import (
 	"gorm.io/gorm/clause"
 
 	"edo/internal/config"
+	"edo/internal/database"
 	"edo/internal/hostcredential"
 	"edo/internal/model"
 	"edo/internal/secret"
@@ -132,6 +134,9 @@ func (s *Service) List(ctx context.Context) ([]model.DockerEndpoint, error) {
 		return nil, fmt.Errorf("查询 Docker 连接失败: %w", err)
 	}
 	local, err := s.localEndpoint(ctx)
+	if errors.Is(err, ErrEndpointNotFound) {
+		return endpoints, nil
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -213,6 +218,9 @@ func (s *Service) Rename(ctx context.Context, id, value string) (*model.DockerEn
 		return nil, ErrInvalidEndpoint
 	}
 	if IsLocalEndpointID(id) {
+		if _, err := s.localEndpoint(ctx); err != nil {
+			return nil, err
+		}
 		now := time.Now().UTC()
 		endpoint := model.DockerEndpoint{
 			ID: LocalEndpointID, Name: name, Host: localEndpointHost, IsActive: true,
@@ -374,6 +382,13 @@ func (s *Service) clientForEndpointWithTimeout(
 		return nil, ErrEndpointNotFound
 	}
 	if IsLocalEndpointID(endpoint.ID) {
+		local, err := s.localEndpoint(ctx)
+		if err != nil {
+			return nil, err
+		}
+		if !local.IsActive {
+			return nil, ErrEndpointNotFound
+		}
 		return s.BuilderClient()
 	}
 	transport := &http.Transport{
@@ -465,6 +480,16 @@ func (s *Service) clientForMonitor(ctx context.Context, id string) (*client.Clie
 }
 
 func (s *Service) monitorRevision(ctx context.Context, endpoint *model.DockerEndpoint) (monitorClientRevision, error) {
+	if IsLocalEndpointID(endpoint.ID) {
+		local, err := s.localEndpoint(ctx)
+		if err != nil {
+			return monitorClientRevision{}, err
+		}
+		if !local.IsActive {
+			return monitorClientRevision{}, ErrEndpointNotFound
+		}
+		endpoint = &local
+	}
 	revision := monitorClientRevision{endpointUpdatedAt: endpoint.UpdatedAt}
 	if endpoint.HostID == "" {
 		return revision, nil
@@ -514,9 +539,23 @@ func IsLocalEndpointID(id string) bool {
 }
 
 func (s *Service) localEndpoint(ctx context.Context) (model.DockerEndpoint, error) {
+	// 内置标识只定位当前运行时，不能代替当前项目真实拥有的主机授权。
+	var host model.Host
+	err := s.db.WithContext(ctx).Where("uuid = ? AND mode = ? AND is_builtin = ? AND is_active = ?",
+		model.BuiltinLocalHostID, model.HostModeLocal, true, true).First(&host).Error
+	if err != nil {
+		scope, _ := database.DepartmentScopeFromContext(ctx)
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			slog.DebugContext(ctx, "当前项目没有可用的本地主机", "operation", "docker_local_endpoint_scope", "project_id", scope.ProjectID)
+			return model.DockerEndpoint{}, ErrEndpointNotFound
+		}
+		slog.ErrorContext(ctx, "核验本地主机项目范围失败", "operation", "docker_local_endpoint_scope", "project_id", scope.ProjectID, "err", err)
+		return model.DockerEndpoint{}, fmt.Errorf("核验本地主机项目范围失败: %w", err)
+	}
 	endpoint := model.DockerEndpoint{
 		ID: LocalEndpointID, Name: defaultLocalEndpointName, Host: localEndpointHost,
 		HostID:    model.BuiltinLocalHostID,
+		ProjectID: host.ProjectID, DepartmentID: host.DepartmentID,
 		CreatedBy: "system",
 	}
 	var capability model.HostCapability
