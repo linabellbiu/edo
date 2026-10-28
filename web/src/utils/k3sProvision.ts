@@ -57,6 +57,37 @@ export function k3sInstallationLogs(installation?: K3sInstallation) {
   return Array.isArray(installation?.logs) ? installation.logs.join('\n') : installation?.logs ?? ''
 }
 
+const installationStages: Record<string,string> = {
+  guard:'检查安装保护',preflight:'复查主机环境',download:'下载安装脚本',configuration:'写入安装配置',installer:'执行官方安装器',
+  installer_download:'下载安装包',installer_verify:'校验安装包',installer_binary:'安装 K3s 二进制',installer_environment:'配置运行环境',installer_service:'配置系统服务',installer_start:'等待 K3s 服务启动',
+  version:'核验安装版本',service:'核验系统服务',api:'等待集群 API 就绪',import:'读取集群连接配置',node:'等待节点就绪',association:'关联主机与集群',components:'等待系统组件就绪',
+  component_coredns:'等待 CoreDNS 就绪','component_metrics-server':'等待 Metrics Server 就绪','component_local-path-provisioner':'等待本地存储组件就绪',
+  k3d_tool:'准备 k3d 工具',k3d_create:'创建 k3d 集群',k3d_resources:'核验 k3d 资源',
+}
+
+export function k3sStageLabel(stage?: string) {
+  return stage ? installationStages[stage] || '执行安装步骤' : ''
+}
+
+export function k3sElapsed(start?: string, end?: string | number) {
+  if (!start || end === undefined || end === '') return '—'
+  const from=Date.parse(start),to=typeof end==='number'?end:Date.parse(end)
+  if (!Number.isFinite(from)||!Number.isFinite(to)||to<from) return '—'
+  const seconds=Math.floor((to-from)/1000),hours=Math.floor(seconds/3600),minutes=Math.floor(seconds%3600/60)
+  return hours ? `${hours} 小时 ${minutes} 分 ${seconds%60} 秒` : minutes ? `${minutes} 分 ${seconds%60} 秒` : `${seconds} 秒`
+}
+
+export function k3sInstallationLogView(installation?: K3sInstallation) {
+  const source=k3sInstallationLogs(installation),limit=64*1024
+  // 日志仅按纯文本呈现，限制异常响应大小，不执行 ANSI 或 HTML 控制内容。
+  let tail=source.slice(-limit)
+  if(tail.length&&tail.charCodeAt(0)>=0xdc00&&tail.charCodeAt(0)<=0xdfff)tail=tail.slice(1)
+  const bytes=new TextEncoder().encode(tail),truncated=source.length>tail.length||bytes.length>limit
+  let start=Math.max(0,bytes.length-limit)
+  while(start<bytes.length&&(bytes[start]!&0xc0)===0x80)start++
+  return {text:new TextDecoder().decode(bytes.subarray(start)).replace(/\x1b\[[0-?]*[ -/]*[@-~]/g,'').replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g,''),truncated}
+}
+
 export function k3sHostStatusLabel(status?: string) {
   if (!status) return '等待执行'
   return ({pending:'等待执行',checking:'检查中',ready:'检查通过',installing:'安装中',running:'执行中',succeeded:'已完成',failed:'失败',skipped:'已跳过',not_started:'未开始'} as Record<string,string>)[status] ?? '状态未知'

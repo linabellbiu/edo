@@ -42,7 +42,7 @@ function harness({action='create',codes=permissions,api={}}={}){
   }
   const ctx=componentHarness('../src/components/K3sProvisionDrawer.vue',{
     codes,props,modules:{vue:{...vue,onMounted:fn=>mounts.push(fn),onBeforeUnmount:fn=>unmounts.push(fn)},'@/api/k3s':methods,'@/utils/k3sProvision':helpers,'@/utils/k3dProvision':k3dHelpers,'@/api/infrastructure':{listHosts:async()=>{requests.push({method:'hosts',project:storage.project});return props.hosts}},'@/utils/time':{formatDateTime:String},'@/stores/auth':{useAuthStore:()=>auth}},
-    globals:{window:{addEventListener:(name,fn)=>listeners.set(name,fn),removeEventListener:(name,fn)=>{if(listeners.get(name)===fn)listeners.delete(name)}},localStorage:{getItem:()=>storage.project},setTimeout:fn=>{timers.push(fn);return timers.length},clearTimeout(){},setInterval(){return 1},clearInterval(){}},
+    globals:{window:{addEventListener:(name,fn)=>listeners.set(name,fn),removeEventListener:(name,fn)=>{if(listeners.get(name)===fn)listeners.delete(name)}},localStorage:{getItem:()=>storage.project},setTimeout:(fn,delay)=>{fn.delay=delay;timers.push(fn);return timers.length},clearTimeout(){},setInterval(){return 1},clearInterval(){}},
   })
   mounts.forEach(fn=>fn())
   return {...ctx,auth,props,requests,timers,listeners,storage,stop(){unmounts.forEach(fn=>fn());ctx.stop()},async open(){props.open=true;await settle()},ready(){Object.assign(ctx.state.form,{name:'Production',server_host_id:action==='create'?'1':'',agent_host_ids:[],join_host_ids:action==='join'?['2']:[]})}}
@@ -699,6 +699,43 @@ test('安装任务可从最近记录恢复，轮询失败保留真实状态，�
     fail=false;await ctx.state.refreshInstallation();await ctx.state.refreshInstallation()
     assert.equal(ctx.state.installation.value.status,'succeeded');assert.equal(ctx.events.filter(item=>item.name==='created').length,1);assert.equal(ctx.events.filter(item=>item.name==='completed').length,1)
     ctx.props.open=false;await settle();ctx.props.open=true;await settle();assert.equal(ctx.state.installation.value.id,'old-run')
+  }finally{ctx.stop()}
+})
+
+test('安装进度断线继续重试而非停更，关闭后停止请求，重开仍恢复原任务',async()=>{
+  let fail=true
+  const ctx=harness({api:{getK3sInstallation:async id=>{if(fail)throw Error('进度暂时不可用');return {id,status:'running',hosts:[{id:'1',stage:'installer_start',stage_started_at:'2026-10-28T23:20:28+08:00',progress_updated_at:'2026-10-28T23:21:28+08:00'}],logs:'23:21:28 等待服务启动'}}}})
+  try{
+    await ctx.open();ctx.state.viewInstallation({id:'persisted-run',status:'running',logs:'23:20:28 开始安装'});await settle()
+    assert.equal(ctx.state.installation.value.logs,'23:20:28 开始安装');assert.equal(ctx.state.pollError.value,'进度暂时不可用');assert.equal(ctx.timers.length,1)
+    fail=false;await ctx.timers.shift()();await settle();assert.equal(ctx.state.installation.value.hosts[0].stage,'installer_start');assert.equal(ctx.state.pollError.value,'')
+    ctx.props.open=false;await settle();const before=ctx.requests.length
+    await ctx.timers.shift()();await settle();assert.equal(ctx.requests.length,before)
+    ctx.props.open=true;await settle();assert.equal(ctx.state.installation.value.id,'persisted-run')
+  }finally{ctx.stop()}
+})
+
+test('回看其他安装任务拒绝迟到日志覆盖，失权清空历史并不能直接恢复',async()=>{
+  const pending=deferred(),ctx=harness({api:{getK3sInstallation:async id=>id==='first'?pending.promise:{id,status:'failed',logs:'第二项任务日志'}}})
+  try{
+    await ctx.open();ctx.state.viewInstallation({id:'first',status:'running',logs:'第一项旧日志'});await settle()
+    ctx.state.viewInstallation({id:'second',status:'failed',logs:''});await settle()
+    pending.resolve({id:'first',status:'running',logs:'第一项迟到日志'});await settle()
+    assert.equal(ctx.state.installation.value.id,'second');assert.equal(ctx.state.installation.value.logs,'第二项任务日志')
+    ctx.auth.user=null;await settle();assert.equal(ctx.state.installation.value,undefined);assert.deepEqual(ctx.state.recent.value,[])
+    ctx.state.viewInstallation({id:'private',status:'running',logs:'不可再读取'});await settle();assert.equal(ctx.state.installation.value,undefined)
+  }finally{ctx.stop()}
+})
+
+test('断线重试使用有上限退避，成功后恢复正常周期并重置退避',async()=>{
+  let fail=true
+  const ctx=harness({api:{getK3sInstallation:async id=>{if(fail)throw Error('读取失败');return {id,status:'running',logs:'最新反馈'}}}})
+  try{
+    await ctx.open();ctx.state.viewInstallation({id:'retry-run',status:'running'});await settle()
+    for(const delay of [5000,10000,20000,30000,30000]){const timer=ctx.timers.shift();assert.equal(timer.delay,delay);await timer();await settle()}
+    fail=false;await ctx.timers.shift()();await settle();assert.equal(ctx.timers[0].delay,1500)
+    fail=true;await ctx.timers.shift()();await settle();assert.equal(ctx.timers[0].delay,5000)
+    assert.equal(ctx.state.installation.value.logs,'最新反馈');assert.equal(ctx.state.installation.value.status,'running')
   }finally{ctx.stop()}
 })
 

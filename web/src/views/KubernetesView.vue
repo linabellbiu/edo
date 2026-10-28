@@ -57,6 +57,7 @@ function openProvision(action:'create'|'join'){provisionAction.value=action;prov
 function provisionContext(){return JSON.stringify([auth.user?.id??'',auth.user?.project_id??'',typeof localStorage==='undefined'?'':localStorage.getItem('edo.project')??'',auth.user?.is_superuser??false,[...(auth.user?.permissions??[])].sort(),cluster.value])}
 async function provisionCompleted(installation:K3sInstallation){const context=provisionContext();const loaded=await loadClusters(true);if(!loaded||!mounted||context!==provisionContext())return;if(installation.action==='create'&&installation.cluster_id)cluster.value=installation.cluster_id;refreshAll()}
 const nodeRemoval=ref<{cluster:string;object:KubeObject}>(),nodeName=ref(''),agentStopped=ref(false)
+const nodeRemovalResult=ref<{status:'submitting'|'succeeded'|'failed';message:string}>()
 let overviewRevision=0,overviewController:AbortController|undefined,lastOverview=0,lastOverviewAttempt=0,overviewPending=false
 function selectResource(value:string){
   const type=kubeTypes.find(item=>item.resource===value)
@@ -364,13 +365,20 @@ async function edit(object?:KubeObject,type=activeType.value) {
 }
 function refreshDetail(){detailRefresh.value++;if(detail.value)void openDetails(detail.value,detailTab.value,detailType.value,true)}
 async function saved() { await refresh(false,false,true);void refreshOverview(false,true); if(detailOpen.value&&detail.value) await openDetails(detail.value,detailTab.value,detailType.value,true); if(activeType.value?.resource==='namespaces') void loadNamespaces(true) }
-function showRemoveNode(object:KubeObject){nodeRemoval.value={cluster:cluster.value,object};nodeName.value='';agentStopped.value=false}
+function showRemoveNode(object:KubeObject){if(busy.value||!can('kubernetes.node.delete'))return;nodeRemoval.value={cluster:cluster.value,object};nodeName.value='';agentStopped.value=false;nodeRemovalResult.value=undefined}
+watch(()=>can('kubernetes.node.delete'),allowed=>{if(!allowed){nodeRemoval.value=undefined;nodeRemovalResult.value=undefined}})
 async function removeNode(){
   const target=nodeRemoval.value,type=kubeTypes[0]!
-  if(!target||!agentStopped.value||nodeName.value!==target.object.metadata.name||busy.value)return
+  if(nodeRemovalResult.value?.status==='succeeded'){nodeRemoval.value=undefined;return}
+  if(!target||!can('kubernetes.node.delete')||!agentStopped.value||nodeName.value!==target.object.metadata.name||busy.value)return
   busy.value=kubeKey(target.object)
-  try{await withFreshKubeResource(target.cluster,type,target.object,t('k8s.resourceChanged'),current=>client.delete(`/kubernetes/clusters/${encodeURIComponent(target.cluster)}/nodes/${encodeURIComponent(target.object.metadata.name)}`,{data:{...identityOf(current),name:nodeName.value,agent_stopped:true}}));nodeRemoval.value=undefined;message.success(t('k8s.submitted'));await saved()}
-  catch(err){message.error(kubeErrorMessage(err))}finally{busy.value=''}
+  nodeRemovalResult.value={status:'submitting',message:'正在移除节点记录…'}
+  try{
+    await withFreshKubeResource(target.cluster,type,target.object,t('k8s.resourceChanged'),current=>client.delete(`/kubernetes/clusters/${encodeURIComponent(target.cluster)}/nodes/${encodeURIComponent(target.object.metadata.name)}`,{data:{...identityOf(current),name:nodeName.value,agent_stopped:true}}))
+    if(!mounted||nodeRemoval.value!==target||cluster.value!==target.cluster)return
+    nodeRemovalResult.value={status:'succeeded',message:'节点记录已移除，未卸载主机上的 K3s。'}
+    message.success(t('k8s.submitted'));await saved()
+  }catch(err){if(mounted&&nodeRemoval.value===target){const detail=kubeErrorMessage(err);nodeRemovalResult.value={status:'failed',message:detail};message.error(detail)}}finally{busy.value=''}
 }
 function confirmAction(object:KubeObject,action:string,type=activeType.value) {
   if(busy.value)return
@@ -625,7 +633,7 @@ onBeforeUnmount(()=>{mounted=false;watchMounted=false;stopKubeWatch();watchDirty
     <KubeNodeJoinDrawer v-model:open="joinOpen" :cluster="cluster" :endpoint="clusterInfo?.api_server??''" />
     <K3sProvisionDrawer v-model:open="provisionOpen" :action="provisionAction" :cluster="provisionAction==='join'?cluster:''" :endpoint="provisionAction==='join'?clusterInfo?.api_server??'':''" @completed="provisionCompleted" />
     <ClusterRbacDrawer v-model:open="clusterRbacOpen" :cluster="cluster" @changed="refreshAll" />
-    <a-modal :open="Boolean(nodeRemoval)" :title="t('k8s.removeNode')" :confirm-loading="Boolean(busy)" :ok-text="t('k8s.removeNode')" :cancel-text="t('k8s.cancel')" :ok-button-props="{danger:true,disabled:!agentStopped||nodeName!==nodeRemoval?.object.metadata.name}" :closable="!busy" :mask-closable="!busy" @cancel="nodeRemoval=undefined" @ok="removeNode"><a-alert type="warning" show-icon :message="t('k8s.removeNodeHint')" /><p class="node-removal-context">{{ clusterInfo?.name }} / {{ nodeRemoval?.object.metadata.name }}</p><p>{{ t('k8s.removeBlocked') }}</p><a-checkbox v-model:checked="agentStopped">{{ t('k8s.agentStopped') }}</a-checkbox><a-form-item :label="t('k8s.typeNodeName')" class="node-removal-name"><a-input v-model:value="nodeName" :placeholder="nodeRemoval?.object.metadata.name" :disabled="Boolean(busy)" /></a-form-item></a-modal>
+    <a-modal :open="Boolean(nodeRemoval)" :title="t('k8s.removeNode')" :confirm-loading="Boolean(busy)" :ok-text="nodeRemovalResult?.status==='succeeded'?'关闭':t('k8s.removeNode')" :cancel-text="t('k8s.cancel')" :cancel-button-props="{style:nodeRemovalResult?.status==='succeeded'?{display:'none'}:undefined}" :ok-button-props="{danger:nodeRemovalResult?.status!=='succeeded',disabled:nodeRemovalResult?.status!=='succeeded'&&(!can('kubernetes.node.delete')||!agentStopped||nodeName!==nodeRemoval?.object.metadata.name)}" :closable="!busy" :mask-closable="!busy" @cancel="!busy&&(nodeRemoval=undefined)" @ok="removeNode"><a-alert type="warning" show-icon :message="t('k8s.removeNodeHint')" /><p class="node-removal-context">{{ clusterInfo?.name }} / {{ nodeRemoval?.object.metadata.name }}</p><a-alert v-if="nodeRemovalResult" class="node-removal-result" :type="nodeRemovalResult.status==='succeeded'?'success':nodeRemovalResult.status==='failed'?'error':'info'" show-icon :message="nodeRemovalResult.message" role="status" /><template v-if="nodeRemovalResult?.status!=='succeeded'"><p>{{ t('k8s.removeBlocked') }}</p><a-checkbox v-model:checked="agentStopped" :disabled="Boolean(busy)">{{ t('k8s.agentStopped') }}</a-checkbox><a-form-item :label="t('k8s.typeNodeName')" class="node-removal-name"><a-input v-model:value="nodeName" :placeholder="nodeRemoval?.object.metadata.name" :disabled="Boolean(busy)" /></a-form-item></template></a-modal>
     <a-modal v-model:open="scaleOpen" :title="t('k8s.scaleTitle',{name:scaleTarget?.object.metadata.name??''})" :confirm-loading="Boolean(busy)" :closable="!busy" :mask-closable="!busy" :keyboard="!busy" :ok-text="t('k8s.save')" :cancel-text="t('k8s.cancel')" @ok="scale"><p>{{ clusterInfo?.name }} / {{ scaleTarget?.object.metadata.namespace }}</p><a-form-item :label="t('k8s.replicas')"><a-input-number v-model:value="scaleValue" :min="0" :max="1000" :precision="0" :disabled="Boolean(busy)" /></a-form-item></a-modal>
     <ContainerLogDrawer v-if="!stream.terminal" :key="stream.path" v-model:open="stream.open" :title="stream.title" :path="stream.path" />
     <TerminalDrawer v-else :key="stream.path" v-model:open="stream.open" :title="stream.title" :path="stream.path" />

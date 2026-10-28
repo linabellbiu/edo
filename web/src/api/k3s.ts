@@ -113,12 +113,14 @@ export interface K3sInstallation {
   error?: string
   logs?: string[] | string
   created_at?: string
+  started_at?: string
+  finished_at?: string
   updated_at?: string
   cluster?: Pick<InfrastructureCluster, 'id' | 'name'> & Partial<InfrastructureCluster>
   cluster_id?: string
   action?: 'create' | 'join'
   name?: string
-  hosts?: Array<{id: string; name: string; address?: string; role?: string; status?: string; message?: string}>
+  hosts?: Array<{id: string; name: string; address?: string; role?: string; status?: string; message?: string; stage?: string; stage_started_at?: string; progress_updated_at?: string}>
 }
 
 export async function getK3sCatalog(clusterID = '', signal?: AbortSignal) {

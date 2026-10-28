@@ -11,8 +11,9 @@ import {
 } from '@/api/k3s'
 import K3sOptionFields from '@/components/K3sOptionFields.vue'
 import K3sPreflightReportView from '@/components/K3sPreflightReport.vue'
+import K3sInstallationProgress from '@/components/K3sInstallationProgress.vue'
 import { useAuthStore } from '@/stores/auth'
-import { availableK3sHosts, k3sAutomaticEndpoint, k3sHostDisabledReason, k3sHostRoleLabel, k3sHostStatusLabel, k3sInstallationLabel, k3sInstallationLogs, k3sInstallationRunning, k3sMasterRawArgumentOptions, k3sMasterRawArgumentReason, validateK3sOverrides } from '@/utils/k3sProvision'
+import { availableK3sHosts, k3sAutomaticEndpoint, k3sHostDisabledReason, k3sHostRoleLabel, k3sInstallationLabel, k3sInstallationRunning, k3sMasterRawArgumentOptions, k3sMasterRawArgumentReason, validateK3sOverrides } from '@/utils/k3sProvision'
 import { formatDateTime } from '@/utils/time'
 import { defaultK3dBindAddress, validK3dBindAddress } from '@/utils/k3dProvision'
 
@@ -44,6 +45,7 @@ const form = reactive(emptyForm())
 let modeDrafts: Partial<Record<K3sInstallMode,ReturnType<typeof emptyForm>>> = {},restoringMode=false
 let mounted = true,revision = 0,request:AbortController|undefined,pollRequest:AbortController|undefined,recentRequest:AbortController|undefined
 let pollTimer:ReturnType<typeof setTimeout>|undefined,clock:ReturnType<typeof setInterval>|undefined,completedID = '',operationContext = ''
+let pollFailures=0
 const selectedProject = ref(readSelectedProject())
 const context = computed(() => JSON.stringify([auth.user?.id??'',auth.user?.project_id??'',selectedProject.value,props.action,props.cluster]))
 const hostChoices = computed(() => availableK3sHosts(hosts.value))
@@ -162,6 +164,7 @@ function resetForm() {
   restoringMode=true;modeDrafts={};Object.assign(form,{...emptyForm(),endpoint:props.action==='join'?props.endpoint:''});restoringMode=false
   optionTab.value=props.action==='join'?'agent':'server';plan.value=undefined;preflight.value=undefined;installation.value=undefined;completedID='';operationContext=context.value
   error.value='';pollError.value=''
+  pollFailures=0
 }
 async function initialize() {
   if(!syncProject()||!canExecute.value)return
@@ -188,8 +191,8 @@ async function loadRecent() {
   finally {if(mounted&&current===revision)recentLoading.value=false}
 }
 function viewInstallation(item:K3sInstallation) {
-  if(busy.value)return
-  stopPoll();installation.value=item;form.server_token='';plan.value=undefined;preflight.value=undefined;pollError.value='';operationContext=context.value
+  if(busy.value||!props.open||!canExecute.value)return
+  stopPoll();pollFailures=0;installation.value=item;form.server_token='';plan.value=undefined;preflight.value=undefined;pollError.value='';operationContext=context.value
   completedID=['succeeded','failed','interrupted'].includes(item.status)?item.id:''
   void refreshInstallation()
 }
@@ -229,14 +232,17 @@ function handleProgress(result:K3sInstallation) {
 }
 async function refreshInstallation() {
   const id=installation.value?.id
-  if(!syncProject()||!props.open||!id||!mounted)return
+  if(!syncProject()||!props.open||!canExecute.value||!id||!mounted)return
   stopPoll();const current=revision,currentContext=context.value,controller=new AbortController();pollRequest=controller
   try {
     const result=await getK3sInstallation(id,controller.signal)
     if(!mounted||!props.open||current!==revision||installation.value?.id!==id||!matchesContext(currentContext))return
-    installation.value=result;pollError.value='';handleProgress(result)
+    installation.value=result;pollError.value='';pollFailures=0;handleProgress(result)
   } catch(err) {
-    if(mounted&&props.open&&current===revision&&!controller.signal.aborted&&matchesContext(currentContext))pollError.value=apiErrorMessage(err)
+    if(mounted&&props.open&&current===revision&&!controller.signal.aborted&&matchesContext(currentContext)){
+      pollError.value=apiErrorMessage(err)
+      if(running.value)pollTimer=setTimeout(()=>void refreshInstallation(),Math.min(30_000,5000*2**Math.min(pollFailures++,3)))
+    }
   }
 }
 function configureAgain() {
@@ -292,7 +298,7 @@ onBeforeUnmount(()=>{mounted=false;form.server_token='';cancelRequests();window.
       <a-alert v-if="loadError" type="error" show-icon message="安装配置读取失败" :description="loadError"><template #action><a-button size="small" @click="initialize">重试</a-button></template></a-alert>
       <a-alert v-if="error" type="error" show-icon :message="error" />
       <K3sPreflightReportView v-if="visiblePreflight&&!installation" :report="visiblePreflight" />
-      <section v-if="!installation&&(recent.length||recentError||recentLoading)" class="recent-operations"><details><summary>最近安装任务 <span v-if="recent.length">{{ recent.length }}</span><a-button type="link" size="small" :loading="recentLoading" @click.stop.prevent="loadRecent">刷新</a-button></summary><a-alert v-if="recentError" type="warning" message="最近任务读取失败" :description="recentError"><template #action><a-button size="small" @click="loadRecent">重试</a-button></template></a-alert><div v-for="item in recent" :key="item.id" class="recent-operation"><div><strong>{{ item.name||item.id }}</strong><small>{{ item.created_at?formatDateTime(item.created_at,'zh-CN'):item.id }}</small></div><a-tag>{{ t(modeOf(item)==='k3d'?'k8s.installModeK3d':'k8s.installModeNative') }}</a-tag><a-tag v-if="item.action==='join'&&item.hosts?.length">{{ k3sHostRoleLabel(item.hosts[0]?.role) }}</a-tag><a-tag>{{ k3sInstallationLabel(item.status) }}</a-tag><a-button size="small" :disabled="busy" @click="viewInstallation(item)">查看进度</a-button></div></details></section>
+      <section v-if="recent.length||recentError||recentLoading" class="recent-operations"><details :open="!installation"><summary>最近安装任务 <span v-if="recent.length">{{ recent.length }}</span><a-button type="link" size="small" :loading="recentLoading" @click.stop.prevent="loadRecent">刷新</a-button></summary><a-alert v-if="recentError" type="warning" message="最近任务读取失败" :description="recentError"><template #action><a-button size="small" @click="loadRecent">重试</a-button></template></a-alert><div v-for="item in recent" :key="item.id" class="recent-operation" :class="{'current-operation':installation?.id===item.id}"><div><strong>{{ item.name||item.id }}</strong><small>{{ item.created_at?formatDateTime(item.created_at,'zh-CN'):item.id }}</small></div><a-tag>{{ t(modeOf(item)==='k3d'?'k8s.installModeK3d':'k8s.installModeNative') }}</a-tag><a-tag v-if="item.action==='join'&&item.hosts?.length">{{ k3sHostRoleLabel(item.hosts[0]?.role) }}</a-tag><a-tag>{{ k3sInstallationLabel(item.status) }}</a-tag><a-button size="small" :disabled="busy" :aria-pressed="installation?.id===item.id" @click="viewInstallation(item)">查看进度</a-button></div></details></section>
       <a-spin :spinning="loading">
         <a-form v-if="!plan&&!installation" layout="vertical" :disabled="busy||!canExecute" class="provision-form">
           <a-form-item v-if="action==='create'" :label="t('k8s.installMode')"><a-radio-group v-model:value="form.mode" :aria-label="t('k8s.installMode')" button-style="solid"><a-radio-button value="native">{{ t('k8s.installModeNative') }}</a-radio-button><a-radio-button value="k3d">{{ t('k8s.installModeK3d') }}</a-radio-button></a-radio-group></a-form-item>
@@ -362,8 +368,7 @@ onBeforeUnmount(()=>{mounted=false;form.server_token='';cancelRequests();window.
           <a-button v-if="!running&&installation.cluster" class="manage-created-cluster" @click="manageCreatedCluster">{{ canManageClusterResources?'管理已创建集群':'查看已创建集群' }}</a-button>
           <p class="operation-id">任务编号：{{ installation.id }}</p>
           <a-alert v-if="pollError" type="warning" show-icon message="进度读取失败，安装任务可能仍在运行" :description="pollError"><template #action><a-button size="small" @click="refreshInstallation"><RefreshCw :size="13" />重新读取</a-button></template></a-alert>
-          <div class="operation-hosts"><div v-for="host in installation.hosts" :key="host.id"><Server :size="16" /><span><strong>{{ host.name }}</strong><small>{{ host.address }}</small></span><a-tag :title="host.status">{{ k3sHostStatusLabel(host.status) }}</a-tag><p v-if="host.message">{{ host.message }}</p></div></div>
-          <section><h4>安装日志</h4><pre class="installation-logs" aria-live="polite">{{ k3sInstallationLogs(installation)||'等待安装日志…' }}</pre></section>
+          <K3sInstallationProgress :key="installation.id" :installation="installation" :now="now" />
         </div>
       </a-spin>
     </div>
@@ -374,6 +379,6 @@ onBeforeUnmount(()=>{mounted=false;form.server_token='';cancelRequests();window.
 <style scoped>
 .source-options{margin-top:16px}.source-options :deep(.ant-select){width:100%}.source-suggestion{margin-top:-10px;margin-bottom:22px}.source-facts{padding:14px;border:1px solid var(--edo-border);border-radius:6px;background:var(--edo-bg)}
 .host-configs details+details{margin-top:12px}.host-configs summary{padding:9px 0;cursor:pointer;font-size:12px}.recent-operations summary>.ant-btn{float:right;margin-top:-4px}
-.recent-operations{border:1px solid var(--edo-border);border-radius:6px}.recent-operations summary{cursor:pointer;padding:11px 14px;font-size:12px;background:var(--edo-bg)}.recent-operations summary>span{margin-left:6px;color:var(--edo-muted)}.recent-operation{display:flex;align-items:center;gap:12px;padding:12px 14px;border-top:1px solid var(--edo-border)}.recent-operation>div{flex:1;min-width:0}.recent-operation strong,.recent-operation small{display:block;overflow-wrap:anywhere}.recent-operation strong{font-size:12px;font-weight:500}.recent-operation small{margin-top:4px;font-size:11px;color:var(--edo-muted)}
+.recent-operations{border:1px solid var(--edo-border);border-radius:6px}.recent-operations summary{cursor:pointer;padding:11px 14px;font-size:12px;background:var(--edo-bg)}.recent-operations summary>span{margin-left:6px;color:var(--edo-muted)}.recent-operation{display:flex;align-items:center;gap:8px 12px;flex-wrap:wrap;padding:12px 14px;border-top:1px solid var(--edo-border)}.recent-operation.current-operation{background:color-mix(in srgb,var(--edo-primary) 6%,var(--edo-surface))}.recent-operation>div{flex:1;min-width:120px}.recent-operation strong,.recent-operation small{display:block;overflow-wrap:anywhere}.recent-operation strong{font-size:12px;font-weight:500}.recent-operation small{margin-top:4px;font-size:11px;color:var(--edo-muted)}
 .provision-content{display:grid;gap:22px}.provision-form{margin-top:6px}.form-columns{display:grid;grid-template-columns:1fr 1fr;gap:0 16px}.wide{grid-column:1/-1}.field-help{margin-top:6px;font-size:12px;line-height:1.65;color:var(--edo-muted)}.default-install{display:flex;gap:12px;padding:18px;border:1px solid var(--edo-border);border-radius:6px;background:var(--edo-bg)}.default-install>svg{color:#1d9459;flex:none;margin-top:3px}.default-install strong{font-size:13px;font-weight:600}.default-install p{margin:5px 0;font-size:12px;line-height:1.7;color:var(--edo-muted)}.default-install small{color:var(--edo-muted);font-size:11px}.install-note{padding-top:18px;font-size:12px;color:var(--edo-muted);line-height:1.7}.catalog-caption{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:14px}.catalog-caption strong{font-size:14px;font-weight:600}.catalog-caption span{font-size:11px;color:var(--edo-muted)}.option-tabs{margin:8px 0 20px}.override-field{margin-top:22px}.override-field :deep(textarea){font-family:Consolas,monospace;font-size:12px}.provision-footer{display:flex;align-items:center;justify-content:flex-end;gap:8px}.plan-review,.installation-result{display:grid;gap:16px}.plan-facts{margin:0;display:grid;grid-template-columns:1fr 1fr;gap:14px}.plan-facts div{min-width:0}.plan-facts dt{color:var(--edo-muted);font-size:12px;margin-bottom:5px}.plan-facts dd{margin:0;font-size:13px;overflow-wrap:anywhere}.plan-hosts{border:1px solid var(--edo-border);border-radius:6px}.plan-hosts>div{display:flex;align-items:center;gap:10px;padding:12px;border-bottom:1px solid var(--edo-border);flex-wrap:wrap;font-size:12px}.plan-hosts>div:last-child{border:0}.plan-hosts strong{font-weight:500}.plan-hosts code{color:var(--edo-muted)}.plan-hosts .ant-tag{margin-left:auto}.plan-review h4,.installation-result h4{margin:0 0 8px;font-size:13px;font-weight:600}.plan-review pre,.installation-logs{margin:0;padding:14px;border:1px solid var(--edo-border);border-radius:6px;background:var(--edo-bg);font-size:12px;line-height:1.7;white-space:pre-wrap;overflow-wrap:anywhere;max-height:360px;overflow:auto}.plan-review pre+pre{margin-top:10px}.operation-id{font-size:11px;color:var(--edo-muted);margin:0;overflow-wrap:anywhere}.operation-hosts>div{display:flex;align-items:center;gap:10px;padding:12px 0;flex-wrap:wrap;border-bottom:1px solid var(--edo-border)}.operation-hosts span{flex:1}.operation-hosts strong,.operation-hosts small{display:block}.operation-hosts strong{font-size:13px;font-weight:500}.operation-hosts small{font-size:11px;color:var(--edo-muted);margin-top:3px}.operation-hosts p{flex-basis:100%;margin:0 0 0 26px;font-size:12px;color:var(--edo-muted)}@media(max-width:650px){.form-columns,.plan-facts{grid-template-columns:1fr}.catalog-caption{align-items:flex-start;flex-direction:column}.provision-footer{flex-wrap:wrap}}
 </style>
