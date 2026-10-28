@@ -68,7 +68,7 @@ func (s *Service) DeployContainer(
 	endpointID, targetID, containerName, image, imageDisplay, deploymentID string,
 	timeout time.Duration, configuration model.DockerContainerConfig, registry RegistryAuth, stdout, stderr io.Writer,
 ) (ImageSnapshot, error, error) {
-	return s.deployContainer(ctx, endpointID, targetID, containerName, image, imageDisplay, "", deploymentID, timeout, configuration, registry, stdout, stderr)
+	return s.deployContainer(ctx, endpointID, targetID, containerName, image, imageDisplay, "", deploymentID, timeout, configuration, nil, registry, stdout, stderr)
 }
 
 // DeployPreparedContainer 发布已经在目标 Docker daemon 中固定 Image ID 的镜像。
@@ -81,13 +81,25 @@ func (s *Service) DeployPreparedContainer(
 	if strings.TrimSpace(image) == "" || !IsValidImageID(expectedImageID) {
 		return ImageSnapshot{}, nil, containerDeploymentError(ErrContainerImageMismatch, errors.New("待发布的 Docker 镜像不可验证"))
 	}
-	return s.deployContainer(ctx, endpointID, targetID, containerName, image, imageDisplay, expectedImageID, deploymentID, timeout, configuration, registry, stdout, stderr)
+	return s.deployContainer(ctx, endpointID, targetID, containerName, image, imageDisplay, expectedImageID, deploymentID, timeout, configuration, nil, registry, stdout, stderr)
+}
+
+// DeployPreparedContainerIfCurrent 在替换前再次核对已确认的容器身份，不能将旧回退应用到新实例。
+func (s *Service) DeployPreparedContainerIfCurrent(
+	ctx context.Context,
+	endpointID, targetID, containerName, image, imageDisplay, expectedImageID, deploymentID string,
+	timeout time.Duration, configuration model.DockerContainerConfig, current ContainerRollbackIdentity, registry RegistryAuth, stdout, stderr io.Writer,
+) (ImageSnapshot, error, error) {
+	if !IsValidImageID(expectedImageID) || !current.Managed || current.ContainerID == "" || current.TargetID != targetID || current.DeploymentID == "" || !IsValidImageID(current.ImageID) {
+		return ImageSnapshot{}, nil, containerDeploymentError(ErrContainerOwnershipConflict, errors.New("回退容器身份不可验证"))
+	}
+	return s.deployContainer(ctx, endpointID, targetID, containerName, image, imageDisplay, expectedImageID, deploymentID, timeout, configuration, &current, registry, stdout, stderr)
 }
 
 func (s *Service) deployContainer(
 	ctx context.Context,
 	endpointID, targetID, containerName, image, imageDisplay, expectedImageID, deploymentID string,
-	timeout time.Duration, configuration model.DockerContainerConfig, registry RegistryAuth, stdout, stderr io.Writer,
+	timeout time.Duration, configuration model.DockerContainerConfig, current *ContainerRollbackIdentity, registry RegistryAuth, stdout, stderr io.Writer,
 ) (ImageSnapshot, error, error) {
 	configuration, err := NormalizeContainerConfig(configuration)
 	if err != nil {
@@ -100,6 +112,15 @@ func (s *Service) deployContainer(
 	defer apiClient.Close()
 	deployContext, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
+	if current != nil {
+		inspected, inspectErr := apiClient.ContainerInspect(deployContext, containerName, client.ContainerInspectOptions{})
+		if inspectErr != nil {
+			return ImageSnapshot{}, nil, containerDeploymentError(ErrContainerOwnershipConflict, fmt.Errorf("读取回退容器当前身份失败: %w", inspectErr))
+		}
+		if !matchesRollbackContainer(inspected.Container, *current) {
+			return ImageSnapshot{}, nil, containerDeploymentError(ErrContainerOwnershipConflict, errors.New("回退容器镜像或发布归属已变化"))
+		}
+	}
 
 	executionImage := image
 	if expectedImageID != "" {
@@ -152,6 +173,9 @@ func (s *Service) deployContainer(
 
 	inspect, err := apiClient.ContainerInspect(deployContext, containerName, client.ContainerInspectOptions{})
 	if err != nil {
+		if current != nil {
+			return ImageSnapshot{}, nil, containerDeploymentError(ErrContainerOwnershipConflict, fmt.Errorf("读取回退容器失败: %w", err))
+		}
 		if errdefs.IsNotFound(err) {
 			return createInitialContainer(deployContext, apiClient, targetID, containerName, executionImage, imageDisplay, deploymentID, configuration)
 		}
@@ -159,6 +183,9 @@ func (s *Service) deployContainer(
 	}
 	if inspect.Container.Config == nil || inspect.Container.HostConfig == nil {
 		return ImageSnapshot{}, nil, containerDeploymentError(ErrContainerConfigInvalid, errors.New("Docker 容器配置不完整"))
+	}
+	if current != nil && !matchesRollbackContainer(inspect.Container, *current) {
+		return ImageSnapshot{}, nil, containerDeploymentError(ErrContainerOwnershipConflict, errors.New("回退容器镜像或发布归属已变化"))
 	}
 	if inspect.Container.Config.Labels["edo.managed"] != "true" ||
 		inspect.Container.Config.Labels["edo.deployment.target.id"] != targetID {

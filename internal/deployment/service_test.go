@@ -775,6 +775,7 @@ func TestRollbackRequiresImmutableImageIdentityAndIsIdempotent(t *testing.T) {
 	if err := db.Create(&source).Error; err != nil {
 		t.Fatalf("创建待回滚发布记录失败: %v", err)
 	}
+	completeDockerRollbackSource(t, service, db, endpointID, &source)
 	first, err := service.Rollback(deploymentExecutionTestContext(), source.ID, "operator")
 	if err != nil {
 		t.Fatalf("创建固定镜像身份的回滚失败: %v", err)
@@ -918,6 +919,7 @@ func TestRollbackAdoptsLegacyFailedRecordBeforeCreatingRetry(t *testing.T) {
 	if err := db.Create(&source).Error; err != nil {
 		t.Fatalf("创建历史回滚来源失败: %v", err)
 	}
+	completeDockerRollbackSource(t, service, db, endpointID, &source)
 	legacyKey, _ := rollbackIdempotencyKey(source.ID, 1)
 	legacy := model.DeploymentRecord{
 		ID: "legacy-failed-rollback", IdempotencyKey: &legacyKey,

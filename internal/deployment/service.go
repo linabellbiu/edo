@@ -676,6 +676,31 @@ func (s *Service) rollback(ctx context.Context, sourceID, actorID string, expect
 		if !dockerengine.IsValidImageID(source.PreviousImageID) {
 			return nil, ErrRollbackUnavailable
 		}
+		if expected != nil && !rollbackConfirmationMatches(&source, expected) {
+			return nil, ErrRollbackTargetChanged
+		}
+		legacyKey, _ := rollbackIdempotencyKey(source.ID, 1)
+		latest, findErr := findLatestRollbackAttempt(s.db.WithContext(ctx), source.ID, legacyKey)
+		if findErr != nil {
+			return nil, s.rollbackValidationError(&source, "deployment_docker_rollback_existing", findErr)
+		}
+		if latest != nil && latest.Status != model.DeploymentFailed {
+			if latest.ApplicationID != source.ApplicationID || latest.PipelineRunID != source.PipelineRunID ||
+				latest.ProjectID != source.ProjectID || latest.DepartmentID != source.DepartmentID || latest.ExpectedImageID != source.PreviousImageID ||
+				latest.TargetID != source.TargetID || latest.RuntimeID != source.RuntimeID || latest.WorkloadName != source.WorkloadName {
+				s.logger.Warn("既有 Docker 回退记录与来源归属不一致", "operation", "deployment_docker_rollback_existing_identity", "source_deployment_id", source.ID, "rollback_deployment_id", latest.ID)
+				return nil, ErrRollbackTargetChanged
+			}
+			return latest, nil
+		}
+		reason, validationErr := s.validateDockerRollback(ctx, &source)
+		if validationErr != nil {
+			return nil, validationErr
+		}
+		if reason != "" {
+			s.logger.Warn("拒绝不安全的 Docker 镜像回退", "operation", "deployment_docker_rollback_validate", "deployment_id", source.ID, "reason", reason)
+			return nil, ErrRollbackTargetChanged
+		}
 		// Docker 回滚直接按上一容器实际使用的 Image ID 执行；标签只用于历史展示，
 		// 不能再次成为回滚时的可变解析入口。
 		image = source.PreviousImageID
@@ -1026,6 +1051,15 @@ func (s *Service) run(ctx context.Context, deploymentID, expectedImageID string,
 				Stdout:       executionOutput(command, true), Stderr: executionOutput(command, false),
 			})
 		} else {
+			var rollbackIdentity *dockerengine.ContainerRollbackIdentity
+			if record.Operation == model.DeploymentRollback {
+				identity, identityErr := s.dockerRollbackExecutionIdentity(ctx, &record)
+				if identityErr != nil {
+					err = identityErr
+					break
+				}
+				rollbackIdentity = &identity
+			}
 			dockerConfig, configErr := dockerengine.NormalizeContainerConfig(record.DockerConfig)
 			if record.DeploymentPlanKind == model.DeploymentPlanDocker &&
 				(configErr != nil || record.DockerConfigDigest == "" || record.DockerConfigDigest != model.DockerContainerConfigDigest(dockerConfig)) {
@@ -1051,6 +1085,13 @@ func (s *Service) run(ctx context.Context, deploymentID, expectedImageID string,
 				previous, deployWarning, deployErr := s.docker.DeployContainer(
 					ctx, record.RuntimeID, record.TargetID, record.WorkloadName, record.Image, record.ImageDisplay,
 					record.ID, timeout, dockerConfig,
+					executionRegistryAuth(command), executionOutput(command, true), executionOutput(command, false),
+				)
+				previousImage, previousImageID, warning, err = previous.Reference, previous.ID, deployWarning, deployErr
+			} else if rollbackIdentity != nil {
+				previous, deployWarning, deployErr := s.docker.DeployPreparedContainerIfCurrent(
+					ctx, record.RuntimeID, record.TargetID, record.WorkloadName, record.Image, record.ImageDisplay,
+					expectedImageID, record.ID, timeout, dockerConfig, *rollbackIdentity,
 					executionRegistryAuth(command), executionOutput(command, true), executionOutput(command, false),
 				)
 				previousImage, previousImageID, warning, err = previous.Reference, previous.ID, deployWarning, deployErr

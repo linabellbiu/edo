@@ -4,10 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"gorm.io/gorm"
 
+	"edo/internal/dockerengine"
 	"edo/internal/kube"
 	"edo/internal/model"
 )
@@ -22,18 +24,22 @@ type RollbackConfirmation struct {
 }
 
 type RollbackPreview struct {
-	CanRollback        bool   `json:"can_rollback"`
-	Reason             string `json:"reason"`
-	SourceDeploymentID string `json:"source_deployment_id"`
-	SourceUpdatedAt    string `json:"source_updated_at"`
-	CurrentImage       string `json:"current_image"`
-	TargetImage        string `json:"target_image"`
-	KubernetesUID      string `json:"kubernetes_uid"`
-	ClusterName        string `json:"cluster_name"`
-	RuntimeID          string `json:"runtime_id"`
-	Namespace          string `json:"namespace"`
-	WorkloadName       string `json:"workload_name"`
-	ContainerName      string `json:"container_name"`
+	Platform           model.DeploymentPlatform `json:"platform"`
+	RuntimeName        string                   `json:"runtime_name"`
+	CurrentImageID     string                   `json:"current_image_id,omitempty"`
+	TargetImageID      string                   `json:"target_image_id,omitempty"`
+	CanRollback        bool                     `json:"can_rollback"`
+	Reason             string                   `json:"reason"`
+	SourceDeploymentID string                   `json:"source_deployment_id"`
+	SourceUpdatedAt    string                   `json:"source_updated_at"`
+	CurrentImage       string                   `json:"current_image"`
+	TargetImage        string                   `json:"target_image"`
+	KubernetesUID      string                   `json:"kubernetes_uid"`
+	ClusterName        string                   `json:"cluster_name"`
+	RuntimeID          string                   `json:"runtime_id"`
+	Namespace          string                   `json:"namespace"`
+	WorkloadName       string                   `json:"workload_name"`
+	ContainerName      string                   `json:"container_name"`
 }
 
 func (s *Service) RollbackPreview(ctx context.Context, sourceID string) (*RollbackPreview, error) {
@@ -42,8 +48,13 @@ func (s *Service) RollbackPreview(ctx context.Context, sourceID string) (*Rollba
 		return nil, err
 	}
 	preview := rollbackPreviewFor(source)
+	if source.Platform == model.DeploymentDocker {
+		preview.Reason, err = s.validateDockerRollback(ctx, source)
+		preview.CanRollback = err == nil && preview.Reason == ""
+		return preview, err
+	}
 	if source.Platform != model.DeploymentKubernetes {
-		preview.Reason = "当前入口只支持 Kubernetes 镜像回退"
+		preview.Reason = "当前部署方式不支持此镜像回退入口"
 		return preview, nil
 	}
 	preview.Reason, err = s.validateKubernetesRollback(ctx, source)
@@ -58,10 +69,77 @@ func (s *Service) RollbackPreview(ctx context.Context, sourceID string) (*Rollba
 
 func rollbackPreviewFor(source *model.DeploymentRecord) *RollbackPreview {
 	return &RollbackPreview{
+		Platform: source.Platform, RuntimeName: source.TargetName,
+		CurrentImageID: source.ExpectedImageID, TargetImageID: source.PreviousImageID,
 		SourceDeploymentID: source.ID, SourceUpdatedAt: source.UpdatedAt.Format(time.RFC3339Nano),
 		CurrentImage: source.Image, TargetImage: rollbackTargetImage(source), KubernetesUID: source.KubernetesUID,
 		RuntimeID: source.RuntimeID, Namespace: source.Namespace, WorkloadName: source.WorkloadName, ContainerName: source.ContainerName,
 	}
+}
+
+func (s *Service) validateDockerRollback(ctx context.Context, source *model.DeploymentRecord) (string, error) {
+	if source.DeploymentPlanKind != model.DeploymentPlanDocker || source.Status != model.DeploymentSucceeded || source.PreviousImage == "" {
+		return "该发布记录没有可回退的上一镜像", nil
+	}
+	if !dockerengine.IsValidImageID(source.PreviousImageID) || !dockerengine.IsValidImageID(source.ExpectedImageID) {
+		return "该记录缺少不可变镜像身份，无法安全回退", nil
+	}
+	if source.PreviousImageID == source.ExpectedImageID {
+		return "上一镜像与当前镜像相同，无需回退", nil
+	}
+	if source.ApplicationID == "" || source.PipelineRunID == "" || source.DeploymentPlanID == "" {
+		return "该记录缺少应用流水线归属，无法安全回退", nil
+	}
+	if _, err := s.currentDeployment(ctx, source.ID); err != nil {
+		if errors.Is(err, ErrDeploymentNotCurrent) || errors.Is(err, ErrRuntimeInstanceRemoved) {
+			return "该记录已不是当前部署，请查看最近发布", nil
+		}
+		return "", s.rollbackValidationError(source, "deployment_docker_rollback_current", err)
+	}
+	var run model.PipelineRun
+	if err := s.db.WithContext(ctx).First(&run, "uuid = ? AND application_id = ? AND project_id = ? AND department_id = ?",
+		source.PipelineRunID, source.ApplicationID, source.ProjectID, source.DepartmentID).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return "发布记录的应用流水线归属已变化", nil
+		}
+		return "", s.rollbackValidationError(source, "deployment_docker_rollback_run", err)
+	}
+	var plan model.DeploymentPlan
+	if err := s.db.WithContext(ctx).First(&plan, "uuid = ? AND project_id = ? AND department_id = ? AND is_active = ?",
+		source.DeploymentPlanID, source.ProjectID, source.DepartmentID, true).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return "部署方案已删除或停用，无法回退历史目标", nil
+		}
+		return "", s.rollbackValidationError(source, "deployment_docker_rollback_plan", err)
+	}
+	var target model.DeploymentTarget
+	if err := s.db.WithContext(ctx).First(&target, "uuid = ? AND project_id = ? AND department_id = ? AND is_active = ?",
+		plan.DeploymentTargetID, source.ProjectID, source.DepartmentID, true).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return "部署目标已删除或停用，无法回退历史目标", nil
+		}
+		return "", s.rollbackValidationError(source, "deployment_docker_rollback_target", err)
+	}
+	if plan.Kind != model.DeploymentPlanDocker || target.ID != source.TargetID || target.Platform != source.Platform ||
+		target.RuntimeID != source.RuntimeID || target.HostID != source.HostID || target.EnvironmentID != source.EnvironmentID ||
+		(strings.TrimSpace(target.WorkloadName) != "" && target.WorkloadName != source.WorkloadName) {
+		return "部署方案的目标已变化，不能回退原位置", nil
+	}
+	if s.docker == nil {
+		return "当前无法连接 Docker 发布能力", nil
+	}
+	identity, err := s.docker.RollbackIdentity(ctx, source.RuntimeID, source.WorkloadName, source.PreviousImageID)
+	if err != nil {
+		s.logger.Warn("读取 Docker 回退目标身份失败", "operation", "deployment_docker_rollback_inspect", "deployment_id", source.ID, "runtime_id", source.RuntimeID, "target_id", source.TargetID, "err", err)
+		return "无法确认容器当前身份，请检查 Docker 连接与部署实例", nil
+	}
+	if !identity.Managed || identity.TargetID != source.TargetID || identity.DeploymentID != source.ID || identity.ImageID != source.ExpectedImageID {
+		return "容器镜像或发布归属已变化，请查看最近发布", nil
+	}
+	if !identity.PreviousImageAvailable {
+		return "上一镜像已不在当前 Docker 运行环境，无法回退", nil
+	}
+	return "", nil
 }
 
 func (s *Service) rollbackSource(ctx context.Context, sourceID string) (*model.DeploymentRecord, error) {
@@ -141,7 +219,7 @@ func (s *Service) validateKubernetesRollback(ctx context.Context, source *model.
 
 func (s *Service) rollbackValidationError(source *model.DeploymentRecord, operation string, err error) error {
 	s.logger.Error("校验镜像回退来源失败", "operation", operation, "deployment_id", source.ID, "application_id", source.ApplicationID, "err", err)
-	return fmt.Errorf("校验镜像回退来源失败: %w", err)
+	return errors.New("校验镜像回退来源失败，请稍后重试")
 }
 
 func rollbackConfirmationMatches(source *model.DeploymentRecord, expected *RollbackConfirmation) bool {
@@ -154,6 +232,40 @@ func rollbackTargetImage(source *model.DeploymentRecord) string {
 		return image
 	}
 	return source.PreviousImage
+}
+
+func (s *Service) dockerRollbackExecutionIdentity(ctx context.Context, record *model.DeploymentRecord) (dockerengine.ContainerRollbackIdentity, error) {
+	identity := dockerengine.ContainerRollbackIdentity{}
+	source, err := s.rollbackSource(ctx, record.RollbackSourceID)
+	if err != nil {
+		return identity, err
+	}
+	if source.ApplicationID != record.ApplicationID || source.PipelineRunID != record.PipelineRunID ||
+		source.ProjectID != record.ProjectID || source.DepartmentID != record.DepartmentID || source.Platform != record.Platform ||
+		source.PreviousImageID != record.ExpectedImageID || record.Image != source.PreviousImageID ||
+		source.TargetID != record.TargetID || source.RuntimeID != record.RuntimeID || source.HostID != record.HostID ||
+		source.EnvironmentID != record.EnvironmentID || source.WorkloadName != record.WorkloadName ||
+		source.DeploymentPlanID != record.DeploymentPlanID || source.DockerConfigDigest != record.DockerConfigDigest || source.UpdatedAt.After(record.CreatedAt) {
+		s.logger.Warn("Docker 回退来源快照已变化", "operation", "deployment_docker_rollback_source_changed", "deployment_id", record.ID, "source_deployment_id", source.ID)
+		return identity, ErrRollbackTargetChanged
+	}
+	reason, err := s.validateDockerRollback(ctx, source)
+	if err != nil {
+		return identity, err
+	}
+	if reason != "" {
+		s.logger.Warn("Docker 回退执行前目标校验失败", "operation", "deployment_docker_rollback_revalidate", "deployment_id", record.ID, "source_deployment_id", source.ID, "reason", reason)
+		return identity, ErrRollbackTargetChanged
+	}
+	identity, err = s.docker.RollbackIdentity(ctx, source.RuntimeID, source.WorkloadName, source.PreviousImageID)
+	if err != nil {
+		return identity, err
+	}
+	if !identity.Managed || identity.TargetID != source.TargetID || identity.DeploymentID != source.ID || identity.ImageID != source.ExpectedImageID || !identity.PreviousImageAvailable {
+		s.logger.Warn("Docker 回退执行前容器身份已变化", "operation", "deployment_docker_rollback_container_changed", "deployment_id", record.ID, "source_deployment_id", source.ID)
+		return identity, ErrRollbackTargetChanged
+	}
+	return identity, nil
 }
 
 func (s *Service) rollbackArtifactID(ctx context.Context, source *model.DeploymentRecord, image string) (string, error) {
