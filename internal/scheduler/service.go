@@ -23,10 +23,11 @@ import (
 )
 
 var (
-	ErrInvalidSchedule    = errors.New("定时任务配置无效")
-	ErrScheduleExists     = errors.New("定时任务名称已存在")
-	ErrScheduleNotFound   = errors.New("定时任务不存在")
-	ErrInvalidTaskPayload = errors.New("定时任务参数无效")
+	ErrInvalidSchedule      = errors.New("定时任务配置无效")
+	ErrScheduleExists       = errors.New("定时任务名称已存在")
+	ErrScheduleNotFound     = errors.New("定时任务不存在")
+	ErrInvalidTaskPayload   = errors.New("定时任务参数无效")
+	ErrExecutionUnavailable = errors.New("定时任务暂时无法执行，请稍后重试")
 )
 
 var scheduleNamePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_. -]{1,127}$`)
@@ -47,10 +48,11 @@ type Input struct {
 }
 
 type TaskPayload struct {
-	ScheduleID  string               `json:"schedule_id"`
-	ScheduledAt time.Time            `json:"scheduled_at"`
-	Action      model.ScheduleAction `json:"action"`
-	Payload     json.RawMessage      `json:"payload"`
+	ScheduleID   string               `json:"schedule_id"`
+	ScheduledAt  time.Time            `json:"scheduled_at"`
+	ConfiguredAt time.Time            `json:"configured_at"`
+	Action       model.ScheduleAction `json:"action"`
+	Payload      json.RawMessage      `json:"payload"`
 }
 
 type Service struct {
@@ -156,18 +158,35 @@ func (s *Service) EnqueueDue(ctx context.Context, now time.Time) error {
 }
 
 func (s *Service) Execute(ctx context.Context, payload TaskPayload) error {
-	if payload.ScheduleID == "" || payload.ScheduledAt.IsZero() || payload.Action != model.ScheduleNotification {
+	if payload.ScheduleID == "" || payload.ScheduledAt.IsZero() || payload.ConfiguredAt.IsZero() || payload.Action != model.ScheduleNotification {
+		s.logger.WarnContext(ctx, "定时任务执行参数无效", "operation", "scheduler_execute_payload", "schedule_id", payload.ScheduleID, "err", ErrInvalidTaskPayload)
 		return ErrInvalidTaskPayload
 	}
 	var action NotificationAction
-	if err := decodeStrict(payload.Payload, &action); err != nil || !validNotificationAction(action) {
+	if err := decodeStrict(payload.Payload, &action); err != nil {
+		s.logger.WarnContext(ctx, "定时任务执行动作格式无效", "operation", "scheduler_execute_action", "schedule_id", payload.ScheduleID, "err", err)
 		return ErrInvalidTaskPayload
 	}
-	_, err := s.notifier.Enqueue(ctx, notification.EnqueueInput{
+	if !validNotificationAction(action) {
+		s.logger.WarnContext(ctx, "定时任务执行动作无效", "operation", "scheduler_execute_action", "schedule_id", payload.ScheduleID, "err", ErrInvalidTaskPayload)
+		return ErrInvalidTaskPayload
+	}
+	valid, err := s.executionScheduleCurrent(ctx, payload, action)
+	if err != nil || !valid {
+		return err
+	}
+	if s.notifier == nil {
+		s.logger.ErrorContext(ctx, "定时通知服务不可用", "operation", "scheduler_execute_notifier", "schedule_id", payload.ScheduleID, "err", ErrExecutionUnavailable)
+		return ErrExecutionUnavailable
+	}
+	_, err = s.notifier.Enqueue(ctx, notification.EnqueueInput{
 		ChannelID: action.ChannelID, Title: action.Title, Message: action.Message,
 		Severity: action.Severity, Source: "scheduler", SourceID: payload.ScheduleID,
 		DedupeKey: "schedule:" + payload.ScheduleID + ":" + payload.ScheduledAt.UTC().Format(time.RFC3339),
 	})
+	if err != nil {
+		s.logger.ErrorContext(ctx, "创建定时通知失败", "operation", "scheduler_execute_notification", "schedule_id", payload.ScheduleID, "err", err)
+	}
 	return err
 }
 
@@ -196,9 +215,10 @@ func (s *Service) enqueueOne(ctx context.Context, due *model.ScheduledTask, now 
 		return err
 	}
 	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		// UpdatedAt 只表示配置代次，运行游标不能使已冻结的配置失效。
 		result := tx.Model(&model.ScheduledTask{}).
-			Where("uuid = ? AND is_active = ? AND next_run_at = ?", due.ID, true, due.NextRunAt).
-			Updates(map[string]any{"next_run_at": nextRunAt, "last_run_at": scheduledAt, "updated_at": now})
+			Where("uuid = ? AND is_active = ? AND next_run_at = ? AND updated_at = ?", due.ID, true, due.NextRunAt, due.UpdatedAt).
+			UpdateColumns(map[string]any{"next_run_at": nextRunAt, "last_run_at": scheduledAt})
 		if result.Error != nil {
 			return result.Error
 		}
@@ -211,14 +231,14 @@ func (s *Service) enqueueOne(ctx context.Context, due *model.ScheduledTask, now 
 			Kind:         "scheduler.execute", Subject: "edo.task.scheduler.execute", Idempotent: true,
 			IdempotencyKey: "schedule:" + due.ID + ":" + scheduledAt.Format(time.RFC3339),
 			Payload: TaskPayload{
-				ScheduleID: due.ID, ScheduledAt: scheduledAt, Action: due.Action,
+				ScheduleID: due.ID, ScheduledAt: scheduledAt, ConfiguredAt: due.UpdatedAt, Action: due.Action,
 				Payload: append(json.RawMessage(nil), due.Payload...),
 			},
 		})
 		if err != nil {
 			return err
 		}
-		return tx.Model(&model.ScheduledTask{}).Where("uuid = ?", due.ID).Update("last_job_id", job.ID).Error
+		return tx.Model(&model.ScheduledTask{}).Where("uuid = ?", due.ID).UpdateColumn("last_job_id", job.ID).Error
 	})
 }
 

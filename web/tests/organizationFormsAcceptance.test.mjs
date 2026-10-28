@@ -76,7 +76,7 @@ test('项目删除确认绑定原项目，失败不关闭详情，使用项目�
 })
 
 test('凭据列表只在明确显示时读取正文，再点击立即隐藏，保存同凭据后清除旧正文',async t=>{
-  const h=harness(t,'../src/views/CredentialView.vue',{api:{get:async path=>path.endsWith('/secret')?{data:{secret:'synthetic-only-secret'}}:{data:{credentials:[]}}}})
+  const h=harness(t,'../src/views/CredentialView.vue',{codes:['credential.secret.read'],api:{get:async path=>path.endsWith('/secret')?{data:{secret:'synthetic-only-secret'}}:{data:{credentials:[]}}}})
   const item={id:'credential-a',name:'测试凭据'}
   await h.state.refresh();assert.equal(h.requests.filter(item=>item.path.endsWith('/secret')).length,0)
   await h.state.reveal(item);assert.equal(h.state.revealed['credential-a'],'synthetic-only-secret')
@@ -84,6 +84,35 @@ test('凭据列表只在明确显示时读取正文，再点击立即隐藏，�
   assert.equal(h.requests.filter(item=>item.path.endsWith('/secret')).length,1)
   await h.state.reveal(item);await h.state.saved(item)
   assert.equal(h.state.revealed['credential-a'],undefined)
+})
+
+test('凭据普通查看不请求原文，原文请求等待期间撤权不保留结果',async t=>{
+  const reader=harness(t,'../src/views/CredentialView.vue',{codes:['credential.read']})
+  await reader.state.reveal({id:'credential-a'})
+  assert.equal(reader.requests.length,0)
+  let finish
+  const allowed=harness(t,'../src/views/CredentialView.vue',{codes:['credential.secret.read'],api:{get:()=>new Promise(resolve=>{finish=resolve})}})
+  const pending=allowed.state.reveal({id:'credential-a'})
+  allowed.auth.permissions.delete('credential.secret.read')
+  finish({data:{secret:'synthetic-discarded-secret'}})
+  await pending
+  assert.equal(allowed.state.revealed['credential-a'],undefined)
+})
+
+test('登录方式只读不加载授权选项，编辑仅使用后端可委派的角色候选',async t=>{
+  const reader=harness(t,'../src/views/IdentityProvidersView.vue',{codes:['identity.read']})
+  await reader.state.refresh()
+  assert.deepEqual(reader.requests.map(item=>item.path),['/identity-providers'])
+  const roles=[{id:'safe-role',display_name:'可委派角色'}]
+  const editor=harness(t,'../src/views/IdentityProvidersView.vue',{codes:['identity.update'],api:{get:async path=>({data:path.endsWith('/role-choices')?{roles}:{providers:[]}})}})
+  await editor.state.refresh()
+  assert.deepEqual(editor.requests.map(item=>item.path),['/identity-providers','/identity-providers/role-choices'])
+  assert.deepEqual(editor.state.roles.value,roles)
+  const failed=harness(t,'../src/views/IdentityProvidersView.vue',{codes:['identity.update'],api:{get:async path=>{if(path.endsWith('/role-choices'))throw new Error('当前无权分配角色');return {data:{providers:[]}}}}})
+  failed.state.roles.value=roles
+  await failed.state.refresh()
+  assert.deepEqual(failed.state.roles.value,[])
+  assert.equal(failed.requests.some(item=>item.path==='/roles'),false)
 })
 
 test('死信清理只在连接正常且非空时确认，只请求死信端点，忙碌时不重复打开',async t=>{

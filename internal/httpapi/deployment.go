@@ -173,6 +173,8 @@ func (h deploymentHandler) writeRuntimeError(c *gin.Context, operation string, e
 	h.logger.Warn(message, "operation", operation, "request_id", requestIDFrom(c),
 		"deployment_id", c.Param("id"), "err", err)
 	switch {
+	case errors.Is(err, deployment.ErrExecutionAuthorization):
+		writeError(c, http.StatusForbidden, "deployment_authorization_revoked", deployment.ErrExecutionAuthorization.Error())
 	case errors.Is(err, deployment.ErrDeploymentNotFound):
 		writeError(c, http.StatusNotFound, "deployment_not_found", deployment.ErrDeploymentNotFound.Error())
 	case errors.Is(err, deployment.ErrDeploymentNotCurrent):

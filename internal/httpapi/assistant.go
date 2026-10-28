@@ -68,6 +68,8 @@ func assistantHTTPError(err error) (int, string, string) {
 		status, code, message = http.StatusNotFound, "assistant_not_found", assistant.ErrNotFound.Error()
 	case errors.Is(err, assistant.ErrInvalidInput):
 		status, code, message = http.StatusBadRequest, "assistant_invalid", assistant.ErrInvalidInput.Error()
+	case errors.Is(err, assistant.ErrAPIKeyRebindRequired):
+		status, code, message = http.StatusBadRequest, "assistant_key_rebind_required", assistant.ErrAPIKeyRebindRequired.Error()
 	case errors.Is(err, assistant.ErrDisabled):
 		status, code, message = http.StatusConflict, "assistant_disabled", assistant.ErrDisabled.Error()
 	case errors.Is(err, assistant.ErrUnavailable):

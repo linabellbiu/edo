@@ -113,6 +113,8 @@ func (h notificationHandler) writeError(c *gin.Context, operation string, err er
 	switch {
 	case errors.Is(err, notification.ErrInvalidChannel):
 		writeError(c, http.StatusBadRequest, "invalid_notification_channel", notification.ErrInvalidChannel.Error())
+	case errors.Is(err, notification.ErrTokenRebindRequired):
+		writeError(c, http.StatusBadRequest, "notification_token_rebind_required", notification.ErrTokenRebindRequired.Error())
 	case errors.Is(err, notification.ErrInvalidNotification):
 		writeError(c, http.StatusBadRequest, "invalid_notification", notification.ErrInvalidNotification.Error())
 	case errors.Is(err, notification.ErrChannelExists):

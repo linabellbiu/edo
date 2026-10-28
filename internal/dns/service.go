@@ -29,6 +29,7 @@ import (
 var (
 	ErrInvalidProviderAccount = errors.New("DNS 厂商账号信息无效")
 	ErrInvalidProviderConfig  = errors.New("DNS 厂商凭据配置无效")
+	ErrTokenRebindRequired    = errors.New("更换 DNS 服务地址后，请重新填写 API Token")
 	ErrProviderAccountExists  = errors.New("DNS 厂商账号名称已存在")
 	ErrProviderAccountMissing = errors.New("DNS 厂商账号不存在")
 	ErrProviderAccountInUse   = errors.New("DNS 厂商账号仍被域名使用，不能删除")
@@ -181,6 +182,12 @@ func (s *Service) UpdateProviderAccount(ctx context.Context, id string, input Pr
 	)
 	if err != nil {
 		return nil, err
+	}
+	if existing.Provider == model.DNSProviderPowerDNS && existingSecrets["api_token"] != "" &&
+		strings.TrimRight(existingPublic["server_url"], "/") != strings.TrimRight(publicConfig["server_url"], "/") {
+		if strings.TrimSpace(input.Config["api_token"]) == "" && secretConfig["api_token"] != "" {
+			return nil, ErrTokenRebindRequired
+		}
 	}
 	publicJSON, secretCiphertext, secretFieldsJSON, err := s.encodeAccountConfig(id, publicConfig, secretConfig, secretFields)
 	if err != nil {

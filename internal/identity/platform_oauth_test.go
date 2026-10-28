@@ -54,7 +54,7 @@ func TestPlatformOAuthAdapters(t *testing.T) {
 			defer server.Close()
 			secret := "app-secret"
 			view, err := s.Create(context.Background(), ProviderInput{Type: providerType, Name: providerType, DisplayName: providerType, IsActive: true, AutoCreate: true,
-				ClientID: "app-id", ClientSecret: &secret, RedirectURL: "http://edo.example/callback", AuthorizationURL: server.URL + "/authorize", TokenURL: server.URL + "/token", UserInfoURL: server.URL + "/user", AllowInsecure: true}, "admin")
+				ClientID: "app-id", ClientSecret: &secret, RedirectURL: "http://edo.example/callback", AuthorizationURL: server.URL + "/authorize", TokenURL: server.URL + "/token", UserInfoURL: server.URL + "/user", AllowInsecure: true}, identityTestAdmin(t, s).ID)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -79,7 +79,7 @@ func TestPlatformOAuthAdapters(t *testing.T) {
 			}
 			start, _ = s.StartOAuth(context.Background(), view.ID, "/", "192.0.2.1")
 			parsed, _ = url.Parse(start)
-			s.SetActive(context.Background(), view.ID, false)
+			s.SetActiveAs(context.Background(), identityTestAdmin(t, s), view.ID, false)
 			if _, _, err := s.CompleteOAuth(context.Background(), view.ID, parsed.Query().Get("state"), "auth-code", "192.0.2.1"); !errors.Is(err, ErrProviderDisabled) {
 				t.Fatalf("停用后回调仍可登录: %v", err)
 			}

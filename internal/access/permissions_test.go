@@ -43,7 +43,7 @@ func TestPermissionCatalogContainsOnlyImplementedCapabilities(t *testing.T) {
 		PermissionIdentityRead, PermissionIdentityCreate, PermissionIdentityUpdate,
 		PermissionRepositoryRead, PermissionRepositoryCreate, PermissionRepositoryUpdate, PermissionRepositoryDelete,
 		PermissionRepositoryExecute, PermissionRepositorySecretRead,
-		PermissionCredentialRead, PermissionCredentialCreate, PermissionCredentialUpdate, PermissionCredentialDelete,
+		PermissionCredentialRead, PermissionCredentialSecretRead, PermissionCredentialCreate, PermissionCredentialUpdate, PermissionCredentialDelete,
 		PermissionDNSRead, PermissionDNSCreate, PermissionDNSUpdate, PermissionDNSDelete, PermissionDNSExecute,
 		PermissionDeploymentRead, PermissionDeploymentCreate, PermissionDeploymentUpdate, PermissionDeploymentDelete,
 		PermissionDeploymentExecute, PermissionDeploymentReview,

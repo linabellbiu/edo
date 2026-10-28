@@ -11,6 +11,8 @@ import (
 	"github.com/google/uuid"
 	"gorm.io/gorm"
 
+	"edo/internal/access"
+	"edo/internal/database"
 	"edo/internal/dockerengine"
 	"edo/internal/kube"
 	"edo/internal/model"
@@ -171,6 +173,9 @@ func (s *Service) ControlRuntime(
 	if err != nil {
 		return nil, err
 	}
+	if err := s.requireRuntimeControlPermission(ctx, record, actorID); err != nil {
+		return nil, err
+	}
 	if input.Action == "scale" && record.Platform != model.DeploymentKubernetes {
 		return nil, ErrRuntimeControlUnsupported
 	}
@@ -210,6 +215,9 @@ func (s *Service) ControlRuntime(
 	if err != nil {
 		return nil, err
 	}
+	if err := s.requireRuntimeControlPermission(ctx, record, actorID); err != nil {
+		return nil, err
+	}
 	state, err := s.executeRuntimeControl(ctx, record, actorID, input)
 	if err != nil {
 		if errors.Is(err, ErrLifecycleScriptRequired) || errors.Is(err, ErrRuntimeControlUnsupported) || errors.Is(err, ErrRuntimeControlInvalid) {
@@ -236,6 +244,9 @@ func (s *Service) RemoveRuntime(ctx context.Context, deploymentID, actorID strin
 	if err != nil {
 		return err
 	}
+	if err := s.requireRuntimeControlPermission(ctx, record, actorID); err != nil {
+		return err
+	}
 	if record.Platform != model.DeploymentDocker || record.DeploymentPlanKind != model.DeploymentPlanDocker || s.docker == nil {
 		return ErrRuntimeControlUnsupported
 	}
@@ -258,6 +269,9 @@ func (s *Service) RemoveRuntime(ctx context.Context, deploymentID, actorID strin
 	// 等锁期间可能已有新部署完成，删除前再次确认，避免移除刚上线的新容器。
 	record, err = s.currentDeployment(ctx, deploymentID)
 	if err != nil {
+		return err
+	}
+	if err := s.requireRuntimeControlPermission(ctx, record, actorID); err != nil {
 		return err
 	}
 	timeout := time.Duration(record.RolloutTimeout) * time.Second
@@ -285,6 +299,14 @@ func (s *Service) RemoveRuntime(ctx context.Context, deploymentID, actorID strin
 		"deployment_id", record.ID, "application_id", record.ApplicationID, "target_id", record.TargetID,
 		"runtime_id", record.RuntimeID, "container_name", record.WorkloadName, "actor_id", actorID)
 	return nil
+}
+
+func (s *Service) requireRuntimeControlPermission(ctx context.Context, record *model.DeploymentRecord, actorID string) error {
+	scope, ok := database.DepartmentScopeFromContext(ctx)
+	if !ok || scope.UserID != actorID {
+		return s.executionAuthorizationDenied(ctx, record, "deployment_runtime_actor", actorID, access.PermissionDeploymentExecute, ErrExecutionAuthorization)
+	}
+	return s.requireCurrentActorPermission(ctx, record, actorID, access.PermissionDeploymentExecute)
 }
 
 func (s *Service) executeRuntimeControl(

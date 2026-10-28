@@ -78,13 +78,19 @@ func normalizeSettings(input SettingsInput) (SettingsInput, error) {
 }
 
 func (s *Service) configuredInput(ctx context.Context, input SettingsInput) (model.AssistantSettings, string, error) {
-	input, err := normalizeSettings(input)
-	if err != nil {
-		return model.AssistantSettings{}, "", s.failure(ctx, "assistant_settings_validate", err, err)
-	}
 	row, err := s.settings(ctx)
 	if err != nil {
 		return row, "", err
+	}
+	if strings.TrimSpace(input.BaseURL) == "" {
+		input.BaseURL = row.BaseURL
+	}
+	input, err = normalizeSettings(input)
+	if err != nil {
+		return model.AssistantSettings{}, "", s.failure(ctx, "assistant_settings_validate", err, err)
+	}
+	if row.APIKeyCiphertext != "" && strings.TrimRight(row.BaseURL, "/") != input.BaseURL && input.APIKey == "" && !input.ClearAPIKey {
+		return row, "", s.failure(ctx, "assistant_key_destination", ErrAPIKeyRebindRequired, ErrAPIKeyRebindRequired)
 	}
 	row.Enabled, row.BaseURL, row.Model, row.MaxSteps, row.TimeoutSeconds = input.Enabled, input.BaseURL, input.Model, input.MaxSteps, input.TimeoutSeconds
 	key := input.APIKey

@@ -174,12 +174,23 @@ func TestChannelReferenceScopeRejectsForeignMissingOrInactiveSaveHTTP(t *testing
 	}
 	// 后台执行仍必须按任务携带的项目范围拒绝，不产生通知或后续投递任务。
 	ctx := database.WithDepartmentScope(context.Background(), database.DepartmentScope{UserID: userID, DepartmentID: database.DefaultDepartmentID, ProjectID: projectID})
-	for _, channelID := range []string{foreignChannel, uuid.NewString(), inactiveChannel} {
+	for index, channelID := range []string{foreignChannel, uuid.NewString(), inactiveChannel} {
 		payload, err := json.Marshal(scheduler.NotificationAction{ChannelID: channelID, Title: "执行范围检查", Message: "不发送", Severity: model.NotificationInfo})
 		if err != nil {
 			t.Fatal(err)
 		}
-		err = deps.Scheduler.Execute(ctx, scheduler.TaskPayload{ScheduleID: uuid.NewString(), ScheduledAt: time.Now().UTC(), Action: model.ScheduleNotification, Payload: payload})
+		// 模拟历史配置中已有无效关联；执行必须先经过真实计划与配置代次复核。
+		now := time.Now().UTC()
+		item := model.ScheduledTask{ID: uuid.NewString(), ProjectID: projectID, DepartmentID: database.DefaultDepartmentID,
+			Name: "execution-channel-probe-" + string(rune('a'+index)), CronExpression: "*/5 * * * *", Timezone: "Asia/Shanghai",
+			Action: model.ScheduleNotification, Payload: payload, IsActive: true, NextRunAt: now, CreatedBy: userID, CreatedAt: now, UpdatedAt: now}
+		if err := fixture.db.WithContext(ctx).Create(&item).Error; err != nil {
+			t.Fatal(err)
+		}
+		if err := fixture.db.WithContext(ctx).First(&item, "uuid = ?", item.ID).Error; err != nil {
+			t.Fatal(err)
+		}
+		err = deps.Scheduler.Execute(ctx, scheduler.TaskPayload{ScheduleID: item.ID, ScheduledAt: now, ConfiguredAt: item.UpdatedAt, Action: item.Action, Payload: payload})
 		if !errors.Is(err, notification.ErrChannelNotFound) {
 			t.Fatalf("执行侧没有保持渠道范围: err=%v", err)
 		}

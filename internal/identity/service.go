@@ -46,6 +46,7 @@ var (
 	ErrExternalLogin        = errors.New("外部登录失败，请重试")
 	ErrInvalidState         = errors.New("登录请求已失效，请重新开始")
 	ErrUnverifiedEmail      = errors.New("外部账户邮箱尚未验证")
+	ErrProviderAccessDenied = errors.New("没有权限配置此登录方式或授予所选默认角色")
 	providerNamePattern     = regexp.MustCompile(`^[a-z][a-z0-9_-]{2,63}$`)
 )
 
@@ -154,6 +155,14 @@ func (s *Service) ListPublic(ctx context.Context) ([]PublicProvider, error) {
 }
 
 func (s *Service) Create(ctx context.Context, input ProviderInput, createdBy string) (*ProviderView, error) {
+	var actor model.User
+	if err := s.db.WithContext(ctx).First(&actor, "uuid = ? AND is_active = ?", createdBy, true).Error; err != nil {
+		return nil, s.delegationFailure(ctx, "identity_create_actor", createdBy, "", err)
+	}
+	return s.CreateAs(ctx, &actor, input)
+}
+
+func (s *Service) createProvider(ctx context.Context, input ProviderInput, createdBy string) (*ProviderView, error) {
 	provider, clientSecret, bindPassword, err := s.normalize(ctx, input, nil)
 	if err != nil {
 		return nil, err
@@ -175,7 +184,7 @@ func (s *Service) Create(ctx context.Context, input ProviderInput, createdBy str
 	return &view, err
 }
 
-func (s *Service) Update(ctx context.Context, id string, input ProviderInput) (*ProviderView, error) {
+func (s *Service) updateProvider(ctx context.Context, id string, input ProviderInput) (*ProviderView, error) {
 	var current model.IdentityProvider
 	if err := s.db.WithContext(ctx).First(&current, "uuid = ?", id).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -207,7 +216,7 @@ func (s *Service) Update(ctx context.Context, id string, input ProviderInput) (*
 	return &view, err
 }
 
-func (s *Service) SetActive(ctx context.Context, id string, active bool) error {
+func (s *Service) setProviderActive(ctx context.Context, id string, active bool) error {
 	result := s.db.WithContext(ctx).Model(&model.IdentityProvider{}).Where("uuid = ?", id).
 		Updates(map[string]any{"is_active": active, "updated_at": time.Now().UTC()})
 	if result.Error != nil {

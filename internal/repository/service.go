@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -26,22 +27,23 @@ import (
 )
 
 var (
-	ErrInvalidRepository       = errors.New("代码仓库配置无效")
-	ErrInvalidRepositoryName   = errors.New("仓库名称只能包含中文、英文、数字、空格、点、下划线或短横线")
-	ErrInsecureRepository      = errors.New("HTTP 仓库默认不允许，请显式确认不安全连接")
-	ErrRepositoryExists        = errors.New("代码仓库名称已存在")
-	ErrRepositoryNotFound      = errors.New("代码仓库不存在")
-	ErrRepositoryInUse         = errors.New("代码仓库正在被应用使用，不能删除")
-	ErrInvalidCredential       = errors.New("代码仓库凭据配置无效")
-	ErrKnownHostsRequired      = errors.New("SSH 仓库必须配置可信 known_hosts 文件")
-	ErrExternalWebhookDisabled = errors.New("外部 Git Webhook API 未启用")
-	ErrWebhookUnavailable      = errors.New("Git Webhook 服务暂不可用")
-	ErrWebhookDisabled         = errors.New("代码仓库 Webhook 未启用")
-	ErrInvalidSignature        = errors.New("Webhook 签名校验失败")
-	ErrUnsupportedEvent        = errors.New("Webhook 事件类型不受支持")
-	ErrInvalidTaskPayload      = errors.New("Webhook 任务参数无效")
-	ErrPullRequestMetadata     = errors.New("无法读取可靠的 PR/MR 分支元数据")
-	ErrDirectoryBusy           = errors.New("当前有构建正在使用该目录，请稍后重试")
+	ErrInvalidRepository        = errors.New("代码仓库配置无效")
+	ErrInvalidRepositoryName    = errors.New("仓库名称只能包含中文、英文、数字、空格、点、下划线或短横线")
+	ErrInsecureRepository       = errors.New("HTTP 仓库默认不允许，请显式确认不安全连接")
+	ErrRepositoryExists         = errors.New("代码仓库名称已存在")
+	ErrRepositoryNotFound       = errors.New("代码仓库不存在")
+	ErrRepositoryInUse          = errors.New("代码仓库正在被应用使用，不能删除")
+	ErrInvalidCredential        = errors.New("代码仓库凭据配置无效")
+	ErrCredentialRebindRequired = errors.New("更换代码仓库地址后，请重新提供凭据或选择本人保存的令牌")
+	ErrKnownHostsRequired       = errors.New("SSH 仓库必须配置可信 known_hosts 文件")
+	ErrExternalWebhookDisabled  = errors.New("外部 Git Webhook API 未启用")
+	ErrWebhookUnavailable       = errors.New("Git Webhook 服务暂不可用")
+	ErrWebhookDisabled          = errors.New("代码仓库 Webhook 未启用")
+	ErrInvalidSignature         = errors.New("Webhook 签名校验失败")
+	ErrUnsupportedEvent         = errors.New("Webhook 事件类型不受支持")
+	ErrInvalidTaskPayload       = errors.New("Webhook 任务参数无效")
+	ErrPullRequestMetadata      = errors.New("无法读取可靠的 PR/MR 分支元数据")
+	ErrDirectoryBusy            = errors.New("当前有构建正在使用该目录，请稍后重试")
 )
 
 var repositoryNamePattern = regexp.MustCompile(`^[A-Za-z0-9\p{Han}][A-Za-z0-9\p{Han}_. -]{0,127}$`)
@@ -828,6 +830,10 @@ func (s *Service) normalizeInput(ctx context.Context, actorID, id string, existi
 		return normalizedInput{}, err
 	}
 	input.CloneURL = cloneURL
+	if err := validateCredentialDestination(existing, input); err != nil {
+		slog.WarnContext(ctx, "代码仓库目的地变化需要重新绑定凭据", "operation", "repository_credential_destination", "actor_user_id", actorID, "repository_id", id, "err", err)
+		return normalizedInput{}, err
+	}
 	var credentialID *string
 	credentialCiphertext := ""
 	if existing != nil {

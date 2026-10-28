@@ -62,6 +62,17 @@ func (s *Service) requireExecutionPermission(ctx context.Context, record *model.
 	} else if scope.UserID != "" && scope.UserID != record.RequestedBy {
 		return s.executionAuthorizationDenied(ctx, record, "deployment_execution_requester", actorID, permission, ErrExecutionAuthorization)
 	}
+	return s.requireCurrentActorPermission(ctx, record, actorID, permission)
+}
+
+// requireCurrentActorPermission 复用冻结归属，以数据库中的当前身份和授权判定副作用执行权限。
+func (s *Service) requireCurrentActorPermission(ctx context.Context, record *model.DeploymentRecord, actorID, permission string) error {
+	if err := s.requireExecutionScope(ctx, record); err != nil {
+		return err
+	}
+	if strings.TrimSpace(actorID) == "" {
+		return s.executionAuthorizationDenied(ctx, record, "deployment_execution_identity", actorID, permission, ErrExecutionAuthorization)
+	}
 	authorization, err := access.FreshProjectPermissions(s.db, ctx, actorID, record.ProjectID)
 	if err != nil || !authorization.Permissions[permission] {
 		return s.executionAuthorizationDenied(ctx, record, "deployment_execution_permission", actorID, permission, err)

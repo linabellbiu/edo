@@ -318,6 +318,8 @@ func (h dnsHandler) writeServiceError(c *gin.Context, operation string, err erro
 		writeError(c, http.StatusBadRequest, "invalid_dns_account", dnsmanager.ErrInvalidProviderAccount.Error())
 	case errors.Is(err, dnsmanager.ErrInvalidProviderConfig), errors.Is(err, dnsmanager.ErrUnsupportedProvider):
 		writeError(c, http.StatusBadRequest, "invalid_dns_provider_config", dnsmanager.ErrInvalidProviderConfig.Error())
+	case errors.Is(err, dnsmanager.ErrTokenRebindRequired):
+		writeError(c, http.StatusBadRequest, "dns_token_rebind_required", dnsmanager.ErrTokenRebindRequired.Error())
 	case errors.Is(err, dnsmanager.ErrProviderAccountExists):
 		writeError(c, http.StatusConflict, "dns_account_exists", dnsmanager.ErrProviderAccountExists.Error())
 	case errors.Is(err, dnsmanager.ErrProviderAccountMissing):

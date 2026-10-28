@@ -44,10 +44,13 @@ const columns = computed(() => [
 ])
 async function refresh() {
   loading.value = true
+  roles.value = []
   try {
     const [providersResult, rolesResult] = await Promise.all([
       client.get<{ providers: Provider[] }>('/identity-providers'),
-      client.get<{ roles: Role[] }>('/roles').catch(() => ({ data: { roles: [] as Role[] } })),
+      auth.canAny(['identity.create', 'identity.update'])
+        ? client.get<{ roles: Role[] }>('/identity-providers/role-choices')
+        : Promise.resolve({ data: { roles: [] as Role[] } }),
     ])
     items.value = providersResult.data.providers
     roles.value = rolesResult.data.roles

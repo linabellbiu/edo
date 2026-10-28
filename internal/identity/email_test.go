@@ -34,7 +34,7 @@ func TestEmailCodeCreatesSessionWithoutMergingLocalUserAndIsSingleUse(t *testing
 		delivered = code
 		return nil
 	}
-	view, err := s.Create(ctx, emailTestInput(), "admin")
+	view, err := s.Create(ctx, emailTestInput(), identityTestAdmin(t, s).ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -93,7 +93,7 @@ func TestEmailCodeAttemptLimitExpiryAndProviderDisable(t *testing.T) {
 	ctx := context.Background()
 	var delivered string
 	s.sendEmail = func(_ context.Context, _ EmailSettings, _, code string) error { delivered = code; return nil }
-	view, err := s.Create(ctx, emailTestInput(), "admin")
+	view, err := s.Create(ctx, emailTestInput(), identityTestAdmin(t, s).ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -128,7 +128,7 @@ func TestEmailCodeAttemptLimitExpiryAndProviderDisable(t *testing.T) {
 		t.Fatal("过期验证码仍然有效")
 	}
 	send("disabled@example.com")
-	if err := s.SetActive(ctx, view.ID, false); err != nil {
+	if err := s.SetActiveAs(ctx, identityTestAdmin(t, s), view.ID, false); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := s.LoginEmail(ctx, view.ID, "disabled@example.com", delivered, "192.0.2.1"); !errors.Is(err, ErrProviderDisabled) {
@@ -146,7 +146,7 @@ func TestEmailSettingsPreservePasswordAndRejectInsecureTransport(t *testing.T) {
 	input := emailTestInput()
 	var delivered string
 	s.sendEmail = func(_ context.Context, _ EmailSettings, _, code string) error { delivered = code; return nil }
-	view, err := s.Create(ctx, input, "admin")
+	view, err := s.Create(ctx, input, identityTestAdmin(t, s).ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -155,7 +155,7 @@ func TestEmailSettingsPreservePasswordAndRejectInsecureTransport(t *testing.T) {
 	}
 	input.Email.Password = nil
 	input.Email.Host = "mail.example.com"
-	updated, err := s.Update(ctx, view.ID, input)
+	updated, err := s.UpdateAs(ctx, identityTestAdmin(t, s), view.ID, input)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -172,7 +172,7 @@ func TestEmailSettingsPreservePasswordAndRejectInsecureTransport(t *testing.T) {
 		t.Fatal("未保留原邮件密码")
 	}
 	input.Email.TLSMode = "none"
-	if _, err := s.Update(ctx, view.ID, input); !errors.Is(err, ErrInvalidProvider) {
+	if _, err := s.UpdateAs(ctx, identityTestAdmin(t, s), view.ID, input); !errors.Is(err, ErrInvalidProvider) {
 		t.Fatalf("允许不加密 SMTP: %v", err)
 	}
 	if _, err := s.StartOAuth(ctx, view.ID, "/", "192.0.2.1"); !errors.Is(err, ErrInvalidProvider) {
@@ -190,7 +190,7 @@ func TestEmailDomainProvisioningAndDeliveryFailure(t *testing.T) {
 		return errors.New("邮件服务器不可用")
 	}
 	input := emailTestInput()
-	view, err := s.Create(ctx, input, "admin")
+	view, err := s.Create(ctx, input, identityTestAdmin(t, s).ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -205,7 +205,7 @@ func TestEmailDomainProvisioningAndDeliveryFailure(t *testing.T) {
 		t.Fatal("发送失败后仍保留验证码")
 	}
 	input.AutoCreate = false
-	if _, err := s.Update(ctx, view.ID, input); err != nil {
+	if _, err := s.UpdateAs(ctx, identityTestAdmin(t, s), view.ID, input); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.SendEmailCode(ctx, view.ID, "unknown@example.com", "192.0.2.1"); err != nil || calls != 1 {

@@ -104,6 +104,16 @@ func (h identityHandler) list(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"providers": providers})
 }
 
+func (h identityHandler) roleChoices(c *gin.Context) {
+	actor, _ := currentUser(c)
+	roles, err := h.service.RoleChoices(c.Request.Context(), actor)
+	if err != nil {
+		h.writeProviderError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"roles": roles})
+}
+
 func (h identityHandler) create(c *gin.Context) {
 	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 64*1024)
 	var request identity.ProviderInput
@@ -113,7 +123,7 @@ func (h identityHandler) create(c *gin.Context) {
 		return
 	}
 	user, _ := currentUser(c)
-	provider, err := h.service.Create(c.Request.Context(), request, user.ID)
+	provider, err := h.service.CreateAs(c.Request.Context(), user, request)
 	if err != nil {
 		h.writeProviderError(c, err)
 		return
@@ -130,7 +140,8 @@ func (h identityHandler) update(c *gin.Context) {
 		writeError(c, http.StatusBadRequest, "invalid_request", "请检查登录方式配置")
 		return
 	}
-	provider, err := h.service.Update(c.Request.Context(), c.Param("id"), request)
+	actor, _ := currentUser(c)
+	provider, err := h.service.UpdateAs(c.Request.Context(), actor, c.Param("id"), request)
 	if err != nil {
 		h.writeProviderError(c, err)
 		return
@@ -144,7 +155,8 @@ func (h identityHandler) setStatus(c *gin.Context) {
 		writeError(c, http.StatusBadRequest, "invalid_request", "请明确是否启用")
 		return
 	}
-	if err := h.service.SetActive(c.Request.Context(), c.Param("id"), *request.IsActive); err != nil {
+	actor, _ := currentUser(c)
+	if err := h.service.SetActiveAs(c.Request.Context(), actor, c.Param("id"), *request.IsActive); err != nil {
 		h.writeProviderError(c, err)
 		return
 	}
@@ -236,6 +248,8 @@ func (h identityHandler) callbackOAuth(c *gin.Context) {
 func (h identityHandler) writeProviderError(c *gin.Context, err error) {
 	h.logger.Warn("登录方式配置操作失败", "operation", "identity_provider_save", "provider_id", c.Param("id"), "request_id", requestIDFrom(c), "err", err)
 	switch {
+	case errors.Is(err, identity.ErrProviderAccessDenied):
+		writeError(c, http.StatusForbidden, "identity_provider_permission_denied", identity.ErrProviderAccessDenied.Error())
 	case errors.Is(err, identity.ErrInvalidProvider):
 		c.JSON(http.StatusBadRequest, errorResponse{Code: "invalid_provider", Message: err.Error(), RequestID: requestIDFrom(c)})
 	case errors.Is(err, identity.ErrProviderNotFound):

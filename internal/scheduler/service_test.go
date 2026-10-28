@@ -49,8 +49,9 @@ func TestScheduleEnqueuesOnceAndExecutesIdempotently(t *testing.T) {
 	if err := json.Unmarshal(jobs[0].Payload, &taskPayload); err != nil {
 		t.Fatalf("解析定时任务参数失败: %v", err)
 	}
+	executionContext := database.WithDepartmentScope(context.Background(), database.DepartmentScope{ProjectID: jobs[0].ProjectID, DepartmentID: jobs[0].DepartmentID})
 	for range 2 {
-		if err := service.Execute(context.Background(), taskPayload); err != nil {
+		if err := service.Execute(executionContext, taskPayload); err != nil {
 			t.Fatalf("执行定时任务失败: %v", err)
 		}
 	}

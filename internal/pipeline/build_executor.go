@@ -112,6 +112,10 @@ func (s *Service) executeBuildTask(ctx context.Context, payload BuildTaskPayload
 			"获取代码失败，请检查仓库连接和所选 Commit", err)
 	}
 	defer checkout.Release()
+	// 检出和工作区准备可能长时间等待，开始新的执行动作前重新核验冻结授权。
+	if err := s.requirePipelineExecutionPermission(ctx, prepared.run, prepared.snapshot); err != nil {
+		return s.finishBuildTaskFailure(ctx, runningState, false, "流水线执行授权已失效，请检查当前项目角色权限", err)
+	}
 	workspace := checkout.Directory
 	if !checkout.RepositoryCached {
 		s.appendRunLog(ctx, prepared.run.ID, "checkout", "info", "首次 Clone 仓库并准备独立版本工作区 "+checkout.Version)
@@ -136,6 +140,9 @@ func (s *Service) executeBuildTask(ctx context.Context, payload BuildTaskPayload
 		err = ErrPipelineExecutionConfig
 	}
 	if err != nil {
+		if errors.Is(err, cicd.ErrExecutionAuthorization) {
+			return s.finishBuildTaskFailure(ctx, runningState, false, "流水线执行授权已失效，请检查当前项目角色权限", err)
+		}
 		return s.finishBuildTaskFailure(ctx, runningState, buildTaskCanRetry(prepared),
 			"任务执行失败，请查看流水线日志", err)
 	}
@@ -517,6 +524,9 @@ func (s *Service) executePipelineBuild(ctx context.Context, prepared *buildExecu
 			if err := s.updateExecutionPhase(ctx, &prepared.run, "build", "正在构建本地 OCI 镜像 "+image); err != nil {
 				return nil, err
 			}
+			if err := s.requirePipelineExecutionPermission(ctx, prepared.run, prepared.snapshot); err != nil {
+				return nil, err
+			}
 			builtImage, err := s.docker.BuildLocalArtifactWithOptions(ctx, contextDirectory, dockerfile, image, options, timeout, output)
 			if err != nil {
 				return nil, err
@@ -544,6 +554,9 @@ func (s *Service) executePipelineBuild(ctx context.Context, prepared *buildExecu
 		output := s.newBuildLogWriter(ctx, prepared.run.ID, "build", redactions...)
 		defer output.Close()
 		if err := s.updateExecutionPhase(ctx, &prepared.run, "build", "正在构建并推送 OCI 镜像 "+image); err != nil {
+			return nil, err
+		}
+		if err := s.requirePipelineExecutionPermission(ctx, prepared.run, prepared.snapshot); err != nil {
 			return nil, err
 		}
 		builtImage, err := s.docker.BuildAndPushArtifactWithOptions(
@@ -690,6 +703,10 @@ func (s *Service) executePipelineShell(
 	}
 	output := s.newExecutionLogWriter(ctx, prepared.run.ID, stage, outputName, redactions...)
 	defer output.Close()
+	// 变量、依赖缓存和运行环境准备结束后，不沿用开始检出时的授权。
+	if err := s.requirePipelineExecutionPermission(ctx, prepared.run, prepared.snapshot); err != nil {
+		return dockerengine.ScriptContainerResult{}, err
+	}
 	result, err := s.scriptRunner.RunScriptContainer(ctx, dockerengine.ScriptContainerInput{
 		Image:            runtimeImage,
 		Platform:         prepared.plan.Platform,

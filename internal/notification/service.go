@@ -24,6 +24,7 @@ import (
 
 var (
 	ErrInvalidChannel       = errors.New("通知渠道配置无效")
+	ErrTokenRebindRequired  = errors.New("更换通知地址后，请重新填写或清除访问令牌")
 	ErrChannelExists        = errors.New("通知渠道名称已存在")
 	ErrChannelNotFound      = errors.New("通知渠道不存在")
 	ErrInvalidNotification  = errors.New("通知内容无效")
@@ -373,6 +374,15 @@ func (s *Service) normalizeChannel(
 		if err != nil || parsed.Host == "" || parsed.User != nil || parsed.Fragment != "" ||
 			(parsed.Scheme != "https" && !(input.AllowHTTP && parsed.Scheme == "http")) {
 			return "", "", "", "", ErrInvalidChannel
+		}
+		if existing != nil && existing.TokenCiphertext != "" && input.Token == nil {
+			previous, err := s.secrets.Decrypt(existing.EndpointCiphertext, channelEndpointAAD(id))
+			if err != nil {
+				return "", "", "", "", err
+			}
+			if previous != endpoint {
+				return "", "", "", "", ErrTokenRebindRequired
+			}
 		}
 		endpointCiphertext, err = s.secrets.Encrypt(endpoint, channelEndpointAAD(id))
 		if err != nil {

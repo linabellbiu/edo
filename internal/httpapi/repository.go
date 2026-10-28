@@ -256,6 +256,8 @@ func (h repositoryHandler) webhook(c *gin.Context) {
 func (h repositoryHandler) writeServiceError(c *gin.Context, operation string, err error) {
 	h.logger.Warn("代码仓库操作失败", "operation", operation, "request_id", requestIDFrom(c), "repository_id", c.Param("id"), "err", err)
 	switch {
+	case errors.Is(err, repository.ErrCredentialRebindRequired):
+		writeError(c, http.StatusBadRequest, "repository_credential_rebind_required", repository.ErrCredentialRebindRequired.Error())
 	case errors.Is(err, repository.ErrInvalidRepositoryName):
 		writeError(c, http.StatusBadRequest, "invalid_repository_name", repository.ErrInvalidRepositoryName.Error())
 	case errors.Is(err, repository.ErrInvalidRepository):

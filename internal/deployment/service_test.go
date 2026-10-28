@@ -95,6 +95,9 @@ func (s *hostScriptRunnerStub) RunHostDeploymentScript(_ context.Context, input 
 
 func TestShellRuntimeControlUsesOnlySavedDeploymentInstanceCommand(t *testing.T) {
 	service, db, _ := newDeploymentTestService(t)
+	ctx := database.WithDepartmentScope(context.Background(), database.DepartmentScope{
+		ProjectID: database.DefaultProjectID(database.DefaultDepartmentID), DepartmentID: database.DefaultDepartmentID, UserID: "operator",
+	})
 	runner := &hostScriptRunnerStub{result: sshdeploy.Result{ExitCode: 0, Started: true}}
 	service.ssh = runner
 	now := time.Now().UTC()
@@ -133,10 +136,10 @@ func TestShellRuntimeControlUsesOnlySavedDeploymentInstanceCommand(t *testing.T)
 	if err := db.Create(&record).Error; err != nil {
 		t.Fatal(err)
 	}
-	if _, err := service.ControlRuntime(context.Background(), record.ID, "operator", RuntimeControlInput{Action: "restart"}); !errors.Is(err, ErrLifecycleScriptRequired) {
+	if _, err := service.ControlRuntime(ctx, record.ID, "operator", RuntimeControlInput{Action: "restart"}); !errors.Is(err, ErrLifecycleScriptRequired) {
 		t.Fatalf("没有保存重启命令时必须拒绝执行: %v", err)
 	}
-	configuration, err := service.SaveRuntimeConfiguration(context.Background(), record.ID, "operator", InstanceControlConfigurationInput{
+	configuration, err := service.SaveRuntimeConfiguration(ctx, record.ID, "operator", InstanceControlConfigurationInput{
 		RestartScript: "  systemctl --user restart lifecycle  ", StopScript: "systemctl --user stop lifecycle", TimeoutSeconds: 300,
 	})
 	if err != nil {
@@ -149,7 +152,7 @@ func TestShellRuntimeControlUsesOnlySavedDeploymentInstanceCommand(t *testing.T)
 	if err != nil || !runtime.RestartConfigured || !runtime.StopConfigured {
 		t.Fatalf("Shell 部署实例没有返回命令配置状态: state=%+v err=%v", runtime, err)
 	}
-	state, err := service.ControlRuntime(context.Background(), record.ID, "operator", RuntimeControlInput{Action: "restart"})
+	state, err := service.ControlRuntime(ctx, record.ID, "operator", RuntimeControlInput{Action: "restart"})
 	if err != nil {
 		t.Fatalf("执行已保存的重启命令失败: %v", err)
 	}
@@ -174,7 +177,7 @@ func TestShellRuntimeControlUsesOnlySavedDeploymentInstanceCommand(t *testing.T)
 		t.Fatalf("不同目标位置不能复用其他部署实例的 Shell 命令: state=%+v err=%v", isolatedState, err)
 	}
 	replicas := int32(2)
-	if _, err := service.ControlRuntime(context.Background(), record.ID, "operator", RuntimeControlInput{Action: "scale", Replicas: &replicas}); !errors.Is(err, ErrRuntimeControlUnsupported) {
+	if _, err := service.ControlRuntime(ctx, record.ID, "operator", RuntimeControlInput{Action: "scale", Replicas: &replicas}); !errors.Is(err, ErrRuntimeControlUnsupported) {
 		t.Fatalf("Shell 部署不应允许扩缩容: %v", err)
 	}
 	later := record
@@ -186,7 +189,7 @@ func TestShellRuntimeControlUsesOnlySavedDeploymentInstanceCommand(t *testing.T)
 	if err := db.Create(&later).Error; err != nil {
 		t.Fatal(err)
 	}
-	if _, err := service.ControlRuntime(context.Background(), record.ID, "operator", RuntimeControlInput{Action: "stop"}); !errors.Is(err, ErrDeploymentNotCurrent) {
+	if _, err := service.ControlRuntime(ctx, record.ID, "operator", RuntimeControlInput{Action: "stop"}); !errors.Is(err, ErrDeploymentNotCurrent) {
 		t.Fatalf("历史部署实例必须拒绝运行控制: %v", err)
 	}
 }

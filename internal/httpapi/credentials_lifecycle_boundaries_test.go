@@ -25,7 +25,7 @@ func TestOperationsCredentialHTTPUpdatesSecretsAndProtectsReferences(t *testing.
 	if err := fixture.db.Where(&model.GitCredential{ID: id}).First(&original).Error; err != nil {
 		t.Fatal(err)
 	}
-	role := createRoleForHTTPTest(t, fixture.router, fixture.cookie, "ops-other-credential-owner", []string{"credential.read", "credential.create", "credential.update", "credential.delete"})
+	role := createRoleForHTTPTest(t, fixture.router, fixture.cookie, "ops-other-credential-owner", []string{"credential.read", "credential.secret.read", "credential.create", "credential.update", "credential.delete"})
 	createUserForHTTPTest(t, fixture.router, fixture.cookie, "ops-other-credential-owner", "", []string{role})
 	other := loginForDepartmentTest(t, fixture.router, "ops-other-credential-owner")
 	for _, item := range []struct {

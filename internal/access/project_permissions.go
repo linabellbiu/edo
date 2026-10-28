@@ -18,7 +18,8 @@ func workspacePermissions() []Permission {
 			if !strings.Contains(" "+implemented[resource.code]+" ", " "+action.code+" ") {
 				continue
 			}
-			result = append(result, permission(resource.code+"."+action.code, "持续交付", resource.code, resource.name, action.code, action.name, action.name+resource.name, action.code == "delete" || action.code == "execute"))
+			dangerous := action.code == "delete" || action.code == "execute" || ((resource.code == "workflow" || resource.code == "build_plan" || resource.code == "deployment_plan") && (action.code == "create" || action.code == "update"))
+			result = append(result, permission(resource.code+"."+action.code, "持续交付", resource.code, resource.name, action.code, action.name, action.name+resource.name, dangerous))
 		}
 	}
 	for _, resource := range []struct{ code, name, actions string }{
@@ -49,7 +50,7 @@ func workspacePermissions() []Permission {
 			if resource.code == "environment_policy" && action.code != "read" && action.code != "update" {
 				continue
 			}
-			result = append(result, permission(resource.code+"."+action.code, "持续交付", resource.code, resource.name, action.code, action.name, action.name+resource.name, action.code == "delete" || action.code == "execute"))
+			result = append(result, permission(resource.code+"."+action.code, "持续交付", resource.code, resource.name, action.code, action.name, action.name+resource.name, action.code == "delete" || action.code == "execute" || (resource.code == "environment_policy" && action.code == "update")))
 		}
 	}
 	return result

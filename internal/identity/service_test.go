@@ -64,7 +64,7 @@ func TestGenericOAuthCreatesBoundUserAndConsumesState(t *testing.T) {
 		RedirectURL: "http://edo.example/api/v1/auth/oauth/company_oauth/callback", Scopes: "openid email",
 		SubjectField: "sub", UsernameField: "preferred_username", NicknameField: "name", EmailField: "email",
 		EmailVerifiedField: "email_verified", AllowInsecure: true,
-	}, "admin-id")
+	}, identityTestAdmin(t, service).ID)
 	if err != nil {
 		t.Fatalf("创建 OAuth 登录方式失败: %v", err)
 	}
@@ -102,7 +102,7 @@ func TestProviderDefaultsAndSecureTransportValidation(t *testing.T) {
 	view, err := service.Create(context.Background(), ProviderInput{
 		Type: TypeGoogle, Name: "google", DisplayName: "Google", IsActive: true,
 		ClientID: "client", ClientSecret: &clientSecret, RedirectURL: "https://edo.example/api/v1/auth/oauth/google/callback",
-	}, "admin-id")
+	}, identityTestAdmin(t, service).ID)
 	if err != nil {
 		t.Fatalf("创建 Google 预设失败: %v", err)
 	}
@@ -114,7 +114,7 @@ func TestProviderDefaultsAndSecureTransportValidation(t *testing.T) {
 		Type: TypeLDAP, Name: "plain_ldap", DisplayName: "LDAP", IsActive: true,
 		LDAPURL: "ldap://ldap.example.com:389", LDAPBaseDN: "dc=example,dc=com", LDAPBindDN: "cn=edo,dc=example,dc=com",
 		LDAPBindPassword: &bindPassword, LDAPUserFilter: "(uid={username})", LDAPUsernameAttribute: "uid",
-	}, "admin-id")
+	}, identityTestAdmin(t, service).ID)
 	if err == nil || !strings.Contains(err.Error(), "StartTLS") {
 		t.Fatalf("未拒绝未加密 LDAP: %v", err)
 	}
@@ -131,6 +131,7 @@ func newIdentityTestService(t *testing.T) (*Service, *gorm.DB, func()) {
 	if err := database.Migrate(ctx, db); err != nil {
 		t.Fatalf("迁移测试数据库失败: %v", err)
 	}
+	testutil.CreateAdmin(t, db)
 	redisServer := miniredis.RunT(t)
 	redisClient, err := cache.Open(ctx, config.Redis{URL: "redis://" + redisServer.Addr() + "/0", KeyPrefix: "edo:", Timeout: time.Second})
 	if err != nil {
@@ -154,6 +155,15 @@ func newIdentityTestService(t *testing.T) (*Service, *gorm.DB, func()) {
 		_ = redisClient.Close()
 		_ = database.Close(db)
 	}
+}
+
+func identityTestAdmin(t *testing.T, service *Service) *model.User {
+	t.Helper()
+	var actor model.User
+	if err := service.db.First(&actor, "username = ?", "admin").Error; err != nil {
+		t.Fatal(err)
+	}
+	return &actor
 }
 
 func TestProfileFromNestedClaims(t *testing.T) {

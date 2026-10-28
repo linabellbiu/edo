@@ -191,7 +191,7 @@ func NewRouter(deps Dependencies) *gin.Engine {
 	protected.POST("/git-credentials", auditAction(deps.Audits, deps.Logger, "credential.create", "git_credential"), requirePermission(deps.Access, deps.Logger, access.PermissionCredentialCreate), credentialAPI.create)
 	protected.PUT("/git-credentials/:id", auditAction(deps.Audits, deps.Logger, "credential.update", "git_credential"), requirePermission(deps.Access, deps.Logger, access.PermissionCredentialUpdate), credentialAPI.update)
 	protected.DELETE("/git-credentials/:id", auditAction(deps.Audits, deps.Logger, "credential.delete", "git_credential"), requirePermission(deps.Access, deps.Logger, access.PermissionCredentialDelete), credentialAPI.remove)
-	protected.GET("/git-credentials/:id/secret", auditAction(deps.Audits, deps.Logger, "credential.reveal", "git_credential"), requirePermission(deps.Access, deps.Logger, access.PermissionCredentialRead), credentialAPI.reveal)
+	protected.GET("/git-credentials/:id/secret", auditAction(deps.Audits, deps.Logger, "credential.reveal", "git_credential"), requirePermission(deps.Access, deps.Logger, access.PermissionCredentialSecretRead), credentialAPI.reveal)
 	dnsAPI := dnsHandler{service: deps.DNS, logger: deps.Logger}
 	protected.GET("/dns/providers", requirePermission(deps.Access, deps.Logger, access.PermissionDNSRead), dnsAPI.listProviders)
 	protected.GET("/dns/accounts", requirePermission(deps.Access, deps.Logger, access.PermissionDNSRead), dnsAPI.listAccounts)
@@ -210,6 +210,7 @@ func NewRouter(deps Dependencies) *gin.Engine {
 	protected.PUT("/dns/domains/:id/records/:record_id", auditAction(deps.Audits, deps.Logger, "dns.record.update", "dns_record"), requirePermission(deps.Access, deps.Logger, access.PermissionDNSUpdate), dnsAPI.updateRecord)
 	protected.DELETE("/dns/domains/:id/records/:record_id", auditAction(deps.Audits, deps.Logger, "dns.record.delete", "dns_record"), requirePermission(deps.Access, deps.Logger, access.PermissionDNSDelete), dnsAPI.deleteRecord)
 	protected.GET("/identity-providers", requirePermission(deps.Access, deps.Logger, access.PermissionIdentityRead), identityAPI.list)
+	protected.GET("/identity-providers/role-choices", requireAnyPermission(deps.Access, deps.Logger, access.PermissionIdentityCreate, access.PermissionIdentityUpdate), identityAPI.roleChoices)
 	protected.POST("/identity-providers", auditAction(deps.Audits, deps.Logger, "identity_provider.create", "identity_provider"), requirePermission(deps.Access, deps.Logger, access.PermissionIdentityCreate), identityAPI.create)
 	protected.PUT("/identity-providers/:id", auditAction(deps.Audits, deps.Logger, "identity_provider.update", "identity_provider"), requirePermission(deps.Access, deps.Logger, access.PermissionIdentityUpdate), identityAPI.update)
 	protected.PATCH("/identity-providers/:id/status", auditAction(deps.Audits, deps.Logger, "identity_provider.status.update", "identity_provider"), requirePermission(deps.Access, deps.Logger, access.PermissionIdentityUpdate), identityAPI.setStatus)

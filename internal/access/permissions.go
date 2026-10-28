@@ -49,10 +49,11 @@ const (
 	PermissionRepositoryExecute    = "repository.execute"
 	PermissionRepositorySecretRead = "repository.secret.read"
 
-	PermissionCredentialRead   = "credential.read"
-	PermissionCredentialCreate = "credential.create"
-	PermissionCredentialUpdate = "credential.update"
-	PermissionCredentialDelete = "credential.delete"
+	PermissionCredentialRead       = "credential.read"
+	PermissionCredentialSecretRead = "credential.secret.read"
+	PermissionCredentialCreate     = "credential.create"
+	PermissionCredentialUpdate     = "credential.update"
+	PermissionCredentialDelete     = "credential.delete"
 
 	PermissionDNSRead    = "dns.read"
 	PermissionDNSCreate  = "dns.create"
@@ -148,12 +149,12 @@ var catalog = append([]Permission{
 
 	permission(PermissionUserRead, "身份与权限", "user", "用户", "read", "查看", "查看当前权限范围内的用户", false),
 	permission(PermissionUserCreate, "身份与权限", "user", "用户", "create", "创建", "创建用户", false),
-	permission(PermissionUserUpdate, "身份与权限", "user", "用户", "update", "修改", "修改用户、启停状态、部门、角色和权限", false),
+	permission(PermissionUserUpdate, "身份与权限", "user", "用户", "update", "修改", "修改用户、启停状态、部门、角色和权限", true),
 	permission(PermissionUserDelete, "身份与权限", "user", "用户", "delete", "删除", "删除用户", true),
 
 	permission(PermissionRoleRead, "身份与权限", "role", "角色", "read", "查看", "查看角色及其权限", false),
 	permission(PermissionRoleCreate, "身份与权限", "role", "角色", "create", "创建", "创建角色", false),
-	permission(PermissionRoleUpdate, "身份与权限", "role", "角色", "update", "修改", "修改角色名称和权限", false),
+	permission(PermissionRoleUpdate, "身份与权限", "role", "角色", "update", "修改", "修改角色名称和权限", true),
 	permission(PermissionRoleDelete, "身份与权限", "role", "角色", "delete", "删除", "删除角色", true),
 
 	permission(PermissionDepartmentRead, "身份与权限", "department", "部门", "read", "查看", "查看部门和部门成员", false),
@@ -162,8 +163,8 @@ var catalog = append([]Permission{
 	permission(PermissionDepartmentDelete, "身份与权限", "department", "部门", "delete", "删除", "删除部门", true),
 
 	permission(PermissionIdentityRead, "身份与权限", "identity", "登录方式", "read", "查看", "查看登录方式", false),
-	permission(PermissionIdentityCreate, "身份与权限", "identity", "登录方式", "create", "创建", "创建登录方式", false),
-	permission(PermissionIdentityUpdate, "身份与权限", "identity", "登录方式", "update", "修改", "修改或启停登录方式", false),
+	permission(PermissionIdentityCreate, "身份与权限", "identity", "登录方式", "create", "创建", "创建登录方式及上游认证信任；默认角色不能超过当前有效权限", true),
+	permission(PermissionIdentityUpdate, "身份与权限", "identity", "登录方式", "update", "修改", "修改或启停登录方式及上游认证信任，可影响已有绑定账户的登录", true),
 
 	permission(PermissionAuditRead, "审计", "audit", "审计日志", "read", "查看", "查看操作审计日志", false),
 
@@ -175,6 +176,7 @@ var catalog = append([]Permission{
 	permission(PermissionRepositorySecretRead, "代码仓库", "repository", "代码仓库 Webhook 密钥", "read_secret", "查看密钥", "查看 Webhook 回调地址和签名密钥", true),
 
 	permission(PermissionCredentialRead, "个人令牌", "credential", "个人 Git 令牌", "read", "查看", "查看本人保存的 Git 令牌", false),
+	permission(PermissionCredentialSecretRead, "个人令牌", "credential", "个人 Git 令牌原文", "read_secret", "查看密钥", "查看本人保存的 Git 令牌或 SSH 私钥原文并记录审计", true),
 	permission(PermissionCredentialCreate, "个人令牌", "credential", "个人 Git 令牌", "create", "创建", "创建本人 Git 令牌", false),
 	permission(PermissionCredentialUpdate, "个人令牌", "credential", "个人 Git 令牌", "update", "修改", "修改本人 Git 令牌", false),
 	permission(PermissionCredentialDelete, "个人令牌", "credential", "个人 Git 令牌", "delete", "删除", "删除本人 Git 令牌", true),
@@ -212,7 +214,7 @@ var catalog = append([]Permission{
 
 	permission(PermissionConfigRead, "配置", "config", "系统配置", "read", "查看", "查看非敏感系统配置", false),
 	permission(PermissionConfigCreate, "配置", "config", "系统配置", "create", "创建", "创建配置及密钥引用", false),
-	permission(PermissionConfigUpdate, "配置", "config", "系统配置", "update", "修改", "修改系统设置、配置或密钥引用", false),
+	permission(PermissionConfigUpdate, "配置", "config", "系统配置", "update", "修改", "修改系统设置、配置或密钥引用", true),
 	permission(PermissionConfigExecute, "配置", "config", "系统维护操作", "execute", "执行", "执行日志、工作区、缓存或本地产物清理", true),
 
 	permission(PermissionNotificationRead, "通知", "notification", "通知", "read", "查看", "查看通知和通知渠道", false),
