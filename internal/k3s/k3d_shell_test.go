@@ -44,7 +44,7 @@ func TestK3dShellUsesPinnedCLIAndOnlyUpdatesReviewedLocalContainers(t *testing.T
 				t.Fatal(err)
 			}
 			tool := "#!/bin/sh\n[ -z \"${DOCKER_CONTEXT:-}${DOCKER_TLS_VERIFY:-}${KUBECONFIG:-}\" ] || exit 96\n[ \"${DOCKER_HOST:-}\" = " + shellQuote("unix://"+socket) + " ] || exit 95\nprintf 'cli %s\\n' \"$*\" >> " + shellQuote(calls) + "\n"
-			tool += "case \"${1:-}\" in\nversion) printf 'k3d version v5.9.0\\n';;\ncluster)\n[ \"${2:-}\" = create ] || exit 94\nshift 2\nname=$1; shift\n[ \"$name\" = " + shellQuote(k3dResourceName(id)) + " ] || exit 93\nruntime_label=''; node_label=''\nwhile [ \"$#\" -gt 0 ]; do case \"$1\" in --runtime-label) runtime_label=$2; shift 2;; --k3s-node-label) node_label=$2; shift 2;; *) shift;; esac; done\n[ \"$runtime_label\" = " + shellQuote("edo.dev/installation="+id+"@all") + " ] && [ \"$node_label\" = \"$runtime_label\" ] || exit 92\n;;\nkubeconfig) printf 'apiVersion: v1\\nkind: Config\\ncurrent-context: chosen\\n';;\n*) exit 91;;\nesac\n"
+			tool += "case \"${1:-}\" in\nversion) printf 'k3d version v5.9.0\\n';;\ncluster)\n[ \"${2:-}\" = create ] || exit 94\nshift 2\nname=$1; shift\n[ \"${#name}\" -le 32 ] || exit 98\ncase \"$name\" in ''|*[!a-z0-9-]*|*-) exit 97;; esac\n[ \"$name\" = " + shellQuote(k3dResourceName(id)) + " ] || exit 93\nruntime_label=''; node_label=''\nwhile [ \"$#\" -gt 0 ]; do case \"$1\" in --runtime-label) runtime_label=$2; shift 2;; --k3s-node-label) node_label=$2; shift 2;; *) shift;; esac; done\n[ \"$runtime_label\" = " + shellQuote("edo.dev/installation="+id+"@all") + " ] && [ \"$node_label\" = \"$runtime_label\" ] || exit 92\n;;\nkubeconfig)\n[ \"${2:-}\" = get ] && [ \"${3:-}\" = " + shellQuote(k3dResourceName(id)) + " ] || exit 86\nprintf 'apiVersion: v1\\nkind: Config\\ncurrent-context: chosen\\n';;\n*) exit 91;;\nesac\n"
 			asset := filepath.Join(directory, "asset")
 			if err := os.WriteFile(asset, []byte(tool), 0600); err != nil {
 				t.Fatal(err)
@@ -134,6 +134,9 @@ func TestK3dShellUsesPinnedCLIAndOnlyUpdatesReviewedLocalContainers(t *testing.T
 			if err == nil {
 				err = run(install)
 			}
+			if err == nil {
+				err = run(k3dReadConfigScript(id))
+			}
 			wantSuccess := scenario == "success" || scenario == "minimum-engine"
 			if (err == nil) != wantSuccess {
 				t.Fatalf("shell结果错误: %v", err)
@@ -143,7 +146,7 @@ func TestK3dShellUsesPinnedCLIAndOnlyUpdatesReviewedLocalContainers(t *testing.T
 				t.Fatal("前置检查失败仍创建容器")
 			}
 			if wantSuccess {
-				for _, expected := range []string{"cli cluster create " + k3dResourceName(id), "--runtime-label edo.dev/installation=" + id + "@all", "docker update --cpus 2 --memory 2g --memory-swap 2g k3d-" + k3dResourceName(id) + "-server-0", "docker update --cpus 1 --memory 1g --memory-swap 1g k3d-" + k3dResourceName(id) + "-agent-0"} {
+				for _, expected := range []string{"cli cluster create " + k3dResourceName(id), "--runtime-label edo.dev/installation=" + id + "@all", "docker update --cpus 2 --memory 2g --memory-swap 2g k3d-" + k3dResourceName(id) + "-server-0", "docker update --cpus 1 --memory 1g --memory-swap 1g k3d-" + k3dResourceName(id) + "-agent-0", "cli kubeconfig get " + k3dResourceName(id)} {
 					if !strings.Contains(string(encoded), expected) {
 						t.Fatalf("未执行固定本地CLI/节点限制: %s", expected)
 					}

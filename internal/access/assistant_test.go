@@ -6,6 +6,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
+
 	"edo/internal/database"
 	"edo/internal/model"
 )
@@ -15,7 +17,10 @@ func TestProjectDeletionProtectsActiveAssistantOnly(t *testing.T) {
 		t.Run(state, func(t *testing.T) {
 			db, service := newRolePolicySyncTestService(t, "assistant_delete_"+state)
 			ctx := context.Background()
-			admin := &model.User{ID: "root", DepartmentID: database.DefaultDepartmentID, IsSuperuser: true, IsActive: true}
+			admin := &model.User{ID: uuid.NewString(), Username: "assistant-admin-" + uuid.NewString()[:8], DepartmentID: database.DefaultDepartmentID, IsSuperuser: true, IsActive: true}
+			if err := db.Create(admin).Error; err != nil {
+				t.Fatal(err)
+			}
 			project, err := service.CreateProject(ctx, admin, state, "", "")
 			if err != nil {
 				t.Fatal(err)

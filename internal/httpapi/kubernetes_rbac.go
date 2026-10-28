@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"net/http"
-	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -84,18 +83,22 @@ func (h kubernetesRBACHandler) respond(c *gin.Context, state *kube.RBACState) {
 		return
 	}
 	result := kubernetesRBACResponse{RBACState: state, Roles: []kubernetesRBACRole{}, Catalog: []kubernetesRBACPermission{}, Namespaces: []string{}}
+	grantable := map[string]bool{}
+	for _, code := range kube.RBACGrantPermissionCodes() {
+		grantable[code] = true
+	}
 	for _, role := range roles {
 		valid, hasKubernetes := len(role.Permissions) > 0, false
 		for _, code := range role.Permissions {
 			valid = valid && access.ProjectPermission(code)
-			hasKubernetes = hasKubernetes || strings.HasPrefix(code, "kubernetes.") && !strings.HasPrefix(code, "kubernetes.rbac.")
+			hasKubernetes = hasKubernetes || grantable[code]
 		}
 		if valid && hasKubernetes {
 			result.Roles = append(result.Roles, kubernetesRBACRole{ID: role.ID, Name: role.Name, DisplayName: role.DisplayName, Permissions: role.Permissions})
 		}
 	}
 	for _, permission := range access.Catalog() {
-		if strings.HasPrefix(permission.Code, "kubernetes.") && !strings.HasPrefix(permission.Code, "kubernetes.rbac.") {
+		if grantable[permission.Code] {
 			result.Catalog = append(result.Catalog, kubernetesRBACPermission{Permission: permission, ResourceScopes: kube.RBACPermissionScopes(permission.Code)})
 		}
 	}

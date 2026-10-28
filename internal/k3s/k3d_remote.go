@@ -7,8 +7,6 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/google/uuid"
-
 	"edo/internal/hostidentity"
 )
 
@@ -100,11 +98,12 @@ printf 'EDO_K3S_IDENTITY_BEGIN\n'
 
 func k3dCreateCommand(input Input, installationID string) string {
 	options := input.K3d
-	if options == nil {
+	name := k3dResourceName(installationID)
+	if options == nil || name == "" {
 		return ""
 	}
 	endpoint, _ := url.Parse(input.Endpoint)
-	return "edo_cli cluster create " + shellQuote(k3dResourceName(installationID)) + " --servers 1 --agents " + strconv.Itoa(k3dAgents(options)) +
+	return "edo_cli cluster create " + shellQuote(name) + " --servers 1 --agents " + strconv.Itoa(k3dAgents(options)) +
 		" --api-port " + shellQuote(net.JoinHostPort(options.BindAddress, strconv.Itoa(options.APIPort))) +
 		" --image " + shellQuote("rancher/k3s:"+strings.ReplaceAll(k3dK3sVersion, "+", "-")) +
 		" --servers-memory 2g --agents-memory 1g --no-lb --no-image-volume --no-rollback --wait=false --timeout 5m --kubeconfig-update-default=false --kubeconfig-switch-context=false" +
@@ -114,7 +113,7 @@ func k3dCreateCommand(input Input, installationID string) string {
 }
 
 func k3dPrepareToolScript(input Input, installationID string) (string, error) {
-	if _, err := uuid.Parse(installationID); err != nil || input.Mode != "k3d" || input.K3d == nil {
+	if k3dResourceName(installationID) == "" || input.Mode != "k3d" || input.K3d == nil {
 		return "", ErrInvalidInput
 	}
 	script := `set -eu
@@ -143,7 +142,8 @@ edo_tool_valid
 }
 
 func k3dInstallScript(input Input, installationID string) (string, error) {
-	if _, err := uuid.Parse(installationID); err != nil || input.Mode != "k3d" || input.K3d == nil {
+	resourceName := k3dResourceName(installationID)
+	if resourceName == "" || input.Mode != "k3d" || input.K3d == nil {
 		return "", ErrInvalidInput
 	}
 	script := `set -eu
@@ -164,7 +164,7 @@ edo_tool_valid
 		if index == -1 {
 			role, ordinal, cpus, memory, bytes = "server", 0, "2", "2g", 2147483648
 		}
-		name := "k3d-" + k3dResourceName(installationID) + "-" + role + "-" + strconv.Itoa(ordinal)
+		name := "k3d-" + resourceName + "-" + role + "-" + strconv.Itoa(ordinal)
 		script += "[ \"$(edo_docker inspect --format '{{index .Config.Labels \"edo.dev/installation\"}}' " + shellQuote(name) + ")\" = " + shellQuote(installationID) + " ]\n"
 		script += "edo_docker update --cpus " + cpus + " --memory " + memory + " --memory-swap " + memory + " " + shellQuote(name) + " >/dev/null\n"
 		script += "[ \"$(edo_docker inspect --format '{{.HostConfig.NanoCpus}} {{.HostConfig.Memory}} {{.HostConfig.MemorySwap}}' " + shellQuote(name) + ")\" = " + shellQuote(fmt.Sprintf("%s000000000 %d %d", cpus, bytes, bytes)) + " ]\n"
@@ -173,5 +173,9 @@ edo_tool_valid
 }
 
 func k3dReadConfigScript(installationID string) string {
-	return "set -eu\numask 077\n" + k3dLocalEnvironment + k3dToolSelection + "edo_tool_valid\nedo_cli kubeconfig get " + shellQuote(k3dResourceName(installationID)) + "\n"
+	name := k3dResourceName(installationID)
+	if name == "" {
+		return "exit 44\n"
+	}
+	return "set -eu\numask 077\n" + k3dLocalEnvironment + k3dToolSelection + "edo_tool_valid\nedo_cli kubeconfig get " + shellQuote(name) + "\n"
 }

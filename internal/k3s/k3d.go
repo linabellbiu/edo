@@ -2,6 +2,7 @@ package k3s
 
 import (
 	"context"
+	"encoding/base32"
 	"encoding/json"
 	"errors"
 	"io"
@@ -13,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
@@ -88,13 +90,25 @@ func (s *Service) normalizeK3d(ctx context.Context, input Input) (Input, []Host,
 	return input, hosts, map[string]string{host.ID: hostDigest(host)}, nil, nil, nil
 }
 
-func k3dResourceName(id string) string { return "edo-" + id }
+func k3dResourceName(id string) string {
+	parsed, err := uuid.Parse(id)
+	if err != nil || len(id) != 36 {
+		return ""
+	}
+	// 保留完整 128 位 UUID，同时满足固定 k3d 版本的 32 字符名称上限。
+	encoded := base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString(parsed[:])
+	return "edo-" + strings.ToLower(encoded)
+}
 
 func k3dWarnings(id string) []string {
+	name := k3dResourceName(id)
+	if name == "" {
+		return nil
+	}
 	return []string{
 		"将在所选主机的本地 Docker 中通过官方 k3d 创建独立容器集群，不安装宿主机 K3s 服务，不修改默认 kubeconfig。",
 		"Server 限制为 2 GiB，Worker 各 1 GiB；创建后立即设置 Server 2 核、Worker 1 核及交换限制，启动瞬间尚未限制 CPU。",
-		"失败时保留已创建的容器、网络和卷供检查，不自动删除或重建；本次资源名：" + k3dResourceName(id),
+		"失败时保留已创建的容器、网络和卷供检查，不自动删除或重建；本次资源名：" + name,
 		"容器节点不是物理主机，集群会独立接入，不自动建立物理节点关联。",
 	}
 }
@@ -122,6 +136,11 @@ func (s *Service) runK3dPreflight(ctx context.Context, input Input, hosts []Host
 }
 
 func (s *Service) performK3d(ctx context.Context, record *model.K3sInstallation, snapshot savedInput) error {
+	resourceName := k3dResourceName(record.ID)
+	if resourceName == "" {
+		slog.ErrorContext(ctx, "k3d 安装任务标识无效", "operation", "k3d_resource_name", "err", ErrInvalidInput)
+		return ErrInvalidInput
+	}
 	input := snapshot.Input
 	host := Host{ID: input.ServerHostID, Role: "host"}
 	var hosts []Host
@@ -150,7 +169,7 @@ func (s *Service) performK3d(ctx context.Context, record *model.K3sInstallation,
 	if err := s.recheckRuntime(ctx, *record, snapshot); err != nil {
 		return err
 	}
-	if err := s.log(record, "创建 k3d 集群："+k3dResourceName(record.ID)); err != nil {
+	if err := s.log(record, "创建 k3d 集群："+resourceName); err != nil {
 		return err
 	}
 	if err := s.hostProgress(record, hosts, 0, "installing", ""); err != nil {
@@ -220,10 +239,17 @@ func (s *Service) performK3d(ctx context.Context, record *model.K3sInstallation,
 	if err := s.hostProgress(record, hosts, 0, "succeeded", "k3d 容器集群已就绪，未关联物理节点"); err != nil {
 		return err
 	}
-	return s.log(record, "k3d 集群已独立接入 EDO："+k3dResourceName(record.ID))
+	return s.log(record, "k3d 集群已独立接入 EDO："+resourceName)
 }
 
 func (s *Service) waitForK3dConnection(ctx context.Context, record *model.K3sInstallation, snapshot savedInput, host model.Host, bundle sshclient.Bundle) (string, error) {
+	if err := k3dWaitContextError(ctx); err != nil {
+		return "", err
+	}
+	if k3dResourceName(record.ID) == "" {
+		slog.ErrorContext(ctx, "k3d 连接任务标识无效", "operation", "k3d_connection_resource_name", "err", ErrInvalidInput)
+		return "", ErrInvalidInput
+	}
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 	defer cancel()
 	interval := s.k3dWaitInterval

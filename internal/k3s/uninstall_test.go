@@ -248,7 +248,10 @@ func TestUninstallRejectsChangedExpiredBusyAndLateRevocation(t *testing.T) {
 
 func TestUninstallPermissionIsIndependentFreshAndSourceMayBeColleague(t *testing.T) {
 	f, source, _ := uninstallFixture(t)
-	actor := model.User{ID: uuid.NewString(), Username: "uninstall-" + uuid.NewString(), Nickname: "卸载同事", DepartmentID: f.actor.DepartmentID, IsActive: true, AuthVersion: 1, PasswordHash: "fixture-only", CreatedAt: time.Now(), UpdatedAt: time.Now()}
+	actor := model.User{ID: uuid.NewString(), Username: "uninstall_" + strings.ReplaceAll(uuid.NewString(), "-", "")[:16], Nickname: "卸载同事", DepartmentID: f.actor.DepartmentID, IsActive: true, AuthVersion: 1, PasswordHash: "fixture-only", CreatedAt: time.Now(), UpdatedAt: time.Now()}
+	if len(actor.Username) > 32 {
+		t.Fatal("测试用户名超过数据库列允许的长度")
+	}
 	role := model.Role{ID: uuid.NewString(), Name: "uninstall-" + uuid.NewString(), DisplayName: "仅卸载", CreatedAt: time.Now(), UpdatedAt: time.Now()}
 	for _, value := range []any{&actor, &role, &model.RolePermission{RoleID: role.ID, Permission: access.PermissionK3sUninstall}, &model.RolePermission{RoleID: role.ID, Permission: "cluster.read"}, &model.ProjectMember{ProjectID: f.host.ProjectID, UserID: actor.ID, RoleID: role.ID}} {
 		if err := f.db.Create(value).Error; err != nil {

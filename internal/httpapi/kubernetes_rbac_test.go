@@ -12,6 +12,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 
+	"edo/internal/access"
 	"edo/internal/database"
 	"edo/internal/kube"
 	"edo/internal/model"
@@ -64,6 +65,7 @@ func (f rbacHTTPFixture) path() string { return "/api/v1/kubernetes/clusters/" +
 func TestKubernetesRBACHTTPDefaultAndDraftPreviewNeverWriteCluster(t *testing.T) {
 	f := newRBACHTTPFixture(t)
 	role := createRoleForHTTPTest(t, f.router, f.admin, "rbac-http-workload", []string{"kubernetes.workload.read", "kubernetes.workload.update"})
+	uninstallRole := createRoleForHTTPTest(t, f.router, f.admin, "rbac-http-uninstall-only", []string{access.PermissionK3sUninstall})
 	response := performJSONRequest(t, f.router, http.MethodGet, f.path(), nil, f.admin)
 	var state kubernetesRBACResponse
 	if response.Code != 200 || json.Unmarshal(response.Body.Bytes(), &state) != nil || state.Enabled || state.Revision != 0 || len(state.Grants) != 0 || len(state.Roles) == 0 {
@@ -73,6 +75,9 @@ func TestKubernetesRBACHTTPDefaultAndDraftPreviewNeverWriteCluster(t *testing.T)
 		t.Fatal("authorization state was cacheable")
 	}
 	for _, permission := range state.Catalog {
+		if permission.Code == access.PermissionK3sUninstall {
+			t.Fatal("主机卸载权限不能出现在原生集群授权目录")
+		}
 		if strings.HasPrefix(permission.Code, "kubernetes.rbac.") {
 			t.Fatal("RBAC management must not be a data grant")
 		}
@@ -81,6 +86,11 @@ func TestKubernetesRBACHTTPDefaultAndDraftPreviewNeverWriteCluster(t *testing.T)
 		}
 		if permission.Code == "kubernetes.storage.create" && (slices.Contains(permission.ResourceScopes, "cluster") || !slices.Contains(permission.ResourceScopes, "namespace")) {
 			t.Fatal("storage creation advertised unsupported cluster scope")
+		}
+	}
+	for _, role := range state.Roles {
+		if role.ID == uninstallRole {
+			t.Fatal("仅有主机卸载权限的角色不能作为原生集群数据授权角色")
 		}
 	}
 	request := map[string]any{"role_id": role, "namespace": "team-a", "cluster_scope": false, "permissions": []string{"kubernetes.workload.read"}, "expected_revision": 0}
@@ -111,6 +121,7 @@ func TestKubernetesRBACHTTPRejectsUnsafeScopeAndMissingRevision(t *testing.T) {
 		{"role_id": role, "namespace": "team-a", "cluster_scope": true, "permissions": []string{"kubernetes.workload.read"}, "expected_revision": 0},
 		{"role_id": role, "namespace": "team-a", "permissions": []string{"kubernetes.rbac.update"}, "expected_revision": 0},
 		{"role_id": role, "namespace": "team-a", "permissions": []string{"kubernetes.secret.read"}, "expected_revision": 0},
+		{"role_id": role, "namespace": "team-a", "permissions": []string{access.PermissionK3sUninstall}, "expected_revision": 0},
 		{"role_id": role, "namespace": "team-a", "permissions": []string{"kubernetes.workload.read"}},
 	} {
 		response := performJSONRequest(t, f.router, http.MethodPost, f.path()+"/grants", request, f.admin)
