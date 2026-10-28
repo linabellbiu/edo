@@ -252,7 +252,8 @@ func preflightScript(installer map[string]any, options map[string]any, ownedLock
 	for _, directory := range []string{unitDir, "/etc/systemd/system", "/usr/lib/systemd/system", "/etc/init.d"} {
 		script.WriteString("for unit in " + shellQuote(directory) + "/k3s* " + shellQuote(directory) + "/rke2* " + shellQuote(directory) + "/kubelet.service; do if [ -e \"$unit\" ]; then printf 'EDO_K3S_EXISTS\\n'; exit 42; fi; done\n")
 	}
-	script.WriteString("if timeout 2 ps -eo comm= 2>/dev/null | awk '$1 ~ /^(k3s|rke2|kubelet|kube-apiserver|kube-controller|kube-scheduler|microk8s)(-|$)/ {found=1} END{exit !found}'; then printf 'EDO_K3S_EXISTS\\n'; exit 42; fi\n")
+	script.WriteString("if edo_processes=$(timeout 2 ps -eo comm= 2>/dev/null); then :; else printf 'EDO_K3S_PROCESS_CHECK_FAILED\\n'; exit 44; fi\n")
+	script.WriteString("if printf '%s\\n' \"$edo_processes\" | awk '$1 ~ /^(k3s|rke2|kubelet|kube-apiserver|kube-controller|kube-scheduler|microk8s)(-|$)/ {found=1} END{exit !found}'; then printf 'EDO_K3S_EXISTS\\n'; exit 42; else edo_process_status=$?; if [ \"$edo_process_status\" != 1 ]; then printf 'EDO_K3S_PROCESS_CHECK_FAILED\\n'; exit 44; fi; fi\nunset edo_processes edo_process_status\n")
 	script.WriteString("printf 'EDO_K3S_PREFLIGHT_OK\\n'\n")
 	return script.String()
 }

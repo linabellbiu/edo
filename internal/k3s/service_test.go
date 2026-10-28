@@ -377,7 +377,7 @@ func TestWorkerRechecksRevokedPermissionAndDoesNotInstallExistingKubernetes(t *t
 			if scenario == "permission" && f.transport.reads != 1 {
 				t.Fatal("revoked actor reached SSH")
 			}
-			if scenario == "existing" && !strings.Contains(finished.ErrorMessage, "现有 Kubernetes") {
+			if scenario == "existing" && !strings.Contains(finished.ErrorMessage, "现有安装") {
 				t.Fatal(finished.ErrorMessage)
 			}
 			var locks int64

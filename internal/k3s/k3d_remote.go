@@ -18,13 +18,15 @@ var k3dPreflightDefinitions = []preflightCheckDefinition{
 	{"architecture", "CPU 架构", "支持当前 CPU 架构", "不支持该 CPU 架构", ""},
 	{"tools", "基础命令", "安装所需命令可用", "需要 Docker、curl、ip、ss、awk、df、getconf、sha256sum、timeout、install、mktemp、ln 和 base64 命令", ""},
 	{"docker", "本地 Docker", "本机 Unix Socket 上的 Linux Docker 版本满足要求", "需要本机 /var/run/docker.sock 上的 Linux Docker 20.10.5 或以上，不使用远端 Docker 或其他 Context", ""},
+	{"runc", "容器运行时版本", "本机 Docker 的 runc 版本满足官方最低要求", "k3d 需要 runc 1.0.0-rc93 或以上", "本机 Docker 未返回可核对的 runc 版本，需另行核验；未将其视为已通过"},
 	{"bind_address", "API 绑定地址", "绑定 IP 属于当前主机", "API 绑定地址必须是所选主机实际网卡上的 IP", ""},
 	{"ports", "API 端口", "API 端口未被占用", "API 端口已被占用或无法读取监听端口", ""},
 	{"cpu", "累计 CPU", "CPU 核数满足全部容器节点限制", "CPU 不足，需要 Server 2 核、每个 Worker 1 核", ""},
 	{"memory", "累计内存", "可用内存满足全部节点及宿主预留", "可用内存不足，需要 Server 2 GiB、每个 Worker 1 GiB，另为宿主预留 512 MiB", ""},
 	{"disk", "Docker 数据盘", "Docker 数据盘空间充足", "Docker 数据目录不可读或可用空间不足，需至少 10 GiB 加每个 Worker 2 GiB", ""},
 	{"download", "k3d 工具", "官方固定版本工具可用或下载源可达", "固定版本工具校验失败或无法访问官方 HTTPS 下载源", ""},
-	{"installation_lock", "主机安装锁", "没有其他 EDO 安装任务", "该主机正在执行其他 EDO 安装任务", ""},
+	{"component_images", "K3s 组件镜像", "", "", "此检测不拉取镜像，尚未验证 Docker 实际镜像源、K3s 标签、平台及系统组件镜像可用性"},
+	{"installation_lock", "主机安装锁", "没有其他 EDO 安装锁", "存在其他任务或残留安装锁，请核对主机实际状态", ""},
 	{"hostname", "主机名称", "主机名称有效", "无法读取有效主机名称", ""},
 }
 
@@ -70,13 +72,15 @@ edo_tools=true
 for edo_tool in docker curl ip ss awk df getconf sha256sum timeout install mktemp ln base64 hostname ps; do command -v "$edo_tool" >/dev/null 2>&1 || edo_tools=false; done
 if "$edo_tools"; then edo_check tools passed; else edo_check tools failed; fi
 edo_engine=$(timeout 5 env -i PATH="$edo_path" HOME=/var/lib/edo/k3d "$edo_docker_binary" --host=unix:///var/run/docker.sock version --format '{{.Server.Os}} {{.Server.Version}}' 2>/dev/null)
-if [ -S /var/run/docker.sock ] && printf '%s\n' "$edo_engine" | awk '$1=="linux" && split($2,v,".")>=3 && v[1]~/^[0-9]+$/ && v[2]~/^[0-9]+$/ && v[3]~/^[0-9]+([-+].*)?$/ {split(v[3],p,"[-+]"); if(v[1]>20 || (v[1]==20 && (v[2]>10 || (v[2]==10 && p[1]>=5))))ok=1} END{exit !ok}'; then edo_check docker passed; else edo_check docker failed; fi
+edo_engine_status=$?
+if [ "$edo_engine_status" = 0 ] && [ -S /var/run/docker.sock ] && printf '%s\n' "$edo_engine" | awk '$1=="linux" && split($2,v,".")>=3 && v[1]~/^[0-9]+$/ && v[2]~/^[0-9]+$/ && v[3]~/^[0-9]+([-+].*)?$/ {split(v[3],p,"[-+]"); if(v[1]>20 || (v[1]==20 && (v[2]>10 || (v[2]==10 && p[1]>=5))))ok=1} END{exit !ok}'; then edo_check docker passed; else edo_check docker failed; fi
 `
-	script += "if timeout 3 ip -o address show 2>/dev/null | awk -v want=" + shellQuote(options.BindAddress) + " '{split($4,a,\"/\");if(a[1]==want)found=1} END{exit !found}'; then edo_check bind_address passed; else edo_check bind_address failed; fi\n"
+	script += k3dRuncPreflightScript
+	script += "edo_addresses=$(timeout 3 ip -o address show 2>/dev/null)\nedo_address_status=$?\nif [ \"$edo_address_status\" = 0 ] && printf '%s\\n' \"$edo_addresses\" | awk -v want=" + shellQuote(options.BindAddress) + " '{split($4,a,\"/\");if(a[1]==want)found=1} END{exit !found}'; then edo_check bind_address passed; else edo_check bind_address failed; fi\n"
 	script += "edo_listeners=$(timeout 3 ss -H -ltn 2>/dev/null)\nedo_listener_status=$?\nif [ \"$edo_listener_status\" = 0 ] && ! printf '%s\\n' \"$edo_listeners\" | awk '$4 ~ /:" + strconv.Itoa(options.APIPort) + "$/ {found=1} END{exit !found}'; then edo_check ports passed; else edo_check ports failed; fi\n"
-	script += "edo_cpu=$(getconf _NPROCESSORS_ONLN 2>/dev/null || printf 0)\nif [ \"$edo_cpu\" -ge " + strconv.Itoa(2+agents) + " ] 2>/dev/null; then edo_check cpu passed; else edo_check cpu failed; fi\n"
+	script += "edo_cpu=$(getconf _NPROCESSORS_ONLN 2>/dev/null)\nedo_cpu_status=$?\nif [ \"$edo_cpu_status\" = 0 ] && [ \"$edo_cpu\" -ge " + strconv.Itoa(2+agents) + " ] 2>/dev/null; then edo_check cpu passed; else edo_check cpu failed; fi\n"
 	script += "edo_available=$(awk '$1==\"MemAvailable:\"{print $2;found=1;exit} END{if(!found)print 0}' /proc/meminfo 2>/dev/null || printf 0)\nif [ \"$edo_available\" -ge " + strconv.Itoa((2+agents)*1024*1024+512*1024) + " ] 2>/dev/null; then edo_check memory passed; else edo_check memory failed; fi\n"
-	script += "edo_root=$(timeout 5 env -i PATH=\"$edo_path\" HOME=/var/lib/edo/k3d \"$edo_docker_binary\" --host=unix:///var/run/docker.sock info --format '{{.DockerRootDir}}' 2>/dev/null)\nedo_free=$(timeout 3 df -Pk \"$edo_root\" 2>/dev/null | awk 'NR==2{print $4}')\nif [ -d \"$edo_root\" ] && [ \"${edo_free:-0}\" -ge " + strconv.Itoa((10+agents*2)*1024*1024) + " ] 2>/dev/null; then edo_check disk passed; else edo_check disk failed; fi\n"
+	script += "edo_root=$(timeout 5 env -i PATH=\"$edo_path\" HOME=/var/lib/edo/k3d \"$edo_docker_binary\" --host=unix:///var/run/docker.sock info --format '{{.DockerRootDir}}' 2>/dev/null)\nedo_root_status=$?\nedo_free=0\nedo_disk_status=1\nif [ \"$edo_root_status\" = 0 ] && [ -d \"$edo_root\" ]; then\n  edo_disk_output=$(timeout 3 df -Pk \"$edo_root\" 2>/dev/null)\n  edo_disk_status=$?\n  if [ \"$edo_disk_status\" = 0 ]; then edo_free=$(printf '%s\\n' \"$edo_disk_output\" | awk 'NR==2{print $4}'); fi\nfi\nif [ \"$edo_root_status\" = 0 ] && [ \"$edo_disk_status\" = 0 ] && [ -d \"$edo_root\" ] && [ \"${edo_free:-0}\" -ge " + strconv.Itoa((10+agents*2)*1024*1024) + " ] 2>/dev/null; then edo_check disk passed; else edo_check disk failed; fi\n"
 	script += `if [ -e "$edo_k3d" ] || [ -L "$edo_k3d" ]; then
   if edo_tool_valid; then edo_check download passed; else edo_check download failed; fi
 elif timeout 5 curl --fail --silent --head --location --proto '=https' --proto-redir '=https' --max-redirs 5 --tlsv1.2 --connect-timeout 2 --max-time 4 "https://github.com/k3d-io/k3d/releases/download/v5.9.0/k3d-linux-$edo_arch" >/dev/null 2>&1; then edo_check download passed; else edo_check download failed; fi

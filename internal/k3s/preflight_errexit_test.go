@@ -44,10 +44,11 @@ func newProbeShellFixture(t *testing.T, missing string) probeShellFixture {
 		"df":        "printf 'Filesystem 1024-blocks Used Available Capacity Mounted\\nfixture 99999999 0 99999999 0%% /\\n'\n",
 		"ss":        "exit \"${EDO_TEST_SS_STATUS:-0}\"\n",
 		"curl":      "case \"$*\" in *api.example.test*) exit \"${EDO_TEST_ENDPOINT_STATUS:-0}\" ;; esac\nexit 0\n",
-		"ps":        "exit 0\n",
+		"ps":        "printf '%s' \"${EDO_TEST_PROCESSES:-}\"\nexit \"${EDO_TEST_PS_STATUS:-0}\"\n",
+		"stat":      "printf ext4\nexit \"${EDO_TEST_STAT_STATUS:-0}\"\n",
 		"docker":    "exit 9\n",
 		"ip":        "printf '2: eth0 inet 192.0.2.10/24 scope global eth0\\n'\n",
-		"systemctl": "exit 0\n",
+		"systemctl": "printf '%s' \"${EDO_TEST_MANAGER_VERSION-255}\"\nexit \"${EDO_TEST_MANAGER_STATUS:-0}\"\n",
 		"sh":        "printf 'addresses\\t192.0.2.10\\nmachine_id\\t0123456789abcdef0123456789abcdef\\nsystem_uuid\\t\\nboot_id\\t\\n'\n",
 	} {
 		if name != missing {
@@ -74,6 +75,7 @@ func (fixture probeShellFixture) run(t *testing.T, script string, extraEnv ...st
 		"edo_path=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin", "edo_path="+shellQuote(fixture.commands),
 		"/etc/", fixture.root+"/etc/", "/var/", fixture.root+"/var/", "/run/", fixture.root+"/run/",
 		"/sys/", fixture.root+"/sys/", "/proc/", fixture.root+"/proc/", "/usr/local/bin/", fixture.root+"/bin/",
+		"/boot/", fixture.root+"/boot/",
 		"/sbin/openrc-run", fixture.root+"/sbin/openrc-run",
 	)
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
@@ -94,6 +96,10 @@ func TestNativePreflightReportSurvivesTransportErrexit(t *testing.T) {
 		{name: "已有安装", check: "existing_installation", existing: true},
 		{name: "缺少基础命令", missing: "ss", check: "tools"},
 		{name: "监听端口读取失败", check: "ports", environment: []string{"EDO_TEST_SS_STATUS=9"}},
+		{name: "进程读取失败", check: "existing_installation", environment: []string{"EDO_TEST_PS_STATUS=9"}},
+		{name: "进程读取超时", check: "existing_installation", environment: []string{"EDO_TEST_PS_STATUS=124"}},
+		{name: "文件系统读取失败", check: "snapshotter", environment: []string{"EDO_TEST_STAT_STATUS=1"}},
+		{name: "服务管理器失效", check: "supervisor", environment: []string{"EDO_TEST_MANAGER_STATUS=1"}},
 		{name: "集群证书检查失败", check: "endpoint", environment: []string{"EDO_TEST_ENDPOINT_STATUS=60"}},
 	} {
 		t.Run(scenario.name, func(t *testing.T) {
@@ -112,6 +118,13 @@ func TestNativePreflightReportSurvivesTransportErrexit(t *testing.T) {
 			report := parsePreflightProbe(host, output, nil)
 			if report.Passed || preflightStatus(report, scenario.check) != "failed" || len(report.Checks) != len(hostPreflightDefinitions)+1 || preflightStatus(report, "report") != "" || preflightStatus(report, "connection") != "" {
 				t.Fatalf("未保留完整且失败闭合的主机报告: %+v", report.Checks)
+			}
+			if strings.HasPrefix(scenario.name, "进程读取") {
+				for _, item := range report.Checks {
+					if item.ID == "existing_installation" && (!strings.Contains(item.Message, "无法完成") || strings.Contains(item.Message, "已发现")) {
+						t.Fatal("无法读取进程不得冒充已发现已有安装")
+					}
+				}
 			}
 			if !errors.Is(requirePreflight(&PreflightReport{Hosts: []HostPreflight{report}}), ErrPreflightFailed) {
 				t.Fatal("有阻断项的报告不得允许安装")

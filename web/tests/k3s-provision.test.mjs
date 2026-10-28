@@ -15,19 +15,21 @@ const targetVersion='v1.35.5+k3s1'
 const host=id=>({id,name:`Host ${id}`,mode:'ssh',address:`192.0.2.${id}`,is_builtin:false,is_active:true,capabilities:[],credential_configured:true})
 const preflightCheck=(status='passed')=>({id:'memory',name:'内存',status,message:status==='failed'?'可用内存不足，请扩容后重试':'满足角色最低要求'})
 const preflightReport=(passed=true)=>({checked_at:new Date().toISOString(),passed,checks:[],hosts:[{host_id:'1',host_name:'Host 1',role:'server',hostname:'master-a',passed,checks:[preflightCheck(passed?'passed':'failed')]}]})
+const reportFor=body=>({...preflightReport(),hosts:(body.action==='join'?(body.join_host_ids??[]).map(id=>({id,role:body.join_role??'agent'})):[{id:body.server_host_id,role:body.mode==='k3d'?'host':'server'},...(body.mode==='k3d'?[]:(body.agent_host_ids??[]).map(id=>({id,role:'agent'})))]).map(item=>({host_id:item.id,host_name:`Host ${item.id}`,role:item.role,hostname:`node-${item.id}`,passed:true,checks:[preflightCheck()]}))})
 const preflightFailure=report=>({message:'前置检查未通过',response:{status:409,data:{code:'k3s_preflight_failed',message:'前置检查未通过',preflight:report}}})
 const nativeSources=(download_source='official',system_image_registry='')=>({download_source,installer_url:download_source==='official_cn'?'https://rancher-mirror.rancher.cn/k3s/k3s-install.sh':'https://get.k3s.io',artifact_url:download_source==='official_cn'?'https://rancher-mirror.rancher.cn/k3s':'https://github.com/k3s-io/k3s/releases/download',...(download_source==='official_cn'?{mirror:'cn'}:{}),system_image_registry})
 const plan=()=>({id:'plan-1',action:'create',sources:nativeSources(),expires_at:new Date(Date.now()+300000).toISOString(),hosts:[{id:'1',name:'Host 1',address:'192.0.2.1',role:'server'}],server_config:'disable: []',agent_config:'',commands:[],warnings:[],preflight:preflightReport()})
 const k3dPlan=(config={agents:1,api_port:16443,bind_address:'192.0.2.1'})=>({...plan(),sources:undefined,mode:'k3d',k3d:{...config},endpoint:`https://${config.bind_address}:${config.api_port}`,hosts:[{id:'1',name:'Host 1',address:'192.0.2.1',role:'host'}],preflight:{...preflightReport(),hosts:[{...preflightReport().hosts[0],role:'host'}]}})
 const permissions=['cluster.create','cluster.execute','cluster.update','cluster.read','kubernetes.node.create']
 
-function harness({action='create',codes=permissions,api={}}={}){
+function harness({action='create',codes=permissions,api={},assumeDetected=true}={}){
   const requests=[],timers=[],mounts=[],unmounts=[],listeners=new Map(),storage={project:'project-a'}
   let previewed
   const auth=vue.reactive({user:{id:'operator',project_id:'project-a'},canAny(required){return Boolean(this.user)&&required.some(code=>codes.includes(code))}})
   const props=vue.reactive({open:false,action,cluster:action==='join'?'cluster-a':'',endpoint:action==='join'?'https://cluster.example:6443':'',hosts:[host('1'),host('2')]})
   const methods={
     getK3sCatalog:async(cluster,signal)=>{requests.push({method:'catalog',cluster,signal});return cluster?{...catalog,default_version:targetVersion,target_version:targetVersion}:catalog},
+    checkK3sPreflight:async(body,signal)=>{requests.push({method:'check',body,signal});return reportFor(body)},
     listK3sInstallations:async(cluster,action,signal)=>{requests.push({method:'list',cluster,action,signal});return []},
     previewK3sPlan:async(body,signal)=>{
       requests.push({method:'preview',body,signal});previewed=body
@@ -45,6 +47,12 @@ function harness({action='create',codes=permissions,api={}}={}){
     globals:{window:{addEventListener:(name,fn)=>listeners.set(name,fn),removeEventListener:(name,fn)=>{if(listeners.get(name)===fn)listeners.delete(name)}},localStorage:{getItem:()=>storage.project},setTimeout:(fn,delay)=>{fn.delay=delay;timers.push(fn);return timers.length},clearTimeout(){},setInterval(){return 1},clearInterval(){}},
   })
   mounts.forEach(fn=>fn())
+  // 既有计划/执行单测使用已检测的固定前置夹具；独立检测用例关闭此夹具并走真实组件流程。
+  const preview=ctx.state.preview
+  ctx.state.preview=()=>{
+    if(assumeDetected&&ctx.state.canCheck.value){ctx.state.preflight.value=preflightReport();ctx.state.checkedInput.value=ctx.state.signature.value;ctx.state.checkedContext.value=ctx.state.context.value}
+    return preview()
+  }
   return {...ctx,auth,props,requests,timers,listeners,storage,stop(){unmounts.forEach(fn=>fn());ctx.stop()},async open(){props.open=true;await settle()},ready(){Object.assign(ctx.state.form,{name:'Production',server_host_id:action==='create'?'1':'',agent_host_ids:[],join_host_ids:action==='join'?['2']:[]})}}
 }
 
@@ -92,7 +100,7 @@ test('原生安装不要求Docker主机能力，默认不注入运行时参数�
   try{
     await ctx.open();ctx.ready();assert.deepEqual(ctx.props.hosts[0].capabilities,[])
     assert.equal(ctx.state.hostOptions.value.find(item=>item.value==='1').disabled,false)
-    assert.equal(ctx.state.canPreview.value,true);await ctx.state.preview()
+    assert.equal(ctx.state.canCheck.value,true);await ctx.state.preview()
     const input=ctx.requests.find(item=>item.method==='preview').body
     assert.deepEqual(input.server_options,{});assert.deepEqual(input.agent_options,{});assert.deepEqual(input.installer,{})
     ctx.state.form.profile='custom';ctx.state.form.server_options={docker:true};await settle()
@@ -160,13 +168,13 @@ test('k3d地址必须显式IP且节点数端口有界，域名SSH地址不猜NAS
   const ctx=harness()
   try{
     await ctx.open();ctx.props.hosts[0].address='nas-forward.example';ctx.state.form.mode='k3d';await settle();ctx.ready();await settle()
-    assert.equal(ctx.state.form.k3d.bind_address,'');assert.equal(ctx.state.canPreview.value,false)
-    for(const address of ['0.0.0.0','127.0.0.1','::1','nas.example','192.0.2.1:16443']){ctx.state.form.k3d.bind_address=address;assert.equal(ctx.state.canPreview.value,false,address)}
+    assert.equal(ctx.state.form.k3d.bind_address,'');assert.equal(ctx.state.canCheck.value,false)
+    for(const address of ['0.0.0.0','127.0.0.1','::1','nas.example','192.0.2.1:16443']){ctx.state.form.k3d.bind_address=address;assert.equal(ctx.state.canCheck.value,false,address)}
     ctx.state.form.k3d.bind_address='192.168.10.24'
     for(const [key,value] of [['agents',-1],['agents',9],['agents',1.5],['api_port',0],['api_port',1],['api_port',1023],['api_port',65536]]){
-      const previous=ctx.state.form.k3d[key];ctx.state.form.k3d[key]=value;assert.equal(ctx.state.canPreview.value,false,`${key}=${value}`);ctx.state.form.k3d[key]=previous
+      const previous=ctx.state.form.k3d[key];ctx.state.form.k3d[key]=value;assert.equal(ctx.state.canCheck.value,false,`${key}=${value}`);ctx.state.form.k3d[key]=previous
     }
-    ctx.state.form.k3d.agents=0;ctx.state.form.k3d.api_port=1024;assert.equal(ctx.state.canPreview.value,true);await ctx.state.preview()
+    ctx.state.form.k3d.agents=0;ctx.state.form.k3d.api_port=1024;assert.equal(ctx.state.canCheck.value,true);await ctx.state.preview()
     assert.equal(ctx.requests.find(item=>item.method==='preview').body.k3d.agents,0)
     assert.equal(ctx.requests.find(item=>item.method==='preview').body.k3d.api_port,1024)
   }finally{ctx.stop()}
@@ -239,8 +247,8 @@ test('添加Master需要明确Server凭据并发送统一join字段，创建流�
   try{
     await ctx.open();assert.equal(ctx.state.form.join_role,'agent')
     ctx.state.form.join_role='server';await settle();ctx.state.form.join_host_ids=['1']
-    assert.equal(ctx.state.canPreview.value,false);ctx.state.form.server_token='   ';assert.equal(ctx.state.canPreview.value,false)
-    ctx.state.form.server_token='K10fixture-ca::server-fixture-password';assert.equal(ctx.state.canPreview.value,true)
+    assert.equal(ctx.state.canCheck.value,false);ctx.state.form.server_token='   ';assert.equal(ctx.state.canCheck.value,false)
+    ctx.state.form.server_token='K10fixture-ca::server-fixture-password';assert.equal(ctx.state.canCheck.value,true)
     await ctx.state.preview();const request=ctx.requests.find(item=>item.method==='preview').body
     assert.equal(request.join_role,'server');assert.deepEqual(request.join_host_ids,['1']);assert.equal(request.server_token,'K10fixture-ca::server-fixture-password')
     assert.equal('agent_host_ids' in request,false);assert.equal('server_host_id' in request,false)
@@ -340,7 +348,7 @@ test('角色切换后的迟到Master预览不能恢复旧计划，任务接收�
 })
 
 test('Master与Worker的加入批次均不超过20台，凭据只通过密码控件输入',async()=>{
-  for(const role of ['agent','server']){const ctx=harness({action:'join'});try{await ctx.open();ctx.state.form.join_role=role;await settle();ctx.state.form.server_token='fixture-server-credential';ctx.state.form.join_host_ids=Array.from({length:21},(_,index)=>String(index));assert.equal(ctx.state.canPreview.value,false);await ctx.state.preview();assert.equal(ctx.requests.some(item=>item.method==='preview'),false)}finally{ctx.stop()}}
+  for(const role of ['agent','server']){const ctx=harness({action:'join'});try{await ctx.open();ctx.state.form.join_role=role;await settle();ctx.state.form.server_token='fixture-server-credential';ctx.state.form.join_host_ids=Array.from({length:21},(_,index)=>String(index));assert.equal(ctx.state.canCheck.value,false);await ctx.state.preview();assert.equal(ctx.requests.some(item=>item.method==='preview'),false)}finally{ctx.stop()}}
   const source=readFileSync(new URL('../src/components/K3sProvisionDrawer.vue',import.meta.url),'utf8')
   assert.match(source,/<a-input-password v-model:value="form.server_token"/);assert.doesNotMatch(source,/\{\{\s*form.server_token\s*\}\}/)
   assert.match(source,/SQLite、外置数据存储或无法确认的目标会被阻断/)
@@ -350,9 +358,9 @@ test('Master每计划只能单台逐次加入，Worker保留多选并仍发送�
   const ctx=harness({action:'join'})
   try{
     await ctx.open();ctx.state.form.join_role='server';await settle();ctx.state.form.server_token='fixture-server-credential'
-    ctx.state.form.join_host_ids=['1','2'];assert.equal(ctx.state.canPreview.value,false);await ctx.state.preview();assert.equal(ctx.requests.some(item=>item.method==='preview'),false)
-    ctx.state.joinHostSelection.value='1';assert.deepEqual(ctx.state.form.join_host_ids,['1']);assert.equal(ctx.state.canPreview.value,true);await ctx.state.preview();assert.deepEqual(ctx.requests.find(item=>item.method==='preview').body.join_host_ids,['1'])
-    ctx.state.form.join_role='agent';await settle();ctx.state.joinHostSelection.value=['1','2'];assert.deepEqual(ctx.state.form.join_host_ids,['1','2']);assert.equal(ctx.state.canPreview.value,true);await ctx.state.preview();assert.deepEqual(ctx.requests.filter(item=>item.method==='preview').at(-1).body.join_host_ids,['1','2'])
+    ctx.state.form.join_host_ids=['1','2'];assert.equal(ctx.state.canCheck.value,false);await ctx.state.preview();assert.equal(ctx.requests.some(item=>item.method==='preview'),false)
+    ctx.state.joinHostSelection.value='1';assert.deepEqual(ctx.state.form.join_host_ids,['1']);assert.equal(ctx.state.canCheck.value,true);await ctx.state.preview();assert.deepEqual(ctx.requests.find(item=>item.method==='preview').body.join_host_ids,['1'])
+    ctx.state.form.join_role='agent';await settle();ctx.state.joinHostSelection.value=['1','2'];assert.deepEqual(ctx.state.form.join_host_ids,['1','2']);assert.equal(ctx.state.canCheck.value,true);await ctx.state.preview();assert.deepEqual(ctx.requests.filter(item=>item.method==='preview').at(-1).body.join_host_ids,['1','2'])
     const source=readFileSync(new URL('../src/components/K3sProvisionDrawer.vue',import.meta.url),'utf8');assert.match(source,/Master 每个计划仅加入 1 台/)
   }finally{ctx.stop()}
 })
@@ -390,9 +398,9 @@ test('原生默认与自定义均显式发送下载源，系统镜像源独立�
       assert.equal(domestic.download_source,'official_cn')
       assert.equal(domestic.system_image_registry,'registry.cn-hangzhou.aliyuncs.com')
       ctx.state.form.system_image_source='custom'
-      assert.equal(ctx.state.canPreview.value,false)
+      assert.equal(ctx.state.canCheck.value,false)
       ctx.state.form.custom_system_image_registry=' registry.example.com:5000/team '
-      assert.equal(ctx.state.canPreview.value,true)
+      assert.equal(ctx.state.canCheck.value,true)
       assert.equal(ctx.state.input().system_image_registry,'registry.example.com:5000/team')
       await ctx.state.preview()
       assert.equal(ctx.state.planSourceValid.value,true)
@@ -608,7 +616,7 @@ test('配置变更和关闭后返回的预览不覆盖新状态，过期计划�
 
 test('节点安装使用当前集群，选择工作节点是必要条件，缺少执行或关联权限不能预览',async()=>{
   const ctx=harness({action:'join'});try{
-    await ctx.open();assert.equal(ctx.state.canPreview.value,false);ctx.state.form.join_host_ids=['2'];assert.equal(ctx.state.canPreview.value,true)
+    await ctx.open();assert.equal(ctx.state.canCheck.value,false);ctx.state.form.join_host_ids=['2'];assert.equal(ctx.state.canCheck.value,true)
     await ctx.state.preview();const payload=ctx.requests.find(item=>item.method==='preview').body
     assert.equal(payload.action,'join');assert.equal(payload.cluster_id,'cluster-a');assert.equal(payload.join_role,'agent');assert.deepEqual(payload.join_host_ids,['2']);assert.equal('server_host_id' in payload,false);assert.equal('agent_host_ids' in payload,false);assert.equal('server_token' in payload,false)
   }finally{ctx.stop()}
@@ -688,6 +696,94 @@ test('预检预览沿用取消信号并给多主机检查预留请求预算',asy
   const controller=new AbortController(),body={action:'create'}
   await api.previewK3sPlan(body,controller.signal)
   assert.equal(requests[0].options.signal,controller.signal);assert.equal(requests[0].options.timeout,180000)
+})
+
+test('独立安装前检测只请求报告，通过后才允许单独生成计划，检测不创建任务',async()=>{
+  for(const mode of ['native','k3d']){
+    const ctx=harness({assumeDetected:false})
+    try{
+      await ctx.open();ctx.ready();ctx.state.form.mode=mode;await settle();ctx.ready()
+      if(mode==='k3d')ctx.state.form.k3d.bind_address='192.0.2.1'
+      assert.equal(ctx.state.canCheck.value,true);assert.equal(ctx.state.canPreview.value,false)
+      await ctx.state.preview();assert.equal(ctx.requests.some(item=>item.method==='preview'),false)
+      await ctx.state.checkPreflight();assert.equal(ctx.state.preflight.value.passed,true);assert.equal(ctx.state.canPreview.value,true);assert.equal(ctx.state.currentStep.value,1)
+      assert.equal(ctx.requests.filter(item=>item.method==='check').length,1);assert.equal(ctx.requests.find(item=>item.method==='check').body.mode,mode)
+      assert.equal(ctx.state.plan.value,undefined);assert.equal(ctx.state.installation.value,undefined);assert.equal(ctx.requests.some(item=>['preview','start'].includes(item.method)),false)
+      await ctx.state.preview();assert.ok(ctx.state.plan.value);assert.equal(ctx.state.currentStep.value,2);assert.equal(ctx.requests.filter(item=>item.method==='preview').length,1);assert.equal(ctx.requests.some(item=>item.method==='start'),false)
+    }finally{ctx.stop()}
+  }
+})
+
+test('检测不满足即阻断计划，警告不冒充不满足，重新检测也不会自动修复或安装',async()=>{
+  let failed=true
+  const ctx=harness({assumeDetected:false,api:{checkK3sPreflight:async body=>{const report=reportFor(body);report.passed=!failed;report.hosts[0].passed=!failed;report.hosts[0].checks=[preflightCheck(failed?'failed':'warning')];return report}}})
+  try{
+    await ctx.open();ctx.ready();await ctx.state.checkPreflight();assert.equal(ctx.state.preflight.value.passed,false);assert.equal(ctx.state.canPreview.value,false)
+    await ctx.state.preview();await ctx.state.execute();assert.equal(ctx.requests.some(item=>['preview','start'].includes(item.method)),false)
+    failed=false;await ctx.state.checkPreflight();assert.equal(ctx.state.canPreview.value,true);assert.equal(ctx.state.preflight.value.hosts[0].checks[0].status,'warning');assert.equal(ctx.state.plan.value,undefined)
+  }finally{ctx.stop()}
+})
+
+test('检测绑定主机、参数、来源与模式，任意配置变化使旧通过结果失效',async()=>{
+  const ctx=harness({assumeDetected:false})
+  try{
+    await ctx.open();ctx.ready()
+    for(const change of [()=>{ctx.state.form.name='Changed'},()=>{ctx.state.form.server_host_id='2'},()=>{ctx.state.form.download_source='official_cn'},()=>{ctx.state.form.system_image_source='community_cn'},()=>{ctx.state.form.profile='custom'},()=>{ctx.state.form.server_options={'node-label':['environment=test']}}]){
+      await ctx.state.checkPreflight();assert.equal(ctx.state.canPreview.value,true)
+      change();await settle();assert.equal(ctx.state.preflight.value,undefined);assert.equal(ctx.state.canPreview.value,false);await ctx.state.preview();assert.equal(ctx.state.plan.value,undefined)
+    }
+    await ctx.state.checkPreflight();ctx.state.form.mode='k3d';await settle();assert.equal(ctx.state.preflight.value,undefined);assert.equal(ctx.state.checkedInput.value,'');assert.equal(ctx.state.canPreview.value,false)
+    ctx.state.form.mode='native';await settle();assert.equal(ctx.state.canPreview.value,false)
+  }finally{ctx.stop()}
+})
+
+test('独立检测结果核对准确主机和角色，不接受空检查、错目标、重复或损坏报告',async()=>{
+  const reports=[undefined,{...preflightReport(),checked_at:'invalid'}, {...preflightReport(),hosts:[]}, {...preflightReport(),hosts:[{...preflightReport().hosts[0],host_id:'other'}]}, {...preflightReport(),hosts:[{...preflightReport().hosts[0],role:'host'}]}, {...preflightReport(),hosts:[preflightReport().hosts[0],preflightReport().hosts[0]]}, {...preflightReport(),hosts:[{...preflightReport().hosts[0],checks:[]}]}]
+  for(const report of reports){
+    const ctx=harness({assumeDetected:false,api:{checkK3sPreflight:async()=>report}})
+    try{await ctx.open();ctx.ready();await ctx.state.checkPreflight();assert.equal(ctx.state.canPreview.value,false);assert.equal(ctx.state.error.value,'安装前检测结果不完整，请重新检测。');await ctx.state.preview();assert.equal(ctx.requests.some(item=>item.method==='preview'),false)}finally{ctx.stop()}
+  }
+})
+
+test('检测请求中可关闭取消，快速重试和关闭后的迟到结果不创建计划或恢复旧报告',async()=>{
+  const pending=deferred(),ctx=harness({assumeDetected:false,api:{checkK3sPreflight:(body,signal)=>{ctx.requests.push({method:'check',body,signal});return pending.promise}}})
+  try{
+    await ctx.open();ctx.ready();const work=ctx.state.checkPreflight();assert.equal(ctx.state.checking.value,true);assert.equal(ctx.state.currentStep.value,1)
+    await ctx.state.checkPreflight();assert.equal(ctx.requests.filter(item=>item.method==='check').length,1)
+    ctx.state.close();assert.deepEqual(ctx.events.at(-1),{name:'update:open',args:[false]});ctx.props.open=false;await settle()
+    assert.equal(ctx.requests.find(item=>item.method==='check').signal.aborted,true);assert.equal(ctx.state.checking.value,false)
+    pending.resolve(preflightReport());await work;assert.equal(ctx.state.preflight.value,undefined);assert.equal(ctx.state.plan.value,undefined)
+  }finally{ctx.stop()}
+})
+
+test('检测中配置/模式/项目/权限改变均丢弃迟到响应，原始输入和凭据不进入报告',async()=>{
+  for(const change of [ctx=>{ctx.state.form.name='New'},ctx=>{ctx.state.form.mode='k3d'},ctx=>{ctx.storage.project='project-b';ctx.listeners.get('edo:projects-changed')({type:'edo:projects-changed'})},ctx=>{ctx.auth.user=null}]){
+    const pending=deferred(),ctx=harness({assumeDetected:false,api:{checkK3sPreflight:()=>pending.promise}})
+    try{await ctx.open();ctx.ready();const work=ctx.state.checkPreflight();change(ctx);await settle();pending.resolve(preflightReport());await work;assert.equal(ctx.state.preflight.value,undefined);assert.equal(ctx.state.canPreview.value,false);assert.equal(ctx.state.plan.value,undefined)}finally{ctx.stop()}
+  }
+  const ctx=harness({assumeDetected:false,codes:['cluster.read']})
+  try{await ctx.open();ctx.ready();await ctx.state.checkPreflight();assert.equal(ctx.requests.some(item=>item.method==='check'),false)}finally{ctx.stop()}
+})
+
+test('Worker和Master独立检测保留正确加入角色，切角色旧检测不能用于新角色计划',async()=>{
+  const ctx=harness({action:'join',assumeDetected:false})
+  try{
+    await ctx.open();ctx.ready();await ctx.state.checkPreflight();assert.equal(ctx.state.preflight.value.hosts[0].role,'agent');assert.equal(ctx.state.canPreview.value,true)
+    ctx.state.form.join_role='server';await settle();assert.equal(ctx.state.canPreview.value,false);ctx.state.form.join_host_ids=['2'];ctx.state.form.server_token='fixture-server-token';await settle()
+    await ctx.state.checkPreflight();assert.equal(ctx.state.preflight.value.hosts[0].role,'server');assert.equal(ctx.state.canPreview.value,true);assert.equal(JSON.stringify(ctx.state.preflight.value).includes('fixture-server-token'),false)
+  }finally{ctx.stop()}
+})
+
+test('独立检测API只调用preflight端点，保留取消信号和多主机预算，不请求plans',async()=>{
+  const requests=[],api=loadFrontend('../src/api/k3s.ts',{'@/api/client':{__esModule:true,default:{post:async(path,body,options)=>{requests.push({path,body,options});return {data:preflightReport()}}}}}),controller=new AbortController(),body={action:'create',mode:'native'}
+  await api.checkK3sPreflight(body,controller.signal);assert.equal(requests.length,1);assert.equal(requests[0].path,'/kubernetes/k3s/preflight');assert.equal(requests[0].options.signal,controller.signal);assert.equal(requests[0].options.timeout,180000)
+})
+
+test('用户触发检测后聚焦报告或安全失败，配置校验和网络失败不生成计划',async()=>{
+  const ctx=harness({assumeDetected:false}),focus=[]
+  try{await ctx.open();ctx.ready();ctx.state.preflightView.value={focus:()=>focus.push('report')};await ctx.state.checkPreflight();assert.deepEqual(focus,['report']);assert.equal(ctx.state.plan.value,undefined)}finally{ctx.stop()}
+  const failed=harness({assumeDetected:false,api:{checkK3sPreflight:async()=>{throw Error('检测暂时不可用')}}})
+  try{await failed.open();failed.ready();failed.state.errorRegion.value={focus:()=>focus.push('error')};await failed.state.checkPreflight();assert.equal(focus.at(-1),'error');assert.equal(failed.state.error.value,'检测暂时不可用');assert.equal(failed.state.canPreview.value,false);assert.equal(failed.state.plan.value,undefined)}finally{failed.stop()}
 })
 
 test('安装任务可从最近记录恢复，轮询失败保留真实状态，恢复成功只通知一次',async()=>{

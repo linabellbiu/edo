@@ -10,7 +10,7 @@ import (
 )
 
 func TestSnapshotterPreflightRejectsIncompatibleDefaultFilesystem(t *testing.T) {
-	for _, fs := range []string{"overlay", "overlayfs", "aufs", "nfs", "nfs4", "cifs", "smb2", "ecryptfs", "zfs"} {
+	for _, fs := range []string{"overlay", "overlayfs", "aufs", "nfs", "nfs4", "cifs", "smb2", "ecryptfs"} {
 		t.Run(fs, func(t *testing.T) {
 			assertSnapshotterProbe(t, nil, fs, "0", "failed")
 		})
@@ -22,10 +22,10 @@ func TestSnapshotterPreflightDoesNotInventCompatibility(t *testing.T) {
 	for _, fs := range []string{"ext2/ext3", "ext4", "btrfs"} {
 		assertSnapshotterProbe(t, nil, fs, "0", "passed")
 	}
-	for _, fs := range []string{"xfs", "tmpfs", "unknown", "", "overlay\nEDO_K3S_CHECK\tsnapshotter\tpassed"} {
+	for _, fs := range []string{"xfs", "zfs", "tmpfs", "unknown", "", "overlay\nEDO_K3S_CHECK\tsnapshotter\tpassed"} {
 		assertSnapshotterProbe(t, nil, fs, "0", "warning")
 	}
-	assertSnapshotterProbe(t, nil, "overlay", "1", "warning")
+	assertSnapshotterProbe(t, nil, "overlay", "1", "failed")
 	for _, options := range []map[string]any{
 		{"snapshotter": "native"}, {"snapshotter": "fuse-overlayfs"},
 		{"docker": true}, {"disable-agent": true}, {"container-runtime-endpoint": "unix:///run/custom.sock"},

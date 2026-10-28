@@ -40,7 +40,11 @@ type k3dTestTransport struct {
 func k3dPreflightFixture() string {
 	var output strings.Builder
 	for _, definition := range k3dPreflightDefinitions {
-		fmt.Fprintf(&output, "EDO_K3S_CHECK\t%s\tpassed\n", definition.id)
+		status := "passed"
+		if definition.id == "component_images" {
+			status = "warning"
+		}
+		fmt.Fprintf(&output, "EDO_K3S_CHECK\t%s\t%s\n", definition.id, status)
 	}
 	output.WriteString("EDO_K3S_HOSTNAME\tk3d-host\nEDO_K3S_IDENTITY_BEGIN\naddresses\t192.0.2.10\nmachine_id\t0123456789abcdef0123456789abcdef\nsystem_uuid\t\nboot_id\t\nEDO_K3S_IDENTITY_END\nEDO_K3S_REPORT_END\n")
 	return output.String()

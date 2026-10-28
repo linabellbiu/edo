@@ -35,7 +35,7 @@ type k3sHTTPTestTransport struct {
 }
 
 var k3sHTTPPreflightCheckIDs = []string{
-	"privilege", "os", "tools", "architecture", "supervisor", "cgroup", "cpu", "memory", "disk", "snapshotter", "hostname", "ports", "download", "system_registry", "endpoint", "swap", "firewall", "selinux", "existing_installation",
+	"privilege", "os", "tools", "architecture", "supervisor", "cgroup", "cpu", "memory", "disk", "snapshotter", "overlay_kernel", "cni_kernel", "hostname", "ports", "cni_ports", "download", "system_registry", "endpoint", "swap", "firewall", "selinux", "existing_installation",
 }
 
 func (transport *k3sHTTPTestTransport) Read(ctx context.Context, _ model.Host, _ sshclient.Bundle, script string) (string, error) {
@@ -58,13 +58,16 @@ func (transport *k3sHTTPTestTransport) Read(ctx context.Context, _ model.Host, _
 	var output strings.Builder
 	checks := k3sHTTPPreflightCheckIDs
 	if strings.Contains(script, "edo_docker_binary=") {
-		checks = []string{"privilege", "os", "architecture", "tools", "docker", "bind_address", "ports", "cpu", "memory", "disk", "download", "installation_lock", "hostname"}
+		checks = []string{"privilege", "os", "architecture", "tools", "docker", "runc", "component_images", "bind_address", "ports", "cpu", "memory", "disk", "download", "installation_lock", "hostname"}
 	}
 	for _, id := range checks {
 		status := transport.statuses[id]
 		if status == "" {
 			status = "passed"
 			if id == "system_registry" && strings.Contains(script, "edo_check system_registry warning\n") {
+				status = "warning"
+			}
+			if id == "component_images" {
 				status = "warning"
 			}
 		}

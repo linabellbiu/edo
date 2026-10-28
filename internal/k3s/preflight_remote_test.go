@@ -112,13 +112,21 @@ func runPreflightShell(t *testing.T, input Input, host Host, extraEnv ...string)
 	} else {
 		input.AgentOptions = options
 	}
-	writePreflightCommand(t, directory, "uname", "if [ \"${1:-}\" = -s ]; then printf Linux; else printf x86_64; fi\n")
+	writePreflightCommand(t, directory, "uname", "if [ \"${1:-}\" = -s ]; then printf Linux; else printf '%s' \"${EDO_TEST_ARCH:-x86_64}\"; fi\n")
 	writePreflightCommand(t, directory, "id", "printf 0\n")
 	writePreflightCommand(t, directory, "hostname", "printf worker-a\n")
-	writePreflightCommand(t, directory, "getconf", "printf '%s' \"${EDO_TEST_CPU:-2}\"\n")
-	writePreflightCommand(t, directory, "df", "printf 'Filesystem 1024-blocks Used Available Capacity Mounted\\nfixture 99999999 0 %s 0%% /\\n' \"${EDO_TEST_FREE:-99999999}\"\n")
-	writePreflightCommand(t, directory, "ss", "printf '%s\\n' \"${EDO_TEST_LISTENERS:-}\"\n")
-	writePreflightCommand(t, directory, "curl", "case \"$*\" in *api.example.test*) exit \"${EDO_TEST_ENDPOINT_STATUS:-0}\" ;; esac\nexit 0\n")
+	writePreflightCommand(t, directory, "getconf", "printf '%s' \"${EDO_TEST_CPU:-2}\"\nexit \"${EDO_TEST_CPU_STATUS:-0}\"\n")
+	writePreflightCommand(t, directory, "df", "printf 'Filesystem 1024-blocks Used Available Capacity Mounted\\nfixture 99999999 0 %s 0%% /\\n' \"${EDO_TEST_FREE:-99999999}\"\nexit \"${EDO_TEST_DF_STATUS:-0}\"\n")
+	writePreflightCommand(t, directory, "stat", "printf '%s' ext4\n")
+	writePreflightCommand(t, directory, "ss", "case \"$*\" in *-lun*) printf '%s\\n' \"${EDO_TEST_UDP_LISTENERS:-}\"; exit \"${EDO_TEST_UDP_STATUS:-0}\" ;; esac\nprintf '%s\\n' \"${EDO_TEST_LISTENERS:-}\"\n")
+	writePreflightCommand(t, directory, "curl", `case "$*" in
+  *api.example.test*) exit "${EDO_TEST_ENDPOINT_STATUS:-0}" ;;
+  */k3s|*/k3s-arm64|*/k3s-armhf)
+    if [ -n "${EDO_TEST_EXPECTED_ASSET:-}" ]; then case "$*" in */"$EDO_TEST_EXPECTED_ASSET") : ;; *) exit 9 ;; esac; fi
+    exit "${EDO_TEST_BINARY_STATUS:-0}" ;;
+esac
+exit 0
+`)
 	writePreflightCommand(t, directory, "getenforce", "printf '%s' \"${EDO_TEST_SELINUX:-Enforcing}\"\n")
 	writePreflightCommand(t, directory, "rpm", "exit \"${EDO_TEST_SELINUX_POLICY_STATUS:-1}\"\n")
 	script := preflightEnvironmentScript(host, input, true) + "edo_check existing_installation passed\nprintf 'EDO_K3S_IDENTITY_BEGIN\\naddresses\\t192.0.2.10\\nmachine_id\\t0123456789abcdef0123456789abcdef\\nsystem_uuid\\t\\nboot_id\\t\\nEDO_K3S_IDENTITY_END\\nEDO_K3S_REPORT_END\\n'\n"
@@ -280,7 +288,8 @@ func TestPreflightDownloadFollowsOnlyBoundedHTTPSRedirects(t *testing.T) {
 			}
 		})
 	}
-	if finalRequests.Load() != 1 || plaintextRequests.Load() != 0 {
+	// 校验文件与架构安装包分别只发送 HEAD，两个请求都不得降级到明文。
+	if finalRequests.Load() != 2 || plaintextRequests.Load() != 0 {
 		t.Fatalf("redirect targets: HTTPS=%d plaintext=%d", finalRequests.Load(), plaintextRequests.Load())
 	}
 	apiScript := preflightEnvironmentScript(Host{Role: "agent"}, Input{Endpoint: "https://api.example.test:6443"}, true)

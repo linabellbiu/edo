@@ -37,23 +37,26 @@ type preflightCheckDefinition struct{ id, name, passed, failed, warning string }
 var hostPreflightDefinitions = []preflightCheckDefinition{
 	{"privilege", "SSH 与提权", "已通过 SSH 在 root 权限下检查", "需要 root 或可用的 sudo 权限", ""},
 	{"os", "操作系统", "Linux 操作系统", "仅支持 Linux 主机", ""},
-	{"tools", "基础命令", "预检和安装所需命令可用", "需要 curl、base64、awk、df、hostname、ps、ss、getconf、tr 和 timeout 命令", ""},
+	{"tools", "基础命令", "预检和安装所需命令可用", "需要 curl、base64、awk、df、stat、hostname、ps、ss、getconf、tr 和 timeout 命令", ""},
 	{"architecture", "CPU 架构", "支持的 x86_64、ARM64 或 ARMv7 架构", "不支持该 CPU 架构", ""},
 	{"supervisor", "服务管理器", "systemd 或 OpenRC 可用", "需要运行中的 systemd 或 OpenRC 环境", ""},
 	{"cgroup", "内存 cgroup", "内存 cgroup 已启用", "需要启用内存 cgroup 控制器", ""},
 	{"cpu", "CPU 核数", "满足当前节点角色的最低 CPU 要求", "控制平面至少需要 2 核，工作节点至少需要 1 核", ""},
 	{"memory", "内存容量", "满足当前节点角色的最低内存要求", "控制平面至少需要 2 GiB，工作节点至少需要 512 MiB 内存", ""},
 	{"disk", "数据盘空间", "数据目录所在文件系统空间充足", "EDO 安装要求控制平面至少有 5 GiB、工作节点至少有 2 GiB 可用空间，且文件系统可写", "已达到 EDO 最低空间要求，建议控制平面预留 10 GiB、工作节点预留 5 GiB，并另行估算工作负载存储"},
-	{"snapshotter", "容器快照文件系统", "数据目录文件系统与所选快照方式兼容", "数据目录文件系统不支持默认 OverlayFS，请在自定义配置中选择兼容的数据目录或快照方式", "未能确认快照文件系统兼容性，或使用外部运行时；需另行核验运行时及存储能力"},
+	{"snapshotter", "容器快照文件系统", "数据目录文件系统与所选快照方式兼容", "无法读取数据目录文件系统，或该文件系统不支持默认 OverlayFS，请核对目录与快照配置", "未能确认快照文件系统兼容性，或使用外部运行时；需另行核验运行时及存储能力"},
+	{"overlay_kernel", "OverlayFS 内核能力", "内核已注册 OverlayFS 或存在对应内核模块", "内核明确未启用默认运行时所需的 OverlayFS", "当前配置不使用默认 OverlayFS，或无法只读确认内核能力；安装期间仍须验证实际运行时"},
+	{"cni_kernel", "CNI 内核能力", "当前 CNI 所需的内核模块可用", "内核明确未启用当前 CNI 所需模块", "无法只读确认当前 CNI 的内核能力或沿用现有集群配置，需另行核验"},
 	{"hostname", "节点名称", "节点名称格式有效", "节点名称必须是有效且唯一的 DNS 名称", ""},
 	{"ports", "本地端口", "当前配置所需的本地 TCP 端口未被占用", "当前配置所需的本地 TCP 端口已被占用，或无法读取监听端口", "部分自定义组件端口无法可靠确定，尚未核验这些端口；请核对最终配置，已明确的 API、LB 和组件端口仍会阻断冲突"},
-	{"download", "安装源连通性", "安装脚本和指定发布源可通过 HTTPS 访问", "无法通过 HTTPS 访问安装脚本或指定发布源，请检查 DNS、出站网络和 CA 信任", "使用预装二进制，已跳过发布源下载检查；安装脚本仍需通过 HTTPS 访问"},
+	{"cni_ports", "CNI 本地 UDP 端口", "当前 CNI 所需本地 UDP 端口未被占用；节点间双向连通性仍未验证", "当前 CNI 所需本地 UDP 端口已被占用，或无法读取监听端口", "当前 CNI 端口无法从安装配置确定，或不使用内置 UDP 隧道；节点间双向连通性仍未验证"},
+	{"download", "安装包源连通性", "安装脚本、架构对应安装包及校验文件的 HTTPS 端点可达；尚未下载或验证文件内容", "无法通过 HTTPS 访问安装脚本或架构对应发布文件，请检查 DNS、出站网络和 CA 信任", "使用预装二进制或发布通道，尚未验证精确版本的架构安装包及校验文件；已检查安装脚本与适用的通道端点"},
 	{"system_registry", "系统镜像仓库基础连通性", "所选仓库 HTTPS 基础端点可达，尚未验证登录、镜像标签及平台内容", "无法访问所选仓库的 HTTPS 基础端点，请检查仓库地址、DNS、出站网络和 CA 信任", "未指定独立系统镜像仓库，沿用 K3s 默认或现有集群设置；此项未探测"},
 	{"endpoint", "集群 API 连通性", "主机可使用目标集群 CA 通过 HTTPS 访问集群 API", "主机无法通过可信 HTTPS 访问集群 API，请检查地址、DNS、路由、端口和集群 CA", "创建集群后将再次检查工作节点到 API 的可信 HTTPS 连接"},
 	{"swap", "Swap", "未启用 Swap", "", "检测到 Swap，请核对目标 K3s 版本及 kubelet 的 Swap 配置；预检不会关闭 Swap"},
 	{"firewall", "防火墙", "未发现正在运行的常见主机防火墙", "", "请核对 API、节点间 CNI 和 kubelet 所需网络规则；预检不会修改防火墙，UDP 双向连通性需另行核验"},
 	{"selinux", "SELinux", "SELinux 已禁用或已核对策略包", "Master 使用已校验制品安装；SELinux 启用时需预先安装 k3s-selinux 策略包", "SELinux 处于启用状态，请核对 K3s SELinux 策略包；预检不会更改 SELinux"},
-	{"existing_installation", "现有 Kubernetes 安装", "未发现现有 Kubernetes 安装、残留配置或其他 EDO 安装锁", "已发现现有 Kubernetes 安装、配置、进程或其他 EDO 安装锁，请接入或处理现有集群", ""},
+	{"existing_installation", "现有 Kubernetes 安装", "未发现现有 Kubernetes 安装、残留配置或其他 EDO 安装锁", "发现现有安装或无法完成进程、配置核验，请检查主机实际状态及安装锁", ""},
 }
 
 func preflightProbeScript(host Host, input Input, endpointReady bool) string {
@@ -99,10 +102,19 @@ edo_check() { printf 'EDO_K3S_CHECK\t%s\t%s\n' "$1" "$2"; if [ "$2" = failed ]; 
 if [ "$(id -u)" = 0 ]; then edo_check privilege passed; else edo_check privilege failed; fi
 if [ "$(uname -s)" = Linux ]; then edo_check os passed; else edo_check os failed; fi
 edo_tools=true
-for edo_tool in curl base64 awk df hostname ps ss getconf tr timeout $edo_extra_tools; do command -v "$edo_tool" >/dev/null 2>&1 || edo_tools=false; done
+for edo_tool in curl base64 awk df stat hostname ps ss getconf tr timeout $edo_extra_tools; do command -v "$edo_tool" >/dev/null 2>&1 || edo_tools=false; done
 if "$edo_tools"; then edo_check tools passed; else edo_check tools failed; fi
 case "$(uname -m)" in x86_64|aarch64|arm64|armv7l|armv7*) edo_check architecture passed ;; *) edo_check architecture failed ;; esac
-if { [ -d /run/systemd/system ] && command -v systemctl >/dev/null 2>&1; } || [ -x /sbin/openrc-run ]; then edo_check supervisor passed; else edo_check supervisor failed; fi
+edo_supervisor=false
+if [ -d /run/systemd/system ] && command -v systemctl >/dev/null 2>&1; then
+  edo_manager=$(timeout 3 systemctl show --property=Version --value 2>/dev/null)
+  if [ "$?" = 0 ] && [ -n "$edo_manager" ]; then edo_supervisor=true; fi
+fi
+if ! "$edo_supervisor" && [ -x /sbin/openrc-run ] && [ -r /run/openrc/softlevel ] && command -v rc-status >/dev/null 2>&1; then
+  edo_manager=$(timeout 3 rc-status --runlevel 2>/dev/null)
+  if [ "$?" = 0 ] && [ -n "$edo_manager" ]; then edo_supervisor=true; fi
+fi
+if "$edo_supervisor"; then edo_check supervisor passed; else edo_check supervisor failed; fi
 edo_memory_cgroup=false
 if [ -r /sys/fs/cgroup/cgroup.controllers ]; then
   if awk '{for(i=1;i<=NF;i++)if($i=="memory")found=1} END{exit !found}' /sys/fs/cgroup/cgroup.controllers; then edo_memory_cgroup=true; fi
@@ -110,14 +122,16 @@ elif [ -d /sys/fs/cgroup/memory ] && [ -r /proc/cgroups ]; then
   if awk '$1=="memory" && $4==1{found=1} END{exit !found}' /proc/cgroups; then edo_memory_cgroup=true; fi
 fi
 if "$edo_memory_cgroup"; then edo_check cgroup passed; else edo_check cgroup failed; fi
-edo_cpu=$(getconf _NPROCESSORS_ONLN 2>/dev/null || printf 0)
+edo_cpu=$(getconf _NPROCESSORS_ONLN 2>/dev/null)
+edo_cpu_status=$?
 edo_ram=$(awk '$1=="MemTotal:"{print $2;found=1;exit} END{if(!found)print 0}' /proc/meminfo 2>/dev/null || printf 0)
 `)
-	script.WriteString(fmt.Sprintf("if [ \"$edo_cpu\" -ge %d ] 2>/dev/null; then edo_check cpu passed; else edo_check cpu failed; fi\nif [ \"$edo_ram\" -ge %d ] 2>/dev/null; then edo_check memory passed; else edo_check memory failed; fi\n", minimumCPU, minimumRAM))
+	script.WriteString(fmt.Sprintf("if [ \"$edo_cpu_status\" = 0 ] && [ \"$edo_cpu\" -ge %d ] 2>/dev/null; then edo_check cpu passed; else edo_check cpu failed; fi\nif [ \"$edo_ram\" -ge %d ] 2>/dev/null; then edo_check memory passed; else edo_check memory failed; fi\n", minimumCPU, minimumRAM))
 	script.WriteString("edo_data=" + shellQuote(dataDir) + "\nwhile [ ! -e \"$edo_data\" ] && [ \"$edo_data\" != / ]; do edo_data=${edo_data%/*}; [ -n \"$edo_data\" ] || edo_data=/; done\n")
-	script.WriteString("edo_free=$(timeout 3 df -Pk \"$edo_data\" 2>/dev/null | awk 'NR==2{print $4}')\n")
-	script.WriteString(fmt.Sprintf("if [ ! -w \"$edo_data\" ] || ! [ \"${edo_free:-0}\" -ge %d ] 2>/dev/null; then edo_check disk failed; elif [ \"$edo_free\" -lt %d ]; then edo_check disk warning; else edo_check disk passed; fi\n", minimumDisk, recommendedDisk))
+	script.WriteString("edo_disk_output=$(timeout 3 df -Pk \"$edo_data\" 2>/dev/null)\nedo_disk_status=$?\nedo_free=0\nif [ \"$edo_disk_status\" = 0 ]; then edo_free=$(printf '%s\\n' \"$edo_disk_output\" | awk 'NR==2{print $4}'); fi\n")
+	script.WriteString(fmt.Sprintf("if [ \"$edo_disk_status\" != 0 ] || [ ! -w \"$edo_data\" ] || ! [ \"${edo_free:-0}\" -ge %d ] 2>/dev/null; then edo_check disk failed; elif [ \"$edo_free\" -lt %d ]; then edo_check disk warning; else edo_check disk passed; fi\n", minimumDisk, recommendedDisk))
 	script.WriteString(snapshotterPreflightScript(options))
+	script.WriteString(kernelPreflightScript(host, input))
 	if nodeName == "" {
 		script.WriteString("edo_hostname=$(timeout 2 hostname 2>/dev/null || true)\n")
 	} else {
@@ -127,11 +141,14 @@ edo_ram=$(awk '$1=="MemTotal:"{print $2;found=1;exit} END{if(!found)print 0}' /p
 if [ -n "$edo_hostname" ] && [ "${#edo_hostname}" -le 253 ] && printf '%s\n' "$edo_hostname" | awk -F. 'BEGIN{ok=1} {for(i=1;i<=NF;i++) if(length($i)<1 || length($i)>63 || $i!~/^[a-z0-9]([a-z0-9-]*[a-z0-9])?$/)ok=0} END{exit !ok}'; then printf 'EDO_K3S_HOSTNAME\t%s\n' "$edo_hostname"; edo_check hostname passed; else edo_check hostname failed; fi
 `)
 	ports, customPorts := preflightPorts(host, options)
-	if isServerJoin(input) {
-		ports = append(ports, 2379, 2380)
-		slices.Sort(ports)
-		ports = slices.Compact(ports)
+	if host.Role != "server" && input.Action == "create" && input.ServerOptions["embedded-registry"] == true {
+		ports = append(ports, 5001, 6443)
 	}
+	if isServerJoin(input) {
+		ports = append(ports, 2379, 2380, 2381, 2382)
+	}
+	slices.Sort(ports)
+	ports = slices.Compact(ports)
 	script.WriteString("edo_listeners=$(timeout 3 ss -H -ltn 2>/dev/null)\nedo_ss_status=$?\nedo_ports_ok=true\nif [ \"$edo_ss_status\" != 0 ]; then edo_ports_ok=false; fi\n")
 	for _, port := range ports {
 		script.WriteString("if printf '%s\\n' \"$edo_listeners\" | awk '$4 ~ /:" + strconv.Itoa(port) + "$/ {found=1} END{exit !found}'; then edo_ports_ok=false; fi\n")
@@ -143,6 +160,7 @@ if [ -n "$edo_hostname" ] && [ "${#edo_hostname}" -le 253 ] && printf '%s\n' "$e
 		script.WriteString("passed")
 	}
 	script.WriteString("; fi\n")
+	script.WriteString(cniPortsPreflightScript(host, input))
 	// Read only response headers without credentials or disabled verification.
 	// Downloads follow bounded HTTPS redirects; the cluster API never redirects.
 	curlProbe := "timeout 5 curl --fail --silent --output /dev/null --head --proto '=https' --tlsv1.2 --connect-timeout 2 --max-time 4 "
@@ -164,9 +182,10 @@ if [ -n "$edo_hostname" ] && [ "${#edo_hostname}" -le 253 ] && printf '%s\n' "$e
 		} else {
 			version, _ := input.Installer["INSTALL_K3S_VERSION"].(string)
 			if version != "" {
-				script.WriteString("case \"$(uname -m)\" in x86_64) edo_arch=amd64 ;; aarch64|arm64) edo_arch=arm64 ;; armv7*) edo_arch=arm ;; *) edo_arch=unsupported ;; esac\n")
+				script.WriteString("case \"$(uname -m)\" in x86_64) edo_arch=amd64; edo_asset=k3s ;; aarch64|arm64) edo_arch=arm64; edo_asset=k3s-arm64 ;; armv7*) edo_arch=arm; edo_asset=k3s-armhf ;; *) edo_arch=unsupported; edo_asset=unsupported ;; esac\n")
 				// Probe release checksum headers; never download or execute a binary.
 				script.WriteString(downloadProbe + shellQuote(sourceReleaseURL(sources, version)+"/sha256sum-") + "\"$edo_arch\".txt >/dev/null 2>&1 || edo_download_ok=false\n")
+				script.WriteString(downloadProbe + shellQuote(sourceReleaseURL(sources, version)+"/") + "\"$edo_asset\" >/dev/null 2>&1 || edo_download_ok=false\n")
 			} else {
 				channelURL := sourceChannelURL(sources, input.Installer)
 				parsedChannel, parseErr := url.Parse(channelURL)
@@ -183,7 +202,8 @@ if [ -n "$edo_hostname" ] && [ "${#edo_hostname}" -le 253 ] && printf '%s\n' "$e
 			}
 		}
 	}
-	if preloadedBinary(input.Installer) {
+	version, _ := input.Installer["INSTALL_K3S_VERSION"].(string)
+	if preloadedBinary(input.Installer) || version == "" {
 		script.WriteString("if \"$edo_download_ok\"; then edo_check download warning; else edo_check download failed; fi\n")
 	} else {
 		script.WriteString("if \"$edo_download_ok\"; then edo_check download passed; else edo_check download failed; fi\n")
@@ -230,10 +250,10 @@ func snapshotterPreflightScript(options map[string]any) string {
 	return `edo_snapshot_fs=$(timeout 3 stat -f -c %T "$edo_data" 2>/dev/null)
 edo_snapshot_status=$?
 if [ "$edo_snapshot_status" != 0 ]; then
-  edo_check snapshotter warning
+  edo_check snapshotter failed
 else
   case "$edo_snapshot_fs" in
-    overlay|overlayfs|aufs|nfs|nfs4|cifs|smb2|ecryptfs|zfs) edo_check snapshotter failed ;;
+    overlay|overlayfs|aufs|nfs|nfs4|cifs|smb2|ecryptfs) edo_check snapshotter failed ;;
     ext2/ext3|ext4|btrfs) edo_check snapshotter passed ;;
     *) edo_check snapshotter warning ;;
   esac
@@ -261,8 +281,11 @@ func preflightPorts(host Host, options map[string]any) ([]int, bool) {
 	if host.Role == "server" {
 		ports = append(ports, port("https-listen-port", 6443))
 		if options["cluster-init"] == true {
-			ports = append(ports, 2379, 2380)
+			ports = append(ports, 2379, 2380, 2381, 2382)
 		}
+	}
+	if options["embedded-registry"] == true {
+		ports = append(ports, 5001, 6443)
 	}
 	if host.Role != "server" || options["disable-agent"] != true {
 		ports = append(ports, port("lb-server-port", 6444), 10010)

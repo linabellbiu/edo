@@ -407,7 +407,7 @@ func (s *Service) normalize(ctx context.Context, input Input) (Input, []Host, ma
 	}
 	if isServerJoin(input) {
 		if err := s.prepareServerJoin(ctx, &input); err != nil {
-			return input, nil, nil, nil, nil, serverJoinPreflightError(hosts, err)
+			return input, hosts, digests, cluster, warnings, serverJoinPreflightError(hosts, err)
 		}
 	}
 	return input, hosts, digests, cluster, warnings, nil
@@ -496,18 +496,7 @@ func (s *Service) Preview(ctx context.Context, actorID string, input Input) (*Pl
 	if disabled, _ := input.ServerOptions["disable-agent"].(bool); disabled {
 		plan.Warnings = append(plan.Warnings, "禁用 Server Agent 后不会注册该控制平面节点，该主机暂不自动关联。")
 	}
-	snapshot := savedInput{Input: input, Sources: input.sources, HostDigests: digests, AuthVersion: actor.AuthVersion, TargetVersion: input.targetVersion, PreflightVersion: preflightVersion}
-	if input.Mode == "k3d" {
-		snapshot.K3dVersion, snapshot.K3dK3sVersion = k3dVersion, k3dK3sVersion
-	}
-	if isServerJoin(input) {
-		snapshot.ServerCriticalDigest = input.serverJoin.CriticalDigest
-		snapshot.ServerMembershipDigest = input.serverJoin.MembershipDigest
-		snapshot.ServerMembers = input.serverJoin.Members
-	}
-	if cluster != nil {
-		snapshot.ClusterDigest = clusterDigest(cluster)
-	}
+	snapshot := reviewSnapshot(input, digests, actor, cluster)
 	// SSH checks can take time; scope, credentials and target version must still
 	// match the review before persisting an executable plan.
 	review := model.K3sInstallation{CreatedBy: actorID, Action: input.Action, Name: input.Name}

@@ -1,28 +1,31 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
-import type { K3sPreflightReport } from '@/api/k3s'
+import type { K3sPreflightReport, K3sInstallMode } from '@/api/k3s'
 import { formatDateTime } from '@/utils/time'
 
-const props = defineProps<{report:K3sPreflightReport}>()
+const props = defineProps<{report:K3sPreflightReport;mode?:K3sInstallMode;standalone?:boolean}>()
+const root=ref<HTMLElement>()
+defineExpose({focus:()=>root.value?.focus()})
 const { t } = useI18n()
 const groups = computed(() => [
-  ...(props.report.checks.length?[{id:'cluster',name:'集群检查',role:'',hostname:'',checks:props.report.checks}]:[]),
-  ...props.report.hosts.map(host=>({id:host.host_id,name:host.host_name,role:host.role==='host'?t('k8s.installationHost'):host.role==='server'?'控制平面（Master）':'工作节点（Worker）',hostname:host.hostname,checks:host.checks})),
+  ...(props.report.checks.length?[{id:'cluster',name:'集群检查',role:'',hostname:'',passed:props.report.checks.every(check=>check.status!=='failed'),checks:props.report.checks}]:[]),
+  ...props.report.hosts.map(host=>({id:host.host_id,name:host.host_name,role:host.role==='host'?t('k8s.installationHost'):host.role==='server'?'控制平面（Master）':'工作节点（Worker）',hostname:host.hostname,passed:host.passed,checks:host.checks})),
 ])
 const checks = computed(() => groups.value.flatMap(group=>group.checks))
 const failed = computed(() => checks.value.filter(check=>check.status==='failed').length)
 const warnings = computed(() => checks.value.filter(check=>check.status==='warning').length)
-const labels = {passed:'通过',warning:'提示',failed:'阻断'}
+const passed = computed(() => props.report.passed&&props.report.hosts.length>0&&props.report.hosts.every(host=>host.passed&&host.checks.length>0)&&failed.value===0)
+const labels = {passed:'通过',warning:'警告',failed:'不满足'}
 const colors = {passed:'green',warning:'orange',failed:'red'}
 </script>
 
 <template>
-  <section class="preflight-report" aria-label="安装前置检查报告">
-    <a-alert :type="report.passed?(warnings?'warning':'success'):'error'" show-icon :message="report.passed?(warnings?`前置检查通过，含 ${warnings} 项提示`:'前置检查通过'):`前置检查未通过${failed?`，${failed} 项阻断`:''}`" description="本次检查为只读操作。请处理阻断项后重新检查；安装前会再次实时复查。" />
-    <div class="preflight-summary"><span>检查时间：{{ formatDateTime(report.checked_at,'zh-CN') }}</span><span>{{ report.hosts.length }} 台主机 · {{ checks.length }} 项检查</span></div>
+  <section ref="root" class="preflight-report" aria-label="安装前置检查报告" tabindex="-1">
+    <a-alert :type="passed?(warnings?'warning':'success'):'error'" show-icon :message="passed?(warnings?`安装前检测通过，含 ${warnings} 项警告`:'安装前检测通过'):`安装前检测未通过${failed?`，${failed} 项不满足`:''}`" :description="standalone?'只读检测，不创建安装计划、不安装或修改主机；开始安装前仍会再次复查。':'请处理不满足项后重新检测；开始安装前会再次实时复查。'" role="status" />
+    <div class="preflight-summary"><span v-if="mode">检测模式：{{ mode==='k3d'?'k3d':'原生 K3s' }}</span><span>检测时间：{{ formatDateTime(report.checked_at,'zh-CN') }}</span><span>{{ report.hosts.length }} 台主机 · {{ checks.length }} 项检测</span></div>
     <details v-for="group in groups" :key="group.id" :open="group.checks.some(check=>check.status!=='passed')" class="preflight-group">
-      <summary><strong>{{ group.name }}</strong><span v-if="group.role">{{ group.role }}</span><code v-if="group.hostname">{{ group.hostname }}</code><a-tag :color="group.checks.some(check=>check.status==='failed')?'red':group.checks.some(check=>check.status==='warning')?'orange':'green'">{{ group.checks.some(check=>check.status==='failed')?'需处理':group.checks.some(check=>check.status==='warning')?'含提示':'通过' }}</a-tag></summary>
+      <summary><strong>{{ group.name }}</strong><span v-if="group.role">{{ group.role }}</span><code v-if="group.hostname">{{ group.hostname }}</code><a-tag :color="!group.checks.length?undefined:!group.passed||group.checks.some(check=>check.status==='failed')?'red':group.checks.some(check=>check.status==='warning')?'orange':'green'">{{ !group.checks.length?'未取得检测结果':!group.passed||group.checks.some(check=>check.status==='failed')?'不满足':group.checks.some(check=>check.status==='warning')?'含警告':'通过' }}</a-tag></summary>
       <ul class="preflight-checks"><li v-for="check in group.checks" :key="check.id"><a-tag :color="colors[check.status]">{{ labels[check.status] }}</a-tag><div><strong>{{ check.name }}</strong><p>{{ check.message }}</p></div></li></ul>
     </details>
   </section>

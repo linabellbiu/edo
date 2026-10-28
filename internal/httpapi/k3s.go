@@ -25,10 +25,40 @@ func registerK3sRoutes(protected *gin.RouterGroup, deps Dependencies) {
 	h := k3sHandler{service: deps.K3s, access: deps.Access, logger: deps.Logger}
 	canInstall := requireAnyPermission(deps.Access, deps.Logger, access.PermissionClusterCreate, "kubernetes.node.create")
 	protected.GET("/kubernetes/k3s/options", canInstall, h.options)
+	protected.POST("/kubernetes/k3s/preflight", canInstall, auditAction(deps.Audits, deps.Logger, "kubernetes.k3s.preflight", "host"), h.check)
 	protected.POST("/kubernetes/k3s/plans", canInstall, auditAction(deps.Audits, deps.Logger, "kubernetes.k3s.plan", "k3s_installation"), h.preview)
 	protected.POST("/kubernetes/k3s/installations", canInstall, auditAction(deps.Audits, deps.Logger, "kubernetes.k3s.install", "k3s_installation"), h.execute)
 	protected.GET("/kubernetes/k3s/installations", canInstall, h.list)
 	protected.GET("/kubernetes/k3s/installations/:id", canInstall, h.detail)
+}
+
+func (h k3sHandler) check(c *gin.Context) {
+	c.Header("Cache-Control", "no-store")
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 256*1024)
+	var input k3s.Input
+	if err := c.ShouldBindJSON(&input); err != nil {
+		if h.logger != nil {
+			h.logger.Warn("K3s 安装前检测参数解析失败", "operation", "k3s_preflight_bind", "request_id", requestIDFrom(c), "err", err)
+		}
+		writeError(c, http.StatusBadRequest, "invalid_k3s_config", "请检查安装检测配置")
+		return
+	}
+	if !h.authorize(c, input.Action) || !h.available(c) {
+		return
+	}
+	controller := http.NewResponseController(c.Writer)
+	if err := controller.SetWriteDeadline(time.Now().Add(k3s.PreflightTimeout + 15*time.Second)); err != nil && !errors.Is(err, http.ErrNotSupported) {
+		h.writeError(c, "k3s_check_deadline", err)
+		return
+	}
+	actor, _ := currentUser(c)
+	report, err := h.service.Check(c.Request.Context(), actor.ID, input)
+	if err != nil {
+		h.writeError(c, "k3s_check", err)
+		return
+	}
+	// 不满足安装条件也是正常检测结果，不创建安装计划或执行任务。
+	c.JSON(http.StatusOK, report)
 }
 
 func (h k3sHandler) available(c *gin.Context) bool {

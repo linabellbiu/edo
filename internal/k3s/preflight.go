@@ -16,9 +16,10 @@ import (
 	"edo/internal/hostidentity"
 	"edo/internal/kube"
 	"edo/internal/model"
+	"edo/internal/secret"
 )
 
-const preflightVersion = 1
+const preflightVersion = 2
 
 // PreflightTimeout bounds the complete multi-host read-only check. HTTP callers
 // use the same budget instead of the server's shorter ordinary request limit.
@@ -38,6 +39,96 @@ func (e *PreflightError) Unwrap() error { return ErrPreflightFailed }
 
 func check(id, name, status, message string) PreflightCheck {
 	return PreflightCheck{ID: id, Name: name, Status: status, Message: message}
+}
+
+// Check 只读取安装要求与主机状态，不创建计划、任务、主机锁或加入凭据。
+func (s *Service) Check(ctx context.Context, actorID string, input Input) (_ *PreflightReport, resultErr error) {
+	ctx, cancel := context.WithTimeout(ctx, PreflightTimeout)
+	defer cancel()
+	action := "invalid"
+	if input.Action == "create" || input.Action == "join" {
+		action = input.Action
+	}
+	defer func() {
+		if resultErr != nil {
+			slog.ErrorContext(ctx, "安装前检测失败", "operation", "k3s_preflight_check", "actor_id", actorID, "action", action, "err", resultErr)
+		}
+	}()
+	actor, err := s.authorize(ctx, actorID, input.Action)
+	if err != nil {
+		return nil, err
+	}
+	if !s.secrets.Available() {
+		return nil, secret.ErrUnavailable
+	}
+	input, hosts, digests, cluster, _, err := s.normalize(ctx, input)
+	if err != nil {
+		var blocked *PreflightError
+		if errors.As(err, &blocked) && blocked.Report != nil {
+			// Master 条件不满足也是检测结果；返回前仍重新核对授权、主机与集群。
+			review := model.K3sInstallation{CreatedBy: actorID, Action: input.Action, Name: input.Name}
+			snapshot := reviewSnapshot(input, digests, actor, cluster)
+			if err := s.recheck(ctx, review, snapshot); err != nil {
+				return nil, err
+			}
+			version, err := s.liveTargetVersion(ctx, input.ClusterID)
+			if err != nil {
+				return nil, err
+			}
+			if version != input.targetVersion {
+				return nil, ErrTargetVersionChanged
+			}
+			if err := s.recheckReportScope(ctx, review, snapshot); err != nil {
+				return nil, err
+			}
+			return blocked.Report, nil
+		}
+		return nil, err
+	}
+	if err := s.authorizeNativeNodes(ctx, actor, input); err != nil {
+		return nil, err
+	}
+	report, err := s.runPreflight(ctx, input, hosts)
+	if err != nil {
+		return nil, err
+	}
+	// SSH 检测后重新核对当前授权、主机凭据与目标集群；检测报告不构成安装许可。
+	review := model.K3sInstallation{CreatedBy: actorID, Action: input.Action, Name: input.Name}
+	snapshot := reviewSnapshot(input, digests, actor, cluster)
+	if err := s.recheckRuntime(ctx, review, snapshot); err != nil {
+		return nil, err
+	}
+	if err := s.recheckReportScope(ctx, review, snapshot); err != nil {
+		return nil, err
+	}
+	return report, nil
+}
+
+// 最后一次慢网络读取结束后再做本地复核，不能将其等待期间的旧权限返回页面。
+func (s *Service) recheckReportScope(ctx context.Context, review model.K3sInstallation, snapshot savedInput) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := s.recheck(ctx, review, snapshot); err != nil {
+		return err
+	}
+	return ctx.Err()
+}
+
+func reviewSnapshot(input Input, digests map[string]string, actor *model.User, cluster *model.KubernetesCluster) savedInput {
+	snapshot := savedInput{Input: input, Sources: input.sources, HostDigests: digests, AuthVersion: actor.AuthVersion, TargetVersion: input.targetVersion, PreflightVersion: preflightVersion}
+	if input.Mode == "k3d" {
+		snapshot.K3dVersion, snapshot.K3dK3sVersion = k3dVersion, k3dK3sVersion
+	}
+	if isServerJoin(input) && input.serverJoin != nil {
+		snapshot.ServerCriticalDigest = input.serverJoin.CriticalDigest
+		snapshot.ServerMembershipDigest = input.serverJoin.MembershipDigest
+		snapshot.ServerMembers = input.serverJoin.Members
+	}
+	if cluster != nil {
+		snapshot.ClusterDigest = clusterDigest(cluster)
+	}
+	return snapshot
 }
 
 func (s *Service) preparePreflightInput(ctx context.Context, input Input) (Input, error) {

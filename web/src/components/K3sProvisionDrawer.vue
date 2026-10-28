@@ -1,12 +1,12 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { Check, ChevronLeft, RefreshCw, Server } from 'lucide-vue-next'
 import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { listHosts, type InfrastructureHost } from '@/api/infrastructure'
 import { apiErrorMessage } from '@/api/resources'
 import {
-  getK3sCatalog, getK3sInstallation, listK3sInstallations, previewK3sPlan, startK3sInstallation,
+  getK3sCatalog, getK3sInstallation, listK3sInstallations, checkK3sPreflight, previewK3sPlan, startK3sInstallation,
   type K3sCatalog, type K3sInstallation, type K3sPlan, type K3sPlanInput, type K3sPreflightReport, type K3sPreflightCheck, type K3sJoinRole, type K3sInstallMode, type K3dConfig, type K3sDownloadSource,
 } from '@/api/k3s'
 import K3sOptionFields from '@/components/K3sOptionFields.vue'
@@ -34,6 +34,8 @@ const loading = ref(false),busy = ref(false),error = ref(''),loadError = ref('')
 const recent = ref<K3sInstallation[]>([]),recentError = ref(''),recentLoading = ref(false)
 const plan = ref<K3sPlan>(),installation = ref<K3sInstallation>(),optionTab = ref('server'),now = ref(Date.now())
 const preflight = ref<K3sPreflightReport>()
+const checking=ref(false),checkedInput=ref(''),checkedContext=ref('')
+const preflightView=ref<{focus:()=>void}>(),errorRegion=ref<HTMLElement>()
 const emptyForm = () => ({
   mode:'native' as K3sInstallMode,k3d:{agents:1,api_port:16443,bind_address:''} as K3dConfig,
   download_source:'official' as K3sDownloadSource,system_image_source:'official' as 'official'|'community_cn'|'custom',custom_system_image_registry:'',
@@ -83,17 +85,18 @@ const hasHostConfig = computed(() => plan.value?.hosts?.some(host=>Boolean(host.
 const endpointPlaceholder = computed(() => k3sAutomaticEndpoint(hosts.value.find(host=>host.id===form.server_host_id),form.profile==='custom'?form.server_options:{},form.profile==='custom'?form.overrides:'')||'https://192.168.1.10:6443')
 const canManageClusterResources = computed(() => auth.canAny(['kubernetes.node.read','kubernetes.workload.read','kubernetes.config.read','kubernetes.storage.read','kubernetes.network.read']))
 const canExecute = computed(() => auth.canAny([props.action==='create'?'cluster.create':'kubernetes.node.create'])&&auth.canAny(['cluster.execute'])&&auth.canAny(['cluster.update'])&&auth.canAny(['cluster.read','deployment.read']))
-const canPreview = computed(() => Boolean(catalog.value)&&!loadError.value&&canExecute.value&&!loading.value&&!busy.value&&sourceInputValid.value&&(props.action==='create'?Boolean(form.name.trim()&&form.server_host_id&&(!isK3d.value||validK3dConfig(form.k3d))):Boolean(props.cluster&&form.join_host_ids.length&&form.join_host_ids.length<=(joinMaster.value?1:20)&&(!joinMaster.value||form.server_token.trim()))))
+const canCheck = computed(() => Boolean(catalog.value)&&!loadError.value&&canExecute.value&&!loading.value&&!busy.value&&sourceInputValid.value&&(props.action==='create'?Boolean(form.name.trim()&&form.server_host_id&&(!isK3d.value||validK3dConfig(form.k3d))):Boolean(props.cluster&&form.join_host_ids.length&&form.join_host_ids.length<=(joinMaster.value?1:20)&&(!joinMaster.value||form.server_token.trim()))))
+const canPreview = computed(() => canCheck.value&&reportPassed(preflight.value)&&checkedInput.value===signature.value&&checkedContext.value===context.value)
 const running = computed(() => k3sInstallationRunning(installation.value))
 const planExpired = computed(() => Boolean(plan.value)&&(!Number.isFinite(Date.parse(plan.value!.expires_at))||Date.parse(plan.value!.expires_at)<=now.value))
 const visiblePreflight = computed(() => readPreflight(plan.value?.preflight)??preflight.value)
 const planPreflightPassed = computed(() => {
   const report=readPreflight(plan.value?.preflight)
-  return Boolean(report?.passed&&report.hosts.length&&report.hosts.every(host=>host.passed&&host.checks.length&&host.checks.every(check=>check.status!=='failed'))&&report.checks.every(check=>check.status!=='failed'))
+  return reportPassed(report)
 })
 const planModeValid = computed(() => !!plan.value&&modeOf(plan.value)===(isK3d.value?'k3d':'native')&&(modeOf(plan.value)!=='k3d'||k3dPlanMatches(plan.value)))
 const planSourceValid = computed(() => !!plan.value&&(modeOf(plan.value)==='k3d'||nativeSourcesMatch(plan.value,input())))
-const currentStep = computed(() => installation.value?2:plan.value?1:0)
+const currentStep = computed(() => installation.value?3:plan.value?2:preflight.value||checking.value?1:0)
 const title = computed(() => props.action==='create'?t('k8s.createClusterTitle'):'添加 K3s 节点')
 const installerOptions = computed(() => catalog.value?.installer.filter(option=>!['INSTALL_K3S_VERSION','INSTALL_K3S_CHANNEL'].includes(option.name))??[])
 const serverOptionChoices = computed(() => catalog.value?.server.map(option=>{
@@ -144,6 +147,13 @@ function readPreflight(value:unknown):K3sPreflightReport|undefined {
 function failurePreflight(error:unknown) {
   return readPreflight((error as {response?:{data?:{preflight?:unknown}}}|undefined)?.response?.data?.preflight)
 }
+function reportPassed(report?:K3sPreflightReport) {
+  return Boolean(report?.passed&&report.hosts.length&&report.hosts.every(host=>host.passed&&host.checks.length&&host.checks.every(check=>check.status!=='failed'))&&report.checks.every(check=>check.status!=='failed'))
+}
+function reportMatchesHosts(report:K3sPreflightReport,payload:K3sPlanInput) {
+  const expected=payload.action==='join'?(payload.join_host_ids??[]).map(id=>({id,role:payload.join_role??'agent'})):[{id:payload.server_host_id,role:payload.mode==='k3d'?'host':'server'},...(payload.mode==='k3d'?[]:(payload.agent_host_ids??[]).map(id=>({id,role:'agent'})))]
+  return report.hosts.length===expected.length&&new Set(report.hosts.map(host=>host.host_id)).size===expected.length&&expected.every(host=>report.hosts.some(actual=>actual.host_id===host.id&&actual.role===host.role))
+}
 function readSelectedProject() {return typeof localStorage==='undefined'?'':localStorage.getItem('edo.project')??''}
 function syncProject() {
   const project=readSelectedProject()
@@ -164,6 +174,7 @@ function resetForm() {
   restoringMode=true;modeDrafts={};Object.assign(form,{...emptyForm(),endpoint:props.action==='join'?props.endpoint:''});restoringMode=false
   optionTab.value=props.action==='join'?'agent':'server';plan.value=undefined;preflight.value=undefined;installation.value=undefined;completedID='';operationContext=context.value
   error.value='';pollError.value=''
+  checking.value=false;checkedInput.value='';checkedContext.value=''
   pollFailures=0
 }
 async function initialize() {
@@ -196,9 +207,24 @@ function viewInstallation(item:K3sInstallation) {
   completedID=['succeeded','failed','interrupted'].includes(item.status)?item.id:''
   void refreshInstallation()
 }
+async function checkPreflight() {
+  if(!syncProject()||!props.open||!canCheck.value||installation.value||plan.value)return
+  error.value='';preflight.value=undefined;checkedInput.value='';checkedContext.value=''
+  try {if(form.profile==='custom')validateK3sOverrides(form.overrides,props.action==='join'?form.join_role:undefined)} catch(err) {error.value=err instanceof Error?err.message:'覆盖配置无效';return}
+  const payload=input(),currentSignature=signature.value,currentContext=context.value,current=revision,controller=new AbortController();request?.abort();request=controller;busy.value=true;checking.value=true
+  try {
+    const result=readPreflight(await checkK3sPreflight(payload,controller.signal))
+    if(!mounted||!props.open||current!==revision||signature.value!==currentSignature||!matchesContext(currentContext))return
+    if(!result||!reportMatchesHosts(result,payload)||result.hosts.some(host=>!host.checks.length)){error.value='安装前检测结果不完整，请重新检测。'}
+    else{preflight.value=result;checkedInput.value=currentSignature;checkedContext.value=currentContext}
+    await nextTick()
+    if(mounted&&props.open&&current===revision&&matchesContext(currentContext)){if(preflight.value)preflightView.value?.focus();else errorRegion.value?.focus()}
+  }catch(err){if(mounted&&props.open&&current===revision&&signature.value===currentSignature&&!controller.signal.aborted&&matchesContext(currentContext)){preflight.value=failurePreflight(err);error.value=apiErrorMessage(err);await nextTick();if(mounted&&props.open&&current===revision&&matchesContext(currentContext))errorRegion.value?.focus()}}
+  finally{if(mounted&&current===revision){busy.value=false;checking.value=false}}
+}
 async function preview() {
   if(!syncProject()||!props.open||!canPreview.value||running.value)return
-  error.value='';preflight.value=undefined;plan.value=undefined
+  error.value='';plan.value=undefined
   try {if(form.profile==='custom')validateK3sOverrides(form.overrides,props.action==='join'?form.join_role:undefined)} catch(err) {error.value=err instanceof Error?err.message:'覆盖配置无效';return}
   const payload=input(),currentSignature=signature.value,currentContext=context.value,current=revision,controller=new AbortController();request?.abort();request=controller;busy.value=true
   try {
@@ -208,7 +234,7 @@ async function preview() {
       if(payload.mode==='native'&&!nativeSourcesMatch(result,payload)){error.value=t('k8s.installSourceMismatch');return}
       plan.value=result;now.value=Date.now()
     }
-  } catch(err) {if(mounted&&props.open&&current===revision&&signature.value===currentSignature&&!controller.signal.aborted&&matchesContext(currentContext)){preflight.value=failurePreflight(err);error.value=apiErrorMessage(err)}}
+  } catch(err) {if(mounted&&props.open&&current===revision&&signature.value===currentSignature&&!controller.signal.aborted&&matchesContext(currentContext)){preflight.value=failurePreflight(err);checkedInput.value='';checkedContext.value='';error.value=apiErrorMessage(err)}}
   finally {if(mounted&&current===revision)busy.value=false}
 }
 async function execute() {
@@ -248,17 +274,17 @@ async function refreshInstallation() {
 function configureAgain() {
   if(running.value||busy.value)return
   const mode=installation.value?modeOf(installation.value):form.mode
-  plan.value=undefined;preflight.value=undefined;installation.value=undefined;completedID='';error.value='';pollError.value=''
+  plan.value=undefined;preflight.value=undefined;checkedInput.value='';checkedContext.value='';installation.value=undefined;completedID='';error.value='';pollError.value=''
   if(props.action==='create')form.mode=mode
 }
-function close() {if(!busy.value)emit('update:open',false)}
+function close() {if(!busy.value||checking.value)emit('update:open',false)}
 function manageCreatedCluster() {
   const id=installation.value?.cluster?.id??installation.value?.cluster_id
   if(!id)return
   void router.push(canManageClusterResources.value?{path:'/kubernetes',query:{cluster:id,view:'overview'}}:{path:'/hosts',query:{cluster:id,view:'clusters'}})
   close()
 }
-watch(signature,()=>{if(!installation.value){if(busy.value){cancelRequests();busy.value=false}plan.value=undefined;preflight.value=undefined;error.value=''}},{flush:'sync'})
+watch(signature,()=>{if(!installation.value){if(busy.value){cancelRequests();busy.value=false;checking.value=false}plan.value=undefined;preflight.value=undefined;checkedInput.value='';checkedContext.value='';error.value=''}},{flush:'sync'})
 watch(()=>form.mode,(mode,previous)=>{
   if(restoringMode||props.action!=='create')return
   modeDrafts[previous]={...JSON.parse(JSON.stringify(form)),mode:previous}
@@ -278,26 +304,27 @@ watch(()=>form.join_role,()=>{
   if(props.open&&!catalog.value)void initialize()
 })
 watch(()=>props.open,open=>{
-  if(!open){form.server_token='';cancelRequests();busy.value=false;loading.value=false;return}
+  if(!open){form.server_token='';cancelRequests();busy.value=false;checking.value=false;loading.value=false;if(!installation.value){preflight.value=undefined;checkedInput.value='';checkedContext.value=''}return}
   if(operationContext!==context.value||!installation.value)resetForm()
   void initialize()
 })
 watch(context,()=>{cancelRequests();busy.value=false;loading.value=false;recent.value=[];recentError.value='';recentLoading.value=false;catalog.value=undefined;hosts.value=[];loadError.value='';resetForm();if(props.open)void initialize()})
-watch(canExecute,allowed=>{if(!allowed){form.server_token='';cancelRequests();busy.value=false;loading.value=false;loadError.value='';recentError.value='';recentLoading.value=false;plan.value=undefined;preflight.value=undefined;installation.value=undefined;recent.value=[];catalog.value=undefined;hosts.value=[]}else if(props.open)void initialize()})
+watch(canExecute,allowed=>{if(!allowed){form.server_token='';cancelRequests();busy.value=false;checking.value=false;checkedInput.value='';checkedContext.value='';loading.value=false;loadError.value='';recentError.value='';recentLoading.value=false;plan.value=undefined;preflight.value=undefined;installation.value=undefined;recent.value=[];catalog.value=undefined;hosts.value=[]}else if(props.open)void initialize()})
 onMounted(()=>{window.addEventListener('storage',projectChanged);window.addEventListener('edo:projects-changed',projectChanged);clock=setInterval(()=>{if(props.open)now.value=Date.now()},1000);if(props.open){resetForm();void initialize()}})
 onBeforeUnmount(()=>{mounted=false;form.server_token='';cancelRequests();window.removeEventListener('storage',projectChanged);window.removeEventListener('edo:projects-changed',projectChanged);if(clock)clearInterval(clock)})
 </script>
 
 <template>
-  <a-drawer :open="open" :title="title" width="min(1060px,96vw)" :closable="!busy" :mask-closable="!busy" @close="close">
+  <a-drawer :open="open" :title="title" width="min(1060px,96vw)" :closable="!busy||checking" :mask-closable="!busy||checking" @close="close">
     <div class="provision-content">
-      <a-steps :current="currentStep" size="small" :items="[{title:'安装配置'},{title:'预检与确认计划'},{title:'执行结果'}]" />
+      <a-steps :current="currentStep" size="small" :items="[{title:'安装配置'},{title:'安装前检测'},{title:'确认计划'},{title:'执行结果'}]" />
       <a-alert v-if="!installation&&displayMode==='native'" type="info" show-icon :message="t('k8s.nativeInstallTitle')" :description="t('k8s.nativeInstallHint')" />
       <a-alert v-else-if="!installation" type="info" show-icon :message="t('k8s.k3dInstallTitle')" :description="t('k8s.k3dInstallHint')" />
       <a-alert v-if="!canExecute" type="warning" show-icon message="需要主机读取、集群执行和关联权限，以及对应的创建权限。" />
       <a-alert v-if="loadError" type="error" show-icon message="安装配置读取失败" :description="loadError"><template #action><a-button size="small" @click="initialize">重试</a-button></template></a-alert>
-      <a-alert v-if="error" type="error" show-icon :message="error" />
-      <K3sPreflightReportView v-if="visiblePreflight&&!installation" :report="visiblePreflight" />
+      <div v-if="error" ref="errorRegion" tabindex="-1"><a-alert type="error" show-icon :message="error" /></div>
+      <a-alert v-if="checking" type="info" show-icon message="正在进行安装前检测" description="只读检测所选主机，不会安装或自动修复。" role="status" />
+      <K3sPreflightReportView v-if="visiblePreflight&&!installation" ref="preflightView" :report="visiblePreflight" :mode="displayMode" :standalone="!plan" />
       <section v-if="recent.length||recentError||recentLoading" class="recent-operations"><details :open="!installation"><summary>最近安装任务 <span v-if="recent.length">{{ recent.length }}</span><a-button type="link" size="small" :loading="recentLoading" @click.stop.prevent="loadRecent">刷新</a-button></summary><a-alert v-if="recentError" type="warning" message="最近任务读取失败" :description="recentError"><template #action><a-button size="small" @click="loadRecent">重试</a-button></template></a-alert><div v-for="item in recent" :key="item.id" class="recent-operation" :class="{'current-operation':installation?.id===item.id}"><div><strong>{{ item.name||item.id }}</strong><small>{{ item.created_at?formatDateTime(item.created_at,'zh-CN'):item.id }}</small></div><a-tag>{{ t(modeOf(item)==='k3d'?'k8s.installModeK3d':'k8s.installModeNative') }}</a-tag><a-tag v-if="item.action==='join'&&item.hosts?.length">{{ k3sHostRoleLabel(item.hosts[0]?.role) }}</a-tag><a-tag>{{ k3sInstallationLabel(item.status) }}</a-tag><a-button size="small" :disabled="busy" :aria-pressed="installation?.id===item.id" @click="viewInstallation(item)">查看进度</a-button></div></details></section>
       <a-spin :spinning="loading">
         <a-form v-if="!plan&&!installation" layout="vertical" :disabled="busy||!canExecute" class="provision-form">
@@ -337,7 +364,7 @@ onBeforeUnmount(()=>{mounted=false;form.server_token='';cancelRequests();window.
             <a-form-item label="覆盖配置（YAML）" class="override-field"><a-textarea v-model:value="form.overrides" :rows="8" spellcheck="false" :placeholder="overridesPlaceholder" /><div class="field-help">优先级：K3s 默认值 → 上方选项 → 此处覆盖。使用 server、agent、installer 分组；false 和空列表会覆盖原值。最终配置在下一步显示。</div></a-form-item>
           </template>
           </template>
-          <div class="install-note">{{ isK3d?t('k8s.k3dPreflightHint'):'下一步先只读检查所选控制平面和工作节点的环境、资源、已有安装与连接，再生成安装计划。检查不会安装软件或修改主机；开始安装前会实时复查。' }}</div>
+          <div v-if="!visiblePreflight&&!checking" class="install-note">{{ isK3d?t('k8s.k3dPreflightHint'):'先进行安装前检测，通过后再生成安装计划。检测不会安装软件或修改主机；开始安装前仍会实时复查。' }}</div>
         </a-form>
 
         <div v-else-if="plan&&!installation" class="plan-review">
@@ -372,7 +399,7 @@ onBeforeUnmount(()=>{mounted=false;form.server_token='';cancelRequests();window.
         </div>
       </a-spin>
     </div>
-    <template #footer><div class="provision-footer"><a-button :disabled="busy" @click="close">{{ running?'关闭窗口':'关闭' }}</a-button><a-button v-if="plan&&!installation" :disabled="busy" @click="plan=undefined;preflight=undefined"><ChevronLeft :size="14" />返回配置</a-button><a-button v-if="installation&&!running" :disabled="busy" @click="configureAgain">{{ displayMode==='k3d'?t('k8s.k3dConfigureAgain'):installation.status==='succeeded'?'继续添加':'重新配置' }}</a-button><a-button v-if="!plan&&!installation" type="primary" :loading="busy" :disabled="!canPreview" @click="preview">检查并预览安装计划</a-button><a-button v-else-if="plan&&!installation" type="primary" :loading="busy" :disabled="planExpired||!canExecute||!planPreflightPassed||!planModeValid||!planSourceValid" @click="execute">开始安装</a-button></div></template>
+    <template #footer><div class="provision-footer"><a-button :disabled="busy&&!checking" @click="close">{{ checking?'取消检测':running?'关闭窗口':'关闭' }}</a-button><a-button v-if="plan&&!installation" :disabled="busy" @click="plan=undefined;preflight=undefined;checkedInput='';checkedContext=''"><ChevronLeft :size="14" />返回配置</a-button><a-button v-if="installation&&!running" :disabled="busy" @click="configureAgain">{{ displayMode==='k3d'?t('k8s.k3dConfigureAgain'):installation.status==='succeeded'?'继续添加':'重新配置' }}</a-button><template v-if="!plan&&!installation"><a-button :type="canPreview?'default':'primary'" :loading="checking" :disabled="!canCheck" @click="checkPreflight">{{ preflight?'重新检测':'安装前检测' }}</a-button><a-button type="primary" :loading="busy&&!checking" :disabled="!canPreview" @click="preview">生成安装计划</a-button></template><a-button v-else-if="plan&&!installation" type="primary" :loading="busy" :disabled="planExpired||!canExecute||!planPreflightPassed||!planModeValid||!planSourceValid" @click="execute">开始安装</a-button></div></template>
   </a-drawer>
 </template>
 

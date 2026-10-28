@@ -129,6 +129,9 @@ export async function getK3sCatalog(clusterID = '', signal?: AbortSignal) {
 export async function previewK3sPlan(input: K3sPlanInput, signal?: AbortSignal) {
   return (await client.post<K3sPlan>('/kubernetes/k3s/plans', input, { signal, timeout: 180_000 })).data
 }
+export async function checkK3sPreflight(input: K3sPlanInput, signal?: AbortSignal) {
+  return (await client.post<K3sPreflightReport>('/kubernetes/k3s/preflight', input, { signal, timeout: 180_000 })).data
+}
 export async function startK3sInstallation(planID: string, signal?: AbortSignal) {
   return (await client.post<K3sInstallation>('/kubernetes/k3s/installations', { plan_id: planID }, { signal })).data
 }
