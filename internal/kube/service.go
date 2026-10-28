@@ -52,6 +52,7 @@ type ConnectionTest struct {
 }
 
 type Pod struct {
+	UID        string            `json:"uid"`
 	Namespace  string            `json:"namespace"`
 	Name       string            `json:"name"`
 	Phase      string            `json:"phase"`
@@ -382,7 +383,7 @@ func (s *Service) Pods(ctx context.Context, id, namespace string) ([]Pod, error)
 			containers = append(containers, container.Name)
 		}
 		pods = append(pods, Pod{
-			Namespace: item.Namespace, Name: item.Name, Phase: string(item.Status.Phase),
+			UID: string(item.UID), Namespace: item.Namespace, Name: item.Name, Phase: string(item.Status.Phase),
 			NodeName: item.Spec.NodeName, PodIP: item.Status.PodIP, Labels: item.Labels,
 			CreatedAt: item.CreationTimestamp.Time, Containers: containers,
 		})

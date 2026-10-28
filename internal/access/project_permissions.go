@@ -62,6 +62,9 @@ func ProjectPermission(code string) bool {
 	if code == "project.read" || code == "project.update" || code == "project.delete" || code == "project.member.update" {
 		return true
 	}
+	if code == PermissionHostTerminalOpen {
+		return true
+	}
 	prefix, _, _ := strings.Cut(code, ".")
 	switch prefix {
 	case "sql_change", "delivery_variable", "application_database", "environment_policy", "application", "workflow", "build_plan", "image_registry", "deployment_plan", "release_plan", "pipeline_run", "artifact", "repository", "delivery", "deployment", "cluster", "kubernetes", "terminal", "task", "dns", "notification", "scheduler", "assistant":

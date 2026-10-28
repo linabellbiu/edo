@@ -390,6 +390,11 @@ func NewRouter(deps Dependencies) *gin.Engine {
 	terminalAPI := terminalHandler{service: deps.Terminal, audits: deps.Audits, logger: deps.Logger, streamAuth: func(c *gin.Context) func() bool { return streamAuthorization(deps, c, access.PermissionTerminalOpen) }}
 	protected.GET("/terminals/docker/:endpoint_id/containers/:container_id/ws", requirePermission(deps.Access, deps.Logger, access.PermissionTerminalOpen), terminalAPI.docker)
 	protected.GET("/terminals/kubernetes/:cluster_id/namespaces/:namespace/pods/:pod/containers/:container/ws", requirePermission(deps.Access, deps.Logger, access.PermissionTerminalOpen), terminalAPI.kubernetes)
+	hostTerminalAPI := terminalHandler{service: deps.Terminal, hosts: deps.Hosts, audits: deps.Audits, logger: deps.Logger, streamAuth: func(c *gin.Context) func() bool {
+		return streamAuthorization(deps, c, access.PermissionHostTerminalOpen)
+	}}
+	protected.GET("/terminals/hosts/:host_id/ws", requirePermission(deps.Access, deps.Logger, access.PermissionHostTerminalOpen), hostTerminalAPI.host)
+	registerTerminalFiles(protected, deps)
 
 	configurationAPI := configurationHandler{service: deps.Configurations, logger: deps.Logger}
 	settingsAPI := settingsHandler{service: deps.Configurations, loginLimiter: deps.LoginLimiter, authConfig: deps.AuthConfig, retention: deps.LogRetention, runtimeLogs: deps.RuntimeLogs, repositories: deps.Repositories, artifacts: deps.Artifacts, logger: deps.Logger}

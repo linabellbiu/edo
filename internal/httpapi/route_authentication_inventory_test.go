@@ -53,7 +53,7 @@ func inventoryAPIPath(t *testing.T, pattern, projectID string) string {
 			if strings.HasPrefix(pattern, "/api/v1/projects/") {
 				parts[index] = projectID
 			}
-		case ":user_id", ":workflow_id", ":application_id", ":group_id", ":endpoint_id", ":cluster_id", ":join", ":record_id", ":grant":
+		case ":user_id", ":workflow_id", ":application_id", ":group_id", ":endpoint_id", ":cluster_id", ":host_id", ":join", ":record_id", ":grant":
 			parts[index] = "fae9f5e6-eaae-4092-9cf7-97a0f5e05510"
 		case ":resource":
 			parts[index] = "deployments"

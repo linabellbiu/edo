@@ -16,6 +16,7 @@ import (
 	"github.com/gorilla/websocket"
 
 	"edo/internal/audit"
+	hostmanager "edo/internal/host"
 	"edo/internal/model"
 	terminalservice "edo/internal/terminal"
 )
@@ -25,8 +26,20 @@ const terminalSubprotocol = "edo-terminal-v1"
 type terminalHandler struct {
 	streamAuth func(*gin.Context) func() bool
 	service    *terminalservice.Service
+	hosts      *hostmanager.Service
 	audits     *audit.Service
 	logger     *slog.Logger
+}
+
+func (h terminalHandler) host(c *gin.Context) {
+	if h.hosts == nil || h.service == nil {
+		h.logger.Error("主机终端服务未初始化", "operation", "host_terminal_open", "request_id", requestIDFrom(c))
+		writeError(c, http.StatusServiceUnavailable, "host_terminal_unavailable", "主机终端暂不可用")
+		return
+	}
+	h.open(c, "host", c.Param("host_id"), map[string]any{"host_id": c.Param("host_id")}, func(ctx context.Context, shell string, size terminalservice.Size) (terminalservice.Session, error) {
+		return h.hosts.OpenTerminal(ctx, c.Param("host_id"), shell, size)
+	})
 }
 
 type terminalControl struct {
@@ -61,7 +74,7 @@ func (h terminalHandler) kubernetes(c *gin.Context) {
 		"pod": c.Param("pod"), "container": c.Param("container"),
 	}, func(ctx context.Context, shell string, size terminalservice.Size) (terminalservice.Session, error) {
 		return h.service.OpenKubernetes(
-			ctx, c.Param("cluster_id"), c.Param("namespace"), c.Param("pod"), c.Param("container"), shell, size,
+			ctx, c.Param("cluster_id"), c.Param("namespace"), c.Param("pod"), c.Param("container"), shell, size, c.Query("pod_uid"),
 		)
 	})
 }
@@ -72,6 +85,11 @@ func (h terminalHandler) open(
 	metadata map[string]any,
 	opener func(context.Context, string, terminalservice.Size) (terminalservice.Session, error),
 ) {
+	if h.service == nil {
+		h.logger.Error("终端服务未初始化", "operation", "terminal_open", "request_id", requestIDFrom(c))
+		writeError(c, http.StatusServiceUnavailable, "terminal_unavailable", "终端暂不可用")
+		return
+	}
 	metadata["target_type"] = targetType
 	shell := c.DefaultQuery("shell", "sh")
 	size, err := parseTerminalSize(c)
@@ -117,8 +135,8 @@ func (h terminalHandler) open(
 	}
 	session, err := opener(sessionContext, shell, size)
 	if err != nil {
-		h.logger.Error("打开容器终端失败", "operation", "terminal_open", "request_id", requestIDFrom(c), "session_id", sessionID, "target_type", targetType, "resource_id", resourceID, "err", err)
-		h.writeTerminalEvent(connection, terminalEvent{Type: "error", Message: "终端连接失败，请检查目标容器状态"})
+		h.logger.Error("打开终端失败", "operation", "terminal_open", "request_id", requestIDFrom(c), "session_id", sessionID, "target_type", targetType, "resource_id", resourceID, "err", err)
+		h.writeTerminalEvent(connection, terminalEvent{Type: "error", Message: "终端连接失败，请检查目标状态或联系管理员"})
 		h.recordTerminalAudit(c, "terminal.open", resourceID, sessionID, model.AuditFailed, metadata, 0)
 		return
 	}

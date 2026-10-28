@@ -50,6 +50,7 @@ import PageToolbar from '@/components/PageToolbar.vue'
 import RuntimeBrandIcon from '@/components/RuntimeBrandIcon.vue'
 import RuntimeResourcePanel from '@/components/RuntimeResourcePanel.vue'
 import { useAuthStore } from '@/stores/auth'
+import { hostSupportsTerminal, useHostTerminalsStore } from '@/stores/hostTerminals'
 import { formatDateTime } from '@/utils/time'
 import { clusterForHost, clusterHostIDs } from '@/utils/infrastructureRelations'
 
@@ -60,6 +61,12 @@ type GroupFormMode = 'create' | 'details' | 'hosts'
 type DetailTab = 'info' | 'resources'
 
 const auth = useAuthStore()
+function openHostTerminal(host: InfrastructureHost) {
+  const current = hosts.value.find(item => item.id === host.id)
+  if (!current || current !== host || hostLoadError.value || !hostSupportsTerminal(current)) return
+  const result = useHostTerminalsStore().open(current)
+  if (result.error) message.warning(result.error)
+}
 const { t } = useI18n()
 const route = useRoute()
 const router = useRouter()
@@ -818,6 +825,7 @@ onBeforeUnmount(() => {
               <div v-if="record.capabilities.length" class="capability-icons">
                 <template v-for="capability in record.capabilities" :key="capability.kind">
                   <button v-if="capability.kind === 'docker'" type="button" class="capability-shortcut" :class="capability.status" :disabled="!canReadResources || !record.is_active || !capability.runtime_id || Boolean(hostLoadError)" :aria-label="`查看 ${record.name} 的 Docker 容器`" :title="`Docker：${capabilityDescription(record, capability.kind)}`" @click="openRuntime(record, 'docker')"><RuntimeBrandIcon kind="docker" /></button>
+                  <button v-else-if="capability.kind === (record.mode === 'local' ? 'local_exec' : 'ssh')" type="button" class="capability-shortcut host-terminal-shortcut" :class="capability.status" :disabled="!auth.canAny(['host.terminal.open']) || !hostSupportsTerminal(record) || Boolean(hostLoadError)" :aria-label="`打开 ${record.name} 的主机终端`" :title="auth.canAny(['host.terminal.open']) ? `主机终端：${record.name}` : '没有打开主机终端的权限'" @click="openHostTerminal(record)"><RuntimeBrandIcon :kind="capability.kind" /></button>
                   <span v-else :class="capability.status" :title="`${capabilityName(capability.kind)}：${capabilityDescription(record, capability.kind)}`"><RuntimeBrandIcon :kind="capability.kind" /></span>
                 </template>
               </div>
@@ -1001,6 +1009,7 @@ onBeforeUnmount(() => {
 .capability-icons>.capability-shortcut:focus-visible{outline:2px solid var(--edo-primary);outline-offset:3px}
 .capability-icons>.capability-shortcut:disabled{opacity:.48;cursor:not-allowed;background:transparent}
 .capability-shortcut :deep(svg){fill:#2496ed}
+.host-terminal-shortcut :deep(svg){fill:var(--edo-primary)}
 .capability-shortcut::after{position:absolute;right:2px;bottom:2px;width:6px;height:6px;border:1px solid var(--edo-surface);border-radius:50%;background:var(--edo-muted);content:''}
 .capability-shortcut.ready::after{background:var(--edo-success,#28b66e)}
 .capability-shortcut.unreachable::after{background:var(--edo-error,#ef5656)}

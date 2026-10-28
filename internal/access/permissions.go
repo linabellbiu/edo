@@ -79,7 +79,11 @@ const (
 	PermissionClusterDelete  = "cluster.delete"
 	PermissionClusterExecute = "cluster.execute"
 
-	PermissionTerminalOpen = "terminal.open"
+	PermissionTerminalOpen       = "terminal.open"
+	PermissionHostTerminalOpen   = "host.terminal.open"
+	PermissionTerminalFileRead   = "terminal.file.read"
+	PermissionTerminalFileUpload = "terminal.file.upload"
+	PermissionTerminalFileEdit   = "terminal.file.edit"
 
 	PermissionTaskRead    = "task.read"
 	PermissionTaskExecute = "task.execute"
@@ -193,6 +197,10 @@ var catalog = append([]Permission{
 	permission(PermissionClusterDelete, "主机与集群", "cluster", "主机接入", "delete", "删除", "删除不再使用的远程主机", true),
 	permission(PermissionClusterExecute, "主机与集群", "cluster", "连接测试", "execute", "执行", "测试主机、Docker 或 Kubernetes 连接", true),
 	permission(PermissionTerminalOpen, "主机与集群", "terminal", "Pod 或容器终端", "open", "打开", "打开 Kubernetes Pod 或 Docker 容器内终端", true),
+	permission(PermissionHostTerminalOpen, "主机与集群", "host.terminal", "主机终端", "open", "打开", "打开本项目主机的交互终端，不自动提权", true),
+	permission(PermissionTerminalFileRead, "主机与集群", "terminal.file", "终端文件", "read", "查看下载", "浏览、预览和下载当前目标内的普通文件", true),
+	permission(PermissionTerminalFileUpload, "主机与集群", "terminal.file", "终端文件", "upload", "上传", "在当前目标内上传新文件；覆盖还须查看和编辑权限", true),
+	permission(PermissionTerminalFileEdit, "主机与集群", "terminal.file", "终端文件", "edit", "编辑", "编辑或覆盖当前目标内的普通文件，不含删除", true),
 
 	permission(PermissionTaskRead, "任务", "task", "后台任务", "read", "查看", "查看任务状态和输出", false),
 	permission(PermissionAssistantRead, "助手", "assistant", "对话助手", "read", "查看", "查看当前项目内自己的助手会话", false),

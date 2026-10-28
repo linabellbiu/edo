@@ -153,7 +153,8 @@ function openDockerTerminal(row: ResourceRecord) {
 }
 function openPodTerminal(row: ResourceRecord, container: string) {
   if (!currentRow(row, 'kubernetes') || !auth.canAny(['terminal.open']) || row.phase !== 'Running' || !Array.isArray(row.containers) || !row.containers.includes(container)) return
-  terminal.value = { open: true, title: t('runtimeResources.podTerminal', { name: row.name, container }), path: `/api/v1/terminals/kubernetes/${encodeURIComponent(selectedRuntime.value!.id)}/namespaces/${encodeURIComponent(String(row.namespace))}/pods/${encodeURIComponent(String(row.name))}/containers/${encodeURIComponent(container)}/ws` }
+  const identity = typeof row.uid === 'string' && row.uid ? `?pod_uid=${encodeURIComponent(row.uid)}` : ''
+  terminal.value = { open: true, title: t('runtimeResources.podTerminal', { name: row.name, container }), path: `/api/v1/terminals/kubernetes/${encodeURIComponent(selectedRuntime.value!.id)}/namespaces/${encodeURIComponent(String(row.namespace))}/pods/${encodeURIComponent(String(row.name))}/containers/${encodeURIComponent(container)}/ws${identity}` }
 }
 function resetContext() {
   activeMetadataContext = metadataContext(); metadataRequest++; metadataController?.abort(); pingRequest++; pingController?.abort(); pingLoading.value = false

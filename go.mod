@@ -12,6 +12,7 @@ require (
 	github.com/cloudwego/eino v0.9.22
 	github.com/cloudwego/eino-ext/components/model/openai v0.1.13
 	github.com/containerd/errdefs v1.0.0
+	github.com/creack/pty v1.1.24
 	github.com/distribution/reference v0.6.0
 	github.com/gin-gonic/gin v1.12.0
 	github.com/go-git/go-git/v5 v5.19.1
@@ -43,6 +44,7 @@ require (
 	github.com/moby/patternmatcher v0.6.1
 	github.com/nats-io/nats.go v1.52.0
 	github.com/opencontainers/image-spec v1.1.1
+	github.com/pkg/sftp v1.13.12
 	github.com/pressly/goose/v3 v3.27.0
 	github.com/redis/go-redis/v9 v9.21.0
 	github.com/regclient/regclient v0.11.5
@@ -160,6 +162,7 @@ require (
 	github.com/kevinburke/ssh_config v1.2.0 // indirect
 	github.com/klauspost/compress v1.18.6 // indirect
 	github.com/klauspost/cpuid/v2 v2.3.0 // indirect
+	github.com/kr/fs v0.1.0 // indirect
 	github.com/kylelemons/godebug v1.1.0 // indirect
 	github.com/leodido/go-urn v1.4.0 // indirect
 	github.com/lufia/plan9stats v0.0.0-20211012122336-39d0f177ccd0 // indirect

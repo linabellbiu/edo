@@ -303,7 +303,7 @@ onBeforeUnmount(() => {
           </header>
           <ResourceTable :rows="pods" :columns="[{ key: 'name', label: 'Pod' }, { key: 'namespace', label: '命名空间' }, { key: 'phase', label: '阶段' }, { key: 'containers', label: '容器' }]" :loading="resourceLoading">
             <template v-if="auth.canAny(['terminal.open'])" #actions="{ row }">
-              <a-button v-for="podContainer in (row.phase === 'Running' && Array.isArray(row.containers) ? row.containers : [])" :key="String(podContainer)" type="link" @click="openTerminal(`Pod 终端：${row.name}（容器：${podContainer}）`, `/api/v1/terminals/kubernetes/${encodeURIComponent(selectedClusterID)}/namespaces/${encodeURIComponent(String(row.namespace))}/pods/${encodeURIComponent(String(row.name))}/containers/${encodeURIComponent(String(podContainer))}/ws`)">{{ podContainer }}</a-button>
+              <a-button v-for="podContainer in (row.phase === 'Running' && Array.isArray(row.containers) ? row.containers : [])" :key="String(podContainer)" type="link" @click="openTerminal(`Pod 终端：${row.name}（容器：${podContainer}）`, `/api/v1/terminals/kubernetes/${encodeURIComponent(selectedClusterID)}/namespaces/${encodeURIComponent(String(row.namespace))}/pods/${encodeURIComponent(String(row.name))}/containers/${encodeURIComponent(String(podContainer))}/ws${row.uid ? `?pod_uid=${encodeURIComponent(String(row.uid))}` : ''}`)">{{ podContainer }}</a-button>
             </template>
           </ResourceTable>
         </template>

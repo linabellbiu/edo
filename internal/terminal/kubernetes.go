@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -30,8 +31,9 @@ func (s *Service) OpenKubernetes(
 	ctx context.Context,
 	clusterID, namespace, podName, containerName, shell string,
 	size Size,
+	expectedUID ...string,
 ) (Session, error) {
-	if strings.TrimSpace(clusterID) == "" || len(validation.IsDNS1123Label(namespace)) > 0 ||
+	if s == nil || s.kube == nil || len(expectedUID) > 1 || strings.TrimSpace(clusterID) == "" || len(validation.IsDNS1123Label(namespace)) > 0 ||
 		len(validation.IsDNS1123Subdomain(podName)) > 0 || len(validation.IsDNS1123Label(containerName)) > 0 ||
 		!validSize(size) {
 		return nil, ErrInvalidRequest
@@ -67,7 +69,8 @@ func (s *Service) OpenKubernetes(
 	if err != nil {
 		return nil, fmt.Errorf("读取 Kubernetes Pod 状态失败: %w", err)
 	}
-	if pod.Status.Phase != corev1.PodRunning || !podHasContainer(pod, containerName) {
+	identity := filePodContainerIdentity(pod, containerName)
+	if len(expectedUID) > 1 || len(expectedUID) == 1 && expectedUID[0] != "" && expectedUID[0] != string(pod.UID) || pod.UID == "" || identity == "" || pod.Status.Phase != corev1.PodRunning || !podHasContainer(pod, containerName) {
 		return nil, ErrTargetNotReady
 	}
 	request := clientset.CoreV1().RESTClient().Post().
@@ -101,7 +104,24 @@ func (s *Service) OpenKubernetes(
 		_ = stdoutWriter.CloseWithError(err)
 	}()
 	opened = true
-	return session, nil
+	check := func(probe context.Context) error {
+		if err := s.kube.RequireResourcePermission(probe, clusterID, "pods", namespace, "execute", false); err != nil {
+			return err
+		}
+		current, err := clientset.CoreV1().Pods(namespace).Get(probe, podName, metav1.GetOptions{})
+		if err != nil {
+			return err
+		}
+		if current.UID != pod.UID || filePodContainerIdentity(current, containerName) != identity {
+			return ErrTargetNotReady
+		}
+		return nil
+	}
+	if err := check(sessionContext); err != nil {
+		_ = session.Close()
+		return nil, err
+	}
+	return guardResourceSession(sessionContext, session, check, 2*time.Second), nil
 }
 
 func (s *kubernetesSession) Read(buffer []byte) (int, error) {

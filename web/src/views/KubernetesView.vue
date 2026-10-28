@@ -405,7 +405,8 @@ function openStream(pod:KubeObject, terminal=false) {
   const parts=[cluster.value,nsOf(pod),pod.metadata.name,container].map(value=>encodeURIComponent(value))
   const project=encodeURIComponent(localStorage.getItem('edo.project')??'')
   const path=terminal ? `/api/v1/terminals/kubernetes/${parts[0]}/namespaces/${parts[1]}/pods/${parts[2]}/containers/${parts[3]}/ws` : `/api/v1/kubernetes/clusters/${parts[0]}/namespaces/${parts[1]}/pods/${parts[2]}/containers/${parts[3]}/logs/ws`
-  stream.value={open:true,terminal,path:`${path}?project_id=${project}`,title:`${pod.metadata.name} / ${container}`}
+  const podIdentity=terminal&&pod.metadata.uid?`&pod_uid=${encodeURIComponent(pod.metadata.uid)}`:''
+  stream.value={open:true,terminal,path:`${path}?project_id=${project}${podIdentity}`,title:`${pod.metadata.name} / ${container}`}
 }
 function openWorkloadStream(pod:KubeObject,container:string,terminal=false){
   if(!detailOpen.value||!workloadExplorer.value||busy.value||detailError.value||!can('kubernetes.workload.read'))return

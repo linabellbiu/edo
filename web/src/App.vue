@@ -1,12 +1,15 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, defineAsyncComponent } from 'vue'
 import { ConfigProvider } from 'ant-design-vue'
 import zhCN from 'ant-design-vue/es/locale/zh_CN'
 import enUS from 'ant-design-vue/es/locale/en_US'
 
 import { usePreferencesStore } from '@/stores/preferences'
+import { useHostTerminalsStore } from '@/stores/hostTerminals'
 
 const preferences = usePreferencesStore()
+const hostTerminals = useHostTerminalsStore()
+const TerminalDock = defineAsyncComponent(() => import('@/components/TerminalDock.vue'))
 const antLocale = computed(() => preferences.locale === 'zh-CN' ? zhCN : enUS)
 const theme = computed(() => ({
   token: {
@@ -24,5 +27,6 @@ const theme = computed(() => ({
 <template>
   <ConfigProvider :locale="antLocale" :theme="theme">
     <RouterView />
+    <TerminalDock v-if="hostTerminals.sessions.length" />
   </ConfigProvider>
 </template>

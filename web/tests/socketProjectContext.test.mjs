@@ -65,7 +65,7 @@ async function drawerHarness(component, path) {
   class FakeTerminal {
     cols = 96; rows = 28; output = []
     constructor(options) { this.options = options; terminals.push(this) }
-    loadAddon() {} open() {} dispose() {} scrollToBottom() {}
+    loadAddon() {} open() {} dispose() {} scrollToBottom() {} focus() {}
     write(value) { this.output.push(value) }
     writeln(value) { this.output.push(value) }
     onData(callback) { this.input = callback; return { dispose() {} } }
@@ -77,12 +77,15 @@ async function drawerHarness(component, path) {
     '@xterm/xterm': { Terminal: FakeTerminal },
     '@xterm/addon-fit': { FitAddon: class { fit() {} } },
     '@/utils/socketUrl': urls,
+    '@/stores/auth': { useAuthStore: () => ({ user: {id:'operator',project_id:'project-current',permissions:['terminal.open']}, canAny: () => true }) },
+    '@/stores/hostTerminals': { terminalActorContext: (user,project) => JSON.stringify([user?.id, project]) },
   }
-  const loaded = load(`../src/components/${component}.vue`, modules, {
+  const loaded = load(`../src/components/${component === 'TerminalDrawer' ? 'TerminalSessionPane' : component}.vue`, modules, {
     ...globals, WebSocket: FakeSocket, ResizeObserver: class { observe() {} disconnect() {} },
+    window: {addEventListener(){},removeEventListener(){}},
   }).default
-  const state = loaded.setup({ open: true, path, title: '验收' }, { expose() {}, emit() {} })
-  state.container.value = {}
+  const state = loaded.setup({ open: true, visible: true, permission: 'terminal.open', path, title: '验收' }, { expose() {}, emit() {} })
+  state.container.value = {getBoundingClientRect:()=>({width:900,height:500})}
   await state.connect()
   return { state, sockets, terminals, unmount }
 }

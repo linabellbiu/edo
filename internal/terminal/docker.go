@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/moby/moby/client"
 )
@@ -23,10 +24,14 @@ func (s *Service) OpenDocker(
 	endpointID, containerID, shell string,
 	size Size,
 ) (Session, error) {
-	if strings.TrimSpace(endpointID) == "" || strings.TrimSpace(containerID) == "" || !validSize(size) {
+	if s == nil || s.docker == nil || strings.TrimSpace(endpointID) == "" || len(containerID) != 64 || !validSize(size) {
 		return nil, ErrInvalidRequest
 	}
 	command, err := normalizeShell(shell)
+	if err != nil {
+		return nil, err
+	}
+	revision, err := s.docker.TerminalRevision(ctx, endpointID)
 	if err != nil {
 		return nil, err
 	}
@@ -39,7 +44,7 @@ func (s *Service) OpenDocker(
 		apiClient.Close()
 		return nil, fmt.Errorf("读取 Docker 容器状态失败: %w", err)
 	}
-	if inspect.Container.State == nil || !inspect.Container.State.Running || inspect.Container.State.Paused {
+	if inspect.Container.ID != containerID || inspect.Container.State == nil || !inspect.Container.State.Running || inspect.Container.State.Paused || inspect.Container.State.Restarting {
 		apiClient.Close()
 		return nil, ErrTargetNotReady
 	}
@@ -57,7 +62,29 @@ func (s *Service) OpenDocker(
 		apiClient.Close()
 		return nil, fmt.Errorf("连接 Docker 容器终端失败: %w", err)
 	}
-	return &dockerSession{client: apiClient, attach: attached, execID: created.ID}, nil
+	session := &dockerSession{client: apiClient, attach: attached, execID: created.ID}
+	check := func(probe context.Context) error {
+		current, err := s.docker.TerminalRevision(probe, endpointID)
+		if err != nil {
+			return err
+		}
+		if current != revision {
+			return ErrTargetNotReady
+		}
+		state, err := apiClient.ContainerInspect(probe, containerID, client.ContainerInspectOptions{})
+		if err != nil {
+			return err
+		}
+		if state.Container.ID != containerID || state.Container.State == nil || !state.Container.State.Running || state.Container.State.Paused || state.Container.State.Restarting {
+			return ErrTargetNotReady
+		}
+		return nil
+	}
+	if err := check(ctx); err != nil {
+		_ = session.Close()
+		return nil, err
+	}
+	return guardResourceSession(ctx, session, check, 2*time.Second), nil
 }
 
 func (s *dockerSession) Read(buffer []byte) (int, error) {
