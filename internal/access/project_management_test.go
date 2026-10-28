@@ -115,7 +115,7 @@ func projectManagementFixture(t *testing.T, action string) (*gorm.DB, *Service, 
 	t.Helper()
 	db := testutil.NewDatabase(t)
 	now := time.Now().UTC()
-	actor := &model.User{ID: uuid.NewString(), Username: "管理权限-" + uuid.NewString(), DepartmentID: database.DefaultDepartmentID, IsActive: true, CreatedAt: now, UpdatedAt: now}
+	actor := &model.User{ID: uuid.NewString(), Username: "pm-" + uuid.NewString()[:12], DepartmentID: database.DefaultDepartmentID, IsActive: true, CreatedAt: now, UpdatedAt: now}
 	role := model.Role{ID: uuid.NewString(), Name: "管理角色-" + uuid.NewString(), DisplayName: "管理权限回归", CreatedAt: now, UpdatedAt: now}
 	project := &model.Project{ID: uuid.NewString(), Name: "独立空项目-" + uuid.NewString(), DepartmentID: database.DefaultDepartmentID, IsActive: true, CreatedAt: now, UpdatedAt: now}
 	for _, value := range []any{actor, &role, project, &model.RolePermission{RoleID: role.ID, Permission: "project." + action}, &model.ProjectMember{ProjectID: project.ID, UserID: actor.ID, RoleID: role.ID}} {
