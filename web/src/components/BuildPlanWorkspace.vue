@@ -141,14 +141,14 @@ watch(() => ({ ids: props.plans.map(plan => plan.id), requested: props.requested
 const selectedApplication = computed(() => props.applications.find(item => item.id === props.selectedApplicationID))
 const uploadDisabled = computed(() => !selected.value?.is_active || !selectedApplication.value?.is_active)
 const artifactColumns = [
-  { key: 'name', label: '制品名称' },
-  { key: 'application_id', label: '应用' },
-  { key: 'kind', label: '类型' },
-  { key: 'status', label: '状态' },
-  { key: 'size_bytes', label: '大小' },
-  { key: 'storage_kind', label: '存储位置' },
-  { key: 'digest', label: '摘要' },
-  { key: 'created_at', label: '创建时间' },
+  { key: 'name', label: '制品名称', width: '260px' },
+  { key: 'application_id', label: '应用', width: '220px' },
+  { key: 'kind', label: '类型', width: '100px' },
+  { key: 'status', label: '状态', width: '84px' },
+  { key: 'size_bytes', label: '大小', width: '128px' },
+  { key: 'storage_kind', label: '存储位置', width: '120px' },
+  { key: 'digest', label: '摘要', width: '180px' },
+  { key: 'created_at', label: '创建时间', width: '176px' },
 ]
 
 const beforeArtifactUpload: UploadProps['beforeUpload'] = (file) => {
@@ -229,16 +229,17 @@ function artifactStorageLabel(kind: Artifact['storage_kind']) {
 }
 
 function formatFileSize(value: number) {
-  if (!Number.isFinite(value) || value < 0) return '未知'
-  if (value === 0) return '0 B'
-  const units = ['B', 'KB', 'MB', 'GB', 'TB']
-  const index = Math.min(Math.floor(Math.log(value) / Math.log(1024)), units.length - 1)
-  return `${(value / 1024 ** index).toFixed(index === 0 ? 0 : 1)} ${units[index]}`
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) return '未知'
+  const gib = value >= 1024 ** 3
+  const amount = value / (gib ? 1024 ** 3 : 1024 ** 2)
+  if (value > 0 && amount < 0.0001) return '< 0.0001 MiB'
+  const digits = amount < 0.01 ? 4 : amount < 1 ? 2 : 1
+  return `${amount.toLocaleString('zh-CN', { maximumFractionDigits: digits })} ${gib ? 'GiB' : 'MiB'}`
 }
 
 function formatArtifactSize(item: Artifact) {
   if (item.kind === 'oci_image' && item.size_bytes <= 0) return '未知'
-  return formatFileSize(Number(item.size_bytes))
+  return formatFileSize(item.size_bytes)
 }
 
 function formatTime(value: string) {
@@ -335,11 +336,13 @@ function formatTime(value: string) {
           </a-upload>
         </div>
       </header>
-      <ResourceTable :rows="artifacts" :columns="artifactColumns" :loading="artifactLoading" empty-text="该构建方案还没有制品">
-        <template #cell-application_id="{ value }">{{ applicationName(String(value)) }}</template>
+      <ResourceTable class="artifact-table" :rows="artifacts" :columns="artifactColumns" :loading="artifactLoading" empty-text="该构建方案还没有制品">
+        <template #cell-application_id="{ value }"><a-tooltip :title="applicationName(String(value))" :trigger="['hover', 'focus', 'click']"><span class="artifact-application-name" tabindex="0">{{ applicationName(String(value)) }}</span></a-tooltip></template>
+        <template #detail-application_id="{ value }">{{ applicationName(String(value)) }}</template>
         <template #cell-kind="{ value }"><a-tag color="blue">{{ artifactKindLabel(value as Artifact['kind']) }}</a-tag></template>
         <template #cell-status="{ value }"><a-tag :color="value === 'available' ? 'success' : value === 'corrupt' ? 'error' : 'default'">{{ artifactStatusLabel(value as Artifact['status']) }}</a-tag></template>
-        <template #cell-size_bytes="{ row }">{{ formatArtifactSize(row as Artifact) }}</template>
+        <template #cell-size_bytes="{ row }"><span class="artifact-size">{{ formatArtifactSize(row as Artifact) }}</span></template>
+        <template #detail-size_bytes="{ row }">{{ formatArtifactSize(row as Artifact) }}</template>
         <template #cell-storage_kind="{ value }">{{ artifactStorageLabel(value as Artifact['storage_kind']) }}</template>
         <template #cell-digest="{ value }"><code class="artifact-digest" :title="String(value)">{{ String(value).slice(0, 19) }}…</code></template>
         <template #actions="{ row }"><a-button v-if="(row as Artifact).storage_kind === 'local_file' && (row as Artifact).status === 'available'" type="link" :loading="artifactDownloadingID === String(row.id)" @click="emit('download', row as Artifact)"><Download :size="14" />下载</a-button></template>
@@ -372,6 +375,11 @@ function formatTime(value: string) {
 .artifact-toolbar :deep(.ant-select) { width: 210px; }
 .artifact-toolbar :deep(.ant-btn) { display: inline-flex; align-items: center; gap: 5px; }
 .artifact-toolbar svg { width: 14px; }
+.artifact-table :deep(.resource-table) { min-width: 1360px; table-layout: fixed; }
+.artifact-table :deep(.table-actions), .artifact-table :deep(.table-action-heading) { width: 88px; }
+.artifact-application-name { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: help; }
+.artifact-application-name:focus-visible { outline: 2px solid var(--edo-primary); outline-offset: 2px; border-radius: 3px; }
+.artifact-size { white-space: nowrap; font-variant-numeric: tabular-nums; }
 .artifact-digest { white-space: nowrap; }
 @media (max-width: 720px) {
   .artifact-toolbar { align-items: flex-start; flex-direction: column; }

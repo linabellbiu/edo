@@ -1500,7 +1500,7 @@ onBeforeRouteLeave(async () => {
 
         <footer class="board-footer">
           <div><a-tag :color="issues.length || !draftStructureValid ? 'warning' : 'success'">{{ issues.length ? `${issues.length} 个问题` : draftStructureValid ? '结构正常' : '流程尚未完成' }}</a-tag><span>{{ saveState }}</span></div>
-          <small>拖动阶段可调整执行顺序，拖动任务可调整并行分支的位置。</small>
+          <small v-if="canUpdate">拖动阶段可调整执行顺序，拖动任务可调整并行分支的位置。</small>
         </footer>
       </main>
 

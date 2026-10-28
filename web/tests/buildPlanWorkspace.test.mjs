@@ -104,3 +104,22 @@ test('列表按各行方案展示 Dockerfile、脚本目录及制品位置，不
   assert.equal(state.buildPlanArtifact({ ...script, artifact_path: '' }), '不保存制品')
   assert.equal(props.selectedID, 'p1')
 })
+
+test('制品容量统一使用二进制 GiB 与 MiB，保留微小非零值和未知镜像大小', () => {
+  const { state } = harness()
+  assert.equal(state.formatFileSize(1024 ** 2), '1 MiB')
+  assert.equal(state.formatFileSize(14.1 * 1024 ** 2), '14.1 MiB')
+  assert.equal(state.formatFileSize(1024 ** 3 - 1), '1,024 MiB')
+  assert.equal(state.formatFileSize(1024 ** 3), '1 GiB')
+  assert.equal(state.formatFileSize(2.5 * 1024 ** 3), '2.5 GiB')
+  assert.equal(state.formatFileSize(1024 ** 4), '1,024 GiB')
+  assert.equal(state.formatFileSize(1), '< 0.0001 MiB')
+  assert.equal(state.formatFileSize(1024), '0.001 MiB')
+  for (const invalid of [undefined, null, '', '1024', NaN, Infinity, -1]) {
+    assert.equal(state.formatFileSize(invalid), '未知')
+    assert.equal(state.formatArtifactSize({ kind: 'oci_image', size_bytes: invalid }), '未知')
+  }
+  assert.equal(state.formatArtifactSize({ kind: 'oci_image', size_bytes: 0 }), '未知')
+  assert.equal(state.formatArtifactSize({ kind: 'file_bundle', size_bytes: 0 }), '0 MiB')
+})
+
