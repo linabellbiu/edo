@@ -37,6 +37,7 @@ import {
 } from '@/api/infrastructure'
 import { apiErrorMessage } from '@/api/resources'
 import HostDrawer from '@/components/HostDrawer.vue'
+import HostResourceSummary from '@/components/HostResourceSummary.vue'
 import ResourceDetailDrawer from '@/components/ResourceDetailDrawer.vue'
 import ResourceRowActions from '@/components/ResourceRowActions.vue'
 import { useResourceList } from '@/utils/resourceList'
@@ -79,6 +80,7 @@ const selectedGroupKey = ref<HostGroupKey>('all')
 const searchQuery = ref('')
 const statusFilter = ref<HostStatusFilter>('all')
 const loading = ref(false)
+const resourceRevision = ref(0)
 const drawerOpen = ref(false)
 const detailOpen = ref(false)
 const detailTab = ref<DetailTab>('info')
@@ -98,6 +100,10 @@ let statusErrorShown = false
 let lastStatusRefreshAt = 0
 let initialized = false
 let mounted = true
+let inventoryRead = 0
+let statusRead = 0
+let inventoryController: AbortController | undefined
+let statusController: AbortController | undefined
 
 const statusPollInterval = 5000
 const statusRefreshDeduplicationWindow = 1000
@@ -116,15 +122,14 @@ const selectedGroup = computed(() => hostGroups.value.find(environment => enviro
 const environmentNames = computed(() => new Map(hostGroups.value.map(environment => [environment.id, environment.name])))
 const normalizedSearch = computed(() => searchQuery.value.trim().toLocaleLowerCase())
 const tableColumns = [
-  { title: '主机名称', key: 'name', width: 210 },
-  { title: '连接信息', key: 'connection', width: 220 },
-  { title: '所属分组', key: 'groups', width: 220 },
-  { title: '主机能力', key: 'capabilities', width: 180 },
-  { title: '关联集群', key: 'cluster', width: 200 },
-  { title: '架构', key: 'architecture', width: 86 },
-  { title: '状态', key: 'status', width: 126 },
-  { title: '更新时间', key: 'updated_at', width: 170 },
-  { title: '操作', key: 'actions', fixed: 'right' as const, width: 190 },
+  { title: '主机名称', key: 'name', width: 190 },
+  { title: '连接信息', key: 'connection', width: 180 },
+  { title: '系统资源', key: 'resources', width: 240 },
+  { title: '所属分组', key: 'groups', width: 150 },
+  { title: '主机能力', key: 'capabilities', width: 120 },
+  { title: '关联集群', key: 'cluster', width: 180 },
+  { title: '状态', key: 'status', width: 140 },
+  { title: '操作', key: 'actions', fixed: 'right' as const, width: 170 },
 ]
 
 const selectedEnvironmentSummary = computed(() => {
@@ -224,16 +229,11 @@ function syncRouteState() {
       ? requestedHost
       : undefined
     selectedID.value = host?.id || ''
-    resourceHostID.value = host?.id || ''
+    resourceHostID.value = requested || ''
     resourceNode.value = requestedNode || 'overview'
     if (host) selectedGroupKey.value = 'all'
     detailTab.value = 'resources'
     detailOpen.value = true
-    if (requested && requested !== host?.id) {
-      const query = { ...route.query }
-      delete query.host
-      void router.replace({ path: route.path, query })
-    }
     return
   }
   const host = hosts.value.find(item => item.id === requested)
@@ -261,15 +261,24 @@ function syncRouteState() {
 
 async function refresh() {
   if (loading.value) return
+  const read = ++inventoryRead
+  const context = hostReadContext()
+  statusRead += 1
+  statusController?.abort()
+  statusRefreshing = false
+  inventoryController?.abort()
+  inventoryController = new AbortController()
+  const signal = inventoryController.signal
   loading.value = true
   try {
     const [hostResult, environmentResult, clusterResult] = await Promise.allSettled([
-      canReadHosts.value ? listHosts() : Promise.resolve([]),
-      canReadGroups.value ? listEnvironments() : Promise.resolve([]),
-      canReadClusters.value ? client.get<{ clusters: ClusterOption[] }>('/kubernetes/clusters').then(response => response.data.clusters ?? []) : Promise.resolve([]),
+      canReadHosts.value ? listHosts(signal) : Promise.resolve([]),
+      canReadGroups.value ? listEnvironments(signal) : Promise.resolve([]),
+      canReadClusters.value ? client.get<{ clusters: ClusterOption[] }>('/kubernetes/clusters', { signal }).then(response => response.data.clusters ?? []) : Promise.resolve([]),
     ])
-    if (!mounted) return
+    if (!mounted || read !== inventoryRead || context !== hostReadContext()) return
     hosts.value = hostResult.status === 'fulfilled' ? hostResult.value : []
+    resourceRevision.value += 1
     hostLoadError.value = hostResult.status === 'rejected' ? apiErrorMessage(hostResult.reason) : ''
     environments.value = environmentResult.status === 'fulfilled' ? environmentResult.value : []
     environmentLoadError.value = environmentResult.status === 'rejected' ? apiErrorMessage(environmentResult.reason) : ''
@@ -285,9 +294,9 @@ async function refresh() {
     const error = hostLoadError.value || clusterLoadError.value || environmentLoadError.value
     if (error) message.error(error)
   } catch (error) {
-    message.error(apiErrorMessage(error))
+    if (mounted && read === inventoryRead && context === hostReadContext()) message.error(apiErrorMessage(error))
   } finally {
-    loading.value = false
+    if (mounted && read === inventoryRead) loading.value = false
   }
 }
 
@@ -296,8 +305,14 @@ async function refreshStatuses() {
   if (!canReadHosts.value || document.hidden || loading.value || statusRefreshing || now - lastStatusRefreshAt < statusRefreshDeduplicationWindow) return
   statusRefreshing = true
   lastStatusRefreshAt = now
+  const read = ++statusRead
+  const context = hostReadContext()
+  statusController?.abort()
+  statusController = new AbortController()
   try {
-    const merged = mergeHostStatuses(hosts.value, await listHostStatuses())
+    const statuses = await listHostStatuses(statusController.signal)
+    if (!mounted || read !== statusRead || context !== hostReadContext() || !canReadHosts.value) return
+    const merged = mergeHostStatuses(hosts.value, statuses)
     if (!merged) {
       await refresh()
       return
@@ -306,10 +321,11 @@ async function refreshStatuses() {
     syncRouteState()
     statusErrorShown = false
   } catch (error) {
+    if (!mounted || read !== statusRead || context !== hostReadContext()) return
     if (!statusErrorShown) message.error(apiErrorMessage(error))
     statusErrorShown = true
   } finally {
-    statusRefreshing = false
+    if (mounted && read === statusRead) statusRefreshing = false
   }
 }
 
@@ -329,6 +345,11 @@ async function hostSaved() {
 
 function provisionContext() {
   return JSON.stringify([auth.user?.id??'',auth.user?.project_id??'',typeof localStorage==='undefined'?'':localStorage.getItem('edo.project')??'',auth.user?.is_superuser??false,[...(auth.user?.permissions??[])].sort(),route.path,route.query.view??'',route.query.cluster??''])
+}
+
+function hostReadContext() {
+  return JSON.stringify([auth.user?.id, auth.user?.project_id, auth.user?.department_id, auth.user?.is_superuser,
+    [...(auth.user?.permissions ?? [])].sort(), typeof localStorage === 'undefined' ? '' : localStorage.getItem('edo.project')])
 }
 
 async function clusterCreated(cluster: Pick<ClusterOption, 'id'>) {
@@ -447,7 +468,10 @@ async function toggle(host: InfrastructureHost) {
 }
 
 function openRuntime(host: InfrastructureHost, kind: 'docker' | 'kubernetes') {
+  const current = hosts.value.find(item => item.id === host.id)
+  if (hostLoadError.value || !current?.is_active || !host.is_active || !canReadResources.value) return
   const capability = capabilityOf(host, kind)
+  if (capability?.runtime_id !== capabilityOf(current, kind)?.runtime_id) return
   if (!capability?.runtime_id) {
     message.info(kind === 'docker' ? '该主机尚未建立 Docker 运行时' : '该主机尚未关联 Kubernetes 集群')
     return
@@ -673,6 +697,25 @@ watch(() => route.query.create, value => {
   void router.replace({ path: route.path, query })
 }, { immediate: true })
 watch(() => [route.query.host, route.query.view, route.query.node], syncRouteState)
+watch(hostReadContext, () => {
+  inventoryRead += 1
+  statusRead += 1
+  inventoryController?.abort()
+  statusController?.abort()
+  loading.value = false
+  statusRefreshing = false
+  initialized = false
+  hosts.value = []
+  environments.value = []
+  clusters.value = []
+  selectedID.value = ''
+  resourceHostID.value = ''
+  detailOpen.value = false
+  relationOpen.value = false
+  drawerOpen.value = false
+  groupDrawerOpen.value = false
+  if (mounted) void refresh()
+})
 
 onMounted(() => {
   lastStatusRefreshAt = Date.now()
@@ -684,6 +727,10 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   mounted = false
+  inventoryRead += 1
+  statusRead += 1
+  inventoryController?.abort()
+  statusController?.abort()
   if (statusTimer !== undefined) window.clearInterval(statusTimer)
   document.removeEventListener('visibilitychange', refreshVisibleStatuses)
   window.removeEventListener('focus', refreshVisibleStatuses)
@@ -691,7 +738,7 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <section>
+  <section class="host-page">
     <PageToolbar :title="activeWorkspace === 'clusters' ? '集群' : '主机'" description="">
       <a-button v-if="activeWorkspace === 'hosts' && canReadGroups && auth.canAny(['deployment.create'])" @click="createGroup"><Plus :size="15" />新建主机分组</a-button>
       <a-button v-if="activeWorkspace === 'hosts' && canReadResources" @click="openAllResources"><Container :size="15" />运行资源</a-button>
@@ -713,7 +760,7 @@ onBeforeUnmount(() => {
             <small>显示 {{ filteredHosts.length }} / {{ hosts.length }} 台主机</small>
           </div>
           <div class="table-filters">
-            <a-select v-if="canReadGroups" :value="selectedGroupKey" :options="[{ value: 'all', label: '全部分组' }, ...hostGroups.map(item => ({ value: item.id, label: item.name }))]" style="min-width:170px" @change="selectGroup" />
+            <label v-if="canReadGroups" class="host-group-filter"><span class="visually-hidden">主机分组</span><select :value="selectedGroupKey" aria-label="主机分组" @change="selectGroup(($event.target as HTMLSelectElement).value)"><option value="all">全部分组</option><option v-for="group in hostGroups" :key="group.id" :value="group.id">{{ group.name }}</option></select></label>
             <a-dropdown v-if="selectedGroup && auth.canAny(['deployment.update', 'deployment.delete'])" :trigger="['click']"><a-button size="small">分组操作<MoreHorizontal :size="14" /></a-button><template #overlay><a-menu @click="handleGroupAction(selectedGroup!, String($event.key))"><a-menu-item v-if="auth.canAny(['deployment.update'])" key="details">编辑信息</a-menu-item><a-menu-item v-if="auth.canAny(['deployment.update'])" key="hosts">调整主机</a-menu-item><a-menu-item v-if="auth.canAny(['deployment.update'])" key="toggle">{{ selectedGroup.is_active ? '停用分组' : '启用分组' }}</a-menu-item><a-menu-item v-if="auth.canAny(['deployment.delete'])" key="delete" danger>删除分组</a-menu-item></a-menu></template></a-dropdown>
             <a-input v-model:value="searchQuery" allow-clear placeholder="搜索名称、地址、分组或集群" class="host-search" aria-label="搜索主机">
               <template #prefix><Search :size="15" /></template>
@@ -738,8 +785,8 @@ onBeforeUnmount(() => {
           :columns="tableColumns"
           :data-source="filteredHosts"
           :loading="loading"
-          :pagination="hostPagination" @change="changeHostPage"
-          :scroll="{ x: 1560 }"
+          :pagination="{ ...hostPagination, showSizeChanger: false }" @change="changeHostPage"
+          :scroll="{ x: 1370 }"
           row-key="id"
           size="middle"
           class="host-table resource-list-table"
@@ -748,7 +795,7 @@ onBeforeUnmount(() => {
             <template v-if="column.key === 'name'">
               <button type="button" class="host-name" @click="openDetails(record)">
                 <span class="host-icon" :class="{ inactive: !record.is_active }"><Server :size="18" /></span>
-                <span><strong>{{ record.name }}</strong><small>{{ record.is_builtin ? '本地主机' : 'SSH 主机' }}</small></span>
+                <span><strong>{{ record.name }}</strong><small>{{ record.is_builtin ? '本地主机' : 'SSH 主机' }}<span v-if="record.architecture"> · {{ record.architecture.toUpperCase() }}</span></small></span>
               </button>
             </template>
             <template v-else-if="column.key === 'connection'">
@@ -756,6 +803,9 @@ onBeforeUnmount(() => {
                 <strong>{{ record.is_builtin ? '本地' : `${record.address}:${record.ssh_port}` }}</strong>
                 <small>{{ record.is_builtin ? '当前 EDO 运行环境' : `SSH 用户：${record.ssh_username}` }}</small>
               </div>
+            </template>
+            <template v-else-if="column.key === 'resources'">
+              <HostResourceSummary :host="record" :revision="resourceRevision" />
             </template>
             <template v-else-if="column.key === 'groups'">
               <span v-if="!canReadGroups" class="muted-text">无环境查看权限</span>
@@ -766,9 +816,10 @@ onBeforeUnmount(() => {
             </template>
             <template v-else-if="column.key === 'capabilities'">
               <div v-if="record.capabilities.length" class="capability-icons">
-                <span v-for="capability in record.capabilities" :key="capability.kind" :class="capability.status" :title="`${capabilityName(capability.kind)}：${capabilityDescription(record, capability.kind)}`">
-                  <RuntimeBrandIcon :kind="capability.kind" />
-                </span>
+                <template v-for="capability in record.capabilities" :key="capability.kind">
+                  <button v-if="capability.kind === 'docker'" type="button" class="capability-shortcut" :class="capability.status" :disabled="!canReadResources || !record.is_active || !capability.runtime_id || Boolean(hostLoadError)" :aria-label="`查看 ${record.name} 的 Docker 容器`" :title="`Docker：${capabilityDescription(record, capability.kind)}`" @click="openRuntime(record, 'docker')"><RuntimeBrandIcon kind="docker" /></button>
+                  <span v-else :class="capability.status" :title="`${capabilityName(capability.kind)}：${capabilityDescription(record, capability.kind)}`"><RuntimeBrandIcon :kind="capability.kind" /></span>
+                </template>
               </div>
               <span v-else class="muted-text">未配置</span>
             </template>
@@ -798,17 +849,11 @@ onBeforeUnmount(() => {
           </template>
           <template #emptyText><a-empty :description="hostLoadError ? '主机列表加载失败' : '当前筛选条件下没有主机'" /></template>
         </a-table>
+        <label class="host-page-size">每页条数<select :value="hostPagination.pageSize" aria-label="每页条数" @change="changeHostPage({ current: 1, pageSize: Number(($event.target as HTMLSelectElement).value) })"><option v-for="size in [10, 20, 50, 100]" :key="size" :value="size">{{ size }}</option></select></label>
       </main>
     </div>
 
-    <ResourceDetailDrawer v-model:open="detailOpen" class="host-detail-drawer" @close="closeDetails">
-      <template #title>
-        <div class="drawer-title">
-          <component :is="selected ? Server : Container" :size="19" />
-          <span>{{ selected ? selected.name : '全部运行资源' }}</span>
-          <a-tag v-if="selected" :color="selected.is_active ? 'success' : 'default'">{{ selected.is_active ? '已启用' : '已停用' }}</a-tag>
-        </div>
-      </template>
+    <ResourceDetailDrawer v-model:open="detailOpen" class="host-detail-drawer" :title="selected ? selected.name : '运行资源'" :width="detailTab === 'resources' ? 'min(1440px, 96vw)' : 'min(960px, 94vw)'" @close="closeDetails">
       <template v-if="selected && detailTab === 'info'" #actions>
         <a-space>
           <a-button v-if="auth.canAny(['cluster.update'])" @click="edit(selected)"><Pencil :size="14" />编辑</a-button>
@@ -831,7 +876,7 @@ onBeforeUnmount(() => {
         </a-space>
       </template>
 
-      <div v-if="selected && canReadResources" class="detail-view-switch">
+      <div v-if="selected && canReadResources && detailTab === 'info'" class="detail-view-switch">
         <a-segmented
           :value="detailTab"
           :options="[
@@ -846,6 +891,7 @@ onBeforeUnmount(() => {
         <section class="resource-detail-section">
           <h4>{{ t('resourceList.basic') }}</h4>
           <dl class="resource-facts">
+            <div class="resource-facts-wide"><dt>系统资源</dt><dd><HostResourceSummary :host="selected" :revision="resourceRevision" /></dd></div>
             <div><dt>连接地址</dt><dd>{{ selected.is_builtin ? '本地' : selected.address + ':' + selected.ssh_port }}</dd></div>
             <div><dt>SSH 用户</dt><dd>{{ selected.is_builtin ? '—' : selected.ssh_username }}</dd></div>
             <div><dt>认证方式</dt><dd>{{ selected.is_builtin ? '本地连接' : selected.ssh_auth_type === 'password' ? 'SSH 密码' : 'SSH 私钥' }}</dd></div>
@@ -934,4 +980,32 @@ onBeforeUnmount(() => {
 
 <style scoped>
 .host-cluster-cell{display:flex;align-items:flex-start;flex-direction:column;gap:2px}
+.host-page{--host-link:#3859cc;--host-ready:#167645}
+:global([data-theme="dark"] .host-page){--host-link:#a5b7ff;--host-ready:#6cdaa5}
+.host-page .infrastructure-tabs>a.active,.host-page .host-cluster-link{color:var(--host-link)}
+.host-page .runtime-state.ready{color:var(--host-ready)}
+.host-page :deep(.host-node-roles .ant-tag-processing){color:var(--host-link)}
+.host-workspace :deep(.ant-btn-primary){background:#4057d6;border-color:#4057d6;color:#fff}
+.host-group-filter{display:flex;min-width:150px;max-width:100%;align-items:center}
+.host-group-filter select,.host-page-size select{min-height:32px;max-width:100%;padding:4px 28px 4px 10px;border:1px solid var(--edo-border);border-radius:6px;background:var(--edo-surface);color:var(--edo-text);font:inherit;font-size:13px}
+.host-group-filter select{width:100%}
+.host-group-filter select:focus-visible,.host-page-size select:focus-visible{outline:2px solid var(--edo-primary);outline-offset:2px}
+.host-page-size{display:flex;justify-content:flex-end;align-items:center;gap:10px;padding:0 16px 14px;color:var(--edo-muted);font-size:12px}
+.host-table :deep(.ant-table-thead>tr>th){background:var(--edo-surface-soft);color:var(--edo-text);border-right:1px solid var(--edo-border)}
+.host-table :deep(.ant-table-tbody>tr>td){border-right:1px solid var(--edo-border)}
+.host-table :deep(.ant-table-tbody>tr:last-child>td){border-bottom:1px solid var(--edo-border)}
+.host-name strong{white-space:normal;overflow-wrap:anywhere}
+.visually-hidden{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
+.capability-icons>.capability-shortcut{position:relative;display:grid;width:34px;height:34px;place-items:center;padding:0;border:0;border-radius:6px;background:transparent;cursor:pointer;transition:background-color .15s}
+.capability-icons>.capability-shortcut:hover:not(:disabled){background:var(--edo-primary-soft)}
+.capability-icons>.capability-shortcut:focus-visible{outline:2px solid var(--edo-primary);outline-offset:3px}
+.capability-icons>.capability-shortcut:disabled{opacity:.48;cursor:not-allowed;background:transparent}
+.capability-shortcut :deep(svg){fill:#2496ed}
+.capability-shortcut::after{position:absolute;right:2px;bottom:2px;width:6px;height:6px;border:1px solid var(--edo-surface);border-radius:50%;background:var(--edo-muted);content:''}
+.capability-shortcut.ready::after{background:var(--edo-success,#28b66e)}
+.capability-shortcut.unreachable::after{background:var(--edo-error,#ef5656)}
+.capability-shortcut.unchecked::after{background:var(--edo-warning,#d99b25)}
+.host-detail-drawer :deep(.resource-detail-content){padding:16px 20px}
+@media(prefers-reduced-motion:reduce){.capability-icons>.capability-shortcut{transition:none}}
+@media(max-width:640px){.host-detail-drawer :deep(.resource-detail-content){padding:12px}}
 </style>

@@ -171,6 +171,7 @@ type Service struct {
 	runtimeProbes       map[string]struct{}
 	runtimeProbeSlots   chan struct{}
 	localRuntimeProbe   bool
+	resources           resourceCache
 }
 
 func NewService(db *gorm.DB, secrets *secret.Manager, docker dockerProbe, kubernetes kubernetesProbe) *Service {

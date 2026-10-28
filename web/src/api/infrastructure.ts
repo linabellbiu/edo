@@ -87,13 +87,13 @@ export interface InfrastructureEnvironment {
   updated_at?: string
 }
 
-export async function listHosts(): Promise<InfrastructureHost[]> {
-  const response = await client.get<{ hosts: InfrastructureHost[] }>('/hosts')
+export async function listHosts(signal?: AbortSignal): Promise<InfrastructureHost[]> {
+  const response = await client.get<{ hosts: InfrastructureHost[] }>('/hosts', { signal })
   return response.data.hosts ?? []
 }
 
-export async function listHostStatuses(): Promise<InfrastructureHostStatus[]> {
-  const response = await client.get<{ hosts: InfrastructureHostStatus[] }>('/hosts/statuses')
+export async function listHostStatuses(signal?: AbortSignal): Promise<InfrastructureHostStatus[]> {
+  const response = await client.get<{ hosts: InfrastructureHostStatus[] }>('/hosts/statuses', { signal })
   return response.data.hosts ?? []
 }
 
@@ -110,8 +110,8 @@ export function mergeHostStatuses(
   })
 }
 
-export async function listEnvironments(): Promise<InfrastructureEnvironment[]> {
-  const response = await client.get<{ environments: InfrastructureEnvironment[] }>('/environments')
+export async function listEnvironments(signal?: AbortSignal): Promise<InfrastructureEnvironment[]> {
+  const response = await client.get<{ environments: InfrastructureEnvironment[] }>('/environments', { signal })
   return response.data.environments ?? []
 }
 

@@ -115,6 +115,20 @@ func (h hostHandler) get(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"host": toHostResponse(*current)})
 }
 
+func (h hostHandler) resources(c *gin.Context) {
+	if h.service == nil {
+		h.logger.Error("主机资源服务未初始化", "operation", "host_resources", "request_id", requestIDFrom(c))
+		writeError(c, http.StatusServiceUnavailable, "host_resources_unavailable", "主机系统资源暂不可用")
+		return
+	}
+	result, err := h.service.Resources(c.Request.Context(), c.Param("id"))
+	if err != nil {
+		h.writeError(c, "host_resources", err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"resources": result})
+}
+
 func (h hostHandler) ping(c *gin.Context) {
 	capability := model.HostCapabilityKind(strings.TrimSpace(c.Query("capability")))
 	if capability != "" && capability != model.HostCapabilitySSH && capability != model.HostCapabilityDocker &&
