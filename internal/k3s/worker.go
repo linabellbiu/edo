@@ -54,6 +54,10 @@ func (s *Service) recoverExpired(ctx context.Context) error {
 		return err
 	}
 	for _, record := range records {
+		interrupted := "安装进程已中断，请先检查主机上的实际安装状态，再重新操作。"
+		if record.Action == "uninstall" {
+			interrupted = "卸载进程已中断，实际状态未知，请保留现场并检查，不会自动重试。"
+		}
 		err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 			query := tx.Model(&model.K3sInstallation{}).Where("uuid = ? AND status = ?", record.ID, record.Status)
 			if record.Status == "running" {
@@ -61,11 +65,14 @@ func (s *Service) recoverExpired(ctx context.Context) error {
 			} else {
 				query = query.Where("updated_at < ?", now.Add(-executionTimeout))
 			}
-			updated := query.Updates(map[string]any{"status": "failed", "error_message": "安装进程已中断，请先检查主机上的实际安装状态，再重新操作。", "finished_at": now, "updated_at": now, "lease_owner": "", "lease_expires_at": nil})
+			updated := query.Updates(map[string]any{"status": "failed", "error_message": interrupted, "finished_at": now, "updated_at": now, "lease_owner": "", "lease_expires_at": nil})
 			if updated.Error != nil {
 				return updated.Error
 			}
 			if updated.RowsAffected == 0 {
+				return nil
+			}
+			if record.Action == "uninstall" && uninstallDestructiveStage(record.Hosts) {
 				return nil
 			}
 			return tx.Where("installation_id = ?", record.ID).Delete(&model.K3sInstallationHostLock{}).Error
@@ -102,13 +109,21 @@ func (s *Service) claim(ctx context.Context) (*model.K3sInstallation, error) {
 }
 
 func (s *Service) runInstallation(parent context.Context, record model.K3sInstallation) {
-	ctx, cancel := context.WithTimeout(parent, executionTimeout)
+	timeout := executionTimeout
+	if record.Action == "uninstall" {
+		timeout = uninstallTimeout
+	}
+	ctx, cancel := context.WithTimeout(parent, timeout)
 	defer cancel()
 	// Scope is reconstructed from the saved project plus a fresh actor lookup;
 	// no administrator flag from a browser request is trusted by the worker.
 	var actor model.User
 	if err := s.db.WithContext(ctx).First(&actor, "uuid = ?", record.CreatedBy).Error; err != nil {
-		s.finish(parent, record, ErrPermission)
+		denied := ErrPermission
+		if record.Action == "uninstall" {
+			denied = ErrUninstallPermission
+		}
+		s.finish(parent, record, denied)
 		return
 	}
 	ctx = database.WithDepartmentScope(ctx, database.DepartmentScope{ProjectID: record.ProjectID, DepartmentID: record.DepartmentID, UserID: record.CreatedBy, AllDepartments: actor.IsSuperuser})
@@ -134,7 +149,11 @@ func (s *Service) runInstallation(parent context.Context, record model.K3sInstal
 					if ctx.Err() != nil {
 						return
 					}
-					heartbeatFailure <- installationError("guard", err)
+					stage := "guard"
+					if action == "uninstall" {
+						stage = "uninstall_guard"
+					}
+					heartbeatFailure <- installationError(stage, err)
 					cancel()
 					return
 				}
@@ -178,6 +197,14 @@ func (s *Service) finish(ctx context.Context, record model.K3sInstallation, err 
 	if err != nil {
 		status = "failed"
 		message = safeFailure(err)
+		if record.Action == "uninstall" {
+			if errors.Is(err, context.Canceled) {
+				message = "卸载连接已中断，实际状态未知，请保留现场并检查，不会自动重试。"
+			}
+			if errors.Is(err, context.DeadlineExceeded) {
+				message = "卸载超时，实际状态未知，请保留现场并检查，不会自动重试。"
+			}
+		}
 		attributes := []any{"operation", "k3s_installation", "installation_id", record.ID, "err", err}
 		var failure *installationFailure
 		if errors.As(err, &failure) {
@@ -186,7 +213,7 @@ func (s *Service) finish(ctx context.Context, record model.K3sInstallation, err 
 				attributes = append(attributes, "exit_code", failure.code)
 			}
 		}
-		slog.ErrorContext(ctx, "K3s 安装任务失败", attributes...)
+		slog.ErrorContext(ctx, "K3s 主机任务失败", append(attributes, "action", record.Action)...)
 		var hosts []Host
 		_ = json.Unmarshal(record.Hosts, &hosts)
 		for index := range hosts {
@@ -208,7 +235,11 @@ func (s *Service) finish(ctx context.Context, record model.K3sInstallation, err 
 		}
 		encoded, _ := json.Marshal(hosts)
 		record.Hosts = datatypes.JSON(encoded)
-		record.Logs = appendInstallationLog(record.Logs, time.Now().Format("15:04:05")+" 安装未完成："+message+"\n")
+		operation := "安装"
+		if record.Action == "uninstall" {
+			operation = "卸载"
+		}
+		record.Logs = appendInstallationLog(record.Logs, time.Now().Format("15:04:05")+" "+operation+"未完成："+message+"\n")
 	}
 	updates := map[string]any{"status": status, "error_message": message, "finished_at": now, "updated_at": now, "lease_owner": "", "lease_expires_at": nil, "cluster_id": record.ClusterID, "logs": record.Logs, "hosts": record.Hosts}
 	if err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
@@ -217,6 +248,10 @@ func (s *Service) finish(ctx context.Context, record model.K3sInstallation, err 
 			return updated.Error
 		}
 		if updated.RowsAffected == 0 {
+			return nil
+		}
+		// SSH 断开不能证明官方 sudo 子进程已退出；未知破坏阶段保留永久互斥。
+		if status == "failed" && record.Action == "uninstall" && uninstallDestructiveStage(record.Hosts) {
 			return nil
 		}
 		return tx.Where("installation_id = ?", record.ID).Delete(&model.K3sInstallationHostLock{}).Error
@@ -233,7 +268,7 @@ func safeFailure(err error) string {
 	if errors.Is(err, ErrPreflightFailed) {
 		return preflightFailureMessage(err)
 	}
-	for _, safe := range []error{ErrPermission, ErrHostChanged, ErrTargetVersionChanged, ErrPreflightRequired, ErrHostBusy, ErrExistingInstallation, ErrRemote, ErrReadiness, ErrInvalidInput, kube.ErrJoinUnsupported} {
+	for _, safe := range []error{ErrUninstallPermission, ErrUninstallUnsupported, ErrUninstallChanged, ErrUninstallConfirmation, ErrUninstallIncomplete, ErrPermission, ErrHostChanged, ErrTargetVersionChanged, ErrPreflightRequired, ErrHostBusy, ErrExistingInstallation, ErrRemote, ErrReadiness, ErrInvalidInput, kube.ErrJoinUnsupported} {
 		if errors.Is(err, safe) {
 			return safe.Error()
 		}
@@ -286,6 +321,9 @@ func (s *Service) perform(ctx context.Context, record *model.K3sInstallation) er
 	snapshot, err := s.decode(*record)
 	if err != nil {
 		return err
+	}
+	if record.Action == "uninstall" {
+		return s.performUninstall(ctx, record, snapshot)
 	}
 	if err := s.recheckRuntime(ctx, *record, snapshot); err != nil {
 		return err

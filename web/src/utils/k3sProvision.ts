@@ -42,7 +42,8 @@ export function k3sInstallationRunning(installation?: K3sInstallation) {
   return installation?.status === 'pending' || installation?.status === 'running'
 }
 
-export function k3sInstallationLabel(status?: K3sInstallation['status']) {
+export function k3sInstallationLabel(status?: K3sInstallation['status'], action?: K3sInstallation['action']) {
+  if(action==='uninstall')return ({planned:'待确认',pending:'等待执行',running:'正在卸载',succeeded:'卸载完成',failed:'卸载失败',interrupted:'执行中断'} as const)[status??'pending']
   return ({planned:'待确认',pending:'等待执行',running:'正在安装',succeeded:'安装完成',failed:'安装失败',interrupted:'执行中断'} as const)[status ?? 'pending']
 }
 
@@ -64,8 +65,10 @@ const installationStages: Record<string,string> = {
   component_coredns:'等待 CoreDNS 就绪','component_metrics-server':'等待 Metrics Server 就绪','component_local-path-provisioner':'等待本地存储组件就绪',
   k3d_tool:'准备 k3d 工具',k3d_create:'创建 k3d 集群',k3d_resources:'核验 k3d 资源',
 }
+const uninstallStages:Record<string,string>={uninstall_guard:'核对卸载保护',uninstall:'执行官方卸载脚本',uninstall_verify:'核验卸载结果'}
 
-export function k3sStageLabel(stage?: string) {
+export function k3sStageLabel(stage?: string, action?: K3sInstallation['action']) {
+  if(action==='uninstall')return stage?uninstallStages[stage]||'执行卸载步骤':''
   return stage ? installationStages[stage] || '执行安装步骤' : ''
 }
 
@@ -88,8 +91,9 @@ export function k3sInstallationLogView(installation?: K3sInstallation) {
   return {text:new TextDecoder().decode(bytes.subarray(start)).replace(/\x1b\[[0-?]*[ -/]*[@-~]/g,'').replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g,''),truncated}
 }
 
-export function k3sHostStatusLabel(status?: string) {
+export function k3sHostStatusLabel(status?: string, action?: K3sInstallation['action']) {
   if (!status) return '等待执行'
+  if(action==='uninstall'&&status==='installing')return '卸载中'
   return ({pending:'等待执行',checking:'检查中',ready:'检查通过',installing:'安装中',running:'执行中',succeeded:'已完成',failed:'失败',skipped:'已跳过',not_started:'未开始'} as Record<string,string>)[status] ?? '状态未知'
 }
 

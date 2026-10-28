@@ -21,6 +21,7 @@ import (
 
 // 只接受代码内登记的阶段，安装器输出和命令正文均不进入错误或任务日志。
 var installationStages = map[string]string{
+	"uninstall_guard": "卸载目标复核", "uninstall": "官方卸载脚本", "uninstall_verify": "卸载结果验证",
 	"guard": "安装前检查", "preflight": "主机环境检查", "download": "下载安装器",
 	"configuration": "写入安装配置", "installer": "官方安装器", "version": "安装版本校验",
 	"service": "系统服务校验", "api": "API 就绪校验", "components": "系统组件就绪校验",
@@ -50,6 +51,15 @@ func (e *installationFailure) Error() string {
 	}
 	if errors.Is(e.cause, ErrPermission) {
 		return name + "失败，安装权限已失效或集群拒绝访问。"
+	}
+	if errors.Is(e.cause, ErrUninstallPermission) {
+		return name + "失败，卸载权限已失效。"
+	}
+	if errors.Is(e.cause, ErrUninstallChanged) {
+		return name + "失败，卸载目标或官方脚本已变化。"
+	}
+	if errors.Is(e.cause, ErrUninstallIncomplete) {
+		return ErrUninstallIncomplete.Error()
 	}
 	if errors.Is(e.cause, ErrHostChanged) {
 		return name + "失败，安装目标身份或连接已变化。"

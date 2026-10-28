@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/url"
 	"regexp"
@@ -23,6 +24,7 @@ import (
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 
+	"edo/internal/access"
 	"edo/internal/config"
 	"edo/internal/database"
 	"edo/internal/hostcredential"
@@ -39,6 +41,7 @@ const executionTimeout = 45 * time.Minute
 var validName = regexp.MustCompile(`^[\p{L}\p{N}][\p{L}\p{N}_. -]{1,127}$`)
 
 type savedInput struct {
+	Uninstall              *savedUninstall         `json:"uninstall,omitempty"`
 	Input                  Input                   `json:"input"`
 	HostDigests            map[string]string       `json:"host_digests"`
 	AuthVersion            uint64                  `json:"auth_version"`
@@ -89,16 +92,28 @@ func (s *Service) WithTransport(transport Transport) *Service {
 }
 
 func (s *Service) authorize(ctx context.Context, actorID, action string) (*model.User, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if action == "uninstall" {
+		return s.authorizeUninstall(ctx, actorID)
+	}
 	scope, ok := database.DepartmentScopeFromContext(ctx)
 	if !ok || scope.ProjectID == "" || scope.DepartmentID == "" || (scope.UserID != "" && scope.UserID != actorID) || s.authorizer == nil {
 		return nil, ErrPermission
 	}
 	var actor model.User
 	if err := s.db.WithContext(ctx).First(&actor, "uuid = ?", actorID).Error; err != nil || !actor.IsActive {
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
 		return nil, ErrPermission
 	}
 	var project model.Project
 	if err := s.db.WithContext(ctx).First(&project, "uuid = ?", scope.ProjectID).Error; err != nil || !project.IsActive || project.DepartmentID != scope.DepartmentID {
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
 		return nil, ErrPermission
 	}
 	if !actor.IsSuperuser {
@@ -107,9 +122,21 @@ func (s *Service) authorize(ctx context.Context, actorID, action string) (*model
 		}
 		var count int64
 		if err := s.db.WithContext(ctx).Model(&model.ProjectMember{}).Where("project_id = ? AND user_id = ?", scope.ProjectID, actor.ID).Count(&count).Error; err != nil || count == 0 {
+			if ctx.Err() != nil {
+				return nil, ctx.Err()
+			}
 			return nil, ErrPermission
 		}
 	}
+	fresh, err := access.FreshProjectPermissions(s.db, ctx, actorID, scope.ProjectID)
+	if err != nil {
+		slog.WarnContext(ctx, "复核 K3s 安装当前项目权限失败", "operation", "k3s_authorize_fresh", "actor_id", actorID, "err", err)
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		return nil, ErrPermission
+	}
+	actor = fresh.User
 	permissions := []string{"cluster.execute", "cluster.update"}
 	if action == "create" {
 		permissions = append(permissions, "cluster.create")
@@ -120,7 +147,10 @@ func (s *Service) authorize(ctx context.Context, actorID, action string) (*model
 	}
 	for _, permission := range permissions {
 		allowed, err := s.authorizer.HasPermission(ctx, &actor, permission)
-		if err != nil || !allowed {
+		if err != nil || !allowed || !fresh.Permissions[permission] {
+			if ctx.Err() != nil {
+				return nil, ctx.Err()
+			}
 			return nil, ErrPermission
 		}
 	}
@@ -128,9 +158,12 @@ func (s *Service) authorize(ctx context.Context, actorID, action string) (*model
 	for _, permission := range []string{"cluster.read", "deployment.read"} {
 		allowed, err := s.authorizer.HasPermission(ctx, &actor, permission)
 		if err != nil {
+			if ctx.Err() != nil {
+				return nil, ctx.Err()
+			}
 			return nil, ErrPermission
 		}
-		canRead = canRead || allowed
+		canRead = canRead || allowed && fresh.Permissions[permission]
 	}
 	if !canRead {
 		return nil, ErrPermission
@@ -152,6 +185,18 @@ func (s *Service) authorizeNativeNodes(ctx context.Context, actor *model.User, i
 	}
 	allowed, err := s.authorizer.HasPermission(ctx, actor, "kubernetes.node.create")
 	if err != nil || !allowed {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		return ErrPermission
+	}
+	scope, _ := database.DepartmentScopeFromContext(ctx)
+	fresh, err := access.FreshProjectPermissions(s.db, ctx, actor.ID, scope.ProjectID)
+	if err != nil || !fresh.Permissions["kubernetes.node.create"] {
+		slog.WarnContext(ctx, "复核 K3s 节点创建权限失败", "operation", "k3s_authorize_nodes_fresh", "actor_id", actor.ID, "err", err)
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
 		return ErrPermission
 	}
 	return nil
@@ -538,12 +583,20 @@ func (s *Service) recheckInstallationAuthority(ctx context.Context, actorID, act
 		return err
 	}
 	if actor.AuthVersion != snapshot.AuthVersion {
+		if action == "uninstall" {
+			return ErrUninstallPermission
+		}
 		return ErrPermission
 	}
 	if err := s.authorizeNativeNodes(ctx, actor, snapshot.Input); err != nil {
 		return err
 	}
 	for id, digest := range snapshot.HostDigests {
+		if action != "uninstall" {
+			if err := s.requireNoUncertainUninstall(ctx, id, ""); err != nil {
+				return err
+			}
+		}
 		host, _, err := s.loadHost(ctx, id)
 		if err != nil {
 			return err
@@ -552,12 +605,21 @@ func (s *Service) recheckInstallationAuthority(ctx context.Context, actorID, act
 			return ErrHostChanged
 		}
 	}
+	if action == "uninstall" {
+		return s.recheckUninstallSource(ctx, snapshot)
+	}
 	return nil
 }
 
 func (s *Service) recheck(ctx context.Context, record model.K3sInstallation, snapshot savedInput) error {
 	if err := s.recheckInstallationAuthority(ctx, record.CreatedBy, record.Action, snapshot); err != nil {
 		return err
+	}
+	if record.Action == "uninstall" {
+		if snapshot.Uninstall == nil || snapshot.Uninstall.TaskID != record.ID {
+			return ErrUninstallChanged
+		}
+		return nil
 	}
 	if snapshot.Input.Action == "join" {
 		var current model.KubernetesCluster
@@ -596,6 +658,10 @@ func (s *Service) Execute(ctx context.Context, actorID, planID string) (*Install
 	}
 	if reviewed.Status != "planned" {
 		return nil, ErrPlanConsumed
+	}
+	// 安装提交入口绝不接受卸载计划，避免绕过独立确认与危险权限。
+	if reviewed.Action == "uninstall" {
+		return nil, ErrUninstallConfirmation
 	}
 	if !reviewed.ExpiresAt.After(time.Now().UTC()) {
 		return nil, ErrPlanExpired
@@ -718,7 +784,7 @@ func (s *Service) List(ctx context.Context, clusterID string, limit int, actions
 	}
 	query := s.db.WithContext(ctx).Where("created_by = ? AND project_id = ? AND department_id = ? AND status <> ?", scope.UserID, scope.ProjectID, scope.DepartmentID, "planned")
 	if len(actions) > 0 && actions[0] != "" {
-		if actions[0] != "create" && actions[0] != "join" {
+		if actions[0] != "create" && actions[0] != "join" && actions[0] != "uninstall" {
 			return nil, ErrInvalidInput
 		}
 		query = query.Where("action = ?", actions[0])
@@ -750,6 +816,7 @@ func (s *Service) present(record model.K3sInstallation) *Installation {
 	result := &Installation{ID: record.ID, Action: record.Action, Mode: "native", Name: record.Name, Status: record.Status, ClusterID: record.ClusterID, ExpiresAt: record.ExpiresAt, CreatedAt: record.CreatedAt, StartedAt: record.StartedAt, FinishedAt: record.FinishedAt, Hosts: hosts, Logs: record.Logs, Error: record.ErrorMessage}
 	var preview Plan
 	if json.Unmarshal(record.Preview, &preview) == nil {
+		result.Uninstall = preview.Uninstall
 		result.Sources = preview.Sources
 		if preview.Mode == "k3d" {
 			result.Mode, result.K3d = "k3d", preview.K3d

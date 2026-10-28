@@ -12,20 +12,46 @@ import (
 )
 
 var (
-	ErrInvalidInput         = errors.New("K3s 安装配置无效")
-	ErrPermission           = errors.New("没有执行 K3s 安装的权限，或当前项目权限已变化")
-	ErrNotFound             = errors.New("K3s 安装计划不存在")
-	ErrPlanExpired          = errors.New("安装计划已过期，请重新预览")
-	ErrPlanConsumed         = errors.New("安装计划已执行，请查看任务结果")
-	ErrHostBusy             = errors.New("目标主机或集群正在执行其他安装任务")
-	ErrHostChanged          = errors.New("主机连接、集群配置或所属范围已变化，请重新预览")
-	ErrTargetVersionChanged = errors.New("目标集群版本已变化或安装计划缺少版本记录，请重新预览")
-	ErrExistingInstallation = errors.New("主机已有 Kubernetes 安装或配置，请接入现有集群")
-	ErrRemote               = errors.New("主机安装命令执行失败，请检查主机连接和服务日志")
-	ErrReadiness            = errors.New("等待集群节点就绪超时，请检查安装任务、节点状态和集群连接")
-	ErrPreflightFailed      = errors.New("节点前置检查未通过，请处理阻断项后重新检查")
-	ErrPreflightRequired    = errors.New("安装计划缺少当前前置检查，请重新检查并预览")
+	ErrInvalidInput          = errors.New("K3s 安装配置无效")
+	ErrPermission            = errors.New("没有执行 K3s 安装的权限，或当前项目权限已变化")
+	ErrNotFound              = errors.New("K3s 安装计划不存在")
+	ErrPlanExpired           = errors.New("安装计划已过期，请重新预览")
+	ErrPlanConsumed          = errors.New("安装计划已执行，请查看任务结果")
+	ErrHostBusy              = errors.New("目标主机或集群正在执行其他安装任务")
+	ErrHostChanged           = errors.New("主机连接、集群配置或所属范围已变化，请重新预览")
+	ErrTargetVersionChanged  = errors.New("目标集群版本已变化或安装计划缺少版本记录，请重新预览")
+	ErrExistingInstallation  = errors.New("主机已有 Kubernetes 安装或配置，请接入现有集群")
+	ErrRemote                = errors.New("主机安装命令执行失败，请检查主机连接和服务日志")
+	ErrReadiness             = errors.New("等待集群节点就绪超时，请检查安装任务、节点状态和集群连接")
+	ErrPreflightFailed       = errors.New("节点前置检查未通过，请处理阻断项后重新检查")
+	ErrPreflightRequired     = errors.New("安装计划缺少当前前置检查，请重新检查并预览")
+	ErrUninstallPermission   = errors.New("没有执行 K3s 卸载的权限，或当前项目权限已变化")
+	ErrUninstallUnsupported  = errors.New("无法安全确认此原生 K3s 卸载目标，请检查安装来源和主机现场")
+	ErrUninstallChanged      = errors.New("K3s 卸载目标或官方脚本已变化，请重新预览")
+	ErrUninstallConfirmation = errors.New("请输入“确认”后再执行卸载")
+	ErrUninstallIncomplete   = errors.New("K3s 卸载未通过现场验证，请保留现场并检查任务记录，不要直接重试")
 )
+
+type UninstallInput struct {
+	InstallationID string `json:"installation_id"`
+	HostID         string `json:"host_id"`
+}
+
+type UninstallSummary struct {
+	SourceInstallationID string `json:"source_installation_id"`
+	HostID               string `json:"host_id"`
+	Role                 string `json:"role"`
+	ScriptPath           string `json:"script_path"`
+	ServiceName          string `json:"service_name"`
+	DataDir              string `json:"data_dir"`
+}
+
+type UninstallTarget struct {
+	UninstallSummary
+	InstallationName string    `json:"installation_name"`
+	Status           string    `json:"status"`
+	CreatedAt        time.Time `json:"created_at"`
+}
 
 type ValidationError struct{ Message string }
 
@@ -92,6 +118,7 @@ type Host struct {
 }
 
 type Plan struct {
+	Uninstall     *UninstallSummary  `json:"uninstall,omitempty"`
 	ID            string             `json:"id"`
 	Action        string             `json:"action"`
 	Mode          string             `json:"mode"`
@@ -125,22 +152,23 @@ type ServerJoinSummary struct {
 }
 
 type Installation struct {
-	ID         string      `json:"id"`
-	Action     string      `json:"action"`
-	Mode       string      `json:"mode"`
-	K3d        *K3dOptions `json:"k3d,omitempty"`
-	Sources    *Sources    `json:"sources,omitempty"`
-	Name       string      `json:"name"`
-	Status     string      `json:"status"`
-	ClusterID  string      `json:"cluster_id,omitempty"`
-	ExpiresAt  time.Time   `json:"expires_at"`
-	CreatedAt  time.Time   `json:"created_at"`
-	StartedAt  *time.Time  `json:"started_at,omitempty"`
-	FinishedAt *time.Time  `json:"finished_at,omitempty"`
-	Hosts      []Host      `json:"hosts"`
-	Logs       string      `json:"logs"`
-	Error      string      `json:"error,omitempty"`
-	Cluster    *Cluster    `json:"cluster,omitempty"`
+	Uninstall  *UninstallSummary `json:"uninstall,omitempty"`
+	ID         string            `json:"id"`
+	Action     string            `json:"action"`
+	Mode       string            `json:"mode"`
+	K3d        *K3dOptions       `json:"k3d,omitempty"`
+	Sources    *Sources          `json:"sources,omitempty"`
+	Name       string            `json:"name"`
+	Status     string            `json:"status"`
+	ClusterID  string            `json:"cluster_id,omitempty"`
+	ExpiresAt  time.Time         `json:"expires_at"`
+	CreatedAt  time.Time         `json:"created_at"`
+	StartedAt  *time.Time        `json:"started_at,omitempty"`
+	FinishedAt *time.Time        `json:"finished_at,omitempty"`
+	Hosts      []Host            `json:"hosts"`
+	Logs       string            `json:"logs"`
+	Error      string            `json:"error,omitempty"`
+	Cluster    *Cluster          `json:"cluster,omitempty"`
 }
 
 type Authorizer interface {

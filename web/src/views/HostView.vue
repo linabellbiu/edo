@@ -45,6 +45,7 @@ import KubernetesClusterDrawer from '@/components/KubernetesClusterDrawer.vue'
 import ClusterInventory from '@/components/ClusterInventory.vue'
 import KubeHostRoleBadge from '@/components/KubeHostRoleBadge.vue'
 import K3sProvisionDrawer from '@/components/K3sProvisionDrawer.vue'
+import K3sUninstallDrawer from '@/components/K3sUninstallDrawer.vue'
 import type { K3sInstallation } from '@/api/k3s'
 import PageToolbar from '@/components/PageToolbar.vue'
 import RuntimeBrandIcon from '@/components/RuntimeBrandIcon.vue'
@@ -95,6 +96,9 @@ const resourceNode = ref('overview')
 const resourceHostID = ref('')
 const clusterCreateOpen = ref(false)
 const clusterProvisionOpen = ref(false)
+const k3sUninstallOpen = ref(false)
+const k3sUninstallHostID = ref('')
+const k3sUninstallHost = computed(() => hosts.value.find(host => host.id === k3sUninstallHostID.value))
 const editingHost = ref<InfrastructureHost>()
 const groupDrawerOpen = ref(false)
 const groupSaving = ref(false)
@@ -119,6 +123,7 @@ const legacyLocalEnvironmentID = 'edo-local-environment'
 const canReadGroups = computed(() => auth.canAny(['deployment.read']))
 const canReadHosts = computed(() => auth.canAny(['cluster.read', 'deployment.read']))
 const canReadResources = computed(() => auth.canAny(['cluster.read']))
+const canUninstallK3s = computed(() => auth.canAny(['cluster.read']) && auth.canAny(['kubernetes.k3s.uninstall']))
 const canReadClusters = computed(() => auth.canAny(['cluster.read', 'kubernetes.node.read', 'kubernetes.workload.read', 'kubernetes.config.read', 'kubernetes.storage.read', 'kubernetes.network.read']))
 const canManageKubernetes = computed(() => auth.canAny(['kubernetes.node.read', 'kubernetes.workload.read', 'kubernetes.config.read', 'kubernetes.storage.read', 'kubernetes.network.read']))
 const activeWorkspace = computed(() => route.query.view === 'clusters' ? 'clusters' : 'hosts')
@@ -372,6 +377,18 @@ async function clusterProvisionCompleted(installation: K3sInstallation) {
   else await refresh()
 }
 
+function showK3sUninstall(host: InfrastructureHost) {
+  return canUninstallK3s.value && host.mode === 'ssh' && !host.is_builtin
+}
+
+function openK3sUninstall(host: InfrastructureHost) {
+  const current = hosts.value.find(item => item.id === host.id)
+  if (!current || !showK3sUninstall(current) || !current.is_active || hostLoadError.value || !auth.user?.id || auth.user.project_id !== localStorage.getItem('edo.project')) return
+  if (current.address !== host.address || current.ssh_username !== host.ssh_username || current.ssh_port !== host.ssh_port) return
+  k3sUninstallHostID.value = current.id
+  k3sUninstallOpen.value = true
+}
+
 function manageCluster(cluster: InfrastructureCluster) {
   if (canManageKubernetes.value) void router.push({ path: '/kubernetes', query: { cluster: cluster.id, view: 'overview' } })
   else void router.push({ path: '/hosts', query: { view: 'clusters', cluster: cluster.id } })
@@ -552,6 +569,7 @@ function handleHostAction(host: InfrastructureHost, action: string) {
   else if (action === 'edit') edit(host)
   else if (action === 'toggle') void toggle(host)
   else if (action === 'delete') remove(host)
+  else if (action === 'uninstall-k3s') openK3sUninstall(host)
   else if (action === 'docker' || action === 'kubernetes') openRuntime(host, action)
 }
 
@@ -721,6 +739,8 @@ watch(hostReadContext, () => {
   relationOpen.value = false
   drawerOpen.value = false
   groupDrawerOpen.value = false
+  k3sUninstallOpen.value = false
+  k3sUninstallHostID.value = ''
   if (mounted) void refresh()
 })
 
@@ -842,13 +862,14 @@ onBeforeUnmount(() => {
             </template>
             <template v-else-if="column.key === 'updated_at'">{{ formatTime(record.updated_at) }}</template>
             <template v-else-if="column.key === 'actions'">
-              <ResourceRowActions :more="auth.canAny(['cluster.update', 'cluster.delete'])">
+              <ResourceRowActions :more="auth.canAny(['cluster.update', 'cluster.delete']) || showK3sUninstall(record)">
                 <a-button v-if="canReadResources && runtimeCount(record)" type="link" size="small" @click="openHostResources(record)">资源 {{ runtimeCount(record) }}</a-button>
                 <a-button type="link" size="small" @click="openDetails(record)">详情</a-button>
                 <template #more>
                       <a-menu-item v-if="auth.canAny(['cluster.update'])" @click="handleHostAction(record, 'edit')">编辑主机</a-menu-item>
                       <a-menu-item v-if="auth.canAny(['cluster.update']) && !record.is_builtin" :disabled="Boolean(clusterLoadError || hostLoadError)" @click="editHostCluster(record)">关联集群</a-menu-item>
                       <a-menu-item v-if="auth.canAny(['cluster.update']) && !record.is_builtin" @click="handleHostAction(record, 'toggle')">{{ record.is_active ? '停用主机' : '启用主机' }}</a-menu-item>
+                      <a-menu-item v-if="showK3sUninstall(record)" :disabled="!record.is_active || Boolean(hostLoadError)" @click="openK3sUninstall(record)" danger>卸载 K3s</a-menu-item>
                       <a-menu-divider v-if="auth.canAny(['cluster.delete']) && !record.is_builtin" />
                       <a-menu-item v-if="auth.canAny(['cluster.delete']) && !record.is_builtin" @click="handleHostAction(record, 'delete')" danger>删除主机</a-menu-item>
                 </template>
@@ -871,11 +892,12 @@ onBeforeUnmount(() => {
             disabled
             title="内置本地主机不能删除，可按需关闭它的主机能力"
           ><Trash2 :size="14" />删除</a-button>
-          <a-dropdown v-if="(!selected.is_builtin && auth.canAny(['cluster.update', 'cluster.delete']))" placement="bottomRight">
+          <a-dropdown v-if="!selected.is_builtin && (auth.canAny(['cluster.update', 'cluster.delete']) || showK3sUninstall(selected))" placement="bottomRight">
             <a-button>更多<MoreHorizontal :size="14" /></a-button>
             <template #overlay>
               <a-menu @click="handleHostAction(selected, String($event.key))">
                 <a-menu-item v-if="auth.canAny(['cluster.update'])" key="toggle">{{ selected.is_active ? '停用主机' : '启用主机' }}</a-menu-item>
+                <a-menu-item v-if="showK3sUninstall(selected)" key="uninstall-k3s" :disabled="!selected.is_active || Boolean(hostLoadError)" danger>卸载 K3s</a-menu-item>
                 <a-menu-divider v-if="auth.canAny(['cluster.delete'])" />
                 <a-menu-item v-if="auth.canAny(['cluster.delete'])" key="delete" danger>删除主机</a-menu-item>
               </a-menu>
@@ -963,6 +985,7 @@ onBeforeUnmount(() => {
     <HostDrawer v-model:open="drawerOpen" :host="editingHost" :clusters="clusters" :can-test="auth.canAny(['cluster.execute'])" @create-cluster="clusterCreateOpen = true" @saved="hostSaved" />
     <KubernetesClusterDrawer v-model:open="clusterCreateOpen" :hosts="hosts" :clusters="clusters" :can-associate="auth.canAny(['cluster.update']) && canReadHosts && !hostLoadError && !clusterLoadError" :can-test="auth.canAny(['cluster.execute'])" @created="clusterCreated" />
     <K3sProvisionDrawer v-model:open="clusterProvisionOpen" :hosts="hosts" @completed="clusterProvisionCompleted" />
+    <K3sUninstallDrawer v-model:open="k3sUninstallOpen" :host="k3sUninstallHost" @completed="refresh" />
 
     <a-drawer :open="relationOpen" :title="relationHost && clusterForHost(relationHost, clusters) ? '更改关联集群' : '关联集群'" width="min(520px, 100vw)" :mask-closable="!relationSaving" @close="!relationSaving && (relationOpen = false)">
       <div v-if="relationHost" class="host-association-summary"><Server :size="20" /><div><strong>{{ relationHost.name }}</strong><small>{{ relationHost.address }}</small></div></div>

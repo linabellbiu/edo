@@ -5,6 +5,7 @@ export type K3sScope = 'server' | 'agent' | 'installer'
 export type K3sJoinRole = 'agent' | 'server'
 export type K3sInstallMode = 'native' | 'k3d'
 export type K3sDownloadSource = 'official' | 'official_cn'
+export type K3sAction = 'create' | 'join' | 'uninstall'
 export interface K3sInstallSources {
   download_source: K3sDownloadSource
   installer_url: string
@@ -63,6 +64,19 @@ export interface K3sPlanHost {
   command?: string
   config?: string
 }
+export interface K3sUninstallSummary {
+  source_installation_id: string
+  host_id: string
+  role: K3sJoinRole
+  script_path: string
+  service_name: string
+  data_dir: string
+}
+export interface K3sUninstallTarget extends K3sUninstallSummary {
+  installation_name: string
+  status: K3sInstallation['status']
+  created_at?: string
+}
 export interface K3sPreflightCheck {
   id: string
   name: string
@@ -86,7 +100,7 @@ export interface K3sPreflightReport {
 export interface K3sPlan {
   id: string
   expires_at: string
-  action: 'create' | 'join'
+  action: K3sAction
   mode?: K3sInstallMode
   k3d?: K3dConfig
   sources?: K3sInstallSources
@@ -101,6 +115,7 @@ export interface K3sPlan {
   commands?: string[]
   warnings?: string[]
   preflight?: K3sPreflightReport
+  uninstall?: K3sUninstallSummary
 }
 export interface K3sInstallation {
   id: string
@@ -118,8 +133,9 @@ export interface K3sInstallation {
   updated_at?: string
   cluster?: Pick<InfrastructureCluster, 'id' | 'name'> & Partial<InfrastructureCluster>
   cluster_id?: string
-  action?: 'create' | 'join'
+  action?: K3sAction
   name?: string
+  uninstall?: K3sUninstallSummary
   hosts?: Array<{id: string; name: string; address?: string; role?: string; status?: string; message?: string; stage?: string; stage_started_at?: string; progress_updated_at?: string}>
 }
 
@@ -138,6 +154,16 @@ export async function startK3sInstallation(planID: string, signal?: AbortSignal)
 export async function getK3sInstallation(id: string, signal?: AbortSignal) {
   return (await client.get<K3sInstallation>(`/kubernetes/k3s/installations/${encodeURIComponent(id)}`, { signal })).data
 }
-export async function listK3sInstallations(clusterID: string, action: 'create'|'join', signal?: AbortSignal) {
-  return (await client.get<{installations:K3sInstallation[]}>('/kubernetes/k3s/installations', { params:{limit:10,action,...(clusterID?{cluster_id:clusterID}:{})},signal })).data.installations ?? []
+export async function listK3sInstallations(clusterID: string, action: K3sAction, signal?: AbortSignal, hostID = '') {
+  const result=await client.get<{installations:K3sInstallation[]}>('/kubernetes/k3s/installations', { params:{limit:10,action,...(clusterID?{cluster_id:clusterID}:{}),...(hostID?{host_id:hostID}:{})},signal })
+  return action==='uninstall'?result.data.installations:result.data.installations??[]
+}
+export async function listK3sUninstallTargets(hostID: string, signal?: AbortSignal) {
+  return (await client.get<{targets:K3sUninstallTarget[]}>('/kubernetes/k3s/uninstall-targets',{params:{host_id:hostID},signal})).data.targets
+}
+export async function previewK3sUninstallPlan(installationID: string, hostID: string, signal?: AbortSignal) {
+  return (await client.post<K3sPlan>('/kubernetes/k3s/uninstall/plans',{installation_id:installationID,host_id:hostID},{signal,timeout:180_000})).data
+}
+export async function startK3sUninstallation(planID: string, confirmation: string, signal?: AbortSignal) {
+  return (await client.post<K3sInstallation>('/kubernetes/k3s/uninstallations',{plan_id:planID,confirmation},{signal,timeout:180_000})).data
 }

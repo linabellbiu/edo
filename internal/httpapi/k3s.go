@@ -24,12 +24,14 @@ type k3sHandler struct {
 func registerK3sRoutes(protected *gin.RouterGroup, deps Dependencies) {
 	h := k3sHandler{service: deps.K3s, access: deps.Access, logger: deps.Logger}
 	canInstall := requireAnyPermission(deps.Access, deps.Logger, access.PermissionClusterCreate, "kubernetes.node.create")
+	canViewTask := requireAnyPermission(deps.Access, deps.Logger, access.PermissionClusterCreate, "kubernetes.node.create", access.PermissionK3sUninstall)
 	protected.GET("/kubernetes/k3s/options", canInstall, h.options)
 	protected.POST("/kubernetes/k3s/preflight", canInstall, auditAction(deps.Audits, deps.Logger, "kubernetes.k3s.preflight", "host"), h.check)
 	protected.POST("/kubernetes/k3s/plans", canInstall, auditAction(deps.Audits, deps.Logger, "kubernetes.k3s.plan", "k3s_installation"), h.preview)
 	protected.POST("/kubernetes/k3s/installations", canInstall, auditAction(deps.Audits, deps.Logger, "kubernetes.k3s.install", "k3s_installation"), h.execute)
-	protected.GET("/kubernetes/k3s/installations", canInstall, h.list)
-	protected.GET("/kubernetes/k3s/installations/:id", canInstall, h.detail)
+	protected.GET("/kubernetes/k3s/installations", canViewTask, h.list)
+	protected.GET("/kubernetes/k3s/installations/:id", canViewTask, h.detail)
+	registerK3sUninstallRoutes(protected, deps)
 }
 
 func (h k3sHandler) check(c *gin.Context) {
@@ -187,8 +189,25 @@ func (h k3sHandler) list(c *gin.Context) {
 		}
 	}
 	action := c.Query("action")
-	if action != "" && action != "create" && action != "join" {
-		writeError(c, http.StatusBadRequest, "invalid_k3s_action", "请选择创建集群或添加节点")
+	if action != "" && action != "create" && action != "join" && action != "uninstall" {
+		writeError(c, http.StatusBadRequest, "invalid_k3s_action", "请选择有效的集群操作类型")
+		return
+	}
+	if action == "uninstall" {
+		var query struct {
+			HostID string `form:"host_id" binding:"required,max=36"`
+		}
+		if err := c.ShouldBindQuery(&query); err != nil {
+			h.uninstallError(c, "k3s_uninstall_history_bind", errors.Join(k3s.ErrInvalidInput, err))
+			return
+		}
+		actor, _ := currentUser(c)
+		items, err := h.service.ListUninstallations(c.Request.Context(), actor.ID, query.HostID, limit)
+		if err != nil {
+			h.uninstallError(c, "k3s_uninstall_history", err)
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"installations": items})
 		return
 	}
 	items, err := h.service.List(c.Request.Context(), c.Query("cluster_id"), limit, action)
@@ -212,6 +231,10 @@ func (h k3sHandler) detail(c *gin.Context) {
 }
 
 func (h k3sHandler) writeError(c *gin.Context, operation string, err error) {
+	if errors.Is(err, k3s.ErrUninstallPermission) || errors.Is(err, k3s.ErrUninstallUnsupported) || errors.Is(err, k3s.ErrUninstallChanged) || errors.Is(err, k3s.ErrUninstallConfirmation) || errors.Is(err, k3s.ErrUninstallIncomplete) {
+		h.uninstallError(c, operation, err)
+		return
+	}
 	var preflight *k3s.PreflightError
 	if errors.As(err, &preflight) {
 		c.JSON(http.StatusConflict, struct {

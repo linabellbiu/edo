@@ -6,30 +6,31 @@ import { k3sElapsed, k3sHostStatusLabel, k3sInstallationLogView, k3sInstallation
 import { formatDateTime } from '@/utils/time'
 
 const props=defineProps<{installation:K3sInstallation;now:number}>()
+const actionLabel=computed(()=>props.installation.action==='uninstall'?'卸载':'安装')
 const running=computed(()=>k3sInstallationRunning(props.installation))
 const end=computed(()=>running.value?props.now:props.installation.finished_at)
 const elapsed=computed(()=>k3sElapsed(props.installation.started_at,end.value))
 const logs=computed(()=>k3sInstallationLogView(props.installation))
 const viewport=ref<HTMLElement>()
 const hosts=computed(()=>(props.installation.hosts??[]).map(host=>({
-  ...host,stageLabel:k3sStageLabel(host.stage),elapsed:k3sElapsed(host.stage_started_at,running.value&&['running','installing'].includes(host.status??'')?props.now:host.progress_updated_at??props.installation.finished_at),
+  ...host,stageLabel:k3sStageLabel(host.stage,props.installation.action),elapsed:k3sElapsed(host.stage_started_at,running.value&&['running','installing'].includes(host.status??'')?props.now:host.progress_updated_at??props.installation.finished_at),
   waiting:running.value&&['running','installing'].includes(host.status??'')&&Number.isFinite(Date.parse(host.progress_updated_at??''))&&props.now-Date.parse(host.progress_updated_at!)>90_000,
 })))
 function showLatest(){if(viewport.value)viewport.value.scrollTop=viewport.value.scrollHeight}
 </script>
 
 <template>
-  <section class="installation-progress" aria-label="安装任务进度">
+  <section class="installation-progress" :aria-label="`${actionLabel}任务进度`">
     <dl class="progress-times"><div><dt>开始时间</dt><dd>{{ formatDateTime(installation.started_at) }}</dd></div><div><dt>总耗时</dt><dd>{{ elapsed }}</dd></div><div v-if="!running"><dt>结束时间</dt><dd>{{ formatDateTime(installation.finished_at) }}</dd></div></dl>
     <div class="progress-hosts">
-      <article v-for="host in hosts" :key="host.id" :aria-label="`${host.name} 安装进度`">
-        <header><Server :size="16" aria-hidden="true" /><span class="host-identity"><strong>{{ host.name }}</strong><small>{{ host.address }}</small></span><a-tag :color="host.status==='succeeded'?'success':host.status==='failed'?'error':host.status==='installing'||host.status==='running'?'processing':undefined">{{ k3sHostStatusLabel(host.status) }}</a-tag></header>
+      <article v-for="host in hosts" :key="host.id" :aria-label="`${host.name} ${actionLabel}进度`">
+        <header><Server :size="16" aria-hidden="true" /><span class="host-identity"><strong>{{ host.name }}</strong><small>{{ host.address }}</small></span><a-tag :color="host.status==='succeeded'?'success':host.status==='failed'?'error':host.status==='installing'||host.status==='running'?'processing':undefined">{{ k3sHostStatusLabel(host.status,installation.action) }}</a-tag></header>
         <div v-if="host.stageLabel||host.message" class="host-stage"><strong role="status" aria-live="polite">{{ host.stageLabel||host.message }}</strong><span v-if="host.stage_started_at">本阶段 {{ host.elapsed }}</span></div>
         <p v-if="host.message&&host.stageLabel&&host.message!==host.stageLabel">{{ host.message }}</p>
         <div v-if="host.progress_updated_at" class="host-feedback"><span>最近反馈 {{ formatDateTime(host.progress_updated_at) }}</span><span v-if="host.waiting" class="feedback-delayed">暂未收到新反馈</span></div>
       </article>
     </div>
-    <section class="progress-logs"><header><h4>安装日志</h4><a-button size="small" @click="showLatest">查看最新</a-button></header><p v-if="logs.truncated" class="log-limit">仅显示最近 64 KiB 日志</p><pre ref="viewport" role="log" aria-label="安装安全日志" aria-live="off" tabindex="0">{{ logs.text||'等待安装日志…' }}</pre></section>
+    <section class="progress-logs"><header><h4>{{ actionLabel }}日志</h4><a-button size="small" @click="showLatest">查看最新</a-button></header><p v-if="logs.truncated" class="log-limit">仅显示最近 64 KiB 日志</p><pre ref="viewport" role="log" :aria-label="`${actionLabel}安全日志`" aria-live="off" tabindex="0">{{ logs.text||`等待${actionLabel}日志…` }}</pre></section>
   </section>
 </template>
 

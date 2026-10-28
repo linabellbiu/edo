@@ -7,6 +7,8 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -99,6 +101,24 @@ func runTimeoutFixture(args []string) int {
 }
 
 func runChecksumFixture(args []string) int {
+	if len(args) == 0 {
+		data, err := io.ReadAll(os.Stdin)
+		if err != nil {
+			return 1
+		}
+		sum := sha256.Sum256(data)
+		fmt.Printf("%x  -\n", sum)
+		return 0
+	}
+	if len(args) == 2 && args[0] == "--" {
+		data, err := os.ReadFile(args[1])
+		if err != nil {
+			return 1
+		}
+		sum := sha256.Sum256(data)
+		fmt.Printf("%x  %s\n", sum, args[1])
+		return 0
+	}
 	if len(args) != 2 || args[0] != "-c" {
 		return 2
 	}

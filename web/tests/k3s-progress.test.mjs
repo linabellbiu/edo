@@ -80,3 +80,12 @@ test('系统组件阶段与安装器阶段全部用稳定中文名称，不把�
   for(const stage of ['guard','preflight','download','configuration','installer','installer_download','installer_verify','installer_binary','installer_environment','installer_service','installer_start','version','service','api','import','node','association','components','component_coredns','component_metrics-server','component_local-path-provisioner','k3d_tool','k3d_create','k3d_resources'])assert.notEqual(helpers.k3sStageLabel(stage),'执行安装步骤',stage)
   assert.equal(helpers.k3sStageLabel('unknown'),'执行安装步骤');assert.equal(helpers.k3sStageLabel(undefined),'')
 })
+
+test('卸载任务复用进度与安全日志但不显示安装文案，原安装标签保持不变',t=>{
+  const h=mount(t,{...record(),action:'uninstall',logs:'',hosts:[{id:'host-a',name:'目标主机',status:'installing',stage:'untrusted-uninstall-stage'}]})
+  assert.match(h.content(),/卸载中|执行卸载步骤/);assert.match(h.content(),/卸载日志/);assert.match(h.content(),/等待卸载日志/);assert.doesNotMatch(h.content(),/安装|untrusted-uninstall-stage/)
+  assert.equal(walk(h.root).find(n=>n.props.role==='log').props['aria-label'],'卸载安全日志')
+  assert.equal(walk(h.root).find(n=>n.props['aria-label']==='卸载任务进度')?.tag,'section')
+  assert.equal(helpers.k3sInstallationLabel('running','uninstall'),'正在卸载');assert.equal(helpers.k3sInstallationLabel('succeeded','uninstall'),'卸载完成');assert.equal(helpers.k3sInstallationLabel('failed','uninstall'),'卸载失败')
+  assert.equal(helpers.k3sInstallationLabel('running'),'正在安装');assert.equal(helpers.k3sHostStatusLabel('installing'),'安装中')
+})
