@@ -114,6 +114,7 @@ func k3dPrepareToolScript(input Input, installationID string) (string, error) {
 		return "", ErrInvalidInput
 	}
 	script := `set -eu
+printf 'EDO_K3S_STAGE\tk3d_tool\n'
 [ "$(id -u)" = 0 ]
 if ! mkdir -m 700 /run/edo-k3s-install.lock; then printf 'EDO_K3S_BUSY\n'; exit 43; fi
 work=''
@@ -142,6 +143,7 @@ func k3dInstallScript(input Input, installationID string) (string, error) {
 		return "", ErrInvalidInput
 	}
 	script := `set -eu
+printf 'EDO_K3S_STAGE\tk3d_create\n'
 [ "$(id -u)" = 0 ]
 if ! mkdir -m 700 /run/edo-k3s-install.lock; then printf 'EDO_K3S_BUSY\n'; exit 43; fi
 trap 'rmdir /run/edo-k3s-install.lock' EXIT
@@ -152,6 +154,7 @@ set -e
 edo_tool_valid
 `
 	script += k3dCreateCommand(input, installationID) + "\n"
+	script += "printf 'EDO_K3S_STAGE\\tk3d_resources\\n'\n"
 	for index := -1; index < k3dAgents(input.K3d); index++ {
 		role, ordinal, cpus, memory, bytes := "agent", index, "1", "1g", 1073741824
 		if index == -1 {

@@ -28,6 +28,10 @@ var installationStages = map[string]string{
 	"import": "接入集群", "node": "节点就绪校验", "association": "关联主机",
 	"component_coredns": "CoreDNS 就绪校验", "component_metrics-server": "Metrics Server 就绪校验",
 	"component_local-path-provisioner": "本地存储组件就绪校验",
+	"installer_download":               "官方安装器下载文件", "installer_verify": "官方安装器校验文件",
+	"installer_binary": "官方安装器安装程序", "installer_environment": "官方安装器写入服务环境",
+	"installer_service": "官方安装器创建系统服务", "installer_start": "官方安装器启动系统服务",
+	"k3d_tool": "准备 k3d 工具", "k3d_create": "创建 k3d 容器节点", "k3d_resources": "校验 k3d 资源限制",
 }
 
 type installationFailure struct {
@@ -92,31 +96,114 @@ type installationDiagnostics struct {
 	stage   string
 	line    []byte
 	discard bool
+	seen    map[string]bool
+	started time.Time
+	updated time.Time
+	onStage func(string, time.Time, time.Time, bool) error
+	err     error
 }
 
 func (d *installationDiagnostics) Write(value []byte) (int, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
+	if d.err != nil {
+		return 0, d.err
+	}
 	for _, b := range value {
 		if b == '\n' {
+			line := string(d.line)
+			stage := ""
 			if !d.discard {
-				if stage, ok := strings.CutPrefix(string(d.line), "EDO_K3S_STAGE\t"); ok && installationStages[stage] != "" {
-					d.stage = stage
+				if value, ok := strings.CutPrefix(line, "EDO_K3S_STAGE\t"); ok {
+					stage = value
 				}
+			}
+			if installationStages[stage] == "" {
+				stage = ""
+				if strings.HasPrefix(d.stage, "installer") {
+					stage = officialInstallerStage(line)
+				}
+			}
+			if stage != "" {
+				d.setStageLocked(stage, time.Now())
 			}
 			d.line, d.discard = d.line[:0], false
 		} else if len(d.line) < 80 && !d.discard {
 			d.line = append(d.line, b)
 		} else {
-			d.line, d.discard = d.line[:0], true
+			d.discard = true
 		}
 	}
-	return len(value), nil
+	return len(value), d.err
+}
+
+func officialInstallerStage(line string) string {
+	if !strings.HasPrefix(line, "[INFO] ") {
+		return ""
+	}
+	line = strings.TrimLeft(strings.TrimPrefix(line, "[INFO] "), " ")
+	for _, item := range []struct{ prefix, stage string }{
+		{"Downloading hash ", "installer_download"}, {"Downloading binary ", "installer_download"}, {"Downloading K3s artifact ", "installer_download"},
+		{"Installing k3s to ", "installer_binary"}, {"env: Creating environment file ", "installer_environment"},
+		{"systemd: Creating service file ", "installer_service"}, {"openrc: Creating service file ", "installer_service"},
+		{"systemd: Starting ", "installer_start"}, {"openrc: Starting ", "installer_start"},
+	} {
+		if strings.HasPrefix(line, item.prefix) {
+			return item.stage
+		}
+	}
+	if line == "Verifying binary download" {
+		return "installer_verify"
+	}
+	return ""
+}
+
+func (d *installationDiagnostics) setStageLocked(stage string, now time.Time) {
+	if d.err != nil || installationStages[stage] == "" || d.seen[stage] {
+		return
+	}
+	if d.stage == "installer_start" && now.Sub(d.started) >= 5*time.Minute {
+		d.err = installationError(d.stage, context.DeadlineExceeded)
+		return
+	}
+	if now.Before(d.updated) {
+		now = d.updated
+	}
+	if d.seen == nil {
+		d.seen = make(map[string]bool)
+	}
+	d.seen[stage], d.stage, d.started, d.updated = true, stage, now, now
+	if d.onStage != nil {
+		d.err = d.onStage(stage, now, now, false)
+	}
+}
+
+func (d *installationDiagnostics) start(stage string) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.setStageLocked(stage, time.Now())
+	return d.err
+}
+
+func (d *installationDiagnostics) heartbeat(now time.Time) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.err == nil && d.stage == "installer_start" && now.Sub(d.started) >= 5*time.Minute {
+		d.err = installationError(d.stage, context.DeadlineExceeded)
+	}
+	if d.err == nil && d.stage != "" && now.Sub(d.updated) >= 30*time.Second && d.onStage != nil {
+		d.updated = now
+		d.err = d.onStage(d.stage, d.started, now, true)
+	}
+	return d.err
 }
 
 func (d *installationDiagnostics) failure(err error) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
+	if d.err != nil {
+		return d.err
+	}
 	stage := d.stage
 	if stage == "" {
 		stage = "installer"

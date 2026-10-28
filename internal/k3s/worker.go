@@ -193,7 +193,7 @@ func (s *Service) finish(ctx context.Context, record model.K3sInstallation, err 
 			if hosts[index].Status == "succeeded" {
 				continue
 			}
-			installedServer := hosts[index].Status == "ready" && hosts[index].Role == "server" && record.Action == "create" && record.ClusterID != ""
+			installedServer := hosts[index].Role == "server" && record.Action == "create" && record.ClusterID != ""
 			if hosts[index].Status == "installing" || hosts[index].Status == "checking" || installedServer {
 				hosts[index].Status = "failed"
 				hosts[index].Message = message
@@ -204,12 +204,11 @@ func (s *Service) finish(ctx context.Context, record model.K3sInstallation, err 
 				hosts[index].Status = "not_started"
 				hosts[index].Message = "前序步骤未完成"
 			}
+			hosts[index].ProgressUpdatedAt = &now
 		}
 		encoded, _ := json.Marshal(hosts)
 		record.Hosts = datatypes.JSON(encoded)
-		if len(record.Logs)+len(message) < 64*1024 {
-			record.Logs += time.Now().Format("15:04:05") + " 安装未完成：" + message + "\n"
-		}
+		record.Logs = appendInstallationLog(record.Logs, time.Now().Format("15:04:05")+" 安装未完成："+message+"\n")
 	}
 	updates := map[string]any{"status": status, "error_message": message, "finished_at": now, "updated_at": now, "lease_owner": "", "lease_expires_at": nil, "cluster_id": record.ClusterID, "logs": record.Logs, "hosts": record.Hosts}
 	if err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
@@ -249,7 +248,13 @@ func safeFailure(err error) string {
 }
 
 func (s *Service) persistProgress(record *model.K3sInstallation, updates map[string]any) error {
-	result := s.db.Model(&model.K3sInstallation{}).Where("uuid = ? AND lease_owner = ? AND status = ?", record.ID, s.owner, "running").Updates(updates)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	return s.persistProgressContext(ctx, record, updates)
+}
+
+func (s *Service) persistProgressContext(ctx context.Context, record *model.K3sInstallation, updates map[string]any) error {
+	result := s.db.WithContext(ctx).Model(&model.K3sInstallation{}).Where("uuid = ? AND lease_owner = ? AND status = ?", record.ID, s.owner, "running").Updates(updates)
 	if result.Error != nil || result.RowsAffected != 1 {
 		err := result.Error
 		if err == nil {
@@ -263,16 +268,15 @@ func (s *Service) persistProgress(record *model.K3sInstallation, updates map[str
 
 func (s *Service) log(record *model.K3sInstallation, message string) error {
 	line := time.Now().Format("15:04:05") + " " + message + "\n"
-	if len(record.Logs)+len(line) > 64*1024 {
-		return installationError("record", ErrRemote)
-	}
-	record.Logs += line
+	record.Logs = appendInstallationLog(record.Logs, line)
 	return s.persistProgress(record, map[string]any{"logs": record.Logs})
 }
 
 func (s *Service) hostProgress(record *model.K3sInstallation, hosts []Host, index int, status, message string) error {
+	now := time.Now().UTC()
 	hosts[index].Status = status
 	hosts[index].Message = message
+	hosts[index].ProgressUpdatedAt = &now
 	encoded, _ := json.Marshal(hosts)
 	record.Hosts = datatypes.JSON(encoded)
 	return s.persistProgress(record, map[string]any{"hosts": record.Hosts})
@@ -357,23 +361,28 @@ func (s *Service) perform(ctx context.Context, record *model.K3sInstallation) er
 		if err := s.recheckRuntime(ctx, *record, snapshot); err != nil {
 			return err
 		}
-		diagnostics := &installationDiagnostics{}
-		if err := s.transport.Run(ctx, current, bundle, script, diagnostics); err != nil {
-			return diagnostics.failure(err)
-		}
-		kubeconfig, err := s.transport.Read(ctx, current, bundle, "set -eu\ncat /etc/rancher/k3s/k3s.yaml\n")
-		if err != nil {
-			return installationError("import", err)
-		}
-		value, err := rewriteKubeconfigEndpoint([]byte(kubeconfig), input.Endpoint)
-		if err != nil {
-			return installationError("import", err)
-		}
-		if err := s.recheckRuntime(ctx, *record, snapshot); err != nil {
+		if err := s.runHostOperation(ctx, record, hosts, serverIndex, "ssh", func(ctx context.Context, output io.Writer) error {
+			return s.transport.Run(ctx, current, bundle, script, output)
+		}); err != nil {
 			return err
 		}
-		cluster, err := s.kubernetes.Create(ctx, record.CreatedBy, kube.Input{Name: input.Name, Mode: model.KubernetesKubeconfig, DefaultNamespace: "default", Kubeconfig: &value})
-		if err != nil {
+		importRecord := *record
+		var cluster *model.KubernetesCluster
+		if err := s.runHostOperation(ctx, record, hosts, serverIndex, "import", func(ctx context.Context, _ io.Writer) error {
+			kubeconfig, err := s.transport.Read(ctx, current, bundle, "set -eu\ncat /etc/rancher/k3s/k3s.yaml\n")
+			if err != nil {
+				return err
+			}
+			value, err := rewriteKubeconfigEndpoint([]byte(kubeconfig), input.Endpoint)
+			if err != nil {
+				return err
+			}
+			if err := s.recheckRuntime(ctx, importRecord, snapshot); err != nil {
+				return err
+			}
+			cluster, err = s.kubernetes.Create(ctx, importRecord.CreatedBy, kube.Input{Name: input.Name, Mode: model.KubernetesKubeconfig, DefaultNamespace: "default", Kubeconfig: &value})
+			return err
+		}); err != nil {
 			return installationError("import", err)
 		}
 		record.ClusterID = cluster.ID
@@ -381,7 +390,10 @@ func (s *Service) perform(ctx context.Context, record *model.K3sInstallation) er
 			return err
 		}
 		if disabled, _ := input.ServerOptions["disable-agent"].(bool); !disabled {
-			if err := s.waitForNode(ctx, cluster.ID, record.ID, host.ID); err != nil {
+			installationID := record.ID
+			if err := s.runHostOperation(ctx, record, hosts, serverIndex, "node", func(ctx context.Context, _ io.Writer) error {
+				return s.waitForNode(ctx, cluster.ID, installationID, host.ID)
+			}); err != nil {
 				return installationError("node", err)
 			}
 			if err := s.recheckRuntime(ctx, *record, snapshot); err != nil {
@@ -428,7 +440,9 @@ func (s *Service) perform(ctx context.Context, record *model.K3sInstallation) er
 			defer cancel()
 			_ = s.transport.Run(cleanupCtx, cleanupHost, cleanupBundle, cleanup, io.Discard)
 		}()
-		if err = s.transport.Run(ctx, current, bundle, download, io.Discard); err != nil {
+		if err = s.runHostOperation(ctx, record, hosts, 0, "download", func(ctx context.Context, output io.Writer) error {
+			return s.transport.Run(ctx, current, bundle, download, output)
+		}); err != nil {
 			return err
 		}
 		// Downloads may take minutes. Re-read authorization, host identity,
@@ -448,11 +462,15 @@ func (s *Service) perform(ctx context.Context, record *model.K3sInstallation) er
 		if err := s.recheckRuntime(ctx, *record, snapshot); err != nil {
 			return err
 		}
-		diagnostics := &installationDiagnostics{}
-		if err := s.transport.Run(ctx, current, bundle, script, diagnostics); err != nil {
-			return diagnostics.failure(err)
+		if err := s.runHostOperation(ctx, record, hosts, 0, "ssh", func(ctx context.Context, output io.Writer) error {
+			return s.transport.Run(ctx, current, bundle, script, output)
+		}); err != nil {
+			return err
 		}
-		if err := s.waitForJoinedServer(ctx, record, snapshot, host); err != nil {
+		readyRecord := *record
+		if err := s.runHostOperation(ctx, record, hosts, 0, "node", func(ctx context.Context, _ io.Writer) error {
+			return s.waitForJoinedServer(ctx, &readyRecord, snapshot, host)
+		}); err != nil {
 			return installationError("node", err)
 		}
 		// Membership now contains the reviewed node. Do not compare it against
@@ -487,7 +505,7 @@ func (s *Service) perform(ctx context.Context, record *model.K3sInstallation) er
 		if err != nil {
 			return err
 		}
-		err = s.installAgent(ctx, record, snapshot, host, join)
+		err = s.installAgent(ctx, record, snapshot, hosts, index, join)
 		revokeCtx, cancel := context.WithTimeout(kube.WithInternalClusterAccess(context.WithoutCancel(ctx), "node-bootstrap-cleanup"), 10*time.Second)
 		revokeErr := s.kubernetes.RevokeNodeJoin(revokeCtx, record.ClusterID, join.ID, join.ResourceIdentity)
 		cancel()
@@ -507,8 +525,13 @@ func (s *Service) perform(ctx context.Context, record *model.K3sInstallation) er
 			return err
 		}
 	}
-	if err := s.waitForCreatedComponents(ctx, record, snapshot); err != nil {
-		return err
+	if input.Action == "create" {
+		readyRecord := *record
+		if err := s.runHostOperation(ctx, record, hosts, serverIndex, "components", func(ctx context.Context, _ io.Writer) error {
+			return s.waitForCreatedComponents(ctx, &readyRecord, snapshot)
+		}); err != nil {
+			return err
+		}
 	}
 	if serverIndex >= 0 {
 		if err := s.hostProgress(record, hosts, serverIndex, "succeeded", "控制平面和系统组件已就绪"); err != nil {
@@ -518,7 +541,8 @@ func (s *Service) perform(ctx context.Context, record *model.K3sInstallation) er
 	return s.log(record, "K3s 安装完成")
 }
 
-func (s *Service) installAgent(ctx context.Context, record *model.K3sInstallation, snapshot savedInput, host Host, join *kube.NodeJoin) error {
+func (s *Service) installAgent(ctx context.Context, record *model.K3sInstallation, snapshot savedInput, hosts []Host, index int, join *kube.NodeJoin) error {
+	host := hosts[index]
 	if join.Token == "" {
 		return kube.ErrJoinUnsupported
 	}
@@ -537,11 +561,15 @@ func (s *Service) installAgent(ctx context.Context, record *model.K3sInstallatio
 	if err := s.recheckRuntime(ctx, *record, snapshot); err != nil {
 		return err
 	}
-	diagnostics := &installationDiagnostics{}
-	if err := s.transport.Run(ctx, current, bundle, script, diagnostics); err != nil {
-		return diagnostics.failure(err)
+	if err := s.runHostOperation(ctx, record, hosts, index, "ssh", func(ctx context.Context, output io.Writer) error {
+		return s.transport.Run(ctx, current, bundle, script, output)
+	}); err != nil {
+		return err
 	}
-	return installationError("node", s.waitForNode(ctx, record.ClusterID, record.ID, host.ID))
+	clusterID, installationID := record.ClusterID, record.ID
+	return s.runHostOperation(ctx, record, hosts, index, "node", func(ctx context.Context, _ io.Writer) error {
+		return installationError("node", s.waitForNode(ctx, clusterID, installationID, host.ID))
+	})
 }
 
 func (s *Service) waitForNode(ctx context.Context, clusterID, installationID, hostID string) error {

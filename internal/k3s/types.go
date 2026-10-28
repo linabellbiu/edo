@@ -79,13 +79,16 @@ type K3dOptions struct {
 }
 
 type Host struct {
-	ID      string `json:"id"`
-	Name    string `json:"name"`
-	Address string `json:"address"`
-	Role    string `json:"role"`
-	Config  string `json:"config,omitempty"`
-	Status  string `json:"status,omitempty"`
-	Message string `json:"message,omitempty"`
+	ID                string     `json:"id"`
+	Name              string     `json:"name"`
+	Address           string     `json:"address"`
+	Role              string     `json:"role"`
+	Config            string     `json:"config,omitempty"`
+	Status            string     `json:"status,omitempty"`
+	Message           string     `json:"message,omitempty"`
+	Stage             string     `json:"stage,omitempty"`
+	StageStartedAt    *time.Time `json:"stage_started_at,omitempty"`
+	ProgressUpdatedAt *time.Time `json:"progress_updated_at,omitempty"`
 }
 
 type Plan struct {

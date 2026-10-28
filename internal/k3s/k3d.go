@@ -156,7 +156,9 @@ func (s *Service) performK3d(ctx context.Context, record *model.K3sInstallation,
 	if err := s.hostProgress(record, hosts, 0, "installing", ""); err != nil {
 		return err
 	}
-	if err := s.transport.Run(ctx, current, bundle, prepare, io.Discard); err != nil {
+	if err := s.runHostOperation(ctx, record, hosts, 0, "k3d_tool", func(ctx context.Context, output io.Writer) error {
+		return s.transport.Run(ctx, current, bundle, prepare, output)
+	}); err != nil {
 		return err
 	}
 	// 工具下载可能较慢；在真正创建容器前重新检查授权、主机和资源。
@@ -178,14 +180,21 @@ func (s *Service) performK3d(ctx context.Context, record *model.K3sInstallation,
 	if err != nil {
 		return err
 	}
-	if err := s.transport.Run(ctx, current, bundle, script, io.Discard); err != nil {
+	if err := s.runHostOperation(ctx, record, hosts, 0, "k3d_create", func(ctx context.Context, output io.Writer) error {
+		return s.transport.Run(ctx, current, bundle, script, output)
+	}); err != nil {
 		return err
 	}
 	if err := s.recheckRuntime(ctx, *record, snapshot); err != nil {
 		return err
 	}
-	value, err := s.waitForK3dConnection(ctx, record, snapshot, current, bundle)
-	if err != nil {
+	connectionRecord := *record
+	var value string
+	if err := s.runHostOperation(ctx, record, hosts, 0, "api", func(ctx context.Context, _ io.Writer) error {
+		var err error
+		value, err = s.waitForK3dConnection(ctx, &connectionRecord, snapshot, current, bundle)
+		return err
+	}); err != nil {
 		return err
 	}
 	if err := s.recheckRuntime(ctx, *record, snapshot); err != nil {
@@ -199,7 +208,10 @@ func (s *Service) performK3d(ctx context.Context, record *model.K3sInstallation,
 	if err := s.db.WithContext(ctx).Model(&model.K3sInstallation{}).Where("uuid = ? AND lease_owner = ?", record.ID, s.owner).Update("cluster_id", cluster.ID).Error; err != nil {
 		return err
 	}
-	if err := s.waitForK3d(ctx, record, snapshot, 1+k3dAgents(input.K3d)); err != nil {
+	readyRecord := *record
+	if err := s.runHostOperation(ctx, record, hosts, 0, "node", func(ctx context.Context, _ io.Writer) error {
+		return s.waitForK3d(ctx, &readyRecord, snapshot, 1+k3dAgents(input.K3d))
+	}); err != nil {
 		return err
 	}
 	if err := s.recheckRuntime(ctx, *record, snapshot); err != nil {
