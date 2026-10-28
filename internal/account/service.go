@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"regexp"
 	"strings"
 	"time"
@@ -199,7 +200,12 @@ func (s *Service) List(ctx context.Context, limit, offset int) ([]model.User, er
 	return users, nil
 }
 
-func (s *Service) SetActive(ctx context.Context, userID string, active bool) error {
+func (s *Service) SetActive(ctx context.Context, userID string, active bool) (err error) {
+	defer func() {
+		if err != nil {
+			slog.WarnContext(ctx, "修改用户启停状态失败", "operation", "user_status_update", "user_id", userID, "active", active, "err", err)
+		}
+	}()
 	var user model.User
 	if err := s.db.WithContext(ctx).First(&user, "uuid = ?", userID).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -210,9 +216,15 @@ func (s *Service) SetActive(ctx context.Context, userID string, active bool) err
 	if user.IsSuperuser {
 		return ErrSuperuserImmutable
 	}
-	if err := s.db.WithContext(ctx).Model(&user).Updates(map[string]any{
-		"is_active": active, "updated_at": time.Now().UTC(),
-	}).Error; err != nil {
+	updates := map[string]any{"is_active": active, "updated_at": time.Now().UTC()}
+	if !active {
+		// 停用与会话版本递增在同一条更新中完成，未访问的旧会话也不能在重新启用后复活。
+		updates["auth_version"] = gorm.Expr("auth_version + ?", 1)
+	}
+	// 只更新实际状态转换；重复停用不反复递增，重新启用也不恢复旧认证版本。
+	if err := s.db.WithContext(ctx).Model(&model.User{}).
+		Where("uuid = ? AND is_active = ? AND is_superuser = ?", userID, !active, false).
+		Updates(updates).Error; err != nil {
 		return fmt.Errorf("修改用户状态失败: %w", err)
 	}
 	return nil

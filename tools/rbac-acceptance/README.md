@@ -35,3 +35,14 @@ node tools/rbac-acceptance/run.mjs --admin-file /private/tmp/edo-rbac-private/ad
 环境无主机，构建方案只保存不执行。脚本不连接外部代码源、Docker、Kubernetes、SSH 或数据库目标，也不读取本机集群配置。
 
 首版不声称完成流水线、真实部署、双人审核运行、排队撤权、WebSocket、终端、文件或 SQL 外部执行验收；这些应按计划后续接入独立测试目标。预期拒绝收到意外成功会标记失败，保留本轮目标便于排查，不删除或改动既有用户、角色、项目和资源。
+
+## 在线撤权专项
+
+`revocation.mjs` 另建自己的 `rbac_revoke_` 项目、角色和账号，只读取基础种子中的两个部门 ID，不改变原矩阵身份。它验证同一 Cookie 的角色减权、个人拒绝、移出项目、部门变更、账号/项目停用，以及共享模板跨项目的实际作用；状态 WebSocket 必须先成功握手并收到 `resync`，才断言撤权关流。
+
+```sh
+node tools/rbac-acceptance/revocation.mjs --admin-file /private/tmp/edo-rbac-private/admin.json --source-manifest /private/tmp/edo-rbac-private/run-01/manifest.json --out /private/tmp/edo-rbac-private/revoke-01 --phase all
+node tools/rbac-acceptance/revocation.mjs --admin-file /private/tmp/edo-rbac-private/admin.json --source-manifest /private/tmp/edo-rbac-private/run-01/manifest.json --out /private/tmp/edo-rbac-private/revoke-01 --phase verify
+```
+
+账号停用测试保留两个已登录会话：一个在停用期发请求，另一个始终休眠。重新启用后两个旧会话都应失效，新登录应成功，不能只证明活跃会话被删除。所有状态变更和最终恢复均限制在专项白名单 UUID，报告包含最终恢复状态；不创建应用、执行任务或直接写数据库。凭据单独存于 `600` 的 `credentials.json`，Cookie 不落盘。
