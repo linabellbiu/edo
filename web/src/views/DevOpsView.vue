@@ -1915,6 +1915,9 @@ onBeforeUnmount(()=>{runListController?.abort();executionController?.abort();run
    <template #cell-sync_status="{value}"><a-tag :color="value==='changed'?'warning':value==='synced'?'success':'default'">{{ value }}</a-tag></template>
    <template #cell-provider="{value}"><a-tag color="blue">{{ registryProviderLabel(value as RegistryProvider) }}</a-tag></template>
    <template #cell-endpoint="{row}">{{ registryEndpointLabel(row as Registry) }}</template>
+   <template #cell-has_credential="{value}"><a-tag v-if="typeof value==='boolean'" :color="value?'success':'default'">{{ value?'已配置':props.section==='image-registries'?'匿名':'未配置' }}</a-tag><span v-else>—</span></template>
+   <template v-if="props.section==='image-registries'" #detail-provider="{value}">{{ typeof value==='string'&&value?registryProviderLabel(value as RegistryProvider):'—' }}</template>
+   <template v-if="props.section==='image-registries'" #detail-has_credential="{value}">{{ typeof value==='boolean'?(value?'已配置':'匿名'):'—' }}</template>
    <template #cell-description="{value}"><span :title="String(value||'')">{{ value||'—' }}</span></template>
    <template #cell-timeout_seconds="{value}">{{ value }} 秒</template>
    <template #actions="{row}">

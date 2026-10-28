@@ -89,7 +89,7 @@ function displayValue(value: unknown): string {
     </a-spin>
   </div>
   <ResourceDetailDrawer v-if="details" v-model:open="detailOpen" :title="String(selected?.name || selected?.nickname || t('resourceList.details'))">
-    <section v-if="selected" class="resource-detail-section"><h4>{{ t('resourceList.basic') }}</h4><dl class="resource-facts"><div v-for="column in columns" :key="column.key"><dt>{{ column.label }}</dt><dd>{{ displayValue(selected[column.key]) }}</dd></div></dl></section>
+    <section v-if="selected" class="resource-detail-section"><h4>{{ t('resourceList.basic') }}</h4><dl class="resource-facts"><div v-for="column in columns" :key="column.key"><dt>{{ column.label }}</dt><dd><slot :name="`detail-${column.key}`" :row="selected" :value="selected[column.key]">{{ displayValue(selected[column.key]) }}</slot></dd></div></dl></section>
   </ResourceDetailDrawer>
 </template>
 
