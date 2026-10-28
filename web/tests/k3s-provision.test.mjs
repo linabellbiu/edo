@@ -207,7 +207,7 @@ test('k3d接受host角色预检但不绕过失败项，确认使用plan ID且安
     assert.equal(ctx.requests.find(item=>item.method==='start').id,'plan-1');assert.equal(ctx.state.installation.value.status,'pending');assert.equal(ctx.state.displayMode.value,'k3d')
     assert.ok(!ctx.events.some(event=>event.name==='created'))
     const report=componentHarness('../src/components/K3sPreflightReport.vue',{props:{report:k3dPlan().preflight},modules:{'@/utils/time':{formatDateTime:String}}})
-    try{assert.equal(report.state.groups.value[0].role,'k8s.installationHost')}finally{report.stop()}
+    try{assert.equal(report.state.groups.value[0].name,k3dPlan().preflight.hosts[0].host_name);assert.equal(report.state.failedGroups.value.length,0)}finally{report.stop()}
   }finally{ctx.stop()}
 })
 
@@ -678,16 +678,16 @@ test('开始安装时的预检冲突返回配置页显示新报告，重新检�
   }finally{ctx.stop()}
 })
 
-test('报告按集群和 Master、Worker 分组，保留阻断原因和提示计数',()=>{
+test('报告只按准确主机保留不满足项，不展示通过和警告明细',()=>{
   const report=preflightReport(false)
   report.checks=[{id:'target',name:'目标集群',status:'passed',message:'集群版本已核对'}]
   report.hosts.push({host_id:'2',host_name:'Host 2',role:'agent',hostname:'worker-a',passed:true,checks:[preflightCheck('warning')]})
   const ctx=componentHarness('../src/components/K3sPreflightReport.vue',{props:{report},modules:{'@/utils/time':{formatDateTime:String}}})
   try{
-    assert.deepEqual(ctx.state.groups.value.map(group=>group.role),['','控制平面（Master）','工作节点（Worker）'])
-    assert.equal(ctx.state.failed.value,1);assert.equal(ctx.state.warnings.value,1)
-    assert.match(ctx.state.groups.value[1].checks[0].message,/扩容/)
-    assert.equal(ctx.state.groups.value[2].hostname,'worker-a')
+    assert.equal(ctx.state.failed.value,1);assert.equal(ctx.state.failedGroups.value.length,1)
+    assert.equal(ctx.state.failedGroups.value[0].name,report.hosts[0].host_name)
+    assert.match(ctx.state.failedGroups.value[0].checks[0].message,/扩容/)
+    assert.equal(ctx.state.failedGroups.value[0].checks.every(check=>check.status==='failed'),true)
   }finally{ctx.stop()}
 })
 

@@ -3,7 +3,7 @@ import {readFileSync} from 'node:fs'
 import {test} from 'node:test'
 import * as vue from 'vue'
 import {renderToString} from '@vue/server-renderer'
-import {compileScript,parse} from '@vue/compiler-sfc'
+import {compileScript,compileStyle,parse} from '@vue/compiler-sfc'
 import ts from 'typescript'
 import {loadFrontend} from './acceptanceHarness.mjs'
 
@@ -23,28 +23,52 @@ async function render(component,props){
 const check=(id,status='passed')=>({id,name:`检查-${id}`,status,message:status==='failed'?'需要处理后重新检测':'检测结果已确认'})
 const report=()=>({checked_at:'2026-10-29T00:30:00+08:00',passed:true,checks:[],hosts:[{host_id:'nas',host_name:'NAS测试主机',hostname:'nas-test',role:'host',passed:true,checks:[check('docker'),check('memory','warning')]}]})
 
-test('真实检测报告SFC按模式呈现通过/警告/不满足，明确检测只读且不创建计划',async()=>{
+test('真实检测报告只列不满足项，无阻断仅简短结果，保留唯一官方外链',async()=>{
   for(const mode of ['native','k3d']){
     const value=report(),html=await render(Report,{report:value,mode,standalone:true})
-    assert.match(html,new RegExp(`检测模式：${mode==='native'?'原生 K3s':'k3d'}`));assert.match(html,/安装前检测通过，含 1 项警告/);assert.match(html,/>通过</);assert.match(html,/>警告</)
-    assert.match(html,/只读检测，不创建安装计划、不安装或修改主机/);assert.match(html,/role="status"/);assert.match(html,/tabindex="-1"/);assert.match(html,/<details[^>]*open/)
+    assert.match(html,/未发现不满足项/);assert.doesNotMatch(html,/检查-docker|检查-memory|>通过<|>警告<|检测时间|台主机|项检测|<details|<summary|检测模式/)
+    assert.match(html,/href="https:\/\/docs.k3s.io\/zh\/installation\/configuration" target="_blank" rel="noopener noreferrer"/);assert.equal((html.match(/<a /g)||[]).length,1)
+    assert.match(html,/role="status"/);assert.match(html,/tabindex="-1"/)
     value.passed=false;value.hosts[0].passed=false;value.hosts[0].checks.push(check('filesystem','failed'))
-    const failed=await render(Report,{report:value,mode,standalone:true});assert.match(failed,/安装前检测未通过，1 项不满足/);assert.match(failed,/>不满足</);assert.doesNotMatch(failed,/安装前检测通过，/)
+    const failed=await render(Report,{report:value,mode,standalone:true});assert.match(failed,/NAS测试主机/);assert.match(failed,/检查-filesystem/);assert.match(failed,/>不满足</);assert.doesNotMatch(failed,/未发现不满足项|检查-docker|检查-memory/)
   }
 })
 
 test('报告没有检查项不标绿，后台passed矛盾时以真实不满足项阻断，额外凭据不渲染',async()=>{
   const value=report();value.hosts[0].checks=[];value.server_token='do-not-render-token';value.config={password:'do-not-render-password'}
-  let html=await render(Report,{report:value,mode:'native',standalone:true});assert.match(html,/安装前检测未通过/);assert.match(html,/未取得检测结果/);assert.doesNotMatch(html,/color="green"|do-not-render/)
-  value.hosts[0].checks=[check('blocked','failed')];html=await render(Report,{report:value,mode:'native',standalone:true});assert.match(html,/安装前检测未通过，1 项不满足/);assert.doesNotMatch(html,/安装前检测通过，/)
+  let html=await render(Report,{report:value,mode:'native',standalone:true});assert.match(html,/检测结果不完整，请重新检测/);assert.doesNotMatch(html,/color="green"|do-not-render|未发现不满足项/)
+  value.hosts[0].checks=[check('blocked','failed')];html=await render(Report,{report:value,mode:'native',standalone:true});assert.match(html,/检测结果未确认通过，请重新检测/);assert.match(html,/检查-blocked/);assert.doesNotMatch(html,/未发现不满足项/)
+  value.passed=false;value.hosts[0].passed=false;value.hosts[0].checks=[check('docker')];html=await render(Report,{report:value});assert.match(html,/检测结果未确认通过/);assert.doesNotMatch(html,/未发现不满足项/)
 })
 
-test('主机和结果长文本按纯文本渲染，失败检查保持展开并可键盘进入原生details',async()=>{
+test('多主机仅展示各自失败项，长文本按纯文本渲染且无需展开',async()=>{
   const value=report();value.passed=false;value.hosts[0].passed=false;value.hosts[0].host_name='<script>not-executed</script>';value.hosts[0].checks=[{...check('filesystem','failed'),message:'只读诊断 '.repeat(300)+'<img src=x onerror=alert(1)>'}]
-  const html=await render(Report,{report:value,mode:'native',standalone:true});assert.match(html,/&lt;script&gt;not-executed&lt;\/script&gt;/);assert.match(html,/&lt;img src=x onerror=alert\(1\)&gt;/);assert.doesNotMatch(html,/<script>|<img/);assert.match(html,/<details[^>]*open/);assert.match(html,/<summary>/)
+  value.hosts.push({host_id:'worker',host_name:'工作主机',hostname:'worker',role:'agent',passed:false,checks:[check('swap','failed'),check('network')]})
+  const html=await render(Report,{report:value,mode:'native',standalone:true});assert.match(html,/&lt;script&gt;not-executed&lt;\/script&gt;/);assert.match(html,/&lt;img src=x onerror=alert\(1\)&gt;/);assert.doesNotMatch(html,/<script>|<img|<details|<summary|检查-network/);assert.match(html,/工作主机/);assert.match(html,/检查-swap/);assert.equal((html.match(/class="preflight-group"/g)||[]).length,2)
+})
+
+test('抽屉与报告限制网格最小宽度，窄屏长文本不能撑宽焦点区域',()=>{
+  for(const file of ['K3sProvisionDrawer.vue','K3sPreflightReport.vue']){
+    const {descriptor}=parse(read(`../src/components/${file}`))
+    const result=compileStyle({id:'k3s-responsive-regression',source:descriptor.styles[0].content,scoped:true})
+    assert.deepEqual(result.errors,[])
+    const root=file==='K3sProvisionDrawer.vue'?'provision-content':'preflight-report'
+    assert.match(result.code,new RegExp(`\\.${root}[^}]*grid-template-columns:minmax\\(0,1fr\\)[^}]*min-width:0`))
+    assert.match(result.code,new RegExp(`\\.${root}[^>]*>\\*[^}]*min-width:0`))
+    assert.doesNotMatch(result.code,/overflow(?:-x)?:hidden|outline:none/)
+    if(file==='K3sProvisionDrawer.vue'){
+      assert.match(result.code,/grid-template-columns:repeat\(2,minmax\(0,1fr\)\)/)
+      assert.match(result.code,/@media\(max-width:650px\)\{[^}]*\.form-columns[^}]*grid-template-columns:minmax\(0,1fr\)/)
+    }
+  }
 })
 
 const ast=parse(read('../src/components/K3sProvisionDrawer.vue')).descriptor.template.ast
+test('检测中或已有报告不叠加长安装介绍，原生与k3d分支使用相同门控',()=>{
+  const introductions=ast.children.filter(node=>node.type===1&&node.tag==='a-drawer').flatMap(node=>node.children).filter(node=>node.type===1&&node.props.some(prop=>prop.type===6&&prop.name==='class'&&prop.value?.content==='provision-content')).flatMap(node=>node.children).filter(node=>node.type===1&&node.tag==='a-alert'&&node.props.some(prop=>prop.type===7&&prop.name==='bind'&&prop.arg?.content==='description'&&/nativeInstallHint|k3dInstallHint/.test(prop.exp?.content??'')))
+  assert.equal(introductions.length,2)
+  for(const node of introductions){const condition=node.props.find(prop=>prop.type===7&&['if','else-if'].includes(prop.name))?.exp?.content??'';assert.match(condition,/!installation&&!visiblePreflight&&!checking/)}
+})
 let footer
 function find(node){if(node.type===1&&node.tag==='template'&&node.props.some(p=>p.type===7&&p.name==='slot'&&p.arg?.content==='footer'))footer=node;for(const child of node.children??[])find(child)}
 find(ast);assert.ok(footer)
