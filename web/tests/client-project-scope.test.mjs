@@ -3,11 +3,12 @@ import { test } from 'node:test'
 import axios from 'axios'
 import { loadFrontend, componentHarness } from './acceptanceHarness.mjs'
 
-function harness() {
+function harness(globals = {}) {
   let project = 'project-a'
   const requests = []
   const module = loadFrontend('../src/api/client.ts', { axios: { __esModule: true, default: axios } }, {
     localStorage: { getItem: key => key === 'edo.project' ? project : null },
+    ...globals,
   })
   const client = module.default
   client.defaults.adapter = async config => {
@@ -30,6 +31,37 @@ test('普通请求使用当前项目，显式固定项目头与空项目头不�
   h.select('project-b')
   await assert.rejects(h.client.post('/delivery-variables', {}, { headers: { 'X-EDO-Project-ID': 'project-a' } }), { code: 'EDO_PROJECT_CHANGED' })
   assert.equal(h.requests.length, 3)
+})
+
+test('当前业务403通知权限核验，原始POST只发送一次；认证403与401不递归通知', async () => {
+  const window = new EventTarget(), events = [], h = harness({ window })
+  window.addEventListener('edo:permissions-stale', event => events.push(event.detail))
+  let status = 403, calls = 0
+  h.client.defaults.adapter = async config => {
+    calls++
+    throw new axios.AxiosError('denied', 'ERR_BAD_REQUEST', config, undefined, { status, config })
+  }
+  await assert.rejects(h.client.post('/applications', {}), error => error.response.status === 403)
+  assert.equal(calls, 1)
+  assert.deepEqual(events, [{ project: 'project-a' }])
+  await assert.rejects(h.module.getCurrentUser())
+  await assert.rejects(h.client.get('/projects'))
+  status = 401; await assert.rejects(h.client.get('/applications'))
+  assert.equal(events.length, 1)
+})
+
+test('旧项目403不会请求刷新新项目权限，正常2xx响应保持原数据对象', async () => {
+  const window = new EventTarget(), events = [], h = harness({ window })
+  window.addEventListener('edo:permissions-stale', event => events.push(event.detail))
+  const data = { cached: ['resource'] }
+  h.client.defaults.adapter = async config => ({ data, status: 200, statusText: 'OK', headers: {}, config })
+  assert.equal((await h.client.get('/applications')).data, data)
+  let finish
+  h.client.defaults.adapter = config => new Promise((_, reject) => { finish = () => reject(new axios.AxiosError('denied', undefined, config, undefined, { status: 403, config })) })
+  const old = h.client.get('/applications'); await new Promise(resolve => setImmediate(resolve))
+  h.select('project-b'); finish()
+  await assert.rejects(old, { code: 'EDO_PROJECT_CHANGED' })
+  assert.equal(events.length, 0)
 })
 
 test('旧项目业务响应晚到时不能回写到新项目，包含成功和失败响应', async () => {
@@ -98,4 +130,29 @@ test('当前项目失效后的自动选择也重建整个页面，不能把旧�
   assert.deepEqual(h.locations, ['/projects'])
   assert.equal(profileRequests, 0)
   assert.equal(h.auth.user.project_id, 'project-a')
+})
+
+test('项目列表旧响应在用户切换后不修改新用户选择，也不启动身份刷新', async t => {
+  let finish, refreshes = 0
+  const storage = new Map([['edo.project', 'project-a']])
+  const h = componentHarness('../src/components/ProjectSelector.vue', {
+    api: { get: () => new Promise(resolve => { finish = () => resolve({ data: { projects: [{ id: 'old-project', is_active: true }] } }) }) },
+    globals: { localStorage: { getItem: key => storage.get(key), setItem: (key, value) => storage.set(key, value), removeItem: key => storage.delete(key) } },
+  })
+  t.after(h.stop)
+  h.auth.refreshPermissions = async () => { refreshes++ }
+  const old = h.state.reload(); h.auth.user.id = 'other-user'; storage.set('edo.project', 'project-b'); finish(); await old
+  assert.equal(storage.get('edo.project'), 'project-b')
+  assert.equal(refreshes, 0); assert.deepEqual(h.locations, [])
+})
+
+test('旧用户项目列表失败不向新用户显示过期错误', async t => {
+  let fail
+  const h = componentHarness('../src/components/ProjectSelector.vue', {
+    api: { get: () => new Promise((_, reject) => { fail = () => reject(new Error('旧用户项目请求失败')) }) },
+    globals: { localStorage: { getItem: () => 'project-a' } },
+  })
+  t.after(h.stop)
+  const old = h.state.reload(); h.auth.user.id = 'new-user'; fail(); await old
+  assert.deepEqual(h.notifications, [])
 })

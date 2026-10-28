@@ -62,6 +62,10 @@ client.interceptors.response.use(response => {
   return response
 }, error => {
   if (axios.isAxiosError(error) && responseProjectChanged(error.config)) throw new axios.AxiosError(projectChangedMessage, 'EDO_PROJECT_CHANGED', error.config)
+  if (axios.isAxiosError(error) && error.response?.status === 403 && error.config && !contextRequest(error.config) && typeof window !== 'undefined') {
+    // 只通知当前范围重新核验权限；原请求仍失败，尤其不能自动重放写操作。
+    window.dispatchEvent(new CustomEvent('edo:permissions-stale', { detail: { project: selectedProject() } }))
+  }
   return Promise.reject(error)
 })
 

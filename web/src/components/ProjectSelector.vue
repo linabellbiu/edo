@@ -2,7 +2,7 @@
 import { onMounted, onBeforeUnmount, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { message } from 'ant-design-vue'
-import client, { getCurrentUser } from '@/api/client'
+import client from '@/api/client'
 import { useAuthStore } from '@/stores/auth'
 import { apiErrorMessage } from '@/api/resources'
 const { t } = useI18n(), auth = useAuthStore()
@@ -10,10 +10,11 @@ const items = ref<Array<{id:string;name:string;department_name?:string;is_active
 let revision=0,disposed=false
 async function reload() {
  const request=++revision
+ const subject=JSON.stringify([auth.user?.id,auth.user?.department_id,auth.user?.project_id]), project=localStorage.getItem('edo.project')||''
  loading.value=true
  try {
   const projects=(await client.get<{projects:typeof items.value}>('/projects')).data.projects.filter(item=>item.is_active)
-  if(disposed||request!==revision)return
+  if(disposed||request!==revision||subject!==JSON.stringify([auth.user?.id,auth.user?.department_id,auth.user?.project_id])||project!==(localStorage.getItem('edo.project')||''))return
   items.value=projects
   const saved=localStorage.getItem('edo.project')||''
   selected.value=projects.some(item=>item.id===saved)?saved:projects[0]?.id||''
@@ -23,9 +24,8 @@ async function reload() {
    window.location.assign('/projects')
    return
   }
-  const user=await getCurrentUser()
-  if(!disposed&&request===revision)auth.user=user
- }catch(error){if(!disposed&&request===revision)message.error(apiErrorMessage(error))}
+  await auth.refreshPermissions()
+ }catch(error){if(!disposed&&request===revision&&subject===JSON.stringify([auth.user?.id,auth.user?.department_id,auth.user?.project_id])&&project===(localStorage.getItem('edo.project')||''))message.error(apiErrorMessage(error))}
  finally{if(!disposed&&request===revision)loading.value=false}
 }
 function projectChanged(){void reload()}

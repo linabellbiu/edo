@@ -44,6 +44,7 @@ const reloadKey = ref(0)
 const mobileMenuOpen = ref(false)
 const openKeys = ref<string[]>([])
 let menuRevealPending = false
+let stopPermissionSync: (() => void) | undefined
 
 function expandCurrentMenu() {
   for (const item of navigationTrail(route.fullPath)) {
@@ -192,8 +193,14 @@ watch(searchOpen, async (open) => {
   document.querySelector<HTMLInputElement>('.command-search input')?.focus()
 })
 
-onMounted(() => { window.addEventListener('keydown', keyboard); revealCurrentMenu() })
-onBeforeUnmount(() => { menuRevealPending = false; window.removeEventListener('keydown', keyboard) })
+watch(() => JSON.stringify([auth.user?.id, auth.user?.department_id, auth.user?.project_id, auth.user?.is_superuser, auth.user?.permissions]), () => {
+  searchOpen.value = false
+  if (!auth.user) { void router.replace('/login'); return }
+  if (!allowedHistoryPath(route.fullPath)) void router.replace('/projects')
+}, { flush: 'sync' })
+
+onMounted(() => { window.addEventListener('keydown', keyboard); stopPermissionSync = auth.startPermissionSync(); revealCurrentMenu() })
+onBeforeUnmount(() => { menuRevealPending = false; stopPermissionSync?.(); window.removeEventListener('keydown', keyboard) })
 </script>
 
 <template>
