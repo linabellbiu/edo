@@ -2,6 +2,7 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
+import { ConfigProvider } from 'ant-design-vue'
 import {
   Bell, ChevronDown, ChevronLeft, Command, Expand, Github, Languages, LockKeyhole, LogOut,
   Maximize2, Menu, Moon, PanelLeftClose, PanelLeftOpen, RefreshCw, Search,
@@ -22,6 +23,19 @@ const auth = useAuthStore()
 const preferences = usePreferencesStore()
 const tabsStore = useTabsStore()
 const { t } = useI18n()
+
+const sidebarTheme = {
+  components: {
+    Menu: {
+      colorItemBgHover: 'var(--edo-nav-hover-bg)',
+      colorItemTextHover: 'var(--edo-nav-active-color)',
+      colorSubItemBg: 'var(--edo-surface-soft)',
+      colorItemBgSelected: 'var(--edo-nav-selected-bg)',
+      colorItemTextSelected: 'var(--edo-nav-active-color)',
+      colorPrimaryBorder: 'var(--edo-primary)',
+    },
+  },
+}
 
 const searchOpen = ref(false)
 const searchText = ref('')
@@ -191,38 +205,40 @@ onBeforeUnmount(() => { menuRevealPending = false; window.removeEventListener('k
         <strong>EDO</strong>
       </div>
 
-      <nav class="vben-navigation" @transitionend="revealCurrentMenu">
-        <a-menu
-          :selected-keys="selectedKeys"
-          :open-keys="preferences.sidebarCollapsed ? [] : openKeys"
-          mode="inline"
-          :inline-collapsed="preferences.sidebarCollapsed"
-          @open-change="updateOpenKeys"
-        >
-          <a-menu-item v-for="item in navigation[0]?.items?.filter(allowed)" :key="item.path" @click="navigate(item.path)">
-            <template #icon><component :is="item.icon" :size="18" /></template>
-            {{ t(item.label) }}
-          </a-menu-item>
-        </a-menu>
-
-        <template v-for="(section, sectionIndex) in navigation.slice(1)" :key="section.label">
-          <div v-if="!preferences.sidebarCollapsed" class="navigation-section-title">{{ section.label ? t(section.label) : '' }}</div>
+      <ConfigProvider :theme="sidebarTheme">
+        <nav class="vben-navigation" @transitionend="revealCurrentMenu">
           <a-menu
             :selected-keys="selectedKeys"
             :open-keys="preferences.sidebarCollapsed ? [] : openKeys"
             mode="inline"
-            :inline-indent="16"
             :inline-collapsed="preferences.sidebarCollapsed"
             @open-change="updateOpenKeys"
           >
-            <a-sub-menu v-for="branch in allowedBranches(sectionIndex + 1)" :key="branch.key">
-              <template #icon><component :is="branch.icon" :size="18" /></template>
-              <template #title>{{ t(branch.label) }}</template>
-              <SidebarNavItem v-for="item in branch.items" :key="item.path" :item="item" @navigate="navigate" />
-            </a-sub-menu>
+            <a-menu-item v-for="item in navigation[0]?.items?.filter(allowed)" :key="item.path" @click="navigate(item.path)">
+              <template #icon><component :is="item.icon" :size="18" /></template>
+              {{ t(item.label) }}
+            </a-menu-item>
           </a-menu>
-        </template>
-      </nav>
+
+          <template v-for="(section, sectionIndex) in navigation.slice(1)" :key="section.label">
+            <div v-if="!preferences.sidebarCollapsed" class="navigation-section-title">{{ section.label ? t(section.label) : '' }}</div>
+            <a-menu
+              :selected-keys="selectedKeys"
+              :open-keys="preferences.sidebarCollapsed ? [] : openKeys"
+              mode="inline"
+              :inline-indent="16"
+              :inline-collapsed="preferences.sidebarCollapsed"
+              @open-change="updateOpenKeys"
+            >
+              <a-sub-menu v-for="branch in allowedBranches(sectionIndex + 1)" :key="branch.key">
+                <template #icon><component :is="branch.icon" :size="18" /></template>
+                <template #title>{{ t(branch.label) }}</template>
+                <SidebarNavItem v-for="item in branch.items" :key="item.path" :item="item" @navigate="navigate" />
+              </a-sub-menu>
+            </a-menu>
+          </template>
+        </nav>
+      </ConfigProvider>
 
       <button class="sidebar-collapse" type="button" @click="preferences.toggleSidebar()">
         <PanelLeftOpen v-if="preferences.sidebarCollapsed" :size="18" />

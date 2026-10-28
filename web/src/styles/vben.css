@@ -13,6 +13,9 @@
   --edo-border: #e7e9ee;
   --edo-text: #1f2329;
   --edo-muted: #687182;
+  --edo-nav-active-color: color-mix(in srgb, var(--edo-primary) 84%, var(--edo-text));
+  --edo-nav-hover-bg: color-mix(in srgb, var(--edo-primary) 8%, var(--edo-surface));
+  --edo-nav-selected-bg: color-mix(in srgb, var(--edo-text) 7%, var(--edo-surface));
   --edo-header: rgb(255 255 255 / 94%);
   --edo-shadow: 0 1px 2px rgb(0 0 0 / 3%), 0 4px 16px rgb(0 0 0 / 3%);
 }
@@ -29,6 +32,8 @@
   --edo-border: #2a2c34;
   --edo-text: #eef0f5;
   --edo-muted: #959dab;
+  --edo-nav-hover-bg: color-mix(in srgb, var(--edo-primary) 16%, var(--edo-surface));
+  --edo-nav-selected-bg: color-mix(in srgb, var(--edo-text) 10%, var(--edo-surface));
   --edo-header: rgb(23 24 29 / 94%);
   --edo-shadow: 0 8px 24px rgb(0 0 0 / 22%);
 }
