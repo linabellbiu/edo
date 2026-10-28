@@ -288,6 +288,10 @@ func (t *authorizationRoundTripper) RoundTrip(request *http.Request) (*http.Resp
 		release()
 		stop()
 		cancel()
+		// 保留调用方的取消原因，避免连接租约的取消掩盖请求超时。
+		if contextErr := request.Context().Err(); contextErr != nil {
+			return nil, contextErr
+		}
 		return nil, err
 	}
 	if response.Body == nil {
