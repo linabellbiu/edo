@@ -199,6 +199,8 @@ func (h deploymentHandler) writeRuntimeError(c *gin.Context, operation string, e
 func (h deploymentHandler) writeDeploymentError(c *gin.Context, operation string, err error) {
 	h.logger.Warn("发布操作失败", "operation", operation, "request_id", requestIDFrom(c), "deployment_id", c.Param("id"), "err", err)
 	switch {
+	case errors.Is(err, deployment.ErrExecutionAuthorization):
+		writeError(c, http.StatusForbidden, "deployment_authorization_revoked", deployment.ErrExecutionAuthorization.Error())
 	case errors.Is(err, deployment.ErrTargetNotFound):
 		writeError(c, http.StatusNotFound, "deployment_target_not_found", deployment.ErrTargetNotFound.Error())
 	case errors.Is(err, deployment.ErrInvalidImage):

@@ -1,11 +1,12 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { message } from 'ant-design-vue'
 import { CheckCircle2, Download, GitBranch, Package, Rocket, TerminalSquare } from 'lucide-vue-next'
 import { useI18n } from 'vue-i18n'
 
 import client from '@/api/client'
 import { apiErrorMessage } from '@/api/resources'
+import { useAuthStore } from '@/stores/auth'
 import type { WorkflowTemplateResponse } from '@/types/pipeline'
 
 interface WorkflowPresetStep {
@@ -44,6 +45,14 @@ const emit = defineEmits<{
 type CategoryKey = WorkflowPreset['category']
 
 const { t } = useI18n()
+const auth = useAuthStore()
+const selectedProject = ref(localStorage.getItem('edo.project') || '')
+const projectID = computed(() => auth.user?.project_id && auth.user.project_id === selectedProject.value ? selectedProject.value : '')
+const scopeIdentity = computed(() => JSON.stringify([
+  auth.user?.id, auth.user?.project_id, selectedProject.value, auth.user?.is_superuser,
+  [...(auth.user?.permissions || [])].sort(), props.canCreate, props.canExecute,
+]))
+const openedScope = ref('')
 const categories = computed(() => [
   { key: 'quickstart' as const, label: t('pipelinePreset.category.quickstart'), mark: '⌁' },
   { key: 'docker' as const, label: t('pipelinePreset.category.docker'), mark: 'DK' },
@@ -69,7 +78,90 @@ const activeCategoryName = computed(() => categories.value.find(item => item.key
 const requiresRuntime = computed(() => ['go', 'nodejs', 'python'].includes(activeCategory.value))
 const runtimeIsPreparing = computed(() => preparingRuntime.value || selectedRuntime.value?.preparation_status === 'preparing')
 const busy = computed(() => creating.value)
-const canConfirm = computed(() => props.canCreate && Boolean(selectedKey.value) && (!requiresRuntime.value || Boolean(selectedRuntime.value?.installed)))
+const canConfirm = computed(() => canUse('workflow.create') && !loading.value && selectedPreset.value?.category === activeCategory.value && (!requiresRuntime.value || Boolean(selectedRuntime.value?.installed)))
+
+interface PresetRequestScope {
+  identity: string
+  projectID: string
+  epoch: number
+}
+
+let disposed = false
+let scopeEpoch = 0
+let runtimeLoadToken = 0
+let runtimePreparationToken = 0
+let runtimePollTimer: number | undefined
+let resolveRuntimeDelay: (() => void) | undefined
+const requestControllers = new Set<AbortController>()
+const runtimeControllers = new Set<AbortController>()
+const preparationControllers = new Set<AbortController>()
+
+function canUse(permission: 'workflow.read' | 'workflow.create' | 'workflow.execute') {
+  if (disposed || !props.open || !projectID.value || openedScope.value !== scopeIdentity.value || localStorage.getItem('edo.project') !== projectID.value) return false
+  if (permission === 'workflow.create' && !props.canCreate || permission === 'workflow.execute' && !props.canExecute) return false
+  return auth.canAny([permission])
+}
+
+function requestScope(permission: 'workflow.read' | 'workflow.create' | 'workflow.execute'): PresetRequestScope | undefined {
+  if (!canUse(permission)) return undefined
+  return { identity: scopeIdentity.value, projectID: projectID.value, epoch: scopeEpoch }
+}
+
+function currentScope(scope: PresetRequestScope, permission: 'workflow.read' | 'workflow.create' | 'workflow.execute' = 'workflow.read') {
+  return scope.epoch === scopeEpoch && scope.identity === scopeIdentity.value && scope.projectID === projectID.value && canUse(permission)
+}
+
+function beginRequest(scope: PresetRequestScope, runtime = false, preparation = false) {
+  const controller = new AbortController()
+  requestControllers.add(controller)
+  if (runtime) runtimeControllers.add(controller)
+  if (preparation) preparationControllers.add(controller)
+  return { controller, options: { headers: { 'X-EDO-Project-ID': scope.projectID }, signal: controller.signal } }
+}
+
+function finishRequest(controller: AbortController) {
+  requestControllers.delete(controller)
+  runtimeControllers.delete(controller)
+  preparationControllers.delete(controller)
+}
+
+function stopRuntimePreparation() {
+  runtimePreparationToken += 1
+  preparationControllers.forEach(controller => controller.abort())
+  preparationControllers.clear()
+  if (runtimePollTimer !== undefined) window.clearTimeout(runtimePollTimer)
+  runtimePollTimer = undefined
+  resolveRuntimeDelay?.()
+  resolveRuntimeDelay = undefined
+  preparingRuntime.value = false
+}
+
+function stopRuntimeRequests() {
+  runtimeLoadToken += 1
+  stopRuntimePreparation()
+  runtimeControllers.forEach(controller => controller.abort())
+  runtimeControllers.clear()
+  loadingRuntimes.value = false
+}
+
+function resetContext() {
+  scopeEpoch += 1
+  openedScope.value = ''
+  stopRuntimeRequests()
+  requestControllers.forEach(controller => controller.abort())
+  requestControllers.clear()
+  presets.value = []
+  runtimeVersions.value = []
+  selectedRuntimeVersion.value = ''
+  selectedKey.value = ''
+  activeCategory.value = 'quickstart'
+  loading.value = false
+  creating.value = false
+}
+
+function syncSelectedProject() {
+  selectedProject.value = localStorage.getItem('edo.project') || ''
+}
 
 function stepIcon(type: string) {
   if (type === 'test') return CheckCircle2
@@ -85,23 +177,28 @@ function runtimeStatusLabel(item: WorkflowRuntimeVersion) {
 }
 
 async function loadPresets() {
+  const scope = requestScope('workflow.read')
+  if (!scope) return
+  const { controller, options } = beginRequest(scope)
   loading.value = true
   try {
-    const result = await client.get<{ workflow_presets: WorkflowPreset[] }>('/workflow-presets')
+    const result = await client.get<{ workflow_presets: WorkflowPreset[] }>('/workflow-presets', options)
+    if (!currentScope(scope) || controller.signal.aborted) return
     presets.value = (result.data.workflow_presets || []).map(preset => ({
       ...preset,
       steps: preset.steps || [],
     }))
   } catch (error) {
-    message.error(apiErrorMessage(error))
+    if (currentScope(scope) && !controller.signal.aborted) message.error(apiErrorMessage(error))
   } finally {
-    loading.value = false
+    finishRequest(controller)
+    if (currentScope(scope)) loading.value = false
   }
 }
 
 function selectCategory(key: CategoryKey) {
-  runtimePreparationToken += 1
-  preparingRuntime.value = false
+  if (busy.value || !canUse('workflow.read')) return
+  stopRuntimeRequests()
   activeCategory.value = key
   const current = presets.value.find(item => item.key === selectedKey.value)
   if (current?.category !== key) selectedKey.value = ''
@@ -115,36 +212,55 @@ function close() {
 }
 
 async function loadRuntimeVersions(language: Exclude<CategoryKey, 'quickstart' | 'docker'>) {
+  const scope = requestScope('workflow.read')
+  if (!scope || activeCategory.value !== language) return
+  const token = ++runtimeLoadToken
+  const { controller, options } = beginRequest(scope, true)
   loadingRuntimes.value = true
   try {
     const result = await client.get<{ runtime_versions: WorkflowRuntimeVersion[] }>('/workflow-runtime-versions', {
-      params: { language },
+      ...options, params: { language },
     })
-    if (activeCategory.value !== language) return
-    runtimeVersions.value = result.data.runtime_versions || []
+    if (!currentScope(scope) || token !== runtimeLoadToken || controller.signal.aborted || activeCategory.value !== language) return
+    runtimeVersions.value = (result.data.runtime_versions || []).filter(item => item.language === language)
     selectedRuntimeVersion.value = runtimeVersions.value.find(item => item.recommended)?.version || runtimeVersions.value[0]?.version || ''
   } catch (error) {
-    if (activeCategory.value === language) message.error(apiErrorMessage(error))
+    if (currentScope(scope) && token === runtimeLoadToken && !controller.signal.aborted && activeCategory.value === language) message.error(apiErrorMessage(error))
   } finally {
-    if (activeCategory.value === language) loadingRuntimes.value = false
+    finishRequest(controller)
+    if (currentScope(scope) && token === runtimeLoadToken && activeCategory.value === language) loadingRuntimes.value = false
   }
 }
 
-let runtimePreparationToken = 0
-
 function waitForRuntimePollDelay() {
-  return new Promise(resolve => window.setTimeout(resolve, 1800))
+  return new Promise<void>(resolve => {
+    resolveRuntimeDelay = resolve
+    runtimePollTimer = window.setTimeout(() => {
+      runtimePollTimer = undefined
+      resolveRuntimeDelay = undefined
+      resolve()
+    }, 1800)
+  })
 }
 
 async function waitForRuntimePreparation(language: Exclude<CategoryKey, 'quickstart' | 'docker'>, version: string) {
+  const scope = requestScope('workflow.read')
+  if (!scope) return
   const token = ++runtimePreparationToken
   preparingRuntime.value = true
   try {
-    while (props.open && token === runtimePreparationToken) {
+    while (currentScope(scope) && activeCategory.value === language && selectedRuntimeVersion.value === version && token === runtimePreparationToken) {
       await waitForRuntimePollDelay()
-      if (!props.open || token !== runtimePreparationToken) return
-      const result = await client.get<{ runtime_versions: WorkflowRuntimeVersion[] }>('/workflow-runtime-versions', { params: { language } })
-      const versions = result.data.runtime_versions || []
+      if (!currentScope(scope) || activeCategory.value !== language || selectedRuntimeVersion.value !== version || token !== runtimePreparationToken) return
+      const { controller, options } = beginRequest(scope, true, true)
+      let result
+      try {
+        result = await client.get<{ runtime_versions: WorkflowRuntimeVersion[] }>('/workflow-runtime-versions', { ...options, params: { language } })
+      } finally {
+        finishRequest(controller)
+      }
+      if (!currentScope(scope) || controller.signal.aborted || activeCategory.value !== language || selectedRuntimeVersion.value !== version || token !== runtimePreparationToken) return
+      const versions = (result.data.runtime_versions || []).filter(item => item.language === language)
       if (activeCategory.value === language) runtimeVersions.value = versions
       const runtime = versions.find(item => item.version === version)
       if (!runtime) {
@@ -161,25 +277,28 @@ async function waitForRuntimePreparation(language: Exclude<CategoryKey, 'quickst
       }
     }
   } catch (error) {
-    if (token === runtimePreparationToken) message.error(apiErrorMessage(error))
+    if (currentScope(scope) && token === runtimePreparationToken) message.error(apiErrorMessage(error))
   } finally {
-    if (token === runtimePreparationToken) preparingRuntime.value = false
+    if (currentScope(scope) && token === runtimePreparationToken) preparingRuntime.value = false
   }
 }
 
 async function prepareSelectedRuntime() {
-  if (!props.canExecute) {
-    message.error('缺少准备构建运行时的执行权限')
-    return
-  }
+  const scope = requestScope('workflow.execute')
+  if (!scope) return
   if (!selectedRuntime.value || selectedRuntime.value.installed || runtimeIsPreparing.value) return
   const language = selectedRuntime.value.language
   const version = selectedRuntime.value.version
+  const token = ++runtimePreparationToken
+  const { controller, options } = beginRequest(scope, true, true)
+  preparingRuntime.value = true
   try {
     const result = await client.post<WorkflowRuntimeVersion>('/workflow-runtime-versions/prepare', {
       language,
       version,
-    })
+    }, options)
+    if (!currentScope(scope, 'workflow.execute') || controller.signal.aborted || token !== runtimePreparationToken || activeCategory.value !== language || selectedRuntimeVersion.value !== version) return
+    if (result.data.language !== language || result.data.version !== version) return
     runtimeVersions.value = runtimeVersions.value.map(item => item.version === result.data.version ? result.data : item)
     if (result.data.installed) {
       message.success(t('pipelinePreset.runtime.downloaded', { version }))
@@ -187,46 +306,65 @@ async function prepareSelectedRuntime() {
     }
     void waitForRuntimePreparation(language, version)
   } catch (error) {
-    message.error(apiErrorMessage(error))
+    if (currentScope(scope, 'workflow.execute') && !controller.signal.aborted && token === runtimePreparationToken) message.error(apiErrorMessage(error))
+  } finally {
+    finishRequest(controller)
+    if (currentScope(scope) && token === runtimePreparationToken) preparingRuntime.value = false
   }
 }
 
 async function confirm() {
   if (!canConfirm.value || busy.value) return
+  const scope = requestScope('workflow.create')
+  if (!scope) return
+  const name = selectedPreset.value?.name || t('pipelinePreset.fallbackName')
+  const input = { preset_key: selectedKey.value, runtime_version: requiresRuntime.value ? selectedRuntimeVersion.value : undefined }
+  const { controller, options } = beginRequest(scope)
   creating.value = true
   try {
-    const result = await client.post<WorkflowTemplateResponse>('/workflow-templates/from-preset', {
-      preset_key: selectedKey.value,
-      runtime_version: requiresRuntime.value ? selectedRuntimeVersion.value : undefined,
-    })
+    const result = await client.post<WorkflowTemplateResponse & { workflow_template: { project_id?: string } }>('/workflow-templates/from-preset', input, options)
+    if (!currentScope(scope, 'workflow.create') || controller.signal.aborted) return
+    if (result.data.workflow_template?.project_id !== scope.projectID) {
+      message.error('返回的流水线不属于当前项目，请刷新后重试')
+      return
+    }
+    message.success(t('pipelinePreset.created', { name }))
     emit('created', result.data)
     emit('update:open', false)
-    message.success(t('pipelinePreset.created', { name: selectedPreset.value?.name || t('pipelinePreset.fallbackName') }))
   } catch (error) {
-    message.error(apiErrorMessage(error))
+    if (currentScope(scope, 'workflow.create') && !controller.signal.aborted) message.error(apiErrorMessage(error))
   } finally {
-    creating.value = false
+    finishRequest(controller)
+    if (currentScope(scope)) creating.value = false
   }
 }
 
-watch(() => props.open, (open) => {
-  if (!open) {
-    runtimePreparationToken += 1
-    preparingRuntime.value = false
+watch(() => [props.open, scopeIdentity.value] as const, ([open, identity], previous) => {
+  resetContext()
+  if (!open) return
+  if (previous?.[0] && previous[1] !== identity) {
+    emit('update:open', false)
     return
   }
-  activeCategory.value = 'quickstart'
-  selectedKey.value = ''
-  runtimeVersions.value = []
-  selectedRuntimeVersion.value = ''
-  if (!presets.value.length) void loadPresets()
-})
+  openedScope.value = identity
+  if (canUse('workflow.read')) void loadPresets()
+}, { immediate: true, flush: 'sync' })
 watch(selectedRuntimeVersion, (version) => {
-  runtimePreparationToken += 1
-  preparingRuntime.value = false
+  stopRuntimePreparation()
   const runtime = runtimeVersions.value.find(item => item.version === version)
   if (!runtime || runtime.preparation_status !== 'preparing') return
   void waitForRuntimePreparation(runtime.language, runtime.version)
+})
+
+onMounted(() => {
+  window.addEventListener('edo:projects-changed', syncSelectedProject)
+  window.addEventListener('storage', syncSelectedProject)
+})
+onBeforeUnmount(() => {
+  disposed = true
+  resetContext()
+  window.removeEventListener('edo:projects-changed', syncSelectedProject)
+  window.removeEventListener('storage', syncSelectedProject)
 })
 </script>
 

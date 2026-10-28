@@ -21,6 +21,25 @@ type FreshProjectAuthorization struct {
 	Digest      string
 }
 
+// HasCurrentProjectPermission 在已通过策略校验后复核当前项目成员、角色与个人拒绝。
+func (s *Service) HasCurrentProjectPermission(ctx context.Context, user *model.User, permission string) (bool, error) {
+	if user == nil || !ProjectPermission(permission) {
+		return false, nil
+	}
+	scope, ok := database.DepartmentScopeFromContext(ctx)
+	if !ok || scope.ProjectID == "" {
+		return false, nil
+	}
+	authorization, err := FreshProjectPermissions(s.db, ctx, user.ID, scope.ProjectID)
+	if errors.Is(err, ErrAccessDelegationDenied) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return authorization.Permissions[permission], nil
+}
+
 // FreshProjectPermissions reuses the same current-DB permission calculation as
 // project delegation. It does not depend on an asynchronously reloaded enforcer.
 func FreshProjectPermissions(db *gorm.DB, ctx context.Context, userID, projectID string) (*FreshProjectAuthorization, error) {
@@ -30,11 +49,25 @@ func FreshProjectPermissions(db *gorm.DB, ctx context.Context, userID, projectID
 	}
 	result := &FreshProjectAuthorization{Permissions: map[string]bool{}}
 	err := db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		if err := tx.First(&result.User, "uuid = ?", userID).Error; err != nil || !result.User.IsActive {
+		// 只跨部门读取操作者身份；项目和授权查询继续使用冻结范围，普通成员随后核对部门。
+		identityContext := database.WithDepartmentScope(ctx, database.DepartmentScope{UserID: userID, AllDepartments: true})
+		if err := tx.WithContext(identityContext).First(&result.User, "uuid = ?", userID).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return ErrAccessDelegationDenied
+			}
+			return err
+		}
+		if !result.User.IsActive {
 			return ErrAccessDelegationDenied
 		}
 		var project model.Project
-		if err := tx.First(&project, "uuid = ?", projectID).Error; err != nil || !project.IsActive || project.DepartmentID != scope.DepartmentID {
+		if err := tx.First(&project, "uuid = ?", projectID).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return ErrAccessDelegationDenied
+			}
+			return err
+		}
+		if !project.IsActive || project.DepartmentID != scope.DepartmentID {
 			return ErrAccessDelegationDenied
 		}
 		var member model.ProjectMember

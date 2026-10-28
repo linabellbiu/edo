@@ -241,15 +241,34 @@ func (s *Service) DeleteVariable(ctx context.Context, id string, version uint64)
 	err = s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var item model.DeliveryVariable
 		if e := tx.Where("uuid = ? AND project_id = ? AND version = ?", id, scope.ProjectID, version).First(&item).Error; e != nil {
-			return ErrVariableConflict
-		}
-		if e := tx.Model(&item).Updates(map[string]any{"scope_key": digest("deleted", item.ID), "is_active": false}).Error; e != nil {
+			if errors.Is(e, gorm.ErrRecordNotFound) {
+				return ErrVariableConflict
+			}
 			return e
 		}
-		return tx.Delete(&item).Error
+		result := tx.Model(&model.DeliveryVariable{}).Where("uuid = ? AND project_id = ? AND version = ?", item.ID, scope.ProjectID, version).
+			Updates(map[string]any{"scope_key": digest("deleted", item.ID), "is_active": false})
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected != 1 {
+			return ErrVariableConflict
+		}
+		result = tx.Where("uuid = ? AND project_id = ? AND version = ?", item.ID, scope.ProjectID, version).Delete(&model.DeliveryVariable{})
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected != 1 {
+			return ErrVariableConflict
+		}
+		return nil
 	})
 	if err != nil {
-		return s.failure(ctx, "delivery_variable_delete", err, ErrVariableConflict)
+		public := ErrStorage
+		if errors.Is(err, ErrVariableConflict) {
+			public = ErrVariableConflict
+		}
+		return s.failure(ctx, "delivery_variable_delete", err, public)
 	}
 	return nil
 }
@@ -259,7 +278,9 @@ func (s *Service) FreezeVariables(ctx context.Context, projectID, applicationID,
 	if len(names) == 0 {
 		return []model.DeliveryVariableBinding{}, nil
 	}
-	if projectID == "" || len(names) > 128 {
+	// 后台任务也必须携带已验证的项目范围，不能只信任调用方传入的项目 UUID。
+	scope, scopeErr := scopeFrom(ctx)
+	if scopeErr != nil || projectID != scope.ProjectID || len(names) > 128 {
 		return nil, s.failure(ctx, "delivery_variable_freeze_scope", ErrScope, ErrScope)
 	}
 	var items []model.DeliveryVariable
@@ -291,6 +312,15 @@ func (s *Service) FreezeVariables(ctx context.Context, projectID, applicationID,
 func (s *Service) ResolveVariables(ctx context.Context, projectID, ref string, bindings []model.DeliveryVariableBinding) (map[string]string, map[string]string, []string, error) {
 	values, files := map[string]string{}, map[string]string{}
 	redactions := []string{}
+	if len(bindings) > 0 {
+		scope, err := scopeFrom(ctx)
+		if err != nil {
+			return nil, nil, nil, s.failure(ctx, "delivery_variable_resolve_scope", err, ErrScope)
+		}
+		if projectID != scope.ProjectID {
+			return nil, nil, nil, s.failure(ctx, "delivery_variable_resolve_scope", ErrScope, ErrVariableUnavailable)
+		}
+	}
 	for _, binding := range bindings {
 		var item model.DeliveryVariable
 		if e := s.db.WithContext(ctx).Where("project_id = ? AND uuid = ? AND is_active = ?", projectID, binding.VariableID, true).First(&item).Error; e != nil {

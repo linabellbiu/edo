@@ -12,6 +12,7 @@ import (
 )
 
 func (h pipelineHandler) listDeliveryVariables(c *gin.Context) {
+	c.Header("Cache-Control", "no-store")
 	items, err := h.service.Delivery().ListVariables(c.Request.Context())
 	if err != nil {
 		h.writeDeliveryError(c, "delivery_variable_list", err)
@@ -74,6 +75,9 @@ func (h pipelineHandler) writeDeliveryError(c *gin.Context, operation string, er
 	status := http.StatusInternalServerError
 	message := cicd.ErrStorage.Error()
 	switch {
+	case errors.Is(err, cicd.ErrExecutionAuthorization):
+		status = http.StatusForbidden
+		message = "没有操作当前项目交付配置的权限"
 	case errors.Is(err, cicd.ErrScope), errors.Is(err, cicd.ErrInvalidVariable), errors.Is(err, cicd.ErrInvalidDatabase), errors.Is(err, cicd.ErrDatabaseConnect), errors.Is(err, cicd.ErrInvalidPolicy):
 		status = http.StatusBadRequest
 		message = err.Error()

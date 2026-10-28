@@ -233,6 +233,15 @@ func requireAuth(
 	}
 }
 
+func requestPermission(c *gin.Context, accessService *access.Service, user *model.User, permission string) (bool, error) {
+	allowed, err := accessService.HasPermission(c.Request.Context(), user, permission)
+	if err != nil || !allowed || !access.ProjectPermission(permission) {
+		return allowed, err
+	}
+	// 保留 Casbin 策略边界，项目业务操作再以数据库中的当前授权防止撤权延迟。
+	return accessService.HasCurrentProjectPermission(c.Request.Context(), user, permission)
+}
+
 func requirePermission(accessService *access.Service, logger *slog.Logger, permission string) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		user, ok := currentUser(c)
@@ -242,15 +251,16 @@ func requirePermission(accessService *access.Service, logger *slog.Logger, permi
 			c.Abort()
 			return
 		}
-		allowed, err := accessService.HasPermission(c.Request.Context(), user, permission)
+		allowed, err := requestPermission(c, accessService, user, permission)
+		scope, _ := database.DepartmentScopeFromContext(c.Request.Context())
 		if err != nil {
-			logger.Error("查询用户权限失败", "operation", "permission_check", "request_id", requestIDFrom(c), "user_id", user.ID, "permission", permission, "err", err)
+			logger.Error("查询用户权限失败", "operation", "permission_check", "request_id", requestIDFrom(c), "user_id", user.ID, "project_id", scope.ProjectID, "permission", permission, "err", err)
 			writeInternalError(c)
 			c.Abort()
 			return
 		}
 		if !allowed {
-			logger.Warn("用户权限不足", "operation", "permission_denied", "request_id", requestIDFrom(c), "user_id", user.ID, "permission", permission)
+			logger.Warn("用户权限不足", "operation", "permission_denied", "request_id", requestIDFrom(c), "user_id", user.ID, "project_id", scope.ProjectID, "permission", permission)
 			c.AbortWithStatusJSON(http.StatusForbidden, errorResponse{
 				Code: "permission_denied", Message: "没有执行此操作的权限", RequestID: requestIDFrom(c),
 			})
@@ -269,10 +279,11 @@ func requireAnyPermission(accessService *access.Service, logger *slog.Logger, pe
 			c.Abort()
 			return
 		}
+		scope, _ := database.DepartmentScopeFromContext(c.Request.Context())
 		for _, permission := range permissions {
-			allowed, err := accessService.HasPermission(c.Request.Context(), user, permission)
+			allowed, err := requestPermission(c, accessService, user, permission)
 			if err != nil {
-				logger.Error("查询用户权限失败", "operation", "permission_any_check", "request_id", requestIDFrom(c), "user_id", user.ID, "permission", permission, "err", err)
+				logger.Error("查询用户权限失败", "operation", "permission_any_check", "request_id", requestIDFrom(c), "user_id", user.ID, "project_id", scope.ProjectID, "permission", permission, "err", err)
 				writeInternalError(c)
 				c.Abort()
 				return
@@ -282,7 +293,7 @@ func requireAnyPermission(accessService *access.Service, logger *slog.Logger, pe
 				return
 			}
 		}
-		logger.Warn("用户缺少任一所需权限", "operation", "permission_any_denied", "request_id", requestIDFrom(c), "user_id", user.ID, "permissions", permissions)
+		logger.Warn("用户缺少任一所需权限", "operation", "permission_any_denied", "request_id", requestIDFrom(c), "user_id", user.ID, "project_id", scope.ProjectID, "permissions", permissions)
 		c.AbortWithStatusJSON(http.StatusForbidden, errorResponse{
 			Code: "permission_denied", Message: "没有执行此操作的权限", RequestID: requestIDFrom(c),
 		})

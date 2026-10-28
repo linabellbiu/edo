@@ -60,7 +60,7 @@ func TestStopExecutingPipelineWaitsForCleanupAndPreventsLateResults(t *testing.T
 			defer cancel()
 			done := make(chan error, 1)
 			go func() {
-				done <- service.ExecuteBuildTask(ctx, BuildTaskPayload{PipelineRunID: run.ID, WorkflowNodeID: node.ID}, run.ExecutionJobID)
+				done <- service.ExecuteBuildTask(pipelineExecutionTestContext(ctx, run), BuildTaskPayload{PipelineRunID: run.ID, WorkflowNodeID: node.ID}, run.ExecutionJobID)
 			}()
 			select {
 			case <-runner.started:
@@ -138,7 +138,7 @@ func TestStopQueuedPipelineAndRejectCompletedRun(t *testing.T) {
 	if err != nil || stopped.Status != model.PipelineRunCanceled {
 		t.Fatalf("排队任务未停止: %+v %v", stopped, err)
 	}
-	if err := service.ExecuteBuildTask(context.Background(), BuildTaskPayload{PipelineRunID: run.ID, WorkflowNodeID: node.ID}, run.ExecutionJobID); err != nil {
+	if err := service.ExecuteBuildTask(pipelineExecutionTestContext(context.Background(), run), BuildTaskPayload{PipelineRunID: run.ID, WorkflowNodeID: node.ID}, run.ExecutionJobID); err != nil {
 		t.Fatal(err)
 	}
 	var job model.Job

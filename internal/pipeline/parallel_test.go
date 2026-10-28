@@ -53,7 +53,7 @@ func TestParallelTasksExecuteTogetherAndWaitForStage(t *testing.T) {
 			t.Fatal(err)
 		}
 		go func(node model.PipelineNodeRun) {
-			errorsCh <- s.ExecuteBuildTask(ctx, BuildTaskPayload{PipelineRunID: run.ID, WorkflowNodeID: node.NodeID}, node.JobID)
+			errorsCh <- s.ExecuteBuildTask(pipelineExecutionTestContext(ctx, run), BuildTaskPayload{PipelineRunID: run.ID, WorkflowNodeID: node.NodeID}, node.JobID)
 		}(node)
 	}
 	dirs := []string{}
@@ -87,7 +87,7 @@ func TestParallelTasksExecuteTogetherAndWaitForStage(t *testing.T) {
 	}
 	for _, node := range nodes {
 		if node.NodeID == third.ID {
-			if err = s.ExecuteBuildTask(ctx, BuildTaskPayload{PipelineRunID: run.ID, WorkflowNodeID: third.ID}, node.JobID); err != nil {
+			if err = s.ExecuteBuildTask(pipelineExecutionTestContext(ctx, run), BuildTaskPayload{PipelineRunID: run.ID, WorkflowNodeID: third.ID}, node.JobID); err != nil {
 				t.Fatal(err)
 			}
 		}

@@ -612,8 +612,8 @@ func TestSSHDeploymentUsesSelectedMembershipAndExactPlanSnapshot(t *testing.T) {
 	service.ssh = runner
 	script := "printf '%s\\n' \"$EDO_DEPLOYMENT_ID\"  \nexit 17\n\n"
 	digest := model.DeploymentPlanExecutionDigest(model.DeploymentPlanScript, script, 120)
-	record, err := service.RequestCommandAndRun(context.Background(), "operator", CommandRequestInput{
-		TargetID: target.ID, PipelineRunID: "run-1", WorkflowNodeID: "deploy-1",
+	record, err := service.RequestCommandAndRun(deploymentPipelineExecutionContext(t, db, target, "run-1"), "operator", CommandRequestInput{
+		ApplicationID: deploymentTestApplicationID, TargetID: target.ID, PipelineRunID: "run-1", WorkflowNodeID: "deploy-1",
 		DeploymentPlanID: "plan-1", PlanKind: model.DeploymentPlanScript,
 		Script: script, ScriptDigest: digest, TimeoutSeconds: 120,
 		Environment: map[string]string{"EDO_PIPELINE_RUN_ID": "run-1"},
@@ -636,7 +636,7 @@ func TestSSHDeploymentUsesSelectedMembershipAndExactPlanSnapshot(t *testing.T) {
 		stored.ErrorMessage != "命令脚本部署失败：脚本退出码为 17，请查看部署控制台输出" {
 		t.Fatalf("SSH 发布记录快照或退出码错误: %+v", stored)
 	}
-	if _, err := service.Rollback(context.Background(), stored.ID, "operator"); !errors.Is(err, ErrRollbackUnavailable) {
+	if _, err := service.Rollback(deploymentExecutionTestContext(), stored.ID, "operator"); !errors.Is(err, ErrRollbackUnavailable) {
 		t.Fatalf("SSH 命令部署不应自动创建回滚: %v", err)
 	}
 }
@@ -664,9 +664,9 @@ func TestPipelineDeploymentExecutesImmutableTargetSnapshot(t *testing.T) {
 	script := "echo ok\n"
 	digest := model.DeploymentPlanExecutionDigest(model.DeploymentPlanScript, script, 120)
 	record, err := service.RequestCommandSnapshotAndRun(
-		context.Background(), "operator", snapshot,
+		deploymentPipelineExecutionContext(t, db, &snapshot, "snapshot-run"), "operator", snapshot,
 		CommandRequestInput{
-			TargetID: target.ID, PipelineRunID: "snapshot-run", WorkflowNodeID: "deploy",
+			ApplicationID: deploymentTestApplicationID, TargetID: target.ID, PipelineRunID: "snapshot-run", WorkflowNodeID: "deploy",
 			DeploymentPlanID: "snapshot-plan", PlanKind: model.DeploymentPlanScript,
 			Script: script, ScriptDigest: digest, TimeoutSeconds: 120,
 		},
@@ -701,7 +701,7 @@ func TestPipelineReleaseIdempotencyBlocksConcurrentExecutionAndReusesSuccess(t *
 	service.ssh = runner
 	script := "./deploy.sh\n"
 	input := CommandRequestInput{
-		TargetID: target.ID, PipelineRunID: "run-idempotent", WorkflowNodeID: "deploy-production",
+		ApplicationID: deploymentTestApplicationID, TargetID: target.ID, PipelineRunID: "run-idempotent", WorkflowNodeID: "deploy-production",
 		DeploymentPlanID: "plan-idempotent", PlanKind: model.DeploymentPlanScript,
 		Script: script, ScriptDigest: model.DeploymentPlanExecutionDigest(model.DeploymentPlanScript, script, 120),
 		TimeoutSeconds: 120,
@@ -712,7 +712,7 @@ func TestPipelineReleaseIdempotencyBlocksConcurrentExecutionAndReusesSuccess(t *
 	}
 	firstResult := make(chan result, 1)
 	go func() {
-		record, runErr := service.RequestCommandSnapshotAndRun(context.Background(), "operator", *target, input)
+		record, runErr := service.RequestCommandSnapshotAndRun(deploymentPipelineExecutionContext(t, db, target, input.PipelineRunID), "operator", *target, input)
 		firstResult <- result{record: record, err: runErr}
 	}()
 	select {
@@ -721,7 +721,7 @@ func TestPipelineReleaseIdempotencyBlocksConcurrentExecutionAndReusesSuccess(t *
 		t.Fatal("首次发布没有开始执行")
 	}
 
-	duplicate, err := service.RequestCommandSnapshotAndRun(context.Background(), "operator", *target, input)
+	duplicate, err := service.RequestCommandSnapshotAndRun(deploymentPipelineExecutionContext(t, db, target, input.PipelineRunID), "operator", *target, input)
 	if !errors.Is(err, ErrPipelineReleaseRunning) || duplicate == nil {
 		t.Fatalf("并发重复发布未返回稳定的执行中错误: record=%+v err=%v", duplicate, err)
 	}
@@ -740,7 +740,7 @@ func TestPipelineReleaseIdempotencyBlocksConcurrentExecutionAndReusesSuccess(t *
 	if first.err != nil || first.record == nil || first.record.ID != duplicate.ID {
 		t.Fatalf("首次发布执行结果错误: record=%+v err=%v", first.record, first.err)
 	}
-	reused, err := service.RequestCommandSnapshotAndRun(context.Background(), "operator", *target, input)
+	reused, err := service.RequestCommandSnapshotAndRun(deploymentPipelineExecutionContext(t, db, target, input.PipelineRunID), "operator", *target, input)
 	if err != nil || reused == nil || reused.ID != first.record.ID || reused.Status != model.DeploymentSucceeded {
 		t.Fatalf("重投没有复用已成功发布记录: record=%+v err=%v", reused, err)
 	}
@@ -749,7 +749,7 @@ func TestPipelineReleaseIdempotencyBlocksConcurrentExecutionAndReusesSuccess(t *
 	}
 	changed := input
 	changed.ArtifactID = "other-artifact"
-	conflict, err := service.RequestCommandSnapshotAndRun(context.Background(), "operator", *target, changed)
+	conflict, err := service.RequestCommandSnapshotAndRun(deploymentPipelineExecutionContext(t, db, target, changed.PipelineRunID), "operator", *target, changed)
 	if !errors.Is(err, ErrPipelineReleaseConflict) || conflict == nil || conflict.ID != first.record.ID {
 		t.Fatalf("相同幂等键下不同制品语义未被拒绝: record=%+v err=%v", conflict, err)
 	}
@@ -775,7 +775,7 @@ func TestRollbackRequiresImmutableImageIdentityAndIsIdempotent(t *testing.T) {
 	if err := db.Create(&source).Error; err != nil {
 		t.Fatalf("创建待回滚发布记录失败: %v", err)
 	}
-	first, err := service.Rollback(context.Background(), source.ID, "operator")
+	first, err := service.Rollback(deploymentExecutionTestContext(), source.ID, "operator")
 	if err != nil {
 		t.Fatalf("创建固定镜像身份的回滚失败: %v", err)
 	}
@@ -790,7 +790,7 @@ func TestRollbackRequiresImmutableImageIdentityAndIsIdempotent(t *testing.T) {
 	if storedRollback.RollbackSourceID != source.ID || storedRollback.RollbackAttempt != 1 {
 		t.Fatalf("回滚任务没有记录来源及尝试次数: %+v", storedRollback)
 	}
-	second, err := service.Rollback(context.Background(), source.ID, "operator")
+	second, err := service.Rollback(deploymentExecutionTestContext(), source.ID, "operator")
 	if err != nil {
 		t.Fatalf("重复回滚请求未复用已有任务: %v", err)
 	}
@@ -824,7 +824,7 @@ func TestRollbackRequiresImmutableImageIdentityAndIsIdempotent(t *testing.T) {
 		wait.Add(1)
 		go func() {
 			defer wait.Done()
-			record, err := service.Rollback(context.Background(), source.ID, "operator")
+			record, err := service.Rollback(deploymentExecutionTestContext(), source.ID, "operator")
 			results <- rollbackResult{record: record, err: err}
 		}()
 	}
@@ -861,7 +861,7 @@ func TestRollbackRequiresImmutableImageIdentityAndIsIdempotent(t *testing.T) {
 		if err := db.Model(&model.DeploymentRecord{}).Where("uuid = ?", retry.ID).Update("status", status).Error; err != nil {
 			t.Fatalf("更新回滚状态为 %s 失败: %v", status, err)
 		}
-		reused, err := service.Rollback(context.Background(), source.ID, "operator")
+		reused, err := service.Rollback(deploymentExecutionTestContext(), source.ID, "operator")
 		if err != nil || reused == nil || reused.ID != retry.ID || reused.Status != status {
 			t.Fatalf("状态为 %s 的回滚尝试未被复用: record=%+v err=%v", status, reused, err)
 		}
@@ -879,7 +879,7 @@ func TestRollbackRequiresImmutableImageIdentityAndIsIdempotent(t *testing.T) {
 	if err := db.Create(&missingIdentity).Error; err != nil {
 		t.Fatalf("创建缺少镜像身份的历史记录失败: %v", err)
 	}
-	if _, err := service.Rollback(context.Background(), missingIdentity.ID, "operator"); !errors.Is(err, ErrRollbackUnavailable) {
+	if _, err := service.Rollback(deploymentExecutionTestContext(), missingIdentity.ID, "operator"); !errors.Is(err, ErrRollbackUnavailable) {
 		t.Fatalf("缺少 Docker Image ID 的回滚未被拒绝: %v", err)
 	}
 
@@ -896,7 +896,7 @@ func TestRollbackRequiresImmutableImageIdentityAndIsIdempotent(t *testing.T) {
 	if err := db.Create(&mutableKubernetes).Error; err != nil {
 		t.Fatalf("创建可变 Kubernetes 历史记录失败: %v", err)
 	}
-	if _, err := service.Rollback(context.Background(), mutableKubernetes.ID, "operator"); !errors.Is(err, ErrRollbackUnavailable) {
+	if _, err := service.Rollback(deploymentExecutionTestContext(), mutableKubernetes.ID, "operator"); !errors.Is(err, ErrRollbackUnavailable) {
 		t.Fatalf("Kubernetes 可变标签回滚未被拒绝: %v", err)
 	}
 }
@@ -932,7 +932,7 @@ func TestRollbackAdoptsLegacyFailedRecordBeforeCreatingRetry(t *testing.T) {
 		t.Fatalf("创建旧结构失败回滚记录失败: %v", err)
 	}
 
-	retry, err := service.Rollback(context.Background(), source.ID, "operator")
+	retry, err := service.Rollback(deploymentExecutionTestContext(), source.ID, "operator")
 	if err != nil {
 		t.Fatalf("旧结构失败回滚无法重试: %v", err)
 	}
@@ -963,16 +963,16 @@ func TestPipelineReleaseIdempotencyDoesNotRetryFailedDeployment(t *testing.T) {
 	service.ssh = runner
 	script := "exit 17\n"
 	input := CommandRequestInput{
-		TargetID: target.ID, PipelineRunID: "run-failed-idempotent", WorkflowNodeID: "deploy",
+		ApplicationID: deploymentTestApplicationID, TargetID: target.ID, PipelineRunID: "run-failed-idempotent", WorkflowNodeID: "deploy",
 		DeploymentPlanID: "plan-failed-idempotent", PlanKind: model.DeploymentPlanScript,
 		Script: script, ScriptDigest: model.DeploymentPlanExecutionDigest(model.DeploymentPlanScript, script, 120),
 		TimeoutSeconds: 120,
 	}
-	first, err := service.RequestCommandSnapshotAndRun(context.Background(), "operator", *target, input)
+	first, err := service.RequestCommandSnapshotAndRun(deploymentPipelineExecutionContext(t, db, target, input.PipelineRunID), "operator", *target, input)
 	if err == nil || first == nil {
 		t.Fatalf("首次失败发布没有保存发布记录: record=%+v err=%v", first, err)
 	}
-	duplicate, err := service.RequestCommandSnapshotAndRun(context.Background(), "operator", *target, input)
+	duplicate, err := service.RequestCommandSnapshotAndRun(deploymentPipelineExecutionContext(t, db, target, input.PipelineRunID), "operator", *target, input)
 	if !errors.Is(err, ErrPipelineReleaseFailed) || duplicate == nil || duplicate.ID != first.ID {
 		t.Fatalf("失败发布重投未返回稳定错误及原记录: record=%+v err=%v", duplicate, err)
 	}
@@ -1334,5 +1334,6 @@ func newDeploymentTestService(t *testing.T) (*Service, *gorm.DB, string) {
 			t.Fatalf("创建 Docker 环境测试资源失败: %v", err)
 		}
 	}
+	configureDeploymentAuthorizationTestActor(t, db, database.DefaultProjectID(database.DefaultDepartmentID), database.DefaultDepartmentID, "operator", "deployment.execute", "pipeline_run.execute")
 	return NewService(db, dockerService, kubeService, nil, nil, "", logger), db, endpoint.ID
 }

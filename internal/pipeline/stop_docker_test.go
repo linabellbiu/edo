@@ -55,7 +55,7 @@ func TestStopPipelineWithRealDockerContainer(t *testing.T) {
 	}
 	done := make(chan error, 1)
 	go func() {
-		done <- service.ExecuteBuildTask(ctx, BuildTaskPayload{PipelineRunID: run.ID, WorkflowNodeID: node.ID}, run.ExecutionJobID)
+		done <- service.ExecuteBuildTask(pipelineExecutionTestContext(ctx, run), BuildTaskPayload{PipelineRunID: run.ID, WorkflowNodeID: node.ID}, run.ExecutionJobID)
 	}()
 	select {
 	case <-runner.ready:

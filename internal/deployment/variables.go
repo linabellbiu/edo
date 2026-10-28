@@ -33,6 +33,7 @@ func (s *Service) ConfigureReleaseVariables(manager *secret.Manager, permissions
 func (s *Service) resolveRecordVariables(ctx context.Context, record *model.DeploymentRecord) (map[string]string, error) {
 	denied := errors.New("发布变量不可用或使用授权已失效")
 	if s.variables == nil || s.variables.permissions == nil {
+		s.logger.Error("发布变量权限服务不可用", "operation", "deployment_variable_authorization", "record_id", record.ID, "project_id", record.ProjectID, "err", denied)
 		return nil, denied
 	}
 	var run model.PipelineRun
@@ -45,24 +46,24 @@ func (s *Service) resolveRecordVariables(ctx context.Context, record *model.Depl
 		AuthorityID      string                                     `json:"authority_id"`
 	}
 	if err := json.Unmarshal([]byte(run.WorkflowSnapshot), &snapshot); err != nil {
+		s.logger.Error("读取发布变量运行快照失败", "operation", "deployment_variable_snapshot", "record_id", record.ID, "run_id", run.ID, "err", err)
 		return nil, denied
 	}
 	bindings := snapshot.VariableBindings[record.WorkflowNodeID]
 	if len(bindings) == 0 {
+		s.logger.Error("发布变量运行引用不存在", "operation", "deployment_variable_bindings", "record_id", record.ID, "run_id", run.ID, "node_id", record.WorkflowNodeID, "err", denied)
 		return nil, denied
 	}
 	for _, id := range []string{snapshot.AuthorityID, record.RequestedBy} {
-		var user model.User
-		if err := s.db.WithContext(ctx).First(&user, "uuid = ? AND is_active = ?", id, true).Error; err != nil {
-			return nil, denied
-		}
-		allowed, err := s.variables.permissions.HasPermission(ctx, &user, "delivery_variable.execute")
-		if err != nil || !allowed {
+		authorization, err := access.FreshProjectPermissions(s.db, ctx, id, run.ProjectID)
+		if err != nil || !authorization.Permissions["delivery_variable.execute"] {
+			s.logger.Error("发布变量使用授权已失效", "operation", "deployment_variable_authorization", "record_id", record.ID, "project_id", run.ProjectID, "actor_id", id, "err", err)
 			return nil, denied
 		}
 	}
 	values, files, _, err := s.variables.service.ResolveVariables(ctx, run.ProjectID, run.Ref, bindings)
 	if err != nil || len(files) > 0 {
+		s.logger.Error("发布变量读取失败", "operation", "deployment_variable_resolve", "record_id", record.ID, "project_id", run.ProjectID, "err", errors.Join(err, denied))
 		return nil, denied
 	}
 	return values, nil

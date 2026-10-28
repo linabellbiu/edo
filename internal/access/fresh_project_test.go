@@ -6,8 +6,11 @@ import (
 	"testing"
 	"time"
 
+	"gorm.io/gorm"
+
 	"edo/internal/database"
 	"edo/internal/model"
+	"edo/internal/testutil"
 )
 
 func TestFreshProjectPermissionsBypassesStaleEnforcerAndHonorsDeny(t *testing.T) {
@@ -90,5 +93,74 @@ func TestFreshProjectPermissionsRejectsInactiveAndWrongProject(t *testing.T) {
 	}
 	if _, err := FreshProjectPermissions(db, ctx, user.ID, project.ID); !errors.Is(err, ErrAccessDelegationDenied) {
 		t.Fatalf("inactive user accepted: %v", err)
+	}
+}
+
+func TestFreshProjectPermissionsScopesCrossDepartmentIdentityOnly(t *testing.T) {
+	db := testutil.NewDatabase(t)
+	department := model.Department{ID: "fresh-other-department", Name: "其他部门", IsActive: true}
+	project := model.Project{ID: "fresh-other-project", DepartmentID: department.ID, Name: "其他部门项目", IsActive: true}
+	admin := model.User{ID: "fresh-cross-admin", Username: "fresh_cross_admin", DepartmentID: database.DefaultDepartmentID, IsActive: true, IsSuperuser: true}
+	foreign := model.User{ID: "fresh-cross-member", Username: "fresh_cross_member", DepartmentID: database.DefaultDepartmentID, IsActive: true}
+	member := model.User{ID: "fresh-local-member", Username: "fresh_local_member", DepartmentID: department.ID, IsActive: true}
+	role := model.Role{ID: "fresh-executor-role", Name: "fresh_executor_role", DisplayName: "项目执行员"}
+	for _, item := range []any{
+		&department, &project, &admin, &foreign, &member, &role,
+		&model.RolePermission{RoleID: role.ID, Permission: "pipeline_run.execute"},
+		&model.ProjectMember{ProjectID: project.ID, UserID: foreign.ID, RoleID: role.ID},
+		&model.ProjectMember{ProjectID: project.ID, UserID: member.ID, RoleID: role.ID},
+	} {
+		if err := db.Create(item).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	type traceKey struct{}
+	base, cancel := context.WithTimeout(context.WithValue(context.Background(), traceKey{}, "identity-trace"), time.Minute)
+	defer cancel()
+	deadline, _ := base.Deadline()
+	ctx := database.WithDepartmentScope(base, database.DepartmentScope{ProjectID: project.ID, DepartmentID: department.ID})
+	queries := map[string]int{}
+	if err := db.Callback().Query().Before("gorm:query").Register("test:fresh_identity_scope", func(tx *gorm.DB) {
+		current := tx.Statement.Context
+		if current.Value(traceKey{}) != "identity-trace" {
+			t.Error("授权查询丢失了原请求上下文")
+		}
+		if actual, ok := current.Deadline(); !ok || !actual.Equal(deadline) {
+			t.Error("授权查询丢失了原请求超时")
+		}
+		scope, _ := database.DepartmentScopeFromContext(current)
+		queries[tx.Statement.Table]++
+		if tx.Statement.Table == "users" {
+			if !scope.AllDepartments || scope.ProjectID != "" || scope.DepartmentID != "" {
+				t.Error("跨部门身份查询仍受到业务项目范围过滤")
+			}
+		} else if scope.ProjectID != project.ID || scope.DepartmentID != department.ID || scope.AllDepartments {
+			t.Errorf("身份读取范围扩大到了业务授权查询: table=%s", tx.Statement.Table)
+		}
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for _, actor := range []model.User{admin, member} {
+		authorization, err := FreshProjectPermissions(db, ctx, actor.ID, project.ID)
+		if err != nil || !authorization.Permissions["pipeline_run.execute"] {
+			t.Fatalf("有效操作者无法在冻结项目执行: actor=%s err=%v", actor.ID, err)
+		}
+	}
+	for _, table := range []string{"users", "projects", "project_members", "role_permissions", "user_permissions"} {
+		if queries[table] == 0 {
+			t.Fatalf("没有覆盖授权查询的冻结范围: table=%s", table)
+		}
+	}
+	if _, err := FreshProjectPermissions(db, ctx, foreign.ID, project.ID); !errors.Is(err, ErrAccessDelegationDenied) {
+		t.Fatalf("普通跨部门用户借助成员记录获得项目权限: %v", err)
+	}
+	if _, err := FreshProjectPermissions(db, ctx, admin.ID, "different-project"); !errors.Is(err, ErrAccessDelegationDenied) {
+		t.Fatalf("超级管理员身份读取放宽了目标项目范围: %v", err)
+	}
+	if err := db.Model(&model.Project{}).Where("uuid = ?", project.ID).Update("is_active", false).Error; err != nil {
+		t.Fatal(err)
+	}
+	if _, err := FreshProjectPermissions(db, ctx, admin.ID, project.ID); !errors.Is(err, ErrAccessDelegationDenied) {
+		t.Fatalf("超级管理员可以执行已失效项目: %v", err)
 	}
 }

@@ -19,14 +19,25 @@ async function reload() {
   selected.value=projects.some(item=>item.id===saved)?saved:projects[0]?.id||''
   if(selected.value)localStorage.setItem('edo.project',selected.value)
   else localStorage.removeItem('edo.project')
+  if (auth.user && (auth.user.project_id || '') !== selected.value) {
+   window.location.assign('/projects')
+   return
+  }
   const user=await getCurrentUser()
   if(!disposed&&request===revision)auth.user=user
  }catch(error){if(!disposed&&request===revision)message.error(apiErrorMessage(error))}
  finally{if(!disposed&&request===revision)loading.value=false}
 }
 function projectChanged(){void reload()}
-onMounted(()=>{void reload();window.addEventListener('edo:projects-changed',projectChanged)})
-onBeforeUnmount(()=>{disposed=true;revision++;window.removeEventListener('edo:projects-changed',projectChanged)})
+function externalProjectChanged(event: StorageEvent) {
+ if (event.key !== null && event.key !== 'edo.project') return
+ if ((localStorage.getItem('edo.project') || '') !== selected.value) {
+  revision++
+  window.location.assign('/projects')
+ }
+}
+onMounted(()=>{void reload();window.addEventListener('edo:projects-changed',projectChanged);window.addEventListener('storage',externalProjectChanged)})
+onBeforeUnmount(()=>{disposed=true;revision++;window.removeEventListener('edo:projects-changed',projectChanged);window.removeEventListener('storage',externalProjectChanged)})
 function change(id: string) { if (id === selected.value) return; localStorage.setItem('edo.project',id); window.location.assign('/projects') }
 </script>
 <template><a-select class="project-selector" :value="selected || undefined" :options="items.map(item=>({value:item.id,label:item.name,department:item.department_name}))" :loading="loading" show-search option-filter-prop="label" :placeholder="t('workspace.chooseProject')" :aria-label="t('workspace.chooseProject')" @change="(value:unknown)=>change(String(value))"><template #option="{label,department}"><span class="project-option"><strong>{{label}}</strong><small v-if="department">{{department}}</small></span></template></a-select></template>

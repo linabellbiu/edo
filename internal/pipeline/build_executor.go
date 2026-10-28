@@ -75,6 +75,9 @@ func (s *Service) executeBuildTask(ctx context.Context, payload BuildTaskPayload
 	}
 	ctx = withPipelineNodeLog(ctx, prepared.node.ID, prepared.node.Name)
 	runningState := failureStateForRun(prepared.run)
+	if err := s.requirePipelineExecutionPermission(ctx, prepared.run, prepared.snapshot); err != nil {
+		return s.finishBuildTaskFailure(ctx, runningState, false, "流水线执行授权已失效，请检查当前项目角色权限", err)
+	}
 	if prepared.node.Type == model.WorkflowNodeBuild {
 		recovered, recoverErr := s.recoverCompletedBuildArtifact(ctx, prepared)
 		if recoverErr != nil {

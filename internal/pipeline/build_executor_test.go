@@ -137,7 +137,7 @@ func TestExecuteScriptBuildProducesFileBundleAndAdvances(t *testing.T) {
 		"src/input.txt": "source",
 	})
 
-	if err := service.ExecuteBuildTask(context.Background(), BuildTaskPayload{
+	if err := service.ExecuteBuildTask(pipelineExecutionTestContext(context.Background(), run), BuildTaskPayload{
 		PipelineRunID: run.ID, WorkflowNodeID: buildNode.ID,
 	}, run.ExecutionJobID); err != nil {
 		t.Fatalf("执行脚本构建失败: %v", err)
@@ -219,7 +219,7 @@ func TestExecuteShellTaskUsesWorkingDirectoryAndEnvironment(t *testing.T) {
 		Stages:        []model.WorkflowStage{{ID: "verify", Name: "检查", Tasks: []model.WorkflowNode{node}}},
 	}, map[string]string{"work/source.txt": "source"})
 
-	if err := service.ExecuteBuildTask(context.Background(), BuildTaskPayload{
+	if err := service.ExecuteBuildTask(pipelineExecutionTestContext(context.Background(), run), BuildTaskPayload{
 		PipelineRunID: run.ID, WorkflowNodeID: node.ID,
 	}, run.ExecutionJobID); err != nil {
 		t.Fatalf("执行 Shell 任务失败: %v", err)
@@ -276,7 +276,7 @@ func TestStaleBuildDeliveryAfterAdvanceIsNoOp(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := service.ExecuteBuildTask(context.Background(), BuildTaskPayload{
+	if err := service.ExecuteBuildTask(pipelineExecutionTestContext(context.Background(), run), BuildTaskPayload{
 		PipelineRunID: run.ID, WorkflowNodeID: oldNode.ID,
 	}, oldJobID); err != nil {
 		t.Fatalf("旧构建消息重投应安全忽略: %v", err)
@@ -385,7 +385,7 @@ func TestExecuteBuildTaskRecoversRegisteredArtifactWithoutRebuilding(t *testing.
 	if err != nil {
 		t.Fatalf("预先登记构建制品失败: %v", err)
 	}
-	if err := service.ExecuteBuildTask(context.Background(), BuildTaskPayload{
+	if err := service.ExecuteBuildTask(pipelineExecutionTestContext(context.Background(), run), BuildTaskPayload{
 		PipelineRunID: run.ID, WorkflowNodeID: node.ID,
 	}, run.ExecutionJobID); err != nil {
 		t.Fatalf("已有制品时仍然重复执行失败脚本: %v", err)
@@ -473,6 +473,10 @@ func newBuildExecutorTestRun(
 	if err := db.Create(&application).Error; err != nil {
 		t.Fatalf("创建构建执行测试应用失败: %v", err)
 	}
+	if snapshot.AuthorityID == "" {
+		snapshot.AuthorityID = "admin"
+	}
+	configurePipelineExecutionTestAuthority(t, service, application.ProjectID, application.DepartmentID, snapshot.AuthorityID)
 	snapshotJSON, err := json.Marshal(snapshot)
 	if err != nil {
 		t.Fatal(err)

@@ -652,6 +652,9 @@ func (s *Service) RollbackChecked(ctx context.Context, sourceID, actorID string,
 }
 
 func (s *Service) rollback(ctx context.Context, sourceID, actorID string, expected *RollbackConfirmation) (*model.DeploymentRecord, error) {
+	if err := s.requireExecutionContext(ctx, sourceID); err != nil {
+		return nil, err
+	}
 	stored, err := s.rollbackSource(ctx, sourceID)
 	if err != nil {
 		return nil, err
@@ -660,6 +663,11 @@ func (s *Service) rollback(ctx context.Context, sourceID, actorID string, expect
 	if source.Platform == model.DeploymentSSH || source.DeploymentPlanKind == model.DeploymentPlanCompose ||
 		(source.Status != model.DeploymentSucceeded && !(source.Platform == model.DeploymentKubernetes && source.Status == model.DeploymentFailed)) || source.PreviousImage == "" {
 		return nil, ErrRollbackUnavailable
+	}
+	authorizationRecord := source
+	authorizationRecord.Operation, authorizationRecord.RequestedBy = model.DeploymentRollback, actorID
+	if err := s.requireExecutionPermission(ctx, &authorizationRecord); err != nil {
+		return nil, err
 	}
 	image := strings.TrimSpace(source.PreviousImage)
 	expectedImageID := ""
@@ -879,12 +887,28 @@ func (s *Service) Run(ctx context.Context, deploymentID string) error {
 }
 
 func (s *Service) run(ctx context.Context, deploymentID, expectedImageID string, command *commandExecution) error {
+	if err := s.requireExecutionContext(ctx, deploymentID); err != nil {
+		return err
+	}
 	var record model.DeploymentRecord
 	if err := s.db.WithContext(ctx).First(&record, "uuid = ?", deploymentID).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return ErrDeploymentNotFound
 		}
 		return fmt.Errorf("读取待执行发布记录失败: %w", err)
+	}
+	if err := s.requireExecutionScope(ctx, &record); err != nil {
+		return err
+	}
+	// 成功任务的重投只确认已完成结果，撤权不能把既有成功任务改为失败。
+	if record.Status == model.DeploymentSucceeded {
+		return nil
+	}
+	if record.Status != model.DeploymentQueued {
+		return ErrInvalidDeploymentState
+	}
+	if err := s.requireExecutionPermission(ctx, &record); err != nil {
+		return s.failExecutionAuthorization(ctx, &record, err)
 	}
 	ctx, err := deploymentRequesterContext(ctx, record)
 	if err != nil {
@@ -967,6 +991,9 @@ func (s *Service) run(ctx context.Context, deploymentID, expectedImageID string,
 			err = ErrInvalidTarget
 			break
 		}
+		if err := s.requireExecutionPermission(ctx, &record); err != nil {
+			return s.failExecutionAuthorization(ctx, &record, err)
+		}
 		result, commandErr := s.ssh.RunHostDeploymentScript(ctx, sshdeploy.Input{
 			HostID: record.HostID, EnvironmentID: record.EnvironmentID,
 			WorkingDirectory: record.WorkingDirectory, Script: record.CommandScript,
@@ -985,6 +1012,9 @@ func (s *Service) run(ctx context.Context, deploymentID, expectedImageID string,
 			if !validTimeout || record.ComposeDigest == "" || record.ComposeDigest != expectedDigest || s.docker == nil {
 				err = ErrInvalidTarget
 				break
+			}
+			if err := s.requireExecutionPermission(ctx, &record); err != nil {
+				return s.failExecutionAuthorization(ctx, &record, err)
 			}
 			previousImage, err = s.docker.DeployCompose(ctx, dockerengine.ComposeDeployInput{
 				EndpointID: record.RuntimeID, TargetID: record.TargetID,
@@ -1014,6 +1044,9 @@ func (s *Service) run(ctx context.Context, deploymentID, expectedImageID string,
 					dockerConfig.EnvironmentVariables[key] = value
 				}
 			}
+			if err := s.requireExecutionPermission(ctx, &record); err != nil {
+				return s.failExecutionAuthorization(ctx, &record, err)
+			}
 			if expectedImageID == "" {
 				previous, deployWarning, deployErr := s.docker.DeployContainer(
 					ctx, record.RuntimeID, record.TargetID, record.WorkloadName, record.Image, record.ImageDisplay,
@@ -1038,6 +1071,9 @@ func (s *Service) run(ctx context.Context, deploymentID, expectedImageID string,
 		}
 		if values := releaseEnvironment(ctx); values != nil {
 			ctx = kube.WithReleaseVariables(ctx, values)
+		}
+		if err := s.requireExecutionPermission(ctx, &record); err != nil {
+			return s.failExecutionAuthorization(ctx, &record, err)
 		}
 		previousImage, err = s.kube.DeployImageIfCurrent(
 			ctx, record.RuntimeID, record.Namespace, record.WorkloadName,

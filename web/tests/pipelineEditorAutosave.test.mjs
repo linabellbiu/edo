@@ -21,7 +21,7 @@ function harness(t, { active = false, publicMode = false } = {}) {
       useRouter: () => ({}), onBeforeRouteLeave() {}, onBeforeRouteUpdate() {},
     },
     'ant-design-vue': { Modal: { confirm: options => dialogs.push(options) }, message: Object.fromEntries(['success', 'warning', 'error'].map(level => [level, value => messages.push({ level, value })])) },
-    '@/stores/auth': { useAuthStore: () => ({ canAny: () => true }) },
+    '@/stores/auth': { useAuthStore: () => ({ user:{id:'operator',project_id:'project-a',permissions:['workflow.read','workflow.update'],is_superuser:false},canAny:()=>true }) },
     '@/api/client': { __esModule: true, default: { put: (path, payload) => new Promise((resolve, reject) => requests.push({ path, payload, resolve, reject })) } },
     '@/api/resources': { apiErrorMessage: () => '保存失败' },
   }
@@ -30,7 +30,7 @@ function harness(t, { active = false, publicMode = false } = {}) {
     clearTimeout: id => timers.delete(id),
   }
   const module = { exports: {} }
-  new Function('require', 'module', 'exports', 'window', output)(name => modules[name] || {}, module, module.exports, fakeWindow)
+  new Function('require','module','exports','window','localStorage',output)(name=>modules[name]||{},module,module.exports,fakeWindow,{getItem:key=>key==='edo.project'?'project-a':null})
   const scope = vue.effectScope()
   const state = scope.run(() => module.exports.default.setup({}, { expose() {} }))
   const initial = {

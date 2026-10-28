@@ -46,6 +46,7 @@ func newKubernetesRollbackFixture(t *testing.T, status model.DeploymentStatus) *
 	t.Helper()
 	service, db, _ := newDeploymentTestService(t)
 	f := &rollbackFixture{service: service, db: db}
+	configureDeploymentAuthorizationTestActor(t, db, "project-a", database.DefaultDepartmentID, "operator", "deployment.execute", "pipeline_run.execute")
 	replicas := int32(2)
 	f.live = &appsv1.Deployment{
 		TypeMeta:   metav1.TypeMeta{APIVersion: "apps/v1", Kind: "Deployment"},
@@ -92,7 +93,7 @@ func newKubernetesRollbackFixture(t *testing.T, status model.DeploymentStatus) *
 	t.Cleanup(server.Close)
 	certificate := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: server.Certificate().Raw})
 	kubeconfig := fmt.Sprintf("apiVersion: v1\nkind: Config\nclusters:\n- name: test\n  cluster:\n    server: %s\n    certificate-authority-data: %s\nusers:\n- name: edo\n  user:\n    token: test\ncontexts:\n- name: test\n  context:\n    cluster: test\n    user: edo\ncurrent-context: test\n", server.URL, base64.StdEncoding.EncodeToString(certificate))
-	ctx := database.WithDepartmentScope(context.Background(), database.DepartmentScope{UserID: "operator", DepartmentID: database.DefaultDepartmentID, ProjectID: "project-a"})
+	ctx := database.WithDepartmentScope(deploymentExecutionTestContext("project-a"), database.DepartmentScope{UserID: "operator", DepartmentID: database.DefaultDepartmentID, ProjectID: "project-a"})
 	cluster, err := service.kube.Create(ctx, "operator", kube.Input{Name: "验收集群", Mode: model.KubernetesKubeconfig, Kubeconfig: &kubeconfig})
 	if err != nil {
 		t.Fatal(err)
@@ -101,7 +102,7 @@ func newKubernetesRollbackFixture(t *testing.T, status model.DeploymentStatus) *
 	resources := []any{
 		&model.GitRepository{ID: "rollback-repo", Name: "回退仓库", IsActive: true},
 		&model.Application{ID: "rollback-app", Name: "rollback_app", RepositoryID: "rollback-repo", IsActive: true},
-		&model.PipelineRun{ID: "source-run", ApplicationID: "rollback-app", Status: model.PipelineRunFailed},
+		&model.PipelineRun{ID: "source-run", ApplicationID: "rollback-app", Status: model.PipelineRunFailed, CreatedBy: "operator", WorkflowSnapshot: `{"authority_id":"operator"}`},
 		&model.DeploymentTarget{ID: "source-target", Name: "独立验收目标", Platform: model.DeploymentKubernetes, RuntimeID: cluster.ID, Namespace: "acceptance", WorkloadName: "api", ContainerName: "api", RolloutTimeout: 30, IsActive: true},
 		&model.DeploymentPlan{ID: "source-plan", Name: "验收部署", Kind: model.DeploymentPlanKubernetes, DeploymentTargetID: "source-target", IsActive: true},
 		&model.Artifact{ID: "good-artifact", ApplicationID: "rollback-app", PipelineRunID: "source-run", ImageRef: rollbackGoodImage, Kind: model.ArtifactKindOCIImage, Digest: "sha256:" + strings.Repeat("a", 64), Status: model.ArtifactStatusAvailable},
@@ -138,11 +139,11 @@ func TestKubernetesRollbackPreservesOwnershipAndPreviousArtifact(t *testing.T) {
 	for _, status := range []model.DeploymentStatus{model.DeploymentSucceeded, model.DeploymentFailed} {
 		t.Run(string(status), func(t *testing.T) {
 			f := newKubernetesRollbackFixture(t, status)
-			preview, err := f.service.RollbackPreview(context.Background(), f.source.ID)
+			preview, err := f.service.RollbackPreview(deploymentExecutionTestContext("project-a"), f.source.ID)
 			if err != nil || !preview.CanRollback || preview.TargetImage != rollbackGoodImage || preview.ClusterName != "验收集群" {
 				t.Fatalf("已实际应用镜像的发布无法预检回退: %+v %v", preview, err)
 			}
-			record, err := f.service.RollbackChecked(context.Background(), f.source.ID, "operator", f.confirmation())
+			record, err := f.service.RollbackChecked(deploymentExecutionTestContext("project-a"), f.source.ID, "operator", f.confirmation())
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -152,10 +153,10 @@ func TestKubernetesRollbackPreservesOwnershipAndPreviousArtifact(t *testing.T) {
 				record.DeploymentPlanID != f.source.DeploymentPlanID || record.Namespace != f.source.Namespace || record.ContainerName != f.source.ContainerName {
 				t.Fatalf("回退归属、上一镜像制品或目标快照错误: %+v", record)
 			}
-			if err := f.service.Run(context.Background(), record.ID); err != nil {
+			if err := f.service.Run(deploymentExecutionTestContext("project-a"), record.ID); err != nil {
 				t.Fatal(err)
 			}
-			reused, err := f.service.RollbackChecked(context.Background(), f.source.ID, "operator", f.confirmation())
+			reused, err := f.service.RollbackChecked(deploymentExecutionTestContext("project-a"), f.source.ID, "operator", f.confirmation())
 			if err != nil || reused.ID != record.ID || reused.Status != model.DeploymentSucceeded || f.writes != 1 {
 				t.Fatalf("重复确认触发了重复回退: %+v %v writes=%d", reused, err, f.writes)
 			}
@@ -163,7 +164,7 @@ func TestKubernetesRollbackPreservesOwnershipAndPreviousArtifact(t *testing.T) {
 			if err := f.db.First(&original, "uuid = ?", f.source.ID).Error; err != nil || original.Status != status || original.ArtifactID != "bad-artifact" || original.Image != rollbackBadImage {
 				t.Fatalf("回退改写了来源历史: %+v %v", original, err)
 			}
-			records, err := f.service.ListForPipelineRun(context.Background(), f.source.PipelineRunID, 50)
+			records, err := f.service.ListForPipelineRun(deploymentExecutionTestContext("project-a"), f.source.PipelineRunID, 50)
 			if err != nil || len(records) != 2 {
 				t.Fatalf("原流水线上下文没有包含回退进度: %+v %v", records, err)
 			}
@@ -207,7 +208,7 @@ func TestKubernetesRollbackRejectsChangedIdentityAndScope(t *testing.T) {
 			f := newKubernetesRollbackFixture(t, model.DeploymentFailed)
 			confirmation := f.confirmation()
 			tc.change(f, &confirmation)
-			if _, err := f.service.RollbackChecked(context.Background(), f.source.ID, "operator", confirmation); !errors.Is(err, ErrRollbackTargetChanged) {
+			if _, err := f.service.RollbackChecked(deploymentExecutionTestContext("project-a"), f.source.ID, "operator", confirmation); !errors.Is(err, ErrRollbackTargetChanged) {
 				t.Fatalf("变化的目标仍允许回退: %v", err)
 			}
 			if f.writes != 0 {
@@ -216,7 +217,7 @@ func TestKubernetesRollbackRejectsChangedIdentityAndScope(t *testing.T) {
 		})
 	}
 	f := newKubernetesRollbackFixture(t, model.DeploymentFailed)
-	foreign := database.WithDepartmentScope(context.Background(), database.DepartmentScope{UserID: "operator", DepartmentID: f.source.DepartmentID, ProjectID: "project-b"})
+	foreign := database.WithDepartmentScope(deploymentExecutionTestContext("project-a"), database.DepartmentScope{UserID: "operator", DepartmentID: f.source.DepartmentID, ProjectID: "project-b"})
 	if _, err := f.service.RollbackPreview(foreign, f.source.ID); !errors.Is(err, ErrDeploymentNotFound) {
 		t.Fatalf("跨项目预检读取了部署: %v", err)
 	}
@@ -238,12 +239,12 @@ func TestKubernetesRollbackRechecksAfterQueueAndNeverInventsArtifact(t *testing.
 	if err := f.db.Create(&foreignArtifact).Error; err != nil {
 		t.Fatal(err)
 	}
-	record, err := f.service.RollbackChecked(context.Background(), f.source.ID, "operator", f.confirmation())
+	record, err := f.service.RollbackChecked(deploymentExecutionTestContext("project-a"), f.source.ID, "operator", f.confirmation())
 	if err != nil || record.ArtifactID != "" {
 		t.Fatalf("没有上一镜像制品时不应借用失败制品: %+v %v", record, err)
 	}
 	f.live.UID = "recreated-while-queued"
-	if err := f.service.Run(context.Background(), record.ID); err == nil {
+	if err := f.service.Run(deploymentExecutionTestContext("project-a"), record.ID); err == nil {
 		t.Fatal("排队后目标变化仍执行了回退")
 	}
 	var stored model.DeploymentRecord
@@ -261,7 +262,7 @@ func TestKubernetesReleaseSavesIdentityEvenWhenReadinessFails(t *testing.T) {
 	f.live.Spec.Template.Spec.Containers[0].Image = rollbackGoodImage
 	f.live.Spec.Template.Annotations["edo.io/deployment-id"] = "previous-release"
 	f.live.Status.ReadyReplicas, f.live.Status.AvailableReplicas = 0, 0
-	if err := f.service.Run(context.Background(), f.source.ID); err == nil {
+	if err := f.service.Run(deploymentExecutionTestContext("project-a"), f.source.ID); err == nil {
 		t.Fatal("未就绪的新镜像被报告为成功")
 	}
 	var record model.DeploymentRecord
@@ -271,7 +272,7 @@ func TestKubernetesReleaseSavesIdentityEvenWhenReadinessFails(t *testing.T) {
 	if record.KubernetesUID != "original-uid" || record.PreviousImage != rollbackGoodImage || record.Status != model.DeploymentFailed || f.writes != 1 {
 		t.Fatalf("实际更新后丢失安全回退所需身份: %+v writes=%d", record, f.writes)
 	}
-	preview, err := f.service.RollbackPreview(context.Background(), record.ID)
+	preview, err := f.service.RollbackPreview(deploymentExecutionTestContext("project-a"), record.ID)
 	if err != nil || !preview.CanRollback {
 		t.Fatalf("真实就绪失败记录不能安全回退: %+v %v", preview, err)
 	}
@@ -285,27 +286,27 @@ func TestKubernetesDeploymentLockUsesPhysicalWorkload(t *testing.T) {
 	first := &model.DeploymentRecord{ID: "first", TargetID: "plan-a-target", Platform: model.DeploymentKubernetes, RuntimeID: "cluster", Namespace: "ns", WorkloadName: "api", RolloutTimeout: 30}
 	second := *first
 	second.ID, second.TargetID = "second", "plan-b-target"
-	lock, err := service.acquireTargetLock(context.Background(), first)
+	lock, err := service.acquireTargetLock(deploymentExecutionTestContext("project-a"), first)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer lock.Release(context.Background())
-	ctx, cancel := context.WithTimeout(context.Background(), 80*time.Millisecond)
+	defer lock.Release(deploymentExecutionTestContext("project-a"))
+	ctx, cancel := context.WithTimeout(deploymentExecutionTestContext("project-a"), 80*time.Millisecond)
 	defer cancel()
 	if competing, err := service.acquireTargetLock(ctx, &second); err == nil || competing != nil {
 		t.Fatalf("不同方案仍能同时修改同一工作负载: lock=%v err=%v", competing, err)
 	}
 	second.Namespace = "other"
-	independent, err := service.acquireTargetLock(context.Background(), &second)
+	independent, err := service.acquireTargetLock(deploymentExecutionTestContext("project-a"), &second)
 	if err != nil {
 		t.Fatalf("不同工作负载被全局串行化: %v", err)
 	}
-	defer independent.Release(context.Background())
+	defer independent.Release(deploymentExecutionTestContext("project-a"))
 }
 
 func TestKubernetesDeploymentTargetDoesNotRequireSSHHostMembership(t *testing.T) {
 	f := newKubernetesRollbackFixture(t, model.DeploymentSucceeded)
-	ctx := database.WithDepartmentScope(context.Background(), database.DepartmentScope{UserID: "operator", DepartmentID: f.source.DepartmentID, ProjectID: f.source.ProjectID})
+	ctx := database.WithDepartmentScope(deploymentExecutionTestContext("project-a"), database.DepartmentScope{UserID: "operator", DepartmentID: f.source.DepartmentID, ProjectID: f.source.ProjectID})
 	environment := model.Environment{ID: "independent-environment", Name: "独立集群环境", IsActive: true}
 	if err := f.db.WithContext(ctx).Create(&environment).Error; err != nil {
 		t.Fatal(err)
@@ -323,7 +324,7 @@ func TestKubernetesDeploymentTargetDoesNotRequireSSHHostMembership(t *testing.T)
 	if err := f.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error { return f.service.ReconcileEnvironmentTargets(ctx, tx, environment.ID) }); err != nil {
 		t.Fatalf("调整空环境仍要求集群绑定 SSH 主机: %v", err)
 	}
-	foreign := database.WithDepartmentScope(context.Background(), database.DepartmentScope{UserID: "operator", DepartmentID: f.source.DepartmentID, ProjectID: "project-b"})
+	foreign := database.WithDepartmentScope(deploymentExecutionTestContext("project-a"), database.DepartmentScope{UserID: "operator", DepartmentID: f.source.DepartmentID, ProjectID: "project-b"})
 	otherEnvironment := model.Environment{ID: "foreign-cluster-environment", Name: "其他项目环境", IsActive: true}
 	if err := f.db.WithContext(foreign).Create(&otherEnvironment).Error; err != nil {
 		t.Fatal(err)

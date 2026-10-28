@@ -1,4 +1,4 @@
-import axios from 'axios'
+import axios, { type InternalAxiosRequestConfig } from 'axios'
 
 export interface ReadyResponse {
   status: 'ok' | 'failed'
@@ -35,10 +35,34 @@ const client = axios.create({
   withCredentials: true,
 })
 
+let authorizedProject: string | undefined
+const selectedProject = () => typeof localStorage === 'undefined' ? '' : localStorage.getItem('edo.project') ?? ''
+const projectChangedMessage = '项目已切换，请刷新页面后重试'
+const contextRequest = (config: InternalAxiosRequestConfig) => /^\/?auth(?:\/|$)/.test(config.url ?? '') || config.method === 'get' && config.url === '/projects'
+
 client.interceptors.request.use(config => {
-  const project = typeof localStorage === 'undefined' ? '' : localStorage.getItem('edo.project')
-  if (project) config.headers.set('X-EDO-Project-ID', project)
+  const project = selectedProject()
+  const requestedProject = config.headers.has('X-EDO-Project-ID') ? String(config.headers.get('X-EDO-Project-ID') ?? '') : project
+  if (!contextRequest(config) && (requestedProject !== project || authorizedProject !== undefined && project !== authorizedProject)) {
+    throw new axios.AxiosError(projectChangedMessage, 'EDO_PROJECT_CHANGED', config)
+  }
+  // 已打开的编辑器和确认框可以固定项目，不能在发送时被新选择覆盖。
+  if (project && !config.headers.has('X-EDO-Project-ID')) config.headers.set('X-EDO-Project-ID', project)
   return config
+})
+
+function responseProjectChanged(config?: InternalAxiosRequestConfig) {
+  if (!config || contextRequest(config)) return false
+  const project = String(config.headers.get('X-EDO-Project-ID') ?? '')
+  return project !== selectedProject() || authorizedProject !== undefined && project !== authorizedProject
+}
+
+client.interceptors.response.use(response => {
+  if (responseProjectChanged(response.config)) throw new axios.AxiosError(projectChangedMessage, 'EDO_PROJECT_CHANGED', response.config)
+  return response
+}, error => {
+  if (axios.isAxiosError(error) && responseProjectChanged(error.config)) throw new axios.AxiosError(projectChangedMessage, 'EDO_PROJECT_CHANGED', error.config)
+  return Promise.reject(error)
 })
 
 export async function getReadyStatus(): Promise<ReadyResponse> {
@@ -64,12 +88,21 @@ export async function getLoginProviders(): Promise<LoginProvider[]> {
 }
 
 export async function getCurrentUser(): Promise<User> {
-  const response = await client.get<UserResponse>('/auth/me')
+  const project = selectedProject()
+  const response = await client.get<UserResponse>('/auth/me', { headers: { 'X-EDO-Project-ID': project } })
+  if (project !== selectedProject() || (response.data.user.project_id ?? '') !== project) {
+    throw new axios.AxiosError(projectChangedMessage, 'EDO_PROJECT_CHANGED', response.config)
+  }
+  authorizedProject = project
   return response.data.user
 }
 
 export async function logout(): Promise<void> {
-  await client.post('/auth/logout')
+  try {
+    await client.post('/auth/logout')
+  } finally {
+    authorizedProject = undefined
+  }
 }
 
 export default client

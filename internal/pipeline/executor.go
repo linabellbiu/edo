@@ -87,6 +87,9 @@ func (s *Service) executeDeployTask(ctx context.Context, payload DeployTaskPaylo
 	}
 	ctx = withPipelineNodeLog(ctx, prepared.node.ID, prepared.node.Name)
 	failureState := failureStateForRun(prepared.run)
+	if err := s.requirePipelineExecutionPermission(ctx, prepared.run, prepared.snapshot); err != nil {
+		return s.failDeploymentExecution(ctx, failureState, "流水线执行授权已失效，请检查当前项目角色权限", err)
+	}
 	if err := s.validateReleasePolicy(ctx, prepared.run, prepared.node, prepared.snapshot, prepared.target.EnvironmentID); err != nil {
 		return s.failDeploymentExecution(ctx, failureState, "发布未满足环境保护规则", err)
 	}

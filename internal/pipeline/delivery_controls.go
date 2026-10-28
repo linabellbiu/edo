@@ -3,6 +3,7 @@ package pipeline
 import (
 	"context"
 	"edo/internal/access"
+	"edo/internal/database"
 	"gorm.io/gorm"
 
 	"edo/internal/cicd"
@@ -32,27 +33,40 @@ func (s *Service) ListCheckReports(ctx context.Context, runID string) ([]model.P
 func (s *Service) ConfigureDeliveryAccess(permissions *access.Service) {
 	s.deliveryAccess = permissions
 }
+
+// CheckDeliveryPermission 按当前项目的实时成员、角色及个人拒绝校验交付动作。
+func (s *Service) CheckDeliveryPermission(ctx context.Context, actorID, permission string) error {
+	return s.requireDeliveryPermission(ctx, actorID, permission)
+}
+
 func (s *Service) requireDeliveryPermission(ctx context.Context, actorID, permission string) error {
 	return s.requireDeliveryPermissionWithDatabase(ctx, s.db, actorID, permission)
 }
 func (s *Service) requireDeliveryPermissionWithDatabase(ctx context.Context, db *gorm.DB, actorID, permission string) error {
 	denied := cicd.ErrExecutionAuthorization
+	scope, _ := database.DepartmentScopeFromContext(ctx)
 	if s.deliveryAccess == nil {
-		s.logger.Error("交付权限服务不可用", "operation", "delivery_permission", "permission", permission)
+		s.logger.Error("交付权限服务不可用", "operation", "delivery_permission", "project_id", scope.ProjectID, "actor_id", actorID, "permission", permission, "err", denied)
 		return denied
 	}
-	var actor model.User
-	if err := db.WithContext(ctx).First(&actor, "uuid = ? AND is_active = ?", actorID, true).Error; err != nil {
-		s.logger.Error("执行授权用户不可用", "operation", "delivery_permission", "actor_id", actorID, "err", err)
-		return denied
-	}
-	allowed, err := s.deliveryAccess.HasPermission(ctx, &actor, permission)
-	if err != nil || !allowed {
-		s.logger.Error("交付执行权限不足", "operation", "delivery_permission", "actor_id", actorID, "permission", permission, "err", err)
+	authorization, err := access.FreshProjectPermissions(db, ctx, actorID, scope.ProjectID)
+	if err != nil || !authorization.Permissions[permission] {
+		s.logger.Error("交付执行权限不足", "operation", "delivery_permission", "project_id", scope.ProjectID, "actor_id", actorID, "permission", permission, "err", err)
 		return denied
 	}
 	return nil
 }
+
+func (s *Service) requirePipelineExecutionPermission(ctx context.Context, run model.PipelineRun, snapshot workflowSnapshot) error {
+	scope, ok := database.DepartmentScopeFromContext(ctx)
+	if !ok || run.ProjectID == "" || run.DepartmentID == "" || scope.ProjectID != run.ProjectID || scope.DepartmentID != run.DepartmentID || snapshot.AuthorityID == "" {
+		s.logger.Error("流水线执行授权范围无效", "operation", "pipeline_execution_authorization", "pipeline_run_id", run.ID,
+			"project_id", run.ProjectID, "department_id", run.DepartmentID, "actor_id", snapshot.AuthorityID, "err", cicd.ErrExecutionAuthorization)
+		return cicd.ErrExecutionAuthorization
+	}
+	return s.requireDeliveryPermission(ctx, snapshot.AuthorityID, "pipeline_run.execute")
+}
+
 func (s *Service) DatabaseMigrations(ctx context.Context, id string) ([]model.ApplicationDatabaseMigration, error) {
 	var target model.ApplicationDatabase
 	if err := s.db.WithContext(ctx).First(&target, "uuid = ?", id).Error; err != nil {

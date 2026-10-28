@@ -397,7 +397,7 @@ function workflowSourceLabel(workflow:ApplicationWorkflow){
  return `分支：${branch}；触发：${events||t('applicationCard.trigger.none')}`
 }
 function workflowDisplayName(workflow?:ApplicationWorkflow){return workflow?.name||workflow?.workflow_template?.name||t('applicationCard.customWorkflow')}
-function workflowOriginLabel(workflow:ApplicationWorkflow){return workflow.workflow_template?'公共流水线':'自定义流水线'}
+function workflowOriginLabel(workflow:ApplicationWorkflow){return workflow.workflow_template?'项目共用流水线':'自定义流水线'}
 function deploymentKind(record:DeploymentRecord){
  const kind=record.deployment_plan_kind||record.platform
  return ['docker','compose','kubernetes','script'].includes(kind)?kind:'script'
@@ -1069,7 +1069,7 @@ function removeApplicationWorkflow(workflow:ApplicationWorkflow){
  const templateLinked=Boolean(workflow.workflow_template_id)
  Modal.confirm({
   title:`${templateLinked?'解除关联并删除':'删除'}流水线“${workflowDisplayName(workflow)}”？`,
-  content:'只删除该应用下的流水线定义，应用、公共流水线和历史运行记录不会被删除。正在执行的流水线不能删除。',
+  content:'只删除该应用下的流水线定义，应用、项目共用流水线和历史运行记录不会被删除。正在执行的流水线不能删除。',
   okText:templateLinked?'解除并删除':'删除流水线',cancelText:'取消',okType:'danger',
   async onOk(){
    workflowRemovalID.value=workflow.id
@@ -2075,7 +2075,7 @@ onBeforeUnmount(()=>{runListController?.abort();executionController?.abort();run
   </div>
  </section>
  <section class="application-form-section application-workflow-association">
-  <header><strong>关联流水线</strong><small>{{ editingID?'查看应用已有流水线，或继续选择已启用的公共流水线。':'可选择已启用的公共流水线；不选择则在保存应用后配置发布流程。' }}</small></header>
+  <header><strong>关联流水线</strong><small>{{ editingID?'查看应用已有流水线，或继续选择本项目已启用的共用流水线。':'可选择本项目已启用的共用流水线；不选择则在保存应用后配置发布流程。' }}</small></header>
   <template v-if="editingID">
    <div v-if="editingApplication?.workflows?.length" class="workflow-association-list">
     <div v-for="workflow in editingApplication.workflows" :key="workflow.id" class="workflow-association-item">

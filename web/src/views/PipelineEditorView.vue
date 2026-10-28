@@ -162,15 +162,47 @@ let stageListElement: HTMLElement | null = null
 const taskListElements = new Map<string, HTMLElement>()
 const taskSortables = new Map<string, Sortable>()
 
-const canCreate = computed(() => auth.canAny(['workflow.create']))
-const canUpdate = computed(() => auth.canAny(['workflow.update']))
-const canExecute = computed(() => auth.canAny(['workflow.execute']))
+
+type EditorScope = { identity:string; revision:number; projectID:string; signal:AbortSignal }
+const loadedContext = ref(''), scopeError = ref('')
+let disposed = false, mounted = false, scopeRevision = 0, graphRevision = 0, scopeController = new AbortController(), presetContext = ''
+let stageRemovalDialog:ReturnType<typeof Modal.confirm>|undefined
+let discardDialog:ReturnType<typeof Modal.confirm>|undefined, discardResolve:((value:boolean)=>void)|undefined
+function selectedProject() { return typeof localStorage === 'undefined' ? '' : localStorage.getItem('edo.project') || '' }
+function scopeIdentity() { return JSON.stringify([auth.user?.id,auth.user?.department_id,auth.user?.project_id,auth.user?.is_superuser,[...(auth.user?.permissions || [])].sort(),selectedProject()]) }
+function scopeAllowed() { const selected=selectedProject(); return !!selected && selected===auth.user?.project_id && auth.canAny(['workflow.read']) }
+function scopeCan(permission:string) { return scopeAllowed() && loadedContext.value===scopeIdentity() && auth.canAny([permission]) }
+function captureScope():EditorScope { return {identity:scopeIdentity(),revision:scopeRevision,projectID:selectedProject(),signal:scopeController.signal} }
+function currentScope(scope:EditorScope) { return !disposed && !scope.signal.aborted && scope.revision===scopeRevision && scope.identity===scopeIdentity() && scopeAllowed() }
+function scopeOptions(scope:EditorScope) { return {headers:{'X-EDO-Project-ID':scope.projectID},signal:scope.signal} }
+function failedScope(cause:unknown, scope:EditorScope) {
+  if(!currentScope(scope))return true
+  if((cause as {response?:{status?:number}})?.response?.status!==403)return false
+  resetScope(false);scopeError.value=apiErrorMessage(cause);return true
+}
+function resetScope(reload=true) {
+  scopeRevision++;graphRevision++;scopeController.abort();scopeController=new AbortController();loadedContext.value=''
+  window.clearTimeout(autoSaveTimer);destroySortables();stageRemovalDialog?.destroy();stageRemovalDialog=undefined;discardResolve?.(false);discardResolve=undefined;discardDialog?.destroy();discardDialog=undefined
+  applications.value=[];templates.value=[];buildPlans.value=[];deploymentPlans.value=[];notificationChannels.value=[];builtinVariables.value=[];workflow.value=null;sources.value=[];stages.value=[];issues.value=[]
+  selectedNodeID.value='';selectedStageID.value='';libraryStageID.value='';panelMode.value='closed';propertyTab.value='common';presetOpen.value=false;presetContext='';saveConfirmOpen.value=false;saveConfirmSubmitting.value=false
+  notificationChannelModalOpen.value=false;notificationChannelSubmitting.value=false;notificationChannelForm.name='';notificationChannelForm.endpoint='';notificationChannelForm.token='';notificationChannelForm.title=defaultNotificationTitle;notificationChannelForm.message=defaultNotificationMessage;notificationChannelForm.allow_http=false
+  for(const values of [environmentVariableTexts,environmentVariableErrors,notificationTemplateTargets])Object.keys(values).forEach(key=>delete values[key])
+  dirty.value=false;editVersion++;saving.value=false;autoSaving.value=false;autoSaveFailed.value=false;switching.value=false;loading.value=false;builtinVariableLoading.value=false;builtinVariableError.value=''
+  applicationID.value=typeof route.query.application==='string'?route.query.application:'';workflowID.value=typeof route.query.workflow==='string'?route.query.workflow:'';templateID.value=typeof route.query.template==='string'?route.query.template:''
+  scopeError.value=!selectedProject()?'请先选择项目，再管理流水线。':selectedProject()!==auth.user?.project_id?'正在切换项目，请等待项目权限加载完成。':!auth.canAny(['workflow.read'])?'当前项目没有查看流水线的权限。':''
+  if(reload&&mounted&&scopeAllowed())void loadResources()
+}
+function projectChanged(event:Event) { if(event.type==='storage'&&(event as StorageEvent).key!==null&&(event as StorageEvent).key!=='edo.project')return;resetScope() }
+
+const canCreate = computed(() => scopeCan('workflow.create'))
+const canUpdate = computed(() => scopeCan('workflow.update'))
+const canExecute = computed(() => scopeCan('workflow.execute'))
 const canEdit = computed(() => canUpdate.value && (!saving.value || autoSaving.value))
-const canCreateBuildPlan = computed(() => auth.canAny(['build_plan.create']))
-const canCreateDeploymentPlan = computed(() => auth.canAny(['deployment_plan.create']))
-const canReadNotificationChannels = computed(() => auth.canAny(['notification.read']))
-const canCreateNotificationChannels = computed(() => auth.canAny(['notification.create']))
-const canTestNotificationChannels = computed(() => auth.canAny(['notification.execute']))
+const canCreateBuildPlan = computed(() => scopeCan('build_plan.create'))
+const canCreateDeploymentPlan = computed(() => scopeCan('deployment_plan.create'))
+const canReadNotificationChannels = computed(() => scopeAllowed() && auth.canAny(['notification.read']))
+const canCreateNotificationChannels = computed(() => scopeCan('notification.create'))
+const canTestNotificationChannels = computed(() => scopeCan('notification.execute'))
 const publicMode = computed(() => !applicationID.value)
 const editorApplication = computed<ApplicationRecord | null>(() => {
   if (publicMode.value) return { id: 'public-template', name: '流水线' }
@@ -247,6 +279,7 @@ function isTaskType(type: WorkflowNodeType): type is TaskNodeType {
 }
 
 function markDirty() {
+  if (!canUpdate.value) return
   editVersion += 1
   dirty.value = true
   autoSaveFailed.value = false
@@ -255,7 +288,7 @@ function markDirty() {
 
 function scheduleAutoSave() {
   window.clearTimeout(autoSaveTimer)
-  if (!canUpdate.value || !workflow.value || workflow.value.is_active || saving.value) return
+  if (!scopeCan('workflow.update') || !workflow.value || workflow.value.is_active || saving.value) return
   autoSaveTimer = window.setTimeout(() => void save(false, true), 1200)
 }
 
@@ -348,7 +381,9 @@ function cloneWorkflowValue<T>(value: T): T {
   return JSON.parse(JSON.stringify(value)) as T
 }
 
-function loadGraph(value: Workflow, loadedIssues: WorkflowIssue[]) {
+function loadGraph(value: Workflow, loadedIssues: WorkflowIssue[], scope = captureScope()) {
+  if (!currentScope(scope)) return
+  loadedContext.value = scope.identity
   workflow.value = value
   Object.keys(environmentVariableTexts).forEach(key => delete environmentVariableTexts[key])
   Object.keys(environmentVariableErrors).forEach(key => delete environmentVariableErrors[key])
@@ -381,81 +416,86 @@ function summarizeIssues(items: WorkflowIssue[]) {
   return first.join('；')
 }
 
-async function loadBuiltinVariableCatalog() {
+async function loadBuiltinVariableCatalog(scope = captureScope()) {
+  if(!currentScope(scope))return
   builtinVariableLoading.value = true
   builtinVariableError.value = ''
   try {
-    const result = await client.get<BuiltinVariableCatalog>('/settings/builtin-variables')
+    const result = await client.get<BuiltinVariableCatalog>('/settings/builtin-variables',scopeOptions(scope))
+    if(!currentScope(scope))return
     const variables = result.data.variables || []
     if (!variables.length) throw new Error('内置变量目录为空')
     builtinVariables.value = variables
   } catch (error) {
+    if(failedScope(error,scope))return
     builtinVariables.value = []
     builtinVariableError.value = `内置变量目录暂时不可用：${apiErrorMessage(error)}`
     message.warning(builtinVariableError.value)
-  } finally {
-    builtinVariableLoading.value = false
-  }
+  } finally { if(currentScope(scope))builtinVariableLoading.value = false }
 }
 
 async function loadResources() {
-  loading.value = true
-  void loadBuiltinVariableCatalog()
+  const scope=captureScope()
+  if(!currentScope(scope))return
+  loading.value = true;scopeError.value=''
+  void loadBuiltinVariableCatalog(scope)
   try {
+    const options=scopeOptions(scope)
     const notificationChannelRequest = canReadNotificationChannels.value
-      ? client.get<{ channels: NotificationChannel[] }>('/notification-channels')
+      ? client.get<{ channels: NotificationChannel[] }>('/notification-channels',options)
       : Promise.resolve({ data: { channels: [] as NotificationChannel[] } })
     const [applicationResult, templateResult, buildPlanResult, deploymentPlanResult, notificationChannelResult] = await Promise.all([
-      auth.canAny(['application.read']) ? client.get<{ applications: ApplicationRecord[] }>('/applications') : Promise.resolve({data:{applications:[]}}),
-      client.get<{ workflow_templates: Workflow[] }>('/workflow-templates'),
-      auth.canAny(['build_plan.read']) ? client.get<{ build_plans: PipelineBuildPlan[] }>('/build-plans') : Promise.resolve({data:{build_plans:[]}}),
-      auth.canAny(['deployment_plan.read']) ? client.get<{ deployment_plans: DeploymentPlan[] }>('/deployment-plans') : Promise.resolve({data:{deployment_plans:[]}}),
+      auth.canAny(['application.read']) ? client.get<{ applications: ApplicationRecord[] }>('/applications',options) : Promise.resolve({data:{applications:[]}}),
+      client.get<{ workflow_templates: Workflow[] }>('/workflow-templates',options),
+      auth.canAny(['build_plan.read']) ? client.get<{ build_plans: PipelineBuildPlan[] }>('/build-plans',options) : Promise.resolve({data:{build_plans:[]}}),
+      auth.canAny(['deployment_plan.read']) ? client.get<{ deployment_plans: DeploymentPlan[] }>('/deployment-plans',options) : Promise.resolve({data:{deployment_plans:[]}}),
       notificationChannelRequest,
     ])
+    if(!currentScope(scope))return
     applications.value = applicationResult.data.applications || []
     templates.value = templateResult.data.workflow_templates || []
     buildPlans.value = buildPlanResult.data.build_plans || []
     deploymentPlans.value = deploymentPlanResult.data.deployment_plans || []
     notificationChannels.value = notificationChannelResult.data.channels || []
+    loadedContext.value=scope.identity
     if (publicMode.value && route.query.create === '1' && canCreate.value) {
-      presetOpen.value = true
+      presetContext=scope.identity;presetOpen.value = true
       await router.replace({ path: '/pipeline-plans/editor' })
+      if(!currentScope(scope))return
     }
     if (applicationID.value) {
-      await loadApplication(applicationID.value)
-      if (workflowID.value && route.query.workflow !== workflowID.value) {
-        await router.replace({ query: { application: applicationID.value, workflow: workflowID.value } })
-      }
+      await loadApplication(applicationID.value,workflowID.value,scope)
+      if(!currentScope(scope))return
+      if (workflowID.value && route.query.workflow !== workflowID.value) await router.replace({ query: { application: applicationID.value, workflow: workflowID.value } })
     }
-    else if (templateID.value) await loadTemplate(templateID.value)
+    else if (templateID.value) await loadTemplate(templateID.value,scope)
     else if (templates.value.length) {
       templateID.value = templates.value[0].id
       await router.replace({ query: { template: templateID.value } })
-      await loadTemplate(templateID.value)
+      if(!currentScope(scope))return
+      await loadTemplate(templateID.value,scope)
     }
-  } catch (error) {
-    message.error(apiErrorMessage(error))
-  } finally {
-    loading.value = false
-  }
+  } catch (error) { if(!failedScope(error,scope)){scopeError.value=apiErrorMessage(error);message.error(scopeError.value)} }
+  finally { if(currentScope(scope))loading.value = false }
 }
 
-async function loadApplication(id: string, requestedWorkflowID = workflowID.value) {
+async function loadApplication(id: string, requestedWorkflowID = workflowID.value, scope = captureScope()) {
+  if(!currentScope(scope))return
+  const request=++graphRevision
   const application = applications.value.find(item => item.id === id)
   const selected = application?.workflows?.find(item => item.id === requestedWorkflowID) || application?.workflows?.[0]
-  if (!selected) {
-    workflowID.value = ''
-    workflow.value = null
-    return
-  }
-  const result = await client.get<WorkflowResponse>(`/applications/${id}/workflows/${selected.id}`)
+  if (!selected) { workflowID.value = ''; workflow.value = null; return }
+  const result = await client.get<WorkflowResponse>(`/applications/${id}/workflows/${selected.id}`,scopeOptions(scope))
+  if(!currentScope(scope)||request!==graphRevision)return
   workflowID.value = selected.id
-  loadGraph(result.data.workflow, result.data.issues)
+  loadGraph(result.data.workflow, result.data.issues,scope)
 }
 
-async function loadTemplate(id: string) {
-  const result = await client.get<WorkflowTemplateResponse>(`/workflow-templates/${id}`)
-  loadGraph(result.data.workflow_template, result.data.issues)
+async function loadTemplate(id: string, scope = captureScope()) {
+  if(!currentScope(scope))return
+  const request=++graphRevision
+  const result = await client.get<WorkflowTemplateResponse>(`/workflow-templates/${id}`,scopeOptions(scope))
+  if(currentScope(scope)&&request===graphRevision)loadGraph(result.data.workflow_template, result.data.issues,scope)
 }
 
 function updateApplicationWorkflow(saved: Workflow) {
@@ -469,90 +509,77 @@ function updateApplicationWorkflow(saved: Workflow) {
 }
 
 function confirmDiscardChanges() {
+  const scope=captureScope()
   return new Promise<boolean>(resolve => {
-    Modal.confirm({
-      title: '放弃尚未保存的更改？',
-      content: '这些更改还没有写入流水线，离开后无法恢复。',
-      okText: '放弃更改',
-      cancelText: '继续编辑',
-      okType: 'danger',
-      onOk: () => {
-        window.clearTimeout(autoSaveTimer)
-        resolve(true)
-      },
-      onCancel: () => resolve(false),
+    discardResolve=resolve
+    discardDialog=Modal.confirm({
+      title: '放弃尚未保存的更改？', content: '这些更改还没有写入流水线，离开后无法恢复。', okText: '放弃更改', cancelText: '继续编辑', okType: 'danger',
+      onOk: () => { if(currentScope(scope))window.clearTimeout(autoSaveTimer);resolve(currentScope(scope)) }, onCancel: () => resolve(false),
+      afterClose:()=>{if(currentScope(scope)){discardResolve=undefined;discardDialog=undefined}},
     })
   })
 }
 
 async function settleDraftBeforeNavigation() {
+  const scope=captureScope()
+  if(!currentScope(scope))return false
   if (!dirty.value) return true
-  if (workflow.value && !workflow.value.is_active && draftReady(false)) {
-    if (await save(false, true) && !dirty.value) return true
+  if (canUpdate.value && workflow.value && !workflow.value.is_active && draftReady(false)) {
+    if (await save(false, true) && currentScope(scope) && !dirty.value) return true
+    if(!currentScope(scope))return false
   }
   return confirmDiscardChanges()
 }
 
 async function chooseTemplate(id: string) {
-  if (!publicMode.value || !id || loading.value || switching.value || saving.value) return
-  if (!(await settleDraftBeforeNavigation())) return
-  loading.value = true
-  switching.value = true
+  if (!scopeAllowed()||loadedContext.value!==scopeIdentity()||!publicMode.value||!templates.value.some(item=>item.id===id)||loading.value||switching.value||saving.value)return
+  const scope=captureScope()
+  if (!(await settleDraftBeforeNavigation())||!currentScope(scope)) return
+  const request=++graphRevision
+  loading.value = true;switching.value = true
   try {
-    const result = await client.get<WorkflowTemplateResponse>(`/workflow-templates/${id}`)
-    const previousTemplateID = templateID.value
-    const previousApplicationID = applicationID.value
-    templateID.value = id
-    applicationID.value = ''
-    try {
-      await router.replace({ query: { template: id } })
-    } catch (error) {
-      templateID.value = previousTemplateID
-      applicationID.value = previousApplicationID
-      throw error
-    }
-    loadGraph(result.data.workflow_template, result.data.issues)
-  } catch (error) {
-    message.error(apiErrorMessage(error))
-  } finally {
-    switching.value = false
-    loading.value = false
-  }
+    const result = await client.get<WorkflowTemplateResponse>(`/workflow-templates/${id}`,scopeOptions(scope))
+    if(!currentScope(scope)||request!==graphRevision)return
+    const previousTemplateID = templateID.value,previousApplicationID = applicationID.value
+    templateID.value = id;applicationID.value = ''
+    try { await router.replace({ query: { template: id } }) }
+    catch(error) { if(currentScope(scope)){templateID.value = previousTemplateID;applicationID.value = previousApplicationID};throw error }
+    if(currentScope(scope)&&request===graphRevision)loadGraph(result.data.workflow_template,result.data.issues,scope)
+  } catch(error) { if(!failedScope(error,scope))message.error(apiErrorMessage(error)) }
+  finally { if(currentScope(scope)&&request===graphRevision){switching.value=false;loading.value=false} }
 }
 
 async function chooseWorkflow(id: string) {
-  if (!id || id === workflowID.value || loading.value || switching.value || saving.value) return
-  if (!(await settleDraftBeforeNavigation())) return
-  switching.value = true
-  loading.value = true
+  if (!scopeAllowed()||loadedContext.value!==scopeIdentity()||!id||id===workflowID.value||loading.value||switching.value||saving.value)return
+  if(!editorApplication.value?.workflows?.some(item=>item.id===id))return
+  const scope=captureScope()
+  if (!(await settleDraftBeforeNavigation())||!currentScope(scope)) return
+  switching.value = true;loading.value = true
   const previousWorkflowID = workflowID.value
   try {
     workflowID.value = id
     await router.replace({ query: { application: applicationID.value, workflow: id } })
-    await loadApplication(applicationID.value, id)
-  } catch (error) {
-    workflowID.value = previousWorkflowID
-    message.error(apiErrorMessage(error))
-  } finally {
-    switching.value = false
-    loading.value = false
-  }
+    if(!currentScope(scope))return
+    await loadApplication(applicationID.value,id,scope)
+  } catch(error) { if(!failedScope(error,scope)){workflowID.value=previousWorkflowID;message.error(apiErrorMessage(error))} }
+  finally { if(currentScope(scope)){switching.value=false;loading.value=false} }
 }
 
 async function openCreatedTemplate(result: WorkflowTemplateResponse) {
-  const created = result.workflow_template
-  const existingIndex = templates.value.findIndex(item => item.id === created.id)
-  if (existingIndex >= 0) templates.value[existingIndex] = created
-  else templates.value.push(created)
-  templateID.value = created.id
-  applicationID.value = ''
-  await router.replace({ query: { template: created.id } })
-  loadGraph(created, result.issues || [])
+  if(!scopeCan('workflow.create')||!presetOpen.value||presetContext!==scopeIdentity())return
+  const scope=captureScope(),created=result.workflow_template
+  const existingIndex=templates.value.findIndex(item=>item.id===created.id)
+  if(existingIndex>=0)templates.value[existingIndex]=created;else templates.value.push(created)
+  templateID.value=created.id;applicationID.value=''
+  await router.replace({query:{template:created.id}})
+  if(currentScope(scope))loadGraph(created,result.issues||[],scope)
 }
 
 async function openPresetSelector() {
-  if (dirty.value && !(await confirmDiscardChanges())) return
-  presetOpen.value = true
+  if(!scopeCan('workflow.create'))return
+  const scope=captureScope()
+  if(dirty.value&&!(await confirmDiscardChanges()))return
+  if(currentScope(scope)&&canCreate.value){presetContext=scope.identity;presetOpen.value=true}
 }
 
 function payload(activate: boolean) {
@@ -589,26 +616,29 @@ function ensureEnvironmentVariablesValid(showMessage: boolean) {
 }
 
 async function validateGraph() {
-  if (!workflow.value || !draftReady(true) || !ensureEnvironmentVariablesValid(true)) return
+  if (!scopeCan('workflow.read') || !workflow.value || !draftReady(true) || !ensureEnvironmentVariablesValid(true)) return
+  const scope=captureScope(),version=editVersion,id=workflow.value.id
   try {
     const result = publicMode.value
-      ? await client.post<WorkflowTemplateResponse>('/workflow-templates/validate', payload(false))
-      : await client.post<WorkflowResponse>(`/applications/${applicationID.value}/workflows/${workflowID.value}/validate`, payload(false))
+      ? await client.post<WorkflowTemplateResponse>('/workflow-templates/validate', payload(false),scopeOptions(scope))
+      : await client.post<WorkflowResponse>(`/applications/${applicationID.value}/workflows/${workflowID.value}/validate`, payload(false),scopeOptions(scope))
+    if(!currentScope(scope)||version!==editVersion||workflow.value?.id!==id)return
     issues.value = result.data.issues || []
-    if (result.data.valid) message.success('结构检查通过，可以启用这份流水线。')
+    if (result.data.valid) message.success(canUpdate.value?'结构检查通过，可以启用这份流水线。':'结构检查通过。')
     else message.warning(`发现 ${issues.value.length} 个问题：${summarizeIssues(issues.value)}`)
   } catch (error) {
-    message.error(apiErrorMessage(error))
+    if(!failedScope(error,scope))message.error(apiErrorMessage(error))
   }
 }
 
 async function save(activate: boolean, automatic = false): Promise<boolean> {
-  if (!workflow.value || saving.value || !draftReady(!automatic)) return false
+  if (!scopeCan('workflow.update') || !workflow.value || saving.value || !draftReady(!automatic)) return false
   if (automatic && (activate || workflow.value.is_active)) return false
   if (!ensureEnvironmentVariablesValid(!automatic)) {
     if (automatic) autoSaveFailed.value = true
     return false
   }
+  const scope=captureScope(),isPublic=publicMode.value,requestTemplateID=templateID.value,requestApplicationID=applicationID.value,requestApplicationWorkflowID=workflowID.value
   const requestVersion = editVersion
   const requestWorkflowID = workflow.value.id
   const requestPayload = payload(activate)
@@ -617,13 +647,14 @@ async function save(activate: boolean, automatic = false): Promise<boolean> {
   saving.value = true
   window.clearTimeout(autoSaveTimer)
   try {
-    const result = publicMode.value
-      ? await client.put<WorkflowTemplateResponse>(`/workflow-templates/${templateID.value}`, requestPayload)
-      : await client.put<WorkflowResponse>(`/applications/${applicationID.value}/workflows/${workflowID.value}`, requestPayload)
-    const saved = publicMode.value
+    const result = isPublic
+      ? await client.put<WorkflowTemplateResponse>(`/workflow-templates/${requestTemplateID}`, requestPayload,scopeOptions(scope))
+      : await client.put<WorkflowResponse>(`/applications/${requestApplicationID}/workflows/${requestApplicationWorkflowID}`, requestPayload,scopeOptions(scope))
+    if(!currentScope(scope)||!canUpdate.value)return false
+    const saved = isPublic
       ? (result.data as WorkflowTemplateResponse).workflow_template
       : (result.data as WorkflowResponse).workflow
-    if (publicMode.value) {
+    if (isPublic) {
       const templateIndex = templates.value.findIndex(item => item.id === saved.id)
       if (templateIndex >= 0) templates.value[templateIndex] = saved
     } else updateApplicationWorkflow(saved)
@@ -644,7 +675,7 @@ async function save(activate: boolean, automatic = false): Promise<boolean> {
       dirty.value = true
     }
     if (!automatic) {
-      if (!publicMode.value && previousTemplateID && !saved.workflow_template_id) {
+      if (!isPublic && previousTemplateID && !saved.workflow_template_id) {
         message.success('应用流水线已保存为自定义配置，后续不再跟随原流水线更新。')
       } else {
         message.success(activate ? '流水线已启用，新运行将按当前阶段顺序执行。' : '草稿已保存')
@@ -652,6 +683,7 @@ async function save(activate: boolean, automatic = false): Promise<boolean> {
     }
     return true
   } catch (error) {
+    if(failedScope(error,scope))return false
     const responseIssues = (error as { response?: { data?: { issues?: WorkflowIssue[] } } }).response?.data?.issues
     if (responseIssues?.length) {
       if (editVersion === requestVersion && workflow.value?.id === requestWorkflowID) issues.value = responseIssues
@@ -670,13 +702,12 @@ async function save(activate: boolean, automatic = false): Promise<boolean> {
     if (automatic) autoSaveFailed.value = true
     return false
   } finally {
-    saving.value = false
-    autoSaving.value = false
-    if (dirty.value) scheduleAutoSave()
+    if(currentScope(scope)){saving.value=false;autoSaving.value=false;if(dirty.value)scheduleAutoSave()}
   }
 }
 
 function requestSave() {
+  if(!scopeCan('workflow.update')||saving.value)return
   if (!workflow.value?.is_active) {
     void save(false)
     return
@@ -685,12 +716,13 @@ function requestSave() {
 }
 
 async function confirmSaveUpdate() {
-  if (saveConfirmSubmitting.value) return
+  if (!saveConfirmOpen.value||!scopeCan('workflow.update')||saveConfirmSubmitting.value) return
+  const scope=captureScope()
   saveConfirmSubmitting.value = true
   try {
-    if (await save(true)) saveConfirmOpen.value = false
+    if (await save(true)&&currentScope(scope)) saveConfirmOpen.value = false
   } finally {
-    saveConfirmSubmitting.value = false
+    if(currentScope(scope))saveConfirmSubmitting.value = false
   }
 }
 
@@ -699,7 +731,7 @@ function updateWorkflowMeta() {
 }
 
 function replaceNode(id: string, update: Partial<WorkflowNode>, config?: Partial<WorkflowNodeConfig>) {
-  if (!canEdit.value) return
+  if (!scopeCan('workflow.update') || !canEdit.value) return
   const sourceIndex = sources.value.findIndex(item => item.id === id)
   if (sourceIndex >= 0) {
     const current = sources.value[sourceIndex]
@@ -774,7 +806,7 @@ function selectNotificationTemplateField(ruleID: string, field: NotificationTemp
 }
 
 function insertNotificationVariable(rule: WorkflowNotificationRule, variable: string) {
-  if (!canEdit.value) return
+  if (!scopeCan('workflow.update') || !canEdit.value) return
   const field = notificationTemplateTargets[rule.id] || 'message'
   const current = rule[field] || ''
   const separator = current && !current.endsWith(' ') && !current.endsWith('\n')
@@ -793,6 +825,7 @@ function insertNotificationChannelVariable(variable: string) {
 }
 
 function openNotificationChannelModal() {
+  if(!scopeCan('notification.create')||!scopeCan('workflow.update')||!canEdit.value)return
   notificationChannelForm.name = ''
   notificationChannelForm.endpoint = ''
   notificationChannelForm.token = ''
@@ -804,6 +837,8 @@ function openNotificationChannelModal() {
 }
 
 async function createNotificationChannel() {
+  if(!notificationChannelModalOpen.value||notificationChannelSubmitting.value||!scopeCan('notification.create')||!scopeCan('workflow.update')||!canEdit.value)return
+  const scope=captureScope(),taskID=selectedTask.value?.id
   const name = notificationChannelForm.name.trim()
   const endpoint = notificationChannelForm.endpoint.trim()
   const title = notificationChannelForm.title.trim()
@@ -820,29 +855,33 @@ async function createNotificationChannel() {
       endpoint,
       token: notificationChannelForm.token.trim() || undefined,
       allow_http: notificationChannelForm.allow_http,
-    })
+    },scopeOptions(scope))
+    if(!currentScope(scope)||!canCreateNotificationChannels.value)return
+    notificationChannelForm.token=''
     notificationChannels.value = [...notificationChannels.value, result.data.channel]
     notificationChannelModalOpen.value = false
-    if (selectedTask.value && canEdit.value && (selectedTask.value.config.notifications?.length || 0) < 10) {
+    if (selectedTask.value && selectedTask.value.id===taskID && canEdit.value && (selectedTask.value.config.notifications?.length || 0) < 10) {
       appendNotificationRule(result.data.channel.id, { title, message: content })
       message.success('通知渠道已创建，通知模板已添加到当前任务。')
     } else {
       message.success('通知渠道已创建。')
     }
   } catch (error) {
-    message.error(apiErrorMessage(error))
+    if(!failedScope(error,scope))message.error(apiErrorMessage(error))
   } finally {
-    notificationChannelSubmitting.value = false
+    if(currentScope(scope))notificationChannelSubmitting.value = false
   }
 }
 
 async function testNotificationChannel(channelID: string) {
-  if (!channelID || !canTestNotificationChannels.value) return
+  if (!channelID||!scopeCan('notification.execute')||!notificationChannels.value.some(item=>item.id===channelID&&item.is_active)) return
+  const scope=captureScope()
   try {
-    await client.post(`/notification-channels/${encodeURIComponent(channelID)}/test`)
+    await client.post(`/notification-channels/${encodeURIComponent(channelID)}/test`,undefined,scopeOptions(scope))
+    if(!currentScope(scope)||!canTestNotificationChannels.value)return
     message.success('测试通知已进入发送队列。')
   } catch (error) {
-    message.error(apiErrorMessage(error))
+    if(!failedScope(error,scope))message.error(apiErrorMessage(error))
   }
 }
 
@@ -854,7 +893,7 @@ function selectNode(id: string) {
 }
 
 function addStage(afterIndex = stages.value.length - 1) {
-  if (!canEdit.value) return
+  if (!scopeCan('workflow.update') || !canEdit.value) return
   const stage: PipelineStageDraft = { id: uid('stage'), name: '未命名阶段', tasks: [] }
   stages.value.splice(Math.max(0, afterIndex + 1), 0, stage)
   selectStage(stage.id)
@@ -862,18 +901,21 @@ function addStage(afterIndex = stages.value.length - 1) {
 }
 
 function updateStageName(stage: PipelineStageDraft, value: string) {
-  if (!canEdit.value) return
+  if (!scopeCan('workflow.update') || !canEdit.value) return
   stage.name = value
   markDirty()
 }
 
 function removeStage(stage: PipelineStageDraft) {
-  if (!canEdit.value) return
-  Modal.confirm({
+  if (!canEdit.value||!stages.value.includes(stage)) return
+  const scope=captureScope(),workflowID=workflow.value?.id
+  stageRemovalDialog=Modal.confirm({
     title: `删除阶段“${stage.name}”？`,
     content: `阶段中的 ${stage.tasks.length} 个任务也会一并移除。`,
     okText: '删除', cancelText: '取消', okType: 'danger',
+    afterClose(){if(currentScope(scope))stageRemovalDialog=undefined},
     onOk() {
+      if(!currentScope(scope)||!canEdit.value||workflow.value?.id!==workflowID||!stages.value.includes(stage))return
       stages.value = stages.value.filter(item => item.id !== stage.id)
       if (selectedStage.value?.id === stage.id) selectedNodeID.value = ''
       if (selectedStageID.value === stage.id) selectedStageID.value = ''
@@ -928,7 +970,7 @@ function openTaskLibrary(stageID?: string, intent: 'initial' | 'parallel' = 'par
 }
 
 function addTask(definition: TaskDefinition) {
-  if (!canEdit.value) return
+  if (!scopeCan('workflow.update') || !canEdit.value) return
   let stage = stages.value.find(item => item.id === libraryStageID.value)
   if (!stage) {
     stage = { id: uid('stage'), name: '未命名阶段', tasks: [] }
@@ -950,7 +992,7 @@ function stageHasSelectedTask(stage: PipelineStageDraft) {
 }
 
 function removeTask(id: string) {
-  if (!canEdit.value) return
+  if (!scopeCan('workflow.update') || !canEdit.value) return
   const stage = stages.value.find(item => item.tasks.some(task => task.id === id))
   if (!stage) return
   stage.tasks = stage.tasks.filter(item => item.id !== id)
@@ -962,7 +1004,7 @@ function removeTask(id: string) {
 }
 
 function applyTemplate(compact: boolean) {
-  if (!canEdit.value) return
+  if (!scopeCan('workflow.update') || !canEdit.value) return
   const draft = defaultDraft()
   if (!compact) {
     const approvalStageID = uid('stage')
@@ -1117,10 +1159,12 @@ function updateEnvironmentVariables(value: string) {
 }
 
 function createBuildPlan() {
+  if(!canCreateBuildPlan.value||!canEdit.value)return
   void router.push({ path: '/build-plans', query: { create: '1', return_to: route.fullPath } })
 }
 
 function createDeploymentPlan() {
+  if(!canCreateDeploymentPlan.value||!canEdit.value)return
   void router.push({ path: '/deployment-plans', query: { create: '1', return_to: route.fullPath } })
 }
 
@@ -1141,6 +1185,7 @@ function setStageListRef(target: Element | ComponentPublicInstance | null) {
   stageSortable = null
   stageListElement = element
   if (!element) return
+  const scope=captureScope(),workflowID=workflow.value?.id
   stageSortable = Sortable.create(element, {
     animation: 160,
     direction: 'horizontal',
@@ -1150,6 +1195,7 @@ function setStageListRef(target: Element | ComponentPublicInstance | null) {
     ghostClass: 'pipeline-stage-ghost',
     chosenClass: 'pipeline-stage-chosen',
     onEnd(event) {
+      if(!currentScope(scope)||!canEdit.value||workflow.value?.id!==workflowID)return
       const oldIndex = event.oldDraggableIndex
       const newIndex = event.newDraggableIndex
       if (oldIndex == null || newIndex == null || oldIndex === newIndex) return
@@ -1169,6 +1215,7 @@ function setTaskListRef(stageID: string, target: Element | ComponentPublicInstan
   taskListElements.delete(stageID)
   if (!element) return
   taskListElements.set(stageID, element)
+  const scope=captureScope(),workflowID=workflow.value?.id
   taskSortables.set(stageID, Sortable.create(element, {
     animation: 160,
     direction: 'vertical',
@@ -1179,6 +1226,7 @@ function setTaskListRef(stageID: string, target: Element | ComponentPublicInstan
     ghostClass: 'pipeline-task-ghost',
     chosenClass: 'pipeline-task-chosen',
     onEnd(event) {
+      if(!currentScope(scope)||!canEdit.value||workflow.value?.id!==workflowID)return
       const taskID = (event.item as HTMLElement).dataset.taskId || ''
       const fromStageID = (event.from as HTMLElement).dataset.stageId || ''
       const toStageID = (event.to as HTMLElement).dataset.stageId || ''
@@ -1232,13 +1280,18 @@ watch([saving, canUpdate], ([isSaving, manageable]) => {
   stageSortable?.option('disabled', !manageable || isSaving)
   taskSortables.forEach(sortable => sortable.option('disabled', !manageable || isSaving))
 })
+watch(scopeIdentity,()=>resetScope(),{flush:'sync'})
 onMounted(async () => {
+  mounted=true
   window.addEventListener('keydown', handleKeydown)
   window.addEventListener('beforeunload', handleBeforeUnload)
-  await loadResources()
+  window.addEventListener('storage',projectChanged);window.addEventListener('edo:projects-changed',projectChanged)
+  resetScope()
   await nextTick()
 })
 onBeforeUnmount(() => {
+  disposed=true;mounted=false;resetScope(false)
+  window.removeEventListener('storage',projectChanged);window.removeEventListener('edo:projects-changed',projectChanged)
   window.clearTimeout(autoSaveTimer)
   document.body.classList.remove('pipeline-immersive-open')
   window.removeEventListener('keydown', handleKeydown)
@@ -1246,45 +1299,38 @@ onBeforeUnmount(() => {
   destroySortables()
 })
 onBeforeRouteUpdate(async to => {
+  const scope=captureScope()
+  if(!currentScope(scope))return false
   const nextApplicationID = typeof to.query.application === 'string' ? to.query.application : ''
   const nextWorkflowID = nextApplicationID && typeof to.query.workflow === 'string' ? to.query.workflow : ''
   const nextTemplateID = nextApplicationID ? '' : typeof to.query.template === 'string' ? to.query.template : ''
-  if (nextApplicationID === applicationID.value && nextWorkflowID === workflowID.value && nextTemplateID === templateID.value) return true
-  if (switching.value) return false
-  if (saving.value) {
-    message.warning('流水线正在保存，请稍后再切换。')
-    return false
-  }
-  if (!nextApplicationID && !nextTemplateID) return false
-  if (!(await settleDraftBeforeNavigation())) return false
-  loading.value = true
-  switching.value = true
+  if(nextApplicationID===applicationID.value&&nextWorkflowID===workflowID.value&&nextTemplateID===templateID.value)return true
+  if(switching.value)return false
+  if(saving.value){message.warning('流水线正在保存，请稍后再切换。');return false}
+  if(!nextApplicationID&&!nextTemplateID)return false
+  if(!(await settleDraftBeforeNavigation())||!currentScope(scope))return false
+  const request=++graphRevision
+  loading.value=true;switching.value=true
   try {
-    if (nextApplicationID) {
-      const selected = applications.value.find(item => item.id === nextApplicationID)?.workflows?.find(item => item.id === nextWorkflowID)
-      if (!selected) return false
-      const result = await client.get<WorkflowResponse>(`/applications/${nextApplicationID}/workflows/${selected.id}`)
-      loadGraph(result.data.workflow, result.data.issues)
-      applicationID.value = nextApplicationID
-      workflowID.value = selected.id
-      templateID.value = ''
-    } else {
-      const result = await client.get<WorkflowTemplateResponse>(`/workflow-templates/${nextTemplateID}`)
-      loadGraph(result.data.workflow_template, result.data.issues)
-      templateID.value = nextTemplateID
-      applicationID.value = ''
-      workflowID.value = ''
+    if(nextApplicationID){
+      const selected=applications.value.find(item=>item.id===nextApplicationID)?.workflows?.find(item=>item.id===nextWorkflowID)
+      if(!selected)return false
+      const result=await client.get<WorkflowResponse>(`/applications/${nextApplicationID}/workflows/${selected.id}`,scopeOptions(scope))
+      if(!currentScope(scope)||request!==graphRevision)return false
+      loadGraph(result.data.workflow,result.data.issues,scope);applicationID.value=nextApplicationID;workflowID.value=selected.id;templateID.value=''
+    }else{
+      if(!templates.value.some(item=>item.id===nextTemplateID))return false
+      const result=await client.get<WorkflowTemplateResponse>(`/workflow-templates/${nextTemplateID}`,scopeOptions(scope))
+      if(!currentScope(scope)||request!==graphRevision)return false
+      loadGraph(result.data.workflow_template,result.data.issues,scope);templateID.value=nextTemplateID;applicationID.value='';workflowID.value=''
     }
     return true
-  } catch (error) {
-    message.error(apiErrorMessage(error))
-    return false
-  } finally {
-    switching.value = false
-    loading.value = false
-  }
+  }catch(error){if(!failedScope(error,scope))message.error(apiErrorMessage(error));return false}
+  finally{if(currentScope(scope)&&request===graphRevision){switching.value=false;loading.value=false}}
 })
+
 onBeforeRouteLeave(async () => {
+  if(!scopeAllowed()||loadedContext.value!==scopeIdentity())return true
   if (switching.value) {
     message.warning('流水线正在加载，请稍后再离开。')
     return false
@@ -1299,6 +1345,7 @@ onBeforeRouteLeave(async () => {
 
 <template>
   <section class="pipeline-editor-page">
+    <a-alert v-if="scopeError" type="warning" show-icon :message="scopeError"/>
     <div class="pipeline-command vben-card">
       <div class="pipeline-command-main">
         <a-button type="text" :disabled="saving || switching" @click="router.push(publicMode ? '/pipeline-plans' : '/applications')"><ChevronLeft :size="17" />返回</a-button>
@@ -1315,7 +1362,7 @@ onBeforeRouteLeave(async () => {
             <template #option="{ label, detail }"><span class="named-option"><strong>{{ label }}</strong><small>{{ detail }}</small></span></template>
           </a-select>
         </label>
-        <a-tag v-if="!publicMode && workflow" :color="selectedTemplateID ? 'blue' : 'default'">{{ selectedTemplateID ? '跟随公共流水线' : '自定义' }}</a-tag>
+        <a-tag v-if="!publicMode && workflow" :color="selectedTemplateID ? 'blue' : 'default'">{{ selectedTemplateID ? '跟随项目共用流水线' : '自定义' }}</a-tag>
         <a-tag v-if="workflow" :color="workflow.is_active ? 'success' : 'default'">{{ workflow.is_active ? '已启用' : '草稿' }}</a-tag>
         <span v-if="workflow" class="save-indicator" :class="{ failed: autoSaveFailed, pending: dirty }"><i />{{ saveState }}</span>
       </div>
@@ -1372,7 +1419,7 @@ onBeforeRouteLeave(async () => {
                 <span v-else class="source-repository"><i><GitBranch :size="17" /></i>{{ codeSourceName }}</span>
                 <span class="source-meta"><small>版本：{{ triggerVersionSummary(source) }}</small><small>触发：{{ triggerEventSummary(source.config.events) }}</small></span>
               </button>
-              <p v-if="publicMode">公共流水线不绑定代码仓库；应用使用时自动采用自己的代码仓库和凭据。</p>
+              <p v-if="publicMode">项目共用流水线只供本项目应用使用；运行时采用应用自己的代码仓库和凭据。</p>
             </section>
 
             <div :ref="setStageListRef" class="pipeline-stage-list">
@@ -1769,7 +1816,7 @@ onBeforeRouteLeave(async () => {
       <p class="save-confirm-copy">保存后对新运行生效，不影响正在执行的流水线。</p>
       <template #footer>
         <a-button html-type="button" :disabled="saveConfirmSubmitting" @click="saveConfirmOpen = false">取消</a-button>
-        <a-button type="primary" html-type="button" :loading="saveConfirmSubmitting" @click.stop="confirmSaveUpdate">保存并启用</a-button>
+        <a-button type="primary" html-type="button" :loading="saveConfirmSubmitting" :disabled="!canUpdate" @click.stop="confirmSaveUpdate">保存并启用</a-button>
       </template>
     </a-modal>
     <a-modal
@@ -1805,7 +1852,7 @@ onBeforeRouteLeave(async () => {
         <p class="notification-channel-note">流水线执行时只会替换标题和内容中实际引用的变量。Webhook 请求还会包含投递所需的级别、来源和运行标识，不会包含仓库凭据或部署密钥。</p>
       </a-form>
     </a-modal>
-    <WorkflowPresetModal v-model:open="presetOpen" :can-create="canCreate" :can-execute="canExecute" @created="openCreatedTemplate" />
+    <WorkflowPresetModal :key="scopeIdentity()" v-model:open="presetOpen" :can-create="canCreate" :can-execute="canExecute" @created="openCreatedTemplate" />
   </section>
 </template>
 
