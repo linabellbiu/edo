@@ -78,7 +78,7 @@ func (s *Service) runHostOperation(ctx context.Context, record *model.K3sInstall
 	done, stopped := make(chan struct{}), make(chan struct{})
 	go func() {
 		defer close(stopped)
-		ticker := time.NewTicker(time.Second)
+		ticker := time.NewTicker(30 * time.Second)
 		defer ticker.Stop()
 		for {
 			select {

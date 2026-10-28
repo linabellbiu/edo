@@ -162,10 +162,6 @@ func (d *installationDiagnostics) setStageLocked(stage string, now time.Time) {
 	if d.err != nil || installationStages[stage] == "" || d.seen[stage] {
 		return
 	}
-	if d.stage == "installer_start" && now.Sub(d.started) >= 5*time.Minute {
-		d.err = installationError(d.stage, context.DeadlineExceeded)
-		return
-	}
 	if now.Before(d.updated) {
 		now = d.updated
 	}
@@ -188,9 +184,6 @@ func (d *installationDiagnostics) start(stage string) error {
 func (d *installationDiagnostics) heartbeat(now time.Time) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	if d.err == nil && d.stage == "installer_start" && now.Sub(d.started) >= 5*time.Minute {
-		d.err = installationError(d.stage, context.DeadlineExceeded)
-	}
 	if d.err == nil && d.stage != "" && now.Sub(d.updated) >= 30*time.Second && d.onStage != nil {
 		d.updated = now
 		d.err = d.onStage(d.stage, d.started, now, true)

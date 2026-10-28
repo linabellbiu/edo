@@ -47,7 +47,7 @@ func TestInstallationProgressOnlyMapsOfficialInfoAndExactMarkers(t *testing.T) {
 	}
 }
 
-func TestInstallationProgressHeartbeatIsThrottledAndServiceStartIsBounded(t *testing.T) {
+func TestInstallationProgressHeartbeatIsThrottledWithoutManagingOfficialServiceStart(t *testing.T) {
 	var updates, beats int
 	d := &installationDiagnostics{onStage: func(_ string, started, updated time.Time, heartbeat bool) error {
 		updates++
@@ -71,12 +71,17 @@ func TestInstallationProgressHeartbeatIsThrottledAndServiceStartIsBounded(t *tes
 	if updates != 10 || beats != 9 || !d.started.Equal(start) {
 		t.Fatalf("心跳写入未限频或改变阶段起点: updates=%d beats=%d", updates, beats)
 	}
-	err := d.heartbeat(start.Add(5 * time.Minute))
-	if !errors.Is(err, context.DeadlineExceeded) || !strings.Contains(safeFailure(err), "启动系统服务超时") {
-		t.Fatal("服务启动没有有界失败", err)
+	if err := d.heartbeat(start.Add(5 * time.Minute)); err != nil || updates != 11 || beats != 10 {
+		t.Fatal("进度观察不应额外接管官方安装器的服务启动时限", err)
 	}
-	if d.failure(nil) != err {
-		t.Fatal("迟到成功覆盖了已触发的阶段超时")
+	if d.failure(nil) != nil {
+		t.Fatal("等待反馈不能被伪造为服务启动失败")
+	}
+	d.mu.Lock()
+	d.setStageLocked("version", start.Add(6*time.Minute))
+	d.mu.Unlock()
+	if d.failure(nil) != nil || d.stage != "version" {
+		t.Fatal("官方安装器较晚返回后应继续版本验收，不由进度观察制造失败")
 	}
 }
 
@@ -126,6 +131,8 @@ func TestInstallationProgressStageClockDoesNotRegressOrAcceptRemoteTimes(t *test
 	late := &installationDiagnostics{}
 	_ = late.start("installer_start")
 	late.mu.Lock()
+	// 后台任务真正结束后，迟到输出不得覆盖结果；进度观察本身不决定服务超时。
+	late.err = installationError("installer_start", context.DeadlineExceeded)
 	late.setStageLocked("version", late.started.Add(5*time.Minute))
 	late.mu.Unlock()
 	if !errors.Is(late.failure(nil), context.DeadlineExceeded) || late.stage != "installer_start" {
