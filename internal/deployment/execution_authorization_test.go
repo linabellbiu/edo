@@ -1,10 +1,16 @@
 package deployment
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
+	"reflect"
+	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"gorm.io/gorm"
@@ -296,5 +302,120 @@ func TestSucceededDeploymentReplayDoesNotRequireOldGrantOrRepeatSideEffect(t *te
 	var stored model.DeploymentRecord
 	if err := f.db.Where("uuid = ?", f.source.ID).First(&stored).Error; err != nil || stored.Status != model.DeploymentSucceeded || stored.ErrorCode != "" || f.writes != 0 {
 		t.Fatalf("成功记录重投改变历史或执行副作用: status=%s writes=%d err=%v", stored.Status, f.writes, err)
+	}
+}
+
+func TestDeploymentAuthorizationFailureDoesNotOverwriteConcurrentSuccess(t *testing.T) {
+	f := newKubernetesRollbackFixture(t, model.DeploymentQueued)
+	var triggered atomic.Bool
+	var winner model.DeploymentRecord
+	var callbackErr error
+	const callback = "test:complete_deployment_after_queued_read"
+	if err := f.db.Callback().Query().After("gorm:query").Register(callback, func(tx *gorm.DB) {
+		if tx.Statement.Table != "deployment_records" || !triggered.CompareAndSwap(false, true) {
+			return
+		}
+		// 当前执行已读到 queued；另一个执行完成，再撤销旧授权，模拟真实交错。
+		finished := make(chan error, 1)
+		go func() {
+			finished <- f.db.Transaction(func(other *gorm.DB) error {
+				completedAt := time.Now().UTC().Add(-time.Second)
+				if err := other.Model(&model.DeploymentRecord{}).Where("uuid = ?", f.source.ID).Updates(map[string]any{
+					"status": model.DeploymentSucceeded, "previous_image": rollbackGoodImage, "previous_image_id": "sha256:" + strings.Repeat("e", 64),
+					"warning_message": "并发完成者的结果", "command_exit_code": 0, "finished_at": completedAt, "updated_at": completedAt,
+				}).Error; err != nil {
+					return err
+				}
+				return other.Where("project_id = ? AND user_id = ?", f.source.ProjectID, "operator").Delete(&model.ProjectMember{}).Error
+			})
+		}()
+		select {
+		case callbackErr = <-finished:
+		case <-time.After(3 * time.Second):
+			callbackErr = errors.New("并发执行未完成")
+		}
+		if callbackErr == nil {
+			callbackErr = f.db.Where("uuid = ?", f.source.ID).First(&winner).Error
+		}
+		if callbackErr != nil {
+			tx.AddError(callbackErr)
+		}
+	}); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = f.db.Callback().Query().Remove(callback) })
+	err := f.service.Run(deploymentExecutionTestContext(f.source.ProjectID), f.source.ID)
+	if !triggered.Load() || callbackErr != nil || !errors.Is(err, ErrExecutionAuthorization) {
+		t.Fatalf("未按预期交错执行并保留授权错误: triggered=%v callback_err=%v err=%v", triggered.Load(), callbackErr, err)
+	}
+	var stored model.DeploymentRecord
+	if err := f.db.Where("uuid = ?", f.source.ID).First(&stored).Error; err != nil || !reflect.DeepEqual(winner, stored) || stored.Status != model.DeploymentSucceeded || f.writes != 0 {
+		t.Fatalf("迟到的授权失败覆盖了并发成功历史或触发副作用: status=%s writes=%d err=%v", stored.Status, f.writes, err)
+	}
+}
+
+func TestDeploymentAuthorizationFailureCASPreservesChangedStateAndScope(t *testing.T) {
+	for _, scenario := range []struct {
+		name        string
+		cachedState model.DeploymentStatus
+		nextState   model.DeploymentStatus
+		projectID   string
+		department  string
+	}{
+		{"排队记录已由另一执行领取", model.DeploymentQueued, model.DeploymentRunning, "", ""},
+		{"执行记录已成功", model.DeploymentRunning, model.DeploymentSucceeded, "", ""},
+		{"执行记录已取消", model.DeploymentRunning, model.DeploymentCanceled, "", ""},
+		{"执行记录已按另一原因失败", model.DeploymentRunning, model.DeploymentFailed, "", ""},
+		{"同状态但项目已变化", model.DeploymentQueued, model.DeploymentQueued, "another-project", ""},
+		{"同状态但部门已变化", model.DeploymentRunning, model.DeploymentRunning, "", "another-department"},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			f := newKubernetesRollbackFixture(t, scenario.cachedState)
+			cached := f.source
+			updates := map[string]any{"status": scenario.nextState, "error_code": "other_execution_result", "error_message": "另一执行保存的结果", "warning_message": "保留完整历史", "previous_image": rollbackGoodImage, "command_exit_code": 17, "finished_at": time.Now().UTC().Add(-time.Minute)}
+			if scenario.projectID != "" {
+				updates["project_id"] = scenario.projectID
+			}
+			if scenario.department != "" {
+				updates["department_id"] = scenario.department
+			}
+			if err := f.db.Model(&model.DeploymentRecord{}).Where("uuid = ?", cached.ID).Updates(updates).Error; err != nil {
+				t.Fatal(err)
+			}
+			var before, after model.DeploymentRecord
+			if err := f.db.Where("uuid = ?", cached.ID).First(&before).Error; err != nil {
+				t.Fatal(err)
+			}
+			if err := f.service.failExecutionAuthorization(deploymentExecutionTestContext(cached.ProjectID), &cached, ErrExecutionAuthorization); !errors.Is(err, ErrExecutionAuthorization) {
+				t.Fatalf("CAS 未保留授权错误类型: %v", err)
+			}
+			if err := f.db.Where("uuid = ?", cached.ID).First(&after).Error; err != nil || !reflect.DeepEqual(before, after) {
+				t.Fatalf("未匹配期望范围和状态时仍改写记录: status=%s err=%v", after.Status, err)
+			}
+		})
+	}
+}
+
+func TestDeploymentAuthorizationFailureStorageErrorKeepsSafeErrorAndDiagnostics(t *testing.T) {
+	f := newKubernetesRollbackFixture(t, model.DeploymentQueued)
+	var output bytes.Buffer
+	f.service.logger = slog.New(slog.NewJSONHandler(&output, nil))
+	const diagnostic = "synthetic-authorization-storage-failure"
+	const callback = "test:reject_authorization_failure_update"
+	if err := f.db.Callback().Update().Before("gorm:update").Register(callback, func(tx *gorm.DB) {
+		if tx.Statement.Table == "deployment_records" {
+			tx.AddError(errors.New(diagnostic))
+		}
+	}); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = f.db.Callback().Update().Remove(callback) })
+	err := f.service.failExecutionAuthorization(deploymentExecutionTestContext(f.source.ProjectID), &f.source, ErrExecutionAuthorization)
+	if !errors.Is(err, ErrExecutionAuthorization) || strings.Contains(err.Error(), diagnostic) || !strings.Contains(output.String(), diagnostic) || !strings.Contains(output.String(), "deployment_authorization_failure_persist") {
+		t.Fatalf("授权状态持久化错误未保留安全提示与内部诊断: err=%v", err)
+	}
+	var stored model.DeploymentRecord
+	if err := f.db.Where("uuid = ?", f.source.ID).First(&stored).Error; err != nil || !reflect.DeepEqual(stored, f.source) {
+		t.Fatalf("状态保存失败仍改变记录: err=%v", err)
 	}
 }

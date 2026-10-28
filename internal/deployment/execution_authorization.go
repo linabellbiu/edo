@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"strings"
+	"time"
 
 	"edo/internal/access"
 	"edo/internal/database"
@@ -81,10 +82,30 @@ func (s *Service) executionAuthorizationDenied(ctx context.Context, record *mode
 }
 
 func (s *Service) failExecutionAuthorization(ctx context.Context, record *model.DeploymentRecord, cause error) error {
+	if !errors.Is(cause, ErrExecutionAuthorization) {
+		cause = errors.Join(ErrExecutionAuthorization, cause)
+	}
 	scope, scoped := database.DepartmentScopeFromContext(ctx)
 	// 无效范围不得借读取到的记录重写项目，也不能改动成功或已结束的历史。
-	if !scoped || scope.ProjectID == "" || scope.DepartmentID == "" || scope.ProjectID != record.ProjectID || scope.DepartmentID != record.DepartmentID || (record.Status != model.DeploymentQueued && record.Status != model.DeploymentRunning) {
+	if record == nil || !scoped || scope.ProjectID == "" || scope.DepartmentID == "" || scope.ProjectID != record.ProjectID || scope.DepartmentID != record.DepartmentID || (record.Status != model.DeploymentQueued && record.Status != model.DeploymentRunning) {
 		return cause
 	}
-	return s.markFailed(ctx, record.ID, "deployment_authorization_revoked", ErrExecutionAuthorization.Error(), cause, record.PreviousImage, nil)
+	updateContext, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+	defer cancel()
+	now := time.Now().UTC()
+	// 状态检查必须进入同一条 UPDATE，不能用内存中的旧状态覆盖其他执行的结果。
+	result := s.db.WithContext(updateContext).Model(&model.DeploymentRecord{}).
+		Where("uuid = ? AND project_id = ? AND department_id = ? AND status = ?", record.ID, record.ProjectID, record.DepartmentID, record.Status).
+		Updates(map[string]any{
+			"status": model.DeploymentFailed, "error_code": "deployment_authorization_revoked", "error_message": ErrExecutionAuthorization.Error(),
+			"finished_at": now, "updated_at": now,
+		})
+	if result.Error != nil {
+		s.logger.ErrorContext(ctx, "保存发布授权失败状态失败", "operation", "deployment_authorization_failure_persist", "deployment_id", record.ID, "project_id", record.ProjectID, "department_id", record.DepartmentID, "expected_status", record.Status, "err", result.Error, "cause", cause)
+		return cause
+	}
+	if result.RowsAffected != 1 {
+		s.logger.WarnContext(ctx, "发布状态已变化，未覆盖既有执行结果", "operation", "deployment_authorization_failure_stale", "deployment_id", record.ID, "project_id", record.ProjectID, "department_id", record.DepartmentID, "expected_status", record.Status, "rows_affected", result.RowsAffected, "err", cause)
+	}
+	return cause
 }
