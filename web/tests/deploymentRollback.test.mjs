@@ -141,3 +141,20 @@ test('失败回退保留服务端错误，不把失败或排队记录画成已�
     assert.equal(h.events.at(-1)[1].status, 'failed')
   } finally { h.stop() }
 })
+
+test('Docker 回退展示真实容器与不可变镜像身份，沿用快照确认与异步就绪状态', async () => {
+  const h = harness()
+  try {
+    const checked = preview({ platform:'docker', runtime_name:'本地', workload_name:'test-frontend', kubernetes_uid:'', current_image:'test:v2', target_image:'test:v1', current_image_id:`sha256:${'a'.repeat(64)}`, target_image_id:`sha256:${'b'.repeat(64)}` })
+    h.gets[0].resolve({ data:{ rollback:checked } }); await flush()
+    assert.equal(h.state.isDocker.value,true)
+    assert.equal(h.state.preview.value.runtime_name,'本地')
+    assert.equal(h.state.preview.value.workload_name,'test-frontend')
+    assert.equal(h.state.canSubmit.value,true)
+    const submitting=h.state.submit()
+    assert.deepEqual(h.posts[0].body,rollback.rollbackConfirmation(checked))
+    h.posts[0].resolve({ data:{ deployment:{id:'docker-rollback',status:'queued',image:checked.target_image} } });await submitting
+    assert.equal(h.state.running.value,true)
+    assert.deepEqual(h.events.map(event=>event[0]),['accepted'])
+  } finally { h.stop() }
+})

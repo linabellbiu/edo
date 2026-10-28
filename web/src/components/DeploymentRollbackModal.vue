@@ -16,6 +16,7 @@ let requestID = 0
 const running = computed(() => rollbackInProgress(task.value))
 const canSubmit = computed(() => props.canExecute && Boolean(preview.value?.can_rollback) && !loading.value && !submitting.value && !task.value)
 const statusType = computed(() => task.value?.status === 'succeeded' ? 'success' : task.value?.status === 'failed' ? 'error' : 'info')
+const isDocker = computed(() => preview.value?.platform === 'docker')
 
 async function loadPreview(keepError = false) {
   const id = ++requestID, sourceID = props.sourceID
@@ -72,14 +73,20 @@ watch(() => props.records, records => {
         <a-alert v-if="!canExecute" type="warning" show-icon :message="t('rollback.permission')"/>
         <template v-if="preview">
           <a-alert v-if="!preview.can_rollback&&!task" type="warning" show-icon :message="t('rollback.unavailable')" :description="preview.reason"/>
-          <a-alert v-else-if="!task" type="warning" show-icon :message="t('rollback.impact')"/>
+          <a-alert v-else-if="!task" type="warning" show-icon :message="t(isDocker?'rollback.dockerImpact':'rollback.impact')"/>
           <dl class="rollback-facts">
-            <div><dt>{{ t('rollback.cluster') }}</dt><dd>{{ preview.cluster_name || preview.runtime_id || '—' }}</dd></div>
-            <div><dt>{{ t('rollback.namespace') }}</dt><dd>{{ preview.namespace || '—' }}</dd></div>
-            <div><dt>{{ t('rollback.workload') }}</dt><dd>Deployment / {{ preview.workload_name || '—' }}</dd></div>
-            <div><dt>{{ t('rollback.container') }}</dt><dd>{{ preview.container_name || '—' }}</dd></div>
-            <div class="rollback-image"><dt>{{ t('rollback.current') }}</dt><dd>{{ preview.current_image || '—' }}</dd></div>
-            <div class="rollback-image"><dt>{{ t('rollback.target') }}</dt><dd>{{ preview.target_image || '—' }}</dd></div>
+            <template v-if="isDocker">
+              <div><dt>{{ t('rollback.runtime') }}</dt><dd>{{ preview.runtime_name || preview.runtime_id || '—' }}</dd></div>
+              <div><dt>{{ t('rollback.dockerContainer') }}</dt><dd>{{ preview.workload_name || preview.container_name || '—' }}</dd></div>
+            </template>
+            <template v-else>
+              <div><dt>{{ t('rollback.cluster') }}</dt><dd>{{ preview.cluster_name || preview.runtime_id || '—' }}</dd></div>
+              <div><dt>{{ t('rollback.namespace') }}</dt><dd>{{ preview.namespace || '—' }}</dd></div>
+              <div><dt>{{ t('rollback.workload') }}</dt><dd>Deployment / {{ preview.workload_name || '—' }}</dd></div>
+              <div><dt>{{ t('rollback.container') }}</dt><dd>{{ preview.container_name || '—' }}</dd></div>
+            </template>
+            <div class="rollback-image"><dt>{{ t('rollback.current') }}</dt><dd>{{ preview.current_image || '—' }}<small v-if="isDocker&&preview.current_image_id">{{ t('rollback.imageID') }}：{{ preview.current_image_id }}</small></dd></div>
+            <div class="rollback-image"><dt>{{ t('rollback.target') }}</dt><dd>{{ preview.target_image || '—' }}<small v-if="isDocker&&preview.target_image_id">{{ t('rollback.imageID') }}：{{ preview.target_image_id }}</small></dd></div>
             <div class="rollback-image"><dt>{{ t('rollback.source') }}</dt><dd>{{ preview.source_deployment_id }}</dd></div>
           </dl>
         </template>
@@ -98,5 +105,5 @@ watch(() => props.records, records => {
 </template>
 
 <style scoped>
-.rollback-content{display:grid;gap:12px;min-height:80px}.rollback-facts{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin:0}.rollback-facts>div{min-width:0;padding:10px 12px;border:1px solid var(--edo-border);border-radius:6px;background:var(--edo-surface-soft)}.rollback-facts dt{margin-bottom:4px;color:var(--edo-muted);font-size:12px}.rollback-facts dd{margin:0;color:var(--edo-text);overflow-wrap:anywhere}.rollback-facts .rollback-image{grid-column:1/-1}.rollback-task{margin:0;color:var(--edo-muted);font-size:12px;overflow-wrap:anywhere}@media(max-width:540px){.rollback-facts{grid-template-columns:1fr}}
+.rollback-content{display:grid;gap:12px;min-height:80px}.rollback-facts{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin:0}.rollback-facts>div{min-width:0;padding:10px 12px;border:1px solid var(--edo-border);border-radius:6px;background:var(--edo-surface-soft)}.rollback-facts dt{margin-bottom:4px;color:var(--edo-muted);font-size:12px}.rollback-facts dd{margin:0;color:var(--edo-text);overflow-wrap:anywhere}.rollback-facts .rollback-image{grid-column:1/-1}.rollback-image small{display:block;margin-top:4px;color:var(--edo-muted);font-size:12px;overflow-wrap:anywhere}.rollback-task{margin:0;color:var(--edo-muted);font-size:12px;overflow-wrap:anywhere}@media(max-width:540px){.rollback-facts{grid-template-columns:1fr}}
 </style>

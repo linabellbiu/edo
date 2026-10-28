@@ -32,6 +32,7 @@ import type { PipelineExecutionGraph, Workflow as PipelineWorkflow } from '@/typ
 import { formatGitReference } from '@/utils/gitReference'
 import { retainCurrentDeploymentState, selectCurrentDeploymentInstances, selectLatestFailedDeploymentAttempts } from '@/utils/deploymentInstances'
 import type { RollbackRecord } from '@/types/deploymentRollback'
+import type { PipelineRunApproval } from '@/types/pipelineApproval'
 import { deploymentRollbackEn, deploymentRollbackZh } from '@/locales/deploymentRollback'
 import { formatDateTime, formatRelativeTime } from '@/utils/time'
 import { parsePipelineRunFilters, pipelineRunDateBounds, pipelineRunDateRange, pipelineRunRequestParams, pipelineRunRouteQuery, type PipelineRunFilters } from '@/utils/pipelineRunFilters'
@@ -54,7 +55,7 @@ interface Artifact extends ResourceRecord{id:string;application_id:string;build_
 interface ApplicationWorkflow extends PipelineWorkflow{workflow_template?:{id:string;name:string}}
 interface WorkflowTemplate extends PipelineWorkflow{description?:string}
 interface Application extends ResourceRecord{id:string;name:string;description:string;repository_id:string;poll_interval_seconds:number;last_observed_commit?:string;sync_status:string;sync_message?:string;last_checked_at?:string;is_active:boolean;repository?:Repository;workflows:ApplicationWorkflow[]}
-interface Run extends ResourceRecord{row_id?:number;id:string;application_id:string;workflow_id?:string;deployment_id?:string;release_plan_id?:string;release_plan_execution_id?:string;release_plan_execution_item_id?:string;retry_of_id?:string;artifact_id?:string;selected_artifact?:{id:string;name:string;kind:'oci_image'|'file_bundle';digest:string};trigger:string;ref:string;commit_sha:string;commit_message?:string;status:string;stage:string;message?:string;created_at:string;updated_at?:string;application?:Application;environment?:string;current_node_id?:string;current_node_name?:string;created_by?:string;image?:string;execution_graph?:PipelineExecutionGraph}
+interface Run extends ResourceRecord{approval?:PipelineRunApproval;row_id?:number;id:string;application_id:string;workflow_id?:string;deployment_id?:string;release_plan_id?:string;release_plan_execution_id?:string;release_plan_execution_item_id?:string;retry_of_id?:string;artifact_id?:string;selected_artifact?:{id:string;name:string;kind:'oci_image'|'file_bundle';digest:string};trigger:string;ref:string;commit_sha:string;commit_message?:string;status:string;stage:string;message?:string;created_at:string;updated_at?:string;application?:Application;environment?:string;current_node_id?:string;current_node_name?:string;created_by?:string;image?:string;execution_graph?:PipelineExecutionGraph}
 interface DeploymentTarget extends ResourceRecord{id:string;platform:string;environment_id:string;host_id:string;runtime_id:string;namespace?:string;workload_name?:string;container_name?:string}
 interface DeploymentPlan extends ResourceRecord{id:string;kind?:string;service_name?:string;deployment_target_id:string;deployment_target?:DeploymentTarget}
 interface DeploymentRecord extends ResourceRecord{id:string;pipeline_run_id?:string;application_id?:string;target_id:string;target_name:string;platform:string;environment_id:string;host_id:string;runtime_id:string;namespace:string;workload_name:string;container_name:string;deployment_plan_id?:string;deployment_plan_kind?:string;compose_service?:string;operation:string;image:string;image_display?:string;status:string;error_message?:string;runtime_deleted_at?:string;created_at:string;updated_at:string;finished_at?:string}
@@ -204,6 +205,46 @@ const canReadContainerLogs=computed(()=>auth.canAny(['cluster.read']))
 const canOpenContainerTerminal=computed(()=>auth.canAny(['terminal.open']))
 const canUpdateDeployments=computed(()=>auth.canAny(['deployment.update']))
 const canControlDeployments=computed(()=>auth.canAny(['deployment.execute']))
+const runApprovals=ref<Record<string,PipelineRunApproval>>({}),runApprovalLoading=ref<Record<string,boolean>>({}),runApprovalErrors=ref<Record<string,string>>({}),approvingRunID=ref('')
+const runApprovalRequests=new Map<string,AbortController>()
+function approvalScope(){return [auth.user?.id||'',auth.user?.project_id||'',...(auth.user?.permissions||[])].join('|')}
+function visibleApprovalRuns(){
+ if(props.section!=='release-plans'||releaseView.value!=='runs'||!runDrawerOpen.value||!runDrawerEntry.value)return []
+ return runEntryRecords(runDrawerEntry.value).filter(run=>expandedRunIDs.value.includes(run.id)&&run.status==='awaiting_approval')
+}
+function currentRunApproval(run:Run){const approval=runApprovals.value[run.id];return run.status==='awaiting_approval'&&approval?.node_id===run.current_node_id?approval:undefined}
+function canApproveRun(run:Run){return auth.canAny(['deployment.review'])&&Boolean(currentRunApproval(run)?.can_approve)&&!runApprovalLoading.value[run.id]&&!approvingRunID.value}
+async function loadRunApproval(runID:string){
+ if(!visibleApprovalRuns().some(run=>run.id===runID)||runApprovalLoading.value[runID])return
+ const controller=new AbortController(),scope=approvalScope()
+ runApprovalRequests.set(runID,controller);runApprovalLoading.value[runID]=true;delete runApprovalErrors.value[runID]
+ try{
+  const detail=(await client.get<{pipeline_run:Run}>(`/pipeline-runs/${encodeURIComponent(runID)}`,{signal:controller.signal})).data.pipeline_run
+  if(controller.signal.aborted||scope!==approvalScope()||detail.id!==runID)return
+  runs.value=runs.value.map(run=>run.id===runID?{...run,...detail}:run)
+  if(detachedRun.value?.id===runID)detachedRun.value=detail
+  if(executionDrawer.value)executionDrawer.value.runs=executionDrawer.value.runs.map(run=>run.id===runID?{...run,...detail}:run)
+  delete runApprovals.value[runID]
+  if(detail.status==='awaiting_approval'){
+   if(detail.approval&&detail.approval.node_id===detail.current_node_id)runApprovals.value[runID]=detail.approval
+   else runApprovalErrors.value[runID]='无法读取最新审核状态，请重试'
+  }
+ }catch(error){if(!controller.signal.aborted&&scope===approvalScope()){delete runApprovals.value[runID];runApprovalErrors.value[runID]=apiErrorMessage(error)}}
+ finally{if(runApprovalRequests.get(runID)===controller){runApprovalRequests.delete(runID);runApprovalLoading.value[runID]=false}}
+}
+async function refreshRunApprovals(){await Promise.all(visibleApprovalRuns().map(run=>loadRunApproval(run.id)))}
+async function approveRun(run:Run){
+ if(!canApproveRun(run))return
+ approvingRunID.value=run.id
+ try{
+  await loadRunApproval(run.id)
+  if(!auth.canAny(['deployment.review'])||!currentRunApproval(run)?.can_approve)return
+  await client.post(`/pipeline-runs/${encodeURIComponent(run.id)}/approve`,undefined,{timeout:35000})
+  await refresh()
+  await loadRunApproval(run.id)
+ }catch(error){message.error(apiErrorMessage(error));await loadRunApproval(run.id)}
+ finally{approvingRunID.value=''}
+}
 function visibleDeploymentRunIDs(){
  if(props.section!=='release-plans'||releaseView.value!=='runs'||!canReadDeployments.value||!runDrawerOpen.value||!runDrawerEntry.value)return []
  return runEntryRecords(runDrawerEntry.value).filter(run=>expandedRunIDs.value.includes(run.id)).map(run=>run.id)
@@ -473,7 +514,7 @@ function lifecycleScriptAvailable(record:DeploymentRecord,action:'restart'|'stop
 }
 function runtimeActionKey(record:DeploymentRecord,action:string){return `${record.id}:${action}`}
 function openDeploymentRollback(record:DeploymentRecord){
- if(!canReadDeployments.value||!canControlDeployments.value||deploymentKind(record)!=='kubernetes')return
+ if(!canReadDeployments.value||!canControlDeployments.value||!['docker','kubernetes'].includes(deploymentKind(record)))return
  rollbackDialog.sourceID=record.id;rollbackDialog.pipelineRunID=record.pipeline_run_id||'';rollbackDialog.open=true
 }
 function acceptRollbackRecord(record:RollbackRecord){
@@ -842,7 +883,7 @@ function changeRunPage(pagination:{current?:number;pageSize?:number}){
  void router.push({query:pipelineRunRouteQuery(route.query,filters)})
 }
 
-async function refresh(){const section=props.section,view=releaseView.value;loading.value=true;try{const requests=await Promise.all([auth.canAny(['application.read'])?client.get<{applications:Application[]}>('/applications'):null,auth.canAny(['repository.read'])?client.get<{repositories:Repository[]}>('/repositories'):null,auth.canAny(['credential.read'])?client.get<{credentials:Credential[]}>('/git-credentials'):null,auth.canAny(['build_plan.read'])?client.get<{build_plans:BuildPlan[]}>('/build-plans'):null,auth.canAny(['image_registry.read'])?client.get<{image_registries:Registry[]}>('/image-registries'):null,auth.canAny(['pipeline_run.read'])&&!(section==='release-plans'&&view==='runs')?client.get<{pipeline_runs:Run[]}>('/pipeline-runs?limit=200'):null,auth.canAny(['release_plan.read'])?client.get<{release_plans:ReleasePlan[]}>('/release-plans'):null,canReadDeployments.value?client.get<{deployments:DeploymentRecord[]}>('/deployments?limit=200'):null,auth.canAny(['deployment_plan.read'])?client.get<{deployment_plans:DeploymentPlan[]}>('/deployment-plans'):null,auth.canAny(['workflow.read'])?client.get<{workflow_templates:WorkflowTemplate[]}>('/workflow-templates'):null]);if(section!==props.section||view!==releaseView.value)return;applications.value=requests[0]?.data.applications||[];repositories.value=requests[1]?.data.repositories||[];credentials.value=requests[2]?.data.credentials||[];buildPlans.value=requests[3]?.data.build_plans||[];registries.value=requests[4]?.data.image_registries||[];if(!(section==='release-plans'&&view==='runs'))runs.value=requests[5]?.data.pipeline_runs||[];releasePlans.value=requests[6]?.data.release_plans||[];deployments.value=requests[7]?.data.deployments||[];deploymentPlans.value=requests[8]?.data.deployment_plans||[];workflowTemplates.value=requests[9]?.data.workflow_templates||[];if(section==='release-plans'&&view==='runs')await loadRunPage(true);if(requestedRunID.value)void revealRequestedRun();await refreshVisibleRunDeployments()}catch(error){message.error(apiErrorMessage(error))}finally{loading.value=false}}
+async function refresh(){const section=props.section,view=releaseView.value;loading.value=true;try{const requests=await Promise.all([auth.canAny(['application.read'])?client.get<{applications:Application[]}>('/applications'):null,auth.canAny(['repository.read'])?client.get<{repositories:Repository[]}>('/repositories'):null,auth.canAny(['credential.read'])?client.get<{credentials:Credential[]}>('/git-credentials'):null,auth.canAny(['build_plan.read'])?client.get<{build_plans:BuildPlan[]}>('/build-plans'):null,auth.canAny(['image_registry.read'])?client.get<{image_registries:Registry[]}>('/image-registries'):null,auth.canAny(['pipeline_run.read'])&&!(section==='release-plans'&&view==='runs')?client.get<{pipeline_runs:Run[]}>('/pipeline-runs?limit=200'):null,auth.canAny(['release_plan.read'])?client.get<{release_plans:ReleasePlan[]}>('/release-plans'):null,canReadDeployments.value?client.get<{deployments:DeploymentRecord[]}>('/deployments?limit=200'):null,auth.canAny(['deployment_plan.read'])?client.get<{deployment_plans:DeploymentPlan[]}>('/deployment-plans'):null,auth.canAny(['workflow.read'])?client.get<{workflow_templates:WorkflowTemplate[]}>('/workflow-templates'):null]);if(section!==props.section||view!==releaseView.value)return;applications.value=requests[0]?.data.applications||[];repositories.value=requests[1]?.data.repositories||[];credentials.value=requests[2]?.data.credentials||[];buildPlans.value=requests[3]?.data.build_plans||[];registries.value=requests[4]?.data.image_registries||[];if(!(section==='release-plans'&&view==='runs'))runs.value=requests[5]?.data.pipeline_runs||[];releasePlans.value=requests[6]?.data.release_plans||[];deployments.value=requests[7]?.data.deployments||[];deploymentPlans.value=requests[8]?.data.deployment_plans||[];workflowTemplates.value=requests[9]?.data.workflow_templates||[];if(section==='release-plans'&&view==='runs')await loadRunPage(true);if(requestedRunID.value)void revealRequestedRun();await refreshVisibleRunDeployments();await refreshRunApprovals()}catch(error){message.error(apiErrorMessage(error))}finally{loading.value=false}}
 let stateRefreshing=false
 async function refreshApplicationState(){
  const section=props.section,view=releaseView.value
@@ -883,7 +924,7 @@ async function refreshReleasePlanState(){
 async function refreshRunState(){
  if(stateRefreshing||!auth.canAny(['pipeline_run.read']))return
  stateRefreshing=true
- try{await loadRunPage();await refreshVisibleRunDeployments();if(rollbackDialog.open||releasePlanResources.open)await refreshRollbackRecords()}
+ try{await loadRunPage();await refreshVisibleRunDeployments();await refreshRunApprovals();if(rollbackDialog.open||releasePlanResources.open)await refreshRollbackRecords()}
  finally{stateRefreshing=false}
 }
 
@@ -1731,9 +1772,11 @@ watch(()=>route.query.application,()=>{void revealActiveApplication()})
 watch(()=>route.query.delivery_kind,consumeDeliveryRequest)
 watch(()=>route.query.run,()=>{void revealRequestedRun()})
 watch(runQueryKey,()=>{runDrawerEntryID.value='';expandedRunIDs.value=[];expandedExecutionIDs.value=[];selectedRunID.value='';revealedRunID='';detachedRun.value=null;executionDrawer.value=null;executionController?.abort();executionRevision++;void loadRunPage(true)})
+watch(()=>visibleApprovalRuns().map(run=>`${run.id}:${run.current_node_id}`).join(','),()=>{void refreshRunApprovals()})
+watch(approvalScope,()=>{for(const controller of runApprovalRequests.values())controller.abort();runApprovalRequests.clear();runApprovals.value={};runApprovalLoading.value={};runApprovalErrors.value={};void refreshRunApprovals()})
 watch(()=>props.section,connectDeliveryEvents)
 onMounted(()=>{connectDeliveryEvents();void refresh().then(()=>{lastDeliverySync=Date.now();syncBuildPlanSelection();consumeBuildCreateRequest();consumeDeliveryRequest();void revealActiveApplication()});releaseTimer=window.setInterval(refreshVisibleState,5000);document.addEventListener('visibilitychange',onDeliveryPageVisible);window.addEventListener('focus',onDeliveryPageVisible)})
-onBeforeUnmount(()=>{runListController?.abort();executionController?.abort();runQueryRevision++;executionRevision++;stopDeliveryEvents?.();clearTimeout(deliveryRefreshTimer);resetPlanExecution();clearInterval(releaseTimer);document.removeEventListener('visibilitychange',onDeliveryPageVisible);window.removeEventListener('focus',onDeliveryPageVisible)})
+onBeforeUnmount(()=>{for(const controller of runApprovalRequests.values())controller.abort();runListController?.abort();executionController?.abort();runQueryRevision++;executionRevision++;stopDeliveryEvents?.();clearTimeout(deliveryRefreshTimer);resetPlanExecution();clearInterval(releaseTimer);document.removeEventListener('visibilitychange',onDeliveryPageVisible);window.removeEventListener('focus',onDeliveryPageVisible)})
 </script>
 
 <template><section :class="{'applications-page':props.section==='applications'}"><PageToolbar :description="props.section==='applications'?t('applicationWorkspace.description'):currentDescription"><a-tag v-if="props.section==='applications'||props.section==='release-plans'" color="processing">{{ t('applicationCard.autoRefresh') }}</a-tag><a-button :loading="loading" @click="refresh"><RefreshCw :size="15"/>刷新</a-button><a-button v-if="props.section==='release-plans'&&releaseView==='runs'&&auth.canAny(['pipeline_run.execute'])&&auth.canAny(['application.read'])" type="primary" :disabled="saving" @click="openManualPicker">{{ t('manualRun.execute') }}</a-button><a-button v-if="canCreate&&(props.section!=='release-plans'||releaseView==='plans')" type="primary" @click="create"><Plus :size="15"/>{{ props.section==='release-plans'?'创建发布计划':props.section==='applications'?t('applicationWorkspace.create'):'新建' }}</a-button></PageToolbar>
@@ -1848,7 +1891,7 @@ onBeforeUnmount(()=>{runListController?.abort();executionController?.abort();run
                   <a-button v-if="canControlDeployments" size="small" danger :loading="deploymentRuntimeAction===runtimeActionKey(record,'stop')" :disabled="Boolean(deploymentRuntimeAction)||!lifecycleScriptAvailable(record,'stop')" :title="lifecycleScriptAvailable(record,'stop')?'':'请先在该 Shell 部署实例中保存停止命令'" @click="confirmDeploymentRuntimeAction(record,'stop')"><Power/>停止</a-button>
                   <a-button v-if="canControlDeployments" size="small" :loading="deploymentRuntimeAction===runtimeActionKey(record,'restart')" :disabled="Boolean(deploymentRuntimeAction)||!lifecycleScriptAvailable(record,'restart')" :title="lifecycleScriptAvailable(record,'restart')?'':'请先在该 Shell 部署实例中保存重启命令'" @click="confirmDeploymentRuntimeAction(record,'restart')"><RotateCw/>重启</a-button>
                   <a-button v-if="canControlDeployments&&deploymentKind(record)==='kubernetes'" size="small" :disabled="Boolean(deploymentRuntimeAction)" @click="openScaleDialog(record)"><Minus/>扩缩容</a-button>
-                  <a-button v-if="canReadDeployments&&canControlDeployments&&deploymentKind(record)==='kubernetes'" size="small" :disabled="Boolean(deploymentRuntimeAction)" @click="openDeploymentRollback(record)"><RotateCw/>{{ rollbackT('rollback.title') }}</a-button>
+                  <a-button v-if="canReadDeployments&&canControlDeployments&&['docker','kubernetes'].includes(deploymentKind(record))" size="small" :disabled="Boolean(deploymentRuntimeAction)" @click="openDeploymentRollback(record)"><RotateCw/>{{ rollbackT('rollback.title') }}</a-button>
                   <a-button v-if="canControlDeployments&&deploymentKind(record)==='docker'" size="small" danger :loading="deploymentRuntimeAction===runtimeActionKey(record,'remove')" :disabled="Boolean(deploymentRuntimeAction)" @click="confirmDeploymentRuntimeRemoval(record)"><Trash2/>删除实例</a-button>
                 </div>
               </div>
@@ -2022,7 +2065,12 @@ onBeforeUnmount(()=>{runListController?.abort();executionController?.abort();run
               <a-button v-if="run.status==='failed'&&auth.canAny(['pipeline_run.execute'])" type="primary" @click="openRetry(run)">重试流水线</a-button>
               <a-button v-if="runHasDeployments(run.id)" @click="openReleasePlanApplicationResources('',run.application_id,run.id)">{{ rollbackT('rollback.recordsAndRollback') }}</a-button>
               <span v-else-if="canReadDeployments&&runDeploymentLoading[run.id]" class="resource-secondary">{{ rollbackT('rollback.recordsLoading') }}</span>
-              <a-button v-if="run.status==='awaiting_approval'&&auth.canAny(['deployment.review'])" type="primary" @click="action(`/pipeline-runs/${run.id}/approve`)">通过审核</a-button>
+              <div v-if="run.status==='awaiting_approval'" class="resource-secondary" role="status">
+                <span v-if="currentRunApproval(run)">已审核 {{ currentRunApproval(run)!.approved_count }} / {{ currentRunApproval(run)!.required_approvals }} 人<span v-if="currentRunApproval(run)!.reason"> · {{ currentRunApproval(run)!.reason }}</span></span>
+                <span v-else-if="runApprovalLoading[run.id]">正在检查审核状态</span>
+                <span v-else>{{ runApprovalErrors[run.id] || '等待最新审核状态' }} <a-button size="small" type="link" @click="loadRunApproval(run.id)">重新检查</a-button></span>
+              </div>
+              <a-button v-if="run.status==='awaiting_approval'&&auth.canAny(['deployment.review'])" type="primary" :loading="approvingRunID===run.id||runApprovalLoading[run.id]" :disabled="!canApproveRun(run)" @click="approveRun(run)">{{ currentRunApproval(run)?.approved_by_me?'已审核':'通过审核' }}</a-button>
               <a-button v-if="run.stage==='manual'&&auth.canAny(['pipeline_run.execute'])" type="primary" @click="action(`/pipeline-runs/${run.id}/advance`)">放行并继续</a-button>
             </footer>
           </section>
@@ -2344,6 +2392,7 @@ onBeforeUnmount(()=>{runListController?.abort();executionController?.abort();run
     <div v-if="deploymentKind(record)==='docker'" class="release-plan-resource-actions">
      <a-button v-if="canReadContainerLogs" :loading="dockerRuntimeLoading[record.runtime_id]" :disabled="!dockerContainerForDeployment(record)" @click="openDeploymentLogs(record)"><FileText :size="14"/>查看日志</a-button>
      <a-button v-if="canOpenContainerTerminal&&canReadContainerLogs" :disabled="dockerRuntimeLoading[record.runtime_id]||dockerContainerForDeployment(record)?.state!=='running'" :title="dockerContainerForDeployment(record)?.state==='running'?'':'容器只有在实时运行中才能打开终端'" @click="openDeploymentTerminal(record)"><TerminalSquare :size="14"/>打开终端</a-button>
+     <a-button v-if="canReadDeployments&&canControlDeployments" @click="openDeploymentRollback(record)"><RotateCw :size="14"/>{{ rollbackT('rollback.title') }}</a-button>
      <span v-if="!canReadContainerLogs" class="release-plan-resource-permission">没有 cluster.read 权限，无法读取容器实时状态和日志。</span>
      <span v-else-if="!canOpenContainerTerminal" class="release-plan-resource-permission">没有 terminal.open 权限，无法打开容器终端。</span>
     </div>

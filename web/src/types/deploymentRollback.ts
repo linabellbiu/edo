@@ -1,4 +1,8 @@
 export interface RollbackPreview {
+  platform?: 'docker' | 'kubernetes' | 'ssh'
+  runtime_name?: string
+  current_image_id?: string
+  target_image_id?: string
   can_rollback: boolean
   reason: string
   source_deployment_id: string
