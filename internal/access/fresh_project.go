@@ -43,6 +43,11 @@ func (s *Service) HasCurrentProjectPermission(ctx context.Context, user *model.U
 // FreshProjectPermissions reuses the same current-DB permission calculation as
 // project delegation. It does not depend on an asynchronously reloaded enforcer.
 func FreshProjectPermissions(db *gorm.DB, ctx context.Context, userID, projectID string) (*FreshProjectAuthorization, error) {
+	return freshProjectPermissions(db, ctx, userID, projectID, false)
+}
+
+// 只有项目自身的管理操作允许复核停用项目，业务操作仍必须拒绝停用项目。
+func freshProjectPermissions(db *gorm.DB, ctx context.Context, userID, projectID string, allowInactive bool) (*FreshProjectAuthorization, error) {
 	scope, ok := database.DepartmentScopeFromContext(ctx)
 	if !ok || scope.ProjectID == "" || scope.ProjectID != projectID || scope.DepartmentID == "" || userID == "" {
 		return nil, ErrAccessDelegationDenied
@@ -67,7 +72,7 @@ func FreshProjectPermissions(db *gorm.DB, ctx context.Context, userID, projectID
 			}
 			return err
 		}
-		if !project.IsActive || project.DepartmentID != scope.DepartmentID {
+		if (!project.IsActive && !allowInactive) || project.DepartmentID != scope.DepartmentID {
 			return ErrAccessDelegationDenied
 		}
 		var member model.ProjectMember

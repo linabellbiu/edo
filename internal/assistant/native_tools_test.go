@@ -34,7 +34,7 @@ func TestNativeCapabilitiesAndCatalogDoNotInventFeaturesOrExposeCredentials(t *t
 	if err != nil || !strings.Contains(output, "目前还没有这个功能") || !strings.Contains(output, "false") {
 		t.Fatalf("未知能力未明确拒绝: %s %v", output, err)
 	}
-	for _, name := range []string{"runtime_control", "yaml_apply", "arbitrary_commands", "external_knowledge", "kubernetes_workload_create", "delete"} {
+	for _, name := range []string{"runtime_control", "yaml_apply", "arbitrary_commands", "external_knowledge", "kubernetes_workload_create", "delete", "k3s_uninstall", "kubernetes.k3s.uninstall"} {
 		output, err = diagnosticTool(t, s, user, "edo_capabilities").InvokableRun(ctx, `{"resource":"`+name+`"}`)
 		if err != nil || !strings.Contains(output, `\"supported\":false`) {
 			t.Fatalf("禁止能力错误开放: %s %v", output, err)

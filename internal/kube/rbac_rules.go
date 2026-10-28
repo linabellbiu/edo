@@ -18,7 +18,7 @@ import (
 func RBACGrantPermissionCodes() []string {
 	result := []string{}
 	for _, permission := range access.Catalog() {
-		if strings.HasPrefix(permission.Code, "kubernetes.") && !strings.HasPrefix(permission.Code, "kubernetes.rbac.") {
+		if strings.HasPrefix(permission.Code, "kubernetes.") && !strings.HasPrefix(permission.Code, "kubernetes.rbac.") && permission.Code != access.PermissionK3sUninstall {
 			result = append(result, permission.Code)
 		}
 	}

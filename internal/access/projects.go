@@ -129,12 +129,8 @@ func (s *Service) UpdateProject(ctx context.Context, user *model.User, id, name,
 	if err != nil {
 		return err
 	}
-	allowed, err := s.HasPermission(projectContext(ctx, user, project), user, "project.update")
-	if err != nil {
+	if err := s.authorizeProjectManagement(ctx, user, project, "project.update"); err != nil {
 		return err
-	}
-	if !allowed {
-		return ErrAccessDelegationDenied
 	}
 	if project.IsDefault && !active {
 		return ErrProjectDefault
@@ -311,12 +307,8 @@ func (s *Service) DeleteProject(ctx context.Context, user *model.User, id string
 	if project.IsDefault {
 		return ErrProjectDefault
 	}
-	allowed, err := s.HasPermission(projectContext(ctx, user, project), user, "project.delete")
-	if err != nil {
+	if err := s.authorizeProjectManagement(ctx, user, project, "project.delete"); err != nil {
 		return err
-	}
-	if !allowed {
-		return ErrAccessDelegationDenied
 	}
 	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		for _, table := range []string{"applications", "git_repositories", "build_plans", "image_registries", "deployment_plans", "release_plans", "release_workflow_templates", "hosts", "environments", "docker_endpoints", "kubernetes_clusters", "dns_provider_accounts", "notification_channels", "scheduled_tasks", "monitor_rules", "pipeline_runs", "artifacts", "jobs", "outbox_events", "release_workflows", "build_runs", "deployment_targets", "deployment_records", "release_plan_executions", "notifications"} {
@@ -387,7 +379,7 @@ func (s *Service) EnsureProjectRoles(ctx context.Context) error {
 			}
 			var permissions []string
 			for _, item := range catalog {
-				if !ProjectPermission(item.Code) || strings.HasPrefix(item.Code, "delivery.") {
+				if !ProjectPermission(item.Code) || strings.HasPrefix(item.Code, "delivery.") || item.Code == PermissionK3sUninstall {
 					continue
 				}
 				include := preset.id == ProjectOwnerRoleID || item.Action == "read" && !item.Dangerous || preset.id == projectDeveloperRoleID && projectDeveloperWritePermission(item.Code)
