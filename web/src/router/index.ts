@@ -72,7 +72,7 @@ router.beforeEach(async (to) => {
   else if (to.path === '/hosts' && to.query.view === 'clusters' && item) required = item.permissions
   else if (to.path === '/release-plans' && to.query.view === 'runs') required = ['pipeline_run.read']
   if (!auth.canAny(required)) return '/projects'
-  if ((to.path === '/kubernetes' || to.path === '/hosts') && item) to.meta.title = item.label
+  if (item) to.meta.title = item.label
   return true
 })
 
