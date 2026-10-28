@@ -375,8 +375,8 @@ function formatTime(value: string) {
 .artifact-toolbar :deep(.ant-select) { width: 210px; }
 .artifact-toolbar :deep(.ant-btn) { display: inline-flex; align-items: center; gap: 5px; }
 .artifact-toolbar svg { width: 14px; }
-.artifact-table :deep(.resource-table) { min-width: 1360px; table-layout: fixed; }
-.artifact-table :deep(.table-actions), .artifact-table :deep(.table-action-heading) { width: 88px; }
+.build-plan-artifacts :deep(.artifact-table .resource-table) { min-width: 1360px; table-layout: fixed; }
+.build-plan-artifacts :deep(.artifact-table .table-actions), .build-plan-artifacts :deep(.artifact-table .table-action-heading) { width: 88px; }
 .artifact-application-name { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: help; }
 .artifact-application-name:focus-visible { outline: 2px solid var(--edo-primary); outline-offset: 2px; border-radius: 3px; }
 .artifact-size { white-space: nowrap; font-variant-numeric: tabular-nums; }
