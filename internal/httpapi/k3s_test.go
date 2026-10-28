@@ -35,7 +35,7 @@ type k3sHTTPTestTransport struct {
 }
 
 var k3sHTTPPreflightCheckIDs = []string{
-	"privilege", "os", "tools", "architecture", "supervisor", "cgroup", "cpu", "memory", "disk", "hostname", "ports", "download", "system_registry", "endpoint", "swap", "firewall", "selinux", "existing_installation",
+	"privilege", "os", "tools", "architecture", "supervisor", "cgroup", "cpu", "memory", "disk", "snapshotter", "hostname", "ports", "download", "system_registry", "endpoint", "swap", "firewall", "selinux", "existing_installation",
 }
 
 func (transport *k3sHTTPTestTransport) Read(ctx context.Context, _ model.Host, _ sshclient.Bundle, script string) (string, error) {
@@ -365,7 +365,7 @@ func k3sHTTPPreflightState(t *testing.T, db *gorm.DB) map[string]int64 {
 
 func TestK3sHTTPFailedPreflightReturnsCompleteReportWithoutCreatingPlanOrTask(t *testing.T) {
 	transport := &k3sHTTPTestTransport{
-		statuses:    map[string]string{"memory": "failed", "ports": "failed", "existing_installation": "failed"},
+		statuses:    map[string]string{"memory": "failed", "ports": "failed", "snapshotter": "failed", "existing_installation": "failed"},
 		extraOutput: "EDO_PRIVATE_OUTPUT\tprivate-remote-diagnostic password=private-remote-password\n",
 	}
 	router, cleanup, db := newK3sHTTPTestRouterAndDB(t, transport)
