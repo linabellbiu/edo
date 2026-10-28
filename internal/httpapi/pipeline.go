@@ -746,7 +746,7 @@ func (h pipelineHandler) listRuns(c *gin.Context) {
 }
 
 func (h pipelineHandler) getRun(c *gin.Context) {
-	run, err := h.service.FindRun(c.Request.Context(), c.Param("id"))
+	run, err := h.service.FindRunView(c.Request.Context(), c.Param("id"))
 	if err != nil {
 		h.writeError(c, "pipeline_run_get", err)
 		return
@@ -854,6 +854,8 @@ func (h pipelineHandler) writeError(c *gin.Context, operation string, err error)
 		writeError(c, http.StatusUnprocessableEntity, "pipeline_execution_config_invalid", err.Error())
 	case errors.Is(err, pipeline.ErrPipelineExecutionUnavailable):
 		writeError(c, http.StatusServiceUnavailable, "pipeline_execution_unavailable", err.Error())
+	case errors.Is(err, pipeline.ErrRunApprovalUnavailable):
+		writeError(c, http.StatusServiceUnavailable, "pipeline_approval_unavailable", err.Error())
 	default:
 		writeInternalError(c)
 	}

@@ -18,6 +18,11 @@ func (s *Service) ListNodeRuns(ctx context.Context, runID string) ([]model.Pipel
 	}
 	items := []model.PipelineNodeRun{}
 	err := s.db.WithContext(ctx).Where("pipeline_run_id = ?", runID).Order("id ASC").Find(&items).Error
+	for i := range items {
+		if items[i].Type == model.WorkflowNodeApproval && items[i].Status == model.PipelineRunSucceeded {
+			items[i].Message = "审核已通过"
+		}
+	}
 	return items, err
 }
 

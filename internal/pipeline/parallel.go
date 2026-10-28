@@ -137,7 +137,11 @@ func (s *Service) advanceParallelRun(ctx context.Context, run *model.PipelineRun
 					} else if actorID == "" {
 						return ErrInvalidWorkflowTransition
 					}
-					if err := tx.Model(&model.PipelineNodeRun{}).Where("uuid = ? AND status = ?", state.ID, state.Status).Updates(map[string]any{"status": model.PipelineRunSucceeded, "stage": "completed", "finished_at": now, "updated_at": now}).Error; err != nil {
+					updates := map[string]any{"status": model.PipelineRunSucceeded, "stage": "completed", "finished_at": now, "updated_at": now}
+					if first.Type == model.WorkflowNodeApproval {
+						updates["message"] = "审核已通过"
+					}
+					if err := tx.Model(&model.PipelineNodeRun{}).Where("uuid = ? AND status = ?", state.ID, state.Status).Updates(updates).Error; err != nil {
 						return err
 					}
 					continue
