@@ -177,7 +177,7 @@ func parseStartOptions(args []string) (startOptions, error) {
 func printStartHelp() {
 	fmt.Println(`用法：mage start [--dev | --docker] [--server | --web]
 
-不指定参数时，构建内嵌 Web 的单文件程序，迁移数据库后在后台启动。
+不指定参数时，分别构建后端和 Web，迁移数据库后在后台启动两个进程。
 启动器日志写入 logs/backend.log 和 logs/web.log，后端结构化日志写入可滚动的 logs/edo.log。
 --dev     启动 Redis、NATS 和迁移，再使用 go run 与 npm start 在当前终端运行
 --docker  使用 Docker Compose 在后台启动
@@ -433,67 +433,75 @@ func waitForDockerStartRetry(ctx context.Context, delay time.Duration) error {
 	}
 }
 
+type builtStartRunner struct {
+	useHostDockerBuilder  func() error
+	ensureWebDependencies func(context.Context) error
+	buildBackend          func(context.Context) (string, error)
+	runCommand            func(context.Context, string, ...string) error
+	runLocalServices      func(context.Context, []localService) error
+}
+
 func startBuilt(ctx context.Context, runServer, runWeb bool) error {
+	return startBuiltWithRunner(ctx, runServer, runWeb, builtStartRunner{
+		useHostDockerBuilder:  useHostDockerBuilder,
+		ensureWebDependencies: ensureWebDependencies,
+		buildBackend:          buildBackend,
+		runCommand:            runCommand,
+		runLocalServices:      runLocalServices,
+	})
+}
+
+func startBuiltWithRunner(ctx context.Context, runServer, runWeb bool, runner builtStartRunner) error {
 	if runServer {
-		if err := useHostDockerBuilder(); err != nil {
+		if err := runner.useHostDockerBuilder(); err != nil {
 			return err
 		}
 	}
 	if runWeb {
-		if err := ensureWebDependencies(ctx); err != nil {
+		if err := runner.ensureWebDependencies(ctx); err != nil {
 			return err
 		}
-		if err := runCommand(ctx, npmExecutable(), "--prefix", "web", "run", "build"); err != nil {
+		if err := runner.runCommand(ctx, npmExecutable(), "--prefix", "web", "run", "build"); err != nil {
 			return fmt.Errorf("构建 Web 失败: %w", err)
 		}
 	}
-	backend := ""
+	services := make([]localService, 0, 2)
 	if runServer {
-		var err error
-		backend, err = buildBackend(ctx, runWeb)
+		backend, err := runner.buildBackend(ctx)
 		if err != nil {
 			return err
 		}
-	}
-	if runServer {
-		if err := os.Setenv("EDO_WEB_ROOT", ""); err != nil {
-			return fmt.Errorf("设置 Web 目录失败: %w", err)
-		}
-		if err := runCommand(ctx, backend, "migrate"); err != nil {
+		if err := runner.runCommand(ctx, backend, "migrate"); err != nil {
 			return fmt.Errorf("数据库迁移失败: %w", err)
 		}
 		fmt.Println("EDO 后端：http://127.0.0.1:8080")
-		if runWeb {
-			fmt.Println("EDO Web：http://127.0.0.1:8080")
-		}
-		return runLocalServices(ctx, []localService{{
+		services = append(services, localService{
 			id:           localServiceBackend,
 			name:         "后端",
 			executable:   backend,
 			args:         []string{"server"},
 			readyURL:     "http://127.0.0.1:8080/api/v1/health/ready",
 			readyTimeout: 90 * time.Second,
-		}})
+		})
 	}
-
-	fmt.Println("EDO Web：http://127.0.0.1:5173")
-	return runLocalServices(ctx, []localService{{
-		id:           localServiceWeb,
-		name:         "Web",
-		executable:   npmExecutable(),
-		args:         []string{"--prefix", "web", "run", "preview", "--", "--host", "127.0.0.1", "--port", "5173"},
-		readyURL:     "http://127.0.0.1:5173",
-		readyTimeout: 30 * time.Second,
-	}})
+	if runWeb {
+		fmt.Println("EDO Web：http://127.0.0.1:5173")
+		services = append(services, localService{
+			id:           localServiceWeb,
+			name:         "Web",
+			executable:   npmExecutable(),
+			args:         []string{"--prefix", "web", "run", "preview", "--", "--host", "127.0.0.1", "--port", "5173", "--strictPort"},
+			readyURL:     "http://127.0.0.1:5173",
+			readyTimeout: 30 * time.Second,
+		})
+	}
+	return runner.runLocalServices(ctx, services)
 }
 
 func startDevelopment(ctx context.Context, runServer, runWeb bool) error {
 	if runServer {
 		if err := startDevelopmentDependencies(ctx); err != nil {
 			return err
-		}
-		if err := os.Setenv("EDO_WEB_ROOT", ""); err != nil {
-			return fmt.Errorf("设置开发环境 Web 目录失败: %w", err)
 		}
 		if err := migrateFromSource(ctx); err != nil {
 			return err
@@ -610,23 +618,19 @@ func useHostDockerBuilder() error {
 	return nil
 }
 
-func buildBackend(ctx context.Context, embedWeb bool) (string, error) {
+func buildBackend(ctx context.Context) (string, error) {
+	return buildBackendWithRunner(ctx, runCommand)
+}
+
+func buildBackendWithRunner(ctx context.Context, run func(context.Context, string, ...string) error) (string, error) {
 	if err := os.MkdirAll("bin", 0o755); err != nil {
 		return "", fmt.Errorf("创建 bin 目录失败: %w", err)
 	}
-	if embedWeb {
-		if err := prepareEmbeddedWebAssets(); err != nil {
-			return "", err
-		}
-	}
 	binary := filepath.Join("bin", "edo")
-	// 本地单文件构建与容器发布构建保持一致，移除生产运行不需要的符号表和 DWARF 调试信息。
+	// 本地后端构建与容器保持一致，不复制前端产物，并移除符号表和 DWARF 调试信息。
 	args := []string{"build", "-trimpath", "-ldflags", "-s -w"}
-	if embedWeb {
-		args = append(args, "-tags", "edo_web")
-	}
 	args = append(args, "-o", binary, "./cmd/edo")
-	if err := runCommand(ctx, "go", args...); err != nil {
+	if err := run(ctx, "go", args...); err != nil {
 		return "", fmt.Errorf("构建 EDO 后端失败: %w", err)
 	}
 	absolute, err := filepath.Abs(binary)
@@ -634,22 +638,6 @@ func buildBackend(ctx context.Context, embedWeb bool) (string, error) {
 		return "", fmt.Errorf("解析 EDO 后端路径失败: %w", err)
 	}
 	return absolute, nil
-}
-
-func prepareEmbeddedWebAssets() error {
-	source := filepath.Join("web", "dist")
-	target := filepath.Join("internal", "webui", "dist")
-	return copyEmbeddedWebAssets(source, target)
-}
-
-func copyEmbeddedWebAssets(source, target string) error {
-	if err := os.RemoveAll(target); err != nil {
-		return fmt.Errorf("清理内嵌 Web 资源失败: %w", err)
-	}
-	if err := os.CopyFS(target, os.DirFS(source)); err != nil {
-		return fmt.Errorf("准备内嵌 Web 资源失败: %w", err)
-	}
-	return nil
 }
 
 func ensureWebDependencies(ctx context.Context) error {

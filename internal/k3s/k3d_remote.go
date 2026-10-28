@@ -50,7 +50,10 @@ edo_tool_valid() {
 }
 `
 
-func k3dPreflightScript(input Input) string { return k3dPreflightScriptWithLock(input, false) }
+func k3dPreflightScript(input Input) string {
+	// 只读报告收集预期的检查失败；实际安装继续由独立的阻断判断控制。
+	return "set +e\n" + k3dPreflightScriptWithLock(input, false)
+}
 
 func k3dPreflightScriptWithLock(input Input, owned bool) string {
 	options := input.K3d

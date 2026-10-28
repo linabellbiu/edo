@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"maps"
 	"net"
 	"net/url"
@@ -33,10 +34,12 @@ func (t *sshTransport) Run(ctx context.Context, host model.Host, bundle sshclien
 	endpoint := (&url.URL{Scheme: "ssh", User: url.User(host.SSHUsername), Host: net.JoinHostPort(host.Address, strconv.Itoa(host.SSHPort))}).String()
 	connector, err := sshclient.NewConnector(endpoint, bundle, host.SSHHostKeyFingerprint, t.timeout)
 	if err != nil {
+		logSSHTransportFailure(ctx, host.ID, "connector", err)
 		return ErrRemote
 	}
 	client, err := connector.ConnectPinned(ctx)
 	if err != nil {
+		logSSHTransportFailure(ctx, host.ID, "connect", err)
 		return ErrRemote
 	}
 	defer client.Close()
@@ -44,10 +47,12 @@ func (t *sshTransport) Run(ctx context.Context, host model.Host, bundle sshclien
 	input := io.Reader(strings.NewReader(script))
 	if host.SSHUsername != "root" {
 		if !bundle.UseSudo {
+			logSSHTransportFailure(ctx, host.ID, "sudo_required", ErrInvalidInput)
 			return ErrRemote
 		}
 		probe, err := client.NewSession()
 		if err != nil {
+			logSSHTransportFailure(ctx, host.ID, "sudo_probe_session", err)
 			return ErrRemote
 		}
 		probeDone := make(chan error, 1)
@@ -58,6 +63,7 @@ func (t *sshTransport) Run(ctx context.Context, host model.Host, bundle sshclien
 		case <-ctx.Done():
 			_ = probe.Close()
 			_ = client.Close()
+			logSSHTransportFailure(ctx, host.ID, "sudo_probe_timeout", ctx.Err())
 			return ctx.Err()
 		}
 		_ = probe.Close()
@@ -69,6 +75,7 @@ func (t *sshTransport) Run(ctx context.Context, host model.Host, bundle sshclien
 				password = bundle.Password
 			}
 			if password == "" || strings.ContainsAny(password, "\r\n\x00") {
+				logSSHTransportFailure(ctx, host.ID, "sudo_authentication", probeErr)
 				return ErrRemote
 			}
 			command = sudoFramedCommand
@@ -77,6 +84,7 @@ func (t *sshTransport) Run(ctx context.Context, host model.Host, bundle sshclien
 	}
 	session, err := client.NewSession()
 	if err != nil {
+		logSSHTransportFailure(ctx, host.ID, "session", err)
 		return ErrRemote
 	}
 	defer session.Close()
@@ -85,6 +93,7 @@ func (t *sshTransport) Run(ctx context.Context, host model.Host, bundle sshclien
 	}
 	session.Stdout, session.Stderr, session.Stdin = output, output, input
 	if err := session.Start(command); err != nil {
+		logSSHTransportFailure(ctx, host.ID, "start", err)
 		return ErrRemote
 	}
 	done := make(chan error, 1)
@@ -92,6 +101,7 @@ func (t *sshTransport) Run(ctx context.Context, host model.Host, bundle sshclien
 	select {
 	case err := <-done:
 		if err != nil {
+			logSSHTransportFailure(ctx, host.ID, "wait", err)
 			var remoteExit *ssh.ExitError
 			if errors.As(err, &remoteExit) {
 				cause := ErrRemote
@@ -115,8 +125,14 @@ func (t *sshTransport) Run(ctx context.Context, host model.Host, bundle sshclien
 		case <-done:
 		case <-time.After(time.Second):
 		}
+		logSSHTransportFailure(ctx, host.ID, "cancellation", ctx.Err())
 		return ctx.Err()
 	}
+}
+
+func logSSHTransportFailure(ctx context.Context, hostID, stage string, err error) {
+	// 仅记录阶段、主机标识和 SSH 错误；不读取输出、脚本或认证数据。
+	slog.ErrorContext(ctx, "K3s 主机 SSH 操作失败", "operation", "k3s_ssh", "host_id", hostID, "stage", stage, "err", err)
 }
 
 func (t *sshTransport) Read(ctx context.Context, host model.Host, bundle sshclient.Bundle, script string) (string, error) {
@@ -125,6 +141,7 @@ func (t *sshTransport) Read(ctx context.Context, host model.Host, bundle sshclie
 	output.mu.Lock()
 	defer output.mu.Unlock()
 	if output.exceeded {
+		logSSHTransportFailure(ctx, host.ID, "read_limit", errors.New("只读 SSH 结果超过容量限制"))
 		return "", ErrRemote
 	}
 	return output.buffer.String(), err

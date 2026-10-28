@@ -1,10 +1,13 @@
-# EDO 单机部署：应用、Redis、NATS 一起启动，数据保存在 Docker Volume 中。
+# EDO 单机部署：Web 与 Go API 独立运行，数据保存在仓库 data 目录。
 name: edo
 
 # migrate 和 api 共用这组环境变量。这里仅保留容器部署必须指定的内容，
 # 重试次数、任务超时、Stream 容量等默认值统一放在 Go 配置中维护。
 x-edo-environment: &edo-environment
   EDO_ENV: production
+  EDO_SERVER_ADDRESS: :8080
+  # 不自动信任 Docker 私网（含构建器）；只有明确配置的代理 IP/CIDR 才可提供客户端地址。
+  EDO_SERVER_TRUSTED_PROXIES: ${EDO_COMPOSE_SERVER_TRUSTED_PROXIES:-}
   EDO_LOG_FILE_ENABLED: ${EDO_LOG_FILE_ENABLED:-true}
   EDO_LOG_DIRECTORY: /app/data/logs
   EDO_LOG_MAX_FILE_SIZE_MB: ${EDO_LOG_MAX_FILE_SIZE_MB:-100}
@@ -85,8 +88,6 @@ services:
     volumes:
       - ./data:/app/data
       - edo-builder-client-certs:/certs/client:ro
-    ports:
-      - "127.0.0.1:${EDO_HTTP_PORT:-8080}:8080"
     depends_on:
       migrate:
         condition: service_completed_successfully
@@ -106,6 +107,45 @@ services:
     networks:
       - edo
       - edo-builder
+    restart: unless-stopped
+
+  # NGINX 使用原 HTTP 端口提供页面，并转发 API、WebSocket 与流式输出。
+  # API 不映射宿主机端口；Web 不持有业务数据或 Docker 客户端证书。
+  web:
+    image: ${EDO_WEB_IMAGE:-edo-web:local}
+    pull_policy: never
+    build:
+      context: .
+      dockerfile: web/Dockerfile
+    init: true
+    user: "101:101"
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    # PID 与必要临时文件只写内存；上传流直接交给 API 的容量限制处理。
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    ports:
+      - "127.0.0.1:${EDO_HTTP_PORT:-8080}:8080"
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/healthz"]
+      interval: 15s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+    stop_grace_period: 30s
+    networks:
+      - edo
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
     restart: unless-stopped
 
   # 独立 Docker-in-Docker 构建节点。未绑定镜像仓库且发布到远程 Docker 时，api 会将

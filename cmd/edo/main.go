@@ -598,7 +598,7 @@ func runServer(ctx context.Context, cfg config.Config, logger *slog.Logger, runt
 		Logger:         logger,
 		RuntimeLogs:    runtimeLogs,
 		Version:        version,
-		WebRoot:        cfg.Server.WebRoot,
+		TrustedProxies: cfg.Server.TrustedProxies,
 		AuthConfig:     cfg.Auth,
 		Accounts:       accounts,
 		Assistant:      assistantService,

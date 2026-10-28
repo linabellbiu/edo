@@ -26,20 +26,18 @@ RUN set -eu; \
       sleep "$wait_seconds"; \
       attempt=$((attempt + 1)); \
     done
-COPY . .
+# 只复制后端编译所需源码，前端或文档变化不使 Go 编译层失效。
+COPY cmd/ ./cmd/
+COPY internal/ ./internal/
 
 # 开发 Compose 只构建 Go，不等待生产 Web 打包。
 FROM go-source AS go-builder
 ARG EDO_VERSION=dev
 RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w -X main.version=${EDO_VERSION}" -o /out/edo ./cmd/edo
 
-# 正式镜像把 Web 产物编进二进制，运行层不再保存另一份静态文件。
-FROM go-source AS go-release-builder
-COPY --from=web-builder /src/web/dist/ ./internal/webui/dist/
-ARG EDO_VERSION=dev
-RUN CGO_ENABLED=0 go build -tags=edo_web -trimpath -ldflags="-s -w -X main.version=${EDO_VERSION}" -o /out/edo ./cmd/edo
-
-FROM debian:bookworm-slim
+# 默认 API 镜像只依赖 Go 构建图；独立 Web 镜像由 web/Dockerfile 构建。
+# 上面的 web-builder 仅保留给 Vite 开发 Compose，不参与默认 API 构建。
+FROM debian:bookworm-slim AS api-runtime
 COPY --from=docker-cli /usr/local/bin/docker /usr/local/bin/docker
 COPY --from=docker-cli /usr/local/libexec/docker/cli-plugins/docker-buildx /usr/local/libexec/docker/cli-plugins/docker-buildx
 COPY --from=docker-cli /usr/local/libexec/docker/cli-plugins/docker-compose /usr/local/libexec/docker/cli-plugins/docker-compose
@@ -51,7 +49,7 @@ RUN apt-get -o Acquire::Retries=5 update \
     && mkdir -p /app/data \
     && chown -R edo:edo /app
 WORKDIR /app
-COPY --from=go-release-builder --chown=edo:edo /out/edo /app/edo
+COPY --from=go-builder --chown=edo:edo /out/edo /app/edo
 ENV EDO_DATABASE_DRIVER=sqlite \
     EDO_DATABASE_DSN=/app/data/edo.db
 USER 10001:10001

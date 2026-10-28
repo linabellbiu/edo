@@ -101,6 +101,7 @@ func runPreflightShell(t *testing.T, input Input, host Host, extraEnv ...string)
 		t.Skip("POSIX shell unavailable")
 	}
 	directory := t.TempDir()
+	writeLinuxToolFixtures(t, directory)
 	// 这里只模拟 root 身份，数据目录使用测试账户实际可写的路径。
 	options := map[string]any{"data-dir": directory}
 	for key, value := range optionsForHost(host, input) {
@@ -189,6 +190,7 @@ func TestPreflightCAThroughStdinVerifiesRealTLSWithoutWritingRemoteFiles(t *test
 	defer server.Close()
 	ca := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: server.Certificate().Raw})
 	directory := t.TempDir()
+	writeLinuxToolFixtures(t, directory)
 	writePreflightCommand(t, directory, "curl", "case \"$*\" in *"+server.URL+"*) exec "+shellQuote(curl)+" \"$@\" ;; esac\nexit 0\n")
 	input := Input{Endpoint: server.URL, targetCAData: ca, Installer: map[string]any{"INSTALL_K3S_VERSION": "v1.35.5+k3s1"}}
 	run := func(input Input) string {
@@ -247,6 +249,7 @@ func TestPreflightDownloadFollowsOnlyBoundedHTTPSRedirects(t *testing.T) {
 	}))
 	defer server.Close()
 	directory := t.TempDir()
+	writeLinuxToolFixtures(t, directory)
 	caPath := filepath.Join(directory, "source-ca.pem")
 	if err := os.WriteFile(caPath, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: server.Certificate().Raw}), 0600); err != nil {
 		t.Fatal(err)

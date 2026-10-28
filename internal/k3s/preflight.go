@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"maps"
 	"strings"
 	"sync"
@@ -122,10 +123,14 @@ func (s *Service) runPreflight(ctx context.Context, input Input, hosts []Host) (
 			defer stop()
 			current, bundle, err := s.loadHost(probeCtx, selected.ID)
 			if err != nil {
+				slog.ErrorContext(probeCtx, "读取 K3s 预检主机失败", "operation", "k3s_preflight_load_host", "host_id", selected.ID, "err", err)
 				report.Hosts[index] = failedHostPreflight(selected)
 				return
 			}
 			output, err := s.transport.Read(probeCtx, current, bundle, preflightProbeScript(selected, input, endpointReady))
+			if err != nil {
+				slog.ErrorContext(probeCtx, "读取 K3s 主机预检失败", "operation", "k3s_preflight_read", "host_id", selected.ID, "err", err)
+			}
 			report.Hosts[index] = parsePreflightProbe(selected, output, err)
 			if isServerJoin(input) && report.Hosts[index].Passed {
 				peerScript, peerErr := serverPeerProbeScript(input.serverJoin)

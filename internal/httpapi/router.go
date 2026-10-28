@@ -2,12 +2,8 @@ package httpapi
 
 import (
 	"database/sql"
-	"io/fs"
 	"log/slog"
 	"net/http"
-	"os"
-	"path/filepath"
-	"strings"
 
 	"github.com/gin-gonic/gin"
 
@@ -41,7 +37,6 @@ import (
 	"edo/internal/systemmetrics"
 	"edo/internal/task"
 	"edo/internal/terminal"
-	"edo/internal/webui"
 )
 
 type Dependencies struct {
@@ -52,7 +47,7 @@ type Dependencies struct {
 	Logger         *slog.Logger
 	RuntimeLogs    *logging.RuntimeController
 	Version        string
-	WebRoot        string
+	TrustedProxies []string
 	AuthConfig     config.Auth
 	Accounts       *account.Service
 	Login          *account.LoginService
@@ -98,7 +93,13 @@ func NewRouter(deps Dependencies) *gin.Engine {
 	}
 	router := gin.New()
 	_ = router.SetTrustedProxies(nil)
-	router.Use(requestID(), securityHeaders(), webUICacheHeaders(), recovery(deps.Logger), accessLog(deps.Logger, deps.RuntimeLogs))
+	if err := config.ValidateTrustedProxies(deps.TrustedProxies); err != nil {
+		deps.Logger.Error("HTTP 可信代理设置无效，已禁用转发地址", "operation", "http_trusted_proxies", "err", err)
+	} else if err := router.SetTrustedProxies(deps.TrustedProxies); err != nil {
+		deps.Logger.Error("设置 HTTP 可信代理失败，已禁用转发地址", "operation", "http_trusted_proxies", "err", err)
+		_ = router.SetTrustedProxies(nil)
+	}
+	router.Use(requestID(), securityHeaders(), recovery(deps.Logger), accessLog(deps.Logger, deps.RuntimeLogs))
 
 	health := healthHandler{database: deps.Database, redis: deps.Redis, nats: deps.NATS, builder: deps.Docker, logger: deps.Logger}
 	api := router.Group("/api/v1")
@@ -446,56 +447,11 @@ func NewRouter(deps Dependencies) *gin.Engine {
 	protected.GET("/tasks/:id", requirePermission(deps.Access, deps.Logger, access.PermissionTaskRead), taskAPI.get)
 	protected.POST("/tasks/:id/cancel", auditAction(deps.Audits, deps.Logger, "task.cancel", "task"), requirePermission(deps.Access, deps.Logger, access.PermissionTaskExecute), taskAPI.cancel)
 	protected.POST("/tasks/:id/retry", auditAction(deps.Audits, deps.Logger, "task.retry", "task"), requirePermission(deps.Access, deps.Logger, access.PermissionTaskExecute), taskAPI.retry)
-	webIndex := installWebUI(router, deps.WebRoot, deps.Logger)
 	router.NoRoute(func(c *gin.Context) {
-		if webIndex != nil && c.Request.Method == http.MethodGet && !strings.HasPrefix(c.Request.URL.Path, "/api/") {
-			webIndex(c)
-			return
-		}
+		c.Header("Cache-Control", "no-store")
 		c.JSON(http.StatusNotFound, errorResponse{
 			Code: "not_found", Message: "请求的资源不存在", RequestID: requestIDFrom(c),
 		})
 	})
 	return router
-}
-
-func installWebUI(router *gin.Engine, webRoot string, logger *slog.Logger) gin.HandlerFunc {
-	if strings.TrimSpace(webRoot) != "" {
-		root, err := filepath.Abs(webRoot)
-		if err != nil {
-			logger.Warn("Web 前端目录无效", "operation", "webui_path", "err", err)
-		} else {
-			index := filepath.Join(root, "index.html")
-			if info, err := os.Stat(index); err == nil && info.Mode().IsRegular() {
-				assets := filepath.Join(root, "assets")
-				if info, err := os.Stat(assets); err == nil && info.IsDir() {
-					router.StaticFS("/assets", http.Dir(assets))
-				}
-				handler := func(c *gin.Context) { c.File(index) }
-				router.GET("/", handler)
-				logger.Info("EDO Web 前端已启用", "operation", "webui_enabled", "web_root", root)
-				return handler
-			}
-		}
-	}
-
-	embedded := webui.Files()
-	if embedded == nil {
-		logger.Info("未发现已构建的 Web 前端，API 将独立运行", "operation", "webui_disabled")
-		return nil
-	}
-	index, err := fs.ReadFile(embedded, "index.html")
-	if err != nil {
-		logger.Error("读取内嵌 Web 前端失败", "operation", "webui_embed", "err", err)
-		return nil
-	}
-	if assets, err := fs.Sub(embedded, "assets"); err == nil {
-		router.StaticFS("/assets", http.FS(assets))
-	}
-	handler := func(c *gin.Context) {
-		c.Data(http.StatusOK, "text/html; charset=utf-8", index)
-	}
-	router.GET("/", handler)
-	logger.Info("EDO 内嵌 Web 前端已启用", "operation", "webui_enabled", "web_root", "embedded")
-	return handler
 }

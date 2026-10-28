@@ -3,6 +3,8 @@ package config
 import (
 	"errors"
 	"fmt"
+	"log/slog"
+	"net/netip"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -73,7 +75,7 @@ type Auth struct {
 
 type Server struct {
 	Address         string        `env:"EDO_SERVER_ADDRESS"`
-	WebRoot         string        `env:"EDO_WEB_ROOT"`
+	TrustedProxies  []string      `env:"EDO_SERVER_TRUSTED_PROXIES" envSeparator:","`
 	ReadTimeout     time.Duration `env:"EDO_SERVER_READ_TIMEOUT"`
 	WriteTimeout    time.Duration `env:"EDO_SERVER_WRITE_TIMEOUT"`
 	IdleTimeout     time.Duration `env:"EDO_SERVER_IDLE_TIMEOUT"`
@@ -185,7 +187,6 @@ func Load() (Config, error) {
 		},
 		Server: Server{
 			Address:         ":8080",
-			WebRoot:         "web/dist",
 			ReadTimeout:     15 * time.Second,
 			WriteTimeout:    30 * time.Second,
 			IdleTimeout:     60 * time.Second,
@@ -286,6 +287,9 @@ func (c Config) Validate() error {
 	if c.Server.ReadTimeout <= 0 || c.Server.WriteTimeout <= 0 || c.Server.IdleTimeout <= 0 || c.Server.ShutdownTimeout <= 0 {
 		return errors.New("HTTP 服务超时配置无效")
 	}
+	if err := ValidateTrustedProxies(c.Server.TrustedProxies); err != nil {
+		return err
+	}
 	if c.Auth.SessionTTL <= 0 || c.Auth.LoginWindow <= 0 || c.Auth.LoginMaxFailure < 1 || c.Auth.LoginMaxFailure > 100 {
 		return errors.New("登录会话或限流配置无效")
 	}
@@ -361,7 +365,9 @@ func (c *Config) normalizeStrings() {
 	c.LogLevel = strings.TrimSpace(c.LogLevel)
 	c.Logging.Directory = strings.TrimSpace(c.Logging.Directory)
 	c.Server.Address = strings.TrimSpace(c.Server.Address)
-	c.Server.WebRoot = strings.TrimSpace(c.Server.WebRoot)
+	for index := range c.Server.TrustedProxies {
+		c.Server.TrustedProxies[index] = strings.TrimSpace(c.Server.TrustedProxies[index])
+	}
 	c.Auth.CookieName = strings.TrimSpace(c.Auth.CookieName)
 	c.Database.Driver = strings.ToLower(strings.TrimSpace(c.Database.Driver))
 	c.Database.DSN = strings.TrimSpace(c.Database.DSN)
@@ -380,6 +386,31 @@ func (c *Config) normalizeStrings() {
 	c.Runtime.DockerBuilderTLSCertPath = strings.TrimSpace(c.Runtime.DockerBuilderTLSCertPath)
 	c.Artifacts.BuildDirectory = filepath.Clean(strings.TrimSpace(c.Artifacts.BuildDirectory))
 	c.Artifacts.Directory = strings.TrimSpace(c.Artifacts.Directory)
+}
+
+// ValidateTrustedProxies 只接受明确的代理来源，避免错误配置退回框架的全网信任。
+func ValidateTrustedProxies(proxies []string) error {
+	for index, value := range proxies {
+		var err error
+		if strings.Contains(value, "/") {
+			var prefix netip.Prefix
+			prefix, err = netip.ParsePrefix(value)
+			if err == nil && (prefix.Bits() == 0 || (prefix.Addr().Is4In6() && prefix.Bits() <= 96)) {
+				err = errors.New("不能信任全部网络")
+			}
+		} else {
+			var address netip.Addr
+			address, err = netip.ParseAddr(value)
+			if err == nil && (address.Unmap().IsUnspecified() || address.Zone() != "") {
+				err = errors.New("代理来源必须是明确的 IP 地址")
+			}
+		}
+		if err != nil {
+			slog.Error("校验可信代理设置失败", "operation", "server_trusted_proxies_validate", "index", index, "err", err)
+			return errors.New("可信代理设置无效，请填写明确的 IP 或 CIDR")
+		}
+	}
+	return nil
 }
 
 func validDockerBuilderRuntime(host, certPath string) bool {

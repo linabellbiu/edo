@@ -42,6 +42,7 @@ func TestMasterStagesVerifiedBinaryWithoutRunningInstaller(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
+			writeLinuxToolFixtures(t, commands)
 			version := scenario.version
 			if version == "" {
 				version = "v1.35.5+k3s1"
@@ -164,6 +165,7 @@ func TestMasterBinaryPublishNeverClobbersConcurrentFileOrSymlink(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
+			writeLinuxToolFixtures(t, commands)
 			if err := os.WriteFile(filepath.Join(work, "k3s"), []byte("reviewed-binary"), 0700); err != nil {
 				t.Fatal(err)
 			}
@@ -189,6 +191,9 @@ func TestMasterBinaryPublishNeverClobbersConcurrentFileOrSymlink(t *testing.T) {
 				realLN, err := exec.LookPath("ln")
 				if err != nil {
 					t.Fatal(err)
+				}
+				if runtime.GOOS == "darwin" {
+					realLN = filepath.Join(commands, "edo-fixture-ln")
 				}
 				writePreflightCommand(t, commands, "ln", "printf foreign-binary > "+shellQuote(target)+"\nexec "+shellQuote(realLN)+" \"$@\"\n")
 			}

@@ -56,7 +56,9 @@ var hostPreflightDefinitions = []preflightCheckDefinition{
 }
 
 func preflightProbeScript(host Host, input Input, endpointReady bool) string {
-	script := "set -u\n" + preflightEnvironmentScript(host, input, endpointReady)
+	// SSH 入口使用 sh -se；只读预检必须收集全部检查，不能因单项失败提前退出。
+	// 安装保护仍在自己的子 Shell 中使用 set -eu，并将失败写入阻断报告。
+	script := "set +e\nset -u\n" + preflightEnvironmentScript(host, input, endpointReady)
 	options := optionsForHost(host, input)
 	// Execute the same installation guard in a subshell so all check results can
 	// still be displayed when a machine already belongs to a cluster.

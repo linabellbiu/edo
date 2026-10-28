@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -378,34 +379,193 @@ func TestComposeBuilderAlwaysUsesMTLS(t *testing.T) {
 	}
 }
 
-func TestCopyEmbeddedWebAssets(t *testing.T) {
-	root := t.TempDir()
-	source := filepath.Join(root, "source")
-	target := filepath.Join(root, "target")
-	if err := os.MkdirAll(filepath.Join(source, "assets"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.MkdirAll(target, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(source, "index.html"), []byte("EDO"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(source, "assets", "app.js"), []byte("app"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(target, "stale.js"), []byte("stale"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+type builtStartRecorder struct {
+	events   []string
+	services []localService
+	failAt   string
+	failure  error
+}
 
-	if err := copyEmbeddedWebAssets(source, target); err != nil {
+func (recorder *builtStartRecorder) record(event string) error {
+	recorder.events = append(recorder.events, event)
+	if event == recorder.failAt {
+		return recorder.failure
+	}
+	return nil
+}
+
+func (recorder *builtStartRecorder) runner(t *testing.T) builtStartRunner {
+	t.Helper()
+	return builtStartRunner{
+		useHostDockerBuilder: func() error { return recorder.record("host-docker") },
+		ensureWebDependencies: func(context.Context) error {
+			return recorder.record("web-dependencies")
+		},
+		buildBackend: func(context.Context) (string, error) {
+			return "/test/bin/edo", recorder.record("backend-build")
+		},
+		runCommand: func(_ context.Context, executable string, args ...string) error {
+			switch {
+			case executable == "npm" && slices.Equal(args, []string{"--prefix", "web", "run", "build"}):
+				return recorder.record("web-build")
+			case executable == "/test/bin/edo" && slices.Equal(args, []string{"migrate"}):
+				return recorder.record("migrate")
+			default:
+				t.Fatalf("意外执行命令: %s %v", executable, args)
+				return nil
+			}
+		},
+		runLocalServices: func(_ context.Context, services []localService) error {
+			recorder.services = append([]localService(nil), services...)
+			return recorder.record("services")
+		},
+	}
+}
+
+func TestStartBuiltRunsSeparatedComponents(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		server     bool
+		web        bool
+		wantEvents []string
+		wantIDs    []string
+	}{
+		{
+			name:       "默认后台前后端",
+			wantEvents: []string{"host-docker", "web-dependencies", "web-build", "backend-build", "migrate", "services"},
+			wantIDs:    []string{localServiceBackend, localServiceWeb},
+		},
+		{
+			name:       "仅后端无需前端依赖",
+			server:     true,
+			wantEvents: []string{"host-docker", "backend-build", "migrate", "services"},
+			wantIDs:    []string{localServiceBackend},
+		},
+		{
+			name:       "仅前端不构建或迁移后端",
+			web:        true,
+			wantEvents: []string{"web-dependencies", "web-build", "services"},
+			wantIDs:    []string{localServiceWeb},
+		},
+		{
+			name:       "显式前后端",
+			server:     true,
+			web:        true,
+			wantEvents: []string{"host-docker", "web-dependencies", "web-build", "backend-build", "migrate", "services"},
+			wantIDs:    []string{localServiceBackend, localServiceWeb},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			recorder := &builtStartRecorder{}
+			runServer, runWeb := selectedComponents(test.server, test.web)
+			if err := startBuiltWithRunner(context.Background(), runServer, runWeb, recorder.runner(t)); err != nil {
+				t.Fatal(err)
+			}
+			if !slices.Equal(recorder.events, test.wantEvents) {
+				t.Fatalf("构建、迁移及启动顺序错误: got=%v want=%v", recorder.events, test.wantEvents)
+			}
+			var ids []string
+			for _, service := range recorder.services {
+				ids = append(ids, service.id)
+				switch service.id {
+				case localServiceBackend:
+					if service.executable != "/test/bin/edo" || !slices.Equal(service.args, []string{"server"}) || service.readyURL != "http://127.0.0.1:8080/api/v1/health/ready" || service.readyTimeout != 90*time.Second {
+						t.Fatalf("后端服务参数不正确: %+v", service)
+					}
+				case localServiceWeb:
+					wantArgs := []string{"--prefix", "web", "run", "preview", "--", "--host", "127.0.0.1", "--port", "5173", "--strictPort"}
+					if service.executable != "npm" || !slices.Equal(service.args, wantArgs) || service.readyURL != "http://127.0.0.1:5173" || service.readyTimeout != 30*time.Second {
+						t.Fatalf("Web 必须独立使用固定端口的 Vite preview: %+v", service)
+					}
+				}
+			}
+			if !slices.Equal(ids, test.wantIDs) {
+				t.Fatalf("后台进程不正确: got=%v want=%v", ids, test.wantIDs)
+			}
+		})
+	}
+}
+
+func TestStartBuiltStopsOnPreparationFailure(t *testing.T) {
+	steps := []string{"host-docker", "web-dependencies", "web-build", "backend-build", "migrate", "services"}
+	for index, step := range steps {
+		t.Run(step, func(t *testing.T) {
+			cause := errors.New("模拟启动步骤失败")
+			recorder := &builtStartRecorder{failAt: step, failure: cause}
+			err := startBuiltWithRunner(context.Background(), true, true, recorder.runner(t))
+			if !errors.Is(err, cause) {
+				t.Fatalf("未保留步骤失败: %v", err)
+			}
+			if !slices.Equal(recorder.events, steps[:index+1]) {
+				t.Fatalf("步骤失败后仍执行后续流程: %v", recorder.events)
+			}
+			if step != "services" && len(recorder.services) != 0 {
+				t.Fatal("构建或迁移失败时不得启动任何服务")
+			}
+		})
+	}
+}
+
+func TestBuildBackendDoesNotRequireWebAssets(t *testing.T) {
+	root := t.TempDir()
+	t.Chdir(root)
+	calls := 0
+	binary, err := buildBackendWithRunner(context.Background(), func(_ context.Context, executable string, args ...string) error {
+		calls++
+		wantArgs := []string{"build", "-trimpath", "-ldflags", "-s -w", "-o", filepath.Join("bin", "edo"), "./cmd/edo"}
+		if executable != "go" || !slices.Equal(args, wantArgs) {
+			t.Fatalf("后端必须独立构建且不使用 Web 标签: %s %v", executable, args)
+		}
+		return nil
+	})
+	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := os.Stat(filepath.Join(target, "assets", "app.js")); err != nil {
-		t.Fatalf("内嵌资源未复制: %v", err)
+	if calls != 1 || binary != filepath.Join(root, "bin", "edo") {
+		t.Fatalf("后端构建命令次数或路径不正确: calls=%d binary=%q", calls, binary)
 	}
-	if _, err := os.Stat(filepath.Join(target, "stale.js")); !os.IsNotExist(err) {
-		t.Fatalf("旧的内嵌资源未清理: %v", err)
+	if _, err := os.Stat("internal"); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("后端构建不得生成或复制前端资源")
+	}
+}
+
+func TestBuildBackendPreservesFailure(t *testing.T) {
+	t.Chdir(t.TempDir())
+	cause := errors.New("模拟 Go 构建失败")
+	binary, err := buildBackendWithRunner(context.Background(), func(context.Context, string, ...string) error { return cause })
+	if binary != "" || !errors.Is(err, cause) {
+		t.Fatalf("构建失败不得返回可运行后端: binary=%q err=%v", binary, err)
+	}
+}
+
+func TestVitePreviewInheritsAPIAndWebSocketProxy(t *testing.T) {
+	if _, err := exec.LookPath("node"); err != nil {
+		t.Skip("当前环境未安装 Node.js")
+	}
+	if _, err := os.Stat(filepath.Join("web", "node_modules", "vite", "package.json")); errors.Is(err, os.ErrNotExist) {
+		t.Skip("当前环境未安装 Web 依赖")
+	} else if err != nil {
+		t.Fatal(err)
+	}
+	// 仅解析当前配置，不读取环境文件，也不监听端口或连接后端。
+	const script = `
+import assert from 'node:assert/strict'
+import { resolveConfig } from 'vite'
+const config = await resolveConfig({ root: process.cwd(), configFile: 'vite.config.ts', envDir: false }, 'serve', 'production', 'production', true)
+assert.strictEqual(config.preview.proxy, config.server.proxy)
+const api = config.preview.proxy['/api']
+assert.equal(api.target, 'http://127.0.0.1:8080')
+assert.equal(api.ws, true)
+assert.equal(api.timeout, 15 * 60 * 1000)
+assert.equal(api.proxyTimeout, 15 * 60 * 1000)
+`
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	command := exec.CommandContext(ctx, "node", "--input-type=module", "--eval", script)
+	command.Dir = "web"
+	command.Env = append(os.Environ(), "EDO_WEB_PROXY_TARGET=http://127.0.0.1:8080")
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("Vite preview 必须继承开发模式的同源 HTTP/WebSocket 代理: %v\n%s", err, output)
 	}
 }
 

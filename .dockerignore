@@ -2,6 +2,9 @@
 .history
 .idea
 .vscode
+# 运行配置和本地备份不进入构建上下文或中间层，只保留公开模板。
+**/.env*
+!.env.example
 bin
 data
 internal/webui/dist

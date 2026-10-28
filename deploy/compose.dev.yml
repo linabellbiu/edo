@@ -10,8 +10,7 @@ x-edo-environment: &edo-environment
   EDO_LOG_MAX_FILE_SIZE_MB: ${EDO_LOG_MAX_FILE_SIZE_MB:-100}
   EDO_LOG_COMPRESS_AFTER_DAYS: ${EDO_LOG_COMPRESS_AFTER_DAYS:-3}
   EDO_SERVER_ADDRESS: :8080
-  # 开发环境由独立 Vite 容器提供前端，Go 后端只提供 API 与 WebSocket。
-  EDO_WEB_ROOT: ""
+  EDO_SERVER_TRUSTED_PROXIES: ${EDO_COMPOSE_SERVER_TRUSTED_PROXIES:-}
   EDO_AUTH_COOKIE_SECURE: "false"
   # 宿主机路径、127.0.0.1 与容器内地址含义不同，使用根 .env 的 Compose 专用值映射实际运行变量。
   # SQLite 文件默认位于持久卷；删除普通容器不会丢失账户和业务数据。

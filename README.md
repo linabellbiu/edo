@@ -6,7 +6,7 @@ EDO（EasyDevOps）是一个简单、轻量的自动发布工具，可以装在�
 
 默认采用 Pull 模式：EDO 按设置的间隔主动检查仓库里的分支、Tag 和 PR/MR，发现符合流水线规则的变化就自动执行。仓库不需要反过来连接 EDO，适合放在内网运行；EDO 需要能访问代码仓库和发布目标。也可以接入 Webhook，更快收到仓库变化。
 
-EDO 的前端和后端打包在一个程序里，网页服务和后台任务在同一个进程里运行。默认用 SQLite 保存数据，数据库就是本地的一个文件。另外还需要 Redis 和 NATS，用 Docker Compose 可以一起启动这些服务。
+EDO 的前端和后端分别构建、运行：Web 提供网页，Go API 处理接口、WebSocket 和后台任务。默认用 SQLite 保存数据，数据库就是本地的一个文件。Docker Compose 会一起管理 Web、API、Redis、NATS 和隔离的 Docker 构建器，不需要分别手工启动。
 
 应用可以直接发布到 EDO 的本地 Docker 环境，也可以发布到远程主机或 Kubernetes 集群。Docker、Docker Compose 和 Kubernetes 都从应用开始，选择流水线和部署方案，再填好具体位置，统一按「应用 → 流水线 → 部署方案 → 运行资源」发布。
 
@@ -16,7 +16,7 @@ EDO 的前端和后端打包在一个程序里，网页服务和后台任务在�
 
 ## Docker Compose 部署
 
-准备 Linux 或 macOS，安装 Git、Docker、Docker Compose v2 和 Buildx。Compose 会在镜像中完成编译，并启动 EDO、Redis 和 NATS。
+准备 Linux 或 macOS，安装 Git、Docker、Docker Compose v2 和 Buildx。Compose 分别构建 Web 与 API 镜像，API 构建不依赖 Node.js 或前端打包。
 
 首次部署，先拉取代码并准备配置：
 
@@ -33,7 +33,7 @@ openssl rand -base64 32
 docker compose --env-file .env up -d --build
 ```
 
-访问 [http://127.0.0.1:8080](http://127.0.0.1:8080)。默认只监听本机；部署在服务器上时，通过 HTTPS 反向代理对外提供访问，并开启 WebSocket 转发。
+访问 [http://127.0.0.1:8080](http://127.0.0.1:8080)。这是 Web 入口，NGINX 在容器网络内将 `/api/` 和 WebSocket 转发给 Go API，API 不直接映射宿主机端口。默认只监听本机；部署在服务器上时，通过 HTTPS 反向代理对外提供访问，并开启 WebSocket 转发。
 
 首次部署的管理员账号是 `admin`，初始密码是 `123456`。登录后请修改密码。
 
@@ -41,7 +41,7 @@ docker compose --env-file .env up -d --build
 
 ```bash
 docker compose --env-file .env ps
-docker compose --env-file .env logs -f api
+docker compose --env-file .env logs -f api web
 ```
 
 停止服务，保留数据：
@@ -50,7 +50,7 @@ docker compose --env-file .env logs -f api
 docker compose --env-file .env down
 ```
 
-更新时，先完成本地测试与构建，再在开发机提交修改并推送到 GitHub，最后在服务器拉取代码、构建并重新部署；发布无需等待 GitHub Actions。现有 systemd 服务的备份、切换及回滚流程见 [EDO 保护发布](tools/release-activate/README.md)。Docker Compose 更新示例：
+更新时，先完成本地测试与构建，再在开发机提交修改并推送到 GitHub，最后在服务器拉取代码、构建并重新部署；发布无需等待 GitHub Actions。[EDO 保护发布](tools/release-activate/README.md) 只负责 systemd Go API 的备份、切换及回滚，独立 Web 资源必须另外发布，不能把 API 激活视为前后端全部上线。Docker Compose 会同时更新 Web 和 API：
 
 ```bash
 git pull --ff-only origin main
@@ -65,7 +65,7 @@ docker compose --env-file .env up -d --build
 go install github.com/magefile/mage@v1.17.2
 ```
 
-本地进程模式仅支持 Linux 和 macOS；Windows 请使用 `mage start --docker`，在容器中运行。
+本地进程和源码构建仅支持 Linux 与 macOS。
 
 如果已经通过 Compose 启动 EDO，请先执行上面的停止命令，再选择下面一种方式。
 
@@ -79,7 +79,7 @@ mage start --dev
 
 这个命令会启动 Redis、NATS 并初始化数据库。如果 `.env` 不存在，Mage 会按模板创建文件并生成密钥；文件已存在时，使用其中的配置。
 
-### 单文件运行
+### 后台运行
 
 先按上面的方式准备 `.env` 和密钥，再启动 Redis、NATS：
 
@@ -88,7 +88,7 @@ docker compose --env-file .env -f deploy/compose.dev.yml up -d --wait redis nats
 mage start
 ```
 
-`mage start` 会把前端打进 `bin/edo`，初始化数据库并在后台启动。访问 [http://127.0.0.1:8080](http://127.0.0.1:8080)。
+`mage start` 分别构建 Go API 和前端，初始化数据库后在后台启动两个独立进程。访问 [http://127.0.0.1:5173](http://127.0.0.1:5173)，API 为 `http://127.0.0.1:8080`。本地预览服务转发 API 与 WebSocket；正式 Docker 部署使用独立 NGINX Web 容器。
 
 ### Mage 启动参数
 
@@ -100,7 +100,7 @@ mage start [--dev | --docker] [--server | --web]
 
 | 参数 | 用途 |
 | --- | --- |
-| 不带参数 | 构建内嵌前端的单文件程序，迁移数据库，然后在后台启动 |
+| 不带参数 | 分别构建前后端，迁移数据库，然后在后台启动两个独立进程 |
 | `--dev` | 开发模式，在当前终端运行；启动后端时会先启动 Redis、NATS 并迁移数据库 |
 | `--docker` | 使用 `deploy/compose.dev.yml` 构建并在后台启动容器 |
 | `--server` | 只启动后端；Docker 模式会同时启动后端依赖 |
@@ -122,7 +122,7 @@ mage start [--dev | --docker] [--server | --web]
 | `mage start --docker --server` | 在容器中启动后端、数据库迁移和后端依赖 |
 | `mage start --docker --web` | 只启动前端容器，不自动启动后端及其依赖 |
 
-`mage start` 和 `mage start --server` 需要事先启动 Redis、NATS，可使用“单文件运行”中的依赖启动命令。只启动前端时，需要另行启动后端才能使用登录等 API 功能。
+`mage start` 和 `mage start --server` 需要事先启动 Redis、NATS，可使用“后台运行”中的依赖启动命令。只启动前端时，需要另行启动后端才能使用登录等 API 功能。
 
 ### 进程与日志管理
 
