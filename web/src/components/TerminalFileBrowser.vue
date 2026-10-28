@@ -24,6 +24,7 @@ const items = computed(() => [...entries.value].sort((a, b) => Number(b.kind ===
 let disposed = false, revision = 0, fileRevision = 0
 let listController: AbortController | undefined, fileController: AbortController | undefined, transferController: AbortController | undefined
 let confirmation: ReturnType<typeof Modal.confirm> | undefined
+let uploadSelection: { identity: string; directory: string; revision: number } | undefined
 const actor = () => terminalActorContext(auth.user, typeof localStorage === 'undefined' ? '' : localStorage.getItem('edo.project') ?? '')
 const context = () => JSON.stringify([actor(), props.path])
 let frozenContext = context()
@@ -32,6 +33,7 @@ function options(path: string, signal?: AbortSignal) {
   return { params: { ...target.value?.parameters, path }, headers: { 'X-EDO-Project-ID': target.value?.parameters.project_id ?? (typeof localStorage === 'undefined' ? '' : localStorage.getItem('edo.project') ?? '') }, signal }
 }
 function reset() {
+  cancelUploadSelection()
   frozenContext = context(); revision++; fileRevision++; listController?.abort(); fileController?.abort(); transferController?.abort(); confirmation?.destroy(); confirmation = undefined
   entries.value = []; error.value = ''; fileError.value = ''; editor.value = undefined; draft.value = ''; directory.value = '/'; address.value = '/'; loading.value = false; busy.value = false; reading.value = false; saving.value = false; truncated.value = false
   if (canRead.value && target.value) void load('/')
@@ -97,12 +99,13 @@ async function download(entry: Entry) {
   finally { if (valid(identity)) busy.value = false }
 }
 async function upload(event: Event) {
-  const input = event.target as HTMLInputElement, file = input.files?.[0]; input.value = ''
-  if (!file || !target.value || !canUpload.value || busy.value) return
+  const input = event.target as HTMLInputElement, file = input.files?.[0], selection = uploadSelection; cancelUploadSelection(); input.value = ''
+  const selectionValid = () => Boolean(selection && valid(selection.identity) && selection.revision === revision && selection.directory === directory.value)
+  if (!file || !selection || !selectionValid() || !target.value || !canUpload.value || busy.value) return
   if (file.size > terminalTransferLimit) { message.warning('单个文件传输不能超过 64 MiB'); return }
-  const path = terminalChild(directory.value, file.name)
+  const path = terminalChild(selection.directory, file.name)
   if (!path) { message.error('文件名无效'); return }
-  const identity = context(); transferController?.abort(); const controller = new AbortController(); transferController = controller
+  const identity = selection.identity; transferController?.abort(); const controller = new AbortController(); transferController = controller
   busy.value = true; error.value = ''
   try {
     let etag = ''
@@ -110,13 +113,13 @@ async function upload(event: Event) {
       try { const response = await client.get<{ file: Entry & { etag: string } }>(`${target.value.base}/stat`, options(path, controller.signal)); etag = response.data.file.etag }
       catch (err) { if ((err as { response?: { status?: number } }).response?.status !== 404) throw err }
     }
-    if (!valid(identity) || !canUpload.value) return
+    if (!selectionValid() || !canUpload.value) return
     if (etag) {
       if (!canEdit.value) { error.value = '同名文件已存在，覆盖还需要文件读取和编辑权限'; return }
       const accepted = await new Promise<boolean>(resolve => {
-        confirmation = Modal.confirm({ title: '覆盖同名文件？', content: path, zIndex: 1120, okText: '确认覆盖', cancelText: '取消', onOk: () => resolve(valid(identity)), onCancel: () => resolve(false), afterClose: () => { confirmation = undefined; resolve(false) } })
+        confirmation = Modal.confirm({ title: '覆盖同名文件？', content: path, zIndex: 1120, okText: '确认覆盖', cancelText: '取消', onOk: () => resolve(selectionValid()), onCancel: () => resolve(false), afterClose: () => { confirmation = undefined; resolve(false) } })
       })
-      if (!accepted || !valid(identity) || !canEdit.value || !canUpload.value) return
+      if (!accepted || !selectionValid() || !canEdit.value || !canUpload.value) return
     }
     await client.post(`${target.value.base}/upload`, file, { ...options(path, controller.signal), headers: { ...options(path).headers, 'Content-Type': 'application/octet-stream', ...(etag ? { 'If-Match': etag } : {}) }, timeout: 120_000 })
     if (!valid(identity)) return
@@ -124,18 +127,25 @@ async function upload(event: Event) {
   } catch (err) { if (valid(identity) && !controller.signal.aborted) error.value = apiErrorMessage(err) }
   finally { if (valid(identity)) busy.value = false }
 }
-function uploadHere() { if (!canRead.value && address.value.startsWith('/')) directory.value = address.value; uploadInput.value?.click() }
+function cancelUploadSelection() { uploadSelection = undefined; if (uploadInput.value) uploadInput.value.value = '' }
+function uploadHere() {
+  cancelUploadSelection()
+  if (disposed || !target.value || !canUpload.value || busy.value || !uploadInput.value) return
+  if (!canRead.value && address.value.startsWith('/')) directory.value = address.value
+  uploadSelection = { identity: context(), directory: directory.value, revision }
+  uploadInput.value.click()
+}
 function beforeUnload(event: BeforeUnloadEvent) { if (dirty.value) { event.preventDefault(); event.returnValue = '' } }
 function externalContext() { if (frozenContext !== context()) reset() }
-watch(() => [props.path, actor()], reset, { immediate: true, flush: 'sync' })
+watch([() => props.path, actor], reset, { immediate: true, flush: 'sync' })
 if (typeof window !== 'undefined') { window.addEventListener('beforeunload', beforeUnload); window.addEventListener('storage', externalContext); window.addEventListener('edo:projects-changed', externalContext) }
-onBeforeUnmount(() => { disposed = true; revision++; fileRevision++; listController?.abort(); fileController?.abort(); transferController?.abort(); confirmation?.destroy(); if (typeof window !== 'undefined') { window.removeEventListener('beforeunload', beforeUnload); window.removeEventListener('storage', externalContext); window.removeEventListener('edo:projects-changed', externalContext) } })
+onBeforeUnmount(() => { disposed = true; cancelUploadSelection(); revision++; fileRevision++; listController?.abort(); fileController?.abort(); transferController?.abort(); confirmation?.destroy(); if (typeof window !== 'undefined') { window.removeEventListener('beforeunload', beforeUnload); window.removeEventListener('storage', externalContext); window.removeEventListener('edo:projects-changed', externalContext) } })
 defineExpose({ confirmDiscard })
 </script>
 
 <template>
   <aside class="terminal-files" aria-label="终端文件">
-    <header><Folder :size="16" aria-hidden="true" /><strong>文件</strong><span /><button type="button" :disabled="loading || !canRead || !target" aria-label="刷新目录" title="刷新目录" @click="load(directory)"><RefreshCw :size="15" /></button><button v-if="canUpload" type="button" :disabled="busy || !target" aria-label="上传文件" title="上传文件" @click="uploadHere"><Upload :size="15" /></button><input ref="uploadInput" type="file" hidden @change="upload" /></header>
+    <header><Folder :size="16" aria-hidden="true" /><strong>文件</strong><span /><button type="button" :disabled="loading || !canRead || !target" aria-label="刷新目录" title="刷新目录" @click="load(directory)"><RefreshCw :size="15" /></button><button v-if="canUpload" type="button" :disabled="busy || !target" aria-label="上传文件" title="上传文件" @click="uploadHere"><Upload :size="15" /></button><input ref="uploadInput" type="file" hidden @change="upload" @cancel="cancelUploadSelection" /></header>
     <form class="file-path" @submit.prevent="load(address)"><button type="button" :disabled="directory === '/' || loading || !canRead" aria-label="上级目录" @click="load(terminalParent(directory))"><ArrowUp :size="15" /></button><input v-model="address" aria-label="文件目录路径" :disabled="loading || !target" /><button type="submit" :disabled="!canRead || loading" aria-label="打开目录"><ChevronRight :size="15" /></button></form>
     <p v-if="!target" class="file-notice" role="alert">文件目标无效</p><p v-else-if="!canRead" class="file-notice">没有读取文件的权限</p><p v-else-if="loading" class="file-notice" role="status">正在读取目录…</p>
     <p v-if="error" class="file-error" role="alert">{{ error }}</p><p v-if="busy" class="file-notice" role="status">正在传输文件…</p><p v-if="reading" class="file-notice" role="status">正在读取文件…</p>

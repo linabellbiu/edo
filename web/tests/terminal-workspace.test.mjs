@@ -57,7 +57,9 @@ function browserHarness(codes, handlers={}) {
   },{localStorage:storage,window:{addEventListener:(key,fn)=>listeners.set(key,fn),removeEventListener:key=>listeners.delete(key),setTimeout:fn=>fn()},document:{createElement:()=>({click(){downloads.push(this.download)}})},URL:BrowserURL}).default
   const scope=vue.effectScope();let state
   scope.run(()=>{state=component.setup(props,{expose(){}})})
-  return{auth,storage,props,state,entry,requests,confirmations,notifications,listeners,downloads,stop(){unmounts.forEach(fn=>fn());scope.stop()}}
+  const input={value:'',click(){}}
+  state.uploadInput.value=input
+  return{auth,storage,props,state,entry,requests,confirmations,notifications,listeners,downloads,selectUpload(event){state.uploadHere();return state.upload(event)},stop(){unmounts.forEach(fn=>fn());scope.stop()}}
 }
 
 test('终端文件目标只允许三类准确接口，保留冻结项目和Pod UID，不接受外站或任意API',()=>{
@@ -137,16 +139,16 @@ test('文件成功保存采用新etag，关闭脏编辑明确确认且取消不�
 
 test('上传新文件不附If-Match，覆盖必须read+edit并明确确认原SHA256',async t=>{
   const uploadEvent=()=>({target:{files:[Object.assign(new Blob(['payload']),{name:'app.conf'})],value:'selected'}})
-  const fresh=browserHarness(['terminal.file.upload']);t.after(fresh.stop);await settle();await fresh.state.upload(uploadEvent());assert.equal(fresh.requests.length,1);assert.equal(fresh.requests[0].method,'post');assert.equal(fresh.requests[0].options.headers['If-Match'],undefined)
+  const fresh=browserHarness(['terminal.file.upload']);t.after(fresh.stop);await settle();await fresh.selectUpload(uploadEvent());assert.equal(fresh.requests.length,1);assert.equal(fresh.requests[0].method,'post');assert.equal(fresh.requests[0].options.headers['If-Match'],undefined)
   const existing={get:(path)=>path.endsWith('/stat')?{data:{file:{etag:'original-sha'}}}:undefined}
-  const denied=browserHarness(['terminal.file.read','terminal.file.upload'],existing);t.after(denied.stop);await settle();await denied.state.upload(uploadEvent());assert.equal(denied.requests.some(row=>row.method==='post'),false);assert.match(denied.state.error.value,/编辑权限/)
-  const allowed=browserHarness(['terminal.file.read','terminal.file.upload','terminal.file.edit'],existing);t.after(allowed.stop);await settle();const pending=allowed.state.upload(uploadEvent());await settle();assert.equal(allowed.requests.some(row=>row.method==='post'),false);allowed.confirmations[0].options.onOk();await pending
+  const denied=browserHarness(['terminal.file.read','terminal.file.upload'],existing);t.after(denied.stop);await settle();await denied.selectUpload(uploadEvent());assert.equal(denied.requests.some(row=>row.method==='post'),false);assert.match(denied.state.error.value,/编辑权限/)
+  const allowed=browserHarness(['terminal.file.read','terminal.file.upload','terminal.file.edit'],existing);t.after(allowed.stop);await settle();const pending=allowed.selectUpload(uploadEvent());await settle();assert.equal(allowed.requests.some(row=>row.method==='post'),false);allowed.confirmations[0].options.onOk();await pending
   assert.equal(allowed.requests.find(row=>row.method==='post').options.headers['If-Match'],'original-sha')
 })
 
 test('上传与下载限制64MiB，下载为blob attachment，不将原文当HTML执行',async t=>{
   const h=browserHarness(['terminal.file.read','terminal.file.upload']);t.after(h.stop);await settle();const before=h.requests.length
-  await h.state.upload({target:{files:[{name:'huge',size:files.terminalTransferLimit+1}],value:''}});await h.state.download({...h.entry,size:files.terminalTransferLimit+1});assert.equal(h.requests.length,before)
+  await h.selectUpload({target:{files:[{name:'huge',size:files.terminalTransferLimit+1}],value:''}});await h.state.download({...h.entry,size:files.terminalTransferLimit+1});assert.equal(h.requests.length,before)
   await h.state.download(h.entry);assert.equal(h.requests.at(-1).options.responseType,'blob');assert.deepEqual(h.downloads,['app.conf'])
 })
 
@@ -158,10 +160,90 @@ test('文件目标或权限切换取消旧请求，迟到响应不覆盖新目�
   h.stop();assert.equal(h.listeners.size,0)
 })
 
+test('相同actor权限校准替换user对象不重置目录或未保存草稿，也不改变权限原数组',async t=>{
+  const h=browserHarness(['terminal.file.read','terminal.file.edit']);t.after(h.stop);await settle()
+  await h.state.load('/tmp/fixture-directory');await h.state.preview(h.entry);h.state.draft.value='unsaved fixture draft'
+  const before=h.requests.length, editor=h.state.editor.value, permissions=[...h.auth.user.permissions]
+  h.auth.user={...h.auth.user,nickname:'updated profile',permissions:[...permissions].reverse()};await settle()
+  assert.equal(h.state.directory.value,'/tmp/fixture-directory')
+  assert.equal(h.state.address.value,'/tmp/fixture-directory')
+  assert.equal(h.state.editor.value,editor);assert.equal(h.state.draft.value,'unsaved fixture draft');assert.equal(h.state.dirty.value,true)
+  assert.equal(h.requests.length,before)
+  assert.deepEqual(h.auth.user.permissions,[...permissions].reverse())
+})
+
+test('相同actor的新user引用不会取消正在加载的目录或另发根目录请求',async t=>{
+  let finish
+  const h=browserHarness(['terminal.file.read'],{get:(path,_body,options)=>path.endsWith('/files')&&options.params.path==='/tmp/fixture-pending'?new Promise(resolve=>{finish=resolve}):undefined});t.after(h.stop);await settle()
+  const pending=h.state.load('/tmp/fixture-pending'), current=h.requests.at(-1), before=h.requests.length
+  h.auth.user={...h.auth.user,permissions:[...h.auth.user.permissions]};await settle()
+  assert.equal(current.options.signal.aborted,false);assert.equal(h.requests.length,before);assert.equal(h.state.loading.value,true)
+  finish({data:{directory:{path:'/tmp/fixture-pending',entries:[],truncated:false}}});await pending
+  assert.equal(h.state.directory.value,'/tmp/fixture-pending');assert.equal(h.state.loading.value,false)
+})
+
+test('真实用户部门项目权限或目标变化仍清草稿并取消旧目录，迟到响应不能回填',async t=>{
+  for(const change of [
+    h=>{h.auth.user.id='another-user'},h=>{h.auth.user.department_id='another-department'},
+    h=>{h.auth.user.project_id='another-project'},h=>{h.storage.project='another-project';h.listeners.get('storage')()},
+    h=>{h.auth.user.permissions=['terminal.file.read']},h=>{h.props.path='/api/v1/terminals/hosts/host-b/ws?project_id=project-a'},
+  ]){
+    let finish
+    const h=browserHarness(['terminal.file.read','terminal.file.edit'],{get:(path,_body,options)=>path.endsWith('/files')&&options.params.path==='/tmp/fixture-old'?new Promise(resolve=>{finish=resolve}):undefined});t.after(h.stop);await settle()
+    await h.state.load('/tmp/fixture-current');await h.state.preview(h.entry);h.state.draft.value='sensitive fixture draft'
+    const pending=h.state.load('/tmp/fixture-old'), old=h.requests.at(-1)
+    change(h);await settle()
+    assert.equal(old.options.signal.aborted,true);assert.equal(h.state.editor.value,undefined);assert.equal(h.state.draft.value,'');assert.equal(h.state.directory.value,'/')
+    finish({data:{directory:{path:'/tmp/fixture-old',entries:[h.entry],truncated:false}}});await pending
+    assert.equal(h.state.directory.value,'/');assert.equal(h.state.editor.value,undefined);assert.equal(h.state.draft.value,'')
+  }
+})
+
+test('文件选择期间目录身份项目权限或目标变化会取消旧选择，不向新目录或新目标探测上传',async t=>{
+  for(const change of [
+    h=>h.state.load('/tmp/another-directory'),async h=>{await h.state.load('/tmp/another-directory');await h.state.load('/tmp/fixture-directory')},
+    h=>{h.auth.user.id='another-user'},h=>{h.auth.user.department_id='another-department'},
+    h=>{h.auth.user.project_id='another-project'},h=>{h.storage.project='another-project';h.listeners.get('storage')()},
+    h=>{h.auth.user.permissions=['terminal.file.read','terminal.file.upload']},h=>{h.props.path='/api/v1/terminals/hosts/host-b/ws?project_id=project-a'},
+  ]){
+    const h=browserHarness(['terminal.file.read','terminal.file.upload','terminal.file.edit']);t.after(h.stop);await settle();await h.state.load('/tmp/fixture-directory')
+    h.state.uploadHere();await change(h);await settle();const before=h.requests.length
+    await h.state.upload({target:{files:[Object.assign(new Blob(['fixture']),{name:'upload.txt'})],value:'selected'}})
+    assert.equal(h.requests.length,before);assert.equal(h.requests.some(row=>row.method==='post'),false)
+  }
+})
+
+test('文件选择保持点击时目录且同actor校准不影响，取消及重复事件不能复用旧选择',async t=>{
+  const h=browserHarness(['terminal.file.read','terminal.file.upload']);t.after(h.stop);await settle();await h.state.load('/tmp/fixture-directory')
+  const event=()=>({target:{files:[Object.assign(new Blob(['fixture']),{name:'upload.txt'})],value:'selected'}})
+  h.state.uploadHere();h.auth.user={...h.auth.user,permissions:[...h.auth.user.permissions].reverse()};await settle()
+  await h.state.upload(event());assert.equal(h.requests.find(row=>row.method==='post').options.params.path,'/tmp/fixture-directory/upload.txt')
+  await settle();let before=h.requests.length;await h.state.upload(event());assert.equal(h.requests.length,before)
+  h.state.uploadHere();await h.state.upload({target:{files:[],value:''}});before=h.requests.length;await h.state.upload(event());assert.equal(h.requests.length,before)
+  h.state.uploadHere();h.state.cancelUploadSelection();before=h.requests.length;await h.state.upload(event());assert.equal(h.requests.length,before)
+  await h.selectUpload(event());assert.equal(h.requests.filter(row=>row.method==='post').length,2)
+})
+
+test('只有上传权限时也冻结显式目录，选择期间改地址不会转为新路径',async t=>{
+  const h=browserHarness(['terminal.file.upload']);t.after(h.stop);await settle();h.state.address.value='/tmp/fixture-directory';h.state.uploadHere();h.state.address.value='/tmp/other'
+  await h.state.upload({target:{files:[Object.assign(new Blob(['fixture']),{name:'upload.txt'})],value:'selected'}})
+  assert.equal(h.requests.length,1);assert.equal(h.requests[0].options.params.path,'/tmp/fixture-directory/upload.txt')
+})
+
+test('文件stat期间换目录及组件卸载都不能让旧选择继续提交',async t=>{
+  for(const change of [h=>h.state.load('/tmp/another-directory'),h=>h.stop()]){
+    let finish
+    const h=browserHarness(['terminal.file.read','terminal.file.upload'],{get:path=>path.endsWith('/stat')?new Promise(resolve=>{finish=resolve}):undefined});t.after(h.stop);await settle();await h.state.load('/tmp/fixture-directory')
+    const pending=h.selectUpload({target:{files:[Object.assign(new Blob(['fixture']),{name:'upload.txt'})],value:'selected'}});await settle()
+    await change(h);finish({data:{file:{etag:''}}});await pending
+    assert.equal(h.requests.some(row=>row.method==='post'),false)
+  }
+})
+
 test('覆盖确认期间项目或上传权限变化会取消操作，不向旧目标提交文件',async t=>{
   for(const change of [h=>h.auth.user.permissions=['terminal.file.read'],h=>{h.storage.project='other';h.listeners.get('edo:projects-changed')()}]){
     const h=browserHarness(['terminal.file.read','terminal.file.upload','terminal.file.edit'],{get:path=>path.endsWith('/stat')?{data:{file:{etag:'old'}}}:undefined});t.after(h.stop);await settle()
-    const pending=h.state.upload({target:{files:[Object.assign(new Blob(['payload']),{name:'app.conf'})],value:''}});await settle();assert.equal(h.confirmations.length,1)
+    const pending=h.selectUpload({target:{files:[Object.assign(new Blob(['payload']),{name:'app.conf'})],value:''}});await settle();assert.equal(h.confirmations.length,1)
     const old=h.confirmations[0];change(h);await settle();old.options.onOk();await pending
     assert.equal(h.requests.some(row=>row.method==='post'),false)
   }
