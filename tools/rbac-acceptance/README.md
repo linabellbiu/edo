@@ -1,6 +1,6 @@
 # EDO RBAC 真实 HTTP 验收
 
-本脚本对应 [RBAC 验收计划](../../docs/rbac-devops-acceptance-plan.md)。使用 Node.js 20 或更新版本的内置 `fetch`，不安装依赖，不启动或重建 EDO。
+本目录对应 [RBAC 验收计划](../../docs/rbac-devops-acceptance-plan.md)，不安装依赖，不启动或重建 EDO。`run.mjs` 与 `sql-workflow.mjs` 使用 Node.js 20+ 的内置 `fetch`，本轮验证版本为 Node.js 24.16.0。`revocation.mjs` 的带请求头 WebSocket 已验证 Node.js 24.16.0，也可使用 Bun；不能把它视为 Node.js 20 通用接口。`terminal-workflow.mjs` 使用已验证的 Bun 1.3.13，并在读取文件或修改资源前拒绝其他运行时。
 
 只允许 `127.0.0.1` 和 `[::1]` IP，默认 `http://127.0.0.1:18180`；拒绝重定向和携带凭据的 URL。管理员必须由维护本地验收环境的会话通过官方管理命令另建，不读取、改用其他账号的密码。
 
@@ -46,3 +46,41 @@ node tools/rbac-acceptance/revocation.mjs --admin-file /private/tmp/edo-rbac-pri
 ```
 
 账号停用测试保留两个已登录会话：一个在停用期发请求，另一个始终休眠。重新启用后两个旧会话都应失效，新登录应成功，不能只证明活跃会话被删除。所有状态变更和最终恢复均限制在专项白名单 UUID，报告包含最终恢复状态；不创建应用、执行任务或直接写数据库。凭据单独存于 `600` 的 `credentials.json`，Cookie 不落盘。
+
+## SQL 岗位流程专项
+
+`sql-workflow.mjs` 默认 `prepare` 只生成私有计划，不发 HTTP 请求或创建容器。后续阶段会创建独立 MySQL 8.4 目标，并通过正常 EDO 接口执行“保存并检查 → 独立审核 → 执行”。这不是只读测试：仅在独立验收环境与任务窗口已确认后使用。
+
+先通过正常 EDO 流程取得 A 项目的真实应用、分支、流水线运行与环境 UUID；不要生成替代 UUID。把这些值填入本轮 `EDO_RBAC_APPLICATION_ID`、`EDO_RBAC_PIPELINE_RUN_ID`、`EDO_RBAC_ENVIRONMENT_ID` 环境变量，再生成计划。默认分支为 `refs/heads/main`，其他分支在 `prepare` 时使用 `--branch` 指定。
+
+```sh
+node tools/rbac-acceptance/sql-workflow.mjs --admin-file /private/tmp/edo-rbac-private/admin.json --source-manifest /private/tmp/edo-rbac-private/run-01/manifest.json --out /private/tmp/edo-rbac-private/sql-01 --phase prepare --application-id "$EDO_RBAC_APPLICATION_ID" --pipeline-run-id "$EDO_RBAC_PIPELINE_RUN_ID" --environment-id "$EDO_RBAC_ENVIRONMENT_ID"
+node tools/rbac-acceptance/sql-workflow.mjs --admin-file /private/tmp/edo-rbac-private/admin.json --source-manifest /private/tmp/edo-rbac-private/run-01/manifest.json --out /private/tmp/edo-rbac-private/sql-01 --phase target
+node tools/rbac-acceptance/sql-workflow.mjs --admin-file /private/tmp/edo-rbac-private/admin.json --source-manifest /private/tmp/edo-rbac-private/run-01/manifest.json --out /private/tmp/edo-rbac-private/sql-01 --phase submit
+```
+
+后续沿用完全相同的管理员、来源清单和输出目录，依次使用 `--phase review`、`--phase execute`、`--phase verify`，最后显式执行 `--phase cleanup`。分阶段运行可在待审核、已批准、执行成功时分别检查三岗位页面；`review` 也可核对已由指定 DBA 在页面完成的唯一批准记录。`all` 会连续创建目标、检查、审核和执行，不包含 `cleanup`，不替代页面验收。
+
+只有本轮准确内容仍为 `check_failed`、没有审核或执行记录时，才可明确选择 `--phase recheck`。它通过正常检查接口生成新修订并保留原失败记录，不会直接改状态，也不会自动重试外部写入。检查镜像由 API 的构建运行时使用；宿主 Docker 已有镜像不代表该运行时已准备好。冷启动超时应保留为失败，后续重新检查成功不能冒充原失败已修复。
+
+目标固定为官方 `mysql:8.4`，使用独立名称、网络、回环端口与 tmpfs，限制 1 CPU、1 GiB 内存及进程数。API 容器须能通过 `host.docker.internal` 访问该回环映射；该地址不能冒充 API 容器自己的 `127.0.0.1`。脚本每次运行都复核保存的 Docker context 仍指向本地 Unix endpoint，不切换全局 context。bootstrap 只创建专库、运行用户与只读验收用户；业务建表和写入只来自经过审核的 SQL 工单。
+
+`cleanup` 先核对项目、应用、环境、数据库身份与当前版本，通过正常 PUT 停用本轮数据库配置，然后按保存的容器和网络 ID 清理，拒绝同名替换。未完成启动或已停止的自有资源，仅在尚未登记数据库配置、或配置已经停用时可清理。已登记配置仍启用而目标停止或缺失时，脚本明确失败并保留现场：现有 PUT 停用仍要求可连接，不能借清理直接写 EDO 数据库、删除配置或擅自重启环境。
+
+报告、工单、角色和账号历史保留；`cleanup` 不删除这些记录、宿主镜像或私有证据文件。`target-credentials.json` 包含随机目标及影子账号凭据，`mysql-secrets/` 包含目标连接文件，均须继续保持目录 `700`、文件 `600`，由验收维护者按留存要求处置。本工具不自动停用影子账号，不把基础设施清理称为全部身份清理。
+
+## 主机终端与文件专项
+
+`terminal-workflow.mjs` 只用于独立 E2E API 容器内的本地主机。`enable` 会把内置本地主机从仅 `docker` 临时改为 `docker` 加 `local_exec`；不能把这项操作用于开发机原生 EDO 或共享生产环境。先约定该 E2E 的测试窗口，再按一次性的 `enable → verify → restore` 顺序运行：
+
+```sh
+bun run tools/rbac-acceptance/terminal-workflow.mjs --admin-file /private/tmp/edo-rbac-private/admin.json --manifest /private/tmp/edo-rbac-private/release-identities/manifest.json --out /private/tmp/edo-rbac-private/terminal-01 --phase enable
+bun run tools/rbac-acceptance/terminal-workflow.mjs --admin-file /private/tmp/edo-rbac-private/admin.json --manifest /private/tmp/edo-rbac-private/release-identities/manifest.json --out /private/tmp/edo-rbac-private/terminal-01 --phase verify
+bun run tools/rbac-acceptance/terminal-workflow.mjs --admin-file /private/tmp/edo-rbac-private/admin.json --manifest /private/tmp/edo-rbac-private/release-identities/manifest.json --out /private/tmp/edo-rbac-private/terminal-01 --phase restore
+```
+
+这里的清单来自本轮独立岗位身份准备，必须包含 `prefix`、`fixturePrefix`、`projects.DEFAULT`、`users.terminal_operator` 及 `created` 用户 UUID 白名单。终端账号须为本轮新建普通用户，服务端昵称精确为 `fixturePrefix + '-terminal_operator'`；随机用户名不要求带前缀。脚本每阶段核对真实账号 UUID、用户名、昵称和非超级管理员身份，管理员登录必须返回超级管理员，普通用户登录 ID 必须与清单一致。
+
+文件目标只允许状态中随机生成的 `/tmp/rbac-terminal-<20 位十六进制>.txt` 及其 `.second` 文件，不能把私有状态改成其他真实文件路径后继续测试。`verify` 验证读、上传、编辑、覆盖所需的独立权限、旧摘要冲突及无副作用，并在同一已成功工作的主机终端连接上验证撤权关流。终端只执行固定的验收标记命令，输入输出不写入状态或报告。
+
+`verify` 结束会尝试恢复专属账号的个人权限，主机能力仍必须显式执行 `restore`；失败不会伪装恢复成功。恢复前核对本轮最后应用的个人权限及主机名称、能力、环境关联，发现其他修改时保留现场，不覆盖外部变更。查看 `state.json` 的 `restored` 与失败标记确认结果；已完成的阶段不要当成幂等接口重复提交。两个无敏感内容的临时文件不通过任意 Shell 删除，留待独立 E2E 容器的维护者收尾处理。状态文件仍为 `600`，不包含凭据、Cookie 或终端内容。
