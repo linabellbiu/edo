@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"edo/internal/access"
 	"edo/internal/database"
 	"edo/internal/model"
 	"edo/internal/secret"
@@ -122,7 +123,20 @@ func fixture(t *testing.T) *domainFixture {
 		if err = db.Create(&user).Error; err != nil {
 			t.Fatal(err)
 		}
-		if err = db.Create(&model.ProjectMember{ProjectID: project, UserID: id, RoleID: uuid.NewString()}).Error; err != nil {
+		role := model.Role{ID: uuid.NewString(), Name: "sql_fixture_" + []string{"owner", "reviewer", "other"}[i], DisplayName: "SQL 领域测试角色"}
+		if err = db.Create(&role).Error; err != nil {
+			t.Fatal(err)
+		}
+		// 旧用例保留模拟失败分支，真实项目授权仍需完整的角色与权限记录。
+		for _, permission := range access.Catalog() {
+			if !strings.HasPrefix(permission.Code, "sql_change.") && permission.Code != "application_database.execute" {
+				continue
+			}
+			if err = db.Create(&model.RolePermission{RoleID: role.ID, Permission: permission.Code}).Error; err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err = db.Create(&model.ProjectMember{ProjectID: project, UserID: id, RoleID: role.ID}).Error; err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -405,7 +419,12 @@ func TestSQLChangePermissionsScopeAndControlBoundaries(t *testing.T) {
 	if err := f.s.db.Create(&model.Project{ID: foreignScope.ProjectID, DepartmentID: database.DefaultDepartmentID, Name: "另一 SQL 项目", IsActive: true}).Error; err != nil {
 		t.Fatal(err)
 	}
-	if err := f.s.db.Create(&model.ProjectMember{ProjectID: foreignScope.ProjectID, UserID: f.owner, RoleID: uuid.NewString()}).Error; err != nil {
+	scope, _ := scopeFrom(f.ctx)
+	var ownerMember model.ProjectMember
+	if err := f.s.db.Where("project_id = ? AND user_id = ?", scope.ProjectID, f.owner).First(&ownerMember).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := f.s.db.Create(&model.ProjectMember{ProjectID: foreignScope.ProjectID, UserID: f.owner, RoleID: ownerMember.RoleID}).Error; err != nil {
 		t.Fatal(err)
 	}
 	if _, err := f.s.Detail(foreign, d.Change.ID); !errors.Is(err, ErrNotFound) {

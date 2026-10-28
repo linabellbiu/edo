@@ -43,22 +43,23 @@ type setUserRolesRequest struct {
 	RoleIDs []string `json:"role_ids" binding:"max=100,dive,max=36"`
 }
 
+// 权限集合统一最多 512 项，覆盖完整目录并保留有界增长空间；角色个数仍限制为 100。
 type setUserPermissionsRequest struct {
-	Allow []string `json:"allow" binding:"max=100,dive,max=96"`
-	Deny  []string `json:"deny" binding:"max=100,dive,max=96"`
+	Allow []string `json:"allow" binding:"max=512,dive,max=96"`
+	Deny  []string `json:"deny" binding:"max=512,dive,max=96"`
 }
 
 type setUserAccessRequest struct {
 	RoleIDs *[]string `json:"role_ids" binding:"required,max=100,dive,max=36"`
-	Allow   *[]string `json:"allow" binding:"required,max=100,dive,max=96"`
-	Deny    *[]string `json:"deny" binding:"required,max=100,dive,max=96"`
+	Allow   *[]string `json:"allow" binding:"required,max=512,dive,max=96"`
+	Deny    *[]string `json:"deny" binding:"required,max=512,dive,max=96"`
 }
 
 type roleRequest struct {
 	Name        string   `json:"name" binding:"required,max=64"`
 	DisplayName string   `json:"display_name" binding:"required,max=64"`
 	Description string   `json:"description" binding:"max=255"`
-	Permissions []string `json:"permissions" binding:"max=100,dive,max=96"`
+	Permissions []string `json:"permissions" binding:"max=512,dive,max=96"`
 }
 
 type roleBasicRequest struct {
@@ -68,7 +69,7 @@ type roleBasicRequest struct {
 }
 
 type rolePermissionsRequest struct {
-	Permissions *[]string `json:"permissions" binding:"required,max=100,dive,max=96"`
+	Permissions *[]string `json:"permissions" binding:"required,max=512,dive,max=96"`
 }
 
 type listedRoleResponse struct {

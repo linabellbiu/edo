@@ -44,6 +44,7 @@ var hostPreflightDefinitions = []preflightCheckDefinition{
 	{"cpu", "CPU 核数", "满足当前节点角色的最低 CPU 要求", "控制平面至少需要 2 核，工作节点至少需要 1 核", ""},
 	{"memory", "内存容量", "满足当前节点角色的最低内存要求", "控制平面至少需要 2 GiB，工作节点至少需要 512 MiB 内存", ""},
 	{"disk", "数据盘空间", "数据目录所在文件系统空间充足", "EDO 安装要求控制平面至少有 5 GiB、工作节点至少有 2 GiB 可用空间，且文件系统可写", "已达到 EDO 最低空间要求，建议控制平面预留 10 GiB、工作节点预留 5 GiB，并另行估算工作负载存储"},
+	{"snapshotter", "容器快照文件系统", "数据目录文件系统与所选快照方式兼容", "数据目录文件系统不支持默认 OverlayFS，请在自定义配置中选择兼容的数据目录或快照方式", "未能确认快照文件系统兼容性，或使用外部运行时；需另行核验运行时及存储能力"},
 	{"hostname", "节点名称", "节点名称格式有效", "节点名称必须是有效且唯一的 DNS 名称", ""},
 	{"ports", "本地端口", "当前配置所需的本地 TCP 端口未被占用", "当前配置所需的本地 TCP 端口已被占用，或无法读取监听端口", "部分自定义组件端口无法可靠确定，尚未核验这些端口；请核对最终配置，已明确的 API、LB 和组件端口仍会阻断冲突"},
 	{"download", "安装源连通性", "安装脚本和指定发布源可通过 HTTPS 访问", "无法通过 HTTPS 访问安装脚本或指定发布源，请检查 DNS、出站网络和 CA 信任", "使用预装二进制，已跳过发布源下载检查；安装脚本仍需通过 HTTPS 访问"},
@@ -116,6 +117,7 @@ edo_ram=$(awk '$1=="MemTotal:"{print $2;found=1;exit} END{if(!found)print 0}' /p
 	script.WriteString("edo_data=" + shellQuote(dataDir) + "\nwhile [ ! -e \"$edo_data\" ] && [ \"$edo_data\" != / ]; do edo_data=${edo_data%/*}; [ -n \"$edo_data\" ] || edo_data=/; done\n")
 	script.WriteString("edo_free=$(timeout 3 df -Pk \"$edo_data\" 2>/dev/null | awk 'NR==2{print $4}')\n")
 	script.WriteString(fmt.Sprintf("if [ ! -w \"$edo_data\" ] || ! [ \"${edo_free:-0}\" -ge %d ] 2>/dev/null; then edo_check disk failed; elif [ \"$edo_free\" -lt %d ]; then edo_check disk warning; else edo_check disk passed; fi\n", minimumDisk, recommendedDisk))
+	script.WriteString(snapshotterPreflightScript(options))
 	if nodeName == "" {
 		script.WriteString("edo_hostname=$(timeout 2 hostname 2>/dev/null || true)\n")
 	} else {
@@ -210,6 +212,34 @@ if [ -n "$edo_hostname" ] && [ "${#edo_hostname}" -le 253 ] && printf '%s\n' "$e
 		script.WriteString("if command -v getenforce >/dev/null 2>&1 && [ \"$(timeout 2 getenforce 2>/dev/null || true)\" = Enforcing ]; then edo_check selinux warning; else edo_check selinux passed; fi\n")
 	}
 	return script.String()
+}
+
+// 仅检查已存在父目录的文件系统，不创建目录、挂载或静默更换快照方式。
+func snapshotterPreflightScript(options map[string]any) string {
+	if options["docker"] == true || options["disable-agent"] == true {
+		return "edo_check snapshotter warning\n"
+	}
+	if endpoint, _ := options["container-runtime-endpoint"].(string); endpoint != "" {
+		return "edo_check snapshotter warning\n"
+	}
+	snapshotter, _ := options["snapshotter"].(string)
+	if snapshotter != "" && snapshotter != "overlayfs" {
+		// 非默认快照方式还依赖目标内核或插件，不因可解析配置就宣称已验证。
+		return "edo_check snapshotter warning\n"
+	}
+	return `edo_snapshot_fs=$(timeout 3 stat -f -c %T "$edo_data" 2>/dev/null)
+edo_snapshot_status=$?
+if [ "$edo_snapshot_status" != 0 ]; then
+  edo_check snapshotter warning
+else
+  case "$edo_snapshot_fs" in
+    overlay|overlayfs|aufs|nfs|nfs4|cifs|smb2|ecryptfs|zfs) edo_check snapshotter failed ;;
+    ext2/ext3|ext4|btrfs) edo_check snapshotter passed ;;
+    *) edo_check snapshotter warning ;;
+  esac
+fi
+unset edo_snapshot_fs edo_snapshot_status
+`
 }
 
 func preflightPorts(host Host, options map[string]any) ([]int, bool) {

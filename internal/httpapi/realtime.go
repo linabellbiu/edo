@@ -40,6 +40,15 @@ func realtimeMutation(bus *realtime.Bus) gin.HandlerFunc {
 	}
 }
 
+func currentStreamPermission(ctx context.Context, service *access.Service, user *model.User, permission string) (bool, error) {
+	allowed, err := service.HasPermission(ctx, user, permission)
+	if err != nil || !allowed || !access.ProjectPermission(permission) {
+		return allowed, err
+	}
+	// 长连接与普通项目请求采用相同的双重检查，不能等待跨实例策略通知到达才撤权。
+	return service.HasCurrentProjectPermission(ctx, user, permission)
+}
+
 // 长连接继续检查会话、权限与部门；调动部门或注销后不沿用握手时的权限。
 func streamAuthorization(deps Dependencies, c *gin.Context, permissions ...string) func() bool {
 	initial, ok := currentUser(c)
@@ -70,7 +79,7 @@ func streamAuthorization(deps Dependencies, c *gin.Context, permissions ...strin
 			if err == nil {
 				var allowed bool
 				for _, permission := range permissions {
-					allowed, err = deps.Access.HasPermission(ctx, user, permission)
+					allowed, err = currentStreamPermission(ctx, deps.Access, user, permission)
 					if err != nil || allowed {
 						break
 					}
@@ -81,7 +90,7 @@ func streamAuthorization(deps Dependencies, c *gin.Context, permissions ...strin
 			}
 		}
 		if err != nil {
-			deps.Logger.Warn("实时会话授权已失效", "operation", "realtime_authorization", "user_id", identity.ID, "err", err)
+			deps.Logger.Warn("实时会话授权已失效", "operation", "realtime_authorization", "user_id", identity.ID, "project_id", initialScope.ProjectID, "err", err)
 		}
 		return err == nil
 	}
@@ -171,9 +180,10 @@ func streamState(deps Dependencies) gin.HandlerFunc {
 					if resource == "deployments" {
 						permission = access.PermissionDeploymentRead
 					}
-					allowed, permissionErr := deps.Access.HasPermission(c.Request.Context(), user, permission)
+					allowed, permissionErr := currentStreamPermission(c.Request.Context(), deps.Access, user, permission)
 					if permissionErr != nil {
-						deps.Logger.Warn("检查状态通知权限失败", "operation", "realtime_permission", "user_id", user.ID, "err", permissionErr)
+						scope, _ := database.DepartmentScopeFromContext(c.Request.Context())
+						deps.Logger.Warn("检查状态通知权限失败", "operation", "realtime_permission", "user_id", user.ID, "project_id", scope.ProjectID, "permission", permission, "err", permissionErr)
 						return
 					}
 					if allowed {

@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"edo/internal/access"
 	"edo/internal/model"
 	"github.com/google/uuid"
 	"gorm.io/gorm"
@@ -74,18 +75,13 @@ func (s *Service) SavePolicy(ctx context.Context, actorID, environmentID string,
 				return ErrInvalidPolicy
 			}
 			seen[id] = true
-			var user model.User
-			if e := tx.First(&user, "uuid = ? AND is_active = ?", id, true).Error; e != nil {
-				return ErrInvalidPolicy
+			allowed, e := s.policyReviewerAllowed(ctx, tx, scope.ProjectID, id)
+			if e != nil {
+				return e
 			}
-			if !user.IsSuperuser {
-				var count int64
-				if e := tx.Model(&model.ProjectMember{}).Where("project_id = ? AND user_id = ?", scope.ProjectID, id).Count(&count).Error; e != nil {
-					return e
-				}
-				if count == 0 {
-					return ErrInvalidPolicy
-				}
+			if !allowed {
+				s.logger.WarnContext(ctx, "审核人已无当前项目审批权限", "operation", "environment_policy_reviewer_validate", "project_id", scope.ProjectID, "environment_id", environmentID, "reviewer_id", id, "err", access.ErrAccessDelegationDenied)
+				return ErrInvalidPolicy
 			}
 		}
 		e := tx.First(&item, "environment_id = ? AND project_id = ?", environmentID, scope.ProjectID).Error
@@ -175,9 +171,37 @@ func (s *Service) Reviewers(ctx context.Context) ([]ReviewerChoice, error) {
 		return nil, s.failure(ctx, "environment_policy_reviewer_scope", err, err)
 	}
 	items := []ReviewerChoice{}
-	err = s.db.WithContext(ctx).Table("users AS u").Select("DISTINCT u.uuid AS id, u.username AS name").Joins("JOIN project_members AS m ON m.user_id = u.uuid").Where("m.project_id = ? AND u.is_active = ?", scope.ProjectID, true).Order("u.username ASC").Scan(&items).Error
+	err = s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		candidates := []ReviewerChoice{}
+		if e := tx.Table("users AS u").Select("DISTINCT u.uuid AS id, u.username AS name").Joins("JOIN project_members AS m ON m.user_id = u.uuid").Where("m.project_id = ? AND u.is_active = ?", scope.ProjectID, true).Order("u.username ASC").Scan(&candidates).Error; e != nil {
+			return e
+		}
+		// 候选先按项目收敛，再复用当前授权算法；不能缓存已经失效的角色或个人例外。
+		for _, candidate := range candidates {
+			allowed, e := s.policyReviewerAllowed(ctx, tx, scope.ProjectID, candidate.ID)
+			if e != nil {
+				return e
+			}
+			if allowed {
+				items = append(items, candidate)
+			}
+		}
+		return nil
+	})
 	if err != nil {
 		return nil, s.failure(ctx, "environment_policy_reviewers", err, ErrStorage)
 	}
 	return items, nil
+}
+
+func (s *Service) policyReviewerAllowed(ctx context.Context, tx *gorm.DB, projectID, reviewerID string) (bool, error) {
+	authorization, err := access.FreshProjectPermissions(tx, ctx, reviewerID, projectID)
+	if errors.Is(err, access.ErrAccessDelegationDenied) {
+		return false, nil
+	}
+	if err != nil {
+		s.logger.ErrorContext(ctx, "读取环境审核人当前授权失败", "operation", "environment_policy_reviewer_authorization", "project_id", projectID, "reviewer_id", reviewerID, "err", err)
+		return false, err
+	}
+	return authorization.Permissions[access.PermissionDeploymentReview], nil
 }

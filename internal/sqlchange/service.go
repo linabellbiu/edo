@@ -11,6 +11,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"edo/internal/access"
 	"edo/internal/database"
 	"edo/internal/model"
 	"edo/internal/secret"
@@ -83,21 +84,51 @@ func (s *Service) authorize(ctx context.Context, actorID, permission string) err
 			return s.failure(ctx, "sql_change_membership", ErrForbidden, ErrForbidden)
 		}
 	}
-	if s.permissions == nil {
-		return s.failure(ctx, "sql_change_permission_unavailable", ErrUnavailable, ErrUnavailable)
-	}
-	allowed, err := s.permissions.HasPermission(ctx, &user, permission)
-	if err != nil || !allowed {
-		return s.failure(ctx, "sql_change_permission", err, ErrForbidden)
-	}
+	permissions := []string{permission}
 	if permission != "sql_change.read" {
-		allowed, err = s.permissions.HasPermission(ctx, &user, "sql_change.read")
-		if err != nil || !allowed {
-			return s.failure(ctx, "sql_change_read_permission", err, ErrForbidden)
+		permissions = append(permissions, "sql_change.read")
+	}
+	return s.requireCurrentPermissions(ctx, s.db, &user, permissions...)
+}
+
+func (s *Service) requireCurrentPermissions(ctx context.Context, db *gorm.DB, user *model.User, permissions ...string) error {
+	scope, _ := database.DepartmentScopeFromContext(ctx)
+	fail := func(permission string, cause, public error) error {
+		s.logger.ErrorContext(ctx, "SQL 工单权限校验失败", "operation", "sql_change_current_permission", "project_id", scope.ProjectID, "department_id", scope.DepartmentID, "actor_id", scope.UserID, "subject_id", user.ID, "permission", permission, "err", cause)
+		return public
+	}
+	if s.permissions == nil {
+		return fail("", ErrUnavailable, ErrUnavailable)
+	}
+	var current *access.FreshProjectAuthorization
+	for _, permission := range permissions {
+		allowed, err := s.permissions.HasPermission(ctx, user, permission)
+		if err != nil {
+			return fail(permission, err, ErrUnavailable)
+		}
+		if !allowed {
+			return fail(permission, ErrForbidden, ErrForbidden)
+		}
+		if !access.ProjectPermission(permission) {
+			continue
+		}
+		if current == nil {
+			// 使用调用方事务与冻结项目范围，一次读取同时复核动作及必要读取权限。
+			current, err = access.FreshProjectPermissions(db, ctx, user.ID, scope.ProjectID)
+			if errors.Is(err, access.ErrAccessDelegationDenied) {
+				return fail(permission, err, ErrForbidden)
+			}
+			if err != nil {
+				return fail(permission, err, ErrStorage)
+			}
+		}
+		if !current.Permissions[permission] {
+			return fail(permission, ErrForbidden, ErrForbidden)
 		}
 	}
 	return nil
 }
+
 func (s *Service) requestActor(ctx context.Context, permission string) error {
 	scope, err := scopeFrom(ctx)
 	if err != nil {
@@ -270,21 +301,7 @@ func (s *Service) validateReviewer(ctx context.Context, db *gorm.DB, id, authorI
 	if count == 0 {
 		return ErrInvalid
 	}
-	allowed, err := s.permissions.HasPermission(ctx, &user, "sql_change.review")
-	if err != nil {
-		return err
-	}
-	if !allowed {
-		return ErrForbidden
-	}
-	allowed, err = s.permissions.HasPermission(ctx, &user, "sql_change.read")
-	if err != nil {
-		return err
-	}
-	if !allowed {
-		return ErrForbidden
-	}
-	return nil
+	return s.requireCurrentPermissions(ctx, db, &user, "sql_change.review", "sql_change.read")
 }
 func (s *Service) Save(ctx context.Context, actorID, id string, input Input) (*DetailResult, error) {
 	permission := "sql_change.create"

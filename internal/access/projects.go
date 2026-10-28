@@ -9,6 +9,7 @@ import (
 	"github.com/google/uuid"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
+	"slices"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -347,38 +348,74 @@ func (s *Service) DeleteProject(ctx context.Context, user *model.User, id string
 	})
 }
 
-const ProjectOwnerRoleID = "bbf0404f-7165-5119-8620-194a3fab6c01"
+const (
+	ProjectOwnerRoleID     = "bbf0404f-7165-5119-8620-194a3fab6c01"
+	projectDeveloperRoleID = "bbf0404f-7165-5119-8620-194a3fab6c03"
+)
+
+func projectDeveloperWritePermission(code string) bool {
+	// 开发角色只包含日常开发动作；新增的创建、修改或执行权限必须逐项评估。
+	switch code {
+	case "application.create", "application.update", "application.execute",
+		"repository.create", "repository.update",
+		"workflow.create", "workflow.update",
+		"build_plan.create", "build_plan.update", "pipeline_run.execute":
+		return true
+	default:
+		return false
+	}
+}
 
 func (s *Service) EnsureProjectRoles(ctx context.Context) error {
+	var roleID string
 	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		for _, preset := range []struct{ id, name, label string }{{ProjectOwnerRoleID, "edo_project_owner", "项目管理员"}, {"bbf0404f-7165-5119-8620-194a3fab6c02", "edo_project_viewer", "项目只读成员"}, {"bbf0404f-7165-5119-8620-194a3fab6c03", "edo_project_developer", "项目开发成员"}} {
+		for _, preset := range []struct{ id, name, label string }{{ProjectOwnerRoleID, "edo_project_owner", "项目管理员"}, {"bbf0404f-7165-5119-8620-194a3fab6c02", "edo_project_viewer", "项目只读成员"}, {projectDeveloperRoleID, "edo_project_developer", "项目开发成员"}} {
+			roleID = preset.id
 			var count int64
 			if err := tx.Model(&model.Role{}).Where("uuid = ?", preset.id).Count(&count).Error; err != nil {
 				return err
 			}
-			if count > 0 {
+			if count > 0 && preset.id != projectDeveloperRoleID {
 				continue
 			}
 			now := time.Now().UTC()
-			role := model.Role{ID: preset.id, Name: preset.name, DisplayName: preset.label, Description: "仅包含项目内能力，不授予公司及账号管理权限", CreatedAt: now, UpdatedAt: now}
-			if err := tx.Create(&role).Error; err != nil {
-				return err
+			if count == 0 {
+				role := model.Role{ID: preset.id, Name: preset.name, DisplayName: preset.label, Description: "仅包含项目内能力，不授予公司及账号管理权限", CreatedAt: now, UpdatedAt: now}
+				if err := tx.Create(&role).Error; err != nil {
+					return err
+				}
 			}
+			var permissions []string
 			for _, item := range catalog {
 				if !ProjectPermission(item.Code) || strings.HasPrefix(item.Code, "delivery.") {
 					continue
 				}
-				include := preset.id == ProjectOwnerRoleID || item.Action == "read" && !item.Dangerous || preset.name == "edo_project_developer" && (strings.HasSuffix(item.Code, ".create") || strings.HasSuffix(item.Code, ".update") || item.Code == "pipeline_run.execute" || item.Code == "application.execute") && item.Resource != "project" && !strings.HasPrefix(item.Code, "kubernetes.")
+				include := preset.id == ProjectOwnerRoleID || item.Action == "read" && !item.Dangerous || preset.id == projectDeveloperRoleID && projectDeveloperWritePermission(item.Code)
 				if include {
-					if err := tx.Create(&model.RolePermission{RoleID: role.ID, Permission: item.Code, CreatedAt: now}).Error; err != nil {
-						return err
-					}
+					permissions = append(permissions, item.Code)
 				}
+			}
+			permissions = uniqueSorted(permissions)
+			if count > 0 {
+				// 只收敛固定 UUID 的内置开发模板，保留角色本体及成员、自定义角色关联。
+				var existing []string
+				if err := tx.Model(&model.RolePermission{}).Where("role_id = ?", preset.id).Order("permission ASC").Pluck("permission", &existing).Error; err != nil {
+					return err
+				}
+				// 数据库排序规则可能忽略标点，使用相同字节序比较以保留稳定权限行。
+				slices.Sort(existing)
+				if slices.Equal(existing, permissions) {
+					continue
+				}
+			}
+			if err := replacePermissions(tx, preset.id, permissions, now); err != nil {
+				return err
 			}
 		}
 		return nil
 	})
 	if err != nil {
+		s.logger.Error("初始化项目角色失败", "operation", "project_role_bootstrap", "role_id", roleID, "err", err)
 		return err
 	}
 	return s.syncPolicy("project_role_bootstrap")
