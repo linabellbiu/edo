@@ -64,6 +64,26 @@ function harness(t, records = [run('failed-run')]) {
   }
 }
 
+test('已停用应用不在当前列表时日志标题仍保留运行关联的应用名', t => {
+  const record = { ...run('inactive-run'), application: { id: 'api', name: '已停用的测试应用' } }
+  const h = harness(t, [record])
+  h.state.applications.value = []
+  h.state.openLogs(record)
+  assert.equal(h.state.log.value.open, true)
+  assert.equal(h.state.log.value.runID, record.id)
+  assert.equal(h.state.log.value.title, '流水线日志：已停用的测试应用')
+})
+
+test('日志标题优先使用当前应用名称且缺失关联时保持安全回退', t => {
+  const h = harness(t)
+  const record = { ...run('current-run'), application: { id: 'api', name: '运行中的旧名称' } }
+  h.state.openLogs(record)
+  assert.equal(h.state.log.value.title, '流水线日志：前后端验收')
+  h.state.applications.value = []
+  h.state.openLogs(run('missing-application-run'))
+  assert.equal(h.state.log.value.title, '流水线日志：未命名应用')
+})
+
 test('失败运行没有 deployment_id 时先按准确 run 异步读取，存在记录才显示回退入口', async t => {
   const h = harness(t), failed = h.state.runs.value[0]
   assert.equal(failed.deployment_id, undefined)

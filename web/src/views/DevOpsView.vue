@@ -1237,7 +1237,7 @@ async function executeRetry(){
   void router.replace({path:'/release-plans',query:{...route.query,view:'runs',run:retried.id}})
  }catch(error){message.error(apiErrorMessage(error))}finally{retrySubmitting.value=false}
 }
-function openLogs(run:Run){log.value={open:true,runID:run.id,title:`流水线日志：${applications.value.find(item=>item.id===run.application_id)?.name||'应用'}`,status:run.status}}
+function openLogs(run:Run){log.value={open:true,runID:run.id,title:`流水线日志：${applicationName(run)}`,status:run.status}}
 function resetManualFlow(){
  commitOpen.value=false
  manualApplicationID.value=''
