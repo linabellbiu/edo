@@ -20,6 +20,7 @@ import (
 
 	"edo/internal/config"
 	"edo/internal/credential"
+	"edo/internal/database"
 	"edo/internal/model"
 	"edo/internal/secret"
 	"edo/internal/testutil"
@@ -640,6 +641,99 @@ func TestProcessWebhookTaskIsIdempotent(t *testing.T) {
 		if err := service.ProcessWebhookTask(context.Background(), payload); err != nil {
 			t.Fatalf("幂等处理 Webhook 任务失败: %v", err)
 		}
+	}
+}
+
+func TestWebhookBackgroundTaskUsesRepositoryProject(t *testing.T) {
+	service, db := newRepositoryTestService(t)
+	const projectID = "11111111-2222-4333-8444-555555555555"
+	project := model.Project{
+		ID: projectID, DepartmentID: database.DefaultDepartmentID,
+		Name: "Webhook 非默认项目", IsActive: true,
+	}
+	if err := db.Create(&project).Error; err != nil {
+		t.Fatalf("创建独立项目失败: %v", err)
+	}
+	repositoryContext := database.WithDepartmentScope(context.Background(), database.DepartmentScope{
+		ProjectID: projectID, DepartmentID: database.DefaultDepartmentID,
+	})
+	repo, webhookSecret, err := service.Create(repositoryContext, "admin", Input{
+		Name: "project-webhook", Provider: model.GitProviderGitee,
+		CloneURL: "https://git.example.com/team/api.git", AuthType: model.GitAuthNone, WebhookEnabled: true,
+	})
+	if err != nil || repo.ProjectID != projectID {
+		t.Fatalf("创建项目仓库失败: err=%v", err)
+	}
+	body := []byte(`{"ref":"refs/heads/main","after":"0123456789012345678901234567890123456789"}`)
+	headers := make(http.Header)
+	headers.Set("X-Gitee-Event", "Push Hook")
+	headers.Set("X-Gitee-Delivery", "project-delivery")
+	headers.Set("X-Gitee-Token", webhookSecret)
+	defaultProjectID := database.DefaultProjectID(database.DefaultDepartmentID)
+	// 公开入站没有登录项目上下文，客户端头也不能决定后台任务归属。
+	headers.Set("X-EDO-Project-ID", defaultProjectID)
+	publicContext := context.Background()
+	var beforeJobs, beforeOutbox int64
+	if err := db.Model(&model.Job{}).Count(&beforeJobs).Error; err != nil {
+		t.Fatalf("读取任务基线失败: %v", err)
+	}
+	if err := db.Model(&model.OutboxEvent{}).Count(&beforeOutbox).Error; err != nil {
+		t.Fatalf("读取投递基线失败: %v", err)
+	}
+	badHeaders := headers.Clone()
+	badHeaders.Set("X-Gitee-Token", "invalid-public-token")
+	if _, err := service.HandleWebhook(publicContext, repo.ID, badHeaders, body); !errors.Is(err, ErrInvalidSignature) {
+		t.Fatalf("错误令牌未被拒绝: %v", err)
+	}
+	var badJobs, badOutbox int64
+	if err := db.Model(&model.Job{}).Count(&badJobs).Error; err != nil || badJobs != beforeJobs {
+		t.Fatalf("错误令牌不应创建任务: count=%d err=%v", badJobs, err)
+	}
+	if err := db.Model(&model.OutboxEvent{}).Count(&badOutbox).Error; err != nil || badOutbox != beforeOutbox {
+		t.Fatalf("错误令牌不应创建投递: count=%d err=%v", badOutbox, err)
+	}
+	accepted, err := service.HandleWebhook(publicContext, repo.ID, headers, body)
+	if err != nil || accepted.Delivery == nil || accepted.Duplicate {
+		t.Fatalf("正常项目事件未接受: err=%v", err)
+	}
+	var job model.Job
+	if err := db.First(&job, "uuid = ?", accepted.Delivery.JobID).Error; err != nil {
+		t.Fatalf("读取准确后台任务失败: %v", err)
+	}
+	var event model.OutboxEvent
+	if err := db.First(&event, "aggregate_id = ?", job.ID).Error; err != nil {
+		t.Fatalf("读取准确Outbox投递失败: %v", err)
+	}
+	if job.ProjectID != projectID || event.ProjectID != projectID || job.DepartmentID != repo.DepartmentID || event.DepartmentID != repo.DepartmentID {
+		t.Fatalf("后台任务及Outbox必须继承仓库归属: job_project=%s outbox_project=%s expected_project=%s", job.ProjectID, event.ProjectID, projectID)
+	}
+	defaultContext := database.WithDepartmentScope(context.Background(), database.DepartmentScope{
+		ProjectID: defaultProjectID, DepartmentID: database.DefaultDepartmentID,
+	})
+	for _, item := range []struct {
+		value any
+		query string
+	}{
+		{&model.Job{}, "uuid = ?"},
+		{&model.OutboxEvent{}, "aggregate_id = ?"},
+	} {
+		if err := db.WithContext(repositoryContext).First(item.value, item.query, job.ID).Error; err != nil {
+			t.Fatalf("仓库项目无法读取派生任务: %v", err)
+		}
+		if err := db.WithContext(defaultContext).First(item.value, item.query, job.ID).Error; !errors.Is(err, gorm.ErrRecordNotFound) {
+			t.Fatalf("默认项目不能读取其他项目派生任务: %v", err)
+		}
+	}
+	repeated, err := service.HandleWebhook(publicContext, repo.ID, headers, body)
+	if err != nil || !repeated.Duplicate || repeated.Delivery == nil || repeated.Delivery.ID != accepted.Delivery.ID || repeated.Delivery.JobID != job.ID {
+		t.Fatalf("项目事件重复投递未复用同一任务: err=%v", err)
+	}
+	var afterJobs, afterOutbox int64
+	if err := db.Model(&model.Job{}).Count(&afterJobs).Error; err != nil || afterJobs != beforeJobs+1 {
+		t.Fatalf("重复投递新增了后台任务: count=%d err=%v", afterJobs, err)
+	}
+	if err := db.Model(&model.OutboxEvent{}).Count(&afterOutbox).Error; err != nil || afterOutbox != beforeOutbox+1 {
+		t.Fatalf("重复投递新增了Outbox: count=%d err=%v", afterOutbox, err)
 	}
 }
 

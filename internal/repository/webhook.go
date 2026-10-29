@@ -157,6 +157,7 @@ func (s *Service) HandleWebhook(
 			return err
 		}
 		job, err := task.NewService(tx, s.defaultMaxAttempts).Create(ctx, task.CreateInput{
+			ProjectID:    repository.ProjectID,
 			DepartmentID: repository.DepartmentID,
 			Kind:         "repository.webhook", Subject: "edo.task.repository.webhook",
 			Payload: WebhookTaskPayload{
