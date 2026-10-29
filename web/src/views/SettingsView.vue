@@ -356,8 +356,8 @@ onMounted(() => {
           <p>修改成功后，所有设备上的旧会话都会失效，并返回登录界面。</p>
         </div>
       </header>
-      <a-form layout="vertical" class="settings-form" @finish="changePassword"
-        ><a-form-item label="当前密码" required><a-input-password v-model:value="password.current" autocomplete="current-password" /></a-form-item><a-form-item label="新密码" required><a-input-password v-model:value="password.next" autocomplete="new-password" /></a-form-item><a-form-item label="再次输入新密码" required><a-input-password v-model:value="password.confirm" autocomplete="new-password" /></a-form-item><a-button type="primary" html-type="submit" :loading="passwordSaving">修改密码</a-button></a-form
+      <a-form :model="password" layout="vertical" class="settings-form" @finish="changePassword"
+        ><a-form-item name="current" label="当前密码" required><a-input-password v-model:value="password.current" autocomplete="current-password" /></a-form-item><a-form-item name="next" label="新密码" required><a-input-password v-model:value="password.next" autocomplete="new-password" /></a-form-item><a-form-item name="confirm" label="再次输入新密码" required><a-input-password v-model:value="password.confirm" autocomplete="new-password" /></a-form-item><a-button type="primary" html-type="submit" :loading="passwordSaving">修改密码</a-button></a-form
       >
     </article>
     <template v-if="active === 'general'">
