@@ -388,7 +388,7 @@ func (s *Service) requestAndRun(
 		targetSnapshot := *target
 		targetSnapshot.WorkloadName = workloadName
 		target = &targetSnapshot
-	} else if target.Platform == model.DeploymentDocker && strings.TrimSpace(target.WorkloadName) == "" {
+	} else if target.Platform == model.DeploymentDocker && input.PlanKind != model.DeploymentPlanCompose && strings.TrimSpace(target.WorkloadName) == "" {
 		return nil, ErrInvalidTarget
 	}
 	input.PipelineRunID = strings.TrimSpace(input.PipelineRunID)
