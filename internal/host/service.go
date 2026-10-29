@@ -993,11 +993,7 @@ func (s *Service) updateLocal(ctx context.Context, existing *model.Host, input I
 			delete(currentByKind, kind)
 		}
 		for _, capability := range currentByKind {
-			hostID := ""
-			if capability.Kind == model.HostCapabilityLocalExec {
-				hostID = existing.ID
-			}
-			referenced, err := s.runtimeReferenced(ctx, tx, hostID, []string{capability.RuntimeID})
+			referenced, err := s.capabilityReferenced(ctx, tx, existing.ID, capability)
 			if err != nil {
 				return err
 			}
@@ -1246,15 +1242,7 @@ func (s *Service) replaceCapabilities(
 		delete(existingByKind, kind)
 	}
 	for _, capability := range existingByKind {
-		hostID := ""
-		runtimeIDs := []string(nil)
-		if capability.Kind == model.HostCapabilitySSH {
-			hostID = current.ID
-		}
-		if capability.Kind == model.HostCapabilityDocker {
-			runtimeIDs = []string{capability.RuntimeID}
-		}
-		referenced, err := s.runtimeReferenced(tx.Statement.Context, tx, hostID, runtimeIDs)
+		referenced, err := s.capabilityReferenced(tx.Statement.Context, tx, current.ID, capability)
 		if err != nil {
 			return nil, err
 		}
@@ -1372,6 +1360,18 @@ func (s *Service) listCapabilities(ctx context.Context, ids []string) (map[strin
 		result[capabilities[i].HostID] = append(result[capabilities[i].HostID], capabilities[i])
 	}
 	return result, nil
+}
+
+func (s *Service) capabilityReferenced(ctx context.Context, db *gorm.DB, hostID string, capability model.HostCapability) (bool, error) {
+	switch capability.Kind {
+	case model.HostCapabilitySSH, model.HostCapabilityLocalExec:
+		// Docker 目标也保存主机归属，但不依赖独立的命令执行能力。
+		return s.runtimeReferenced(ctx, db.Where("platform = ?", model.DeploymentSSH), hostID, nil)
+	case model.HostCapabilityDocker:
+		return s.runtimeReferenced(ctx, db, "", []string{capability.RuntimeID})
+	default:
+		return false, nil
+	}
 }
 
 func (s *Service) runtimeReferenced(ctx context.Context, db *gorm.DB, hostID string, runtimeIDs []string) (bool, error) {
