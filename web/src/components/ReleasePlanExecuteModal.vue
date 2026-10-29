@@ -138,7 +138,7 @@ function isExecutionContentSelected(item: ReleasePlanExecutionItem) {
 }
 
 function workflowSummary(item: ReleasePlanExecutionItem) {
-  return item.workflows.find((workflow) => workflow.id === item.workflowID) || item.workflows[0]
+  return item.workflows.find((workflow) => workflow.id === item.workflowID)
 }
 
 function itemStatus(item: ReleasePlanExecutionItem): ItemStatus {
@@ -259,7 +259,7 @@ function updateArtifact(membershipID: string, value: unknown) {
                     <strong>{{ workflowSummary(item)?.name }}</strong>
                     <small>{{ t('releasePlanExecution.application.workflowRevision', { revision: workflowSummary(item)?.revision }) }}</small>
                   </div>
-                  <small v-else class="field-message">{{ t('releasePlanExecution.reason.manualSourceMissing') }}</small>
+                  <small v-else class="field-message">{{ item.reason || t('releasePlanExecution.reason.manualSourceMissing') }}</small>
                 </div>
 
 				<div class="item-field execution-content" :class="{ incomplete: item.loadState === 'ready' && !isExecutionContentSelected(item) }">

@@ -234,6 +234,7 @@ export const messages = {
       empty: { title: '没有可执行应用', description: '请先为发布计划添加应用。' },
       reason: {
         applicationMissing: '应用不存在或已被删除', applicationDisabled: '应用已停用', workflowDisabled: '应用没有启用的流水线',
+        workflowAmbiguous: '应用存在多条可手动执行的流水线，无法确定执行目标',
         manualSourceMissing: '流水线代码源没有开启手动发布', membershipMissing: '发布计划应用关联不完整', duplicateApplication: '同一应用不能重复加入发布计划',
 	        referenceMissing: '代码仓库没有可用的分支或 Tag', referenceOrArtifactMissing: '没有可用的代码版本或与当前流水线匹配的历史制品', preflightFailed: '服务端预检查未通过',
       },
@@ -471,6 +472,7 @@ export const messages = {
       empty: { title: 'No runnable applications', description: 'Add applications to this release plan first.' },
       reason: {
         applicationMissing: 'The application no longer exists', applicationDisabled: 'The application is disabled', workflowDisabled: 'The application has no active pipeline',
+        workflowAmbiguous: 'Multiple manually runnable pipelines exist for this application. The execution target cannot be determined.',
         manualSourceMissing: 'The pipeline code source does not allow manual releases', membershipMissing: 'The release-plan application membership is incomplete', duplicateApplication: 'An application cannot be added twice to the release plan',
 	        referenceMissing: 'The repository has no available branch or tag', referenceOrArtifactMissing: 'No code version or matching existing artifact is available', preflightFailed: 'Server preflight validation failed',
       },

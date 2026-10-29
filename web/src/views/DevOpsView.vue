@@ -78,6 +78,7 @@ interface PlanExecutionReference{kind:'branch'|'tag';ref:string;name:string;sha:
 interface PlanExecutionSource{id:string;name:string;environment?:string}
 interface PlanExecutionItem{membershipID:string;applicationID:string;applicationName:string;workflowID:string;workflowRevision:number;workflows:Array<{id:string;name:string;revision:number}>;loadState:PlanExecutionLoadState;reason?:string;staticBlocked:boolean;sources:PlanExecutionSource[];refs:PlanExecutionReference[];artifacts:ManualArtifact[];executionMode:'code'|'artifact';selectedSourceID:string;selectedRef:string;selectedArtifactID:string;referenceError?:string}
 interface PlanExecutionGroup{id:string;name:string;mode:string;failurePolicy:string;dependencies:string[];items:PlanExecutionItem[]}
+interface PlanExecutionScope{identity:string;projectID:string;epoch:number}
 interface ReleasePlanEditorValue{id:string;description:string;groups:Array<{id:string;name:string;mode:'parallel'|'sequential';failure_policy:'stop'|'continue';depends_on_group_ids:string[];applications:Array<{application_id:string;manual_deploy:boolean;source_type:string;source_value:string}>}>}
 
 const applications=ref<Application[]>([]),repositories=ref<Repository[]>([]),credentials=ref<Credential[]>([]),workflowTemplates=ref<WorkflowTemplate[]>([]),buildPlans=ref<BuildPlan[]>([]),registries=ref<Registry[]>([]),runs=ref<Run[]>([]),releasePlans=ref<ReleasePlan[]>([]),deployments=ref<DeploymentRecord[]>([]),deploymentPlans=ref<DeploymentPlan[]>([]),artifacts=ref<Artifact[]>([])
@@ -114,6 +115,11 @@ let deliveryRefreshTimer: ReturnType<typeof setTimeout>|undefined
 let applicationSyncOnly=false
 const relativeTimeNow=ref(Date.now())
 let planExecutionController:AbortController|null=null
+const planExecutionSelectedProject=ref(typeof localStorage==='undefined'?'':localStorage.getItem('edo.project')||'')
+const planExecutionScopeIdentity=computed(()=>JSON.stringify([auth.user?.id,auth.user?.department_id,auth.user?.project_id,auth.user?.is_superuser,[...(auth.user?.permissions||[])].sort(),planExecutionSelectedProject.value,props.section]))
+const planExecutionRequests=new Set<AbortController>()
+let planExecutionOpenedScope:PlanExecutionScope|undefined
+let planExecutionEpoch=0,planExecutionDisposed=false
 const DEFAULT_APPLICATION_POLL_INTERVAL=3
 const appForm=reactive({name:'',description:'',repository_id:'',workflow_template_id:'',poll_interval_seconds:DEFAULT_APPLICATION_POLL_INTERVAL})
 const repoForm=reactive({name:'',provider:'github',clone_url:'',default_branch:'main',auth_type:'none',username:'',credential_id:'',api_credential_id:'',webhook_enabled:false,allow_insecure_http:false})
@@ -792,25 +798,26 @@ async function loadExecutionGroup(group:RunExecutionGroup){
  }catch(error){if(!controller.signal.aborted&&request===executionRevision)executionDrawerError.value=apiErrorMessage(error)}
  finally{if(request===executionRevision)executionDrawerLoading.value=false}
 }
-async function loadRunPage(reportError=false){
- if(props.section!=='release-plans'||releaseView.value!=='runs'||!auth.canAny(['pipeline_run.read']))return
+async function loadRunPage(reportError=false,scope?:PlanExecutionScope){
+ if(props.section!=='release-plans'||releaseView.value!=='runs'||!auth.canAny(['pipeline_run.read'])||(scope&&!currentPlanExecutionScope(scope)))return
  runListController?.abort()
  const controller=new AbortController(),request=++runQueryRevision,key=runQueryKey.value
+ if(scope)planExecutionRequests.add(controller)
  runListController=controller;runListLoading.value=true;runListError.value=''
  if(lastRunQuery!==key){runs.value=[];runTotal.value=0;lastRunQuery=key}
  try{
-  const {data}=await client.get<{pipeline_runs:Run[];total:number}>('/pipeline-runs',{params:pipelineRunRequestParams(runFilters.value),signal:controller.signal})
-  if(request!==runQueryRevision||key!==runQueryKey.value||controller.signal.aborted)return
+  const {data}=await client.get<{pipeline_runs:Run[];total:number}>('/pipeline-runs',{params:pipelineRunRequestParams(runFilters.value),signal:controller.signal,...(scope?{headers:{'X-EDO-Project-ID':scope.projectID}}:{})})
+  if(request!==runQueryRevision||key!==runQueryKey.value||controller.signal.aborted||(scope&&!currentPlanExecutionScope(scope)))return
   runs.value=data.pipeline_runs;runTotal.value=data.total
   const finalPage=Math.max(1,Math.ceil(data.total/runFilters.value.pageSize))
   if(runFilters.value.page>finalPage){void router.replace({query:pipelineRunRouteQuery(route.query,{...runFilters.value,page:finalPage})});return}
   if(executionDrawer.value&&runDrawerEntryID.value===executionDrawer.value.id)void loadExecutionGroup(executionDrawer.value)
   if(requestedRunID.value)void revealRequestedRun()
  }catch(error){
-  if(controller.signal.aborted||request!==runQueryRevision)return
+  if(controller.signal.aborted||request!==runQueryRevision||(scope&&!currentPlanExecutionScope(scope)))return
   runListError.value=apiErrorMessage(error)
   if(reportError)message.error(runListError.value)
- }finally{if(request===runQueryRevision)runListLoading.value=false}
+ }finally{if(scope)planExecutionRequests.delete(controller);if(request===runQueryRevision)runListLoading.value=false}
 }
 function changeRunFilters(patch:Partial<PipelineRunFilters>){
  const filters={...runFilters.value,...patch,page:1}
@@ -905,20 +912,21 @@ function refreshVisibleDeploymentRuntime(){
  for(const runtimeID of visibleRuntimeIDs)void loadDockerRuntime(runtimeID,true,true)
  for(const record of visibleRecords)void loadDeploymentRuntime(record,true)
 }
-async function refreshReleasePlanState(){
+async function refreshReleasePlanState(scope?:PlanExecutionScope,options?:{headers:{'X-EDO-Project-ID':string};signal:AbortSignal}){
  const section=props.section,view=releaseView.value
- if(stateRefreshing||!auth.canAny([`${sectionPermission.value}.read`]))return
+ if(stateRefreshing||!auth.canAny([`${sectionPermission.value}.read`])||(scope&&!currentPlanExecutionScope(scope)))return
  stateRefreshing=true
  try{
   const [appResult,runResult,planResult]=await Promise.all([
-   auth.canAny(['application.read'])?client.get<{applications:Application[]}>('/applications'):Promise.resolve({data:{applications:[] as Application[]}}),
-   auth.canAny(['pipeline_run.read'])?client.get<{pipeline_runs:Run[]}>('/pipeline-runs?limit=200'):Promise.resolve({data:{pipeline_runs:[] as Run[]}}),
-   client.get<{release_plans:ReleasePlan[]}>('/release-plans'),
+   auth.canAny(['application.read'])?client.get<{applications:Application[]}>('/applications',options):Promise.resolve({data:{applications:[] as Application[]}}),
+   view!=='runs'&&auth.canAny(['pipeline_run.read'])?client.get<{pipeline_runs:Run[]}>('/pipeline-runs?limit=200',options):Promise.resolve({data:{pipeline_runs:[] as Run[]}}),
+   client.get<{release_plans:ReleasePlan[]}>('/release-plans',options),
   ])
-  if(section!==props.section||view!==releaseView.value)return
+  if(section!==props.section||view!==releaseView.value||(scope&&!currentPlanExecutionScope(scope)))return
   applications.value=appResult.data.applications||[]
-  runs.value=runResult.data.pipeline_runs||[]
+  if(view!=='runs')runs.value=runResult.data.pipeline_runs||[]
   releasePlans.value=planResult.data.release_plans||[]
+  if(view==='runs')await loadRunPage(false,scope)
  }catch{}finally{stateRefreshing=false}
 }
 async function refreshRunState(){
@@ -1488,12 +1496,33 @@ function resetPlanExecution(){
  planExecutionExpectedUpdatedAt.value=''
  planExecutionRequestID.value=''
  planExecutionGroups.value=[]
+ planExecutionOpenedScope=undefined
 }
+function capturePlanExecutionScope():PlanExecutionScope|undefined{
+ const projectID=planExecutionSelectedProject.value
+ if(planExecutionDisposed||props.section!=='release-plans'||!auth.user||!projectID||auth.user.project_id!==projectID||typeof localStorage==='undefined'||localStorage.getItem('edo.project')!==projectID||!auth.canAny(['release_plan.execute'])||!auth.canAny(['application.read']))return
+ return {identity:planExecutionScopeIdentity.value,projectID,epoch:planExecutionEpoch}
+}
+function currentPlanExecutionScope(scope:PlanExecutionScope){
+ const current=capturePlanExecutionScope()
+ return Boolean(current&&scope.epoch===current.epoch&&scope.identity===current.identity&&scope.projectID===current.projectID)
+}
+function resetPlanExecutionScope(){
+ planExecutionEpoch++
+ resetPlanExecution()
+ for(const controller of planExecutionRequests)controller.abort()
+ planExecutionRequests.clear()
+ executingReleasePlanIDs.value=[]
+}
+function syncPlanExecutionProject(){planExecutionSelectedProject.value=typeof localStorage==='undefined'?'':localStorage.getItem('edo.project')||''}
+function releasePlanSubmissionBlocked(plan:ReleasePlan){return plan.is_active===false||plan.status==='canceled'||executingReleasePlanIDs.value.includes(plan.id)||['pending','running'].includes(plan.latest_execution?.status||'')}
 function planExecutionItems(){return planExecutionGroups.value.flatMap(group=>group.items)}
 function planApplicationBlockReason(application?:Application){
  if(!application)return t('releasePlanExecution.reason.applicationMissing')
  if(!application.is_active)return t('releasePlanExecution.reason.applicationDisabled')
- if(!applicationManualWorkflows(application).length)return t('releasePlanExecution.reason.manualSourceMissing')
+ const workflows=applicationManualWorkflows(application)
+ if(!workflows.length)return t('releasePlanExecution.reason.manualSourceMissing')
+ if(workflows.length>1)return t('releasePlanExecution.reason.workflowAmbiguous')
  return ''
 }
 function buildPlanExecutionGroups(plan:ReleasePlan){
@@ -1512,7 +1541,7 @@ function buildPlanExecutionGroups(plan:ReleasePlan){
    const duplicated=(applicationCounts.get(membership.application_id)||0)>1
    const reason=relationMissing?t('releasePlanExecution.reason.membershipMissing'):duplicated?t('releasePlanExecution.reason.duplicateApplication'):planApplicationBlockReason(application)
    const workflows=applicationManualWorkflows(application).map(item=>({id:item.id,name:workflowDisplayName(item),revision:item.revision}))
-   const selectedWorkflow=workflows[0]
+   const selectedWorkflow=workflows.length===1?workflows[0]:undefined
    return {
     membershipID:membership.id||`${group.id}:${membership.application_id}`,
     applicationID:membership.application_id,
@@ -1536,16 +1565,17 @@ function buildPlanExecutionGroups(plan:ReleasePlan){
  }))
 }
 async function loadPlanExecutionItem(membershipID:string,signal:AbortSignal){
+ const scope=planExecutionOpenedScope
  const item=planExecutionItems().find(candidate=>candidate.membershipID===membershipID)
- if(!item||item.staticBlocked||!item.workflowID)return
+ if(!scope||!currentPlanExecutionScope(scope)||!item||item.staticBlocked||!item.workflowID)return
  const requestedWorkflowID=item.workflowID
  const application=applications.value.find(candidate=>candidate.id===item.applicationID)
  const blockedReason=planApplicationBlockReason(application)
  if(blockedReason){item.loadState='blocked';item.reason=blockedReason;return}
  item.loadState='loading';item.reason=''
  try{
-  const data=(await client.get<RefResult>(`/applications/${item.applicationID}/workflows/${item.workflowID}/repository-refs`,{timeout:35000,signal})).data
-  if(signal.aborted||item.workflowID!==requestedWorkflowID)return
+  const data=(await client.get<RefResult>(`/applications/${item.applicationID}/workflows/${item.workflowID}/repository-refs`,{timeout:35000,signal,headers:{'X-EDO-Project-ID':scope.projectID}})).data
+  if(signal.aborted||!currentPlanExecutionScope(scope)||item.workflowID!==requestedWorkflowID)return
 	  const sources=(data.manual_sources||[]).map(item=>({id:item.id,name:item.name,environment:item.environment}))
 	  const refs:PlanExecutionReference[]=[...(data.branches||[]).map(item=>({kind:'branch' as const,ref:`refs/heads/${item.name}`,name:item.name,sha:item.sha})),...(data.tags||[]).map(item=>({kind:'tag' as const,ref:`refs/tags/${item.name}`,name:item.name,sha:item.sha}))]
 	  const availableArtifacts=data.artifacts||[]
@@ -1560,7 +1590,7 @@ async function loadPlanExecutionItem(membershipID:string,signal:AbortSignal){
 	  item.selectedSourceID=sources[0]?.id||'';item.selectedRef=defaultRef
 	  item.selectedArtifactID=availableArtifacts.length===1?availableArtifacts[0].id:''
  }catch(error){
-  if(signal.aborted||item.workflowID!==requestedWorkflowID)return
+  if(signal.aborted||!currentPlanExecutionScope(scope)||item.workflowID!==requestedWorkflowID)return
   item.loadState='error';item.reason=apiErrorMessage(error)
  }
 }
@@ -1570,9 +1600,11 @@ async function loadPlanExecutionItems(membershipIDs:string[],signal:AbortSignal)
  await Promise.all(Array.from({length:Math.min(4,queue.length)},()=>worker()))
 }
 function openReleasePlan(planID:string,membershipID=''){
+ const scope=capturePlanExecutionScope()
  const plan=releasePlans.value.find(item=>item.id===planID)
- if(!plan)return
+ if(!scope||!plan||plan.project_id!==scope.projectID||releasePlanSubmissionBlocked(plan))return
  resetPlanExecution()
+ planExecutionOpenedScope=scope
  planExecutionPlanID.value=plan.id
  planExecutionExpectedUpdatedAt.value=plan.updated_at||plan.created_at
  planExecutionRequestID.value=crypto.randomUUID()
@@ -1601,25 +1633,41 @@ function setReleasePlanExecuting(planID:string,executing:boolean){
   ? [...new Set([...executingReleasePlanIDs.value,planID])]
   : executingReleasePlanIDs.value.filter(id=>id!==planID)
 }
-async function applyAcceptedReleasePlanExecution(planID:string,execution:ReleasePlanExecutionRecord){
+async function applyAcceptedReleasePlanExecution(planID:string,execution:ReleasePlanExecutionRecord,scope:PlanExecutionScope,options:{headers:{'X-EDO-Project-ID':string};signal:AbortSignal}){
+ if(!currentPlanExecutionScope(scope)||options.signal.aborted)return
  const plan=releasePlans.value.find(item=>item.id===planID)
  if(plan)plan.latest_execution={id:execution.id,status:execution.status,created_at:execution.created_at,finished_at:execution.finished_at,items:execution.items||[]}
  const runIDs=[...new Set((execution.items||[]).map(item=>item.pipeline_run_id).filter(Boolean))]
  if(!runIDs.length){
   message.error(t('releasePlanExecution.acceptedWithoutRuns'))
-  await refresh()
+  await refreshReleasePlanState(scope,options)
   return
  }
- const results=await Promise.allSettled(runIDs.map(runID=>client.get<{pipeline_run:Run}>(`/pipeline-runs/${encodeURIComponent(runID)}`)))
+ const results=await Promise.allSettled(runIDs.map(runID=>client.get<{pipeline_run:Run}>(`/pipeline-runs/${encodeURIComponent(runID)}`,options)))
+ if(!currentPlanExecutionScope(scope)||options.signal.aborted)return
  const acceptedRuns=results.flatMap(result=>result.status==='fulfilled'&&result.value.data.pipeline_run?[result.value.data.pipeline_run]:[])
  if(acceptedRuns.length){
   const acceptedIDs=new Set(acceptedRuns.map(run=>run.id))
-  if(releaseView.value==='runs'){await loadRunPage();return}
+  if(releaseView.value==='runs'){await loadRunPage(false,scope);return}
   runs.value=[...acceptedRuns,...runs.value.filter(run=>!acceptedIDs.has(run.id))].sort((left,right)=>new Date(right.created_at).getTime()-new Date(left.created_at).getTime())
  }
 }
 function executeReleasePlan(){
-	 const selections=planExecutionItems().map(item=>{
+ const scope=planExecutionOpenedScope
+ if(!planExecutionOpen.value||!scope||!currentPlanExecutionScope(scope))return
+ const plan=releasePlans.value.find(item=>item.id===planExecutionPlanID.value)
+ if(!plan||plan.project_id!==scope.projectID||releasePlanSubmissionBlocked(plan))return
+ const items=planExecutionItems()
+ // 弹窗状态和当前流水线都要复核，不能仅依赖按钮禁用或已有输入值。
+ if(!items.length||items.some(item=>{
+  const application=applications.value.find(application=>application.id===item.applicationID)
+  const workflows=applicationManualWorkflows(application)
+  return item.loadState!=='ready'||item.staticBlocked||!application?.is_active||application.project_id!==scope.projectID||workflows.length!==1||workflows[0]?.id!==item.workflowID||workflows[0]?.revision!==item.workflowRevision||!item.sources.some(source=>source.id===item.selectedSourceID)||(item.executionMode==='artifact'?!item.artifacts.some(artifact=>artifact.id===item.selectedArtifactID):!item.refs.some(reference=>reference.ref===item.selectedRef&&reference.sha))
+ })){
+  message.error(t('releasePlanExecution.selectionInvalid'))
+  return
+ }
+	 const selections=items.map(item=>{
 	  const reference=item.refs.find(candidate=>candidate.ref===item.selectedRef)
 	  return {release_group_application_id:item.membershipID,workflow_id:item.workflowID,expected_workflow_revision:item.workflowRevision,source_node_id:item.selectedSourceID,ref:item.executionMode==='code'?item.selectedRef:'',commit_sha:item.executionMode==='code'?reference?.sha||'':'',artifact_id:item.executionMode==='artifact'?item.selectedArtifactID:''}
 	 })
@@ -1629,16 +1677,21 @@ function executeReleasePlan(){
  }
  const planID=planExecutionPlanID.value
  const request={request_id:planExecutionRequestID.value,expected_plan_updated_at:planExecutionExpectedUpdatedAt.value,selections}
+ const controller=new AbortController(),options={headers:{'X-EDO-Project-ID':scope.projectID},signal:controller.signal}
+ planExecutionRequests.add(controller)
  setReleasePlanExecuting(planID,true)
  resetPlanExecution()
  message.success(t('releasePlanExecution.submitted'))
- void client.post<{release_plan_execution:ReleasePlanExecutionRecord}>(`/release-plans/${planID}/executions`,request,{timeout:60000}).then(async result=>{
-  await applyAcceptedReleasePlanExecution(planID,result.data.release_plan_execution)
+ void client.post<{release_plan_execution:ReleasePlanExecutionRecord}>(`/release-plans/${planID}/executions`,request,{...options,timeout:60000}).then(async result=>{
+  if(!currentPlanExecutionScope(scope)||controller.signal.aborted)return
+  await applyAcceptedReleasePlanExecution(planID,result.data.release_plan_execution,scope,options)
  }).catch(async error=>{
+  if(!currentPlanExecutionScope(scope)||controller.signal.aborted)return
   message.error({content:t('releasePlanExecution.submitFailed',{message:apiErrorMessage(error)}),duration:8})
-  await refresh()
+  await refreshReleasePlanState(scope,options)
  }).finally(()=>{
-  setReleasePlanExecuting(planID,false)
+  planExecutionRequests.delete(controller)
+  if(currentPlanExecutionScope(scope))setReleasePlanExecuting(planID,false)
  })
 }
 function showWebhook(item:Repository){void client.get<{webhook_url:string;webhook_secret:string}>(`/repositories/${item.id}/webhook`).then(result=>Modal.info({title:`${item.name} Webhook`,width:650,content:()=>`${result.data.webhook_url}\n${result.data.webhook_secret}`})).catch(error=>message.error(apiErrorMessage(error)))}
@@ -1774,9 +1827,12 @@ watch(()=>route.query.run,()=>{void revealRequestedRun()})
 watch(runQueryKey,()=>{runDrawerEntryID.value='';expandedRunIDs.value=[];expandedExecutionIDs.value=[];selectedRunID.value='';revealedRunID='';detachedRun.value=null;executionDrawer.value=null;executionController?.abort();executionRevision++;void loadRunPage(true)})
 watch(()=>visibleApprovalRuns().map(run=>`${run.id}:${run.current_node_id}`).join(','),()=>{void refreshRunApprovals()})
 watch(approvalScope,()=>{for(const controller of runApprovalRequests.values())controller.abort();runApprovalRequests.clear();runApprovals.value={};runApprovalLoading.value={};runApprovalErrors.value={};void refreshRunApprovals()})
+watch(planExecutionScopeIdentity,resetPlanExecutionScope,{flush:'sync'})
 watch(()=>props.section,connectDeliveryEvents)
+onMounted(()=>{window.addEventListener('edo:projects-changed',syncPlanExecutionProject)})
 onMounted(()=>{connectDeliveryEvents();void refresh().then(()=>{lastDeliverySync=Date.now();syncBuildPlanSelection();consumeBuildCreateRequest();consumeDeliveryRequest();void revealActiveApplication()});releaseTimer=window.setInterval(refreshVisibleState,5000);document.addEventListener('visibilitychange',onDeliveryPageVisible);window.addEventListener('focus',onDeliveryPageVisible)})
 onBeforeUnmount(()=>{for(const controller of runApprovalRequests.values())controller.abort();runListController?.abort();executionController?.abort();runQueryRevision++;executionRevision++;stopDeliveryEvents?.();clearTimeout(deliveryRefreshTimer);resetPlanExecution();clearInterval(releaseTimer);document.removeEventListener('visibilitychange',onDeliveryPageVisible);window.removeEventListener('focus',onDeliveryPageVisible)})
+onBeforeUnmount(()=>{planExecutionDisposed=true;resetPlanExecutionScope();window.removeEventListener('edo:projects-changed',syncPlanExecutionProject)})
 </script>
 
 <template><section :class="{'applications-page':props.section==='applications'}"><PageToolbar :description="props.section==='applications'?t('applicationWorkspace.description'):currentDescription"><a-tag v-if="props.section==='applications'||props.section==='release-plans'" color="processing">{{ t('applicationCard.autoRefresh') }}</a-tag><a-button :loading="loading" @click="refresh"><RefreshCw :size="15"/>刷新</a-button><a-button v-if="props.section==='release-plans'&&releaseView==='runs'&&auth.canAny(['pipeline_run.execute'])&&auth.canAny(['application.read'])" type="primary" :disabled="saving" @click="openManualPicker">{{ t('manualRun.execute') }}</a-button><a-button v-if="canCreate&&(props.section!=='release-plans'||releaseView==='plans')" type="primary" @click="create"><Plus :size="15"/>{{ props.section==='release-plans'?'创建发布计划':props.section==='applications'?t('applicationWorkspace.create'):'新建' }}</a-button></PageToolbar>
