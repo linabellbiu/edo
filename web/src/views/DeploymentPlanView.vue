@@ -105,6 +105,7 @@ interface Runtime {
 interface DeploymentDraft {
   script: string
   compose_yaml: string
+  service_name: string
   environment_id: string
   host_id: string
   working_directory: string
@@ -206,6 +207,7 @@ const form = reactive({
   kind: 'docker' as PlanKind,
   script: '',
   compose_yaml: defaultComposeYAML,
+  service_name: '',
   environment_id: '',
   host_id: '',
   working_directory: '',
@@ -405,7 +407,7 @@ function updatedTime(plan: DeploymentPlan) {
 
 function reset() {
   Object.assign(form, {
-    reusable: true, name: '', description: '', kind: 'docker', script: '', compose_yaml: defaultComposeYAML,
+    reusable: true, name: '', description: '', kind: 'docker', script: '', compose_yaml: defaultComposeYAML, service_name: '',
     environment_id: '', host_id: '', working_directory: '', runtime_id: '',
     namespace: 'default', workload_name: '', container_name: '', timeout_seconds: 600,
     docker_port_mappings: [emptyDockerPort()], docker_environment_variables: [], docker_volume_mounts: [],
@@ -467,12 +469,13 @@ function edit(plan: DeploymentPlan) {
     kind: plan.kind,
     script: plan.script || '',
     compose_yaml: plan.compose_yaml || defaultComposeYAML,
+    service_name: plan.kind === 'compose' ? plan.service_name || '' : '',
     environment_id: target?.environment_id || '',
     host_id: target?.host_id || '',
     working_directory: target?.working_directory || '',
     runtime_id: target?.runtime_id || '',
     namespace: target?.namespace || 'default',
-    workload_name: target?.workload_name || plan.service_name || '',
+    workload_name: plan.kind === 'compose' ? '' : target?.workload_name || plan.service_name || '',
     container_name: target?.container_name || '',
     docker_port_mappings: dockerPorts.length ? dockerPorts : [emptyDockerPort()],
     docker_environment_variables: Object.entries(dockerConfig?.environment_variables || {}).map(([name, value]) => ({ name, value })),
@@ -551,6 +554,7 @@ function currentDeploymentDraft(): DeploymentDraft {
   return {
     script: form.script,
     compose_yaml: form.compose_yaml,
+    service_name: form.service_name,
     environment_id: form.environment_id,
     host_id: form.host_id,
     working_directory: form.working_directory,
@@ -581,12 +585,13 @@ function emptyDeploymentDraft(kind: PlanKind): DeploymentDraft {
   return {
     script: '',
     compose_yaml: kind === 'compose' ? defaultComposeYAML : '',
+    service_name: kind === 'compose' ? 'app' : '',
     environment_id: '',
     host_id: '',
     working_directory: '',
     runtime_id: '',
     namespace: 'default',
-    workload_name: kind === 'compose' ? 'app' : '',
+    workload_name: '',
     container_name: '',
     docker_port_mappings: [emptyDockerPort()],
     docker_environment_variables: [],
@@ -757,7 +762,7 @@ function validate() {
   if (!form.name.trim()) return '请输入方案名称'
   if (form.reusable) {
     if (form.kind === 'script' && !form.script.trim()) return '请输入部署脚本'
-    if (form.kind === 'compose' && (!form.workload_name.trim() || !form.compose_yaml.trim())) return '请输入 Compose 服务名称和 YAML'
+    if (form.kind === 'compose' && (!form.service_name.trim() || !form.compose_yaml.trim())) return '请输入 Compose 服务名称和 YAML'
     return form.kind === 'docker' ? validateDockerConfig() : ''
   }
   if (!form.environment_id) return t('environment.deployment.environmentRequired')
@@ -773,7 +778,7 @@ function validate() {
     const dockerConfigMessage = validateDockerConfig()
     if (dockerConfigMessage) return dockerConfigMessage
   }
-  if (form.kind === 'compose' && !form.workload_name.trim()) return '请输入 Compose 目标服务名称'
+  if (form.kind === 'compose' && !form.service_name.trim()) return '请输入 Compose 目标服务名称'
   if (form.kind === 'compose' && !form.compose_yaml.trim()) return '请输入内联 Compose YAML'
   if (form.kind === 'kubernetes' && (!form.runtime_id || !targetCapabilityMatches(form.kind, '', form.runtime_id))) return targetT('deploymentTarget.clusterPlaceholder')
   if (form.kind === 'kubernetes' && (!form.namespace.trim() || !form.workload_name.trim() || !form.container_name.trim())) return '请输入命名空间、Deployment 名称和容器名称'
@@ -871,7 +876,7 @@ async function save() {
       working_directory: platform.value === 'ssh' ? form.working_directory.trim() : '',
       runtime_id: platform.value === 'ssh' ? '' : form.runtime_id,
       namespace: platform.value === 'kubernetes' ? form.namespace.trim() : '',
-      workload_name: platform.value === 'ssh' ? '' : form.workload_name.trim(),
+      workload_name: platform.value === 'ssh' || form.kind === 'compose' ? '' : form.workload_name.trim(),
       container_name: platform.value === 'kubernetes' ? form.container_name.trim() : '',
       rollout_timeout: form.timeout_seconds,
     }
@@ -881,7 +886,7 @@ async function save() {
       kind: form.kind,
       script: form.kind === 'script' ? form.script : '',
       compose_yaml: form.kind === 'compose' ? form.compose_yaml : '',
-      service_name: form.kind === 'docker' || form.kind === 'compose' ? form.workload_name.trim() : '',
+      service_name: form.kind === 'compose' ? form.service_name.trim() : form.kind === 'docker' ? form.workload_name.trim() : '',
       docker_config: form.kind === 'docker' ? dockerConfigPayload() : {},
       timeout_seconds: form.timeout_seconds,
       reusable: form.reusable,
@@ -1073,7 +1078,7 @@ onMounted(refresh)
                 <a-input v-model:value="form.working_directory" placeholder="例如：/srv/apps/edo；留空使用执行用户主目录" />
               </a-form-item>
               <a-form-item v-if="form.kind === 'compose'" class="span-2" label="Compose 目标服务名称" required>
-                <a-input v-model:value="form.workload_name" placeholder="例如：app（必须与 services 下的名称一致）" />
+                <a-input v-model:value="form.service_name" placeholder="例如：app（必须与 services 下的名称一致）" />
               </a-form-item>
               <template v-if="!form.reusable && platform === 'kubernetes'">
                 <a-form-item label="命名空间" required><a-input v-model:value="form.namespace" placeholder="default" /></a-form-item>

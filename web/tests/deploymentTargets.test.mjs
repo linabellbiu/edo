@@ -31,11 +31,18 @@ function harness(t, denied = []) {
     },
     '@/api/client': { __esModule: true, default: {
       get: async path => ({ data: { deployment_plans: state.plans.value, clusters: state.clusters.value, endpoints: state.docker.value } }),
-      post: async (path, body) => { requests.push({ method: 'POST', path, body }); return { data: {} } },
+      post: async (path, body) => {
+        requests.push({ method: 'POST', path, body })
+        if (path !== '/deployment-plans') return { data: {} }
+        const saved = { ...body, id: 'plan' }
+        if (body.deployment_target) Object.assign(saved, { deployment_target_id: 'target', deployment_target: { ...body.deployment_target, id: 'target' } })
+        state.plans.value = [saved]
+        return { data: { deployment_plan: saved } }
+      },
       put: async (path, body) => {
         requests.push({ method: 'PUT', path, body })
         const saved = { ...body, id: 'plan', deployment_target_id: 'target', deployment_target: { ...body.deployment_target, id: 'target' } }
-        delete saved.deployment_target.host_id
+        if (saved.deployment_target.platform === 'kubernetes') delete saved.deployment_target.host_id
         state.plans.value = [saved]
         return { data: { deployment_plan: saved } }
       },
@@ -139,4 +146,124 @@ test('Docker、Compose 和脚本继续要求当前环境内唯一已就绪主机
   assert.equal(state.form.host_id, 'first')
   assert.equal(state.form.runtime_id, 'docker-first')
   assert.equal(state.executionTargetError.value, '')
+})
+
+function dockerHostHarness(t) {
+  const result = harness(t)
+  result.state.hosts.value = [{
+    id: 'docker-host', name: '测试主机', mode: 'ssh', is_active: true, environment_ids: ['env'],
+    capabilities: [{ kind: 'docker', status: 'ready', runtime_id: 'docker-runtime' }, { kind: 'ssh', status: 'ready' }],
+  }]
+  result.state.docker.value = [{ id: 'docker-runtime', host_id: 'docker-host', is_active: true }]
+  return result
+}
+
+function composePlan(workloadName = '') {
+  return {
+    id: 'plan', name: 'Compose 测试方案', kind: 'compose', service_name: 'app',
+    compose_yaml: 'services:\n  app:\n    restart: no\n', timeout_seconds: 120,
+    deployment_target_id: 'target', deployment_target: {
+      id: 'target', platform: 'docker', environment_id: 'env', host_id: 'docker-host',
+      runtime_id: 'docker-runtime', workload_name: workloadName, rollout_timeout: 120,
+    },
+  }
+}
+
+test('Compose 编辑仅改 YAML 保存不把服务名写入容器名，也不继承旧误填值', async t => {
+  for (const previousName of ['', 'old-container']) {
+    const { state, requests, errors } = dockerHostHarness(t)
+    state.edit(composePlan(previousName))
+    state.form.compose_yaml += '# 仅修改测试配置\n'
+    await state.save()
+    const saved = requests.find(x => x.method === 'PUT')
+    assert.ok(saved)
+    assert.equal(saved.body.deployment_target.workload_name, '')
+    assert.equal(saved.body.service_name, 'app')
+    assert.equal(saved.body.deployment_target.host_id, 'docker-host')
+    assert.equal(saved.body.deployment_target.runtime_id, 'docker-runtime')
+    assert.equal(saved.body.deployment_target.environment_id, 'env')
+    assert.equal(saved.body.compose_yaml, composePlan().compose_yaml + '# 仅修改测试配置\n')
+    assert.deepEqual(errors, [])
+  }
+})
+
+test('Compose 服务改名只写独立服务字段，目标容器名称保持空', async t => {
+  const { state, requests, errors } = dockerHostHarness(t)
+  state.edit(composePlan())
+  state.form.service_name = 'api'
+  state.form.compose_yaml = 'services:\n  api:\n    restart: no\n'
+  await state.save()
+  const saved = requests.find(x => x.method === 'PUT')
+  assert.equal(saved.body.service_name, 'api')
+  assert.equal(saved.body.deployment_target.workload_name, '')
+  assert.deepEqual(errors, [])
+})
+
+test('Compose、Docker 和 K8s 草稿分别恢复服务名及目标名，不互相污染', t => {
+  const { state } = dockerHostHarness(t)
+  state.edit(composePlan())
+  state.form.service_name = 'api'
+  state.changeKind('docker')
+  assert.equal(state.form.workload_name, '')
+  assert.equal(state.form.service_name, '')
+  state.form.workload_name = 'docker-app'
+  state.changeKind('compose')
+  assert.equal(state.form.service_name, 'api')
+  assert.equal(state.form.workload_name, '')
+  state.changeKind('kubernetes')
+  assert.equal(state.form.workload_name, '')
+  state.form.workload_name = 'kube-app'
+  state.changeKind('compose')
+  assert.equal(state.form.service_name, 'api')
+  state.changeKind('docker')
+  assert.equal(state.form.workload_name, 'docker-app')
+  state.changeKind('kubernetes')
+  assert.equal(state.form.workload_name, 'kube-app')
+})
+
+test('Docker 显式容器名称和留空自动命名的提交语义不变', async t => {
+  for (const name of ['', 'docker-app']) {
+    const { state, requests, errors } = dockerHostHarness(t)
+    const dockerPlan = composePlan(name)
+    dockerPlan.kind = 'docker'
+    dockerPlan.service_name = name
+    state.edit(dockerPlan)
+    state.form.service_name = '不可混入Docker的Compose服务名'
+    await state.save()
+    const saved = requests.find(x => x.method === 'PUT')
+    assert.equal(saved.body.deployment_target.workload_name, name)
+    assert.equal(saved.body.service_name, name)
+    assert.deepEqual(errors, [])
+  }
+})
+
+test('脚本提交继续清空容器名称，不混入Compose服务字段', async t => {
+  const { state, requests, errors } = dockerHostHarness(t)
+  const scriptPlan = composePlan('ignored-container')
+  scriptPlan.kind = 'script'
+  scriptPlan.script = 'printf test\n'
+  scriptPlan.deployment_target.platform = 'ssh'
+  state.edit(scriptPlan)
+  state.form.service_name = 'ignored-service'
+  await state.save()
+  const saved = requests.find(x => x.method === 'PUT')
+  assert.equal(saved.body.deployment_target.workload_name, '')
+  assert.equal(saved.body.service_name, '')
+  assert.deepEqual(errors, [])
+})
+
+test('新建可复用Compose默认服务app且不生成部署目标', async t => {
+  const { state, requests, errors } = dockerHostHarness(t)
+  state.create()
+  state.changeKind('compose')
+  state.form.name = '可复用Compose'
+  await state.save()
+  const saved = requests.find(x => x.method === 'POST')
+  assert.equal(saved.body.service_name, 'app')
+  assert.equal(saved.body.deployment_target, undefined)
+  assert.deepEqual(errors, [])
+})
+
+test('Compose 服务输入绑定独立服务字段，不再绑定单容器名称', () => {
+  assert.ok(source.includes('<a-input v-model:value="form.service_name"'))
 })
