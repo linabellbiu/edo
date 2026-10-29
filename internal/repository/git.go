@@ -39,6 +39,8 @@ var checkoutFallbackDepths = [...]int{1, 32, 128, 512, 2048, 4096}
 type GitRef struct {
 	Name string `json:"name"`
 	SHA  string `json:"sha"`
+	// 原始标签对象只用于旧监听游标的等价判定，不作为公开提交身份。
+	RawTagOID string `json:"-"`
 }
 
 type RefResult struct {
@@ -123,7 +125,7 @@ func (c *GitClient) ListRefs(
 		}
 		refs, err := remote.ListContext(queryContext, &git.ListOptions{
 			Auth:          auth,
-			PeelingOption: git.IgnorePeeled,
+			PeelingOption: git.AppendPeeled,
 		})
 		if err == nil {
 			return refsToResult(refs)
@@ -485,6 +487,17 @@ func refsToResult(refs []*plumbing.Reference) (RefResult, error) {
 	}
 	branches := make([]GitRef, 0)
 	tags := make([]GitRef, 0)
+	peeled := make(map[plumbing.ReferenceName]plumbing.Hash)
+	for _, ref := range refs {
+		name := ref.Name()
+		if name.IsTag() && strings.HasSuffix(name.String(), "^{}") {
+			base := plumbing.ReferenceName(strings.TrimSuffix(name.String(), "^{}"))
+			if existing, ok := peeled[base]; ok && existing != ref.Hash() {
+				return RefResult{}, errors.New("Git 标签目标信息不一致")
+			}
+			peeled[base] = ref.Hash()
+		}
+	}
 	pullRequests := make(map[int64]PullRequestRef)
 	for _, ref := range refs {
 		name := ref.Name()
@@ -492,7 +505,14 @@ func refsToResult(refs []*plumbing.Reference) (RefResult, error) {
 		case name.IsBranch():
 			branches = append(branches, GitRef{Name: name.Short(), SHA: ref.Hash().String()})
 		case name.IsTag():
-			tags = append(tags, GitRef{Name: name.Short(), SHA: ref.Hash().String()})
+			if strings.HasSuffix(name.String(), "^{}") {
+				continue
+			}
+			tag := GitRef{Name: name.Short(), SHA: ref.Hash().String()}
+			if target, ok := peeled[name]; ok {
+				tag.RawTagOID, tag.SHA = tag.SHA, target.String()
+			}
+			tags = append(tags, tag)
 		default:
 			if pullRequest, ok := parsePullRequestGitRef(name.String(), ref.Hash().String()); ok {
 				// 同一 PR 同时暴露 head 和 merge 时使用 head，保证构建的是提交者实际推送的版本。

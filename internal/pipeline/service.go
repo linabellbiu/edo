@@ -1357,6 +1357,26 @@ func (s *Service) SyncApplication(ctx context.Context, applicationID, trigger st
 						}
 					}
 				}
+				if candidate.Event == "tag" && candidate.RawTagOID != "" && exists && observation.CommitSHA == candidate.RawTagOID {
+					// 只有当前同一标签对象的 peeled 配对可以规范旧游标；不把表示变化当发布事件。
+					updated := s.db.WithContext(ctx).Model(&model.ApplicationRepositoryObservation{}).
+						Where("uuid = ? AND commit_sha = ?", observation.ID, candidate.RawTagOID).
+						Updates(map[string]any{"commit_sha": candidate.Commit, "last_checked_at": now, "updated_at": now})
+					if updated.Error != nil {
+						return application, nil, fmt.Errorf("规范标签监听状态失败: %w", updated.Error)
+					}
+					if updated.RowsAffected > 0 {
+						observation.CommitSHA, observation.LastCheckedAt, observation.UpdatedAt = candidate.Commit, &now, now
+						observedByWatchKey[watchKey] = observation
+						observedByEventRef[observationEventRefKey(workflow.ID, candidate.Event, candidate.Ref)] = observation
+						if err := s.db.WithContext(ctx).Model(&model.ApplicationRepository{}).
+							Where("uuid = ? AND last_observed_ref = ? AND last_observed_commit = ?", link.ID, candidate.Ref, candidate.RawTagOID).
+							Updates(map[string]any{"last_observed_commit": candidate.Commit, "last_checked_at": now, "updated_at": now}).Error; err != nil {
+							return application, nil, fmt.Errorf("规范应用标签状态失败: %w", err)
+						}
+					}
+					continue
+				}
 				changed := exists && observation.CommitSHA != "" && observation.CommitSHA != candidate.Commit
 				if candidate.Event == "pr" && exists && observation.CommitSHA != "" && candidateAction == "merged" &&
 					normalizePullRequestAction(observation.Action) != "merged" {
@@ -1526,6 +1546,15 @@ func (s *Service) createObservedRun(
 	component := pipelineRunRepositoryForLink(run.ID, link, candidate.Ref, candidate.Commit, now)
 	created := false
 	if err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if candidate.Event == "tag" && candidate.RawTagOID != "" {
+			existing, err := tagEventRecorded(tx, application.ID, workflow.ID, candidate.Ref, candidate.Commit, candidate.RawTagOID)
+			if err != nil {
+				return err
+			}
+			if existing {
+				return nil
+			}
+		}
 		result := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(run)
 		if result.Error != nil {
 			return result.Error
@@ -1603,11 +1632,24 @@ func pipelineRunRepositoryForLink(runID string, link model.ApplicationRepository
 	}
 }
 
+func tagEventRecorded(database *gorm.DB, applicationID, workflowID, ref, commit string, rawTagOIDs ...string) (bool, error) {
+	keys := []string{repositoryEventDedupKey(applicationID, workflowID, "tag", ref, commit, "", "")}
+	for _, raw := range rawTagOIDs {
+		if raw != "" && raw != commit {
+			keys = append(keys, repositoryEventDedupKey(applicationID, workflowID, "tag", ref, raw, "", ""))
+		}
+	}
+	var count int64
+	err := database.Model(&model.PipelineRun{}).Where("event_dedup_key IN ?", keys).Count(&count).Error
+	return count > 0, err
+}
+
 func (s *Service) HandleRepositoryEvent(ctx context.Context, input repository.WebhookTaskPayload) error {
 	var linked []model.ApplicationRepository
 	if err := s.db.WithContext(ctx).Where("repository_id = ?", input.RepositoryID).Find(&linked).Error; err != nil {
 		return fmt.Errorf("查询 Webhook 关联应用失败: %w", err)
 	}
+	tagResolved, rawTagOID, currentTagOID := false, "", ""
 	for i := range linked {
 		application, err := s.FindApplication(ctx, linked[i].ApplicationID)
 		if err != nil {
@@ -1640,6 +1682,25 @@ func (s *Service) HandleRepositoryEvent(ctx context.Context, input repository.We
 		if len(sources) == 0 || input.CommitSHA == "" {
 			continue
 		}
+		if event == "tag" && !tagResolved {
+			commit, raw, err := s.repositories.ResolveTagCommit(ctx, input.RepositoryID, input.Ref, input.CommitSHA)
+			if err != nil {
+				s.logger.Error("读取标签事件固定提交失败", "operation", "pipeline_tag_event_commit", "repository_id", input.RepositoryID, "err", err)
+				return err
+			}
+			refs, err := s.repositories.TestConnection(ctx, input.RepositoryID)
+			if err != nil {
+				s.logger.Error("读取标签事件当前引用失败", "operation", "pipeline_tag_event_refs", "repository_id", input.RepositoryID, "ref", input.Ref, "err", err)
+				return errors.New("无法核验标签事件，请稍后重试")
+			}
+			for _, tag := range refs.Tags {
+				if "refs/tags/"+tag.Name == input.Ref && tag.SHA == commit {
+					currentTagOID = tag.RawTagOID
+					break
+				}
+			}
+			input.CommitSHA, rawTagOID, tagResolved = commit, raw, true
+		}
 		now := time.Now().UTC()
 		eventAction := ""
 		if event == "pr" {
@@ -1647,18 +1708,26 @@ func (s *Service) HandleRepositoryEvent(ctx context.Context, input repository.We
 		}
 		createdRunIDs := make([]string, 0, len(sources))
 		if err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-			applicationUpdates := map[string]any{
-				"last_checked_at": now, "sync_status": model.ApplicationSyncChanged,
-				"sync_message": "Webhook 检测到新的代码版本", "updated_at": now,
+			updateApplication := func() error {
+				applicationUpdates := map[string]any{
+					"last_checked_at": now, "sync_status": model.ApplicationSyncChanged,
+					"sync_message": "Webhook 检测到新的代码版本", "updated_at": now,
+				}
+				if err := tx.Model(&model.Application{}).Where("uuid = ?", application.ID).Updates(applicationUpdates).Error; err != nil {
+					return err
+				}
+				if err := tx.Model(&model.ApplicationRepository{}).Where("uuid = ?", applicationRepository.ID).Updates(map[string]any{
+					"last_observed_ref": input.Ref, "last_observed_commit": input.CommitSHA,
+					"last_checked_at": now, "updated_at": now,
+				}).Error; err != nil {
+					return err
+				}
+				return nil
 			}
-			if err := tx.Model(&model.Application{}).Where("uuid = ?", application.ID).Updates(applicationUpdates).Error; err != nil {
-				return err
-			}
-			if err := tx.Model(&model.ApplicationRepository{}).Where("uuid = ?", applicationRepository.ID).Updates(map[string]any{
-				"last_observed_ref": input.Ref, "last_observed_commit": input.CommitSHA,
-				"last_checked_at": now, "updated_at": now,
-			}).Error; err != nil {
-				return err
+			if event != "tag" {
+				if err := updateApplication(); err != nil {
+					return err
+				}
 			}
 			for _, binding := range sources {
 				workflow, source := binding.Workflow, binding.Source
@@ -1667,6 +1736,32 @@ func (s *Service) HandleRepositoryEvent(ctx context.Context, input repository.We
 				err := tx.First(&observation, "application_repository_id = ? AND watch_key = ?", applicationRepository.ID, watchKey).Error
 				if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
 					return err
+				}
+				if event == "tag" {
+					recorded, lookupErr := tagEventRecorded(tx, application.ID, workflow.ID, input.Ref, input.CommitSHA, rawTagOID, currentTagOID)
+					if lookupErr != nil {
+						return lookupErr
+					}
+					if err == nil && currentTagOID != "" && observation.CommitSHA == currentTagOID {
+						if err := tx.Model(&model.ApplicationRepositoryObservation{}).
+							Where("uuid = ? AND commit_sha = ?", observation.ID, currentTagOID).
+							Updates(map[string]any{"commit_sha": input.CommitSHA, "last_checked_at": now, "updated_at": now}).Error; err != nil {
+							return err
+						}
+						if err := tx.Model(&model.ApplicationRepository{}).
+							Where("uuid = ? AND last_observed_ref = ? AND last_observed_commit = ?", applicationRepository.ID, input.Ref, currentTagOID).
+							Updates(map[string]any{"last_observed_commit": input.CommitSHA, "last_checked_at": now, "updated_at": now}).Error; err != nil {
+							return err
+						}
+						continue
+					}
+					if recorded {
+						continue
+					}
+					if err == nil && rawTagOID != "" && observation.CommitSHA == rawTagOID {
+						// 延迟的相同对象事件不代表代码变化；没有当前配对证明时保留旧游标。
+						continue
+					}
 				}
 				if err == nil && observation.CommitSHA == input.CommitSHA && observation.Action == eventAction {
 					continue
@@ -1701,6 +1796,9 @@ func (s *Service) HandleRepositoryEvent(ctx context.Context, input repository.We
 					return err
 				}
 				createdRunIDs = append(createdRunIDs, run.ID)
+			}
+			if event == "tag" && len(createdRunIDs) > 0 {
+				return updateApplication()
 			}
 			return nil
 		}); err != nil {

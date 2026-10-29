@@ -44,6 +44,7 @@ var (
 	ErrInvalidTaskPayload       = errors.New("Webhook 任务参数无效")
 	ErrPullRequestMetadata      = errors.New("无法读取可靠的 PR/MR 分支元数据")
 	ErrDirectoryBusy            = errors.New("当前有构建正在使用该目录，请稍后重试")
+	ErrTagCommitResolution      = errors.New("无法解析固定 Tag 对应的 Commit，请检查仓库和版本后重试")
 )
 
 var repositoryNamePattern = regexp.MustCompile(`^[A-Za-z0-9\p{Han}][A-Za-z0-9\p{Han}_. -]{0,127}$`)
@@ -652,25 +653,11 @@ func (s *Service) commitMessage(ctx context.Context, id, ref, commitSHA string, 
 		return "", err
 	}
 	if client, ok := s.git.(cachedCommitMessageClient); ok {
-		// 先完成范围、启用状态与凭据检查，再使用缓存；清理不能与读取并发，本次读取固定目录快照。
-		s.maintenance.RLock()
-		defer s.maintenance.RUnlock()
-		directories := s.Directories()
-		digest := sha256.Sum256([]byte(strings.TrimSpace(repository.CloneURL)))
-		key := hex.EncodeToString(digest[:])
-		directory := ""
-		if directories.CacheDirectory != "" && directories.CacheDirectory != "." {
-			directory = filepath.Join(directories.CacheDirectory, key)
-		} else if directories.WorkspaceDirectory != "" && directories.WorkspaceDirectory != "." {
-			directory = filepath.Join(directories.WorkspaceDirectory, key, ".cache")
+		directory, release, err := s.acquireMetadataCache(ctx, repository.CloneURL)
+		if err != nil {
+			return "", err
 		}
-		if directory != "" {
-			release, err := s.acquireCheckoutLock(ctx, "repository:"+directory)
-			if err != nil {
-				return "", err
-			}
-			defer release()
-		}
+		defer release()
 		return client.CommitMessageCachedAt(ctx, *repository, credential, ref, commitSHA, directory, historical)
 	}
 	if historical {
@@ -685,6 +672,88 @@ func (s *Service) commitMessage(ctx context.Context, id, ref, commitSHA string, 
 		return "", nil
 	}
 	return client.CommitMessage(ctx, *repository, credential, ref, commitSHA)
+}
+
+// ResolveTagCommit 校验固定事件对象；原 Tag OID 仅作为进程内迁移线索返回。
+func (s *Service) ResolveTagCommit(ctx context.Context, id, ref, objectSHA string) (string, string, error) {
+	ref, objectSHA = strings.TrimSpace(ref), strings.TrimSpace(objectSHA)
+	validRef := len(ref) <= 512 && plumbing.ReferenceName(ref).IsTag() && plumbing.ReferenceName(ref).Validate() == nil
+	validSHA := plumbing.IsHash(objectSHA) && !plumbing.NewHash(objectSHA).IsZero()
+	fail := func(err error) (string, string, error) {
+		loggedRef, loggedSHA := "invalid", "invalid"
+		if validRef {
+			loggedRef = ref
+		}
+		if validSHA {
+			loggedSHA = objectSHA
+		}
+		slog.ErrorContext(ctx, "解析固定 Tag Commit 失败", "operation", "repository_resolve_tag_commit", "repository_id", id, "ref", loggedRef, "object_sha", loggedSHA, "err", err)
+		return "", "", ErrTagCommitResolution
+	}
+	repository, err := s.Find(ctx, id)
+	if err != nil {
+		return fail(err)
+	}
+	if !repository.IsActive {
+		return fail(ErrRepositoryNotFound)
+	}
+	credential, err := s.resolveCredential(ctx, repository)
+	if err != nil {
+		return fail(err)
+	}
+	if !validRef || !validSHA {
+		return fail(ErrInvalidTaskPayload)
+	}
+	objectSHA = plumbing.NewHash(objectSHA).String()
+	client, ok := s.git.(cachedTagCommitClient)
+	if !ok {
+		return fail(errors.New("Git 客户端未提供固定 Tag 解析能力"))
+	}
+	directory, release, err := s.acquireMetadataCache(ctx, repository.CloneURL)
+	if err != nil {
+		return fail(err)
+	}
+	defer release()
+	commitSHA, err := client.ResolveTagCommitCachedAt(ctx, *repository, credential, ref, objectSHA, directory)
+	if err != nil {
+		return fail(err)
+	}
+	if !plumbing.IsHash(commitSHA) || plumbing.NewHash(commitSHA).IsZero() {
+		return fail(errors.New("Git 客户端未返回有效 Commit"))
+	}
+	commitSHA = plumbing.NewHash(commitSHA).String()
+	rawTagOID := ""
+	if commitSHA != objectSHA {
+		rawTagOID = objectSHA
+	}
+	return commitSHA, rawTagOID, nil
+}
+
+func (s *Service) acquireMetadataCache(ctx context.Context, cloneURL string) (string, func(), error) {
+	// 先完成范围、启用状态与凭据检查，再使用缓存；清理与固定目录读取不能并发。
+	s.maintenance.RLock()
+	directories := s.Directories()
+	digest := sha256.Sum256([]byte(strings.TrimSpace(cloneURL)))
+	key := hex.EncodeToString(digest[:])
+	directory := ""
+	if directories.CacheDirectory != "" && directories.CacheDirectory != "." {
+		directory = filepath.Join(directories.CacheDirectory, key)
+	} else if directories.WorkspaceDirectory != "" && directories.WorkspaceDirectory != "." {
+		directory = filepath.Join(directories.WorkspaceDirectory, key, ".cache")
+	}
+	releaseRepository := func() {}
+	if directory != "" {
+		var err error
+		releaseRepository, err = s.acquireCheckoutLock(ctx, "repository:"+directory)
+		if err != nil {
+			s.maintenance.RUnlock()
+			return "", nil, err
+		}
+	}
+	return directory, func() {
+		releaseRepository()
+		s.maintenance.RUnlock()
+	}, nil
 }
 
 // TestInput 使用尚未保存的仓库配置执行只读远端查询，不会持久化地址或凭据。

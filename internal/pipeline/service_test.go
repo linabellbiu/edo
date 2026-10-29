@@ -523,7 +523,12 @@ func TestRegistryLoginUsesOCIAuthentication(t *testing.T) {
 }
 
 func TestRepositoryEventsFollowApplicationTriggers(t *testing.T) {
-	service, db, _, repositoryID := newPipelineTestService(t)
+	service, db, secrets, repositoryID := newPipelineTestService(t)
+	tagCommit := strings.Repeat("a", 40)
+	service.repositories = repository.NewService(db, secrets, credential.NewService(db, secrets), &tagNormalizationClient{
+		pipelineRefLister: pipelineRefLister{refs: repository.RefResult{Tags: []repository.GitRef{{Name: "v1.0.0", SHA: tagCommit}}}},
+		resolved:          map[string]string{tagCommit: tagCommit},
+	}, 4)
 	ctx := context.Background()
 	buildPlan, err := service.CreateBuildPlan(ctx, "admin", BuildPlanInput{
 		Name: "Webhook 构建", Kind: model.BuildPlanDockerfile, DockerfilePath: "Dockerfile",
@@ -569,7 +574,7 @@ func TestRepositoryEventsFollowApplicationTriggers(t *testing.T) {
 		{RepositoryID: repositoryID, EventType: "branch_push", Ref: "refs/heads/main", CommitSHA: "commit-main", Message: "修复支付回调\n\n补充异常分支测试"},
 		{RepositoryID: repositoryID, EventType: "branch_push", Ref: "refs/heads/main", CommitSHA: "commit-main"},
 		{RepositoryID: repositoryID, EventType: "tag_push", Ref: "refs/tags/nightly", CommitSHA: "skip-tag"},
-		{RepositoryID: repositoryID, EventType: "tag_push", Ref: "refs/tags/v1.0.0", CommitSHA: "commit-tag"},
+		{RepositoryID: repositoryID, EventType: "tag_push", Ref: "refs/tags/v1.0.0", CommitSHA: tagCommit},
 		{
 			RepositoryID: repositoryID, EventType: "pull_request", Ref: "refs/pull/17/head", CommitSHA: "commit-pr",
 			SourceBranch: "feature/payment", TargetBranch: "main", Action: "synchronize",

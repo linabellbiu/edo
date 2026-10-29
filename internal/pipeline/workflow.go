@@ -1461,6 +1461,7 @@ type workflowPollCandidate struct {
 	SourceBranch string
 	TargetBranch string
 	Action       string
+	RawTagOID    string
 }
 
 func workflowPollCandidates(source model.WorkflowNode, refs repository.RefResult) []workflowPollCandidate {
@@ -1495,7 +1496,7 @@ func workflowPollCandidates(source model.WorkflowNode, refs repository.RefResult
 		for i := range refs.Tags {
 			if matchTag(source.Config.TagPattern, refs.Tags[i].Name) {
 				result = append(result, workflowPollCandidate{
-					Event: "tag", Ref: "refs/tags/" + refs.Tags[i].Name, Commit: refs.Tags[i].SHA,
+					Event: "tag", Ref: "refs/tags/" + refs.Tags[i].Name, Commit: refs.Tags[i].SHA, RawTagOID: refs.Tags[i].RawTagOID,
 				})
 			}
 		}
