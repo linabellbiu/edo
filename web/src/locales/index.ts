@@ -37,7 +37,7 @@ export const messages = {
       type: '类型', typeRequired: '请选择凭据类型', token: '访问令牌', sshKey: 'SSH 私钥', username: '用户名', usernamePlaceholder: '部分平台可留空',
       tokenRequired: '请输入访问令牌', sshKeyRequired: '请输入 SSH 私钥', keepSecret: '留空表示保持原值', secretPlaceholder: '请输入凭据内容', cancel: '取消', save: '保存',
     },
-    common: { search: '搜索', refresh: '刷新', logout: '退出登录', language: '语言', theme: '主题', fullscreen: '全屏', back: '返回上一页', history: '访问历史' },
+    common: { search: '搜索', refresh: '刷新', logout: '退出登录', language: '语言', theme: '主题', fullscreen: '全屏', exitFullscreen: '退出全屏', lightTheme: '切换浅色主题', darkTheme: '切换深色主题', back: '返回上一页', history: '访问历史', notifications: '通知', accountMenu: '用户菜单', githubRepository: '打开 EDO GitHub 仓库', openNavigation: '打开导航', closeNavigation: '关闭导航', toggleNavigation: '切换导航', expandNavigation: '展开导航', collapseNavigation: '收起导航', closeTab: '关闭标签', unpinTab: '取消固定标签', exitMaximized: '退出最大化' },
     nav: {
       overview: '概览', delivery: '持续交付', applicationsCode: '应用与代码', applications: '应用', repositories: '代码仓库', credentials: '我的令牌',
       buildArtifacts: '构建与制品', buildPlans: '构建方案', registries: '镜像仓库', releaseManagement: '发布管理', deploymentPlans: '部署方案',
@@ -275,7 +275,7 @@ export const messages = {
       type: 'Type', typeRequired: 'Select a credential type', token: 'Access token', sshKey: 'SSH private key', username: 'Username', usernamePlaceholder: 'Optional on some platforms',
       tokenRequired: 'Enter an access token', sshKeyRequired: 'Enter an SSH private key', keepSecret: 'Leave blank to keep the current value', secretPlaceholder: 'Enter the credential', cancel: 'Cancel', save: 'Save',
     },
-    common: { search: 'Search', refresh: 'Refresh', logout: 'Sign out', language: 'Language', theme: 'Theme', fullscreen: 'Fullscreen', back: 'Go back', history: 'Recent pages' },
+    common: { search: 'Search', refresh: 'Refresh', logout: 'Sign out', language: 'Language', theme: 'Theme', fullscreen: 'Fullscreen', exitFullscreen: 'Exit fullscreen', lightTheme: 'Switch to light theme', darkTheme: 'Switch to dark theme', back: 'Go back', history: 'Recent pages', notifications: 'Notifications', accountMenu: 'Account menu', githubRepository: 'Open EDO GitHub repository', openNavigation: 'Open navigation', closeNavigation: 'Close navigation', toggleNavigation: 'Toggle navigation', expandNavigation: 'Expand navigation', collapseNavigation: 'Collapse navigation', closeTab: 'Close tab', unpinTab: 'Unpin tab', exitMaximized: 'Exit maximized view' },
     nav: {
       overview: 'Overview', delivery: 'Delivery', applicationsCode: 'Apps & Code', applications: 'Applications', repositories: 'Repositories', credentials: 'My Tokens',
       buildArtifacts: 'Build & Artifacts', buildPlans: 'Build Plans', registries: 'Registries', releaseManagement: 'Release Management', deploymentPlans: 'Deployment Plans',

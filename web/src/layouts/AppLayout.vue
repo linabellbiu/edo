@@ -40,6 +40,7 @@ const sidebarTheme = {
 const searchOpen = ref(false)
 const searchText = ref('')
 const contentMaximized = ref(false)
+const fullscreen = ref(false)
 const reloadKey = ref(0)
 const mobileMenuOpen = ref(false)
 const openKeys = ref<string[]>([])
@@ -143,6 +144,10 @@ function toggleFullscreen() {
   else void document.documentElement.requestFullscreen()
 }
 
+function syncFullscreen() {
+  fullscreen.value = Boolean(document.fullscreenElement)
+}
+
 async function signOut() {
   await auth.logout()
   await router.replace('/login')
@@ -199,14 +204,27 @@ watch(() => JSON.stringify([auth.user?.id, auth.user?.department_id, auth.user?.
   if (!allowedHistoryPath(route.fullPath)) void router.replace('/projects')
 }, { flush: 'sync' })
 
-onMounted(() => { window.addEventListener('keydown', keyboard); stopPermissionSync = auth.startPermissionSync(); revealCurrentMenu() })
-onBeforeUnmount(() => { menuRevealPending = false; stopPermissionSync?.(); window.removeEventListener('keydown', keyboard) })
+onMounted(() => {
+  window.addEventListener('keydown', keyboard)
+  stopPermissionSync = auth.startPermissionSync()
+  revealCurrentMenu()
+  if (typeof document !== 'undefined') {
+    syncFullscreen()
+    document.addEventListener('fullscreenchange', syncFullscreen)
+  }
+})
+onBeforeUnmount(() => {
+  menuRevealPending = false
+  stopPermissionSync?.()
+  window.removeEventListener('keydown', keyboard)
+  if (typeof document !== 'undefined') document.removeEventListener('fullscreenchange', syncFullscreen)
+})
 </script>
 
 <template>
   <div class="vben-app" :class="{ 'content-maximized': contentMaximized, 'sidebar-collapsed': preferences.sidebarCollapsed, 'kube-navigation-active': route.path === '/kubernetes' }">
     <aside class="vben-sidebar" :class="{ collapsed: preferences.sidebarCollapsed, 'mobile-open': mobileMenuOpen }">
-      <button class="mobile-close" type="button" aria-label="关闭导航" @click="mobileMenuOpen = false"><X /></button>
+      <button class="mobile-close" type="button" :aria-label="t('common.closeNavigation')" @click="mobileMenuOpen = false"><X /></button>
       <div class="vben-logo" @click="navigate('/')">
         <span class="logo-mark"><span>Z</span></span>
         <strong>EDO</strong>
@@ -247,10 +265,10 @@ onBeforeUnmount(() => { menuRevealPending = false; stopPermissionSync?.(); windo
         </nav>
       </ConfigProvider>
 
-      <button class="sidebar-collapse" type="button" @click="preferences.toggleSidebar()">
+      <button class="sidebar-collapse" type="button" :aria-label="t(preferences.sidebarCollapsed ? 'common.expandNavigation' : 'common.collapseNavigation')" @click="preferences.toggleSidebar()">
         <PanelLeftOpen v-if="preferences.sidebarCollapsed" :size="18" />
         <PanelLeftClose v-else :size="18" />
-        <span>收起导航</span>
+        <span>{{ t(preferences.sidebarCollapsed ? 'common.expandNavigation' : 'common.collapseNavigation') }}</span>
       </button>
     </aside>
 
@@ -259,10 +277,10 @@ onBeforeUnmount(() => { menuRevealPending = false; stopPermissionSync?.(); windo
     <main class="vben-main">
       <header class="vben-header">
         <div class="header-left">
-          <button class="mobile-menu-button" type="button" aria-label="打开导航" @click="mobileMenuOpen = true"><Menu /></button>
-          <button class="desktop-collapse" type="button" aria-label="切换导航" @click="preferences.toggleSidebar()"><Menu /></button>
+          <button class="mobile-menu-button" type="button" :aria-label="t('common.openNavigation')" @click="mobileMenuOpen = true"><Menu /></button>
+          <button class="desktop-collapse" type="button" :aria-label="t('common.toggleNavigation')" @click="preferences.toggleSidebar()"><Menu /></button>
           <div class="breadcrumb-history" :class="{ disabled: !canGoBack }">
-            <a-tooltip :title="t('common.back')"><button type="button" :disabled="!canGoBack" @click="tabsStore.back(router,route.fullPath)"><ChevronLeft /></button></a-tooltip>
+            <a-tooltip :title="t('common.back')"><button type="button" :disabled="!canGoBack" :aria-label="t('common.back')" @click="tabsStore.back(router,route.fullPath)"><ChevronLeft /></button></a-tooltip>
             <a-dropdown :disabled="recentVisits.length===0" placement="bottomLeft" :trigger="['click']">
               <button type="button" :disabled="recentVisits.length===0" :aria-label="t('common.history')"><ChevronDown /></button>
               <template #overlay>
@@ -289,17 +307,17 @@ onBeforeUnmount(() => { menuRevealPending = false; stopPermissionSync?.(); windo
           <button class="header-search" type="button" @click="openSearch">
             <Search :size="17" /><span>{{ t('common.search') }}</span><kbd><Command :size="12" /> K</kbd>
           </button>
-          <a-tooltip title="GitHub"><a class="icon-button github-link" href="https://github.com/linabellbiu/edo" target="_blank" rel="noopener noreferrer" aria-label="打开 EDO GitHub 仓库"><Github /></a></a-tooltip>
-          <a-tooltip :title="t('common.theme')"><button class="icon-button" type="button" @click="preferences.toggleTheme()"><Sun v-if="preferences.theme === 'dark'" /><Moon v-else /></button></a-tooltip>
+          <a-tooltip title="GitHub"><a class="icon-button github-link" href="https://github.com/linabellbiu/edo" target="_blank" rel="noopener noreferrer" :aria-label="t('common.githubRepository')"><Github /></a></a-tooltip>
+          <a-tooltip :title="t(preferences.theme === 'dark' ? 'common.lightTheme' : 'common.darkTheme')"><button class="icon-button" type="button" :aria-label="t(preferences.theme === 'dark' ? 'common.lightTheme' : 'common.darkTheme')" @click="preferences.toggleTheme()"><Sun v-if="preferences.theme === 'dark'" /><Moon v-else /></button></a-tooltip>
           <a-dropdown placement="bottomRight">
-            <a-tooltip :title="t('common.language')"><button class="icon-button" type="button"><Languages /></button></a-tooltip>
+            <a-tooltip :title="t('common.language')"><button class="icon-button" type="button" :aria-label="t('common.language')"><Languages /></button></a-tooltip>
             <template #overlay><a-menu :selected-keys="[preferences.locale]" @click="({ key }: { key: string }) => preferences.setLocale(key as 'zh-CN' | 'en-US')"><a-menu-item key="zh-CN">简体中文</a-menu-item><a-menu-item key="en-US">English</a-menu-item></a-menu></template>
           </a-dropdown>
-          <a-tooltip :title="t('common.fullscreen')"><button class="icon-button optional-action" type="button" @click="toggleFullscreen"><Expand /></button></a-tooltip>
-          <a-tooltip :title="t('common.refresh')"><button class="icon-button optional-action" type="button" @click="reloadPage"><RefreshCw /></button></a-tooltip>
-          <button class="icon-button optional-action" type="button" aria-label="通知"><Bell /></button>
+          <a-tooltip :title="t(fullscreen ? 'common.exitFullscreen' : 'common.fullscreen')"><button class="icon-button optional-action" type="button" :aria-label="t(fullscreen ? 'common.exitFullscreen' : 'common.fullscreen')" @click="toggleFullscreen"><Expand /></button></a-tooltip>
+          <a-tooltip :title="t('common.refresh')"><button class="icon-button optional-action" type="button" :aria-label="t('common.refresh')" @click="reloadPage"><RefreshCw /></button></a-tooltip>
+          <button class="icon-button optional-action" type="button" :aria-label="t('common.notifications')"><Bell /></button>
           <a-dropdown placement="bottomRight">
-            <button class="avatar-button" type="button"><span>{{ (auth.user?.nickname || auth.user?.username || 'Z').slice(0, 1).toUpperCase() }}</span><i /></button>
+            <button class="avatar-button" type="button" :aria-label="t('common.accountMenu')"><span>{{ (auth.user?.nickname || auth.user?.username || 'Z').slice(0, 1).toUpperCase() }}</span><i /></button>
             <template #overlay>
               <a-menu>
                 <a-menu-item disabled><Settings :size="15" /> {{ auth.user?.nickname || auth.user?.username }}</a-menu-item>
@@ -326,8 +344,8 @@ onBeforeUnmount(() => { menuRevealPending = false; stopPermissionSync?.(); windo
             >
               <component :is="tabIcon(tab.path)" v-if="tabIcon(tab.path)" class="tab-route-icon" :size="16" />
               <span>{{ t(tab.title) }}</span>
-              <button v-if="tab.pinned" class="tab-action pin-action" type="button" aria-label="已固定" :disabled="tab.key === '/'" @click.stop="tabsStore.togglePin(tab.key)"><Pin :size="14" /></button>
-              <button v-else class="tab-action" type="button" aria-label="关闭标签" @click.stop="tabsStore.close(tab.key, router, route.path)"><X :size="14" /></button>
+              <button v-if="tab.pinned" class="tab-action pin-action" type="button" :aria-label="t('common.unpinTab')" :disabled="tab.key === '/'" @click.stop="tabsStore.togglePin(tab.key)"><Pin :size="14" /></button>
+              <button v-else class="tab-action" type="button" :aria-label="t('common.closeTab')" @click.stop="tabsStore.close(tab.key, router, route.path)"><X :size="14" /></button>
             </div>
             <template #overlay>
               <a-menu @click="({ key }: { key: string }) => tabMenuAction(key, tab.key, tab.path)">
@@ -345,8 +363,8 @@ onBeforeUnmount(() => { menuRevealPending = false; stopPermissionSync?.(); windo
             </template>
           </a-dropdown>
         </div>
-        <button class="tabs-extra" type="button" @click="reloadPage"><RefreshCw /></button>
-        <button v-if="contentMaximized" class="tabs-extra" type="button" @click="contentMaximized = false"><ChevronLeft /></button>
+        <button class="tabs-extra" type="button" :aria-label="t('common.refresh')" @click="reloadPage"><RefreshCw /></button>
+        <button v-if="contentMaximized" class="tabs-extra" type="button" :aria-label="t('common.exitMaximized')" @click="contentMaximized = false"><ChevronLeft /></button>
       </div>
 
       <section class="vben-content">
