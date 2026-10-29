@@ -35,6 +35,10 @@ func TestLocalExecRemovalIgnoresRetainedDockerTarget(t *testing.T) {
 			if err := db.Create(&target).Error; err != nil {
 				t.Fatal(err)
 			}
+			var baseline model.DeploymentTarget
+			if err := db.First(&baseline, "uuid = ?", target.ID).Error; err != nil {
+				t.Fatal(err)
+			}
 			updated, err := service.Update(ctx, before.Host.ID, Input{
 				Name: before.Host.Name, CapabilityKinds: []model.HostCapabilityKind{model.HostCapabilityDocker},
 			})
@@ -46,7 +50,7 @@ func TestLocalExecRemovalIgnoresRetainedDockerTarget(t *testing.T) {
 				t.Fatalf("关闭本地执行改变了 Docker 能力: %+v", updated.Capabilities)
 			}
 			var stored model.DeploymentTarget
-			if err := db.First(&stored, "uuid = ?", target.ID).Error; err != nil || stored != target {
+			if err := db.First(&stored, "uuid = ?", target.ID).Error; err != nil || stored != baseline {
 				t.Fatalf("能力变更不应修改发布目标: %+v err=%v", stored, err)
 			}
 		})
@@ -70,6 +74,10 @@ func TestLocalCapabilityRemovalStillProtectsExecutionReferences(t *testing.T) {
 			before, err := service.Update(ctx, model.BuiltinLocalHostID, Input{
 				Name: "本地", CapabilityKinds: []model.HostCapabilityKind{model.HostCapabilityDocker, model.HostCapabilityLocalExec},
 			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			baseline, err := service.Get(ctx, before.Host.ID)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -100,7 +108,7 @@ func TestLocalCapabilityRemovalStillProtectsExecutionReferences(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if unchanged.Host.Name != before.Host.Name || !slices.Equal(unchanged.Capabilities, before.Capabilities) {
+			if unchanged.Host.Name != baseline.Host.Name || !slices.Equal(unchanged.Capabilities, baseline.Capabilities) {
 				t.Fatalf("引用检查失败没有完整回滚主机与能力: %+v", unchanged)
 			}
 		})
