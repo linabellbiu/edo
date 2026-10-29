@@ -22,6 +22,30 @@ func parallelShell(id string) model.WorkflowNode {
 	return model.WorkflowNode{ID: id, Type: model.WorkflowNodeShell, Name: id, Config: model.WorkflowNodeConfig{Script: id, RuntimeImage: model.DefaultRuntimeImage, WorkingDirectory: ".", TimeoutSeconds: 30}}
 }
 
+func TestParallelManualGateRecordsCompletedMessage(t *testing.T) {
+	ctx := context.Background()
+	gate := model.WorkflowNode{ID: "manual", Name: "人工放行", Type: model.WorkflowNodeManual}
+	snapshot := workflowSnapshot{SchemaVersion: 1, ExecutionVersion: 2, Source: model.WorkflowNode{ID: "source", Type: model.WorkflowNodeTrigger}, Stages: []model.WorkflowStage{{ID: "manual-stage", Tasks: []model.WorkflowNode{gate}}, {ID: "checks", Tasks: []model.WorkflowNode{parallelShell("after")}}}}
+	s, _, _, run := newBuildExecutorTestRun(t, snapshot.Source, snapshot, map[string]string{"code.txt": "source"})
+	if _, err := s.AdvanceRun(ctx, run.ID, "admin", ""); err != nil {
+		t.Fatal(err)
+	}
+	nodes, err := s.ListNodeRuns(ctx, run.ID)
+	if err != nil || len(nodes) != 1 || nodes[0].Status != model.PipelineRunBlocked || nodes[0].Message != "等待人工放行" {
+		t.Fatalf("放行前必须保留真实等待状态: %+v %v", nodes, err)
+	}
+	if _, err := s.AdvanceRun(ctx, run.ID, "admin", ""); err != nil {
+		t.Fatal(err)
+	}
+	nodes, err = s.ListNodeRuns(ctx, run.ID)
+	if err != nil || len(nodes) != 2 {
+		t.Fatalf("放行后没有推进后续任务: %+v %v", nodes, err)
+	}
+	if nodes[0].Status != model.PipelineRunSucceeded || nodes[0].Stage != "completed" || nodes[0].FinishedAt == nil || nodes[0].Message != "已人工放行" {
+		t.Fatalf("已完成的人工节点仍显示等待: %+v", nodes[0])
+	}
+}
+
 func TestParallelTasksExecuteTogetherAndWaitForStage(t *testing.T) {
 	ctx := context.Background()
 	first, second, third := parallelShell("first"), parallelShell("second"), parallelShell("third")

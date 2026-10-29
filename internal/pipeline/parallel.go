@@ -137,7 +137,7 @@ func (s *Service) advanceParallelRun(ctx context.Context, run *model.PipelineRun
 					} else if actorID == "" {
 						return ErrInvalidWorkflowTransition
 					}
-					updates := map[string]any{"status": model.PipelineRunSucceeded, "stage": "completed", "finished_at": now, "updated_at": now}
+					updates := map[string]any{"status": model.PipelineRunSucceeded, "stage": "completed", "message": "已人工放行", "finished_at": now, "updated_at": now}
 					if first.Type == model.WorkflowNodeApproval {
 						updates["message"] = "审核已通过"
 					}
