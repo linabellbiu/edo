@@ -89,8 +89,8 @@ onUnmounted(() => { if (timer) clearInterval(timer) })
 <template>
   <main class="vben-login-page">
     <div class="login-tools">
-      <a-dropdown><button type="button"><Languages /></button><template #overlay><a-menu @click="({ key }: { key: string }) => preferences.setLocale(key as 'zh-CN' | 'en-US')"><a-menu-item key="zh-CN">简体中文</a-menu-item><a-menu-item key="en-US">English</a-menu-item></a-menu></template></a-dropdown>
-      <button type="button" @click="preferences.toggleTheme()"><Sun v-if="preferences.theme === 'dark'" /><Moon v-else /></button>
+      <a-dropdown><button type="button" :aria-label="t('common.language')"><Languages /></button><template #overlay><a-menu @click="({ key }: { key: string }) => preferences.setLocale(key as 'zh-CN' | 'en-US')"><a-menu-item key="zh-CN">简体中文</a-menu-item><a-menu-item key="en-US">English</a-menu-item></a-menu></template></a-dropdown>
+      <button type="button" :aria-label="t('common.theme')" @click="preferences.toggleTheme()"><Sun v-if="preferences.theme === 'dark'" /><Moon v-else /></button>
     </div>
     <section class="login-visual">
       <div class="visual-brand"><span class="logo-mark"><span>Z</span></span><strong>EDO</strong></div>
