@@ -335,6 +335,10 @@ func (h terminalFileHandler) upload(c *gin.Context) {
 	hash := sha256.New()
 	size, err := io.Copy(io.MultiWriter(spool, hash), c.Request.Body)
 	if err != nil {
+		// 主动关闭请求流产生的读取错误仍需保留撤权或超时原因，不能误报网络失败。
+		if cause := c.Request.Context().Err(); cause != nil {
+			err = errors.Join(err, cause)
+		}
 		var limit *http.MaxBytesError
 		if errors.As(err, &limit) {
 			err = terminalfiles.ErrTooLarge

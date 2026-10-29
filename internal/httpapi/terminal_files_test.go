@@ -12,8 +12,11 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/iotest"
+	"time"
 
 	"github.com/gin-gonic/gin"
 
@@ -203,5 +206,91 @@ func TestTerminalFilesHTTPRevokedBeforeCommitDoesNotPersist(t *testing.T) {
 				t.Fatalf("提交前撤权仍写入或未关闭: %d %q %d", response.Code, f.value, f.closed)
 			}
 		})
+	}
+}
+
+type interruptedUploadBody struct {
+	closed chan struct{}
+	onRead func()
+	once   sync.Once
+}
+
+func (b *interruptedUploadBody) Read([]byte) (int, error) {
+	b.onRead()
+	<-b.closed
+	return 0, errors.New("private-upload-reader-closed")
+}
+
+func (b *interruptedUploadBody) Close() error {
+	b.once.Do(func() { close(b.closed) })
+	return nil
+}
+
+func TestTerminalFilesHTTPInterruptedUploadReportsCancellationCause(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		revoke bool
+		status int
+		code   string
+	}{
+		{"上传中撤权", true, http.StatusForbidden, "file_permission_denied"},
+		{"上传读取超时", false, http.StatusGatewayTimeout, "file_timeout"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var allowed atomic.Bool
+			allowed.Store(true)
+			backend := &fakeFileBackend{value: []byte("original")}
+			h := terminalFileHandler{
+				open: func(context.Context, *gin.Context) (terminalfiles.Backend, error) { return backend, nil },
+				key:  func(*gin.Context) string { return "host:test" }, logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+				checks: func(*gin.Context, ...string) func() bool { return allowed.Load },
+			}
+			router := gin.New()
+			router.POST("/files/upload", h.upload)
+			budget := 5 * time.Second
+			if !test.revoke {
+				budget = 200 * time.Millisecond
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), budget)
+			defer cancel()
+			body := &interruptedUploadBody{closed: make(chan struct{}), onRead: func() {
+				if test.revoke {
+					allowed.Store(false)
+				}
+			}}
+			defer body.Close()
+			request := httptest.NewRequest(http.MethodPost, "/files/upload?path=/demo.txt", body).WithContext(ctx)
+			response, done := httptest.NewRecorder(), make(chan struct{})
+			go func() { defer close(done); router.ServeHTTP(response, request) }()
+			select {
+			case <-done:
+			case <-time.After(6 * time.Second):
+				cancel()
+				t.Fatal("上传取消后未停止读取")
+			}
+			if response.Code != test.status || !strings.Contains(response.Body.String(), test.code) {
+				t.Fatalf("取消原因被误报为普通读取失败: status=%d body=%s", response.Code, response.Body)
+			}
+			if backend.puts != 0 || string(backend.value) != "original" || backend.closed != 1 {
+				t.Fatalf("中断上传仍写入或未释放后端: puts=%d closed=%d", backend.puts, backend.closed)
+			}
+			if strings.Contains(response.Body.String(), "private-upload-reader-closed") {
+				t.Fatal("内部读取错误泄漏到客户端")
+			}
+		})
+	}
+}
+
+func TestTerminalFilesHTTPUploadKeepsUnrelatedReadFailurePrivate(t *testing.T) {
+	backend := &fakeFileBackend{value: []byte("original")}
+	router, _ := fileTestRouter(backend, "")
+	request := httptest.NewRequest(http.MethodPost, "/files/upload?path=/demo.txt", iotest.ErrReader(errors.New("private-upload-read-failure")))
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+	if response.Code != http.StatusBadGateway || strings.Contains(response.Body.String(), "private-upload-read-failure") {
+		t.Fatalf("未取消的读取故障被误判或泄露: %d %s", response.Code, response.Body)
+	}
+	if backend.puts != 0 || backend.closed != 1 || string(backend.value) != "original" {
+		t.Fatal("读取失败后仍提交文件或未释放后端")
 	}
 }
