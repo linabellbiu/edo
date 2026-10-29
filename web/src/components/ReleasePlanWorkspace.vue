@@ -161,6 +161,7 @@ function planStatus(status: string): { tone: PlanTone; label: string; hint: stri
 function visiblePlanStatus(plan: ReleasePlanItem) {
   if (plan.is_active === false) return 'disabled'
   if (props.executingPlanIds?.includes(plan.id)) return 'running'
+  if (plan.latest_execution?.status === 'pending' || plan.latest_execution?.status === 'running') return plan.latest_execution.status
   const latestRunStatus = latestPlanRun(plan)?.status
   if (latestRunStatus === 'detected' || latestRunStatus === 'ready' || latestRunStatus === 'awaiting_approval') return 'running'
   if (latestRunStatus === 'blocked') return 'failed'

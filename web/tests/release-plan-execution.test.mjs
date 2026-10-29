@@ -29,12 +29,15 @@ const translate = (key, args = {}, language = 'zh-CN') => {
   return typeof value === 'string' ? value.replace(/\{(\w+)\}/g, (_, name) => args[name] ?? '') : key
 }
 
-async function harness({ get, post, codes = permissions, selected = 'project-a', project = 'project-a' } = {}) {
+async function harness({ get, post, codes = permissions, selected = 'project-a', project = 'project-a', hidden = true } = {}) {
   const requests = [], notifications = [], navigations = [], mounted = [], unmounts = []
+  const timers = new Map(), intervals = new Map(), subscriptions = []
+  let timerID = 0, now = 1_000_000
+  class TestDate extends Date { static now() { return now } }
   const auth = vue.reactive({ user: { id: 'operator-a', project_id: project, department_id: 'department-a', is_superuser: false, permissions: [...codes] }, canAny(codes) { return Boolean(this.user && (this.user.is_superuser || codes.some(code => this.user.permissions.includes(code)))) } })
   const storage = { selected }, localStorage = { getItem: key => key === 'edo.project' ? storage.selected : null }
-  const window = new EventTarget(); window.setInterval = () => 1; window.location = { origin: 'http://127.0.0.1:18180' }
-  const document = new EventTarget(); document.hidden = true
+  const window = new EventTarget(); window.setInterval = callback => { const id = ++timerID; intervals.set(id, callback); return id }; window.location = { origin: 'http://127.0.0.1:18180' }
+  const document = new EventTarget(); document.hidden = hidden
   const route = vue.reactive({ path: '/release-plans', query: {}, fullPath: '/release-plans' })
   const props = vue.reactive({ section: 'release-plans' })
   const client = Object.fromEntries(['get', 'post'].map(method => [method, async (path, bodyOrOptions, options) => {
@@ -42,7 +45,7 @@ async function harness({ get, post, codes = permissions, selected = 'project-a',
     requests.push(request)
     const handler = { get, post }[method]; if (handler) { const result = await handler(request); if (result) return result }
     const projectID = request.options?.headers?.['X-EDO-Project-ID'] || storage.selected
-    const data = path === '/applications' ? { applications: applications(projectID) } : path === '/release-plans' ? { release_plans: [plan(projectID)] } : path === '/pipeline-runs?limit=200' ? { pipeline_runs: [] } : path.endsWith('/repository-refs') ? { branches: [{ name: 'main', sha: 'sha-main' }, { name: 'feature', sha: 'sha-feature' }], tags: [{ name: 'v1', sha: 'sha-tag' }], manual_sources: [{ id: `source-${path.split('/')[4]}`, name: '代码源' }], artifacts: [{ id: 'artifact-a', name: '已有镜像', digest: 'sha256:public-test', kind: 'oci_image', build_plan_id: 'build-a', ref: 'refs/heads/feature', commit_sha: 'sha-artifact' }] } : path.startsWith('/pipeline-runs/') ? { pipeline_run: run(path.split('/').at(-1)) } : path.endsWith('/executions') ? { release_plan_execution: execution() } : {}
+    const data = path === '/applications' ? { applications: applications(projectID) } : path === '/release-plans' ? { release_plans: [plan(projectID)] } : path === '/pipeline-runs?limit=200' ? { pipeline_runs: [] } : path === '/pipeline-runs' ? { pipeline_runs: [], total: 0 } : path.endsWith('/repository-refs') ? { branches: [{ name: 'main', sha: 'sha-main' }, { name: 'feature', sha: 'sha-feature' }], tags: [{ name: 'v1', sha: 'sha-tag' }], manual_sources: [{ id: `source-${path.split('/')[4]}`, name: '代码源' }], artifacts: [{ id: 'artifact-a', name: '已有镜像', digest: 'sha256:public-test', kind: 'oci_image', build_plan_id: 'build-a', ref: 'refs/heads/feature', commit_sha: 'sha-artifact' }] } : path.startsWith('/pipeline-runs/') ? { pipeline_run: run(path.split('/').at(-1)) } : path.endsWith('/executions') ? { release_plan_execution: execution() } : {}
     return { data }
   }]))
   const component = loadFrontend('../src/views/DevOpsView.vue', {
@@ -51,18 +54,66 @@ async function harness({ get, post, codes = permissions, selected = 'project-a',
     'vue-router': { useRoute: () => route, useRouter: () => ({ push: async value => navigations.push(value), replace: async value => navigations.push(value) }) },
     'ant-design-vue': { Modal: {}, message: Object.fromEntries(['success', 'warning', 'error'].map(kind => [kind, value => notifications.push({ kind, value })])) },
     '@/stores/auth': { useAuthStore: () => auth }, '@/api/client': { __esModule: true, default: client }, '@/api/resources': { apiErrorMessage: () => '请求失败，请重试' },
-    '@/utils/deliveryEvents': { subscribeDeliveryEvents: () => () => {} },
+    '@/utils/deliveryEvents': { subscribeDeliveryEvents: subscriber => { subscriptions.push(subscriber); return () => {} } },
     '@/utils/deploymentInstances': loadFrontend('../src/utils/deploymentInstances.ts'),
-  }, { localStorage, window, document }).default
+  }, { localStorage, window, document, Date: TestDate, setTimeout: callback => { const id = ++timerID; timers.set(id, callback); return id }, clearTimeout: id => timers.delete(id), clearInterval: id => intervals.delete(id) }).default
   const scope = vue.effectScope(); let state, stopped = false
   scope.run(() => { state = component.setup(props, { expose() {} }) })
   mounted.forEach(fn => fn()); await settle()
   const stop = () => { if (stopped) return; stopped = true; unmounts.forEach(fn => fn()); scope.stop() }
-  return { state, auth, storage, window, route, props, requests, notifications, navigations, stop }
+  const flushTimers = async () => { const callbacks = [...timers.values()]; timers.clear(); for (const callback of callbacks) await callback(); await settle() }
+  const tick = async (milliseconds = 5000) => { now += milliseconds; for (const callback of intervals.values()) callback(); await flushTimers() }
+  return { state, auth, storage, window, document, route, props, requests, notifications, navigations, subscriptions, timers, flushTimers, tick, stop }
 }
 const posts = h => h.requests.filter(request => request.method === 'post')
 const open = async (h, membership = '') => { h.state.openReleasePlan('plan-a', membership); await settle(); return h.state.planExecutionItems() }
 const changeProject = async (h, project) => { h.storage.selected = project; h.window.dispatchEvent(new Event('edo:projects-changed')); h.auth.user.project_id = project; await settle() }
+
+test('运行页收到终态通知后返回计划立即刷新，不被刚更新的运行页同步时间抑制', async t => {
+  let status = 'running'
+  const h = await harness({ hidden: false, get: request => request.path === '/release-plans' ? { data: { release_plans: [{ ...plan(), latest_execution: execution({ status }) }] } } : undefined }); t.after(h.stop)
+  const subscriber = h.subscriptions.at(-1); subscriber.state('connected')
+  h.route.query = { view: 'runs' }; await settle()
+  status = 'failed'; subscriber.event({ type: 'changed', resources: ['release_plans', 'pipeline_runs'] }); await h.flushTimers()
+  assert.equal(h.state.releasePlans.value[0].latest_execution.status, 'running')
+  h.route.query = {}; await settle(); await h.flushTimers()
+  assert.equal(h.state.releasePlans.value[0].latest_execution.status, 'failed')
+  assert.equal(h.state.releasePlanSubmissionBlocked(h.state.releasePlans.value[0]), false)
+  assert.equal(h.requests.filter(request => request.path === '/release-plans').length, 2)
+})
+
+test('未打开详情的忙碌计划每个既有周期补同步，终态后立即恢复空闲刷新频率', async t => {
+  let status = 'running'
+  const h = await harness({ hidden: false, get: request => request.path === '/release-plans' ? { data: { release_plans: [{ ...plan(), latest_execution: execution({ status }) }] } } : undefined }); t.after(h.stop)
+  h.subscriptions.at(-1).state('connected')
+  assert.equal(h.state.runDrawerOpen.value, false)
+  status = 'failed'; await h.tick()
+  assert.equal(h.state.releasePlans.value[0].latest_execution.status, 'failed')
+  assert.equal(h.requests.filter(request => request.path === '/release-plans').length, 2)
+  for (let tick = 0; tick < 10; tick++) await h.tick()
+  assert.equal(h.requests.filter(request => request.path === '/release-plans').length, 2)
+})
+
+test('切回计划遇到旧运行页刷新未结束时等待并重试，不丢失计划刷新且不重复排程', async t => {
+  const pending = deferred(); let status = 'running', pageReads = 0
+  const h = await harness({ hidden: false, get: request => request.path === '/release-plans' ? { data: { release_plans: [{ ...plan(), latest_execution: execution({ status }) }] } } : request.path === '/pipeline-runs' && ++pageReads > 1 ? pending.promise : undefined }); t.after(h.stop)
+  h.subscriptions.at(-1).state('connected'); h.route.query = { view: 'runs' }; await settle()
+  const oldRefresh = h.state.refreshRunState(); await settle()
+  status = 'failed'; h.route.query = {}; await settle(); h.subscriptions.at(-1).event({ type: 'changed', resources: ['release_plans'] })
+  assert.equal(h.timers.size, 1); await h.flushTimers(); assert.equal(h.timers.size, 1)
+  pending.resolve({ data: { pipeline_runs: [], total: 0 } }); await oldRefresh; await h.flushTimers()
+  assert.equal(h.state.releasePlans.value[0].latest_execution.status, 'failed'); assert.equal(h.timers.size, 0)
+})
+
+test('忙碌补同步尊重页面隐藏和查看权限，卸载清理已排程刷新', async t => {
+  const h = await harness({ hidden: false, get: request => request.path === '/release-plans' ? { data: { release_plans: [{ ...plan(), latest_execution: execution({ status: 'running' }) }] } } : undefined }); t.after(h.stop)
+  h.subscriptions.at(-1).state('connected')
+  const reads = h.requests.length
+  h.document.hidden = true; await h.tick(); assert.equal(h.requests.length, reads)
+  h.document.hidden = false; h.auth.user.permissions = ['pipeline_run.read']; await settle(); await h.tick(); assert.equal(h.requests.length, reads)
+  h.auth.user.permissions = permissions; await settle(); h.state.queueDeliveryRefresh(); assert.equal(h.timers.size, 1)
+  h.stop(); assert.equal(h.timers.size, 0); await h.tick(); assert.equal(h.requests.length, reads)
+})
 
 test('多条可手动执行流水线明确阻断，不任取首条；中英文原因稳定', async t => {
   const h = await harness(); t.after(h.stop)

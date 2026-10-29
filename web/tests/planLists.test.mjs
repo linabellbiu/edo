@@ -103,6 +103,29 @@ test('发布计划通过分页定位详情抽屉，刷新保留当前计划，�
   assert.equal(state.applicationName(props.plans[21].groups[0].applications[0]), '订单服务')
 })
 
+test('最近运行已取消但整体执行尚未结束时保持真实忙碌状态，终态后关闭的抽屉也恢复两类执行', async t => {
+  const application = { id: 'app', name: '应用', is_active: true }
+  const member = { id: 'member', application_id: 'app', manual_deploy: true }
+  const plan = { id: 'plan', status: 'active', is_active: true, groups: [{ id: 'group', applications: [member] }], latest_execution: { status: 'running' } }
+  const props = vue.reactive({ plans: [plan], applications: [application], pipelineRuns: [{ id: 'run', application_id: 'app', status: 'canceled', created_at: '2026-10-29T00:00:00Z' }], executingPlanIds: [] })
+  const state = componentHarness(t, '../src/components/ReleasePlanWorkspace.vue', props)
+  state.openDetails(props.plans[0]); state.detailOpen.value = false
+  for (const status of ['pending', 'running']) {
+    props.plans[0].latest_execution.status = status
+    assert.equal(state.visiblePlanStatus(props.plans[0]), status)
+    assert.equal(state.canExecutePlan(props.plans[0]), false); assert.equal(state.canExecuteApplication(props.plans[0], member), false)
+  }
+  props.plans[0].latest_execution.status = 'failed'; await vue.nextTick()
+  assert.equal(state.visiblePlanStatus(props.plans[0]), 'canceled'); assert.equal(state.detailOpen.value, false)
+  assert.equal(state.canExecutePlan(props.plans[0]), true); assert.equal(state.canExecuteApplication(props.plans[0], member), true)
+  props.plans[0].is_active = false
+  assert.equal(state.canExecutePlan(props.plans[0]), false); assert.equal(state.canExecuteApplication(props.plans[0], member), false)
+  props.plans[0].is_active = true; props.executingPlanIds = ['plan']
+  assert.equal(state.visiblePlanStatus(props.plans[0]), 'running'); assert.equal(state.canExecutePlan(props.plans[0]), false); assert.equal(state.canExecuteApplication(props.plans[0], member), false)
+  props.executingPlanIds = []; props.plans[0].status = 'canceled'
+  assert.equal(state.canExecutePlan(props.plans[0]), false); assert.equal(state.canExecuteApplication(props.plans[0], member), false)
+})
+
 function deploymentHarness(t) {
   const route = vue.reactive({ query: { plan: 'plan-21' } })
   const state = componentHarness(t, '../src/views/DeploymentPlanView.vue', {}, {

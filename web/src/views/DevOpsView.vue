@@ -1733,7 +1733,9 @@ function refreshVisibleState(){
  if(document.hidden)return
  if(props.section==='applications')refreshVisibleDeploymentRuntime()
  if(props.section==='build-plans'&&buildPlanView.value==='artifacts')void loadArtifacts()
- if(Date.now()-lastDeliverySync>=(deliveryConnected?60_000:30_000))queueDeliveryRefresh()
+ // 执行项与整体计划异步收敛，忙碌计划短期补同步；终态恢复原有低频校准。
+ const activePlan=props.section==='release-plans'&&releaseView.value==='plans'&&auth.canAny(['release_plan.read'])&&(executingReleasePlanIDs.value.length>0||releasePlans.value.some(plan=>['pending','running'].includes(plan.latest_execution?.status||'')))
+ if(activePlan||Date.now()-lastDeliverySync>=(deliveryConnected?60_000:30_000))queueDeliveryRefresh()
 }
 function queueDeliveryRefresh(syncOnly=false){
  if(!deliveryRefreshTimer)applicationSyncOnly=syncOnly
@@ -1824,6 +1826,7 @@ watch(()=>route.query.create,consumeBuildCreateRequest)
 watch(()=>route.query.application,()=>{void revealActiveApplication()})
 watch(()=>route.query.delivery_kind,consumeDeliveryRequest)
 watch(()=>route.query.run,()=>{void revealRequestedRun()})
+watch(releaseView,(view,previous)=>{if(props.section==='release-plans'&&previous==='runs'&&view==='plans')queueDeliveryRefresh()})
 watch(runQueryKey,()=>{runDrawerEntryID.value='';expandedRunIDs.value=[];expandedExecutionIDs.value=[];selectedRunID.value='';revealedRunID='';detachedRun.value=null;executionDrawer.value=null;executionController?.abort();executionRevision++;void loadRunPage(true)})
 watch(()=>visibleApprovalRuns().map(run=>`${run.id}:${run.current_node_id}`).join(','),()=>{void refreshRunApprovals()})
 watch(approvalScope,()=>{for(const controller of runApprovalRequests.values())controller.abort();runApprovalRequests.clear();runApprovals.value={};runApprovalLoading.value={};runApprovalErrors.value={};void refreshRunApprovals()})
