@@ -150,7 +150,8 @@ func (s *Service) buildAndPushWithOptions(
 		imageRef, err := s.runBuildxPush(buildContextTimeout, buildContext, dockerfile, image, registry, options, output)
 		return BuiltImage{ImageRef: imageRef}, err
 	}
-	apiClient, err := s.BuilderClient()
+	// 推送会持续读取进度流，总时限由构建上下文控制，不能被普通 HTTP 请求超时截断。
+	apiClient, err := s.builderExecutionClient()
 	if err != nil {
 		return BuiltImage{}, err
 	}

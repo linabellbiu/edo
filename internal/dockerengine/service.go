@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"path"
 	"path/filepath"
 	"regexp"
@@ -630,6 +631,38 @@ func (s *Service) builderClient(requestTimeout time.Duration) (*client.Client, e
 			return nil, ErrInvalidEndpoint
 		}
 		options = append(connectionOptions, options...)
+	}
+	// 先交给官方选项克隆并配置 Transport，保留环境、Unix Socket、代理与双向 TLS。
+	// 长操作不设置 HTTP 总超时，但连接、TLS 握手和响应头仍分别有界。
+	// 模板保留拨号器，避免 Go 克隆空 Transport 时自动填入 TLS 配置而改变协议判断。
+	options = append([]client.Opt{client.WithHTTPClient(&http.Client{
+		Transport: &http.Transport{
+			MaxIdleConns: 6, IdleConnTimeout: 30 * time.Second,
+			DialContext:           (&net.Dialer{Timeout: s.config.ConnectTimeout, KeepAlive: 30 * time.Second}).DialContext,
+			ResponseHeaderTimeout: s.config.RequestTimeout, TLSHandshakeTimeout: s.config.ConnectTimeout,
+		},
+		CheckRedirect: client.CheckRedirect,
+	})}, options...)
+	if s.config.ConnectTimeout > 0 {
+		effectiveHost := host
+		if effectiveHost == "" {
+			effectiveHost = os.Getenv(client.EnvOverrideHost)
+			if effectiveHost == "" {
+				effectiveHost = client.DefaultDockerHost
+			}
+		}
+		parsed, err := client.ParseHostURL(effectiveHost)
+		if err != nil {
+			return nil, ErrInvalidEndpoint
+		}
+		dialer := &net.Dialer{Timeout: s.config.ConnectTimeout, KeepAlive: 30 * time.Second}
+		dial := dialer.DialContext
+		if parsed.Scheme == "unix" {
+			dial = func(ctx context.Context, _, _ string) (net.Conn, error) {
+				return dialer.DialContext(ctx, "unix", parsed.Host)
+			}
+		}
+		options = append(options, client.WithDialContext(dial))
 	}
 	apiClient, err := client.New(options...)
 	if err != nil {
