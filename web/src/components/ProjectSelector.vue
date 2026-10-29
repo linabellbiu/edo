@@ -1,11 +1,12 @@
 <script setup lang="ts">
-import { onMounted, onBeforeUnmount, ref } from 'vue'
+import { onMounted, onBeforeUnmount, ref, useId } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { message } from 'ant-design-vue'
 import client from '@/api/client'
 import { useAuthStore } from '@/stores/auth'
 import { apiErrorMessage } from '@/api/resources'
 const { t } = useI18n(), auth = useAuthStore()
+const selectID = `edo-project-${useId()}`
 const items = ref<Array<{id:string;name:string;department_name?:string;is_active:boolean}>>([]), selected = ref(''), loading = ref(false)
 let revision=0,disposed=false
 async function reload() {
@@ -40,5 +41,5 @@ onMounted(()=>{void reload();window.addEventListener('edo:projects-changed',proj
 onBeforeUnmount(()=>{disposed=true;revision++;window.removeEventListener('edo:projects-changed',projectChanged);window.removeEventListener('storage',externalProjectChanged)})
 function change(id: string) { if (id === selected.value) return; localStorage.setItem('edo.project',id); window.location.assign('/projects') }
 </script>
-<template><a-select class="project-selector" :value="selected || undefined" :options="items.map(item=>({value:item.id,label:item.name,department:item.department_name}))" :loading="loading" show-search option-filter-prop="label" :placeholder="t('workspace.chooseProject')" :aria-label="t('workspace.chooseProject')" @change="(value:unknown)=>change(String(value))"><template #option="{label,department}"><span class="project-option"><strong>{{label}}</strong><small v-if="department">{{department}}</small></span></template></a-select></template>
-<style scoped>.project-selector{width:176px;flex-shrink:0}@media(max-width:760px){.project-selector{width:132px}}.project-option{display:flex;flex-direction:column;line-height:1.5}.project-option strong{font-weight:500}.project-option small{color:var(--edo-muted);font-size:12px}</style>
+<template><label :for="selectID" class="project-selector-label">{{t('workspace.chooseProject')}}</label><a-select :id="selectID" class="project-selector" :value="selected || undefined" :options="items.map(item=>({value:item.id,label:item.name,department:item.department_name}))" :loading="loading" show-search option-filter-prop="label" :placeholder="t('workspace.chooseProject')" :aria-label="t('workspace.chooseProject')" @change="(value:unknown)=>change(String(value))"><template #option="{label,department}"><span class="project-option"><strong>{{label}}</strong><small v-if="department">{{department}}</small></span></template></a-select></template>
+<style scoped>.project-selector-label{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}.project-selector{width:176px;flex-shrink:0}@media(max-width:760px){.project-selector{width:132px}}.project-option{display:flex;flex-direction:column;line-height:1.5}.project-option strong{font-weight:500}.project-option small{color:var(--edo-muted);font-size:12px}</style>

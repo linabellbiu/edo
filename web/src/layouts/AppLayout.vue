@@ -44,6 +44,7 @@ const fullscreen = ref(false)
 const reloadKey = ref(0)
 const mobileMenuOpen = ref(false)
 const openKeys = ref<string[]>([])
+const collapsedOpenKeys = ref<string[]>([])
 let menuRevealPending = false
 let stopPermissionSync: (() => void) | undefined
 
@@ -66,7 +67,9 @@ function revealCurrentMenu() {
 }
 
 function updateOpenKeys(keys: string[]) {
-  if (!preferences.sidebarCollapsed) openKeys.value = keys
+  const visible = keys.filter(key => allowedMenuKeys.value.has(key))
+  if (preferences.sidebarCollapsed) collapsedOpenKeys.value = visible
+  else openKeys.value = visible
 }
 
 const allowed = (item: NavItem) => auth.canAny(item.permissions)
@@ -74,6 +77,24 @@ const allowedBranches = (sectionIndex: number): NavBranch[] =>
   (navigation[sectionIndex]?.branches ?? [])
     .map((branch) => ({ ...branch, items: visibleNavigationItems(branch.items, permissions => auth.canAny(permissions)) }))
     .filter((branch) => branch.items.length > 0)
+
+const allowedMenuKeys = computed(() => {
+  const keys = new Set<string>()
+  function children(items: NavItem[]) {
+    for (const item of items) if (item.children) { keys.add(item.path); children(item.children) }
+  }
+  for (let index = 1; index < navigation.length; index++) for (const branch of allowedBranches(index)) {
+    keys.add(branch.key)
+    children(branch.items)
+  }
+  return keys
+})
+
+function toggleNavigationBranch(key: string) {
+  if (!allowedMenuKeys.value.has(key)) return
+  const keys = preferences.sidebarCollapsed ? collapsedOpenKeys : openKeys
+  keys.value = keys.value.includes(key) ? keys.value.filter(value => value !== key) : [...keys.value, key]
+}
 
 const selectedKeys = computed(() => {
   const item = findNavigationItem(route.fullPath)
@@ -110,6 +131,7 @@ function historyContext(path: string) {
 
 function navigate(path: string) {
   mobileMenuOpen.value = false
+  collapsedOpenKeys.value = []
   const target = new URL(path, 'http://edo.local')
   if (target.pathname === '/kubernetes' && route.path === '/hosts' && route.query.view === 'clusters' && typeof route.query.cluster === 'string') {
     void router.push({ path: target.pathname, query: { ...Object.fromEntries(target.searchParams), cluster: route.query.cluster } })
@@ -174,10 +196,12 @@ function keyboard(event: KeyboardEvent) {
     event.preventDefault()
     openSearch()
   }
+  if (event.key === 'Escape') collapsedOpenKeys.value = []
   if (event.key === 'Escape' && contentMaximized.value) contentMaximized.value = false
 }
 
 watch(() => route.fullPath, async () => {
+  collapsedOpenKeys.value = []
   tabsStore.visit(route)
   tabsStore.add(route)
   expandCurrentMenu()
@@ -186,6 +210,7 @@ watch(() => route.fullPath, async () => {
 }, { immediate: true })
 
 watch(() => preferences.sidebarCollapsed, async collapsed => {
+  collapsedOpenKeys.value = []
   if (collapsed) return
   expandCurrentMenu()
   await nextTick()
@@ -200,6 +225,8 @@ watch(searchOpen, async (open) => {
 
 watch(() => JSON.stringify([auth.user?.id, auth.user?.department_id, auth.user?.project_id, auth.user?.is_superuser, auth.user?.permissions]), () => {
   searchOpen.value = false
+  collapsedOpenKeys.value = []
+  openKeys.value = openKeys.value.filter(key => allowedMenuKeys.value.has(key))
   if (!auth.user) { void router.replace('/login'); return }
   if (!allowedHistoryPath(route.fullPath)) void router.replace('/projects')
 }, { flush: 'sync' })
@@ -234,14 +261,15 @@ onBeforeUnmount(() => {
         <nav class="vben-navigation" @transitionend="revealCurrentMenu">
           <a-menu
             :selected-keys="selectedKeys"
-            :open-keys="preferences.sidebarCollapsed ? [] : openKeys"
+            :open-keys="preferences.sidebarCollapsed ? collapsedOpenKeys : openKeys"
             mode="inline"
             :inline-collapsed="preferences.sidebarCollapsed"
+            :trigger-sub-menu-action="preferences.sidebarCollapsed ? 'click' : 'hover'"
             @open-change="updateOpenKeys"
           >
-            <a-menu-item v-for="item in navigation[0]?.items?.filter(allowed)" :key="item.path" @click="navigate(item.path)">
+            <a-menu-item v-for="item in navigation[0]?.items?.filter(allowed)" :key="item.path">
               <template #icon><component :is="item.icon" :size="18" /></template>
-              {{ t(item.label) }}
+              <a :href="item.path" @click.left.exact.prevent="navigate(item.path)">{{ t(item.label) }}</a>
             </a-menu-item>
           </a-menu>
 
@@ -249,15 +277,19 @@ onBeforeUnmount(() => {
             <div v-if="!preferences.sidebarCollapsed" class="navigation-section-title">{{ section.label ? t(section.label) : '' }}</div>
             <a-menu
               :selected-keys="selectedKeys"
-              :open-keys="preferences.sidebarCollapsed ? [] : openKeys"
+              :open-keys="preferences.sidebarCollapsed ? collapsedOpenKeys : openKeys"
               mode="inline"
               :inline-indent="16"
               :inline-collapsed="preferences.sidebarCollapsed"
+              :trigger-sub-menu-action="preferences.sidebarCollapsed ? 'click' : 'hover'"
               @open-change="updateOpenKeys"
             >
               <a-sub-menu v-for="branch in allowedBranches(sectionIndex + 1)" :key="branch.key">
-                <template #icon><component :is="branch.icon" :size="18" /></template>
-                <template #title>{{ t(branch.label) }}</template>
+                <template #icon>
+                  <button v-if="preferences.sidebarCollapsed" type="button" class="navigation-group-icon" :aria-label="t(branch.label)" :aria-expanded="collapsedOpenKeys.includes(branch.key)" aria-haspopup="menu" @click.stop="toggleNavigationBranch(branch.key)"><component :is="branch.icon" :size="18" /></button>
+                  <component :is="branch.icon" v-else :size="18" />
+                </template>
+                <template #title><button v-if="!preferences.sidebarCollapsed" type="button" class="navigation-group-title" :aria-expanded="openKeys.includes(branch.key)" @click.stop="toggleNavigationBranch(branch.key)">{{ t(branch.label) }}</button><span v-else>{{ t(branch.label) }}</span></template>
                 <SidebarNavItem v-for="item in branch.items" :key="item.path" :item="item" @navigate="navigate" />
               </a-sub-menu>
             </a-menu>
@@ -390,6 +422,9 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
+.navigation-group-title,.navigation-group-icon{padding:0;border:0;background:transparent;color:inherit;font:inherit;cursor:pointer;text-align:inherit}
+.navigation-group-icon{display:inline-flex;align-items:center;vertical-align:middle}
+.navigation-group-title:focus-visible,.navigation-group-icon:focus-visible{outline:1px solid var(--edo-primary);outline-offset:3px;border-radius:2px}
 @media(max-width:600px){
   .vben-header{gap:8px;padding:0 10px}
   .header-left{flex:1;min-width:0;gap:4px}

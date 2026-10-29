@@ -13,8 +13,8 @@ const { t } = useI18n()
     <template #title>{{ t(item.label) }}</template>
     <SidebarNavItem v-for="child in item.children" :key="child.path" :item="child" @navigate="emit('navigate', $event)" />
   </a-sub-menu>
-  <a-menu-item v-else :key="item.path" @click="emit('navigate', item.path)">
+  <a-menu-item v-else :key="item.path">
     <template #icon><component :is="item.icon" :size="16" /></template>
-    {{ t(item.label) }}
+    <a :href="item.path" @click.left.exact.prevent="emit('navigate', item.path)">{{ t(item.label) }}</a>
   </a-menu-item>
 </template>
