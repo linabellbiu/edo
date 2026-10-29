@@ -678,7 +678,7 @@ func dockerBuildEnvironment(host, tlsCertPath, configDirectory string, buildArgs
 			continue
 		}
 		switch strings.ToUpper(name) {
-		case "DOCKER_BUILDKIT":
+		case "DOCKER_BUILDKIT", "DOCKER_AUTH_CONFIG":
 			continue
 		case "DOCKER_HOST", "DOCKER_CONTEXT", "DOCKER_TLS_VERIFY", "DOCKER_CERT_PATH":
 			if host != "" {
@@ -707,6 +707,9 @@ func dockerBuildEnvironment(host, tlsCertPath, configDirectory string, buildArgs
 	}
 	sort.Strings(keys)
 	for _, key := range keys {
+		if strings.EqualFold(key, "DOCKER_AUTH_CONFIG") {
+			continue
+		}
 		environment = append(environment, key+"="+configured[key])
 	}
 	return environment
@@ -734,18 +737,23 @@ func writeDockerCLIConfig(registry RegistryAuth) (string, error) {
 		Auths:               make(map[string]authEntry),
 		CLIPluginsExtraDirs: dockerCLIPluginDirectories(),
 	}
+	entry := authEntry{}
 	if registry.Credential != "" {
-		entry := authEntry{}
 		if registry.Username == "" {
 			entry.IdentityToken = registry.Credential
 		} else {
 			entry.Auth = base64.StdEncoding.EncodeToString([]byte(registry.Username + ":" + registry.Credential))
 		}
-		for _, address := range []string{strings.TrimSpace(registry.ServerAddress), strings.TrimSpace(registry.Host)} {
-			if address != "" {
-				configuration.Auths[address] = entry
-			}
+	}
+	for _, address := range []string{strings.TrimSpace(registry.ServerAddress), strings.TrimSpace(registry.Host)} {
+		if address != "" {
+			configuration.Auths[address] = entry
 		}
+	}
+	// Docker CLI 的 ContainsAuth 在没有认证项时会自动探测平台凭据助手。
+	// 显式保留空目标认证，无目标时使用 Docker Hub，避免匿名构建访问宿主机钥匙串。
+	if len(configuration.Auths) == 0 {
+		configuration.Auths["https://index.docker.io/v1/"] = authEntry{}
 	}
 	payload, err := json.Marshal(configuration)
 	if err != nil {

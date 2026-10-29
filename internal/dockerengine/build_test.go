@@ -3,14 +3,17 @@ package dockerengine
 import (
 	"archive/tar"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/moby/moby/client"
 )
@@ -391,6 +394,183 @@ func TestDockerBuildEnvironmentSelectsLocalOrConfiguredRuntime(t *testing.T) {
 	}
 }
 
+func TestDockerBuildEnvironmentExcludesInheritedRegistryAuthentication(t *testing.T) {
+	t.Setenv("HTTPS_PROXY", "http://proxy.qa.invalid:3128")
+	for _, target := range []struct{ name, host string }{{name: "local"}, {name: "configured", host: "tcp://builder.qa.invalid:2376"}} {
+		for _, source := range []string{"inherited", "uppercase_override", "lowercase_override"} {
+			t.Run(target.name+"/"+source, func(t *testing.T) {
+				t.Setenv("DOCKER_AUTH_CONFIG", "")
+				if err := os.Unsetenv("DOCKER_AUTH_CONFIG"); err != nil {
+					t.Fatal(err)
+				}
+				configured := map[string]string{"APP_VERSION": "qa-version"}
+				switch source {
+				case "inherited":
+					t.Setenv("DOCKER_AUTH_CONFIG", `{"auths":{"qa.invalid":{"auth":"cWE6Zml4dHVyZQ=="}}}`)
+				case "uppercase_override":
+					configured["DOCKER_AUTH_CONFIG"] = "synthetic-override"
+				case "lowercase_override":
+					configured["docker_auth_config"] = "synthetic-lowercase-override"
+				}
+				inputCount := len(configured)
+				environment := environmentValues(dockerBuildEnvironment(target.host, "/qa/client", "/qa/config", configured))
+				for key := range environment {
+					if strings.EqualFold(key, "DOCKER_AUTH_CONFIG") {
+						t.Fatal("构建子进程不得继承或重新注入 Docker 环境认证配置")
+					}
+				}
+				if environment["HTTPS_PROXY"] != "http://proxy.qa.invalid:3128" || environment["DOCKER_CONFIG"] != "/qa/config" || environment["DOCKER_BUILDKIT"] != "1" {
+					t.Fatal("隔离认证不应改变代理和独立构建配置")
+				}
+				if target.host != "" && (environment["DOCKER_HOST"] != target.host || environment["DOCKER_TLS_VERIFY"] != "1" || environment["DOCKER_CERT_PATH"] != "/qa/client") {
+					t.Fatal("隔离认证不应改变显式构建运行时或 TLS 配置")
+				}
+				if environment["APP_VERSION"] != "qa-version" || len(configured) != inputCount {
+					t.Fatal("隔离认证不应丢失正常构建参数或修改调用者参数")
+				}
+			})
+		}
+	}
+}
+
+func TestAnonymousDockerCLIConfigContainsOnlyEmptyTargetAuthentication(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		registry RegistryAuth
+		keys     []string
+	}{
+		{name: "docker_hub", keys: []string{"https://index.docker.io/v1/"}},
+		{name: "target_host", registry: RegistryAuth{Host: "qa.invalid"}, keys: []string{"qa.invalid"}},
+		{name: "target_aliases", registry: RegistryAuth{ServerAddress: " https://qa.invalid ", Host: " qa.invalid "}, keys: []string{"https://qa.invalid", "qa.invalid"}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			directory, err := writeDockerCLIConfig(test.registry)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer os.RemoveAll(directory)
+			payload, err := os.ReadFile(filepath.Join(directory, "config.json"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			var configuration struct {
+				Auths            map[string]map[string]string `json:"auths"`
+				CredentialsStore string                       `json:"credsStore"`
+				Helpers          map[string]string            `json:"credHelpers"`
+			}
+			if err := json.Unmarshal(payload, &configuration); err != nil {
+				t.Fatal(err)
+			}
+			if len(configuration.Auths) != len(test.keys) || configuration.CredentialsStore != "" || len(configuration.Helpers) != 0 {
+				t.Fatal("匿名配置必须显式声明空目标认证且不得使用凭据助手")
+			}
+			for _, key := range test.keys {
+				entry, exists := configuration.Auths[key]
+				if !exists || len(entry) != 0 {
+					t.Fatal("匿名目标认证必须存在且不含凭据")
+				}
+			}
+		})
+	}
+}
+
+func TestExplicitDockerCLIConfigKeepsOnlyCurrentRegistryAuthentication(t *testing.T) {
+	for _, username := range []string{"qa-user", ""} {
+		directory, err := writeDockerCLIConfig(RegistryAuth{
+			ServerAddress: "https://qa.invalid", Host: "qa.invalid", Username: username, Credential: "synthetic-fixture",
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer os.RemoveAll(directory)
+		payload, err := os.ReadFile(filepath.Join(directory, "config.json"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var configuration struct {
+			Auths map[string]map[string]string `json:"auths"`
+		}
+		if err := json.Unmarshal(payload, &configuration); err != nil {
+			t.Fatal(err)
+		}
+		if len(configuration.Auths) != 2 {
+			t.Fatal("私库构建必须只保留本次仓库的两个准确认证别名")
+		}
+		for _, key := range []string{"https://qa.invalid", "qa.invalid"} {
+			entry := configuration.Auths[key]
+			if len(entry) != 1 {
+				t.Fatal("私库认证内容缺失或出现额外字段")
+			}
+			if username == "" {
+				if entry["identitytoken"] != "synthetic-fixture" {
+					t.Fatal("本次私库身份令牌未保留")
+				}
+			} else if entry["auth"] != base64.StdEncoding.EncodeToString([]byte(username+":synthetic-fixture")) {
+				t.Fatal("本次私库用户名认证未保留")
+			}
+		}
+	}
+}
+
+func TestDockerCLIAuthenticationIsolationWithControlledHelpers(t *testing.T) {
+	cli := os.Getenv("EDO_TEST_DOCKER_CLI")
+	if cli == "" {
+		t.Skip("未指定隔离验证使用的官方 Docker CLI 绝对路径")
+	}
+	if !filepath.IsAbs(cli) {
+		t.Fatal("隔离验证必须显式指定官方 Docker CLI 绝对路径")
+	}
+	root := t.TempDir()
+	bin := filepath.Join(root, "bin")
+	if err := os.Mkdir(bin, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	// PATH 仅包含本测试助手，不可回退到宿主机钥匙串；只记录动作，不保存标准输入。
+	helper := []byte("#!/bin/sh\ncase \"$1\" in\n  erase|store|get|list)\n    printf '%s\\n' \"$1\" >> \"$EDO_TEST_HELPER_COUNTER\"\n    case \"$1\" in get) printf '{\"Username\":\"\",\"Secret\":\"\"}\\n';; list) printf '{}\\n';; esac\n    exit 0;;\n  *) exit 2;;\nesac\n")
+	for _, name := range []string{"docker-credential-osxkeychain", "docker-credential-pass", "docker-credential-secretservice"} {
+		if err := os.WriteFile(filepath.Join(bin, name), helper, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(bin, "pass"), []byte("#!/bin/sh\nexit 0\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for _, test := range []struct {
+		name     string
+		registry RegistryAuth
+	}{
+		{name: "anonymous_hub"},
+		{name: "anonymous_target", registry: RegistryAuth{Host: "qa.invalid"}},
+		{name: "explicit_target", registry: RegistryAuth{ServerAddress: "https://qa.invalid", Host: "qa.invalid", Username: "qa", Credential: "synthetic-fixture"}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			directory, err := writeDockerCLIConfig(test.registry)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer os.RemoveAll(directory)
+			counter := filepath.Join(t.TempDir(), "actions")
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			command := exec.CommandContext(ctx, cli, "--config", directory, "logout", "qa.invalid")
+			command.Env = []string{
+				"PATH=" + bin,
+				"DOCKER_CONFIG=" + directory,
+				"DOCKER_HOST=unix://" + filepath.Join(root, "no-daemon.sock"),
+				"DOCKER_CONTEXT=default",
+				"EDO_TEST_HELPER_COUNTER=" + counter,
+			}
+			// logout 的明确目标只操作私有配置，不建立 daemon 或 Registry 连接。
+			if err := command.Run(); err != nil {
+				t.Fatalf("受控 Docker CLI 本地认证验证失败：%v", err)
+			}
+			if _, err := os.Stat(counter); !errors.Is(err, os.ErrNotExist) {
+				t.Fatal("独立构建认证配置仍调用了平台默认凭据助手")
+			}
+		})
+	}
+}
+
 func TestAnonymousDockerConfigDoesNotInheritCredentials(t *testing.T) {
 	directory, err := writeDockerCLIConfig(RegistryAuth{})
 	if err != nil {
@@ -438,7 +618,7 @@ func TestDockerCLIConfigKeepsExplicitPluginDirectoryWithoutCredentials(t *testin
 	if !slices.Contains(configuration.CLIPluginsExtraDirs, plugins) {
 		t.Fatal("独立认证配置丢失显式 Docker 配置中的插件目录")
 	}
-	if len(configuration.Auths) != 0 || strings.Contains(string(payload), "synthetic-private-auth") ||
+	if len(configuration.Auths) != 1 || string(configuration.Auths["https://index.docker.io/v1/"]) != "{}" || strings.Contains(string(payload), "synthetic-private-auth") ||
 		strings.Contains(string(payload), "private-helper") || strings.Contains(string(payload), "private-untrusted-plugin") {
 		t.Fatal("独立认证配置继承了原配置内容")
 	}
