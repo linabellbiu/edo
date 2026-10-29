@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, onBeforeUnmount, reactive, ref } from 'vue'
+import { computed, h, onMounted, onBeforeUnmount, reactive, ref } from 'vue'
 import { Modal, message } from 'ant-design-vue'
 import { Plus, RefreshCw } from 'lucide-vue-next'
 import { useI18n } from 'vue-i18n'
@@ -28,7 +28,18 @@ async function detail(id:string){const request=++revision;try{const value=(await
 function closeDetail(){revision++;open.value=false;selected.value=null}
 function edit(item?:Project){editingID.value=item?.id||'';Object.assign(form,{name:item?.name||'',description:item?.description||'',department_id:item?.department_id||auth.user?.department_id||'',is_active:item?.is_active??true});formOpen.value=true}
 async function save(){if(!form.name.trim()||saving.value)return;saving.value=true;try{if(editingID.value)await client.put(`/projects/${editingID.value}`,form);else await client.post('/projects',form);formOpen.value=false;message.success(t('workspace.saved'));window.dispatchEvent(new Event('edo:projects-changed'));await load();if(open.value&&selected.value)await detail(selected.value.project.id)}catch(error){message.error(apiErrorMessage(error))}finally{saving.value=false}}
-function assign(userID:string,roleID:string){if(!selected.value||saving.value)return;const id=selected.value.project.id;Modal.confirm({title:t('workspace.confirmMember'),async onOk(){saving.value=true;try{await client.put(`/projects/${id}/members/${userID}`,{role_id:roleID});message.success(t('workspace.saved'));await detail(id)}catch(error){message.error(apiErrorMessage(error));throw error}finally{saving.value=false}}})}
+function assign(userID:string,roleID:string){
+ if(!selected.value||saving.value)return
+ const {project,members,users,roles}=selected.value,existing=members.find(item=>item.user_id===userID)
+ const target=existing||users.find(item=>item.id===userID),roleName=roleID?roles.find(item=>item.id===roleID)?.display_name:existing?.role_name
+ if(!project.name||!target||!roleName)return
+ const id=project.id,userName=target.nickname&&target.nickname!==target.username?`${target.nickname}（${target.username}）`:target.username
+ const action=roleID?(existing?'confirmUpdateMember':'confirmAddMember'):'confirmRemoveMember'
+ // 确认信息与实际请求共用本次点击冻结的目标，不跟随后续列表选择变化。
+ Modal.confirm({title:t(`workspace.${action}`),content:h('div',[
+  h('p',`${t('workspace.name')}：${project.name}`),h('p',`${t('workspace.user')}：${userName}`),h('p',`${t('workspace.role')}：${roleName}`),
+ ]),okText:t(roleID?(existing?'workspace.save':'workspace.addMember'):'workspace.removeMember'),cancelText:t('workspace.cancel'),okType:roleID?'primary':'danger',async onOk(){saving.value=true;try{await client.put(`/projects/${id}/members/${userID}`,{role_id:roleID});message.success(t('workspace.saved'));await detail(id)}catch(error){message.error(apiErrorMessage(error));throw error}finally{saving.value=false}}})
+}
 function remove(item:Project){Modal.confirm({title:t('workspace.confirmDelete'),content:t('workspace.confirmDeleteHint'),okType:'danger',async onOk(){try{await client.delete(`/projects/${item.id}`);open.value=false;window.dispatchEvent(new Event('edo:projects-changed'));await load()}catch(error){message.error(apiErrorMessage(error));throw error}}})}
 function useProject(item:Project){localStorage.setItem('edo.project',item.id);window.location.assign('/applications')}
 onBeforeUnmount(()=>{revision++})

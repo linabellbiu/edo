@@ -157,7 +157,7 @@ test('DNS记录请求切换域名后丢弃迟到响应，关闭详情也不恢�
 
 test('项目成员变更在确认时固定项目和成员，角色只能委派当前项目已有权限',async t=>{
   const h=harness(t,'../src/views/ProjectsView.vue',{codes:['project.member.update'],api:{get:async()=>({data:{project:{id:'project-a'},members:[],users:[],roles:[],permissions:['project.member.update'],catalog:[]}})}})
-  h.state.selected.value={project:{id:'project-a'},permissions:['project.member.update','application.read'],roles:[{id:'reader',display_name:'只读',permissions:['application.read']},{id:'strong',display_name:'高级',permissions:['user.delete']}],members:[]}
+  h.state.selected.value={project:{id:'project-a',name:'项目A'},permissions:['project.member.update','application.read'],roles:[{id:'reader',display_name:'只读',permissions:['application.read']},{id:'strong',display_name:'高级',permissions:['user.delete']}],members:[],users:[{id:'member-a',username:'member_a',nickname:'成员A'}]}
   assert.deepEqual(h.state.roleOptions.value.map(item=>[item.value,item.disabled]),[['reader',false],['strong',true]])
   h.state.assign('member-a','reader');assert.equal(writes(h).length,0)
   h.state.selected.value={project:{id:'project-b'},permissions:[],roles:[],members:[]}
