@@ -66,6 +66,7 @@ interface ReleaseGroup {
 
 interface ReleasePlanExecutionItem {
   id: string
+  release_plan_execution_id?: string
   release_group_application_id: string
   application_id: string
   pipeline_run_id: string
@@ -161,12 +162,30 @@ function planStatus(status: string): { tone: PlanTone; label: string; hint: stri
 function visiblePlanStatus(plan: ReleasePlanItem) {
   if (plan.is_active === false) return 'disabled'
   if (props.executingPlanIds?.includes(plan.id)) return 'running'
-  if (plan.latest_execution?.status === 'pending' || plan.latest_execution?.status === 'running') return plan.latest_execution.status
+  if (plan.latest_execution) {
+    const execution = plan.latest_execution
+    if (!['pending', 'running', 'succeeded', 'failed'].includes(execution.status)) return 'unknown'
+    if (execution.status === 'pending' || execution.status === 'running') return execution.status
+    const items = completeExecutionItems(execution)
+    if (execution.status === 'failed' && items.length && items.every(item => item.status === 'canceled')) return 'canceled'
+    if (execution.status === 'succeeded' && items.length && items.every(item => item.status === 'skipped')) return 'skipped'
+    return execution.status || 'unknown'
+  }
   const latestRunStatus = latestPlanRun(plan)?.status
   if (latestRunStatus === 'detected' || latestRunStatus === 'ready' || latestRunStatus === 'awaiting_approval') return 'running'
   if (latestRunStatus === 'blocked') return 'failed'
   if (latestRunStatus) return latestRunStatus
-  return plan.latest_execution?.status || plan.status
+  return plan.status
+}
+
+function completeExecutionItems(execution: NonNullable<ReleasePlanItem['latest_execution']>) {
+  const items = execution.items
+  if (typeof execution.id !== 'string' || !execution.id.trim() || !Array.isArray(items) || !items.length) return []
+  // 特殊终态只能由本次完整有效的执行项确定，不以截断的运行列表或其他执行猜测。
+  const keys = ['id', 'release_group_application_id', 'application_id', 'pipeline_run_id'] as const
+  if (items.some(item => !item || item.release_plan_execution_id !== execution.id || keys.some(key => typeof item[key] !== 'string' || !item[key].trim()))) return []
+  if (keys.some(key => new Set(items.map(item => item[key])).size !== items.length)) return []
+  return items
 }
 
 function planMutationBlocked(plan: ReleasePlanItem) {
