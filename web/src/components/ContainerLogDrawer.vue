@@ -16,6 +16,8 @@ const follow = ref(true)
 const connection = ref<'connecting' | 'connected' | 'complete' | 'error'>('connecting')
 let activeTerminal: Terminal | undefined
 let dispose: (() => void) | undefined
+let generation = 0
+let disposed = false
 
 const connectionText = computed(() => ({
   connecting: t('containerLogs.connecting'),
@@ -32,11 +34,13 @@ const connectionColor = computed(() => {
 })
 
 async function connect() {
+  const revision = ++generation
+  const target = props.path
   dispose?.()
   dispose = undefined
   connection.value = 'connecting'
   await nextTick()
-  if (!props.open || !container.value || !props.path) return
+  if (disposed || revision !== generation || !props.open || !container.value || !target || target !== props.path) return
 
   const terminal = new Terminal({
     convertEol: true,
@@ -59,14 +63,16 @@ async function connect() {
 
   let closed = false
   let completed = false
+  const current = () => !closed && !disposed && revision === generation && props.open && target === props.path
   const socket = new WebSocket(
-    projectSocketUrl(props.path, { tail: tail.value, follow: follow.value, timestamps: true }),
+    projectSocketUrl(target, { tail: tail.value, follow: follow.value, timestamps: true }),
     'edo-container-logs-v1',
   )
   const decoder = new TextDecoder()
   socket.binaryType = 'arraybuffer'
 
   socket.onmessage = event => {
+    if (!current()) return
     if (event.data instanceof ArrayBuffer) {
       terminal.write(decoder.decode(event.data, { stream: true }))
       if (follow.value) terminal.scrollToBottom()
@@ -90,13 +96,13 @@ async function connect() {
     }
   }
   socket.onclose = () => {
-    if (!closed && !completed) {
+    if (current() && !completed) {
       connection.value = 'error'
       terminal.writeln(`\r\n\x1b[90m${t('containerLogs.disconnected')}\x1b[0m`)
     }
   }
   socket.onerror = () => {
-    connection.value = 'error'
+    if (current()) connection.value = 'error'
   }
 
   const observer = new ResizeObserver(() => {
@@ -110,7 +116,8 @@ async function connect() {
   dispose = () => {
     closed = true
     observer.disconnect()
-    if (socket.readyState === WebSocket.OPEN) socket.close(1000, '用户关闭容器日志')
+    socket.onmessage = socket.onclose = socket.onerror = null
+    if (socket.readyState === WebSocket.CONNECTING || socket.readyState === WebSocket.OPEN) socket.close(1000, '用户关闭容器日志')
     terminal.dispose()
     if (activeTerminal === terminal) activeTerminal = undefined
   }
@@ -120,15 +127,21 @@ function clear() {
   activeTerminal?.clear()
 }
 
-watch(() => props.open, open => {
+watch(() => [props.open, props.path] as const, ([open]) => {
   if (open) void connect()
   else {
+    generation++
     dispose?.()
     dispose = undefined
   }
 }, { immediate: true })
 
-onBeforeUnmount(() => dispose?.())
+onBeforeUnmount(() => {
+  disposed = true
+  generation++
+  dispose?.()
+  dispose = undefined
+})
 </script>
 
 <template>
