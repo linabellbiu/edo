@@ -110,7 +110,12 @@ func (h terminalHandler) open(
 		h.logger.Warn("WebSocket 终端握手失败", "operation", "terminal_upgrade", "request_id", requestIDFrom(c), "target_type", targetType, "err", err)
 		return
 	}
-	defer connection.Close()
+	closeCode := websocket.CloseNormalClosure
+	defer func() {
+		_ = connection.WriteControl(websocket.CloseMessage,
+			websocket.FormatCloseMessage(closeCode, "终端会话已结束"), time.Now().Add(2*time.Second))
+		_ = connection.Close()
+	}()
 
 	sessionID := uuid.NewString()
 	sessionContext, cancel := context.WithTimeout(c.Request.Context(), h.service.MaxDuration())
@@ -135,6 +140,7 @@ func (h terminalHandler) open(
 	}
 	session, err := opener(sessionContext, shell, size)
 	if err != nil {
+		closeCode = websocket.CloseInternalServerErr
 		h.logger.Error("打开终端失败", "operation", "terminal_open", "request_id", requestIDFrom(c), "session_id", sessionID, "target_type", targetType, "resource_id", resourceID, "err", err)
 		h.writeTerminalEvent(connection, terminalEvent{Type: "error", Message: "终端连接失败，请检查目标状态或联系管理员"})
 		h.recordTerminalAudit(c, "terminal.open", resourceID, sessionID, model.AuditFailed, metadata, 0)
@@ -164,6 +170,7 @@ func (h terminalHandler) open(
 	sessionClosed = true
 	result := model.AuditSucceeded
 	if bridgeErr != nil && !isExpectedTerminalClose(bridgeErr) {
+		closeCode = websocket.CloseInternalServerErr
 		result = model.AuditFailed
 		h.logger.Warn("容器终端会话异常结束", "operation", "terminal_bridge", "request_id", requestIDFrom(c), "session_id", sessionID, "target_type", targetType, "resource_id", resourceID, "err", bridgeErr)
 	}
@@ -181,9 +188,12 @@ func (h terminalHandler) bridge(ctx context.Context, connection *websocket.Conn,
 	clientDone := make(chan error, 1)
 	backendDone := make(chan error, 1)
 	writerDone := make(chan error, 1)
+	// 会话取消后仍给退出事件留出发送机会，桥接结束即释放写协程。
+	writerContext, stopWriter := context.WithCancel(context.WithoutCancel(ctx))
+	defer stopWriter()
 	go readTerminalClient(ctx, connection, session, clientDone)
 	go readTerminalOutput(ctx, session, outbound, backendDone)
-	go writeTerminalClient(ctx, connection, outbound, writerDone)
+	go writeTerminalClient(writerContext, ctx, connection, outbound, writerDone)
 	if err := sendTerminalEvent(ctx, outbound, terminalEvent{Type: "ready"}); err != nil {
 		return err
 	}
@@ -263,7 +273,7 @@ func readTerminalOutput(ctx context.Context, session terminalservice.Session, ou
 	}
 }
 
-func writeTerminalClient(ctx context.Context, connection *websocket.Conn, outbound <-chan terminalOutbound, done chan<- error) {
+func writeTerminalClient(ctx, sessionContext context.Context, connection *websocket.Conn, outbound <-chan terminalOutbound, done chan<- error) {
 	ticker := time.NewTicker(25 * time.Second)
 	defer ticker.Stop()
 	for {
@@ -272,6 +282,9 @@ func writeTerminalClient(ctx context.Context, connection *websocket.Conn, outbou
 			done <- ctx.Err()
 			return
 		case message := <-outbound:
+			if message.messageType == websocket.BinaryMessage && sessionContext.Err() != nil {
+				continue
+			}
 			_ = connection.SetWriteDeadline(time.Now().Add(10 * time.Second))
 			err := connection.WriteMessage(message.messageType, message.payload)
 			if message.ack != nil {
@@ -297,13 +310,13 @@ func sendTerminalEvent(ctx context.Context, outbound chan<- terminalOutbound, ev
 		return err
 	}
 	ack := make(chan error, 1)
+	waitContext, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
 	select {
 	case outbound <- terminalOutbound{messageType: websocket.TextMessage, payload: payload, ack: ack}:
-	case <-ctx.Done():
-		return ctx.Err()
+	case <-waitContext.Done():
+		return waitContext.Err()
 	}
-	waitContext, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
-	defer cancel()
 	select {
 	case err := <-ack:
 		return err
