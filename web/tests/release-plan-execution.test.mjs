@@ -311,10 +311,26 @@ test('弹窗真实渲染不把第一条流水线伪装为已选，阻断原因�
   const descriptor = parse(readFileSync(new URL('../src/components/ReleasePlanExecuteModal.vue', import.meta.url), 'utf8')).descriptor
   const output = ts.transpileModule(compileScript(descriptor, { id: 'release-plan-render', inlineTemplate: true }).content, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, esModuleInterop: true } }).outputText
   const module = { exports: {} }, icon = { render: () => null }
-  new Function('require', 'module', 'exports', output)(name => name === 'vue' ? vue : name === 'vue-i18n' ? { useI18n: () => ({ t: translate }) } : new Proxy({}, { get: () => icon }), module, module.exports)
+  new Function('require', 'module', 'exports', output)(name => name === 'vue' ? vue : name === 'vue-i18n' ? { useI18n: () => ({ t: translate }) } : name === 'ant-design-vue' ? { theme: { useToken: () => ({ token: vue.ref({ zIndexPopupBase: 1000 }) }) } } : new Proxy({}, { get: () => icon }), module, module.exports)
   const app = vue.createSSRApp(module.exports.default, { open: true, planTitle: '发布计划', groups: h.state.planExecutionGroups.value })
   for (const name of ['a-modal', 'a-select', 'a-radio-group', 'a-radio-button', 'a-button', 'a-select-option', 'a-select-opt-group']) app.component(name, { props: ['okButtonProps'], setup: (props, { slots }) => () => vue.h(name === 'a-modal' ? 'dialog' : 'span', {}, [slots.default?.(), ...(name === 'a-modal' ? [vue.h('button', { disabled: props.okButtonProps.disabled }, '确认并执行')] : [])]) })
   const html = await renderToString(app)
   assert.match(html, /应用存在多条可手动执行的流水线，无法确定执行目标/); assert.doesNotMatch(html, /流水线 flow-a|流水线 flow-other/)
   assert.match(html, /<button disabled>确认并执行<\/button>/)
+})
+
+test('详情抽屉上打开的执行弹窗使用当前主题浮层基准，仍低于选择下拉层级', async () => {
+  const descriptor = parse(readFileSync(new URL('../src/components/ReleasePlanExecuteModal.vue', import.meta.url), 'utf8')).descriptor
+  const output = ts.transpileModule(compileScript(descriptor, { id: 'release-plan-layer', inlineTemplate: true }).content, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, esModuleInterop: true } }).outputText
+  for (const base of [1000, 4000]) {
+    const module = { exports: {} }, icon = { render: () => null }
+    new Function('require', 'module', 'exports', output)(name => name === 'vue' ? vue : name === 'vue-i18n' ? { useI18n: () => ({ t: translate }) } : name === 'ant-design-vue' ? { theme: { useToken: () => ({ token: vue.ref({ zIndexPopupBase: base }) }) } } : new Proxy({}, { get: () => icon }), module, module.exports)
+    const layers = [], app = vue.createSSRApp(module.exports.default, { open: true, planTitle: '发布计划', groups: [] })
+    app.component('a-modal', { props: ['zIndex'], setup: (props, { slots }) => { layers.push(props.zIndex); return () => vue.h('dialog', {}, slots.default?.()) } })
+    for (const name of ['a-select', 'a-radio-group', 'a-radio-button', 'a-button', 'a-select-option', 'a-select-opt-group']) app.component(name, { render: () => null })
+    await renderToString(app)
+    assert.equal(layers[0], base + 10)
+    assert.ok(layers[0] > base, '必须高于详情抽屉')
+    assert.ok(layers[0] < base + 50, '不得盖住执行内容选择下拉')
+  }
 })

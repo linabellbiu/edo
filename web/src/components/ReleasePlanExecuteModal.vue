@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, type Component } from 'vue'
 import { useI18n } from 'vue-i18n'
+import { theme } from 'ant-design-vue'
 import {
   AlertTriangle,
   Boxes,
@@ -89,6 +90,7 @@ const emit = defineEmits<{
 }>()
 
 const { t } = useI18n()
+const { token } = theme.useToken()
 
 const items = computed(() => props.groups.flatMap((group) => group.items))
 const completeCount = computed(() => items.value.filter(isItemComplete).length)
@@ -191,6 +193,7 @@ function updateArtifact(membershipID: string, value: unknown) {
   <a-modal
     :open="open"
     :width="1080"
+    :z-index="token.zIndexPopupBase + 10"
     wrap-class-name="release-plan-execute-modal"
     :title="t('releasePlanExecution.title')"
     :ok-button-props="{ disabled: !canSubmit }"
