@@ -271,6 +271,63 @@ func TestSQLChangeManualLifecycleAndEncryption(t *testing.T) {
 	}
 }
 
+func TestSQLChangeRejectRequiresReasonWithoutMutation(t *testing.T) {
+	f := fixture(t)
+	created := f.saved(t)
+	if err := f.s.HandleCheck(context.Background(), f.message(t, "sql_change.check")); err != nil {
+		t.Fatal(err)
+	}
+	before, err := f.s.Detail(f.ctx, created.Change.ID)
+	if err != nil || before.Change.Status != "pending_review" {
+		t.Fatalf("检查后工单未等待审核: %v", err)
+	}
+	var beforeJobs int64
+	if err := f.s.db.Model(&model.Job{}).Count(&beforeJobs).Error; err != nil {
+		t.Fatal(err)
+	}
+	for _, input := range []struct{ name, decision, reason string }{
+		{"空原因", "reject", ""}, {"空白原因", "reject", " \t\r\n\u3000"},
+		{"超长原因", "reject", strings.Repeat("原", 334)}, {"修剪前超长", "reject", strings.Repeat(" ", 1000) + "原"},
+		{"非法编码", "reject", string([]byte{0xff})}, {"批准超长空白", "approve", strings.Repeat(" ", 1001)},
+		{"批准非法编码", "approve", string([]byte{0xff})},
+	} {
+		t.Run(input.name, func(t *testing.T) {
+			_, err := f.s.Review(f.actor(f.reviewer), f.reviewer, before.Change.ID, ActionInput{ExpectedVersion: before.Change.Version, Decision: input.decision, Reason: input.reason})
+			if !errors.Is(err, ErrInvalid) {
+				t.Fatalf("无效审核原因未被拒绝: %v", err)
+			}
+			after, err := f.s.Detail(f.ctx, before.Change.ID)
+			if err != nil || after.Change.Version != before.Change.Version || after.Change.RevisionID != before.Change.RevisionID || after.Change.Status != before.Change.Status || !after.Change.UpdatedAt.Equal(before.Change.UpdatedAt) || len(after.Reviews) != 0 || len(after.Executions) != 0 {
+				t.Fatalf("无效审核改变了工单或历史: %v", err)
+			}
+			var jobs int64
+			if err := f.s.db.Model(&model.Job{}).Count(&jobs).Error; err != nil || jobs != beforeJobs || f.runner.executions.Load() != 0 {
+				t.Fatalf("无效审核创建或执行了后台任务: %v", err)
+			}
+		})
+	}
+	rejected, err := f.s.Review(f.actor(f.reviewer), f.reviewer, before.Change.ID, ActionInput{ExpectedVersion: before.Change.Version, Decision: "reject", Reason: " \t请补充变更范围\u3000\n"})
+	if err != nil || rejected.Change.Status != "rejected" || len(rejected.Reviews) != 1 || rejected.Reviews[0].Reason != "请补充变更范围" || rejected.Change.Version != before.Change.Version+1 {
+		t.Fatalf("有效驳回没有保留修剪后的原因: %v", err)
+	}
+}
+
+func TestSQLChangeApproveStillAllowsEmptyReason(t *testing.T) {
+	f := fixture(t)
+	created := f.saved(t)
+	if err := f.s.HandleCheck(context.Background(), f.message(t, "sql_change.check")); err != nil {
+		t.Fatal(err)
+	}
+	before, err := f.s.Detail(f.ctx, created.Change.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	approved, err := f.s.Review(f.actor(f.reviewer), f.reviewer, before.Change.ID, ActionInput{ExpectedVersion: before.Change.Version, Decision: "approve", Reason: " \t\u3000"})
+	if err != nil || approved.Change.Status != "approved" || len(approved.Reviews) != 1 || approved.Reviews[0].Reason != "" || len(approved.Executions) != 0 || f.runner.executions.Load() != 0 {
+		t.Fatalf("批准空原因规则被改变或意外执行SQL: %v", err)
+	}
+}
+
 func TestSQLChangeStaleChecksAndContentAuthorBoundaries(t *testing.T) {
 	f := fixture(t)
 	d := f.saved(t)

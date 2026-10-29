@@ -18,7 +18,9 @@ func (s *Service) Review(ctx context.Context, actorID, id string, input ActionIn
 	if err := s.authorize(ctx, actorID, "sql_change.review"); err != nil {
 		return nil, err
 	}
-	if input.Decision != "approve" && input.Decision != "reject" || len(input.Reason) > 1000 || !utf8.ValidString(input.Reason) {
+	rawReason := input.Reason
+	input.Reason = strings.TrimSpace(input.Reason)
+	if input.Decision != "approve" && input.Decision != "reject" || len(rawReason) > 1000 || !utf8.ValidString(rawReason) || input.Decision == "reject" && input.Reason == "" {
 		return nil, s.failure(ctx, "sql_change_review_validate", ErrInvalid, ErrInvalid)
 	}
 	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
@@ -57,7 +59,7 @@ func (s *Service) Review(ctx context.Context, actorID, id string, input ActionIn
 		if r.RowsAffected != 1 {
 			return ErrConflict
 		}
-		return tx.Create(&model.SQLChangeReview{ID: uuid.NewString(), ProjectID: item.ProjectID, DepartmentID: item.DepartmentID, ChangeID: id, RevisionID: item.RevisionID, ReviewerID: actorID, Decision: input.Decision, Reason: strings.TrimSpace(input.Reason), CreatedAt: now}).Error
+		return tx.Create(&model.SQLChangeReview{ID: uuid.NewString(), ProjectID: item.ProjectID, DepartmentID: item.DepartmentID, ChangeID: id, RevisionID: item.RevisionID, ReviewerID: actorID, Decision: input.Decision, Reason: input.Reason, CreatedAt: now}).Error
 	})
 	if err != nil {
 		return nil, s.failure(ctx, "sql_change_review", err, safeError(err))

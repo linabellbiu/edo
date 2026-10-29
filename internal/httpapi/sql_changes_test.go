@@ -307,6 +307,26 @@ func TestSQLChangeHTTPModificationRequiresNewCheckAndReview(t *testing.T) {
 	f.request(t, http.MethodGet, "/"+first.Change.ID, nil, f.writer, 404)
 }
 
+func TestSQLChangeHTTPRejectReasonValidationWithoutMutation(t *testing.T) {
+	f := newSQLChangeHTTPFixture(t)
+	before := f.checked(t, f.create(t, "驳回原因接口校验"))
+	for _, input := range []struct{ name, reason string }{
+		{"空原因", ""}, {"空白原因", " \t\r\n\u3000"}, {"超长原因", strings.Repeat("原", 334)}, {"修剪前超长", strings.Repeat(" ", 1000) + "原"},
+	} {
+		t.Run(input.name, func(t *testing.T) {
+			f.request(t, http.MethodPost, "/"+before.Change.ID+"/reviews", sqlchange.ActionInput{ExpectedVersion: before.Change.Version, Decision: "reject", Reason: input.reason}, f.review, http.StatusBadRequest)
+			after := sqlChangeHTTPDetail(t, f.request(t, http.MethodGet, "/"+before.Change.ID, nil, f.writer, http.StatusOK))
+			if after.Change.Version != before.Change.Version || after.Change.RevisionID != before.Change.RevisionID || after.Change.Status != "pending_review" || !after.Change.UpdatedAt.Equal(before.Change.UpdatedAt) || len(after.Reviews) != 0 || len(after.Executions) != 0 || f.runner.executes.Load() != 0 {
+				t.Fatal("接口拒绝无效原因时修改了工单或执行记录")
+			}
+		})
+	}
+	rejected := sqlChangeHTTPDetail(t, f.request(t, http.MethodPost, "/"+before.Change.ID+"/reviews", sqlchange.ActionInput{ExpectedVersion: before.Change.Version, Decision: "reject", Reason: " \t需调整变更范围\u3000\n"}, f.review, http.StatusOK))
+	if rejected.Change.Status != "rejected" || len(rejected.Reviews) != 1 || rejected.Reviews[0].Reason != "需调整变更范围" {
+		t.Fatal("有效驳回原因没有准确保存")
+	}
+}
+
 func TestSQLChangeHTTPSkipRequiresAssignedReviewerAndReason(t *testing.T) {
 	f := newSQLChangeHTTPFixture(t)
 	change := f.create(t, "SQL 人工跳过")
