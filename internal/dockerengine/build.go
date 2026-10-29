@@ -765,6 +765,12 @@ func dockerCLIPluginDirectories() []string {
 		"/usr/libexec/docker/cli-plugins",
 		"/usr/lib/docker/cli-plugins",
 	}
+	// 独立认证目录只复用原配置的插件路径，不读取认证或凭据助手设置。
+	if configured := os.Getenv("DOCKER_CONFIG"); configured != "" {
+		if absolute, err := filepath.Abs(configured); err == nil {
+			candidates = append([]string{filepath.Join(absolute, "cli-plugins")}, candidates...)
+		}
+	}
 	if home, err := os.UserHomeDir(); err == nil {
 		candidates = append(candidates, filepath.Join(home, ".docker", "cli-plugins"))
 	}

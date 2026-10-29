@@ -3,6 +3,7 @@ package dockerengine
 import (
 	"archive/tar"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"os"
@@ -402,6 +403,122 @@ func TestAnonymousDockerConfigDoesNotInheritCredentials(t *testing.T) {
 	}
 	if strings.Contains(string(payload), "private-token") || strings.Contains(string(payload), "/host/docker-config") {
 		t.Fatalf("匿名构建配置继承了宿主机凭据: %s", payload)
+	}
+}
+
+func TestDockerCLIConfigKeepsExplicitPluginDirectoryWithoutCredentials(t *testing.T) {
+	configured := t.TempDir()
+	plugins := filepath.Join(configured, "cli-plugins")
+	if err := os.Mkdir(plugins, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	// 原配置故意不符合 JSON，插件发现不得读取其中的认证或配置内容。
+	privateConfig := []byte(`synthetic-private-auth; credsStore=private-helper; cliPluginsExtraDirs=/private-untrusted-plugin`)
+	if err := os.WriteFile(filepath.Join(configured, "config.json"), privateConfig, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("DOCKER_CONFIG", configured)
+
+	directory, err := writeDockerCLIConfig(RegistryAuth{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(directory)
+	payload, err := os.ReadFile(filepath.Join(directory, "config.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var configuration struct {
+		Auths               map[string]json.RawMessage `json:"auths"`
+		CLIPluginsExtraDirs []string                   `json:"cliPluginsExtraDirs"`
+	}
+	if err := json.Unmarshal(payload, &configuration); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(configuration.CLIPluginsExtraDirs, plugins) {
+		t.Fatal("独立认证配置丢失显式 Docker 配置中的插件目录")
+	}
+	if len(configuration.Auths) != 0 || strings.Contains(string(payload), "synthetic-private-auth") ||
+		strings.Contains(string(payload), "private-helper") || strings.Contains(string(payload), "private-untrusted-plugin") {
+		t.Fatal("独立认证配置继承了原配置内容")
+	}
+	var keys map[string]json.RawMessage
+	if err := json.Unmarshal(payload, &keys); err != nil {
+		t.Fatal(err)
+	}
+	for key := range keys {
+		if key != "auths" && key != "cliPluginsExtraDirs" {
+			t.Fatalf("独立认证配置包含意外字段：%s", key)
+		}
+	}
+}
+
+func TestDockerCLIPluginDirectoriesIgnoreUnavailableExplicitConfig(t *testing.T) {
+	for _, name := range []string{"unset", "empty", "missing", "config_file", "plugins_file"} {
+		t.Run(name, func(t *testing.T) {
+			root := t.TempDir()
+			configured := filepath.Join(root, "docker-config")
+			t.Setenv("DOCKER_CONFIG", configured)
+			switch name {
+			case "unset":
+				if err := os.Unsetenv("DOCKER_CONFIG"); err != nil {
+					t.Fatal(err)
+				}
+			case "empty":
+				t.Setenv("DOCKER_CONFIG", "")
+			case "config_file":
+				if err := os.WriteFile(configured, nil, 0o600); err != nil {
+					t.Fatal(err)
+				}
+			case "plugins_file":
+				if err := os.Mkdir(configured, 0o700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(configured, "cli-plugins"), nil, 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			directories := dockerCLIPluginDirectories()
+			if slices.Contains(directories, filepath.Join(configured, "cli-plugins")) ||
+				slices.Contains(directories, "cli-plugins") {
+				t.Fatal("空配置或不可用插件路径不应进入临时认证配置")
+			}
+		})
+	}
+}
+
+func TestDockerCLIPluginDirectoriesResolveRelativeExplicitConfig(t *testing.T) {
+	root := t.TempDir()
+	t.Chdir(root)
+	plugins := filepath.Join(root, "docker-config", "cli-plugins")
+	if err := os.MkdirAll(plugins, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("DOCKER_CONFIG", "docker-config")
+	if !slices.Contains(dockerCLIPluginDirectories(), plugins) {
+		t.Fatal("相对插件路径必须在切换构建工作目录前固定为绝对路径")
+	}
+}
+
+func TestDockerCLIPluginDirectoriesDeduplicateExplicitAndExecutablePath(t *testing.T) {
+	configured := t.TempDir()
+	plugins := filepath.Join(configured, "cli-plugins")
+	if err := os.Mkdir(plugins, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(configured, "docker"), []byte("#!/bin/sh\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("DOCKER_CONFIG", configured)
+	t.Setenv("PATH", configured)
+	count := 0
+	for _, directory := range dockerCLIPluginDirectories() {
+		if directory == plugins {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Fatalf("同一显式插件目录应只保留一次，实际为 %d", count)
 	}
 }
 
