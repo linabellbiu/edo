@@ -147,21 +147,34 @@ func (h terminalFileHandler) prepare(c *gin.Context, permissions ...string) (ter
 			}
 		}()
 	}
-	// 取消上传时关闭请求流，避免授权撤销后仍阻塞读取上传内容。
+	controller := http.NewResponseController(c.Writer)
+	interrupted := make(chan struct{})
+	target, requestID := h.key(c), requestIDFrom(c)
+	// net/http 的 Close 会等待正在读取的请求体，先用读取截止时间解除阻塞。
 	stop := context.AfterFunc(ctx, func() {
+		defer close(interrupted)
 		if body != nil {
+			if err := controller.SetReadDeadline(time.Now()); err != nil && !errors.Is(err, http.ErrNotSupported) {
+				h.logger.Warn("中断终端文件请求读取失败", "operation", "terminal_file_interrupt", "target", target, "request_id", requestID, "err", err)
+			}
 			_ = body.Close()
 		}
 	})
+	stopInterrupt := func() {
+		if !stop() {
+			// 回调结束后才能归还处理器，防止继续使用被 Gin 复用的响应对象。
+			<-interrupted
+		}
+	}
 	backend, err := h.open(ctx, c)
 	if err != nil {
-		stop()
+		stopInterrupt()
 		cleanup()
 		h.fail(c, err)
 		return nil, func() {}, false
 	}
 	return backend, func() {
-		stop()
+		stopInterrupt()
 		cancel()
 		if err := backend.Close(); err != nil {
 			h.logger.Warn("关闭终端文件资源失败", "operation", "terminal_file_close", "target", h.key(c), "err", err)
