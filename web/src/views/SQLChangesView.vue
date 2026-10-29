@@ -203,12 +203,12 @@ function resetContext() {
   search.value = queryText('search')
   if (can('read')) { void loadOptions(); void loadList(); if (selectedID.value) { detailOpen.value = true; void loadDetail() } }
 }
-watch(() => [auth.user?.id, project(), can('read')], resetContext, { immediate: true })
+watch([() => auth.user?.id, () => auth.user?.department_id, project, () => auth.user?.is_superuser, () => can('read')], resetContext, { immediate: true })
 watch(() => [queryText('search'), status.value, applicationFilter.value, queryText('pipeline_run_id'), page.value, pageSize.value], () => { search.value = queryText('search'); if (can('read')) void loadList() })
 watch(selectedID, value => { detailRevision++; detailController?.abort(); detail.value = undefined; detailError.value = ''; detailOpen.value = !!value && can('read'); if (detailOpen.value) void loadDetail(value) })
 watch(() => form.application_id, () => { if (!hydrating) { form.pipeline_run_id = ''; form.database_id = ''; form.branch = '' } }, { flush: 'sync' })
 watch(() => form.pipeline_run_id, id => { if (!hydrating) { const run = runs.value.find(item => item.id === id); if (run?.ref.startsWith('refs/heads/')) form.branch = run.ref.slice(11) } }, { flush: 'sync' })
-watch(() => [can('create'), can('update'), can('delete'), can('review'), can('execute'), can('skip'), can('check'), auth.canAny(['application_database.execute'])], () => {
+watch([...['create', 'update', 'delete', 'review', 'execute', 'skip', 'check'].map(action => () => can(action)), () => auth.canAny(['application_database.execute'])], () => {
   if (editorOpen.value && !can(editingID.value ? 'update' : 'create')) { editorRevision++; saveController?.abort(); editorOpen.value = false; form.sql = ''; saving.value = false }
   if (actionDialog.open && actionTarget && !permitted(actionDialog.action, actionTarget)) { actionRevision++; actionController?.abort(); actionDialog.open = false; actionDialog.pending = false; actionTarget = undefined }
 })

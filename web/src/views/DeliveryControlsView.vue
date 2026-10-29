@@ -33,7 +33,10 @@ async function save(){if(saving.value)return;const project=auth.user?.project_id
 }catch(cause){message.error(apiErrorMessage(cause))}finally{saving.value=false}}
 function remove(row:Database){Modal.confirm({title:`删除数据库配置“${row.name}”？`,content:'只删除 EDO 中的连接配置，数据库本身和变更记录保留；后续引用任务将无法执行。',okText:'删除',okType:'danger',async onOk(){await client.delete(`/application-databases/${encodeURIComponent(row.id)}`,{params:{version:row.version}});await load()}})}
 async function showHistory(row:Database){try{const result=await client.get(`/application-databases/${encodeURIComponent(row.id)}/migrations`);history.value=result.data.migrations;historyOpen.value=true}catch(cause){message.error(apiErrorMessage(cause))}}
-watch(()=>[auth.user?.project_id,route.name],()=>{revision++;open.value=false;historyOpen.value=false;dbForm.password='';databases.value=[];policies.value=[];void load()},{immediate:true})
+watch([
+ ()=>auth.user?.id,()=>auth.user?.department_id,()=>auth.user?.project_id,()=>auth.user?.is_superuser,()=>route.name,
+ ...['read','create','update','delete'].map(action=>()=>auth.canAny([`${permission.value}.${action}`])),
+],()=>{revision++;open.value=false;historyOpen.value=false;dbForm.password='';tested.value=false;databases.value=[];policies.value=[];if(auth.canAny([`${permission.value}.read`]))void load()},{immediate:true})
 watch(dbForm,()=>{tested.value=false},{deep:true})
 watch(()=>route.query.create,()=>{if(!loading.value)consumeDatabaseCreateRequest()})
 

@@ -21,7 +21,7 @@ function value(status='pending_review', overrides={}) {
 }
 async function harness({ codes=allCodes, user='applicant', query={}, get, post, put, del }={}) {
   const requests=[], messages=[], confirmations=[], unmounts=[], mounted=[], routeLeaves=[], documentListeners=new Map()
-  const auth = vue.reactive({ user:{id:user, project_id:'project-a', is_superuser:false}, permissions:new Set(codes), canAny(required){return !required.length || required.some(code => this.permissions.has(code))} })
+  const auth = vue.reactive({ user:{id:user, department_id:'department-a', project_id:'project-a', is_superuser:false}, permissions:new Set(codes), canAny(required){return !!this.user && (this.user.is_superuser || !required.length || required.some(code => this.permissions.has(code)))} })
   const route=vue.reactive({path:'/sql-changes',query:{...query}})
   const router={async push({query}){route.query={...query}}}
   const client={async get(path,options={}){requests.push({method:'get',path,options});if(get){const response=await get(path,options);if(response)return response};return {data:path==='/sql-changes/options'?clone(choices):path==='/sql-changes'?{items:[],total:0}:value()}},async post(path,body,options={}){requests.push({method:'post',path,body:clone(body),options});return post?post(path,body,options):{data:value(path.endsWith('/execute')?'queued':'checking')}},async put(path,body,options={}){requests.push({method:'put',path,body:clone(body),options});return put?put(path,body,options):{data:value('checking')}},async delete(path,options={}){requests.push({method:'delete',path,options});return del?del(path,options):{data:{}}}}
@@ -42,6 +42,29 @@ async function harness({ codes=allCodes, user='applicant', query={}, get, post, 
   return {state,auth,route,router,client,api,requests,messages,confirmations,routeLeaves,document,documentListeners,stop}
 }
 function fill(h) { h.state.form.name='变更';h.state.form.application_id='app-a';h.state.form.pipeline_run_id='run-a';h.state.form.database_id='db-a';h.state.form.reviewer_id='reviewer';h.state.form.sql='UPDATE orders SET state=1 WHERE id=1;' }
+
+test('同身份同有效权限刷新不丢SQL草稿与详情，也不重复读取',async t=>{
+  const h=await harness();t.after(h.stop);await h.state.edit();fill(h)
+  h.state.detail.value=value();h.state.detailOpen.value=true
+  const count=h.requests.length
+  h.auth.user={...h.auth.user};h.auth.permissions=new Set([...h.auth.permissions].reverse());await settle()
+  assert.equal(h.state.editorOpen.value,true);assert.equal(h.state.form.sql,'UPDATE orders SET state=1 WHERE id=1;')
+  assert.equal(h.state.detailOpen.value,true);assert.equal(h.state.detail.value.change.id,'change-a');assert.equal(h.requests.length,count)
+})
+test('真实用户、部门、项目或超级管理员身份变化仍清理SQL编辑草稿与详情',async t=>{
+  for(const update of [h=>{h.auth.user.id='another-user'},h=>{h.auth.user.department_id='department-b'},h=>{h.auth.user.project_id='project-b'},h=>{h.auth.user.is_superuser=true},h=>{h.auth.user=null}]){
+    const h=await harness();t.after(h.stop);await h.state.edit();fill(h);h.state.detail.value=value();h.state.detailOpen.value=true
+    update(h);await settle();assert.equal(h.state.editorOpen.value,false);assert.equal(h.state.form.sql,'');assert.equal(h.state.detailOpen.value,false);assert.equal(h.state.detail.value,undefined)
+  }
+})
+test('同身份权限校准保留审核确认，超级管理员降级仍清理SQL草稿',async t=>{
+  const reviewer=await harness({user:'reviewer'});t.after(reviewer.stop)
+  await reviewer.state.prepareAction('review',value().change);assert.equal(reviewer.state.actionDialog.open,true)
+  reviewer.auth.user={...reviewer.auth.user};reviewer.auth.permissions=new Set([...reviewer.auth.permissions].reverse());await settle()
+  assert.equal(reviewer.state.actionDialog.open,true)
+  const h=await harness();t.after(h.stop);h.auth.user.is_superuser=true;await settle();await h.state.edit();fill(h)
+  h.auth.user={...h.auth.user,is_superuser:false};await settle();assert.equal(h.state.editorOpen.value,false);assert.equal(h.state.form.sql,'')
+})
 
 test('SQL独立页初始化只读一次列表和选项，不自动创建、执行或推进流水线',async t=>{
   const h=await harness();t.after(h.stop)
