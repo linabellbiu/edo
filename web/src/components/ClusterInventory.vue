@@ -19,7 +19,7 @@ import { hostsForCluster } from '@/utils/infrastructureRelations'
 import { formatDateTime } from '@/utils/time'
 
 const props = defineProps<{ clusters: InfrastructureCluster[]; hosts: InfrastructureHost[]; loading: boolean; error?: string; hostError?: string }>()
-const emit = defineEmits<{ refresh: []; create: []; provision: []; host: [host: InfrastructureHost] }>()
+const emit = defineEmits<{ refresh: []; provision: []; host: [host: InfrastructureHost] }>()
 const auth = useAuthStore()
 const route = useRoute()
 const router = useRouter()
@@ -155,7 +155,7 @@ onBeforeUnmount(() => { mounted = false })
         <a-input v-model:value="query" allow-clear placeholder="搜索集群、API 地址或主机" aria-label="搜索集群"><template #prefix><Search :size="15" /></template></a-input>
         <a-select v-model:value="association" :disabled="!canFilterAssociations" aria-label="按主机关联筛选" :options="[{ label: '全部集群', value: 'all' }, { label: '已关联主机', value: 'linked' }, { label: '未关联主机', value: 'standalone' }]" />
       </div>
-      <div class="cluster-toolbar-actions"><a-button :loading="loading" @click="emit('refresh')"><RefreshCw :size="15" />刷新</a-button><a-button v-if="auth.canAny(['cluster.create'])" @click="emit('create')">接入集群</a-button><a-button v-if="canCreateK3s" type="primary" @click="emit('provision')"><Plus :size="15" />创建集群</a-button></div>
+      <div class="cluster-toolbar-actions"><a-button :loading="loading" @click="emit('refresh')"><RefreshCw :size="15" />刷新</a-button><a-button v-if="canCreateK3s" type="primary" @click="emit('provision')"><Plus :size="15" />创建集群</a-button></div>
     </header>
     <a-alert v-if="error" class="cluster-load-error" type="error" show-icon message="集群列表加载失败" :description="error"><template #action><a-button size="small" @click="emit('refresh')">重试</a-button></template></a-alert>
     <a-table :columns="columns" :data-source="filtered" :loading="loading" :pagination="pagination" :scroll="{ x: 1220 }" class="resource-list-table" row-key="id" size="middle" @change="changePage">
@@ -166,7 +166,7 @@ onBeforeUnmount(() => { mounted = false })
         <template v-else-if="column.key === 'status'"><a-tag v-if="!record.is_active">已停用</a-tag><span v-else-if="connection[record.id]" class="connection-state" :class="{ failed: !connection[record.id]?.ok }" :title="connection[record.id]?.error"><i />{{ connection[record.id]?.ok ? '连接正常' : '连接失败' }}</span><a-tag v-else color="success">已启用</a-tag></template>
         <template v-else-if="column.key === 'actions'"><ResourceRowActions :more="auth.canAny(['cluster.update', 'cluster.execute'])"><a-button v-if="canManageResources" size="small" @click="manage(record)">管理<ArrowUpRight :size="13" /></a-button><a-button size="small" @click="openDetails(record)">详情</a-button><a-button v-if="auth.canAny(['kubernetes.rbac.read','kubernetes.rbac.update'])" size="small" :disabled="!record.is_active" @click="openRbac(record)">授权</a-button><template #more><a-menu-item v-if="auth.canAny(['cluster.update'])" @click="editCluster(record)"><Pencil :size="13" />编辑集群</a-menu-item><a-menu-item v-if="canEditAssociations" :disabled="!associationKnown(record)" @click="associate(record)">关联主机</a-menu-item><a-menu-item v-if="auth.canAny(['cluster.execute'])" :disabled="!record.is_active || Boolean(checking)" @click="ping(record)">测试连接</a-menu-item><a-menu-item v-if="auth.canAny(['cluster.update'])" :disabled="Boolean(updating)" @click="toggle(record)">{{ record.is_active ? '停用集群' : '启用集群' }}</a-menu-item></template></ResourceRowActions></template>
       </template>
-      <template #emptyText><a-empty :description="error ? '集群列表加载失败' : query || association !== 'all' ? '没有匹配的集群' : '暂无 Kubernetes 集群'"><a-space v-if="!error && !query && association === 'all'"><a-button v-if="auth.canAny(['cluster.create'])" @click="emit('create')">接入集群</a-button><a-button v-if="canCreateK3s" type="primary" @click="emit('provision')">创建集群</a-button></a-space></a-empty></template>
+      <template #emptyText><a-empty :description="error ? '集群列表加载失败' : query || association !== 'all' ? '没有匹配的集群' : '暂无 Kubernetes 集群'"><a-space v-if="!error && !query && association === 'all'"><a-button v-if="canCreateK3s" type="primary" @click="emit('provision')">创建集群</a-button></a-space></a-empty></template>
     </a-table>
 
     <ResourceDetailDrawer :open="detailOpen" @close="closeDetails" @update:open="detailOpen = $event">
