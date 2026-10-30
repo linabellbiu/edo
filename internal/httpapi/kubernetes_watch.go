@@ -129,23 +129,46 @@ func (h kubernetesWatchHandler) stream(c *gin.Context) {
 	c.Header("Content-Type", "text/event-stream; charset=utf-8")
 	c.Header("Cache-Control", "no-store")
 	c.Header("X-Accel-Buffering", "no")
-	controller := http.NewResponseController(c.Writer)
+	writer := http.ResponseWriter(c.Writer)
+	// Gin 的 Flush 不返回底层错误；正文仍由 Gin 写入以保留状态与字节统计。
+	if unwrapper, ok := c.Writer.(interface{ Unwrap() http.ResponseWriter }); ok {
+		writer = unwrapper.Unwrap()
+	}
+	controller := http.NewResponseController(writer)
+	logWriteError := func(operation string, err error) {
+		h.logger.WarnContext(ctx, "推送集群资源变更失败", "operation", operation, "request_id", requestIDFrom(c), "cluster_id", c.Param("id"), "err", err)
+	}
+	clearWriteDeadline := func() bool {
+		if err := controller.SetWriteDeadline(time.Time{}); err != nil && !errors.Is(err, http.ErrNotSupported) {
+			logWriteError("kubernetes_watch_clear_write_deadline", err)
+			return false
+		}
+		return true
+	}
+	defer clearWriteDeadline()
 	write := func(event string, payload any) bool {
 		if !authorized() {
 			return false
 		}
-		if err := controller.SetWriteDeadline(time.Now().Add(5 * time.Second)); err != nil && !errors.Is(err, http.ErrNotSupported) {
-			return false
-		}
 		data, err := json.Marshal(payload)
 		if err != nil {
+			logWriteError("kubernetes_watch_encode", err)
+			return false
+		}
+		if err := controller.SetWriteDeadline(time.Now().Add(5 * time.Second)); err != nil && !errors.Is(err, http.ErrNotSupported) {
+			logWriteError("kubernetes_watch_set_write_deadline", err)
 			return false
 		}
 		if _, err := c.Writer.Write([]byte("event: " + event + "\ndata: " + string(data) + "\n\n")); err != nil {
+			logWriteError("kubernetes_watch_write", err)
 			return false
 		}
-		c.Writer.Flush()
-		return true
+		if err := controller.Flush(); err != nil {
+			logWriteError("kubernetes_watch_flush", err)
+			return false
+		}
+		// 空闲阶段不能保留写入期限，否则会截断退出响应或重置 HTTP/2 流。
+		return clearWriteDeadline()
 	}
 	// "ready" only acknowledges the SSE transport. A reset/change from the
 	// subscriber asks the browser to read again after informer synchronization.
