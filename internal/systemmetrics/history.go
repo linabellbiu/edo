@@ -2,6 +2,7 @@ package systemmetrics
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/json"
 	"errors"
@@ -29,9 +30,11 @@ type History struct {
 }
 
 type historyStore struct {
-	client *redis.Client
-	key    string
-	nodeID string
+	client    *redis.Client
+	key       string
+	namespace string
+	cleanup   historyCleanup
+	nodeID    string
 }
 
 func (s *Service) ConfigureHistory(client *redis.Client, prefix, listener string) {
@@ -42,7 +45,10 @@ func (s *Service) ConfigureHistory(client *redis.Client, prefix, listener string
 	}
 	digest := sha256.Sum256([]byte(hostname + "\x00" + listener))
 	nodeID := fmt.Sprintf("%x", digest[:12])
-	s.history = &historyStore{client: client, key: prefix + ":" + nodeID, nodeID: nodeID}
+	s.history = &historyStore{
+		client: client, key: prefix + ":" + nodeID, namespace: prefix, nodeID: nodeID,
+		cleanup: historyCleanup{client: client.WithTimeout(time.Second), registration: prefix + ":" + nodeID + ":registered:" + rand.Text()},
+	}
 }
 
 // Run 在后台独立采样，浏览器查询只读取缓存，不参与 CPU 差值计算。
@@ -90,6 +96,7 @@ func (h *historyStore) append(ctx context.Context, snapshot Snapshot) error {
 	now := snapshot.CollectedAt
 	score := float64(now.UnixMilli())
 	minute := now.Truncate(time.Minute).UnixMilli()
+	var registered *redis.IntCmd
 	_, err = h.client.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
 		fine, coarse := h.key+":5s", h.key+":60s"
 		pipe.ZAdd(ctx, fine, redis.Z{Score: score, Member: data})
@@ -102,12 +109,25 @@ func (h *historyStore) append(ctx context.Context, snapshot Snapshot) error {
 		pipe.ZRemRangeByScore(ctx, coarse, "-inf", strconv.FormatInt(now.Add(-HistoryRetention).UnixMilli(), 10))
 		pipe.ZRemRangeByRank(ctx, coarse, 0, -4322)
 		pipe.Expire(ctx, coarse, HistoryRetention)
+		if h.namespace != "" {
+			// 只提前最早到期时间；新采样不得把旧采样的待清时间推迟。
+			registered = pipe.ZAddLT(ctx, h.retentionIndex(),
+				redis.Z{Score: score + float64(time.Hour.Milliseconds()), Member: fine},
+				redis.Z{Score: score + float64(HistoryRetention.Milliseconds()), Member: coarse},
+				redis.Z{Score: score + float64(HistoryRetention.Milliseconds()), Member: h.cleanup.registration},
+			)
+			pipe.Expire(ctx, h.retentionIndex(), HistoryRetention)
+		}
 		return nil
 	})
+	if h.namespace != "" && (err != nil || registered != nil && registered.Err() == nil && registered.Val() > 0) {
+		// 重新登记或事务回执未知时保守重发现；不重放写事务，也不漏掉失活节点。
+		h.cleanup.rediscover.Store(true)
+	}
 	if err != nil {
 		return fmt.Errorf("保存监控历史失败: %w", err)
 	}
-	return nil
+	return h.trimInactive(ctx, now)
 }
 
 func (s *Service) History(ctx context.Context, window time.Duration, after int64) (History, error) {
