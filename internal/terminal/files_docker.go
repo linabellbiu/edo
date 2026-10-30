@@ -89,10 +89,10 @@ func (s *Service) OpenDockerFiles(ctx context.Context, endpointID, containerID s
 		if op.Err() != nil {
 			return op.Err()
 		}
-		if err := errors.Join(copyErr, inputErr); err != nil {
-			return err
-		}
 		result, err := api.ExecInspect(op, created.ID, client.ExecInspectOptions{})
+		if op.Err() != nil {
+			return op.Err()
+		}
 		if err != nil {
 			return fmt.Errorf("读取 Docker 文件操作结果失败: %w", err)
 		}
@@ -100,9 +100,11 @@ func (s *Service) OpenDockerFiles(ctx context.Context, endpointID, containerID s
 			return terminalfiles.ErrUnavailable
 		}
 		if result.ExitCode != 0 {
+			// 协议可能在 READY 前拒绝旧摘要；收尾关闭输入产生的管道错误
+			// 不能覆盖已核实的远端退出语义。
 			return fileExecError(fileExecExitError(result.ExitCode))
 		}
-		return nil
+		return errors.Join(copyErr, inputErr)
 	}
 	if err := f.check(ctx); err != nil {
 		f.Close()
