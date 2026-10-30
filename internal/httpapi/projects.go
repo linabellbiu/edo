@@ -80,7 +80,7 @@ func (h projectHandler) fail(c *gin.Context, operation string, err error) {
 		writeError(c, 403, "permission_denied", err.Error())
 	case errors.Is(err, access.ErrProjectInvalid), errors.Is(err, access.ErrProjectMember):
 		writeError(c, 400, "invalid_project", err.Error())
-	case errors.Is(err, access.ErrProjectConflict), errors.Is(err, access.ErrProjectInUse), errors.Is(err, access.ErrProjectDefault):
+	case errors.Is(err, access.ErrProjectConflict), errors.Is(err, access.ErrProjectInUse), errors.Is(err, access.ErrProjectDefault), errors.Is(err, access.ErrProjectLastOwner):
 		writeError(c, 409, "project_conflict", err.Error())
 	default:
 		writeInternalError(c)

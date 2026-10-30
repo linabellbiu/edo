@@ -216,7 +216,12 @@ func (s *Service) ProjectAccess(ctx context.Context, user *model.User, id string
 	return result, nil
 }
 
-func (s *Service) SetProjectMember(ctx context.Context, user *model.User, projectID, userID, roleID string) error {
+func (s *Service) SetProjectMember(ctx context.Context, user *model.User, projectID, userID, roleID string) (err error) {
+	defer func() {
+		if err != nil {
+			s.logger.WarnContext(ctx, "修改项目成员失败", "operation", "project_member_update", "project_id", projectID, "user_id", user.ID, "target_user_id", userID, "role_id", roleID, "err", err)
+		}
+	}()
 	project, err := s.ResolveProject(ctx, user, projectID)
 	if err != nil {
 		return err
@@ -234,6 +239,11 @@ func (s *Service) SetProjectMember(ctx context.Context, user *model.User, projec
 		return ErrSelfAccessUpdate
 	}
 	err = s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		locked, err := lockProjectMembers(tx, projectID)
+		if err != nil {
+			return err
+		}
+		project = locked
 		var currentActor model.User
 		if err := tx.First(&currentActor, "uuid = ?", user.ID).Error; err != nil && !user.IsSuperuser {
 			return ErrAccessDelegationDenied
@@ -245,6 +255,13 @@ func (s *Service) SetProjectMember(ctx context.Context, user *model.User, projec
 		if !user.IsSuperuser {
 			if !currentActor.IsActive || currentActor.DepartmentID != project.DepartmentID {
 				return ErrAccessDelegationDenied
+			}
+			var membership model.ProjectMember
+			if err := tx.Where("project_id = ? AND user_id = ?", project.ID, user.ID).First(&membership).Error; err != nil {
+				if errors.Is(err, gorm.ErrRecordNotFound) {
+					return ErrAccessDelegationDenied
+				}
+				return fmt.Errorf("复核当前项目成员失败: %w", err)
 			}
 			if !actorPermissions["project.member.update"] {
 				return ErrAccessDelegationDenied
@@ -261,6 +278,11 @@ func (s *Service) SetProjectMember(ctx context.Context, user *model.User, projec
 			return ErrProjectMember
 		}
 		if roleID == "" {
+			if !user.IsSuperuser {
+				if err := preserveProjectOwner(tx, project, userID, roleID); err != nil {
+					return err
+				}
+			}
 			return tx.Where("project_id = ? AND user_id = ?", projectID, userID).Delete(&model.ProjectMember{}).Error
 		}
 		var role model.Role
@@ -280,6 +302,11 @@ func (s *Service) SetProjectMember(ctx context.Context, user *model.User, projec
 			}
 			if !user.IsSuperuser && !actorPermissions[code] {
 				return ErrAccessDelegationDenied
+			}
+		}
+		if !user.IsSuperuser {
+			if err := preserveProjectOwner(tx, project, userID, roleID); err != nil {
+				return err
 			}
 		}
 		member := model.ProjectMember{ProjectID: projectID, UserID: userID, RoleID: roleID, CreatedAt: time.Now().UTC()}
