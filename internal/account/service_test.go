@@ -8,6 +8,7 @@ import (
 
 	"edo/internal/testutil"
 
+	"github.com/google/uuid"
 	"gorm.io/gorm"
 
 	"edo/internal/auth"
@@ -145,6 +146,51 @@ func TestSetDepartmentRequiresRepositoryCredentialHandover(t *testing.T) {
 	updated, err := service.FindByID(ctx, user.ID)
 	if err != nil || updated.DepartmentID != "department-target" || updated.AuthVersion != user.AuthVersion+1 {
 		t.Fatalf("用户部门或认证版本未更新: user=%+v err=%v", updated, err)
+	}
+}
+
+func TestCredentialReferenceCheckIgnoresCurrentProjectButKeepsDepartment(t *testing.T) {
+	db := openAccountTestDatabase(t, "credential-reference-project-scope")
+	service := NewService(db)
+	ctx := context.Background()
+	user, err := service.CreateUser(ctx, "scope-credential-owner", "凭据归属", "correct horse battery staple")
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	credential := model.GitCredential{ID: uuid.NewString(), UserID: user.ID, Name: "项目范围引用", Provider: model.GitProviderGitea, AuthType: model.GitAuthToken, SecretCiphertext: "test-encrypted-placeholder", CreatedAt: now, UpdatedAt: now}
+	if err := db.Create(&credential).Error; err != nil {
+		t.Fatal(err)
+	}
+	foreignDepartment := uuid.NewString()
+	if err := db.Create(&model.Department{ID: foreignDepartment, Name: "引用检查外部门", IsActive: true, CreatedAt: now, UpdatedAt: now}).Error; err != nil {
+		t.Fatal(err)
+	}
+	otherProject := uuid.NewString()
+	localRepository := model.GitRepository{ID: uuid.NewString(), ProjectID: otherProject, DepartmentID: user.DepartmentID, Name: "原部门其他项目引用", Provider: model.GitProviderGitea, CloneURL: "https://git.example.test/team/local.git", DefaultBranch: "main", AuthType: model.GitAuthToken, CredentialID: &credential.ID, IsActive: true, CreatedBy: user.ID, CreatedAt: now, UpdatedAt: now}
+	foreignRepository := model.GitRepository{ID: uuid.NewString(), ProjectID: uuid.NewString(), DepartmentID: foreignDepartment, Name: "不在检查范围内的引用", Provider: model.GitProviderGitea, CloneURL: "https://git.example.test/team/foreign.git", DefaultBranch: "main", AuthType: model.GitAuthToken, CredentialID: &credential.ID, IsActive: true, CreatedBy: user.ID, CreatedAt: now, UpdatedAt: now}
+	if err := db.Create(&localRepository).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&foreignRepository).Error; err != nil {
+		t.Fatal(err)
+	}
+	ctx = database.WithDepartmentScope(ctx, database.DepartmentScope{UserID: user.ID, DepartmentID: user.DepartmentID, ProjectID: uuid.NewString()})
+	for _, reference := range []string{"credential_id", "api_credential_id"} {
+		values := map[string]any{"credential_id": nil, "api_credential_id": nil}
+		values[reference] = credential.ID
+		if err := db.Model(&localRepository).Updates(values).Error; err != nil {
+			t.Fatal(err)
+		}
+		if err := service.EnsureCredentialsUnreferenced(ctx, user.ID, user.DepartmentID); !errors.Is(err, ErrUserCredentialUsed) {
+			t.Fatalf("当前项目过滤隐藏了同部门其他项目引用: reference=%s err=%v", reference, err)
+		}
+	}
+	if err := db.Model(&localRepository).Updates(map[string]any{"credential_id": nil, "api_credential_id": nil}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := service.EnsureCredentialsUnreferenced(ctx, user.ID, user.DepartmentID); err != nil {
+		t.Fatalf("引用检查不应越过原部门边界: err=%v", err)
 	}
 }
 

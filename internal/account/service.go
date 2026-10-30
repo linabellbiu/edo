@@ -174,7 +174,8 @@ func (s *Service) EnsureCredentialsUnreferenced(ctx context.Context, userID, dep
 		return nil
 	}
 	var count int64
-	query := s.db.WithContext(ctx).Model(&model.GitRepository{}).
+	// 账号删除或调动必须检查原部门的全部项目，不能被当前请求的项目过滤隐藏引用。
+	query := s.db.WithContext(ctx).Table("git_repositories").
 		Where("department_id = ?", departmentID).
 		Where("credential_id IN ? OR api_credential_id IN ?", credentialIDs, credentialIDs)
 	if err := query.Count(&count).Error; err != nil {
