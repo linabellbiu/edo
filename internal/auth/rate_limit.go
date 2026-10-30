@@ -73,10 +73,19 @@ func (l *LoginRateLimiter) RecordFailure(ctx context.Context, username, clientIP
 }
 
 func (l *LoginRateLimiter) ClearAll(ctx context.Context) error {
-	iterator := l.redis.Client().Scan(ctx, 0, l.redis.Key("login", "failure", "*"), 100).Iterator()
+	namespace := l.redis.Key("login", "failure") + ":"
+	// MATCH 使用 glob，配置前缀中的特殊字符必须按字面匹配。
+	pattern := strings.NewReplacer(`\`, `\\`, `*`, `\*`, `?`, `\?`, `[`, `\[`, `]`, `\]`).Replace(namespace) + "*"
+	iterator := l.redis.Client().Scan(ctx, 0, pattern, 100).Iterator()
 	keys := make([]string, 0, 100)
 	for iterator.Next(ctx) {
-		keys = append(keys, iterator.Val())
+		key := iterator.Val()
+		// 枚举结果仍需核对准确命名空间及本模块生成的 SHA256 计数键格式。
+		digest, owned := strings.CutPrefix(key, namespace)
+		if !owned || len(digest) != sha256.Size*2 || strings.Trim(digest, "0123456789abcdef") != "" {
+			continue
+		}
+		keys = append(keys, key)
 		if len(keys) == 100 {
 			if err := l.redis.Client().Del(ctx, keys...).Err(); err != nil {
 				return fmt.Errorf("清理登录失败计数失败: %w", err)
