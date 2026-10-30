@@ -2168,7 +2168,7 @@ onBeforeUnmount(()=>{planExecutionDisposed=true;resetPlanExecutionScope();window
  @open-application-resources="openReleasePlanApplicationResources"
 />
 
-<a-drawer :open="formOpen" :title="creatingApplicationRepository?t('applicationForm.createRepository'):props.section==='applications'?(editingID?'编辑应用':'创建应用'):(editingID?'编辑配置':'新建配置')" width="700" :closable="!saving&&!testing" :mask-closable="!saving&&!testing" :keyboard="!saving&&!testing" @close="closeForm"><a-form layout="vertical">
+<a-drawer :open="formOpen" :title="creatingApplicationRepository?t('applicationForm.createRepository'):props.section==='applications'?(editingID?'编辑应用':'创建应用'):(editingID?'编辑配置':'新建配置')" width="min(700px, 100vw)" :closable="!saving&&!testing" :mask-closable="!saving&&!testing" :keyboard="!saving&&!testing" @close="closeForm"><a-form layout="vertical">
 <template v-if="formSection==='applications'">
  <section class="application-form-section">
   <header><strong>应用信息</strong><small>配置应用名称、说明和唯一绑定的代码仓库。</small></header>

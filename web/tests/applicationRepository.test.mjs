@@ -210,3 +210,27 @@ test('显式 HTTP 许可随测试和保存提交，重新新建仓库时重置',
   repositories.create()
   assert.equal(repositories.repoForm.allow_insecure_http, false)
 })
+
+test('仓库新建、编辑及应用内建表单共用的抽屉宽度不得超出视口', () => {
+  const elements = []
+  function visit(node) {
+    if (node.type === 1) elements.push(node)
+    for (const child of node.children || []) visit(child)
+  }
+  visit(descriptor.template.ast)
+  const directive = (node, name, argument) => node.props?.find(prop => prop.type === 7 && prop.name === name && prop.arg?.content === argument)?.exp?.content
+  const drawers = elements.filter(node => node.tag === 'a-drawer' && directive(node, 'bind', 'open') === 'formOpen')
+  assert.equal(drawers.length, 1)
+  const drawer = drawers[0]
+  assert.equal(drawer.props.find(prop => prop.type === 6 && prop.name === 'width')?.value?.content, 'min(700px, 100vw)')
+  assert.match(directive(drawer, 'bind', 'title'), /creatingApplicationRepository/)
+  assert.match(directive(drawer, 'bind', 'title'), /editingID/)
+  assert.match(drawer.loc.source, /formSection==='repositories'/)
+  assert.equal(directive(drawer, 'on', 'close'), 'closeForm')
+  for (const name of ['closable', 'mask-closable', 'keyboard']) assert.equal(directive(drawer, 'bind', name), '!saving&&!testing')
+  const save = elements.find(node => node.tag === 'a-button' && directive(node, 'on', 'click') === 'save')
+  assert.ok(save && save.loc.start.offset > drawer.loc.start.offset && save.loc.end.offset < drawer.loc.end.offset)
+  assert.equal(directive(save, 'if'), 'canSaveCurrent')
+  assert.equal(directive(save, 'bind', 'loading'), 'saving')
+  assert.match(directive(save, 'bind', 'disabled'), /testing/)
+})
