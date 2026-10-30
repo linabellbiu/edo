@@ -20,6 +20,7 @@ import (
 	"edo/internal/terminalfiles"
 
 	corev1 "k8s.io/api/core/v1"
+	utilexec "k8s.io/client-go/util/exec"
 )
 
 func testFileBackend(t *testing.T, run fileExec) *containerFiles {
@@ -277,10 +278,110 @@ func TestContainerFilesPodIdentityRejectsReplacementAndStoppedContainer(t *testi
 }
 
 func TestContainerFilesProtocolExitCodesAreSafe(t *testing.T) {
-	for code, want := range map[int]error{64: terminalfiles.ErrUnavailable, 65: terminalfiles.ErrInvalidPath, 66: terminalfiles.ErrNotRegular, 67: terminalfiles.ErrTooLarge, 68: terminalfiles.ErrConflict, 69: terminalfiles.ErrExists, 127: terminalfiles.ErrUnavailable} {
+	for code, want := range map[int]error{64: terminalfiles.ErrUnavailable, 65: terminalfiles.ErrInvalidPath, 66: terminalfiles.ErrNotRegular, 67: terminalfiles.ErrTooLarge, 68: terminalfiles.ErrConflict, 69: terminalfiles.ErrExists, 71: fs.ErrNotExist, 72: fs.ErrPermission, 127: terminalfiles.ErrUnavailable} {
 		if got := fileExecError(fileExecExitError(code)); !errors.Is(got, want) {
 			t.Fatalf("%d: %v", code, got)
 		}
+	}
+}
+
+func TestContainerFilesOpenMapsRemoteMissingPermissionAndType(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		code int
+		want error
+	}{
+		{"路径不存在", 71, fs.ErrNotExist}, {"文件不可读", 72, fs.ErrPermission}, {"非普通文件", 66, terminalfiles.ErrNotRegular},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			remote := utilexec.CodeExitError{Err: errors.New("固定文件协议退出"), Code: test.code}
+			f := testFileBackend(t, func(context.Context, []string, io.Reader, io.Writer) error { return fileExecError(remote) })
+			reader, _, err := f.Open(context.Background(), "/tmp/new.txt")
+			if reader != nil {
+				reader.Close()
+				t.Fatal("失败路径不应返回文件流")
+			}
+			if !errors.Is(err, test.want) {
+				t.Fatalf("远端状态未正确映射: %v", err)
+			}
+			if test.code != 66 {
+				var exit interface{ ExitStatus() int }
+				if !errors.As(err, &exit) || exit.ExitStatus() != test.code {
+					t.Fatal("内部诊断丢失原始退出状态")
+				}
+			}
+		})
+	}
+}
+
+func TestContainerFilesPathChecksDistinguishMissingTypeAndPermission(t *testing.T) {
+	// 直接运行生产协议中的路径检查函数，不运行Linux工具探测或连接真实容器。
+	start := strings.Index(fileScriptPrelude, "require_path() {")
+	if start < 0 {
+		start = strings.Index(fileScriptPrelude, "regular() {")
+	}
+	end := strings.LastIndex(fileScriptPrelude, "\np=$1")
+	if start < 0 || end <= start {
+		t.Fatal("生产路径检查函数缺失")
+	}
+	checks := fileScriptPrelude[start:end]
+	dir := t.TempDir()
+	plain := dir + "/plain"
+	if err := os.WriteFile(plain, []byte("fixture"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	link := dir + "/link"
+	if err := os.Symlink(plain, link); err != nil {
+		t.Fatal(err)
+	}
+	dangling := dir + "/dangling"
+	if err := os.Symlink(dir+"/absent-target", dangling); err != nil {
+		t.Fatal(err)
+	}
+	denied := dir + "/denied"
+	if err := os.Mkdir(denied, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(denied, 0000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(denied, 0700) })
+	unreadable := dir + "/unreadable"
+	if err := os.WriteFile(unreadable, []byte("fixture"), 0000); err != nil {
+		t.Fatal(err)
+	}
+	for _, test := range []struct {
+		name, path string
+		want       error
+	}{
+		{"新文件不存在", dir + "/new.txt", fs.ErrNotExist},
+		{"缺失父目录", dir + "/missing/new.txt", fs.ErrNotExist},
+		{"普通文件", plain, nil},
+		{"目录不是文件", dir, terminalfiles.ErrNotRegular},
+		{"符号链接不是普通文件", link, terminalfiles.ErrNotRegular},
+		{"悬空链接不是新文件", dangling, terminalfiles.ErrNotRegular},
+		{"父目录无搜索权限", denied + "/hidden.txt", fs.ErrPermission},
+		{"普通文件无读权限", unreadable, fs.ErrPermission},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if test.want == fs.ErrPermission && os.Geteuid() == 0 {
+				t.Skip("root可穿透此权限夹具；协议退出码与HTTP映射另有Mock覆盖")
+			}
+			err := exec.Command("/bin/sh", "-c", checks+"\nregular \"$1\"", "edo-files", test.path).Run()
+			if err == nil {
+				if test.want != nil {
+					t.Fatal("路径错误被当作成功")
+				}
+				return
+			}
+			var exit *exec.ExitError
+			if !errors.As(err, &exit) {
+				t.Fatal("路径检查命令未正常退出")
+			}
+			if !errors.Is(fileExecError(fileExecExitError(exit.ExitCode())), test.want) {
+				t.Fatalf("路径错误类型不符，exit=%d want=%v", exit.ExitCode(), test.want)
+			}
+		})
 	}
 }
 
@@ -323,8 +424,15 @@ printf again | /bin/sh -c "$4" edo-files "$path" "$5" 5 >/dev/null
 result=$?
 set -e
 [ "$result" -eq 68 ]
+set +e
+/bin/sh -c "$3" edo-files '/tmp/protocol/new file' >/dev/null
+result=$?
+set -e
+[ "$result" -eq 71 ]
 printf 'createEDO-COMMIT\n' | /bin/sh -c "$4" edo-files '/tmp/protocol/new file' '' 6 >/tmp/create
 [ "$(stat -c %a '/tmp/protocol/new file')" = 600 ]
+/bin/sh -c "$3" edo-files '/tmp/protocol/new file' >/tmp/open-created
+test -s /tmp/open-created
 set +e
 printf duplicate | /bin/sh -c "$4" edo-files '/tmp/protocol/new file' '' 9 >/dev/null
 result=$?
@@ -437,6 +545,12 @@ set -e
 				}
 				return err
 			})
+			if reader, _, err := backend.Open(ctx, "/tmp/not-created"); reader != nil || !errors.Is(err, fs.ErrNotExist) {
+				if reader != nil {
+					reader.Close()
+				}
+				t.Fatalf("真实Linux文件流未把缺失路径映射为不存在: %v", err)
+			}
 			var authorizations atomic.Int32
 			authorized := terminalfiles.WithCommitAuthorization(ctx, func(context.Context) error { authorizations.Add(1); return nil })
 			payload := strings.Repeat("界", 23000)

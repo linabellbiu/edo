@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"path"
 	"strconv"
 	"strings"
@@ -36,15 +37,36 @@ emit() {
  case $((0x$1 & 0170000)) in 32768) kind=file;; 16384) kind=directory;; 40960) kind=symlink;; esac
  printf '%s\000%s\000%s\000%s\000%s\000' "$name" "$kind" "$2" "$3" "$4"
 }
-regular() { [ ! -L "$1" ] && [ -f "$1" ] || exit 66; }
+require_path() {
+ # 先核对祖先目录的搜索权限，不能把权限遮蔽的路径误报为不存在。
+ edo_probe=$1
+ while :; do
+  edo_parent=${edo_probe%/*}
+  [ -n "$edo_parent" ] || edo_parent=/
+  if [ -e "$edo_parent" ] || [ -L "$edo_parent" ]; then
+   [ -d "$edo_parent" ] || exit 65
+   [ -x "$edo_parent" ] || exit 72
+  fi
+  [ "$edo_parent" != / ] || break
+  edo_probe=$edo_parent
+ done
+ [ -e "$1" ] || [ -L "$1" ] || exit 71
+}
+regular() {
+ require_path "$1"
+ [ ! -L "$1" ] && [ -f "$1" ] || exit 66
+ [ -r "$1" ] || exit 72
+}
 p=$1
 `
 
 const fileListScript = fileScriptPrelude + `
-[ -d "$p" ] && [ ! -L "$p" ] || exit 65
+require_path "$p"
+[ -d "$p" ] && [ ! -L "$p" ] || exit 66
+[ -r "$p" ] && [ -x "$p" ] || exit 72
 # 先固定实际目录，后续名称均通过 NUL 分隔，不受换行、引号或空格影响。
-cd -P -- "$p" || exit 65
-[ -r . ] && [ -x . ] || exit 65
+cd -P -- "$p" || exit 72
+[ -r . ] && [ -x . ] || exit 72
 count=0
 for item in ./* ./.[!.]* ./..?*; do
  [ -e "$item" ] || [ -L "$item" ] || continue
@@ -78,8 +100,10 @@ dir=${p%/*}
 base=${p##*/}
 [ -n "$dir" ] || dir=/
 [ -n "$base" ] && [ "$base" != . ] && [ "$base" != .. ] || exit 65
-[ -d "$dir" ] && [ ! -L "$dir" ] || exit 65
-cd -P -- "$dir" || exit 65
+require_path "$dir"
+[ -d "$dir" ] && [ ! -L "$dir" ] || exit 66
+[ -x "$dir" ] && [ -w "$dir" ] || exit 72
+cd -P -- "$dir" || exit 72
 # 固定父目录描述符，进入私有暂存目录后不重新跟随外部可替换的父路径。
 exec 4< . || exit 64
 parent=/proc/$$/fd/4
@@ -656,6 +680,10 @@ func fileExecError(err error) error {
 		return terminalfiles.ErrConflict
 	case 69:
 		return terminalfiles.ErrExists
+	case 71:
+		return fmt.Errorf("%w: %w", fs.ErrNotExist, err)
+	case 72:
+		return fmt.Errorf("%w: %w", fs.ErrPermission, err)
 	}
 	return err
 }

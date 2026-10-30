@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"io/fs"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -117,6 +118,51 @@ func TestTerminalFilesHTTPReadsHashAndDownloadsWithoutChangingContent(t *testing
 	}
 	if f.puts != 0 || f.closed != 3 {
 		t.Fatal("读取修改了文件或未关闭后端")
+	}
+}
+
+func TestTerminalFilesHTTPNewFileStatThenUpload(t *testing.T) {
+	f := &fakeFileBackend{err: fs.ErrNotExist}
+	router, _ := fileTestRouter(f, "")
+	response := fileRequest(router, http.MethodGet, "/files/stat?path=/tmp/new.txt", "", "")
+	if response.Code != http.StatusNotFound || !strings.Contains(response.Body.String(), `"code":"file_not_found"`) {
+		t.Fatal("新文件stat必须返回明确404，不是非普通文件400")
+	}
+	f.err = nil
+	response = fileRequest(router, http.MethodPost, "/files/upload?path=/tmp/new.txt", "synthetic upload", "")
+	if response.Code != http.StatusOK || f.puts != 1 || f.expected != "" {
+		t.Fatal("404后的新建上传被当成覆盖或被错误阻断")
+	}
+}
+
+func TestTerminalFilesHTTPFileErrorsHaveDistinctSafeStatuses(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		err    error
+		status int
+		code   string
+	}{
+		{"不存在", errors.Join(fs.ErrNotExist, errors.New("文件协议退出状态71")), 404, "file_not_found"},
+		{"非普通文件", terminalfiles.ErrNotRegular, 400, "invalid_file_type"},
+		{"权限不足", errors.Join(fs.ErrPermission, errors.New("文件协议退出状态72")), 403, "file_permission_denied"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var logs bytes.Buffer
+			f := &fakeFileBackend{value: []byte("synthetic-private-file-content"), err: test.err}
+			h := terminalFileHandler{open: func(context.Context, *gin.Context) (terminalfiles.Backend, error) { return f, nil }, key: func(*gin.Context) string { return "pod:fixture" }, logger: slog.New(slog.NewTextHandler(&logs, nil))}
+			router := gin.New()
+			router.GET("/files/stat", h.stat)
+			response := fileRequest(router, http.MethodGet, "/files/stat?path=/tmp/new.txt", "", "")
+			if response.Code != test.status || !strings.Contains(response.Body.String(), `"code":"`+test.code+`"`) {
+				t.Fatal("文件错误状态未区分")
+			}
+			if strings.Contains(response.Body.String(), "退出状态") || strings.Contains(response.Body.String(), "synthetic-private") || strings.Contains(logs.String(), "synthetic-private") {
+				t.Fatal("文件内容或内部诊断泄漏到响应")
+			}
+			if !strings.Contains(logs.String(), "terminal_file_operation") || !strings.Contains(logs.String(), "pod:fixture") {
+				t.Fatal("内部错误日志缺少操作或目标上下文")
+			}
+		})
 	}
 }
 
