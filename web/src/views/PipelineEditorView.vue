@@ -531,12 +531,13 @@ async function settleDraftBeforeNavigation() {
 }
 
 async function chooseTemplate(id: string) {
-  if (!scopeAllowed()||loadedContext.value!==scopeIdentity()||!publicMode.value||!templates.value.some(item=>item.id===id)||loading.value||switching.value||saving.value)return
+  if (!scopeAllowed()||loadedContext.value!==scopeIdentity()||!publicMode.value||id===templateID.value||!templates.value.some(item=>item.id===id)||loading.value||switching.value||saving.value)return
   const scope=captureScope()
-  if (!(await settleDraftBeforeNavigation())||!currentScope(scope)) return
   const request=++graphRevision
-  loading.value = true;switching.value = true
+  switching.value = true
   try {
+    if (!(await settleDraftBeforeNavigation())||!currentScope(scope)) return
+    loading.value = true
     const result = await client.get<WorkflowTemplateResponse>(`/workflow-templates/${id}`,scopeOptions(scope))
     if(!currentScope(scope)||request!==graphRevision)return
     const previousTemplateID = templateID.value,previousApplicationID = applicationID.value
@@ -552,10 +553,11 @@ async function chooseWorkflow(id: string) {
   if (!scopeAllowed()||loadedContext.value!==scopeIdentity()||!id||id===workflowID.value||loading.value||switching.value||saving.value)return
   if(!editorApplication.value?.workflows?.some(item=>item.id===id))return
   const scope=captureScope()
-  if (!(await settleDraftBeforeNavigation())||!currentScope(scope)) return
-  switching.value = true;loading.value = true
+  switching.value = true
   const previousWorkflowID = workflowID.value
   try {
+    if (!(await settleDraftBeforeNavigation())||!currentScope(scope)) return
+    loading.value = true
     workflowID.value = id
     await router.replace({ query: { application: applicationID.value, workflow: id } })
     if(!currentScope(scope))return
@@ -1357,13 +1359,13 @@ onBeforeRouteLeave(async () => {
         <span class="command-divider" />
         <label v-if="!publicMode" class="plan-switcher">
           <span>应用流水线</span>
-          <a-select :value="workflowID || undefined" :options="workflowOptions" :loading="loading" :disabled="saving" placeholder="选择流水线" @change="chooseWorkflow(String($event))">
+          <a-select :value="workflowID || undefined" :options="workflowOptions" :loading="loading" :disabled="saving || switching" placeholder="选择流水线" @change="chooseWorkflow(String($event))">
             <template #option="{ label, detail }"><span class="named-option"><strong>{{ label }}</strong><small>{{ detail }}</small></span></template>
           </a-select>
         </label>
         <label v-else class="plan-switcher">
           <span>流水线</span>
-          <a-select :value="selectedTemplateID || undefined" :options="templateOptions" :loading="loading" :disabled="saving" placeholder="选择流水线" @change="chooseTemplate(String($event))">
+          <a-select :value="selectedTemplateID || undefined" :options="templateOptions" :loading="loading" :disabled="saving || switching" placeholder="选择流水线" @change="chooseTemplate(String($event))">
             <template #option="{ label, detail }"><span class="named-option"><strong>{{ label }}</strong><small>{{ detail }}</small></span></template>
           </a-select>
         </label>

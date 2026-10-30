@@ -11,16 +11,21 @@ const output = ts.transpileModule(compileScript(descriptor, { id: 'pipeline-auto
   compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, esModuleInterop: true },
 }).outputText
 
-function harness(t, { active = false, publicMode = false } = {}) {
+function harness(t, { active = false, publicMode = false, routeGuards = false } = {}) {
   const requests = [], messages = [], dialogs = [], timers = new Map()
   const navigations = [], storage = { project: 'project-a' }
+  const routeUpdates = [], routeLeaves = [], route = { query: publicMode ? { template: 'flow' } : { application: 'api', workflow: 'flow' } }
   const auth = vue.reactive({ user: { id: 'operator', project_id: 'project-a', permissions: ['workflow.read', 'workflow.update'], is_superuser: false }, canAny(codes) { return codes.some(code => this.user.permissions.includes(code)) } })
   let timerID = 0, now = 0
   const modules = {
     vue: { ...vue, onMounted() {}, onBeforeUnmount() {} },
     'vue-router': {
-      useRoute: () => ({ query: publicMode ? { template: 'flow' } : { application: 'api', workflow: 'flow' } }),
-      useRouter: () => ({ replace: async location => navigations.push(location) }), onBeforeRouteLeave() {}, onBeforeRouteUpdate() {},
+      useRoute: () => route,
+      useRouter: () => ({ replace: async location => {
+        if (routeGuards) for (const guard of routeUpdates) if (await guard(location) === false) return false
+        navigations.push(location)
+        if (location.query) route.query = location.query
+      } }), onBeforeRouteLeave: guard => routeLeaves.push(guard), onBeforeRouteUpdate: guard => routeUpdates.push(guard),
     },
     'ant-design-vue': { Modal: { confirm: options => dialogs.push(options) }, message: Object.fromEntries(['success', 'warning', 'error'].map(level => [level, value => messages.push({ level, value })])) },
     '@/stores/auth': { useAuthStore: () => auth },
@@ -71,7 +76,7 @@ function harness(t, { active = false, publicMode = false } = {}) {
     now = target
     await flush()
   }
-  return { state, requests, messages, dialogs, timers, succeed, advance, flush, auth, storage, navigations }
+  return { state, requests, messages, dialogs, timers, succeed, advance, flush, auth, storage, navigations, route, routeUpdates, routeLeaves }
 }
 
 function addDraft(state) {
@@ -79,6 +84,76 @@ function addDraft(state) {
   state.templates.value.push(draft)
   return draft
 }
+
+test('重复选择流水线只打开一个放弃确认，取消后保留草稿并恢复切换', async t => {
+  for (const publicMode of [true, false]) {
+    const { state, requests, dialogs, flush } = harness(t, { publicMode, active: true })
+    const draft = addDraft(state)
+    if (!publicMode) state.applications.value[0].workflows.push(draft)
+    state.workflow.value.name = '保留这次更改'
+    state.updateWorkflowMeta()
+    const choose = publicMode ? state.chooseTemplate : state.chooseWorkflow
+    const first = choose(draft.id)
+    await flush()
+    const duplicate = choose(draft.id)
+    await flush()
+    const dialogCount = dialogs.length
+    for (const dialog of dialogs) dialog.onCancel()
+    await Promise.all([first, duplicate])
+    assert.equal(dialogCount, 1, publicMode ? '公共流水线重复确认' : '应用流水线重复确认')
+    assert.equal(requests.length, 0)
+    assert.equal(state.workflow.value.name, '保留这次更改')
+    assert.equal(state.dirty.value, true)
+    assert.equal(state.switching.value, false)
+    const retry = choose(draft.id)
+    await flush()
+    assert.equal(dialogs.length, 2)
+    dialogs[1].onCancel()
+    await retry
+  }
+})
+
+test('一次放弃确认后公共切换只加载一次并通过真实登记的路由守卫', async t => {
+  const { state, requests, dialogs, navigations, route, flush } = harness(t, { publicMode: true, active: true, routeGuards: true })
+  const draft = addDraft(state)
+  state.workflow.value.name = '不保存的修改'
+  state.updateWorkflowMeta()
+  const first = state.chooseTemplate(draft.id)
+  await flush()
+  const duplicate = state.chooseTemplate(draft.id)
+  await flush()
+  if (dialogs.length !== 1) {
+    for (const dialog of dialogs) dialog.onCancel()
+    await Promise.all([first, duplicate])
+    assert.fail('确认期间的重复选择不能打开第二个确认框')
+  }
+  dialogs[0].onOk()
+  await flush()
+  assert.equal(requests.length, 1)
+  assert.equal(requests[0].method, 'get')
+  requests[0].resolve({ data: { workflow_template: draft, issues: [] } })
+  await Promise.all([first, duplicate])
+  assert.equal(dialogs.length, 1)
+  assert.deepEqual(navigations, [{ query: { template: draft.id } }])
+  assert.equal(route.query.template, draft.id)
+  assert.equal(state.workflow.value.id, draft.id)
+  assert.equal(state.dirty.value, false)
+  assert.equal(state.switching.value, false)
+})
+
+test('重复选择当前公共流水线不询问放弃且不重新读取', async t => {
+  const { state, requests, dialogs, flush } = harness(t, { publicMode: true, active: true })
+  state.workflow.value.name = '原目标的未保存更改'
+  state.updateWorkflowMeta()
+  const choosing = state.chooseTemplate('flow')
+  await flush()
+  const dialogCount = dialogs.length
+  for (const dialog of dialogs) dialog.onCancel()
+  await choosing
+  assert.equal(dialogCount, 0)
+  assert.equal(requests.length, 0)
+  assert.equal(state.dirty.value, true)
+})
 
 test('公共编辑器的已启用与草稿流水线均可选择，切换草稿走正常加载', async t => {
   const { state, requests, navigations, flush } = harness(t, { publicMode: true, active: true })
