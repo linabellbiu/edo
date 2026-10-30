@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, reactive, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, reactive, ref, watch } from 'vue'
 import { message } from 'ant-design-vue'
 import { useI18n } from 'vue-i18n'
 
@@ -52,6 +52,7 @@ const form = reactive({
   password: '',
   private_key: '',
   passphrase: '',
+  sudo_password: '',
   use_sudo: false,
   capability_kinds: ['ssh'] as HostCapabilityKind[],
   kubernetes_cluster_id: '',
@@ -61,6 +62,7 @@ const submitting = ref(false)
 const tested = ref<HostTestResult>()
 const hydrating = ref(false)
 const replaceCredential = ref(false)
+let requestController: AbortController | undefined
 
 const editing = computed(() => Boolean(props.host))
 const isLocal = computed(() => props.host?.mode === 'local')
@@ -87,15 +89,33 @@ function localCapabilityHint(kind: 'docker' | 'local_exec') {
 }
 
 watch(form, () => {
-  if (!hydrating.value) tested.value = undefined
-}, { deep: true })
+  if (!hydrating.value) invalidateTest()
+}, { deep: true, flush: 'sync' })
 
 watch(replaceCredential, () => {
-  if (!hydrating.value) tested.value = undefined
-})
+  if (hydrating.value) return
+  if (!replaceCredential.value) clearCredentials()
+  else invalidateTest()
+}, { flush: 'sync' })
+
+watch(() => form.ssh_auth_type, () => {
+  if (!hydrating.value) clearCredentials()
+}, { flush: 'sync' })
+
+watch(() => form.use_sudo, enabled => {
+  if (!hydrating.value && !enabled) form.sudo_password = ''
+}, { flush: 'sync' })
+
+watch(() => props.canTest, allowed => {
+  if (!allowed && !isLocal.value) clearCredentials()
+}, { flush: 'sync' })
 
 watch(() => [props.open, props.host] as const, ([open]) => {
-  if (!open) return
+  invalidateTest()
+  if (!open) {
+    clearCredentials()
+    return
+  }
   hydrating.value = true
   const host = props.host
   Object.assign(form, {
@@ -107,6 +127,7 @@ watch(() => [props.open, props.host] as const, ([open]) => {
     password: '',
     private_key: '',
     passphrase: '',
+    sudo_password: '',
     use_sudo: host?.use_sudo ?? Boolean(host?.capabilities.find(item => item.kind === 'docker')?.use_sudo),
     capability_kinds: host
       ? host.capabilities.map(item => item.kind)
@@ -116,7 +137,27 @@ watch(() => [props.open, props.host] as const, ([open]) => {
   replaceCredential.value = Boolean(host?.mode === 'ssh' && host.credential_configured === false)
   tested.value = undefined
   queueMicrotask(() => { hydrating.value = false })
-}, { immediate: true })
+}, { immediate: true, flush: 'sync' })
+
+function invalidateTest() {
+  requestController?.abort()
+  requestController = undefined
+  tested.value = undefined
+  testing.value = false
+  submitting.value = false
+}
+
+function clearCredentials() {
+  form.password = ''
+  form.private_key = ''
+  form.passphrase = ''
+  form.sudo_password = ''
+  invalidateTest()
+}
+
+function currentRequest(controller: AbortController) {
+  return requestController === controller && !controller.signal.aborted && props.open && (isLocal.value || props.canTest)
+}
 
 function payload() {
   if (isLocal.value) {
@@ -134,6 +175,7 @@ function payload() {
           private_key: form.private_key,
           passphrase: form.passphrase || undefined,
           use_sudo: useSudo,
+          ...(useSudo && form.sudo_password ? { sudo_password: form.sudo_password } : {}),
         }
     : undefined
   return {
@@ -158,58 +200,88 @@ async function validate() {
 }
 
 async function testConnection() {
+  if (!props.open || isLocal.value || testing.value || submitting.value) return
   if (!props.canTest) {
     message.error('缺少主机连接测试权限')
     return
   }
-  try {
-    await validate()
-  } catch (error) {
-    if (error instanceof Error && ['请选择至少一种主机能力', '请选择 Kubernetes 集群'].includes(error.message)) message.error(error.message)
-    return
-  }
+  const controller = new AbortController()
+  requestController = controller
+  tested.value = undefined
   testing.value = true
   try {
+    try {
+      await validate()
+    } catch (error) {
+      if (currentRequest(controller) && error instanceof Error && ['请选择至少一种主机能力', '请选择 Kubernetes 集群'].includes(error.message)) message.error(error.message)
+      return
+    }
+    if (!currentRequest(controller)) return
     const path = editingRemote.value && props.host ? `/hosts/${props.host.id}/test` : '/hosts/test'
-    const response = await client.post<HostTestResult>(path, payload(), { timeout: 35_000 })
+    const response = await client.post<HostTestResult>(path, payload(), { timeout: 35_000, signal: controller.signal })
+    if (!currentRequest(controller)) return
     tested.value = response.data
     message.success('主机连接正常')
   } catch (error) {
-    message.error(apiErrorMessage(error))
+    if (currentRequest(controller)) message.error(apiErrorMessage(error))
   } finally {
-    testing.value = false
+    if (requestController === controller) {
+      requestController = undefined
+      testing.value = false
+    }
   }
 }
 
 async function submit() {
-  try {
-    await validate()
-  } catch (error) {
-    if (error instanceof Error && ['请选择至少一种主机能力', '请选择 Kubernetes 集群'].includes(error.message)) message.error(error.message)
+  if (!props.open || testing.value || submitting.value) return
+  if (!isLocal.value && !props.canTest) {
+    message.error('缺少主机连接测试权限')
     return
   }
-  if (!isLocal.value && !tested.value?.test_token) {
-    message.error('请先测试主机连接与所选能力')
-    return
-  }
+  const controller = new AbortController()
+  requestController = controller
   submitting.value = true
   try {
+    try {
+      await validate()
+    } catch (error) {
+      if (currentRequest(controller) && error instanceof Error && ['请选择至少一种主机能力', '请选择 Kubernetes 集群'].includes(error.message)) message.error(error.message)
+      return
+    }
+    if (!currentRequest(controller)) return
+    if (!isLocal.value && !tested.value?.test_token) {
+      message.error('请先测试主机连接与所选能力')
+      return
+    }
     const request = { ...payload(), test_token: tested.value?.test_token }
-    if (editing.value && props.host) await client.put(`/hosts/${props.host.id}`, request, { timeout: 35_000 })
-    else await client.post('/hosts', request, { timeout: 35_000 })
+    const options = { timeout: 35_000, signal: controller.signal }
+    if (editing.value && props.host) await client.put(`/hosts/${props.host.id}`, request, options)
+    else await client.post('/hosts', request, options)
+    if (!currentRequest(controller)) return
     message.success(editing.value ? '主机已更新' : '主机已添加')
+    clearCredentials()
     emit('saved')
     emit('update:open', false)
   } catch (error) {
-    message.error(apiErrorMessage(error))
+    if (currentRequest(controller)) {
+      tested.value = undefined
+      message.error(apiErrorMessage(error))
+    }
   } finally {
-    submitting.value = false
+    if (requestController === controller) {
+      requestController = undefined
+      submitting.value = false
+    }
   }
 }
 
 function close() {
-  if (!testing.value && !submitting.value) emit('update:open', false)
+  if (testing.value || submitting.value) return
+  clearCredentials()
+  emit('update:open', false)
 }
+
+onBeforeUnmount(clearCredentials)
 </script>
 
 <template>
@@ -328,6 +400,14 @@ function close() {
           <a-form-item class="span-2 sudo-toggle" name="use_sudo">
             <a-checkbox v-model:checked="form.use_sudo">{{ t('hostForm.installUseSudo') }}</a-checkbox>
             <div class="field-hint">{{ t('hostForm.installSudoHint') }}</div>
+          </a-form-item>
+          <a-form-item
+            v-if="needsCredential && form.ssh_auth_type === 'private_key' && form.use_sudo"
+            class="span-2"
+            :label="t('hostForm.sudoPassword')"
+            name="sudo_password"
+          >
+            <a-input-password v-model:value="form.sudo_password" :maxlength="4096" autocomplete="new-password" :placeholder="t('hostForm.sudoPasswordPlaceholder')" />
           </a-form-item>
         </template>
       </div>

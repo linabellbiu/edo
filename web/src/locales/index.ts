@@ -46,7 +46,7 @@ export const messages = {
       monitor: '系统监控', tasks: '任务中心', logs: '日志', security: '系统与安全', settings: '系统设置', users: '用户管理', roles: '角色与功能', audit: '审计日志',
     },
     hostCluster: { hosts: '主机与接入', resources: '运行资源' },
-    hostForm: { installUseSudo: '安装操作使用 sudo', installSudoHint: '用于 K3s 安装及已勾选的受限 Docker 操作；密码认证复用 SSH 密码，私钥认证需配置免密 sudo。SSH 部署脚本不会自动提权。' },
+    hostForm: { installUseSudo: '安装操作使用 sudo', installSudoHint: '用于 K3s 安装及已勾选的受限 Docker 操作；密码认证复用 SSH 密码，私钥认证可填写独立 sudo 密码，留空使用免密 sudo。SSH 部署脚本不会自动提权。', sudoPassword: 'sudo 密码（可选）', sudoPasswordPlaceholder: '仅加密保存，不回显；留空使用免密 sudo' },
     kubernetesCluster: {
       action: { add: '添加集群', cancel: '取消', test: '测试连接', create: '添加集群' },
       drawer: { title: '添加 Kubernetes 集群' },
@@ -284,7 +284,7 @@ export const messages = {
       monitor: 'System Monitor', tasks: 'Tasks', logs: 'Logs', security: 'System & Security', settings: 'Settings', users: 'Users', roles: 'Roles & Permissions', audit: 'Audit Logs',
     },
     hostCluster: { hosts: 'Hosts & Access', resources: 'Runtime Resources' },
-    hostForm: { installUseSudo: 'Use sudo for installation operations', installSudoHint: 'Used for K3s installation and restricted Docker operations when selected. Password authentication reuses the SSH password; private key authentication requires passwordless sudo. SSH deployment scripts are not automatically elevated.' },
+    hostForm: { installUseSudo: 'Use sudo for installation operations', installSudoHint: 'Used for K3s installation and restricted Docker operations when selected. Password authentication reuses the SSH password; private key authentication can use a separate sudo password, or passwordless sudo when left blank. SSH deployment scripts are not automatically elevated.', sudoPassword: 'Sudo password (optional)', sudoPasswordPlaceholder: 'Encrypted, never returned; leave blank for passwordless sudo' },
     kubernetesCluster: {
       action: { add: 'Add K8s cluster', cancel: 'Cancel', test: 'Test connection', create: 'Create cluster' },
       drawer: { title: 'Add Kubernetes cluster' },
