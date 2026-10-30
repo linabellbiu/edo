@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref, watch } from 'vue'
-import { message, Modal } from 'ant-design-vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+import { message } from 'ant-design-vue'
 import { FileUp, Plus, RefreshCw, Trash2 } from 'lucide-vue-next'
 import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
@@ -17,6 +17,7 @@ import RuntimeBrandIcon from '@/components/RuntimeBrandIcon.vue'
 import { useAuthStore } from '@/stores/auth'
 import { formatDateTime } from '@/utils/time'
 import { deploymentTargetEn, deploymentTargetZh } from '@/locales/deploymentTarget'
+import { asyncConfirm } from '@/utils/asyncConfirm'
 import '@/styles/plan-list.css'
 
 type PlanKind = 'script' | 'docker' | 'compose' | 'kubernetes'
@@ -196,6 +197,17 @@ const loading = ref(false)
 const saving = ref(false)
 const testing = ref(false)
 const mutatingID = ref('')
+const selectedProject = ref(typeof localStorage === 'undefined' ? '' : localStorage.getItem('edo.project') || '')
+const planScope = computed(() => JSON.stringify([auth.user?.id, auth.user?.department_id, auth.user?.project_id, auth.user?.is_superuser, [...(auth.user?.permissions || [])].sort(), selectedProject.value]))
+let mutationDialog: ReturnType<typeof asyncConfirm> | undefined
+let disposed = false, refreshRevision = 0
+function scopeKey() { return JSON.stringify([planScope.value, typeof localStorage === 'undefined' ? '' : localStorage.getItem('edo.project') || '']) }
+function syncProject() { selectedProject.value = typeof localStorage === 'undefined' ? '' : localStorage.getItem('edo.project') || '' }
+function resetMutation() { mutationDialog?.destroy(); mutationDialog = undefined; mutatingID.value = ''; refreshRevision++; loading.value = false }
+watch(planScope, () => {
+  resetMutation(); plans.value = []; hosts.value = []; environments.value = []; docker.value = []; clusters.value = []
+  if (!disposed && selectedProject.value && auth.user?.project_id === selectedProject.value && auth.canAny(['deployment_plan.read'])) void refresh()
+}, { flush: 'sync' })
 const composeFileInput = ref<HTMLInputElement>()
 const deploymentDrafts: Partial<Record<PlanKind, DeploymentDraft>> = {}
 const defaultComposeYAML = 'services:\n  app:\n    restart: unless-stopped\n'
@@ -419,6 +431,9 @@ function reset() {
 }
 
 async function refresh() {
+  if (disposed || !auth.canAny(['deployment_plan.read'])) return
+  const scope = scopeKey(), revision = ++refreshRevision
+  const current = () => !disposed && scope === scopeKey() && revision === refreshRevision
   loading.value = true
   try {
     const [planResponse, dockerResponse, clusterResponse, hostItems, environmentItems] = await Promise.all([
@@ -432,15 +447,16 @@ async function refresh() {
       canReadHosts.value ? listHosts() : Promise.resolve([] as InfrastructureHost[]),
       canReadEnvironments.value ? listEnvironments() : Promise.resolve([] as InfrastructureEnvironment[]),
     ])
+    if (!current()) return
     plans.value = planResponse.data.deployment_plans || []
     docker.value = dockerResponse.data.endpoints || []
     clusters.value = clusterResponse.data.clusters || []
     hosts.value = hostItems
     environments.value = environmentItems
   } catch (error) {
-    message.error(apiErrorMessage(error))
+    if (current()) message.error(apiErrorMessage(error))
   } finally {
-    loading.value = false
+    if (current()) loading.value = false
   }
 }
 
@@ -498,57 +514,37 @@ function edit(plan: DeploymentPlan) {
   formOpen.value = true
 }
 
-async function setPlanStatus(plan: DeploymentPlan, active: boolean) {
-  mutatingID.value = plan.id
-  try {
-    await client.patch(`/deployment-plans/${plan.id}/status`, { active })
-    message.success(active ? '部署方案已启用' : '部署方案已停用')
-    await refresh()
-  } catch (error) {
-    message.error(apiErrorMessage(error))
-    throw error
-  } finally {
-    mutatingID.value = ''
-  }
-}
-
-function confirmPlanStatus(plan: DeploymentPlan) {
-  const active = !plan.is_active
-  Modal.confirm({
-    title: `${active ? '启用' : '停用'}部署方案“${plan.name}”？`,
-    content: active
-      ? '启用后，新流水线可以再次选择该方案。'
-      : '停用后不能用于新运行，正在执行的流水线不受影响。',
-    okText: active ? '启用' : '停用',
-    cancelText: '取消',
-    onOk: () => setPlanStatus(plan, active),
+function confirmPlanMutation(plan: DeploymentPlan, remove: boolean) {
+  if (mutationDialog || mutatingID.value) return
+  const { id, name, is_active: wasActive } = plan, active = !wasActive
+  const scope = scopeKey(), project = selectedProject.value
+  const permission = remove ? 'deployment_plan.delete' : 'deployment_plan.update'
+  const current = () => !disposed && scope === scopeKey() && Boolean(project) && auth.user?.project_id === project && auth.canAny([permission]) && plans.value.some(item => item.id === id)
+  if (!current()) return
+  const release = () => { if (mutationDialog === dialog) mutationDialog = undefined }
+  const dialog = asyncConfirm({
+    title: `${remove ? '删除' : active ? '启用' : '停用'}部署方案“${name}”？`,
+    content: remove ? '仍被流水线引用的方案不能删除。删除后保留运行历史。' : active ? '启用后，新流水线可以再次选择该方案。' : '停用后不能用于新运行，正在执行的流水线不受影响。',
+    okText: remove ? '删除' : active ? '启用' : '停用', okType: remove ? 'danger' : 'primary', cancelText: '取消',
+    isCurrent: current, onCancel: release, afterClose: release, onError: error => message.error(apiErrorMessage(error)),
+    action: async signal => {
+      if (!remove && plans.value.find(item => item.id === id)?.is_active !== wasActive) { dialog.destroy(); release(); return }
+      mutatingID.value = id
+      try {
+        const options = { headers: { 'X-EDO-Project-ID': project }, signal }
+        if (remove) await client.delete(`/deployment-plans/${id}`, options)
+        else await client.patch(`/deployment-plans/${id}/status`, { active }, options)
+        if (signal.aborted || !current()) return
+        message.success(remove ? '部署方案已删除' : active ? '部署方案已启用' : '部署方案已停用')
+        await refresh()
+      } finally { if (scope === scopeKey() && mutationDialog === dialog) mutatingID.value = '' }
+    },
   })
+  mutationDialog = dialog
 }
 
-async function deletePlan(plan: DeploymentPlan) {
-  mutatingID.value = plan.id
-  try {
-    await client.delete(`/deployment-plans/${plan.id}`)
-    message.success('部署方案已删除')
-    await refresh()
-  } catch (error) {
-    message.error(apiErrorMessage(error))
-    throw error
-  } finally {
-    mutatingID.value = ''
-  }
-}
-
-function confirmDeletePlan(plan: DeploymentPlan) {
-  Modal.confirm({
-    title: `删除部署方案“${plan.name}”？`,
-    content: '仍被流水线引用的方案不能删除。删除后保留运行历史。',
-    okText: '删除',
-    okType: 'danger',
-    cancelText: '取消',
-    onOk: () => deletePlan(plan),
-  })
-}
+function confirmPlanStatus(plan: DeploymentPlan) { confirmPlanMutation(plan, false) }
+function confirmDeletePlan(plan: DeploymentPlan) { confirmPlanMutation(plan, true) }
 
 function currentDeploymentDraft(): DeploymentDraft {
   return {
@@ -920,7 +916,8 @@ watch([() => route.query.create, () => auth.loaded], ([value]) => {
   void router.replace({ query })
 }, { immediate: true })
 
-onMounted(refresh)
+onMounted(() => { window.addEventListener('edo:projects-changed', syncProject); void refresh() })
+onBeforeUnmount(() => { disposed = true; resetMutation(); window.removeEventListener('edo:projects-changed', syncProject) })
 </script>
 
 <template>

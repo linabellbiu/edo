@@ -225,10 +225,11 @@ test('缺失或非法执行聚合状态显示中性未知，不与计划配置�
 function deploymentHarness(t) {
   const route = vue.reactive({ query: { plan: 'plan-21' } })
   const state = componentHarness(t, '../src/views/DeploymentPlanView.vue', {}, {
+    vue: { ...vue, onMounted() {}, onBeforeUnmount() {} },
     'vue-router': { useRoute: () => route, useRouter: () => ({ replace: () => assert.fail('行内交互不能更新路由') }) },
     'vue-i18n': { useI18n: () => ({ t: (key, params) => params ? `${key}:${JSON.stringify(params)}` : key, locale: vue.ref('zh-CN') }) },
     'ant-design-vue': { message: { error: assert.fail } },
-    '@/stores/auth': { useAuthStore: () => ({ canAny: () => false }) },
+    '@/stores/auth': { useAuthStore: () => ({ canAny: codes => codes.includes('deployment_plan.read') }) },
     '@/api/client': { __esModule: true, default: { get: async () => ({ data: { deployment_plans: records() } }) } },
   })
   return { state, route }

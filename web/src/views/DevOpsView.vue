@@ -36,6 +36,7 @@ import type { PipelineRunApproval } from '@/types/pipelineApproval'
 import { deploymentRollbackEn, deploymentRollbackZh } from '@/locales/deploymentRollback'
 import { formatDateTime, formatRelativeTime } from '@/utils/time'
 import { parsePipelineRunFilters, pipelineRunDateBounds, pipelineRunDateRange, pipelineRunRequestParams, pipelineRunRouteQuery, type PipelineRunFilters } from '@/utils/pipelineRunFilters'
+import { asyncConfirm } from '@/utils/asyncConfirm'
 
 type Section='applications'|'repositories'|'build-plans'|'image-registries'|'release-plans'
 const props=defineProps<{section:Section}>(),route=useRoute(),router=useRouter(),auth=useAuthStore()
@@ -122,10 +123,9 @@ let planExecutionOpenedScope:PlanExecutionScope|undefined
 let planExecutionEpoch=0,planExecutionDisposed=false
 let resourceLoadedScope='',resourceRefreshRevision=0
 let resourceStatusDialog:ReturnType<typeof Modal.confirm>|undefined
-let resourceStatusController:AbortController|undefined
 function resourceScopeKey(){return JSON.stringify([planExecutionScopeIdentity.value,planExecutionEpoch,typeof localStorage==='undefined'?'':localStorage.getItem('edo.project')||''])}
 function resourceReadOptions(){return {headers:{'X-EDO-Project-ID':planExecutionSelectedProject.value}}}
-function resetResourceStatus(){if(resourceStatusController)resourceMutationID.value='';resourceStatusController?.abort();resourceStatusController=undefined;resourceStatusDialog?.destroy();resourceStatusDialog=undefined;resourceLoadedScope='';resourceRefreshRevision++;loading.value=false;if(['applications','repositories'].includes(props.section)){applications.value=[];repositories.value=[];closeApplicationDetails()}}
+function resetResourceStatus(){if(resourceStatusDialog)resourceMutationID.value='';resourceStatusDialog?.destroy();resourceStatusDialog=undefined;resourceLoadedScope='';resourceRefreshRevision++;loading.value=false;if(['applications','repositories'].includes(props.section)){applications.value=[];repositories.value=[];closeApplicationDetails()}}
 const DEFAULT_APPLICATION_POLL_INTERVAL=3
 const appForm=reactive({name:'',description:'',repository_id:'',workflow_template_id:'',poll_interval_seconds:DEFAULT_APPLICATION_POLL_INTERVAL})
 const repoForm=reactive({name:'',provider:'github',clone_url:'',default_branch:'main',auth_type:'none',username:'',credential_id:'',api_credential_id:'',webhook_enabled:false,allow_insecure_http:false})
@@ -1193,34 +1193,26 @@ function confirmResourceStatus(row:Pick<Application|Repository,'id'|'name'|'is_a
  const section=props.section,scope=resourceScopeKey(),projectID=planExecutionSelectedProject.value,id=row.id,wasActive=row.is_active
  if(!['applications','repositories'].includes(section)||resourceStatusDialog||resourceMutationID.value)return
  const permission=section==='applications'?'application.update':'repository.update'
- let finished=false
  const current=()=>{
   const rows=section==='applications'?applications.value:repositories.value
-  return !finished&&!planExecutionDisposed&&props.section===section&&scope===resourceScopeKey()&&resourceLoadedScope===scope&&auth.user?.project_id===projectID&&Boolean(projectID)&&auth.canAny([permission])&&rows.some(item=>item.id===id)
+  return !planExecutionDisposed&&props.section===section&&scope===resourceScopeKey()&&resourceLoadedScope===scope&&auth.user?.project_id===projectID&&Boolean(projectID)&&auth.canAny([permission])&&rows.some(item=>item.id===id)
  }
  if(!current())return
  const active=!wasActive,action=t(active?'delivery.enable':'delivery.disable'),name=row.name
- let pending:Promise<void>|undefined
- const dialog=Modal.confirm({
+ const release=()=>{if(resourceStatusDialog===dialog)resourceStatusDialog=undefined}
+ const dialog=asyncConfirm({
   title:t('delivery.statusTitle',{action,name}),
   content:t(active?'delivery.enableHint':'delivery.disableHint'),okText:action,cancelText:t('delivery.cancel'),
-  onCancel:()=>{finished=true;if(resourceStatusDialog===dialog)resourceStatusDialog=undefined},
-  onOk:()=>{
-   if(pending)return pending
-   if(!current()||(section==='applications'?applications.value:repositories.value).find(item=>item.id===id)?.is_active!==wasActive){finished=true;dialog.destroy();if(resourceStatusDialog===dialog)resourceStatusDialog=undefined;return}
-   const controller=new AbortController();resourceStatusController=controller;resourceMutationID.value=id
-   dialog.update({cancelButtonProps:{disabled:true},keyboard:false})
-   pending=(async()=>{
-    try{
-     await client.patch(`/${section}/${id}/status`,{active},{headers:{'X-EDO-Project-ID':projectID},signal:controller.signal})
-     if(controller.signal.aborted||!current())return
-     finished=true
-     message.success(t('delivery.statusSaved',{name,action}));if(resourceStatusDialog===dialog)resourceStatusDialog=undefined
-     await refresh()
-    }catch(error){if(!controller.signal.aborted&&current()){message.error(apiErrorMessage(error));throw error}}
-    finally{if(resourceStatusController===controller){resourceStatusController=undefined;resourceMutationID.value=''}if(current())dialog.update({cancelButtonProps:{disabled:false},keyboard:true});pending=undefined}
-   })()
-   return pending
+  isCurrent:current,onCancel:release,afterClose:release,onError:error=>message.error(apiErrorMessage(error)),
+  action:async signal=>{
+   if((section==='applications'?applications.value:repositories.value).find(item=>item.id===id)?.is_active!==wasActive){dialog.destroy();release();return}
+   resourceMutationID.value=id
+   try{
+    await client.patch(`/${section}/${id}/status`,{active},{headers:{'X-EDO-Project-ID':projectID},signal})
+    if(signal.aborted||!current())return
+    message.success(t('delivery.statusSaved',{name,action}))
+    await refresh()
+   }finally{if(scope===resourceScopeKey()&&resourceStatusDialog===dialog)resourceMutationID.value=''}
   },
  })
  resourceStatusDialog=dialog
