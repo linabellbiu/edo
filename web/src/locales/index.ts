@@ -48,16 +48,16 @@ export const messages = {
     hostCluster: { hosts: '主机与接入', resources: '运行资源' },
     hostForm: { installUseSudo: '安装操作使用 sudo', installSudoHint: '用于 K3s 安装及已勾选的受限 Docker 操作；密码认证复用 SSH 密码，私钥认证可填写独立 sudo 密码，留空使用免密 sudo。SSH 部署脚本不会自动提权。', sudoPassword: 'sudo 密码（可选）', sudoPasswordPlaceholder: '仅加密保存，不回显；留空使用免密 sudo' },
     kubernetesCluster: {
-      action: { add: '添加集群', cancel: '取消', test: '测试连接', create: '添加集群' },
-      drawer: { title: '添加 Kubernetes 集群' },
-      field: { name: '集群名称', namespace: '默认命名空间' },
+      action: { add: '添加集群', cancel: '取消', test: '测试连接', create: '添加集群', save: '保存', keep: '保留当前配置', replace: '更换配置' },
+      drawer: { title: '添加 Kubernetes 集群', edit: '编辑 Kubernetes 集群' },
+      field: { name: '集群名称', namespace: '默认命名空间', connection: '连接配置' },
       placeholder: { name: '例如：生产 Kubernetes' },
       validation: { name: '请输入集群名称', namespace: '请输入默认命名空间', kubeconfig: '请粘贴 kubeconfig' },
       hint: {
         kubeconfig: '使用包含证书或 Token 的 kubeconfig，凭据加密保存。',
       },
       test: { ready: '连接正常（Kubernetes {version}）' },
-      message: { testFirst: '请先测试连接', testSuccess: 'Kubernetes {version} 连接正常', created: 'Kubernetes 集群已创建' },
+      message: { testFirst: '请先测试连接', testSuccess: 'Kubernetes {version} 连接正常', created: 'Kubernetes 集群已创建', updated: 'Kubernetes 集群已更新', contextChanged: '操作范围或权限已变化，请关闭后重新打开' },
     },
     environment: {
       actions: { editDetails: '编辑信息', adjustHosts: '调整主机' },
@@ -286,16 +286,16 @@ export const messages = {
     hostCluster: { hosts: 'Hosts & Access', resources: 'Runtime Resources' },
     hostForm: { installUseSudo: 'Use sudo for installation operations', installSudoHint: 'Used for K3s installation and restricted Docker operations when selected. Password authentication reuses the SSH password; private key authentication can use a separate sudo password, or passwordless sudo when left blank. SSH deployment scripts are not automatically elevated.', sudoPassword: 'Sudo password (optional)', sudoPasswordPlaceholder: 'Encrypted, never returned; leave blank for passwordless sudo' },
     kubernetesCluster: {
-      action: { add: 'Add K8s cluster', cancel: 'Cancel', test: 'Test connection', create: 'Create cluster' },
-      drawer: { title: 'Add Kubernetes cluster' },
-      field: { name: 'Cluster name', namespace: 'Default namespace' },
+      action: { add: 'Add K8s cluster', cancel: 'Cancel', test: 'Test connection', create: 'Create cluster', save: 'Save', keep: 'Keep current configuration', replace: 'Replace configuration' },
+      drawer: { title: 'Add Kubernetes cluster', edit: 'Edit Kubernetes cluster' },
+      field: { name: 'Cluster name', namespace: 'Default namespace', connection: 'Connection configuration' },
       placeholder: { name: 'e.g. Production Kubernetes' },
       validation: { name: 'Enter a cluster name', namespace: 'Enter the default namespace', kubeconfig: 'Paste a kubeconfig' },
       hint: {
         kubeconfig: 'Use a kubeconfig with embedded certificates or a token. Credentials are stored encrypted.',
       },
       test: { ready: 'Connected (Kubernetes {version})' },
-      message: { testFirst: 'Test the connection first', testSuccess: 'Connected to Kubernetes {version}', created: 'Kubernetes cluster created' },
+      message: { testFirst: 'Test the connection first', testSuccess: 'Connected to Kubernetes {version}', created: 'Kubernetes cluster created', updated: 'Kubernetes cluster updated', contextChanged: 'The scope or permissions changed. Close and reopen this drawer.' },
     },
     environment: {
       actions: { editDetails: 'Edit details', adjustHosts: 'Manage hosts' },

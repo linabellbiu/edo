@@ -18,7 +18,7 @@ const t = key => key
 const host = { id: 'host-1', name: 'node-1', address: '10.0.0.1', is_active: true, is_builtin: false, capabilities: [] }
 const cluster = { id: 'cluster-1', name: 'team', api_server: 'https://10.0.0.1:6443', default_namespace: 'default', is_active: true, hosts: [host] }
 function deferred() { let resolve, reject; const promise = new Promise((ok, fail) => { resolve = ok; reject = fail }); return { promise, resolve, reject } }
-function setup(path, initialProps, extra = {}, initialPermissions = ['cluster.read', 'cluster.update', 'cluster.execute']) {
+function setup(path, initialProps, extra = {}, initialPermissions = ['cluster.read', 'cluster.update', 'cluster.execute', 'cluster.create']) {
   const props = vue.reactive(initialProps), events = [], errors = [], successes = [], routes = [], cleanups = []
   const permissions = vue.reactive(new Set(initialPermissions))
   const auth = { canAny: values => values.some(value => permissions.has(value)) }
@@ -146,7 +146,7 @@ test('导入 kubeconfig 只填本地草稿，限制文件类型与大小，关�
     readers[1].result = 'must-not-replace'
     readers[1].onload()
     await late
-    assert.equal(fixture.state.form.kubeconfig, 'apiVersion: v1\nclusters: []')
+    assert.equal(fixture.state.form.kubeconfig, '')
   } finally {
     fixture.stop()
     globalThis.FileReader = originalReader

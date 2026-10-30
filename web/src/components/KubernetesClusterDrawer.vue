@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, reactive, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { message } from 'ant-design-vue'
 import { Upload } from 'lucide-vue-next'
 import { useI18n } from 'vue-i18n'
@@ -8,6 +8,7 @@ import client from '@/api/client'
 import { apiErrorMessage } from '@/api/resources'
 import type { InfrastructureCluster, InfrastructureHost } from '@/api/infrastructure'
 import { clusterForHost } from '@/utils/infrastructureRelations'
+import { useAuthStore } from '@/stores/auth'
 
 interface KubernetesCluster {
   id: string
@@ -22,13 +23,14 @@ interface ConnectionTest {
   version: string
 }
 
-const props = withDefaults(defineProps<{ open?: boolean; canTest?: boolean; canAssociate?: boolean; hosts?: InfrastructureHost[]; clusters?: InfrastructureCluster[] }>(), {
+const props = withDefaults(defineProps<{ open?: boolean; cluster?: InfrastructureCluster; canTest?: boolean; canAssociate?: boolean; hosts?: InfrastructureHost[]; clusters?: InfrastructureCluster[] }>(), {
   open: false, canTest: false, canAssociate: false, hosts: () => [], clusters: () => [],
 })
-const emit = defineEmits<{ created: [cluster: KubernetesCluster]; 'update:open': [value: boolean] }>()
+const emit = defineEmits<{ created: [cluster: KubernetesCluster]; saved: [cluster: KubernetesCluster]; 'update:open': [value: boolean] }>()
 const { t } = useI18n()
+const auth = useAuthStore()
 const formRef = ref<{ validate: () => Promise<void> }>()
-const form = reactive({ name: '', default_namespace: 'default', kubeconfig: '', host_ids: [] as string[] })
+const form = reactive({ name: '', default_namespace: 'default', kubeconfig: '', config_action: 'keep' as 'keep' | 'replace', host_ids: [] as string[] })
 const testing = ref(false)
 const submitting = ref(false)
 const readingFile = ref(false)
@@ -40,25 +42,65 @@ const requestError = ref('')
 const busy = computed(() => testing.value || submitting.value || readingFile.value)
 let formRevision = 0
 let mounted = true
+let request: AbortController | undefined
+const selectedProject = ref(readSelectedProject())
+const editing = computed(() => Boolean(props.cluster?.id))
+const scope = computed(() => JSON.stringify([auth.user?.id ?? '', auth.user?.project_id ?? '', auth.user?.department_id ?? '', selectedProject.value]))
+const openedScope = ref(scope.value)
+const canModify = computed(() => scope.value === openedScope.value && (!auth.user?.project_id || auth.user.project_id === selectedProject.value) && auth.canAny([editing.value ? 'cluster.update' : 'cluster.create']))
+const testAllowed = computed(() => props.canTest && auth.canAny(['cluster.execute']) && canModify.value)
+const replacingConfig = computed(() => !editing.value || form.config_action === 'replace')
+const context = computed(() => JSON.stringify([
+  auth.user?.id ?? '', auth.user?.project_id ?? '', auth.user?.department_id ?? '', selectedProject.value,
+  props.cluster?.id ?? '', props.cluster?.updated_at ?? '', props.cluster?.api_server ?? '', props.cluster?.name ?? '', props.cluster?.default_namespace ?? '',
+]))
 const currentSignature = computed(() => JSON.stringify({
+  context: context.value,
   name: form.name.trim(),
   default_namespace: form.default_namespace.trim() || 'default',
-  kubeconfig: form.kubeconfig.trim(),
-  host_ids: props.canAssociate ? [...form.host_ids].sort() : [],
+  kubeconfig: replacingConfig.value ? form.kubeconfig.trim() : '',
+  config_action: form.config_action,
+  host_ids: !editing.value && props.canAssociate ? [...form.host_ids].sort() : [],
 }))
 const connectionTested = computed(() => Boolean(testResult.value) && testedSignature.value === currentSignature.value)
+const canSubmit = computed(() => canModify.value && (!replacingConfig.value || testAllowed.value && connectionTested.value))
 
-watch(() => props.open, open => {
+function cancelRequests() {
   formRevision += 1
-  if (!open) return
-  Object.assign(form, { name: '', default_namespace: 'default', kubeconfig: '', host_ids: [] })
+  request?.abort(); request = undefined
+  testing.value = false; submitting.value = false; readingFile.value = false
+}
+function resetForm() {
+  cancelRequests()
+  Object.assign(form, { name: props.cluster?.name ?? '', default_namespace: props.cluster?.default_namespace || 'default', kubeconfig: '', config_action: editing.value ? 'keep' : 'replace', host_ids: [] })
   testedSignature.value = ''
   testResult.value = undefined
   requestError.value = ''
+}
+function readSelectedProject() { return typeof localStorage === 'undefined' ? '' : localStorage.getItem('edo.project') ?? '' }
+function syncProject() {
+  const current = readSelectedProject()
+  if (current === selectedProject.value) return true
+  selectedProject.value = current
+  resetForm()
+  return false
+}
+function projectChanged(event: Event) {
+  if (event.type === 'storage' && (event as StorageEvent).key !== null && (event as StorageEvent).key !== 'edo.project') return
+  syncProject()
+}
+function isCurrent(revision: number, expectedContext: string) {
+  return syncProject() && mounted && props.open && formRevision === revision && context.value === expectedContext && canModify.value
+}
+watch(() => props.open, open => { if (open) openedScope.value = scope.value })
+watch(() => [props.open, context.value] as const, resetForm, { immediate: true })
+watch([canModify, testAllowed], () => {
+  if (!canModify.value || replacingConfig.value && !testAllowed.value) resetForm()
 })
+watch(() => form.config_action, value => { if (value === 'keep') form.kubeconfig = '' })
 
 async function readKubeconfigFile(file: File) {
-  if (!props.open || busy.value) return
+  if (!syncProject() || !props.open || busy.value || !canModify.value || !replacingConfig.value) return
   if (file.size > 1024 * 1024) {
     message.error('文件不能超过 1 MiB')
     return
@@ -68,6 +110,7 @@ async function readKubeconfigFile(file: File) {
     return
   }
   const revision = formRevision
+  const expectedContext = context.value
   readingFile.value = true
   try {
     const content = await new Promise<string>((resolve, reject) => {
@@ -77,11 +120,11 @@ async function readKubeconfigFile(file: File) {
       reader.onabort = () => reject(new Error('read_aborted'))
       reader.readAsText(file)
     })
-    if (mounted && props.open && revision === formRevision) form.kubeconfig = content
+    if (isCurrent(revision, expectedContext) && replacingConfig.value) form.kubeconfig = content
   } catch {
-    if (mounted && props.open && revision === formRevision) message.error('文件读取失败，请重新选择')
+    if (isCurrent(revision, expectedContext)) message.error('文件读取失败，请重新选择')
   } finally {
-    readingFile.value = false
+    if (formRevision === revision) readingFile.value = false
   }
 }
 
@@ -95,7 +138,8 @@ async function importKubeconfig(event: Event) {
 function close() {
   if (!busy.value) emit('update:open', false)
 }
-onBeforeUnmount(() => { mounted = false; formRevision += 1 })
+onMounted(() => { window.addEventListener('storage', projectChanged); window.addEventListener('edo:projects-changed', projectChanged) })
+onBeforeUnmount(() => { mounted = false; cancelRequests(); form.kubeconfig = ''; window.removeEventListener('storage', projectChanged); window.removeEventListener('edo:projects-changed', projectChanged) })
 
 watch(currentSignature, signature => {
   requestError.value = ''
@@ -103,6 +147,7 @@ watch(currentSignature, signature => {
     testedSignature.value = ''
     testResult.value = undefined
   }
+  if (testing.value) { request?.abort(); request = undefined; testing.value = false }
 })
 
 function payload() {
@@ -110,8 +155,8 @@ function payload() {
     name: form.name.trim(),
     mode: 'kubeconfig',
     default_namespace: form.default_namespace.trim() || 'default',
-    kubeconfig: form.kubeconfig,
-    ...(props.canAssociate && form.host_ids.length ? { host_ids: form.host_ids } : {}),
+    ...(replacingConfig.value ? { kubeconfig: form.kubeconfig } : {}),
+    ...(!editing.value && props.canAssociate && form.host_ids.length ? { host_ids: [...form.host_ids] } : {}),
   }
 }
 
@@ -125,58 +170,75 @@ async function validate() {
 }
 
 async function testConnection() {
-  if (!props.open || busy.value) return
-  if (!props.canTest) {
+  if (!syncProject() || !props.open || busy.value || !canModify.value) return
+  if (!testAllowed.value) {
     message.error('缺少 Kubernetes 连接测试权限')
     return
   }
+  const expectedContext = context.value
   if (!await validate()) return
-  if (busy.value) return
+  if (!syncProject() || !props.open || busy.value || !testAllowed.value || context.value !== expectedContext) return
   const signature = currentSignature.value
   const revision = formRevision
+  const clusterID = props.cluster?.id
+  const controller = new AbortController()
+  request?.abort(); request = controller
   requestError.value = ''
   testing.value = true
   try {
-    const response = await client.post<ConnectionTest>('/kubernetes/clusters/test', payload(), { timeout: 35_000 })
-    if (!mounted || !props.open || formRevision !== revision || currentSignature.value !== signature) return
+    const options = { timeout: 35_000, signal: controller.signal, headers: { 'X-EDO-Project-ID': selectedProject.value } }
+    const response = replacingConfig.value
+      ? await client.post<ConnectionTest>('/kubernetes/clusters/test', payload(), options)
+      : await client.post<ConnectionTest>(`/kubernetes/clusters/${encodeURIComponent(clusterID!)}/ping`, undefined, options)
+    if (!isCurrent(revision, expectedContext) || !testAllowed.value || currentSignature.value !== signature || controller.signal.aborted) return
     testedSignature.value = signature
-    testResult.value = response.data
+    testResult.value = { ...response.data, api_server: response.data.api_server || props.cluster?.api_server || '' }
     message.success(t('kubernetesCluster.message.testSuccess', { version: response.data.version }))
   } catch (error) {
-    if (!mounted || !props.open || formRevision !== revision) return
+    if (!isCurrent(revision, expectedContext) || !testAllowed.value || currentSignature.value !== signature || controller.signal.aborted) return
     testedSignature.value = ''
     testResult.value = undefined
     requestError.value = apiErrorMessage(error)
     message.error(requestError.value)
   } finally {
-    testing.value = false
+    if (request === controller) { testing.value = false; request = undefined }
   }
 }
 
 async function submit() {
-  if (!props.open || busy.value) return
+  if (!syncProject() || !props.open || busy.value || !canModify.value) return
+  const expectedContext = context.value
   if (!await validate()) return
-  if (busy.value) return
-  if (!connectionTested.value) {
+  if (!syncProject() || !props.open || busy.value || !canModify.value || context.value !== expectedContext) return
+  if (!canSubmit.value) {
     message.info(t('kubernetesCluster.message.testFirst'))
     return
   }
   submitting.value = true
   requestError.value = ''
   const revision = formRevision
+  const clusterID = props.cluster?.id
+  const signature = currentSignature.value
+  const controller = new AbortController()
+  request?.abort(); request = controller
   try {
-    const response = await client.post<{ cluster: KubernetesCluster }>('/kubernetes/clusters', payload(), { timeout: 35_000 })
-    if (!mounted || !props.open || formRevision !== revision) return
-    message.success(t('kubernetesCluster.message.created'))
-    emit('created', response.data.cluster)
+    const options = { timeout: 35_000, signal: controller.signal, headers: { 'X-EDO-Project-ID': selectedProject.value } }
+    const response = clusterID
+      ? await client.put<{ cluster: KubernetesCluster }>(`/kubernetes/clusters/${encodeURIComponent(clusterID)}`, payload(), options)
+      : await client.post<{ cluster: KubernetesCluster }>('/kubernetes/clusters', payload(), options)
+    if (!isCurrent(revision, expectedContext) || currentSignature.value !== signature || controller.signal.aborted) return
+    if (!response.data.cluster?.id || clusterID && response.data.cluster.id !== clusterID) { requestError.value = '集群更新结果未确认，请重新读取集群后核对'; return }
+    message.success(t(clusterID ? 'kubernetesCluster.message.updated' : 'kubernetesCluster.message.created'))
+    if (clusterID) emit('saved', response.data.cluster)
+    else emit('created', response.data.cluster)
     emit('update:open', false)
   } catch (error) {
-    if (mounted && props.open && formRevision === revision) {
+    if (isCurrent(revision, expectedContext) && currentSignature.value === signature && !controller.signal.aborted) {
       requestError.value = apiErrorMessage(error)
       message.error(requestError.value)
     }
   } finally {
-    submitting.value = false
+    if (request === controller) { submitting.value = false; request = undefined }
   }
 }
 </script>
@@ -184,13 +246,14 @@ async function submit() {
 <template>
   <a-drawer
     :open="open"
-    :title="t('kubernetesCluster.drawer.title')"
-    width="620"
+    :title="t(editing ? 'kubernetesCluster.drawer.edit' : 'kubernetesCluster.drawer.title')"
+    width="min(620px, 100vw)"
     :mask-closable="!busy"
     @close="close"
   >
-    <a-form ref="formRef" :model="form" layout="vertical" :disabled="busy">
+    <a-form ref="formRef" :model="form" layout="vertical" :disabled="busy || !canModify">
       <div class="form-grid">
+        <a-alert v-if="!canModify" class="span-2" type="warning" show-icon :message="t('kubernetesCluster.message.contextChanged')" />
         <a-form-item
           :label="t('kubernetesCluster.field.name')"
           name="name"
@@ -205,7 +268,12 @@ async function submit() {
         >
           <a-input v-model:value="form.default_namespace" placeholder="default" />
         </a-form-item>
+        <a-form-item v-if="editing" class="span-2" :label="t('kubernetesCluster.field.connection')">
+          <a-radio-group v-model:value="form.config_action" :aria-label="t('kubernetesCluster.field.connection')"><a-radio-button value="keep">{{ t('kubernetesCluster.action.keep') }}</a-radio-button><a-radio-button value="replace" :disabled="!testAllowed">{{ t('kubernetesCluster.action.replace') }}</a-radio-button></a-radio-group>
+          <div v-if="!replacingConfig" class="field-hint"><code>{{ cluster?.api_server }}</code></div>
+        </a-form-item>
         <a-form-item
+          v-if="replacingConfig"
           class="span-2"
           name="kubeconfig"
           :rules="[{ required: true, whitespace: true, message: t('kubernetesCluster.validation.kubeconfig') }]"
@@ -223,7 +291,7 @@ async function submit() {
           :message="t('kubernetesCluster.test.ready', { version: testResult.version })"
           :description="testResult.api_server"
         />
-        <a-form-item v-if="canAssociate" class="span-2" label="关联主机（可选）" name="host_ids">
+        <a-form-item v-if="canAssociate && !editing" class="span-2" label="关联主机（可选）" name="host_ids">
           <a-select v-model:value="form.host_ids" mode="multiple" allow-clear placeholder="不关联主机" :options="hosts.filter(host => !host.is_builtin).map(host => ({ value: host.id, label: `${host.name}${host.is_active ? '' : '（已停用）'}` }))" />
           <div class="field-hint">保存时核对主机与集群节点信息，不匹配无法关联。没有主机时留空。</div>
           <div v-for="host in hosts.filter(host => form.host_ids.includes(host.id) && clusterForHost(host, clusters))" :key="host.id" class="host-transfer">{{ host.name }} 当前关联“{{ clusterForHost(host, clusters)?.name }}”，添加后关联到本集群。</div>
@@ -234,9 +302,9 @@ async function submit() {
     <template #footer>
       <div class="drawer-actions">
         <a-button :disabled="busy" @click="close">{{ t('kubernetesCluster.action.cancel') }}</a-button>
-        <a-button v-if="canTest" :loading="testing" :disabled="submitting" @click="testConnection">{{ t('kubernetesCluster.action.test') }}</a-button>
-        <a-button type="primary" :loading="submitting" :disabled="!canTest || !connectionTested || testing" @click="submit">
-          {{ submitting && form.host_ids.length ? '校验并添加' : t('kubernetesCluster.action.create') }}
+        <a-button v-if="testAllowed" :loading="testing" :disabled="submitting || readingFile" @click="testConnection">{{ t('kubernetesCluster.action.test') }}</a-button>
+        <a-button type="primary" :loading="submitting" :disabled="!canSubmit || testing || readingFile" @click="submit">
+          {{ editing ? t('kubernetesCluster.action.save') : submitting && form.host_ids.length ? '校验并添加' : t('kubernetesCluster.action.create') }}
         </a-button>
       </div>
     </template>

@@ -237,6 +237,14 @@ func (s *Service) Update(ctx context.Context, id string, input Input) (*model.Ku
 			return nil, err
 		}
 	}
+	if input.Kubeconfig != nil || input.Mode != existing.Mode {
+		// 保存时复用真实连接测试；主机身份仍由下方统一核验，避免重复探测。
+		connectionInput := input
+		connectionInput.HostIDs = nil
+		if _, err := s.Test(ctx, connectionInput); err != nil {
+			return nil, err
+		}
+	}
 	var verified []model.Host
 	var hostIDs []string
 	checkExistingLinks := input.HostIDs == nil && input.Kubeconfig != nil

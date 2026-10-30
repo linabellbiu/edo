@@ -1,12 +1,13 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, reactive, ref, watch } from 'vue'
 import { message } from 'ant-design-vue'
-import { ArrowUpRight, Link2, Plus, RefreshCw, Search, Server } from 'lucide-vue-next'
+import { ArrowUpRight, Link2, Pencil, Plus, RefreshCw, Search, Server } from 'lucide-vue-next'
 import { useRoute, useRouter } from 'vue-router'
 import client from '@/api/client'
 import type { ClusterHost, InfrastructureCluster, InfrastructureHost } from '@/api/infrastructure'
 import { apiErrorMessage } from '@/api/resources'
 import ClusterHostDrawer from '@/components/ClusterHostDrawer.vue'
+import KubernetesClusterDrawer from '@/components/KubernetesClusterDrawer.vue'
 import ClusterRbacDrawer from '@/components/ClusterRbacDrawer.vue'
 import KubeHostRoleBadge from '@/components/KubeHostRoleBadge.vue'
 import ResourceDetailDrawer from '@/components/ResourceDetailDrawer.vue'
@@ -26,6 +27,8 @@ const query = ref('')
 const association = ref('all')
 const associationOpen = ref(false)
 const associationCluster = ref<InfrastructureCluster>()
+const editOpen = ref(false)
+const editingCluster = ref<InfrastructureCluster>()
 const rbacCluster=ref(''),rbacOpen=ref(false)
 function openRbac(cluster:InfrastructureCluster){if(!auth.canAny(['kubernetes.rbac.read','kubernetes.rbac.update']))return;rbacCluster.value=cluster.id;rbacOpen.value=true}
 const checking = ref('')
@@ -73,6 +76,18 @@ function associate(cluster: InfrastructureCluster) {
   if (!canEditAssociations.value || !associationKnown(cluster)) return
   associationCluster.value = cluster
   associationOpen.value = true
+}
+function editCluster(cluster: InfrastructureCluster) {
+  if (!auth.canAny(['cluster.update']) || props.error) return
+  const current = props.clusters.find(item => item.id === cluster.id)
+  if (!current) return
+  editingCluster.value = current
+  editOpen.value = true
+}
+function clusterSaved(cluster: InfrastructureCluster) {
+  if (cluster.id !== editingCluster.value?.id) return
+  delete connection[cluster.id]
+  emit('refresh')
 }
 function openHost(host: ClusterHost) {
   if (!canOpenHost(host)) return
@@ -122,6 +137,13 @@ async function toggle(cluster: InfrastructureCluster) {
 }
 watch(canFilterAssociations, allowed => { if (!allowed) association.value = 'all' })
 watch(() => props.error, error => { if (error) { detailOpen.value = false; associationOpen.value = false } })
+watch(() => props.clusters, clusters => {
+  if (!editOpen.value || !editingCluster.value) return
+  const current = clusters.find(item => item.id === editingCluster.value?.id)
+  if (current) editingCluster.value = current
+  else { editOpen.value = false; editingCluster.value = undefined }
+})
+watch(() => auth.canAny(['cluster.update']) && !props.error, allowed => { if (!allowed) editOpen.value = false })
 onBeforeUnmount(() => { mounted = false })
 </script>
 
@@ -142,20 +164,21 @@ onBeforeUnmount(() => { mounted = false })
         <template v-else-if="column.key === 'api_server'"><code class="api-address">{{ record.api_server }}</code></template>
         <template v-else-if="column.key === 'hosts'"><span v-if="!associationKnown(record)" class="muted">{{ unknownAssociationLabel() }}</span><div v-else-if="hostsForCluster(record, hosts).length" class="linked-hosts"><button v-for="host in hostsForCluster(record, hosts)" :key="host.id" type="button" class="host-link" :disabled="!canOpenHost(host)" @click="openHost(host)"><Server :size="13" />{{ host.name }}<KubeHostRoleBadge :cluster="record.id" :host="host.id" /></button></div><span v-else class="muted">未关联主机</span></template>
         <template v-else-if="column.key === 'status'"><a-tag v-if="!record.is_active">已停用</a-tag><span v-else-if="connection[record.id]" class="connection-state" :class="{ failed: !connection[record.id]?.ok }" :title="connection[record.id]?.error"><i />{{ connection[record.id]?.ok ? '连接正常' : '连接失败' }}</span><a-tag v-else color="success">已启用</a-tag></template>
-        <template v-else-if="column.key === 'actions'"><ResourceRowActions :more="auth.canAny(['cluster.update', 'cluster.execute'])"><a-button v-if="canManageResources" size="small" @click="manage(record)">管理<ArrowUpRight :size="13" /></a-button><a-button size="small" @click="openDetails(record)">详情</a-button><a-button v-if="auth.canAny(['kubernetes.rbac.read','kubernetes.rbac.update'])" size="small" :disabled="!record.is_active" @click="openRbac(record)">授权</a-button><template #more><a-menu-item v-if="canEditAssociations" :disabled="!associationKnown(record)" @click="associate(record)">关联主机</a-menu-item><a-menu-item v-if="auth.canAny(['cluster.execute'])" :disabled="!record.is_active || Boolean(checking)" @click="ping(record)">测试连接</a-menu-item><a-menu-item v-if="auth.canAny(['cluster.update'])" :disabled="Boolean(updating)" @click="toggle(record)">{{ record.is_active ? '停用集群' : '启用集群' }}</a-menu-item></template></ResourceRowActions></template>
+        <template v-else-if="column.key === 'actions'"><ResourceRowActions :more="auth.canAny(['cluster.update', 'cluster.execute'])"><a-button v-if="canManageResources" size="small" @click="manage(record)">管理<ArrowUpRight :size="13" /></a-button><a-button size="small" @click="openDetails(record)">详情</a-button><a-button v-if="auth.canAny(['kubernetes.rbac.read','kubernetes.rbac.update'])" size="small" :disabled="!record.is_active" @click="openRbac(record)">授权</a-button><template #more><a-menu-item v-if="auth.canAny(['cluster.update'])" @click="editCluster(record)"><Pencil :size="13" />编辑集群</a-menu-item><a-menu-item v-if="canEditAssociations" :disabled="!associationKnown(record)" @click="associate(record)">关联主机</a-menu-item><a-menu-item v-if="auth.canAny(['cluster.execute'])" :disabled="!record.is_active || Boolean(checking)" @click="ping(record)">测试连接</a-menu-item><a-menu-item v-if="auth.canAny(['cluster.update'])" :disabled="Boolean(updating)" @click="toggle(record)">{{ record.is_active ? '停用集群' : '启用集群' }}</a-menu-item></template></ResourceRowActions></template>
       </template>
       <template #emptyText><a-empty :description="error ? '集群列表加载失败' : query || association !== 'all' ? '没有匹配的集群' : '暂无 Kubernetes 集群'"><a-space v-if="!error && !query && association === 'all'"><a-button v-if="auth.canAny(['cluster.create'])" @click="emit('create')">接入集群</a-button><a-button v-if="canCreateK3s" type="primary" @click="emit('provision')">创建集群</a-button></a-space></a-empty></template>
     </a-table>
 
     <ResourceDetailDrawer :open="detailOpen" @close="closeDetails" @update:open="detailOpen = $event">
       <template #title><div v-if="selected" class="cluster-detail-title"><span class="cluster-icon"><RuntimeBrandIcon kind="kubernetes" /></span>{{ selected.name }}<a-tag :color="selected.is_active ? 'success' : undefined">{{ selected.is_active ? '已启用' : '已停用' }}</a-tag></div></template>
-      <template v-if="selected" #actions><a-space><a-button v-if="canManageResources" type="primary" @click="manage(selected)">管理集群<ArrowUpRight :size="14" /></a-button><a-button v-if="auth.canAny(['kubernetes.node.read'])" @click="router.push({path:'/kubernetes',query:{view:'nodes',node_view:'topology',cluster:selected.id}})">节点拓扑</a-button><a-button v-if="auth.canAny(['cluster.execute'])" :loading="checking === selected.id" :disabled="!selected.is_active" @click="ping(selected)">测试连接</a-button></a-space></template>
+      <template v-if="selected" #actions><a-space><a-button v-if="canManageResources" type="primary" @click="manage(selected)">管理集群<ArrowUpRight :size="14" /></a-button><a-button v-if="auth.canAny(['cluster.update'])" @click="editCluster(selected)"><Pencil :size="14" />编辑</a-button><a-button v-if="auth.canAny(['kubernetes.node.read'])" @click="router.push({path:'/kubernetes',query:{view:'nodes',node_view:'topology',cluster:selected.id}})">节点拓扑</a-button><a-button v-if="auth.canAny(['cluster.execute'])" :loading="checking === selected.id" :disabled="!selected.is_active" @click="ping(selected)">测试连接</a-button></a-space></template>
       <template v-if="selected">
         <section class="resource-detail-section"><h4>集群信息</h4><dl class="resource-facts"><div class="resource-facts-wide"><dt>API 地址</dt><dd><code>{{ selected.api_server }}</code></dd></div><div><dt>默认命名空间</dt><dd>{{ selected.default_namespace }}</dd></div><div><dt>接入方式</dt><dd>kubeconfig</dd></div><div><dt>更新时间</dt><dd>{{ formatDateTime(selected.updated_at, 'zh-CN') }}</dd></div><div v-if="connection[selected.id]?.version"><dt>Kubernetes</dt><dd>{{ connection[selected.id]?.version }}</dd></div></dl></section>
         <section class="resource-detail-section"><header><h4>关联主机 <span v-if="associationKnown(selected)" class="muted">{{ hostsForCluster(selected, hosts).length }}</span></h4><a-button v-if="canEditAssociations && associationKnown(selected)" size="small" @click="associate(selected)"><Link2 :size="14" />关联主机</a-button></header><p v-if="!associationKnown(selected)" class="muted">{{ unknownAssociationLabel() }}</p><div v-else-if="hostsForCluster(selected, hosts).length" class="detail-hosts"><button v-for="host in hostsForCluster(selected, hosts)" :key="host.id" type="button" :disabled="!canOpenHost(host)" @click="openHost(host)"><Server :size="17" /><span><strong>{{ host.name }}</strong><small>{{ host.address }}</small><KubeHostRoleBadge :cluster="selected.id" :host="host.id" /></span><a-tag v-if="!host.is_active">已停用</a-tag><ArrowUpRight v-if="canOpenHost(host)" :size="15" /></button></div><div v-else class="standalone-state"><span class="standalone-icon"><RuntimeBrandIcon kind="kubernetes" /></span><strong>未关联主机</strong><p>通过 kubeconfig 访问集群，可直接管理资源。</p><a-button v-if="canManageResources" @click="manage(selected)">管理集群<ArrowUpRight :size="13" /></a-button></div></section>
       </template>
     </ResourceDetailDrawer>
     <ClusterHostDrawer v-model:open="associationOpen" :cluster="associationCluster" :clusters="clusters" :hosts="hosts" @saved="emit('refresh')" />
+    <KubernetesClusterDrawer v-model:open="editOpen" :cluster="editingCluster" :can-test="auth.canAny(['cluster.execute'])" @saved="clusterSaved" />
     <ClusterRbacDrawer v-model:open="rbacOpen" :cluster="rbacCluster" />
   </div>
 </template>

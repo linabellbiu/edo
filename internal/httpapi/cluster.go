@@ -300,6 +300,27 @@ func (h clusterHandler) updateKubernetesCluster(c *gin.Context) {
 		writeError(c, http.StatusBadRequest, "invalid_request", kube.ErrInvalidCluster.Error())
 		return
 	}
+	existing, err := h.kube.Find(c.Request.Context(), c.Param("id"))
+	if err != nil {
+		h.writeKubernetesError(c, "kubernetes_cluster_update_find", err)
+		return
+	}
+	if request.Kubeconfig != nil || request.Mode != existing.Mode {
+		actor, ok := currentUser(c)
+		allowed := false
+		if ok && h.access != nil {
+			allowed, err = requestPermission(c, h.access, actor, access.PermissionClusterExecute)
+		}
+		if err != nil {
+			h.writeKubernetesError(c, "kubernetes_cluster_update_connection_permission", err)
+			return
+		}
+		if !allowed {
+			h.logger.Warn("修改 Kubernetes 连接缺少执行权限", "operation", "kubernetes_cluster_update_connection_permission", "request_id", requestIDFrom(c), "cluster_id", c.Param("id"))
+			writeError(c, http.StatusForbidden, "permission_denied", "没有测试或更换集群连接的权限")
+			return
+		}
+	}
 	cluster, err := h.kube.Update(c.Request.Context(), c.Param("id"), toKubernetesInput(request))
 	if err != nil {
 		h.writeKubernetesError(c, "kubernetes_cluster_update", err)
