@@ -1,11 +1,15 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
+import { readFileSync } from 'node:fs'
+import { createRequire } from 'node:module'
+import { parse } from '@vue/compiler-sfc'
 import * as vue from 'vue'
 import { loadFrontend } from './acceptanceHarness.mjs'
 
 const permissions = ['application_database.read', 'application_database.create', 'application_database.update', 'application.read', 'deployment.read', 'environment_policy.read', 'environment_policy.update']
 const settle = async () => { await vue.nextTick(); await new Promise(resolve => setImmediate(resolve)); await vue.nextTick() }
 const deferred = () => { let resolve; const promise = new Promise(yes => { resolve = yes }); return { promise, resolve } }
+const filterOptions = createRequire(import.meta.url)('ant-design-vue/lib/vc-select/hooks/useFilterOptions.js').default
 
 async function harness({ routeName = 'application-databases', get } = {}) {
   const requests = [], unmounts = []
@@ -94,4 +98,28 @@ test('超级管理员降级即使保留相关动作权限也关闭敏感草稿',
   h.auth.user = { ...h.auth.user, is_superuser: false }; await settle()
   assert.equal(h.state.open.value, false)
   assert.equal(h.state.dbForm.password, '')
+})
+
+test('审核人真实选择框按中英文姓名搜索，不按UUID匹配，清空搜索保留全部候选及已选成员', async t => {
+  const reviewers = [
+    { id: '12000000-0000-4000-8000-000000000001', name: '张三' },
+    { id: '12000000-0000-4000-8000-000000000002', name: 'Alice Cooper' },
+    { id: '12000000-0000-4000-8000-000000000003', name: 'qa_c03_birch_reviewer_one' },
+  ]
+  const h = await harness({ routeName: 'environment-policies', get: path => path === '/environment-policies/reviewers' ? { data: { reviewers } } : undefined }); t.after(h.stop)
+  h.state.editPolicy({ id: 'policy-a', environment_id: 'env-a', reviewer_ids: [reviewers[1].id], require_approval: true })
+  const ast = parse(readFileSync(new URL('../src/views/DeliveryControlsView.vue', import.meta.url), 'utf8')).descriptor.template.ast
+  const matches = [], visit = node => { if (node.tag === 'a-select' && node.props.some(prop => prop.type === 7 && prop.name === 'model' && prop.exp.content === 'policyForm.reviewer_ids')) matches.push(node); for (const child of node.children || []) visit(child) }; visit(ast)
+  assert.equal(matches.length, 1)
+  const select = matches[0], expression = select.props.find(prop => prop.type === 7 && prop.name === 'bind' && prop.arg.content === 'options').exp.content
+  const options = vue.ref(new Function('reviewers', `return (${expression})`)(h.state.reviewers.value))
+  const search = vue.ref(''), prop = select.props.find(prop => prop.type === 6 && prop.name === 'option-filter-prop')?.value.content
+  const filtered = filterOptions(options, vue.ref({ label: 'label', value: 'value', options: 'options' }), search, vue.ref(undefined), vue.ref(prop))
+  const requestCount = h.requests.length
+  for (const [query, ids] of [['张三', [reviewers[0].id]], ['alice cooper', [reviewers[1].id]], ['qa_c03_birch_reviewer_one', [reviewers[2].id]], [reviewers[0].id, []], ['', reviewers.map(item => item.id)]]) {
+    search.value = query
+    assert.deepEqual(filtered.value.map(item => item.value), ids, query || '清空搜索')
+    assert.deepEqual(h.state.policyForm.reviewer_ids, [reviewers[1].id])
+  }
+  assert.equal(h.requests.length, requestCount)
 })

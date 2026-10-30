@@ -63,7 +63,7 @@ onBeforeUnmount(()=>{disposed=true;revision++;dbForm.password=''})
      <a-form-item><a-switch v-model:checked="policyForm.is_active"/> 启用环境保护</a-form-item>
      <a-form-item label="允许发布的版本" extra="一行一个，例如 refs/heads/main、refs/tags/v*；留空表示不限制。"><a-textarea v-model:value="policyForm.allowed_refs" :rows="3"/></a-form-item>
      <a-form-item><a-checkbox v-model:checked="policyForm.require_approval">发布前需要指定成员审核</a-checkbox></a-form-item>
-     <template v-if="policyForm.require_approval"><a-form-item label="审核人" required><a-select mode="multiple" v-model:value="policyForm.reviewer_ids" :options="reviewers.map(v=>({value:v.id,label:v.name}))"/></a-form-item><a-form-item label="至少通过人数"><a-input-number v-model:value="policyForm.minimum_approvals" :min="1" :max="32"/></a-form-item></template>
+     <template v-if="policyForm.require_approval"><a-form-item label="审核人" required><a-select mode="multiple" v-model:value="policyForm.reviewer_ids" option-filter-prop="label" :options="reviewers.map(v=>({value:v.id,label:v.name}))"/></a-form-item><a-form-item label="至少通过人数"><a-input-number v-model:value="policyForm.minimum_approvals" :min="1" :max="32"/></a-form-item></template>
      <a-form-item label="发布时间窗口（Asia/Shanghai）"><a-input v-model:value="policyForm.window_start" placeholder="开始时间，如 09:00"/><a-input v-model:value="policyForm.window_end" placeholder="结束时间，如 18:00；留空不限制"/></a-form-item>
      <a-alert type="info" show-icon message="申请人不能自审。审核人仍需拥有流水线审核权限；规则变更后，尚未执行的发布需要重新运行。"/>
     </template>
