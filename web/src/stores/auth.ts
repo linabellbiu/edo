@@ -23,11 +23,25 @@ export const useAuthStore = defineStore('auth', () => {
   let schedulePermissionSync: (() => void) | undefined
   const selectedProject = () => localStorage.getItem('edo.project') ?? ''
 
+  function clearAuditPositions() {
+    // 审计页可能已卸载，身份失效也必须清除本功能的浏览位置。
+    try { window.sessionStorage?.removeItem('edo.audit.positions') } catch { /* 禁用存储不影响身份清理。 */ }
+  }
+
+  const profileContext = (profile: User) => JSON.stringify([
+    profile.id, profile.department_id, profile.project_id, profile.is_superuser, [...new Set(profile.permissions)].sort(),
+  ])
+  function applyProfile(profile: User) {
+    if (user.value && profileContext(user.value) !== profileContext(profile)) clearAuditPositions()
+    user.value = profile
+  }
+
   function invalidateSession() {
     revision++
     permissionRevision++
     loadPromise = null
     refresh = undefined
+    clearAuditPositions()
     user.value = null
   }
 
@@ -42,11 +56,12 @@ export const useAuthStore = defineStore('auth', () => {
         if (request !== revision) return
         const profile = await getCurrentUser()
         if (request !== revision) return
-        user.value = profile
+        applyProfile(profile)
         loaded.value = true
         loadFailed.value = false
       } catch (error) {
         if (request !== revision) return
+        if (axios.isAxiosError(error) && [401, 403].includes(error.response?.status ?? 0)) clearAuditPositions()
         if (axios.isAxiosError(error) && error.response?.status === 401) {
           user.value = null
           loaded.value = true
@@ -84,7 +99,7 @@ export const useAuthStore = defineStore('auth', () => {
     if (request !== revision) return
     const profile = await getCurrentUser()
     if (request !== revision) return
-    user.value = profile
+    applyProfile(profile)
     loaded.value = true
     loadFailed.value = false
   }
@@ -137,7 +152,7 @@ export const useAuthStore = defineStore('auth', () => {
             loaded.value = true
             return
           }
-          user.value = profile
+          applyProfile(profile)
           loadFailed.value = false
           return
         } catch (error) {
@@ -150,6 +165,7 @@ export const useAuthStore = defineStore('auth', () => {
             if (attempt === 1) schedulePermissionSync?.()
             continue
           } else if (axios.isAxiosError(error) && error.response?.status === 403) {
+            clearAuditPositions()
             // 当前项目授权失效时清掉旧权限，但不退出仍可访问其他项目的会话。
             if (subject.permissions.length || subject.is_superuser) {
               user.value = { ...subject, permissions: [], is_superuser: false }

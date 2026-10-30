@@ -180,15 +180,103 @@ const active = computed(() =>
     : tabs.value[0]?.key || '',
 )
 
-const auditContext = computed(() => JSON.stringify([
-  route.query.view,
-  active.value,
+const auditScope = computed(() => JSON.stringify([
   auth.user?.id,
   auth.user?.department_id,
   auth.user?.project_id,
   auth.user?.is_superuser,
   [...auth.permissions].sort(),
 ]))
+const auditContext = computed(() => JSON.stringify([route.query.view, active.value, auditScope.value]))
+interface AuditPosition { position: string; cursors: string[]; savedAt: number }
+interface AuditPositions { scope: string; positions: AuditPosition[] }
+const auditPositionKey = 'edo.audit.positions'
+const auditPositionTTL = 30 * 60_000
+const auditPositionLimit = 40, auditPositionCursorLimit = 1000, auditPositionByteLimit = 256 * 1024
+let auditPositionsMemory: AuditPositions | undefined
+let lastAuditScope = auditScope.value
+const auditRouteWrites = new Map<string, number>()
+
+function validAuditCursors(value: unknown): value is string[] {
+  if (!Array.isArray(value) || !value.length || value.length > auditPositionCursorLimit || value[0] !== '') return false
+  return value.slice(1).every((cursor, index) => typeof cursor === 'string' && /^[1-9]\d{0,18}$/.test(cursor)
+    && BigInt(cursor) <= 9223372036854775807n && (index === 0 || BigInt(value[index]) > BigInt(cursor)))
+}
+
+function clearAuditPositions() {
+  auditPositionsMemory = { scope: auditScope.value, positions: [] }
+  try { window.sessionStorage?.removeItem(auditPositionKey) } catch { /* 不可用的会话存储不影响权限清场。 */ }
+}
+
+function readAuditPositions(): AuditPositions {
+  const now = Date.now(), scope = auditScope.value
+  if (!auditPositionsMemory || auditPositionsMemory.scope !== scope) {
+    try {
+      const raw = window.sessionStorage?.getItem(auditPositionKey)
+      if (raw && new TextEncoder().encode(raw).byteLength <= auditPositionByteLimit) {
+        const value = JSON.parse(raw)
+        if (value?.scope === scope && Array.isArray(value.positions) && value.positions.length <= auditPositionLimit
+          && Object.keys(value).sort().join() === 'positions,scope'
+          && value.positions.every((item: AuditPosition) => item && Object.keys(item).sort().join() === 'cursors,position,savedAt'
+            && typeof item.position === 'string' && /^[a-f0-9]{24}$/.test(item.position) && validAuditCursors(item.cursors)
+            && Number.isSafeInteger(item.savedAt) && item.savedAt <= now)
+          && new Set(value.positions.map((item: AuditPosition) => item.position)).size === value.positions.length) auditPositionsMemory = value
+      }
+    } catch { /* 损坏或禁用的存储只丢弃浏览位置，不保留审计正文。 */ }
+    if (!auditPositionsMemory || auditPositionsMemory.scope !== scope) clearAuditPositions()
+  }
+  const cache = auditPositionsMemory!, retained = cache.positions.filter(item => now - item.savedAt < auditPositionTTL)
+  if (retained.length !== cache.positions.length) {
+    cache.positions = retained
+    try {
+      if (retained.length) window.sessionStorage?.setItem(auditPositionKey, JSON.stringify(cache))
+      else window.sessionStorage?.removeItem(auditPositionKey)
+    } catch { /* 过期位置在内存中同样不可恢复。 */ }
+  }
+  return auditPositionsMemory!
+}
+
+function replaceAuditPosition(position?: string) {
+  if (route.query.audit_position === position) return
+  const context = auditContext.value, key = JSON.stringify([context, position ?? null])
+  const query = { ...route.query }
+  if (position) query.audit_position = position
+  else delete query.audit_position
+  auditRouteWrites.set(key, (auditRouteWrites.get(key) || 0) + 1)
+  void router.replace({ query, hash: route.hash }).catch(() => { /* 导航取消不改变已经鉴权取得的当前页。 */ }).finally(() => {
+    const remaining = (auditRouteWrites.get(key) || 1) - 1
+    if (remaining) auditRouteWrites.set(key, remaining)
+    else auditRouteWrites.delete(key)
+  })
+}
+
+function restoreAuditPosition(): string[] {
+  const position = route.query.audit_position
+  const entry = typeof position === 'string' && /^[a-f0-9]{24}$/.test(position)
+    ? readAuditPositions().positions.find(item => item.position === position) : undefined
+  if (!entry) { replaceAuditPosition(); return [''] }
+  return [...entry.cursors]
+}
+
+function saveAuditPosition(cursors: string[]) {
+  if (cursors.length === 1 || !validAuditCursors(cursors)) { replaceAuditPosition(); return }
+  const cache = readAuditPositions(), existing = cache.positions.find(item => item.position === route.query.audit_position)
+    || cache.positions.find(item => JSON.stringify(item.cursors) === JSON.stringify(cursors))
+  let position = existing?.position
+  if (!position) {
+    try { position = Array.from(window.crypto.getRandomValues(new Uint8Array(12)), value => value.toString(16).padStart(2, '0')).join('') }
+    catch { replaceAuditPosition(); return }
+    if (cache.positions.some(item => item.position === position)) { replaceAuditPosition(); return }
+  }
+  const entry = { position, cursors: [...cursors], savedAt: Date.now() }
+  const positions = [...cache.positions.filter(item => item.position !== position), entry].slice(-auditPositionLimit)
+  const next = { scope: auditScope.value, positions }
+  while (new TextEncoder().encode(JSON.stringify(next)).byteLength > auditPositionByteLimit && positions.length > 1) positions.shift()
+  if (new TextEncoder().encode(JSON.stringify(next)).byteLength > auditPositionByteLimit) { replaceAuditPosition(); return }
+  auditPositionsMemory = next
+  try { window.sessionStorage?.setItem(auditPositionKey, JSON.stringify(next)) } catch { /* 当前组件仍保留有界游标，刷新时安全回到首页。 */ }
+  replaceAuditPosition(position)
+}
 
 const canReadUsers = computed(() => canAny(['user.read', 'user.create', 'user.update', 'user.delete']))
 const canAccessDepartments = computed(() => canAny([
@@ -453,10 +541,13 @@ async function loadAuditPage(cursors: string[]) {
     auditCursorStack.value = nextStack
     auditNextCursor.value = nextCursor
     auditHasMore.value = Boolean(response.data.has_more && nextCursor)
+    if (isCurrent()) saveAuditPosition(nextStack)
   } catch (error) {
     if (!isCurrent()) return
     if (isAxiosError(error) && (error.response?.status === 401 || error.response?.status === 403)) {
+      clearAuditPositions()
       resetAuditPagination()
+      replaceAuditPosition()
     }
     auditError.value = apiErrorMessage(error)
     message.error(auditError.value)
@@ -490,7 +581,9 @@ async function loadAllUsers() {
 }
 
 function selectTab(key: string) {
-  void router.replace({ query: { ...route.query, view: key } })
+  const query: typeof route.query = { ...route.query, view: key }
+  if (key !== 'audit') delete query.audit_position
+  void router.replace({ query })
 }
 
 function resetUser() {
@@ -844,17 +937,27 @@ watch(
   },
   { immediate: true },
 )
-watch(auditContext, () => {
+watch(() => JSON.stringify([auditContext.value, route.query.audit_position ?? null]), () => {
+  const scopeChanged = lastAuditScope !== auditScope.value
+  lastAuditScope = auditScope.value
+  if (scopeChanged) clearAuditPositions()
+  const internalWrite = JSON.stringify([auditContext.value, route.query.audit_position ?? null])
+  if (!scopeChanged && auditRouteWrites.has(internalWrite)) return
   resetAuditPagination()
-  if (active.value === 'audit' && canAny(['audit.read'])) void loadAuditPage([''])
+  if (active.value === 'audit' && canAny(['audit.read'])) {
+    if (scopeChanged) replaceAuditPosition()
+    void loadAuditPage(scopeChanged ? [''] : restoreAuditPosition())
+  } else replaceAuditPosition()
 }, { flush: 'sync' })
 onBeforeUnmount(() => {
   auditDisposed = true
-  auditRevision += 1
-  auditController?.abort()
-  auditController = undefined
+  resetAuditPagination()
 })
-onMounted(refresh)
+onMounted(() => {
+  if (active.value === 'audit') return loadAuditPage(restoreAuditPosition())
+  replaceAuditPosition()
+  return refresh()
+})
 </script>
 
 <template>
