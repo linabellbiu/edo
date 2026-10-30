@@ -22,7 +22,7 @@ function harness(initial) {
   const props = vue.reactive({ data: initial, loading: false, error: '', clusterName: 'NAS K3s', endpoint: '', disabled: false, selected: '' })
   const events = [], scope = vue.effectScope()
   const component = loadFrontend('../src/components/KubeNodeTopology.vue', {
-    vue: { ...vue, onMounted() {}, onBeforeUnmount() {} },
+    vue: { ...vue, onMounted() {}, onBeforeUnmount() {}, useId: () => 'topology-test' },
     'vue-i18n': { useI18n: () => ({ t: (key, values = {}) => `${key} ${JSON.stringify(values)}` }) },
     '@/utils/kubernetesTopology': topology,
     '@/utils/time': { formatDateTime: value => value },

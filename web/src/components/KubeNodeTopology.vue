@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, useId, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { ArrowUpRight, Boxes, CircleAlert, Clock3, Cpu, Layers3, MemoryStick, Network, RefreshCw, Search, Server, ShieldCheck } from 'lucide-vue-next'
 import type { KubeObject } from '@/api/kubernetes'
@@ -22,6 +22,7 @@ const props = withDefaults(defineProps<{
 }>(), { clusterName: '', endpoint: '', disabled: false, selected: '' })
 const emit = defineEmits<{ select: [node: KubeObject]; refresh: [] }>()
 const { t } = useI18n()
+const roleSelectID = `kube-topology-role-${useId()}`
 const query = ref('')
 const role = ref<'all' | NodeRole>('all')
 const now = ref(Date.now())
@@ -83,7 +84,7 @@ function nodeDescription(entry: NodeTopologyEntry) {
   <section class="node-topology" :aria-busy="loading" :aria-label="t('k8sTopology.title')">
     <header class="topology-toolbar">
       <div class="topology-title"><Network :size="17" /><strong>{{ t('k8sTopology.title') }}</strong><span>{{ t('k8sTopology.nodeCount', { count: nodes.length }) }}</span></div>
-      <div class="topology-filters"><a-input v-model:value="query" allow-clear :placeholder="t('k8sTopology.search')" :aria-label="t('k8sTopology.search')"><template #prefix><Search :size="14" /></template></a-input><a-select v-model:value="role" :options="roleOptions" :aria-label="t('k8sTopology.roles')" /></div>
+      <div class="topology-filters"><a-input v-model:value="query" allow-clear :placeholder="t('k8sTopology.search')" :aria-label="t('k8sTopology.search')"><template #prefix><Search :size="14" /></template></a-input><label :for="roleSelectID" class="topology-role-label">{{ t('k8sTopology.roles') }}</label><a-select :id="roleSelectID" v-model:value="role" :options="roleOptions" :aria-label="t('k8sTopology.roles')" /></div>
       <a-button :loading="loading" :disabled="disabled" @click="refresh"><RefreshCw :size="14" />{{ t('k8sTopology.refresh') }}</a-button>
     </header>
     <a-alert v-if="error" class="topology-alert" type="error" show-icon :message="t('k8sTopology.loadFailed')" :description="error"><template #action><a-button size="small" :disabled="disabled" @click="refresh">{{ t('k8sTopology.refresh') }}</a-button></template></a-alert>
@@ -137,4 +138,5 @@ function nodeDescription(entry: NodeTopologyEntry) {
 
 <style scoped>
 .cluster-ready.degraded>i{background:#b77e16}
+.topology-role-label{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
 </style>
