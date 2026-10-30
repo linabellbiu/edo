@@ -100,6 +100,14 @@ func k3dResourceName(id string) string {
 	return "edo-" + strings.ToLower(encoded)
 }
 
+func k3dImageVolumeName(id string) string {
+	name := k3dResourceName(id)
+	if name == "" {
+		return ""
+	}
+	return "k3d-" + name + "-images"
+}
+
 func k3dWarnings(id string) []string {
 	name := k3dResourceName(id)
 	if name == "" {
@@ -107,6 +115,7 @@ func k3dWarnings(id string) []string {
 	}
 	return []string{
 		"将在所选主机的本地 Docker 中通过官方 k3d 创建独立容器集群，不安装宿主机 K3s 服务，不修改默认 kubeconfig。",
+		"官方 k3d 将创建本次独立镜像卷 " + k3dImageVolumeName(id) + "；创建前拒绝复用同名卷，创建后核对卷的集群归属。",
 		"Server 限制为 2 GiB，Worker 各 1 GiB；创建后立即设置 Server 2 核、Worker 1 核及交换限制，启动瞬间尚未限制 CPU。",
 		"失败时保留已创建的容器、网络和卷供检查，不自动删除或重建；本次资源名：" + name,
 		"容器节点不是物理主机，集群会独立接入，不自动建立物理节点关联。",

@@ -106,7 +106,7 @@ func k3dCreateCommand(input Input, installationID string) string {
 	return "edo_cli cluster create " + shellQuote(name) + " --servers 1 --agents " + strconv.Itoa(k3dAgents(options)) +
 		" --api-port " + shellQuote(net.JoinHostPort(options.BindAddress, strconv.Itoa(options.APIPort))) +
 		" --image " + shellQuote("rancher/k3s:"+strings.ReplaceAll(k3dK3sVersion, "+", "-")) +
-		" --servers-memory 2g --agents-memory 1g --no-lb --no-image-volume --no-rollback --wait=false --timeout 5m --kubeconfig-update-default=false --kubeconfig-switch-context=false" +
+		" --servers-memory 2g --agents-memory 1g --no-lb --no-rollback --wait=false --timeout 5m --kubeconfig-update-default=false --kubeconfig-switch-context=false" +
 		" --runtime-label " + shellQuote("edo.dev/installation="+installationID+"@all") +
 		" --k3s-node-label " + shellQuote("edo.dev/installation="+installationID+"@all") +
 		" --k3s-arg " + shellQuote("--tls-san="+endpoint.Hostname()+"@server:0")
@@ -157,8 +157,12 @@ set +e
 set -e
 edo_tool_valid
 `
+	imageVolume := k3dImageVolumeName(installationID)
+	// 官方工具节点依赖镜像卷；只允许本次安装新建，不接管同名旧卷。
+	script += "edo_image_volume=" + shellQuote(imageVolume) + "\nedo_volume_names=$(edo_docker volume ls --format '{{.Name}}') || exit 47\nif printf '%s\\n' \"$edo_volume_names\" | awk -v want=\"$edo_image_volume\" '$0==want{found=1} END{exit !found}'; then exit 47; fi\nunset edo_volume_names\n"
 	script += k3dCreateCommand(input, installationID) + "\n"
 	script += "printf 'EDO_K3S_STAGE\\tk3d_resources\\n'\n"
+	script += "[ \"$(edo_docker volume inspect --format '{{.Name}} {{index .Labels \"k3d.cluster\"}}' \"$edo_image_volume\")\" = " + shellQuote(imageVolume+" "+resourceName) + " ] || exit 47\n"
 	for index := -1; index < k3dAgents(input.K3d); index++ {
 		role, ordinal, cpus, memory, bytes := "agent", index, "1", "1g", 1073741824
 		if index == -1 {

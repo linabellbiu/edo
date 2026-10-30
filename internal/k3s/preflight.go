@@ -19,7 +19,8 @@ import (
 	"edo/internal/secret"
 )
 
-const preflightVersion = 2
+// 托管资源契约变化后，已有计划必须重新预检并确认。
+const preflightVersion = 3
 
 // PreflightTimeout bounds the complete multi-host read-only check. HTTP callers
 // use the same budget instead of the server's shorter ordinary request limit.

@@ -139,6 +139,53 @@ func TestK3dNormalizationDefaultsAndRejectsUnsafeTargets(t *testing.T) {
 	}
 }
 
+func TestK3dRejectsPreImageVolumePlanBeforeTaskOrHostSideEffects(t *testing.T) {
+	f, transport, clusters, input := k3dFixture(t)
+	plan, err := f.service.Preview(f.ctx, f.actor.ID, input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var record model.K3sInstallation
+	if err := f.db.First(&record, "uuid = ?", plan.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := f.service.decode(record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 旧版本计划没有确认官方镜像卷，不能沿用其安装授权。
+	snapshot.PreflightVersion = 2
+	encoded, err := json.Marshal(snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ciphertext, err := f.service.secrets.Encrypt(string(encoded), []byte("k3s-installation:"+record.ID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.db.Model(&record).Update("input_ciphertext", ciphertext).Error; err != nil {
+		t.Fatal(err)
+	}
+	operation, executeErr := f.service.Execute(f.ctx, f.actor.ID, plan.ID)
+	if !errors.Is(executeErr, ErrPreflightRequired) || operation != nil {
+		t.Errorf("旧版本计划未在排队前要求重新预检和确认: %v", executeErr)
+	}
+	var stored model.K3sInstallation
+	if err := f.db.First(&stored, "uuid = ?", plan.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if stored.Status != "planned" || stored.InputCiphertext != ciphertext {
+		t.Error("拒绝旧版本计划时修改了原计划状态或密文")
+	}
+	var locks int64
+	if err := f.db.Model(&model.K3sInstallationHostLock{}).Where("installation_id = ?", plan.ID).Count(&locks).Error; err != nil {
+		t.Fatal(err)
+	}
+	if locks != 0 || len(transport.writes) != 0 || clusters.created != 0 || len(clusters.linked) != 0 {
+		t.Error("旧版本计划产生了安装主机锁、远端写入或集群接入副作用")
+	}
+}
+
 type k3dDelayedAPI struct {
 	*fakeClusters
 	tests, failures int

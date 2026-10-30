@@ -16,7 +16,7 @@ import (
 )
 
 func TestK3dShellUsesPinnedCLIAndOnlyUpdatesReviewedLocalContainers(t *testing.T) {
-	for _, scenario := range []string{"success", "minimum-engine", "bad-checksum", "old-engine", "unknown-engine", "wrong-bind", "occupied-port", "low-cpu", "low-memory", "low-disk", "update-failure"} {
+	for _, scenario := range []string{"success", "minimum-engine", "bad-checksum", "old-engine", "unknown-engine", "wrong-bind", "occupied-port", "low-cpu", "low-memory", "low-disk", "update-failure", "volume-conflict", "volume-list-failure", "foreign-volume-owner"} {
 		t.Run(scenario, func(t *testing.T) {
 			// 使用短路径，兼容 macOS Unix Socket 的路径长度限制。
 			directory, err := os.MkdirTemp("/tmp", "edo-k3d-shell-")
@@ -45,6 +45,8 @@ func TestK3dShellUsesPinnedCLIAndOnlyUpdatesReviewedLocalContainers(t *testing.T
 			}
 			tool := "#!/bin/sh\n[ -z \"${DOCKER_CONTEXT:-}${DOCKER_TLS_VERIFY:-}${KUBECONFIG:-}\" ] || exit 96\n[ \"${DOCKER_HOST:-}\" = " + shellQuote("unix://"+socket) + " ] || exit 95\nprintf 'cli %s\\n' \"$*\" >> " + shellQuote(calls) + "\n"
 			tool += "case \"${1:-}\" in\nversion) printf 'k3d version v5.9.0\\n';;\ncluster)\n[ \"${2:-}\" = create ] || exit 94\nshift 2\nname=$1; shift\n[ \"${#name}\" -le 32 ] || exit 98\ncase \"$name\" in ''|*[!a-z0-9-]*|*-) exit 97;; esac\n[ \"$name\" = " + shellQuote(k3dResourceName(id)) + " ] || exit 93\nruntime_label=''; node_label=''\nwhile [ \"$#\" -gt 0 ]; do case \"$1\" in --runtime-label) runtime_label=$2; shift 2;; --k3s-node-label) node_label=$2; shift 2;; *) shift;; esac; done\n[ \"$runtime_label\" = " + shellQuote("edo.dev/installation="+id+"@all") + " ] && [ \"$node_label\" = \"$runtime_label\" ] || exit 92\n;;\nkubeconfig)\n[ \"${2:-}\" = get ] && [ \"${3:-}\" = " + shellQuote(k3dResourceName(id)) + " ] || exit 86\nprintf 'apiVersion: v1\\nkind: Config\\ncurrent-context: chosen\\n';;\n*) exit 91;;\nesac\n"
+			// 对照固定官方版本的工具依赖：禁用镜像卷时不能假装创建成功。
+			tool = strings.Replace(tool, "cluster)\n", "cluster)\nfor edo_arg do [ \"$edo_arg\" != --no-image-volume ] || exit 85; done\n", 1)
 			asset := filepath.Join(directory, "asset")
 			if err := os.WriteFile(asset, []byte(tool), 0600); err != nil {
 				t.Fatal(err)
@@ -70,6 +72,19 @@ func TestK3dShellUsesPinnedCLIAndOnlyUpdatesReviewedLocalContainers(t *testing.T
 				docker += "exit 0\n"
 			}
 			docker += ";;\n*) exit 87;;\nesac\n"
+			imageVolume := "k3d-" + k3dResourceName(id) + "-images"
+			volumeList, volumeOwner := "", k3dResourceName(id)
+			if scenario == "volume-conflict" {
+				volumeList = imageVolume
+			}
+			if scenario == "foreign-volume-owner" {
+				volumeOwner = "another-cluster"
+			}
+			volumeScript := "volume)\ncase \"$2\" in\nls) printf '%s\\n' " + shellQuote(volumeList) + ";;\ninspect) printf '%s\\n' " + shellQuote(imageVolume+" "+volumeOwner) + ";;\n*) exit 84;;\nesac\n;;\n"
+			if scenario == "volume-list-failure" {
+				volumeScript = "volume) exit 83;;\n"
+			}
+			docker = strings.Replace(docker, "version) printf", volumeScript+"version) printf", 1)
 			writePreflightCommand(t, commands, "docker", docker)
 			// 测试用上下文统一限制时长；桩只去掉 timeout 参数，不访问真实服务。
 			writePreflightCommand(t, commands, "timeout", "shift\nexec \"$@\"\n")
@@ -142,7 +157,7 @@ func TestK3dShellUsesPinnedCLIAndOnlyUpdatesReviewedLocalContainers(t *testing.T
 				t.Fatalf("shell结果错误: %v", err)
 			}
 			encoded, _ := os.ReadFile(calls)
-			if !wantSuccess && scenario != "update-failure" && strings.Contains(string(encoded), "cli cluster create") {
+			if !wantSuccess && scenario != "update-failure" && scenario != "foreign-volume-owner" && strings.Contains(string(encoded), "cli cluster create") {
 				t.Fatal("前置检查失败仍创建容器")
 			}
 			if wantSuccess {
