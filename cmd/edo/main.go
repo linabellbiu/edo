@@ -119,7 +119,16 @@ func run() error {
 
 func loadRuntimeEnvironmentFile(path string) error {
 	if err := godotenv.Load(path); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return fmt.Errorf("读取 .env 失败: %w", err)
+		kind := "invalid_format"
+		message := "环境配置文件格式无效，请检查 .env 中的变量和注释"
+		var pathError *os.PathError
+		if errors.As(err, &pathError) {
+			kind = "file_access"
+			message = "无法读取环境配置文件，请检查 .env 的访问权限"
+		}
+		// 解析错误可能包含剩余配置全文，不能返回、包装或记录原始错误。
+		slog.Error("加载环境配置失败", "operation", "runtime_environment_load", "file", path, "error_kind", kind)
+		return errors.New(message)
 	}
 	return nil
 }

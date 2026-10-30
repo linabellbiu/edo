@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/exec"
@@ -267,7 +268,16 @@ func loadEnvironmentFile(path string) error {
 		fmt.Printf("未找到 %s，已根据 %s 创建默认配置并生成固定密钥\n", path, path+".example")
 	}
 	if err := godotenv.Load(path); err != nil {
-		return fmt.Errorf("读取 %s 失败: %w", path, err)
+		kind := "invalid_format"
+		message := "环境配置文件格式无效，请检查 .env 中的变量和注释"
+		var pathError *os.PathError
+		if errors.As(err, &pathError) {
+			kind = "file_access"
+			message = "无法读取环境配置文件，请检查 .env 的访问权限"
+		}
+		// 解析错误可能包含剩余配置全文，不能返回、包装或记录原始错误。
+		slog.Error("加载环境配置失败", "operation", "mage_environment_load", "file", path, "error_kind", kind)
+		return errors.New(message)
 	}
 	return nil
 }
