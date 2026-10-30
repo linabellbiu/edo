@@ -56,7 +56,7 @@ onBeforeUnmount(()=>{disposed=true;revision++;dbForm.password=''})
     <template #bodyCell="{column,record}"><template v-if="column.key==='application'">{{label(record.application_id,apps)}}</template><template v-else-if="column.key==='environment'">{{label(record.environment_id,environments)}}</template><template v-else-if="column.key==='connection'">{{record.host}}:{{record.port}} / {{record.database}}</template><template v-else-if="column.key==='active'"><a-tag :color="record.is_active?'green':'default'">{{record.is_active?'已启用':'已停用'}}</a-tag></template><template v-else-if="column.key==='actions'"><a-button type="link" @click="showHistory(record)">变更记录</a-button><a-button v-if="auth.canAny(['application_database.update'])" type="link" @click="editDatabase(record)">编辑</a-button><a-button v-if="auth.canAny(['application_database.delete'])" type="link" danger @click="remove(record)">删除</a-button></template></template>
    </a-table>
   </div>
-  <a-drawer v-model:open="open" :title="policyMode?'环境保护':(editingID?'编辑数据库':'添加数据库')" width="600" destroy-on-close @after-open-change="(v:boolean)=>{if(!v)dbForm.password=''}">
+  <a-drawer v-model:open="open" :title="policyMode?'环境保护':(editingID?'编辑数据库':'添加数据库')" width="min(600px, 100vw)" destroy-on-close @after-open-change="(v:boolean)=>{if(!v)dbForm.password=''}">
    <a-form :model="policyMode?policyForm:dbForm" layout="vertical" @finish="save">
     <template v-if="policyMode">
      <a-form-item label="环境" name="environment_id" required><a-select v-model:value="policyForm.environment_id" :disabled="!!editingID" :options="environments.filter(e=>!!editingID||!policies.some(p=>p.environment_id===e.id)).map(v=>({value:v.id,label:v.name}))"/></a-form-item>
@@ -81,7 +81,7 @@ onBeforeUnmount(()=>{disposed=true;revision++;dbForm.password=''})
     <a-button type="primary" block html-type="submit" :loading="saving" style="margin-top:20px">保存</a-button>
    </a-form>
   </a-drawer>
-  <a-drawer v-model:open="historyOpen" title="数据库变更记录" width="800"><a-table bordered :data-source="history" row-key="id" :columns="[{title:'状态',dataIndex:'status'},{title:'Commit',dataIndex:'commit_sha'},{title:'目录',dataIndex:'directory'},{title:'开始时间',dataIndex:'started_at'},{title:'说明',dataIndex:'message'}]"/></a-drawer>
+  <a-drawer v-model:open="historyOpen" title="数据库变更记录" width="min(800px, 100vw)"><a-table bordered :data-source="history" row-key="id" :columns="[{title:'状态',dataIndex:'status'},{title:'Commit',dataIndex:'commit_sha'},{title:'目录',dataIndex:'directory'},{title:'开始时间',dataIndex:'started_at'},{title:'说明',dataIndex:'message'}]"/></a-drawer>
  </div>
 </template>
 <style scoped>.delivery-controls{display:grid;gap:16px}.vben-card{overflow:auto}</style>

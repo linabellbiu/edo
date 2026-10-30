@@ -123,3 +123,14 @@ test('审核人真实选择框按中英文姓名搜索，不按UUID匹配，清�
   }
   assert.equal(h.requests.length, requestCount)
 })
+
+test('保护表单与数据库历史抽屉宽度不超过视口，保留原有宽屏上限', () => {
+  const ast = parse(readFileSync(new URL('../src/views/DeliveryControlsView.vue', import.meta.url), 'utf8')).descriptor.template.ast
+  const drawers = [], visit = node => { if (node.tag === 'a-drawer') drawers.push(node); for (const child of node.children || []) visit(child) }; visit(ast)
+  assert.equal(drawers.length, 2)
+  for (const [model, width] of [['open', 'min(600px, 100vw)'], ['historyOpen', 'min(800px, 100vw)']]) {
+    const drawer = drawers.find(node => node.props.some(prop => prop.type === 7 && prop.name === 'model' && prop.arg.content === 'open' && prop.exp.content === model))
+    assert.ok(drawer, model)
+    assert.equal(drawer.props.find(prop => prop.type === 6 && prop.name === 'width')?.value.content, width)
+  }
+})
