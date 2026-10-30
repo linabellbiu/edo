@@ -74,6 +74,18 @@ test('登录表单按本地、LDAP和邮箱验证码选择正确入口，并限�
   assert.equal(h.locations[0],'/api/v1/auth/oauth/github%2Fprovider/start?return_to=%2Fapplications%3Fapplication%3Dapp-id')
 })
 
+test('登录提交同步防重，失败保留安全提示并可重试，等待期间不提前结束loading',async t=>{
+  let calls=0,resolve,reject
+  const auth={login:()=>{calls++;return new Promise((yes,no)=>{resolve=yes;reject=no})}}
+  const h=harness(t,'../src/views/LoginView.vue',{modules:{'@/stores/auth':{useAuthStore:()=>auth},'@/stores/preferences':{usePreferencesStore:()=>({})},axios:{__esModule:true,default:{isAxiosError:()=>false}}}})
+  h.state.username.value='synthetic-user';h.state.password.value='synthetic-noncredential'
+  const first=h.state.submit(),duplicate=h.state.submit();assert.equal(calls,1);assert.equal(h.state.loading.value,true)
+  reject(new Error('synthetic failure'));await Promise.all([first,duplicate])
+  assert.equal(h.state.loading.value,false);assert.equal(h.state.error.value,'loginAuth.unavailable');assert.deepEqual(h.replacements,[])
+  const retry=h.state.submit();assert.equal(calls,2);assert.equal(h.state.loading.value,true)
+  resolve();await retry;assert.equal(h.state.loading.value,false);assert.deepEqual(h.replacements,['/'])
+})
+
 test('邮箱验证码请求包含选定提供方且成功设置重发等待，失败清理loading',async t=>{
   const h=harness(t,'../src/views/LoginView.vue',{api:{post:async()=>({data:{retry_after:60}})},modules:{'@/stores/preferences':{usePreferencesStore:()=>({})},axios:{__esModule:true,default:{isAxiosError:()=>false}}}})
   h.state.provider.value='email/provider';await h.state.sendCode();assert.equal(writes(h).length,0)

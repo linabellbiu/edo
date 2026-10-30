@@ -156,9 +156,9 @@ test('镜像仓库必须先真实测试，DockerHub地址固定且不允许HTTP�
 })
 
 test('总览只按实际健康检查计算可用性，保留最多24次页面采样',async t=>{
-  const system=vue.reactive({ready:{status:'failed',checks:{database:'ok',redis:'failed',nats:'ok'}},refresh:async()=>{}})
+  const system=vue.reactive({ready:{status:'failed',checks:{database:'ok',redis:'failed',nats:'ok',builder:'ok'}},refresh:async()=>true})
   const h=harness(t,'../src/views/OverviewView.vue',{modules:{'@/stores/system':{useSystemStore:()=>system}}})
-  assert.equal(h.state.healthPercent.value,67)
+  assert.equal(h.state.healthPercent.value,75)
   for(let i=0;i<30;i++)await h.state.refresh()
   assert.equal(h.state.history.value.length,24)
   system.ready.checks.redis='ok';await h.state.refresh()

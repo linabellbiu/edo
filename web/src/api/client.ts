@@ -1,10 +1,10 @@
 import axios, { type InternalAxiosRequestConfig } from 'axios'
 
 export interface ReadyResponse {
-  status: 'ok' | 'failed'
+  status: 'ok' | 'degraded' | 'failed'
   message?: string
   request_id?: string
-  checks: Record<'database' | 'redis' | 'nats', 'ok' | 'failed'>
+  checks: Record<'database' | 'redis' | 'nats', 'ok' | 'failed'> & { builder: 'ok' | 'unavailable' }
 }
 
 export interface User {

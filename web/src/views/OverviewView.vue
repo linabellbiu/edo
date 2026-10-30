@@ -8,25 +8,48 @@ import { useSystemStore } from '@/stores/system'
 
 const system = useSystemStore()
 const { t } = useI18n()
-const history = ref<number[]>([])
+const history = ref<Array<number | null>>([])
 let timer = 0
+let disposed = false
 
-const healthyCount = computed(() => Object.values(system.ready?.checks ?? {}).filter((value) => value === 'ok').length)
-const checkCount = computed(() => Math.max(1, Object.keys(system.ready?.checks ?? {}).length))
-const healthPercent = computed(() => Math.round((healthyCount.value / checkCount.value) * 100))
-const points = computed(() => {
-  const values = history.value.length > 1 ? history.value : [healthPercent.value, healthPercent.value]
-  return values.map((value, index) => `${(index / Math.max(1, values.length - 1)) * 100},${92 - value * .72}`).join(' ')
+const checkKeys = ['database', 'redis', 'nats', 'builder'] as const
+const healthyCount = computed(() => checkKeys.filter(key => system.ready?.checks?.[key] === 'ok').length)
+const checkCount = computed(() => checkKeys.filter(key => system.ready?.checks?.[key] !== undefined).length)
+const healthPercent = computed(() => {
+  const checks = system.ready?.checks
+  if (!checks || !['ok', 'degraded', 'failed'].includes(system.ready?.status || '') || !(['database', 'redis', 'nats'] as const).every(key => ['ok', 'failed'].includes(checks[key])) || !['ok', 'unavailable'].includes(checks.builder)) return null
+  return Math.round((healthyCount.value / checkCount.value) * 100)
 })
+const healthStatus = computed(() => {
+  if (healthPercent.value === null) return { color: 'default', label: 'dashboard.noData' }
+  if (system.ready?.status === 'ok') return { color: 'success', label: 'dashboard.healthy' }
+  if (system.ready?.status === 'degraded') return { color: 'warning', label: 'dashboard.degraded' }
+  return { color: 'error', label: 'dashboard.failed' }
+})
+const points = computed(() => history.value.map((value, index) => value === null ? null : { x: (index / Math.max(1, history.value.length - 1)) * 100, y: 92 - value * .72 }))
+const segments = computed(() => {
+  const result: Array<Array<{ x: number; y: number }>> = []
+  let segment: Array<{ x: number; y: number }> = []
+  for (const point of points.value) {
+    if (point) { segment.push(point) }
+    else if (segment.length) { result.push(segment); segment = [] }
+  }
+  if (segment.length) result.push(segment)
+  return result
+})
+const serviceValue = (value: unknown) => value === 'ok' ? '正常' : value === 'failed' ? '异常' : '—'
 const cards = computed(() => [
-  { key: 'overall', label: '平台可用性', value: `${healthPercent.value}%`, detail: `${healthyCount.value} / ${checkCount.value} 项基础服务正常`, icon: Activity, status: system.ready?.status === 'ok' ? 'ok' : 'failed' },
-  { key: 'database', label: '数据服务', value: system.ready?.checks.database === 'ok' ? '正常' : '异常', detail: '业务数据读写', icon: Database, status: system.ready?.checks.database },
-  { key: 'redis', label: '缓存服务', value: system.ready?.checks.redis === 'ok' ? '正常' : '异常', detail: '登录会话和缓存', icon: Server, status: system.ready?.checks.redis },
-  { key: 'nats', label: '任务服务', value: system.ready?.checks.nats === 'ok' ? '正常' : '异常', detail: '任务投递与失败重试', icon: RadioTower, status: system.ready?.checks.nats },
+  { key: 'overall', label: '平台可用性', value: healthPercent.value === null ? '—' : `${healthPercent.value}%`, detail: healthPercent.value === null ? t('dashboard.noData') : `${healthyCount.value} / ${checkCount.value} 项基础服务正常`, icon: Activity, status: healthPercent.value === null || system.ready?.status === 'degraded' ? undefined : system.ready?.status },
+  { key: 'database', label: '数据服务', value: serviceValue(system.ready?.checks?.database), detail: '业务数据读写', icon: Database, status: system.ready?.checks?.database },
+  { key: 'redis', label: '缓存服务', value: serviceValue(system.ready?.checks?.redis), detail: '登录会话和缓存', icon: Server, status: system.ready?.checks?.redis },
+  { key: 'nats', label: '任务服务', value: serviceValue(system.ready?.checks?.nats), detail: '任务投递与失败重试', icon: RadioTower, status: system.ready?.checks?.nats },
 ])
 
 async function refresh() {
-  await system.refresh()
+  if (disposed) return
+  const accepted = await system.refresh()
+  if (!accepted || disposed) return
+  // 失败请求留下断点；迟到的旧回执不应追加采样。
   history.value = [...history.value, healthPercent.value].slice(-24)
 }
 
@@ -34,7 +57,7 @@ onMounted(() => {
   void refresh()
   timer = window.setInterval(() => void refresh(), 15_000)
 })
-onBeforeUnmount(() => window.clearInterval(timer))
+onBeforeUnmount(() => { disposed = true; window.clearInterval(timer) })
 </script>
 
 <template>
@@ -53,13 +76,16 @@ onBeforeUnmount(() => window.clearInterval(timer))
     </div>
 
     <section class="trend-card vben-card">
-      <div class="card-heading"><div><strong>服务状态趋势</strong><span>每 15 秒检查一次，仅显示当前页面记录</span></div><a-tag :color="system.ready?.status === 'ok' ? 'success' : 'warning'">{{ system.ready?.status === 'ok' ? t('dashboard.healthy') : t('dashboard.checking') }}</a-tag></div>
+      <div class="card-heading"><div><strong>服务状态趋势</strong><span>每 15 秒检查一次，仅显示当前页面记录</span></div><a-tag :color="healthStatus.color">{{ t(healthStatus.label) }}</a-tag></div>
       <div class="trend-chart">
         <div v-for="line in 5" :key="line" class="grid-line" :style="{ top: `${line * 16}%` }"><span>{{ 100 - line * 20 }}%</span></div>
         <svg viewBox="0 0 100 100" preserveAspectRatio="none" aria-label="服务可用性趋势">
           <defs><linearGradient id="availability-area" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#6f8cff" stop-opacity=".5"/><stop offset="1" stop-color="#6f8cff" stop-opacity=".04"/></linearGradient></defs>
-          <polygon :points="`0,100 ${points} 100,100`" fill="url(#availability-area)" />
-          <polyline :points="points" fill="none" stroke="#5b7cfa" stroke-width="1.4" vector-effect="non-scaling-stroke" />
+          <g v-for="(segment, index) in segments" :key="index">
+            <polygon v-if="segment.length > 1" :points="`${segment[0]?.x},100 ${segment.map(point => `${point.x},${point.y}`).join(' ')} ${segment[segment.length - 1]?.x},100`" fill="url(#availability-area)" />
+            <polyline v-if="segment.length > 1" :points="segment.map(point => `${point.x},${point.y}`).join(' ')" fill="none" stroke="#5b7cfa" stroke-width="1.4" vector-effect="non-scaling-stroke" />
+            <circle v-else :cx="segment[0]?.x" :cy="segment[0]?.y" r=".8" fill="#5b7cfa" />
+          </g>
         </svg>
       </div>
     </section>

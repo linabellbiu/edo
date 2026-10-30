@@ -49,6 +49,7 @@ function safeRedirect(value: unknown) {
 }
 
 async function submit() {
+  if (loading.value) return
   if (isEmail.value ? !email.value.trim() || !/^\d{6}$/.test(code.value) : !username.value.trim() || !password.value) {
     error.value = t(isEmail.value ? 'loginAuth.emailRequired' : 'loginAuth.credentialsRequired')
     return
