@@ -31,13 +31,14 @@ import (
 )
 
 var (
-	ErrApplicationNotFound = errors.New("应用不存在")
-	ErrBuildPlanNotFound   = errors.New("构建方案不存在")
-	ErrArtifactNotFound    = errors.New("制品不存在")
-	ErrInvalidArtifact     = errors.New("制品配置无效")
-	ErrArtifactUnavailable = errors.New("制品文件不可用")
-	ErrArtifactConflict    = errors.New("同一流水线节点已登记不同制品")
-	ErrBuildDirectoryBusy  = errors.New("当前有构建正在使用构建目录，请稍后重试")
+	ErrApplicationNotFound   = errors.New("应用不存在")
+	ErrBuildPlanNotFound     = errors.New("构建方案不存在")
+	ErrArtifactNotFound      = errors.New("制品不存在")
+	ErrInvalidArtifact       = errors.New("制品配置无效")
+	ErrArtifactUnavailable   = errors.New("制品文件不可用")
+	ErrArtifactConflict      = errors.New("同一流水线节点已登记不同制品")
+	ErrBuildDirectoryBusy    = errors.New("当前有构建正在使用构建目录，请稍后重试")
+	ErrArtifactDirectoryBusy = errors.New("当前有制品传输正在使用本地产物目录，请稍后重试")
 )
 
 type Service struct {
@@ -268,7 +269,10 @@ func (c *DirectoryChange) Abort() {
 }
 
 func (s *Service) ClearLocalArtifacts(ctx context.Context) (CleanupReport, error) {
-	s.storeMu.Lock()
+	if !s.storeMu.TryLock() {
+		s.logger.WarnContext(ctx, "本地产物目录忙碌，取消清理", "operation", "artifact_cleanup_busy", "err", ErrArtifactDirectoryBusy)
+		return CleanupReport{}, ErrArtifactDirectoryBusy
+	}
 	defer s.storeMu.Unlock()
 	if _, err := manageddirectory.Prepare(s.store.Root(), localArtifactDirectoryKind, false); err != nil {
 		s.logger.Error("校验本地产物目录失败", "operation", "artifact_cleanup_prepare", "err", err)

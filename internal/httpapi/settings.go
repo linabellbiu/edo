@@ -408,6 +408,11 @@ func (h settingsHandler) cleanupLocalArtifacts(c *gin.Context) {
 	}
 	report, err := h.artifacts.ClearLocalArtifacts(c.Request.Context())
 	if err != nil {
+		if errors.Is(err, artifactmanager.ErrArtifactDirectoryBusy) {
+			h.logger.Warn("清理本地产物被占用", "operation", "settings_local_artifact_cleanup", "request_id", requestIDFrom(c), "err", err)
+			writeError(c, http.StatusConflict, "directory_busy", artifactmanager.ErrArtifactDirectoryBusy.Error())
+			return
+		}
 		h.logger.Error("清理本地产物失败", "operation", "settings_local_artifact_cleanup", "request_id", requestIDFrom(c), "err", err)
 		writeInternalError(c)
 		return
