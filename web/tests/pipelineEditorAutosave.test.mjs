@@ -13,7 +13,7 @@ const output = ts.transpileModule(compileScript(descriptor, { id: 'pipeline-auto
 
 function harness(t, { active = false, publicMode = false } = {}) {
   const requests = [], messages = [], dialogs = [], timers = new Map()
-  let timerID = 0
+  let timerID = 0, now = 0
   const modules = {
     vue: { ...vue, onMounted() {}, onBeforeUnmount() {} },
     'vue-router': {
@@ -23,10 +23,10 @@ function harness(t, { active = false, publicMode = false } = {}) {
     'ant-design-vue': { Modal: { confirm: options => dialogs.push(options) }, message: Object.fromEntries(['success', 'warning', 'error'].map(level => [level, value => messages.push({ level, value })])) },
     '@/stores/auth': { useAuthStore: () => ({ user:{id:'operator',project_id:'project-a',permissions:['workflow.read','workflow.update'],is_superuser:false},canAny:()=>true }) },
     '@/api/client': { __esModule: true, default: { put: (path, payload) => new Promise((resolve, reject) => requests.push({ path, payload, resolve, reject })) } },
-    '@/api/resources': { apiErrorMessage: () => '保存失败' },
+    '@/api/resources': { apiErrorMessage: error => error.response?.data?.message || '保存失败' },
   }
   const fakeWindow = {
-    setTimeout: callback => { const id = ++timerID; timers.set(id, callback); return id },
+    setTimeout: (callback, delay = 0) => { const id = ++timerID; timers.set(id, { callback, due: now + delay }); return id },
     clearTimeout: id => timers.delete(id),
   }
   const module = { exports: {} }
@@ -49,7 +49,24 @@ function harness(t, { active = false, publicMode = false } = {}) {
     const saved = { ...structuredClone(initial), ...structuredClone(request.payload), revision: Number(request.payload.revision) + 1, is_active: request.payload.activate, workflow_template_id: '' }
     request.resolve({ data: { workflow: saved, workflow_template: saved, issues } })
   }
-  return { state, requests, messages, dialogs, timers, succeed }
+  const flush = () => new Promise(resolve => setImmediate(resolve))
+  async function advance(milliseconds) {
+    const target = now + milliseconds
+    let executed = 0
+    while (true) {
+      const next = [...timers].filter(([, timer]) => timer.due <= target).sort((a, b) => a[1].due - b[1].due)[0]
+      if (!next) break
+      assert.ok(++executed < 100, '虚拟时钟检测到非预期的定时器循环')
+      const [id, timer] = next
+      now = timer.due
+      timers.delete(id)
+      timer.callback()
+      await flush()
+    }
+    now = target
+    await flush()
+  }
+  return { state, requests, messages, dialogs, timers, succeed, advance, flush }
 }
 
 test('草稿自动保存保留代码源面板、原草稿对象与未格式化输入，控件保持可编辑', async t => {
@@ -142,6 +159,136 @@ test('自动保存失败不抢占当前编辑位置，也不把旧请求错误�
   assert.equal(state.sources.value[0].config.branch, 'release/latest')
   assert.deepEqual(state.issues.value, [])
   assert.equal(state.autoSaveFailed.value, true)
+})
+
+for (const publicMode of [false, true]) {
+  for (const status of [409, 500]) {
+    test(`${publicMode ? '公共流水线' : '应用流水线'}草稿自动保存 ${status} 后停止定时重试并保留输入与错误`, async t => {
+      const { state, requests, messages, timers, advance, flush } = harness(t, { publicMode })
+      state.workflow.value.name = '当前标签尚未保存的名称'
+      state.updateWorkflowMeta()
+      await advance(1200)
+      assert.equal(requests.length, 1)
+      const failure = status === 409 ? '流水线已被其他人修改，请重新加载后再试。' : '暂时无法保存，请稍后重试。'
+      requests[0].reject({ response: { status, data: { message: failure } } })
+      await flush()
+      assert.equal(state.autoSaveFailed.value, true)
+      assert.equal(state.dirty.value, true)
+      assert.equal(state.workflow.value.name, '当前标签尚未保存的名称')
+      assert.equal(state.workflow.value.revision, 3, '不能冒认其他标签的新版本或清除 CAS 保护')
+      assert.equal(state.saving.value, false)
+      assert.equal(state.autoSaving.value, false)
+      assert.equal(state.canEdit.value, true)
+      assert.deepEqual(messages, [{ level: 'error', value: failure }])
+      assert.equal(timers.size, 0, '失败不能在 finally 里重新安排自动保存')
+      await advance(30_000)
+      assert.equal(requests.length, 1, '没有新编辑或手动保存时不得重复请求')
+      assert.equal(messages.length, 1, '不能每隔一秒重复弹错误')
+    })
+  }
+}
+
+test('自动保存失败后再次真实编辑才恢复防抖保存，成功后继续保存后续输入', async t => {
+  const { state, requests, timers, succeed, advance, flush } = harness(t)
+  state.workflow.value.name = '第一次输入'
+  state.updateWorkflowMeta()
+  await advance(1200)
+  requests[0].reject({ response: { status: 500 } })
+  await flush()
+  assert.equal(timers.size, 0)
+  state.workflow.value.name = '失败后继续编辑'
+  state.updateWorkflowMeta()
+  assert.equal(state.autoSaveFailed.value, false)
+  await advance(1199)
+  assert.equal(requests.length, 1)
+  await advance(1)
+  assert.equal(requests.length, 2)
+  assert.equal(requests[1].payload.name, '失败后继续编辑')
+  assert.equal(requests[1].payload.revision, 3)
+  succeed(1)
+  await flush()
+  assert.equal(state.dirty.value, false)
+  assert.equal(state.workflow.value.revision, 4)
+  state.workflow.value.name = '成功后继续编辑'
+  state.updateWorkflowMeta()
+  await advance(1200)
+  assert.equal(requests.length, 3)
+  assert.equal(requests[2].payload.revision, 4)
+  succeed(2)
+  await flush()
+  assert.equal(state.dirty.value, false)
+  assert.equal(timers.size, 0)
+})
+
+test('自动保存冲突后可明确手动重试，失败不触发后台重试且保留 CAS 版本', async t => {
+  const { state, requests, messages, timers, succeed, advance, flush } = harness(t, { publicMode: true })
+  state.workflow.value.name = '保留本地输入'
+  state.updateWorkflowMeta()
+  await advance(1200)
+  requests[0].reject({ response: { status: 409, data: { message: '其他标签已经修改此流水线。' } } })
+  await flush()
+  state.requestSave()
+  assert.equal(requests.length, 2)
+  assert.equal(requests[1].payload.revision, 3)
+  assert.equal(requests[1].payload.name, '保留本地输入')
+  requests[1].reject({ response: { status: 409, data: { message: '其他标签已经修改此流水线。' } } })
+  await flush()
+  await advance(30_000)
+  assert.equal(requests.length, 2)
+  assert.equal(messages.length, 2)
+  assert.equal(timers.size, 0)
+  assert.equal(state.dirty.value, true)
+  assert.equal(state.workflow.value.revision, 3)
+  state.requestSave()
+  assert.equal(requests.length, 3)
+  succeed(2)
+  await flush()
+  assert.equal(state.dirty.value, false)
+  assert.equal(state.autoSaveFailed.value, false)
+})
+
+test('自动保存成功后有请求期间的新编辑仍应继续防抖保存', async t => {
+  const { state, requests, timers, succeed, advance, flush } = harness(t)
+  state.workflow.value.name = '请求之前'
+  state.updateWorkflowMeta()
+  await advance(1200)
+  state.workflow.value.name = '请求期间的新名称'
+  state.updateWorkflowMeta()
+  succeed(0)
+  await flush()
+  assert.equal(state.dirty.value, true)
+  assert.equal(timers.size, 1)
+  await advance(1200)
+  assert.equal(requests.length, 2)
+  assert.equal(requests[1].payload.name, '请求期间的新名称')
+  assert.equal(requests[1].payload.revision, 4)
+  succeed(1)
+  await flush()
+  assert.equal(state.dirty.value, false)
+})
+
+test('自动保存冲突后离开直接确认未保存草稿，不隐式重试或清除本地输入', async t => {
+  const { state, requests, dialogs, timers, advance, flush } = harness(t)
+  state.workflow.value.name = '冲突后保留的名称'
+  state.updateWorkflowMeta()
+  await advance(1200)
+  requests[0].reject({ response: { status: 409 } })
+  await flush()
+  let prevented = 0
+  const unload = { preventDefault() { prevented++ }, returnValue: undefined }
+  state.handleBeforeUnload(unload)
+  assert.equal(prevented, 1)
+  assert.equal(unload.returnValue, '')
+  const leaving = state.settleDraftBeforeNavigation()
+  await flush()
+  assert.equal(requests.length, 1, '离开不是对失败草稿的再次保存授权')
+  assert.equal(dialogs.length, 1)
+  assert.equal(dialogs[0].title, '放弃尚未保存的更改？')
+  dialogs[0].onCancel()
+  assert.equal(await leaving, false)
+  assert.equal(state.dirty.value, true)
+  assert.equal(state.workflow.value.name, '冲突后保留的名称')
+  assert.equal(timers.size, 0)
 })
 
 test('离开前保存期间继续输入时，旧请求成功不能直接放行并丢弃新草稿', async t => {

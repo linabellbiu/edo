@@ -45,6 +45,9 @@ func (h kubernetesLogHandler) stream(c *gin.Context) {
 	}
 	defer connection.Close()
 	writer := &containerLogWriter{connection: connection}
+	if h.streamAuth != nil {
+		writer.authorized = h.streamAuth(c)
+	}
 	if err := writer.event(containerLogEvent{Type: "ready"}); err != nil {
 		return
 	}
@@ -61,6 +64,8 @@ func (h kubernetesLogHandler) stream(c *gin.Context) {
 	go func() { _, copyErr := io.Copy(writer, stream); streamDone <- copyErr }()
 	ping := time.NewTicker(10 * time.Second)
 	defer ping.Stop()
+	flush := time.NewTicker(containerLogFlushInterval)
+	defer flush.Stop()
 	for {
 		select {
 		case <-ctx.Done():
@@ -68,6 +73,9 @@ func (h kubernetesLogHandler) stream(c *gin.Context) {
 		case <-clientDone:
 			return
 		case err := <-streamDone:
+			if errors.Is(err, errContainerLogAccessRevoked) {
+				return
+			}
 			if err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, context.Canceled) {
 				h.logger.Warn("Pod 日志连接中断", "operation", "kubernetes_logs_stream", "cluster_id", c.Param("id"), "pod", c.Param("pod"), "err", err)
 				_ = writer.event(containerLogEvent{Type: "error", Message: "Pod 日志连接已中断"})
@@ -75,10 +83,12 @@ func (h kubernetesLogHandler) stream(c *gin.Context) {
 				_ = writer.event(containerLogEvent{Type: "complete", Message: "日志流已结束"})
 			}
 			return
-		case <-ping.C:
-			if h.streamAuth != nil && !h.streamAuth(c)() {
+		case <-flush.C:
+			if err := writer.flush(); err != nil {
+				h.logger.Warn("推送 Pod 日志失败", "operation", "kubernetes_logs_flush", "cluster_id", c.Param("id"), "pod", c.Param("pod"), "err", err)
 				return
 			}
+		case <-ping.C:
 			if err := writer.ping(); err != nil {
 				return
 			}

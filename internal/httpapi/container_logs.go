@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -22,6 +23,10 @@ import (
 )
 
 const containerLogSubprotocol = "edo-container-logs-v1"
+
+const containerLogFlushInterval = 100 * time.Millisecond
+
+var errContainerLogAccessRevoked = errors.New("日志访问权限已失效")
 
 type dockerContainerLogService interface {
 	ContainerLogs(context.Context, string, string, dockerengine.ContainerLogOptions) (*dockerengine.ContainerLogStream, error)
@@ -75,7 +80,11 @@ func (h containerLogHandler) stream(c *gin.Context) {
 	}
 	defer connection.Close()
 	writer := &containerLogWriter{connection: connection}
+	if h.streamAuth != nil {
+		writer.authorized = h.streamAuth(c)
+	}
 	if err := writer.event(containerLogEvent{Type: "ready"}); err != nil {
+		h.recordAudit(c, "container.logs.open", sessionID, options, model.AuditFailed, 0)
 		return
 	}
 	h.recordAudit(c, "container.logs.open", sessionID, options, model.AuditSucceeded, 0)
@@ -99,6 +108,8 @@ func (h containerLogHandler) stream(c *gin.Context) {
 
 	ping := time.NewTicker(25 * time.Second)
 	defer ping.Stop()
+	flush := time.NewTicker(containerLogFlushInterval)
+	defer flush.Stop()
 	for {
 		select {
 		case <-streamContext.Done():
@@ -107,19 +118,29 @@ func (h containerLogHandler) stream(c *gin.Context) {
 			cancel()
 			return
 		case err := <-streamDone:
+			if errors.Is(err, errContainerLogAccessRevoked) {
+				result = model.AuditFailed
+				return
+			}
 			if err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, context.Canceled) {
 				result = model.AuditFailed
 				h.logger.Warn("读取 Docker 容器日志中断", "operation", "docker_container_logs_stream", "request_id", requestIDFrom(c), "endpoint_id", c.Param("id"), "container_id", c.Param("container_id"), "err", err)
 				_ = writer.event(containerLogEvent{Type: "error", Message: "容器日志连接已中断"})
 				return
 			}
-			_ = writer.event(containerLogEvent{Type: "complete", Message: "日志流已结束"})
+			if err := writer.event(containerLogEvent{Type: "complete", Message: "日志流已结束"}); err != nil {
+				result = model.AuditFailed
+				h.logger.Warn("结束 Docker 容器日志失败", "operation", "docker_container_logs_complete", "endpoint_id", c.Param("id"), "container_id", c.Param("container_id"), "err", err)
+			}
 			return
-		case <-ping.C:
-			if h.streamAuth != nil && !h.streamAuth(c)() {
+		case <-flush.C:
+			if err := writer.flush(); err != nil {
+				result = model.AuditFailed
+				h.logger.Warn("推送 Docker 容器日志失败", "operation", "docker_container_logs_flush", "endpoint_id", c.Param("id"), "container_id", c.Param("container_id"), "err", err)
 				cancel()
 				return
 			}
+		case <-ping.C:
 			if err := writer.ping(); err != nil {
 				cancel()
 				return
@@ -201,14 +222,26 @@ func readContainerLogClient(connection *websocket.Conn, done chan<- error) {
 type containerLogWriter struct {
 	connection *websocket.Conn
 	mu         sync.Mutex
+	buffer     *bufio.Writer
+	authorized func() bool
 }
 
 func (writer *containerLogWriter) Write(payload []byte) (int, error) {
 	writer.mu.Lock()
 	defer writer.mu.Unlock()
+	if writer.buffer == nil {
+		// 合并小日志行后再鉴权，避免历史日志每一行都触发会话和范围查询。
+		writer.buffer = bufio.NewWriterSize(containerLogPayload{writer}, 32*1024)
+	}
+	return writer.buffer.Write(payload)
+}
+
+type containerLogPayload struct{ writer *containerLogWriter }
+
+func (sink containerLogPayload) Write(payload []byte) (int, error) {
 	for offset := 0; offset < len(payload); {
 		end := min(offset+32*1024, len(payload))
-		if err := writer.write(websocket.BinaryMessage, payload[offset:end]); err != nil {
+		if err := sink.writer.write(websocket.BinaryMessage, payload[offset:end]); err != nil {
 			return offset, err
 		}
 		offset = end
@@ -223,18 +256,48 @@ func (writer *containerLogWriter) event(event containerLogEvent) error {
 	}
 	writer.mu.Lock()
 	defer writer.mu.Unlock()
+	if err := writer.flushLocked(); err != nil {
+		return err
+	}
 	return writer.write(websocket.TextMessage, payload)
+}
+
+func (writer *containerLogWriter) flush() error {
+	writer.mu.Lock()
+	defer writer.mu.Unlock()
+	return writer.flushLocked()
+}
+
+func (writer *containerLogWriter) flushLocked() error {
+	if writer.buffer == nil {
+		return nil
+	}
+	return writer.buffer.Flush()
 }
 
 func (writer *containerLogWriter) ping() error {
 	writer.mu.Lock()
 	defer writer.mu.Unlock()
+	if err := writer.authorize(); err != nil {
+		return err
+	}
 	return writer.connection.WriteControl(websocket.PingMessage, nil, time.Now().Add(5*time.Second))
 }
 
 func (writer *containerLogWriter) write(messageType int, payload []byte) error {
+	if err := writer.authorize(); err != nil {
+		return err
+	}
 	if err := writer.connection.SetWriteDeadline(time.Now().Add(10 * time.Second)); err != nil {
 		return err
 	}
 	return writer.connection.WriteMessage(messageType, payload)
+}
+
+func (writer *containerLogWriter) authorize() error {
+	if writer.authorized != nil && !writer.authorized() {
+		closeSocketPolicy(writer.connection)
+		return errContainerLogAccessRevoked
+	}
+	return nil
 }

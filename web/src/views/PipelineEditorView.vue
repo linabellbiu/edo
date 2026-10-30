@@ -524,7 +524,7 @@ async function settleDraftBeforeNavigation() {
   const scope=captureScope()
   if(!currentScope(scope))return false
   if (!dirty.value) return true
-  if (canUpdate.value && workflow.value && !workflow.value.is_active && draftReady(false)) {
+  if (canUpdate.value && workflow.value && !workflow.value.is_active && !autoSaveFailed.value && draftReady(false)) {
     if (await save(false, true) && currentScope(scope) && !dirty.value) return true
     if(!currentScope(scope))return false
   }
@@ -646,6 +646,7 @@ async function save(activate: boolean, automatic = false): Promise<boolean> {
   autoSaving.value = automatic
   saving.value = true
   window.clearTimeout(autoSaveTimer)
+  let savedSuccessfully = false
   try {
     const result = isPublic
       ? await client.put<WorkflowTemplateResponse>(`/workflow-templates/${requestTemplateID}`, requestPayload,scopeOptions(scope))
@@ -681,6 +682,7 @@ async function save(activate: boolean, automatic = false): Promise<boolean> {
         message.success(activate ? '流水线已启用，新运行将按当前阶段顺序执行。' : '草稿已保存')
       }
     }
+    savedSuccessfully = true
     return true
   } catch (error) {
     if(failedScope(error,scope))return false
@@ -702,7 +704,11 @@ async function save(activate: boolean, automatic = false): Promise<boolean> {
     if (automatic) autoSaveFailed.value = true
     return false
   } finally {
-    if(currentScope(scope)){saving.value=false;autoSaving.value=false;if(dirty.value)scheduleAutoSave()}
+    if(currentScope(scope)){
+      saving.value=false;autoSaving.value=false
+      // 失败保留草稿，等再次编辑或手动保存；只有成功期间的新输入才继续防抖保存。
+      if(savedSuccessfully&&dirty.value)scheduleAutoSave()
+    }
   }
 }
 
@@ -2038,5 +2044,5 @@ onBeforeRouteLeave(async () => {
 @media(prefers-reduced-motion:reduce){.new-parallel-task-slot{animation:none}.pipeline-panel-enter-active,.pipeline-panel-leave-active{transition:none}}
 @media(max-width:1200px){.plan-switcher>span{display:none}.plan-switcher:deep(.ant-select){width:210px}.pipeline-name-input{width:180px}}
 @media(max-width:1000px){.pipeline-side-panel{top:0;right:0;bottom:0;width:min(560px,100%);max-height:none;border-radius:0 10px 10px 0}.pipeline-studio.immersive .pipeline-side-panel{border-radius:0}}
-@media(max-width:760px){.pipeline-editor-page{height:calc(100dvh - 108px)}.pipeline-command{align-items:flex-start;flex-direction:column}.pipeline-command-main,.pipeline-command-actions{width:100%;flex-wrap:wrap}.pipeline-name-input{width:min(100%,260px)}.plan-switcher:deep(.ant-select){width:180px}.board-toolbar>div:first-child span,.board-footer small{display:none}.pipeline-source-column{width:245px;flex-basis:245px}.pipeline-side-panel{width:100%;border-radius:0}.task-library-grid{grid-template-columns:1fr}}
+@media(max-width:760px){.pipeline-editor-page{height:calc(100dvh - 108px)}.pipeline-command{align-items:flex-start;flex-direction:column}.pipeline-command-main{flex:0 1 auto}.pipeline-command-main,.pipeline-command-actions{width:100%;flex-wrap:wrap}.pipeline-name-input{width:min(100%,260px)}.plan-switcher:deep(.ant-select){width:180px}.board-toolbar>div:first-child span,.board-footer small{display:none}.pipeline-source-column{width:245px;flex-basis:245px}.pipeline-side-panel{width:100%;border-radius:0}.task-library-grid{grid-template-columns:1fr}}
 </style>
