@@ -120,6 +120,12 @@ const planExecutionScopeIdentity=computed(()=>JSON.stringify([auth.user?.id,auth
 const planExecutionRequests=new Set<AbortController>()
 let planExecutionOpenedScope:PlanExecutionScope|undefined
 let planExecutionEpoch=0,planExecutionDisposed=false
+let resourceLoadedScope='',resourceRefreshRevision=0
+let resourceStatusDialog:ReturnType<typeof Modal.confirm>|undefined
+let resourceStatusController:AbortController|undefined
+function resourceScopeKey(){return JSON.stringify([planExecutionScopeIdentity.value,planExecutionEpoch,typeof localStorage==='undefined'?'':localStorage.getItem('edo.project')||''])}
+function resourceReadOptions(){return {headers:{'X-EDO-Project-ID':planExecutionSelectedProject.value}}}
+function resetResourceStatus(){if(resourceStatusController)resourceMutationID.value='';resourceStatusController?.abort();resourceStatusController=undefined;resourceStatusDialog?.destroy();resourceStatusDialog=undefined;resourceLoadedScope='';resourceRefreshRevision++;loading.value=false;if(['applications','repositories'].includes(props.section)){applications.value=[];repositories.value=[];closeApplicationDetails()}}
 const DEFAULT_APPLICATION_POLL_INTERVAL=3
 const appForm=reactive({name:'',description:'',repository_id:'',workflow_template_id:'',poll_interval_seconds:DEFAULT_APPLICATION_POLL_INTERVAL})
 const repoForm=reactive({name:'',provider:'github',clone_url:'',default_branch:'main',auth_type:'none',username:'',credential_id:'',api_credential_id:'',webhook_enabled:false,allow_insecure_http:false})
@@ -891,15 +897,15 @@ function changeRunPage(pagination:{current?:number;pageSize?:number}){
  void router.push({query:pipelineRunRouteQuery(route.query,filters)})
 }
 
-async function refresh(){const section=props.section,view=releaseView.value;loading.value=true;try{const requests=await Promise.all([auth.canAny(['application.read'])?client.get<{applications:Application[]}>('/applications'):null,auth.canAny(['repository.read'])?client.get<{repositories:Repository[]}>('/repositories'):null,auth.canAny(['credential.read'])?client.get<{credentials:Credential[]}>('/git-credentials'):null,auth.canAny(['build_plan.read'])?client.get<{build_plans:BuildPlan[]}>('/build-plans'):null,auth.canAny(['image_registry.read'])?client.get<{image_registries:Registry[]}>('/image-registries'):null,auth.canAny(['pipeline_run.read'])&&!(section==='release-plans'&&view==='runs')?client.get<{pipeline_runs:Run[]}>('/pipeline-runs?limit=200'):null,auth.canAny(['release_plan.read'])?client.get<{release_plans:ReleasePlan[]}>('/release-plans'):null,canReadDeployments.value?client.get<{deployments:DeploymentRecord[]}>('/deployments?limit=200'):null,auth.canAny(['deployment_plan.read'])?client.get<{deployment_plans:DeploymentPlan[]}>('/deployment-plans'):null,auth.canAny(['workflow.read'])?client.get<{workflow_templates:WorkflowTemplate[]}>('/workflow-templates'):null]);if(section!==props.section||view!==releaseView.value)return;applications.value=requests[0]?.data.applications||[];repositories.value=requests[1]?.data.repositories||[];credentials.value=requests[2]?.data.credentials||[];buildPlans.value=requests[3]?.data.build_plans||[];registries.value=requests[4]?.data.image_registries||[];if(!(section==='release-plans'&&view==='runs'))runs.value=requests[5]?.data.pipeline_runs||[];releasePlans.value=requests[6]?.data.release_plans||[];deployments.value=requests[7]?.data.deployments||[];deploymentPlans.value=requests[8]?.data.deployment_plans||[];workflowTemplates.value=requests[9]?.data.workflow_templates||[];if(section==='release-plans'&&view==='runs')await loadRunPage(true);if(requestedRunID.value)void revealRequestedRun();await refreshVisibleRunDeployments();await refreshRunApprovals()}catch(error){message.error(apiErrorMessage(error))}finally{loading.value=false}}
+async function refresh(){const section=props.section,view=releaseView.value,scope=resourceScopeKey(),revision=++resourceRefreshRevision,options=resourceReadOptions();loading.value=true;try{const requests=await Promise.all([auth.canAny(['application.read'])?client.get<{applications:Application[]}>('/applications',options):null,auth.canAny(['repository.read'])?client.get<{repositories:Repository[]}>('/repositories',options):null,auth.canAny(['credential.read'])?client.get<{credentials:Credential[]}>('/git-credentials',options):null,auth.canAny(['build_plan.read'])?client.get<{build_plans:BuildPlan[]}>('/build-plans',options):null,auth.canAny(['image_registry.read'])?client.get<{image_registries:Registry[]}>('/image-registries',options):null,auth.canAny(['pipeline_run.read'])&&!(section==='release-plans'&&view==='runs')?client.get<{pipeline_runs:Run[]}>('/pipeline-runs?limit=200',options):null,auth.canAny(['release_plan.read'])?client.get<{release_plans:ReleasePlan[]}>('/release-plans',options):null,canReadDeployments.value?client.get<{deployments:DeploymentRecord[]}>('/deployments?limit=200',options):null,auth.canAny(['deployment_plan.read'])?client.get<{deployment_plans:DeploymentPlan[]}>('/deployment-plans',options):null,auth.canAny(['workflow.read'])?client.get<{workflow_templates:WorkflowTemplate[]}>('/workflow-templates',options):null]);if(section!==props.section||view!==releaseView.value||scope!==resourceScopeKey()||revision!==resourceRefreshRevision)return;resourceLoadedScope=scope;applications.value=requests[0]?.data.applications||[];repositories.value=requests[1]?.data.repositories||[];credentials.value=requests[2]?.data.credentials||[];buildPlans.value=requests[3]?.data.build_plans||[];registries.value=requests[4]?.data.image_registries||[];if(!(section==='release-plans'&&view==='runs'))runs.value=requests[5]?.data.pipeline_runs||[];releasePlans.value=requests[6]?.data.release_plans||[];deployments.value=requests[7]?.data.deployments||[];deploymentPlans.value=requests[8]?.data.deployment_plans||[];workflowTemplates.value=requests[9]?.data.workflow_templates||[];if(section==='release-plans'&&view==='runs')await loadRunPage(true);if(requestedRunID.value)void revealRequestedRun();await refreshVisibleRunDeployments();await refreshRunApprovals()}catch(error){if(scope===resourceScopeKey()&&revision===resourceRefreshRevision)message.error(apiErrorMessage(error))}finally{if(revision===resourceRefreshRevision)loading.value=false}}
 let stateRefreshing=false
 async function refreshApplicationState(){
- const section=props.section,view=releaseView.value
+ const section=props.section,view=releaseView.value,scope=resourceScopeKey()
  if(stateRefreshing||!auth.canAny([`${sectionPermission.value}.read`]))return
  stateRefreshing=true
  try{
  const [applicationResult,runResult,deploymentResult,deploymentPlanResult]=await Promise.all([auth.canAny(['application.read'])?client.get<{applications:Application[]}>('/applications'):Promise.resolve({data:{applications:[] as Application[]}}),auth.canAny(['pipeline_run.read'])?client.get<{pipeline_runs:Run[]}>('/pipeline-runs?limit=200'):Promise.resolve({data:{pipeline_runs:[] as Run[]}}),canReadDeployments.value?client.get<{deployments:DeploymentRecord[]}>('/deployments?limit=200'):null,auth.canAny(['deployment_plan.read'])?client.get<{deployment_plans:DeploymentPlan[]}>('/deployment-plans'):Promise.resolve({data:{deployment_plans:[] as DeploymentPlan[]}})])
-  if(section!==props.section||view!==releaseView.value)return
+  if(section!==props.section||view!==releaseView.value||scope!==resourceScopeKey())return
   applications.value=applicationResult.data.applications||[]
   runs.value=runResult.data.pipeline_runs||[]
   if(deploymentResult)deployments.value=deploymentResult.data.deployments||[]
@@ -1182,6 +1188,42 @@ function confirmBuildPlanStatus(plan:Pick<BuildPlan,'id'|'name'|'is_active'>){
    finally{resourceMutationID.value=''}
   },
  })
+}
+function confirmResourceStatus(row:Pick<Application|Repository,'id'|'name'|'is_active'>){
+ const section=props.section,scope=resourceScopeKey(),projectID=planExecutionSelectedProject.value,id=row.id,wasActive=row.is_active
+ if(!['applications','repositories'].includes(section)||resourceStatusDialog||resourceMutationID.value)return
+ const permission=section==='applications'?'application.update':'repository.update'
+ let finished=false
+ const current=()=>{
+  const rows=section==='applications'?applications.value:repositories.value
+  return !finished&&!planExecutionDisposed&&props.section===section&&scope===resourceScopeKey()&&resourceLoadedScope===scope&&auth.user?.project_id===projectID&&Boolean(projectID)&&auth.canAny([permission])&&rows.some(item=>item.id===id)
+ }
+ if(!current())return
+ const active=!wasActive,action=t(active?'delivery.enable':'delivery.disable'),name=row.name
+ let pending:Promise<void>|undefined
+ const dialog=Modal.confirm({
+  title:t('delivery.statusTitle',{action,name}),
+  content:t(active?'delivery.enableHint':'delivery.disableHint'),okText:action,cancelText:t('delivery.cancel'),
+  onCancel:()=>{finished=true;if(resourceStatusDialog===dialog)resourceStatusDialog=undefined},
+  onOk:()=>{
+   if(pending)return pending
+   if(!current()||(section==='applications'?applications.value:repositories.value).find(item=>item.id===id)?.is_active!==wasActive){finished=true;dialog.destroy();if(resourceStatusDialog===dialog)resourceStatusDialog=undefined;return}
+   const controller=new AbortController();resourceStatusController=controller;resourceMutationID.value=id
+   dialog.update({cancelButtonProps:{disabled:true},keyboard:false})
+   pending=(async()=>{
+    try{
+     await client.patch(`/${section}/${id}/status`,{active},{headers:{'X-EDO-Project-ID':projectID},signal:controller.signal})
+     if(controller.signal.aborted||!current())return
+     finished=true
+     message.success(t('delivery.statusSaved',{name,action}));if(resourceStatusDialog===dialog)resourceStatusDialog=undefined
+     await refresh()
+    }catch(error){if(!controller.signal.aborted&&current()){message.error(apiErrorMessage(error));throw error}}
+    finally{if(resourceStatusController===controller){resourceStatusController=undefined;resourceMutationID.value=''}if(current())dialog.update({cancelButtonProps:{disabled:false},keyboard:true});pending=undefined}
+   })()
+   return pending
+  },
+ })
+ resourceStatusDialog=dialog
 }
 function confirmDeleteBuildPlan(plan:Pick<BuildPlan,'id'|'name'>){
  Modal.confirm({
@@ -1749,8 +1791,9 @@ function queueDeliveryRefresh(syncOnly=false){
   if(stateRefreshing||loading.value){queueDeliveryRefresh(applicationSyncOnly);return}
   if(!applicationSyncOnly)lastDeliverySync=Date.now()
   if(props.section==='applications'&&applicationSyncOnly){
+   const scope=resourceScopeKey()
    stateRefreshing=true
-   try{applications.value=(await (auth.canAny(['application.read'])?client.get<{applications:Application[]}>('/applications'):Promise.resolve({data:{applications:[] as Application[]}}))).data.applications||[]}catch{}finally{stateRefreshing=false}
+   try{const result=await (auth.canAny(['application.read'])?client.get<{applications:Application[]}>('/applications',resourceReadOptions()):Promise.resolve({data:{applications:[] as Application[]}}));if(scope===resourceScopeKey())applications.value=result.data.applications||[]}catch{}finally{stateRefreshing=false}
   }
   else if(props.section==='applications')await refreshApplicationState()
   else if(props.section==='release-plans'&&releaseView.value==='runs')await refreshRunState()
@@ -1832,11 +1875,12 @@ watch(runQueryKey,()=>{runDrawerEntryID.value='';expandedRunIDs.value=[];expande
 watch(()=>visibleApprovalRuns().map(run=>`${run.id}:${run.current_node_id}`).join(','),()=>{void refreshRunApprovals()})
 watch(approvalScope,()=>{for(const controller of runApprovalRequests.values())controller.abort();runApprovalRequests.clear();runApprovals.value={};runApprovalLoading.value={};runApprovalErrors.value={};void refreshRunApprovals()})
 watch(planExecutionScopeIdentity,resetPlanExecutionScope,{flush:'sync'})
+watch(planExecutionScopeIdentity,resetResourceStatus,{flush:'sync'})
 watch(()=>props.section,connectDeliveryEvents)
 onMounted(()=>{window.addEventListener('edo:projects-changed',syncPlanExecutionProject)})
 onMounted(()=>{connectDeliveryEvents();void refresh().then(()=>{lastDeliverySync=Date.now();syncBuildPlanSelection();consumeBuildCreateRequest();consumeDeliveryRequest();void revealActiveApplication()});releaseTimer=window.setInterval(refreshVisibleState,5000);document.addEventListener('visibilitychange',onDeliveryPageVisible);window.addEventListener('focus',onDeliveryPageVisible)})
 onBeforeUnmount(()=>{for(const controller of runApprovalRequests.values())controller.abort();runListController?.abort();executionController?.abort();runQueryRevision++;executionRevision++;stopDeliveryEvents?.();clearTimeout(deliveryRefreshTimer);resetPlanExecution();clearInterval(releaseTimer);document.removeEventListener('visibilitychange',onDeliveryPageVisible);window.removeEventListener('focus',onDeliveryPageVisible)})
-onBeforeUnmount(()=>{planExecutionDisposed=true;resetPlanExecutionScope();window.removeEventListener('edo:projects-changed',syncPlanExecutionProject)})
+onBeforeUnmount(()=>{planExecutionDisposed=true;resetPlanExecutionScope();resetResourceStatus();window.removeEventListener('edo:projects-changed',syncPlanExecutionProject)})
 </script>
 
 <template><section :class="{'applications-page':props.section==='applications'}"><PageToolbar :description="props.section==='applications'?t('applicationWorkspace.description'):currentDescription"><a-tag v-if="props.section==='applications'||props.section==='release-plans'" color="processing">{{ t('applicationCard.autoRefresh') }}</a-tag><a-button :loading="loading" @click="refresh"><RefreshCw :size="15"/>刷新</a-button><a-button v-if="props.section==='release-plans'&&releaseView==='runs'&&auth.canAny(['pipeline_run.execute'])&&auth.canAny(['application.read'])" type="primary" :disabled="saving" @click="openManualPicker">{{ t('manualRun.execute') }}</a-button><a-button v-if="canCreate&&(props.section!=='release-plans'||releaseView==='plans')" type="primary" @click="create"><Plus :size="15"/>{{ props.section==='release-plans'?'创建发布计划':props.section==='applications'?t('applicationWorkspace.create'):'新建' }}</a-button></PageToolbar>
@@ -1883,7 +1927,7 @@ onBeforeUnmount(()=>{planExecutionDisposed=true;resetPlanExecutionScope();window
       <ResourceRowActions v-else-if="column.key==='actions'" :more="canUpdate">
         <a-button size="small" @click="toggleApplicationDetails(card,'workflows')">{{ t('resourceList.details') }}</a-button>
         <a-button v-if="canExecute" size="small" :loading="checkingApplicationIDs[card.application.id]" :disabled="card.sync.live" @click="checkApplicationUpdates(card.application)">{{ t('applicationCard.checkUpdates') }}</a-button>
-        <template #more><a-menu-item v-if="canUpdate" @click="edit(card.application)">{{ t('applicationCard.configure') }}</a-menu-item></template>
+        <template #more><a-menu-item v-if="canUpdate" @click="edit(card.application)">{{ t('applicationCard.configure') }}</a-menu-item><a-menu-item v-if="canUpdate" :disabled="Boolean(resourceMutationID)" @click="confirmResourceStatus(card.application)"><Power :size="14"/>{{ t(card.application.is_active?'delivery.disable':'delivery.enable') }}</a-menu-item></template>
       </ResourceRowActions>
     </template>
   </a-table>
@@ -1894,6 +1938,7 @@ onBeforeUnmount(()=>{planExecutionDisposed=true;resetPlanExecutionScope();window
         <a-button size="small" :type="applicationDetailTab(applicationDrawerID)==='deployments'?'primary':'default'" @click="toggleApplicationDetails(applicationDrawerCard,'deployments')">{{ t('resourceList.instances') }} ({{ applicationDrawerCard.deploymentInstances.length }})</a-button>
         <a-button v-if="canConfigureDelivery" size="small" @click="configureDelivery(applicationDrawerCard.application.id)">{{ t('delivery.configure') }}</a-button>
         <a-button v-if="canUpdate" size="small" @click="edit(applicationDrawerCard.application)">{{ t('applicationCard.configure') }}</a-button>
+        <a-button v-if="canUpdate" size="small" :loading="resourceMutationID===applicationDrawerCard.application.id" :disabled="Boolean(resourceMutationID)" @click="confirmResourceStatus(applicationDrawerCard.application)"><Power :size="14"/>{{ t(applicationDrawerCard.application.is_active?'delivery.disable':'delivery.enable') }}</a-button>
       </template>
     </template>
     <section v-if="applicationDrawerCard" class="resource-detail-section">
@@ -2024,9 +2069,11 @@ onBeforeUnmount(()=>{planExecutionDisposed=true;resetPlanExecutionScope();window
    <template #cell-description="{value}"><span :title="String(value||'')">{{ value||'—' }}</span></template>
    <template #cell-timeout_seconds="{value}">{{ value }} 秒</template>
    <template #actions="{row}">
-    <a-button v-if="canUpdate&&props.section==='repositories'" type="link" @click="edit(row)">编辑</a-button>
-    <a-button v-if="canExecute&&props.section==='repositories'" type="link" :loading="repositoryTestingID===String(row.id)" :disabled="Boolean(repositoryTestingID)&&repositoryTestingID!==String(row.id)" @click="testStoredRepository(row as Repository)">测试</a-button>
-    <a-button v-if="props.section==='repositories'&&(row as Repository).webhook_enabled&&auth.canAny(['repository.secret.read'])" type="link" @click="showWebhook(row as Repository)">Webhook</a-button>
+    <ResourceRowActions v-if="props.section==='repositories'" :more="canUpdate" :loading="resourceMutationID===String(row.id)">
+     <a-button v-if="canExecute" type="link" :loading="repositoryTestingID===String(row.id)" :disabled="Boolean(repositoryTestingID)&&repositoryTestingID!==String(row.id)" @click="testStoredRepository(row as Repository)">测试</a-button>
+     <a-button v-if="(row as Repository).webhook_enabled&&auth.canAny(['repository.secret.read'])" type="link" @click="showWebhook(row as Repository)">Webhook</a-button>
+     <template #more><a-menu-item v-if="canUpdate" @click="edit(row)">{{ t('applicationCard.configure') }}</a-menu-item><a-menu-item v-if="canUpdate" :disabled="Boolean(resourceMutationID)" @click="confirmResourceStatus(row as Repository)"><Power :size="14"/>{{ t((row as Repository).is_active?'delivery.disable':'delivery.enable') }}</a-menu-item></template>
+    </ResourceRowActions>
    </template>
   </ResourceTable>
  </div>

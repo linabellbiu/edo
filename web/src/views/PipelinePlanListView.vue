@@ -12,6 +12,7 @@ import ResourceRowActions from '@/components/ResourceRowActions.vue'
 import { useResourceList } from '@/utils/resourceList'
 import { useI18n } from 'vue-i18n'
 import DeliveryDefaultsDrawer from '@/components/DeliveryDefaultsDrawer.vue'
+import { oneDeliveryTask } from '@/api/delivery'
 import WorkflowPresetModal from '@/components/WorkflowPresetModal.vue'
 import { useAuthStore } from '@/stores/auth'
 import type { Workflow, WorkflowNode, WorkflowStage } from '@/types/pipeline'
@@ -45,7 +46,11 @@ const busyID = ref('')
 const presetOpen = ref(false)
 const defaultsOpen = ref(false), defaultWorkflowID = ref('')
 const canDefaults = computed(() => auth.canAny(['workflow.read']) && auth.canAny(['deployment_plan.read']))
-function openDefaults(id='') { defaultWorkflowID.value=id; defaultsOpen.value=true }
+function openDefaults(id='') {
+  if(!canDefaults.value)return
+  if(id){const template=templates.value.find(item=>item.id===id);if(!template?.is_active||!oneDeliveryTask(template)||!auth.canAny(['workflow.update'])||!auth.canAny(['deployment_plan.update']))return}
+  defaultWorkflowID.value=id; defaultsOpen.value=true
+}
 
 const canCreate = computed(() => auth.canAny(['workflow.create']))
 const canUpdate = computed(() => auth.canAny(['workflow.update']))
@@ -221,7 +226,7 @@ async function openCreatedTemplate(result: import('@/types/pipeline').WorkflowTe
               <a-button size="small" @click="openDetails(record)">{{ t('resourceList.details') }}</a-button>
               <a-button v-if="canUpdate" size="small" @click="router.push(`/pipeline-plans/editor?template=${record.id}`)">{{ t('planList.edit') }}</a-button>
               <template #more>
-                <a-menu-item v-if="canDefaults && canUpdate && auth.canAny(['deployment_plan.update']) && record.is_active" @click="openDefaults(record.id)">{{ t('delivery.setDefault') }}</a-menu-item>
+                <a-menu-item v-if="canDefaults && canUpdate && auth.canAny(['deployment_plan.update']) && record.is_active" :disabled="!oneDeliveryTask(record)" :title="!oneDeliveryTask(record)?t('delivery.workflowRequirement'):undefined" @click="openDefaults(record.id)">{{ t('delivery.setDefault') }}</a-menu-item>
                 <a-menu-item v-if="canCreate" @click="duplicate(record)"><Copy :size="14" />复制</a-menu-item>
                 <a-menu-item v-if="canUpdate" @click="setActive(record, !record.is_active)">{{ record.is_active ? t('planList.disable') : t('planList.enable') }}</a-menu-item>
                 <a-menu-divider v-if="canDelete" />

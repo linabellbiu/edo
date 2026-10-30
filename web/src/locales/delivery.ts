@@ -8,6 +8,8 @@ export const deliveryZh = {
  buildHint:'Kubernetes 构建方案必须绑定镜像仓库；主机脚本构建必须保存文件制品。', scriptHint:'内置主机脚本方案需要补齐实际部署命令，之后才能启用。',
  targetHint:'Deployment 及容器必须已经存在。私有镜像仓库的拉取权限由集群配置。',
  setDefault:'设为默认', reusable:'通用部署方案', reusableHint:'通用方案只保存部署规则，应用使用时独立选择运行位置。', fixed:'固定运行位置', link:'关联应用',
+ selectedUnavailable:'所选方案不可用', workflowRequirement:'请选择已启用且包含一个构建和一个部署任务的流水线。', planRequirement:'请选择已启用且与当前部署方式一致的方案。',
+ enable:'启用', disable:'停用', cancel:'取消', statusTitle:'{action}“{name}”？', statusSaved:'“{name}”已{action}', enableHint:'启用后可继续用于新的流水线操作。', disableHint:'停用后不再用于新的流水线操作；不会停止已有任务或已部署的应用。',
  configureFirst:'创建应用后，通过“配置发布流程”选择默认方案和运行位置。', noPermission:'没有查看或配置发布流程的权限。',
 }
 export const deliveryEn: Record<keyof typeof deliveryZh,string> = {
@@ -20,5 +22,7 @@ export const deliveryEn: Record<keyof typeof deliveryZh,string> = {
  buildHint:'Kubernetes builds require a registry. Host-script builds must save file artifacts.', scriptHint:'Configure the actual deployment commands before enabling the built-in host-script flow.',
  targetHint:'The Deployment and container must already exist. Configure private registry pull permissions in the cluster.',
  setDefault:'Set as default', reusable:'Reusable deployment plan', reusableHint:'Reusable plans contain deployment rules. Each application selects its own destination.', fixed:'Fixed destination', link:'Link application',
+ selectedUnavailable:'Selected plan unavailable', workflowRequirement:'Select an enabled pipeline with exactly one build and one deployment task.', planRequirement:'Select an enabled plan matching this deployment type.',
+ enable:'Enable', disable:'Disable', cancel:'Cancel', statusTitle:'{action} “{name}”?', statusSaved:'“{name}”: {action}', enableHint:'It will be available for new pipeline operations.', disableHint:'It will no longer be available for new pipeline operations. Existing tasks and deployed applications will not be stopped.',
  configureFirst:'After creating an application, configure its delivery defaults and destination.', noPermission:'You do not have permission to view or configure delivery.',
 }
