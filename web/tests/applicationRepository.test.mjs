@@ -22,6 +22,7 @@ function formHarness({ section = 'applications', repositoryCreate = true, creden
     async post(path, payload) {
       requests.push({ method: 'post', path, payload })
       if (failure) throw failure
+      if (path === '/repositories/test') return { data: { branches: [], tags: [] } }
       return { data: { repository: saved } }
     },
     async put(path, payload) {
@@ -39,7 +40,7 @@ function formHarness({ section = 'applications', repositoryCreate = true, creden
     '@/api/resources': { apiErrorMessage: () => '请求失败' },
   }
   const module = { exports: {} }
-  new Function('require', 'module', 'exports', outputText)(name => modules[name] || {}, module, module.exports)
+  new Function('require', 'module', 'exports', 'localStorage', outputText)(name => modules[name] || {}, module, module.exports, { getItem: () => null })
   const state = module.exports.default.setup({ section }, { expose() {} })
   return { state, requests, notifications, saved, fail: error => { failure = error } }
 }
@@ -150,4 +151,62 @@ test('没有凭据创建权限时不能打开加号表单', () => {
   assert.equal(state.credentialCreation.open, false)
   state.createRepositoryCredential('api')
   assert.equal(state.credentialCreation.open, false)
+})
+
+test('HTTP 仓库必须提供带风险提示的显式勾选，HTTPS 和 SSH 不显示', () => {
+  const elements = []
+  function visit(node, parents = []) {
+    if (node.type === 1) elements.push({ node, parents })
+    for (const child of node.children || []) visit(child, [...parents, node])
+  }
+  visit(descriptor.template.ast)
+  const model = (node, field, argument) => node.props?.some(prop => prop.type === 7 && prop.name === 'model' && prop.arg?.content === argument && prop.exp?.content === field)
+  const controls = elements.filter(({ node }) => node.tag === 'a-checkbox' && model(node, 'repoForm.allow_insecure_http', 'checked'))
+  assert.equal(controls.length, 1, '实际模板必须有绑定 HTTP 许可的 Ant Checkbox')
+  const control = controls[0]
+  const guard = [...control.parents, control.node].find(node => node.props?.some(prop => prop.type === 7 && prop.name === 'if' && prop.exp?.content === 'repositoryUsesHTTP'))
+  assert.ok(guard, '许可控件必须由真实 HTTP 地址条件控制')
+  assert.match(control.node.loc.source, /t\(['"]repositoryForm\.allowHttp['"]\)/)
+  assert.match(guard.loc.source, /t\(['"]repositoryForm\.httpWarning['"]\)/)
+  const address = elements.find(({ node }) => model(node, 'repoForm.clone_url', 'value'))
+  assert.ok(control.parents.some(node => node.tag === 'div' && address.parents.includes(node)), '许可控件与仓库地址属于同一表单区域')
+
+  const { state } = formHarness({ section: 'repositories' })
+  for (const [url, visible] of [['http://example.com/team/repo.git', true], ['  http://example.com/team/repo.git  ', true], ['https://example.com/team/repo.git', false], ['ssh://git@example.com/team/repo.git', false], ['git@example.com:team/repo.git', false], ['', false]]) {
+    state.repoForm.clone_url = url
+    assert.equal(state.repositoryUsesHTTP.value, visible, url)
+    assert.equal(state.repoForm.allow_insecure_http, false, '填写 HTTP 地址不能自动授予许可')
+  }
+})
+
+test('HTTP 仓库默认不许可，连接测试与保存均不得自动开启', async () => {
+  const { state, requests } = formHarness()
+  state.createApplicationRepository()
+  Object.assign(state.repoForm, { name: 'new_repo', clone_url: 'http://example.com/team/repo.git' })
+  assert.equal(state.repoForm.allow_insecure_http, false)
+  await state.testRepository()
+  await state.save()
+  assert.deepEqual(requests.map(({ path, payload }) => ({ path, allow_insecure_http: payload.allow_insecure_http })), [
+    { path: '/repositories/test', allow_insecure_http: false },
+    { path: '/repositories', allow_insecure_http: false },
+  ])
+  assert.equal(state.repoForm.allow_insecure_http, false)
+})
+
+test('显式 HTTP 许可随测试和保存提交，重新新建仓库时重置', async () => {
+  const { state, requests } = formHarness()
+  state.createApplicationRepository()
+  Object.assign(state.repoForm, { name: 'new_repo', clone_url: 'http://example.com/team/repo.git', allow_insecure_http: true })
+  await state.testRepository()
+  await state.save()
+  assert.deepEqual(requests.map(({ path, payload }) => ({ path, allow_insecure_http: payload.allow_insecure_http })), [
+    { path: '/repositories/test', allow_insecure_http: true },
+    { path: '/repositories', allow_insecure_http: true },
+  ])
+  state.createApplicationRepository()
+  assert.equal(state.repoForm.allow_insecure_http, false)
+  const repositories = formHarness({ section: 'repositories' }).state
+  repositories.repoForm.allow_insecure_http = true
+  repositories.create()
+  assert.equal(repositories.repoForm.allow_insecure_http, false)
 })

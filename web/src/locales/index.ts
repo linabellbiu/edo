@@ -26,6 +26,7 @@ export const messages = {
     planList: { hint: '点击记录展开详情，可同时查看多条', total: '共 {count} 条', expand: '展开详情', collapse: '收起详情', status: '状态', actions: '操作', updated: '最近更新', details: '方案详情', deploymentName: '部署方案', releaseName: '发布计划', mode: '执行方式', destination: '运行位置', object: '更新对象', directory: '执行目录', timeout: '最长执行时间', seconds: '{count} 秒', timeoutHint: '超过时间后停止本次部署并标记失败。', descriptionEmpty: '尚未填写说明', deploymentEmpty: '还没有部署方案', enabled: '已启用', disabled: '已停用', incomplete: '待补全', enable: '启用', disable: '停用', edit: '编辑', remove: '删除', applications: '发布应用', applicationOverflow: '另 {count} 个', manualCount: '{count} 个可手动执行' },
     applicationForm: { createRepository: '创建代码仓库', backToApplication: '返回应用', repositoryCreated: '代码仓库已创建并选中' },
     repositoryForm: {
+      allowHttp: '允许 HTTP（仅可信内网）', httpWarning: 'HTTP 不会加密仓库内容或凭据。',
       gitAuthentication: 'Git 认证', gitCredential: 'Git 凭据', gitCredentialHint: '用于拉取代码和查询分支、Tag；只能选择你自己保存的凭据。',
       apiToken: '平台 API 令牌（可选）', createApiToken: '创建平台 API 令牌', apiReusePlaceholder: '留空则复用 Git 凭据中的 Token', apiTokenPlaceholder: '需要读取私有 PR/MR 时选择 Token',
       apiReuseHint: '用于读取 PR/MR。留空使用上面的 Git Token。',
@@ -264,6 +265,7 @@ export const messages = {
     planList: { hint: 'Click a row to expand details; multiple rows can stay open', total: '{count} items', expand: 'Expand details', collapse: 'Collapse details', status: 'Status', actions: 'Actions', updated: 'Last updated', details: 'Plan details', deploymentName: 'Deployment plan', releaseName: 'Release plan', mode: 'Execution mode', destination: 'Location', object: 'Target', directory: 'Working directory', timeout: 'Timeout', seconds: '{count} seconds', timeoutHint: 'The deployment stops and is marked failed after the timeout.', descriptionEmpty: 'No description', deploymentEmpty: 'No deployment plans yet', enabled: 'Enabled', disabled: 'Disabled', incomplete: 'Incomplete', enable: 'Enable', disable: 'Disable', edit: 'Edit', remove: 'Delete', applications: 'Applications', applicationOverflow: '{count} more', manualCount: '{count} ready for manual execution' },
     applicationForm: { createRepository: 'Create repository', backToApplication: 'Back to application', repositoryCreated: 'Repository created and selected' },
     repositoryForm: {
+      allowHttp: 'Allow HTTP (trusted networks only)', httpWarning: 'HTTP does not encrypt repository data or credentials.',
       gitAuthentication: 'Git authentication', gitCredential: 'Git credential', gitCredentialHint: 'Used to fetch code and query branches and tags. Only your own saved credentials are available.',
       apiToken: 'Platform API token (optional)', createApiToken: 'Create platform API token', apiReusePlaceholder: 'Leave blank to reuse the Git token', apiTokenPlaceholder: 'Select a token to read private PRs/MRs',
       apiReuseHint: 'Used to read PR/MR information. Leave blank to reuse the Git token above; select a separate token only if you need different API credentials.',

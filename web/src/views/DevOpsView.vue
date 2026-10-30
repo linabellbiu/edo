@@ -123,6 +123,7 @@ let planExecutionEpoch=0,planExecutionDisposed=false
 const DEFAULT_APPLICATION_POLL_INTERVAL=3
 const appForm=reactive({name:'',description:'',repository_id:'',workflow_template_id:'',poll_interval_seconds:DEFAULT_APPLICATION_POLL_INTERVAL})
 const repoForm=reactive({name:'',provider:'github',clone_url:'',default_branch:'main',auth_type:'none',username:'',credential_id:'',api_credential_id:'',webhook_enabled:false,allow_insecure_http:false})
+const repositoryUsesHTTP=computed(()=>/^http:\/\//i.test(repoForm.clone_url.trim()))
 const creatingApplicationRepository=ref(false)
 const credentialCreation=reactive({open:false,target:'git' as 'git'|'api',provider:'github',authType:'token' as Credential['auth_type']})
 const formSection=computed(()=>creatingApplicationRepository.value?'repositories':props.section)
@@ -2220,6 +2221,10 @@ onBeforeUnmount(()=>{planExecutionDisposed=true;resetPlanExecutionScope();window
   <a-form-item label="名称" required><a-input v-model:value="repoForm.name"/></a-form-item>
   <a-form-item label="平台"><a-select v-model:value="repoForm.provider" :options="['github','gitlab','gitea','gitee','generic'].map(value=>({value,label:value}))"/></a-form-item>
   <a-form-item class="span2" label="Git 地址" required><a-input v-model:value="repoForm.clone_url"/></a-form-item>
+  <a-form-item v-if="repositoryUsesHTTP" class="span2">
+   <a-checkbox v-model:checked="repoForm.allow_insecure_http">{{ t('repositoryForm.allowHttp') }}</a-checkbox>
+   <small class="field-hint">{{ t('repositoryForm.httpWarning') }}</small>
+  </a-form-item>
   <a-form-item label="默认分支"><a-input v-model:value="repoForm.default_branch"/></a-form-item>
   <a-form-item :label="t('repositoryForm.gitAuthentication')"><a-select v-model:value="repoForm.auth_type" :options="[{value:'none',label:'无需认证'},{value:'token',label:'访问令牌'},{value:'ssh_key',label:'SSH 私钥'}]"/></a-form-item>
   <a-form-item v-if="repoForm.auth_type!=='none'" class="span2" :label="t('repositoryForm.gitCredential')">
