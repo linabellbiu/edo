@@ -1055,6 +1055,10 @@ func (s *Service) prepareUpdateInput(existing *model.Host, input Input) (Input, 
 	}
 	if input.UseSudo != nil {
 		bundle.UseSudo = *input.UseSudo
+		if !bundle.UseSudo {
+			// 关闭提权只清除独立 sudo 密码，保留原 SSH 登录凭据。
+			bundle.SudoPassword = ""
+		}
 	}
 	input.SSH, input.SSHAuthType = bundle, existing.SSHAuthType
 	return input, nil

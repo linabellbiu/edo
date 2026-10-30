@@ -5,6 +5,7 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"io"
@@ -23,6 +24,7 @@ import (
 	"edo/internal/dockerengine"
 	"edo/internal/hostcredential"
 	"edo/internal/model"
+	"edo/internal/sshclient"
 )
 
 func createReuseFixture(t *testing.T, service *Service, input Input) *Detail {
@@ -37,6 +39,136 @@ func createReuseFixture(t *testing.T, service *Service, input Input) *Detail {
 		t.Fatal(err)
 	}
 	return created
+}
+
+type sudoReuseProbe struct{ recordingDockerProbe }
+
+func (s *sudoReuseProbe) TestSSH(ctx context.Context, input dockerengine.Input) (dockerengine.SSHTestResult, error) {
+	if input.SSH == nil {
+		return dockerengine.SSHTestResult{}, sshclient.ErrInvalidConfiguration
+	}
+	if _, err := sshclient.AuthMethods(sshclient.Bundle(*input.SSH)); err != nil {
+		return dockerengine.SSHTestResult{}, err
+	}
+	return s.recordingDockerProbe.TestSSH(ctx, input)
+}
+
+func (s *sudoReuseProbe) TestSSHConnection(ctx context.Context, input dockerengine.Input) (dockerengine.SSHConnectionTestResult, error) {
+	if input.SSH == nil {
+		return dockerengine.SSHConnectionTestResult{}, sshclient.ErrInvalidConfiguration
+	}
+	if _, err := sshclient.AuthMethods(sshclient.Bundle(*input.SSH)); err != nil {
+		return dockerengine.SSHConnectionTestResult{}, err
+	}
+	return s.recordingDockerProbe.TestSSHConnection(ctx, input)
+}
+
+func sudoReuseInput(t *testing.T, authType model.SSHAuthType) Input {
+	t.Helper()
+	input := hostTestInput()
+	input.SSHAuthType = authType
+	input.CapabilityKinds = []model.HostCapabilityKind{model.HostCapabilitySSH}
+	input.KubernetesClusterID = ""
+	input.SSH.SudoPassword = "independent-test-sudo-password"
+	if authType == model.SSHAuthPrivateKey {
+		_, key, err := ed25519.GenerateKey(rand.Reader)
+		if err != nil {
+			t.Fatal("生成独立测试密钥失败")
+		}
+		block, err := ssh.MarshalPrivateKeyWithPassphrase(key, "host-sudo-reuse-test", []byte("test-key-passphrase"))
+		if err != nil {
+			t.Fatal("加密独立测试密钥失败")
+		}
+		input.SSH.Password = ""
+		input.SSH.PrivateKey = string(pem.EncodeToMemory(block))
+		input.SSH.Passphrase = "test-key-passphrase"
+	}
+	return input
+}
+
+func TestExistingCredentialReuseCanDisableIndependentSudoPassword(t *testing.T) {
+	for _, authType := range []model.SSHAuthType{model.SSHAuthPassword, model.SSHAuthPrivateKey} {
+		for _, docker := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/docker=%t", authType, docker), func(t *testing.T) {
+				service, db, _ := newHostTestService(t)
+				probe := &sudoReuseProbe{recordingDockerProbe{fingerprint: "SHA256:" + strings.Repeat("A", 43)}}
+				service.docker = probe
+				input := sudoReuseInput(t, authType)
+				if docker {
+					input.CapabilityKinds = append(input.CapabilityKinds, model.HostCapabilityDocker)
+				}
+				want := *input.SSH
+				created := createReuseFixture(t, service, input)
+				useSudo := false
+				input.SSH, input.ReuseCredential, input.UseSudo = nil, true, &useSudo
+				tested, err := service.TestExisting(context.Background(), created.Host.ID, input)
+				if err != nil || tested.Token == "" {
+					t.Fatalf("关闭 sudo 后复用 SSH 凭据重测失败: %v", err)
+				}
+				want.UseSudo, want.SudoPassword = false, ""
+				if probe.input.SSH == nil || *probe.input.SSH != want || probe.input.SSHHostKeyFingerprint != created.Host.SSHHostKeyFingerprint {
+					t.Fatal("关闭 sudo 的重测未保留 SSH 认证和原指纹")
+				}
+				var stored model.Host
+				if err := db.First(&stored, "uuid = ?", created.Host.ID).Error; err != nil {
+					t.Fatal("读取测试主机失败")
+				}
+				if stored.SSHCredentialCiphertext != created.Host.SSHCredentialCiphertext || stored.SSHHostKeyFingerprint != created.Host.SSHHostKeyFingerprint {
+					t.Fatal("仅重测不应修改已保存的凭据或指纹")
+				}
+			})
+		}
+	}
+}
+
+func TestUpdateCredentialReusePersistsExplicitSudoChoice(t *testing.T) {
+	for _, authType := range []model.SSHAuthType{model.SSHAuthPassword, model.SSHAuthPrivateKey} {
+		for _, choice := range []string{"保留", "开启", "关闭"} {
+			t.Run(fmt.Sprintf("%s/%s", authType, choice), func(t *testing.T) {
+				service, _, secrets := newHostTestService(t)
+				recorder := &recordingDockerProbe{fingerprint: "SHA256:" + strings.Repeat("A", 43)}
+				service.docker = recorder
+				input := sudoReuseInput(t, authType)
+				want := *input.SSH
+				created := createReuseFixture(t, service, input)
+				input.SSH, input.ReuseCredential = nil, true
+				if choice != "保留" {
+					useSudo := choice == "开启"
+					input.UseSudo = &useSudo
+					want.UseSudo = useSudo
+					if !useSudo {
+						want.SudoPassword = ""
+					}
+				}
+				tested, err := service.TestExisting(context.Background(), created.Host.ID, input)
+				if err != nil {
+					t.Fatalf("复用已保存凭据重测失败: %v", err)
+				}
+				input.TestToken = tested.Token
+				updated, err := service.Update(context.Background(), created.Host.ID, input)
+				if err != nil {
+					t.Fatalf("保存 sudo 选择失败: %v", err)
+				}
+				plain, err := secrets.Decrypt(updated.Host.SSHCredentialCiphertext, hostcredential.AAD(updated.Host.ID))
+				if err != nil {
+					t.Fatal("解密测试凭据失败")
+				}
+				var stored dockerengine.SSHBundle
+				if err := json.Unmarshal([]byte(plain), &stored); err != nil || stored != want {
+					t.Fatal("保存 sudo 选择未准确保留 SSH 凭据或独立 sudo 密码")
+				}
+				if _, err := sshclient.AuthMethods(sshclient.Bundle(stored)); err != nil {
+					t.Fatalf("保存后的凭据无法用于 SSH 认证: %v", err)
+				}
+				if updated.UseSudo != want.UseSudo || updated.Host.SSHHostKeyFingerprint != created.Host.SSHHostKeyFingerprint || recorder.input.SSHHostKeyFingerprint != created.Host.SSHHostKeyFingerprint {
+					t.Fatal("更新 sudo 改变了主机指纹或授权摘要不正确")
+				}
+				if choice == "保留" && updated.Host.SSHCredentialCiphertext != created.Host.SSHCredentialCiphertext {
+					t.Fatal("未修改 sudo 时不应重新加密凭据")
+				}
+			})
+		}
+	}
 }
 
 func TestExistingCredentialReusePinsBothProbesAndPreservesSavedState(t *testing.T) {
