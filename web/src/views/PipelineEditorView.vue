@@ -220,7 +220,6 @@ const templateOptions = computed(() => templates.value.map(item => ({
   value: item.id,
   label: item.name,
   detail: `状态：${item.is_active ? '已启用' : '草稿'}`,
-  disabled: !item.is_active && item.id !== selectedTemplateID.value,
 })))
 const codeSourceName = computed(() => editorApplication.value?.repository?.name || '未配置代码仓库')
 const allNodes = computed(() => [...sources.value, ...stages.value.flatMap(stage => stage.tasks)])

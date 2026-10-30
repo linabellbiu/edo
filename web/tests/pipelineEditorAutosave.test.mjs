@@ -13,16 +13,21 @@ const output = ts.transpileModule(compileScript(descriptor, { id: 'pipeline-auto
 
 function harness(t, { active = false, publicMode = false } = {}) {
   const requests = [], messages = [], dialogs = [], timers = new Map()
+  const navigations = [], storage = { project: 'project-a' }
+  const auth = vue.reactive({ user: { id: 'operator', project_id: 'project-a', permissions: ['workflow.read', 'workflow.update'], is_superuser: false }, canAny(codes) { return codes.some(code => this.user.permissions.includes(code)) } })
   let timerID = 0, now = 0
   const modules = {
     vue: { ...vue, onMounted() {}, onBeforeUnmount() {} },
     'vue-router': {
       useRoute: () => ({ query: publicMode ? { template: 'flow' } : { application: 'api', workflow: 'flow' } }),
-      useRouter: () => ({}), onBeforeRouteLeave() {}, onBeforeRouteUpdate() {},
+      useRouter: () => ({ replace: async location => navigations.push(location) }), onBeforeRouteLeave() {}, onBeforeRouteUpdate() {},
     },
     'ant-design-vue': { Modal: { confirm: options => dialogs.push(options) }, message: Object.fromEntries(['success', 'warning', 'error'].map(level => [level, value => messages.push({ level, value })])) },
-    '@/stores/auth': { useAuthStore: () => ({ user:{id:'operator',project_id:'project-a',permissions:['workflow.read','workflow.update'],is_superuser:false},canAny:()=>true }) },
-    '@/api/client': { __esModule: true, default: { put: (path, payload) => new Promise((resolve, reject) => requests.push({ path, payload, resolve, reject })) } },
+    '@/stores/auth': { useAuthStore: () => auth },
+    '@/api/client': { __esModule: true, default: {
+      put: (path, payload) => new Promise((resolve, reject) => requests.push({ path, payload, resolve, reject })),
+      get: (path, options) => new Promise((resolve, reject) => requests.push({ method: 'get', path, options, resolve, reject })),
+    } },
     '@/api/resources': { apiErrorMessage: error => error.response?.data?.message || '保存失败' },
   }
   const fakeWindow = {
@@ -30,7 +35,7 @@ function harness(t, { active = false, publicMode = false } = {}) {
     clearTimeout: id => timers.delete(id),
   }
   const module = { exports: {} }
-  new Function('require','module','exports','window','localStorage',output)(name=>modules[name]||{},module,module.exports,fakeWindow,{getItem:key=>key==='edo.project'?'project-a':null})
+  new Function('require','module','exports','window','localStorage',output)(name=>modules[name]||{},module,module.exports,fakeWindow,{getItem:key=>key==='edo.project'?storage.project:null})
   const scope = vue.effectScope()
   const state = scope.run(() => module.exports.default.setup({}, { expose() {} }))
   const initial = {
@@ -66,8 +71,71 @@ function harness(t, { active = false, publicMode = false } = {}) {
     now = target
     await flush()
   }
-  return { state, requests, messages, dialogs, timers, succeed, advance, flush }
+  return { state, requests, messages, dialogs, timers, succeed, advance, flush, auth, storage, navigations }
 }
+
+function addDraft(state) {
+  const draft = { ...JSON.parse(JSON.stringify(state.workflow.value)), id: 'other-draft', name: '其他草稿', is_active: false }
+  state.templates.value.push(draft)
+  return draft
+}
+
+test('公共编辑器的已启用与草稿流水线均可选择，切换草稿走正常加载', async t => {
+  const { state, requests, navigations, flush } = harness(t, { publicMode: true, active: true })
+  const draft = addDraft(state)
+  assert.deepEqual(state.templateOptions.value.map(option => ({ id: option.value, disabled: Boolean(option.disabled) })), [{ id: 'flow', disabled: false }, { id: draft.id, disabled: false }])
+  const choosing = state.chooseTemplate(draft.id)
+  await flush()
+  assert.equal(requests.length, 1)
+  assert.equal(requests[0].method, 'get')
+  assert.equal(requests[0].path, '/workflow-templates/' + draft.id)
+  assert.equal(requests[0].options.headers['X-EDO-Project-ID'], 'project-a')
+  requests[0].resolve({ data: { workflow_template: draft, issues: [] } })
+  await choosing
+  assert.equal(state.workflow.value.id, draft.id)
+  assert.equal(state.selectedTemplateID.value, draft.id)
+  assert.equal(state.dirty.value, false)
+  assert.equal(state.canEdit.value, true)
+  assert.deepEqual(navigations, [{ query: { template: draft.id } }])
+})
+
+test('没有查看权限、项目范围失效或应用模式时不能切换公共流水线', async t => {
+  for (const reason of ['permission', 'project', 'application']) {
+    const { state, requests, auth, storage, navigations } = harness(t, { publicMode: reason !== 'application' })
+    const draft = addDraft(state)
+    if (reason === 'permission') auth.user.permissions = []
+    if (reason === 'project') storage.project = 'project-b'
+    await state.chooseTemplate(draft.id)
+    assert.equal(requests.length, 0, reason)
+    assert.equal(navigations.length, 0, reason)
+  }
+})
+
+test('切换公共草稿仍须处理未保存更改，取消保留、确认放弃后才加载', async t => {
+  const { state, requests, dialogs, navigations, flush } = harness(t, { publicMode: true, active: true })
+  const draft = addDraft(state)
+  state.workflow.value.name = '尚未保存的当前名称'
+  state.updateWorkflowMeta()
+  const canceled = state.chooseTemplate(draft.id)
+  await flush()
+  assert.equal(dialogs.length, 1)
+  assert.equal(requests.length, 0)
+  dialogs[0].onCancel()
+  await canceled
+  assert.equal(state.workflow.value.name, '尚未保存的当前名称')
+  assert.equal(state.dirty.value, true)
+  assert.equal(navigations.length, 0)
+  const confirmed = state.chooseTemplate(draft.id)
+  await flush()
+  dialogs[1].onOk()
+  await flush()
+  assert.equal(requests.length, 1)
+  assert.equal(state.workflow.value.id, 'flow')
+  requests[0].resolve({ data: { workflow_template: draft, issues: [] } })
+  await confirmed
+  assert.equal(state.workflow.value.id, draft.id)
+  assert.equal(state.dirty.value, false)
+})
 
 test('草稿自动保存保留代码源面板、原草稿对象与未格式化输入，控件保持可编辑', async t => {
   const { state, requests, succeed } = harness(t)
