@@ -154,13 +154,21 @@ func TestWebImageUsesIndependentNonRootRuntime(t *testing.T) {
 	if len(parts) != 2 {
 		t.Fatal("Web 必须使用版本固定的 NGINX 官方稳定镜像")
 	}
-	for _, required := range []string{"FROM node:24.16.0-bookworm-slim AS web-builder", "RUN npm ci", "RUN npm run build", "COPY web/nginx.conf /etc/nginx/nginx.conf", "COPY --from=web-builder /src/web/dist/ /usr/share/nginx/html/", "USER 101:101", "ENTRYPOINT [\"nginx\"]", "CMD [\"-g\", \"daemon off;\"]"} {
+	for _, required := range []string{"FROM node:24.16.0-bookworm-slim AS web-builder", "RUN npm ci", "RUN npm run build", "COPY --chmod=0444 web/nginx.conf /etc/nginx/nginx.conf", "COPY --from=web-builder /src/web/dist/ /usr/share/nginx/html/", "RUN chmod -R a=rX /usr/share/nginx/html", "USER 101:101", "ENTRYPOINT [\"nginx\"]", "CMD [\"-g\", \"daemon off;\"]"} {
 		if !strings.Contains(dockerfile, required) {
 			t.Errorf("缺少 Web 镜像隔离契约: %s", required)
 		}
 	}
 	if strings.Contains(parts[1], "/app/edo") || strings.Contains(parts[1], "npm") || strings.Contains(parts[1], "node:") {
 		t.Fatal("Web 运行镜像不得携带后端二进制或 Node 运行时")
+	}
+	runtime := parts[1]
+	configCopy := strings.Index(runtime, "COPY --chmod=0444 web/nginx.conf /etc/nginx/nginx.conf")
+	assetsCopy := strings.Index(runtime, "COPY --from=web-builder /src/web/dist/ /usr/share/nginx/html/")
+	publicPermissions := strings.Index(runtime, "RUN chmod -R a=rX /usr/share/nginx/html")
+	nonRoot := strings.Index(runtime, "USER 101:101")
+	if configCopy < 0 || assetsCopy < 0 || publicPermissions < 0 || nonRoot < 0 || configCopy >= nonRoot || assetsCopy >= publicPermissions || publicPermissions >= nonRoot {
+		t.Fatal("Web 运行层必须先复制公开资源并设置只读可访问权限，再切换非 root 用户")
 	}
 }
 
