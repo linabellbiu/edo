@@ -297,3 +297,13 @@ test('sudo 密码使用有标签的可隐藏密码控件，只在新增或替换
   }
   assert.match(messages['zh-CN'].hostForm.installSudoHint, /私钥.*sudo 密码.*免密 sudo/)
 })
+
+test('主机抽屉宽度随视口收缩并保留桌面640px上限', () => {
+  const { descriptor, errors } = parse(readFileSync(new URL('../src/components/HostDrawer.vue', import.meta.url), 'utf8'))
+  assert.deepEqual(errors, [])
+  const drawer = descriptor.template.ast.children.find(node => node.type === 1 && node.tag === 'a-drawer')
+  assert.ok(drawer)
+  const width = drawer.props.find(prop => prop.type === 6 && prop.name === 'width')?.value?.content
+  assert.equal(width, 'min(640px, 100vw)')
+  assert.deepEqual(compileTemplate({ source: descriptor.template.content, filename: 'HostDrawer.vue', id: 'host-responsive-width' }).errors, [])
+})

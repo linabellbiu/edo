@@ -288,7 +288,7 @@ onBeforeUnmount(clearCredentials)
   <a-drawer
     :open="open"
     :title="isLocal ? '编辑本地主机' : editing ? '编辑主机' : '添加主机'"
-    width="640"
+    width="min(640px, 100vw)"
     :mask-closable="!testing && !submitting"
     @close="close"
   >
