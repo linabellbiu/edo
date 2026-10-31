@@ -192,6 +192,14 @@ function planMutationBlocked(plan: ReleasePlanItem) {
   return Boolean(props.executingPlanIds?.includes(plan.id)) || plan.latest_execution?.status === 'pending' || plan.latest_execution?.status === 'running'
 }
 
+function editPlan(id: string) {
+  if (!props.canUpdate) return
+  const currentPlan = props.plans.find(plan => plan.id === id)
+  if (!currentPlan || planMutationBlocked(currentPlan) || props.mutatingPlanID === currentPlan.id) return
+  detailOpen.value = false
+  emit('edit', currentPlan.id)
+}
+
 function canExecutePlan(plan: ReleasePlanItem) {
   const applications = planApplications(plan)
   return plan.is_active !== false && !planMutationBlocked(plan) && plan.status !== 'canceled' && applications.length > 0 && manualApplicationCount(plan) === applications.length
@@ -332,7 +340,7 @@ function sourceMeta(item: ReleaseGroupApplication) {
           <a-button size="small" @click="openDetails(plan)">{{ t('resourceList.details') }}</a-button>
           <a-button v-if="canExecute && canExecutePlan(plan)" size="small" @click="emit('execute', plan.id)"><Play :size="14" />{{ t('releasePlan.execute') }}</a-button>
           <template #more>
-            <a-menu-item v-if="canUpdate && !planMutationBlocked(plan)" @click="emit('edit', plan.id)">{{ t('releasePlan.actions.edit') }}</a-menu-item>
+            <a-menu-item v-if="canUpdate && !planMutationBlocked(plan)" :disabled="mutatingPlanID === plan.id" @click="editPlan(plan.id)">{{ t('releasePlan.actions.edit') }}</a-menu-item>
             <a-menu-item v-if="canUpdate" :disabled="mutatingPlanID === plan.id" @click="emit('toggle', plan.id, plan.is_active === false)">{{ plan.is_active === false ? t('releasePlan.actions.enable') : t('releasePlan.actions.disable') }}</a-menu-item>
             <a-menu-divider v-if="canDelete" />
             <a-menu-item v-if="canDelete && !planMutationBlocked(plan)" danger :disabled="mutatingPlanID === plan.id" @click="emit('remove', plan.id)">{{ t('releasePlan.actions.remove') }}</a-menu-item>
@@ -351,7 +359,7 @@ function sourceMeta(item: ReleaseGroupApplication) {
   <ResourceDetailDrawer v-model:open="detailOpen" :title="detailPlan ? planTitle(detailPlan) : ''">
     <template #actions>
       <a-button v-if="detailPlan && canExecute && canExecutePlan(detailPlan)" size="small" type="primary" @click="emit('execute', detailPlan.id)"><Play :size="14" />{{ t('releasePlan.execute') }}</a-button>
-      <a-button v-if="detailPlan && canUpdate && !planMutationBlocked(detailPlan)" size="small" @click="emit('edit', detailPlan.id)">{{ t('releasePlan.actions.edit') }}</a-button>
+      <a-button v-if="detailPlan && canUpdate && !planMutationBlocked(detailPlan)" size="small" :disabled="mutatingPlanID === detailPlan.id" @click="editPlan(detailPlan?.id || '')">{{ t('releasePlan.actions.edit') }}</a-button>
       <span v-if="detailPlan" class="resource-secondary">{{ groupMode(primaryGroup(detailPlan)?.mode || 'parallel') }} · {{ failurePolicy(primaryGroup(detailPlan)?.failure_policy || 'stop') }}</span>
     </template>
     <section v-for="plan in detailPlan ? [detailPlan] : []" :key="plan.id" :id="`release-plan-${plan.id}`" :aria-label="planTitle(plan)" class="resource-detail-section" :class="{ 'is-current': selectedPlanID === plan.id }">
