@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"gorm.io/gorm"
+
 	"edo/internal/kube"
 	"edo/internal/model"
 	"edo/internal/sshclient"
@@ -118,6 +120,38 @@ func TestCheckCancellationHasNoInstallationSideEffects(t *testing.T) {
 		t.Fatalf("取消未停止独立检测: report=%+v err=%v", report, err)
 	}
 	assertCheckReadOnly(t, f)
+}
+
+func TestCheckCancellationBeforeRemoteProbePreservesCause(t *testing.T) {
+	for _, stage := range []string{"进入前", "hosts", "host_capabilities"} {
+		t.Run(stage, func(t *testing.T) {
+			f := newFixture(t)
+			ctx, cancel := context.WithCancel(f.ctx)
+			defer cancel()
+			cancellations := 0
+			const callback = "test:k3s_check_cancel_before_remote_probe"
+			if err := f.db.Callback().Query().Before("gorm:query").Register(callback, func(tx *gorm.DB) {
+				if tx.Statement.Table == stage {
+					cancellations++
+					cancel()
+				}
+			}); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = f.db.Callback().Query().Remove(callback) })
+			if stage == "进入前" {
+				cancel()
+			}
+			report, err := f.service.Check(ctx, f.actor.ID, f.input())
+			if report != nil || !errors.Is(err, context.Canceled) || f.transport.reads != 0 {
+				t.Fatalf("远端读取前取消应保留取消原因且不返回报告: report=%+v err=%v reads=%d", report, err, f.transport.reads)
+			}
+			if stage != "进入前" && cancellations != 1 {
+				t.Fatalf("未在指定主机查询阶段准确取消: stage=%s count=%d", stage, cancellations)
+			}
+			assertCheckReadOnly(t, f)
+		})
+	}
 }
 
 func TestCheckRemoteReadFailureReturnsSafeReportWithoutWrites(t *testing.T) {

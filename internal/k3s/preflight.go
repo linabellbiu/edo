@@ -43,7 +43,7 @@ func check(id, name, status, message string) PreflightCheck {
 }
 
 // Check 只读取安装要求与主机状态，不创建计划、任务、主机锁或加入凭据。
-func (s *Service) Check(ctx context.Context, actorID string, input Input) (_ *PreflightReport, resultErr error) {
+func (s *Service) Check(ctx context.Context, actorID string, input Input) (resultReport *PreflightReport, resultErr error) {
 	ctx, cancel := context.WithTimeout(ctx, PreflightTimeout)
 	defer cancel()
 	action := "invalid"
@@ -51,6 +51,10 @@ func (s *Service) Check(ctx context.Context, actorID string, input Input) (_ *Pr
 		action = input.Action
 	}
 	defer func() {
+		// 查询或复核期间取消时保留真正原因，不返回可能已经失效的报告。
+		if err := ctx.Err(); err != nil {
+			resultReport, resultErr = nil, err
+		}
 		if resultErr != nil {
 			slog.ErrorContext(ctx, "安装前检测失败", "operation", "k3s_preflight_check", "actor_id", actorID, "action", action, "err", resultErr)
 		}
