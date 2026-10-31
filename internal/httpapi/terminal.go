@@ -111,9 +111,10 @@ func (h terminalHandler) open(
 		return
 	}
 	closeCode := websocket.CloseNormalClosure
+	closeMessage := "终端会话已结束"
 	defer func() {
 		_ = connection.WriteControl(websocket.CloseMessage,
-			websocket.FormatCloseMessage(closeCode, "终端会话已结束"), time.Now().Add(2*time.Second))
+			websocket.FormatCloseMessage(closeCode, closeMessage), time.Now().Add(2*time.Second))
 		_ = connection.Close()
 	}()
 
@@ -164,11 +165,17 @@ func (h terminalHandler) open(
 	bridgeErr := h.bridge(sessionContext, connection, session)
 	duration := time.Since(started)
 	cancel()
-	if closeErr := session.Close(); closeErr != nil {
+	closeErr := session.Close()
+	if closeErr != nil {
 		h.logger.Warn("结束容器终端时释放资源失败", "operation", "terminal_close_resource", "request_id", requestIDFrom(c), "session_id", sessionID, "err", closeErr)
 	}
 	sessionClosed = true
 	result := model.AuditSucceeded
+	if closeErr != nil {
+		result = model.AuditFailed
+		closeCode = websocket.CloseInternalServerErr
+		closeMessage = "终端资源释放失败，请联系管理员"
+	}
 	if bridgeErr != nil && !isExpectedTerminalClose(bridgeErr) {
 		closeCode = websocket.CloseInternalServerErr
 		result = model.AuditFailed

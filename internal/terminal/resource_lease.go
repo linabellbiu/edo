@@ -10,10 +10,11 @@ import (
 // resourceSession 固定运行时及容器身份，不把原连接复用到同名新资源。
 type resourceSession struct {
 	Session
-	ctx    context.Context
-	cancel context.CancelFunc
-	check  func(context.Context) error
-	once   sync.Once
+	ctx      context.Context
+	cancel   context.CancelFunc
+	check    func(context.Context) error
+	once     sync.Once
+	closeErr error
 }
 
 func guardResourceSession(ctx context.Context, session Session, check func(context.Context) error, interval time.Duration) Session {
@@ -60,7 +61,6 @@ func (s *resourceSession) Resize(ctx context.Context, size Size) error {
 	return s.Session.Resize(ctx, size)
 }
 func (s *resourceSession) Close() error {
-	var err error
-	s.once.Do(func() { s.cancel(); err = s.Session.Close() })
-	return err
+	s.once.Do(func() { s.cancel(); s.closeErr = s.Session.Close() })
+	return s.closeErr
 }
