@@ -105,6 +105,7 @@ func registerTerminalFiles(protected *gin.RouterGroup, deps Dependencies) {
 func (h terminalFileHandler) prepare(c *gin.Context, permissions ...string) (terminalfiles.Backend, func(), bool) {
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 2*time.Minute)
 	body := c.Request.Body
+	interruptBody := c.Request.Method == http.MethodPost && body != nil && body != http.NoBody
 	c.Request = c.Request.WithContext(ctx)
 	select {
 	case terminalFileSlots <- struct{}{}:
@@ -150,10 +151,10 @@ func (h terminalFileHandler) prepare(c *gin.Context, permissions ...string) (ter
 	controller := http.NewResponseController(c.Writer)
 	interrupted := make(chan struct{})
 	target, requestID := h.key(c), requestIDFrom(c)
-	// net/http 的 Close 会等待正在读取的请求体，先用读取截止时间解除阻塞。
+	// 只中断上传正在读取的真实请求体；读取接口不触碰连接的读取截止时间。
 	stop := context.AfterFunc(ctx, func() {
 		defer close(interrupted)
-		if body != nil {
+		if interruptBody {
 			if err := controller.SetReadDeadline(time.Now()); err != nil && !errors.Is(err, http.ErrNotSupported) {
 				h.logger.Warn("中断终端文件请求读取失败", "operation", "terminal_file_interrupt", "target", target, "request_id", requestID, "err", err)
 			}
@@ -422,6 +423,10 @@ func (h terminalFileHandler) edit(c *gin.Context) {
 }
 
 func (h terminalFileHandler) fail(c *gin.Context, err error) {
+	// 真实请求体被中断后不能让上游复用基础 context 已失效的 HTTP/1 连接。
+	if c.Request.ProtoMajor == 1 && c.Request.Context().Err() != nil && c.Request.Body != nil && c.Request.Body != http.NoBody {
+		c.Header("Connection", "close")
+	}
 	h.logger.Warn("终端文件操作失败", "operation", "terminal_file_operation", "target", h.key(c), "request_id", requestIDFrom(c), "err", err)
 	status, code, message := http.StatusBadGateway, "terminal_file_failed", "文件操作失败，请检查目标状态或权限"
 	switch {
