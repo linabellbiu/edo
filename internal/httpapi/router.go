@@ -123,6 +123,7 @@ func NewRouter(deps Dependencies) *gin.Engine {
 
 	protected := api.Group("")
 	protected.Use(requireAuth(deps.Accounts, deps.Sessions, deps.Logger, deps.AuthConfig.CookieName))
+	protected.Use(auditRejectedProjectScope(deps.Audits, deps.Logger))
 	protected.Use(projectScope(deps.Access, deps.Logger))
 	registerSQLChangeRoutes(protected, deps)
 	projectAPI := projectHandler{service: deps.Access, logger: deps.Logger}

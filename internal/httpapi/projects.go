@@ -50,6 +50,7 @@ func projectScope(service *access.Service, logger *slog.Logger) gin.HandlerFunc 
 			id = c.Query("project_id")
 		}
 		if id == "" {
+			markProjectScopeRejection(c, "", "project_required")
 			logger.Warn("业务请求缺少项目范围", "operation", "project_scope", "user_id", user.ID)
 			writeError(c, 400, "project_required", "请先选择项目空间")
 			c.Abort()
@@ -58,10 +59,11 @@ func projectScope(service *access.Service, logger *slog.Logger) gin.HandlerFunc 
 		project, err := service.ResolveProject(c.Request.Context(), user, id)
 		if err != nil || !project.IsActive {
 			if platformContext {
-				logger.Debug("平台操作不采用不可访问的项目上下文", "operation", "platform_scope", "project_id", id, "err", err)
+				logger.Debug("平台操作不采用不可访问的项目上下文", "operation", "platform_scope", "project_id", projectAuditUUID(id), "err", err)
 				return
 			}
-			logger.Warn("项目访问被拒绝", "operation", "project_scope", "user_id", user.ID, "project_id", id, "err", err)
+			markProjectScopeRejection(c, id, "project_denied")
+			logger.Warn("项目访问被拒绝", "operation", "project_scope", "user_id", user.ID, "project_id", projectAuditUUID(id), "err", err)
 			writeError(c, http.StatusForbidden, "project_denied", "项目不可用或没有访问权限")
 			c.Abort()
 			return
