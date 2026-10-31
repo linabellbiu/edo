@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref, watch } from "vue";
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { useI18n } from "vue-i18n";
 import { Modal, message } from "ant-design-vue";
@@ -89,6 +89,14 @@ const canConfig = computed(() => auth.canAny(["config.read"])),
   canUpdate = computed(() => auth.canAny(["config.update"])),
   canExecute = computed(() => auth.canAny(["config.execute"])),
   canIdentity = computed(() => auth.canAny(["identity.read"]));
+let directoryRevision = 0, directoryReadRevision = 0, disposed = false;
+const directoryContext = computed(() => JSON.stringify([auth.user?.id, auth.user?.department_id, auth.user?.project_id, auth.authorizationState, canConfig.value, canUpdate.value]));
+watch(directoryContext, () => {
+  directoryRevision++;
+  runtimeDirectories.value = null;
+  if (!disposed && canConfig.value) void loadRuntimeDirectories();
+}, { flush: "sync" });
+onBeforeUnmount(() => { disposed = true; directoryRevision++; runtimeDirectories.value = null; });
 const sections = computed(() => [
   { key: "account", label: "修改密码" },
   ...(canConfig.value
@@ -125,8 +133,25 @@ const filteredBuiltinVariables = computed(() => {
 function select(value: string) {
   void router.replace({ query: value === "account" ? {} : { section: value } });
 }
-async function load() {
-  if (!canConfig.value) return;
+function isCurrentDirectoryRead(revision: number, read: number) {
+  return !disposed && revision === directoryRevision && read === directoryReadRevision && canConfig.value;
+}
+async function loadRuntimeDirectories() {
+  if (!canConfig.value || disposed) return;
+  const read = ++directoryReadRevision, revision = directoryRevision;
+  loading.value = true;
+  try {
+    const response = await client.get<RuntimeDirectorySetting>("/settings/runtime-directories");
+    if (isCurrentDirectoryRead(revision, read)) runtimeDirectories.value = response.data;
+  } catch (error) {
+    if (isCurrentDirectoryRead(revision, read)) message.error(apiErrorMessage(error));
+  } finally {
+    if (read === directoryReadRevision) loading.value = false;
+  }
+}
+async function load(directoryDraft?: RuntimeDirectorySetting, expectedVersion = directoryDraft?.version) {
+  if (!canConfig.value || disposed) return;
+  const read = ++directoryReadRevision, revision = directoryRevision;
   loading.value = true;
   try {
     const [a, b, c, d, e] = await Promise.all([client.get<WebhookSetting>("/settings/external-git-webhook"), client.get<LockoutSetting>("/settings/login-lockout"), client.get<RuntimeLoggingSetting>("/settings/runtime-logging"), client.get<RetentionSetting>("/settings/log-retention"), client.get<RuntimeDirectorySetting>("/settings/runtime-directories")]);
@@ -134,11 +159,21 @@ async function load() {
     lockout.value = b.data;
     runtimeLogging.value = c.data;
     retention.value = d.data;
-    runtimeDirectories.value = e.data;
+    if (isCurrentDirectoryRead(revision, read) && (!directoryDraft || runtimeDirectories.value === directoryDraft)) {
+      // 失败回读更新实际用量；草稿仍绑定原版本，只有显式刷新才接纳新配置。
+      runtimeDirectories.value = directoryDraft ? {
+        ...e.data,
+        workspace_directory: directoryDraft.workspace_directory,
+        build_directory: directoryDraft.build_directory,
+        cache_directory: directoryDraft.cache_directory,
+        local_artifact_directory: directoryDraft.local_artifact_directory,
+        version: expectedVersion ?? directoryDraft.version,
+      } : e.data;
+    }
   } catch (error) {
-    message.error(apiErrorMessage(error));
+    if (isCurrentDirectoryRead(revision, read)) message.error(apiErrorMessage(error));
   } finally {
-    loading.value = false;
+    if (read === directoryReadRevision) loading.value = false;
   }
 }
 async function loadBuiltinVariables(force = false) {
@@ -154,6 +189,7 @@ async function loadBuiltinVariables(force = false) {
 }
 function refreshActiveSection() {
   if (active.value === "variables") void loadBuiltinVariables(true);
+  else if (active.value === "storage") void loadRuntimeDirectories();
   else void load();
 }
 async function toggle(kind: "webhook" | "lockout") {
@@ -240,24 +276,28 @@ async function saveRuntimeLogging() {
   }
 }
 async function saveRuntimeDirectories() {
-  if (!runtimeDirectories.value) return;
+  const draft = runtimeDirectories.value;
+  if (!draft || !canConfig.value || !canUpdate.value || disposed || saving.value === "runtime-directories") return;
+  const version = draft.version, revision = directoryRevision, read = directoryReadRevision;
+  const current = () => !disposed && revision === directoryRevision && canConfig.value && canUpdate.value;
   saving.value = "runtime-directories";
   try {
-    runtimeDirectories.value = (
-      await client.put<RuntimeDirectorySetting>("/settings/runtime-directories", {
-        workspace_directory: runtimeDirectories.value.workspace_directory,
-        build_directory: runtimeDirectories.value.build_directory,
-        cache_directory: runtimeDirectories.value.cache_directory,
-        local_artifact_directory: runtimeDirectories.value.local_artifact_directory,
-        expected_version: runtimeDirectories.value.version,
-      })
-    ).data;
+    const response = await client.put<RuntimeDirectorySetting>("/settings/runtime-directories", {
+      workspace_directory: draft.workspace_directory,
+      build_directory: draft.build_directory,
+      cache_directory: draft.cache_directory,
+      local_artifact_directory: draft.local_artifact_directory,
+      expected_version: version,
+    });
+    if (!current()) return;
+    if (read === directoryReadRevision) runtimeDirectories.value = response.data;
     message.success("存储目录已立即生效");
   } catch (error) {
+    if (!current()) return;
     message.error(apiErrorMessage(error));
-    await load();
+    if (read === directoryReadRevision && runtimeDirectories.value === draft) await load(draft, version);
   } finally {
-    saving.value = "";
+    if (saving.value === "runtime-directories") saving.value = "";
   }
 }
 function formatBytes(bytes: number) {

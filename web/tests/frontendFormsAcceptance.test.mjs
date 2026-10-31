@@ -48,7 +48,7 @@ test('目录清理需要执行权限与确认，失败拒绝确认Promise，成�
 })
 
 test('运行日志及四类目录保存携带版本，日志配置不混入数据库或凭据',async t=>{
-  const h=settings(t,{codes:['config.update']})
+  const h=settings(t,{codes:['config.read','config.update']})
   h.state.runtimeLogging.value={level:'warn',http_access_enabled:false,file_enabled:true,file_directory:'/tmp/edo-logs',max_file_size_mb:10,compress_after_days:2,version:7}
   await h.state.saveRuntimeLogging()
   assert.deepEqual(writes(h)[0].body,{level:'warn',http_access_enabled:false,file_enabled:true,file_directory:'/tmp/edo-logs',max_file_size_mb:10,compress_after_days:2,expected_version:7})
