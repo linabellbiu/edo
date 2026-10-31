@@ -78,6 +78,12 @@ const webhook = ref<WebhookSetting | null>(null),
   variableSearch = ref(""),
   variableKind = ref("all");
 const password = reactive({ current: "", next: "", confirm: "" });
+const lockoutDuration = computed(() => {
+  const seconds = lockout.value?.window_seconds;
+  if (typeof seconds !== "number" || !Number.isSafeInteger(seconds) || seconds <= 0) return "—";
+  const minutes = Math.floor(seconds / 60), remainder = seconds % 60;
+  return minutes === 0 ? `${seconds} 秒` : remainder === 0 ? `${minutes} 分钟` : `${minutes} 分钟 ${remainder} 秒`;
+});
 const canConfig = computed(() => auth.canAny(["config.read"])),
   canViewVariables = computed(() => auth.canAny(["config.read", "application.read","workflow.read","build_plan.read","deployment_plan.read"])),
   canUpdate = computed(() => auth.canAny(["config.update"])),
@@ -408,7 +414,7 @@ onMounted(() => {
           </div>
           <div>
             <dt>锁定时间</dt>
-            <dd>{{ Math.round((lockout?.window_seconds || 900) / 60) }} 分钟</dd>
+            <dd>{{ lockoutDuration }}</dd>
           </div>
           <div>
             <dt>计数维度</dt>
