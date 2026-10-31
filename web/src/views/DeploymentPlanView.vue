@@ -469,6 +469,14 @@ function resourceViewHref(path: string, query: Record<string, string>) {
   return router.resolve({ path, query }).href
 }
 
+function beginEdit(plan: DeploymentPlan | undefined) {
+  if (!canUpdate.value || !plan) return
+  const currentPlan = plans.value.find(item => item.id === plan.id)
+  if (!currentPlan) return
+  detailOpen.value = false
+  edit(currentPlan)
+}
+
 function edit(plan: DeploymentPlan) {
   for (const kind of kindOptions) delete deploymentDrafts[kind.value]
   const target = targetOf(plan)
@@ -964,7 +972,7 @@ onBeforeUnmount(() => { disposed = true; resetMutation(); window.removeEventList
           </div>
           <ResourceRowActions v-else-if="column.key === 'actions'" :more="canUpdate || canDelete" :loading="mutatingID === plan.id">
             <a-button size="small" @click="openDetails(plan)">{{ t('resourceList.details') }}</a-button>
-            <a-button v-if="canUpdate" size="small" @click="edit(plan)">{{ t('planList.edit') }}</a-button>
+            <a-button v-if="canUpdate" size="small" @click="beginEdit(plan)">{{ t('planList.edit') }}</a-button>
             <template #more>
               <a-menu-item v-if="canDefaults && canUpdate && auth.canAny(['workflow.update']) && plan.is_active" @click="openDefaults(plan)">{{ t('delivery.setDefault') }}</a-menu-item>
               <a-menu-item v-if="canUpdate" :disabled="mutatingID === plan.id" @click="confirmPlanStatus(plan)">{{ plan.is_active ? t('planList.disable') : t('planList.enable') }}</a-menu-item>
@@ -976,7 +984,7 @@ onBeforeUnmount(() => { disposed = true; resetMutation(); window.removeEventList
     </div>
 
     <ResourceDetailDrawer v-model:open="detailOpen" :title="detailPlan?.name">
-      <template #actions><a-tag v-if="detailPlan" :color="detailPlan.is_active ? 'success' : 'default'">{{ detailPlan.is_active ? t('planList.enabled') : t('planList.disabled') }}</a-tag><a-button v-if="detailPlan && canUpdate" size="small" @click="edit(detailPlan)">{{ t('planList.edit') }}</a-button></template>
+      <template #actions><a-tag v-if="detailPlan" :color="detailPlan.is_active ? 'success' : 'default'">{{ detailPlan.is_active ? t('planList.enabled') : t('planList.disabled') }}</a-tag><a-button v-if="detailPlan && canUpdate" size="small" @click="beginEdit(detailPlan)">{{ t('planList.edit') }}</a-button></template>
       <section v-if="detailPlan" class="resource-detail-section">
         <h4>{{ t('resourceList.configuration') }}</h4>
         <dl class="resource-facts">
