@@ -26,7 +26,8 @@ const healthStatus = computed(() => {
   if (system.ready?.status === 'degraded') return { color: 'warning', label: 'dashboard.degraded' }
   return { color: 'error', label: 'dashboard.failed' }
 })
-const points = computed(() => history.value.map((value, index) => value === null ? null : { x: (index / Math.max(1, history.value.length - 1)) * 100, y: 92 - value * .72 }))
+const chartY = (value: number) => 80 - value * .8
+const points = computed(() => history.value.map((value, index) => value === null ? null : { x: (index / Math.max(1, history.value.length - 1)) * 100, y: chartY(value) }))
 const segments = computed(() => {
   const result: Array<Array<{ x: number; y: number }>> = []
   let segment: Array<{ x: number; y: number }> = []
@@ -78,11 +79,11 @@ onBeforeUnmount(() => { disposed = true; window.clearInterval(timer) })
     <section class="trend-card vben-card">
       <div class="card-heading"><div><strong>服务状态趋势</strong><span>每 15 秒检查一次，仅显示当前页面记录</span></div><a-tag :color="healthStatus.color">{{ t(healthStatus.label) }}</a-tag></div>
       <div class="trend-chart">
-        <div v-for="line in 5" :key="line" class="grid-line" :style="{ top: `${line * 16}%` }"><span>{{ 100 - line * 20 }}%</span></div>
+        <div v-for="line in 5" :key="line" class="grid-line" :style="{ top: `${chartY(100 - line * 20)}%` }"><span>{{ 100 - line * 20 }}%</span></div>
         <svg viewBox="0 0 100 100" preserveAspectRatio="none" aria-label="服务可用性趋势">
           <defs><linearGradient id="availability-area" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#6f8cff" stop-opacity=".5"/><stop offset="1" stop-color="#6f8cff" stop-opacity=".04"/></linearGradient></defs>
           <g v-for="(segment, index) in segments" :key="index">
-            <polygon v-if="segment.length > 1" :points="`${segment[0]?.x},100 ${segment.map(point => `${point.x},${point.y}`).join(' ')} ${segment[segment.length - 1]?.x},100`" fill="url(#availability-area)" />
+            <polygon v-if="segment.length > 1" :points="`${segment[0]?.x},${chartY(0)} ${segment.map(point => `${point.x},${point.y}`).join(' ')} ${segment[segment.length - 1]?.x},${chartY(0)}`" fill="url(#availability-area)" />
             <polyline v-if="segment.length > 1" :points="segment.map(point => `${point.x},${point.y}`).join(' ')" fill="none" stroke="#5b7cfa" stroke-width="1.4" vector-effect="non-scaling-stroke" />
             <circle v-else :cx="segment[0]?.x" :cy="segment[0]?.y" r=".8" fill="#5b7cfa" />
           </g>
