@@ -2,67 +2,83 @@ package terminal
 
 import (
 	"context"
-	"errors"
+	"encoding/hex"
 	"fmt"
+	"log/slog"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/moby/moby/client"
+
+	"edo/internal/terminalwire"
 )
 
-type dockerSession struct {
-	client    *client.Client
-	attach    client.ExecAttachResult
-	execID    string
-	closeOnce sync.Once
-	closeErr  error
-}
-
-func (s *Service) OpenDocker(
-	ctx context.Context,
-	endpointID, containerID, shell string,
-	size Size,
-) (Session, error) {
-	if s == nil || s.docker == nil || strings.TrimSpace(endpointID) == "" || len(containerID) != 64 || !validSize(size) {
+func (s *Service) OpenDocker(ctx context.Context, endpointID, containerID, shell string, size Size) (Session, error) {
+	if s == nil || s.docker == nil || strings.TrimSpace(endpointID) == "" || len(containerID) != 64 || !validSize(size) || s.maxDuration < time.Second || s.maxDuration > 24*time.Hour {
 		return nil, ErrInvalidRequest
 	}
 	command, err := normalizeShell(shell)
 	if err != nil {
 		return nil, err
 	}
+	shell = strings.TrimPrefix(command[0], "/bin/")
 	revision, err := s.docker.TerminalRevision(ctx, endpointID)
 	if err != nil {
 		return nil, err
 	}
-	apiClient, err := s.docker.Client(ctx, endpointID)
+	api, err := s.docker.Client(ctx, endpointID)
 	if err != nil {
 		return nil, fmt.Errorf("创建 Docker 终端客户端失败: %w", err)
 	}
-	inspect, err := apiClient.ContainerInspect(ctx, containerID, client.ContainerInspectOptions{})
+	initial, err := api.ContainerInspect(ctx, containerID, client.ContainerInspectOptions{})
 	if err != nil {
-		apiClient.Close()
+		api.Close()
 		return nil, fmt.Errorf("读取 Docker 容器状态失败: %w", err)
 	}
-	if inspect.Container.ID != containerID || inspect.Container.State == nil || !inspect.Container.State.Running || inspect.Container.State.Paused || inspect.Container.State.Restarting {
-		apiClient.Close()
+	state := initial.Container.State
+	if initial.Container.ID != containerID || state == nil || !state.Running || state.Paused || state.Restarting {
+		api.Close()
 		return nil, ErrTargetNotReady
 	}
-	consoleSize := client.ConsoleSize{Height: uint(size.Rows), Width: uint(size.Columns)}
-	created, err := apiClient.ExecCreate(ctx, containerID, client.ExecCreateOptions{
-		TTY: true, ConsoleSize: consoleSize, AttachStdin: true, AttachStderr: true,
-		AttachStdout: true, Privileged: false, Cmd: command,
-	})
-	if err != nil {
-		apiClient.Close()
-		return nil, fmt.Errorf("创建 Docker 容器终端失败: %w", err)
+	host := initial.Container.HostConfig
+	if host == nil || host.Init == nil || !*host.Init || !host.PidMode.IsPrivate() {
+		slog.WarnContext(ctx, "Docker 目标不满足受控终端运行条件", "operation", "terminal_docker_preflight", "endpoint_id", endpointID, "container_id", containerID)
+		api.Close()
+		return nil, ErrDockerTerminalUnavailable
 	}
-	attached, err := apiClient.ExecAttach(ctx, created.ID, client.ExecAttachOptions{TTY: true, ConsoleSize: consoleSize})
+	// 外层仅传协议，真正的 PTY、尺寸和 Shell 由预装工具维护；不写入 Env 或提权。
+	created, err := api.ExecCreate(ctx, containerID, client.ExecCreateOptions{TTY: false, AttachStdin: true, AttachStderr: true, AttachStdout: true, Privileged: false, Cmd: []string{terminalwire.HelperPath, "controller"}})
 	if err != nil {
-		apiClient.Close()
-		return nil, fmt.Errorf("连接 Docker 容器终端失败: %w", err)
+		api.Close()
+		return nil, fmt.Errorf("创建 Docker 受控终端失败: %w", err)
 	}
-	session := &dockerSession{client: apiClient, attach: attached, execID: created.ID}
+	if _, err := hex.DecodeString(created.ID); err != nil || len(created.ID) != 64 {
+		slog.WarnContext(ctx, "Docker 返回的终端执行身份无效", "operation", "terminal_docker_exec_identity", "container_id", containerID)
+		api.Close()
+		return nil, ErrTargetNotReady
+	}
+	attached, err := api.ExecAttach(ctx, created.ID, client.ExecAttachOptions{TTY: false})
+	if err != nil {
+		slog.WarnContext(ctx, "Docker 受控终端工具无法启动", "operation", "terminal_docker_attach", "container_id", containerID, "exec_id", created.ID, "err", err)
+		api.Close()
+		return nil, ErrDockerTerminalUnavailable
+	}
+	session := newDockerSession(ctx, attached.Conn, attached.Reader, attached.Close, api.Close, func(probe context.Context) (client.ExecInspectResult, error) {
+		return api.ExecInspect(probe, created.ID, client.ExecInspectOptions{})
+	}, created.ID, containerID)
+	if err := session.start(ctx, terminalwire.Message{Type: "start", Shell: shell, Rows: size.Rows, Cols: size.Columns, MaxMS: s.maxDuration.Milliseconds(), LeaseMS: terminalwire.LeaseMS}); err != nil {
+		slog.WarnContext(ctx, "Docker 受控终端工具未就绪", "operation", "terminal_docker_handshake", "endpoint_id", endpointID, "container_id", containerID, "exec_id", created.ID, "err", err)
+		if closeErr := session.Close(); closeErr != nil {
+			slog.WarnContext(context.WithoutCancel(ctx), "打开失败后的受控终端回收未确认", "operation", "terminal_docker_open_cleanup", "exec_id", created.ID, "err", closeErr)
+		}
+		return nil, ErrDockerTerminalUnavailable
+	}
+	opened, err := api.ExecInspect(ctx, created.ID, client.ExecInspectOptions{})
+	if err != nil || opened.ID != created.ID || opened.ContainerID != containerID || !opened.Running {
+		slog.WarnContext(ctx, "打开后的 Docker 终端执行身份不匹配", "operation", "terminal_docker_exec_open_identity", "container_id", containerID, "exec_id", created.ID, "err", err)
+		_ = session.Close()
+		return nil, ErrTargetNotReady
+	}
 	check := func(probe context.Context) error {
 		current, err := s.docker.TerminalRevision(probe, endpointID)
 		if err != nil {
@@ -71,11 +87,12 @@ func (s *Service) OpenDocker(
 		if current != revision {
 			return ErrTargetNotReady
 		}
-		state, err := apiClient.ContainerInspect(probe, containerID, client.ContainerInspectOptions{})
+		now, err := api.ContainerInspect(probe, containerID, client.ContainerInspectOptions{})
 		if err != nil {
 			return err
 		}
-		if state.Container.ID != containerID || state.Container.State == nil || !state.Container.State.Running || state.Container.State.Paused || state.Container.State.Restarting {
+		x := now.Container.State
+		if now.Container.ID != containerID || x == nil || !x.Running || x.Paused || x.Restarting || x.Pid != state.Pid || x.StartedAt != state.StartedAt || now.Container.RestartCount != initial.Container.RestartCount {
 			return ErrTargetNotReady
 		}
 		return nil
@@ -85,35 +102,4 @@ func (s *Service) OpenDocker(
 		return nil, err
 	}
 	return guardResourceSession(ctx, session, check, 2*time.Second), nil
-}
-
-func (s *dockerSession) Read(buffer []byte) (int, error) {
-	return s.attach.Reader.Read(buffer)
-}
-
-func (s *dockerSession) Write(buffer []byte) (int, error) {
-	return s.attach.Conn.Write(buffer)
-}
-
-func (s *dockerSession) Resize(ctx context.Context, size Size) error {
-	if !validSize(size) {
-		return ErrInvalidRequest
-	}
-	_, err := s.client.ExecResize(ctx, s.execID, client.ExecResizeOptions{
-		Height: uint(size.Rows), Width: uint(size.Columns),
-	})
-	if err != nil {
-		return fmt.Errorf("调整 Docker 终端尺寸失败: %w", err)
-	}
-	return nil
-}
-
-func (s *dockerSession) Close() error {
-	s.closeOnce.Do(func() {
-		s.attach.Close()
-		if err := s.client.Close(); err != nil && !errors.Is(err, context.Canceled) {
-			s.closeErr = fmt.Errorf("关闭 Docker 终端客户端失败: %w", err)
-		}
-	})
-	return s.closeErr
 }

@@ -11,8 +11,10 @@ import (
 )
 
 var (
-	ErrInvalidRequest = errors.New("终端连接参数无效")
-	ErrTargetNotReady = errors.New("目标容器当前不可进入终端")
+	ErrInvalidRequest            = errors.New("终端连接参数无效")
+	ErrTargetNotReady            = errors.New("目标容器当前不可进入终端")
+	ErrDockerTerminalUnavailable = errors.New("目标容器不满足受控终端条件，请预装终端工具、启用 init 并使用独立 PID 命名空间")
+	ErrDockerTerminalRelease     = errors.New("终端会话回收未确认，请联系管理员")
 )
 
 type Size struct {

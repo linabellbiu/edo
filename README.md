@@ -279,6 +279,26 @@ docker compose --env-file .env -f deploy/compose.dev.yml down
 
 独立的手动 SQL 变更在“基础设施 → SQL 审计”：提交后自动静态检查，由指定审核人审批，再人工执行或跳过。每项绑定本次发布与目标数据库，成功后不能修改、删除；目前不自动联动流水线。使用方法与权限说明见[手动 SQL 审计](docs/sql-audit.md)。
 
+## Docker 交互终端的可选前置条件
+
+容器列表、日志、文件与发布不需要额外终端工具。要在 EDO 中打开 Docker 交互终端，目标 Linux amd64/arm64 镜像需显式预装本项目的 `edo-terminal-session` v1 工具到 `/usr/local/libexec/edo-terminal-session`（只读、可执行），创建容器时使用 Docker 官方 `--init` 或 Compose 的 `init: true`，保留默认独立 PID 命名空间。EDO 不会自动复制工具、重建已有容器、改启动参数、提权或退回旧的直接 TTY 模式。
+
+按目标架构编译工具，例如：
+
+```bash
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -o edo-terminal-session ./cmd/edo-terminal-session
+```
+
+arm64 镜像将 `GOARCH` 改为 `arm64`，再在自己的应用 Dockerfile 中显式加入：
+
+```dockerfile
+COPY --chmod=0555 edo-terminal-session /usr/local/libexec/edo-terminal-session
+```
+
+工具只在会话期间运行，内部是真实 PTY；关闭、超时或权限失效只回收该会话创建的进程，不向终端灌入 `exit`，不按任意 PID 杀进程，也不停止业务容器。原容器用户、工作目录及环境保留；只有未设置 `TERM` 时为 Shell 补 `xterm-256color`。该模式启用 `no_new_privs` 并跟踪自身子代，不能通过 `sudo`/setuid 提权，不支持 `gdb`/`strace` 等调试类会话和兼容 ABI；目标内核及 LSM/seccomp 不支持时会明确拒绝，不自动降低安全策略。
+
+这不是恶意程序沙箱。同 UID 恶意进程冻结监控进程、宿主机冻结或不可中断内核状态，都可能阻止及时回收；未收到完整回收确认或 Docker Exec 仍未停止时，EDO 会记录失败，不将断线当成释放成功。工具内部 Go 预算不是 RSS 上限，不作未经实测的内存承诺。实现和权限边界见[终端工作区](docs/terminal-workspace.md#docker-受控会话)。
+
 ## 配置与数据
 
 首次启动前选择数据库，默认 SQLite，也可以选择 PostgreSQL 或 MySQL。连接地址、端口和目录在 [.env.example](.env.example) 中都有说明，实际配置保存在 `.env`。宿主机与容器使用的地址分开填写：

@@ -143,7 +143,7 @@ func (h terminalHandler) open(
 	if err != nil {
 		closeCode = websocket.CloseInternalServerErr
 		h.logger.Error("打开终端失败", "operation", "terminal_open", "request_id", requestIDFrom(c), "session_id", sessionID, "target_type", targetType, "resource_id", resourceID, "err", err)
-		h.writeTerminalEvent(connection, terminalEvent{Type: "error", Message: "终端连接失败，请检查目标状态或联系管理员"})
+		h.writeTerminalEvent(connection, terminalEvent{Type: "error", Message: terminalOpenErrorMessage(err)})
 		h.recordTerminalAudit(c, "terminal.open", resourceID, sessionID, model.AuditFailed, metadata, 0)
 		return
 	}
@@ -393,6 +393,13 @@ func requestedSubprotocol(request *http.Request) bool {
 		}
 	}
 	return false
+}
+
+func terminalOpenErrorMessage(err error) string {
+	if errors.Is(err, terminalservice.ErrDockerTerminalUnavailable) {
+		return terminalservice.ErrDockerTerminalUnavailable.Error()
+	}
+	return "终端连接失败，请检查目标状态或联系管理员"
 }
 
 func isExpectedTerminalClose(err error) bool {

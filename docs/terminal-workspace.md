@@ -22,6 +22,22 @@ Docker 容器与 Kubernetes Pod 仍在当前终端抽屉中打开，不提供最
 
 主机连接复用已加密的 SSH 凭据和固定指纹，不自动 sudo，不新增任意宿主机命令 HTTP API，不将交互终端开放为对话助手工具。本地 PTY 只继承必要环境，不继承 EDO 密钥与服务连接变量。主机、项目、成员、身份和权限变化将终止过期连接；终端断线不会自动重连或重放输入。文件读取和传输期间同样持续复核权限及目标身份。
 
+## Docker 受控会话
+
+Docker Engine 的 Exec API 提供创建、启动、尺寸调整和检查，没有单个 Exec 的停止接口；关闭 attach 或 TTY 的写方向不等于 Shell 及其后台进程退出。因此 Docker 终端不再直接运行 `sh`，而要求用户将 `edo-terminal-session` v1 显式预装到目标镜像的 `/usr/local/libexec/edo-terminal-session`，并使用官方 `--init` 与默认独立 PID 命名空间。缺少工具、版本不匹配或运行条件不满足时拒绝连接；EDO 不安装工具、不变更原容器、不加 `SYS_PTRACE` 或 privileged、不关闭 seccomp，也不回退到已知会残留进程的方式。主机、Pod 和文件能力不受此工具前置影响。
+
+外层 Docker Exec 使用非 TTY 的有界 v1 控制协议，官方 Moby `stdcopy` 解复用；工具内部继续复用 `creack/pty` 提供真实 PTY、终端尺寸和作业控制。启动仅允许 `sh/bash/ash`，时长由服务端配置决定，不接受命令、PID 或前端扩大的预算。工具进程中的 Go CPU/内存预算只作用于自身，原用户、工作目录和环境保留；未设置 `TERM` 时才补 `xterm-256color`。控制 ACK 与最多 256 KiB 的待消费终端数据分流，慢读时关闭本会话并继续读取 ACK。输入也使用最多 256 KiB 的队列，前台不读时不能阻塞关闭；队满或写入失败明确记为异常，实际回收后也不会改称正常结束。已消费输入尽力清理，不将终端内容写入日志。
+
+可信 launcher 在释放 Shell 前启用 `no_new_privs`、固定原生 ABI 的小型 seccomp 规则及 `PTRACE_SEIZE` 的子代/执行/退出事件追踪。worker 只处理内核返回的自身子代 TID，不读取系统调用参数、进程内存或终端内容；空闲时阻塞等待事件，不按毫秒轮询。控制连接 EOF、租约、最长时长或关闭使 worker 自行退出，由 `PTRACE_O_EXITKILL` 回收本会话后代，再由 subreaper/官方 init 收尸。用户终端不接收注入的退出命令，撤权后也不另开清理 Exec。
+
+服务端有界清理使用独立于已取消请求的上下文；只有完整输出结束、ACK 明确 released/clean、协议无尾部错误，并且同一容器的准确 Exec 已停止且正常退出，才确认回收。ACK 缺失、退出异常、身份不匹配、inspect 失败或超时均记录失败；不自动改为成功、重放输入或停止业务容器。
+
+此机制不是恶意代码安全沙箱：同 UID 恶意进程可冻结监控进程，宿主机冻结及 D 状态也可能延迟退出。NNP 阻止 sudo/setuid 提权，用户子代的 ptrace 被拒绝，因此不支持 gdb/strace 调试会话及兼容 ABI；内核、Yama/LSM 或 seccomp 不允许该机制时明确失败，不修改目标安全策略。工具 Go 预算不代表 RSS 硬上限，环境继承、并发、作业控制和资源成本仍需按目标实测。
+
+通用能力沿用已有的 Moby（Apache-2.0）、creack/pty（MIT）、x/sys 与 x/net/bpf（BSD-3-Clause），未增加依赖或常驻服务。Docker 官方 API 缺少 Exec stop；tini/dumb-init 只能收尸/转发进程组信号，不能单独覆盖 setsid 与双 fork；外部 strace 增加工具依赖和敏感 syscall 解码；cgroup.kill 需要额外可写委派挂载，因此没有作为默认方案。自有代码仅实现固定会话生命周期、协议和权限边界，维护风险是 ptrace 事件顺序、原生 ABI、内核/LSM 差异及关闭竞态，必须保持源测试与隔离容器真实回归。
+
+依据：[Docker Engine Exec API](https://docs.docker.com/reference/api/engine/version/v1.56/)、[ptrace](https://man7.org/linux/man-pages/man2/ptrace.2.html)、[seccomp](https://man7.org/linux/man-pages/man2/seccomp.2.html)。
+
 ## 文件实现与边界
 
 主机文件使用已有 SSH 连接设施配合 [pkg/sftp](https://github.com/pkg/sftp)（BSD-2-Clause），本地交互终端使用 [creack/pty](https://github.com/creack/pty)（MIT）。二者均为专门的轻量协议库，不引入远程 Agent 或额外常驻组件，不自行实现 PTY/SFTP 协议。已有 xterm、Moby 与 client-go 继续复用。依赖固定版本在 `go.mod`；替换面限制在主机 provider，不改变业务权限与审计协议。维护风险主要是平台 PTY 差异与服务器 SFTP 扩展支持，需继续维持 Linux/macOS 与隔离 SSH/SFTP 回归。
