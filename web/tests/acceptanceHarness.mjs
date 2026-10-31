@@ -35,7 +35,7 @@ export function componentHarness(path, {codes = [], superuser = false, query = {
     'ant-design-vue':{Modal:{confirm:value=>confirmations.push(value),destroyAll:()=>confirmations.splice(0)},message:Object.fromEntries(['error','warning','success','info'].map(kind=>[kind,value=>notifications.push({kind,value})]))},
     '@/stores/auth':{useAuthStore:()=>auth},
     '@/api/client':{__esModule:true,default:client},
-    '@/api/resources':{apiErrorMessage:error=>error?.message||'操作失败'},
+    '@/api/resources':{apiErrorMessage:error=>error?.message||'操作失败',isMutationAcknowledged:error=>error?.code==='EDO_MUTATION_ACKNOWLEDGED'},
     ...modules,
   },{
     location:{origin:'https://edo.example',assign:path=>locations.push(path)},

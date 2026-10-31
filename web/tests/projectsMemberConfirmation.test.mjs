@@ -32,7 +32,7 @@ async function harness(t, { fail = false, permissions } = {}) {
     vue: { ...vue, onMounted() {}, onBeforeUnmount() {} }, 'vue-i18n': { useI18n: () => ({ t: translate }) },
     'ant-design-vue': { Modal: { confirm: options => confirmations.push(options) }, message: { error: error => errors.push(error), success() {} } },
     'lucide-vue-next': { Plus: icon, RefreshCw: icon },
-    '@/api/client': { __esModule: true, default: client }, '@/api/resources': { apiErrorMessage: error => error.message },
+    '@/api/client': { __esModule: true, default: client }, '@/api/resources': { apiErrorMessage: error => error.message, isMutationAcknowledged: error => error?.code === 'EDO_MUTATION_ACKNOWLEDGED' },
     '@/stores/auth': { useAuthStore: () => ({ user: { id: 'operator', department_id: 'department-a' }, canAny: () => false }) },
     '@/components/PageToolbar.vue': { __esModule: true, default: wrapper }, '@/components/ResourceTable.vue': { __esModule: true, default: table },
     '@/components/ResourceDetailDrawer.vue': { __esModule: true, default: wrapper }, '@/components/PermissionPreview.vue': { __esModule: true, default: blank },

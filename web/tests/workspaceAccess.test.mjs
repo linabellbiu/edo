@@ -96,7 +96,7 @@ test('项目目录恢复时只读重取，检查前的豁免GET和换用户旧�
  assert.deepEqual(state.rows.value,[])
 })
 test('部门上级选项排除自己及所有下级，防止界面形成环',()=>{
- const component=load('../src/views/OrganizationView.vue',{vue:{...vue,onMounted(){}},'vue-i18n':{useI18n:()=>({t:key=>key})},'@/stores/auth':{useAuthStore:()=>({canAny:()=>false})}}).default
+ const component=load('../src/views/OrganizationView.vue',{vue:{...vue,onMounted(){},onBeforeUnmount(){}},'vue-i18n':{useI18n:()=>({t:key=>key})},'@/stores/auth':{useAuthStore:()=>({canAny:()=>false})}}).default
  const state=component.setup({}, {expose(){}})
  state.rows.value=[{id:'a',name:'研发部',parent_id:''},{id:'b',name:'交付组',parent_id:'a'},{id:'c',name:'测试组',parent_id:'b'},{id:'other',name:'财务部',parent_id:''}]
  state.form.id='a'

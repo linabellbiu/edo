@@ -1,10 +1,10 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { Modal, message } from 'ant-design-vue'
 import { Plus, RefreshCw, Building2 } from 'lucide-vue-next'
 import { useI18n } from 'vue-i18n'
 import client from '@/api/client'
-import { apiErrorMessage, type ResourceRecord } from '@/api/resources'
+import { apiErrorMessage, isMutationAcknowledged, type ResourceRecord } from '@/api/resources'
 import { useAuthStore } from '@/stores/auth'
 import PageToolbar from '@/components/PageToolbar.vue'
 import ResourceTable from '@/components/ResourceTable.vue'
@@ -21,16 +21,55 @@ const parentOptions=computed(()=>{
  while(changed){changed=false;for(const row of rows.value)if(descendants.has(row.parent_id)&&!descendants.has(row.id)){descendants.add(row.id);changed=true}}
  return [{value:'',label:t('workspace.root')},...rows.value.filter(row=>!descendants.has(row.id)).map(row=>({value:row.id,label:row.name}))]
 })
-async function load(){loading.value=true;try{
- await Promise.all([
- auth.canAny(['organization.read','organization.update'])?client.get('/organization').then(({data})=>Object.assign(company,data.organization)):null,
- auth.canAny(['department.read','department.create','department.update','department.delete'])?client.get('/departments').then(({data})=>{rows.value=data.departments}):null,
- ])
-}catch(error){message.error(apiErrorMessage(error))}finally{loading.value=false}}
+const authorizationAvailable=()=>auth.authorizationState!=='checking'&&auth.authorizationState!=='unavailable'
+const mutationIdentity=()=>JSON.stringify([auth.user?.id,auth.user?.department_id,auth.user?.project_id,typeof localStorage==='undefined'?'':localStorage.getItem('edo.project')??''])
+const scopeIdentity=()=>JSON.stringify([mutationIdentity(),auth.user?.is_superuser,[...(auth.user?.permissions??[])].sort()])
+let disposed=false,loadRevision=0,mutationIdentityRevision=0
+watch(mutationIdentity,()=>{mutationIdentityRevision++},{flush:'sync'})
+function beginMutation(){const scope=mutationIdentity(),epoch=mutationIdentityRevision;return()=>!disposed&&epoch===mutationIdentityRevision&&scope===mutationIdentity()}
+function mutationError(error:unknown,current:()=>boolean){
+ const acknowledged=isMutationAcknowledged(error)
+ if(!current())return acknowledged
+ if(acknowledged){message.info(apiErrorMessage(error));if(authorizationAvailable())void load()}
+ else message.error(apiErrorMessage(error))
+ return acknowledged
+}
+async function load(){
+ if(disposed||!authorizationAvailable())return
+ const request=++loadRevision,scope=scopeIdentity(),current=()=>!disposed&&request===loadRevision&&authorizationAvailable()&&scope===scopeIdentity()
+ loading.value=true
+ try{
+  const [organization,departments]=await Promise.all([
+   auth.canAny(['organization.read','organization.update'])?client.get('/organization'):null,
+   auth.canAny(['department.read','department.create','department.update','department.delete'])?client.get('/departments'):null,
+  ])
+  if(!current())return
+  Object.assign(company,organization?.data.organization??{name:'',description:''});rows.value=departments?.data.departments??[]
+ }catch(error){if(current())message.error(apiErrorMessage(error))}finally{if(request===loadRevision)loading.value=false}
+}
 function edit(row?:Department){Object.assign(form,{id:row?.id||'',name:row?.name||'',description:row?.description||'',parent_id:row?.parent_id||''});departmentOpen.value=true}
-async function saveCompany(){if(saving.value||!company.name.trim())return;saving.value=true;try{await client.put('/organization',company);companyOpen.value=false;message.success(t('workspace.saved'));await load()}catch(error){message.error(apiErrorMessage(error))}finally{saving.value=false}}
-async function saveDepartment(){if(saving.value||!form.name.trim())return;saving.value=true;try{if(form.id)await client.put(`/departments/${form.id}`,form);else await client.post('/departments',form);departmentOpen.value=false;message.success(t('workspace.saved'));await load();if(selected.value)selected.value=rows.value.find(row=>row.id===selected.value?.id)||null}catch(error){message.error(apiErrorMessage(error))}finally{saving.value=false}}
-function remove(row:Department){Modal.confirm({title:`${t('workspace.remove')} · ${row.name}`,content:t('workspace.departmentDeleteHint'),okType:'danger',async onOk(){try{await client.delete(`/departments/${row.id}`);selected.value=null;await load()}catch(error){message.error(apiErrorMessage(error));throw error}}})}
+async function saveCompany(){
+ if(!authorizationAvailable()||saving.value||!company.name.trim())return
+ const current=beginMutation();saving.value=true
+ try{await client.put('/organization',company);if(!current())return;companyOpen.value=false;message.success(t('workspace.saved'));await load()}
+ catch(error){mutationError(error,current)}finally{saving.value=false}
+}
+async function saveDepartment(){
+ if(!authorizationAvailable()||saving.value||!form.name.trim())return
+ const current=beginMutation();saving.value=true
+ try{if(form.id)await client.put(`/departments/${form.id}`,form);else await client.post('/departments',form);if(!current())return;departmentOpen.value=false;message.success(t('workspace.saved'));await load();if(current()&&selected.value)selected.value=rows.value.find(row=>row.id===selected.value?.id)||null}
+ catch(error){mutationError(error,current)}finally{saving.value=false}
+}
+function remove(row:Department){const current=beginMutation();Modal.confirm({title:`${t('workspace.remove')} · ${row.name}`,content:t('workspace.departmentDeleteHint'),okType:'danger',async onOk(){
+ if(!current()||!authorizationAvailable())return
+ try{await client.delete(`/departments/${row.id}`);if(!current())return;selected.value=null;await load()}
+ catch(error){if(!mutationError(error,current))throw error}
+}})}
+watch([()=>auth.authorizationState,scopeIdentity],([state,scope],[previous,oldScope])=>{
+ if(state==='checking'||state==='unavailable'||scope!==oldScope){loadRevision++;loading.value=false;rows.value=[];Object.assign(company,{name:'',description:''});selected.value=null;companyOpen.value=departmentOpen.value=false;Modal.destroyAll()}
+ if(authorizationAvailable()&&(previous==='checking'||previous==='unavailable'||scope!==oldScope))void load()
+},{flush:'sync'})
+onBeforeUnmount(()=>{disposed=true;loadRevision++})
 onMounted(load)
 </script>
 <template><section><PageToolbar :description="t('workspace.organizationHint')"><a-button :loading="loading" :aria-label="t('workspace.refresh')" @click="load"><RefreshCw :size="15"/></a-button><a-button v-if="auth.canAny(['department.create'])" type="primary" @click="edit()"><Plus :size="15"/>{{t('workspace.createDepartment')}}</a-button></PageToolbar>

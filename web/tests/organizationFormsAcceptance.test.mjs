@@ -65,7 +65,7 @@ test('项目创建采用当前部门，更新绑定准确项目，失败不关�
 
 test('项目删除确认绑定原项目，失败不关闭详情，使用项目写入准确范围再导航',async t=>{
   const stored=new Map()
-  const h=harness(t,'../src/views/ProjectsView.vue',{api:{delete:async()=>{throw new Error('项目仍有关联资源')}},globals:{localStorage:{setItem:(key,value)=>stored.set(key,value)}}})
+  const h=harness(t,'../src/views/ProjectsView.vue',{api:{delete:async()=>{throw new Error('项目仍有关联资源')}},globals:{localStorage:{getItem:key=>stored.get(key)??null,setItem:(key,value)=>stored.set(key,value)}}})
   h.state.open.value=true
   h.state.remove({id:'project-a',name:'项目A'})
   assert.equal(writes(h).length,0)

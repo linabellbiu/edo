@@ -266,7 +266,15 @@ func (r *Runtime) Execute(ctx context.Context, target model.ApplicationDatabase,
 		return ErrExecutionUncertain
 	}
 	query = "UPDATE edo_sql_change_receipts SET state='succeeded' WHERE execution_id = " + placeholder(target.Driver, 1) + " AND digest = " + placeholder(target.Driver, 2)
-	if _, err = db.ExecContext(ctx, query, executionID, digest); err != nil {
+	result, err := db.ExecContext(ctx, query, executionID, digest)
+	if err == nil {
+		var affected int64
+		affected, err = result.RowsAffected()
+		if err == nil && affected != 1 {
+			err = errors.New("SQL 完成回执更新数量异常")
+		}
+	}
+	if err != nil {
 		r.executionError(executionID, "receipt_complete", err)
 		return ErrExecutionUncertain
 	}

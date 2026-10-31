@@ -318,3 +318,32 @@ func TestSQLChangeRuntimeExistingRunningReceiptDoesNotReplay(t *testing.T) {
 		})
 	}
 }
+
+func TestSQLChangeRuntimeUnconfirmedReceiptCompletionNeverSucceeds(t *testing.T) {
+	for _, dialect := range []string{"postgres", "mysql"} {
+		for _, completion := range []string{"zero_rows", "affected_rows_error", "multiple_rows"} {
+			t.Run(dialect+"/"+completion, func(t *testing.T) {
+				f := newRuntimeBoundaryFixture(t, dialect, uuid.NewString())
+				f.receipt("running", nil)
+				f.migration(nil)
+				markers := []string{"$1", "$2"}
+				if dialect == "mysql" {
+					markers = []string{"?", "?"}
+				}
+				result := sqlmock.NewResult(0, 0)
+				if completion == "affected_rows_error" {
+					result = sqlmock.NewErrorResult(errors.New("合成完成回执计数不可用"))
+				} else if completion == "multiple_rows" {
+					result = sqlmock.NewResult(0, 2)
+				}
+				f.mock.ExpectExec("UPDATE edo_sql_change_receipts SET state='succeeded' WHERE execution_id = "+markers[0]+" AND digest = "+markers[1]).WithArgs(f.executionID, f.digest).WillReturnResult(result)
+				f.closeExpectations()
+				err := f.runtime.Execute(context.Background(), f.target, boundaryPassword, boundarySource, f.executionID)
+				if err != ErrExecutionUncertain {
+					t.Errorf("未确认完成回执不能记为成功: error_type=%T", err)
+				}
+				f.verify(t, []string{"exec", "exec", "query", "query", "query", "begin", "business", "exec", "commit", "receipt_complete", "close"}, "receipt_complete")
+			})
+		}
+	}
+}

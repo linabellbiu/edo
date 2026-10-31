@@ -128,6 +128,14 @@ func NewDistributedService(
 }
 
 func (s *Service) HasPermission(ctx context.Context, user *model.User, permission string) (bool, error) {
+	allowed, err := s.casbinPermission(ctx, user, permission)
+	if err != nil || !allowed || user.IsSuperuser || ProjectPermission(permission) {
+		return allowed, err
+	}
+	return s.currentPlatformPermission(ctx, user, permission)
+}
+
+func (s *Service) casbinPermission(ctx context.Context, user *model.User, permission string) (bool, error) {
 	if user == nil || !IsKnown(permission) {
 		return false, nil
 	}
@@ -135,6 +143,11 @@ func (s *Service) HasPermission(ctx context.Context, user *model.User, permissio
 		return true, nil
 	}
 	if err := ctx.Err(); err != nil {
+		logger := s.logger
+		if logger == nil {
+			logger = slog.Default()
+		}
+		logger.WarnContext(ctx, "权限校验已取消", "operation", "permission_check_canceled", "user_id", user.ID, "permission", permission, "err", err)
 		return false, err
 	}
 	scope, _ := database.DepartmentScopeFromContext(ctx)
@@ -145,6 +158,8 @@ func (s *Service) HasPermission(ctx context.Context, user *model.User, permissio
 	return allowed, nil
 }
 
+// UserPermissions 只枚举 Casbin 候选元数据，供管理页和一致快照的后续收紧使用。
+// 它不能代替业务动作的 HasPermission 或当前身份的 CurrentUserPermissions。
 func (s *Service) UserPermissions(ctx context.Context, user *model.User) ([]string, error) {
 	if user == nil {
 		return []string{}, nil
@@ -157,7 +172,7 @@ func (s *Service) UserPermissions(ctx context.Context, user *model.User) ([]stri
 	}
 	permissions := make([]string, 0, len(catalog))
 	for _, item := range catalog {
-		allowed, err := s.HasPermission(ctx, user, item.Code)
+		allowed, err := s.casbinPermission(ctx, user, item.Code)
 		if err != nil {
 			return nil, fmt.Errorf("计算 Casbin 有效权限失败: %w", err)
 		}

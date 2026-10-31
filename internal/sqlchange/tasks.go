@@ -224,7 +224,8 @@ func (s *Service) HandleExecute(ctx context.Context, message task.Message) error
 		return nil
 	})
 	if err != nil {
-		return s.finishExecution(ctx, record, "failed", safeError(err))
+		// 提交回执丢失时认领可能已生效，由任务终止钩子按当前记录收口。
+		return s.failure(ctx, "sql_change_execute_claim", err, ErrStorage)
 	}
 	if !claimed {
 		return nil

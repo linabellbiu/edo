@@ -72,10 +72,17 @@ function responseAuthorizationChanged(config?: InternalAxiosRequestConfig) {
 }
 
 client.interceptors.response.use(response => {
-  if (responseAuthorizationChanged(response.config)) throw new axios.AxiosError('授权状态已更新，请重新读取', 'EDO_AUTHORIZATION_CHANGED', response.config)
+  if (responseAuthorizationChanged(response.config)) {
+    if (['post', 'put', 'patch', 'delete'].includes(response.config.method?.toLowerCase() ?? '') && Number.isInteger(response.status) && response.status >= 200 && response.status < 300) {
+      // 只保留已收到2xx的事实，不能把旧正文或请求参数交回失效的页面。
+      throw new axios.AxiosError('请求已受理，请重新查看结果，勿重复提交。', 'EDO_MUTATION_ACKNOWLEDGED')
+    }
+    throw new axios.AxiosError('授权状态已更新，请重新读取', 'EDO_AUTHORIZATION_CHANGED', response.config)
+  }
   if (responseProjectChanged(response.config)) throw new axios.AxiosError(projectChangedMessage, 'EDO_PROJECT_CHANGED', response.config)
   return response
 }, error => {
+  if (axios.isAxiosError(error) && error.code === 'EDO_AUTHORIZATION_PENDING') throw error
   if (axios.isAxiosError(error) && responseAuthorizationChanged(error.config)) throw new axios.AxiosError('授权状态已更新，请重新读取', 'EDO_AUTHORIZATION_CHANGED', error.config)
   if (axios.isAxiosError(error) && responseProjectChanged(error.config)) throw new axios.AxiosError(projectChangedMessage, 'EDO_PROJECT_CHANGED', error.config)
   if (axios.isAxiosError(error) && error.response?.status === 403 && error.config && !contextRequest(error.config) && typeof window !== 'undefined') {

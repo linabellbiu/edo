@@ -4,7 +4,7 @@ import { Modal, message } from 'ant-design-vue'
 import { Plus, RefreshCw } from 'lucide-vue-next'
 import { useI18n } from 'vue-i18n'
 import client from '@/api/client'
-import { apiErrorMessage, type ResourceRecord } from '@/api/resources'
+import { apiErrorMessage, isMutationAcknowledged, type ResourceRecord } from '@/api/resources'
 import { useAuthStore } from '@/stores/auth'
 import PageToolbar from '@/components/PageToolbar.vue'
 import ResourceTable from '@/components/ResourceTable.vue'
@@ -25,6 +25,17 @@ const preview=computed(()=>selected.value?.roles.find(role=>role.id===member.rol
 const authorizationAvailable=()=>auth.authorizationState!=='checking'&&auth.authorizationState!=='unavailable'
 const identity=()=>JSON.stringify([auth.user?.id,auth.user?.department_id,auth.user?.project_id,auth.user?.is_superuser,[...(auth.user?.permissions??[])].sort()])
 let revision=0,loadRevision=0,disposed=false
+const mutationIdentity=()=>JSON.stringify([auth.user?.id,auth.user?.department_id,auth.user?.project_id,typeof localStorage==='undefined'?'':localStorage.getItem('edo.project')??''])
+let mutationIdentityRevision=0
+watch(mutationIdentity,()=>{mutationIdentityRevision++},{flush:'sync'})
+function beginMutation(){const scope=mutationIdentity(),epoch=mutationIdentityRevision;return()=>!disposed&&epoch===mutationIdentityRevision&&scope===mutationIdentity()}
+function mutationError(error:unknown,current:()=>boolean){
+ const acknowledged=isMutationAcknowledged(error)
+ if(!current())return acknowledged
+ if(acknowledged){message.info(apiErrorMessage(error));if(authorizationAvailable())void load()}
+ else message.error(apiErrorMessage(error))
+ return acknowledged
+}
 async function load(){
  if(disposed||!authorizationAvailable())return
  const request=++loadRevision,scope=identity(),current=()=>!disposed&&request===loadRevision&&authorizationAvailable()&&scope===identity()
@@ -40,7 +51,16 @@ async function load(){
 async function detail(id:string){const request=++revision;try{const value=(await client.get<Detail>(`/projects/${encodeURIComponent(id)}`)).data;if(request!==revision)return;selected.value=value;Object.assign(roleDrafts,Object.fromEntries(value.members.map(item=>[item.user_id,item.role_id])));Object.assign(member,{user_id:'',role_id:''});open.value=true}catch(error){if(request===revision)message.error(apiErrorMessage(error))}}
 function closeDetail(){revision++;open.value=false;selected.value=null}
 function edit(item?:Project){editingID.value=item?.id||'';Object.assign(form,{name:item?.name||'',description:item?.description||'',department_id:item?.department_id||auth.user?.department_id||'',is_active:item?.is_active??true});formOpen.value=true}
-async function save(){if(!form.name.trim()||saving.value)return;saving.value=true;try{if(editingID.value)await client.put(`/projects/${editingID.value}`,form);else await client.post('/projects',form);formOpen.value=false;message.success(t('workspace.saved'));window.dispatchEvent(new Event('edo:projects-changed'));await load();if(open.value&&selected.value)await detail(selected.value.project.id)}catch(error){message.error(apiErrorMessage(error))}finally{saving.value=false}}
+async function save(){
+ if(!authorizationAvailable()||!form.name.trim()||saving.value)return
+ const current=beginMutation();saving.value=true
+ try{
+  if(editingID.value)await client.put(`/projects/${editingID.value}`,form);else await client.post('/projects',form)
+  if(!current())return
+  formOpen.value=false;message.success(t('workspace.saved'));window.dispatchEvent(new Event('edo:projects-changed'))
+  await load();if(current()&&open.value&&selected.value)await detail(selected.value.project.id)
+ }catch(error){mutationError(error,current)}finally{saving.value=false}
+}
 function assign(userID:string,roleID:string){
  if(!selected.value||saving.value)return
  const {project,members,users,roles}=selected.value,existing=members.find(item=>item.user_id===userID)
@@ -48,12 +68,22 @@ function assign(userID:string,roleID:string){
  if(!project.name||!target||!roleName)return
  const id=project.id,userName=target.nickname&&target.nickname!==target.username?`${target.nickname}（${target.username}）`:target.username
  const action=roleID?(existing?'confirmUpdateMember':'confirmAddMember'):'confirmRemoveMember'
+ const current=beginMutation()
  // 确认信息与实际请求共用本次点击冻结的目标，不跟随后续列表选择变化。
  Modal.confirm({title:t(`workspace.${action}`),content:h('div',[
   h('p',`${t('workspace.name')}：${project.name}`),h('p',`${t('workspace.user')}：${userName}`),h('p',`${t('workspace.role')}：${roleName}`),
- ]),okText:t(roleID?(existing?'workspace.save':'workspace.addMember'):'workspace.removeMember'),cancelText:t('workspace.cancel'),okType:roleID?'primary':'danger',async onOk(){saving.value=true;try{await client.put(`/projects/${id}/members/${userID}`,{role_id:roleID});message.success(t('workspace.saved'));await detail(id)}catch(error){message.error(apiErrorMessage(error));throw error}finally{saving.value=false}}})
+ ]),okText:t(roleID?(existing?'workspace.save':'workspace.addMember'):'workspace.removeMember'),cancelText:t('workspace.cancel'),okType:roleID?'primary':'danger',async onOk(){
+  if(!current()||!authorizationAvailable())return
+  saving.value=true
+  try{await client.put(`/projects/${id}/members/${userID}`,{role_id:roleID});if(!current())return;message.success(t('workspace.saved'));await detail(id)}
+  catch(error){if(!mutationError(error,current))throw error}finally{saving.value=false}
+ }})
 }
-function remove(item:Project){Modal.confirm({title:t('workspace.confirmDelete'),content:t('workspace.confirmDeleteHint'),okType:'danger',async onOk(){try{await client.delete(`/projects/${item.id}`);open.value=false;window.dispatchEvent(new Event('edo:projects-changed'));await load()}catch(error){message.error(apiErrorMessage(error));throw error}}})}
+function remove(item:Project){const current=beginMutation();Modal.confirm({title:t('workspace.confirmDelete'),content:t('workspace.confirmDeleteHint'),okType:'danger',async onOk(){
+ if(!current()||!authorizationAvailable())return
+ try{await client.delete(`/projects/${item.id}`);if(!current())return;open.value=false;window.dispatchEvent(new Event('edo:projects-changed'));await load()}
+ catch(error){if(!mutationError(error,current))throw error}
+}})}
 function useProject(item:Project){localStorage.setItem('edo.project',item.id);window.location.assign('/applications')}
 watch([()=>auth.authorizationState,identity],([state,scope],[previous,oldScope])=>{
  if(state==='checking'||state==='unavailable'||scope!==oldScope){loadRevision++;loading.value=false;closeDetail();formOpen.value=false;rows.value=[];departments.value=[]}

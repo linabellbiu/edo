@@ -72,11 +72,11 @@ func TestAuthorizationMatcherPermissionFirstPreservesBoundaries(t *testing.T) {
 				ctx := database.WithDepartmentScope(context.Background(), database.DepartmentScope{
 					UserID: user.ID, DepartmentID: user.DepartmentID, ProjectID: tc.project,
 				})
-				oldAllowed, err := before.HasPermission(ctx, user, tc.permission)
+				oldAllowed, err := before.casbinPermission(ctx, user, tc.permission)
 				if err != nil || oldAllowed != tc.want {
 					t.Fatalf("原规则与安全边界预期不一致: allowed=%t want=%t err=%v", oldAllowed, tc.want, err)
 				}
-				newAllowed, err := after.HasPermission(ctx, user, tc.permission)
+				newAllowed, err := after.casbinPermission(ctx, user, tc.permission)
 				if err != nil || newAllowed != oldAllowed {
 					t.Fatalf("调整比较顺序后权限结果改变: allowed=%t before=%t err=%v", newAllowed, oldAllowed, err)
 				}

@@ -10,7 +10,7 @@ import {
 } from 'lucide-vue-next'
 
 import client from '@/api/client'
-import { apiErrorMessage, type ResourceRecord } from '@/api/resources'
+import { apiErrorMessage, isMutationAcknowledged, type ResourceRecord } from '@/api/resources'
 import PageToolbar from '@/components/PageToolbar.vue'
 import ResourceTable from '@/components/ResourceTable.vue'
 import ClusterRbacDrawer from '@/components/ClusterRbacDrawer.vue'
@@ -114,6 +114,23 @@ const auditPage = computed(() => auditCursorStack.value.length)
 let auditRevision = 0
 let auditDisposed = false
 let auditController: AbortController | undefined
+const mutationIdentity = () => JSON.stringify([auth.user?.id, auth.user?.department_id, auth.user?.project_id,
+  typeof localStorage === 'undefined' ? '' : localStorage.getItem('edo.project') ?? ''])
+let mutationIdentityRevision = 0
+watch(mutationIdentity, () => { mutationIdentityRevision++ }, { flush: 'sync' })
+function beginMutation() {
+  const identity = mutationIdentity(), revision = mutationIdentityRevision
+  return () => !auditDisposed && revision === mutationIdentityRevision && identity === mutationIdentity()
+}
+function mutationError(error: unknown, current: () => boolean) {
+  const acknowledged = isMutationAcknowledged(error)
+  if (!current()) return acknowledged
+  if (acknowledged) {
+    message.info(apiErrorMessage(error))
+    if (authorizationReady.value) void (active.value === 'audit' ? loadAuditPage(restoreAuditPosition()) : refresh())
+  } else message.error(apiErrorMessage(error))
+  return acknowledged
+}
 const loading = ref(false)
 const saving = ref(false)
 const userQuery = ref('')
@@ -608,20 +625,23 @@ function resetUser() {
 }
 
 async function createUser() {
+  if (!authorizationReady.value) return
   if (!userForm.department_id) {
     message.warning('请选择用户所属部门')
     return
   }
+  const current = beginMutation()
   saving.value = true
   try {
     const response = await client.post<{ warning?: string }>('/users', userForm)
+    if (!current()) return
     if (response.data.warning) message.warning(response.data.warning)
     else message.success('用户已创建')
     userFormOpen.value = false
     resetUser()
     await refresh()
   } catch (error) {
-    message.error(apiErrorMessage(error))
+    mutationError(error, current)
   } finally {
     saving.value = false
   }
@@ -639,30 +659,35 @@ function editDepartment(item: Department) {
 }
 
 async function saveDepartment() {
+  if (!authorizationReady.value) return
   if (!departmentForm.name.trim()) {
     message.warning('请输入部门名称')
     return
   }
+  const current = beginMutation()
   saving.value = true
   try {
     if (editingDepartmentID.value) {
       await client.put(`/departments/${editingDepartmentID.value}`, departmentForm)
+      if (!current()) return
       message.success('部门已更新')
     } else {
       await client.post('/departments', departmentForm)
+      if (!current()) return
       message.success('部门已创建')
     }
     departmentFormOpen.value = false
     resetDepartment()
     await refresh()
   } catch (error) {
-    message.error(apiErrorMessage(error))
+    mutationError(error, current)
   } finally {
     saving.value = false
   }
 }
 
 function removeDepartment(item: Department) {
+  const current = beginMutation()
   Modal.confirm({
     title: `删除部门“${item.name}”？`,
     content: item.member_count > 0
@@ -673,13 +698,14 @@ function removeDepartment(item: Department) {
     cancelText: '取消',
     okButtonProps: { disabled: item.member_count > 0 },
     async onOk() {
+      if (!current() || !authorizationReady.value) return
       try {
         await client.delete(`/departments/${item.id}`)
+        if (!current()) return
         message.success('部门已删除')
         await refresh()
       } catch (error) {
-        message.error(apiErrorMessage(error))
-        throw error
+        if (!mutationError(error, current)) throw error
       }
     },
   })
@@ -692,18 +718,21 @@ function openUserDepartment(item: ManagedUser) {
 }
 
 async function saveUserDepartment() {
+  if (!authorizationReady.value) return
   if (!editingUser.value || !userDepartmentForm.department_id) {
     message.warning('请选择用户所属部门')
     return
   }
+  const current = beginMutation()
   saving.value = true
   try {
     await client.put(`/users/${editingUser.value.id}/department`, userDepartmentForm)
+    if (!current()) return
     message.success('用户所属部门已更新')
     userDepartmentOpen.value = false
     await refresh()
   } catch (error) {
-    message.error(apiErrorMessage(error))
+    mutationError(error, current)
   } finally {
     saving.value = false
   }
@@ -752,11 +781,14 @@ function editRolePermissions(item: Role) {
 }
 
 async function saveRole() {
+  if (!authorizationReady.value) return
+  const current = beginMutation()
   saving.value = true
   try {
     let warning = ''
     if (!editingRoleID.value) {
       const response = await client.post<{ warning?: string }>('/roles', roleForm)
+      if (!current()) return
       warning = response.data.warning || ''
     } else if (roleEditorMode.value === 'basic') {
       await client.patch(`/roles/${editingRoleID.value}/basic`, {
@@ -767,19 +799,21 @@ async function saveRole() {
     } else {
       await client.put(`/roles/${editingRoleID.value}/permissions`, { permissions: roleForm.permissions })
     }
+    if (!current()) return
     if (warning) message.warning(warning)
     else message.success(!editingRoleID.value ? '角色已创建' : roleEditorMode.value === 'basic' ? '角色基本信息已更新' : '角色权限已更新')
     roleFormOpen.value = false
     resetRole()
     await refresh()
   } catch (error) {
-    message.error(apiErrorMessage(error))
+    mutationError(error, current)
   } finally {
     saving.value = false
   }
 }
 
 function removeRole(item: Role) {
+  const current = beginMutation()
   const visibleCount = item.visible_member_count
   Modal.confirm({
     title: `删除角色“${item.display_name}”？`,
@@ -793,20 +827,22 @@ function removeRole(item: Role) {
     cancelText: '取消',
     okButtonProps: { disabled: item.in_use },
     async onOk() {
+      if (!current() || !authorizationReady.value) return
       try {
         const response = await client.delete<{ warning?: string }>(`/roles/${item.id}`)
+        if (!current()) return
         if (response.data.warning) message.warning(response.data.warning)
         else message.success('角色已删除')
         await refresh()
       } catch (error) {
-        message.error(apiErrorMessage(error))
-        throw error
+        if (!mutationError(error, current)) throw error
       }
     },
   })
 }
 
 function removeUser(item: ManagedUser) {
+  const current = beginMutation()
   Modal.confirm({
     title: `删除用户“${item.nickname || item.username}”？`,
     content: '账户、个人 Git 令牌和权限配置会被删除；部门业务资源和审计记录会保留。若个人令牌仍被仓库引用，需要先为仓库更换凭据。',
@@ -814,19 +850,21 @@ function removeUser(item: ManagedUser) {
     okType: 'danger',
     cancelText: '取消',
     async onOk() {
+      if (!current() || !authorizationReady.value) return
       try {
         await client.delete(`/users/${item.id}`)
+        if (!current()) return
         message.success('用户已删除')
         await refresh()
       } catch (error) {
-        message.error(apiErrorMessage(error))
-        throw error
+        if (!mutationError(error, current)) throw error
       }
     },
   })
 }
 
 function toggleUser(item: ManagedUser) {
+  const current = beginMutation()
   const action = item.is_active ? '停用' : '启用'
   Modal.confirm({
     title: `${action}用户“${item.nickname || item.username}”？`,
@@ -837,13 +875,14 @@ function toggleUser(item: ManagedUser) {
     okType: item.is_active ? 'danger' : 'primary',
     cancelText: '取消',
     async onOk() {
+      if (!current() || !authorizationReady.value) return
       try {
         await client.patch(`/users/${item.id}/status`, { active: !item.is_active })
+        if (!current()) return
         message.success(`用户已${action}`)
         await refresh()
       } catch (error) {
-        message.error(apiErrorMessage(error))
-        throw error
+        if (!mutationError(error, current)) throw error
       }
     },
   })
@@ -883,7 +922,9 @@ function editAccess(item: ManagedUser) {
 }
 
 async function saveAccess() {
+  if (!authorizationReady.value) return
   if (!editingUser.value) return
+  const current = beginMutation()
   saving.value = true
   try {
     const allow = Object.entries(accessForm.effects)
@@ -893,11 +934,12 @@ async function saveAccess() {
       .filter(([, effect]) => effect === 'deny')
       .map(([permission]) => permission)
     await client.put(`/users/${editingUser.value.id}/access`, { role_ids: accessForm.role_ids, allow, deny })
+    if (!current()) return
     message.success('用户权限已更新')
     accessOpen.value = false
     await refresh()
   } catch (error) {
-    message.error(apiErrorMessage(error))
+    mutationError(error, current)
   } finally {
     saving.value = false
   }
