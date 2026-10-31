@@ -4,6 +4,8 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"io"
+	"net/http"
 	"net/http/httptest"
 	"os"
 	"os/exec"
@@ -15,6 +17,7 @@ import (
 	"github.com/gorilla/websocket"
 	"gorm.io/gorm"
 
+	"edo/internal/database"
 	"edo/internal/model"
 )
 
@@ -72,6 +75,26 @@ func TestPipelineLogsThroughRealViteProxy(t *testing.T) {
 	}
 	proxyURL := scanner.Text()
 	cookie := realtimeLogin(t, router)
+	// 真实代理也必须保留 Origin，让后端在打开日志流前拒绝跨来源连接。
+	header := http.Header{
+		"Cookie":           {cookie.String()},
+		"X-EDO-Project-ID": {database.DefaultProjectID(database.DefaultDepartmentID)},
+		"Origin":           {"http://127.0.0.1:1"},
+	}
+	dialer := websocket.Dialer{Subprotocols: []string{pipelineLogSubprotocol}, HandshakeTimeout: 3 * time.Second}
+	connection, response, err := dialer.Dial("ws"+strings.TrimPrefix(proxyURL, "http")+"/api/v1/pipeline-runs/"+run.ID+"/logs/ws", header)
+	if connection != nil {
+		_ = connection.WriteControl(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""), time.Now().Add(time.Second))
+		_ = connection.Close()
+	}
+	if err == nil || response == nil || response.StatusCode != http.StatusForbidden {
+		t.Fatal("真实 Vite 代理未拒绝跨来源日志连接")
+	}
+	body, err := io.ReadAll(response.Body)
+	_ = response.Body.Close()
+	if err != nil || !bytes.Contains(body, []byte(`"code":"websocket_origin_denied"`)) {
+		t.Fatal("真实 Vite 代理未返回安全的来源拒绝结果")
+	}
 	for range 5 {
 		connection := dialRealtime(t, proxyURL, "/api/v1/pipeline-runs/"+run.ID+"/logs/ws", pipelineLogSubprotocol, cookie)
 		logCount := 0

@@ -107,7 +107,6 @@ func (h pipelineHandler) streamRunLogs(c *gin.Context) {
 		HandshakeTimeout:  10 * time.Second,
 		Subprotocols:      []string{pipelineLogSubprotocol},
 		EnableCompression: true,
-		CheckOrigin:       func(*http.Request) bool { return true },
 	}
 	connection, err := upgrader.Upgrade(c.Writer, c.Request, nil)
 	if err != nil {

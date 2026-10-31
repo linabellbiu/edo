@@ -71,7 +71,6 @@ func (h containerLogHandler) stream(c *gin.Context) {
 		HandshakeTimeout:  10 * time.Second,
 		Subprotocols:      []string{containerLogSubprotocol},
 		EnableCompression: false,
-		CheckOrigin:       func(*http.Request) bool { return true },
 	}
 	connection, err := upgrader.Upgrade(c.Writer, c.Request, nil)
 	if err != nil {

@@ -111,7 +111,7 @@ func streamState(deps Dependencies) gin.HandlerFunc {
 			return
 		}
 		defer subscription.Close()
-		upgrader := websocket.Upgrader{HandshakeTimeout: 10 * time.Second, Subprotocols: []string{stateSubprotocol}, CheckOrigin: func(*http.Request) bool { return true }}
+		upgrader := websocket.Upgrader{HandshakeTimeout: 10 * time.Second, Subprotocols: []string{stateSubprotocol}}
 		connection, err := upgrader.Upgrade(c.Writer, c.Request, nil)
 		if err != nil {
 			deps.Logger.Warn("状态连接握手失败", "operation", "realtime_upgrade", "request_id", requestIDFrom(c), "err", err)

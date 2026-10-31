@@ -99,7 +99,7 @@ func NewRouter(deps Dependencies) *gin.Engine {
 		deps.Logger.Error("设置 HTTP 可信代理失败，已禁用转发地址", "operation", "http_trusted_proxies", "err", err)
 		_ = router.SetTrustedProxies(nil)
 	}
-	router.Use(requestID(), securityHeaders(), recovery(deps.Logger), accessLog(deps.Logger, deps.RuntimeLogs))
+	router.Use(requestID(), securityHeaders(), recovery(deps.Logger), accessLog(deps.Logger, deps.RuntimeLogs), requireWebSocketOrigin(deps.Logger))
 
 	health := healthHandler{database: deps.Database, redis: deps.Redis, nats: deps.NATS, builder: deps.Docker, logger: deps.Logger}
 	api := router.Group("/api/v1")

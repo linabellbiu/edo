@@ -37,7 +37,7 @@ func (h kubernetesLogHandler) stream(c *gin.Context) {
 		return
 	}
 	defer stream.Close()
-	upgrader := websocket.Upgrader{HandshakeTimeout: 10 * time.Second, Subprotocols: []string{containerLogSubprotocol}, CheckOrigin: func(*http.Request) bool { return true }}
+	upgrader := websocket.Upgrader{HandshakeTimeout: 10 * time.Second, Subprotocols: []string{containerLogSubprotocol}}
 	connection, err := upgrader.Upgrade(c.Writer, c.Request, nil)
 	if err != nil {
 		h.logger.Warn("Pod 日志握手失败", "operation", "kubernetes_logs_upgrade", "request_id", requestIDFrom(c), "err", err)

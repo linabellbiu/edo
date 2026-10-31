@@ -28,6 +28,7 @@ func realtimeLogin(t *testing.T, handler http.Handler) *http.Cookie {
 func dialRealtime(t *testing.T, serverURL, path, protocol string, cookie *http.Cookie) *websocket.Conn {
 	t.Helper()
 	header := http.Header{}
+	header.Set("Origin", serverURL)
 	if cookie != nil {
 		header.Set("Cookie", cookie.String())
 		header.Set("X-EDO-Project-ID", database.DefaultProjectID(database.DefaultDepartmentID))
@@ -125,7 +126,7 @@ func TestStateAndLogsWebSocketEnforceDepartmentAndPermission(t *testing.T) {
 	cookie := login.Result().Cookies()[0]
 	server := httptest.NewServer(router)
 	defer server.Close()
-	header := http.Header{"Cookie": []string{cookie.String()}, "X-EDO-Project-ID": []string{database.DefaultProjectID(database.DefaultDepartmentID)}}
+	header := http.Header{"Cookie": []string{cookie.String()}, "X-EDO-Project-ID": []string{database.DefaultProjectID(database.DefaultDepartmentID)}, "Origin": []string{server.URL}}
 	dialer := websocket.Dialer{Subprotocols: []string{stateSubprotocol}}
 	_, response, err := dialer.Dial("ws"+strings.TrimPrefix(server.URL, "http")+"/api/v1/events/ws", header)
 	if err == nil || response.StatusCode != http.StatusForbidden {

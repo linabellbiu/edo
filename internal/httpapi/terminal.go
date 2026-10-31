@@ -102,8 +102,6 @@ func (h terminalHandler) open(
 		HandshakeTimeout:  10 * time.Second,
 		Subprotocols:      []string{terminalSubprotocol},
 		EnableCompression: false,
-		// 允许跨来源连接，后续仍检查登录会话和终端权限，并记录审计。
-		CheckOrigin: func(*http.Request) bool { return true },
 	}
 	connection, err := upgrader.Upgrade(c.Writer, c.Request, nil)
 	if err != nil {

@@ -54,6 +54,14 @@ SFTP 目录读取有单包与累计响应预算。服务器缺少原子新建或
 
 审计记录操作者、项目、目标、文件路径及结果，不记录文件内容、终端输入输出或凭据。上传、下载、编辑分别记录动作，拒绝也进入审计。文件请求、会话、目录输出和传输均有超时、并发与大小上限。
 
+## 浏览器连接来源
+
+终端、容器及流水线日志、实时状态的 WebSocket 在读取运行资源前统一检查浏览器 `Origin`，主机名和端口必须与实际请求 `Host` 一致。拒绝其他端口、子域、`null` 或多值来源，不记录或回显来源、Cookie 原文；各连接继续使用 Gorilla 的默认来源检查。无 `Origin` 的非浏览器 API 客户端仍须通过原会话、项目和动作权限校验，省略来源不是绕过鉴权的方式。
+
+Web 已使用 `$http_host` 保留对外主机和端口，开发 Vite 也通过同源代理访问 API。其他反向代理须同样保留实际对外 `Host`，不能靠客户端提供的 `X-Forwarded-Host` 放行连接。`SameSite` Cookie 不能代替来源校验，因为同站点仍可包含不同端口或子域。来源解析使用标准库，握手继续复用现有 Gorilla，不新增依赖或常驻组件。
+
+依据：[Gorilla 来源校验](https://pkg.go.dev/github.com/gorilla/websocket#hdr-Origin_Considerations)、[MDN 站点与来源](https://developer.mozilla.org/en-US/docs/Glossary/Site)。
+
 ## 本地验收
 
 `/tests/fixtures/terminal-workspace.html` 挂载真实生产组件，用内存文件和模拟 WebSocket 验证停靠、最小化、多主机、权限、文件编辑和覆盖确认，不请求真实服务器。它不是线上或真实远端资源验收证据。
