@@ -7,6 +7,27 @@ interface PipelineLog{id:number;stage:string;level:string;message:string;created
 const props=defineProps<{open:boolean;runID:string;title:string;initialStatus:string}>(),emit=defineEmits<{'update:open':[value:boolean]}>()
 const logs=ref<PipelineLog[]>([]),status=ref(''),connection=ref<'connecting'|'connected'|'complete'|'error'>('connecting'),error=ref(''),viewport=ref<HTMLDivElement|null>(null)
 let dispose:undefined|(()=>void)
+let focusOrigin: HTMLElement | null = null
+watch(() => props.open, open => {
+  if (!open || typeof document === 'undefined') return
+  const active = document.activeElement
+  // 快速重开时保留原入口，不把尚未退场的抽屉控件当成新入口。
+  if (active instanceof HTMLElement && active !== document.body && active !== document.documentElement &&
+      !viewport.value?.closest('.pipeline-log-drawer')?.contains(active)) focusOrigin = active
+}, {immediate: true})
+function afterOpenChange(open: boolean) {
+  if (open || props.open) return
+  const target = focusOrigin
+  focusOrigin = null
+  if (!target?.isConnected || target.matches(':disabled') || target.closest('[hidden], [inert], [aria-hidden="true"]')) return
+  const bounds = target.getBoundingClientRect(), style = target.ownerDocument.defaultView?.getComputedStyle(target)
+  if (!target.getClientRects().length || bounds.width <= 0 || bounds.height <= 0 || style?.display === 'none' || style?.visibility === 'hidden') return
+  const active = target.ownerDocument.activeElement
+  // 关闭动画期间用户已转向别处时，不再抢回焦点。
+  if (active && active !== target.ownerDocument.body && active !== target.ownerDocument.documentElement && active !== target &&
+      !viewport.value?.closest('.pipeline-log-drawer')?.contains(active)) return
+  target.focus({preventScroll: true})
+}
 async function connect() {
   dispose?.()
   const runID = props.runID
@@ -50,9 +71,9 @@ async function connect() {
   })
 }
 watch(()=>[props.open,props.runID],()=>{if(props.open&&props.runID)void connect();else{dispose?.();dispose=undefined}},{immediate:true})
-onBeforeUnmount(()=>dispose?.())
+onBeforeUnmount(()=>{focusOrigin=null;dispose?.()})
 </script>
-<template><a-drawer :open="open" :title="title" width="min(920px,94vw)" :body-style="{ display: 'flex', flexDirection: 'column', minHeight: 0, overflow: 'hidden' }" @close="emit('update:open',false)"><template #extra><a-tag :color="connection==='connected'?'processing':connection==='complete'?'success':'error'">{{ connection==='connected'?'实时连接':connection==='complete'?'执行结束':connection==='connecting'?'连接中':'连接异常' }}</a-tag></template><div class="log-meta"><span>运行 ID：<code>{{ runID }}</code></span><span>状态：{{ status }}</span><span>{{ logs.length }} 条</span><b v-if="error">{{ error }}</b></div><div ref="viewport" class="log-viewport" role="region" :aria-label="title" tabindex="0"><div v-for="log in logs" :key="log.id" :class="`log-line level-${log.level}`"><time>{{ new Date(log.created_at).toLocaleTimeString('zh-CN',{hour12:false}) }}</time><span>{{ log.stage||'pipeline' }}</span><code>{{ log.message }}</code></div><a-empty v-if="!logs.length" description="等待流水线输出日志…"/></div></a-drawer></template>
+<template><a-drawer :open="open" :title="title" width="min(920px,94vw)" root-class-name="pipeline-log-drawer" :body-style="{ display: 'flex', flexDirection: 'column', minHeight: 0, overflow: 'hidden' }" @close="emit('update:open',false)" @after-open-change="afterOpenChange"><template #extra><a-tag :color="connection==='connected'?'processing':connection==='complete'?'success':'error'">{{ connection==='connected'?'实时连接':connection==='complete'?'执行结束':connection==='connecting'?'连接中':'连接异常' }}</a-tag></template><div class="log-meta"><span>运行 ID：<code>{{ runID }}</code></span><span>状态：{{ status }}</span><span>{{ logs.length }} 条</span><b v-if="error">{{ error }}</b></div><div ref="viewport" class="log-viewport" role="region" :aria-label="title" tabindex="0"><div v-for="log in logs" :key="log.id" :class="`log-line level-${log.level}`"><time>{{ new Date(log.created_at).toLocaleTimeString('zh-CN',{hour12:false}) }}</time><span>{{ log.stage||'pipeline' }}</span><code>{{ log.message }}</code></div><a-empty v-if="!logs.length" description="等待流水线输出日志…"/></div></a-drawer></template>
 <style scoped>
 .log-meta{flex:none;display:flex;flex-wrap:wrap;gap:14px;margin-bottom:10px;color:var(--edo-muted);font-size:12px}
 .log-meta > span{min-width:0}
