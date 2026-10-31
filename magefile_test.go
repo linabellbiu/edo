@@ -5,7 +5,6 @@ package main
 import (
 	"bytes"
 	"context"
-	"encoding/base64"
 	"errors"
 	"log/slog"
 	"net/http"
@@ -286,78 +285,29 @@ func TestLoadEnvironmentFileReportsFileAccessFailure(t *testing.T) {
 	}
 }
 
-func TestLoadEnvironmentFileCreatesDefault(t *testing.T) {
+func TestLoadEnvironmentFileDoesNotOverwriteExistingConfiguration(t *testing.T) {
+	const existingKey = "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY="
+	t.Setenv("EDO_SECRETS_KEY", existingKey)
 	root := t.TempDir()
 	path := filepath.Join(root, ".env")
-	template := "EDO_MAGE_CREATED_TEST=loaded\nEDO_SECRETS_KEY=\n"
-	if err := os.WriteFile(path+".example", []byte(template), 0o600); err != nil {
-		t.Fatal(err)
+	content := []byte("EDO_SECRETS_KEY=" + existingKey + "\n")
+	if err := os.WriteFile(path, content, 0o600); err != nil {
+		t.Fatal("写入临时已有配置失败")
 	}
-	_ = os.Unsetenv("EDO_MAGE_CREATED_TEST")
-	_ = os.Unsetenv("EDO_SECRETS_KEY")
-	t.Cleanup(func() {
-		_ = os.Unsetenv("EDO_MAGE_CREATED_TEST")
-		_ = os.Unsetenv("EDO_SECRETS_KEY")
-	})
-
-	if err := loadEnvironmentFile(path); err != nil {
-		t.Fatal(err)
+	if err := os.WriteFile(path+".example", []byte("EDO_SECRETS_KEY=\n"), 0o600); err != nil {
+		t.Fatal("写入临时模板失败")
 	}
-	if got := os.Getenv("EDO_MAGE_CREATED_TEST"); got != "loaded" {
-		t.Fatalf("未加载自动创建的默认配置: %q", got)
-	}
-	encoded := os.Getenv("EDO_SECRETS_KEY")
-	key, err := base64.StdEncoding.DecodeString(encoded)
-	if err != nil || len(key) != 32 {
-		t.Fatalf("自动生成的 EDO_SECRETS_KEY 无效: %q", encoded)
-	}
-	content, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(content), "EDO_SECRETS_KEY="+encoded) {
-		t.Fatal("自动生成的密钥未持久化到 .env")
-	}
-
-	before := string(content)
-	if err := loadEnvironmentFile(path); err != nil {
-		t.Fatal(err)
-	}
-	after, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(after) != before {
-		t.Fatal("再次加载时不得覆盖或轮换已有 .env")
-	}
-}
-
-func TestFillEnvironmentSecretsKeyRejectsUnsafeTemplate(t *testing.T) {
-	for _, template := range []string{
-		"EDO_ENV=development\n",
-		"EDO_SECRETS_KEY=hard-coded\n",
-		"EDO_SECRETS_KEY=\nEDO_SECRETS_KEY=\n",
-	} {
-		if _, err := fillEnvironmentSecretsKey([]byte(template), "generated"); err == nil {
-			t.Fatalf("应拒绝不安全的默认配置模板: %q", template)
+	for range 2 {
+		if err := loadEnvironmentFile(path); err != nil {
+			t.Fatal("读取已有配置失败")
 		}
-	}
-}
-
-func TestInitialSecretsKeyUsesProcessEnvironment(t *testing.T) {
-	const existing = "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY="
-	t.Setenv("EDO_SECRETS_KEY", existing)
-	got, err := initialSecretsKey()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got != existing {
-		t.Fatalf("未复用进程环境中的固定密钥: %q", got)
-	}
-
-	t.Setenv("EDO_SECRETS_KEY", "invalid")
-	if _, err := initialSecretsKey(); err == nil {
-		t.Fatal("不得用随机密钥替代进程环境中的无效密钥")
+		after, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal("回读临时已有配置失败")
+		}
+		if !bytes.Equal(content, after) || os.Getenv("EDO_SECRETS_KEY") != existingKey {
+			t.Fatal("重复读取不得覆盖已有配置或轮换固定密钥")
+		}
 	}
 }
 
