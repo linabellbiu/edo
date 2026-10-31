@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"regexp"
 	"strings"
 	"time"
@@ -11,7 +12,9 @@ import (
 
 	"github.com/google/uuid"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
+	"edo/internal/database"
 	"edo/internal/model"
 	"edo/internal/secret"
 )
@@ -61,7 +64,8 @@ func (s *Service) FindOwned(ctx context.Context, userID, id string) (*model.GitC
 	return &credential, nil
 }
 
-func (s *Service) Create(ctx context.Context, userID string, input Input) (*model.GitCredential, error) {
+func (s *Service) Create(ctx context.Context, userID string, input Input) (item *model.GitCredential, err error) {
+	defer func() { s.logMutationError(ctx, "credential_create", userID, "", err) }()
 	input, plaintext, err := normalizeInput(input, true)
 	if err != nil {
 		return nil, err
@@ -77,7 +81,15 @@ func (s *Service) Create(ctx context.Context, userID string, input Input) (*mode
 		AuthType: input.AuthType, Username: input.Username, SecretCiphertext: ciphertext,
 		SecretHint: secretHint(plaintext), CreatedAt: now, UpdatedAt: now,
 	}
-	if err := s.db.WithContext(ctx).Create(credential).Error; err != nil {
+	if err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if _, err := database.LockUser(tx, userID); err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return ErrCredentialNotFound
+			}
+			return err
+		}
+		return tx.Create(credential).Error
+	}); err != nil {
 		if errors.Is(err, gorm.ErrDuplicatedKey) {
 			return nil, ErrCredentialExists
 		}
@@ -86,67 +98,81 @@ func (s *Service) Create(ctx context.Context, userID string, input Input) (*mode
 	return credential, nil
 }
 
-func (s *Service) Update(ctx context.Context, userID, id string, input Input) (*model.GitCredential, error) {
-	existing, err := s.FindOwned(ctx, userID, id)
-	if err != nil {
-		return nil, err
-	}
+func (s *Service) Update(ctx context.Context, userID, id string, input Input) (item *model.GitCredential, err error) {
+	defer func() { s.logMutationError(ctx, "credential_update", userID, id, err) }()
 	input, plaintext, err := normalizeInput(input, false)
 	if err != nil {
 		return nil, err
 	}
-	if input.Provider != existing.Provider || input.AuthType != existing.AuthType {
-		var references int64
-		if err := s.db.WithContext(ctx).Model(&model.GitRepository{}).
-			Where("credential_id = ? OR api_credential_id = ?", id, id).Count(&references).Error; err != nil {
-			return nil, fmt.Errorf("检查 Git 令牌使用状态失败: %w", err)
+	if err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := LockReferences(tx, []string{id}); err != nil {
+			return err
 		}
-		if references > 0 {
-			return nil, ErrCredentialInUse
+		var existing model.GitCredential
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&existing, "uuid = ? AND user_id = ?", id, userID).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return ErrCredentialNotFound
+			}
+			return fmt.Errorf("查询待修改个人凭据失败: %w", err)
 		}
-	}
-	ciphertext := existing.SecretCiphertext
-	hint := existing.SecretHint
-	if input.Secret != nil {
-		ciphertext, err = s.secrets.Encrypt(plaintext, credentialAAD(id))
-		if err != nil {
-			return nil, fmt.Errorf("加密个人 Git 令牌失败: %w", err)
+		if input.Provider != existing.Provider || input.AuthType != existing.AuthType {
+			used, err := ReferencesInUse(tx, []string{id}, "")
+			if err != nil {
+				return err
+			}
+			if used {
+				return ErrCredentialInUse
+			}
 		}
-		hint = secretHint(plaintext)
-	} else if input.AuthType != existing.AuthType {
-		return nil, ErrInvalidCredential
-	}
-	now := time.Now().UTC()
-	updates := map[string]any{
-		"name": input.Name, "provider": input.Provider, "auth_type": input.AuthType,
-		"username": input.Username, "secret_ciphertext": ciphertext, "secret_hint": hint, "updated_at": now,
-	}
-	if err := s.db.WithContext(ctx).Model(existing).Updates(updates).Error; err != nil {
+		ciphertext, hint := existing.SecretCiphertext, existing.SecretHint
+		if input.Secret != nil {
+			var err error
+			ciphertext, err = s.secrets.Encrypt(plaintext, credentialAAD(id))
+			if err != nil {
+				return fmt.Errorf("加密个人 Git 令牌失败: %w", err)
+			}
+			hint = secretHint(plaintext)
+		} else if input.AuthType != existing.AuthType {
+			return ErrInvalidCredential
+		}
+		now := time.Now().UTC()
+		if err := tx.Model(&existing).Updates(map[string]any{
+			"name": input.Name, "provider": input.Provider, "auth_type": input.AuthType,
+			"username": input.Username, "secret_ciphertext": ciphertext, "secret_hint": hint, "updated_at": now,
+		}).Error; err != nil {
+			return err
+		}
+		existing.Name, existing.Provider, existing.AuthType, existing.Username = input.Name, input.Provider, input.AuthType, input.Username
+		existing.SecretCiphertext, existing.SecretHint, existing.UpdatedAt = ciphertext, hint, now
+		item = &existing
+		return nil
+	}); err != nil {
 		if errors.Is(err, gorm.ErrDuplicatedKey) {
 			return nil, ErrCredentialExists
 		}
 		return nil, fmt.Errorf("更新个人 Git 令牌失败: %w", err)
 	}
-	existing.Name, existing.Provider, existing.AuthType, existing.Username = input.Name, input.Provider, input.AuthType, input.Username
-	existing.SecretCiphertext, existing.SecretHint, existing.UpdatedAt = ciphertext, hint, now
-	return existing, nil
+	return item, nil
 }
 
-func (s *Service) Delete(ctx context.Context, userID, id string) error {
+func (s *Service) Delete(ctx context.Context, userID, id string) (err error) {
+	defer func() { s.logMutationError(ctx, "credential_delete", userID, id, err) }()
 	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := LockReferences(tx, []string{id}); err != nil {
+			return err
+		}
 		var credential model.GitCredential
-		if err := tx.First(&credential, "uuid = ? AND user_id = ?", id, userID).Error; err != nil {
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&credential, "uuid = ? AND user_id = ?", id, userID).Error; err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
 				return ErrCredentialNotFound
 			}
 			return fmt.Errorf("查询待删除 Git 令牌失败: %w", err)
 		}
-		var count int64
-		if err := tx.Model(&model.GitRepository{}).
-			Where("credential_id = ? OR api_credential_id = ?", id, id).Count(&count).Error; err != nil {
-			return fmt.Errorf("检查 Git 令牌使用状态失败: %w", err)
+		used, err := ReferencesInUse(tx, []string{id}, "")
+		if err != nil {
+			return err
 		}
-		if count > 0 {
+		if used {
 			return ErrCredentialInUse
 		}
 		if err := tx.Delete(&credential).Error; err != nil {
@@ -154,6 +180,12 @@ func (s *Service) Delete(ctx context.Context, userID, id string) error {
 		}
 		return nil
 	})
+}
+
+func (s *Service) logMutationError(ctx context.Context, operation, userID, credentialID string, err error) {
+	if err != nil {
+		slog.WarnContext(ctx, "个人凭据变更失败", "operation", operation, "user_id", userID, "credential_id", credentialID, "err", err)
+	}
 }
 
 func (s *Service) RevealOwned(ctx context.Context, userID, id string) (string, error) {

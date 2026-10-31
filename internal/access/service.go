@@ -536,8 +536,8 @@ func (s *Service) DeleteRole(ctx context.Context, roleID string) error {
 // 业务资源使用冻结的 department_id 归属部门，不能因人员离职而被级联删除。
 func (s *Service) DeleteUser(ctx context.Context, userID string) error {
 	if err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		var user model.User
-		if err := tx.First(&user, "uuid = ?", userID).Error; err != nil {
+		user, err := database.LockUser(tx, userID)
+		if err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
 				return account.ErrUserNotFound
 			}
@@ -564,7 +564,7 @@ func (s *Service) DeleteUser(ctx context.Context, userID string) error {
 		if err := tx.Where("user_id = ?", user.ID).Delete(&model.GitCredential{}).Error; err != nil {
 			return fmt.Errorf("删除用户个人 Git 令牌失败: %w", err)
 		}
-		if err := tx.Delete(&user).Error; err != nil {
+		if err := tx.Delete(user).Error; err != nil {
 			return fmt.Errorf("删除用户失败: %w", err)
 		}
 		return nil

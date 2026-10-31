@@ -768,6 +768,15 @@ func TestRepositoryInputCanBeTestedWithoutSaving(t *testing.T) {
 func newRepositoryTestService(t *testing.T) (*Service, *gorm.DB) {
 	t.Helper()
 	db := testutil.NewDatabase(t)
+	// 个人凭据必须有真实账户行；无凭据仓库仍不依赖这些单测命名账户。
+	for _, id := range []string{"user-a", "user-b", "owner", "token-owner", "different-editor"} {
+		now := time.Now().UTC()
+		if err := db.Create(&model.User{ID: id, Username: "repo-" + id, Nickname: id,
+			DepartmentID: database.DefaultDepartmentID, IsActive: true, AuthVersion: 1,
+			PasswordHash: "unused-unit-test-hash", CreatedAt: now, UpdatedAt: now}).Error; err != nil {
+			t.Fatalf("创建仓库单测凭据所有者失败: %v", err)
+		}
+	}
 	key := base64.StdEncoding.EncodeToString([]byte("0123456789abcdef0123456789abcdef"))
 	secretManager, err := secret.New(key)
 	if err != nil {

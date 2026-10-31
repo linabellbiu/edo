@@ -32,6 +32,7 @@ var (
 	ErrInsecureRepository       = errors.New("HTTP 仓库默认不允许，请显式确认不安全连接")
 	ErrRepositoryExists         = errors.New("代码仓库名称已存在")
 	ErrRepositoryNotFound       = errors.New("代码仓库不存在")
+	ErrRepositoryChanged        = errors.New("代码仓库配置已变化，请刷新后重试")
 	ErrRepositoryInUse          = errors.New("代码仓库正在被应用使用，不能删除")
 	ErrInvalidCredential        = errors.New("代码仓库凭据配置无效")
 	ErrCredentialRebindRequired = errors.New("更换代码仓库地址后，请重新提供凭据或选择本人保存的令牌")
@@ -262,8 +263,9 @@ func (s *Service) ListDeliveries(ctx context.Context, repositoryID string, limit
 	return deliveries, nil
 }
 
-func (s *Service) Create(ctx context.Context, actorID string, input Input) (*model.GitRepository, string, error) {
+func (s *Service) Create(ctx context.Context, actorID string, input Input) (item *model.GitRepository, webhook string, err error) {
 	id := uuid.NewString()
+	defer func() { logRepositoryMutationError(ctx, "repository_create", actorID, id, err) }()
 	normalized, err := s.normalizeInput(ctx, actorID, id, nil, input)
 	if err != nil {
 		return nil, "", err
@@ -280,7 +282,16 @@ func (s *Service) Create(ctx context.Context, actorID string, input Input) (*mod
 		WebhookEnabled:          normalized.WebhookEnabled, AllowInsecureHTTP: normalized.AllowInsecureHTTP,
 		IsActive: true, CreatedBy: actorID, CreatedAt: now, UpdatedAt: now,
 	}
-	if err := s.db.WithContext(ctx).Create(repository).Error; err != nil {
+	if err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := credential.LockReferences(tx, normalizedReferenceIDs(normalized)); err != nil {
+			return err
+		}
+		if err := validateLockedReferences(tx, actorID, nil, input, &normalized); err != nil {
+			return err
+		}
+		repository.Username = normalized.Username
+		return tx.Create(repository).Error
+	}); err != nil {
 		if errors.Is(err, gorm.ErrDuplicatedKey) {
 			return nil, "", ErrRepositoryExists
 		}
@@ -289,7 +300,8 @@ func (s *Service) Create(ctx context.Context, actorID string, input Input) (*mod
 	return repository, normalized.webhookPlaintext, nil
 }
 
-func (s *Service) Update(ctx context.Context, actorID, id string, input Input) (*model.GitRepository, string, error) {
+func (s *Service) Update(ctx context.Context, actorID, id string, input Input) (item *model.GitRepository, webhook string, err error) {
+	defer func() { logRepositoryMutationError(ctx, "repository_update", actorID, id, err) }()
 	existing, err := s.Find(ctx, id)
 	if err != nil {
 		return nil, "", err
@@ -310,7 +322,19 @@ func (s *Service) Update(ctx context.Context, actorID, id string, input Input) (
 		"webhook_enabled":           normalized.WebhookEnabled,
 		"allow_insecure_http":       normalized.AllowInsecureHTTP, "updated_at": now,
 	}
-	if err := s.db.WithContext(ctx).Model(existing).Updates(updates).Error; err != nil {
+	if err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := credential.LockReferences(tx, normalizedReferenceIDs(normalized)); err != nil {
+			return err
+		}
+		if err := lockRepositoryMutation(tx, existing); err != nil {
+			return err
+		}
+		if err := validateLockedReferences(tx, actorID, existing, input, &normalized); err != nil {
+			return err
+		}
+		updates["username"] = normalized.Username
+		return tx.Model(existing).Updates(updates).Error
+	}); err != nil {
 		if errors.Is(err, gorm.ErrDuplicatedKey) {
 			return nil, "", ErrRepositoryExists
 		}

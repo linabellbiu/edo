@@ -14,6 +14,7 @@ import (
 	"gorm.io/gorm"
 
 	"edo/internal/auth"
+	"edo/internal/credential"
 	"edo/internal/database"
 	"edo/internal/model"
 )
@@ -133,36 +134,43 @@ func (s *Service) create(ctx context.Context, username, nickname, password, depa
 	return user, nil
 }
 
-func (s *Service) SetDepartment(ctx context.Context, userID, departmentID string) error {
+func (s *Service) SetDepartment(ctx context.Context, userID, departmentID string) (err error) {
+	defer func() {
+		if err != nil {
+			slog.WarnContext(ctx, "调整用户部门失败", "operation", "user_department_update", "user_id", userID, "department_id", departmentID, "err", err)
+		}
+	}()
 	departmentID = strings.TrimSpace(departmentID)
 	if departmentID == "" {
 		return ErrInvalidUser
 	}
-	var user model.User
-	if err := s.db.WithContext(ctx).First(&user, "uuid = ?", userID).Error; err != nil {
+	if err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		user, err := database.LockUser(tx, userID)
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return ErrUserNotFound
 		}
-		return fmt.Errorf("查询待调整部门的用户失败: %w", err)
-	}
-	if user.IsSuperuser {
-		return ErrSuperuserImmutable
-	}
-	if err := s.EnsureCredentialsUnreferenced(ctx, user.ID, user.DepartmentID); err != nil {
+		if err != nil {
+			return err
+		}
+		if user.IsSuperuser {
+			return ErrSuperuserImmutable
+		}
+		if err := NewService(tx).EnsureCredentialsUnreferenced(ctx, user.ID, user.DepartmentID); err != nil {
+			return err
+		}
+		var departmentCount int64
+		if err := tx.Model(&model.Department{}).
+			Where("uuid = ? AND is_active = ?", departmentID, true).Count(&departmentCount).Error; err != nil {
+			return fmt.Errorf("查询目标部门失败: %w", err)
+		}
+		if departmentCount != 1 {
+			return ErrInvalidUser
+		}
+		return tx.Model(user).Updates(map[string]any{
+			"department_id": departmentID, "auth_version": gorm.Expr("auth_version + ?", 1), "updated_at": time.Now().UTC(),
+		}).Error
+	}); err != nil {
 		return err
-	}
-	var departmentCount int64
-	if err := s.db.WithContext(ctx).Model(&model.Department{}).
-		Where("uuid = ? AND is_active = ?", departmentID, true).Count(&departmentCount).Error; err != nil {
-		return fmt.Errorf("查询目标部门失败: %w", err)
-	}
-	if departmentCount != 1 {
-		return ErrInvalidUser
-	}
-	if err := s.db.WithContext(ctx).Model(&user).Updates(map[string]any{
-		"department_id": departmentID, "auth_version": gorm.Expr("auth_version + ?", 1), "updated_at": time.Now().UTC(),
-	}).Error; err != nil {
-		return fmt.Errorf("调整用户部门失败: %w", err)
 	}
 	s.invalidations.UserChanged(ctx, userID)
 	return nil
@@ -170,24 +178,26 @@ func (s *Service) SetDepartment(ctx context.Context, userID, departmentID string
 
 // EnsureCredentialsUnreferenced 防止调动或删除用户时破坏仍在运行的部门仓库。
 // 个人令牌归用户所有；引用必须先在原部门仓库中解除或替换。
+// 删除或调动的调用方必须已在同一事务持有用户锁，以阻止新增个人凭据遗漏。
+// 独立读取本方法只能取得检查结果，不构成后续写操作的原子保证。
 func (s *Service) EnsureCredentialsUnreferenced(ctx context.Context, userID, departmentID string) error {
 	var credentialIDs []string
 	if err := s.db.WithContext(ctx).Model(&model.GitCredential{}).
 		Where("user_id = ?", userID).Pluck("uuid", &credentialIDs).Error; err != nil {
+		slog.ErrorContext(ctx, "查询用户个人凭据失败", "operation", "user_credential_list", "user_id", userID, "err", err)
 		return fmt.Errorf("查询用户个人 Git 令牌失败: %w", err)
 	}
 	if len(credentialIDs) == 0 {
 		return nil
 	}
-	var count int64
-	// 账号删除或调动必须检查原部门的全部项目，不能被当前请求的项目过滤隐藏引用。
-	query := s.db.WithContext(ctx).Table("git_repositories").
-		Where("department_id = ?", departmentID).
-		Where("credential_id IN ? OR api_credential_id IN ?", credentialIDs, credentialIDs)
-	if err := query.Count(&count).Error; err != nil {
-		return fmt.Errorf("检查代码仓库令牌引用失败: %w", err)
+	if err := credential.LockReferences(s.db.WithContext(ctx), credentialIDs); err != nil {
+		return err
 	}
-	if count > 0 {
+	used, err := credential.ReferencesInUse(s.db.WithContext(ctx), credentialIDs, departmentID)
+	if err != nil {
+		return err
+	}
+	if used {
 		return ErrUserCredentialUsed
 	}
 	return nil

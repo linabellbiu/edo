@@ -268,6 +268,8 @@ func (h repositoryHandler) writeServiceError(c *gin.Context, operation string, e
 		writeError(c, http.StatusBadRequest, "invalid_credential", repository.ErrInvalidCredential.Error())
 	case errors.Is(err, repository.ErrRepositoryExists):
 		writeError(c, http.StatusConflict, "repository_exists", repository.ErrRepositoryExists.Error())
+	case errors.Is(err, repository.ErrRepositoryChanged):
+		writeError(c, http.StatusConflict, "repository_changed", repository.ErrRepositoryChanged.Error())
 	case errors.Is(err, repository.ErrRepositoryNotFound):
 		writeError(c, http.StatusNotFound, "repository_not_found", repository.ErrRepositoryNotFound.Error())
 	case errors.Is(err, repository.ErrRepositoryInUse):
