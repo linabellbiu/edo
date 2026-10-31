@@ -19,7 +19,8 @@ async function navigation(t,{start='/access?view=audit',saved=storage(),actor=id
   const route=new Proxy({}, {get:(_target,key)=>router.currentRoute.value[key]})
   const mounted=[],unmounted=[]
   const profile=vue.ref(actor)
-  const auth={get user(){return profile.value},get permissions(){return new Set(profile.value.permissions)},canAny:codes=>profile.value.is_superuser||!codes.length||codes.some(code=>profile.value.permissions.includes(code))}
+  const freshness=vue.ref('ready')
+  const auth={get authorizationState(){return freshness.value},get user(){return profile.value},get permissions(){return new Set(profile.value.permissions)},canAny:codes=>freshness.value==='ready'&&(profile.value.is_superuser||!codes.length||codes.some(code=>profile.value.permissions.includes(code)))}
   const h=componentHarness('../src/views/AccessView.vue',{
     modules:{axios:{isAxiosError},'@/stores/auth':{useAuthStore:()=>auth},vue:{...vue,onMounted:callback=>mounted.push(callback),onBeforeUnmount:callback=>unmounted.push(callback)},'vue-router':{useRoute:()=>route,useRouter:()=>router}},
     globals:{window:{sessionStorage:saved,crypto:webcrypto,dispatchEvent(){},setInterval(){return 1},clearInterval(){}}},
@@ -30,8 +31,60 @@ async function navigation(t,{start='/access?view=audit',saved=storage(),actor=id
   t.after(stop)
   await Promise.all(mounted.map(callback=>callback()));await settle()
   const navigate=async action=>{await new Promise((resolve,reject)=>{const remove=router.afterEach((_to,_from,failure)=>{remove();failure?reject(failure):resolve()});action()});await settle()}
-  return {...h,router,route,actor,profile,saved,stop,navigate,auditRequests:()=>h.requests.filter(x=>x.path.startsWith('/audit-logs'))}
+  return {...h,router,route,actor,profile,freshness,saved,stop,navigate,auditRequests:()=>h.requests.filter(x=>x.path.startsWith('/audit-logs'))}
 }
+
+test('授权checking同步清正文并取消旧响应，同权限恢复保持原审计页和位置',async t=>{
+  const pending=[]
+  let blocked=false
+  const h=await navigation(t,{get:(url,options)=>blocked?new Promise(resolve=>pending.push({url,options,resolve})):pages.get(url.searchParams.get('cursor')||'')})
+  await h.state.nextAuditPage();await settle()
+  const path=h.router.currentRoute.value.fullPath,saved=[...h.saved.values.entries()]
+  assert.equal(h.state.auditPage.value,2)
+  blocked=true
+  const old=h.state.nextAuditPage()
+  h.freshness.value='checking'
+  assert.equal(h.state.audits.value.length,0)
+  assert.equal(pending[0].options.signal.aborted,true)
+  assert.equal(h.state.auditPage.value,2)
+  assert.equal(h.state.active.value,'audit')
+  assert.deepEqual([...h.saved.values.entries()],saved)
+  pending[0].resolve(page('stale-sensitive',10));await old
+  assert.equal(h.state.audits.value.length,0)
+  h.freshness.value='unavailable';await settle()
+  assert.equal(h.router.currentRoute.value.fullPath,path)
+  assert.equal(h.auditRequests().length,3)
+  h.profile.value={...h.profile.value,permissions:[...h.profile.value.permissions].reverse()}
+  h.freshness.value='ready';await settle()
+  assert.equal(pending.length,2)
+  assert.equal(pending[1].url.searchParams.get('cursor'),'201')
+  pending[1].resolve(page('fresh-second',100,'101'));await settle()
+  assert.equal(h.state.auditPage.value,2)
+  assert.equal(h.state.audits.value[0].action,'fresh-second')
+})
+
+test('检查期间真正撤权清理位置与编辑层，不以旧超级管理员绕过授权状态',async t=>{
+  const h=await navigation(t,{actor:vue.reactive({...identity(),is_superuser:true})})
+  await h.state.nextAuditPage();await settle()
+  h.state.userFormOpen.value=h.state.roleFormOpen.value=h.state.accessOpen.value=true
+  h.state.removeRole({id:'role-a',display_name:'测试角色',permissions:[],in_use:false})
+  assert.equal(h.confirmations.length,1)
+  h.freshness.value='checking'
+  assert.equal(h.state.canDelegatePermission('user.delete'),false)
+  assert.equal(h.state.canManageRolePermissions({permissions:[]}),false)
+  assert.equal(h.state.canManageUserAccess({id:'other',role_ids:[],permission_overrides:{allow:[]}}),false)
+  assert.equal(h.state.userFormOpen.value,false)
+  assert.equal(h.state.roleFormOpen.value,false)
+  assert.equal(h.state.accessOpen.value,false)
+  assert.equal(h.confirmations.length,0)
+  assert.ok(h.saved.values.has('edo.audit.positions'),'未知状态本身不能清位置')
+  h.profile.value={...h.profile.value,is_superuser:false,permissions:[]}
+  assert.equal(h.saved.values.has('edo.audit.positions'),false)
+  h.freshness.value='ready';await settle()
+  assert.equal(h.state.active.value,'')
+  assert.equal(h.state.audits.value.length,0)
+  assert.equal(h.state.auditPage.value,1)
+})
 
 const deferred=()=>{let resolve,reject;const promise=new Promise((yes,no)=>{resolve=yes;reject=no});return {promise,resolve,reject}}
 const denied=status=>new AxiosError('访问已失效',undefined,undefined,undefined,{status,data:{},headers:{},config:{}})
@@ -45,9 +98,9 @@ function navigationStore(saved){
 
 function authLifecycle(saved,initial){
   let response=structuredClone(initial),failure
-  const api={__esModule:true,default:{get:async()=>({data:{projects:[{id:initial.project_id,is_active:true}]}}),post:async()=>{}},getCurrentUser:async()=>{if(failure)throw failure;return structuredClone(response)},login:async()=>{},loginLDAP:async()=>{},logout:async()=>{}}
+  const api={__esModule:true,setAuthorizationFreshness(){},default:{get:async()=>({data:{projects:[{id:initial.project_id,is_active:true}]}}),post:async()=>{}},getCurrentUser:async()=>{if(failure)throw failure;return structuredClone(response)},login:async()=>{},loginLDAP:async()=>{},logout:async()=>{}}
   const module=loadFrontend('../src/stores/auth.ts',{vue,pinia:{defineStore:(_id,factory)=>factory},axios:{__esModule:true,default:axios},'@/api/client':api},{window:{sessionStorage:saved,dispatchEvent(){}},localStorage:{getItem:()=>initial.project_id,setItem(){},removeItem(){}}})
-  const store=module.useAuthStore();store.user.value=structuredClone(initial);store.loaded.value=true
+  const store=module.useAuthStore();store.user.value=structuredClone(initial);store.loaded.value=true;store.authorizationState.value='ready'
   return {store,respond:value=>{response=structuredClone(value);failure=undefined},fail:value=>{failure=value}}
 }
 

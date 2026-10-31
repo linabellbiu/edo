@@ -16,6 +16,7 @@ const preview=createPreflightPreview(parameters.get('scenario')??'passed',{calls
 client.defaults.adapter=preview.adapter
 const pinia=createPinia(),auth=useAuthStore(pinia)
 auth.user={id:'k3s-preflight-fixture-user',username:'preview',nickname:'前端夹具',project_id:localStorage.getItem('edo.project')??'',department_id:'fixture-department',is_superuser:false,permissions:preview.permissions};auth.loaded=true
+auth.authorizationState='ready'
 const router=createRouter({history:createMemoryHistory(),routes:[{path:'/:pathMatch(.*)*',component:{template:'<p>前端检测夹具不访问业务路由。</p>'}}]})
 await router.push('/fixture')
 document.body.dataset.preflightFixture='true'

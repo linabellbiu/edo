@@ -196,6 +196,9 @@ func newAuthTestRouter(t *testing.T, configure ...func(*Dependencies, *gorm.DB))
 		SessionTTL: time.Hour, CookieName: "edo_session", LoginMaxFailure: 3, LoginWindow: time.Minute,
 	}
 	sessions := auth.NewSessionStore(redisClient, authConfig.SessionTTL)
+	accounts.SetInvalidations(sessions.Invalidations())
+	accessService.SetInvalidations(sessions.Invalidations())
+	departmentService.SetInvalidations(sessions.Invalidations())
 	limiter := auth.NewLoginRateLimiter(redisClient, authConfig.LoginMaxFailure, authConfig.LoginWindow, configurationService)
 	login, err := account.NewLoginService(accounts, sessions, limiter, logger)
 	if err != nil {

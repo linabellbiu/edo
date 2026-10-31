@@ -40,8 +40,9 @@ window.WebSocket = class PreviewWebSocket extends EventTarget {
 }
 const pinia = createPinia()
 const auth = useAuthStore(pinia)
-auth.user = { id: 'hosts-preview-user', username: 'preview', nickname: '本地主机预览', is_superuser: false, permissions: data.permissions }
+auth.user = { id: 'hosts-preview-user', username: 'preview', nickname: '本地主机预览', project_id: localStorage.getItem('edo.project') ?? '', is_superuser: false, permissions: data.permissions }
 auth.loaded = true
+auth.authorizationState = 'ready'
 const router = createRouter({ history: createMemoryHistory(), routes: [
   { path: '/hosts', component: HostView },
   { path: '/:pathMatch(.*)*', component: { template: '<section><h2>本地预览范围</h2><p>此入口仅验收主机 UI，不连接其他业务页面。</p><router-link to="/hosts">返回主机</router-link></section>' } },

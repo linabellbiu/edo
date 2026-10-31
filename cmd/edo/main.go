@@ -30,6 +30,7 @@ import (
 	"edo/internal/audit"
 	"edo/internal/auth"
 	"edo/internal/bootstrap"
+	"edo/internal/cache"
 	"edo/internal/config"
 	"edo/internal/configuration"
 	"edo/internal/credential"
@@ -208,7 +209,10 @@ func runAdminResetPassword(ctx context.Context, cfg config.Config, logger *slog.
 		logger.Error("密码重置前数据库迁移检查失败", "operation", "admin_reset_password_migration", "err", err)
 		return errors.New("请先执行数据库迁移")
 	}
-	user, err := account.NewService(db).ResetPassword(ctx, *username, password)
+	accounts := account.NewService(db)
+	closeNotifications := configurePasswordResetInvalidations(ctx, cfg.Redis, logger, accounts)
+	defer closeNotifications()
+	user, err := accounts.ResetPassword(ctx, *username, password)
 	password = ""
 	if err != nil {
 		logger.Error("重置用户密码失败", "operation", "admin_reset_password", "username", *username, "err", err)
@@ -216,6 +220,29 @@ func runAdminResetPassword(ctx context.Context, cfg config.Config, logger *slog.
 	}
 	logger.Info("用户密码已重置并启用账户", "operation", "admin_reset_password", "user_id", user.ID, "username", user.Username)
 	return nil
+}
+
+// Redis 通知是在线会话的加速信号，不能成为离线管理员恢复账户的前置条件。
+func configurePasswordResetInvalidations(ctx context.Context, cfg config.Redis, logger *slog.Logger, accounts *account.Service) func() {
+	if strings.TrimSpace(cfg.URL) == "" {
+		return func() {}
+	}
+	if cfg.Timeout <= 0 || cfg.Timeout > 3*time.Second {
+		cfg.Timeout = 3 * time.Second
+	}
+	connectCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	redisClient, err := cache.Open(connectCtx, cfg)
+	if err != nil {
+		logger.Warn("密码重置的在线身份通知不可用，继续离线恢复", "operation", "admin_reset_password_notifications", "err", err)
+		return func() {}
+	}
+	accounts.SetInvalidations(auth.NewInvalidations(redisClient, logger))
+	return func() {
+		if err := redisClient.Close(); err != nil {
+			logger.Warn("关闭密码重置通知连接失败", "operation", "admin_reset_password_notifications_close", "err", err)
+		}
+	}
 }
 
 func runLegacyImport(ctx context.Context, cfg config.Config, logger *slog.Logger, args []string) error {
@@ -431,7 +458,9 @@ func runServer(ctx context.Context, cfg config.Config, logger *slog.Logger, runt
 		return errors.New("服务依赖初始化失败")
 	}
 	defer resources.Close()
+	sessions := auth.NewSessionStore(resources.Redis, cfg.Auth.SessionTTL)
 	accounts := account.NewService(resources.Database)
+	accounts.SetInvalidations(sessions.Invalidations())
 	initialAdmin, created, err := accounts.EnsureInitialAdmin(serviceCtx)
 	if err != nil {
 		logger.Error("初始化管理员账户失败", "operation", "account_bootstrap", "err", err)
@@ -450,6 +479,7 @@ func runServer(ctx context.Context, cfg config.Config, logger *slog.Logger, runt
 		logger.Error("初始化 Casbin 权限服务失败", "operation", "rbac_bootstrap", "err", err)
 		return errors.New("权限服务初始化失败")
 	}
+	accessService.SetInvalidations(sessions.Invalidations())
 	auditService := audit.NewService(resources.Database)
 	if err := accessService.EnsureProjectRoles(serviceCtx); err != nil {
 		logger.Error("初始化项目角色失败", "operation", "project_roles_bootstrap", "err", err)
@@ -508,7 +538,6 @@ func runServer(ctx context.Context, cfg config.Config, logger *slog.Logger, runt
 	cfg.Git.Directory, cfg.Git.CacheDirectory = workspaceDirectory, cacheDirectory
 	cfg.Artifacts.BuildDirectory, cfg.Artifacts.Directory = buildDirectory, artifactDirectory
 	logRetentionService := logretention.NewService(resources.Database, configurationService, logger)
-	sessions := auth.NewSessionStore(resources.Redis, cfg.Auth.SessionTTL)
 	limiter := auth.NewLoginRateLimiter(resources.Redis, cfg.Auth.LoginMaxFailure, cfg.Auth.LoginWindow, configurationService)
 	loginService, err := account.NewLoginService(accounts, sessions, limiter, logger)
 	if err != nil {
@@ -593,6 +622,7 @@ func runServer(ctx context.Context, cfg config.Config, logger *slog.Logger, runt
 	systemMetricsService.ConfigureHistory(resources.Redis.Client(), resources.Redis.Key("system", "metrics"), cfg.Server.Address)
 	taskWorker.ConfigureRealtime(realtimeBus)
 	departmentService := department.NewService(resources.Database)
+	departmentService.SetInvalidations(sessions.Invalidations())
 	assistantService := assistant.NewService(assistant.Dependencies{
 		Database: resources.Database, Secrets: secretManager, Access: accessService,
 		Pipeline: pipelineService, Kubernetes: kubernetesService, Audits: auditService, Logger: logger,

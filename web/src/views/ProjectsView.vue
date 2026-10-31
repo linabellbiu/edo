@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, h, onMounted, onBeforeUnmount, reactive, ref } from 'vue'
+import { computed, h, onMounted, onBeforeUnmount, reactive, ref, watch } from 'vue'
 import { Modal, message } from 'ant-design-vue'
 import { Plus, RefreshCw } from 'lucide-vue-next'
 import { useI18n } from 'vue-i18n'
@@ -19,11 +19,24 @@ const rows=ref<Project[]>([]),departments=ref<Array<{id:string;name:string}>>([]
 const form=reactive({name:'',description:'',department_id:'',is_active:true}),member=reactive({user_id:'',role_id:''}),roleDrafts=reactive<Record<string,string>>({})
 const filtered=computed(()=>rows.value.filter(item=>`${item.name} ${item.description}`.toLowerCase().includes(query.value.toLowerCase())))
 const columns=computed(()=>[{key:'name',label:t('workspace.name')},{key:'department_id',label:t('workspace.department'),width:'180px'},{key:'is_active',label:t('workspace.status'),width:'110px'},{key:'updated_at',label:t('workspace.updated'),width:'190px'}])
-const can=(code:string)=>auth.user?.is_superuser||selected.value?.permissions.includes(code)||selected.value?.permissions.includes('*')
+const can=(code:string)=>auth.authorizationState !== 'checking' && auth.authorizationState !== 'unavailable' && (auth.user?.is_superuser||selected.value?.permissions.includes(code)||selected.value?.permissions.includes('*'))
 const roleOptions=computed(()=>selected.value?.roles.map(role=>({value:role.id,label:role.display_name,disabled:!auth.user?.is_superuser&&!role.permissions.every(code=>selected.value?.permissions.includes(code))}))||[])
 const preview=computed(()=>selected.value?.roles.find(role=>role.id===member.role_id)?.permissions||[])
-async function load(){loading.value=true;try{rows.value=(await client.get<{projects:Project[]}>('/projects')).data.projects;if(auth.canAny(['department.read']))departments.value=(await client.get<{departments:typeof departments.value}>('/departments')).data.departments}catch(error){message.error(apiErrorMessage(error))}finally{loading.value=false}}
-let revision=0
+const authorizationAvailable=()=>auth.authorizationState!=='checking'&&auth.authorizationState!=='unavailable'
+const identity=()=>JSON.stringify([auth.user?.id,auth.user?.department_id,auth.user?.project_id,auth.user?.is_superuser,[...(auth.user?.permissions??[])].sort()])
+let revision=0,loadRevision=0,disposed=false
+async function load(){
+ if(disposed||!authorizationAvailable())return
+ const request=++loadRevision,scope=identity(),current=()=>!disposed&&request===loadRevision&&authorizationAvailable()&&scope===identity()
+ loading.value=true
+ try{
+  const projects=(await client.get<{projects:Project[]}>('/projects')).data.projects
+  if(!current())return
+  const items=auth.canAny(['department.read'])?(await client.get<{departments:typeof departments.value}>('/departments')).data.departments:[]
+  if(!current())return
+  rows.value=projects;departments.value=items
+ }catch(error){if(current())message.error(apiErrorMessage(error))}finally{if(request===loadRevision)loading.value=false}
+}
 async function detail(id:string){const request=++revision;try{const value=(await client.get<Detail>(`/projects/${encodeURIComponent(id)}`)).data;if(request!==revision)return;selected.value=value;Object.assign(roleDrafts,Object.fromEntries(value.members.map(item=>[item.user_id,item.role_id])));Object.assign(member,{user_id:'',role_id:''});open.value=true}catch(error){if(request===revision)message.error(apiErrorMessage(error))}}
 function closeDetail(){revision++;open.value=false;selected.value=null}
 function edit(item?:Project){editingID.value=item?.id||'';Object.assign(form,{name:item?.name||'',description:item?.description||'',department_id:item?.department_id||auth.user?.department_id||'',is_active:item?.is_active??true});formOpen.value=true}
@@ -42,7 +55,11 @@ function assign(userID:string,roleID:string){
 }
 function remove(item:Project){Modal.confirm({title:t('workspace.confirmDelete'),content:t('workspace.confirmDeleteHint'),okType:'danger',async onOk(){try{await client.delete(`/projects/${item.id}`);open.value=false;window.dispatchEvent(new Event('edo:projects-changed'));await load()}catch(error){message.error(apiErrorMessage(error));throw error}}})}
 function useProject(item:Project){localStorage.setItem('edo.project',item.id);window.location.assign('/applications')}
-onBeforeUnmount(()=>{revision++})
+watch([()=>auth.authorizationState,identity],([state,scope],[previous,oldScope])=>{
+ if(state==='checking'||state==='unavailable'||scope!==oldScope){loadRevision++;loading.value=false;closeDetail();formOpen.value=false;rows.value=[];departments.value=[]}
+ if(authorizationAvailable()&&(previous==='checking'||previous==='unavailable'||scope!==oldScope))void load()
+}, {flush:'sync'})
+onBeforeUnmount(()=>{disposed=true;revision++;loadRevision++})
 onMounted(load)
 </script>
 <template><section><PageToolbar :description="t('workspace.description')"><a-button @click="load" :aria-label="t('workspace.refresh')" :loading="loading"><RefreshCw :size="15"/></a-button><a-button v-if="auth.canAny(['project.create'])" type="primary" @click="edit()"><Plus :size="15"/>{{t('workspace.create')}}</a-button></PageToolbar><div class="workspace-search"><a-input-search v-model:value="query" allow-clear :placeholder="t('workspace.search')"/></div><div class="vben-card"><ResourceTable :rows="filtered" :columns="columns" :loading="loading" :details="false"><template #cell-name="{row}"><button class="project-name" @click="detail(String(row.id))">{{row.name}}</button><a-tag v-if="row.is_default&&row.name!==t('workspace.default')" class="default-tag">{{t('workspace.default')}}</a-tag><p class="muted">{{row.description||'—'}}</p></template><template #cell-department_id="{row}">{{row.department_name||departments.find(item=>item.id===row.department_id)?.name||auth.user?.department_name||'—'}}</template><template #cell-is_active="{row}"><a-tag :color="row.is_active?'success':'default'">{{row.is_active?t('workspace.enabled'):t('workspace.disabled')}}</a-tag></template><template #cell-updated_at="{row}"><time>{{new Date(String(row.updated_at)).toLocaleString()}}</time></template><template #actions="{row}"><a-button size="small" @click="detail(String(row.id))">{{t('workspace.details')}}</a-button><a-button v-if="row.is_active" size="small" @click="useProject(row as Project)">{{t('workspace.useProject')}}</a-button></template></ResourceTable></div>

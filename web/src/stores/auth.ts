@@ -1,10 +1,12 @@
 import axios from 'axios'
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { defineStore } from 'pinia'
+import { openLiveSocket, type LiveSocketState } from '@/utils/liveSocket'
 
 import {
   default as client,
   getCurrentUser,
+  setAuthorizationFreshness,
   login as loginRequest,
   loginLDAP as loginLDAPRequest,
   logout as logoutRequest,
@@ -15,12 +17,18 @@ export const useAuthStore = defineStore('auth', () => {
   const user = ref<User | null>(null)
   const loaded = ref(false)
   const loadFailed = ref(false)
+  const authorizationState = ref<'checking' | 'ready' | 'unavailable'>('checking')
+  const authorizationReady = computed(() => authorizationState.value === 'ready')
+  watch(authorizationReady, setAuthorizationFreshness, { immediate: true, flush: 'sync' })
   const permissions = computed(() => new Set(user.value?.permissions ?? []))
+  const identityRevision = ref(0)
   let revision = 0
   let permissionRevision = 0
   let loadPromise: Promise<void> | null = null
   let refresh: { subject: User; project: string; revision: number; cancelled: boolean; promise: Promise<void> } | undefined
   let schedulePermissionSync: (() => void) | undefined
+  let stopSync: (() => void) | undefined
+  let socketState: LiveSocketState | undefined
   const selectedProject = () => localStorage.getItem('edo.project') ?? ''
 
   function clearAuditPositions() {
@@ -34,15 +42,23 @@ export const useAuthStore = defineStore('auth', () => {
   function applyProfile(profile: User) {
     if (user.value && profileContext(user.value) !== profileContext(profile)) clearAuditPositions()
     user.value = profile
+    authorizationState.value = socketState && socketState !== 'connected' ? 'unavailable' : 'ready'
+  }
+
+  function suspendAuthorization(state: 'checking' | 'unavailable' = 'checking') {
+    permissionRevision++
+    authorizationState.value = state
   }
 
   function invalidateSession() {
     revision++
     permissionRevision++
+    authorizationState.value = 'checking'
     loadPromise = null
     refresh = undefined
     clearAuditPositions()
     user.value = null
+    identityRevision.value++
   }
 
   async function ensureLoaded() {
@@ -130,7 +146,8 @@ export const useAuthStore = defineStore('auth', () => {
 
   async function refreshPermissions() {
     const subject = user.value, project = selectedProject(), request = revision
-    if (!subject || (subject.project_id ?? '') !== project) return
+    if (!subject) return
+    if ((subject.project_id ?? '') !== project) { suspendAuthorization(); return }
     if (refresh?.subject === subject && refresh.project === project && refresh.revision === request) return refresh.promise
     const operation = { subject, project, revision: request, cancelled: false, promise: Promise.resolve() }
     const current = () => !operation.cancelled && request === revision && user.value === subject && selectedProject() === project
@@ -171,6 +188,9 @@ export const useAuthStore = defineStore('auth', () => {
               user.value = { ...subject, permissions: [], is_superuser: false }
               window.dispatchEvent(new Event('edo:projects-changed'))
             }
+            authorizationState.value = socketState && socketState !== 'connected' ? 'unavailable' : 'ready'
+          } else {
+            authorizationState.value = 'unavailable'
           }
           // 网络失败不伪造撤权或登出；后续请求仍由服务端逐项鉴权。
           throw error
@@ -185,7 +205,9 @@ export const useAuthStore = defineStore('auth', () => {
   }
 
   function startPermissionSync() {
+    stopSync?.()
     let disposed = false, lastAttempt = -Infinity
+    let closeSocket: (() => void) | undefined, socketEpoch = 0
     let retry: number | undefined
     const sync = () => {
       if (disposed || !user.value || document.hidden || retry !== undefined) return
@@ -204,7 +226,7 @@ export const useAuthStore = defineStore('auth', () => {
     schedulePermissionSync = schedule
     const denied = (event: Event) => {
       if ((event as CustomEvent<{ project: string }>).detail?.project !== selectedProject()) return
-      permissionRevision++
+      suspendAuthorization()
       // 在途核验会在响应后处理最新修订；合并突发拒绝，不另起并发请求。
       if (refresh?.subject === user.value && refresh.project === selectedProject() && refresh.revision === revision) return
       sync()
@@ -214,9 +236,46 @@ export const useAuthStore = defineStore('auth', () => {
     document.addEventListener('visibilitychange', sync)
     // 只校准当前用户权限，不依赖业务通知权限，也不轮询业务列表。
     const interval = window.setInterval(sync, 60_000)
-    return () => {
+    const stopIdentity = watch([() => user.value?.id ?? '', identityRevision], ([id]) => {
+      const epoch = ++socketEpoch
+      closeSocket?.()
+      closeSocket = undefined
+      socketState = undefined
+      if (disposed || !id) return
+      closeSocket = openLiveSocket({
+        path: '/api/v1/auth/events/ws', protocol: 'edo-auth-v1',
+        onState(state) {
+          if (disposed || epoch !== socketEpoch) return
+          socketState = state
+          if (state === 'connecting' || state === 'disconnected' || state === 'stopped') suspendAuthorization(state === 'connecting' ? 'checking' : 'unavailable')
+          if (state === 'connected') sync()
+        },
+        onEvent(data) {
+          if (disposed || epoch !== socketEpoch) return false
+          if (!data || typeof data !== 'object' || !('type' in data)) return false
+          const type = (data as { type: unknown }).type
+          if (type === 'heartbeat') return
+          if (type !== 'resync' && type !== 'changed') return false
+          suspendAuthorization()
+          if (refresh?.subject === user.value && refresh.project === selectedProject() && refresh.revision === revision) return
+          sync()
+        },
+        onDenied() {
+          if (disposed || epoch !== socketEpoch) return
+          invalidateSession()
+          loaded.value = true
+          loadFailed.value = false
+        },
+      })
+    }, { immediate: true, flush: 'sync' })
+    const stop = () => {
       if (disposed) return
       disposed = true
+      socketEpoch++
+      stopIdentity()
+      closeSocket?.()
+      socketState = undefined
+      if (stopSync === stop) stopSync = undefined
       if (schedulePermissionSync === schedule) schedulePermissionSync = undefined
       if (refresh) { refresh.cancelled = true; refresh = undefined }
       window.clearInterval(interval)
@@ -225,12 +284,24 @@ export const useAuthStore = defineStore('auth', () => {
       window.removeEventListener('focus', sync)
       document.removeEventListener('visibilitychange', sync)
     }
+    stopSync = stop
+    return stop
+  }
+
+  async function retryAuthorization() {
+    if (!user.value) return
+    suspendAuthorization()
+    identityRevision.value++
+    try { await refreshPermissions() } catch { /* 页面保留明确的不可用状态与重试入口。 */ }
   }
 
   function canAny(required: string[]) {
-    if (user.value?.is_superuser || required.length === 0) return true
+    if (required.length === 0) return true
+    if (!authorizationReady.value) return false
+    if (!user.value || (user.value.project_id ?? '') !== selectedProject()) return false
+    if (user.value?.is_superuser) return true
     return required.some((permission) => permissions.value.has(permission))
   }
 
-  return { user, loaded, loadFailed, permissions, ensureLoaded, refreshPermissions, startPermissionSync, login, loginLDAP, loginEmail, logout, canAny }
+  return { user, loaded, loadFailed, permissions, authorizationState, authorizationReady, ensureLoaded, refreshPermissions, retryAuthorization, startPermissionSync, login, loginLDAP, loginEmail, logout, canAny }
 })

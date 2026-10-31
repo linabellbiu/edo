@@ -6,9 +6,11 @@ import {loadFrontend} from './acceptanceHarness.mjs'
 function routeHarness(codes=[],{superuser=false,anonymous=false,unavailable=false}={}) {
   const authStore=loadFrontend('../src/stores/auth.ts',{
     vue,pinia:{defineStore:(_name,factory)=>factory},axios:{__esModule:true,default:{isAxiosError:()=>false}},
+    '@/api/client':{setAuthorizationFreshness(){}},
   },{localStorage:{getItem(){return null}}}).useAuthStore()
   authStore.user.value=anonymous?null:{id:'operator',permissions:codes,is_superuser:superuser}
   authStore.loaded.value=true;authStore.loadFailed.value=unavailable
+  authStore.authorizationState.value='ready'
   const auth=vue.proxyRefs(authStore)
   const navigation=loadFrontend('../src/router/navigation.ts')
   let guard,after,options

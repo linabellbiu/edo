@@ -3,6 +3,7 @@ package httpapi
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -232,16 +233,26 @@ func readSocketControl(connection *websocket.Conn, logger *slog.Logger) <-chan s
 		defer close(done)
 		for {
 			if _, _, err := connection.ReadMessage(); err != nil {
-				if websocket.IsCloseError(err, websocket.CloseNormalClosure, websocket.CloseGoingAway, websocket.ClosePolicyViolation) {
-					logger.Debug("实时连接已关闭", "err", err)
-				} else {
-					logger.Warn("实时连接异常断开", "err", err)
-				}
+				logSocketControlError(logger, err)
 				return
 			}
 		}
 	}()
 	return done
+}
+
+func logSocketControlError(logger *slog.Logger, err error) {
+	// CloseError.Text 来自客户端，可夹带任意内容；诊断只保留类型和关闭码。
+	code := 0
+	var closed *websocket.CloseError
+	if errors.As(err, &closed) {
+		code = closed.Code
+	}
+	if websocket.IsCloseError(err, websocket.CloseNormalClosure, websocket.CloseGoingAway, websocket.ClosePolicyViolation) {
+		logger.Debug("实时连接已关闭", "close_code", code, "error_type", fmt.Sprintf("%T", err))
+	} else {
+		logger.Warn("实时连接异常断开", "close_code", code, "error_type", fmt.Sprintf("%T", err))
+	}
 }
 
 func closeSocketNormally(connection *websocket.Conn, done <-chan struct{}) {

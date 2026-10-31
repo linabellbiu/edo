@@ -36,11 +36,21 @@ const client = axios.create({
 })
 
 let authorizedProject: string | undefined
+let authorizationFresh = true, authorizationEpoch = 0
+const requestEpochs = new WeakMap<object, number>()
+export function setAuthorizationFreshness(fresh: boolean) {
+  if (!fresh) authorizationEpoch++
+  authorizationFresh = fresh
+}
 const selectedProject = () => typeof localStorage === 'undefined' ? '' : localStorage.getItem('edo.project') ?? ''
 const projectChangedMessage = '项目已切换，请刷新页面后重试'
 const contextRequest = (config: InternalAxiosRequestConfig) => /^\/?auth(?:\/|$)/.test(config.url ?? '') || config.method === 'get' && config.url === '/projects'
 
 client.interceptors.request.use(config => {
+  if (!contextRequest(config)) {
+    if (!authorizationFresh) throw new axios.AxiosError('正在重新核验权限，请稍后重试', 'EDO_AUTHORIZATION_PENDING', config)
+    requestEpochs.set(config, authorizationEpoch)
+  }
   const project = selectedProject()
   const requestedProject = config.headers.has('X-EDO-Project-ID') ? String(config.headers.get('X-EDO-Project-ID') ?? '') : project
   if (!contextRequest(config) && (requestedProject !== project || authorizedProject !== undefined && project !== authorizedProject)) {
@@ -57,10 +67,16 @@ function responseProjectChanged(config?: InternalAxiosRequestConfig) {
   return project !== selectedProject() || authorizedProject !== undefined && project !== authorizedProject
 }
 
+function responseAuthorizationChanged(config?: InternalAxiosRequestConfig) {
+  return Boolean(config && !contextRequest(config) && (!authorizationFresh || requestEpochs.get(config) !== authorizationEpoch))
+}
+
 client.interceptors.response.use(response => {
+  if (responseAuthorizationChanged(response.config)) throw new axios.AxiosError('授权状态已更新，请重新读取', 'EDO_AUTHORIZATION_CHANGED', response.config)
   if (responseProjectChanged(response.config)) throw new axios.AxiosError(projectChangedMessage, 'EDO_PROJECT_CHANGED', response.config)
   return response
 }, error => {
+  if (axios.isAxiosError(error) && responseAuthorizationChanged(error.config)) throw new axios.AxiosError('授权状态已更新，请重新读取', 'EDO_AUTHORIZATION_CHANGED', error.config)
   if (axios.isAxiosError(error) && responseProjectChanged(error.config)) throw new axios.AxiosError(projectChangedMessage, 'EDO_PROJECT_CHANGED', error.config)
   if (axios.isAxiosError(error) && error.response?.status === 403 && error.config && !contextRequest(error.config) && typeof window !== 'undefined') {
     // 只通知当前范围重新核验权限；原请求仍失败，尤其不能自动重放写操作。

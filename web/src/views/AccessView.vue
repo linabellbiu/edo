@@ -161,17 +161,19 @@ const accessForm = reactive({
   effects: {} as Record<string, 'inherit' | 'allow' | 'deny'>,
 })
 
+const authorizationReady = computed(() => auth.authorizationState !== 'checking' && auth.authorizationState !== 'unavailable')
+const knownPermission = (codes: string[]) => Boolean(auth.user?.is_superuser || codes.some(code => auth.permissions.has(code)))
 const tabs = computed(() => [
-  ...(auth.canAny(['user.read', 'user.create', 'user.update', 'user.delete'])
+  ...(knownPermission(['user.read', 'user.create', 'user.update', 'user.delete'])
     ? [{ key: 'users', label: '用户管理' }]
     : []),
-  ...(auth.canAny(['department.read', 'department.create', 'department.update', 'department.delete'])
+  ...(knownPermission(['department.read', 'department.create', 'department.update', 'department.delete'])
     ? [{ key: 'departments', label: '部门管理' }]
     : []),
-  ...(auth.canAny(['role.read', 'role.create', 'role.update', 'role.delete'])
+  ...(knownPermission(['role.read', 'role.create', 'role.update', 'role.delete'])
     ? [{ key: 'roles', label: '角色与权限' }]
     : []),
-  ...(auth.canAny(['audit.read']) ? [{ key: 'audit', label: '审计日志' }] : []),
+  ...(knownPermission(['audit.read']) ? [{ key: 'audit', label: '审计日志' }] : []),
 ])
 
 const active = computed(() =>
@@ -432,14 +434,15 @@ const toolbarDescription = computed(() => {
 })
 
 function canAny(required: string[]) {
-  return auth.canAny(required)
+  return authorizationReady.value && auth.canAny(required)
 }
 
 function canDelegatePermission(permission: string) {
-  return Boolean(auth.user?.is_superuser || auth.permissions.has(permission))
+  return authorizationReady.value && Boolean(auth.user?.is_superuser || auth.permissions.has(permission))
 }
 
 function canManageUserAccess(item: ManagedUser) {
+  if (!authorizationReady.value) return false
   if (auth.user?.is_superuser) return true
   if (item.id === auth.user?.id) return false
   const rolesDelegable = item.role_ids.every((id) => roleMap.value.get(id)?.permissions.every(canDelegatePermission))
@@ -447,7 +450,7 @@ function canManageUserAccess(item: ManagedUser) {
 }
 
 function canManageRolePermissions(item: Role) {
-  return Boolean(auth.user?.is_superuser || item.permissions.every(canDelegatePermission))
+  return authorizationReady.value && Boolean(auth.user?.is_superuser || item.permissions.every(canDelegatePermission))
 }
 
 function userInitial(row: ResourceRecord) {
@@ -462,12 +465,16 @@ function auditResult(value: unknown) {
   return { label: '未知', color: 'default' }
 }
 
+let accessRevision = 0
 async function refresh() {
+  if (!authorizationReady.value || auditDisposed) return
   if (active.value === 'audit') {
     await loadAuditPage([''])
     return
   }
   loading.value = true
+  const revision = ++accessRevision, context = auditScope.value
+  const current = () => !auditDisposed && authorizationReady.value && revision === accessRevision && context === auditScope.value
   try {
     const canLoadUsers = canAny(['user.read', 'user.create', 'user.update', 'user.delete'])
     const canLoadDepartments = canAny([
@@ -489,28 +496,29 @@ async function refresh() {
     const canLoadPermissions = canAny(['role.read', 'role.create', 'role.update', 'role.delete', 'user.update'])
     const [userResponse, departmentResponse, roleResponse, permissionResponse] =
       await Promise.all([
-        canLoadUsers ? loadAllUsers() : null,
+        canLoadUsers ? loadAllUsers(current) : null,
         canLoadDepartments ? client.get<{ departments: Department[] }>('/departments') : null,
         canLoadRoles ? client.get<{ roles: Role[] }>('/roles') : null,
         canLoadPermissions ? client.get<{ permissions: Permission[] }>('/permissions') : null,
       ])
+    if (!current()) return
     users.value = userResponse || []
     departments.value = departmentResponse?.data.departments || []
     roles.value = roleResponse?.data.roles || []
     permissions.value = permissionResponse?.data.permissions || []
   } catch (error) {
-    message.error(apiErrorMessage(error))
+    if (current()) message.error(apiErrorMessage(error))
   } finally {
-    loading.value = false
+    if (revision === accessRevision) loading.value = false
   }
 }
 
-function resetAuditPagination() {
+function resetAuditPagination(preservePosition = false) {
   auditRevision += 1
   auditController?.abort()
   auditController = undefined
   audits.value = []
-  auditCursorStack.value = ['']
+  if (!preservePosition) auditCursorStack.value = ['']
   auditNextCursor.value = ''
   auditHasMore.value = false
   auditLoading.value = false
@@ -569,11 +577,12 @@ async function previousAuditPage() {
   await loadAuditPage(auditCursorStack.value.slice(0, -1))
 }
 
-async function loadAllUsers() {
+async function loadAllUsers(current: () => boolean = () => true) {
   const pageSize = 200
   const result: ManagedUser[] = []
   for (let offset = 0; ; offset += pageSize) {
     const response = await client.get<{ users: ManagedUser[] }>(`/users?limit=${pageSize}&offset=${offset}`)
+    if (!current()) return []
     const page = response.data.users || []
     result.push(...page)
     if (page.length < pageSize) return result
@@ -932,25 +941,41 @@ function effectivePermissionSummary(value: unknown) {
 watch(
   active,
   (value, previous) => {
+    if (!authorizationReady.value) return
     if (value && route.query.view !== value) selectTab(value)
     if (previous === 'audit' && value && value !== 'audit') void refresh()
   },
   { immediate: true },
 )
-watch(() => JSON.stringify([auditContext.value, route.query.audit_position ?? null]), () => {
+watch(() => JSON.stringify([auditContext.value, route.query.audit_position ?? null, authorizationReady.value]), () => {
   const scopeChanged = lastAuditScope !== auditScope.value
   lastAuditScope = auditScope.value
   if (scopeChanged) clearAuditPositions()
+  if (!authorizationReady.value) {
+    resetAuditPagination(!scopeChanged)
+    accessRevision++
+    loading.value = false
+    users.value = []; departments.value = []; roles.value = []; permissions.value = []
+    userFormOpen.value = departmentFormOpen.value = roleFormOpen.value = accessOpen.value = false
+    userDepartmentOpen.value = memberDrawerOpen.value = clusterRbacOpen.value = false
+    editingUser.value = null
+    Modal.destroyAll()
+    return
+  }
   const internalWrite = JSON.stringify([auditContext.value, route.query.audit_position ?? null])
   if (!scopeChanged && auditRouteWrites.has(internalWrite)) return
   resetAuditPagination()
   if (active.value === 'audit' && canAny(['audit.read'])) {
     if (scopeChanged) replaceAuditPosition()
     void loadAuditPage(scopeChanged ? [''] : restoreAuditPosition())
-  } else replaceAuditPosition()
+  } else {
+    replaceAuditPosition()
+    void refresh()
+  }
 }, { flush: 'sync' })
 onBeforeUnmount(() => {
   auditDisposed = true
+  accessRevision++
   resetAuditPagination()
 })
 onMounted(() => {
@@ -963,7 +988,7 @@ onMounted(() => {
 <template>
   <section>
     <PageToolbar :description="toolbarDescription">
-      <a-button :loading="loading || auditLoading" @click="refresh">
+      <a-button :loading="loading || auditLoading" :disabled="!authorizationReady" @click="refresh">
         <RefreshCw :size="15" />刷新
       </a-button>
       <a-button
@@ -992,6 +1017,7 @@ onMounted(() => {
     <a-segmented
       :value="active"
       :options="tabs.map((item) => ({ value: item.key, label: item.label }))"
+      :disabled="!authorizationReady"
       class="edo-page-tabs"
       aria-label="访问控制页面"
       @change="(value: string) => selectTab(value)"
@@ -1174,8 +1200,8 @@ onMounted(() => {
         <div class="audit-pagination" aria-label="审计日志分页">
           <span>第 {{ auditPage }} 页 · 本页 {{ audits.length }} 条（每页 {{ auditPageSize }} 条）</span>
           <a-space>
-            <a-button :disabled="auditLoading || auditPage <= 1" @click="previousAuditPage">上一页</a-button>
-            <a-button :disabled="auditLoading || !auditHasMore" @click="nextAuditPage">下一页</a-button>
+            <a-button :disabled="!authorizationReady || auditLoading || auditPage <= 1" @click="previousAuditPage">上一页</a-button>
+            <a-button :disabled="!authorizationReady || auditLoading || !auditHasMore" @click="nextAuditPage">下一页</a-button>
           </a-space>
         </div>
       </template>

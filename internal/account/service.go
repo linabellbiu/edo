@@ -37,10 +37,15 @@ var (
 )
 
 type Service struct {
-	db *gorm.DB
+	db            *gorm.DB
+	invalidations *auth.Invalidations
 }
 
 func NewService(db *gorm.DB) *Service { return &Service{db: db} }
+
+func (s *Service) SetInvalidations(invalidations *auth.Invalidations) {
+	s.invalidations = invalidations
+}
 
 // EnsureInitialAdmin 仅在账户表为空时创建产品约定的默认管理员。
 // 默认口令有意不经过普通账户的 12 位密码校验，也不设置强制改密状态。
@@ -159,6 +164,7 @@ func (s *Service) SetDepartment(ctx context.Context, userID, departmentID string
 	}).Error; err != nil {
 		return fmt.Errorf("调整用户部门失败: %w", err)
 	}
+	s.invalidations.UserChanged(ctx, userID)
 	return nil
 }
 
@@ -223,10 +229,14 @@ func (s *Service) SetActive(ctx context.Context, userID string, active bool) (er
 		updates["auth_version"] = gorm.Expr("auth_version + ?", 1)
 	}
 	// 只更新实际状态转换；重复停用不反复递增，重新启用也不恢复旧认证版本。
-	if err := s.db.WithContext(ctx).Model(&model.User{}).
+	result := s.db.WithContext(ctx).Model(&model.User{}).
 		Where("uuid = ? AND is_active = ? AND is_superuser = ?", userID, !active, false).
-		Updates(updates).Error; err != nil {
-		return fmt.Errorf("修改用户状态失败: %w", err)
+		Updates(updates)
+	if result.Error != nil {
+		return fmt.Errorf("修改用户状态失败: %w", result.Error)
+	}
+	if result.RowsAffected > 0 {
+		s.invalidations.UserChanged(ctx, userID)
 	}
 	return nil
 }
@@ -279,6 +289,14 @@ func (s *Service) ResetPassword(ctx context.Context, username, password string) 
 		return nil, ErrUserNotFound
 	}
 	var user model.User
+	// 更新已成功时，后续结果重读失败也必须通知在线身份重新验证。
+	defer func() {
+		if user.ID != "" {
+			s.invalidations.UserChanged(ctx, user.ID)
+		} else {
+			s.invalidations.PolicyChanged(ctx)
+		}
+	}()
 	if err := s.db.WithContext(ctx).First(&user, "username = ?", username).Error; err != nil {
 		return nil, fmt.Errorf("读取密码重置结果失败: %w", err)
 	}
@@ -334,6 +352,7 @@ func (s *Service) ChangePassword(ctx context.Context, userID, currentPassword, n
 	if result.RowsAffected != 1 {
 		return errors.New("用户信息已发生变化，请重新登录后再试")
 	}
+	s.invalidations.UserChanged(ctx, user.ID)
 	return nil
 }
 

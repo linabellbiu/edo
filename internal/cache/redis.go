@@ -2,7 +2,9 @@ package cache
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 
 	"github.com/redis/go-redis/v9"
@@ -18,9 +20,13 @@ type Redis struct {
 func Open(ctx context.Context, cfg config.Redis) (*Redis, error) {
 	options, err := redis.ParseURL(cfg.URL)
 	if err != nil {
-		return nil, fmt.Errorf("Redis 连接配置无效: %w", err)
+		// ParseURL 的原错误可能包含带口令的输入，诊断只保留稳定分类和类型。
+		slog.ErrorContext(ctx, "Redis 连接配置无效", "operation", "redis_config_parse", "error_kind", "invalid_url", "error_type", fmt.Sprintf("%T", err), "err", errors.New("连接 URL 格式无效"))
+		return nil, errors.New("Redis 连接配置无效")
 	}
 	options.Protocol = 2
+	// 命令遵守调用方的取消及总期限，避免读写超时分别累加突破业务预算。
+	options.ContextTimeoutEnabled = true
 	options.DialTimeout = cfg.Timeout
 	options.ReadTimeout = cfg.Timeout
 	options.WriteTimeout = cfg.Timeout

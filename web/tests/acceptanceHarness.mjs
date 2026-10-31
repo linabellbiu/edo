@@ -32,7 +32,7 @@ export function componentHarness(path, {codes = [], superuser = false, query = {
     vue:{...vue,onMounted(){},onBeforeUnmount(){},onUnmounted(){}},
     'vue-i18n':{useI18n:()=>({t:key=>key,locale:vue.ref('zh-CN')})},
     'vue-router':{useRoute:()=>route,useRouter:()=>({replace:value=>{replacements.push(value);return Promise.resolve()},push:value=>{replacements.push(value);return Promise.resolve()}})},
-    'ant-design-vue':{Modal:{confirm:value=>confirmations.push(value)},message:Object.fromEntries(['error','warning','success','info'].map(kind=>[kind,value=>notifications.push({kind,value})]))},
+    'ant-design-vue':{Modal:{confirm:value=>confirmations.push(value),destroyAll:()=>confirmations.splice(0)},message:Object.fromEntries(['error','warning','success','info'].map(kind=>[kind,value=>notifications.push({kind,value})]))},
     '@/stores/auth':{useAuthStore:()=>auth},
     '@/api/client':{__esModule:true,default:client},
     '@/api/resources':{apiErrorMessage:error=>error?.message||'操作失败'},

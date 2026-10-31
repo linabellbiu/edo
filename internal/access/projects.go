@@ -146,6 +146,9 @@ func (s *Service) UpdateProject(ctx context.Context, user *model.User, id, name,
 		}
 		return fmt.Errorf("更新项目失败: %w", err)
 	}
+	if project.IsActive != active {
+		s.invalidations.Load().PolicyChanged(ctx)
+	}
 	return nil
 }
 
@@ -337,7 +340,7 @@ func (s *Service) DeleteProject(ctx context.Context, user *model.User, id string
 	if err := s.authorizeProjectManagement(ctx, user, project, "project.delete"); err != nil {
 		return err
 	}
-	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	err = s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		for _, table := range []string{"applications", "git_repositories", "build_plans", "image_registries", "deployment_plans", "release_plans", "release_workflow_templates", "hosts", "environments", "docker_endpoints", "kubernetes_clusters", "dns_provider_accounts", "notification_channels", "scheduled_tasks", "monitor_rules", "pipeline_runs", "artifacts", "jobs", "outbox_events", "release_workflows", "build_runs", "deployment_targets", "deployment_records", "release_plan_executions", "notifications"} {
 			var count int64
 			if err := tx.Table(table).Where("project_id = ?", id).Count(&count).Error; err != nil {
@@ -365,6 +368,10 @@ func (s *Service) DeleteProject(ctx context.Context, user *model.User, id string
 		}
 		return tx.Delete(&model.Project{}, "uuid = ?", id).Error
 	})
+	if err == nil {
+		s.invalidations.Load().PolicyChanged(ctx)
+	}
+	return err
 }
 
 const (

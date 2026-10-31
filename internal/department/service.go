@@ -12,6 +12,7 @@ import (
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 
+	"edo/internal/auth"
 	"edo/internal/database"
 	"edo/internal/model"
 )
@@ -36,9 +37,16 @@ type Input struct {
 	Description string
 }
 
-type Service struct{ db *gorm.DB }
+type Service struct {
+	db            *gorm.DB
+	invalidations *auth.Invalidations
+}
 
 func NewService(db *gorm.DB) *Service { return &Service{db: db} }
+
+func (s *Service) SetInvalidations(invalidations *auth.Invalidations) {
+	s.invalidations = invalidations
+}
 
 func (s *Service) List(ctx context.Context) ([]View, error) {
 	query := s.db.WithContext(ctx).Model(&model.Department{}).
@@ -131,7 +139,7 @@ func (s *Service) Delete(ctx context.Context, id string) error {
 	if id == database.DefaultDepartmentID {
 		return ErrDefaultDepartment
 	}
-	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if err := lockCompany(tx); err != nil {
 			return err
 		}
@@ -183,6 +191,10 @@ func (s *Service) Delete(ctx context.Context, id string) error {
 		}
 		return nil
 	})
+	if err == nil {
+		s.invalidations.PolicyChanged(ctx)
+	}
+	return err
 }
 
 func lockCompany(tx *gorm.DB) error {

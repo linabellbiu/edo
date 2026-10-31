@@ -67,6 +67,19 @@ test('心跳超时触发恢复；权限失效停止重连', () => {
   assert.equal(h.timers.size, 0)
 })
 
+test('基础设施1013保留重连，与确认会话失效1008不同', () => {
+  const h = socketHarness()
+  h.sockets[0].open(); h.sockets[0].close(1013)
+  assert.equal(h.denied(), 0)
+  assert.equal(h.states.at(-1), 'disconnected')
+  h.fireTimer(delay => delay >= 1000 && delay < 1500)
+  assert.equal(h.sockets.length, 2)
+  h.sockets[1].open(); h.sockets[1].message({type: 'heartbeat'})
+  assert.equal(h.states.at(-1), 'connected')
+  h.stop()
+  assert.equal(h.timers.size, 0)
+})
+
 test('握手中离开页面不会创建重连，握手完成后关闭旧连接', () => {
   const h = socketHarness()
   h.stop(); h.sockets[0].open()

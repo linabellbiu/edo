@@ -116,6 +116,8 @@ func NewRouter(deps Dependencies) *gin.Engine {
 	authAPI.POST("/email/:id/login", auditAction(deps.Audits, deps.Logger, "auth.email.login", "session"), identityAPI.loginEmail)
 	authAPI.GET("/oauth/:id/start", identityAPI.startOAuth)
 	authAPI.GET("/oauth/:id/callback", identityAPI.callbackOAuth)
+	// 身份重验不依赖业务读取或旧项目准入，项目移除后仍须通知当前会话。
+	authAPI.GET("/events/ws", requireAuth(deps.Accounts, deps.Sessions, deps.Logger, deps.AuthConfig.CookieName), streamAuthEvents(deps))
 	repositoryAPI := repositoryHandler{service: deps.Repositories, access: deps.Access, logger: deps.Logger}
 	api.POST("/webhooks/git/:id", repositoryAPI.webhook)
 

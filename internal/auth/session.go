@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -26,13 +27,16 @@ type Session struct {
 }
 
 type SessionStore struct {
-	redis *cache.Redis
-	ttl   time.Duration
+	redis         *cache.Redis
+	ttl           time.Duration
+	invalidations *Invalidations
 }
 
 func NewSessionStore(redisClient *cache.Redis, ttl time.Duration) *SessionStore {
-	return &SessionStore{redis: redisClient, ttl: ttl}
+	return &SessionStore{redis: redisClient, ttl: ttl, invalidations: NewInvalidations(redisClient, nil)}
 }
+
+func (s *SessionStore) Invalidations() *Invalidations { return s.invalidations }
 
 func (s *SessionStore) Create(ctx context.Context, userID string, authVersion uint64) (string, Session, error) {
 	random := make([]byte, 32)
@@ -65,11 +69,11 @@ func (s *SessionStore) Get(ctx context.Context, token string) (Session, error) {
 	}
 	var session Session
 	if err := json.Unmarshal(value, &session); err != nil {
-		_ = s.redis.Client().Del(ctx, s.key(token)).Err()
+		_ = s.Delete(ctx, token)
 		return Session{}, fmt.Errorf("登录会话数据损坏: %w", err)
 	}
 	if session.ExpiresAt.Before(time.Now().UTC()) {
-		_ = s.redis.Client().Del(ctx, s.key(token)).Err()
+		_ = s.Delete(ctx, token)
 		return Session{}, ErrSessionNotFound
 	}
 	return session, nil
@@ -80,8 +84,10 @@ func (s *SessionStore) Delete(ctx context.Context, token string) error {
 		return nil
 	}
 	if err := s.redis.Client().Del(ctx, s.key(token)).Err(); err != nil {
+		slog.ErrorContext(ctx, "删除登录会话失败", "operation", "auth_session_delete", "err", err)
 		return fmt.Errorf("删除登录会话失败: %w", err)
 	}
+	s.invalidations.SessionChanged(ctx, token)
 	return nil
 }
 

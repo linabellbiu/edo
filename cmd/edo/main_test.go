@@ -2,11 +2,22 @@ package main
 
 import (
 	"bytes"
+	"context"
+	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
+
+	miniredis "github.com/alicebob/miniredis/v2"
+
+	"edo/internal/account"
+	"edo/internal/auth"
+	"edo/internal/cache"
+	"edo/internal/config"
+	"edo/internal/testutil"
 )
 
 func TestLoadRuntimeEnvironmentFile(t *testing.T) {
@@ -96,5 +107,55 @@ func TestReadOnlySQLiteDSN(t *testing.T) {
 	}
 	if _, err := readOnlySQLiteDSN("file:data/legacy.db?mode=rw"); err == nil {
 		t.Fatal("可写 SQLite DSN 应被拒绝")
+	}
+}
+
+func TestPasswordResetNotificationsUseConfiguredRedis(t *testing.T) {
+	ctx := context.Background()
+	server := miniredis.RunT(t)
+	cfg := config.Redis{URL: "redis://" + server.Addr() + "/1", KeyPrefix: "edo-reset:", Timeout: time.Second}
+	client, err := cache.Open(ctx, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	accounts := account.NewService(testutil.NewDatabase(t))
+	user, err := accounts.CreateUser(ctx, "reset-cli-notify", "测试", "old-password-123")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sub, err := auth.NewInvalidations(client, nil).Subscribe(ctx, user.ID, "synthetic-session")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sub.Close()
+	closeNotifications := configurePasswordResetInvalidations(ctx, cfg, slog.New(slog.NewTextHandler(io.Discard, nil)), accounts)
+	defer closeNotifications()
+	if _, err := accounts.ResetPassword(ctx, user.Username, "reset-password-456"); err != nil {
+		t.Fatal(err)
+	}
+	readCtx, cancel := context.WithTimeout(ctx, time.Second)
+	defer cancel()
+	message, err := sub.ReceiveMessage(readCtx)
+	if err != nil || message.Payload != "stale" {
+		t.Fatal("CLI重置未使用相同配置通知在线身份")
+	}
+}
+
+func TestPasswordResetRemainsAvailableWithoutRedis(t *testing.T) {
+	for _, url := range []string{"", "unsupported://synthetic-config"} {
+		t.Run(url, func(t *testing.T) {
+			ctx := context.Background()
+			accounts := account.NewService(testutil.NewDatabase(t))
+			user, err := accounts.CreateUser(ctx, "offline-reset", "测试", "old-password-123")
+			if err != nil {
+				t.Fatal(err)
+			}
+			closeNotifications := configurePasswordResetInvalidations(ctx, config.Redis{URL: url}, slog.New(slog.NewTextHandler(io.Discard, nil)), accounts)
+			defer closeNotifications()
+			if _, err := accounts.ResetPassword(ctx, user.Username, "reset-password-456"); err != nil {
+				t.Fatal("通知不可用不得阻断离线恢复")
+			}
+		})
 	}
 }

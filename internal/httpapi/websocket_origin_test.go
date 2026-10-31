@@ -150,7 +150,7 @@ func TestAllRegisteredWebSocketRoutesRejectUntrustedOriginBeforeLookup(t *testin
 			t.Errorf("来源不可信时仍进入资源查询: route=%s status=%d", route.Path, response.Code)
 		}
 	}
-	if count != 7 {
+	if count != 8 {
 		t.Fatalf("WebSocket 路由数量变化，需复核门禁覆盖: %d", count)
 	}
 	response := performJSONRequest(t, router, http.MethodGet, "/api/v1/auth/me", nil, cookie)

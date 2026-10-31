@@ -11,7 +11,7 @@ const descriptor = parse(readFileSync(new URL('../src/layouts/AppLayout.vue', im
 const code = ts.transpileModule(compileScript(descriptor, {id: 'header-accessibility', inlineTemplate: true}).content, {
   compilerOptions: {module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, esModuleInterop: true},
 }).outputText
-function node(tag, text = '') { return {tag, text, props: {}, children: [], parent: null} }
+function node(tag, text = '') { return {tag, text, style: {}, props: {}, children: [], parent: null} }
 const renderer = vue.createRenderer({
   createElement: tag => node(tag), createText: text => node('#text', text), createComment: () => node('#comment'),
   setText: (target, text) => { target.text = text },
@@ -29,8 +29,8 @@ const renderer = vue.createRenderer({
 const walk = root => [root, ...root.children.flatMap(walk)]
 const text = root => root.tag === '#comment' ? '' : root.text + root.children.map(text).join('')
 
-function mount(t, {locale = 'zh-CN', theme = 'light'} = {}) {
-  const listeners = new Map(), calls = {back: 0, reloads: 0, enterFullscreen: 0, exitFullscreen: 0, stopSync: 0}
+function mount(t, {locale = 'zh-CN', theme = 'light', connecting = false} = {}) {
+  const listeners = new Map(), calls = {back: 0, reloads: 0, enterFullscreen: 0, exitFullscreen: 0, stopSync: 0, retry: 0, clearConfirmations: 0}
   const document = {
     fullscreenElement: null, querySelector: () => null,
     addEventListener: (name, listener) => listeners.set(name, listener),
@@ -48,14 +48,15 @@ function mount(t, {locale = 'zh-CN', theme = 'light'} = {}) {
   const route = vue.reactive({path: '/projects', fullPath: '/projects', query: {}, meta: {title: 'nav.overview'}})
   const icon = {render: () => vue.h('svg', {'aria-hidden': 'true'})}
   const pass = {setup: (_props, {slots}) => () => vue.h('div', slots.default?.())}
+  const auth = vue.reactive({user: {id: 'viewer', nickname: 'Q', permissions: []}, authorizationReady: true, authorizationState: 'ready', canAny: () => true, retryAuthorization: () => { calls.retry++ }, startPermissionSync: () => { if (connecting) { auth.authorizationReady = false; auth.authorizationState = 'checking' }; return () => { calls.stopSync++ } }})
   const modules = {
     vue: {...vue, Transition: pass},
     'vue-i18n': {useI18n: () => ({t: key => key.split('.').reduce((value, part) => value?.[part], messages[preferences.locale]) || key})},
     'vue-router': {useRoute: () => route, useRouter: () => ({resolve: () => ({name: 'projects', meta: {}}), replace: async () => {}, push: async () => {}})},
-    'ant-design-vue': {ConfigProvider: pass},
+    'ant-design-vue': {ConfigProvider: pass, Modal: {destroyAll: () => { calls.clearConfirmations++ }}},
     'lucide-vue-next': new Proxy({}, {get: () => icon}),
     '@/router/navigation': {navigation: [{items: []}], flatNavigation: () => [], navigationTrail: () => [], findNavigationItem: () => undefined, visibleNavigationItems: items => items},
-    '@/stores/auth': {useAuthStore: () => ({user: {id: 'viewer', nickname: 'Q', permissions: []}, canAny: () => true, startPermissionSync: () => () => { calls.stopSync++ }})},
+    '@/stores/auth': {useAuthStore: () => auth},
     '@/stores/preferences': {usePreferencesStore: () => preferences},
     '@/stores/tabs': {useTabsStore: () => ({tabs: [{key: '/', path: '/', title: 'nav.overview', pinned: true}, {key: '/projects', path: '/projects', title: 'nav.overview', pinned: false}], recent: () => [], canGoBack: () => canBack.value, visit() {}, add() {}, back: () => { calls.back++ }, togglePin() {}, close() {}})},
     '@/components/ProjectSelector.vue': {__esModule: true, default: {render: () => null}},
@@ -71,12 +72,48 @@ function mount(t, {locale = 'zh-CN', theme = 'light'} = {}) {
   app.component('a-tooltip', {props: ['title'], setup: (props, {slots}) => () => vue.h('div', {'data-tooltip': props.title}, slots.default?.())})
   for (const name of ['a-dropdown', 'a-menu', 'a-menu-item', 'a-sub-menu', 'a-menu-divider', 'a-breadcrumb', 'a-breadcrumb-item', 'a-empty']) app.component(name, pass)
   app.component('a-modal', {render: () => null})
+  app.component('a-alert', {props: ['message'], setup: (props, {slots}) => () => vue.h('div', [props.message, slots.action?.()])})
+  app.component('a-button', {setup: (_props, {slots}) => () => vue.h('button', slots.default?.())})
   const content = {setup() { calls.reloads++; return () => vue.h('p', '当前页面') }}
   app.component('RouterView', {setup: (_props, {slots}) => () => slots.default?.({Component: content})})
   app.mount(root)
   t.after(() => app.unmount())
-  return {root, preferences, canBack, calls, document, listeners, buttons: () => walk(root).filter(item => item.tag === 'button'), byLabel: label => walk(root).find(item => item.tag === 'button' && item.props['aria-label'] === label)}
+  return {root, preferences, canBack, calls, auth, document, listeners, buttons: () => walk(root).filter(item => item.tag === 'button'), byLabel: label => walk(root).find(item => item.tag === 'button' && item.props['aria-label'] === label)}
 }
+
+test('授权核验与不可用有可访问回退及重试，暂停正文但保留路由组件实例', async t => {
+  const h = mount(t)
+  await vue.nextTick()
+  assert.equal(h.calls.reloads, 1)
+  h.auth.authorizationReady = false; h.auth.authorizationState = 'checking'; await vue.nextTick()
+  const status = walk(h.root).find(item => item.props.role === 'status')
+  assert.equal(status.props['aria-live'], 'polite')
+  assert.match(text(status), /正在重新核验权限/)
+  const body = walk(h.root).find(item => item.props.inert === true)
+  assert.equal(body.style.display, 'none')
+  assert.equal(h.calls.clearConfirmations, 1)
+  h.auth.authorizationState = 'unavailable'; await vue.nextTick()
+  assert.match(text(status), /暂时无法核验权限/)
+  const retry = h.buttons().find(item => text(item) === '重试')
+  assert.ok(retry); retry.props.onClick()
+  assert.equal(h.calls.retry, 1)
+  h.auth.authorizationState = 'ready'; h.auth.authorizationReady = true; await vue.nextTick()
+  assert.equal(h.calls.reloads, 1)
+  assert.equal(body.props.inert, false)
+  assert.notEqual(body.style.display, 'none')
+})
+
+test('首次通知连接和身份复核之前不挂载业务页，避免首屏业务请求被检查态拒绝', async t => {
+  const h = mount(t, {connecting: true})
+  await vue.nextTick()
+  assert.equal(h.calls.reloads, 0)
+  assert.match(text(h.root), /正在重新核验权限/)
+  h.auth.authorizationState = 'ready'; h.auth.authorizationReady = true; await vue.nextTick()
+  assert.equal(h.calls.reloads, 1)
+  h.auth.authorizationState = 'checking'; h.auth.authorizationReady = false; await vue.nextTick()
+  h.auth.authorizationState = 'ready'; h.auth.authorizationReady = true; await vue.nextTick()
+  assert.equal(h.calls.reloads, 1, '后续复核不得销毁路由与分页上下文')
+})
 
 test('Header与标签栏真实图标按钮在中英文和深浅主题下有准确可访问名称', t => {
   for (const locale of ['zh-CN', 'en-US']) for (const theme of ['light', 'dark']) {

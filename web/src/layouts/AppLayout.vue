@@ -2,7 +2,7 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
-import { ConfigProvider } from 'ant-design-vue'
+import { ConfigProvider, Modal } from 'ant-design-vue'
 import {
   Bell, ChevronDown, ChevronLeft, Command, Expand, Github, Languages, LockKeyhole, LogOut,
   Maximize2, Menu, Moon, PanelLeftClose, PanelLeftOpen, RefreshCw, Search,
@@ -42,6 +42,8 @@ const searchText = ref('')
 const contentMaximized = ref(false)
 const fullscreen = ref(false)
 const reloadKey = ref(0)
+const contentInitialized = ref(false)
+let permissionSyncStarted = false
 const mobileMenuOpen = ref(false)
 const openKeys = ref<string[]>([])
 const collapsedOpenKeys = ref<string[]>([])
@@ -226,14 +228,27 @@ watch(searchOpen, async (open) => {
 watch(() => JSON.stringify([auth.user?.id, auth.user?.department_id, auth.user?.project_id, auth.user?.is_superuser, auth.user?.permissions]), () => {
   searchOpen.value = false
   collapsedOpenKeys.value = []
-  openKeys.value = openKeys.value.filter(key => allowedMenuKeys.value.has(key))
   if (!auth.user) { void router.replace('/login'); return }
+  if (!auth.authorizationReady) return
+  openKeys.value = openKeys.value.filter(key => allowedMenuKeys.value.has(key))
   if (!allowedHistoryPath(route.fullPath)) void router.replace('/projects')
+}, { flush: 'sync' })
+
+watch(() => auth.authorizationReady, ready => {
+  if (ready) {
+    if (permissionSyncStarted) contentInitialized.value = true
+    if (auth.user && !allowedHistoryPath(route.fullPath)) void router.replace('/projects')
+    return
+  }
+  searchOpen.value = false
+  Modal.destroyAll()
 }, { flush: 'sync' })
 
 onMounted(() => {
   window.addEventListener('keydown', keyboard)
+  permissionSyncStarted = true
   stopPermissionSync = auth.startPermissionSync()
+  if (auth.authorizationReady) contentInitialized.value = true
   revealCurrentMenu()
   if (typeof document !== 'undefined') {
     syncFullscreen()
@@ -400,15 +415,20 @@ onBeforeUnmount(() => {
       </div>
 
       <section class="vben-content">
-        <RouterView v-slot="{ Component }">
+        <a-alert v-if="!auth.authorizationReady" :type="auth.authorizationState === 'unavailable' ? 'warning' : 'info'" show-icon role="status" aria-live="polite" :message="auth.authorizationState === 'unavailable' ? '暂时无法核验权限，内容和操作已暂停。' : '正在重新核验权限…'">
+          <template v-if="auth.authorizationState === 'unavailable'" #action><a-button size="small" @click="auth.retryAuthorization">重试</a-button></template>
+        </a-alert>
+        <div v-show="auth.authorizationReady" :inert="!auth.authorizationReady">
+        <RouterView v-if="contentInitialized" v-slot="{ Component }">
           <Transition name="page-fade" mode="out-in">
             <component :is="Component" :key="`${route.path}:${reloadKey}`" />
           </Transition>
         </RouterView>
+        </div>
       </section>
     </main>
 
-    <FloatingAssistant />
+    <FloatingAssistant v-if="auth.authorizationReady" />
     <a-modal v-model:open="searchOpen" :footer="null" :closable="false" width="620px" wrap-class-name="command-modal">
       <div class="command-search"><Search /><input v-model="searchText" :placeholder="`${t('common.search')}...`" /></div>
       <div class="command-results">

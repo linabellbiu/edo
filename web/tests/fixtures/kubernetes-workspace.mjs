@@ -71,8 +71,9 @@ window.WebSocket = class PreviewWebSocket extends EventTarget {
 }
 const pinia = createPinia()
 const auth = useAuthStore(pinia)
-auth.user = { id: 'local-preview-user', username: 'preview', nickname: '本地预览', is_superuser: false, permissions: ['cluster.read', 'terminal.open', ...['node', 'workload', 'config', 'storage', 'network'].flatMap(resource => ['read', 'update'].map(action => `kubernetes.${resource}.${action}`))] }
+auth.user = { id: 'local-preview-user', username: 'preview', nickname: '本地预览', project_id: localStorage.getItem('edo.project') ?? '', is_superuser: false, permissions: ['cluster.read', 'terminal.open', ...['node', 'workload', 'config', 'storage', 'network'].flatMap(resource => ['read', 'update'].map(action => `kubernetes.${resource}.${action}`))] }
 auth.loaded = true
+auth.authorizationState = 'ready'
 const router = createRouter({ history: createMemoryHistory(), routes: [{ path: '/kubernetes', component: KubernetesView }] })
 const view = new URLSearchParams(location.search).get('view') || 'overview'
 await router.push({ path: '/kubernetes', query: { view, cluster: 'local-preview', namespace: 'preview' } })

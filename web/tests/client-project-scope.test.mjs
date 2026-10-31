@@ -19,6 +19,34 @@ function harness(globals = {}) {
   return { module, client, requests, select: value => { project = value } }
 }
 
+test('未知授权阻断业务读写但不阻断正常身份复核，已发送请求不自动重放', async () => {
+  const h = harness()
+  h.module.setAuthorizationFreshness(false)
+  await assert.rejects(h.client.post('/roles', {}), error => ['EDO_AUTHORIZATION_PENDING', 'EDO_AUTHORIZATION_CHANGED'].includes(error.code))
+  await assert.rejects(h.client.get('/audit-logs'), error => ['EDO_AUTHORIZATION_PENDING', 'EDO_AUTHORIZATION_CHANGED'].includes(error.code))
+  assert.equal(h.requests.length, 0)
+  await h.module.getCurrentUser()
+  await h.client.get('/projects')
+  assert.equal(h.requests.length, 2)
+  h.module.setAuthorizationFreshness(true)
+  await h.client.get('/audit-logs')
+  assert.equal(h.requests.length, 3)
+})
+
+test('未知授权期间的旧业务响应即使随后重新核验通过也不能恢复敏感正文', async () => {
+  for (const failed of [false, true]) {
+    const h = harness()
+    let finish
+    h.client.defaults.adapter = config => new Promise((resolve, reject) => {
+      finish = () => failed ? reject(new axios.AxiosError('old failure', undefined, config)) : resolve({ data: { audit_logs: ['old'] }, status: 200, headers: {}, config })
+    })
+    const request = h.client.get('/audit-logs'); await new Promise(resolve => setImmediate(resolve))
+    h.module.setAuthorizationFreshness(false); h.module.setAuthorizationFreshness(true)
+    finish()
+    await assert.rejects(request, { code: 'EDO_AUTHORIZATION_CHANGED' })
+  }
+})
+
 test('普通请求使用当前项目，显式固定项目头与空项目头不会被选择器覆盖', async () => {
   const h = harness()
   await h.client.get('/applications')

@@ -16,7 +16,7 @@ function load(path,modules,globals={}){
 function authHarness(projects,stored='revoked-project'){
  const values=new Map([['edo.project',stored]]),calls=[]
  const storage={getItem:key=>values.get(key)||null,setItem:(key,value)=>values.set(key,value),removeItem:key=>values.delete(key)}
- const api={__esModule:true,default:{get:async path=>{calls.push(path);return {data:{projects}}}},getCurrentUser:async()=>{calls.push('profile:'+storage.getItem('edo.project'));return {id:'member',permissions:['application.read']}},login:async()=>calls.push('login')}
+ const api={__esModule:true,setAuthorizationFreshness(){},default:{get:async path=>{calls.push(path);return {data:{projects}}}},getCurrentUser:async()=>{calls.push('profile:'+storage.getItem('edo.project'));return {id:'member',project_id:storage.getItem('edo.project')||'',permissions:['application.read']}},login:async()=>calls.push('login')}
  const store=load('../src/stores/auth.ts',{vue,pinia:{defineStore:(_id,factory)=>factory},axios:{__esModule:true,default:{isAxiosError:()=>false}},'@/api/client':api},{localStorage:storage}).useAuthStore()
  return {store,calls,storage}
 }
@@ -55,6 +55,45 @@ test('项目详情快速切换丢弃迟到响应，关闭后也不会重新打�
  assert.equal(state.can('project.member.update'),false)
  const c=state.detail('c');state.closeDetail();pending[2](detail('c'));await c
  assert.equal(state.open.value,false);assert.equal(state.selected.value,null)
+})
+test('项目详情检查态关闭编辑层且阻止旧超级管理员授权与迟到详情恢复',async t=>{
+ const pending=[],auth=vue.reactive({authorizationState:'ready',user:{id:'me',is_superuser:true},canAny:()=>true})
+ const component=load('../src/views/ProjectsView.vue',{vue:{...vue,onMounted(){},onBeforeUnmount(){}},'vue-i18n':{useI18n:()=>({t:key=>key})},'@/stores/auth':{useAuthStore:()=>auth},'@/api/client':{__esModule:true,default:{get:()=>new Promise(resolve=>pending.push(resolve))}},'ant-design-vue':{message:{error:assert.fail}}}).default
+ const scope=vue.effectScope();let state
+ scope.run(()=>{state=component.setup({}, {expose(){}})});t.after(()=>scope.stop())
+ const first=state.detail('a');pending[0]({data:{project:{id:'a'},members:[],users:[],roles:[],permissions:[],catalog:[]}});await first
+ state.formOpen.value=true
+ assert.equal(state.can('project.member.update'),true)
+ const old=state.detail('b')
+ auth.authorizationState='checking'
+ assert.equal(state.open.value,false);assert.equal(state.formOpen.value,false)
+ assert.equal(state.selected.value,null);assert.equal(state.can('project.member.update'),false)
+ pending[1]({data:{project:{id:'b'},members:[],users:[],roles:[],permissions:['project.member.update'],catalog:[]}});await old
+ assert.equal(state.selected.value,null)
+ auth.authorizationState='unavailable'
+ assert.equal(state.can('project.member.update'),false)
+})
+test('项目目录恢复时只读重取，检查前的豁免GET和换用户旧响应不能恢复旧目录',async t=>{
+ const pending=[],unmount=[],auth=vue.reactive({authorizationState:'ready',user:{id:'me',permissions:[]},canAny:()=>false})
+ const component=load('../src/views/ProjectsView.vue',{vue:{...vue,onMounted(){},onBeforeUnmount:callback=>unmount.push(callback)},'vue-i18n':{useI18n:()=>({t:key=>key})},'@/stores/auth':{useAuthStore:()=>auth},'@/api/client':{__esModule:true,default:{get:()=>new Promise(resolve=>pending.push(resolve))}},'ant-design-vue':{message:{error:assert.fail}}}).default
+ const scope=vue.effectScope();let state
+ scope.run(()=>{state=component.setup({}, {expose(){}})});t.after(()=>{unmount.forEach(callback=>callback());scope.stop()})
+ const old=state.load()
+ auth.authorizationState='checking';auth.authorizationState='unavailable';auth.authorizationState='ready'
+ assert.equal(pending.length,2)
+ pending[0]({data:{projects:[{id:'old'}]}});await old
+ assert.deepEqual(state.rows.value,[])
+ pending[1]({data:{projects:[{id:'fresh'}]}});await new Promise(resolve=>setImmediate(resolve))
+ assert.deepEqual(state.rows.value.map(row=>row.id),['fresh'])
+ const next=state.load()
+ auth.user={id:'other',permissions:[]}
+ assert.equal(pending.length,4)
+ assert.deepEqual(state.rows.value,[])
+ pending[2]({data:{projects:[{id:'previous-user'}]}});await next
+ assert.deepEqual(state.rows.value,[])
+ unmount.forEach(callback=>callback())
+ pending[3]({data:{projects:[{id:'unmounted'}]}});await new Promise(resolve=>setImmediate(resolve))
+ assert.deepEqual(state.rows.value,[])
 })
 test('部门上级选项排除自己及所有下级，防止界面形成环',()=>{
  const component=load('../src/views/OrganizationView.vue',{vue:{...vue,onMounted(){}},'vue-i18n':{useI18n:()=>({t:key=>key})},'@/stores/auth':{useAuthStore:()=>({canAny:()=>false})}}).default

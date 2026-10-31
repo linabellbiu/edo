@@ -10,7 +10,7 @@ const tick = () => new Promise(resolve => setImmediate(resolve))
 
 function harness() {
   let project = 'project-a', now = 10_000
-  const requests = [], intervals = new Map(), timeouts = new Map(), events = []
+  const requests = [], intervals = new Map(), timeouts = new Map(), events = [], sockets = [], freshness = []
   const window = new EventTarget(), document = new EventTarget()
   document.hidden = false
   window.setInterval = (callback, delay) => { intervals.set(1, { callback, delay }); return 1 }
@@ -23,13 +23,15 @@ function harness() {
     default: { get: async () => ({ data: { projects: [{ id: project, is_active: true }] } }), post: async () => {} },
     getCurrentUser: () => { const request = deferred(); requests.push(request); return request.promise },
     login: async () => {}, loginLDAP: async () => {}, logout: async () => {},
+    setAuthorizationFreshness: value => freshness.push(value),
   }
   const module = loadFrontend('../src/stores/auth.ts', {
     vue, pinia: { defineStore: (_, factory) => factory }, axios: { __esModule: true, default: axios }, '@/api/client': api,
+    '@/utils/liveSocket': { openLiveSocket: options => { const socket = { ...options, closed: false }; sockets.push(socket); return () => { socket.closed = true } } },
   }, { window, document, Date: { now: () => now }, localStorage: { getItem: () => project, setItem: (_, value) => { project = value }, removeItem: () => { project = '' } } })
   const store = module.useAuthStore()
-  store.user.value = profile(); store.loaded.value = true
-  return { store, requests, intervals, timeouts, window, document, events, select: value => { project = value }, advance: value => { now += value }, denied: value => window.dispatchEvent(new CustomEvent('edo:permissions-stale', { detail: { project: value ?? project } })) }
+  store.user.value = profile(); store.loaded.value = true; store.authorizationState.value = 'ready'
+  return { store, requests, intervals, timeouts, window, document, events, sockets, freshness, select: value => { project = value }, advance: value => { now += value }, denied: value => window.dispatchEvent(new CustomEvent('edo:permissions-stale', { detail: { project: value ?? project } })) }
 }
 
 test('无业务通知权限的普通用户，403触发去重刷新并移除旧权限', async () => {
@@ -189,7 +191,10 @@ test('网络失败保留有效身份，不伪造撤权或登出，后续可重�
   const h = harness(), pending = h.store.refreshPermissions()
   h.requests[0].reject(new axios.AxiosError('offline'))
   await assert.rejects(pending)
-  assert.equal(h.store.canAny(['cluster.read']), true)
+  assert.equal(h.store.canAny(['cluster.read']), false)
+  assert.equal(h.store.user.value.id, 'viewer')
+  assert.deepEqual(h.store.user.value.permissions, ['cluster.read'])
+  assert.equal(h.store.authorizationState.value, 'unavailable')
   const retry = h.store.refreshPermissions()
   h.requests[1].resolve(profile(['project.read'])); await retry
   assert.equal(h.store.canAny(['cluster.read']), false)
@@ -226,4 +231,95 @@ test('初始化加载在退出后返回不能覆盖退出状态或恢复项目',
   await h.store.logout(); h.requests[0].resolve(profile()); await load
   assert.equal(h.store.user.value, null)
   assert.equal(h.store.loaded.value, true)
+})
+
+test('独立授权通知无需业务查看权限；changed 立即冻结，旧快照只能由新核验替代', async () => {
+  const h = harness(), stop = h.store.startPermissionSync(), socket = h.sockets[0]
+  try {
+    assert.equal(socket.path, '/api/v1/auth/events/ws')
+    assert.equal(socket.protocol, 'edo-auth-v1')
+    socket.onState('connecting'); socket.onState('connected')
+    assert.equal(h.requests.length, 1)
+    socket.onEvent({ type: 'resync' })
+    assert.equal(h.store.authorizationState.value, 'checking')
+    assert.equal(h.store.canAny(['cluster.read']), false)
+    assert.deepEqual(h.store.user.value.permissions, ['cluster.read'])
+    h.requests[0].resolve(profile(['host.terminal.open'])); await tick()
+    assert.equal(h.requests.length, 2)
+    assert.equal(h.store.canAny(['host.terminal.open']), false)
+    h.requests[1].resolve(profile(['audit.read'])); await tick()
+    assert.equal(h.store.authorizationReady.value, true)
+    assert.equal(h.store.canAny(['audit.read']), true)
+    const before = h.requests.length
+    socket.onEvent({ type: 'heartbeat' }); assert.equal(h.requests.length, before)
+    h.advance(2000); socket.onEvent({ type: 'changed' })
+    assert.equal(h.store.authorizationReady.value, false)
+    assert.equal(h.requests.length, before + 1)
+    h.requests[2].resolve(profile(['audit.read'])); await tick()
+    assert.equal(h.sockets.length, 1, '等价 profile 新对象不能重连通知流')
+  } finally { stop() }
+})
+
+test('断联不伪登出或伪撤权，超级管理员同样暂停；HTTP成功不能冒充通知流已恢复', async () => {
+  const h = harness()
+  h.store.user.value = profile(['audit.read'], { is_superuser: true })
+  const stop = h.store.startPermissionSync(), socket = h.sockets[0]
+  try {
+    socket.onState('connecting'); socket.onState('connected')
+    h.requests[0].resolve(profile(['audit.read'], { is_superuser: true })); await tick()
+    assert.equal(h.store.canAny(['user.delete']), true)
+    socket.onState('disconnected')
+    assert.equal(h.store.authorizationState.value, 'unavailable')
+    assert.equal(h.store.canAny(['user.delete']), false)
+    assert.equal(h.store.user.value.is_superuser, true)
+    const calibration = h.store.refreshPermissions()
+    h.requests[1].resolve(profile(['audit.read'], { is_superuser: true })); await calibration
+    assert.equal(h.store.authorizationState.value, 'unavailable')
+    h.advance(2000); socket.onState('connecting'); socket.onState('connected')
+    h.requests[2].resolve(profile(['audit.read'], { is_superuser: true })); await tick()
+    assert.equal(h.store.authorizationReady.value, true)
+  } finally { stop() }
+})
+
+test('1008确实失效清身份；停止、退出和换用户关闭自身通知流并忽略旧事件', async () => {
+  for (const action of ['stop', 'logout', 'user', 'denied']) {
+    const h = harness(), stop = h.store.startPermissionSync(), old = h.sockets[0]
+    old.onState('connecting'); old.onState('connected')
+    if (action === 'stop') stop()
+    if (action === 'logout') await h.store.logout()
+    if (action === 'user') h.store.user.value = profile(['project.read'], { id: 'new-viewer' })
+    if (action === 'denied') old.onDenied()
+    assert.equal(old.closed, true, action)
+    const requests = h.requests.length, state = h.store.authorizationState.value
+    old.onEvent({ type: 'changed' }); old.onState('disconnected'); old.onDenied()
+    assert.equal(h.requests.length, requests)
+    assert.equal(h.store.authorizationState.value, state)
+    h.requests[0].resolve(profile(['host.terminal.open'])); await tick()
+    assert.equal(h.store.canAny(['host.terminal.open']), false)
+    if (action === 'logout' || action === 'denied') assert.equal(h.store.user.value, null)
+    if (action === 'user') assert.equal(h.store.user.value.id, 'new-viewer')
+    stop()
+  }
+})
+
+test('手动重试重建已停止的通知流，未知消息不恢复授权；切项目不能使用旧超级权限', async () => {
+  const h = harness(), stop = h.store.startPermissionSync(), old = h.sockets[0]
+  try {
+    old.onState('stopped')
+    assert.equal(h.store.authorizationState.value, 'unavailable')
+    const retry = h.store.retryAuthorization()
+    assert.equal(h.sockets.length, 2); assert.equal(old.closed, true)
+    const socket = h.sockets[1]
+    socket.onState('connecting'); socket.onState('connected')
+    h.requests[0].resolve(profile()); await tick()
+    // 重试期间 connecting 使旧 HTTP 快照过期，必须完成尾随核验。
+    h.requests[1].resolve(profile()); await retry
+    assert.equal(h.store.authorizationReady.value, true)
+    assert.equal(socket.onEvent({ type: 'other' }), false)
+    h.store.user.value = profile([], { is_superuser: true })
+    h.select('project-b')
+    assert.equal(h.store.canAny(['user.delete']), false)
+    await h.store.refreshPermissions()
+    assert.equal(h.store.authorizationState.value, 'checking')
+  } finally { stop() }
 })

@@ -44,7 +44,7 @@ test('项目选择器的原生标签关联实际Ant输入框，多个实例与�
   }
 })
 
-function node(tag, text = '') { return {tag, text, props: {}, children: [], parent: null} }
+function node(tag, text = '') { return {tag, text, style: {}, props: {}, children: [], parent: null} }
 const renderer = vue.createRenderer({
   createElement: tag => node(tag), createText: text => node('#text', text), createComment: () => node('#comment'),
   setText: (target, text) => { target.text = text }, setElementText: (target, text) => { target.text = text; target.children = [] },
@@ -62,7 +62,7 @@ const text = root => root.tag === '#comment' ? '' : root.text + root.children.ma
 function menuHarness(t) {
   const listeners = new Map()
   const preferences = vue.reactive({sidebarCollapsed: false, theme: 'light', locale: 'zh-CN'})
-  const auth = vue.reactive({user: {id: 'viewer', department_id: 'department-a', project_id: 'project-a', permissions: ['monitor.read']},
+  const auth = vue.reactive({authorizationReady: true, authorizationState: 'ready', user: {id: 'viewer', department_id: 'department-a', project_id: 'project-a', permissions: ['monitor.read']},
     canAny(codes) { return !codes?.length || codes.some(code => this.user?.permissions.includes(code)) }, startPermissionSync: () => () => {}})
   const route = vue.reactive({path: '/projects', fullPath: '/projects', query: {}, meta: {}})
   const icon = {render: () => vue.h('svg', {'aria-hidden': 'true'})}
@@ -74,7 +74,7 @@ function menuHarness(t) {
   const component = compiled('../src/layouts/AppLayout.vue', {
     vue: {...vue, Transition: pass}, 'vue-i18n': {useI18n: () => ({t: key => key})},
     'vue-router': {useRoute: () => route, useRouter: () => ({resolve: () => ({name: 'projects', meta: {}}), replace: async () => {}, push: async () => {}})},
-    'ant-design-vue': {ConfigProvider: pass}, 'lucide-vue-next': new Proxy({}, {get: () => icon}),
+    'ant-design-vue': {ConfigProvider: pass, Modal: {destroyAll(){}}}, 'lucide-vue-next': new Proxy({}, {get: () => icon}),
     '@/router/navigation': {navigation, flatNavigation: () => navigation[1].branches.flatMap(branch => branch.items), navigationTrail: () => [], findNavigationItem: () => undefined, visibleNavigationItems: (items, allowed) => items.filter(item => allowed(item.permissions))},
     '@/stores/auth': {useAuthStore: () => auth}, '@/stores/preferences': {usePreferencesStore: () => preferences},
     '@/stores/tabs': {useTabsStore: () => ({tabs: [], recent: () => [], canGoBack: () => false, visit() {}, add() {}})},
@@ -83,7 +83,7 @@ function menuHarness(t) {
     '@/components/FloatingAssistant.vue': {__esModule: true, default: {render: () => null}},
   }, {addEventListener: (name, callback) => listeners.set(name, callback), removeEventListener: name => listeners.delete(name)})
   const root = node('root'), app = renderer.createApp(component)
-  for (const name of ['a-tooltip', 'a-dropdown', 'a-menu-item', 'a-menu-divider', 'a-breadcrumb', 'a-breadcrumb-item', 'a-empty']) app.component(name, pass)
+  for (const name of ['a-tooltip', 'a-dropdown', 'a-menu-item', 'a-menu-divider', 'a-breadcrumb', 'a-breadcrumb-item', 'a-empty', 'a-alert', 'a-button']) app.component(name, pass)
   app.component('a-menu', {props: ['openKeys', 'triggerSubMenuAction'], emits: ['openChange'], setup: (props, {slots, emit}) => () => vue.h('menu', {openKeys: props.openKeys, triggerSubMenuAction: props.triggerSubMenuAction, onOpenChange: keys => emit('openChange', keys)}, slots.default?.())})
   app.component('a-sub-menu', {setup: (_props, {slots}) => () => vue.h('section', [slots.icon?.(), slots.title?.(), slots.default?.()])})
   app.component('a-modal', {render: () => null})

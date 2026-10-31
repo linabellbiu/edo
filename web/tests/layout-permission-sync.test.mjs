@@ -8,8 +8,9 @@ function harness() {
   const mounted = [], unmounted = [], replacements = []
   let starts = 0, stops = 0
   const auth = vue.reactive({
+    authorizationReady: true, authorizationState: 'ready',
     user: { id: 'viewer', department_id: 'department-a', project_id: 'project-a', is_superuser: false, permissions: ['cluster.read', 'project.read'] },
-    canAny(required) { return !required.length || this.user?.is_superuser || required.some(code => this.user?.permissions.includes(code)) },
+    canAny(required) { return !required.length || this.authorizationReady && (this.user?.is_superuser || required.some(code => this.user?.permissions.includes(code))) },
     startPermissionSync() { starts++; return () => { stops++ } },
   })
   const route = vue.reactive({ path: '/hosts', fullPath: '/hosts', query: {}, meta: { title: 'nav.hosts' } })
@@ -17,6 +18,7 @@ function harness() {
     vue: { ...vue, onMounted: callback => mounted.push(callback), onBeforeUnmount: callback => unmounted.push(callback) },
     'vue-i18n': { useI18n: () => ({ t: key => key }) },
     'vue-router': { useRoute: () => route, useRouter: () => ({ replace: path => replacements.push(path), resolve: () => ({ name: 'projects', meta: {} }) }) },
+    'ant-design-vue': {Modal:{destroyAll(){}}},
     '@/router/navigation': nav, '@/stores/auth': { useAuthStore: () => auth },
     '@/stores/preferences': { usePreferencesStore: () => ({ sidebarCollapsed: false }) },
     '@/stores/tabs': { useTabsStore: () => ({ tabs: [{ path: '/hosts' }, { path: '/projects' }], recent: () => [], canGoBack: () => false, visit() {}, add() {} }) },
@@ -50,6 +52,22 @@ test('未缩减当前页面权限时不强制跳转；401清除用户后返回�
     h.auth.user = null
     assert.deepEqual(h.replacements, ['/login'])
   } finally { h.stop() }
+})
+
+test('未知授权不伪造撤权跳转，复核相同权限保留页面，确实撤权才离开', () => {
+  const h = harness()
+  try {
+    h.auth.authorizationState='checking';h.auth.authorizationReady=false
+    h.auth.user={...h.auth.user,permissions:['project.read','cluster.read']}
+    assert.deepEqual(h.replacements,[])
+    h.auth.authorizationState='ready';h.auth.authorizationReady=true
+    assert.deepEqual(h.replacements,[])
+    h.auth.authorizationState='checking';h.auth.authorizationReady=false
+    h.auth.user={...h.auth.user,permissions:['project.read']}
+    assert.deepEqual(h.replacements,[])
+    h.auth.authorizationState='ready';h.auth.authorizationReady=true
+    assert.deepEqual(h.replacements,['/projects'])
+  } finally {h.stop()}
 })
 
 test('布局卸载清理权限同步订阅和计时器，避免重新挂载重复校准', () => {

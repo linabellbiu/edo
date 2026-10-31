@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"sync/atomic"
 	"time"
 	"unicode/utf8"
 
@@ -20,6 +21,7 @@ import (
 	"gorm.io/gorm/clause"
 
 	"edo/internal/account"
+	"edo/internal/auth"
 	"edo/internal/database"
 	"edo/internal/model"
 )
@@ -64,10 +66,16 @@ type UserPermissionOverrides struct {
 }
 
 type Service struct {
-	db       *gorm.DB
-	enforcer *casbin.SyncedEnforcer
-	watcher  persist.Watcher
-	logger   *slog.Logger
+	db            *gorm.DB
+	enforcer      *casbin.SyncedEnforcer
+	watcher       persist.Watcher
+	logger        *slog.Logger
+	invalidations atomic.Pointer[auth.Invalidations]
+}
+
+// SetInvalidations 仅在启动装配时注入与会话相同的通知服务。
+func (s *Service) SetInvalidations(invalidations *auth.Invalidations) {
+	s.invalidations.Store(invalidations)
 }
 
 func NewService(db *gorm.DB) (*Service, error) {
@@ -105,6 +113,8 @@ func NewDistributedService(
 			if err := service.enforcer.LoadPolicy(); err != nil {
 				service.logger.Error("重新加载 Casbin 权限策略失败", "operation", "rbac_policy_reload", "err", err)
 			}
+			// 只发布身份重读信号，不反发 Casbin watcher，防止跨实例通知循环。
+			service.invalidations.Load().PolicyChanged(context.Background())
 		},
 	})
 	if err != nil {
@@ -972,6 +982,8 @@ func replacePermissions(tx *gorm.DB, roleID string, permissions []string, now ti
 }
 
 func (s *Service) syncPolicy(operation string) error {
+	// 策略写入已提交；包括同步失败在内，都让在线身份重新执行真实权限检查。
+	defer s.invalidations.Load().PolicyChanged(context.Background())
 	if err := s.enforcer.LoadPolicy(); err != nil {
 		s.logger.Error("重新加载 Casbin 权限策略失败", "operation", operation, "err", err)
 		return ErrPolicySync

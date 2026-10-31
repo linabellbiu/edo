@@ -63,6 +63,7 @@ func (s *Service) syncRolePermissionsOrDisable(ctx context.Context, roleID, oper
 			return fmt.Errorf("%w: %v", ErrRolePermissionsSyncUnsafe, err)
 		}
 		s.logger.Error("角色权限策略同步失败，关联账户已安全停用", "operation", operation, "role_id", roleID, "err", err)
+		s.invalidations.Load().PolicyChanged(safeContext)
 		return ErrRolePermissionsSyncDisabled
 	}
 }

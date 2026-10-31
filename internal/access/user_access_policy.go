@@ -159,6 +159,7 @@ func (s *Service) syncUserAccessOrDisable(ctx context.Context, userID, operation
 			return fmt.Errorf("%w: %v", ErrUserAccessSyncUnsafe, err)
 		}
 		s.logger.Error("权限策略同步失败，目标账户已安全停用", "operation", operation, "user_id", userID, "err", err)
+		s.invalidations.Load().UserChanged(safeContext, userID)
 		return ErrUserAccessSyncDisabled
 	}
 }

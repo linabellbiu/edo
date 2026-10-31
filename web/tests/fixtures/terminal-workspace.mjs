@@ -19,6 +19,7 @@ window.fetch=(input,options)=>{const url=new URL(typeof input==='string'?input:i
 installTerminalPreviewSocket()
 const pinia=createPinia(),auth=useAuthStore(pinia)
 auth.user={id:'terminal-preview-user',username:'preview',nickname:'本地终端预览',project_id:localStorage.getItem('edo.project')??'',department_id:'preview-department',is_superuser:false,permissions:preview.hostData.permissions};auth.loaded=true
+auth.authorizationState='ready'
 const router=createRouter({history:createMemoryHistory(),routes:[{path:'/hosts',component:HostView},{path:'/:pathMatch(.*)*',redirect:'/hosts'}]})
 await router.push('/hosts')
 createApp(TerminalWorkspacePreview).use(pinia).use(i18n).use(router).mount('#root')
