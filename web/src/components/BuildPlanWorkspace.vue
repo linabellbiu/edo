@@ -185,6 +185,13 @@ function closeDrawer() {
   overviewOpen.value = false
   closeArtifacts()
 }
+function editPlan(plan: BuildPlan | undefined) {
+  if (!props.canUpdate || props.artifactUploading || !plan) return
+  const currentPlan = props.plans.find(item => item.id === plan.id)
+  if (!currentPlan) return
+  closeDrawer()
+  emit('edit', currentPlan)
+}
 function closeArtifacts() {
   if (!props.artifactUploading) emit('select-view', 'overview')
 }
@@ -288,7 +295,7 @@ function formatTime(value: string) {
           <a-button size="small" @click="openOverview(plan)">{{ t('resourceList.details') }}</a-button>
           <a-button v-if="canReadArtifacts" size="small" :disabled="artifactUploading" @click="openArtifacts(plan)">{{ t('buildPlanWorkspace.artifacts') }}</a-button>
           <template #more>
-            <a-menu-item v-if="canUpdate" @click="emit('edit', plan)">{{ t('planList.edit') }}</a-menu-item>
+            <a-menu-item v-if="canUpdate" :disabled="artifactUploading" @click="editPlan(plan)">{{ t('planList.edit') }}</a-menu-item>
             <a-menu-item v-if="canUpdate" :disabled="mutationID === plan.id" @click="emit('toggle', plan)">{{ plan.is_active ? t('planList.disable') : t('planList.enable') }}</a-menu-item>
             <a-menu-divider v-if="canDelete" />
             <a-menu-item v-if="canDelete" danger :disabled="mutationID === plan.id" @click="emit('remove', plan)">{{ t('planList.remove') }}</a-menu-item>
@@ -303,7 +310,7 @@ function formatTime(value: string) {
       <a-tag v-if="drawerPlan" :color="drawerPlan.is_active ? 'success' : 'default'">{{ drawerPlan.is_active ? t('planList.enabled') : t('planList.disabled') }}</a-tag>
       <a-button v-if="drawerPlan && artifactsOpen" size="small" @click="openOverview(drawerPlan)">{{ t('resourceList.basic') }}</a-button>
       <a-button v-if="drawerPlan && !artifactsOpen && canReadArtifacts" size="small" @click="openArtifacts(drawerPlan)">{{ t('buildPlanWorkspace.artifacts') }}</a-button>
-      <a-button v-if="drawerPlan && canUpdate" size="small" @click="emit('edit', drawerPlan)">{{ t('planList.edit') }}</a-button>
+      <a-button v-if="drawerPlan && canUpdate" size="small" :disabled="artifactUploading" @click="editPlan(drawerPlan)">{{ t('planList.edit') }}</a-button>
     </template>
     <section v-if="!artifactsOpen && drawerPlan" class="resource-detail-section">
       <h4>{{ t('resourceList.configuration') }}</h4>
