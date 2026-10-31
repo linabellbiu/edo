@@ -65,7 +65,7 @@ interface DeploymentRuntimeState{deployment_id:string;kind:string;resource_id?:s
 interface ShellControlConfiguration{deployment_id:string;restart_script:string;stop_script:string;timeout_seconds:number}
 type StatusTone='neutral'|'info'|'success'|'warning'|'danger'
 interface StatusMeta{tone:StatusTone;label:string;live:boolean}
-interface ReleasePlanExecutionRecordItem{id:string;release_group_application_id:string;application_id:string;pipeline_run_id:string;status:string}
+interface ReleasePlanExecutionRecordItem{id:string;release_plan_execution_id?:string;release_group_application_id:string;application_id:string;pipeline_run_id:string;status:string}
 interface ReleasePlanExecutionRecord{id:string;release_plan_id:string;status:string;created_at:string;finished_at?:string;items?:ReleasePlanExecutionRecordItem[]}
  interface ReleasePlan extends ResourceRecord{id:string;name:string;version:string;description:string;status:string;is_active?:boolean;created_at:string;updated_at?:string;latest_execution?:{id:string;status:string;created_at:string;finished_at?:string;items?:ReleasePlanExecutionRecordItem[]};groups?:Array<{id:string;name:string;mode:string;failure_policy:string;sort_order?:number;dependencies?:Array<{depends_on_group_id:string}>;applications:Array<{id:string;application_id:string;application?:Application;manual_deploy?:boolean;source_type?:string;source_value?:string;sort_order?:number}>}>}
 type ReleasePlanGroup=NonNullable<ReleasePlan['groups']>[number]
@@ -1401,9 +1401,11 @@ async function loadReleasePlanApplicationResources(){
 }
 function openReleasePlanApplicationRun(planID:string,applicationID:string,pipelineRunID:string){
  const plan=releasePlans.value.find(item=>item.id===planID)
- const member=plan?.groups?.[0]?.applications.some(item=>item.application_id===applicationID)
+ const member=plan?.groups?.[0]?.applications.find(item=>item.application_id===applicationID)
+ const execution=plan?.latest_execution
+ const current=execution?.id&&execution.items?.find(item=>item&&item.release_plan_execution_id===execution.id&&item.release_group_application_id===member?.id&&item.application_id===applicationID)
  const latest=runs.value.filter(item=>item.application_id===applicationID).reduce<Run|undefined>((current,item)=>!current||Date.parse(item.created_at)>Date.parse(current.created_at)?item:current,undefined)
- const linked=member&&latest?.id===pipelineRunID
+ const linked=member&&Boolean(pipelineRunID?.trim())&&(current?current.pipeline_run_id===pipelineRunID:latest?.id===pipelineRunID)
  if(!linked){message.error('该发布计划应用没有可定位的流水线运行');return}
  selectedRunID.value=pipelineRunID
  void router.push({path:'/release-plans',query:{view:'runs',run:pipelineRunID}})

@@ -35,6 +35,7 @@ interface ApplicationItem {
 interface PipelineRunItem {
   id: string
   application_id: string
+  release_plan_id?: string
   status: string
   created_at: string
   updated_at?: string
@@ -85,6 +86,7 @@ interface ReleasePlanItem {
     id: string
     status: string
     created_at: string
+    updated_at?: string
     finished_at?: string
     items?: ReleasePlanExecutionItem[]
   }
@@ -243,19 +245,28 @@ function latestApplicationRun(item: ReleaseGroupApplication) {
 
 function latestPlanRun(plan: ReleasePlanItem) {
   const applicationIDs = new Set(planApplications(plan).map((item) => item.application_id))
-  return latestRun((props.pipelineRuns || []).filter((run) => applicationIDs.has(run.application_id)))
+  return latestRun((props.pipelineRuns || []).filter((run) => run.release_plan_id === plan.id && applicationIDs.has(run.application_id)))
 }
 
 function planDisplayTime(plan: ReleasePlanItem) {
-  const run = latestPlanRun(plan)
-  return run?.updated_at || run?.created_at || plan.updated_at || plan.created_at
+  const execution = plan.latest_execution
+  const run = execution ? undefined : latestPlanRun(plan)
+  return [plan.updated_at, execution?.updated_at, execution?.finished_at, execution?.created_at, run?.updated_at, run?.created_at]
+    .reduce<string>((latest, value) => value && Date.parse(value) > Date.parse(latest) ? value : latest, plan.created_at)
 }
 
 function executionItem(plan: ReleasePlanItem, item: ReleaseGroupApplication) {
+  const execution = plan.latest_execution
+  const current = execution?.id && execution.items?.find((candidate) => candidate && candidate.release_plan_execution_id === execution.id
+    && candidate.release_group_application_id === item.id && candidate.application_id === item.application_id)
+  if (current) return current
   const run = latestApplicationRun(item)
   if (run) return { pipeline_run_id: run.id, status: run.status }
-  return plan.latest_execution?.items?.find((candidate) => candidate.release_group_application_id === item.id)
-    || plan.latest_execution?.items?.find((candidate) => candidate.application_id === item.application_id)
+}
+
+function executionRun(plan: ReleasePlanItem, item: ReleaseGroupApplication) {
+  const selected = executionItem(plan, item)
+  return selected && props.pipelineRuns?.find((run) => run.id === selected.pipeline_run_id && run.application_id === item.application_id)
 }
 
 function executionItemStatus(status?: string) {
@@ -388,8 +399,8 @@ function sourceMeta(item: ReleaseGroupApplication) {
                       <span v-if="executionItem(plan, item)" class="plan-app-execution" :class="`tone-${executionItemStatus(executionItem(plan, item)?.status).tone}`">
                         <Route />{{ executionItemStatus(executionItem(plan, item)?.status).label }}
                       </span>
-                      <time v-if="latestApplicationRun(item)" class="plan-app-time" :datetime="latestApplicationRun(item)!.created_at" :title="formatTime(latestApplicationRun(item)!.created_at)">
-                        <Clock3 /><span>{{ formatTime(latestApplicationRun(item)!.created_at) }}</span><em>{{ relativeTime(latestApplicationRun(item)!.created_at) }}</em>
+                      <time v-if="executionRun(plan, item)" class="plan-app-time" :datetime="executionRun(plan, item)!.created_at" :title="formatTime(executionRun(plan, item)!.created_at)">
+                        <Clock3 /><span>{{ formatTime(executionRun(plan, item)!.created_at) }}</span><em>{{ relativeTime(executionRun(plan, item)!.created_at) }}</em>
                       </time>
                     </div>
                     <div class="plan-app-actions">
@@ -403,17 +414,19 @@ function sourceMeta(item: ReleaseGroupApplication) {
                         <Play :size="13" />{{ t('releasePlan.executeApplication') }}
                       </a-button>
                       <a-button
-                        v-if="executionItem(plan, item)?.pipeline_run_id"
+                        v-if="executionItem(plan, item)"
                         type="text"
                         size="small"
+                        :disabled="!executionItem(plan, item)?.pipeline_run_id?.trim()"
                         @click="emit('openApplicationRun', plan.id, item.application_id, executionItem(plan, item)!.pipeline_run_id)"
                       >
                         <ListChecks :size="13" />流水线记录
                       </a-button>
                       <a-button
-                        v-if="executionItem(plan, item)?.pipeline_run_id && canReadDeployments"
+                        v-if="executionItem(plan, item) && canReadDeployments"
                         type="text"
                         size="small"
+                        :disabled="!executionItem(plan, item)?.pipeline_run_id?.trim()"
                         @click="emit('openApplicationResources', plan.id, item.application_id, executionItem(plan, item)!.pipeline_run_id)"
                       >
                         <TerminalSquare :size="13" />部署资源
