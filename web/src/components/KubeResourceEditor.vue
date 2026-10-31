@@ -202,7 +202,9 @@ function buildObject(): KubeObject {
     if (!Number.isInteger(form.port)||form.port<1||form.port>65535||!form.targetPort.trim()) throw new Error(t('k8s.invalidPort'))
     const targetPort=/^\d+$/.test(form.targetPort) ? Number(form.targetPort) : form.targetPort.trim()
     if (typeof targetPort==='number'&&(targetPort<1||targetPort>65535)) throw new Error(t('k8s.invalidPort'))
-    object.spec={type:form.serviceType,selector:mapping(form.selector),ports:[{...original.spec?.ports?.[0],port:form.port,targetPort},...(original.spec?.ports ?? []).slice(1)]}
+    const selector: Record<string,string|null> = mapping(form.selector)
+    for (const key of Object.keys(original.spec?.selector ?? {})) if (!Object.hasOwn(selector,key)) selector[key]=null
+    object.spec={type:form.serviceType,selector,ports:[{...original.spec?.ports?.[0],port:form.port,targetPort},...(original.spec?.ports ?? []).slice(1)]}
   } else if (kind==='Ingress') {
     try {
       const spec=ingressFormPatch(props.object,{hostname:form.hostname,path:form.path,backend:form.backend,ingressClass:form.ingressClass,ingressPort:form.ingressPort})
