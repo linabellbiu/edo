@@ -4,6 +4,8 @@ import { test } from 'node:test'
 import { compileScript, parse } from '@vue/compiler-sfc'
 import ts from 'typescript'
 import * as vue from 'vue'
+import { Drawer } from 'ant-design-vue'
+import { renderToString } from '@vue/server-renderer'
 
 const compile = content => ts.transpileModule(content, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, esModuleInterop: true } }).outputText
 function load(content, modules, globals = {}) {
@@ -35,7 +37,9 @@ async function harness() {
     remove(node) { if (node.parent) node.parent.children.splice(node.parent.children.indexOf(node), 1); node.parent = null },
   })
   const detail = { props: ['open', 'title'], setup: (p, { slots }) => () => p.open ? vue.h('section', { 'data-detail': p.title }, [slots.actions?.(), slots.default?.()]) : null }
-  const editor = { props: ['open', 'title'], setup: (p, { slots }) => {
+  let editorProps
+  const editor = { props: ['open', 'title', 'width'], setup: (p, { slots }) => {
+    editorProps = p
     vue.watch(() => p.open, value => { if (value) trace.push('editor-open') }, { flush: 'sync' })
     return () => p.open ? vue.h('aside', { 'data-editor': p.title }, [slots.default?.(), slots.footer?.()]) : null
   } }
@@ -86,6 +90,7 @@ async function harness() {
   return { records, permissions, trace, writes, errors, find, click, rowButton, toolbarEdit,
     countDetails: () => find(node => Boolean(node.props['data-detail'])).length,
     countEditors: () => find(node => Boolean(node.props['data-editor'])).length,
+    editorWidth: () => editorProps.width,
     name: () => one(node => node.tag === 'input' && node.props.placeholder === '例如：生产后端部署').props.value,
     page: () => table.props.pagination.current,
     selected: () => find(node => node.tag === 'tr' && node.props.class.includes('is-current')).map(node => node.props['data-plan']),
@@ -140,5 +145,17 @@ for (const entry of ['toolbar', 'row']) for (const reason of ['revoked', 'remove
   assert.equal(h.countEditors(), 0)
   assert.equal(h.countDetails(), before)
   assert.deepEqual(h.trace, [])
+  assert.deepEqual(h.writes, [])
+})
+
+test('真实编辑模板把随视口收缩且保留桌面上限的宽度传给 Ant 抽屉', async t => {
+  const h = await harness(); t.after(h.stop)
+  await h.click(h.rowButton('p11', 'planList.edit'))
+  assert.equal(h.countEditors(), 1)
+  assert.equal(h.editorWidth(), 'min(720px, 100vw)')
+  const html = await renderToString(vue.createSSRApp(() => vue.h(Drawer, {
+    open: true, getContainer: false, forceRender: true, width: h.editorWidth(),
+  }, { default: () => vue.h('p', '部署方案') })))
+  assert.match(html, /class="ant-drawer-content-wrapper"[^>]*style="[^"]*width:min\(720px, 100vw\)/)
   assert.deepEqual(h.writes, [])
 })

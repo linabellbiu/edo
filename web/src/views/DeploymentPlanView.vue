@@ -1000,7 +1000,7 @@ onBeforeUnmount(() => { disposed = true; resetMutation(); window.removeEventList
       <section v-if="detailPlan && (detailPlan.script || detailPlan.compose_yaml)" class="resource-detail-section"><h4>{{ t('deploymentList.configuration') }}</h4><pre class="resource-code">{{ detailPlan.kind === 'compose' ? detailPlan.compose_yaml : detailPlan.script }}</pre></section>
     </ResourceDetailDrawer>
 
-    <a-drawer v-model:open="formOpen" :title="editingID ? '编辑部署方案' : '新建部署方案'" width="720">
+    <a-drawer v-model:open="formOpen" :title="editingID ? '编辑部署方案' : '新建部署方案'" width="min(720px, 100vw)">
       <a-form layout="vertical">
         <div class="form-section">
           <header><b>1</b><div><strong>方案信息</strong><small>使用能直接辨认用途和环境的名称。</small></div></header>
