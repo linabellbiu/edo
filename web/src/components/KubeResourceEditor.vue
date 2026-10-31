@@ -405,6 +405,7 @@ async function submit(url:string,namespace:string,method:string,object:KubeObjec
 :global(.kube-resource-editor-modal .kube-resource-editor-slide-enter),:global(.kube-resource-editor-modal .kube-resource-editor-slide-leave){transition:transform 160ms ease-out}
 :global(.kube-resource-editor-modal .kube-resource-editor-slide-enter-start),:global(.kube-resource-editor-modal .kube-resource-editor-slide-leave-active){transform:translateX(100%)}
 :global(.kube-resource-editor-modal .kube-resource-editor-slide-enter-active){transform:translateX(0)}
+@media(max-width:760px){:global(.kube-resource-editor-modal .ant-modal-body){padding:16px}}
 @media(prefers-reduced-motion:reduce){:global(.kube-resource-editor-modal .kube-resource-editor-slide-enter),:global(.kube-resource-editor-modal .kube-resource-editor-slide-leave){transition-duration:1ms}}
 </style>
 <style scoped>

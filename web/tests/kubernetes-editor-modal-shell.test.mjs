@@ -111,3 +111,13 @@ test('右侧满高和滚动规则只作用于本编辑器命名空间，不改�
  assert.match(css.code,/@media\s*\(prefers-reduced-motion:\s*reduce\)[\s\S]*transition-duration:\s*1ms/)
  assert.doesNotMatch(css.code,/scale\(|zoom/)
 })
+
+test('窄屏面板内边距与吸顶偏移一致，内容不从导航上方露出',()=>{
+ const shell=descriptor.styles.find(item=>item.content.includes('kube-resource-editor-modal'))
+ const tabs=descriptor.styles.find(item=>item.content.includes('.workload-editor-tabs > :deep(.ant-tabs-nav)'))
+ const shellCSS=compileStyle({source:shell.content,filename:'KubeResourceEditor.vue',id:'data-v-kube-modal-shell',scoped:shell.scoped})
+ const tabsCSS=compileStyle({source:tabs.content,filename:'KubeResourceEditor.vue',id:'data-v-kube-modal-shell',scoped:tabs.scoped})
+ assert.deepEqual(shellCSS.errors,[]);assert.deepEqual(tabsCSS.errors,[])
+ assert.match(shellCSS.code,/@media\s*\(max-width:\s*760px\)\s*\{\s*\.kube-resource-editor-modal \.ant-modal-body\s*\{\s*padding:\s*16px/)
+ assert.match(tabsCSS.code,/@media\s*\(max-width:\s*760px\)[\s\S]*\.workload-editor-tabs[^}]*top:\s*-16px/)
+})
