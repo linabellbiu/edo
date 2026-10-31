@@ -17,7 +17,10 @@ import (
 	"edo/internal/terminalwire"
 )
 
-const dockerCleanupTimeout = 10 * time.Second
+const (
+	dockerCleanupTimeout = 10 * time.Second
+	dockerOutputLimit    = 256 * 1024
+)
 
 var errDockerOutputFull = errors.New("终端输出超过读取能力，会话已关闭")
 
@@ -29,20 +32,21 @@ type dockerSession struct {
 	closeClient               func() error
 	inspect                   func(context.Context) (client.ExecInspectResult, error)
 	execID, containerID       string
-	output                    chan []byte
+	output                    bytes.Buffer
+	outputMu                  sync.Mutex
+	outputReady               chan struct{}
 	ready, ack, done, closing chan struct{}
 	gate                      chan struct{}
 	mu                        sync.Mutex
 	result                    *terminalwire.Message
 	failure                   error
 	readMu                    sync.Mutex
-	pending                   []byte
 	attachOnce, closeOnce     sync.Once
 	closeErr                  error
 }
 
 func newDockerSession(ctx context.Context, conn net.Conn, source io.Reader, closeAttach func(), closeClient func() error, inspect func(context.Context) (client.ExecInspectResult, error), execID, containerID string) *dockerSession {
-	s := &dockerSession{ctx: ctx, conn: conn, source: source, closeAttach: closeAttach, closeClient: closeClient, inspect: inspect, execID: execID, containerID: containerID, output: make(chan []byte, 8), ready: make(chan struct{}), ack: make(chan struct{}), done: make(chan struct{}), closing: make(chan struct{}), gate: make(chan struct{}, 1)}
+	s := &dockerSession{ctx: ctx, conn: conn, source: source, closeAttach: closeAttach, closeClient: closeClient, inspect: inspect, execID: execID, containerID: containerID, outputReady: make(chan struct{}, 1), ready: make(chan struct{}), ack: make(chan struct{}), done: make(chan struct{}), closing: make(chan struct{}), gate: make(chan struct{}, 1)}
 	s.gate <- struct{}{}
 	go s.pump()
 	return s
@@ -61,6 +65,39 @@ func (s *dockerSession) recordFailure(err error) {
 	}
 }
 func (s *dockerSession) failureValue() error { s.mu.Lock(); defer s.mu.Unlock(); return s.failure }
+
+// 预算按未消费字节计算，不把 PTY 的细碎帧误当成大量输出；通知不承载终端数据。
+func (s *dockerSession) bufferOutput(data []byte) error {
+	s.outputMu.Lock()
+	defer s.outputMu.Unlock()
+	select {
+	case <-s.closing:
+		return nil
+	default:
+	}
+	if len(data) > dockerOutputLimit-s.output.Len() {
+		return errDockerOutputFull
+	}
+	_, _ = s.output.Write(data)
+	select {
+	case s.outputReady <- struct{}{}:
+	default:
+	}
+	return nil
+}
+
+func (s *dockerSession) readOutput(data []byte) int {
+	s.outputMu.Lock()
+	defer s.outputMu.Unlock()
+	queued := s.output.Bytes()
+	n := copy(data, queued)
+	clear(queued[:n])
+	s.output.Next(n)
+	if s.output.Len() == 0 {
+		s.output = bytes.Buffer{}
+	}
+	return n
+}
 
 func (s *dockerSession) start(ctx context.Context, start terminalwire.Message) error {
 	if err := s.send(ctx, start, false); err != nil {
@@ -150,30 +187,24 @@ func (s *dockerSession) Read(b []byte) (int, error) {
 	for {
 		select {
 		case <-s.closing:
-			s.pending = nil
 			return 0, io.EOF
 		default:
 		}
-		if len(s.pending) > 0 {
-			n := copy(b, s.pending)
-			s.pending = s.pending[n:]
+		if n := s.readOutput(b); n > 0 {
 			return n, nil
 		}
 		select {
 		case <-s.closing:
 			return 0, io.EOF
-		case data := <-s.output:
-			s.pending = data
+		case <-s.outputReady:
 		case <-s.done:
-			select {
-			case data := <-s.output:
-				s.pending = data
-			default:
-				if err := s.failureValue(); err != nil {
-					return 0, err
-				}
-				return 0, io.EOF
+			if n := s.readOutput(b); n > 0 {
+				return n, nil
 			}
+			if err := s.failureValue(); err != nil {
+				return 0, err
+			}
+			return 0, io.EOF
 		}
 	}
 }
@@ -250,15 +281,10 @@ func (w *dockerProtocolWriter) Write(b []byte) (int, error) {
 			if !w.ready {
 				return 0, terminalwire.ErrProtocol
 			}
-			select {
-			case <-s.closing:
-			default:
-				select {
-				case s.output <- m.Data:
-				default:
-					s.recordFailure(errDockerOutputFull)
-				}
+			if err := s.bufferOutput(m.Data); err != nil {
+				s.recordFailure(err)
 			}
+			clear(m.Data)
 		case "closed":
 			if !w.ready {
 				return 0, terminalwire.ErrProtocol
@@ -339,19 +365,10 @@ func (s *dockerSession) Close() error {
 				slog.WarnContext(ctx, "受控终端输出最终核验失败", "operation", "terminal_docker_close_final_protocol", "exec_id", s.execID, "err", err)
 				s.closeErr = ErrDockerTerminalRelease
 			}
-			s.readMu.Lock()
-			clear(s.pending)
-			s.pending = nil
-			drain := true
-			for drain {
-				select {
-				case data := <-s.output:
-					clear(data)
-				default:
-					drain = false
-				}
-			}
-			s.readMu.Unlock()
+			s.outputMu.Lock()
+			clear(s.output.Bytes())
+			s.output = bytes.Buffer{}
+			s.outputMu.Unlock()
 			if err := s.closeClient(); err != nil {
 				slog.WarnContext(ctx, "关闭 Docker 终端客户端失败", "operation", "terminal_docker_client_close", "exec_id", s.execID, "err", err)
 				s.closeErr = ErrDockerTerminalRelease

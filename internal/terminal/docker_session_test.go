@@ -28,6 +28,8 @@ type controlledFixture struct {
 	stopped                                                              atomic.Bool
 	finished                                                             chan struct{}
 	floodStart                                                           chan struct{}
+	fragments                                                            [][]byte
+	fragmentsStart, fragmentsSent                                        chan struct{}
 }
 
 // 仅测试端编码 Docker 固定的 8 字节 stdout 帧；生产端仍使用官方 stdcopy 解复用。
@@ -72,6 +74,15 @@ func controlledTestSession(t *testing.T, ctx context.Context, f *controlledFixtu
 					return
 				}
 			}
+		}
+		if len(f.fragments) > 0 {
+			<-f.fragmentsStart
+			for _, fragment := range f.fragments {
+				if terminalwire.Write(out, terminalwire.Message{Type: "data", Data: fragment}) != nil {
+					return
+				}
+			}
+			close(f.fragmentsSent)
 		}
 		for {
 			m, err := terminalwire.Read(reader)
@@ -157,6 +168,97 @@ func TestControlledDockerBinaryResizeAndConcurrentClose(t *testing.T) {
 	}
 }
 
+func TestControlledDockerFragmentedOutputUsesByteBudget(t *testing.T) {
+	f := &controlledFixture{ack: terminalwire.Message{Released: true, Clean: true}, fragmentsStart: make(chan struct{}), fragmentsSent: make(chan struct{})}
+	want := make([]byte, 256)
+	for i := range want {
+		want[i] = byte(i)
+		f.fragments = append(f.fragments, []byte{byte(i)})
+	}
+	s := controlledTestSession(t, context.Background(), f)
+	startControlled(t, s, context.Background())
+	close(f.fragmentsStart)
+	select {
+	case <-f.fragmentsSent:
+	case <-time.After(time.Second):
+		t.Fatal("细碎输出阻塞了控制帧读取")
+	}
+	if err := s.failureValue(); err != nil {
+		t.Fatal("256 字节细碎输出不应按帧数误判背压", err)
+	}
+	got := make([]byte, len(want))
+	if _, err := io.ReadFull(s, got); err != nil || !bytes.Equal(got, want) {
+		t.Fatal("细碎输出丢失或顺序改变", err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatal("小量细碎输出后的严格回收失败", err)
+	}
+}
+
+func TestDockerOutputBudgetCountsUnconsumedBytesAndReleasesStorage(t *testing.T) {
+	s := &dockerSession{outputReady: make(chan struct{}, 1), closing: make(chan struct{}), done: make(chan struct{})}
+	if s.output.Cap() != 0 {
+		t.Fatal("空闲会话不应预分配终端数据缓冲")
+	}
+	chunk := bytes.Repeat([]byte{'x'}, terminalwire.MaxData)
+	for range dockerOutputLimit / len(chunk) {
+		if err := s.bufferOutput(chunk); err != nil {
+			t.Fatal("未达到字节预算就拒绝输出", err)
+		}
+	}
+	if s.output.Len() != dockerOutputLimit || !errors.Is(s.bufferOutput([]byte{'y'}), errDockerOutputFull) {
+		t.Fatal("没有在准确的未消费字节上限拒绝新输出")
+	}
+	first := make([]byte, 1)
+	if n, err := s.Read(first); n != 1 || err != nil || first[0] != 'x' {
+		t.Fatal("部分读取失败", n, err)
+	}
+	if err := s.bufferOutput([]byte{'y'}); err != nil || s.output.Len() != dockerOutputLimit {
+		t.Fatal("消费的额度没有立即归还", err)
+	}
+	close(s.done)
+	got := make([]byte, dockerOutputLimit)
+	if _, err := io.ReadFull(s, got); err != nil || !bytes.Equal(got[:len(got)-1], bytes.Repeat([]byte{'x'}, len(got)-1)) || got[len(got)-1] != 'y' {
+		t.Fatal("读取结束前未按顺序排空剩余输出", err)
+	}
+	if n, err := s.Read(first); n != 0 || !errors.Is(err, io.EOF) || s.output.Len() != 0 || s.output.Cap() != 0 {
+		t.Fatal("排空后没有释放存储或返回 EOF", n, err)
+	}
+	close(s.closing)
+	if err := s.bufferOutput([]byte{'z'}); err != nil || s.output.Len() != 0 || s.output.Cap() != 0 {
+		t.Fatal("关闭后仍接收新的终端数据", err)
+	}
+}
+
+func TestControlledDockerCloseUnblocksIdleOutputReader(t *testing.T) {
+	f := &controlledFixture{ack: terminalwire.Message{Released: true, Clean: true}}
+	s := controlledTestSession(t, context.Background(), f)
+	s.outputReady = make(chan struct{})
+	startControlled(t, s, context.Background())
+	result := make(chan error, 1)
+	go func() {
+		var one [1]byte
+		_, err := s.Read(one[:])
+		result <- err
+	}()
+	select {
+	case s.outputReady <- struct{}{}:
+	case <-time.After(time.Second):
+		t.Fatal("读取协程没有进入等待输出的分支")
+	}
+	if err := s.Close(); err != nil {
+		t.Fatal("空闲读取期间严格回收失败", err)
+	}
+	select {
+	case err := <-result:
+		if !errors.Is(err, io.EOF) {
+			t.Fatal("关闭后读取未返回 EOF", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("关闭未唤醒等待读取的协程")
+	}
+}
+
 func TestControlledDockerCanceledCallerStillConfirmsCleanup(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -228,7 +330,7 @@ func TestControlledDockerSlowReaderKeepsControlPumpAndBoundsMemory(t *testing.T)
 	if !f.stopped.Load() || f.closeFrames.Load() != 1 || s.result == nil || !s.result.Released {
 		t.Fatal("TTY 队列阻断了控制 ACK")
 	}
-	if len(s.output) != 0 || len(s.pending) != 0 || cap(s.output) != 8 {
+	if s.output.Len() != 0 || s.output.Cap() != 0 {
 		t.Fatal("关闭后仍保留终端缓冲")
 	}
 }
