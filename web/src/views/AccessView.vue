@@ -1321,12 +1321,12 @@ onMounted(() => {
       cancel-text="取消"
       @ok="saveDepartment"
     >
-      <a-form layout="vertical">
-        <a-form-item label="部门名称" required>
-          <a-input v-model:value="departmentForm.name" maxlength="64" />
+      <a-form :model="departmentForm" name="access-department" layout="vertical">
+        <a-form-item name="name" label="部门名称" required>
+          <a-input v-model:value="departmentForm.name" :maxlength="64" />
         </a-form-item>
-        <a-form-item label="说明">
-          <a-textarea v-model:value="departmentForm.description" :rows="3" maxlength="255" />
+        <a-form-item name="description" label="说明">
+          <a-textarea v-model:value="departmentForm.description" :rows="3" :maxlength="255" />
         </a-form-item>
       </a-form>
     </a-modal>
