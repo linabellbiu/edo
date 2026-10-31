@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
@@ -31,15 +32,16 @@ import (
 const checkImage = "sqlfluff/sqlfluff:4.4.0"
 
 type Runtime struct {
-	config config.Runtime
-	logger *slog.Logger
+	config       config.Runtime
+	logger       *slog.Logger
+	openDatabase func(context.Context, model.ApplicationDatabase, string) (*sql.DB, error)
 }
 
 func NewRuntime(cfg config.Runtime, logger *slog.Logger) *Runtime {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &Runtime{config: cfg, logger: logger}
+	return &Runtime{config: cfg, logger: logger, openDatabase: cicd.OpenApplicationDatabase}
 }
 
 type checkFinding struct {
@@ -202,7 +204,7 @@ func (r *Runtime) Execute(ctx context.Context, target model.ApplicationDatabase,
 	}
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 	defer cancel()
-	db, err := cicd.OpenApplicationDatabase(ctx, target, password)
+	db, err := r.openDatabase(ctx, target, password)
 	if err != nil {
 		r.executionError(executionID, "connect", err)
 		return ErrExecutionFailed
