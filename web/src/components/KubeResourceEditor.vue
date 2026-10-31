@@ -58,6 +58,7 @@ function removeContainer(){
   if(!rows.length)selectContainer('containers',0)
   else activeContainerIndex.value=Math.min(activeContainerIndex.value,rows.length-1)
 }
+// 等父组件本轮 props 全部更新后再回填，避免 open 先变更时读到上次关闭前的旧对象。
 watch(editorIdentity, () => {
   editorRevision++;submitRevision++;submitController?.abort();submitController=undefined;saving.value=false;saveDialog?.destroy?.();saveDialog=undefined;confirming.value=false
   classRevision++
@@ -76,7 +77,7 @@ watch(editorIdentity, () => {
   storageClasses.value = []; classesError.value = ''; classesLoading.value = false
   if (props.type.kind === 'PersistentVolumeClaim' && !editing.value) void loadStorageClasses()
   initialDraft.value=draft()
-}, {immediate:true,flush:'sync'})
+}, {immediate:true,flush:'pre'})
 async function loadStorageClasses() {
   const revision = ++classRevision, cluster = props.cluster
   classesLoading.value = true; classesError.value = ''

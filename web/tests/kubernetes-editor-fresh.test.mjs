@@ -1,9 +1,10 @@
 import assert from 'node:assert/strict'
 import {readFileSync} from 'node:fs'
 import {test} from 'node:test'
-import {parse,compileScript} from '@vue/compiler-sfc'
+import {parse,compileScript,compileTemplate} from '@vue/compiler-sfc'
 import ts from 'typescript'
 import * as vue from 'vue'
+import axios from 'axios'
 import {createRouter,createMemoryHistory} from 'vue-router'
 
 function load(path,modules={},globals={}){
@@ -245,4 +246,90 @@ test('ConfigMap 编辑器仍以原快照预检阻断并发 A 到 C，保留 B �
  scope.run(()=>{state=component.setup(props,{expose(){},emit:(...args)=>events.push(args)})});state.form.data[0].value='DRAFT_B'
  await assert.rejects(state.submit(localApi.resourceURL('test',props.type,'settings'),'team','PATCH',{...clone(original),data:{setting:'DRAFT_B'}}),/k8s.resourceChanged/)
  assert.deepEqual(calls,['GET']);assert.equal(state.form.data[0].value,'DRAFT_B');assert.equal(state.error.value,'k8s.resourceChanged');assert.equal(props.open,true);assert.deepEqual(events,[])
+})
+
+// 使用 Vue 编译出的动态 props 和真实 renderer，覆盖父 VNode 逐项更新，而非模拟 watcher。
+function renderedEditor({bindingOrder='open-first',handlers={}}={}){
+ const calls=[],events=[],dialogs=[],trace=[],parent=vue.reactive({open:true,visible:true,cluster:'test',namespace:'team',object:resourceObject('configmaps'),type:api.kubeTypes.find(type=>type.resource==='configmaps')})
+ const client={}
+ for(const method of ['get','post','request'])client[method]=async(...args)=>{
+  calls.push({method,args})
+  if(handlers[method])return handlers[method](...args)
+  return method==='get'?{data:{object:clone(parent.object)}}:{data:{}}
+ }
+ const localApi=load('../src/api/kubernetes.ts',{axios,'./client':{__esModule:true,default:client},'./resources':{apiErrorMessage:error=>error.message}})
+ const component=load('../src/components/KubeResourceEditor.vue',{
+  vue,'vue-i18n':{useI18n:()=>({t:key=>key})},
+  'ant-design-vue':{Modal:{confirm:options=>{const dialog={...options,update(){},destroy(){dialog.destroyed=true}};dialogs.push(dialog);return dialog}},message:{success:value=>events.push(['success',value])}},
+  '@/api/client':{__esModule:true,default:client},'@/api/kubernetes':localApi,
+  '@/utils/kubernetesWorkloadForm':load('../src/utils/kubernetesWorkloadForm.ts',{'@/api/kubernetes':localApi}),
+  '@/utils/kubernetesConfig':{inspectConfigFile:()=>({issues:[]})},
+ },{window:{addEventListener(){},removeEventListener(){}}}).default
+ let state,childProps
+ const bridge={...component,setup(props,context){childProps=vue.getCurrentInstance().props;vue.watch(()=>[props.open,props.object?.metadata.resourceVersion],value=>trace.push([...value]),{flush:'sync'});state=component.setup(props,{...context,emit:(...args)=>events.push(args)});return()=>null}}
+ const bindings=bindingOrder==='open-first'?':open="open" :cluster="cluster" :namespace="namespace" :type="type" :object="object"':':object="object" :cluster="cluster" :namespace="namespace" :type="type" :open="open"'
+ const compiled=compileTemplate({source:`<KubeResourceEditor v-if="visible" ${bindings} />`,filename:'KubeEditorParent.vue',id:'editor-prop-order',compilerOptions:{mode:'function'}})
+ assert.deepEqual(compiled.errors,[])
+ const renderer=vue.createRenderer({patchProp(){},insert(node,target){node.parent=target;(target.children??=[]).push(node)},remove(node){if(node.parent)node.parent.children=node.parent.children.filter(item=>item!==node)},createElement:()=>({children:[]}),createText:()=>({}),createComment:()=>({}),setText(){},setElementText(){},parentNode:node=>node.parent,nextSibling:()=>null})
+ const app=renderer.createApp({components:{KubeResourceEditor:bridge},setup:()=>parent,render:new Function('Vue',compiled.code)(vue)})
+ app.mount({children:[]});let stopped=false
+ return {state,parent,childProps,calls,events,dialogs,trace,localApi,stop(){if(!stopped){stopped=true;app.unmount()}}}
+}
+
+test('父 VNode 重开同 UID 的 ConfigMap 时，两种赋值及绑定顺序均回填新 RV 的 A 而非 FIRST',async t=>{
+ for(const bindingOrder of ['open-first','object-first'])for(const assignmentOrder of ['open-first','object-first'])await t.test(`${bindingOrder}/${assignmentOrder}`,async t=>{
+  const h=renderedEditor({bindingOrder});t.after(h.stop)
+  assert.equal(h.state.form.data[0].value,'FIRST');h.parent.open=false;await vue.nextTick()
+  const fresh=resourceObject('configmaps',{version:'34977',value:'A'})
+  if(assignmentOrder==='open-first'){h.parent.open=true;h.parent.object=fresh}else{h.parent.object=fresh;h.parent.open=true}
+  await vue.nextTick()
+  if(bindingOrder==='open-first'){const opened=h.trace.findIndex(([open,rv])=>open&&rv==='12');assert.ok(opened>=0);assert.ok(h.trace.slice(opened+1).some(([open,rv])=>open&&rv==='34977'))}
+  assert.equal(h.state.form.data[0].value,'A');assert.equal(h.state.dirty.value,false)
+  assert.equal(h.state.buildObject().metadata.resourceVersion,'34977');assert.deepEqual(h.calls,[])
+ })
+})
+
+test('已打开的脏稿不被同身份 background 新 object 或 RV 覆盖',async t=>{
+ const h=renderedEditor();t.after(h.stop);h.state.form.data[0].value='DRAFT_B';assert.equal(h.state.dirty.value,true)
+ h.parent.object=resourceObject('configmaps',{version:'34978',value:'A-later'});await vue.nextTick()
+ assert.equal(h.state.form.data[0].value,'DRAFT_B');assert.equal(h.state.dirty.value,true);assert.deepEqual(h.calls,[])
+})
+
+test('身份变化的即时 submit 检查先于批处理回填，旧确认不能发出请求',async t=>{
+ const h=renderedEditor();t.after(h.stop);h.state.form.data[0].value='DRAFT_B'
+ const context=h.state.submissionContext(),body=h.state.buildObject()
+ h.childProps.cluster='other-cluster'
+ await h.state.submit(h.localApi.resourceURL('test',h.parent.type,'settings'),'team','PATCH',body,context)
+ assert.deepEqual(h.calls,[]);assert.deepEqual(h.events,[])
+})
+
+test('跨范围、关闭或卸载会中止在途 fresh，迟到响应不 dry-run、不写入或发成功事件',async t=>{
+ for(const change of ['cluster','namespace','resource','close','unmount'])await t.test(change,async t=>{
+  let resolve;const h=renderedEditor({handlers:{get:()=>new Promise(done=>resolve=done)}});t.after(h.stop)
+  const original=clone(h.parent.object);h.state.form.data[0].value='DRAFT_B'
+  const pending=h.state.submit(h.localApi.resourceURL('test',h.parent.type,'settings'),'team','PATCH',h.state.buildObject())
+  const signal=h.calls[0].args[1].signal
+  if(change==='cluster')h.parent.cluster='other-cluster'
+  else if(change==='namespace')h.parent.namespace='other'
+  else if(change==='resource')h.parent.type=api.kubeTypes.find(type=>type.resource==='secrets')
+  else if(change==='close')h.parent.open=false
+  else h.stop()
+  await vue.nextTick();assert.equal(signal.aborted,true)
+  resolve({data:{object:original}});await pending
+  assert.deepEqual(h.calls.map(call=>call.method),['get']);assert.deepEqual(h.events,[])
+ })
+})
+
+test('dry-run 与 PATCH 迟到完成不覆盖新范围草稿或报告旧操作成功',async t=>{
+ for(const stage of ['post','request'])await t.test(stage,async t=>{
+  let resolve;const h=renderedEditor({handlers:{[stage]:()=>new Promise(done=>resolve=done)}});t.after(h.stop)
+  h.state.form.data[0].value='DRAFT_B'
+  const pending=h.state.submit(h.localApi.resourceURL('test',h.parent.type,'settings'),'team','PATCH',h.state.buildObject())
+  await settle();assert.equal(h.calls.at(-1).method,stage)
+  const signal=stage==='post'?h.calls.at(-1).args[2].signal:h.calls.at(-1).args[0].signal
+  h.parent.namespace='other';h.parent.object=resourceObject('configmaps',{namespace:'other',uid:'other-uid',version:'20',value:'OTHER'});await vue.nextTick();assert.equal(signal.aborted,true)
+  resolve({data:{}});await pending
+  assert.deepEqual(h.calls.map(call=>call.method),stage==='post'?['get','post']:['get','post','request']);assert.deepEqual(h.events,[])
+  assert.equal(h.state.form.data[0].value,'OTHER');assert.equal(h.state.saving.value,false)
+ })
 })
