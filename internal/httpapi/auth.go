@@ -105,9 +105,13 @@ func (h authHandler) handleMe(c *gin.Context) {
 		})
 		return
 	}
-	permissions, err := h.access.UserPermissions(c.Request.Context(), user)
+	permissions, err := h.access.CurrentUserPermissions(c.Request.Context(), user)
 	if err != nil {
 		h.logger.Error("读取当前用户权限失败", "operation", "auth_me_permissions", "request_id", requestIDFrom(c), "user_id", user.ID, "err", err)
+		if errors.Is(err, access.ErrAccessDelegationDenied) {
+			writeError(c, http.StatusForbidden, "authorization_changed", "当前权限已发生变化，请刷新后重试")
+			return
+		}
 		writeInternalError(c)
 		return
 	}

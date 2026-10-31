@@ -25,6 +25,12 @@
 
 Casbin 负责权限判断，项目 ID 用作角色域。角色、成员关系和用户单独配置的权限保存在数据库中，变更通过 Redis Watcher 通知其他实例。不需要额外部署身份或权限服务。
 
+当前身份接口 `/auth/me` 只返回 Casbin 授权与当前数据库授权的交集，不能把尚未重载的旧权限重新交给页面，也不能仅凭数据库新记录扩大授权。复核包含账户启停、认证版本、部门、项目可用性、成员资格及个人拒绝；有效超级管理员保留跨部门恢复入口，但停用项目仍不能执行业务操作。
+
+角色与个人拒绝在一致只读快照中读取。MySQL、PostgreSQL 使用显式 `Repeatable Read`；SQLite 沿用连接的 WAL 读快照。该入口从根数据库创建事务，不复用无法升级隔离级别的已有事务；任何读取或提交失败均不返回权限，并将诊断保留在内部日志。依据：[PostgreSQL 隔离级别](https://www.postgresql.org/docs/current/transaction-iso.html)、[MySQL 一致性读取](https://dev.mysql.com/doc/refman/8.4/en/innodb-consistent-read.html)、[SQLite 隔离](https://www.sqlite.org/isolation.html)。
+
+这不等于页面已具备即时撤权通知。目前页面仍通过请求拒绝、焦点、可见性与低频校准刷新身份；专用身份通知及断联补偿需另行完成验收，不能以身份接口修复替代。
+
 ## 接口与后台
 
 业务接口必须携带 `X-EDO-Project-ID`，WebSocket 使用 `project_id` 查询参数。服务端先验证项目可用性和成员资格，再检查动作权限；数据库查询、更新和删除继续强制按部门、项目过滤。未携带项目 ID 的业务请求会被拒绝。
