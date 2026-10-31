@@ -52,5 +52,23 @@ async function connect() {
 watch(()=>[props.open,props.runID],()=>{if(props.open&&props.runID)void connect();else{dispose?.();dispose=undefined}},{immediate:true})
 onBeforeUnmount(()=>dispose?.())
 </script>
-<template><a-drawer :open="open" :title="title" width="min(920px,94vw)" @close="emit('update:open',false)"><template #extra><a-tag :color="connection==='connected'?'processing':connection==='complete'?'success':'error'">{{ connection==='connected'?'实时连接':connection==='complete'?'执行结束':connection==='connecting'?'连接中':'连接异常' }}</a-tag></template><div class="log-meta"><span>运行 ID：<code>{{ runID }}</code></span><span>状态：{{ status }}</span><span>{{ logs.length }} 条</span><b v-if="error">{{ error }}</b></div><div ref="viewport" class="log-viewport"><div v-for="log in logs" :key="log.id" :class="`log-line level-${log.level}`"><time>{{ new Date(log.created_at).toLocaleTimeString('zh-CN',{hour12:false}) }}</time><span>{{ log.stage||'pipeline' }}</span><code>{{ log.message }}</code></div><a-empty v-if="!logs.length" description="等待流水线输出日志…"/></div></a-drawer></template>
-<style scoped>.log-meta{display:flex;flex-wrap:wrap;gap:14px;margin-bottom:10px;color:var(--edo-muted);font-size:12px}.log-meta b{color:#ef5656}.log-viewport{height:calc(100vh - 150px);overflow:auto;border-radius:7px;background:#071018;color:#d7e3ef;font:12px/1.7 SFMono-Regular,Consolas,monospace}.log-line{display:grid;grid-template-columns:75px 90px 1fr;gap:8px;padding:3px 12px;border-bottom:1px solid rgb(255 255 255 / 4%)}.log-line time,.log-line span{color:#7890a3}.log-line.level-error code{color:#ff8792}.log-line.level-warning code{color:#f1c169}.log-line.level-success code{color:#6dd6a3}.ant-empty{margin-top:120px}</style>
+<template><a-drawer :open="open" :title="title" width="min(920px,94vw)" :body-style="{ display: 'flex', flexDirection: 'column', minHeight: 0, overflow: 'hidden' }" @close="emit('update:open',false)"><template #extra><a-tag :color="connection==='connected'?'processing':connection==='complete'?'success':'error'">{{ connection==='connected'?'实时连接':connection==='complete'?'执行结束':connection==='connecting'?'连接中':'连接异常' }}</a-tag></template><div class="log-meta"><span>运行 ID：<code>{{ runID }}</code></span><span>状态：{{ status }}</span><span>{{ logs.length }} 条</span><b v-if="error">{{ error }}</b></div><div ref="viewport" class="log-viewport" role="region" :aria-label="title" tabindex="0"><div v-for="log in logs" :key="log.id" :class="`log-line level-${log.level}`"><time>{{ new Date(log.created_at).toLocaleTimeString('zh-CN',{hour12:false}) }}</time><span>{{ log.stage||'pipeline' }}</span><code>{{ log.message }}</code></div><a-empty v-if="!logs.length" description="等待流水线输出日志…"/></div></a-drawer></template>
+<style scoped>
+.log-meta{flex:none;display:flex;flex-wrap:wrap;gap:14px;margin-bottom:10px;color:var(--edo-muted);font-size:12px}
+.log-meta > span{min-width:0}
+.log-meta code{overflow-wrap:anywhere}
+.log-meta b{color:#ef5656}
+.log-viewport{flex:1;min-height:0;overflow:auto;border-radius:7px;background:#071018;color:#d7e3ef;font:12px/1.7 SFMono-Regular,Consolas,monospace}
+.log-viewport:focus-visible{outline:2px solid var(--edo-primary);outline-offset:2px}
+.log-line{display:grid;grid-template-columns:75px 90px minmax(0,1fr);gap:8px;padding:3px 12px;border-bottom:1px solid rgb(255 255 255 / 4%)}
+.log-line code{min-width:0;white-space:pre-wrap;overflow-wrap:anywhere}
+.log-line time,.log-line span{min-width:0;color:#7890a3;overflow-wrap:anywhere}
+.log-line.level-error code{color:#ff8792}
+.log-line.level-warning code{color:#f1c169}
+.log-line.level-success code{color:#6dd6a3}
+.ant-empty{margin-top:120px}
+@media(max-width:640px){
+  .log-line{grid-template-columns:75px minmax(0,1fr);gap:2px 8px;padding:8px 12px}
+  .log-line code{grid-column:1 / -1}
+}
+</style>
