@@ -1207,6 +1207,9 @@ onMounted(() => {
         <template #cell-permissions="{ value }">
           {{ Array.isArray(value) ? value.length : 0 }} 项
         </template>
+        <template #detail-permissions="{ value }">
+          {{ Array.isArray(value) ? value.length : 0 }} 项
+        </template>
         <template #actions="{ row }">
           <a-button
             v-if="canAny(['role.update'])"
