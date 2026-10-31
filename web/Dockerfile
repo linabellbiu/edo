@@ -1,6 +1,7 @@
 FROM node:24.16.0-bookworm-slim AS web-builder
 WORKDIR /src/web
 COPY web/package.json web/package-lock.json ./
+COPY web/patches/ ./patches/
 RUN npm ci
 COPY web/ ./
 RUN npm run build

@@ -1,0 +1,48 @@
+diff --git a/node_modules/ant-design-vue/es/vc-select/Selector/Input.js b/node_modules/ant-design-vue/es/vc-select/Selector/Input.js
+--- a/node_modules/ant-design-vue/es/vc-select/Selector/Input.js
++++ b/node_modules/ant-design-vue/es/vc-select/Selector/Input.js
+@@ -121,7 +121,7 @@
+         'aria-owns': `${id}_list`,
+         'aria-autocomplete': 'list',
+         'aria-controls': `${id}_list`,
+-        'aria-activedescendant': activeDescendantId
++        'aria-activedescendant': open ? activeDescendantId : undefined
+       }), attrs), {
+         value: editable ? value : '',
+         readonly: !editable,
+diff --git a/node_modules/ant-design-vue/lib/vc-select/Selector/Input.js b/node_modules/ant-design-vue/lib/vc-select/Selector/Input.js
+--- a/node_modules/ant-design-vue/lib/vc-select/Selector/Input.js
++++ b/node_modules/ant-design-vue/lib/vc-select/Selector/Input.js
+@@ -127,7 +127,7 @@
+         'aria-owns': `${id}_list`,
+         'aria-autocomplete': 'list',
+         'aria-controls': `${id}_list`,
+-        'aria-activedescendant': activeDescendantId
++        'aria-activedescendant': open ? activeDescendantId : undefined
+       }), attrs), {
+         value: editable ? value : '',
+         readonly: !editable,
+diff --git a/node_modules/ant-design-vue/es/vc-select/Select.js b/node_modules/ant-design-vue/es/vc-select/Select.js
+--- a/node_modules/ant-design-vue/es/vc-select/Select.js
++++ b/node_modules/ant-design-vue/es/vc-select/Select.js
+@@ -479,7 +479,7 @@
+         "OptionList": OptionList,
+         "emptyOptions": !displayOptions.value.length,
+         "activeValue": activeValue.value,
+-        "activeDescendantId": `${mergedId}_list_${accessibilityIndex.value}`
++        "activeDescendantId": accessibilityIndex.value >= 0 && accessibilityIndex.value < displayOptions.value.length ? `${mergedId}_list_${accessibilityIndex.value}` : undefined
+       }), slots);
+     };
+   }
+diff --git a/node_modules/ant-design-vue/lib/vc-select/Select.js b/node_modules/ant-design-vue/lib/vc-select/Select.js
+--- a/node_modules/ant-design-vue/lib/vc-select/Select.js
++++ b/node_modules/ant-design-vue/lib/vc-select/Select.js
+@@ -489,7 +489,7 @@
+         "OptionList": _OptionList.default,
+         "emptyOptions": !displayOptions.value.length,
+         "activeValue": activeValue.value,
+-        "activeDescendantId": `${mergedId}_list_${accessibilityIndex.value}`
++        "activeDescendantId": accessibilityIndex.value >= 0 && accessibilityIndex.value < displayOptions.value.length ? `${mergedId}_list_${accessibilityIndex.value}` : undefined
+       }), slots);
+     };
+   }

@@ -84,6 +84,7 @@ test('真实 Select 初始关闭态保留 combobox 语义并采样 IDREF，不�
   const controls = inputs(html).filter(control => control.role === 'combobox')
   assert.equal(controls.length, 2)
   assert.ok(controls.every(control => control['aria-expanded'] === 'false'))
+  assert.ok(controls.every(control => !control['aria-activedescendant']), '关闭的下拉没有活动选项，不应指向未挂载的选项')
   const metadata = controls.map(control => ({ id: control.id, expanded: control['aria-expanded'], references: ['aria-controls', 'aria-owns', 'aria-activedescendant'].map(attribute => ({ attribute, id: control[attribute], existsInSSR: ids.has(control[attribute]) })) }))
   t.diagnostic(JSON.stringify({ kind: 'closed-select-ssr-only', controls: metadata, browserPopupAndAxe: '未执行' }))
 })
@@ -153,6 +154,8 @@ test('用户 modal 局部编译样式复用主题 tokens，浅深色 placeholder
   const declaration = (rule, property) => rule.nodes.find(node => node.type === 'decl' && node.prop === property)?.value
   const placeholder = rules.find(rule => rule.selector === '.access-user-modal .ant-select-selection-placeholder')
   assert.ok(placeholder); assert.equal(declaration(placeholder, 'color'), 'var(--edo-muted)')
+  const openedSelection = rules.find(rule => rule.selector === '.access-user-modal .ant-select-single.ant-select-open .ant-select-selection-item')
+  assert.ok(openedSelection); assert.equal(declaration(openedSelection, 'color'), 'var(--edo-muted)')
   const button = rules.filter(rule => rule.selector.includes('.ant-modal-footer .ant-btn-primary:not(:disabled)'))
   assert.equal(button.length, 3)
   const base = button.find(rule => !rule.selector.endsWith(':hover') && !rule.selector.endsWith(':active'))
