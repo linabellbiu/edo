@@ -350,7 +350,7 @@ async function edit(object?:KubeObject,type=activeType.value) {
   if(!mounted||busy.value||editorLoading.value||editorOpen.value||yamlOpen.value||!type)return
   if(object?!type.update||!can(`${type.permission}.read`)||!can(`${type.permission}.update`):!type.create||!can(`${type.permission}.create`))return
   const target={cluster:cluster.value,namespace:object?nsOf(object):namespace.value,type:{...type},name:object?.metadata.name,uid:object?.metadata.uid},context=contextKey.value
-  if(!object||type.group!=='workloads'){
+  if(!object){
     editorContext.value={cluster:target.cluster,namespace:namespace.value,type:target.type,object:object?JSON.parse(JSON.stringify(object)):undefined};editorOpen.value=true;return
   }
   if(!target.uid||!target.name){message.error(t('k8s.resourceChanged'));return}
