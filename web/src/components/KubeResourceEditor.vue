@@ -7,17 +7,16 @@ import { podSpec, resourceURL, kubeTypes, listKubeResources, withFreshKubeResour
 import KubeKeyValues, { type KeyValue } from './KubeKeyValues.vue'
 import KubeConfigEntries from './KubeConfigEntries.vue'
 import KubeContainerFields from './KubeContainerFields.vue'
+import ASelect from './KubeEditorSelect.vue'
 import {containerForm,buildContainer,volumeForm,buildVolumes,workloadSettings,buildWorkloadSettings,type ContainerForm,type VolumeForm} from '@/utils/kubernetesWorkloadForm'
 import { inspectConfigFile } from '@/utils/kubernetesConfig'
 import { ingressForm, ingressFormPatch, networkPolicyForm, networkPolicyFormPatch } from '@/utils/kubernetesNetworkForm'
 
 const props = defineProps<{open:boolean; cluster:string; type:KubeType; namespace:string; object?:KubeObject; returnToDetails?:boolean}>()
 const emit = defineEmits<{'update:open':[value:boolean]; saved:[]}>()
-const { t } = useI18n({ messages: {
-  'zh-CN': { networkEditor: { port: '服务端口或名称', invalidIngressPort: '请输入 1 至 65535 的端口，或有效的服务端口名称', readonly: '此资源的网络规则无法由当前表单无损编辑，规则保持只读；仍可修改标签。', originalRules: '当前网络规则（只读）' } },
-  'en-US': { networkEditor: { port: 'Service port or name', invalidIngressPort: 'Enter a port from 1 to 65535 or a valid service port name', readonly: 'This form cannot edit these network rules without losing information. Rules are read-only; labels can still be edited.', originalRules: 'Current network rules (read-only)' } },
-} })
+const { t } = useI18n({ useScope: 'global' })
 const saving = ref(false), confirming=ref(false),error = ref('')
+const editorActive=computed(()=>props.open&&!saving.value&&!confirming.value)
 const editing = computed(() => Boolean(props.object))
 const workload = computed(() => ['Deployment','StatefulSet','DaemonSet','Job','CronJob','Pod'].includes(props.type.kind))
 const configuration = computed(() => ['ConfigMap','Secret'].includes(props.type.kind))
@@ -280,7 +279,8 @@ async function submit(url:string,namespace:string,method:string,object:KubeObjec
 </script>
 
 <template>
-  <a-drawer :open="open" :title="`${t(editing?'k8s.edit':'k8s.create')}${t(`k8s.type_${type.resource}`)}`" :width="workload?'min(1120px,96vw)':'min(800px,94vw)'" :mask-closable="!saving&&!confirming" :closable="!saving&&!confirming" :keyboard="!saving&&!confirming" @close="closeEditor">
+  <!-- 复用 Modal 的焦点管理与关闭恢复；非空动效名保留首次开窗的焦点生命周期。 -->
+  <a-modal :open="open" :title="`${t(editing?'k8s.edit':'k8s.create')}${t(`k8s.type_${type.resource}`)}`" :width="workload?'min(1120px,96vw)':'min(800px,94vw)'" wrap-class-name="kube-resource-editor-modal" :focus-trigger-after-close="true" transition-name="kube-resource-editor-slide" mask-transition-name="" :mask-closable="!saving&&!confirming" :closable="!saving&&!confirming" :keyboard="!saving&&!confirming" @cancel="closeEditor">
     <div class="editor-context"><a-tag>{{ type.kind }}</a-tag><span>{{ type.namespaced?form.namespace:t('k8s.clusterScope') }}</span><strong v-if="editing">{{ object?.metadata.name }}</strong></div>
     <div v-if="error" ref="errorPanel" tabindex="-1" role="alert" class="editor-error"><a-alert type="error" show-icon :message="error" class="editor-alert" /></div>
     <a-form layout="vertical" :disabled="saving||confirming" @finish="save">
@@ -296,16 +296,16 @@ async function submit(url:string,namespace:string,method:string,object:KubeObjec
         <div class="form-grid"><a-form-item v-if="['Deployment','StatefulSet'].includes(type.kind)" :label="t('k8s.replicas')" required><a-input-number :aria-label="t('k8s.replicas')" v-model:value="form.replicas" :min="0" :max="1000" :precision="0" /></a-form-item><a-form-item v-if="type.kind==='StatefulSet'" :label="t('k8s.serviceName')" required><a-input :aria-label="t('k8s.serviceName')" v-model:value="form.serviceName" :disabled="editing" /></a-form-item></div>
         <template v-if="type.kind==='CronJob'">
           <div class="form-grid"><a-form-item :label="t('k8s.schedule')" required><a-input :aria-label="t('k8s.schedule')" v-model:value="form.schedule" /></a-form-item><a-form-item :label="t('k8s.suspend')"><a-switch :aria-label="t('k8s.suspend')" v-model:checked="form.suspend" /></a-form-item></div>
-          <div class="form-grid"><a-form-item :label="t('k8s.cronTimeZone')"><a-input :aria-label="t('k8s.cronTimeZone')" v-model:value="workloadOptions.timeZone" placeholder="Asia/Shanghai" /><small class="editor-hint">{{ t('k8s.cronTimeZoneHint') }}</small></a-form-item><a-form-item :label="t('k8s.cronConcurrencyPolicy')"><a-select :aria-label="t('k8s.cronConcurrencyPolicy')" v-model:value="workloadOptions.concurrencyPolicy" :options="[{value:'',label:t('k8s.defaultValue')},...['Allow','Forbid','Replace'].map(value=>({value,label:t(`k8s.concurrency${value}`)}))]" /></a-form-item></div>
+          <div class="form-grid"><a-form-item :label="t('k8s.cronTimeZone')"><a-input :aria-label="t('k8s.cronTimeZone')" v-model:value="workloadOptions.timeZone" placeholder="Asia/Shanghai" /><small class="editor-hint">{{ t('k8s.cronTimeZoneHint') }}</small></a-form-item><a-form-item :label="t('k8s.cronConcurrencyPolicy')"><a-select :active="editorActive" :aria-label="t('k8s.cronConcurrencyPolicy')" v-model:value="workloadOptions.concurrencyPolicy" :options="[{value:'',label:t('k8s.defaultValue')},...['Allow','Forbid','Replace'].map(value=>({value,label:t(`k8s.concurrency${value}`)}))]" /></a-form-item></div>
           <div class="form-grid"><a-form-item :label="t('k8s.cronSuccessfulHistory')"><a-input-number :aria-label="t('k8s.cronSuccessfulHistory')" v-model:value="workloadOptions.successfulJobsHistoryLimit" :min="0" :precision="0" :placeholder="t('k8s.optionalClusterDefault')" /></a-form-item><a-form-item :label="t('k8s.cronFailedHistory')"><a-input-number :aria-label="t('k8s.cronFailedHistory')" v-model:value="workloadOptions.failedJobsHistoryLimit" :min="0" :precision="0" :placeholder="t('k8s.optionalClusterDefault')" /></a-form-item><a-form-item :label="t('k8s.cronStartingDeadlineSeconds')"><a-input-number :aria-label="t('k8s.cronStartingDeadlineSeconds')" v-model:value="workloadOptions.startingDeadlineSeconds" :min="0" :precision="0" :placeholder="t('k8s.optionalClusterDefault')" /></a-form-item></div>
         </template>
         </a-tab-pane>
         <a-tab-pane v-if="type.kind==='Deployment'" key="strategy" :tab="t('k8s.deploymentStrategy')" force-render>
 
-          <a-form-item :label="t('k8s.deploymentStrategy')"><a-select :aria-label="t('k8s.deploymentStrategy')" v-model:value="form.strategy" :options="['RollingUpdate','Recreate'].map(value=>({value,label:t(`k8s.strategy_${value}`)}))" /></a-form-item><div v-if="form.strategy==='RollingUpdate'" class="form-grid"><a-form-item :label="t('k8s.maxSurge')"><a-input :aria-label="t('k8s.maxSurge')" v-model:value="form.maxSurge" placeholder="25%" /></a-form-item><a-form-item :label="t('k8s.maxUnavailable')"><a-input :aria-label="t('k8s.maxUnavailable')" v-model:value="form.maxUnavailable" placeholder="25%" /></a-form-item></div><div class="form-grid"><a-form-item v-for="field in ['minReadySeconds','revisionHistoryLimit','progressDeadlineSeconds'] as const" :key="field" :label="t(`k8s.${field}`)"><a-input-number :aria-label="t(`k8s.${field}`)" v-model:value="form[field]" :min="0" :precision="0" /></a-form-item></div>
+          <a-form-item :label="t('k8s.deploymentStrategy')"><a-select :active="editorActive" :aria-label="t('k8s.deploymentStrategy')" v-model:value="form.strategy" :options="['RollingUpdate','Recreate'].map(value=>({value,label:t(`k8s.strategy_${value}`)}))" /></a-form-item><div v-if="form.strategy==='RollingUpdate'" class="form-grid"><a-form-item :label="t('k8s.maxSurge')"><a-input :aria-label="t('k8s.maxSurge')" v-model:value="form.maxSurge" placeholder="25%" /></a-form-item><a-form-item :label="t('k8s.maxUnavailable')"><a-input :aria-label="t('k8s.maxUnavailable')" v-model:value="form.maxUnavailable" placeholder="25%" /></a-form-item></div><div class="form-grid"><a-form-item v-for="field in ['minReadySeconds','revisionHistoryLimit','progressDeadlineSeconds'] as const" :key="field" :label="t(`k8s.${field}`)"><a-input-number :aria-label="t(`k8s.${field}`)" v-model:value="form[field]" :min="0" :precision="0" /></a-form-item></div>
         </a-tab-pane>
         <a-tab-pane v-if="['StatefulSet','DaemonSet'].includes(type.kind)" key="strategy" :tab="t('k8s.workloadUpdateStrategy')" force-render>
-          <a-form-item :label="t('k8s.workloadUpdateStrategy')"><a-select :aria-label="t('k8s.workloadUpdateStrategy')" v-model:value="workloadOptions.updateStrategy" :options="['RollingUpdate','OnDelete'].map(value=>({value,label:t(`k8s.strategy_${value}`)}))" /></a-form-item>
+          <a-form-item :label="t('k8s.workloadUpdateStrategy')"><a-select :active="editorActive" :aria-label="t('k8s.workloadUpdateStrategy')" v-model:value="workloadOptions.updateStrategy" :options="['RollingUpdate','OnDelete'].map(value=>({value,label:t(`k8s.strategy_${value}`)}))" /></a-form-item>
           <template v-if="workloadOptions.updateStrategy==='RollingUpdate'"><a-form-item v-if="type.kind==='StatefulSet'" :label="t('k8s.statefulPartition')"><a-input-number :aria-label="t('k8s.statefulPartition')" v-model:value="workloadOptions.partition" :min="0" :precision="0" :placeholder="t('k8s.optionalClusterDefault')" /><small class="editor-hint">{{ t('k8s.statefulPartitionHint') }}</small></a-form-item><div v-else class="form-grid"><a-form-item :label="t('k8s.maxSurge')"><a-input :aria-label="t('k8s.maxSurge')" v-model:value="workloadOptions.daemonMaxSurge" placeholder="0" /></a-form-item><a-form-item :label="t('k8s.maxUnavailable')"><a-input :aria-label="t('k8s.maxUnavailable')" v-model:value="workloadOptions.daemonMaxUnavailable" placeholder="1" /></a-form-item></div></template>
         </a-tab-pane>
         <a-tab-pane v-if="['Job','CronJob'].includes(type.kind)" key="job" :tab="t('k8s.jobSettings')" force-render>
@@ -326,12 +326,12 @@ async function submit(url:string,namespace:string,method:string,object:KubeObjec
               </nav>
               <section v-if="selectedContainer" class="container-editor-panel">
                 <div class="section-heading"><div><a-tag v-if="activeContainerGroup==='initContainers'">Init</a-tag><strong>{{ selectedContainer.name || t('k8s.container') }}</strong></div><a-button v-if="activeContainerGroup==='initContainers'||form.containers.length>1" html-type="button" size="small" danger :disabled="saving||confirming" @click="removeContainer">{{ t('k8s.remove') }}</a-button></div>
-                <KubeContainerFields :key="`${activeContainerGroup}:${activeContainerIndex}`" :container="selectedContainer" :editing="editing&&Boolean(selectedContainer.raw?.name)" :init="activeContainerGroup==='initContainers'" :disabled="saving||confirming" :volumes="form.volumes.map(v=>v.name)" />
+                <KubeContainerFields :key="`${activeContainerGroup}:${activeContainerIndex}`" :container="selectedContainer" :editing="editing&&Boolean(selectedContainer.raw?.name)" :init="activeContainerGroup==='initContainers'" :active="editorActive" :disabled="saving||confirming" :volumes="form.volumes.map(v=>v.name)" />
               </section>
             </div>
           </a-tab-pane>
           <a-tab-pane key="pod" :tab="`${t('k8s.volumes')} (${form.volumes.length})`" force-render>
-          <h4>{{ t('k8s.volumes') }}</h4><section v-for="(volume,index) in form.volumes" :key="index" class="container-form"><div class="form-grid"><a-form-item :label="t('k8s.volumeName')"><a-input :aria-label="t('k8s.volumeName')" v-model:value="volume.name" /></a-form-item><a-form-item :label="t('k8s.volumeType')"><a-select :aria-label="t('k8s.volumeType')" v-model:value="volume.kind" :disabled="volume.kind==='preserve'" :options="['emptyDir','configMap','secret','persistentVolumeClaim',...(volume.kind==='preserve'?['preserve']:[])].map(value=>({value,label:value==='preserve'?t('k8s.preservedVolume'):t(`k8s.volume_${value}`)}))" /></a-form-item></div><a-form-item v-if="!['emptyDir','preserve'].includes(volume.kind)" :label="t('k8s.referenceName')"><a-input :aria-label="t('k8s.referenceName')" v-model:value="volume.source" /></a-form-item><div v-if="volume.kind==='emptyDir'" class="form-grid"><a-form-item :label="t('k8s.volumeMedium')"><a-select :aria-label="t('k8s.volumeMedium')" v-model:value="volume.medium" :options="[{value:'',label:t('k8s.defaultValue')},{value:'Memory',label:'Memory'}]" /></a-form-item><a-form-item :label="t('k8s.sizeLimit')"><a-input :aria-label="t('k8s.sizeLimit')" v-model:value="volume.sizeLimit" placeholder="1Gi" /></a-form-item></div><a-button danger size="small" @click="form.volumes.splice(index,1)">{{ t('k8s.remove') }}</a-button></section>
+          <h4>{{ t('k8s.volumes') }}</h4><section v-for="(volume,index) in form.volumes" :key="index" class="container-form"><div class="form-grid"><a-form-item :label="t('k8s.volumeName')"><a-input :aria-label="t('k8s.volumeName')" v-model:value="volume.name" /></a-form-item><a-form-item :label="t('k8s.volumeType')"><a-select :active="editorActive" :aria-label="t('k8s.volumeType')" v-model:value="volume.kind" :disabled="volume.kind==='preserve'" :options="['emptyDir','configMap','secret','persistentVolumeClaim',...(volume.kind==='preserve'?['preserve']:[])].map(value=>({value,label:value==='preserve'?t('k8s.preservedVolume'):t(`k8s.volume_${value}`)}))" /></a-form-item></div><a-form-item v-if="!['emptyDir','preserve'].includes(volume.kind)" :label="t('k8s.referenceName')"><a-input :aria-label="t('k8s.referenceName')" v-model:value="volume.source" /></a-form-item><div v-if="volume.kind==='emptyDir'" class="form-grid"><a-form-item :label="t('k8s.volumeMedium')"><a-select :active="editorActive" :aria-label="t('k8s.volumeMedium')" v-model:value="volume.medium" :options="[{value:'',label:t('k8s.defaultValue')},{value:'Memory',label:'Memory'}]" /></a-form-item><a-form-item :label="t('k8s.sizeLimit')"><a-input :aria-label="t('k8s.sizeLimit')" v-model:value="volume.sizeLimit" placeholder="1Gi" /></a-form-item></div><a-button danger size="small" @click="form.volumes.splice(index,1)">{{ t('k8s.remove') }}</a-button></section>
           <a-button size="small" @click="form.volumes.push(volumeForm({name:'',emptyDir:{}}))">+ {{ t('k8s.volumes') }}</a-button>
           </a-tab-pane>
         <a-tab-pane key="scheduling" :tab="t('k8s.schedulingSettings')" force-render>
@@ -339,14 +339,14 @@ async function submit(url:string,namespace:string,method:string,object:KubeObjec
           <a-form-item :label="t('k8s.nodeSelector')"><KubeKeyValues v-model="nodeSelector" :disabled="saving||confirming" /></a-form-item>
         </a-tab-pane>
           <a-tab-pane key="options" :tab="t('k8s.workloadPodOptions')" force-render>
-        <template v-if="type.kind==='Pod'"><a-alert type="info" show-icon :message="t('k8s.standalonePod')" class="editor-alert" /><a-form-item :label="t('k8s.restartPolicy')"><a-select :aria-label="t('k8s.restartPolicy')" v-model:value="restartPolicy" :options="['Always','OnFailure','Never'].map(value=>({value}))" /></a-form-item></template>
+        <template v-if="type.kind==='Pod'"><a-alert type="info" show-icon :message="t('k8s.standalonePod')" class="editor-alert" /><a-form-item :label="t('k8s.restartPolicy')"><a-select :active="editorActive" :aria-label="t('k8s.restartPolicy')" v-model:value="restartPolicy" :options="['Always','OnFailure','Never'].map(value=>({value}))" /></a-form-item></template>
           <a-form-item :label="t('k8s.imagePullSecrets')"><a-input :aria-label="t('k8s.imagePullSecrets')" v-model:value="form.imagePullSecrets" /></a-form-item>
           </a-tab-pane>
           </a-tabs>
         </a-tab-pane>
       </a-tabs>
       <template v-if="type.kind==='Node'">
-        <a-form-item :label="t('k8s.taints')"><div v-for="(taint,index) in form.taints" :key="index" class="taint-row"><a-input :aria-label="t('k8s.taints')" v-model:value="taint.key" placeholder="Key" /><a-input :aria-label="t('k8s.taints')" v-model:value="taint.value" placeholder="Value" /><a-select :aria-label="t('k8s.taints')" v-model:value="taint.effect" :options="['NoSchedule','PreferNoSchedule','NoExecute'].map(value=>({value}))" /><a-button @click="form.taints.splice(index,1)">−</a-button></div><a-button size="small" @click="form.taints.push({key:'',value:'',effect:'NoSchedule'})">+ {{ t('k8s.addEntry') }}</a-button></a-form-item>
+        <a-form-item :label="t('k8s.taints')"><div v-for="(taint,index) in form.taints" :key="index" class="taint-row"><a-input :aria-label="t('k8s.taints')" v-model:value="taint.key" placeholder="Key" /><a-input :aria-label="t('k8s.taints')" v-model:value="taint.value" placeholder="Value" /><a-select :active="editorActive" :aria-label="t('k8s.taints')" v-model:value="taint.effect" :options="['NoSchedule','PreferNoSchedule','NoExecute'].map(value=>({value}))" /><a-button @click="form.taints.splice(index,1)">−</a-button></div><a-button size="small" @click="form.taints.push({key:'',value:'',effect:'NoSchedule'})">+ {{ t('k8s.addEntry') }}</a-button></a-form-item>
         <a-alert type="warning" show-icon :message="t('k8s.taintWarning')" />
       </template>
       <template v-if="configuration">
@@ -365,13 +365,13 @@ async function submit(url:string,namespace:string,method:string,object:KubeObjec
         </a-tabs>
       </template>
       <template v-if="type.kind==='PersistentVolumeClaim'">
-        <div class="form-grid"><a-form-item :label="t('k8s.capacity')" required><a-input :aria-label="t('k8s.capacity')" v-model:value="form.storage" placeholder="1Gi" /></a-form-item><a-form-item :label="t('k8s.storageClass')"><a-input :aria-label="t('k8s.storageClass')" v-if="editing" :value="form.storageClass || '—'" disabled /><a-select :aria-label="t('k8s.storageClass')" v-else v-model:value="form.storageClass" :loading="classesLoading" :options="classOptions" show-search option-filter-prop="label" /></a-form-item></div>
+        <div class="form-grid"><a-form-item :label="t('k8s.capacity')" required><a-input :aria-label="t('k8s.capacity')" v-model:value="form.storage" placeholder="1Gi" /></a-form-item><a-form-item :label="t('k8s.storageClass')"><a-input :aria-label="t('k8s.storageClass')" v-if="editing" :value="form.storageClass || '—'" disabled /><a-select :active="editorActive" :aria-label="t('k8s.storageClass')" v-else v-model:value="form.storageClass" :loading="classesLoading" :options="classOptions" show-search option-filter-prop="label" /></a-form-item></div>
         <a-alert v-if="classesError" class="editor-alert" type="warning" :message="classesError"><template #action><a-button size="small" :loading="classesLoading" @click="loadStorageClasses">{{ t('k8s.storageClassRetry') }}</a-button></template></a-alert>
-        <div class="form-grid"><a-form-item :label="t('k8s.accessMode')" required><a-select :aria-label="t('k8s.accessMode')" v-model:value="form.accessModes" mode="multiple" :disabled="editing" :options="['ReadWriteOnce','ReadOnlyMany','ReadWriteMany','ReadWriteOncePod'].map(value=>({value}))" /></a-form-item><a-form-item :label="t('k8s.volumeMode')"><a-select :aria-label="t('k8s.volumeMode')" v-model:value="form.volumeMode" :disabled="editing" :options="['Filesystem','Block'].map(value=>({value}))" /></a-form-item></div>
+        <div class="form-grid"><a-form-item :label="t('k8s.accessMode')" required><a-select :active="editorActive" :aria-label="t('k8s.accessMode')" v-model:value="form.accessModes" mode="multiple" :disabled="editing" :options="['ReadWriteOnce','ReadOnlyMany','ReadWriteMany','ReadWriteOncePod'].map(value=>({value}))" /></a-form-item><a-form-item :label="t('k8s.volumeMode')"><a-select :active="editorActive" :aria-label="t('k8s.volumeMode')" v-model:value="form.volumeMode" :disabled="editing" :options="['Filesystem','Block'].map(value=>({value}))" /></a-form-item></div>
         <a-alert v-if="editing" type="warning" :message="t('k8s.expandHint')" />
       </template>
       <template v-if="type.kind==='Service'">
-        <a-form-item :label="t('k8s.serviceType')"><a-select :aria-label="t('k8s.serviceType')" v-model:value="form.serviceType" :options="['ClusterIP','NodePort','LoadBalancer'].map(value=>({value}))" /></a-form-item>
+        <a-form-item :label="t('k8s.serviceType')"><a-select :active="editorActive" :aria-label="t('k8s.serviceType')" v-model:value="form.serviceType" :options="['ClusterIP','NodePort','LoadBalancer'].map(value=>({value}))" /></a-form-item>
         <a-form-item :label="t('k8s.selector')"><KubeKeyValues v-model="form.selector" :disabled="saving" /></a-form-item>
         <div class="form-grid"><a-form-item :label="t('k8s.servicePort')" required><a-input-number :aria-label="t('k8s.servicePort')" v-model:value="form.port" :min="1" :max="65535" :precision="0" /></a-form-item><a-form-item :label="t('k8s.targetPort')" required><a-input :aria-label="t('k8s.targetPort')" v-model:value="form.targetPort" /></a-form-item></div>
         <a-alert v-if="editing&&(object?.spec?.ports?.length??0)>1" type="info" :message="t('k8s.firstPortHint')" />
@@ -391,8 +391,22 @@ async function submit(url:string,namespace:string,method:string,object:KubeObjec
       <template v-if="networkReadOnly"><a-alert type="info" show-icon :message="t('networkEditor.readonly')" /><h4 class="network-rule-heading">{{ t('networkEditor.originalRules') }}</h4><pre class="network-rule-preview" tabindex="0" role="region" :aria-label="t('networkEditor.originalRules')">{{ networkRulePreview }}</pre></template>
     </a-form>
     <template #footer><div class="editor-footer"><span :class="{changed:dirty}">{{ t(dirty?'k8s.unsavedChanges':'k8s.noChanges') }}</span><a-button :disabled="saving||confirming" @click="closeEditor">{{ t(returnToDetails?'k8s.backToDetails':'k8s.cancel') }}</a-button><a-button type="primary" :loading="saving" :disabled="confirming&&!saving||editing&&!dirty" @click="save">{{ t('k8s.save') }}</a-button></div></template>
-  </a-drawer>
+  </a-modal>
 </template>
+<style scoped>
+:global(.kube-resource-editor-modal){overflow:hidden}
+:global(.kube-resource-editor-modal .ant-modal){top:0;height:100dvh;max-width:100vw;margin:0;margin-inline-start:auto;margin-inline-end:0;padding-bottom:0}
+:global(.kube-resource-editor-modal .ant-modal-content){display:flex;flex-direction:column;height:100dvh;padding:0;border-radius:0}
+:global(.kube-resource-editor-modal .ant-modal-header){flex:none;margin:0;padding:16px 24px;border-bottom:1px solid var(--edo-border);border-radius:0}
+:global(.kube-resource-editor-modal .ant-modal-title){padding-inline-start:32px}
+:global(.kube-resource-editor-modal .ant-modal-close){top:12px;inset-inline-start:16px;inset-inline-end:auto}
+:global(.kube-resource-editor-modal .ant-modal-body){flex:1;min-height:0;padding:24px;overflow:auto;overscroll-behavior:contain}
+:global(.kube-resource-editor-modal .ant-modal-footer){flex:none;margin:0;padding:10px 16px;border-top:1px solid var(--edo-border)}
+:global(.kube-resource-editor-modal .kube-resource-editor-slide-enter),:global(.kube-resource-editor-modal .kube-resource-editor-slide-leave){transition:transform 160ms ease-out}
+:global(.kube-resource-editor-modal .kube-resource-editor-slide-enter-start),:global(.kube-resource-editor-modal .kube-resource-editor-slide-leave-active){transform:translateX(100%)}
+:global(.kube-resource-editor-modal .kube-resource-editor-slide-enter-active){transform:translateX(0)}
+@media(prefers-reduced-motion:reduce){:global(.kube-resource-editor-modal .kube-resource-editor-slide-enter),:global(.kube-resource-editor-modal .kube-resource-editor-slide-leave){transition-duration:1ms}}
+</style>
 <style scoped>
 .form-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:0 16px}.editor-alert{margin-bottom:16px}.container-form{padding:16px;margin-bottom:14px;border:1px solid var(--edo-border);border-radius:6px;background:var(--edo-bg)}.section-heading{display:flex;justify-content:space-between;align-items:center;margin-bottom:14px}.container-form :deep(.ant-form-item:last-child){margin-bottom:0}.taint-row{display:grid;grid-template-columns:1fr 1fr 160px 32px;gap:8px;margin-bottom:8px}.editor-footer{display:flex;justify-content:flex-end;gap:8px}@media(max-width:640px){.form-grid{grid-template-columns:1fr}.taint-row{grid-template-columns:1fr 1fr}.taint-row :deep(.ant-select){min-width:130px}}
 .container-count{padding:1px 7px;border-radius:10px;font-size:11px;background:var(--edo-surface-soft);color:var(--edo-muted)}

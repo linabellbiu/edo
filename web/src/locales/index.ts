@@ -3,6 +3,7 @@ import { workspaceZh, workspaceEn } from './workspace'
 import { kubernetesZh, kubernetesEn } from './kubernetes'
 import { kubernetesRolesZh, kubernetesRolesEn } from './kubernetesRoles'
 import { kubernetesTopologyZh, kubernetesTopologyEn } from './kubernetesTopology'
+import { networkEditorZh, networkEditorEn } from './kubernetesNetworkEditor'
 import { loginZh, loginEn } from './login'
 import { deliveryZh, deliveryEn } from './delivery'
 import { yamlZh, yamlEn } from './yaml'
@@ -17,6 +18,7 @@ export const messages = {
 	yamlEditor: yamlZh,
 	loginAuth: loginZh,
 	k8s: kubernetesZh,
+    networkEditor: networkEditorZh,
     nodeRoles: kubernetesRolesZh,
     k8sTopology: kubernetesTopologyZh,
 	workspace: workspaceZh,
@@ -256,6 +258,7 @@ export const messages = {
 	yamlEditor: yamlEn,
 	loginAuth: loginEn,
 	k8s: kubernetesEn,
+    networkEditor: networkEditorEn,
     nodeRoles: kubernetesRolesEn,
     k8sTopology: kubernetesTopologyEn,
 	workspace: workspaceEn,
