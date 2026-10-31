@@ -152,6 +152,7 @@ test('当前项目失效后的自动选择也重建整个页面，不能把旧�
     globals: { localStorage: { getItem: key => storage.get(key), setItem: (key, value) => storage.set(key, value), removeItem: key => storage.delete(key) } },
   })
   t.after(h.stop)
+  h.auth.authorizationState = 'ready'
   h.auth.user.project_id = 'project-a'
   await h.state.reload()
   assert.equal(storage.get('edo.project'), 'project-b')
@@ -168,6 +169,7 @@ test('项目列表旧响应在用户切换后不修改新用户选择，也不�
     globals: { localStorage: { getItem: key => storage.get(key), setItem: (key, value) => storage.set(key, value), removeItem: key => storage.delete(key) } },
   })
   t.after(h.stop)
+  h.auth.authorizationState = 'ready'
   h.auth.refreshPermissions = async () => { refreshes++ }
   const old = h.state.reload(); h.auth.user.id = 'other-user'; storage.set('edo.project', 'project-b'); finish(); await old
   assert.equal(storage.get('edo.project'), 'project-b')
@@ -181,6 +183,7 @@ test('旧用户项目列表失败不向新用户显示过期错误', async t => 
     globals: { localStorage: { getItem: () => 'project-a' } },
   })
   t.after(h.stop)
+  h.auth.authorizationState = 'ready'
   const old = h.state.reload(); h.auth.user.id = 'new-user'; fail(); await old
   assert.deepEqual(h.notifications, [])
 })

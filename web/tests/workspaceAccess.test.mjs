@@ -38,7 +38,7 @@ test('没有项目成员资格时清除旧项目，仅加载平台身份，不�
 })
 test('切换项目采用完整页面上下文切换，避免旧抽屉和旧异步请求混入新项目',()=>{
  const assignments=[],stored=new Map()
- const component=load('../src/components/ProjectSelector.vue',{vue:{...vue,onMounted(){},onBeforeUnmount(){}},'vue-i18n':{useI18n:()=>({t:key=>key})},'@/stores/auth':{useAuthStore:()=>({})}},{localStorage:{setItem:(key,value)=>stored.set(key,value)},window:{location:{assign:path=>assignments.push(path)}}}).default
+ const component=load('../src/components/ProjectSelector.vue',{vue:{...vue,onMounted(){},onBeforeUnmount(){}},'vue-i18n':{useI18n:()=>({t:key=>key})},'@/stores/auth':{useAuthStore:()=>({authorizationState:'ready'})}},{localStorage:{setItem:(key,value)=>stored.set(key,value)},window:{location:{assign:path=>assignments.push(path)}}}).default
  const state=component.setup({}, {expose(){}})
  state.selected.value='old-project';state.change('new-project')
  assert.equal(stored.get('edo.project'),'new-project')

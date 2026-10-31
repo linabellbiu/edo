@@ -145,6 +145,7 @@ const accessPermissionQuery = ref('')
 const accessOnlyChanged = ref(false)
 
 const userFormOpen = ref(false)
+const userSelectOpen = reactive({ department: false, roles: false })
 const departmentFormOpen = ref(false)
 const userDepartmentOpen = ref(false)
 const roleFormOpen = ref(false)
@@ -179,6 +180,20 @@ const accessForm = reactive({
 })
 
 const authorizationReady = computed(() => auth.authorizationState !== 'checking' && auth.authorizationState !== 'unavailable')
+function changeUserSelectOpen(field: 'department' | 'roles', open: boolean) {
+  userSelectOpen[field] = Boolean(open && userFormOpen.value && authorizationReady.value && (field !== 'department' || auth.user?.is_superuser))
+}
+function userSelectKeydown(field: 'department' | 'roles', event: KeyboardEvent) {
+  if (event.key === 'Escape' && userSelectOpen[field]) {
+    event.stopPropagation()
+    event.preventDefault()
+    userSelectOpen[field] = false
+  }
+}
+watch([userFormOpen, () => auth.user?.is_superuser], ([open, superuser]) => {
+  if (!open) userSelectOpen.department = userSelectOpen.roles = false
+  else if (!superuser) userSelectOpen.department = false
+}, { flush: 'sync' })
 const knownPermission = (codes: string[]) => Boolean(auth.user?.is_superuser || codes.some(code => auth.permissions.has(code)))
 const tabs = computed(() => [
   ...(knownPermission(['user.read', 'user.create', 'user.update', 'user.delete'])
@@ -1254,37 +1269,44 @@ onMounted(() => {
 
     <a-modal
       v-model:open="userFormOpen"
+      wrap-class-name="access-user-modal"
       title="创建用户"
       :confirm-loading="saving"
       ok-text="创建"
       cancel-text="取消"
       @ok="createUser"
     >
-      <a-form layout="vertical">
-        <a-form-item label="用户名" required>
-          <a-input v-model:value="userForm.username" maxlength="32" />
+      <a-form :model="userForm" name="access-user" layout="vertical">
+        <a-form-item name="username" label="用户名" required>
+          <a-input v-model:value="userForm.username" :maxlength="32" />
         </a-form-item>
-        <a-form-item label="昵称">
-          <a-input v-model:value="userForm.nickname" maxlength="64" />
+        <a-form-item name="nickname" label="昵称">
+          <a-input v-model:value="userForm.nickname" :maxlength="64" />
         </a-form-item>
-        <a-form-item label="所属部门" required>
+        <a-form-item name="department_id" label="所属部门" required>
           <a-select
             v-model:value="userForm.department_id"
             placeholder="请选择部门"
             :disabled="!auth.user?.is_superuser"
             :options="departmentOptions"
+            :open="userSelectOpen.department"
+            @dropdown-visible-change="(open: boolean) => changeUserSelectOpen('department', open)"
+            @input-key-down="(event: KeyboardEvent) => userSelectKeydown('department', event)"
           />
           <small class="field-hint">普通管理员只能在自己的部门创建用户。</small>
         </a-form-item>
-        <a-form-item label="初始密码" required>
-          <a-input-password v-model:value="userForm.password" minlength="12" maxlength="128" />
+        <a-form-item name="password" label="初始密码" required>
+          <a-input-password v-model:value="userForm.password" minlength="12" :maxlength="128" />
         </a-form-item>
-        <a-form-item :label="t('workspace.platformRoles')">
+        <a-form-item name="role_ids" :label="t('workspace.platformRoles')">
           <a-select
             v-model:value="userForm.role_ids"
             mode="multiple"
             placeholder="可选择多个角色"
             :options="delegableRoleOptions"
+            :open="userSelectOpen.roles"
+            @dropdown-visible-change="(open: boolean) => changeUserSelectOpen('roles', open)"
+            @input-key-down="(event: KeyboardEvent) => userSelectKeydown('roles', event)"
           />
           <small class="field-hint">{{t('workspace.platformRoleHint')}}</small>
         </a-form-item>
@@ -1489,6 +1511,21 @@ onMounted(() => {
 </template>
 
 <style scoped>
+:global(.access-user-modal .ant-select-selection-placeholder) {
+  color: var(--edo-muted);
+}
+:global(.access-user-modal .ant-modal-footer .ant-btn-primary:not(:disabled)) {
+  --access-user-action-bg: color-mix(in srgb, var(--edo-primary) 84%, var(--edo-text));
+  color: var(--edo-surface);
+  background: var(--access-user-action-bg);
+  border-color: var(--access-user-action-bg);
+}
+:global(.access-user-modal .ant-modal-footer .ant-btn-primary:not(:disabled):hover) {
+  --access-user-action-bg: color-mix(in srgb, var(--edo-primary) 76%, var(--edo-text));
+}
+:global(.access-user-modal .ant-modal-footer .ant-btn-primary:not(:disabled):active) {
+  --access-user-action-bg: color-mix(in srgb, var(--edo-primary) 70%, var(--edo-text));
+}
 .audit-error {
   margin-bottom: 12px;
 }
