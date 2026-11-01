@@ -1004,18 +1004,26 @@ watch(
   },
   { immediate: true },
 )
-watch(() => JSON.stringify([auditContext.value, route.query.audit_position ?? null, authorizationReady.value]), () => {
+function closeAccessEditors() {
+  userFormOpen.value = departmentFormOpen.value = roleFormOpen.value = accessOpen.value = false
+  userDepartmentOpen.value = memberDrawerOpen.value = clusterRbacOpen.value = false
+  editingUser.value = null
+  Modal.destroyAll()
+}
+watch(() => JSON.stringify([auditContext.value, route.query.audit_position ?? null, auth.authorizationState, mutationIdentity()]), () => {
   const scopeChanged = lastAuditScope !== auditScope.value
   lastAuditScope = auditScope.value
   if (scopeChanged) clearAuditPositions()
+  const selectedProject = typeof localStorage === 'undefined' ? '' : localStorage.getItem('edo.project') ?? ''
+  // 同一身份的短暂核验只暂停操作；真正失权、断线或切换范围仍关闭旧编辑上下文。
+  if (scopeChanged || !auth.user || selectedProject !== (auth.user.project_id ?? '') || auth.authorizationState === 'unavailable') closeAccessEditors()
   if (!authorizationReady.value) {
     resetAuditPagination(!scopeChanged)
     accessRevision++
     loading.value = false
     users.value = []; departments.value = []; roles.value = []; permissions.value = []
-    userFormOpen.value = departmentFormOpen.value = roleFormOpen.value = accessOpen.value = false
-    userDepartmentOpen.value = memberDrawerOpen.value = clusterRbacOpen.value = false
-    editingUser.value = null
+    userSelectOpen.department = userSelectOpen.roles = false
+    memberDrawerOpen.value = clusterRbacOpen.value = false
     Modal.destroyAll()
     return
   }
@@ -1272,11 +1280,12 @@ onMounted(() => {
       wrap-class-name="access-user-modal"
       title="创建用户"
       :confirm-loading="saving"
+      :ok-button-props="{ disabled: !authorizationReady }"
       ok-text="创建"
       cancel-text="取消"
       @ok="createUser"
     >
-      <a-form :model="userForm" name="access-user" layout="vertical">
+      <a-form :model="userForm" name="access-user" layout="vertical" :disabled="!authorizationReady">
         <a-form-item name="username" label="用户名" required>
           <a-input v-model:value="userForm.username" :maxlength="32" />
         </a-form-item>
@@ -1287,7 +1296,7 @@ onMounted(() => {
           <a-select
             v-model:value="userForm.department_id"
             placeholder="请选择部门"
-            :disabled="!auth.user?.is_superuser"
+            :disabled="!authorizationReady || !auth.user?.is_superuser"
             :options="departmentOptions"
             :open="userSelectOpen.department"
             @dropdown-visible-change="(open: boolean) => changeUserSelectOpen('department', open)"
@@ -1302,6 +1311,7 @@ onMounted(() => {
           <a-select
             v-model:value="userForm.role_ids"
             mode="multiple"
+            :disabled="!authorizationReady"
             placeholder="可选择多个角色"
             :options="delegableRoleOptions"
             :open="userSelectOpen.roles"
@@ -1317,11 +1327,12 @@ onMounted(() => {
       v-model:open="departmentFormOpen"
       :title="editingDepartmentID ? '编辑部门' : '创建部门'"
       :confirm-loading="saving"
+      :ok-button-props="{ disabled: !authorizationReady }"
       :ok-text="editingDepartmentID ? '保存' : '创建'"
       cancel-text="取消"
       @ok="saveDepartment"
     >
-      <a-form :model="departmentForm" name="access-department" layout="vertical">
+      <a-form :model="departmentForm" name="access-department" layout="vertical" :disabled="!authorizationReady">
         <a-form-item name="name" label="部门名称" required>
           <a-input v-model:value="departmentForm.name" :maxlength="64" />
         </a-form-item>
@@ -1335,6 +1346,7 @@ onMounted(() => {
       v-model:open="userDepartmentOpen"
       :title="`调整 ${editingUser?.nickname || editingUser?.username || ''} 的部门`"
       :confirm-loading="saving"
+      :ok-button-props="{ disabled: !authorizationReady }"
       ok-text="保存"
       cancel-text="取消"
       @ok="saveUserDepartment"
@@ -1345,7 +1357,7 @@ onMounted(() => {
         message="调整部门只影响用户之后创建的资源；历史资源仍归原部门，避免数据意外转移。用户的现有会话会立即失效。"
         class="form-alert"
       />
-      <a-form layout="vertical">
+      <a-form layout="vertical" :disabled="!authorizationReady">
         <a-form-item label="所属部门" required>
           <a-select
             v-model:value="userDepartmentForm.department_id"
@@ -1361,10 +1373,10 @@ onMounted(() => {
       :title="roleEditorMode === 'create' ? '创建角色' : roleEditorMode === 'basic' ? `编辑角色 · ${roleForm.display_name}` : `权限配置 · ${roleForm.display_name}`"
       width="760"
     >
-      <a-form layout="vertical">
+      <a-form layout="vertical" :disabled="!authorizationReady">
         <section v-if="roleEditorMode !== 'permissions'" class="role-basic-form">
           <a-form-item label="角色标识（技术字段）" required>
-            <a-input v-model:value="roleForm.name" :disabled="Boolean(editingRoleID)" placeholder="例如：release_manager" />
+            <a-input v-model:value="roleForm.name" :disabled="!authorizationReady || Boolean(editingRoleID)" placeholder="例如：release_manager" />
           </a-form-item>
           <a-form-item label="角色名称" required>
             <a-input v-model:value="roleForm.display_name" placeholder="例如：发布管理员" />
@@ -1421,7 +1433,7 @@ onMounted(() => {
           </section>
         </section>
 
-        <a-button class="drawer-save" type="primary" block :loading="saving" @click="saveRole">
+        <a-button class="drawer-save" type="primary" block :loading="saving" :disabled="!authorizationReady" @click="saveRole">
           {{ roleEditorMode === 'permissions' ? '保存权限' : roleEditorMode === 'basic' ? '保存基本信息' : '创建角色' }}
         </a-button>
       </a-form>
@@ -1439,7 +1451,7 @@ onMounted(() => {
       />
       <section class="access-role-section">
         <header><div><h3>{{t('workspace.platformRoles')}}</h3><small>{{t('workspace.platformRoleHint')}}</small></div><a-tag color="blue">{{ accessForm.role_ids.length }} 个</a-tag></header>
-        <a-checkbox-group v-model:value="accessForm.role_ids" :options="delegableRoleOptions" />
+        <a-checkbox-group v-model:value="accessForm.role_ids" :options="delegableRoleOptions" :disabled="!authorizationReady" />
       </section>
       <div class="access-impact-summary">
         <article><strong>{{ accessRolePermissionCodes.size }}</strong><span>角色继承</span></article>
@@ -1470,6 +1482,7 @@ onMounted(() => {
                 </span>
                 <a-segmented
                   v-model:value="accessForm.effects[item.code]"
+                  :disabled="!authorizationReady"
                   :options="[
                     { label: '继承', value: 'inherit' },
                     { label: '允许', value: 'allow', disabled: !canDelegatePermission(item.code) },
@@ -1481,7 +1494,7 @@ onMounted(() => {
           </section>
         </a-collapse-panel>
       </a-collapse>
-      <a-button class="drawer-save" type="primary" block :loading="saving" @click="saveAccess">保存角色与权限</a-button>
+      <a-button class="drawer-save" type="primary" block :loading="saving" :disabled="!authorizationReady" @click="saveAccess">保存角色与权限</a-button>
     </a-drawer>
 
     <ClusterRbacDrawer v-model:open="clusterRbacOpen" :role-id="clusterRbacRoleID" />

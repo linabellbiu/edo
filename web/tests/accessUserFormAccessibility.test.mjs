@@ -122,12 +122,29 @@ test('用户表单局部 Select 只用公开 Boolean open 和事件，关闭/禁
   assert.deepEqual(bindings().slice(-2).map(binding => binding.open), [false, false])
   const current = () => bindings().slice(-2)
   current()[0].onDropdownVisibleChange(true); await settle(); h.auth.user.is_superuser = false; await settle()
+  assert.equal(h.state.userFormOpen.value, false)
+  h.state.userFormOpen.value = true; await settle()
   assert.equal(current()[0].open, false); assert.equal(current()[0].disabled, true)
   current()[0].onDropdownVisibleChange(true); await settle(); assert.equal(current()[0].open, false)
   current()[1].onDropdownVisibleChange(true); await settle(); h.auth.authorizationState = 'checking'; await settle()
-  assert.equal(h.state.userFormOpen.value, false)
-  h.auth.authorizationState = 'ready'; await settle(); h.state.userFormOpen.value = true; await settle()
+  assert.equal(h.state.userFormOpen.value, true)
+  assert.equal(current()[1].open, false); assert.equal(current()[1].disabled, true)
+  h.auth.authorizationState = 'ready'; await settle()
   assert.deepEqual(current().map(binding => binding.open), [false, false])
+})
+
+test('短暂权限核验中的真实 Ant 用户输入全部禁用，恢复后重新可用而不丢草稿', async t => {
+  const h = harness(t)
+  h.state.userForm.nickname = '保留的输入'
+  h.auth.authorizationState = 'checking'; await settle()
+  assert.equal(h.state.userFormOpen.value, true)
+  const paused = inputs(await actualForm(h))
+  assert.equal(paused.length, 5)
+  assert.ok(paused.every(control => Object.hasOwn(control, 'disabled')))
+  h.auth.authorizationState = 'ready'; await settle()
+  const resumed = inputs(await actualForm(h))
+  assert.ok(resumed.every(control => !Object.hasOwn(control, 'disabled')))
+  assert.equal(h.state.userForm.nickname, '保留的输入')
 })
 
 test('语义修复保留创建请求字段、成功关闭、失败保稿及授权未知不提交', async t => {
