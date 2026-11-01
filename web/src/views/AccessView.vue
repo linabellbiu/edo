@@ -111,6 +111,8 @@ const auditNextCursor = ref('')
 const auditHasMore = ref(false)
 const auditLoading = ref(false)
 const auditError = ref('')
+const auditTable = ref<HTMLElement>()
+const auditLayout = ref<Record<string, string>>()
 const auditPage = computed(() => auditCursorStack.value.length)
 let auditRevision = 0
 let auditDisposed = false
@@ -553,10 +555,19 @@ async function refresh() {
   }
 }
 
-function resetAuditPagination(preservePosition = false) {
+function preserveAuditLayout() {
+  if (auditLayout.value) return
+  const bounds = auditTable.value?.querySelector('table')?.getBoundingClientRect()
+  if (bounds && bounds.width > 0 && bounds.height > 0) {
+    auditLayout.value = { '--audit-table-width': `${bounds.width}px`, '--audit-table-height': `${bounds.height}px` }
+  }
+}
+
+function resetAuditPagination(preservePosition = false, preserveLayout = false) {
   auditRevision += 1
   auditController?.abort()
   auditController = undefined
+  if (!preserveLayout) auditLayout.value = undefined
   audits.value = []
   if (!preservePosition) auditCursorStack.value = ['']
   auditNextCursor.value = ''
@@ -603,6 +614,7 @@ async function loadAuditPage(cursors: string[]) {
     if (revision === auditRevision) {
       auditLoading.value = false
       auditController = undefined
+      auditLayout.value = undefined
     }
   }
 }
@@ -1023,10 +1035,14 @@ watch(() => JSON.stringify([auditContext.value, route.query.audit_position ?? nu
   lastAuditScope = auditScope.value
   if (scopeChanged) clearAuditPositions()
   const selectedProject = typeof localStorage === 'undefined' ? '' : localStorage.getItem('edo.project') ?? ''
+  const sameAuditScope = !scopeChanged && active.value === 'audit' && auth.user
+    && selectedProject === (auth.user.project_id ?? '') && auth.authorizationState !== 'unavailable'
   // 同一身份的短暂核验只暂停操作；真正失权、断线或切换范围仍关闭旧编辑上下文。
   if (scopeChanged || !auth.user || selectedProject !== (auth.user.project_id ?? '') || auth.authorizationState === 'unavailable') closeAccessEditors()
   if (!authorizationReady.value) {
-    resetAuditPagination(!scopeChanged)
+    // 正文仍立即清场，只保留尺寸，避免短暂核验使横向和页面滚动被浏览器归零。
+    if (sameAuditScope) preserveAuditLayout()
+    resetAuditPagination(!scopeChanged, Boolean(sameAuditScope))
     accessRevision++
     loading.value = false
     users.value = []; departments.value = []; roles.value = []; permissions.value = []
@@ -1037,7 +1053,7 @@ watch(() => JSON.stringify([auditContext.value, route.query.audit_position ?? nu
   }
   const internalWrite = JSON.stringify([auditContext.value, route.query.audit_position ?? null])
   if (!scopeChanged && auditRouteWrites.has(internalWrite)) return
-  resetAuditPagination()
+  resetAuditPagination(false, Boolean(sameAuditScope))
   if (active.value === 'audit' && canAny(['audit.read'])) {
     if (scopeChanged) replaceAuditPosition()
     void loadAuditPage(scopeChanged ? [''] : restoreAuditPosition())
@@ -1268,11 +1284,13 @@ onMounted(() => {
 
       <template v-else-if="active === 'audit'">
         <a-alert v-if="auditError" type="error" :message="auditError" show-icon class="audit-error" />
-        <ResourceTable :rows="audits" :columns="auditColumns" :loading="auditLoading" :pagination="false">
-          <template #cell-result="{ value }">
-            <a-tag :color="auditResult(value).color">{{ auditResult(value).label }}</a-tag>
-          </template>
-        </ResourceTable>
+        <div ref="auditTable" class="audit-table" :style="auditLayout">
+          <ResourceTable :rows="audits" :columns="auditColumns" :loading="auditLoading || !authorizationReady" :pagination="false" keep-header>
+            <template #cell-result="{ value }">
+              <a-tag :color="auditResult(value).color">{{ auditResult(value).label }}</a-tag>
+            </template>
+          </ResourceTable>
+        </div>
         <div class="audit-pagination" aria-label="审计日志分页">
           <span>第 {{ auditPage }} 页 · 本页 {{ audits.length }} 条（每页 {{ auditPageSize }} 条）</span>
           <a-space>
@@ -1553,6 +1571,8 @@ onMounted(() => {
 .audit-error {
   margin-bottom: 12px;
 }
+.audit-table :deep(.table-scroll) { min-height: var(--audit-table-height, 0px); }
+.audit-table :deep(.resource-table) { min-width: var(--audit-table-width, 0px); }
 
 .audit-pagination {
   display: flex;

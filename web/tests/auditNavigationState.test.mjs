@@ -13,7 +13,7 @@ const storage=()=>{const values=new Map();return {values,getItem:key=>values.get
 async function settle(){for(let i=0;i<5;i++){await vue.nextTick();await new Promise(resolve=>setImmediate(resolve))}}
 function identity(){return vue.reactive({id:'operator-a',department_id:'department-a',project_id:'project-a',is_superuser:false,permissions:['audit.read','user.read']})}
 
-async function navigation(t,{start='/access?view=audit',saved=storage(),actor=identity(),get}={}){
+async function navigation(t,{start='/access?view=audit',saved=storage(),actor=identity(),get,selectedProject}={}){
   const router=createRouter({history:createMemoryHistory(),routes:[{path:'/access',component:{}},{path:'/projects',component:{}}]})
   await router.push(start)
   const route=new Proxy({}, {get:(_target,key)=>router.currentRoute.value[key]})
@@ -23,7 +23,7 @@ async function navigation(t,{start='/access?view=audit',saved=storage(),actor=id
   const auth={get authorizationState(){return freshness.value},get user(){return profile.value},get permissions(){return new Set(profile.value.permissions)},canAny:codes=>freshness.value==='ready'&&(profile.value.is_superuser||!codes.length||codes.some(code=>profile.value.permissions.includes(code)))}
   const h=componentHarness('../src/views/AccessView.vue',{
     modules:{axios:{isAxiosError},'@/stores/auth':{useAuthStore:()=>auth},vue:{...vue,onMounted:callback=>mounted.push(callback),onBeforeUnmount:callback=>unmounted.push(callback)},'vue-router':{useRoute:()=>route,useRouter:()=>router}},
-    globals:{window:{sessionStorage:saved,crypto:webcrypto,dispatchEvent(){},setInterval(){return 1},clearInterval(){}}},
+    globals:{window:{sessionStorage:saved,crypto:webcrypto,dispatchEvent(){},setInterval(){return 1},clearInterval(){}},...(selectedProject===undefined?{}:{localStorage:{getItem:()=>selectedProject}})},
     api:{get:async(path,options)=>{const url=new URL(path,'https://edo.example');return url.pathname==='/audit-logs'?{data:await(get?get(url,options):pages.get(url.searchParams.get('cursor')||''))}:{data:{users:[],roles:[],departments:[],permissions:[]}}}},
   })
   let stopped=false
@@ -33,6 +33,43 @@ async function navigation(t,{start='/access?view=audit',saved=storage(),actor=id
   const navigate=async action=>{await new Promise((resolve,reject)=>{const remove=router.afterEach((_to,_from,failure)=>{remove();failure?reject(failure):resolve()});action()});await settle()}
   return {...h,router,route,actor,profile,freshness,saved,stop,navigate,auditRequests:()=>h.requests.filter(x=>x.path.startsWith('/audit-logs'))}
 }
+
+test('同范围授权核验清空审计正文，但在新页返回前保留表格尺寸，避免滚动归零',async t=>{
+  let pending
+  const h=await navigation(t,{selectedProject:'project-a',get:url=>pending?pending.promise:pages.get(url.searchParams.get('cursor')||'')})
+  await h.state.nextAuditPage();await settle()
+  h.state.auditTable.value={querySelector:()=>({getBoundingClientRect:()=>({width:1380,height:6842})})}
+  const path=h.route.fullPath
+  h.freshness.value='checking'
+  assert.equal(h.state.audits.value.length,0,'核验期间不保留敏感正文')
+  assert.deepEqual(h.state.auditLayout.value,{'--audit-table-width':'1380px','--audit-table-height':'6842px'})
+  pending=deferred()
+  h.freshness.value='ready';await settle()
+  assert.deepEqual(h.state.auditLayout.value,{'--audit-table-width':'1380px','--audit-table-height':'6842px'})
+  assert.equal(h.state.audits.value.length,0)
+  pending.resolve(page('second',100,'101'));await settle()
+  assert.equal(h.state.audits.value.length,100)
+  assert.equal(h.state.auditLayout.value,undefined)
+  assert.equal(h.route.fullPath,path)
+  assert.equal(h.state.auditPage.value,2)
+})
+
+for(const change of ['unavailable','scope','denied-response','failed-response','unmount'])test(`审计尺寸占位在${change}后立即释放，不妨碍清场`,async t=>{
+  let pending
+  const h=await navigation(t,{selectedProject:'project-a',get:url=>pending?pending.promise:pages.get(url.searchParams.get('cursor')||'')})
+  h.state.auditTable.value={querySelector:()=>({getBoundingClientRect:()=>({width:1380,height:6842})})}
+  h.freshness.value='checking'
+  assert.ok(h.state.auditLayout.value)
+  if(change==='unavailable')h.freshness.value='unavailable'
+  else if(change==='scope')h.profile.value={...h.profile.value,permissions:['user.read']}
+  else if(change==='unmount')h.stop()
+  else{
+    pending=deferred();h.freshness.value='ready';await settle()
+    pending.reject(change==='denied-response'?denied(403):new Error('暂不可用'));await settle()
+  }
+  assert.equal(h.state.auditLayout.value,undefined)
+  assert.equal(h.state.audits.value.length,0)
+})
 
 test('授权checking同步清正文并取消旧响应，同权限恢复保持原审计页和位置',async t=>{
   const pending=[]
