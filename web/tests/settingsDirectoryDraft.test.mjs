@@ -232,6 +232,47 @@ test('仅失去修改权限仍保留查看时，正常回读实际usage并呈现
   assert.equal(h.writes().length, 0)
 })
 
+test('修改权限撤销再恢复后使用新回读配置，旧未保存路径不会复活', async t => {
+  let reads = 0
+  const h = harness(t, { get: async () => ({ data: ++reads === 1 ? dto(8, 'read-only') : dto(9, 'restored') }) })
+  Object.assign(h.state.runtimeDirectories.value, draft)
+  h.codes.delete('config.update'); await settle()
+  await h.state.saveRuntimeDirectories()
+  assert.deepEqual(h.state.runtimeDirectories.value, dto(8, 'read-only'))
+  assert.equal(h.writes().length, 0)
+
+  h.codes.add('config.update'); await settle()
+  assert.deepEqual(h.state.runtimeDirectories.value, dto(9, 'restored'))
+  const html = await assertInputs(h, fields.map(key => dto(9, 'restored')[key]))
+  assert.equal([...html.matchAll(/<input\b[^>]*\bdisabled(?:[\s=>])/g)].length, 0)
+  assert.deepEqual(h.reads().map(item => item.path), ['/settings/runtime-directories', '/settings/runtime-directories'])
+  assert.equal(h.writes().length, 0)
+  assert.equal(h.notifications.length, 0)
+})
+
+test('修改权限撤销再恢复期间的旧保存和旧回读不能覆盖恢复后的实际目录', async t => {
+  for (const result of ['success', 'failure']) await t.test(result, async t => {
+    const put = deferred(), old = deferred(), fresh = deferred(); let reads = 0
+    const h = harness(t, { put: () => put.promise, get: () => ++reads === 1 ? old.promise : fresh.promise })
+    Object.assign(h.state.runtimeDirectories.value, draft)
+    const save = h.state.saveRuntimeDirectories()
+    h.codes.delete('config.update'); await settle()
+    assert.equal(h.state.runtimeDirectories.value, null)
+    await h.state.saveRuntimeDirectories()
+    h.codes.add('config.update'); await settle()
+    fresh.resolve({ data: dto(10, 'restored-fresh') }); await settle()
+    old.resolve({ data: dto(8, 'revoked-late') })
+    if (result === 'success') put.resolve({ data: dto(4, 'old-save') }); else put.reject(failure(409))
+    await save; await settle()
+    assert.deepEqual(h.state.runtimeDirectories.value, dto(10, 'restored-fresh'))
+    await assertInputs(h, fields.map(key => dto(10, 'restored-fresh')[key]))
+    assert.deepEqual(h.reads().map(item => item.path), ['/settings/runtime-directories', '/settings/runtime-directories'])
+    assert.deepEqual(h.writes().map(item => item.body), [{ ...draft, expected_version: 3 }])
+    assert.equal(h.notifications.length, 0)
+    assert.equal(h.state.saving.value, '')
+  })
+})
+
 test('重新获得查看权限会回读；仍未知或无查看权限时不读取', async t => {
   const h = harness(t)
   h.codes.delete('config.read'); await settle()
