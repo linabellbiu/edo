@@ -1,0 +1,92 @@
+import assert from 'node:assert/strict'
+import { test } from 'node:test'
+import { componentHarness, loadFrontend } from './acceptanceHarness.mjs'
+
+function harness(t, { editing = false, api = {}, codes = ['build_plan.read', 'build_plan.create', 'build_plan.update'] } = {}) {
+  const h = componentHarness('../src/views/DevOpsView.vue', {
+    props: { section: 'build-plans' }, codes, api,
+    modules: { '@/utils/deploymentInstances': loadFrontend('../src/utils/deploymentInstances.ts') },
+    globals: { document: { hidden: true } },
+  })
+  t.after(h.stop)
+  if (editing) h.state.edit({ id: 'plan-a', name: '构建方案', kind: 'dockerfile' })
+  else h.state.create()
+  Object.assign(h.state.buildForm, { name: '构建方案', script: 'echo public', runtime_image: 'alpine:3.22' })
+  return h
+}
+const writes = h => h.requests.filter(item => item.method !== 'get')
+
+for (const editing of [false, true]) for (const kind of ['script', 'dockerfile']) {
+  test(`${editing ? '编辑' : '新建'}切换为 ${kind} 后，隐藏方式的无效参数不得阻止保存或进入请求`, async t => {
+    const h = harness(t, { editing })
+    h.state.buildForm.kind = kind
+    h.state.buildArgsText.value = kind === 'dockerfile' ? 'VERSION=1=public' : 'INVALID DOCKER ARG'
+    h.state.buildEnvironmentText.value = kind === 'script' ? 'MODE=public' : 'INVALID SHELL ENV'
+    await h.state.save()
+    assert.equal(writes(h).length, 1)
+    const request = writes(h)[0]
+    assert.equal(request.method, editing ? 'put' : 'post')
+    assert.equal(request.path, editing ? '/build-plans/plan-a' : '/build-plans')
+    assert.equal(request.body.kind, kind)
+    assert.deepEqual(request.body.build_args, kind === 'dockerfile' ? { VERSION: '1=public' } : {})
+    assert.deepEqual(request.body.environment_variables, kind === 'script' ? { MODE: 'public' } : {})
+    assert.equal(h.state.formOpen.value, false)
+    assert.equal(h.state.saving.value, false)
+    assert.equal(h.notifications.some(item => item.kind === 'error'), false)
+  })
+}
+
+for (const [kind, field, value, expected] of [
+  ['dockerfile', 'buildArgsText', 'INVALID', /构建参数第 1 行格式无效/],
+  ['dockerfile', 'buildArgsText', 'X=1\nX=2', /构建参数第 2 行的 X 重复/],
+  ['dockerfile', 'buildArgsText', Array.from({ length: 101 }, (_, i) => `X${i}=v`).join('\n'), /构建参数最多配置 100 项/],
+  ['script', 'buildEnvironmentText', 'INVALID', /环境变量第 1 行格式无效/],
+  ['script', 'buildEnvironmentText', 'X=1\nX=2', /环境变量第 2 行的 X 重复/],
+  ['script', 'buildEnvironmentText', 'HOME=/tmp', /环境变量第 1 行使用了系统保留变量 HOME/],
+  ['script', 'buildEnvironmentText', Array.from({ length: 101 }, (_, i) => `X${i}=v`).join('\n'), /环境变量最多配置 100 项/],
+]) {
+  test(`${kind} 当前可见字段仍校验 ${expected.source}，失败保留草稿且零写入`, async t => {
+    const h = harness(t)
+    h.state.buildForm.kind = kind
+    h.state[field].value = value
+    await h.state.save()
+    assert.equal(writes(h).length, 0)
+    assert.equal(h.state.formOpen.value, true)
+    assert.equal(h.state[field].value, value)
+    assert.equal(h.state.saving.value, false)
+    assert.match(h.notifications.find(item => item.kind === 'error').value, expected)
+  })
+}
+
+for (const kind of ['dockerfile', 'script']) test(`${kind} 校验失败后切换方式可以直接保存，无需清理旧方式草稿`, async t => {
+  const h = harness(t)
+  h.state.buildForm.kind = kind
+  const field = kind === 'dockerfile' ? 'buildArgsText' : 'buildEnvironmentText'
+  h.state[field].value = 'INVALID'
+  await h.state.save()
+  assert.equal(writes(h).length, 0)
+  h.state.buildForm.kind = kind === 'dockerfile' ? 'script' : 'dockerfile'
+  await h.state.save()
+  assert.equal(writes(h).length, 1)
+  assert.deepEqual(writes(h)[0].body.build_args, {})
+  assert.deepEqual(writes(h)[0].body.environment_variables, {})
+})
+
+test('Shell 保存失败时保留当前脚本、有效环境变量和隐藏 Docker 草稿，允许修正后重试', async t => {
+  let reject = true
+  const h = harness(t, { api: { post: async () => { if (reject) throw new Error('保存失败'); return { data: {} } } } })
+  h.state.buildForm.kind = 'script'
+  h.state.buildArgsText.value = 'INVALID DOCKER ARG'
+  h.state.buildEnvironmentText.value = 'MODE=public'
+  await h.state.save()
+  assert.equal(writes(h).length, 1)
+  assert.equal(h.state.formOpen.value, true)
+  assert.equal(h.state.buildForm.script, 'echo public')
+  assert.equal(h.state.buildArgsText.value, 'INVALID DOCKER ARG')
+  assert.equal(h.state.buildEnvironmentText.value, 'MODE=public')
+  assert.equal(h.state.saving.value, false)
+  reject = false
+  await h.state.save()
+  assert.equal(writes(h).length, 2)
+  assert.equal(h.state.formOpen.value, false)
+})

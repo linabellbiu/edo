@@ -1068,8 +1068,8 @@ async function save(){
    if(buildForm.kind==='dockerfile'&&buildImageDestination.value==='registry'&&!buildForm.image_registry_id){message.error('请选择镜像仓库');return}
 	   if(buildForm.kind==='script'&&(!buildForm.script.trim()||!buildForm.runtime_image.trim())){message.error('请填写构建脚本和运行镜像');return}
 	   if(buildForm.kind==='script'&&buildSaveArtifact.value&&!buildForm.artifact_path.trim()){message.error('开启保存产物后，请填写产物路径');return}
-   const buildArgs=parseVariableText(buildArgsText.value,'构建参数')
-   const environmentVariables=parseVariableText(buildEnvironmentText.value,'环境变量')
+   const buildArgs=buildForm.kind==='dockerfile'?parseVariableText(buildArgsText.value,'构建参数'):{values:{},error:''}
+   const environmentVariables=buildForm.kind==='script'?parseVariableText(buildEnvironmentText.value,'环境变量'):{values:{},error:''}
    if(buildArgs.error||environmentVariables.error){message.error(buildArgs.error||environmentVariables.error);return}
    endpoint=editingID.value?`/build-plans/${editingID.value}`:'/build-plans'
    payload={
