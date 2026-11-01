@@ -148,6 +148,8 @@ const accessPermissionQuery = ref('')
 const accessOnlyChanged = ref(false)
 
 const userFormOpen = ref(false)
+let userFormRevision = 0
+watch(userFormOpen, () => { userFormRevision++ }, { flush: 'sync' })
 const userSelectOpen = reactive({ department: false, roles: false })
 const departmentFormOpen = ref(false)
 const userDepartmentOpen = ref(false)
@@ -660,12 +662,13 @@ function resetUser() {
 }
 
 async function createUser() {
-  if (!authorizationReady.value) return
+  if (!authorizationReady.value || saving.value) return
   if (!userForm.department_id) {
     message.warning('请选择用户所属部门')
     return
   }
-  const current = beginMutation()
+  const identityCurrent = beginMutation(), revision = userFormRevision
+  const current = () => identityCurrent() && revision === userFormRevision
   saving.value = true
   try {
     const response = await client.post<{ warning?: string }>('/users', userForm)
@@ -676,7 +679,11 @@ async function createUser() {
     resetUser()
     await refresh()
   } catch (error) {
-    mutationError(error, current)
+    if (mutationError(error, current) && current()) {
+      // 2xx 已确认受理，只清理原表单，不保留可重复提交的密码草稿。
+      userFormOpen.value = false
+      resetUser()
+    }
   } finally {
     saving.value = false
   }

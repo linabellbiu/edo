@@ -19,11 +19,11 @@ function transport(){
  const respond=(status=200)=>pending.resolve({status,statusText:'OK',headers:{},config:pending.config,data:{marker:'synthetic-old-response-not-for-ui'}})
  return{module,resources,calls,respond,get pending(){return pending}}
 }
-function view(t,path){
+function view(t,path,globals={}){
  const h=transport(),identity=vue.reactive({authorizationState:'ready',user:{id:'actor-a',department_id:'department-a',project_id:'project-a',is_superuser:true,permissions:['role.update','role.delete','project.update']}})
  const unmount=[]
  const auth={get user(){return identity.user},get authorizationState(){return identity.authorizationState},get permissions(){return new Set(identity.user.permissions)},canAny:codes=>!codes.length||identity.authorizationState==='ready'}
- const component=componentHarness(path,{query:{view:'roles'},modules:{vue:{...vue,onMounted(){},onBeforeUnmount:callback=>unmount.push(callback),onUnmounted(){}},'@/api/client':h.module,'@/api/resources':h.resources,'@/stores/auth':{useAuthStore:()=>auth}}})
+ const component=componentHarness(path,{query:{view:'roles'},globals,modules:{vue:{...vue,onMounted(){},onBeforeUnmount:callback=>unmount.push(callback),onUnmounted(){}},'@/api/client':h.module,'@/api/resources':h.resources,'@/stores/auth':{useAuthStore:()=>auth}}})
  let disposed=false
  const dispose=()=>{if(disposed)return;disposed=true;unmount.forEach(callback=>callback());component.stop()}
  t.after(dispose)
@@ -47,6 +47,74 @@ test('真实 AccessView 保存遇到 changed→PUT200，不得显示普通失败
  assert.equal(h.notifications.filter(item=>item.kind==='error').length,0)
  assert.equal(h.calls.filter(item=>item.method==='put').length,1)
  assert.equal(h.state.roles.value.length,0)
+})
+test('创建用户201遇到同身份权限核验，关闭已受理表单并清空密码，不重复提交',async t=>{
+ const h=view(t,'../src/views/AccessView.vue',{localStorage:{getItem:()=> 'project-a'}})
+ h.state.userFormOpen.value=true
+ Object.assign(h.state.userForm,{username:'synthetic-user',nickname:'合成用户',department_id:'department-a',password:'synthetic-password-only',role_ids:[]})
+ const saving=h.state.createUser();await tick();h.stale();h.respond(201);await saving
+ assert.equal(h.state.userFormOpen.value,false)
+ assert.equal(h.state.userForm.password,'')
+ assert.equal(h.state.userForm.username,'')
+ assert.equal(h.state.saving.value,false)
+ assert.deepEqual(h.notifications.map(x=>x.kind),['info'])
+ assert.equal(h.calls.filter(x=>x.method==='post').length,1)
+})
+for(const status of [201,'ack'])test(`创建用户旧${status}回执不关闭同身份重新打开的新表单`,async t=>{
+ const h=view(t,'../src/views/AccessView.vue',{localStorage:{getItem:()=> 'project-a'}})
+ h.state.userFormOpen.value=true
+ Object.assign(h.state.userForm,{username:'old-user',department_id:'department-a',password:'synthetic-old-password'})
+ const saving=h.state.createUser();await tick()
+ h.state.userFormOpen.value=false;h.state.resetUser();h.state.userFormOpen.value=true
+ Object.assign(h.state.userForm,{username:'new-draft',department_id:'department-a',password:'synthetic-new-password'})
+ if(status==='ack')h.stale()
+ h.respond(201);await saving
+ assert.equal(h.state.userFormOpen.value,true)
+ assert.equal(h.state.userForm.username,'new-draft')
+ assert.equal(h.state.userForm.password,'synthetic-new-password')
+ assert.deepEqual(h.notifications,[])
+ assert.equal(h.calls.filter(x=>x.method==='post').length,1)
+})
+for(const failure of ['forbidden','network'])test(`创建用户${failure}未确认受理时保留原稿且不重试`,async t=>{
+ const h=view(t,'../src/views/AccessView.vue',{localStorage:{getItem:()=> 'project-a'}})
+ h.state.userFormOpen.value=true
+ Object.assign(h.state.userForm,{username:'synthetic-user',department_id:'department-a',password:'synthetic-password-only'})
+ const saving=h.state.createUser();await tick()
+ h.pending.reject(new axios.AxiosError('合成失败',failure==='network'?'ERR_NETWORK':'ERR_BAD_REQUEST',h.pending.config,undefined,failure==='forbidden'?{status:403,data:{message:'合成拒绝'},config:h.pending.config}:undefined))
+ await saving
+ assert.equal(h.state.userFormOpen.value,true)
+ assert.equal(h.state.userForm.password,'synthetic-password-only')
+ assert.equal(h.state.saving.value,false)
+ assert.deepEqual(h.notifications.map(x=>x.kind),['error'])
+ assert.equal(h.calls.filter(x=>x.method==='post').length,1)
+})
+test('创建用户进行中重复确认只发送一次，普通201成功正常关闭并清空',async t=>{
+ const h=view(t,'../src/views/AccessView.vue',{localStorage:{getItem:()=> 'project-a'}})
+ h.state.userFormOpen.value=true
+ Object.assign(h.state.userForm,{username:'synthetic-user',department_id:'department-a',password:'synthetic-password-only'})
+ const saving=h.state.createUser();await tick();await h.state.createUser()
+ assert.equal(h.calls.filter(x=>x.method==='post').length,1)
+ h.respond(201);await saving
+ assert.equal(h.state.userFormOpen.value,false)
+ assert.equal(h.state.userForm.password,'')
+ assert.deepEqual(h.notifications.map(x=>x.kind),['success'])
+})
+for(const changed of ['id','department_id','project_id','identity-return','unmount'])test(`创建用户${changed}后旧ACK不清理新稿或通知`,async t=>{
+ const h=view(t,'../src/views/AccessView.vue',{localStorage:{getItem:()=> 'project-a'}})
+ h.state.userFormOpen.value=true
+ Object.assign(h.state.userForm,{username:'synthetic-user',department_id:'department-a',password:'synthetic-password-only'})
+ const saving=h.state.createUser();await tick();h.stale()
+ if(changed==='unmount')h.dispose()
+ else if(changed==='identity-return'){h.identity.user.id='other';h.identity.user.id='actor-a'}
+ else h.identity.user[changed]='other'
+ h.state.userFormOpen.value=true
+ Object.assign(h.state.userForm,{username:'new-draft',password:'synthetic-new-password'})
+ h.respond(201);await saving
+ assert.equal(h.state.userFormOpen.value,true)
+ assert.equal(h.state.userForm.username,'new-draft')
+ assert.equal(h.state.userForm.password,'synthetic-new-password')
+ assert.deepEqual(h.notifications,[])
+ assert.equal(h.calls.filter(x=>x.method==='post').length,1)
 })
 test('真实 ProjectsView 保存遇到 changed→PUT200，不得显示普通失败',async t=>{
  const h=view(t,'../src/views/ProjectsView.vue')
