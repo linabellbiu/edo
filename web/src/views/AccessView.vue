@@ -74,6 +74,7 @@ interface ManagedUser extends ResourceRecord {
   is_superuser: boolean
   is_active: boolean
   role_ids: string[]
+  role_names: Record<string, string>
   permission_overrides: { allow: string[]; deny: string[] }
   effective_permissions: string[]
   last_login_at?: string
@@ -321,7 +322,14 @@ const canAccessRoles = computed(() => canAny([
 ]))
 const activeDepartments = computed(() => departments.value.filter((item) => item.is_active))
 const departmentOptions = computed(() => activeDepartments.value.map((item) => ({ value: item.id, label: item.name })))
-const roleOptions = computed(() => roles.value.map((item) => ({ value: item.id, label: item.display_name })))
+const userRoleLabels = computed(() => new Map(users.value.map((item) => [item.id,
+  item.role_ids.map((id) => ({ id, name: item.role_names?.[id]?.trim() || '未知角色' })),
+])))
+const userRoleOptions = computed(() => {
+  const names = new Map<string, string>()
+  userRoleLabels.value.forEach((items) => items.forEach(({ id, name }) => names.set(id, name)))
+  return [...names].map(([value, label]) => ({ value, label }))
+})
 const delegableRoleOptions = computed(() => roles.value.map((item) => {
   const projectOnly=item.permissions.length>0&&item.permissions.every(code=>permissions.value.find(permission=>permission.code===code)?.scope==='project')
   const disabled = projectOnly || !item.permissions.every((permission) => canDelegatePermission(permission))
@@ -341,7 +349,7 @@ const filteredUsers = computed(() => {
     if (userDepartmentID.value && item.department_id !== userDepartmentID.value) return false
     if (userRoleID.value && !item.role_ids.includes(userRoleID.value)) return false
     if (!keyword) return true
-    const roleNames = item.role_ids.map((id) => roleMap.value.get(id)?.display_name || '').join(' ')
+    const roleNames = userRoleLabels.value.get(item.id)?.map((role) => role.name).join(' ') || ''
     return `${item.username} ${item.nickname} ${item.department_name} ${roleNames}`.toLocaleLowerCase().includes(keyword)
   })
 })
@@ -1115,7 +1123,7 @@ onMounted(() => {
         :options="[{ value: 'all', label: '全部' }, { value: 'active', label: '启用' }, { value: 'inactive', label: '停用' }]"
       />
       <a-select v-model:value="userDepartmentID" allow-clear placeholder="全部部门" :options="departmentOptions" />
-      <a-select v-model:value="userRoleID" allow-clear placeholder="全部角色" :options="roleOptions" />
+      <a-select v-model:value="userRoleID" allow-clear placeholder="全部角色" :options="userRoleOptions" />
       <span>显示 {{ filteredUsers.length }} / {{ users.length }} 人</span>
     </div>
     <div v-else-if="active === 'departments'" class="access-filter-bar compact vben-card">
@@ -1152,8 +1160,8 @@ onMounted(() => {
         <template #cell-role_ids="{ row }">
           <div class="tag-list">
             <a-tag v-if="row.is_superuser" color="purple">超级管理员</a-tag>
-            <a-tag v-for="id in row.role_ids" :key="String(id)">
-              {{ roles.find((role) => role.id === id)?.display_name || id }}
+            <a-tag v-for="role in userRoleLabels.get(String(row.id)) || []" :key="role.id">
+              {{ role.name }}
             </a-tag>
           </div>
         </template>

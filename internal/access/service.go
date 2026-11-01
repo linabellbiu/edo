@@ -901,6 +901,23 @@ func (s *Service) UserRoleIDs(ctx context.Context, userID string) ([]string, err
 	return roleIDs, nil
 }
 
+// RoleDisplayNames 仅补充调用方已取得的角色引用，不加载角色目录或权限配置。
+func (s *Service) RoleDisplayNames(ctx context.Context, roleIDs []string) (map[string]string, error) {
+	names := make(map[string]string)
+	roleIDs = uniqueSorted(roleIDs)
+	if len(roleIDs) == 0 {
+		return names, nil
+	}
+	var roles []model.Role
+	if err := s.db.WithContext(ctx).Select("uuid", "display_name").Where("uuid IN ?", roleIDs).Find(&roles).Error; err != nil {
+		return nil, fmt.Errorf("查询角色显示名称失败: %w", err)
+	}
+	for _, role := range roles {
+		names[role.ID] = role.DisplayName
+	}
+	return names, nil
+}
+
 func (s *Service) rolePermissions(ctx context.Context, roleID string) ([]string, error) {
 	var permissions []string
 	if err := s.db.WithContext(ctx).Model(&model.RolePermission{}).Where("role_id = ?", roleID).

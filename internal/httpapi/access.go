@@ -87,6 +87,11 @@ type managedUserResponse struct {
 	EffectivePermissions []string                       `json:"effective_permissions"`
 }
 
+type listedUserResponse struct {
+	managedUserResponse
+	RoleNames map[string]string `json:"role_names"`
+}
+
 func (h accessHandler) listUsers(c *gin.Context) {
 	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "50"))
 	offset, _ := strconv.Atoi(c.DefaultQuery("offset", "0"))
@@ -96,7 +101,9 @@ func (h accessHandler) listUsers(c *gin.Context) {
 		writeInternalError(c)
 		return
 	}
-	result := make([]managedUserResponse, 0, len(users))
+	result := make([]listedUserResponse, 0, len(users))
+	roleIDsToLoad := []string{}
+	seenRoleIDs := map[string]bool{}
 	departmentNames := map[string]string{}
 	if h.departments != nil {
 		items, departmentErr := h.departments.List(c.Request.Context())
@@ -130,10 +137,30 @@ func (h accessHandler) listUsers(c *gin.Context) {
 		}
 		userView := toUserResponse(&users[i])
 		userView.DepartmentName = departmentNames[users[i].DepartmentID]
-		result = append(result, managedUserResponse{
+		result = append(result, listedUserResponse{managedUserResponse: managedUserResponse{
 			userResponse: userView, IsActive: users[i].IsActive, RoleIDs: roleIDs,
 			PermissionOverrides: overrides, EffectivePermissions: effective,
-		})
+		}})
+		for _, roleID := range roleIDs {
+			if !seenRoleIDs[roleID] {
+				seenRoleIDs[roleID] = true
+				roleIDsToLoad = append(roleIDsToLoad, roleID)
+			}
+		}
+	}
+	roleNames, err := h.access.RoleDisplayNames(c.Request.Context(), roleIDsToLoad)
+	if err != nil {
+		h.logger.Error("查询用户角色名称失败", "operation", "user_list_role_names", "request_id", requestIDFrom(c), "role_count", len(roleIDsToLoad), "err", err)
+		writeInternalError(c)
+		return
+	}
+	for i := range result {
+		result[i].RoleNames = make(map[string]string, len(result[i].RoleIDs))
+		for _, roleID := range result[i].RoleIDs {
+			if name, ok := roleNames[roleID]; ok {
+				result[i].RoleNames[roleID] = name
+			}
+		}
 	}
 	c.JSON(http.StatusOK, gin.H{"users": result})
 }
