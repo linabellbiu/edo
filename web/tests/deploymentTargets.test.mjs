@@ -15,13 +15,15 @@ const plan = { id: 'plan', name: 'K8s 验收部署', kind: 'kubernetes', deploym
 
 function harness(t, denied = []) {
   const requests = [], errors = []
+  const permissions = ['deployment_plan.read', 'deployment_plan.create', 'deployment_plan.update', 'cluster.read', 'cluster.execute', 'deployment.read'].filter(permission => !denied.includes(permission))
+  const auth = { loaded: true, user: { id: 'test-user', department_id: 'test-department', project_id: 'test-project', permissions }, canAny: codes => codes.some(code => permissions.includes(code)) }
   let state
   const modules = {
     vue: { ...vue, onMounted() {} },
     'vue-i18n': { useI18n: () => ({ t: key => key, locale: vue.ref('zh-CN') }) },
     'vue-router': { useRoute: () => ({ query: {} }), useRouter: () => ({ resolve: () => ({ href: '/resource' }) }) },
     'ant-design-vue': { message: { error: value => errors.push(value), success() {} } },
-    '@/stores/auth': { useAuthStore: () => ({ canAny: permissions => permissions.some(permission => !denied.includes(permission)) }) },
+    '@/stores/auth': { useAuthStore: () => auth },
     '@/utils/resourceList': { useResourceList: () => ({ detailOpen: vue.ref(false), selected: vue.ref(), openDetails() {} }) },
     '@/api/resources': { apiErrorMessage: () => '请求失败' },
     '@/api/infrastructure': {
@@ -49,7 +51,8 @@ function harness(t, denied = []) {
     } },
   }
   const module = { exports: {} }
-  new Function('require', 'module', 'exports', outputText)(name => modules[name] || {}, module, module.exports)
+  new Function('require', 'module', 'exports', 'localStorage', 'window', outputText)(name => modules[name] || {}, module, module.exports,
+    { getItem: key => key === 'edo.project' ? 'test-project' : null }, { addEventListener() {}, removeEventListener() {} })
   const scope = vue.effectScope()
   t.after(() => scope.stop())
   state = scope.run(() => module.exports.default.setup({}, { expose() {} }))

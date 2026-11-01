@@ -199,6 +199,9 @@ const testing = ref(false)
 const mutatingID = ref('')
 const selectedProject = ref(typeof localStorage === 'undefined' ? '' : localStorage.getItem('edo.project') || '')
 const planScope = computed(() => JSON.stringify([auth.user?.id, auth.user?.department_id, auth.user?.project_id, auth.user?.is_superuser, [...(auth.user?.permissions || [])].sort(), selectedProject.value]))
+const editorIdentity = computed(() => JSON.stringify([auth.user?.id, auth.user?.department_id, auth.user?.project_id, selectedProject.value]))
+let formRevision = 0
+let formRequest: AbortController | undefined
 let mutationDialog: ReturnType<typeof asyncConfirm> | undefined
 let disposed = false, refreshRevision = 0
 function scopeKey() { return JSON.stringify([planScope.value, typeof localStorage === 'undefined' ? '' : localStorage.getItem('edo.project') || '']) }
@@ -252,6 +255,14 @@ function kindName(plan: DeploymentPlan) { return kindNames[plan.kind] }
 const canCreate = computed(() => auth.canAny(['deployment_plan.create']))
 const canUpdate = computed(() => auth.canAny(['deployment_plan.update']))
 const canDelete = computed(() => auth.canAny(['deployment_plan.delete']))
+function canUseForm() {
+  return !disposed && Boolean(auth.user?.id && selectedProject.value) && auth.user?.project_id === selectedProject.value
+    && auth.canAny(['deployment_plan.read']) && (editingID.value ? canUpdate.value : canCreate.value)
+}
+watch([editorIdentity, () => auth.canAny(['deployment_plan.read']), canCreate, canUpdate], ([identity], [previousIdentity]) => {
+  if (formOpen.value && (identity !== previousIdentity || !canUseForm())) formOpen.value = false
+}, { flush: 'sync' })
+watch(formOpen, open => { if (!open) reset() }, { flush: 'sync' })
 const platform = computed<Platform>(() => planPlatform(form.kind))
 const canReadHosts = computed(() => auth.canAny(['cluster.read', 'deployment.read']))
 const canReadEnvironments = computed(() => auth.canAny(['deployment.read']))
@@ -418,6 +429,10 @@ function updatedTime(plan: DeploymentPlan) {
 }
 
 function reset() {
+  formRevision++
+  formRequest?.abort()
+  formRequest = undefined
+  saving.value = false
   Object.assign(form, {
     reusable: true, name: '', description: '', kind: 'docker', script: '', compose_yaml: defaultComposeYAML, service_name: '',
     environment_id: '', host_id: '', working_directory: '', runtime_id: '',
@@ -461,6 +476,7 @@ async function refresh() {
 }
 
 function create() {
+  if (disposed || !auth.canAny(['deployment_plan.read']) || !canCreate.value || !selectedProject.value || auth.user?.project_id !== selectedProject.value) return
   reset()
   formOpen.value = true
 }
@@ -478,6 +494,7 @@ function beginEdit(plan: DeploymentPlan | undefined) {
 }
 
 function edit(plan: DeploymentPlan) {
+  reset()
   for (const kind of kindOptions) delete deploymentDrafts[kind.value]
   const target = targetOf(plan)
   const dockerConfig = plan.docker_config
@@ -864,11 +881,17 @@ function dockerConfigPayload(): DockerContainerConfig {
 }
 
 async function save() {
+  if (!formOpen.value || saving.value || testing.value || !canUseForm()) return
   const validationMessage = validate()
   if (validationMessage) {
     message.error(validationMessage)
     return
   }
+  const revision = ++formRevision, identity = editorIdentity.value, planID = editingID.value
+  const controller = new AbortController()
+  formRequest = controller
+  const current = () => formRequest === controller && formRevision === revision && formOpen.value
+    && identity === editorIdentity.value && canUseForm()
   saving.value = true
   try {
     const target = {
@@ -896,23 +919,24 @@ async function save() {
       reusable: form.reusable,
       deployment_target: form.reusable ? undefined : target,
     }
-    const response = editingID.value
-      ? await client.put<{ deployment_plan: DeploymentPlan }>(`/deployment-plans/${editingID.value}`, payload)
-      : await client.post<{ deployment_plan: DeploymentPlan }>('/deployment-plans', payload)
+    const response = planID
+      ? await client.put<{ deployment_plan: DeploymentPlan }>(`/deployment-plans/${planID}`, payload, { signal: controller.signal })
+      : await client.post<{ deployment_plan: DeploymentPlan }>('/deployment-plans', payload, { signal: controller.signal })
+    if (!current()) return
     const savedPlan = response.data.deployment_plan
     if (!savedTargetMatchesForm(savedPlan)) {
       message.error('部署连接未保存，请确认后端已更新并重试')
       return
     }
-    message.success(editingID.value ? '部署方案已更新' : '部署方案已创建')
+    message.success(planID ? '部署方案已更新' : '部署方案已创建')
     formOpen.value = false
-    reset()
+    const completionRevision = formRevision
     await refresh()
-    revealPlan(savedPlan.id)
+    if (!disposed && !formOpen.value && formRevision === completionRevision && identity === editorIdentity.value) revealPlan(savedPlan.id)
   } catch (error) {
-    message.error(apiErrorMessage(error))
+    if (current()) message.error(apiErrorMessage(error))
   } finally {
-    saving.value = false
+    if (formRequest === controller) { formRequest = undefined; saving.value = false }
   }
 }
 
@@ -925,7 +949,7 @@ watch([() => route.query.create, () => auth.loaded], ([value]) => {
 }, { immediate: true })
 
 onMounted(() => { window.addEventListener('edo:projects-changed', syncProject); void refresh() })
-onBeforeUnmount(() => { disposed = true; resetMutation(); window.removeEventListener('edo:projects-changed', syncProject) })
+onBeforeUnmount(() => { disposed = true; resetMutation(); reset(); window.removeEventListener('edo:projects-changed', syncProject) })
 </script>
 
 <template>
@@ -1224,7 +1248,7 @@ onBeforeUnmount(() => { disposed = true; resetMutation(); window.removeEventList
         <div class="drawer-actions">
           <a-button :disabled="saving || testing" @click="formOpen = false">取消</a-button>
           <a-button v-if="!form.reusable && canTestInfrastructure" :loading="testing" :disabled="saving" @click="testConnection">检查连接</a-button>
-          <a-button type="primary" :loading="saving" :disabled="testing" @click="save">保存部署方案</a-button>
+          <a-button type="primary" :loading="saving" :disabled="saving || testing || !canUseForm()" @click="save">保存部署方案</a-button>
         </div>
       </template>
     </a-drawer>

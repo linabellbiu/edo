@@ -22,10 +22,10 @@ const i18n = { useI18n: () => ({ t: key => key, locale: vue.ref('zh-CN') }) }
 const resourceList = load(readFileSync(new URL('../src/utils/resourceList.ts', import.meta.url), 'utf8'), { vue, 'vue-i18n': i18n })
 const pass = tag => ({ inheritAttrs: false, setup: (_, { attrs, slots }) => () => vue.h(tag, attrs, slots.default?.()) })
 
-async function harness() {
+async function harness(initialPermissions = ['deployment_plan.read', 'deployment_plan.update'], request = null) {
   const records = vue.ref(Array.from({ length: 21 }, (_, index) => ({ id: `p${index + 1}`, name: `Plan ${index + 1}`, kind: 'docker', timeout_seconds: 600, is_active: true })))
-  const permissions = vue.reactive(new Set(['deployment_plan.read', 'deployment_plan.update']))
-  const auth = { loaded: true, user: { id: 'user', department_id: 'department', project_id: 'project', permissions: ['deployment_plan.read', 'deployment_plan.update'] }, canAny: codes => codes.some(code => permissions.has(code)) }
+  const permissions = vue.reactive(new Set(initialPermissions))
+  const auth = { loaded: true, user: vue.reactive({ id: 'user', department_id: 'department', project_id: 'project', permissions: [...initialPermissions] }), canAny: codes => codes.some(code => permissions.has(code)) }
   const trace = [], writes = [], errors = []
   const element = tag => ({ tag, props: {}, text: '', children: [], parent: null })
   const renderer = vue.createRenderer({
@@ -44,7 +44,11 @@ async function harness() {
     return () => p.open ? vue.h('aside', { 'data-editor': p.title }, [slots.default?.(), slots.footer?.()]) : null
   } }
   const actions = { setup: (_, { slots }) => () => vue.h('div', [slots.default?.(), slots.more?.()]) }
-  const noNetwork = method => async path => { writes.push({ method, path }); throw Error('此交接测试不得执行写请求') }
+  const noNetwork = method => async (path, body, options) => {
+    writes.push({ method, path, ...(options?.signal ? { signal: options.signal } : {}) })
+    if (request) return request(method, path, body, options)
+    throw Error('此交接测试不得执行写请求')
+  }
   const modules = {
     vue, 'vue-i18n': i18n,
     'vue-router': { useRoute: () => vue.reactive({ query: {} }), useRouter: () => ({ replace: () => Promise.resolve(), resolve: () => ({ href: '/resource' }) }) },
@@ -88,6 +92,11 @@ async function harness() {
   const rowButton = (id, label) => { const nodes = find(node => node.tag === 'button' && text(node) === label, row(id)); assert.equal(nodes.length, 1); return nodes[0] }
   const toolbarEdit = () => one(node => node.tag === 'button' && text(node) === 'planList.edit' && Boolean(node.parent?.props['data-detail']))
   return { records, permissions, trace, writes, errors, find, click, rowButton, toolbarEdit,
+    async setPermissions(codes) { for (const code of permissions) if (!codes.includes(code)) permissions.delete(code); codes.forEach(code => permissions.add(code)); auth.user.permissions = [...codes]; await flush() },
+    async changeIdentity(key, value) { auth.user[key] = value; await flush() },
+    async setName(value) { one(node => node.tag === 'input' && node.props.placeholder === '例如：生产后端部署').props['onUpdate:value'](value); await flush() },
+    createButton: () => one(node => node.tag === 'button' && text(node) === '新建部署方案'),
+    saveButton: () => one(node => node.tag === 'button' && text(node) === '保存部署方案'),
     countDetails: () => find(node => Boolean(node.props['data-detail'])).length,
     countEditors: () => find(node => Boolean(node.props['data-editor'])).length,
     editorWidth: () => editorProps.width,
@@ -157,5 +166,149 @@ test('真实编辑模板把随视口收缩且保留桌面上限的宽度传给 A
     open: true, getContainer: false, forceRender: true, width: h.editorWidth(),
   }, { default: () => vue.h('p', '部署方案') })))
   assert.match(html, /class="ant-drawer-content-wrapper"[^>]*style="[^"]*width:min\(720px, 100vw\)/)
+  assert.deepEqual(h.writes, [])
+})
+
+for (const action of ['read', 'update']) test(`打开编辑器后撤销${action}权限立即收起，旧保存回调不能发请求`, async t => {
+  const h = await harness(); t.after(h.stop)
+  await h.click(h.rowButton('p11', 'planList.edit'))
+  await h.setName('未提交草稿')
+  const save = h.saveButton().props.onClick
+  await h.setPermissions(action === 'read' ? ['deployment_plan.update'] : ['deployment_plan.read'])
+  assert.equal(h.countEditors(), 0)
+  await save()
+  assert.deepEqual(h.writes, [])
+})
+
+for (const key of ['id', 'department_id', 'project_id']) test(`编辑中${key}变化立即收起，旧保存不能写入新范围`, async t => {
+  const h = await harness(); t.after(h.stop)
+  await h.click(h.rowButton('p11', 'planList.edit'))
+  const save = h.saveButton().props.onClick
+  await h.changeIdentity(key, 'other')
+  assert.equal(h.countEditors(), 0)
+  await save()
+  assert.deepEqual(h.writes, [])
+})
+
+test('新建表单撤销创建权限后收起，旧创建和保存回调均无效', async t => {
+  const h = await harness(['deployment_plan.read', 'deployment_plan.create']); t.after(h.stop)
+  const create = h.createButton().props.onClick
+  await create()
+  await vue.nextTick()
+  assert.equal(h.countEditors(), 1)
+  const save = h.saveButton().props.onClick
+  await h.setPermissions(['deployment_plan.read'])
+  assert.equal(h.countEditors(), 0)
+  await create()
+  await save()
+  assert.equal(h.countEditors(), 0)
+  assert.deepEqual(h.writes, [])
+})
+
+test('无关权限增加仍保留当前有权编辑的草稿', async t => {
+  const h = await harness(); t.after(h.stop)
+  await h.click(h.rowButton('p11', 'planList.edit'))
+  await h.setName('仍应保留的草稿')
+  await h.setPermissions(['deployment_plan.read', 'deployment_plan.update', 'artifact.read'])
+  assert.equal(h.countEditors(), 1)
+  assert.equal(h.name(), '仍应保留的草稿')
+  assert.deepEqual(h.writes, [])
+})
+
+test('同一保存回调并发调用仅提交一次，等待时显示忙碌', async t => {
+  let settle
+  const h = await harness(undefined, () => new Promise(resolve => { settle = resolve })); t.after(h.stop)
+  await h.click(h.rowButton('p11', 'planList.edit'))
+  const save = h.saveButton().props.onClick
+  const first = save(), second = save()
+  await vue.nextTick()
+  assert.equal(h.saveButton().props.loading, true)
+  assert.equal(h.writes.length, 1)
+  settle({ data: { deployment_plan: { id: 'p11', name: 'Plan 11' } } })
+  await Promise.all([first, second])
+  assert.equal(h.countEditors(), 0)
+})
+
+test('撤权取消在途保存，恢复后旧成功不关闭或清空新草稿', async t => {
+  let settle
+  const h = await harness(undefined, () => new Promise(resolve => { settle = resolve })); t.after(h.stop)
+  await h.click(h.rowButton('p11', 'planList.edit'))
+  const save = h.saveButton().props.onClick
+  const pending = save()
+  await vue.nextTick()
+  assert.equal(h.writes.length, 1)
+  await h.setPermissions(['deployment_plan.read'])
+  assert.equal(h.countEditors(), 0)
+  assert.equal(h.writes[0].signal?.aborted, true)
+  await h.setPermissions(['deployment_plan.read', 'deployment_plan.update'])
+  await h.click(h.rowButton('p12', 'planList.edit'))
+  await h.setName('新草稿不可被旧成功清除')
+  settle({ data: { deployment_plan: { id: 'p11', name: 'Plan 11' } } })
+  await pending
+  assert.equal(h.countEditors(), 1)
+  assert.equal(h.name(), '新草稿不可被旧成功清除')
+  assert.deepEqual(h.errors, [])
+})
+
+test('当前保存失败保留草稿并恢复按钮，不吞掉有效错误', async t => {
+  const h = await harness(undefined, async () => { throw Error('保存失败') }); t.after(h.stop)
+  await h.click(h.rowButton('p11', 'planList.edit'))
+  await h.setName('失败仍保留的草稿')
+  await h.saveButton().props.onClick()
+  assert.equal(h.countEditors(), 1)
+  assert.equal(h.name(), '失败仍保留的草稿')
+  assert.equal(h.saveButton().props.loading, false)
+  assert.deepEqual(h.errors, ['保存失败'])
+})
+
+test('撤权后旧失败不能污染恢复后的新草稿', async t => {
+  let reject
+  const h = await harness(undefined, () => new Promise((_resolve, fail) => { reject = fail })); t.after(h.stop)
+  await h.click(h.rowButton('p11', 'planList.edit'))
+  const pending = h.saveButton().props.onClick()
+  await h.setPermissions(['deployment_plan.read'])
+  await h.setPermissions(['deployment_plan.read', 'deployment_plan.update'])
+  await h.click(h.rowButton('p12', 'planList.edit'))
+  await h.setName('新的编辑草稿')
+  reject(Error('过时保存错误'))
+  await pending
+  assert.equal(h.countEditors(), 1)
+  assert.equal(h.name(), '新的编辑草稿')
+  assert.equal(h.saveButton().props.loading, false)
+  assert.deepEqual(h.errors, [])
+})
+
+test('页面卸载取消保存，迟到失败不再展示错误', async () => {
+  let reject
+  const h = await harness(undefined, () => new Promise((_resolve, fail) => { reject = fail }))
+  await h.click(h.rowButton('p11', 'planList.edit'))
+  const pending = h.saveButton().props.onClick()
+  h.stop()
+  assert.equal(h.writes[0].signal.aborted, true)
+  reject(Error('已离开的保存错误'))
+  await pending
+  assert.deepEqual(h.errors, [])
+})
+
+for (const mode of ['create', 'update']) test(`${mode}表单不因移除另一操作权限丢草稿`, async t => {
+  const h = await harness(['deployment_plan.read', 'deployment_plan.create', 'deployment_plan.update']); t.after(h.stop)
+  if (mode === 'create') await h.click(h.createButton())
+  else await h.click(h.rowButton('p11', 'planList.edit'))
+  await h.setName('当前仍有权的草稿')
+  await h.setPermissions(['deployment_plan.read', `deployment_plan.${mode}`])
+  assert.equal(h.countEditors(), 1)
+  assert.equal(h.name(), '当前仍有权的草稿')
+  assert.deepEqual(h.writes, [])
+})
+
+test('撤权后恢复修改权限重新打开仅使用已保存配置', async t => {
+  const h = await harness(); t.after(h.stop)
+  await h.click(h.rowButton('p11', 'planList.edit'))
+  await h.setName('不能复活的未提交草稿')
+  await h.setPermissions(['deployment_plan.read'])
+  await h.setPermissions(['deployment_plan.read', 'deployment_plan.update'])
+  assert.equal(h.countEditors(), 0)
+  await h.click(h.rowButton('p11', 'planList.edit'))
+  assert.equal(h.name(), 'Plan 11')
   assert.deepEqual(h.writes, [])
 })
