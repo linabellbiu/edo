@@ -1218,16 +1218,26 @@ function confirmResourceStatus(row:Pick<Application|Repository,'id'|'name'|'is_a
  resourceStatusDialog=dialog
 }
 function confirmDeleteBuildPlan(plan:Pick<BuildPlan,'id'|'name'>){
- Modal.confirm({
+ if(props.section!=='build-plans'||resourceStatusDialog||resourceMutationID.value)return
+ const scope=resourceScopeKey(),projectID=planExecutionSelectedProject.value,id=plan.id
+ const current=()=>!planExecutionDisposed&&props.section==='build-plans'&&scope===resourceScopeKey()&&resourceLoadedScope===scope&&Boolean(projectID)&&auth.user?.project_id===projectID&&auth.canAny(['build_plan.delete'])&&buildPlans.value.some(item=>item.id===id)
+ if(!current())return
+ const release=()=>{if(resourceStatusDialog===dialog)resourceStatusDialog=undefined}
+ const dialog=asyncConfirm({
   title:`删除构建方案“${plan.name}”？`,content:'删除后将从构建方案列表隐藏，历史流水线记录继续保留。仍被流水线任务引用时系统会拒绝删除。',
   okText:'删除',okType:'danger',cancelText:'取消',
-  onOk:async()=>{
-   resourceMutationID.value=plan.id
-   try{await client.delete(`/build-plans/${plan.id}`);message.success('构建方案已删除');await refresh()}
-   catch(error){message.error(apiErrorMessage(error));throw error}
-   finally{resourceMutationID.value=''}
+  isCurrent:current,onCancel:release,afterClose:release,onError:error=>message.error(apiErrorMessage(error)),
+  action:async signal=>{
+   resourceMutationID.value=id
+   try{
+    await client.delete(`/build-plans/${id}`,{headers:{'X-EDO-Project-ID':projectID},signal})
+    if(signal.aborted||!current())return
+    message.success('构建方案已删除')
+    await refresh()
+   }finally{if(scope===resourceScopeKey()&&resourceStatusDialog===dialog)resourceMutationID.value=''}
   },
  })
+ resourceStatusDialog=dialog
 }
 async function testRepository(){if(testing.value||saving.value)return;testing.value=true;try{const payload={...repoForm,credential_id:repoForm.auth_type==='none'?null:repoForm.credential_id||null,api_credential_id:repoForm.provider==='generic'?'':repoForm.api_credential_id||'',credential:null,regenerate_webhook:false};const result=formEditingID.value?await client.post<RefResult>(`/repositories/${formEditingID.value}/test`,undefined,{timeout:35000}):await client.post<RefResult>('/repositories/test',payload,{timeout:35000});message.success(`连接成功：${result.data.branches?.length||0} 个分支，${result.data.tags?.length||0} 个标签`)}catch(error){message.error(apiErrorMessage(error))}finally{testing.value=false}}
 async function testStoredRepository(repository:Repository){repositoryTestingID.value=repository.id;try{const result=await client.post<RefResult>(`/repositories/${repository.id}/test`,undefined,{timeout:35000});message.success(`连接成功：${result.data.branches?.length||0} 个分支，${result.data.tags?.length||0} 个标签`);await refresh()}catch(error){message.error(apiErrorMessage(error))}finally{repositoryTestingID.value=''}}

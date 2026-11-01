@@ -11,12 +11,13 @@ const settle = async () => { await vue.nextTick(); await new Promise(resolve => 
 const deferred = () => { let resolve, reject; const promise = new Promise((yes, no) => { resolve = yes; reject = no }); return { promise, resolve, reject } }
 const require = createRequire(import.meta.url)
 const ActionButton = require('ant-design-vue/lib/_util/ActionButton.js').default
+const recordKey = section => section === 'plans' ? 'plans' : section === 'build-plans' ? 'buildPlans' : section
 
 async function harness(section = 'plans', write = async () => ({ status: 204 }), read) {
   const dialogs = [], unmounts = [], liveWrites = [], storage = { project: 'project-a' }
   const window = new EventTarget()
-  const auth = vue.reactive({ user: { id: 'operator', department_id: 'department-a', project_id: 'project-a', permissions: ['application.read', 'application.update', 'repository.read', 'repository.update', 'deployment_plan.read', 'deployment_plan.update', 'deployment_plan.delete'] }, canAny(codes) { return codes.some(code => this.user?.permissions.includes(code)) } })
-  const records = { applications: [{ id: 'app-a', name: '应用甲', repository_id: 'repo-a', is_active: true, workflows: [] }], repositories: [{ id: 'repo-a', name: '仓库甲', is_active: true }], plans: [{ id: 'plan-a', name: '部署甲', kind: 'docker', is_active: true }] }
+  const auth = vue.reactive({ user: { id: 'operator', department_id: 'department-a', project_id: 'project-a', permissions: ['application.read', 'application.update', 'repository.read', 'repository.update', 'deployment_plan.read', 'deployment_plan.update', 'deployment_plan.delete', 'build_plan.read', 'build_plan.delete'] }, canAny(codes) { return codes.some(code => this.user?.permissions.includes(code)) } })
+  const records = { applications: [{ id: 'app-a', name: '应用甲', repository_id: 'repo-a', is_active: true, workflows: [] }], repositories: [{ id: 'repo-a', name: '仓库甲', is_active: true }], plans: [{ id: 'plan-a', name: '部署甲', kind: 'docker', is_active: true }], buildPlans: [{ id: 'build-a', name: '构建甲', kind: 'dockerfile', dockerfile_path: 'Dockerfile', context_path: '.', is_active: true }] }
   const Modal = { confirm(config) { const dialog = { ...config, closes: 0, destroyed: false, destroy() { this.destroyed = true }, update(value) { Object.assign(this, value) } }; dialogs.push(dialog); return dialog } }
   const message = { error() {}, success() {} }
   const modules = {
@@ -30,7 +31,7 @@ async function harness(section = 'plans', write = async () => ({ status: 204 }),
   const h = componentHarness(section === 'plans' ? '../src/views/DeploymentPlanView.vue' : '../src/views/DevOpsView.vue', {
     props: { section }, modules, globals: { localStorage: { getItem: () => storage.project }, window, document: new EventTarget() },
     api: {
-      get: async path => await read?.(path) || { data: { deployment_plans: structuredClone(records.plans), applications: structuredClone(records.applications), repositories: structuredClone(records.repositories), endpoints: [], clusters: [] } },
+      get: async path => await read?.(path) || { data: { deployment_plans: structuredClone(records.plans), build_plans: structuredClone(records.buildPlans), applications: structuredClone(records.applications), repositories: structuredClone(records.repositories), endpoints: [], clusters: [] } },
       patch: (path, body, options) => { liveWrites.push({ path, body, options }); return write(path, body, options) },
       delete: (path, options) => { liveWrites.push({ path, options }); return write(path, options) },
     },
@@ -57,8 +58,7 @@ function click(dialog, action = 'onOk') {
 async function rejectionProbe(section, operation) {
   const errors = [], h = await harness(section, async () => { throw new Error('仍被引用') })
   process.on('unhandledRejection', error => errors.push(error.message))
-  if (section === 'plans') h.state[operation](h.state.plans.value[0])
-  else h.state.confirmResourceStatus(h.state[section].value[0])
+  h.state[operation || 'confirmResourceStatus'](h.state[recordKey(section)].value[0])
   const dialog = h.dialogs[0]; click(dialog)
   await settle(); await settle()
   const result = { unhandled: errors, closes: dialog.closes, errors: h.notifications.filter(item => item.kind === 'error').length, destroyed: dialog.destroyed }
@@ -69,7 +69,7 @@ if (process.argv[2] === '--rejection-probe') {
   await rejectionProbe(process.argv[3], process.argv[4])
 } else {
   test('真实 Ant ActionButton 消费业务失败时不产生 unhandledRejection，保留确认和错误提示', () => {
-    for (const [section, operation] of [['plans', 'confirmDeletePlan'], ['plans', 'confirmPlanStatus'], ['applications'], ['repositories']]) {
+    for (const [section, operation] of [['plans', 'confirmDeletePlan'], ['plans', 'confirmPlanStatus'], ['build-plans', 'confirmDeleteBuildPlan'], ['applications'], ['repositories']]) {
       const result = spawnSync(process.execPath, [fileURLToPath(import.meta.url), '--rejection-probe', section, operation || ''], { encoding: 'utf8', timeout: 15000, env: { PATH: process.env.PATH } })
       assert.equal(result.status, 0, result.stderr)
       const proof = JSON.parse(result.stdout)
@@ -78,14 +78,15 @@ if (process.argv[2] === '--rejection-probe') {
   })
 
   test('确认使用回调同步返回，立即加载且防重，失败可重试，成功只关闭一次', async t => {
-    for (const [section, operation] of [['plans', 'confirmDeletePlan'], ['plans', 'confirmPlanStatus'], ['applications', 'confirmResourceStatus'], ['repositories', 'confirmResourceStatus']]) {
+    for (const [section, operation] of [['plans', 'confirmDeletePlan'], ['plans', 'confirmPlanStatus'], ['build-plans', 'confirmDeleteBuildPlan'], ['applications', 'confirmResourceStatus'], ['repositories', 'confirmResourceStatus']]) {
       let pending = deferred(); const h = await harness(section, () => pending.promise); t.after(h.stop)
-      h.state[operation](h.state[section === 'plans' ? 'plans' : section].value[0]); const dialog = h.dialogs[0]
+      h.state[operation](h.state[recordKey(section)].value[0]); const dialog = h.dialogs[0]
       assert.equal(dialog.onOk.length, 1, '必须命中 Ant 的 close 回调模式')
       const close = () => { dialog.closes++ }
       assert.equal(dialog.onOk(close), undefined); dialog.onOk(close)
       assert.equal(dialog.okButtonProps.loading, true); assert.equal(dialog.cancelButtonProps.disabled, true); assert.equal(dialog.keyboard, false)
       assert.equal(h.requests.filter(item => ['delete', 'patch'].includes(item.method)).length, 1)
+      if (section === 'build-plans') assert.deepEqual(h.requests.filter(item => item.method === 'delete').map(item => item.path), ['/build-plans/build-a'])
       pending.reject(new Error('仍被引用')); await settle()
       assert.equal(dialog.closes, 0); assert.equal(dialog.destroyed, false); assert.equal(dialog.okButtonProps.loading, false)
       assert.equal(dialog.cancelButtonProps.disabled, false); assert.equal(dialog.keyboard, true)
@@ -96,9 +97,9 @@ if (process.argv[2] === '--rejection-probe') {
   })
 
   test('取消与撤权销毁旧确认，不能通过保存的回调执行旧动作', async t => {
-    for (const [section, operation, permission] of [['plans', 'confirmDeletePlan', 'deployment_plan.delete'], ['plans', 'confirmPlanStatus', 'deployment_plan.update'], ['applications', 'confirmResourceStatus', 'application.update'], ['repositories', 'confirmResourceStatus', 'repository.update']]) {
+    for (const [section, operation, permission] of [['plans', 'confirmDeletePlan', 'deployment_plan.delete'], ['plans', 'confirmPlanStatus', 'deployment_plan.update'], ['build-plans', 'confirmDeleteBuildPlan', 'build_plan.delete'], ['applications', 'confirmResourceStatus', 'application.update'], ['repositories', 'confirmResourceStatus', 'repository.update']]) {
       const h = await harness(section); t.after(h.stop)
-      const row = h.state[section === 'plans' ? 'plans' : section].value[0]
+      const row = h.state[recordKey(section)].value[0]
       h.state[operation](row); const canceled = h.dialogs[0]; canceled.onCancel(); canceled.onOk(() => { canceled.closes++ })
       h.state[operation](row); const revoked = h.dialogs[1]
       h.auth.user.permissions = h.auth.user.permissions.filter(code => code !== permission); await settle()
@@ -109,26 +110,28 @@ if (process.argv[2] === '--rejection-probe') {
   })
 
   test('真实 Ant 取消按钮忙碌时不关闭，失败后允许正常取消且旧确认不能重发', async t => {
-    const pending = deferred(), h = await harness('plans', () => pending.promise); t.after(h.stop)
-    h.state.confirmDeletePlan(h.state.plans.value[0]); const dialog = h.dialogs[0]
-    click(dialog); click(dialog, 'onCancel'); assert.equal(dialog.closes, 0)
-    pending.reject(new Error('仍被引用')); await settle()
-    click(dialog, 'onCancel'); assert.equal(dialog.closes, 1)
-    click(dialog); await settle()
-    assert.equal(h.requests.filter(item => item.method === 'delete').length, 1)
+    for (const [section, operation] of [['plans', 'confirmDeletePlan'], ['build-plans', 'confirmDeleteBuildPlan']]) {
+      const pending = deferred(), h = await harness(section, () => pending.promise); t.after(h.stop)
+      h.state[operation](h.state[recordKey(section)].value[0]); const dialog = h.dialogs[0]
+      click(dialog); click(dialog, 'onCancel'); assert.equal(dialog.closes, 0)
+      pending.reject(new Error('仍被引用')); await settle()
+      click(dialog, 'onCancel'); assert.equal(dialog.closes, 1)
+      click(dialog); await settle()
+      assert.equal(h.requests.filter(item => item.method === 'delete').length, 1)
+    }
   })
 
   test('项目切换或卸载中止旧提交，迟到成功及错误不关闭新确认、不提示或覆盖新列表', async t => {
-    for (const [section, operation] of [['plans', 'confirmDeletePlan'], ['plans', 'confirmPlanStatus'], ['applications', 'confirmResourceStatus'], ['repositories', 'confirmResourceStatus']]) for (const leave of [false, true]) {
+    for (const [section, operation] of [['plans', 'confirmDeletePlan'], ['plans', 'confirmPlanStatus'], ['build-plans', 'confirmDeleteBuildPlan'], ['applications', 'confirmResourceStatus'], ['repositories', 'confirmResourceStatus']]) for (const leave of [false, true]) {
       const pending = deferred(), h = await harness(section, () => pending.promise); t.after(h.stop)
-      h.state[operation](h.state[section === 'plans' ? 'plans' : section].value[0]); const dialog = h.dialogs[0]
+      h.state[operation](h.state[recordKey(section)].value[0]); const dialog = h.dialogs[0]
       dialog.onOk(() => { dialog.closes++ })
       const { options } = h.liveWrites[0]
       if (leave) h.stop()
       else {
         h.storage.project = 'project-b'
         h.auth.user.project_id = 'project-b'
-        h.records[section] = [{ id: 'new-b', name: '新项目对象', is_active: true, workflows: [] }]
+        h.records[recordKey(section)] = [{ id: 'new-b', name: '新项目对象', is_active: true, workflows: [], ...(section === 'build-plans' ? { kind: 'dockerfile' } : {}) }]
         if (section === 'plans') h.state.syncProject()
         else { h.state.syncPlanExecutionProject(); await h.state.refresh() }
         await settle()
@@ -140,7 +143,7 @@ if (process.argv[2] === '--rejection-probe') {
       assert.equal(options.signal.aborted, true); assert.equal(options.headers['X-EDO-Project-ID'], 'project-a')
       assert.equal(dialog.destroyed, true); assert.equal(dialog.closes, 0); assert.deepEqual(h.notifications, [])
       assert.equal(h.requests.length, requestCount)
-      if (!leave) assert.deepEqual(h.state[section === 'plans' ? 'plans' : section].value.map(item => item.id), ['new-b'])
+      if (!leave) assert.deepEqual(h.state[recordKey(section)].value.map(item => item.id), ['new-b'])
     }
   })
 
