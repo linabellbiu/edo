@@ -300,8 +300,8 @@ func normalizeScriptContainerInput(input ScriptContainerInput) (ScriptContainerI
 	}
 	if input.Script == "" || len(input.Script) > maximumScriptSize || strings.ContainsRune(input.Script, '\x00') ||
 		input.Timeout < 30*time.Second || input.Timeout > 2*time.Hour ||
-		!validPinnedRuntimeImage(input.Image) || !validScriptPlatform(input.Platform) || !validContainerRelativePath(input.WorkingDirectory) ||
-		(input.ArtifactPath != "" && !validContainerRelativePath(input.ArtifactPath)) ||
+		!validPinnedRuntimeImage(input.Image) || !validScriptPlatform(input.Platform) || !ValidScriptContainerRelativePath(input.WorkingDirectory) ||
+		(input.ArtifactPath != "" && !ValidScriptContainerRelativePath(input.ArtifactPath)) ||
 		(input.ArtifactPath == "") != (input.OutputDirectory == "") || !validScriptEnvironment(input.Environment) ||
 		!validScriptSystemEnvironment(input.SystemEnvironment) {
 		return input, ErrInvalidScriptContainer
@@ -310,7 +310,7 @@ func normalizeScriptContainerInput(input ScriptContainerInput) (ScriptContainerI
 		return input, ErrInvalidScriptContainer
 	}
 	for _, name := range input.CachePaths {
-		if !validContainerRelativePath(name) || path.Clean(name) == "." {
+		if !ValidScriptContainerRelativePath(name) || path.Clean(name) == "." {
 			return input, ErrInvalidScriptContainer
 		}
 	}
@@ -318,7 +318,7 @@ func normalizeScriptContainerInput(input ScriptContainerInput) (ScriptContainerI
 		return input, ErrInvalidScriptContainer
 	}
 	for _, name := range input.ReportPaths {
-		if !validContainerRelativePath(name) || path.Clean(name) == "." {
+		if !ValidScriptContainerRelativePath(name) || path.Clean(name) == "." {
 			return input, ErrInvalidScriptContainer
 		}
 	}
@@ -383,7 +383,8 @@ func validPinnedRuntimeImage(value string) bool {
 	return ok
 }
 
-func validContainerRelativePath(value string) bool {
+// ValidScriptContainerRelativePath 供保存与执行共用 POSIX 工作区相对路径规则，不改写输入。
+func ValidScriptContainerRelativePath(value string) bool {
 	if value == "" || len(value) > 512 || strings.ContainsAny(value, "\\\x00") || path.IsAbs(value) {
 		return false
 	}

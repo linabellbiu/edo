@@ -475,6 +475,10 @@ func normalizeBuildPlanInput(input BuildPlanInput) (BuildPlanInput, error) {
 		if !validScriptEnvironmentVariables(input.EnvironmentVariables) {
 			return input, ErrInvalidScriptEnvironment
 		}
+		if !dockerengine.ValidScriptContainerRelativePath(input.WorkingDirectory) ||
+			(input.ArtifactPath != "" && !dockerengine.ValidScriptContainerRelativePath(input.ArtifactPath)) {
+			return input, ErrInvalidBuildPlan
+		}
 	}
 	validKind := (input.Kind == model.BuildPlanScript && strings.TrimSpace(input.Script) != "" && validRuntimeImageReference(input.RuntimeImage)) ||
 		(input.Kind == model.BuildPlanDockerfile && input.DockerfilePath != "")
