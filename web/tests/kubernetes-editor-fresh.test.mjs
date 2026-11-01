@@ -32,7 +32,7 @@ async function harness({denied=[],resource='statefulsets'}={}){
  const router=createRouter({history:createMemoryHistory(),routes:[{path:'/kubernetes',component:{}}]})
  const type=api.kubeTypes.find(type=>type.resource===resource)
  await router.push(`/kubernetes?view=${type.group}&resource=${resource}&cluster=test&namespace=team`)
- const route=new Proxy({},{get:(_target,key)=>router.currentRoute.value[key]}),gets=[],writes=[],messages=[],unmounts=[],blocked=new Set(denied)
+ const route=new Proxy({},{get:(_target,key)=>router.currentRoute.value[key]}),gets=[],writes=[],messages=[],unmounts=[],blocked=new Set(denied),authorization=vue.reactive({ready:true})
  const client={get:(url,options={})=>{
   if(/\/resources\/[^/]+\/[^/]+$/.test(url))return new Promise((resolve,reject)=>gets.push({url,options,resolve,reject}))
   if(url.endsWith('/namespaces'))return Promise.resolve({data:{namespaces:['team','other']}})
@@ -45,14 +45,14 @@ async function harness({denied=[],resource='statefulsets'}={}){
   'vue-router':{useRoute:()=>route,useRouter:()=>router,onBeforeRouteLeave(){},onBeforeRouteUpdate(){}},
   'ant-design-vue':{Modal:{confirm:()=>({destroy(){}})},message:Object.fromEntries(['error','warning','success'].map(kind=>[kind,value=>messages.push({kind,value})]))},
   '@/api/kubernetes':{...api,listKubeResourceScopes:async()=>({items:[],cursor:{}})},'@/utils/kubernetesWorkspace':workspace,'@/utils/kubernetesPresentation':presentation,
-  '@/stores/auth':{useAuthStore:()=>({canAny:permissions=>permissions.some(permission=>!blocked.has(permission))})},'@/api/client':{__esModule:true,default:client},
+  '@/stores/auth':{useAuthStore:()=>({canAny:permissions=>authorization.ready&&permissions.some(permission=>!blocked.has(permission))})},'@/api/client':{__esModule:true,default:client},
  },{document:{hidden:false,removeEventListener(){}},window:{removeEventListener(){}}}).default
  const scope=vue.effectScope();let state,stopped=false
  scope.run(()=>{state=component.setup({}, {expose(){}})})
  state.clusters.value=[{id:'test',name:'test',default_namespace:'team',is_active:true},{id:'other-cluster',name:'other',default_namespace:'team',is_active:true}]
  state.cluster.value='test';await settle()
  const stop=()=>{if(stopped)return;stopped=true;unmounts.forEach(fn=>fn());state.cancelListPersist();scope.stop()}
- return {state,router,route,gets,writes,messages,blocked,unmount:stop,stop}
+ return {state,router,route,gets,writes,messages,blocked,authorization,unmount:stop,stop}
 }
 
 test('工作负载编辑独立读取新版本，旧列表分区不直接进入表单',async t=>{
@@ -230,6 +230,51 @@ test('ConfigMap 在途读取受切换范围、关闭详情和撤权约束，不�
   else assert.equal(h.state.editorOpen.value,false,change)
   assert.deepEqual(h.writes,[]);assert.deepEqual(h.messages,[])
  }
+})
+
+test('ConfigMap 已打开草稿经历撤修改权限及恢复后保持关闭，重开必须读取服务器原值',async t=>{
+ const h=await harness({resource:'configmaps'});t.after(h.stop)
+ const stale=resourceObject('configmaps'),initial=h.state.edit(stale)
+ h.gets[0].resolve({data:{object:resourceObject('configmaps',{version:'14',value:'A'})}});await initial
+ h.state.editorContext.value.object.data.setting='DRAFT_B'
+ assert.equal(h.state.editorOpen.value,true)
+ h.authorization.ready=false;await settle()
+ h.blocked.add('kubernetes.config.update');h.authorization.ready=true;await settle()
+ assert.equal(h.state.editorOpen.value,false)
+ assert.equal(h.state.activeType.value.resource,'configmaps','查看权限仍保留')
+ await h.state.edit(stale)
+ assert.equal(h.gets.length,1,'只读用户不能重新打开编辑器')
+ h.authorization.ready=false;await settle()
+ h.blocked.delete('kubernetes.config.update');h.authorization.ready=true;await settle()
+ assert.equal(h.state.editorOpen.value,false,'恢复权限不能自动重开旧草稿')
+ const reopened=h.state.edit(stale)
+ assert.equal(h.gets.length,2);assert.equal(h.state.editorOpen.value,false)
+ h.gets[1].resolve({data:{object:resourceObject('configmaps',{version:'14',value:'A'})}});await reopened
+ assert.equal(h.state.editorOpen.value,true)
+ assert.equal(h.state.editorContext.value.object.data.setting,'A')
+ assert.equal(h.state.editorContext.value.object.metadata.resourceVersion,'14')
+ assert.equal(stale.data.setting,'FIRST');assert.deepEqual(h.writes,[]);assert.deepEqual(h.messages,[])
+})
+
+test('ConfigMap 撤权时中止未完成的编辑读取，恢复后迟到旧响应也不能替代新读取',async t=>{
+ const h=await harness({resource:'configmaps'});t.after(h.stop)
+ const stale=resourceObject('configmaps'),old=h.state.edit(stale),signal=h.gets[0].options.signal
+ h.authorization.ready=false;await settle()
+ assert.equal(signal.aborted,true)
+ h.blocked.add('kubernetes.config.update');h.authorization.ready=true;await settle()
+ assert.equal(h.state.editorOpen.value,false)
+ h.authorization.ready=false;await settle()
+ h.blocked.delete('kubernetes.config.update');h.authorization.ready=true;await settle()
+ const current=h.state.edit(stale)
+ assert.equal(h.gets.length,2)
+ h.gets[0].resolve({data:{object:resourceObject('configmaps',{version:'14',value:'OLD'})}});await old
+ assert.equal(h.state.editorOpen.value,false)
+ assert.equal(h.state.editorLoading.value,true,'旧请求不能清理新请求的加载状态')
+ h.gets[1].resolve({data:{object:resourceObject('configmaps',{version:'15',value:'CURRENT'})}});await current
+ assert.equal(h.state.editorOpen.value,true)
+ assert.equal(h.state.editorContext.value.object.data.setting,'CURRENT')
+ assert.equal(h.state.editorContext.value.object.metadata.resourceVersion,'15')
+ assert.deepEqual(h.writes,[]);assert.deepEqual(h.messages,[])
 })
 
 test('ConfigMap 编辑器仍以原快照预检阻断并发 A 到 C，保留 B 草稿且无校验或写入',async t=>{
