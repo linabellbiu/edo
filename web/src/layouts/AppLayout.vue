@@ -43,6 +43,8 @@ const contentMaximized = ref(false)
 const fullscreen = ref(false)
 const reloadKey = ref(0)
 const contentInitialized = ref(false)
+const contentRegion = ref<HTMLElement>()
+const pausedContentHeight = ref<number>()
 let permissionSyncStarted = false
 const mobileMenuOpen = ref(false)
 const openKeys = ref<string[]>([])
@@ -244,6 +246,17 @@ watch(() => auth.authorizationReady, ready => {
   Modal.destroyAll()
 }, { flush: 'sync' })
 
+watch(() => auth.authorizationState, (state, previous) => {
+  const height = state === 'checking' && previous === 'ready' && auth.user
+    ? contentRegion.value?.getBoundingClientRect().height : undefined
+  // 内容仍隐藏并禁用，只保留核验前的高度，避免长列表暂时消失使页面回顶。
+  pausedContentHeight.value = height !== undefined && Number.isFinite(height) && height > 0 ? height : undefined
+}, { flush: 'sync' })
+watch(() => JSON.stringify([route.path, auth.user?.id, auth.user?.department_id, auth.user?.project_id,
+  auth.user?.is_superuser, [...(auth.user?.permissions ?? [])].sort()]), () => {
+  pausedContentHeight.value = undefined
+}, { flush: 'sync' })
+
 onMounted(() => {
   window.addEventListener('keydown', keyboard)
   permissionSyncStarted = true
@@ -256,6 +269,7 @@ onMounted(() => {
   }
 })
 onBeforeUnmount(() => {
+  pausedContentHeight.value = undefined
   menuRevealPending = false
   stopPermissionSync?.()
   window.removeEventListener('keydown', keyboard)
@@ -414,7 +428,7 @@ onBeforeUnmount(() => {
         <button v-if="contentMaximized" class="tabs-extra" type="button" :aria-label="t('common.exitMaximized')" @click="contentMaximized = false"><ChevronLeft /></button>
       </div>
 
-      <section class="vben-content">
+      <section ref="contentRegion" class="vben-content" :style="pausedContentHeight === undefined ? undefined : { minHeight: `${pausedContentHeight}px` }">
         <a-alert v-if="!auth.authorizationReady" :type="auth.authorizationState === 'unavailable' ? 'warning' : 'info'" show-icon role="status" aria-live="polite" :message="auth.authorizationState === 'unavailable' ? '暂时无法核验权限，内容和操作已暂停。' : '正在重新核验权限…'">
           <template v-if="auth.authorizationState === 'unavailable'" #action><a-button size="small" @click="auth.retryAuthorization">重试</a-button></template>
         </a-alert>

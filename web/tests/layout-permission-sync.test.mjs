@@ -77,3 +77,47 @@ test('布局卸载清理权限同步订阅和计时器，避免重新挂载重�
   h.stop()
   assert.deepEqual(h.counts(), { starts: 1, stops: 1 })
 })
+
+test('同范围短暂核验隐藏内容时保留原内容区高度，恢复后释放，不保存正文', () => {
+  const h = harness()
+  try {
+    h.state.contentRegion.value = { getBoundingClientRect: () => ({ height: 7200 }) }
+    h.auth.authorizationState = 'checking'; h.auth.authorizationReady = false
+    assert.equal(h.state.pausedContentHeight.value, 7200)
+    h.auth.user = { ...h.auth.user, permissions: [...h.auth.user.permissions].reverse() }
+    assert.equal(h.state.pausedContentHeight.value, 7200)
+    h.auth.authorizationState = 'ready'; h.auth.authorizationReady = true
+    assert.equal(h.state.pausedContentHeight.value, undefined)
+    assert.deepEqual(h.replacements, [])
+  } finally { h.stop() }
+})
+
+for (const change of ['unavailable', 'identity', 'permission', 'route', 'unmount']) test(`内容区高度占位在${change}时清理，不能跨范围沿用`, () => {
+  const h = harness()
+  try {
+    h.state.contentRegion.value = { getBoundingClientRect: () => ({ height: 7200 }) }
+    h.auth.authorizationState = 'checking'; h.auth.authorizationReady = false
+    assert.equal(h.state.pausedContentHeight.value, 7200)
+    if (change === 'unavailable') h.auth.authorizationState = 'unavailable'
+    else if (change === 'identity') h.auth.user = { ...h.auth.user, id: 'another-user' }
+    else if (change === 'permission') h.auth.user.permissions = ['project.read']
+    else if (change === 'route') h.route.path = '/projects'
+    else h.stop()
+    assert.equal(h.state.pausedContentHeight.value, undefined)
+  } finally { if (change !== 'unmount') h.stop() }
+})
+
+test('没有可测内容或未从就绪状态进入核验时不构造占位高度', () => {
+  for (const height of [0, -1, NaN, Infinity]) {
+    const h = harness()
+    try {
+      h.state.contentRegion.value = { getBoundingClientRect: () => ({ height }) }
+      h.auth.authorizationState = 'checking'; h.auth.authorizationReady = false
+      assert.equal(h.state.pausedContentHeight.value, undefined)
+      h.auth.authorizationState = 'unavailable'
+      h.state.contentRegion.value = { getBoundingClientRect: () => ({ height: 7200 }) }
+      h.auth.authorizationState = 'checking'
+      assert.equal(h.state.pausedContentHeight.value, undefined)
+    } finally { h.stop() }
+  }
+})

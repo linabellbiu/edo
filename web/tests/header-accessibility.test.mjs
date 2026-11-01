@@ -11,7 +11,7 @@ const descriptor = parse(readFileSync(new URL('../src/layouts/AppLayout.vue', im
 const code = ts.transpileModule(compileScript(descriptor, {id: 'header-accessibility', inlineTemplate: true}).content, {
   compilerOptions: {module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, esModuleInterop: true},
 }).outputText
-function node(tag, text = '') { return {tag, text, style: {}, props: {}, children: [], parent: null} }
+function node(tag, text = '') { return {tag, text, style: {}, props: {}, children: [], parent: null, getBoundingClientRect: () => ({height: tag === 'section' ? 7200 : 0})} }
 const renderer = vue.createRenderer({
   createElement: tag => node(tag), createText: text => node('#text', text), createComment: () => node('#comment'),
   setText: (target, text) => { target.text = text },
@@ -91,8 +91,11 @@ test('授权核验与不可用有可访问回退及重试，暂停正文但保�
   assert.match(text(status), /正在重新核验权限/)
   const body = walk(h.root).find(item => item.props.inert === true)
   assert.equal(body.style.display, 'none')
+  const region = walk(h.root).find(item => item.tag === 'section' && item.props.class === 'vben-content')
+  assert.deepEqual(region.props.style, {minHeight: '7200px'})
   assert.equal(h.calls.clearConfirmations, 1)
   h.auth.authorizationState = 'unavailable'; await vue.nextTick()
+  assert.equal(region.props.style, undefined)
   assert.match(text(status), /暂时无法核验权限/)
   const retry = h.buttons().find(item => text(item) === '重试')
   assert.ok(retry); retry.props.onClick()
