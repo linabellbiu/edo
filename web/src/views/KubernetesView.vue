@@ -126,6 +126,7 @@ const stream = ref({open:false,terminal:false,path:'',title:''}), scaleOpen=ref(
 let clusterRevision=0,clusterController:AbortController|undefined,namespaceRevision=0,namespaceController:AbortController|undefined,lastNamespaceRefresh=0
 let revision=0, detailRevision=0, controller:AbortController|undefined,detailController:AbortController|undefined, timer:ReturnType<typeof setInterval>|undefined, mounted=true
 let editRevision=0,editController:AbortController|undefined,editBusyKey=''
+let secretController:AbortController|undefined
 let detailSyncing=false,listRefreshing=false,lastRelatedSync=0,lastVisibleSync=0
 const watchHealthy=ref(false),watchDegraded=ref(false)
 let watchMounted=false,watchRevision=0,watchController:AbortController|undefined,watchReconnect:ReturnType<typeof setTimeout>|undefined,watchFlush:ReturnType<typeof setTimeout>|undefined,watchRetry=0,lastWatchEvent=0,lastCalibration=0
@@ -281,7 +282,9 @@ watch(()=>[route.query.cluster,route.query.namespace],()=>{
   }
 },{deep:true})
 
-function closeDetails() { cancelPendingEdit();const origin=lastViewedRow.value;void nextTick(()=>{const row=[...resourcePanel.value?.querySelectorAll<HTMLElement>('[data-resource-key]')??[]].find(item=>item.dataset.resourceKey===origin);row?.querySelector<HTMLButtonElement>('.resource-name')?.focus({preventScroll:true})}); detailRevision++;detailController?.abort(); detailOpen.value=false; detail.value=undefined;detailType.value=undefined;detailOrigin.value='';detailHistory.value=[]; workloadSelections.value={};templateContainerSelections.value={}; secretValues.value=undefined; relatedPods.value=[]; events.value=[]; detailError.value='';detailSyncError.value='';relatedLoading.value=false }
+function hideSecret(){secretController?.abort();secretController=undefined;secretValues.value=undefined}
+watch(()=>can('kubernetes.config.read')&&can('kubernetes.secret.read'),allowed=>{if(!allowed)hideSecret()},{flush:'sync'})
+function closeDetails() { cancelPendingEdit();const origin=lastViewedRow.value;void nextTick(()=>{const row=[...resourcePanel.value?.querySelectorAll<HTMLElement>('[data-resource-key]')??[]].find(item=>item.dataset.resourceKey===origin);row?.querySelector<HTMLButtonElement>('.resource-name')?.focus({preventScroll:true})}); detailRevision++;detailController?.abort(); detailOpen.value=false; detail.value=undefined;detailType.value=undefined;detailOrigin.value='';detailHistory.value=[]; workloadSelections.value={};templateContainerSelections.value={}; hideSecret(); relatedPods.value=[]; events.value=[]; detailError.value='';detailSyncError.value='';relatedLoading.value=false }
 function nsOf(object:KubeObject) { return object.metadata.namespace ?? '' }
 async function openDetails(object:KubeObject, tab='basic',type=activeType.value,follow=false) {
   if (!type||!can(`${type.permission}.read`)) return
@@ -291,7 +294,7 @@ async function openDetails(object:KubeObject, tab='basic',type=activeType.value,
   const preserve=follow&&detail.value?.metadata.uid===object.metadata.uid&&detailType.value?.resource===type.resource
   const current=++detailRevision, id=cluster.value
   detailController?.abort();const request=new AbortController();detailController=request
-  detailOpen.value=true; detailLoading.value=true; detailError.value='';detailSyncError.value=''; secretValues.value=undefined; detailTab.value=object.kind==='Node'&&tab==='basic'?'monitor':type.group==='workloads'&&object.kind!=='Pod'&&['pods','diagnostics'].includes(tab)?'basic':tab; if(!preserve){relatedPods.value=[];events.value=[];templateSection.value='containers'} eventsError.value=false;relatedLoaded.value=false;relatedError.value='';relatedPartial.value=false;relatedLoading.value=false;lastRelatedSync=0
+  detailOpen.value=true; detailLoading.value=true; detailError.value='';detailSyncError.value=''; hideSecret(); detailTab.value=object.kind==='Node'&&tab==='basic'?'monitor':type.group==='workloads'&&object.kind!=='Pod'&&['pods','diagnostics'].includes(tab)?'basic':tab; if(!preserve){relatedPods.value=[];events.value=[];templateSection.value='containers'} eventsError.value=false;relatedLoaded.value=false;relatedError.value='';relatedPartial.value=false;relatedLoading.value=false;lastRelatedSync=0
   detail.value=object;detailType.value=type
   try {
     const {data}=await client.get<{object:KubeObject}>(resourceURL(id,type,object.metadata.name),{params:{namespace:nsOf(object)},signal:request.signal})
@@ -339,7 +342,7 @@ async function loadRelatedPods(id:string,object:KubeObject,current:number,signal
   } catch { if(mounted&&current===detailRevision&&!signal.aborted) relatedError.value=t('k8s.relatedFailed') }
   finally{if(mounted&&current===detailRevision)relatedLoading.value=false}
 }
-watch(detailTab,(tab,previous)=>{if(previous==='data'&&tab!=='data')secretValues.value=undefined;if(needsRelatedPods.value&&detail.value&&!detailLoading.value&&!relatedLoaded.value&&detailController)void loadRelatedPods(cluster.value,detail.value,detailRevision,detailController.signal)})
+watch(detailTab,(tab,previous)=>{if(previous==='data'&&tab!=='data')hideSecret();if(needsRelatedPods.value&&detail.value&&!detailLoading.value&&!relatedLoaded.value&&detailController)void loadRelatedPods(cluster.value,detail.value,detailRevision,detailController.signal)},{flush:'sync'})
 function retryRelatedPods(){if(detail.value&&detailController&&!detailLoading.value)void loadRelatedPods(cluster.value,detail.value,detailRevision,detailController.signal)}
 function cancelPendingEdit(){
   editRevision++;editController?.abort();editController=undefined;editorLoading.value=false
@@ -428,13 +431,21 @@ function selectedPodContainer(pod:KubeObject){const choices=podContainerChoices(
 function containerOptions(pod:KubeObject){return podContainerChoices(pod).map(item=>({value:item.name,label:item.kind==='app'?item.name:`${item.name} (${t(`k8s.containerKind_${item.kind}`)})`}))}
 async function reveal() {
   const object=detail.value,type=detailType.value,id=cluster.value,current=detailRevision
-  if(!object||!type)return
-  Modal.confirm({title:t('k8s.secretConfirm'),content:t('k8s.secretAudit'),cancelText:t('k8s.cancel'),okText:t('k8s.reveal'),async onOk(){
+  const inContext=()=>mounted&&current===detailRevision&&detailOpen.value&&detailTab.value==='data'&&can('kubernetes.config.read')&&can('kubernetes.secret.read')
+  if(!object||object.kind!=='Secret'||type?.resource!=='secrets'||!inContext())return
+  let request:AbortController|undefined
+  Modal.confirm({title:t('k8s.secretConfirm'),content:t('k8s.secretAudit'),cancelText:t('k8s.cancel'),okText:t('k8s.reveal'),onCancel(){if(request&&secretController===request)hideSecret()},async onOk(){
+    if(!inContext())return
+    hideSecret();request=new AbortController();const active=request;secretController=active
+    // 请求身份与当前详情同时有效，取消或切回原标签也不复用旧响应。
+    const isCurrent=()=>inContext()&&secretController===active&&!active.signal.aborted
     try {
-      const {data}=await client.get<{object:KubeObject}>(`${resourceURL(id,type,object.metadata.name)}/secret`,{params:{namespace:nsOf(object)}})
-      if(mounted&&current===detailRevision&&(data.object.metadata.uid!==object.metadata.uid||data.object.metadata.resourceVersion!==object.metadata.resourceVersion))throw new KubeResourceChanged(t('k8s.resourceChanged'))
-      if(mounted&&current===detailRevision) secretValues.value=Object.fromEntries(Object.entries(data.object.data??{}).map(([key,value])=>{try{return[key,new TextDecoder().decode(Uint8Array.from(atob(String(value)),char=>char.charCodeAt(0)))]}catch{return[key,'[binary]']}}))
-    }catch(err){message.error(kubeErrorMessage(err));throw err}
+      const {data}=await client.get<{object:KubeObject}>(`${resourceURL(id,type,object.metadata.name)}/secret`,{params:{namespace:nsOf(object)},signal:active.signal})
+      if(!isCurrent())return
+      if(data.object.metadata.uid!==object.metadata.uid||data.object.metadata.resourceVersion!==object.metadata.resourceVersion)throw new KubeResourceChanged(t('k8s.resourceChanged'))
+      secretValues.value=Object.fromEntries(Object.entries(data.object.data??{}).map(([key,value])=>{try{return[key,new TextDecoder().decode(Uint8Array.from(atob(String(value)),char=>char.charCodeAt(0)))]}catch{return[key,'[binary]']}}))
+    }catch(err){if(isCurrent()){message.error(kubeErrorMessage(err));throw err}}
+    finally{if(secretController===active)secretController=undefined}
   }})
 }
 const detailPods=computed<KubeObject[]>(()=>(detail.value?.kind==='Pod'?[detail.value]:relatedPods.value).map(object=>({...object,id:kubeKey(object),cells:resourceCells(object,t),state:resourceStatus(object,t)})))
@@ -525,7 +536,7 @@ function syncVisible(){
 function workspaceVisibility(){if(document.hidden)stopKubeWatch();else{startKubeWatch();syncVisible()}}
 function watchProjectChanged(event:StorageEvent){if(event.key==='edo.project'){stopKubeWatch();watchDirty.clear();rows.value=[];overview.value=null;namespaces.value=[];clusters.value=[];cluster.value='';void loadClusters()}}
 onMounted(()=>{watchMounted=true;void loadClusters();startKubeWatch();timer=setInterval(syncVisible,5000);document.addEventListener('visibilitychange',workspaceVisibility);window.addEventListener('focus',syncVisible);window.addEventListener('storage',watchProjectChanged)})
-onBeforeUnmount(()=>{mounted=false;watchMounted=false;stopKubeWatch();watchDirty.clear();cancelPendingEdit();cancelListPersist();clusterRevision++;clusterController?.abort();namespaceRevision++;namespaceController?.abort();revision++;detailRevision++;overviewRevision++;controller?.abort();detailController?.abort();overviewController?.abort();document.removeEventListener('visibilitychange',workspaceVisibility);window.removeEventListener('focus',syncVisible);window.removeEventListener('storage',watchProjectChanged);if(timer)clearInterval(timer);secretValues.value=undefined;stream.value.open=false})
+onBeforeUnmount(()=>{mounted=false;watchMounted=false;stopKubeWatch();watchDirty.clear();cancelPendingEdit();cancelListPersist();clusterRevision++;clusterController?.abort();namespaceRevision++;namespaceController?.abort();revision++;detailRevision++;overviewRevision++;controller?.abort();detailController?.abort();overviewController?.abort();document.removeEventListener('visibilitychange',workspaceVisibility);window.removeEventListener('focus',syncVisible);window.removeEventListener('storage',watchProjectChanged);if(timer)clearInterval(timer);hideSecret();stream.value.open=false})
 </script>
 
 <template>
@@ -609,7 +620,7 @@ onBeforeUnmount(()=>{mounted=false;watchMounted=false;stopKubeWatch();watchDirty
         </a-tab-pane>
         <a-tab-pane v-if="['ConfigMap','Secret'].includes(detail.kind)" key="data" :tab="t('k8s.dataTab')">
           <section v-if="detail.kind==='ConfigMap'" class="resource-detail-section"><KubeConfigEntries v-if="Object.keys(detail.data??{}).length || !Object.keys(detail.binaryData??{}).length" :model-value="Object.entries(detail.data??{}).map(([key,value])=>({key,value:String(value)}))" readonly /><div v-for="(_,key) in detail.binaryData??{}" :key="key" class="config-entry"><strong>{{ key }} <a-tag>{{ t('k8s.binaryData') }}</a-tag></strong><p class="secondary">{{ t('k8s.binaryHidden') }}</p></div></section>
-          <section v-else class="resource-detail-section"><div class="section-heading"><h4>{{ t('k8s.data') }}</h4><a-button v-if="can('kubernetes.secret.read')&&!secretValues" size="small" @click="reveal">{{ t('k8s.reveal') }}</a-button><a-button v-if="secretValues" size="small" @click="secretValues=undefined">{{ t('k8s.close') }}</a-button></div><a-alert :type="secretValues?'warning':'info'" :message="t(secretValues?'k8s.secretPlaintext':'k8s.secretHidden')" /><div v-for="key in detail.keys??[]" :key="key" class="config-entry"><strong>{{ key }}</strong><pre>{{ secretValues?.[key]??'••••••••' }}</pre></div><a-empty v-if="!detail.keys?.length" :description="t('k8s.noKeys')" /></section>
+          <section v-else class="resource-detail-section"><div class="section-heading"><h4>{{ t('k8s.data') }}</h4><a-button v-if="can('kubernetes.secret.read')&&!secretValues" size="small" @click="reveal">{{ t('k8s.reveal') }}</a-button><a-button v-if="secretValues" size="small" @click="hideSecret">{{ t('k8s.close') }}</a-button></div><a-alert :type="secretValues?'warning':'info'" :message="t(secretValues?'k8s.secretPlaintext':'k8s.secretHidden')" /><div v-for="key in detail.keys??[]" :key="key" class="config-entry"><strong>{{ key }}</strong><pre>{{ secretValues?.[key]??'••••••••' }}</pre></div><a-empty v-if="!detail.keys?.length" :description="t('k8s.noKeys')" /></section>
         </a-tab-pane>
         <a-tab-pane v-if="hasRelatedPods&&!workloadExplorer" key="pods" :tab="detail.kind==='Pod'?t('k8s.podTab'):t('k8s.relatedPods')"><section class="resource-detail-section"><p v-if="detail.kind!=='Pod'" class="secondary">{{ t(detail.kind==='Node'?'k8s.nodeRelatedHint':'k8s.relatedSelectorHint') }}</p><a-alert v-if="relatedError" type="error" :message="relatedError"><template #action><a-button size="small" @click="openDetails(detail,'pods',detailType,true)">{{ t('k8s.refresh') }}</a-button></template></a-alert><a-alert v-if="relatedPartial" type="warning" :message="t('k8s.relatedPartial')" />
           <ResourceTable class="kube-resource-table related-pod-table" :rows="detailPods" :columns="podColumns" :details="false" :loading="relatedLoading" :empty-text="relatedError?t('k8s.unavailable'):t('k8s.noPods')">
