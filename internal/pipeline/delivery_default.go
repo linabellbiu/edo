@@ -245,6 +245,9 @@ func (s *Service) CreateDeliveryWorkflow(ctx context.Context, applicationID, act
 	}
 	var createdID string
 	err = s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := lockWorkflowApplication(tx, applicationID); err != nil {
+			return err
+		}
 		var project model.Project
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&project, "uuid = ?", scope.ProjectID).Error; err != nil {
 			return err
@@ -252,10 +255,6 @@ func (s *Service) CreateDeliveryWorkflow(ctx context.Context, applicationID, act
 		service := s.deliveryTransaction(tx)
 		application, err := service.FindApplication(ctx, applicationID)
 		if err != nil {
-			return err
-		}
-		var locked model.Application
-		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&locked, "uuid = ?", applicationID).Error; err != nil {
 			return err
 		}
 		var defaults model.DeliveryDefault
@@ -303,8 +302,11 @@ func (s *Service) CreateDeliveryWorkflow(ctx context.Context, applicationID, act
 		if !validResourceName(name) {
 			return ErrInvalidWorkflow
 		}
-		name, err = service.nextApplicationWorkflowName(ctx, application.ID, name)
+		name, err = service.nextApplicationWorkflowName(ctx, tx, application.ID, "", name)
 		if err != nil {
+			return err
+		}
+		if err := workflowNameAvailable(tx, application.ID, "", name); err != nil {
 			return err
 		}
 		// 默认只复制通用规则，已有方案的主机、集群和工作负载绝不进入新应用。

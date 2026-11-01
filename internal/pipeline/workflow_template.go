@@ -5,11 +5,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
 	"github.com/google/uuid"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
 	"edo/internal/model"
 )
@@ -174,8 +176,13 @@ func (s *Service) SaveWorkflowTemplate(ctx context.Context, id, actorID string, 
 	now := time.Now().UTC()
 	var saved model.ReleaseWorkflowTemplate
 	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		// 与应用名称锁相同：SQLite先取得写锁，其他方言锁定本模板后再读取当前版本。
+		if err := tx.Model(&model.ReleaseWorkflowTemplate{}).Where("uuid = ?", id).
+			UpdateColumn("updated_at", gorm.Expr("updated_at")).Error; err != nil {
+			return err
+		}
 		var existing model.ReleaseWorkflowTemplate
-		if err := tx.First(&existing, "uuid = ?", id).Error; err != nil {
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&existing, "uuid = ?", id).Error; err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
 				return ErrWorkflowTemplateNotFound
 			}
@@ -205,7 +212,7 @@ func (s *Service) SaveWorkflowTemplate(ctx context.Context, id, actorID string, 
 			return err
 		}
 		if saved.IsActive {
-			return syncLinkedApplicationWorkflows(tx, &saved, actorID, now)
+			return s.syncLinkedApplicationWorkflows(tx, &saved, actorID, now)
 		}
 		return nil
 	})
@@ -218,13 +225,22 @@ func (s *Service) SaveWorkflowTemplate(ctx context.Context, id, actorID string, 
 	return &WorkflowTemplateResult{WorkflowTemplate: &saved, Valid: len(issues) == 0, Issues: issues}, nil
 }
 
-func syncLinkedApplicationWorkflows(tx *gorm.DB, template *model.ReleaseWorkflowTemplate, actorID string, now time.Time) error {
-	var workflows []model.ReleaseWorkflow
-	if err := tx.Where("workflow_template_id = ?", template.ID).Find(&workflows).Error; err != nil {
+func (s *Service) syncLinkedApplicationWorkflows(tx *gorm.DB, template *model.ReleaseWorkflowTemplate, actorID string, now time.Time) error {
+	// 此查询只发现候选应用，不锁WF，也不把发现时的版本、名称或关联用作写入依据。
+	var applicationIDs []string
+	if err := tx.Model(&model.ReleaseWorkflow{}).Where("workflow_template_id = ?", template.ID).
+		Distinct("application_id").Pluck("application_id", &applicationIDs).Error; err != nil {
 		return err
 	}
-	if len(workflows) == 0 {
+	if len(applicationIDs) == 0 {
 		return nil
+	}
+	slices.Sort(applicationIDs)
+	applicationIDs = slices.Compact(applicationIDs)
+	for _, id := range applicationIDs {
+		if err := lockWorkflowApplication(tx, id); err != nil {
+			return err
+		}
 	}
 
 	sourceJSON, err := json.Marshal(template.Source)
@@ -235,21 +251,38 @@ func syncLinkedApplicationWorkflows(tx *gorm.DB, template *model.ReleaseWorkflow
 	if err != nil {
 		return err
 	}
-	for i := range workflows {
-		result := tx.Model(&model.ReleaseWorkflow{}).
-			Where("uuid = ? AND revision = ?", workflows[i].ID, workflows[i].Revision).
-			Updates(map[string]any{
-				"name":           template.Name,
-				"schema_version": template.SchemaVersion,
-				"source":         string(sourceJSON), "stages": string(stagesJSON),
-				"workflow_template_revision": template.Revision,
-				"revision":                   workflows[i].Revision + 1, "updated_by": actorID, "updated_at": now,
-			})
-		if result.Error != nil {
-			return result.Error
+	for _, applicationID := range applicationIDs {
+		var workflows []model.ReleaseWorkflow
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			Where("application_id = ? AND workflow_template_id = ?", applicationID, template.ID).
+			Order("id ASC").Find(&workflows).Error; err != nil {
+			return err
 		}
-		if result.RowsAffected != 1 {
-			return ErrWorkflowRevisionConflict
+		for _, workflow := range workflows {
+			name, err := s.nextApplicationWorkflowName(tx.Statement.Context, tx, applicationID, workflow.ID, template.Name)
+			if err != nil {
+				return err
+			}
+			// map仅用于候选分配，最终仍按数据库collation做当前SQL检查。
+			if err := workflowNameAvailable(tx, applicationID, workflow.ID, name); err != nil {
+				return err
+			}
+			result := tx.Model(&model.ReleaseWorkflow{}).
+				Where("uuid = ? AND application_id = ? AND workflow_template_id = ? AND revision = ? AND workflow_template_revision = ?",
+					workflow.ID, applicationID, template.ID, workflow.Revision, workflow.WorkflowTemplateRevision).
+				Updates(map[string]any{
+					"name":           name,
+					"schema_version": template.SchemaVersion,
+					"source":         string(sourceJSON), "stages": string(stagesJSON),
+					"workflow_template_revision": template.Revision,
+					"revision":                   workflow.Revision + 1, "updated_by": actorID, "updated_at": now,
+				})
+			if result.Error != nil {
+				return result.Error
+			}
+			if result.RowsAffected != 1 {
+				return ErrWorkflowRevisionConflict
+			}
 		}
 	}
 	return nil

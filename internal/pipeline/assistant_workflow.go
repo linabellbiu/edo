@@ -95,6 +95,11 @@ func (s *Service) assistantWorkflow(ctx context.Context, actor string, input Ass
 	}
 	var result *AssistantWorkflowPlan
 	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if !preview && input.ApplicationID != "" {
+			if err := lockWorkflowApplication(tx, input.ApplicationID); err != nil {
+				return err
+			}
+		}
 		service := s.assistantTransaction(tx)
 		var application *model.Application
 		facts := []any{input}
@@ -621,6 +626,11 @@ func (s *Service) ActivateAssistantWorkflowExpected(ctx context.Context, appID, 
 func (s *Service) assistantActivation(ctx context.Context, appID, workflowID, actor, expected string, preview bool) (string, error) {
 	fingerprint := ""
 	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if !preview {
+			if err := lockWorkflowApplication(tx, appID); err != nil {
+				return err
+			}
+		}
 		var lock model.ReleaseWorkflow
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&lock, &model.ReleaseWorkflow{ID: workflowID, ApplicationID: appID}).Error; err != nil {
 			return err

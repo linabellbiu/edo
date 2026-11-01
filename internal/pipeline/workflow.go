@@ -14,6 +14,7 @@ import (
 
 	"github.com/google/uuid"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
 	"edo/internal/cicd"
 	"edo/internal/deployment"
@@ -224,39 +225,42 @@ func (s *Service) CreateApplicationWorkflow(
 			return nil, err
 		}
 	}
-	if input.Name != "" {
-		workflow.Name = input.Name
-	} else {
-		workflow.Name, err = s.nextApplicationWorkflowName(ctx, applicationID, workflow.Name)
-		if err != nil {
-			return nil, err
+	err = s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := lockWorkflowApplication(tx, application.ID); err != nil {
+			return err
 		}
-	}
-	var duplicate int64
-	if err := s.db.WithContext(ctx).Model(&model.ReleaseWorkflow{}).
-		Where("application_id = ? AND name = ?", applicationID, workflow.Name).Count(&duplicate).Error; err != nil {
-		return nil, err
-	}
-	if duplicate > 0 {
-		return nil, ErrWorkflowExists
-	}
-	if err := s.db.WithContext(ctx).Create(workflow).Error; err != nil {
+		if input.Name != "" {
+			workflow.Name = input.Name
+		} else {
+			var err error
+			workflow.Name, err = s.nextApplicationWorkflowName(ctx, tx, application.ID, "", workflow.Name)
+			if err != nil {
+				return err
+			}
+		}
+		if err := workflowNameAvailable(tx, application.ID, "", workflow.Name); err != nil {
+			return err
+		}
+		return tx.Create(workflow).Error
+	})
+	if err != nil {
 		if errors.Is(err, gorm.ErrDuplicatedKey) {
-			return nil, ErrWorkflowExists
+			err = ErrWorkflowExists
 		}
-		if s.logger != nil {
-			s.logger.Error("创建应用流水线失败", "operation", "application_workflow_create", "application_id", applicationID, "err", err)
-		}
-		return nil, errors.New("创建应用流水线失败")
+		return nil, s.workflowMutationError(ctx, "application_workflow_create", application.ID, workflow.ID, err)
 	}
 	issues := s.validateWorkflow(ctx, application, workflow.SchemaVersion, workflow.Source, workflow.Stages)
 	return &WorkflowResult{Workflow: workflow, Valid: len(issues) == 0, Issues: issues}, nil
 }
 
-func (s *Service) nextApplicationWorkflowName(ctx context.Context, applicationID, base string) (string, error) {
+func (s *Service) nextApplicationWorkflowName(ctx context.Context, db *gorm.DB, applicationID, workflowID, base string) (string, error) {
 	var names []string
-	if err := s.db.WithContext(ctx).Model(&model.ReleaseWorkflow{}).
-		Where("application_id = ?", applicationID).Pluck("name", &names).Error; err != nil {
+	query := db.WithContext(ctx).Model(&model.ReleaseWorkflow{}).Clauses(clause.Locking{Strength: "UPDATE"}).
+		Where("application_id = ?", applicationID)
+	if workflowID != "" {
+		query = query.Where("uuid <> ?", workflowID)
+	}
+	if err := query.Pluck("name", &names).Error; err != nil {
 		if s.logger != nil {
 			s.logger.Error("生成应用流水线默认名称失败", "operation", "application_workflow_name", "application_id", applicationID, "err", err)
 		}
@@ -266,11 +270,21 @@ func (s *Service) nextApplicationWorkflowName(ctx context.Context, applicationID
 	for _, name := range names {
 		used[name] = struct{}{}
 	}
+	baseRunes := []rune(base)
+	if len(baseRunes) > 128 {
+		baseRunes = baseRunes[:128]
+		base = string(baseRunes)
+	}
 	if _, exists := used[base]; !exists {
 		return base, nil
 	}
 	for suffix := 2; ; suffix++ {
-		candidate := fmt.Sprintf("%s %d", base, suffix)
+		ending := fmt.Sprintf(" %d", suffix)
+		prefix := baseRunes
+		if maximum := 128 - utf8.RuneCountInString(ending); len(prefix) > maximum {
+			prefix = prefix[:maximum]
+		}
+		candidate := string(prefix) + ending
 		if _, exists := used[candidate]; !exists {
 			return candidate, nil
 		}
@@ -354,8 +368,11 @@ func (s *Service) SaveApplicationWorkflow(ctx context.Context, applicationID, wo
 	}
 	var saved model.ReleaseWorkflow
 	err = s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := lockWorkflowApplication(tx, application.ID); err != nil {
+			return err
+		}
 		var existing model.ReleaseWorkflow
-		err := tx.First(&existing, "uuid = ? AND application_id = ?", workflow.ID, application.ID).Error
+		err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&existing, "uuid = ? AND application_id = ?", workflow.ID, application.ID).Error
 		if err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
 				return ErrWorkflowNotFound
@@ -364,6 +381,9 @@ func (s *Service) SaveApplicationWorkflow(ctx context.Context, applicationID, wo
 		}
 		if input.Revision != existing.Revision {
 			return ErrWorkflowRevisionConflict
+		}
+		if err := workflowNameAvailable(tx, application.ID, existing.ID, input.Name); err != nil {
+			return err
 		}
 		result := tx.Model(&model.ReleaseWorkflow{}).
 			Where("uuid = ? AND revision = ?", existing.ID, existing.Revision).
@@ -382,7 +402,7 @@ func (s *Service) SaveApplicationWorkflow(ctx context.Context, applicationID, wo
 		return tx.First(&saved, "uuid = ?", existing.ID).Error
 	})
 	if err != nil {
-		return nil, err
+		return nil, s.workflowMutationError(ctx, "application_workflow_save", application.ID, workflow.ID, err)
 	}
 	return &WorkflowResult{Workflow: &saved, Valid: len(issues) == 0, Issues: issues}, nil
 }
@@ -429,13 +449,25 @@ func (s *Service) ensureWorkflow(ctx context.Context, application *model.Applica
 	if err != nil {
 		return nil, err
 	}
-	if err := s.db.WithContext(ctx).Create(workflow).Error; err != nil {
-		if !errors.Is(err, gorm.ErrDuplicatedKey) {
-			return nil, fmt.Errorf("创建默认应用流水线失败: %w", err)
+	err = s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := lockWorkflowApplication(tx, application.ID); err != nil {
+			return err
 		}
-		if err := s.db.WithContext(ctx).First(workflow, "application_id = ?", application.ID).Error; err != nil {
-			return nil, fmt.Errorf("读取应用流水线失败: %w", err)
+		var current []model.ReleaseWorkflow
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("application_id = ?", application.ID).Find(&current).Error; err != nil {
+			return err
 		}
+		if len(current) > 1 {
+			return ErrWorkflowNotFound
+		}
+		if len(current) == 1 {
+			workflow = &current[0]
+			return nil
+		}
+		return tx.Create(workflow).Error
+	})
+	if err != nil {
+		return nil, s.workflowMutationError(ctx, "application_workflow_ensure", application.ID, workflow.ID, err)
 	}
 	return workflow, nil
 }
