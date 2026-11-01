@@ -775,6 +775,13 @@ func (s *Service) validateWorkflow(
 					issues = append(issues, WorkflowIssue{Code: "missing_deployment_target", Message: fmt.Sprintf("部署任务“%s”的部署方案配置不完整", node.Name), NodeID: node.ID, StageID: stage.ID})
 				} else if !deploymentPlanSupportsTarget(plan.Kind, target.Platform) {
 					issues = append(issues, WorkflowIssue{Code: "deployment_plan_target_mismatch", Message: fmt.Sprintf("部署任务“%s”的执行方式与目标不匹配", node.Name), NodeID: node.ID, StageID: stage.ID})
+				} else {
+					available, err := s.deploymentEnvironmentAvailable(ctx, s.db, target, "pipeline_workflow_validate_environment")
+					if err != nil {
+						issues = append(issues, WorkflowIssue{Code: "deployment_environment_check_failed", Message: errDeploymentEnvironmentCheckFailed.Error(), NodeID: node.ID, StageID: stage.ID})
+					} else if !available {
+						issues = append(issues, WorkflowIssue{Code: "deployment_environment_unavailable", Message: "部署任务所选环境不存在、已停用或不属于当前项目", NodeID: node.ID, StageID: stage.ID})
+					}
 				}
 			case model.WorkflowNodeTrigger:
 				issues = append(issues, WorkflowIssue{Code: "trigger_in_stage", Message: "代码源不能作为阶段任务", NodeID: node.ID, StageID: stage.ID})
@@ -1166,6 +1173,13 @@ func (s *Service) newStageResolvedWorkflowRunWithDatabase(
 					First(&target, "uuid = ? AND is_active = ?", plan.DeploymentTargetID, true).Error != nil ||
 					target.DepartmentID != application.DepartmentID || target.ProjectID != application.ProjectID ||
 					!deploymentPlanSupportsTarget(plan.Kind, target.Platform) {
+					return nil, ErrInvalidWorkflow
+				}
+				available, environmentErr := s.deploymentEnvironmentAvailable(ctx, database, target, "pipeline_run_environment_validate")
+				if environmentErr != nil {
+					return nil, environmentErr
+				}
+				if !available {
 					return nil, ErrInvalidWorkflow
 				}
 				architectures, architectureErr := s.deploymentTargetArchitectures(ctx, database, target)

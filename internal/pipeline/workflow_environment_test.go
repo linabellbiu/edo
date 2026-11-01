@@ -211,10 +211,14 @@ func TestStageWorkflowValidatesDeploymentPlanOwnedTarget(t *testing.T) {
 		t.Fatal(err)
 	}
 	now := time.Now().UTC()
+	environment := model.Environment{ID: "stage-environment", Name: "阶段目标校验环境", IsActive: true, CreatedBy: "admin", CreatedAt: now, UpdatedAt: now}
+	if err := db.Create(&environment).Error; err != nil {
+		t.Fatal(err)
+	}
 	targets := []model.DeploymentTarget{
-		{ID: "stage-ssh-target", Name: "SSH 目标", Platform: model.DeploymentSSH, HostID: "host-1", IsActive: true, CreatedBy: "admin", CreatedAt: now, UpdatedAt: now},
-		{ID: "stage-docker-target", Name: "Docker 目标", Platform: model.DeploymentDocker, RuntimeID: "docker-1", WorkloadName: "api", IsActive: true, CreatedBy: "admin", CreatedAt: now, UpdatedAt: now},
-		{ID: "stage-disabled-target", Name: "已停用目标", Platform: model.DeploymentSSH, HostID: "host-2", IsActive: false, CreatedBy: "admin", CreatedAt: now, UpdatedAt: now},
+		{ID: "stage-ssh-target", Name: "SSH 目标", EnvironmentID: environment.ID, Platform: model.DeploymentSSH, HostID: "host-1", IsActive: true, CreatedBy: "admin", CreatedAt: now, UpdatedAt: now},
+		{ID: "stage-docker-target", Name: "Docker 目标", EnvironmentID: environment.ID, Platform: model.DeploymentDocker, RuntimeID: "docker-1", WorkloadName: "api", IsActive: true, CreatedBy: "admin", CreatedAt: now, UpdatedAt: now},
+		{ID: "stage-disabled-target", Name: "已停用目标", EnvironmentID: environment.ID, Platform: model.DeploymentSSH, HostID: "host-2", IsActive: false, CreatedBy: "admin", CreatedAt: now, UpdatedAt: now},
 	}
 	if err := db.Create(&targets).Error; err != nil {
 		t.Fatal(err)

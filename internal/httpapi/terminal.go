@@ -199,7 +199,7 @@ func (h terminalHandler) bridge(ctx context.Context, connection *websocket.Conn,
 	go readTerminalClient(ctx, connection, session, clientDone)
 	go readTerminalOutput(ctx, session, outbound, backendDone)
 	go writeTerminalClient(writerContext, ctx, connection, outbound, writerDone)
-	if err := sendTerminalEvent(ctx, outbound, terminalEvent{Type: "ready"}); err != nil {
+	if err := sendTerminalEvent(writerContext, outbound, terminalEvent{Type: "ready"}); err != nil {
 		return err
 	}
 

@@ -982,6 +982,28 @@ func (s *Service) SetDeploymentPlanActive(ctx context.Context, id string, active
 		if plan.IsActive == active {
 			return nil
 		}
+		if active && plan.DeploymentTargetID != "" {
+			var target model.DeploymentTarget
+			if err := tx.First(&target, "uuid = ? AND project_id = ? AND department_id = ?",
+				plan.DeploymentTargetID, plan.ProjectID, plan.DepartmentID).Error; err != nil {
+				if s.logger != nil {
+					s.logger.ErrorContext(ctx, "读取待启用部署方案的执行目标失败", "operation", "pipeline_deployment_plan_activate_target",
+						"deployment_plan_id", plan.ID, "deployment_target_id", plan.DeploymentTargetID,
+						"project_id", plan.ProjectID, "department_id", plan.DepartmentID, "err", err)
+				}
+				if errors.Is(err, gorm.ErrRecordNotFound) {
+					return ErrInvalidDeploymentPlan
+				}
+				return errDeploymentEnvironmentCheckFailed
+			}
+			available, err := s.deploymentEnvironmentAvailable(ctx, tx, target, "pipeline_deployment_plan_activate_environment")
+			if err != nil {
+				return err
+			}
+			if !available {
+				return ErrInvalidDeploymentPlan
+			}
+		}
 		if err := tx.Model(&model.DeploymentPlan{}).Where("uuid = ?", plan.ID).
 			Updates(map[string]any{"is_active": active, "updated_at": time.Now().UTC()}).Error; err != nil {
 			return fmt.Errorf("修改部署方案状态失败: %w", err)
