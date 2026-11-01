@@ -10,6 +10,7 @@ import (
 	"io/fs"
 	"log/slog"
 	"mime"
+	"net"
 	"net/http"
 	"os"
 	"strings"
@@ -36,6 +37,56 @@ type terminalFileHandler struct {
 }
 
 var terminalFileSlots = make(chan struct{}, 8)
+
+var errTerminalFileCanceled = errors.New("文件操作已取消")
+
+func (h terminalFileHandler) alignDeadlines(c *gin.Context, ctx context.Context, readBody bool) error {
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		h.logger.Error("终端文件操作缺少有界期限", "operation", "terminal_file_deadline", "request_id", requestIDFrom(c))
+		return terminalfiles.ErrUnavailable
+	}
+	controller := http.NewResponseController(c.Writer)
+	if readBody {
+		if err := controller.SetReadDeadline(deadline); err != nil {
+			h.logger.Error("设置终端文件读取期限失败", "operation", "terminal_file_deadline_read", "request_id", requestIDFrom(c), "err", err)
+			return terminalfiles.ErrUnavailable
+		}
+	}
+	// 操作仍在ctx到期时终止，额外1秒只用于交付错误响应，不延长授权或后台写入。
+	if err := controller.SetWriteDeadline(deadline.Add(time.Second)); err != nil {
+		h.logger.Error("设置终端文件响应期限失败", "operation", "terminal_file_deadline_write", "request_id", requestIDFrom(c), "err", err)
+		return terminalfiles.ErrUnavailable
+	}
+	return nil
+}
+
+func terminalFileFailure(ctx context.Context, err error) error {
+	if errors.Is(err, fs.ErrPermission) {
+		return err
+	}
+	var timeout net.Error
+	isTimeout := errors.As(err, &timeout) && timeout.Timeout()
+	contextFailure := errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, errTerminalFileCanceled) || isTimeout
+	if !contextFailure {
+		return err
+	}
+	cause := context.Cause(ctx)
+	if errors.Is(cause, fs.ErrPermission) {
+		return fs.ErrPermission
+	}
+	if errors.Is(cause, errTerminalFileCanceled) || errors.Is(err, errTerminalFileCanceled) {
+		return errTerminalFileCanceled
+	}
+	deadline, bounded := ctx.Deadline()
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(cause, context.DeadlineExceeded) || isTimeout || bounded && !time.Now().Before(deadline) {
+		return context.DeadlineExceeded
+	}
+	if errors.Is(cause, context.Canceled) || errors.Is(err, context.Canceled) {
+		return errTerminalFileCanceled
+	}
+	return err
+}
 
 type terminalFileResponse struct {
 	terminalfiles.Entry
@@ -103,7 +154,9 @@ func registerTerminalFiles(protected *gin.RouterGroup, deps Dependencies) {
 }
 
 func (h terminalFileHandler) prepare(c *gin.Context, permissions ...string) (terminalfiles.Backend, func(), bool) {
-	ctx, cancel := context.WithTimeout(c.Request.Context(), 2*time.Minute)
+	budget, timeoutCancel := context.WithTimeout(c.Request.Context(), 2*time.Minute)
+	ctx, cancelCause := context.WithCancelCause(budget)
+	cancel := func() { cancelCause(context.Canceled); timeoutCancel() }
 	body := c.Request.Body
 	interruptBody := c.Request.Method == http.MethodPost && body != nil && body != http.NoBody
 	c.Request = c.Request.WithContext(ctx)
@@ -114,7 +167,19 @@ func (h terminalFileHandler) prepare(c *gin.Context, permissions ...string) (ter
 		h.fail(c, terminalfiles.ErrUnavailable)
 		return nil, func() {}, false
 	}
-	cleanup := func() { cancel(); <-terminalFileSlots }
+	var authorizationDone <-chan struct{}
+	stopAuthorization := func() {
+		cancel()
+		if authorizationDone != nil {
+			<-authorizationDone
+		}
+	}
+	cleanup := func() { stopAuthorization(); <-terminalFileSlots }
+	if err := h.alignDeadlines(c, ctx, interruptBody); err != nil {
+		cleanup()
+		h.fail(c, err)
+		return nil, func() {}, false
+	}
 	if h.checks != nil {
 		check := h.checks(c, permissions...)
 		if !check() {
@@ -132,7 +197,10 @@ func (h terminalFileHandler) prepare(c *gin.Context, permissions ...string) (ter
 			return nil
 		})
 		c.Request = c.Request.WithContext(ctx)
+		done := make(chan struct{})
+		authorizationDone = done
 		go func() {
+			defer close(done)
 			ticker := time.NewTicker(2 * time.Second)
 			defer ticker.Stop()
 			for {
@@ -141,7 +209,7 @@ func (h terminalFileHandler) prepare(c *gin.Context, permissions ...string) (ter
 					return
 				case <-ticker.C:
 					if !check() {
-						cancel()
+						cancelCause(fs.ErrPermission)
 						return
 					}
 				}
@@ -176,7 +244,7 @@ func (h terminalFileHandler) prepare(c *gin.Context, permissions ...string) (ter
 	}
 	return backend, func() {
 		stopInterrupt()
-		cancel()
+		stopAuthorization()
 		if err := backend.Close(); err != nil {
 			h.logger.Warn("关闭终端文件资源失败", "operation", "terminal_file_close", "target", h.key(c), "err", err)
 		}
@@ -427,7 +495,8 @@ func (h terminalFileHandler) fail(c *gin.Context, err error) {
 	if c.Request.ProtoMajor == 1 && c.Request.Context().Err() != nil && c.Request.Body != nil && c.Request.Body != http.NoBody {
 		c.Header("Connection", "close")
 	}
-	h.logger.Warn("终端文件操作失败", "operation", "terminal_file_operation", "target", h.key(c), "request_id", requestIDFrom(c), "err", err)
+	h.logger.Warn("终端文件操作失败", "operation", "terminal_file_operation", "target", h.key(c), "request_id", requestIDFrom(c), "err", err, "cause", context.Cause(c.Request.Context()))
+	err = terminalFileFailure(c.Request.Context(), err)
 	status, code, message := http.StatusBadGateway, "terminal_file_failed", "文件操作失败，请检查目标状态或权限"
 	switch {
 	case errors.Is(err, hostmanager.ErrHostNotFound), errors.Is(err, dockerengine.ErrEndpointNotFound), errors.Is(err, kube.ErrClusterNotFound):
@@ -444,8 +513,10 @@ func (h terminalFileHandler) fail(c *gin.Context, err error) {
 		status, code, message = http.StatusRequestEntityTooLarge, "file_too_large", terminalfiles.ErrTooLarge.Error()
 	case errors.Is(err, terminalfiles.ErrConflict), errors.Is(err, terminalfiles.ErrExists):
 		status, code, message = http.StatusConflict, "file_changed", "同名文件已存在或内容已变化，请重新读取并确认"
-	case errors.Is(err, fs.ErrPermission), errors.Is(err, context.Canceled):
+	case errors.Is(err, fs.ErrPermission):
 		status, code, message = http.StatusForbidden, "file_permission_denied", "没有文件操作权限，或操作授权已失效"
+	case errors.Is(err, errTerminalFileCanceled):
+		status, code, message = http.StatusRequestTimeout, "file_canceled", errTerminalFileCanceled.Error()
 	case errors.Is(err, fs.ErrNotExist):
 		status, code, message = http.StatusNotFound, "file_not_found", "文件或目录不存在"
 	case errors.Is(err, context.DeadlineExceeded):

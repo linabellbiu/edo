@@ -109,7 +109,7 @@ func TestDockerLocalProjectBoundaryRejectsBeforeDaemonAndPreservesOwner(t *testi
 			r.Header.Set("Sec-WebSocket-Protocol", protocol)
 		}
 		response := httptest.NewRecorder()
-		router.ServeHTTP(response, r)
+		router.ServeHTTP(fileDeadlineRecorder{response}, r)
 		return response
 	}
 	for _, test := range []struct {

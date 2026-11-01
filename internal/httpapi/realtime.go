@@ -57,10 +57,11 @@ func streamAuthorization(deps Dependencies, c *gin.Context, permissions ...strin
 		return func() bool { return false }
 	}
 	identity := *initial
+	requestContext := c.Request.Context()
 	initialScope, _ := database.DepartmentScopeFromContext(c.Request.Context())
 	token, _ := c.Cookie(deps.AuthConfig.CookieName)
 	return func() bool {
-		ctx, cancel := context.WithTimeout(c.Request.Context(), 3*time.Second)
+		ctx, cancel := context.WithTimeout(requestContext, 3*time.Second)
 		defer cancel()
 		session, err := deps.Sessions.Get(ctx, token)
 		if err == nil {

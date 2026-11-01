@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -25,14 +26,19 @@ import (
 
 type observedHTTPUploadBody struct {
 	io.ReadCloser
-	readStarted chan struct{}
-	closed      chan struct{}
-	readOnce    sync.Once
-	closeOnce   sync.Once
+	readStarted  chan struct{}
+	closed       chan struct{}
+	readOnce     sync.Once
+	closeOnce    sync.Once
+	readTimedOut atomic.Bool
 }
 
 func (b *observedHTTPUploadBody) Read(data []byte) (int, error) {
 	n, err := b.ReadCloser.Read(data)
+	var timeout net.Error
+	if errors.As(err, &timeout) && timeout.Timeout() {
+		b.readTimedOut.Store(true)
+	}
 	if n > 0 {
 		b.readOnce.Do(func() { close(b.readStarted) })
 	}
@@ -48,7 +54,8 @@ func (b *observedHTTPUploadBody) Close() error {
 
 func TestTerminalFilesHTTPRealUploadCancellation(t *testing.T) {
 	for _, framing := range []string{"content-length", "chunked"} {
-		for _, cause := range []string{"revoke", "timeout", "cancel"} {
+		// server-cancel主动取消服务端context但TCP仍开，不冒充真实客户端断连。
+		for _, cause := range []string{"revoke", "timeout", "server-cancel"} {
 			t.Run(framing+"/"+cause, func(t *testing.T) {
 				var allowed atomic.Bool
 				allowed.Store(true)
@@ -114,7 +121,7 @@ func TestTerminalFilesHTTPRealUploadCancellation(t *testing.T) {
 				cancel := <-cancelReady
 				if cause == "revoke" {
 					allowed.Store(false)
-				} else if cause == "cancel" {
+				} else if cause == "server-cancel" {
 					cancel()
 				}
 				if err := connection.SetReadDeadline(time.Now().Add(4 * time.Second)); err != nil {
@@ -132,6 +139,12 @@ func TestTerminalFilesHTTPRealUploadCancellation(t *testing.T) {
 					status, code := http.StatusForbidden, "file_permission_denied"
 					if cause == "timeout" {
 						status, code = http.StatusGatewayTimeout, "file_timeout"
+					} else if cause == "server-cancel" {
+						// 前缀ready不保证下一次Read已阻塞；只按真实Read错误链分类，不猜调度。
+						status, code = http.StatusRequestTimeout, "file_canceled"
+						if body.readTimedOut.Load() {
+							status, code = http.StatusGatewayTimeout, "file_timeout"
+						}
 					}
 					if decodeErr != nil || response.StatusCode != status || payload.Code != code {
 						t.Errorf("真实请求取消原因不准确: status=%d code=%s decode=%v", response.StatusCode, payload.Code, decodeErr)

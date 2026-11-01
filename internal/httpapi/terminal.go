@@ -214,15 +214,27 @@ func (h terminalHandler) bridge(ctx context.Context, connection *websocket.Conn,
 	case err := <-clientDone:
 		return err
 	case err := <-backendDone:
-		message := "终端进程已退出"
-		if err != nil && !errors.Is(err, io.EOF) {
-			message = "终端进程异常退出"
-		}
-		_ = sendTerminalEvent(context.Background(), outbound, terminalEvent{Type: "exit", Message: message})
-		return err
+		event, result := terminalBackendExit(ctx, err)
+		_ = sendTerminalEvent(context.Background(), outbound, event)
+		return result
 	case err := <-writerDone:
 		return err
 	}
+}
+
+func terminalBackendExit(ctx context.Context, err error) (terminalEvent, error) {
+	if contextErr := ctx.Err(); contextErr != nil {
+		message := "终端会话已结束"
+		if errors.Is(contextErr, context.DeadlineExceeded) {
+			message = "终端会话已达到最长持续时间"
+		}
+		return terminalEvent{Type: "exit", Message: message}, contextErr
+	}
+	message := "终端进程已退出"
+	if err != nil && !errors.Is(err, io.EOF) {
+		message = "终端进程异常退出"
+	}
+	return terminalEvent{Type: "exit", Message: message}, err
 }
 
 func readTerminalClient(ctx context.Context, connection *websocket.Conn, session terminalservice.Session, done chan<- error) {

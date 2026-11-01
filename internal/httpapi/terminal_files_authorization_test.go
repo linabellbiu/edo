@@ -80,7 +80,7 @@ func terminalAuthorizationRequest(t *testing.T, f *streamBoundaryFixture, method
 		request.AddCookie(cookie)
 	}
 	response := httptest.NewRecorder()
-	f.router.ServeHTTP(response, request)
+	f.router.ServeHTTP(fileDeadlineRecorder{response}, request)
 	return response
 }
 

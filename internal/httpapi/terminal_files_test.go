@@ -33,6 +33,12 @@ type fakeFileBackend struct {
 	beforeCommit        func()
 }
 
+// 纯Recorder没有连接；测试显式声明deadline支持，真实TCP覆盖另用真实Server。
+type fileDeadlineRecorder struct{ *httptest.ResponseRecorder }
+
+func (fileDeadlineRecorder) SetReadDeadline(time.Time) error  { return nil }
+func (fileDeadlineRecorder) SetWriteDeadline(time.Time) error { return nil }
+
 func (f *fakeFileBackend) List(context.Context, string) (terminalfiles.Directory, error) {
 	return terminalfiles.Directory{Path: "/", Entries: []terminalfiles.Entry{{Name: "demo.txt", Path: "/demo.txt", Kind: "file", Size: int64(len(f.value))}}}, f.err
 }
@@ -86,7 +92,7 @@ func fileRequest(r http.Handler, method, path, body, etag string) *httptest.Resp
 		request.Header.Set("If-Match", etag)
 	}
 	response := httptest.NewRecorder()
-	r.ServeHTTP(response, request)
+	r.ServeHTTP(fileDeadlineRecorder{response}, request)
 	return response
 }
 
@@ -307,7 +313,7 @@ func TestTerminalFilesHTTPInterruptedUploadReportsCancellationCause(t *testing.T
 			defer body.Close()
 			request := httptest.NewRequest(http.MethodPost, "/files/upload?path=/demo.txt", body).WithContext(ctx)
 			response, done := httptest.NewRecorder(), make(chan struct{})
-			go func() { defer close(done); router.ServeHTTP(response, request) }()
+			go func() { defer close(done); router.ServeHTTP(fileDeadlineRecorder{response}, request) }()
 			select {
 			case <-done:
 			case <-time.After(6 * time.Second):
@@ -332,7 +338,7 @@ func TestTerminalFilesHTTPUploadKeepsUnrelatedReadFailurePrivate(t *testing.T) {
 	router, _ := fileTestRouter(backend, "")
 	request := httptest.NewRequest(http.MethodPost, "/files/upload?path=/demo.txt", iotest.ErrReader(errors.New("private-upload-read-failure")))
 	response := httptest.NewRecorder()
-	router.ServeHTTP(response, request)
+	router.ServeHTTP(fileDeadlineRecorder{response}, request)
 	if response.Code != http.StatusBadGateway || strings.Contains(response.Body.String(), "private-upload-read-failure") {
 		t.Fatalf("未取消的读取故障被误判或泄露: %d %s", response.Code, response.Body)
 	}
