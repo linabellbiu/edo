@@ -481,8 +481,13 @@ func defaultWorkflow(application *model.Application, actorID string, now time.Ti
 		ID: "source", Type: model.WorkflowNodeTrigger, Name: "代码源",
 		Config: model.WorkflowNodeConfig{Branch: branch, Events: []string{"manual", "push"}, TagPattern: defaultWorkflowTagPattern},
 	}
+	const suffix = "流水线"
+	name := []rune(application.Name)
+	if maximum := 128 - utf8.RuneCountInString(suffix); len(name) > maximum {
+		name = name[:maximum]
+	}
 	return &model.ReleaseWorkflow{
-		ID: uuid.NewString(), ApplicationID: application.ID, Name: application.Name + "流水线",
+		ID: uuid.NewString(), ApplicationID: application.ID, Name: string(name) + suffix,
 		SchemaVersion: model.WorkflowSchemaVersion, Revision: 1, IsActive: false,
 		Source: source, Stages: []model.WorkflowStage{},
 		CreatedBy: actorID, UpdatedBy: actorID, CreatedAt: now, UpdatedAt: now,
