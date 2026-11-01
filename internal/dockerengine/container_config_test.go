@@ -1,8 +1,10 @@
 package dockerengine
 
 import (
+	"encoding/json"
 	"errors"
 	"reflect"
+	"strconv"
 	"testing"
 
 	"edo/internal/model"
@@ -33,7 +35,7 @@ func TestNormalizeContainerConfigNormalizesHealthCheck(t *testing.T) {
 	}
 	want := model.DockerHealthCheck{
 		Enabled: true, Command: []string{"/bin/check", "--ready"}, IntervalSeconds: 30,
-		TimeoutSeconds: 5, Retries: 3, StartPeriodSeconds: 10,
+		TimeoutSeconds: 5, Retries: 3, StartPeriodSeconds: 0,
 	}
 	if !reflect.DeepEqual(config.HealthCheck, want) {
 		t.Fatalf("健康检查默认值不正确: got=%+v want=%+v", config.HealthCheck, want)
@@ -50,6 +52,48 @@ func TestNormalizeContainerConfigDeploymentScriptTakesPriority(t *testing.T) {
 	}
 	if config.DeploymentScript != "docker run -it ${EDO_IMAGE}" || len(config.Command) != 0 {
 		t.Fatalf("部署脚本没有覆盖历史启动参数: %+v", config)
+	}
+}
+
+func TestNormalizeContainerConfigPreservesHealthStartPeriod(t *testing.T) {
+	for _, seconds := range []int{0, 1, 10, 3600} {
+		t.Run(strconv.Itoa(seconds), func(t *testing.T) {
+			input := model.DockerContainerConfig{HealthCheck: model.DockerHealthCheck{
+				Enabled: true, Command: []string{"CMD-SHELL", "true"}, StartPeriodSeconds: seconds,
+			}}
+			config, err := NormalizeContainerConfig(input)
+			if err != nil {
+				t.Fatalf("规范化健康检查失败: %v", err)
+			}
+			if config.HealthCheck.StartPeriodSeconds != seconds {
+				t.Fatalf("启动宽限被静默改写: got=%d want=%d", config.HealthCheck.StartPeriodSeconds, seconds)
+			}
+			data, err := json.Marshal(config)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var persisted model.DockerContainerConfig
+			if err := json.Unmarshal(data, &persisted); err != nil {
+				t.Fatal(err)
+			}
+			prepared, err := NormalizeContainerConfig(persisted)
+			if err != nil || !reflect.DeepEqual(prepared, config) {
+				t.Fatalf("持久化后再次规范化改变配置: err=%v got=%+v want=%+v", err, prepared, config)
+			}
+			if input.HealthCheck.StartPeriodSeconds != seconds {
+				t.Fatal("规范化不应修改调用方的启动宽限")
+			}
+		})
+	}
+	for _, seconds := range []int{-1, 3601} {
+		t.Run("拒绝"+strconv.Itoa(seconds), func(t *testing.T) {
+			_, err := NormalizeContainerConfig(model.DockerContainerConfig{HealthCheck: model.DockerHealthCheck{
+				Enabled: true, Command: []string{"CMD-SHELL", "true"}, StartPeriodSeconds: seconds,
+			}})
+			if !errors.Is(err, ErrInvalidContainerConfig) {
+				t.Fatalf("越界启动宽限应被拒绝: seconds=%d err=%v", seconds, err)
+			}
+		})
 	}
 }
 

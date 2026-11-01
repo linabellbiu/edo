@@ -153,9 +153,7 @@ func NormalizeContainerConfig(input model.DockerContainerConfig) (model.DockerCo
 		if result.HealthCheck.Retries == 0 {
 			result.HealthCheck.Retries = 3
 		}
-		if result.HealthCheck.StartPeriodSeconds == 0 {
-			result.HealthCheck.StartPeriodSeconds = 10
-		}
+		// 零秒表示不设置启动宽限，不能作为缺省值覆盖。
 		if result.HealthCheck.IntervalSeconds < 2 || result.HealthCheck.IntervalSeconds > 3600 ||
 			result.HealthCheck.TimeoutSeconds < 1 || result.HealthCheck.TimeoutSeconds > 300 ||
 			result.HealthCheck.TimeoutSeconds >= result.HealthCheck.IntervalSeconds ||
