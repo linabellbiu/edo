@@ -207,7 +207,7 @@ let disposed = false, refreshRevision = 0
 function scopeKey() { return JSON.stringify([planScope.value, typeof localStorage === 'undefined' ? '' : localStorage.getItem('edo.project') || '']) }
 function syncProject() { selectedProject.value = typeof localStorage === 'undefined' ? '' : localStorage.getItem('edo.project') || '' }
 function resetMutation() { mutationDialog?.destroy(); mutationDialog = undefined; mutatingID.value = ''; refreshRevision++; loading.value = false }
-watch(planScope, () => {
+watch([planScope, () => auth.authorizationReady], () => {
   resetMutation(); plans.value = []; hosts.value = []; environments.value = []; docker.value = []; clusters.value = []
   if (!disposed && selectedProject.value && auth.user?.project_id === selectedProject.value && auth.canAny(['deployment_plan.read'])) void refresh()
 }, { flush: 'sync' })

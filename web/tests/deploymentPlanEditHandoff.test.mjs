@@ -22,11 +22,11 @@ const i18n = { useI18n: () => ({ t: key => key, locale: vue.ref('zh-CN') }) }
 const resourceList = load(readFileSync(new URL('../src/utils/resourceList.ts', import.meta.url), 'utf8'), { vue, 'vue-i18n': i18n })
 const pass = tag => ({ inheritAttrs: false, setup: (_, { attrs, slots }) => () => vue.h(tag, attrs, slots.default?.()) })
 
-async function harness(initialPermissions = ['deployment_plan.read', 'deployment_plan.update'], request = null) {
+async function harness(initialPermissions = ['deployment_plan.read', 'deployment_plan.update'], request = null, readRequest = null) {
   const records = vue.ref(Array.from({ length: 21 }, (_, index) => ({ id: `p${index + 1}`, name: `Plan ${index + 1}`, kind: 'docker', timeout_seconds: 600, is_active: true })))
   const permissions = vue.reactive(new Set(initialPermissions))
-  const auth = { loaded: true, user: vue.reactive({ id: 'user', department_id: 'department', project_id: 'project', permissions: [...initialPermissions] }), canAny: codes => codes.some(code => permissions.has(code)) }
-  const trace = [], writes = [], errors = []
+  const auth = vue.reactive({ loaded: true, authorizationReady: true, user: { id: 'user', department_id: 'department', project_id: 'project', permissions: [...initialPermissions] }, canAny: codes => auth.authorizationReady && codes.some(code => permissions.has(code)) })
+  const trace = [], writes = [], reads = [], errors = []
   const element = tag => ({ tag, props: {}, text: '', children: [], parent: null })
   const renderer = vue.createRenderer({
     patchProp: (node, key, _old, value) => node.props[key] = value,
@@ -55,7 +55,7 @@ async function harness(initialPermissions = ['deployment_plan.read', 'deployment
     'ant-design-vue': { message: { error: value => errors.push(value), success() {} } },
     'lucide-vue-next': Object.fromEntries(['FileUp', 'Plus', 'RefreshCw', 'Trash2'].map(name => [name, pass('i')])),
     '@/stores/auth': { useAuthStore: () => auth },
-    '@/api/client': { __esModule: true, default: { get: async path => { assert.equal(path, '/deployment-plans'); return { data: { deployment_plans: records.value } } }, post: noNetwork('post'), put: noNetwork('put'), delete: noNetwork('delete') } },
+    '@/api/client': { __esModule: true, default: { get: async path => { assert.equal(path, '/deployment-plans'); reads.push(path); return { data: { deployment_plans: readRequest ? await readRequest(records.value) : records.value } } }, post: noNetwork('post'), put: noNetwork('put'), delete: noNetwork('delete') } },
     '@/api/resources': { apiErrorMessage: error => error.message },
     '@/api/infrastructure': { environmentIDsOf: host => host.environment_ids || [], listEnvironments: async () => [], listHosts: async () => [] },
     '@/utils/resourceList': { useResourceList: (...args) => { const state = resourceList.useResourceList(...args); vue.watch(state.detailOpen, value => { if (!value) trace.push('detail-close') }, { flush: 'sync' }); return state } },
@@ -91,14 +91,16 @@ async function harness(initialPermissions = ['deployment_plan.read', 'deployment
   const row = id => one(node => node.props['data-plan'] === id)
   const rowButton = (id, label) => { const nodes = find(node => node.tag === 'button' && text(node) === label, row(id)); assert.equal(nodes.length, 1); return nodes[0] }
   const toolbarEdit = () => one(node => node.tag === 'button' && text(node) === 'planList.edit' && Boolean(node.parent?.props['data-detail']))
-  return { records, permissions, trace, writes, errors, find, click, rowButton, toolbarEdit,
+  return { records, permissions, trace, writes, reads, errors, find, click, rowButton, toolbarEdit,
     async setPermissions(codes) { for (const code of permissions) if (!codes.includes(code)) permissions.delete(code); codes.forEach(code => permissions.add(code)); auth.user.permissions = [...codes]; await flush() },
     async changeIdentity(key, value) { auth.user[key] = value; await flush() },
+    async setAuthorizationReady(value) { auth.authorizationReady = value; await flush() },
     async setName(value) { one(node => node.tag === 'input' && node.props.placeholder === '例如：生产后端部署').props['onUpdate:value'](value); await flush() },
     createButton: () => one(node => node.tag === 'button' && text(node) === '新建部署方案'),
     saveButton: () => one(node => node.tag === 'button' && text(node) === '保存部署方案'),
     countDetails: () => find(node => Boolean(node.props['data-detail'])).length,
     countEditors: () => find(node => Boolean(node.props['data-editor'])).length,
+    visibleIDs: () => find(node => Boolean(node.props['data-plan'])).map(node => node.props['data-plan']),
     editorWidth: () => editorProps.width,
     name: () => one(node => node.tag === 'input' && node.props.placeholder === '例如：生产后端部署').props.value,
     page: () => table.props.pagination.current,
@@ -311,4 +313,57 @@ test('撤权后恢复修改权限重新打开仅使用已保存配置', async t 
   await h.click(h.rowButton('p11', 'planList.edit'))
   assert.equal(h.name(), 'Plan 11')
   assert.deepEqual(h.writes, [])
+})
+
+test('权限核验期间先应用新权限，恢复就绪后自动重载部署列表', async t => {
+  const h = await harness(['deployment_plan.read']); t.after(h.stop)
+  await h.setAuthorizationReady(false)
+  await h.setPermissions(['deployment_plan.read', 'deployment_plan.update'])
+  assert.deepEqual(h.visibleIDs(), [])
+  const reads = h.reads.length
+  await h.setAuthorizationReady(true)
+  assert.equal(h.reads.length, reads + 1)
+  assert.equal(h.visibleIDs().length, 21)
+  assert.ok(h.rowButton('p11', 'planList.edit'))
+  assert.deepEqual(h.writes, [])
+  assert.deepEqual(h.errors, [])
+})
+
+test('同权限重新核验与恢复也清除旧列表再读取，不停留在空状态', async t => {
+  const h = await harness(); t.after(h.stop)
+  await h.setAuthorizationReady(false)
+  assert.deepEqual(h.visibleIDs(), [])
+  const reads = h.reads.length
+  await h.setAuthorizationReady(true)
+  assert.equal(h.reads.length, reads + 1)
+  assert.equal(h.visibleIDs().length, 21)
+  assert.deepEqual(h.writes, [])
+})
+
+test('核验确认失去查看权限后保持清空，不请求部署列表', async t => {
+  const h = await harness(); t.after(h.stop)
+  await h.setAuthorizationReady(false)
+  await h.setPermissions([])
+  const reads = h.reads.length
+  await h.setAuthorizationReady(true)
+  assert.deepEqual(h.visibleIDs(), [])
+  assert.equal(h.reads.length, reads)
+  assert.deepEqual(h.writes, [])
+})
+
+test('核验前的迟到列表不覆盖恢复就绪后的当前数据', async t => {
+  let hold = false, finish
+  const h = await harness(undefined, null, rows => hold ? new Promise(resolve => { finish = () => resolve([{ id: 'stale', name: '过期列表', kind: 'docker', timeout_seconds: 600 }]) }) : rows); t.after(h.stop)
+  hold = true
+  await h.refresh()
+  assert.equal(typeof finish, 'function')
+  hold = false
+  await h.setAuthorizationReady(false)
+  await h.setAuthorizationReady(true)
+  finish()
+  for (let i = 0; i < 4; i++) await vue.nextTick()
+  assert.equal(h.visibleIDs().length, 21)
+  assert.equal(h.visibleIDs().includes('stale'), false)
+  assert.deepEqual(h.writes, [])
+  assert.deepEqual(h.errors, [])
 })
