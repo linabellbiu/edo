@@ -34,17 +34,18 @@ function harness({ realWatch = false } = {}) {
   }
   const module = { exports: {} }
   const modules = {
-    vue: { ...vue, watch: (source, callback, options) => { watchers.push({ source, callback }); if (realWatch) return vue.watch(source, callback, options) }, onBeforeUnmount: callback => { unmount = callback } },
+    vue: { ...vue, watch: (source, callback, options) => { watchers.push({ source: () => typeof source === 'function' ? source() : source.map(read => read()), callback }); if (realWatch) return vue.watch(source, callback, options) }, onBeforeUnmount: callback => { unmount = callback } },
     'vue-i18n': { useI18n: () => ({ t: key => key }) },
     '@xterm/xterm': { Terminal: FakeTerminal },
     '@xterm/addon-fit': { FitAddon: class { fit() {} } },
     '@/utils/socketUrl': { projectSocketUrl: (path, options) => `ws://edo.test${path}?${new URLSearchParams(options)}` },
   }
   new Function('require', 'module', 'exports', 'WebSocket', 'ResizeObserver', output)(name => modules[name] || {}, module, module.exports, FakeSocket, FakeObserver)
-  const props = vue.reactive({ open: true, title: '测试容器日志', path: '/api/v1/docker/endpoints/local/containers/owned/logs/ws' })
-  const state = scope.run(() => module.exports.default.setup(props, { expose() {}, emit() {} }))
+  const props = vue.reactive({ open: true, paused: false, title: '测试容器日志', path: '/api/v1/docker/endpoints/local/containers/owned/logs/ws' })
+  const events = []
+  const state = scope.run(() => module.exports.default.setup(props, { expose() {}, emit: (...args) => events.push(args) }))
   state.container.value = {}
-  return { props, state, sockets, terminals, observers, watchers, unmount: () => { unmount(); scope.stop() } }
+  return { props, state, sockets, terminals, observers, watchers, events, unmount: () => { unmount(); scope.stop() } }
 }
 
 test('同一轮渲染中的重复重连只保留最后一次连接，不遗留无人回收的日志流', async () => {
@@ -145,4 +146,37 @@ test('真实 Vue watcher 立即连接，并随目标切换、关闭和卸载完�
   assert.equal(h.sockets.every(socket => socket.closeCalls.length === 1), true)
   assert.equal(h.terminals.every(terminal => terminal.disposed === 1), true)
   assert.equal(h.observers.every(observer => observer.disconnected === 1), true)
+})
+
+test('checking同步停流清除正文并拒绝迟到消息/重连，恢复后只建准确目标的新连接', async t => {
+  const h = harness({ realWatch: true }); t.after(h.unmount); await vue.nextTick(); await vue.nextTick()
+  const old = h.sockets[0]; old.readyState = 1
+  old.onmessage({ data: new TextEncoder().encode('public old log').buffer })
+  const late = old.onmessage, lateClose = old.onclose
+  h.props.paused = true
+  assert.equal(old.closeCalls.length, 1)
+  assert.equal(h.terminals[0].disposed, 1)
+  assert.equal(h.state.connection.value, 'checking')
+  late({ data: new TextEncoder().encode('late must not render').buffer }); lateClose()
+  await h.state.connect(); assert.equal(h.sockets.length, 1)
+  assert.equal(h.state.connection.value, 'checking')
+  h.props.paused = false; await vue.nextTick(); await vue.nextTick()
+  assert.equal(h.sockets.length, 2)
+  assert.match(h.sockets[1].url, /containers\/owned\/logs\/ws/)
+  assert.deepEqual(h.terminals[1].output, [])
+})
+
+test('暂停前的nextTick连接不得越过checking；暂停中换目标或用户关闭均不能自动重开', async t => {
+  const first = harness({ realWatch: true }); t.after(first.unmount)
+  first.props.paused = true; await vue.nextTick(); await vue.nextTick()
+  assert.equal(first.sockets.length, 0)
+  for (const change of ['target', 'close']) {
+    const h = harness({ realWatch: true }); t.after(h.unmount); await vue.nextTick(); await vue.nextTick()
+    h.props.paused = true
+    if (change === 'target') h.props.path = '/api/v1/docker/endpoints/local/containers/replaced/logs/ws'
+    else h.props.open = false
+    await vue.nextTick(); h.props.paused = false; await vue.nextTick(); await vue.nextTick()
+    assert.equal(h.sockets.length, 1, change)
+    if (change === 'target') assert.ok(h.events.some(([name, value]) => name === 'update:open' && value === false))
+  }
 })

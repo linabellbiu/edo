@@ -123,6 +123,18 @@ const legacyLocalEnvironmentID = 'edo-local-environment'
 const canReadGroups = computed(() => auth.canAny(['deployment.read']))
 const canReadHosts = computed(() => auth.canAny(['cluster.read', 'deployment.read']))
 const canReadResources = computed(() => auth.canAny(['cluster.read']))
+const authorizedResourceContext = ref('')
+const resourcePanelMounted = computed(() => canReadResources.value || auth.authorizationState === 'checking' && authorizedResourceContext.value === hostReadContext() && Boolean(authorizedResourceContext.value))
+watch([() => auth.authorizationState, hostReadContext, detailOpen, detailTab], ([state]) => {
+  if ((state ?? 'ready') === 'ready' && canReadResources.value && detailOpen.value && detailTab.value === 'resources') authorizedResourceContext.value = hostReadContext()
+  else if (state !== 'checking' || !detailOpen.value || detailTab.value !== 'resources' || authorizedResourceContext.value !== hostReadContext()) authorizedResourceContext.value = ''
+}, { immediate: true, flush: 'sync' })
+watch(() => auth.authorizationState, state => {
+  if (state === 'checking' || state === 'unavailable') {
+    inventoryRead++; statusRead++; inventoryController?.abort(); statusController?.abort()
+    loading.value = false; statusRefreshing = false
+  } else if (state === 'ready' && mounted) void refresh()
+}, { flush: 'sync' })
 const canUninstallK3s = computed(() => auth.canAny(['cluster.read']) && auth.canAny(['kubernetes.k3s.uninstall']))
 const canReadClusters = computed(() => auth.canAny(['cluster.read', 'kubernetes.node.read', 'kubernetes.workload.read', 'kubernetes.config.read', 'kubernetes.storage.read', 'kubernetes.network.read']))
 const canManageKubernetes = computed(() => auth.canAny(['kubernetes.node.read', 'kubernetes.workload.read', 'kubernetes.config.read', 'kubernetes.storage.read', 'kubernetes.network.read']))
@@ -952,7 +964,7 @@ onBeforeUnmount(() => {
         </section>
       </template>
       <RuntimeResourcePanel
-        v-else-if="detailTab === 'resources' && canReadResources"
+        v-else-if="detailTab === 'resources' && resourcePanelMounted"
         :hosts="hosts"
         :host-id="resourceHostID"
         :node="resourceNode"

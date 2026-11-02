@@ -6,20 +6,22 @@ import { RefreshCw, Trash2 } from 'lucide-vue-next'
 import { useI18n } from 'vue-i18n'
 import { projectSocketUrl } from '@/utils/socketUrl'
 
-const props = defineProps<{ open: boolean; title: string; path: string }>()
+const props = withDefaults(defineProps<{ open: boolean; title: string; path: string; paused?: boolean }>(), { paused: false })
 const emit = defineEmits<{ 'update:open': [value: boolean] }>()
 const { t } = useI18n()
 
 const container = ref<HTMLDivElement | null>(null)
 const tail = ref(500)
 const follow = ref(true)
-const connection = ref<'connecting' | 'connected' | 'complete' | 'error'>('connecting')
+const connection = ref<'checking' | 'connecting' | 'connected' | 'complete' | 'error'>('connecting')
 let activeTerminal: Terminal | undefined
 let dispose: (() => void) | undefined
 let generation = 0
 let disposed = false
+let pausedPath = '', cancelledIntent = false
 
 const connectionText = computed(() => ({
+  checking: t('containerLogs.checking'),
   connecting: t('containerLogs.connecting'),
   connected: t('containerLogs.connected'),
   complete: t('containerLogs.complete'),
@@ -38,9 +40,10 @@ async function connect() {
   const target = props.path
   dispose?.()
   dispose = undefined
-  connection.value = 'connecting'
+  connection.value = props.paused ? 'checking' : 'connecting'
+  if (props.paused || cancelledIntent) return
   await nextTick()
-  if (disposed || revision !== generation || !props.open || !container.value || !target || target !== props.path) return
+  if (disposed || props.paused || cancelledIntent || revision !== generation || !props.open || !container.value || !target || target !== props.path) return
 
   const terminal = new Terminal({
     convertEol: true,
@@ -63,7 +66,7 @@ async function connect() {
 
   let closed = false
   let completed = false
-  const current = () => !closed && !disposed && revision === generation && props.open && target === props.path
+  const current = () => !closed && !disposed && !props.paused && !cancelledIntent && revision === generation && props.open && target === props.path
   const socket = new WebSocket(
     projectSocketUrl(target, { tail: tail.value, follow: follow.value, timestamps: true }),
     'edo-container-logs-v1',
@@ -127,14 +130,23 @@ function clear() {
   activeTerminal?.clear()
 }
 
-watch(() => [props.open, props.path] as const, ([open]) => {
-  if (open) void connect()
-  else {
-    generation++
-    dispose?.()
-    dispose = undefined
+watch([() => props.open, () => props.path, () => props.paused], ([open, path, paused]) => {
+  generation++
+  dispose?.()
+  dispose = undefined
+  if (!open) { pausedPath = ''; cancelledIntent = false; return }
+  if (pausedPath && path !== pausedPath) { cancelledIntent = true; emit('update:open', false) }
+  if (cancelledIntent) return
+  if (paused) {
+    pausedPath = path
+    connection.value = 'checking'
+    // 停流后不保留旧授权下已渲染的日志正文。
+    container.value?.replaceChildren?.()
+    return
   }
-}, { immediate: true })
+  pausedPath = ''
+  void connect()
+}, { immediate: true, flush: 'sync' })
 
 onBeforeUnmount(() => {
   disposed = true
@@ -160,15 +172,15 @@ onBeforeUnmount(() => {
     <div class="log-toolbar">
       <label>
         <span>{{ t('containerLogs.recent') }}</span>
-        <a-select v-model:value="tail" :options="[100, 500, 1000, 2000, 5000].map(value => ({ value, label: String(value) }))" @change="connect" />
+        <a-select v-model:value="tail" :disabled="paused" :options="[100, 500, 1000, 2000, 5000].map(value => ({ value, label: String(value) }))" @change="connect" />
       </label>
       <label class="follow-option">
-        <a-switch v-model:checked="follow" size="small" @change="connect" />
+        <a-switch v-model:checked="follow" :disabled="paused" size="small" @change="connect" />
         <span>{{ t('containerLogs.follow') }}</span>
       </label>
       <span class="toolbar-spacer" />
-      <a-button @click="clear"><Trash2 :size="15" />{{ t('containerLogs.clear') }}</a-button>
-      <a-button @click="connect"><RefreshCw :size="15" />{{ t('containerLogs.reconnect') }}</a-button>
+      <a-button :disabled="paused" @click="clear"><Trash2 :size="15" />{{ t('containerLogs.clear') }}</a-button>
+      <a-button :disabled="paused" @click="connect"><RefreshCw :size="15" />{{ t('containerLogs.reconnect') }}</a-button>
     </div>
     <div ref="container" class="log-console" />
   </a-drawer>

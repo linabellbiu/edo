@@ -50,7 +50,7 @@ async function renderSummary(resource, { allowed = true, active = true } = {}) {
 
 function inventoryReads() {
   const requests = [], notifications = [], cleanups = [], replacements = []
-  const auth = vue.reactive({ user: { id: 'reader', project_id: 'project-a', department_id: 'department-a', is_superuser: false, permissions: ['cluster.read', 'deployment.read'] }, canAny(required) { return this.user.is_superuser || required.some(code => this.user.permissions.includes(code)) } })
+  const auth = vue.reactive({ authorizationState: 'ready', user: { id: 'reader', project_id: 'project-a', department_id: 'department-a', is_superuser: false, permissions: ['cluster.read', 'deployment.read'] }, canAny(required) { return this.authorizationState === 'ready' && (this.user.is_superuser || required.some(code => this.user.permissions.includes(code))) } })
   let clock = 0, stopped = false
   class ControlledDate extends Date { static now() { return clock } }
   const get = (path, options = {}) => new Promise((resolve, reject) => requests.push({ path, options, resolve, reject }))
@@ -297,6 +297,31 @@ test('HostView列表撤权取消在途请求并清理抽屉，迟到成功不能
   assert.equal(current.length, 2)
   await h.inventory(current)
   assert.equal(h.state.hosts.value.length, 3)
+})
+
+test('主机资源面板只在同一已授权范围checking时保留挂载，动作仍拒绝，失效范围不借旧授权恢复', async t => {
+  const h = inventoryReads(); t.after(h.stop)
+  h.state.detailOpen.value = true; h.state.detailTab.value = 'resources'; await flush()
+  assert.equal(h.state.resourcePanelMounted.value, true)
+  h.auth.authorizationState = 'checking'; await flush()
+  assert.equal(h.state.canReadResources.value, false)
+  assert.equal(h.state.resourcePanelMounted.value, true)
+  h.auth.user = { ...h.auth.user, permissions: [...h.auth.user.permissions].reverse() }; await flush()
+  assert.equal(h.state.resourcePanelMounted.value, true)
+  h.auth.user.department_id = 'other-department'; await flush()
+  assert.equal(h.state.resourcePanelMounted.value, false)
+  h.auth.user.department_id = 'department-a'; await flush()
+  assert.equal(h.state.resourcePanelMounted.value, false)
+  h.auth.authorizationState = 'ready'; await flush()
+  assert.equal(h.state.resourcePanelMounted.value, true)
+  h.auth.authorizationState = 'unavailable'; await flush()
+  assert.equal(h.state.resourcePanelMounted.value, false)
+  const template = parse(readFileSync(new URL('../src/views/HostView.vue', import.meta.url), 'utf8')).descriptor.template.content
+  assert.match(template, /v-else-if="detailTab === 'resources' && resourcePanelMounted"/)
+  const initial = inventoryReads(); t.after(initial.stop)
+  initial.auth.authorizationState = 'checking'
+  initial.state.detailOpen.value = true; initial.state.detailTab.value = 'resources'; await flush()
+  assert.equal(initial.state.resourcePanelMounted.value, false, '未曾打开授权面板不能在checking期间新开')
 })
 
 test('HostView用户、项目与部门变化分别冻结新读范围，旧成功失败都不能污染最新列表或提示', async t => {

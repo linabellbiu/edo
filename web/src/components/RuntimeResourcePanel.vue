@@ -45,13 +45,16 @@ const metadataLoading = ref(false), resourceLoading = ref(false), metadataLoaded
 const metadataErrors = ref({ docker: '', kubernetes: '' }), resourceError = ref('')
 const namespace = ref('default'), search = ref(''), containerFilter = ref<ContainerFilter>('running')
 const terminal = ref({ open: false, title: '', path: '' }), containerLogs = ref({ open: false, title: '', path: '' })
+const logPaused = ref(false)
+let authorizationRevision = 0, pausedLogContext = '', logContainerID = ''
 let metadataRequest = 0, resourceRequest = 0, pingRequest = 0, namespaceRuntimeID = '', loadedContext = '', mounted = false, disposed = false, activeMetadataContext = ''
 let metadataController: AbortController | undefined, resourceController: AbortController | undefined, pingController: AbortController | undefined
 const selectedHost = computed(() => props.hosts.find(host => host.id === props.hostId))
 const hostEnabled = computed(() => !props.hostId || Boolean(selectedHost.value && selectedHost.value.is_active !== false))
 const hostRuntimeKeys = computed(() => selectedHost.value?.capabilities.filter(item => ['docker', 'kubernetes'].includes(item.kind) && item.runtime_id).map(item => `${item.kind}:${item.runtime_id}`).sort() ?? [])
 function identity() { return JSON.stringify([auth.user?.id, auth.user?.department_id, auth.user?.project_id, auth.user?.is_superuser, [...(auth.user?.permissions ?? [])].sort(), typeof localStorage === 'undefined' ? '' : localStorage.getItem('edo.project')]) }
-function metadataContext() { return JSON.stringify([identity(), props.hostId, hostEnabled.value, hostRuntimeKeys.value]) }
+function hostIdentity(host?: InfrastructureHost) { return host ? JSON.stringify([host.id, host.name, host.mode, host.address, host.ssh_port, host.ssh_username, host.ssh_host_key_fingerprint, host.is_active, host.updated_at, host.capabilities.map(c => [c.kind, c.runtime_id]).sort()]) : '' }
+function metadataContext() { return JSON.stringify([identity(), props.hostId, hostEnabled.value, hostRuntimeKeys.value, hostIdentity(selectedHost.value)]) }
 function hostsForRuntime(kind: RuntimeKind, id: string) { return props.hosts.filter(host => host.capabilities.some(item => item.kind === kind && item.runtime_id === id)) }
 const allRuntimeOptions = computed<RuntimeOption[]>(() => [
   ...dockerEndpoints.value.map(endpoint => ({ key: `docker:${endpoint.id}`, id: endpoint.id, kind: 'docker' as const, name: endpoint.name, description: endpoint.local ? 'Docker' : endpoint.host || 'Docker', hosts: hostsForRuntime('docker', endpoint.id), enabled: endpoint.is_active !== false })),
@@ -68,7 +71,7 @@ function resourceContext() { return JSON.stringify([identity(), props.hostId, ho
 const filteredContainers = computed(() => filterRuntimeContainers(containers.value, search.value, containerFilter.value))
 const filteredPods = computed(() => pods.value.filter(row => runtimeMatches(row, search.value)))
 const containerCounts = computed(() => ({ running: containers.value.filter(row => containerState(row) === 'running').length, all: containers.value.length, stopped: containers.value.filter(stoppedContainer).length }))
-const rowActionsDisabled = computed(() => !canRead.value || !hostEnabled.value || metadataLoading.value || resourceLoading.value || !resourceLoaded.value || Boolean(resourceError.value) || !selectedRuntime.value?.enabled || Boolean(selectedRuntime.value && metadataErrors.value[selectedRuntime.value.kind]) || loadedContext !== resourceContext())
+const rowActionsDisabled = computed(() => logPaused.value || !canRead.value || !hostEnabled.value || metadataLoading.value || resourceLoading.value || !resourceLoaded.value || Boolean(resourceError.value) || !selectedRuntime.value?.enabled || Boolean(selectedRuntime.value && metadataErrors.value[selectedRuntime.value.kind]) || loadedContext !== resourceContext())
 const dockerColumns = computed(() => [ { key: 'names', label: t('runtimeResources.name'), width: '230px' }, { key: 'image_display', label: t('runtimeResources.image'), width: '260px' }, { key: 'state', label: t('runtimeResources.status'), width: '110px' }, { key: 'status', label: t('runtimeResources.details'), width: '190px' } ])
 const podColumns = computed(() => [ { key: 'name', label: 'Pod', width: '240px' }, { key: 'namespace', label: t('runtimeResources.namespace'), width: '150px' }, { key: 'phase', label: t('runtimeResources.phase'), width: '110px' }, { key: 'containers', label: t('runtimeResources.containers'), width: '220px' } ])
 const emptyText = computed(() => search.value.trim() ? t('runtimeResources.noResults') : t(selectedDocker.value ? containerFilter.value === 'running' ? 'runtimeResources.emptyRunning' : containerFilter.value === 'stopped' ? 'runtimeResources.emptyStopped' : 'runtimeResources.emptyDocker' : 'runtimeResources.emptyPods'))
@@ -82,8 +85,12 @@ function connectionState(runtime: RuntimeOption) {
   if (statuses.includes('ready')) return { label: t('runtimeResources.connected'), color: 'success' }
   return { label: t('runtimeResources.unbound'), color: 'default' }
 }
-function choose(node: string) { if (canRead.value && hostEnabled.value && (node === 'overview' || visibleRuntimeOptions.value.some(item => item.key === node))) emit('update:node', node) }
-function closeStreams() { terminal.value = { open: false, title: '', path: '' }; containerLogs.value = { open: false, title: '', path: '' } }
+function choose(node: string) { if (!logPaused.value && canRead.value && hostEnabled.value && (node === 'overview' || visibleRuntimeOptions.value.some(item => item.key === node))) emit('update:node', node) }
+function closeStreams() { terminal.value = { open: false, title: '', path: '' }; containerLogs.value = { open: false, title: '', path: '' }; pausedLogContext = ''; logContainerID = '' }
+function logContext() {
+  const runtime = selectedRuntime.value, endpoint = dockerEndpoints.value.find(item => item.id === runtime?.id)
+  return JSON.stringify([metadataContext(), props.node, runtime?.key, runtime?.enabled, endpoint && [endpoint.id, endpoint.name, endpoint.host, endpoint.local, endpoint.is_active, endpoint.updated_at]])
+}
 function clearResources() { resourceRequest++; resourceController?.abort(); resourceLoading.value = false; resourceLoaded.value = false; loadedContext = ''; containers.value = []; pods.value = []; resourceError.value = ''; closeStreams() }
 function ensureNamespaceForSelection() { const cluster = selectedCluster.value; if (cluster && namespaceRuntimeID !== cluster.id) { namespaceRuntimeID = cluster.id; namespace.value = cluster.default_namespace || 'default' } }
 
@@ -135,7 +142,7 @@ async function refresh() {
 }
 async function ping() {
   const runtime = selectedRuntime.value
-  if (!runtime || !runtime.enabled || !hostEnabled.value || !auth.canAny(['cluster.execute']) || !canRead.value || pingLoading.value) return
+  if (logPaused.value || !runtime || !runtime.enabled || !hostEnabled.value || !auth.canAny(['cluster.execute']) || !canRead.value || pingLoading.value) return
   pingController?.abort(); const controller = new AbortController(), request = ++pingRequest, context = resourceContext(); pingController = controller; pingLoading.value = true
   try { await client.post(`/${runtime.kind === 'docker' ? 'docker/endpoints' : 'kubernetes/clusters'}/${encodeURIComponent(runtime.id)}/ping`, undefined, { timeout: 35_000, signal: controller.signal }); if (!disposed && request === pingRequest && !controller.signal.aborted && context === resourceContext()) message.success(t('runtimeResources.pingOK')) }
   catch (error) { if (!disposed && request === pingRequest && !controller.signal.aborted && context === resourceContext()) message.error(apiErrorMessage(error)) }
@@ -145,6 +152,7 @@ function currentRow(row: ResourceRecord, kind: RuntimeKind) { return !rowActions
 function openContainerLogs(row: ResourceRecord) {
   if (!currentRow(row, 'docker') || !row.id) return
   const runtime = selectedRuntime.value!
+  logContainerID = String(row.id)
   containerLogs.value = { open: true, title: t('runtimeResources.dockerLogs', { name: runtimeContainerName(row) }), path: `/api/v1/docker/endpoints/${encodeURIComponent(runtime.id)}/containers/${encodeURIComponent(String(row.id))}/logs/ws` }
 }
 function openDockerTerminal(row: ResourceRecord) {
@@ -157,10 +165,54 @@ function openPodTerminal(row: ResourceRecord, container: string) {
   terminal.value = { open: true, title: t('runtimeResources.podTerminal', { name: row.name, container }), path: `/api/v1/terminals/kubernetes/${encodeURIComponent(selectedRuntime.value!.id)}/namespaces/${encodeURIComponent(String(row.namespace))}/pods/${encodeURIComponent(String(row.name))}/containers/${encodeURIComponent(container)}/ws${identity}` }
 }
 function resetContext() {
+  authorizationRevision++
+  logPaused.value = auth.authorizationState === 'checking' || auth.authorizationState === 'unavailable'
   activeMetadataContext = metadataContext(); metadataRequest++; metadataController?.abort(); pingRequest++; pingController?.abort(); pingLoading.value = false
   clearResources(); dockerEndpoints.value = []; kubernetesClusters.value = []; metadataErrors.value = { docker: '', kubernetes: '' }; metadataLoaded.value = false; metadataLoading.value = false; namespaceRuntimeID = ''; search.value = ''; containerFilter.value = 'running'
   if (mounted && canRead.value && hostEnabled.value) void refresh()
 }
+async function resumeAuthorization() {
+  const revision = ++authorizationRevision, context = pausedLogContext, path = containerLogs.value.path
+  const current = () => !disposed && revision === authorizationRevision && canRead.value && hostEnabled.value
+  try {
+    // 恢复日志前重新读取主机归属、运行时和容器，不用暂停前的旧行自动重开。
+    if (props.hostId && context) {
+      metadataController?.abort()
+      const controller = new AbortController(); metadataController = controller
+      const { data } = await client.get<{ hosts: InfrastructureHost[] }>('/hosts', { signal: controller.signal })
+      if (!current()) return
+      if (hostIdentity(data.hosts.find(host => host.id === props.hostId)) !== hostIdentity(selectedHost.value)) { clearResources(); return }
+    }
+    if (!current()) return
+    await refresh()
+    if (!current()) return
+    if (context && (!containerLogs.value.open || path !== containerLogs.value.path || context !== logContext() || !resourceLoaded.value || metadataErrors.value.docker || resourceError.value || loadedContext !== resourceContext() || !containers.value.some(row => row.id === logContainerID))) closeStreams()
+  } catch {
+    if (current()) closeStreams()
+  } finally {
+    if (current()) { pausedLogContext = ''; logPaused.value = false }
+  }
+}
+watch(() => auth.authorizationState, state => {
+  authorizationRevision++
+  if (state === 'checking') {
+    if (!logPaused.value) pausedLogContext = containerLogs.value.open ? logContext() : ''
+    logPaused.value = true
+    metadataRequest++; metadataController?.abort(); resourceRequest++; resourceController?.abort(); pingRequest++; pingController?.abort()
+    metadataLoading.value = false; resourceLoading.value = false; pingLoading.value = false
+    terminal.value = { open: false, title: '', path: '' }
+  } else if (state === 'unavailable') {
+    logPaused.value = true
+    metadataRequest++; metadataController?.abort(); resourceRequest++; resourceController?.abort(); pingRequest++; pingController?.abort()
+    metadataLoading.value = false; resourceLoading.value = false; pingLoading.value = false
+    closeStreams()
+  } else if (state === 'ready') {
+    if (canRead.value) void resumeAuthorization()
+    else { closeStreams(); logPaused.value = false }
+  }
+}, { flush: 'sync' })
+watch(logContext, () => { if (containerLogs.value.open) closeStreams() }, { flush: 'sync' })
+watch(() => containerLogs.value.open, open => { if (!open) { pausedLogContext = ''; logContainerID = '' } }, { flush: 'sync' })
 function externalContextChanged() { if (mounted && activeMetadataContext !== metadataContext()) resetContext() }
 watch(() => props.node, () => { clearResources(); search.value = ''; containerFilter.value = 'running'; ensureNamespaceForSelection(); pingRequest++; pingController?.abort(); pingLoading.value = false; if (mounted && metadataLoaded.value) void loadRuntime() }, { flush: 'sync' })
 watch(() => selectedRuntime.value ? `${selectedRuntime.value.key}/${selectedRuntime.value.enabled}` : '', () => { closeStreams(); if (!selectedRuntime.value || !selectedRuntime.value.enabled) clearResources() }, { flush: 'sync' })
@@ -218,7 +270,7 @@ onBeforeUnmount(() => { disposed = true; mounted = false; metadataRequest++; met
       <a-empty v-else-if="metadataLoaded" :description="t(selectedNode === 'overview' ? 'runtimeResources.none' : 'runtimeResources.missing')" />
     </template>
     <TerminalDrawer v-model:open="terminal.open" :title="terminal.title" :path="terminal.path" />
-    <ContainerLogDrawer v-model:open="containerLogs.open" :title="containerLogs.title" :path="containerLogs.path" />
+    <ContainerLogDrawer v-model:open="containerLogs.open" :title="containerLogs.title" :path="containerLogs.path" :paused="logPaused" />
   </section>
 </template>
 

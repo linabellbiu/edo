@@ -155,7 +155,7 @@ export const messages = {
     },
     containerLogs: {
       button: '日志', title: '控制台日志：{name}', recent: '最近行数', follow: '实时跟随', clear: '清空', reconnect: '重新连接',
-      connecting: '连接中', connected: '实时日志', complete: '日志已结束', error: '连接异常', readFailed: '读取容器日志失败',
+      checking: '正在重新核验权限…', connecting: '连接中', connected: '实时日志', complete: '日志已结束', error: '连接异常', readFailed: '读取容器日志失败',
       invalidEvent: '收到无法识别的日志事件', disconnected: '日志连接已断开',
     },
     applicationWorkspace: {
@@ -395,7 +395,7 @@ export const messages = {
     },
     containerLogs: {
       button: 'Logs', title: 'Console logs: {name}', recent: 'Recent lines', follow: 'Follow', clear: 'Clear', reconnect: 'Reconnect',
-      connecting: 'Connecting', connected: 'Live', complete: 'Log ended', error: 'Connection error', readFailed: 'Unable to read container logs',
+      checking: 'Checking permissions…', connecting: 'Connecting', connected: 'Live', complete: 'Log ended', error: 'Connection error', readFailed: 'Unable to read container logs',
       invalidEvent: 'Received an invalid log event', disconnected: 'Log connection closed',
     },
     applicationWorkspace: {

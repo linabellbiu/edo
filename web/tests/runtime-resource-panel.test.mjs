@@ -19,14 +19,15 @@ const host = (id = 'host-a', capabilities = [{ kind: 'docker', runtime_id: 'd1',
 function harness(options = {}) {
   const requests = [], notifications = [], events = [], mounts = [], unmounts = [], listeners = new Map()
   let project = 'project-a', stopped = false
-  const auth = vue.reactive({ user: { id: 'operator', department_id: 'department-a', project_id: 'project-a', is_superuser: false, permissions: options.codes ?? ['cluster.read', 'terminal.open', 'cluster.execute'] } })
-  auth.canAny = codes => Boolean(auth.user?.is_superuser || codes.some(code => auth.user?.permissions.includes(code)))
+  const auth = vue.reactive({ authorizationState: 'ready', user: { id: 'operator', department_id: 'department-a', project_id: 'project-a', is_superuser: false, permissions: options.codes ?? ['cluster.read', 'terminal.open', 'cluster.execute'] } })
+  auth.canAny = codes => auth.authorizationState === 'ready' && Boolean(auth.user?.is_superuser || codes.some(code => auth.user?.permissions.includes(code)))
   const props = vue.reactive({ hosts: options.hosts ?? [host()], hostId: options.hostId ?? 'host-a', node: options.node ?? 'docker:d1' })
   const client = {
     async get(path, config) {
       const request = { method: 'get', path, config }; requests.push(request)
       if (options.get) { const result = options.get(path, config, request); if (result !== undefined) return result }
       if (path === '/docker/endpoints') return { data: { endpoints: options.endpoints ?? [{ id: 'd1', name: 'Docker one', is_active: true }] } }
+      if (path === '/hosts') return { data: { hosts: props.hosts } }
       if (path === '/kubernetes/clusters') return { data: { clusters: options.clusters ?? [{ id: 'k1', name: 'Cluster', default_namespace: 'team', is_active: true }] } }
       if (path.includes('/containers?')) return { data: { containers: fixtureRows() } }
       if (path.includes('/pods?')) return { data: { pods: [{ id: 'pod-a', name: 'api', namespace: 'team', phase: 'Running', containers: ['api', 'sidecar'] }] } }
@@ -122,6 +123,71 @@ test('无查看权限不请求，撤权立即清理列表与控制台，执行/�
   h.state.openContainerLogs(h.state.containers.value[0]); assert.equal(h.state.containerLogs.value.open, true)
   h.auth.user.permissions = []; await settle()
   assert.equal(h.state.containers.value.length, 0); assert.equal(h.state.containerLogs.value.open, false); assert.equal(h.requests.length, 2)
+})
+
+test('短暂checking取消旧读并关闭终端，日志仅保留意图；同scope新快照和目标回读后恢复日志', async t => {
+  const pending = deferred(); let reads = 0
+  const h = harness({ get: path => path.includes('/containers?') && ++reads === 2 ? pending.promise : undefined }); t.after(h.stop); await h.mount()
+  const row = h.state.containers.value[0]; h.state.openContainerLogs(row); h.state.openDockerTerminal(row)
+  const intent = { ...h.state.containerLogs.value }, reading = h.state.loadRuntime(), request = h.requests.at(-1)
+  h.auth.authorizationState = 'checking'; await settle()
+  assert.equal(request.config.signal.aborted, true)
+  assert.equal(h.state.terminal.value.open, false)
+  assert.deepEqual(h.state.containerLogs.value, intent)
+  assert.equal(h.state.logPaused.value, true)
+  h.state.openDockerTerminal(row); assert.equal(h.state.terminal.value.open, false)
+  pending.resolve({ data: { containers: [{ id: 'late-wrong-target', state: 'running' }] } }); await reading; await settle()
+  h.auth.user = { ...h.auth.user, permissions: [...h.auth.user.permissions].reverse() }
+  h.auth.authorizationState = 'ready'; await settle()
+  assert.equal(h.state.logPaused.value, false)
+  assert.deepEqual(h.state.containerLogs.value, intent)
+  assert.equal(h.state.terminal.value.open, false)
+  assert.equal(h.state.containers.value[0].id, 'container-running')
+})
+
+for (const change of ['permission', 'department', 'project', 'runtime', 'host', 'unavailable', 'user-close']) test(`暂停期间${change}清除日志意图，恢复权限不自动重开`, async t => {
+  const h = harness(); t.after(h.stop); await h.mount()
+  h.state.openContainerLogs(h.state.containers.value[0])
+  h.auth.authorizationState = 'checking'; await settle()
+  if (change === 'permission') h.auth.user.permissions = ['cluster.read']
+  if (change === 'department') h.auth.user.department_id = 'another-department'
+  if (change === 'project') h.project('project-b')
+  if (change === 'runtime') h.props.node = 'docker:other-runtime'
+  if (change === 'host') h.props.hosts[0].is_active = false
+  if (change === 'unavailable') h.auth.authorizationState = 'unavailable'
+  if (change === 'user-close') h.state.containerLogs.value.open = false
+  await settle(); assert.equal(h.state.containerLogs.value.open, false)
+  h.auth.authorizationState = 'ready'; await settle()
+  assert.equal(h.state.containerLogs.value.open, false)
+})
+
+test('恢复中的主机回读受二次checking取消，迟到成功不能解除新暂停或重开用户关闭的日志', async t => {
+  const pending = deferred(); let hostReads = 0
+  const h = harness({ get: path => path === '/hosts' && ++hostReads === 1 ? pending.promise : undefined }); t.after(h.stop); await h.mount()
+  h.state.openContainerLogs(h.state.containers.value[0]); h.auth.authorizationState = 'checking'; await settle()
+  h.auth.authorizationState = 'ready'; await settle()
+  const old = h.requests.at(-1); assert.equal(old.path, '/hosts'); assert.equal(h.state.logPaused.value, true)
+  h.auth.authorizationState = 'checking'; assert.equal(old.config.signal.aborted, true)
+  h.state.containerLogs.value.open = false
+  pending.resolve({ data: { hosts: h.props.hosts } }); await settle()
+  assert.equal(h.state.logPaused.value, true); assert.equal(h.state.containerLogs.value.open, false)
+  h.auth.authorizationState = 'ready'; await settle()
+  assert.equal(h.state.logPaused.value, false); assert.equal(h.state.containerLogs.value.open, false)
+})
+
+for (const failure of ['host-missing', 'endpoint-disabled', 'metadata-failed', 'container-missing']) test(`恢复目标回读${failure}丢弃日志意图，不恢复旧目标或永远暂停`, async t => {
+  let resumed = false
+  const h = harness({ get: path => {
+    if (!resumed) return undefined
+    if (path === '/hosts' && failure === 'host-missing') return { data: { hosts: [] } }
+    if (path === '/docker/endpoints' && failure === 'endpoint-disabled') return { data: { endpoints: [{ id: 'd1', name: 'Docker one', is_active: false }] } }
+    if (path === '/docker/endpoints' && failure === 'metadata-failed') return Promise.reject(Error('目标读取失败'))
+    if (path.includes('/containers?') && failure === 'container-missing') return { data: { containers: [] } }
+  } }); t.after(h.stop); await h.mount()
+  h.state.openContainerLogs(h.state.containers.value[0]); h.auth.authorizationState = 'checking'; await settle()
+  resumed = true; h.auth.authorizationState = 'ready'; await settle()
+  assert.equal(h.state.containerLogs.value.open, false)
+  assert.equal(h.state.logPaused.value, false)
 })
 
 test('身份/项目切换关闭控制台并取消旧元数据，卸载取消全部请求并释放事件监听', async t => {
