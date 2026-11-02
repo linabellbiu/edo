@@ -1,12 +1,14 @@
 package httpapi
 
 import (
+	"context"
 	"errors"
 	"io"
 	"log/slog"
 	"mime"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 
@@ -17,8 +19,9 @@ import (
 const multipartArtifactOverhead = int64(1024 * 1024)
 
 type artifactHandler struct {
-	service *artifactmanager.Service
-	logger  *slog.Logger
+	service             *artifactmanager.Service
+	logger              *slog.Logger
+	uploadAuthorization func(*gin.Context) func(context.Context) error
 }
 
 func (h artifactHandler) list(c *gin.Context) {
@@ -57,6 +60,11 @@ func (h artifactHandler) uploadFile(c *gin.Context, buildPlanID, applicationID s
 	if !h.available(c) {
 		return
 	}
+	cleanup, ok := h.prepareUpload(c)
+	if !ok {
+		return
+	}
+	defer cleanup()
 	// MultipartReader 直接把文件流交给内容寻址存储，不调用 ParseMultipartForm，
 	// 避免框架先把大文件完整写入另一份临时文件。
 	limit := h.service.MaxBytes() + multipartArtifactOverhead
@@ -73,7 +81,7 @@ func (h artifactHandler) uploadFile(c *gin.Context, buildPlanID, applicationID s
 			if errors.Is(nextErr, io.EOF) {
 				break
 			}
-			h.writeError(c, "artifact_upload_read", nextErr)
+			h.writeError(c, "artifact_upload_read", uploadFailure(c.Request.Context(), nextErr))
 			return
 		}
 		if part.FormName() != "file" || strings.TrimSpace(part.FileName()) == "" {
@@ -88,17 +96,81 @@ func (h artifactHandler) uploadFile(c *gin.Context, buildPlanID, applicationID s
 		} else {
 			item, uploadErr = h.service.UploadForBuildPlan(c.Request.Context(), buildPlanID, applicationID, actor.ID, part.FileName(), part.Header.Get("Content-Type"), part)
 		}
-		_ = part.Close()
 		if uploadErr != nil {
-			h.writeError(c, "artifact_upload", uploadErr)
+			// 失败时不再排空 multipart，避免撤权后继续等待客户端传完整个文件。
+			h.writeError(c, "artifact_upload", uploadFailure(c.Request.Context(), uploadErr))
 			return
 		}
+		_ = part.Close()
 		setAuditResourceID(c, item.ID)
 		c.JSON(http.StatusCreated, gin.H{"artifact": item})
 		return
 	}
 	h.log().Warn("上传制品请求缺少文件", "operation", "artifact_upload_file_required", "request_id", requestIDFrom(c), "build_plan_id", buildPlanID, "application_id", applicationID)
 	writeError(c, http.StatusBadRequest, "artifact_file_required", "请选择需要上传的制品文件")
+}
+
+func uploadFailure(ctx context.Context, err error) error {
+	if cause := context.Cause(ctx); cause != nil {
+		return errors.Join(err, cause)
+	}
+	return err
+}
+
+func (h artifactHandler) prepareUpload(c *gin.Context) (func(), bool) {
+	if h.uploadAuthorization == nil {
+		h.log().Error("上传授权检查未配置", "operation", "artifact_upload_authorization", "request_id", requestIDFrom(c))
+		writeInternalError(c)
+		return nil, false
+	}
+	check := h.uploadAuthorization(c)
+	requestContext := c.Request.Context()
+	ctx, cancel := context.WithCancelCause(requestContext)
+	if err := check(ctx); err != nil {
+		cancel(err)
+		h.writeError(c, "artifact_upload_authorization", err)
+		return nil, false
+	}
+	ctx = artifactmanager.WithUploadAuthorization(ctx, check)
+	c.Request = c.Request.WithContext(ctx)
+	body, controller, requestID := c.Request.Body, http.NewResponseController(c.Writer), requestIDFrom(c)
+	interrupted := make(chan struct{})
+	stopInterrupt := context.AfterFunc(ctx, func() {
+		defer close(interrupted)
+		if body != nil {
+			// 截止时间先唤醒 net/http 中阻塞的 Read，随后才能安全关闭请求体。
+			if err := controller.SetReadDeadline(time.Now()); err != nil && !errors.Is(err, http.ErrNotSupported) {
+				h.log().Warn("中断制品上传读取失败", "operation", "artifact_upload_interrupt", "request_id", requestID, "err", err)
+			}
+			_ = body.Close()
+		}
+	})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		ticker := time.NewTicker(2 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				if err := check(ctx); err != nil {
+					cancel(err)
+					return
+				}
+			}
+		}
+	}()
+	return func() {
+		if !stopInterrupt() {
+			<-interrupted
+		}
+		cancel(context.Canceled)
+		<-done
+		// 外层审计仍使用原请求范围，不继承本次传输清理产生的取消信号。
+		c.Request = c.Request.WithContext(requestContext)
+	}, true
 }
 
 func (h artifactHandler) get(c *gin.Context) {
@@ -148,8 +220,14 @@ func (h artifactHandler) available(c *gin.Context) bool {
 
 func (h artifactHandler) writeError(c *gin.Context, operation string, err error) {
 	h.log().Error("制品操作失败", "operation", operation, "request_id", requestIDFrom(c), "resource_id", c.Param("id"), "err", err)
+	if c.Request.ProtoMajor == 1 && c.Request.Context().Err() != nil {
+		// 读取中断可能已取消 net/http 的连接上下文，不能继续复用该 HTTP/1 连接。
+		c.Header("Connection", "close")
+	}
 	var maxBytesError *http.MaxBytesError
 	switch {
+	case errors.Is(err, errRequestAuthorizationDenied):
+		writeError(c, http.StatusForbidden, "permission_denied", "当前登录或权限已失效，请刷新后重试")
 	case errors.Is(err, artifactmanager.ErrApplicationNotFound):
 		writeError(c, http.StatusNotFound, "application_not_found", artifactmanager.ErrApplicationNotFound.Error())
 	case errors.Is(err, artifactmanager.ErrBuildPlanNotFound):

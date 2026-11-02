@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"context"
 	"database/sql"
 	"log/slog"
 	"net/http"
@@ -229,7 +230,9 @@ func NewRouter(deps Dependencies) *gin.Engine {
 	protected.GET("/repositories/:id/webhook", auditAction(deps.Audits, deps.Logger, "repository.webhook.reveal", "repository"), requirePermission(deps.Access, deps.Logger, access.PermissionRepositorySecretRead), repositoryAPI.webhookConfiguration)
 
 	pipelineAPI := pipelineHandler{service: deps.Pipelines, logger: deps.Logger, realtime: deps.Realtime, streamAuth: func(c *gin.Context) func() bool { return streamAuthorization(deps, c, "pipeline_run.read") }}
-	artifactAPI := artifactHandler{service: deps.Artifacts, logger: deps.Logger}
+	artifactAPI := artifactHandler{service: deps.Artifacts, logger: deps.Logger, uploadAuthorization: func(c *gin.Context) func(context.Context) error {
+		return requestAuthorization(deps, c, "artifact.create")
+	}}
 	protected.GET("/applications", requirePermission(deps.Access, deps.Logger, "application.read"), pipelineAPI.listApplications)
 	protected.GET("/delivery-defaults", requirePermission(deps.Access, deps.Logger, "workflow.read"), requirePermission(deps.Access, deps.Logger, "deployment_plan.read"), pipelineAPI.deliveryDefaults)
 	protected.PUT("/delivery-defaults/:kind", auditAction(deps.Audits, deps.Logger, "delivery.defaults.update", "delivery_default"), requirePermission(deps.Access, deps.Logger, "workflow.update"), requirePermission(deps.Access, deps.Logger, "deployment_plan.update"), pipelineAPI.saveDeliveryDefault)

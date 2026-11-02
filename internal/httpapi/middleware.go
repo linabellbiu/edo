@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -100,7 +101,10 @@ func auditAction(audits *audit.Service, logger *slog.Logger, action, resourceTyp
 				resourceID = id
 			}
 		}
-		if err := audits.Record(c.Request.Context(), audit.RecordInput{
+		// 撤权、断线和超时同样必须留审计；只剥离取消信号，保留原用户与项目范围。
+		auditContext, cancel := context.WithTimeout(context.WithoutCancel(c.Request.Context()), 3*time.Second)
+		defer cancel()
+		if err := audits.Record(auditContext, audit.RecordInput{
 			ActorUserID: actorID, Action: action, ResourceType: resourceType,
 			ResourceID: resourceID, Result: result, RequestID: requestIDFrom(c),
 			ClientIP: c.ClientIP(), UserAgent: truncateText(c.Request.UserAgent(), 512),

@@ -115,6 +115,10 @@ func (s *LocalStore) Put(ctx context.Context, source io.Reader) (Blob, error) {
 	if err := temporary.Close(); err != nil {
 		return Blob{}, fmt.Errorf("关闭制品临时文件失败: %w", err)
 	}
+	// 传输结束不是授权仍有效的证据；正式内容落盘前复核，拒绝时由 defer 清理暂存。
+	if err := authorizeUpload(ctx); err != nil {
+		return Blob{}, err
+	}
 
 	hexDigest := hex.EncodeToString(digest.Sum(nil))
 	storageKey := filepath.ToSlash(filepath.Join("blobs", "sha256", hexDigest[:2], hexDigest))
@@ -142,6 +146,9 @@ func (s *LocalStore) Put(ctx context.Context, source io.Reader) (Blob, error) {
 		return Blob{Digest: "sha256:" + hexDigest, StorageKey: storageKey, SizeBytes: size}, nil
 	} else if !errors.Is(statErr, os.ErrNotExist) {
 		return Blob{}, fmt.Errorf("检查制品内容是否存在失败: %w", statErr)
+	}
+	if err := authorizeUpload(ctx); err != nil {
+		return Blob{}, err
 	}
 	if err := os.Rename(temporaryPath, destination); err != nil {
 		// 同摘要并发写入时，另一条请求可能已经先完成原子重命名。

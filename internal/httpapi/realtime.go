@@ -12,14 +12,18 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/gorilla/websocket"
 	"github.com/redis/go-redis/v9"
+	"gorm.io/gorm"
 
 	"edo/internal/access"
+	"edo/internal/auth"
 	"edo/internal/database"
 	"edo/internal/model"
 	"edo/internal/realtime"
 )
 
 const stateSubprotocol = "edo-state-v1"
+
+var errRequestAuthorizationDenied = errors.New("当前登录或权限已失效")
 
 type stateEvent struct {
 	Type      string   `json:"type"`
@@ -52,30 +56,44 @@ func currentStreamPermission(ctx context.Context, service *access.Service, user 
 
 // 长连接继续检查会话、权限与部门；调动部门或注销后不沿用握手时的权限。
 func streamAuthorization(deps Dependencies, c *gin.Context, permissions ...string) func() bool {
+	requestContext := c.Request.Context()
+	check := requestAuthorization(deps, c, permissions...)
+	return func() bool { return check(requestContext) == nil }
+}
+
+// 请求的身份与范围只捕获一次；调用时复核当前授权，并保留存储故障与撤权的区别。
+func requestAuthorization(deps Dependencies, c *gin.Context, permissions ...string) func(context.Context) error {
 	initial, ok := currentUser(c)
 	if !ok {
-		return func() bool { return false }
+		return func(context.Context) error { return errRequestAuthorizationDenied }
 	}
 	identity := *initial
-	requestContext := c.Request.Context()
 	initialScope, _ := database.DepartmentScopeFromContext(c.Request.Context())
 	token, _ := c.Cookie(deps.AuthConfig.CookieName)
-	return func() bool {
+	return func(requestContext context.Context) error {
 		ctx, cancel := context.WithTimeout(requestContext, 3*time.Second)
 		defer cancel()
 		session, err := deps.Sessions.Get(ctx, token)
+		if errors.Is(err, auth.ErrSessionNotFound) {
+			err = errRequestAuthorizationDenied
+		}
 		if err == nil {
 			var user *model.User
 			user, err = deps.Accounts.FindByID(ctx, session.UserID)
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				err = errRequestAuthorizationDenied
+			}
 			if err == nil && (user.ID != identity.ID || !user.IsActive || session.AuthVersion != user.AuthVersion || user.DepartmentID != identity.DepartmentID || user.IsSuperuser != identity.IsSuperuser) {
-				err = errors.New("实时会话的用户或部门已变化")
+				err = errRequestAuthorizationDenied
 			}
 			if err == nil && initialScope.ProjectID != "" {
 				project, scopeErr := deps.Access.ResolveProject(ctx, user, initialScope.ProjectID)
-				if scopeErr != nil {
+				if errors.Is(scopeErr, access.ErrProjectNotFound) {
+					err = errRequestAuthorizationDenied
+				} else if scopeErr != nil {
 					err = scopeErr
 				} else if !project.IsActive {
-					err = errors.New("项目已停用")
+					err = errRequestAuthorizationDenied
 				}
 			}
 			if err == nil {
@@ -87,14 +105,14 @@ func streamAuthorization(deps Dependencies, c *gin.Context, permissions ...strin
 					}
 				}
 				if err == nil && !allowed {
-					err = errors.New("实时会话的读取权限已撤销")
+					err = errRequestAuthorizationDenied
 				}
 			}
 		}
 		if err != nil {
 			deps.Logger.Warn("实时会话授权已失效", "operation", "realtime_authorization", "user_id", identity.ID, "project_id", initialScope.ProjectID, "err", err)
 		}
-		return err == nil
+		return err
 	}
 }
 

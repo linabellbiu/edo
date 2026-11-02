@@ -569,9 +569,10 @@ func (s *Service) createFileArtifact(
 	s.storeMu.RLock()
 	defer s.storeMu.RUnlock()
 	blob, storeErr := s.store.Put(ctx, source)
-	if storeErr != nil {
+	if storeErr != nil && producerErrors != nil {
 		// 目录打包通过 io.Pipe 边生成边保存；存储提前停止读取时必须关闭 reader，
 		// 否则打包 goroutine 会阻塞在写端，等待 producerErrors 将形成死锁。
+		// 普通上传的 Reader 属于调用方，不能调用 multipart.Part.Close 排空余体。
 		if closer, ok := source.(io.Closer); ok {
 			_ = closer.Close()
 		}
@@ -606,6 +607,10 @@ func (s *Service) register(
 	metadata BuildMetadata,
 	artifact model.Artifact,
 ) (*model.Artifact, error) {
+	if err := authorizeUpload(ctx); err != nil {
+		s.logger.Warn("登记制品前授权复核失败", "operation", "artifact_register_authorization", "application_id", metadata.ApplicationID, "err", err)
+		return nil, err
+	}
 	idempotencyKey := buildRunIdempotencyKey(metadata)
 	if idempotencyKey != nil {
 		existing, err := s.findIdempotentArtifact(ctx, s.db, *idempotencyKey, metadata, artifact)
