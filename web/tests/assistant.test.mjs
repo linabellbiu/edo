@@ -128,6 +128,34 @@ test('助手只在启用且有权限时显示，首次点击才挂载对话，�
   assert.equal(h.state.initialized.value, false)
 })
 
+test('同用户同项目资料刷新保留助手窗口，不重复查询状态', async t => {
+  let statusCalls = 0
+  const h = harness(t, 'FloatingAssistant', { getAssistantStatus: async () => { statusCalls++; return { enabled: true, configured: true } } })
+  await h.mount(); await h.state.show()
+  const before = statusCalls
+  for (let i = 0; i < 3; i++) {
+    h.auth.user = { ...h.auth.user, nickname: `刷新 ${i}` }
+    await flush()
+    assert.equal(h.state.open.value, true)
+    assert.equal(h.state.initialized.value, true)
+    assert.equal(statusCalls, before)
+  }
+})
+
+test('用户、项目或读取权限变化仍清理助手窗口', async t => {
+  for (const kind of ['user', 'project', 'read']) await t.test(kind, async t => {
+    const h = harness(t, 'FloatingAssistant')
+    await h.mount(); await h.state.show()
+    if (kind === 'user') h.auth.user = { ...h.auth.user, id: 'user-2' }
+    if (kind === 'project') h.changeProject('project-2')
+    if (kind === 'read') h.auth.canAny = needed => !needed.includes('assistant.read')
+    await flush()
+    assert.equal(h.state.open.value, false)
+    assert.equal(h.state.initialized.value, false)
+    if (kind === 'read') assert.equal(h.state.visible.value, false)
+  })
+})
+
 test('关闭助手隐藏悬浮入口并卸载对话，重新启用不自动展开', async t => {
   let enabled = true
   const h = harness(t, 'FloatingAssistant', { getAssistantStatus: async () => ({ enabled, configured: true }) })
@@ -270,6 +298,71 @@ test('连接测试只有服务端成功才显示成功，读取权限不授予�
   await readonly.state.save()
   await readonly.state.testConnection()
   assert.deepEqual(readonly.calls, [])
+})
+
+test('同范围资料刷新保留对话草稿、选中项及在途消息，不重载列表', async t => {
+  let release, receive, streamSignal, listCalls = 0, detailCalls = 0
+  const h = harness(t, 'AssistantPanel', {
+    listAssistantConversations: async () => { listCalls++; return [conversation('saved-1')] },
+    getAssistantConversation: async id => { detailCalls++; return { conversation: conversation(id), messages: [{ id: 'saved-answer', role: 'assistant', content: '历史回答' }], actions: [] } },
+    streamAssistantMessage: async (_id, _content, _project, signal, onEvent) => { streamSignal = signal; receive = onEvent; await new Promise(resolve => { release = resolve }) },
+  })
+  await flush()
+  h.state.draft.value = '正在询问'
+  const sending = h.state.send()
+  await flush()
+  h.state.draft.value = '尚未发送的草稿'
+  const before = { listCalls, detailCalls, messages: JSON.stringify(h.state.messages.value), conversations: JSON.stringify(h.state.conversations.value) }
+  try {
+    h.auth.user = { ...h.auth.user, nickname: '资料已刷新' }
+    await flush()
+    assert.equal(streamSignal.aborted, false)
+    assert.equal(h.state.streaming.value, true)
+    assert.equal(h.state.draft.value, '尚未发送的草稿')
+    assert.equal(h.state.selected.value, 'saved-1')
+    assert.equal(JSON.stringify(h.state.messages.value), before.messages)
+    assert.equal(JSON.stringify(h.state.conversations.value), before.conversations)
+    assert.equal(listCalls, before.listCalls)
+    assert.equal(detailCalls, before.detailCalls)
+    receive({ type: 'delta', text: '刷新后的正常片段' })
+    assert.equal(h.state.messages.value.at(-1).content, '刷新后的正常片段')
+  } finally { release(); await sending }
+})
+
+test('真实用户、项目或助手权限变化仍取消在途请求并清理旧对话', async t => {
+  for (const kind of ['user', 'project', 'read', 'execute']) await t.test(kind, async t => {
+    let release, receive, signal
+    const h = harness(t, 'AssistantPanel', { streamAssistantMessage: async (_id, _content, _project, currentSignal, onEvent) => { signal = currentSignal; receive = onEvent; await new Promise(resolve => { release = resolve }) } })
+    await flush()
+    h.state.draft.value = '旧范围问题'
+    const sending = h.state.send()
+    await flush()
+    h.state.previewID.value = 'old-action'
+    h.state.capabilitiesOpen.value = true
+    h.state.capabilities.value = [{ id: 'old-capability', supported: true }]
+    h.state.tools.value = [{ name: 'project_resources', running: true }]
+    try {
+      if (kind === 'user') h.auth.user = { ...h.auth.user, id: 'user-2' }
+      if (kind === 'project') h.changeProject('project-2')
+      if (kind === 'read' || kind === 'execute') h.auth.canAny = needed => !needed.includes(`assistant.${kind}`)
+      await flush()
+      assert.equal(signal.aborted, true)
+      assert.equal(h.state.streaming.value, false)
+      assert.equal(h.state.selected.value, '')
+      assert.equal(h.state.draft.value, '')
+      assert.deepEqual(h.state.messages.value, [])
+      assert.deepEqual(h.state.conversations.value, [])
+      assert.equal(h.state.previewID.value, '')
+      assert.equal(h.state.capabilitiesOpen.value, false)
+      assert.deepEqual(h.state.capabilities.value, [])
+      assert.deepEqual(h.state.tools.value, [])
+      receive({ type: 'action_proposed', action: action() })
+      receive({ type: 'delta', text: '旧范围迟到片段' })
+      assert.deepEqual(h.state.actions.value, [])
+    } finally { release(); await sending }
+    assert.equal(h.state.selected.value, '')
+    assert.deepEqual(h.state.messages.value, [])
+  })
 })
 
 test('发送失败保留输入并退出 loading，纯文本 delta 不作为 HTML 执行', async t => {

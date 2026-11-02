@@ -47,7 +47,7 @@ function settingsChanged() { reset(); void refresh() }
 function focus() { if (document.visibilityState !== 'hidden') void refresh() }
 function storage(event: StorageEvent) { if (event.key === 'edo.project' || event.key === null) changeContext() }
 
-watch(() => [auth.user?.id, auth.user?.project_id, canRead.value], changeContext, { immediate: true })
+watch([() => auth.user?.id, () => auth.user?.project_id, canRead], changeContext, { immediate: true })
 watch(() => [route.query.assistant, visible.value, checked.value], () => {
   if (route.query.assistant !== 'open' || !checked.value) return
   if (visible.value) void show()

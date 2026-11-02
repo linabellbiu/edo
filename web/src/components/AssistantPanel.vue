@@ -190,7 +190,7 @@ function keydown(event: KeyboardEvent) {
 }
 function contextChanged() { void load() }
 function pageHidden() { invalidate() }
-watch(() => [auth.user?.id, auth.user?.project_id, canRead.value, canExecute.value], () => void load(), { immediate: true })
+watch([() => auth.user?.id, () => auth.user?.project_id, canRead, canExecute], () => void load(), { immediate: true })
 onMounted(() => {
   timer = window.setInterval(() => { clock.value = Date.now() }, 1000)
   window.addEventListener('storage', contextChanged)
