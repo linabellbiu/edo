@@ -141,7 +141,9 @@ test('环境保存失败保留表单与主机选择，停用中的异步请求�
 
 test('镜像仓库必须先真实测试，DockerHub地址固定且不允许HTTP，字段变更清除测试结果',async t=>{
   const deployments=loadFrontend('../src/utils/deploymentInstances.ts')
-  const h=harness(t,'../src/views/DevOpsView.vue',{props:{section:'image-registries'},codes:['image_registry.read','image_registry.create','image_registry.execute'],modules:{'@/utils/deploymentInstances':deployments},globals:{document:{hidden:true}}})
+  const codes=['image_registry.read','image_registry.create','image_registry.execute']
+  const auth=vue.reactive({user:{id:'operator',department_id:'department-a',project_id:'project-a',permissions:codes},canAny(required){return required.some(code=>this.user.permissions.includes(code))}})
+  const h=harness(t,'../src/views/DevOpsView.vue',{props:{section:'image-registries'},codes,modules:{'@/stores/auth':{useAuthStore:()=>auth},'@/utils/deploymentInstances':deployments},globals:{document:{hidden:true},localStorage:{getItem:()=> 'project-a'}}})
   h.state.create();Object.assign(h.state.registryForm,{name:'镜像仓库',provider:'docker_hub',endpoint:'https://not-used.example',namespace:'team',username:'test-user',credential:'synthetic-registry-token',allow_insecure_http:true})
   await vue.nextTick()
   await h.state.save();assert.equal(writes(h).length,0)

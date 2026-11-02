@@ -8,7 +8,7 @@ import { ArrowUpRight, Box, Boxes, ChevronDown, ChevronRight, Clock3, FileText, 
 
 import client from '@/api/client'
 import { subscribeDeliveryEvents } from '@/utils/deliveryEvents'
-import { apiErrorMessage, type ResourceRecord } from '@/api/resources'
+import { apiErrorMessage, isMutationAcknowledged, type ResourceRecord } from '@/api/resources'
 import DeliveryWorkflowDrawer from '@/components/DeliveryWorkflowDrawer.vue'
 import DeploymentRollbackModal from '@/components/DeploymentRollbackModal.vue'
 import type {DeliveryKind} from '@/api/delivery'
@@ -160,6 +160,41 @@ const canUpdate=computed(()=>props.section==='repositories'?auth.canAny(['reposi
 const canDelete=computed(()=>props.section==='repositories'?auth.canAny(['repository.delete']):auth.canAny([`${sectionPermission.value}.delete`]))
 const canExecute=computed(()=>props.section==='repositories'?auth.canAny(['repository.execute']):auth.canAny([`${sectionPermission.value}.execute`]))
 const canSaveCurrent=computed(()=>creatingApplicationRepository.value?auth.canAny(['repository.create']):editingID.value?canUpdate.value:canCreate.value)
+const resourceFormIdentity=computed(()=>JSON.stringify([auth.user?.id,auth.user?.department_id,auth.user?.project_id,planExecutionSelectedProject.value,props.section]))
+const resourceFormReadPermission=computed(()=>props.section==='repositories'?'repository.read':`${sectionPermission.value}.read`)
+const resourceFormRequiredPermission=ref('')
+let resourceFormRevision=0,resourceFormRequest:AbortController|undefined
+function resourceFormIdentityReady(){
+ const projectID=planExecutionSelectedProject.value
+ return !planExecutionDisposed&&Boolean(auth.user?.id&&projectID)&&auth.user?.project_id===projectID
+  &&typeof localStorage!=='undefined'&&localStorage.getItem('edo.project')===projectID
+  &&auth.canAny([resourceFormReadPermission.value])
+}
+function canOpenResourceForm(editing:boolean){return resourceFormIdentityReady()&&(editing?canUpdate.value:canCreate.value)}
+function canUseResourceForm(){return resourceFormIdentityReady()&&canSaveCurrent.value}
+function resetResourceForm(){
+ resourceFormRevision++
+ resourceFormRequest?.abort();resourceFormRequest=undefined;resourceFormRequiredPermission.value=''
+ saving.value=false;testing.value=false;resetForms()
+}
+function startResourceFormRequest(permission=''){
+ const revision=++resourceFormRevision,identity=resourceFormIdentity.value,section=formSection.value,id=formEditingID.value
+ const controller=new AbortController(),projectID=planExecutionSelectedProject.value
+ resourceFormRequest=controller;resourceFormRequiredPermission.value=permission
+ const current=()=>resourceFormRequest===controller&&resourceFormRevision===revision&&formOpen.value
+  &&identity===resourceFormIdentity.value&&section===formSection.value&&id===formEditingID.value&&canUseResourceForm()
+  &&(!permission||auth.canAny([permission]))
+ return {controller,current,identity,options:{headers:{'X-EDO-Project-ID':projectID},signal:controller.signal}}
+}
+function finishResourceFormRequest(controller:AbortController){
+ if(resourceFormRequest!==controller)return
+ resourceFormRequest=undefined;resourceFormRequiredPermission.value='';saving.value=false;testing.value=false
+}
+watch([resourceFormIdentity,()=>auth.canAny([resourceFormReadPermission.value]),canSaveCurrent,
+ ()=>!resourceFormRequiredPermission.value||auth.canAny([resourceFormRequiredPermission.value])],([identity], [previousIdentity])=>{
+ if(formOpen.value&&(identity!==previousIdentity||!canUseResourceForm()||(resourceFormRequiredPermission.value&&!auth.canAny([resourceFormRequiredPermission.value]))))formOpen.value=false
+},{flush:'sync'})
+watch(formOpen,open=>{if(!open)resetResourceForm()},{flush:'sync'})
 const releasePlanAddApplicationTarget=computed(()=>{
  const plan=releasePlans.value.find(item=>item.id===releasePlanAddApplicationPlanID.value)
  const group=plan?.groups?.find(item=>item.id===releasePlanAddApplicationGroupID.value)
@@ -972,7 +1007,8 @@ function resetForms(){
  Object.assign(registryForm,{name:'',provider:'generic',endpoint:'https://',namespace:'',username:'',credential:'',allow_insecure_http:false})
 }
 function create(){
- resetForms()
+ if(saving.value||testing.value||(props.section!=='release-plans'&&!canOpenResourceForm(false)))return
+ resetResourceForm()
  if(props.section==='release-plans'){
   releasePlanEditorPlan.value={
    id:'',name:'',version:'',description:'',status:'draft',is_active:true,created_at:'',
@@ -1019,6 +1055,8 @@ function repositoryCredentialSaved(credential:Credential){
  }
 }
 function edit(row:ResourceRecord){
+ if(saving.value||testing.value||!canOpenResourceForm(true))return
+ resetResourceForm()
  editingID.value=String(row.id)
  selectedWorkflowTemplateID.value=''
  workflowRemovalID.value=''
@@ -1041,7 +1079,8 @@ function edit(row:ResourceRecord){
  formOpen.value=true
 }
 async function save(){
- if(saving.value||testing.value||credentialCreation.open||!canSaveCurrent.value)return
+ if(saving.value||testing.value||credentialCreation.open||!formOpen.value||!canUseResourceForm())return
+ const request=startResourceFormRequest()
  saving.value=true
  try{
   const section=formSection.value
@@ -1090,25 +1129,33 @@ async function save(){
    endpoint='/image-registries';payload=registryRequestPayload()
   }
   const creatingDeliveryApplication=section==='applications'&&!editingID.value&&!appForm.workflow_template_id
-  const response=await client[method](endpoint,payload)
-  if(section==='applications'&&editingID.value&&pendingWorkflowTemplateID){
-   await client.post(`/applications/${editingID.value}/workflows`,{workflow_template_id:pendingWorkflowTemplateID})
+  const response=await client[method](endpoint,payload,request.options)
+  if(!request.current())return
+  if(section==='applications'&&resourceID&&pendingWorkflowTemplateID){
+   await client.post(`/applications/${resourceID}/workflows`,{workflow_template_id:pendingWorkflowTemplateID},request.options)
+   if(!request.current())return
   }
   const savedRepository=section==='repositories'?(response.data as {repository?:Repository}).repository:undefined
   const savedWebhookAPI=creatingRepository&&repoForm.webhook_enabled&&savedRepository?.webhook_url
    ?new URL(savedRepository.webhook_url,window.location.origin).toString()
    :''
+  let completionRevision=resourceFormRevision
   if(creatingApplicationRepository.value&&savedRepository){
    repositories.value=[savedRepository,...repositories.value.filter(item=>item.id!==savedRepository.id)]
    appForm.repository_id=savedRepository.id
    creatingApplicationRepository.value=false
    message.success(t('applicationForm.repositoryCreated'))
   }else{
-   message.success('配置已保存');formOpen.value=false;resetForms();await refresh()
+   message.success('配置已保存');formOpen.value=false;completionRevision=resourceFormRevision;await refresh()
   }
+  if(planExecutionDisposed||request.identity!==resourceFormIdentity.value||completionRevision!==resourceFormRevision)return
   if(creatingDeliveryApplication&&canConfigureDelivery.value){configureDelivery((response.data as {application:Application}).application.id)}
   if(savedWebhookAPI)Modal.info({title:'Webhook 已启用',width:650,okText:'关闭',content:()=>`Webhook API：${savedWebhookAPI}`})
- }catch(error){message.error(apiErrorMessage(error))}finally{saving.value=false}
+ }catch(error){
+  if(!request.current())return
+  if(isMutationAcknowledged(error)){formOpen.value=false;message.info('请求已受理，请重新查看结果，勿重复提交。')}
+  else message.error(apiErrorMessage(error))
+ }finally{finishResourceFormRequest(request.controller)}
 }
 
 async function copyRepositoryWebhookAPI(){
@@ -1239,9 +1286,9 @@ function confirmDeleteBuildPlan(plan:Pick<BuildPlan,'id'|'name'>){
  })
  resourceStatusDialog=dialog
 }
-async function testRepository(){if(testing.value||saving.value)return;testing.value=true;try{const payload={...repoForm,credential_id:repoForm.auth_type==='none'?null:repoForm.credential_id||null,api_credential_id:repoForm.provider==='generic'?'':repoForm.api_credential_id||'',credential:null,regenerate_webhook:false};const result=formEditingID.value?await client.post<RefResult>(`/repositories/${formEditingID.value}/test`,undefined,{timeout:35000}):await client.post<RefResult>('/repositories/test',payload,{timeout:35000});message.success(`连接成功：${result.data.branches?.length||0} 个分支，${result.data.tags?.length||0} 个标签`)}catch(error){message.error(apiErrorMessage(error))}finally{testing.value=false}}
+async function testRepository(){if(testing.value||saving.value||!formOpen.value||!canUseResourceForm()||!auth.canAny(['repository.execute']))return;const request=startResourceFormRequest('repository.execute');testing.value=true;try{const payload={...repoForm,credential_id:repoForm.auth_type==='none'?null:repoForm.credential_id||null,api_credential_id:repoForm.provider==='generic'?'':repoForm.api_credential_id||'',credential:null,regenerate_webhook:false};const result=formEditingID.value?await client.post<RefResult>(`/repositories/${formEditingID.value}/test`,undefined,{...request.options,timeout:35000}):await client.post<RefResult>('/repositories/test',payload,{...request.options,timeout:35000});if(request.current())message.success(`连接成功：${result.data.branches?.length||0} 个分支，${result.data.tags?.length||0} 个标签`)}catch(error){if(request.current())message.error(apiErrorMessage(error))}finally{finishResourceFormRequest(request.controller)}}
 async function testStoredRepository(repository:Repository){repositoryTestingID.value=repository.id;try{const result=await client.post<RefResult>(`/repositories/${repository.id}/test`,undefined,{timeout:35000});message.success(`连接成功：${result.data.branches?.length||0} 个分支，${result.data.tags?.length||0} 个标签`);await refresh()}catch(error){message.error(apiErrorMessage(error))}finally{repositoryTestingID.value=''}}
-async function testRegistry(){testing.value=true;registryTested.value=false;try{await client.post('/image-registries/test',registryRequestPayload(),{timeout:35000});registryTested.value=true;message.success('镜像仓库登录成功')}catch(error){message.error(apiErrorMessage(error))}finally{testing.value=false}}
+async function testRegistry(){if(testing.value||saving.value||!formOpen.value||!canUseResourceForm()||!auth.canAny(['image_registry.execute']))return;const request=startResourceFormRequest('image_registry.execute'),payload=registryRequestPayload(),snapshot=JSON.stringify(payload);testing.value=true;registryTested.value=false;try{await client.post('/image-registries/test',payload,{...request.options,timeout:35000});if(!request.current()||snapshot!==JSON.stringify(registryRequestPayload()))return;registryTested.value=true;message.success('镜像仓库登录成功')}catch(error){if(request.current()&&snapshot===JSON.stringify(registryRequestPayload()))message.error(apiErrorMessage(error))}finally{finishResourceFormRequest(request.controller)}}
 async function action(path:string){try{await client.post(path,undefined,{timeout:35000});await refresh()}catch(error){message.error(apiErrorMessage(error))}}
 function canStopRun(run:Run){return ['detected','ready','blocked','awaiting_approval','running'].includes(run.status)}
 function confirmStopRun(run:Run){
@@ -1884,7 +1931,7 @@ watch(()=>props.section,connectDeliveryEvents)
 onMounted(()=>{window.addEventListener('edo:projects-changed',syncPlanExecutionProject)})
 onMounted(()=>{connectDeliveryEvents();void refresh().then(()=>{lastDeliverySync=Date.now();syncBuildPlanSelection();consumeBuildCreateRequest();consumeDeliveryRequest();void revealActiveApplication()});releaseTimer=window.setInterval(refreshVisibleState,5000);document.addEventListener('visibilitychange',onDeliveryPageVisible);window.addEventListener('focus',onDeliveryPageVisible)})
 onBeforeUnmount(()=>{for(const controller of runApprovalRequests.values())controller.abort();runListController?.abort();executionController?.abort();runQueryRevision++;executionRevision++;stopDeliveryEvents?.();clearTimeout(deliveryRefreshTimer);resetPlanExecution();clearInterval(releaseTimer);document.removeEventListener('visibilitychange',onDeliveryPageVisible);window.removeEventListener('focus',onDeliveryPageVisible)})
-onBeforeUnmount(()=>{planExecutionDisposed=true;resetPlanExecutionScope();resetResourceStatus();window.removeEventListener('edo:projects-changed',syncPlanExecutionProject)})
+onBeforeUnmount(()=>{planExecutionDisposed=true;formOpen.value=false;resetResourceForm();resetPlanExecutionScope();resetResourceStatus();window.removeEventListener('edo:projects-changed',syncPlanExecutionProject)})
 </script>
 
 <template><section :class="{'applications-page':props.section==='applications'}"><PageToolbar :description="props.section==='applications'?t('applicationWorkspace.description'):currentDescription"><a-tag v-if="props.section==='applications'||props.section==='release-plans'" color="processing">{{ t('applicationCard.autoRefresh') }}</a-tag><a-button :loading="loading" @click="refresh"><RefreshCw :size="15"/>刷新</a-button><a-button v-if="props.section==='release-plans'&&releaseView==='runs'&&auth.canAny(['pipeline_run.execute'])&&auth.canAny(['application.read'])" type="primary" :disabled="saving" @click="openManualPicker">{{ t('manualRun.execute') }}</a-button><a-button v-if="canCreate&&(props.section!=='release-plans'||releaseView==='plans')" type="primary" @click="create"><Plus :size="15"/>{{ props.section==='release-plans'?'创建发布计划':props.section==='applications'?t('applicationWorkspace.create'):'新建' }}</a-button></PageToolbar>

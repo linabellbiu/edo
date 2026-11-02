@@ -1,12 +1,14 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { componentHarness, loadFrontend } from './acceptanceHarness.mjs'
+import * as vue from 'vue'
 
 function harness(t, { editing = false, api = {}, codes = ['build_plan.read', 'build_plan.create', 'build_plan.update'] } = {}) {
+  const auth = vue.reactive({ user: { id: 'operator', department_id: 'department-a', project_id: 'project-a', permissions: [...codes] }, canAny(required) { return required.some(code => this.user.permissions.includes(code)) } })
   const h = componentHarness('../src/views/DevOpsView.vue', {
     props: { section: 'build-plans' }, codes, api,
-    modules: { '@/utils/deploymentInstances': loadFrontend('../src/utils/deploymentInstances.ts') },
-    globals: { document: { hidden: true } },
+    modules: { '@/stores/auth': { useAuthStore: () => auth }, '@/utils/deploymentInstances': loadFrontend('../src/utils/deploymentInstances.ts') },
+    globals: { document: { hidden: true }, localStorage: { getItem: () => 'project-a' } },
   })
   t.after(h.stop)
   if (editing) h.state.edit({ id: 'plan-a', name: '构建方案', kind: 'dockerfile' })

@@ -35,13 +35,14 @@ function formHarness({ section = 'applications', repositoryCreate = true, creden
     'vue-router': { useRoute: () => ({ query: {} }), useRouter: () => ({}) },
     'vue-i18n': { useI18n: () => ({ t: key => key, locale: vue.ref('zh-CN') }) },
     'ant-design-vue': { Modal: {}, message: { success: value => notifications.push(value), error: value => notifications.push(value) } },
-    '@/stores/auth': { useAuthStore: () => ({ canAny: permissions => permissions.some(permission => permission === 'repository.create' ? repositoryCreate : permission === 'credential.create' ? credentialCreate : true) }) },
+    '@/stores/auth': { useAuthStore: () => ({ user: { id: 'operator', department_id: 'department-a', project_id: 'project-a' }, canAny: permissions => permissions.some(permission => permission === 'repository.create' ? repositoryCreate : permission === 'credential.create' ? credentialCreate : true) }) },
     '@/api/client': { __esModule: true, default: client },
-    '@/api/resources': { apiErrorMessage: () => '请求失败' },
+    '@/api/resources': { apiErrorMessage: () => '请求失败', isMutationAcknowledged: () => false },
   }
   const module = { exports: {} }
-  new Function('require', 'module', 'exports', 'localStorage', outputText)(name => modules[name] || {}, module, module.exports, { getItem: () => null })
+  new Function('require', 'module', 'exports', 'localStorage', outputText)(name => modules[name] || {}, module, module.exports, { getItem: () => 'project-a' })
   const state = module.exports.default.setup({ section }, { expose() {} })
+  state.formOpen.value = true
   return { state, requests, notifications, saved, fail: error => { failure = error } }
 }
 
