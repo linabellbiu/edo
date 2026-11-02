@@ -7,15 +7,15 @@ import { loadFrontend } from './acceptanceHarness.mjs'
 
 const settle = async () => { await vue.nextTick(); await new Promise(resolve => setImmediate(resolve)) }
 const deferred = () => { let resolve, reject; const promise = new Promise((yes, no) => { resolve = yes; reject = no }); return { promise, resolve, reject } }
-const codes = ['application.read', 'application.update', 'repository.read', 'repository.update']
+const codes = ['application.read', 'application.update', 'repository.read', 'repository.update', 'build_plan.read', 'build_plan.update', 'build_plan.delete', 'image_registry.read']
 
 async function harness({ section = 'applications', patch, get } = {}) {
   const requests = [], confirmations = [], notifications = [], unmounts = []
-  const auth = vue.reactive({ user: { id: 'operator', project_id: 'project-a', department_id: 'department-a', permissions: [...codes] }, canAny(required) { return required.some(code => this.user?.permissions.includes(code)) } })
+  const auth = vue.reactive({ authorizationReady: true, user: { id: 'operator', project_id: 'project-a', department_id: 'department-a', permissions: [...codes] }, canAny(required) { return this.authorizationReady && required.some(code => this.user?.permissions.includes(code)) } })
   const storage = { project: 'project-a' }, window = new EventTarget()
-  const rows = { applications: [{ id: 'app-a', name: '应用甲', repository_id: 'repo-a', is_active: true, workflows: [] }], repositories: [{ id: 'repo-a', name: '仓库甲', is_active: true }] }
+  const rows = { applications: [{ id: 'app-a', name: '应用甲', repository_id: 'repo-a', is_active: true, workflows: [] }], repositories: [{ id: 'repo-a', name: '仓库甲', is_active: true }], build_plans: [{ id: 'build-a', name: '构建甲', kind: 'dockerfile', is_active: true }], image_registries: [{ id: 'registry-a', name: '镜像仓库甲', provider: 'generic', endpoint: 'https://registry.example', namespace: 'demo' }] }
   const client = {
-    async get(path, options) { requests.push({ method: 'get', path, options }); return await get?.(path, options) || { data: path === '/applications' ? { applications: structuredClone(rows.applications) } : path === '/repositories' ? { repositories: structuredClone(rows.repositories) } : {} } },
+    async get(path, options) { requests.push({ method: 'get', path, options }); return await get?.(path, options) || { data: path === '/applications' ? { applications: structuredClone(rows.applications) } : path === '/repositories' ? { repositories: structuredClone(rows.repositories) } : path === '/build-plans' ? { build_plans: structuredClone(rows.build_plans) } : path === '/image-registries' ? { image_registries: structuredClone(rows.image_registries) } : {} } },
     async patch(path, body, options) { requests.push({ method: 'patch', path, body, options }); if (patch) return patch(path, body, options); rows[section][0].is_active = body.active; return { status: 204 } },
   }
   const Modal = { confirm(config) { const dialog = { ...config, destroyed: false, destroy() { this.destroyed = true }, update(value) { Object.assign(this, value) } }; confirmations.push(dialog); return dialog } }
@@ -100,11 +100,13 @@ test('只读角色没有启停权限，撤权后旧确认不可继续执行', as
 test('切换项目中止旧提交，迟到成功不提示、不刷新或覆盖新范围', async t => {
   const pending = deferred(), h = await harness({ patch: () => pending.promise }); t.after(h.stop)
   h.state.confirmResourceStatus(h.state.applications.value[0]); const saving = submit(h.confirmations[0]), request = writes(h)[0]
+  h.rows.applications = [{ id: 'app-b', name: '应用乙', is_active: true, workflows: [] }]
   h.storage.project = 'project-b'; h.state.syncPlanExecutionProject(); h.auth.user.project_id = 'project-b'; await settle()
   const count = h.requests.length; pending.resolve({ status: 204 }); await saving
   assert.equal(request.options.signal.aborted, true); assert.equal(h.confirmations[0].destroyed, true)
   assert.equal(h.requests.length, count); assert.equal(h.notifications.length, 0)
   assert.equal(h.state.applications.value.some(row => row.id === 'app-a'), false)
+  assert.deepEqual(h.state.applications.value.map(row => row.id), ['app-b'])
 })
 
 test('启停在应用更多菜单与详情、仓库更多菜单提供，均沿用修改权限和忙碌状态', () => {
@@ -115,4 +117,121 @@ test('启停在应用更多菜单与详情、仓库更多菜单提供，均沿�
     assert.ok([...parents, node].some(item => item.props?.some(prop => prop.type === 7 && prop.name === 'if' && prop.exp?.content.includes('canUpdate'))))
     assert.ok(node.props.some(prop => prop.type === 7 && prop.name === 'bind' && prop.arg?.content === 'disabled' && prop.exp?.content.includes('resourceMutationID')))
   }
+})
+
+test('构建方案撤权再恢复后自动重读当前范围，删除入口无需手动刷新', async t => {
+  const h = await harness({ section: 'build-plans' }); t.after(h.stop)
+  const reads = () => h.requests.filter(x => x.method === 'get' && x.path === '/build-plans')
+  h.auth.authorizationReady = false; h.auth.user.permissions = ['build_plan.read']; await settle()
+  const waiting = reads().length; assert.equal(waiting, 1)
+  h.auth.authorizationReady = true; await settle()
+  assert.equal(reads().length, waiting + 1)
+  h.state.confirmDeleteBuildPlan(h.state.buildPlans.value[0]); assert.equal(h.confirmations.length, 0)
+  h.auth.authorizationReady = false; h.auth.user.permissions = ['build_plan.read', 'build_plan.delete']; await settle()
+  const beforeRestore = reads().length
+  h.auth.authorizationReady = true; await settle()
+  assert.equal(reads().length, beforeRestore + 1)
+  assert.equal(reads().at(-1).options.headers['X-EDO-Project-ID'], 'project-a')
+  h.state.confirmDeleteBuildPlan(h.state.buildPlans.value[0]); assert.equal(h.confirmations.length, 1)
+  assert.match(h.confirmations[0].title, /构建甲/)
+})
+
+for (const section of ['applications', 'repositories']) test(`${section} 修改权限恢复后重新取得当前范围，仓库不依赖应用权限`, async t => {
+  const h = await harness({ section }); t.after(h.stop)
+  const code = section === 'applications' ? 'application' : 'repository'
+  h.auth.authorizationReady = false; h.auth.user.permissions = [`${code}.read`]; await settle()
+  h.auth.authorizationReady = true; await settle()
+  const before = h.requests.filter(x => x.method === 'get' && x.path === `/${section}`).length
+  h.auth.authorizationReady = false; h.auth.user.permissions = [`${code}.read`, `${code}.update`]; await settle()
+  h.auth.authorizationReady = true; await settle()
+  assert.equal(h.requests.filter(x => x.method === 'get' && x.path === `/${section}`).length, before + 1)
+  h.state.confirmResourceStatus(h.state[section].value[0]); assert.equal(h.confirmations.length, 1)
+})
+
+test('同身份同权限校准恢复不重复读取业务列表，也不使已加载删除入口失效', async t => {
+  const h = await harness({ section: 'build-plans' }); t.after(h.stop)
+  const before = h.requests.length
+  for (let i = 0; i < 3; i++) { h.auth.authorizationReady = false; await settle(); h.auth.authorizationReady = true; await settle() }
+  assert.equal(h.requests.length, before)
+  h.state.confirmDeleteBuildPlan(h.state.buildPlans.value[0]); assert.equal(h.confirmations.length, 1)
+})
+
+test('校准期间空读取不能冒充当前范围已加载，恢复后须重新取得真实列表', async t => {
+  const h = await harness({ section: 'build-plans' }); t.after(h.stop)
+  h.auth.authorizationReady = false; await h.state.refresh(); await settle()
+  assert.deepEqual(h.state.buildPlans.value, [])
+  const before = h.requests.length
+  h.auth.authorizationReady = true; await settle()
+  assert(h.requests.length > before)
+  assert.deepEqual(h.state.buildPlans.value.map(x => x.id), ['build-a'])
+  h.state.confirmDeleteBuildPlan(h.state.buildPlans.value[0]); assert.equal(h.confirmations.length, 1)
+})
+
+test('同一新范围已有显式读取在途时，授权恢复不再重复发出业务读取', async t => {
+  const pending = deferred(); let delay = false, reads = 0
+  const h = await harness({ section: 'build-plans', get(path) { if (path === '/build-plans' && delay) { reads++; return pending.promise } } }); t.after(h.stop)
+  h.auth.authorizationReady = false; h.auth.user.permissions.push('monitor.read'); await settle()
+  delay = true; h.auth.authorizationReady = true; const explicit = h.state.refresh(); await settle()
+  assert.equal(reads, 1)
+  pending.resolve({ data: { build_plans: structuredClone(h.rows.build_plans) } }); await explicit; await settle()
+  assert.equal(reads, 1)
+  h.state.confirmDeleteBuildPlan(h.state.buildPlans.value[0]); assert.equal(h.confirmations.length, 1)
+})
+
+test('checking空读取结算前同步恢复Ready，须补一次真实读取且不能形成重试循环', async t => {
+  const h = await harness({ section: 'build-plans' }); t.after(h.stop)
+  const reads = () => h.requests.filter(x => x.method === 'get' && x.path === '/build-plans').length
+  const before = reads()
+  h.auth.authorizationReady = false; const empty = h.state.refresh(); h.auth.authorizationReady = true
+  await empty; await settle(); await settle()
+  assert.equal(reads(), before + 1)
+  assert.deepEqual(h.state.buildPlans.value.map(x => x.id), ['build-a'])
+  await settle(); assert.equal(reads(), before + 1)
+  h.state.confirmDeleteBuildPlan(h.state.buildPlans.value[0]); assert.equal(h.confirmations.length, 1)
+})
+
+test('镜像仓库授权恢复自动取得当前列表，不依赖应用权限', async t => {
+  const h = await harness({ section: 'image-registries' }); t.after(h.stop)
+  h.auth.authorizationReady = false; h.auth.user.permissions = ['build_plan.read']; await settle()
+  h.auth.authorizationReady = true; await settle()
+  const before = h.requests.filter(x => x.method === 'get' && x.path === '/image-registries').length
+  h.auth.authorizationReady = false; h.auth.user.permissions = ['image_registry.read']; await settle()
+  h.auth.authorizationReady = true; await settle()
+  assert.equal(h.requests.filter(x => x.method === 'get' && x.path === '/image-registries').length, before + 1)
+  assert.deepEqual(h.state.registries.value, h.rows.image_registries)
+})
+
+test('独立发布计划流程不被通用资源授权恢复额外读取', async t => {
+  const h = await harness({ section: 'release-plans' }); t.after(h.stop)
+  const before = h.requests.length
+  h.auth.authorizationReady = false; h.auth.user.permissions.push('release_plan.read'); await settle()
+  h.auth.authorizationReady = true; await settle()
+  assert.equal(h.requests.length, before)
+})
+
+test('权限已变但项目上下文尚未一致时不能自动读取旧项目', async t => {
+  const h = await harness({ section: 'build-plans' }); t.after(h.stop)
+  const before = h.requests.length
+  h.auth.authorizationReady = false; h.auth.user.project_id = 'project-b'; h.auth.user.permissions.push('monitor.read'); await settle()
+  h.auth.authorizationReady = true; await settle()
+  assert.equal(h.requests.length, before)
+  h.state.confirmDeleteBuildPlan(h.state.buildPlans.value[0]); assert.equal(h.confirmations.length, 0)
+})
+
+test('恢复授权触发的旧范围读取迟到时不能覆盖新项目', async t => {
+  const pending = deferred(); let delayOld = false, pendingReads = 0
+  const h = await harness({ section: 'build-plans', get(path, options) {
+    if (path !== '/build-plans') return
+    const project = options.headers['X-EDO-Project-ID']
+    if (project === 'project-a' && delayOld) { pendingReads++; return pending.promise }
+    if (project === 'project-b') return { data: { build_plans: [{ id: 'build-b', name: '构建乙', kind: 'dockerfile', is_active: true }] } }
+  } }); t.after(h.stop)
+  delayOld = true; h.auth.authorizationReady = false; h.auth.user.permissions.push('monitor.read'); await settle()
+  h.auth.authorizationReady = true; await settle(); assert.equal(pendingReads, 1)
+  h.auth.authorizationReady = false; h.storage.project = 'project-b'; h.auth.user.project_id = 'project-b'; h.state.syncPlanExecutionProject(); await settle()
+  h.auth.authorizationReady = true; await settle()
+  assert.deepEqual(h.state.buildPlans.value.map(x => x.id), ['build-b'])
+  pending.resolve({ data: { build_plans: [{ id: 'stale-build', name: '迟到构建', kind: 'dockerfile', is_active: true }] } }); await settle()
+  assert.deepEqual(h.state.buildPlans.value.map(x => x.id), ['build-b'])
+  h.state.confirmDeleteBuildPlan(h.state.buildPlans.value[0]); assert.equal(h.confirmations.length, 1)
 })

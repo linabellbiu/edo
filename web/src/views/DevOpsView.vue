@@ -121,11 +121,11 @@ const planExecutionScopeIdentity=computed(()=>JSON.stringify([auth.user?.id,auth
 const planExecutionRequests=new Set<AbortController>()
 let planExecutionOpenedScope:PlanExecutionScope|undefined
 let planExecutionEpoch=0,planExecutionDisposed=false
-let resourceLoadedScope='',resourceRefreshRevision=0
+let resourceLoadedScope='',resourceLoadingScope='',resourceRefreshRevision=0
 let resourceStatusDialog:ReturnType<typeof Modal.confirm>|undefined
 function resourceScopeKey(){return JSON.stringify([planExecutionScopeIdentity.value,planExecutionEpoch,typeof localStorage==='undefined'?'':localStorage.getItem('edo.project')||''])}
 function resourceReadOptions(){return {headers:{'X-EDO-Project-ID':planExecutionSelectedProject.value}}}
-function resetResourceStatus(){if(resourceStatusDialog)resourceMutationID.value='';resourceStatusDialog?.destroy();resourceStatusDialog=undefined;resourceLoadedScope='';resourceRefreshRevision++;loading.value=false;if(['applications','repositories'].includes(props.section)){applications.value=[];repositories.value=[];closeApplicationDetails()}}
+function resetResourceStatus(){if(resourceStatusDialog)resourceMutationID.value='';resourceStatusDialog?.destroy();resourceStatusDialog=undefined;resourceLoadedScope='';resourceLoadingScope='';resourceRefreshRevision++;loading.value=false;if(['applications','repositories'].includes(props.section)){applications.value=[];repositories.value=[];closeApplicationDetails()}}
 const DEFAULT_APPLICATION_POLL_INTERVAL=3
 const appForm=reactive({name:'',description:'',repository_id:'',workflow_template_id:'',poll_interval_seconds:DEFAULT_APPLICATION_POLL_INTERVAL})
 const repoForm=reactive({name:'',provider:'github',clone_url:'',default_branch:'main',auth_type:'none',username:'',credential_id:'',api_credential_id:'',webhook_enabled:false,allow_insecure_http:false})
@@ -932,7 +932,43 @@ function changeRunPage(pagination:{current?:number;pageSize?:number}){
  void router.push({query:pipelineRunRouteQuery(route.query,filters)})
 }
 
-async function refresh(){const section=props.section,view=releaseView.value,scope=resourceScopeKey(),revision=++resourceRefreshRevision,options=resourceReadOptions();loading.value=true;try{const requests=await Promise.all([auth.canAny(['application.read'])?client.get<{applications:Application[]}>('/applications',options):null,auth.canAny(['repository.read'])?client.get<{repositories:Repository[]}>('/repositories',options):null,auth.canAny(['credential.read'])?client.get<{credentials:Credential[]}>('/git-credentials',options):null,auth.canAny(['build_plan.read'])?client.get<{build_plans:BuildPlan[]}>('/build-plans',options):null,auth.canAny(['image_registry.read'])?client.get<{image_registries:Registry[]}>('/image-registries',options):null,auth.canAny(['pipeline_run.read'])&&!(section==='release-plans'&&view==='runs')?client.get<{pipeline_runs:Run[]}>('/pipeline-runs?limit=200',options):null,auth.canAny(['release_plan.read'])?client.get<{release_plans:ReleasePlan[]}>('/release-plans',options):null,canReadDeployments.value?client.get<{deployments:DeploymentRecord[]}>('/deployments?limit=200',options):null,auth.canAny(['deployment_plan.read'])?client.get<{deployment_plans:DeploymentPlan[]}>('/deployment-plans',options):null,auth.canAny(['workflow.read'])?client.get<{workflow_templates:WorkflowTemplate[]}>('/workflow-templates',options):null]);if(section!==props.section||view!==releaseView.value||scope!==resourceScopeKey()||revision!==resourceRefreshRevision)return;resourceLoadedScope=scope;applications.value=requests[0]?.data.applications||[];repositories.value=requests[1]?.data.repositories||[];credentials.value=requests[2]?.data.credentials||[];buildPlans.value=requests[3]?.data.build_plans||[];registries.value=requests[4]?.data.image_registries||[];if(!(section==='release-plans'&&view==='runs'))runs.value=requests[5]?.data.pipeline_runs||[];releasePlans.value=requests[6]?.data.release_plans||[];deployments.value=requests[7]?.data.deployments||[];deploymentPlans.value=requests[8]?.data.deployment_plans||[];workflowTemplates.value=requests[9]?.data.workflow_templates||[];if(section==='release-plans'&&view==='runs')await loadRunPage(true);if(requestedRunID.value)void revealRequestedRun();await refreshVisibleRunDeployments();await refreshRunApprovals()}catch(error){if(scope===resourceScopeKey()&&revision===resourceRefreshRevision)message.error(apiErrorMessage(error))}finally{if(revision===resourceRefreshRevision)loading.value=false}}
+async function refresh(){
+ const section=props.section,view=releaseView.value,scope=resourceScopeKey(),revision=++resourceRefreshRevision,options=resourceReadOptions()
+ const readPermission=resourceFormReadPermission.value,primaryReadRequested=auth.canAny([readPermission])
+ resourceLoadingScope=primaryReadRequested?scope:'';loading.value=true
+ if(!primaryReadRequested)resourceLoadedScope=''
+ try{
+  const requests=await Promise.all([
+   auth.canAny(['application.read'])?client.get<{applications:Application[]}>('/applications',options):null,
+   auth.canAny(['repository.read'])?client.get<{repositories:Repository[]}>('/repositories',options):null,
+   auth.canAny(['credential.read'])?client.get<{credentials:Credential[]}>('/git-credentials',options):null,
+   auth.canAny(['build_plan.read'])?client.get<{build_plans:BuildPlan[]}>('/build-plans',options):null,
+   auth.canAny(['image_registry.read'])?client.get<{image_registries:Registry[]}>('/image-registries',options):null,
+   auth.canAny(['pipeline_run.read'])&&!(section==='release-plans'&&view==='runs')?client.get<{pipeline_runs:Run[]}>('/pipeline-runs?limit=200',options):null,
+   auth.canAny(['release_plan.read'])?client.get<{release_plans:ReleasePlan[]}>('/release-plans',options):null,
+   canReadDeployments.value?client.get<{deployments:DeploymentRecord[]}>('/deployments?limit=200',options):null,
+   auth.canAny(['deployment_plan.read'])?client.get<{deployment_plans:DeploymentPlan[]}>('/deployment-plans',options):null,
+   auth.canAny(['workflow.read'])?client.get<{workflow_templates:WorkflowTemplate[]}>('/workflow-templates',options):null,
+  ])
+  if(section!==props.section||view!==releaseView.value||scope!==resourceScopeKey()||revision!==resourceRefreshRevision)return
+  resourceLoadedScope=primaryReadRequested&&auth.canAny([readPermission])?scope:''
+  applications.value=requests[0]?.data.applications||[];repositories.value=requests[1]?.data.repositories||[];credentials.value=requests[2]?.data.credentials||[]
+  buildPlans.value=requests[3]?.data.build_plans||[];registries.value=requests[4]?.data.image_registries||[]
+  if(!(section==='release-plans'&&view==='runs'))runs.value=requests[5]?.data.pipeline_runs||[]
+  releasePlans.value=requests[6]?.data.release_plans||[];deployments.value=requests[7]?.data.deployments||[]
+  deploymentPlans.value=requests[8]?.data.deployment_plans||[];workflowTemplates.value=requests[9]?.data.workflow_templates||[]
+  if(section==='release-plans'&&view==='runs')await loadRunPage(true)
+  if(requestedRunID.value)void revealRequestedRun()
+  await refreshVisibleRunDeployments();await refreshRunApprovals()
+ }catch(error){if(scope===resourceScopeKey()&&revision===resourceRefreshRevision)message.error(apiErrorMessage(error))}
+ finally{if(revision===resourceRefreshRevision){loading.value=false;resourceLoadingScope='';if(!primaryReadRequested)refreshAuthorizedResourceScope()}}
+}
+function refreshAuthorizedResourceScope(){
+ // 授权范围变化后重取列表；同范围校准和已经在途的读取不重复请求。
+ if(!['applications','repositories','build-plans','image-registries'].includes(props.section)||!auth.authorizationReady||!resourceFormIdentityReady())return
+ const scope=resourceScopeKey()
+ if(resourceLoadedScope!==scope&&resourceLoadingScope!==scope)void refresh()
+}
 let stateRefreshing=false
 async function refreshApplicationState(){
  const section=props.section,view=releaseView.value,scope=resourceScopeKey()
@@ -1927,6 +1963,7 @@ watch(()=>visibleApprovalRuns().map(run=>`${run.id}:${run.current_node_id}`).joi
 watch(approvalScope,()=>{for(const controller of runApprovalRequests.values())controller.abort();runApprovalRequests.clear();runApprovals.value={};runApprovalLoading.value={};runApprovalErrors.value={};void refreshRunApprovals()})
 watch(planExecutionScopeIdentity,resetPlanExecutionScope,{flush:'sync'})
 watch(planExecutionScopeIdentity,resetResourceStatus,{flush:'sync'})
+watch([planExecutionScopeIdentity,()=>auth.authorizationReady],refreshAuthorizedResourceScope,{flush:'post'})
 watch(()=>props.section,connectDeliveryEvents)
 onMounted(()=>{window.addEventListener('edo:projects-changed',syncPlanExecutionProject)})
 onMounted(()=>{connectDeliveryEvents();void refresh().then(()=>{lastDeliverySync=Date.now();syncBuildPlanSelection();consumeBuildCreateRequest();consumeDeliveryRequest();void revealActiveApplication()});releaseTimer=window.setInterval(refreshVisibleState,5000);document.addEventListener('visibilitychange',onDeliveryPageVisible);window.addEventListener('focus',onDeliveryPageVisible)})
