@@ -55,6 +55,9 @@ EDO_TEST_DATABASE_DRIVER=postgres go test -race -count=1 -timeout=20m ./internal
 
 # 先设置指向另一个独立测试库的 EDO_TEST_MYSQL_DSN。
 EDO_TEST_DATABASE_DRIVER=mysql go test -race -count=1 -timeout=20m ./internal/database -run '^TestExternal(Database|Assistant)Migration$'
+
+# 复用该独立MySQL测试库，另验产品连接池的两个物理连接及重连后会话时区。
+EDO_TEST_DATABASE_DRIVER=mysql go test -race -count=1 -timeout=5m ./internal/database -run '^TestExternalMySQLSessionTimezoneAndScanning$'
 ```
 
 上面两项验证完成后，同一专用库还可执行 `./internal/pipeline -run '^TestLatestReleasePlanExecutionsExternalDatabases$'`，沿用所选驱动和对应的 `EDO_TEST_*_DSN`，并保留相同的 `-race -count=1 -timeout=20m` 参数。

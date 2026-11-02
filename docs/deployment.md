@@ -52,6 +52,8 @@ edo:password@tcp(mysql.example.com:3306)/edo?charset=utf8mb4&parseTime=True&loc=
 
 生产数据库账户应只拥有 EDO 数据库所需权限。迁移进程需要建表和索引权限；EDO 主服务可以在迁移后使用权限更小的运行账户。
 
+EDO 自身使用 MySQL 数据库时，会将 Go 时间解析和每个新建、重连的会话统一为 `Asia/Shanghai`，不依赖服务器默认时区；`loc` 本身不会设置 MySQL 会话时区。MySQL 必须已加载包含 `Asia/Shanghai` 的时区表，否则连接检查会失败，EDO 不会静默退回其他时区或自动修改数据库服务器。可由数据库管理员按 [MySQL 官方说明](https://dev.mysql.com/doc/refman/8.4/en/time-zone-support.html)准备时区数据。
+
 ## 探针与停机
 
 - `/api/v1/health/live` 只表示进程存活。

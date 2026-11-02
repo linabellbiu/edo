@@ -14,7 +14,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgconn"
-	"gorm.io/driver/mysql"
 	gormsqlite "gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 	gormlogger "gorm.io/gorm/logger"
@@ -113,7 +112,7 @@ func makeDialector(cfg config.Database) (gorm.Dialector, *sql.DB, error) {
 	case "postgres":
 		return postgresDialector(cfg.DSN)
 	case "mysql":
-		return mysql.Open(cfg.DSN), nil, nil
+		return mysqlDialector(cfg.DSN)
 	default:
 		return nil, nil, errors.New("不支持的数据库驱动")
 	}
