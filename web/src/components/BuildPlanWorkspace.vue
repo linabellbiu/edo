@@ -107,7 +107,7 @@ const overviewID = ref('')
 const overviewOpen = ref(false)
 const overviewPlan = computed(() => props.plans.find(plan => plan.id === overviewID.value))
 const drawerPlan = computed(() => artifactsOpen.value ? selected.value : overviewPlan.value)
-const artifactsOpen = computed(() => Boolean(selected.value && props.activeView === 'artifacts'))
+const artifactsOpen = computed(() => Boolean(props.canReadArtifacts && selected.value && props.activeView === 'artifacts'))
 const pageState = reactive({ current: 1, pageSize: 10 })
 const highlightedID = ref('')
 const planPagination = computed(() => ({
@@ -152,7 +152,7 @@ const artifactColumns = [
 ]
 
 const beforeArtifactUpload: UploadProps['beforeUpload'] = (file) => {
-  emit('upload', file)
+  if (props.canReadArtifacts && props.canUploadArtifacts && !uploadDisabled.value && !props.artifactUploading) emit('upload', file)
   return false
 }
 
@@ -164,7 +164,7 @@ function changePlanPage(page: { current?: number; pageSize?: number }) {
 }
 
 function openArtifacts(plan: BuildPlan) {
-  if (props.artifactUploading) return
+  if (!props.canReadArtifacts || props.artifactUploading) return
   overviewOpen.value = false
   highlightedID.value = plan.id
   if (plan.id !== props.selectedID) {

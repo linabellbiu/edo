@@ -16,6 +16,7 @@ function harness(changes = {}) {
   const props = vue.reactive({
     plans: Array.from({ length: 21 }, (_, index) => plan(`p${index + 1}`)), applications: [{ id: 'app', is_active: true }],
     artifacts: [], registries: [], selectedID: 'p1', requestedID: '', activeView: 'overview', selectedApplicationID: '', artifactUploading: false,
+    canReadArtifacts: true,
     ...changes,
   })
   const modules = { vue, 'vue-i18n': { useI18n: () => ({ t: key => key }) } }
@@ -121,4 +122,22 @@ test('制品容量统一使用二进制 GiB 与 MiB，保留微小非零值和�
   }
   assert.equal(state.formatArtifactSize({ kind: 'oci_image', size_bytes: 0 }), '未知')
   assert.equal(state.formatArtifactSize({ kind: 'file_bundle', size_bytes: 0 }), '0 MiB')
+})
+
+test('制品读取撤权立即隐藏抽屉，失效的入口和上传回调不能继续交互', async () => {
+  const { props, state, events } = harness({ activeView: 'artifacts', selectedApplicationID: 'app', canUploadArtifacts: true })
+  const file = new File(['public'], 'public.txt')
+  assert.equal(state.artifactsOpen.value, true)
+  state.beforeArtifactUpload(file)
+  assert.deepEqual(events, [['upload', file]])
+  events.length = 0; props.canReadArtifacts = false; await vue.nextTick()
+  assert.equal(state.artifactsOpen.value, false)
+  state.openArtifacts(props.plans[0]); state.beforeArtifactUpload(file)
+  assert.deepEqual(events, [])
+  props.canReadArtifacts = true; props.canUploadArtifacts = false
+  state.beforeArtifactUpload(file); assert.deepEqual(events, [])
+  props.canUploadArtifacts = true; props.artifactUploading = true
+  state.beforeArtifactUpload(file); assert.deepEqual(events, [])
+  props.artifactUploading = false; props.plans[0].is_active = false
+  state.beforeArtifactUpload(file); assert.deepEqual(events, [])
 })

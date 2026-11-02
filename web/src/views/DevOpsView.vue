@@ -1223,40 +1223,72 @@ function removeApplicationWorkflow(workflow:ApplicationWorkflow){
 function registryProviderLabel(provider:RegistryProvider){return ({harbor:'Harbor',docker_hub:'Docker Hub',generic:'通用 Registry'} as const)[provider]||provider}
 function registryEndpointLabel(registry:Registry){return registry.provider==='docker_hub'?'docker.io（系统固定）':registry.endpoint}
 function registryRequestPayload(){return {...registryForm,endpoint:dockerHubRegistry.value?'':registryForm.endpoint,allow_insecure_http:dockerHubRegistry.value?false:registryForm.allow_insecure_http,credential:registryForm.credential||null}}
+type ArtifactRequestKind='list'|'upload'|'download'
+const artifactRequests=new Map<ArtifactRequestKind,AbortController>()
+const artifactIdentity=computed(()=>JSON.stringify([auth.user?.id,auth.user?.department_id,auth.user?.project_id,auth.user?.is_superuser,planExecutionSelectedProject.value,props.section]))
+function artifactScopeKey(){return JSON.stringify([artifactIdentity.value,selectedBuildPlanID.value,artifactApplicationID.value,buildPlanView.value,typeof localStorage==='undefined'?'':localStorage.getItem('edo.project')])}
+function canUseArtifacts(upload=false){
+ if(props.section!=='build-plans'||buildPlanView.value!=='artifacts'||!resourceFormIdentityReady()||!auth.canAny(['artifact.read']))return false
+ const plan=buildPlans.value.find(item=>item.id===selectedBuildPlanID.value)
+ if(!plan)return false
+ return !upload||Boolean(plan.is_active&&auth.canAny(['artifact.create'])&&applications.value.some(item=>item.id===artifactApplicationID.value&&item.is_active))
+}
+function cancelArtifactRequest(kind:ArtifactRequestKind){
+ artifactRequests.get(kind)?.abort();artifactRequests.delete(kind)
+ if(kind==='list')artifactLoading.value=false
+ else if(kind==='upload')artifactUploading.value=false
+ else artifactDownloadingID.value=''
+}
+function resetArtifactRequests(){for(const kind of ['list','upload','download'] as const)cancelArtifactRequest(kind);artifacts.value=[]}
+function startArtifactRequest(kind:ArtifactRequestKind){
+ cancelArtifactRequest(kind)
+ const controller=new AbortController(),scope=artifactScopeKey(),projectID=planExecutionSelectedProject.value
+ artifactRequests.set(kind,controller)
+ return {controller,options:{headers:{'X-EDO-Project-ID':projectID},signal:controller.signal},current:()=>artifactRequests.get(kind)===controller&&!controller.signal.aborted&&scope===artifactScopeKey()&&canUseArtifacts(kind==='upload')}
+}
 async function loadArtifacts(){
  const buildPlanID=selectedBuildPlanID.value
  const applicationID=artifactApplicationID.value
- if(props.section!=='build-plans'||buildPlanView.value!=='artifacts'||!buildPlanID||!auth.canAny(['artifact.read'])){artifacts.value=[];return}
- const requestKey=`${buildPlanID}:${applicationID}`
+ if(!canUseArtifacts()){cancelArtifactRequest('list');artifacts.value=[];return}
+ const request=startArtifactRequest('list')
  artifactLoading.value=true
  try{
-  const result=await client.get<{artifacts:Artifact[]}>(`/build-plans/${buildPlanID}/artifacts`,{params:applicationID?{application_id:applicationID}:undefined})
-  if(`${selectedBuildPlanID.value}:${artifactApplicationID.value}`===requestKey&&buildPlanView.value==='artifacts')artifacts.value=result.data.artifacts||[]
+  const result=await client.get<{artifacts:Artifact[]}>(`/build-plans/${buildPlanID}/artifacts`,{...request.options,params:applicationID?{application_id:applicationID}:undefined})
+  if(request.current())artifacts.value=result.data.artifacts||[]
  }catch(error){
-  if(`${selectedBuildPlanID.value}:${artifactApplicationID.value}`===requestKey&&buildPlanView.value==='artifacts'){artifacts.value=[];message.error(apiErrorMessage(error))}
- }finally{if(`${selectedBuildPlanID.value}:${artifactApplicationID.value}`===requestKey)artifactLoading.value=false}
+  if(request.current()){artifacts.value=[];message.error(apiErrorMessage(error))}
+ }finally{if(artifactRequests.get('list')===request.controller){artifactRequests.delete('list');artifactLoading.value=false}}
 }
 async function uploadArtifact(file:File){
- if(!selectedBuildPlanID.value||!artifactApplicationID.value||artifactUploading.value)return
+ if(!canUseArtifacts(true)||artifactUploading.value)return
+ const buildPlanID=selectedBuildPlanID.value,applicationID=artifactApplicationID.value,request=startArtifactRequest('upload')
  artifactUploading.value=true
  try{
   const body=new FormData()
   body.append('file',file,file.name)
-  await client.post(`/build-plans/${selectedBuildPlanID.value}/applications/${artifactApplicationID.value}/artifacts/upload`,body,{timeout:120_000})
+  await client.post(`/build-plans/${buildPlanID}/applications/${applicationID}/artifacts/upload`,body,{...request.options,timeout:120_000})
+  if(!request.current())return
   message.success('制品上传完成，已记录到当前构建方案')
   await loadArtifacts()
- }catch(error){message.error(apiErrorMessage(error))}finally{artifactUploading.value=false}
+ }catch(error){
+  if(!request.current())return
+  if(isMutationAcknowledged(error))message.info('请求已受理，请重新查看制品，勿重复上传。')
+  else message.error(apiErrorMessage(error))
+ }finally{if(artifactRequests.get('upload')===request.controller){artifactRequests.delete('upload');artifactUploading.value=false}}
 }
 async function downloadArtifact(item:Pick<Artifact,'id'|'name'|'original_name'|'storage_kind'|'status'>){
- if(item.storage_kind!=='local_file'||item.status!=='available')return
+ if(!canUseArtifacts()||item.storage_kind!=='local_file'||item.status!=='available'||!artifacts.value.some(row=>row.id===item.id&&row.storage_kind==='local_file'&&row.status==='available'))return
+ const request=startArtifactRequest('download')
  artifactDownloadingID.value=item.id
  try{
-  const response=await client.get<Blob>(`/artifacts/${item.id}/download`,{responseType:'blob',timeout:120_000})
+  const response=await client.get<Blob>(`/artifacts/${item.id}/download`,{...request.options,responseType:'blob',timeout:120_000})
+  if(!request.current())return
   const url=URL.createObjectURL(response.data)
   const link=document.createElement('a')
   link.href=url;link.download=item.original_name||item.name;link.click()
   window.setTimeout(()=>URL.revokeObjectURL(url),1000)
- }catch(error){message.error(apiErrorMessage(error))}finally{artifactDownloadingID.value=''}
+ }catch(error){if(request.current())message.error(apiErrorMessage(error))}
+ finally{if(artifactRequests.get('download')===request.controller){artifactRequests.delete('download');artifactDownloadingID.value=''}}
 }
 function confirmBuildPlanStatus(plan:Pick<BuildPlan,'id'|'name'|'is_active'>){
  const enabling=!plan.is_active
@@ -1952,7 +1984,12 @@ watch(()=>repoForm.auth_type,(authType)=>{if(authType==='none'||!credentials.val
 watch(()=>buildPlans.value.map(item=>item.id).join(','),syncBuildPlanSelection)
 watch(()=>route.query.plan,syncBuildPlanSelection)
 watch(()=>applications.value.map(item=>item.id).join(','),syncBuildPlanSelection)
-watch([selectedBuildPlanID,artifactApplicationID,buildPlanView],()=>{void loadArtifacts()})
+watch(artifactIdentity,()=>{resetArtifactRequests();if(props.section==='build-plans')buildPlanView.value='overview'},{flush:'sync'})
+watch([()=>auth.authorizationReady,()=>auth.canAny(['build_plan.read']),()=>auth.canAny(['artifact.read']),()=>auth.canAny(['artifact.create']),()=>buildPlans.value.find(item=>item.id===selectedBuildPlanID.value)?.is_active,()=>applications.value.find(item=>item.id===artifactApplicationID.value)?.is_active],()=>{
+ if(!canUseArtifacts()){resetArtifactRequests();if(props.section==='build-plans')buildPlanView.value='overview'}
+ else if(!canUseArtifacts(true))cancelArtifactRequest('upload')
+},{flush:'sync'})
+watch([selectedBuildPlanID,artifactApplicationID,buildPlanView],()=>{resetArtifactRequests();void loadArtifacts()})
 watch(()=>route.query.create,consumeBuildCreateRequest)
 watch(()=>route.query.application,()=>{void revealActiveApplication()})
 watch(()=>route.query.delivery_kind,consumeDeliveryRequest)
@@ -1968,7 +2005,7 @@ watch(()=>props.section,connectDeliveryEvents)
 onMounted(()=>{window.addEventListener('edo:projects-changed',syncPlanExecutionProject)})
 onMounted(()=>{connectDeliveryEvents();void refresh().then(()=>{lastDeliverySync=Date.now();syncBuildPlanSelection();consumeBuildCreateRequest();consumeDeliveryRequest();void revealActiveApplication()});releaseTimer=window.setInterval(refreshVisibleState,5000);document.addEventListener('visibilitychange',onDeliveryPageVisible);window.addEventListener('focus',onDeliveryPageVisible)})
 onBeforeUnmount(()=>{for(const controller of runApprovalRequests.values())controller.abort();runListController?.abort();executionController?.abort();runQueryRevision++;executionRevision++;stopDeliveryEvents?.();clearTimeout(deliveryRefreshTimer);resetPlanExecution();clearInterval(releaseTimer);document.removeEventListener('visibilitychange',onDeliveryPageVisible);window.removeEventListener('focus',onDeliveryPageVisible)})
-onBeforeUnmount(()=>{planExecutionDisposed=true;formOpen.value=false;resetResourceForm();resetPlanExecutionScope();resetResourceStatus();window.removeEventListener('edo:projects-changed',syncPlanExecutionProject)})
+onBeforeUnmount(()=>{planExecutionDisposed=true;resetArtifactRequests();formOpen.value=false;resetResourceForm();resetPlanExecutionScope();resetResourceStatus();window.removeEventListener('edo:projects-changed',syncPlanExecutionProject)})
 </script>
 
 <template><section :class="{'applications-page':props.section==='applications'}"><PageToolbar :description="props.section==='applications'?t('applicationWorkspace.description'):currentDescription"><a-tag v-if="props.section==='applications'||props.section==='release-plans'" color="processing">{{ t('applicationCard.autoRefresh') }}</a-tag><a-button :loading="loading" @click="refresh"><RefreshCw :size="15"/>刷新</a-button><a-button v-if="props.section==='release-plans'&&releaseView==='runs'&&auth.canAny(['pipeline_run.execute'])&&auth.canAny(['application.read'])" type="primary" :disabled="saving" @click="openManualPicker">{{ t('manualRun.execute') }}</a-button><a-button v-if="canCreate&&(props.section!=='release-plans'||releaseView==='plans')" type="primary" @click="create"><Plus :size="15"/>{{ props.section==='release-plans'?'创建发布计划':props.section==='applications'?t('applicationWorkspace.create'):'新建' }}</a-button></PageToolbar>
