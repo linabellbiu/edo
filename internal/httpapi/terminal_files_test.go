@@ -151,6 +151,7 @@ func TestTerminalFilesHTTPFileErrorsHaveDistinctSafeStatuses(t *testing.T) {
 		{"不存在", errors.Join(fs.ErrNotExist, errors.New("文件协议退出状态71")), 404, "file_not_found"},
 		{"非普通文件", terminalfiles.ErrNotRegular, 400, "invalid_file_type"},
 		{"权限不足", errors.Join(fs.ErrPermission, errors.New("文件协议退出状态72")), 403, "file_permission_denied"},
+		{"目录缺少写入保护", errors.Join(terminalfiles.ErrUnsafeDirectory, errors.New("文件协议退出状态73")), 409, "unsafe_file_directory"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			var logs bytes.Buffer
@@ -167,6 +168,32 @@ func TestTerminalFilesHTTPFileErrorsHaveDistinctSafeStatuses(t *testing.T) {
 			}
 			if !strings.Contains(logs.String(), "terminal_file_operation") || !strings.Contains(logs.String(), "pod:fixture") {
 				t.Fatal("内部错误日志缺少操作或目标上下文")
+			}
+		})
+	}
+}
+
+func TestTerminalFilesHTTPUnsafeDirectoryRejectsWritesWithoutPermissionRefresh(t *testing.T) {
+	for _, method := range []string{http.MethodPost, http.MethodPut} {
+		t.Run(method, func(t *testing.T) {
+			original := []byte("synthetic-existing-content")
+			f := &fakeFileBackend{value: append([]byte(nil), original...), err: terminalfiles.ErrUnsafeDirectory}
+			router, _ := fileTestRouter(f, "")
+			path, body := "/files/upload?path=/work/new.txt", "synthetic-new-content"
+			if method == http.MethodPut {
+				digest := sha256.Sum256(original)
+				encoded, err := json.Marshal(map[string]string{"path": "/work/new.txt", "content": body, "etag": hex.EncodeToString(digest[:])})
+				if err != nil {
+					t.Fatal(err)
+				}
+				path, body = "/files/content", string(encoded)
+			}
+			response := fileRequest(router, method, path, body, "")
+			if response.Code != http.StatusConflict || !strings.Contains(response.Body.String(), `"code":"unsafe_file_directory"`) || !strings.Contains(response.Body.String(), "安全写入保护") {
+				t.Fatal("目录保护拒绝未明确区分服务故障和RBAC失效")
+			}
+			if f.puts != 1 || !bytes.Equal(f.value, original) || f.closed != 1 {
+				t.Fatal("目录拒绝后改写了文件或没有释放后端")
 			}
 		})
 	}

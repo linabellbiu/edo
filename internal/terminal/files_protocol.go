@@ -111,7 +111,7 @@ parent=/proc/$$/fd/4
 parentmode=$(stat -c '%a' -- .) || exit 65
 parentmode=$((0$parentmode))
 # 可被其他用户随意改名的非 sticky 目录不提供安全写入。
-[ "$((parentmode & 0022))" -eq 0 ] || [ "$((parentmode & 01000))" -ne 0 ] || exit 64
+[ "$((parentmode & 0022))" -eq 0 ] || [ "$((parentmode & 01000))" -ne 0 ] || exit 73
 target=$parent/$base
 check() {
  if [ -z "$expected" ]; then
@@ -684,6 +684,9 @@ func fileExecError(err error) error {
 		return fmt.Errorf("%w: %w", fs.ErrNotExist, err)
 	case 72:
 		return fmt.Errorf("%w: %w", fs.ErrPermission, err)
+	case 73:
+		// 仅保留固定协议数字，不将远端错误正文写入日志或返回给客户端。
+		return fmt.Errorf("%w: %w", terminalfiles.ErrUnsafeDirectory, fileExecExitError(status))
 	}
 	return err
 }

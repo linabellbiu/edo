@@ -513,6 +513,8 @@ func (h terminalFileHandler) fail(c *gin.Context, err error) {
 		status, code, message = http.StatusRequestEntityTooLarge, "file_too_large", terminalfiles.ErrTooLarge.Error()
 	case errors.Is(err, terminalfiles.ErrConflict), errors.Is(err, terminalfiles.ErrExists):
 		status, code, message = http.StatusConflict, "file_changed", "同名文件已存在或内容已变化，请重新读取并确认"
+	case errors.Is(err, terminalfiles.ErrUnsafeDirectory):
+		status, code, message = http.StatusConflict, "unsafe_file_directory", terminalfiles.ErrUnsafeDirectory.Error()
 	case errors.Is(err, fs.ErrPermission):
 		status, code, message = http.StatusForbidden, "file_permission_denied", "没有文件操作权限，或操作授权已失效"
 	case errors.Is(err, errTerminalFileCanceled):

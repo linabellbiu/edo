@@ -15,12 +15,13 @@ const (
 )
 
 var (
-	ErrInvalidPath = errors.New("文件路径无效")
-	ErrNotRegular  = errors.New("仅支持普通文件")
-	ErrTooLarge    = errors.New("文件超过当前操作的大小限制")
-	ErrConflict    = errors.New("文件已变化，请重新读取后再操作")
-	ErrExists      = errors.New("同名文件已存在，请确认后再覆盖")
-	ErrUnavailable = errors.New("当前目标暂不支持文件操作")
+	ErrInvalidPath     = errors.New("文件路径无效")
+	ErrNotRegular      = errors.New("仅支持普通文件")
+	ErrTooLarge        = errors.New("文件超过当前操作的大小限制")
+	ErrConflict        = errors.New("文件已变化，请重新读取后再操作")
+	ErrExists          = errors.New("同名文件已存在，请确认后再覆盖")
+	ErrUnavailable     = errors.New("当前目标暂不支持文件操作")
+	ErrUnsafeDirectory = errors.New("目标目录缺少安全写入保护，请选择受保护的目录")
 )
 
 type Entry struct {

@@ -278,10 +278,22 @@ func TestContainerFilesPodIdentityRejectsReplacementAndStoppedContainer(t *testi
 }
 
 func TestContainerFilesProtocolExitCodesAreSafe(t *testing.T) {
-	for code, want := range map[int]error{64: terminalfiles.ErrUnavailable, 65: terminalfiles.ErrInvalidPath, 66: terminalfiles.ErrNotRegular, 67: terminalfiles.ErrTooLarge, 68: terminalfiles.ErrConflict, 69: terminalfiles.ErrExists, 71: fs.ErrNotExist, 72: fs.ErrPermission, 127: terminalfiles.ErrUnavailable} {
+	for code, want := range map[int]error{64: terminalfiles.ErrUnavailable, 65: terminalfiles.ErrInvalidPath, 66: terminalfiles.ErrNotRegular, 67: terminalfiles.ErrTooLarge, 68: terminalfiles.ErrConflict, 69: terminalfiles.ErrExists, 71: fs.ErrNotExist, 72: fs.ErrPermission, 73: terminalfiles.ErrUnsafeDirectory, 127: terminalfiles.ErrUnavailable} {
 		if got := fileExecError(fileExecExitError(code)); !errors.Is(got, want) {
 			t.Fatalf("%d: %v", code, got)
 		}
+	}
+}
+
+func TestContainerFilesUnsafeDirectoryKeepsSafeDiagnostic(t *testing.T) {
+	remote := utilexec.CodeExitError{Err: errors.New("fixture_private_remote_message"), Code: 73}
+	err := fileExecError(remote)
+	var status fileExecExitError
+	if !errors.Is(err, terminalfiles.ErrUnsafeDirectory) || !errors.As(err, &status) || status != 73 {
+		t.Fatal("安全目录拒绝未保留稳定错误和数字协议状态")
+	}
+	if strings.Contains(err.Error(), "fixture_private") {
+		t.Fatal("安全目录错误包含了远端原始输出")
 	}
 }
 
@@ -522,19 +534,27 @@ set +e
 printf x | /bin/sh -c "$4" edo-files /tmp/unsafe/a '' 1 >/dev/null
 result=$?
 set -e
-[ "$result" -eq 64 ]
+[ "$result" -eq 73 ]
 [ ! -e /tmp/unsafe/a ]
+[ "$(find /tmp/unsafe -maxdepth 1 -name '.edo-upload.*' | wc -l)" -eq 0 ]
+# 私有目录和带 sticky 位的共享目录仍可安全提交。
+mkdir -m 700 /tmp/owned
+printf 'pEDO-COMMIT\n' | /bin/sh -c "$4" edo-files /tmp/owned/a '' 1 >/dev/null
+[ "$(cat /tmp/owned/a)" = p ]
+mkdir -m 1777 /tmp/sticky
+printf 'sEDO-COMMIT\n' | /bin/sh -c "$4" edo-files /tmp/sticky/a '' 1 >/dev/null
+[ "$(cat /tmp/sticky/a)" = s ]
 [ ! -e /tmp/protocol/injected ]
 `
 			digest := sha256.Sum256([]byte("old"))
-			args := []string{"run", "--rm", "--pull=never", "--network=none", "--read-only", "--cap-drop=ALL", "--security-opt=no-new-privileges", "--memory=96m", "--cpus=.5", "--tmpfs=/tmp:rw,noexec,nosuid,size=80m", "--entrypoint=/bin/sh", image, "-c", harness, "edo-files-test", image, fileListScript, fileOpenScript, filePutScript, hex.EncodeToString(digest[:]), filePutTimeoutScript}
+			args := []string{"run", "--rm", "--pull=never", "--network=none", "--read-only", "--user=10001:10001", "--label=io.edo.acceptance.case=terminal-tools", "--cap-drop=ALL", "--security-opt=no-new-privileges", "--memory=96m", "--cpus=.5", "--tmpfs=/tmp:rw,noexec,nosuid,size=80m", "--entrypoint=/bin/sh", image, "-c", harness, "edo-files-test", image, fileListScript, fileOpenScript, filePutScript, hex.EncodeToString(digest[:]), filePutTimeoutScript}
 			out, err := exec.CommandContext(ctx, "docker", args...).CombinedOutput()
 			if err != nil {
 				t.Fatalf("隔离镜像协议验证失败: %v %s", err, out)
 			}
 			// 同时通过真实双向流运行 Go 侧握手，不只拼接静态许可测试脚本。
 			backend := testFileBackend(t, func(ctx context.Context, command []string, input io.Reader, output io.Writer) error {
-				args := []string{"run", "--rm", "--pull=never", "-i", "--network=none", "--read-only", "--cap-drop=ALL", "--security-opt=no-new-privileges", "--memory=96m", "--cpus=.5", "--tmpfs=/tmp:rw,noexec,nosuid,size=80m", "--entrypoint=/bin/sh", image}
+				args := []string{"run", "--rm", "--pull=never", "-i", "--network=none", "--read-only", "--user=10001:10001", "--label=io.edo.acceptance.case=terminal-tools", "--cap-drop=ALL", "--security-opt=no-new-privileges", "--memory=96m", "--cpus=.5", "--tmpfs=/tmp:rw,noexec,nosuid,size=80m", "--entrypoint=/bin/sh", image}
 				args = append(args, command[1:]...)
 				cmd := exec.CommandContext(ctx, "docker", args...)
 				cmd.Stdin, cmd.Stdout, cmd.Stderr = input, output, io.Discard
