@@ -53,7 +53,8 @@
 - 持续并行负载：唯一Run`027bc09f`、8阶段×2个Shell任务，16Job均成功/attempt1，实际连续216.525秒，每项26.429～27.517秒；每Job生成1MiB公开随机数据并执行2048次SHA256，没有sleep假负载或部署节点。16份不同BuildRun/摘要制品共16,786,880B，一份实际API下载摘要匹配；原5失败/1取消保留，只增加16成功。16个准确沙箱及匿名卷全部回收，原11容器/2卷/运行5006保持，新WF/BP正常删除、App/Repo恢复停用，历史保留。
 - 同一实际88 API后台保存的93个真实5秒点覆盖上述负载与恢复，最大间隔5003ms；负载内43点RSS148.23～184.49MiB、Go堆31.71～74.89MiB，完成60秒后的29点中末点RSS140.24MiB/堆52.32MiB，积压0。执行前即时RSS208.34MiB/堆130.26MiB不是稳态基线，不能将自然GC下降冒称优化；采样峰不等于瞬时峰或生产容量。页面真实区分EDO约138MiB与Docker虚拟机运行环境约4.1GiB，曲线可见；全程未重启、forceGC或补造历史，配置cap仍768MiB。
 - 日志重核样本：新未分配Role`b24ab324`唯一POST201后DOM清场，同主体/项目/有效权限及旧五Role/User/member逐值保持；同CID日志正常重开，准确DELETE204恢复基线后注销关闭。只记录公开DOM时序，不能据此证明WS关闭码；首次旧现场仍保留未知，不为通过而放宽鉴权。工具成员路由/Ant层级错误保留，没有重复业务写。
-- 构建密钥持久化补测提交`fc39d0a`：正常HTTP创建env/file两类合成密钥，保存引用、prepare/execute后直接读取独立测试库的原始WorkflowSnapshot、Job/Outbox及五RID对应审计字段，只包含准确版本引用/密文，不含合成明文或文件内容。最终定向2项、完整HTTP race966项（293顶层/673子项，0失败/跳过）及vet通过，源码不覆盖CI选择的业务驱动。此例仅排队、BuildRun=0，不冒充Worker执行后的PlanSnapshot或新的BuildKit镜像验收；该执行层缺口继续保留。
+- 构建密钥HTTP持久化补测提交`fc39d0a`：正常HTTP创建env/file两类合成密钥，保存引用、prepare/execute后直接读取独立测试库的原始WorkflowSnapshot、Job/Outbox及五RID对应审计字段，只包含准确版本引用/密文，不含合成明文或文件内容。最终定向2项、完整HTTP race966项（293顶层/673子项，0失败/跳过）及vet通过，源码不覆盖CI选择的业务驱动。此例只验证排队，不单独证明BuildRun执行层。
+- 构建执行层另补`TestBuildExecutionPersistsFrozenPlanWithoutResolvedSecrets`：正常服务创建方案、应用、两类密钥及流水线后，调用实际构建执行服务；Script stub恰一次收到准确env/file值，真实临时文件制品下载内容吻合。沿Artifact.BuildRunID直接读取原始PlanSnapshot和摘要，准确关联Run/Node/App/Repo/Plan，且原始WorkflowSnapshot、Job、Outbox无明文或base64内容；没有手写快照。定向1项、pipeline全包race405通过/0失败/3项既有前提跳过、vet通过。仅本轮真实SQLite加外部执行stub，补齐服务执行持久化断言，不冒充消息消费、BuildKit镜像或三库实跑。
 
 ## 证据与收尾
 
