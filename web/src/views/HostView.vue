@@ -136,7 +136,7 @@ watch(() => auth.authorizationState, state => {
   } else if (state === 'ready' && mounted) void refresh()
 }, { flush: 'sync' })
 const canUninstallK3s = computed(() => auth.canAny(['cluster.read']) && auth.canAny(['kubernetes.k3s.uninstall']))
-const canReadClusters = computed(() => auth.canAny(['cluster.read', 'kubernetes.node.read', 'kubernetes.workload.read', 'kubernetes.config.read', 'kubernetes.storage.read', 'kubernetes.network.read']))
+const canReadClusters = computed(() => auth.canAny(['cluster.read', 'kubernetes.node.read', 'kubernetes.workload.read', 'kubernetes.config.read', 'kubernetes.storage.read', 'kubernetes.network.read', 'kubernetes.rbac.read', 'kubernetes.rbac.update']))
 const canManageKubernetes = computed(() => auth.canAny(['kubernetes.node.read', 'kubernetes.workload.read', 'kubernetes.config.read', 'kubernetes.storage.read', 'kubernetes.network.read']))
 const activeWorkspace = computed(() => route.query.view === 'clusters' ? 'clusters' : 'hosts')
 const selected = computed(() => hosts.value.find(host => host.id === selectedID.value))

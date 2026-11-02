@@ -63,7 +63,7 @@ export const navigation: NavSection[] = [
         { label: 'nav.environments', path: '/environments', permissions: ['deployment.read'], icon: ServerCog },
         { label: 'nav.containers', path: '/kubernetes', permissions: [], icon: Boxes, children: [
           { label: 'nav.hosts', path: '/hosts', permissions: ['cluster.read', 'deployment.read'], icon: Server },
-          { label: 'k8s.clusters', path: '/hosts?view=clusters', permissions: ['cluster.read','kubernetes.node.read','kubernetes.workload.read','kubernetes.config.read','kubernetes.storage.read','kubernetes.network.read'], icon: Boxes },
+          { label: 'k8s.clusters', path: '/hosts?view=clusters', permissions: ['cluster.read','kubernetes.node.read','kubernetes.workload.read','kubernetes.config.read','kubernetes.storage.read','kubernetes.network.read','kubernetes.rbac.read','kubernetes.rbac.update'], icon: Boxes },
           { label: 'k8s.overview', path: '/kubernetes?view=overview', permissions: ['kubernetes.node.read','kubernetes.workload.read','kubernetes.config.read','kubernetes.storage.read','kubernetes.network.read'], icon: LayoutDashboard },
           { label: 'k8s.nodes', path: '/kubernetes?view=nodes', permissions: ['kubernetes.node.read'], icon: Server },
           { label: 'k8s.workloads', path: '/kubernetes?view=workloads', permissions: ['kubernetes.workload.read'], icon: Boxes },
