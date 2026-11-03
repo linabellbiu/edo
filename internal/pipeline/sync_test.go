@@ -2,12 +2,19 @@ package pipeline
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"net/url"
+	"reflect"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
+	"edo/internal/config"
 	"edo/internal/credential"
 	"edo/internal/model"
 	"edo/internal/repository"
@@ -69,6 +76,142 @@ func TestSyncFailureKeepsSafeMessageAndPreservesPollingCursor(t *testing.T) {
 
 func (l pipelineRefLister) ListPullRequests(context.Context, model.GitRepository, string, string) ([]repository.PullRequestRef, error) {
 	return l.refs.PullRequests, l.pullRequestErr
+}
+
+type pipelineAPIPullRequestLister struct {
+	pipelineRefLister
+	client *repository.GitClient
+}
+
+func (l pipelineAPIPullRequestLister) ListPullRequests(ctx context.Context, item model.GitRepository, cloneCredential, apiCredential string) ([]repository.PullRequestRef, error) {
+	return l.client.ListPullRequests(ctx, item, cloneCredential, apiCredential)
+}
+
+func TestSyncApplicationPreservesReliablePullRequestsDuringPartialAPIResults(t *testing.T) {
+	service, db, secrets, repositoryID := newPipelineTestService(t)
+	var partial atomic.Bool
+	var openRequests, mergedRequests atomic.Int32
+	sha := func(value string) string { return strings.Repeat(value, 40) }
+	apiPull := func(number int, commit string) map[string]any {
+		return map[string]any{
+			"number": number, "state": "open",
+			"head": map[string]string{"ref": "feature/test", "sha": commit},
+			"base": map[string]string{"ref": "main"},
+		}
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.Method != http.MethodGet || request.URL.Path != "/api/v5/repos/team/app/pulls" ||
+			request.URL.Query().Get("page") != "1" || request.URL.Query().Get("per_page") != "100" {
+			t.Errorf("PR 测试 API 收到非预期请求: method=%s path=%s", request.Method, request.URL.Path)
+			writer.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		rows := make([]map[string]any, 0)
+		switch request.URL.Query().Get("state") {
+		case "open":
+			openRequests.Add(1)
+			rows = []map[string]any{apiPull(7, sha("7")), apiPull(8, sha("8")), apiPull(12, sha("a"))}
+			if partial.Load() {
+				rows = []map[string]any{apiPull(7, sha("e")), apiPull(12, sha("b"))}
+			}
+		case "merged":
+			mergedRequests.Add(1)
+			if partial.Load() {
+				// 平台确认同编号已合并，但没有给出合并提交；旧 open 的 head 不能继续触发。
+				rows = []map[string]any{{
+					"number": 7, "state": "merged", "merged_at": "2026-11-03T23:27:29+08:00",
+					"head": map[string]string{"ref": "feature/test", "sha": sha("e")},
+					"base": map[string]string{"ref": "main", "sha": sha("c")},
+				}}
+			}
+		default:
+			t.Errorf("PR 测试 API 收到错误状态: %q", request.URL.Query().Get("state"))
+			writer.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		writer.Header().Set("Content-Type", "application/json")
+		if err := json.NewEncoder(writer).Encode(rows); err != nil {
+			t.Errorf("写入 PR 测试响应失败: %v", err)
+		}
+	}))
+	defer server.Close()
+	lister := pipelineAPIPullRequestLister{
+		pipelineRefLister: pipelineRefLister{refs: repository.RefResult{Branches: []repository.GitRef{{Name: "main", SHA: sha("c")}}}},
+		client:            repository.NewGitClient(config.Git{Timeout: time.Second}),
+	}
+	repositories := repository.NewService(db, secrets, credential.NewService(db, secrets), lister, 4)
+	if _, _, err := repositories.Update(context.Background(), "admin", repositoryID, repository.Input{
+		Name: "partial-pr-api", Provider: model.GitProviderGitee, CloneURL: server.URL + "/team/app.git",
+		DefaultBranch: "main", AuthType: model.GitAuthNone, AllowInsecureHTTP: true,
+	}); err != nil {
+		t.Fatalf("设置本地 PR API 仓库失败: %v", err)
+	}
+	service.repositories = repositories
+	application := createManualRunTestApplication(t, service, db, repositoryID, "partial_pr_api_poll")
+	workflow, err := service.GetWorkflow(context.Background(), application.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := workflow.Workflow.Source
+	source.Config.Events, source.Config.PRActions = []string{"pr"}, []string{"opened", "updated", "merged"}
+	source.Config.PRSourcePattern, source.Config.PRTargetPattern = "*", "main"
+	if _, err := service.SaveWorkflow(context.Background(), application.ID, "admin", WorkflowInput{
+		SchemaVersion: model.WorkflowSchemaVersion, Name: workflow.Workflow.Name, Revision: workflow.Workflow.Revision,
+		Activate: true, Source: source, Stages: workflow.Workflow.Stages,
+	}); err != nil {
+		t.Fatalf("启用 PR 测试流水线失败: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if updated, run, err := service.SyncApplication(ctx, application.ID, "manual_sync"); err != nil || run != nil || updated.SyncStatus != model.ApplicationSyncSynced {
+		t.Fatalf("首次完整 API 结果应只建立基线: application=%+v run=%+v err=%v", updated, run, err)
+	}
+	var link model.ApplicationRepository
+	if err := db.First(&link, "application_id = ?", application.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	observation := func(ref string) model.ApplicationRepositoryObservation {
+		t.Helper()
+		var stored model.ApplicationRepositoryObservation
+		if err := db.Where("application_repository_id = ? AND event = ? AND ref = ?", link.ID, "pr", ref).First(&stored).Error; err != nil {
+			t.Fatalf("读取 PR 游标失败: ref=%s err=%v", ref, err)
+		}
+		return stored
+	}
+	conflicted, omitted := observation("refs/pull/7/head"), observation("refs/pull/8/head")
+	partial.Store(true)
+	updated, run, err := service.SyncApplication(ctx, application.ID, "poll")
+	if err != nil || run == nil || run.Trigger != "poll_pr" || run.TriggerAction != "updated" ||
+		run.Ref != "refs/pull/12/head" || run.CommitSHA != sha("b") || run.TargetBranch != "main" ||
+		run.Status != model.PipelineRunRunning || run.CurrentNodeID != "build" || run.ExecutionJobID == "" {
+		t.Fatalf("部分 API 结果未仅执行可靠 open 变化: run=%+v err=%v", run, err)
+	}
+	if updated.SyncStatus != model.ApplicationSyncChanged || !strings.Contains(updated.SyncMessage, "PR/MR 同步失败") {
+		t.Fatalf("可靠事件执行后仍须保留部分失败诊断: %+v", updated)
+	}
+	assertPipelineBuildJob(t, db, run.ExecutionJobID)
+	assertPreserved := func() {
+		t.Helper()
+		if got := observation(conflicted.Ref); !reflect.DeepEqual(got, conflicted) {
+			t.Fatalf("缺少 merge SHA 的同编号 PR 不得沿用旧 open 或推进游标: before=%+v after=%+v", conflicted, got)
+		}
+		if got := observation(omitted.Ref); !reflect.DeepEqual(got, omitted) {
+			t.Fatalf("部分结果中遗漏的 PR 游标必须完整保留: before=%+v after=%+v", omitted, got)
+		}
+	}
+	assertPreserved()
+	updated, duplicate, err := service.SyncApplication(ctx, application.ID, "poll")
+	if err != nil || duplicate != nil || updated.SyncStatus != model.ApplicationSyncFailed || !strings.Contains(updated.SyncMessage, "PR/MR 同步失败") {
+		t.Fatalf("相同部分结果不得重放，失败诊断也不得被清除: application=%+v run=%+v err=%v", updated, duplicate, err)
+	}
+	assertPreserved()
+	var runs []model.PipelineRun
+	if err := db.Where("application_id = ?", application.ID).Find(&runs).Error; err != nil || len(runs) != 1 || runs[0].ID != run.ID {
+		t.Fatalf("可靠事件只能建立一个运行，冲突及遗漏记录均不得执行: runs=%+v err=%v", runs, err)
+	}
+	if openRequests.Load() != 3 || mergedRequests.Load() != 3 {
+		t.Fatalf("每次同步必须经过真实平台 API 两种查询: open=%d merged=%d", openRequests.Load(), mergedRequests.Load())
+	}
 }
 
 func TestSyncApplicationPollsPushNodeWithoutWebhook(t *testing.T) {

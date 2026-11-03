@@ -449,6 +449,11 @@ func (s *Service) PollState(ctx context.Context, id string, includePullRequests 
 		// Git 协议读取到的 PR Ref 没有可靠的源/目标分支，API 失败时不能据此触发规则。
 		// 分支和 Tag 结果仍返回，让两类监听独立继续推进。
 		result.PullRequests = nil
+		var partial *partialPullRequestError
+		if errors.As(err, &partial) {
+			// 一条缺失元数据的合并记录不应阻断其他已验证事件；遗漏记录仍保持失败诊断。
+			result.PullRequests = partial.validated
+		}
 		result.PullRequestError = err
 		return result, nil
 	}

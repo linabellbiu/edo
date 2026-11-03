@@ -182,7 +182,7 @@ func TestPullRequestEndpointQueriesRecentMerged(t *testing.T) {
 		{model.GitProviderGitHub, map[string]string{"state": "closed", "sort": "updated", "direction": "desc"}},
 		{model.GitProviderGitLab, map[string]string{"state": "merged", "order_by": "updated_at", "sort": "desc", "scope": "all"}},
 		{model.GitProviderGitea, map[string]string{"state": "closed", "sort": "recentupdate"}},
-		{model.GitProviderGitee, map[string]string{"state": "closed", "sort": "updated", "direction": "desc"}},
+		{model.GitProviderGitee, map[string]string{"state": "merged", "sort": "updated", "direction": "desc"}},
 	}
 	for _, test := range tests {
 		endpoint, err := pullRequestEndpoint(test.provider, location, 1, pullRequestQueryMerged)
@@ -198,6 +198,126 @@ func TestPullRequestEndpointQueriesRecentMerged(t *testing.T) {
 				t.Fatalf("%s 最近合并 PR 参数 %s 错误: %s", test.provider, key, endpoint)
 			}
 		}
+	}
+}
+
+func TestGitClientQueriesGiteeMergedStateWithoutGuessingMergeCommit(t *testing.T) {
+	states := make(chan string, 2)
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		state := request.URL.Query().Get("state")
+		states <- state
+		writer.Header().Set("Content-Type", "application/json")
+		switch state {
+		case "open", "closed":
+			_, _ = writer.Write([]byte(`[]`))
+		case "merged":
+			// Gitee 的已合并列表可能不提供合并 Commit；当前目标分支和 PR 头均不能替代它。
+			_, _ = writer.Write([]byte(`[{"number":1,"state":"merged","merged_at":"2026-11-03T23:27:29+08:00","head":{"ref":"feature/test","sha":"pr-head"},"base":{"ref":"main","sha":"later-main"}}]`))
+		default:
+			writer.WriteHeader(http.StatusBadRequest)
+		}
+	}))
+	defer server.Close()
+
+	client := NewGitClient(config.Git{Timeout: time.Second})
+	result, err := client.ListPullRequests(context.Background(), model.GitRepository{
+		Provider: model.GitProviderGitee, CloneURL: server.URL + "/team/app.git", AuthType: model.GitAuthNone,
+	}, "", "")
+	if len(states) != 2 {
+		t.Fatalf("Gitee 开启及已合并查询次数错误: %d", len(states))
+	}
+	if open, merged := <-states, <-states; open != "open" || merged != "merged" {
+		t.Fatalf("Gitee 查询状态错误: open=%q merged=%q", open, merged)
+	}
+	if !errors.Is(err, ErrPullRequestMetadata) || len(result) != 0 {
+		t.Fatalf("缺少合并 Commit 时不应猜测已合并 PR 的执行版本: result=%+v err=%v", result, err)
+	}
+}
+
+func TestGitClientPreservesOnlyValidatedPullRequestsOnPartialFailure(t *testing.T) {
+	for _, mergedStatus := range []int{http.StatusOK, http.StatusServiceUnavailable} {
+		t.Run(http.StatusText(mergedStatus), func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+				writer.Header().Set("Content-Type", "application/json")
+				if request.URL.Query().Get("state") == "open" {
+					_, _ = writer.Write([]byte(`[
+						{"number":1,"state":"open","head":{"ref":"feature/stale","sha":"stale-open"},"base":{"ref":"main"}},
+						{"number":2,"state":"open","head":{"ref":"feature/open","sha":"open-head"},"base":{"ref":"main"}}
+					]`))
+					return
+				}
+				writer.WriteHeader(mergedStatus)
+				if mergedStatus == http.StatusOK {
+					_, _ = writer.Write([]byte(`[
+						{"number":1,"state":"merged","head":{"ref":"feature/missing","sha":"not-the-merge"},"base":{"ref":"main"}},
+						{"number":3,"state":"merged","merge_commit_sha":"exact-merge","head":{"ref":"feature/valid","sha":"old-head"},"base":{"ref":"main"}}
+					]`))
+				}
+			}))
+			defer server.Close()
+
+			client := NewGitClient(config.Git{Timeout: time.Second})
+			result, err := client.ListPullRequests(context.Background(), model.GitRepository{
+				Provider: model.GitProviderGitee, CloneURL: server.URL + "/team/app.git", AuthType: model.GitAuthNone,
+			}, "", "")
+			var partial *partialPullRequestError
+			if !errors.As(err, &partial) || len(result) == 0 || len(partial.validated) != len(result) {
+				t.Fatalf("部分失败没有保留已验证 API 记录及诊断: result=%+v err=%v", result, err)
+			}
+			if mergedStatus == http.StatusOK {
+				if !errors.Is(err, ErrPullRequestMetadata) || len(result) != 2 || result[0].Number != 2 || result[0].SHA != "open-head" || result[0].Action != "opened" || result[1].Number != 3 || result[1].SHA != "exact-merge" {
+					t.Fatalf("无效合并记录影响了有效记录或被猜测补全: %+v err=%v", result, err)
+				}
+			} else if len(result) != 2 || result[0].Number != 1 || result[1].Number != 2 || result[0].Action != "opened" || result[1].Action != "opened" {
+				t.Fatalf("API 失败不应生成合并事件或破坏已验证开启事件: %+v", result)
+			}
+		})
+	}
+}
+
+func TestGitClientBoundsPullRequestPagesByRawRecords(t *testing.T) {
+	requests := make(chan struct{}, 3)
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		select {
+		case requests <- struct{}{}:
+		default:
+		}
+		writer.Header().Set("Content-Type", "application/json")
+		_, _ = writer.Write([]byte("[" + strings.Repeat(`{"number":1,"state":"closed"},`, 99) + `{"number":1,"state":"closed"}]`))
+	}))
+	defer server.Close()
+	client := NewGitClient(config.Git{Timeout: time.Second})
+	location, err := parseRepositoryLocation(server.URL + "/team/app.git")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	result, err := client.listPullRequests(ctx, model.GitProviderGitee, location, "", pullRequestQueryOpen, 200)
+	if err != nil || len(result) != 0 || len(requests) != 2 {
+		t.Fatalf("过滤记录后仍应遵守原始分页预算: result=%+v requests=%d err=%v", result, len(requests), err)
+	}
+}
+
+func TestGitClientBoundsPartialPullRequestResults(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		writer.Header().Set("Content-Type", "application/json")
+		_, _ = writer.Write([]byte(`[
+			{"number":1,"state":"open","head":{"ref":"feature/one","sha":"one"},"base":{"ref":"main"}},
+			{"number":2,"state":"open","head":{"ref":"feature/two","sha":"two"},"base":{"ref":"main"}},
+			{"number":3,"state":"merged","head":{"ref":"feature/missing","sha":"not-merge"},"base":{"ref":"main"}}
+		]`))
+	}))
+	defer server.Close()
+	location, err := parseRepositoryLocation(server.URL + "/team/app.git")
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := NewGitClient(config.Git{Timeout: time.Second})
+	result, err := client.listPullRequests(context.Background(), model.GitProviderGitee, location, "", pullRequestQueryOpen, 1)
+	var partial *partialPullRequestError
+	if !errors.As(err, &partial) || len(result) != 1 || result[0].Number != 1 {
+		t.Fatalf("部分结果也必须遵守条数上限: result=%+v err=%v", result, err)
 	}
 }
 

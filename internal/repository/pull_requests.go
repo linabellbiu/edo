@@ -39,6 +39,16 @@ type pullRequestLister interface {
 	ListPullRequests(context.Context, model.GitRepository, string, string) ([]PullRequestRef, error)
 }
 
+// partialPullRequestError 仅携带平台 API 已完整校验的记录，不允许用裸 Git Ref 补全。
+type partialPullRequestError struct {
+	validated           []PullRequestRef
+	mergedWithoutCommit []int64
+	err                 error
+}
+
+func (e *partialPullRequestError) Error() string { return e.err.Error() }
+func (e *partialPullRequestError) Unwrap() error { return e.err }
+
 func parsePullRequestGitRef(ref, sha string) (PullRequestRef, bool) {
 	match := pullRefPattern.FindStringSubmatch(ref)
 	if len(match) == 0 {
@@ -96,17 +106,21 @@ func (c *GitClient) ListPullRequests(
 	if strings.Contains(apiCredential, "PRIVATE KEY") {
 		return nil, ErrInvalidCredential
 	}
-	openPullRequests, err := c.listPullRequests(queryContext, repository.Provider, location, apiCredential, pullRequestQueryOpen, maxOpenPullRequests)
-	if err != nil {
-		return nil, err
+	openPullRequests, openErr := c.listPullRequests(queryContext, repository.Provider, location, apiCredential, pullRequestQueryOpen, maxOpenPullRequests)
+	if openErr != nil && !errors.Is(openErr, ErrPullRequestMetadata) {
+		return nil, openErr
 	}
-	mergedPullRequests, err := c.listPullRequests(queryContext, repository.Provider, location, apiCredential, pullRequestQueryMerged, maxRecentMergedPullRequests)
-	if err != nil {
-		return nil, err
-	}
+	mergedPullRequests, mergedErr := c.listPullRequests(queryContext, repository.Provider, location, apiCredential, pullRequestQueryMerged, maxRecentMergedPullRequests)
 	byNumber := make(map[int64]PullRequestRef, len(openPullRequests)+len(mergedPullRequests))
 	for i := range openPullRequests {
 		byNumber[openPullRequests[i].Number] = openPullRequests[i]
+	}
+	var partial *partialPullRequestError
+	if errors.As(mergedErr, &partial) {
+		for _, number := range partial.mergedWithoutCommit {
+			// 已知合并但执行版本未知，不能继续沿用同编号的旧开启状态。
+			delete(byNumber, number)
+		}
 	}
 	for i := range mergedPullRequests {
 		// 同一编号不应同时处于开启和已合并状态；若平台短暂返回两份记录，
@@ -118,6 +132,9 @@ func (c *GitClient) ListPullRequests(
 		result = append(result, pullRequest)
 	}
 	sort.Slice(result, func(i, j int) bool { return result[i].Number < result[j].Number })
+	if err := errors.Join(openErr, mergedErr); err != nil {
+		return result, &partialPullRequestError{validated: result, err: err}
+	}
 	return result, nil
 }
 
@@ -130,7 +147,8 @@ func (c *GitClient) listPullRequests(
 	limit int,
 ) ([]PullRequestRef, error) {
 	result := make([]PullRequestRef, 0)
-	for pageNumber := 1; len(result) < limit; pageNumber++ {
+	maxPages := (limit + pullRequestPageSize - 1) / pullRequestPageSize
+	for pageNumber := 1; pageNumber <= maxPages && len(result) < limit; pageNumber++ {
 		endpoint, err := pullRequestEndpoint(provider, location, pageNumber, query)
 		if err != nil {
 			return nil, err
@@ -163,6 +181,13 @@ func (c *GitClient) listPullRequests(
 		}
 		page, responseCount, err := decodePullRequestPage(provider, body)
 		if err != nil {
+			if errors.Is(err, ErrPullRequestMetadata) {
+				result = append(result, page...)
+				if len(result) > limit {
+					result = result[:limit]
+				}
+				return result, err
+			}
 			return nil, err
 		}
 		result = append(result, page...)
@@ -256,7 +281,7 @@ func pullRequestEndpoint(provider model.GitProvider, location repositoryLocation
 		base = location.Scheme + "://" + location.Host
 		endpointPath = "/api/v5/repos/" + escapeRepositoryPath(location.Path) + "/pulls"
 		if query == pullRequestQueryMerged {
-			values.Set("state", "closed")
+			values.Set("state", "merged")
 			values.Set("sort", "updated")
 			values.Set("direction", "desc")
 		} else {
@@ -332,6 +357,8 @@ func decodePullRequestPage(provider model.GitProvider, body []byte) ([]PullReque
 		return nil, 0, fmt.Errorf("解析 PR 查询结果失败: %w", err)
 	}
 	result := make([]PullRequestRef, 0, len(items))
+	var metadataErr error
+	var mergedWithoutCommit []int64
 	for i := range items {
 		item := items[i]
 		number := item.Number
@@ -359,7 +386,11 @@ func decodePullRequestPage(provider model.GitProvider, body []byte) ([]PullReque
 			state = "open"
 		}
 		if number < 1 || sha == "" || sourceBranch == "" || targetBranch == "" {
-			return nil, len(items), fmt.Errorf("%w: 平台返回的 PR/MR 数据缺少编号、Commit 或分支", ErrPullRequestMetadata)
+			metadataErr = fmt.Errorf("%w: 平台返回的 PR/MR 数据缺少编号、Commit 或分支", ErrPullRequestMetadata)
+			if merged && number > 0 {
+				mergedWithoutCommit = append(mergedWithoutCommit, number)
+			}
+			continue
 		}
 		ref, supported := pullRequestHeadRef(provider, number)
 		if !supported {
@@ -369,6 +400,9 @@ func decodePullRequestPage(provider model.GitProvider, body []byte) ([]PullReque
 			Number: number, Ref: ref, SHA: sha, SourceBranch: sourceBranch, TargetBranch: targetBranch,
 			State: state, Action: action,
 		})
+	}
+	if metadataErr != nil {
+		return result, len(items), &partialPullRequestError{validated: result, mergedWithoutCommit: mergedWithoutCommit, err: metadataErr}
 	}
 	return result, len(items), nil
 }

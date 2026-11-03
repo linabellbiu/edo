@@ -843,6 +843,7 @@ func (s *separatedCheckoutStub) CheckoutCachedAt(
 
 type credentialCapturingRefLister struct {
 	refs            RefResult
+	pullRequestErr  error
 	cloneCredential string
 	apiCredential   string
 }
@@ -855,7 +856,40 @@ func (l *credentialCapturingRefLister) ListRefs(_ context.Context, _ model.GitRe
 func (l *credentialCapturingRefLister) ListPullRequests(_ context.Context, _ model.GitRepository, cloneCredential, apiCredential string) ([]PullRequestRef, error) {
 	l.cloneCredential = cloneCredential
 	l.apiCredential = apiCredential
-	return l.refs.PullRequests, nil
+	return l.refs.PullRequests, l.pullRequestErr
+}
+
+func TestPollStatePartialFailureDoesNotTrustGitPullRefs(t *testing.T) {
+	service, _ := newRepositoryTestService(t)
+	repo, _, err := service.Create(context.Background(), "admin", Input{
+		Name: "partial-pr-metadata", Provider: model.GitProviderGitee,
+		CloneURL: "https://git.example.com/team/app.git", AuthType: model.GitAuthNone,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	verified := PullRequestRef{Number: 2, Ref: "refs/pull/2/head", SHA: "verified-head", SourceBranch: "feature/valid", TargetBranch: "main", Action: "opened"}
+	for _, partial := range []bool{false, true} {
+		lister := &credentialCapturingRefLister{refs: RefResult{
+			Branches:     []GitRef{{Name: "main", SHA: "main-sha"}},
+			PullRequests: []PullRequestRef{{Number: 1, Ref: "refs/pull/1/head", SHA: "unverified-head"}},
+		}, pullRequestErr: ErrPullRequestMetadata}
+		if partial {
+			lister.pullRequestErr = &partialPullRequestError{validated: []PullRequestRef{verified}, err: ErrPullRequestMetadata}
+		}
+		service.git = lister
+		refs, err := service.PollState(context.Background(), repo.ID, true)
+		if err != nil || !errors.Is(refs.PullRequestError, ErrPullRequestMetadata) || len(refs.Branches) != 1 {
+			t.Fatalf("PR 诊断或普通分支丢失: refs=%+v err=%v", refs, err)
+		}
+		if partial {
+			if len(refs.PullRequests) != 1 || refs.PullRequests[0] != verified {
+				t.Fatalf("部分成功只能接收明确已验证的 API 记录: %+v", refs.PullRequests)
+			}
+		} else if len(refs.PullRequests) != 0 {
+			t.Fatalf("API 失败时不得回退到裸 Git Ref: %+v", refs.PullRequests)
+		}
+	}
 }
 
 func (s staticRefLister) ListRefs(context.Context, model.GitRepository, string) (RefResult, error) {
