@@ -176,6 +176,8 @@ exec timeout 120 /bin/sh -c "$1" edo-files "$2" "$3" "$4"
 
 type fileExec func(context.Context, []string, io.Reader, io.Writer) error
 
+var errFileValidationComplete = errors.New("文件校验正常结束")
+
 type containerFiles struct {
 	ctx      context.Context
 	cancel   context.CancelFunc
@@ -225,6 +227,8 @@ func (f *containerFiles) execute(ctx context.Context, command []string, input io
 		return err
 	}
 	defer done()
+	validationContext, stopValidation := context.WithCancelCause(op)
+	defer stopValidation(nil)
 	// 正在进行的文件传输也要响应目标停用、容器重建与集群权限租约失效。
 	var validationErr error
 	finished := make(chan struct{})
@@ -234,10 +238,14 @@ func (f *containerFiles) execute(ctx context.Context, command []string, input io
 		defer ticker.Stop()
 		for {
 			select {
-			case <-op.Done():
+			case <-validationContext.Done():
 				return
 			case <-ticker.C:
-				if err := f.check(op); err != nil {
+				if err := f.check(validationContext); err != nil {
+					// 只忽略本轮正常收尾明确造成的校验取消，不忽略撤权或外部取消。
+					if errors.Is(err, context.Canceled) && context.Cause(validationContext) == errFileValidationComplete {
+						return
+					}
 					validationErr = err
 					done()
 					return
@@ -246,12 +254,19 @@ func (f *containerFiles) execute(ctx context.Context, command []string, input io
 		}
 	}()
 	err = f.run(op, command, input, out)
-	done()
+	// 先停止并收回校验器，不能用操作本身的取消改写已经确定的远端结果。
+	stopValidation(errFileValidationComplete)
 	<-finished
 	if validationErr != nil {
 		return validationErr
 	}
-	return err
+	if err != nil {
+		return err
+	}
+	if err := op.Err(); err != nil {
+		return err
+	}
+	return f.ctx.Err()
 }
 
 func (f *containerFiles) List(ctx context.Context, value string) (terminalfiles.Directory, error) {

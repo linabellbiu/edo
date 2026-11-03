@@ -230,6 +230,76 @@ func TestContainerFilesCancellationAndRuntimeChangesStopTransfer(t *testing.T) {
 	}
 }
 
+func TestContainerFilesExecuteSettlesRunBeforeStoppingValidation(t *testing.T) {
+	remoteFailure := errors.New("测试远端操作失败")
+	for _, test := range []struct {
+		name     string
+		runError error
+		checkErr error
+		external string
+		want     error
+	}{
+		{name: "成功后的校验取消不改写结果"},
+		{name: "远端失败后的校验取消保留原错", runError: remoteFailure, want: remoteFailure},
+		{name: "真实核权失败仍拒绝", checkErr: fs.ErrPermission, want: fs.ErrPermission},
+		{name: "父请求取消仍拒绝", external: "request", want: context.Canceled},
+		{name: "后端租约取消仍拒绝", external: "backend", want: context.Canceled},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			checking, checked := make(chan struct{}), make(chan struct{})
+			var calls atomic.Int32
+			var backend *containerFiles
+			backend = testFileBackend(t, func(context.Context, []string, io.Reader, io.Writer) error {
+				select {
+				case <-checking:
+				case <-ctx.Done():
+					return ctx.Err()
+				}
+				if test.external != "" {
+					if test.external == "request" {
+						cancel()
+					} else {
+						backend.cancel()
+					}
+					// 先让外部取消被校验器实际观测，再允许 run 返回成功。
+					select {
+					case <-checked:
+					case <-time.After(time.Second):
+						return errors.New("测试外部取消未收口")
+					}
+				}
+				return test.runError
+			})
+			backend.check = func(checkCtx context.Context) error {
+				if calls.Add(1) == 1 {
+					return nil
+				}
+				close(checking)
+				<-checkCtx.Done()
+				defer close(checked)
+				if test.checkErr != nil {
+					return test.checkErr
+				}
+				return fmt.Errorf("测试目标校验结束: %w", checkCtx.Err())
+			}
+			got := backend.execute(ctx, nil, nil, io.Discard)
+			if !errors.Is(got, test.want) || test.want == nil && got != nil {
+				t.Fatalf("正常收尾覆盖了运行结果或放过外部失效: got=%v want=%v", got, test.want)
+			}
+			if calls.Load() != 2 {
+				t.Fatalf("未精确进入一次在途周期校验: checks=%d", calls.Load())
+			}
+			select {
+			case <-checked:
+			default:
+				t.Fatal("execute 返回时校验协程仍未结束")
+			}
+		})
+	}
+}
+
 func TestContainerFilesPathLocksAreBoundedAndCancelable(t *testing.T) {
 	release, err := lockFilePath(context.Background(), "same-path")
 	if err != nil {
