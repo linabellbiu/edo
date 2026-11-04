@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, reactive, ref, watch } from 'vue'
 import { message } from 'ant-design-vue'
+import { Upload } from 'lucide-vue-next'
 import { useI18n } from 'vue-i18n'
 
 import client from '@/api/client'
@@ -42,6 +43,9 @@ const emit = defineEmits<{
 }>()
 
 const formRef = ref<{ validate: () => Promise<void> }>()
+const privateKeyFileInput = ref<HTMLInputElement>()
+const readingPrivateKey = ref(false)
+let privateKeyReadRevision = 0
 const { t } = useI18n()
 const form = reactive({
   name: '',
@@ -89,7 +93,10 @@ function localCapabilityHint(kind: 'docker' | 'local_exec') {
 }
 
 watch(form, () => {
-  if (!hydrating.value) invalidateTest()
+  if (!hydrating.value) {
+    cancelPrivateKeyRead()
+    invalidateTest()
+  }
 }, { deep: true, flush: 'sync' })
 
 watch(replaceCredential, () => {
@@ -111,6 +118,7 @@ watch(() => props.canTest, allowed => {
 }, { flush: 'sync' })
 
 watch(() => [props.open, props.host] as const, ([open]) => {
+  cancelPrivateKeyRead()
   invalidateTest()
   if (!open) {
     clearCredentials()
@@ -148,11 +156,55 @@ function invalidateTest() {
 }
 
 function clearCredentials() {
+  cancelPrivateKeyRead()
   form.password = ''
   form.private_key = ''
   form.passphrase = ''
   form.sudo_password = ''
   invalidateTest()
+}
+
+function cancelPrivateKeyRead() {
+  privateKeyReadRevision++
+  readingPrivateKey.value = false
+  if (privateKeyFileInput.value) privateKeyFileInput.value.value = ''
+}
+
+async function readPrivateKeyFile(file: File) {
+  const allowed = () => props.open && props.canTest && !isLocal.value && needsCredential.value &&
+    form.ssh_auth_type === 'private_key' && !testing.value && !submitting.value
+  if (!allowed()) return
+  if (file.size === 0 || file.size > 64 * 1024) {
+    message.error('请选择非空且不超过 64 KiB 的私钥文件')
+    return
+  }
+  cancelPrivateKeyRead()
+  const revision = privateKeyReadRevision
+  invalidateTest()
+  readingPrivateKey.value = true
+  try {
+    const content = (await file.text()).trim()
+    if (revision !== privateKeyReadRevision || !allowed()) return
+    if (!/^-----BEGIN (?:[A-Z0-9]+ )*PRIVATE KEY-----\r?\n/.test(content)) {
+      message.error('请选择 OpenSSH 或 PEM 格式的私钥文件')
+      return
+    }
+    // 只填入当前表单，后端继续负责私钥解析、连接测试和加密保存。
+    readingPrivateKey.value = false
+    form.private_key = content
+    message.success('私钥已载入，请测试连接')
+  } catch {
+    if (revision === privateKeyReadRevision && allowed()) message.error('读取私钥文件失败，请重新选择')
+  } finally {
+    if (revision === privateKeyReadRevision) readingPrivateKey.value = false
+  }
+}
+
+async function importPrivateKey(event: Event) {
+  const input = event.target as HTMLInputElement
+  const file = input.files?.[0]
+  input.value = ''
+  if (file) await readPrivateKeyFile(file)
 }
 
 function currentRequest(controller: AbortController) {
@@ -200,7 +252,7 @@ async function validate() {
 }
 
 async function testConnection() {
-  if (!props.open || isLocal.value || testing.value || submitting.value) return
+  if (!props.open || isLocal.value || testing.value || submitting.value || readingPrivateKey.value) return
   if (!props.canTest) {
     message.error('缺少主机连接测试权限')
     return
@@ -233,7 +285,7 @@ async function testConnection() {
 }
 
 async function submit() {
-  if (!props.open || testing.value || submitting.value) return
+  if (!props.open || testing.value || submitting.value || readingPrivateKey.value) return
   if (!isLocal.value && !props.canTest) {
     message.error('缺少主机连接测试权限')
     return
@@ -292,7 +344,7 @@ onBeforeUnmount(clearCredentials)
     :mask-closable="!testing && !submitting"
     @close="close"
   >
-    <a-form ref="formRef" :model="form" layout="vertical" :disabled="testing || submitting">
+    <a-form ref="formRef" :model="form" layout="vertical" :disabled="testing || submitting || readingPrivateKey">
       <div class="form-grid" :class="{ local: isLocal }">
         <a-form-item :class="{ 'span-2': isLocal }" label="主机名称" name="name" :rules="[{ required: true, whitespace: true, message: '请输入主机名称' }]">
           <a-input v-model:value="form.name" placeholder="例如：上海构建节点 01" />
@@ -389,7 +441,9 @@ onBeforeUnmount(clearCredentials)
               <a-input-password v-model:value="form.password" autocomplete="new-password" placeholder="密码只会加密保存" />
             </a-form-item>
             <template v-else>
-              <a-form-item class="span-2" label="SSH 私钥" name="private_key" :rules="[{ required: true, whitespace: true, message: '请粘贴 SSH 私钥' }]">
+              <a-form-item class="span-2 private-key-item" label="SSH 私钥" name="private_key" :rules="[{ required: true, whitespace: true, message: '请粘贴或上传 SSH 私钥' }]">
+                <template #label><div class="private-key-label"><span>SSH 私钥</span><a-button class="private-key-upload-button" :loading="readingPrivateKey" :disabled="testing || submitting || !canTest" @click="privateKeyFileInput?.click()"><Upload :size="14" aria-hidden="true" />上传私钥</a-button></div></template>
+                <input ref="privateKeyFileInput" type="file" hidden aria-label="选择 SSH 私钥文件" @change="importPrivateKey" />
                 <a-textarea v-model:value="form.private_key" :rows="8" spellcheck="false" placeholder="-----BEGIN OPENSSH PRIVATE KEY-----" />
               </a-form-item>
               <a-form-item class="span-2" label="私钥口令（可选）" name="passphrase">
@@ -446,8 +500,8 @@ onBeforeUnmount(clearCredentials)
     <template #footer>
       <div class="drawer-actions">
         <a-button @click="close">取消</a-button>
-        <a-button v-if="!isLocal && canTest" :loading="testing" :disabled="submitting" @click="testConnection">测试连接</a-button>
-        <a-button type="primary" :loading="submitting" :disabled="testing || (!isLocal && (!canTest || !tested))" @click="submit">保存主机</a-button>
+        <a-button v-if="!isLocal && canTest" :loading="testing" :disabled="submitting || readingPrivateKey" @click="testConnection">测试连接</a-button>
+        <a-button type="primary" :loading="submitting" :disabled="testing || readingPrivateKey || (!isLocal && (!canTest || !tested))" @click="submit">保存主机</a-button>
       </div>
     </template>
   </a-drawer>
@@ -456,4 +510,5 @@ onBeforeUnmount(clearCredentials)
 <style scoped>
 .form-grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:0 16px}.span-2{grid-column:1/-1}.form-grid :deep(.ant-input-number){width:100%}.capability-grid{display:grid;width:100%;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}.capability-grid.local-capabilities{grid-template-columns:repeat(2,minmax(0,1fr))}.capability-option{display:flex;min-height:82px;align-items:center;padding:10px;border:1px solid var(--edo-border);border-radius:10px;background:var(--edo-surface-soft)}.capability-option:has(.ant-checkbox-checked){border-color:color-mix(in srgb,var(--edo-primary) 55%,var(--edo-border));background:var(--edo-primary-soft)}.capability-option :deep(.ant-checkbox){align-self:center}.capability-option>span:last-child{display:flex;align-items:center;gap:8px}.capability-option strong,.capability-option small{display:block}.capability-option small{margin-top:2px;color:var(--edo-muted);font-size:11px;line-height:1.4}.capability-brand{display:grid;width:34px;height:34px;flex:0 0 34px;place-items:center;border-radius:9px;background:var(--edo-surface)}.capability-brand :deep(svg){width:21px;height:21px}.capability-brand.ssh,.capability-brand.local_exec{color:var(--edo-muted)}.capability-brand.docker{color:#2496ed}.capability-brand.kubernetes{color:#326ce5}.credential-toggle{display:flex;align-items:center;justify-content:space-between;padding:12px 14px;border:1px solid var(--edo-border);border-radius:10px;background:var(--edo-surface-soft)}.credential-toggle>div strong,.credential-toggle>div small{display:block}.credential-toggle>div small{margin-top:2px;color:var(--edo-muted);font-size:12px}.field-hint{margin-top:6px;color:var(--edo-muted);font-size:12px}.test-result{margin-top:8px}.test-details{display:flex;flex-wrap:wrap;gap:8px 14px}.test-details code{width:100%;overflow-wrap:anywhere;color:var(--edo-muted)}.drawer-actions{display:flex;justify-content:flex-end;gap:8px}@media(max-width:640px){.form-grid,.capability-grid,.capability-grid.local-capabilities{grid-template-columns:1fr}.span-2{grid-column:auto}}
 .capability-option.unavailable{opacity:.58}
+.private-key-label{display:flex;align-items:center;justify-content:space-between;width:100%;gap:12px}.private-key-item :deep(.ant-form-item-label>label){width:100%}@media(pointer:coarse){.private-key-upload-button{min-height:44px}}
 </style>

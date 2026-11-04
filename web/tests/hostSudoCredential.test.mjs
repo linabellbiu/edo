@@ -307,3 +307,56 @@ test('主机抽屉宽度随视口收缩并保留桌面640px上限', () => {
   assert.equal(width, 'min(640px, 100vw)')
   assert.deepEqual(compileTemplate({ source: descriptor.template.content, filename: 'HostDrawer.vue', id: 'host-responsive-width' }).errors, [])
 })
+
+// 仅验证浏览器读取与表单生命周期；合成内容不冒充可连接的真实私钥。
+const keyFileContent = '-----BEGIN OPENSSH PRIVATE KEY-----\nU1lOVEhFVElDLUtFWS1GSUxFLUZJWFRVUkU=\n-----END OPENSSH PRIVATE KEY-----\n'
+const keyFile = (text = keyFileContent) => ({ size: Buffer.byteLength(text), text: async () => text })
+
+test('上传私钥只载入当前表单并撤销旧测试票据，文件选择可重复使用', async t => {
+  const h = await hostFixture(t)
+  await fillKey(h)
+  await h.state.testConnection()
+  const input = { files: [keyFile()], value: 'synthetic-file-selection' }
+  await h.state.importPrivateKey({ target: input })
+  assert.equal(input.value, '')
+  assert.equal(h.state.form.private_key, keyFileContent.trim())
+  assert.equal(h.state.tested.value, undefined)
+  assert.equal(h.state.readingPrivateKey.value, false)
+  assert.equal(h.requests.length, 1, '选择文件不得额外上传或保存凭据')
+  await h.state.testConnection()
+  assert.equal(h.requests[1].body.ssh.private_key, keyFileContent.trim())
+})
+
+test('私钥读取中不能测试或保存，关闭或修改表单后迟到读取不得恢复秘密', async t => {
+  for (const change of ['close', 'auth', 'manual']) await t.test(change, async t => {
+    const h = await hostFixture(t)
+    const read = pending()
+    const importing = h.state.readPrivateKeyFile({ size: 200, text: () => read.promise })
+    assert.equal(h.state.readingPrivateKey.value, true)
+    await h.state.testConnection(); await h.state.submit()
+    assert.equal(h.requests.length, 0)
+    if (change === 'close') h.props.open = false
+    else if (change === 'auth') h.state.form.ssh_auth_type = 'password'
+    else h.state.form.private_key = 'synthetic-manual-draft'
+    await flush()
+    read.resolve(keyFileContent)
+    await importing
+    assert.equal(h.state.form.private_key, change === 'manual' ? 'synthetic-manual-draft' : '')
+    assert.equal(h.state.readingPrivateKey.value, false)
+  })
+})
+
+test('公钥、空文件、超限和读取失败不覆盖旧草稿，错误不回显内容', async t => {
+  const h = await hostFixture(t)
+  await fillKey(h)
+  const draft = h.state.form.private_key
+  let reads = 0
+  for (const size of [0, 65537]) await h.state.readPrivateKeyFile({ size, text: async () => { reads++; return keyFileContent } })
+  assert.equal(reads, 0)
+  await h.state.readPrivateKeyFile(keyFile('ssh-ed25519 synthetic-public-key'))
+  await h.state.readPrivateKeyFile({ size: 100, text: async () => { throw new Error('SYNTHETIC_PRIVATE_CONTENT_MUST_NOT_LEAK') } })
+  assert.equal(h.state.form.private_key, draft)
+  assert.equal(h.state.readingPrivateKey.value, false)
+  assert.ok(h.notifications.every(item => !item.value.includes('SYNTHETIC_PRIVATE_CONTENT_MUST_NOT_LEAK')))
+  assert.equal(h.requests.length, 0)
+})
