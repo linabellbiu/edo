@@ -92,6 +92,16 @@ curl --fail http://localhost:8080/api/v1/health/ready
 
 更新前备份并确认没有正在执行的发布。远端未提交修改需先核对，不能覆盖。更新后记录分支和 Commit，并检查页面及 Web/API 健康。源码变更使用 `--build` 重建两个独立镜像，普通再次启动只需 `up -d`。PostgreSQL 固定大版本 17，不自动做跨大版本升级。
 
+自行使用 systemd 部署时，Web 与 API 仍需分别发布。[EDO 保护发布](../tools/release-activate/README.md) 提供 Go API 的备份、切换及回滚步骤。
+
+## 重置管理员密码
+
+忘记管理员密码时，在服务器终端执行，按隐藏输入提示设置新密码：
+
+```bash
+docker compose exec api /app/docker-entrypoint.sh admin reset-password --username admin
+```
+
 ## 备份与恢复
 
 运行中 PostgreSQL 使用官方工具备份，备份包含业务与凭据，请限制权限：
