@@ -4,6 +4,7 @@ import { test } from 'node:test'
 import { parse, compileScript } from '@vue/compiler-sfc'
 import ts from 'typescript'
 import * as vue from 'vue'
+import { v4 as uuidv4 } from 'uuid'
 
 const source = readFileSync(new URL('../src/views/PipelineEditorView.vue', import.meta.url), 'utf8')
 const descriptor = parse(source).descriptor
@@ -11,13 +12,14 @@ const output = ts.transpileModule(compileScript(descriptor, { id: 'pipeline-auto
   compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, esModuleInterop: true },
 }).outputText
 
-function harness(t, { active = false, publicMode = false, routeGuards = false } = {}) {
+function harness(t, { active = false, publicMode = false, routeGuards = false, crypto = globalThis.crypto } = {}) {
   const requests = [], messages = [], dialogs = [], timers = new Map()
   const navigations = [], storage = { project: 'project-a' }
   const routeUpdates = [], routeLeaves = [], route = { query: publicMode ? { template: 'flow' } : { application: 'api', workflow: 'flow' } }
   const auth = vue.reactive({ user: { id: 'operator', project_id: 'project-a', permissions: ['workflow.read', 'workflow.update'], is_superuser: false }, canAny(codes) { return codes.some(code => this.user.permissions.includes(code)) } })
   let timerID = 0, now = 0
   const modules = {
+    uuid: { v4: uuidv4 },
     vue: { ...vue, onMounted() {}, onBeforeUnmount() {} },
     'vue-router': {
       useRoute: () => route,
@@ -40,7 +42,7 @@ function harness(t, { active = false, publicMode = false, routeGuards = false } 
     clearTimeout: id => timers.delete(id),
   }
   const module = { exports: {} }
-  new Function('require','module','exports','window','localStorage',output)(name=>modules[name]||{},module,module.exports,fakeWindow,{getItem:key=>key==='edo.project'?storage.project:null})
+  new Function('require','module','exports','window','localStorage','crypto',output)(name=>modules[name]||{},module,module.exports,fakeWindow,{getItem:key=>key==='edo.project'?storage.project:null},crypto)
   const scope = vue.effectScope()
   const state = scope.run(() => module.exports.default.setup({}, { expose() {} }))
   const initial = {
@@ -84,6 +86,37 @@ function addDraft(state) {
   state.templates.value.push(draft)
   return draft
 }
+
+test('普通 HTTP 缺少 randomUUID 时仍可连续新增阶段与多个并行任务，保存重开不丢失', async t => {
+  const crypto = { getRandomValues: globalThis.crypto.getRandomValues.bind(globalThis.crypto) }
+  for (const publicMode of [false, true]) {
+    const { state, requests, advance, succeed, flush } = harness(t, { publicMode, crypto })
+    state.addStage(-1)
+    const stage = state.stages.value[0]
+    assert.match(stage.id, /^stage-[0-9a-f-]{36}$/)
+    state.openTaskLibrary(stage.id, 'initial')
+    state.addTask(state.taskDefinitions.find(item => item.id === 'shell'))
+    for (const definition of ['unit-test', 'quality-scan', 'manual']) {
+      assert.equal(state.stageHasSelectedTask(stage), true)
+      state.openTaskLibrary(stage.id, 'parallel')
+      state.addTask(state.taskDefinitions.find(item => item.id === definition))
+    }
+    assert.equal(stage.tasks.length, 4)
+    assert.equal(new Set(stage.tasks.map(task => task.id)).size, 4)
+    state.addStage(1)
+    state.openTaskLibrary(state.stages.value[2].id, 'initial')
+    state.addTask(state.taskDefinitions.find(item => item.id === 'manual'))
+    await advance(1200)
+    assert.equal(requests.length, 1)
+    assert.deepEqual(requests[0].payload.stages.map(item => item.tasks.length), [4, 1, 1])
+    const savedStages = JSON.parse(JSON.stringify(requests[0].payload.stages))
+    succeed(0)
+    await flush()
+    state.loadGraph(JSON.parse(JSON.stringify(state.workflow.value)), [])
+    assert.deepEqual(JSON.parse(JSON.stringify(state.stages.value)), savedStages)
+    assert.equal(state.dirty.value, false)
+  }
+})
 
 test('重复选择流水线只打开一个放弃确认，取消后保留草稿并恢复切换', async t => {
   for (const publicMode of [true, false]) {

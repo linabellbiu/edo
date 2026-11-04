@@ -5,6 +5,7 @@ import { parse, compileScript } from '@vue/compiler-sfc'
 import { renderToString } from '@vue/server-renderer'
 import ts from 'typescript'
 import * as vue from 'vue'
+import { validate as validateUUID } from 'uuid'
 import { loadFrontend } from './acceptanceHarness.mjs'
 
 const settle = async () => { await vue.nextTick(); await new Promise(resolve => setImmediate(resolve)); await vue.nextTick() }
@@ -29,7 +30,7 @@ const translate = (key, args = {}, language = 'zh-CN') => {
   return typeof value === 'string' ? value.replace(/\{(\w+)\}/g, (_, name) => args[name] ?? '') : key
 }
 
-async function harness({ get, post, codes = permissions, selected = 'project-a', project = 'project-a', hidden = true } = {}) {
+async function harness({ get, post, codes = permissions, selected = 'project-a', project = 'project-a', hidden = true, crypto = globalThis.crypto } = {}) {
   const requests = [], notifications = [], navigations = [], mounted = [], unmounts = []
   const timers = new Map(), intervals = new Map(), subscriptions = []
   let timerID = 0, now = 1_000_000
@@ -56,7 +57,7 @@ async function harness({ get, post, codes = permissions, selected = 'project-a',
     '@/stores/auth': { useAuthStore: () => auth }, '@/api/client': { __esModule: true, default: client }, '@/api/resources': { apiErrorMessage: () => '请求失败，请重试' },
     '@/utils/deliveryEvents': { subscribeDeliveryEvents: subscriber => { subscriptions.push(subscriber); return () => {} } },
     '@/utils/deploymentInstances': loadFrontend('../src/utils/deploymentInstances.ts'),
-  }, { localStorage, window, document, Date: TestDate, setTimeout: callback => { const id = ++timerID; timers.set(id, callback); return id }, clearTimeout: id => timers.delete(id), clearInterval: id => intervals.delete(id) }).default
+  }, { localStorage, window, document, crypto, Date: TestDate, setTimeout: callback => { const id = ++timerID; timers.set(id, callback); return id }, clearTimeout: id => timers.delete(id), clearInterval: id => intervals.delete(id) }).default
   const scope = vue.effectScope(); let state, stopped = false
   scope.run(() => { state = component.setup(props, { expose() {} }) })
   mounted.forEach(fn => fn()); await settle()
@@ -68,6 +69,19 @@ async function harness({ get, post, codes = permissions, selected = 'project-a',
 const posts = h => h.requests.filter(request => request.method === 'post')
 const open = async (h, membership = '') => { h.state.openReleasePlan('plan-a', membership); await settle(); return h.state.planExecutionItems() }
 const changeProject = async (h, project) => { h.storage.selected = project; h.window.dispatchEvent(new Event('edo:projects-changed')); h.auth.user.project_id = project; await settle() }
+
+test('普通 HTTP 缺少 randomUUID 时仍可打开发布计划，每次确认使用独立 UUID', async t => {
+  const h = await harness({ crypto: { getRandomValues: globalThis.crypto.getRandomValues.bind(globalThis.crypto) } }); t.after(h.stop)
+  await open(h)
+  const first = h.state.planExecutionRequestID.value
+  assert.equal(h.state.planExecutionOpen.value, true)
+  assert.equal(validateUUID(first), true)
+  h.state.resetPlanExecution()
+  await open(h)
+  assert.equal(validateUUID(h.state.planExecutionRequestID.value), true)
+  assert.notEqual(h.state.planExecutionRequestID.value, first)
+  assert.deepEqual(posts(h), [])
+})
 
 test('运行页收到终态通知后返回计划立即刷新，不被刚更新的运行页同步时间抑制', async t => {
   let status = 'running'

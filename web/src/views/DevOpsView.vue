@@ -4,6 +4,7 @@ import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
 import { Modal, message } from 'ant-design-vue'
 import { isAxiosError } from 'axios'
+import { v4 as uuidv4 } from 'uuid'
 import { ArrowUpRight, Box, Boxes, ChevronDown, ChevronRight, Clock3, FileText, GitBranch, Layers3, Minus, Plus, Power, RefreshCw, RotateCw, Search, Server, Settings2, TerminalSquare, Trash2, Workflow } from 'lucide-vue-next'
 
 import client from '@/api/client'
@@ -1769,7 +1770,7 @@ function openReleasePlan(planID:string,membershipID=''){
  planExecutionOpenedScope=scope
  planExecutionPlanID.value=plan.id
  planExecutionExpectedUpdatedAt.value=plan.updated_at||plan.created_at
- planExecutionRequestID.value=crypto.randomUUID()
+ planExecutionRequestID.value=uuidv4()
  const groups=buildPlanExecutionGroups(plan)
  if(membershipID){
   const selected=groups.flatMap(group=>group.items).find(item=>item.membershipID===membershipID)

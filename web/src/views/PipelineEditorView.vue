@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import Sortable from 'sortablejs'
+import { v4 as uuidv4 } from 'uuid'
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch, type ComponentPublicInstance } from 'vue'
 import { message, Modal } from 'ant-design-vue'
 import { onBeforeRouteLeave, onBeforeRouteUpdate, useRoute, useRouter } from 'vue-router'
@@ -270,7 +271,7 @@ const saveState = computed(() => {
 })
 
 function uid(prefix: string) {
-  return `${prefix}-${crypto.randomUUID()}`
+  return `${prefix}-${uuidv4()}`
 }
 
 function isTaskType(type: WorkflowNodeType): type is TaskNodeType {

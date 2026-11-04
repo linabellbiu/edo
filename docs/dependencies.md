@@ -23,6 +23,9 @@
 | Vue 组件按需导入 | `unplugin-vue-components` | MIT 许可、持续维护并提供 Ant Design Vue Resolver；构建时生成显式组件导入，避免全量注册 UI 库造成超大首屏入口包 | 只在 Vite 构建阶段工作，不参与浏览器运行；组件选型和页面行为仍由 EDO 控制 |
 | 国际化 | `vue-i18n` | Vue 官方生态事实标准，支持组合式 API、懒加载词典和运行时切换 | 简体中文为默认语言；语言入口、业务词典和 Ant Design Vue Locale 同步由 EDO 管理 |
 | 流水线阶段与任务排序 | `sortablejs` | MIT 许可、成熟且项目已在使用；能直接实现阶段和阶段内任务链的横向拖动 | 只保存版本化的“唯一代码源 + 串行阶段数组 + 串行任务数组”；跨阶段规则、任务配置、草稿和启用边界由 EDO 控制 |
+| 浏览器 UUID | `uuid` 14.0.3 | MIT 许可、无运行时依赖，持续维护并测试主流浏览器；原生 randomUUID 不可用时使用 getRandomValues，支持普通 HTTP 访问 | 阶段与任务前缀、发布确认幂等范围、权限和服务端校验仍由 EDO 定义 |
+
+UUID 选型核对了 [uuid](https://github.com/uuidjs/uuid) 和 [Nano ID](https://github.com/ai/nanoid)。Nano ID 默认格式不同；当前节点和发布确认继续采用 UUID，因此选择 `uuid`，不自行维护随机数及 UUID 编码。固定版本 14.0.3 于 2026-10 更新，整包约 65 KiB，浏览器仅按需打包 v4，无额外运行时依赖；适用于项目的 Node.js 24 构建、Linux/macOS 开发及现代浏览器，可在调用处独立替换。2026-11-05 npm 官方生产依赖审计未发现已登记告警。后续升级仍需检查随机源和构建兼容性，不将 ID 生成作为授权依据。
 
 `go-git` 同时负责远端引用查询和指定 Commit 检出。运行镜像不再安装 `git` 和 `openssh-client`，SSH 私钥也不再写入临时文件。已有 Argon2id PHC 摘要不需要迁移。
 

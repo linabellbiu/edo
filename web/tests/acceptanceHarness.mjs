@@ -3,13 +3,14 @@ import {readFileSync} from 'node:fs'
 import {parse, compileScript} from '@vue/compiler-sfc'
 import ts from 'typescript'
 import * as vue from 'vue'
+import * as uuid from 'uuid'
 
 export function loadFrontend(path, modules = {}, globals = {}) {
   const source = readFileSync(new URL(path, import.meta.url), 'utf8')
   const script = path.endsWith('.vue') ? compileScript(parse(source).descriptor, {id:'acceptance-test'}).content : source
   const output = ts.transpileModule(script, {compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022,esModuleInterop:true}}).outputText
   const module = {exports:{}}
-  new Function('require','module','exports',...Object.keys(globals),output)(name => modules[name] ?? (name === '@/utils/pipelineRunFilters' ? runFilterModule : {}),module,module.exports,...Object.values(globals))
+  new Function('require','module','exports',...Object.keys(globals),output)(name => modules[name] ?? (name === 'uuid' ? uuid : name === '@/utils/pipelineRunFilters' ? runFilterModule : {}),module,module.exports,...Object.values(globals))
   return module.exports
 }
 
