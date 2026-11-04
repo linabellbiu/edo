@@ -33,7 +33,7 @@ type TaskNodeType = 'build' | 'shell' | 'approval' | 'manual' | 'deploy'
 type PanelMode = 'closed' | 'library' | 'properties' | 'stage'
 type PropertyTab = 'common' | 'advanced'
 type NotificationTemplateField = 'title' | 'message'
-type DeploymentPlanKind = 'script' | 'kubernetes' | 'compose' | 'docker'
+type DeploymentPlanKind = 'script' | 'kubernetes' | 'compose' | 'compose_stack' | 'docker'
 type TaskGroup = '构建' | '测试' | '扫描' | '发布' | '部署' | '工具'
 
 interface ApplicationRecord {
@@ -95,7 +95,7 @@ const DEFAULT_RUNTIME_IMAGE = 'alpine:3.22'
 const DEFAULT_TAG_PATTERN = 'v*'
 const runtimeImageOptions = ['alpine:3.22', 'node:24-alpine', 'golang:1.26-alpine', 'python:3.14-alpine', 'maven:3.9-eclipse-temurin-21-alpine'].map(value => ({ value }))
 const deploymentKindNames: Record<DeploymentPlanKind, string> = {
-  script: '主机脚本', docker: 'Docker 容器', compose: 'Docker Compose', kubernetes: 'Kubernetes Deployment',
+  script: '主机脚本', docker: 'Docker 容器', compose: 'Compose 单镜像', compose_stack: 'Compose 多镜像', kubernetes: 'Kubernetes Deployment',
 }
 const defaultNotificationTitle = 'EDO｜{{application.name}}｜{{task.name}}｜{{task.status}}'
 const defaultNotificationMessage = [

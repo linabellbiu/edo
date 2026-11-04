@@ -9,7 +9,7 @@
 | 环境变量解析 | `github.com/caarlos0/env/v11` | 零运行时依赖，支持结构体标签、数值、布尔值和 `time.Duration`，替代手写类型转换 | 默认值、跨字段校验、显式空值检查和安全错误文案 |
 | Git 远端引用与认证 | `github.com/go-git/go-git/v5` | 纯 Go、持续维护、支持 HTTPS Basic Auth、SSH 私钥和 `known_hosts` | 仓库地址白名单、不安全 HTTP 显式确认、凭据所有权和引用数量上限 |
 | Docker 构建与发布 | Moby Client + Docker CLI/Buildx/Compose v2 + `golang.org/x/crypto/ssh` | Moby 官方客户端负责镜像、容器和传输 API；官方 Docker CLI/Buildx 负责 BuildKit 双向 session，Compose v2 负责执行经 EDO 校验的内联服务定义；Go 官方扩展库负责远程目标认证 | Compose 通过隔离网络连接 DinD，本地二进制直接使用宿主机 Docker；Docker CLI/Buildx/Compose 从固定版本官方镜像复制到 EDO 运行镜像，Apache-2.0 许可证兼容。每个 Worker 使用独立上下文、认证目录和镜像标签，可按配置并行构建；认证只写入权限为 `0600` 的临时配置并立即清理。本地目标直接部署构建运行时内镜像；远程目标固定主机指纹，有仓库时受控 push/pull，无仓库时传输 `docker save` 流并校验两端镜像，不开放宿主机终端 |
-| Docker Compose YAML 解析 | `go.yaml.in/yaml/v3` | 维护活跃，MIT/Apache-2.0 双许可兼容；使用 AST 能在执行前精确验证服务、镜像占位符和禁止的外部文件引用 | EDO 只允许 `${EDO_IMAGE}` 插值，拒绝 `build`、`include`、`extends`、`env_file`、外部 config/secret 等越界输入，项目名、超时、镜像摘要校验和执行审计仍由 EDO 实现 |
+| Docker Compose YAML 解析 | `go.yaml.in/yaml/v3` | 维护活跃，MIT/Apache-2.0 双许可兼容；使用 AST 能在执行前精确验证服务、镜像占位符和禁止的外部文件引用 | 单镜像方式只允许 `${EDO_IMAGE}` 插值，并限制外部文件引用。多镜像方式复用同一解析库及目标主机官方 Compose CLI，保存完整正文与可配置 Tag 变量，允许用户配置环境文件、卷和网络，但仍拒绝 `build`、`include` 和 `extends`；镜像制品归属、冻结摘要、发布锁、失败恢复与审计由 EDO 实现，不引入新的解析器、汇总运行时或常驻服务 |
 | Docker 构建上下文 | `github.com/moby/patternmatcher` | 复用 Docker 官方维护的 `.dockerignore` 语义，避免自行实现忽略规则后出现敏感文件误打包或缓存失效 | 强制排除 `.git`、限制上下文为 1 GiB，并拒绝上下文外 Dockerfile |
 | 密码摘要 | `github.com/matthewhartstonge/argon2` | Apache-2.0、持续维护、兼容标准 Argon2id PHC 格式 | 固定 Argon2id v1.3，并在计算前限制内存、迭代、并发、盐和摘要长度 |
 | RBAC 判定 | `github.com/casbin/casbin/v3` | 成熟的 RBAC 模型、角色继承和 deny-override 判定 | 权限目录、超级管理员边界、个人密钥所有权和管理接口 |

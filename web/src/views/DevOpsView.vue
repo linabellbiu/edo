@@ -492,7 +492,7 @@ function deploymentKind(record:DeploymentRecord){
  const kind=record.deployment_plan_kind||record.platform
  return ['docker','compose','kubernetes','script'].includes(kind)?kind:'script'
 }
-function deploymentKindLabel(record:DeploymentRecord){return t(`applicationCard.deploymentKind.${deploymentKind(record)}`)}
+function deploymentKindLabel(record:DeploymentRecord){return record.deployment_plan_kind==='compose_stack'?'Compose 多镜像':t(`applicationCard.deploymentKind.${deploymentKind(record)}`)}
 function deploymentInstanceName(record:DeploymentRecord){return record.container_name||record.compose_service||record.workload_name||record.target_name||t('applicationCard.unknownInstance')}
 function deploymentImageLabel(record:DeploymentRecord){return record.image_display||record.image||t('applicationCard.noImage')}
 function deploymentStatus(record:DeploymentRecord):StatusMeta{
