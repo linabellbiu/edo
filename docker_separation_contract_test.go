@@ -49,7 +49,7 @@ func separationComposeServices(t *testing.T, path string) map[string]separationC
 
 func TestProductionComposeSeparatesWebAndAPI(t *testing.T) {
 	services := separationComposeServices(t, "docker-compose.yml")
-	for _, name := range []string{"api", "migrate", "web", "redis", "nats", "docker-builder"} {
+	for _, name := range []string{"bootstrap", "postgres", "api", "migrate", "web", "redis", "nats", "docker-builder"} {
 		if _, ok := services[name]; !ok {
 			t.Fatalf("默认部署缺少必要服务: %s", name)
 		}
@@ -66,15 +66,15 @@ func TestProductionComposeSeparatesWebAndAPI(t *testing.T) {
 			t.Errorf("默认部署只允许 Web 映射宿主机入口: service=%s ports=%v", name, service.Ports)
 		}
 	}
-	if !slices.Equal(web.Ports, []string{"127.0.0.1:${EDO_HTTP_PORT:-8080}:8080"}) {
-		t.Fatalf("Web 必须保留现有 HTTP 端口并默认只监听回环: %v", web.Ports)
+	if !slices.Equal(web.Ports, []string{"${EDO_HTTP_BIND:-0.0.0.0}:${EDO_HTTP_PORT:-8080}:8080"}) {
+		t.Fatalf("Web 必须默认允许通过服务器 IP 访问，并支持配置监听地址: %v", web.Ports)
 	}
 	if _, ok := api.Environment["EDO_WEB_ROOT"]; ok || api.Environment["EDO_SERVER_ADDRESS"] != ":8080" {
 		t.Fatal("正式 API 只保留内部 8080 入口，不再配置前端静态目录")
 	}
 	for name, value := range map[string]string{
-		"EDO_DATABASE_DRIVER":        "${EDO_COMPOSE_DATABASE_DRIVER:-sqlite}",
-		"EDO_DATABASE_DSN":           "${EDO_COMPOSE_DATABASE_DSN:-/app/data/edo.db}",
+		"EDO_DATABASE_DRIVER":        "${EDO_COMPOSE_DATABASE_DRIVER:-postgres}",
+		"EDO_DATABASE_DSN":           "${EDO_COMPOSE_DATABASE_DSN:-}",
 		"EDO_REDIS_URL":              "${EDO_COMPOSE_REDIS_URL:-redis://redis:6379/0}",
 		"EDO_NATS_URL":               "${EDO_COMPOSE_NATS_URL:-nats://nats:4222}",
 		"EDO_SERVER_TRUSTED_PROXIES": "${EDO_COMPOSE_SERVER_TRUSTED_PROXIES:-}",
@@ -83,8 +83,15 @@ func TestProductionComposeSeparatesWebAndAPI(t *testing.T) {
 			t.Errorf("前后端分离不得改变根 .env 的连接映射: %s", name)
 		}
 	}
-	if !strings.HasPrefix(api.Environment["EDO_SECRETS_KEY"], "${EDO_SECRETS_KEY:?") {
-		t.Fatal("后端缺少根 .env 密钥时必须失败，不允许临时密钥")
+	if api.Environment["EDO_SECRETS_KEY_FILE"] != "/app/data/bootstrap/secrets-key" || api.Environment["EDO_DATABASE_DSN_FILE"] != "/app/data/bootstrap/postgres-dsn" {
+		t.Fatal("正式 Compose 必须读取持久化密钥与默认数据库连接，不允许临时密钥")
+	}
+	postgres := services["postgres"]
+	if migrate.DependsOn["bootstrap"].Condition != "service_completed_successfully" || migrate.DependsOn["postgres"].Condition != "service_healthy" || postgres.DependsOn["bootstrap"].Condition != "service_completed_successfully" {
+		t.Fatal("数据库与迁移必须等待初始化，迁移还需等待数据库健康")
+	}
+	if postgres.Environment["TZ"] != "Asia/Shanghai" || postgres.Environment["PGTZ"] != "Asia/Shanghai" || postgres.Environment["POSTGRES_PASSWORD_FILE"] != "/run/edo-bootstrap/postgres-password" || !slices.Contains(postgres.Command, "timezone=Asia/Shanghai") || !slices.Contains(postgres.Command, "log_timezone=Asia/Shanghai") {
+		t.Fatal("默认 PostgreSQL 必须通过文件读取密码并统一数据库和日志时区")
 	}
 	if web.DependsOn["api"].Condition != "service_healthy" || api.DependsOn["migrate"].Condition != "service_completed_successfully" {
 		t.Fatal("Web 启动必须等待 API 健康，API 必须等待迁移成功")
@@ -105,12 +112,13 @@ func TestProductionComposeSeparatesWebAndAPI(t *testing.T) {
 
 func TestDockerAPIRuntimeDoesNotDependOnWebBuild(t *testing.T) {
 	dockerfile := separationReadFile(t, "Dockerfile")
-	parts := strings.Split(dockerfile, "FROM debian:bookworm-slim AS api-runtime\n")
+	parts := strings.Split(dockerfile, "FROM ${EDO_API_BASE_IMAGE} AS api-runtime\n")
 	if len(parts) != 2 {
 		t.Fatal("默认最终阶段必须是独立 API 运行时")
 	}
 	for _, required := range []string{
-		"FROM golang:1.26.10-bookworm AS go-source",
+		"ARG EDO_GO_BUILD_IMAGE=golang:1.26.10-bookworm",
+		"FROM ${EDO_GO_BUILD_IMAGE} AS go-source",
 		"FROM go-source AS go-builder",
 		"COPY --from=go-builder --chown=edo:edo /out/edo /app/edo",
 	} {
@@ -126,7 +134,7 @@ func TestDockerAPIRuntimeDoesNotDependOnWebBuild(t *testing.T) {
 	if strings.Contains(parts[1], "npm") || strings.Contains(parts[1], "node:") {
 		t.Fatal("API 运行层不得携带前端工具链")
 	}
-	_, goSource, ok := strings.Cut(parts[0], "FROM golang:1.26.10-bookworm AS go-source\n")
+	_, goSource, ok := strings.Cut(parts[0], "FROM ${EDO_GO_BUILD_IMAGE} AS go-source\n")
 	if !ok {
 		t.Fatal("缺少 Go 源码构建阶段")
 	}
@@ -150,11 +158,11 @@ func TestDockerAPIRuntimeDoesNotDependOnWebBuild(t *testing.T) {
 
 func TestWebImageUsesIndependentNonRootRuntime(t *testing.T) {
 	dockerfile := separationReadFile(t, "web/Dockerfile")
-	parts := strings.Split(dockerfile, "FROM nginx:1.30.6-alpine AS web-runtime\n")
+	parts := strings.Split(dockerfile, "FROM ${EDO_WEB_BASE_IMAGE} AS web-runtime\n")
 	if len(parts) != 2 {
 		t.Fatal("Web 必须使用版本固定的 NGINX 官方稳定镜像")
 	}
-	for _, required := range []string{"FROM node:24.16.0-bookworm-slim AS web-builder", "RUN npm ci", "RUN npm run build", "COPY --chmod=0444 web/nginx.conf /etc/nginx/nginx.conf", "COPY --from=web-builder /src/web/dist/ /usr/share/nginx/html/", "RUN chmod -R a=rX /usr/share/nginx/html", "USER 101:101", "ENTRYPOINT [\"nginx\"]", "CMD [\"-g\", \"daemon off;\"]"} {
+	for _, required := range []string{"ARG EDO_NODE_BUILD_IMAGE=node:24.16.0-bookworm-slim", "ARG EDO_WEB_BASE_IMAGE=nginx:1.30.6-alpine", "FROM ${EDO_NODE_BUILD_IMAGE} AS web-builder", "RUN npm ci", "RUN npm run build", "COPY --chmod=0444 web/nginx.conf /etc/nginx/nginx.conf", "COPY --from=web-builder /src/web/dist/ /usr/share/nginx/html/", "RUN chmod -R a=rX /usr/share/nginx/html", "USER 101:101", "ENTRYPOINT [\"nginx\"]", "CMD [\"-g\", \"daemon off;\"]"} {
 		if !strings.Contains(dockerfile, required) {
 			t.Errorf("缺少 Web 镜像隔离契约: %s", required)
 		}

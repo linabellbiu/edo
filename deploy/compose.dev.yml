@@ -14,8 +14,9 @@ x-edo-environment: &edo-environment
   EDO_AUTH_COOKIE_SECURE: "false"
   # 宿主机路径、127.0.0.1 与容器内地址含义不同，使用根 .env 的 Compose 专用值映射实际运行变量。
   # SQLite 文件默认位于持久卷；删除普通容器不会丢失账户和业务数据。
-  EDO_DATABASE_DRIVER: ${EDO_COMPOSE_DATABASE_DRIVER:-sqlite}
-  EDO_DATABASE_DSN: ${EDO_COMPOSE_DATABASE_DSN:-/app/data/edo.db}
+  # 开发配置独立覆盖正式 Compose 的 PostgreSQL 默认值；原有自定义连接仍可作为回退。
+  EDO_DATABASE_DRIVER: ${EDO_DEV_COMPOSE_DATABASE_DRIVER:-${EDO_COMPOSE_DATABASE_DRIVER:-sqlite}}
+  EDO_DATABASE_DSN: ${EDO_DEV_COMPOSE_DATABASE_DSN:-${EDO_COMPOSE_DATABASE_DSN:-/app/data/edo.db}}
   # 构建中间输出与文件制品分开存放，便于独立查看和清理。
   EDO_BUILD_DIRECTORY: ${EDO_COMPOSE_BUILD_DIRECTORY:-/app/data/builds}
   EDO_ARTIFACTS_DIRECTORY: ${EDO_COMPOSE_ARTIFACTS_DIRECTORY:-/app/data/artifacts}

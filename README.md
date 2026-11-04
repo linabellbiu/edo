@@ -6,7 +6,7 @@ EDO（EasyDevOps）是一个简单、轻量的自动发布工具，可以装在�
 
 默认采用 Pull 模式：EDO 按设置的间隔主动检查仓库里的分支、Tag 和 PR/MR，发现符合流水线规则的变化就自动执行。仓库不需要反过来连接 EDO，适合放在内网运行；EDO 需要能访问代码仓库和发布目标。也可以接入 Webhook，更快收到仓库变化。
 
-EDO 的前端和后端分别构建、运行：Web 提供网页，Go API 处理接口、WebSocket 和后台任务。默认用 SQLite 保存数据，数据库就是本地的一个文件。Docker Compose 会一起管理 Web、API、Redis、NATS 和隔离的 Docker 构建器，不需要分别手工启动。
+EDO 的前端和后端分别构建、运行：Web 提供网页，Go API 处理接口、WebSocket 和后台任务。Docker Compose 默认使用 PostgreSQL，并一起管理 Web、API、数据库、Redis、NATS 和隔离的 Docker 构建器，不需要分别手工安装这些服务。宿主机开发和二进制运行仍默认使用 SQLite。
 
 应用可以直接发布到 EDO 的本地 Docker 环境，也可以发布到远程主机或 Kubernetes 集群。Docker、Docker Compose 和 Kubernetes 都从应用开始，选择流水线和部署方案，再填好具体位置，统一按「应用 → 流水线 → 部署方案 → 运行资源」发布。
 
@@ -14,134 +14,71 @@ EDO 的前端和后端分别构建、运行：Web 提供网页，Go API 处理�
 
 项目角色可按集群、命名空间和操作范围映射到 Kubernetes 原生 RBAC。映射默认关闭，显式配置并同步成功后生效；用户请求使用受控身份，授权变更同时影响缓存和长连接。详见[集群 RBAC 授权](docs/kubernetes-rbac.md)。
 
-## 安装前准备
+## Docker Compose 一键启动
 
-EDO 支持 Linux 和 macOS，可运行在本地电脑或内网服务器上。先选择一种启动方式，不要在同一个工作目录和数据目录中同时启动下面几种环境。
-
-| 方式 | 适用场景 | 需要安装 | 默认网页入口 |
-| --- | --- | --- | --- |
-| Docker Compose | 安装使用、服务器部署 | Git、Docker、Compose v2、Buildx、OpenSSL | `http://127.0.0.1:8080` |
-| `mage start --dev` | 修改源码、前端热更新 | 上述工具，以及 Go、Node.js、npm、Mage | `http://127.0.0.1:5173` |
-| `mage start` | 源码构建后在宿主机后台运行 | 与开发模式相同，Redis/NATS 需先启动 | `http://127.0.0.1:5173` |
-
-普通安装使用第一种即可，不需要在宿主机安装 Go、Node.js 或独立 Worker。Compose 启动两个应用容器：Web 提供页面，Go API 同时处理 HTTP、WebSocket 和后台任务；另有 Redis、NATS JetStream 和隔离的 Docker 构建器。默认数据库是 SQLite 文件，无需额外安装数据库服务。构建器使用需要 `privileged` 的 Docker-in-Docker 容器，API 不挂载宿主机 Docker Socket。
-
-确认 Docker 已启动，当前用户可以执行以下命令：
-
-```bash
-git --version
-docker version
-docker compose version
-docker buildx version
-openssl version
-```
-
-首次构建需要访问 Go/npm 依赖源和容器镜像仓库；运行流水线时，EDO 还需能访问所用代码仓库、镜像仓库和发布目标。
-
-### 获取源码与配置
+支持 Linux 和 macOS。电脑或服务器上只需准备 Git、Docker Engine（macOS 使用 Docker Desktop）及 Compose v2/更新版本、Buildx 插件，确认当前用户可以运行 Docker。无需安装 Go、Node.js、PostgreSQL 或 OpenSSL。
 
 ```bash
 git clone --branch main https://github.com/linabellbiu/edo.git
 cd edo
 cp .env.example .env
-chmod 600 .env
-openssl rand -base64 32
+docker compose up -d
 ```
 
-用编辑器打开 `.env`，把最后一条命令生成的完整内容填入 `EDO_SECRETS_KEY=` 后面。这个值用于加密仓库令牌、SSH 凭据和集群配置，必须固定保存。已有 `.env` 或数据库时继续使用原配置与密钥，不要重新复制模板覆盖。
+无需修改复制后的配置。第一次自动构建 Web/API 镜像，生成并保存随机加密密钥与数据库密码，初始化 PostgreSQL，完成迁移后启动服务。默认已配置国内镜像同步源及 Go/npm 源，首次需联网下载，请等待构建完成；对应版本、架构和覆盖方式见[镜像说明](docs/deployment.md#默认镜像源)。再次运行同一命令会复用已有镜像和数据；更新源码后使用 `docker compose up -d --build`。
 
-默认配置即可使用 SQLite。需要 PostgreSQL 或 MySQL 时，在首次启动前按下文[配置与数据](#配置与数据)修改数据库连接；不提供运行后的跨数据库切换功能。
+浏览器打开 **`http://服务器IP:8080`**，本机安装打开 [http://localhost:8080](http://localhost:8080)。默认账户 **`admin`**，初始密码 **`123456`**；登录后通过头像菜单“修改密码”设置至少 12 位的新密码。已有账户不会被覆盖。
 
-## Docker Compose 部署
-
-以下命令均在仓库根目录执行，使用根目录的 `docker-compose.yml`。
-
-### 1. 准备数据目录
+### 检查启动结果
 
 ```bash
-mkdir -p data
+docker compose ps -a
+curl --fail http://localhost:8080/healthz
+curl --fail http://localhost:8080/api/v1/health/ready
 ```
 
-Linux 首次安装时，API 和迁移容器以 `10001:10001` 运行，新建的空 `data/` 目录需要允许该用户写入：
+`bootstrap` 和 `migrate` 是一次性任务，`Exited (0)` 属于正常结果。其余服务应保持健康；Web 检查与 API 检查均通过后，在浏览器实际打开登录页。初始化或迁移失败会阻止后续启动，使用 `docker compose logs bootstrap migrate api web` 查看安全日志。
 
-```bash
-sudo chown 10001:10001 data
-```
+### 默认启动了什么
 
-已有数据目录先核对原归属和备份，不要递归修改 Redis、NATS 等子目录的权限。macOS 使用 Docker Desktop 时，确保仓库目录已允许 Docker 文件共享。
+Web 单独提供网页，Go API 一个进程同时处理接口、WebSocket 和后台任务；另有 PostgreSQL 17、Redis、NATS JetStream 和隔离的 Docker 构建器。数据库不映射宿主机端口。构建器需要 `privileged`，不挂载宿主机 Docker Socket，并通过 mTLS 与 API 通信。
 
-### 2. 校验并启动
+默认只有 Web 对外监听 `8080`。修改 `.env` 的 `EDO_HTTP_PORT` 可换端口；仅通过本机反向代理访问时，将 `EDO_HTTP_BIND` 改为 `127.0.0.1`。使用 HTTPS 反向代理时，将 `EDO_AUTH_COOKIE_SECURE` 改为 `true`，并保留 WebSocket Upgrade 和长连接。实际客户端地址的代理信任配置见[部署说明](docs/deployment.md)。
 
-```bash
-docker compose --env-file .env config --quiet
-docker compose --env-file .env up -d --build
-docker compose --env-file .env ps -a
-```
+### 数据、密钥与备份
 
-首次构建需要一些时间。`migrate` 是一次性数据库迁移，成功后显示 `Exited (0)` 属于正常情况；等待 `api`、`web` 及依赖服务健康后，打开 [http://127.0.0.1:8080](http://127.0.0.1:8080)。
+所有业务数据保存在仓库 `data/`：PostgreSQL 位于 `data/postgres/`，随机密钥和数据库连接文件位于 `data/bootstrap/`，另有 Redis、NATS、仓库工作区、文件制品和日志。初始化会自动处理顶层目录权限，无需手工 `mkdir` 或 `chown`；不会递归修改已有数据目录。
 
-确认页面与后端均已就绪：
-
-```bash
-curl --fail http://127.0.0.1:8080/healthz
-curl --fail http://127.0.0.1:8080/api/v1/health/ready
-```
-
-前一个检查 Web，后一个检查 API 与数据库、Redis、NATS JetStream。还应在浏览器实际打开登录页；仅 API 返回正常不能代替页面检查。
-
-### 3. 首次登录
-
-账户库为空时，服务自动创建管理员 `admin`，初始密码为 `123456`。登录后通过右上角头像菜单的“修改密码”设置新密码，至少 12 位。已有账户的数据库不会补建管理员或重置现有密码。
-
-需要在终端重置管理员密码时，可执行：
-
-```bash
-docker compose --env-file .env exec api /app/edo admin reset-password --username admin
-```
-
-命令会隐藏输入并要求确认新密码，无需把密码写进命令行。
-
-### 4. 服务器访问与端口
-
-正式 Compose 只将 Web 映射到宿主机 `127.0.0.1:8080`。NGINX 在容器网络内转发 `/api/`、WebSocket 和流式输出；API、Redis、NATS 和构建器不直接映射宿主机端口。因此，远程电脑不能直接访问服务器 IP 的 8080 端口。
-
-临时从自己的电脑访问服务器，可在自己的电脑执行，替换登录用户和服务器地址：
-
-```bash
-ssh -L 18080:127.0.0.1:8080 deploy@your-server
-```
-
-保持该 SSH 连接，访问自己电脑的 `http://127.0.0.1:18080`。长期访问使用 HTTPS 反向代理，代理到服务器本地 Web 入口，并支持 WebSocket Upgrade 和长连接。HTTPS 部署还需将 Compose 的 `EDO_AUTH_COOKIE_SECURE` 环境项改为 `"true"`；当前 Compose 文件显式设置该值，仅修改 `.env` 同名项不会覆盖它。代理信任配置见[部署说明](docs/deployment.md)。
-
-端口占用时，修改 `.env` 的 `EDO_HTTP_PORT` 后重新执行启动命令。例如设为 `18080`，正式网页入口变为 `http://127.0.0.1:18080`。`EDO_WEB_PORT` 只调整开发 Compose 的 Vite 端口，不改变正式 Web 入口。
+**保留并备份整个 `data/` 和 `.env`。** 加密密钥不是每次启动重新生成的，丢失后无法解密原凭据。已初始化环境缺少密钥或数据库密码时会拒绝启动；恢复备份，不要删除配置目录让它重新生成。已有 `.env` 和数据时不要重新复制模板覆盖，也不会将已有 SQLite 自动切换到 PostgreSQL。运行中的 PostgreSQL 使用 `pg_dump` 备份，直接复制整个目录应先停止全部写入，见[备份说明](docs/deployment.md#备份与恢复)。
 
 ### 日常管理与更新
 
 ```bash
-# 状态与最近日志；Ctrl+C 只退出日志查看
-docker compose --env-file .env ps -a
-docker compose --env-file .env logs --tail 100 -f api web migrate
+# 状态与日志；Ctrl+C 只退出日志查看
+docker compose ps -a
+docker compose logs --tail 100 -f api web
 
 # 停止容器，保留 data/ 和命名卷
-docker compose --env-file .env down
+docker compose down
 
 # 再次启动
-docker compose --env-file .env up -d
-```
+docker compose up -d
 
-更新前备份数据库和 `.env`，确认当前没有正在执行的发布任务。在服务器拉取已推送的 `main`，同时重建 Web 和 API：
-
-```bash
+# 更新前先备份并确认没有正在执行的发布任务
 git pull --ff-only origin main
 git rev-parse --short HEAD
-docker compose --env-file .env up -d --build
-docker compose --env-file .env ps -a
-curl --fail http://127.0.0.1:8080/api/v1/health/ready
+docker compose up -d --build
 ```
 
-使用自定义端口时同步替换检查地址，最后在浏览器复查页面。不要用重新复制 `.env.example` 或删除 `data/` 解决升级问题。
+更新后再次检查健康接口和页面。不要添加 `down -v` 或直接清空 `data/`。构建器的命名卷还保存本地发布环境与镜像缓存，其应用数据需单独备份。
 
-自行使用 systemd 部署时，Web 与 API 仍需分别发布。[EDO 保护发布](tools/release-activate/README.md) 只负责 systemd Go API 的备份、切换及回滚，不能把 API 激活视为前后端全部上线。
+需要在终端重置管理员密码时执行以下命令，按隐藏输入提示操作：
+
+```bash
+docker compose exec api /app/docker-entrypoint.sh admin reset-password --username admin
+```
+
+自行使用 systemd 部署时，Web 与 API 仍需分别发布。[EDO 保护发布](tools/release-activate/README.md) 只负责 systemd Go API 的备份、切换及回滚。
 
 ## 本地启动
 
@@ -156,7 +93,15 @@ npm --version
 mage -l
 ```
 
-先按[获取源码与配置](#获取源码与配置)准备 `.env`。Mage 会自动准备缺失的前端依赖；首次安装需要能访问 Go/npm 依赖源。
+本地二进制、Mage 与开发 Compose 仍默认 SQLite，需手工配置固定加密密钥：
+
+```bash
+cp .env.example .env
+chmod 600 .env
+openssl rand -base64 32
+```
+
+把生成的完整值填入 `.env` 的 `EDO_SECRETS_KEY=`。已有配置时保留原密钥，不要覆盖；从正式 Compose 环境转为本地开发时请使用独立工作目录与数据库。Mage 会自动准备缺失的前端依赖。
 
 如果已经通过正式 Compose 启动同目录的 EDO，先执行根目录的 `docker compose --env-file .env down`，再选择下面一种本地方式。它与开发 Compose 是两个不同项目，`mage stop` 不会停止正式 Compose。Linux 切换运行用户时也需核对数据目录的写入权限。
 
@@ -259,14 +204,14 @@ docker compose --env-file .env -f deploy/compose.dev.yml down
 
 | 现象 | 检查方式 |
 | --- | --- |
-| 提示 `EDO_SECRETS_KEY` 缺失或无效 | 检查仓库根目录 `.env`，需填写 32 字节随机值的 Base64；已有数据应恢复原密钥 |
+| 提示密钥缺失或无效 | 正式 Compose 检查 `bootstrap` 日志及 `data/bootstrap/`；本地开发检查 `.env` 的密钥；已有数据恢复原密钥 |
 | 8080、5173、6379 或 4222 被占用 | 先确认现有进程；Compose 改对应映射端口，宿主机 Redis/NATS 的连接 URL 也需同步修改 |
 | 数据库或日志目录 `permission denied` | Linux 检查 API 用户 `10001:10001` 对挂载目录的写权限；不要改为全目录 `777` |
 | `migrate` 失败，API/Web 未启动 | 查看 `docker compose --env-file .env logs migrate`，修正数据库连接或权限后再启动 |
 | 页面能打开但登录失败、API 未就绪 | 查看 API 日志及 `/api/v1/health/ready`，检查数据库、Redis 和启用 JetStream 的 NATS |
 | Docker 构建器不健康 | 查看对应 Compose 的 `docker-builder` 日志；容器部署使用隔离 DinD，宿主机运行使用当前 Docker daemon |
 | 本地提示 Redis/NATS 连接失败 | `mage start` 不会启动依赖，先执行“后台运行”中的依赖启动命令；容器内不要使用宿主机 `127.0.0.1` 连接 URL |
-| 服务器 IP 无法直接打开网页 | 正式入口默认仅监听服务器本机，使用 SSH 转发或 HTTPS 反向代理 |
+| 服务器 IP 无法直接打开网页 | 检查 Web 健康、`EDO_HTTP_BIND`、`EDO_HTTP_PORT` 及服务器网络入口是否允许该端口 |
 
 ## 开始发布
 
@@ -301,7 +246,7 @@ COPY --chmod=0555 edo-terminal-session /usr/local/libexec/edo-terminal-session
 
 ## 配置与数据
 
-首次启动前选择数据库，默认 SQLite，也可以选择 PostgreSQL 或 MySQL。连接地址、端口和目录在 [.env.example](.env.example) 中都有说明，实际配置保存在 `.env`。宿主机与容器使用的地址分开填写：
+首次启动前选择数据库：正式 Docker Compose 默认自带 PostgreSQL，宿主机及开发 Compose 默认 SQLite，也支持外部 PostgreSQL 或 MySQL。连接地址、端口和目录在 [.env.example](.env.example) 中都有说明，实际配置保存在 `.env`。宿主机与容器使用的地址分开填写：
 
 | 配置 | 宿主机 / Mage | Compose 容器 |
 | --- | --- | --- |
@@ -310,9 +255,9 @@ COPY --chmod=0555 edo-terminal-session /usr/local/libexec/edo-terminal-session
 | Redis | `EDO_REDIS_URL` | `EDO_COMPOSE_REDIS_URL` |
 | NATS JetStream | `EDO_NATS_URL` | `EDO_COMPOSE_NATS_URL` |
 
-SQLite 默认分别为 `data/edo.db` 和容器内 `/app/data/edo.db`，通过挂载对应同一个文件。外部 PostgreSQL/MySQL 需先创建 EDO 数据库及账户，再填写容器实际可访问的地址；容器中的 `127.0.0.1` 指容器自身。DSN 示例见[部署说明](docs/deployment.md#数据库-dsn-示例)。
+正式 Compose 的 `EDO_COMPOSE_DATABASE_DSN` 留空时，从 `data/bootstrap/postgres-dsn` 读取自动生成的 PostgreSQL 连接。开发 Compose 使用 `EDO_DEV_COMPOSE_DATABASE_DRIVER` 与 `EDO_DEV_COMPOSE_DATABASE_DSN` 独立覆盖，默认 `/app/data/edo.db`；宿主机 SQLite 默认为 `data/edo.db`。外部 PostgreSQL/MySQL 需先创建 EDO 数据库及账户，再填写容器实际可访问的地址；容器中的 `127.0.0.1` 指容器自身。DSN 示例见[部署说明](docs/deployment.md#数据库-dsn-示例)。
 
-默认 EDO 数据保存在 `data/`，包括 SQLite、Redis、NATS、仓库文件和构建制品；本地启动器日志在 `logs/backend.log`、`logs/web.log`，后端结构化日志为 `logs/edo.log`。Compose 中的后端日志保存在 `data/logs/`，Web 日志通过 Compose 查看。
+默认 EDO 数据保存在 `data/`，包括 PostgreSQL（或选择的 SQLite）、初始化密钥、Redis、NATS、仓库文件和构建制品；本地启动器日志在 `logs/backend.log`、`logs/web.log`，后端结构化日志为 `logs/edo.log`。Compose 中的后端日志保存在 `data/logs/`，Web 日志通过 Compose 查看。
 
 SQLite 部署在停止写入后一起备份 `data/` 和 `.env`；使用外部数据库时，还需使用对应数据库的备份工具保存 EDO 数据库。`EDO_SECRETS_KEY` 用于解密凭据，请固定保存；更换后将无法读取此前保存的凭据。`.env` 含敏感信息，请勿提交到仓库。
 

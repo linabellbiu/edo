@@ -83,3 +83,14 @@ unset EDO_ID_TEST_DRIVER
 测试夹具复用现有 GORM、官方 MySQL 驱动和标准库，不增加运行依赖。评估过 testcontainers-go 和 go-txdb：前者负责容器生命周期，不能提供逐用例的表结构复制；后者的事务不能隔离 MySQL DDL。容器由 CI 或本地命令管理；结构复制仅限测试，维护风险由模板隔离、并发创建、清理和真实迁移测试约束。
 
 数据库类型在首次初始化时确定。设置页不提供 SQLite、PostgreSQL、MySQL 之间的数据复制或切换；上述迁移测试只验证同类型数据库的表结构升级。
+
+## 正式 Compose 初始化
+
+下面的回归仅创建随机命名的独立 Docker 卷及短时容器，结束后清理自己的卷，不启动或修改现有 EDO：
+
+```bash
+docker pull alpine:3.22
+EDO_TEST_COMPOSE_BOOTSTRAP=1 go test -race -count=1 -timeout=4m .
+```
+
+覆盖首次随机配置、重复启动不换密钥、API/PostgreSQL 文件权限、配置不一致不泄露输入、关键文件丢失阻断、旧 SQLite 不自动切库和容器入口读取持久化配置。Docker Desktop 的 bind 文件身份会重映射，权限断言使用 Docker 管理卷保留真实 Linux UID/GID；正式服务器仍需实际执行默认 Compose 验收。

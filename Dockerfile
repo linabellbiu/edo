@@ -1,6 +1,12 @@
-FROM docker:28.3.3-cli AS docker-cli
+# 构建镜像可由 Compose 传入用户指定的同步源；直接 docker build 保留官方默认值。
+ARG EDO_DOCKER_CLI_IMAGE=docker:29.8.2-cli
+ARG EDO_GO_BUILD_IMAGE=golang:1.26.10-bookworm
+ARG EDO_API_BASE_IMAGE=debian:bookworm-slim
+FROM ${EDO_DOCKER_CLI_IMAGE} AS docker-cli
 
-FROM golang:1.26.10-bookworm AS go-source
+FROM ${EDO_GO_BUILD_IMAGE} AS go-source
+ARG GOPROXY=https://proxy.golang.org,direct
+ENV GOPROXY=${GOPROXY}
 WORKDIR /src
 # Buildx 负责与 Docker-in-Docker 中的 BuildKit 建立双向 session；仅调用 HTTP build API 无法传输上下文和认证。
 COPY --from=docker-cli /usr/local/bin/docker /usr/local/bin/docker
@@ -29,7 +35,7 @@ ARG EDO_VERSION=dev
 RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w -X main.version=${EDO_VERSION}" -o /out/edo ./cmd/edo
 
 # API 镜像只编译 Go；生产与开发 Web 均由 web/Dockerfile 独立构建。
-FROM debian:bookworm-slim AS api-runtime
+FROM ${EDO_API_BASE_IMAGE} AS api-runtime
 COPY --from=docker-cli /usr/local/bin/docker /usr/local/bin/docker
 COPY --from=docker-cli /usr/local/libexec/docker/cli-plugins/docker-buildx /usr/local/libexec/docker/cli-plugins/docker-buildx
 COPY --from=docker-cli /usr/local/libexec/docker/cli-plugins/docker-compose /usr/local/libexec/docker/cli-plugins/docker-compose
@@ -42,9 +48,10 @@ RUN apt-get -o Acquire::Retries=5 update \
     && chown -R edo:edo /app
 WORKDIR /app
 COPY --from=go-builder --chown=edo:edo /out/edo /app/edo
+COPY --chmod=0555 deploy/docker-entrypoint.sh /app/docker-entrypoint.sh
 ENV EDO_DATABASE_DRIVER=sqlite \
     EDO_DATABASE_DSN=/app/data/edo.db
 USER 10001:10001
 EXPOSE 8080
-ENTRYPOINT ["/app/edo"]
+ENTRYPOINT ["/app/docker-entrypoint.sh"]
 CMD ["server"]

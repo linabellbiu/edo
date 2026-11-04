@@ -1,13 +1,17 @@
-FROM node:24.16.0-bookworm-slim AS web-builder
+# Compose 默认使用镜像同步源；不将数据库配置或密钥作为构建参数。
+ARG EDO_NODE_BUILD_IMAGE=node:24.16.0-bookworm-slim
+ARG EDO_WEB_BASE_IMAGE=nginx:1.30.6-alpine
+FROM ${EDO_NODE_BUILD_IMAGE} AS web-builder
+ARG EDO_NPM_REGISTRY=https://registry.npmjs.org
 WORKDIR /src/web
 COPY web/package.json web/package-lock.json ./
 COPY web/patches/ ./patches/
-RUN npm ci
+RUN npm ci --registry="${EDO_NPM_REGISTRY}"
 COPY web/ ./
 RUN npm run build
 
 # 使用 NGINX 官方稳定版，运行时不携带 Node、源码或后端二进制。
-FROM nginx:1.30.6-alpine AS web-runtime
+FROM ${EDO_WEB_BASE_IMAGE} AS web-runtime
 # 私有归档可能保留 0600/0700，运行时公开文件需显式设置为非 root 可读且不可写。
 COPY --chmod=0444 web/nginx.conf /etc/nginx/nginx.conf
 COPY --from=web-builder /src/web/dist/ /usr/share/nginx/html/

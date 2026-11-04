@@ -1,4 +1,5 @@
-# EDO 单机部署：Web 与 Go API 独立运行，数据保存在仓库 data 目录。
+# EDO 单机部署：复制 .env.example 为 .env 后直接 docker compose up -d。
+# Web 与 Go API 独立运行，默认 PostgreSQL，全部业务数据保存在仓库 data 目录。
 name: edo
 
 # migrate 和 api 共用这组环境变量。这里仅保留容器部署必须指定的内容，
@@ -13,14 +14,14 @@ x-edo-environment: &edo-environment
   EDO_LOG_MAX_FILE_SIZE_MB: ${EDO_LOG_MAX_FILE_SIZE_MB:-100}
   EDO_LOG_COMPRESS_AFTER_DAYS: ${EDO_LOG_COMPRESS_AFTER_DAYS:-3}
 
-  # 当前端通过 http://127.0.0.1:8080 访问时必须为 false。
-  # 配置 HTTPS 反向代理后改为 true。
-  EDO_AUTH_COOKIE_SECURE: "false"
+  # 默认 HTTP；配置 HTTPS 反向代理后在 .env 中改为 true。
+  EDO_AUTH_COOKIE_SECURE: ${EDO_AUTH_COOKIE_SECURE:-false}
 
   # 宿主机路径、127.0.0.1 与容器内地址含义不同，使用根 .env 的 Compose 专用值映射实际运行变量。
-  # SQLite 数据库默认保存在仓库 data 目录中。
-  EDO_DATABASE_DRIVER: ${EDO_COMPOSE_DATABASE_DRIVER:-sqlite}
-  EDO_DATABASE_DSN: ${EDO_COMPOSE_DATABASE_DSN:-/app/data/edo.db}
+  # 空 DSN 由入口读取首次生成的 PostgreSQL 连接文件，密码不进入 Compose 配置。
+  EDO_DATABASE_DRIVER: ${EDO_COMPOSE_DATABASE_DRIVER:-postgres}
+  EDO_DATABASE_DSN: ${EDO_COMPOSE_DATABASE_DSN:-}
+  EDO_DATABASE_DSN_FILE: /app/data/bootstrap/postgres-dsn
 
   # 构建中间输出与文件制品分开存放；单产物默认限制为 1 GiB。
   EDO_BUILD_DIRECTORY: ${EDO_COMPOSE_BUILD_DIRECTORY:-/app/data/builds}
@@ -34,13 +35,24 @@ x-edo-environment: &edo-environment
   EDO_REDIS_URL: ${EDO_COMPOSE_REDIS_URL:-redis://redis:6379/0}
   EDO_NATS_URL: ${EDO_COMPOSE_NATS_URL:-nats://nats:4222}
 
-  # 请在 .env 中设置。该密钥用于加密登录方式、仓库凭据和 kubeconfig。
-  EDO_SECRETS_KEY: ${EDO_SECRETS_KEY:?请先在根目录 .env 中设置 EDO_SECRETS_KEY}
+  # 可提供原有密钥；留空时只在全新安装生成一次，之后必须复用持久化文件。
+  EDO_SECRETS_KEY: ${EDO_SECRETS_KEY:-}
+  EDO_SECRETS_KEY_FILE: /app/data/bootstrap/secrets-key
 
 # migrate 和 api 共用同一个镜像、数据卷和安全设置。
 x-edo-runtime: &edo-runtime
+  platform: ${EDO_DOCKER_PLATFORM:-linux/amd64}
   image: ${EDO_IMAGE:-edo:local}
   pull_policy: never
+  build:
+    context: .
+    dockerfile: Dockerfile
+    args:
+      EDO_VERSION: ${EDO_VERSION:-dev}
+      GOPROXY: ${EDO_GO_PROXY:-https://goproxy.cn,direct}
+      EDO_DOCKER_CLI_IMAGE: ${EDO_DOCKER_CLI_IMAGE:-swr.cn-north-4.myhuaweicloud.com/ddn-k8s/docker.io/library/docker:29.8.2-cli}
+      EDO_GO_BUILD_IMAGE: ${EDO_GO_BUILD_IMAGE:-swr.cn-north-4.myhuaweicloud.com/ddn-k8s/docker.io/library/golang:1.26.10-alpine}
+      EDO_API_BASE_IMAGE: ${EDO_API_BASE_IMAGE:-swr.cn-north-4.myhuaweicloud.com/ddn-k8s/docker.io/library/debian:bookworm-slim}
   environment: *edo-environment
   init: true
   # 容器根目录只读，并禁止进程提权。
@@ -51,7 +63,7 @@ x-edo-runtime: &edo-runtime
   tmpfs:
     - /tmp:size=256m,mode=1777
   volumes:
-    # 直接保存到仓库 data 目录，便于备份并与本机运行共享 SQLite。
+    # 业务文件与初始化密钥持久化；不可用其他启动方式同时写入。
     - ./data:/app/data
   networks:
     - edo
@@ -62,15 +74,68 @@ x-edo-runtime: &edo-runtime
       max-file: "5"
 
 services:
+  # 一次性准备可写目录、随机密钥和数据库密码；仅此任务以 root 操作 data 顶层。
+  # 不递归改已有子目录，不自动换密钥；失败会阻断数据库迁移与服务启动。
+  bootstrap:
+    platform: ${EDO_DOCKER_PLATFORM:-linux/amd64}
+    image: ${EDO_BOOTSTRAP_IMAGE:-swr.cn-north-4.myhuaweicloud.com/ddn-k8s/docker.io/library/alpine:3.22}
+    user: "0:0"
+    command: ["sh", "/usr/local/bin/edo-compose-init.sh"]
+    environment:
+      EDO_SECRETS_KEY: ${EDO_SECRETS_KEY:-}
+      EDO_DATABASE_DRIVER: ${EDO_COMPOSE_DATABASE_DRIVER:-postgres}
+      EDO_DATABASE_DSN: ${EDO_COMPOSE_DATABASE_DSN:-}
+    volumes:
+      - ./data:/app/data
+      - ./deploy/compose-init.sh:/usr/local/bin/edo-compose-init.sh:ro
+    network_mode: none
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    restart: "no"
+
+  # 官方 PostgreSQL 17：密码从文件读取，不暴露数据库端口，数据库与日志均使用上海时区。
+  # 官方入口负责首次建库与数据目录权限；版本升级前须备份，不自动跨大版本升级。
+  postgres:
+    platform: ${EDO_DOCKER_PLATFORM:-linux/amd64}
+    image: ${EDO_POSTGRES_IMAGE:-swr.cn-north-4.myhuaweicloud.com/ddn-k8s/docker.io/postgres:17.11-trixie}
+    environment:
+      POSTGRES_USER: edo
+      POSTGRES_DB: edo
+      POSTGRES_PASSWORD_FILE: /run/edo-bootstrap/postgres-password
+      TZ: Asia/Shanghai
+      PGTZ: Asia/Shanghai
+    command: ["postgres", "-c", "timezone=Asia/Shanghai", "-c", "log_timezone=Asia/Shanghai"]
+    volumes:
+      - ./data/postgres:/var/lib/postgresql/data
+      - ./data/bootstrap:/run/edo-bootstrap:ro
+    depends_on:
+      bootstrap:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U edo -d edo"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 15s
+    networks:
+      - edo
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+    restart: unless-stopped
+
   # 一次性数据库迁移。迁移成功后 api 才会启动。
   migrate:
     <<: *edo-runtime
-    build:
-      context: .
-      dockerfile: Dockerfile
-      args:
-        EDO_VERSION: ${EDO_VERSION:-dev}
     command: ["migrate"]
+    depends_on:
+      bootstrap:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
     # 数据库临时不可用时最多重启 5 次。
     restart: "on-failure:5"
 
@@ -112,11 +177,16 @@ services:
   # NGINX 使用原 HTTP 端口提供页面，并转发 API、WebSocket 与流式输出。
   # API 不映射宿主机端口；Web 不持有业务数据或 Docker 客户端证书。
   web:
+    platform: ${EDO_DOCKER_PLATFORM:-linux/amd64}
     image: ${EDO_WEB_IMAGE:-edo-web:local}
     pull_policy: never
     build:
       context: .
       dockerfile: web/Dockerfile
+      args:
+        EDO_NODE_BUILD_IMAGE: ${EDO_NODE_BUILD_IMAGE:-swr.cn-north-4.myhuaweicloud.com/ddn-k8s/docker.io/node:24.16.0-trixie-slim}
+        EDO_WEB_BASE_IMAGE: ${EDO_WEB_BASE_IMAGE:-swr.cn-north-4.myhuaweicloud.com/ddn-k8s/docker.io/nginx:1.30.6-alpine3.24}
+        EDO_NPM_REGISTRY: ${EDO_NPM_REGISTRY:-https://registry.npmmirror.com}
     init: true
     user: "101:101"
     read_only: true
@@ -128,7 +198,7 @@ services:
     tmpfs:
       - /tmp:size=64m,mode=1777
     ports:
-      - "127.0.0.1:${EDO_HTTP_PORT:-8080}:8080"
+      - "${EDO_HTTP_BIND:-0.0.0.0}:${EDO_HTTP_PORT:-8080}:8080"
     depends_on:
       api:
         condition: service_healthy
@@ -153,7 +223,8 @@ services:
   # 绑定仓库时由这里直接 push。
   # privileged 仅授予这个隔离容器，不挂载宿主机 Docker Socket。
   docker-builder:
-    image: docker:28.3.3-dind
+    platform: ${EDO_DOCKER_PLATFORM:-linux/amd64}
+    image: ${EDO_DOCKER_BUILDER_IMAGE:-swr.cn-north-4.myhuaweicloud.com/ddn-k8s/docker.io/library/docker:29.8.2-dind}
     privileged: true
     environment:
       # 官方入口自动生成 CA、服务端和客户端证书，并让 2376 强制校验客户端证书。
@@ -183,7 +254,8 @@ services:
 
   # Redis 保存登录会话、限流状态和短期缓存。
   redis:
-    image: redis:7.4.9-alpine
+    platform: ${EDO_DOCKER_PLATFORM:-linux/amd64}
+    image: ${EDO_REDIS_IMAGE:-swr.cn-north-4.myhuaweicloud.com/ddn-k8s/docker.io/redis:7.4.9}
     command: ["redis-server", "--appendonly", "yes", "--appendfsync", "everysec", "--save", "60", "1000"]
     init: true
     security_opt:
@@ -206,7 +278,9 @@ services:
 
   # NATS JetStream 保存任务消息和死信。数据目录必须持久化。
   nats:
-    image: nats:2.12.12-alpine
+    platform: ${EDO_DOCKER_PLATFORM:-linux/amd64}
+    # 指定同步站暂无这个精确版本，使用同版本的 DaoCloud 代理，不降级 JetStream。
+    image: ${EDO_NATS_IMAGE:-docker.m.daocloud.io/library/nats:2.12.12-alpine}
     command: ["--jetstream", "--store_dir", "/data", "--http_port", "8222"]
     init: true
     security_opt:
@@ -234,10 +308,10 @@ networks:
   edo-builder:
     driver: bridge
 
-# SQLite、Redis 和 NATS 都保存在仓库 data 目录；docker compose down 不会删除这些文件。
+# PostgreSQL、密钥、文件产物、Redis 和 NATS 都保存在 data；down 不会删除这些文件。
 # 不要直接清空 data 目录，升级、迁移或重建环境前先完整备份。
 volumes:
-  # 这是可重建的镜像层缓存，不包含 SQLite、Redis 或 NATS 业务数据。
+  # 这是可重建的镜像层缓存，不包含数据库、密钥、Redis 或 NATS 业务数据。
   edo-builder-data:
   # CA 私钥与客户端证书分卷保存，避免 API 获得签发新证书的能力。
   edo-builder-ca-certs:

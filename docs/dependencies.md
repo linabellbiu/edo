@@ -123,3 +123,11 @@ Git 元数据继续使用已固定版本的 [go-git 文件存储](https://pkg.go
 - 缓存复用官方 Moby archive API、Go `archive/tar` 和 `os.Root`。不引入额外缓存服务。归档边界、容量、过期时间和项目隔离属于 EDO 自身规则，必须持续测试路径穿越、链接、跟踪源码覆盖和并发清理。
 - 仓库状态写回复用已有平台 URL 解析和凭据解析，用标准 HTTP 客户端调用四个平台的小型状态接口；不为单一接口引入四套大型 SDK。需维护状态映射、请求格式、重试分类及平台 API 变动测试。自动跳转关闭，错误不记录响应正文和令牌。
 - 本次报告解析会使用 XML 解码器，按 Go 漏洞库检查结果将工具链更新到 Go 1.26.10、`golang.org/x/text` 更新到 v0.41.0，修复原版本可触达的解析、TLS 和证书问题；构建镜像与本地编译版本保持一致。
+
+## Compose 首次初始化
+
+默认数据库复用 Docker Official Image `postgres:17.11-trixie` 的同步版 的初始化、权限处理与 `POSTGRES_PASSWORD_FILE`，不自行安装 PostgreSQL 或维护数据库安装器。PostgreSQL License 宽松且兼容项目使用；17 大版本受官方维护，Debian 运行层较 Alpine 大，但固定的 postgres UID/GID 便于收紧密码文件权限，官方支持 Linux amd64/arm64 和 Docker Desktop；本次同步站选定条目为 amd64，Apple Silicon 使用 Docker Desktop 仿真，原生 arm64 需覆盖镜像地址。镜像固定为 17.11 补丁版，升级前备份，大版本需独立处理；未增加 Go/npm 包。
+
+一次性配置准备复用官方 Alpine 3.22 的 BusyBox（POSIX Shell、base64、od、文件权限工具）与 Linux `/dev/urandom`。评估过让用户安装 OpenSSL 手工生成配置，以及增加 Vault 等常驻密钥服务；前者增加安装步骤，后者扩大常驻组件，均不符合此次默认启动需求。仅由项目脚本承担 EDO 专有的持久化、旧数据防护和密钥一致性规则，不自制加密算法。Alpine/BusyBox 体积小、持续维护且适用于当前容器平台；镜像内各包遵循其原许可证，不打包到 EDO 二进制。维护风险在 Shell 中断、权限与旧数据识别，使用一次性启动依赖、独占初始化锁、原子落盘和真实容器回归约束；后续可替换实现而保留配置文件格式。
+
+镜像分发按用户要求选择 [docker.aityp.com](https://docker.aityp.com/) 公布的华为云 SWR 地址，镜像清单见[部署说明](deployment.md#默认镜像源)。镜像站未索引的 NATS 2.12.12 使用 DaoCloud 同版本代理，避免降级；Docker CLI 和 DinD 同时升级为固定 29.8.2，实际构建运行和 mTLS 健康必须验收。Go/Node 构建镜像更换发行版而不更换工具链版本，API 运行层保持 Debian。第三方同步存在架构单一、同步延迟与供应链信任成本，每项均可用环境变量替换，未引入常驻代理或镜像平台。公开依赖下载使用成熟 Go/npm 代理，可覆盖，不传输私有仓库凭据。
