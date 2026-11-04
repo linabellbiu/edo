@@ -742,6 +742,25 @@ func (s *Service) prepareComposeImage(
 	return nil
 }
 
+// PrepareRegistryImage 为多镜像发布准备已固定摘要的镜像，复用现有受控认证和 SSH 拉取路径。
+func (s *Service) PrepareRegistryImage(ctx context.Context, endpointID, hostID, image string, registry RegistryAuth) error {
+	if _, err := parseImmutableComposeImage(image); err != nil {
+		return err
+	}
+	endpoint, err := s.Find(ctx, endpointID)
+	if err != nil {
+		return err
+	}
+	if endpoint.HostID != hostID || !endpoint.IsActive {
+		return ErrInvalidEndpoint
+	}
+	apiClient, err := s.executionClient(ctx, endpointID)
+	if err != nil {
+		return err
+	}
+	return s.prepareComposeImage(ctx, apiClient, endpoint, image, "", registry)
+}
+
 func composeProjectName(targetID string) string {
 	digest := sha256.Sum256([]byte(strings.TrimSpace(targetID)))
 	return "edo-" + hex.EncodeToString(digest[:6])

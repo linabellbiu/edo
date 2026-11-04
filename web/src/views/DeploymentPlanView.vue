@@ -8,6 +8,8 @@ import { useRoute, useRouter } from 'vue-router'
 import client from '@/api/client'
 import { environmentIDsOf, listEnvironments, listHosts, type InfrastructureEnvironment, type InfrastructureHost } from '@/api/infrastructure'
 import { apiErrorMessage, type ResourceRecord } from '@/api/resources'
+import YamlCodeEditor from '@/components/YamlCodeEditor.vue'
+import { readKubeYaml } from '@/utils/kubernetesYaml'
 import DeliveryDefaultsDrawer from '@/components/DeliveryDefaultsDrawer.vue'
 import PageToolbar from '@/components/PageToolbar.vue'
 import ResourceDetailDrawer from '@/components/ResourceDetailDrawer.vue'
@@ -20,7 +22,7 @@ import { deploymentTargetEn, deploymentTargetZh } from '@/locales/deploymentTarg
 import { asyncConfirm } from '@/utils/asyncConfirm'
 import '@/styles/plan-list.css'
 
-type PlanKind = 'script' | 'docker' | 'compose' | 'kubernetes'
+type PlanKind = 'script' | 'docker' | 'compose' | 'compose_stack' | 'kubernetes'
 type Platform = 'ssh' | 'docker' | 'kubernetes'
 
 interface DeploymentTarget {
@@ -190,7 +192,7 @@ const defaultsOpen = ref(false)
 const defaultPlanID = ref('')
 const defaultKind = ref<PlanKind>('docker')
 const canDefaults = computed(() => auth.canAny(['workflow.read']) && auth.canAny(['deployment_plan.read']))
-function openDefaults(plan?: DeploymentPlan) { defaultPlanID.value = plan?.id || ''; defaultKind.value = plan?.kind || 'docker'; defaultsOpen.value = true }
+function openDefaults(plan?: DeploymentPlan) { if (plan?.kind === 'compose_stack') { message.info('多镜像 Compose 请在应用中配置发布流程'); return } defaultPlanID.value = plan?.id || ''; defaultKind.value = plan?.kind || 'docker'; defaultsOpen.value = true }
 const formOpen = ref(false)
 const editingID = ref('')
 const loading = ref(false)
@@ -247,7 +249,8 @@ const form = reactive({
 const kindOptions: Array<{ value: PlanKind; label: string; hint: string }> = [
   { value: 'script', label: '主机脚本', hint: '通过 SSH 执行部署脚本' },
   { value: 'docker', label: 'Docker 容器', hint: '更新指定容器镜像' },
-  { value: 'compose', label: 'Docker Compose', hint: '使用内联 Compose YAML 部署' },
+  { value: 'compose', label: 'Compose 单镜像', hint: '使用单个上游镜像部署' },
+  { value: 'compose_stack', label: 'Compose 多镜像', hint: 'EDO 保存完整 Compose，关联多个并行构建' },
   { value: 'kubernetes', label: 'Kubernetes Deployment', hint: '更新 Deployment 中的容器' },
 ]
 const kindNames: Record<PlanKind, string> = Object.fromEntries(kindOptions.map(item => [item.value, item.label])) as Record<PlanKind, string>
@@ -300,7 +303,7 @@ const executionTargetError = computed(() => {
 })
 
 function planPlatform(kind: PlanKind): Platform {
-  if (kind === 'script') return 'ssh'
+  if (kind === 'script' || kind === 'compose_stack') return 'ssh'
   if (kind === 'kubernetes') return 'kubernetes'
   return 'docker'
 }
@@ -310,6 +313,7 @@ function readyCapability(host: InfrastructureHost, kind: 'ssh' | 'docker' | 'kub
 }
 
 function hostSupportsKind(host: InfrastructureHost, kind: PlanKind) {
+  if (kind === 'compose_stack') return host.mode === 'ssh' && Boolean(readyCapability(host, 'ssh') && readyCapability(host, 'docker')?.runtime_id)
   if (kind === 'script') return Boolean(readyCapability(host, host.mode === 'local' ? 'local_exec' : 'ssh'))
   if (kind === 'docker' || kind === 'compose') {
     const capability = readyCapability(host, 'docker')
@@ -327,7 +331,7 @@ function targetCapabilityMatches(kind: PlanKind, hostID: string, runtimeID = '')
   if (kind === 'kubernetes') return Boolean(runtimeID && clusterByID.value.has(runtimeID))
   const host = hostByID.value.get(hostID)
   if (!host || !environmentIDsOf(host).includes(form.environment_id)) return false
-  if (kind === 'script') return hostSupportsKind(host, kind)
+  if (kind === 'script' || kind === 'compose_stack') return hostSupportsKind(host, kind)
   const capability = readyCapability(host, 'docker')
   return Boolean(capability?.runtime_id && capability.runtime_id === runtimeID && hostSupportsKind(host, kind))
 }
@@ -400,6 +404,7 @@ function destinationAddress(plan: DeploymentPlan) {
 function deploymentConfiguration(plan: DeploymentPlan) {
   const target = targetOf(plan)
   if (!target) return { summary: t('deploymentList.noLocation'), detail: '' }
+  if (plan.kind === 'compose_stack') return { summary: 'EDO Compose 与多镜像 Tag', detail: target.working_directory || '尚未配置工作目录' }
   if (plan.kind === 'script') return {
     summary: t('deploymentList.directory', { value: target.working_directory || t('deploymentList.homeDirectory') }),
     detail: t('deploymentList.savedScript'),
@@ -605,7 +610,7 @@ function rememberDeploymentDraft(kind: PlanKind) {
 function emptyDeploymentDraft(kind: PlanKind): DeploymentDraft {
   return {
     script: '',
-    compose_yaml: kind === 'compose' ? defaultComposeYAML : '',
+    compose_yaml: kind === 'compose' || kind === 'compose_stack' ? defaultComposeYAML : '',
     service_name: kind === 'compose' ? 'app' : '',
     environment_id: '',
     host_id: '',
@@ -706,6 +711,12 @@ function addDockerVolume() {
   form.docker_volume_mounts.push({ type: 'volume', source: '', target: '', read_only: true })
 }
 
+function formatCompose() {
+  const parsed = readKubeYaml(form.compose_yaml)
+  if (parsed.issues.length) { message.error('请先修正 YAML 中标记的行列错误'); return }
+  if (parsed.formatted) form.compose_yaml = parsed.formatted
+}
+
 async function readComposeFile(event: Event) {
   const input = event.target as HTMLInputElement
   const file = input.files?.[0]
@@ -781,6 +792,12 @@ function validateDockerConfig() {
 function validate() {
   reconcileExecutionTarget()
   if (!form.name.trim()) return '请输入方案名称'
+  if (form.kind === 'compose_stack') {
+    const parsed = readKubeYaml(form.compose_yaml)
+    if (parsed.issues.length) return `Compose YAML 无效：第 ${parsed.issues[0]!.line} 行，第 ${parsed.issues[0]!.column} 列`
+    if (!parsed.object?.services) return 'Compose 必须包含 services'
+    if (!form.reusable && (!form.working_directory || !validWorkingDirectory(form.working_directory))) return 'Compose 部署目录必须是规范化绝对路径'
+  }
   if (form.reusable) {
     if (form.kind === 'script' && !form.script.trim()) return '请输入部署脚本'
     if (form.kind === 'compose' && (!form.service_name.trim() || !form.compose_yaml.trim())) return '请输入 Compose 服务名称和 YAML'
@@ -912,7 +929,7 @@ async function save() {
       description: form.description.trim(),
       kind: form.kind,
       script: form.kind === 'script' ? form.script : '',
-      compose_yaml: form.kind === 'compose' ? form.compose_yaml : '',
+      compose_yaml: form.kind === 'compose' || form.kind === 'compose_stack' ? form.compose_yaml : '',
       service_name: form.kind === 'compose' ? form.service_name.trim() : form.kind === 'docker' ? form.workload_name.trim() : '',
       docker_config: form.kind === 'docker' ? dockerConfigPayload() : {},
       timeout_seconds: form.timeout_seconds,
@@ -1021,7 +1038,7 @@ onBeforeUnmount(() => { disposed = true; resetMutation(); reset(); window.remove
           <div class="resource-facts-wide"><dt>{{ t('resourceList.description') }}</dt><dd>{{ detailPlan.description || '—' }}</dd></div>
         </dl>
       </section>
-      <section v-if="detailPlan && (detailPlan.script || detailPlan.compose_yaml)" class="resource-detail-section"><h4>{{ t('deploymentList.configuration') }}</h4><pre class="resource-code">{{ detailPlan.kind === 'compose' ? detailPlan.compose_yaml : detailPlan.script }}</pre></section>
+      <section v-if="detailPlan && (detailPlan.script || detailPlan.compose_yaml)" class="resource-detail-section"><h4>{{ t('deploymentList.configuration') }}</h4><YamlCodeEditor v-if="detailPlan.compose_yaml" :model-value="detailPlan.compose_yaml" readonly label="部署方案 Compose YAML"/><pre v-else class="resource-code">{{ detailPlan.script }}</pre></section>
     </ResourceDetailDrawer>
 
     <a-drawer v-model:open="formOpen" :title="editingID ? '编辑部署方案' : '新建部署方案'" width="min(720px, 100vw)">
@@ -1217,26 +1234,29 @@ onBeforeUnmount(() => { disposed = true; resetMutation(); reset(); window.remove
               description="脚本通过 EDO_ARTIFACT_PATH 读取暂存文件，并可用 EDO_ARTIFACT_DIGEST 校验制品摘要。后续如何读取、解包或管理服务由脚本按实际场景决定，EDO 不做假设。"
             />
           </template>
-          <template v-if="form.kind === 'compose'">
+          <template v-if="form.kind === 'compose' || form.kind === 'compose_stack'">
             <a-alert
+              v-if="form.kind === 'compose'"
               class="artifact-image-notice"
               type="info"
               show-icon
               message="镜像来自上游构建制品，无需在 Compose 中填写 image"
               description="部署时自动填入流水线镜像，请勿填写固定镜像地址或 build 配置。"
             />
+            <a-alert v-if="form.kind === 'compose_stack'" type="info" show-icon message="Compose 保存在 EDO，image 使用 ${IMAGE_TAG}；在流水线部署任务中关联服务与上游镜像。"/>
             <div class="compose-import">
               <input ref="composeFileInput" class="file-input" type="file" accept=".yml,.yaml,application/yaml,text/yaml" @change="readComposeFile" />
               <a-button @click="composeFileInput?.click()"><FileUp :size="15" />读取 docker-compose.yml</a-button>
               <span>只读入当前表单，不会自动保存。</span>
             </div>
             <a-form-item label="内联 Compose YAML" required>
-              <a-textarea v-model:value="form.compose_yaml" :rows="12" spellcheck="false" placeholder="services:&#10;  app:&#10;    restart: unless-stopped&#10;    ports:&#10;      - 8080:8080" />
+              <a-button @click="formatCompose">格式化</a-button>
+              <YamlCodeEditor v-model="form.compose_yaml" label="部署方案 Compose YAML" @format="formatCompose"/>
             </a-form-item>
             <a-alert
               type="info"
               show-icon
-              message="Compose 只描述目标服务的运行参数"
+              :message="form.kind === 'compose_stack' ? '按流水线配置执行 docker compose up -d' : 'Compose 只描述目标服务的运行参数'"
               description="不会读取代码仓库中的 Compose 文件；所选执行主机必须安装 Docker Compose v2 插件。"
             />
           </template>
@@ -1252,7 +1272,7 @@ onBeforeUnmount(() => { disposed = true; resetMutation(); reset(); window.remove
         </div>
       </template>
     </a-drawer>
-    <DeliveryDefaultsDrawer v-model:open="defaultsOpen" :plan-id="defaultPlanID" :initial-kind="defaultKind"/>
+    <DeliveryDefaultsDrawer v-model:open="defaultsOpen" :plan-id="defaultPlanID" :initial-kind="defaultKind === 'compose_stack' ? undefined : defaultKind"/>
   </section>
 </template>
 

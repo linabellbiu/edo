@@ -4,6 +4,7 @@ import { test } from 'node:test'
 import { compileScript, parse } from '@vue/compiler-sfc'
 import ts from 'typescript'
 import * as vue from 'vue'
+import * as yaml from 'yaml'
 import {loadFrontend} from './acceptanceHarness.mjs'
 
 function harness() {
@@ -16,7 +17,7 @@ function harness() {
     'vue-i18n': { useI18n: () => ({ t: key => key }) },
     '@/api/delivery': { deliveryKinds: ['docker', 'kubernetes', 'script'] },
     '@/api/infrastructure': { environmentIDsOf: host => host.environment_ids || [] },
-    '@/utils/composeDelivery': loadFrontend('../src/utils/composeDelivery.ts'),
+    '@/utils/composeDelivery': loadFrontend('../src/utils/composeDelivery.ts', {'@/utils/kubernetesYaml':loadFrontend('../src/utils/kubernetesYaml.ts',{yaml})}),
     '@/stores/auth': {useAuthStore:()=>({canAny:()=>false})},
   }
   const module = { exports: {} }

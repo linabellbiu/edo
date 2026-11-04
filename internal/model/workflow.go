@@ -28,6 +28,8 @@ type WorkflowNodeConfig struct {
 	PRSourcePattern       string                     `json:"pr_source_pattern,omitempty"`
 	PRActions             []string                   `json:"pr_actions,omitempty"`
 	BuildPlanID           string                     `json:"build_plan_id,omitempty"`
+	ImageName             string                     `json:"image_name,omitempty"`
+	ImageTag              string                     `json:"image_tag,omitempty"`
 	DeploymentPlanID      string                     `json:"deployment_plan_id,omitempty"`
 	Script                string                     `json:"script,omitempty"`
 	RuntimeImage          string                     `json:"runtime_image,omitempty"`
@@ -40,12 +42,29 @@ type WorkflowNodeConfig struct {
 	VariableEnvironmentID string                     `json:"variable_environment_id,omitempty"`
 	ArtifactNodeID        string                     `json:"artifact_node_id,omitempty"`
 	ArtifactNodeIDs       []string                   `json:"artifact_node_ids,omitempty"`
+	ComposeImages         []ComposeImageBinding      `json:"compose_images,omitempty"`
+	Compose               *ComposeDeploymentSettings `json:"compose,omitempty"`
 	Reports               []WorkflowReportConfig     `json:"reports,omitempty"`
 	Check                 *WorkflowCheckConfig       `json:"check,omitempty"`
 	Cache                 *WorkflowCacheConfig       `json:"cache,omitempty"`
 	Migration             *WorkflowMigrationConfig   `json:"migration,omitempty"`
 	Description           string                     `json:"description,omitempty"`
 	Notifications         []WorkflowNotificationRule `json:"notifications,omitempty"`
+}
+
+type ComposeImageBinding struct {
+	Service        string `json:"service"`
+	ArtifactNodeID string `json:"artifact_node_id"`
+}
+
+// ComposeDeploymentSettings 由部署任务保存并进入运行快照；Compose 正文本身保存在部署方案中。
+type ComposeDeploymentSettings struct {
+	ProjectName   string `json:"project_name"`
+	EnvFile       string `json:"env_file,omitempty"`
+	TagVariable   string `json:"tag_variable"`
+	UseSudo       bool   `json:"use_sudo"`
+	HealthURL     string `json:"health_url,omitempty"`
+	AdoptExisting bool   `json:"adopt_existing"`
 }
 
 // WorkflowNotificationRule 定义单个任务结束后需要发送的通知。规则属于任务配置，

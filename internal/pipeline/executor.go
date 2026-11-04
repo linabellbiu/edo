@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	distributionreference "github.com/distribution/reference"
 	"github.com/regclient/regclient"
 	"gorm.io/gorm"
 
@@ -48,6 +49,7 @@ type executionContext struct {
 	registry           model.ImageRegistry
 	target             model.DeploymentTarget
 	artifact           model.Artifact
+	composeArtifacts   map[string]model.Artifact
 	variables          map[string]string
 	variableRedactions []string
 }
@@ -111,6 +113,9 @@ func (s *Service) executeDeployTask(ctx context.Context, payload DeployTaskPaylo
 		return s.failDeploymentExecution(ctx, failureState, "读取流水线审核状态失败，请稍后重试", err)
 	}
 	if prepared.target.Platform == model.DeploymentSSH {
+		if prepared.deploymentPlan.Kind == model.DeploymentPlanComposeStack {
+			return s.executeComposeStackDeployment(ctx, prepared, approvedBy)
+		}
 		return s.executeSSHDeployment(ctx, prepared, approvedBy)
 	}
 	image, expectedImageID, err := s.resolveDeploymentImage(ctx, prepared)
@@ -352,6 +357,15 @@ func (s *Service) loadArtifactDeploymentExecution(ctx context.Context, payload D
 		return nil, err
 	}
 	if result.target.Platform == model.DeploymentSSH {
+		if result.deploymentPlan.Kind == model.DeploymentPlanComposeStack {
+			if _, err := parseComposeStack(result.deploymentPlan.ComposeYAML); err != nil {
+				return nil, err
+			}
+			if err := s.loadComposeStackArtifacts(ctx, result); err != nil {
+				return nil, err
+			}
+			return result, nil
+		}
 		if !validSSHDeploymentPlanSnapshot(&result.deploymentPlan, &result.target) {
 			return nil, ErrPipelineExecutionConfig
 		}
@@ -441,7 +455,7 @@ func (s *Service) executionImage(ctx context.Context, prepared *executionContext
 	if err != nil || parsed.Host == "" {
 		return "", dockerengine.RegistryAuth{}, ErrInvalidRegistryEndpoint
 	}
-	name, err := executionImageName(prepared.application)
+	name, err := executionNodeImageName(prepared)
 	if err != nil {
 		return "", dockerengine.RegistryAuth{}, err
 	}
@@ -453,7 +467,7 @@ func (s *Service) executionImage(ctx context.Context, prepared *executionContext
 		parts = append(parts, strings.Trim(prepared.registry.Namespace, "/"))
 	}
 	parts = append(parts, name)
-	tag, err := executionImageTag(prepared.run)
+	tag, err := executionNodeImageTag(prepared)
 	if err != nil {
 		return "", dockerengine.RegistryAuth{}, err
 	}
@@ -486,11 +500,11 @@ func (s *Service) registryAuth(registry model.ImageRegistry) (dockerengine.Regis
 }
 
 func localExecutionImage(prepared *executionContext) (string, error) {
-	name, err := executionImageName(prepared.application)
+	name, err := executionNodeImageName(prepared)
 	if err != nil {
 		return "", err
 	}
-	tag, err := executionImageTag(prepared.run)
+	tag, err := executionNodeImageTag(prepared)
 	if err != nil {
 		return "", ErrPipelineExecutionConfig
 	}
@@ -517,6 +531,41 @@ func executionImageName(application model.Application) (string, error) {
 	}
 	digest := strings.TrimPrefix(sha256Digest([]byte(applicationID)), "sha256:")
 	return name + "-" + digest[:8], nil
+}
+
+func executionNodeImageName(prepared *executionContext) (string, error) {
+	value := strings.TrimSpace(prepared.node.Config.ImageName)
+	if value == "" {
+		return executionImageName(prepared.application)
+	}
+	value = expandPipelineImageVariable(value, prepared.run, prepared.application)
+	named, err := distributionreference.ParseNormalizedNamed("registry.example.com/" + value)
+	if err != nil || named.Name() != "registry.example.com/"+value || len(value) > 255 || strings.ContainsAny(value, ":@") {
+		return "", ErrPipelineExecutionConfig
+	}
+	return value, nil
+}
+
+var pipelineImageTagPattern = regexp.MustCompile(`^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$`)
+
+func executionNodeImageTag(prepared *executionContext) (string, error) {
+	value := strings.TrimSpace(prepared.node.Config.ImageTag)
+	if value == "" {
+		return executionImageTag(prepared.run)
+	}
+	value = expandPipelineImageVariable(value, prepared.run, prepared.application)
+	if !pipelineImageTagPattern.MatchString(value) {
+		return "", ErrPipelineExecutionConfig
+	}
+	return value, nil
+}
+
+func expandPipelineImageVariable(value string, run model.PipelineRun, app model.Application) string {
+	tag := ""
+	if strings.HasPrefix(run.Ref, "refs/tags/") {
+		tag = strings.TrimPrefix(run.Ref, "refs/tags/")
+	}
+	return strings.NewReplacer("${EDO_GIT_TAG}", tag, "${EDO_COMMIT_SHA}", run.CommitSHA, "${EDO_APPLICATION_NAME}", app.Name, "${EDO_PIPELINE_RUN_ID}", run.ID).Replace(value)
 }
 
 func executionImageTag(run model.PipelineRun) (string, error) {
@@ -638,6 +687,9 @@ func completedDeploymentMatches(prepared *executionContext, record *model.Deploy
 		return false
 	}
 	if prepared.target.Platform == model.DeploymentSSH {
+		if prepared.deploymentPlan.Kind == model.DeploymentPlanComposeStack {
+			return record.Image == prepared.artifact.ImageRef && record.ExpectedImageID == "" && record.CommandDigest == model.DeploymentPlanExecutionDigest(prepared.deploymentPlan.Kind, prepared.deploymentPlan.Script, prepared.deploymentPlan.TimeoutSeconds)
+		}
 		return record.Image == "" && record.ExpectedImageID == "" &&
 			record.CommandDigest == model.DeploymentPlanExecutionDigest(
 				prepared.deploymentPlan.Kind, prepared.deploymentPlan.Script, prepared.deploymentPlan.TimeoutSeconds,

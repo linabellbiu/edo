@@ -1,15 +1,17 @@
 import assert from 'node:assert/strict'
 import {test} from 'node:test'
 import * as vue from 'vue'
+import * as yaml from 'yaml'
 import {loadFrontend} from './acceptanceHarness.mjs'
 
-const forms=loadFrontend('../src/utils/composeDelivery.ts')
+const yamlModule=loadFrontend('../src/utils/kubernetesYaml.ts', {yaml})
+const forms=loadFrontend('../src/utils/composeDelivery.ts', {'@/utils/kubernetesYaml':yamlModule})
 const settle=async()=>{await vue.nextTick();await new Promise(resolve=>setImmediate(resolve))}
 
 function harness(post){
  const requests=[],events=[],notifications=[],unmounts=[]
  const storage={project:'project-a'}
- const auth=vue.reactive({user:{id:'operator',project_id:'project-a',permissions:['build_plan.create']},canAny(codes){return codes.some(code=>this.user.permissions.includes(code))}})
+ const auth=vue.reactive({user:{id:'operator',project_id:'project-a',permissions:['workflow.create','deployment_plan.create']},canAny(codes){return codes.some(code=>this.user.permissions.includes(code))}})
  const client={get:async(path,options)=>({data:{deployment_plans:[],workflow_templates:[],build_plans:[],applications:[],clusters:[]}}),post:async(path,body,options)=>{requests.push({path,body:JSON.parse(JSON.stringify(body)),options});return post?post():{data:{workflow:{id:'created'}}}}}
  const props=vue.reactive({open:true,applicationId:'application-a'})
  const component=loadFrontend('../src/components/DeliveryWorkflowDrawer.vue',{
@@ -26,17 +28,19 @@ function harness(post){
 
 function fill(state){
  Object.assign(state.form,{kind:'compose_existing',application:'application-a',environment:'env-a',host:'host-a',directory:'/srv/team-a',name:'团队发布'})
- Object.assign(state.composeForm.value,{project_name:'another-stack',compose_file:'deployment/app.yaml',env_file:'runtime.env',services:[{service:'web',build_plan_id:'build-one'},{service:'jobs',build_plan_id:'build-one'}]})
+ Object.assign(state.composeForm.value,{project_name:'another-stack',compose_yaml:'services:\n  web:\n    image: registry.example.com/engine:${IMAGE_TAG}\n  jobs:\n    image: registry.example.com/engine:${IMAGE_TAG}\n',env_file:'runtime.env',services:[{service:'web',build_plan_id:'build-one',image_name:'engine'},{service:'jobs',build_plan_id:'build-one',image_name:'engine'}]})
  state.composeFields.value={validate:()=>Object.keys(forms.composeDeliveryErrors(state.composeForm.value)).length===0}
 }
 
-test('已有 Compose 页面按用户配置提交，不强制单个镜像或特定仓库路径',async t=>{
+test('Compose 页面保存内联正文、Tag 和服务映射，不要求额外汇总阶段',async t=>{
  const h=harness();t.after(h.stop);await h.state.load();fill(h.state);await h.state.create()
  assert.equal(h.requests.length,1)
  const request=h.requests[0]
  assert.equal(request.path,'/applications/application-a/compose-delivery-workflows')
  assert.equal(request.body.project_name,'another-stack')
- assert.equal(request.body.compose_file,'deployment/app.yaml')
+ assert.match(request.body.compose_yaml,/engine:\$\{IMAGE_TAG\}/)
+ assert.equal(request.body.image_tag,'${EDO_GIT_TAG}')
+ assert.equal(request.body.compose_file,undefined)
  assert.equal(request.body.target.working_directory,'/srv/team-a')
  assert.equal(request.body.services.length,2)
  assert.equal(request.options.headers['X-EDO-Project-ID'],'project-a')
@@ -44,7 +48,7 @@ test('已有 Compose 页面按用户配置提交，不强制单个镜像或特�
 })
 
 test('重复服务和不安全健康地址在提交前逐字段提示',()=>{
- const value=forms.newComposeDeliveryForm();value.project_name='custom-stack';value.services=[{service:'web',build_plan_id:'one'},{service:'web',build_plan_id:'two'}];value.health_url='https://user:password@example.com/health'
+ const value=forms.newComposeDeliveryForm();value.project_name='custom-stack';value.compose_yaml='services:\n  web:\n    image: registry.example.com/web:${IMAGE_TAG}\n  jobs:\n    image: registry.example.com/jobs:${IMAGE_TAG}\n';value.services=[{service:'web',build_plan_id:'one',image_name:'web'},{service:'web',build_plan_id:'two',image_name:'jobs'}];value.health_url='https://user:password@example.com/health'
  const errors=forms.composeDeliveryErrors(value)
  assert.equal(Boolean(errors.service_1),true);assert.equal(Boolean(errors.health_url),true)
  value.services[1].service='jobs';value.health_url='http://127.0.0.1:9000/ready'
@@ -62,7 +66,7 @@ test('保存中切换项目会取消请求、清空草稿，不应用旧项目�
  assert.deepEqual(h.notifications,[])
 })
 
-test('缺少构建方案创建权限不能通过向导创建隐式脚本方案',async t=>{
+test('缺少流水线与部署方案创建权限不能通过向导创建草稿',async t=>{
  const h=harness();t.after(h.stop);h.auth.user.permissions=[];await h.state.load();fill(h.state);await h.state.create()
  assert.deepEqual(h.requests,[])
 })

@@ -353,7 +353,7 @@ func (s *Service) normalizeApplication(ctx context.Context, input ApplicationInp
 
 func deploymentPlanSupportsTarget(kind model.DeploymentPlanKind, platform model.DeploymentPlatform) bool {
 	switch kind {
-	case model.DeploymentPlanScript:
+	case model.DeploymentPlanScript, model.DeploymentPlanComposeStack:
 		return platform == model.DeploymentSSH
 	case model.DeploymentPlanKubernetes:
 		return platform == model.DeploymentKubernetes
@@ -841,6 +841,7 @@ func normalizeDeploymentPlanInput(input DeploymentPlanInput) (DeploymentPlanInpu
 		input.TimeoutSeconds = 600
 	}
 	validKind := (input.Kind == model.DeploymentPlanScript && strings.TrimSpace(input.Script) != "") ||
+		(input.Kind == model.DeploymentPlanComposeStack && input.ComposeYAML != "") ||
 		input.Kind == model.DeploymentPlanKubernetes ||
 		(input.Kind == model.DeploymentPlanCompose && input.ComposeYAML != "" && input.ServiceName != "") ||
 		input.Kind == model.DeploymentPlanDocker
@@ -850,6 +851,14 @@ func normalizeDeploymentPlanInput(input DeploymentPlanInput) (DeploymentPlanInpu
 		return input, ErrInvalidDeploymentPlan
 	}
 	switch input.Kind {
+	case model.DeploymentPlanComposeStack:
+		input.Script, input.ServiceName, input.DockerConfig = "", "", model.DockerContainerConfig{}
+		if input.TimeoutSeconds < 60 {
+			return input, ErrInvalidDeploymentPlan
+		}
+		if _, err := parseComposeStack(input.ComposeYAML); err != nil {
+			return input, err
+		}
 	case model.DeploymentPlanScript:
 		input.ComposeYAML, input.ServiceName, input.DockerConfig = "", "", model.DockerContainerConfig{}
 	case model.DeploymentPlanKubernetes:

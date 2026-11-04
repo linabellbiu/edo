@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import client from '@/api/client'
+import ComposeTaskFields from '@/components/ComposeTaskFields.vue'
 import { apiErrorMessage } from '@/api/resources'
 import { useAuthStore } from '@/stores/auth'
 import type { WorkflowNode, WorkflowNodeConfig } from '@/types/pipeline'
@@ -43,6 +44,10 @@ function updateCache(update:Record<string,unknown>){change({cache:{key:'dependen
 </script>
 <template>
  <section class="task-controls">
+  <template v-if="node.type==='build'&&!scriptBuild">
+   <a-form-item label="镜像名称" help="相对于构建方案镜像仓库的命名空间；留空使用应用名。"><a-input :value="node.config.image_name" :disabled="!canEdit" placeholder="例如 my-service" @update:value="change({image_name:String($event||'')})"/></a-form-item>
+   <a-form-item label="镜像 Tag" help="可用 ${EDO_GIT_TAG} 引用本次 Git Tag，或 ${EDO_COMMIT_SHA} 引用提交；留空自动生成唯一版本。"><a-input :value="node.config.image_tag" :disabled="!canEdit" placeholder="${EDO_GIT_TAG}" @update:value="change({image_tag:String($event||'')})"/></a-form-item>
+  </template>
   <a-alert v-if="error" type="warning" :message="error" show-icon/>
   <template v-if="node.type==='shell'">
    <a-form-item label="任务用途"><a-select :value="tool" :disabled="!canEdit" :options="[{value:'script',label:'自定义脚本'},{value:'sqlfluff',label:'SQL 质量检查'},{value:'trivy',label:'漏洞与配置扫描'},{value:'gitleaks',label:'密钥泄漏扫描'},{value:'migration',label:'数据库变更'}]" @update:value="chooseTool(String($event))"/></a-form-item>
@@ -63,7 +68,8 @@ function updateCache(update:Record<string,unknown>){change({cache:{key:'dependen
    <a-select mode="tags" :value="node.config.variable_names||[]" :disabled="!canEdit" :options="variableOptions" placeholder="选择或输入变量名称" @update:value="change({variable_names:$event as string[]})"/>
   </a-form-item>
   <a-form-item v-if="['shell','build'].includes(node.type)&&!node.config.migration" label="变量适用环境"><a-select allow-clear :value="node.config.variable_environment_id||undefined" :disabled="!canEdit" :options="environments.map(v=>({value:v.id,label:v.name}))" @update:value="change({variable_environment_id:String($event||'')})"/></a-form-item>
-  <a-form-item v-if="node.type==='deploy'" label="构建制品来源"><a-select allow-clear :value="node.config.artifact_node_id||undefined" :disabled="!canEdit" placeholder="上游只有一个构建时自动选择" :options="buildNodes.map(v=>({value:v.id,label:v.name}))" @update:value="change({artifact_node_id:String($event||'')})"/></a-form-item>
+  <ComposeTaskFields v-if="node.type==='deploy'" :node="node" :build-nodes="buildNodes" :disabled="!canEdit" @change="change"/>
+  <a-form-item v-if="node.type==='deploy'&&!node.config.compose" label="构建制品来源"><a-select allow-clear :value="node.config.artifact_node_id||undefined" :disabled="!canEdit" placeholder="上游只有一个构建时自动选择" :options="buildNodes.map(v=>({value:v.id,label:v.name}))" @update:value="change({artifact_node_id:String($event||'')})"/></a-form-item>
   <a-form-item v-if="node.type==='build'&&scriptBuild" label="汇总的上游构建" help="用于多镜像等制品汇总；所选构建会沿用本次下游主机的目标架构。"><a-select mode="multiple" :value="node.config.artifact_node_ids||[]" :disabled="!canEdit" :options="buildNodes.filter(v=>v.id!==node.id).map(v=>({value:v.id,label:v.name}))" @update:value="change({artifact_node_ids:$event as string[]})"/></a-form-item>
   <template v-if="(node.type==='shell'||(node.type==='build'&&scriptBuild))&&!node.config.migration&&!node.config.check">
    <a-divider>检查报告</a-divider>

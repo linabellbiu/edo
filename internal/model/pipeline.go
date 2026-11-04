@@ -88,10 +88,11 @@ func (ImageRegistry) TableName() string { return "image_registries" }
 type DeploymentPlanKind string
 
 const (
-	DeploymentPlanScript     DeploymentPlanKind = "script"
-	DeploymentPlanKubernetes DeploymentPlanKind = "kubernetes"
-	DeploymentPlanCompose    DeploymentPlanKind = "compose"
-	DeploymentPlanDocker     DeploymentPlanKind = "docker"
+	DeploymentPlanScript       DeploymentPlanKind = "script"
+	DeploymentPlanKubernetes   DeploymentPlanKind = "kubernetes"
+	DeploymentPlanCompose      DeploymentPlanKind = "compose"
+	DeploymentPlanComposeStack DeploymentPlanKind = "compose_stack"
+	DeploymentPlanDocker       DeploymentPlanKind = "docker"
 )
 
 type DockerPortMapping struct {

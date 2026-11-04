@@ -2,7 +2,6 @@ package pipeline
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"os"
 	"os/exec"
@@ -10,10 +9,11 @@ import (
 	"strings"
 	"testing"
 
+	"edo/internal/artifact"
 	"edo/internal/model"
 )
 
-func TestComposeDeliveryCreatesGenericDraftAndDeduplicatesBuilds(t *testing.T) {
+func TestComposeDeliveryCreatesTwoStageDraftAndSharedImageBuild(t *testing.T) {
 	s, db, _, repoID := newPipelineTestService(t)
 	ctx := deliveryTestContext()
 	registry := model.ImageRegistry{ID: "compose-test-registry", Name: "通用镜像仓库", Provider: model.RegistryGeneric, Endpoint: "https://registry.example.com", IsActive: true}
@@ -32,21 +32,24 @@ func TestComposeDeliveryCreatesGenericDraftAndDeduplicatesBuilds(t *testing.T) {
 	if err := db.WithContext(ctx).Create(&model.HostCapability{HostID: target.HostID, Kind: model.HostCapabilityDocker, Status: model.HostCapabilityReady}).Error; err != nil {
 		t.Fatal(err)
 	}
-	input := ComposeDeliveryInput{ProjectName: "example-stack", ComposeFile: "deploy/production.yml", EnvFile: "settings.env", Services: []ComposeServiceBuild{{Service: "api", BuildPlanID: build.ID}, {Service: "jobs", BuildPlanID: build.ID}}, Target: *target}
+	input := ComposeDeliveryInput{ProjectName: "example-stack", ComposeYAML: "services:\n  api:\n    image: registry.example.com/engine:${IMAGE_TAG}\n  jobs:\n    image: registry.example.com/engine:${IMAGE_TAG}\n", EnvFile: "settings.env", Services: []ComposeServiceBuild{{Service: "api", BuildPlanID: build.ID, ImageName: "engine"}, {Service: "jobs", BuildPlanID: build.ID, ImageName: "engine"}}, Target: *target}
 	result, err := s.CreateComposeDeliveryWorkflow(ctx, app.ID, "admin", input)
 	if err != nil || !result.Valid || result.Workflow.IsActive {
 		t.Fatalf("未生成有效独立草稿: err=%v result=%+v", err, result)
 	}
 	stages := result.Workflow.Stages
-	if len(stages) != 3 || len(stages[0].Tasks) != 1 || len(stages[1].Tasks[0].Config.ArtifactNodeIDs) != 1 {
-		t.Fatal("共享构建方案不应重复构建")
+	if len(stages) != 2 || len(stages[0].Tasks) != 1 || len(stages[1].Tasks[0].Config.ComposeImages) != 2 {
+		t.Fatal("应直接从并行构建进入部署，共享镜像只构建一次")
 	}
-	plan, err := deliveryTestPlan(t, s, ctx, stages[2].Tasks[0].Config.DeploymentPlanID)
+	if stages[0].Tasks[0].Config.ImageTag != "${EDO_GIT_TAG}" {
+		t.Fatal("未保存可配置的镜像 Tag")
+	}
+	plan, err := deliveryTestPlan(t, s, ctx, stages[1].Tasks[0].Config.DeploymentPlanID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(plan.Script, "example-stack") || !strings.Contains(plan.Script, "production.yml") || strings.Contains(plan.Script, "dev-plat") || strings.Contains(plan.Script, "turing") {
-		t.Fatal("通用脚本没有使用页面配置或包含业务专用值")
+	if plan.Kind != model.DeploymentPlanComposeStack || plan.Script != "" || !strings.Contains(plan.ComposeYAML, "${IMAGE_TAG}") {
+		t.Fatal("Compose 应保存在 EDO 部署方案，不生成专用脚本或清单阶段")
 	}
 	for _, value := range []any{&model.PipelineRun{}, &model.DeploymentRecord{}, &model.Job{}} {
 		var count int64
@@ -54,33 +57,25 @@ func TestComposeDeliveryCreatesGenericDraftAndDeduplicatesBuilds(t *testing.T) {
 			t.Fatal("创建草稿不应执行部署")
 		}
 	}
-	// 配置失败必须整体回滚，不能留下汇总构建方案、部署位置或半个工作流。
 	var before int64
-	db.Model(&model.BuildPlan{}).Count(&before)
+	db.Model(&model.DeploymentPlan{}).Count(&before)
 	input.Target.HostID = "unavailable-host"
 	if _, err := s.CreateComposeDeliveryWorkflow(ctx, app.ID, "admin", input); err == nil {
 		t.Fatal("无效主机未被拒绝")
 	}
 	var after int64
-	db.Model(&model.BuildPlan{}).Count(&after)
+	db.Model(&model.DeploymentPlan{}).Count(&after)
 	if before != after {
-		t.Fatal("失败配置留下了部分构建方案")
+		t.Fatal("失败配置留下了部分方案")
 	}
 }
 
-func TestComposeDeliveryValidatesPathsServicesAndHealthURL(t *testing.T) {
-	valid := ComposeDeliveryInput{ProjectName: "my-app", ComposeFile: "compose.yaml", Services: []ComposeServiceBuild{{Service: "api", BuildPlanID: "build"}}}
+func TestComposeDeliveryValidatesInlineYAMLAndTagBindings(t *testing.T) {
+	valid := ComposeDeliveryInput{ProjectName: "my-app", ComposeYAML: "services:\n  api:\n    image: registry.example.com/api:${IMAGE_TAG}\n", Services: []ComposeServiceBuild{{Service: "api", BuildPlanID: "build"}}}
 	valid.Target.WorkingDirectory = "/srv/app"
-	for _, change := range []func(*ComposeDeliveryInput){
-		func(v *ComposeDeliveryInput) { v.ProjectName = "$(id)" },
-		func(v *ComposeDeliveryInput) { v.ComposeFile = "../prod.yml" },
-		func(v *ComposeDeliveryInput) { v.EnvFile = "prod.env\ncommand" },
-		func(v *ComposeDeliveryInput) {
-			v.Services = []ComposeServiceBuild{{Service: "api", BuildPlanID: "build"}, {Service: "api", BuildPlanID: "build"}}
-		},
-		func(v *ComposeDeliveryInput) { v.HealthURL = "https://user:pass@example.com/health" },
-		func(v *ComposeDeliveryInput) { v.HealthURL = "https://example.com/health?token=private" },
-	} {
+	for _, change := range []func(*ComposeDeliveryInput){func(v *ComposeDeliveryInput) { v.ProjectName = "$(id)" }, func(v *ComposeDeliveryInput) { v.ComposeYAML = "services: [" }, func(v *ComposeDeliveryInput) { v.EnvFile = "../prod.env" }, func(v *ComposeDeliveryInput) { v.TagVariable = "EDO_COMMIT_SHA" }, func(v *ComposeDeliveryInput) { v.HealthURL = "https://user:pass@example.com/health" }, func(v *ComposeDeliveryInput) {
+		v.ComposeYAML = "services:\n  api:\n    build: .\n    image: app:${IMAGE_TAG}\n"
+	}} {
 		input := valid
 		change(&input)
 		if _, err := normalizeComposeDelivery(input); !errors.Is(err, ErrInvalidComposeDelivery) {
@@ -89,58 +84,59 @@ func TestComposeDeliveryValidatesPathsServicesAndHealthURL(t *testing.T) {
 	}
 }
 
-func TestComposeImageManifestRequiresExactCommitAndCompleteDigests(t *testing.T) {
-	if _, err := exec.LookPath("node"); err != nil {
-		t.Skip("当前环境未安装 Node.js")
+func composeTestConfig() model.WorkflowNodeConfig {
+	return model.WorkflowNodeConfig{ArtifactNodeID: "image", ArtifactNodeIDs: []string{"image"}, ComposeImages: []model.ComposeImageBinding{{Service: "web", ArtifactNodeID: "image"}}, Compose: &model.ComposeDeploymentSettings{ProjectName: "sample", TagVariable: "IMAGE_TAG", AdoptExisting: true}}
+}
+
+func TestComposeTagComesFromActualBuildAndExecutionPinsDigest(t *testing.T) {
+	config := composeTestConfig()
+	digest := "sha256:" + strings.Repeat("b", 64)
+	image := model.Artifact{Name: "registry.example.com/web:release-one", ImageRef: "registry.example.com/web@" + digest, Digest: digest}
+	source := "services:\n  web:\n    image: registry.example.com/web:${IMAGE_TAG}\n    environment:\n      TOKEN: ${PRIVATE_VALUE}\n"
+	text, tag, err := renderComposeStack(source, config, map[string]model.Artifact{"web": image}, map[string]string{"PRIVATE_VALUE": "do-not-serialize"})
+	if err != nil || tag != "release-one" || !strings.Contains(text, image.ImageRef) || strings.Contains(text, "do-not-serialize") || !strings.Contains(text, "${PRIVATE_VALUE}") {
+		t.Fatalf("未绑定构建结果或泄露变量: tag=%s err=%v", tag, err)
 	}
-	dir := t.TempDir()
-	script := strings.ReplaceAll(composeImagesTemplate, "__EDO_BINDINGS__", `[{"service":"api","node_id":"image-one"}]`)
-	file := filepath.Join(dir, "generate.cjs")
-	if err := os.WriteFile(file, []byte(script), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	commit := strings.Repeat("a", 40)
-	image := map[string]string{"node_id": "image-one", "kind": "oci_image", "storage_kind": "registry", "digest": "sha256:" + strings.Repeat("b", 64), "image_ref": "registry.example.com/apps/service@sha256:" + strings.Repeat("b", 64), "commit_sha": commit}
-	run := func() error {
-		raw, _ := json.Marshal([]any{image})
-		cmd := exec.CommandContext(context.Background(), "node", file)
-		cmd.Dir = dir
-		cmd.Env = append(os.Environ(), "EDO_COMMIT_SHA="+commit, "EDO_PIPELINE_RUN_ID=run-one", "EDO_UPSTREAM_ARTIFACTS_JSON="+string(raw))
-		return cmd.Run()
-	}
-	if err := run(); err != nil {
-		t.Fatal(err)
-	}
-	content, err := os.ReadFile(filepath.Join(dir, "compose.images.json"))
-	if err != nil || !strings.Contains(string(content), image["image_ref"]) {
-		t.Fatal("未生成固定摘要清单")
-	}
-	image["commit_sha"] = strings.Repeat("c", 40)
-	if err := run(); err == nil {
-		t.Fatal("接受了其他提交的制品")
-	}
-	image["commit_sha"] = commit
-	image["image_ref"] = "registry.example.com/apps/service:latest"
-	if err := run(); err == nil {
-		t.Fatal("接受了可变标签")
+	_, _, err = renderComposeStack(strings.ReplaceAll(source, "web:${IMAGE_TAG}", "other:${IMAGE_TAG}"), config, map[string]model.Artifact{"web": image}, nil)
+	if err == nil {
+		t.Fatal("接受了与实际构建不同的镜像名称")
 	}
 }
 
-func TestComposeSummaryPropagatesDownstreamArchitecture(t *testing.T) {
-	build := model.WorkflowNode{ID: "image", Type: model.WorkflowNodeBuild}
-	bundle := model.WorkflowNode{ID: "bundle", Type: model.WorkflowNodeBuild, Config: model.WorkflowNodeConfig{ArtifactNodeIDs: []string{"image"}}}
-	deploy := model.WorkflowNode{ID: "deploy", Type: model.WorkflowNodeDeploy, Config: model.WorkflowNodeConfig{ArtifactNodeID: "bundle"}}
-	snapshot := workflowSnapshot{ExecutionVersion: 2, Stages: []model.WorkflowStage{{ID: "images", Tasks: []model.WorkflowNode{build}}, {ID: "bundle", Tasks: []model.WorkflowNode{bundle}}, {ID: "deploy", Tasks: []model.WorkflowNode{deploy}}}, DeploymentTargets: map[string]workflowDeploymentTargetSnapshot{"deploy": {Architecture: model.HostArchitectureARM64}}}
-	platform, err := workflowBuildPlatform(snapshot, build.ID, workflowBuildPlanSnapshot{Kind: model.BuildPlanDockerfile, ImageRegistryID: "registry"})
-	if err != nil || platform != "linux/arm64" {
-		t.Fatalf("汇总后未正确推导目标架构: %s %v", platform, err)
+func TestPipelineImageNamesAndGitTagAreConfigurable(t *testing.T) {
+	p := &executionContext{application: model.Application{ID: "app-one", Name: "my_app"}, run: model.PipelineRun{ID: "run-one", Ref: "refs/tags/release-one", CommitSHA: strings.Repeat("a", 40)}, node: model.WorkflowNode{Config: model.WorkflowNodeConfig{ImageName: "team/service", ImageTag: "${EDO_GIT_TAG}"}}}
+	name, err := executionNodeImageName(p)
+	if err != nil || name != "team/service" {
+		t.Fatalf("镜像名未采用配置: %s %v", name, err)
 	}
-	if len(validateUpstreamArtifactStages([]model.WorkflowStage{{ID: "same", Tasks: []model.WorkflowNode{build, bundle}}})) == 0 {
-		t.Fatal("不应允许同阶段隐式依赖")
+	tag, err := executionNodeImageTag(p)
+	if err != nil || tag != "release-one" {
+		t.Fatalf("镜像 Tag 未采用运行引用: %s %v", tag, err)
+	}
+	p.run.Ref = "refs/heads/main"
+	if _, err := executionNodeImageTag(p); err == nil {
+		t.Fatal("分支运行不应伪造 Git Tag")
+	}
+	p.node.Config.ImageName = "https://other.example.com/app"
+	if _, err := executionNodeImageName(p); err == nil {
+		t.Fatal("镜像名不应改变登记仓库地址")
 	}
 }
 
-func TestComposeExistingScriptDoesNotUpdateOnPullFailureAndRestoresFailedUpdate(t *testing.T) {
+func TestComposeDirectImagesPropagateDownstreamArchitecture(t *testing.T) {
+	a := model.WorkflowNode{ID: "one", Type: model.WorkflowNodeBuild}
+	b := model.WorkflowNode{ID: "two", Type: model.WorkflowNodeBuild}
+	d := model.WorkflowNode{ID: "deploy", Type: model.WorkflowNodeDeploy, Config: model.WorkflowNodeConfig{ArtifactNodeID: "one", ArtifactNodeIDs: []string{"one", "two"}}}
+	snapshot := workflowSnapshot{ExecutionVersion: 2, Stages: []model.WorkflowStage{{ID: "build", Tasks: []model.WorkflowNode{a, b}}, {ID: "deploy", Tasks: []model.WorkflowNode{d}}}, DeploymentTargets: map[string]workflowDeploymentTargetSnapshot{"deploy": {Architecture: model.HostArchitectureARM64}}}
+	for _, id := range []string{"one", "two"} {
+		platform, err := workflowBuildPlatform(snapshot, id, workflowBuildPlanSnapshot{Kind: model.BuildPlanDockerfile, ImageRegistryID: "registry"})
+		if err != nil || platform != "linux/arm64" {
+			t.Fatalf("目标架构错误: %s %s %v", id, platform, err)
+		}
+	}
+}
+
+func TestComposeInlineScriptFailurePreservesOrRestoresImages(t *testing.T) {
 	for _, mode := range []string{"success", "pull-fails", "update-fails"} {
 		t.Run(mode, func(t *testing.T) {
 			work := t.TempDir()
@@ -151,23 +147,19 @@ func TestComposeExistingScriptDoesNotUpdateOnPullFailureAndRestoresFailedUpdate(
 			fake := `#!/bin/sh
 set -eu
 printf '%s\n' "$*" >> "$TRACE"
-if [ "$1" = inspect ]; then
- case "$3" in *working_dir*) pwd;; *) cat "$STATE";; esac
- exit 0
-fi
-if [ "$1" = image ]; then printf 'sha256:%s\n' "$NEW_ID"; exit 0; fi
+if [ "$1" = inspect ]; then case "$3" in *working_dir*) pwd;; *RestartCount*) echo 0;; *State.Status*) echo 'running 0 ';; *) cat "$STATE";; esac; exit 0; fi
+if [ "$1" = image ]; then echo "sha256:$NEW_ID"; exit 0; fi
 for arg in "$@"; do
  case "$arg" in
- version) exit 0;;
  config)
-   case "$*" in *--services*) echo web;; *--images*) echo "registry.example.com/service@sha256:$NEW_ID";; esac
-   exit 0;;
+  case "$*" in *--images*) echo "registry.example.com/web@sha256:$NEW_ID";; *--format*) printf '{"services":{"web":{"image":"sha256:%s"}}}\n' "$OLD_ID";; esac
+  exit 0;;
  ps) echo test-container; exit 0;;
  pull) [ "$MODE" != pull-fails ]; exit $?;;
  up)
-   if [ "$MODE" = update-fails ] && [ ! -f "$FAILED" ]; then touch "$FAILED"; echo broken > "$STATE"; exit 9; fi
-   if grep -q "$NEW_ID" .edo/compose/sample/images.json; then echo "sha256:$NEW_ID" > "$STATE"; else echo "sha256:$OLD_ID" > "$STATE"; fi
-   exit 0;;
+  if [ "$MODE" = update-fails ] && [ ! -f "$FAILED" ]; then touch "$FAILED"; echo broken > "$STATE"; exit 9; fi
+  if grep -q "$NEW_ID" .edo/compose/sample/current.yml; then echo "sha256:$NEW_ID" > "$STATE"; else echo "sha256:$OLD_ID" > "$STATE"; fi
+  exit 0;;
  esac
 done
 exit 99
@@ -180,19 +172,18 @@ exit 99
 			if err := os.WriteFile(state, []byte("sha256:"+oldID+"\n"), 0o600); err != nil {
 				t.Fatal(err)
 			}
-			artifactPath := filepath.Join(work, "images.json")
-			if err := os.WriteFile(artifactPath, []byte(`{"services":{"web":{"image":"registry.example.com/service@sha256:`+newID+`"}}}`), 0o600); err != nil {
+			content := "services:\n  web:\n    image: registry.example.com/web@sha256:" + newID + "\n"
+			script, err := composeStackScript(content, composeTestConfig(), work, 120)
+			if err != nil {
 				t.Fatal(err)
 			}
-			input := ComposeDeliveryInput{ProjectName: "sample", ComposeFile: "compose.yaml", TimeoutSeconds: 120, Services: []ComposeServiceBuild{{Service: "web"}}}
-			input.Target.WorkingDirectory = work
-			cmd := exec.Command("sh", "-se")
+			cmd := exec.CommandContext(context.Background(), "sh", "-se")
 			cmd.Dir = work
-			cmd.Stdin = strings.NewReader(composeExistingScript(input))
-			cmd.Env = append(os.Environ(), "PATH="+bin+":/usr/bin:/bin", "TRACE="+trace, "STATE="+state, "OLD_ID="+oldID, "NEW_ID="+newID, "MODE="+mode, "FAILED="+filepath.Join(work, "failed"), "EDO_ARTIFACT_PATH="+artifactPath, "EDO_DEPLOYMENT_ID=deployment-one", "EDO_DEPLOYMENT_TARGET_ID=target-one", "EDO_COMMIT_SHA="+strings.Repeat("c", 40))
+			cmd.Stdin = strings.NewReader(script)
+			cmd.Env = append(os.Environ(), "PATH="+bin+":/usr/bin:/bin", "TRACE="+trace, "STATE="+state, "OLD_ID="+oldID, "NEW_ID="+newID, "MODE="+mode, "FAILED="+filepath.Join(work, "failed"), "EDO_DEPLOYMENT_ID=deployment-one", "EDO_DEPLOYMENT_TARGET_ID=target-one", "EDO_COMMIT_SHA="+strings.Repeat("c", 40))
 			output, err := cmd.CombinedOutput()
 			if (err == nil) != (mode == "success") {
-				t.Fatalf("发布结果错误: mode=%s err=%v output=%s", mode, err, output)
+				t.Fatalf("结果错误: %s %v %s", mode, err, output)
 			}
 			actual, _ := os.ReadFile(state)
 			expected := "sha256:" + oldID
@@ -200,15 +191,101 @@ exit 99
 				expected = "sha256:" + newID
 			}
 			if strings.TrimSpace(string(actual)) != expected {
-				t.Fatalf("镜像状态或恢复错误: mode=%s actual=%s", mode, actual)
+				t.Fatalf("镜像状态错误: %s %s", mode, actual)
 			}
 			commands, _ := os.ReadFile(trace)
 			if mode == "pull-fails" && strings.Contains(string(commands), " up ") {
-				t.Fatal("拉取失败后不应更新容器")
+				t.Fatal("拉取失败后不应更新")
 			}
 			if strings.Contains(string(commands), " down") || strings.Contains(string(commands), "--build") {
-				t.Fatal("已有项目脚本不应删除项目或重新构建")
+				t.Fatal("不应删除项目或在部署主机构建")
 			}
 		})
+	}
+}
+
+func TestComposeDraftAllowsIncompleteFieldsButActivationChecksBindings(t *testing.T) {
+	node := model.WorkflowNode{ID: "deploy", Name: "部署", Type: model.WorkflowNodeDeploy, Config: model.WorkflowNodeConfig{Compose: &model.ComposeDeploymentSettings{}, ComposeImages: []model.ComposeImageBinding{{Service: "", ArtifactNodeID: ""}}}}
+	if err := sanitizeWorkflowNode(&node); err != nil {
+		t.Fatalf("草稿未填完不应无法保存: %v", err)
+	}
+	if validateComposeNode(node.Config) == nil {
+		t.Fatal("未完成配置不能执行")
+	}
+	config := composeTestConfig()
+	config.ArtifactNodeIDs = append(config.ArtifactNodeIDs, "unmapped")
+	if validateComposeNode(config) == nil {
+		t.Fatal("未映射的额外制品来源不能被忽略")
+	}
+	config = composeTestConfig()
+	config.ComposeImages = append(config.ComposeImages, model.ComposeImageBinding{Service: "jobs", ArtifactNodeID: "image"})
+	if err := validateComposeNode(config); err != nil {
+		t.Fatalf("多个服务应能共用同一构建: %v", err)
+	}
+	if validateComposeBindingsYAML("services:\n  web:\n    image: repo/web:${IMAGE_TAG}\n", config) == nil {
+		t.Fatal("不存在的服务必须在构建前拒绝")
+	}
+}
+
+func TestComposeMixedTagsAndDuplicateBuildOutputsAreRejected(t *testing.T) {
+	config := composeTestConfig()
+	config.ArtifactNodeIDs = append(config.ArtifactNodeIDs, "other")
+	config.ComposeImages = append(config.ComposeImages, model.ComposeImageBinding{Service: "jobs", ArtifactNodeID: "other"})
+	images := map[string]model.Artifact{"web": {Name: "registry.example.com/web:one"}, "jobs": {Name: "registry.example.com/jobs:two"}}
+	if _, _, err := renderComposeStack("services:\n  web:\n    image: registry.example.com/web:${IMAGE_TAG}\n  jobs:\n    image: registry.example.com/jobs:${IMAGE_TAG}\n", config, images, nil); err == nil {
+		t.Fatal("不同实际 Tag 不能混用一个共享变量")
+	}
+	nodes := []model.WorkflowNode{{ID: "one", Type: model.WorkflowNodeBuild, Config: model.WorkflowNodeConfig{BuildPlanID: "plan", ImageName: "api", ImageTag: "${EDO_GIT_TAG}"}}, {ID: "two", Type: model.WorkflowNodeBuild, Config: model.WorkflowNodeConfig{BuildPlanID: "plan", ImageName: "api", ImageTag: "${EDO_GIT_TAG}"}}}
+	issues := validateWorkflowArtifactFlow(nodes, map[string]model.BuildPlan{"plan": {Kind: model.BuildPlanDockerfile, ImageRegistryID: "registry"}}, nil, nil)
+	if !hasWorkflowIssue(issues, "duplicate_image_output") {
+		t.Fatal("并行任务覆盖相同 Tag 未被阻断")
+	}
+}
+
+func TestComposeChecksEveryArtifactProducerAndRun(t *testing.T) {
+	s, db, _, repoID := newPipelineTestService(t)
+	ctx := deliveryTestContext()
+	store, err := artifact.NewService(db, t.TempDir(), 1024*1024, s.logger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.ConfigureArtifacts(store)
+	app, err := s.CreateApplication(ctx, "admin", ApplicationInput{Name: "compose_identity", RepositoryID: repoID, EmptyWorkflow: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	registry := model.ImageRegistry{ID: "identity-registry", Name: "身份测试仓库", Provider: model.RegistryGeneric, Endpoint: "https://registry.example.com", IsActive: true}
+	if err := db.WithContext(ctx).Create(&registry).Error; err != nil {
+		t.Fatal(err)
+	}
+	config := composeTestConfig()
+	config.ArtifactNodeIDs = append(config.ArtifactNodeIDs, "other")
+	config.ComposeImages = append(config.ComposeImages, model.ComposeImageBinding{Service: "jobs", ArtifactNodeID: "other"})
+	prepared := &executionContext{run: model.PipelineRun{ID: "identity-run", ApplicationID: app.ID, ProjectID: app.ProjectID, CommitSHA: strings.Repeat("a", 40), Trigger: "manual"}, node: model.WorkflowNode{Config: config}, snapshot: workflowSnapshot{BuildPlans: map[string]workflowBuildPlanSnapshot{}}}
+	for _, id := range []string{"image", "other"} {
+		build := model.BuildRun{ID: "build-" + id, ApplicationID: app.ID, ProjectID: app.ProjectID, PipelineRunID: prepared.run.ID, WorkflowNodeID: id, BuildPlanID: "plan-" + id, CommitSHA: prepared.run.CommitSHA, Status: model.BuildRunStatusSucceeded}
+		image := model.Artifact{ID: "artifact-" + id, ApplicationID: app.ID, ProjectID: app.ProjectID, PipelineRunID: prepared.run.ID, BuildRunID: build.ID, Name: "registry.example.com/" + id + ":release", ImageRef: "registry.example.com/" + id + "@sha256:" + strings.Repeat("b", 64), Digest: "sha256:" + strings.Repeat("b", 64), Kind: model.ArtifactKindOCIImage, StorageKind: model.ArtifactStorageKindRegistry, ImageRegistryID: registry.ID, Status: model.ArtifactStatusAvailable}
+		node := model.PipelineNodeRun{ID: "node-" + id, ProjectID: app.ProjectID, PipelineRunID: prepared.run.ID, NodeID: id, Status: model.PipelineRunSucceeded, ArtifactID: image.ID}
+		for _, row := range []any{&build, &image, &node} {
+			if err := db.WithContext(ctx).Create(row).Error; err != nil {
+				t.Fatal(err)
+			}
+		}
+		prepared.snapshot.BuildPlans[id] = workflowBuildPlanSnapshot{ID: build.BuildPlanID, ImageRegistryID: registry.ID}
+	}
+	if err := s.loadComposeStackArtifacts(ctx, prepared); err != nil {
+		t.Fatalf("完整制品链应通过: %v", err)
+	}
+	if len(prepared.composeArtifacts) != 2 {
+		t.Fatal("未读取所有服务镜像")
+	}
+	db.WithContext(ctx).Model(&model.BuildRun{}).Where("uuid = ?", "build-other").Update("commit_sha", strings.Repeat("c", 40))
+	if s.loadComposeStackArtifacts(ctx, prepared) == nil {
+		t.Fatal("非主镜像的其他提交未被拒绝")
+	}
+	db.WithContext(ctx).Model(&model.BuildRun{}).Where("uuid = ?", "build-other").Update("commit_sha", prepared.run.CommitSHA)
+	db.WithContext(ctx).Model(&model.Artifact{}).Where("uuid = ?", "artifact-other").Update("pipeline_run_id", "foreign-run")
+	if s.loadComposeStackArtifacts(ctx, prepared) == nil {
+		t.Fatal("手动运行不能绕过多镜像的运行归属")
 	}
 }

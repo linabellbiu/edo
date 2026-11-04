@@ -385,6 +385,9 @@ func workflowBuildPlatform(snapshot workflowSnapshot, buildNodeID string, plan w
 			}
 			sourceID := sources[tasks[index].ID]
 			dependsOnBuild := sourceID == buildNodeID
+			for _, dependency := range tasks[index].Config.ArtifactNodeIDs {
+				dependsOnBuild = dependsOnBuild || dependency == buildNodeID
+			}
 			for _, upstream := range tasks {
 				if upstream.ID == sourceID {
 					for _, dependency := range upstream.Config.ArtifactNodeIDs {
@@ -529,7 +532,7 @@ func (s *Service) executePipelineBuild(ctx context.Context, prepared *buildExecu
 		if prepared.plan.ImageRegistryID == "" {
 			output := s.newBuildLogWriter(ctx, prepared.run.ID, "build", append(sensitiveVariableValues(buildArgs), variableRedactions...)...)
 			defer output.Close()
-			image, err := localExecutionImage(&executionContext{run: prepared.run, application: prepared.application})
+			image, err := localExecutionImage(&executionContext{run: prepared.run, node: prepared.node, application: prepared.application})
 			if err != nil {
 				return nil, err
 			}
@@ -553,7 +556,7 @@ func (s *Service) executePipelineBuild(ctx context.Context, prepared *buildExecu
 		if err := s.db.WithContext(ctx).First(&registry, "uuid = ? AND is_active = ?", prepared.plan.ImageRegistryID, true).Error; err != nil {
 			return nil, err
 		}
-		execution := &executionContext{run: prepared.run, application: prepared.application, registry: registry}
+		execution := &executionContext{run: prepared.run, node: prepared.node, application: prepared.application, registry: registry}
 		execution.component.ImageRegistryID = registry.ID
 		image, auth, err := s.executionImage(ctx, execution)
 		if err != nil {
@@ -806,6 +809,9 @@ func pipelineCommandEnvironment(prepared *buildExecutionContext) map[string]stri
 		"EDO_APPLICATION_ID":  prepared.application.ID,
 		"EDO_GIT_REF":         prepared.run.Ref,
 		"EDO_COMMIT_SHA":      prepared.run.CommitSHA,
+	}
+	if strings.HasPrefix(prepared.run.Ref, "refs/tags/") {
+		environment["EDO_GIT_TAG"] = strings.TrimPrefix(prepared.run.Ref, "refs/tags/")
 	}
 	if prepared.plan.Platform != "" {
 		environment["EDO_TARGET_PLATFORM"] = prepared.plan.Platform

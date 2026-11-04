@@ -93,6 +93,7 @@ type CommandRequestInput struct {
 	TargetID              string
 	ApplicationID         string
 	ArtifactID            string
+	Image                 string
 	PipelineRunID         string
 	WorkflowNodeID        string
 	ApprovedBy            string
@@ -469,7 +470,10 @@ func (s *Service) requestCommandAndRun(
 	input.ScriptDigest = strings.TrimSpace(input.ScriptDigest)
 	input.DeploymentPlanID = strings.TrimSpace(input.DeploymentPlanID)
 	expectedDigest := model.DeploymentPlanExecutionDigest(input.PlanKind, input.Script, input.TimeoutSeconds)
-	if target.Platform != model.DeploymentSSH || input.PlanKind != model.DeploymentPlanScript ||
+	if (input.PlanKind == model.DeploymentPlanComposeStack && (!immutableImageReference(input.Image) || input.ArtifactID == "")) || (input.PlanKind == model.DeploymentPlanScript && input.Image != "") {
+		return nil, ErrInvalidTarget
+	}
+	if target.Platform != model.DeploymentSSH || (input.PlanKind != model.DeploymentPlanScript && input.PlanKind != model.DeploymentPlanComposeStack) ||
 		input.DeploymentPlanID == "" || strings.TrimSpace(input.Script) == "" || len(input.Script) > 256*1024 ||
 		input.TimeoutSeconds < 30 || input.TimeoutSeconds > 3600 || input.ScriptDigest == "" ||
 		input.ScriptDigest != expectedDigest || s.ssh == nil {
@@ -488,6 +492,7 @@ func (s *Service) requestCommandAndRun(
 		ID: uuid.NewString(), ProjectID: target.ProjectID, DepartmentID: target.DepartmentID, IdempotencyKey: &idempotencyKey,
 		UsesDeliveryVariables: input.UsesDeliveryVariables, PipelineRunID: input.PipelineRunID, ApplicationID: strings.TrimSpace(input.ApplicationID), WorkflowNodeID: input.WorkflowNodeID,
 		ArtifactID: input.ArtifactID, TargetID: target.ID, Operation: model.DeploymentRelease, Status: model.DeploymentQueued,
+		Image:       input.Image,
 		RequestedBy: actorID, CreatedAt: now, UpdatedAt: now,
 		DeploymentPlanID: input.DeploymentPlanID, DeploymentPlanKind: input.PlanKind,
 		CommandScript: input.Script, CommandDigest: input.ScriptDigest, CommandTimeout: input.TimeoutSeconds,

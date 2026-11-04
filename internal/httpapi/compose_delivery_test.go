@@ -39,18 +39,18 @@ func TestComposeDeliveryHTTPUsesNormalPermissionsAndCreatesOnlyDraft(t *testing.
 		t.Fatal("应用创建失败")
 	}
 	path := "/api/v1/applications/" + appBody.App.ID + "/compose-delivery-workflows"
-	body := map[string]any{"project_name": "custom-project", "compose_file": "custom.yaml", "services": []map[string]string{{"service": "web", "build_plan_id": buildBody.Build.ID}}, "target": map[string]string{"name": "通用位置", "platform": "ssh", "environment_id": "httpapi-deployment-environment", "host_id": "httpapi-deployment-host", "working_directory": "/srv/custom"}}
+	body := map[string]any{"project_name": "custom-project", "compose_yaml": "services:\n  web:\n    image: registry.example.com/web:${IMAGE_TAG}\n", "services": []map[string]string{{"service": "web", "build_plan_id": buildBody.Build.ID}}, "target": map[string]string{"name": "通用位置", "platform": "ssh", "environment_id": "httpapi-deployment-environment", "host_id": "httpapi-deployment-host", "working_directory": "/srv/custom"}}
 	created := performJSONRequest(t, router, http.MethodPost, path, body, admin)
 	var result pipeline.WorkflowResult
 	if created.Code != 201 || json.Unmarshal(created.Body.Bytes(), &result) != nil || !result.Valid || result.Workflow.IsActive {
 		t.Fatalf("未生成有效草稿: %d %s", created.Code, created.Body.String())
 	}
-	role := createRoleForHTTPTest(t, router, admin, "compose-no-build-create", []string{"application.update", "workflow.create", "workflow.read", "deployment_plan.create", "deployment_plan.read", "build_plan.read", "cluster.read", "deployment.read"})
+	role := createRoleForHTTPTest(t, router, admin, "compose-no-build-create", []string{"application.update", "workflow.read", "deployment_plan.create", "deployment_plan.read", "build_plan.read", "cluster.read", "deployment.read"})
 	createUserForHTTPTest(t, router, admin, "compose_config_reader", appBody.App.DepartmentID, []string{role})
 	reader := loginForDepartmentTest(t, router, "compose_config_reader")
 	denied := performJSONRequest(t, router, http.MethodPost, path, body, reader)
 	if denied.Code != http.StatusForbidden {
-		t.Fatalf("未要求汇总构建方案创建权限: %d", denied.Code)
+		t.Fatalf("未要求正常流水线创建权限: %d", denied.Code)
 	}
 	for _, value := range []any{&model.PipelineRun{}, &model.DeploymentRecord{}, &model.Job{}} {
 		var count int64

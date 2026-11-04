@@ -24,6 +24,8 @@ export interface WorkflowNodeConfig {
   pr_source_pattern?: string
   pr_actions?: string[]
   build_plan_id?: string
+  image_name?: string
+  image_tag?: string
   deployment_plan_id?: string
   script?: string
   runtime_image?: string
@@ -36,6 +38,8 @@ export interface WorkflowNodeConfig {
   variable_environment_id?: string
   artifact_node_id?: string
   artifact_node_ids?: string[]
+  compose_images?: Array<{service:string;artifact_node_id:string}>
+  compose?: {project_name:string;env_file?:string;tag_variable:string;use_sudo:boolean;health_url?:string;adopt_existing:boolean}
   reports?: Array<{format:string;paths:string[];required:boolean;minimum_coverage?:number;fail_severity?:string}>
   check?: {tool:string;dialect?:string;path:string;config_path?:string}
   cache?: {key:string;lock_files:string[];paths:string[]}

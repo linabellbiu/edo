@@ -16,7 +16,7 @@ const {t}=useI18n()
 const auth=useAuthStore()
 const composeForm=ref(newComposeDeliveryForm()),composeFields=ref<{validate:()=>boolean}>()
 const existingCompose=computed(()=>form.kind==='compose_existing')
-const canCreateCompose=computed(()=>auth.canAny?.(['build_plan.create'])||false)
+const canCreateCompose=computed(()=>Boolean(auth.canAny?.(['workflow.create'])&&auth.canAny?.(['deployment_plan.create'])))
 const defaults=ref<DeliveryDefault[]>([]),plans=ref<DeliveryPlan[]>([]),templates=ref<DeliveryTemplate[]>([]),builds=ref<Array<{id:string;name:string;kind:string;is_active:boolean;image_registry_id?:string;artifact_path?:string}>>([]),applications=ref<Array<{id:string;name:string}>>([])
 const environments=ref<InfrastructureEnvironment[]>([]),hosts=ref<InfrastructureHost[]>([]),clusters=ref<Array<{id:string;name:string;is_active:boolean}>>([])
 const loading=ref(false),saving=ref(false),ready=ref(false)
@@ -90,7 +90,7 @@ watch(()=>props.open,value=>{if(value)composeForm.value=newComposeDeliveryForm()
 <a-alert v-if="currentDefault&&(!currentDefault.workflow_available||!currentDefault.deployment_available)" type="warning" :message="t('delivery.unavailable')" class="hint"/>
 <a-form layout="vertical"><div class="grid">
 <a-form-item v-if="!applicationId" class="wide" :label="t('delivery.application')" required><a-select :aria-label="t('delivery.application')" v-model:value="form.application" :options="applications.map(item=>({value:item.id,label:item.name}))"/></a-form-item>
-<a-form-item :label="t('delivery.kind')"><a-select :aria-label="t('delivery.kind')" v-model:value="form.kind" :options="[...deliveryKinds.map(value=>({value,label:t(`delivery.${value}`)})),{value:'compose_existing',label:'已有 Compose 项目（多镜像）',disabled:!canCreateCompose}]" @change="selectKind"/></a-form-item>
+<a-form-item :label="t('delivery.kind')"><a-select :aria-label="t('delivery.kind')" v-model:value="form.kind" :options="[...deliveryKinds.map(value=>({value,label:t(`delivery.${value}`)})),{value:'compose_existing',label:'Compose 与 Tag（多镜像）',disabled:!canCreateCompose}]" @change="selectKind"/></a-form-item>
 <a-form-item :label="t('delivery.name')"><a-input :aria-label="t('delivery.name')" v-model:value="form.name" :maxlength="128"/></a-form-item>
 <a-form-item v-if="!existingCompose" :label="t('delivery.workflow')"><a-select :aria-label="t('delivery.workflow')" v-model:value="form.workflow" :options="workflowOptions"/></a-form-item>
 <a-form-item v-if="!existingCompose" :label="t('delivery.deployment')"><a-select :aria-label="t('delivery.deployment')" v-model:value="form.plan" :options="planOptions"/></a-form-item>
@@ -109,4 +109,4 @@ watch(()=>props.open,value=>{if(value)composeForm.value=newComposeDeliveryForm()
 <a-button type="primary" :disabled="!ready" :loading="saving" @click="create">{{ t('delivery.create') }}</a-button>
 </a-form></a-spin></a-drawer>
 </template>
-<style scoped>.grid{display:grid;grid-template-columns:1fr 1fr;gap:0 16px}.wide{grid-column:1/-1}.hint{margin-bottom:20px}@media(max-width:600px){.grid{grid-template-columns:1fr}}</style>
+<style scoped>.grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:0 16px}.grid>*{min-width:0}.wide{grid-column:1/-1}.hint{margin-bottom:20px}@media(max-width:600px){.grid{grid-template-columns:minmax(0,1fr)}}</style>

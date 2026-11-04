@@ -64,6 +64,8 @@ async function harness(initialPermissions = ['deployment_plan.read', 'deployment
     '@/locales/deploymentTarget': { deploymentTargetEn: {}, deploymentTargetZh: {} },
     '@/components/ResourceDetailDrawer.vue': { __esModule: true, default: detail },
     '@/components/ResourceRowActions.vue': { __esModule: true, default: actions },
+    '@/components/YamlCodeEditor.vue': { __esModule: true, default: pass('div') },
+    '@/utils/kubernetesYaml': {},
     '@/components/PageToolbar.vue': { __esModule: true, default: pass('header') },
     '@/components/RuntimeBrandIcon.vue': { __esModule: true, default: pass('i') },
     '@/components/DeliveryDefaultsDrawer.vue': { __esModule: true, default: { setup: () => () => null } },

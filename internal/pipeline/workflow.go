@@ -564,7 +564,13 @@ func sanitizeWorkflowNode(node *model.WorkflowNode) error {
 	node.Config.ToolchainVersion = strings.TrimSpace(node.Config.ToolchainVersion)
 	node.Config.WorkingDirectory = strings.TrimSpace(node.Config.WorkingDirectory)
 	node.Config.Description = strings.TrimSpace(node.Config.Description)
-	if len(node.Config.ArtifactNodeIDs) > 64 || (len(node.Config.ArtifactNodeIDs) > 0 && node.Type != model.WorkflowNodeBuild) {
+	if (node.Config.Compose != nil || len(node.Config.ComposeImages) > 0) && (node.Type != model.WorkflowNodeDeploy || !validComposeNodeShape(node.Config)) {
+		return ErrInvalidWorkflow
+	}
+	if len(node.Config.ImageName) > 255 || len(node.Config.ImageTag) > 512 || ((node.Config.ImageName != "" || node.Config.ImageTag != "") && node.Type != model.WorkflowNodeBuild) {
+		return ErrInvalidWorkflow
+	}
+	if len(node.Config.ArtifactNodeIDs) > 64 || (len(node.Config.ArtifactNodeIDs) > 0 && node.Type != model.WorkflowNodeBuild && node.Type != model.WorkflowNodeDeploy) {
 		return ErrInvalidWorkflow
 	}
 	seenArtifacts := map[string]bool{}
@@ -893,6 +899,7 @@ func validateWorkflowArtifactFlow(
 	priorBuilds := map[string]bool{}
 	var artifactPlan *model.BuildPlan
 	buildTaskSeen := false
+	outputs := map[string]bool{}
 	for i := range tasks {
 		next := tasks[i]
 		switch next.Type {
@@ -909,6 +916,13 @@ func validateWorkflowArtifactFlow(
 				artifactPlan = nil
 			} else {
 				artifactPlan = &plan
+				if plan.Kind == model.BuildPlanDockerfile && next.Config.ImageTag != "" {
+					key := plan.ImageRegistryID + "\x00" + strings.TrimSpace(next.Config.ImageName) + "\x00" + strings.TrimSpace(next.Config.ImageTag)
+					if outputs[key] {
+						issues = append(issues, WorkflowIssue{Code: "duplicate_image_output", Message: "多个构建不能写入同一仓库、镜像名称和 Tag；共用镜像请引用同一构建任务", NodeID: next.ID})
+					}
+					outputs[key] = true
+				}
 			}
 		case model.WorkflowNodeDeploy:
 			if next.Config.ArtifactNodeID != "" {
@@ -937,7 +951,7 @@ func validateWorkflowArtifactFlow(
 			if planOK && deploymentPlan.DeploymentTargetID == "" {
 				targetOK = true
 				switch deploymentPlan.Kind {
-				case model.DeploymentPlanScript:
+				case model.DeploymentPlanScript, model.DeploymentPlanComposeStack:
 					target.Platform = model.DeploymentSSH
 				case model.DeploymentPlanKubernetes:
 					target.Platform = model.DeploymentKubernetes
@@ -947,6 +961,28 @@ func validateWorkflowArtifactFlow(
 			}
 			if !planOK || !targetOK {
 				break
+			}
+			if deploymentPlan.Kind != model.DeploymentPlanComposeStack && (next.Config.Compose != nil || len(next.Config.ComposeImages) > 0 || len(next.Config.ArtifactNodeIDs) > 0) {
+				issues = append(issues, WorkflowIssue{Code: "compose_plan_required", Message: "多镜像配置需要选择 Compose 多镜像部署方案", NodeID: next.ID})
+			}
+			if deploymentPlan.Kind == model.DeploymentPlanComposeStack {
+				if validateComposeBindingsYAML(deploymentPlan.ComposeYAML, next.Config) != nil {
+					issues = append(issues, WorkflowIssue{Code: "invalid_compose_bindings", Message: "请配置 Compose 服务、上游镜像与 Tag 变量", NodeID: next.ID})
+					continue
+				}
+				for _, binding := range next.Config.ComposeImages {
+					var sourcePlan model.BuildPlan
+					for _, candidate := range tasks {
+						if candidate.ID == binding.ArtifactNodeID {
+							sourcePlan = buildPlans[candidate.Config.BuildPlanID]
+							break
+						}
+					}
+					if !priorBuilds[binding.ArtifactNodeID] || sourcePlan.Kind != model.BuildPlanDockerfile || sourcePlan.ImageRegistryID == "" {
+						issues = append(issues, WorkflowIssue{Code: "compose_image_source", Message: "Compose 必须引用前序阶段已绑定镜像仓库的构建任务", NodeID: next.ID})
+					}
+				}
+				continue
 			}
 			if target.Platform == model.DeploymentSSH && artifactPlan.Kind != model.BuildPlanScript {
 				issues = append(issues, WorkflowIssue{
@@ -1371,6 +1407,26 @@ func (s *Service) newStageResolvedWorkflowRunWithDatabase(
 	run, err := newWorkflowRun(application, &resolved, node, trigger, ref, commitSHA, actorID, message, now)
 	if err != nil {
 		return nil, err
+	}
+	outputs := map[string]bool{}
+	for _, stage := range resolved.Stages {
+		for _, task := range stage.Tasks {
+			plan, ok := buildPlans[task.ID]
+			if !ok || plan.Kind != model.BuildPlanDockerfile || (task.Config.ImageName == "" && task.Config.ImageTag == "") {
+				continue
+			}
+			prepared := &executionContext{run: *run, application: *application, node: task}
+			name, nameErr := executionNodeImageName(prepared)
+			tag, tagErr := executionNodeImageTag(prepared)
+			key := plan.ImageRegistryID + "/" + name + ":" + tag
+			if nameErr != nil || tagErr != nil || outputs[key] {
+				if s.logger != nil {
+					s.logger.Error("流水线构建镜像名称或 Tag 无效或重复", "operation", "pipeline_image_output_validate", "application_id", application.ID, "workflow_node_id", task.ID, "err", errors.Join(nameErr, tagErr, ErrInvalidWorkflow))
+				}
+				return nil, ErrInvalidWorkflow
+			}
+			outputs[key] = true
+		}
 	}
 	snapshot, err := json.Marshal(workflowSnapshot{
 		SchemaVersion: resolved.SchemaVersion, Source: resolved.Source, Stages: resolved.Stages,
