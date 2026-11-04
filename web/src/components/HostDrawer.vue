@@ -175,7 +175,7 @@ async function readPrivateKeyFile(file: File) {
     form.ssh_auth_type === 'private_key' && !testing.value && !submitting.value
   if (!allowed()) return
   if (file.size === 0 || file.size > 64 * 1024) {
-    message.error('请选择非空且不超过 64 KiB 的私钥文件')
+    message.error(t('hostForm.privateKeyFileSize'))
     return
   }
   cancelPrivateKeyRead()
@@ -186,15 +186,15 @@ async function readPrivateKeyFile(file: File) {
     const content = (await file.text()).trim()
     if (revision !== privateKeyReadRevision || !allowed()) return
     if (!/^-----BEGIN (?:[A-Z0-9]+ )*PRIVATE KEY-----\r?\n/.test(content)) {
-      message.error('请选择 OpenSSH 或 PEM 格式的私钥文件')
+      message.error(t('hostForm.privateKeyFileFormat'))
       return
     }
     // 只填入当前表单，后端继续负责私钥解析、连接测试和加密保存。
     readingPrivateKey.value = false
     form.private_key = content
-    message.success('私钥已载入，请测试连接')
+    message.success(t('hostForm.privateKeyLoaded'))
   } catch {
-    if (revision === privateKeyReadRevision && allowed()) message.error('读取私钥文件失败，请重新选择')
+    if (revision === privateKeyReadRevision && allowed()) message.error(t('hostForm.privateKeyReadFailed'))
   } finally {
     if (revision === privateKeyReadRevision) readingPrivateKey.value = false
   }
@@ -441,9 +441,9 @@ onBeforeUnmount(clearCredentials)
               <a-input-password v-model:value="form.password" autocomplete="new-password" placeholder="密码只会加密保存" />
             </a-form-item>
             <template v-else>
-              <a-form-item class="span-2 private-key-item" name="private_key" :rules="[{ required: true, whitespace: true, message: '请粘贴或上传 SSH 私钥' }]">
-                <template #label><div class="private-key-label"><span>SSH 私钥</span><a-button class="private-key-upload-button" :loading="readingPrivateKey" :disabled="testing || submitting || !canTest" @click="privateKeyFileInput?.click()"><Upload :size="14" aria-hidden="true" />上传私钥</a-button></div></template>
-                <input ref="privateKeyFileInput" type="file" hidden aria-label="选择 SSH 私钥文件" @change="importPrivateKey" />
+              <a-form-item class="span-2 private-key-item" name="private_key" :rules="[{ required: true, whitespace: true, message: t('hostForm.privateKeyRequired') }]">
+                <template #label><div class="private-key-label"><span>SSH 私钥</span><a-button class="private-key-upload-button" :loading="readingPrivateKey" :disabled="testing || submitting || !canTest" @click="privateKeyFileInput?.click()"><Upload :size="14" aria-hidden="true" />{{ t('hostForm.uploadPrivateKey') }}</a-button></div></template>
+                <input ref="privateKeyFileInput" type="file" hidden :aria-label="t('hostForm.privateKeyFileLabel')" @change="importPrivateKey" />
                 <a-textarea v-model:value="form.private_key" :rows="8" spellcheck="false" placeholder="-----BEGIN OPENSSH PRIVATE KEY-----" />
               </a-form-item>
               <a-form-item class="span-2" label="私钥口令（可选）" name="passphrase">

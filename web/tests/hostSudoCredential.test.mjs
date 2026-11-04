@@ -329,7 +329,9 @@ test('真实 Ant Form 标签展示上传私钥按钮，不被静态 label 覆盖
   const rendered = { exports: {} }
   new Function('require', 'exports', ts.transpileModule(compiled.code, { compilerOptions: { module: ts.ModuleKind.CommonJS } }).outputText)(name => { assert.equal(name, 'vue'); return vue }, rendered.exports)
   const form = vue.reactive({ private_key: '' })
-  const body = { setup: () => ({ form, readingPrivateKey: false, testing: false, submitting: false, canTest: true, privateKeyFileInput: undefined, importPrivateKey() {} }), render: rendered.exports.render }
+  const { messages } = loadFrontend('../src/locales/index.ts', { 'vue-i18n': { createI18n: options => options } })
+  const t = key => key.split('.').reduce((value, part) => value[part], messages['zh-CN'])
+  const body = { setup: () => ({ form, t, readingPrivateKey: false, testing: false, submitting: false, canTest: true, privateKeyFileInput: undefined, importPrivateKey() {} }), render: rendered.exports.render }
   const app = vue.createSSRApp({ render: () => vue.h(Form, { model: form, name: 'host-upload' }, { default: () => vue.h(body) }) })
   for (const [name, component] of Object.entries({ 'a-form-item': FormItem, 'a-button': Button, 'a-textarea': Input.TextArea, Upload: { render: () => null } })) app.component(name, component)
   const html = await renderToString(app)

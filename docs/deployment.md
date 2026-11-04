@@ -135,6 +135,8 @@ EDO_COMPOSE_DATABASE_DSN=/app/data/edo.db
 
 公钥放在目标服务器对应登录用户的 `~/.ssh/authorized_keys`，私钥由 EDO 发起认证并在保存时加密。将公钥保存在 `.pub` 文件中不会自动授权登录；需要将其内容加入目标用户的授权文件。排查时分别核对 SSH 网络、登录用户名、公钥授权和私钥口令，不把账号公钥当作服务器主机指纹。EDO 与目标 SSH 主机在同一台服务器时也沿用这些规则。
 
+若 SSH 已成功，但普通用户执行 Docker 报权限错误，而 `sudo -n docker version` 正常，在主机表单勾选“使用 sudo 执行 Docker / 安装操作”。免密 sudo 的目标可将 sudo 密码留空。该选项只影响已登记的受限 Docker 和安装操作，SSH 部署脚本仍不自动提权。
+
 ## 探针与停机
 
 - `/healthz`：Web 存活。
