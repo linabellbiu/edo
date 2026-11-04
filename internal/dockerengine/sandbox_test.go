@@ -8,11 +8,28 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/moby/moby/api/types/mount"
 )
+
+func TestScriptUpstreamArtifactEnvironmentIsReservedAndBounded(t *testing.T) {
+	name := "EDO_UPSTREAM_ARTIFACTS_JSON"
+	if validScriptEnvironment(map[string]string{name: "[]"}) {
+		t.Fatal("用户变量不应覆盖上游制品清单")
+	}
+	if !validScriptSystemEnvironment(map[string]string{name: strings.Repeat("a", 32*1024)}) {
+		t.Fatal("系统制品清单未接受有界的大值")
+	}
+	if validScriptSystemEnvironment(map[string]string{name: strings.Repeat("a", 64*1024+1)}) {
+		t.Fatal("系统制品清单没有大小上限")
+	}
+	if validScriptSystemEnvironment(map[string]string{"EDO_COMMIT_SHA": strings.Repeat("a", 16*1024+1)}) {
+		t.Fatal("不应扩大其他系统变量上限")
+	}
+}
 
 func TestNormalizeScriptContainerInputRequiresPinnedImageAndEmptyOutput(t *testing.T) {
 	source := t.TempDir()

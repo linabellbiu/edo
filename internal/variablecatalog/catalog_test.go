@@ -42,7 +42,7 @@ func TestReservedScriptEnvironmentNamesMatchExecutionBoundary(t *testing.T) {
 	reserved := ReservedScriptEnvironmentNames()
 	for _, name := range []string{
 		"CI", "HOME", "TMPDIR", "EDO_PIPELINE_RUN_ID", "EDO_APPLICATION_ID", "EDO_GIT_REF",
-		"EDO_COMMIT_SHA", "EDO_TARGET_PLATFORM", "EDO_TARGET_ARCH", "GOOS", "GOARCH",
+		"EDO_COMMIT_SHA", "EDO_UPSTREAM_ARTIFACTS_JSON", "EDO_TARGET_PLATFORM", "EDO_TARGET_ARCH", "GOOS", "GOARCH",
 	} {
 		if _, exists := reserved[name]; !exists {
 			t.Fatalf("缺少脚本保留变量: %s", name)

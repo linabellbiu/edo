@@ -2,6 +2,7 @@ package repository
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"io"
@@ -200,6 +201,21 @@ func (c *GitClient) CheckoutCachedAt(
 ) (bool, error) {
 	checkoutContext, cancel := context.WithTimeout(ctx, c.config.Timeout)
 	defer cancel()
+	cached, err := c.checkoutCachedAt(checkoutContext, repository, credential, ref, commitSHA, destination, cacheDirectory)
+	if err != nil {
+		return false, err
+	}
+	if err := c.checkoutSubmodules(checkoutContext, repository, credential, plumbing.NewHash(strings.TrimSpace(commitSHA)), destination, cacheDirectory, 0, new(int)); err != nil {
+		return false, err
+	}
+	return cached, nil
+}
+
+func (c *GitClient) checkoutCachedAt(
+	checkoutContext context.Context,
+	repository model.GitRepository,
+	credential, ref, commitSHA, destination, cacheDirectory string,
+) (bool, error) {
 	auth, err := c.authMethod(repository, credential)
 	if err != nil {
 		return false, err
@@ -285,7 +301,7 @@ func materializeCachedCommit(
 		return false, fmt.Errorf("读取 Git 固定 Commit 失败: %w", err)
 	}
 	markerDirectory := filepath.Join(cacheDirectory, "edo-workspaces")
-	marker := filepath.Join(markerDirectory, filepath.Base(destination)+".commit")
+	marker := workspaceCommitMarker(cacheDirectory, destination)
 	if cachedWorkspaceMatches(cacheDirectory, destination, hash) {
 		return true, nil
 	}
@@ -339,13 +355,18 @@ func materializeCachedCommit(
 }
 
 func cachedWorkspaceMatches(cacheDirectory, destination string, hash plumbing.Hash) bool {
-	marker := filepath.Join(cacheDirectory, "edo-workspaces", filepath.Base(destination)+".commit")
+	marker := workspaceCommitMarker(cacheDirectory, destination)
 	content, err := os.ReadFile(marker)
 	if err != nil || strings.TrimSpace(string(content)) != hash.String() {
 		return false
 	}
 	info, err := os.Stat(destination)
 	return err == nil && info.IsDir()
+}
+
+func workspaceCommitMarker(cacheDirectory, destination string) string {
+	key := sha256.Sum256([]byte(filepath.Clean(destination)))
+	return filepath.Join(cacheDirectory, "edo-workspaces", fmt.Sprintf("%x.commit", key))
 }
 
 func pinnedCommitObject(repository *git.Repository, hash plumbing.Hash) (*object.Commit, error) {

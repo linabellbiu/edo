@@ -499,6 +499,9 @@ func (s *Service) executePipelineBuild(ctx context.Context, prepared *buildExecu
 				buildArgs[binding.Name] = values[binding.Name]
 			}
 		}
+		for key, value := range buildArgs {
+			buildArgs[key] = expandPipelineBuildArgument(value, prepared.run)
+		}
 
 		options := dockerengine.BuildOptions{
 			Pull: prepared.plan.Pull, CacheEnabled: prepared.plan.CacheEnabled,
@@ -579,6 +582,15 @@ func effectiveBuildRuntimeImage(config model.WorkflowNodeConfig, plan workflowBu
 		return config.RuntimeImage
 	}
 	return plan.RuntimeImage
+}
+
+func expandPipelineBuildArgument(value string, run model.PipelineRun) string {
+	return strings.NewReplacer(
+		"${EDO_COMMIT_SHA}", run.CommitSHA,
+		"${EDO_GIT_REF}", run.Ref,
+		"${EDO_PIPELINE_RUN_ID}", run.ID,
+		"${EDO_APPLICATION_ID}", run.ApplicationID,
+	).Replace(value)
 }
 
 func effectiveDockerBuildArgs(config model.WorkflowNodeConfig, configured map[string]string) map[string]string {
@@ -707,6 +719,13 @@ func (s *Service) executePipelineShell(
 	if err := s.requirePipelineExecutionPermission(ctx, prepared.run, prepared.snapshot); err != nil {
 		return dockerengine.ScriptContainerResult{}, err
 	}
+	systemEnvironment := pipelineCommandEnvironment(prepared)
+	upstream, err := s.upstreamArtifactsJSON(ctx, prepared)
+	if err != nil {
+		s.logger.Error("读取流水线上游制品清单失败", "operation", "pipeline_upstream_artifacts", "pipeline_run_id", prepared.run.ID, "node_id", prepared.node.ID, "err", err)
+		return dockerengine.ScriptContainerResult{}, ErrPipelineExecutionConfig
+	}
+	systemEnvironment["EDO_UPSTREAM_ARTIFACTS_JSON"] = upstream
 	result, err := s.scriptRunner.RunScriptContainer(ctx, dockerengine.ScriptContainerInput{
 		Image:            runtimeImage,
 		Platform:         prepared.plan.Platform,
@@ -724,7 +743,7 @@ func (s *Service) executePipelineShell(
 			}
 			return nil
 		}(),
-		SystemEnvironment: pipelineCommandEnvironment(prepared),
+		SystemEnvironment: systemEnvironment,
 		Labels: map[string]string{
 			"io.edo.application.id":   prepared.application.ID,
 			"io.edo.pipeline.run.id":  prepared.run.ID,

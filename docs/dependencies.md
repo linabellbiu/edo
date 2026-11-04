@@ -26,6 +26,8 @@
 
 `go-git` 同时负责远端引用查询和指定 Commit 检出。运行镜像不再安装 `git` 和 `openssh-client`，SSH 私钥也不再写入临时文件。已有 Argon2id PHC 摘要不需要迁移。
 
+子模块继续使用已固定的 go-git v5.19.1（Apache-2.0），复用 `config.Modules`、Git 传输与对象存储，不引入 Git 子进程或额外运行依赖。评估了原生 `Submodule.UpdateContext`，但它依赖可写 Git 工作树与父仓库配置，不适合 EDO 不携带 `.git` 的隔离构建目录。因此复用现有固定 Commit 缓存来导出 gitlink 对应文件树；跨站认证、路径限制、递归上限及缓存隔离由 EDO 维护。维护风险为相对 URL 语义、远端按 SHA 拉取兼容性和异常中断后的重试，需要保持固定版本、跨工作区及认证隔离回归；不运行 `.gitmodules` 更新钩子。依赖未升级，不把本次功能验证视为完整安全审计。
+
 系统指标使用 `gopsutil/v4` 的 CPU、内存、进程、负载和运行时间子包。当前固定在 v4.26.6，依赖体积中等且不需要常驻 Agent 或 CGO；采集被封装在系统指标服务中，后续可以按平台替换而不改变内置 API。即使单项采集失败，页面仍返回其余指标，并只在服务端日志记录原始错误。
 
 历史图表使用 [Apache ECharts](https://github.com/apache/echarts)，采用官方 [按需导入方案](https://echarts.apache.org/handbook/en/basics/import/)，只注册 LineChart、GridComponent、TooltipComponent 和 CanvasRenderer，不导入地图、编辑器等无关模块。6.1.0 为稳定版本，Apache-2.0 许可兼容，依赖 zrender 6.1.0 与 tslib，支持当前 Linux/macOS 开发及现代浏览器，运行时不下载远程脚本。也评估了更小的 uPlot，最终使用 ECharts。图表包较大，仅在打开监控页时加载。维护风险是大量小图的重绘成本、提示交互和 API 升级，由三天窗口上限、关闭装饰动画、复用实例、卸载释放、回归测试和浏览器检查约束。图表不改变 API 或存储格式，后续可独立替换。现有 Vue、Axios、Vite 等依赖仍有安全告警，本次没有顺带升级既有技术栈，构建成功不表示这些安全告警已修复。

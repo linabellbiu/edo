@@ -90,6 +90,7 @@ var definitions = []Definition{
 	environment("application_name", "EDO_APPLICATION_NAME", "应用名称", "本次部署所属应用的名称。", "应用", []Scope{ScopeDeploymentScript, ScopeLifecycleScript}, "部署或实例生命周期脚本执行时可用", false),
 	environment("git_ref", "EDO_GIT_REF", "原始 Git Ref", "本次运行固定的原始 Git Ref，例如 refs/heads/main；不会转换成展示文案。", "代码", []Scope{ScopePipelineScript, ScopeDeploymentScript}, "本次运行固定代码版本后可用", true),
 	environment("commit_sha", "EDO_COMMIT_SHA", "完整 Commit SHA", "本次运行固定的完整 Commit SHA。", "代码", []Scope{ScopePipelineScript, ScopeDeploymentScript}, "本次运行固定 Commit 后可用", true),
+	environment("upstream_artifacts", "EDO_UPSTREAM_ARTIFACTS_JSON", "上游制品清单", "前序阶段中本次运行已成功构建的制品 JSON 数组，包含 node_id、id、kind、storage_kind、digest、image_ref 和 commit_sha；不包含凭据或文件路径。", "制品", []Scope{ScopePipelineScript}, "前序阶段构建成功后可用；无制品时为 []", true),
 	environment("target_platform", "EDO_TARGET_PLATFORM", "目标构建平台", "构建方案解析出的目标平台；多平台构建时为逗号分隔的平台列表。", "构建", []Scope{ScopePipelineScript}, "构建方案已解析目标平台时可用", true),
 	environment("target_arch", "EDO_TARGET_ARCH", "目标架构", "单一 Linux 目标平台的架构，例如 amd64 或 arm64。", "构建", []Scope{ScopePipelineScript}, "目标为单一 Linux 平台时可用", true),
 	environment("goos", "GOOS", "Go 目标系统", "Go 流水线在单一 Linux 目标下固定为 linux。", "语言工具链", []Scope{ScopePipelineScript}, "Go 工具链且目标为单一 Linux 平台时可用", true),

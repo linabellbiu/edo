@@ -412,8 +412,12 @@ func validScriptSystemEnvironment(values map[string]string) bool {
 		return false
 	}
 	for name, value := range values {
+		maximumValueBytes := 16 * 1024
+		if name == "EDO_UPSTREAM_ARTIFACTS_JSON" {
+			maximumValueBytes = 64 * 1024
+		}
 		if _, reserved := reservedScriptContainerEnvironment[name]; !reserved ||
-			name == "CI" || name == "HOME" || name == "TMPDIR" || len(value) > 16*1024 || strings.ContainsRune(value, '\x00') {
+			name == "CI" || name == "HOME" || name == "TMPDIR" || len(value) > maximumValueBytes || strings.ContainsRune(value, '\x00') {
 			return false
 		}
 	}
