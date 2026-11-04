@@ -29,12 +29,12 @@ curl --fail http://localhost:8080/api/v1/health/ready
 ### 初始化与默认值
 
 - 数据库：官方镜像同步版 `postgres:17.11-trixie`，库及用户为 `edo`，随机密码通过官方 `POSTGRES_PASSWORD_FILE` 传入，端口仅在容器网络内可用。`TZ`、`PGTZ`、数据库 `TimeZone` 和 `log_timezone` 均为 `Asia/Shanghai`。
-- 加密密钥：首次随机生成 32 字节 Base64，保存到 `data/bootstrap/secrets-key`；数据库密码及连接分别保存到同目录的 `postgres-password`、`postgres-dsn`。不输出到日志或写入镜像，后续启动固定复用。
+- 加密密钥：首次随机生成 32 字节 Base64，保存到 `data/bootstrap/secrets-key`；数据库密码及连接分别保存到同目录的 `postgres-password`、`postgres-dsn`。PG 仅挂载单独的 `data/bootstrap/postgres/` 密码子目录，不获得 API 密钥。配置不输出到日志或写入镜像，后续启动固定复用。
 - 自带 PostgreSQL 的 DSN：`.env` 中 `EDO_COMPOSE_DATABASE_DSN` 留空，从持久化连接文件读取。可在首次初始化前填写外部数据库 DSN；该值优先于文件，内置 PostgreSQL 仍由当前 Compose 启动。使用其他数据库驱动时必须同时提供 DSN。
 - 一次性 `bootstrap` 使用官方 Alpine/BusyBox 和系统随机源准备配置与顶层目录权限，无网络、不安装软件、不递归修改已有子目录。API 与迁移仍使用 `10001:10001`，Web 使用 `101:101`，无需手工创建或修改 data 权限。
 - 已有 `.env` 的 `EDO_SECRETS_KEY` 会在首次接管时固定保存；以后必须与保存值一致。已有数据库或初始化记录缺少密钥、密码时拒绝启动，不静默生成替代值。已有 SQLite 不自动迁入 PostgreSQL，应保留原 DRIVER、DSN 和密钥。
 
-`data/bootstrap`、数据库和 `.env` 必须一起备份。配置目录权限受限，Linux 备份通常需要 sudo。不要重新复制模板覆盖已有 `.env`，不要删除配置目录解决启动错误。中断遗留的 `data/bootstrap/.init-lock` 会阻断初始化，先核对没有其他初始化进程，再由管理员处理遗留锁。
+PostgreSQL 使用默认名为 `edo_edo-postgres-data` 的 Docker 持久卷（自定义项目名时前缀相应变化），兼容 Docker Desktop 的文件身份映射。`data/bootstrap`、数据库卷和 `.env` 必须一起备份。配置目录权限受限，Linux 备份通常需要 sudo。不要重新复制模板覆盖已有 `.env`，不要删除配置目录解决启动错误。中断遗留的 `data/bootstrap/.init-lock` 会阻断初始化，先核对没有其他初始化进程，再由管理员处理遗留锁。
 
 构建上下文排除真实 `.env`、data 与备份变体，只保留公开 `.env.example`。密钥不得放入 Dockerfile、构建参数或前端配置。Web 不读取业务卷或密钥；API 仅持有隔离构建器的只读 mTLS 客户端证书，不挂载宿主机 Docker Socket。
 
@@ -99,7 +99,13 @@ umask 077
 docker compose exec -T postgres pg_dump -U edo -d edo -Fc > edo-postgres.dump
 ```
 
-同时备份 `.env` 和整个 `data/`，文件级完整备份前先 `docker compose down` 停止所有写入。恢复完整环境时在启动前恢复 `.env` 与整个 `data/`，保持 PostgreSQL 大版本一致；已有数据库恢复应由管理员在隔离环境核对，不直接覆盖现有库。外部 PostgreSQL/MySQL 还需其独立备份。不要对正在写入的 PGDATA 直接打包并声称可恢复。
+同时备份 `.env` 和整个 `data/`。若选择文件级完整备份，先 `docker compose down` 停止所有写入，再将数据库卷单独归档：
+
+```bash
+docker compose run --rm --no-deps --user 0 --entrypoint tar -v "$PWD:/backup" postgres -C /var/lib/postgresql/data -czf /backup/edo-postgres-data.tar.gz .
+```
+
+归档包含完整数据库，应限制访问。恢复完整环境时需恢复数据库卷、`.env` 与整个 `data/`，保持 PostgreSQL 大版本一致；由管理员在隔离环境核对，不直接覆盖现有库。外部 PostgreSQL/MySQL 还需独立备份。不要对正在写入的 PGDATA 直接打包并声称可恢复。
 
 `docker compose down` 保留 bind 数据和命名卷；构建器命名卷另有镜像、缓存和本地发布的应用运行环境，其应用数据要独立备份。不要使用 `down -v` 或清空 `data/` 重启系统。
 

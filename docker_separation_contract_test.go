@@ -90,8 +90,14 @@ func TestProductionComposeSeparatesWebAndAPI(t *testing.T) {
 	if migrate.DependsOn["bootstrap"].Condition != "service_completed_successfully" || migrate.DependsOn["postgres"].Condition != "service_healthy" || postgres.DependsOn["bootstrap"].Condition != "service_completed_successfully" {
 		t.Fatal("数据库与迁移必须等待初始化，迁移还需等待数据库健康")
 	}
-	if postgres.Environment["TZ"] != "Asia/Shanghai" || postgres.Environment["PGTZ"] != "Asia/Shanghai" || postgres.Environment["POSTGRES_PASSWORD_FILE"] != "/run/edo-bootstrap/postgres-password" || !slices.Contains(postgres.Command, "timezone=Asia/Shanghai") || !slices.Contains(postgres.Command, "log_timezone=Asia/Shanghai") {
+	if postgres.Environment["TZ"] != "Asia/Shanghai" || postgres.Environment["PGTZ"] != "Asia/Shanghai" || postgres.Environment["POSTGRES_PASSWORD_FILE"] != "/run/edo-postgres/password" || !slices.Contains(postgres.Command, "timezone=Asia/Shanghai") || !slices.Contains(postgres.Command, "log_timezone=Asia/Shanghai") {
 		t.Fatal("默认 PostgreSQL 必须通过文件读取密码并统一数据库和日志时区")
+	}
+	if !slices.Contains(postgres.Volumes, "edo-postgres-data:/var/lib/postgresql/data") || !strings.Contains(strings.Join(postgres.Healthcheck.Test, " "), "SELECT 1") {
+		t.Fatal("PostgreSQL 必须使用持久卷并实际查询目标数据库才能就绪")
+	}
+	if !slices.Contains(postgres.Volumes, "./data/bootstrap/postgres:/run/edo-postgres:ro") || slices.Contains(postgres.Volumes, "./data:/app/data") {
+		t.Fatal("PostgreSQL 只能挂载独立密码子目录，不能持有 API 加密密钥")
 	}
 	if web.DependsOn["api"].Condition != "service_healthy" || api.DependsOn["migrate"].Condition != "service_completed_successfully" {
 		t.Fatal("Web 启动必须等待 API 健康，API 必须等待迁移成功")

@@ -1,5 +1,5 @@
 # EDO 单机部署：复制 .env.example 为 .env 后直接 docker compose up -d。
-# Web 与 Go API 独立运行，默认 PostgreSQL，全部业务数据保存在仓库 data 目录。
+# Web 与 Go API 独立运行，默认 PostgreSQL；数据库使用 Docker 卷，业务文件与密钥保存在 data。
 name: edo
 
 # migrate 和 api 共用这组环境变量。这里仅保留容器部署必须指定的内容，
@@ -89,6 +89,8 @@ services:
     volumes:
       - ./data:/app/data
       - ./deploy/compose-init.sh:/usr/local/bin/edo-compose-init.sh:ro
+      # 只读识别既有数据库，数据目录由 PostgreSQL 官方入口管理。
+      - edo-postgres-data:/var/lib/postgresql/data:ro
     network_mode: none
     read_only: true
     security_opt:
@@ -103,18 +105,21 @@ services:
     environment:
       POSTGRES_USER: edo
       POSTGRES_DB: edo
-      POSTGRES_PASSWORD_FILE: /run/edo-bootstrap/postgres-password
+      POSTGRES_PASSWORD_FILE: /run/edo-postgres/password
       TZ: Asia/Shanghai
       PGTZ: Asia/Shanghai
     command: ["postgres", "-c", "timezone=Asia/Shanghai", "-c", "log_timezone=Asia/Shanghai"]
     volumes:
-      - ./data/postgres:/var/lib/postgresql/data
-      - ./data/bootstrap:/run/edo-bootstrap:ro
+      # Docker 卷保留真实 Linux UID/GID，避免 Docker Desktop bind 目录的身份映射。
+      - edo-postgres-data:/var/lib/postgresql/data
+      # 仅挂载数据库密码子目录，PG 容器中不存在 API 加密密钥。
+      - ./data/bootstrap/postgres:/run/edo-postgres:ro
     depends_on:
       bootstrap:
         condition: service_completed_successfully
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U edo -d edo"]
+      # pg_isready 不保证目标数据库存在；实际查询才能确认首次建库完成。
+      test: ["CMD-SHELL", "psql -U edo -d edo -Atqc 'SELECT 1' | grep -qx 1"]
       interval: 5s
       timeout: 3s
       retries: 20
@@ -309,9 +314,11 @@ networks:
   edo-builder:
     driver: bridge
 
-# PostgreSQL、密钥、文件产物、Redis 和 NATS 都保存在 data；down 不会删除这些文件。
-# 不要直接清空 data 目录，升级、迁移或重建环境前先完整备份。
+# down 保留 data 和命名卷；备份既要包含 data/.env，也要包含 PostgreSQL 数据库。
+# 不要直接清空 data 或执行 down -v，升级、迁移或重建环境前先完整备份。
 volumes:
+  # PostgreSQL 业务数据，必须单独备份；不能当作可重建缓存删除。
+  edo-postgres-data:
   # 这是可重建的镜像层缓存，不包含数据库、密钥、Redis 或 NATS 业务数据。
   edo-builder-data:
   # CA 私钥与客户端证书分卷保存，避免 API 获得签发新证书的能力。

@@ -63,7 +63,7 @@ func TestComposeBootstrapFilesystem(t *testing.T) {
 	// 实际以 API 和 PostgreSQL 身份验证读取边界，不凭静态 chmod 命令判断成功。
 	mustRun("10001:10001", nil, "sh", "-ec", "cat /app/data/bootstrap/secrets-key /app/data/bootstrap/postgres-dsn >/dev/null && touch /app/data/api-write-probe")
 	// PG 通过子目录 bind 挂载，不经过仅允许 API 读取的 data 顶层。
-	if output, err := exec.Command("docker", "run", "--rm", "--network", "none", "--read-only", "--user", "999:999", "--mount", "type=volume,src="+data+",dst=/run/bootstrap,volume-subpath=bootstrap,readonly", "alpine:3.22", "sh", "-ec", "test -r /run/bootstrap/postgres-password && test ! -r /run/bootstrap/secrets-key && test ! -r /run/bootstrap/postgres-dsn").CombinedOutput(); err != nil {
+	if output, err := exec.Command("docker", "run", "--rm", "--network", "none", "--read-only", "--user", "999:999", "--mount", "type=volume,src="+data+",dst=/run/bootstrap,volume-subpath=bootstrap/postgres,readonly", "alpine:3.22", "sh", "-ec", "test -r /run/bootstrap/password && test ! -e /run/bootstrap/secrets-key && test ! -e /run/bootstrap/postgres-dsn").CombinedOutput(); err != nil {
 		t.Fatalf("PostgreSQL 文件权限边界错误：%v，日志：%s", err, output)
 	}
 	canary := "SYNTHETIC_INVALID_SECRET_MUST_NOT_APPEAR"

@@ -26,8 +26,11 @@ done
 if [ -s "$data/edo.db" ] && [ "${EDO_DATABASE_DRIVER:-postgres}" = postgres ] && [ -z "${EDO_DATABASE_DSN:-}" ]; then
   fail '检测到已有 SQLite 数据，请恢复原数据库配置；不支持自动切换数据库'
 fi
+if [ -f "$data/postgres/PG_VERSION" ]; then
+  fail '检测到原目录中的 PostgreSQL 数据，请保留原数据挂载或明确恢复备份，不自动改用新数据库卷'
+fi
 existing=false
-if [ -f "$state/initialized" ] || [ -f "$data/postgres/PG_VERSION" ] || [ -s "$data/edo.db" ]; then
+if [ -f "$state/initialized" ] || [ -f /var/lib/postgresql/data/PG_VERSION ] || [ -s "$data/edo.db" ]; then
   existing=true
 fi
 
@@ -53,7 +56,7 @@ if [ ! -f "$state/secrets-key" ]; then
 fi
 
 if [ ! -f "$state/postgres-password" ]; then
-  if [ -f "$state/initialized" ] || [ -f "$data/postgres/PG_VERSION" ]; then
+  if [ -f "$state/initialized" ] || [ -f /var/lib/postgresql/data/PG_VERSION ]; then
     fail '已有数据缺少 PostgreSQL 密码，请从备份恢复'
   fi
   od -An -N32 -tx1 /dev/urandom | tr -d ' \n' > "$state/postgres-password.tmp"
@@ -70,13 +73,25 @@ else
   mv "$state/postgres-dsn.tmp" "$state/postgres-dsn"
 fi
 
-# API 仅需拥有 data 顶层及自己的配置；PostgreSQL 官方入口自行管理其数据目录。
-# 999 是默认 PostgreSQL Debian 镜像的 postgres 组，仅赋予密码文件读取权，不开放加密密钥。
-chown 10001:10001 "$data" "$state/secrets-key" "$state/postgres-dsn"
+# PostgreSQL 只挂载这个单独目录，任何平台都不向其提供 API 加密密钥或连接文件。
+pg_state=$state/postgres
+[ ! -L "$pg_state" ] || fail '数据库密码目录不能是符号链接'
+mkdir -p "$pg_state"
+[ ! -L "$pg_state/password" ] || fail '数据库密码文件不能是符号链接'
+if [ -e "$pg_state/password" ]; then
+  [ -f "$pg_state/password" ] || fail '数据库密码文件类型无效'
+  [ "$(cat "$pg_state/password")" = "$password" ] || fail '数据库密码文件不一致，请恢复备份'
+else
+  printf '%s' "$password" > "$pg_state/password.tmp"
+  mv "$pg_state/password.tmp" "$pg_state/password"
+fi
+# 999 是默认 PostgreSQL Debian 镜像的 postgres 身份；只管理这些准确路径，不递归 chown。
+chown 999:999 "$pg_state" "$pg_state/password"
+chmod 700 "$pg_state"
+chmod 600 "$pg_state/password"
+chown 10001:10001 "$data" "$state" "$state/secrets-key" "$state/postgres-dsn" "$state/postgres-password"
 chmod 750 "$data"
-chown 10001:999 "$state" "$state/postgres-password"
-chmod 750 "$state"
-chmod 600 "$state/secrets-key" "$state/postgres-dsn"
-chmod 640 "$state/postgres-password"
+chmod 700 "$state"
+chmod 600 "$state/secrets-key" "$state/postgres-dsn" "$state/postgres-password"
 touch "$state/initialized"
 printf '%s\n' 'EDO 初始化完成，后续启动将复用已保存的配置与密钥'

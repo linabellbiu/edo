@@ -47,9 +47,9 @@ Web 单独提供网页，Go API 一个进程同时处理接口、WebSocket 和�
 
 ### 数据、密钥与备份
 
-所有业务数据保存在仓库 `data/`：PostgreSQL 位于 `data/postgres/`，随机密钥和数据库连接文件位于 `data/bootstrap/`，另有 Redis、NATS、仓库工作区、文件制品和日志。初始化会自动处理顶层目录权限，无需手工 `mkdir` 或 `chown`；不会递归修改已有数据目录。
+PostgreSQL 数据保存在 Docker 持久卷 `edo_edo-postgres-data`（默认项目名）中，重建容器不会丢失。仓库 `data/` 保存随机密钥和数据库连接文件（`data/bootstrap/`），以及 Redis、NATS、仓库工作区、文件制品和日志。初始化会自动处理顶层目录权限，无需手工 `mkdir` 或 `chown`；不会递归修改已有数据目录。
 
-**保留并备份整个 `data/` 和 `.env`。** 加密密钥不是每次启动重新生成的，丢失后无法解密原凭据。已初始化环境缺少密钥或数据库密码时会拒绝启动；恢复备份，不要删除配置目录让它重新生成。已有 `.env` 和数据时不要重新复制模板覆盖，也不会将已有 SQLite 自动切换到 PostgreSQL。运行中的 PostgreSQL 使用 `pg_dump` 备份，直接复制整个目录应先停止全部写入，见[备份说明](docs/deployment.md#备份与恢复)。
+**保留并备份 PostgreSQL、整个 `data/` 和 `.env`。** 加密密钥不是每次启动重新生成的，丢失后无法解密原凭据。已初始化环境缺少密钥或数据库密码时会拒绝启动；恢复备份，不要删除配置目录让它重新生成。已有 `.env` 和数据时不要重新复制模板覆盖，也不会将已有 SQLite 自动切换到 PostgreSQL。运行中的 PostgreSQL 使用 `pg_dump` 备份，复制数据库卷及文件目录前应先停止全部写入，见[备份说明](docs/deployment.md#备份与恢复)。
 
 ### 日常管理与更新
 
@@ -257,7 +257,7 @@ COPY --chmod=0555 edo-terminal-session /usr/local/libexec/edo-terminal-session
 
 正式 Compose 的 `EDO_COMPOSE_DATABASE_DSN` 留空时，从 `data/bootstrap/postgres-dsn` 读取自动生成的 PostgreSQL 连接。开发 Compose 使用 `EDO_DEV_COMPOSE_DATABASE_DRIVER` 与 `EDO_DEV_COMPOSE_DATABASE_DSN` 独立覆盖，默认 `/app/data/edo.db`；宿主机 SQLite 默认为 `data/edo.db`。外部 PostgreSQL/MySQL 需先创建 EDO 数据库及账户，再填写容器实际可访问的地址；容器中的 `127.0.0.1` 指容器自身。DSN 示例见[部署说明](docs/deployment.md#数据库-dsn-示例)。
 
-默认 EDO 数据保存在 `data/`，包括 PostgreSQL（或选择的 SQLite）、初始化密钥、Redis、NATS、仓库文件和构建制品；本地启动器日志在 `logs/backend.log`、`logs/web.log`，后端结构化日志为 `logs/edo.log`。Compose 中的后端日志保存在 `data/logs/`，Web 日志通过 Compose 查看。
+默认 PostgreSQL 保存在 Docker 命名卷中；`data/` 保存选择的 SQLite、初始化密钥、Redis、NATS、仓库文件和构建制品。本地启动器日志在 `logs/backend.log`、`logs/web.log`，后端结构化日志为 `logs/edo.log`。Compose 中的后端日志保存在 `data/logs/`，Web 日志通过 Compose 查看。
 
 SQLite 部署在停止写入后一起备份 `data/` 和 `.env`；使用外部数据库时，还需使用对应数据库的备份工具保存 EDO 数据库。`EDO_SECRETS_KEY` 用于解密凭据，请固定保存；更换后将无法读取此前保存的凭据。`.env` 含敏感信息，请勿提交到仓库。
 
