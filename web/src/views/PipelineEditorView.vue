@@ -1895,7 +1895,7 @@ onBeforeRouteLeave(async () => {
 .board-footer { border-top: 1px solid var(--edo-border); border-bottom: 0; }
 .board-footer > div { display: flex; align-items: center; gap: 8px; }
 .pipeline-board-scroll { min-width: 0; overflow: auto; background: var(--edo-surface-soft); }
-.pipeline-flow { display: flex; width: max-content; min-width: 100%; min-height: 100%; align-items: stretch; background: var(--edo-surface); }
+.pipeline-flow { --pipeline-insert-width: 28px; display: flex; width: max-content; min-width: 100%; min-height: 100%; align-items: stretch; padding-right: calc(var(--pipeline-insert-width) / 2); background: var(--edo-surface); }
 .pipeline-source-column { width: 300px; flex: 0 0 300px; padding: 18px 20px; border-right: 1px solid var(--edo-border); background: var(--edo-surface-soft); }
 .pipeline-source-column > header { display: flex; height: 34px; align-items: center; margin-bottom: 16px; }
 .pipeline-source-column > header strong { font-size: 15px; }
@@ -1929,8 +1929,7 @@ onBeforeRouteLeave(async () => {
 .stage-drag-handle, .task-drag-handle { display: grid; padding: 2px; border: 0; color: var(--edo-muted); background: transparent; cursor: grab; }
 .stage-edit { display: grid; padding: 3px; border: 0; color: var(--edo-muted); background: transparent; cursor: pointer; }
 .stage-edit:hover { color: var(--edo-primary); }
-.stage-insert { position: relative; z-index: 3; width: 28px; min-width: 28px; align-self: stretch; padding: 0; border: 0; color: #fff; background: var(--edo-surface); cursor: pointer; }
-.stage-insert::before { position: absolute; top: var(--pipeline-mainline-y); left: 0; width: 100%; height: 1px; background: var(--edo-border); content: ''; }
+.stage-insert { position: relative; z-index: 3; flex: 0 0 var(--pipeline-insert-width); width: var(--pipeline-insert-width); min-width: var(--pipeline-insert-width); align-self: stretch; margin: 0 calc(var(--pipeline-insert-width) / -2); padding: 0; border: 0; color: #fff; background: transparent; cursor: pointer; }
 .stage-insert svg { position: absolute; z-index: 1; top: var(--pipeline-mainline-y); left: 50%; box-sizing: content-box; padding: 2px; border-radius: 3px; background: var(--edo-primary); transform: translate(-50%, -50%); }
 .pipeline-task-list { position: relative; display: flex; min-height: 168px; align-items: center; flex-direction: column; gap: 22px; padding: 20px 38px 32px; }
 .pipeline-task-list::before { position: absolute; top: var(--pipeline-task-line-offset); right: 0; left: 0; height: 1px; background: var(--edo-border); content: ''; }
@@ -1938,6 +1937,8 @@ onBeforeRouteLeave(async () => {
 .pipeline-task-list.show-parallel-entry .parallel-branch-frame { bottom: 49px; }
 .parallel-task-row { position: relative; z-index: 2; display: flex; width: 100%; min-height: 62px; align-items: center; justify-content: center; }
 .parallel-task-row::before { position: absolute; z-index: -1; top: 50%; right: 0; left: 0; height: 1px; background: var(--edo-border); content: ''; }
+.parallel-task-row:first-of-type::before,
+.pipeline-task-list:not(.show-parallel-entry) .parallel-task-row:last-of-type::before { content: none; }
 .pipeline-task-card { --task-color:var(--edo-primary); position: relative; z-index: 2; display: grid; width: 154px; min-width: 154px; min-height: 62px; align-items: center; grid-template-columns: 16px 32px minmax(0,1fr); gap: 6px; padding: 8px 9px 8px 5px; border: 1px solid var(--edo-border); border-radius: 7px; background: var(--edo-surface-soft); box-shadow: 0 3px 10px rgb(25 35 55 / 6%); cursor: pointer; }
 .pipeline-task-card:hover, .pipeline-task-card.selected { border-color: var(--task-color); background: var(--edo-surface); box-shadow: 0 0 0 2px color-mix(in srgb,var(--task-color) 12%,transparent); }
 .pipeline-task-card:focus-visible { outline: 2px solid var(--edo-primary); outline-offset: 2px; }
