@@ -441,7 +441,7 @@ onBeforeUnmount(clearCredentials)
               <a-input-password v-model:value="form.password" autocomplete="new-password" placeholder="密码只会加密保存" />
             </a-form-item>
             <template v-else>
-              <a-form-item class="span-2 private-key-item" label="SSH 私钥" name="private_key" :rules="[{ required: true, whitespace: true, message: '请粘贴或上传 SSH 私钥' }]">
+              <a-form-item class="span-2 private-key-item" name="private_key" :rules="[{ required: true, whitespace: true, message: '请粘贴或上传 SSH 私钥' }]">
                 <template #label><div class="private-key-label"><span>SSH 私钥</span><a-button class="private-key-upload-button" :loading="readingPrivateKey" :disabled="testing || submitting || !canTest" @click="privateKeyFileInput?.click()"><Upload :size="14" aria-hidden="true" />上传私钥</a-button></div></template>
                 <input ref="privateKeyFileInput" type="file" hidden aria-label="选择 SSH 私钥文件" @change="importPrivateKey" />
                 <a-textarea v-model:value="form.private_key" :rows="8" spellcheck="false" placeholder="-----BEGIN OPENSSH PRIVATE KEY-----" />

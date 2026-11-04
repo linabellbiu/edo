@@ -2,6 +2,9 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { readFileSync } from 'node:fs'
 import { parse, compileTemplate } from '@vue/compiler-sfc'
+import { renderToString } from '@vue/server-renderer'
+import { Button, Form, FormItem, Input } from 'ant-design-vue'
+import ts from 'typescript'
 import * as vue from 'vue'
 import { componentHarness, loadFrontend } from './acceptanceHarness.mjs'
 
@@ -311,6 +314,29 @@ test('主机抽屉宽度随视口收缩并保留桌面640px上限', () => {
 // 仅验证浏览器读取与表单生命周期；合成内容不冒充可连接的真实私钥。
 const keyFileContent = '-----BEGIN OPENSSH PRIVATE KEY-----\nU1lOVEhFVElDLUtFWS1GSUxFLUZJWFRVUkU=\n-----END OPENSSH PRIVATE KEY-----\n'
 const keyFile = (text = keyFileContent) => ({ size: Buffer.byteLength(text), text: async () => text })
+
+test('真实 Ant Form 标签展示上传私钥按钮，不被静态 label 覆盖', async () => {
+  const { descriptor } = parse(readFileSync(new URL('../src/components/HostDrawer.vue', import.meta.url), 'utf8'))
+  let item
+  const visit = node => {
+    if (node.tag === 'a-form-item' && node.props.some(prop => prop.name === 'name' && prop.value?.content === 'private_key')) item = node
+    for (const child of node.children ?? []) visit(child)
+  }
+  visit(descriptor.template.ast)
+  assert.ok(item)
+  const compiled = compileTemplate({ source: item.loc.source, filename: 'HostDrawer.vue', id: 'private-key-upload' })
+  assert.deepEqual(compiled.errors, [])
+  const rendered = { exports: {} }
+  new Function('require', 'exports', ts.transpileModule(compiled.code, { compilerOptions: { module: ts.ModuleKind.CommonJS } }).outputText)(name => { assert.equal(name, 'vue'); return vue }, rendered.exports)
+  const form = vue.reactive({ private_key: '' })
+  const body = { setup: () => ({ form, readingPrivateKey: false, testing: false, submitting: false, canTest: true, privateKeyFileInput: undefined, importPrivateKey() {} }), render: rendered.exports.render }
+  const app = vue.createSSRApp({ render: () => vue.h(Form, { model: form, name: 'host-upload' }, { default: () => vue.h(body) }) })
+  for (const [name, component] of Object.entries({ 'a-form-item': FormItem, 'a-button': Button, 'a-textarea': Input.TextArea, Upload: { render: () => null } })) app.component(name, component)
+  const html = await renderToString(app)
+  assert.match(html, /<button[^>]*>[\s\S]*?上传私钥[\s\S]*?<\/button>/)
+  assert.match(html, /type="file"[^>]*hidden[^>]*aria-label="选择 SSH 私钥文件"/)
+  assert.match(html, /<textarea[^>]*id="host-upload_private_key"/)
+})
 
 test('上传私钥只载入当前表单并撤销旧测试票据，文件选择可重复使用', async t => {
   const h = await hostFixture(t)
