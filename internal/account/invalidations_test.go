@@ -74,7 +74,7 @@ func TestAccountCommittedIdentityMutationsNotify(t *testing.T) {
 		t.Fatal(err)
 	}
 	accountExpectInvalidation(t, sub, "user")
-	if _, err := service.ResetPassword(ctx, user.Username, "reset-password-789"); err != nil {
+	if _, err := service.ResetPassword(ctx, user.Username, "135790"); err != nil {
 		t.Fatal(err)
 	}
 	accountExpectInvalidation(t, sub, "user")

@@ -27,7 +27,7 @@ docker compose up -d
 
 无需修改复制后的配置。第一次自动构建 Web/API 镜像，生成并保存随机加密密钥与数据库密码，初始化 PostgreSQL，完成迁移后启动服务。默认已配置国内镜像同步源及 Go/npm 源，首次需联网下载，请等待构建完成；对应版本、架构和覆盖方式见[镜像说明](docs/deployment.md#默认镜像源)。再次运行同一命令会复用已有镜像和数据；更新源码后使用 `docker compose up -d --build`。
 
-浏览器打开 **`http://服务器IP:8080`**，本机安装打开 [http://localhost:8080](http://localhost:8080)。默认账户 **`admin`**，初始密码 **`123456`**；登录后通过头像菜单“修改密码”设置至少 12 位的新密码。已有账户不会被覆盖。
+浏览器打开 **`http://服务器IP:8080`**，本机安装打开 [http://localhost:8080](http://localhost:8080)。默认账户 **`admin`**，初始密码 **`123456`**；登录后可通过头像菜单“修改密码”设置新密码，不限制最小长度，不能为空。已有账户不会被覆盖。
 
 ### 检查启动结果
 
@@ -43,7 +43,7 @@ curl --fail http://localhost:8080/api/v1/health/ready
 
 Web 单独提供网页，Go API 一个进程同时处理接口、WebSocket 和后台任务；另有 PostgreSQL 17、Redis、NATS JetStream 和隔离的 Docker 构建器。数据库不映射宿主机端口。构建器需要 `privileged`，不挂载宿主机 Docker Socket，并通过 mTLS 与 API 通信。
 
-默认只有 Web 对外监听 `8080`。修改 `.env` 的 `EDO_HTTP_PORT` 可换端口；仅通过本机反向代理访问时，将 `EDO_HTTP_BIND` 改为 `127.0.0.1`。使用 HTTPS 反向代理时，将 `EDO_AUTH_COOKIE_SECURE` 改为 `true`，并保留 WebSocket Upgrade 和长连接。实际客户端地址的代理信任配置见[部署说明](docs/deployment.md)。
+默认只有 Web 对外监听 `8080`。云服务器需在安全组放行对应 TCP 端口。修改 `.env` 的 `EDO_HTTP_PORT` 可换端口；仅通过本机反向代理访问时，将 `EDO_HTTP_BIND` 改为 `127.0.0.1`。使用 HTTPS 反向代理时，将 `EDO_AUTH_COOKIE_SECURE` 改为 `true`，并保留 WebSocket Upgrade 和长连接。实际客户端地址的代理信任配置见[部署说明](docs/deployment.md)。
 
 ### 数据、密钥与备份
 

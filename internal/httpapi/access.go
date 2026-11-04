@@ -206,7 +206,7 @@ func (h accessHandler) createUser(c *gin.Context) {
 		case errors.Is(err, account.ErrInvalidUser):
 			writeError(c, http.StatusBadRequest, "invalid_user", "用户名或昵称格式无效")
 		case errors.Is(err, account.ErrInvalidPassword):
-			writeError(c, http.StatusBadRequest, "invalid_password", "密码至少需要 12 个字符，且不能超过 128 个字符")
+			writeError(c, http.StatusBadRequest, "invalid_password", err.Error())
 		case errors.Is(err, access.ErrInvalidUserRoles):
 			writeError(c, http.StatusBadRequest, "invalid_roles", access.ErrInvalidUserRoles.Error())
 		case errors.Is(err, access.ErrAccessDelegationDenied):

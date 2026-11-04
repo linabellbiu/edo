@@ -1338,7 +1338,7 @@ onMounted(() => {
           <small class="field-hint">普通管理员只能在自己的部门创建用户。</small>
         </a-form-item>
         <a-form-item name="password" label="初始密码" required>
-          <a-input-password v-model:value="userForm.password" minlength="12" :maxlength="128" />
+          <a-input-password v-model:value="userForm.password" :maxlength="128" />
         </a-form-item>
         <a-form-item name="role_ids" :label="t('workspace.platformRoles')">
           <a-select

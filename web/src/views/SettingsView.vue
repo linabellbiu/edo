@@ -213,8 +213,8 @@ async function toggle(kind: "webhook" | "lockout") {
   }
 }
 async function changePassword() {
-  if (password.next.length < 12) {
-    message.error("新密码至少需要 12 个字符。");
+  if (!password.next) {
+    message.error("请输入新密码。");
     return;
   }
   if (password.next !== password.confirm) {

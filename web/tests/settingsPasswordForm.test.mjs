@@ -45,21 +45,21 @@ test('自身改密编译模板绑定真实 Ant Form 模型和三个字段，原�
   const h = await passwordForm()
   assert.ok(h.model, '缺少 model 时 Ant Form 不会触发 finish')
   assert.deepEqual(h.names, ['current', 'next', 'confirm'])
-  Object.assign(h.model, { current: 'public-current-test-password', next: 'public-next-test-password', confirm: 'public-next-test-password' })
+  Object.assign(h.model, { current: 'public-current-test-password', next: 'short', confirm: 'short' })
   await h.submit()
-  assert.deepEqual(h.requests, [{ path: '/auth/password', body: { current_password: 'public-current-test-password', new_password: 'public-next-test-password' } }])
+  assert.deepEqual(h.requests, [{ path: '/auth/password', body: { current_password: 'public-current-test-password', new_password: 'short' } }])
   assert.deepEqual(h.locations, ['/login?reason=password_changed'])
 })
 
-test('真实 Ant Form 提交仍经过业务长度和确认校验，接口失败不跳转且保留输入', async () => {
+test('真实 Ant Form 拒绝空值和确认不一致，短密码可提交，接口失败保留输入', async () => {
   const h = await passwordForm({ fail: true })
   assert.ok(h.model)
-  Object.assign(h.model, { current: 'public-current-test-password', next: 'short', confirm: 'short' })
+  Object.assign(h.model, { current: 'public-current-test-password', next: '', confirm: '' })
   await h.submit(); assert.equal(h.requests.length, 0)
-  h.model.next = 'public-next-test-password'; h.model.confirm = 'different-public-password'
+  h.model.next = 'short'; h.model.confirm = 'different-public-password'
   await h.submit(); assert.equal(h.requests.length, 0)
   h.model.confirm = h.model.next
   await h.submit(); assert.equal(h.requests.length, 1)
   assert.deepEqual(h.locations, []); assert.equal(h.errors.at(-1), '当前密码不正确')
-  assert.equal(h.model.next, 'public-next-test-password')
+  assert.equal(h.model.next, 'short')
 })

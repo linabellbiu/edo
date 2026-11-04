@@ -71,11 +71,11 @@ test('普通管理员的真实部门输入仍禁用，不能因语义修复扩�
   assert.equal(h.state.delegableRoleOptions.value[0].disabled, true)
 })
 
-test('真实 Ant maxlength 数字契约不产生类型告警，用户名昵称密码限制保持原值', async t => {
+test('真实 Ant maxlength 数字契约无类型告警，密码不再设置最小长度', async t => {
   const h = harness(t), warnings = [], controls = inputs(await actualForm(h, warnings))
   assert.deepEqual(warnings, [])
   assert.deepEqual(['username', 'nickname', 'password'].map(field => controls.find(control => control.id === `access-user_${field}`).maxlength), ['32', '64', '128'])
-  assert.equal(controls.find(control => control.id === 'access-user_password').minlength, '12')
+  assert.equal(controls.find(control => control.id === 'access-user_password').minlength, undefined)
 })
 
 test('真实 Select 初始关闭态保留 combobox 语义并采样 IDREF，不冒充 popup/axe 验收', async t => {

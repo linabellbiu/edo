@@ -17,14 +17,14 @@ test('个人设置始终可见，变量、登录方式和配置分别按权限�
   assert.ok(!administrator.state.sections.value.some(item=>item.key==='database'))
 })
 
-test('修改密码先校验长度和确认值，成功才跳转重新登录，失败保留表单',async t=>{
+test('修改密码拒绝空值和确认不一致，短密码成功后重新登录，失败保留表单',async t=>{
   const h=settings(t)
-  Object.assign(h.state.password,{current:'old-test-password',next:'short',confirm:'short'})
+  Object.assign(h.state.password,{current:'old-test-password',next:'',confirm:''})
   await h.state.changePassword();assert.equal(writes(h).length,0)
-  h.state.password.next='new-test-password';h.state.password.confirm='different-password'
+  h.state.password.next='short';h.state.password.confirm='different-password'
   await h.state.changePassword();assert.equal(writes(h).length,0)
-  h.state.password.confirm='new-test-password';await h.state.changePassword()
-  assert.deepEqual(writes(h)[0].body,{current_password:'old-test-password',new_password:'new-test-password'})
+  h.state.password.confirm='short';await h.state.changePassword()
+  assert.deepEqual(writes(h)[0].body,{current_password:'old-test-password',new_password:'short'})
   assert.deepEqual(h.locations,['/login?reason=password_changed'])
   const denied=settings(t,{api:{put:async()=>{throw new Error('原密码不正确')}}})
   Object.assign(denied.state.password,{current:'wrong-test-password',next:'new-test-password',confirm:'new-test-password'})

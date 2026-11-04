@@ -15,7 +15,7 @@ docker compose up -d
 
 复制后的配置无需修改。首次自动构建 Web/API，初始化 PostgreSQL 17、Redis、NATS JetStream 和隔离的 Docker 构建器，迁移成功且 API 健康后启动 Web。首次构建需要能访问官方镜像仓库、Go/npm 依赖源。浏览器访问 `http://服务器IP:8080`，本机使用 `http://localhost:8080`。
 
-空账户库自动创建 `admin`，初始密码 `123456`。登录后通过头像菜单修改为至少 12 位的新密码。已有账户不会被覆盖。
+空账户库自动创建 `admin`，初始密码 `123456`。登录后可通过头像菜单修改密码，不限制最小长度，不能为空；创建与重置本地账户采用相同规则。已有账户不会被覆盖。
 
 ```bash
 docker compose ps -a
@@ -69,6 +69,8 @@ PostgreSQL 使用默认名为 `edo_edo-postgres-data` 的 Docker 持久卷（自
 | `EDO_COMPOSE_DATABASE_DRIVER` | `postgres` | 首次选择数据库类型 |
 | `EDO_COMPOSE_DATABASE_DSN` | 留空 | 使用自带 PostgreSQL；外部库或旧 SQLite 填写实际连接 |
 | `EDO_SECRETS_KEY` | 留空 | 正式 Compose 首次自动生成；已有部署可提供原密钥 |
+
+云服务器需在安全组放行 `EDO_HTTP_PORT` 对应的 TCP 端口，默认 `8080`。服务器本机访问正常但公网请求无法到达 Web 时，单独核对云入口和网络策略，不通过重建数据库或重启 Docker 解决。
 
 API、数据库、Redis、NATS 和构建器不直接暴露宿主机端口。生产访问可通过 HTTPS 代理转发到 Web，保留 WebSocket Upgrade、上传限制与长连接；`EDO_WEB_PORT` 只影响开发 Compose。默认不信任转发头；需要真实客户端地址时，通过 `EDO_COMPOSE_SERVER_TRUSTED_PROXIES` 仅填写受控代理 IP/CIDR，不能填写 `/0` 或整个 Docker 私网。NGINX 覆盖来路的 `X-Forwarded-For`、`X-Real-IP` 并清除 `Forwarded`，不继承伪造地址。Web 前若还有代理，其信任需单独配置。
 

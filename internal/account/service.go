@@ -49,7 +49,7 @@ func (s *Service) SetInvalidations(invalidations *auth.Invalidations) {
 }
 
 // EnsureInitialAdmin 仅在账户表为空时创建产品约定的默认管理员。
-// 默认口令有意不经过普通账户的 12 位密码校验，也不设置强制改密状态。
+// 初始口令按产品约定设置，不设置强制改密状态。
 func (s *Service) EnsureInitialAdmin(ctx context.Context) (*model.User, bool, error) {
 	var count int64
 	if err := s.db.WithContext(ctx).Model(&model.User{}).Count(&count).Error; err != nil {
@@ -368,8 +368,9 @@ func (s *Service) ChangePassword(ctx context.Context, userID, currentPassword, n
 
 func ValidatePassword(password string) error {
 	length := utf8.RuneCountInString(password)
-	if length < 12 {
-		return fmt.Errorf("%w：密码至少需要 12 个字符", ErrInvalidPassword)
+	if length == 0 {
+		slog.Warn("账户密码校验失败", "operation", "account_password_validate", "reason", "empty")
+		return fmt.Errorf("%w：密码不能为空", ErrInvalidPassword)
 	}
 	if length > 128 || len(password) > 512 {
 		return fmt.Errorf("%w：密码不能超过 128 个字符", ErrInvalidPassword)

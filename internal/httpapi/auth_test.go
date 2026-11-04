@@ -87,13 +87,13 @@ func TestChangePasswordInvalidatesCurrentSession(t *testing.T) {
 	}
 	cookie := login.Result().Cookies()[0]
 	wrong := performJSONRequest(t, router, http.MethodPut, "/api/v1/auth/password", map[string]string{
-		"current_password": "wrong password", "new_password": "new correct password 123",
+		"current_password": "wrong password", "new_password": "654321",
 	}, cookie)
 	if wrong.Code != http.StatusBadRequest {
 		t.Fatalf("错误的当前密码未被拒绝: status=%d body=%s", wrong.Code, wrong.Body.String())
 	}
 	changed := performJSONRequest(t, router, http.MethodPut, "/api/v1/auth/password", map[string]string{
-		"current_password": "correct horse battery staple", "new_password": "new correct password 123",
+		"current_password": "correct horse battery staple", "new_password": "654321",
 	}, cookie)
 	if changed.Code != http.StatusOK {
 		t.Fatalf("修改密码失败: status=%d body=%s", changed.Code, changed.Body.String())
@@ -109,7 +109,7 @@ func TestChangePasswordInvalidatesCurrentSession(t *testing.T) {
 		t.Fatalf("旧密码仍可登录: status=%d", oldLogin.Code)
 	}
 	newLogin := performJSONRequest(t, router, http.MethodPost, "/api/v1/auth/login", map[string]string{
-		"username": "admin", "password": "new correct password 123",
+		"username": "admin", "password": "654321",
 	}, nil)
 	if newLogin.Code != http.StatusOK {
 		t.Fatalf("新密码无法登录: status=%d body=%s", newLogin.Code, newLogin.Body.String())

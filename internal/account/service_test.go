@@ -3,6 +3,7 @@ package account
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -51,7 +52,7 @@ func TestChangePasswordVerifiesCurrentPasswordAndInvalidatesSessions(t *testing.
 	if err := service.ChangePassword(context.Background(), user.ID, "old-password-123", "old-password-123"); !errors.Is(err, ErrPasswordUnchanged) {
 		t.Fatalf("重复使用旧密码未被拒绝: %v", err)
 	}
-	if err := service.ChangePassword(context.Background(), user.ID, "old-password-123", "new-password-456"); err != nil {
+	if err := service.ChangePassword(context.Background(), user.ID, "old-password-123", "654321"); err != nil {
 		t.Fatalf("修改密码失败: %v", err)
 	}
 	updated, err := service.FindByID(context.Background(), user.ID)
@@ -61,9 +62,22 @@ func TestChangePasswordVerifiesCurrentPasswordAndInvalidatesSessions(t *testing.
 	if updated.AuthVersion != user.AuthVersion+1 {
 		t.Fatalf("认证版本未递增: got %d want %d", updated.AuthVersion, user.AuthVersion+1)
 	}
-	matched, err := auth.ComparePassword("new-password-456", updated.PasswordHash)
+	matched, err := auth.ComparePassword("654321", updated.PasswordHash)
 	if err != nil || !matched {
 		t.Fatalf("新密码无法通过校验: matched=%v err=%v", matched, err)
+	}
+}
+
+func TestValidatePasswordAcceptsShortNonEmptyValues(t *testing.T) {
+	for _, password := range []string{"1", "123456", "密码", strings.Repeat("a", 128), strings.Repeat("密", 128)} {
+		if err := ValidatePassword(password); err != nil {
+			t.Fatalf("非空且未超上限的密码应通过：字符数=%d err=%v", len([]rune(password)), err)
+		}
+	}
+	for _, password := range []string{"", strings.Repeat("a", 129), strings.Repeat("密", 129)} {
+		if err := ValidatePassword(password); !errors.Is(err, ErrInvalidPassword) {
+			t.Fatalf("空密码或超上限应拒绝：字符数=%d err=%v", len([]rune(password)), err)
+		}
 	}
 }
 
