@@ -5,7 +5,6 @@
 .resource-list-table.ant-table-wrapper .ant-table-tbody > tr:hover:not(.ant-table-expanded-row) > td { background:color-mix(in srgb,var(--edo-primary) 6%,var(--edo-surface)); }
 .resource-list-table.ant-table-wrapper .ant-table-tbody > tr.resource-selected > td { background:var(--edo-primary-soft); }
 .resource-list-table.ant-table-wrapper .ant-table-pagination { margin:14px 16px; }
-.resource-list-table .ant-table-cell-fix-right-first::after { box-shadow:-5px 0 7px -5px rgb(31 35 41 / 16%); }
 .resource-name { display:block; max-width:100%; padding:0; overflow:hidden; border:0; color:var(--edo-text); background:transparent; font-size:13px; font-weight:600; text-align:left; text-overflow:ellipsis; white-space:nowrap; cursor:pointer; }
 .resource-name:hover { color:var(--edo-primary); }
 .resource-secondary { display:block; margin-top:4px; color:var(--edo-muted); font-size:12px; line-height:19px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }

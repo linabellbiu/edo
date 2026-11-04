@@ -29,6 +29,20 @@ const props = withDefaults(defineProps<{
 const emit = defineEmits<{ 'update:currentPage': [page:number]; 'update:rowsPerPage': [size:number]; sort: [key:string] }>()
 const { t } = useI18n()
 const current = ref(1), pageSize = ref(10), detailID = ref(''), detailOpen = ref(false)
+const scrollContainer = ref<HTMLDivElement | null>(null), tableElement = ref<HTMLTableElement | null>(null)
+const hasRightOverflow = ref(false)
+function syncRightOverflow() {
+  const element = scrollContainer.value
+  hasRightOverflow.value = Boolean(element && element.scrollWidth - element.clientWidth - element.scrollLeft > 1)
+}
+watch([scrollContainer, tableElement], ([container, table], _previous, onCleanup) => {
+  syncRightOverflow()
+  if (!container || !table || typeof ResizeObserver === 'undefined') return
+  const observer = new ResizeObserver(syncRightOverflow)
+  observer.observe(container)
+  observer.observe(table)
+  onCleanup(() => observer.disconnect())
+}, { flush: 'post' })
 const page = computed({get:()=>props.currentPage??current.value,set:(value:number)=>{current.value=value;emit('update:currentPage',value)}})
 const limit = computed({get:()=>props.rowsPerPage??pageSize.value,set:(value:number)=>{pageSize.value=value;emit('update:rowsPerPage',value)}})
 const keyOf = (row: T, index: number) => String(row[props.rowKey] ?? props.rows.indexOf(row) ?? index)
@@ -65,8 +79,8 @@ function displayValue(value: unknown): string {
   <div v-bind="$attrs" class="resource-table-wrap">
     <a-spin :spinning="loading">
       <div v-if="rows.length === 0&&!keepHeader" class="empty-panel"><slot name="empty"><a-empty :description="emptyText" /></slot></div>
-      <div v-else class="table-scroll">
-        <table class="resource-table">
+      <div v-else ref="scrollContainer" class="table-scroll" :class="{ 'has-right-overflow': hasRightOverflow }" @scroll.passive="syncRightOverflow">
+        <table ref="tableElement" class="resource-table">
           <thead><tr><th v-for="column in columns" :key="column.key" :style="{ width: column.width }" :aria-sort="column.sortable?(sortKey===column.key?(sortOrder==='desc'?'descending':'ascending'):'none'):undefined"><button v-if="column.sortable" class="column-sort" :aria-label="`${column.label} · ${t('resourceList.sort')}`" @click="emit('sort',column.key)">{{ column.label }}<span aria-hidden="true">{{ sortKey===column.key?(sortOrder==='desc'?'↓':'↑'):'↕' }}</span></button><template v-else>{{ column.label }}</template></th><th v-if="$slots.actions || details" class="table-action-heading">{{ t('planList.actions') }}</th></tr></thead>
           <tbody>
             <tr v-if="!rows.length"><td :colspan="columns.length+($slots.actions||details?1:0)" class="table-empty-cell"><slot name="empty"><a-empty :description="emptyText" /></slot></td></tr>
@@ -106,7 +120,8 @@ tbody tr.active td { background: var(--edo-primary-soft); }
 tbody tr.active td:first-child { box-shadow: inset 3px 0 var(--edo-primary); }
 .json-cell { display: block; max-width: 360px; overflow: hidden; color: var(--edo-muted); text-overflow: ellipsis; white-space: nowrap; }
 .resource-value { display:block; max-width:360px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-.table-actions,.table-action-heading { position:sticky; right:0; width:1%; white-space:nowrap; background:var(--edo-surface); box-shadow:-5px 0 7px -5px rgb(31 35 41 / 16%); }
+.table-actions,.table-action-heading { position:sticky; right:0; width:1%; white-space:nowrap; background:var(--edo-surface); }
+.has-right-overflow .table-actions,.has-right-overflow .table-action-heading { box-shadow:-5px 0 7px -5px rgb(31 35 41 / 16%); }
 .resource-pagination { display:flex; justify-content:flex-end; margin:14px 16px; }
 .table-actions :deep(.ant-btn) { padding-inline: 5px; }
 .column-sort{display:flex;align-items:center;gap:8px;padding:0;border:0;background:none;color:inherit;font:inherit;cursor:pointer}.column-sort span{color:var(--edo-muted)}.column-sort:focus-visible{outline:2px solid var(--edo-primary);outline-offset:4px}.table-empty-cell{height:220px!important;text-align:center}

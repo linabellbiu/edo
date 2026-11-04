@@ -1001,7 +1001,6 @@ onBeforeUnmount(() => {
 .host-table :deep(.ant-table-thead>tr>th){background:var(--edo-surface-soft);color:var(--edo-text);border-right:1px solid var(--edo-border)}
 .host-table :deep(.ant-table-tbody>tr>td){border-right:1px solid var(--edo-border)}
 .host-table :deep(.ant-table-tbody>tr:last-child>td){border-bottom:1px solid var(--edo-border)}
-.host-table :deep(.ant-table:not(.ant-table-ping-right) .ant-table-cell-fix-right-first::after){box-shadow:none}
 .host-name strong{white-space:normal;overflow-wrap:anywhere}
 .visually-hidden{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
 .capability-icons>.capability-shortcut{position:relative;display:grid;width:34px;height:34px;place-items:center;padding:0;border:0;border-radius:6px;background:transparent;cursor:pointer;transition:background-color .15s}
