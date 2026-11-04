@@ -85,7 +85,7 @@ test('SSH安装sudo控件不再以Docker为显示条件，文案区分安装和�
   assert.ok(descriptor.template.content.includes("t('hostForm.installUseSudo')"));assert.ok(descriptor.template.content.includes("t('hostForm.installSudoHint')"))
   const {messages}=loadFrontend('../src/locales/index.ts',{'vue-i18n':{createI18n:options=>options}})
   const zh=messages['zh-CN'].hostForm,en=messages['en-US'].hostForm
-  assert.equal(zh.installUseSudo,'安装操作使用 sudo');assert.match(zh.installSudoHint,/K3s.*Docker/);assert.match(zh.installSudoHint,/SSH 部署脚本不会自动提权/)
+  assert.equal(zh.installUseSudo,'使用 sudo 执行 Docker / 安装操作');assert.match(zh.installSudoHint,/K3s.*Docker/);assert.match(zh.installSudoHint,/SSH 部署脚本不会自动提权/)
   assert.equal(typeof en.installUseSudo,'string');assert.match(en.installSudoHint,/K3s.*Docker/)
 })
 

@@ -564,6 +564,16 @@ func sanitizeWorkflowNode(node *model.WorkflowNode) error {
 	node.Config.ToolchainVersion = strings.TrimSpace(node.Config.ToolchainVersion)
 	node.Config.WorkingDirectory = strings.TrimSpace(node.Config.WorkingDirectory)
 	node.Config.Description = strings.TrimSpace(node.Config.Description)
+	if len(node.Config.ArtifactNodeIDs) > 64 || (len(node.Config.ArtifactNodeIDs) > 0 && node.Type != model.WorkflowNodeBuild) {
+		return ErrInvalidWorkflow
+	}
+	seenArtifacts := map[string]bool{}
+	for _, source := range node.Config.ArtifactNodeIDs {
+		if source == "" || len(source) > 64 || seenArtifacts[source] {
+			return ErrInvalidWorkflow
+		}
+		seenArtifacts[source] = true
+	}
 	if len(node.Config.Notifications) > 10 {
 		return ErrInvalidWorkflow
 	}
@@ -831,6 +841,7 @@ func (s *Service) validateWorkflow(
 		issues = append(issues, WorkflowIssue{Code: "ambiguous_artifact_source", Message: "部署任务需要选择已完成阶段的构建制品；并行构建时请明确选择来源任务"})
 	}
 	issues = append(issues, validateWorkflowArtifactFlow(tasks, activeBuildPlans, activeDeploymentPlans, activeTargets)...)
+	issues = append(issues, validateUpstreamArtifactStages(stages)...)
 	return uniqueIssues(issues)
 }
 
@@ -879,12 +890,19 @@ func validateWorkflowArtifactFlow(
 	targets map[string]model.DeploymentTarget,
 ) []WorkflowIssue {
 	issues := make([]WorkflowIssue, 0)
+	priorBuilds := map[string]bool{}
 	var artifactPlan *model.BuildPlan
 	buildTaskSeen := false
 	for i := range tasks {
 		next := tasks[i]
 		switch next.Type {
 		case model.WorkflowNodeBuild:
+			for _, source := range next.Config.ArtifactNodeIDs {
+				if !priorBuilds[source] {
+					issues = append(issues, WorkflowIssue{Code: "invalid_upstream_artifact", Message: "汇总制品只能引用前序构建任务", NodeID: next.ID})
+				}
+			}
+			priorBuilds[next.ID] = true
 			buildTaskSeen = true
 			plan, ok := buildPlans[next.Config.BuildPlanID]
 			if !ok {
@@ -1299,9 +1317,9 @@ func (s *Service) newStageResolvedWorkflowRunWithDatabase(
 	// 方案是独立可编辑资源，流水线启用后其类型或镜像仓库仍可能改变。
 	// 每次创建运行快照前都重新校验完整制品链，避免先执行昂贵构建，
 	// 到部署节点才发现文件/镜像类型已不匹配。
-	if issues := validateWorkflowArtifactFlow(
+	if issues := append(validateUpstreamArtifactStages(resolved.Stages), validateWorkflowArtifactFlow(
 		workflowTasks(resolved.Stages), resolvedBuildPlans, resolvedDeploymentPlans, resolvedDeploymentTargets,
-	); len(issues) > 0 {
+	)...); len(issues) > 0 {
 		if s.logger != nil {
 			s.logger.Error("创建流水线运行前制品链校验失败", "operation", "pipeline_run_artifact_flow_validate",
 				"application_id", application.ID, "workflow_id", workflow.ID, "issue_code", issues[0].Code,

@@ -39,6 +39,7 @@ type WorkflowNodeConfig struct {
 	VariableNames         []string                   `json:"variable_names,omitempty"`
 	VariableEnvironmentID string                     `json:"variable_environment_id,omitempty"`
 	ArtifactNodeID        string                     `json:"artifact_node_id,omitempty"`
+	ArtifactNodeIDs       []string                   `json:"artifact_node_ids,omitempty"`
 	Reports               []WorkflowReportConfig     `json:"reports,omitempty"`
 	Check                 *WorkflowCheckConfig       `json:"check,omitempty"`
 	Cache                 *WorkflowCacheConfig       `json:"cache,omitempty"`

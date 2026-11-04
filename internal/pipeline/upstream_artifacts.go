@@ -18,6 +18,26 @@ type upstreamArtifact struct {
 	CommitSHA   string                    `json:"commit_sha"`
 }
 
+func validateUpstreamArtifactStages(stages []model.WorkflowStage) []WorkflowIssue {
+	prior := map[string]bool{}
+	issues := []WorkflowIssue{}
+	for _, stage := range stages {
+		for _, node := range stage.Tasks {
+			for _, source := range node.Config.ArtifactNodeIDs {
+				if !prior[source] {
+					issues = append(issues, WorkflowIssue{Code: "invalid_upstream_stage", Message: "汇总制品必须引用前序阶段的构建任务", NodeID: node.ID, StageID: stage.ID})
+				}
+			}
+		}
+		for _, node := range stage.Tasks {
+			if node.Type == model.WorkflowNodeBuild {
+				prior[node.ID] = true
+			}
+		}
+	}
+	return issues
+}
+
 // 只向后续阶段提供本次运行已成功构建的制品身份，不包含凭据、文件路径或其他运行的产物。
 func (s *Service) upstreamArtifactsJSON(ctx context.Context, prepared *buildExecutionContext) (string, error) {
 	prior := []string{}

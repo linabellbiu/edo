@@ -4,6 +4,7 @@ import { test } from 'node:test'
 import { compileScript, parse } from '@vue/compiler-sfc'
 import ts from 'typescript'
 import * as vue from 'vue'
+import {loadFrontend} from './acceptanceHarness.mjs'
 
 function harness() {
   const source = readFileSync(new URL('../src/components/DeliveryWorkflowDrawer.vue', import.meta.url), 'utf8')
@@ -11,13 +12,15 @@ function harness() {
     compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, esModuleInterop: true },
   })
   const modules = {
-    vue,
+    vue:{...vue,onMounted(){},onBeforeUnmount(){}},
     'vue-i18n': { useI18n: () => ({ t: key => key }) },
     '@/api/delivery': { deliveryKinds: ['docker', 'kubernetes', 'script'] },
     '@/api/infrastructure': { environmentIDsOf: host => host.environment_ids || [] },
+    '@/utils/composeDelivery': loadFrontend('../src/utils/composeDelivery.ts'),
+    '@/stores/auth': {useAuthStore:()=>({canAny:()=>false})},
   }
   const module = { exports: {} }
-  new Function('require', 'module', 'exports', outputText)(name => modules[name] || {}, module, module.exports)
+  new Function('require', 'module', 'exports', 'localStorage',outputText)(name => modules[name] || {}, module, module.exports,{getItem:()=>''})
   const scope = vue.effectScope()
   const state = scope.run(() => module.exports.default.setup({ open: false }, { expose() {}, emit() {} }))
   return { state, stop: () => scope.stop() }

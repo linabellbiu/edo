@@ -383,7 +383,16 @@ func workflowBuildPlatform(snapshot workflowSnapshot, buildNodeID string, plan w
 			if err != nil {
 				return "", err
 			}
-			if sources[tasks[index].ID] != buildNodeID {
+			sourceID := sources[tasks[index].ID]
+			dependsOnBuild := sourceID == buildNodeID
+			for _, upstream := range tasks {
+				if upstream.ID == sourceID {
+					for _, dependency := range upstream.Config.ArtifactNodeIDs {
+						dependsOnBuild = dependsOnBuild || dependency == buildNodeID
+					}
+				}
+			}
+			if !dependsOnBuild {
 				continue
 			}
 		}

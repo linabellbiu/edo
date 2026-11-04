@@ -65,6 +65,8 @@ func (h pipelineHandler) createDeliveryWorkflow(c *gin.Context) {
 func (h pipelineHandler) deliveryError(c *gin.Context, operation string, err error) {
 	h.logger.Warn("发布流程配置操作失败", "operation", operation, "request_id", requestIDFrom(c), "kind", c.Param("kind"), "application_id", c.Param("id"), "err", err)
 	switch {
+	case errors.Is(err, pipeline.ErrInvalidComposeDelivery):
+		writeError(c, 400, "invalid_compose_delivery", pipeline.ErrInvalidComposeDelivery.Error())
 	case errors.Is(err, pipeline.ErrDeliveryDefaultConflict):
 		writeError(c, 409, "delivery_default_conflict", pipeline.ErrDeliveryDefaultConflict.Error())
 	case errors.Is(err, pipeline.ErrDeliveryDefaultUnavailable):
@@ -76,4 +78,26 @@ func (h pipelineHandler) deliveryError(c *gin.Context, operation string, err err
 	default:
 		h.writeError(c, operation, err)
 	}
+}
+
+func (h pipelineHandler) createComposeDeliveryWorkflow(c *gin.Context) {
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 32*1024)
+	var input struct {
+		pipeline.ComposeDeliveryInput
+		Target deploymentTargetRequest `json:"target" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&input); err != nil {
+		h.logger.Warn("已有 Compose 发布配置请求无效", "operation", "compose_delivery_validate", "application_id", c.Param("id"), "request_id", requestIDFrom(c), "err", err)
+		writeError(c, 400, "invalid_compose_delivery", pipeline.ErrInvalidComposeDelivery.Error())
+		return
+	}
+	input.ComposeDeliveryInput.Target = toDeploymentTargetInput(input.Target)
+	actor, _ := currentUser(c)
+	result, err := h.service.CreateComposeDeliveryWorkflow(c.Request.Context(), c.Param("id"), actor.ID, input.ComposeDeliveryInput)
+	if err != nil {
+		h.deliveryError(c, "compose_delivery_create", err)
+		return
+	}
+	setAuditResourceID(c, result.Workflow.ID)
+	c.JSON(http.StatusCreated, result)
 }

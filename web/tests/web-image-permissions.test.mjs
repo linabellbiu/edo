@@ -65,7 +65,8 @@ test('静态产物的真实 chmod 恢复私有目录和文件的公开只读权�
 })
 
 test('运行镜像只调整公开产物权限且继续使用非 root 用户，不增加可写所有权或系统修改', () => {
-  assert.match(runtime[0], /^FROM nginx:\S+ AS web-runtime$/)
+  assert.equal(runtime[0], 'FROM ${EDO_WEB_BASE_IMAGE} AS web-runtime')
+  assert.ok(instructions.some(line => /^ARG EDO_WEB_BASE_IMAGE=nginx:\S+$/.test(line)), '可覆盖的运行镜像仍需提供固定版本 NGINX 默认值')
   assert.deepEqual(runtime.filter(line => /^USER\s/.test(line)), ['USER 101:101'])
   assert.deepEqual(runtime.filter(line => /^RUN\s/.test(line)), ['RUN chmod -R a=rX /usr/share/nginx/html'])
   assert.equal(runtime.some(line => /--chown|\bchown\b/.test(line)), false)

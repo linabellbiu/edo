@@ -35,6 +35,7 @@ export interface WorkflowNodeConfig {
   variable_names?: string[]
   variable_environment_id?: string
   artifact_node_id?: string
+  artifact_node_ids?: string[]
   reports?: Array<{format:string;paths:string[];required:boolean;minimum_coverage?:number;fail_severity?:string}>
   check?: {tool:string;dialect?:string;path:string;config_path?:string}
   cache?: {key:string;lock_files:string[];paths:string[]}
