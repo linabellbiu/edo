@@ -129,3 +129,5 @@ EDO_COMPOSE_DATABASE_DSN=/app/data/edo.db
 - 停机统一关闭 HTTP/WebSocket、停止领取新消息，并在配置上限内等待后台任务。
 
 不要让多个主机通过 NFS 共享 SQLite 文件，不要把 Docker Socket、kubeconfig、数据库密码或密钥写进镜像。
+
+API 运行层安装系统包时默认使用华为云 Debian 镜像，通过 `EDO_DEBIAN_MIRROR` 覆盖；保留 Debian 官方签名验证，仅影响镜像构建，不修改宿主机 apt 配置。首次本地构建在官方 Debian 下载地址遇到单个包 502，切换后重新验证，不把原失败记为成功。

@@ -50,6 +50,7 @@ x-edo-runtime: &edo-runtime
     args:
       EDO_VERSION: ${EDO_VERSION:-dev}
       GOPROXY: ${EDO_GO_PROXY:-https://goproxy.cn,direct}
+      EDO_DEBIAN_MIRROR: ${EDO_DEBIAN_MIRROR:-http://mirrors.huaweicloud.com}
       EDO_DOCKER_CLI_IMAGE: ${EDO_DOCKER_CLI_IMAGE:-swr.cn-north-4.myhuaweicloud.com/ddn-k8s/docker.io/library/docker:29.8.2-cli}
       EDO_GO_BUILD_IMAGE: ${EDO_GO_BUILD_IMAGE:-swr.cn-north-4.myhuaweicloud.com/ddn-k8s/docker.io/library/golang:1.26.10-alpine}
       EDO_API_BASE_IMAGE: ${EDO_API_BASE_IMAGE:-swr.cn-north-4.myhuaweicloud.com/ddn-k8s/docker.io/library/debian:bookworm-slim}

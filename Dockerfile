@@ -36,10 +36,12 @@ RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w -X main.version=${EDO_VERSI
 
 # API 镜像只编译 Go；生产与开发 Web 均由 web/Dockerfile 独立构建。
 FROM ${EDO_API_BASE_IMAGE} AS api-runtime
+ARG EDO_DEBIAN_MIRROR=http://deb.debian.org
 COPY --from=docker-cli /usr/local/bin/docker /usr/local/bin/docker
 COPY --from=docker-cli /usr/local/libexec/docker/cli-plugins/docker-buildx /usr/local/libexec/docker/cli-plugins/docker-buildx
 COPY --from=docker-cli /usr/local/libexec/docker/cli-plugins/docker-compose /usr/local/libexec/docker/cli-plugins/docker-compose
-RUN apt-get -o Acquire::Retries=5 update \
+RUN sed -i "s|http://deb.debian.org|${EDO_DEBIAN_MIRROR}|g" /etc/apt/sources.list.d/debian.sources \
+    && apt-get -o Acquire::Retries=5 update \
     && apt-get -o Acquire::Retries=5 install -y --no-install-recommends ca-certificates curl tzdata \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd --gid 10001 edo \
