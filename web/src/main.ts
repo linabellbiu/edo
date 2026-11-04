@@ -10,6 +10,9 @@ import { MotionPlugin } from '@vueuse/motion'
 import App from './App.vue'
 import i18n from './locales'
 import router from './router'
+import { installChunkRecovery } from './router/chunkRecovery'
+
+installChunkRecovery(router)
 
 createApp(App)
   .use(createPinia())
