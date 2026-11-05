@@ -53,6 +53,46 @@ test('节点添加下级自动绑定该部门，修改仍指向原部门，公�
   assert.equal(h.state.form.id,'');assert.equal(h.state.form.parent_id,'');assert.equal(h.state.form.name,'')
 })
 
+test('默认部门连续编辑与添加下级时，上级名称独立于候选缓存且始终使用字符串 ID 保存',async t=>{
+  const id='00000000-0000-0000-0000-000000000001'
+  const h=harness(t,'../src/views/OrganizationView.vue')
+  const parent={id,name:'默认部门',parent_id:'',description:'',member_count:1,is_default:true}
+  h.state.rows.value=[parent,{id:'child',name:'下级部门',parent_id:id,description:'',member_count:0,is_default:false}]
+  h.state.edit(parent)
+  assert.deepEqual(h.state.parentSelection.value,{value:'',label:'workspace.root'})
+  h.state.addDepartment(id)
+  assert.deepEqual(h.state.parentSelection.value,{value:id,label:'默认部门'})
+  assert.equal(h.state.parentValid.value,true)
+  h.state.rows.value=[{...parent,name:'默认部门新名称'},h.state.rows.value[1]]
+  assert.equal(h.state.parentSelection.value.label,'默认部门新名称')
+  h.state.selectParent({value:'child',label:'下级部门'})
+  assert.equal(h.state.form.parent_id,'child')
+  h.state.selectParent({value:id,label:'缓存中的旧名'})
+  h.state.form.name='新部门'
+  await h.state.saveDepartment()
+  assert.equal(writes(h)[0].body.parent_id,id)
+})
+
+test('不可查看的上级保留原关联，不回显 UUID；失效关联由服务端拒绝，循环上级不可选',async t=>{
+  const h=harness(t,'../src/views/OrganizationView.vue',{api:{put:async()=>{throw new Error('上级部门不可用')}}})
+  const row={id:'self',name:'本部门',parent_id:'missing',description:'',member_count:0,is_default:false}
+  h.state.rows.value=[row,{...row,id:'child',name:'下级',parent_id:'self'}]
+  h.state.edit(row)
+  assert.deepEqual(h.state.parentSelection.value,{value:'missing',label:'workspace.parentUnavailable'})
+  await h.state.saveDepartment()
+  assert.equal(writes(h)[0].body.parent_id,'missing')
+  assert.equal(h.state.departmentOpen.value,true);assert.equal(h.state.form.parent_id,'missing')
+  h.state.selectParent({value:'self',label:'本部门'})
+  assert.equal(h.state.form.parent_id,'missing')
+  h.state.form.parent_id='self'
+  assert.equal(h.state.parentValid.value,false)
+  await h.state.saveDepartment();assert.equal(writes(h).length,1)
+  h.state.selectParent({value:'child',label:'下级'})
+  assert.equal(h.state.form.parent_id,'self')
+  h.state.selectParent({value:'',label:'公司直属'})
+  assert.equal(h.state.parentValid.value,true);assert.equal(h.state.form.parent_id,'')
+})
+
 test('部门树刷新保留收起的分支，新增节点可见，历史异常关系不丢失部门',async t=>{
   const h=harness(t,'../src/views/OrganizationView.vue')
   const rows=[{id:'parent',name:'研发',parent_id:''},{id:'child',name:'后端',parent_id:'parent'}]
@@ -109,6 +149,7 @@ test('公司和部门保存区分创建及更新，空名称不发送，接口�
   await h.state.saveCompany()
   assert.deepEqual(writes(h)[0],{method:'put',path:'/organization',body:{name:'公司名称',description:'公司说明'},options:undefined})
   assert.equal(h.state.companyOpen.value,false)
+  h.state.rows.value=[{id:'parent-a',name:'上级部门',description:'',parent_id:'',member_count:0,is_default:false}]
   h.state.edit();Object.assign(h.state.form,{name:'研发部',description:'描述',parent_id:'parent-a'})
   await h.state.saveDepartment()
   assert.equal(writes(h)[1].method,'post');assert.equal(writes(h)[1].path,'/departments')

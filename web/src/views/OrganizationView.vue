@@ -11,7 +11,7 @@ import ResourceDetailDrawer from '@/components/ResourceDetailDrawer.vue'
 
 interface Department extends ResourceRecord { id:string; parent_id:string; name:string; description:string; member_count:number; is_default:boolean }
 interface DepartmentMember { id:string; username:string; nickname:string; department_id:string; is_active:boolean }
-interface OrganizationNode { key:string; title:string; department?:Department; member?:DepartmentMember; children:OrganizationNode[] }
+interface OrganizationNode { key:string; title:string; class?:string; depth?:number; department?:Department; member?:DepartmentMember; children:OrganizationNode[] }
 const {t}=useI18n(),auth=useAuthStore()
 const company=reactive({name:'',description:''}), rows=ref<Department[]>([]), query=ref(''), loading=ref(false), saving=ref(false), companyOpen=ref(false), departmentOpen=ref(false), selected=ref<Department|null>(null)
 const members=ref<DepartmentMember[]>([]),membersLoading=ref(false),membersError=ref('')
@@ -38,7 +38,8 @@ const treeData=computed<OrganizationNode[]>(()=>{
  const matching=new Set(filtered.value.map(row=>row.id))
  const keyword=query.value.trim().toLowerCase()
  function retain(nodes:OrganizationNode[]):OrganizationNode[]{return nodes.flatMap(node=>{if(!keyword||matching.has(node.key)||node.member&&`${node.member.nickname} ${node.member.username}`.toLowerCase().includes(keyword))return [node];const children=retain(node.children);return children.length?[{...node,children}]:[]})}
- return [{key:'company',title:company.name||t('workspace.company'),children:retain(roots)}]
+ function atDepth(node:OrganizationNode,depth:number):OrganizationNode{return {...node,depth,children:node.children.map(child=>atDepth(child,depth+1))}}
+ return [atDepth({key:'company',title:company.name||t('workspace.company'),class:'organization-tree-root',children:retain(roots)},0)]
 })
 const visibleExpandedKeys=computed(()=>query.value.trim()?['company',...rows.value.map(row=>row.id)]:expandedKeys.value)
 watch(rows,(current,previous)=>{
@@ -51,6 +52,9 @@ const parentOptions=computed(()=>{
  while(changed){changed=false;for(const row of rows.value)if(descendants.has(row.parent_id)&&!descendants.has(row.id)){descendants.add(row.id);changed=true}}
  return [{value:'',label:t('workspace.root')},...rows.value.filter(row=>!descendants.has(row.id)).map(row=>({value:row.id,label:row.name}))]
 })
+const parentSelection=computed(()=>({value:form.parent_id,label:form.parent_id?rows.value.find(row=>row.id===form.parent_id)?.name||t('workspace.parentUnavailable'):t('workspace.root')}))
+const parentValid=computed(()=>parentOptions.value.some(option=>option.value===form.parent_id)||!rows.value.some(row=>row.id===form.parent_id))
+function selectParent(value:unknown){if(value&&typeof value==='object'&&'value' in value&&typeof value.value==='string'&&parentOptions.value.some(option=>option.value===value.value))form.parent_id=value.value}
 const authorizationAvailable=()=>auth.authorizationState!=='checking'&&auth.authorizationState!=='unavailable'
 const mutationIdentity=()=>JSON.stringify([auth.user?.id,auth.user?.department_id,auth.user?.project_id,typeof localStorage==='undefined'?'':localStorage.getItem('edo.project')??''])
 const scopeIdentity=()=>JSON.stringify([mutationIdentity(),auth.user?.is_superuser,[...(auth.user?.permissions??[])].sort()])
@@ -112,6 +116,7 @@ async function saveCompany(){
 }
 async function saveDepartment(){
  if(!authorizationAvailable()||saving.value||!form.name.trim())return
+ if(!parentValid.value){message.warning(t('workspace.invalidParent'));return}
  const current=beginMutation();saving.value=true
  try{if(form.id)await client.put(`/departments/${form.id}`,form);else await client.post('/departments',form);if(!current())return;departmentOpen.value=false;message.success(t('workspace.saved'));await load();if(current()&&selected.value)selected.value=rows.value.find(row=>row.id===selected.value?.id)||null}
  catch(error){mutationError(error,current)}finally{saving.value=false}
@@ -135,15 +140,15 @@ onMounted(load)
  <a-spin :spinning="loading">
   <a-tree class="organization-tree" :aria-label="t('workspace.departments')" block-node :selectable="false" :show-line="{showLeafIcon:false}" :tree-data="treeData" :expanded-keys="visibleExpandedKeys" :auto-expand-parent="false" @expand="expandNodes">
    <template #title="node">
-    <div class="organization-node" :class="{'is-company':!node.department&&!node.member,'is-member':!!node.member}" :data-department-id="node.department?.id" :data-member-id="node.member?.id">
-     <Building2 v-if="!node.department&&!node.member" :size="22" class="organization-icon"/><UsersRound v-else-if="node.department" :size="18" class="organization-icon"/><UserRound v-else :size="16" class="organization-icon"/>
+    <div class="organization-node" :class="{'is-company':!node.department&&!node.member,'is-member':!!node.member,'has-children':!!node.children?.length}" :style="{'--organization-depth':node.depth||0}" :data-department-id="node.department?.id" :data-member-id="node.member?.id">
+     <span class="organization-icon" aria-hidden="true"><Building2 v-if="!node.department&&!node.member" :size="22"/><UsersRound v-else-if="node.department" :size="18"/><UserRound v-else :size="16"/></span>
      <div class="organization-copy">
       <span class="organization-name">{{node.title}}</span><span v-if="node.department" class="organization-members">{{t('workspace.memberCount')}} {{node.department.member_count??'—'}}</span>
       <span v-if="node.member&&node.member.nickname&&node.member.nickname!==node.member.username" class="organization-members">{{node.member.username}}</span><a-tag v-if="node.member?.is_active===false">{{t('workspace.disabled')}}</a-tag>
       <span v-if="node.department?.description||(!node.department&&!node.member&&company.description)" class="organization-description">{{node.department?.description||company.description}}</span>
       <span v-if="node.department&&memberNote(node.department)" class="organization-description">{{memberNote(node.department)}}</span>
      </div>
-     <div v-if="!node.member" class="organization-actions" @click.stop @keydown.stop>
+     <div v-if="!node.member&&(node.department||auth.canAny(['organization.update','department.create']))" class="organization-actions" @click.stop @keydown.stop>
       <template v-if="!node.department">
        <a-button v-if="auth.canAny(['organization.update'])" size="small" :aria-label="`${t('workspace.edit')} ${node.title}`" @click="companyOpen=true">{{t('workspace.edit')}}</a-button>
        <a-button v-if="auth.canAny(['department.create'])" size="small" type="link" @click="addDepartment()"><Plus :size="14"/>{{t('workspace.createDepartment')}}</a-button>
@@ -163,13 +168,41 @@ onMounted(load)
 </div>
 <ResourceDetailDrawer :open="!!selected" :title="selected?.name" @update:open="value=>{if(!value)selected=null}"><template v-if="selected" #actions><a-button v-if="auth.canAny(['department.update'])" @click="edit(selected)">{{t('workspace.edit')}}</a-button></template><template v-if="selected"><a-descriptions :column="1" bordered size="small"><a-descriptions-item :label="t('workspace.departmentName')">{{selected.name}}</a-descriptions-item><a-descriptions-item :label="t('workspace.parent')">{{rows.find(item=>item.id===selected?.parent_id)?.name||t('workspace.root')}}</a-descriptions-item><a-descriptions-item :label="t('workspace.memberCount')">{{selected.member_count}}</a-descriptions-item><a-descriptions-item :label="t('workspace.descriptionField')">{{selected.description||'—'}}</a-descriptions-item></a-descriptions><a-alert class="department-note" :message="t('workspace.departmentHint')" type="info" show-icon/></template></ResourceDetailDrawer>
 <a-drawer v-model:open="companyOpen" :title="t('workspace.company')" width="min(560px,94vw)" :closable="!saving" :mask-closable="!saving"><a-form layout="vertical"><a-form-item :label="t('workspace.companyName')" required><a-input v-model:value="company.name" :maxlength="96"/></a-form-item><a-form-item :label="t('workspace.companyDescription')"><a-textarea v-model:value="company.description" :rows="3" :maxlength="255"/></a-form-item></a-form><template #footer><div class="drawer-actions"><a-button :disabled="saving" @click="companyOpen=false">{{t('workspace.cancel')}}</a-button><a-button type="primary" :loading="saving" @click="saveCompany">{{t('workspace.save')}}</a-button></div></template></a-drawer>
-<a-drawer v-model:open="departmentOpen" :title="form.id?t('workspace.edit'):t('workspace.createDepartment')" width="min(560px,94vw)" :closable="!saving" :mask-closable="!saving"><a-form layout="vertical"><a-form-item :label="t('workspace.departmentName')" required><a-input v-model:value="form.name" :maxlength="64"/></a-form-item><a-form-item :label="t('workspace.parent')"><a-select v-model:value="form.parent_id" show-search option-filter-prop="label" :options="parentOptions"/></a-form-item><a-form-item :label="t('workspace.descriptionField')"><a-textarea v-model:value="form.description" :rows="3" :maxlength="255"/></a-form-item></a-form><template #footer><div class="drawer-actions"><a-button :disabled="saving" @click="departmentOpen=false">{{t('workspace.cancel')}}</a-button><a-button type="primary" :loading="saving" @click="saveDepartment">{{t('workspace.save')}}</a-button></div></template></a-drawer>
+<a-drawer v-model:open="departmentOpen" :title="form.id?t('workspace.edit'):t('workspace.createDepartment')" width="min(560px,94vw)" :closable="!saving" :mask-closable="!saving"><a-form layout="vertical"><a-form-item :label="t('workspace.departmentName')" required><a-input v-model:value="form.name" :maxlength="64"/></a-form-item><a-form-item :label="t('workspace.parent')" :validate-status="parentValid?'':'error'" :help="parentValid?undefined:t('workspace.invalidParent')"><a-select :value="parentSelection" label-in-value show-search option-filter-prop="label" :aria-label="t('workspace.parent')" :options="parentOptions" @change="selectParent"/></a-form-item><a-form-item :label="t('workspace.descriptionField')"><a-textarea v-model:value="form.description" :rows="3" :maxlength="255"/></a-form-item></a-form><template #footer><div class="drawer-actions"><a-button :disabled="saving" @click="departmentOpen=false">{{t('workspace.cancel')}}</a-button><a-button type="primary" :loading="saving" :disabled="!parentValid" @click="saveDepartment">{{t('workspace.save')}}</a-button></div></template></a-drawer>
 </section></template>
 <style scoped>
-.organization-card{padding:16px}.organization-search{max-width:340px;margin-bottom:16px}.organization-card :deep(.organization-tree){background:transparent;color:var(--edo-text)}
-.organization-card :deep(.organization-tree .ant-tree-treenode){padding:0;width:100%;align-items:stretch}.organization-card :deep(.organization-tree .ant-tree-node-content-wrapper){min-width:0;flex:1;padding:0 8px;border-radius:6px;cursor:default}.organization-card :deep(.organization-tree .ant-tree-switcher){display:flex;align-items:center;justify-content:center}.organization-card :deep(.organization-tree .ant-tree-title){display:block}.organization-card :deep(.organization-tree .ant-tree-node-content-wrapper:hover){background:var(--edo-surface-soft)}
-.organization-card :deep(.organization-tree .ant-tree-switcher-leaf-line::after){top:50%;height:0}.organization-card :deep(.organization-tree .ant-tree-treenode-leaf-last .ant-tree-switcher-leaf-line::before){top:0!important;height:50%!important}.organization-card :deep(.organization-tree .ant-tree-indent-unit::before),.organization-card :deep(.organization-tree .ant-tree-switcher-leaf-line::before){bottom:0}
-.organization-node{display:flex;align-items:center;gap:12px;min-height:56px;padding:8px 0;border-bottom:1px solid var(--edo-border)}.organization-node.is-company{min-height:64px}.organization-node.is-member{min-height:40px;border-bottom:0}.organization-icon{flex:none;color:var(--edo-primary)}.is-member .organization-icon{color:var(--edo-muted)}.organization-copy{display:flex;align-items:center;gap:6px 14px;flex:1;min-width:0;flex-wrap:wrap}.organization-name{font-size:14px;overflow-wrap:anywhere}.is-company .organization-name{font-weight:600}.is-member .organization-name{font-size:13px}.organization-members,.organization-description{font-size:12px;color:var(--edo-muted);line-height:1.6}.organization-members{white-space:nowrap}.organization-description{flex-basis:100%;overflow-wrap:anywhere}.organization-actions{display:flex;align-items:center;justify-content:flex-end;gap:6px;flex-wrap:wrap;flex:none}.organization-actions :deep(.ant-btn){margin:0}.organization-member-error{margin-bottom:12px}.department-note{margin-top:16px}.drawer-actions{display:flex;justify-content:flex-end;gap:8px}
+.organization-card{padding:16px;--organization-line:color-mix(in srgb,var(--edo-muted) 42%,var(--edo-surface))}
+.organization-search{max-width:340px;margin-bottom:12px}
+.organization-card :deep(.organization-tree){background:transparent;color:var(--edo-text)}
+.organization-card :deep(.organization-tree .ant-tree-treenode){padding:0;width:100%;align-items:stretch}
+.organization-card :deep(.organization-tree .ant-tree-node-content-wrapper){min-width:0;flex:1;padding:0;cursor:default}
+.organization-card :deep(.organization-tree .ant-tree-node-content-wrapper:hover){background:transparent}
+.organization-card :deep(.organization-tree .ant-tree-title){display:block}
+.organization-card :deep(.organization-tree .ant-tree-indent-unit){width:24px}
+.organization-card :deep(.organization-tree .ant-tree-indent-unit::before){top:0;bottom:0;left:12px;inset-inline-end:auto;border-inline-end:0;border-left:1px solid var(--organization-line)}
+.organization-card :deep(.organization-tree .ant-tree-switcher){position:relative;width:24px;display:block}
+.organization-card :deep(.organization-tree .ant-tree-switcher::before){content:'';position:absolute;top:0;bottom:0;left:12px;border-left:1px solid var(--organization-line);pointer-events:none}
+.organization-card :deep(.organization-tree .ant-tree-switcher::after){content:'';position:absolute;top:22px;left:12px;right:0;border-top:1px solid var(--organization-line);pointer-events:none}
+.organization-card :deep(.organization-tree .ant-tree-treenode-leaf-last>.ant-tree-switcher::before){bottom:auto;height:22px}
+.organization-card :deep(.organization-tree-root>.ant-tree-switcher::before),.organization-card :deep(.organization-tree-root>.ant-tree-switcher::after){display:none}
+.organization-card :deep(.organization-tree .ant-tree-switcher>.anticon){position:absolute;top:15px;left:5px;z-index:1;width:14px;height:14px;display:flex;align-items:center;justify-content:center;background:var(--edo-surface);line-height:1}
+.organization-card :deep(.organization-tree .ant-tree-switcher-leaf-line::before),.organization-card :deep(.organization-tree .ant-tree-switcher-leaf-line::after){display:none!important}
+.organization-node{position:relative;display:grid;grid-template-columns:24px minmax(0,max(120px,calc(284px - var(--organization-depth,0)*24px))) max-content;align-items:start;gap:0 12px;min-height:44px;padding:10px 0}
+.organization-card :deep(.ant-tree-treenode-switcher-open .organization-node.has-children::before){content:'';position:absolute;left:12px;top:34px;bottom:0;border-left:1px solid var(--organization-line);pointer-events:none}
+.organization-icon{display:flex;align-items:center;justify-content:center;width:24px;height:24px;color:var(--edo-primary)}
+.is-member .organization-icon{color:var(--edo-muted)}
+.organization-copy{display:flex;align-items:center;gap:0 12px;min-width:0;flex-wrap:wrap;line-height:24px}
+.organization-name{font-size:14px;overflow-wrap:anywhere}
+.is-company .organization-name{font-weight:600}
+.is-member .organization-name{font-size:13px}
+.organization-members,.organization-description{font-size:12px;color:var(--edo-muted)}
+.organization-members{white-space:nowrap}
 .is-member .organization-members{white-space:normal;overflow-wrap:anywhere}
-@media(max-width:680px){.organization-card{padding:12px 8px}.organization-node{gap:8px;flex-wrap:wrap}.organization-copy{flex-basis:calc(100% - 36px)}.organization-actions{flex:1 1 100%;justify-content:flex-start;padding-left:26px}.organization-search{max-width:none}.organization-card :deep(.organization-tree .ant-tree-indent-unit){width:16px}}
+.organization-description{flex-basis:100%;line-height:18px;overflow-wrap:anywhere}
+.organization-actions{display:flex;align-items:center;justify-content:flex-start;gap:8px;min-height:24px}
+.organization-actions :deep(.ant-btn){margin:0}
+.organization-member-error{margin-bottom:12px}
+.department-note{margin-top:16px}
+.drawer-actions{display:flex;justify-content:flex-end;gap:8px}
+@media(max-width:760px){.organization-node{grid-template-columns:24px minmax(0,1fr);gap:0 8px}.organization-actions{grid-column:2;flex-wrap:wrap;gap:6px;margin-top:6px}.organization-actions :deep(.ant-btn){padding-inline:5px;font-size:12px}.organization-search{max-width:none}.organization-card{padding:12px 8px}}
 </style>

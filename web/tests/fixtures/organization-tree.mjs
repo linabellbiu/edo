@@ -10,16 +10,17 @@ import OrganizationView from '/src/views/OrganizationView.vue'
 
 const params = new URLSearchParams(location.search)
 const dark = params.get('theme') === 'dark', readonly = params.has('readonly')
+const defaultDepartmentID = '00000000-0000-0000-0000-000000000001'
 const company = { name: '示例公司', description: '产品与技术团队' }
 const departments = [
   { id: 'engineering', parent_id: '', name: '研发部', description: '应用研发与平台维护', member_count: 6, is_default: false },
   { id: 'backend', parent_id: 'engineering', name: '后端组', description: '服务开发', member_count: 3, is_default: false },
   { id: 'payments', parent_id: 'backend', name: '支付服务组', description: '', member_count: 1, is_default: false },
   { id: 'frontend', parent_id: 'engineering', name: '前端组', description: '', member_count: 2, is_default: false },
-  { id: 'default', parent_id: '', name: '默认部门', description: '公司初始部门', member_count: 1, is_default: true },
+  { id: defaultDepartmentID, parent_id: '', name: '默认部门', description: '公司初始部门', member_count: 1, is_default: true },
 ]
-const memberNames = { engineering: ['陈阳', '李敏', '周宁', '吴晨', '郑远', '许安'], backend: ['林青', '张晓', '何川'], payments: ['赵明'], frontend: ['方可', '孙晴'], default: ['管理员'] }
-const members = Object.entries(memberNames).flatMap(([department_id, names]) => names.map((nickname, index) => ({ id: `${department_id}-member-${index}`, department_id, nickname, username: `${department_id}.${index}`, is_active: department_id !== 'payments' })))
+const memberNames = { engineering: ['陈阳', '李敏', '周宁', '吴晨', '郑远', '许安'], backend: ['林青', '张晓', '何川'], payments: ['赵明'], frontend: ['方可', '孙晴'], [defaultDepartmentID]: ['管理员'] }
+const members = Object.entries(memberNames).flatMap(([department_id, names]) => names.map((nickname, index) => ({ id: `${department_id}-member-${index}`, department_id, nickname, username: department_id === defaultDepartmentID ? 'admin' : `${department_id}.${index}`, is_active: department_id !== 'payments' })))
 let nextID = 0
 const saved = ref('尚未保存')
 client.defaults.adapter = async config => {
