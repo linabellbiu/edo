@@ -34,3 +34,13 @@
 验收夹具：`web/tests/fixtures/application-env-scope.html`，使用合成数据，不连接业务 API。无需新增第三方包，继续复用现有加密修订、YAML 库与官方 Compose CLI。
 
 页面、接口、持久化与真实 Compose 执行分别记录，不互相替代。
+
+## 2026-11-05 发布核验
+
+- 用户明确要求推送、部署，目标沿用已确认的 `117.50.182.97:8080`，服务器身份为 `10-60-249-21`。本次功能提交 `fdf4e34`、`66030c3`、`ba4d329` 已推送 GitHub `main`；服务器 `/home/ubuntu/edo` 通过 `git pull --ff-only` 更新到 `ba4d3292d42fe3724005c2a97542a23da9ab12a3` 后远程构建。
+- API、Web 分别构建，仅替换这两个服务，实际 API 版本为 `EDO ba4d329`。API 镜像为 `sha256:4268c7535d6ac80b0021b96bda02cee71420ad0875b2f93d79fc36aec0be4e2e`，Web 镜像为 `sha256:9802bbee962ce9c73f6cdb26f1544c0c5d5d234597e3e638909f4e576e14cb4d`。
+- 使用一次性迁移容器完成 PostgreSQL 增量迁移，版本 `202611050076` 已登记；`delivery_variables.auto_deploy` 为非空字段，默认 `false`，历史变量不会因升级自动注入。
+- API、Web 均 healthy，Web `/healthz` 为 ok；API readiness 的 database、redis、nats、builder 均为 ok。发布前无运行中的构建或部署任务，没有触发业务流水线。
+- PostgreSQL、Redis、NATS、Docker 构建器的容器 ID、镜像及启动时间与发布前完全一致；`.env`、`docker-compose.yml` 摘要未变。未创建数据备份或专门回退镜像，没有重启 Docker 或调整其他服务。
+- 实际 HTTP 提供的 `DeliveryVariablesView-Dvs7rYS6.js`、`DevOpsView-DuQL0Uoc.js`、`PipelineEditorView-BP7zVWP4.js` 均与运行 Web 镜像内文件 SHA-256 相同，已确认包含应用环境配置和可选启动服务的新界面。
+- Chrome 独立标签页正常显示线上登录页；当前没有可复用的有效登录，未保存生产变量或修改业务流水线。登录后的线上交互未复验，前述本地实际组件、接口、三库及真实 Compose 验收证据继续保留，资源校验不冒充已登录业务验收。
