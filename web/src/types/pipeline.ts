@@ -115,6 +115,15 @@ export interface PipelineExecutionStage {
   id: string
   name: string
   tasks: PipelineRunGraphNode[]
+  timing?: PipelineStageTiming
+}
+
+export interface PipelineStageTiming {
+  state: string
+  started_at?: string
+  finished_at?: string
+  duration_ms: number | null
+  running: boolean
 }
 
 export interface PipelineExecutionGraph {

@@ -22,6 +22,7 @@ import GitCredentialDrawer from '@/components/GitCredentialDrawer.vue'
 import PageToolbar from '@/components/PageToolbar.vue'
 import PipelineLogDrawer from '@/components/PipelineLogDrawer.vue'
 import PipelineTaskHistory from '@/components/PipelineTaskHistory.vue'
+import PipelineStageDurations from '@/components/PipelineStageDurations.vue'
 import ReleasePlanEditorDrawer from '@/components/ReleasePlanEditorDrawer.vue'
 import ReleasePlanExecuteModal from '@/components/ReleasePlanExecuteModal.vue'
 import ReleasePlanWorkspace from '@/components/ReleasePlanWorkspace.vue'
@@ -245,6 +246,7 @@ const runColumns=[
  {title:'应用流水线',key:'workflow',width:180},
  {title:'提交 / 版本',key:'version'},
  {title:'状态 / 当前任务',key:'status',width:160},
+ {title:'阶段耗时',key:'stage_durations',width:240},
  {title:'执行时间',key:'created_at',width:180},
  {title:'操作',key:'actions',width:175,fixed:'right' as const},
 ]
@@ -2221,7 +2223,7 @@ onBeforeUnmount(()=>{planExecutionDisposed=true;resetArtifactRequests();formOpen
     :data-source="runListEntries"
     :loading="runListLoading||(loading&&!runs.length)"
     :pagination="runPagination"
-    :scroll="{x:1340}"
+    :scroll="{x:1580}"
     :row-class-name="runListRowClass"
     @change="changeRunPage"
   >
@@ -2234,6 +2236,7 @@ onBeforeUnmount(()=>{planExecutionDisposed=true;resetArtifactRequests();formOpen
         <template v-else-if="column.key==='workflow'"><strong class="run-cell-title">{{ record.runs.length }} 条流水线记录</strong><span class="run-cell-secondary">各应用独立执行</span></template>
         <template v-else-if="column.key==='version'"><span class="run-cell-muted">各应用使用各自的代码版本或制品</span></template>
         <template v-else-if="column.key==='status'"><span class="run-group-counts"><span v-for="count in executionRunCounts(record).split('、')" :key="count">{{ count }}</span></span></template>
+        <template v-else-if="column.key==='stage_durations'"><span class="run-cell-muted">展开查看各应用阶段耗时</span></template>
         <template v-else-if="column.key==='created_at'"><time class="run-cell-time" :datetime="record.created_at">{{ formatRunTime(record.created_at) }}</time><span class="run-cell-secondary">最近运行</span></template>
       </template>
       <template v-else-if="column.key==='release_plan'">
@@ -2258,6 +2261,7 @@ onBeforeUnmount(()=>{planExecutionDisposed=true;resetArtifactRequests();formOpen
         <time class="run-cell-time" :datetime="record.created_at">{{ formatRunTime(record.created_at) }}</time>
         <span class="run-cell-secondary">{{ formatRunRelativeTime(record.created_at) }}</span>
       </template>
+      <PipelineStageDurations v-else-if="column.key==='stage_durations'" :stages="record.execution_graph?.stages"/>
     </template>
   </a-table>
   <ResourceDetailDrawer v-model:open="runDrawerOpen" :title="runDrawerEntry ? (isRunExecutionGroup(runDrawerEntry) ? runEntryPlanName(runDrawerEntry) : applicationName(runDrawerEntry)) : '运行详情'">
@@ -2273,7 +2277,7 @@ onBeforeUnmount(()=>{planExecutionDisposed=true;resetArtifactRequests();formOpen
             <div><small>流水线</small><button type="button" class="run-resource-link" :disabled="!run.workflow_id" :title="runWorkflowName(run)" @click.stop="openApplicationWorkflow(run.application_id,run.workflow_id||'')">{{ runWorkflowName(run) }}</button></div>
             <div><strong class="run-cell-title" :title="run.commit_message||'未记录提交说明'">{{ run.commit_message||'未记录提交说明' }}</strong><span class="run-cell-secondary" :title="runReferenceLabel(run)">{{ runReferenceLabel(run) }}</span></div>
             <div><a-tag :color="runStatusColor(run.status)">{{ runStatusLabel(run.status,run.stage) }}</a-tag><span class="run-cell-secondary">{{ run.current_node_name||run.current_node_id||'尚未开始' }}</span></div>
-            <div><time class="run-cell-time" :datetime="run.created_at">{{ formatRunTime(run.created_at) }}</time><span class="run-cell-secondary">{{ formatRunRelativeTime(run.created_at) }}</span></div>
+            <div><time class="run-cell-time" :datetime="run.created_at">{{ formatRunTime(run.created_at) }}</time><span class="run-cell-secondary">{{ formatRunRelativeTime(run.created_at) }}</span><PipelineStageDurations :stages="run.execution_graph?.stages"/></div>
           </div>
           <section v-if="expandedRunIDs.includes(run.id)" :id="`run-detail-${run.id}`" class="run-detail" :class="{'is-current':selectedRunID===run.id}" :aria-label="`运行详情：${formatRunTime(run.created_at)}`">
             <header class="run-detail-heading">

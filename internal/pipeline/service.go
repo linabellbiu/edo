@@ -1150,7 +1150,7 @@ func (s *Service) enrichPipelineRuns(ctx context.Context, runs []model.PipelineR
 			runs[i].ExecutionGraph = graph
 		}
 	}
-	return nil
+	return s.attachRunStageTimings(ctx, runs)
 }
 
 func (s *Service) attachRunSelectedArtifacts(ctx context.Context, runs []model.PipelineRun) error {

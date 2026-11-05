@@ -4,6 +4,7 @@ import { useI18n } from 'vue-i18n'
 import { Check, ChevronRight, CircleDot, Clock3, GitBranch, Hand, Package, Rocket, ShieldCheck, TerminalSquare, X } from 'lucide-vue-next'
 
 import type { PipelineExecutionGraph, PipelineExecutionStage, PipelineRunGraphNode, WorkflowNodeType } from '@/types/pipeline'
+import PipelineStageDurations from './PipelineStageDurations.vue'
 
 const props = defineProps<{
   graph?: PipelineExecutionGraph
@@ -104,7 +105,7 @@ watch(() => [props.currentNodeId, nodes.value.length], async () => {
         <ChevronRight v-if="graph?.stages?.length" class="stage-arrow" :size="20" />
         <template v-for="(pipelineStage, stageIndex) in graph?.stages || []" :key="pipelineStage.id">
           <section class="run-stage">
-            <header><strong>{{ pipelineStage.name }}</strong><small>阶段 {{ stageIndex + 1 }}</small></header>
+            <header><div><strong>{{ pipelineStage.name }}</strong><PipelineStageDurations :stages="[pipelineStage]" :show-name="false"/></div><small>阶段 {{ stageIndex + 1 }}</small></header>
             <div class="run-task-chain">
               <template v-for="(batch, batchIndex) in stageBatches(pipelineStage)" :key="batchIndex">
                 <ChevronRight v-if="batchIndex" class="task-arrow" :size="17" />

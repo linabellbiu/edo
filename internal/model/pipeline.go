@@ -277,6 +277,16 @@ type PipelineRunGraphStage struct {
 	ID      string                 `json:"id"`
 	Name    string                 `json:"name"`
 	Tasks   []PipelineRunGraphNode `json:"tasks"`
+	Timing  *PipelineStageTiming   `json:"timing,omitempty"`
+}
+
+// PipelineStageTiming 由本次运行的任务记录聚合，不修改流程快照或持久化结构。
+type PipelineStageTiming struct {
+	State      string     `json:"state"`
+	StartedAt  *time.Time `json:"started_at,omitempty"`
+	FinishedAt *time.Time `json:"finished_at,omitempty"`
+	DurationMS *int64     `json:"duration_ms"`
+	Running    bool       `json:"running"`
 }
 
 type PipelineRunGraphNode struct {
