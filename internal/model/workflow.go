@@ -59,12 +59,13 @@ type ComposeImageBinding struct {
 
 // ComposeDeploymentSettings 由部署任务保存并进入运行快照；Compose 正文本身保存在部署方案中。
 type ComposeDeploymentSettings struct {
-	ProjectName   string `json:"project_name"`
-	EnvFile       string `json:"env_file,omitempty"`
-	TagVariable   string `json:"tag_variable"`
-	UseSudo       bool   `json:"use_sudo"`
-	HealthURL     string `json:"health_url,omitempty"`
-	AdoptExisting bool   `json:"adopt_existing"`
+	Services      []string `json:"services,omitempty"`
+	ProjectName   string   `json:"project_name"`
+	EnvFile       string   `json:"env_file,omitempty"`
+	TagVariable   string   `json:"tag_variable"`
+	UseSudo       bool     `json:"use_sudo"`
+	HealthURL     string   `json:"health_url,omitempty"`
+	AdoptExisting bool     `json:"adopt_existing"`
 }
 
 // WorkflowNotificationRule 定义单个任务结束后需要发送的通知。规则属于任务配置，

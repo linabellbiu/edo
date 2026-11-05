@@ -49,6 +49,7 @@ type executionContext struct {
 	registry           model.ImageRegistry
 	target             model.DeploymentTarget
 	artifact           model.Artifact
+	composeCandidates  map[string]model.Artifact
 	composeArtifacts   map[string]model.Artifact
 	variables          map[string]string
 	variableFiles      map[string]string

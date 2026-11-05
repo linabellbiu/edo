@@ -25,7 +25,7 @@ func validComposeNodeShape(config model.WorkflowNodeConfig) bool {
 		return false
 	}
 	if c := config.Compose; c != nil {
-		if len(c.ProjectName) > 128 || len(c.TagVariable) > 128 || len(c.EnvFile) > 1024 || len(c.HealthURL) > 2048 {
+		if len(c.Services) > 64 || len(c.ProjectName) > 128 || len(c.TagVariable) > 128 || len(c.EnvFile) > 1024 || len(c.HealthURL) > 2048 {
 			return false
 		}
 	}
@@ -68,7 +68,7 @@ func parseComposeStack(value string) (map[string]any, error) {
 }
 
 func validateComposeNode(config model.WorkflowNodeConfig) error {
-	if len(config.ComposeImages) == 0 || len(config.ComposeImages) > 32 || config.Compose == nil {
+	if len(config.ComposeImages) > 32 || config.Compose == nil {
 		return ErrInvalidComposeDelivery
 	}
 	settings := config.Compose
@@ -78,6 +78,13 @@ func validateComposeNode(config model.WorkflowNodeConfig) error {
 	if (settings.EnvFile != "" && !validComposeFilePath(settings.EnvFile)) || !validComposeHealthURL(settings.HealthURL) {
 		return ErrInvalidComposeDelivery
 	}
+	selected := map[string]bool{}
+	for _, name := range settings.Services {
+		if !composeServicePattern.MatchString(name) || selected[name] {
+			return ErrInvalidComposeDelivery
+		}
+		selected[name] = true
+	}
 	seen := map[string]bool{}
 	sources := map[string]bool{}
 	used := map[string]bool{}
@@ -86,6 +93,12 @@ func validateComposeNode(config model.WorkflowNodeConfig) error {
 			return ErrInvalidComposeDelivery
 		}
 		sources[source] = true
+	}
+	if len(config.ComposeImages) == 0 {
+		if config.ArtifactNodeID != "" && !sources[config.ArtifactNodeID] {
+			return ErrInvalidComposeDelivery
+		}
+		return nil
 	}
 	for _, binding := range config.ComposeImages {
 		if !composeServicePattern.MatchString(binding.Service) || seen[binding.Service] || binding.ArtifactNodeID == "" || len(binding.ArtifactNodeID) > 64 || !sources[binding.ArtifactNodeID] {
@@ -113,6 +126,15 @@ func validateComposeBindingsYAML(value string, config model.WorkflowNodeConfig) 
 		return err
 	}
 	services := doc["services"].(map[string]any)
+	if _, err := composeServiceScope(doc, config.Compose.Services); err != nil {
+		return err
+	}
+	for _, raw := range services {
+		service := raw.(map[string]any)
+		if image, ok := service["image"].(string); !ok || strings.TrimSpace(image) == "" {
+			return ErrInvalidComposeDelivery
+		}
+	}
 	for _, binding := range config.ComposeImages {
 		service, ok := services[binding.Service].(map[string]any)
 		if !ok {
@@ -127,13 +149,14 @@ func validateComposeBindingsYAML(value string, config model.WorkflowNodeConfig) 
 }
 
 func (s *Service) loadComposeStackArtifacts(ctx context.Context, prepared *executionContext) error {
-	if validateComposeNode(prepared.node.Config) != nil || s.artifacts == nil || s.docker == nil {
+	if validateComposeNode(prepared.node.Config) != nil || s.docker == nil || (len(prepared.node.Config.ArtifactNodeIDs) > 0 && s.artifacts == nil) {
 		return ErrPipelineExecutionConfig
 	}
 	prepared.composeArtifacts = map[string]model.Artifact{}
-	for _, binding := range prepared.node.Config.ComposeImages {
+	prepared.composeCandidates = map[string]model.Artifact{}
+	for _, sourceID := range prepared.node.Config.ArtifactNodeIDs {
 		var node model.PipelineNodeRun
-		if err := s.db.WithContext(ctx).Where("pipeline_run_id = ? AND project_id = ? AND node_id = ? AND status IN ?", prepared.run.ID, prepared.run.ProjectID, binding.ArtifactNodeID, []model.PipelineRunStatus{model.PipelineRunSucceeded, model.PipelineRunSkipped}).First(&node).Error; err != nil {
+		if err := s.db.WithContext(ctx).Where("pipeline_run_id = ? AND project_id = ? AND node_id = ? AND status IN ?", prepared.run.ID, prepared.run.ProjectID, sourceID, []model.PipelineRunStatus{model.PipelineRunSucceeded, model.PipelineRunSkipped}).First(&node).Error; err != nil {
 			return err
 		}
 		stored, err := s.artifacts.Find(ctx, node.ArtifactID)
@@ -149,10 +172,10 @@ func (s *Service) loadComposeStackArtifacts(ctx context.Context, prepared *execu
 			return ErrPipelineExecutionConfig
 		}
 		var build model.BuildRun
-		if err := s.db.WithContext(ctx).Where("uuid = ? AND project_id = ? AND application_id = ? AND pipeline_run_id = ? AND workflow_node_id = ? AND commit_sha = ? AND status = ?", stored.BuildRunID, prepared.run.ProjectID, prepared.run.ApplicationID, stored.PipelineRunID, binding.ArtifactNodeID, prepared.run.CommitSHA, model.BuildRunStatusSucceeded).First(&build).Error; err != nil {
+		if err := s.db.WithContext(ctx).Where("uuid = ? AND project_id = ? AND application_id = ? AND pipeline_run_id = ? AND workflow_node_id = ? AND commit_sha = ? AND status = ?", stored.BuildRunID, prepared.run.ProjectID, prepared.run.ApplicationID, stored.PipelineRunID, sourceID, prepared.run.CommitSHA, model.BuildRunStatusSucceeded).First(&build).Error; err != nil {
 			return err
 		}
-		plan, ok := prepared.snapshot.BuildPlans[binding.ArtifactNodeID]
+		plan, ok := prepared.snapshot.BuildPlans[sourceID]
 		if !ok || plan.ID != build.BuildPlanID || plan.ImageRegistryID != stored.ImageRegistryID {
 			return ErrPipelineExecutionConfig
 		}
@@ -163,13 +186,17 @@ func (s *Service) loadComposeStackArtifacts(ctx context.Context, prepared *execu
 		if !artifact.RegistryImageMatches(stored.ImageRef, stored.Digest, registry.Endpoint, registry.Namespace) {
 			return ErrPipelineExecutionConfig
 		}
-		prepared.composeArtifacts[binding.Service] = *stored
-		if binding.ArtifactNodeID == prepared.node.Config.ArtifactNodeID {
+		prepared.composeCandidates[sourceID] = *stored
+		if sourceID == prepared.node.Config.ArtifactNodeID {
 			prepared.artifact = *stored
 		}
 	}
-	if prepared.artifact.ID == "" {
-		return ErrPipelineExecutionConfig
+	for _, binding := range prepared.node.Config.ComposeImages {
+		image, ok := prepared.composeCandidates[binding.ArtifactNodeID]
+		if !ok {
+			return ErrPipelineExecutionConfig
+		}
+		prepared.composeArtifacts[binding.Service] = image
 	}
 	return nil
 }
@@ -245,6 +272,17 @@ func renderComposeStack(value string, config model.WorkflowNodeConfig, images ma
 
 func (s *Service) executeComposeStackDeployment(ctx context.Context, prepared *executionContext, approvedBy string) error {
 	failure := failureStateForRun(prepared.run)
+	if len(prepared.node.Config.ComposeImages) == 0 {
+		config, images, err := autoComposeImages(prepared.deploymentPlan.ComposeYAML, prepared.node.Config, prepared.composeCandidates, prepared.variables)
+		if err != nil {
+			return s.failDeploymentExecution(ctx, failure, "Compose 镜像无法自动匹配，请检查镜像引用及上游构建", err)
+		}
+		prepared.node.Config, prepared.composeArtifacts = config, images
+		prepared.artifact = model.Artifact{}
+		if len(config.ComposeImages) > 0 {
+			prepared.artifact = images[config.ComposeImages[0].Service]
+		}
+	}
 	content, tag, err := renderComposeStack(prepared.deploymentPlan.ComposeYAML, prepared.node.Config, prepared.composeArtifacts, prepared.variables)
 	if err != nil {
 		return s.failDeploymentExecution(ctx, failure, "Compose 镜像与本次构建的名称或 Tag 不匹配，请检查部署方案和变量", err)
@@ -269,7 +307,11 @@ func (s *Service) executeComposeStackDeployment(ctx context.Context, prepared *e
 			return s.failDeploymentExecution(ctx, failure, "目标主机无法拉取本次构建的固定镜像", err)
 		}
 	}
-	if err := s.updateExecutionPhase(ctx, &prepared.run, "deploy", "正在使用 EDO Compose 配置部署镜像 Tag "+tag); err != nil {
+	message := "正在使用 EDO Compose 配置部署"
+	if tag != "" {
+		message += "镜像 Tag " + tag
+	}
+	if err := s.updateExecutionPhase(ctx, &prepared.run, "deploy", message); err != nil {
 		return s.failDeploymentExecution(ctx, failure, "更新 Compose 发布状态失败", err)
 	}
 	output := s.newExecutionLogWriter(ctx, prepared.run.ID, "deploy", "Docker Compose", prepared.variableRedactions...)
@@ -283,7 +325,10 @@ func (s *Service) executeComposeStackDeployment(ctx context.Context, prepared *e
 		return s.failDeploymentExecution(ctx, failure, "Compose 部署配置无效", err)
 	}
 	prepared.deploymentPlan.Script = script
-	environment := mergeDeploymentVariables(prepared.variables, map[string]string{"EDO_PIPELINE_RUN_ID": prepared.run.ID, "EDO_APPLICATION_ID": prepared.application.ID, "EDO_APPLICATION_NAME": prepared.application.Name, "EDO_GIT_REF": prepared.run.Ref, "EDO_COMMIT_SHA": prepared.run.CommitSHA, "EDO_DEPLOYMENT_TARGET_ID": prepared.target.ID, prepared.node.Config.Compose.TagVariable: tag})
+	environment := mergeDeploymentVariables(prepared.variables, map[string]string{"EDO_PIPELINE_RUN_ID": prepared.run.ID, "EDO_APPLICATION_ID": prepared.application.ID, "EDO_APPLICATION_NAME": prepared.application.Name, "EDO_GIT_REF": prepared.run.Ref, "EDO_COMMIT_SHA": prepared.run.CommitSHA, "EDO_DEPLOYMENT_TARGET_ID": prepared.target.ID})
+	if tag != "" {
+		environment[prepared.node.Config.Compose.TagVariable] = tag
+	}
 	for name, value := range prepared.variableFiles {
 		environment[envtext.TransportKey(name)] = value
 	}
@@ -307,24 +352,28 @@ func composeStackScript(content string, config model.WorkflowNodeConfig, directo
 	if settings.EnvFile != "" {
 		args += " --env-file " + composeShellLiteral(settings.EnvFile)
 	}
-	services := []string{}
-	expected := []string{}
 	doc, err := parseComposeStack(content)
 	if err != nil {
 		return "", err
 	}
-	configuredServices := doc["services"].(map[string]any)
-	for _, binding := range config.ComposeImages {
-		services = append(services, composeShellLiteral(binding.Service))
-		service, ok := configuredServices[binding.Service].(map[string]any)
-		if !ok {
-			return "", ErrInvalidComposeDelivery
-		}
+	scope, err := composeServiceScope(doc, settings.Services)
+	if err != nil {
+		return "", err
+	}
+	services, explicit, expected := []string{}, []string{}, []string{}
+	for _, name := range settings.Services {
+		explicit = append(explicit, composeShellLiteral(name))
+	}
+	for _, name := range scope {
+		services = append(services, composeShellLiteral(name))
+		service := doc["services"].(map[string]any)[name].(map[string]any)
 		image, ok := service["image"].(string)
 		if !ok {
 			return "", ErrInvalidComposeDelivery
 		}
-		expected = append(expected, composeShellLiteral(binding.Service)+") printf '%s\\n' "+composeShellLiteral(image)+";;")
+		if !strings.Contains(image, "$") {
+			expected = append(expected, composeShellLiteral(name)+") printf '%s\\n' "+composeShellLiteral(image)+";;")
+		}
 	}
 	marker := "EDO_COMPOSE_" + strings.TrimPrefix(sha256Digest([]byte(content)), "sha256:")
 	for strings.Contains(content, "\n"+marker+"\n") {
@@ -334,6 +383,6 @@ func composeStackScript(content string, config model.WorkflowNodeConfig, directo
 	if settings.HealthURL != "" {
 		health = "curl --fail --silent --show-error --max-time 10 --output /dev/null " + composeShellLiteral(settings.HealthURL)
 	}
-	script := strings.NewReplacer("__EDO_WRITE_ENV_FILES__", fileWrites, "__EDO_DOCKER__", docker, "__EDO_COMPOSE_ARGS__", args, "__EDO_PROJECT_NAME__", composeShellLiteral(settings.ProjectName), "__EDO_EXPECTED_IMAGES__", strings.Join(expected, " "), "__EDO_SERVICES__", strings.Join(services, " "), "__EDO_TIMEOUT__", fmt.Sprint(timeout-30), "__EDO_HEALTH_CHECK__", health, "__EDO_ADOPT_EXISTING__", fmt.Sprint(settings.AdoptExisting), "__EDO_WRITE_COMPOSE__", "cat >\"$release/compose.yml\" <<'"+marker+"'\n"+content+"\n"+marker+"\n").Replace(composeStackTemplate)
+	script := strings.NewReplacer("__EDO_UP_SERVICES__", strings.Join(explicit, " "), "__EDO_WRITE_ENV_FILES__", fileWrites, "__EDO_DOCKER__", docker, "__EDO_COMPOSE_ARGS__", args, "__EDO_PROJECT_NAME__", composeShellLiteral(settings.ProjectName), "__EDO_EXPECTED_IMAGES__", strings.Join(expected, " "), "__EDO_SERVICES__", strings.Join(services, " "), "__EDO_TIMEOUT__", fmt.Sprint(timeout-30), "__EDO_HEALTH_CHECK__", health, "__EDO_ADOPT_EXISTING__", fmt.Sprint(settings.AdoptExisting), "__EDO_WRITE_COMPOSE__", "cat >\"$release/compose.yml\" <<'"+marker+"'\n"+content+"\n"+marker+"\n").Replace(composeStackTemplate)
 	return script, nil
 }

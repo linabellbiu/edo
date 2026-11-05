@@ -393,6 +393,9 @@ func artifactSources(stages []model.WorkflowStage) (map[string]string, error) {
 				continue
 			}
 			source := node.Config.ArtifactNodeID
+			if source == "" && node.Config.Compose != nil {
+				continue
+			}
 			if source == "" {
 				if len(latest) != 1 {
 					return nil, ErrPipelineExecutionConfig

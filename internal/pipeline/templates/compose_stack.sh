@@ -56,12 +56,12 @@ elif [ "$existing" = true ]; then
  dc "$release/compose.yml" --file "$release/old-images.yml" config --no-interpolate --no-env-resolution --no-path-resolution --format json >"$release/previous.yml" 2>>"$log" || error '无法记录上一镜像配置'
 fi
 echo '正在准备本次 Compose 镜像'
-dc "$release/compose.yml" pull --policy missing >>"$log" 2>&1 || error '镜像拉取失败，请检查镜像及主机网络'
+dc "$release/compose.yml" pull --policy missing --include-deps __EDO_UP_SERVICES__ >>"$log" 2>&1 || error '镜像拉取失败，请检查镜像及主机网络'
 cp "$release/compose.yml" "$current"
 rollback() {
  if [ -f "$release/previous.yml" ]; then
   cp "$release/previous.yml" "$current"
-  if dc "$current" up -d --no-build --pull never --wait --wait-timeout __EDO_TIMEOUT__ >>"$log" 2>&1; then
+  if dc "$current" up -d --no-build --pull never --wait --wait-timeout __EDO_TIMEOUT__ __EDO_UP_SERVICES__ >>"$log" 2>&1; then
    echo '本次发布失败，已恢复上一镜像配置' >&2
   else
    echo '本次发布失败，恢复上一镜像也失败，请检查现场' >&2
@@ -72,15 +72,16 @@ rollback() {
  exit 1
 }
 echo '正在执行 docker compose up -d'
-dc "$current" up -d --no-build --pull never --wait --wait-timeout __EDO_TIMEOUT__ >>"$log" 2>&1 || rollback
+dc "$current" up -d --no-build --pull never --wait --wait-timeout __EDO_TIMEOUT__ __EDO_UP_SERVICES__ >>"$log" 2>&1 || rollback
 for service in __EDO_SERVICES__; do
- expected=$(expected_image "$service") || rollback
- expected_id=$(docker_command image inspect --format '{{.Id}}' "$expected" 2>>"$log") || rollback
+ expected=$(expected_image "$service") || expected=''
+ expected_id=''
+ if [ -n "$expected" ]; then expected_id=$(docker_command image inspect --format '{{.Id}}' "$expected" 2>>"$log") || rollback; fi
  ids=$(dc "$current" ps --all --quiet "$service" 2>>"$log") || rollback
  [ -n "$ids" ] || rollback
  for id in $ids; do
   actual=$(docker_command inspect --format '{{.Image}}' "$id" 2>>"$log") || rollback
-  [ "$actual" = "$expected_id" ] || rollback
+  [ -z "$expected_id" ] || [ "$actual" = "$expected_id" ] || rollback
   restarts=$(docker_command inspect --format '{{.RestartCount}}' "$id" 2>>"$log") || rollback
   previous_restarts=$(awk -v id="$id" '$1 == id {print $2}' "$release/old-restarts")
   [ "$restarts" = "${previous_restarts:-0}" ] || rollback

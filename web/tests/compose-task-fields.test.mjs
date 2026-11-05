@@ -16,12 +16,14 @@ function harness(get){
  const scope=vue.effectScope(),state=scope.run(()=>component.setup(props,{expose(){},emit:(name,patch)=>{events.push({name,patch});Object.assign(props.node.config,patch)}}))
  return {state,events,props,auth,requests,stop(){unmounts.forEach(fn=>fn());scope.stop()}}
 }
-test('多镜像任务从 EDO 方案读取服务，共用上游构建且同步完整制品来源',async t=>{
+test('部署任务仅选择启动服务，留空部署全部，镜像来源由后端自动关联',async t=>{
  const h=harness();t.after(h.stop);await settle();assert.equal(h.state.kind.value,'compose_stack')
- h.state.readServices();h.state.updateBinding(0,{artifact_node_id:'build'});h.state.updateBinding(1,{artifact_node_id:'build'})
- assert.deepEqual(h.props.node.config.artifact_node_ids,['build']);assert.equal(h.props.node.config.artifact_node_id,'build')
- assert.equal(h.props.node.config.compose_images.length,2);assert.equal(h.props.node.config.compose.tag_variable,'VERSION')
- h.state.bindings([]);assert.deepEqual(h.props.node.config.artifact_node_ids,[]);assert.equal(h.props.node.config.artifact_node_id,'')
+ assert.deepEqual(h.state.services.value,['api','jobs'])
+ h.state.updateSettings({services:['api']})
+ assert.deepEqual(h.props.node.config.compose.services,['api']);assert.deepEqual(h.props.node.config.compose_images,[])
+ assert.deepEqual(h.props.node.config.artifact_node_ids,[]);assert.equal(h.props.node.config.artifact_node_id,'')
+ h.state.updateSettings({services:[]});assert.deepEqual(h.props.node.config.compose.services,[])
+ assert.equal(h.props.node.config.compose.tag_variable,'VERSION')
 })
 test('切换项目中止旧方案读取，禁用或撤权后不更新配置',async t=>{
  let resolve;const pending=new Promise(yes=>{resolve=yes});const h=harness(()=>pending);t.after(h.stop)

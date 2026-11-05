@@ -471,7 +471,7 @@ func (s *Service) requestCommandAndRun(
 	input.ScriptDigest = strings.TrimSpace(input.ScriptDigest)
 	input.DeploymentPlanID = strings.TrimSpace(input.DeploymentPlanID)
 	expectedDigest := model.DeploymentPlanExecutionDigest(input.PlanKind, input.Script, input.TimeoutSeconds)
-	if (input.PlanKind == model.DeploymentPlanComposeStack && (!immutableImageReference(input.Image) || input.ArtifactID == "")) || (input.PlanKind == model.DeploymentPlanScript && input.Image != "") {
+	if (input.PlanKind == model.DeploymentPlanComposeStack && ((input.Image != "" || input.ArtifactID != "") && (!immutableImageReference(input.Image) || input.ArtifactID == ""))) || (input.PlanKind == model.DeploymentPlanScript && input.Image != "") {
 		return nil, ErrInvalidTarget
 	}
 	if target.Platform != model.DeploymentSSH || (input.PlanKind != model.DeploymentPlanScript && input.PlanKind != model.DeploymentPlanComposeStack) ||

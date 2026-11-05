@@ -926,6 +926,24 @@ func validateWorkflowArtifactFlow(
 				}
 			}
 		case model.WorkflowNodeDeploy:
+			if plan, ok := deploymentPlans[next.Config.DeploymentPlanID]; ok && plan.Kind == model.DeploymentPlanComposeStack {
+				if err := validateComposeBindingsYAML(plan.ComposeYAML, next.Config); err != nil {
+					issues = append(issues, WorkflowIssue{Code: "invalid_compose_bindings", Message: "请检查 Compose 服务范围、镜像引用与 Tag 变量", NodeID: next.ID})
+				}
+				for _, source := range next.Config.ArtifactNodeIDs {
+					var sourcePlan model.BuildPlan
+					for _, candidate := range tasks {
+						if candidate.ID == source {
+							sourcePlan = buildPlans[candidate.Config.BuildPlanID]
+							break
+						}
+					}
+					if !priorBuilds[source] || sourcePlan.Kind != model.BuildPlanDockerfile || sourcePlan.ImageRegistryID == "" {
+						issues = append(issues, WorkflowIssue{Code: "compose_image_source", Message: "Compose 镜像来源必须是前序已绑定镜像仓库的构建任务", NodeID: next.ID})
+					}
+				}
+				continue
+			}
 			if next.Config.ArtifactNodeID != "" {
 				artifactPlan = nil
 				for _, candidate := range tasks {
@@ -965,25 +983,6 @@ func validateWorkflowArtifactFlow(
 			}
 			if deploymentPlan.Kind != model.DeploymentPlanComposeStack && (next.Config.Compose != nil || len(next.Config.ComposeImages) > 0 || len(next.Config.ArtifactNodeIDs) > 0) {
 				issues = append(issues, WorkflowIssue{Code: "compose_plan_required", Message: "多镜像配置需要选择 Compose 多镜像部署方案", NodeID: next.ID})
-			}
-			if deploymentPlan.Kind == model.DeploymentPlanComposeStack {
-				if validateComposeBindingsYAML(deploymentPlan.ComposeYAML, next.Config) != nil {
-					issues = append(issues, WorkflowIssue{Code: "invalid_compose_bindings", Message: "请配置 Compose 服务、上游镜像与 Tag 变量", NodeID: next.ID})
-					continue
-				}
-				for _, binding := range next.Config.ComposeImages {
-					var sourcePlan model.BuildPlan
-					for _, candidate := range tasks {
-						if candidate.ID == binding.ArtifactNodeID {
-							sourcePlan = buildPlans[candidate.Config.BuildPlanID]
-							break
-						}
-					}
-					if !priorBuilds[binding.ArtifactNodeID] || sourcePlan.Kind != model.BuildPlanDockerfile || sourcePlan.ImageRegistryID == "" {
-						issues = append(issues, WorkflowIssue{Code: "compose_image_source", Message: "Compose 必须引用前序阶段已绑定镜像仓库的构建任务", NodeID: next.ID})
-					}
-				}
-				continue
 			}
 			if target.Platform == model.DeploymentSSH && artifactPlan.Kind != model.BuildPlanScript {
 				issues = append(issues, WorkflowIssue{
@@ -1345,6 +1344,7 @@ func (s *Service) newStageResolvedWorkflowRunWithDatabase(
 			variableBindings[task.ID] = binding
 		}
 	}
+	autoComposeArtifactSources(resolved.Stages, buildPlans, deploymentPlans)
 	sources, sourceErr := artifactSources(resolved.Stages)
 	if sourceErr != nil {
 		return nil, sourceErr
