@@ -395,6 +395,12 @@ var migrations = []migration{
 	{version: "202610270075", up: func(tx *gorm.DB) error {
 		return tx.AutoMigrate(&model.KubernetesRBACPolicy{}, &model.KubernetesRoleGrant{}, &model.KubernetesRBACSubject{})
 	}},
+	{version: "202611050076", up: func(tx *gorm.DB) error {
+		if tx.Migrator().HasColumn(&model.DeliveryVariable{}, "AutoDeploy") {
+			return nil
+		}
+		return tx.Migrator().AddColumn(&model.DeliveryVariable{}, "AutoDeploy")
+	}},
 }
 
 // migrateRepeatableReleasePlanExecutions 取消“一个发布计划只能执行一次”的旧约束，

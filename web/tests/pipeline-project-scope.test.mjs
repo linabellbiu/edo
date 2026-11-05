@@ -128,6 +128,15 @@ test('任务引用只保留当前项目名称，不在内存中保留变量内�
   assert.ok(h.requests.every(request=>request.options.headers['X-EDO-Project-ID']==='project-a'))
 })
 
+test('部署任务只额外选择共享引用，自动配置不重复出现，已有显式引用仍可编辑',async t=>{
+  const h=await harness({task:true,get:request=>request.path==='/delivery-variables'?{data:{variables:[{project_id:'project-a',name:'APP_ENV',usage:'deploy',kind:'env_text',auto_deploy:true,is_secret:true,value:'不保留内容'},{project_id:'project-a',name:'SHARED',usage:'deploy',kind:'env',is_secret:false}]}}:undefined});t.after(h.stop)
+  h.props.node.type='deploy';await settle()
+  assert.deepEqual(h.state.variableOptions.value.map(item=>item.value),['SHARED'])
+  assert.equal(JSON.stringify(h.state.variables.value).includes('不保留内容'),false)
+  h.props.node.config.variable_names=['APP_ENV'];await settle()
+  assert.deepEqual(h.state.variableOptions.value.map(item=>item.value),['APP_ENV','SHARED'])
+})
+
 test('任务引用角色撤销与切项目立即清理选项，旧响应不能回填',async t=>{
   const pending=deferred(),h=await harness({task:true,get:request=>request.path==='/delivery-variables'&&request.options.headers['X-EDO-Project-ID']==='project-a'?pending.promise:undefined});t.after(h.stop)
   h.storage.selected='project-b';h.window.dispatchEvent(new Event('edo:projects-changed'));h.auth.user.project_id='project-b';await settle()

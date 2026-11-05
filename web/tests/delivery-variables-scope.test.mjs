@@ -10,7 +10,7 @@ const settle = async () => { await vue.nextTick(); await new Promise(resolve => 
 const deferred = () => { let resolve, reject; const promise = new Promise((yes, no) => { resolve = yes; reject = no }); return { promise, resolve, reject } }
 const variable = (project = 'project-a', patch = {}) => ({ id: `variable-${project}`, project_id: project, name: 'API_URL', description: '仅当前项目使用', kind: 'env', usage: 'build', application_id: '', environment_id: '', is_secret: false, is_active: true, version: 3, protected_refs: [], value: 'https://example.test', ...patch })
 
-async function harness({ permissions = codes, project = 'project-a', selected = project, get, put, post, del } = {}) {
+async function harness({ permissions = codes, project = 'project-a', selected = project, props = {}, get, put, post, del } = {}) {
   const requests = [], notifications = [], confirmations = [], mounted = [], unmounts = []
   const auth = vue.reactive({ user: { id: 'operator-a', department_id: 'department-a', project_id: project, is_superuser: false, permissions: [...permissions] }, canAny(required) { return !!this.user && (this.user.is_superuser || required.some(code => this.user.permissions.includes(code))) } })
   const storage = { selected }, localStorage = { getItem: key => key === 'edo.project' ? storage.selected : null }, window = new EventTarget()
@@ -28,12 +28,33 @@ async function harness({ permissions = codes, project = 'project-a', selected = 
     'ant-design-vue': { Modal: { confirm(config) { const item = { ...config, destroyed: false, destroy() { this.destroyed = true; config.afterClose?.() } }; confirmations.push(item); return item } }, message: Object.fromEntries(['success', 'warning', 'error'].map(kind => [kind, text => notifications.push({ kind, text })])) },
   }, { localStorage, window }).default
   const scope = vue.effectScope(); let state, stopped = false
-  scope.run(() => { state = component.setup({}, { expose() {} }) }); mounted.forEach(fn => fn()); await settle()
+  scope.run(() => { state = component.setup(props, { expose() {} }) }); mounted.forEach(fn => fn()); await settle()
   const stop = () => { if (stopped) return; stopped = true; unmounts.forEach(fn => fn()); scope.stop() }
   return { state, auth, storage, window, requests, notifications, confirmations, stop }
 }
 const writes = h => h.requests.filter(item => item.method !== 'get')
 const changeProject = async (h, id) => { h.storage.selected = id; h.window.dispatchEvent(new Event('edo:projects-changed')); h.auth.user.project_id = id; await settle() }
+
+test('应用入口固定应用和环境，文本无需引用名，保存自动使用但不发布', async t => {
+  const props=vue.reactive({applicationId:'app-project-a',applicationName:'应用 A'})
+  const h=await harness({props});t.after(h.stop)
+  h.state.environmentFilter.value='env-project-a';await settle();h.state.edit()
+  assert.equal(h.state.form.application_id,props.applicationId);assert.equal(h.state.form.environment_id,'env-project-a')
+  assert.equal(h.state.form.kind,'env_text');assert.ok(h.state.form.name)
+  h.state.form.value='TOKEN=literal$token\nEMPTY=';await h.state.save()
+  assert.equal(writes(h).length,1);assert.equal(writes(h)[0].path,'/delivery-variables')
+  assert.equal(writes(h)[0].body.auto_deploy,true);assert.equal(writes(h)[0].body.application_id,props.applicationId)
+  h.state.edit();h.state.form.value='旧环境草稿';h.state.environmentFilter.value='other';await settle();await h.state.save()
+  assert.equal(h.state.form.value,'');assert.equal(h.state.open.value,false);assert.equal(writes(h).length,1)
+})
+
+test('应用切换清空草稿，其他应用或环境的条目不能从应用入口编辑', async t => {
+  const props=vue.reactive({applicationId:'app-project-a'})
+  const h=await harness({props,get:request=>request.path==='/delivery-variables'?{data:{variables:[variable('project-a',{application_id:'app-project-a',usage:'deploy'}),variable('project-a',{id:'other',application_id:'another-app',usage:'deploy'})]}}:undefined});t.after(h.stop)
+  assert.equal(h.state.filtered.value.length,1);h.state.edit(h.state.rows.value[1]);assert.equal(h.state.open.value,false)
+  h.state.edit();h.state.form.value='旧应用草稿';props.applicationId='another-app';await settle()
+  assert.equal(h.state.open.value,false);assert.equal(h.state.form.value,'');assert.equal(h.state.filtered.value[0].id,'other')
+})
 
 test('变量页只读取当前项目并显示名称，读请求固定项目头且不额外执行写入', async t => {
   const h = await harness(); t.after(h.stop)

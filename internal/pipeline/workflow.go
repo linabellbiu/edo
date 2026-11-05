@@ -17,6 +17,7 @@ import (
 	"gorm.io/gorm/clause"
 
 	"edo/internal/cicd"
+	projectdatabase "edo/internal/database"
 	"edo/internal/deployment"
 	"edo/internal/dockerengine"
 	"edo/internal/envtext"
@@ -1223,6 +1224,16 @@ func (s *Service) newStageResolvedWorkflowRunWithDatabase(
 	}
 	resolved := *workflow
 	resolved.Stages = cloneWorkflowStages(workflow.Stages)
+	// 代码事件和调度从已读取的应用恢复项目范围；请求携带的范围必须与应用一致。
+	variableContext := ctx
+	if scope, ok := projectdatabase.DepartmentScopeFromContext(ctx); ok && scope.ProjectID != "" {
+		if scope.ProjectID != application.ProjectID || scope.DepartmentID != application.DepartmentID {
+			s.logger.Error("应用环境配置范围不一致", "operation", "application_environment_scope", "application_id", application.ID, "err", cicd.ErrScope)
+			return nil, cicd.ErrScope
+		}
+	} else {
+		variableContext = projectdatabase.WithDepartmentScope(ctx, projectdatabase.DepartmentScope{ProjectID: application.ProjectID, DepartmentID: application.DepartmentID})
+	}
 	delivery := cicd.New(database, s.secrets, s.logger)
 	variableBindings := make(map[string][]model.DeliveryVariableBinding)
 	policies := make(map[string]model.EnvironmentReleasePolicy)
@@ -1320,7 +1331,7 @@ func (s *Service) newStageResolvedWorkflowRunWithDatabase(
 	}
 	for _, stage := range resolved.Stages {
 		for _, task := range stage.Tasks {
-			if len(task.Config.VariableNames) == 0 {
+			if len(task.Config.VariableNames) == 0 && task.Type != model.WorkflowNodeDeploy {
 				continue
 			}
 			usage, envID := "build", task.Config.VariableEnvironmentID
@@ -1328,12 +1339,20 @@ func (s *Service) newStageResolvedWorkflowRunWithDatabase(
 				usage = "deploy"
 				envID = deploymentTargets[task.ID].EnvironmentID
 			}
-			if permissionErr := s.requireDeliveryPermissionWithDatabase(ctx, database, authorityID, "delivery_variable.execute"); permissionErr != nil {
-				return nil, permissionErr
+			var binding []model.DeliveryVariableBinding
+			var bindingErr error
+			if task.Type == model.WorkflowNodeDeploy {
+				binding, bindingErr = delivery.FreezeDeploymentVariables(variableContext, application.ProjectID, application.ID, envID, ref, task.Config.VariableNames)
+			} else {
+				binding, bindingErr = delivery.FreezeVariables(variableContext, application.ProjectID, application.ID, envID, usage, ref, task.Config.VariableNames)
 			}
-			binding, bindingErr := delivery.FreezeVariables(ctx, application.ProjectID, application.ID, envID, usage, ref, task.Config.VariableNames)
 			if bindingErr != nil {
 				return nil, bindingErr
+			}
+			if len(binding) > 0 {
+				if permissionErr := s.requireDeliveryPermissionWithDatabase(variableContext, database, authorityID, "delivery_variable.execute"); permissionErr != nil {
+					return nil, permissionErr
+				}
 			}
 			for _, variable := range binding {
 				if variable.Kind == "env_file" && deploymentPlans[task.ID].Kind != model.DeploymentPlanComposeStack && deploymentPlans[task.ID].Kind != model.DeploymentPlanCompose {
@@ -1341,7 +1360,9 @@ func (s *Service) newStageResolvedWorkflowRunWithDatabase(
 					return nil, ErrInvalidWorkflow
 				}
 			}
-			variableBindings[task.ID] = binding
+			if len(binding) > 0 {
+				variableBindings[task.ID] = binding
+			}
 		}
 	}
 	autoComposeArtifactSources(resolved.Stages, buildPlans, deploymentPlans)

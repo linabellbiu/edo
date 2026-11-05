@@ -7,7 +7,7 @@ import { useAuthStore } from '@/stores/auth'
 import type { WorkflowNode, WorkflowNodeConfig } from '@/types/pipeline'
 const props=defineProps<{node:WorkflowNode;disabled:boolean;buildNodes:WorkflowNode[];scriptBuild?:boolean}>()
 const emit=defineEmits<{change:[config:Partial<WorkflowNodeConfig>]}>()
-const auth=useAuthStore(),variables=ref<Array<{name:string;is_secret:boolean;usage?:string;kind?:string}>>([]),databases=ref<Array<{id:string;name:string}>>([]),environments=ref<Array<{id:string;name:string}>>([]),error=ref('')
+const auth=useAuthStore(),variables=ref<Array<{name:string;is_secret:boolean;usage?:string;kind?:string;auto_deploy?:boolean}>>([]),databases=ref<Array<{id:string;name:string}>>([]),environments=ref<Array<{id:string;name:string}>>([]),error=ref('')
 let revision=0,disposed=false
 let controller:AbortController|undefined
 const selectedProject=ref(readSelectedProject())
@@ -24,7 +24,7 @@ async function load(){
  try{
   const [v,d,e]=await Promise.all([auth.canAny(['delivery_variable.read'])?client.get('/delivery-variables',options):Promise.resolve({data:{variables:[]}}),auth.canAny(['application_database.read'])?client.get('/application-databases',options):Promise.resolve({data:{databases:[]}}),auth.canAny(['deployment.read'])?client.get('/environments',options):Promise.resolve({data:{environments:[]}})])
   if(disposed||signal.aborted||request!==revision||identity!==context())return
-  variables.value=v.data.variables.filter((item:{project_id:string})=>item.project_id===projectID).map((item:{name:string;is_secret:boolean;usage?:string;kind?:string})=>({name:item.name,is_secret:item.is_secret,usage:item.usage,kind:item.kind}))
+  variables.value=v.data.variables.filter((item:{project_id:string})=>item.project_id===projectID).map((item:{name:string;is_secret:boolean;usage?:string;kind?:string;auto_deploy?:boolean})=>({name:item.name,is_secret:item.is_secret,...(item.usage?{usage:item.usage}:{}),...(item.kind?{kind:item.kind}:{}),...(item.auto_deploy?{auto_deploy:true}:{})}))
   databases.value=d.data.databases.filter((item:{project_id:string})=>item.project_id===projectID);environments.value=e.data.environments.filter((item:{project_id:string})=>item.project_id===projectID)
  }catch(cause){if(!disposed&&!signal.aborted&&request===revision&&identity===context())error.value=apiErrorMessage(cause)}
 }
@@ -33,7 +33,7 @@ watch(context,()=>{selectedProject.value=readSelectedProject();void load()},{imm
 onMounted(()=>{window.addEventListener('storage',projectChanged);window.addEventListener('edo:projects-changed',projectChanged)})
 onBeforeUnmount(()=>{disposed=true;revision++;controller?.abort();variables.value=[];databases.value=[];environments.value=[];window.removeEventListener('storage',projectChanged);window.removeEventListener('edo:projects-changed',projectChanged)})
 const variableOptions=computed(()=>{
- const available=variables.value.filter(item=>!item.usage||item.usage===(props.node.type==='deploy'?'deploy':'build'))
+ const available=variables.value.filter(item=>(!item.usage||item.usage===(props.node.type==='deploy'?'deploy':'build'))&&(props.node.type!=='deploy'||!item.auto_deploy||props.node.config.variable_names?.includes(item.name)))
  return Array.from(new Set(available.map(v=>v.name))).map(name=>({value:name,label:name+(available.some(v=>v.name===name&&v.kind==='env_file')?' · env_file':available.some(v=>v.name===name&&v.kind==='env_text')?' · environment':'')+(available.some(v=>v.name===name&&v.is_secret)?' · 密钥':'')}))
 })
 const tool=computed(()=>props.node.config.migration?'migration':props.node.config.check?.tool||'script')
@@ -67,7 +67,7 @@ function updateCache(update:Record<string,unknown>){change({cache:{key:'dependen
    </template>
    <a-form-item v-if="tool!=='script'" label="超时（秒）"><a-input-number :value="node.config.timeout_seconds||600" :min="30" :max="7200" :disabled="!canEdit" @update:value="change({timeout_seconds:Number($event||600)})"/></a-form-item>
   </template>
-  <a-form-item v-if="['shell','build','deploy'].includes(node.type)&&!node.config.migration" label="引用当前项目变量与密钥">
+  <a-form-item v-if="['shell','build','deploy'].includes(node.type)&&!node.config.migration" :label="node.type==='deploy'?'额外引用共享变量与密钥':'引用当前项目变量与密钥'" :extra="node.type==='deploy'?'应用环境配置自动使用，无需在此重复选择。':undefined">
    <a-select mode="tags" :value="node.config.variable_names||[]" :disabled="!canEdit" :options="variableOptions" placeholder="选择或输入变量名称" @update:value="change({variable_names:$event as string[]})"/>
   </a-form-item>
   <a-form-item v-if="['shell','build'].includes(node.type)&&!node.config.migration" label="变量适用环境"><a-select allow-clear :value="node.config.variable_environment_id||undefined" :disabled="!canEdit" :options="environments.map(v=>({value:v.id,label:v.name}))" @update:value="change({variable_environment_id:String($event||'')})"/></a-form-item>

@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import DeliveryVariablesView from './DeliveryVariablesView.vue'
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
@@ -89,7 +90,7 @@ const applications=ref<Application[]>([]),repositories=ref<Repository[]>([]),cre
 const loading=ref(false),saving=ref(false),workflowRemovalID=ref(''),resourceMutationID=ref(''),formOpen=ref(false),editingID=ref(''),selectedWorkflowTemplateID=ref(''),registryTested=ref(false),testing=ref(false),repositoryTestingID=ref(''),manualApplicationID=ref(''),manualWorkflowID=ref(''),commitOpen=ref(false),commitOptions=ref<Array<{ref:string;name:string;sha:string;kind:'branch'|'tag'}>>([]),manualArtifacts=ref<ManualArtifact[]>([]),manualExecutionMode=ref<'code'|'artifact'>('code'),selectedArtifactID=ref(''),manualReferenceError=ref(''),selectedRef=ref(''),selectedSource=ref(''),manualSources=ref<Array<{id:string;name:string;environment?:string}>>([]),currentRun=ref<Run|null>(null),currentRunSelectionKey=ref(''),selectedRunID=ref(''),log=ref({open:false,runID:'',nodeID:'',title:'',status:''})
 const expandedApplications=ref<Record<string,boolean>>({}),expandedDeployments=ref<Record<string,boolean>>({}),dockerRuntimeContainers=ref<Record<string,DockerContainerRecord[]>>({}),dockerRuntimeLoading=ref<Record<string,boolean>>({}),dockerRuntimeLoaded=ref<Record<string,boolean>>({}),dockerRuntimeErrors=ref<Record<string,string>>({})
 type ApplicationFilter='all'|'running'|'attention'|'inactive'
-type ApplicationDetailTab='workflows'|'deployments'
+type ApplicationDetailTab='workflows'|'deployments'|'environment'
 const applicationSearch=ref(''),applicationFilter=ref<ApplicationFilter>('all')
 const applicationDetailTabs=ref<Record<string,ApplicationDetailTab>>({}),checkingApplicationIDs=ref<Record<string,boolean>>({})
 const deploymentRuntimeStates=ref<Record<string,DeploymentRuntimeState>>({}),deploymentRuntimeLoading=ref<Record<string,boolean>>({}),deploymentRuntimeErrors=ref<Record<string,string>>({}),deploymentRuntimeAction=ref('')
@@ -2066,6 +2067,7 @@ onBeforeUnmount(()=>{planExecutionDisposed=true;resetArtifactRequests();formOpen
       <template v-if="applicationDrawerCard">
         <a-button size="small" :type="applicationDetailTab(applicationDrawerID)==='workflows'?'primary':'default'" @click="toggleApplicationDetails(applicationDrawerCard,'workflows')">{{ t('resourceList.workflows') }} ({{ applicationDrawerCard.workflowSummaries.length }})</a-button>
         <a-button size="small" :type="applicationDetailTab(applicationDrawerID)==='deployments'?'primary':'default'" @click="toggleApplicationDetails(applicationDrawerCard,'deployments')">{{ t('resourceList.instances') }} ({{ applicationDrawerCard.deploymentInstances.length }})</a-button>
+        <a-button v-if="auth.canAny(['delivery_variable.read'])" size="small" :type="applicationDetailTab(applicationDrawerID)==='environment'?'primary':'default'" @click="toggleApplicationDetails(applicationDrawerCard,'environment')">环境配置（变量 / .env）</a-button>
         <a-button v-if="canConfigureDelivery" size="small" @click="configureDelivery(applicationDrawerCard.application.id)">{{ t('delivery.configure') }}</a-button>
         <a-button v-if="canUpdate" size="small" @click="edit(applicationDrawerCard.application)">{{ t('applicationCard.configure') }}</a-button>
         <a-button v-if="canUpdate" size="small" :loading="resourceMutationID===applicationDrawerCard.application.id" :disabled="Boolean(resourceMutationID)" @click="confirmResourceStatus(applicationDrawerCard.application)"><Power :size="14"/>{{ t(applicationDrawerCard.application.is_active?'delivery.disable':'delivery.enable') }}</a-button>
@@ -2082,7 +2084,7 @@ onBeforeUnmount(()=>{planExecutionDisposed=true;resetArtifactRequests();formOpen
     </section>
     <template v-for="card in applicationDrawerCard ? [applicationDrawerCard] : []" :key="card.application.id">
 
-      <section v-if="applicationDetailsOpen(card.application.id)" :id="`application-details-${card.application.id}`" class="apps-details-content resource-detail-section" :aria-label="card.application.name+' · '+(applicationDetailTab(card.application.id)==='workflows'?t('applicationCard.linkedWorkflows'):t('applicationCard.deploymentInstances'))">
+      <section v-if="applicationDetailsOpen(card.application.id)" :id="`application-details-${card.application.id}`" class="apps-details-content resource-detail-section" :aria-label="card.application.name+' · '+(applicationDetailTab(card.application.id)==='environment'?'环境配置':applicationDetailTab(card.application.id)==='workflows'?t('applicationCard.linkedWorkflows'):t('applicationCard.deploymentInstances'))">
         <template v-if="applicationDetailTab(card.application.id)==='workflows'">
           <a-table v-if="card.workflowSummaries.length" class="apps-workflow-table" size="small" table-layout="fixed"
             :columns="applicationWorkflowColumns" :data-source="card.workflowSummaries" :row-key="(item:ApplicationCard['workflowSummaries'][number])=>item.workflow.id" :pagination="false" :scroll="{x:1435}">
@@ -2098,6 +2100,7 @@ onBeforeUnmount(()=>{planExecutionDisposed=true;resetArtifactRequests();formOpen
           </a-table>
           <div v-else class="apps-empty-inline"><Workflow :size="20"/><span>{{ t('applicationCard.noWorkflows') }}</span></div>
         </template>
+        <DeliveryVariablesView v-else-if="applicationDetailTab(card.application.id)==='environment'" :key="card.application.id" :application-id="card.application.id" :application-name="card.application.name"/>
         <div v-else class="apps-deployments">
         <p v-if="!canReadDeployments" class="apps-empty-inline">{{ t('applicationCard.deploymentPermissionDenied') }}</p>
         <div v-else-if="card.deploymentInstances.length" class="application-deployment-list">

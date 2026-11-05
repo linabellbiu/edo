@@ -71,6 +71,7 @@ type VariableInput struct {
 	Value           *string  `json:"value"`
 	IsSecret        bool     `json:"is_secret"`
 	IsActive        bool     `json:"is_active"`
+	AutoDeploy      *bool    `json:"auto_deploy"`
 	ProtectedRefs   []string `json:"protected_refs"`
 	ExpectedVersion uint64   `json:"expected_version"`
 }
@@ -119,6 +120,9 @@ func (s *Service) SaveVariable(ctx context.Context, actorID, id string, in Varia
 		(in.Usage != "deploy" && (in.Kind == "env_text" || in.Kind == "env_file")) ||
 		(in.Value != nil && (len(*in.Value) > 65536 || strings.ContainsRune(*in.Value, '\x00'))) {
 		return nil, s.failure(ctx, "delivery_variable_validate", ErrInvalidVariable, ErrInvalidVariable)
+	}
+	if in.AutoDeploy != nil && *in.AutoDeploy && (in.ApplicationID == "" || in.Usage != "deploy") {
+		return nil, s.failure(ctx, "delivery_variable_auto_deploy_validate", ErrInvalidVariable, ErrInvalidVariable)
 	}
 	if in.Value != nil && (in.Kind == "env_text" || in.Kind == "env_file") {
 		parsed, parseErr := envtext.Parse(*in.Value)
@@ -198,6 +202,9 @@ func (s *Service) SaveVariable(ctx context.Context, actorID, id string, in Varia
 			return ErrInvalidVariable
 		}
 		item.Description, item.IsSecret, item.IsActive = in.Description, in.IsSecret, in.IsActive
+		if in.AutoDeploy != nil {
+			item.AutoDeploy = *in.AutoDeploy
+		}
 		item.ProtectedRefs = append([]string{}, in.ProtectedRefs...)
 		item.UpdatedBy, item.UpdatedAt = actorID, now
 		revision := model.DeliveryVariableRevision{ID: uuid.NewString(), ProjectID: scope.ProjectID, DepartmentID: scope.DepartmentID,
@@ -217,7 +224,7 @@ func (s *Service) SaveVariable(ctx context.Context, actorID, id string, in Varia
 		} else {
 			result := tx.Model(&model.DeliveryVariable{}).Where("uuid = ? AND project_id = ? AND version = ?", item.ID, scope.ProjectID, in.ExpectedVersion).
 				Updates(map[string]any{"description": item.Description, "is_secret": item.IsSecret, "is_active": item.IsActive,
-					"protected_refs": jsonValue(item.ProtectedRefs), "version": item.Version, "updated_by": actorID, "updated_at": now})
+					"auto_deploy": item.AutoDeploy, "protected_refs": jsonValue(item.ProtectedRefs), "version": item.Version, "updated_by": actorID, "updated_at": now})
 			if result.Error != nil {
 				return result.Error
 			}
@@ -291,7 +298,16 @@ func (s *Service) DeleteVariable(ctx context.Context, id string, version uint64)
 
 // FreezeVariables 固定引用与修订号，不把解密值写入运行快照。
 func (s *Service) FreezeVariables(ctx context.Context, projectID, applicationID, environmentID, usage, ref string, names []string) ([]model.DeliveryVariableBinding, error) {
-	if len(names) == 0 {
+	return s.freezeVariables(ctx, projectID, applicationID, environmentID, usage, ref, names, false)
+}
+
+// FreezeDeploymentVariables 将当前应用的自动配置与任务显式共享引用一起固定，旧变量不会自动启用。
+func (s *Service) FreezeDeploymentVariables(ctx context.Context, projectID, applicationID, environmentID, ref string, names []string) ([]model.DeliveryVariableBinding, error) {
+	return s.freezeVariables(ctx, projectID, applicationID, environmentID, "deploy", ref, names, true)
+}
+
+func (s *Service) freezeVariables(ctx context.Context, projectID, applicationID, environmentID, usage, ref string, names []string, automatic bool) ([]model.DeliveryVariableBinding, error) {
+	if len(names) == 0 && !automatic {
 		return []model.DeliveryVariableBinding{}, nil
 	}
 	// 后台任务也必须携带已验证的项目范围，不能只信任调用方传入的项目 UUID。
@@ -299,6 +315,7 @@ func (s *Service) FreezeVariables(ctx context.Context, projectID, applicationID,
 	if scopeErr != nil || projectID != scope.ProjectID || len(names) > 128 {
 		return nil, s.failure(ctx, "delivery_variable_freeze_scope", ErrScope, ErrScope)
 	}
+	names = append([]string{}, names...)
 	var items []model.DeliveryVariable
 	err := s.db.WithContext(ctx).Where(map[string]any{"project_id": projectID, "usage": usage, "is_active": true}).
 		Where("application_id IN ? AND environment_id IN ?", []string{"", applicationID}, []string{"", environmentID}).Order("id ASC").Find(&items).Error
@@ -306,10 +323,26 @@ func (s *Service) FreezeVariables(ctx context.Context, projectID, applicationID,
 		return nil, s.failure(ctx, "delivery_variable_freeze", err, ErrStorage)
 	}
 	selected := map[string]model.DeliveryVariable{}
+	explicit, added := map[string]bool{}, map[string]bool{}
+	for _, name := range names {
+		explicit[name] = true
+	}
 	for _, item := range items {
+		if !explicit[item.Name] {
+			if !automatic || applicationID == "" || item.ApplicationID != applicationID || !item.AutoDeploy {
+				continue
+			}
+			if !added[item.Name] {
+				names = append(names, item.Name)
+				added[item.Name] = true
+			}
+		}
 		if old, ok := selected[item.Name]; !ok || variablePriority(item) > variablePriority(old) {
 			selected[item.Name] = item
 		}
+	}
+	if len(names) > 128 {
+		return nil, s.failure(ctx, "delivery_variable_freeze_count", ErrInvalidVariable, ErrInvalidVariable)
 	}
 	result := make([]model.DeliveryVariableBinding, 0, len(names))
 	seen := map[string]bool{}

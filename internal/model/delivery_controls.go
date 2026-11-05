@@ -23,6 +23,7 @@ type DeliveryVariable struct {
 	ProtectedRefs []string       `gorm:"serializer:json;type:text;not null" json:"protected_refs"`
 	Version       uint64         `gorm:"not null" json:"version"`
 	IsActive      bool           `gorm:"not null;index" json:"is_active"`
+	AutoDeploy    bool           `gorm:"not null;default:false" json:"auto_deploy"`
 	CreatedBy     string         `gorm:"type:varchar(36);not null" json:"created_by"`
 	UpdatedBy     string         `gorm:"type:varchar(36);not null" json:"updated_by"`
 	CreatedAt     time.Time      `json:"created_at"`
