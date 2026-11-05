@@ -1,11 +1,32 @@
 package pipeline
 
 import (
+	"context"
 	"strings"
 	"testing"
 
 	"edo/internal/model"
 )
+
+func TestComposeFixedImagesQueueWithoutBuildArtifact(t *testing.T) {
+	node := model.WorkflowNode{ID: "deploy", Name: "部署固定镜像", Type: model.WorkflowNodeDeploy, Config: model.WorkflowNodeConfig{Compose: &model.ComposeDeploymentSettings{ProjectName: "example", TagVariable: "IMAGE_TAG"}}}
+	snapshot := workflowSnapshot{SchemaVersion: 1, ExecutionVersion: 2, Source: model.WorkflowNode{ID: "source", Type: model.WorkflowNodeTrigger}, Stages: []model.WorkflowStage{{ID: "deploy-stage", Tasks: []model.WorkflowNode{node}}}, DeploymentPlans: map[string]workflowDeploymentPlanSnapshot{node.ID: {Kind: model.DeploymentPlanComposeStack}}}
+	if id, err := parallelUpstreamArtifact(&snapshot, node, nil, "unrelated-artifact"); err != nil || id != "" {
+		t.Fatal("固定镜像部署错误借用了其他制品", err)
+	}
+	s, db, _, run := newBuildExecutorTestRun(t, snapshot.Source, snapshot, map[string]string{"code.txt": "source"})
+	if _, err := s.AdvanceRun(context.Background(), run.ID, "admin", ""); err != nil {
+		t.Fatal("没有构建任务的 Compose 无法进入部署队列", err)
+	}
+	nodes, err := s.ListNodeRuns(context.Background(), run.ID)
+	if err != nil || len(nodes) != 1 || nodes[0].ArtifactID != "" || nodes[0].JobID == "" {
+		t.Fatal("部署任务错误要求或伪造制品", err)
+	}
+	var job model.Job
+	if err = db.First(&job, "uuid = ?", nodes[0].JobID).Error; err != nil || job.Kind != "pipeline.deploy" {
+		t.Fatal("没有创建真实部署任务", err)
+	}
+}
 
 func TestComposeScopeAndAutomaticImages(t *testing.T) {
 	source := "services:\n  api:\n    image: registry.example.com/team/api:${IMAGE_TAG}\n    depends_on: [db]\n  worker:\n    image: registry.example.com/team/api:${IMAGE_TAG}\n  db:\n    image: redis:7-alpine\n"

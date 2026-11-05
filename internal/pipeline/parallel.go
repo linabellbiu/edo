@@ -255,6 +255,9 @@ func parallelUpstreamArtifact(snapshot *workflowSnapshot, node model.WorkflowNod
 		}
 		return state.ArtifactID, nil
 	}
+	if node.Config.Compose != nil && snapshot.DeploymentPlans[node.ID].Kind == model.DeploymentPlanComposeStack && len(node.Config.ArtifactNodeIDs) == 0 {
+		return "", nil
+	}
 	sources, err := artifactSources(snapshot.Stages)
 	if err != nil {
 		return "", err

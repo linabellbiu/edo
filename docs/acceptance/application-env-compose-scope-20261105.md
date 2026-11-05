@@ -14,7 +14,7 @@
 
 - CMP-SCOPE-01：通过。独立本机 Docker 项目运行实际 EDO 生成脚本，留空启动 api、db、worker；选 api 后 api 与依赖 db 更新，worker 容器 ID 保持。
 - CMP-SCOPE-02：后端与前端组件测试通过。覆盖完整仓库路径、共用镜像、歧义拒绝、已有制品身份检查；真实远程流水线未执行。
-- CMP-SCOPE-03：真实 Docker 脚本通过，使用 Compose 固定 alpine:3.22，无上游构建。
+- CMP-SCOPE-03：真实 Docker 脚本通过，使用 Compose 固定 alpine:3.22，无上游构建。另以真实测试数据库验证无构建流水线正常创建部署任务，不要求或借用其他制品。
 - CMP-SCOPE-04：脚本测试通过，正常 up 与恢复 up 仅追加已选服务；真实失败恢复未补跑，已有模拟失败测试通过。
 - 前端类型检查、生产构建与 Compose 配置组件用例通过。真实组件页面直接列出 api、worker，多选 api 后正确显示，无逐行上游构建控件。
 
