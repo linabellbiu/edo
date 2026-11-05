@@ -19,6 +19,49 @@ test('组织读取只请求已授权的公司或部门，筛选不修改原部�
   assert.deepEqual(company.requests.map(item=>item.path),['/organization']);assert.equal(company.state.company.name,'测试公司')
 })
 
+test('部门树按真实上下级组织，搜索下级保留完整路径且不改变折叠状态',async t=>{
+  const h=harness(t,'../src/views/OrganizationView.vue',{codes:['department.read']})
+  const department=(id,name,parent_id='')=>({id,name,parent_id,description:'',member_count:0,is_default:false})
+  h.state.rows.value=[department('backend','后端组','engineering'),department('support','客户支持'),department('engineering','研发部'),department('payments','支付服务组','backend')]
+  await Promise.resolve()
+  const root=h.state.treeData.value[0]
+  assert.deepEqual(root.children.map(node=>node.key),['support','engineering'])
+  assert.equal(root.children[1].children[0].children[0].title,'支付服务组')
+  h.state.expandNodes(['company','engineering'])
+  h.state.query.value=' 支付 '
+  assert.equal(h.state.treeData.value[0].children.length,1)
+  assert.equal(h.state.treeData.value[0].children[0].children[0].children[0].key,'payments')
+  assert.ok(h.state.visibleExpandedKeys.value.includes('backend'))
+  h.state.query.value=''
+  assert.deepEqual(h.state.visibleExpandedKeys.value,['company','engineering'])
+  assert.equal(h.state.rows.value.length,4)
+})
+
+test('节点添加下级自动绑定该部门，修改仍指向原部门，公司节点添加直属部门',async t=>{
+  const h=harness(t,'../src/views/OrganizationView.vue')
+  const parent={id:'parent',name:'研发部',parent_id:'',description:'研发说明',member_count:2,is_default:false}
+  h.state.rows.value=[parent]
+  h.state.addDepartment(parent.id)
+  assert.equal(h.state.form.id,'');assert.equal(h.state.form.parent_id,'parent')
+  h.state.form.name='后端组';await h.state.saveDepartment()
+  assert.equal(writes(h)[0].path,'/departments');assert.equal(writes(h)[0].body.parent_id,'parent')
+  h.state.edit(parent);h.state.form.name='产品研发部';await h.state.saveDepartment()
+  assert.equal(writes(h)[1].path,'/departments/parent');assert.equal(writes(h)[1].body.parent_id,'')
+  h.state.addDepartment()
+  assert.equal(h.state.form.id,'');assert.equal(h.state.form.parent_id,'');assert.equal(h.state.form.name,'')
+})
+
+test('部门树刷新保留收起的分支，新增节点可见，历史异常关系不丢失部门',async t=>{
+  const h=harness(t,'../src/views/OrganizationView.vue')
+  const rows=[{id:'parent',name:'研发',parent_id:''},{id:'child',name:'后端',parent_id:'parent'}]
+  h.state.rows.value=rows;await Promise.resolve()
+  h.state.expandNodes(['company'])
+  h.state.rows.value=rows.map(row=>({...row}));await Promise.resolve()
+  assert.deepEqual(h.state.visibleExpandedKeys.value,['company'])
+  h.state.rows.value=[{id:'a',name:'A',parent_id:'b'},{id:'b',name:'B',parent_id:'a'},{id:'orphan',name:'历史部门',parent_id:'missing'}]
+  assert.deepEqual(h.state.treeData.value[0].children.map(node=>node.key),['a','b','orphan'])
+})
+
 test('公司和部门保存区分创建及更新，空名称不发送，接口失败保留编辑草稿',async t=>{
   const h=harness(t,'../src/views/OrganizationView.vue')
   await h.state.saveCompany();await h.state.saveDepartment();assert.equal(writes(h).length,0)
