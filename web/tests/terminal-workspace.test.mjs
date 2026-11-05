@@ -107,6 +107,35 @@ test('最小化与恢复保留原WebSocket/xterm，输入和尺寸协议保持�
   assert.equal(h.sockets.length,1);assert.equal(h.terminals.length,1);assert.equal(view.disposed,false)
 })
 
+test('服务端ready后终端正文显示已连接，重复ready不重写Shell输出',async t=>{
+  const h=sessionHarness();t.after(h.stop);await h.mount()
+  const socket=h.sockets[0],view=h.terminals[0]
+  assert.equal(h.state.stateText.value,'正在连接终端…')
+  socket.readyState=1
+  assert.equal(h.emissions.some(([,state])=>state==='connected'),false)
+  socket.onmessage({data:new TextEncoder().encode('$ prompt\r\nexisting output').buffer})
+  const before=view.output.length
+  socket.onmessage({data:JSON.stringify({type:'ready'})})
+  assert.equal(h.emissions.filter(([,state])=>state==='connected').length,1)
+  assert.equal(h.state.stateText.value,'已连接')
+  assert.equal(view.output.length,before)
+  socket.onmessage({data:JSON.stringify({type:'ready'})})
+  assert.equal(view.output.length,before)
+  assert.equal(view.output.at(-1),'$ prompt\r\nexisting output')
+})
+
+test('失败或结束的连接不能被迟到ready显示为已连接',async t=>{
+  for(const type of ['error','exit']){
+    const h=sessionHarness();t.after(h.stop);await h.mount()
+    h.sockets[0].onmessage({data:JSON.stringify({type,message:'会话已结束'})})
+    const before=h.terminals[0].output.length
+    h.sockets[0].onmessage({data:JSON.stringify({type:'ready'})})
+    assert.equal(h.emissions.some(([,state])=>state==='connected'),false)
+    assert.equal(h.terminals[0].output.length,before)
+    assert.equal(h.state.stateText.value,type==='error'?'连接失败':'连接已结束')
+  }
+})
+
 test('关闭CONNECTING会话也释放socket/observer，迟到回调不复活终端',async()=>{
   const h=sessionHarness();await h.mount();const socket=h.sockets[0],callback=socket.onmessage,view=h.terminals[0],before=view.output.length
   h.stop();assert.equal(socket.closes.length,1);assert.equal(view.disposed,true);assert.equal(h.observers[0].disconnected,true);assert.equal(h.listeners.size,0)
