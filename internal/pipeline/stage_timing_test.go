@@ -106,8 +106,11 @@ func TestRunStageTimingsUseRunSnapshotAndProjectScope(t *testing.T) {
 	if stages[0].Timing.DurationMS == nil || *stages[0].Timing.DurationMS != 15000 || stages[1].Timing.DurationMS != nil || stages[1].Timing.State != "pending" {
 		t.Fatalf("阶段数据或项目隔离错误: %+v %+v", stages[0].Timing, stages[1].Timing)
 	}
+	if timing := page.Runs[0].Timing; timing == nil || timing.DurationMS == nil || !timing.Running || timing.StartedAt == nil || !timing.StartedAt.Equal(base) {
+		t.Fatalf("整体耗时未继承实际任务时间或混入其他项目: %+v", timing)
+	}
 	found, err := service.FindRun(ctx, run.ID)
-	if err != nil || found.ExecutionGraph.Stages[0].Timing.DurationMS == nil {
+	if err != nil || found.ExecutionGraph.Stages[0].Timing.DurationMS == nil || found.Timing == nil || found.Timing.DurationMS == nil {
 		t.Fatalf("详情遗漏阶段耗时: %+v %v", found, err)
 	}
 }

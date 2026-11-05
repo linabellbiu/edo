@@ -53,5 +53,8 @@ func TestPipelineStageTimingIsAvailableToRunReader(t *testing.T) {
 		if timing == nil || timing.DurationMS == nil || *timing.DurationMS != 12000 || timing.Running || timing.FinishedAt == nil {
 			t.Fatalf("接口未返回实际固定耗时: %+v", timing)
 		}
+		if got.Timing == nil || got.Timing.DurationMS == nil || *got.Timing.DurationMS != 12000 || got.Timing.Running {
+			t.Fatalf("运行查看权限未取得真实总耗时: %+v", got.Timing)
+		}
 	}
 }

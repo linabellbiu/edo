@@ -14,7 +14,7 @@ var errStageTimingUnavailable = errors.New("读取流水线阶段耗时失败，
 func (s *Service) attachRunStageTimings(ctx context.Context, runs []model.PipelineRun) error {
 	ids := make([]string, 0, len(runs))
 	for _, run := range runs {
-		if run.ExecutionGraph != nil && len(run.ExecutionGraph.Stages) > 0 {
+		if run.ExecutionGraph != nil {
 			ids = append(ids, run.ID)
 		}
 	}
@@ -49,8 +49,57 @@ func (s *Service) attachRunStageTimings(ctx context.Context, runs []model.Pipeli
 			stage := &runs[i].ExecutionGraph.Stages[j]
 			stage.Timing = stageTiming(*stage, runs[i].Status, byRun[runs[i].ID], now)
 		}
+		runs[i].Timing = runTiming(runs[i], byRun[runs[i].ID], now)
 	}
 	return nil
+}
+
+// 总耗时取本次实际执行的时间跨度，包含代码源与阶段间等待，不使用运行更新时间。
+func runTiming(run model.PipelineRun, records map[string]model.PipelineNodeRun, now time.Time) *model.PipelineStageTiming {
+	timing := &model.PipelineStageTiming{State: string(run.Status)}
+	if run.ExecutionGraph == nil {
+		return timing
+	}
+	parts := make([]*model.PipelineStageTiming, 0, len(run.ExecutionGraph.Stages)+1)
+	if source, ok := records[run.ExecutionGraph.Source.ID]; ok {
+		parts = append(parts, stageTiming(model.PipelineRunGraphStage{ID: source.StageID, Tasks: []model.PipelineRunGraphNode{run.ExecutionGraph.Source}}, run.Status, records, now))
+	}
+	for _, stage := range run.ExecutionGraph.Stages {
+		parts = append(parts, stage.Timing)
+	}
+	terminal := nodeFinished(run.Status)
+	incomplete := false
+	for _, part := range parts {
+		if part != nil && (part.State == "pending" || part.State == "not_executed" || part.State == "skipped") {
+			continue
+		}
+		if part == nil || part.DurationMS == nil || part.StartedAt == nil {
+			incomplete = true
+			continue
+		}
+		if timing.StartedAt == nil || part.StartedAt.Before(*timing.StartedAt) {
+			timing.StartedAt = part.StartedAt
+		}
+		if terminal {
+			if part.FinishedAt == nil {
+				incomplete = true
+			} else if timing.FinishedAt == nil || part.FinishedAt.After(*timing.FinishedAt) {
+				timing.FinishedAt = part.FinishedAt
+			}
+		}
+	}
+	if incomplete || timing.StartedAt == nil || terminal && timing.FinishedAt == nil {
+		return timing
+	}
+	end := now
+	if terminal {
+		end = *timing.FinishedAt
+	}
+	if duration := end.Sub(*timing.StartedAt).Milliseconds(); duration >= 0 {
+		timing.DurationMS = &duration
+		timing.Running = !terminal
+	}
+	return timing
 }
 
 func stageTiming(stage model.PipelineRunGraphStage, runStatus model.PipelineRunStatus, records map[string]model.PipelineNodeRun, now time.Time) *model.PipelineStageTiming {

@@ -27,23 +27,22 @@ export function stageDurationLabel(
     timing.duration_ms < 0
   )
     return '耗时未知'
-  const milliseconds =
-    timing.duration_ms + (timing.running ? Math.max(0, elapsed) : 0)
-  let duration: string
-  if (milliseconds < 1000) duration = `${Math.floor(milliseconds)} 毫秒`
-  else {
-    const seconds = Math.floor(milliseconds / 1000)
-    const parts = [
-      seconds >= 3600 ? `${Math.floor(seconds / 3600)} 小时` : '',
-      seconds >= 60 ? `${Math.floor((seconds % 3600) / 60)} 分` : '',
-      `${seconds % 60} 秒`,
-    ]
-    duration = parts.filter(Boolean).join(' ')
-  }
+  const duration = formatPipelineDuration(timing.duration_ms + (timing.running ? Math.max(0, elapsed) : 0))
   const state = timing.running
     ? states[timing.state] || '进行中'
     : ['failed', 'canceled'].includes(timing.state)
       ? states[timing.state]
       : ''
   return state ? `${duration} · ${state}` : duration
+}
+
+export function formatPipelineDuration(milliseconds?: number | null): string {
+  if (milliseconds == null || !Number.isFinite(milliseconds) || milliseconds < 0) return '耗时未知'
+  if (milliseconds < 1000) return `${Math.floor(milliseconds)} 毫秒`
+  const seconds = Math.floor(milliseconds / 1000)
+  return [
+    seconds >= 3600 ? `${Math.floor(seconds / 3600)} 小时` : '',
+    seconds >= 60 ? `${Math.floor((seconds % 3600) / 60)} 分` : '',
+    `${seconds % 60} 秒`,
+  ].filter(Boolean).join(' ')
 }

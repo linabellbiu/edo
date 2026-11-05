@@ -22,7 +22,8 @@ import GitCredentialDrawer from '@/components/GitCredentialDrawer.vue'
 import PageToolbar from '@/components/PageToolbar.vue'
 import PipelineLogDrawer from '@/components/PipelineLogDrawer.vue'
 import PipelineTaskHistory from '@/components/PipelineTaskHistory.vue'
-import PipelineStageDurations from '@/components/PipelineStageDurations.vue'
+import PipelineRunProgress from '@/components/PipelineRunProgress.vue'
+import type { PipelineRunProgressRecord } from '@/utils/pipelineRunProgress'
 import ReleasePlanEditorDrawer from '@/components/ReleasePlanEditorDrawer.vue'
 import ReleasePlanExecuteModal from '@/components/ReleasePlanExecuteModal.vue'
 import ReleasePlanWorkspace from '@/components/ReleasePlanWorkspace.vue'
@@ -58,7 +59,7 @@ interface Artifact extends ResourceRecord{id:string;application_id:string;build_
 interface ApplicationWorkflow extends PipelineWorkflow{workflow_template?:{id:string;name:string}}
 interface WorkflowTemplate extends PipelineWorkflow{description?:string}
 interface Application extends ResourceRecord{id:string;name:string;description:string;repository_id:string;poll_interval_seconds:number;last_observed_commit?:string;sync_status:string;sync_message?:string;last_checked_at?:string;is_active:boolean;repository?:Repository;workflows:ApplicationWorkflow[]}
-interface Run extends ResourceRecord{approval?:PipelineRunApproval;row_id?:number;id:string;application_id:string;workflow_id?:string;deployment_id?:string;release_plan_id?:string;release_plan_execution_id?:string;release_plan_execution_item_id?:string;retry_of_id?:string;artifact_id?:string;selected_artifact?:{id:string;name:string;kind:'oci_image'|'file_bundle';digest:string};trigger:string;ref:string;commit_sha:string;commit_message?:string;status:string;stage:string;message?:string;created_at:string;updated_at?:string;application?:Application;environment?:string;current_node_id?:string;current_node_name?:string;created_by?:string;image?:string;execution_graph?:PipelineExecutionGraph}
+interface Run extends ResourceRecord,PipelineRunProgressRecord{approval?:PipelineRunApproval;row_id?:number;id:string;application_id:string;workflow_id?:string;deployment_id?:string;release_plan_id?:string;release_plan_execution_id?:string;release_plan_execution_item_id?:string;retry_of_id?:string;artifact_id?:string;selected_artifact?:{id:string;name:string;kind:'oci_image'|'file_bundle';digest:string};trigger:string;ref:string;commit_sha:string;commit_message?:string;status:string;stage:string;message?:string;created_at:string;updated_at?:string;application?:Application;environment?:string;current_node_id?:string;current_node_name?:string;created_by?:string;image?:string;execution_graph?:PipelineExecutionGraph}
 interface DeploymentTarget extends ResourceRecord{id:string;platform:string;environment_id:string;host_id:string;runtime_id:string;namespace?:string;workload_name?:string;container_name?:string}
 interface DeploymentPlan extends ResourceRecord{id:string;kind?:string;service_name?:string;deployment_target_id:string;deployment_target?:DeploymentTarget}
 interface DeploymentRecord extends ResourceRecord{id:string;pipeline_run_id?:string;application_id?:string;target_id:string;target_name:string;platform:string;environment_id:string;host_id:string;runtime_id:string;namespace:string;workload_name:string;container_name:string;deployment_plan_id?:string;deployment_plan_kind?:string;compose_service?:string;operation:string;image:string;image_display?:string;status:string;error_message?:string;runtime_deleted_at?:string;created_at:string;updated_at:string;finished_at?:string}
@@ -246,7 +247,7 @@ const runColumns=[
  {title:'应用流水线',key:'workflow',width:180},
  {title:'提交 / 版本',key:'version'},
  {title:'状态 / 当前任务',key:'status',width:160},
- {title:'阶段耗时',key:'stage_durations',width:240},
+ {title:'总耗时 / 当前阶段',key:'progress',width:240},
  {title:'执行时间',key:'created_at',width:180},
  {title:'操作',key:'actions',width:175,fixed:'right' as const},
 ]
@@ -2237,7 +2238,7 @@ onBeforeUnmount(()=>{planExecutionDisposed=true;resetArtifactRequests();formOpen
         <template v-else-if="column.key==='workflow'"><strong class="run-cell-title">{{ record.runs.length }} 条流水线记录</strong><span class="run-cell-secondary">各应用独立执行</span></template>
         <template v-else-if="column.key==='version'"><span class="run-cell-muted">各应用使用各自的代码版本或制品</span></template>
         <template v-else-if="column.key==='status'"><span class="run-group-counts"><span v-for="count in executionRunCounts(record).split('、')" :key="count">{{ count }}</span></span></template>
-        <template v-else-if="column.key==='stage_durations'"><span class="run-cell-muted">展开查看各应用阶段耗时</span></template>
+        <template v-else-if="column.key==='progress'"><span class="run-cell-muted">展开查看各应用总耗时和阶段</span></template>
         <template v-else-if="column.key==='created_at'"><time class="run-cell-time" :datetime="record.created_at">{{ formatRunTime(record.created_at) }}</time><span class="run-cell-secondary">最近运行</span></template>
       </template>
       <template v-else-if="column.key==='release_plan'">
@@ -2262,7 +2263,7 @@ onBeforeUnmount(()=>{planExecutionDisposed=true;resetArtifactRequests();formOpen
         <time class="run-cell-time" :datetime="record.created_at">{{ formatRunTime(record.created_at) }}</time>
         <span class="run-cell-secondary">{{ formatRunRelativeTime(record.created_at) }}</span>
       </template>
-      <PipelineStageDurations v-else-if="column.key==='stage_durations'" :stages="record.execution_graph?.stages"/>
+      <PipelineRunProgress v-else-if="column.key==='progress'" :run="record"/>
     </template>
   </a-table>
   <ResourceDetailDrawer v-model:open="runDrawerOpen" :title="runDrawerEntry ? (isRunExecutionGroup(runDrawerEntry) ? runEntryPlanName(runDrawerEntry) : applicationName(runDrawerEntry)) : '运行详情'">
@@ -2278,7 +2279,7 @@ onBeforeUnmount(()=>{planExecutionDisposed=true;resetArtifactRequests();formOpen
             <div><small>流水线</small><button type="button" class="run-resource-link" :disabled="!run.workflow_id" :title="runWorkflowName(run)" @click.stop="openApplicationWorkflow(run.application_id,run.workflow_id||'')">{{ runWorkflowName(run) }}</button></div>
             <div><strong class="run-cell-title" :title="run.commit_message||'未记录提交说明'">{{ run.commit_message||'未记录提交说明' }}</strong><span class="run-cell-secondary" :title="runReferenceLabel(run)">{{ runReferenceLabel(run) }}</span></div>
             <div><a-tag :color="runStatusColor(run.status)">{{ runStatusLabel(run.status,run.stage) }}</a-tag><span class="run-cell-secondary">{{ run.current_node_name||run.current_node_id||'尚未开始' }}</span></div>
-            <div><time class="run-cell-time" :datetime="run.created_at">{{ formatRunTime(run.created_at) }}</time><span class="run-cell-secondary">{{ formatRunRelativeTime(run.created_at) }}</span><PipelineStageDurations :stages="run.execution_graph?.stages"/></div>
+            <div><time class="run-cell-time" :datetime="run.created_at">{{ formatRunTime(run.created_at) }}</time><span class="run-cell-secondary">{{ formatRunRelativeTime(run.created_at) }}</span><PipelineRunProgress :run="run"/></div>
           </div>
           <section v-if="expandedRunIDs.includes(run.id)" :id="`run-detail-${run.id}`" class="run-detail" :class="{'is-current':selectedRunID===run.id}" :aria-label="`运行详情：${formatRunTime(run.created_at)}`">
             <header class="run-detail-heading">

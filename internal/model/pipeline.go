@@ -344,6 +344,7 @@ type PipelineRun struct {
 	ApprovalRequired           bool                         `gorm:"-" json:"approval_required"`
 	CurrentNodeName            string                       `gorm:"-" json:"current_node_name,omitempty"`
 	ExecutionGraph             *PipelineRunGraph            `gorm:"-" json:"execution_graph,omitempty"`
+	Timing                     *PipelineStageTiming         `gorm:"-" json:"timing,omitempty"`
 	SelectedArtifact           *PipelineRunSelectedArtifact `gorm:"-" json:"selected_artifact,omitempty"`
 	StatusWriteback            bool                         `gorm:"not null;default:false;index" json:"status_writeback"`
 	RepositoryCheckState       string                       `gorm:"type:varchar(16);not null;default:''" json:"repository_check_state"`
