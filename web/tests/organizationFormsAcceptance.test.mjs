@@ -64,6 +64,44 @@ test('部门树刷新保留收起的分支，新增节点可见，历史异常�
   assert.deepEqual(h.state.treeData.value[0].children.map(node=>node.key),['a','b','orphan'])
 })
 
+test('默认部门排在首位，成员分页完整挂到所属部门，搜索成员保留上级路径',async t=>{
+  const departments=[{id:'team',name:'研发部',parent_id:'',is_default:false,member_count:1},{id:'default',name:'默认部门',parent_id:'',is_default:true,member_count:200}]
+  const users=Array.from({length:201},(_,index)=>({id:`user-${index}`,username:`account-${index}`,nickname:index===200?'小林':'成员',department_id:index===200?'team':'default',is_active:index!==200}))
+  const h=harness(t,'../src/views/OrganizationView.vue',{codes:['department.read','user.read'],api:{get:async(path,config)=>({data:path==='/departments'?{departments}:{users:users.slice(config.params.offset,config.params.offset+config.params.limit)}})}})
+  await h.state.load()
+  const root=h.state.treeData.value[0]
+  assert.equal(root.children[0].key,'default');assert.equal(root.children[0].children.length,200)
+  assert.equal(root.children[1].children[0].title,'小林');assert.equal(root.children[1].children[0].member.is_active,false)
+  assert.deepEqual(h.requests.filter(row=>row.path==='/users').map(row=>row.body.params),[{view:'members',limit:200,offset:0},{view:'members',limit:200,offset:200}])
+  h.state.query.value='account-200'
+  assert.equal(h.state.treeData.value[0].children.length,1)
+  assert.equal(h.state.treeData.value[0].children[0].key,'team')
+  assert.equal(h.state.treeData.value[0].children[0].children[0].key,'member:user-200')
+})
+
+test('成员读取失败不影响部门树，无用户权限时不读取成员且不把缺失当作无人',async t=>{
+  const department={id:'team',name:'研发部',parent_id:'',is_default:false,member_count:1}
+  const reader=harness(t,'../src/views/OrganizationView.vue',{codes:['department.read'],api:{get:async()=>({data:{departments:[department]}})}})
+  await reader.state.load()
+  assert.deepEqual(reader.requests.map(row=>row.path),['/departments'])
+  assert.equal(reader.state.memberNote(department),'workspace.memberAccessDenied')
+  const failed=harness(t,'../src/views/OrganizationView.vue',{codes:['department.read','user.read'],api:{get:async path=>{if(path==='/users')throw new Error('成员读取失败');return {data:{departments:[department]}}}}})
+  await failed.state.load()
+  assert.equal(failed.state.treeData.value[0].children[0].key,'team')
+  assert.equal(failed.state.membersLoading.value,false);assert.equal(failed.state.membersError.value,'workspace.memberLoadFailed')
+})
+
+test('成员读取中身份变化后丢弃旧成员，不继续翻页',async t=>{
+  let finish
+  const h=harness(t,'../src/views/OrganizationView.vue',{codes:['department.read','user.read'],api:{get:async path=>path==='/users'?new Promise(resolve=>{finish=resolve}):{data:{departments:[]}}}})
+  const pending=h.state.load()
+  h.auth.user.id='another-user'
+  finish({data:{users:Array.from({length:200},(_,index)=>({id:`old-${index}`,username:'旧身份成员',department_id:'old'}))}})
+  await pending
+  assert.deepEqual(h.state.members.value,[])
+  assert.equal(h.requests.filter(row=>row.path==='/users').length,1)
+})
+
 test('公司和部门保存区分创建及更新，空名称不发送，接口失败保留编辑草稿',async t=>{
   const h=harness(t,'../src/views/OrganizationView.vue')
   await h.state.saveCompany();await h.state.saveDepartment();assert.equal(writes(h).length,0)

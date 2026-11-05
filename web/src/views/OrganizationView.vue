@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { Modal, message } from 'ant-design-vue'
-import { Plus, RefreshCw, Building2, UsersRound, MoreHorizontal } from 'lucide-vue-next'
+import { Plus, RefreshCw, Building2, UsersRound, UserRound, MoreHorizontal } from 'lucide-vue-next'
 import { useI18n } from 'vue-i18n'
 import client from '@/api/client'
 import { apiErrorMessage, isMutationAcknowledged, type ResourceRecord } from '@/api/resources'
@@ -10,23 +10,34 @@ import PageToolbar from '@/components/PageToolbar.vue'
 import ResourceDetailDrawer from '@/components/ResourceDetailDrawer.vue'
 
 interface Department extends ResourceRecord { id:string; parent_id:string; name:string; description:string; member_count:number; is_default:boolean }
-interface OrganizationNode { key:string; title:string; department?:Department; children:OrganizationNode[] }
+interface DepartmentMember { id:string; username:string; nickname:string; department_id:string; is_active:boolean }
+interface OrganizationNode { key:string; title:string; department?:Department; member?:DepartmentMember; children:OrganizationNode[] }
 const {t}=useI18n(),auth=useAuthStore()
 const company=reactive({name:'',description:''}), rows=ref<Department[]>([]), query=ref(''), loading=ref(false), saving=ref(false), companyOpen=ref(false), departmentOpen=ref(false), selected=ref<Department|null>(null)
+const members=ref<DepartmentMember[]>([]),membersLoading=ref(false),membersError=ref('')
+const canReadMembers=computed(()=>auth.canAny(['user.read','user.create','user.update','user.delete']))
+const membersByDepartment=computed(()=>{
+ const result=new Map<string,DepartmentMember[]>()
+ for(const member of members.value){const group=result.get(member.department_id)||[];group.push(member);result.set(member.department_id,group)}
+ return result
+})
 const form=reactive({id:'',name:'',description:'',parent_id:''})
 const filtered=computed(()=>rows.value.filter(row=>`${row.name} ${row.description}`.toLowerCase().includes(query.value.trim().toLowerCase())))
 const expandedKeys=ref<string[]>(['company'])
 const treeData=computed<OrganizationNode[]>(()=>{
- const nodes=new Map(rows.value.map(row=>[row.id,{key:row.id,title:row.name,department:row,children:[]} as OrganizationNode]))
+ const ordered=[...rows.value].sort((a,b)=>Number(!!b.is_default)-Number(!!a.is_default))
+ const nodes=new Map(ordered.map(row=>[row.id,{key:row.id,title:row.name,department:row,children:[]} as OrganizationNode]))
  const roots:OrganizationNode[]=[]
- for(const row of rows.value){
+ for(const row of ordered){
   const node=nodes.get(row.id)!,parent=nodes.get(row.parent_id),ancestors=new Set([row.id])
   let ancestor=parent,cycle=false
   while(ancestor){if(ancestors.has(ancestor.key)){cycle=true;break}ancestors.add(ancestor.key);ancestor=nodes.get(ancestor.department?.parent_id||'')}
   if(parent&&!cycle)parent.children.push(node);else roots.push(node)
  }
+ for(const node of nodes.values())for(const member of membersByDepartment.value.get(node.key)||[])node.children.push({key:`member:${member.id}`,title:member.nickname||member.username,member,children:[]})
  const matching=new Set(filtered.value.map(row=>row.id))
- function retain(nodes:OrganizationNode[]):OrganizationNode[]{return nodes.flatMap(node=>{const children=retain(node.children);return matching.has(node.key)||children.length?[{...node,children}]:[]})}
+ const keyword=query.value.trim().toLowerCase()
+ function retain(nodes:OrganizationNode[]):OrganizationNode[]{return nodes.flatMap(node=>{if(!keyword||matching.has(node.key)||node.member&&`${node.member.nickname} ${node.member.username}`.toLowerCase().includes(keyword))return [node];const children=retain(node.children);return children.length?[{...node,children}]:[]})}
  return [{key:'company',title:company.name||t('workspace.company'),children:retain(roots)}]
 })
 const visibleExpandedKeys=computed(()=>query.value.trim()?['company',...rows.value.map(row=>row.id)]:expandedKeys.value)
@@ -53,10 +64,34 @@ function mutationError(error:unknown,current:()=>boolean){
  else message.error(apiErrorMessage(error))
  return acknowledged
 }
+function memberNote(department:Department){
+ if(!department.member_count)return ''
+ if(!canReadMembers.value)return t('workspace.memberAccessDenied')
+ if(membersLoading.value)return t('workspace.loading')
+ if(membersError.value)return membersError.value
+ return membersByDepartment.value.has(department.id)?'':t('workspace.membersUnavailable')
+}
+async function loadMembers(current:()=>boolean){
+ members.value=[];membersError.value=''
+ if(!canReadMembers.value||!auth.canAny(['department.read','department.create','department.update','department.delete'])){membersLoading.value=false;return}
+ membersLoading.value=true
+ try{
+  const result:DepartmentMember[]=[]
+  for(let offset=0;current();offset+=200){
+   const response=await client.get<{users:DepartmentMember[]}>('/users',{params:{view:'members',limit:200,offset}})
+   if(!current())return
+   result.push(...response.data.users)
+   if(response.data.users.length<200)break
+  }
+  if(current())members.value=result
+ }catch{if(current())membersError.value=t('workspace.memberLoadFailed')}
+ finally{if(current())membersLoading.value=false}
+}
 async function load(){
  if(disposed||!authorizationAvailable())return
  const request=++loadRevision,scope=scopeIdentity(),current=()=>!disposed&&request===loadRevision&&authorizationAvailable()&&scope===scopeIdentity()
  loading.value=true
+ const memberRequest=loadMembers(current)
  try{
   const [organization,departments]=await Promise.all([
    auth.canAny(['organization.read','organization.update'])?client.get('/organization'):null,
@@ -65,6 +100,7 @@ async function load(){
   if(!current())return
   Object.assign(company,organization?.data.organization??{name:'',description:''});rows.value=departments?.data.departments??[]
  }catch(error){if(current())message.error(apiErrorMessage(error))}finally{if(request===loadRevision)loading.value=false}
+ await memberRequest
 }
 function edit(row?:Department){Object.assign(form,{id:row?.id||'',name:row?.name||'',description:row?.description||'',parent_id:row?.parent_id||''});departmentOpen.value=true}
 function addDepartment(parentID=''){edit();form.parent_id=parentID;expandedKeys.value=[...new Set([...expandedKeys.value,'company',...(parentID?[parentID]:[])])]}
@@ -86,7 +122,7 @@ function remove(row:Department){const current=beginMutation();Modal.confirm({tit
  catch(error){if(!mutationError(error,current))throw error}
 }})}
 watch([()=>auth.authorizationState,scopeIdentity],([state,scope],[previous,oldScope])=>{
- if(state==='checking'||state==='unavailable'||scope!==oldScope){loadRevision++;loading.value=false;rows.value=[];Object.assign(company,{name:'',description:''});selected.value=null;companyOpen.value=departmentOpen.value=false;Modal.destroyAll()}
+ if(state==='checking'||state==='unavailable'||scope!==oldScope){loadRevision++;loading.value=false;rows.value=[];members.value=[];membersLoading.value=false;membersError.value='';Object.assign(company,{name:'',description:''});selected.value=null;companyOpen.value=departmentOpen.value=false;Modal.destroyAll()}
  if(authorizationAvailable()&&(previous==='checking'||previous==='unavailable'||scope!==oldScope))void load()
 },{flush:'sync'})
 onBeforeUnmount(()=>{disposed=true;loadRevision++})
@@ -94,14 +130,20 @@ onMounted(load)
 </script>
 <template><section><PageToolbar :description="t('workspace.organizationHint')"><a-button :loading="loading" :aria-label="t('workspace.refresh')" @click="load"><RefreshCw :size="15"/></a-button></PageToolbar>
 <div class="vben-card organization-card">
- <div class="organization-search"><a-input-search v-model:value="query" :placeholder="t('workspace.search')" :aria-label="t('workspace.search')" allow-clear/></div>
+ <div class="organization-search"><a-input-search v-model:value="query" :placeholder="t('workspace.departmentTreeSearch')" :aria-label="t('workspace.departmentTreeSearch')" allow-clear/></div>
+ <a-alert v-if="membersError" class="organization-member-error" type="warning" show-icon :message="membersError"/>
  <a-spin :spinning="loading">
   <a-tree class="organization-tree" :aria-label="t('workspace.departments')" block-node :selectable="false" :show-line="{showLeafIcon:false}" :tree-data="treeData" :expanded-keys="visibleExpandedKeys" :auto-expand-parent="false" @expand="expandNodes">
    <template #title="node">
-    <div class="organization-node" :class="{'is-company':!node.department}" :data-department-id="node.department?.id">
-     <Building2 v-if="!node.department" :size="22" class="organization-icon"/><UsersRound v-else :size="18" class="organization-icon"/>
-     <div class="organization-copy"><span class="organization-name">{{node.title}}</span><span v-if="node.department" class="organization-members">{{t('workspace.memberCount')}} {{node.department.member_count??'—'}}</span><span v-if="node.department?.description||(!node.department&&company.description)" class="organization-description">{{node.department?.description||company.description}}</span></div>
-     <div class="organization-actions" @click.stop @keydown.stop>
+    <div class="organization-node" :class="{'is-company':!node.department&&!node.member,'is-member':!!node.member}" :data-department-id="node.department?.id" :data-member-id="node.member?.id">
+     <Building2 v-if="!node.department&&!node.member" :size="22" class="organization-icon"/><UsersRound v-else-if="node.department" :size="18" class="organization-icon"/><UserRound v-else :size="16" class="organization-icon"/>
+     <div class="organization-copy">
+      <span class="organization-name">{{node.title}}</span><span v-if="node.department" class="organization-members">{{t('workspace.memberCount')}} {{node.department.member_count??'—'}}</span>
+      <span v-if="node.member&&node.member.nickname&&node.member.nickname!==node.member.username" class="organization-members">{{node.member.username}}</span><a-tag v-if="node.member?.is_active===false">{{t('workspace.disabled')}}</a-tag>
+      <span v-if="node.department?.description||(!node.department&&!node.member&&company.description)" class="organization-description">{{node.department?.description||company.description}}</span>
+      <span v-if="node.department&&memberNote(node.department)" class="organization-description">{{memberNote(node.department)}}</span>
+     </div>
+     <div v-if="!node.member" class="organization-actions" @click.stop @keydown.stop>
       <template v-if="!node.department">
        <a-button v-if="auth.canAny(['organization.update'])" size="small" :aria-label="`${t('workspace.edit')} ${node.title}`" @click="companyOpen=true">{{t('workspace.edit')}}</a-button>
        <a-button v-if="auth.canAny(['department.create'])" size="small" type="link" @click="addDepartment()"><Plus :size="14"/>{{t('workspace.createDepartment')}}</a-button>
@@ -127,6 +169,7 @@ onMounted(load)
 .organization-card{padding:16px}.organization-search{max-width:340px;margin-bottom:16px}.organization-card :deep(.organization-tree){background:transparent;color:var(--edo-text)}
 .organization-card :deep(.organization-tree .ant-tree-treenode){padding:0;width:100%;align-items:stretch}.organization-card :deep(.organization-tree .ant-tree-node-content-wrapper){min-width:0;flex:1;padding:0 8px;border-radius:6px;cursor:default}.organization-card :deep(.organization-tree .ant-tree-switcher){display:flex;align-items:center;justify-content:center}.organization-card :deep(.organization-tree .ant-tree-title){display:block}.organization-card :deep(.organization-tree .ant-tree-node-content-wrapper:hover){background:var(--edo-surface-soft)}
 .organization-card :deep(.organization-tree .ant-tree-switcher-leaf-line::after){top:50%;height:0}.organization-card :deep(.organization-tree .ant-tree-treenode-leaf-last .ant-tree-switcher-leaf-line::before){top:0!important;height:50%!important}.organization-card :deep(.organization-tree .ant-tree-indent-unit::before),.organization-card :deep(.organization-tree .ant-tree-switcher-leaf-line::before){bottom:0}
-.organization-node{display:flex;align-items:center;gap:12px;min-height:56px;padding:8px 0;border-bottom:1px solid var(--edo-border)}.organization-node.is-company{min-height:64px}.organization-icon{flex:none;color:var(--edo-primary)}.organization-copy{display:flex;align-items:center;gap:6px 14px;flex:1;min-width:0;flex-wrap:wrap}.organization-name{font-size:14px;overflow-wrap:anywhere}.is-company .organization-name{font-weight:600}.organization-members,.organization-description{font-size:12px;color:var(--edo-muted);line-height:1.6}.organization-members{white-space:nowrap}.organization-description{flex-basis:100%;overflow-wrap:anywhere}.organization-actions{display:flex;align-items:center;justify-content:flex-end;gap:6px;flex-wrap:wrap;flex:none}.organization-actions :deep(.ant-btn){margin:0}.department-note{margin-top:16px}.drawer-actions{display:flex;justify-content:flex-end;gap:8px}
+.organization-node{display:flex;align-items:center;gap:12px;min-height:56px;padding:8px 0;border-bottom:1px solid var(--edo-border)}.organization-node.is-company{min-height:64px}.organization-node.is-member{min-height:40px;border-bottom:0}.organization-icon{flex:none;color:var(--edo-primary)}.is-member .organization-icon{color:var(--edo-muted)}.organization-copy{display:flex;align-items:center;gap:6px 14px;flex:1;min-width:0;flex-wrap:wrap}.organization-name{font-size:14px;overflow-wrap:anywhere}.is-company .organization-name{font-weight:600}.is-member .organization-name{font-size:13px}.organization-members,.organization-description{font-size:12px;color:var(--edo-muted);line-height:1.6}.organization-members{white-space:nowrap}.organization-description{flex-basis:100%;overflow-wrap:anywhere}.organization-actions{display:flex;align-items:center;justify-content:flex-end;gap:6px;flex-wrap:wrap;flex:none}.organization-actions :deep(.ant-btn){margin:0}.organization-member-error{margin-bottom:12px}.department-note{margin-top:16px}.drawer-actions{display:flex;justify-content:flex-end;gap:8px}
+.is-member .organization-members{white-space:normal;overflow-wrap:anywhere}
 @media(max-width:680px){.organization-card{padding:12px 8px}.organization-node{gap:8px;flex-wrap:wrap}.organization-copy{flex-basis:calc(100% - 36px)}.organization-actions{flex:1 1 100%;justify-content:flex-start;padding-left:26px}.organization-search{max-width:none}.organization-card :deep(.organization-tree .ant-tree-indent-unit){width:16px}}
 </style>

@@ -95,6 +95,16 @@ type listedUserResponse struct {
 func (h accessHandler) listUsers(c *gin.Context) {
 	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "50"))
 	offset, _ := strconv.Atoi(c.DefaultQuery("offset", "0"))
+	if c.Query("view") == "members" {
+		users, err := h.accounts.ListMemberSummaries(c.Request.Context(), limit, offset)
+		if err != nil {
+			h.logger.Error("查询部门成员失败", "operation", "user_member_list", "request_id", requestIDFrom(c), "limit", limit, "offset", offset, "err", err)
+			writeInternalError(c)
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"users": users})
+		return
+	}
 	users, err := h.accounts.List(c.Request.Context(), limit, offset)
 	if err != nil {
 		h.logger.Error("查询用户列表失败", "operation", "user_list", "request_id", requestIDFrom(c), "err", err)

@@ -13,7 +13,7 @@ function transport(){
  module.default.defaults.adapter=config=>{
   calls.push({method:config.method,path:config.url})
   if(config.method!=='get')return new Promise((resolve,reject)=>{pending={config,resolve,reject}})
-  assert.ok(['/roles','/permissions','/projects','/users?limit=200&offset=0','/departments','/organization'].includes(config.url),'只允许固定的内存读取')
+  assert.ok(['/roles','/permissions','/projects','/users?limit=200&offset=0','/users','/departments','/organization'].includes(config.url),'只允许固定的内存读取')
   return Promise.resolve({status:200,statusText:'OK',headers:{},config,data:{roles:[],permissions:[],projects:[],users:[],departments:[],organization:{name:'',description:''}}})
  }
  const respond=(status=200)=>pending.resolve({status,statusText:'OK',headers:{},config:pending.config,data:{marker:'synthetic-old-response-not-for-ui'}})
@@ -291,21 +291,23 @@ test('Organization ACK后只在ready恢复有界只读目录，不留下已删�
  assert.equal(h.calls.filter(item=>item.method==='get').length,0)
  h.module.setAuthorizationFreshness(true);h.identity.authorizationState='ready';await tick()
  assert.deepEqual(h.state.rows.value,[])
- assert.deepEqual(h.calls.filter(item=>item.method==='get').map(item=>item.path).sort(),['/departments','/organization'])
+ assert.deepEqual(h.calls.filter(item=>item.method==='get').map(item=>item.path).sort(),['/departments','/organization','/users'])
  assert.equal(h.calls.filter(item=>item.method!=='get').length,1)
 })
 
 test('Organization旧在途目录不能覆盖恢复后的新目录，卸载后不继续读取',async t=>{
  const h=view(t,'../src/views/OrganizationView.vue'),reads=[]
  h.module.default.defaults.adapter=config=>new Promise(resolve=>reads.push({config,resolve}))
- const old=h.state.load();await tick();assert.equal(reads.length,2)
+ const old=h.state.load();await tick();assert.equal(reads.length,3)
  h.stale();h.module.setAuthorizationFreshness(true);h.identity.authorizationState='ready';await tick()
- assert.equal(reads.length,4)
- const respond=(index,name)=>reads[index].resolve({status:200,statusText:'OK',headers:{},config:reads[index].config,data:{organization:{name},departments:[{id:name,name,parent_id:''}]}})
- respond(0,'old');respond(1,'old');await old
+ assert.equal(reads.length,6)
+ const respond=(index,name)=>reads[index].resolve({status:200,statusText:'OK',headers:{},config:reads[index].config,data:{organization:{name},departments:[{id:name,name,parent_id:''}],users:[{id:`${name}-member`,username:name,department_id:name}]}})
+ respond(0,'old');respond(1,'old');respond(2,'old');await old
  assert.deepEqual(h.state.rows.value,[])
- respond(2,'fresh');respond(3,'fresh');await tick()
+ assert.deepEqual(h.state.members.value,[])
+ respond(3,'fresh');respond(4,'fresh');respond(5,'fresh');await tick()
  assert.deepEqual(h.state.rows.value.map(row=>row.id),['fresh'])
  assert.equal(h.state.company.name,'fresh')
- h.dispose();await h.state.load();assert.equal(reads.length,4)
+ assert.deepEqual(h.state.members.value.map(row=>row.id),['fresh-member'])
+ h.dispose();await h.state.load();assert.equal(reads.length,6)
 })

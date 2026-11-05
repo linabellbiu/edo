@@ -203,6 +203,31 @@ func (s *Service) EnsureCredentialsUnreferenced(ctx context.Context, userID, dep
 	return nil
 }
 
+type MemberSummary struct {
+	ID           string `gorm:"column:uuid" json:"id"`
+	Username     string `json:"username"`
+	Nickname     string `json:"nickname"`
+	DepartmentID string `json:"department_id"`
+	IsActive     bool   `json:"is_active"`
+}
+
+// 组织树仅需要成员基本信息，不读取密码、角色和权限明细。
+func (s *Service) ListMemberSummaries(ctx context.Context, limit, offset int) ([]MemberSummary, error) {
+	if limit < 1 || limit > 200 {
+		limit = 50
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	users := []MemberSummary{}
+	if err := s.db.WithContext(ctx).Model(&model.User{}).
+		Select("uuid", "username", "nickname", "department_id", "is_active").
+		Order("id DESC").Limit(limit).Offset(offset).Find(&users).Error; err != nil {
+		return nil, fmt.Errorf("查询部门成员失败: %w", err)
+	}
+	return users, nil
+}
+
 func (s *Service) List(ctx context.Context, limit, offset int) ([]model.User, error) {
 	if limit < 1 || limit > 200 {
 		limit = 50

@@ -1,5 +1,5 @@
 export const workspaceZh = {
-  addChildDepartment:'添加下级',noDepartments:'暂无部门',noDepartmentMatch:'没有匹配的部门',
+  addChildDepartment:'添加下级',noDepartments:'暂无部门',noDepartmentMatch:'没有匹配的部门或成员',departmentTreeSearch:'搜索部门或成员',memberAccessDenied:'无权查看成员',memberLoadFailed:'成员加载失败，请刷新重试',membersUnavailable:'成员信息暂不可用',
   platformCount:'平台 {count} 人',projectCount:'项目 {count} 人',
   confirmAddMember:'确认添加成员？',confirmUpdateMember:'确认修改成员角色？',confirmRemoveMember:'确认移除成员？',
   platformRoles:'平台角色',platformRoleHint:'平台角色用于账号、组织和系统管理。项目角色在项目成员中设置，个人拒绝项优先。',projectScope:'项目内生效',platformScope:'平台级',
@@ -7,7 +7,7 @@ export const workspaceZh = {
   projects:'项目空间', organization:'组织与部门', description:'按项目管理应用、流水线和成员权限。', chooseProject:'切换项目', create:'新建项目', name:'项目名称', descriptionField:'说明', department:'所属部门', status:'状态', updated:'最近更新', details:'详情', edit:'编辑', remove:'删除', enabled:'已启用', disabled:'已停用', default:'默认项目', search:'搜索名称或说明', save:'保存', cancel:'取消', saved:'已保存', members:'项目成员', role:'项目角色', user:'成员', addMember:'添加成员', removeMember:'移除成员', effective:'我的有效权限', permissions:'角色权限', noMemberAccess:'你没有管理此项目成员的权限。', defaultHint:'默认项目也需要添加成员并分配项目角色。', scopedHint:'只能添加本部门成员，项目角色不能包含平台管理权限。', empty:'还没有项目空间', confirmDelete:'确认删除项目？', confirmDeleteHint:'仅允许删除没有业务资源的非默认项目，不删除应用或运行历史。', confirmMember:'确认修改项目授权？', company:'公司资料', companyName:'公司名称', companyDescription:'公司说明', departments:'部门结构', createDepartment:'新建部门', departmentName:'部门名称', parent:'上级部门', root:'公司直属', memberCount:'成员数量', noPermission:'无权限', rolePreview:'所选角色的权限', selectedCount:'已授权 {count} 项', searchPermissions:'搜索资源或权限', projectAccess:'项目访问', grantSource:'权限来源', platform:'平台角色与个人例外', note:'项目角色只在当前项目生效，个人拒绝项优先。', current:'当前项目', useProject:'进入项目', loading:'正在读取',
 }
 export const workspaceEn: Record<keyof typeof workspaceZh,string> = {
- addChildDepartment:'Add subdepartment',noDepartments:'No departments yet',noDepartmentMatch:'No matching departments',
+ addChildDepartment:'Add subdepartment',noDepartments:'No departments yet',noDepartmentMatch:'No matching departments or members',departmentTreeSearch:'Search departments or members',memberAccessDenied:'Member access not permitted',memberLoadFailed:'Could not load members. Refresh to retry.',membersUnavailable:'Member information is unavailable',
  platformCount:'Platform: {count}',projectCount:'Projects: {count}',
  confirmAddMember:'Add this project member?',confirmUpdateMember:'Change this member’s project role?',confirmRemoveMember:'Remove this project member?',
  platformRoles:'Platform roles',platformRoleHint:'Platform roles grant account, organization and system access only. Assign project roles in each project. Personal explicit denies always take precedence.',projectScope:'Project scope',platformScope:'Platform scope',

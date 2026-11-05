@@ -18,6 +18,8 @@ const departments = [
   { id: 'frontend', parent_id: 'engineering', name: '前端组', description: '', member_count: 2, is_default: false },
   { id: 'default', parent_id: '', name: '默认部门', description: '公司初始部门', member_count: 1, is_default: true },
 ]
+const memberNames = { engineering: ['陈阳', '李敏', '周宁', '吴晨', '郑远', '许安'], backend: ['林青', '张晓', '何川'], payments: ['赵明'], frontend: ['方可', '孙晴'], default: ['管理员'] }
+const members = Object.entries(memberNames).flatMap(([department_id, names]) => names.map((nickname, index) => ({ id: `${department_id}-member-${index}`, department_id, nickname, username: `${department_id}.${index}`, is_active: department_id !== 'payments' })))
 let nextID = 0
 const saved = ref('尚未保存')
 client.defaults.adapter = async config => {
@@ -26,6 +28,10 @@ client.defaults.adapter = async config => {
   let data
   if (method === 'get' && path === '/organization') data = { organization: { ...company } }
   else if (method === 'get' && path === '/departments') data = { departments: departments.map(row => ({ ...row })) }
+  else if (method === 'get' && path === '/users') {
+    if (params.has('members-error')) throw new Error('模拟成员加载失败')
+    data = { users: members.slice(config.params.offset, config.params.offset + config.params.limit) }
+  }
   else if (!readonly && method === 'post' && path === '/departments') {
     const row = { ...body, id: `created-${++nextID}`, member_count: 0, is_default: false }
     departments.push(row); saved.value = `已添加 ${row.name}，上级 ${row.parent_id || '公司'}`; data = { department: row }
@@ -42,7 +48,7 @@ client.defaults.adapter = async config => {
 window.fetch = () => Promise.reject(new Error('隔离验收不连接服务器'))
 document.documentElement.dataset.theme = dark ? 'dark' : 'light'
 const pinia = createPinia(), auth = useAuthStore(pinia)
-auth.user = { id: 'preview', permissions: ['organization.read', 'department.read', ...(readonly ? [] : ['organization.update', 'department.create', 'department.update', 'department.delete'])], is_superuser: false }
+auth.user = { id: 'preview', permissions: ['organization.read', 'department.read', ...(params.has('no-member-access') ? [] : ['user.read']), ...(readonly ? [] : ['organization.update', 'department.create', 'department.update', 'department.delete'])], is_superuser: false }
 auth.loaded = true; auth.authorizationState = 'ready'
 createApp({ render: () => h(ConfigProvider, { theme: { algorithm: dark ? theme.darkAlgorithm : theme.defaultAlgorithm } }, {
   default: () => [h('header', { style: 'padding:16px;color:var(--edo-muted)' }, ['隔离合成数据，仅在内存保存。', h('output', { 'aria-label': '隔离保存记录', style: 'margin-left:12px' }, saved.value)]), h('main', { style: 'padding:16px' }, h(OrganizationView))],
