@@ -169,7 +169,7 @@ onBeforeUnmount(() => { disposed = true; revision++; controller?.abort(); if (ti
 .runtime-pod-card { overflow: hidden; border: 1px solid var(--workload-border); border-radius: 4px; background: var(--workload-column); }
 .runtime-pod-title { display: flex; align-items: center; gap: 7px; min-width: 0; padding: 8px 10px; border-bottom: 1px solid var(--workload-border); background: var(--workload-heading); color: var(--workload-title); font-size: 12px; }
 .runtime-pod-title>strong { flex: 1; min-width: 0; font-weight: 600; white-space: normal; overflow-wrap: anywhere; font-family: var(--edo-font-mono, ui-monospace, monospace); }
-.pod-detail-link { display: flex; align-items: center; gap: 2px; padding: 2px 6px; border: 1px solid var(--workload-idle-border); border-radius: 3px; background: var(--workload-column); color: var(--workload-link); font: inherit; white-space: nowrap; cursor: pointer; }
+.pod-detail-link { display: flex; align-items: center; gap: 6px; padding: 2px 6px; border: 1px solid var(--workload-idle-border); border-radius: 3px; background: var(--workload-column); color: var(--workload-link); font: inherit; white-space: nowrap; cursor: pointer; }
 .pod-detail-link:hover:not(:disabled) { border-color: var(--workload-hover-border); background: var(--workload-hover); }
 .runtime-pod-facts { display: grid; grid-template-columns: minmax(0,1.25fr) minmax(0,1fr) minmax(0,.8fr) minmax(0,.7fr); gap: 12px; margin: 0; padding: 12px 12px 10px; border-bottom: 1px solid var(--workload-border); }
 .runtime-pod-facts>div { min-width: 0; }

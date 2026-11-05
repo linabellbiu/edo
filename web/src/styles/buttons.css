@@ -1,0 +1,29 @@
+/* 统一图标与文字的布局，按钮尺寸、颜色及键盘焦点继续使用组件库与业务样式。 */
+.ant-btn.ant-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  column-gap: 6px;
+}
+
+.ant-btn.ant-btn > svg {
+  display: block;
+  flex-shrink: 0;
+}
+
+.ant-btn.ant-btn > .anticon,
+.ant-btn.ant-btn > .ant-btn-loading-icon {
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+}
+
+/* 图文间距由 gap 提供，避免与组件库的图标外边距叠加。 */
+.ant-btn.ant-btn > .anticon + span,
+.ant-btn.ant-btn > span + .anticon {
+  margin-inline-start: 0;
+}
+
+.ant-btn.ant-btn:not(.ant-btn-icon-only) .ant-btn-loading-icon > .anticon {
+  margin-inline-end: 0;
+}
