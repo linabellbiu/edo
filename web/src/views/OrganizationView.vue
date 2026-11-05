@@ -36,7 +36,7 @@ watch(rows,(current,previous)=>{
 })
 function expandNodes(keys:(string|number)[]){if(!query.value.trim())expandedKeys.value=keys.map(String)}
 const parentOptions=computed(()=>{
- const descendants=new Set([form.id]);let changed=true
+ const descendants=new Set(form.id?[form.id]:[]);let changed=true
  while(changed){changed=false;for(const row of rows.value)if(descendants.has(row.parent_id)&&!descendants.has(row.id)){descendants.add(row.id);changed=true}}
  return [{value:'',label:t('workspace.root')},...rows.value.filter(row=>!descendants.has(row.id)).map(row=>({value:row.id,label:row.name}))]
 })

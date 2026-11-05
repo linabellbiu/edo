@@ -43,6 +43,8 @@ test('节点添加下级自动绑定该部门，修改仍指向原部门，公�
   h.state.rows.value=[parent]
   h.state.addDepartment(parent.id)
   assert.equal(h.state.form.id,'');assert.equal(h.state.form.parent_id,'parent')
+  assert.deepEqual(h.state.parentOptions.value.map(option=>option.value),['','parent'])
+  assert.equal(h.state.parentOptions.value.find(option=>option.value==='parent').label,'研发部')
   h.state.form.name='后端组';await h.state.saveDepartment()
   assert.equal(writes(h)[0].path,'/departments');assert.equal(writes(h)[0].body.parent_id,'parent')
   h.state.edit(parent);h.state.form.name='产品研发部';await h.state.saveDepartment()
