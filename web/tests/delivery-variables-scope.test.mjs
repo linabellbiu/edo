@@ -3,6 +3,8 @@ import { test } from 'node:test'
 import * as vue from 'vue'
 import { loadFrontend } from './acceptanceHarness.mjs'
 
+const envTextModule = loadFrontend('../src/utils/envText.ts')
+
 const codes = ['delivery_variable.read', 'delivery_variable.create', 'delivery_variable.update', 'delivery_variable.delete', 'application.read', 'deployment.read']
 const settle = async () => { await vue.nextTick(); await new Promise(resolve => setImmediate(resolve)); await vue.nextTick() }
 const deferred = () => { let resolve, reject; const promise = new Promise((yes, no) => { resolve = yes; reject = no }); return { promise, resolve, reject } }
@@ -22,7 +24,7 @@ async function harness({ permissions = codes, project = 'project-a', selected = 
   }]))
   const component = loadFrontend('../src/views/DeliveryVariablesView.vue', {
     vue: { ...vue, onMounted: fn => mounted.push(fn), onBeforeUnmount: fn => unmounts.push(fn) },
-    '@/stores/auth': { useAuthStore: () => auth }, '@/api/client': { __esModule: true, default: client }, '@/api/resources': { apiErrorMessage: () => '当前项目操作失败，请重试' },
+    '@/utils/envText': envTextModule, '@/stores/auth': { useAuthStore: () => auth }, '@/api/client': { __esModule: true, default: client }, '@/api/resources': { apiErrorMessage: () => '当前项目操作失败，请重试' },
     'ant-design-vue': { Modal: { confirm(config) { const item = { ...config, destroyed: false, destroy() { this.destroyed = true; config.afterClose?.() } }; confirmations.push(item); return item } }, message: Object.fromEntries(['success', 'warning', 'error'].map(kind => [kind, text => notifications.push({ kind, text })])) },
   }, { localStorage, window }).default
   const scope = vue.effectScope(); let state, stopped = false
@@ -76,7 +78,7 @@ test('保存冻结原项目和版本，切换后中止请求且迟到结果不�
   assert.equal(writes(h).length, 1); const request = writes(h)[0]
   assert.equal(request.options.headers['X-EDO-Project-ID'], 'project-a'); assert.equal(request.body.expected_version, 3)
   await changeProject(h, 'project-b'); assert.equal(request.options.signal.aborted, true)
-  h.state.edit(); h.state.form.name = 'B_ONLY'; h.state.form.value = '新项目草稿'
+  h.state.edit(); h.state.form.kind = 'env'; h.state.form.name = 'B_ONLY'; h.state.form.value = '新项目草稿'
   pending.resolve({ data: {} }); await saving
   assert.equal(h.state.open.value, true); assert.equal(h.state.form.value, '新项目草稿'); assert.equal(h.notifications.length, 0)
 })
@@ -89,7 +91,7 @@ test('本地选择已变化但事件尚未派发时也不能按旧权限发出�
 
 test('角色权限撤销立即关闭编辑并清空内容，已有保存的迟到失败不弹到新范围', async t => {
   const pending = deferred(), h = await harness({ post: () => pending.promise }); t.after(h.stop)
-  h.state.edit(); h.state.form.name = 'KEY'; h.state.form.is_secret = true; h.state.form.value = '敏感草稿'; const saving = h.state.save()
+  h.state.edit(); h.state.form.kind = 'env'; h.state.form.name = 'KEY'; h.state.form.is_secret = true; h.state.form.value = '敏感草稿'; const saving = h.state.save()
   h.auth.user.permissions = ['delivery_variable.read']; await settle()
   assert.equal(h.state.open.value, false); assert.equal(h.state.form.value, ''); assert.equal(writes(h)[0].options.signal.aborted, true)
   pending.reject(new Error('旧请求错误')); await saving
@@ -130,13 +132,28 @@ test('保存保留未替换密钥语义，普通值不丢失；成功只刷新�
   const h = await harness({ get: request => request.path === '/delivery-variables' ? { data: { variables: [variable('project-a', { is_secret: true, value: undefined })] } } : undefined }); t.after(h.stop)
   h.state.edit(h.state.rows.value[0]); assert.equal(h.state.form.value, ''); assert.equal(h.state.replaceValue.value, false)
   await h.state.save(); assert.equal(writes(h)[0].body.value, undefined); assert.equal(h.state.open.value, false)
-  h.state.edit(); h.state.form.name = 'NORMAL'; h.state.form.value = '可见普通值'; await h.state.save()
+  h.state.edit(); h.state.form.kind = 'env'; h.state.form.name = 'NORMAL'; h.state.form.value = '可见普通值'; await h.state.save()
   assert.equal(writes(h)[1].body.value, '可见普通值'); assert.ok(h.requests.every(item => item.options.headers['X-EDO-Project-ID'] === 'project-a'))
 })
 
 test('卸载取消所有读取，保存迟到响应不提示成功或恢复数据', async t => {
   const pending = deferred(), h = await harness({ post: () => pending.promise }); t.after(h.stop)
-  h.state.edit(); h.state.form.name = 'KEY'; h.state.form.value = '草稿'; const saving = h.state.save(); h.stop()
+  h.state.edit(); h.state.form.kind = 'env'; h.state.form.name = 'KEY'; h.state.form.value = '草稿'; const saving = h.state.save(); h.stop()
   assert.equal(writes(h)[0].options.signal.aborted, true); assert.equal(h.state.form.value, '')
   pending.resolve({ data: {} }); await saving; assert.deepEqual(h.notifications, []); assert.deepEqual(h.state.rows.value, [])
+})
+
+
+test('env 文本默认用于部署，保存物理行与文件名，错误文本不会发送请求', async t => {
+ const h = await harness(); t.after(h.stop)
+ h.state.edit()
+ assert.equal(h.state.form.kind, 'env_text'); assert.equal(h.state.form.usage, 'deploy'); assert.equal(h.state.form.is_secret, true)
+ h.state.form.name = 'PROD_ENV'; h.state.form.value = 'TOKEN=a=b $literal\nEMPTY=\n'
+ await h.state.save()
+ assert.equal(writes(h)[0].body.kind, 'env_text'); assert.equal(writes(h)[0].body.value, 'TOKEN=a=b $literal\nEMPTY=\n')
+ h.state.edit(); h.state.form.kind = 'env_file'; h.state.form.name = '.prod.env'; h.state.form.value = 'TOKEN=literal'
+ await h.state.save()
+ assert.equal(writes(h)[1].body.kind, 'env_file'); assert.equal(writes(h)[1].body.name, '.prod.env')
+ h.state.edit(); h.state.form.name = 'INVALID'; h.state.form.value = 'TOKEN=private\nTOKEN=again'
+ await h.state.save(); assert.equal(writes(h).length, 2); assert.match(h.state.editorError.value, /第 2 行/); assert.doesNotMatch(h.state.editorError.value, /private/)
 })

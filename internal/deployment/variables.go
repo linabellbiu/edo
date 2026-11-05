@@ -12,6 +12,16 @@ import (
 )
 
 type releaseEnvironmentKey struct{}
+type releaseEnvFilesKey struct{}
+
+func WithReleaseEnvFiles(ctx context.Context, files map[string]string) context.Context {
+	return context.WithValue(ctx, releaseEnvFilesKey{}, maps.Clone(files))
+}
+
+func releaseEnvFiles(ctx context.Context) map[string]string {
+	files, _ := ctx.Value(releaseEnvFilesKey{}).(map[string]string)
+	return maps.Clone(files)
+}
 
 // WithReleaseEnvironment 只在一次执行的上下文中传递变量内容，发布记录不保存明文。
 func WithReleaseEnvironment(ctx context.Context, values map[string]string) context.Context {
@@ -31,15 +41,20 @@ func (s *Service) ConfigureReleaseVariables(manager *secret.Manager, permissions
 	s.variables = &releaseVariablesResolver{service: cicd.New(s.db, manager, s.logger), permissions: permissions}
 }
 func (s *Service) resolveRecordVariables(ctx context.Context, record *model.DeploymentRecord) (map[string]string, error) {
+	values, _, err := s.resolveRecordVariableSet(ctx, record)
+	return values, err
+}
+
+func (s *Service) resolveRecordVariableSet(ctx context.Context, record *model.DeploymentRecord) (map[string]string, map[string]string, error) {
 	denied := errors.New("发布变量不可用或使用授权已失效")
 	if s.variables == nil || s.variables.permissions == nil {
 		s.logger.Error("发布变量权限服务不可用", "operation", "deployment_variable_authorization", "record_id", record.ID, "project_id", record.ProjectID, "err", denied)
-		return nil, denied
+		return nil, nil, denied
 	}
 	var run model.PipelineRun
 	if err := s.db.WithContext(ctx).First(&run, "uuid = ? AND project_id = ? AND application_id = ?", record.PipelineRunID, record.ProjectID, record.ApplicationID).Error; err != nil {
 		s.logger.Error("读取发布变量所属运行失败", "operation", "deployment_variable_run", "run_id", record.PipelineRunID, "err", err)
-		return nil, denied
+		return nil, nil, denied
 	}
 	var snapshot struct {
 		VariableBindings map[string][]model.DeliveryVariableBinding `json:"variable_bindings"`
@@ -47,24 +62,24 @@ func (s *Service) resolveRecordVariables(ctx context.Context, record *model.Depl
 	}
 	if err := json.Unmarshal([]byte(run.WorkflowSnapshot), &snapshot); err != nil {
 		s.logger.Error("读取发布变量运行快照失败", "operation", "deployment_variable_snapshot", "record_id", record.ID, "run_id", run.ID, "err", err)
-		return nil, denied
+		return nil, nil, denied
 	}
 	bindings := snapshot.VariableBindings[record.WorkflowNodeID]
 	if len(bindings) == 0 {
 		s.logger.Error("发布变量运行引用不存在", "operation", "deployment_variable_bindings", "record_id", record.ID, "run_id", run.ID, "node_id", record.WorkflowNodeID, "err", denied)
-		return nil, denied
+		return nil, nil, denied
 	}
 	for _, id := range []string{snapshot.AuthorityID, record.RequestedBy} {
 		authorization, err := access.FreshProjectPermissions(s.db, ctx, id, run.ProjectID)
 		if err != nil || !authorization.Permissions["delivery_variable.execute"] {
 			s.logger.Error("发布变量使用授权已失效", "operation", "deployment_variable_authorization", "record_id", record.ID, "project_id", run.ProjectID, "actor_id", id, "err", err)
-			return nil, denied
+			return nil, nil, denied
 		}
 	}
 	values, files, _, err := s.variables.service.ResolveVariables(ctx, run.ProjectID, run.Ref, bindings)
-	if err != nil || len(files) > 0 {
+	if err != nil || (len(files) > 0 && record.DeploymentPlanKind != model.DeploymentPlanCompose && record.DeploymentPlanKind != model.DeploymentPlanComposeStack) {
 		s.logger.Error("发布变量读取失败", "operation", "deployment_variable_resolve", "record_id", record.ID, "project_id", run.ProjectID, "err", errors.Join(err, denied))
-		return nil, denied
+		return nil, nil, denied
 	}
-	return values, nil
+	return values, files, nil
 }

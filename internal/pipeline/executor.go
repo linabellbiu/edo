@@ -51,6 +51,7 @@ type executionContext struct {
 	artifact           model.Artifact
 	composeArtifacts   map[string]model.Artifact
 	variables          map[string]string
+	variableFiles      map[string]string
 	variableRedactions []string
 }
 
@@ -102,11 +103,13 @@ func (s *Service) executeDeployTask(ctx context.Context, payload DeployTaskPaylo
 		}
 	}
 	values, files, redactions, variableErr := s.Delivery().ResolveVariables(ctx, prepared.run.ProjectID, prepared.run.Ref, bindings)
-	if variableErr != nil || len(files) > 0 {
+	if variableErr != nil || (len(files) > 0 && prepared.deploymentPlan.Kind != model.DeploymentPlanComposeStack && prepared.deploymentPlan.Kind != model.DeploymentPlanCompose) {
 		return s.failDeploymentExecution(ctx, failureState, "部署变量无法读取，请检查变量配置", errors.Join(variableErr, cicd.ErrVariableUnavailable))
 	}
 	prepared.variables, prepared.variableRedactions = values, redactions
+	prepared.variableFiles = files
 	ctx = deployment.WithReleaseEnvironment(ctx, values)
+	ctx = deployment.WithReleaseEnvFiles(ctx, files)
 	s.appendRunLog(ctx, prepared.run.ID, "deploy", "info", "开始部署已构建制品")
 	approvedBy, err := s.latestExecutionApproval(ctx, prepared.run.ID)
 	if err != nil {

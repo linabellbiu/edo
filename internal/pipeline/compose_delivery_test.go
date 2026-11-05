@@ -178,7 +178,7 @@ exit 99
 				t.Fatal(err)
 			}
 			content := "services:\n  web:\n    image: registry.example.com/web@sha256:" + newID + "\n"
-			script, err := composeStackScript(content, composeTestConfig(), work, 120)
+			script, err := composeStackScript(content, composeTestConfig(), work, 120, "")
 			if err != nil {
 				t.Fatal(err)
 			}

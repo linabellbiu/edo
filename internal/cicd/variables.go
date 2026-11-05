@@ -17,6 +17,7 @@ import (
 	"gorm.io/gorm"
 
 	"edo/internal/database"
+	"edo/internal/envtext"
 	"edo/internal/model"
 	"edo/internal/secret"
 	"edo/internal/variablecatalog"
@@ -109,10 +110,25 @@ func (s *Service) SaveVariable(ctx context.Context, actorID, id string, in Varia
 		return nil, s.failure(ctx, "delivery_variable_scope", err, err)
 	}
 	in.Name = strings.TrimSpace(in.Name)
-	if !variableName.MatchString(in.Name) || len(in.Description) > 500 || (in.Kind != "env" && in.Kind != "file") ||
+	validName := variableName.MatchString(in.Name)
+	if in.Kind == "env_file" {
+		validName = envtext.ValidFileName(in.Name)
+	}
+	if !validName || len(in.Description) > 500 || (in.Kind != "env" && in.Kind != "file" && in.Kind != "env_text" && in.Kind != "env_file") ||
 		(in.Usage != "build" && in.Usage != "deploy") || (in.Usage == "deploy" && in.Kind == "file") || len(in.ProtectedRefs) > 32 ||
+		(in.Usage != "deploy" && (in.Kind == "env_text" || in.Kind == "env_file")) ||
 		(in.Value != nil && (len(*in.Value) > 65536 || strings.ContainsRune(*in.Value, '\x00'))) {
 		return nil, s.failure(ctx, "delivery_variable_validate", ErrInvalidVariable, ErrInvalidVariable)
+	}
+	if in.Value != nil && (in.Kind == "env_text" || in.Kind == "env_file") {
+		parsed, parseErr := envtext.Parse(*in.Value)
+		if parseErr != nil {
+			public := fmt.Errorf("%w：%s", ErrInvalidVariable, parseErr)
+			return nil, s.failure(ctx, "delivery_variable_env_text_validate", parseErr, public)
+		}
+		if in.Kind == "env_file" && len(envtext.Render(parsed)) > 65536 {
+			return nil, s.failure(ctx, "delivery_variable_env_file_size", ErrInvalidVariable, ErrInvalidVariable)
+		}
 	}
 	for _, p := range in.ProtectedRefs {
 		if len(p) > 255 || (!strings.HasPrefix(p, "refs/heads/") && !strings.HasPrefix(p, "refs/tags/")) {
@@ -311,6 +327,7 @@ func (s *Service) FreezeVariables(ctx context.Context, projectID, applicationID,
 
 func (s *Service) ResolveVariables(ctx context.Context, projectID, ref string, bindings []model.DeliveryVariableBinding) (map[string]string, map[string]string, []string, error) {
 	values, files := map[string]string{}, map[string]string{}
+	groupValues := map[string]string{}
 	redactions := []string{}
 	if len(bindings) > 0 {
 		scope, err := scopeFrom(ctx)
@@ -347,10 +364,40 @@ func (s *Service) ResolveVariables(ctx context.Context, projectID, ref string, b
 				redactions = append(redactions, value)
 			}
 		}
-		if binding.Kind == "file" {
+		if binding.Kind == "env_text" || binding.Kind == "env_file" {
+			parsed, parseErr := envtext.Parse(value)
+			if parseErr != nil {
+				return nil, nil, nil, s.failure(ctx, "delivery_variable_env_text_resolve", parseErr, ErrVariableUnavailable)
+			}
+			if revision.IsSecret {
+				for _, content := range parsed {
+					if content != "" {
+						redactions = append(redactions, content)
+					}
+				}
+			}
+			if binding.Kind == "env_file" {
+				if !envtext.ValidFileName(binding.Name) {
+					return nil, nil, nil, s.failure(ctx, "delivery_variable_env_file_name", ErrInvalidVariable, ErrVariableUnavailable)
+				}
+				files[binding.Name] = envtext.Render(parsed)
+			} else {
+				for key, content := range parsed {
+					if _, exists := groupValues[key]; exists {
+						return nil, nil, nil, s.failure(ctx, "delivery_variable_env_text_conflict", ErrVariableConflict, ErrVariableConflict)
+					}
+					groupValues[key] = content
+				}
+			}
+		} else if binding.Kind == "file" {
 			files[binding.Name] = value
 		} else {
 			values[binding.Name] = value
+		}
+	}
+	for key, value := range groupValues {
+		if _, explicit := values[key]; !explicit {
+			values[key] = value
 		}
 	}
 	return values, files, redactions, nil

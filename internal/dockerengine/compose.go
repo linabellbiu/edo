@@ -557,6 +557,7 @@ func validComposeScalarInterpolation(value string) bool {
 
 type ComposeDeployInput struct {
 	Environment     map[string]string
+	EnvFiles        map[string]string
 	EndpointID      string
 	TargetID        string
 	ServiceName     string
@@ -947,7 +948,16 @@ func runComposeWithSSH(
 		quotedArguments = append(quotedArguments, shellQuote(argument))
 	}
 	command := "env EDO_IMAGE=" + shellQuote(input.Image) + " docker " + strings.Join(quotedArguments, " ")
-	command, commandInput := mode.prepare(command, strings.NewReader(input.YAML))
+	var commandInput io.Reader = strings.NewReader(input.YAML)
+	if len(input.EnvFiles) > 0 {
+		script, scriptErr := composeSSHEnvFiles(command, input)
+		if scriptErr != nil {
+			return scriptErr
+		}
+		command, commandInput = mode.prepare("sh -se", strings.NewReader(script))
+	} else {
+		command, commandInput = mode.prepare(command, commandInput)
+	}
 	if err := runSSHCommandWithStreams(ctx, client, command, commandInput, outputOrDiscard(input.Stdout), outputOrDiscard(input.Stderr)); err != nil {
 		return fmt.Errorf("远程执行 Docker Compose 失败: %w", err)
 	}
@@ -968,6 +978,18 @@ func (s *Service) runComposeCLI(
 		return fmt.Errorf("创建 Docker Compose 临时目录失败: %w", err)
 	}
 	defer os.RemoveAll(directory)
+	if len(input.EnvFiles) > 0 {
+		content, names, fileErr := composeWithEnvFiles(input.YAML, input.ServiceName, directory, input.EnvFiles)
+		if fileErr != nil {
+			return fileErr
+		}
+		for _, name := range names {
+			if fileErr = os.WriteFile(filepath.Join(directory, name), []byte(input.EnvFiles[name]), 0600); fileErr != nil {
+				return fmt.Errorf("写入部署 env 文件失败: %w", fileErr)
+			}
+		}
+		input.YAML = content
+	}
 	environment, cleanup, err := s.composeCLIEnvironment(endpoint, input.Image, input.RegistryAuth)
 	if err != nil {
 		return err

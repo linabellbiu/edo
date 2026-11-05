@@ -19,6 +19,7 @@ import (
 	"edo/internal/cicd"
 	"edo/internal/deployment"
 	"edo/internal/dockerengine"
+	"edo/internal/envtext"
 	"edo/internal/model"
 	"edo/internal/repository"
 	"edo/internal/task"
@@ -546,7 +547,7 @@ func sanitizeWorkflowNode(node *model.WorkflowNode) error {
 		return ErrInvalidWorkflow
 	}
 	for _, name := range node.Config.VariableNames {
-		if !buildVariableNamePattern.MatchString(name) {
+		if !buildVariableNamePattern.MatchString(name) && !(node.Type == model.WorkflowNodeDeploy && envtext.ValidReference(name)) {
 			return ErrInvalidWorkflow
 		}
 	}
@@ -1334,6 +1335,12 @@ func (s *Service) newStageResolvedWorkflowRunWithDatabase(
 			binding, bindingErr := delivery.FreezeVariables(ctx, application.ProjectID, application.ID, envID, usage, ref, task.Config.VariableNames)
 			if bindingErr != nil {
 				return nil, bindingErr
+			}
+			for _, variable := range binding {
+				if variable.Kind == "env_file" && deploymentPlans[task.ID].Kind != model.DeploymentPlanComposeStack && deploymentPlans[task.ID].Kind != model.DeploymentPlanCompose {
+					s.logger.Error("env 文件只能用于 Compose 部署", "operation", "workflow_env_file_target", "node_id", task.ID, "err", ErrInvalidWorkflow)
+					return nil, ErrInvalidWorkflow
+				}
 			}
 			variableBindings[task.ID] = binding
 		}

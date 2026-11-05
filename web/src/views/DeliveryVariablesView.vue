@@ -7,16 +7,20 @@ import { apiErrorMessage, type ResourceRecord } from '@/api/resources'
 import { useAuthStore } from '@/stores/auth'
 import PageToolbar from '@/components/PageToolbar.vue'
 import ResourceTable from '@/components/ResourceTable.vue'
+import { envTextError, variableKindLabel, type DeliveryVariableKind } from '@/utils/envText'
 
 interface Variable extends ResourceRecord {
-  id:string;project_id:string;name:string;description:string;kind:'env'|'file';usage:'build'|'deploy';value?:string
+  id:string;project_id:string;name:string;description:string;kind:DeliveryVariableKind;usage:'build'|'deploy';value?:string
   application_id:string;environment_id:string;is_secret:boolean;is_active:boolean;version:number;protected_refs:string[]
 }
 interface Choice {id:string;name:string}
 const auth=useAuthStore(),rows=ref<Variable[]>([]),applications=ref<Choice[]>([]),environments=ref<Choice[]>([]),projectName=ref('')
 const loading=ref(false),saving=ref(false),open=ref(false),editing=ref<Variable|null>(null),search=ref(''),usage=ref('all'),replaceValue=ref(false),error=ref(''),editorError=ref('')
-const emptyForm=()=>({name:'',description:'',kind:'env' as 'env'|'file',usage:'build' as 'build'|'deploy',application_id:'',environment_id:'',is_secret:false,is_active:true,value:'',protected_refs:''})
+const emptyForm=()=>({name:'',description:'',kind:'env_text' as DeliveryVariableKind,usage:'deploy' as 'build'|'deploy',application_id:'',environment_id:'',is_secret:true,is_active:true,value:'',protected_refs:''})
 const form=reactive(emptyForm())
+const isEnvText=computed(()=>form.kind==='env_text'||form.kind==='env_file')
+const textError=computed(()=>isEnvText.value&&replaceValue.value?envTextError(form.value):'')
+const textTouched=ref(false)
 const columns=[{key:'name',label:'变量'},{key:'usage',label:'用途',width:'120px'},{key:'scope',label:'适用范围'},{key:'is_secret',label:'内容',width:'110px'},{key:'is_active',label:'状态',width:'100px'},{key:'version',label:'版本',width:'80px'}]
 const filtered=computed(()=>rows.value.filter(v=>(usage.value==='all'||v.usage===usage.value)&&`${v.name} ${v.description}`.toLowerCase().includes(search.value.toLowerCase())))
 const applicationNames=computed(()=>Object.fromEntries(applications.value.map(v=>[v.id,v.name])))
@@ -31,7 +35,7 @@ function can(action:string){return !!project()&&auth.canAny([`delivery_variable.
 function identity(){return JSON.stringify([auth.user?.id,auth.user?.department_id,auth.user?.project_id,auth.user?.is_superuser,[...(auth.user?.permissions||[])].sort(),readSelectedProject(),...['read','create','update','delete'].map(can),auth.canAny(['application.read']),auth.canAny(['deployment.read'])])}
 function current(epoch:number,context:string){return !disposed&&epoch===generation&&context===identity()&&can('read')}
 function requestOptions(projectID:string,signal:AbortSignal){return {headers:{'X-EDO-Project-ID':projectID},signal}}
-function clearEditor(){open.value=false;editing.value=null;editorContext='';replaceValue.value=false;editorError.value='';Object.assign(form,emptyForm())}
+function clearEditor(){open.value=false;editing.value=null;editorContext='';replaceValue.value=false;textTouched.value=false;editorError.value='';Object.assign(form,emptyForm())}
 function clearContent(){rows.value=[];applications.value=[];environments.value=[];projectName.value='';clearEditor();confirmation?.destroy();confirmation=undefined}
 function forbidden(cause:unknown){
   if((cause as {response?:{status?:number}})?.response?.status!==403)return false
@@ -58,13 +62,15 @@ async function load(){
 function available(item:Variable){return item.project_id===project()&&rows.value.some(row=>row.id===item.id&&row.project_id===item.project_id&&row.version===item.version)}
 function edit(item?:Variable){
   if(!can('read')||!can(item?'update':'create')||saving.value||confirmation||item&&!available(item))return
-  editing.value=item?{...item}:null;replaceValue.value=!item||!item.is_secret;editorError.value='';editorContext=identity()
-  Object.assign(form,{name:item?.name||'',description:item?.description||'',kind:item?.kind||'env',usage:item?.usage||'build',application_id:item?.application_id||'',environment_id:item?.environment_id||'',is_secret:item?.is_secret||false,is_active:item?.is_active??true,value:item?.is_secret?'':item?.value||'',protected_refs:(item?.protected_refs||[]).join('\n')})
+  editing.value=item?{...item}:null;replaceValue.value=!item||!item.is_secret;textTouched.value=false;editorError.value='';editorContext=identity()
+  Object.assign(form,item?{...item,value:item.is_secret?'':item.value||'',protected_refs:(item.protected_refs||[]).join('\n')}:emptyForm())
   open.value=true
 }
 async function save(){
   const action=editing.value?'update':'create'
   if(saving.value||!open.value||!can('read')||!can(action)||editorContext!==identity()||!form.name.trim()||editing.value&&!available(editing.value))return
+  textTouched.value=true
+  if(textError.value){editorError.value=textError.value;return}
   const epoch=generation,context=identity(),projectID=project(),target=editing.value?{...editing.value}:null,controller=new AbortController()
   saveController=controller;saving.value=true;editorError.value=''
   try{
@@ -97,7 +103,7 @@ function reset(){
   if(can('read'))void load()
 }
 function projectChanged(event:Event){if(event.type==='storage'&&(event as StorageEvent).key!==null&&(event as StorageEvent).key!=='edo.project')return;reset()}
-watch(()=>form.usage,value=>{if(value==='deploy')form.kind='env'})
+watch(()=>form.usage,value=>{if(editing.value)return;if(value==='build'&&isEnvText.value)form.kind='env';else if(value==='deploy'&&form.kind==='file')form.kind='env_text'})
 watch(identity,reset,{immediate:true,flush:'sync'})
 onMounted(()=>{window.addEventListener('storage',projectChanged);window.addEventListener('edo:projects-changed',projectChanged)})
 onBeforeUnmount(()=>{disposed=true;generation++;revision++;listController?.abort();saveController?.abort();deleteController?.abort();clearContent();window.removeEventListener('storage',projectChanged);window.removeEventListener('edo:projects-changed',projectChanged)})
@@ -115,9 +121,9 @@ onBeforeUnmount(()=>{disposed=true;generation++;revision++;listController?.abort
     <div class="variable-filters"><a-input v-model:value="search" placeholder="搜索名称或说明" allow-clear/><a-select v-model:value="usage" :options="[{value:'all',label:'全部用途'},{value:'build',label:'构建与检查'},{value:'deploy',label:'应用运行与部署'}]"/></div>
     <div class="vben-card"><ResourceTable :rows="filtered" :details="false" :columns="columns" :loading="loading">
       <template #cell-name="{row}"><strong>{{row.name}}</strong><small class="variable-description">{{row.description}}</small></template>
-      <template #cell-usage="{row}">{{row.usage==='build'?'构建与检查':'运行与部署'}}<small class="variable-description">{{row.kind==='file'?'文件变量':'环境变量'}}</small></template>
+      <template #cell-usage="{row}">{{row.usage==='build'?'构建与检查':'运行与部署'}}<small class="variable-description">{{variableKindLabel(row.kind as DeliveryVariableKind)}}</small></template>
       <template #cell-scope="{row}">{{row.application_id?(applicationNames[row.application_id as string]||'指定应用'):'当前项目共享'}} · {{row.environment_id?(environmentNames[row.environment_id as string]||'指定环境'):'全部环境'}}</template>
-      <template #cell-is_secret="{row}"><a-tag :color="row.is_secret?'gold':'default'">{{row.is_secret?'密钥 · 已隐藏':'普通变量'}}</a-tag><small v-if="!row.is_secret" class="variable-description">{{row.value||'空值'}}</small></template>
+      <template #cell-is_secret="{row}"><a-tag :color="row.is_secret?'gold':'default'">{{row.is_secret?'密钥 · 已隐藏':'普通变量'}}</a-tag><small v-if="!row.is_secret&&row.kind==='env'" class="variable-description">{{row.value||'空值'}}</small></template>
       <template #cell-is_active="{row}"><a-tag :color="row.is_active?'green':'default'">{{row.is_active?'已启用':'已停用'}}</a-tag></template>
       <template #actions="{row}"><a-button v-if="can('update')" type="link" @click="edit(row as Variable)">编辑</a-button><a-button v-if="can('delete')" type="link" danger @click="remove(row as Variable)">删除</a-button></template>
     </ResourceTable></div>
@@ -126,17 +132,28 @@ onBeforeUnmount(()=>{disposed=true;generation++;revision++;listController?.abort
       <a-form :model="form" :disabled="saving||!can(editing?'update':'create')" layout="vertical" @finish="save">
         <a-alert v-if="editorError" type="error" show-icon :message="editorError"/>
         <a-form-item label="项目"><a-input :value="projectName||'当前项目'" disabled/></a-form-item>
-        <a-form-item label="名称" name="name" required><a-input v-model:value="form.name" :disabled="!!editing" :maxlength="128" placeholder="例如 API_URL、DB_PASSWORD"/></a-form-item>
+        <a-form-item :label="form.kind==='env_file'?'文件名':isEnvText?'配置名称':'名称'" name="name" required :extra="form.kind==='env_file'?'只填写文件名，例如 .prod.env，不包含目录。':undefined"><a-input v-model:value="form.name" :disabled="!!editing" :maxlength="128" :placeholder="form.kind==='env_file'?'.prod.env':isEnvText?'例如 PROD_ENV':'例如 API_URL、DB_PASSWORD'"/></a-form-item>
         <a-form-item label="说明"><a-input v-model:value="form.description" :maxlength="500"/></a-form-item>
         <div class="variable-form-grid">
           <a-form-item label="用途"><a-select v-model:value="form.usage" :disabled="!!editing" :options="[{value:'build',label:'构建与检查'},{value:'deploy',label:'应用运行与部署'}]"/></a-form-item>
-          <a-form-item label="类型"><a-select v-model:value="form.kind" :disabled="!!editing" :options="[{value:'env',label:'环境变量'},{value:'file',label:'文件变量（构建与检查）',disabled:form.usage==='deploy'}]"/></a-form-item>
           <a-form-item label="应用"><a-select v-model:value="form.application_id" :disabled="!!editing" :options="[{value:'',label:'当前项目共享'},...applications.map(v=>({value:v.id,label:v.name}))]"/></a-form-item>
           <a-form-item label="环境"><a-select v-model:value="form.environment_id" :disabled="!!editing" :options="[{value:'',label:'全部环境'},...environments.map(v=>({value:v.id,label:v.name}))]"/></a-form-item>
         </div>
+        <a-form-item v-if="form.usage==='deploy'" label="添加方式">
+          <a-radio-group v-model:value="form.kind" :disabled="!!editing" class="env-input-modes">
+            <a-radio value="env_text">输入 env 文本（environment）</a-radio>
+            <a-radio value="env_file">挂载 env 文本（env_file）</a-radio>
+            <a-radio value="env">逐条添加</a-radio>
+          </a-radio-group>
+        </a-form-item>
+        <a-form-item v-else label="类型"><a-select v-model:value="form.kind" :disabled="!!editing" :options="[{value:'env',label:'环境变量'},{value:'file',label:'文件变量（构建与检查）'}]"/></a-form-item>
         <a-form-item><a-checkbox v-model:checked="form.is_secret" :disabled="!!editing?.is_secret">作为密钥加密保存</a-checkbox><a-checkbox v-model:checked="form.is_active">启用</a-checkbox></a-form-item>
         <a-form-item v-if="editing?.is_secret"><a-checkbox v-model:checked="replaceValue">替换已保存的密钥</a-checkbox></a-form-item>
-        <a-form-item v-if="replaceValue" :label="form.kind==='file'?'文件内容':'值'" name="value" extra="留空保存为空值；未勾选替换时保留现有密钥。"><a-textarea v-if="form.kind==='file'" v-model:value="form.value" :rows="6" :maxlength="65536" autocomplete="off"/><a-input-password v-else-if="form.is_secret" v-model:value="form.value" autocomplete="new-password" :maxlength="65536"/><a-input v-else v-model:value="form.value" :maxlength="65536"/></a-form-item>
+        <a-form-item v-if="replaceValue" :label="isEnvText?'env 文本':form.kind==='file'?'文件内容':'值'" name="value" :validate-status="textTouched&&textError?'error':undefined" :help="textTouched?textError:undefined" :extra="isEnvText?'每行 KEY=value；等号后的内容原样保存，不解析引号或变量引用。支持空行和整行 # 注释。':'留空保存为空值；未勾选替换时保留现有密钥。'">
+          <a-textarea v-if="isEnvText||form.kind==='file'" v-model:value="form.value" :rows="8" :maxlength="65536" wrap="off" class="env-text-input" aria-label="env 文本" autocomplete="off" spellcheck="false" @blur="textTouched=true"/>
+          <a-input-password v-else-if="form.is_secret" v-model:value="form.value" autocomplete="new-password" :maxlength="65536"/><a-input v-else v-model:value="form.value" :maxlength="65536"/>
+        </a-form-item>
+        <p v-if="form.usage==='deploy'&&isEnvText" class="variable-description">{{form.kind==='env_file'?'仅用于 Compose：部署时自动生成命名文件，为服务添加 env_file 引用。':'Compose 部署时自动合并到所有服务的 environment，无需预先在 YAML 声明；同名项使用本次配置。'}}</p>
         <a-form-item label="允许使用的代码版本" extra="一行一个，例如 refs/heads/main、refs/tags/v*；留空表示不限制。"><a-textarea v-model:value="form.protected_refs" :rows="3"/></a-form-item>
         <a-alert type="info" show-icon message="只向明确引用该变量的任务注入。同名变量优先使用应用和环境范围内的配置，运行会固定引用的版本。"/>
         <a-button type="primary" html-type="submit" block :loading="saving" :disabled="!can(editing?'update':'create')" style="margin-top:20px">保存变量</a-button>
@@ -147,4 +164,8 @@ onBeforeUnmount(()=>{disposed=true;generation++;revision++;listController?.abort
 
 <style scoped>
 .variables-workspace{display:grid;min-width:0;gap:16px}.variables-workspace>.vben-card{min-width:0}.variables-workspace :deep(.resource-table){min-width:880px}.variable-filters{display:flex;gap:12px}.variable-filters>.ant-input-affix-wrapper{max-width:420px}.variable-filters>.ant-select{min-width:180px}.variable-description{display:block;color:var(--edo-muted);margin-top:4px}.variable-form-grid{display:grid;grid-template-columns:1fr 1fr;gap:0 14px}@media(max-width:650px){.variable-filters{flex-direction:column}.variable-form-grid{grid-template-columns:1fr}}
+</style>
+
+<style scoped>
+.env-input-modes{display:flex;flex-wrap:wrap;gap:10px 16px}.env-input-modes :deep(.ant-radio-wrapper){margin-inline-end:0}.env-text-input{white-space:pre;overflow-wrap:normal;overflow-x:auto;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;tab-size:2}
 </style>

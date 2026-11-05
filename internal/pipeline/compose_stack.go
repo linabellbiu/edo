@@ -13,6 +13,7 @@ import (
 
 	"edo/internal/artifact"
 	"edo/internal/deployment"
+	"edo/internal/envtext"
 	"edo/internal/model"
 )
 
@@ -273,12 +274,19 @@ func (s *Service) executeComposeStackDeployment(ctx context.Context, prepared *e
 	}
 	output := s.newExecutionLogWriter(ctx, prepared.run.ID, "deploy", "Docker Compose", prepared.variableRedactions...)
 	defer output.Close()
-	script, err := composeStackScript(content, prepared.node.Config, prepared.target.WorkingDirectory, prepared.deploymentPlan.TimeoutSeconds)
+	content, fileWrites, err := composeStackVariables(content, prepared.node.Config.Compose.ProjectName, prepared.target.WorkingDirectory, prepared.run.ID+"/"+prepared.node.ID, prepared.variables, prepared.variableFiles)
+	if err != nil {
+		return s.failDeploymentExecution(ctx, failure, "Compose 部署变量配置无效", err)
+	}
+	script, err := composeStackScript(content, prepared.node.Config, prepared.target.WorkingDirectory, prepared.deploymentPlan.TimeoutSeconds, fileWrites)
 	if err != nil {
 		return s.failDeploymentExecution(ctx, failure, "Compose 部署配置无效", err)
 	}
 	prepared.deploymentPlan.Script = script
 	environment := mergeDeploymentVariables(prepared.variables, map[string]string{"EDO_PIPELINE_RUN_ID": prepared.run.ID, "EDO_APPLICATION_ID": prepared.application.ID, "EDO_APPLICATION_NAME": prepared.application.Name, "EDO_GIT_REF": prepared.run.Ref, "EDO_COMMIT_SHA": prepared.run.CommitSHA, "EDO_DEPLOYMENT_TARGET_ID": prepared.target.ID, prepared.node.Config.Compose.TagVariable: tag})
+	for name, value := range prepared.variableFiles {
+		environment[envtext.TransportKey(name)] = value
+	}
 	record, err := s.deployments.RequestCommandSnapshotAndRun(ctx, prepared.run.CreatedBy, prepared.target, deployment.CommandRequestInput{UsesDeliveryVariables: len(prepared.snapshot.VariableBindings[prepared.node.ID]) > 0, TargetID: prepared.target.ID, ApplicationID: prepared.application.ID, ArtifactID: prepared.artifact.ID, Image: prepared.artifact.ImageRef, PipelineRunID: prepared.run.ID, WorkflowNodeID: prepared.node.ID, ApprovedBy: approvedBy, DeploymentPlanID: prepared.deploymentPlan.ID, PlanKind: model.DeploymentPlanComposeStack, Script: script, ScriptDigest: model.DeploymentPlanExecutionDigest(model.DeploymentPlanComposeStack, script, prepared.deploymentPlan.TimeoutSeconds), TimeoutSeconds: prepared.deploymentPlan.TimeoutSeconds, Environment: environment, Stdout: output, Stderr: output})
 	if err != nil {
 		return s.handleDeploymentExecutionError(ctx, failure, deploymentFailureLogMessage(record, "Compose 部署失败，请查看运行日志"), err)
@@ -286,7 +294,7 @@ func (s *Service) executeComposeStackDeployment(ctx context.Context, prepared *e
 	return s.completeExecution(ctx, prepared, record)
 }
 
-func composeStackScript(content string, config model.WorkflowNodeConfig, directory string, timeout int) (string, error) {
+func composeStackScript(content string, config model.WorkflowNodeConfig, directory string, timeout int, fileWrites string) (string, error) {
 	if validateComposeNode(config) != nil || len(content) > maximumComposeStackBytes || timeout < 60 {
 		return "", ErrInvalidComposeDelivery
 	}
@@ -326,6 +334,6 @@ func composeStackScript(content string, config model.WorkflowNodeConfig, directo
 	if settings.HealthURL != "" {
 		health = "curl --fail --silent --show-error --max-time 10 --output /dev/null " + composeShellLiteral(settings.HealthURL)
 	}
-	script := strings.NewReplacer("__EDO_DOCKER__", docker, "__EDO_COMPOSE_ARGS__", args, "__EDO_PROJECT_NAME__", composeShellLiteral(settings.ProjectName), "__EDO_EXPECTED_IMAGES__", strings.Join(expected, " "), "__EDO_SERVICES__", strings.Join(services, " "), "__EDO_TIMEOUT__", fmt.Sprint(timeout-30), "__EDO_HEALTH_CHECK__", health, "__EDO_ADOPT_EXISTING__", fmt.Sprint(settings.AdoptExisting), "__EDO_WRITE_COMPOSE__", "cat >\"$release/compose.yml\" <<'"+marker+"'\n"+content+"\n"+marker+"\n").Replace(composeStackTemplate)
+	script := strings.NewReplacer("__EDO_WRITE_ENV_FILES__", fileWrites, "__EDO_DOCKER__", docker, "__EDO_COMPOSE_ARGS__", args, "__EDO_PROJECT_NAME__", composeShellLiteral(settings.ProjectName), "__EDO_EXPECTED_IMAGES__", strings.Join(expected, " "), "__EDO_SERVICES__", strings.Join(services, " "), "__EDO_TIMEOUT__", fmt.Sprint(timeout-30), "__EDO_HEALTH_CHECK__", health, "__EDO_ADOPT_EXISTING__", fmt.Sprint(settings.AdoptExisting), "__EDO_WRITE_COMPOSE__", "cat >\"$release/compose.yml\" <<'"+marker+"'\n"+content+"\n"+marker+"\n").Replace(composeStackTemplate)
 	return script, nil
 }

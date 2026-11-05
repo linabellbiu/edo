@@ -22,6 +22,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/validation"
 
 	"edo/internal/dockerengine"
+	"edo/internal/envtext"
 	"edo/internal/kube"
 	"edo/internal/model"
 	"edo/internal/sshdeploy"
@@ -982,12 +983,13 @@ func (s *Service) run(ctx context.Context, deploymentID, expectedImageID string,
 		return s.markFailed(ctx, deploymentID, "deployment_record_missing", "发布记录读取失败", err, "", nil)
 	}
 	if record.UsesDeliveryVariables && releaseEnvironment(ctx) == nil {
-		values, resolveErr := s.resolveRecordVariables(ctx, &record)
+		values, files, resolveErr := s.resolveRecordVariableSet(ctx, &record)
 		if resolveErr != nil {
 			s.logger.Error("恢复发布变量失败", "operation", "deployment_variables_resolve", "deployment_id", record.ID, "err", resolveErr)
 			return s.markFailed(ctx, record.ID, "deployment_variables_unavailable", "发布变量已撤销或授权失效，请检查原运行", resolveErr, "", nil)
 		}
 		ctx = WithReleaseEnvironment(ctx, values)
+		ctx = WithReleaseEnvFiles(ctx, files)
 	}
 	expectedImageID = strings.TrimSpace(expectedImageID)
 	if record.ExpectedImageID != "" {
@@ -1024,6 +1026,12 @@ func (s *Service) run(ctx context.Context, deploymentID, expectedImageID string,
 		if err := s.requireExecutionPermission(ctx, &record); err != nil {
 			return s.failExecutionAuthorization(ctx, &record, err)
 		}
+		for name, content := range releaseEnvFiles(ctx) {
+			if command.environment == nil {
+				command.environment = map[string]string{}
+			}
+			command.environment[envtext.TransportKey(name)] = content
+		}
 		result, commandErr := s.ssh.RunHostDeploymentScript(ctx, sshdeploy.Input{
 			HostID: record.HostID, EnvironmentID: record.EnvironmentID,
 			WorkingDirectory: record.WorkingDirectory, Script: record.CommandScript,
@@ -1053,6 +1061,7 @@ func (s *Service) run(ctx context.Context, deploymentID, expectedImageID string,
 				DeploymentID: record.ID, Timeout: composeTimeout,
 				RegistryAuth: executionRegistryAuth(command),
 				Environment:  releaseEnvironment(ctx),
+				EnvFiles:     releaseEnvFiles(ctx),
 				Stdout:       executionOutput(command, true), Stderr: executionOutput(command, false),
 			})
 		} else {

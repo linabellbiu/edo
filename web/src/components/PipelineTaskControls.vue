@@ -7,7 +7,7 @@ import { useAuthStore } from '@/stores/auth'
 import type { WorkflowNode, WorkflowNodeConfig } from '@/types/pipeline'
 const props=defineProps<{node:WorkflowNode;disabled:boolean;buildNodes:WorkflowNode[];scriptBuild?:boolean}>()
 const emit=defineEmits<{change:[config:Partial<WorkflowNodeConfig>]}>()
-const auth=useAuthStore(),variables=ref<Array<{name:string;is_secret:boolean}>>([]),databases=ref<Array<{id:string;name:string}>>([]),environments=ref<Array<{id:string;name:string}>>([]),error=ref('')
+const auth=useAuthStore(),variables=ref<Array<{name:string;is_secret:boolean;usage?:string;kind?:string}>>([]),databases=ref<Array<{id:string;name:string}>>([]),environments=ref<Array<{id:string;name:string}>>([]),error=ref('')
 let revision=0,disposed=false
 let controller:AbortController|undefined
 const selectedProject=ref(readSelectedProject())
@@ -24,7 +24,7 @@ async function load(){
  try{
   const [v,d,e]=await Promise.all([auth.canAny(['delivery_variable.read'])?client.get('/delivery-variables',options):Promise.resolve({data:{variables:[]}}),auth.canAny(['application_database.read'])?client.get('/application-databases',options):Promise.resolve({data:{databases:[]}}),auth.canAny(['deployment.read'])?client.get('/environments',options):Promise.resolve({data:{environments:[]}})])
   if(disposed||signal.aborted||request!==revision||identity!==context())return
-  variables.value=v.data.variables.filter((item:{project_id:string})=>item.project_id===projectID).map((item:{name:string;is_secret:boolean})=>({name:item.name,is_secret:item.is_secret}))
+  variables.value=v.data.variables.filter((item:{project_id:string})=>item.project_id===projectID).map((item:{name:string;is_secret:boolean;usage?:string;kind?:string})=>({name:item.name,is_secret:item.is_secret,usage:item.usage,kind:item.kind}))
   databases.value=d.data.databases.filter((item:{project_id:string})=>item.project_id===projectID);environments.value=e.data.environments.filter((item:{project_id:string})=>item.project_id===projectID)
  }catch(cause){if(!disposed&&!signal.aborted&&request===revision&&identity===context())error.value=apiErrorMessage(cause)}
 }
@@ -32,7 +32,10 @@ function projectChanged(event:Event){if(event.type==='storage'&&(event as Storag
 watch(context,()=>{selectedProject.value=readSelectedProject();void load()},{immediate:true,flush:'sync'})
 onMounted(()=>{window.addEventListener('storage',projectChanged);window.addEventListener('edo:projects-changed',projectChanged)})
 onBeforeUnmount(()=>{disposed=true;revision++;controller?.abort();variables.value=[];databases.value=[];environments.value=[];window.removeEventListener('storage',projectChanged);window.removeEventListener('edo:projects-changed',projectChanged)})
-const variableOptions=computed(()=>Array.from(new Set(variables.value.map(v=>v.name))).map(name=>({value:name,label:name+(variables.value.some(v=>v.name===name&&v.is_secret)?' · 密钥':'')})))
+const variableOptions=computed(()=>{
+ const available=variables.value.filter(item=>!item.usage||item.usage===(props.node.type==='deploy'?'deploy':'build'))
+ return Array.from(new Set(available.map(v=>v.name))).map(name=>({value:name,label:name+(available.some(v=>v.name===name&&v.kind==='env_file')?' · env_file':available.some(v=>v.name===name&&v.kind==='env_text')?' · environment':'')+(available.some(v=>v.name===name&&v.is_secret)?' · 密钥':'')}))
+})
 const tool=computed(()=>props.node.config.migration?'migration':props.node.config.check?.tool||'script')
 function chooseTool(value:string){
  if(value==='migration'){change({check:undefined,cache:undefined,variable_names:[],toolchain_language:undefined,toolchain_version:undefined,migration:{database_id:'',directory:'migrations'},reports:[],script:'echo 数据库迁移由 EDO 执行',runtime_image:'alpine:3.22',timeout_seconds:600});return}

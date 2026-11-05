@@ -22,6 +22,7 @@ docker_command() { __EDO_DOCKER__ "$@"; }
 dc() { file=$1; shift; docker_command compose __EDO_COMPOSE_ARGS__ --file "$file" "$@"; }
 expected_image() { case "$1" in __EDO_EXPECTED_IMAGES__ *) return 1;; esac; }
 error() { echo "$1；请查看目标主机本次发布目录中的 compose.log" >&2; exit 1; }
+__EDO_WRITE_ENV_FILES__
 __EDO_WRITE_COMPOSE__
 dc "$release/compose.yml" config --quiet >>"$log" 2>&1 || error 'EDO Compose 配置或变量校验失败'
 printf 'services:\n' >"$release/old-images.yml"

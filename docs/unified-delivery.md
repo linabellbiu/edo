@@ -37,7 +37,7 @@ Kubernetes Deployment 的操作菜单提供“关联应用”，携带当前集�
 页面入口为“应用 → 配置发布流程 → Compose 与 Tag（多镜像）”：
 
 1. 填写 Compose 项目名，在 YAML 编辑器粘贴完整 Compose。需要保留原数据库和卷时，准确沿用原项目名、卷、网络、端口与服务配置；移除 `build`、`include` 和 `extends`。编辑器支持行号、高亮、格式化和行列错误定位，无效输入不会被格式化覆盖。
-2. 业务服务的 `image` 写成 `registry.example.com/team/api:${IMAGE_TAG}`。设置构建镜像 Tag，例如 `${EDO_GIT_TAG}`；Compose Tag 变量名默认 `IMAGE_TAG`。其他环境变量继续使用项目变量、密钥或目标主机环境文件，不在 YAML 写明文密码。
+2. 业务服务的 `image` 写成 `registry.example.com/team/api:${IMAGE_TAG}`。设置构建镜像 Tag，例如 `${EDO_GIT_TAG}`；Compose Tag 变量名默认 `IMAGE_TAG`。其他环境变量可在「变量与密钥」按应用、环境保存 env 文本或命名 env 文件，再在部署任务中引用；EDO 自动合并 `environment` 或添加 `env_file`，不在 YAML 写明文密码。命名文件模式需要 Compose 2.30 或更新版本。
 3. 选择服务、带镜像仓库的 Dockerfile 构建方案及输出镜像名称。多个服务使用相同构建方案和镜像名时，共用一个构建任务；不同输出镜像并行构建。构建配方中的 Dockerfile、上下文、目标阶段和仓库均可独立配置。多个构建不能覆盖同一仓库、镜像名称和 Tag。
 4. 选择环境、SSH 与 Docker 能力均已就绪的目标主机、绝对部署目录，可选环境文件、健康检查及免密码 sudo。接管已有项目时开启接管校验。
 5. 创建草稿后，在流水线编辑器配置代码源事件、分支与 Tag 规则，再启用。创建草稿不会构建、推送或部署。

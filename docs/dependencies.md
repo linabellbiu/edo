@@ -138,3 +138,7 @@ Git 元数据继续使用已固定版本的 [go-git 文件存储](https://pkg.go
 镜像分发按用户要求选择 [docker.aityp.com](https://docker.aityp.com/) 公布的华为云 SWR 地址，镜像清单见[部署说明](deployment.md#默认镜像源)。镜像站未索引的 NATS 2.12.12 使用 DaoCloud 同版本代理，避免降级；Docker CLI 和 DinD 同时升级为固定 29.8.2，实际构建运行和 mTLS 健康必须验收。Go/Node 构建镜像更换发行版而不更换工具链版本，API 运行层保持 Debian。第三方同步存在架构单一、同步延迟与供应链信任成本，每项均可用环境变量替换，未引入常驻代理或镜像平台。公开依赖下载使用成熟 Go/npm 代理，可覆盖，不传输私有仓库凭据。
 
 API 运行层安装系统包时默认使用华为云 Debian 镜像，通过 `EDO_DEBIAN_MIRROR` 覆盖；保留 Debian 官方签名验证，仅影响镜像构建，不修改宿主机 apt 配置。首次本地构建在官方 Debian 下载地址遇到单个包 502，切换后重新验证，不把原失败记为成功。
+
+## 部署 env 文本
+
+复用项目已有的官方 Docker Compose CLI、GORM 变量修订与加密组件，无新增依赖或常驻服务。评估了现有 MIT 包 `github.com/joho/godotenv v1.5.1` 与 Docker 官方生态的 `compose-go/v2/dotenv`：前者为稳定的小型解析库，后者随 Compose 持续维护，但两者的完整 dotenv 语法会解释引号、转义或插值，不符合本次按物理行保留字面 `KEY=value` 的输入约定；为这段业务录入规则引入 compose-go 也会增加无须在 EDO 重复承担的解析依赖。EDO 仅用标准库按首个等号拆分并做有界校验，不实现通用 dotenv 解释器；文件消费直接采用 Compose 官方的 `env_file.format: raw`。该能力可通过相同输入约定替换内部实现，维护风险是前后端校验规则漂移和 Compose 版本差异，由行号错误测试、真实 Compose 特殊字符验收及明确的最低版本约束控制。项目已有版本冻结、使用授权与敏感内容保护继续生效。
