@@ -20,5 +20,14 @@
 
 首次真实文件测试发现单引号编码遇到尾部反斜杠时被 Compose 判为未闭合引号，保留该失败记录；改为官方 `env_file.format: raw` 后，相关真实容器测试重新通过。该模式要求 Compose 2.30 或更新版本，不自制另一套 dotenv 引号解释器。
 
-页面夹具只使用合成接口与合成数据；正常 HTTP 测试使用独立真实数据库；外部执行使用独立临时 Compose 项目。测试项目、容器和独立 MySQL 已清理，原有本机服务继续运行。本次不包含服务器部署。
+页面夹具只使用合成接口与合成数据；正常 HTTP 测试使用独立真实数据库；外部执行使用独立临时 Compose 项目。测试项目、容器和独立 MySQL 已清理，原有本机服务继续运行。以上为本地验证记录，线上发布见下文。
 
+
+## 2026-11-05 发布核验
+
+- 用户明确指定本次目标为 `117.50.182.97:8080`；主机身份为 `10-60-249-21`，仓库为 `/home/ubuntu/edo` 的 `main`。功能提交 `a3ce053ba0069592a53ac6d9de8fdf5c1fd7562e` 已推送 GitHub。
+- 发布期间 main 与服务器发生并发更新，精确版本检查在本任务构建和替换容器前停止。随后只读确认服务器已经运行 `8c4d37055df5a919759ad7c83f11bc937daea242`；Git 祖先关系证实它包含本次功能。本任务未覆盖或回退另一会话的发布，也未重新启动、停止或重跑业务流水线。
+- 实际 API 版本为 `EDO 8c4d370`，API 与 Web 均 healthy；Web `/healthz` 返回 ok，API readiness 的 database、redis、nats、builder 均为 ok。API 内 Compose 为 5.6.0，支持文件模式所需的官方 raw 格式。
+- API 镜像为 `sha256:d16c446a4cca538fa2fa16928348fbb6820a810ff36bed6dcfa1b1717e693cae`；Web 镜像为 `sha256:df2b6d6c29a1b70ee573d75e37598c2bfe6eb788cc0b1a330930f0315abec8b1`。数据库、Redis、NATS、构建器及一次性初始化/迁移容器的 ID、镜像和启动时间未改变，`.env` 与 Compose 配置摘要保持一致。本次核验未创建数据备份或专门回退镜像。
+- 从服务器真实 Web 入口读取 `/delivery-variables` 及 `DeliveryVariablesView-EQ7tfMhV.js` 均为 200，已确认 environment、env_file、逐条添加三种模式；HTTP 提供的资源与运行镜像文件 SHA-256 一致，为 `4e74c874472a365468f879aa447ba3dbe2ca6de7462139f40f4bf1244b346cfb`。
+- Chrome 线上表单交互未完成：独立验收页遇到网络错误及浏览器并发控制，未保存任何生产变量或触发新的业务发布。上述资源与健康验证不替代 ENV-03/04 的完整远程业务流程验收，本地页面、接口与真实 Compose 证据继续保留。
