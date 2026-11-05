@@ -18,3 +18,12 @@
 - 浏览器夹具为 `web/tests/fixtures/organization-tree.html`。成员合成数据共 13 名，页面每页 10 条；公司第二页显示剩余 3 名，账号筛选后回到第一页；支付服务组的停用成员使用中性状态。
 - 无成员权限与请求失败时，公司成员数为未知值，不显示零人；只读身份没有新增和编辑节点按钮。所有本地写入只修改夹具内存，没有创建或修改线上组织数据。
 - 390px 页面与文档宽度均为 390px；成员表在自身容器内横向滚动，部门长名称在详情中换行。保留全站 Vben、侧栏及登录样式。
+
+## 发布核验
+
+- 功能提交 `77b320cacd1898baced6f41b5d05e0dba2a110ff` 已推送 GitHub `main`。沿用已确认的 `117.50.182.97:8080`，SSH 核对主机身份为 `10-60-249-21`，仓库为 `/home/ubuntu/edo`。
+- 获取 `/tmp/edo-compose-release.lock` 后，检查源码、API 与 Web 容器基线，服务器通过 `git pull --ff-only origin main` 从 `a8fba57` 更新到精确功能提交。远程构建并仅替换 Web；新容器为 `8b34838cff31`，镜像为 `sha256:611dd06ecabacab8527c21496c84e9d9710c94fe0f9a6cce50f59b5caaa4cde0`，状态 healthy。
+- API 仍为 `EDO ba4d329`。API、PostgreSQL、Redis、NATS、Docker 构建器的容器 ID、镜像与启动时间逐项保持一致；`.env`、`docker-compose.yml` 摘要未变。没有创建数据库、文件备份或专门回退镜像，没有调整 CI、Runner、FRP 或重启 Docker。
+- Web `/healthz` 返回 ok；API readiness 的 database、redis、nats、builder 均为 ok。
+- HTTP 实际提供的 `OrganizationView-IPgkHS_9.js` 与 `OrganizationView-CeHwy3nr.css` 分别与运行镜像内文件 SHA-256 一致；确认包含双栏布局、成员表及 300px 部门树样式。
+- Chrome 独立线上验收窗口回到登录页，目前没有可复用的有效登录。登录后组织页交互未复验，未创建、修改或删除线上组织数据；本地实际组件交互通过与线上静态资源校验分别记录，不将资源校验冒充已登录页面验收。
