@@ -76,6 +76,14 @@ export interface Workflow {
   stages: WorkflowStage[]
 }
 
+export interface WorkflowCatalogEntry extends Workflow {
+  kind: 'template' | 'application'
+  project_id: string
+  application_name?: string
+  application_count: number
+  updated_at: string
+}
+
 export interface WorkflowIssue {
   code: string
   message: string

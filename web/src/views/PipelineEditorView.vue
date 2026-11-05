@@ -26,6 +26,7 @@ import type {
   WorkflowNotificationRule,
   WorkflowNodeType,
   WorkflowResponse,
+  WorkflowCatalogEntry,
   WorkflowTemplateResponse,
 } from '@/types/pipeline'
 
@@ -222,7 +223,7 @@ const templateOptions = computed(() => templates.value.map(item => ({
   label: item.name,
   detail: `状态：${item.is_active ? '已启用' : '草稿'}`,
 })))
-const codeSourceName = computed(() => editorApplication.value?.repository?.name || '未配置代码仓库')
+const codeSourceName = computed(() => editorApplication.value?.repository?.name || (auth.canAny(['application.read']) ? '未配置代码仓库' : '代码源'))
 const allNodes = computed(() => [...sources.value, ...stages.value.flatMap(stage => stage.tasks)])
 const selectedNode = computed(() => allNodes.value.find(item => item.id === selectedNodeID.value) || null)
 const selectedTask = computed(() => selectedNode.value && isTaskType(selectedNode.value.type) ? selectedNode.value : null)
@@ -452,7 +453,20 @@ async function loadResources() {
       notificationChannelRequest,
     ])
     if(!currentScope(scope))return
-    applications.value = applicationResult.data.applications || []
+    let visibleApplications = applicationResult.data.applications || []
+    if (applicationID.value && !auth.canAny(['application.read'])) {
+      const { data } = await client.get<{ workflows: WorkflowCatalogEntry[] }>('/workflows', options)
+      if (!currentScope(scope)) return
+      const grouped = new Map<string, ApplicationRecord>()
+      for (const item of data.workflows || []) {
+        if (item.kind !== 'application' || !item.application_id) continue
+        const app = grouped.get(item.application_id) || { id: item.application_id, name: item.application_name || '关联应用', workflows: [] }
+        app.workflows!.push(item)
+        grouped.set(app.id, app)
+      }
+      visibleApplications = [...grouped.values()]
+    }
+    applications.value = visibleApplications
     templates.value = templateResult.data.workflow_templates || []
     buildPlans.value = buildPlanResult.data.build_plans || []
     deploymentPlans.value = deploymentPlanResult.data.deployment_plans || []
@@ -483,8 +497,8 @@ async function loadApplication(id: string, requestedWorkflowID = workflowID.valu
   if(!currentScope(scope))return
   const request=++graphRevision
   const application = applications.value.find(item => item.id === id)
-  const selected = application?.workflows?.find(item => item.id === requestedWorkflowID) || application?.workflows?.[0]
-  if (!selected) { workflowID.value = ''; workflow.value = null; return }
+  const selected = requestedWorkflowID ? application?.workflows?.find(item => item.id === requestedWorkflowID) : application?.workflows?.[0]
+  if (!selected) { workflowID.value = ''; workflow.value = null; sources.value = []; stages.value = []; scopeError.value = '当前应用没有这条可查看的流水线'; return }
   const result = await client.get<WorkflowResponse>(`/applications/${id}/workflows/${selected.id}`,scopeOptions(scope))
   if(!currentScope(scope)||request!==graphRevision)return
   workflowID.value = selected.id

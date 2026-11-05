@@ -83,9 +83,9 @@ test('公共流水线设默认入口与抽屉共用一构建一部署资格，�
   const state = loadFrontend('../src/views/PipelinePlanListView.vue', {
     vue: { ...vue, onMounted() {} }, 'vue-router': { useRoute: () => ({ query: {} }), useRouter: () => ({}) },
     'vue-i18n': { useI18n: () => ({ t: key => key }) }, '@/api/delivery': delivery,
-    '@/stores/auth': { useAuthStore: () => ({ canAny: () => true }) }, '@/utils/resourceList': { useResourceList: () => ({}) },
-  }).default.setup({}, { expose() {} })
-  state.templates.value = [template(), template('manual', ['shell']), template('draft', ['build', 'deploy'], false)]
+    '@/stores/auth': { useAuthStore: () => ({ user:{id:'operator',project_id:'project',permissions:[]},canAny: () => true }) }, '@/utils/resourceList': { useResourceList: () => ({}) },
+  },{localStorage:{getItem:()=> 'project'}}).default.setup({}, { expose() {} })
+  state.entries.value = [template(), template('manual', ['shell']), template('draft', ['build', 'deploy'], false)].map(item=>({...item,kind:'template'}))
   state.openDefaults('manual'); assert.equal(state.defaultsOpen.value, false)
   state.openDefaults('draft'); assert.equal(state.defaultsOpen.value, false)
   state.openDefaults('valid'); assert.equal(state.defaultsOpen.value, true); assert.equal(state.defaultWorkflowID.value, 'valid')

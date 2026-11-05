@@ -20,7 +20,7 @@ async function harness({ codes = permissions, project = 'project-a', selected = 
     const request={method,path,body:method==='get'?undefined:JSON.parse(JSON.stringify(bodyOrOptions??null)),options:method==='get'?bodyOrOptions:options};requests.push(request)
     const handler={get,put,post}[method];if(handler){const value=await handler(request);if(value)return value}
     const projectID=request.options?.headers['X-EDO-Project-ID']||project,workflow=graph(projectID)
-    const data=path==='/settings/builtin-variables'?{variables:[{id:'builtin',kind:'environment',name:'EDO_COMMIT',scopes:['pipeline_script'],syntax:'$EDO_COMMIT',label:'提交'}]}:path==='/applications'?{applications:[{id:`app-${projectID}`,name:`应用 ${projectID}`,workflows:[workflow]}]}:path==='/workflow-templates'?{workflow_templates:[{...workflow,application_id:''}]}:path==='/build-plans'?{build_plans:[{id:`build-${projectID}`,name:'构建',is_active:true}]}:path==='/deployment-plans'?{deployment_plans:[{id:`deploy-${projectID}`,name:'部署',is_active:true}]}:path==='/notification-channels'?{channels:[{id:`channel-${projectID}`,name:'渠道',is_active:true,type:'webhook'}]}:path==='/delivery-variables'?{variables:[{project_id:projectID,name:`KEY_${projectID}`,is_secret:true,value:'不得保留'}]}:path==='/application-databases'?{databases:[{id:`db-${projectID}`,project_id:projectID,name:'数据库'}]}:path==='/environments'?{environments:[{id:`env-${projectID}`,project_id:projectID,name:'环境'}]}:{workflow,workflow_template:workflow,issues:[],valid:true}
+    const data=path==='/workflows'?{workflows:[{...workflow,kind:'application',application_name:`应用 ${projectID}`}]}:path==='/settings/builtin-variables'?{variables:[{id:'builtin',kind:'environment',name:'EDO_COMMIT',scopes:['pipeline_script'],syntax:'$EDO_COMMIT',label:'提交'}]}:path==='/applications'?{applications:[{id:`app-${projectID}`,name:`应用 ${projectID}`,workflows:[workflow]}]}:path==='/workflow-templates'?{workflow_templates:[{...workflow,application_id:''}]}:path==='/build-plans'?{build_plans:[{id:`build-${projectID}`,name:'构建',is_active:true}]}:path==='/deployment-plans'?{deployment_plans:[{id:`deploy-${projectID}`,name:'部署',is_active:true}]}:path==='/notification-channels'?{channels:[{id:`channel-${projectID}`,name:'渠道',is_active:true,type:'webhook'}]}:path==='/delivery-variables'?{variables:[{project_id:projectID,name:`KEY_${projectID}`,is_secret:true,value:'不得保留'}]}:path==='/application-databases'?{databases:[{id:`db-${projectID}`,project_id:projectID,name:'数据库'}]}:path==='/environments'?{environments:[{id:`env-${projectID}`,project_id:projectID,name:'环境'}]}:{workflow,workflow_template:workflow,issues:[],valid:true}
     return {data}
   }]))
   const props=vue.reactive({node:{id:'shell',type:'shell',name:'检查',config:{script:'echo ok'}},disabled:false,buildNodes:[]})
@@ -140,4 +140,10 @@ test('禁用或没有workflow.update时任务配置回调不能发出本地修�
   h.state.chooseTool('migration');h.state.updateCache({paths:['.cache']});assert.deepEqual(h.events,[])
   h.auth.user.permissions=permissions;await settle();h.props.disabled=true;h.state.chooseTool('script');assert.deepEqual(h.events,[])
   h.props.disabled=false;h.state.chooseTool('script');assert.equal(h.events.length,1)
+})
+
+test('只有流水线查看权限时可从统一目录打开应用流水线，不额外要求应用查看权限',async t=>{
+ const h=await harness({codes:['workflow.read']});t.after(h.stop)
+ assert.equal(h.state.workflow.value.id,'flow-project-a');assert.ok(h.requests.some(r=>r.path==='/workflows'));assert.equal(h.requests.some(r=>r.path==='/applications'),false)
+ assert.equal(h.state.canEdit.value,false)
 })

@@ -252,6 +252,7 @@ func NewRouter(deps Dependencies) *gin.Engine {
 	protected.DELETE("/applications/:id/workflows/:workflow_id", auditAction(deps.Audits, deps.Logger, "workflow.delete", "release_workflow"), requirePermission(deps.Access, deps.Logger, "workflow.delete"), pipelineAPI.deleteWorkflow)
 	protected.GET("/applications/:id/workflows/:workflow_id/repository-refs", requirePermission(deps.Access, deps.Logger, "workflow.read"), pipelineAPI.listApplicationRefs)
 	protected.POST("/applications/:id/workflows/:workflow_id/pipeline-runs", auditAction(deps.Audits, deps.Logger, "pipeline.prepare", "pipeline_run"), requirePermission(deps.Access, deps.Logger, "pipeline_run.execute"), pipelineAPI.prepareRun)
+	protected.GET("/workflows", requirePermission(deps.Access, deps.Logger, "workflow.read"), pipelineAPI.listWorkflowCatalog)
 	protected.GET("/workflow-templates", requirePermission(deps.Access, deps.Logger, "workflow.read"), pipelineAPI.listWorkflowTemplates)
 	protected.GET("/workflow-presets", requirePermission(deps.Access, deps.Logger, "workflow.read"), pipelineAPI.listWorkflowPresets)
 	protected.GET("/workflow-runtime-versions", requirePermission(deps.Access, deps.Logger, "workflow.read"), pipelineAPI.listWorkflowRuntimeVersions)
