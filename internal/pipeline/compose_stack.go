@@ -184,6 +184,7 @@ func renderComposeStack(value string, config model.WorkflowNodeConfig, images ma
 	}
 	services := doc["services"].(map[string]any)
 	tag := ""
+	taggedImages := map[string]string{}
 	for _, binding := range config.ComposeImages {
 		image, ok := images[binding.Service]
 		if !ok {
@@ -198,6 +199,19 @@ func renderComposeStack(value string, config model.WorkflowNodeConfig, images ma
 			return "", "", ErrPipelineExecutionConfig
 		}
 		tag = tagged.Tag()
+		// 制品名称用于展示，登记时会去掉仓库路径；完整身份必须来自已校验的摘要引用。
+		pinned, err := distributionreference.ParseNormalizedNamed(image.ImageRef)
+		if err != nil {
+			return "", "", ErrPipelineExecutionConfig
+		}
+		if _, ok := pinned.(distributionreference.Digested); !ok {
+			return "", "", ErrPipelineExecutionConfig
+		}
+		fullTag, err := distributionreference.WithTag(distributionreference.TrimNamed(pinned), tagged.Tag())
+		if err != nil {
+			return "", "", ErrPipelineExecutionConfig
+		}
+		taggedImages[binding.Service] = distributionreference.FamiliarString(fullTag)
 	}
 	for _, binding := range config.ComposeImages {
 		service, ok := services[binding.Service].(map[string]any)
@@ -215,7 +229,7 @@ func renderComposeStack(value string, config model.WorkflowNodeConfig, images ma
 			return variables[name]
 		})
 		image := images[binding.Service]
-		if expanded != image.Name && expanded != image.ImageRef {
+		if expanded != taggedImages[binding.Service] && expanded != image.ImageRef {
 			return "", "", ErrPipelineExecutionConfig
 		}
 		service["image"] = image.ImageRef

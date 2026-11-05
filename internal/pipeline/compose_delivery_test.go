@@ -91,8 +91,8 @@ func composeTestConfig() model.WorkflowNodeConfig {
 func TestComposeTagComesFromActualBuildAndExecutionPinsDigest(t *testing.T) {
 	config := composeTestConfig()
 	digest := "sha256:" + strings.Repeat("b", 64)
-	image := model.Artifact{Name: "registry.example.com/web:release-one", ImageRef: "registry.example.com/web@" + digest, Digest: digest}
-	source := "services:\n  web:\n    image: registry.example.com/web:${IMAGE_TAG}\n    environment:\n      TOKEN: ${PRIVATE_VALUE}\n"
+	image := model.Artifact{Name: "web:release-one", ImageRef: "registry.example.com/team/web@" + digest, Digest: digest}
+	source := "services:\n  web:\n    image: registry.example.com/team/web:${IMAGE_TAG}\n    environment:\n      TOKEN: ${PRIVATE_VALUE}\n"
 	text, tag, err := renderComposeStack(source, config, map[string]model.Artifact{"web": image}, map[string]string{"PRIVATE_VALUE": "do-not-serialize"})
 	if err != nil || tag != "release-one" || !strings.Contains(text, image.ImageRef) || strings.Contains(text, "do-not-serialize") || !strings.Contains(text, "${PRIVATE_VALUE}") {
 		t.Fatalf("未绑定构建结果或泄露变量: tag=%s err=%v", tag, err)
@@ -100,6 +100,11 @@ func TestComposeTagComesFromActualBuildAndExecutionPinsDigest(t *testing.T) {
 	_, _, err = renderComposeStack(strings.ReplaceAll(source, "web:${IMAGE_TAG}", "other:${IMAGE_TAG}"), config, map[string]model.Artifact{"web": image}, nil)
 	if err == nil {
 		t.Fatal("接受了与实际构建不同的镜像名称")
+	}
+	for _, wrong := range []string{"other.example.com/team/web:${IMAGE_TAG}", "registry.example.com/other/web:${IMAGE_TAG}", "web:${IMAGE_TAG}"} {
+		if _, _, err := renderComposeStack(strings.Replace(source, "registry.example.com/team/web:${IMAGE_TAG}", wrong, 1), config, map[string]model.Artifact{"web": image}, nil); err == nil {
+			t.Fatalf("接受了与固定摘要不同的仓库路径: %s", wrong)
+		}
 	}
 }
 
@@ -287,5 +292,34 @@ func TestComposeChecksEveryArtifactProducerAndRun(t *testing.T) {
 	db.WithContext(ctx).Model(&model.Artifact{}).Where("uuid = ?", "artifact-other").Update("pipeline_run_id", "foreign-run")
 	if s.loadComposeStackArtifacts(ctx, prepared) == nil {
 		t.Fatal("手动运行不能绕过多镜像的运行归属")
+	}
+}
+
+func TestComposeRegisteredImageUsesDigestRepository(t *testing.T) {
+	s, db, _, repoID := newPipelineTestService(t)
+	ctx := deliveryTestContext()
+	app, err := s.CreateApplication(ctx, "admin", ApplicationInput{Name: "compose_registered", RepositoryID: repoID, EmptyWorkflow: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	registry := model.ImageRegistry{ID: "registered-registry", Name: "登记镜像仓库", Provider: model.RegistryGeneric, Endpoint: "https://registry.example.com", Namespace: "team", IsActive: true}
+	if err := db.WithContext(ctx).Create(&registry).Error; err != nil {
+		t.Fatal(err)
+	}
+	store, err := artifact.NewService(db, t.TempDir(), 1024*1024, s.logger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest := "sha256:" + strings.Repeat("b", 64)
+	image, err := store.CreateImage(ctx, artifact.ImageInput{BuildMetadata: artifact.BuildMetadata{ApplicationID: app.ID, PipelineRunID: "registered-run", RepositoryID: repoID, WorkflowNodeID: "image", BuildPlanID: "build-plan", Ref: "refs/tags/release-one", CommitSHA: strings.Repeat("a", 40), PlanSnapshot: "{}", PlanDigest: sha256Digest([]byte("{}")), CreatedBy: "admin"}, Name: "registry.example.com/team/web:release-one", StorageKind: model.ArtifactStorageKindRegistry, ImageRegistryID: registry.ID, ImageRef: "registry.example.com/team/web@" + digest})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if image.Name != "web:release-one" {
+		t.Fatalf("需覆盖真实登记后的显示名: %s", image.Name)
+	}
+	content, tag, err := renderComposeStack("services:\n  web:\n    image: registry.example.com/team/web:${IMAGE_TAG}\n", composeTestConfig(), map[string]model.Artifact{"web": *image}, nil)
+	if err != nil || tag != "release-one" || !strings.Contains(content, image.ImageRef) {
+		t.Fatalf("真实登记制品无法用于 Compose: tag=%s err=%v", tag, err)
 	}
 }
