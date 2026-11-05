@@ -29,6 +29,7 @@ const (
 const pipelineRunLogTruncatedMessage = "…本次流水线日志已达到 2 MiB 上限，后续日志不再保存"
 
 var ErrInvalidExecutionLogFilter = errors.New("日志查询条件无效")
+var ErrPipelineLogNodeNotFound = errors.New("该任务不属于本次流水线运行")
 
 type ExecutionLogFilter struct {
 	BeforeID uint64
@@ -101,19 +102,42 @@ func (s *Service) ListRunLogs(
 	afterID uint64,
 	limit int,
 ) ([]model.PipelineRunLog, model.PipelineRunStatus, error) {
+	return s.ListNodeRunLogs(ctx, runID, "", afterID, limit)
+}
+
+// ListNodeRunLogs 按运行快照中的任务 ID 读取；空任务 ID 表示整个运行。
+func (s *Service) ListNodeRunLogs(ctx context.Context, runID, nodeID string, afterID uint64, limit int) ([]model.PipelineRunLog, model.PipelineRunStatus, error) {
 	if limit < 1 || limit > 500 {
 		limit = 200
 	}
 	var run model.PipelineRun
-	if err := s.db.WithContext(ctx).Select("uuid", "status").First(&run, "uuid = ?", strings.TrimSpace(runID)).Error; err != nil {
+	if err := s.db.WithContext(ctx).Select("uuid", "status", "workflow_snapshot").First(&run, "uuid = ?", strings.TrimSpace(runID)).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, "", ErrPipelineRunNotFound
 		}
 		return nil, "", err
 	}
+	query := s.db.WithContext(ctx).Where("pipeline_run_id = ? AND id > ?", run.ID, afterID)
+	if nodeID != "" {
+		snapshot, err := parseWorkflowSnapshot(&run)
+		if err != nil {
+			return nil, "", err
+		}
+		if _, found := workflowFindNode(snapshot.Source, snapshot.Stages, nodeID); !found {
+			return nil, "", ErrPipelineLogNodeNotFound
+		}
+		query = query.Where("node_id = ?", nodeID)
+		var task model.PipelineNodeRun
+		err = s.db.WithContext(ctx).Select("status").Where("pipeline_run_id = ? AND node_id = ?", run.ID, nodeID).First(&task).Error
+		if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, "", err
+		}
+		if err == nil && (nodeFinished(task.Status) || !nodeFinished(run.Status)) {
+			run.Status = task.Status
+		}
+	}
 	var logs []model.PipelineRunLog
-	if err := s.db.WithContext(ctx).
-		Where("pipeline_run_id = ? AND id > ?", run.ID, afterID).
+	if err := query.
 		Order("id ASC").Limit(limit).Find(&logs).Error; err != nil {
 		return nil, "", err
 	}

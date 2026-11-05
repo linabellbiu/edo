@@ -3,8 +3,8 @@ import { nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import client from '@/api/client'
 import { openLiveSocket } from '@/utils/liveSocket'
 
-interface PipelineLog{id:number;stage:string;level:string;message:string;created_at:string}
-const props=defineProps<{open:boolean;runID:string;title:string;initialStatus:string}>(),emit=defineEmits<{'update:open':[value:boolean]}>()
+interface PipelineLog{id:number;node_id?:string;stage:string;level:string;message:string;created_at:string}
+const props=defineProps<{open:boolean;runID:string;nodeID?:string;title:string;initialStatus:string}>(),emit=defineEmits<{'update:open':[value:boolean]}>()
 const logs=ref<PipelineLog[]>([]),status=ref(''),connection=ref<'connecting'|'connected'|'complete'|'error'>('connecting'),error=ref(''),viewport=ref<HTMLDivElement|null>(null)
 let dispose:undefined|(()=>void)
 let focusOrigin: HTMLElement | null = null
@@ -30,7 +30,8 @@ function afterOpenChange(open: boolean) {
 }
 async function connect() {
   dispose?.()
-  const runID = props.runID
+  const runID = props.runID, nodeID = props.nodeID || ''
+  const nodeQuery = nodeID ? `&node_id=${encodeURIComponent(nodeID)}` : ''
   const controller = new AbortController()
   let closed = false
   let stopSocket: (() => void) | undefined
@@ -40,27 +41,27 @@ async function connect() {
   logs.value = []; status.value = props.initialStatus; error.value = ''; connection.value = 'connecting'
   try {
     const history = (await client.get<{logs: PipelineLog[]; status: string; next_after_id: number}>(
-      `/pipeline-runs/${encodeURIComponent(runID)}/logs?limit=500`, {signal: controller.signal},
+      `/pipeline-runs/${encodeURIComponent(runID)}/logs?limit=500${nodeQuery}`, {signal: controller.signal},
     )).data
     if (closed) return
-    logs.value = history.logs || []; status.value = history.status || props.initialStatus; afterID = history.next_after_id || 0
+    logs.value = (history.logs || []).filter(log => !nodeID || log.node_id === nodeID); status.value = history.status || props.initialStatus; afterID = history.next_after_id || 0
   } catch { /* 历史请求失败时仍尝试由日志连接按游标补齐。 */ }
   if (closed) return
   stopSocket = openLiveSocket({
-    get path() { return `/api/v1/pipeline-runs/${encodeURIComponent(runID)}/logs/ws?after_id=${afterID}` },
+    get path() { return `/api/v1/pipeline-runs/${encodeURIComponent(runID)}/logs/ws?after_id=${afterID}${nodeQuery}` },
     protocol: 'edo-pipeline-logs-v1',
     onState: value => {
       if (closed || value === 'stopped') return
       connection.value = value === 'disconnected' ? 'error' : value
       error.value = value === 'disconnected' ? '日志连接已断开，正在重连…' : ''
     },
-    onDenied: () => { connection.value = 'error'; error.value = '登录或权限已变化，请重新登录' },
+    onDenied: () => { if (closed) return; connection.value = 'error'; error.value = '登录或权限已变化，请重新登录' },
     onEvent: data => {
       if (closed) return false
       const payload = data as {type: string; logs?: PipelineLog[]; status?: string; message?: string}
       if (payload.status) status.value = payload.status
       if (payload.logs?.length) {
-        const fresh = payload.logs.filter(log => log.id > afterID)
+        const fresh = payload.logs.filter(log => log.id > afterID && (!nodeID || log.node_id === nodeID))
         logs.value.push(...fresh)
         afterID = fresh.at(-1)?.id || afterID
         void nextTick().then(() => { if (!closed && viewport.value) viewport.value.scrollTop = viewport.value.scrollHeight })
@@ -70,10 +71,10 @@ async function connect() {
     },
   })
 }
-watch(()=>[props.open,props.runID],()=>{if(props.open&&props.runID)void connect();else{dispose?.();dispose=undefined}},{immediate:true})
+watch(()=>[props.open,props.runID,props.nodeID],()=>{if(props.open&&props.runID)void connect();else{dispose?.();dispose=undefined}},{immediate:true})
 onBeforeUnmount(()=>{focusOrigin=null;dispose?.()})
 </script>
-<template><a-drawer :open="open" :title="title" width="min(920px,94vw)" root-class-name="pipeline-log-drawer" :body-style="{ display: 'flex', flexDirection: 'column', minHeight: 0, overflow: 'hidden' }" @close="emit('update:open',false)" @after-open-change="afterOpenChange"><template #extra><a-tag :color="connection==='connected'?'processing':connection==='complete'?'success':'error'">{{ connection==='connected'?'实时连接':connection==='complete'?'执行结束':connection==='connecting'?'连接中':'连接异常' }}</a-tag></template><div class="log-meta"><span>运行 ID：<code>{{ runID }}</code></span><span>状态：{{ status }}</span><span>{{ logs.length }} 条</span><b v-if="error">{{ error }}</b></div><div ref="viewport" class="log-viewport" role="region" :aria-label="title" tabindex="0"><div v-for="log in logs" :key="log.id" :class="`log-line level-${log.level}`"><time>{{ new Date(log.created_at).toLocaleTimeString('zh-CN',{hour12:false}) }}</time><span>{{ log.stage||'pipeline' }}</span><code>{{ log.message }}</code></div><a-empty v-if="!logs.length" description="等待流水线输出日志…"/></div></a-drawer></template>
+<template><a-drawer :open="open" :title="title" width="min(920px,94vw)" root-class-name="pipeline-log-drawer" :body-style="{ display: 'flex', flexDirection: 'column', minHeight: 0, overflow: 'hidden' }" @close="emit('update:open',false)" @after-open-change="afterOpenChange"><template #extra><a-tag :color="connection==='connected'?'processing':connection==='complete'?'success':'error'">{{ connection==='connected'?'实时连接':connection==='complete'?'执行结束':connection==='connecting'?'连接中':'连接异常' }}</a-tag></template><div class="log-meta"><span>运行 ID：<code>{{ runID }}</code></span><span>状态：{{ status }}</span><span>{{ logs.length }} 条</span><b v-if="error">{{ error }}</b></div><div ref="viewport" class="log-viewport" role="region" :aria-label="title" tabindex="0"><div v-for="log in logs" :key="log.id" :class="`log-line level-${log.level}`"><time>{{ new Date(log.created_at).toLocaleTimeString('zh-CN',{hour12:false}) }}</time><span>{{ log.stage||'pipeline' }}</span><code>{{ log.message }}</code></div><a-empty v-if="!logs.length" :description="connection==='complete'?(nodeID?'该任务暂无日志':'本次运行暂无日志'):(nodeID?'等待该任务输出日志…':'等待流水线输出日志…')"/></div></a-drawer></template>
 <style scoped>
 .log-meta{flex:none;display:flex;flex-wrap:wrap;gap:14px;margin-bottom:10px;color:var(--edo-muted);font-size:12px}
 .log-meta > span{min-width:0}

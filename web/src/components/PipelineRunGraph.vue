@@ -14,6 +14,7 @@ const props = defineProps<{
   tasks?: Array<{node_id:string;status:string;stage:string;message:string}>
   compact?: boolean
 }>()
+const emit = defineEmits<{'task-logs': [node: PipelineRunGraphNode]}>()
 const { t } = useI18n()
 const viewport = ref<HTMLDivElement | null>(null)
 
@@ -111,8 +112,12 @@ watch(() => [props.currentNodeId, nodes.value.length], async () => {
                 <ChevronRight v-if="batchIndex" class="task-arrow" :size="17" />
                 <div class="run-batch"><small v-if="batch.length>1" class="parallel-label">并行任务</small>
                 <template v-for="node in batch" :key="node.id">
-                <article
-                  class="run-node"
+                <button
+                  type="button"
+                  class="run-node task-log-button"
+                  :aria-label="`查看任务日志：${node.name}`"
+                  :title="node.name"
+                  @click="emit('task-logs', node)"
                   :class="nodeClasses(node)"
                   :style="{ '--node-color': nodeMeta[node.type]?.color || '#718096' }"
                   :aria-current="node.id === currentNodeId ? 'step' : undefined"
@@ -126,7 +131,7 @@ watch(() => [props.currentNodeId, nodes.value.length], async () => {
                     <i v-if="nodeState(node)?.key === 'running'" class="node-breathing-light" aria-hidden="true" />
                     <component v-else :is="nodeState(node)?.icon" :size="13" />
                   </span>
-                </article>
+                </button>
                 </template></div>
               </template>
             </div>
@@ -148,6 +153,7 @@ watch(() => [props.currentNodeId, nodes.value.length], async () => {
 .run-stage{padding:10px 12px 13px;border:1px solid var(--edo-border);border-radius:10px;background:color-mix(in srgb,var(--edo-surface) 92%,transparent)}.run-stage>header{display:flex;align-items:center;justify-content:space-between;gap:18px;margin-bottom:9px}.run-stage>header strong{font-size:11px}.run-stage>header small{color:var(--edo-muted);font-size:9px}.run-task-chain{display:flex;align-items:center}.run-batch{display:grid;gap:8px}.parallel-label{font-size:12px;color:var(--edo-muted)}
 .run-node{--state-color:var(--edo-primary);display:grid;width:194px;height:68px;align-items:center;grid-template-columns:36px minmax(0,1fr) 20px;gap:9px;padding:9px 10px;border:1px solid color-mix(in srgb,var(--edo-border) 90%,transparent);border-radius:10px;color:var(--edo-text);background:var(--edo-surface);box-shadow:0 1px 2px rgb(28 36 55 / 4%),0 6px 17px rgb(28 36 55 / 6%)}.run-node.source{width:184px}.node-icon{display:grid;width:36px;height:36px;place-items:center;border:1px solid color-mix(in srgb,var(--node-color) 13%,transparent);border-radius:9px;color:var(--node-color);background:color-mix(in srgb,var(--node-color) 12%,var(--edo-surface))}.node-copy{min-width:0}.node-copy small,.node-copy strong{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.node-copy small{color:var(--edo-muted);font-size:10px}.node-copy strong{margin-top:3px;font-size:12.5px}.node-state{display:grid;width:20px;height:20px;place-items:center;border:1px solid color-mix(in srgb,var(--state-color) 16%,transparent);border-radius:50%;color:var(--state-color);background:color-mix(in srgb,var(--state-color) 12%,var(--edo-surface))}.node-breathing-light{width:7px;height:7px;border-radius:50%;background:currentColor;animation:state-light-breathe 1.9s ease-in-out infinite}
 .run-node.current{border-color:color-mix(in srgb,var(--state-color) 84%,var(--edo-border));box-shadow:0 0 0 3px color-mix(in srgb,var(--state-color) 7%,transparent),0 10px 24px rgb(30 45 75 / 11%)}.run-node.current.running{--state-color:#4f7df3;animation:running-border-breathe 2.2s ease-in-out infinite;will-change:border-color,box-shadow}.run-node.current.waiting{--state-color:#d99a2b}.run-node.current.succeeded{--state-color:#28aa70}.run-node.current.failed{--state-color:#e65361}.run-node.current.canceled,.run-node.current.pending{--state-color:#8e96a3}
+.task-log-button{font:inherit;text-align:left;cursor:pointer}.task-log-button:hover{background:var(--edo-primary-soft)}.task-log-button:focus-visible{outline:2px solid var(--edo-primary);outline-offset:4px}
 .graph-empty{display:flex;min-height:128px;align-items:center;justify-content:center;gap:8px;color:var(--edo-muted);font-size:12px}
 .is-compact>header{min-height:42px;padding:6px 10px}.is-compact .topology-viewport{padding:10px}.is-compact .run-stage{padding:7px 8px 9px}.is-compact .run-stage>header{margin-bottom:6px}
 .is-compact .run-node{width:172px;height:56px;grid-template-columns:28px minmax(0,1fr) 18px;gap:7px;padding:7px 8px;border-radius:8px}.is-compact .run-node.source{width:162px}.is-compact .node-icon{width:28px;height:28px;border-radius:7px}.is-compact .node-copy strong{font-size:12px}.is-compact .stage-arrow{margin:0 6px}.is-compact .graph-empty{min-height:90px}

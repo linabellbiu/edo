@@ -31,9 +31,13 @@ func (h pipelineHandler) listRunLogs(c *gin.Context) {
 		return
 	}
 	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "200"))
-	logs, status, err := h.service.ListRunLogs(c.Request.Context(), c.Param("id"), afterID, limit)
+	logs, status, err := h.service.ListNodeRunLogs(c.Request.Context(), c.Param("id"), c.Query("node_id"), afterID, limit)
 	if err != nil {
-		h.logger.Error("读取流水线执行日志失败", "operation", "pipeline_log_list", "request_id", requestIDFrom(c), "pipeline_run_id", c.Param("id"), "err", err)
+		h.logger.Error("读取流水线执行日志失败", "operation", "pipeline_log_list", "request_id", requestIDFrom(c), "pipeline_run_id", c.Param("id"), "node_id", c.Query("node_id"), "err", err)
+		if errors.Is(err, pipeline.ErrPipelineLogNodeNotFound) {
+			writeError(c, http.StatusNotFound, "pipeline_log_node_not_found", pipeline.ErrPipelineLogNodeNotFound.Error())
+			return
+		}
 		if errors.Is(err, pipeline.ErrPipelineRunNotFound) {
 			writeError(c, http.StatusNotFound, "pipeline_run_not_found", pipeline.ErrPipelineRunNotFound.Error())
 			return
@@ -79,13 +83,17 @@ func (h pipelineHandler) listExecutionLogs(c *gin.Context) {
 func (h pipelineHandler) streamRunLogs(c *gin.Context) {
 	afterID, err := pipelineLogAfterID(c)
 	if err != nil || !pipelineLogProtocolRequested(c.Request) {
-		h.logger.Warn("流水线日志握手参数无效", "operation", "pipeline_log_handshake", "request_id", requestIDFrom(c), "pipeline_run_id", c.Param("id"), "err", err)
+		h.logger.Warn("流水线日志握手参数无效", "operation", "pipeline_log_handshake", "request_id", requestIDFrom(c), "pipeline_run_id", c.Param("id"), "node_id", c.Query("node_id"), "err", err)
 		writeError(c, http.StatusBadRequest, "invalid_pipeline_log_request", "流水线日志连接参数无效")
 		return
 	}
 	// 在握手和订阅前检查运行归属，不能先建立跨部门日志通道。
-	if _, _, err := h.service.ListRunLogs(c.Request.Context(), c.Param("id"), afterID, 1); err != nil {
-		h.logger.Warn("检查流水线日志访问失败", "operation", "pipeline_log_access", "pipeline_run_id", c.Param("id"), "err", err)
+	if _, _, err := h.service.ListNodeRunLogs(c.Request.Context(), c.Param("id"), c.Query("node_id"), afterID, 1); err != nil {
+		h.logger.Warn("检查流水线日志访问失败", "operation", "pipeline_log_access", "pipeline_run_id", c.Param("id"), "node_id", c.Query("node_id"), "err", err)
+		if errors.Is(err, pipeline.ErrPipelineLogNodeNotFound) {
+			writeError(c, http.StatusNotFound, "pipeline_log_node_not_found", pipeline.ErrPipelineLogNodeNotFound.Error())
+			return
+		}
 		if errors.Is(err, pipeline.ErrPipelineRunNotFound) {
 			writeError(c, http.StatusNotFound, "pipeline_run_not_found", pipeline.ErrPipelineRunNotFound.Error())
 		} else {
@@ -97,7 +105,7 @@ func (h pipelineHandler) streamRunLogs(c *gin.Context) {
 	if h.realtime != nil {
 		subscription, err := h.realtime.SubscribeLogs(c.Request.Context(), c.Param("id"))
 		if err != nil {
-			h.logger.Warn("订阅流水线日志失败，使用低频补同步", "operation", "pipeline_log_subscribe", "pipeline_run_id", c.Param("id"), "err", err)
+			h.logger.Warn("订阅流水线日志失败，使用低频补同步", "operation", "pipeline_log_subscribe", "pipeline_run_id", c.Param("id"), "node_id", c.Query("node_id"), "err", err)
 		} else {
 			defer subscription.Close()
 			updates = subscription.ChannelWithSubscriptions(redis.WithChannelSize(64))
@@ -110,7 +118,7 @@ func (h pipelineHandler) streamRunLogs(c *gin.Context) {
 	}
 	connection, err := upgrader.Upgrade(c.Writer, c.Request, nil)
 	if err != nil {
-		h.logger.Warn("升级流水线日志 WebSocket 失败", "operation", "pipeline_log_upgrade", "request_id", requestIDFrom(c), "pipeline_run_id", c.Param("id"), "err", err)
+		h.logger.Warn("升级流水线日志 WebSocket 失败", "operation", "pipeline_log_upgrade", "request_id", requestIDFrom(c), "pipeline_run_id", c.Param("id"), "node_id", c.Query("node_id"), "err", err)
 		return
 	}
 	defer connection.Close()
@@ -146,9 +154,9 @@ func (h pipelineHandler) streamRunLogs(c *gin.Context) {
 			closeSocketPolicy(connection)
 			return
 		}
-		logs, status, readErr := h.service.ListRunLogs(c.Request.Context(), c.Param("id"), afterID, 200)
+		logs, status, readErr := h.service.ListNodeRunLogs(c.Request.Context(), c.Param("id"), c.Query("node_id"), afterID, 200)
 		if readErr != nil {
-			h.logger.Error("推送流水线执行日志失败", "operation", "pipeline_log_stream", "request_id", requestIDFrom(c), "pipeline_run_id", c.Param("id"), "err", readErr)
+			h.logger.Error("推送流水线执行日志失败", "operation", "pipeline_log_stream", "request_id", requestIDFrom(c), "pipeline_run_id", c.Param("id"), "node_id", c.Query("node_id"), "err", readErr)
 			_ = write(pipelineLogEvent{Type: "error", Message: "读取流水线日志失败，请稍后重试"})
 			return
 		}

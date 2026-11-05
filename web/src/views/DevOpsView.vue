@@ -85,7 +85,7 @@ interface PlanExecutionScope{identity:string;projectID:string;epoch:number}
 interface ReleasePlanEditorValue{id:string;description:string;groups:Array<{id:string;name:string;mode:'parallel'|'sequential';failure_policy:'stop'|'continue';depends_on_group_ids:string[];applications:Array<{application_id:string;manual_deploy:boolean;source_type:string;source_value:string}>}>}
 
 const applications=ref<Application[]>([]),repositories=ref<Repository[]>([]),credentials=ref<Credential[]>([]),workflowTemplates=ref<WorkflowTemplate[]>([]),buildPlans=ref<BuildPlan[]>([]),registries=ref<Registry[]>([]),runs=ref<Run[]>([]),releasePlans=ref<ReleasePlan[]>([]),deployments=ref<DeploymentRecord[]>([]),deploymentPlans=ref<DeploymentPlan[]>([]),artifacts=ref<Artifact[]>([])
-const loading=ref(false),saving=ref(false),workflowRemovalID=ref(''),resourceMutationID=ref(''),formOpen=ref(false),editingID=ref(''),selectedWorkflowTemplateID=ref(''),registryTested=ref(false),testing=ref(false),repositoryTestingID=ref(''),manualApplicationID=ref(''),manualWorkflowID=ref(''),commitOpen=ref(false),commitOptions=ref<Array<{ref:string;name:string;sha:string;kind:'branch'|'tag'}>>([]),manualArtifacts=ref<ManualArtifact[]>([]),manualExecutionMode=ref<'code'|'artifact'>('code'),selectedArtifactID=ref(''),manualReferenceError=ref(''),selectedRef=ref(''),selectedSource=ref(''),manualSources=ref<Array<{id:string;name:string;environment?:string}>>([]),currentRun=ref<Run|null>(null),currentRunSelectionKey=ref(''),selectedRunID=ref(''),log=ref({open:false,runID:'',title:'',status:''})
+const loading=ref(false),saving=ref(false),workflowRemovalID=ref(''),resourceMutationID=ref(''),formOpen=ref(false),editingID=ref(''),selectedWorkflowTemplateID=ref(''),registryTested=ref(false),testing=ref(false),repositoryTestingID=ref(''),manualApplicationID=ref(''),manualWorkflowID=ref(''),commitOpen=ref(false),commitOptions=ref<Array<{ref:string;name:string;sha:string;kind:'branch'|'tag'}>>([]),manualArtifacts=ref<ManualArtifact[]>([]),manualExecutionMode=ref<'code'|'artifact'>('code'),selectedArtifactID=ref(''),manualReferenceError=ref(''),selectedRef=ref(''),selectedSource=ref(''),manualSources=ref<Array<{id:string;name:string;environment?:string}>>([]),currentRun=ref<Run|null>(null),currentRunSelectionKey=ref(''),selectedRunID=ref(''),log=ref({open:false,runID:'',nodeID:'',title:'',status:''})
 const expandedApplications=ref<Record<string,boolean>>({}),expandedDeployments=ref<Record<string,boolean>>({}),dockerRuntimeContainers=ref<Record<string,DockerContainerRecord[]>>({}),dockerRuntimeLoading=ref<Record<string,boolean>>({}),dockerRuntimeLoaded=ref<Record<string,boolean>>({}),dockerRuntimeErrors=ref<Record<string,string>>({})
 type ApplicationFilter='all'|'running'|'attention'|'inactive'
 type ApplicationDetailTab='workflows'|'deployments'
@@ -1400,7 +1400,8 @@ async function executeRetry(){
   void router.replace({path:'/release-plans',query:{...route.query,view:'runs',run:retried.id}})
  }catch(error){message.error(apiErrorMessage(error))}finally{retrySubmitting.value=false}
 }
-function openLogs(run:Run){log.value={open:true,runID:run.id,title:`流水线日志：${applicationName(run)}`,status:run.status}}
+function openTaskLogs(run:Run,node:{id:string;name:string}){log.value={open:true,runID:run.id,nodeID:node.id,title:`任务日志：${node.name}`,status:run.status}}
+function openLogs(run:Run){log.value={open:true,runID:run.id,nodeID:'',title:`流水线日志：${applicationName(run)}`,status:run.status}}
 function resetManualFlow(){
  commitOpen.value=false
  manualApplicationID.value=''
@@ -2284,7 +2285,7 @@ onBeforeUnmount(()=>{planExecutionDisposed=true;resetArtifactRequests();formOpen
               <div class="run-detail-identity"><span class="run-detail-label">{{ selectedRunID===run.id?'当前查看':'运行详情' }}</span><time :datetime="run.created_at">{{ formatRunTime(run.created_at) }}</time><span class="run-detail-version">{{ runReferenceLabel(run) }}</span></div>
               <a-button size="small" @click="runDrawerOpen=false">关闭详情</a-button>
             </header>
-            <PipelineTaskHistory :key="run.id" :run-id="run.id" :updated-at="run.updated_at" :graph="run.execution_graph" :current-node-id="run.current_node_id" :status="run.status" :stage="run.stage"/>
+            <PipelineTaskHistory :key="run.id" :run-id="run.id" :updated-at="run.updated_at" :graph="run.execution_graph" :current-node-id="run.current_node_id" :status="run.status" :stage="run.stage" @task-logs="openTaskLogs(run,$event)"/>
             <dl class="run-facts">
               <div><dt>发布应用</dt><dd>{{ applicationName(run) }}</dd></div>
               <div><dt>应用流水线</dt><dd>{{ runWorkflowName(run) }}</dd></div>
@@ -2642,7 +2643,7 @@ onBeforeUnmount(()=>{planExecutionDisposed=true;resetArtifactRequests();formOpen
   <a-empty v-else-if="!releasePlanResources.loading" description="该应用本次流水线运行还没有部署记录"/>
  </a-spin>
 </a-drawer>
-<PipelineLogDrawer v-model:open="log.open" :runID="log.runID" :title="log.title" :initial-status="log.status"/>
+<PipelineLogDrawer v-model:open="log.open" :runID="log.runID" :nodeID="log.nodeID" :title="log.title" :initial-status="log.status"/>
 <ContainerLogDrawer v-model:open="containerLogs.open" :title="containerLogs.title" :path="containerLogs.path"/>
 <TerminalDrawer v-model:open="terminal.open" :title="terminal.title" :path="terminal.path"/>
 </section></template>

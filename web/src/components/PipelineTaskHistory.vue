@@ -3,8 +3,9 @@ import { onBeforeUnmount, ref, watch } from 'vue'
 import client from '@/api/client'
 import { apiErrorMessage } from '@/api/resources'
 import PipelineRunGraph from './PipelineRunGraph.vue'
-import type { PipelineExecutionGraph } from '@/types/pipeline'
+import type { PipelineExecutionGraph, PipelineRunGraphNode } from '@/types/pipeline'
 const props=defineProps<{runId:string;updatedAt?:string;graph?:PipelineExecutionGraph;currentNodeId?:string;status:string;stage?:string}>()
+const emit=defineEmits<{'task-logs':[node:Pick<PipelineRunGraphNode,'id'|'name'>]}>()
 interface Task {id:string;node_id:string;name:string;status:string;stage:string;message:string;started_at?:string;finished_at?:string}
 interface Finding {file:string;line:number;rule:string;severity:string;message:string}
 interface Report {id:string;node_id:string;name:string;kind:string;status:string;summary:string;findings:string}
@@ -22,10 +23,10 @@ function color(status:string){return ({succeeded:'green',passed:'green',failed:'
 </script>
 <template>
  <div class="task-history">
-  <PipelineRunGraph compact :graph="graph" :current-node-id="currentNodeId" :status="status" :stage="stage" :tasks="tasks"/>
+  <PipelineRunGraph compact :graph="graph" :current-node-id="currentNodeId" :status="status" :stage="stage" :tasks="tasks" @task-logs="emit('task-logs',$event)"/>
   <a-alert v-if="error" type="error" show-icon :message="error"/>
   <a-table v-if="tasks.length" size="small" bordered :loading="loading" :data-source="tasks" :pagination="false" row-key="id" :columns="[{title:'任务',dataIndex:'name'},{title:'状态',key:'status'},{title:'当前阶段',key:'stage'},{title:'说明',dataIndex:'message'}]">
-   <template #bodyCell="{column,record}"><template v-if="column.key==='status'"><a-tag :color="color(record.status)">{{record.status==='running'&&record.stage==='queued'?'排队中':label(record.status)}}</a-tag></template><template v-else-if="column.key==='stage'">{{stageLabel(record.stage)}}</template></template>
+   <template #bodyCell="{column,record}"><template v-if="column.dataIndex==='name'"><button type="button" class="task-log-link" :aria-label="`查看任务日志：${record.name}`" @click="emit('task-logs',{id:record.node_id,name:record.name})">{{record.name}}</button></template><template v-else-if="column.key==='status'"><a-tag :color="color(record.status)">{{record.status==='running'&&record.stage==='queued'?'排队中':label(record.status)}}</a-tag></template><template v-else-if="column.key==='stage'">{{stageLabel(record.stage)}}</template></template>
   </a-table>
   <a-alert v-for="delivery in deliveries.filter(v=>v.status!=='obsolete')" :key="delivery.id" :type="delivery.status==='delivered'?'success':delivery.status==='failed'?'warning':'info'" show-icon :message="`仓库检查结果：${delivery.message}（已尝试 ${delivery.attempts} 次）`"/>
   <a-collapse v-if="reports.length">
@@ -38,4 +39,4 @@ function color(status:string){return ({succeeded:'green',passed:'green',failed:'
   </a-collapse>
  </div>
 </template>
-<style scoped>.task-history{display:grid;gap:16px}.finding-message{white-space:pre-wrap;overflow-wrap:anywhere;margin:8px 0 0}.task-history :deep(.ant-table-wrapper){overflow:auto}</style>
+<style scoped>.task-log-link{padding:2px 0;border:0;background:none;color:var(--edo-primary);font:inherit;text-align:left;cursor:pointer}.task-log-link:hover{text-decoration:underline}.task-log-link:focus-visible{outline:2px solid var(--edo-primary);outline-offset:2px}.task-history{display:grid;gap:16px}.finding-message{white-space:pre-wrap;overflow-wrap:anywhere;margin:8px 0 0}.task-history :deep(.ant-table-wrapper){overflow:auto}</style>
