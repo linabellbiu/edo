@@ -98,7 +98,7 @@ test('版本与 Pod 只强调选中名称，正文保持深灰，悬停不改写
   const selected=declarationsFor(roots,`.${name}.selected`)
   assert.match(selected.background,/var\(--workload-selected\)/,name)
   assert.equal(selected.color,'var(--workload-text)',name)
-  assert.equal(selected['box-shadow'],'inset 2px 0 var(--workload-accent)',name)
+  assert.equal(selected['box-shadow'],undefined,name)
   const titleSelector=name==='revision-item'?'.revision-item.selected .revision-heading strong':'.pod-item.selected .pod-heading strong'
   assert.equal(declarationsFor(roots,titleSelector).color,'var(--workload-on-selected)')
   const hover=entries.filter(rule=>rule.selectors.some(selector=>selector.includes(`.${name}`)&&selector.includes(':hover')))

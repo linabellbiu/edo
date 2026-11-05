@@ -501,7 +501,7 @@ onBeforeUnmount(() => {
 .preset-categories button { display: flex; width: 100%; height: 44px; align-items: center; gap: 11px; padding: 0 14px; border: 0; border-radius: 7px; color: var(--edo-text); background: transparent; cursor: pointer; text-align: left; }
 .preset-categories button:hover, .preset-categories button.active { color: var(--edo-primary); background: var(--edo-primary-soft); }
 .preset-categories button:disabled { cursor: not-allowed; opacity: .55; }
-.preset-categories button.active { box-shadow: inset 3px 0 0 var(--edo-primary); font-weight: 600; }
+.preset-categories button.active { font-weight: 600; }
 .preset-categories button > span { display: inline-grid; width: 28px; color: var(--edo-primary); place-items: center; font-size: 16px; font-weight: 700; }
 .preset-categories .language-mark { font-size: 11px; letter-spacing: -.5px; }
 .preset-content { min-width: 0; overflow-y: auto; padding: 24px 28px; }

@@ -2018,7 +2018,7 @@ onBeforeRouteLeave(async () => {
 .resource-picker :deep(.ant-select) { min-width: 0; flex: 1; }
 .resource-create { width: 34px; flex: 0 0 34px; padding: 0; }
 .node-notification-section { margin: 0 -16px; }
-.node-notification-header { display: flex; min-height: 42px; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 16px; border-left: 4px solid var(--edo-primary); background: var(--edo-primary-soft); }
+.node-notification-header { display: flex; min-height: 42px; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 16px; background: var(--edo-primary-soft); }
 .node-notification-header > span { display: flex; min-width: 0; align-items: center; gap: 7px; }
 .node-notification-header > span:first-child { color: var(--edo-text); }
 .node-notification-header small { color: var(--edo-muted); font-size: 10px; }

@@ -236,7 +236,7 @@ onBeforeUnmount(() => { disposed = true; revision++; request?.abort(); if (timer
 .revision-entry.selected::before { background: var(--workload-accent); }
 .revision-created { display: block; padding: 3px 0 6px; color: var(--workload-muted); font-size: 12px; line-height: 18px; }
 .revision-item,.pod-item { position: relative; display: flex; flex-direction: column; gap: 6px; width: 100%; min-width: 0; padding: 10px 12px; border: 1px solid var(--workload-idle-border); border-radius: 3px; background: var(--workload-idle); color: var(--workload-text); font: inherit; text-align: left; cursor: pointer; }
-.revision-item.selected,.pod-item.selected { border-color: var(--workload-selected-border); background: var(--workload-selected); color: var(--workload-text); box-shadow: inset 2px 0 var(--workload-accent); }
+.revision-item.selected,.pod-item.selected { border-color: var(--workload-selected-border); background: var(--workload-selected); color: var(--workload-text); }
 .revision-item.selected .revision-heading strong,.pod-item.selected .pod-heading strong { color: var(--workload-on-selected); }
 .revision-item:hover:not(.selected):not(:disabled),.pod-item:hover:not(.selected):not(:disabled) { border-color: var(--workload-hover-border); background: var(--workload-hover); color: var(--workload-text); }
 button:focus-visible { outline: 2px solid var(--workload-focus); outline-offset: 2px; }

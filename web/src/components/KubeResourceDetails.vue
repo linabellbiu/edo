@@ -136,11 +136,11 @@ const rawResources=(container:KubeObject,field:string)=>Object.entries(container
 .kube-container-group+.kube-container-group{margin-top:16px}
 .kube-container-group h4{display:flex;align-items:center;justify-content:space-between;padding:0 12px;font-size:12px;color:var(--kube-muted);margin-bottom:6px}
 .kube-container-group h4 span{font-weight:400;font-variant-numeric:tabular-nums}
-.kube-container-choice{width:100%;min-height:40px;display:flex;flex-direction:column;gap:4px;text-align:left;padding:10px 12px;border:0;border-left:2px solid transparent;color:var(--kube-text);background:transparent;cursor:pointer;overflow-wrap:anywhere;font:inherit}
+.kube-container-choice{width:100%;min-height:40px;display:flex;flex-direction:column;gap:4px;text-align:left;padding:10px 12px;border:0;color:var(--kube-text);background:transparent;cursor:pointer;overflow-wrap:anywhere;font:inherit}
 .kube-container-choice strong{font-size:13px;font-weight:500}
 .kube-container-choice>span{font-size:12px;color:var(--kube-muted)}
 .kube-container-choice:not(.is-selected):hover{background:var(--kube-hover)}
-.kube-container-choice.is-selected{border-left-color:var(--kube-link);background:var(--kube-selected);color:var(--kube-link)}
+.kube-container-choice.is-selected{background:var(--kube-selected);color:var(--kube-link)}
 .kube-container-choice:focus-visible{outline:2px solid var(--kube-focus);outline-offset:-2px}
 .kube-container-content{min-width:0;padding:16px}
 .kube-container-heading{display:flex;align-items:center;gap:10px;padding-bottom:10px;border-bottom:1px solid var(--kube-border)}

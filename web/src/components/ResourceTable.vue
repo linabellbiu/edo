@@ -117,7 +117,6 @@ tbody tr:nth-child(even) td { background: color-mix(in srgb,var(--edo-primary) 3
 tbody tr:last-child td { border-bottom: 0; }
 tbody tr:hover td { background: color-mix(in srgb,var(--edo-primary) 3%,transparent); }
 tbody tr.active td { background: var(--edo-primary-soft); }
-tbody tr.active td:first-child { box-shadow: inset 3px 0 var(--edo-primary); }
 .json-cell { display: block; max-width: 360px; overflow: hidden; color: var(--edo-muted); text-overflow: ellipsis; white-space: nowrap; }
 .resource-value { display:block; max-width:360px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .table-actions,.table-action-heading { position:sticky; right:0; width:1%; white-space:nowrap; background:var(--edo-surface); }
