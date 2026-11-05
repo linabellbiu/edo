@@ -104,19 +104,25 @@ test('部门树刷新保留收起的分支，新增节点可见，历史异常�
   assert.deepEqual(h.state.treeData.value[0].children.map(node=>node.key),['a','b','orphan'])
 })
 
-test('默认部门排在首位，成员分页完整挂到所属部门，搜索成员保留上级路径',async t=>{
+test('默认部门排在首位，切换部门后右侧显示直属成员并支持账号搜索',async t=>{
   const departments=[{id:'team',name:'研发部',parent_id:'',is_default:false,member_count:1},{id:'default',name:'默认部门',parent_id:'',is_default:true,member_count:200}]
   const users=Array.from({length:201},(_,index)=>({id:`user-${index}`,username:`account-${index}`,nickname:index===200?'小林':'成员',department_id:index===200?'team':'default',is_active:index!==200}))
   const h=harness(t,'../src/views/OrganizationView.vue',{codes:['department.read','user.read'],api:{get:async(path,config)=>({data:path==='/departments'?{departments}:{users:users.slice(config.params.offset,config.params.offset+config.params.limit)}})}})
   await h.state.load()
   const root=h.state.treeData.value[0]
-  assert.equal(root.children[0].key,'default');assert.equal(root.children[0].children.length,200)
-  assert.equal(root.children[1].children[0].title,'小林');assert.equal(root.children[1].children[0].member.is_active,false)
+  assert.equal(root.children[0].key,'default');assert.equal(root.children[0].children.length,0)
+  assert.equal(h.state.scopedMembers.value.length,201)
+  h.state.selectOrganizationNode(['team'])
+  assert.equal(h.state.currentTitle.value,'研发部')
+  assert.equal(h.state.scopedMembers.value[0].nickname,'小林');assert.equal(h.state.scopedMembers.value[0].is_active,false)
   assert.deepEqual(h.requests.filter(row=>row.path==='/users').map(row=>row.body.params),[{view:'members',limit:200,offset:0},{view:'members',limit:200,offset:200}])
-  h.state.query.value='account-200'
-  assert.equal(h.state.treeData.value[0].children.length,1)
-  assert.equal(h.state.treeData.value[0].children[0].key,'team')
-  assert.equal(h.state.treeData.value[0].children[0].children[0].key,'member:user-200')
+  h.state.memberQuery.value='account-200'
+  assert.equal(h.state.filteredMembers.value.length,1)
+  h.state.selectOrganizationNode(['default'])
+  assert.equal(h.state.filteredMembers.value.length,0)
+  h.state.selectOrganizationNode(['company'])
+  assert.equal(h.state.filteredMembers.value[0].id,'user-200')
+  assert.equal(h.state.treeData.value[0].children.length,2)
 })
 
 test('成员读取失败不影响部门树，无用户权限时不读取成员且不把缺失当作无人',async t=>{
@@ -124,7 +130,7 @@ test('成员读取失败不影响部门树，无用户权限时不读取成员�
   const reader=harness(t,'../src/views/OrganizationView.vue',{codes:['department.read'],api:{get:async()=>({data:{departments:[department]}})}})
   await reader.state.load()
   assert.deepEqual(reader.requests.map(row=>row.path),['/departments'])
-  assert.equal(reader.state.memberNote(department),'workspace.memberAccessDenied')
+  assert.equal(reader.state.memberDirectoryAllowed.value,false)
   const failed=harness(t,'../src/views/OrganizationView.vue',{codes:['department.read','user.read'],api:{get:async path=>{if(path==='/users')throw new Error('成员读取失败');return {data:{departments:[department]}}}}})
   await failed.state.load()
   assert.equal(failed.state.treeData.value[0].children[0].key,'team')
@@ -142,10 +148,50 @@ test('成员读取中身份变化后丢弃旧成员，不继续翻页',async t=>
   assert.equal(h.requests.filter(row=>row.path==='/users').length,1)
 })
 
+test('公司编辑使用独立草稿，取消或保存失败不改变已显示公司资料',async t=>{
+  const h=harness(t,'../src/views/OrganizationView.vue',{api:{put:async()=>{throw new Error('公司名称不可用')}}})
+  Object.assign(h.state.company,{name:'原公司',description:'原说明'})
+  h.state.editCompany();h.state.companyForm.name='未保存名称';h.state.companyOpen.value=false
+  assert.equal(h.state.currentTitle.value,'原公司');assert.equal(h.state.company.name,'原公司')
+  h.state.editCompany();assert.equal(h.state.companyForm.name,'原公司')
+  h.state.companyForm.name='保留草稿';await h.state.saveCompany()
+  assert.equal(h.state.companyOpen.value,true);assert.equal(h.state.companyForm.name,'保留草稿')
+  assert.equal(h.state.company.name,'原公司')
+})
+
+test('新建部门保存后准确选中，刷新保留选择，失效目标回到公司而不替换成另一部门',async t=>{
+  const departments=[{id:'parent',name:'研发',description:'',parent_id:'',member_count:0,is_default:false}]
+  const h=harness(t,'../src/views/OrganizationView.vue',{codes:['department.create','department.read'],api:{
+    get:async()=>({data:{departments:departments.map(row=>({...row}))}}),
+    post:async(_path,body)=>{const department={...body,id:'created',member_count:0,is_default:false};departments.push(department);return {data:{department}}},
+  }})
+  await h.state.load();h.state.addDepartment('parent');h.state.form.name='后端组';await h.state.saveDepartment()
+  assert.equal(h.state.selected.value.id,'created');assert.equal(h.state.currentTitle.value,'后端组')
+  departments[1].name='服务组';await h.state.load()
+  assert.equal(h.state.selected.value.id,'created');assert.equal(h.state.currentTitle.value,'服务组')
+  h.state.selectOrganizationNode(['unknown']);assert.equal(h.state.selected.value.id,'created')
+  h.state.selectOrganizationNode([]);assert.equal(h.state.selected.value.id,'created')
+  departments.pop();await h.state.load();assert.equal(h.state.selected.value,null)
+})
+
+test('成员面板只展示直属成员，分页随筛选及部门切换复位，缺少成员不冒充零人',async t=>{
+  const h=harness(t,'../src/views/OrganizationView.vue')
+  h.state.rows.value=[{id:'parent',name:'研发',parent_id:'',member_count:1},{id:'child',name:'后端',parent_id:'parent',member_count:1}]
+  h.state.members.value=[{id:'one',nickname:'小陈',username:'chen',department_id:'parent',is_active:true},{id:'two',nickname:'小李',username:'li',department_id:'child',is_active:false}]
+  h.state.membersLoaded.value=true;h.state.selectOrganizationNode(['parent'])
+  assert.deepEqual(h.state.scopedMembers.value.map(row=>row.id),['one'])
+  h.state.memberPage.value=3;h.state.memberQuery.value='chen';await Promise.resolve()
+  assert.equal(h.state.memberPage.value,1)
+  h.state.selectOrganizationNode(['child']);await Promise.resolve()
+  assert.equal(h.state.filteredMembers.value.length,0);assert.equal(h.state.membersMissing.value,false)
+  h.state.members.value=[]
+  assert.equal(h.state.membersMissing.value,true);assert.equal(h.state.memberCount.value,1)
+})
+
 test('公司和部门保存区分创建及更新，空名称不发送，接口失败保留编辑草稿',async t=>{
   const h=harness(t,'../src/views/OrganizationView.vue')
   await h.state.saveCompany();await h.state.saveDepartment();assert.equal(writes(h).length,0)
-  Object.assign(h.state.company,{name:'公司名称',description:'公司说明'});h.state.companyOpen.value=true
+  Object.assign(h.state.company,{name:'公司名称',description:'公司说明'});h.state.editCompany()
   await h.state.saveCompany()
   assert.deepEqual(writes(h)[0],{method:'put',path:'/organization',body:{name:'公司名称',description:'公司说明'},options:undefined})
   assert.equal(h.state.companyOpen.value,false)
