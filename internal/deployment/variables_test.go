@@ -146,3 +146,63 @@ func TestRollbackVariableAuthorizationUsesCurrentProjectMembershipAndRole(t *tes
 		})
 	}
 }
+
+func TestContainerRecreateVariablesUseCurrentActorAndFrozenVersion(t *testing.T) {
+	db := testutil.NewDatabase(t)
+	manager, err := secret.New(base64.StdEncoding.EncodeToString([]byte(strings.Repeat("r", 32))))
+	if err != nil {
+		t.Fatal(err)
+	}
+	project := database.DefaultProjectID(database.DefaultDepartmentID)
+	actorID := "container-variable-operator"
+	configureDeploymentAuthorizationTestActor(t, db, project, database.DefaultDepartmentID, actorID, "delivery_variable.execute")
+	permissions, err := access.NewService(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := database.WithDepartmentScope(context.Background(), database.DepartmentScope{ProjectID: project, DepartmentID: database.DefaultDepartmentID, UserID: actorID})
+	service := NewService(db, nil, nil, nil, nil, "", nil)
+	service.ConfigureReleaseVariables(manager, permissions)
+	variables := cicd.New(db, manager, nil)
+	value := "private-original-container-value"
+	variable, err := variables.SaveVariable(ctx, actorID, "", cicd.VariableInput{Name: "APP_TOKEN", Kind: "env", Usage: "deploy", Value: &value, IsSecret: true, IsActive: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	bindings, err := variables.FreezeVariables(ctx, project, "", "", "deploy", "refs/heads/main", []string{"APP_TOKEN"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated := "private-newer-container-value"
+	if _, err = variables.SaveVariable(ctx, actorID, variable.ID, cicd.VariableInput{Name: "APP_TOKEN", Kind: "env", Usage: "deploy", Value: &updated, IsSecret: true, IsActive: true, ExpectedVersion: variable.Version}); err != nil {
+		t.Fatal(err)
+	}
+	repository := model.GitRepository{ID: "container-variable-repository", Name: "container_variable_repository"}
+	application := model.Application{ID: "container-variable-app", Name: "container_variable_app", RepositoryID: repository.ID}
+	for _, item := range []any{&repository, &application} {
+		if err = db.WithContext(ctx).Create(item).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	snapshot, _ := json.Marshal(map[string]any{"authority_id": "former-publisher", "variable_bindings": map[string]any{"deploy": bindings}})
+	run := model.PipelineRun{ID: "container-variable-run", ApplicationID: application.ID, WorkflowSnapshot: string(snapshot), Ref: "refs/heads/main"}
+	if err = db.WithContext(ctx).Create(&run).Error; err != nil {
+		t.Fatal(err)
+	}
+	record := model.DeploymentRecord{ID: "container-variable-deployment", UsesDeliveryVariables: true, ProjectID: project, ApplicationID: application.ID, PipelineRunID: run.ID, WorkflowNodeID: "deploy", RequestedBy: "system"}
+	if values, err := service.resolveRecordVariablesAsActor(ctx, &record, actorID); err != nil || values["APP_TOKEN"] != value {
+		t.Fatalf("当前操作者未能读取原自动发布的冻结变量版本: %v", err)
+	}
+	if values, err := service.resolveRecordVariablesAsActor(ctx, &record, "former-publisher"); err == nil || values != nil {
+		t.Fatal("允许伪造变量使用操作者")
+	}
+	if values, err := service.resolveRecordVariables(ctx, &record); err == nil || values != nil {
+		t.Fatal("容器重建改变了原发布及回滚的变量授权规则")
+	}
+	if err = db.Create(&model.UserPermission{UserID: actorID, Permission: "delivery_variable.execute", Effect: model.PermissionDeny}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if values, err := service.resolveRecordVariablesAsActor(ctx, &record, actorID); err == nil || values != nil || strings.Contains(err.Error(), value) || strings.Contains(err.Error(), updated) {
+		t.Fatal("撤权后仍返回变量或错误泄漏变量明文")
+	}
+}

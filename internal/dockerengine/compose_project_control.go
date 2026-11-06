@@ -14,6 +14,9 @@ import (
 
 // ComposeProjectScope 来自已成功发布的冻结配置，不接受客户端指定项目或服务。
 type ComposeProjectScope struct {
+	UseSudo            bool
+	EnvFile            string
+	TagVariable        string
 	HostID             string
 	ProjectName        string
 	WorkingDirectory   string

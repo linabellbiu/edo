@@ -4,6 +4,7 @@ import (
 	"context"
 	"edo/internal/access"
 	"edo/internal/cicd"
+	"edo/internal/database"
 	"edo/internal/model"
 	"edo/internal/secret"
 	"encoding/json"
@@ -46,6 +47,20 @@ func (s *Service) resolveRecordVariables(ctx context.Context, record *model.Depl
 }
 
 func (s *Service) resolveRecordVariableSet(ctx context.Context, record *model.DeploymentRecord) (map[string]string, map[string]string, error) {
+	return s.resolveRecordVariableSetForActors(ctx, record, nil)
+}
+
+// 手动容器重建使用当前操作者授权，但仍读取原运行冻结的变量版本。
+func (s *Service) resolveRecordVariablesAsActor(ctx context.Context, record *model.DeploymentRecord, actorID string) (map[string]string, error) {
+	scope, ok := database.DepartmentScopeFromContext(ctx)
+	if !ok || actorID == "" || scope.UserID != actorID || scope.ProjectID != record.ProjectID {
+		return nil, s.executionAuthorizationDenied(ctx, record, "container_recreate_variables", actorID, "delivery_variable.execute", ErrExecutionAuthorization)
+	}
+	values, _, err := s.resolveRecordVariableSetForActors(ctx, record, []string{actorID})
+	return values, err
+}
+
+func (s *Service) resolveRecordVariableSetForActors(ctx context.Context, record *model.DeploymentRecord, actors []string) (map[string]string, map[string]string, error) {
 	denied := errors.New("发布变量不可用或使用授权已失效")
 	if s.variables == nil || s.variables.permissions == nil {
 		s.logger.Error("发布变量权限服务不可用", "operation", "deployment_variable_authorization", "record_id", record.ID, "project_id", record.ProjectID, "err", denied)
@@ -69,7 +84,10 @@ func (s *Service) resolveRecordVariableSet(ctx context.Context, record *model.De
 		s.logger.Error("发布变量运行引用不存在", "operation", "deployment_variable_bindings", "record_id", record.ID, "run_id", run.ID, "node_id", record.WorkflowNodeID, "err", denied)
 		return nil, nil, denied
 	}
-	for _, id := range []string{snapshot.AuthorityID, record.RequestedBy} {
+	if len(actors) == 0 {
+		actors = []string{snapshot.AuthorityID, record.RequestedBy}
+	}
+	for _, id := range actors {
 		authorization, err := access.FreshProjectPermissions(s.db, ctx, id, run.ProjectID)
 		if err != nil || !authorization.Permissions["delivery_variable.execute"] {
 			s.logger.Error("发布变量使用授权已失效", "operation", "deployment_variable_authorization", "record_id", record.ID, "project_id", run.ProjectID, "actor_id", id, "err", err)

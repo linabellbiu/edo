@@ -73,6 +73,9 @@ const (
 	PermissionDeploymentDelete  = "deployment.delete"
 	PermissionDeploymentExecute = "deployment.execute"
 	PermissionDeploymentReview  = "deployment.review"
+	PermissionContainerRestart  = "deployment.container.restart"
+	PermissionContainerStop     = "deployment.container.stop"
+	PermissionContainerRecreate = "deployment.container.recreate"
 
 	PermissionClusterRead    = "cluster.read"
 	PermissionClusterCreate  = "cluster.create"
@@ -188,6 +191,9 @@ var catalog = append([]Permission{
 	permission(PermissionDNSExecute, "域名解析", "dns", "DNS 连接测试", "execute", "执行", "测试 DNS 厂商连接", true),
 
 	permission(PermissionDeploymentRead, "发布", "deployment", "发布环境与记录", "read", "查看", "查看发布环境、发布记录和运行状态", false),
+	permission(PermissionContainerRestart, "发布", "deployment.container", "部署容器", "restart", "重启", "仅重启所选部署容器", true),
+	permission(PermissionContainerStop, "发布", "deployment.container", "部署容器", "stop", "停止", "仅停止所选部署容器", true),
+	permission(PermissionContainerRecreate, "发布", "deployment.container", "部署容器", "recreate", "重建", "强制重建所选容器所属 Compose 服务的全部副本", true),
 	permission(PermissionDeploymentCreate, "发布", "deployment", "发布环境与配置", "create", "创建", "创建发布环境和部署配置", false),
 	permission(PermissionDeploymentUpdate, "发布", "deployment", "发布环境与配置", "update", "修改", "修改或启停发布环境和部署配置", false),
 	permission(PermissionDeploymentDelete, "发布", "deployment", "发布环境与配置", "delete", "删除", "删除发布环境和部署配置", true),

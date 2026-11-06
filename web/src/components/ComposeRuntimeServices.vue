@@ -1,12 +1,13 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
-import { FileText, TerminalSquare } from 'lucide-vue-next'
+import { FileText, TerminalSquare, MoreHorizontal } from 'lucide-vue-next'
+import type { ContainerControlAction } from '@/types/deploymentRuntime'
 import ResourceDetailDrawer from '@/components/ResourceDetailDrawer.vue'
 import { composeContainerCanTerminal, composePortLabel, composeRuntimeColor, composeRuntimeStatus, type ComposeContainerState, type ComposeServiceState } from '@/utils/composeRuntime'
 import { formatDateTime } from '@/utils/time'
 
-const props = defineProps<{ services: ComposeServiceState[]; canLogs: boolean; canTerminal: boolean; opening?: boolean }>()
-const emit = defineEmits<{ logs: [containerID: string]; terminal: [containerID: string] }>()
+const props = defineProps<{ services: ComposeServiceState[]; canLogs: boolean; canTerminal: boolean; canRestart?: boolean; canStop?: boolean; canRecreate?: boolean; opening?: boolean }>()
+const emit = defineEmits<{ logs: [containerID: string]; terminal: [containerID: string]; control: [containerID: string, action: ContainerControlAction] }>()
 const selectedID = ref('')
 interface ContainerRow { service: ComposeServiceState; container?: ComposeContainerState; index: number; span: number }
 const rows = computed(() => props.services.flatMap<ContainerRow>(service => {
@@ -23,6 +24,11 @@ function openStream(containerID: string, terminal = false) {
   if (terminal) emit('terminal', container.id)
   else emit('logs', container.id)
 }
+function controlAllowed(containerID: string, action: ContainerControlAction) {
+  const container = rows.value.find(row => row.container?.id === containerID)?.container
+  return Boolean(container && !props.opening && ({ restart: props.canRestart, stop: props.canStop, recreate: props.canRecreate })[action] && (action !== 'stop' || container.running))
+}
+function control(containerID: string, action: ContainerControlAction) { if (controlAllowed(containerID, action)) emit('control', containerID, action) }
 </script>
 
 <template>
@@ -38,7 +44,7 @@ function openStream(containerID: string, terminal = false) {
             <td class="image-cell">{{ row.container.image_display || row.container.image || '—' }}</td>
             <td class="time-cell">{{ formatDateTime(row.container.created_at) }}</td>
             <td class="restart-cell">{{ row.container.restart_count ?? '—' }}</td>
-            <td><div class="container-actions"><a-button v-if="canLogs" size="small" :disabled="opening" :aria-label="`查看 ${row.container.name || row.container.id} 日志`" @click="openStream(row.container.id)"><FileText :size="14" />日志</a-button><a-button v-if="canLogs && canTerminal" size="small" :disabled="opening || !composeContainerCanTerminal(row.container)" :title="composeContainerCanTerminal(row.container) ? '' : row.container.terminal_unavailable_reason || '容器当前未运行，不能打开终端'" :aria-label="`进入容器 ${row.container.name || row.container.id}`" @click="openStream(row.container.id, true)"><TerminalSquare :size="14" />终端</a-button><span v-if="!canLogs" class="muted">无日志权限</span></div></td>
+            <td><div class="container-actions"><a-button v-if="canLogs" size="small" :disabled="opening" :aria-label="`查看 ${row.container.name || row.container.id} 日志`" @click="openStream(row.container.id)"><FileText :size="14" />日志</a-button><a-button v-if="canLogs && canTerminal" size="small" :disabled="opening || !composeContainerCanTerminal(row.container)" :title="composeContainerCanTerminal(row.container) ? '' : row.container.terminal_unavailable_reason || '容器当前未运行，不能打开终端'" :aria-label="`进入容器 ${row.container.name || row.container.id}`" @click="openStream(row.container.id, true)"><TerminalSquare :size="14" />终端</a-button><a-dropdown v-if="canRestart || canStop || canRecreate" :trigger="['click']"><a-button size="small" :disabled="opening" :aria-label="`容器 ${row.container.name || row.container.id} 的运行操作`"><MoreHorizontal :size="14" /></a-button><template #overlay><a-menu><a-menu-item v-if="canRestart" :disabled="!controlAllowed(row.container.id,'restart')" @click="control(row.container.id,'restart')">重启容器</a-menu-item><a-menu-item v-if="canStop" danger :disabled="!controlAllowed(row.container.id,'stop')" @click="control(row.container.id,'stop')">停止容器</a-menu-item><a-menu-item v-if="canRecreate" danger :disabled="!controlAllowed(row.container.id,'recreate')" @click="control(row.container.id,'recreate')">重建服务</a-menu-item></a-menu></template></a-dropdown><span v-if="!canLogs && !canRestart && !canStop && !canRecreate" class="muted">无操作权限</span></div></td>
           </template>
           <template v-else><td>—</td><td><a-tag :color="composeRuntimeColor(row.service.state)">{{ composeRuntimeStatus(row.service.state).label }}</a-tag></td><td colspan="4" class="muted">{{ row.service.count === 0 ? '未找到容器' : '容器信息暂不可用' }}</td></template>
         </tr>
@@ -46,7 +52,7 @@ function openStream(containerID: string, terminal = false) {
     </table>
   </div>
   <ResourceDetailDrawer v-model:open="detailOpen" :title="`容器：${selectedContainer?.name || selectedID}`" width="min(840px, 94vw)">
-    <template v-if="selectedContainer" #actions><a-button v-if="canLogs" :disabled="opening" @click="openStream(selectedContainer.id)"><FileText :size="14" />查看日志</a-button><a-button v-if="canLogs && canTerminal" :disabled="opening || !composeContainerCanTerminal(selectedContainer)" @click="openStream(selectedContainer.id, true)"><TerminalSquare :size="14" />进入终端</a-button></template>
+    <template v-if="selectedContainer" #actions><a-button v-if="canRestart" :disabled="!controlAllowed(selectedContainer.id,'restart')" @click="control(selectedContainer.id,'restart')">重启容器</a-button><a-button v-if="canStop" danger :disabled="!controlAllowed(selectedContainer.id,'stop')" @click="control(selectedContainer.id,'stop')">停止容器</a-button><a-button v-if="canRecreate" danger :disabled="!controlAllowed(selectedContainer.id,'recreate')" @click="control(selectedContainer.id,'recreate')">重建服务</a-button><a-button v-if="canLogs" :disabled="opening" @click="openStream(selectedContainer.id)"><FileText :size="14" />查看日志</a-button><a-button v-if="canLogs && canTerminal" :disabled="opening || !composeContainerCanTerminal(selectedContainer)" @click="openStream(selectedContainer.id, true)"><TerminalSquare :size="14" />进入终端</a-button></template>
     <dl v-if="selectedContainer" class="container-facts">
       <div><dt>容器名称</dt><dd>{{ selectedContainer.name || '—' }}</dd></div>
       <div><dt>容器 ID</dt><dd class="mono">{{ selectedContainer.id }}</dd></div>

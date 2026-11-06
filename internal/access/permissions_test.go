@@ -47,6 +47,7 @@ func TestPermissionCatalogContainsOnlyImplementedCapabilities(t *testing.T) {
 		PermissionDNSRead, PermissionDNSCreate, PermissionDNSUpdate, PermissionDNSDelete, PermissionDNSExecute,
 		PermissionDeploymentRead, PermissionDeploymentCreate, PermissionDeploymentUpdate, PermissionDeploymentDelete,
 		PermissionDeploymentExecute, PermissionDeploymentReview,
+		PermissionContainerRestart, PermissionContainerStop, PermissionContainerRecreate,
 		PermissionClusterRead, PermissionClusterCreate, PermissionClusterUpdate, PermissionClusterDelete, PermissionClusterExecute,
 		PermissionK3sUninstall,
 		PermissionTerminalOpen, PermissionHostTerminalOpen, PermissionTerminalFileRead, PermissionTerminalFileUpload, PermissionTerminalFileEdit,

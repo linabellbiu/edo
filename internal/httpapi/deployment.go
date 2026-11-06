@@ -10,6 +10,7 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"edo/internal/deployment"
+	"edo/internal/dockerengine"
 	"edo/internal/model"
 )
 
@@ -131,6 +132,41 @@ func (h deploymentHandler) restart(c *gin.Context) {
 	h.controlRuntime(c, deployment.RuntimeControlInput{Action: "restart"})
 }
 
+func (h deploymentHandler) containerControlPreview(c *gin.Context) {
+	actor, _ := currentUser(c)
+	plan, err := h.service.ContainerControlPreview(c.Request.Context(), c.Param("id"), c.Param("container_id"), actor.ID, c.Query("action"))
+	if err != nil {
+		h.writeRuntimeError(c, "container_control_preview", err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"preview": plan})
+}
+
+func (h deploymentHandler) containerControl(c *gin.Context, action string) {
+	setAuditResourceID(c, c.Param("container_id"))
+	setAuditMetadata(c, map[string]any{"deployment_id": c.Param("id"), "container_id": c.Param("container_id")})
+	var request deployment.ContainerControlConfirmation
+	if err := c.ShouldBindJSON(&request); err != nil {
+		h.logger.Warn("容器运行操作确认参数无效", "operation", "container_control_validate", "deployment_id", c.Param("id"), "container_id", c.Param("container_id"), "action", action, "err", err)
+		writeError(c, http.StatusBadRequest, "invalid_container_confirmation", deployment.ErrRuntimeControlInvalid.Error())
+		return
+	}
+	actor, _ := currentUser(c)
+	result, err := h.service.ControlContainer(c.Request.Context(), c.Param("id"), c.Param("container_id"), actor.ID, action, request)
+	if result != nil && result.Plan != nil {
+		ids := []string{}
+		for _, container := range result.Plan.Containers {
+			ids = append(ids, container.ID)
+		}
+		setAuditMetadata(c, map[string]any{"service": result.Plan.Service, "affected_container_ids": ids, "confirmation_digest": request.Digest})
+	}
+	if err != nil {
+		h.writeRuntimeError(c, "container_control_"+action, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"runtime": result.Runtime})
+}
+
 func (h deploymentHandler) stop(c *gin.Context) {
 	h.controlRuntime(c, deployment.RuntimeControlInput{Action: "stop"})
 }
@@ -171,8 +207,14 @@ func (h deploymentHandler) writeRuntimeError(c *gin.Context, operation string, e
 		message = "读取部署实例运行状态失败"
 	}
 	h.logger.Warn(message, "operation", operation, "request_id", requestIDFrom(c),
-		"deployment_id", c.Param("id"), "err", err)
+		"deployment_id", c.Param("id"), "container_id", c.Param("container_id"), "err", err)
 	switch {
+	case errors.Is(err, deployment.ErrContainerControlBusy):
+		writeError(c, http.StatusConflict, "container_control_busy", deployment.ErrContainerControlBusy.Error())
+	case errors.Is(err, deployment.ErrContainerRecreateBaseline):
+		writeError(c, http.StatusConflict, "container_recreate_baseline_changed", deployment.ErrContainerRecreateBaseline.Error())
+	case errors.Is(err, dockerengine.ErrContainerControlChanged):
+		writeError(c, http.StatusConflict, "container_control_changed", dockerengine.ErrContainerControlChanged.Error())
 	case errors.Is(err, deployment.ErrExecutionAuthorization):
 		writeError(c, http.StatusForbidden, "deployment_authorization_revoked", deployment.ErrExecutionAuthorization.Error())
 	case errors.Is(err, deployment.ErrDeploymentNotFound):

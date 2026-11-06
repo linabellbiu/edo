@@ -20,6 +20,7 @@ import ResourceDetailDrawer from '@/components/ResourceDetailDrawer.vue'
 import ResourceRowActions from '@/components/ResourceRowActions.vue'
 import ContainerLogDrawer from '@/components/ContainerLogDrawer.vue'
 import ComposeRuntimeServices from '@/components/ComposeRuntimeServices.vue'
+import ComposeContainerControlModal from '@/components/ComposeContainerControlModal.vue'
 import GitCredentialDrawer from '@/components/GitCredentialDrawer.vue'
 import PageToolbar from '@/components/PageToolbar.vue'
 import PipelineLogDrawer from '@/components/PipelineLogDrawer.vue'
@@ -40,7 +41,8 @@ import type { RollbackRecord } from '@/types/deploymentRollback'
 import type { PipelineRunApproval } from '@/types/pipelineApproval'
 import { deploymentRollbackEn, deploymentRollbackZh } from '@/locales/deploymentRollback'
 import { formatDateTime, formatRelativeTime } from '@/utils/time'
-import { composeRuntimeStatus, composeContainerCanTerminal, type ComposeServiceState } from '@/utils/composeRuntime'
+import { composeRuntimeStatus, composeContainerCanTerminal } from '@/utils/composeRuntime'
+import type { ContainerControlAction, DeploymentRuntimeState } from '@/types/deploymentRuntime'
 import { parsePipelineRunFilters, pipelineRunDateBounds, pipelineRunDateRange, pipelineRunRequestParams, pipelineRunRouteQuery, type PipelineRunFilters } from '@/utils/pipelineRunFilters'
 import { asyncConfirm } from '@/utils/asyncConfirm'
 
@@ -67,7 +69,6 @@ interface DeploymentTarget extends ResourceRecord{id:string;platform:string;envi
 interface DeploymentPlan extends ResourceRecord{id:string;kind?:string;service_name?:string;deployment_target_id:string;deployment_target?:DeploymentTarget}
 interface DeploymentRecord extends ResourceRecord{id:string;pipeline_run_id?:string;application_id?:string;target_id:string;target_name:string;platform:string;environment_id:string;host_id:string;runtime_id:string;namespace:string;workload_name:string;container_name:string;deployment_plan_id?:string;deployment_plan_kind?:string;compose_service?:string;operation:string;image:string;image_display?:string;status:string;error_message?:string;runtime_deleted_at?:string;created_at:string;updated_at:string;finished_at?:string}
 interface DockerContainerRecord extends ResourceRecord{id:string;names:string[];state:string;status:string}
-interface DeploymentRuntimeState{runtime_id?:string;services?:ComposeServiceState[];deployment_id:string;kind:string;resource_id?:string;name:string;namespace?:string;state:string;running:boolean;count?:number;replicas?:number;ready_replicas?:number;available_replicas?:number;restart_configured?:boolean;stop_configured?:boolean;output?:string}
 interface ShellControlConfiguration{deployment_id:string;restart_script:string;stop_script:string;timeout_seconds:number}
 type StatusTone='neutral'|'info'|'success'|'warning'|'danger'
 interface StatusMeta{tone:StatusTone;label:string;live:boolean}
@@ -103,6 +104,7 @@ const dockerRuntimeRequests=new Map<string,Promise<void>>()
 const containerLogs=ref({open:false,title:'',path:''}),terminal=ref({open:false,title:'',path:''})
 const composeContainerOpening=ref('')
 const composeStream=ref<{deploymentID:string;containerID:string;scope:string}|null>(null)
+const containerControlDialog=reactive({open:false,deploymentID:'',containerID:'',action:'restart' as ContainerControlAction})
 let composeContainerController:AbortController|undefined,composeActionDeploymentID='',composeActionScope=''
 const releasePlanResources=reactive({open:false,loading:false,planID:'',applicationID:'',pipelineRunID:'',title:'',error:'',records:[] as DeploymentRecord[]})
 const runDeploymentRecords=ref<Record<string,DeploymentRecord[]>>({}),runDeploymentLoading=ref<Record<string,boolean>>({}),runDeploymentErrors=ref<Record<string,string>>({})
@@ -637,6 +639,7 @@ async function executeDeploymentRuntimeAction(record:DeploymentRecord,action:'re
 }
 function confirmDeploymentRuntimeAction(record:DeploymentRecord,action:'restart'|'stop'){
  if(!canControlDeployments.value||!currentDeploymentIDs.value.has(record.id)||deploymentRuntimeAction.value)return
+ if(record.deployment_plan_kind==='compose_stack'&&!canComposeContainerControl(action))return
  if(!lifecycleScriptAvailable(record,action)){message.warning(deploymentKind(record)==='script'?`请先在该 Shell 部署实例中保存${action==='restart'?'重启':'停止'}命令`:'请先确认当前 Compose 服务状态完整可用');return}
  const actionLabel=action==='restart'?'重启':'停止'
  Modal.confirm({
@@ -806,6 +809,7 @@ async function openComposeContainerStream(record:DeploymentRecord,containerID:st
  finally{if(composeContainerController===controller){composeContainerController=undefined;composeContainerOpening.value='';composeActionDeploymentID=''}}
 }
 function syncComposeContainerContext(){
+ if(containerControlDialog.open&&(!composeInstanceVisible(containerControlDialog.deploymentID)||!canComposeContainerControl(containerControlDialog.action)))containerControlDialog.open=false
  if(composeContainerController&&(composeActionScope!==resourceScopeKey()||!composeContainerAccess(composeActionDeploymentID,'logs'))){composeContainerController.abort();composeContainerController=undefined;composeContainerOpening.value=''}
  const stream=composeStream.value
  if(stream){
@@ -815,6 +819,16 @@ function syncComposeContainerContext(){
    containerLogs.value={open:false,title:'',path:''};terminal.value={open:false,title:'',path:''};composeStream.value=null
   }
  }
+}
+function canComposeContainerControl(action:ContainerControlAction){return canReadDeployments.value&&auth.authorizationState==='ready'&&auth.canAny([`deployment.container.${action}`])}
+function openComposeContainerControl(record:DeploymentRecord,containerID:string,action:ContainerControlAction){
+ if(deploymentRuntimeAction.value||!composeInstanceVisible(record.id)||!canComposeContainerControl(action))return
+ Object.assign(containerControlDialog,{deploymentID:record.id,containerID,action,open:true})
+}
+function containerControlCompleted(runtime:DeploymentRuntimeState){
+ if(!currentDeploymentIDs.value.has(runtime.deployment_id))return
+ deploymentRuntimeStates.value[runtime.deployment_id]=runtime;delete deploymentRuntimeErrors.value[runtime.deployment_id]
+ message.success(({restart:'容器已重启',stop:'容器已停止',recreate:'服务已重建'})[containerControlDialog.action])
 }
 function workflowSupportsManualRelease(workflow?:PipelineWorkflow){return Boolean(workflow?.is_active&&workflow.source?.type==='trigger'&&workflow.source.config?.events?.includes('manual'))}
 function applicationManualWorkflows(application?:Application){return (application?.workflows||[]).filter(workflowSupportsManualRelease)}
@@ -2174,13 +2188,13 @@ onBeforeUnmount(()=>{planExecutionDisposed=true;composeContainerController?.abor
                   <div v-if="deploymentKind(record)==='script'"><dt>重启命令</dt><dd>{{ lifecycleScriptAvailable(record,'restart')?'已配置':'未配置' }}</dd></div>
                 </dl>
                 <div v-if="record.deployment_plan_kind==='compose_stack'&&deploymentRuntimeStates[record.id]?.kind==='compose'" class="compose-runtime-summary">Compose 项目：{{deploymentRuntimeStates[record.id]?.name}}</div>
-                <ComposeRuntimeServices v-if="deploymentRuntimeStates[record.id]?.services?.length" :key="record.id" :services="deploymentRuntimeStates[record.id]?.services || []" :can-logs="canReadContainerLogs" :can-terminal="canOpenContainerTerminal" :opening="Boolean(composeContainerOpening)" @logs="openComposeContainerStream(record,$event,'logs')" @terminal="openComposeContainerStream(record,$event,'terminal')" />
+                <ComposeRuntimeServices v-if="deploymentRuntimeStates[record.id]?.services?.length" :key="record.id" :services="deploymentRuntimeStates[record.id]?.services || []" :can-logs="canReadContainerLogs" :can-terminal="canOpenContainerTerminal" :can-restart="canComposeContainerControl('restart')" :can-stop="canComposeContainerControl('stop')" :can-recreate="canComposeContainerControl('recreate')" :opening="Boolean(composeContainerOpening)||Boolean(deploymentRuntimeAction)" @control="(id,action)=>openComposeContainerControl(record,id,action)" @logs="openComposeContainerStream(record,$event,'logs')" @terminal="openComposeContainerStream(record,$event,'terminal')" />
                 <div class="application-deployment-actions">
                   <a-button v-if="deploymentKind(record)==='docker'&&canReadContainerLogs" size="small" :loading="dockerRuntimeLoading[record.runtime_id]" :disabled="!dockerContainerForDeployment(record)" @click="openDeploymentLogs(record)"><FileText/>{{ t('containerLogs.button') }}</a-button>
                   <a-button v-if="deploymentKind(record)==='docker'&&canOpenContainerTerminal&&canReadContainerLogs" size="small" :disabled="dockerRuntimeLoading[record.runtime_id]||dockerContainerForDeployment(record)?.state!=='running'" :title="dockerContainerForDeployment(record)?.state==='running'?'':t('applicationCard.terminalRunningOnly')" @click="openDeploymentTerminal(record)"><TerminalSquare/>{{ t('applicationCard.terminal') }}</a-button>
                   <a-button v-if="canUpdateDeployments&&deploymentKind(record)==='script'" size="small" @click="openShellControlConfiguration(record)"><Settings2/>配置命令</a-button>
-                  <a-button v-if="canControlDeployments" size="small" danger :loading="deploymentRuntimeAction===runtimeActionKey(record,'stop')" :disabled="Boolean(deploymentRuntimeAction)||!lifecycleScriptAvailable(record,'stop')" :title="lifecycleScriptAvailable(record,'stop')?'':deploymentKind(record)==='script'?'请先在该 Shell 部署实例中保存停止命令':'当前服务状态不完整，暂不可操作'" @click="confirmDeploymentRuntimeAction(record,'stop')"><Power/>停止</a-button>
-                  <a-button v-if="canControlDeployments" size="small" :loading="deploymentRuntimeAction===runtimeActionKey(record,'restart')" :disabled="Boolean(deploymentRuntimeAction)||!lifecycleScriptAvailable(record,'restart')" :title="lifecycleScriptAvailable(record,'restart')?'':deploymentKind(record)==='script'?'请先在该 Shell 部署实例中保存重启命令':'当前服务状态不完整，暂不可操作'" @click="confirmDeploymentRuntimeAction(record,'restart')"><RotateCw/>重启</a-button>
+                  <a-button v-if="canControlDeployments&&(record.deployment_plan_kind!=='compose_stack'||canComposeContainerControl('stop'))" size="small" danger :loading="deploymentRuntimeAction===runtimeActionKey(record,'stop')" :disabled="Boolean(deploymentRuntimeAction)||!lifecycleScriptAvailable(record,'stop')" :title="lifecycleScriptAvailable(record,'stop')?'':deploymentKind(record)==='script'?'请先在该 Shell 部署实例中保存停止命令':'当前服务状态不完整，暂不可操作'" @click="confirmDeploymentRuntimeAction(record,'stop')"><Power/>停止</a-button>
+                  <a-button v-if="canControlDeployments&&(record.deployment_plan_kind!=='compose_stack'||canComposeContainerControl('restart'))" size="small" :loading="deploymentRuntimeAction===runtimeActionKey(record,'restart')" :disabled="Boolean(deploymentRuntimeAction)||!lifecycleScriptAvailable(record,'restart')" :title="lifecycleScriptAvailable(record,'restart')?'':deploymentKind(record)==='script'?'请先在该 Shell 部署实例中保存重启命令':'当前服务状态不完整，暂不可操作'" @click="confirmDeploymentRuntimeAction(record,'restart')"><RotateCw/>重启</a-button>
                   <a-button v-if="canControlDeployments&&deploymentKind(record)==='kubernetes'" size="small" :disabled="Boolean(deploymentRuntimeAction)" @click="openScaleDialog(record)"><Minus/>扩缩容</a-button>
                   <a-button v-if="canReadDeployments&&canControlDeployments&&['docker','kubernetes'].includes(deploymentKind(record))" size="small" :disabled="Boolean(deploymentRuntimeAction)" @click="openDeploymentRollback(record)"><RotateCw/>{{ rollbackT('rollback.title') }}</a-button>
                   <a-button v-if="canControlDeployments&&deploymentKind(record)==='docker'" size="small" danger :loading="deploymentRuntimeAction===runtimeActionKey(record,'remove')" :disabled="Boolean(deploymentRuntimeAction)" @click="confirmDeploymentRuntimeRemoval(record)"><Trash2/>删除实例</a-button>
@@ -2701,6 +2715,7 @@ onBeforeUnmount(()=>{planExecutionDisposed=true;composeContainerController?.abor
  </a-spin>
 </a-drawer>
 <PipelineLogDrawer v-model:open="log.open" :runID="log.runID" :nodeID="log.nodeID" :title="log.title" :initial-status="log.status"/>
+<ComposeContainerControlModal v-model:open="containerControlDialog.open" :deploymentID="containerControlDialog.deploymentID" :containerID="containerControlDialog.containerID" :action="containerControlDialog.action" @completed="containerControlCompleted"/>
 <ContainerLogDrawer v-model:open="containerLogs.open" :title="containerLogs.title" :path="containerLogs.path"/>
 <TerminalDrawer v-model:open="terminal.open" :title="terminal.title" :path="terminal.path"/>
 </section></template>

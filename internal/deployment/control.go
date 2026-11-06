@@ -178,6 +178,9 @@ func (s *Service) ControlRuntime(
 	if err := s.requireRuntimeControlPermission(ctx, record, actorID); err != nil {
 		return nil, err
 	}
+	if err := s.requireComposeRuntimeActionPermission(ctx, record, actorID, input.Action); err != nil {
+		return nil, err
+	}
 	if input.Action == "scale" && record.Platform != model.DeploymentKubernetes {
 		return nil, ErrRuntimeControlUnsupported
 	}
@@ -218,6 +221,9 @@ func (s *Service) ControlRuntime(
 		return nil, err
 	}
 	if err := s.requireRuntimeControlPermission(ctx, record, actorID); err != nil {
+		return nil, err
+	}
+	if err := s.requireComposeRuntimeActionPermission(ctx, record, actorID, input.Action); err != nil {
 		return nil, err
 	}
 	state, err := s.executeRuntimeControl(ctx, record, actorID, input)

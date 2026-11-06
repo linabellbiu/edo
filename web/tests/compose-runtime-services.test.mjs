@@ -47,3 +47,19 @@ test('日志可读已完成任务，终端只允许有权限且仍在运行的�
   assert.equal(compose.composePortLabel({container_port:'80/tcp',host_ip:'::',host_port:'8080'}),'[::]:8080 → 80/tcp')
   assert.equal(compose.composePortLabel({container_port:'443/tcp'}),'443/tcp')
 })
+
+test('容器重启、停止、服务重建分别按权限显示和分发，不借用日志或终端权限',()=>{
+  const {state,props,events,containers}=harness(false,false)
+  props.canStop=true
+  state.control(containers[0].id,'stop')
+  state.control(containers[0].id,'restart')
+  state.control(containers[0].id,'recreate')
+  state.control('c'.repeat(64),'stop')
+  assert.deepEqual(events,[['control',containers[0].id,'stop']])
+  props.canRecreate=true
+  state.control(containers[1].id,'recreate')
+  assert.deepEqual(events.at(-1),['control',containers[1].id,'recreate'])
+  props.opening=true
+  state.control(containers[0].id,'stop')
+  assert.equal(events.length,2)
+})

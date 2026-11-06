@@ -18,6 +18,7 @@ import (
 
 const requestIDKey = "request_id"
 const auditResourceIDKey = "audit_resource_id"
+const auditMetadataKey = "audit_metadata"
 
 func requestID() gin.HandlerFunc {
 	return func(c *gin.Context) {
@@ -104,13 +105,19 @@ func auditAction(audits *audit.Service, logger *slog.Logger, action, resourceTyp
 		// 撤权、断线和超时同样必须留审计；只剥离取消信号，保留原用户与项目范围。
 		auditContext, cancel := context.WithTimeout(context.WithoutCancel(c.Request.Context()), 3*time.Second)
 		defer cancel()
+		metadata := map[string]any{"method": c.Request.Method, "path": c.FullPath(), "status": c.Writer.Status()}
+		if value, exists := c.Get(auditMetadataKey); exists {
+			if extra, ok := value.(map[string]any); ok {
+				for key, value := range extra {
+					metadata[key] = value
+				}
+			}
+		}
 		if err := audits.Record(auditContext, audit.RecordInput{
 			ActorUserID: actorID, Action: action, ResourceType: resourceType,
 			ResourceID: resourceID, Result: result, RequestID: requestIDFrom(c),
 			ClientIP: c.ClientIP(), UserAgent: truncateText(c.Request.UserAgent(), 512),
-			Metadata: map[string]any{
-				"method": c.Request.Method, "path": c.FullPath(), "status": c.Writer.Status(),
-			},
+			Metadata: metadata,
 		}); err != nil {
 			logger.Error("记录操作审计失败", "operation", "audit_record", "request_id", requestIDFrom(c), "action", action, "resource_type", resourceType, "resource_id", resourceID, "err", err)
 		}
@@ -119,6 +126,20 @@ func auditAction(audits *audit.Service, logger *slog.Logger, action, resourceTyp
 
 func setAuditResourceID(c *gin.Context, resourceID string) {
 	c.Set(auditResourceIDKey, resourceID)
+}
+
+// 仅由业务处理器传入有界身份及确认信息，不采集请求正文或运行配置。
+func setAuditMetadata(c *gin.Context, extra map[string]any) {
+	current := map[string]any{}
+	if value, exists := c.Get(auditMetadataKey); exists {
+		if stored, ok := value.(map[string]any); ok {
+			current = stored
+		}
+	}
+	for key, value := range extra {
+		current[key] = value
+	}
+	c.Set(auditMetadataKey, current)
 }
 
 func truncateText(value string, maxRunes int) string {

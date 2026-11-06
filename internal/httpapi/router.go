@@ -394,6 +394,10 @@ func NewRouter(deps Dependencies) *gin.Engine {
 	protected.PUT("/deployments/:id/runtime/configuration", auditAction(deps.Audits, deps.Logger, "deployment.runtime.configuration.update", "deployment"), requirePermission(deps.Access, deps.Logger, access.PermissionDeploymentUpdate), deploymentAPI.saveRuntimeConfiguration)
 	protected.POST("/deployments/:id/runtime/restart", auditAction(deps.Audits, deps.Logger, "deployment.runtime.restart", "deployment"), requirePermission(deps.Access, deps.Logger, access.PermissionDeploymentExecute), deploymentAPI.restart)
 	protected.POST("/deployments/:id/runtime/stop", auditAction(deps.Audits, deps.Logger, "deployment.runtime.stop", "deployment"), requirePermission(deps.Access, deps.Logger, access.PermissionDeploymentExecute), deploymentAPI.stop)
+	protected.GET("/deployments/:id/runtime/containers/:container_id/preview", requirePermission(deps.Access, deps.Logger, access.PermissionDeploymentRead), deploymentAPI.containerControlPreview)
+	for _, action := range []string{"restart", "stop", "recreate"} {
+		protected.POST("/deployments/:id/runtime/containers/:container_id/"+action, auditAction(deps.Audits, deps.Logger, "deployment.container."+action, "docker_container"), requirePermission(deps.Access, deps.Logger, access.PermissionDeploymentRead), requirePermission(deps.Access, deps.Logger, deployment.ContainerControlPermission(action)), func(c *gin.Context) { deploymentAPI.containerControl(c, action) })
+	}
 	protected.POST("/deployments/:id/runtime/scale", auditAction(deps.Audits, deps.Logger, "deployment.runtime.scale", "deployment"), requirePermission(deps.Access, deps.Logger, access.PermissionDeploymentExecute), deploymentAPI.scale)
 	protected.DELETE("/deployments/:id/runtime", auditAction(deps.Audits, deps.Logger, "deployment.runtime.remove", "deployment"), requirePermission(deps.Access, deps.Logger, access.PermissionDeploymentExecute), deploymentAPI.removeRuntime)
 
