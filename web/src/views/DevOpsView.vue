@@ -65,7 +65,7 @@ interface DeploymentTarget extends ResourceRecord{id:string;platform:string;envi
 interface DeploymentPlan extends ResourceRecord{id:string;kind?:string;service_name?:string;deployment_target_id:string;deployment_target?:DeploymentTarget}
 interface DeploymentRecord extends ResourceRecord{id:string;pipeline_run_id?:string;application_id?:string;target_id:string;target_name:string;platform:string;environment_id:string;host_id:string;runtime_id:string;namespace:string;workload_name:string;container_name:string;deployment_plan_id?:string;deployment_plan_kind?:string;compose_service?:string;operation:string;image:string;image_display?:string;status:string;error_message?:string;runtime_deleted_at?:string;created_at:string;updated_at:string;finished_at?:string}
 interface DockerContainerRecord extends ResourceRecord{id:string;names:string[];state:string;status:string}
-interface ComposeServiceState{name:string;state:string;count:number;ready_count:number}
+interface ComposeServiceState{run_to_completion?:boolean;name:string;state:string;count:number;ready_count:number}
 interface DeploymentRuntimeState{services?:ComposeServiceState[];deployment_id:string;kind:string;resource_id?:string;name:string;namespace?:string;state:string;running:boolean;count?:number;replicas?:number;ready_replicas?:number;available_replicas?:number;restart_configured?:boolean;stop_configured?:boolean;output?:string}
 interface ShellControlConfiguration{deployment_id:string;restart_script:string;stop_script:string;timeout_seconds:number}
 type StatusTone='neutral'|'info'|'success'|'warning'|'danger'
@@ -511,8 +511,9 @@ function deploymentStatus(record:DeploymentRecord):StatusMeta{
  return states[record.status]||{tone:'neutral',label:record.status,live:false}
 }
 function composeRuntimeStatus(state:string,running=false):StatusMeta{
+ if(state==='completed')return {tone:'success',label:'已完成',live:false}
  if(running)return {tone:'success',label:'运行中',live:true}
- const states:Record<string,StatusMeta>={partial:{tone:'warning',label:'部分服务异常',live:false},unhealthy:{tone:'danger',label:'健康检查失败',live:false},starting:{tone:'warning',label:'启动中',live:true},restarting:{tone:'warning',label:'重启中',live:true},missing:{tone:'warning',label:'服务不存在',live:false},paused:{tone:'neutral',label:'已暂停',live:false},exited:{tone:'neutral',label:'已停止',live:false},created:{tone:'neutral',label:'尚未启动',live:false},dead:{tone:'danger',label:'异常退出',live:false}}
+ const states:Record<string,StatusMeta>={failed:{tone:'danger',label:'任务失败',live:false},completing:{tone:'warning',label:'执行中',live:true},partial:{tone:'warning',label:'部分服务异常',live:false},unhealthy:{tone:'danger',label:'健康检查失败',live:false},starting:{tone:'warning',label:'启动中',live:true},restarting:{tone:'warning',label:'重启中',live:true},missing:{tone:'warning',label:'服务不存在',live:false},paused:{tone:'neutral',label:'已暂停',live:false},exited:{tone:'neutral',label:'已停止',live:false},created:{tone:'neutral',label:'尚未启动',live:false},dead:{tone:'danger',label:'异常退出',live:false}}
  return states[state]||{tone:'neutral',label:'状态未知',live:false}
 }
 function composeRuntimeColor(state:string,running=false){return ({success:'green',warning:'gold',danger:'red',info:'blue'} as Record<string,string>)[composeRuntimeStatus(state,running).tone]}
@@ -572,7 +573,7 @@ function deploymentDetailsOpen(record:DeploymentRecord){return Boolean(expandedD
 function lifecycleScriptAvailable(record:DeploymentRecord,action:'restart'|'stop'){
  if(record.deployment_plan_kind==='compose_stack'){
   const runtime=deploymentRuntimeStates.value[record.id]
-  return !deploymentRuntimeErrors.value[record.id]&&runtime?.kind==='compose'&&!!runtime.services?.length&&runtime.services.every(service=>service.count>0)
+  return !deploymentRuntimeErrors.value[record.id]&&runtime?.kind==='compose'&&!!runtime.services?.length&&runtime.services.some(service=>!service.run_to_completion)&&runtime.services.every(service=>service.count>0&&(!service.run_to_completion||service.state==='completed'))
  }
  if(deploymentKind(record)!=='script')return true
  const runtime=deploymentRuntimeStates.value[record.id]
@@ -643,7 +644,7 @@ function confirmDeploymentRuntimeAction(record:DeploymentRecord,action:'restart'
  const actionLabel=action==='restart'?'重启':'停止'
  Modal.confirm({
   title:`确认${actionLabel}${deploymentInstanceName(record)}？`,
-  content:record.deployment_plan_kind==='compose_stack'?`将${actionLabel}本次部署范围内的 Compose 服务：${deploymentRuntimeStates.value[record.id]?.services?.map(service=>service.name).join('、')}。镜像、配置及数据卷保持不变。`:deploymentKind(record)==='script'?`将执行该部署实例中已经保存的${actionLabel} Shell 命令。`:`操作当前${deploymentKindLabel(record)}运行资源。`,
+  content:record.deployment_plan_kind==='compose_stack'?`将${actionLabel}本次部署范围内的 Compose 服务：${deploymentRuntimeStates.value[record.id]?.services?.filter(service=>!service.run_to_completion).map(service=>service.name).join('、')}。镜像、配置及数据卷保持不变。`:deploymentKind(record)==='script'?`将执行该部署实例中已经保存的${actionLabel} Shell 命令。`:`操作当前${deploymentKindLabel(record)}运行资源。`,
   okText:actionLabel,cancelText:'取消',okType:action==='stop'?'danger':'primary',
  onOk:()=>executeDeploymentRuntimeAction(record,action),
  })

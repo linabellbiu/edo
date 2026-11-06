@@ -27,17 +27,23 @@ func TestComposeStackRuntimeUsesFrozenHostScope(t *testing.T) {
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		labels := map[string]string{"com.docker.compose.project": "frozen-project", "com.docker.compose.service": "api", "com.docker.compose.project.working_dir": "/srv/app"}
+		labels := func(name string) map[string]string {
+			return map[string]string{"com.docker.compose.project": "frozen-project", "com.docker.compose.service": name, "com.docker.compose.project.working_dir": "/srv/app"}
+		}
 		if strings.HasSuffix(r.URL.Path, "/_ping") {
 			w.Header().Set("API-Version", "1.54")
 			return
 		}
 		if strings.HasSuffix(r.URL.Path, "/containers/json") {
-			_ = json.NewEncoder(w).Encode([]any{map[string]any{"Id": "api-id", "Labels": labels}})
+			_ = json.NewEncoder(w).Encode([]any{map[string]any{"Id": "api-id", "Labels": labels("api")}, map[string]any{"Id": "setup-id", "Labels": labels("setup")}})
 			return
 		}
 		if strings.HasSuffix(r.URL.Path, "/containers/api-id/json") {
-			_ = json.NewEncoder(w).Encode(map[string]any{"Id": "api-id", "Config": map[string]any{"Labels": labels}, "State": map[string]any{"Status": "running", "Running": true}})
+			_ = json.NewEncoder(w).Encode(map[string]any{"Id": "api-id", "Config": map[string]any{"Labels": labels("api")}, "State": map[string]any{"Status": "running", "Running": true}})
+			return
+		}
+		if strings.HasSuffix(r.URL.Path, "/containers/setup-id/json") {
+			_ = json.NewEncoder(w).Encode(map[string]any{"Id": "setup-id", "Config": map[string]any{"Labels": labels("setup")}, "State": map[string]any{"Status": "exited", "Running": false, "ExitCode": 0}})
 			return
 		}
 		http.NotFound(w, r)
@@ -64,8 +70,14 @@ func TestComposeStackRuntimeUsesFrozenHostScope(t *testing.T) {
 	if err := db.Create(&run).Error; err != nil {
 		t.Fatal(err)
 	}
+	// 完成条件只从当次冻结的 Compose 读取，当前方案不存在也不影响成功记录。
+	snapshot["deployment_plans"].(map[string]any)["deploy"].(map[string]any)["compose_yaml"] = "services:\n  api:\n    image: alpine:3.22\n    depends_on:\n      setup:\n        condition: service_completed_successfully\n  setup:\n    image: alpine:3.22\n  unselected:\n    image: alpine:3.22\n"
+	encoded, _ = json.Marshal(snapshot)
+	if err := db.Model(&model.PipelineRun{}).Where("uuid = ?", run.ID).Update("workflow_snapshot", string(encoded)).Error; err != nil {
+		t.Fatal(err)
+	}
 	state, err := s.RuntimeState(ctx, record.ID)
-	if err != nil || state.Kind != "compose" || !state.Running || state.Name != "frozen-project" || len(state.Services) != 1 || state.Services[0].Name != "api" {
+	if err != nil || state.Kind != "compose" || !state.Running || state.Name != "frozen-project" || len(state.Services) != 2 || state.Services[0].Name != "api" || state.Services[1].State != "completed" || !state.Services[1].RunToCompletion {
 		t.Fatal("未从冻结的主机和服务范围读取状态", state, err)
 	}
 	if _, err = s.RuntimeConfiguration(ctx, record.ID); !errors.Is(err, ErrRuntimeControlUnsupported) {

@@ -8,6 +8,37 @@ import (
 
 var ErrInvalidScope = errors.New("Compose 服务范围无效")
 
+// CompletionServices 只识别 Compose 明确声明需要成功完成的一次性依赖，不按服务名称猜测。
+func CompletionServices(doc map[string]any, scope []string) ([]string, error) {
+	services, ok := doc["services"].(map[string]any)
+	if !ok {
+		return nil, ErrInvalidScope
+	}
+	included, completed := map[string]bool{}, map[string]bool{}
+	for _, name := range scope {
+		included[name] = true
+	}
+	for _, raw := range services {
+		service, ok := raw.(map[string]any)
+		if !ok {
+			return nil, ErrInvalidScope
+		}
+		dependencies, _ := service["depends_on"].(map[string]any)
+		for name, rawOptions := range dependencies {
+			options, ok := rawOptions.(map[string]any)
+			if ok && included[name] && options["condition"] == "service_completed_successfully" {
+				completed[name] = true
+			}
+		}
+	}
+	names := []string{}
+	for name := range completed {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names, nil
+}
+
 // ServiceScope 仅计算服务作用范围，依赖的启动顺序仍由官方 Compose 处理。
 func ServiceScope(doc map[string]any, selected []string) ([]string, error) {
 	services, ok := doc["services"].(map[string]any)

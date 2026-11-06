@@ -14,7 +14,7 @@ const workflow = (id, name) => ({ id, name, is_active: true, source: { config: {
 const application = (id, changes = {}) => ({ id, name: id, description: '', repository_id: 'repo', is_active: true, sync_status: 'synced', workflows: [workflow(`${id}-flow`, `${id} 流水线`)], ...changes })
 
 function harness({ allowed = true, executeAllowed = true } = {}) {
-  const requests = [], submissions = [], pending = [], runtimePending = [], errors = [], navigation = [], scrolls = []
+  const requests = [], submissions = [], pending = [], runtimePending = [], errors = [], navigation = [], scrolls = [], confirmations = []
   const route = vue.reactive({ query: {} })
   let state
   const client = {
@@ -30,7 +30,7 @@ function harness({ allowed = true, executeAllowed = true } = {}) {
     vue: { ...vue, onMounted() {}, onBeforeUnmount() {}, watch() {} },
     'vue-router': { useRoute: () => route, useRouter: () => ({ push: value => navigation.push(value) }) },
     'vue-i18n': { useI18n: () => ({ t: key => key, locale: vue.ref('zh-CN') }) },
-    'ant-design-vue': { Modal: {}, message: { error: value => errors.push(value), warning: value => errors.push(value), success() {} } },
+    'ant-design-vue': { Modal: { confirm: value => confirmations.push(value) }, message: { error: value => errors.push(value), warning: value => errors.push(value), success() {} } },
     axios: { isAxiosError: () => false },
     '@/stores/auth': { useAuthStore: () => ({ canAny: permissions => allowed && (!permissions.includes('pipeline_run.execute') || executeAllowed) }) },
     '@/api/client': { __esModule: true, default: client },
@@ -45,7 +45,7 @@ function harness({ allowed = true, executeAllowed = true } = {}) {
   state = module.exports.default.setup({ section: 'applications' }, { expose() {} })
   state.applications.value = [application('api'), application('web', { is_active: false })]
   state.repositories.value = [{ id: 'repo', name: 'Platform' }]
-  return { state, requests, submissions, pending, runtimePending, errors, navigation, route, scrolls }
+  return { state, requests, submissions, pending, runtimePending, errors, navigation, route, scrolls, confirmations }
 }
 
 function allowManual(application, id = 'second-flow') {
@@ -68,6 +68,41 @@ test('SSH Compose 多镜像正确识别，不显示 Shell 配置；状态完整�
   assert.equal(state.currentDeploymentStatus(record).label,'部分服务异常')
   assert.equal(state.lifecycleScriptAvailable(record,'stop'),false)
   for(const value of ['unhealthy','missing','paused','starting','unknown'])assert.notEqual(state.composeRuntimeStatus(value).label,'已停止')
+})
+
+test('Compose 已完成任务显示完成，运行确认只包含常驻服务，失败或执行中任务阻止操作',()=>{
+  const {state,confirmations,submissions}=harness()
+  const target={id:'target',platform:'ssh',host_id:'host',environment_id:'env',working_directory:'/srv/example'}
+  const record={...target,id:'compose',target_id:'target',application_id:'api',pipeline_run_id:'run',deployment_plan_id:'plan',deployment_plan_kind:'compose_stack',status:'succeeded',created_at:'2026-11-06T06:00:00Z'}
+  state.deploymentPlans.value=[{id:'plan',kind:'compose_stack',deployment_target:target}]
+  state.applications.value[0].workflows[0].stages=[{tasks:[{type:'deploy',config:{deployment_plan_id:'plan'}}]}]
+  state.deployments.value=[record]
+  const setup={name:'setup',state:'completed',count:1,ready_count:1,run_to_completion:true}
+  const api={name:'api',state:'running',count:1,ready_count:1}
+  const runtime={kind:'compose',name:'example',state:'running',running:true,services:[api,setup]}
+  state.deploymentRuntimeStates.value.compose=runtime
+  assert.deepEqual(state.composeRuntimeStatus('completed',true),{tone:'success',label:'已完成',live:false})
+  assert.equal(state.currentDeploymentStatus(record).label,'运行中')
+  for(const action of ['stop','restart']){
+    assert.equal(state.lifecycleScriptAvailable(record,action),true)
+    state.confirmDeploymentRuntimeAction(record,action)
+    assert.match(confirmations.at(-1).content,/Compose 服务：api。/)
+    assert.doesNotMatch(confirmations.at(-1).content,/setup/)
+  }
+  assert.equal(submissions.length,0,'确认前不能写入')
+  for(const value of ['failed','completing','missing']){
+    setup.state=value
+    assert.equal(state.lifecycleScriptAvailable(record,'restart'),false)
+    state.confirmDeploymentRuntimeAction(record,'restart')
+  }
+  assert.equal(confirmations.length,2,'失败或未完成的任务不能进入执行确认')
+  setup.state='completed'
+  runtime.services=[setup]
+  runtime.state='completed'
+  runtime.running=false
+  state.deploymentRuntimeStates.value.compose=runtime
+  assert.equal(state.currentDeploymentStatus(record).label,'已完成')
+  assert.equal(state.lifecycleScriptAvailable(record,'restart'),false,'不提供重跑已完成任务的入口')
 })
 
 test('手动执行绑定准确流水线，选完版本前不创建运行，确认后复用完整执行链', async () => {

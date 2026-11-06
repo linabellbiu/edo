@@ -22,7 +22,7 @@ func TestComposeProjectRuntimeIntegration(t *testing.T) {
 		t.Fatal(err)
 	}
 	file := filepath.Join(directory, "compose.yml")
-	if err = os.WriteFile(file, []byte("services:\n  api:\n    image: alpine:3.22\n    command: [sleep, '300']\n  worker:\n    image: alpine:3.22\n    command: [sleep, '300']\n"), 0600); err != nil {
+	if err = os.WriteFile(file, []byte("services:\n  setup:\n    image: alpine:3.22\n    command: [sh, -c, 'exit 0']\n  api:\n    image: alpine:3.22\n    command: [sleep, '300']\n    depends_on:\n      setup:\n        condition: service_completed_successfully\n  worker:\n    image: alpine:3.22\n    command: [sleep, '300']\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
 	project := fmt.Sprintf("edo-runtime-%d", time.Now().UnixNano())
@@ -38,15 +38,17 @@ func TestComposeProjectRuntimeIntegration(t *testing.T) {
 	t.Cleanup(func() { compose("down", "--remove-orphans") })
 	compose("up", "-d", "--no-build", "--pull", "never", "--wait")
 	worker := compose("ps", "-q", "worker")
+	setup := compose("ps", "-a", "-q", "setup")
 	inspect := func(id string) string {
 		t.Helper()
-		data, err := exec.Command("docker", "inspect", "--format", "{{.Id}} {{.Image}} {{.State.StartedAt}}", id).Output()
+		data, err := exec.Command("docker", "inspect", "--format", "{{.Id}} {{.Image}} {{.State.StartedAt}} {{.State.FinishedAt}}", id).Output()
 		if err != nil {
 			t.Fatal(err)
 		}
 		return string(data)
 	}
 	workerBefore := inspect(worker)
+	setupBefore := inspect(setup)
 	host, err := exec.Command("docker", "context", "inspect", "--format", "{{.Endpoints.docker.Host}}").Output()
 	if err != nil {
 		t.Fatal(err)
@@ -57,11 +59,11 @@ func TestComposeProjectRuntimeIntegration(t *testing.T) {
 		t.Fatal(err)
 	}
 	endpoint := createMonitorEndpoint(t, db, "runtime-integration-endpoint", strings.TrimSpace(string(host)), "runtime-integration-host")
-	scope := ComposeProjectScope{HostID: "runtime-integration-host", ProjectName: project, WorkingDirectory: directory, Services: []string{"api"}}
+	scope := ComposeProjectScope{HostID: "runtime-integration-host", ProjectName: project, WorkingDirectory: directory, Services: []string{"api", "setup"}, CompletionServices: []string{"setup"}}
 	ctx, cancel := context.WithTimeout(t.Context(), 90*time.Second)
 	defer cancel()
 	state, err := service.ComposeProjectRuntimeState(ctx, endpoint.ID, scope)
-	if err != nil || !state.Running || state.Count != 1 {
+	if err != nil || !state.Running || state.Count != 2 || state.Services[1].State != "completed" {
 		t.Fatal("实际 Compose 状态读取失败", state, err)
 	}
 	state, err = service.ControlComposeProject(ctx, endpoint.ID, scope, "stop")
@@ -74,5 +76,8 @@ func TestComposeProjectRuntimeIntegration(t *testing.T) {
 	}
 	if inspect(worker) != workerBefore {
 		t.Fatal("操作影响了未选择的 worker")
+	}
+	if inspect(setup) != setupBefore {
+		t.Fatal("操作重跑或替换了已完成的一次性任务")
 	}
 }

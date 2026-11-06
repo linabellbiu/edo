@@ -71,6 +71,10 @@ func (s *Service) composeRuntimeScope(ctx context.Context, record *model.Deploym
 	if err != nil {
 		return "", dockerengine.ComposeProjectScope{}, invalid
 	}
+	completedServices, err := composeconfig.CompletionServices(document, services)
+	if err != nil {
+		return "", dockerengine.ComposeProjectScope{}, invalid
+	}
 	var host model.Host
 	if err := s.db.WithContext(ctx).Where("uuid = ? AND is_active = ?", record.HostID, true).First(&host).Error; err != nil {
 		return "", dockerengine.ComposeProjectScope{}, err
@@ -83,5 +87,5 @@ func (s *Service) composeRuntimeScope(ctx context.Context, record *model.Deploym
 	if err := s.db.WithContext(ctx).Where("host_id = ? AND kind = ? AND status = ?", record.HostID, model.HostCapabilityDocker, model.HostCapabilityReady).First(&capability).Error; err != nil {
 		return "", dockerengine.ComposeProjectScope{}, err
 	}
-	return capability.RuntimeID, dockerengine.ComposeProjectScope{HostID: record.HostID, ProjectName: settings.ProjectName, WorkingDirectory: record.WorkingDirectory, Services: services}, nil
+	return capability.RuntimeID, dockerengine.ComposeProjectScope{HostID: record.HostID, ProjectName: settings.ProjectName, WorkingDirectory: record.WorkingDirectory, Services: services, CompletionServices: completedServices}, nil
 }

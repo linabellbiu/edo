@@ -3,6 +3,7 @@ package dockerengine
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -121,5 +122,125 @@ func TestComposeProjectScopeAndControls(t *testing.T) {
 	wrongHost.HostID = "other-host"
 	if _, err = service.ComposeProjectRuntimeState(ctx, endpoint.ID, wrongHost); err == nil {
 		t.Fatal("接受了其他主机")
+	}
+}
+
+func TestComposeProjectCompletionTasks(t *testing.T) {
+	service, db := newMonitorTestService(t)
+	if err := db.Create(&model.Host{ID: "completion-host", Name: "一次性任务测试主机", Mode: model.HostModeSSH, IsActive: true}).Error; err != nil {
+		t.Fatal(err)
+	}
+	labels := func(name string) map[string]string {
+		return map[string]string{"com.docker.compose.project": "completion", "com.docker.compose.service": name, "com.docker.compose.project.working_dir": "/srv/completion"}
+	}
+	var mu sync.Mutex
+	apiState, setupState, exitCode, oom, engineError := "running", "exited", 0, false, ""
+	writes := []string{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/_ping"):
+			w.Header().Set("API-Version", "1.54")
+			return
+		case strings.HasSuffix(r.URL.Path, "/containers/json"):
+			_ = json.NewEncoder(w).Encode([]any{map[string]any{"Id": "api", "Labels": labels("api")}, map[string]any{"Id": "setup", "Labels": labels("setup")}})
+			return
+		}
+		for _, name := range []string{"api", "setup"} {
+			if strings.HasSuffix(r.URL.Path, "/containers/"+name+"/json") {
+				state := map[string]any{"Status": apiState, "Running": apiState == "running"}
+				if name == "setup" {
+					state = map[string]any{"Status": setupState, "Running": setupState == "running" || setupState == "paused", "ExitCode": exitCode, "OOMKilled": oom, "Error": engineError}
+				}
+				_ = json.NewEncoder(w).Encode(map[string]any{"Id": name, "Config": map[string]any{"Labels": labels(name)}, "State": state})
+				return
+			}
+			if r.Method == "POST" && strings.Contains(r.URL.Path, "/containers/"+name+"/") {
+				action := r.URL.Path[strings.LastIndex(r.URL.Path, "/")+1:]
+				writes = append(writes, name+":"+action)
+				if name == "api" {
+					apiState = "running"
+					if action == "stop" {
+						apiState = "exited"
+					}
+				}
+				w.WriteHeader(http.StatusNoContent)
+				return
+			}
+		}
+		http.NotFound(w, r)
+	}))
+	t.Cleanup(server.Close)
+	endpoint := createMonitorEndpoint(t, db, "completion-endpoint", strings.Replace(server.URL, "http://", "tcp://", 1), "completion-host")
+	scope := ComposeProjectScope{HostID: "completion-host", ProjectName: "completion", WorkingDirectory: "/srv/completion", Services: []string{"api", "setup"}, CompletionServices: []string{"setup"}}
+	ctx := context.Background()
+	for _, tc := range []struct {
+		name, task, daemon, wantTask, wantOverall string
+		code                                      int
+		oom                                       bool
+		engineError                               string
+	}{
+		{name: "完成不冒充停止", task: "exited", daemon: "running", wantTask: "completed", wantOverall: "running"},
+		{name: "常驻服务停止", task: "exited", daemon: "exited", wantTask: "completed", wantOverall: "exited"},
+		{name: "任务非零退出", task: "exited", daemon: "running", code: 1, wantTask: "failed", wantOverall: "partial"},
+		{name: "任务内存终止", task: "exited", daemon: "running", oom: true, wantTask: "failed", wantOverall: "partial"},
+		{name: "任务引擎错误", task: "exited", daemon: "running", engineError: "测试错误", wantTask: "failed", wantOverall: "partial"},
+		{name: "任务执行中", task: "running", daemon: "running", wantTask: "completing", wantOverall: "partial"},
+		{name: "任务已暂停", task: "paused", daemon: "running", wantTask: "paused", wantOverall: "partial"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			mu.Lock()
+			setupState, apiState, exitCode, oom, engineError = tc.task, tc.daemon, tc.code, tc.oom, tc.engineError
+			writes = nil
+			mu.Unlock()
+			state, err := service.ComposeProjectRuntimeState(ctx, endpoint.ID, scope)
+			if err != nil || state.State != tc.wantOverall || state.Services[1].State != tc.wantTask || !state.Services[1].RunToCompletion || state.Running != (tc.wantOverall == "running") {
+				t.Fatal("一次性任务状态错误", state, err)
+			}
+			if tc.wantTask != "completed" {
+				for _, action := range []string{"stop", "restart"} {
+					if _, err = service.ControlComposeProject(ctx, endpoint.ID, scope, action); !errors.Is(err, ErrRuntimeControlFailed) {
+						t.Fatal("未完成任务未阻止整组操作", err)
+					}
+				}
+				mu.Lock()
+				defer mu.Unlock()
+				if len(writes) != 0 {
+					t.Fatal("阻断前已部分操作常驻服务", writes)
+				}
+			}
+		})
+	}
+	mu.Lock()
+	setupState, apiState, exitCode, oom, engineError = "exited", "running", 0, false, ""
+	writes = nil
+	mu.Unlock()
+	for _, action := range []string{"restart", "stop", "restart"} {
+		if _, err := service.ControlComposeProject(ctx, endpoint.ID, scope, action); err != nil {
+			t.Fatal("常驻服务操作失败", action, err)
+		}
+	}
+	mu.Lock()
+	gotWrites := fmt.Sprint(writes)
+	mu.Unlock()
+	if gotWrites != "[api:restart api:stop api:start]" {
+		t.Fatal("操作重跑了已完成任务", gotWrites)
+	}
+	onlyTask := scope
+	onlyTask.Services = []string{"setup"}
+	state, err := service.ComposeProjectRuntimeState(ctx, endpoint.ID, onlyTask)
+	if err != nil || state.State != "completed" || state.Running || state.Services[0].ReadyCount != 1 {
+		t.Fatal("纯一次性任务状态错误", state, err)
+	}
+	if _, err = service.ControlComposeProject(ctx, endpoint.ID, onlyTask, "restart"); !errors.Is(err, ErrRuntimeControlInvalid) {
+		t.Fatal("允许重跑纯一次性任务", err)
+	}
+	ordinary := scope
+	ordinary.CompletionServices = nil
+	state, err = service.ComposeProjectRuntimeState(ctx, endpoint.ID, ordinary)
+	if err != nil || state.Services[1].State != "exited" || state.Services[1].ReadyCount != 0 || state.Services[1].RunToCompletion {
+		t.Fatal("未声明完成条件的零退出服务被误判为完成", state, err)
 	}
 }

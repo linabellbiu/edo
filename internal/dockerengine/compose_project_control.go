@@ -13,24 +13,26 @@ import (
 
 // ComposeProjectScope 来自已成功发布的冻结配置，不接受客户端指定项目或服务。
 type ComposeProjectScope struct {
-	HostID           string
-	ProjectName      string
-	WorkingDirectory string
-	Services         []string
+	HostID             string
+	ProjectName        string
+	WorkingDirectory   string
+	Services           []string
+	CompletionServices []string
 }
 
 type ComposeServiceState struct {
-	Name       string `json:"name"`
-	State      string `json:"state"`
-	Count      int    `json:"count"`
-	ReadyCount int    `json:"ready_count"`
+	Name            string `json:"name"`
+	State           string `json:"state"`
+	Count           int    `json:"count"`
+	ReadyCount      int    `json:"ready_count"`
+	RunToCompletion bool   `json:"run_to_completion,omitempty"`
 }
 
 var runtimeComposeProjectPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,127}$`)
 
 type composeProjectContainer struct {
 	id, service, state string
-	running, live      bool
+	ready, live        bool
 	restarts           int
 }
 
@@ -44,6 +46,13 @@ func (s *Service) composeProjectClient(ctx context.Context, endpointID string, s
 			return nil, ErrRuntimeControlInvalid
 		}
 		seen[name] = true
+	}
+	completed := map[string]bool{}
+	for _, name := range scope.CompletionServices {
+		if !seen[name] || completed[name] {
+			return nil, ErrRuntimeControlInvalid
+		}
+		completed[name] = true
 	}
 	endpoint, err := s.Find(ctx, endpointID)
 	if err != nil {
@@ -86,8 +95,28 @@ func (s *Service) ControlComposeProject(ctx context.Context, endpointID string, 
 	if len(seen) != len(scope.Services) {
 		return RuntimeState{}, ErrRuntimeResourceMissing
 	}
+	completion := map[string]bool{}
+	for _, name := range scope.CompletionServices {
+		completion[name] = true
+	}
+	mutable := 0
+	for _, item := range containers {
+		if completion[item.service] {
+			if item.state != "completed" {
+				return RuntimeState{}, fmt.Errorf("%w: Compose 一次性任务尚未成功完成", ErrRuntimeControlFailed)
+			}
+		} else {
+			mutable++
+		}
+	}
+	if mutable == 0 {
+		return RuntimeState{}, ErrRuntimeControlInvalid
+	}
 	stopTimeout := 20
 	for _, item := range containers {
+		if completion[item.service] {
+			continue
+		}
 		// 每次写操作前重新核对固定容器 ID 及 Compose 归属。
 		if _, err := inspectComposeProjectContainer(ctx, apiClient, scope, item.id, item.service); err != nil {
 			return RuntimeState{}, err
@@ -109,6 +138,9 @@ func (s *Service) ControlComposeProject(ctx context.Context, endpointID string, 
 	}
 	if action == "restart" {
 		for _, item := range containers {
+			if completion[item.service] {
+				continue
+			}
 			if err = waitContainerHealthyWithRestartBaseline(ctx, apiClient, item.id, item.restarts); err != nil {
 				return RuntimeState{}, err
 			}
@@ -127,7 +159,7 @@ func (s *Service) ControlComposeProject(ctx context.Context, endpointID string, 
 		return RuntimeState{}, ErrRuntimeControlFailed
 	}
 	for _, item := range after {
-		if !ids[item.id] || (action == "stop" && item.live) {
+		if !ids[item.id] || (action == "stop" && item.live) || (completion[item.service] && item.state != "completed") {
 			return RuntimeState{}, ErrRuntimeControlFailed
 		}
 	}
@@ -164,44 +196,73 @@ func inspectComposeProject(ctx context.Context, apiClient *client.Client, scope 
 	sort.Slice(containers, func(i, j int) bool {
 		return containers[i].service < containers[j].service || containers[i].service == containers[j].service && containers[i].id < containers[j].id
 	})
-	state := RuntimeState{Kind: "compose", Name: scope.ProjectName, Count: len(containers), Running: true, State: "running", Services: []ComposeServiceState{}}
+	state := RuntimeState{Kind: "compose", Name: scope.ProjectName, Count: len(containers), Services: []ComposeServiceState{}}
+	completion := map[string]bool{}
+	for _, name := range scope.CompletionServices {
+		completion[name] = true
+	}
+	allReady, allDaemonsExited, completionFailed := true, true, false
+	readyDaemons, daemonContainers, issue := 0, 0, ""
 	for _, name := range scope.Services {
-		service := ComposeServiceState{Name: name, State: "missing"}
+		service := ComposeServiceState{Name: name, State: "missing", RunToCompletion: completion[name]}
 		for _, item := range containers {
-			if item.service == name {
-				service.Count++
-				if item.running {
-					service.ReadyCount++
-				}
-				if service.State == "missing" || service.State == "running" {
-					service.State = item.state
-				}
+			if item.service != name {
+				continue
+			}
+			service.Count++
+			if item.ready {
+				service.ReadyCount++
+			}
+			if service.State == "missing" || composeStatePriority(item.state) > composeStatePriority(service.State) {
+				service.State = item.state
 			}
 		}
-		if service.Count == 0 || service.ReadyCount != service.Count {
-			state.Running = false
-			if state.State == "running" {
-				state.State = service.State
+		ready := service.Count > 0 && service.ReadyCount == service.Count
+		if ready {
+			if service.RunToCompletion {
+				service.State = "completed"
+			} else {
+				service.State = "running"
 			}
-		}
-		if service.ReadyCount > 0 && service.ReadyCount < service.Count {
+		} else if service.ReadyCount > 0 {
 			service.State = "partial"
+		}
+		if !ready {
+			allReady = false
+			if issue == "" || composeStatePriority(service.State) > composeStatePriority(issue) {
+				issue = service.State
+			}
+		}
+		if service.RunToCompletion {
+			if !ready {
+				completionFailed = true
+			}
+		} else {
+			daemonContainers += service.Count
+			if service.Count == 0 || service.State != "exited" {
+				allDaemonsExited = false
+			}
+			if service.ReadyCount > 0 {
+				readyDaemons++
+			}
 		}
 		state.Services = append(state.Services, service)
 	}
-	if !state.Running {
-		running := 0
-		for _, item := range containers {
-			if item.running {
-				running++
-			}
-		}
-		if running > 0 {
-			state.State = "partial"
-		} else if len(containers) == 0 {
-			state.State = "missing"
-		}
+	switch {
+	case allReady && readyDaemons > 0:
+		state.State, state.Running = "running", true
+	case allReady:
+		state.State = "completed"
+	case len(containers) == 0:
+		state.State = "missing"
+	case !completionFailed && allDaemonsExited && daemonContainers > 0:
+		state.State = "exited"
+	case readyDaemons > 0:
+		state.State = "partial"
+	default:
+		state.State = issue
 	}
+
 	return state, containers, nil
 }
 
@@ -218,5 +279,42 @@ func inspectComposeProjectContainer(ctx context.Context, apiClient *client.Clien
 	if c.State.Running && state == "running" && c.State.Health != nil && (string(c.State.Health.Status) == "unhealthy" || string(c.State.Health.Status) == "starting") {
 		state = string(c.State.Health.Status)
 	}
-	return composeProjectContainer{id: id, service: service, state: state, live: c.State.Running, running: c.State.Running && state == "running", restarts: c.RestartCount}, nil
+	ready := c.State.Running && state == "running"
+	for _, name := range scope.CompletionServices {
+		if name != service {
+			continue
+		}
+		ready = false
+		if state == "exited" && !c.State.Running {
+			if c.State.ExitCode == 0 && !c.State.OOMKilled && c.State.Error == "" {
+				state, ready = "completed", true
+			} else {
+				state = "failed"
+			}
+		} else if c.State.Running && (state == "running" || state == "starting") {
+			state = "completing"
+		}
+	}
+	return composeProjectContainer{id: id, service: service, state: state, live: c.State.Running, ready: ready, restarts: c.RestartCount}, nil
+}
+
+func composeStatePriority(state string) int {
+	switch state {
+	case "failed", "dead":
+		return 7
+	case "missing":
+		return 6
+	case "unhealthy":
+		return 5
+	case "partial":
+		return 4
+	case "starting", "completing", "restarting":
+		return 3
+	case "paused", "created":
+		return 2
+	case "exited":
+		return 1
+	default:
+		return 0
+	}
 }
