@@ -57,7 +57,7 @@
 .apps-actions :deep(.ant-btn) { display: inline-flex; height: 28px; align-items: center; justify-content: center; gap: 5px; padding-inline: 8px; border-radius: 6px; font-size: 12px; box-shadow: none; }
 .apps-actions :deep(.ant-btn:last-child) { border-color: color-mix(in srgb, var(--edo-primary) 25%, var(--edo-border)); color: var(--edo-primary); background: var(--edo-primary-soft); }
 .apps-actions :deep(.ant-btn:disabled) { border-color: var(--edo-border); color: var(--edo-muted); background: var(--edo-surface-soft); }
-.apps-resource-switch { display: flex; align-items: center; gap: 6px; }
+.apps-resource-switch { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
 .apps-resource-switch button { display: inline-flex; min-height: 30px; align-items: center; gap: 4px; padding: 4px 6px; border: 1px solid transparent; border-radius: 6px; color: var(--edo-muted); background: var(--edo-surface-soft); cursor: pointer; font-size: 12px; white-space: nowrap; transition: color 160ms ease, background 160ms ease; }
 .apps-resource-switch button:hover, .apps-resource-switch button.is-selected { color: var(--edo-primary); background: var(--edo-primary-soft); }
 .apps-resource-switch button.is-selected { border-color: color-mix(in srgb, var(--edo-primary) 30%, var(--edo-border)); }

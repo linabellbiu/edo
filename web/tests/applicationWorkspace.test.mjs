@@ -245,7 +245,7 @@ test('应用内流水线只保留名称跳转，摘要和整行没有重复编�
   assert.equal(elements.filter(node => hasClass(node, 'apps-workflow-table')).length, 1)
 })
 
-test('应用详情工具栏只保留流水线、部署实例和环境配置，配置与启停保留在列表菜单', () => {
+test('应用详情工具栏只保留流水线和部署实例，配置与启停保留在列表菜单', () => {
   const elements = []
   function walk(node, output = elements) {
     if (node.type === 1) output.push(node)
@@ -263,14 +263,58 @@ test('应用详情工具栏只保留流水线、部署实例和环境配置，�
   assert.deepEqual(buttons.map(click), [
     "toggleApplicationDetails(applicationDrawerCard,'workflows')",
     "toggleApplicationDetails(applicationDrawerCard,'deployments')",
-    "toggleApplicationDetails(applicationDrawerCard,'environment')",
   ])
-  assert.ok(buttons[2].props.some(prop => prop.type === 7 && prop.name === 'if' && prop.exp?.content === "auth.canAny(['delivery_variable.read'])"))
   for (const handler of ['edit(card.application)', 'confirmResourceStatus(card.application)']) {
     const item = elements.find(node => node.tag === 'a-menu-item' && click(node) === handler)
     assert.ok(item, `列表菜单保留 ${handler}`)
     assert.ok(item.props.some(prop => prop.type === 7 && prop.name === 'if' && prop.exp?.content === 'canUpdate'))
   }
+})
+
+test('环境变量入口位于关联资源并保留权限和展开状态，操作列不再提供重复详情入口', () => {
+  const elements = []
+  function walk(node, output = elements) {
+    if (node.type === 1) output.push(node)
+    for (const child of node.children || []) walk(child, output)
+  }
+  walk(parse(source).descriptor.template.ast)
+  const directive = (node, name, arg) => node.props.find(prop => prop.type === 7 && prop.name === name && (!arg || prop.arg?.content === arg))?.exp?.content
+  const hasClass = (node, name) => node.props.some(prop => prop.type === 6 && prop.name === 'class' && prop.value?.content.split(' ').includes(name))
+  const resources = elements.find(node => hasClass(node, 'apps-resource-switch'))
+  assert.equal(directive(resources, 'else-if'), "column.key==='resources'")
+  const environment = resources.children.find(node => node.type === 1 && directive(node, 'on', 'click') === "toggleApplicationDetails(card,'environment')")
+  assert.ok(environment, '环境变量入口必须随当前应用行放在关联资源列')
+  assert.equal(environment.tag, 'button')
+  assert.equal(directive(environment, 'if'), "auth.canAny(['delivery_variable.read'])")
+  assert.equal(directive(environment, 'bind', 'class'), "{'is-selected':applicationDetailsOpen(card.application.id)&&applicationDetailTab(card.application.id)==='environment'}")
+  assert.equal(directive(environment, 'bind', 'aria-expanded'), "applicationDetailsOpen(card.application.id)&&applicationDetailTab(card.application.id)==='environment'")
+  assert.equal(directive(environment, 'bind', 'aria-controls'), 'applicationDetailsOpen(card.application.id)?`application-details-${card.application.id}`:undefined')
+  assert.match(directive(environment, 'bind', 'aria-label'), /card\.application\.name/)
+  const rowActions = elements.find(node => node.tag === 'ResourceRowActions' && directive(node, 'else-if') === "column.key==='actions'")
+  const actions = []
+  walk(rowActions, actions)
+  assert.deepEqual(actions.filter(node => node.tag === 'a-button').map(node => directive(node, 'on', 'click')), ['checkApplicationUpdates(card.application)'])
+  const applicationName = elements.find(node => hasClass(node, 'resource-name') && directive(node, 'on', 'click') === "toggleApplicationDetails(card, 'workflows')")
+  assert.ok(applicationName, '保留通过应用名称打开详情')
+  const variablesView = elements.find(node => node.tag === 'DeliveryVariablesView')
+  assert.equal(directive(variablesView, 'else-if'), "applicationDetailTab(card.application.id)==='environment'")
+  assert.equal(directive(variablesView, 'bind', 'application-id'), 'card.application.id')
+})
+
+test('关联资源打开准确应用的环境配置，切换应用后不沿用前一应用作用域', () => {
+  const { state, requests } = harness()
+  const [first, second] = state.applicationCards.value
+  state.toggleApplicationDetails(first, 'environment')
+  assert.equal(state.applicationDrawerOpen.value, true)
+  assert.equal(state.applicationDrawerCard.value.application.id, 'api')
+  assert.equal(state.applicationDetailTab('api'), 'environment')
+  state.toggleApplicationDetails(second, 'environment')
+  assert.equal(state.applicationDrawerCard.value.application.id, 'web')
+  assert.equal(state.applicationDetailTab('web'), 'environment')
+  assert.equal(state.applicationDetailsOpen('api'), false)
+  assert.equal(requests.length, 0, '打开环境配置不读取部署运行资源')
+  state.applicationDrawerOpen.value = false
+  assert.equal(state.applicationDetailsOpen('web'), false)
 })
 
 test('仓库不可用时不把仓库入口变成重复的应用配置入口', () => {

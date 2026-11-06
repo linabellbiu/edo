@@ -159,7 +159,7 @@ export const messages = {
       invalidEvent: '收到无法识别的日志事件', disconnected: '日志连接已断开',
     },
     applicationWorkspace: {
-      description: '查看应用的代码更新、流水线运行和部署实例。', create: '新建应用', search: '搜索应用、仓库或流水线', filterLabel: '筛选应用', instances: '实例',
+      description: '查看应用的代码更新、流水线运行和部署实例。', create: '新建应用', search: '搜索应用、仓库或流水线', filterLabel: '筛选应用', instances: '实例', environmentVariables: '环境变量', environmentConfiguration: '环境配置（变量 / .env）',
       filters: { all: '全部应用', running: '进行中', attention: '需要关注', inactive: '已停用' },
       columns: { application: '应用', resources: '关联资源', actions: '操作', status: '启用状态', source: '触发规则', template: '绑定方案', tasks: '任务构成', runTime: '运行时间' },
       noResults: '没有符合条件的应用', noResultsHint: '试试其他关键词，或清除筛选条件。', clearFilters: '清除筛选',
@@ -399,7 +399,7 @@ export const messages = {
       invalidEvent: 'Received an invalid log event', disconnected: 'Log connection closed',
     },
     applicationWorkspace: {
-      description: 'Track code updates, pipeline runs, and deployed instances.', create: 'New application', search: 'Search apps, repositories, or pipelines', filterLabel: 'Filter applications', instances: 'Instances',
+      description: 'Track code updates, pipeline runs, and deployed instances.', create: 'New application', search: 'Search apps, repositories, or pipelines', filterLabel: 'Filter applications', instances: 'Instances', environmentVariables: 'Variables', environmentConfiguration: 'Environment configuration (variables / .env)',
       filters: { all: 'All applications', running: 'In progress', attention: 'Needs attention', inactive: 'Disabled' },
       columns: { application: 'Application', resources: 'Resources', actions: 'Actions', status: 'Enabled', source: 'Trigger rules', template: 'Linked template', tasks: 'Tasks', runTime: 'Run time' },
       noResults: 'No matching applications', noResultsHint: 'Try another keyword or clear your filters.', clearFilters: 'Clear filters',

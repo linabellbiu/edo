@@ -426,8 +426,8 @@ const applicationColumns=computed(()=>[
  {key:'run',title:t('applicationCard.latestRun'),width:380},
  {key:'status',title:t('applicationCard.currentNode'),width:150},
  {key:'sync',title:t('applicationCard.codeStatus'),width:125},
- {key:'resources',title:t('applicationWorkspace.columns.resources'),width:195},
- {key:'actions',title:t('applicationWorkspace.columns.actions'),width:225,fixed:'right' as const,align:'right' as const},
+ {key:'resources',title:t('applicationWorkspace.columns.resources'),width:285},
+ {key:'actions',title:t('applicationWorkspace.columns.actions'),width:165,fixed:'right' as const,align:'right' as const},
 ])
 const applicationWorkflowColumns=computed(()=>[
  {key:'name',title:t('applicationCard.workflow'),width:270},
@@ -2024,7 +2024,7 @@ onBeforeUnmount(()=>{planExecutionDisposed=true;resetArtifactRequests();formOpen
   </div>
   <a-table v-if="visibleApplicationCards.length" class="apps-table resource-list-table" size="small" table-layout="fixed"
     :columns="applicationColumns" :data-source="visibleApplicationCards" :row-key="(card:ApplicationCard)=>card.application.id"
-    :pagination="applicationPagination" :scroll="{x:1485}" @change="changeApplicationPage"
+    :pagination="applicationPagination" :scroll="{x:1515}" @change="changeApplicationPage"
     :row-class-name="applicationTableRowClass" :custom-row="applicationTableRow">
     <template #bodyCell="{column,record:card}">
       <div v-if="column.key==='application'" class="apps-identity">
@@ -2054,9 +2054,9 @@ onBeforeUnmount(()=>{planExecutionDisposed=true;resetArtifactRequests();formOpen
       <div v-else-if="column.key==='resources'" class="apps-resource-switch">
         <button type="button" :class="{'is-selected':applicationDetailsOpen(card.application.id)&&applicationDetailTab(card.application.id)==='workflows'}" :aria-label="t('applicationCard.linkedWorkflows')+'：'+card.application.name" :aria-expanded="applicationDetailsOpen(card.application.id)&&applicationDetailTab(card.application.id)==='workflows'" :aria-controls="applicationDetailsOpen(card.application.id)?`application-details-${card.application.id}`:undefined" @click="toggleApplicationDetails(card,'workflows')"><Workflow :size="14"/>{{ t('applicationCard.pipeline') }}<span class="apps-count">{{ card.workflowSummaries.length }}</span></button>
         <button type="button" :class="{'is-selected':applicationDetailsOpen(card.application.id)&&applicationDetailTab(card.application.id)==='deployments'}" :aria-label="t('applicationCard.deploymentInstances')+'：'+card.application.name" :aria-expanded="applicationDetailsOpen(card.application.id)&&applicationDetailTab(card.application.id)==='deployments'" :aria-controls="applicationDetailsOpen(card.application.id)?`application-details-${card.application.id}`:undefined" @click="toggleApplicationDetails(card,'deployments')"><Boxes :size="14"/>{{ t('applicationWorkspace.instances') }}<span v-if="canReadDeployments" class="apps-count">{{ card.deploymentInstances.length }}</span></button>
+        <button v-if="auth.canAny(['delivery_variable.read'])" type="button" :class="{'is-selected':applicationDetailsOpen(card.application.id)&&applicationDetailTab(card.application.id)==='environment'}" :aria-label="t('applicationWorkspace.environmentConfiguration')+'：'+card.application.name" :aria-expanded="applicationDetailsOpen(card.application.id)&&applicationDetailTab(card.application.id)==='environment'" :aria-controls="applicationDetailsOpen(card.application.id)?`application-details-${card.application.id}`:undefined" @click="toggleApplicationDetails(card,'environment')"><Settings2 :size="14" aria-hidden="true"/>{{ t('applicationWorkspace.environmentVariables') }}</button>
       </div>
       <ResourceRowActions v-else-if="column.key==='actions'" :more="canUpdate">
-        <a-button size="small" @click="toggleApplicationDetails(card,'workflows')">{{ t('resourceList.details') }}</a-button>
         <a-button v-if="canExecute" size="small" :loading="checkingApplicationIDs[card.application.id]" :disabled="card.sync.live" @click="checkApplicationUpdates(card.application)">{{ t('applicationCard.checkUpdates') }}</a-button>
         <template #more><a-menu-item v-if="canUpdate" @click="edit(card.application)">{{ t('applicationCard.configure') }}</a-menu-item><a-menu-item v-if="canUpdate" :disabled="Boolean(resourceMutationID)" @click="confirmResourceStatus(card.application)"><Power :size="14"/>{{ t(card.application.is_active?'delivery.disable':'delivery.enable') }}</a-menu-item></template>
       </ResourceRowActions>
@@ -2067,7 +2067,6 @@ onBeforeUnmount(()=>{planExecutionDisposed=true;resetArtifactRequests();formOpen
       <template v-if="applicationDrawerCard">
         <a-button size="small" :type="applicationDetailTab(applicationDrawerID)==='workflows'?'primary':'default'" @click="toggleApplicationDetails(applicationDrawerCard,'workflows')">{{ t('resourceList.workflows') }} ({{ applicationDrawerCard.workflowSummaries.length }})</a-button>
         <a-button size="small" :type="applicationDetailTab(applicationDrawerID)==='deployments'?'primary':'default'" @click="toggleApplicationDetails(applicationDrawerCard,'deployments')">{{ t('resourceList.instances') }} ({{ applicationDrawerCard.deploymentInstances.length }})</a-button>
-        <a-button v-if="auth.canAny(['delivery_variable.read'])" size="small" :type="applicationDetailTab(applicationDrawerID)==='environment'?'primary':'default'" @click="toggleApplicationDetails(applicationDrawerCard,'environment')">环境配置（变量 / .env）</a-button>
       </template>
     </template>
     <section v-if="applicationDrawerCard" class="resource-detail-section">
