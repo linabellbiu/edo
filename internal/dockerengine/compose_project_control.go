@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/moby/moby/client"
 )
@@ -21,11 +22,45 @@ type ComposeProjectScope struct {
 }
 
 type ComposeServiceState struct {
-	Name            string `json:"name"`
-	State           string `json:"state"`
-	Count           int    `json:"count"`
-	ReadyCount      int    `json:"ready_count"`
-	RunToCompletion bool   `json:"run_to_completion,omitempty"`
+	Name            string                  `json:"name"`
+	State           string                  `json:"state"`
+	Count           int                     `json:"count"`
+	ReadyCount      int                     `json:"ready_count"`
+	RunToCompletion bool                    `json:"run_to_completion,omitempty"`
+	Containers      []ComposeContainerState `json:"containers"`
+}
+
+// ComposeContainerState 只包含容器基本信息，不返回环境变量、命令、挂载或完整标签。
+type ComposeContainerState struct {
+	ID                        string                    `json:"id"`
+	Name                      string                    `json:"name"`
+	Image                     string                    `json:"image"`
+	ImageDisplay              string                    `json:"image_display"`
+	ImageID                   string                    `json:"image_id"`
+	State                     string                    `json:"state"`
+	Running                   bool                      `json:"running"`
+	Health                    string                    `json:"health,omitempty"`
+	CreatedAt                 *time.Time                `json:"created_at,omitempty"`
+	StartedAt                 *time.Time                `json:"started_at,omitempty"`
+	FinishedAt                *time.Time                `json:"finished_at,omitempty"`
+	RestartCount              int                       `json:"restart_count"`
+	ExitCode                  int                       `json:"exit_code"`
+	OOMKilled                 bool                      `json:"oom_killed"`
+	RestartPolicy             string                    `json:"restart_policy,omitempty"`
+	TerminalUnavailableReason string                    `json:"terminal_unavailable_reason,omitempty"`
+	Ports                     []ComposeContainerPort    `json:"ports"`
+	Networks                  []ComposeContainerNetwork `json:"networks"`
+}
+
+type ComposeContainerPort struct {
+	ContainerPort string `json:"container_port"`
+	HostIP        string `json:"host_ip,omitempty"`
+	HostPort      string `json:"host_port,omitempty"`
+}
+
+type ComposeContainerNetwork struct {
+	Name      string `json:"name"`
+	IPAddress string `json:"ip_address,omitempty"`
 }
 
 var runtimeComposeProjectPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,127}$`)
@@ -34,6 +69,7 @@ type composeProjectContainer struct {
 	id, service, state string
 	ready, live        bool
 	restarts           int
+	detail             ComposeContainerState
 }
 
 func (s *Service) composeProjectClient(ctx context.Context, endpointID string, scope ComposeProjectScope) (*client.Client, error) {
@@ -71,6 +107,7 @@ func (s *Service) ComposeProjectRuntimeState(ctx context.Context, endpointID str
 	}
 	defer apiClient.Close()
 	state, _, err := inspectComposeProject(ctx, apiClient, scope)
+	state.RuntimeID = endpointID
 	return state, err
 }
 
@@ -166,6 +203,7 @@ func (s *Service) ControlComposeProject(ctx context.Context, endpointID string, 
 	if action == "restart" && !state.Running {
 		return RuntimeState{}, ErrRuntimeControlFailed
 	}
+	state.RuntimeID = endpointID
 	return state, nil
 }
 
@@ -204,12 +242,13 @@ func inspectComposeProject(ctx context.Context, apiClient *client.Client, scope 
 	allReady, allDaemonsExited, completionFailed := true, true, false
 	readyDaemons, daemonContainers, issue := 0, 0, ""
 	for _, name := range scope.Services {
-		service := ComposeServiceState{Name: name, State: "missing", RunToCompletion: completion[name]}
+		service := ComposeServiceState{Name: name, State: "missing", RunToCompletion: completion[name], Containers: []ComposeContainerState{}}
 		for _, item := range containers {
 			if item.service != name {
 				continue
 			}
 			service.Count++
+			service.Containers = append(service.Containers, item.detail)
 			if item.ready {
 				service.ReadyCount++
 			}
@@ -295,7 +334,66 @@ func inspectComposeProjectContainer(ctx context.Context, apiClient *client.Clien
 			state = "completing"
 		}
 	}
-	return composeProjectContainer{id: id, service: service, state: state, live: c.State.Running, ready: ready, restarts: c.RestartCount}, nil
+	detail := ComposeContainerState{
+		ID: id, Name: strings.TrimPrefix(c.Name, "/"), Image: c.Config.Image,
+		ImageDisplay: compactContainerImageReference(c.Config.Image), ImageID: c.Image,
+		State: state, Running: c.State.Running, CreatedAt: composeContainerTime(c.Created),
+		StartedAt: composeContainerTime(c.State.StartedAt), FinishedAt: composeContainerTime(c.State.FinishedAt),
+		RestartCount: c.RestartCount, ExitCode: c.State.ExitCode, OOMKilled: c.State.OOMKilled,
+		Ports: []ComposeContainerPort{}, Networks: []ComposeContainerNetwork{},
+	}
+	if c.State.Health != nil {
+		detail.Health = string(c.State.Health.Status)
+	}
+	if c.HostConfig != nil {
+		detail.RestartPolicy = string(c.HostConfig.RestartPolicy.Name)
+	}
+	if c.HostConfig == nil || c.HostConfig.Init == nil || !*c.HostConfig.Init || !c.HostConfig.PidMode.IsPrivate() {
+		detail.TerminalUnavailableReason = "容器终端需要启用 init 并使用独立 PID 命名空间"
+	}
+	if c.NetworkSettings != nil {
+		for port, bindings := range c.NetworkSettings.Ports {
+			if len(bindings) == 0 {
+				detail.Ports = append(detail.Ports, ComposeContainerPort{ContainerPort: port.String()})
+			}
+			for _, binding := range bindings {
+				hostIP := ""
+				if binding.HostIP.IsValid() {
+					hostIP = binding.HostIP.String()
+				}
+				detail.Ports = append(detail.Ports, ComposeContainerPort{ContainerPort: port.String(), HostIP: hostIP, HostPort: binding.HostPort})
+			}
+		}
+		sort.Slice(detail.Ports, func(i, j int) bool {
+			a, b := detail.Ports[i], detail.Ports[j]
+			if a.ContainerPort != b.ContainerPort {
+				return a.ContainerPort < b.ContainerPort
+			}
+			if a.HostIP != b.HostIP {
+				return a.HostIP < b.HostIP
+			}
+			return a.HostPort < b.HostPort
+		})
+		for name, network := range c.NetworkSettings.Networks {
+			if network != nil {
+				address := ""
+				if network.IPAddress.IsValid() {
+					address = network.IPAddress.String()
+				}
+				detail.Networks = append(detail.Networks, ComposeContainerNetwork{Name: name, IPAddress: address})
+			}
+		}
+		sort.Slice(detail.Networks, func(i, j int) bool { return detail.Networks[i].Name < detail.Networks[j].Name })
+	}
+	return composeProjectContainer{id: id, service: service, state: state, live: c.State.Running, ready: ready, restarts: c.RestartCount, detail: detail}, nil
+}
+
+func composeContainerTime(value string) *time.Time {
+	parsed, err := time.Parse(time.RFC3339Nano, value)
+	if err != nil || parsed.IsZero() {
+		return nil
+	}
+	return &parsed
 }
 
 func composeStatePriority(state string) int {

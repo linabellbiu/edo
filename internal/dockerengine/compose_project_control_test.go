@@ -54,7 +54,14 @@ func TestComposeProjectScopeAndControls(t *testing.T) {
 				if wrongDirectory {
 					l["com.docker.compose.project.working_dir"] = "/srv/other"
 				}
-				_ = json.NewEncoder(w).Encode(map[string]any{"Id": name, "Config": map[string]any{"Labels": l, "Env": []string{"TOKEN=never-return-this-secret"}}, "State": map[string]any{"Status": state, "Running": state == "running", "Health": map[string]any{"Status": health}}, "RestartCount": 0})
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"Id": name, "Name": "/example-" + name + "-1", "Created": "2026-11-06T06:00:00Z", "Image": "sha256:image-id",
+					"Config":     map[string]any{"Image": "registry.example/" + name + ":v2", "Labels": l, "Env": []string{"TOKEN=never-return-this-secret"}, "Cmd": []string{"private-command"}},
+					"HostConfig": map[string]any{"Init": true, "RestartPolicy": map[string]any{"Name": "unless-stopped"}},
+					"Mounts":     []any{map[string]any{"Source": "/private-mount", "Destination": "/data"}},
+					"State":      map[string]any{"Status": state, "Running": state == "running", "StartedAt": "2026-11-06T06:00:01Z", "FinishedAt": "0001-01-01T00:00:00Z", "Health": map[string]any{"Status": health}}, "RestartCount": 3,
+					"NetworkSettings": map[string]any{"Ports": map[string]any{"80/tcp": []any{map[string]any{"HostIp": "0.0.0.0", "HostPort": "8080"}}, "443/tcp": nil}, "Networks": map[string]any{"example_default": map[string]any{"IPAddress": "172.20.0.2"}}},
+				})
 				return
 			}
 			if r.Method == "POST" && strings.Contains(r.URL.Path, "/containers/"+name+"/") {
@@ -79,9 +86,21 @@ func TestComposeProjectScopeAndControls(t *testing.T) {
 	if err != nil || !state.Running || state.Count != 2 || len(state.Services) != 2 {
 		t.Fatal("Compose 实时状态不正确", state, err)
 	}
+	if state.RuntimeID != endpoint.ID || len(state.Services[0].Containers) != 1 {
+		t.Fatal("未返回经过校验的运行时和容器身份", state)
+	}
+	detail := state.Services[0].Containers[0]
+	if detail.ID != "api" || detail.Name != "example-api-1" || detail.Image != "registry.example/api:v2" || detail.ImageID != "sha256:image-id" || detail.RestartCount != 3 || detail.CreatedAt == nil || detail.StartedAt == nil || detail.FinishedAt != nil || detail.TerminalUnavailableReason != "" {
+		t.Fatal("容器基本信息不完整或未清除零时间", detail)
+	}
+	if len(detail.Ports) != 2 || detail.Ports[0].ContainerPort != "443/tcp" || detail.Ports[1].HostIP != "0.0.0.0" || detail.Ports[1].HostPort != "8080" || len(detail.Networks) != 1 || detail.Networks[0].IPAddress != "172.20.0.2" {
+		t.Fatal("容器端口或网络读取不正确", detail)
+	}
 	raw, _ := json.Marshal(state)
-	if strings.Contains(string(raw), "secret") {
-		t.Fatal("运行状态泄漏容器环境")
+	for _, marker := range []string{"secret", "private-command", "private-mount"} {
+		if strings.Contains(string(raw), marker) {
+			t.Fatal("运行状态泄漏容器敏感配置", marker)
+		}
 	}
 	if _, err = service.ControlComposeProject(ctx, endpoint.ID, scope, "stop"); err != nil {
 		t.Fatal(err)
@@ -122,6 +141,14 @@ func TestComposeProjectScopeAndControls(t *testing.T) {
 	wrongHost.HostID = "other-host"
 	if _, err = service.ComposeProjectRuntimeState(ctx, endpoint.ID, wrongHost); err == nil {
 		t.Fatal("接受了其他主机")
+	}
+}
+
+func TestComposeContainerTimeKeepsMissingValuesEmpty(t *testing.T) {
+	for _, value := range []string{"", "invalid", "0001-01-01T00:00:00Z"} {
+		if composeContainerTime(value) != nil {
+			t.Fatal("缺失或无效时间被当作真实时间", value)
+		}
 	}
 }
 

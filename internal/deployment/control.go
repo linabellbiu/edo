@@ -36,6 +36,7 @@ type RuntimeControlInput struct {
 }
 
 type RuntimeState struct {
+	RuntimeID         string                             `json:"runtime_id,omitempty"`
 	DeploymentID      string                             `json:"deployment_id"`
 	Kind              string                             `json:"kind"`
 	ResourceID        string                             `json:"resource_id,omitempty"`
@@ -527,7 +528,7 @@ func (s *Service) currentDeployment(ctx context.Context, deploymentID string) (*
 
 func dockerRuntimeState(deploymentID string, input dockerengine.RuntimeState) *RuntimeState {
 	return &RuntimeState{
-		DeploymentID: deploymentID, Kind: input.Kind, ResourceID: input.ResourceID,
+		DeploymentID: deploymentID, Kind: input.Kind, ResourceID: input.ResourceID, RuntimeID: input.RuntimeID,
 		Name: input.Name, State: input.State, Running: input.Running, Count: input.Count, Services: input.Services,
 	}
 }

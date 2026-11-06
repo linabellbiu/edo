@@ -36,7 +36,7 @@ func TestComposeProjectRuntimeIntegration(t *testing.T) {
 		return strings.TrimSpace(string(data))
 	}
 	t.Cleanup(func() { compose("down", "--remove-orphans") })
-	compose("up", "-d", "--no-build", "--pull", "never", "--wait")
+	compose("up", "-d", "--no-build", "--pull", "never", "--scale", "api=2", "--wait")
 	worker := compose("ps", "-q", "worker")
 	setup := compose("ps", "-a", "-q", "setup")
 	inspect := func(id string) string {
@@ -63,8 +63,13 @@ func TestComposeProjectRuntimeIntegration(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 90*time.Second)
 	defer cancel()
 	state, err := service.ComposeProjectRuntimeState(ctx, endpoint.ID, scope)
-	if err != nil || !state.Running || state.Count != 2 || state.Services[1].State != "completed" {
+	if err != nil || !state.Running || state.Count != 3 || state.Services[1].State != "completed" || len(state.Services[0].Containers) != 2 {
 		t.Fatal("实际 Compose 状态读取失败", state, err)
+	}
+	for _, container := range state.Services[0].Containers {
+		if len(container.ID) != 64 || container.Name == "" || container.CreatedAt == nil || container.StartedAt == nil || container.RestartCount != 0 || container.Image != "alpine:3.22" || container.TerminalUnavailableReason == "" {
+			t.Fatal("多副本真实容器信息验收失败", container)
+		}
 	}
 	state, err = service.ControlComposeProject(ctx, endpoint.ID, scope, "stop")
 	if err != nil || state.Running || state.State != "exited" {

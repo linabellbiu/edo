@@ -5,6 +5,7 @@ import { parse, compileScript } from '@vue/compiler-sfc'
 import ts from 'typescript'
 import * as vue from 'vue'
 import * as instances from '../src/utils/deploymentInstances.ts'
+import * as compose from '../src/utils/composeRuntime.ts'
 
 const source = readFileSync(new URL('../src/views/DevOpsView.vue', import.meta.url), 'utf8')
 const { outputText } = ts.transpileModule(compileScript(parse(source).descriptor, { id: 'application-workspace-test' }).content, {
@@ -13,10 +14,11 @@ const { outputText } = ts.transpileModule(compileScript(parse(source).descriptor
 const workflow = (id, name) => ({ id, name, is_active: true, source: { config: { branch: 'main', events: ['push'] } }, stages: [] })
 const application = (id, changes = {}) => ({ id, name: id, description: '', repository_id: 'repo', is_active: true, sync_status: 'synced', workflows: [workflow(`${id}-flow`, `${id} 流水线`)], ...changes })
 
-function harness({ allowed = true, executeAllowed = true } = {}) {
+function harness({ allowed = true, executeAllowed = true, logsAllowed = true, terminalAllowed = true } = {}) {
   const requests = [], submissions = [], pending = [], runtimePending = [], errors = [], navigation = [], scrolls = [], confirmations = []
   const route = vue.reactive({ query: {} })
   let state
+  const auth = vue.reactive({ authorizationState: 'ready', canAny: permissions => allowed && (!permissions.includes('pipeline_run.execute') || executeAllowed) && (!permissions.includes('cluster.read') || logsAllowed) && (!permissions.includes('terminal.open') || terminalAllowed) })
   const client = {
     post: (path, payload) => new Promise((resolve, reject) => { requests.push(path); submissions.push({ path, payload }); pending.push({ resolve, reject }) }),
     get: async path => {
@@ -32,10 +34,11 @@ function harness({ allowed = true, executeAllowed = true } = {}) {
     'vue-i18n': { useI18n: () => ({ t: key => key, locale: vue.ref('zh-CN') }) },
     'ant-design-vue': { Modal: { confirm: value => confirmations.push(value) }, message: { error: value => errors.push(value), warning: value => errors.push(value), success() {} } },
     axios: { isAxiosError: () => false },
-    '@/stores/auth': { useAuthStore: () => ({ canAny: permissions => allowed && (!permissions.includes('pipeline_run.execute') || executeAllowed) }) },
+    '@/stores/auth': { useAuthStore: () => auth },
     '@/api/client': { __esModule: true, default: client },
     '@/api/resources': { apiErrorMessage: () => '检查更新失败' },
     '@/utils/deploymentInstances': instances,
+    '@/utils/composeRuntime': compose,
   }
   const module = { exports: {} }
   new Function('require', 'module', 'exports', 'document', outputText)(name => modules[name] || {}, module, module.exports, {
@@ -45,7 +48,7 @@ function harness({ allowed = true, executeAllowed = true } = {}) {
   state = module.exports.default.setup({ section: 'applications' }, { expose() {} })
   state.applications.value = [application('api'), application('web', { is_active: false })]
   state.repositories.value = [{ id: 'repo', name: 'Platform' }]
-  return { state, requests, submissions, pending, runtimePending, errors, navigation, route, scrolls, confirmations }
+  return { state, requests, submissions, pending, runtimePending, errors, navigation, route, scrolls, confirmations, auth }
 }
 
 function allowManual(application, id = 'second-flow') {
@@ -67,7 +70,7 @@ test('SSH Compose 多镜像正确识别，不显示 Shell 配置；状态完整�
   state.deploymentRuntimeStates.value.compose.state='partial'
   assert.equal(state.currentDeploymentStatus(record).label,'部分服务异常')
   assert.equal(state.lifecycleScriptAvailable(record,'stop'),false)
-  for(const value of ['unhealthy','missing','paused','starting','unknown'])assert.notEqual(state.composeRuntimeStatus(value).label,'已停止')
+  for(const value of ['unhealthy','missing','paused','starting','unknown'])assert.notEqual(compose.composeRuntimeStatus(value).label,'已停止')
 })
 
 test('Compose 已完成任务显示完成，运行确认只包含常驻服务，失败或执行中任务阻止操作',()=>{
@@ -81,7 +84,7 @@ test('Compose 已完成任务显示完成，运行确认只包含常驻服务，
   const api={name:'api',state:'running',count:1,ready_count:1}
   const runtime={kind:'compose',name:'example',state:'running',running:true,services:[api,setup]}
   state.deploymentRuntimeStates.value.compose=runtime
-  assert.deepEqual(state.composeRuntimeStatus('completed',true),{tone:'success',label:'已完成',live:false})
+  assert.deepEqual(compose.composeRuntimeStatus('completed',true),{tone:'success',label:'已完成',live:false})
   assert.equal(state.currentDeploymentStatus(record).label,'运行中')
   for(const action of ['stop','restart']){
     assert.equal(state.lifecycleScriptAvailable(record,action),true)
@@ -103,6 +106,63 @@ test('Compose 已完成任务显示完成，运行确认只包含常驻服务，
   state.deploymentRuntimeStates.value.compose=runtime
   assert.equal(state.currentDeploymentStatus(record).label,'已完成')
   assert.equal(state.lifecycleScriptAvailable(record,'restart'),false,'不提供重跑已完成任务的入口')
+})
+
+function composeContainerHarness(options) {
+  const result=harness(options),{state}=result
+  const target={id:'target',platform:'ssh',host_id:'host',environment_id:'env',working_directory:'/srv/example'}
+  const record={...target,id:'compose',target_id:'target',application_id:'api',pipeline_run_id:'run',deployment_plan_id:'plan',deployment_plan_kind:'compose_stack',status:'succeeded',created_at:'2026-11-06T06:00:00Z'}
+  state.deploymentPlans.value=[{id:'plan',kind:'compose_stack',deployment_target:target}]
+  state.applications.value[0].workflows[0].stages=[{tasks:[{type:'deploy',config:{deployment_plan_id:'plan'}}]}]
+  state.deployments.value=[record]
+  state.toggleApplicationDetails(state.applicationCards.value[0],'deployments')
+  state.expandedDeployments.value.compose=true
+  const containers=['a','b'].map((id,index)=>({id:id.repeat(64),name:`example-api-${index+1}`,state:'running',running:true}))
+  const runtime={runtime_id:'frozen-endpoint',kind:'compose',name:'example',state:'running',running:true,services:[{name:'api',state:'running',count:2,ready_count:2,containers}]}
+  state.deploymentRuntimeStates.value.compose=runtime
+  return {...result,record,runtime,containers}
+}
+
+test('Compose 容器日志和终端复核冻结范围，精确连接所选副本且不读取全主机容器',async()=>{
+  for(const action of ['logs','terminal']){
+    const {state,record,runtime,containers,runtimePending,requests,submissions}=composeContainerHarness()
+    const opening=state.openComposeContainerStream(record,containers[1].id,action)
+    assert.deepEqual(requests,['/deployments/compose/runtime'])
+    assert.equal(state.terminal.value.open,false)
+    runtimePending[0].resolve({data:{runtime}})
+    await opening
+    const view=action==='logs'?state.containerLogs.value:state.terminal.value
+    assert.equal(view.open,true)
+    assert.match(view.path,new RegExp(`/frozen-endpoint/containers/${containers[1].id}/`))
+    assert.equal(submissions.length,0)
+    state.deploymentRuntimeStates.value.compose.services[0].containers=containers.slice(0,1)
+    state.syncComposeContainerContext()
+    assert.equal(state.terminal.value.open,false,'容器失效后关闭原终端')
+    assert.equal(state.containerLogs.value.open,false,'容器失效后关闭原日志')
+  }
+})
+
+test('Compose 容器替换、停止、撤权、切换项目或关闭详情后不自动改连其他副本',async()=>{
+  for(const variant of ['replaced','stopped','unavailable','endpoint','permission','project','closed']){
+    const {state,auth,record,runtime,containers,runtimePending}=composeContainerHarness()
+    const opening=state.openComposeContainerStream(record,containers[1].id,'terminal')
+    if(variant==='replaced')runtime.services[0].containers=containers.slice(0,1)
+    if(variant==='stopped'){containers[1].state='exited';containers[1].running=false}
+    if(variant==='unavailable')containers[1].terminal_unavailable_reason='终端条件不满足'
+    if(variant==='endpoint')runtime.runtime_id='other-endpoint'
+    if(variant==='permission')auth.authorizationState='checking'
+    if(variant==='project')state.planExecutionSelectedProject.value='other-project'
+    if(variant==='closed')state.applicationDrawerOpen.value=false
+    runtimePending[0].resolve({data:{runtime}})
+    await opening
+    assert.equal(state.terminal.value.open,false,variant)
+    assert.equal(state.composeContainerOpening.value,'',variant)
+  }
+  for(const options of [{logsAllowed:false},{terminalAllowed:false}]){
+    const {state,record,containers,requests}=composeContainerHarness(options)
+    await state.openComposeContainerStream(record,containers[0].id,'terminal')
+    assert.equal(requests.length,0,'缺少日志或终端权限不能读取目标并发起连接')
+  }
 })
 
 test('手动执行绑定准确流水线，选完版本前不创建运行，确认后复用完整执行链', async () => {

@@ -19,6 +19,7 @@ import BuildPlanWorkspace from '@/components/BuildPlanWorkspace.vue'
 import ResourceDetailDrawer from '@/components/ResourceDetailDrawer.vue'
 import ResourceRowActions from '@/components/ResourceRowActions.vue'
 import ContainerLogDrawer from '@/components/ContainerLogDrawer.vue'
+import ComposeRuntimeServices from '@/components/ComposeRuntimeServices.vue'
 import GitCredentialDrawer from '@/components/GitCredentialDrawer.vue'
 import PageToolbar from '@/components/PageToolbar.vue'
 import PipelineLogDrawer from '@/components/PipelineLogDrawer.vue'
@@ -39,6 +40,7 @@ import type { RollbackRecord } from '@/types/deploymentRollback'
 import type { PipelineRunApproval } from '@/types/pipelineApproval'
 import { deploymentRollbackEn, deploymentRollbackZh } from '@/locales/deploymentRollback'
 import { formatDateTime, formatRelativeTime } from '@/utils/time'
+import { composeRuntimeStatus, composeContainerCanTerminal, type ComposeServiceState } from '@/utils/composeRuntime'
 import { parsePipelineRunFilters, pipelineRunDateBounds, pipelineRunDateRange, pipelineRunRequestParams, pipelineRunRouteQuery, type PipelineRunFilters } from '@/utils/pipelineRunFilters'
 import { asyncConfirm } from '@/utils/asyncConfirm'
 
@@ -65,8 +67,7 @@ interface DeploymentTarget extends ResourceRecord{id:string;platform:string;envi
 interface DeploymentPlan extends ResourceRecord{id:string;kind?:string;service_name?:string;deployment_target_id:string;deployment_target?:DeploymentTarget}
 interface DeploymentRecord extends ResourceRecord{id:string;pipeline_run_id?:string;application_id?:string;target_id:string;target_name:string;platform:string;environment_id:string;host_id:string;runtime_id:string;namespace:string;workload_name:string;container_name:string;deployment_plan_id?:string;deployment_plan_kind?:string;compose_service?:string;operation:string;image:string;image_display?:string;status:string;error_message?:string;runtime_deleted_at?:string;created_at:string;updated_at:string;finished_at?:string}
 interface DockerContainerRecord extends ResourceRecord{id:string;names:string[];state:string;status:string}
-interface ComposeServiceState{run_to_completion?:boolean;name:string;state:string;count:number;ready_count:number}
-interface DeploymentRuntimeState{services?:ComposeServiceState[];deployment_id:string;kind:string;resource_id?:string;name:string;namespace?:string;state:string;running:boolean;count?:number;replicas?:number;ready_replicas?:number;available_replicas?:number;restart_configured?:boolean;stop_configured?:boolean;output?:string}
+interface DeploymentRuntimeState{runtime_id?:string;services?:ComposeServiceState[];deployment_id:string;kind:string;resource_id?:string;name:string;namespace?:string;state:string;running:boolean;count?:number;replicas?:number;ready_replicas?:number;available_replicas?:number;restart_configured?:boolean;stop_configured?:boolean;output?:string}
 interface ShellControlConfiguration{deployment_id:string;restart_script:string;stop_script:string;timeout_seconds:number}
 type StatusTone='neutral'|'info'|'success'|'warning'|'danger'
 interface StatusMeta{tone:StatusTone;label:string;live:boolean}
@@ -100,6 +101,9 @@ const shellControlDialog=reactive({open:false,record:null as DeploymentRecord|nu
 const lifecycleOutput=reactive({open:false,title:'',output:''})
 const dockerRuntimeRequests=new Map<string,Promise<void>>()
 const containerLogs=ref({open:false,title:'',path:''}),terminal=ref({open:false,title:'',path:''})
+const composeContainerOpening=ref('')
+const composeStream=ref<{deploymentID:string;containerID:string;scope:string}|null>(null)
+let composeContainerController:AbortController|undefined,composeActionDeploymentID='',composeActionScope=''
 const releasePlanResources=reactive({open:false,loading:false,planID:'',applicationID:'',pipelineRunID:'',title:'',error:'',records:[] as DeploymentRecord[]})
 const runDeploymentRecords=ref<Record<string,DeploymentRecord[]>>({}),runDeploymentLoading=ref<Record<string,boolean>>({}),runDeploymentErrors=ref<Record<string,string>>({})
 const runDeploymentRequests=new Map<string,AbortController>()
@@ -510,13 +514,6 @@ function deploymentStatus(record:DeploymentRecord):StatusMeta{
  }
  return states[record.status]||{tone:'neutral',label:record.status,live:false}
 }
-function composeRuntimeStatus(state:string,running=false):StatusMeta{
- if(state==='completed')return {tone:'success',label:'已完成',live:false}
- if(running)return {tone:'success',label:'运行中',live:true}
- const states:Record<string,StatusMeta>={failed:{tone:'danger',label:'任务失败',live:false},completing:{tone:'warning',label:'执行中',live:true},partial:{tone:'warning',label:'部分服务异常',live:false},unhealthy:{tone:'danger',label:'健康检查失败',live:false},starting:{tone:'warning',label:'启动中',live:true},restarting:{tone:'warning',label:'重启中',live:true},missing:{tone:'warning',label:'服务不存在',live:false},paused:{tone:'neutral',label:'已暂停',live:false},exited:{tone:'neutral',label:'已停止',live:false},created:{tone:'neutral',label:'尚未启动',live:false},dead:{tone:'danger',label:'异常退出',live:false}}
- return states[state]||{tone:'neutral',label:'状态未知',live:false}
-}
-function composeRuntimeColor(state:string,running=false){return ({success:'green',warning:'gold',danger:'red',info:'blue'} as Record<string,string>)[composeRuntimeStatus(state,running).tone]}
 function currentDeploymentStatus(record:DeploymentRecord):StatusMeta{
  const runtime=deploymentRuntimeStates.value[record.id]
  if(deploymentRuntimeLoading.value[record.id]&&!deploymentRuntimeStates.value[record.id]&&!deploymentRuntimeErrors.value[record.id])return {tone:'info',label:'检查中',live:true}
@@ -759,6 +756,7 @@ async function openDeploymentLogs(record:DeploymentRecord){
  const container=dockerContainerForDeployment(record)
  if(!container){message.warning('未在当前 Docker 运行时中找到对应容器');return}
  const name=deploymentContainerName(record)||container.names?.[0]||container.id
+ composeStream.value=null
  containerLogs.value={
   open:true,
   title:t('containerLogs.title',{name}),
@@ -771,10 +769,51 @@ async function openDeploymentTerminal(record:DeploymentRecord){
  const container=dockerContainerForDeployment(record)
  if(!container){message.warning('未在当前 Docker 运行时中找到对应容器');return}
  if(container.state!=='running'){message.warning('容器当前未运行，不能打开终端');return}
+ composeStream.value=null
  terminal.value={
   open:true,
   title:`容器终端：${deploymentContainerName(record)||container.names?.[0]||container.id}`,
   path:`/api/v1/terminals/docker/${encodeURIComponent(record.runtime_id)}/containers/${encodeURIComponent(container.id)}/ws`,
+ }
+}
+function composeInstanceVisible(deploymentID:string){
+ return props.section==='applications'&&applicationDrawerOpen.value&&applicationDetailTab(applicationDrawerID.value)==='deployments'&&Boolean(expandedDeployments.value[deploymentID])&&currentDeploymentIDs.value.has(deploymentID)&&Boolean(applicationDrawerCard.value?.deploymentInstances.some(record=>record.id===deploymentID))
+}
+function composeContainerAccess(deploymentID:string,action:'logs'|'terminal'){
+ return auth.authorizationState==='ready'&&canReadDeployments.value&&canReadContainerLogs.value&&(action==='logs'||canOpenContainerTerminal.value)&&composeInstanceVisible(deploymentID)
+}
+async function openComposeContainerStream(record:DeploymentRecord,containerID:string,action:'logs'|'terminal'){
+ if(record.deployment_plan_kind!=='compose_stack'||!composeContainerAccess(record.id,action)||composeContainerOpening.value)return
+ const previousRuntimeID=deploymentRuntimeStates.value[record.id]?.runtime_id
+ if(!previousRuntimeID)return
+ const scope=resourceScopeKey(),controller=new AbortController()
+ composeContainerController=controller;composeActionDeploymentID=record.id;composeActionScope=scope;composeContainerOpening.value=containerID
+ const current=()=>!planExecutionDisposed&&!controller.signal.aborted&&composeContainerController===controller&&scope===resourceScopeKey()&&composeContainerAccess(record.id,action)
+ try{
+  // 重新读取冻结范围，只接受原容器 ID；容器重建后不按名称替换连接目标。
+  const {data}=await client.get<{runtime:DeploymentRuntimeState}>(`/deployments/${encodeURIComponent(record.id)}/runtime`,{...resourceReadOptions(),timeout:35_000,signal:controller.signal})
+  if(!current())return
+  const runtime=data.runtime
+  deploymentRuntimeStates.value[record.id]=runtime
+  delete deploymentRuntimeErrors.value[record.id]
+  const container=runtime.services?.flatMap(service=>service.containers||[]).find(item=>item.id===containerID)
+  if(runtime.kind!=='compose'||runtime.runtime_id!==previousRuntimeID||!container){message.warning('容器或所属运行时已变化，请重新选择容器');return}
+  if(action==='terminal'&&!composeContainerCanTerminal(container)){message.warning(container.terminal_unavailable_reason||'容器当前未运行，不能打开终端');return}
+  composeStream.value={deploymentID:record.id,containerID:container.id,scope}
+  if(action==='logs')containerLogs.value={open:true,title:`容器日志：${container.name||container.id}`,path:`/api/v1/docker/endpoints/${encodeURIComponent(runtime.runtime_id)}/containers/${encodeURIComponent(container.id)}/logs/ws`}
+  else terminal.value={open:true,title:`容器终端：${container.name||container.id}`,path:`/api/v1/terminals/docker/${encodeURIComponent(runtime.runtime_id)}/containers/${encodeURIComponent(container.id)}/ws`}
+ }catch(error){if(current())message.error(apiErrorMessage(error))}
+ finally{if(composeContainerController===controller){composeContainerController=undefined;composeContainerOpening.value='';composeActionDeploymentID=''}}
+}
+function syncComposeContainerContext(){
+ if(composeContainerController&&(composeActionScope!==resourceScopeKey()||!composeContainerAccess(composeActionDeploymentID,'logs'))){composeContainerController.abort();composeContainerController=undefined;composeContainerOpening.value=''}
+ const stream=composeStream.value
+ if(stream){
+  const runtime=deploymentRuntimeStates.value[stream.deploymentID]
+  const exists=runtime?.services?.some(service=>service.containers?.some(container=>container.id===stream.containerID))
+  if(stream.scope!==resourceScopeKey()||!composeContainerAccess(stream.deploymentID,'logs')||!exists){
+   containerLogs.value={open:false,title:'',path:''};terminal.value={open:false,title:'',path:''};composeStream.value=null
+  }
  }
 }
 function workflowSupportsManualRelease(workflow?:PipelineWorkflow){return Boolean(workflow?.is_active&&workflow.source?.type==='trigger'&&workflow.source.config?.events?.includes('manual'))}
@@ -2021,12 +2060,13 @@ watch(()=>visibleApprovalRuns().map(run=>`${run.id}:${run.current_node_id}`).joi
 watch(approvalScope,()=>{for(const controller of runApprovalRequests.values())controller.abort();runApprovalRequests.clear();runApprovals.value={};runApprovalLoading.value={};runApprovalErrors.value={};void refreshRunApprovals()})
 watch(planExecutionScopeIdentity,resetPlanExecutionScope,{flush:'sync'})
 watch(planExecutionScopeIdentity,resetResourceStatus,{flush:'sync'})
+watch(()=>JSON.stringify([resourceScopeKey(),auth.authorizationState,applicationDrawerOpen.value,applicationDrawerID.value,applicationDetailTab(applicationDrawerID.value),expandedDeployments.value,[...currentDeploymentIDs.value],composeStream.value,composeStream.value&&deploymentRuntimeStates.value[composeStream.value.deploymentID]?.services?.map(service=>service.containers?.map(container=>container.id))]),syncComposeContainerContext,{flush:'sync'})
 watch([planExecutionScopeIdentity,()=>auth.authorizationReady],refreshAuthorizedResourceScope,{flush:'post'})
 watch(()=>props.section,connectDeliveryEvents)
 onMounted(()=>{window.addEventListener('edo:projects-changed',syncPlanExecutionProject)})
 onMounted(()=>{connectDeliveryEvents();void refresh().then(()=>{lastDeliverySync=Date.now();syncBuildPlanSelection();consumeBuildCreateRequest();consumeDeliveryRequest();void revealActiveApplication()});releaseTimer=window.setInterval(refreshVisibleState,5000);document.addEventListener('visibilitychange',onDeliveryPageVisible);window.addEventListener('focus',onDeliveryPageVisible)})
 onBeforeUnmount(()=>{for(const controller of runApprovalRequests.values())controller.abort();runListController?.abort();executionController?.abort();runQueryRevision++;executionRevision++;stopDeliveryEvents?.();clearTimeout(deliveryRefreshTimer);resetPlanExecution();clearInterval(releaseTimer);document.removeEventListener('visibilitychange',onDeliveryPageVisible);window.removeEventListener('focus',onDeliveryPageVisible)})
-onBeforeUnmount(()=>{planExecutionDisposed=true;resetArtifactRequests();formOpen.value=false;resetResourceForm();resetPlanExecutionScope();resetResourceStatus();window.removeEventListener('edo:projects-changed',syncPlanExecutionProject)})
+onBeforeUnmount(()=>{planExecutionDisposed=true;composeContainerController?.abort();resetArtifactRequests();formOpen.value=false;resetResourceForm();resetPlanExecutionScope();resetResourceStatus();window.removeEventListener('edo:projects-changed',syncPlanExecutionProject)})
 </script>
 
 <template><section :class="{'applications-page':props.section==='applications'}"><PageToolbar :description="props.section==='applications'?t('applicationWorkspace.description'):currentDescription"><a-tag v-if="props.section==='applications'||props.section==='release-plans'" color="processing">{{ t('applicationCard.autoRefresh') }}</a-tag><a-button :loading="loading" @click="refresh"><RefreshCw :size="15"/>刷新</a-button><a-button v-if="props.section==='release-plans'&&releaseView==='runs'&&auth.canAny(['pipeline_run.execute'])&&auth.canAny(['application.read'])" type="primary" :disabled="saving" @click="openManualPicker">{{ t('manualRun.execute') }}</a-button><a-button v-if="canCreate&&(props.section!=='release-plans'||releaseView==='plans')" type="primary" @click="create"><Plus :size="15"/>{{ props.section==='release-plans'?'创建发布计划':props.section==='applications'?t('applicationWorkspace.create'):'新建' }}</a-button></PageToolbar>
@@ -2134,10 +2174,7 @@ onBeforeUnmount(()=>{planExecutionDisposed=true;resetArtifactRequests();formOpen
                   <div v-if="deploymentKind(record)==='script'"><dt>重启命令</dt><dd>{{ lifecycleScriptAvailable(record,'restart')?'已配置':'未配置' }}</dd></div>
                 </dl>
                 <div v-if="record.deployment_plan_kind==='compose_stack'&&deploymentRuntimeStates[record.id]?.kind==='compose'" class="compose-runtime-summary">Compose 项目：{{deploymentRuntimeStates[record.id]?.name}}</div>
-                <div v-if="deploymentRuntimeStates[record.id]?.services?.length" class="compose-runtime-table" tabindex="0" role="region" aria-label="Compose 服务状态"><table class="compose-runtime-services">
-                  <thead><tr><th>服务</th><th>运行状态</th><th>就绪实例 / 总实例</th></tr></thead>
-                  <tbody><tr v-for="service in deploymentRuntimeStates[record.id]?.services" :key="service.name"><td>{{service.name}}</td><td><a-tag :color="composeRuntimeColor(service.state,service.count>0&&service.ready_count===service.count)">{{composeRuntimeStatus(service.state,service.count>0&&service.ready_count===service.count).label}}</a-tag></td><td>{{service.ready_count}} / {{service.count}}</td></tr></tbody>
-                </table></div>
+                <ComposeRuntimeServices v-if="deploymentRuntimeStates[record.id]?.services?.length" :key="record.id" :services="deploymentRuntimeStates[record.id]?.services || []" :can-logs="canReadContainerLogs" :can-terminal="canOpenContainerTerminal" :opening="Boolean(composeContainerOpening)" @logs="openComposeContainerStream(record,$event,'logs')" @terminal="openComposeContainerStream(record,$event,'terminal')" />
                 <div class="application-deployment-actions">
                   <a-button v-if="deploymentKind(record)==='docker'&&canReadContainerLogs" size="small" :loading="dockerRuntimeLoading[record.runtime_id]" :disabled="!dockerContainerForDeployment(record)" @click="openDeploymentLogs(record)"><FileText/>{{ t('containerLogs.button') }}</a-button>
                   <a-button v-if="deploymentKind(record)==='docker'&&canOpenContainerTerminal&&canReadContainerLogs" size="small" :disabled="dockerRuntimeLoading[record.runtime_id]||dockerContainerForDeployment(record)?.state!=='running'" :title="dockerContainerForDeployment(record)?.state==='running'?'':t('applicationCard.terminalRunningOnly')" @click="openDeploymentTerminal(record)"><TerminalSquare/>{{ t('applicationCard.terminal') }}</a-button>
@@ -2727,5 +2764,5 @@ onBeforeUnmount(()=>{planExecutionDisposed=true;resetArtifactRequests();formOpen
 <style scoped src="../styles/application-workspace.css"></style>
 
 <style scoped>
-.compose-runtime-summary{color:var(--edo-muted);margin:10px 0}.compose-runtime-table{max-width:100%;overflow-x:auto;margin:10px 0 14px}.compose-runtime-table:focus-visible{outline:2px solid var(--edo-primary);outline-offset:2px}.compose-runtime-services{width:100%;min-width:360px;border-collapse:collapse;font-size:13px}.compose-runtime-services th,.compose-runtime-services td{padding:8px 10px;text-align:left;border-bottom:1px solid var(--edo-border);overflow-wrap:anywhere}.compose-runtime-services th{background:var(--edo-bg);color:var(--edo-muted);font-weight:500}
+.compose-runtime-summary{color:var(--edo-muted);margin:10px 0}
 </style>

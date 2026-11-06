@@ -77,7 +77,7 @@ func TestComposeStackRuntimeUsesFrozenHostScope(t *testing.T) {
 		t.Fatal(err)
 	}
 	state, err := s.RuntimeState(ctx, record.ID)
-	if err != nil || state.Kind != "compose" || !state.Running || state.Name != "frozen-project" || len(state.Services) != 2 || state.Services[0].Name != "api" || state.Services[1].State != "completed" || !state.Services[1].RunToCompletion {
+	if err != nil || state.RuntimeID != endpoint || state.Kind != "compose" || !state.Running || state.Name != "frozen-project" || len(state.Services) != 2 || state.Services[0].Name != "api" || state.Services[1].State != "completed" || !state.Services[1].RunToCompletion || len(state.Services[0].Containers) != 1 || state.Services[0].Containers[0].ID != "api-id" {
 		t.Fatal("未从冻结的主机和服务范围读取状态", state, err)
 	}
 	if _, err = s.RuntimeConfiguration(ctx, record.ID); !errors.Is(err, ErrRuntimeControlUnsupported) {

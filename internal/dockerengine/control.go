@@ -18,6 +18,7 @@ var (
 )
 
 type RuntimeState struct {
+	RuntimeID  string                `json:"runtime_id,omitempty"`
 	Kind       string                `json:"kind"`
 	ResourceID string                `json:"resource_id,omitempty"`
 	Name       string                `json:"name"`
