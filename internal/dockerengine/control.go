@@ -18,12 +18,13 @@ var (
 )
 
 type RuntimeState struct {
-	Kind       string `json:"kind"`
-	ResourceID string `json:"resource_id,omitempty"`
-	Name       string `json:"name"`
-	State      string `json:"state"`
-	Running    bool   `json:"running"`
-	Count      int    `json:"count"`
+	Kind       string                `json:"kind"`
+	ResourceID string                `json:"resource_id,omitempty"`
+	Name       string                `json:"name"`
+	State      string                `json:"state"`
+	Running    bool                  `json:"running"`
+	Count      int                   `json:"count"`
+	Services   []ComposeServiceState `json:"services,omitempty"`
 }
 
 // ContainerRuntimeState 按发布快照中的固定容器名读取状态，不接受浏览器传入任意 Docker 资源。

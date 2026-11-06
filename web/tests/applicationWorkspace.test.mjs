@@ -54,6 +54,22 @@ function allowManual(application, id = 'second-flow') {
   return flow
 }
 
+test('SSH Compose 多镜像正确识别，不显示 Shell 配置；状态完整后提供受限运行操作',()=>{
+  const {state}=harness()
+  const record={id:'compose',deployment_plan_kind:'compose_stack',platform:'ssh',status:'succeeded'}
+  assert.equal(state.deploymentKind(record),'compose')
+  assert.equal(state.lifecycleScriptAvailable(record,'restart'),false)
+  state.deploymentRuntimeStates.value.compose={kind:'compose',name:'example',state:'running',running:true,services:[{name:'api',state:'running',count:1,ready_count:1}]}
+  assert.equal(state.currentDeploymentStatus(record).label,'运行中')
+  assert.equal(state.lifecycleScriptAvailable(record,'restart'),true)
+  state.deploymentRuntimeStates.value.compose.services.push({name:'worker',state:'missing',count:0,ready_count:0})
+  state.deploymentRuntimeStates.value.compose.running=false
+  state.deploymentRuntimeStates.value.compose.state='partial'
+  assert.equal(state.currentDeploymentStatus(record).label,'部分服务异常')
+  assert.equal(state.lifecycleScriptAvailable(record,'stop'),false)
+  for(const value of ['unhealthy','missing','paused','starting','unknown'])assert.notEqual(state.composeRuntimeStatus(value).label,'已停止')
+})
+
 test('手动执行绑定准确流水线，选完版本前不创建运行，确认后复用完整执行链', async () => {
   const { state, requests, submissions, pending } = harness()
   allowManual(state.applications.value[0], 'first-flow')

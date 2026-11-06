@@ -36,20 +36,21 @@ type RuntimeControlInput struct {
 }
 
 type RuntimeState struct {
-	DeploymentID      string `json:"deployment_id"`
-	Kind              string `json:"kind"`
-	ResourceID        string `json:"resource_id,omitempty"`
-	Name              string `json:"name"`
-	Namespace         string `json:"namespace,omitempty"`
-	State             string `json:"state"`
-	Running           bool   `json:"running"`
-	Count             int    `json:"count,omitempty"`
-	Replicas          int32  `json:"replicas,omitempty"`
-	ReadyReplicas     int32  `json:"ready_replicas,omitempty"`
-	AvailableReplicas int32  `json:"available_replicas,omitempty"`
-	RestartConfigured bool   `json:"restart_configured,omitempty"`
-	StopConfigured    bool   `json:"stop_configured,omitempty"`
-	Output            string `json:"output,omitempty"`
+	DeploymentID      string                             `json:"deployment_id"`
+	Kind              string                             `json:"kind"`
+	ResourceID        string                             `json:"resource_id,omitempty"`
+	Name              string                             `json:"name"`
+	Namespace         string                             `json:"namespace,omitempty"`
+	State             string                             `json:"state"`
+	Running           bool                               `json:"running"`
+	Count             int                                `json:"count,omitempty"`
+	Replicas          int32                              `json:"replicas,omitempty"`
+	ReadyReplicas     int32                              `json:"ready_replicas,omitempty"`
+	AvailableReplicas int32                              `json:"available_replicas,omitempty"`
+	RestartConfigured bool                               `json:"restart_configured,omitempty"`
+	StopConfigured    bool                               `json:"stop_configured,omitempty"`
+	Output            string                             `json:"output,omitempty"`
+	Services          []dockerengine.ComposeServiceState `json:"services,omitempty"`
 }
 
 type InstanceControlConfigurationInput struct {
@@ -325,6 +326,13 @@ func (s *Service) executeRuntimeControl(
 	controlContext, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	switch {
+	case record.Platform == model.DeploymentSSH && record.DeploymentPlanKind == model.DeploymentPlanComposeStack:
+		endpoint, scope, err := s.composeRuntimeScope(controlContext, record)
+		if err != nil {
+			return nil, err
+		}
+		result, err := s.docker.ControlComposeProject(controlContext, endpoint, scope, input.Action)
+		return dockerRuntimeState(record.ID, result), err
 	case record.Platform == model.DeploymentDocker && record.DeploymentPlanKind == model.DeploymentPlanCompose:
 		if s.docker == nil {
 			return nil, ErrRuntimeControlUnsupported
@@ -356,6 +364,15 @@ func (s *Service) executeRuntimeControl(
 
 func (s *Service) readRuntimeState(ctx context.Context, record *model.DeploymentRecord) (*RuntimeState, error) {
 	switch {
+	case record.Platform == model.DeploymentSSH && record.DeploymentPlanKind == model.DeploymentPlanComposeStack:
+		readContext, cancel := context.WithTimeout(ctx, 20*time.Second)
+		defer cancel()
+		endpoint, scope, err := s.composeRuntimeScope(readContext, record)
+		if err != nil {
+			return nil, err
+		}
+		result, err := s.docker.ComposeProjectRuntimeState(readContext, endpoint, scope)
+		return dockerRuntimeState(record.ID, result), err
 	case record.Platform == model.DeploymentDocker && record.DeploymentPlanKind == model.DeploymentPlanCompose:
 		if s.docker == nil {
 			return nil, ErrRuntimeControlUnsupported
@@ -511,7 +528,7 @@ func (s *Service) currentDeployment(ctx context.Context, deploymentID string) (*
 func dockerRuntimeState(deploymentID string, input dockerengine.RuntimeState) *RuntimeState {
 	return &RuntimeState{
 		DeploymentID: deploymentID, Kind: input.Kind, ResourceID: input.ResourceID,
-		Name: input.Name, State: input.State, Running: input.Running, Count: input.Count,
+		Name: input.Name, State: input.State, Running: input.Running, Count: input.Count, Services: input.Services,
 	}
 }
 

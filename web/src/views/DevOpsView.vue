@@ -65,7 +65,8 @@ interface DeploymentTarget extends ResourceRecord{id:string;platform:string;envi
 interface DeploymentPlan extends ResourceRecord{id:string;kind?:string;service_name?:string;deployment_target_id:string;deployment_target?:DeploymentTarget}
 interface DeploymentRecord extends ResourceRecord{id:string;pipeline_run_id?:string;application_id?:string;target_id:string;target_name:string;platform:string;environment_id:string;host_id:string;runtime_id:string;namespace:string;workload_name:string;container_name:string;deployment_plan_id?:string;deployment_plan_kind?:string;compose_service?:string;operation:string;image:string;image_display?:string;status:string;error_message?:string;runtime_deleted_at?:string;created_at:string;updated_at:string;finished_at?:string}
 interface DockerContainerRecord extends ResourceRecord{id:string;names:string[];state:string;status:string}
-interface DeploymentRuntimeState{deployment_id:string;kind:string;resource_id?:string;name:string;namespace?:string;state:string;running:boolean;count?:number;replicas?:number;ready_replicas?:number;available_replicas?:number;restart_configured?:boolean;stop_configured?:boolean;output?:string}
+interface ComposeServiceState{name:string;state:string;count:number;ready_count:number}
+interface DeploymentRuntimeState{services?:ComposeServiceState[];deployment_id:string;kind:string;resource_id?:string;name:string;namespace?:string;state:string;running:boolean;count?:number;replicas?:number;ready_replicas?:number;available_replicas?:number;restart_configured?:boolean;stop_configured?:boolean;output?:string}
 interface ShellControlConfiguration{deployment_id:string;restart_script:string;stop_script:string;timeout_seconds:number}
 type StatusTone='neutral'|'info'|'success'|'warning'|'danger'
 interface StatusMeta{tone:StatusTone;label:string;live:boolean}
@@ -494,6 +495,7 @@ function workflowDisplayName(workflow?:ApplicationWorkflow){return workflow?.nam
 function workflowOriginLabel(workflow:ApplicationWorkflow){return workflow.workflow_template?'项目共用流水线':'自定义流水线'}
 function deploymentKind(record:DeploymentRecord){
  const kind=record.deployment_plan_kind||record.platform
+ if(kind==='compose_stack')return 'compose'
  return ['docker','compose','kubernetes','script'].includes(kind)?kind:'script'
 }
 function deploymentKindLabel(record:DeploymentRecord){return record.deployment_plan_kind==='compose_stack'?'DockerCompose 多镜像':t(`applicationCard.deploymentKind.${deploymentKind(record)}`)}
@@ -508,6 +510,12 @@ function deploymentStatus(record:DeploymentRecord):StatusMeta{
  }
  return states[record.status]||{tone:'neutral',label:record.status,live:false}
 }
+function composeRuntimeStatus(state:string,running=false):StatusMeta{
+ if(running)return {tone:'success',label:'运行中',live:true}
+ const states:Record<string,StatusMeta>={partial:{tone:'warning',label:'部分服务异常',live:false},unhealthy:{tone:'danger',label:'健康检查失败',live:false},starting:{tone:'warning',label:'启动中',live:true},restarting:{tone:'warning',label:'重启中',live:true},missing:{tone:'warning',label:'服务不存在',live:false},paused:{tone:'neutral',label:'已暂停',live:false},exited:{tone:'neutral',label:'已停止',live:false},created:{tone:'neutral',label:'尚未启动',live:false},dead:{tone:'danger',label:'异常退出',live:false}}
+ return states[state]||{tone:'neutral',label:'状态未知',live:false}
+}
+function composeRuntimeColor(state:string,running=false){return ({success:'green',warning:'gold',danger:'red',info:'blue'} as Record<string,string>)[composeRuntimeStatus(state,running).tone]}
 function currentDeploymentStatus(record:DeploymentRecord):StatusMeta{
  const runtime=deploymentRuntimeStates.value[record.id]
  if(deploymentRuntimeLoading.value[record.id]&&!deploymentRuntimeStates.value[record.id]&&!deploymentRuntimeErrors.value[record.id])return {tone:'info',label:'检查中',live:true}
@@ -518,7 +526,8 @@ function currentDeploymentStatus(record:DeploymentRecord):StatusMeta{
    if(runtime.state==='progressing')return {tone:'warning',label:'调整中',live:true}
    if(runtime.running)return {tone:'success',label:'运行中',live:true}
   }
-  if(runtime.kind==='docker'||runtime.kind==='compose'){
+  if(runtime.kind==='compose')return composeRuntimeStatus(runtime.state,runtime.running)
+  if(runtime.kind==='docker'){
    if(runtime.running)return {tone:'success',label:'运行中',live:true}
    return {tone:'neutral',label:'已停止',live:false}
   }
@@ -561,6 +570,10 @@ async function checkApplicationUpdates(application:Application){
 }
 function deploymentDetailsOpen(record:DeploymentRecord){return Boolean(expandedDeployments.value[record.id])}
 function lifecycleScriptAvailable(record:DeploymentRecord,action:'restart'|'stop'){
+ if(record.deployment_plan_kind==='compose_stack'){
+  const runtime=deploymentRuntimeStates.value[record.id]
+  return !deploymentRuntimeErrors.value[record.id]&&runtime?.kind==='compose'&&!!runtime.services?.length&&runtime.services.every(service=>service.count>0)
+ }
  if(deploymentKind(record)!=='script')return true
  const runtime=deploymentRuntimeStates.value[record.id]
  return Boolean(action==='restart'?runtime?.restart_configured:runtime?.stop_configured)
@@ -625,11 +638,12 @@ async function executeDeploymentRuntimeAction(record:DeploymentRecord,action:'re
  }catch(error){message.error(apiErrorMessage(error))}finally{deploymentRuntimeAction.value=''}
 }
 function confirmDeploymentRuntimeAction(record:DeploymentRecord,action:'restart'|'stop'){
- if(!lifecycleScriptAvailable(record,action)){message.warning(`请先在该 Shell 部署实例中保存${action==='restart'?'重启':'停止'}命令`);return}
+ if(!canControlDeployments.value||!currentDeploymentIDs.value.has(record.id)||deploymentRuntimeAction.value)return
+ if(!lifecycleScriptAvailable(record,action)){message.warning(deploymentKind(record)==='script'?`请先在该 Shell 部署实例中保存${action==='restart'?'重启':'停止'}命令`:'请先确认当前 Compose 服务状态完整可用');return}
  const actionLabel=action==='restart'?'重启':'停止'
  Modal.confirm({
   title:`确认${actionLabel}${deploymentInstanceName(record)}？`,
-  content:deploymentKind(record)==='script'?`将执行该部署实例中已经保存的${actionLabel} Shell 命令。`:`操作当前${deploymentKindLabel(record)}运行资源。`,
+  content:record.deployment_plan_kind==='compose_stack'?`将${actionLabel}本次部署范围内的 Compose 服务：${deploymentRuntimeStates.value[record.id]?.services?.map(service=>service.name).join('、')}。镜像、配置及数据卷保持不变。`:deploymentKind(record)==='script'?`将执行该部署实例中已经保存的${actionLabel} Shell 命令。`:`操作当前${deploymentKindLabel(record)}运行资源。`,
   okText:actionLabel,cancelText:'取消',okType:action==='stop'?'danger':'primary',
  onOk:()=>executeDeploymentRuntimeAction(record,action),
  })
@@ -2111,19 +2125,24 @@ onBeforeUnmount(()=>{planExecutionDisposed=true;resetArtifactRequests();formOpen
               <div v-if="deploymentDetailsOpen(record)" class="application-deployment-details">
                 <a-alert v-if="deploymentRuntimeErrors[record.id]" type="warning" show-icon :message="deploymentRuntimeErrors[record.id]" style="margin-bottom:8px"/>
                 <dl>
-                  <div v-if="deploymentKind(record)!=='script'"><dt>{{ t('applicationCard.image') }}</dt><dd :title="deploymentImageLabel(record)">{{ deploymentImageLabel(record) }}</dd></div>
+                  <div v-if="deploymentKind(record)!=='script'&&record.deployment_plan_kind!=='compose_stack'"><dt>{{ t('applicationCard.image') }}</dt><dd :title="deploymentImageLabel(record)">{{ deploymentImageLabel(record) }}</dd></div>
                   <div v-if="deploymentRuntimeStates[record.id]"><dt>实时状态</dt><dd>{{ currentDeploymentStatus(record).label }}</dd></div>
                   <div v-if="deploymentRuntimeStates[record.id]?.kind==='kubernetes'"><dt>副本</dt><dd>{{ deploymentRuntimeStates[record.id]?.ready_replicas||0 }} / {{ deploymentRuntimeStates[record.id]?.replicas||0 }} 就绪</dd></div>
                   <div v-if="deploymentKind(record)==='docker'"><dt>{{ t('applicationCard.containerStatus') }}</dt><dd>{{ dockerContainerState(record) }}</dd></div>
                   <div v-if="deploymentKind(record)==='script'"><dt>停止命令</dt><dd>{{ lifecycleScriptAvailable(record,'stop')?'已配置':'未配置' }}</dd></div>
                   <div v-if="deploymentKind(record)==='script'"><dt>重启命令</dt><dd>{{ lifecycleScriptAvailable(record,'restart')?'已配置':'未配置' }}</dd></div>
                 </dl>
+                <div v-if="record.deployment_plan_kind==='compose_stack'&&deploymentRuntimeStates[record.id]?.kind==='compose'" class="compose-runtime-summary">Compose 项目：{{deploymentRuntimeStates[record.id]?.name}}</div>
+                <div v-if="deploymentRuntimeStates[record.id]?.services?.length" class="compose-runtime-table" tabindex="0" role="region" aria-label="Compose 服务状态"><table class="compose-runtime-services">
+                  <thead><tr><th>服务</th><th>运行状态</th><th>就绪实例 / 总实例</th></tr></thead>
+                  <tbody><tr v-for="service in deploymentRuntimeStates[record.id]?.services" :key="service.name"><td>{{service.name}}</td><td><a-tag :color="composeRuntimeColor(service.state,service.count>0&&service.ready_count===service.count)">{{composeRuntimeStatus(service.state,service.count>0&&service.ready_count===service.count).label}}</a-tag></td><td>{{service.ready_count}} / {{service.count}}</td></tr></tbody>
+                </table></div>
                 <div class="application-deployment-actions">
                   <a-button v-if="deploymentKind(record)==='docker'&&canReadContainerLogs" size="small" :loading="dockerRuntimeLoading[record.runtime_id]" :disabled="!dockerContainerForDeployment(record)" @click="openDeploymentLogs(record)"><FileText/>{{ t('containerLogs.button') }}</a-button>
                   <a-button v-if="deploymentKind(record)==='docker'&&canOpenContainerTerminal&&canReadContainerLogs" size="small" :disabled="dockerRuntimeLoading[record.runtime_id]||dockerContainerForDeployment(record)?.state!=='running'" :title="dockerContainerForDeployment(record)?.state==='running'?'':t('applicationCard.terminalRunningOnly')" @click="openDeploymentTerminal(record)"><TerminalSquare/>{{ t('applicationCard.terminal') }}</a-button>
                   <a-button v-if="canUpdateDeployments&&deploymentKind(record)==='script'" size="small" @click="openShellControlConfiguration(record)"><Settings2/>配置命令</a-button>
-                  <a-button v-if="canControlDeployments" size="small" danger :loading="deploymentRuntimeAction===runtimeActionKey(record,'stop')" :disabled="Boolean(deploymentRuntimeAction)||!lifecycleScriptAvailable(record,'stop')" :title="lifecycleScriptAvailable(record,'stop')?'':'请先在该 Shell 部署实例中保存停止命令'" @click="confirmDeploymentRuntimeAction(record,'stop')"><Power/>停止</a-button>
-                  <a-button v-if="canControlDeployments" size="small" :loading="deploymentRuntimeAction===runtimeActionKey(record,'restart')" :disabled="Boolean(deploymentRuntimeAction)||!lifecycleScriptAvailable(record,'restart')" :title="lifecycleScriptAvailable(record,'restart')?'':'请先在该 Shell 部署实例中保存重启命令'" @click="confirmDeploymentRuntimeAction(record,'restart')"><RotateCw/>重启</a-button>
+                  <a-button v-if="canControlDeployments" size="small" danger :loading="deploymentRuntimeAction===runtimeActionKey(record,'stop')" :disabled="Boolean(deploymentRuntimeAction)||!lifecycleScriptAvailable(record,'stop')" :title="lifecycleScriptAvailable(record,'stop')?'':deploymentKind(record)==='script'?'请先在该 Shell 部署实例中保存停止命令':'当前服务状态不完整，暂不可操作'" @click="confirmDeploymentRuntimeAction(record,'stop')"><Power/>停止</a-button>
+                  <a-button v-if="canControlDeployments" size="small" :loading="deploymentRuntimeAction===runtimeActionKey(record,'restart')" :disabled="Boolean(deploymentRuntimeAction)||!lifecycleScriptAvailable(record,'restart')" :title="lifecycleScriptAvailable(record,'restart')?'':deploymentKind(record)==='script'?'请先在该 Shell 部署实例中保存重启命令':'当前服务状态不完整，暂不可操作'" @click="confirmDeploymentRuntimeAction(record,'restart')"><RotateCw/>重启</a-button>
                   <a-button v-if="canControlDeployments&&deploymentKind(record)==='kubernetes'" size="small" :disabled="Boolean(deploymentRuntimeAction)" @click="openScaleDialog(record)"><Minus/>扩缩容</a-button>
                   <a-button v-if="canReadDeployments&&canControlDeployments&&['docker','kubernetes'].includes(deploymentKind(record))" size="small" :disabled="Boolean(deploymentRuntimeAction)" @click="openDeploymentRollback(record)"><RotateCw/>{{ rollbackT('rollback.title') }}</a-button>
                   <a-button v-if="canControlDeployments&&deploymentKind(record)==='docker'" size="small" danger :loading="deploymentRuntimeAction===runtimeActionKey(record,'remove')" :disabled="Boolean(deploymentRuntimeAction)" @click="confirmDeploymentRuntimeRemoval(record)"><Trash2/>删除实例</a-button>
@@ -2705,3 +2724,7 @@ onBeforeUnmount(()=>{planExecutionDisposed=true;resetArtifactRequests();formOpen
 @media(prefers-reduced-motion:reduce){.application-deployment-state.is-live>i{animation:none}}
 </style>
 <style scoped src="../styles/application-workspace.css"></style>
+
+<style scoped>
+.compose-runtime-summary{color:var(--edo-muted);margin:10px 0}.compose-runtime-table{max-width:100%;overflow-x:auto;margin:10px 0 14px}.compose-runtime-table:focus-visible{outline:2px solid var(--edo-primary);outline-offset:2px}.compose-runtime-services{width:100%;min-width:360px;border-collapse:collapse;font-size:13px}.compose-runtime-services th,.compose-runtime-services td{padding:8px 10px;text-align:left;border-bottom:1px solid var(--edo-border);overflow-wrap:anywhere}.compose-runtime-services th{background:var(--edo-bg);color:var(--edo-muted);font-weight:500}
+</style>

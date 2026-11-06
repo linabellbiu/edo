@@ -1,0 +1,87 @@
+package deployment
+
+import (
+	"context"
+	"encoding/json"
+	"path"
+
+	"go.yaml.in/yaml/v3"
+
+	"edo/internal/composeconfig"
+	"edo/internal/dockerengine"
+	"edo/internal/model"
+)
+
+// 只读取冻结快照中的身份及 Compose 范围，不从现在可编辑的流水线或方案推断运行对象。
+func (s *Service) composeRuntimeScope(ctx context.Context, record *model.DeploymentRecord) (string, dockerengine.ComposeProjectScope, error) {
+	invalid := ErrRuntimeControlInvalid
+	if s.docker == nil || record.Platform != model.DeploymentSSH || record.DeploymentPlanKind != model.DeploymentPlanComposeStack || record.HostID == "" || !path.IsAbs(record.WorkingDirectory) {
+		return "", dockerengine.ComposeProjectScope{}, invalid
+	}
+	var run model.PipelineRun
+	if err := s.db.WithContext(ctx).Where("uuid = ? AND application_id = ? AND project_id = ? AND department_id = ?", record.PipelineRunID, record.ApplicationID, record.ProjectID, record.DepartmentID).First(&run).Error; err != nil {
+		return "", dockerengine.ComposeProjectScope{}, err
+	}
+	var snapshot struct {
+		SchemaVersion   uint16                `json:"schema_version"`
+		Stages          []model.WorkflowStage `json:"stages"`
+		DeploymentPlans map[string]struct {
+			ID          string                   `json:"id"`
+			Kind        model.DeploymentPlanKind `json:"kind"`
+			ComposeYAML string                   `json:"compose_yaml"`
+		} `json:"deployment_plans"`
+		DeploymentTargets map[string]struct {
+			ID               string                   `json:"id"`
+			ProjectID        string                   `json:"project_id"`
+			DepartmentID     string                   `json:"department_id"`
+			HostID           string                   `json:"host_id"`
+			EnvironmentID    string                   `json:"environment_id"`
+			WorkingDirectory string                   `json:"working_directory"`
+			Platform         model.DeploymentPlatform `json:"platform"`
+		} `json:"deployment_targets"`
+	}
+	if err := json.Unmarshal([]byte(run.WorkflowSnapshot), &snapshot); err != nil {
+		return "", dockerengine.ComposeProjectScope{}, invalid
+	}
+	plan, target := snapshot.DeploymentPlans[record.WorkflowNodeID], snapshot.DeploymentTargets[record.WorkflowNodeID]
+	if snapshot.SchemaVersion != model.WorkflowSchemaVersion || plan.ID != record.DeploymentPlanID || plan.Kind != record.DeploymentPlanKind || target.ID != record.TargetID || target.ProjectID != record.ProjectID || target.DepartmentID != record.DepartmentID || target.Platform != record.Platform || target.HostID != record.HostID || target.EnvironmentID != record.EnvironmentID || path.Clean(target.WorkingDirectory) != path.Clean(record.WorkingDirectory) {
+		return "", dockerengine.ComposeProjectScope{}, invalid
+	}
+	var settings *model.ComposeDeploymentSettings
+	found := false
+	for _, stage := range snapshot.Stages {
+		for _, node := range stage.Tasks {
+			if node.ID == record.WorkflowNodeID {
+				if found || node.Type != model.WorkflowNodeDeploy || node.Config.DeploymentPlanID != record.DeploymentPlanID {
+					return "", dockerengine.ComposeProjectScope{}, invalid
+				}
+				found = true
+				settings = node.Config.Compose
+			}
+		}
+	}
+	if settings == nil || len(plan.ComposeYAML) == 0 || len(plan.ComposeYAML) > 128*1024 {
+		return "", dockerengine.ComposeProjectScope{}, invalid
+	}
+	var document map[string]any
+	if err := yaml.Unmarshal([]byte(plan.ComposeYAML), &document); err != nil {
+		return "", dockerengine.ComposeProjectScope{}, invalid
+	}
+	services, err := composeconfig.ServiceScope(document, settings.Services)
+	if err != nil {
+		return "", dockerengine.ComposeProjectScope{}, invalid
+	}
+	var host model.Host
+	if err := s.db.WithContext(ctx).Where("uuid = ? AND is_active = ?", record.HostID, true).First(&host).Error; err != nil {
+		return "", dockerengine.ComposeProjectScope{}, err
+	}
+	var membership model.EnvironmentHost
+	if err := s.db.WithContext(ctx).Where("host_id = ? AND environment_id = ?", record.HostID, record.EnvironmentID).First(&membership).Error; err != nil {
+		return "", dockerengine.ComposeProjectScope{}, err
+	}
+	var capability model.HostCapability
+	if err := s.db.WithContext(ctx).Where("host_id = ? AND kind = ? AND status = ?", record.HostID, model.HostCapabilityDocker, model.HostCapabilityReady).First(&capability).Error; err != nil {
+		return "", dockerengine.ComposeProjectScope{}, err
+	}
+	return capability.RuntimeID, dockerengine.ComposeProjectScope{HostID: record.HostID, ProjectName: settings.ProjectName, WorkingDirectory: record.WorkingDirectory, Services: services}, nil
+}
