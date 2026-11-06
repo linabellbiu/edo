@@ -90,7 +90,7 @@ watch(()=>props.open,value=>{if(value)composeForm.value=newComposeDeliveryForm()
 <a-alert v-if="currentDefault&&(!currentDefault.workflow_available||!currentDefault.deployment_available)" type="warning" :message="t('delivery.unavailable')" class="hint"/>
 <a-form layout="vertical"><div class="grid">
 <a-form-item v-if="!applicationId" class="wide" :label="t('delivery.application')" required><a-select :aria-label="t('delivery.application')" v-model:value="form.application" :options="applications.map(item=>({value:item.id,label:item.name}))"/></a-form-item>
-<a-form-item :label="t('delivery.kind')"><a-select :aria-label="t('delivery.kind')" v-model:value="form.kind" :options="[...deliveryKinds.map(value=>({value,label:t(`delivery.${value}`)})),{value:'compose_existing',label:'Compose 与 Tag（多镜像）',disabled:!canCreateCompose}]" @change="selectKind"/></a-form-item>
+<a-form-item :label="t('delivery.kind')"><a-select :aria-label="t('delivery.kind')" v-model:value="form.kind" :options="[...deliveryKinds.map(value=>({value,label:t(`delivery.${value}`)})),{value:'compose_existing',label:'DockerCompose 与 Tag（多镜像）',disabled:!canCreateCompose}]" @change="selectKind"/></a-form-item>
 <a-form-item :label="t('delivery.name')"><a-input :aria-label="t('delivery.name')" v-model:value="form.name" :maxlength="128"/></a-form-item>
 <a-form-item v-if="!existingCompose" :label="t('delivery.workflow')"><a-select :aria-label="t('delivery.workflow')" v-model:value="form.workflow" :options="workflowOptions"/></a-form-item>
 <a-form-item v-if="!existingCompose" :label="t('delivery.deployment')"><a-select :aria-label="t('delivery.deployment')" v-model:value="form.plan" :options="planOptions"/></a-form-item>

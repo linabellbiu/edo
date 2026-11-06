@@ -162,7 +162,7 @@ onBeforeUnmount(()=>{disposed=true;generation++;revision++;listController?.abort
           <a-textarea v-if="isEnvText||form.kind==='file'" v-model:value="form.value" :rows="8" :maxlength="65536" wrap="off" class="env-text-input" aria-label="env 文本" autocomplete="off" spellcheck="false" @blur="textTouched=true"/>
           <a-input-password v-else-if="form.is_secret" v-model:value="form.value" autocomplete="new-password" :maxlength="65536"/><a-input v-else v-model:value="form.value" :maxlength="65536"/>
         </a-form-item>
-        <p v-if="form.usage==='deploy'&&isEnvText" class="variable-description">{{form.kind==='env_file'?'仅用于 Compose：部署时自动生成命名文件，为服务添加 env_file 引用。':'Compose 部署时自动合并到所有服务的 environment，无需预先在 YAML 声明；同名项使用本次配置。'}}</p>
+        <p v-if="form.usage==='deploy'&&isEnvText" class="variable-description">{{form.kind==='env_file'?'仅用于 DockerCompose：部署时自动生成命名文件，为服务添加 env_file 引用。':'DockerCompose 部署时自动合并到所有服务的 environment，无需预先在 YAML 声明；同名项使用本次配置。'}}</p>
         <a-form-item label="允许使用的代码版本" extra="一行一个，例如 refs/heads/main、refs/tags/v*；留空表示不限制。"><a-textarea v-model:value="form.protected_refs" :rows="3"/></a-form-item>
         <a-alert type="info" show-icon :message="embedded?'应用配置自动注入对应环境的部署；项目共享变量仍在任务中选择引用。运行会固定配置版本。':'共享变量只向明确引用的任务注入；应用自动配置按应用和环境匹配，运行会固定引用的版本。'"/>
         <a-button type="primary" html-type="submit" block :loading="saving" :disabled="!can(editing?'update':'create')" style="margin-top:20px">保存变量</a-button>

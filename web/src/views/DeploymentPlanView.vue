@@ -192,7 +192,7 @@ const defaultsOpen = ref(false)
 const defaultPlanID = ref('')
 const defaultKind = ref<PlanKind>('docker')
 const canDefaults = computed(() => auth.canAny(['workflow.read']) && auth.canAny(['deployment_plan.read']))
-function openDefaults(plan?: DeploymentPlan) { if (plan?.kind === 'compose_stack') { message.info('多镜像 Compose 请在应用中配置发布流程'); return } defaultPlanID.value = plan?.id || ''; defaultKind.value = plan?.kind || 'docker'; defaultsOpen.value = true }
+function openDefaults(plan?: DeploymentPlan) { if (plan?.kind === 'compose_stack') { message.info('多镜像 DockerCompose 请在应用中配置发布流程'); return } defaultPlanID.value = plan?.id || ''; defaultKind.value = plan?.kind || 'docker'; defaultsOpen.value = true }
 const formOpen = ref(false)
 const editingID = ref('')
 const loading = ref(false)
@@ -249,8 +249,8 @@ const form = reactive({
 const kindOptions: Array<{ value: PlanKind; label: string; hint: string }> = [
   { value: 'script', label: '主机脚本', hint: '通过 SSH 执行部署脚本' },
   { value: 'docker', label: 'Docker 容器', hint: '更新指定容器镜像' },
-  { value: 'compose', label: 'Compose 单镜像', hint: '使用单个上游镜像部署' },
-  { value: 'compose_stack', label: 'Compose 多镜像', hint: 'EDO 保存完整 Compose，关联多个并行构建' },
+  { value: 'compose', label: 'DockerCompose 单镜像', hint: '使用单个上游镜像部署' },
+  { value: 'compose_stack', label: 'DockerCompose 多镜像', hint: 'EDO 保存完整 DockerCompose，关联多个并行构建' },
   { value: 'kubernetes', label: 'Kubernetes Deployment', hint: '更新 Deployment 中的容器' },
 ]
 const kindNames: Record<PlanKind, string> = Object.fromEntries(kindOptions.map(item => [item.value, item.label])) as Record<PlanKind, string>
@@ -404,7 +404,7 @@ function destinationAddress(plan: DeploymentPlan) {
 function deploymentConfiguration(plan: DeploymentPlan) {
   const target = targetOf(plan)
   if (!target) return { summary: t('deploymentList.noLocation'), detail: '' }
-  if (plan.kind === 'compose_stack') return { summary: 'EDO Compose 与多镜像 Tag', detail: target.working_directory || '尚未配置工作目录' }
+  if (plan.kind === 'compose_stack') return { summary: 'EDO DockerCompose 与多镜像 Tag', detail: target.working_directory || '尚未配置工作目录' }
   if (plan.kind === 'script') return {
     summary: t('deploymentList.directory', { value: target.working_directory || t('deploymentList.homeDirectory') }),
     detail: t('deploymentList.savedScript'),
@@ -729,13 +729,13 @@ async function readComposeFile(event: Event) {
   try {
     const value = await file.text()
     if (!value.trim() || value.includes('\0')) {
-      message.error('Compose 文件内容无效')
+      message.error('DockerCompose 文件内容无效')
       return
     }
     form.compose_yaml = value
     message.success('已读入表单；点击“保存部署方案”后才会生效')
   } catch {
-    message.error('读取 Compose 文件失败')
+    message.error('读取 DockerCompose 文件失败')
   }
 }
 
@@ -794,13 +794,13 @@ function validate() {
   if (!form.name.trim()) return '请输入方案名称'
   if (form.kind === 'compose_stack') {
     const parsed = readKubeYaml(form.compose_yaml)
-    if (parsed.issues.length) return `Compose YAML 无效：第 ${parsed.issues[0]!.line} 行，第 ${parsed.issues[0]!.column} 列`
-    if (!parsed.object?.services) return 'Compose 必须包含 services'
-    if (!form.reusable && (!form.working_directory || !validWorkingDirectory(form.working_directory))) return 'Compose 部署目录必须是规范化绝对路径'
+    if (parsed.issues.length) return `DockerCompose YAML 无效：第 ${parsed.issues[0]!.line} 行，第 ${parsed.issues[0]!.column} 列`
+    if (!parsed.object?.services) return 'DockerCompose 必须包含 services'
+    if (!form.reusable && (!form.working_directory || !validWorkingDirectory(form.working_directory))) return 'DockerCompose 部署目录必须是规范化绝对路径'
   }
   if (form.reusable) {
     if (form.kind === 'script' && !form.script.trim()) return '请输入部署脚本'
-    if (form.kind === 'compose' && (!form.service_name.trim() || !form.compose_yaml.trim())) return '请输入 Compose 服务名称和 YAML'
+    if (form.kind === 'compose' && (!form.service_name.trim() || !form.compose_yaml.trim())) return '请输入 DockerCompose 服务名称和 YAML'
     return form.kind === 'docker' ? validateDockerConfig() : ''
   }
   if (!form.environment_id) return t('environment.deployment.environmentRequired')
@@ -816,8 +816,8 @@ function validate() {
     const dockerConfigMessage = validateDockerConfig()
     if (dockerConfigMessage) return dockerConfigMessage
   }
-  if (form.kind === 'compose' && !form.service_name.trim()) return '请输入 Compose 目标服务名称'
-  if (form.kind === 'compose' && !form.compose_yaml.trim()) return '请输入内联 Compose YAML'
+  if (form.kind === 'compose' && !form.service_name.trim()) return '请输入 DockerCompose 目标服务名称'
+  if (form.kind === 'compose' && !form.compose_yaml.trim()) return '请输入内联 DockerCompose YAML'
   if (form.kind === 'kubernetes' && (!form.runtime_id || !targetCapabilityMatches(form.kind, '', form.runtime_id))) return targetT('deploymentTarget.clusterPlaceholder')
   if (form.kind === 'kubernetes' && (!form.namespace.trim() || !form.workload_name.trim() || !form.container_name.trim())) return '请输入命名空间、Deployment 名称和容器名称'
   return ''
@@ -863,7 +863,7 @@ async function testConnection() {
     message.success(platform.value === 'ssh'
       ? '主机连接正常'
       : platform.value === 'docker'
-        ? form.kind === 'compose' ? '执行主机的 Docker 能力正常；部署时还会检查 Docker Compose 插件' : '执行主机的 Docker 能力正常'
+        ? form.kind === 'compose' ? '执行主机的 Docker 能力正常；部署时还会检查 DockerCompose 插件' : '执行主机的 Docker 能力正常'
         : 'Kubernetes 集群连接正常')
   } catch (error) {
     message.error(apiErrorMessage(error))
@@ -1038,7 +1038,7 @@ onBeforeUnmount(() => { disposed = true; resetMutation(); reset(); window.remove
           <div class="resource-facts-wide"><dt>{{ t('resourceList.description') }}</dt><dd>{{ detailPlan.description || '—' }}</dd></div>
         </dl>
       </section>
-      <section v-if="detailPlan && (detailPlan.script || detailPlan.compose_yaml)" class="resource-detail-section"><h4>{{ t('deploymentList.configuration') }}</h4><YamlCodeEditor v-if="detailPlan.compose_yaml" :model-value="detailPlan.compose_yaml" readonly label="部署方案 Compose YAML"/><pre v-else class="resource-code">{{ detailPlan.script }}</pre></section>
+      <section v-if="detailPlan && (detailPlan.script || detailPlan.compose_yaml)" class="resource-detail-section"><h4>{{ t('deploymentList.configuration') }}</h4><YamlCodeEditor v-if="detailPlan.compose_yaml" :model-value="detailPlan.compose_yaml" readonly label="部署方案 DockerCompose YAML"/><pre v-else class="resource-code">{{ detailPlan.script }}</pre></section>
     </ResourceDetailDrawer>
 
     <a-drawer v-model:open="formOpen" :title="editingID ? '编辑部署方案' : '新建部署方案'" width="min(720px, 100vw)">
@@ -1123,7 +1123,7 @@ onBeforeUnmount(() => { disposed = true; resetMutation(); reset(); window.remove
               <a-form-item v-if="!form.reusable && platform === 'ssh'" class="span-2" label="工作目录">
                 <a-input v-model:value="form.working_directory" placeholder="例如：/srv/apps/edo；留空使用执行用户主目录" />
               </a-form-item>
-              <a-form-item v-if="form.kind === 'compose'" class="span-2" label="Compose 目标服务名称" required>
+              <a-form-item v-if="form.kind === 'compose'" class="span-2" label="DockerCompose 目标服务名称" required>
                 <a-input v-model:value="form.service_name" placeholder="例如：app（必须与 services 下的名称一致）" />
               </a-form-item>
               <template v-if="!form.reusable && platform === 'kubernetes'">
@@ -1133,7 +1133,7 @@ onBeforeUnmount(() => { disposed = true; resetMutation(); reset(); window.remove
               </template>
             </div>
             <div v-if="!form.reusable && (platform === 'kubernetes' ? !canReadRuntimes : !canReadHosts)" class="permission-note">需要主机与集群查看权限才能读取当前环境的执行能力。</div>
-            <div class="form-subtitle">{{ form.kind === 'docker' ? '容器输入参数' : form.kind === 'compose' ? 'Compose 输入参数' : '部署参数' }}</div>
+            <div class="form-subtitle">{{ form.kind === 'docker' ? '容器输入参数' : form.kind === 'compose' ? 'DockerCompose 输入参数' : '部署参数' }}</div>
             <template v-if="form.kind === 'docker'">
             <a-alert
               class="artifact-image-notice"
@@ -1162,7 +1162,7 @@ onBeforeUnmount(() => { disposed = true; resetMutation(); reset(); window.remove
                   <a-select v-model:value="port.protocol" :options="[{ value: 'tcp', label: 'TCP' }, { value: 'udp', label: 'UDP' }]" />
                   <a-button type="text" danger aria-label="删除端口" @click="removeDockerPort(index)"><Trash2 :size="15" /></a-button>
                 </div>
-                <p class="field-help input-block-help">单容器固定使用 bridge 网络；多服务网络互联请使用 Docker Compose。</p>
+                <p class="field-help input-block-help">单容器固定使用 bridge 网络；多服务网络互联请使用 DockerCompose。</p>
               </div>
 
               <a-collapse class="docker-advanced" :bordered="false">
@@ -1240,24 +1240,24 @@ onBeforeUnmount(() => { disposed = true; resetMutation(); reset(); window.remove
               class="artifact-image-notice"
               type="info"
               show-icon
-              message="镜像来自上游构建制品，无需在 Compose 中填写 image"
+              message="镜像来自上游构建制品，无需在 DockerCompose 中填写 image"
               description="部署时自动填入流水线镜像，请勿填写固定镜像地址或 build 配置。"
             />
-            <a-alert v-if="form.kind === 'compose_stack'" type="info" show-icon message="Compose 保存在 EDO，image 使用 ${IMAGE_TAG}；在流水线部署任务中关联服务与上游镜像。"/>
+            <a-alert v-if="form.kind === 'compose_stack'" type="info" show-icon message="DockerCompose 保存在 EDO，image 使用 ${IMAGE_TAG}；在流水线部署任务中关联服务与上游镜像。"/>
             <div class="compose-import">
               <input ref="composeFileInput" class="file-input" type="file" accept=".yml,.yaml,application/yaml,text/yaml" @change="readComposeFile" />
               <a-button @click="composeFileInput?.click()"><FileUp :size="15" />读取 docker-compose.yml</a-button>
               <span>只读入当前表单，不会自动保存。</span>
             </div>
-            <a-form-item label="内联 Compose YAML" required>
+            <a-form-item label="内联 DockerCompose YAML" required>
               <a-button @click="formatCompose">格式化</a-button>
-              <YamlCodeEditor v-model="form.compose_yaml" label="部署方案 Compose YAML" @format="formatCompose"/>
+              <YamlCodeEditor v-model="form.compose_yaml" label="部署方案 DockerCompose YAML" @format="formatCompose"/>
             </a-form-item>
             <a-alert
               type="info"
               show-icon
-              :message="form.kind === 'compose_stack' ? '按流水线配置执行 docker compose up -d' : 'Compose 只描述目标服务的运行参数'"
-              description="不会读取代码仓库中的 Compose 文件；所选执行主机必须安装 Docker Compose v2 插件。"
+              :message="form.kind === 'compose_stack' ? '按流水线配置执行 docker compose up -d' : 'DockerCompose 只描述目标服务的运行参数'"
+              description="不会读取代码仓库中的 DockerCompose 文件；所选执行主机必须安装 DockerCompose v2 插件。"
             />
           </template>
           <a-alert v-if="form.kind === 'kubernetes'" type="info" show-icon message="使用构建产物的镜像摘要更新 Deployment。构建方案需绑定集群能访问的镜像仓库。" />

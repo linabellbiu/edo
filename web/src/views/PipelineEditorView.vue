@@ -96,7 +96,7 @@ const DEFAULT_RUNTIME_IMAGE = 'alpine:3.22'
 const DEFAULT_TAG_PATTERN = 'v*'
 const runtimeImageOptions = ['alpine:3.22', 'node:24-alpine', 'golang:1.26-alpine', 'python:3.14-alpine', 'maven:3.9-eclipse-temurin-21-alpine'].map(value => ({ value }))
 const deploymentKindNames: Record<DeploymentPlanKind, string> = {
-  script: '主机脚本', docker: 'Docker 容器', compose: 'Compose 单镜像', compose_stack: 'Compose 多镜像', kubernetes: 'Kubernetes Deployment',
+  script: '主机脚本', docker: 'Docker 容器', compose: 'DockerCompose 单镜像', compose_stack: 'DockerCompose 多镜像', kubernetes: 'Kubernetes Deployment',
 }
 const defaultNotificationTitle = 'EDO｜{{application.name}}｜{{task.name}}｜{{task.status}}'
 const defaultNotificationMessage = [
@@ -1742,14 +1742,7 @@ onBeforeRouteLeave(async () => {
                 message="当前账号没有读取通知渠道的权限"
                 description="已有规则会继续保留，但不能在这里查看或修改通知渠道。"
               />
-              <a-alert
-                v-else-if="!activeNotificationChannels.length"
-                class="node-notification-alert"
-                type="info"
-                show-icon
-                message="还没有可用通知渠道"
-              />
-              <div v-else-if="selectedTask.config.notifications?.length" class="node-notification-list">
+              <div v-else-if="activeNotificationChannels.length && selectedTask.config.notifications?.length" class="node-notification-list">
                 <article v-for="rule in selectedTask.config.notifications" :key="rule.id" class="node-notification-rule">
                   <div class="node-notification-rule-head">
                     <a-select
@@ -1784,7 +1777,7 @@ onBeforeRouteLeave(async () => {
                   </section>
                 </article>
               </div>
-              <div v-else-if="canReadNotificationChannels" class="node-notification-empty">当前任务尚未配置通知；建议至少添加“失败”通知。</div>
+              <div v-else-if="canReadNotificationChannels && activeNotificationChannels.length" class="node-notification-empty">当前任务尚未配置通知；建议至少添加“失败”通知。</div>
             </section>
             <PipelineTaskControls v-if="selectedTask" :key="selectedNode.id" :node="selectedNode" :disabled="!canEdit" :script-build="activeBuildPlans.find(plan=>plan.id===selectedNode?.config.build_plan_id)?.kind==='script'" :build-nodes="stages.flatMap(stage=>stage.tasks).filter(task=>task.type==='build')" @change="updateSelectedNode({},$event)"/>
             <a-divider v-if="selectedTask && selectedNode.type !== 'deploy'" class="node-notification-divider" />
