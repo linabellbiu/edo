@@ -245,6 +245,34 @@ test('应用内流水线只保留名称跳转，摘要和整行没有重复编�
   assert.equal(elements.filter(node => hasClass(node, 'apps-workflow-table')).length, 1)
 })
 
+test('应用详情工具栏只保留流水线、部署实例和环境配置，配置与启停保留在列表菜单', () => {
+  const elements = []
+  function walk(node, output = elements) {
+    if (node.type === 1) output.push(node)
+    for (const child of node.children || []) walk(child, output)
+  }
+  walk(parse(source).descriptor.template.ast)
+  const drawer = elements.find(node => node.tag === 'ResourceDetailDrawer' && node.props.some(prop => prop.type === 7 && prop.name === 'model' && prop.exp?.content === 'applicationDrawerOpen'))
+  assert.ok(drawer)
+  const actions = drawer.children.find(node => node.type === 1 && node.tag === 'template' && node.props.some(prop => prop.type === 7 && prop.name === 'slot' && prop.arg?.content === 'actions'))
+  assert.ok(actions)
+  const toolbar = []
+  walk(actions, toolbar)
+  const buttons = toolbar.filter(node => node.tag === 'a-button')
+  const click = node => node.props.find(prop => prop.type === 7 && prop.name === 'on' && prop.arg?.content === 'click')?.exp?.content
+  assert.deepEqual(buttons.map(click), [
+    "toggleApplicationDetails(applicationDrawerCard,'workflows')",
+    "toggleApplicationDetails(applicationDrawerCard,'deployments')",
+    "toggleApplicationDetails(applicationDrawerCard,'environment')",
+  ])
+  assert.ok(buttons[2].props.some(prop => prop.type === 7 && prop.name === 'if' && prop.exp?.content === "auth.canAny(['delivery_variable.read'])"))
+  for (const handler of ['edit(card.application)', 'confirmResourceStatus(card.application)']) {
+    const item = elements.find(node => node.tag === 'a-menu-item' && click(node) === handler)
+    assert.ok(item, `列表菜单保留 ${handler}`)
+    assert.ok(item.props.some(prop => prop.type === 7 && prop.name === 'if' && prop.exp?.content === 'canUpdate'))
+  }
+})
+
 test('仓库不可用时不把仓库入口变成重复的应用配置入口', () => {
   const { state, navigation } = harness()
   state.repositories.value = []

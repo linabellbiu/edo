@@ -2068,9 +2068,6 @@ onBeforeUnmount(()=>{planExecutionDisposed=true;resetArtifactRequests();formOpen
         <a-button size="small" :type="applicationDetailTab(applicationDrawerID)==='workflows'?'primary':'default'" @click="toggleApplicationDetails(applicationDrawerCard,'workflows')">{{ t('resourceList.workflows') }} ({{ applicationDrawerCard.workflowSummaries.length }})</a-button>
         <a-button size="small" :type="applicationDetailTab(applicationDrawerID)==='deployments'?'primary':'default'" @click="toggleApplicationDetails(applicationDrawerCard,'deployments')">{{ t('resourceList.instances') }} ({{ applicationDrawerCard.deploymentInstances.length }})</a-button>
         <a-button v-if="auth.canAny(['delivery_variable.read'])" size="small" :type="applicationDetailTab(applicationDrawerID)==='environment'?'primary':'default'" @click="toggleApplicationDetails(applicationDrawerCard,'environment')">环境配置（变量 / .env）</a-button>
-        <a-button v-if="canConfigureDelivery" size="small" @click="configureDelivery(applicationDrawerCard.application.id)">{{ t('delivery.configure') }}</a-button>
-        <a-button v-if="canUpdate" size="small" @click="edit(applicationDrawerCard.application)">{{ t('applicationCard.configure') }}</a-button>
-        <a-button v-if="canUpdate" size="small" :loading="resourceMutationID===applicationDrawerCard.application.id" :disabled="Boolean(resourceMutationID)" @click="confirmResourceStatus(applicationDrawerCard.application)"><Power :size="14"/>{{ t(applicationDrawerCard.application.is_active?'delivery.disable':'delivery.enable') }}</a-button>
       </template>
     </template>
     <section v-if="applicationDrawerCard" class="resource-detail-section">
