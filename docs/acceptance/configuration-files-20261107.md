@@ -41,4 +41,4 @@ YAML 复用已有 yaml 2.9.1 和 CodeMirror。TOML 使用 smol-toml 1.9.1（BSD-
 
 ## 容器运行目录修正
 
-发布前只读核对发现正式 API 镜像的 HOME 为只读 `/app`，新的本地配置默认路径无法生成。镜像将 HOME 显式设置为已有持久化目录 `/app/data`，使本地配置写入 `/app/data/edo/deply`；SSH 主机仍使用目标登录用户的 HOME。不改变现有数据卷或主机上的 Compose 工作目录，镜像构建和可写性在本次发布时单独核验。
+正式 API 镜像 HOME 为 `/app/data`，逻辑默认路径仍为 `~/edo/deply`。仅设置 HOME 不能满足宿主机目录要求，因此正式 Compose 把宿主机执行 Compose 用户的 `${HOME}/edo/deply` 单独挂载到容器 `/app/data/edo/deply`。`EDO_DEPLOY_HOST_DIRECTORY` 可显式覆盖挂载源；SSH 部署仍使用目标登录用户的 HOME。新空目录只初始化顶层权限，已有非空且归属不符的目录拒绝接管，不递归更改。已有安装可以只执行 `--deployment-directory-only`，不读取或修改密钥、数据库及初始化标记。默认 `deply` 目录从 Git 和镜像构建上下文排除，避免将配置正文带入源码或镜像。

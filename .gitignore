@@ -5,6 +5,7 @@ AGENTS.md
 /.env
 /bin/
 /data/
+/deply/
 /logs/
 /internal/webui/dist/
 /web/dist/

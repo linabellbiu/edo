@@ -89,6 +89,8 @@ services:
     volumes:
       - ./data:/app/data
       - ./deploy/compose-init.sh:/usr/local/bin/edo-compose-init.sh:ro
+      # 与 API 共用宿主机部署根目录，仅初始化新目录的顶层权限。
+      - ${EDO_DEPLOY_HOST_DIRECTORY:-${HOME}/edo/deply}:/app/data/edo/deply
       # 只读识别既有数据库，数据目录由 PostgreSQL 官方入口管理。
       - edo-postgres-data:/var/lib/postgresql/data:ro
     network_mode: none
@@ -158,6 +160,8 @@ services:
     command: ["server"]
     volumes:
       - ./data:/app/data
+      # 容器内 ~/edo/deply 对应宿主机执行 Compose 用户的 ~/edo/deply。
+      - ${EDO_DEPLOY_HOST_DIRECTORY:-${HOME}/edo/deply}:/app/data/edo/deply
       - edo-builder-client-certs:/certs/client:ro
     depends_on:
       migrate:

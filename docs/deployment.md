@@ -72,6 +72,8 @@ PostgreSQL 使用默认名为 `edo_edo-postgres-data` 的 Docker 持久卷（自
 
 云服务器需在安全组放行 `EDO_HTTP_PORT` 对应的 TCP 端口，默认 `8080`。服务器本机访问正常但公网请求无法到达 Web 时，单独核对云入口和网络策略，不通过重建数据库或重启 Docker 解决。
 
+本地部署生成的配置默认保存在宿主机执行 Compose 用户的 `~/edo/deply`，通过独立 bind 挂载映射到 API 容器的 `/app/data/edo/deply`；容器内 HOME 为 `/app/data`。可以在根 `.env` 设置 `EDO_DEPLOY_HOST_DIRECTORY` 为其他绝对目录。bootstrap 只初始化新空目录的顶层权限，不接管其他用户已有的非空目录；升级既有安装时可单独执行 `docker compose run --rm --no-deps bootstrap sh /usr/local/bin/edo-compose-init.sh --deployment-directory-only`，不重新初始化数据库或密钥。远程 SSH 部署继续使用所选目标用户的 `~/edo/deply`。
+
 API、数据库、Redis、NATS 和构建器不直接暴露宿主机端口。生产访问可通过 HTTPS 代理转发到 Web，保留 WebSocket Upgrade、上传限制与长连接；`EDO_WEB_PORT` 只影响开发 Compose。默认不信任转发头；需要真实客户端地址时，通过 `EDO_COMPOSE_SERVER_TRUSTED_PROXIES` 仅填写受控代理 IP/CIDR，不能填写 `/0` 或整个 Docker 私网。NGINX 覆盖来路的 `X-Forwarded-For`、`X-Real-IP` 并清除 `Forwarded`，不继承伪造地址。Web 前若还有代理，其信任需单独配置。
 
 按产品约定，HTTP API 和终端 WebSocket 不检查 Origin、Host 或 Sec-Fetch-Site，仍保留会话和权限校验。通过 HTTPS、强密码和网络访问控制保护公开部署。

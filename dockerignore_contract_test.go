@@ -37,6 +37,8 @@ func TestDockerBuildContextExcludesPrivateEnvironment(t *testing.T) {
 		{path: "web/.env", ignored: true},
 		{path: "web/.env.production", ignored: true},
 		{path: "deploy/private/.env.local", ignored: true},
+		{path: "deply/project/application/prod/application.yaml", ignored: true},
+		{path: "deply/project/application/prod/settings.toml", ignored: true},
 		{path: ".env.example"},
 		{path: "Dockerfile"},
 		{path: "go.mod"},

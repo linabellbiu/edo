@@ -8,6 +8,33 @@ fail() {
   exit 1
 }
 
+prepare_deployment_directory() {
+  parent=/app/data/edo
+  [ ! -L "$parent" ] || fail '部署目录的上级不能是符号链接'
+  if [ ! -e "$parent" ]; then
+    mkdir -p "$parent"
+    chown 10001:10001 "$parent"
+    chmod 750 "$parent"
+  fi
+  [ -d "$parent" ] || fail '部署目录的上级类型无效'
+  directory=$parent/deply
+  [ ! -L "$directory" ] || fail '部署目录不能是符号链接'
+  mkdir -p "$directory"
+  if [ "$(stat -c '%u:%g' "$directory")" != 10001:10001 ]; then
+    # 只接管新建空目录，不递归改已有部署文件或其他用户的目录权限。
+    [ -z "$(ls -A "$directory")" ] || fail '已有部署目录权限不匹配，请核对目录归属'
+    chown 10001:10001 "$directory"
+    chmod 750 "$directory"
+  fi
+}
+
+prepare_deployment_directory
+# 已有安装升级目录映射时单独使用，不读取或修改数据库、密钥及初始化标记。
+if [ "${1:-}" = --deployment-directory-only ]; then
+  printf '%s\n' 'EDO 部署目录初始化完成'
+  exit 0
+fi
+
 data=/app/data
 state=$data/bootstrap
 [ ! -L "$state" ] || fail '配置目录不能是符号链接'
