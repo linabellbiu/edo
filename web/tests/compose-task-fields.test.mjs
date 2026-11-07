@@ -30,5 +30,5 @@ test('切换项目中止旧方案读取，禁用或撤权后不更新配置',asy
  h.auth.user.project_id='two';await settle();assert.equal(h.requests[0].options.signal.aborted,true)
  h.props.disabled=true;h.state.updateSettings({project_name:'forbidden'});assert.deepEqual(h.events,[])
  h.props.disabled=false;h.auth.user.permissions=[];h.state.updateSettings({project_name:'forbidden'});await settle()
- resolve({data:{deployment_plans:[{id:'plan',kind:'compose_stack'}]}});await settle();assert.equal(h.state.kind.value,'');assert.deepEqual(h.events,[])
+ resolve({data:{deployment_plans:[{id:'plan',kind:'compose_stack'}]}});await settle();assert.equal(h.state.kind.value,'');assert.equal(h.state.deploymentPlan.value,undefined);assert.deepEqual(h.events,[])
 })

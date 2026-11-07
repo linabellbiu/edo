@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import * as vue from 'vue'
 import { loadFrontend } from './acceptanceHarness.mjs'
+const previewModule=loadFrontend('../src/utils/deploymentCommandPreview.ts')
 
 const settle=async()=>{await vue.nextTick();await new Promise(resolve=>setImmediate(resolve));await vue.nextTick()}
 async function harness(get){
@@ -10,7 +11,7 @@ async function harness(get){
  const props=vue.reactive({config:{configuration_files:[]},applicationID:'app',environmentID:'prod',disabled:false})
  const row=(id,patch={})=>({id,name:`${id}.env`,kind:'config_env',version:1,is_active:true,project_id:'project',application_id:'app',environment_id:'prod',...patch})
  const client={get:async(path,options)=>{requests.push({path,options});return get?get():{data:{variables:[row('selected'),row('legacy',{kind:'env'}),row('other-project',{project_id:'another'}),row('other-app',{application_id:'another'}),row('other-env',{environment_id:'test'})]}}}}
- const component=loadFrontend('../src/components/DeploymentConfigurationFields.vue',{'vue':{...vue,onMounted(){},onBeforeUnmount:fn=>unmounts.push(fn)},'@/api/client':{__esModule:true,default:client},'@/api/resources':{apiErrorMessage:error=>error.message},'@/stores/auth':{useAuthStore:()=>auth}},{localStorage:{getItem:()=>storage.project},window}).default
+ const component=loadFrontend('../src/components/DeploymentConfigurationFields.vue',{'vue':{...vue,onMounted(){},onBeforeUnmount:fn=>unmounts.push(fn)},'@/api/client':{__esModule:true,default:client},'@/api/resources':{apiErrorMessage:error=>error.message},'@/stores/auth':{useAuthStore:()=>auth},'@/utils/deploymentCommandPreview':previewModule},{localStorage:{getItem:()=>storage.project},window}).default
  const scope=vue.effectScope();let state
  scope.run(()=>{state=component.setup(props,{expose(){},emit:(...event)=>events.push(event)})});await settle()
  return {state,props,auth,storage,events,requests,stop(){unmounts.forEach(fn=>fn());scope.stop()}}
@@ -41,4 +42,20 @@ test('旧范围的迟到配置响应不回填新范围候选项',async t=>{
  h.storage.project='another';h.auth.user.project_id='another';await settle()
  responses[0]({data:{variables:[{id:'old',name:'old.env',kind:'config_env',version:1,is_active:true,project_id:'project'}]}});await settle()
  assert.equal(h.state.configurations.value.length,0);h.state.change({configuration_files:[]});assert.equal(h.events.length,0)
+})
+test('额外参数、服务、方案与配置路径变化后立即更新命令预览，撤权清理预览',async t=>{
+ const h=await harness();t.after(h.stop)
+ h.props.deploymentPlan={id:'plan',kind:'compose_stack',timeout_seconds:600,deployment_target:{working_directory:'/srv/app'}}
+ h.props.config={configuration_files:[{id:'selected',path:'.prod.env'}],compose:{project_name:'app',services:[],use_sudo:false},deployment_parameters:'--env-file .prod.env'}
+ assert.match(h.state.commandPreview.value.command,/docker compose .*--env-file \.prod\.env .* up -d /)
+ h.props.config.deployment_parameters='--env-file /srv/app/custom.env'
+ h.props.config.compose.services=['api'];h.props.config.compose.use_sudo=true
+ assert.match(h.state.commandPreview.value.command,/sudo -n docker compose .*--env-file \/srv\/app\/custom\.env/)
+ assert.ok(h.state.commandPreview.value.command.endsWith(' api'))
+ assert.ok(!h.state.commandPreview.value.command.includes('--env-file .prod.env'))
+ h.props.deploymentPlan={id:'docker',kind:'docker',deployment_target:{workload_name:'app'}}
+ h.props.config.deployment_parameters='';h.props.config.configuration_files[0].path='~/latest.env'
+ assert.match(h.state.commandPreview.value.command,/docker run .*--env-file '~\/latest\.env'/)
+ assert.equal(h.state.commandPreview.value.equivalent,true)
+ h.auth.user.permissions=[];await settle();assert.equal(h.state.commandPreview.value,undefined)
 })

@@ -4,7 +4,8 @@ import client from '@/api/client'
 import { apiErrorMessage } from '@/api/resources'
 import { useAuthStore } from '@/stores/auth'
 import type { WorkflowNodeConfig } from '@/types/pipeline'
-const props = defineProps<{ config: WorkflowNodeConfig; applicationID?: string; environmentID?: string; disabled: boolean }>()
+import { deploymentCommandPreview, type DeploymentCommandPlan } from '@/utils/deploymentCommandPreview'
+const props = defineProps<{ config: WorkflowNodeConfig; deploymentPlan?: DeploymentCommandPlan; applicationID?: string; environmentID?: string; disabled: boolean }>()
 const emit = defineEmits<{ change: [config: Partial<WorkflowNodeConfig>] }>()
 const auth = useAuthStore()
 type Configuration = { id: string; name: string; kind: string; version: number; is_active: boolean; project_id: string; application_id?: string; environment_id?: string }
@@ -33,6 +34,11 @@ function projectChanged(){void load()}
 onMounted(()=>{window.addEventListener('storage',projectChanged);window.addEventListener('edo:projects-changed',projectChanged)})
 onBeforeUnmount(() => { revision++; controller?.abort();window.removeEventListener('storage',projectChanged);window.removeEventListener('edo:projects-changed',projectChanged) })
 const selected = computed(() => props.config.configuration_files || [])
+const configurationHelp='修改配置正文后，下次重启或重建采用最新内容；需要更新容器环境时会确认重建。修改此处的引用和参数，要等下一次部署成功后采用。'
+const commandPreview = computed(() => {
+ if(selected.value.length&&(!canRead.value||loading.value||error.value||loadedIdentity.value!==identity()))return undefined
+ return deploymentCommandPreview(props.deploymentPlan, props.config, selected.value.filter(ref=>configurations.value.some(item=>item.id===ref.id&&item.kind==='config_env')).map(ref=>ref.path))
+})
 function change(config: Partial<WorkflowNodeConfig>) { if (canEdit.value && loadedIdentity.value===identity() && localStorage.getItem('edo.project')===auth.user?.project_id && auth.canAny(['workflow.update'])) emit('change', config) }
 function update(index: number, patch: { id?: string; path?: string }) { change({ configuration_files: selected.value.map((ref, i) => i === index ? { ...ref, ...patch } : ref) }) }
 function choose(index: number, id: string) { const item = configurations.value.find(item => item.id === id); update(index, { id, ...(item ? { path: item.name } : {}) }) }
@@ -41,7 +47,7 @@ function validPath(value: string) { const path=value.startsWith('~/')?value.slic
 </script>
 <template>
  <section class="deployment-configuration" aria-label="部署配置文件">
-  <a-divider orientation="left">配置文件（可选）</a-divider>
+  <a-divider orientation="left"><span class="configuration-heading">配置文件（可选）<a-tooltip :title="configurationHelp" :trigger="['hover','focus','click']"><button type="button" class="configuration-help" aria-label="配置文件生效说明">?</button></a-tooltip></span></a-divider>
   <a-alert v-if="error" :message="error" type="error" show-icon />
   <p v-if="!canRead">没有查看配置的权限。</p>
   <div v-for="(reference,index) in selected" :key="index" class="configuration-row">
@@ -56,11 +62,16 @@ function validPath(value: string) { const path=value.startsWith('~/')?value.slic
   <a-button :disabled="!canEdit||selected.length>=32" @click="change({configuration_files:[...selected,{id:'',path:''}]})">添加配置文件</a-button>
   <template v-if="selected.length||config.deployment_parameters">
    <p>文件写入指定路径。支持绝对路径和 <code>~/</code>；相对路径按部署工作目录解析，未设置工作目录时使用执行用户的主目录。</p>
-   <a-form-item label="额外部署参数" help="目前支持 --env-file 配置文件路径，可重复填写；只能引用上方选择的文件。选择 ENV 后自动注入容器环境，无须填写。"><a-input :value="config.deployment_parameters" :disabled="!canEdit" placeholder="--env-file .prod.env" @update:value="change({deployment_parameters:String($event||'')})" /></a-form-item>
-   <p>修改配置正文后，下次重启或重建采用最新内容；需要更新容器环境时会确认重建。修改此处的引用和参数，要等下一次部署成功后采用。</p>
+   <a-form-item label="额外部署参数"><a-input :value="config.deployment_parameters" :disabled="!canEdit" aria-label="额外部署参数" placeholder="--env-file .prod.env" @update:value="change({deployment_parameters:String($event||'')})" /><template #help><span>可用 <code>${EDO_CONFIGURATION_DIRECTORY}/相对路径</code> 引用生成文件。</span></template></a-form-item>
   </template>
+  <div v-if="commandPreview" class="deployment-command-preview" role="region" aria-label="部署命令预览">
+   <span class="command-heading">部署命令预览{{commandPreview.equivalent?'（等效命令）':''}}<a-tooltip v-if="commandPreview.equivalent" title="Docker 通过 API 创建容器，单服务 Compose 由 EDO 合并配置后执行；这里展示等效命令。运行时值使用占位符，配置正文不会读取。" :trigger="['hover','focus','click']"><button type="button" class="configuration-help" aria-label="部署命令预览说明">?</button></a-tooltip></span>
+   <pre tabindex="0" aria-label="完整部署命令"><code>{{ commandPreview.command }}</code></pre>
+   <p v-if="commandPreview.warning" role="alert">{{commandPreview.warning}}</p>
+  </div>
  </section>
 </template>
 <style scoped>
 .deployment-configuration{display:grid;gap:12px;min-width:0}.deployment-configuration>.ant-btn{justify-self:start}.configuration-row{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr) auto;gap:12px;align-items:start}.configuration-row>.ant-btn{margin-top:30px}.configuration-row .ant-form-item{margin:0}.deployment-configuration p{color:var(--edo-muted);font-size:12px;line-height:1.7;margin:0}@media(max-width:600px){.configuration-row{grid-template-columns:minmax(0,1fr)}.configuration-row>.ant-btn{margin-top:0;justify-self:start}}
+.configuration-heading,.command-heading{display:inline-flex;align-items:center;gap:8px}.configuration-help{display:inline-flex;align-items:center;justify-content:center;width:20px;height:20px;padding:0;border:1px solid var(--edo-border);border-radius:50%;color:var(--edo-muted);background:transparent;font-size:12px;line-height:1;cursor:help}.configuration-help:focus-visible,.deployment-command-preview pre:focus-visible{outline:2px solid var(--edo-primary);outline-offset:3px}.deployment-command-preview{display:grid;gap:8px;min-width:0}.command-heading{font-size:13px}.deployment-command-preview pre{margin:0;padding:12px;border:1px solid var(--edo-border);border-radius:6px;background:var(--edo-surface);white-space:pre-wrap;overflow-wrap:anywhere;font-size:12px;line-height:1.7;user-select:text}
 </style>
