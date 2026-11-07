@@ -72,15 +72,16 @@ func (s *Service) resolveRecordVariableSetForActors(ctx context.Context, record 
 		return nil, nil, denied
 	}
 	var snapshot struct {
-		VariableBindings map[string][]model.DeliveryVariableBinding `json:"variable_bindings"`
-		AuthorityID      string                                     `json:"authority_id"`
+		ConfigurationBindings map[string][]model.DeploymentConfigBinding `json:"configuration_bindings"`
+		VariableBindings      map[string][]model.DeliveryVariableBinding `json:"variable_bindings"`
+		AuthorityID           string                                     `json:"authority_id"`
 	}
 	if err := json.Unmarshal([]byte(run.WorkflowSnapshot), &snapshot); err != nil {
 		s.logger.Error("读取发布变量运行快照失败", "operation", "deployment_variable_snapshot", "record_id", record.ID, "run_id", run.ID, "err", err)
 		return nil, nil, denied
 	}
 	bindings := snapshot.VariableBindings[record.WorkflowNodeID]
-	if len(bindings) == 0 {
+	if len(bindings) == 0 && len(snapshot.ConfigurationBindings[record.WorkflowNodeID]) == 0 {
 		s.logger.Error("发布变量运行引用不存在", "operation", "deployment_variable_bindings", "record_id", record.ID, "run_id", run.ID, "node_id", record.WorkflowNodeID, "err", denied)
 		return nil, nil, denied
 	}

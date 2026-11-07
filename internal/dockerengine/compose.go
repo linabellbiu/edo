@@ -556,6 +556,7 @@ func validComposeScalarInterpolation(value string) bool {
 }
 
 type ComposeDeployInput struct {
+	RecreateCount   int
 	Environment     map[string]string
 	EnvFiles        map[string]string
 	EndpointID      string
@@ -588,6 +589,10 @@ func (s *Service) DeployCompose(ctx context.Context, input ComposeDeployInput) (
 		return "", err
 	}
 	input.YAML = managedYAML
+	input.YAML, err = composeWithConfigurationRevision(input.YAML, input.ServiceName, configurationRevision(ctx))
+	if err != nil {
+		return "", err
+	}
 	if input.ExpectedImageID != "" {
 		if !IsEDOLocalImage(input.Image) || !IsValidImageID(input.ExpectedImageID) {
 			return "", composeDeploymentError(ErrComposeImageUnavailable, errors.New("待部署的本地 Docker 镜像无效"))
@@ -942,7 +947,7 @@ func runComposeWithSSH(
 	if err := runSSHCommandWithStreams(ctx, client, versionCommand, versionInput, io.Discard, io.Discard); err != nil {
 		return fmt.Errorf("%w: %v", ErrComposePluginUnavailable, err)
 	}
-	arguments := composeCommandArguments("/tmp", projectName, input.ServiceName, input.Timeout)
+	arguments := composeInputArguments("/tmp", projectName, input)
 	quotedArguments := make([]string, 0, len(arguments))
 	for _, argument := range arguments {
 		quotedArguments = append(quotedArguments, shellQuote(argument))
@@ -1001,7 +1006,7 @@ func (s *Service) runComposeCLI(
 	if err := versionCommand.Run(); err != nil {
 		return fmt.Errorf("%w: %v", ErrComposePluginUnavailable, err)
 	}
-	command := exec.CommandContext(ctx, "docker", composeCommandArguments(directory, projectName, input.ServiceName, input.Timeout)...)
+	command := exec.CommandContext(ctx, "docker", composeInputArguments(directory, projectName, input)...)
 	command.Dir = directory
 	command.Env = environment
 	command.Stdin = strings.NewReader(input.YAML)
@@ -1011,6 +1016,16 @@ func (s *Service) runComposeCLI(
 		return fmt.Errorf("执行 Docker Compose 失败: %w", err)
 	}
 	return nil
+}
+
+func composeInputArguments(directory, projectName string, input ComposeDeployInput) []string {
+	args := composeCommandArguments(directory, projectName, input.ServiceName, input.Timeout)
+	if input.RecreateCount > 0 {
+		index := len(args) - 1
+		extra := []string{"--no-deps", "--force-recreate", "--scale", fmt.Sprintf("%s=%d", input.ServiceName, input.RecreateCount)}
+		args = append(append(args[:index:index], extra...), args[index:]...)
+	}
+	return args
 }
 
 func composeCommandArguments(projectDirectory, projectName, serviceName string, timeout time.Duration) []string {

@@ -15,6 +15,7 @@ import (
 	"github.com/google/uuid"
 
 	"edo/internal/access"
+	"edo/internal/configfile"
 	"edo/internal/database"
 	"edo/internal/dockerengine"
 	"edo/internal/model"
@@ -46,7 +47,7 @@ func ContainerControlPermission(action string) string {
 }
 
 func (s *Service) requireComposeRuntimeActionPermission(ctx context.Context, record *model.DeploymentRecord, actorID, action string) error {
-	if record.DeploymentPlanKind != model.DeploymentPlanComposeStack {
+	if record.DeploymentPlanKind != model.DeploymentPlanComposeStack && record.DeploymentPlanKind != model.DeploymentPlanDocker && record.DeploymentPlanKind != model.DeploymentPlanCompose {
 		return nil
 	}
 	permission := ContainerControlPermission(action)
@@ -86,18 +87,9 @@ func (s *Service) ContainerControlPreview(ctx context.Context, deploymentID, con
 	if err = s.requireContainerControl(ctx, record, actorID, action); err != nil {
 		return nil, err
 	}
-	endpoint, scope, err := s.composeRuntimeScope(ctx, record)
+	plan, _, err := s.containerControlPlan(ctx, record, containerID, actorID, action)
 	if err != nil {
 		return nil, s.containerControlError(record, containerID, action, err)
-	}
-	plan, err := s.docker.ComposeContainerControlPlan(ctx, endpoint, scope, containerID, action)
-	if err != nil {
-		return nil, s.containerControlError(record, containerID, action, err)
-	}
-	if action == "recreate" {
-		if _, err = frozenComposeContent(record); err != nil {
-			return nil, s.containerControlError(record, containerID, action, err)
-		}
 	}
 	return plan, nil
 }
@@ -112,6 +104,7 @@ func (s *Service) ControlContainer(ctx context.Context, deploymentID, containerI
 		return nil, err
 	}
 	if plan.Digest != confirmation.Digest {
+		s.logger.Warn("容器或配置确认已失效", "operation", "container_control_confirmation", "deployment_id", deploymentID, "container_id", containerID, "action", action, "err", dockerengine.ErrContainerControlChanged)
 		return nil, dockerengine.ErrContainerControlChanged
 	}
 	record, err := s.currentDeployment(ctx, deploymentID)
@@ -139,15 +132,12 @@ func (s *Service) ControlContainer(ctx context.Context, deploymentID, containerI
 	if err = s.requireContainerControl(ctx, record, actorID, action); err != nil {
 		return nil, err
 	}
-	endpoint, scope, err := s.composeRuntimeScope(ctx, record)
-	if err != nil {
-		return nil, s.containerControlError(record, containerID, action, err)
-	}
-	plan, err = s.docker.ComposeContainerControlPlan(ctx, endpoint, scope, containerID, action)
+	plan, configuration, err := s.containerControlPlan(ctx, record, containerID, actorID, action)
 	if err != nil {
 		return nil, s.containerControlError(record, containerID, action, err)
 	}
 	if plan.Digest != confirmation.Digest {
+		s.logger.Warn("容器或配置确认已失效", "operation", "container_control_confirmation", "deployment_id", deploymentID, "container_id", containerID, "action", action, "err", dockerengine.ErrContainerControlChanged)
 		return nil, dockerengine.ErrContainerControlChanged
 	}
 	timeout := time.Duration(record.RolloutTimeout) * time.Second
@@ -157,15 +147,53 @@ func (s *Service) ControlContainer(ctx context.Context, deploymentID, containerI
 	execution, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	var result dockerengine.RuntimeState
-	if action == "recreate" {
-		result, err = s.recreateComposeService(execution, record, endpoint, scope, plan, actorID, timeout)
+	effective := action
+	if plan.EffectiveAction != "" {
+		effective = plan.EffectiveAction
+	}
+	authorize := func() error {
+		if err := s.requireContainerControl(execution, record, actorID, action); err != nil {
+			return err
+		}
+		return s.authorizeConfigurationControl(execution, record, actorID, effective, configuration)
+	}
+	if err = authorize(); err != nil {
+		return nil, err
+	}
+	if plan.SingleCompose {
+		if effective == "recreate" {
+			result, err = s.recreateSingleCompose(execution, record, plan, configuration, actorID, timeout)
+		} else {
+			result, err = s.docker.ControlContainer(execution, record.RuntimeID, containerID, action)
+			if err == nil {
+				result, err = s.docker.ComposeRuntimeState(execution, record.RuntimeID, record.TargetID, record.ComposeService)
+			}
+		}
+	} else if plan.Kind == "docker" {
+		if effective == "recreate" {
+			result, err = s.recreateNativeContainer(execution, record, plan, configuration, actorID, effective, timeout)
+		} else {
+			result, err = s.docker.ControlContainer(execution, record.RuntimeID, containerID, action)
+		}
 	} else {
-		result, err = s.docker.ControlComposeContainer(execution, endpoint, scope, containerID, action, plan.Digest, func() error { return s.requireContainerControl(execution, record, actorID, action) })
+		endpoint, scope, scopeErr := s.composeRuntimeScope(execution, record)
+		if scopeErr != nil {
+			return nil, s.containerControlError(record, containerID, action, scopeErr)
+		}
+		if effective == "recreate" {
+			result, err = s.recreateComposeService(execution, record, endpoint, scope, plan, actorID, timeout, configuration)
+		} else {
+			digest := plan.Digest
+			if plan.BaseDigest != "" {
+				digest = plan.BaseDigest
+			}
+			result, err = s.docker.ControlComposeContainer(execution, endpoint, scope, containerID, action, digest, authorize)
+		}
 	}
 	if err != nil {
 		return &ContainerControlResult{Plan: plan}, s.containerControlError(record, containerID, action, err)
 	}
-	s.logger.Info("容器运行操作完成", "operation", "container_control", "deployment_id", deploymentID, "container_id", containerID, "service", plan.Service, "action", action, "actor_id", actorID, "affected_count", len(plan.Containers))
+	s.logger.Info("容器运行操作完成", "operation", "container_control", "deployment_id", deploymentID, "container_id", containerID, "service", plan.Service, "action", action, "effective_action", effective, "actor_id", actorID, "affected_count", len(plan.Containers))
 	return &ContainerControlResult{Runtime: dockerRuntimeState(deploymentID, result), Plan: plan}, nil
 }
 
@@ -213,7 +241,7 @@ func frozenComposeContent(record *model.DeploymentRecord) (string, error) {
 	return content, nil
 }
 
-func (s *Service) recreateComposeService(ctx context.Context, record *model.DeploymentRecord, endpoint string, scope dockerengine.ComposeProjectScope, plan *dockerengine.ComposeContainerControlPlan, actorID string, timeout time.Duration) (dockerengine.RuntimeState, error) {
+func (s *Service) recreateComposeService(ctx context.Context, record *model.DeploymentRecord, endpoint string, scope dockerengine.ComposeProjectScope, plan *dockerengine.ComposeContainerControlPlan, actorID string, timeout time.Duration, configuration *ConfigurationSet) (dockerengine.RuntimeState, error) {
 	if s.ssh == nil {
 		return dockerengine.RuntimeState{}, ErrRuntimeControlUnsupported
 	}
@@ -259,12 +287,32 @@ func (s *Service) recreateComposeService(ctx context.Context, record *model.Depl
 			environment[scope.TagVariable] = tagged.Tag()
 		}
 	}
+	if configuration != nil {
+		for name, value := range configuration.Files {
+			environment[configfile.TransportKey(name)] = value
+		}
+		environment["EDO_CONFIGURATION_REVISION"] = configfile.RevisionDigest(configuration.Bindings)
+	}
+	if configuration != nil {
+		scope.ConfigurationDirectory = configuration.Directory
+	}
 	script, err := composeRecreateScript(record.ID, scope, plan, content)
 	if err != nil {
 		return dockerengine.RuntimeState{}, err
 	}
-	if err = s.requireContainerControl(ctx, record, actorID, "recreate"); err != nil {
+	if err = s.requireContainerControl(ctx, record, actorID, plan.Action); err != nil {
 		return dockerengine.RuntimeState{}, err
+	}
+	if err = s.authorizeConfigurationControl(ctx, record, actorID, "recreate", configuration); err != nil {
+		return dockerengine.RuntimeState{}, err
+	}
+	if configuration != nil {
+		writes, writeErr := configfile.WriteScript(configuration.Directory, configurationPaths(configuration))
+		if writeErr != nil {
+			return dockerengine.RuntimeState{}, writeErr
+		}
+		writes += "export EDO_CONFIGURATION_DIRECTORY=\"$edo_configuration_directory\"\n"
+		script = strings.Replace(script, "# EDO_CONFIGURATION_WRITES", writes, 1)
 	}
 	result, err := s.ssh.RunHostDeploymentScript(ctx, sshdeploy.Input{HostID: record.HostID, EnvironmentID: record.EnvironmentID, WorkingDirectory: record.WorkingDirectory, Script: script, Timeout: timeout, Environment: environment, Stdout: io.Discard, Stderr: io.Discard})
 	if err != nil || result.ExitCode != 0 {
@@ -289,7 +337,7 @@ func composeRecreateScript(deploymentID string, scope dockerengine.ComposeProjec
 	if uuid.Validate(deploymentID) != nil {
 		return "", ErrRuntimeControlInvalid
 	}
-	if len(plan.Containers) == 0 || len(plan.Containers) > 256 || plan.Action != "recreate" {
+	if len(plan.Containers) == 0 || len(plan.Containers) > 256 || (plan.Action != "recreate" && plan.EffectiveAction != "recreate") {
 		return "", ErrRuntimeControlInvalid
 	}
 	quote := func(value string) string { return "'" + strings.ReplaceAll(value, "'", "'\"'\"'") + "'" }
@@ -300,6 +348,13 @@ func composeRecreateScript(deploymentID string, scope dockerengine.ComposeProjec
 	args := "--ansi never --project-name " + quote(scope.ProjectName) + " --project-directory " + quote(scope.WorkingDirectory)
 	if scope.EnvFile != "" {
 		args += " --env-file " + quote(scope.EnvFile)
+	}
+	extra, err := configfile.EnvFileParameters(scope.ConfigurationParameters, scope.ConfigurationFiles)
+	if err != nil {
+		return "", err
+	}
+	for _, name := range extra {
+		args += " --env-file \"${EDO_CONFIGURATION_DIRECTORY:?}/\"" + quote(name)
 	}
 	file := ".edo/compose/" + scope.ProjectName + "/" + deploymentID + "/compose.yml"
 	args += " --file " + quote(file)
@@ -315,10 +370,35 @@ func composeRecreateScript(deploymentID string, scope dockerengine.ComposeProjec
 	sort.Strings(ids)
 	var script strings.Builder
 	fmt.Fprintf(&script, "set -eu\numask 077\nstate=%s\nfile_hash() { if command -v sha256sum >/dev/null 2>&1; then sha256sum \"$1\"; elif command -v shasum >/dev/null 2>&1; then shasum -a 256 \"$1\"; else return 1; fi | cut -d ' ' -f 1; }\nfor dir in .edo .edo/compose \"$state\" %s; do [ -d \"$dir\" ] && [ ! -L \"$dir\" ] || exit 20; done\n[ -f %s ] && [ ! -L %s ] || exit 21\n[ \"$(file_hash %s)\" = %s ] || exit 22\nlock=\"$state/active.lock\"\nmkdir \"$lock\" 2>/dev/null || exit 23\ntrap 'rmdir \"$lock\" 2>/dev/null || true' EXIT\ndocker_command() { %s \"$@\"; }\ndc() { docker_command compose %s \"$@\"; }\nservice=%s\nlog=%s\n", quote(".edo/compose/"+scope.ProjectName), quote(".edo/compose/"+scope.ProjectName+"/"+deploymentID), quote(file), quote(file), quote(file), quote(hex.EncodeToString(sum[:])), docker, args, quote(plan.Service), quote(".edo/compose/"+scope.ProjectName+"/"+deploymentID+"/container-recreate.log"))
+	if len(scope.ConfigurationFiles) > 0 {
+		// 目录来自冻结发布；HOME 在目标登录用户的 Shell 内展开。
+		directory := scope.ConfigurationDirectory
+		if directory == "" {
+			return "", ErrRuntimeControlInvalid
+		}
+		if strings.HasPrefix(directory, "~/") {
+			fmt.Fprintf(&script, "export EDO_CONFIGURATION_DIRECTORY=\"${HOME:?}/\"%s\n", quote(strings.TrimPrefix(directory, "~/")))
+		} else {
+			fmt.Fprintf(&script, "export EDO_CONFIGURATION_DIRECTORY=%s\n", quote(directory))
+		}
+	}
 	script.WriteString("[ ! -L \"$log\" ] && [ ! -d \"$log\" ] || exit 21\n")
-	fmt.Fprintf(&script, "actual=$(dc ps --all --quiet \"$service\" 2>>\"$log\" | sort)\n[ \"$actual\" = %s ] || exit 24\nhash=$(dc config --hash \"$service\" 2>>\"$log\") || exit 25\nhash=${hash#* }\n", quote(strings.Join(ids, "\n")))
+	fmt.Fprintf(&script, "actual=$(dc ps --all --quiet \"$service\" 2>>\"$log\" | sort)\n[ \"$actual\" = %s ] || exit 24\n", quote(strings.Join(ids, "\n")))
+	if len(scope.ConfigurationFiles) == 0 {
+		script.WriteString("hash=$(dc config --hash \"$service\" 2>>\"$log\") || exit 25\nhash=${hash#* }\n")
+	}
 	for _, container := range plan.Containers {
-		fmt.Fprintf(&script, "[ \"$(docker_command inspect --format '{{index .Config.Labels \"com.docker.compose.config-hash\"}}' %s)\" = \"$hash\" ] || exit 26\nimage=$(docker_command inspect --format '{{.Config.Image}}' %s)\n[ \"$(docker_command image inspect --format '{{.Id}}' \"$image\")\" = %s ] || exit 27\n", quote(container.ID), quote(container.ID), quote(container.ImageID))
+		expectedHash := "\"$hash\""
+		if len(scope.ConfigurationFiles) > 0 {
+			if len(container.ConfigurationHash) != 64 {
+				return "", ErrContainerRecreateBaseline
+			}
+			expectedHash = quote(container.ConfigurationHash)
+		}
+		fmt.Fprintf(&script, "[ \"$(docker_command inspect --format '{{index .Config.Labels \"com.docker.compose.config-hash\"}}' %s)\" = %s ] || exit 26\nimage=$(docker_command inspect --format '{{.Config.Image}}' %s)\n[ \"$(docker_command image inspect --format '{{.Id}}' \"$image\")\" = %s ] || exit 27\n", quote(container.ID), expectedHash, quote(container.ID), quote(container.ImageID))
+	}
+	if len(scope.ConfigurationFiles) > 0 {
+		script.WriteString("# EDO_CONFIGURATION_WRITES\n")
 	}
 	fmt.Fprintf(&script, "dc up -d --no-deps --no-build --pull never --force-recreate --scale %s \"$service\" >>\"$log\" 2>&1\n", quote(fmt.Sprintf("%s=%d", plan.Service, len(plan.Containers))))
 	return script.String(), nil

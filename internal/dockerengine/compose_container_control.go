@@ -9,19 +9,34 @@ import (
 	"fmt"
 	"time"
 
+	"edo/internal/configfile"
+	"edo/internal/model"
 	"github.com/moby/moby/client"
 )
 
 var ErrContainerControlChanged = errors.New("容器状态或服务副本已变化，请重新确认")
 
+type ConfigurationFileRevision struct {
+	Path    string `json:"path"`
+	Version uint64 `json:"version"`
+}
+
 type ComposeContainerControlPlan struct {
-	Service         string                  `json:"service"`
-	Action          string                  `json:"action"`
-	ContainerID     string                  `json:"container_id"`
-	Digest          string                  `json:"digest"`
-	RunToCompletion bool                    `json:"run_to_completion"`
-	Containers      []ComposeContainerState `json:"containers"`
-	Others          []ComposeContainerState `json:"-"`
+	ConfigurationFiles    []ConfigurationFileRevision     `json:"configuration_files,omitempty"`
+	SingleCompose         bool                            `json:"-"`
+	Kind                  string                          `json:"kind,omitempty"`
+	EffectiveAction       string                          `json:"effective_action,omitempty"`
+	ConfigurationChanged  bool                            `json:"configuration_changed,omitempty"`
+	ConfigurationBindings []model.DeploymentConfigBinding `json:"-"`
+	BaseDigest            string                          `json:"-"`
+	DockerIdentity        *ContainerRollbackIdentity      `json:"-"`
+	Service               string                          `json:"service"`
+	Action                string                          `json:"action"`
+	ContainerID           string                          `json:"container_id"`
+	Digest                string                          `json:"digest"`
+	RunToCompletion       bool                            `json:"run_to_completion"`
+	Containers            []ComposeContainerState         `json:"containers"`
+	Others                []ComposeContainerState         `json:"-"`
 }
 
 func (s *Service) ComposeContainerControlPlan(ctx context.Context, endpointID string, scope ComposeProjectScope, containerID, action string) (*ComposeContainerControlPlan, error) {
@@ -47,7 +62,7 @@ func (s *Service) ComposeContainerControlPlan(ctx context.Context, endpointID st
 	if selected == nil {
 		return nil, ErrContainerControlChanged
 	}
-	plan := &ComposeContainerControlPlan{Action: action, Service: selected.service, ContainerID: containerID, Containers: []ComposeContainerState{}, Others: []ComposeContainerState{}}
+	plan := &ComposeContainerControlPlan{Kind: "compose", Action: action, Service: selected.service, ContainerID: containerID, Containers: []ComposeContainerState{}, Others: []ComposeContainerState{}}
 	for _, name := range scope.CompletionServices {
 		plan.RunToCompletion = plan.RunToCompletion || name == selected.service
 	}
@@ -59,7 +74,11 @@ func (s *Service) ComposeContainerControlPlan(ctx context.Context, endpointID st
 		}
 	}
 	// 确认摘要绑定动作、冻结目标、当前容器身份及运行代次，不包含任何敏感配置。
-	payload, _ := json.Marshal([]any{endpointID, scope, action, containerID, plan.Containers, plan.Others})
+	revisions := []string{}
+	for _, c := range plan.Containers {
+		revisions = append(revisions, c.ConfigurationRevision+":"+c.ConfigurationHash)
+	}
+	payload, _ := json.Marshal([]any{endpointID, scope, action, containerID, plan.Containers, plan.Others, revisions})
 	sum := sha256.Sum256(payload)
 	plan.Digest = hex.EncodeToString(sum[:])
 	return plan, nil
@@ -180,7 +199,7 @@ func (s *Service) VerifyComposeRecreated(ctx context.Context, endpointID string,
 	}
 	for _, item := range items {
 		if item.service == plan.Service {
-			if oldIDs[item.id] || !images[item.detail.ImageID] {
+			if oldIDs[item.id] || !images[item.detail.ImageID] || (len(plan.ConfigurationBindings) > 0 && item.detail.ConfigurationRevision != configfile.RevisionDigest(plan.ConfigurationBindings)) {
 				return RuntimeState{}, ErrContainerControlChanged
 			}
 			selected = append(selected, item)

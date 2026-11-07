@@ -70,6 +70,7 @@ var scopeOptions = []Option{
 }
 
 var definitions = []Definition{
+	placeholder("configuration_directory", "EDO_CONFIGURATION_DIRECTORY", "配置文件目录", "本次发布生成配置文件的绝对目录，可在多镜像 Compose 中用 ${EDO_CONFIGURATION_DIRECTORY}/相对路径 引用文件。", []Scope{ScopeComposeDeployment}, "多镜像 Compose 任务明确选择配置文件后可用；目录由目标登录用户解析"),
 	template("application_name", "application.name", "应用名称", "当前流水线所属应用的名称。", "应用", "运行上下文已创建时可用"),
 	template("workflow_name", "workflow.name", "流水线名称", "本次运行绑定的流水线名称。", "流水线", "运行绑定流水线后可用"),
 	template("task_name", "task.name", "任务名称", "触发当前通知的任务名称。", "任务", "任务开始执行后可用"),

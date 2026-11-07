@@ -158,7 +158,7 @@ func (h deploymentHandler) containerControl(c *gin.Context, action string) {
 		for _, container := range result.Plan.Containers {
 			ids = append(ids, container.ID)
 		}
-		setAuditMetadata(c, map[string]any{"service": result.Plan.Service, "affected_container_ids": ids, "confirmation_digest": request.Digest})
+		setAuditMetadata(c, map[string]any{"service": result.Plan.Service, "affected_container_ids": ids, "confirmation_digest": request.Digest, "effective_action": result.Plan.EffectiveAction, "configuration_files": result.Plan.ConfigurationFiles})
 	}
 	if err != nil {
 		h.writeRuntimeError(c, "container_control_"+action, err)

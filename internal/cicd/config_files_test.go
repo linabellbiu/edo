@@ -78,3 +78,43 @@ func TestConfigurationFilesRejectScopeAndPathConflicts(t *testing.T) {
 		}
 	}
 }
+
+func TestConfigurationLatestUpdatesContentWithoutChangingDeployedSelection(t *testing.T) {
+	s, ctx := variableFixture(t)
+	scope, _ := scopeFrom(ctx)
+	original := "TOKEN=before\nREMOVED=yes\n"
+	input := VariableInput{Name: ".prod.env", Kind: "config_env", Usage: "deploy", Value: &original, IsSecret: true, IsActive: true}
+	saved, err := s.SaveVariable(ctx, "owner", "", input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	refs := []model.DeploymentConfigFile{{ID: saved.ID, Path: "config/.prod.env"}}
+	frozen, err := s.FreezeConfigFiles(ctx, scope.ProjectID, "app", "prod", "main", refs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	changed := "TOKEN=after\nADDED=yes\n"
+	input.Value = &changed
+	input.ExpectedVersion = saved.Version
+	if _, err = s.SaveVariable(ctx, "owner", saved.ID, input); err != nil {
+		t.Fatal(err)
+	}
+	latest, err := s.LatestConfigFiles(ctx, scope.ProjectID, "app", "prod", "main", frozen)
+	if err != nil || latest[0].Version != 2 || latest[0].VariableID != saved.ID || latest[0].Path != refs[0].Path {
+		t.Fatal("引用或路径改变", err)
+	}
+	files, redactions, err := s.ResolveConfigFiles(ctx, scope.ProjectID, "app", "prod", "main", latest)
+	if err != nil || files[refs[0].Path] != changed || len(redactions) == 0 {
+		t.Fatal("未采用最新正文", err)
+	}
+	old, _, err := s.ResolveConfigFiles(ctx, scope.ProjectID, "app", "prod", "main", frozen)
+	if err != nil || old[refs[0].Path] != original {
+		t.Fatal("改写了原发布版本", err)
+	}
+	if err = s.DeleteVariable(ctx, saved.ID, 2); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = s.LatestConfigFiles(ctx, scope.ProjectID, "app", "prod", "main", frozen); err == nil {
+		t.Fatal("撤销后仍刷新正文")
+	}
+}

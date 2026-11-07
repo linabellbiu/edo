@@ -56,3 +56,13 @@ test('三个权限独立校验，撤权、切项目、关闭或切换容器后�
     assert.equal(h.state.preview.value,undefined,change);assert.equal(h.submissions.length,0,change)
   }
 })
+
+test('配置变化的重启明确转为重建，并独立要求重建权限',async()=>{
+ const h=harness('restart',['deployment.read','deployment.container.restart','deployment.container.recreate'])
+ const opening=h.state.loadPreview();h.pending[0].resolve({data:{preview:{...h.preview,kind:'compose',effective_action:'recreate',configuration_changed:true}}});await opening
+ assert.equal(h.state.effectiveAction.value,'recreate');assert.equal(h.state.label.value,'重建服务')
+ const execution=h.state.execute();assert.equal(h.submissions.length,1);assert.ok(h.submissions[0].path.endsWith('/restart'))
+ h.posts[0].resolve({data:{runtime:{deployment_id:'deployment',kind:'compose'}}});await execution
+ const denied=harness('restart'),deniedOpening=denied.state.loadPreview();denied.pending[0].resolve({data:{preview:{...denied.preview,effective_action:'recreate',configuration_changed:true}}});await deniedOpening
+ assert.equal(denied.state.allowed.value,false);await denied.state.execute();assert.equal(denied.submissions.length,0)
+})

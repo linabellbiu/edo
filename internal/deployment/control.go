@@ -323,6 +323,27 @@ func (s *Service) executeRuntimeControl(
 	actorID string,
 	input RuntimeControlInput,
 ) (*RuntimeState, error) {
+	hasConfiguration := false
+	if input.Action == "restart" && record.UsesDeliveryVariables {
+		var err error
+		hasConfiguration, err = s.recordUsesConfiguration(ctx, record)
+		if err != nil {
+			return nil, err
+		}
+	}
+	if hasConfiguration {
+		if err := s.requireCurrentActorPermission(ctx, record, actorID, "delivery_variable.execute"); err != nil {
+			return nil, err
+		}
+		configuration, err := s.ResolveDeploymentConfiguration(ctx, record, true)
+		if err != nil {
+			return nil, err
+		}
+		if configuration != nil {
+			s.logger.Warn("有配置文件的实例须逐容器确认最新配置", "operation", "runtime_configuration_confirmation", "deployment_id", record.ID)
+			return nil, errors.New("请使用容器的重启入口，确认最新配置和受影响副本")
+		}
+	}
 	if isShellRuntime(record) {
 		return s.executeLifecycleScript(ctx, record, actorID, input.Action)
 	}

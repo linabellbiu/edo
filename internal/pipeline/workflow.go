@@ -17,6 +17,7 @@ import (
 	"gorm.io/gorm/clause"
 
 	"edo/internal/cicd"
+	"edo/internal/configfile"
 	projectdatabase "edo/internal/database"
 	"edo/internal/deployment"
 	"edo/internal/dockerengine"
@@ -74,17 +75,18 @@ type WorkflowResult struct {
 }
 
 type workflowSnapshot struct {
-	ExecutionVersion  int                                         `json:"execution_version,omitempty"`
-	VariableBindings  map[string][]model.DeliveryVariableBinding  `json:"variable_bindings,omitempty"`
-	ReleasePolicies   map[string]model.EnvironmentReleasePolicy   `json:"release_policies,omitempty"`
-	AuthorityID       string                                      `json:"authority_id,omitempty"`
-	SchemaVersion     uint16                                      `json:"schema_version"`
-	Source            model.WorkflowNode                          `json:"source"`
-	Stages            []model.WorkflowStage                       `json:"stages"`
-	BuildPlans        map[string]workflowBuildPlanSnapshot        `json:"build_plans,omitempty"`
-	DeploymentPlans   map[string]workflowDeploymentPlanSnapshot   `json:"deployment_plans,omitempty"`
-	DeploymentTargets map[string]workflowDeploymentTargetSnapshot `json:"deployment_targets,omitempty"`
-	ApprovalEnabled   bool                                        `json:"approval_enabled"`
+	ConfigurationBindings map[string][]model.DeploymentConfigBinding  `json:"configuration_bindings,omitempty"`
+	ExecutionVersion      int                                         `json:"execution_version,omitempty"`
+	VariableBindings      map[string][]model.DeliveryVariableBinding  `json:"variable_bindings,omitempty"`
+	ReleasePolicies       map[string]model.EnvironmentReleasePolicy   `json:"release_policies,omitempty"`
+	AuthorityID           string                                      `json:"authority_id,omitempty"`
+	SchemaVersion         uint16                                      `json:"schema_version"`
+	Source                model.WorkflowNode                          `json:"source"`
+	Stages                []model.WorkflowStage                       `json:"stages"`
+	BuildPlans            map[string]workflowBuildPlanSnapshot        `json:"build_plans,omitempty"`
+	DeploymentPlans       map[string]workflowDeploymentPlanSnapshot   `json:"deployment_plans,omitempty"`
+	DeploymentTargets     map[string]workflowDeploymentTargetSnapshot `json:"deployment_targets,omitempty"`
+	ApprovalEnabled       bool                                        `json:"approval_enabled"`
 }
 
 type workflowBuildPlanSnapshot struct {
@@ -527,6 +529,27 @@ func sanitizeWorkflowInput(input *WorkflowInput) error {
 }
 
 func sanitizeWorkflowNode(node *model.WorkflowNode) error {
+	if len(node.Config.ConfigurationFiles) > 32 || (node.Config.ConfigurationDirectory != "" && !configfile.ValidDirectory(node.Config.ConfigurationDirectory)) {
+		return ErrInvalidWorkflow
+	}
+	if len(node.Config.ConfigurationFiles) > 0 || node.Config.DeploymentParameters != "" || node.Config.ConfigurationDirectory != "" {
+		if node.Type != model.WorkflowNodeDeploy {
+			return ErrInvalidWorkflow
+		}
+		if _, err := configfile.EnvFileParameters(node.Config.DeploymentParameters, node.Config.ConfigurationFiles); err != nil {
+			return fmt.Errorf("%w：%s", ErrInvalidWorkflow, configfile.ErrParameters.Error())
+		}
+		paths := map[string]bool{}
+		ids := map[string]bool{}
+		for _, ref := range node.Config.ConfigurationFiles {
+			if ref.ID == "" || !configfile.ValidPath(ref.Path) || paths[ref.Path] || ids[ref.ID] {
+				return ErrInvalidWorkflow
+			}
+			paths[ref.Path] = true
+			ids[ref.ID] = true
+		}
+	}
+
 	if node.Config.Migration != nil {
 		if node.Type != model.WorkflowNodeShell || node.Config.Check != nil || node.Config.Cache != nil || len(node.Config.Reports) > 0 || len(node.Config.VariableNames) > 0 || node.Config.Migration.DatabaseID == "" || !cicd.ValidRelativePath(node.Config.Migration.Directory) {
 			return ErrInvalidWorkflow
@@ -1236,6 +1259,7 @@ func (s *Service) newStageResolvedWorkflowRunWithDatabase(
 	}
 	delivery := cicd.New(database, s.secrets, s.logger)
 	variableBindings := make(map[string][]model.DeliveryVariableBinding)
+	configurationBindings := make(map[string][]model.DeploymentConfigBinding)
 	policies := make(map[string]model.EnvironmentReleasePolicy)
 	authorityID := actorID
 	if authorityID == "" || authorityID == "system" {
@@ -1338,6 +1362,24 @@ func (s *Service) newStageResolvedWorkflowRunWithDatabase(
 			if task.Type == model.WorkflowNodeDeploy {
 				usage = "deploy"
 				envID = deploymentTargets[task.ID].EnvironmentID
+			}
+			if task.Type == model.WorkflowNodeDeploy && len(task.Config.ConfigurationFiles) > 0 {
+				kind := deploymentPlans[task.ID].Kind
+				if kind == model.DeploymentPlanDocker && deploymentPlans[task.ID].DockerConfig.DeploymentScript != "" {
+					s.logger.Warn("Docker 完整命令不能混用配置注入", "operation", "configuration_docker_script", "node_id", task.ID)
+					return nil, fmt.Errorf("%w：选择配置文件时请使用结构化 Docker 部署方案", ErrInvalidWorkflow)
+				}
+				if kind != model.DeploymentPlanDocker && kind != model.DeploymentPlanCompose && kind != model.DeploymentPlanComposeStack {
+					return nil, ErrInvalidWorkflow
+				}
+				if permissionErr := s.requireDeliveryPermissionWithDatabase(variableContext, database, authorityID, "delivery_variable.execute"); permissionErr != nil {
+					return nil, permissionErr
+				}
+				configs, freezeErr := delivery.FreezeConfigFiles(variableContext, application.ProjectID, application.ID, envID, ref, task.Config.ConfigurationFiles)
+				if freezeErr != nil {
+					return nil, freezeErr
+				}
+				configurationBindings[task.ID] = configs
 			}
 			var binding []model.DeliveryVariableBinding
 			var bindingErr error
@@ -1458,7 +1500,7 @@ func (s *Service) newStageResolvedWorkflowRunWithDatabase(
 	}
 	snapshot, err := json.Marshal(workflowSnapshot{
 		SchemaVersion: resolved.SchemaVersion, Source: resolved.Source, Stages: resolved.Stages,
-		ExecutionVersion: 2, VariableBindings: variableBindings, ReleasePolicies: policies, AuthorityID: authorityID,
+		ExecutionVersion: 2, VariableBindings: variableBindings, ConfigurationBindings: configurationBindings, ReleasePolicies: policies, AuthorityID: authorityID,
 		BuildPlans:      buildPlans,
 		DeploymentPlans: deploymentPlans, DeploymentTargets: deploymentTargets,
 		ApprovalEnabled: workflowHasApprovalNode(resolved.Stages),

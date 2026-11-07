@@ -203,6 +203,7 @@ func inspectComposeRuntimeState(ctx context.Context, apiClient *client.Client, t
 	if len(items) == 0 {
 		return RuntimeState{}, ErrRuntimeResourceMissing
 	}
+	details := []ComposeContainerState{}
 	running := true
 	state := "running"
 	for _, item := range items {
@@ -210,10 +211,27 @@ func inspectComposeRuntimeState(ctx context.Context, apiClient *client.Client, t
 		if err != nil || result.Container.State == nil {
 			return RuntimeState{}, fmt.Errorf("%w: %v", ErrRuntimeStateUnavailable, err)
 		}
+		c := result.Container
+		detail := ComposeContainerState{ID: c.ID, Name: strings.TrimPrefix(c.Name, "/"), ImageID: c.Image, State: string(c.State.Status), Running: c.State.Running, CreatedAt: composeContainerTime(c.Created), StartedAt: composeContainerTime(c.State.StartedAt), RestartCount: c.RestartCount}
+		if c.State.Health != nil {
+			detail.Health = string(c.State.Health.Status)
+		}
+		if c.Config != nil {
+			detail.Image = c.Config.Image
+			detail.ImageDisplay = compactContainerImageReference(c.Config.Image)
+		}
+		details = append(details, detail)
 		if !result.Container.State.Running {
 			running = false
 			state = string(result.Container.State.Status)
 		}
 	}
-	return RuntimeState{Kind: "compose", Name: serviceName, State: state, Running: running, Count: len(items)}, nil
+	ready := 0
+	for _, item := range details {
+		if item.Running && (item.Health == "" || item.Health == "healthy") {
+			ready++
+		}
+	}
+	sortContainerStates(details)
+	return RuntimeState{Kind: "compose", Name: serviceName, State: state, Running: running, Count: len(items), Services: []ComposeServiceState{{Name: serviceName, State: state, Count: len(items), ReadyCount: ready, Containers: details}}}, nil
 }

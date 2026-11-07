@@ -76,3 +76,22 @@ func (s *Service) ResolveConfigFiles(ctx context.Context, projectID, application
 	}
 	return files, redactions, nil
 }
+
+// LatestConfigFiles 保留上次部署选择的 UUID、路径及格式，只更新内容版本。
+// 调用方须将返回引用绑定到操作确认，再按该版本执行；不能在确认后静默换成更新版本。
+func (s *Service) LatestConfigFiles(ctx context.Context, projectID, applicationID, environmentID, ref string, bindings []model.DeploymentConfigBinding) ([]model.DeploymentConfigBinding, error) {
+	refs := make([]model.DeploymentConfigFile, 0, len(bindings))
+	for _, binding := range bindings {
+		refs = append(refs, model.DeploymentConfigFile{ID: binding.VariableID, Path: binding.Path})
+	}
+	latest, err := s.FreezeConfigFiles(ctx, projectID, applicationID, environmentID, ref, refs)
+	if err != nil {
+		return nil, err
+	}
+	for i := range latest {
+		if latest[i].Kind != bindings[i].Kind {
+			return nil, s.failure(ctx, "configuration_latest_format", ErrVariableUnavailable, ErrVariableUnavailable)
+		}
+	}
+	return latest, nil
+}

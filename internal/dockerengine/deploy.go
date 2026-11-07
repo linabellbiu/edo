@@ -226,6 +226,9 @@ func (s *Service) deployContainer(
 		return previousImage, nil, deploymentErrorWithRollback(containerDeploymentError(ErrContainerConfigInvalid, err), rollbackOld())
 	}
 	applyImageDisplayLabel(newConfig, imageDisplay)
+	if revision := configurationRevision(ctx); revision != "" {
+		newConfig.Labels[ConfigurationRevisionLabel] = revision
+	}
 	created, err := apiClient.ContainerCreate(deployContext, client.ContainerCreateOptions{
 		Config: newConfig, HostConfig: newHostConfig, Name: canonicalName,
 	})
@@ -506,6 +509,9 @@ func createInitialContainer(
 		return ImageSnapshot{}, nil, containerDeploymentError(ErrContainerConfigInvalid, err)
 	}
 	applyImageDisplayLabel(configuration, imageDisplay)
+	if revision := configurationRevision(ctx); revision != "" {
+		configuration.Labels[ConfigurationRevisionLabel] = revision
+	}
 	created, err := apiClient.ContainerCreate(ctx, client.ContainerCreateOptions{
 		Config: configuration, HostConfig: hostConfiguration, Name: strings.TrimPrefix(containerName, "/"),
 	})

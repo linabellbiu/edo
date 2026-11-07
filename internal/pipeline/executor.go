@@ -52,6 +52,7 @@ type executionContext struct {
 	composeCandidates  map[string]model.Artifact
 	composeArtifacts   map[string]model.Artifact
 	variables          map[string]string
+	configuration      *deployment.ConfigurationSet
 	variableFiles      map[string]string
 	variableRedactions []string
 }
@@ -98,7 +99,7 @@ func (s *Service) executeDeployTask(ctx context.Context, payload DeployTaskPaylo
 		return s.failDeploymentExecution(ctx, failureState, "发布未满足环境保护规则", err)
 	}
 	bindings := prepared.snapshot.VariableBindings[prepared.node.ID]
-	if len(bindings) > 0 {
+	if len(bindings) > 0 || len(prepared.snapshot.ConfigurationBindings[prepared.node.ID]) > 0 {
 		if err := s.requireDeliveryPermission(ctx, prepared.snapshot.AuthorityID, "delivery_variable.execute"); err != nil {
 			return s.failDeploymentExecution(ctx, failureState, "变量使用授权已失效", err)
 		}
@@ -106,6 +107,15 @@ func (s *Service) executeDeployTask(ctx context.Context, payload DeployTaskPaylo
 	values, files, redactions, variableErr := s.Delivery().ResolveVariables(ctx, prepared.run.ProjectID, prepared.run.Ref, bindings)
 	if variableErr != nil || (len(files) > 0 && prepared.deploymentPlan.Kind != model.DeploymentPlanComposeStack && prepared.deploymentPlan.Kind != model.DeploymentPlanCompose) {
 		return s.failDeploymentExecution(ctx, failureState, "部署变量无法读取，请检查变量配置", errors.Join(variableErr, cicd.ErrVariableUnavailable))
+	}
+	if len(prepared.snapshot.ConfigurationBindings[prepared.node.ID]) > 0 {
+		config, configErr := s.deployments.ResolveDeploymentConfiguration(ctx, &model.DeploymentRecord{ProjectID: prepared.run.ProjectID, ApplicationID: prepared.run.ApplicationID, EnvironmentID: prepared.target.EnvironmentID, PipelineRunID: prepared.run.ID, WorkflowNodeID: prepared.node.ID, DeploymentPlanID: prepared.deploymentPlan.ID}, false)
+		if configErr != nil {
+			return s.failDeploymentExecution(ctx, failureState, "部署配置无法读取，请检查配置及使用权限", configErr)
+		}
+		prepared.configuration = config
+		redactions = append(redactions, config.Redactions...)
+		ctx = deployment.WithReleaseConfiguration(ctx, config)
 	}
 	prepared.variables, prepared.variableRedactions = values, redactions
 	prepared.variableFiles = files
@@ -131,7 +141,7 @@ func (s *Service) executeDeployTask(ctx context.Context, payload DeployTaskPaylo
 		return s.failDeploymentExecution(ctx, failureState, "更新流水线部署状态失败，请稍后重试", err)
 	}
 	request := deployment.RequestInput{
-		UsesDeliveryVariables: len(bindings) > 0, TargetID: prepared.target.ID, ApplicationID: prepared.application.ID, ApplicationName: prepared.application.Name,
+		UsesDeliveryVariables: len(bindings) > 0 || prepared.configuration != nil, TargetID: prepared.target.ID, ApplicationID: prepared.application.ID, ApplicationName: prepared.application.Name,
 		ArtifactID: prepared.artifact.ID, Image: image, ImageDisplay: prepared.artifact.Name,
 		ExpectedImageID: expectedImageID,
 		PipelineRunID:   prepared.run.ID, WorkflowNodeID: prepared.node.ID, ApprovedBy: approvedBy,

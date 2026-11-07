@@ -21,6 +21,7 @@ import (
 	"gorm.io/gorm/clause"
 	"k8s.io/apimachinery/pkg/util/validation"
 
+	"edo/internal/configfile"
 	"edo/internal/dockerengine"
 	"edo/internal/envtext"
 	"edo/internal/kube"
@@ -991,6 +992,33 @@ func (s *Service) run(ctx context.Context, deploymentID, expectedImageID string,
 		ctx = WithReleaseEnvironment(ctx, values)
 		ctx = WithReleaseEnvFiles(ctx, files)
 	}
+	configuration := releaseConfiguration(ctx)
+	if record.UsesDeliveryVariables && configuration == nil {
+		var configErr error
+		configuration, configErr = s.ResolveDeploymentConfiguration(ctx, &record, false)
+		if configErr != nil {
+			return s.markFailed(ctx, record.ID, "configuration_unavailable", "部署配置不可用，请检查原运行", configErr, "", nil)
+		}
+	}
+	if configuration != nil {
+		if err := s.requireExecutionPermission(ctx, &record); err != nil {
+			return s.failExecutionAuthorization(ctx, &record, err)
+		}
+		if record.Platform == model.DeploymentDocker {
+			if err := s.docker.WriteConfigurationFiles(ctx, record.RuntimeID, configuration.Directory, configuration.Files); err != nil {
+				return s.markFailed(ctx, record.ID, "configuration_write_failed", "生成部署配置文件失败", err, "", nil)
+			}
+			values := releaseEnvironment(ctx)
+			if values == nil {
+				values = map[string]string{}
+			}
+			for key, value := range configuration.Values {
+				values[key] = value
+			}
+			ctx = WithReleaseEnvironment(ctx, values)
+			ctx = dockerengine.WithConfigurationRevision(ctx, configfile.RevisionDigest(configuration.Bindings))
+		}
+	}
 	expectedImageID = strings.TrimSpace(expectedImageID)
 	if record.ExpectedImageID != "" {
 		if expectedImageID != "" && expectedImageID != record.ExpectedImageID {
@@ -1031,6 +1059,15 @@ func (s *Service) run(ctx context.Context, deploymentID, expectedImageID string,
 				command.environment = map[string]string{}
 			}
 			command.environment[envtext.TransportKey(name)] = content
+		}
+		if configuration != nil {
+			if command.environment == nil {
+				command.environment = map[string]string{}
+			}
+			for name, content := range configuration.Files {
+				command.environment[configfile.TransportKey(name)] = content
+			}
+			command.environment["EDO_CONFIGURATION_REVISION"] = configfile.RevisionDigest(configuration.Bindings)
 		}
 		result, commandErr := s.ssh.RunHostDeploymentScript(ctx, sshdeploy.Input{
 			HostID: record.HostID, EnvironmentID: record.EnvironmentID,

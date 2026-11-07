@@ -25,10 +25,11 @@ import (
 
 type containerControlFixture struct {
 	*runtimeAuthorizationFixture
-	writes      atomic.Int32
-	states      map[string]string
-	generations map[string]int
-	mu          sync.Mutex
+	writes                 atomic.Int32
+	states                 map[string]string
+	generations            map[string]int
+	configurationRevisions map[string]string
+	mu                     sync.Mutex
 }
 
 func newContainerControlFixture(t *testing.T) *containerControlFixture {
@@ -36,6 +37,7 @@ func newContainerControlFixture(t *testing.T) *containerControlFixture {
 	f := &containerControlFixture{runtimeAuthorizationFixture: newRuntimeAuthorizationFixture(t, model.DeploymentDocker), states: map[string]string{strings.Repeat("a", 64): "running", strings.Repeat("b", 64): "running", strings.Repeat("c", 64): "running", strings.Repeat("d", 64): "exited"}}
 	endpoint := f.record.RuntimeID
 	f.generations = map[string]int{}
+	f.configurationRevisions = map[string]string{}
 	f.record.Platform = model.DeploymentSSH
 	f.record.DeploymentPlanKind = model.DeploymentPlanComposeStack
 	f.record.RuntimeID = ""
@@ -76,7 +78,7 @@ func newContainerControlFixture(t *testing.T) *containerControlFixture {
 			if id[0] == 'd' {
 				service = "setup"
 			}
-			return map[string]string{"com.docker.compose.project": "current-project", "com.docker.compose.service": service, "com.docker.compose.project.working_dir": f.record.WorkingDirectory}
+			return map[string]string{dockerengine.ConfigurationRevisionLabel: f.configurationRevisions[id], "com.docker.compose.project": "current-project", "com.docker.compose.service": service, "com.docker.compose.project.working_dir": f.record.WorkingDirectory}
 		}
 		if strings.HasSuffix(r.URL.Path, "/_ping") {
 			w.Header().Set("API-Version", "1.54")
@@ -92,7 +94,7 @@ func newContainerControlFixture(t *testing.T) *containerControlFixture {
 		}
 		for id, state := range f.states {
 			if strings.HasSuffix(r.URL.Path, "/containers/"+id+"/json") {
-				_ = json.NewEncoder(w).Encode(map[string]any{"Id": id, "Name": "/container-" + id[:1], "Image": "sha256:" + strings.Repeat("f", 64), "Config": map[string]any{"Labels": label(id), "Image": "alpine:3.22"}, "State": map[string]any{"Status": state, "Running": state == "running", "ExitCode": 0, "StartedAt": fmt.Sprintf("2026-11-06T00:00:%02dZ", f.generations[id])}})
+				_ = json.NewEncoder(w).Encode(map[string]any{"Id": id, "Name": "/container-" + id[:1], "Image": "sha256:" + strings.Repeat("f", 64), "Config": map[string]any{"Labels": label(id), "Image": "alpine:3.22"}, "State": map[string]any{"Status": state, "Running": state == "running", "Health": map[string]any{"Status": "healthy"}, "ExitCode": 0, "StartedAt": fmt.Sprintf("2026-11-06T00:00:%02dZ", f.generations[id])}})
 				return
 			}
 			if r.Method == "POST" && strings.Contains(r.URL.Path, "/containers/"+id+"/") {

@@ -48,6 +48,7 @@ func (s *Service) composeRuntimeScope(ctx context.Context, record *model.Deploym
 		return "", dockerengine.ComposeProjectScope{}, invalid
 	}
 	var settings *model.ComposeDeploymentSettings
+	var configuration model.WorkflowNodeConfig
 	found := false
 	for _, stage := range snapshot.Stages {
 		for _, node := range stage.Tasks {
@@ -57,6 +58,7 @@ func (s *Service) composeRuntimeScope(ctx context.Context, record *model.Deploym
 				}
 				found = true
 				settings = node.Config.Compose
+				configuration = node.Config
 			}
 		}
 	}
@@ -87,5 +89,5 @@ func (s *Service) composeRuntimeScope(ctx context.Context, record *model.Deploym
 	if err := s.db.WithContext(ctx).Where("host_id = ? AND kind = ? AND status = ?", record.HostID, model.HostCapabilityDocker, model.HostCapabilityReady).First(&capability).Error; err != nil {
 		return "", dockerengine.ComposeProjectScope{}, err
 	}
-	return capability.RuntimeID, dockerengine.ComposeProjectScope{HostID: record.HostID, ProjectName: settings.ProjectName, WorkingDirectory: record.WorkingDirectory, Services: services, CompletionServices: completedServices, UseSudo: settings.UseSudo, EnvFile: settings.EnvFile, TagVariable: settings.TagVariable}, nil
+	return capability.RuntimeID, dockerengine.ComposeProjectScope{ConfigurationDirectory: configuration.ConfigurationDirectory, ConfigurationParameters: configuration.DeploymentParameters, ConfigurationFiles: configuration.ConfigurationFiles, HostID: record.HostID, ProjectName: settings.ProjectName, WorkingDirectory: record.WorkingDirectory, Services: services, CompletionServices: completedServices, UseSudo: settings.UseSudo, EnvFile: settings.EnvFile, TagVariable: settings.TagVariable}, nil
 }

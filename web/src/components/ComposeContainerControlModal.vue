@@ -9,8 +9,9 @@ const props = defineProps<{ open: boolean; deploymentID: string; containerID: st
 const emit = defineEmits<{ 'update:open': [value: boolean]; completed: [runtime: DeploymentRuntimeState] }>()
 const auth = useAuthStore()
 const preview = ref<ContainerControlPreview>(), error = ref(''), loading = ref(false), submitting = ref(false)
-const label = computed(() => ({ restart: '重启容器', stop: '停止容器', recreate: '重建服务' }[props.action]))
-const allowed = computed(() => auth.authorizationState === 'ready' && auth.canAny(['deployment.read']) && auth.canAny([`deployment.container.${props.action}`]))
+const effectiveAction=computed(()=>preview.value?.effective_action||props.action)
+const label = computed(() => ({ restart: '重启容器', stop: '停止容器', recreate: preview.value?.kind==='docker'?'重建容器':'重建服务' }[effectiveAction.value]))
+const allowed = computed(() => auth.authorizationState === 'ready' && auth.canAny(['deployment.read']) && auth.canAny([`deployment.container.${props.action}`]) && (effectiveAction.value!=='recreate'||auth.canAny(['deployment.container.recreate'])))
 let controller: AbortController | undefined, revision = 0, disposed = false, openedIdentity = ''
 function identity() { return JSON.stringify([auth.user?.id, auth.user?.project_id, auth.user?.department_id, [...(auth.user?.permissions || [])].sort(), auth.authorizationState, typeof localStorage === 'undefined' ? '' : localStorage.getItem('edo.project')]) }
 function target() { return JSON.stringify([props.deploymentID, props.containerID, props.action]) }
@@ -50,9 +51,12 @@ onBeforeUnmount(() => { disposed = true; controller?.abort() })
       <p v-if="loading">正在核对目标容器和服务副本…</p>
       <a-alert v-if="error" type="error" show-icon :message="error" />
       <template v-if="preview">
-        <p v-if="action === 'recreate'">将使用 <code>--force-recreate</code> 重建 Compose 服务 <strong>{{ preview.service }}</strong> 的全部 {{ preview.containers.length }} 个副本。容器可写层会被替换，挂载的数据卷保留；依赖服务保持不变。</p>
+        <a-alert v-if="preview.configuration_changed" type="info" show-icon message="配置内容已更新，本次操作将重新生成配置并重建容器，使最新内容生效。" />
+        <p v-if="effectiveAction==='recreate'&&preview.kind==='docker'">将使用原发布镜像重建以下容器，采用原部署引用的最新配置内容。容器可写层会被替换，挂载的数据卷保留。</p>
+        <p v-else-if="effectiveAction === 'recreate'">将使用 <code>--force-recreate</code> 重建 Compose 服务 <strong>{{ preview.service }}</strong> 的全部 {{ preview.containers.length }} 个副本。容器可写层会被替换，挂载的数据卷保留；依赖服务保持不变。</p>
         <p v-else>将{{ action === 'stop' ? '停止' : '重启' }}以下容器，当前连接会中断。</p>
         <a-alert v-if="preview.run_to_completion && action !== 'stop'" type="warning" show-icon message="这是一次性任务，继续操作将再次执行任务。" />
+        <ul v-if="preview.configuration_files?.length" aria-label="本次配置版本"><li v-for="file in preview.configuration_files" :key="file.path"><code>{{file.path}}</code> · v{{file.version}}</li></ul>
         <ul class="affected-containers" aria-label="受影响容器"><li v-for="container in preview.containers" :key="container.id"><strong>{{ container.name || container.id }}</strong><code>{{ container.id }}</code><span>{{ container.image || '—' }}</span></li></ul>
       </template>
       <a-button v-else-if="!loading && !submitting" @click="loadPreview">重新检查</a-button>

@@ -2,6 +2,7 @@ import type { ComposeContainerState, ComposeServiceState } from '@/utils/compose
 
 export type ContainerControlAction = 'restart' | 'stop' | 'recreate'
 export interface ContainerControlPreview {
+  kind?: 'docker'|'compose'; effective_action?: ContainerControlAction; configuration_changed?: boolean; configuration_files?: Array<{path:string;version:number}>
   service: string; action: ContainerControlAction; container_id: string; digest: string
   run_to_completion: boolean; containers: ComposeContainerState[]
 }

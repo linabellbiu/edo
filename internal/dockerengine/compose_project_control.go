@@ -9,19 +9,23 @@ import (
 	"strings"
 	"time"
 
+	"edo/internal/model"
 	"github.com/moby/moby/client"
 )
 
 // ComposeProjectScope 来自已成功发布的冻结配置，不接受客户端指定项目或服务。
 type ComposeProjectScope struct {
-	UseSudo            bool
-	EnvFile            string
-	TagVariable        string
-	HostID             string
-	ProjectName        string
-	WorkingDirectory   string
-	Services           []string
-	CompletionServices []string
+	ConfigurationDirectory  string
+	ConfigurationParameters string
+	ConfigurationFiles      []model.DeploymentConfigFile
+	UseSudo                 bool
+	EnvFile                 string
+	TagVariable             string
+	HostID                  string
+	ProjectName             string
+	WorkingDirectory        string
+	Services                []string
+	CompletionServices      []string
 }
 
 type ComposeServiceState struct {
@@ -35,6 +39,8 @@ type ComposeServiceState struct {
 
 // ComposeContainerState 只包含容器基本信息，不返回环境变量、命令、挂载或完整标签。
 type ComposeContainerState struct {
+	ConfigurationHash         string                    `json:"-"`
+	ConfigurationRevision     string                    `json:"-"`
 	ID                        string                    `json:"id"`
 	Name                      string                    `json:"name"`
 	Image                     string                    `json:"image"`
@@ -339,6 +345,7 @@ func inspectComposeProjectContainer(ctx context.Context, apiClient *client.Clien
 	}
 	detail := ComposeContainerState{
 		ID: id, Name: strings.TrimPrefix(c.Name, "/"), Image: c.Config.Image,
+		ConfigurationRevision: c.Config.Labels[ConfigurationRevisionLabel], ConfigurationHash: c.Config.Labels["com.docker.compose.config-hash"],
 		ImageDisplay: compactContainerImageReference(c.Config.Image), ImageID: c.Image,
 		State: state, Running: c.State.Running, CreatedAt: composeContainerTime(c.Created),
 		StartedAt: composeContainerTime(c.State.StartedAt), FinishedAt: composeContainerTime(c.State.FinishedAt),

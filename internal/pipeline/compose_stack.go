@@ -320,6 +320,11 @@ func (s *Service) executeComposeStackDeployment(ctx context.Context, prepared *e
 	if err != nil {
 		return s.failDeploymentExecution(ctx, failure, "Compose 部署变量配置无效", err)
 	}
+	content, configurationWrites, err := composeConfiguration(content, prepared.configuration)
+	if err != nil {
+		return s.failDeploymentExecution(ctx, failure, "Compose 配置文件无效", err)
+	}
+	fileWrites += configurationWrites
 	script, err := composeStackScript(content, prepared.node.Config, prepared.target.WorkingDirectory, prepared.deploymentPlan.TimeoutSeconds, fileWrites)
 	if err != nil {
 		return s.failDeploymentExecution(ctx, failure, "Compose 部署配置无效", err)
@@ -332,7 +337,7 @@ func (s *Service) executeComposeStackDeployment(ctx context.Context, prepared *e
 	for name, value := range prepared.variableFiles {
 		environment[envtext.TransportKey(name)] = value
 	}
-	record, err := s.deployments.RequestCommandSnapshotAndRun(ctx, prepared.run.CreatedBy, prepared.target, deployment.CommandRequestInput{UsesDeliveryVariables: len(prepared.snapshot.VariableBindings[prepared.node.ID]) > 0, TargetID: prepared.target.ID, ApplicationID: prepared.application.ID, ArtifactID: prepared.artifact.ID, Image: prepared.artifact.ImageRef, PipelineRunID: prepared.run.ID, WorkflowNodeID: prepared.node.ID, ApprovedBy: approvedBy, DeploymentPlanID: prepared.deploymentPlan.ID, PlanKind: model.DeploymentPlanComposeStack, Script: script, ScriptDigest: model.DeploymentPlanExecutionDigest(model.DeploymentPlanComposeStack, script, prepared.deploymentPlan.TimeoutSeconds), TimeoutSeconds: prepared.deploymentPlan.TimeoutSeconds, Environment: environment, Stdout: output, Stderr: output})
+	record, err := s.deployments.RequestCommandSnapshotAndRun(ctx, prepared.run.CreatedBy, prepared.target, deployment.CommandRequestInput{UsesDeliveryVariables: len(prepared.snapshot.VariableBindings[prepared.node.ID]) > 0 || prepared.configuration != nil, TargetID: prepared.target.ID, ApplicationID: prepared.application.ID, ArtifactID: prepared.artifact.ID, Image: prepared.artifact.ImageRef, PipelineRunID: prepared.run.ID, WorkflowNodeID: prepared.node.ID, ApprovedBy: approvedBy, DeploymentPlanID: prepared.deploymentPlan.ID, PlanKind: model.DeploymentPlanComposeStack, Script: script, ScriptDigest: model.DeploymentPlanExecutionDigest(model.DeploymentPlanComposeStack, script, prepared.deploymentPlan.TimeoutSeconds), TimeoutSeconds: prepared.deploymentPlan.TimeoutSeconds, Environment: environment, Stdout: output, Stderr: output})
 	if err != nil {
 		return s.handleDeploymentExecutionError(ctx, failure, deploymentFailureLogMessage(record, "Compose 部署失败，请查看运行日志"), err)
 	}
@@ -352,6 +357,11 @@ func composeStackScript(content string, config model.WorkflowNodeConfig, directo
 	if settings.EnvFile != "" {
 		args += " --env-file " + composeShellLiteral(settings.EnvFile)
 	}
+	extra, err := configurationComposeArguments(config)
+	if err != nil {
+		return "", err
+	}
+	args += extra
 	doc, err := parseComposeStack(content)
 	if err != nil {
 		return "", err

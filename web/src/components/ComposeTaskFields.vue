@@ -1,25 +1,26 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import client from '@/api/client'
+import DeploymentConfigurationFields from '@/components/DeploymentConfigurationFields.vue'
 import { apiErrorMessage } from '@/api/resources'
 import { useAuthStore } from '@/stores/auth'
 import { readKubeYaml } from '@/utils/kubernetesYaml'
 import type { WorkflowNode, WorkflowNodeConfig } from '@/types/pipeline'
-const props = defineProps<{ node: WorkflowNode; buildNodes: WorkflowNode[]; disabled: boolean }>()
+const props = defineProps<{ node: WorkflowNode; buildNodes: WorkflowNode[]; disabled: boolean; applicationID?: string }>()
 const emit = defineEmits<{ change: [config: Partial<WorkflowNodeConfig>] }>()
-const auth = useAuthStore(), kind = ref(''), yaml = ref(''), error = ref('')
+const auth = useAuthStore(), kind = ref(''), yaml = ref(''), error = ref(''), environmentID=ref('')
 let request = 0, controller: AbortController | undefined
 function identity() { return JSON.stringify([props.node.config.deployment_plan_id, auth.user?.id, auth.user?.project_id, auth.user?.permissions, auth.user?.is_superuser]) }
 watch(identity, async () => {
  const revision = ++request, plan = props.node.config.deployment_plan_id, project = auth.user?.project_id
  controller?.abort(); controller = new AbortController(); const signal = controller.signal
- kind.value = ''; yaml.value = ''; error.value = ''
+ kind.value = ''; yaml.value = ''; error.value = '';environmentID.value=''
  if (!plan || !project || !auth.canAny(['deployment_plan.read'])) return
  try {
   const { data } = await client.get('/deployment-plans', { signal, headers: { 'X-EDO-Project-ID': project } })
   if (signal.aborted || revision !== request) return
   const selected = data.deployment_plans.find((value: { id: string }) => value.id === plan)
-  kind.value = selected?.kind || ''; yaml.value = selected?.compose_yaml || ''
+  environmentID.value=selected?.deployment_target?.environment_id||'';kind.value = selected?.kind || ''; yaml.value = selected?.compose_yaml || ''
  } catch (cause) { if (!signal.aborted && revision === request) error.value = apiErrorMessage(cause) }
 }, { immediate: true })
 onBeforeUnmount(() => { request++; controller?.abort() })
@@ -45,6 +46,7 @@ function updateSettings(patch: Partial<NonNullable<WorkflowNodeConfig['compose']
   <a-checkbox :checked="settings.use_sudo" :disabled="disabled" @change="updateSettings({use_sudo:$event.target.checked})">使用免密码 sudo 执行 Docker</a-checkbox>
  </section>
  <a-alert v-else-if="node.config.compose" type="warning" show-icon message="当前任务含多镜像配置，请选择 DockerCompose 多镜像部署方案。"/>
+ <DeploymentConfigurationFields v-if="['docker','compose','compose_stack'].includes(kind)" :config="node.config" :applicationID="applicationID" :environmentID="environmentID" :disabled="disabled" @change="change"/>
 </template>
 <style scoped>
 .compose-task-fields{display:grid;gap:12px;min-width:0}
