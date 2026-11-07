@@ -17,6 +17,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/http/httptrace"
 	"os"
 	"path/filepath"
 	"strings"
@@ -260,20 +261,78 @@ func TestBuilderExecutionClientPreservesUnixSocketAndNegotiation(t *testing.T) {
 	server.Listener = listener
 	server.Start()
 	t.Cleanup(server.Close)
-	service := NewService(nil, nil, config.Runtime{DockerBuilderHost: "unix://" + socket, ConnectTimeout: 100 * time.Millisecond, RequestTimeout: 100 * time.Millisecond})
-	api, err := service.builderExecutionClient()
+	t.Setenv("DOCKER_HOST", "unix://"+socket)
+	t.Setenv("DOCKER_TLS_VERIFY", "")
+	t.Setenv("DOCKER_CERT_PATH", "")
+	t.Setenv("DOCKER_API_VERSION", "")
+	for _, test := range []struct {
+		name string
+		cfg  config.Runtime
+	}{
+		{"configured_timeout", config.Runtime{DockerBuilderHost: "unix://" + socket, ConnectTimeout: 100 * time.Millisecond, RequestTimeout: 100 * time.Millisecond}},
+		{"zero_timeout", config.Runtime{DockerBuilderHost: "unix://" + socket}},
+		{"environment_zero_timeout", config.Runtime{}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			service := NewService(nil, nil, test.cfg)
+			api, err := service.builderExecutionClient()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer api.Close()
+			ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
+			defer cancel()
+			stream, err := api.ImagePush(ctx, pushStreamTestImage, client.ImagePushOptions{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := stream.Wait(ctx); err != nil || api.ClientVersion() != "1.47" {
+				t.Fatalf("Unix Socket 长推送或 API 协商失败: version=%s err=%v", api.ClientVersion(), err)
+			}
+			regular, err := service.BuilderClient()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer regular.Close()
+			if _, err := regular.Ping(ctx, client.PingOptions{}); err != nil {
+				t.Fatalf("普通构建连接未使用 Unix Socket: %v", err)
+			}
+		})
+	}
+}
+
+func TestBuilderDefaultUnixSocketDoesNotResolveSocketAsHost(t *testing.T) {
+	for _, key := range []string{"DOCKER_HOST", "DOCKER_TLS_VERIFY", "DOCKER_CERT_PATH", "DOCKER_API_VERSION"} {
+		t.Setenv(key, "")
+	}
+	api, err := NewService(nil, nil, config.Runtime{}).BuilderClient()
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer api.Close()
-	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
 	defer cancel()
-	stream, err := api.ImagePush(ctx, pushStreamTestImage, client.ImagePushOptions{})
-	if err != nil {
-		t.Fatal(err)
+	attempts := make(chan string, 1)
+	stop := func(kind string) {
+		select {
+		case attempts <- kind:
+		default:
+		}
+		cancel()
 	}
-	if err := stream.Wait(ctx); err != nil || api.ClientVersion() != "1.47" {
-		t.Fatalf("Unix Socket 长推送或 API 协商失败: version=%s err=%v", api.ClientVersion(), err)
+	// 观察拨号后立即取消，不连接或操作开发机既有 Docker 服务。
+	ctx = httptrace.WithClientTrace(ctx, &httptrace.ClientTrace{
+		DNSStart:     func(httptrace.DNSStartInfo) { stop("dns") },
+		ConnectStart: func(network, _ string) { stop(network) },
+	})
+	_, _ = api.Ping(ctx, client.PingOptions{})
+	select {
+	case kind := <-attempts:
+		if kind != "unix" {
+			t.Fatalf("默认 Socket 被当作网络主机解析: %s", kind)
+		}
+	default:
+		t.Fatal("未观察到默认 Socket 拨号")
 	}
 }
 

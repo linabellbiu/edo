@@ -606,7 +606,8 @@ func (s *Service) builderClient(requestTimeout time.Duration) (*client.Client, e
 		if certPath != "" {
 			return nil, ErrInvalidEndpoint
 		}
-		options = append([]client.Opt{client.FromEnv}, options...)
+		// 自定义 HTTP Transport 后仍需由官方选项初始化默认 Unix Socket。
+		options = append([]client.Opt{client.WithHost(client.DefaultDockerHost), client.FromEnv}, options...)
 	} else {
 		parsed, err := url.Parse(host)
 		if err != nil {
