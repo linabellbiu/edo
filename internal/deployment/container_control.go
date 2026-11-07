@@ -388,6 +388,7 @@ func composeRecreateScript(deploymentID string, scope dockerengine.ComposeProjec
 			fmt.Fprintf(&script, "export EDO_CONFIGURATION_DIRECTORY=%s\n", quote(directory))
 		}
 		script.WriteString("export EDO_CONFIGURATION_HOME=\"${HOME-}\"\n")
+		script.WriteString("export EDO_APP_CONFIG_PATH=\"$EDO_CONFIGURATION_DIRECTORY\"\n")
 	}
 	script.WriteString("[ ! -L \"$log\" ] && [ ! -d \"$log\" ] || exit 21\n")
 	fmt.Fprintf(&script, "actual=$(dc ps --all --quiet \"$service\" 2>>\"$log\" | sort)\n[ \"$actual\" = %s ] || exit 24\n", quote(strings.Join(ids, "\n")))

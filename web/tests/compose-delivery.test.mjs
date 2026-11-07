@@ -28,7 +28,7 @@ function harness(post){
 
 function fill(state){
  Object.assign(state.form,{kind:'compose_existing',application:'application-a',environment:'env-a',host:'host-a',directory:'/srv/team-a',name:'团队发布'})
- Object.assign(state.composeForm.value,{project_name:'another-stack',compose_yaml:'services:\n  web:\n    image: registry.example.com/engine:${IMAGE_TAG}\n  jobs:\n    image: registry.example.com/engine:${IMAGE_TAG}\n',env_file:'runtime.env',services:[{service:'web',build_plan_id:'build-one',image_name:'engine'},{service:'jobs',build_plan_id:'build-one',image_name:'engine'}]})
+ Object.assign(state.composeForm.value,{project_name:'another-stack',compose_yaml:'services:\n  web:\n    image: registry.example.com/engine:${IMAGE_TAG}\n  jobs:\n    image: registry.example.com/engine:${IMAGE_TAG}\n',services:[{service:'web',build_plan_id:'build-one',image_name:'engine'},{service:'jobs',build_plan_id:'build-one',image_name:'engine'}]})
  state.composeFields.value={validate:()=>Object.keys(forms.composeDeliveryErrors(state.composeForm.value)).length===0}
 }
 
@@ -41,6 +41,7 @@ test('Compose 页面保存内联正文、Tag 和服务映射，不要求额外�
  assert.match(request.body.compose_yaml,/engine:\$\{IMAGE_TAG\}/)
  assert.equal(request.body.image_tag,'${EDO_GIT_TAG}')
  assert.equal(request.body.compose_file,undefined)
+ assert.equal(request.body.env_file,undefined)
  assert.equal(request.body.target.working_directory,'/srv/team-a')
  assert.equal(request.body.services.length,2)
  assert.equal(request.options.headers['X-EDO-Project-ID'],'project-a')

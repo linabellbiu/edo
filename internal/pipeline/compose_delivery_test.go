@@ -32,7 +32,7 @@ func TestComposeDeliveryCreatesTwoStageDraftAndSharedImageBuild(t *testing.T) {
 	if err := db.WithContext(ctx).Create(&model.HostCapability{HostID: target.HostID, Kind: model.HostCapabilityDocker, Status: model.HostCapabilityReady}).Error; err != nil {
 		t.Fatal(err)
 	}
-	input := ComposeDeliveryInput{ProjectName: "example-stack", ComposeYAML: "services:\n  api:\n    image: registry.example.com/engine:${IMAGE_TAG}\n  jobs:\n    image: registry.example.com/engine:${IMAGE_TAG}\n", EnvFile: "settings.env", Services: []ComposeServiceBuild{{Service: "api", BuildPlanID: build.ID, ImageName: "engine"}, {Service: "jobs", BuildPlanID: build.ID, ImageName: "engine"}}, Target: *target}
+	input := ComposeDeliveryInput{ProjectName: "example-stack", ComposeYAML: "services:\n  api:\n    image: registry.example.com/engine:${IMAGE_TAG}\n  jobs:\n    image: registry.example.com/engine:${IMAGE_TAG}\n", Services: []ComposeServiceBuild{{Service: "api", BuildPlanID: build.ID, ImageName: "engine"}, {Service: "jobs", BuildPlanID: build.ID, ImageName: "engine"}}, Target: *target}
 	result, err := s.CreateComposeDeliveryWorkflow(ctx, app.ID, "admin", input)
 	if err != nil || !result.Valid || result.Workflow.IsActive {
 		t.Fatalf("未生成有效独立草稿: err=%v result=%+v", err, result)
@@ -73,7 +73,7 @@ func TestComposeDeliveryCreatesTwoStageDraftAndSharedImageBuild(t *testing.T) {
 func TestComposeDeliveryValidatesInlineYAMLAndTagBindings(t *testing.T) {
 	valid := ComposeDeliveryInput{ProjectName: "my-app", ComposeYAML: "services:\n  api:\n    image: registry.example.com/api:${IMAGE_TAG}\n", Services: []ComposeServiceBuild{{Service: "api", BuildPlanID: "build"}}}
 	valid.Target.WorkingDirectory = "/srv/app"
-	for _, change := range []func(*ComposeDeliveryInput){func(v *ComposeDeliveryInput) { v.ProjectName = "$(id)" }, func(v *ComposeDeliveryInput) { v.ComposeYAML = "services: [" }, func(v *ComposeDeliveryInput) { v.EnvFile = "../prod.env" }, func(v *ComposeDeliveryInput) { v.TagVariable = "EDO_COMMIT_SHA" }, func(v *ComposeDeliveryInput) { v.HealthURL = "https://user:pass@example.com/health" }, func(v *ComposeDeliveryInput) {
+	for _, change := range []func(*ComposeDeliveryInput){func(v *ComposeDeliveryInput) { v.ProjectName = "$(id)" }, func(v *ComposeDeliveryInput) { v.ComposeYAML = "services: [" }, func(v *ComposeDeliveryInput) { v.EnvFile = "../prod.env" }, func(v *ComposeDeliveryInput) { v.EnvFile = "settings.env" }, func(v *ComposeDeliveryInput) { v.TagVariable = "EDO_COMMIT_SHA" }, func(v *ComposeDeliveryInput) { v.HealthURL = "https://user:pass@example.com/health" }, func(v *ComposeDeliveryInput) {
 		v.ComposeYAML = "services:\n  api:\n    build: .\n    image: app:${IMAGE_TAG}\n"
 	}} {
 		input := valid

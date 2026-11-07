@@ -5,7 +5,7 @@ import ComposeTaskFields from '@/components/ComposeTaskFields.vue'
 import { apiErrorMessage } from '@/api/resources'
 import { useAuthStore } from '@/stores/auth'
 import type { WorkflowNode, WorkflowNodeConfig } from '@/types/pipeline'
-const props=defineProps<{node:WorkflowNode;disabled:boolean;buildNodes:WorkflowNode[];scriptBuild?:boolean;applicationID?:string}>()
+const props=defineProps<{node:WorkflowNode;disabled:boolean;buildNodes:WorkflowNode[];scriptBuild?:boolean;applicationID?:string;applicationName?:string}>()
 const emit=defineEmits<{change:[config:Partial<WorkflowNodeConfig>]}>()
 const auth=useAuthStore(),variables=ref<Array<{name:string;is_secret:boolean;usage?:string;kind?:string;auto_deploy?:boolean}>>([]),databases=ref<Array<{id:string;name:string}>>([]),environments=ref<Array<{id:string;name:string}>>([]),error=ref('')
 let revision=0,disposed=false
@@ -71,7 +71,7 @@ function updateCache(update:Record<string,unknown>){change({cache:{key:'dependen
    <a-select mode="tags" :value="node.config.variable_names||[]" :disabled="!canEdit" :options="variableOptions" placeholder="选择或输入变量名称" @update:value="change({variable_names:$event as string[]})"/>
   </a-form-item>
   <a-form-item v-if="['shell','build'].includes(node.type)&&!node.config.migration" label="变量适用环境"><a-select allow-clear :value="node.config.variable_environment_id||undefined" :disabled="!canEdit" :options="environments.map(v=>({value:v.id,label:v.name}))" @update:value="change({variable_environment_id:String($event||'')})"/></a-form-item>
-  <ComposeTaskFields v-if="node.type==='deploy'" :node="node" :applicationID="applicationID" :build-nodes="buildNodes" :disabled="!canEdit" @change="change"/>
+  <ComposeTaskFields v-if="node.type==='deploy'" :node="node" :applicationID="applicationID" :applicationName="applicationName" :build-nodes="buildNodes" :disabled="!canEdit" @change="change"/>
   <a-form-item v-if="node.type==='deploy'&&!node.config.compose" label="构建制品来源"><a-select allow-clear :value="node.config.artifact_node_id||undefined" :disabled="!canEdit" placeholder="上游只有一个构建时自动选择" :options="buildNodes.map(v=>({value:v.id,label:v.name}))" @update:value="change({artifact_node_id:String($event||'')})"/></a-form-item>
   <a-form-item v-if="node.type==='build'&&scriptBuild" label="汇总的上游构建" help="用于多镜像等制品汇总；所选构建会沿用本次下游主机的目标架构。"><a-select mode="multiple" :value="node.config.artifact_node_ids||[]" :disabled="!canEdit" :options="buildNodes.filter(v=>v.id!==node.id).map(v=>({value:v.id,label:v.name}))" @update:value="change({artifact_node_ids:$event as string[]})"/></a-form-item>
   <template v-if="(node.type==='shell'||(node.type==='build'&&scriptBuild))&&!node.config.migration&&!node.config.check">

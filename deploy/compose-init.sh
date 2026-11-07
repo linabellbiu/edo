@@ -17,6 +17,12 @@ prepare_deployment_directory() {
     chmod 750 "$parent"
   fi
   [ -d "$parent" ] || fail '部署目录的上级类型无效'
+  # Docker 创建嵌套挂载点时上级可能归 root；只接管 EDO 自身目录，不递归修改配置文件。
+  if [ "$(stat -c '%u' "$parent")" = 0 ]; then
+    chown 10001:10001 "$parent"
+    chmod 750 "$parent"
+  fi
+  [ "$(stat -c '%u:%g' "$parent")" = 10001:10001 ] || fail '应用配置目录权限不匹配，请核对目录归属'
   directory=$parent/deply
   [ ! -L "$directory" ] || fail '部署目录不能是符号链接'
   mkdir -p "$directory"

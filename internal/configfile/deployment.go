@@ -16,7 +16,7 @@ import (
 	"edo/internal/model"
 )
 
-var ErrParameters = errors.New("部署参数无效；目前支持 --env-file 配置文件路径")
+var ErrParameters = errors.New("部署参数无效；只支持 --env-file 引用所选配置文件")
 
 // EnvFileParameters 使用现有 Shell 解析库识别引号，但不执行展开、命令或重定向。
 // 只能读取本次明确选择的配置，不能借参数读取任意主机文件。
@@ -38,7 +38,12 @@ func EnvFileParameters(value string, refs []model.DeploymentConfigFile) ([]strin
 		valid := true
 		syntax.Walk(word, func(node syntax.Node) bool {
 			switch node.(type) {
-			case *syntax.ParamExp, *syntax.CmdSubst, *syntax.ArithmExp, *syntax.ProcSubst, *syntax.ExtGlob:
+			case *syntax.ParamExp:
+				parameter := node.(*syntax.ParamExp)
+				if parameter.Param == nil || parameter.Param.Value != "EDO_APP_CONFIG_PATH" || parameter.Excl || parameter.Length || parameter.Width || parameter.IsSet || parameter.Flags != nil || parameter.NestedParam != nil || parameter.Index != nil || len(parameter.Modifiers) != 0 || parameter.Slice != nil || parameter.Repl != nil || parameter.Exp != nil || parameter.Names != 0 {
+					valid = false
+				}
+			case *syntax.CmdSubst, *syntax.ArithmExp, *syntax.ProcSubst, *syntax.ExtGlob:
 				valid = false
 			}
 			return valid
@@ -47,7 +52,7 @@ func EnvFileParameters(value string, refs []model.DeploymentConfigFile) ([]strin
 			return nil, ErrParameters
 		}
 		// 保留 ~/ 原文，由部署目标展开，不能使用 EDO 进程的主目录。
-		arg, err := expand.Literal(&expand.Config{Env: expand.ListEnviron("HOME=~")}, word)
+		arg, err := expand.Literal(&expand.Config{Env: expand.ListEnviron("HOME=~", "EDO_APP_CONFIG_PATH=${EDO_APP_CONFIG_PATH}")}, word)
 		if err != nil || strings.ContainsAny(arg, "\x00\r\n") {
 			return nil, ErrParameters
 		}
@@ -70,6 +75,7 @@ func EnvFileParameters(value string, refs []model.DeploymentConfigFile) ([]strin
 			}
 			path = args[i]
 		}
+		path = strings.TrimPrefix(strings.TrimPrefix(path, "${EDO_APP_CONFIG_PATH}/"), "$EDO_APP_CONFIG_PATH/")
 		if !ValidFilePath(path) || !selected[path] {
 			return nil, ErrParameters
 		}
@@ -112,7 +118,7 @@ func FileArgument(name string) (string, error) {
 	if path.IsAbs(name) {
 		return Quote(name), nil
 	}
-	return `"${EDO_CONFIGURATION_DIRECTORY:?缺少部署工作目录}/"` + Quote(name), nil
+	return `"${EDO_APP_CONFIG_PATH:?缺少应用配置目录}/"` + Quote(name), nil
 }
 
 // ComposePath 保留用户指定的位置，仅将目标主目录交给目标 Shell 展开。
@@ -126,7 +132,7 @@ func ComposePath(name string) (string, error) {
 	if path.IsAbs(name) {
 		return name, nil
 	}
-	return "${EDO_CONFIGURATION_DIRECTORY}/" + name, nil
+	return "${EDO_APP_CONFIG_PATH}/" + name, nil
 }
 
 // WriteScript 仅引用通过独立输入传输的正文，生成脚本及发布快照不包含明文。
@@ -141,7 +147,7 @@ func WriteScript(directory string, paths []string) (string, error) {
 	var script strings.Builder
 	script.WriteString("edo_previous_directory=$PWD\numask 077\n")
 	script.WriteString(prepare)
-	script.WriteString("edo_configuration_directory=$PWD\n")
+	script.WriteString("edo_configuration_directory=$PWD\nexport EDO_APP_CONFIG_PATH=\"$edo_configuration_directory\"\nexport EDO_CONFIGURATION_DIRECTORY=\"$edo_configuration_directory\"\n")
 	for _, name := range names {
 		if !ValidFilePath(name) {
 			return "", errors.New("配置文件路径无效")

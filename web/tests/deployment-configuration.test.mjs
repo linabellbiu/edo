@@ -8,7 +8,7 @@ const settle=async()=>{await vue.nextTick();await new Promise(resolve=>setImmedi
 async function harness(get){
  const events=[],requests=[],unmounts=[],storage={project:'project'},window=new EventTarget()
  const auth=vue.reactive({authorizationState:'ready',user:{id:'actor',project_id:'project',department_id:'department',permissions:['workflow.update','delivery_variable.read']},canAny(codes){return codes.some(code=>this.user.permissions.includes(code))}})
- const props=vue.reactive({config:{configuration_files:[]},applicationID:'app',environmentID:'prod',disabled:false})
+ const props=vue.reactive({config:{configuration_files:[]},applicationID:'app',applicationName:'订单应用',environmentID:'prod',disabled:false})
  const row=(id,patch={})=>({id,name:`${id}.env`,kind:'config_env',version:1,is_active:true,project_id:'project',application_id:'app',environment_id:'prod',...patch})
  const client={get:async(path,options)=>{requests.push({path,options});return get?get():{data:{variables:[row('selected'),row('legacy',{kind:'env'}),row('other-project',{project_id:'another'}),row('other-app',{application_id:'another'}),row('other-env',{environment_id:'test'})]}}}}
  const component=loadFrontend('../src/components/DeploymentConfigurationFields.vue',{'vue':{...vue,onMounted(){},onBeforeUnmount:fn=>unmounts.push(fn)},'@/api/client':{__esModule:true,default:client},'@/api/resources':{apiErrorMessage:error=>error.message},'@/stores/auth':{useAuthStore:()=>auth},'@/utils/deploymentCommandPreview':previewModule},{localStorage:{getItem:()=>storage.project},window}).default
@@ -24,8 +24,8 @@ test('部署显式选择配置 UUID 与配置文件路径，配置选择不混�
  assert.deepEqual(h.events.at(-1),['change',{configuration_files:[{id:'selected',path:'selected.env'}]}])
  assert.equal(h.requests[0].options.headers['X-EDO-Project-ID'],'project')
  assert.ok(h.state.validPath('config/application.yaml'));assert.ok(!h.state.validPath('../escape'))
- assert.ok(!h.state.validPath('.edo/lock'));assert.ok(h.state.validPath('/srv/app/config'))
- assert.ok(h.state.validPath('~/config/.prod.env'));assert.ok(!h.state.validPath('~/../escape'))
+ assert.ok(!h.state.validPath('.edo/lock'));assert.ok(!h.state.validPath('/srv/app/config'))
+ assert.ok(!h.state.validPath('~/config/.prod.env'));assert.ok(!h.state.validPath('~/../escape'))
  assert.ok(!h.state.validPath('//srv/config'));assert.ok(!h.state.validPath('~//config'))
 })
 test('切项目、撤权或加载失败后不能提交保留的配置草稿',async t=>{
@@ -47,15 +47,22 @@ test('额外参数、服务、方案与配置路径变化后立即更新命令�
  const h=await harness();t.after(h.stop)
  h.props.deploymentPlan={id:'plan',kind:'compose_stack',timeout_seconds:600,deployment_target:{working_directory:'/srv/app'}}
  h.props.config={configuration_files:[{id:'selected',path:'.prod.env'}],compose:{project_name:'app',services:[],use_sudo:false},deployment_parameters:'--env-file .prod.env'}
- assert.match(h.state.commandPreview.value.command,/docker compose .*--env-file \.prod\.env .* up -d /)
- h.props.config.deployment_parameters='--env-file /srv/app/custom.env'
+ assert.ok(h.state.commandPreview.value.command.includes('EDO_APP_CONFIG_PATH'))
+ assert.ok(h.state.commandPreview.value.command.includes('订单应用'))
+ assert.ok(h.state.commandPreview.value.command.includes("'.prod.env' --file"))
+ h.props.config.configuration_files[0].path='settings/custom.env'
+ h.props.config.deployment_parameters='--env-file $EDO_APP_CONFIG_PATH/settings/custom.env'
  h.props.config.compose.services=['api'];h.props.config.compose.use_sudo=true
- assert.match(h.state.commandPreview.value.command,/sudo -n docker compose .*--env-file \/srv\/app\/custom\.env/)
+ assert.match(h.state.commandPreview.value.command,/sudo -n docker compose/)
+ assert.ok(h.state.commandPreview.value.command.includes("'settings/custom.env' --file"))
  assert.ok(h.state.commandPreview.value.command.endsWith(' api'))
- assert.ok(!h.state.commandPreview.value.command.includes('--env-file .prod.env'))
+ assert.ok(!h.state.commandPreview.value.command.includes("'.prod.env'"))
  h.props.deploymentPlan={id:'docker',kind:'docker',deployment_target:{workload_name:'app'}}
- h.props.config.deployment_parameters='';h.props.config.configuration_files[0].path='~/latest.env'
- assert.match(h.state.commandPreview.value.command,/docker run .*--env-file '~\/latest\.env'/)
+ h.props.config.deployment_parameters='';h.props.config.configuration_files[0].path='latest.env'
+ assert.match(h.state.commandPreview.value.command,/docker run /)
+ assert.ok(h.state.commandPreview.value.command.includes("'latest.env'"))
  assert.equal(h.state.commandPreview.value.equivalent,true)
+ h.props.config.configuration_files[0].path='/srv/latest.env'
+ assert.match(h.state.commandPreview.value.warning,/只支持.*相对路径/)
  h.auth.user.permissions=[];await settle();assert.equal(h.state.commandPreview.value,undefined)
 })

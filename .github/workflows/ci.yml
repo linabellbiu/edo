@@ -244,6 +244,10 @@ jobs:
           EDO_TEST_DOCKER_INTEGRATION: "1"
         # 仅在临时 Runner 上创建测试容器，和业务、数据库及前端检查互不阻塞。
         run: go test -race -count=1 -timeout=20m ./internal/dockerengine -run '^Test(DockerBuildAndComposeIntegration|DockerBuildCacheAcrossIsolatedContexts|ScriptContainerIntegration|DeliverySandboxReportsSecretsAndCacheIntegration|ComposeEnvFilesIntegration|ComposeProjectRuntimeIntegration)$'
+      - name: 应用配置目录与首次初始化权限
+        env:
+          EDO_TEST_COMPOSE_BOOTSTRAP: "1"
+        run: go test -race -count=1 -timeout=5m . -run '^TestComposeBootstrapFilesystem$'
       - name: SQL 与安全检查工具
         env:
           EDO_TEST_DELIVERY_TOOLS: "1"

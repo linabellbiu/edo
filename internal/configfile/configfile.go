@@ -34,7 +34,7 @@ func ValidPath(value string) bool {
 	return true
 }
 
-// ValidFilePath 支持相对路径、绝对路径及目标执行用户的主目录，不允许路径穿越。
+// ValidFilePath 为历史运行保留绝对路径及主目录引用；新流程的用户输入使用 ValidPath。
 func ValidFilePath(value string) bool {
 	if len(value) > 512 {
 		return false
@@ -49,6 +49,14 @@ func TransportKey(id string) string {
 	return fmt.Sprintf("EDO_CONFIG_FILE_%x", sum[:12])
 }
 func Quote(value string) string { return "'" + strings.ReplaceAll(value, "'", "'\"'\"'") + "'" }
+
+// ApplicationDirectory 固定应用配置目录；应用名称只能占用一个目录层级。
+func ApplicationDirectory(name string) (string, error) {
+	if name == "" || name == "." || name == ".." || len(name) > 512 || !utf8.ValidString(name) || strings.ContainsAny(name, "/\\") || strings.ContainsFunc(name, unicode.IsControl) {
+		return "", fmt.Errorf("应用名称不能用于配置目录")
+	}
+	return "~/edo/" + name + "/config", nil
+}
 
 func ValidDirectory(value string) bool {
 	if value == "~" || value == "/" {

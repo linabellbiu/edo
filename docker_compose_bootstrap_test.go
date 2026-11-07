@@ -50,6 +50,8 @@ func TestComposeBootstrapFilesystem(t *testing.T) {
 		return output
 	}
 	initialize := func() (string, error) { return run("0:0", nil, "sh", "/init.sh") }
+	// 复现 Docker 为嵌套挂载点预建 root 目录，再验证 API 可以创建应用配置子目录。
+	mustRun("0:0", nil, "sh", "-ec", "mkdir -p /app/data/edo/deply")
 	if output, err := initialize(); err != nil {
 		t.Fatalf("全新目录应自动初始化：%v，日志：%s", err, output)
 	}
@@ -61,7 +63,7 @@ func TestComposeBootstrapFilesystem(t *testing.T) {
 		t.Fatal("重复启动改写了密钥或密码")
 	}
 	// 实际以 API 和 PostgreSQL 身份验证读取边界，不凭静态 chmod 命令判断成功。
-	mustRun("10001:10001", nil, "sh", "-ec", "cat /app/data/bootstrap/secrets-key /app/data/bootstrap/postgres-dsn >/dev/null && touch /app/data/api-write-probe && touch /app/data/edo/deply/deployment-probe")
+	mustRun("10001:10001", nil, "sh", "-ec", "cat /app/data/bootstrap/secrets-key /app/data/bootstrap/postgres-dsn >/dev/null && touch /app/data/api-write-probe && touch /app/data/edo/deply/deployment-probe && mkdir -p /app/data/edo/orders/config && touch /app/data/edo/orders/config/configuration-probe")
 	// PG 通过子目录 bind 挂载，不经过仅允许 API 读取的 data 顶层。
 	if output, err := exec.Command("docker", "run", "--rm", "--network", "none", "--read-only", "--user", "999:999", "--mount", "type=volume,src="+data+",dst=/run/bootstrap,volume-subpath=bootstrap/postgres,readonly", "alpine:3.22", "sh", "-ec", "test -r /run/bootstrap/password && test ! -e /run/bootstrap/secrets-key && test ! -e /run/bootstrap/postgres-dsn").CombinedOutput(); err != nil {
 		t.Fatalf("PostgreSQL 文件权限边界错误：%v，日志：%s", err, output)

@@ -12,7 +12,7 @@ import (
 
 func TestConfigurationParametersOnlySelectedFilesAndNoShellExecution(t *testing.T) {
 	refs := []model.DeploymentConfigFile{{ID: "a", Path: ".prod.env"}, {ID: "b", Path: "config/vars.env"}}
-	for _, input := range []string{"", `--env-file .prod.env`, `--env-file='.prod.env' --env-file "config/vars.env"`} {
+	for _, input := range []string{"", `--env-file .prod.env`, `--env-file='.prod.env' --env-file "config/vars.env"`, `--env-file $EDO_APP_CONFIG_PATH/.prod.env`, `--env-file "${EDO_APP_CONFIG_PATH}/.prod.env"`, `--env-file '${EDO_APP_CONFIG_PATH}/.prod.env'`} {
 		paths, err := EnvFileParameters(input, refs)
 		if err != nil {
 			t.Fatal(input, err)
@@ -25,6 +25,51 @@ func TestConfigurationParametersOnlySelectedFilesAndNoShellExecution(t *testing.
 		if _, err := EnvFileParameters(input, refs); err == nil {
 			t.Fatal("接受不安全参数", input)
 		}
+	}
+	for _, input := range []string{`--env-file ${EDO_APP_CONFIG_PATH:-/etc}/passwd`, `--env-file ${EDO_APP_CONFIG_PATH%/}/.prod.env`, `--env-file ${#EDO_APP_CONFIG_PATH}/.prod.env`, `--env-file $EDO_APP_CONFIG_PATH/../escape`, `--env-file $EDO_APP_CONFIG_PATH/unknown.env`} {
+		if _, err := EnvFileParameters(input, refs); err == nil {
+			t.Fatal("内置变量绕过了配置边界", input)
+		}
+	}
+}
+
+func TestApplicationConfigurationDirectoryWritesAndExportsTargetPath(t *testing.T) {
+	home, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	directory, err := ApplicationDirectory("订单 app")
+	if err != nil || directory != "~/edo/订单 app/config" {
+		t.Fatal(directory, err)
+	}
+	for _, name := range []string{"", ".", "..", "team/app", "team\\app", "app\nname"} {
+		if _, err := ApplicationDirectory(name); err == nil {
+			t.Fatal("应用名称逃逸目录", name)
+		}
+	}
+	script, err := WriteScript(directory, []string{"settings/app.yaml"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	argument, err := FileArgument("settings/app.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	command := exec.Command("sh", "-se")
+	command.Env = append(os.Environ(), "HOME="+home, TransportKey("settings/app.yaml")+"=token: literal$token\n")
+	command.Stdin = strings.NewReader(script + "set -- " + argument + "\nprintf '%s\\n' \"$EDO_APP_CONFIG_PATH\" \"$1\"\n")
+	output, err := command.CombinedOutput()
+	want := filepath.Join(home, "edo", "订单 app", "config")
+	if err != nil || string(output) != want+"\n"+filepath.Join(want, "settings/app.yaml")+"\n" {
+		t.Fatal(string(output), err)
+	}
+	content, err := os.ReadFile(filepath.Join(want, "settings/app.yaml"))
+	if err != nil || string(content) != "token: literal$token\n" {
+		t.Fatal("配置正文或实际目录不正确", err)
+	}
+	info, err := os.Stat(filepath.Join(want, "settings/app.yaml"))
+	if err != nil || info.Mode().Perm() != 0600 {
+		t.Fatal("配置权限不正确", err)
 	}
 }
 func TestConfigurationWritesOriginalTextAndRejectsSymlinks(t *testing.T) {

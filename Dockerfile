@@ -51,7 +51,7 @@ RUN sed -i "s|http://deb.debian.org|${EDO_DEBIAN_MIRROR}|g" /etc/apt/sources.lis
 WORKDIR /app
 COPY --from=go-builder --chown=edo:edo /out/edo /app/edo
 COPY --chmod=0555 deploy/docker-entrypoint.sh /app/docker-entrypoint.sh
-# 内置本地部署的 ~/edo/deply 使用既有数据卷，不能落到只读的 /app 根目录。
+# 应用配置和本地部署目录使用既有数据卷，不能落到只读的 /app 根目录。
 ENV HOME=/app/data \
     EDO_DATABASE_DRIVER=sqlite \
     EDO_DATABASE_DSN=/app/data/edo.db

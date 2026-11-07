@@ -36,9 +36,10 @@ func (s *Service) ResolveDeploymentConfiguration(ctx context.Context, record *mo
 		return nil, s.configurationError(record, "configuration_run", err)
 	}
 	var snapshot struct {
-		DirectConfigurationPaths bool                                       `json:"direct_configuration_paths"`
-		ConfigurationBindings    map[string][]model.DeploymentConfigBinding `json:"configuration_bindings"`
-		Stages                   []model.WorkflowStage                      `json:"stages"`
+		ApplicationConfigDirectory string                                     `json:"application_config_directory"`
+		DirectConfigurationPaths   bool                                       `json:"direct_configuration_paths"`
+		ConfigurationBindings      map[string][]model.DeploymentConfigBinding `json:"configuration_bindings"`
+		Stages                     []model.WorkflowStage                      `json:"stages"`
 	}
 	if err := json.Unmarshal([]byte(run.WorkflowSnapshot), &snapshot); err != nil {
 		return nil, s.configurationError(record, "configuration_snapshot", err)
@@ -66,7 +67,7 @@ func (s *Service) ResolveDeploymentConfiguration(ctx context.Context, record *mo
 		return nil, s.configurationError(record, "configuration_identity", ErrRuntimeControlInvalid)
 	}
 	for i, ref := range config.ConfigurationFiles {
-		if ref.ID != bindings[i].VariableID || ref.Path != bindings[i].Path {
+		if ref.ID != bindings[i].VariableID || ref.Path != bindings[i].Path || (snapshot.ApplicationConfigDirectory != "" && !configfile.ValidPath(ref.Path)) {
 			return nil, s.configurationError(record, "configuration_binding", ErrRuntimeControlInvalid)
 		}
 	}
@@ -89,7 +90,12 @@ func (s *Service) ResolveDeploymentConfiguration(ctx context.Context, record *mo
 	if directory == "" {
 		directory = "~"
 	}
-	if !snapshot.DirectConfigurationPaths {
+	if snapshot.ApplicationConfigDirectory != "" {
+		if !configfile.ValidDirectory(snapshot.ApplicationConfigDirectory) {
+			return nil, s.configurationError(record, "configuration_directory", ErrRuntimeControlInvalid)
+		}
+		directory = snapshot.ApplicationConfigDirectory
+	} else if !snapshot.DirectConfigurationPaths {
 		// 已发布实例沿用原快照路径，不能因升级改变重启、重建操作的文件位置。
 		directory = configfile.Directory(config.ConfigurationDirectory, run.ProjectID, run.ApplicationID, record.EnvironmentID, run.ID, record.WorkflowNodeID)
 	}

@@ -4,8 +4,8 @@ import client from '@/api/client'
 import { apiErrorMessage } from '@/api/resources'
 import { useAuthStore } from '@/stores/auth'
 import type { WorkflowNodeConfig } from '@/types/pipeline'
-import { deploymentCommandPreview, type DeploymentCommandPlan } from '@/utils/deploymentCommandPreview'
-const props = defineProps<{ config: WorkflowNodeConfig; deploymentPlan?: DeploymentCommandPlan; applicationID?: string; environmentID?: string; disabled: boolean }>()
+import { deploymentCommandPreview, validConfigurationPath, type DeploymentCommandPlan } from '@/utils/deploymentCommandPreview'
+const props = defineProps<{ config: WorkflowNodeConfig; deploymentPlan?: DeploymentCommandPlan; applicationID?: string; applicationName?: string; environmentID?: string; disabled: boolean }>()
 const emit = defineEmits<{ change: [config: Partial<WorkflowNodeConfig>] }>()
 const auth = useAuthStore()
 type Configuration = { id: string; name: string; kind: string; version: number; is_active: boolean; project_id: string; application_id?: string; environment_id?: string }
@@ -37,13 +37,13 @@ const selected = computed(() => props.config.configuration_files || [])
 const configurationHelp='修改配置正文后，下次重启或重建采用最新内容；需要更新容器环境时会确认重建。修改此处的引用和参数，要等下一次部署成功后采用。'
 const commandPreview = computed(() => {
  if(selected.value.length&&(!canRead.value||loading.value||error.value||loadedIdentity.value!==identity()))return undefined
- return deploymentCommandPreview(props.deploymentPlan, props.config, selected.value.filter(ref=>configurations.value.some(item=>item.id===ref.id&&item.kind==='config_env')).map(ref=>ref.path))
+ return deploymentCommandPreview(props.deploymentPlan, props.config, selected.value.filter(ref=>configurations.value.some(item=>item.id===ref.id&&item.kind==='config_env')).map(ref=>ref.path), props.applicationName)
 })
 function change(config: Partial<WorkflowNodeConfig>) { if (canEdit.value && loadedIdentity.value===identity() && localStorage.getItem('edo.project')===auth.user?.project_id && auth.canAny(['workflow.update'])) emit('change', config) }
 function update(index: number, patch: { id?: string; path?: string }) { change({ configuration_files: selected.value.map((ref, i) => i === index ? { ...ref, ...patch } : ref) }) }
 function choose(index: number, id: string) { const item = configurations.value.find(item => item.id === id); update(index, { id, ...(item ? { path: item.name } : {}) }) }
 function options(index: number) { return configurations.value.filter(item => !selected.value.some((ref, i) => i !== index && ref.id === item.id)).map(item => ({ value: item.id, label: `${item.name} · ${item.kind.slice(7).toUpperCase()} · v${item.version}` })) }
-function validPath(value: string) { const path=value.startsWith('~/')?value.slice(2):value.startsWith('/')?value.slice(1):value;return !!value && value.length <= 512 && path.split('/').every(part => !!part && part !== '.' && part !== '..' && !part.startsWith('-') && !part.startsWith('.edo') && /^[A-Za-z0-9_.-]+$/.test(part)) }
+const validPath = validConfigurationPath
 </script>
 <template>
  <section class="deployment-configuration" aria-label="部署配置文件">
@@ -54,15 +54,15 @@ function validPath(value: string) { const path=value.startsWith('~/')?value.slic
    <a-form-item label="配置" :validate-status="reference.id&&!configurations.some(item=>item.id===reference.id)&&!loading?'error':undefined" :help="reference.id&&!configurations.some(item=>item.id===reference.id)&&!loading?'原配置不可用，请检查适用范围或使用权限':undefined">
     <a-select :value="reference.id||undefined" :loading="loading" :disabled="!canEdit" :options="options(index)" placeholder="选择配置文件" :aria-label="`配置文件 ${index+1}`" @update:value="choose(index,String($event))" />
    </a-form-item>
-   <a-form-item label="配置文件路径" :validate-status="reference.path&&!validPath(reference.path)?'error':undefined" :help="reference.path&&!validPath(reference.path)?'请输入有效的文件路径，不能包含 .. 或保留目录 .edo':undefined">
-    <a-input :value="reference.path" :disabled="!canEdit" placeholder="例如 /srv/app/.prod.env 或 config/application.yaml" :aria-label="`配置文件路径 ${index+1}`" @update:value="update(index,{path:String($event||'')})" />
+   <a-form-item label="配置文件路径" :validate-status="reference.path&&!validPath(reference.path)?'error':undefined" :help="reference.path&&!validPath(reference.path)?'只填写相对路径，不能使用绝对路径、~/、.. 或保留目录 .edo':undefined">
+    <a-input :value="reference.path" :disabled="!canEdit" addon-before="$EDO_APP_CONFIG_PATH/" placeholder="例如 .prod.env 或 settings/app.yaml" aria-describedby="configuration-path-base" :aria-invalid="reference.path&&!validPath(reference.path)?'true':undefined" :aria-label="`配置文件路径 ${index+1}`" @update:value="update(index,{path:String($event||'')})" />
    </a-form-item>
    <a-button danger :disabled="!canEdit" :aria-label="`移除配置文件 ${index+1}`" @click="change({configuration_files:selected.filter((_,i)=>i!==index)})">移除</a-button>
   </div>
   <a-button :disabled="!canEdit||selected.length>=32" @click="change({configuration_files:[...selected,{id:'',path:''}]})">添加配置文件</a-button>
   <template v-if="selected.length||config.deployment_parameters">
-   <p>文件写入指定路径。支持绝对路径和 <code>~/</code>；相对路径按部署工作目录解析，未设置工作目录时使用执行用户的主目录。</p>
-   <a-form-item label="额外部署参数"><a-input :value="config.deployment_parameters" :disabled="!canEdit" aria-label="额外部署参数" placeholder="--env-file .prod.env" @update:value="change({deployment_parameters:String($event||'')})" /><template #help><span>可用 <code>${EDO_CONFIGURATION_DIRECTORY}/相对路径</code> 引用生成文件。</span></template></a-form-item>
+   <p id="configuration-path-base"><code>EDO_APP_CONFIG_PATH = ~/edo/{{ applicationName || '应用名称' }}/config</code></p>
+   <a-form-item label="额外部署参数"><a-input :value="config.deployment_parameters" :disabled="!canEdit" aria-label="额外部署参数" placeholder="--env-file .prod.env" @update:value="change({deployment_parameters:String($event||'')})" /><template #help><span>可用 <code>${EDO_APP_CONFIG_PATH}/相对路径</code> 引用生成文件。</span></template></a-form-item>
   </template>
   <div v-if="commandPreview" class="deployment-command-preview" role="region" aria-label="部署命令预览">
    <span class="command-heading">部署命令预览{{commandPreview.equivalent?'（等效命令）':''}}<a-tooltip v-if="commandPreview.equivalent" title="Docker 通过 API 创建容器，单服务 Compose 由 EDO 合并配置后执行；这里展示等效命令。运行时值使用占位符，配置正文不会读取。" :trigger="['hover','focus','click']"><button type="button" class="configuration-help" aria-label="部署命令预览说明">?</button></a-tooltip></span>
@@ -72,6 +72,6 @@ function validPath(value: string) { const path=value.startsWith('~/')?value.slic
  </section>
 </template>
 <style scoped>
-.deployment-configuration{display:grid;gap:12px;min-width:0}.deployment-configuration>.ant-btn{justify-self:start}.configuration-row{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr) auto;gap:12px;align-items:start}.configuration-row>.ant-btn{margin-top:30px}.configuration-row .ant-form-item{margin:0}.deployment-configuration p{color:var(--edo-muted);font-size:12px;line-height:1.7;margin:0}@media(max-width:600px){.configuration-row{grid-template-columns:minmax(0,1fr)}.configuration-row>.ant-btn{margin-top:0;justify-self:start}}
+.deployment-configuration{display:grid;gap:12px;min-width:0}.deployment-configuration>.ant-btn{justify-self:start}.configuration-row{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.5fr) auto;gap:12px;align-items:start}.configuration-row>.ant-btn{margin-top:30px}.configuration-row .ant-form-item{margin:0}.deployment-configuration p{color:var(--edo-muted);font-size:12px;line-height:1.7;margin:0}@media(max-width:600px){.configuration-row{grid-template-columns:minmax(0,1fr)}.configuration-row>.ant-btn{margin-top:0;justify-self:start}}
 .configuration-heading,.command-heading{display:inline-flex;align-items:center;gap:8px}.configuration-help{display:inline-flex;align-items:center;justify-content:center;width:20px;height:20px;padding:0;border:1px solid var(--edo-border);border-radius:50%;color:var(--edo-muted);background:transparent;font-size:12px;line-height:1;cursor:help}.configuration-help:focus-visible,.deployment-command-preview pre:focus-visible{outline:2px solid var(--edo-primary);outline-offset:3px}.deployment-command-preview{display:grid;gap:8px;min-width:0}.command-heading{font-size:13px}.deployment-command-preview pre{margin:0;padding:12px;border:1px solid var(--edo-border);border-radius:6px;background:var(--edo-surface);white-space:pre-wrap;overflow-wrap:anywhere;font-size:12px;line-height:1.7;user-select:text}
 </style>

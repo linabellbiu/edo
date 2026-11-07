@@ -5,6 +5,7 @@ import (
 	"edo/internal/access"
 	"edo/internal/cicd"
 	"edo/internal/database"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -30,7 +31,7 @@ func TestComposeConfigurationUsesStablePathsAndOpaqueTransport(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(content+writes, "literal$token") || !strings.Contains(content, "${EDO_CONFIGURATION_DIRECTORY}/config/.prod.env") || !strings.Contains(content, "format: raw") || !strings.Contains(content, "existing: preserved") {
+	if strings.Contains(content+writes, "literal$token") || !strings.Contains(content, "${EDO_APP_CONFIG_PATH}/config/.prod.env") || !strings.Contains(content, "format: raw") || !strings.Contains(content, "existing: preserved") {
 		t.Fatal("正文泄漏、未生成受控引用或原标签丢失")
 	}
 	execute := func(value string) {
@@ -57,7 +58,7 @@ func TestComposeConfigurationUsesStablePathsAndOpaqueTransport(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(script, `--env-file "${EDO_CONFIGURATION_DIRECTORY:?缺少部署工作目录}/"'config/.prod.env'`) || strings.Contains(script, original) || strings.Contains(script, changed) {
+	if !strings.Contains(script, `--env-file "${EDO_APP_CONFIG_PATH:?缺少应用配置目录}/"'config/.prod.env'`) || strings.Contains(script, original) || strings.Contains(script, changed) {
 		t.Fatal("部署参数丢失或正文写入命令快照")
 	}
 	cmd := exec.Command("sh", "-n")
@@ -133,8 +134,36 @@ func TestConfigurationWorkflowSnapshotPinsSelectionUntilNextDeployment(t *testin
 		t.Fatal(err)
 	}
 	snapshot, err := parseWorkflowSnapshot(run)
-	if err != nil || !snapshot.DirectConfigurationPaths || len(snapshot.ConfigurationBindings["deploy"]) != 1 || snapshot.ConfigurationBindings["deploy"][0].Version != 1 || strings.Contains(run.WorkflowSnapshot, value) {
+	if err != nil || snapshot.ApplicationConfigDirectory != "~/edo/"+f.application.Name+"/config" || !snapshot.DirectConfigurationPaths || len(snapshot.ConfigurationBindings["deploy"]) != 1 || snapshot.ConfigurationBindings["deploy"][0].Version != 1 || strings.Contains(run.WorkflowSnapshot, value) {
 		t.Fatal("配置未正确冻结或泄漏正文", err)
+	}
+	renamed := *f.application
+	renamed.Name = "renamed_application"
+	renamedRun, err := f.service.newResolvedWorkflowRun(ctx, &renamed, &workflow, workflow.Source, "manual", "refs/heads/main", strings.Repeat("c", 40), actor.ID, "", time.Now().UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	renamedSnapshot, err := parseWorkflowSnapshot(renamedRun)
+	if err != nil || renamedSnapshot.ApplicationConfigDirectory != "~/edo/renamed_application/config" || snapshot.ApplicationConfigDirectory == renamedSnapshot.ApplicationConfigDirectory {
+		t.Fatal("下一次部署未采用新应用名称", err)
+	}
+	for _, invalid := range []string{"/srv/app/.prod.env", "~/config/.prod.env", "../.prod.env"} {
+		bad := model.WorkflowNode{ID: "deploy", Type: model.WorkflowNodeDeploy, Config: model.WorkflowNodeConfig{ConfigurationFiles: []model.DeploymentConfigFile{{ID: saved.ID, Path: invalid}}}}
+		if err := sanitizeWorkflowNode(&bad); err == nil {
+			t.Fatal("接受新配置的非相对路径", invalid)
+		}
+		badWorkflow := workflow
+		badWorkflow.Stages = cloneWorkflowStages(workflow.Stages)
+		for i := range badWorkflow.Stages {
+			for j := range badWorkflow.Stages[i].Tasks {
+				if badWorkflow.Stages[i].Tasks[j].Type == model.WorkflowNodeDeploy {
+					badWorkflow.Stages[i].Tasks[j].Config.ConfigurationFiles[0].Path = invalid
+				}
+			}
+		}
+		if badRun, err := f.service.newResolvedWorkflowRun(ctx, f.application, &badWorkflow, badWorkflow.Source, "manual", "refs/heads/main", strings.Repeat("d", 40), actor.ID, "", time.Now().UTC()); badRun != nil || !errors.Is(err, ErrInvalidWorkflow) {
+			t.Fatal("开始部署时未拒绝非相对路径，或错误未归为配置校验失败", invalid, err)
+		}
 	}
 	// 只改可编辑流程不能改写已创建运行；下次运行才采用移除引用和参数。
 	for i := range workflow.Stages {
@@ -151,7 +180,7 @@ func TestConfigurationWorkflowSnapshotPinsSelectionUntilNextDeployment(t *testin
 		t.Fatal(err)
 	}
 	nextSnapshot, err := parseWorkflowSnapshot(next)
-	if err != nil || len(nextSnapshot.ConfigurationBindings["deploy"]) != 0 || len(snapshot.ConfigurationBindings["deploy"]) != 1 {
+	if err != nil || nextSnapshot.ApplicationConfigDirectory != "" || len(nextSnapshot.ConfigurationBindings["deploy"]) != 0 || len(snapshot.ConfigurationBindings["deploy"]) != 1 {
 		t.Fatal("新旧运行配置互相影响", err)
 	}
 }

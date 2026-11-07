@@ -213,3 +213,53 @@ func TestConfigurationDirectPathsUseFrozenDeploymentDirectory(t *testing.T) {
 		}
 	}
 }
+
+func TestApplicationConfigurationPathSurvivesRenameAndRejectsAbsoluteReferences(t *testing.T) {
+	f := newContainerControlFixture(t)
+	attachConfigurationFixture(t, f)
+	var run model.PipelineRun
+	if err := f.db.First(&run, "uuid = ?", f.record.PipelineRunID).Error; err != nil {
+		t.Fatal(err)
+	}
+	var snapshot map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(run.WorkflowSnapshot), &snapshot); err != nil {
+		t.Fatal(err)
+	}
+	snapshot["application_config_directory"], _ = json.Marshal("~/edo/container_control/config")
+	save := func() {
+		t.Helper()
+		data, _ := json.Marshal(snapshot)
+		if err := f.db.Model(&run).Update("workflow_snapshot", string(data)).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	save()
+	if err := f.db.Model(&model.Application{}).Where("uuid = ?", f.record.ApplicationID).Update("name", "renamed_application").Error; err != nil {
+		t.Fatal(err)
+	}
+	record := f.record
+	record.WorkingDirectory = "/different/workspace"
+	for _, latest := range []bool{false, true} {
+		set, err := f.service.ResolveDeploymentConfiguration(f.ctx, &record, latest)
+		if err != nil || set.Directory != "~/edo/container_control/config" || set.Bindings[0].Path != "config/.prod.env" {
+			t.Fatal("改名或工作目录改变了原配置位置", set, err)
+		}
+	}
+	// 新目录模式必须二次核对冻结引用，不能用绝对路径绕过新流程的输入校验。
+	var stages []model.WorkflowStage
+	var bindings map[string][]model.DeploymentConfigBinding
+	if err := json.Unmarshal(snapshot["stages"], &stages); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(snapshot["configuration_bindings"], &bindings); err != nil {
+		t.Fatal(err)
+	}
+	stages[0].Tasks[0].Config.ConfigurationFiles[0].Path = "/outside/.prod.env"
+	bindings["deploy"][0].Path = "/outside/.prod.env"
+	snapshot["stages"], _ = json.Marshal(stages)
+	snapshot["configuration_bindings"], _ = json.Marshal(bindings)
+	save()
+	if set, err := f.service.ResolveDeploymentConfiguration(f.ctx, &record, true); err == nil || set != nil {
+		t.Fatal("接受应用配置目录外的引用")
+	}
+}
