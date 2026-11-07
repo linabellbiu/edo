@@ -42,3 +42,12 @@ YAML 复用已有 yaml 2.9.1 和 CodeMirror。TOML 使用 smol-toml 1.9.1（BSD-
 ## 容器运行目录修正
 
 正式 API 镜像 HOME 为 `/app/data`，逻辑默认路径仍为 `~/edo/deply`。仅设置 HOME 不能满足宿主机目录要求，因此正式 Compose 把宿主机执行 Compose 用户的 `${HOME}/edo/deply` 单独挂载到容器 `/app/data/edo/deply`。`EDO_DEPLOY_HOST_DIRECTORY` 可显式覆盖挂载源；SSH 部署仍使用目标登录用户的 HOME。新空目录只初始化顶层权限，已有非空且归属不符的目录拒绝接管，不递归更改。已有安装可以只执行 `--deployment-directory-only`，不读取或修改密钥、数据库及初始化标记。默认 `deply` 目录从 Git 和镜像构建上下文排除，避免将配置正文带入源码或镜像。
+
+## 2026-11-07 发布核验
+
+- 用户授权推送、部署；功能和目录映射提交已推送 GitHub `main`，最终功能提交为 `34416666753ba917be20aeea238fe4ed003e7681`。目标为用户先前明确指定的 `117.50.182.97:8080`，SSH 身份核对为 `10-60-249-21`，服务器 `/home/ubuntu/edo` 只使用 `git pull --ff-only origin main` 更新源码。
+- 取得 `/tmp/edo-compose-release.lock` 并核对无活动流水线、构建和部署后，分别构建并更新 API、Web；目录映射修正阶段只替换 API。实际版本为 `EDO 3441666`，API 镜像为 `sha256:8212dccbe8fe7136d99fcd9fe0732f33110e3e27abd9d67a8467680b91183ddb`，Web 镜像为 `sha256:5b354f0bc670104134fce12440f665619c52ca49f1732462b426296edf37de71`，均 healthy。
+- 独立临时初始化容器只准备宿主机 `/home/ubuntu/edo/deply` 的空目录顶层权限，未读取或更改密钥、数据库和初始化标记。独立临时 API 容器使用 UID 10001 写入 0600 探测文件，容器退出且正式 API 替换后仍能读取；实际 Docker Mount.Source 与 `/home/ubuntu/edo/deply` 一致，探测文件及临时容器均已清理。
+- Web `/healthz` 和 API readiness 通过，database、redis、nats、builder 均 ok。配置页、流水线编辑器和应用页的实际 HTTP JS 与 Web 容器文件 SHA-256 逐项一致；独立浏览器正常加载登录页，当前未登录，不称为已登录配置业务流程验收，也未触发业务部署或容器运行操作。
+- PostgreSQL、Redis、NATS、构建器的容器 ID、镜像及启动时间均保持一致；`.env` 摘要保持一致，Compose 只包含本次 Git 提交的部署目录挂载调整。没有创建数据备份或专门回退镜像，没有重启 Docker、修改 CI/Runner 或其他共享服务。
+- 目录修正相关本机竞争检测、Compose 解析和 Shell 语法验证通过。GitHub CI 独立运行，未停止或重跑；发布健康不代替全量 CI 和真实业务容器的环境更新验收。
