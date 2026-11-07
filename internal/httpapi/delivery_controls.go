@@ -21,6 +21,48 @@ func (h pipelineHandler) listDeliveryVariables(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"variables": items})
 }
 
+func (h pipelineHandler) listDeliveryVariableRevisions(c *gin.Context) {
+	c.Header("Cache-Control", "no-store")
+	page, pageErr := strconv.Atoi(c.DefaultQuery("page", "1"))
+	pageSize, sizeErr := strconv.Atoi(c.DefaultQuery("page_size", "20"))
+	if pageErr != nil || sizeErr != nil {
+		h.logger.Warn("配置历史分页参数无效", "operation", "configuration_history_pagination", "variable_id", c.Param("id"), "page_err", pageErr, "size_err", sizeErr)
+		writeError(c, http.StatusBadRequest, "invalid_variable", cicd.ErrInvalidVariable.Error())
+		return
+	}
+	result, err := h.service.Delivery().ListVariableRevisions(c.Request.Context(), c.Param("id"), page, pageSize)
+	if err != nil {
+		h.writeDeliveryError(c, "configuration_history_list", err)
+		return
+	}
+	c.JSON(http.StatusOK, result)
+}
+
+func (h pipelineHandler) readDeliveryVariableRevision(c *gin.Context) {
+	h.deliveryVariableRevision(c, false)
+}
+
+func (h pipelineHandler) revealDeliveryVariableRevision(c *gin.Context) {
+	h.deliveryVariableRevision(c, true)
+}
+
+func (h pipelineHandler) deliveryVariableRevision(c *gin.Context, reveal bool) {
+	c.Header("Cache-Control", "no-store")
+	version, err := strconv.ParseUint(c.Param("version"), 10, 64)
+	if err != nil || version == 0 {
+		h.logger.Warn("配置历史版本无效", "operation", "configuration_history_version", "variable_id", c.Param("id"), "err", err)
+		writeError(c, http.StatusBadRequest, "invalid_variable", cicd.ErrInvalidVariable.Error())
+		return
+	}
+	setAuditMetadata(c, map[string]any{"version": version})
+	result, err := h.service.Delivery().ReadVariableRevision(c.Request.Context(), c.Param("id"), version, reveal)
+	if err != nil {
+		h.writeDeliveryError(c, "configuration_history_content", err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"revision": result})
+}
+
 func (h pipelineHandler) saveDeliveryVariable(c *gin.Context) {
 	var input cicd.VariableInput
 	if err := c.ShouldBindJSON(&input); err != nil {
@@ -71,7 +113,7 @@ func (h pipelineHandler) listPipelineCheckReports(c *gin.Context) {
 }
 
 func (h pipelineHandler) writeDeliveryError(c *gin.Context, operation string, err error) {
-	h.logger.Error("交付配置请求失败", "operation", operation, "err", err)
+	h.logger.Error("交付配置请求失败", "operation", operation, "resource_id", c.Param("id"), "version", c.Param("version"), "err", err)
 	status := http.StatusInternalServerError
 	message := cicd.ErrStorage.Error()
 	switch {

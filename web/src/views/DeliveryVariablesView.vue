@@ -8,6 +8,7 @@ import { useAuthStore } from '@/stores/auth'
 import PageToolbar from '@/components/PageToolbar.vue'
 import ResourceTable from '@/components/ResourceTable.vue'
 import ConfigCodeEditor from '@/components/ConfigCodeEditor.vue'
+import ConfigurationHistoryDrawer from '@/components/ConfigurationHistoryDrawer.vue'
 import { checkConfigText, configurationFormat, configFormats, guessConfigFormat, type ConfigIssue } from '@/utils/configText'
 import { envTextError, variableKindLabel, type DeliveryVariableKind } from '@/utils/envText'
 
@@ -23,6 +24,7 @@ const loading=ref(false),saving=ref(false),open=ref(false),editing=ref<Variable|
 const emptyForm=()=>({name:props.configurationFiles?'':props.applicationId?'APPLICATION_ENVIRONMENT':'',description:'',kind:(props.configurationFiles?'config_yaml':'env_text') as DeliveryVariableKind,usage:'deploy' as 'build'|'deploy',application_id:props.applicationId||'',environment_id:environmentFilter.value,auto_deploy:!props.configurationFiles&&!!props.applicationId,is_secret:true,is_active:true,value:'',protected_refs:''})
 const form=reactive(emptyForm())
 const configEditor=ref<InstanceType<typeof ConfigCodeEditor>>()
+const historyTarget=ref<Variable>(),draftOriginal=ref<string>(),showDraftDiff=ref(false),readingOriginal=ref(false)
 const currentFormat=computed(()=>configurationFormat(form.kind))
 const configIssues=computed(()=>currentFormat.value&&replaceValue.value?checkConfigText(form.value,currentFormat.value):[])
 function focusConfigIssue(issue:ConfigIssue){configEditor.value?.focusIssue(issue)}
@@ -36,15 +38,15 @@ const environmentNames=computed(()=>Object.fromEntries(environments.value.map(v=
 const selectedProject=ref(readSelectedProject())
 const scopeMessage=computed(()=>!selectedProject.value?'请先选择项目，再管理变量与密钥。':selectedProject.value!==auth.user?.project_id?'正在切换项目，请等待项目权限加载完成。':'当前项目没有查看变量与密钥的权限。')
 let revision=0,generation=0,disposed=false,editorContext=''
-let listController:AbortController|undefined,saveController:AbortController|undefined,deleteController:AbortController|undefined,confirmation:ReturnType<typeof Modal.confirm>|undefined
+let listController:AbortController|undefined,saveController:AbortController|undefined,deleteController:AbortController|undefined,originalController:AbortController|undefined,confirmation:ReturnType<typeof Modal.confirm>|undefined
 function readSelectedProject(){return typeof localStorage==='undefined'?'':localStorage.getItem('edo.project')||''}
 function project(){const id=readSelectedProject();return id&&id===auth.user?.project_id?id:''}
 function can(action:string){return !!project()&&auth.canAny([`delivery_variable.${action}`])}
 function identity(){return JSON.stringify([props.applicationId,props.configurationFiles,auth.user?.id,auth.user?.department_id,auth.user?.project_id,auth.user?.is_superuser,[...(auth.user?.permissions||[])].sort(),readSelectedProject(),...['read','create','update','delete'].map(can),auth.canAny(['application.read']),auth.canAny(['deployment.read'])])}
 function current(epoch:number,context:string){return !disposed&&epoch===generation&&context===identity()&&can('read')}
 function requestOptions(projectID:string,signal:AbortSignal){return {headers:{'X-EDO-Project-ID':projectID},signal}}
-function clearEditor(){open.value=false;editing.value=null;editorContext='';replaceValue.value=false;textTouched.value=false;editorError.value='';Object.assign(form,emptyForm())}
-function clearContent(){rows.value=[];applications.value=[];environments.value=[];projectName.value='';clearEditor();confirmation?.destroy();confirmation=undefined}
+function clearEditor(){originalController?.abort();readingOriginal.value=false;draftOriginal.value=undefined;showDraftDiff.value=false;open.value=false;editing.value=null;editorContext='';replaceValue.value=false;textTouched.value=false;editorError.value='';Object.assign(form,emptyForm())}
+function clearContent(){historyTarget.value=undefined;rows.value=[];applications.value=[];environments.value=[];projectName.value='';clearEditor();confirmation?.destroy();confirmation=undefined}
 function forbidden(cause:unknown){
   if((cause as {response?:{status?:number}})?.response?.status!==403)return false
   listController?.abort();saveController?.abort();deleteController?.abort();clearContent();loading.value=false;saving.value=false;error.value=apiErrorMessage(cause);return true
@@ -70,13 +72,31 @@ async function load(){
 function available(item:Variable){return (!embedded.value||(item.application_id===props.applicationId&&item.usage==='deploy'&&item.environment_id===environmentFilter.value))&&item.project_id===project()&&rows.value.some(row=>row.id===item.id&&row.project_id===item.project_id&&row.version===item.version)}
 function edit(item?:Variable){
   if(!can('read')||!can(item?'update':'create')||saving.value||confirmation||item&&!available(item))return
+  clearEditor();historyTarget.value=undefined
   editing.value=item?{...item}:null;replaceValue.value=!item||!item.is_secret;textTouched.value=false;editorError.value='';editorContext=identity()
   Object.assign(form,item?{...item,value:item.is_secret?'':item.value||'',protected_refs:(item.protected_refs||[]).join('\n')}:emptyForm())
+  if(props.configurationFiles&&item&&!item.is_secret){draftOriginal.value=item.value||'';showDraftDiff.value=true}
   open.value=true
+}
+function showHistory(item:Variable){if(props.configurationFiles&&can('read')&&available(item)&&!saving.value){clearEditor();historyTarget.value={...item}}}
+async function readOriginal(){
+  const target=editing.value
+  if(!props.configurationFiles||!target||!target.is_secret||!can('read')||!can('update')||!can('reveal')||saving.value||readingOriginal.value||!open.value||editorContext!==identity()||!available(target))return
+  const epoch=generation,context=identity(),controller=new AbortController()
+  originalController?.abort();originalController=controller;readingOriginal.value=true;editorError.value=''
+  try{
+    const {data}=await client.post<{revision:{version:number;value?:string;hidden:boolean}}>(`/delivery-variables/${encodeURIComponent(target.id)}/revisions/${target.version}/reveal`,undefined,requestOptions(project(),controller.signal))
+    if(!current(epoch,context)||controller.signal.aborted||!open.value||editing.value?.id!==target.id||editorContext!==context)return
+    if(data.revision.version!==target.version||data.revision.hidden||typeof data.revision.value!=='string'){editorError.value='无法读取当前配置正文，请刷新后重试';return}
+    draftOriginal.value=data.revision.value
+    if(!replaceValue.value){form.value=data.revision.value;replaceValue.value=true}
+    showDraftDiff.value=true
+  }catch(cause){if(current(epoch,context)&&!controller.signal.aborted&&editorContext===context&&!forbidden(cause))editorError.value=apiErrorMessage(cause)}
+  finally{if(current(epoch,context)&&originalController===controller)readingOriginal.value=false}
 }
 async function save(){
   const action=editing.value?'update':'create'
-  if(saving.value||!open.value||!can('read')||!can(action)||editorContext!==identity()||!form.name.trim()||editing.value&&!available(editing.value))return
+  if(saving.value||readingOriginal.value||!open.value||!can('read')||!can(action)||editorContext!==identity()||!form.name.trim()||editing.value&&!available(editing.value))return
   textTouched.value=true
   if(textError.value){editorError.value=textError.value;return}
   if(embedded.value&&!editing.value&&form.kind==='env_text'&&filtered.value.some(row=>row.name===form.name)){editorError.value='当前环境已有 env 文本，请编辑现有配置，或选择逐条添加、env_file。';return}
@@ -113,7 +133,7 @@ function reset(){
 }
 function projectChanged(event:Event){if(event.type==='storage'&&(event as StorageEvent).key!==null&&(event as StorageEvent).key!=='edo.project')return;reset()}
 watch(()=>[form.application_id,form.usage],()=>{if(!form.application_id||form.usage!=='deploy')form.auto_deploy=false})
-watch(environmentFilter,()=>{listController?.abort();saveController?.abort();deleteController?.abort();generation++;revision++;clearEditor();confirmation?.destroy();confirmation=undefined;saving.value=false;void load()})
+watch(environmentFilter,()=>{listController?.abort();saveController?.abort();deleteController?.abort();generation++;revision++;historyTarget.value=undefined;clearEditor();confirmation?.destroy();confirmation=undefined;saving.value=false;void load()})
 watch(()=>form.kind,value=>{if(embedded.value&&!props.configurationFiles&&!editing.value)form.name=value==='env_text'?'APPLICATION_ENVIRONMENT':''})
 watch(()=>form.name,name=>{if(props.configurationFiles&&!editing.value){const format=guessConfigFormat(name);if(format)form.kind=`config_${format}`}})
 watch(()=>form.usage,value=>{if(editing.value)return;if(value==='build'&&isEnvText.value)form.kind='env';else if(value==='deploy'&&form.kind==='file')form.kind='env_text'})
@@ -139,7 +159,7 @@ onBeforeUnmount(()=>{disposed=true;generation++;revision++;listController?.abort
       <template #cell-scope="{row}">{{row.application_id?(applicationNames[row.application_id as string]||'指定应用'):'当前项目共享'}} · {{row.environment_id?(environmentNames[row.environment_id as string]||'指定环境'):'全部环境'}}</template>
       <template #cell-is_secret="{row}"><a-tag :color="row.is_secret?'gold':'default'">{{row.is_secret?'密钥 · 已隐藏':configurationFiles?'普通配置':'普通变量'}}</a-tag><small v-if="!row.is_secret&&row.kind==='env'" class="variable-description">{{row.value||'空值'}}</small></template>
       <template #cell-is_active="{row}"><a-tag :color="row.is_active?'green':'default'">{{row.is_active?'已启用':'已停用'}}</a-tag><small v-if="row.usage==='deploy'" class="variable-description">{{row.auto_deploy?'部署自动使用':'任务显式引用'}}</small></template>
-      <template #actions="{row}"><a-button v-if="can('update')" type="link" @click="edit(row as Variable)">编辑</a-button><a-button v-if="can('delete')" type="link" danger @click="remove(row as Variable)">删除</a-button></template>
+      <template #actions="{row}"><a-button v-if="configurationFiles" type="link" @click="showHistory(row as Variable)">历史版本</a-button><a-button v-if="can('update')" type="link" @click="edit(row as Variable)">编辑</a-button><a-button v-if="can('delete')" type="link" danger @click="remove(row as Variable)">删除</a-button></template>
     </ResourceTable></div>
     </template>
     <a-drawer :open="open" :title="editing?'编辑配置':configurationFiles?'添加配置':embedded?'添加环境配置':'添加变量'" width="min(840px, 96vw)" destroy-on-close :closable="!saving" :mask-closable="!saving" :keyboard="!saving" @close="closeEditor">
@@ -165,9 +185,10 @@ onBeforeUnmount(()=>{disposed=true;generation++;revision++;listController?.abort
         <a-form-item v-else-if="!configurationFiles" label="类型"><a-select v-model:value="form.kind" :disabled="!!editing" :options="[{value:'env',label:'环境变量'},{value:'file',label:'文件变量（构建与检查）'}]"/></a-form-item>
         <a-form-item v-if="!configurationFiles&&!embedded&&form.application_id&&form.usage==='deploy'"><a-checkbox v-model:checked="form.auto_deploy">自动用于此应用对应环境的后续部署</a-checkbox></a-form-item>
         <a-form-item><a-checkbox v-model:checked="form.is_secret" :disabled="!!editing?.is_secret">作为密钥加密保存</a-checkbox><a-checkbox v-model:checked="form.is_active">启用</a-checkbox></a-form-item>
-        <a-form-item v-if="editing?.is_secret"><a-checkbox v-model:checked="replaceValue">替换已保存的密钥</a-checkbox></a-form-item>
+        <a-form-item v-if="editing?.is_secret"><a-checkbox v-model:checked="replaceValue">替换已保存的密钥</a-checkbox><a-button v-if="configurationFiles&&draftOriginal===undefined" type="link" :loading="readingOriginal" :disabled="!can('reveal')" @click="readOriginal">{{replaceValue?'读取原文对比':'读取原文编辑'}}</a-button><small v-if="configurationFiles" class="variable-description">{{can('reveal')?'读取原文会记录操作审计。':'读取原文需要独立的“读取正文”权限；仍可直接提交替换内容。'}}</small></a-form-item>
+        <a-form-item v-if="configurationFiles&&editing&&replaceValue&&draftOriginal!==undefined"><a-switch v-model:checked="showDraftDiff" aria-label="高亮显示配置修改"/> 高亮显示修改</a-form-item>
         <a-form-item v-if="replaceValue" :label="configurationFiles?'配置内容':isEnvText?'env 文本':form.kind==='file'?'文件内容':'值'" name="value" :validate-status="textTouched&&textError?'error':undefined" :help="textTouched?textError:undefined" :extra="configurationFiles?'按所选格式进行静态语法检查，文件原文保存，默认不自动换行。':isEnvText?'每行 KEY=value；等号后的内容原样保存，不解析引号或变量引用。支持空行和整行 # 注释。':'留空保存为空值；未勾选替换时保留现有密钥。'">
-          <ConfigCodeEditor v-if="configurationFiles&&currentFormat" ref="configEditor" v-model="form.value" :format="currentFormat" :readonly="saving||!can(editing?'update':'create')" label="配置内容"/>
+          <ConfigCodeEditor v-if="configurationFiles&&currentFormat" ref="configEditor" v-model="form.value" :original="showDraftDiff?draftOriginal:undefined" :format="currentFormat" :readonly="saving||!can(editing?'update':'create')" label="配置内容"/>
           <a-textarea v-else-if="isEnvText||form.kind==='file'" v-model:value="form.value" :rows="8" :maxlength="65536" wrap="off" class="env-text-input" aria-label="env 文本" autocomplete="off" spellcheck="false" @blur="textTouched=true"/>
           <a-input-password v-else-if="form.is_secret" v-model:value="form.value" autocomplete="new-password" :maxlength="65536"/><a-input v-else v-model:value="form.value" :maxlength="65536"/>
         </a-form-item>
@@ -175,9 +196,10 @@ onBeforeUnmount(()=>{disposed=true;generation++;revision++;listController?.abort
         <p v-if="form.usage==='deploy'&&isEnvText" class="variable-description">{{form.kind==='env_file'?'仅用于 DockerCompose：部署时自动生成命名文件，为服务添加 env_file 引用。':'DockerCompose 部署时自动合并到所有服务的 environment，无需预先在 YAML 声明；同名项使用本次配置。'}}</p>
         <a-form-item label="允许使用的代码版本" extra="一行一个，例如 refs/heads/main、refs/tags/v*；留空表示不限制。"><a-textarea v-model:value="form.protected_refs" :rows="3"/></a-form-item>
         <a-alert type="info" show-icon :message="configurationFiles?'部署阶段按需选择配置文件并指定配置文件路径；ENV 可自动注入容器环境。':embedded?'应用配置自动注入对应环境的部署；项目共享变量仍在任务中选择引用。运行会固定配置版本。':'共享变量只向明确引用的任务注入；应用自动配置按应用和环境匹配，运行会固定引用的版本。'"/>
-        <a-button type="primary" html-type="submit" block :loading="saving" :disabled="!can(editing?'update':'create')" style="margin-top:20px">{{configurationFiles?'保存配置':'保存变量'}}</a-button>
+        <a-button type="primary" html-type="submit" block :loading="saving" :disabled="readingOriginal||!can(editing?'update':'create')" style="margin-top:20px">{{configurationFiles?'保存配置':'保存变量'}}</a-button>
       </a-form>
     </a-drawer>
+    <ConfigurationHistoryDrawer v-if="configurationFiles" :open="!!historyTarget" :target="historyTarget" @update:open="value=>{if(!value)historyTarget=undefined}"/>
   </div>
 </template>
 

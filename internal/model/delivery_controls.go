@@ -6,7 +6,7 @@ import (
 	"gorm.io/gorm"
 )
 
-// DeliveryVariable 的版本内容保存在独立修订记录中；密钥从不随接口回显。
+// DeliveryVariable 的版本内容保存在独立修订记录中；普通接口不回显密钥。
 type DeliveryVariable struct {
 	RowID         uint64         `gorm:"column:id;primaryKey;autoIncrement" json:"row_id"`
 	ID            string         `gorm:"column:uuid;type:varchar(36);not null;uniqueIndex" json:"id"`

@@ -72,6 +72,8 @@ func inventoryAPIPath(t *testing.T, pattern, projectID string) string {
 			parts[index] = strings.Repeat("a", 64)
 		case ":kind":
 			parts[index] = "docker"
+		case ":version":
+			parts[index] = "1"
 		default:
 			t.Fatalf("API 巡检尚未定义动态参数 %s: %s", part, pattern)
 		}

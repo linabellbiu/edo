@@ -70,7 +70,8 @@ var scopeOptions = []Option{
 }
 
 var definitions = []Definition{
-	placeholder("configuration_directory", "EDO_CONFIGURATION_DIRECTORY", "部署工作目录", "相对配置文件路径的解析目录，可在多镜像 Compose 中用 ${EDO_CONFIGURATION_DIRECTORY}/相对路径 引用文件。", []Scope{ScopeComposeDeployment}, "选择配置文件后可用；未设置部署工作目录时使用目标执行用户的主目录"),
+	environment("app_config_path", "EDO_APP_CONFIG_PATH", "应用配置目录", "应用配置文件所在目录，可用 ${EDO_APP_CONFIG_PATH}/相对路径 引用生成文件；配置名称与生成文件路径独立。", "部署", []Scope{ScopeDockerDeployment, ScopeComposeDeployment}, "选择配置文件后可用，默认是目标执行用户的 ~/edo/应用名称/config；已有实例采用冻结目录", false),
+	placeholder("configuration_directory", "EDO_CONFIGURATION_DIRECTORY", "历史配置目录", "为已有运行保留的目录变量；新配置请使用 ${EDO_APP_CONFIG_PATH}/相对路径。", []Scope{ScopeComposeDeployment}, "历史运行按部署快照固定的目录解析"),
 	template("application_name", "application.name", "应用名称", "当前流水线所属应用的名称。", "应用", "运行上下文已创建时可用"),
 	template("workflow_name", "workflow.name", "流水线名称", "本次运行绑定的流水线名称。", "流水线", "运行绑定流水线后可用"),
 	template("task_name", "task.name", "任务名称", "触发当前通知的任务名称。", "任务", "任务开始执行后可用"),

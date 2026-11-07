@@ -36,6 +36,23 @@ async function harness({ permissions = codes, project = 'project-a', selected = 
 const writes = h => h.requests.filter(item => item.method !== 'get')
 const changeProject = async (h, id) => { h.storage.selected = id; h.window.dispatchEvent(new Event('edo:projects-changed')); h.auth.user.project_id = id; await settle() }
 
+test('配置编辑以保存正文为基线高亮差异，历史入口不修改配置',async t=>{
+ const h=await harness({props:{configurationFiles:true},get:req=>req.path==='/delivery-variables'?{data:{variables:[variable('project-a',{name:'orders_settings',kind:'config_yaml',usage:'deploy',value:'port: 8080\n'})]}}:undefined});t.after(h.stop)
+ h.state.edit(h.state.rows.value[0]);assert.equal(h.state.draftOriginal.value,'port: 8080\n');assert.equal(h.state.showDraftDiff.value,true)
+ h.state.form.value='port: 9090\n';assert.equal(h.state.draftOriginal.value,'port: 8080\n')
+ h.state.showHistory(h.state.rows.value[0]);assert.equal(h.state.open.value,false);assert.equal(h.state.form.value,'');assert.equal(h.state.historyTarget.value.name,'orders_settings');assert.deepEqual(writes(h),[])
+ await changeProject(h,'project-b');assert.equal(h.state.historyTarget.value,undefined)
+})
+
+test('密钥原文需要独立读取权限，读取绑定版本且保留已输入的替换草稿',async t=>{
+ const h=await harness({props:{configurationFiles:true},get:req=>req.path==='/delivery-variables'?{data:{variables:[variable('project-a',{kind:'config_env',usage:'deploy',is_secret:true,value:undefined})]}}:undefined,post:()=>({data:{revision:{version:3,value:'TOKEN=original\n',hidden:false}}})});t.after(h.stop)
+ h.state.edit(h.state.rows.value[0]);await h.state.readOriginal();assert.equal(writes(h).length,0)
+ h.auth.user.permissions.push('delivery_variable.reveal');await settle();h.state.edit(h.state.rows.value[0])
+ h.state.replaceValue.value=true;h.state.form.value='TOKEN=draft\n';await h.state.readOriginal()
+ assert.equal(h.state.draftOriginal.value,'TOKEN=original\n');assert.equal(h.state.form.value,'TOKEN=draft\n');assert.ok(writes(h)[0].path.endsWith('/revisions/3/reveal'))
+ h.auth.user.permissions=['delivery_variable.read'];await settle();assert.equal(h.state.draftOriginal.value,undefined);assert.equal(h.state.form.value,'')
+})
+
 test('应用入口固定应用和环境，文本无需引用名，保存自动使用但不发布', async t => {
   const props=vue.reactive({applicationId:'app-project-a',applicationName:'应用 A'})
   const h=await harness({props});t.after(h.stop)

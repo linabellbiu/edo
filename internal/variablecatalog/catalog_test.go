@@ -1,6 +1,22 @@
 package variablecatalog
 
-import "testing"
+import (
+	"slices"
+	"testing"
+)
+
+func TestApplicationConfigurationPathDocumentsAllBuiltinDeploymentModes(t *testing.T) {
+	for _, definition := range Snapshot().Variables {
+		if definition.Name != "EDO_APP_CONFIG_PATH" {
+			continue
+		}
+		if definition.Kind != KindEnvironment || !slices.Contains(definition.Scopes, ScopeDockerDeployment) || !slices.Contains(definition.Scopes, ScopeComposeDeployment) || !definition.ManagedBySystem {
+			t.Fatal("应用配置目录必须登记为 Docker 和 Compose 的内置环境变量")
+		}
+		return
+	}
+	t.Fatal("内置变量目录缺少 EDO_APP_CONFIG_PATH")
+}
 
 func TestCatalogDefinitionsAreUniqueAndNeverExposeValues(t *testing.T) {
 	catalog := Snapshot()

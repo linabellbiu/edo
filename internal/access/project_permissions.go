@@ -53,6 +53,7 @@ func workspacePermissions() []Permission {
 			result = append(result, permission(resource.code+"."+action.code, "持续交付", resource.code, resource.name, action.code, action.name, action.name+resource.name, action.code == "delete" || action.code == "execute" || (resource.code == "environment_policy" && action.code == "update")))
 		}
 	}
+	result = append(result, permission("delivery_variable.reveal", "持续交付", "delivery_variable", "配置与密钥正文", "reveal", "读取正文", "读取配置历史和密钥正文并记录审计", true))
 	return result
 }
 
