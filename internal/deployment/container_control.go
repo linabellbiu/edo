@@ -354,7 +354,11 @@ func composeRecreateScript(deploymentID string, scope dockerengine.ComposeProjec
 		return "", err
 	}
 	for _, name := range extra {
-		args += " --env-file \"${EDO_CONFIGURATION_DIRECTORY:?}/\"" + quote(name)
+		argument, err := configfile.FileArgument(name)
+		if err != nil {
+			return "", err
+		}
+		args += " --env-file " + argument
 	}
 	file := ".edo/compose/" + scope.ProjectName + "/" + deploymentID + "/compose.yml"
 	args += " --file " + quote(file)
@@ -376,11 +380,14 @@ func composeRecreateScript(deploymentID string, scope dockerengine.ComposeProjec
 		if directory == "" {
 			return "", ErrRuntimeControlInvalid
 		}
-		if strings.HasPrefix(directory, "~/") {
+		if directory == "~" {
+			script.WriteString("export EDO_CONFIGURATION_DIRECTORY=\"${HOME:?}\"\n")
+		} else if strings.HasPrefix(directory, "~/") {
 			fmt.Fprintf(&script, "export EDO_CONFIGURATION_DIRECTORY=\"${HOME:?}/\"%s\n", quote(strings.TrimPrefix(directory, "~/")))
 		} else {
 			fmt.Fprintf(&script, "export EDO_CONFIGURATION_DIRECTORY=%s\n", quote(directory))
 		}
+		script.WriteString("export EDO_CONFIGURATION_HOME=\"${HOME-}\"\n")
 	}
 	script.WriteString("[ ! -L \"$log\" ] && [ ! -d \"$log\" ] || exit 21\n")
 	fmt.Fprintf(&script, "actual=$(dc ps --all --quiet \"$service\" 2>>\"$log\" | sort)\n[ \"$actual\" = %s ] || exit 24\n", quote(strings.Join(ids, "\n")))

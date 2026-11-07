@@ -56,9 +56,14 @@ func TestConfigurationFilesRejectScopeAndPathConflicts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, path := range []string{"../escape", "/etc/config", "a/../b", "a//b", ".edo/lock", "--flag", "a\nfile"} {
+	for _, path := range []string{"../escape", "/etc/../config", "~/../config", "a/../b", "a//b", ".edo/lock", "--flag", "a\nfile"} {
 		if _, err = s.FreezeConfigFiles(ctx, scope.ProjectID, "app", "env", "main", []model.DeploymentConfigFile{{ID: saved.ID, Path: path}}); err == nil {
 			t.Fatal("接受非法路径", path)
+		}
+	}
+	for _, path := range []string{"/srv/app/.prod.env", "~/config/.prod.env", "config/.prod.env"} {
+		if _, err = s.FreezeConfigFiles(ctx, scope.ProjectID, "app", "env", "main", []model.DeploymentConfigFile{{ID: saved.ID, Path: path}}); err != nil {
+			t.Fatal("拒绝有效配置文件路径", path, err)
 		}
 	}
 	for _, refs := range [][]model.DeploymentConfigFile{{{ID: saved.ID, Path: "a"}, {ID: saved.ID, Path: "a/b"}}, {{ID: saved.ID, Path: "a"}, {ID: saved.ID, Path: "a"}}} {

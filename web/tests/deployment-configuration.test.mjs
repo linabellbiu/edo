@@ -15,7 +15,7 @@ async function harness(get){
  scope.run(()=>{state=component.setup(props,{expose(){},emit:(...event)=>events.push(event)})});await settle()
  return {state,props,auth,storage,events,requests,stop(){unmounts.forEach(fn=>fn());scope.stop()}}
 }
-test('部署显式选择配置 UUID 与生成路径，配置选择不混入旧变量或其他范围',async t=>{
+test('部署显式选择配置 UUID 与配置文件路径，配置选择不混入旧变量或其他范围',async t=>{
  const h=await harness();t.after(h.stop)
  assert.deepEqual(h.state.options(0).map(item=>item.value),['selected'])
  h.props.config.configuration_files=[{id:'',path:''}]
@@ -23,7 +23,9 @@ test('部署显式选择配置 UUID 与生成路径，配置选择不混入旧�
  assert.deepEqual(h.events.at(-1),['change',{configuration_files:[{id:'selected',path:'selected.env'}]}])
  assert.equal(h.requests[0].options.headers['X-EDO-Project-ID'],'project')
  assert.ok(h.state.validPath('config/application.yaml'));assert.ok(!h.state.validPath('../escape'))
- assert.ok(!h.state.validPath('.edo/lock'));assert.ok(!h.state.validPath('/etc/config'))
+ assert.ok(!h.state.validPath('.edo/lock'));assert.ok(h.state.validPath('/srv/app/config'))
+ assert.ok(h.state.validPath('~/config/.prod.env'));assert.ok(!h.state.validPath('~/../escape'))
+ assert.ok(!h.state.validPath('//srv/config'));assert.ok(!h.state.validPath('~//config'))
 })
 test('切项目、撤权或加载失败后不能提交保留的配置草稿',async t=>{
  for(const mutation of ['project','permission','error']){

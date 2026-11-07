@@ -18,7 +18,7 @@ func (s *Service) FreezeConfigFiles(ctx context.Context, projectID, applicationI
 	paths := map[string]bool{}
 	ids := map[string]bool{}
 	for _, reference := range refs {
-		if !configfile.ValidPath(reference.Path) || paths[reference.Path] || ids[reference.ID] {
+		if !configfile.ValidFilePath(reference.Path) || paths[reference.Path] || ids[reference.ID] {
 			return nil, s.failure(ctx, "configuration_freeze_path", ErrInvalidVariable, ErrInvalidVariable)
 		}
 		for previous := range paths {

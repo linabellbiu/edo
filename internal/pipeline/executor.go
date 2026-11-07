@@ -109,7 +109,7 @@ func (s *Service) executeDeployTask(ctx context.Context, payload DeployTaskPaylo
 		return s.failDeploymentExecution(ctx, failureState, "部署变量无法读取，请检查变量配置", errors.Join(variableErr, cicd.ErrVariableUnavailable))
 	}
 	if len(prepared.snapshot.ConfigurationBindings[prepared.node.ID]) > 0 {
-		config, configErr := s.deployments.ResolveDeploymentConfiguration(ctx, &model.DeploymentRecord{ProjectID: prepared.run.ProjectID, ApplicationID: prepared.run.ApplicationID, EnvironmentID: prepared.target.EnvironmentID, PipelineRunID: prepared.run.ID, WorkflowNodeID: prepared.node.ID, DeploymentPlanID: prepared.deploymentPlan.ID}, false)
+		config, configErr := s.deployments.ResolveDeploymentConfiguration(ctx, &model.DeploymentRecord{ProjectID: prepared.run.ProjectID, ApplicationID: prepared.run.ApplicationID, EnvironmentID: prepared.target.EnvironmentID, PipelineRunID: prepared.run.ID, WorkflowNodeID: prepared.node.ID, DeploymentPlanID: prepared.deploymentPlan.ID, WorkingDirectory: prepared.target.WorkingDirectory}, false)
 		if configErr != nil {
 			return s.failDeploymentExecution(ctx, failureState, "部署配置无法读取，请检查配置及使用权限", configErr)
 		}

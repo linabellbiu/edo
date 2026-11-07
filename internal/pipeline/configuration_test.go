@@ -57,7 +57,7 @@ func TestComposeConfigurationUsesStablePathsAndOpaqueTransport(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(script, `--env-file "${EDO_CONFIGURATION_DIRECTORY:?缺少配置目录}/"'config/.prod.env'`) || strings.Contains(script, original) || strings.Contains(script, changed) {
+	if !strings.Contains(script, `--env-file "${EDO_CONFIGURATION_DIRECTORY:?缺少部署工作目录}/"'config/.prod.env'`) || strings.Contains(script, original) || strings.Contains(script, changed) {
 		t.Fatal("部署参数丢失或正文写入命令快照")
 	}
 	cmd := exec.Command("sh", "-n")
@@ -68,6 +68,34 @@ func TestComposeConfigurationUsesStablePathsAndOpaqueTransport(t *testing.T) {
 	empty, emptyWrites, err := composeConfiguration(source, nil)
 	if err != nil || empty != source || emptyWrites != "" {
 		t.Fatal("未配置时改变了原行为", err)
+	}
+}
+
+func TestComposeConfigurationPreservesExplicitAbsoluteAndHomePaths(t *testing.T) {
+	abs := "/srv/shared/.prod.env"
+	home := "~/settings/app.env"
+	bindings := []model.DeploymentConfigBinding{
+		{DeliveryVariableBinding: model.DeliveryVariableBinding{VariableID: "absolute", Kind: "config_env"}, Path: abs},
+		{DeliveryVariableBinding: model.DeliveryVariableBinding{VariableID: "home", Kind: "config_env"}, Path: home},
+	}
+	set := &deployment.ConfigurationSet{Directory: "/srv/app", Bindings: bindings}
+	content, _, err := composeConfiguration("services:\n  api:\n    image: alpine:3.22\n", set)
+	if err != nil || !strings.Contains(content, abs) || !strings.Contains(content, "${EDO_CONFIGURATION_HOME}/settings/app.env") || strings.Contains(content, "${EDO_CONFIGURATION_DIRECTORY}//") {
+		t.Fatal("Compose 改变了指定文件位置", err)
+	}
+	args, err := configurationComposeArguments(model.WorkflowNodeConfig{
+		ConfigurationFiles:   []model.DeploymentConfigFile{{ID: "absolute", Path: abs}, {ID: "home", Path: home}},
+		DeploymentParameters: "--env-file " + abs + " --env-file " + home,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command("sh", "-se")
+	cmd.Env = append(os.Environ(), "HOME=/home/target", "EDO_CONFIGURATION_DIRECTORY=/srv/app")
+	cmd.Stdin = strings.NewReader("set -- " + args + "\nprintf '%s\\n' \"$@\"\n")
+	output, err := cmd.Output()
+	if err != nil || string(output) != "--env-file\n/srv/shared/.prod.env\n--env-file\n/home/target/settings/app.env\n" {
+		t.Fatal("Compose 参数未在目标主机解析主目录", err)
 	}
 }
 
@@ -105,7 +133,7 @@ func TestConfigurationWorkflowSnapshotPinsSelectionUntilNextDeployment(t *testin
 		t.Fatal(err)
 	}
 	snapshot, err := parseWorkflowSnapshot(run)
-	if err != nil || len(snapshot.ConfigurationBindings["deploy"]) != 1 || snapshot.ConfigurationBindings["deploy"][0].Version != 1 || strings.Contains(run.WorkflowSnapshot, value) {
+	if err != nil || !snapshot.DirectConfigurationPaths || len(snapshot.ConfigurationBindings["deploy"]) != 1 || snapshot.ConfigurationBindings["deploy"][0].Version != 1 || strings.Contains(run.WorkflowSnapshot, value) {
 		t.Fatal("配置未正确冻结或泄漏正文", err)
 	}
 	// 只改可编辑流程不能改写已创建运行；下次运行才采用移除引用和参数。

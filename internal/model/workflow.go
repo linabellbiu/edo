@@ -30,7 +30,7 @@ type DeploymentConfigBinding struct {
 
 type WorkflowNodeConfig struct {
 	ConfigurationFiles     []DeploymentConfigFile     `json:"configuration_files,omitempty"`
-	ConfigurationDirectory string                     `json:"configuration_directory,omitempty"`
+	ConfigurationDirectory string                     `json:"configuration_directory,omitempty"` // 仅用于读取旧运行快照。
 	DeploymentParameters   string                     `json:"deployment_parameters,omitempty"`
 	StatusWriteback        bool                       `json:"status_writeback,omitempty"`
 	Branch                 string                     `json:"branch,omitempty"`

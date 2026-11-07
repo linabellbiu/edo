@@ -62,7 +62,11 @@ func composeConfiguration(content string, set *deployment.ConfigurationSet) (str
 		}
 		for _, binding := range set.Bindings {
 			if binding.Kind == "config_env" {
-				references = append(references, map[string]any{"path": "${EDO_CONFIGURATION_DIRECTORY}/" + binding.Path, "format": "raw"})
+				file, err := configfile.ComposePath(binding.Path)
+				if err != nil {
+					return "", "", err
+				}
+				references = append(references, map[string]any{"path": file, "format": "raw"})
 			}
 		}
 		if len(references) > 0 {
@@ -92,7 +96,11 @@ func configurationComposeArguments(config model.WorkflowNodeConfig) (string, err
 	}
 	var out strings.Builder
 	for _, name := range paths {
-		fmt.Fprintf(&out, " --env-file \"${EDO_CONFIGURATION_DIRECTORY:?缺少配置目录}/\"%s", configfile.Quote(name))
+		argument, err := configfile.FileArgument(name)
+		if err != nil {
+			return "", err
+		}
+		fmt.Fprintf(&out, " --env-file %s", argument)
 	}
 	return out.String(), nil
 }

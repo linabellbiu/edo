@@ -89,5 +89,5 @@ func (s *Service) composeRuntimeScope(ctx context.Context, record *model.Deploym
 	if err := s.db.WithContext(ctx).Where("host_id = ? AND kind = ? AND status = ?", record.HostID, model.HostCapabilityDocker, model.HostCapabilityReady).First(&capability).Error; err != nil {
 		return "", dockerengine.ComposeProjectScope{}, err
 	}
-	return capability.RuntimeID, dockerengine.ComposeProjectScope{ConfigurationDirectory: configuration.ConfigurationDirectory, ConfigurationParameters: configuration.DeploymentParameters, ConfigurationFiles: configuration.ConfigurationFiles, HostID: record.HostID, ProjectName: settings.ProjectName, WorkingDirectory: record.WorkingDirectory, Services: services, CompletionServices: completedServices, UseSudo: settings.UseSudo, EnvFile: settings.EnvFile, TagVariable: settings.TagVariable}, nil
+	return capability.RuntimeID, dockerengine.ComposeProjectScope{ConfigurationDirectory: record.WorkingDirectory, ConfigurationParameters: configuration.DeploymentParameters, ConfigurationFiles: configuration.ConfigurationFiles, HostID: record.HostID, ProjectName: settings.ProjectName, WorkingDirectory: record.WorkingDirectory, Services: services, CompletionServices: completedServices, UseSudo: settings.UseSudo, EnvFile: settings.EnvFile, TagVariable: settings.TagVariable}, nil
 }

@@ -37,7 +37,7 @@ function change(config: Partial<WorkflowNodeConfig>) { if (canEdit.value && load
 function update(index: number, patch: { id?: string; path?: string }) { change({ configuration_files: selected.value.map((ref, i) => i === index ? { ...ref, ...patch } : ref) }) }
 function choose(index: number, id: string) { const item = configurations.value.find(item => item.id === id); update(index, { id, ...(item ? { path: item.name } : {}) }) }
 function options(index: number) { return configurations.value.filter(item => !selected.value.some((ref, i) => i !== index && ref.id === item.id)).map(item => ({ value: item.id, label: `${item.name} · ${item.kind.slice(7).toUpperCase()} · v${item.version}` })) }
-function validPath(value: string) { return !!value && value.length <= 512 && value.split('/').every(part => !!part && part !== '.' && part !== '..' && !part.startsWith('-') && !part.startsWith('.edo') && /^[A-Za-z0-9_.-]+$/.test(part)) }
+function validPath(value: string) { const path=value.startsWith('~/')?value.slice(2):value.startsWith('/')?value.slice(1):value;return !!value && value.length <= 512 && path.split('/').every(part => !!part && part !== '.' && part !== '..' && !part.startsWith('-') && !part.startsWith('.edo') && /^[A-Za-z0-9_.-]+$/.test(part)) }
 </script>
 <template>
  <section class="deployment-configuration" aria-label="部署配置文件">
@@ -48,16 +48,15 @@ function validPath(value: string) { return !!value && value.length <= 512 && val
    <a-form-item label="配置" :validate-status="reference.id&&!configurations.some(item=>item.id===reference.id)&&!loading?'error':undefined" :help="reference.id&&!configurations.some(item=>item.id===reference.id)&&!loading?'原配置不可用，请检查适用范围或使用权限':undefined">
     <a-select :value="reference.id||undefined" :loading="loading" :disabled="!canEdit" :options="options(index)" placeholder="选择配置文件" :aria-label="`配置文件 ${index+1}`" @update:value="choose(index,String($event))" />
    </a-form-item>
-   <a-form-item label="生成路径" :validate-status="reference.path&&!validPath(reference.path)?'error':undefined" :help="reference.path&&!validPath(reference.path)?'请输入安全的相对文件路径':undefined">
-    <a-input :value="reference.path" :disabled="!canEdit" placeholder="例如 config/application.yaml" :aria-label="`生成路径 ${index+1}`" @update:value="update(index,{path:String($event||'')})" />
+   <a-form-item label="配置文件路径" :validate-status="reference.path&&!validPath(reference.path)?'error':undefined" :help="reference.path&&!validPath(reference.path)?'请输入有效的文件路径，不能包含 .. 或保留目录 .edo':undefined">
+    <a-input :value="reference.path" :disabled="!canEdit" placeholder="例如 /srv/app/.prod.env 或 config/application.yaml" :aria-label="`配置文件路径 ${index+1}`" @update:value="update(index,{path:String($event||'')})" />
    </a-form-item>
    <a-button danger :disabled="!canEdit" :aria-label="`移除配置文件 ${index+1}`" @click="change({configuration_files:selected.filter((_,i)=>i!==index)})">移除</a-button>
   </div>
   <a-button :disabled="!canEdit||selected.length>=32" @click="change({configuration_files:[...selected,{id:'',path:''}]})">添加配置文件</a-button>
   <template v-if="selected.length||config.deployment_parameters">
-   <a-form-item label="配置生成根目录" help="留空使用目标登录用户的 ~/edo/deply，按项目、应用、环境和发布版本分别保存。"><a-input :value="config.configuration_directory" :disabled="!canEdit" placeholder="~/edo/deply" @update:value="change({configuration_directory:String($event||'')})" /></a-form-item>
-   <a-form-item label="额外部署参数" help="目前支持 --env-file 相对路径，可重复填写；只能引用上方选择的文件。选择 ENV 后自动注入容器环境，无须填写。"><a-input :value="config.deployment_parameters" :disabled="!canEdit" placeholder="--env-file .prod.env" @update:value="change({deployment_parameters:String($event||'')})" /></a-form-item>
-   <p>多镜像 Compose 可用 <code>${EDO_CONFIGURATION_DIRECTORY}/相对路径</code> 引用生成文件。</p>
+   <p>文件写入指定路径。支持绝对路径和 <code>~/</code>；相对路径按部署工作目录解析，未设置工作目录时使用执行用户的主目录。</p>
+   <a-form-item label="额外部署参数" help="目前支持 --env-file 配置文件路径，可重复填写；只能引用上方选择的文件。选择 ENV 后自动注入容器环境，无须填写。"><a-input :value="config.deployment_parameters" :disabled="!canEdit" placeholder="--env-file .prod.env" @update:value="change({deployment_parameters:String($event||'')})" /></a-form-item>
    <p>修改配置正文后，下次重启或重建采用最新内容；需要更新容器环境时会确认重建。修改此处的引用和参数，要等下一次部署成功后采用。</p>
   </template>
  </section>

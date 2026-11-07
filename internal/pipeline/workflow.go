@@ -75,18 +75,19 @@ type WorkflowResult struct {
 }
 
 type workflowSnapshot struct {
-	ConfigurationBindings map[string][]model.DeploymentConfigBinding  `json:"configuration_bindings,omitempty"`
-	ExecutionVersion      int                                         `json:"execution_version,omitempty"`
-	VariableBindings      map[string][]model.DeliveryVariableBinding  `json:"variable_bindings,omitempty"`
-	ReleasePolicies       map[string]model.EnvironmentReleasePolicy   `json:"release_policies,omitempty"`
-	AuthorityID           string                                      `json:"authority_id,omitempty"`
-	SchemaVersion         uint16                                      `json:"schema_version"`
-	Source                model.WorkflowNode                          `json:"source"`
-	Stages                []model.WorkflowStage                       `json:"stages"`
-	BuildPlans            map[string]workflowBuildPlanSnapshot        `json:"build_plans,omitempty"`
-	DeploymentPlans       map[string]workflowDeploymentPlanSnapshot   `json:"deployment_plans,omitempty"`
-	DeploymentTargets     map[string]workflowDeploymentTargetSnapshot `json:"deployment_targets,omitempty"`
-	ApprovalEnabled       bool                                        `json:"approval_enabled"`
+	DirectConfigurationPaths bool                                        `json:"direct_configuration_paths,omitempty"`
+	ConfigurationBindings    map[string][]model.DeploymentConfigBinding  `json:"configuration_bindings,omitempty"`
+	ExecutionVersion         int                                         `json:"execution_version,omitempty"`
+	VariableBindings         map[string][]model.DeliveryVariableBinding  `json:"variable_bindings,omitempty"`
+	ReleasePolicies          map[string]model.EnvironmentReleasePolicy   `json:"release_policies,omitempty"`
+	AuthorityID              string                                      `json:"authority_id,omitempty"`
+	SchemaVersion            uint16                                      `json:"schema_version"`
+	Source                   model.WorkflowNode                          `json:"source"`
+	Stages                   []model.WorkflowStage                       `json:"stages"`
+	BuildPlans               map[string]workflowBuildPlanSnapshot        `json:"build_plans,omitempty"`
+	DeploymentPlans          map[string]workflowDeploymentPlanSnapshot   `json:"deployment_plans,omitempty"`
+	DeploymentTargets        map[string]workflowDeploymentTargetSnapshot `json:"deployment_targets,omitempty"`
+	ApprovalEnabled          bool                                        `json:"approval_enabled"`
 }
 
 type workflowBuildPlanSnapshot struct {
@@ -529,10 +530,12 @@ func sanitizeWorkflowInput(input *WorkflowInput) error {
 }
 
 func sanitizeWorkflowNode(node *model.WorkflowNode) error {
-	if len(node.Config.ConfigurationFiles) > 32 || (node.Config.ConfigurationDirectory != "" && !configfile.ValidDirectory(node.Config.ConfigurationDirectory)) {
+	// 新流程直接使用配置文件路径；旧字段仅保留给已存在的运行快照解码。
+	node.Config.ConfigurationDirectory = ""
+	if len(node.Config.ConfigurationFiles) > 32 {
 		return ErrInvalidWorkflow
 	}
-	if len(node.Config.ConfigurationFiles) > 0 || node.Config.DeploymentParameters != "" || node.Config.ConfigurationDirectory != "" {
+	if len(node.Config.ConfigurationFiles) > 0 || node.Config.DeploymentParameters != "" {
 		if node.Type != model.WorkflowNodeDeploy {
 			return ErrInvalidWorkflow
 		}
@@ -542,7 +545,7 @@ func sanitizeWorkflowNode(node *model.WorkflowNode) error {
 		paths := map[string]bool{}
 		ids := map[string]bool{}
 		for _, ref := range node.Config.ConfigurationFiles {
-			if ref.ID == "" || !configfile.ValidPath(ref.Path) || paths[ref.Path] || ids[ref.ID] {
+			if ref.ID == "" || !configfile.ValidFilePath(ref.Path) || paths[ref.Path] || ids[ref.ID] {
 				return ErrInvalidWorkflow
 			}
 			paths[ref.Path] = true
@@ -1247,6 +1250,11 @@ func (s *Service) newStageResolvedWorkflowRunWithDatabase(
 	}
 	resolved := *workflow
 	resolved.Stages = cloneWorkflowStages(workflow.Stages)
+	for i := range resolved.Stages {
+		for j := range resolved.Stages[i].Tasks {
+			resolved.Stages[i].Tasks[j].Config.ConfigurationDirectory = ""
+		}
+	}
 	// 代码事件和调度从已读取的应用恢复项目范围；请求携带的范围必须与应用一致。
 	variableContext := ctx
 	if scope, ok := projectdatabase.DepartmentScopeFromContext(ctx); ok && scope.ProjectID != "" {
@@ -1499,7 +1507,8 @@ func (s *Service) newStageResolvedWorkflowRunWithDatabase(
 		}
 	}
 	snapshot, err := json.Marshal(workflowSnapshot{
-		SchemaVersion: resolved.SchemaVersion, Source: resolved.Source, Stages: resolved.Stages,
+		DirectConfigurationPaths: true,
+		SchemaVersion:            resolved.SchemaVersion, Source: resolved.Source, Stages: resolved.Stages,
 		ExecutionVersion: 2, VariableBindings: variableBindings, ConfigurationBindings: configurationBindings, ReleasePolicies: policies, AuthorityID: authorityID,
 		BuildPlans:      buildPlans,
 		DeploymentPlans: deploymentPlans, DeploymentTargets: deploymentTargets,

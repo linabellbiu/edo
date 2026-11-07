@@ -75,3 +75,104 @@ func TestConfigurationWritesOriginalTextAndRejectsSymlinks(t *testing.T) {
 		t.Fatal("改写了目录外文件")
 	}
 }
+
+func TestConfigurationExplicitFilePathsWriteAtSelectedLocations(t *testing.T) {
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	working := filepath.Join(root, "work 目录 'quoted'")
+	home := filepath.Join(root, "home")
+	if err := os.MkdirAll(home, 0700); err != nil {
+		t.Fatal(err)
+	}
+	paths := []string{"config/app.yaml", filepath.Join(root, "absolute", ".prod.env"), "~/settings/app.toml"}
+	script, err := WriteScript(working, paths)
+	if err != nil {
+		t.Fatal(err)
+	}
+	value := "literal$token'\"\\\n"
+	run := func() {
+		t.Helper()
+		command := exec.Command("sh", "-se")
+		command.Dir = root
+		command.Stdin = strings.NewReader(script + "[ \"$PWD\" = " + Quote(root) + " ]\n")
+		command.Env = append(os.Environ(), "HOME="+home)
+		for _, name := range paths {
+			command.Env = append(command.Env, TransportKey(name)+"="+value)
+		}
+		if data, err := command.CombinedOutput(); err != nil {
+			t.Fatalf("生成文件失败: %v %s", err, data)
+		}
+	}
+	run()
+	value = "updated\n"
+	run()
+	for _, filename := range []string{filepath.Join(working, paths[0]), paths[1], filepath.Join(home, "settings", "app.toml")} {
+		data, err := os.ReadFile(filename)
+		if err != nil || string(data) != value {
+			t.Fatal("文件未直接写到指定路径", filename, err)
+		}
+		stat, err := os.Stat(filename)
+		if err != nil || stat.Mode().Perm() != 0600 {
+			t.Fatal("文件权限不正确", filename, err)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(home, "edo", "deply")); !os.IsNotExist(err) {
+		t.Fatal("新路径仍创建默认配置根目录", err)
+	}
+}
+
+func TestConfigurationFilePathAndParameterBoundaries(t *testing.T) {
+	paths := []string{"config/app.yaml", "/srv/app/.prod.env", "~/settings/app.toml"}
+	for _, filename := range paths {
+		if !ValidFilePath(filename) {
+			t.Fatal("拒绝有效配置文件路径", filename)
+		}
+		refs := []model.DeploymentConfigFile{{ID: "selected", Path: filename}}
+		actual, err := EnvFileParameters("--env-file "+filename, refs)
+		if err != nil || len(actual) != 1 || actual[0] != filename {
+			t.Fatal("参数没有保留目标路径", filename, actual, err)
+		}
+	}
+	for _, filename := range []string{"", "/", "~/", "~root/config", "~//config", "//srv/config", "/srv/../secret", "~/../secret", "config/./a", "config/.edo/state", "a/$(id)"} {
+		if ValidFilePath(filename) {
+			t.Fatal("接受不安全路径", filename)
+		}
+	}
+}
+
+func TestConfigurationAbsoluteAndHomePathsRejectSymlinkParents(t *testing.T) {
+	for _, homePath := range []bool{false, true} {
+		t.Run(map[bool]string{false: "absolute", true: "home"}[homePath], func(t *testing.T) {
+			root, err := filepath.EvalSymlinks(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			outside := filepath.Join(root, "outside")
+			if err := os.Mkdir(outside, 0700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(outside, filepath.Join(root, "linked")); err != nil {
+				t.Fatal(err)
+			}
+			filename := filepath.Join(root, "linked", "app.env")
+			if homePath {
+				filename = "~/linked/app.env"
+			}
+			script, err := WriteScript(root, []string{filename})
+			if err != nil {
+				t.Fatal(err)
+			}
+			cmd := exec.Command("sh", "-se")
+			cmd.Stdin = strings.NewReader(script)
+			cmd.Env = append(os.Environ(), "HOME="+root, TransportKey(filename)+"=value")
+			if err := cmd.Run(); err == nil {
+				t.Fatal("跟随了父目录符号链接")
+			}
+			if _, err := os.Stat(filepath.Join(outside, "app.env")); !os.IsNotExist(err) {
+				t.Fatal("符号链接目标被改写", err)
+			}
+		})
+	}
+}

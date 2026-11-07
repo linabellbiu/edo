@@ -17,7 +17,6 @@ export interface WorkflowNotificationRule {
 
 export interface WorkflowNodeConfig {
   configuration_files?: Array<{id:string;path:string}>
-  configuration_directory?: string
   deployment_parameters?: string
  status_writeback?:boolean
   branch?: string

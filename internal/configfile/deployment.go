@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"path"
 	"sort"
 	"strings"
 
@@ -45,7 +46,8 @@ func EnvFileParameters(value string, refs []model.DeploymentConfigFile) ([]strin
 		if !valid {
 			return nil, ErrParameters
 		}
-		arg, err := expand.Literal(nil, word)
+		// 保留 ~/ 原文，由部署目标展开，不能使用 EDO 进程的主目录。
+		arg, err := expand.Literal(&expand.Config{Env: expand.ListEnviron("HOME=~")}, word)
 		if err != nil || strings.ContainsAny(arg, "\x00\r\n") {
 			return nil, ErrParameters
 		}
@@ -68,7 +70,7 @@ func EnvFileParameters(value string, refs []model.DeploymentConfigFile) ([]strin
 			}
 			path = args[i]
 		}
-		if !ValidPath(path) || !selected[path] {
+		if !ValidFilePath(path) || !selected[path] {
 			return nil, ErrParameters
 		}
 		paths = append(paths, path)
@@ -86,6 +88,7 @@ func RevisionDigest(bindings []model.DeploymentConfigBinding) string {
 	return hex.EncodeToString(sum[:])
 }
 
+// Directory 仅恢复旧运行快照的路径；新发布不再使用该目录布局。
 func Directory(configured, projectID, applicationID, environmentID, runID, nodeID string) string {
 	if configured == "" {
 		configured = "~/edo/deply"
@@ -98,8 +101,36 @@ func Directory(configured, projectID, applicationID, environmentID, runID, nodeI
 	return strings.TrimSuffix(configured, "/") + "/" + projectID + "/" + applicationID + "/" + environmentID + "/" + runID + fmt.Sprintf("/%x", sum[:8])
 }
 
+// FileArgument 在目标 Shell 内解析主目录，不执行用户路径中的任何表达式。
+func FileArgument(name string) (string, error) {
+	if !ValidFilePath(name) {
+		return "", errors.New("配置文件路径无效")
+	}
+	if strings.HasPrefix(name, "~/") {
+		return `"${HOME:?无法取得目标用户目录}/"` + Quote(strings.TrimPrefix(name, "~/")), nil
+	}
+	if path.IsAbs(name) {
+		return Quote(name), nil
+	}
+	return `"${EDO_CONFIGURATION_DIRECTORY:?缺少部署工作目录}/"` + Quote(name), nil
+}
+
+// ComposePath 保留用户指定的位置，仅将目标主目录交给目标 Shell 展开。
+func ComposePath(name string) (string, error) {
+	if !ValidFilePath(name) {
+		return "", errors.New("配置文件路径无效")
+	}
+	if strings.HasPrefix(name, "~/") {
+		return "${EDO_CONFIGURATION_HOME}/" + strings.TrimPrefix(name, "~/"), nil
+	}
+	if path.IsAbs(name) {
+		return name, nil
+	}
+	return "${EDO_CONFIGURATION_DIRECTORY}/" + name, nil
+}
+
 // WriteScript 仅引用通过独立输入传输的正文，生成脚本及发布快照不包含明文。
-// 调用方在权限和运行锁内执行；始终使用独立版本目录，不覆盖其他发布的文件。
+// 调用方在权限和运行锁内执行；文件只写入用户指定的位置。
 func WriteScript(directory string, paths []string) (string, error) {
 	prepare, err := PrepareDirectoryScript(directory)
 	if err != nil {
@@ -108,21 +139,35 @@ func WriteScript(directory string, paths []string) (string, error) {
 	names := append([]string{}, paths...)
 	sort.Strings(names)
 	var script strings.Builder
-	script.WriteString("edo_previous_directory=$PWD\n")
+	script.WriteString("edo_previous_directory=$PWD\numask 077\n")
 	script.WriteString(prepare)
-	script.WriteString("umask 077\n")
+	script.WriteString("edo_configuration_directory=$PWD\n")
 	for _, name := range names {
-		if !ValidPath(name) {
+		if !ValidFilePath(name) {
 			return "", errors.New("配置文件路径无效")
 		}
-		components := strings.Split(name, "/")
+		file := name
+		if path.IsAbs(name) || strings.HasPrefix(name, "~/") {
+			parent, err := PrepareDirectoryScript(path.Dir(name))
+			if err != nil {
+				return "", err
+			}
+			script.WriteString(parent)
+			file = path.Base(name)
+		} else {
+			script.WriteString("cd \"$edo_configuration_directory\"\n")
+		}
+		components := strings.Split(file, "/")
 		for i := 1; i < len(components); i++ {
 			dir := Quote(strings.Join(components[:i], "/"))
 			fmt.Fprintf(&script, "[ ! -L %s ] || exit 1\nmkdir -p %s\n", dir, dir)
 		}
-		target := Quote(name)
+		if len(components) > 1 {
+			fmt.Fprintf(&script, "cd %s\n", Quote(path.Dir(file)))
+		}
+		target := Quote(path.Base(file))
 		fmt.Fprintf(&script, "[ ! -L %s ] && [ ! -d %s ] || exit 1\nedo_config_tmp=$(mktemp '.edo-config-XXXXXXXX')\nprintf '%%s' \"${%s?缺少配置文件内容}\" >\"$edo_config_tmp\" || { rm -f \"$edo_config_tmp\"; exit 1; }\nchmod 600 \"$edo_config_tmp\"\nmv -f \"$edo_config_tmp\" %s\nunset %s\n", target, target, TransportKey(name), target, TransportKey(name))
 	}
-	script.WriteString("edo_configuration_directory=$PWD\ncd \"$edo_previous_directory\"\nunset edo_previous_directory edo_config_tmp\n")
+	script.WriteString("export EDO_CONFIGURATION_HOME=\"${HOME-}\"\ncd \"$edo_previous_directory\"\nunset edo_previous_directory edo_config_tmp\n")
 	return script.String(), nil
 }

@@ -176,3 +176,40 @@ func TestConfigurationLegacyVariableRestartDoesNotGainNewPermissionRequirement(t
 		t.Fatal("旧变量实例的普通重启行为改变", err)
 	}
 }
+
+func TestConfigurationDirectPathsUseFrozenDeploymentDirectory(t *testing.T) {
+	f := newContainerControlFixture(t)
+	attachConfigurationFixture(t, f)
+	var run model.PipelineRun
+	if err := f.db.First(&run, "uuid = ?", f.record.PipelineRunID).Error; err != nil {
+		t.Fatal(err)
+	}
+	var snapshot map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(run.WorkflowSnapshot), &snapshot); err != nil {
+		t.Fatal(err)
+	}
+	snapshot["direct_configuration_paths"] = json.RawMessage("true")
+	data, _ := json.Marshal(snapshot)
+	if err := f.db.Model(&run).Update("workflow_snapshot", string(data)).Error; err != nil {
+		t.Fatal(err)
+	}
+	for _, directory := range []string{f.record.WorkingDirectory, ""} {
+		record := f.record
+		record.WorkingDirectory = directory
+		set, err := f.service.ResolveDeploymentConfiguration(f.ctx, &record, false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		expected := directory
+		if expected == "" {
+			expected = "~"
+		}
+		if set.Directory != expected || set.Bindings[0].Path != "config/.prod.env" {
+			t.Fatal("实际目录或文件路径被额外拼接", set.Directory)
+		}
+		latest, err := f.service.ResolveDeploymentConfiguration(f.ctx, &record, true)
+		if err != nil || latest.Directory != set.Directory {
+			t.Fatal("重启重建改变了配置路径", err)
+		}
+	}
+}
