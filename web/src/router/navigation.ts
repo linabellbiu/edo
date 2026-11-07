@@ -40,6 +40,7 @@ export const navigation: NavSection[] = [
         { label: 'nav.credentials', path: '/credentials', permissions: ['credential.read'], icon: KeyRound },
         {label:'nav.applicationDatabases',path:'/application-databases',permissions:['application_database.read'],icon:Database},
         {label:'nav.environmentPolicies',path:'/environment-policies',permissions:['environment_policy.read'],icon:ShieldCheck},
+        {label:'nav.configurationFiles',path:'/configuration-files',permissions:['delivery_variable.read'],icon:FileText},
         { label: 'nav.deliveryVariables', path: '/delivery-variables', permissions: ['delivery_variable.read'], icon: KeyRound },
       ] },
       { key: 'build-artifacts', label: 'nav.buildArtifacts', icon: PackageCheck, items: [

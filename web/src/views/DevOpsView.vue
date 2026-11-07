@@ -2165,7 +2165,7 @@ onBeforeUnmount(()=>{planExecutionDisposed=true;composeContainerController?.abor
           </a-table>
           <div v-else class="apps-empty-inline"><Workflow :size="20"/><span>{{ t('applicationCard.noWorkflows') }}</span></div>
         </template>
-        <DeliveryVariablesView v-else-if="applicationDetailTab(card.application.id)==='environment'" :key="card.application.id" :application-id="card.application.id" :application-name="card.application.name"/>
+        <DeliveryVariablesView :configuration-files="true" v-else-if="applicationDetailTab(card.application.id)==='environment'" :key="card.application.id" :application-id="card.application.id" :application-name="card.application.name"/>
         <div v-else class="apps-deployments">
         <p v-if="!canReadDeployments" class="apps-empty-inline">{{ t('applicationCard.deploymentPermissionDenied') }}</p>
         <div v-else-if="card.deploymentInstances.length" class="application-deployment-list">

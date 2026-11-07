@@ -1,4 +1,4 @@
-export type DeliveryVariableKind = 'env' | 'file' | 'env_text' | 'env_file'
+export type DeliveryVariableKind = 'env' | 'file' | 'env_text' | 'env_file' | `config_${import('./configText').ConfigFormat}`
 
 export function envTextError(source: string): string {
   if (new TextEncoder().encode(source).length > 65536 || source.includes('\0')) return 'env 文本过长或包含无效字符'
@@ -15,4 +15,4 @@ export function envTextError(source: string): string {
   return keys.size ? '' : '请至少输入一行 KEY=value'
 }
 
-export const variableKindLabel = (kind: DeliveryVariableKind) => ({ env: '逐条变量', file: '构建文件', env_text: 'env 文本 · environment', env_file: 'env 文本 · env_file' })[kind]
+export const variableKindLabel = (kind: DeliveryVariableKind) => kind.startsWith('config_') ? `${kind.slice(7).toUpperCase()} 配置文件` : ({ env: '逐条变量', file: '构建文件', env_text: 'env 文本 · environment', env_file: 'env 文本 · env_file' })[kind as 'env' | 'file' | 'env_text' | 'env_file']

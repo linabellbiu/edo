@@ -44,7 +44,7 @@ export const messages = {
     nav: {
       overview: '概览', delivery: '持续交付', applicationsCode: '应用与代码', applications: '应用', repositories: '代码仓库', credentials: '我的令牌',
       buildArtifacts: '构建与制品', buildPlans: '构建方案', registries: '镜像仓库', releaseManagement: '发布管理', deploymentPlans: '部署方案',
-      environments: '环境管理', pipelinePlans: '流水线', releasePlans: '发布计划', pipelineRuns: '流水线运行记录', deliveryVariables: '变量与密钥', applicationDatabases:'应用数据库',environmentPolicies:'环境保护',
+      environments: '环境管理', pipelinePlans: '流水线', releasePlans: '发布计划', pipelineRuns: '流水线运行记录', configurationFiles:'配置', deliveryVariables: '变量与密钥', applicationDatabases:'应用数据库',environmentPolicies:'环境保护',
       platform: '平台管理', infrastructure: '基础设施', sqlAudit: 'SQL 审计', domains: '域名解析', hosts: '主机', containers: '主机与集群',
       monitor: '系统监控', tasks: '任务中心', logs: '日志', security: '系统与安全', settings: '系统设置', users: '用户管理', roles: '角色与功能', audit: '审计日志',
     },
@@ -159,7 +159,7 @@ export const messages = {
       invalidEvent: '收到无法识别的日志事件', disconnected: '日志连接已断开',
     },
     applicationWorkspace: {
-      description: '查看应用的代码更新、流水线运行和部署实例。', create: '新建应用', search: '搜索应用、仓库或流水线', filterLabel: '筛选应用', instances: '实例', environmentVariables: '环境变量', environmentConfiguration: '环境配置（变量 / .env）',
+      description: '查看应用的代码更新、流水线运行和部署实例。', create: '新建应用', search: '搜索应用、仓库或流水线', filterLabel: '筛选应用', instances: '实例', environmentVariables: '配置', environmentConfiguration: '配置',
       filters: { all: '全部应用', running: '进行中', attention: '需要关注', inactive: '已停用' },
       columns: { application: '应用', resources: '关联资源', actions: '操作', status: '启用状态', source: '触发规则', template: '绑定方案', tasks: '任务构成', runTime: '运行时间' },
       noResults: '没有符合条件的应用', noResultsHint: '试试其他关键词，或清除筛选条件。', clearFilters: '清除筛选',
@@ -284,7 +284,7 @@ export const messages = {
     nav: {
       overview: 'Overview', delivery: 'Delivery', applicationsCode: 'Apps & Code', applications: 'Applications', repositories: 'Repositories', credentials: 'My Tokens',
       buildArtifacts: 'Build & Artifacts', buildPlans: 'Build Plans', registries: 'Registries', releaseManagement: 'Release Management', deploymentPlans: 'Deployment Plans',
-      environments: 'Environments', pipelinePlans: 'Pipelines', releasePlans: 'Release Plans', pipelineRuns: 'Pipeline Run Records', deliveryVariables: 'Variables & Secrets', applicationDatabases:'Application databases',environmentPolicies:'Environment protection',
+      environments: 'Environments', pipelinePlans: 'Pipelines', releasePlans: 'Release Plans', pipelineRuns: 'Pipeline Run Records', configurationFiles:'Configuration', deliveryVariables: 'Variables & Secrets', applicationDatabases:'Application databases',environmentPolicies:'Environment protection',
       platform: 'Platform', infrastructure: 'Infrastructure', sqlAudit: 'SQL Review', domains: 'DNS', hosts: 'Hosts', containers: 'Hosts & Clusters',
       monitor: 'System Monitor', tasks: 'Tasks', logs: 'Logs', security: 'System & Security', settings: 'Settings', users: 'Users', roles: 'Roles & Permissions', audit: 'Audit Logs',
     },
@@ -399,7 +399,7 @@ export const messages = {
       invalidEvent: 'Received an invalid log event', disconnected: 'Log connection closed',
     },
     applicationWorkspace: {
-      description: 'Track code updates, pipeline runs, and deployed instances.', create: 'New application', search: 'Search apps, repositories, or pipelines', filterLabel: 'Filter applications', instances: 'Instances', environmentVariables: 'Variables', environmentConfiguration: 'Environment configuration (variables / .env)',
+      description: 'Track code updates, pipeline runs, and deployed instances.', create: 'New application', search: 'Search apps, repositories, or pipelines', filterLabel: 'Filter applications', instances: 'Instances', environmentVariables: 'Configuration', environmentConfiguration: 'Configuration',
       filters: { all: 'All applications', running: 'In progress', attention: 'Needs attention', inactive: 'Disabled' },
       columns: { application: 'Application', resources: 'Resources', actions: 'Actions', status: 'Enabled', source: 'Trigger rules', template: 'Linked template', tasks: 'Tasks', runTime: 'Run time' },
       noResults: 'No matching applications', noResultsHint: 'Try another keyword or clear your filters.', clearFilters: 'Clear filters',

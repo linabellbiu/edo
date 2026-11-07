@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import * as vue from 'vue'
+import * as configText from '../src/utils/configText.ts'
 import { loadFrontend } from './acceptanceHarness.mjs'
 
 const envTextModule = loadFrontend('../src/utils/envText.ts')
@@ -24,7 +25,7 @@ async function harness({ permissions = codes, project = 'project-a', selected = 
   }]))
   const component = loadFrontend('../src/views/DeliveryVariablesView.vue', {
     vue: { ...vue, onMounted: fn => mounted.push(fn), onBeforeUnmount: fn => unmounts.push(fn) },
-    '@/utils/envText': envTextModule, '@/stores/auth': { useAuthStore: () => auth }, '@/api/client': { __esModule: true, default: client }, '@/api/resources': { apiErrorMessage: () => '当前项目操作失败，请重试' },
+    '@/utils/configText':configText, '@/utils/envText': envTextModule, '@/stores/auth': { useAuthStore: () => auth }, '@/api/client': { __esModule: true, default: client }, '@/api/resources': { apiErrorMessage: () => '当前项目操作失败，请重试' },
     'ant-design-vue': { Modal: { confirm(config) { const item = { ...config, destroyed: false, destroy() { this.destroyed = true; config.afterClose?.() } }; confirmations.push(item); return item } }, message: Object.fromEntries(['success', 'warning', 'error'].map(kind => [kind, text => notifications.push({ kind, text })])) },
   }, { localStorage, window }).default
   const scope = vue.effectScope(); let state, stopped = false
@@ -177,4 +178,19 @@ test('env 文本默认用于部署，保存物理行与文件名，错误文本�
  assert.equal(writes(h)[1].body.kind, 'env_file'); assert.equal(writes(h)[1].body.name, '.prod.env')
  h.state.edit(); h.state.form.name = 'INVALID'; h.state.form.value = 'TOKEN=private\nTOKEN=again'
  await h.state.save(); assert.equal(writes(h).length, 2); assert.match(h.state.editorError.value, /第 2 行/); assert.doesNotMatch(h.state.editorError.value, /private/)
+})
+
+
+test('配置文件原文保存且不自动关联，错误格式不会发送请求',async t=>{
+ const h=await harness({props:{configurationFiles:true}});t.after(h.stop)
+ h.state.edit();h.state.form.name='app.yaml';await settle();h.state.form.value='server: [broken';await h.state.save()
+ assert.equal(writes(h).length,0);assert.match(h.state.editorError.value,/YAML/)
+ h.state.form.value='server:\n  password: literal$token\n';await h.state.save()
+ assert.equal(writes(h)[0].body.kind,'config_yaml');assert.equal(writes(h)[0].body.auto_deploy,false);assert.equal(writes(h)[0].body.value,'server:\n  password: literal$token\n')
+ h.state.edit();h.state.form.name='app.toml';await settle();h.state.form.value='port = 8080';assert.equal(h.state.form.kind,'config_toml');await h.state.save();assert.equal(writes(h).length,2)
+})
+
+test('配置页不会把旧变量当成配置文件，按应用环境继续隔离',async t=>{
+ const h=await harness({props:{configurationFiles:true,applicationId:'app-project-a'},get:request=>request.path==='/delivery-variables'?{data:{variables:[variable('project-a',{id:'config-a',name:'app.yaml',kind:'config_yaml',usage:'deploy',application_id:'app-project-a'}),variable('project-a',{id:'old-env',kind:'env_text',usage:'deploy',application_id:'app-project-a'}),variable('project-a',{id:'prod-config',kind:'config_yaml',usage:'deploy',application_id:'app-project-a',environment_id:'prod'})]}}:undefined});t.after(h.stop)
+ assert.deepEqual(h.state.filtered.value.map(v=>v.id),['config-a']);h.state.environmentFilter.value='prod';await settle();assert.deepEqual(h.state.filtered.value.map(v=>v.id),['prod-config'])
 })

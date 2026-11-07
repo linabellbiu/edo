@@ -19,6 +19,15 @@ const (
 	WorkflowNodeDeploy   WorkflowNodeType = "deploy"
 )
 
+type DeploymentConfigFile struct {
+	ID   string `json:"id"`
+	Path string `json:"path"`
+}
+type DeploymentConfigBinding struct {
+	DeliveryVariableBinding
+	Path string `json:"path"`
+}
+
 type WorkflowNodeConfig struct {
 	StatusWriteback       bool                       `json:"status_writeback,omitempty"`
 	Branch                string                     `json:"branch,omitempty"`

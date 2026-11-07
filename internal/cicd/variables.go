@@ -16,6 +16,7 @@ import (
 	"github.com/google/uuid"
 	"gorm.io/gorm"
 
+	"edo/internal/configfile"
 	"edo/internal/database"
 	"edo/internal/envtext"
 	"edo/internal/model"
@@ -112,14 +113,17 @@ func (s *Service) SaveVariable(ctx context.Context, actorID, id string, in Varia
 	}
 	in.Name = strings.TrimSpace(in.Name)
 	validName := variableName.MatchString(in.Name)
-	if in.Kind == "env_file" {
+	if in.Kind == "env_file" || configfile.ValidKind(in.Kind) {
 		validName = envtext.ValidFileName(in.Name)
 	}
-	if !validName || len(in.Description) > 500 || (in.Kind != "env" && in.Kind != "file" && in.Kind != "env_text" && in.Kind != "env_file") ||
+	if !validName || len(in.Description) > 500 || (in.Kind != "env" && in.Kind != "file" && in.Kind != "env_text" && in.Kind != "env_file" && !configfile.ValidKind(in.Kind)) ||
 		(in.Usage != "build" && in.Usage != "deploy") || (in.Usage == "deploy" && in.Kind == "file") || len(in.ProtectedRefs) > 32 ||
 		(in.Usage != "deploy" && (in.Kind == "env_text" || in.Kind == "env_file")) ||
 		(in.Value != nil && (len(*in.Value) > 65536 || strings.ContainsRune(*in.Value, '\x00'))) {
 		return nil, s.failure(ctx, "delivery_variable_validate", ErrInvalidVariable, ErrInvalidVariable)
+	}
+	if configfile.ValidKind(in.Kind) && (in.Usage != "deploy" || in.AutoDeploy != nil && *in.AutoDeploy) {
+		return nil, s.failure(ctx, "configuration_validate_usage", ErrInvalidVariable, ErrInvalidVariable)
 	}
 	if in.AutoDeploy != nil && *in.AutoDeploy && (in.ApplicationID == "" || in.Usage != "deploy") {
 		return nil, s.failure(ctx, "delivery_variable_auto_deploy_validate", ErrInvalidVariable, ErrInvalidVariable)
@@ -328,6 +332,9 @@ func (s *Service) freezeVariables(ctx context.Context, projectID, applicationID,
 		explicit[name] = true
 	}
 	for _, item := range items {
+		if configfile.ValidKind(item.Kind) {
+			continue
+		}
 		if !explicit[item.Name] {
 			if !automatic || applicationID == "" || item.ApplicationID != applicationID || !item.AutoDeploy {
 				continue
@@ -372,6 +379,9 @@ func (s *Service) ResolveVariables(ctx context.Context, projectID, ref string, b
 		}
 	}
 	for _, binding := range bindings {
+		if configfile.ValidKind(binding.Kind) {
+			return nil, nil, nil, s.failure(ctx, "configuration_variable_misuse", ErrInvalidVariable, ErrVariableUnavailable)
+		}
 		var item model.DeliveryVariable
 		if e := s.db.WithContext(ctx).Where("project_id = ? AND uuid = ? AND is_active = ?", projectID, binding.VariableID, true).First(&item).Error; e != nil {
 			return nil, nil, nil, s.failure(ctx, "delivery_variable_resolve_scope", e, ErrVariableUnavailable)

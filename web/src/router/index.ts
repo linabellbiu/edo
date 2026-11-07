@@ -16,6 +16,7 @@ const routes: RouteRecordRaw[] = [
       { path: 'credentials', name: 'credentials', component: () => import('@/views/CredentialView.vue'), meta: { title: 'nav.credentials', permissions: ['credential.read'] } },
       {path:'application-databases',name:'application-databases',component:()=>import('@/views/DeliveryControlsView.vue'),meta:{title:'nav.applicationDatabases',permissions:['application_database.read']}},
       {path:'environment-policies',name:'environment-policies',component:()=>import('@/views/DeliveryControlsView.vue'),meta:{title:'nav.environmentPolicies',permissions:['environment_policy.read']}},
+      { path:'configuration-files',name:'configuration-files',component:()=>import('@/views/DeliveryVariablesView.vue'),props:{configurationFiles:true},meta:{title:'nav.configurationFiles',permissions:['delivery_variable.read']} },
       { path: 'delivery-variables', name: 'delivery-variables', component: () => import('@/views/DeliveryVariablesView.vue'), meta: { title: 'nav.deliveryVariables', permissions: ['delivery_variable.read'] } },
       { path: 'domains', name: 'domains', component: () => import('@/views/DomainView.vue'), meta: { title: 'nav.domains', permissions: ['dns.read'] } },
       { path: 'build-plans', name: 'build-plans', component: () => import('@/views/DevOpsView.vue'), props: { section: 'build-plans' }, meta: { title: 'nav.buildPlans', permissions: ['build_plan.read'] } },
