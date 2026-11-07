@@ -81,7 +81,7 @@ func TestStageTimingUsesWallTimeAndPreservesMissingData(t *testing.T) {
 func TestRunStageTimingsUseRunSnapshotAndProjectScope(t *testing.T) {
 	db := testutil.NewDatabase(t)
 	service := NewService(db, nil, nil)
-	base := time.Now().UTC().Add(-time.Hour)
+	base := time.Now().UTC().Truncate(time.Millisecond).Add(-time.Hour)
 	end := base.Add(15 * time.Second)
 	project := database.DefaultProjectID(database.DefaultDepartmentID)
 	run := queryRunFixture("timing-run", base, model.PipelineRunRunning)

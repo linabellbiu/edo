@@ -85,7 +85,7 @@ func openSQLiteFixture(t testing.TB) (*gorm.DB, error) {
 			t.Errorf("关闭测试数据库失败: %v", err)
 		}
 	})
-	return db, nil
+	return db.Set("edo_test_database_config", config.Database{Driver: "sqlite", DSN: (&url.URL{Scheme: "file", Path: path, RawQuery: "_pragma=journal_mode(WAL)"}).String(), MaxOpenConns: 1, MaxIdleConns: 1}).Session(&gorm.Session{}), nil
 }
 
 func openSQLite(path string) (*gorm.DB, error) {
@@ -94,4 +94,23 @@ func openSQLite(path string) (*gorm.DB, error) {
 	return database.Open(context.Background(), config.Database{
 		Driver: "sqlite", DSN: dsn, MaxOpenConns: 1, MaxIdleConns: 1,
 	}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+}
+
+// ReopenDatabase 用独立连接池访问本用例的同一个数据库，不读取外部业务连接。
+func ReopenDatabase(t testing.TB, db *gorm.DB) *gorm.DB {
+	t.Helper()
+	value, ok := db.Get("edo_test_database_config")
+	if !ok {
+		t.Fatal("测试数据库缺少隔离连接配置")
+	}
+	other, err := database.Open(context.Background(), value.(config.Database), slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatalf("重开独立测试连接失败: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := database.Close(other); err != nil {
+			t.Errorf("关闭独立测试连接失败: %v", err)
+		}
+	})
+	return other
 }

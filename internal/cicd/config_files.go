@@ -27,7 +27,7 @@ func (s *Service) FreezeConfigFiles(ctx context.Context, projectID, applicationI
 			}
 		}
 		var item model.DeliveryVariable
-		if err = s.db.WithContext(ctx).Where("uuid = ? AND project_id = ? AND is_active = ? AND usage = ?", reference.ID, projectID, true, "deploy").First(&item).Error; err != nil {
+		if err = s.db.WithContext(ctx).Where(map[string]any{"uuid": reference.ID, "project_id": projectID, "is_active": true, "usage": "deploy"}).First(&item).Error; err != nil {
 			return nil, s.failure(ctx, "configuration_freeze_read", err, ErrVariableUnavailable)
 		}
 		if !configfile.ValidKind(item.Kind) || (item.ApplicationID != "" && item.ApplicationID != applicationID) || (item.EnvironmentID != "" && item.EnvironmentID != environmentID) || !refAllowed(item.ProtectedRefs, ref) {

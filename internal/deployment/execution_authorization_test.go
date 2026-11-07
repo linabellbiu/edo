@@ -34,9 +34,10 @@ func deploymentExecutionTestContext(projects ...string) context.Context {
 func configureDeploymentAuthorizationTestActor(t *testing.T, db *gorm.DB, projectID, departmentID, actorID string, permissions ...string) string {
 	t.Helper()
 	roleID := uuid.NewSHA1(uuid.NameSpaceURL, []byte("deployment-test-role:"+projectID+":"+actorID)).String()
+	username := "deploy_" + strings.ReplaceAll(uuid.NewSHA1(uuid.NameSpaceURL, []byte(actorID)).String(), "-", "")[:24]
 	resources := []any{
 		&model.Project{ID: projectID, DepartmentID: departmentID, Name: "执行权限项目-" + projectID, IsActive: true},
-		&model.User{ID: actorID, DepartmentID: departmentID, Username: "deployment-" + actorID, IsActive: true},
+		&model.User{ID: actorID, DepartmentID: departmentID, Username: username, IsActive: true},
 		&model.Role{ID: roleID, Name: "deployment-" + roleID, DisplayName: "部署执行测试角色"},
 		&model.ProjectMember{ProjectID: projectID, UserID: actorID, RoleID: roleID},
 	}

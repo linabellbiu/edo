@@ -26,7 +26,12 @@ func nameTestWorkflow(t *testing.T, service *Service, appID, name string) *model
 	if err != nil {
 		t.Fatal(err)
 	}
-	return result.Workflow
+	// 以真实持久化结果为基准，保留数据库时间精度与时区下的完整记录比较。
+	stored, err := service.FindApplicationWorkflow(context.Background(), appID, result.Workflow.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return stored
 }
 
 func nameTestInput(w *model.ReleaseWorkflow, name string) WorkflowInput {

@@ -183,7 +183,7 @@ func createMySQLDatabase() (*gorm.DB, func() error, error) {
 		_ = cleanup()
 		return nil, nil, err
 	}
-	return db, cleanup, nil
+	return db.Set("edo_test_database_config", config.Database{Driver: "mysql", DSN: settings.FormatDSN(), MaxOpenConns: 4, MaxIdleConns: 2}).Session(&gorm.Session{}), cleanup, nil
 }
 
 func mysqlIdentifier(value string) string { return "`" + strings.ReplaceAll(value, "`", "``") + "`" }

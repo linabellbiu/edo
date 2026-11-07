@@ -182,21 +182,40 @@ func TestPreviewCancellationStopsChecksWithoutSavingPlan(t *testing.T) {
 	f := newFixture(t)
 	started := make(chan struct{}, 1)
 	f.service.WithTransport(preflightReadTransport{Transport: f.transport, read: func(ctx context.Context, _ model.Host, _ sshclient.Bundle, _ string) (string, error) {
-		started <- struct{}{}
+		select {
+		case started <- struct{}{}:
+		default:
+		}
 		<-ctx.Done()
 		return "", ctx.Err()
 	}})
-	ctx, cancel := context.WithTimeout(f.ctx, 100*time.Millisecond)
+	ctx, cancel := context.WithCancel(f.ctx)
 	defer cancel()
-	before := time.Now()
-	plan, err := f.service.Preview(ctx, f.actor.ID, f.input())
-	if plan != nil || !errors.Is(err, context.DeadlineExceeded) || time.Since(before) > time.Second {
-		t.Fatalf("preview exceeded parent budget: plan=%+v err=%v elapsed=%s", plan, err, time.Since(before))
-	}
+	done := make(chan struct {
+		plan *Plan
+		err  error
+	}, 1)
+	go func() {
+		plan, err := f.service.Preview(ctx, f.actor.ID, f.input())
+		done <- struct {
+			plan *Plan
+			err  error
+		}{plan, err}
+	}()
 	select {
 	case <-started:
-	default:
-		t.Fatal("fixture did not reach the slow host check")
+	case <-time.After(5 * time.Second):
+		t.Fatal("预检未进入受控的主机检查")
+	}
+	before := time.Now()
+	cancel()
+	select {
+	case result := <-done:
+		if result.plan != nil || !errors.Is(result.err, context.Canceled) {
+			t.Fatalf("取消未停止预检: plan=%+v err=%v", result.plan, result.err)
+		}
+	case <-time.After(time.Second):
+		t.Fatalf("取消后预检未及时退出: %s", time.Since(before))
 	}
 	var plans int64
 	f.db.Model(&model.K3sInstallation{}).Count(&plans)

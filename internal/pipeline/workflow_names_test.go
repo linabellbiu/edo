@@ -4,9 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"io"
 	"log/slog"
-	"net/url"
 	"strings"
 	"sync"
 	"testing"
@@ -19,8 +17,6 @@ import (
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
 
-	"edo/internal/config"
-	"edo/internal/database"
 	"edo/internal/model"
 	"edo/internal/testutil"
 )
@@ -114,33 +110,7 @@ func TestWorkflowNameLockFailureIsSafeAndLogs(t *testing.T) {
 
 func secondNameTestService(t *testing.T, service *Service, db *gorm.DB) *Service {
 	t.Helper()
-	// 仅重开本用例独立SQLite临时文件；两服务持有独立连接池，不读取外部DSN。
-	var entries []struct {
-		Seq        int
-		Name, File string
-	}
-	if err := db.Raw("PRAGMA database_list").Scan(&entries).Error; err != nil {
-		t.Fatal(err)
-	}
-	var file string
-	for _, entry := range entries {
-		if entry.Name == "main" {
-			file = entry.File
-		}
-	}
-	if file == "" {
-		t.Fatal("本用例SQLite路径未取得")
-	}
-	dsn := (&url.URL{Scheme: "file", Path: file, RawQuery: "_pragma=journal_mode(WAL)"}).String()
-	otherDB, err := database.Open(context.Background(), config.Database{Driver: "sqlite", DSN: dsn, MaxOpenConns: 1, MaxIdleConns: 1}, slog.New(slog.NewTextHandler(io.Discard, nil)))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		if err := database.Close(otherDB); err != nil {
-			t.Error(err)
-		}
-	})
+	otherDB := testutil.ReopenDatabase(t, db)
 	return service.deliveryTransaction(otherDB)
 }
 
