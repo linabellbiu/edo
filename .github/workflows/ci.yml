@@ -235,11 +235,15 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+      - name: 准备独立集成测试基础镜像
+        timeout-minutes: 5
+        # Compose 和停止测试只使用预先取得的镜像，不把下载时间计入操作耗时。
+        run: docker pull alpine:3.22
       - name: Dockerfile 与脚本构建到发布的真实链路
         env:
           EDO_TEST_DOCKER_INTEGRATION: "1"
         # 仅在临时 Runner 上创建测试容器，和业务、数据库及前端检查互不阻塞。
-        run: go test -race -count=1 -timeout=20m ./internal/dockerengine -run '^Test(DockerBuildAndComposeIntegration|DockerBuildCacheAcrossIsolatedContexts|ScriptContainerIntegration|DeliverySandboxReportsSecretsAndCacheIntegration)$'
+        run: go test -race -count=1 -timeout=20m ./internal/dockerengine -run '^Test(DockerBuildAndComposeIntegration|DockerBuildCacheAcrossIsolatedContexts|ScriptContainerIntegration|DeliverySandboxReportsSecretsAndCacheIntegration|ComposeEnvFilesIntegration|ComposeProjectRuntimeIntegration)$'
       - name: SQL 与安全检查工具
         env:
           EDO_TEST_DELIVERY_TOOLS: "1"
@@ -250,10 +254,10 @@ jobs:
           EDO_SQL_CHECK_TEST: "1"
         # 无数据库凭据和网络的临时检查容器，失败不得视为检查通过。
         run: go test -race -count=1 -timeout=5m ./internal/sqlchange -run '^TestSQLFluffRuntimeExternal$'
-      - name: 准备流水线停止测试镜像
-        timeout-minutes: 5
-        # 停止测试只使用已存在的镜像，避免把镜像下载时间混入停止耗时。
-        run: docker pull alpine:3.22
+      - name: Compose 配置、服务范围与容器动作
+        env:
+          EDO_TEST_DOCKER_INTEGRATION: "1"
+        run: go test -race -count=1 -timeout=8m ./internal/pipeline ./internal/deployment -run '^Test(ComposeEnvTextIntegration|ComposeServiceScopeIntegration|ComposeContainerActionsIntegration)$'
       - name: 真实流水线取消与容器回收
         env:
           EDO_TEST_DOCKER_STOP: "1"

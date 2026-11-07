@@ -109,11 +109,15 @@ test('切换项目中止旧提交，迟到成功不提示、不刷新或覆盖�
   assert.deepEqual(h.state.applications.value.map(row => row.id), ['app-b'])
 })
 
-test('启停在应用更多菜单与详情、仓库更多菜单提供，均沿用修改权限和忙碌状态', () => {
+test('应用与仓库的更多菜单均提供受修改权限和忙碌状态保护的启停入口', () => {
   const { descriptor } = parse(readFileSync(new URL('../src/views/DevOpsView.vue', import.meta.url), 'utf8'))
   const controls = []; const visit = (node, parents = []) => { if (node.type === 1 && node.props?.some(prop => prop.type === 7 && prop.name === 'on' && prop.arg?.content === 'click' && prop.exp?.content.startsWith('confirmResourceStatus('))) controls.push({ node, parents }); for (const child of node.children || []) visit(child, [...parents, node]) }; visit(descriptor.template.ast)
-  assert.equal(controls.length, 3)
+  const action = node => node.props.find(prop => prop.type === 7 && prop.name === 'on' && prop.arg?.content === 'click').exp.content
+  assert.equal(controls.filter(({node}) => action(node) === 'confirmResourceStatus(card.application)').length, 1, '应用更多菜单缺少或重复提供启停入口')
+  assert.equal(controls.filter(({node}) => action(node).startsWith('confirmResourceStatus(row')).length, 1, '仓库更多菜单缺少或重复提供启停入口')
   for (const { node, parents } of controls) {
+    assert.ok(parents.some(item => item.tag === 'ResourceRowActions'), '启停入口应归属当前资源行')
+    assert.ok(parents.some(item => item.props?.some(prop => prop.type === 7 && prop.name === 'slot' && prop.arg?.content === 'more')), '启停入口应放在更多菜单中')
     assert.ok([...parents, node].some(item => item.props?.some(prop => prop.type === 7 && prop.name === 'if' && prop.exp?.content.includes('canUpdate'))))
     assert.ok(node.props.some(prop => prop.type === 7 && prop.name === 'bind' && prop.arg?.content === 'disabled' && prop.exp?.content.includes('resourceMutationID')))
   }
