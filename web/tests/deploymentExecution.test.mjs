@@ -30,6 +30,14 @@ test('部署方案字段使用方案权限，撤权或跨项目旧回调不能�
  props.disabled=true;state.change({deployment_script:'forbidden'});assert.equal(events.length,1)
  props.disabled=false;auth.user.permissions=[];state.change({deployment_script:'forbidden'});assert.equal(events.length,1)
  auth.user.permissions=['deployment_plan.update'];storage.project='another';state.change({deployment_script:'forbidden'});assert.equal(events.length,1)
+ state.updateTimeout(900);state.updateHealthURL('https://forbidden.test');assert.equal(events.length,1)
+ storage.project='project';auth.user={...auth.user};props.modelValue={variable_names:['ORIGINAL'],compose:{project_name:'saved-project',tag_variable:'${EDO_IMAGE_TAG}',services:['api'],use_sudo:false,adopt_existing:false}}
+ state.updateHealthURL('https://example.test/ready')
+ assert.deepEqual(events.at(-1).value,{variable_names:['ORIGINAL'],compose:{...props.modelValue.compose,health_url:'https://example.test/ready'}})
+ assert.equal(props.modelValue.compose.health_url,undefined)
+ state.updateTimeout(900);assert.deepEqual(events.at(-1),{name:'update:timeoutSeconds',value:900})
+ props.disabled=true;const count=events.length
+ state.updateTimeout(1200);state.updateHealthURL('https://forbidden.test');assert.equal(events.length,count)
 })
 
 test('旧文件明确绑定重复构建中的一个任务时保留原关联，不改成歧义方案来源',()=>{

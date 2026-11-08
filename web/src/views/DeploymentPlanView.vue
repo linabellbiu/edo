@@ -25,6 +25,7 @@ import { asyncConfirm } from '@/utils/asyncConfirm'
 import '@/styles/plan-list.css'
 import type {WorkflowDeploymentPlan, DeploymentExecutionConfig, WorkflowNode} from '@/types/pipeline'
 const props=defineProps<{inline?:boolean;inlineOpen?:boolean;inlineValue?:WorkflowDeploymentPlan;inlineKinds?:string[];applicationID?:string;applicationName?:string;buildNodes?:WorkflowNode[]}>()
+const registryHost=ref<HTMLElement>()
 const emit=defineEmits<{'save-inline':[value:WorkflowDeploymentPlan];'update:inlineOpen':[value:boolean]}>()
 
 type PlanKind = 'script' | 'docker' | 'compose' | 'compose_stack' | 'kubernetes'
@@ -1102,8 +1103,7 @@ onBeforeUnmount(() => { disposed = true; resetMutation(); reset(); window.remove
         <div class="form-section">
           <header><b>1</b><div><strong>方案信息</strong><small>使用能直接辨认用途和环境的名称。</small></div></header>
           <div class="form-grid">
-            <a-form-item label="方案名称" required><a-input v-model:value="form.name" placeholder="例如：生产后端部署" /></a-form-item>
-            <a-form-item label="最长执行时间（秒）"><a-input-number v-model:value="form.timeout_seconds" :min="30" :max="3600" /></a-form-item>
+            <a-form-item class="span-2" label="方案名称" required><a-input v-model:value="form.name" placeholder="例如：生产后端部署" /></a-form-item>
             <a-form-item v-if="!inline" class="span-2" :help="t('delivery.reusableHint')"><a-checkbox v-model:checked="form.reusable" :disabled="Boolean(editingID && plans.find(item=>item.id===editingID)?.deployment_target_id)">{{ t('delivery.reusable') }}</a-checkbox></a-form-item>
             <a-form-item class="span-2" label="说明"><a-input v-model:value="form.description" placeholder="这套方案用于哪些应用或场景" /></a-form-item>
           </div>
@@ -1147,6 +1147,7 @@ onBeforeUnmount(() => { disposed = true; resetMutation(); reset(); window.remove
             </a-radio-group>
           </a-form-item>
           <template v-if="(form.reusable || form.environment_id) && availableKindOptions.length">
+            <div ref="registryHost"/>
             <a-alert
               v-if="!form.reusable && executionTargetError"
               class="span-2"
@@ -1298,17 +1299,16 @@ onBeforeUnmount(() => { disposed = true; resetMutation(); reset(); window.remove
               description="部署时自动填入流水线镜像，请勿填写固定镜像地址或 build 配置。"
             />
             <a-form-item required>
-            <div class="compose-import compose-field-header">
-              <span>compose.yaml</span>
-              <input ref="composeFileInput" class="file-input" type="file" accept=".yml,.yaml,application/yaml,text/yaml" @change="readComposeFile" />
-              <a-button @click="composeFileInput?.click()"><FileUp :size="15" />上传compose.yaml</a-button><a-button @click="formatCompose">格式化</a-button>
-            </div>
-              <YamlCodeEditor v-model="form.compose_yaml" fullscreen collapsible label="compose.yaml" @format="formatCompose"/>
+              <YamlCodeEditor v-model="form.compose_yaml" fullscreen collapsible label="compose.yaml" @format="formatCompose"><template #toolbar>
+                <span>compose.yaml</span>
+                <input ref="composeFileInput" class="file-input" type="file" accept=".yml,.yaml,application/yaml,text/yaml" @change="readComposeFile" />
+                <a-button @click="composeFileInput?.click()"><FileUp :size="15" />上传compose.yaml</a-button><a-button @click="formatCompose">格式化</a-button>
+              </template></YamlCodeEditor>
             </a-form-item>
 
           </template>
           <a-alert v-if="editingID && form.execution_config===undefined" type="info" show-icon message="旧任务中的部署参数仍保留；修改下方执行配置并保存后，后续运行统一使用此方案。" />
-          <DeploymentExecutionFields :model-value="form.execution_config || {}" :plan="executionPlan" :disabled="!canUseForm()" :edit-permission="executionPermission" :applicationID="applicationID" :applicationName="applicationName" :build-nodes="buildNodes" :hide-script="form.kind==='script'" @update:model-value="updateExecution" />
+          <DeploymentExecutionFields :model-value="form.execution_config || {}" :plan="executionPlan" :disabled="!canUseForm()" :edit-permission="executionPermission" :applicationID="applicationID" :applicationName="applicationName" :build-nodes="buildNodes" :hide-script="form.kind==='script'" :registry-target="registryHost" @update:timeout-seconds="form.timeout_seconds=$event" @update:model-value="updateExecution" />
           <a-alert v-if="form.kind === 'kubernetes'" type="info" show-icon message="使用构建产物的镜像摘要更新 Deployment。构建方案需绑定集群能访问的镜像仓库。" />
           </template>
         </div>

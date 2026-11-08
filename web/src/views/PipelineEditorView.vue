@@ -1778,11 +1778,11 @@ onBeforeRouteLeave(async () => {
               <h3 class="task-section-heading"><Layers3 :size="15" aria-hidden="true" />任务信息</h3>
               <PipelineDeployFields v-if="selectedNode.config.inline_deployment_plan&&['script','compose_stack','kubernetes'].includes(selectedNode.config.inline_deployment_plan.kind)" :node="selectedNode" :disabled="!canUpdate" :applicationID="applicationID" :applicationName="editorApplication?.name" :branch="sources[0]?.config.branch" :build-nodes="priorBuildTasks(selectedNode.id)" :build-plans="buildPlans" @change="updateSelectedNode({},$event)"/>
               <template v-else-if="selectedNode.config.inline_deployment_plan">
-                <a-form-item label="原部署配置"><span>{{selectedNode.config.inline_deployment_plan.name}}</span><a-button :disabled="!canUpdate" @click="editInlineDeployment">编辑原配置</a-button></a-form-item>
+                <a-form-item><template #label><span class="linked-deployment-label">原部署配置<a-button type="link" size="small" :disabled="!canUpdate" @click="editInlineDeployment">修改</a-button></span></template><span>{{selectedNode.config.inline_deployment_plan.name}}</span></a-form-item>
                 <DeploymentPlanReferencePreview :plan="{...selectedNode.config.inline_deployment_plan,id:'inline'}" :legacy-config="selectedNode.config" :applicationID="applicationID" :applicationName="editorApplication?.name"/>
               </template>
               <template v-else>
-                <a-form-item label="原部署配置"><a-input :value="selectedLibraryDeploymentPlan?.name||'原部署方案不可用'" disabled/><a-button v-if="canModifyDeploymentPlan" @click="modifyLinkedDeploymentPlan">修改原配置</a-button></a-form-item>
+                <a-form-item><template #label><span class="linked-deployment-label">原部署配置<a v-if="canModifyDeploymentPlan" :href="'/deployment-plans?plan='+encodeURIComponent(selectedLibraryDeploymentPlan?.id||'')+'&amp;edit=1'" aria-label="修改原部署配置" @click.prevent="modifyLinkedDeploymentPlan">修改</a></span></template><a-input :value="selectedLibraryDeploymentPlan?.name||'原部署方案不可用'" disabled/></a-form-item>
                 <DeploymentPlanReferencePreview v-if="selectedLibraryDeploymentPlan" :plan="selectedLibraryDeploymentPlan" :legacy-config="selectedNode.config" :applicationID="applicationID" :applicationName="editorApplication?.name"/>
               </template>
             </template>
@@ -1935,6 +1935,8 @@ onBeforeRouteLeave(async () => {
 </template>
 
 <style scoped>
+.linked-deployment-label{display:inline-flex;align-items:center;gap:8px}.linked-deployment-label>a{color:var(--edo-primary);text-decoration:none}.linked-deployment-label>a:hover{text-decoration:underline}.linked-deployment-label>a:focus-visible{outline:2px solid var(--edo-primary);outline-offset:3px}
+
 .pipeline-editor-page { display: flex; height: calc(100dvh - 124px); min-height: 0; flex-direction: column; overflow: hidden; }
 .pipeline-command { display: flex; min-height: 52px; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px 12px; padding: 7px 10px; }
 .pipeline-command-main, .pipeline-command-actions, .board-toolbar > div { display: flex; align-items: center; gap: 8px; }

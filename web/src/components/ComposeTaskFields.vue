@@ -8,7 +8,7 @@ import { useAuthStore } from '@/stores/auth'
 import { readKubeYaml } from '@/utils/kubernetesYaml'
 import type { WorkflowNode, WorkflowNodeConfig } from '@/types/pipeline'
 import type { DeploymentCommandPlan } from '@/utils/deploymentCommandPreview'
-const props = defineProps<{ node: WorkflowNode; buildNodes: WorkflowNode[]; disabled: boolean; applicationID?: string; applicationName?: string; plan?: DeploymentCommandPlan; editPermission?: string; buildPlans?: Array<{id:string;name:string;kind:string;artifact_path?:string;image_registry_id?:string}>; hideScript?: boolean; hideComposeSettings?:boolean }>()
+const props = defineProps<{ node: WorkflowNode; buildNodes: WorkflowNode[]; disabled: boolean; applicationID?: string; applicationName?: string; plan?: DeploymentCommandPlan; editPermission?: string; buildPlans?: Array<{id:string;name:string;kind:string;artifact_path?:string;image_registry_id?:string}>; hideScript?: boolean; hideComposeSettings?:boolean; hideAdvanced?:boolean; registryTarget?:HTMLElement }>()
 const emit = defineEmits<{ change: [config: Partial<WorkflowNodeConfig>] }>()
 const auth = useAuthStore(), kind = ref(''), yaml = ref(''), error = ref(''), environmentID=ref('')
 const deploymentPlan = ref<DeploymentCommandPlan>()
@@ -53,7 +53,6 @@ function updateSettings(patch: Partial<NonNullable<WorkflowNodeConfig['compose']
  <section v-if="kind==='compose_stack'&&!hideComposeSettings" class="compose-task-fields" aria-label="dockercompose 部署配置">
   <a-form-item label="dockercompose 项目名" required><a-input :value="settings.project_name" :disabled="disabled" @update:value="updateSettings({project_name:String($event||'')})"/></a-form-item>
 
-  <a-form-item label="健康检查地址（可选）"><a-input :value="settings.health_url" :disabled="disabled" @update:value="updateSettings({health_url:String($event||'')})"/></a-form-item>
   <a-form-item><template #label><span>启动服务（可选） <a-tooltip title="留空执行整个 compose.yaml 项目" :trigger="['hover','focus','click']"><button type="button" class="configuration-help" aria-label="启动服务说明">?</button></a-tooltip></span></template>
    <a-select mode="multiple" allow-clear :value="settings.services||[]" :disabled="disabled" :options="services.map(value=>({value,label:value}))" placeholder="全部服务" aria-label="启动服务（可选）" @update:value="updateSettings({services:$event as string[]})"/>
   </a-form-item>
@@ -61,7 +60,8 @@ function updateSettings(patch: Partial<NonNullable<WorkflowNodeConfig['compose']
   <a-checkbox :checked="settings.use_sudo" :disabled="disabled" @change="updateSettings({use_sudo:$event.target.checked})">使用免密码 sudo 执行 Docker</a-checkbox>
  </section>
  <a-alert v-else-if="node.config.compose&&!hideComposeSettings" type="warning" show-icon message="当前任务含 dockercompose 配置，请选择 dockercompose 部署方案。"/>
- <DeploymentConfigurationFields v-if="['docker','compose','compose_stack','script'].includes(kind)" :config="node.config" :build-nodes="buildNodes" :build-plans="buildPlans" :edit-permission="editPermission" :hide-script="hideScript" :deploymentPlan="deploymentPlan" :applicationID="applicationID" :applicationName="applicationName" :environmentID="environmentID" :disabled="disabled" @change="change"/>
+ <DeploymentConfigurationFields v-if="['docker','compose','compose_stack','script'].includes(kind)" :config="node.config" :build-nodes="buildNodes" :build-plans="buildPlans" :edit-permission="editPermission" :hide-script="hideScript" :registry-target="registryTarget" :deploymentPlan="deploymentPlan" :applicationID="applicationID" :applicationName="applicationName" :environmentID="environmentID" :disabled="disabled" @change="change"/>
+ <a-collapse v-if="!hideAdvanced && kind==='compose_stack'" class="deployment-advanced-options"><a-collapse-panel key="advanced" header="高级选项"><a-form-item label="健康检查地址"><a-input :value="settings.health_url" :disabled="disabled" @update:value="updateSettings({health_url:String($event||'')})"/></a-form-item></a-collapse-panel></a-collapse>
 </template>
 <style scoped>
 .configuration-help{border:1px solid var(--edo-border);border-radius:50%;background:transparent;color:var(--edo-muted);width:20px;height:20px;padding:0;cursor:help}.configuration-help:focus-visible{outline:2px solid var(--edo-primary);outline-offset:2px}.compose-task-fields{display:grid;gap:12px;min-width:0}

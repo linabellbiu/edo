@@ -8,7 +8,7 @@ import type { DeploymentInput, WorkflowNode, WorkflowNodeConfig } from '@/types/
 import type { DeploymentCommandPlan } from '@/utils/deploymentCommandPreview'
 import { validConfigurationPath } from '@/utils/deploymentCommandPreview'
 import DeploymentScriptEditor from '@/components/DeploymentScriptEditor.vue'
-const props = defineProps<{ config: WorkflowNodeConfig; deploymentPlan?: DeploymentCommandPlan; buildNodes?: WorkflowNode[]; applicationID?: string; applicationName?: string; environmentID?: string; disabled: boolean; editPermission?: string; hideScript?: boolean; buildPlans?: Array<{id:string;name:string;kind:string;artifact_path?:string;image_registry_id?:string}> }>()
+const props = defineProps<{ config: WorkflowNodeConfig; deploymentPlan?: DeploymentCommandPlan; buildNodes?: WorkflowNode[]; applicationID?: string; applicationName?: string; environmentID?: string; disabled: boolean; editPermission?: string; hideScript?: boolean; registryTarget?:HTMLElement; buildPlans?: Array<{id:string;name:string;kind:string;artifact_path?:string;image_registry_id?:string}> }>()
 const emit = defineEmits<{ change: [config: Partial<WorkflowNodeConfig>] }>()
 const auth = useAuthStore()
 type Configuration = { id: string; name: string; kind: string; version: number; is_active: boolean; project_id: string; application_id?: string; environment_id?: string }
@@ -96,7 +96,9 @@ async function registryOptions(index: number, tags: boolean) {
 </script>
 <template>
  <section class="deployment-configuration" aria-label="部署文件与脚本">
+  <Teleport :to="registryTarget || 'body'" :disabled="!registryTarget">
   <a-form-item v-if="managesRegistry" label="镜像仓库"><a-select :value="deploymentRegistry" :loading="loading" :disabled="!canEdit||!canReadRegistry" :options="deploymentRegistryOptions" placeholder="选择镜像仓库" aria-label="部署镜像仓库" @update:value="setDeploymentRegistry(String($event))"/><template #help><span v-if="primaryRegistryIndex&lt;0 &amp;&amp; inferredRegistry">已使用上游构建的镜像仓库。</span><span v-else>可直接指定镜像与实际 Tag，支持只有部署阶段的流水线。</span><a-button v-if="primaryRegistryIndex&lt;0 &amp;&amp; inferredRegistry" type="link" size="small" :disabled="!canEdit||!canReadRegistry" @click="setDeploymentRegistry(inferredRegistry!)">指定镜像与 Tag</a-button></template></a-form-item>
+  </Teleport>
   <section class="deployment-inputs" aria-label="部署前下载上游产出文件或制品到主机">
    <header class="configuration-heading"><span class="configuration-title">部署前下载上游产出文件或制品到主机</span><a-tooltip :trigger="['hover','focus','click']"><template #title><div class="configuration-tooltip"><p><code>EDO_APP_CONFIG_PATH = ~/edo/{{ applicationName || '应用名称' }}/config</code></p><p>可用 <code>${EDO_APP_CONFIG_PATH}/相对路径</code> 引用生成文件。</p><p>{{ configurationHelp }}</p></div></template><button type="button" class="configuration-help" aria-label="配置目录与生效说明">?</button></a-tooltip><a-button type="link" class="source-add" :disabled="!canEdit||selected.length>=32" aria-label="添加文件来源" @click="change({deployment_inputs:[...selected,{kind:'configuration',configuration_id:'',path:''}]})"><PlusCircle :size="15" />添加</a-button></header>
    <div class="deployment-input-content">

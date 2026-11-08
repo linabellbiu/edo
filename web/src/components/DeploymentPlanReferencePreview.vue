@@ -10,6 +10,7 @@ import type { WorkflowDeploymentPlan, WorkflowNodeConfig } from '@/types/pipelin
 import type { DeploymentCommandPlan } from '@/utils/deploymentCommandPreview'
 
 const props = defineProps<{ plan: WorkflowDeploymentPlan & { id: string; is_active?: boolean }; legacyConfig?: WorkflowNodeConfig; applicationID?: string; applicationName?: string }>()
+const registryHost=ref<HTMLElement>()
 const auth = useAuthStore()
 const environmentName = ref(''), environmentError = ref(''), loading = ref(false)
 let controller: AbortController | undefined
@@ -47,16 +48,16 @@ onBeforeUnmount(() => controller?.abort())
   <section class="deployment-plan-reference" aria-label="已关联部署方案配置（只读）">
     <a-alert v-if="plan.is_active === false" type="warning" show-icon message="原部署方案已停用，已保留关联。" />
     <a-alert v-if="environmentError" type="warning" show-icon :message="environmentError" />
+    <a-form-item label="部署方式"><a-input :value="kindNames[plan.kind]" disabled /></a-form-item>
+    <div ref="registryHost"/>
     <div class="reference-grid">
-      <a-form-item label="部署方式"><a-input :value="kindNames[plan.kind]" disabled /></a-form-item>
       <a-form-item label="环境"><a-input :value="environmentLabel" disabled /></a-form-item>
-      <a-form-item label="超时（秒）"><a-input :value="plan.timeout_seconds" disabled /></a-form-item>
       <a-form-item v-if="plan.kind === 'script' && target?.working_directory" label="工作目录"><a-input :value="target.working_directory" disabled /></a-form-item>
     </div>
     <a-form-item v-if="plan.description" label="方案说明"><a-textarea :value="plan.description" :auto-size="{ minRows: 1, maxRows: 4 }" disabled /></a-form-item>
     <template v-if="plan.kind === 'compose' || plan.kind === 'compose_stack'">
       <a-form-item v-if="plan.kind === 'compose'" label="目标服务"><a-input :value="plan.service_name" disabled /></a-form-item>
-      <a-form-item label="compose.yaml"><YamlCodeEditor :model-value="plan.compose_yaml || ''" readonly fullscreen label="compose.yaml（只读）" /></a-form-item>
+      <a-form-item><YamlCodeEditor :model-value="plan.compose_yaml || ''" readonly fullscreen collapsible label="compose.yaml（只读）"><template #toolbar><span>compose.yaml</span></template></YamlCodeEditor></a-form-item>
     </template>
     <a-form-item v-else-if="plan.kind === 'script'" label="方案脚本"><a-textarea :value="plan.script" :auto-size="{ minRows: 3, maxRows: 12 }" disabled /></a-form-item>
     <template v-else-if="plan.kind === 'kubernetes'">
@@ -79,7 +80,7 @@ onBeforeUnmount(() => controller?.abort())
         <a-form-item label="健康检查"><a-textarea :value="docker.health_check?.enabled ? `${docker.health_check.command.join(' ')}\n间隔 ${docker.health_check.interval_seconds} 秒；超时 ${docker.health_check.timeout_seconds} 秒；重试 ${docker.health_check.retries} 次；启动宽限 ${docker.health_check.start_period_seconds} 秒` : '使用镜像内置健康检查'" :auto-size="{ minRows: 1, maxRows: 6 }" disabled /></a-form-item>
       </template>
     </template>
-    <DeploymentExecutionFields :model-value="execution" :plan="plan" disabled :applicationID="applicationID" :applicationName="applicationName" :hide-script="plan.kind==='script' && !execution.deployment_script" />
+    <DeploymentExecutionFields :model-value="execution" :plan="plan" disabled :registry-target="registryHost" :applicationID="applicationID" :applicationName="applicationName" :hide-script="plan.kind==='script' && !execution.deployment_script" />
   </section>
 </template>
 

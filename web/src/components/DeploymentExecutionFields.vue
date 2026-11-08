@@ -7,8 +7,8 @@ import { useAuthStore } from '@/stores/auth'
 import type { DeploymentExecutionConfig, WorkflowDeploymentPlan, WorkflowNode, PipelineBuildPlan } from '@/types/pipeline'
 import type { DeploymentCommandPlan } from '@/utils/deploymentCommandPreview'
 
-const props = defineProps<{ modelValue: DeploymentExecutionConfig; plan: WorkflowDeploymentPlan; disabled?: boolean; editPermission?: string; applicationID?: string; applicationName?: string; buildNodes?: WorkflowNode[]; hideScript?: boolean; hideComposeSettings?:boolean }>()
-const emit = defineEmits<{ 'update:modelValue': [value: DeploymentExecutionConfig] }>()
+const props = defineProps<{ modelValue: DeploymentExecutionConfig; plan: WorkflowDeploymentPlan; disabled?: boolean; editPermission?: string; applicationID?: string; applicationName?: string; buildNodes?: WorkflowNode[]; hideScript?: boolean; hideComposeSettings?:boolean; registryTarget?:HTMLElement; timeoutMin?:number }>()
+const emit = defineEmits<{ 'update:modelValue': [value: DeploymentExecutionConfig]; 'update:timeoutSeconds':[value:number] }>()
 const auth = useAuthStore(), variables = ref<Array<{name:string;is_secret:boolean}>>([]), builds = ref<PipelineBuildPlan[]>([]), error = ref('')
 let controller: AbortController | undefined
 const permission = computed(() => props.editPermission || 'deployment_plan.update')
@@ -39,18 +39,28 @@ const sourceOptions = computed(() => [
 ])
 function change(patch: Partial<DeploymentExecutionConfig>) { if (canEdit.value && auth.user?.project_id === localStorage.getItem('edo.project') && auth.canAny([permission.value])) emit('update:modelValue', {...props.modelValue,...patch}) }
 function selectSource(value: string) { change({artifact_build_plan_id:value.startsWith('plan:') ? value.slice(5) : undefined,artifact_node_id:value.startsWith('node:') ? value.slice(5) : undefined}) }
+function updateHealthURL(value:string) {
+  change({compose:{...(props.modelValue.compose || {project_name:'',tag_variable:'${EDO_IMAGE_TAG}',use_sudo:false,adopt_existing:false}),health_url:value}})
+}
+function updateTimeout(value:number) { if(canEdit.value && auth.user?.project_id === localStorage.getItem('edo.project') && auth.canAny([permission.value]))emit('update:timeoutSeconds',value) }
 </script>
 
 <template>
   <section class="deployment-execution-fields" aria-label="部署执行配置">
     <a-alert v-if="error" type="warning" show-icon :message="error" />
-    <a-form-item label="引用共享变量与密钥">
-      <a-select mode="tags" :value="modelValue.variable_names || []" :disabled="!canEdit" :options="variables.map(item=>({value:item.name,label:item.name+(item.is_secret?' · 密钥':'')}))" placeholder="选择或输入当前项目的变量名称" @update:value="change({variable_names:$event as string[]})" />
-    </a-form-item>
-    <ComposeTaskFields :node="node" :plan="commandPlan" :build-nodes="buildNodes || []" :build-plans="builds" :disabled="!canEdit" :edit-permission="permission" :applicationID="applicationID" :applicationName="applicationName" :hide-script="hideScript" :hide-compose-settings="hideComposeSettings" @change="change" />
+
+    <ComposeTaskFields :node="node" :plan="commandPlan" :build-nodes="buildNodes || []" :build-plans="builds" :disabled="!canEdit" :edit-permission="permission" :applicationID="applicationID" :applicationName="applicationName" :hide-script="hideScript" :hide-compose-settings="hideComposeSettings" :registry-target="registryTarget" hide-advanced @change="change" />
     <a-form-item v-if="plan.kind!=='compose_stack' && !modelValue.deployment_script && modelValue.deployment_input_version!==1" label="构建制品来源">
       <a-select :value="modelValue.artifact_build_plan_id ? `plan:${modelValue.artifact_build_plan_id}` : modelValue.artifact_node_id ? `node:${modelValue.artifact_node_id}` : ''" :disabled="!canEdit" :options="sourceOptions" @update:value="selectSource(String($event || ''))" />
     </a-form-item>
+    <slot name="before-advanced" />
+    <a-collapse class="deployment-advanced-options"><a-collapse-panel key="advanced" header="高级选项">
+      <a-form-item v-if="plan.kind==='compose_stack'" label="健康检查地址"><a-input aria-label="健康检查地址" :value="modelValue.compose?.health_url || ''" :disabled="!canEdit" @update:value="updateHealthURL(String($event||''))"/></a-form-item>
+    <a-form-item label="引用共享变量与密钥">
+      <a-select aria-label="引用共享变量与密钥" mode="tags" :value="modelValue.variable_names || []" :disabled="!canEdit" :options="variables.map(item=>({value:item.name,label:item.name+(item.is_secret?' · 密钥':'')}))" placeholder="选择或输入当前项目的变量名称" @update:value="change({variable_names:$event as string[]})" />
+    </a-form-item>
+      <a-form-item label="超时（秒）"><a-input-number aria-label="超时（秒）" :value="plan.timeout_seconds" :disabled="!canEdit" :min="timeoutMin||30" :max="3600" @update:value="updateTimeout(Number($event))"/></a-form-item>
+    </a-collapse-panel></a-collapse>
   </section>
 </template>
 
