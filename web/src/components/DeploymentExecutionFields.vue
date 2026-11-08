@@ -65,5 +65,5 @@ function updateTimeout(value:number) { if(canEdit.value && auth.user?.project_id
 </template>
 
 <style scoped>
-.deployment-execution-fields{display:grid;gap:12px;min-width:0}
+.deployment-execution-fields{display:grid;gap:12px;min-width:0}.deployment-execution-fields :deep(.ant-form-item){margin-bottom:0}.deployment-execution-fields :deep(.ant-form-item-label){padding-bottom:4px}.deployment-execution-fields :deep(.deployment-advanced-options .ant-collapse-content-box){display:grid;gap:12px}
 </style>

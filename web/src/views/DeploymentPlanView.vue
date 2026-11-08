@@ -6,6 +6,7 @@ import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
 
 import client from '@/api/client'
+import DeploymentFieldHelp from '@/components/DeploymentFieldHelp.vue'
 import DeploymentExecutionFields from '@/components/DeploymentExecutionFields.vue'
 import DeploymentScriptEditor from '@/components/DeploymentScriptEditor.vue'
 import { environmentIDsOf, listEnvironments, listHosts, type InfrastructureEnvironment, type InfrastructureHost } from '@/api/infrastructure'
@@ -206,7 +207,7 @@ const defaultsOpen = ref(false)
 const defaultPlanID = ref('')
 const defaultKind = ref<PlanKind>('docker')
 const canDefaults = computed(() => auth.canAny(['workflow.read']) && auth.canAny(['deployment_plan.read']))
-function openDefaults(plan?: DeploymentPlan) { if (plan?.kind === 'compose_stack') { message.info('dockercompose 请在应用中配置发布流程'); return } defaultPlanID.value = plan?.id || ''; defaultKind.value = plan?.kind || 'docker'; defaultsOpen.value = true }
+function openDefaults(plan?: DeploymentPlan) { if (plan?.kind === 'compose_stack') { message.info('Docker Compose 请在应用中配置发布流程'); return } defaultPlanID.value = plan?.id || ''; defaultKind.value = plan?.kind || 'docker'; defaultsOpen.value = true }
 const formOpen = ref(false)
 const editingID = ref('')
 const loading = ref(false)
@@ -266,12 +267,13 @@ const form = reactive({
 })
 
 const kindOptions: Array<{ value: PlanKind; label: string; hint: string }> = [
-  { value: 'script', label: '主机脚本', hint: '通过 SSH 执行部署脚本' },
-  { value: 'docker', label: 'Docker 容器', hint: '更新指定容器镜像' },
-  { value: 'compose_stack', label: 'dockercompose', hint: '根据 compose.yaml 自动匹配一个或多个上游镜像' },
-  { value: 'kubernetes', label: 'Kubernetes Deployment', hint: '更新 Deployment 中的容器' },
+  { value: 'script', label: '主机脚本', hint: '通过 SSH 执行部署脚本。上游文件制品先暂存到目标主机，脚本可用 ${EDO_ARTIFACT_PATH} 读取文件，并用 ${EDO_ARTIFACT_DIGEST} 校验摘要。' },
+  { value: 'docker', label: 'Docker 容器', hint: '选择上游构建镜像，或从镜像仓库指定镜像与 Tag。部署时固定镜像 Digest，按已保存的参数创建或更新容器。' },
+  { value: 'compose_stack', label: 'Docker Compose', hint: '根据 compose.yaml 自动匹配一个或多个上游镜像' },
+  { value: 'kubernetes', label: 'Kubernetes Deployment', hint: '使用构建产物的镜像摘要更新 Deployment；构建方案需绑定集群能访问的镜像仓库。' },
 ]
-const kindNames: Record<PlanKind, string> = { ...Object.fromEntries(kindOptions.map(item => [item.value, item.label])), compose: 'dockercompose' } as Record<PlanKind, string>
+const kindNames: Record<PlanKind, string> = { ...Object.fromEntries(kindOptions.map(item => [item.value, item.label])), compose: 'Docker Compose' } as Record<PlanKind, string>
+function planIcon(kind: PlanKind) { return kind === 'compose_stack' ? 'docker' : planPlatform(kind) }
 function kindName(plan: DeploymentPlan) { return kindNames[plan.kind] }
 const canCreate = computed(() => auth.canAny([props.inline?'workflow.update':'deployment_plan.create']))
 const canUpdate = computed(() => auth.canAny([props.inline?'workflow.update':'deployment_plan.update']))
@@ -767,13 +769,13 @@ async function readComposeFile(event: Event) {
   try {
     const value = await file.text()
     if (!value.trim() || value.includes('\0')) {
-      message.error('dockercompose 文件内容无效')
+      message.error('Docker Compose 文件内容无效')
       return
     }
     form.compose_yaml = value
     message.success('已读入表单；点击“保存部署方案”后才会生效')
   } catch {
-    message.error('读取 dockercompose 文件失败')
+    message.error('读取 Docker Compose 文件失败')
   }
 }
 
@@ -833,12 +835,12 @@ function validate() {
   if(['docker','compose','compose_stack'].includes(form.kind)&&!savedDeploymentRegistry(form.execution_config))return '请选择并保存镜像仓库'
   if (form.kind === 'compose_stack') {
     const parsed = readKubeYaml(form.compose_yaml)
-    if (parsed.issues.length) return `dockercompose YAML 无效：第 ${parsed.issues[0]!.line} 行，第 ${parsed.issues[0]!.column} 列`
-    if (!parsed.object?.services) return 'dockercompose 必须包含 services'
+    if (parsed.issues.length) return `Docker Compose YAML 无效：第 ${parsed.issues[0]!.line} 行，第 ${parsed.issues[0]!.column} 列`
+    if (!parsed.object?.services) return 'Docker Compose 必须包含 services'
   }
   if (form.reusable) {
     if (form.kind === 'script' && !form.script.trim()) return '请输入部署脚本'
-    if (form.kind === 'compose' && (!form.service_name.trim() || !form.compose_yaml.trim())) return '请输入 dockercompose 服务名称和 YAML'
+    if (form.kind === 'compose' && (!form.service_name.trim() || !form.compose_yaml.trim())) return '请输入 Docker Compose 服务名称和 YAML'
     return form.kind === 'docker' ? validateDockerConfig() : ''
   }
   if (!form.environment_id) return t('environment.deployment.environmentRequired')
@@ -854,8 +856,8 @@ function validate() {
     const dockerConfigMessage = validateDockerConfig()
     if (dockerConfigMessage) return dockerConfigMessage
   }
-  if (form.kind === 'compose' && !form.service_name.trim()) return '请输入 dockercompose 目标服务名称'
-  if (form.kind === 'compose' && !form.compose_yaml.trim()) return '请输入内联 dockercompose YAML'
+  if (form.kind === 'compose' && !form.service_name.trim()) return '请输入 Docker Compose 目标服务名称'
+  if (form.kind === 'compose' && !form.compose_yaml.trim()) return '请输入内联 Docker Compose YAML'
   if (form.kind === 'kubernetes' && (!form.runtime_id || !targetCapabilityMatches(form.kind, '', form.runtime_id))) return targetT('deploymentTarget.clusterPlaceholder')
   if (form.kind === 'kubernetes' && (!form.namespace.trim() || !form.workload_name.trim() || !form.container_name.trim())) return '请输入命名空间、Deployment 名称和容器名称'
   return ''
@@ -902,7 +904,7 @@ async function testConnection() {
     message.success(platform.value === 'ssh'
       ? '主机连接正常'
       : platform.value === 'docker'
-        ? form.kind === 'compose' ? '执行主机的 Docker 能力正常；部署时还会检查 dockercompose 插件' : '执行主机的 Docker 能力正常'
+        ? form.kind === 'compose' ? '执行主机的 Docker 能力正常；部署时还会检查 Docker Compose 插件' : '执行主机的 Docker 能力正常'
         : 'Kubernetes 集群连接正常')
   } catch (error) {
     message.error(apiErrorMessage(error))
@@ -1068,7 +1070,7 @@ onBeforeUnmount(() => { disposed = true; resetMutation(); reset(); window.remove
           <a-tag v-else-if="column.key === 'status'" :color="plan.is_active ? 'success' : 'default'">
             {{ plan.is_active ? t('planList.enabled') : t('planList.disabled') }}
           </a-tag>
-          <div v-else-if="column.key === 'kind'" class="deployment-kind"><RuntimeBrandIcon :kind="planPlatform(plan.kind)" /><span>{{ kindName(plan) }}</span></div>
+          <div v-else-if="column.key === 'kind'" class="deployment-kind"><RuntimeBrandIcon :kind="planIcon(plan.kind)" /><span>{{ kindName(plan) }}</span></div>
           <div v-else-if="column.key === 'environment'" class="plan-cell">
             <a-tooltip :title="environmentName(plan)" :mouse-enter-delay="tooltipDelay"><strong>{{ environmentName(plan) }}</strong></a-tooltip>
           </div>
@@ -1116,18 +1118,18 @@ onBeforeUnmount(() => { disposed = true; resetMutation(); reset(); window.remove
     </ResourceDetailDrawer>
 
     <a-drawer v-model:open="formOpen" :title="inline?'流水线自定义部署方案':editingID ? '编辑部署方案' : '新建部署方案'" width="min(720px, 100vw)">
-      <a-form layout="vertical">
+      <a-form layout="vertical" class="deployment-form">
         <div class="form-section">
-          <header><b>1</b><div><strong>方案信息</strong><small>使用能直接辨认用途和主机组的名称。</small></div></header>
+          <header><b>1</b><div><strong>方案信息<DeploymentFieldHelp text="使用能直接辨认用途和主机组的名称。" label="方案信息说明" /></strong></div></header>
           <div class="form-grid">
             <a-form-item class="span-2" label="方案名称" required><a-input v-model:value="form.name" placeholder="例如：生产后端部署" /></a-form-item>
-            <a-form-item v-if="!inline" class="span-2" :help="t('delivery.reusableHint')"><a-checkbox v-model:checked="form.reusable" :disabled="Boolean(editingID && plans.find(item=>item.id===editingID)?.deployment_target_id)">{{ t('delivery.reusable') }}</a-checkbox></a-form-item>
+            <a-form-item v-if="!inline" class="span-2"><a-checkbox v-model:checked="form.reusable" :disabled="Boolean(editingID && plans.find(item=>item.id===editingID)?.deployment_target_id)">{{ t('delivery.reusable') }}</a-checkbox><DeploymentFieldHelp :text="t('delivery.reusableHint')" label="复用方案说明" /></a-form-item>
             <a-form-item class="span-2" label="说明"><a-input v-model:value="form.description" placeholder="这套方案用于哪些应用或场景" /></a-form-item>
           </div>
         </div>
 
         <div v-if="!form.reusable" class="form-section">
-          <header><b>2</b><div><strong>执行主机组</strong><small>{{ targetT('deploymentTarget.environmentHint') }}</small></div></header>
+          <header><b>2</b><div><strong>执行主机组<DeploymentFieldHelp :text="targetT('deploymentTarget.environmentHint')" label="执行主机组说明" /></strong></div></header>
           <a-form-item :label="t('environment.deployment.environment')" required>
             <div class="resource-select">
               <a-select
@@ -1153,15 +1155,18 @@ onBeforeUnmount(() => { disposed = true; resetMutation(); reset(); window.remove
         </div>
 
         <div class="form-section">
-          <header><b>3</b><div><strong>执行方式与配置</strong><small>{{ targetT('deploymentTarget.configurationHint') }}</small></div></header>
+          <header><b>3</b><div><strong>执行方式与配置<DeploymentFieldHelp :text="targetT('deploymentTarget.configurationHint')" label="执行配置说明" /></strong></div></header>
           <a-alert v-if="!form.reusable && !form.environment_id" type="info" show-icon message="请先选择执行主机组" :description="targetT('deploymentTarget.chooseEnvironmentHint')" />
           <a-alert v-else-if="!availableKindOptions.length" type="warning" show-icon message="当前主机组没有可用的执行方式" :description="targetT('deploymentTarget.emptyHint')" />
           <a-form-item v-else label="部署方式" required>
             <a-radio-group :value="form.kind" class="kind-picker">
-              <a-radio-button v-for="option in availableKindOptions" :key="option.value" :value="option.value" @click.prevent="changeKind(option.value)">
-                <RuntimeBrandIcon :kind="planPlatform(option.value)" />
-                <span><strong>{{ option.label }}</strong><small>{{ option.hint }}</small></span>
-              </a-radio-button>
+              <div v-for="option in availableKindOptions" :key="option.value" class="kind-choice">
+                <a-radio-button :value="option.value" @click.prevent="changeKind(option.value)">
+                  <RuntimeBrandIcon :kind="planIcon(option.value)" />
+                  <strong>{{ option.label }}</strong>
+                </a-radio-button>
+                <DeploymentFieldHelp :text="option.hint" :label="`${option.label}说明`" />
+              </div>
             </a-radio-group>
           </a-form-item>
           <template v-if="(form.reusable || form.environment_id) && availableKindOptions.length">
@@ -1197,7 +1202,7 @@ onBeforeUnmount(() => { disposed = true; resetMutation(); reset(); window.remove
               <a-form-item v-if="!form.reusable && form.kind === 'script'" class="span-2" label="工作目录">
                 <a-input v-model:value="form.working_directory" placeholder="例如：/srv/apps/edo；留空使用执行用户主目录" />
               </a-form-item>
-              <a-form-item v-if="form.kind === 'compose'" class="span-2" label="dockercompose 目标服务名称" required>
+              <a-form-item v-if="form.kind === 'compose'" class="span-2" label="Docker Compose 目标服务名称" required>
                 <a-input v-model:value="form.service_name" placeholder="例如：app（必须与 services 下的名称一致）" />
               </a-form-item>
               <template v-if="!form.reusable && platform === 'kubernetes'">
@@ -1208,16 +1213,10 @@ onBeforeUnmount(() => { disposed = true; resetMutation(); reset(); window.remove
             </div>
             <div v-if="!form.reusable && (platform === 'kubernetes' ? !canReadRuntimes : !canReadHosts)" class="permission-note">需要主机与集群查看权限才能读取当前主机组的执行能力。</div>
             <template v-if="form.kind === 'docker'">
-            <a-alert
-              class="artifact-image-notice"
-              type="info"
-              show-icon
-              message="选择上游构建镜像，或从镜像仓库指定镜像与 Tag"
-              description="部署时固定镜像 Digest，按以下参数创建或更新容器。"
-            />
+
             <div class="runtime-inputs">
               <div v-if="!form.reusable" class="runtime-input-block">
-                <header><span><strong>Docker 容器名称</strong><small>可选；留空时使用应用名加短隔离标识，同一应用可在同一主机部署多次。</small></span></header>
+                <header><span><strong>Docker 容器名称<DeploymentFieldHelp text="可选；留空时使用应用名加短隔离标识，同一应用可在同一主机部署多次。" label="Docker 容器名称说明" /></strong></span></header>
                 <a-form-item label="容器名称（可选）">
                   <a-input v-model:value="form.workload_name" placeholder="留空自动生成，例如 order_api-a1b2c3d4" />
                 </a-form-item>
@@ -1225,7 +1224,7 @@ onBeforeUnmount(() => { disposed = true; resetMutation(); reset(); window.remove
 
               <div class="runtime-input-block">
                 <header>
-                  <span><strong>端口映射</strong><small>不配置则不发布端口；默认监听地址为 127.0.0.1。</small></span>
+                  <span><strong>端口映射<DeploymentFieldHelp text="不配置则不发布端口；默认监听地址为 127.0.0.1。单容器固定使用 bridge 网络；多服务网络互联请使用 Docker Compose。" label="端口映射说明" /></strong></span>
                   <a-button type="link" size="small" @click="addDockerPort"><Plus :size="14" />添加端口</a-button>
                 </header>
                 <div v-for="(port, index) in form.docker_port_mappings" :key="`port-${index}`" class="docker-row docker-port-input-row">
@@ -1235,14 +1234,13 @@ onBeforeUnmount(() => { disposed = true; resetMutation(); reset(); window.remove
                   <a-select v-model:value="port.protocol" :options="[{ value: 'tcp', label: 'TCP' }, { value: 'udp', label: 'UDP' }]" />
                   <a-button type="text" danger aria-label="删除端口" @click="removeDockerPort(index)"><Trash2 :size="15" /></a-button>
                 </div>
-                <p class="field-help input-block-help">单容器固定使用 bridge 网络；多服务网络互联请使用 dockercompose。</p>
               </div>
 
               <a-collapse class="docker-advanced" :bordered="false">
                 <a-collapse-panel key="advanced" header="高级配置">
               <div class="runtime-input-block">
                 <header>
-                  <span><strong>环境变量</strong><small>填写变量名和值。</small></span>
+                  <span><strong>环境变量<DeploymentFieldHelp text="填写变量名和值。配置会随方案保存，请勿填写密码、令牌等敏感信息。" label="环境变量说明" /></strong></span>
                   <a-button type="link" size="small" @click="addDockerVariable"><Plus :size="14" />添加变量</a-button>
                 </header>
                 <div v-for="(item, index) in form.docker_environment_variables" :key="`env-${index}`" class="docker-row docker-key-value-row">
@@ -1251,12 +1249,11 @@ onBeforeUnmount(() => { disposed = true; resetMutation(); reset(); window.remove
                   <a-button type="text" danger aria-label="删除环境变量" @click="form.docker_environment_variables.splice(index, 1)"><Trash2 :size="15" /></a-button>
                 </div>
                 <p v-if="!form.docker_environment_variables.length" class="input-empty">未设置环境变量</p>
-                <p class="field-help input-block-help">配置会随方案保存，请勿填写密码、令牌等敏感信息。</p>
               </div>
 
               <div class="runtime-input-block">
                 <header>
-                  <span><strong>命名卷</strong><small>只允许由 EDO 隔离创建的 Docker 命名卷。</small></span>
+                  <span><strong>命名卷<DeploymentFieldHelp text="只允许由 EDO 隔离创建的 Docker 命名卷；不允许配置宿主机目录或 Docker Socket 挂载。" label="命名卷说明" /></strong></span>
                   <a-button type="link" size="small" @click="addDockerVolume"><Plus :size="14" />添加挂载</a-button>
                 </header>
                 <div v-for="(item, index) in form.docker_volume_mounts" :key="`volume-${index}`" class="docker-volume-row">
@@ -1266,19 +1263,17 @@ onBeforeUnmount(() => { disposed = true; resetMutation(); reset(); window.remove
                   <a-button type="text" danger aria-label="删除卷挂载" @click="form.docker_volume_mounts.splice(index, 1)"><Trash2 :size="15" /></a-button>
                 </div>
                 <p v-if="!form.docker_volume_mounts.length" class="input-empty">未挂载命名卷</p>
-                <p class="field-help input-block-help">不允许配置宿主机目录或 Docker Socket 挂载。</p>
               </div>
 
               <div class="runtime-input-block">
-                <header><span><strong>自定义 Docker 命令</strong><small>在目标主机执行，填写后替代 EDO 内置的容器参数和创建命令。</small></span></header>
+                <header><span><strong>自定义 Docker 命令<DeploymentFieldHelp text="在目标主机执行，填写后替代 EDO 内置的容器参数和创建命令。${EDO_IMAGE} 由流水线替换为已校验镜像；${EDO_CONTAINER_NAME} 可选。仅允许单条 docker run，Shell 串联、特权模式和宿主机目录挂载会被拒绝。" label="自定义 Docker 命令说明" /></strong></span></header>
                 <a-form-item label="Docker run 命令（可选）">
                   <a-textarea v-model:value="form.docker_deployment_script" :rows="5" placeholder="docker run -d --name ${EDO_CONTAINER_NAME} ${EDO_IMAGE}" />
                 </a-form-item>
-                <p class="field-help input-block-help">${EDO_IMAGE} 由流水线替换为已校验镜像；${EDO_CONTAINER_NAME} 可选。仅允许单条 docker run，Shell 串联、特权模式和宿主机目录挂载会被拒绝。</p>
               </div>
 
               <div class="runtime-input-block">
-                <div class="health-toggle"><span><strong>自定义健康检查</strong><small>关闭时优先使用镜像内置 HEALTHCHECK；否则只确认容器持续运行。</small></span><a-switch v-model:checked="form.docker_health_enabled" /></div>
+                <div class="health-toggle"><span><strong>自定义健康检查<DeploymentFieldHelp text="关闭时优先使用镜像内置 HEALTHCHECK；否则只确认容器持续运行。" label="自定义健康检查说明" /></strong></span><a-switch v-model:checked="form.docker_health_enabled" /></div>
                 <template v-if="form.docker_health_enabled">
                   <a-form-item label="检查命令参数（每行一个）" required>
                     <a-textarea v-model:value="form.docker_health_command" :rows="3" placeholder="例如：&#10;wget&#10;--spider&#10;http://127.0.0.1:8080/health" />
@@ -1300,34 +1295,20 @@ onBeforeUnmount(() => { disposed = true; resetMutation(); reset(); window.remove
             <a-form-item required>
               <DeploymentScriptEditor v-model="form.script" kind="script" :disabled="!canUseForm()" :edit-permission="executionPermission" />
             </a-form-item>
-            <a-alert
-              type="info"
-              show-icon
-              message="上游文件制品会先暂存到目标主机"
-              description="脚本通过 EDO_ARTIFACT_PATH 读取暂存文件，并可用 EDO_ARTIFACT_DIGEST 校验制品摘要。后续如何读取、解包或管理服务由脚本按实际场景决定，EDO 不做假设。"
-            />
+
           </template>
           <template v-if="form.kind === 'compose' || form.kind === 'compose_stack'">
-            <a-alert
-              v-if="form.kind === 'compose'"
-              class="artifact-image-notice"
-              type="info"
-              show-icon
-              message="镜像来自上游构建制品，无需在 dockercompose 中填写 image"
-              description="部署时自动填入流水线镜像，请勿填写固定镜像地址或 build 配置。"
-            />
+
             <a-form-item required>
               <YamlCodeEditor v-model="form.compose_yaml" fullscreen collapsible label="compose.yaml" @format="formatCompose"><template #toolbar>
-                <span>compose.yaml</span>
+                <span>compose.yaml<DeploymentFieldHelp v-if="form.kind==='compose'" text="镜像来自上游构建制品；部署时自动填入流水线镜像，无需填写 image，请勿填写固定镜像地址或 build 配置。" label="Compose 镜像配置说明" /></span>
                 <input ref="composeFileInput" class="file-input" type="file" accept=".yml,.yaml,application/yaml,text/yaml" @change="readComposeFile" />
                 <a-button @click="composeFileInput?.click()"><FileUp :size="15" />上传compose.yaml</a-button><a-button @click="formatCompose">格式化</a-button>
               </template></YamlCodeEditor>
             </a-form-item>
 
           </template>
-          <a-alert v-if="editingID && form.execution_config===undefined" type="info" show-icon message="旧任务中的部署参数仍保留；修改下方执行配置并保存后，后续运行统一使用此方案。" />
           <DeploymentExecutionFields :model-value="form.execution_config || {}" :plan="executionPlan" :disabled="!canUseForm()" :edit-permission="executionPermission" :applicationID="applicationID" :applicationName="applicationName" :build-nodes="buildNodes" :hide-script="form.kind==='script'" :registry-target="registryHost" @update:timeout-seconds="form.timeout_seconds=$event" @update:model-value="updateExecution" />
-          <a-alert v-if="form.kind === 'kubernetes'" type="info" show-icon message="使用构建产物的镜像摘要更新 Deployment。构建方案需绑定集群能访问的镜像仓库。" />
           </template>
         </div>
       </a-form>
@@ -1344,10 +1325,10 @@ onBeforeUnmount(() => { disposed = true; resetMutation(); reset(); window.remove
 </template>
 
 <style scoped>
-.deployment-kind{display:flex;align-items:center;gap:7px;font-size:12px}.deployment-kind :deep(svg){width:18px;height:18px;flex:0 0 18px}
+.deployment-form :deep(.ant-form-item){margin-bottom:12px}.deployment-form :deep(.deployment-execution-fields .ant-form-item){margin-bottom:0}.deployment-form :deep(.ant-form-item-label){padding-bottom:4px}.deployment-kind{display:flex;align-items:center;white-space:nowrap;gap:7px;font-size:12px}.deployment-kind :deep(svg){width:18px;height:18px;flex:0 0 18px}
 .deployment-plan-list :deep(.plan-table-row){cursor:default}
 .deployment-plan-list .plan-cell .deployment-description{display:-webkit-box;overflow:hidden;-webkit-box-orient:vertical;-webkit-line-clamp:2;white-space:normal;overflow-wrap:anywhere;line-height:1.5;cursor:help}
 .deployment-plan-list .deployment-description:focus-visible{outline:2px solid var(--edo-primary);outline-offset:2px;border-radius:3px}
 .deployment-configuration>span{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px}
-.form-section{margin-bottom:16px;padding:15px 16px 4px;border:1px solid var(--edo-border);border-radius:8px;background:var(--edo-surface)}.form-section>header{display:flex;align-items:center;gap:10px;margin:-15px -16px 14px;padding:10px 16px;border-bottom:1px solid var(--edo-border);border-radius:8px 8px 0 0;background:color-mix(in srgb,var(--edo-primary) 6%,var(--edo-surface))}.form-section>header b{display:grid;width:26px;height:26px;flex:0 0 26px;place-items:center;border-radius:8px;color:var(--edo-primary);background:var(--edo-primary-soft)}.form-section>header strong,.form-section>header small{display:block}.form-section>header small{margin-top:1px;color:var(--edo-muted);font-size:11px}.form-subtitle{margin:3px 0 12px;padding-top:12px;border-top:1px solid var(--edo-border);color:var(--edo-muted);font-size:12px;font-weight:600}.form-grid{display:grid;grid-template-columns:1fr 1fr;gap:0 14px}.span-2{grid-column:1/-1}.form-grid :deep(.ant-input-number){width:100%}.resource-select{display:grid;grid-template-columns:minmax(0,1fr) 34px;gap:8px}.resource-select>.ant-btn{padding:0}.runtime-option-copy{min-width:0;flex:1}.runtime-option-copy strong,.runtime-option-copy small{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.runtime-option-copy small{color:var(--edo-muted);font-size:11px}.permission-note,.field-help{margin:-4px 0 13px;color:var(--edo-muted);font-size:12px}.kind-picker{display:grid!important;width:100%;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}.kind-picker :deep(.ant-radio-button-wrapper){display:flex;height:70px;align-items:center;gap:10px;padding:9px 11px;border:1px solid var(--edo-border)!important;border-radius:10px!important;background:var(--edo-surface);box-shadow:none!important;line-height:1.3}.kind-picker :deep(.ant-radio-button-wrapper::before){display:none}.kind-picker :deep(.ant-radio-button-wrapper-checked){border-color:color-mix(in srgb,var(--edo-primary) 65%,var(--edo-border))!important;background:var(--edo-primary-soft)}.kind-picker :deep(.ant-radio-button-wrapper>svg){width:24px;height:24px;flex:0 0 24px}.kind-picker :deep(.ant-radio-button-wrapper span){min-width:0}.kind-picker :deep(.ant-radio-button-wrapper strong),.kind-picker :deep(.ant-radio-button-wrapper small){display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.kind-picker :deep(.ant-radio-button-wrapper small){margin-top:3px;color:var(--edo-muted);font-size:10px}.artifact-image-notice{margin-bottom:12px}.runtime-inputs{display:grid;gap:10px;margin-bottom:12px}.runtime-input-block{padding:13px 14px 2px;border:1px solid var(--edo-border);border-radius:10px;background:var(--edo-surface)}.runtime-input-block>header{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:10px}.runtime-input-block>header span strong,.runtime-input-block>header span small{display:block}.runtime-input-block>header span small{margin-top:2px;color:var(--edo-muted);font-size:11px}.runtime-input-block>header>.ant-btn{height:24px;padding:0}.runtime-input-block>.ant-form-item{margin-bottom:12px}.docker-row{display:grid;align-items:center;gap:8px;margin-bottom:8px}.docker-port-input-row{grid-template-columns:minmax(0,1fr) 112px 112px 86px 32px}.docker-port-input-row :deep(.ant-input-number){width:100%}.docker-key-value-row{grid-template-columns:minmax(0,1fr) minmax(0,1.4fr) 32px}.docker-volume-row{display:grid;align-items:center;grid-template-columns:minmax(0,1fr) minmax(0,1.35fr) auto 32px;gap:8px;margin-bottom:8px}.input-empty{margin:4px 0 10px;padding:12px;border:1px dashed var(--edo-border);border-radius:8px;color:var(--edo-muted);background:var(--edo-surface-soft);font-size:12px;text-align:center}.input-block-help{margin:4px 0 10px}.docker-advanced{border:1px solid var(--edo-border);border-radius:10px;background:var(--edo-surface-soft)}.docker-advanced :deep(.ant-collapse-header){align-items:center!important;padding:13px 14px!important;font-weight:650}.docker-advanced :deep(.ant-collapse-content-box){display:grid;gap:10px;padding:0 10px 10px!important}.health-toggle{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;margin:2px 0 12px}.health-toggle span strong,.health-toggle span small{display:block}.health-toggle span small{margin-top:3px;color:var(--edo-muted);font-size:11px}.health-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px}.health-grid :deep(.ant-input-number){width:100%}.compose-field-header{display:flex;align-items:center;flex-wrap:wrap;gap:12px;margin-bottom:8px}.compose-import{display:flex;align-items:center;gap:8px;margin-bottom:10px}.compose-import span{color:var(--edo-text);font-size:14px}.file-input{display:none!important}.drawer-actions{display:flex;justify-content:flex-end;gap:8px}@media(max-width:760px){.form-grid,.kind-picker,.health-grid{grid-template-columns:1fr}.span-2{grid-column:auto}.docker-port-input-row,.docker-volume-row{grid-template-columns:1fr}.docker-key-value-row{grid-template-columns:1fr 32px}.docker-key-value-row>:nth-child(2){grid-column:1/-1}.compose-field-header{display:flex;align-items:center;flex-wrap:wrap;gap:12px;margin-bottom:8px}.compose-import{align-items:center;flex-direction:row}}
+.form-section{margin-bottom:12px;padding:12px 14px 0;border:1px solid var(--edo-border);border-radius:8px;background:var(--edo-surface)}.form-section>header{display:flex;align-items:center;gap:10px;margin:-12px -14px 12px;padding:8px 14px;border-bottom:1px solid var(--edo-border);border-radius:8px 8px 0 0;background:color-mix(in srgb,var(--edo-primary) 6%,var(--edo-surface))}.form-section>header b{display:grid;width:26px;height:26px;flex:0 0 26px;place-items:center;border-radius:8px;color:var(--edo-primary);background:var(--edo-primary-soft)}.form-section>header strong{display:flex;align-items:center}.form-section>header small{margin-top:1px;color:var(--edo-muted);font-size:11px}.form-subtitle{margin:3px 0 12px;padding-top:12px;border-top:1px solid var(--edo-border);color:var(--edo-muted);font-size:12px;font-weight:600}.form-grid{display:grid;grid-template-columns:1fr 1fr;gap:0 14px}.span-2{grid-column:1/-1}.form-grid :deep(.ant-input-number){width:100%}.resource-select{display:grid;grid-template-columns:minmax(0,1fr) 34px;gap:8px}.resource-select>.ant-btn{padding:0}.runtime-option-copy{min-width:0;flex:1}.runtime-option-copy strong,.runtime-option-copy small{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.runtime-option-copy small{color:var(--edo-muted);font-size:11px}.permission-note,.field-help{margin:-4px 0 13px;color:var(--edo-muted);font-size:12px}.kind-picker{display:grid!important;width:100%;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}.kind-picker :deep(.ant-radio-button-wrapper){display:flex;width:100%;height:50px;align-items:center;gap:8px;padding:8px 38px 8px 11px;border:1px solid var(--edo-border)!important;border-radius:10px!important;background:var(--edo-surface);box-shadow:none!important;line-height:1.3}.kind-choice{position:relative;min-width:0}.kind-choice :deep(.deployment-field-help){position:absolute;z-index:2;right:10px;top:14px;margin:0}.kind-picker :deep(.ant-radio-button-wrapper>span:last-child){display:flex;align-items:center;gap:8px;min-width:0}.kind-picker :deep(.ant-radio-button-wrapper>span:last-child svg){width:24px;height:24px;flex:0 0 24px}.kind-picker :deep(.ant-radio-button-wrapper::before){display:none}.kind-picker :deep(.ant-radio-button-wrapper-checked){border-color:color-mix(in srgb,var(--edo-primary) 65%,var(--edo-border))!important;background:var(--edo-primary-soft)}.kind-picker :deep(.ant-radio-button-wrapper>svg){width:24px;height:24px;flex:0 0 24px}.kind-picker :deep(.ant-radio-button-wrapper span){min-width:0}.kind-picker :deep(.ant-radio-button-wrapper strong),.kind-picker :deep(.ant-radio-button-wrapper small){display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.kind-picker :deep(.ant-radio-button-wrapper small){margin-top:3px;color:var(--edo-muted);font-size:10px}.artifact-image-notice{margin-bottom:12px}.runtime-inputs{display:grid;gap:10px;margin-bottom:12px}.runtime-input-block{padding:13px 14px 2px;border:1px solid var(--edo-border);border-radius:10px;background:var(--edo-surface)}.runtime-input-block>header{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:10px}.runtime-input-block>header span strong,.runtime-input-block>header span small{display:block}.runtime-input-block>header span small{margin-top:2px;color:var(--edo-muted);font-size:11px}.runtime-input-block>header>.ant-btn{height:24px;padding:0}.runtime-input-block>.ant-form-item{margin-bottom:12px}.docker-row{display:grid;align-items:center;gap:8px;margin-bottom:8px}.docker-port-input-row{grid-template-columns:minmax(0,1fr) 112px 112px 86px 32px}.docker-port-input-row :deep(.ant-input-number){width:100%}.docker-key-value-row{grid-template-columns:minmax(0,1fr) minmax(0,1.4fr) 32px}.docker-volume-row{display:grid;align-items:center;grid-template-columns:minmax(0,1fr) minmax(0,1.35fr) auto 32px;gap:8px;margin-bottom:8px}.input-empty{margin:4px 0 10px;padding:12px;border:1px dashed var(--edo-border);border-radius:8px;color:var(--edo-muted);background:var(--edo-surface-soft);font-size:12px;text-align:center}.input-block-help{margin:4px 0 10px}.docker-advanced{border:1px solid var(--edo-border);border-radius:10px;background:var(--edo-surface-soft)}.docker-advanced :deep(.ant-collapse-header){align-items:center!important;padding:13px 14px!important;font-weight:650}.docker-advanced :deep(.ant-collapse-content-box){display:grid;gap:10px;padding:0 10px 10px!important}.health-toggle{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;margin:2px 0 12px}.health-toggle span strong,.health-toggle span small{display:block}.health-toggle span small{margin-top:3px;color:var(--edo-muted);font-size:11px}.health-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px}.health-grid :deep(.ant-input-number){width:100%}.compose-field-header{display:flex;align-items:center;flex-wrap:wrap;gap:12px;margin-bottom:8px}.compose-import{display:flex;align-items:center;gap:8px;margin-bottom:10px}.compose-import span{color:var(--edo-text);font-size:14px}.file-input{display:none!important}.drawer-actions{display:flex;justify-content:flex-end;gap:8px}@media(max-width:760px){.form-grid,.kind-picker,.health-grid{grid-template-columns:1fr}.span-2{grid-column:auto}.docker-port-input-row,.docker-volume-row{grid-template-columns:1fr}.docker-key-value-row{grid-template-columns:1fr 32px}.docker-key-value-row>:nth-child(2){grid-column:1/-1}.compose-field-header{display:flex;align-items:center;flex-wrap:wrap;gap:12px;margin-bottom:8px}.compose-import{align-items:center;flex-direction:row}}
 </style>

@@ -67,6 +67,7 @@ async function harness(initialPermissions = ['deployment_plan.read', 'deployment
     '@/components/ResourceDetailDrawer.vue': { __esModule: true, default: detail },
     '@/components/ResourceRowActions.vue': { __esModule: true, default: actions },
     '@/components/DeploymentHostSelection.vue': { __esModule: true, default: pass('div') },
+    '@/components/DeploymentFieldHelp.vue': { __esModule: true, default: pass('span') },
     '@/components/DeploymentExecutionFields.vue': { __esModule: true, default: pass('div') },
     '@/components/DeploymentScriptEditor.vue': { __esModule: true, default: pass('div') },
     '@/components/YamlCodeEditor.vue': { __esModule: true, default: pass('div') },

@@ -87,5 +87,5 @@ onBeforeUnmount(() => controller?.abort())
 </template>
 
 <style scoped>
-.deployment-plan-reference{min-width:0}.reference-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:0 12px}.deployment-plan-reference :deep(.cm-editor){background:var(--edo-bg)}.deployment-plan-reference :deep(.cm-scroller){min-height:160px;max-height:320px}.deployment-plan-reference :deep(textarea){white-space:pre;overflow:auto}@media(max-width:480px){.reference-grid{grid-template-columns:minmax(0,1fr)}}
+.deployment-plan-reference{display:grid;gap:12px;min-width:0}.deployment-plan-reference :deep(.ant-form-item){margin-bottom:0}.deployment-plan-reference :deep(.ant-form-item-label){padding-bottom:4px}.reference-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}.deployment-plan-reference :deep(.cm-editor){background:var(--edo-bg)}.deployment-plan-reference :deep(.cm-scroller){min-height:160px;max-height:320px}.deployment-plan-reference :deep(textarea){white-space:pre;overflow:auto}@media(max-width:480px){.reference-grid{grid-template-columns:minmax(0,1fr)}}
 </style>

@@ -105,7 +105,7 @@ const DEFAULT_RUNTIME_IMAGE = 'alpine:3.22'
 const DEFAULT_TAG_PATTERN = 'v*'
 const runtimeImageOptions = ['alpine:3.22', 'node:24-alpine', 'golang:1.26-alpine', 'python:3.14-alpine', 'maven:3.9-eclipse-temurin-21-alpine'].map(value => ({ value }))
 const deploymentKindNames: Record<DeploymentPlanKind, string> = {
-  script: '自定义部署', docker: 'Docker 容器', compose: 'dockercompose', compose_stack: 'dockercompose', kubernetes: 'Kubernetes Deployment',
+  script: '自定义部署', docker: 'Docker 容器', compose: 'Docker Compose', compose_stack: 'Docker Compose', kubernetes: 'Kubernetes Deployment',
 }
 const defaultNotificationTitle = 'EDO｜{{application.name}}｜{{task.name}}｜{{task.status}}'
 const defaultNotificationMessage = [
@@ -2073,6 +2073,7 @@ onBeforeRouteLeave(async () => {
 .panel-section h4 { display: flex; align-items: center; gap: 6px; margin: 0 -16px 14px; padding: 9px 16px; color: var(--edo-text); background: var(--edo-primary-soft); }
 .pipeline-side-panel > :deep(.ant-form) { padding: 0 16px; }
 .pipeline-side-panel :deep(.ant-form-item) { margin-bottom: 13px; }
+.pipeline-side-panel :deep(.pipeline-deploy-fields .ant-form-item), .pipeline-side-panel :deep(.deployment-plan-reference .ant-form-item) { margin-bottom: 0; }
 .pipeline-side-panel :deep(.ant-checkbox-wrapper) { display: flex; margin: 5px 0; }
 .resource-picker { display: flex; align-items: stretch; gap: 8px; }
 .resource-picker :deep(.ant-select) { min-width: 0; flex: 1; }
