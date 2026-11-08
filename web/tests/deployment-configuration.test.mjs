@@ -71,3 +71,34 @@ test('删除额外参数与预览，使用真实脚本编辑器和统一路径',
  assert.ok(source.includes('DeploymentScriptEditor'))
  assert.ok(source.includes('${EDO_APP_CONFIG_PATH}/相对路径'))
 })
+
+
+test('上游产物输入变量引用，切换时清除旧构建身份，不请求运行产物',async t=>{
+ const h=await harness();t.after(h.stop)
+ h.props.config.deployment_input_version=1;h.props.config.deployment_inputs=[{kind:'upstream',artifact_node_id:'old',artifact_name:'OLD',path:'output.tar.gz'}]
+ h.state.chooseUpstream(0,'${BUILD_ARTIFACT}')
+ const input=h.props.config.deployment_inputs[0]
+ assert.equal(input.artifact_reference,'${BUILD_ARTIFACT}');assert.equal(input.artifact_node_id,undefined);assert.equal(input.artifact_name,undefined)
+ assert.equal(h.state.invalidUpstreamReference('BUILD_ARTIFACT'),true)
+ assert.equal(h.state.invalidUpstreamReference('${BUILD_ARTIFACT}'),false)
+ assert.ok(h.requests.every(item=>!item.path.includes('/artifacts')))
+})
+
+test('部署镜像仓库始终可见，唯一上游仓库自动显示且不覆盖已选仓库',async t=>{
+ const h=await harness();t.after(h.stop)
+ h.props.deploymentPlan={kind:'compose_stack'};h.props.buildNodes=[{id:'image',type:'build',config:{inline_build:{kind:'dockerfile',image_registry_id:'upstream'}}}]
+ await settle();assert.equal(h.state.managesRegistry.value,true);assert.equal(h.state.deploymentRegistry.value,'upstream');assert.deepEqual(h.events,[])
+ h.props.config.deployment_input_version=1;h.props.config.deployment_inputs=[{kind:'registry',registry_id:'explicit',image:'app',tag:'v1'}]
+ assert.equal(h.state.deploymentRegistry.value,'explicit')
+ h.props.buildNodes=[];await settle();assert.equal(h.state.deploymentRegistry.value,'explicit')
+})
+
+test('无上游构建也能选择仓库及镜像 Tag，撤权后不能修改',async t=>{
+ const h=await harness(path=>({data:path==='/image-registries'?{image_registries:[{id:'registry',name:'仓库',is_active:true,project_id:'project'}]}:path.includes('/deployment-options')?{options:['app']}:{variables:[]}}));t.after(h.stop)
+ h.props.deploymentPlan={kind:'docker'};h.props.buildNodes=[]
+ await h.state.setDeploymentRegistry('registry')
+ h.state.update(0,{image:'app',tag:'v1'})
+ assert.deepEqual(h.props.config.deployment_inputs,[{kind:'registry',registry_id:'registry',image:'app',tag:'v1'}])
+ h.auth.user.permissions=[];await settle();const count=h.events.length
+ await h.state.setDeploymentRegistry('forbidden');assert.equal(h.events.length,count)
+})

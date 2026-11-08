@@ -11,7 +11,7 @@ export function deploymentExecution(config: WorkflowNodeConfig, builds: Workflow
     return plan && builds.filter(item=>item.config.build_plan_id===plan).length===1 ? plan : undefined
   }
   if (planFor(result.artifact_node_id)) { result.artifact_build_plan_id=planFor(result.artifact_node_id); delete result.artifact_node_id }
-  for (const input of result.deployment_inputs || []) if (input.kind==='upstream' && planFor(input.artifact_node_id)) { input.artifact_build_plan_id=planFor(input.artifact_node_id); delete input.artifact_node_id }
+  for (const input of result.deployment_inputs || []) if (input.kind==='upstream' && !input.artifact_reference && planFor(input.artifact_node_id)) { input.artifact_build_plan_id=planFor(input.artifact_node_id); delete input.artifact_node_id }
   return result
 }
 

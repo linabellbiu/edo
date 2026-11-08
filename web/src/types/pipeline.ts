@@ -16,6 +16,7 @@ export interface WorkflowNotificationRule {
 }
 
 export interface DeploymentInput {
+ artifact_reference?:string
  kind: 'configuration'|'upstream'|'registry'
  path?:string
  configuration_id?:string
@@ -31,7 +32,7 @@ export interface WorkflowNodeConfig {
  inline_build?: PipelineBuildPlan
  build_outputs?: Array<{name:string;paths:string[]}>
  runtime_services?: Array<{name:string;restart_script:string;recreate_script:string}>
- compose_source?: {kind:'repository'|'configuration'|'upstream';path?:string;configuration_id?:string;artifact_node_id?:string;artifact_name?:string}
+ compose_source?: {artifact_reference?:string;kind:'repository'|'configuration'|'upstream';path?:string;configuration_id?:string;artifact_node_id?:string;artifact_name?:string}
 
  artifact_build_plan_id?:string
  deployment_input_version?:number

@@ -287,6 +287,10 @@ func (s *Service) executeComposeStackDeployment(ctx context.Context, prepared *e
 	if err != nil {
 		return s.failDeploymentExecution(ctx, failure, "Compose 镜像与本次构建的名称或 Tag 不匹配，请检查部署方案和变量", err)
 	}
+	content, err = pinRegistryComposeImages(content, prepared.snapshot.RegistryInputs[prepared.node.ID], prepared.variables)
+	if err != nil {
+		return s.failDeploymentExecution(ctx, failure, "无法固定所选镜像仓库的镜像，请检查镜像和 Tag", err)
+	}
 	var capability model.HostCapability
 	if err := s.db.WithContext(ctx).First(&capability, "host_id = ? AND kind = ? AND status = ?", prepared.target.HostID, model.HostCapabilityDocker, model.HostCapabilityReady).Error; err != nil {
 		return s.failDeploymentExecution(ctx, failure, "目标主机的 Docker 能力不可用", err)

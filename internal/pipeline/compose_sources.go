@@ -33,11 +33,11 @@ func validComposeSource(source *model.WorkflowComposeSource) bool {
 	}
 	switch source.Kind {
 	case "repository":
-		return source.ConfigurationID == "" && source.ArtifactNodeID == "" && dockerengine.ValidScriptContainerRelativePath(source.Path) && source.Path != "." && source.ArtifactName == ""
+		return source.ArtifactReference == "" && source.ConfigurationID == "" && source.ArtifactNodeID == "" && dockerengine.ValidScriptContainerRelativePath(source.Path) && source.Path != "." && source.ArtifactName == ""
 	case "configuration":
-		return source.ConfigurationID != "" && len(source.ConfigurationID) <= 36 && source.Path == "" && source.ArtifactNodeID == "" && source.ArtifactName == ""
+		return source.ArtifactReference == "" && source.ConfigurationID != "" && len(source.ConfigurationID) <= 36 && source.Path == "" && source.ArtifactNodeID == "" && source.ArtifactName == ""
 	case "upstream":
-		return source.ConfigurationID == "" && source.ArtifactNodeID != "" && len(source.ArtifactNodeID) <= 64 && dockerengine.ValidScriptContainerRelativePath(source.Path) && source.Path != "." && (source.ArtifactName == "" || outputNamePattern.MatchString(source.ArtifactName))
+		return source.ConfigurationID == "" && (source.ArtifactNodeID != "" || source.ArtifactReference != "") && (source.ArtifactReference == "" || upstreamOutputName(source.ArtifactReference) != "") && len(source.ArtifactNodeID) <= 64 && dockerengine.ValidScriptContainerRelativePath(source.Path) && source.Path != "." && (source.ArtifactName == "" || outputNamePattern.MatchString(source.ArtifactName))
 	}
 	return false
 }

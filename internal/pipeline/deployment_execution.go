@@ -140,6 +140,14 @@ func resolveDeploymentBuildBindings(node *model.WorkflowNode, stages []model.Wor
 	}
 	for i := range node.Config.DeploymentInputs {
 		input := &node.Config.DeploymentInputs[i]
+		if input.Kind == "upstream" && input.ArtifactReference != "" {
+			id, name, err := resolveUpstreamOutput(node.ID, input.ArtifactReference, stages)
+			if err != nil {
+				return err
+			}
+			input.ArtifactNodeID, input.ArtifactName, input.ArtifactBuildPlanID = id, name, ""
+			continue
+		}
 		if input.Kind != "upstream" || input.ArtifactBuildPlanID == "" {
 			continue
 		}
@@ -148,6 +156,13 @@ func resolveDeploymentBuildBindings(node *model.WorkflowNode, stages []model.Wor
 			return err
 		}
 		input.ArtifactNodeID, input.ArtifactBuildPlanID = id, ""
+	}
+	if source := node.Config.ComposeSource; source != nil && source.Kind == "upstream" && source.ArtifactReference != "" {
+		id, name, err := resolveUpstreamOutput(node.ID, source.ArtifactReference, stages)
+		if err != nil {
+			return err
+		}
+		source.ArtifactNodeID, source.ArtifactName = id, name
 	}
 	return nil
 }

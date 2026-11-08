@@ -42,7 +42,15 @@ func sanitizeDeploymentInputs(node *model.WorkflowNode) error {
 	files := []model.DeploymentConfigFile{}
 	paths, configurations := map[string]bool{}, map[string]bool{}
 	outputNames := map[string]bool{}
-	for _, input := range c.DeploymentInputs {
+	for index := range c.DeploymentInputs {
+		input := &c.DeploymentInputs[index]
+		if input.ArtifactReference != "" {
+			name := upstreamOutputName(input.ArtifactReference)
+			if input.Kind != "upstream" || name == "" || input.ArtifactBuildPlanID != "" || input.ArtifactName != "" && input.ArtifactName != name {
+				return ErrDeploymentInputs
+			}
+			input.ArtifactName = name
+		}
 		if input.ArtifactName != "" {
 			if input.Kind != "upstream" || !outputNamePattern.MatchString(input.ArtifactName) || outputNames[input.ArtifactName] {
 				return ErrDeploymentInputs
@@ -71,7 +79,7 @@ func sanitizeDeploymentInputs(node *model.WorkflowNode) error {
 			configurations[input.ConfigurationID] = true
 			files = append(files, model.DeploymentConfigFile{ID: input.ConfigurationID, Path: input.Path})
 		case "upstream":
-			if (input.ArtifactNodeID == "") == (input.ArtifactBuildPlanID == "") || len(input.ArtifactNodeID) > 64 || len(input.ArtifactBuildPlanID) > 36 || input.RegistryID != "" || input.Image != "" || input.Tag != "" || input.ConfigurationID != "" {
+			if (input.ArtifactReference == "" && (input.ArtifactNodeID == "") == (input.ArtifactBuildPlanID == "")) || len(input.ArtifactNodeID) > 64 || len(input.ArtifactBuildPlanID) > 36 || input.RegistryID != "" || input.Image != "" || input.Tag != "" || input.ConfigurationID != "" {
 				return ErrDeploymentInputs
 			}
 		case "registry":

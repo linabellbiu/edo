@@ -1093,7 +1093,7 @@ onBeforeUnmount(() => { disposed = true; resetMutation(); reset(); window.remove
           <div class="resource-facts-wide"><dt>{{ t('resourceList.description') }}</dt><dd>{{ detailPlan.description || '—' }}</dd></div>
         </dl>
       </section>
-      <section v-if="detailPlan && (detailPlan.script || detailPlan.compose_yaml)" class="resource-detail-section"><h4>{{ t('deploymentList.configuration') }}</h4><YamlCodeEditor v-if="detailPlan.compose_yaml" :model-value="detailPlan.compose_yaml" readonly fullscreen label="compose.yaml"/><pre v-else class="resource-code">{{ detailPlan.script }}</pre></section>
+      <section v-if="detailPlan && (detailPlan.script || detailPlan.compose_yaml)" class="resource-detail-section"><h4>{{ t('deploymentList.configuration') }}</h4><YamlCodeEditor v-if="detailPlan.compose_yaml" :model-value="detailPlan.compose_yaml" readonly fullscreen collapsible label="compose.yaml"/><pre v-else class="resource-code">{{ detailPlan.script }}</pre></section>
       <a-form v-if="detailPlan?.execution_config" layout="vertical"><DeploymentExecutionFields :model-value="detailPlan.execution_config" :plan="detailPlan" disabled :hide-script="detailPlan.kind==='script' && !detailPlan.execution_config.deployment_script" /></a-form>
     </ResourceDetailDrawer>
 
@@ -1147,7 +1147,6 @@ onBeforeUnmount(() => { disposed = true; resetMutation(); reset(); window.remove
             </a-radio-group>
           </a-form-item>
           <template v-if="(form.reusable || form.environment_id) && availableKindOptions.length">
-            <div class="form-subtitle">{{ t('deploymentList.configuration') }}</div>
             <a-alert
               v-if="!form.reusable && executionTargetError"
               class="span-2"
@@ -1189,14 +1188,13 @@ onBeforeUnmount(() => { disposed = true; resetMutation(); reset(); window.remove
               </template>
             </div>
             <div v-if="!form.reusable && (platform === 'kubernetes' ? !canReadRuntimes : !canReadHosts)" class="permission-note">需要主机与集群查看权限才能读取当前环境的执行能力。</div>
-            <div class="form-subtitle">{{ form.kind === 'docker' ? '容器输入参数' : form.kind === 'compose' ? 'dockercompose 输入参数' : '部署参数' }}</div>
             <template v-if="form.kind === 'docker'">
             <a-alert
               class="artifact-image-notice"
               type="info"
               show-icon
-              message="镜像来自上游构建制品，无需填写镜像地址"
-              description="使用流水线构建的镜像，按以下参数创建或更新容器。"
+              message="选择上游构建镜像，或从镜像仓库指定镜像与 Tag"
+              description="部署时固定镜像 Digest，按以下参数创建或更新容器。"
             />
             <div class="runtime-inputs">
               <div v-if="!form.reusable" class="runtime-input-block">
@@ -1305,14 +1303,9 @@ onBeforeUnmount(() => { disposed = true; resetMutation(); reset(); window.remove
               <input ref="composeFileInput" class="file-input" type="file" accept=".yml,.yaml,application/yaml,text/yaml" @change="readComposeFile" />
               <a-button @click="composeFileInput?.click()"><FileUp :size="15" />上传compose.yaml</a-button><a-button @click="formatCompose">格式化</a-button>
             </div>
-              <YamlCodeEditor v-model="form.compose_yaml" fullscreen label="compose.yaml" @format="formatCompose"/>
+              <YamlCodeEditor v-model="form.compose_yaml" fullscreen collapsible label="compose.yaml" @format="formatCompose"/>
             </a-form-item>
-            <a-alert
-              type="info"
-              show-icon
-              :message="form.kind === 'compose_stack' ? '按部署方案配置执行 docker compose up -d' : 'dockercompose 只描述目标服务的运行参数'"
-              description="不会读取代码仓库中的 dockercompose 文件；所选执行主机必须安装 dockercompose v2 插件。"
-            />
+
           </template>
           <a-alert v-if="editingID && form.execution_config===undefined" type="info" show-icon message="旧任务中的部署参数仍保留；修改下方执行配置并保存后，后续运行统一使用此方案。" />
           <DeploymentExecutionFields :model-value="form.execution_config || {}" :plan="executionPlan" :disabled="!canUseForm()" :edit-permission="executionPermission" :applicationID="applicationID" :applicationName="applicationName" :build-nodes="buildNodes" :hide-script="form.kind==='script'" @update:model-value="updateExecution" />

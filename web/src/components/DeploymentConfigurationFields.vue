@@ -8,7 +8,7 @@ import type { DeploymentInput, WorkflowNode, WorkflowNodeConfig } from '@/types/
 import type { DeploymentCommandPlan } from '@/utils/deploymentCommandPreview'
 import { validConfigurationPath } from '@/utils/deploymentCommandPreview'
 import DeploymentScriptEditor from '@/components/DeploymentScriptEditor.vue'
-const props = defineProps<{ config: WorkflowNodeConfig; deploymentPlan?: DeploymentCommandPlan; buildNodes?: WorkflowNode[]; applicationID?: string; applicationName?: string; environmentID?: string; disabled: boolean; editPermission?: string; hideScript?: boolean; buildPlans?: Array<{id:string;name:string;kind:string;artifact_path?:string}> }>()
+const props = defineProps<{ config: WorkflowNodeConfig; deploymentPlan?: DeploymentCommandPlan; buildNodes?: WorkflowNode[]; applicationID?: string; applicationName?: string; environmentID?: string; disabled: boolean; editPermission?: string; hideScript?: boolean; buildPlans?: Array<{id:string;name:string;kind:string;artifact_path?:string;image_registry_id?:string}> }>()
 const emit = defineEmits<{ change: [config: Partial<WorkflowNodeConfig>] }>()
 const auth = useAuthStore()
 type Configuration = { id: string; name: string; kind: string; version: number; is_active: boolean; project_id: string; application_id?: string; environment_id?: string }
@@ -56,16 +56,29 @@ function removeSource(index: number) { optionRequests.forEach(request=>request.a
 function update(index: number, patch: Partial<DeploymentInput>) { change({ deployment_inputs: selected.value.map((item, i) => i === index ? { ...item, ...patch } : item) }) }
 function chooseKind(index: number, kind: DeploymentInput['kind']) { optionRequests.get(index)?.abort(); delete optionsByRow.value[index]; change({ deployment_inputs: selected.value.map((item, i) => i === index ? { kind, ...(kind === 'registry' ? { registry_id: '', image: '', tag: '' } : { path: '', ...(kind === 'configuration' ? { configuration_id: '' } : { artifact_node_id: '' }) }) } : item) }) }
 function chooseConfiguration(index: number, id: string) { if (!canRead.value || loading.value || error.value || loadedIdentity.value !== identity()) return; const item = configurations.value.find(item => item.id === id); update(index, { configuration_id: id, ...(item ? { path: item.name } : {}) }) }
-function upstreamOptions(input: DeploymentInput) {
- const options=(props.buildNodes||[]).filter(node=>node.type==='build').flatMap(node=>{
-  const outputs=node.config.build_outputs||[]
-  return outputs.length?outputs.map(o=>({value:`node:${node.id}/${o.name}`,label:`${node.name} / ${o.name}`})):node.config.inline_build?.artifact_path?[{value:`node:${node.id}`,label:node.name}]:[]
- })
- options.push(...(props.buildPlans||[]).filter(item=>item.kind==='script'&&item.artifact_path).map(item=>({value:'plan:'+item.id,label:item.name})))
- if(input.artifact_node_id&&!options.some(v=>v.value===`node:${input.artifact_node_id}${input.artifact_name?'/'+input.artifact_name:''}`))options.push({value:'node:'+input.artifact_node_id,label:props.buildNodes?.find(v=>v.id===input.artifact_node_id)?.name||'原构建任务'})
+const managesRegistry = computed(() => ['docker','compose','compose_stack'].includes(props.deploymentPlan?.kind || ''))
+const primaryRegistryIndex = computed(() => selected.value.findIndex(input => input.kind === 'registry'))
+const inferredRegistry = computed(() => {
+ const ids = new Set((props.buildNodes || []).filter(node=>node.type==='build').map(node=>(node.config.inline_build || props.buildPlans?.find(plan=>plan.id===node.config.build_plan_id))?.image_registry_id).filter(Boolean))
+ return ids.size === 1 ? [...ids][0] : undefined
+})
+const deploymentRegistry = computed(() => primaryRegistryIndex.value>=0 ? selected.value[primaryRegistryIndex.value]?.registry_id || undefined : inferredRegistry.value)
+const deploymentRegistryOptions = computed(() => {
+ const options=registries.value.map(item=>({value:item.id,label:item.name}))
+ if(deploymentRegistry.value&&!options.some(item=>item.value===deploymentRegistry.value))options.push({value:deploymentRegistry.value,label:'上游或已保存的镜像仓库'})
  return options
+})
+async function setDeploymentRegistry(id:string){
+ if(!canEdit.value||!canReadRegistry.value)return
+ const index=primaryRegistryIndex.value
+ if(index>=0){void chooseRegistry(index,id);return}
+ const indexToLoad=selected.value.length
+ change({deployment_inputs:[...selected.value,{kind:'registry',registry_id:id,image:'',tag:''}]})
+ await nextTick(); await registryOptions(indexToLoad,false)
 }
-function chooseUpstream(index:number,value:string){const [id,name]=value.slice(5).split('/');update(index,{artifact_build_plan_id:value.startsWith('plan:')?id:undefined,artifact_node_id:value.startsWith('node:')?id:undefined,artifact_name:name})}
+function upstreamReference(input:DeploymentInput){return input.artifact_reference || (input.artifact_name?'${'+input.artifact_name+'}':'')}
+function chooseUpstream(index:number,value:string){update(index,{artifact_reference:value,artifact_build_plan_id:undefined,artifact_node_id:undefined,artifact_name:undefined})}
+function invalidUpstreamReference(value:string){return Boolean(value)&&(!/^\$\{[A-Za-z_][A-Za-z0-9_]{0,31}\}$/.test(value)||value.startsWith('${EDO_'))}
 function configurationOptions(index: number) { return configurations.value.filter(item => !selected.value.some((reference, i) => i !== index && reference.configuration_id === item.id)).map(item => ({ value: item.id, label: `${item.name} · ${item.kind.slice(7).toUpperCase()} · v${item.version}` })) }
 async function chooseRegistry(index: number, registry: string) { optionRequests.get(index)?.abort(); delete optionsByRow.value[index]; update(index,{registry_id:registry,image:'',tag:''}); await nextTick(); await registryOptions(index,false) }
 async function chooseImage(index: number, image: string) { optionRequests.get(index)?.abort(); if (optionsByRow.value[index]) optionsByRow.value[index]!.tags = []; update(index,{image,tag:''}) }
@@ -83,6 +96,7 @@ async function registryOptions(index: number, tags: boolean) {
 </script>
 <template>
  <section class="deployment-configuration" aria-label="部署文件与脚本">
+  <a-form-item v-if="managesRegistry" label="镜像仓库"><a-select :value="deploymentRegistry" :loading="loading" :disabled="!canEdit||!canReadRegistry" :options="deploymentRegistryOptions" placeholder="选择镜像仓库" aria-label="部署镜像仓库" @update:value="setDeploymentRegistry(String($event))"/><template #help><span v-if="primaryRegistryIndex&lt;0 &amp;&amp; inferredRegistry">已使用上游构建的镜像仓库。</span><span v-else>可直接指定镜像与实际 Tag，支持只有部署阶段的流水线。</span><a-button v-if="primaryRegistryIndex&lt;0 &amp;&amp; inferredRegistry" type="link" size="small" :disabled="!canEdit||!canReadRegistry" @click="setDeploymentRegistry(inferredRegistry!)">指定镜像与 Tag</a-button></template></a-form-item>
   <section class="deployment-inputs" aria-label="部署前下载上游产出文件或制品到主机">
    <header class="configuration-heading"><span class="configuration-title">部署前下载上游产出文件或制品到主机</span><a-tooltip :trigger="['hover','focus','click']"><template #title><div class="configuration-tooltip"><p><code>EDO_APP_CONFIG_PATH = ~/edo/{{ applicationName || '应用名称' }}/config</code></p><p>可用 <code>${EDO_APP_CONFIG_PATH}/相对路径</code> 引用生成文件。</p><p>{{ configurationHelp }}</p></div></template><button type="button" class="configuration-help" aria-label="配置目录与生效说明">?</button></a-tooltip><a-button type="link" class="source-add" :disabled="!canEdit||selected.length>=32" aria-label="添加文件来源" @click="change({deployment_inputs:[...selected,{kind:'configuration',configuration_id:'',path:''}]})"><PlusCircle :size="15" />添加</a-button></header>
    <div class="deployment-input-content">
@@ -93,13 +107,13 @@ async function registryOptions(index: number, tags: boolean) {
      <div class="input-source-row">
    <a-form-item label="文件来源"><a-radio-group :value="input.kind" :disabled="!canEdit" :options="[{value:'registry',label:'镜像仓库'},{value:'configuration',label:'配置文件'},{value:'upstream',label:'上游构建产出'}]" :aria-label="`文件来源 ${index+1}`" @update:value="chooseKind(index,$event as DeploymentInput['kind'])" /></a-form-item>
    <template v-if="input.kind==='registry'">
-    <a-form-item label="镜像仓库"><a-select :value="input.registry_id||undefined" :loading="loading" :disabled="!canEdit||!canReadRegistry" :options="registries.map(item=>({value:item.id,label:item.name}))" placeholder="选择镜像仓库" @update:value="chooseRegistry(index,String($event))" /></a-form-item>
+    <a-form-item v-if="!managesRegistry || index!==primaryRegistryIndex" label="镜像仓库"><a-select :value="input.registry_id||undefined" :loading="loading" :disabled="!canEdit||!canReadRegistry" :options="registries.map(item=>({value:item.id,label:item.name}))" placeholder="选择镜像仓库" @update:value="chooseRegistry(index,String($event))" /></a-form-item>
     <div class="source-fields"><a-form-item label="镜像"><a-auto-complete :value="input.image" :disabled="!canEdit||!input.registry_id" :options="(optionsByRow[index]?.images||[]).map(value=>({value}))" placeholder="选择或输入命名空间下的镜像" @update:value="chooseImage(index,String($event))" @blur="registryOptions(index,true)" /></a-form-item><a-form-item label="实际 Tag"><a-auto-complete :value="input.tag" :disabled="!canEdit||!input.image" :options="(optionsByRow[index]?.tags||[]).map(value=>({value}))" placeholder="选择或输入实际 Tag" @focus="registryOptions(index,true)" @update:value="update(index,{tag:String($event)})" /></a-form-item></div>
     <p v-if="optionsByRow[index]?.error" role="status">{{ optionsByRow[index]?.error }}</p><p>本次运行固定 Digest，脚本用 <code>${EDO_INPUT_IMAGE_{{ index+1 }}}</code> 引用该镜像。</p>
    </template>
    <template v-else>
     <a-form-item v-if="input.kind==='configuration'" label="配置" :validate-status="input.configuration_id&&!configurations.some(item=>item.id===input.configuration_id)&&!loading?'error':undefined" :help="!canRead?'没有查看配置的权限':input.configuration_id&&!configurations.some(item=>item.id===input.configuration_id)&&!loading?'原配置不可用，请检查适用范围或使用权限':undefined"><a-select :value="input.configuration_id||undefined" :loading="loading" :disabled="!canEdit||!canRead||loadedIdentity!==identity()" :options="configurationOptions(index)" placeholder="选择配置文件" :aria-label="`配置文件 ${index+1}`" @update:value="chooseConfiguration(index,String($event))" /></a-form-item>
-    <a-form-item v-else label="上游构建产出"><a-select :value="input.artifact_build_plan_id ? `plan:${input.artifact_build_plan_id}` : input.artifact_node_id ? `node:${input.artifact_node_id}${input.artifact_name?'/'+input.artifact_name:''}` : undefined" :disabled="!canEdit" :options="upstreamOptions(input)" placeholder="选择前序构建任务的产物" @update:value="chooseUpstream(index,String($event))" /><template #help>选择的文件在部署前下载到指定路径，命名构建物可通过变量引用。</template></a-form-item>
+    <a-form-item v-else label="上游构建产出环境变量" required :validate-status="invalidUpstreamReference(upstreamReference(input))?'error':undefined" :help="invalidUpstreamReference(upstreamReference(input))?'请使用变量引用，例如 ${BUILD_ARTIFACT}':'填写前序构建中暂存构建物的变量；运行后下载对应文件。'"><a-input :value="upstreamReference(input)" :disabled="!canEdit" placeholder="例如 ${BUILD_ARTIFACT}" :aria-label="`上游构建产出环境变量 ${index+1}`" @update:value="chooseUpstream(index,String($event||''))"/></a-form-item>
     <a-form-item label="配置文件路径" :validate-status="input.path&&!validConfigurationPath(input.path)?'error':undefined" :help="input.path&&!validConfigurationPath(input.path)?'只填写相对路径，不能使用绝对路径、~/、.. 或保留目录 .edo':undefined"><a-input :value="input.path" :disabled="!canEdit" addon-before="${EDO_APP_CONFIG_PATH}/" placeholder="例如 settings/app.yaml 或 output.tar.gz" :aria-label="`配置文件路径 ${index+1}`" @update:value="update(index,{path:String($event||'')})" /></a-form-item>
    </template>
      </div>

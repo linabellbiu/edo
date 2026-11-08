@@ -8,7 +8,7 @@ import { useAuthStore } from '@/stores/auth'
 import { readKubeYaml } from '@/utils/kubernetesYaml'
 import type { WorkflowNode, WorkflowNodeConfig } from '@/types/pipeline'
 import type { DeploymentCommandPlan } from '@/utils/deploymentCommandPreview'
-const props = defineProps<{ node: WorkflowNode; buildNodes: WorkflowNode[]; disabled: boolean; applicationID?: string; applicationName?: string; plan?: DeploymentCommandPlan; editPermission?: string; buildPlans?: Array<{id:string;name:string;kind:string;artifact_path?:string}>; hideScript?: boolean; hideComposeSettings?:boolean }>()
+const props = defineProps<{ node: WorkflowNode; buildNodes: WorkflowNode[]; disabled: boolean; applicationID?: string; applicationName?: string; plan?: DeploymentCommandPlan; editPermission?: string; buildPlans?: Array<{id:string;name:string;kind:string;artifact_path?:string;image_registry_id?:string}>; hideScript?: boolean; hideComposeSettings?:boolean }>()
 const emit = defineEmits<{ change: [config: Partial<WorkflowNodeConfig>] }>()
 const auth = useAuthStore(), kind = ref(''), yaml = ref(''), error = ref(''), environmentID=ref('')
 const deploymentPlan = ref<DeploymentCommandPlan>()

@@ -182,9 +182,13 @@ func TestInlineScriptRuntimeUsesTaskConfigurationInsteadOfTemplateMetadata(t *te
 
 func TestNamedUpstreamComposeIsParsedAndFrozenBeforeDeployment(t *testing.T) {
 	content := "services:\n  api:\n    image: alpine:3.22\n  worker:\n    image: alpine:3.22\n"
-	build := model.WorkflowNode{ID: "build", Name: "自定义构建", Type: model.WorkflowNodeBuild, Config: model.WorkflowNodeConfig{BuildPlanID: "build-plan"}}
-	deploy := model.WorkflowNode{ID: "deploy", Name: "Compose 部署", Type: model.WorkflowNodeDeploy, Config: model.WorkflowNodeConfig{DeploymentPlanID: "deploy-plan", ComposeSource: &model.WorkflowComposeSource{Kind: "upstream", ArtifactNodeID: build.ID, ArtifactName: "CONFIG", Path: "deploy/docker-compose.yaml"}, Compose: &model.ComposeDeploymentSettings{ProjectName: "test-project", TagVariable: "${IMAGE_TAG}"}}}
+	build := model.WorkflowNode{ID: "build", Name: "自定义构建", Type: model.WorkflowNodeBuild, Config: model.WorkflowNodeConfig{BuildPlanID: "build-plan", BuildOutputs: []model.WorkflowBuildOutput{{Name: "CONFIG", Paths: []string{"deploy"}}}}}
+	deploy := model.WorkflowNode{ID: "deploy", Name: "Compose 部署", Type: model.WorkflowNodeDeploy, Config: model.WorkflowNodeConfig{DeploymentPlanID: "deploy-plan", ComposeSource: &model.WorkflowComposeSource{Kind: "upstream", ArtifactReference: "${CONFIG}", Path: "deploy/docker-compose.yaml"}, Compose: &model.ComposeDeploymentSettings{ProjectName: "test-project", TagVariable: "${IMAGE_TAG}"}}}
 	snapshot := workflowSnapshot{SchemaVersion: model.WorkflowSchemaVersion, Source: model.WorkflowNode{ID: "source", Type: model.WorkflowNodeTrigger}, Stages: []model.WorkflowStage{{ID: "build-stage", Tasks: []model.WorkflowNode{build}}, {ID: "deploy-stage", Tasks: []model.WorkflowNode{deploy}}}, DeploymentPlans: map[string]workflowDeploymentPlanSnapshot{deploy.ID: {ID: "deploy-plan", Kind: model.DeploymentPlanComposeStack}}, AuthorityID: "admin"}
+	if err := resolveDeploymentBuildBindings(&deploy, snapshot.Stages); err != nil {
+		t.Fatal(err)
+	}
+	snapshot.Stages[1].Tasks[0] = deploy
 	s, db, store, run := newBuildExecutorTestRun(t, deploy, snapshot, nil)
 	root := t.TempDir()
 	groups := filepath.Join(root, "groups")

@@ -841,7 +841,7 @@ func (s *Service) validateWorkflow(
 					node.Config.DeploymentPlanID = plan.ID
 				}
 				if err := resolveDeploymentBuildBindings(node, stages); err != nil {
-					issues = append(issues, WorkflowIssue{Code: "invalid_deployment_build_binding", Message: "部署方案的上游构建必须在前序阶段唯一匹配，请检查构建方案引用", NodeID: node.ID})
+					issues = append(issues, WorkflowIssue{Code: "invalid_deployment_build_binding", Message: "部署方案的上游构建或产物变量必须在前序阶段唯一匹配，请检查引用", NodeID: node.ID})
 				}
 			}
 		}
