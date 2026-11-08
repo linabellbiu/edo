@@ -790,7 +790,7 @@ func (h pipelineHandler) writeError(c *gin.Context, operation string, err error)
 		errors.Is(err, pipeline.ErrInsecureRegistryEndpoint), errors.Is(err, pipeline.ErrInvalidRegistryNamespace),
 		errors.Is(err, pipeline.ErrInvalidRegistryUsername), errors.Is(err, pipeline.ErrInvalidRegistrySecret),
 		errors.Is(err, pipeline.ErrInvalidDeploymentPlan), errors.Is(err, pipeline.ErrDeploymentPlanTargetMismatch),
-		errors.Is(err, pipeline.ErrDeploymentInputs), errors.Is(err, pipeline.ErrInvalidWorkflow), errors.Is(err, pipeline.ErrInvalidWorkflowRuntime):
+		errors.Is(err, pipeline.ErrComposeSource), errors.Is(err, pipeline.ErrDeploymentInputs), errors.Is(err, pipeline.ErrInvalidWorkflow), errors.Is(err, pipeline.ErrInvalidWorkflowRuntime):
 		writeError(c, http.StatusBadRequest, "invalid_delivery_config", err.Error())
 	case errors.Is(err, pipeline.ErrWorkflowRuntimeNotPrepared):
 		writeError(c, http.StatusConflict, "workflow_runtime_not_prepared", err.Error())

@@ -10,7 +10,19 @@ import (
 	"edo/internal/model"
 )
 
-func normalizeInlineDeploymentPlan(input *model.WorkflowDeploymentPlan) error {
+func normalizeInlineDeploymentPlan(input *model.WorkflowDeploymentPlan, sources ...*model.WorkflowComposeSource) error {
+	if len(sources) > 0 && sources[0] != nil {
+		if input == nil || input.Kind != model.DeploymentPlanComposeStack || !validResourceName(input.Name) || input.DeploymentTarget == nil || input.TimeoutSeconds < 60 || input.TimeoutSeconds > 3600 {
+			return ErrInvalidWorkflow
+		}
+		if err := normalizeDeploymentExecution(input.Kind, "", input.ExecutionConfig); err != nil {
+			return err
+		}
+		input.Script = ""
+		input.ComposeYAML = ""
+		input.ServiceName = ""
+		return nil
+	}
 	if input == nil {
 		return nil
 	}

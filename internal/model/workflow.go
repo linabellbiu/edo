@@ -29,6 +29,10 @@ type DeploymentConfigBinding struct {
 }
 
 type WorkflowNodeConfig struct {
+	ComposeSource          *WorkflowComposeSource     `json:"compose_source,omitempty"`
+	InlineBuild            *BuildPlan                 `json:"inline_build,omitempty"`
+	BuildOutputs           []WorkflowBuildOutput      `json:"build_outputs,omitempty"`
+	RuntimeServices        []WorkflowRuntimeService   `json:"runtime_services,omitempty"`
 	ArtifactBuildPlanID    string                     `json:"artifact_build_plan_id,omitempty"`
 	DeploymentInputVersion int                        `json:"deployment_input_version,omitempty"`
 	DeploymentInputs       []DeploymentInput          `json:"deployment_inputs,omitempty"`
@@ -71,8 +75,31 @@ type WorkflowNodeConfig struct {
 	Notifications          []WorkflowNotificationRule `json:"notifications,omitempty"`
 }
 
+// WorkflowComposeSource 只保存 Compose 来源，部署前读取并解析实际正文。
+type WorkflowComposeSource struct {
+	Kind            string `json:"kind"`
+	Path            string `json:"path,omitempty"`
+	ConfigurationID string `json:"configuration_id,omitempty"`
+	ArtifactNodeID  string `json:"artifact_node_id,omitempty"`
+	ArtifactName    string `json:"artifact_name,omitempty"`
+}
+
+// WorkflowBuildOutput 定义本次构建需要暂存的命名文件包，正文仍由制品存储管理。
+type WorkflowBuildOutput struct {
+	Name  string   `json:"name"`
+	Paths []string `json:"paths"`
+}
+
+// WorkflowRuntimeService 只显式关联用户指定的容器，不扫描或接管同主机其他服务。
+type WorkflowRuntimeService struct {
+	Name           string `json:"name"`
+	RestartScript  string `json:"restart_script"`
+	RecreateScript string `json:"recreate_script"`
+}
+
 // DeploymentInput 只保存来源和相对路径，不保存文件正文或仓库凭据。
 type DeploymentInput struct {
+	ArtifactName        string `json:"artifact_name,omitempty"`
 	ArtifactBuildPlanID string `json:"artifact_build_plan_id,omitempty"`
 	Kind                string `json:"kind"`
 	Path                string `json:"path,omitempty"`

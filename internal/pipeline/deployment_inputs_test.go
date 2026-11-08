@@ -7,13 +7,13 @@ import (
 	"edo/internal/model"
 )
 
-func TestDeploymentInputSanitizerKeepsOnlyFileReferences(t *testing.T) {
-	node := model.WorkflowNode{Type: model.WorkflowNodeDeploy, Config: model.WorkflowNodeConfig{DeploymentInputVersion: 1, DeploymentInputs: []model.DeploymentInput{{Kind: "configuration", ConfigurationID: "config", Path: "runtime/settings.env"}, {Kind: "upstream", ArtifactNodeID: "files", Path: "output.tar.gz"}, {Kind: "registry", RegistryID: "registry", Image: "team/app", Tag: "v1"}}, DeploymentScript: "docker compose --env-file \"${EDO_APP_CONFIG_PATH}/runtime/settings.env\" up -d", DeploymentParameters: "--env-file old.env"}}
+func TestDeploymentInputSanitizerKeepsSelectedFileParameters(t *testing.T) {
+	node := model.WorkflowNode{Type: model.WorkflowNodeDeploy, Config: model.WorkflowNodeConfig{DeploymentInputVersion: 1, DeploymentInputs: []model.DeploymentInput{{Kind: "configuration", ConfigurationID: "config", Path: "runtime/settings.env"}, {Kind: "upstream", ArtifactNodeID: "files", Path: "output.tar.gz"}, {Kind: "registry", RegistryID: "registry", Image: "team/app", Tag: "v1"}}, DeploymentScript: "docker compose --env-file \"${EDO_APP_CONFIG_PATH}/runtime/settings.env\" up -d", DeploymentParameters: "--env-file runtime/settings.env"}}
 	if err := sanitizeDeploymentInputs(&node); err != nil {
 		t.Fatal(err)
 	}
-	if len(node.Config.ConfigurationFiles) != 1 || node.Config.ConfigurationFiles[0].Path != "runtime/settings.env" || node.Config.DeploymentParameters != "" {
-		t.Fatal("旧参数或配置引用未规范化")
+	if len(node.Config.ConfigurationFiles) != 1 || node.Config.ConfigurationFiles[0].Path != "runtime/settings.env" || node.Config.DeploymentParameters != "--env-file runtime/settings.env" {
+		t.Fatal("所选配置引用或自定义参数没有保留")
 	}
 	for _, input := range []model.DeploymentInput{{Kind: "configuration", ConfigurationID: "config", Path: "../escape"}, {Kind: "registry", RegistryID: "registry", Image: "other.example/app:tag", Tag: "v1"}, {Kind: "registry", RegistryID: "registry", Image: "team/app", Tag: "${IMAGE_TAG}"}} {
 		bad := node

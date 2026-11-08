@@ -308,7 +308,7 @@ func (s *Service) listWorkflowArtifacts(ctx context.Context, application *model.
 			return nil, err
 		}
 	}
-	planByID := make(map[string]model.BuildPlan, len(plans))
+	planByID := inlineBuildPlansForWorkflow(workflow)
 	for i := range plans {
 		planByID[plans[i].ID] = plans[i]
 	}
@@ -361,7 +361,16 @@ func (s *Service) validateManualArtifactSelection(ctx context.Context, applicati
 		}
 		return nil, ErrManualArtifactInvalid
 	}
-	if err := s.db.WithContext(ctx).First(&plan, "uuid = ? AND is_active = ?", build.BuildPlanID, true).Error; err != nil {
+	inline, hasInline := inlineBuildPlansForWorkflow(workflow)[build.BuildPlanID]
+	if hasInline {
+		plan = inline
+	}
+	if err := func() error {
+		if hasInline {
+			return nil
+		}
+		return s.db.WithContext(ctx).First(&plan, "uuid = ? AND is_active = ?", build.BuildPlanID, true).Error
+	}(); err != nil {
 		if s.logger != nil {
 			s.logger.Warn("手动执行选择的制品构建方案不可用", "operation", "pipeline_manual_artifact_validate", "application_id", application.ID, "artifact_id", artifactID, "build_plan_id", build.BuildPlanID, "err", err)
 		}
@@ -399,7 +408,12 @@ func manualArtifactBuildNodes(workflow *model.ReleaseWorkflow, build model.Build
 	candidates := make([]candidate, 0, 1)
 	for index := range tasks {
 		resumeNode, feedsDeployment := workflowArtifactResumeNode(tasks, index)
-		if tasks[index].Type != model.WorkflowNodeBuild || tasks[index].Config.BuildPlanID != plan.ID || !feedsDeployment {
+		if tasks[index].Type != model.WorkflowNodeBuild || func() string {
+			if tasks[index].Config.InlineBuild != nil {
+				return inlineBuildIdentity(workflow.ID, tasks[index].ID)
+			}
+			return tasks[index].Config.BuildPlanID
+		}() != plan.ID || !feedsDeployment {
 			continue
 		}
 		if build.WorkflowNodeID != "" && tasks[index].ID == build.WorkflowNodeID {

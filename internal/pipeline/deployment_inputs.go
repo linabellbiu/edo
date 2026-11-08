@@ -41,7 +41,17 @@ func sanitizeDeploymentInputs(node *model.WorkflowNode) error {
 	}
 	files := []model.DeploymentConfigFile{}
 	paths, configurations := map[string]bool{}, map[string]bool{}
+	outputNames := map[string]bool{}
 	for _, input := range c.DeploymentInputs {
+		if input.ArtifactName != "" {
+			if input.Kind != "upstream" || !outputNamePattern.MatchString(input.ArtifactName) || outputNames[input.ArtifactName] {
+				return ErrDeploymentInputs
+			}
+			if _, reserved := reservedScriptEnvironmentNames[input.ArtifactName]; reserved || strings.HasPrefix(input.ArtifactName, "EDO_") || input.ArtifactName == "IMAGE_TAG" {
+				return ErrDeploymentInputs
+			}
+			outputNames[input.ArtifactName] = true
+		}
 		if input.Kind != "registry" {
 			if !configfile.ValidPath(input.Path) || paths[input.Path] {
 				return ErrDeploymentInputs
@@ -73,8 +83,10 @@ func sanitizeDeploymentInputs(node *model.WorkflowNode) error {
 		}
 	}
 	c.ConfigurationFiles = files
-	// 新界面以脚本表达参数，旧快照仍由原执行器解析。
-	c.DeploymentParameters = ""
+	if _, err := configfile.EnvFileParameters(c.DeploymentParameters, files); err != nil {
+		return ErrDeploymentInputs
+	}
+	// 参数和所选文件一起保存，重启、重建复用成功部署快照。
 	return nil
 }
 

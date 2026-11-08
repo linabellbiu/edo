@@ -827,6 +827,11 @@ func directoryArchive(ctx context.Context, root string) (io.Reader, <-chan error
 	return reader, errorsChannel
 }
 
+// WriteDirectoryArchive 复用受控的目录打包规则，拒绝符号链接和特殊文件。
+func WriteDirectoryArchive(ctx context.Context, destination io.Writer, root string) error {
+	return writeDirectoryArchive(ctx, destination, root)
+}
+
 func writeDirectoryArchive(ctx context.Context, destination io.Writer, root string) error {
 	root, err := filepath.Abs(root)
 	if err != nil {

@@ -95,17 +95,18 @@ type workflowSnapshot struct {
 }
 
 type workflowBuildPlanSnapshot struct {
-	ID               string              `json:"id"`
-	Kind             model.BuildPlanKind `json:"kind"`
-	ConfigVersion    uint16              `json:"config_version"`
-	Script           string              `json:"script,omitempty"`
-	DockerfilePath   string              `json:"dockerfile_path,omitempty"`
-	ContextPath      string              `json:"context_path"`
-	WorkingDirectory string              `json:"working_directory"`
-	ArtifactPath     string              `json:"artifact_path,omitempty"`
-	RuntimeImage     string              `json:"runtime_image,omitempty"`
-	ImageRegistryID  string              `json:"image_registry_id,omitempty"`
-	TargetStage      string              `json:"target_stage,omitempty"`
+	Outputs          []model.WorkflowBuildOutput `json:"outputs,omitempty"`
+	ID               string                      `json:"id"`
+	Kind             model.BuildPlanKind         `json:"kind"`
+	ConfigVersion    uint16                      `json:"config_version"`
+	Script           string                      `json:"script,omitempty"`
+	DockerfilePath   string                      `json:"dockerfile_path,omitempty"`
+	ContextPath      string                      `json:"context_path"`
+	WorkingDirectory string                      `json:"working_directory"`
+	ArtifactPath     string                      `json:"artifact_path,omitempty"`
+	RuntimeImage     string                      `json:"runtime_image,omitempty"`
+	ImageRegistryID  string                      `json:"image_registry_id,omitempty"`
+	TargetStage      string                      `json:"target_stage,omitempty"`
 	// Platform 是本次运行根据下游部署主机冻结的 OCI 平台，不来自构建方案表单。
 	Platform             string            `json:"platform,omitempty"`
 	Pull                 bool              `json:"pull"`
@@ -535,6 +536,17 @@ func sanitizeWorkflowInput(input *WorkflowInput) error {
 }
 
 func sanitizeWorkflowNode(node *model.WorkflowNode) error {
+	if err := normalizeTaskRuntimeServices(node); err != nil {
+		slog.Warn("自定义部署服务关联无效", "operation", "workflow_runtime_service_validate", "node_id", node.ID, "err", err)
+		return err
+	}
+	if !validComposeSource(node.Config.ComposeSource) || (node.Config.ComposeSource != nil && (node.Type != model.WorkflowNodeDeploy || node.Config.InlineDeploymentPlan == nil || node.Config.InlineDeploymentPlan.Kind != model.DeploymentPlanComposeStack)) {
+		slog.Warn("Compose 文件来源无效", "operation", "workflow_compose_source_validate", "node_id", node.ID, "err", ErrInvalidWorkflow)
+		return ErrInvalidWorkflow
+	}
+	if err := normalizeInlineBuild(node); err != nil {
+		return err
+	}
 	if len(node.Config.DeploymentTagReference) > 131 || node.Config.DeploymentTagReference != "" && node.Type != model.WorkflowNodeDeploy {
 		return ErrInvalidWorkflow
 	}
@@ -610,7 +622,7 @@ func sanitizeWorkflowNode(node *model.WorkflowNode) error {
 			slog.Warn("流水线部署来源不能同时配置", "operation", "workflow_inline_deployment", "node_id", node.ID, "err", ErrInvalidWorkflow)
 			return ErrInvalidWorkflow
 		}
-		if err := normalizeInlineDeploymentPlan(node.Config.InlineDeploymentPlan); err != nil {
+		if err := normalizeInlineDeploymentPlan(node.Config.InlineDeploymentPlan, node.Config.ComposeSource); err != nil {
 			slog.Warn("流水线自定义部署方案无效", "operation", "workflow_inline_deployment", "node_id", node.ID, "err", err)
 			return err
 		}
@@ -754,6 +766,28 @@ func (s *Service) validateWorkflow(
 			}
 		}
 	}
+	for i := range stages {
+		for j := range stages[i].Tasks {
+			node := &stages[i].Tasks[j]
+			if node.Type == model.WorkflowNodeBuild && node.Config.InlineBuild != nil {
+				plan := *node.Config.InlineBuild
+				plan.ID = inlineBuildIdentity("", node.ID)
+				node.Config.BuildPlanID = plan.ID
+				if len(node.Config.BuildOutputs) > 0 {
+					plan.ArtifactPath = ".edo-build-outputs"
+				}
+				activeBuildPlans[plan.ID] = plan
+				if plan.Kind == model.BuildPlanDockerfile && plan.ImageRegistryID == "" {
+					issues = append(issues, WorkflowIssue{Code: "missing_image_registry", Message: "镜像构建必须关联镜像仓库", NodeID: node.ID})
+				}
+				if err := s.validateBuildPlanRegistry(ctx, plan.ImageRegistryID); err != nil {
+					s.logger.Warn("校验流水线镜像仓库失败", "operation", "workflow_inline_build_registry", "node_id", node.ID, "err", err)
+					issues = append(issues, WorkflowIssue{Code: "invalid_build_registry", Message: "镜像仓库不可用，请重新选择", NodeID: node.ID})
+				}
+			}
+		}
+	}
+	tasks = workflowTasks(stages)
 	activeDeploymentPlans := make(map[string]model.DeploymentPlan, len(deploymentPlanIDs))
 	activeTargets := make(map[string]model.DeploymentTarget)
 	if len(deploymentPlanIDs) > 0 {
@@ -1053,7 +1087,7 @@ func validateWorkflowArtifactFlow(
 				continue
 			}
 			if plan, ok := deploymentPlans[next.Config.DeploymentPlanID]; ok && plan.Kind == model.DeploymentPlanComposeStack {
-				if err := validateComposeBindingsYAML(plan.ComposeYAML, next.Config); err != nil {
+				if err := validateComposeBindingsYAML(plan.ComposeYAML, next.Config); err != nil && next.Config.ComposeSource == nil {
 					issues = append(issues, WorkflowIssue{Code: "invalid_compose_bindings", Message: "请检查 Compose 服务范围、镜像引用与 Tag 变量", NodeID: next.ID})
 				}
 				for _, source := range next.Config.ArtifactNodeIDs {
@@ -1397,12 +1431,29 @@ func (s *Service) newStageResolvedWorkflowRunWithDatabase(
 			switch current.Type {
 			case model.WorkflowNodeBuild:
 				var plan model.BuildPlan
-				if current.Config.BuildPlanID == "" || database.WithContext(ctx).
+				if current.Config.InlineBuild != nil {
+					plan = *current.Config.InlineBuild
+					plan.ID = inlineBuildIdentity(workflow.ID, current.ID)
+					plan.ProjectID, plan.DepartmentID = application.ProjectID, application.DepartmentID
+					current.Config.BuildPlanID = plan.ID
+					if len(current.Config.BuildOutputs) > 0 {
+						plan.ArtifactPath = ".edo-build-outputs"
+					}
+					if plan.Kind == model.BuildPlanDockerfile && plan.ImageRegistryID == "" {
+						return nil, ErrInvalidWorkflow
+					}
+					if err := s.validateBuildPlanRegistry(ctx, plan.ImageRegistryID); err != nil {
+						return nil, err
+					}
+				} else if current.Config.BuildPlanID == "" || database.WithContext(ctx).
 					First(&plan, "uuid = ? AND is_active = ?", current.Config.BuildPlanID, true).Error != nil ||
 					plan.DepartmentID != application.DepartmentID || plan.ProjectID != application.ProjectID {
 					return nil, ErrInvalidWorkflow
 				}
 				buildPlans[current.ID] = buildPlanSnapshot(plan)
+				entry := buildPlans[current.ID]
+				entry.Outputs = current.Config.BuildOutputs
+				buildPlans[current.ID] = entry
 				resolvedBuildPlans[plan.ID] = plan
 			case model.WorkflowNodeDeploy:
 				var plan model.DeploymentPlan
@@ -1428,6 +1479,13 @@ func (s *Service) newStageResolvedWorkflowRunWithDatabase(
 						return nil, ErrInvalidWorkflow
 					}
 				}
+				if current.Config.ComposeSource != nil && current.Config.ComposeSource.Kind != "upstream" {
+					content, sourceErr := s.runtimeComposeDefinition(ctx, *application, *current, target.EnvironmentID, ref, commitSHA, authorityID)
+					if sourceErr != nil {
+						return nil, sourceErr
+					}
+					plan.ComposeYAML = content
+				}
 				model.ApplyDeploymentExecution(&current.Config, plan.ExecutionConfig)
 				if err := resolveDeploymentBuildBindings(current, resolved.Stages); err != nil {
 					return nil, err
@@ -1438,6 +1496,14 @@ func (s *Service) newStageResolvedWorkflowRunWithDatabase(
 				}
 				if !available {
 					return nil, ErrInvalidWorkflow
+				}
+				if len(current.Config.RuntimeServices) > 0 {
+					var capability model.HostCapability
+					if err := database.WithContext(ctx).Where("host_id = ? AND kind = ? AND status = ?", target.HostID, model.HostCapabilityDocker, model.HostCapabilityReady).First(&capability).Error; err != nil {
+						s.logger.Warn("关联服务的 Docker 运行时不可用", "operation", "workflow_custom_runtime_freeze", "node_id", current.ID, "host_id", target.HostID, "err", err)
+						return nil, ErrInvalidWorkflow
+					}
+					target.RuntimeID = capability.RuntimeID
 				}
 				if plan.Kind == model.DeploymentPlanComposeStack && target.WorkingDirectory == "" {
 					directory, directoryErr := s.deployments.ResolveComposeWorkingDirectory(ctx, target, application.Name)

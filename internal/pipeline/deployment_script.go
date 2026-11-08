@@ -85,12 +85,25 @@ func (s *Service) prepareDeploymentInputs(ctx context.Context, prepared *executi
 		if err := s.db.WithContext(ctx).Where("uuid = ? AND pipeline_run_id = ? AND workflow_node_id = ? AND commit_sha = ? AND status = ?", stored.BuildRunID, stored.PipelineRunID, input.ArtifactNodeID, prepared.run.CommitSHA, model.BuildRunStatusSucceeded).First(&build).Error; err != nil {
 			return closers, s.deploymentInputError(prepared.node.ID, "deployment_input_producer", err)
 		}
-		_, content, err := s.artifacts.OpenDownload(ctx, stored.ID)
+		_, rawContent, err := s.artifacts.OpenDownload(ctx, stored.ID)
+		var content io.ReadCloser = rawContent
 		if err != nil {
 			return closers, s.deploymentInputError(prepared.node.ID, "deployment_input_open", err)
 		}
+		digest := stored.Digest
+		if input.ArtifactName != "" {
+			_ = content.Close()
+			content, digest, err = s.artifacts.OpenBundleMember(ctx, stored.ID, input.ArtifactName+".tar.gz")
+			if err != nil {
+				return closers, s.deploymentInputError(prepared.node.ID, "deployment_input_output", err)
+			}
+			if prepared.variables == nil {
+				prepared.variables = map[string]string{}
+			}
+			// 命名构建物的路径在配置目录解析后由脚本前缀导出。
+		}
 		closers = append(closers, content)
-		prepared.inputFiles = append(prepared.inputFiles, sshdeploy.FileInput{Directory: directory, Path: input.Path, Digest: stored.Digest, Content: content})
+		prepared.inputFiles = append(prepared.inputFiles, sshdeploy.FileInput{Directory: directory, Path: input.Path, Digest: digest, Content: content})
 	}
 	for _, image := range prepared.snapshot.RegistryInputs[prepared.node.ID] {
 		if image.Index < 0 || image.Index >= len(prepared.node.Config.DeploymentInputs) {
@@ -238,6 +251,11 @@ func (s *Service) executeCustomDeployment(ctx context.Context, prepared *executi
 	}
 	if prepared.target.WorkingDirectory == "" {
 		prefix += "cd \"${EDO_APP_CONFIG_PATH:?缺少应用配置目录}\"\n"
+	}
+	for _, input := range prepared.node.Config.DeploymentInputs {
+		if input.Kind == "upstream" && input.ArtifactName != "" {
+			prefix += "export " + input.ArtifactName + "=\"${EDO_APP_CONFIG_PATH}/" + input.Path + "\"\n"
+		}
 	}
 	script = "# EDO 用户部署脚本 v1\n" + prefix + script
 	prepared.deploymentPlan.Script = script

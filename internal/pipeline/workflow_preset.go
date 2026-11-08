@@ -85,13 +85,13 @@ var workflowPresetDefinitions = []workflowPresetDefinition{
 
 func newDockerPreset(key, name string, compose, kubernetes bool) workflowPresetDefinition {
 	deployName := "Docker 容器部署"
-	description := "使用 Dockerfile 构建 OCI 镜像并部署到 Docker 容器；创建后需要选择镜像构建和 Docker 容器部署方案。"
+	description := "使用 Dockerfile 构建 OCI 镜像并部署到 Docker 容器；创建后直接配置镜像仓库、Dockerfile 和自定义部署脚本。"
 	if compose {
 		deployName = "Docker Compose 部署"
-		description = "使用 Dockerfile 构建 OCI 镜像并部署到 Compose 服务；创建后需要选择镜像构建和 Docker Compose 部署方案。"
+		description = "使用 Dockerfile 构建 OCI 镜像并部署到 Compose 服务；创建后直接配置镜像仓库及 docker-compose.yaml。"
 	} else if kubernetes {
 		deployName = "Kubernetes 部署"
-		description = "使用 Dockerfile 构建并推送 OCI 镜像，再更新 Kubernetes 工作负载；创建后需要选择镜像构建和 Kubernetes 部署方案。"
+		description = "使用 Dockerfile 构建并推送 OCI 镜像，再更新 Kubernetes 工作负载；创建后直接配置镜像仓库及 Kubernetes 部署目标。"
 	}
 	return workflowPresetDefinition{
 		WorkflowPreset: WorkflowPreset{
@@ -121,7 +121,7 @@ func newHostPreset(key, language, name string, includeTest, fullArtifact bool) w
 	return workflowPresetDefinition{
 		WorkflowPreset: WorkflowPreset{
 			Key: key, Category: language, Name: name,
-			Description: "构建文件制品并通过主机脚本部署；创建后需要选择构建方案和主机部署方案。",
+			Description: "构建文件制品并通过主机脚本部署；创建后直接配置构建和部署任务。",
 			Steps:       steps,
 		},
 		language: language, includeTest: includeTest, fullArtifact: fullArtifact,
@@ -140,7 +140,7 @@ func newKubernetesPreset(key, language, name string, includeTest bool) workflowP
 	return workflowPresetDefinition{
 		WorkflowPreset: WorkflowPreset{
 			Key: key, Category: language, Name: name,
-			Description: "构建并推送容器镜像，再更新 Kubernetes 工作负载；创建后需要选择镜像构建和 Kubernetes 部署方案。",
+			Description: "构建并推送容器镜像，再更新 Kubernetes 工作负载；创建后直接配置镜像仓库及 Kubernetes 部署目标。",
 			Steps:       steps,
 		},
 		language: language, includeTest: includeTest, kubernetes: true,
@@ -265,5 +265,58 @@ func buildWorkflowPresetStages(preset workflowPresetDefinition, runtime Workflow
 			Config: model.WorkflowNodeConfig{Description: deployDescription},
 		}},
 	})
+	for i := range stages {
+		for j := range stages[i].Tasks {
+			node := &stages[i].Tasks[j]
+			if node.Type == model.WorkflowNodeBuild {
+				kind := model.BuildPlanScript
+				if preset.docker || preset.kubernetes {
+					kind = model.BuildPlanDockerfile
+				}
+				script := "set -eu\n# 在这里填写构建命令\n"
+				output := "output"
+				switch preset.language {
+				case workflowPresetGo:
+					script = "set -eu\nmkdir -p output\ngo build -o output/app .\n"
+				case workflowPresetNodeJS:
+					script = "set -eu\nnpm ci\nnpm run build\n"
+					output = "dist"
+				case workflowPresetPython:
+					script = "set -eu\npython -m pip wheel . -w output\n"
+				}
+				node.Config.InlineBuild = &model.BuildPlan{Name: node.Name, Kind: kind, ConfigVersion: 1, Script: script, DockerfilePath: "Dockerfile", ContextPath: ".", WorkingDirectory: ".", RuntimeImage: runtime.Image, TimeoutSeconds: 1800, CacheEnabled: true, Pull: true, IsActive: true}
+				if kind == model.BuildPlanScript {
+					node.Config.BuildOutputs = []model.WorkflowBuildOutput{{Name: "BUILD_ARTIFACT", Paths: []string{output}}}
+				} else {
+					node.Config.InlineBuild.Script = ""
+					node.Config.InlineBuild.RuntimeImage = ""
+				}
+				node.Config.Description = "直接编辑本任务的构建配置"
+			}
+			if node.Type == model.WorkflowNodeDeploy {
+				kind, platform := model.DeploymentPlanScript, model.DeploymentSSH
+				if preset.compose {
+					kind = model.DeploymentPlanComposeStack
+				}
+				if preset.kubernetes {
+					kind = model.DeploymentPlanKubernetes
+					platform = model.DeploymentKubernetes
+				}
+				node.Config.DeploymentSource = "inline"
+				node.Config.InlineDeploymentPlan = &model.WorkflowDeploymentPlan{Name: node.Name, Kind: kind, TimeoutSeconds: 600, DeploymentTarget: &model.DeploymentTarget{Platform: platform}}
+				if kind != model.DeploymentPlanKubernetes {
+					node.Config.InlineDeploymentPlan.ExecutionConfig = &model.DeploymentExecutionConfig{DeploymentInputVersion: 1}
+				}
+				if kind == model.DeploymentPlanScript {
+					node.Config.InlineDeploymentPlan.Script = "set -eu\n# 在这里填写部署命令\n"
+				}
+				if kind == model.DeploymentPlanComposeStack {
+					node.Config.ComposeSource = &model.WorkflowComposeSource{Kind: "repository", Path: "docker-compose.yaml"}
+					node.Config.InlineDeploymentPlan.ExecutionConfig.Compose = &model.ComposeDeploymentSettings{TagVariable: "${IMAGE_TAG}"}
+				}
+				node.Config.Description = "直接编辑本任务的部署配置"
+			}
+		}
+	}
 	return stages
 }

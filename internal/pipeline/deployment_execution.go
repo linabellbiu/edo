@@ -94,7 +94,7 @@ func normalizeDeploymentExecution(kind model.DeploymentPlanKind, composeYAML str
 	if err == nil && kind == model.DeploymentPlanKubernetes && (node.Config.DeploymentInputVersion != 0 || node.Config.DeploymentScript != "" || len(node.Config.ConfigurationFiles) > 0) {
 		err = ErrInvalidDeploymentPlan
 	}
-	if err == nil && kind == model.DeploymentPlanComposeStack && strings.TrimSpace(node.Config.DeploymentScript) == "" {
+	if err == nil && kind == model.DeploymentPlanComposeStack && composeYAML != "" && strings.TrimSpace(node.Config.DeploymentScript) == "" {
 		err = validateComposeBindingsYAML(composeYAML, node.Config)
 	}
 	if err != nil {

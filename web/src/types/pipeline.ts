@@ -21,12 +21,18 @@ export interface DeploymentInput {
  configuration_id?:string
  artifact_node_id?:string
  artifact_build_plan_id?:string
+ artifact_name?:string
  registry_id?:string
  image?:string
  tag?:string
 }
 
 export interface WorkflowNodeConfig {
+ inline_build?: PipelineBuildPlan
+ build_outputs?: Array<{name:string;paths:string[]}>
+ runtime_services?: Array<{name:string;restart_script:string;recreate_script:string}>
+ compose_source?: {kind:'repository'|'configuration'|'upstream';path?:string;configuration_id?:string;artifact_node_id?:string;artifact_name?:string}
+
  artifact_build_plan_id?:string
  deployment_input_version?:number
  deployment_inputs?:DeploymentInput[]

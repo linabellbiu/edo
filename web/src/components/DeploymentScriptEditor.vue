@@ -12,13 +12,15 @@ import { apiErrorMessage } from '@/api/resources'
 import { useAuthStore } from '@/stores/auth'
 import { usePreferencesStore } from '@/stores/preferences'
 
-const props = defineProps<{ modelValue: string; disabled?: boolean; kind?: string; editPermission?: string }>()
+const props = defineProps<{ modelValue: string; disabled?: boolean; kind?: string; editPermission?: string; label?:string; exampleText?:string }>()
 const emit = defineEmits<{ 'update:modelValue': [value: string] }>()
 const auth = useAuthStore(), preferences = usePreferencesStore(), host = ref<HTMLElement>(), upload = ref<HTMLInputElement>()
 type Issue = { line: number; column: number; message: string }
 const issues = ref<Issue[]>([]), status = ref(''), error = ref(''), checking = ref(false)
 const editing = new Compartment(), appearance = new Compartment(), highlighting = new Compartment(), example = new Compartment()
+const editorLabel=computed(()=>props.label||'部署脚本')
 const scriptExample = computed(() => {
+ if(props.exampleText)return props.exampleText
   const introduction = '# 示例：按上方路径调整文件名\n# 留空使用原部署流程\n'
   if (props.kind === 'compose' || props.kind === 'compose_stack') return introduction + [
     '# 使用 Compose 定义与 ENV 文件',
@@ -107,7 +109,7 @@ onMounted(() => {
   editor = new EditorView({ parent: host.value, state: EditorState.create({ doc: props.modelValue, extensions: [
     StreamLanguage.define(shell), highlighting.of(highlight()), appearance.of(theme()), example.of(placeholder(scriptExample.value)),
     lineNumbers(), lintGutter(), drawSelection(), history(), bracketMatching(), highlightActiveLine(), highlightActiveLineGutter(), keymap.of([...defaultKeymap, ...historyKeymap]),
-    EditorView.contentAttributes.of({ 'aria-label': '部署脚本', spellcheck: 'false' }),
+    EditorView.contentAttributes.of({ 'aria-label': editorLabel.value, spellcheck: 'false' }),
     editing.of([EditorState.readOnly.of(!canEdit()), EditorView.editable.of(canEdit())]),
     EditorView.updateListener.of(update => { if (update.docChanged && canEdit() && update.state.doc.toString() !== props.modelValue) emit('update:modelValue', update.state.doc.toString()) }),
   ] }) }); schedule()
@@ -123,8 +125,8 @@ onBeforeUnmount(() => { disposed = true; revision++; clearTimeout(timer); contro
 function locate(issue: Issue) { if (!editor) return; const line = editor.state.doc.line(Math.min(issue.line, editor.state.doc.lines)); editor.dispatch({ selection: { anchor: Math.min(line.to, line.from + issue.column - 1) }, scrollIntoView: true }); editor.focus() }
 </script>
 <template>
- <section class="deployment-script-editor" aria-label="部署脚本编辑器">
-  <div class="script-actions"><a-button :disabled="!canEdit()" @click="upload?.click()">上传部署脚本</a-button><input ref="upload" type="file" accept=".sh,.bash,.txt,text/plain,application/x-sh" hidden @change="readUpload" /></div>
+ <section class="deployment-script-editor" :aria-label="editorLabel+'编辑器'">
+  <div class="script-actions"><a-button :disabled="!canEdit()" @click="upload?.click()">上传{{editorLabel}}</a-button><input ref="upload" type="file" accept=".sh,.bash,.txt,text/plain,application/x-sh" hidden @change="readUpload" /></div>
   <div ref="host" class="script-code" />
   <p v-if="checking || status" :role="issues.length ? 'alert' : 'status'" :aria-live="issues.length ? 'assertive' : 'polite'">{{ checking ? '正在自动检查 Shell 语法…' : status }}</p><a-alert v-if="error" type="error" :message="error" show-icon />
   <button v-for="(issue, index) in issues" :key="index" class="script-issue" type="button" @click="locate(issue)">第 {{ issue.line }} 行，第 {{ issue.column }} 列：{{ issue.message }}</button>

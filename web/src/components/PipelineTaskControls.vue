@@ -85,13 +85,13 @@ function updateCache(update:Record<string,unknown>){change({cache:{key:'dependen
     <a-button danger :disabled="!canEdit" @click="change({reports:node.config.reports?.filter((_,i)=>i!==index)})">删除报告</a-button>
    </div>
    <a-button :disabled="!canEdit" @click="change({reports:[...(node.config.reports||[]),{format:'junit',paths:['reports/junit.xml'],required:true}]})">添加报告</a-button>
-   <a-divider>依赖缓存</a-divider>
+   <template v-if="!node.config.inline_build"><a-divider>依赖缓存</a-divider>
    <a-switch :checked="!!node.config.cache" :disabled="!canEdit" @change="change({cache:$event?{key:'dependencies',lock_files:[],paths:[]}:undefined})"/>
    <template v-if="node.config.cache">
     <a-form-item label="缓存名称"><a-input :value="node.config.cache.key" :disabled="!canEdit" @update:value="updateCache({key:String($event)})"/></a-form-item>
     <a-form-item label="依赖锁文件"><a-select mode="tags" :value="node.config.cache.lock_files" :disabled="!canEdit" :options="['go.sum','package-lock.json','pnpm-lock.yaml','yarn.lock'].map(value=>({value,label:value}))" @update:value="updateCache({lock_files:$event})"/></a-form-item>
     <a-form-item label="缓存目录"><a-select mode="tags" :value="node.config.cache.paths" :disabled="!canEdit" placeholder="例如 .cache/npm；不能填写源码目录" @update:value="updateCache({paths:$event})"/></a-form-item>
-   </template>
+   </template></template>
   </template>
  </section>
 </template>

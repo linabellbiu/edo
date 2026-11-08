@@ -112,7 +112,7 @@ func TestCreateWorkflowTemplateFromPresetCreatesEditableDraft(t *testing.T) {
 		deployTask.Type != model.WorkflowNodeDeploy || deployTask.Name != "Kubernetes 部署" || deployTask.Config.DeploymentPlanID != "" {
 		t.Fatalf("模板不应绑定具体资源且任务名称应说明用途: build=%+v deploy=%+v", buildTask, deployTask)
 	}
-	if first.Valid || !hasWorkflowIssue(first.Issues, "missing_build_plan") || !hasWorkflowIssue(first.Issues, "missing_deployment_plan") {
+	if first.Valid || !hasWorkflowIssue(first.Issues, "missing_image_registry") || !hasWorkflowIssue(first.Issues, "invalid_inline_deployment") {
 		t.Fatalf("未完成资源绑定的模板草稿应返回待配置项: valid=%t issues=%+v", first.Valid, first.Issues)
 	}
 

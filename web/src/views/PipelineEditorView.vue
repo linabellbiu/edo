@@ -13,6 +13,8 @@ import {
 import client from '@/api/client'
 import { deploymentExecution, clearTaskDeploymentExecution } from '@/utils/deploymentExecution'
 import PipelineTaskControls from '@/components/PipelineTaskControls.vue'
+import PipelineBuildFields from '@/components/PipelineBuildFields.vue'
+import PipelineDeployFields from '@/components/PipelineDeployFields.vue'
 import DeploymentPlanView from '@/views/DeploymentPlanView.vue'
 import DeploymentPlanReferencePreview from '@/components/DeploymentPlanReferencePreview.vue'
 import { apiErrorMessage } from '@/api/resources'
@@ -80,12 +82,15 @@ interface TaskDefinition {
 }
 
 const taskDefinitions: TaskDefinition[] = [
-  { id: 'build', type: 'build', label: '构建制品', hint: '用构建方案生成镜像或文件制品，并自动归档', group: '构建', color: '#4f72f2', icon: Package },
+  { id: 'build', type: 'build', label: '自定义构建', hint: '执行构建脚本，可暂存命名构建物并使用缓存', group: '构建', color: '#4f72f2', icon: Package },
+  { id: 'image-build', type: 'build', label: '镜像构建', hint: '选择镜像仓库、Dockerfile 路径和 Context', group: '构建', color: '#4f72f2', icon: Package },
   { id: 'unit-test', type: 'shell', label: '单元测试', hint: '执行项目测试命令，失败时停止流水线', group: '测试', color: '#3985c6', icon: CheckCircle2, presetScript: 'set -eu\n# 在这里填写项目测试命令\n' },
   { id: 'quality-scan', type: 'shell', label: '质量扫描', hint: '执行 lint、依赖或安全扫描命令', group: '扫描', color: '#2f9e88', icon: Scan, presetScript: 'set -eu\n# 在这里填写项目扫描命令\n' },
   { id: 'approval', type: 'approval', label: '发布审核', hint: '等待其他成员审核通过后继续', group: '发布', color: '#df962e', icon: ShieldCheck },
   { id: 'manual', type: 'manual', label: '人工放行', hint: '由操作人员确认后继续执行', group: '发布', color: '#8a62d2', icon: CheckCircle2 },
-  { id: 'deploy', type: 'deploy', label: '部署', hint: '用部署方案把上游制品更新到目标环境', group: '部署', color: '#28a875', icon: Rocket },
+  { id: 'deploy', type: 'deploy', label: '自定义部署', hint: '执行部署脚本，按需手动关联 Docker 服务', group: '部署', color: '#28a875', icon: Rocket },
+  { id: 'compose-deploy', type: 'deploy', label: 'docker-compose 部署', hint: '读取仓库、上传或配置产物中的定义并解析服务', group: '部署', color: '#28a875', icon: Rocket },
+  { id: 'kubernetes-deploy', type: 'deploy', label: 'Kubernetes 部署', hint: '将上游镜像部署到集群', group: '部署', color: '#28a875', icon: Rocket },
   { id: 'shell', type: 'shell', label: 'Shell 脚本执行', hint: '在构建容器中运行脚本', group: '工具', color: '#3985c6', icon: TerminalSquare, presetScript: 'set -eu\n' },
 ]
 
@@ -100,7 +105,7 @@ const DEFAULT_RUNTIME_IMAGE = 'alpine:3.22'
 const DEFAULT_TAG_PATTERN = 'v*'
 const runtimeImageOptions = ['alpine:3.22', 'node:24-alpine', 'golang:1.26-alpine', 'python:3.14-alpine', 'maven:3.9-eclipse-temurin-21-alpine'].map(value => ({ value }))
 const deploymentKindNames: Record<DeploymentPlanKind, string> = {
-  script: '主机脚本', docker: 'Docker 容器', compose: 'dockercompose 单镜像', compose_stack: 'dockercompose 多镜像', kubernetes: 'Kubernetes Deployment',
+  script: '自定义部署', docker: 'Docker 容器', compose: 'dockercompose 单镜像', compose_stack: 'docker-compose', kubernetes: 'Kubernetes Deployment',
 }
 const defaultNotificationTitle = 'EDO｜{{application.name}}｜{{task.name}}｜{{task.status}}'
 const defaultNotificationMessage = [
@@ -322,7 +327,7 @@ function createSourceNode(): WorkflowNode {
 
 function createTaskNode(type: TaskNodeType, definition?: TaskDefinition): WorkflowNode {
   const config: WorkflowNodeConfig = {}
-  if (type === 'build') config.build_plan_id = activeBuildPlans.value[0]?.id
+  if (type === 'build') config.inline_build = {id:'',name:definition?.label||'自定义构建',kind:definition?.id==='image-build'?'dockerfile':'script',script:'set -eu\n# 在这里填写构建命令\n',dockerfile_path:'Dockerfile',context_path:'.',working_directory:'.',runtime_image:DEFAULT_RUNTIME_IMAGE,cache_enabled:true,pull:true,timeout_seconds:1800,is_active:true}
   if (type === 'shell') {
     config.script = definition?.presetScript || 'set -eu\n'
     config.runtime_image = DEFAULT_RUNTIME_IMAGE
@@ -333,9 +338,10 @@ function createTaskNode(type: TaskNodeType, definition?: TaskDefinition): Workfl
   if (type === 'approval') config.description = '由其他成员审核通过后继续'
   if (type === 'manual') config.description = '人工确认后继续执行'
   if (type === 'deploy') {
-    const latestBuild = [...stages.value.flatMap(stage => stage.tasks)].reverse().find(task => task.type === 'build')
-    const buildPlan = activeBuildPlans.value.find(item => item.id === latestBuild?.config.build_plan_id)
-    config.deployment_plan_id = activeDeploymentPlans.value.find(item => deploymentPlanAcceptsBuild(item, buildPlan))?.id
+    const kind=definition?.id==='compose-deploy'?'compose_stack':definition?.id==='kubernetes-deploy'?'kubernetes':'script'
+    if(kind==='compose_stack')config.compose_source={kind:'repository',path:'docker-compose.yaml'}
+    config.deployment_source='inline'
+    config.inline_deployment_plan={name:definition?.label||'自定义部署',kind,script:kind==='script'?'set -eu\n# 在这里填写部署命令\n':undefined,compose_yaml:'',timeout_seconds:600,deployment_target:{platform:kind==='kubernetes'?'kubernetes':'ssh',environment_id:'',working_directory:kind==='script'?'/tmp':undefined},execution_config:kind==='kubernetes'?undefined:{deployment_input_version:1,deployment_inputs:[],compose:kind==='compose_stack'?{project_name:'',tag_variable:'${IMAGE_TAG}',use_sudo:false,adopt_existing:false}:undefined}}
   }
   const node: WorkflowNode = {
     id: uid(type), type, name: definition?.label || taskMeta[type].label, config,
@@ -350,7 +356,7 @@ function defaultDraft() {
   const build = createTaskNode('build')
   const deploy = createTaskNode('deploy')
   const defaultBuildPlan = activeBuildPlans.value.find(item => item.id === build.config.build_plan_id)
-  deploy.config.deployment_plan_id = activeDeploymentPlans.value.find(item => deploymentPlanAcceptsBuild(item, defaultBuildPlan))?.id
+  if(!deploy.config.inline_deployment_plan)deploy.config.deployment_plan_id = activeDeploymentPlans.value.find(item => deploymentPlanAcceptsBuild(item, defaultBuildPlan))?.id
   return {
     sources: [createSourceNode()],
     stages: [
@@ -1083,9 +1089,11 @@ function triggerVersionSummary(node: WorkflowNode) {
   return '仅监听 Tag'
 }
 
+function priorBuildTasks(taskID:string){const result:WorkflowNode[]=[];for(const stage of stages.value){if(stage.tasks.some(node=>node.id===taskID))break;result.push(...stage.tasks.filter(node=>node.type==='build'))}return result}
 function taskSummary(node: WorkflowNode) {
   if (node.type === 'build') {
-    const plan = buildPlans.value.find(item => item.id === node.config.build_plan_id)
+    const plan = node.config.inline_build || buildPlans.value.find(item => item.id === node.config.build_plan_id)
+    if(node.config.inline_build)return plan?.kind==='dockerfile'?`镜像构建：${plan.dockerfile_path||'Dockerfile'} · ${plan.context_path||'.'}`:'自定义构建'
     const summary = `构建方案：${plan?.name || '未选择'}`
     if (!node.config.toolchain_language || !node.config.toolchain_version) return summary
     return `${summary}；版本：${toolchainName(node.config.toolchain_language)} ${node.config.toolchain_version}`
@@ -1097,7 +1105,7 @@ function taskSummary(node: WorkflowNode) {
     return `运行镜像：${node.config.runtime_image || DEFAULT_RUNTIME_IMAGE}`
   }
   if (node.type === 'deploy') {
-    if(node.config.inline_deployment_plan)return `自定义方案：${node.config.inline_deployment_plan.name}`
+    if(node.config.inline_deployment_plan)return deploymentKindNames[node.config.inline_deployment_plan.kind]
     const plan = deploymentPlans.value.find(item => item.id === node.config.deployment_plan_id)
     return `部署方案：${plan?.name || '未选择'}`
   }
@@ -1145,7 +1153,7 @@ function buildPlanBeforeTask(taskID: string) {
   let current: PipelineBuildPlan | undefined
   for (const task of stages.value.flatMap(stage => stage.tasks)) {
     if (task.id === taskID) return current
-    if (task.type === 'build') current = activeBuildPlans.value.find(item => item.id === task.config.build_plan_id)
+    if (task.type === 'build') current = task.config.inline_build || activeBuildPlans.value.find(item => item.id === task.config.build_plan_id)
   }
   return current
 }
@@ -1678,7 +1686,7 @@ onBeforeRouteLeave(async () => {
             </div>
           </header>
           <div class="panel-tabs" role="tablist" aria-label="任务配置分区">
-            <button type="button" :class="{ active: propertyTab === 'common' }" role="tab" :aria-selected="propertyTab === 'common'" @click="propertyTab = 'common'">{{ selectedNode.type==='deploy' ? '部署方案' : '常规配置' }}</button>
+            <button type="button" :class="{ active: propertyTab === 'common' }" role="tab" :aria-selected="propertyTab === 'common'" @click="propertyTab = 'common'">{{ selectedNode.type==='deploy' ? '部署配置' : '常规配置' }}</button>
             <button type="button" :class="{ active: propertyTab === 'advanced' }" role="tab" :aria-selected="propertyTab === 'advanced'" @click="propertyTab = 'advanced'">{{ selectedNode.type==='deploy' ? '通知' : '通知及高级配置' }}</button>
           </div>
           <a-form v-if="propertyTab === 'common'" layout="vertical">
@@ -1725,7 +1733,8 @@ onBeforeRouteLeave(async () => {
                 :message="`构建工具链：${toolchainName(selectedNode.config.toolchain_language)} ${selectedNode.config.toolchain_version}`"
                 :description="`脚本方案使用隔离镜像 ${selectedNode.config.runtime_image}；Dockerfile 方案传入 ${toolchainBuildArgument(selectedNode.config.toolchain_language)} 构建参数。`"
               />
-              <a-form-item label="构建方案" required>
+              <PipelineBuildFields v-if="selectedNode.config.inline_build" :node="selectedNode" :disabled="!canUpdate" @change="updateSelectedNode({},$event)"/>
+              <template v-else>              <a-form-item label="构建方案" required>
                 <div class="resource-picker">
                   <a-select
                     :value="selectedNode.config.build_plan_id"
@@ -1745,7 +1754,7 @@ onBeforeRouteLeave(async () => {
                 </div>
               </a-form-item>
               <a-alert v-if="!activeBuildPlans.length" class="panel-alert" type="warning" show-icon message="还没有可用构建方案，请先创建构建方案。" />
-              <p class="panel-note">构建方案生成镜像或文件，部署任务使用构建结果。</p>
+              <p class="panel-note">构建方案生成镜像或文件，部署任务使用构建结果。</p></template>
             </template>
 
             <template v-else-if="selectedNode.type === 'shell' && !selectedNode.config.check && !selectedNode.config.migration">
@@ -1765,38 +1774,15 @@ onBeforeRouteLeave(async () => {
             </template>
 
             <template v-else-if="selectedNode.type === 'deploy'">
-              <a-form-item label="选择部署" required><a-radio-group :value="deploymentSource(selectedNode)" :disabled="!canUpdate" @update:value="changeDeploymentSource($event)"><a-radio value="inline">自定义方案</a-radio><a-radio value="plan">选择部署方案</a-radio></a-radio-group></a-form-item>
-              <a-form-item v-if="deploymentSource(selectedNode)==='inline'" label="自定义方案" required>
-                <div class="resource-picker"><span>{{selectedNode.config.inline_deployment_plan?.name||'尚未配置'}}</span><a-button :disabled="!canUpdate" @click="editInlineDeployment">{{selectedNode.config.inline_deployment_plan?'编辑方案':'创建方案'}}</a-button></div>
-                <small class="field-hint">保存在当前流水线，不加入部署方案库。</small>
-              </a-form-item>
-              <a-form-item v-else label="部署方案" required>
-                <div class="resource-picker">
-                  <a-select
-                    :value="selectedNode.config.deployment_plan_id"
-                    :disabled="!canUpdate||!canReadDeploymentPlan||(Boolean(selectedNode.config.deployment_plan_id)&&changingDeploymentPlanNodeID!==selectedNode.id)"
-                    :options="deploymentPlanOptions(selectedNode.id)"
-                    placeholder="选择部署方案"
-                    aria-label="已选择的部署方案"
-                    @update:value="changeLibraryDeploymentPlan(String($event||''))"
-                  >
-                    <template #option="{ value, label, detail }">
-                      <span class="managed-resource-option">
-                        <span class="named-option"><strong>{{ label }}</strong><small>{{ detail }}</small></span>
-                        <a class="managed-resource-option-view" :href="resourceViewHref('/deployment-plans', 'plan', String(value))" target="_blank" rel="noopener noreferrer" @mousedown.stop @click.stop>查看</a>
-                      </span>
-                    </template>
-                  </a-select>
-                  <a-button v-if="selectedNode.config.deployment_plan_id&&canUpdate&&canReadDeploymentPlan" @click="unlockDeploymentPlanSelection">更换</a-button>
-                  <a-button v-if="canModifyDeploymentPlan" @click="modifyLinkedDeploymentPlan">修改</a-button>
-                  <a-button v-if="!selectedNode.config.deployment_plan_id&&canCreateDeploymentPlan" class="resource-create" aria-label="创建部署方案" title="创建部署方案" @click="createDeploymentPlan"><Plus :size="16" /></a-button>
-                </div>
-              </a-form-item>
-              <DeploymentPlanReferencePreview v-if="selectedLibraryDeploymentPlan" :key="selectedLibraryDeploymentPlan.id" :plan="selectedLibraryDeploymentPlan" :legacy-config="selectedNode.config" :applicationID="applicationID" :applicationName="publicMode ? undefined : editorApplication?.name" />
-              <DeploymentPlanReferencePreview v-else-if="deploymentSource(selectedNode)==='inline' && selectedNode.config.inline_deployment_plan" :plan="{...selectedNode.config.inline_deployment_plan,id:'inline'}" :legacy-config="selectedNode.config" :applicationID="applicationID" :applicationName="publicMode ? undefined : editorApplication?.name" />
-              <a-alert v-else-if="deploymentSource(selectedNode)==='plan'&&selectedNode.config.deployment_plan_id" type="warning" show-icon :message="canReadDeploymentPlan?'原部署方案不可用，请检查状态和适用范围。':'没有查看部署方案的权限，已保留原关联。'" />
-              <a-alert v-if="deploymentSource(selectedNode)==='plan'&&canReadDeploymentPlan&&!selectedNode.config.deployment_plan_id&&!compatibleDeploymentPlans(selectedNode.id).length" class="panel-alert" type="warning" show-icon message="没有可用的部署方案。Kubernetes 要求镜像构建方案绑定镜像仓库。" />
-
+              <PipelineDeployFields v-if="selectedNode.config.inline_deployment_plan&&['script','compose_stack','kubernetes'].includes(selectedNode.config.inline_deployment_plan.kind)" :node="selectedNode" :disabled="!canUpdate" :applicationID="applicationID" :applicationName="editorApplication?.name" :branch="sources[0]?.config.branch" :build-nodes="priorBuildTasks(selectedNode.id)" :build-plans="buildPlans" @change="updateSelectedNode({},$event)"/>
+              <template v-else-if="selectedNode.config.inline_deployment_plan">
+                <a-form-item label="原部署配置"><span>{{selectedNode.config.inline_deployment_plan.name}}</span><a-button :disabled="!canUpdate" @click="editInlineDeployment">编辑原配置</a-button></a-form-item>
+                <DeploymentPlanReferencePreview :plan="{...selectedNode.config.inline_deployment_plan,id:'inline'}" :legacy-config="selectedNode.config" :applicationID="applicationID" :applicationName="editorApplication?.name"/>
+              </template>
+              <template v-else>
+                <a-form-item label="原部署配置"><a-input :value="selectedLibraryDeploymentPlan?.name||'原部署方案不可用'" disabled/><a-button v-if="canModifyDeploymentPlan" @click="modifyLinkedDeploymentPlan">修改原配置</a-button></a-form-item>
+                <DeploymentPlanReferencePreview v-if="selectedLibraryDeploymentPlan" :plan="selectedLibraryDeploymentPlan" :legacy-config="selectedNode.config" :applicationID="applicationID" :applicationName="editorApplication?.name"/>
+              </template>
             </template>
           </a-form>
           <a-form v-else layout="vertical">
@@ -1853,7 +1839,7 @@ onBeforeRouteLeave(async () => {
               </div>
               <div v-else-if="canReadNotificationChannels && activeNotificationChannels.length" class="node-notification-empty">当前任务尚未配置通知；建议至少添加“失败”通知。</div>
             </section>
-            <PipelineTaskControls v-if="selectedTask && selectedNode.type!=='deploy'" :key="selectedNode.id" :node="selectedNode" :applicationID="applicationID" :applicationName="publicMode ? undefined : editorApplication?.name" :disabled="!canEdit" :script-build="activeBuildPlans.find(plan=>plan.id===selectedNode?.config.build_plan_id)?.kind==='script'" :build-nodes="stages.flatMap(stage=>stage.tasks).filter(task=>task.type==='build')" @change="updateSelectedNode({},$event)"/>
+            <PipelineTaskControls v-if="selectedTask && selectedNode.type!=='deploy'" :key="selectedNode.id" :node="selectedNode" :applicationID="applicationID" :applicationName="publicMode ? undefined : editorApplication?.name" :disabled="!canEdit" :script-build="(selectedNode.config.inline_build||activeBuildPlans.find(plan=>plan.id===selectedNode?.config.build_plan_id))?.kind==='script'" :build-nodes="stages.flatMap(stage=>stage.tasks).filter(task=>task.type==='build')" @change="updateSelectedNode({},$event)"/>
             <a-divider v-if="selectedTask && selectedNode.type !== 'deploy'" class="node-notification-divider" />
             <template v-if="selectedNode.type === 'shell' && !selectedNode.config.check && !selectedNode.config.migration">
               <a-form-item label="运行镜像"><a-auto-complete :value="selectedNode.config.runtime_image || DEFAULT_RUNTIME_IMAGE" :options="runtimeImageOptions" :disabled="!canUpdate || Boolean(selectedNode.config.toolchain_language)" placeholder="alpine:3.22" @update:value="updateSelectedNode({}, { runtime_image: String($event) })" /><small class="field-hint">{{ selectedNode.config.toolchain_language ? '运行镜像由模板中所选语言版本固定。' : '镜像需包含 /bin/sh，并指定版本 Tag 或 Digest，不能使用 latest。' }}</small></a-form-item>
@@ -1881,8 +1867,8 @@ onBeforeRouteLeave(async () => {
               class="panel-alert"
               type="info"
               show-icon
-              message="构建参数由构建方案统一管理"
-              description="在构建方案中设置 Dockerfile、构建目录等参数。"
+              message="构建参数保存在当前任务"
+              description="在任务配置中设置构建脚本、镜像仓库、Dockerfile 和 Context。"
             />
             <a-alert v-else-if="selectedNode.type !== 'deploy' && !selectedNode.config.check && !selectedNode.config.migration" class="panel-alert" type="info" show-icon message="当前任务没有额外高级配置" />
           </a-form>

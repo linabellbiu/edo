@@ -23,6 +23,9 @@ func validateUpstreamArtifactStages(stages []model.WorkflowStage) []WorkflowIssu
 	issues := []WorkflowIssue{}
 	for _, stage := range stages {
 		for _, node := range stage.Tasks {
+			if source := node.Config.ComposeSource; source != nil && source.Kind == "upstream" && !prior[source.ArtifactNodeID] {
+				issues = append(issues, WorkflowIssue{Code: "invalid_compose_source_stage", Message: "Compose 文件只能来自前序阶段的构建产物", NodeID: node.ID, StageID: stage.ID})
+			}
 			for _, input := range node.Config.DeploymentInputs {
 				if input.Kind == "upstream" && !prior[input.ArtifactNodeID] {
 					issues = append(issues, WorkflowIssue{Code: "invalid_deployment_input_stage", Message: "部署文件只能引用前序阶段的构建任务", NodeID: node.ID, StageID: stage.ID})

@@ -15,7 +15,44 @@ import (
 
 func (s *Service) containerControlPlan(ctx context.Context, record *model.DeploymentRecord, containerID, actorID, action string) (*dockerengine.ComposeContainerControlPlan, *ConfigurationSet, error) {
 	if isShellRuntime(record) {
-		return nil, nil, ErrRuntimeControlUnsupported
+		plan, err := s.customContainerPlan(ctx, record, containerID, action)
+		if err != nil {
+			return nil, nil, err
+		}
+		var set *ConfigurationSet
+		if action != "stop" && record.UsesDeliveryVariables {
+			if err = s.requireCurrentActorPermission(ctx, record, actorID, "delivery_variable.execute"); err != nil {
+				return nil, nil, err
+			}
+			set, err = s.ResolveDeploymentConfiguration(ctx, record, true)
+			if err != nil {
+				return nil, nil, err
+			}
+		}
+		if set != nil {
+			var run model.PipelineRun
+			if err = s.db.WithContext(ctx).Where("uuid = ? AND project_id = ?", record.PipelineRunID, record.ProjectID).First(&run).Error; err != nil {
+				return nil, nil, err
+			}
+			var snapshot struct {
+				Bindings map[string][]model.DeploymentConfigBinding `json:"configuration_bindings"`
+			}
+			if err = json.Unmarshal([]byte(run.WorkflowSnapshot), &snapshot); err != nil {
+				return nil, nil, err
+			}
+			changed := configfile.RevisionDigest(snapshot.Bindings[record.WorkflowNodeID]) != configfile.RevisionDigest(set.Bindings)
+
+			plan.ConfigurationChanged = changed
+			plan.BaseDigest = plan.Digest
+			payload, _ := json.Marshal([]any{plan.Digest, set.Bindings})
+			digest := sha256.Sum256(payload)
+			plan.Digest = hex.EncodeToString(digest[:])
+			plan.ConfigurationBindings = set.Bindings
+			for _, binding := range set.Bindings {
+				plan.ConfigurationFiles = append(plan.ConfigurationFiles, dockerengine.ConfigurationFileRevision{Path: binding.Path, Version: binding.Version})
+			}
+		}
+		return plan, set, nil
 	}
 	var plan *dockerengine.ComposeContainerControlPlan
 	var err error

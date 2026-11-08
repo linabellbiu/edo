@@ -394,6 +394,9 @@ func (s *Service) executeRuntimeControl(
 func (s *Service) readRuntimeState(ctx context.Context, record *model.DeploymentRecord) (*RuntimeState, error) {
 	switch {
 	case isShellRuntime(record):
+		if custom, err := s.customRuntimeState(ctx, record); err != nil || custom != nil {
+			return custom, err
+		}
 		configuration, err := s.findInstanceControl(ctx, record)
 		if err != nil {
 			return nil, err

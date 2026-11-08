@@ -466,6 +466,12 @@ func (s *Service) executePipelineBuild(ctx context.Context, prepared *buildExecu
 			return nil, nil
 		}
 		outputPath := result.ArtifactPath
+		if len(prepared.node.Config.BuildOutputs) > 0 {
+			outputPath, err = packageNamedOutputs(ctx, result.ArtifactPath, outputDirectory, prepared.node.Config.BuildOutputs)
+			if err != nil {
+				return nil, err
+			}
+		}
 		outputInfo, err := os.Lstat(outputPath)
 		if err != nil {
 			return nil, err
@@ -590,6 +596,9 @@ func (s *Service) executePipelineBuild(ctx context.Context, prepared *buildExecu
 }
 
 func effectiveBuildRuntimeImage(config model.WorkflowNodeConfig, plan workflowBuildPlanSnapshot) string {
+	if config.InlineBuild != nil {
+		return plan.RuntimeImage
+	}
 	if strings.TrimSpace(config.RuntimeImage) != "" {
 		return config.RuntimeImage
 	}
@@ -739,6 +748,16 @@ func (s *Service) executePipelineShell(
 	}
 	systemEnvironment["EDO_UPSTREAM_ARTIFACTS_JSON"] = upstream
 	result, err := s.scriptRunner.RunScriptContainer(ctx, dockerengine.ScriptContainerInput{
+		NamedOutputs: func() []dockerengine.ScriptOutput {
+			if prepared.node.Type != model.WorkflowNodeBuild {
+				return nil
+			}
+			result := []dockerengine.ScriptOutput{}
+			for _, o := range prepared.node.Config.BuildOutputs {
+				result = append(result, dockerengine.ScriptOutput{Name: o.Name, Paths: o.Paths})
+			}
+			return result
+		}(),
 		Image:            runtimeImage,
 		Platform:         prepared.plan.Platform,
 		Script:           script,

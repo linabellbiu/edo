@@ -47,7 +47,13 @@ var reservedScriptContainerEnvironment = variablecatalog.ReservedScriptEnvironme
 
 // ScriptContainerInput 描述一次隔离的非交互脚本执行。源码通过 Docker archive API
 // 写入匿名卷，不允许调用方传入宿主机挂载或 Docker 连接凭据。
+type ScriptOutput struct {
+	Name  string
+	Paths []string
+}
+
 type ScriptContainerInput struct {
+	NamedOutputs         []ScriptOutput
 	Image                string
 	Platform             string
 	Script               string
@@ -210,6 +216,10 @@ func (s *Service) RunScriptContainer(ctx context.Context, input ScriptContainerI
 	if waitResponse.StatusCode != 0 {
 		return result, &ScriptContainerExitError{ExitCode: waitResponse.StatusCode}
 	}
+	if len(input.NamedOutputs) > 0 {
+		result.ArtifactPath, err = copyNamedScriptOutputs(executionContext, apiClient, containerID, input)
+		return result, err
+	}
 	if input.ArtifactPath == "" {
 		return result, nil
 	}
@@ -305,6 +315,21 @@ func normalizeScriptContainerInput(input ScriptContainerInput) (ScriptContainerI
 		(input.ArtifactPath == "") != (input.OutputDirectory == "") || !validScriptEnvironment(input.Environment) ||
 		!validScriptSystemEnvironment(input.SystemEnvironment) {
 		return input, ErrInvalidScriptContainer
+	}
+	if len(input.NamedOutputs) > 16 {
+		return input, ErrInvalidScriptContainer
+	}
+	names := map[string]bool{}
+	for _, output := range input.NamedOutputs {
+		if !scriptEnvironmentNamePattern.MatchString(output.Name) || len(output.Name) > 32 || names[output.Name] || len(output.Paths) == 0 || len(output.Paths) > 32 || input.OutputDirectory == "" {
+			return input, ErrInvalidScriptContainer
+		}
+		names[output.Name] = true
+		for _, p := range output.Paths {
+			if !ValidScriptContainerRelativePath(p) || path.Clean(p) == "." {
+				return input, ErrInvalidScriptContainer
+			}
+		}
 	}
 	if len(input.CachePaths) > 4 || (len(input.CachePaths) > 0 && !emptyDirectory(input.CacheOutputDirectory)) {
 		return input, ErrInvalidScriptContainer
@@ -773,7 +798,15 @@ func copyScriptArtifact(
 	apiClient *client.Client,
 	containerID string,
 	input ScriptContainerInput,
+	budgets ...int64,
 ) (string, error) {
+	budget := maximumBuildContextSize
+	if len(budgets) > 0 && budgets[0] < budget {
+		budget = budgets[0]
+	}
+	if budget <= 0 {
+		return "", ErrScriptArtifact
+	}
 	containerPath := scriptWorkspace + "/src/" + path.Clean(input.ArtifactPath)
 	archive, err := apiClient.CopyFromContainer(ctx, containerID, client.CopyFromContainerOptions{SourcePath: containerPath})
 	if err != nil {
@@ -783,7 +816,7 @@ func copyScriptArtifact(
 	if !archive.Stat.Mode.IsRegular() && !archive.Stat.Mode.IsDir() {
 		return "", ErrScriptArtifact
 	}
-	artifactPath, err := extractScriptArtifact(archive.Content, input.OutputDirectory, archive.Stat.Name, maximumBuildContextSize)
+	artifactPath, err := extractScriptArtifact(archive.Content, input.OutputDirectory, archive.Stat.Name, budget)
 	if err != nil {
 		return "", err
 	}

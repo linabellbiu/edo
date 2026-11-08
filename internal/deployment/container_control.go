@@ -163,7 +163,9 @@ func (s *Service) ControlContainer(ctx context.Context, deploymentID, containerI
 	if err = authorize(); err != nil {
 		return nil, err
 	}
-	if plan.SingleCompose {
+	if plan.Kind == "custom" {
+		result, err = s.controlCustomContainer(execution, record, plan, actorID, configuration)
+	} else if plan.SingleCompose {
 		if effective == "recreate" {
 			result, err = s.recreateSingleCompose(execution, record, plan, configuration, actorID, timeout)
 		} else {

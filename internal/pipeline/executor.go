@@ -100,6 +100,11 @@ func (s *Service) executeDeployTask(ctx context.Context, payload DeployTaskPaylo
 	if err := s.validateReleasePolicy(ctx, prepared.run, prepared.node, prepared.snapshot, prepared.target.EnvironmentID); err != nil {
 		return s.failDeploymentExecution(ctx, failureState, "发布未满足环境保护规则", err)
 	}
+	if source := prepared.node.Config.ComposeSource; source != nil && source.Kind == "configuration" {
+		if err := s.requireDeliveryPermission(ctx, prepared.snapshot.AuthorityID, "delivery_variable.execute"); err != nil {
+			return s.failDeploymentExecution(ctx, failureState, "Compose 配置使用授权已失效", err)
+		}
+	}
 	bindings := prepared.snapshot.VariableBindings[prepared.node.ID]
 	if len(bindings) > 0 || len(prepared.snapshot.ConfigurationBindings[prepared.node.ID]) > 0 {
 		if err := s.requireDeliveryPermission(ctx, prepared.snapshot.AuthorityID, "delivery_variable.execute"); err != nil {
@@ -412,6 +417,9 @@ func (s *Service) loadArtifactDeploymentExecution(ctx context.Context, payload D
 	}
 	if result.target.Platform == model.DeploymentSSH {
 		if result.deploymentPlan.Kind == model.DeploymentPlanComposeStack {
+			if err := s.resolveProducedCompose(ctx, result); err != nil {
+				return nil, s.composeSourceError(ctx, "compose_upstream_parse", run.ApplicationID, err)
+			}
 			if _, err := parseComposeStack(result.deploymentPlan.ComposeYAML); err != nil {
 				return nil, err
 			}

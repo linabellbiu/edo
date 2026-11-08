@@ -23,7 +23,7 @@ func (s *Service) prepareCustomLifecycle(ctx context.Context, record *model.Depl
 	}
 	paths := []string{}
 	environment := map[string]string{}
-	if action == "restart" && len(snapshot.Bindings[record.WorkflowNodeID]) > 0 {
+	if (action == "restart" || action == "recreate") && len(snapshot.Bindings[record.WorkflowNodeID]) > 0 {
 		if err := s.requireCurrentActorPermission(ctx, record, actorID, "delivery_variable.execute"); err != nil {
 			return "", nil, err
 		}

@@ -51,8 +51,10 @@ onBeforeUnmount(() => { disposed = true; controller?.abort() })
       <p v-if="loading">正在核对目标容器和服务副本…</p>
       <a-alert v-if="error" type="error" show-icon :message="error" />
       <template v-if="preview">
-        <a-alert v-if="preview.configuration_changed" type="info" show-icon message="配置内容已更新，本次操作将重新生成配置并重建容器，使最新内容生效。" />
-        <p v-if="effectiveAction==='recreate'&&preview.kind==='docker'">将使用原发布镜像重建以下容器，采用原部署引用的最新配置内容。容器可写层会被替换，挂载的数据卷保留。</p>
+        <a-alert v-if="preview.configuration_changed && preview.kind==='custom'" type="info" show-icon message="配置内容已更新，将先生成最新文件，再执行你保存的命令。容器环境更新需由重建命令处理。" />
+        <a-alert v-else-if="preview.configuration_changed" type="info" show-icon message="配置内容已更新，本次操作将重新生成配置并重建容器，使最新内容生效。" />
+        <p v-if="preview.kind==='custom'">将对已手动关联的 Docker 服务 <strong>{{preview.service}}</strong> 执行本次成功部署保存的{{effectiveAction==='recreate'?'重建命令':effectiveAction==='restart'?'重启命令':'停止操作'}}。命令内容和作用范围由该部署任务配置。</p>
+        <p v-else-if="effectiveAction==='recreate'&&preview.kind==='docker'">将使用原发布镜像重建以下容器，采用原部署引用的最新配置内容。容器可写层会被替换，挂载的数据卷保留。</p>
         <p v-else-if="effectiveAction === 'recreate'">将使用 <code>--force-recreate</code> 重建 Compose 服务 <strong>{{ preview.service }}</strong> 的全部 {{ preview.containers.length }} 个副本。容器可写层会被替换，挂载的数据卷保留；依赖服务保持不变。</p>
         <p v-else>将{{ action === 'stop' ? '停止' : '重启' }}以下容器，当前连接会中断。</p>
         <a-alert v-if="preview.run_to_completion && action !== 'stop'" type="warning" show-icon message="这是一次性任务，继续操作将再次执行任务。" />
