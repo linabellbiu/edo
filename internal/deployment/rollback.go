@@ -104,21 +104,12 @@ func (s *Service) validateDockerRollback(ctx context.Context, source *model.Depl
 		}
 		return "", s.rollbackValidationError(source, "deployment_docker_rollback_run", err)
 	}
-	var plan model.DeploymentPlan
-	if err := s.db.WithContext(ctx).First(&plan, "uuid = ? AND project_id = ? AND department_id = ? AND is_active = ?",
-		source.DeploymentPlanID, source.ProjectID, source.DepartmentID, true).Error; err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return "部署方案已删除或停用，无法回退历史目标", nil
+	plan, target, err := s.rollbackPlanTarget(ctx, source, run)
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) || errors.Is(err, ErrInvalidTarget) {
+			return "部署方案或目标已变化，无法回退历史目标", nil
 		}
 		return "", s.rollbackValidationError(source, "deployment_docker_rollback_plan", err)
-	}
-	var target model.DeploymentTarget
-	if err := s.db.WithContext(ctx).First(&target, "uuid = ? AND project_id = ? AND department_id = ? AND is_active = ?",
-		plan.DeploymentTargetID, source.ProjectID, source.DepartmentID, true).Error; err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return "部署目标已删除或停用，无法回退历史目标", nil
-		}
-		return "", s.rollbackValidationError(source, "deployment_docker_rollback_target", err)
 	}
 	if plan.Kind != model.DeploymentPlanDocker || target.ID != source.TargetID || target.Platform != source.Platform ||
 		target.RuntimeID != source.RuntimeID || target.HostID != source.HostID || target.EnvironmentID != source.EnvironmentID ||
@@ -178,21 +169,12 @@ func (s *Service) validateKubernetesRollback(ctx context.Context, source *model.
 		}
 		return "", s.rollbackValidationError(source, "deployment_rollback_run", err)
 	}
-	var plan model.DeploymentPlan
-	if err := s.db.WithContext(ctx).First(&plan, "uuid = ? AND project_id = ? AND department_id = ? AND is_active = ?",
-		source.DeploymentPlanID, source.ProjectID, source.DepartmentID, true).Error; err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return "部署方案已删除或停用，无法回退历史目标", nil
+	plan, target, err := s.rollbackPlanTarget(ctx, source, run)
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) || errors.Is(err, ErrInvalidTarget) {
+			return "部署方案或目标已变化，无法回退历史目标", nil
 		}
 		return "", s.rollbackValidationError(source, "deployment_rollback_plan", err)
-	}
-	var target model.DeploymentTarget
-	if err := s.db.WithContext(ctx).First(&target, "uuid = ? AND project_id = ? AND department_id = ? AND is_active = ?",
-		plan.DeploymentTargetID, source.ProjectID, source.DepartmentID, true).Error; err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return "部署目标已删除或停用，无法回退历史目标", nil
-		}
-		return "", s.rollbackValidationError(source, "deployment_rollback_target", err)
 	}
 	if plan.Kind != model.DeploymentPlanKubernetes || target.ID != source.TargetID ||
 		target.Platform != source.Platform || target.RuntimeID != source.RuntimeID || target.EnvironmentID != source.EnvironmentID ||

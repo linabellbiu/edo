@@ -12,11 +12,17 @@ const emit = defineEmits<{ change: [config: Partial<WorkflowNodeConfig>] }>()
 const auth = useAuthStore(), kind = ref(''), yaml = ref(''), error = ref(''), environmentID=ref('')
 const deploymentPlan = ref<DeploymentCommandPlan>()
 let request = 0, controller: AbortController | undefined
-function identity() { return JSON.stringify([props.node.config.deployment_plan_id, auth.user?.id, auth.user?.project_id, auth.user?.permissions, auth.user?.is_superuser]) }
+function identity() { return JSON.stringify([props.node.config.deployment_plan_id,props.node.config.inline_deployment_plan, auth.user?.id, auth.user?.project_id, auth.user?.permissions, auth.user?.is_superuser]) }
 watch(identity, async () => {
  const revision = ++request, plan = props.node.config.deployment_plan_id, project = auth.user?.project_id
  controller?.abort(); controller = new AbortController(); const signal = controller.signal
  kind.value = ''; yaml.value = ''; error.value = '';environmentID.value='';deploymentPlan.value=undefined
+ if(props.node.config.inline_deployment_plan&&project&&auth.canAny(['workflow.read'])){
+  const selected=props.node.config.inline_deployment_plan
+  deploymentPlan.value={...selected,id:'inline'} as DeploymentCommandPlan
+  environmentID.value=selected.deployment_target?.environment_id||'';kind.value=selected.kind;yaml.value=selected.compose_yaml||''
+  return
+ }
  if (!plan || !project || !auth.canAny(['deployment_plan.read'])) return
  try {
   const { data } = await client.get('/deployment-plans', { signal, headers: { 'X-EDO-Project-ID': project } })
@@ -37,7 +43,7 @@ function updateSettings(patch: Partial<NonNullable<WorkflowNodeConfig['compose']
 <template>
  <a-alert v-if="error" type="warning" :message="error" show-icon/>
  <section v-if="kind==='compose_stack'" class="compose-task-fields" aria-label="DockerCompose 多镜像部署配置">
-  <a :href="`/deployment-plans?plan=${encodeURIComponent(node.config.deployment_plan_id||'')}`" target="_blank" rel="noopener">查看和编辑 DockerCompose 部署方案</a>
+  <a v-if="!node.config.inline_deployment_plan" :href="`/deployment-plans?plan=${encodeURIComponent(node.config.deployment_plan_id||'')}`" target="_blank" rel="noopener">查看和编辑 DockerCompose 部署方案</a>
   <a-form-item label="DockerCompose 项目名" required><a-input :value="settings.project_name" :disabled="disabled" @update:value="updateSettings({project_name:String($event||'')})"/></a-form-item>
   <a-form-item label="DockerCompose Tag 变量名" required help="例如 IMAGE_TAG，对应 DockerCompose image 中的 ${IMAGE_TAG}；值来自本次构建产物。"><a-input :value="settings.tag_variable" :disabled="disabled" @update:value="updateSettings({tag_variable:String($event||'')})"/></a-form-item>
   <a-form-item label="健康检查地址（可选）"><a-input :value="settings.health_url" :disabled="disabled" @update:value="updateSettings({health_url:String($event||'')})"/></a-form-item>

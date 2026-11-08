@@ -21,6 +21,9 @@ import { formatDateTime } from '@/utils/time'
 import { deploymentTargetEn, deploymentTargetZh } from '@/locales/deploymentTarget'
 import { asyncConfirm } from '@/utils/asyncConfirm'
 import '@/styles/plan-list.css'
+import type {WorkflowDeploymentPlan} from '@/types/pipeline'
+const props=defineProps<{inline?:boolean;inlineOpen?:boolean;inlineValue?:WorkflowDeploymentPlan;inlineKinds?:string[]}>()
+const emit=defineEmits<{'save-inline':[value:WorkflowDeploymentPlan];'update:inlineOpen':[value:boolean]}>()
 
 type PlanKind = 'script' | 'docker' | 'compose' | 'compose_stack' | 'kubernetes'
 type Platform = 'ssh' | 'docker' | 'kubernetes'
@@ -211,7 +214,7 @@ function syncProject() { selectedProject.value = typeof localStorage === 'undefi
 function resetMutation() { mutationDialog?.destroy(); mutationDialog = undefined; mutatingID.value = ''; refreshRevision++; loading.value = false }
 watch([planScope, () => auth.authorizationReady], () => {
   resetMutation(); plans.value = []; hosts.value = []; environments.value = []; docker.value = []; clusters.value = []
-  if (!disposed && selectedProject.value && auth.user?.project_id === selectedProject.value && auth.canAny(['deployment_plan.read'])) void refresh()
+  if (!disposed && selectedProject.value && auth.user?.project_id === selectedProject.value && auth.canAny([props.inline?'workflow.update':'deployment_plan.read'])) void refresh()
 }, { flush: 'sync' })
 const composeFileInput = ref<HTMLInputElement>()
 const deploymentDrafts: Partial<Record<PlanKind, DeploymentDraft>> = {}
@@ -255,17 +258,17 @@ const kindOptions: Array<{ value: PlanKind; label: string; hint: string }> = [
 ]
 const kindNames: Record<PlanKind, string> = Object.fromEntries(kindOptions.map(item => [item.value, item.label])) as Record<PlanKind, string>
 function kindName(plan: DeploymentPlan) { return kindNames[plan.kind] }
-const canCreate = computed(() => auth.canAny(['deployment_plan.create']))
-const canUpdate = computed(() => auth.canAny(['deployment_plan.update']))
+const canCreate = computed(() => auth.canAny([props.inline?'workflow.update':'deployment_plan.create']))
+const canUpdate = computed(() => auth.canAny([props.inline?'workflow.update':'deployment_plan.update']))
 const canDelete = computed(() => auth.canAny(['deployment_plan.delete']))
 function canUseForm() {
   return !disposed && Boolean(auth.user?.id && selectedProject.value) && auth.user?.project_id === selectedProject.value
-    && auth.canAny(['deployment_plan.read']) && (editingID.value ? canUpdate.value : canCreate.value)
+    && auth.canAny([props.inline?'workflow.read':'deployment_plan.read']) && (editingID.value ? canUpdate.value : canCreate.value)
 }
 watch([editorIdentity, () => auth.canAny(['deployment_plan.read']), canCreate, canUpdate], ([identity], [previousIdentity]) => {
   if (formOpen.value && (identity !== previousIdentity || !canUseForm())) formOpen.value = false
 }, { flush: 'sync' })
-watch(formOpen, open => { if (!open) reset() }, { flush: 'sync' })
+watch(formOpen, open => { if (!open) { reset();if(props.inline&&props.inlineOpen)emit('update:inlineOpen',false) } }, { flush: 'sync' })
 const platform = computed<Platform>(() => planPlatform(form.kind))
 const canReadHosts = computed(() => auth.canAny(['cluster.read', 'deployment.read']))
 const canReadEnvironments = computed(() => auth.canAny(['deployment.read']))
@@ -280,7 +283,7 @@ const environmentOptions = computed(() => environments.value
   .map(environment => ({ value: environment.id, label: environment.name })))
 const environmentHosts = computed(() => hosts.value
   .filter(host => host.is_active && environmentIDsOf(host).includes(form.environment_id)))
-const availableKindOptions = computed(() => form.reusable ? kindOptions : kindOptions.filter(option => environmentSupportsKind(option.value)))
+const availableKindOptions = computed(() => kindOptions.filter(option=>(!props.inline||!props.inlineKinds||props.inlineKinds.includes(option.value))&&(form.reusable||environmentSupportsKind(option.value))))
 const executionHosts = computed(() => environmentHosts.value.filter(host => hostSupportsKind(host, form.kind)))
 const kubernetesRuntimeOptions = computed(() => {
   const options = [...clusterByID.value.values()].map(runtime => ({ value: runtime.id, label: runtime.name, disabled: false }))
@@ -451,13 +454,13 @@ function reset() {
 }
 
 async function refresh() {
-  if (disposed || !auth.canAny(['deployment_plan.read'])) return
+  if (disposed || !auth.canAny([props.inline?'workflow.update':'deployment_plan.read'])) return
   const scope = scopeKey(), revision = ++refreshRevision
   const current = () => !disposed && scope === scopeKey() && revision === refreshRevision
   loading.value = true
   try {
     const [planResponse, dockerResponse, clusterResponse, hostItems, environmentItems] = await Promise.all([
-      client.get<{ deployment_plans: DeploymentPlan[] }>('/deployment-plans'),
+      props.inline?Promise.resolve({data:{deployment_plans:[] as DeploymentPlan[]}}):client.get<{ deployment_plans: DeploymentPlan[] }>('/deployment-plans'),
       canReadRuntimes.value
         ? client.get<{ endpoints: Runtime[] }>('/docker/endpoints')
         : Promise.resolve({ data: { endpoints: [] as Runtime[] } }),
@@ -936,6 +939,12 @@ async function save() {
       reusable: form.reusable,
       deployment_target: form.reusable ? undefined : target,
     }
+    if(props.inline){
+      if(!current())return
+      emit('save-inline',payload)
+      formOpen.value=false
+      return
+    }
     const response = planID
       ? await client.put<{ deployment_plan: DeploymentPlan }>(`/deployment-plans/${planID}`, payload, { signal: controller.signal })
       : await client.post<{ deployment_plan: DeploymentPlan }>('/deployment-plans', payload, { signal: controller.signal })
@@ -958,26 +967,39 @@ async function save() {
 }
 
 watch([() => route.query.create, () => auth.loaded], ([value]) => {
-  if (value !== '1' || !canCreate.value) return
+  if (props.inline || value !== '1' || !canCreate.value) return
   create()
   const query = { ...route.query }
   delete query.create
   void router.replace({ query })
 }, { immediate: true })
 
-onMounted(() => { window.addEventListener('edo:projects-changed', syncProject); void refresh() })
+let inlineRevision=0
+watch(()=>[props.inlineOpen,props.inlineValue] as const,async([open])=>{
+  const revision=++inlineRevision
+  if(!props.inline)return
+  if(!open){formOpen.value=false;return}
+  await refresh()
+  if(disposed||revision!==inlineRevision||!props.inlineOpen||!canCreate.value||!auth.canAny(['workflow.read']))return
+  if(props.inlineValue){
+    const value=props.inlineValue
+    edit({...value,id:'inline',deployment_target_id:'inline-target',deployment_target:{...value.deployment_target,id:'inline-target'},is_active:true} as DeploymentPlan)
+  }else{reset();form.name='自定义部署';form.reusable=false;formOpen.value=true}
+  form.reusable=false
+},{immediate:true})
+onMounted(() => { window.addEventListener('edo:projects-changed', syncProject); if(!props.inline)void refresh() })
 onBeforeUnmount(() => { disposed = true; resetMutation(); reset(); window.removeEventListener('edo:projects-changed', syncProject) })
 </script>
 
 <template>
   <section>
-    <PageToolbar :description="t('deploymentList.description')">
+    <PageToolbar v-if="!inline" :description="t('deploymentList.description')">
       <a-button v-if="canDefaults" @click="openDefaults()">{{ t('delivery.defaults') }}</a-button>
       <a-button :loading="loading" @click="refresh"><RefreshCw :size="15" />刷新</a-button>
       <a-button v-if="canCreate" type="primary" @click="create"><Plus :size="15" />新建部署方案</a-button>
     </PageToolbar>
 
-    <div class="expandable-plan-list deployment-plan-list vben-card">
+    <div v-if="!inline" class="expandable-plan-list deployment-plan-list vben-card">
       <a-table
         class="plan-table resource-list-table" row-key="id" size="small" table-layout="fixed" :columns="planColumns" :data-source="plans"
         :loading="loading" :pagination="planPagination" :scroll="{ x: 1520 }" :row-class-name="planRowClass"
@@ -1041,14 +1063,14 @@ onBeforeUnmount(() => { disposed = true; resetMutation(); reset(); window.remove
       <section v-if="detailPlan && (detailPlan.script || detailPlan.compose_yaml)" class="resource-detail-section"><h4>{{ t('deploymentList.configuration') }}</h4><YamlCodeEditor v-if="detailPlan.compose_yaml" :model-value="detailPlan.compose_yaml" readonly label="部署方案 DockerCompose YAML"/><pre v-else class="resource-code">{{ detailPlan.script }}</pre></section>
     </ResourceDetailDrawer>
 
-    <a-drawer v-model:open="formOpen" :title="editingID ? '编辑部署方案' : '新建部署方案'" width="min(720px, 100vw)">
+    <a-drawer v-model:open="formOpen" :title="inline?'流水线自定义部署方案':editingID ? '编辑部署方案' : '新建部署方案'" width="min(720px, 100vw)">
       <a-form layout="vertical">
         <div class="form-section">
           <header><b>1</b><div><strong>方案信息</strong><small>使用能直接辨认用途和环境的名称。</small></div></header>
           <div class="form-grid">
             <a-form-item label="方案名称" required><a-input v-model:value="form.name" placeholder="例如：生产后端部署" /></a-form-item>
             <a-form-item label="最长执行时间（秒）"><a-input-number v-model:value="form.timeout_seconds" :min="30" :max="3600" /></a-form-item>
-            <a-form-item class="span-2" :help="t('delivery.reusableHint')"><a-checkbox v-model:checked="form.reusable" :disabled="Boolean(editingID && plans.find(item=>item.id===editingID)?.deployment_target_id)">{{ t('delivery.reusable') }}</a-checkbox></a-form-item>
+            <a-form-item v-if="!inline" class="span-2" :help="t('delivery.reusableHint')"><a-checkbox v-model:checked="form.reusable" :disabled="Boolean(editingID && plans.find(item=>item.id===editingID)?.deployment_target_id)">{{ t('delivery.reusable') }}</a-checkbox></a-form-item>
             <a-form-item class="span-2" label="说明"><a-input v-model:value="form.description" placeholder="这套方案用于哪些应用或场景" /></a-form-item>
           </div>
         </div>
@@ -1268,7 +1290,7 @@ onBeforeUnmount(() => { disposed = true; resetMutation(); reset(); window.remove
         <div class="drawer-actions">
           <a-button :disabled="saving || testing" @click="formOpen = false">取消</a-button>
           <a-button v-if="!form.reusable && canTestInfrastructure" :loading="testing" :disabled="saving" @click="testConnection">检查连接</a-button>
-          <a-button type="primary" :loading="saving" :disabled="saving || testing || !canUseForm()" @click="save">保存部署方案</a-button>
+          <a-button type="primary" :loading="saving" :disabled="saving || testing || !canUseForm()" @click="save">{{inline?'使用此方案':'保存部署方案'}}</a-button>
         </div>
       </template>
     </a-drawer>

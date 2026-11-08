@@ -39,6 +39,19 @@ async function harness({ codes = permissions, project = 'project-a', selected = 
 const writes=h=>h.requests.filter(item=>item.method!=='get')
 const changeProject=async(h,id)=>{h.storage.selected=id;h.window.dispatchEvent(new Event('edo:projects-changed'));h.auth.user.project_id=id;h.route.query={application:`app-${id}`,workflow:`flow-${id}`};h.state.resetScope?.();await settle()}
 
+test('部署来源在流水线自定义和选择已有方案之间切换，保留本次自定义草稿且不新建库记录',async t=>{
+ const custom={name:'流水线自定义',kind:'docker',timeout_seconds:600,deployment_target:{platform:'docker',environment_id:'env-project-a'}}
+ const h=await harness();t.after(h.stop)
+ h.state.stages.value[0].tasks=[{id:'deploy',type:'deploy',name:'部署',config:{deployment_plan_id:'existing'}}]
+ h.state.selectNode('deploy');await settle();assert.equal(h.state.deploymentSource(h.state.selectedNode.value),'plan')
+ h.state.changeDeploymentSource('inline');h.state.editInlineDeployment();await settle();h.state.applyInlineDeployment(custom)
+ assert.equal(h.state.selectedNode.value.config.deployment_plan_id,undefined);assert.equal(h.state.selectedNode.value.config.inline_deployment_plan.name,custom.name)
+ h.state.changeDeploymentSource('plan');assert.equal(h.state.selectedNode.value.config.inline_deployment_plan,undefined)
+ h.state.changeDeploymentSource('inline');assert.equal(h.state.selectedNode.value.config.inline_deployment_plan.name,custom.name)
+ assert.equal(writes(h).length,0)
+ await changeProject(h,'project-b');assert.equal(h.state.inlineDeploymentOpen.value,false)
+})
+
 // 真实用户与项目初始化通过页面正常的资源读取完成；不直接赋值绕过权限上下文。
 test('流水线编辑按当前项目加载应用图及选项，所有请求固定范围',async t=>{
   const h=await harness();t.after(h.stop)

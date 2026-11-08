@@ -32,3 +32,11 @@ test('切换项目中止旧方案读取，禁用或撤权后不更新配置',asy
  h.props.disabled=false;h.auth.user.permissions=[];h.state.updateSettings({project_name:'forbidden'});await settle()
  resolve({data:{deployment_plans:[{id:'plan',kind:'compose_stack'}]}});await settle();assert.equal(h.state.kind.value,'');assert.equal(h.state.deploymentPlan.value,undefined);assert.deepEqual(h.events,[])
 })
+
+test('自定义部署方案直接提供 Compose、环境和命令预览，不要求方案库读取权限',async t=>{
+ const h=harness();t.after(h.stop);await settle();const reads=h.requests.length
+ h.auth.user.permissions=['workflow.read','workflow.update']
+ h.props.node.config={deployment_source:'inline',inline_deployment_plan:{name:'流水线方案',kind:'compose_stack',timeout_seconds:600,compose_yaml:'services:\n  api:\n    image: example/app:${IMAGE_TAG}\n',deployment_target:{platform:'ssh',environment_id:'prod',working_directory:'/srv/app'}}}
+ await settle();assert.equal(h.state.kind.value,'compose_stack');assert.equal(h.state.environmentID.value,'prod');assert.deepEqual(h.state.services.value,['api']);assert.equal(h.requests.length,reads)
+ h.auth.user.permissions=[];await settle();assert.equal(h.state.deploymentPlan.value,undefined)
+})

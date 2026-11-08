@@ -16,6 +16,8 @@ export interface WorkflowNotificationRule {
 }
 
 export interface WorkflowNodeConfig {
+	deployment_source?: 'inline' | 'plan'
+	inline_deployment_plan?: WorkflowDeploymentPlan
   configuration_files?: Array<{id:string;path:string}>
   deployment_parameters?: string
  status_writeback?:boolean
@@ -48,6 +50,18 @@ export interface WorkflowNodeConfig {
   migration?: {database_id:string;directory:string}
   description?: string
   notifications?: WorkflowNotificationRule[]
+}
+
+export interface WorkflowDeploymentPlan {
+  name:string
+  kind:'script'|'docker'|'compose'|'compose_stack'|'kubernetes'
+  description?:string
+  script?:string
+  compose_yaml?:string
+  service_name?:string
+  docker_config?:unknown
+  timeout_seconds:number
+  deployment_target?:{platform:'ssh'|'docker'|'kubernetes';environment_id:string;host_id?:string;runtime_id?:string;working_directory?:string;namespace?:string;workload_name?:string;container_name?:string;rollout_timeout?:number}
 }
 
 export interface WorkflowNode {

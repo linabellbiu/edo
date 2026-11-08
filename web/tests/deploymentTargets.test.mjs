@@ -13,9 +13,10 @@ const cluster = { id: 'standalone-cluster', name: '独立验收集群', is_activ
 const target = { id: 'target', platform: 'kubernetes', environment_id: 'env', runtime_id: cluster.id, namespace: 'acceptance', workload_name: 'api', container_name: 'api', rollout_timeout: 600 }
 const plan = { id: 'plan', name: 'K8s 验收部署', kind: 'kubernetes', deployment_target_id: target.id, deployment_target: target, timeout_seconds: 600 }
 
-function harness(t, denied = []) {
-  const requests = [], errors = []
-  const permissions = ['deployment_plan.read', 'deployment_plan.create', 'deployment_plan.update', 'cluster.read', 'cluster.execute', 'deployment.read'].filter(permission => !denied.includes(permission))
+function harness(t, denied = [], props = {}) {
+  const requests = [], errors = [],events=[]
+  props=vue.reactive(props)
+  const permissions = (props.inline?['workflow.read','workflow.update','cluster.read','deployment.read']:['deployment_plan.read', 'deployment_plan.create', 'deployment_plan.update', 'cluster.read', 'cluster.execute', 'deployment.read']).filter(permission => !denied.includes(permission))
   const auth = { loaded: true, user: { id: 'test-user', department_id: 'test-department', project_id: 'test-project', permissions }, canAny: codes => codes.some(code => permissions.includes(code)) }
   let state
   const modules = {
@@ -32,7 +33,7 @@ function harness(t, denied = []) {
       listHosts: async () => state.hosts.value,
     },
     '@/api/client': { __esModule: true, default: {
-      get: async path => ({ data: { deployment_plans: state.plans.value, clusters: state.clusters.value, endpoints: state.docker.value } }),
+      get: async path => {if(props.inline)requests.push({method:'GET',path});return { data: { deployment_plans: state.plans.value, clusters: state.clusters.value, endpoints: state.docker.value } }},
       post: async (path, body) => {
         requests.push({ method: 'POST', path, body })
         if (path !== '/deployment-plans') return { data: {} }
@@ -55,11 +56,25 @@ function harness(t, denied = []) {
     { getItem: key => key === 'edo.project' ? 'test-project' : null }, { addEventListener() {}, removeEventListener() {} })
   const scope = vue.effectScope()
   t.after(() => scope.stop())
-  state = scope.run(() => module.exports.default.setup({}, { expose() {} }))
+  state = scope.run(() => module.exports.default.setup(props, { expose() {},emit:(name,value)=>events.push({name,value}) }))
   state.environments.value = [{ id: 'env', name: '测试环境', is_active: true }, { id: 'other-env', name: '另一环境', is_active: true }]
   state.clusters.value = [{ ...cluster }]
-  return { state, requests, errors }
+  return { state, requests, errors,props,events,permissions }
 }
+
+test('流水线内创建方案只提交给流水线，不读取或写入方案库，也不要求方案库创建权限',async t=>{
+ const h=harness(t,[],{inline:true,inlineOpen:false,inlineKinds:['docker','compose']})
+ h.state.hosts.value=[{id:'docker-host',name:'测试主机',mode:'ssh',is_active:true,environment_ids:['env'],capabilities:[{kind:'docker',status:'ready',runtime_id:'docker-runtime'}]}]
+ h.state.docker.value=[{id:'docker-runtime',host_id:'docker-host',is_active:true}]
+ h.props.inlineOpen=true;await vue.nextTick();await new Promise(resolve=>setImmediate(resolve));await vue.nextTick()
+ assert.equal(h.state.formOpen.value,true);assert.equal(h.state.form.reusable,false)
+ h.state.changeEnvironment('env');h.state.form.name='当前流水线方案'
+ await h.state.save()
+ assert.deepEqual(h.errors,[]);assert.equal(h.requests.filter(r=>r.path==='/deployment-plans').length,0)
+ const saved=h.events.find(event=>event.name==='save-inline')?.value
+ assert.equal(saved.name,'当前流水线方案');assert.equal(saved.deployment_target.environment_id,'env');assert.equal(saved.kind,'docker')
+ assert.ok(h.events.some(event=>event.name==='update:inlineOpen'&&event.value===false))
+})
 
 test('独立集群无关联主机时，编辑显示实际名称及 K8s 方式，修改超时可保存且不发送虚构主机', async t => {
   const { state, requests, errors } = harness(t)

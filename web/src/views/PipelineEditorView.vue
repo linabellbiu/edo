@@ -12,6 +12,7 @@ import {
 
 import client from '@/api/client'
 import PipelineTaskControls from '@/components/PipelineTaskControls.vue'
+import DeploymentPlanView from '@/views/DeploymentPlanView.vue'
 import { apiErrorMessage } from '@/api/resources'
 import WorkflowPresetModal from '@/components/WorkflowPresetModal.vue'
 import { useAuthStore } from '@/stores/auth'
@@ -28,6 +29,7 @@ import type {
   WorkflowResponse,
   WorkflowCatalogEntry,
   WorkflowTemplateResponse,
+  WorkflowDeploymentPlan,
 } from '@/types/pipeline'
 
 type TaskNodeType = 'build' | 'shell' | 'approval' | 'manual' | 'deploy'
@@ -116,6 +118,8 @@ const applications = ref<ApplicationRecord[]>([])
 const templates = ref<Workflow[]>([])
 const buildPlans = ref<PipelineBuildPlan[]>([])
 const deploymentPlans = ref<DeploymentPlan[]>([])
+const inlineDeploymentOpen=ref(false),inlineDeploymentNodeID=ref('')
+const inlineDeploymentDrafts=new Map<string,WorkflowDeploymentPlan>()
 const notificationChannels = ref<NotificationChannel[]>([])
 const builtinVariables = ref<BuiltinVariableDefinition[]>([])
 const builtinVariableLoading = ref(false)
@@ -1083,6 +1087,7 @@ function taskSummary(node: WorkflowNode) {
     return `运行镜像：${node.config.runtime_image || DEFAULT_RUNTIME_IMAGE}`
   }
   if (node.type === 'deploy') {
+    if(node.config.inline_deployment_plan)return `自定义方案：${node.config.inline_deployment_plan.name}`
     const plan = deploymentPlans.value.find(item => item.id === node.config.deployment_plan_id)
     return `部署方案：${plan?.name || '未选择'}`
   }
@@ -1189,6 +1194,25 @@ function createDeploymentPlan() {
   if(!canCreateDeploymentPlan.value||!canEdit.value)return
   void router.push({ path: '/deployment-plans', query: { create: '1', return_to: route.fullPath } })
 }
+
+function deploymentSource(node:WorkflowNode){return node.config.deployment_source||(node.config.inline_deployment_plan||!node.config.deployment_plan_id?'inline':'plan')}
+function inlineDeploymentKinds(taskID:string){const build=buildPlanBeforeTask(taskID);return (['docker','compose','compose_stack','kubernetes','script'] as DeploymentPlanKind[]).filter(kind=>deploymentPlanAcceptsBuild({id:'inline',name:'',kind,is_active:true},build))}
+function changeDeploymentSource(value:'inline'|'plan'){
+  const node=selectedNode.value
+  if(!node||node.type!=='deploy'||!canEdit.value)return
+  if(node.config.inline_deployment_plan)inlineDeploymentDrafts.set(node.id,JSON.parse(JSON.stringify(node.config.inline_deployment_plan)))
+  updateSelectedNode({}, {deployment_source:value,deployment_plan_id:undefined,inline_deployment_plan:value==='inline'?inlineDeploymentDrafts.get(node.id):undefined})
+}
+function editInlineDeployment(){
+  if(!selectedNode.value||selectedNode.value.type!=='deploy'||!canEdit.value)return
+  inlineDeploymentNodeID.value=selectedNode.value.id;inlineDeploymentOpen.value=true
+}
+function applyInlineDeployment(value:WorkflowDeploymentPlan){
+  if(!canEdit.value||selectedNode.value?.id!==inlineDeploymentNodeID.value)return
+  updateSelectedNode({}, {deployment_source:'inline',deployment_plan_id:undefined,inline_deployment_plan:value})
+}
+watch(()=>[selectedNodeID.value,scopeIdentity(),canEdit.value],()=>{inlineDeploymentOpen.value=false;inlineDeploymentNodeID.value=''})
+watch(scopeIdentity,()=>inlineDeploymentDrafts.clear())
 
 function resourceViewHref(path: string, queryKey: string, id: string) {
   return router.resolve({ path, query: { [queryKey]: id } }).href
@@ -1700,14 +1724,19 @@ onBeforeRouteLeave(async () => {
             </template>
 
             <template v-else-if="selectedNode.type === 'deploy'">
-              <a-form-item label="部署方案" required>
+              <a-form-item label="选择部署" required><a-radio-group :value="deploymentSource(selectedNode)" :disabled="!canUpdate" @update:value="changeDeploymentSource($event)"><a-radio value="inline">自定义方案</a-radio><a-radio value="plan">选择部署方案</a-radio></a-radio-group></a-form-item>
+              <a-form-item v-if="deploymentSource(selectedNode)==='inline'" label="自定义方案" required>
+                <div class="resource-picker"><span>{{selectedNode.config.inline_deployment_plan?.name||'尚未配置'}}</span><a-button :disabled="!canUpdate" @click="editInlineDeployment">{{selectedNode.config.inline_deployment_plan?'编辑方案':'创建方案'}}</a-button></div>
+                <small class="field-hint">保存在当前流水线，不加入部署方案库。</small>
+              </a-form-item>
+              <a-form-item v-else label="部署方案" required>
                 <div class="resource-picker">
                   <a-select
                     :value="selectedNode.config.deployment_plan_id"
                     :disabled="!canUpdate"
                     :options="deploymentPlanOptions(selectedNode.id)"
                     placeholder="选择部署方案"
-                    @update:value="updateSelectedNode({}, { deployment_plan_id: String($event || '') || undefined })"
+                    @update:value="updateSelectedNode({}, { deployment_source:'plan',inline_deployment_plan:undefined,deployment_plan_id: String($event || '') || undefined })"
                   >
                     <template #option="{ value, label, detail }">
                       <span class="managed-resource-option">
@@ -1721,8 +1750,8 @@ onBeforeRouteLeave(async () => {
               </a-form-item>
               <a-alert v-if="!hasBuildTaskBeforeTask(selectedNode.id)" class="panel-alert" type="warning" show-icon message="部署任务前必须先添加构建制品任务。" />
               <a-alert v-else-if="!buildPlanBeforeTask(selectedNode.id)" class="panel-alert" type="warning" show-icon message="请先为上游构建制品任务选择可用的构建方案。" />
-              <a-alert v-else-if="!compatibleDeploymentPlans(selectedNode.id).length" class="panel-alert" type="warning" show-icon message="没有与上游制品类型匹配的部署方案。Kubernetes 还要求镜像构建方案绑定镜像仓库。" />
-              <p class="panel-note">部署方案已经包含执行方式、环境和目标位置；这里只显示能消费上游文件或镜像制品的方案。</p>
+              <a-alert v-else-if="deploymentSource(selectedNode)==='plan'&&!compatibleDeploymentPlans(selectedNode.id).length" class="panel-alert" type="warning" show-icon message="没有与上游制品类型匹配的部署方案。Kubernetes 还要求镜像构建方案绑定镜像仓库。" />
+              <p v-if="deploymentSource(selectedNode)==='plan'" class="panel-note">部署方案已经包含执行方式、环境和目标位置；这里只显示能消费上游文件或镜像制品的方案。</p>
             </template>
           </a-form>
           <a-form v-else layout="vertical">
@@ -1867,6 +1896,7 @@ onBeforeRouteLeave(async () => {
         <p class="notification-channel-note">流水线执行时只会替换标题和内容中实际引用的变量。Webhook 请求还会包含投递所需的级别、来源和运行标识，不会包含仓库凭据或部署密钥。</p>
       </a-form>
     </a-modal>
+    <DeploymentPlanView v-if="inlineDeploymentOpen&&selectedNode?.id===inlineDeploymentNodeID" :key="inlineDeploymentNodeID" inline v-model:inline-open="inlineDeploymentOpen" :inline-value="selectedNode.config.inline_deployment_plan" :inline-kinds="inlineDeploymentKinds(inlineDeploymentNodeID)" @save-inline="applyInlineDeployment"/>
     <WorkflowPresetModal :key="scopeIdentity()" v-model:open="presetOpen" :can-create="canCreate" :can-execute="canExecute" @created="openCreatedTemplate" />
   </section>
 </template>

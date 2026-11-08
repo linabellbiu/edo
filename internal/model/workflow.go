@@ -43,6 +43,8 @@ type WorkflowNodeConfig struct {
 	ImageName              string                     `json:"image_name,omitempty"`
 	ImageTag               string                     `json:"image_tag,omitempty"`
 	DeploymentPlanID       string                     `json:"deployment_plan_id,omitempty"`
+	InlineDeploymentPlan   *WorkflowDeploymentPlan    `json:"inline_deployment_plan,omitempty"`
+	DeploymentSource       string                     `json:"deployment_source,omitempty"`
 	Script                 string                     `json:"script,omitempty"`
 	RuntimeImage           string                     `json:"runtime_image,omitempty"`
 	ToolchainLanguage      string                     `json:"toolchain_language,omitempty"`

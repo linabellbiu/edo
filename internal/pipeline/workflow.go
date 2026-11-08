@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"path"
 	"strings"
 	"time"
@@ -591,6 +592,20 @@ func sanitizeWorkflowNode(node *model.WorkflowNode) error {
 	node.Config.PRSourcePattern = strings.TrimSpace(node.Config.PRSourcePattern)
 	node.Config.BuildPlanID = strings.TrimSpace(node.Config.BuildPlanID)
 	node.Config.DeploymentPlanID = strings.TrimSpace(node.Config.DeploymentPlanID)
+	if source := node.Config.DeploymentSource; source != "" && (node.Type != model.WorkflowNodeDeploy || source != "inline" && source != "plan" || source == "plan" && node.Config.InlineDeploymentPlan != nil || source == "inline" && node.Config.DeploymentPlanID != "") {
+		slog.Warn("流水线部署来源无效", "operation", "workflow_deployment_source", "node_id", node.ID, "err", ErrInvalidWorkflow)
+		return ErrInvalidWorkflow
+	}
+	if node.Config.InlineDeploymentPlan != nil {
+		if node.Type != model.WorkflowNodeDeploy || node.Config.DeploymentPlanID != "" {
+			slog.Warn("流水线部署来源不能同时配置", "operation", "workflow_inline_deployment", "node_id", node.ID, "err", ErrInvalidWorkflow)
+			return ErrInvalidWorkflow
+		}
+		if err := normalizeInlineDeploymentPlan(node.Config.InlineDeploymentPlan); err != nil {
+			slog.Warn("流水线自定义部署方案无效", "operation", "workflow_inline_deployment", "node_id", node.ID, "err", err)
+			return err
+		}
+	}
 	node.Config.RuntimeImage = strings.TrimSpace(node.Config.RuntimeImage)
 	node.Config.ToolchainLanguage = strings.ToLower(strings.TrimSpace(node.Config.ToolchainLanguage))
 	node.Config.ToolchainVersion = strings.TrimSpace(node.Config.ToolchainVersion)
@@ -755,6 +770,20 @@ func (s *Service) validateWorkflow(
 			}
 		}
 	}
+	for i := range tasks {
+		if tasks[i].Type != model.WorkflowNodeDeploy || tasks[i].Config.InlineDeploymentPlan == nil {
+			continue
+		}
+		plan, target, err := s.resolveInlineDeploymentPlan(ctx, application, "", tasks[i])
+		if err != nil {
+			s.logger.ErrorContext(ctx, "校验流水线自定义部署失败", "operation", "workflow_inline_validate", "node_id", tasks[i].ID, "err", err)
+			issues = append(issues, WorkflowIssue{Code: "invalid_inline_deployment", Message: "自定义部署方案的环境或执行目标不可用", NodeID: tasks[i].ID})
+			continue
+		}
+		tasks[i].Config.DeploymentPlanID = plan.ID
+		activeDeploymentPlans[plan.ID] = *plan
+		activeTargets[target.ID] = *target
+	}
 	ids := map[string]struct{}{source.ID: {}}
 	if source.Type != model.WorkflowNodeTrigger {
 		issues = append(issues, WorkflowIssue{Code: "invalid_source_type", Message: "代码源类型无效", NodeID: source.ID})
@@ -844,9 +873,16 @@ func (s *Service) validateWorkflow(
 				}
 			case model.WorkflowNodeManual, model.WorkflowNodeApproval:
 			case model.WorkflowNodeDeploy:
-				plan, ok := activeDeploymentPlans[node.Config.DeploymentPlanID]
+				plan, ok := activeDeploymentPlans[workflowDeploymentPlanKey(node)]
 				if !ok {
-					issues = append(issues, WorkflowIssue{Code: "missing_deployment_plan", Message: fmt.Sprintf("部署任务“%s”需要选择可用的部署方案", node.Name), NodeID: node.ID, StageID: stage.ID})
+					if node.Config.InlineDeploymentPlan != nil {
+						break
+					}
+					message := fmt.Sprintf("部署任务“%s”需要选择可用的部署方案", node.Name)
+					if node.Config.DeploymentSource == "inline" {
+						message = fmt.Sprintf("部署任务“%s”需要创建自定义方案", node.Name)
+					}
+					issues = append(issues, WorkflowIssue{Code: "missing_deployment_plan", Message: message, NodeID: node.ID, StageID: stage.ID})
 					break
 				}
 				if plan.Kind == model.DeploymentPlanScript && strings.TrimSpace(plan.Script) == strings.TrimSpace(builtinDeliveryScript) {
@@ -1311,17 +1347,26 @@ func (s *Service) newStageResolvedWorkflowRunWithDatabase(
 				resolvedBuildPlans[plan.ID] = plan
 			case model.WorkflowNodeDeploy:
 				var plan model.DeploymentPlan
-				if current.Config.DeploymentPlanID == "" || database.WithContext(ctx).
-					First(&plan, "uuid = ? AND is_active = ?", current.Config.DeploymentPlanID, true).Error != nil ||
-					plan.DepartmentID != application.DepartmentID || plan.ProjectID != application.ProjectID {
-					return nil, ErrInvalidWorkflow
-				}
 				var target model.DeploymentTarget
-				if plan.DeploymentTargetID == "" || database.WithContext(ctx).
-					First(&target, "uuid = ? AND is_active = ?", plan.DeploymentTargetID, true).Error != nil ||
-					target.DepartmentID != application.DepartmentID || target.ProjectID != application.ProjectID ||
-					!deploymentPlanSupportsTarget(plan.Kind, target.Platform) {
-					return nil, ErrInvalidWorkflow
+				if current.Config.InlineDeploymentPlan != nil {
+					inlinePlan, inlineTarget, resolveErr := s.resolveInlineDeploymentPlan(ctx, application, workflow.ID, *current, database)
+					if resolveErr != nil {
+						return nil, resolveErr
+					}
+					plan, target = *inlinePlan, *inlineTarget
+					current.Config.DeploymentPlanID = plan.ID
+				} else {
+					if current.Config.DeploymentPlanID == "" || database.WithContext(ctx).
+						First(&plan, "uuid = ? AND is_active = ?", current.Config.DeploymentPlanID, true).Error != nil ||
+						plan.DepartmentID != application.DepartmentID || plan.ProjectID != application.ProjectID {
+						return nil, ErrInvalidWorkflow
+					}
+					if plan.DeploymentTargetID == "" || database.WithContext(ctx).
+						First(&target, "uuid = ? AND is_active = ?", plan.DeploymentTargetID, true).Error != nil ||
+						target.DepartmentID != application.DepartmentID || target.ProjectID != application.ProjectID ||
+						!deploymentPlanSupportsTarget(plan.Kind, target.Platform) {
+						return nil, ErrInvalidWorkflow
+					}
 				}
 				available, environmentErr := s.deploymentEnvironmentAvailable(ctx, database, target, "pipeline_run_environment_validate")
 				if environmentErr != nil {
