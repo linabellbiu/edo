@@ -128,6 +128,11 @@ func (r customRuntimeActionRunner) RunHostDeploymentScript(_ context.Context, in
 
 func TestCustomRuntimeActionsUseFrozenCommandsAndVerifyContainerGeneration(t *testing.T) {
 	f := newContainerControlFixture(t)
+	image := model.Artifact{ID: uuid.NewString(), ApplicationID: f.record.ApplicationID, ProjectID: f.record.ProjectID, PipelineRunID: f.record.PipelineRunID, Kind: model.ArtifactKindOCIImage, Status: model.ArtifactStatusAvailable, Name: "example/app:release-one", ImageRef: "example/app@sha256:" + strings.Repeat("e", 64)}
+	if err := f.db.Create(&image).Error; err != nil {
+		t.Fatal(err)
+	}
+	f.record.ArtifactID = image.ID
 	f.record.DeploymentPlanKind = model.DeploymentPlanScript
 	f.record.CommandScript = "# EDO 用户部署脚本 v1\nprintf deployed"
 	if err := f.db.Save(&f.record).Error; err != nil {
@@ -170,6 +175,9 @@ func TestCustomRuntimeActionsUseFrozenCommandsAndVerifyContainerGeneration(t *te
 	}
 	calls := []string{}
 	f.service.ssh = customRuntimeActionRunner{run: func(input sshdeploy.Input) {
+		if input.Environment["EDO_IMAGE_TAG"] != "release-one" || input.Environment["IMAGE_TAG"] != "release-one" {
+			t.Error("重启、重建没有注入本次部署的镜像 Tag")
+		}
 		mu.Lock()
 		defer mu.Unlock()
 		calls = append(calls, input.Script)

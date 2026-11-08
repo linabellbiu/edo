@@ -259,6 +259,7 @@ func (s *Service) controlCustomContainer(ctx context.Context, record *model.Depl
 	}
 	environment["EDO_APPLICATION_ID"] = record.ApplicationID
 	environment["EDO_DEPLOYMENT_ID"] = record.ID
+	delete(environment, "EDO_IMAGE_TAG")
 	delete(environment, "IMAGE_TAG")
 	var images []model.Artifact
 	query := s.db.WithContext(ctx).Where("project_id = ? AND application_id = ? AND kind = ? AND status = ?", record.ProjectID, record.ApplicationID, model.ArtifactKindOCIImage, model.ArtifactStatusAvailable)
@@ -291,6 +292,7 @@ func (s *Service) controlCustomContainer(ctx context.Context, record *model.Depl
 		}
 	}
 	if !ambiguous && len(images) <= 64 && tag != "" {
+		environment["EDO_IMAGE_TAG"] = tag
 		environment["IMAGE_TAG"] = tag
 	}
 	if len(images) == 1 {

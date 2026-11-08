@@ -60,7 +60,7 @@ async function preview(){
 watch(()=>JSON.stringify([identity(),props.node.id,props.node.config.compose_source,plan.value?.compose_yaml,plan.value?.deployment_target?.environment_id,props.applicationID,props.branch]),()=>{clearTimeout(timer);previewController?.abort();services.value=[];serviceLoading.value=false;timer=setTimeout(preview,500)},{immediate:true})
 onBeforeUnmount(()=>{controller?.abort();previewController?.abort();clearTimeout(timer)})
 function binding(index:number,patch:Partial<{name:string;restart_script:string;recreate_script:string}>){change({runtime_services:runtimeServices.value.map((v,i)=>i===index?{...v,...patch}:v)})}
-const settings=computed(()=>execution.value.compose||{project_name:'',tag_variable:'${IMAGE_TAG}',use_sudo:false,adopt_existing:false})
+const settings=computed(()=>execution.value.compose||{project_name:'',tag_variable:'${EDO_IMAGE_TAG}',use_sudo:false,adopt_existing:false})
 function compose(patch:Record<string,unknown>){updateExecution({compose:{...settings.value,...patch}})}
 </script>
 <template>

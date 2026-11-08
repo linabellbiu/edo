@@ -949,7 +949,7 @@ func (s *Service) validateWorkflow(
 					break
 				}
 				if ref := node.Config.DeploymentTagReference; ref != "" && ref != "${"+composeTagName(ref)+"}" {
-					issues = append(issues, WorkflowIssue{Code: "invalid_deployment_tag_reference", Message: "镜像 Tag 请使用变量引用，例如 ${IMAGE_TAG}", NodeID: node.ID, StageID: stage.ID})
+					issues = append(issues, WorkflowIssue{Code: "invalid_deployment_tag_reference", Message: "镜像 Tag 请使用变量引用，例如 ${EDO_IMAGE_TAG}", NodeID: node.ID, StageID: stage.ID})
 				}
 				if node.Config.DeploymentInputVersion == 1 {
 					if plan.Kind == model.DeploymentPlanKubernetes {

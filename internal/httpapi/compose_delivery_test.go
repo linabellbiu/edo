@@ -39,7 +39,7 @@ func TestComposeDeliveryHTTPUsesNormalPermissionsAndCreatesOnlyDraft(t *testing.
 		t.Fatal("应用创建失败")
 	}
 	path := "/api/v1/applications/" + appBody.App.ID + "/compose-delivery-workflows"
-	body := map[string]any{"project_name": "custom-project", "compose_yaml": "services:\n  web:\n    image: registry.example.com/web:${IMAGE_TAG}\n", "services": []map[string]string{{"service": "web", "build_plan_id": buildBody.Build.ID}}, "target": map[string]string{"name": "通用位置", "platform": "ssh", "environment_id": "httpapi-deployment-environment", "host_id": "httpapi-deployment-host", "working_directory": "/srv/custom"}}
+	body := map[string]any{"project_name": "custom-project", "compose_yaml": "services:\n  web:\n    image: registry.example.com/web:${EDO_IMAGE_TAG}\n", "services": []map[string]string{{"service": "web", "build_plan_id": buildBody.Build.ID}}, "target": map[string]string{"name": "通用位置", "platform": "ssh", "environment_id": "httpapi-deployment-environment", "host_id": "httpapi-deployment-host", "working_directory": "/srv/custom"}}
 	created := performJSONRequest(t, router, http.MethodPost, path, body, admin)
 	var result pipeline.WorkflowResult
 	if created.Code != 201 || json.Unmarshal(created.Body.Bytes(), &result) != nil || !result.Valid || result.Workflow.IsActive {

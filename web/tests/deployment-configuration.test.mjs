@@ -58,7 +58,7 @@ test('文件来源与脚本统一保存，切换来源清除旧身份',async t=>
 })
 test('脚本编辑不要求配置读取权限，删除变量输入不清空已有变量',async t=>{
  const h=await harness();t.after(h.stop);h.auth.user.permissions=['workflow.update'];await settle()
- h.state.change({deployment_script:'echo "${IMAGE_TAG}"'});assert.equal(h.props.config.deployment_script,'echo "${IMAGE_TAG}"')
+ h.state.change({deployment_script:'echo "${EDO_IMAGE_TAG}"'});assert.equal(h.props.config.deployment_script,'echo "${EDO_IMAGE_TAG}"')
  h.props.config.environment_variables={APP_ENV:'production',PORT:'8080'}
  h.state.change({deployment_script:'echo ok'})
  assert.deepEqual(h.props.config.environment_variables,{APP_ENV:'production',PORT:'8080'})

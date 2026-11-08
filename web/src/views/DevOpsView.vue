@@ -1105,7 +1105,7 @@ async function refreshRunState(){
 function formatVariableText(values?:Record<string,string>){return Object.entries(values||{}).map(([name,value])=>`${name}=${value}`).join('\n')}
 function parseVariableText(source:string,label:string){
  const values:Record<string,string>={}
- const reservedEnvironmentNames=new Set(['CI','HOME','TMPDIR','EDO_PIPELINE_RUN_ID','EDO_APPLICATION_ID','EDO_GIT_REF','EDO_COMMIT_SHA','EDO_TARGET_PLATFORM','EDO_TARGET_ARCH','GOOS','GOARCH'])
+ const reservedEnvironmentNames=new Set(['EDO_CI','EDO_HOME','EDO_TMPDIR','EDO_IMAGE_TAG','EDO_GOOS','EDO_GOARCH','CI','HOME','TMPDIR','IMAGE_TAG','EDO_PIPELINE_RUN_ID','EDO_APPLICATION_ID','EDO_GIT_REF','EDO_COMMIT_SHA','EDO_TARGET_PLATFORM','EDO_TARGET_ARCH','GOOS','GOARCH'])
  const lines=source.split(/\r?\n/)
  for(let index=0;index<lines.length;index+=1){
   const line=lines[index].trim()

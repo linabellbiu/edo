@@ -61,7 +61,7 @@ var kindOptions = []Option{
 
 var scopeOptions = []Option{
 	{Key: string(ScopeNotificationTemplate), Label: "通知模板", Description: "流水线任务的通知标题和通知内容。"},
-	{Key: string(ScopePipelineScript), Label: "流水线与构建脚本", Description: "流水线 Shell 任务及 Shell 构建方案的隔离运行容器。"},
+	{Key: string(ScopePipelineScript), Label: "流水线与构建脚本", Description: "流水线 Shell 任务的隔离容器及自定义构建的独立工作区。"},
 	{Key: string(ScopeDockerfileBuild), Label: "Dockerfile 构建", Description: "使用 Dockerfile 构建 OCI 镜像时。"},
 	{Key: string(ScopeDeploymentScript), Label: "主机部署脚本", Description: "主机脚本部署方案执行时。"},
 	{Key: string(ScopeLifecycleScript), Label: "实例生命周期脚本", Description: "Shell 部署实例执行停止或重启脚本时。"},
@@ -70,7 +70,7 @@ var scopeOptions = []Option{
 }
 
 var definitions = []Definition{
-	environment("image_tag", "IMAGE_TAG", "当前流水线镜像 Tag", "当前流水线本次构建产物的实际镜像 Tag；使用 ${IMAGE_TAG} 引用，不能通过用户变量覆盖。", "制品", []Scope{ScopeDeploymentScript, ScopeComposeDeployment, ScopeDockerDeployment}, "上游镜像构建完成后可用；多个镜像必须具有相同 Tag", true),
+	environment("image_tag", "EDO_IMAGE_TAG", "当前流水线镜像 Tag", "当前流水线本次构建产物的实际镜像 Tag；使用 ${EDO_IMAGE_TAG} 引用，不能通过用户变量覆盖。", "制品", []Scope{ScopeDeploymentScript, ScopeComposeDeployment, ScopeDockerDeployment}, "上游镜像构建完成后可用；多个镜像必须具有相同 Tag", true),
 	environment("input_image", "EDO_INPUT_IMAGE_1", "所选来源镜像", "部署前选择的镜像仓库来源，值固定为 Digest；序号对应来源列表位置，可引用 ${EDO_INPUT_IMAGE_1}。", "制品", []Scope{ScopeDeploymentScript}, "选择镜像仓库来源并拉取成功后可用", true),
 	environment("app_config_path", "EDO_APP_CONFIG_PATH", "应用配置目录", "应用配置文件所在目录，可用 ${EDO_APP_CONFIG_PATH}/相对路径 引用生成文件；配置名称与生成文件路径独立。", "部署", []Scope{ScopeDockerDeployment, ScopeComposeDeployment, ScopeDeploymentScript}, "部署输入或脚本启用后可用，默认是目标执行用户的 ~/edo/应用名称/config；已有实例采用冻结目录", false),
 	placeholder("configuration_directory", "EDO_CONFIGURATION_DIRECTORY", "历史配置目录", "为已有运行保留的目录变量；新配置请使用 ${EDO_APP_CONFIG_PATH}/相对路径。", []Scope{ScopeComposeDeployment}, "历史运行按部署快照固定的目录解析"),
@@ -86,9 +86,9 @@ var definitions = []Definition{
 	template("run_id", "run.id", "运行 ID", "本次流水线运行的唯一标识。", "运行", "运行创建后可用"),
 	template("detail", "detail", "执行说明", "当前任务产生的执行结果或失败说明。", "任务", "任务完成并产生说明后可用"),
 
-	environment("ci", "CI", "CI 标记", "隔离脚本运行时固定为 true，可用于启用工具的非交互 CI 模式。", "运行环境", []Scope{ScopePipelineScript}, "隔离脚本容器启动后可用", true),
-	environment("home", "HOME", "用户目录", "隔离脚本运行用户的临时 HOME 目录。", "运行环境", []Scope{ScopePipelineScript}, "隔离脚本容器启动后可用", true),
-	environment("tmpdir", "TMPDIR", "临时目录", "隔离脚本运行时允许写入的临时目录。", "运行环境", []Scope{ScopePipelineScript}, "隔离脚本容器启动后可用", true),
+	environment("ci", "EDO_CI", "CI 标记", "脚本运行时固定为 true，同时设置工具所需的 CI 标记。", "运行环境", []Scope{ScopePipelineScript}, "脚本启动后可用", true),
+	environment("home", "EDO_HOME", "用户目录", "当前脚本运行用户的临时目录，与系统 HOME 一致。", "运行环境", []Scope{ScopePipelineScript}, "脚本启动后可用", true),
+	environment("tmpdir", "EDO_TMPDIR", "临时目录", "当前脚本允许写入的临时目录，与系统 TMPDIR 一致。", "运行环境", []Scope{ScopePipelineScript}, "脚本启动后可用", true),
 	environment("pipeline_run_id", "EDO_PIPELINE_RUN_ID", "流水线运行 ID", "本次流水线运行的唯一标识。", "运行", []Scope{ScopePipelineScript, ScopeDeploymentScript}, "流水线运行创建后可用", true),
 	environment("application_id", "EDO_APPLICATION_ID", "应用 ID", "本次运行所属应用的唯一标识。", "应用", []Scope{ScopePipelineScript, ScopeDeploymentScript, ScopeLifecycleScript}, "运行绑定应用后可用", true),
 	environment("application_name", "EDO_APPLICATION_NAME", "应用名称", "本次部署所属应用的名称。", "应用", []Scope{ScopeDeploymentScript, ScopeLifecycleScript}, "部署或实例生命周期脚本执行时可用", false),
@@ -98,8 +98,8 @@ var definitions = []Definition{
 	environment("upstream_artifacts", "EDO_UPSTREAM_ARTIFACTS_JSON", "上游制品清单", "前序阶段中本次运行已成功构建的制品 JSON 数组，包含 node_id、id、kind、storage_kind、digest、image_ref 和 commit_sha；不包含凭据或文件路径。", "制品", []Scope{ScopePipelineScript}, "前序阶段构建成功后可用；无制品时为 []", true),
 	environment("target_platform", "EDO_TARGET_PLATFORM", "目标构建平台", "构建方案解析出的目标平台；多平台构建时为逗号分隔的平台列表。", "构建", []Scope{ScopePipelineScript}, "构建方案已解析目标平台时可用", true),
 	environment("target_arch", "EDO_TARGET_ARCH", "目标架构", "单一 Linux 目标平台的架构，例如 amd64 或 arm64。", "构建", []Scope{ScopePipelineScript}, "目标为单一 Linux 平台时可用", true),
-	environment("goos", "GOOS", "Go 目标系统", "Go 流水线在单一 Linux 目标下固定为 linux。", "语言工具链", []Scope{ScopePipelineScript}, "Go 工具链且目标为单一 Linux 平台时可用", true),
-	environment("goarch", "GOARCH", "Go 目标架构", "Go 流水线在单一 Linux 目标下使用的 amd64 或 arm64 架构。", "语言工具链", []Scope{ScopePipelineScript}, "Go 工具链且目标为单一 Linux 平台时可用", true),
+	environment("goos", "EDO_GOOS", "Go 目标系统", "Go 流水线在单一 Linux 目标下固定为 linux，同时设置工具链所需的 GOOS。", "语言工具链", []Scope{ScopePipelineScript}, "Go 工具链且目标为单一 Linux 平台时可用", true),
+	environment("goarch", "EDO_GOARCH", "Go 目标架构", "Go 流水线在单一 Linux 目标下使用的 amd64 或 arm64 架构，同时设置工具链所需的 GOARCH。", "语言工具链", []Scope{ScopePipelineScript}, "Go 工具链且目标为单一 Linux 平台时可用", true),
 	environment("deployment_target_id", "EDO_DEPLOYMENT_TARGET_ID", "部署目标 ID", "当前主机脚本部署目标的唯一标识。", "部署", []Scope{ScopeDeploymentScript}, "部署任务固定目标后可用", false),
 	environment("deployment_id", "EDO_DEPLOYMENT_ID", "部署记录 ID", "当前部署记录或实例的唯一标识。", "部署", []Scope{ScopeDeploymentScript, ScopeLifecycleScript}, "部署记录创建后可用", false),
 	environment("artifact_path", "EDO_ARTIFACT_PATH", "制品路径", "文件制品传输并校验后，在目标主机上的绝对路径。", "制品", []Scope{ScopeDeploymentScript}, "文件制品在目标主机暂存成功后可用", false),
@@ -178,6 +178,10 @@ func ReservedScriptEnvironmentNames() map[string]struct{} {
 		if definition.Kind == KindEnvironment && definition.scriptReserved {
 			result[definition.Name] = struct{}{}
 		}
+	}
+	// 系统工具与历史脚本继续使用原生名称，不能因目录改名而允许用户覆盖。
+	for _, name := range []string{"CI", "HOME", "TMPDIR", "GOOS", "GOARCH", "IMAGE_TAG"} {
+		result[name] = struct{}{}
 	}
 	return result
 }

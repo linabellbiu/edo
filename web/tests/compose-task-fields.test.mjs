@@ -37,7 +37,7 @@ test('切换项目中止旧方案读取，禁用或撤权后不更新配置',asy
 test('自定义部署方案直接提供 Compose、环境和命令预览，不要求方案库读取权限',async t=>{
  const h=harness();t.after(h.stop);await settle();const reads=h.requests.length
  h.auth.user.permissions=['workflow.read','workflow.update']
- h.props.node.config={deployment_source:'inline',inline_deployment_plan:{name:'流水线方案',kind:'compose_stack',timeout_seconds:600,compose_yaml:'services:\n  api:\n    image: example/app:${IMAGE_TAG}\n',deployment_target:{platform:'ssh',environment_id:'prod',working_directory:'/srv/app'}}}
+ h.props.node.config={deployment_source:'inline',inline_deployment_plan:{name:'流水线方案',kind:'compose_stack',timeout_seconds:600,compose_yaml:'services:\n  api:\n    image: example/app:${EDO_IMAGE_TAG}\n',deployment_target:{platform:'ssh',environment_id:'prod',working_directory:'/srv/app'}}}
  await settle();assert.equal(h.state.kind.value,'compose_stack');assert.equal(h.state.environmentID.value,'prod');assert.deepEqual(h.state.services.value,['api']);assert.equal(h.requests.length,reads)
  h.auth.user.permissions=[];await settle();assert.equal(h.state.deploymentPlan.value,undefined)
 })
@@ -45,14 +45,14 @@ test('自定义部署方案直接提供 Compose、环境和命令预览，不要
  test('镜像 Tag 输入使用变量引用，裸变量名保持错误输入，不静默当作变量',async t=>{
  const h=harness();t.after(h.stop);await settle()
  assert.equal(h.state.tagReference.value,'${VERSION}')
- h.state.updateTag('IMAGE_TAG');await settle();assert.equal(h.state.tagReference.value,'IMAGE_TAG')
- h.state.updateTag('${IMAGE_TAG}');await settle();assert.equal(h.props.node.config.compose.tag_variable,'${IMAGE_TAG}')
+ h.state.updateTag('EDO_IMAGE_TAG');await settle();assert.equal(h.state.tagReference.value,'EDO_IMAGE_TAG')
+ h.state.updateTag('${EDO_IMAGE_TAG}');await settle();assert.equal(h.props.node.config.compose.tag_variable,'${EDO_IMAGE_TAG}')
  })
 
 test('Docker 与单服务 Compose 同样使用镜像 Tag 引用，不写入多镜像设置',async t=>{
  for(const kind of ['docker','compose']){
   const h=harness(()=>({data:{deployment_plans:[{id:'plan',kind}]}}));t.after(h.stop);h.props.node.config={deployment_plan_id:'plan'};await settle()
-  assert.equal(h.state.tagReference.value,'${IMAGE_TAG}')
+  assert.equal(h.state.tagReference.value,'${EDO_IMAGE_TAG}')
   h.state.updateTag('${RELEASE_TAG}');await settle()
   assert.equal(h.props.node.config.deployment_tag_reference,'${RELEASE_TAG}')
   assert.equal(h.props.node.config.compose,undefined)

@@ -35,8 +35,8 @@ watch(identity, async () => {
  } catch (cause) { if (!signal.aborted && revision === request) error.value = apiErrorMessage(cause) }
 }, { immediate: true })
 onBeforeUnmount(() => { request++; controller?.abort() })
-const settings = computed(() => props.node.config.compose || { project_name: '', tag_variable: '${IMAGE_TAG}', use_sudo: false, adopt_existing: false })
-const configuredTag = computed(() => props.node.config.deployment_tag_reference || (kind.value === 'compose_stack' ? settings.value.tag_variable : '${IMAGE_TAG}'))
+const settings = computed(() => props.node.config.compose || { project_name: '', tag_variable: '${EDO_IMAGE_TAG}', use_sudo: false, adopt_existing: false })
+const configuredTag = computed(() => props.node.config.deployment_tag_reference || (kind.value === 'compose_stack' ? settings.value.tag_variable : '${EDO_IMAGE_TAG}'))
 const tagReference = ref(variableReference(configuredTag.value))
 watch(configuredTag, value => { if (value !== tagReference.value) tagReference.value = variableReference(value) })
 watch(() => props.node.id, () => { tagReference.value = variableReference(configuredTag.value) })
@@ -49,7 +49,7 @@ function updateSettings(patch: Partial<NonNullable<WorkflowNodeConfig['compose']
 </script>
 <template>
  <a-alert v-if="error" type="warning" :message="error" show-icon/>
-  <a-form-item v-if="['docker','compose','compose_stack'].includes(kind)" required :validate-status="!validTagReference(tagReference)?'error':undefined" :help="!validTagReference(tagReference)?'请使用变量引用，例如 ${IMAGE_TAG}':undefined"><template #label><span>镜像 Tag <a-tooltip title="例如 ${IMAGE_TAG}，对应 docker image 中的 ${IMAGE_TAG}；值来自当前流水线本次构建的镜像 Tag。" :trigger="['hover','focus','click']"><button type="button" class="configuration-help" aria-label="镜像 Tag 说明">?</button></a-tooltip></span></template><a-input :value="tagReference" placeholder="${IMAGE_TAG}" aria-label="镜像 Tag" :disabled="disabled" @update:value="updateTag(String($event||''))"/></a-form-item>
+  <a-form-item v-if="['docker','compose','compose_stack'].includes(kind)" required :validate-status="!validTagReference(tagReference)?'error':undefined" :help="!validTagReference(tagReference)?'请使用变量引用，例如 ${EDO_IMAGE_TAG}':undefined"><template #label><span>镜像 Tag <a-tooltip title="例如 ${EDO_IMAGE_TAG}，对应 docker image 中的 ${EDO_IMAGE_TAG}；值来自当前流水线本次构建的镜像 Tag。" :trigger="['hover','focus','click']"><button type="button" class="configuration-help" aria-label="镜像 Tag 说明">?</button></a-tooltip></span></template><a-input :value="tagReference" placeholder="${EDO_IMAGE_TAG}" aria-label="镜像 Tag" :disabled="disabled" @update:value="updateTag(String($event||''))"/></a-form-item>
  <section v-if="kind==='compose_stack'&&!hideComposeSettings" class="compose-task-fields" aria-label="dockercompose 部署配置">
   <a-form-item label="dockercompose 项目名" required><a-input :value="settings.project_name" :disabled="disabled" @update:value="updateSettings({project_name:String($event||'')})"/></a-form-item>
 

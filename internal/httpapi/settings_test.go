@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"edo/internal/variablecatalog"
@@ -38,10 +39,13 @@ func TestBuiltinVariableCatalogIsReadableAndContainsNoRuntimeValues(t *testing.T
 	}
 	foundTemplate, foundEnvironment, foundPlaceholder := false, false, false
 	for _, definition := range catalog.Variables {
+		if definition.Kind == variablecatalog.KindEnvironment && !strings.HasPrefix(definition.Name, "EDO_") {
+			t.Fatalf("接口暴露了没有 EDO_ 前缀的内置环境变量: %s", definition.Name)
+		}
 		switch definition.Syntax {
 		case "{{application.name}}":
 			foundTemplate = true
-		case "$EDO_PIPELINE_RUN_ID":
+		case "${EDO_PIPELINE_RUN_ID}":
 			foundEnvironment = true
 		case "${EDO_IMAGE}":
 			foundPlaceholder = true

@@ -7,7 +7,7 @@ func composeTagName(value string) string {
 	if strings.HasPrefix(value, "${") && strings.HasSuffix(value, "}") {
 		value = strings.TrimSuffix(strings.TrimPrefix(value, "${"), "}")
 	}
-	if !buildVariableNamePattern.MatchString(value) || strings.HasPrefix(value, "EDO_") {
+	if !buildVariableNamePattern.MatchString(value) || (strings.HasPrefix(value, "EDO_") && value != "EDO_IMAGE_TAG") {
 		return ""
 	}
 	return value

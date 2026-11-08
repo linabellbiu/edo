@@ -2,8 +2,8 @@
 
 | ID | 角色与前置 | 操作 | 预期 | 状态 |
 | --- | --- | --- | --- | --- |
-| DEP-INPUT-01 | 项目流水线编辑者，已有多镜像部署 | 编辑镜像 Tag，分别填写 `IMAGE_TAG` 和 `${IMAGE_TAG}` | Docker、单服务及多服务 Compose 默认显示 `${IMAGE_TAG}`，裸变量名显示输入错误并由保存校验拒绝启用；提示位于问号内 | 组件测试通过 |
-| DEP-INPUT-02 | 本次流水线已有镜像构建产物 | 使用 `${IMAGE_TAG}` 匹配镜像，并放入同名自定义值 | 采用本次构建产物实际 Tag，部署镜像固定为 Digest；裸变量名不触发替换 | Go 回归通过 |
+| DEP-INPUT-01 | 项目流水线编辑者，已有多镜像部署 | 编辑镜像 Tag，分别填写 `EDO_IMAGE_TAG` 和 `${EDO_IMAGE_TAG}` | Docker、单服务及多服务 Compose 默认显示 `${EDO_IMAGE_TAG}`，裸变量名显示输入错误并由保存校验拒绝启用；提示位于问号内 | 组件测试通过 |
+| DEP-INPUT-02 | 本次流水线已有镜像构建产物 | 使用 `${EDO_IMAGE_TAG}` 匹配镜像，并放入同名自定义值 | 采用本次构建产物实际 Tag，部署镜像固定为 Digest；裸变量名不触发替换 | Go 回归通过 |
 | DEP-INPUT-03 | 历史运行采用裸变量名配置 | 读取旧运行或重新编辑 | 旧运行仍按冻结内容解析；编辑器显示变量引用 | Go / 组件测试通过 |
 
 | DEP-INPUT-04 | 流水线编辑者，当前项目有配置与仓库 | 添加并切换配置文件、镜像仓库、上游构建产出 | 清除原来源身份；保留相对路径约束与项目范围，脚本编辑不要求读取配置正文 | 组件与浏览器合成页面通过 |
@@ -23,7 +23,7 @@
 
 - 默认不填写部署脚本时，继续使用部署方案原有内置流程。新来源版本中的配置文件只生成文件；环境参数由脚本或 Compose 文件明确使用。已发布的旧配置仍遵守原有 ENV 注入与重启、重建规则。
 - `EDO_APP_CONFIG_PATH` 为目标执行用户的 `~/edo/应用名称/config`，在运行快照中固定。下载的上游产物是文件，校验后按相对路径落地，不自动解包。部署方案没有主机工作目录时，自定义脚本从此配置目录执行。
-- 镜像仓库来源必须填写实际 Tag；`${IMAGE_TAG}` 属于当前流水线本次构建，不由所选外部镜像 Tag 赋值。第 N 条来源为镜像仓库时，脚本用 `${EDO_INPUT_IMAGE_N}` 获取其固定 Digest 引用。
+- 镜像仓库来源必须填写实际 Tag；`${EDO_IMAGE_TAG}` 属于当前流水线本次构建，不由所选外部镜像 Tag 赋值。第 N 条来源为镜像仓库时，脚本用 `${EDO_INPUT_IMAGE_N}` 获取其固定 Digest 引用。
 - `${EDO_IMAGE}` 指向本次部署的镜像身份，本地构建使用校验的镜像 ID。`${EDO_PIPELINE_RUN_ID}`、`${EDO_APPLICATION_ID}`、`${EDO_APPLICATION_NAME}`、`${EDO_GIT_REF}`、`${EDO_GIT_TAG}`、`${EDO_COMMIT_SHA}`、`${EDO_DEPLOYMENT_TARGET_ID}`、`${EDO_DEPLOYMENT_ID}` 在对应执行阶段提供。
 - 脚本支持当前任务的 `KEY=value` 变量与原有共享变量、密钥引用；内置变量不可覆盖。脚本与参数进入不可变运行快照；文件正文和仓库凭据不写入快照。
 - 用户脚本可能执行任意合法部署过程，其成功表示退出码为 0；不自动宣称容器就绪。此类实例沿用脚本实例的停止、重启命令配置，不伪造内置 Docker/Compose 运行身份或重建能力；重启前刷新原引用的最新配置正文，生命周期输出不回显配置。
@@ -42,6 +42,6 @@ Shell 高亮采用 CodeMirror 官方 `@codemirror/legacy-modes@6.5.5`（MIT，�
 
 ## 部署脚本空白示例
 
-只读参考 [Gitee 主机部署官方示例](https://help.gitee.com/gitee-go/plugin/deploy#3-主机部署) 的“下载产物 → 进入目录 → 执行部署脚本”表达方式，在空编辑器显示当前部署方式的例子。Compose 展示 `-f`、`--env-file` 和 `${IMAGE_TAG}`，Docker 展示 `${EDO_IMAGE}` 与配置文件，Shell 展示执行下载的 `deploy.sh`；文件名是可替换示例，继续使用 `${EDO_APP_CONFIG_PATH}` 引用路径。
+只读参考 [Gitee 主机部署官方示例](https://help.gitee.com/gitee-go/plugin/deploy#3-主机部署) 的“下载产物 → 进入目录 → 执行部署脚本”表达方式，在空编辑器显示当前部署方式的例子。Compose 展示 `-f`、`--env-file` 和 `${EDO_IMAGE_TAG}`，Docker 展示 `${EDO_IMAGE}` 与配置文件，Shell 展示执行下载的 `deploy.sh`；文件名是可替换示例，继续使用 `${EDO_APP_CONFIG_PATH}` 引用路径。
 
 复用现有 CodeMirror `placeholder` 扩展，无新增依赖。示例不写入编辑文档或流水线正文，空值继续使用原部署流程；也不把示例提交给语法检查。输入、清空、方式切换和深色窄屏由本地合成页面验证，相关 12 项组件测试与生产构建通过，未修改生产配置或执行部署。

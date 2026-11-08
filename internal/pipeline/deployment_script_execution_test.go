@@ -64,13 +64,13 @@ func TestDeploymentScriptWithoutBuildSavesFreezesAndExecutesLocalHost(t *testing
 	}
 	node := model.WorkflowNode{ID: "deploy", Name: "部署脚本", Type: model.WorkflowNodeDeploy, Config: model.WorkflowNodeConfig{DeploymentSource: "inline", DeploymentInputVersion: 1, DeploymentScript: script, EnvironmentVariables: map[string]string{"APP_ENV": "production"}, InlineDeploymentPlan: &model.WorkflowDeploymentPlan{Name: "流水线脚本部署", Kind: model.DeploymentPlanDocker, TimeoutSeconds: 120, DeploymentTarget: &model.DeploymentTarget{Platform: model.DeploymentDocker, EnvironmentID: input.EnvironmentID, WorkingDirectory: directory, WorkloadName: "sample"}}}}
 	node.Config.DeploymentInputs = []model.DeploymentInput{{Kind: "configuration", ConfigurationID: configuration.ID, Path: "settings/runtime.env"}}
-	node.Config.DeploymentTagReference = "IMAGE_TAG"
+	node.Config.DeploymentTagReference = "EDO_IMAGE_TAG"
 	invalid, err := s.SaveWorkflow(ctx, app.ID, actor.ID, WorkflowInput{SchemaVersion: 1, Name: workflow.Workflow.Name, Revision: workflow.Workflow.Revision, Source: source, Stages: []model.WorkflowStage{{ID: "deploy-stage", Name: "部署", Tasks: []model.WorkflowNode{node}}}})
 	if err != nil || invalid.Valid {
 		t.Fatalf("裸镜像 Tag 变量名未被校验拒绝: %+v %v", invalid, err)
 	}
 	workflow = invalid
-	node.Config.DeploymentTagReference = "${IMAGE_TAG}"
+	node.Config.DeploymentTagReference = "${EDO_IMAGE_TAG}"
 	saved, err := s.SaveWorkflow(ctx, app.ID, actor.ID, WorkflowInput{SchemaVersion: 1, Name: workflow.Workflow.Name, Revision: workflow.Workflow.Revision, Activate: true, Source: source, Stages: []model.WorkflowStage{{ID: "deploy-stage", Name: "部署", Tasks: []model.WorkflowNode{node}}}})
 	if err != nil || !saved.Valid {
 		t.Fatalf("无构建脚本部署无法保存: %+v %v", saved, err)

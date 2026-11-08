@@ -14,12 +14,16 @@ import (
 	"edo/internal/sshdeploy"
 )
 
+func referencesPipelineImageTag(script string) bool {
+	return strings.Contains(script, "${EDO_IMAGE_TAG}") || strings.Contains(script, "${IMAGE_TAG}")
+}
+
 func (s *Service) prepareDeploymentInputs(ctx context.Context, prepared *executionContext) ([]io.Closer, error) {
 	closers := []io.Closer{}
 	if prepared.node.Config.DeploymentInputVersion != 1 {
 		return closers, nil
 	}
-	if prepared.node.Config.DeploymentScript != "" && strings.Contains(prepared.node.Config.DeploymentScript, "${IMAGE_TAG}") && prepared.deploymentPlan.Kind != model.DeploymentPlanComposeStack {
+	if referencesPipelineImageTag(prepared.node.Config.DeploymentScript) && prepared.deploymentPlan.Kind != model.DeploymentPlanComposeStack {
 		prior := []string{}
 		found := false
 		for _, stage := range prepared.snapshot.Stages {
@@ -154,6 +158,7 @@ func deploymentScriptEnvironment(prepared *executionContext) (map[string]string,
 	if !strings.HasPrefix(prepared.run.Ref, "refs/tags/") {
 		values["EDO_GIT_TAG"] = ""
 	}
+	delete(values, "EDO_IMAGE_TAG")
 	delete(values, "IMAGE_TAG")
 	images := []model.Artifact{}
 	if prepared.artifact.Kind == model.ArtifactKindOCIImage && prepared.artifact.PipelineRunID != "" {
@@ -182,12 +187,14 @@ func deploymentScriptEnvironment(prepared *executionContext) (map[string]string,
 		tag = ""
 	}
 	if tag != "" {
+		values["EDO_IMAGE_TAG"] = tag
+		// 已保存的脚本及运行快照继续按原变量读取本次制品。
 		values["IMAGE_TAG"] = tag
 		if alias := composeTagName(prepared.node.Config.DeploymentTagReference); alias != "" {
 			values[alias] = tag
 		}
 	}
-	if strings.Contains(prepared.node.Config.DeploymentScript, "${IMAGE_TAG}") && tag == "" {
+	if referencesPipelineImageTag(prepared.node.Config.DeploymentScript) && tag == "" {
 		return nil, ErrDeploymentInputs
 	}
 	if prepared.artifact.ImageRef != "" {

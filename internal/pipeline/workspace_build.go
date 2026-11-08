@@ -66,6 +66,8 @@ func runWorkspaceBuild(ctx context.Context, input dockerengine.ScriptContainerIn
 		environment[key] = file
 	}
 	maps.Copy(environment, input.SystemEnvironment)
+	environment["EDO_CI"], environment["CI"] = "true", "true"
+	environment["EDO_HOME"], environment["EDO_TMPDIR"] = home, private
 	environment["HOME"], environment["TMPDIR"] = home, private
 	keys := make([]string, 0, len(environment))
 	for key := range environment {

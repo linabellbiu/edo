@@ -23,7 +23,7 @@ const history = {
   'env-config': ['TOKEN=synthetic-old\nPORT=8080\n', 'TOKEN=synthetic-new\nPORT=9090\n'],
   'yaml-config': ['server:\n  port: 8080\n', 'server:\n  port: 8080\n  mode: development\n', 'server:\n  port: 9090\n  mode: production\n'],
 }
-const plans = ['compose_stack', 'compose', 'docker', 'script'].map(kind => ({ id: 'plan-' + kind, kind, timeout_seconds: 600, service_name: 'api', compose_yaml: 'services:\n  api:\n    image: example/api:${IMAGE_TAG}\n', deployment_target: { host_id: 'host', environment_id: 'prod', working_directory: '/srv/example', workload_name: 'example-api' } }))
+const plans = ['compose_stack', 'compose', 'docker', 'script'].map(kind => ({ id: 'plan-' + kind, kind, timeout_seconds: 600, service_name: 'api', compose_yaml: 'services:\n  api:\n    image: example/api:${EDO_IMAGE_TAG}\n', deployment_target: { host_id: 'host', environment_id: 'prod', working_directory: '/srv/example', workload_name: 'example-api' } }))
 client.defaults.adapter = async config => {
   let data
   const path = config.url, body = typeof config.data === 'string' ? JSON.parse(config.data) : config.data
@@ -49,7 +49,7 @@ client.defaults.adapter = async config => {
 }
 window.fetch = () => Promise.reject(new Error('验收页不连接真实 API'))
 createApp({ setup() {
-  const compose = { project_name: 'example', services: [], tag_variable: '${IMAGE_TAG}', use_sudo: false, adopt_existing: false, env_file: '/home/ubuntu/legacy.env' }
+  const compose = { project_name: 'example', services: [], tag_variable: '${EDO_IMAGE_TAG}', use_sudo: false, adopt_existing: false, env_file: '/home/ubuntu/legacy.env' }
   const deploymentConfig = ref({ deployment_plan_id: 'plan-compose_stack', configuration_files: [{ id: 'env-config', path: '.prod.env' }], compose }), confirmOpen = ref(false), dark = ref(false)
   const componentTheme = computed(() => ({ token: { colorPrimary: '#4f6ef7', borderRadius: 6, borderRadiusLG: 8, colorBgLayout: dark.value ? '#0f1014' : '#f5f6f8', colorBgContainer: dark.value ? '#17181d' : '#ffffff', colorBorderSecondary: dark.value ? '#292b33' : '#e9eaee' }, algorithm: dark.value ? theme.darkAlgorithm : theme.defaultAlgorithm }))
   return () => h(ConfigProvider, { theme: componentTheme.value }, { default: () => h('main', { style: 'padding:20px;display:grid;gap:24px;min-width:0' }, [

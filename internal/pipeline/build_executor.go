@@ -848,6 +848,7 @@ func pipelineCommandEnvironment(prepared *buildExecutionContext) map[string]stri
 			architecture := strings.TrimPrefix(prepared.plan.Platform, "linux/")
 			environment["EDO_TARGET_ARCH"] = architecture
 			if prepared.node.Config.ToolchainLanguage == workflowPresetGo {
+				environment["EDO_GOOS"], environment["EDO_GOARCH"] = "linux", architecture
 				environment["GOOS"], environment["GOARCH"] = "linux", architecture
 			}
 		}

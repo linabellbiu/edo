@@ -30,10 +30,10 @@ func TestDeploymentInputSanitizerKeepsSelectedFileParameters(t *testing.T) {
 }
 
 func TestDeploymentScriptImageTagIsCurrentBuildNotRegistryOrUserValue(t *testing.T) {
-	p := &executionContext{run: model.PipelineRun{ID: "run", Ref: "refs/tags/git-version"}, node: model.WorkflowNode{Config: model.WorkflowNodeConfig{DeploymentScript: "printf '%s' \"${IMAGE_TAG}\"", EnvironmentVariables: map[string]string{"APP_ENV": "production"}}}, artifact: model.Artifact{Kind: model.ArtifactKindOCIImage, Name: "app:build-v1", PipelineRunID: "run", ImageRef: "registry/app@sha256:" + strings.Repeat("a", 64)}, variables: map[string]string{"IMAGE_TAG": "wrong", "EDO_INPUT_IMAGE_1": "registry/other@sha256:" + strings.Repeat("b", 64)}}
+	p := &executionContext{run: model.PipelineRun{ID: "run", Ref: "refs/tags/git-version"}, node: model.WorkflowNode{Config: model.WorkflowNodeConfig{DeploymentScript: "printf '%s' \"${EDO_IMAGE_TAG}\"", EnvironmentVariables: map[string]string{"APP_ENV": "production"}}}, artifact: model.Artifact{Kind: model.ArtifactKindOCIImage, Name: "app:build-v1", PipelineRunID: "run", ImageRef: "registry/app@sha256:" + strings.Repeat("a", 64)}, variables: map[string]string{"EDO_IMAGE_TAG": "wrong", "IMAGE_TAG": "wrong", "EDO_INPUT_IMAGE_1": "registry/other@sha256:" + strings.Repeat("b", 64)}}
 	p.node.Config.DeploymentTagReference = "${RELEASE_TAG}"
 	values, err := deploymentScriptEnvironment(p)
-	if err != nil || values["IMAGE_TAG"] != "build-v1" || values["RELEASE_TAG"] != "build-v1" || values["APP_ENV"] != "production" || values["EDO_GIT_TAG"] != "git-version" {
+	if err != nil || values["EDO_IMAGE_TAG"] != "build-v1" || values["IMAGE_TAG"] != "build-v1" || values["RELEASE_TAG"] != "build-v1" || values["APP_ENV"] != "production" || values["EDO_GIT_TAG"] != "git-version" {
 		t.Fatalf("脚本变量错误: %+v %v", values, err)
 	}
 	p.composeCandidates = map[string]model.Artifact{"second": {Name: "other:build-v2"}}
@@ -43,6 +43,10 @@ func TestDeploymentScriptImageTagIsCurrentBuildNotRegistryOrUserValue(t *testing
 	p.composeCandidates = nil
 	p.artifact = model.Artifact{}
 	if _, err := deploymentScriptEnvironment(p); err == nil {
-		t.Fatal("没有本次构建时借用了用户 IMAGE_TAG")
+		t.Fatal("没有本次构建时借用了用户 EDO_IMAGE_TAG")
+	}
+	p.node.Config.DeploymentScript = "printf '%s' \"${IMAGE_TAG}\""
+	if _, err := deploymentScriptEnvironment(p); err == nil {
+		t.Fatal("历史变量引用也不得借用用户值")
 	}
 }

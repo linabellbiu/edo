@@ -42,7 +42,7 @@ window.fetch=()=>Promise.reject(new Error('验收页不连接真实 API'))
 window.WebSocket=class extends EventTarget{readyState=0;close(){this.readyState=3}}
 const router=createRouter({history:createMemoryHistory(),routes:[{path:'/',component:{render:()=>null}}]});await router.push('/')
 const app=createApp({setup(){
- const dark=ref(false),node=ref({id:'deploy',type:'deploy',name:'部署',config:{deployment_plan_id:'compose-plan',compose:{project_name:'example',tag_variable:'IMAGE_TAG'}}})
+ const dark=ref(false),node=ref({id:'deploy',type:'deploy',name:'部署',config:{deployment_plan_id:'compose-plan',compose:{project_name:'example',tag_variable:'EDO_IMAGE_TAG'}}})
  const antTheme=computed(()=>({algorithm:dark.value?theme.darkAlgorithm:theme.defaultAlgorithm}))
  return ()=>h(ConfigProvider,{theme:antTheme.value},{default:()=>h('main',{style:'padding:20px'},[
   h(Button,{onClick(){dark.value=!dark.value;document.documentElement.dataset.theme=dark.value?'dark':'light'}},()=> '切换主题'),

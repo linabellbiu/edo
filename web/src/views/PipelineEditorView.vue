@@ -260,9 +260,9 @@ const activeNotificationChannels = computed(() => notificationChannels.value.fil
 const notificationTemplateVariables = computed(() => builtinVariables.value
   .filter(item => item.kind === 'template' && item.scopes.includes('notification_template'))
   .map(item => ({ value: item.syntax, label: item.label })))
-const reservedPipelineEnvironmentNames = computed(() => new Set(builtinVariables.value
+const reservedPipelineEnvironmentNames = computed(() => new Set(['CI','HOME','TMPDIR','GOOS','GOARCH','IMAGE_TAG','EDO_IMAGE_TAG', ...builtinVariables.value
   .filter(item => item.kind === 'environment' && item.scopes.includes('pipeline_script'))
-  .map(item => item.name)))
+  .map(item => item.name)]))
 const builtinVariableCatalogReady = computed(() => !builtinVariableLoading.value && !builtinVariableError.value && builtinVariables.value.length > 0)
 const notificationChannelOptions = computed(() => activeNotificationChannels.value.map(item => ({
   value: item.id,
@@ -341,7 +341,7 @@ function createTaskNode(type: TaskNodeType, definition?: TaskDefinition): Workfl
     const kind=definition?.id==='compose-deploy'?'compose_stack':definition?.id==='kubernetes-deploy'?'kubernetes':'script'
     if(kind==='compose_stack')config.compose_source={kind:'repository',path:'compose.yaml'}
     config.deployment_source='inline'
-    config.inline_deployment_plan={name:definition?.label||'自定义部署',kind,script:kind==='script'?'set -eu\n# 在这里填写部署命令\n':undefined,compose_yaml:'',timeout_seconds:600,deployment_target:{platform:kind==='kubernetes'?'kubernetes':'ssh',environment_id:'',working_directory:kind==='script'?'/tmp':undefined},execution_config:kind==='kubernetes'?undefined:{deployment_input_version:1,deployment_inputs:[],compose:kind==='compose_stack'?{project_name:'',tag_variable:'${IMAGE_TAG}',use_sudo:false,adopt_existing:false}:undefined}}
+    config.inline_deployment_plan={name:definition?.label||'自定义部署',kind,script:kind==='script'?'set -eu\n# 在这里填写部署命令\n':undefined,compose_yaml:'',timeout_seconds:600,deployment_target:{platform:kind==='kubernetes'?'kubernetes':'ssh',environment_id:'',working_directory:kind==='script'?'/tmp':undefined},execution_config:kind==='kubernetes'?undefined:{deployment_input_version:1,deployment_inputs:[],compose:kind==='compose_stack'?{project_name:'',tag_variable:'${EDO_IMAGE_TAG}',use_sudo:false,adopt_existing:false}:undefined}}
   }
   const node: WorkflowNode = {
     id: uid(type), type, name: definition?.label || taskMeta[type].label, config,

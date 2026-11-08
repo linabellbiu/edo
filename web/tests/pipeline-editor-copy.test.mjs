@@ -54,8 +54,8 @@ test('通知渠道读取权限提醒和已有渠道下的未配置通知提醒�
 test('部署任务删除 Compose 说明，显示 dockercompose 名称且保留 docker compose 命令', async () => {
   const html = await render(composeTemplate, {
     error: '', kind: 'compose_stack', disabled: false,
-    node: { config: { deployment_plan_id: 'plan' } }, tagReference:'${IMAGE_TAG}', validTagReference:()=>true,
-    settings: { project_name: 'team', tag_variable: 'IMAGE_TAG', services: [] }, services: [], updateSettings() {},
+    node: { config: { deployment_plan_id: 'plan' } }, tagReference:'${EDO_IMAGE_TAG}', validTagReference:()=>true,
+    settings: { project_name: 'team', tag_variable: 'EDO_IMAGE_TAG', services: [] }, services: [], updateSettings() {},
   })
   assert.doesNotMatch(html, /使用 EDO 保存的|上游构建镜像自动匹配并固定摘要/)
   assert.match(html, /dockercompose 部署配置/)

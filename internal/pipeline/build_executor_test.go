@@ -28,6 +28,27 @@ type buildExecutorCheckoutStub struct {
 
 type buildExecutorScriptRunner struct{}
 
+func TestPipelineCommandEnvironmentUsesPrefixedGoTarget(t *testing.T) {
+	prepared := &buildExecutionContext{
+		run:  model.PipelineRun{ID: "run", Ref: "refs/tags/v1", CommitSHA: "commit"},
+		plan: workflowBuildPlanSnapshot{Platform: "linux/arm64"},
+		node: model.WorkflowNode{Config: model.WorkflowNodeConfig{ToolchainLanguage: workflowPresetGo}},
+	}
+	values := pipelineCommandEnvironment(prepared)
+	for name, want := range map[string]string{"EDO_GOOS": "linux", "EDO_GOARCH": "arm64", "GOOS": "linux", "GOARCH": "arm64", "EDO_TARGET_ARCH": "arm64"} {
+		if values[name] != want {
+			t.Fatalf("构建平台变量 %s 错误: %q", name, values[name])
+		}
+		if validScriptEnvironmentVariables(map[string]string{name: "override"}) {
+			t.Fatalf("构建平台变量 %s 可被覆盖", name)
+		}
+	}
+	prepared.plan.Platform = "linux/amd64,linux/arm64"
+	if _, exists := pipelineCommandEnvironment(prepared)["EDO_GOARCH"]; exists {
+		t.Fatal("多架构构建不得冒充单一 Go 架构")
+	}
+}
+
 func (buildExecutorScriptRunner) RunScriptContainer(
 	ctx context.Context,
 	input dockerengine.ScriptContainerInput,

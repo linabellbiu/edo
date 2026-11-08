@@ -442,7 +442,7 @@ func validScriptSystemEnvironment(values map[string]string) bool {
 			maximumValueBytes = 64 * 1024
 		}
 		if _, reserved := reservedScriptContainerEnvironment[name]; !reserved ||
-			name == "CI" || name == "HOME" || name == "TMPDIR" || len(value) > maximumValueBytes || strings.ContainsRune(value, '\x00') {
+			name == "CI" || name == "HOME" || name == "TMPDIR" || name == "EDO_CI" || name == "EDO_HOME" || name == "EDO_TMPDIR" || len(value) > maximumValueBytes || strings.ContainsRune(value, '\x00') {
 			return false
 		}
 	}
@@ -577,7 +577,7 @@ func scriptContainerEnvironment(configured, system map[string]string) []string {
 		result = append(result, key+"="+system[key])
 	}
 	// 受控目录最后写入，避免方案变量把非 root 用户重新指向只读或敏感路径。
-	result = append(result, "CI=true", "HOME=/home/edo", "TMPDIR=/tmp")
+	result = append(result, "EDO_CI=true", "EDO_HOME=/home/edo", "EDO_TMPDIR=/tmp", "CI=true", "HOME=/home/edo", "TMPDIR=/tmp")
 	return result
 }
 

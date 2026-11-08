@@ -2,6 +2,7 @@ package variablecatalog
 
 import (
 	"slices"
+	"strings"
 	"testing"
 )
 
@@ -25,6 +26,9 @@ func TestCatalogDefinitionsAreUniqueAndNeverExposeValues(t *testing.T) {
 	}
 	ids, syntaxes := map[string]struct{}{}, map[string]struct{}{}
 	for _, definition := range catalog.Variables {
+		if definition.Kind == KindEnvironment && !strings.HasPrefix(definition.Name, "EDO_") {
+			t.Fatalf("内置环境变量必须使用 EDO_ 前缀: %s", definition.Name)
+		}
 		if definition.ID == "" || definition.Name == "" || definition.Syntax == "" ||
 			definition.Label == "" || definition.Description == "" || definition.Availability == "" || len(definition.Scopes) == 0 {
 			t.Fatalf("内置变量说明不完整: %+v", definition)
@@ -57,7 +61,8 @@ func TestRenderNotificationTemplateOnlyReplacesReferencedKnownVariables(t *testi
 func TestReservedScriptEnvironmentNamesMatchExecutionBoundary(t *testing.T) {
 	reserved := ReservedScriptEnvironmentNames()
 	for _, name := range []string{
-		"CI", "HOME", "TMPDIR", "EDO_PIPELINE_RUN_ID", "EDO_APPLICATION_ID", "EDO_GIT_REF",
+		"EDO_CI", "EDO_HOME", "EDO_TMPDIR", "EDO_IMAGE_TAG", "EDO_GOOS", "EDO_GOARCH",
+		"CI", "HOME", "TMPDIR", "IMAGE_TAG", "EDO_PIPELINE_RUN_ID", "EDO_APPLICATION_ID", "EDO_GIT_REF",
 		"EDO_COMMIT_SHA", "EDO_UPSTREAM_ARTIFACTS_JSON", "EDO_TARGET_PLATFORM", "EDO_TARGET_ARCH", "GOOS", "GOARCH",
 	} {
 		if _, exists := reserved[name]; !exists {

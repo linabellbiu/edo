@@ -32,7 +32,7 @@ func TestComposeDeliveryCreatesTwoStageDraftAndSharedImageBuild(t *testing.T) {
 	if err := db.WithContext(ctx).Create(&model.HostCapability{HostID: target.HostID, Kind: model.HostCapabilityDocker, Status: model.HostCapabilityReady}).Error; err != nil {
 		t.Fatal(err)
 	}
-	input := ComposeDeliveryInput{ProjectName: "example-stack", ComposeYAML: "services:\n  api:\n    image: registry.example.com/engine:${IMAGE_TAG}\n  jobs:\n    image: registry.example.com/engine:${IMAGE_TAG}\n", Services: []ComposeServiceBuild{{Service: "api", BuildPlanID: build.ID, ImageName: "engine"}, {Service: "jobs", BuildPlanID: build.ID, ImageName: "engine"}}, Target: *target}
+	input := ComposeDeliveryInput{ProjectName: "example-stack", ComposeYAML: "services:\n  api:\n    image: registry.example.com/engine:${EDO_IMAGE_TAG}\n  jobs:\n    image: registry.example.com/engine:${EDO_IMAGE_TAG}\n", Services: []ComposeServiceBuild{{Service: "api", BuildPlanID: build.ID, ImageName: "engine"}, {Service: "jobs", BuildPlanID: build.ID, ImageName: "engine"}}, Target: *target}
 	result, err := s.CreateComposeDeliveryWorkflow(ctx, app.ID, "admin", input)
 	if err != nil || !result.Valid || result.Workflow.IsActive {
 		t.Fatalf("未生成有效独立草稿: err=%v result=%+v", err, result)
@@ -48,7 +48,7 @@ func TestComposeDeliveryCreatesTwoStageDraftAndSharedImageBuild(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if plan.Kind != model.DeploymentPlanComposeStack || plan.Script != "" || !strings.Contains(plan.ComposeYAML, "${IMAGE_TAG}") {
+	if plan.Kind != model.DeploymentPlanComposeStack || plan.Script != "" || !strings.Contains(plan.ComposeYAML, "${EDO_IMAGE_TAG}") {
 		t.Fatal("Compose 应保存在 EDO 部署方案，不生成专用脚本或清单阶段")
 	}
 	for _, value := range []any{&model.PipelineRun{}, &model.DeploymentRecord{}, &model.Job{}} {
@@ -71,13 +71,13 @@ func TestComposeDeliveryCreatesTwoStageDraftAndSharedImageBuild(t *testing.T) {
 }
 
 func TestComposeDeliveryValidatesInlineYAMLAndTagBindings(t *testing.T) {
-	valid := ComposeDeliveryInput{ProjectName: "my-app", ComposeYAML: "services:\n  api:\n    image: registry.example.com/api:${IMAGE_TAG}\n", Services: []ComposeServiceBuild{{Service: "api", BuildPlanID: "build"}}}
+	valid := ComposeDeliveryInput{ProjectName: "my-app", ComposeYAML: "services:\n  api:\n    image: registry.example.com/api:${EDO_IMAGE_TAG}\n", Services: []ComposeServiceBuild{{Service: "api", BuildPlanID: "build"}}}
 	if _, err := normalizeComposeDelivery(valid); err != nil {
 		t.Fatalf("新方案应允许自动管理工作目录：%v", err)
 	}
 	valid.Target.WorkingDirectory = "/srv/app"
 	for _, change := range []func(*ComposeDeliveryInput){func(v *ComposeDeliveryInput) { v.ProjectName = "$(id)" }, func(v *ComposeDeliveryInput) { v.ComposeYAML = "services: [" }, func(v *ComposeDeliveryInput) { v.EnvFile = "../prod.env" }, func(v *ComposeDeliveryInput) { v.EnvFile = "settings.env" }, func(v *ComposeDeliveryInput) { v.TagVariable = "EDO_COMMIT_SHA" }, func(v *ComposeDeliveryInput) { v.HealthURL = "https://user:pass@example.com/health" }, func(v *ComposeDeliveryInput) {
-		v.ComposeYAML = "services:\n  api:\n    build: .\n    image: app:${IMAGE_TAG}\n"
+		v.ComposeYAML = "services:\n  api:\n    build: .\n    image: app:${EDO_IMAGE_TAG}\n"
 	}} {
 		input := valid
 		change(&input)

@@ -312,7 +312,7 @@ func buildWorkflowPresetStages(preset workflowPresetDefinition, runtime Workflow
 				}
 				if kind == model.DeploymentPlanComposeStack {
 					node.Config.ComposeSource = &model.WorkflowComposeSource{Kind: "repository", Path: "compose.yaml"}
-					node.Config.InlineDeploymentPlan.ExecutionConfig.Compose = &model.ComposeDeploymentSettings{TagVariable: "${IMAGE_TAG}"}
+					node.Config.InlineDeploymentPlan.ExecutionConfig.Compose = &model.ComposeDeploymentSettings{TagVariable: "${EDO_IMAGE_TAG}"}
 				}
 				node.Config.Description = "直接编辑本任务的部署配置"
 			}

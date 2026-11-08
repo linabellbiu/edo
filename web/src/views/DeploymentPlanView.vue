@@ -225,7 +225,7 @@ const composeFileInput = ref<HTMLInputElement>()
 const deploymentDrafts: Partial<Record<PlanKind, DeploymentDraft>> = {}
 const defaultComposeYAML = 'services:\n  app:\n    restart: unless-stopped\n'
 
-function emptyExecution(kind:PlanKind):DeploymentExecutionConfig { return kind==='compose_stack' ? {compose:{project_name:'',tag_variable:'${IMAGE_TAG}',use_sudo:false,adopt_existing:false}} : {} }
+function emptyExecution(kind:PlanKind):DeploymentExecutionConfig { return kind==='compose_stack' ? {compose:{project_name:'',tag_variable:'${EDO_IMAGE_TAG}',use_sudo:false,adopt_existing:false}} : {} }
 function cloneExecution(value?:DeploymentExecutionConfig):DeploymentExecutionConfig|undefined { return value===undefined ? undefined : JSON.parse(JSON.stringify(value)) }
 const form = reactive({
   execution_config: {} as DeploymentExecutionConfig | undefined,

@@ -31,6 +31,22 @@ func TestScriptUpstreamArtifactEnvironmentIsReservedAndBounded(t *testing.T) {
 	}
 }
 
+func TestScriptRuntimeDirectoriesHavePrefixedVariablesAndCannotBeOverridden(t *testing.T) {
+	values := map[string]string{}
+	for _, entry := range scriptContainerEnvironment(nil, nil) {
+		name, value, _ := strings.Cut(entry, "=")
+		values[name] = value
+	}
+	for name, want := range map[string]string{"EDO_CI": "true", "EDO_HOME": "/home/edo", "EDO_TMPDIR": "/tmp", "CI": "true", "HOME": "/home/edo", "TMPDIR": "/tmp"} {
+		if values[name] != want {
+			t.Fatalf("执行环境变量 %s 错误: %q", name, values[name])
+		}
+		if validScriptEnvironment(map[string]string{name: "override"}) || validScriptSystemEnvironment(map[string]string{name: "override"}) {
+			t.Fatalf("受控运行目录或 CI 标记 %s 可以被覆盖", name)
+		}
+	}
+}
+
 func TestNormalizeScriptContainerInputRequiresPinnedImageAndEmptyOutput(t *testing.T) {
 	source := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(source, "cmd"), 0o755); err != nil {
