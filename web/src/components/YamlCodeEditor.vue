@@ -12,14 +12,14 @@ import { linter, forceLinting } from '@codemirror/lint'
 import { usePreferencesStore } from '@/stores/preferences'
 import { readKubeYaml, type YamlIssue } from '@/utils/kubernetesYaml'
 
-const props = withDefaults(defineProps<{ modelValue: string; readonly?: boolean; issues?: YamlIssue[]; label?: string; fullscreen?: boolean; collapsible?:boolean }>(), { readonly: false, fullscreen: false, collapsible:false })
+const props = withDefaults(defineProps<{ modelValue: string; readonly?: boolean; issues?: YamlIssue[]; label?: string; fullscreen?: boolean; collapsible?:boolean; defaultCollapsed?:boolean }>(), { readonly: false, fullscreen: false, collapsible:false, defaultCollapsed:false })
 const emit = defineEmits<{ 'update:modelValue': [value: string]; format: [] }>()
 const { t, locale } = useI18n(), preferences = usePreferencesStore(), host = ref<HTMLElement>()
 const appearance = new Compartment(), accessibility = new Compartment()
 const editing = new Compartment()
 const highlighting = new Compartment()
 const fullscreenOpen = ref(false), fullscreenHost = ref<HTMLElement>()
-const collapsed = ref(false), editorID = useId()
+const collapsed = ref(props.collapsible && props.defaultCollapsed), editorID = useId()
 function highlight() {
   const dark = preferences.theme === 'dark'
   return syntaxHighlighting(HighlightStyle.define([

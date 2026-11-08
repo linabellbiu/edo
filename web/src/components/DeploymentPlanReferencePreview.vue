@@ -59,7 +59,7 @@ onBeforeUnmount(() => controller?.abort())
     <a-form-item v-if="plan.description" label="方案说明"><a-textarea :value="plan.description" :auto-size="{ minRows: 1, maxRows: 4 }" disabled /></a-form-item>
     <template v-if="plan.kind === 'compose' || plan.kind === 'compose_stack'">
       <a-form-item v-if="plan.kind === 'compose'" label="目标服务"><a-input :value="plan.service_name" disabled /></a-form-item>
-      <a-form-item><YamlCodeEditor :model-value="plan.compose_yaml || ''" readonly fullscreen collapsible label="compose.yaml（只读）"><template #toolbar><span>compose.yaml</span></template></YamlCodeEditor></a-form-item>
+      <a-form-item><YamlCodeEditor :model-value="plan.compose_yaml || ''" readonly fullscreen collapsible default-collapsed label="compose.yaml（只读）"><template #toolbar><span>compose.yaml</span></template></YamlCodeEditor></a-form-item>
     </template>
     <a-form-item v-else-if="plan.kind === 'script'" label="方案脚本"><a-textarea :value="plan.script" :auto-size="{ minRows: 3, maxRows: 12 }" disabled /></a-form-item>
     <template v-else-if="plan.kind === 'kubernetes'">

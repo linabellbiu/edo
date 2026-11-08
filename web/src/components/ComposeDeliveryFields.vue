@@ -27,7 +27,7 @@ defineExpose({validate})
  </div>
  <a-form-item label="docker-compose.yaml" required :validate-status="error('compose_yaml')?'error':undefined" :help="error('compose_yaml')">
   <div class="yaml-actions"><a-button :disabled="disabled" @click="format">格式化</a-button><a-button :disabled="disabled" @click="readServices">读取服务列表</a-button></div>
-  <YamlCodeEditor v-model="form.compose_yaml" :readonly="disabled" fullscreen label="docker-compose.yaml" @format="format"/>
+  <YamlCodeEditor v-model="form.compose_yaml" :readonly="disabled" fullscreen collapsible default-collapsed label="docker-compose.yaml" @format="format"/>
  </a-form-item>
  <fieldset class="service-bindings"><legend>服务与镜像构建</legend>
   <p>每个服务关联构建方案和输出镜像名称。同一构建方案与镜像名称可供多个服务共用，只构建一次。</p>

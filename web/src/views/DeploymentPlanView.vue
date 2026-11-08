@@ -12,7 +12,6 @@ import DeploymentScriptEditor from '@/components/DeploymentScriptEditor.vue'
 import { environmentIDsOf, listEnvironments, listHosts, type InfrastructureEnvironment, type InfrastructureHost } from '@/api/infrastructure'
 import DeploymentHostSelection from '@/components/DeploymentHostSelection.vue'
 import { savedDeploymentRegistry } from '@/utils/deploymentExecution'
-import { hostGroupOptions } from '@/utils/hostGroups'
 import { apiErrorMessage, type ResourceRecord } from '@/api/resources'
 import YamlCodeEditor from '@/components/YamlCodeEditor.vue'
 import { readKubeYaml } from '@/utils/kubernetesYaml'
@@ -295,7 +294,7 @@ const environmentByID = computed(() => new Map(environments.value.map(item => [i
 const hostByID = computed(() => new Map(hosts.value.map(item => [item.id, item])))
 const dockerByID = computed(() => new Map(docker.value.filter(item => item.is_active).map(item => [item.id, item])))
 const clusterByID = computed(() => new Map(clusters.value.filter(item => item.is_active).map(item => [item.id, item])))
-const environmentOptions = computed(() => hostGroupOptions(environments.value.filter(environment => environment.is_active)))
+const deploymentHostOptions = computed(()=>Object.fromEntries(environments.value.filter(group=>group.is_active).map(group=>[group.id,hosts.value.filter(host=>host.is_active&&environmentIDsOf(host).includes(group.id)&&hostSupportsKind(host,form.kind))])))
 const environmentHosts = computed(() => hosts.value
   .filter(host => host.is_active && environmentIDsOf(host).includes(form.environment_id)))
 const availableKindOptions = computed(() => kindOptions.map(option=>option.value==='compose_stack'&&form.kind==='compose'?{...option,value:'compose' as PlanKind}:option).filter(option=>(!props.inline||!props.inlineKinds||props.inlineKinds.includes(option.value))&&(form.reusable||environmentSupportsKind(option.value))))
@@ -686,6 +685,13 @@ function changeKind(kind: PlanKind) {
     docker_volume_mounts: cloneDockerVolumes(next.docker_volume_mounts),
   })
   form.environment_id = environmentID
+  reconcileExecutionTarget()
+}
+
+function selectDeploymentTarget(value:{groupID:string;hostIDs:string[]}) {
+  const previousKind=form.kind
+  if(value.groupID!==form.environment_id)changeEnvironment(value.groupID)
+  if(form.kind!=='kubernetes')form.host_ids=previousKind===form.kind?[...value.hostIDs]:undefined
   reconcileExecutionTarget()
 }
 
@@ -1113,7 +1119,7 @@ onBeforeUnmount(() => { disposed = true; resetMutation(); reset(); window.remove
           <div class="resource-facts-wide"><dt>{{ t('resourceList.description') }}</dt><dd>{{ detailPlan.description || '—' }}</dd></div>
         </dl>
       </section>
-      <section v-if="detailPlan && (detailPlan.script || detailPlan.compose_yaml)" class="resource-detail-section"><h4>{{ t('deploymentList.configuration') }}</h4><YamlCodeEditor v-if="detailPlan.compose_yaml" :model-value="detailPlan.compose_yaml" readonly fullscreen collapsible label="compose.yaml"/><pre v-else class="resource-code">{{ detailPlan.script }}</pre></section>
+      <section v-if="detailPlan && (detailPlan.script || detailPlan.compose_yaml)" class="resource-detail-section"><h4>{{ t('deploymentList.configuration') }}</h4><YamlCodeEditor v-if="detailPlan.compose_yaml" :model-value="detailPlan.compose_yaml" readonly fullscreen collapsible default-collapsed label="compose.yaml"/><pre v-else class="resource-code">{{ detailPlan.script }}</pre></section>
       <a-form v-if="detailPlan?.execution_config" layout="vertical"><DeploymentExecutionFields :model-value="detailPlan.execution_config" :plan="detailPlan" disabled :hide-script="detailPlan.kind==='script' && !detailPlan.execution_config.deployment_script" /></a-form>
     </ResourceDetailDrawer>
 
@@ -1128,34 +1134,15 @@ onBeforeUnmount(() => { disposed = true; resetMutation(); reset(); window.remove
           </div>
         </div>
 
-        <div v-if="!form.reusable" class="form-section">
-          <header><b>2</b><div><strong>执行主机组<DeploymentFieldHelp :text="targetT('deploymentTarget.environmentHint')" label="执行主机组说明" /></strong></div></header>
-          <a-form-item :label="t('environment.deployment.environment')" required>
-            <div class="resource-select">
-              <a-select
-                v-model:value="form.environment_id"
-                show-search
-                :disabled="!canReadEnvironments"
-                :options="environmentOptions"
-                :placeholder="t('environment.deployment.environmentPlaceholder')"
-                @change="changeEnvironment"
-              >
-                <template #option="{ value, label }">
-                  <span class="managed-resource-option">
-                    <span class="managed-resource-option-label">{{ label }}</span>
-                    <a class="managed-resource-option-view" :href="resourceViewHref('/hosts', { group: String(value) })" target="_blank" rel="noopener noreferrer" @mousedown.stop @click.stop>查看</a>
-                  </span>
-                </template>
-              </a-select>
-              <a-button v-if="auth.canAny(['deployment.create'])" aria-label="创建主机组" title="创建主机组" @click="router.push('/hosts?create_group=1')"><Plus :size="15" /></a-button>
-            </div>
-          </a-form-item>
-          <DeploymentHostSelection v-if="form.kind!=='kubernetes'&&form.environment_id" :model-value="form.host_ids" :legacyHostID="legacySelectionID" :hosts="executionHosts" :ready="!loading&&environmentByID.has(form.environment_id)" :disabled="saving||!canReadHosts" @update:model-value="form.host_ids=$event;reconcileExecutionTarget()"/>
+        <div v-if="!form.reusable" class="host-target-section">
+          <DeploymentHostSelection :groupID="form.environment_id" :groups="environments.filter(group=>group.is_active)" :model-value="form.host_ids" :legacyHostID="legacySelectionID" :hosts="executionHosts" :host-options="deploymentHostOptions" :group-only="form.kind==='kubernetes'" :ready="!loading" :disabled="saving||!canReadEnvironments||(form.kind!=='kubernetes'&&!canReadHosts)" @change="selectDeploymentTarget" @update:model-value="form.host_ids=$event;reconcileExecutionTarget()">
+            <template #extra><a-button v-if="auth.canAny(['deployment.create'])" aria-label="创建主机组" title="创建主机组" @click="router.push('/hosts?create_group=1')"><Plus :size="15" /></a-button></template>
+          </DeploymentHostSelection>
           <div v-if="!canReadEnvironments" class="permission-note">需要发布记录查看权限才能选择执行主机组。</div>
         </div>
 
         <div class="form-section">
-          <header><b>3</b><div><strong>执行方式与配置<DeploymentFieldHelp :text="targetT('deploymentTarget.configurationHint')" label="执行配置说明" /></strong></div></header>
+          <header><b>2</b><div><strong>执行方式与配置<DeploymentFieldHelp :text="targetT('deploymentTarget.configurationHint')" label="执行配置说明" /></strong></div></header>
           <a-alert v-if="!form.reusable && !form.environment_id" type="info" show-icon message="请先选择执行主机组" :description="targetT('deploymentTarget.chooseEnvironmentHint')" />
           <a-alert v-else-if="!availableKindOptions.length" type="warning" show-icon message="当前主机组没有可用的执行方式" :description="targetT('deploymentTarget.emptyHint')" />
           <a-form-item v-else label="部署方式" required>
@@ -1300,7 +1287,7 @@ onBeforeUnmount(() => { disposed = true; resetMutation(); reset(); window.remove
           <template v-if="form.kind === 'compose' || form.kind === 'compose_stack'">
 
             <a-form-item required>
-              <YamlCodeEditor v-model="form.compose_yaml" fullscreen collapsible label="compose.yaml" @format="formatCompose"><template #toolbar>
+              <YamlCodeEditor v-model="form.compose_yaml" fullscreen collapsible default-collapsed label="compose.yaml" @format="formatCompose"><template #toolbar>
                 <span>compose.yaml<DeploymentFieldHelp v-if="form.kind==='compose'" text="镜像来自上游构建制品；部署时自动填入流水线镜像，无需填写 image，请勿填写固定镜像地址或 build 配置。" label="Compose 镜像配置说明" /></span>
                 <input ref="composeFileInput" class="file-input" type="file" accept=".yml,.yaml,application/yaml,text/yaml" @change="readComposeFile" />
                 <a-button @click="composeFileInput?.click()"><FileUp :size="15" />上传compose.yaml</a-button><a-button @click="formatCompose">格式化</a-button>
@@ -1325,7 +1312,7 @@ onBeforeUnmount(() => { disposed = true; resetMutation(); reset(); window.remove
 </template>
 
 <style scoped>
-.deployment-form :deep(.ant-form-item){margin-bottom:12px}.deployment-form :deep(.deployment-execution-fields .ant-form-item){margin-bottom:0}.deployment-form :deep(.ant-form-item-label){padding-bottom:4px}.deployment-kind{display:flex;align-items:center;white-space:nowrap;gap:7px;font-size:12px}.deployment-kind :deep(svg){width:18px;height:18px;flex:0 0 18px}
+.host-target-section{margin:0 0 12px}.deployment-form :deep(.ant-form-item){margin-bottom:12px}.deployment-form :deep(.deployment-execution-fields .ant-form-item){margin-bottom:0}.deployment-form :deep(.ant-form-item-label){padding-bottom:4px}.deployment-kind{display:flex;align-items:center;white-space:nowrap;gap:7px;font-size:12px}.deployment-kind :deep(svg){width:18px;height:18px;flex:0 0 18px}
 .deployment-plan-list :deep(.plan-table-row){cursor:default}
 .deployment-plan-list .plan-cell .deployment-description{display:-webkit-box;overflow:hidden;-webkit-box-orient:vertical;-webkit-line-clamp:2;white-space:normal;overflow-wrap:anywhere;line-height:1.5;cursor:help}
 .deployment-plan-list .deployment-description:focus-visible{outline:2px solid var(--edo-primary);outline-offset:2px;border-radius:3px}
