@@ -209,6 +209,7 @@ let formRevision = 0
 let formRequest: AbortController | undefined
 let mutationDialog: ReturnType<typeof asyncConfirm> | undefined
 let disposed = false, refreshRevision = 0
+const loadedPlanScope = ref('')
 function scopeKey() { return JSON.stringify([planScope.value, typeof localStorage === 'undefined' ? '' : localStorage.getItem('edo.project') || '']) }
 function syncProject() { selectedProject.value = typeof localStorage === 'undefined' ? '' : localStorage.getItem('edo.project') || '' }
 function resetMutation() { mutationDialog?.destroy(); mutationDialog = undefined; mutatingID.value = ''; refreshRevision++; loading.value = false }
@@ -476,6 +477,7 @@ async function refresh() {
     clusters.value = clusterResponse.data.clusters || []
     hosts.value = hostItems
     environments.value = environmentItems
+    loadedPlanScope.value = scope
   } catch (error) {
     if (current()) message.error(apiErrorMessage(error))
   } finally {
@@ -965,6 +967,19 @@ async function save() {
     if (formRequest === controller) { formRequest = undefined; saving.value = false }
   }
 }
+
+// 只在进入链接时所属的权限与项目范围内打开精确指定的方案。
+let editLinkScope = scopeKey()
+watch(() => [route.query.plan, route.query.edit], () => { editLinkScope = scopeKey() }, { flush: 'sync' })
+watch(() => [route.query.plan, route.query.edit, loading.value, loadedPlanScope.value, planScope.value, plans.value] as const, ([id, requested]) => {
+  if (props.inline || disposed || requested !== '1' || typeof id !== 'string' || !id || loading.value || loadedPlanScope.value !== scopeKey() || editLinkScope !== scopeKey()) return
+  if (!selectedProject.value || auth.user?.project_id !== selectedProject.value || !auth.canAny(['deployment_plan.read']) || !canUpdate.value) return
+  const plan = plans.value.find(item => item.id === id)
+  if (plan) beginEdit(plan)
+  const query = { ...route.query }
+  delete query.edit
+  void router.replace({ query })
+})
 
 watch([() => route.query.create, () => auth.loaded], ([value]) => {
   if (props.inline || value !== '1' || !canCreate.value) return

@@ -59,7 +59,7 @@ test('部署任务删除 Compose 说明，显示 DockerCompose 名称且保留 d
   })
   assert.doesNotMatch(html, /使用 EDO 保存的|上游构建镜像自动匹配并固定摘要/)
   assert.match(html, /DockerCompose 多镜像部署配置/)
-  assert.match(html, /查看和编辑 DockerCompose 部署方案/)
+  assert.doesNotMatch(html, /查看和编辑 DockerCompose 部署方案/)
   assert.match(html, /DockerCompose 项目名/)
   assert.match(html, /镜像 Tag/)
   assert.match(html, /留空执行整个 docker-compose.yaml 项目/)

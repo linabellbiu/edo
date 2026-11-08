@@ -13,6 +13,7 @@ import {
 import client from '@/api/client'
 import PipelineTaskControls from '@/components/PipelineTaskControls.vue'
 import DeploymentPlanView from '@/views/DeploymentPlanView.vue'
+import DeploymentPlanReferencePreview from '@/components/DeploymentPlanReferencePreview.vue'
 import { apiErrorMessage } from '@/api/resources'
 import WorkflowPresetModal from '@/components/WorkflowPresetModal.vue'
 import { useAuthStore } from '@/stores/auth'
@@ -49,13 +50,13 @@ interface ApplicationRecord {
   repository?: { id: string; name: string; default_branch?: string }
 }
 
-interface DeploymentPlan {
+interface DeploymentPlan extends WorkflowDeploymentPlan {
   id: string
   name: string
   kind: DeploymentPlanKind
   is_active: boolean
   deployment_target_id?: string
-  deployment_target?: { id: string; is_active?: boolean }
+  deployment_target?: NonNullable<WorkflowDeploymentPlan['deployment_target']> & { id?: string; is_active?: boolean }
 }
 
 interface NotificationChannel {
@@ -120,6 +121,8 @@ const buildPlans = ref<PipelineBuildPlan[]>([])
 const deploymentPlans = ref<DeploymentPlan[]>([])
 const inlineDeploymentOpen=ref(false),inlineDeploymentNodeID=ref('')
 const inlineDeploymentDrafts=new Map<string,WorkflowDeploymentPlan>()
+const libraryDeploymentDrafts=new Map<string,string>()
+const changingDeploymentPlanNodeID=ref('')
 const notificationChannels = ref<NotificationChannel[]>([])
 const builtinVariables = ref<BuiltinVariableDefinition[]>([])
 const builtinVariableLoading = ref(false)
@@ -206,6 +209,10 @@ const canExecute = computed(() => scopeCan('workflow.execute'))
 const canEdit = computed(() => canUpdate.value && (!saving.value || autoSaving.value))
 const canCreateBuildPlan = computed(() => scopeCan('build_plan.create'))
 const canCreateDeploymentPlan = computed(() => scopeCan('deployment_plan.create'))
+const canReadDeploymentPlan = computed(() => scopeCan('deployment_plan.read'))
+const selectedLibraryDeploymentPlan = computed(() => canReadDeploymentPlan.value && selectedNode.value?.type==='deploy' && deploymentSource(selectedNode.value)==='plan'
+  ? deploymentPlans.value.find(plan=>plan.id===selectedNode.value?.config.deployment_plan_id) : undefined)
+const canModifyDeploymentPlan = computed(() => Boolean(selectedLibraryDeploymentPlan.value) && scopeCan('deployment_plan.update'))
 const canReadNotificationChannels = computed(() => scopeAllowed() && auth.canAny(['notification.read']))
 const canCreateNotificationChannels = computed(() => scopeCan('notification.create'))
 const canTestNotificationChannels = computed(() => scopeCan('notification.execute'))
@@ -388,6 +395,7 @@ function cloneWorkflowValue<T>(value: T): T {
 
 function loadGraph(value: Workflow, loadedIssues: WorkflowIssue[], scope = captureScope()) {
   if (!currentScope(scope)) return
+  inlineDeploymentDrafts.clear();libraryDeploymentDrafts.clear();changingDeploymentPlanNodeID.value=''
   loadedContext.value = scope.identity
   workflow.value = value
   Object.keys(environmentVariableTexts).forEach(key => delete environmentVariableTexts[key])
@@ -961,6 +969,7 @@ function selectStage(stageID: string) {
 function closePanel() {
   propertyTab.value = 'common'
   panelMode.value = 'closed'
+  changingDeploymentPlanNodeID.value = ''
 }
 
 function clearBoardSelection() {
@@ -1095,11 +1104,19 @@ function taskSummary(node: WorkflowNode) {
 }
 
 function deploymentPlanOptions(taskID: string) {
-  return compatibleDeploymentPlans(taskID).map(item => ({
+  const items=canReadDeploymentPlan.value?compatibleDeploymentPlans(taskID):[]
+  const selectableIDs=new Set(items.map(item=>item.id))
+  const currentID=allNodes.value.find(node=>node.id===taskID)?.config.deployment_plan_id
+  const current=currentID&&canReadDeploymentPlan.value?deploymentPlans.value.find(plan=>plan.id===currentID):undefined
+  if(current&&!items.some(item=>item.id===current.id))items.unshift(current)
+  const options=items.map(item => ({
     value: item.id,
     label: item.name,
     detail: `部署方式：${deploymentKindNames[item.kind]}`,
+    disabled: !selectableIDs.has(item.id),
   }))
+  if(currentID&&!current)options.unshift({value:currentID,label:canReadDeploymentPlan.value?'原部署方案不可用':'无权查看原部署方案',detail:'',disabled:true})
+  return options
 }
 
 function toolchainName(language?: string) {
@@ -1116,7 +1133,7 @@ function toolchainBuildArgument(language?: string) {
   return ''
 }
 
-function deploymentPlanAcceptsBuild(plan: DeploymentPlan, buildPlan?: PipelineBuildPlan) {
+function deploymentPlanAcceptsBuild(plan: Pick<DeploymentPlan, 'kind'>, buildPlan?: PipelineBuildPlan) {
   if (!buildPlan) return false
   if (plan.kind === 'script') return buildPlan.kind === 'script'
   if (buildPlan.kind !== 'dockerfile') return false
@@ -1195,13 +1212,32 @@ function createDeploymentPlan() {
   void router.push({ path: '/deployment-plans', query: { create: '1', return_to: route.fullPath } })
 }
 
-function deploymentSource(node:WorkflowNode){return node.config.deployment_source||(node.config.inline_deployment_plan||!node.config.deployment_plan_id?'inline':'plan')}
-function inlineDeploymentKinds(taskID:string){const build=buildPlanBeforeTask(taskID);return (['docker','compose','compose_stack','kubernetes','script'] as DeploymentPlanKind[]).filter(kind=>kind!=='kubernetes'||deploymentPlanAcceptsBuild({id:'inline',name:'',kind,is_active:true},build))}
+function deploymentSource(node:WorkflowNode){return node.config.inline_deployment_plan?'inline':node.config.deployment_plan_id?'plan':node.config.deployment_source||'inline'}
+function inlineDeploymentKinds(taskID:string){const build=buildPlanBeforeTask(taskID);return (['docker','compose','compose_stack','kubernetes','script'] as DeploymentPlanKind[]).filter(kind=>kind!=='kubernetes'||deploymentPlanAcceptsBuild({kind},build))}
 function changeDeploymentSource(value:'inline'|'plan'){
   const node=selectedNode.value
   if(!node||node.type!=='deploy'||!canEdit.value)return
+  if(deploymentSource(node)===value)return
   if(node.config.inline_deployment_plan)inlineDeploymentDrafts.set(node.id,JSON.parse(JSON.stringify(node.config.inline_deployment_plan)))
-  updateSelectedNode({}, {deployment_source:value,deployment_plan_id:undefined,inline_deployment_plan:value==='inline'?inlineDeploymentDrafts.get(node.id):undefined})
+  if(node.config.deployment_plan_id)libraryDeploymentDrafts.set(node.id,node.config.deployment_plan_id)
+  changingDeploymentPlanNodeID.value=''
+  updateSelectedNode({}, {deployment_source:value,deployment_plan_id:value==='plan'?libraryDeploymentDrafts.get(node.id):undefined,inline_deployment_plan:value==='inline'?inlineDeploymentDrafts.get(node.id):undefined})
+}
+function changeLibraryDeploymentPlan(value:string){
+  const node=selectedNode.value
+  if(!node||node.type!=='deploy'||!canEdit.value||!canReadDeploymentPlan.value)return
+  if(deploymentSource(node)!=='plan'||node.config.deployment_plan_id===value)return
+  if(node.config.deployment_plan_id&&changingDeploymentPlanNodeID.value!==node.id)return
+  const plan=activeDeploymentPlans.value.find(plan=>plan.id===value)
+  if(!plan||!compatibleDeploymentPlans(node.id).some(item=>item.id===value))return
+  libraryDeploymentDrafts.set(node.id,value);changingDeploymentPlanNodeID.value=''
+  updateSelectedNode({}, {deployment_source:'plan',inline_deployment_plan:undefined,deployment_plan_id:value})
+}
+function unlockDeploymentPlanSelection(){if(canEdit.value&&canReadDeploymentPlan.value&&selectedNode.value?.type==='deploy')changingDeploymentPlanNodeID.value=selectedNode.value.id}
+function modifyLinkedDeploymentPlan(){
+  const plan=selectedLibraryDeploymentPlan.value
+  if(!plan||!canModifyDeploymentPlan.value)return
+  void router.push({path:'/deployment-plans',query:{plan:plan.id,edit:'1'}})
 }
 function editInlineDeployment(){
   if(!selectedNode.value||selectedNode.value.type!=='deploy'||!canEdit.value)return
@@ -1211,8 +1247,8 @@ function applyInlineDeployment(value:WorkflowDeploymentPlan){
   if(!canEdit.value||selectedNode.value?.id!==inlineDeploymentNodeID.value)return
   updateSelectedNode({}, {deployment_source:'inline',deployment_plan_id:undefined,inline_deployment_plan:value})
 }
-watch(()=>[selectedNodeID.value,scopeIdentity(),canEdit.value],()=>{inlineDeploymentOpen.value=false;inlineDeploymentNodeID.value=''})
-watch(scopeIdentity,()=>inlineDeploymentDrafts.clear())
+watch(()=>[selectedNodeID.value,scopeIdentity(),canEdit.value],()=>{inlineDeploymentOpen.value=false;inlineDeploymentNodeID.value='';changingDeploymentPlanNodeID.value=''})
+watch(scopeIdentity,()=>{inlineDeploymentDrafts.clear();libraryDeploymentDrafts.clear()})
 
 function resourceViewHref(path: string, queryKey: string, id: string) {
   return router.resolve({ path, query: { [queryKey]: id } }).href
@@ -1733,10 +1769,11 @@ onBeforeRouteLeave(async () => {
                 <div class="resource-picker">
                   <a-select
                     :value="selectedNode.config.deployment_plan_id"
-                    :disabled="!canUpdate"
+                    :disabled="!canUpdate||!canReadDeploymentPlan||(Boolean(selectedNode.config.deployment_plan_id)&&changingDeploymentPlanNodeID!==selectedNode.id)"
                     :options="deploymentPlanOptions(selectedNode.id)"
                     placeholder="选择部署方案"
-                    @update:value="updateSelectedNode({}, { deployment_source:'plan',inline_deployment_plan:undefined,deployment_plan_id: String($event || '') || undefined })"
+                    aria-label="已选择的部署方案"
+                    @update:value="changeLibraryDeploymentPlan(String($event||''))"
                   >
                     <template #option="{ value, label, detail }">
                       <span class="managed-resource-option">
@@ -1745,10 +1782,14 @@ onBeforeRouteLeave(async () => {
                       </span>
                     </template>
                   </a-select>
-                  <a-button v-if="canCreateDeploymentPlan" class="resource-create" aria-label="创建部署方案" title="创建部署方案" @click="createDeploymentPlan"><Plus :size="16" /></a-button>
+                  <a-button v-if="selectedNode.config.deployment_plan_id&&canUpdate&&canReadDeploymentPlan" @click="unlockDeploymentPlanSelection">更换</a-button>
+                  <a-button v-if="canModifyDeploymentPlan" @click="modifyLinkedDeploymentPlan">修改</a-button>
+                  <a-button v-if="!selectedNode.config.deployment_plan_id&&canCreateDeploymentPlan" class="resource-create" aria-label="创建部署方案" title="创建部署方案" @click="createDeploymentPlan"><Plus :size="16" /></a-button>
                 </div>
               </a-form-item>
-              <a-alert v-if="deploymentSource(selectedNode)==='plan'&&!compatibleDeploymentPlans(selectedNode.id).length" class="panel-alert" type="warning" show-icon message="没有可用的部署方案。Kubernetes 要求镜像构建方案绑定镜像仓库。" />
+              <DeploymentPlanReferencePreview v-if="selectedLibraryDeploymentPlan" :key="selectedLibraryDeploymentPlan.id" :plan="selectedLibraryDeploymentPlan" />
+              <a-alert v-else-if="deploymentSource(selectedNode)==='plan'&&selectedNode.config.deployment_plan_id" type="warning" show-icon :message="canReadDeploymentPlan?'原部署方案不可用，请检查状态和适用范围。':'没有查看部署方案的权限，已保留原关联。'" />
+              <a-alert v-if="deploymentSource(selectedNode)==='plan'&&canReadDeploymentPlan&&!selectedNode.config.deployment_plan_id&&!compatibleDeploymentPlans(selectedNode.id).length" class="panel-alert" type="warning" show-icon message="没有可用的部署方案。Kubernetes 要求镜像构建方案绑定镜像仓库。" />
               <p v-if="deploymentSource(selectedNode)==='plan'" class="panel-note">部署方案包含执行方式、环境和目标位置；文件来源与部署脚本在当前任务中配置。</p>
             </template>
           </a-form>

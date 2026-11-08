@@ -13,16 +13,17 @@ const cluster = { id: 'standalone-cluster', name: '独立验收集群', is_activ
 const target = { id: 'target', platform: 'kubernetes', environment_id: 'env', runtime_id: cluster.id, namespace: 'acceptance', workload_name: 'api', container_name: 'api', rollout_timeout: 600 }
 const plan = { id: 'plan', name: 'K8s 验收部署', kind: 'kubernetes', deployment_target_id: target.id, deployment_target: target, timeout_seconds: 600 }
 
-function harness(t, denied = [], props = {}) {
-  const requests = [], errors = [],events=[]
+function harness(t, denied = [], props = {}, query = {}) {
+  const requests = [], errors = [],events=[],replacements=[]
+  const route=vue.reactive({query:{...query}})
   props=vue.reactive(props)
   const permissions = (props.inline?['workflow.read','workflow.update','cluster.read','deployment.read']:['deployment_plan.read', 'deployment_plan.create', 'deployment_plan.update', 'cluster.read', 'cluster.execute', 'deployment.read']).filter(permission => !denied.includes(permission))
-  const auth = { loaded: true, user: { id: 'test-user', department_id: 'test-department', project_id: 'test-project', permissions }, canAny: codes => codes.some(code => permissions.includes(code)) }
+  const auth = vue.reactive({ loaded: true, user: { id: 'test-user', department_id: 'test-department', project_id: 'test-project', permissions }, canAny: codes => codes.some(code => auth.user.permissions.includes(code)) })
   let state
   const modules = {
-    vue: { ...vue, onMounted() {} },
+    vue: { ...vue, onMounted() {}, onBeforeUnmount() {} },
     'vue-i18n': { useI18n: () => ({ t: key => key, locale: vue.ref('zh-CN') }) },
-    'vue-router': { useRoute: () => ({ query: {} }), useRouter: () => ({ resolve: () => ({ href: '/resource' }) }) },
+    'vue-router': { useRoute: () => route, useRouter: () => ({ resolve: () => ({ href: '/resource' }), async replace(value){replacements.push(value);route.query={...value.query}} }) },
     'ant-design-vue': { message: { error: value => errors.push(value), success() {} } },
     '@/stores/auth': { useAuthStore: () => auth },
     '@/utils/resourceList': { useResourceList: () => ({ detailOpen: vue.ref(false), selected: vue.ref(), openDetails() {} }) },
@@ -59,8 +60,32 @@ function harness(t, denied = [], props = {}) {
   state = scope.run(() => module.exports.default.setup(props, { expose() {},emit:(name,value)=>events.push({name,value}) }))
   state.environments.value = [{ id: 'env', name: '测试环境', is_active: true }, { id: 'other-env', name: '另一环境', is_active: true }]
   state.clusters.value = [{ ...cluster }]
-  return { state, requests, errors,props,events,permissions }
+  return { state, requests, errors,props,events,permissions,auth,route,replacements }
 }
+
+const settle=async()=>{await vue.nextTick();await new Promise(resolve=>setImmediate(resolve));await vue.nextTick()}
+test('修改链接在数据加载后精确打开指定方案，只消费编辑参数且不执行写入',async t=>{
+ const h=harness(t,[],{}, {plan:'chosen',edit:'1',keep:'value'})
+ h.state.plans.value=[plan,{...plan,id:'chosen',name:'准确方案',timeout_seconds:900}]
+ await h.state.refresh();await settle()
+ assert.equal(h.state.formOpen.value,true);assert.equal(h.state.editingID.value,'chosen')
+ assert.equal(h.state.form.name,'准确方案');assert.equal(h.state.form.timeout_seconds,900)
+ assert.deepEqual({...h.route.query},{plan:'chosen',keep:'value'})
+ assert.equal(h.replacements.length,1);assert.deepEqual(h.requests,[])
+ h.state.formOpen.value=false;await h.state.refresh();await settle()
+ assert.equal(h.state.formOpen.value,false)
+})
+
+test('只定位链接不打开编辑；无权限、无目标和范围变化不打开其他方案',async t=>{
+ for(const options of [{query:{plan:'plan'}},{query:{plan:'missing',edit:'1'}},{denied:['deployment_plan.update'],query:{plan:'plan',edit:'1'}},{denied:['deployment_plan.read'],query:{plan:'plan',edit:'1'}}]){
+  const h=harness(t,options.denied||[],{},options.query)
+  h.state.plans.value=[plan];await h.state.refresh();await settle()
+  assert.equal(h.state.formOpen.value,false);assert.equal(h.state.editingID.value,'');assert.deepEqual(h.requests,[])
+ }
+ const changed=harness(t,[],{}, {plan:'plan',edit:'1'})
+ changed.auth.user.project_id='other-project';changed.state.plans.value=[plan]
+ await changed.state.refresh();await settle();assert.equal(changed.state.formOpen.value,false)
+})
 
 test('流水线内创建方案只提交给流水线，不读取或写入方案库，也不要求方案库创建权限',async t=>{
  const h=harness(t,[],{inline:true,inlineOpen:false,inlineKinds:['docker','compose']})

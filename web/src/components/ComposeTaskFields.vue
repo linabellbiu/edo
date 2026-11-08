@@ -50,7 +50,6 @@ function updateSettings(patch: Partial<NonNullable<WorkflowNodeConfig['compose']
  <a-alert v-if="error" type="warning" :message="error" show-icon/>
   <a-form-item v-if="['docker','compose','compose_stack'].includes(kind)" required :validate-status="!validTagReference(tagReference)?'error':undefined" :help="!validTagReference(tagReference)?'请使用变量引用，例如 ${IMAGE_TAG}':undefined"><template #label><span>镜像 Tag <a-tooltip title="例如 ${IMAGE_TAG}，对应 docker image 中的 ${IMAGE_TAG}；值来自当前流水线本次构建的镜像 Tag。" :trigger="['hover','focus','click']"><button type="button" class="configuration-help" aria-label="镜像 Tag 说明">?</button></a-tooltip></span></template><a-input :value="tagReference" placeholder="${IMAGE_TAG}" aria-label="镜像 Tag" :disabled="disabled" @update:value="updateTag(String($event||''))"/></a-form-item>
  <section v-if="kind==='compose_stack'" class="compose-task-fields" aria-label="DockerCompose 多镜像部署配置">
-  <a v-if="!node.config.inline_deployment_plan" :href="`/deployment-plans?plan=${encodeURIComponent(node.config.deployment_plan_id||'')}`" target="_blank" rel="noopener">查看和编辑 DockerCompose 部署方案</a>
   <a-form-item label="DockerCompose 项目名" required><a-input :value="settings.project_name" :disabled="disabled" @update:value="updateSettings({project_name:String($event||'')})"/></a-form-item>
 
   <a-form-item label="健康检查地址（可选）"><a-input :value="settings.health_url" :disabled="disabled" @update:value="updateSettings({health_url:String($event||'')})"/></a-form-item>

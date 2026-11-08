@@ -9,13 +9,13 @@ const permissions = ['workflow.read','workflow.update','workflow.create','workfl
 const graph = (project = 'project-a', patch = {}) => ({ id: `flow-${project}`, project_id: project, application_id: `app-${project}`, schema_version: 1, name: `流水线 ${project}`, revision: 3, is_active: false, source: { id:'source', type:'trigger', name:'代码源', config:{branch:'main',events:['manual']} }, stages:[{id:'stage',name:'检查',tasks:[{id:'shell',type:'shell',name:'脚本',config:{script:'echo ok',environment_variables:{MODE:'test'}}}]}], ...patch })
 
 async function harness({ codes = permissions, project = 'project-a', selected = project, query, get, put, post, mount = true, task = false } = {}) {
-  const requests=[],notifications=[],confirmations=[],mounted=[],unmounts=[],routeUpdates=[],routeLeaves=[],events=[],timers=new Map()
+  const requests=[],notifications=[],confirmations=[],mounted=[],unmounts=[],routeUpdates=[],routeLeaves=[],events=[],navigations=[],timers=new Map()
   let timerID=0,stopped=false
   const auth=vue.reactive({user:{id:'operator-a',department_id:'department-a',project_id:project,is_superuser:false,permissions:[...codes]},canAny(required){return !!this.user&&(this.user.is_superuser||required.some(code=>this.user.permissions.includes(code)))}})
   const storage={selected},localStorage={getItem:key=>key==='edo.project'?storage.selected:null}
   const window=new EventTarget();window.setTimeout=callback=>{const id=++timerID;timers.set(id,callback);return id};window.clearTimeout=id=>timers.delete(id)
   const document={body:{classList:{add(){},remove(){},toggle(){}}}},route=vue.reactive({query:query||{application:'app-project-a',workflow:'flow-project-a'},fullPath:'/pipeline-plans/editor'})
-  const router={async replace(value){if(value.query)route.query={...value.query}},async push(){},resolve:()=>({href:'/test'})}
+  const router={async replace(value){if(value.query)route.query={...value.query}},async push(value){navigations.push(value)},resolve:()=>({href:'/test'})}
   const client=Object.fromEntries(['get','put','post'].map(method=>[method,async(path,bodyOrOptions,options)=>{
     const request={method,path,body:method==='get'?undefined:JSON.parse(JSON.stringify(bodyOrOptions??null)),options:method==='get'?bodyOrOptions:options};requests.push(request)
     const handler={get,put,post}[method];if(handler){const value=await handler(request);if(value)return value}
@@ -34,7 +34,7 @@ async function harness({ codes = permissions, project = 'project-a', selected = 
   scope.run(()=>{state=component.setup(props,{expose(){},emit:(event,...values)=>events.push({event,values})})})
   if(mount)mounted.forEach(fn=>fn());await settle()
   const stop=()=>{if(stopped)return;stopped=true;unmounts.forEach(fn=>fn());scope.stop();timers.clear()}
-  return {state,auth,storage,window,route,router,props,requests,notifications,confirmations,routeUpdates,routeLeaves,events,timers,stop}
+  return {state,auth,storage,window,route,router,props,requests,notifications,confirmations,routeUpdates,routeLeaves,events,navigations,timers,stop}
 }
 const writes=h=>h.requests.filter(item=>item.method!=='get')
 const changeProject=async(h,id)=>{h.storage.selected=id;h.window.dispatchEvent(new Event('edo:projects-changed'));h.auth.user.project_id=id;h.route.query={application:`app-${id}`,workflow:`flow-${id}`};h.state.resetScope?.();await settle()}
@@ -47,9 +47,59 @@ test('部署来源在流水线自定义和选择已有方案之间切换，保�
  h.state.changeDeploymentSource('inline');h.state.editInlineDeployment();await settle();h.state.applyInlineDeployment(custom)
  assert.equal(h.state.selectedNode.value.config.deployment_plan_id,undefined);assert.equal(h.state.selectedNode.value.config.inline_deployment_plan.name,custom.name)
  h.state.changeDeploymentSource('plan');assert.equal(h.state.selectedNode.value.config.inline_deployment_plan,undefined)
+ assert.equal(h.state.selectedNode.value.config.deployment_plan_id,'existing')
  h.state.changeDeploymentSource('inline');assert.equal(h.state.selectedNode.value.config.inline_deployment_plan.name,custom.name)
  assert.equal(writes(h).length,0)
  await changeProject(h,'project-b');assert.equal(h.state.inlineDeploymentOpen.value,false)
+})
+
+const linkedPlan={id:'existing',name:'已关联方案',kind:'docker',is_active:true,timeout_seconds:120,deployment_target_id:'target',deployment_target:{id:'target',platform:'docker',environment_id:'env-project-a'}}
+async function linkedHarness(options={}){
+ const workflow=graph('project-a',{stages:[{id:'stage',name:'部署',tasks:[{id:'deploy',type:'deploy',name:'部署应用',config:{deployment_plan_id:'existing'}}]}]})
+ const h=await harness({...options,get:request=>options.get?.(request)||(request.path==='/deployment-plans'?{data:{deployment_plans:[linkedPlan]}}:request.path==='/applications/app-project-a/workflows/flow-project-a'?{data:{workflow,issues:[]}}:undefined)})
+ h.state.selectNode('deploy');await settle();return h
+}
+
+test('正常读取后自动回显已有库方案，重复来源事件和重新打开均不清空关联',async t=>{
+ const h=await linkedHarness({codes:[...permissions,'deployment_plan.update']});t.after(h.stop)
+ assert.equal(h.state.deploymentSource(h.state.selectedNode.value),'plan')
+ assert.equal(h.state.selectedLibraryDeploymentPlan.value.name,'已关联方案')
+ assert.equal(h.state.changingDeploymentPlanNodeID.value,'')
+ h.state.changeDeploymentSource('plan');assert.equal(h.state.dirty.value,false)
+ h.state.selectNode('source');h.state.selectNode('deploy');await settle()
+ assert.equal(h.state.selectedNode.value.config.deployment_plan_id,'existing')
+ h.state.modifyLinkedDeploymentPlan()
+ assert.deepEqual(h.navigations,[{path:'/deployment-plans',query:{plan:'existing',edit:'1'}}])
+ assert.deepEqual(writes(h),[])
+})
+
+test('已有选择必须先更换，再选有效方案；切回选择方案恢复原关联',async t=>{
+ const h=await linkedHarness();t.after(h.stop)
+ h.state.deploymentPlans.value.push({...linkedPlan,id:'other',name:'另一方案'})
+ h.state.changeLibraryDeploymentPlan('other');assert.equal(h.state.dirty.value,false)
+ h.state.unlockDeploymentPlanSelection();assert.equal(h.state.changingDeploymentPlanNodeID.value,'deploy')
+ h.state.closePanel();h.state.selectNode('deploy');await settle()
+ assert.equal(h.state.changingDeploymentPlanNodeID.value,'')
+ h.state.unlockDeploymentPlanSelection()
+ h.state.changeLibraryDeploymentPlan('missing');assert.equal(h.state.selectedNode.value.config.deployment_plan_id,'existing')
+ h.state.changeLibraryDeploymentPlan('other');assert.equal(h.state.selectedNode.value.config.deployment_plan_id,'other')
+ assert.equal(h.state.changingDeploymentPlanNodeID.value,'')
+ h.state.changeDeploymentSource('inline');h.state.changeDeploymentSource('plan')
+ assert.equal(h.state.selectedNode.value.config.deployment_plan_id,'other')
+})
+
+test('停用或丢失方案可安全回显原选择，无查看或修改权限不允许跳转修改',async t=>{
+ const inactive=await linkedHarness({get:r=>r.path==='/deployment-plans'?{data:{deployment_plans:[{...linkedPlan,is_active:false}]}}:undefined});t.after(inactive.stop)
+ assert.deepEqual(inactive.state.deploymentPlanOptions('deploy').map(({label,disabled})=>({label,disabled})),[{label:'已关联方案',disabled:true}])
+ assert.equal(inactive.state.selectedNode.value.config.deployment_plan_id,'existing')
+ inactive.state.modifyLinkedDeploymentPlan();assert.deepEqual(inactive.navigations,[])
+ const missing=await linkedHarness({get:r=>r.path==='/deployment-plans'?{data:{deployment_plans:[]}}:undefined});t.after(missing.stop)
+ assert.equal(missing.state.deploymentPlanOptions('deploy')[0].label,'原部署方案不可用')
+ assert.equal(missing.state.selectedNode.value.config.deployment_plan_id,'existing')
+ const denied=await linkedHarness({codes:permissions.filter(code=>code!=='deployment_plan.read').concat('deployment_plan.update')});t.after(denied.stop)
+ assert.equal(denied.state.selectedLibraryDeploymentPlan.value,undefined)
+ assert.equal(denied.state.deploymentPlanOptions('deploy')[0].label,'无权查看原部署方案')
+ denied.state.modifyLinkedDeploymentPlan();assert.deepEqual(denied.navigations,[])
 })
 
 // 真实用户与项目初始化通过页面正常的资源读取完成；不直接赋值绕过权限上下文。
