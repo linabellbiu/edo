@@ -145,8 +145,8 @@ func TestApplicationWorkflowPresetsCreateEditableDrafts(t *testing.T) {
 				deployTask.Type != model.WorkflowNodeDeploy || deployTask.Config.DeploymentPlanID != "" {
 				t.Fatalf("模板不得绑定具体构建或部署方案: build=%+v deploy=%+v", buildTask, deployTask)
 			}
-			if created.Valid || !hasWorkflowIssue(created.Issues, "missing_build_plan") || !hasWorkflowIssue(created.Issues, "missing_deployment_plan") {
-				t.Fatalf("未选择方案的模板草稿应提示补充配置: valid=%t issues=%+v", created.Valid, created.Issues)
+			if buildTask.Config.InlineBuild == nil || deployTask.Config.InlineDeploymentPlan == nil || created.Valid || !hasWorkflowIssue(created.Issues, "invalid_inline_deployment") {
+				t.Fatalf("内置任务草稿应保留构建配置并提示补全部署环境: valid=%t issues=%+v", created.Valid, created.Issues)
 			}
 		})
 	}

@@ -26,7 +26,7 @@ const scriptExample = computed(() => {
     '# 使用 Compose 定义与 ENV 文件',
     'cd "${EDO_APP_CONFIG_PATH}"',
     'docker compose \\',
-    '  -f docker-compose.yaml \\',
+    '  -f compose.yaml \\',
     '  --env-file runtime.env up -d',
     '# 镜像 Tag 使用 ${IMAGE_TAG}',
   ].join('\n')
@@ -126,10 +126,10 @@ function locate(issue: Issue) { if (!editor) return; const line = editor.state.d
 </script>
 <template>
  <section class="deployment-script-editor" :aria-label="editorLabel+'编辑器'">
-  <div class="script-actions"><a-button :disabled="!canEdit()" @click="upload?.click()">上传{{editorLabel}}</a-button><input ref="upload" type="file" accept=".sh,.bash,.txt,text/plain,application/x-sh" hidden @change="readUpload" /></div>
+  <div class="script-actions"><span class="script-label"><slot name="label">{{editorLabel}}</slot></span><a-button :disabled="!canEdit()" @click="upload?.click()">上传{{editorLabel}}</a-button><input ref="upload" type="file" accept=".sh,.bash,.txt,text/plain,application/x-sh" hidden @change="readUpload" /></div>
   <div ref="host" class="script-code" />
   <p v-if="checking || status" :role="issues.length ? 'alert' : 'status'" :aria-live="issues.length ? 'assertive' : 'polite'">{{ checking ? '正在自动检查 Shell 语法…' : status }}</p><a-alert v-if="error" type="error" :message="error" show-icon />
   <button v-for="(issue, index) in issues" :key="index" class="script-issue" type="button" @click="locate(issue)">第 {{ issue.line }} 行，第 {{ issue.column }} 列：{{ issue.message }}</button>
  </section>
 </template>
-<style scoped>.deployment-script-editor{display:grid;gap:8px;min-width:0}.script-actions{display:flex;flex-wrap:wrap;gap:8px}.script-code{min-width:0;border:1px solid var(--edo-border);border-radius:5px;overflow:hidden}.script-code:focus-within{border-color:var(--edo-primary)}.script-code :deep(.cm-placeholder){color:var(--edo-muted);white-space:pre-wrap;overflow-wrap:anywhere}.script-code :deep(.cm-activeLine:has(.cm-placeholder)),.script-code :deep(.cm-editor:has(.cm-placeholder) .cm-activeLineGutter){background:transparent}.deployment-script-editor p{margin:0;color:var(--edo-muted);font-size:12px}.script-issue{text-align:left;color:var(--edo-danger);border:0;background:transparent;cursor:pointer}.script-issue:focus-visible{outline:2px solid var(--edo-primary)}</style>
+<style scoped>.deployment-script-editor{display:grid;gap:8px;min-width:0}.script-actions{display:flex;align-items:center;flex-wrap:wrap;gap:12px}.script-label{font-size:14px;color:var(--edo-text)}.script-code{min-width:0;border:1px solid var(--edo-border);border-radius:5px;overflow:hidden}.script-code:focus-within{border-color:var(--edo-primary)}.script-code :deep(.cm-placeholder){color:var(--edo-muted);white-space:pre-wrap;overflow-wrap:anywhere}.script-code :deep(.cm-activeLine:has(.cm-placeholder)),.script-code :deep(.cm-editor:has(.cm-placeholder) .cm-activeLineGutter){background:transparent}.deployment-script-editor p{margin:0;color:var(--edo-muted);font-size:12px}.script-issue{text-align:left;color:var(--edo-danger);border:0;background:transparent;cursor:pointer}.script-issue:focus-visible{outline:2px solid var(--edo-primary)}</style>

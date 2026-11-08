@@ -105,7 +105,7 @@ async function registryOptions(index: number, tags: boolean) {
     </a-collapse-panel>
    </a-collapse>
   </section>
-  <a-form-item v-if="!hideScript" label="部署脚本"><DeploymentScriptEditor :edit-permission="editPermission" :model-value="config.deployment_script||''" :kind="deploymentPlan?.kind" :disabled="!canEdit" @update:model-value="change({deployment_script:$event})" /><template #help><span>留空使用部署方案原有流程；填写或上传后执行此脚本。支持 <code>${IMAGE_TAG}</code>、<code>${EDO_IMAGE}</code> 和 EDO 内置变量；自定义变量同样使用 <code>${变量名}</code> 引用。</span></template></a-form-item>
+  <a-form-item v-if="!hideScript"><DeploymentScriptEditor :edit-permission="editPermission" :model-value="config.deployment_script||''" :kind="deploymentPlan?.kind" :disabled="!canEdit" @update:model-value="change({deployment_script:$event})" /><template #help><span>留空使用部署方案原有流程；填写或上传后执行此脚本。支持 <code>${IMAGE_TAG}</code>、<code>${EDO_IMAGE}</code> 和 EDO 内置变量；自定义变量同样使用 <code>${变量名}</code> 引用。</span></template></a-form-item>
  </section>
 </template>
 <style scoped>

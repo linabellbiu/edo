@@ -212,6 +212,17 @@ function composePlan(workloadName = '') {
   }
 }
 
+test('新建 dockercompose 只有通用入口，原单镜像方案保留身份且显示同一名称', t => {
+  const {state}=harness(t)
+  assert.deepEqual(state.kindOptions.filter(option=>option.value.startsWith('compose')).map(option=>[option.value,option.label]),[['compose_stack','dockercompose']])
+  state.edit(composePlan())
+  state.form.reusable=true
+  const choices=state.availableKindOptions.value.filter(option=>option.value.startsWith('compose'))
+  assert.deepEqual(choices.map(option=>[option.value,option.label]),[['compose','dockercompose']])
+  assert.equal(state.form.kind,'compose')
+  assert.equal(state.editingID.value,'plan')
+})
+
 test('Compose 编辑仅改 YAML 保存不把服务名写入容器名，也不继承旧误填值', async t => {
   for (const previousName of ['', 'old-container']) {
     const { state, requests, errors } = dockerHostHarness(t)

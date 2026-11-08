@@ -272,6 +272,8 @@ func (s *Service) assistantWorkflow(ctx context.Context, actor string, input Ass
 		for _, stage := range stages {
 			if len(stage.Tasks) == 1 && stage.Tasks[0].Type == model.WorkflowNodeBuild {
 				stage.Tasks[0].Config.BuildPlanID = buildID
+				stage.Tasks[0].Config.InlineBuild = nil
+				stage.Tasks[0].Config.BuildOutputs = nil
 			}
 			if len(stage.Tasks) == 1 && stage.Tasks[0].Type == model.WorkflowNodeDeploy {
 				if input.Approval {
@@ -282,6 +284,9 @@ func (s *Service) assistantWorkflow(ctx context.Context, actor string, input Ass
 					node := stage.Tasks[0]
 					node.ID = "deploy-" + id
 					node.Config.DeploymentPlanID = id
+					node.Config.DeploymentSource = "plan"
+					node.Config.InlineDeploymentPlan = nil
+					node.Config.ComposeSource = nil
 					resolved = append(resolved, model.WorkflowStage{ID: node.ID, Name: stage.Name, Tasks: []model.WorkflowNode{node}})
 					steps = append(steps, stage.Name)
 					if i > 4 {

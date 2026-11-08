@@ -58,16 +58,16 @@ test('部署任务删除 Compose 说明，显示 dockercompose 名称且保留 d
     settings: { project_name: 'team', tag_variable: 'IMAGE_TAG', services: [] }, services: [], updateSettings() {},
   })
   assert.doesNotMatch(html, /使用 EDO 保存的|上游构建镜像自动匹配并固定摘要/)
-  assert.match(html, /dockercompose 多镜像部署配置/)
+  assert.match(html, /dockercompose 部署配置/)
   assert.doesNotMatch(html, /查看和编辑 dockercompose 部署方案/)
   assert.match(html, /dockercompose 项目名/)
   assert.match(html, /镜像 Tag/)
-  assert.match(html, /留空执行整个 docker-compose.yaml 项目/)
+  assert.match(html, /留空执行整个 compose.yaml 项目/)
 })
 test('部署方案读取失败或方案类型不匹配时仍显示必要警告', async () => {
   const html = await render(composeTemplate, { error: '读取失败', kind: '', node: { config: { compose: {} } } })
   assert.match(html, /读取失败/)
-  assert.match(html, /请选择 dockercompose 多镜像部署方案/)
+  assert.match(html, /请选择 dockercompose 部署方案/)
 })
 
 test('部署任务通知分区只渲染通知，不再渲染部署参数编辑器',async()=>{

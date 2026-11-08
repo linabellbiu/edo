@@ -95,6 +95,7 @@ type workflowSnapshot struct {
 }
 
 type workflowBuildPlanSnapshot struct {
+	Workspace        bool                        `json:"workspace,omitempty"`
 	Outputs          []model.WorkflowBuildOutput `json:"outputs,omitempty"`
 	ID               string                      `json:"id"`
 	Kind             model.BuildPlanKind         `json:"kind"`
@@ -1765,7 +1766,7 @@ func deploymentTargetArchitecture(ctx context.Context, database *gorm.DB, hostID
 }
 
 func buildPlanSnapshot(plan model.BuildPlan) workflowBuildPlanSnapshot {
-	return workflowBuildPlanSnapshot{
+	snapshot := workflowBuildPlanSnapshot{
 		ID: plan.ID, Kind: plan.Kind, ConfigVersion: plan.ConfigVersion,
 		Script: plan.Script, DockerfilePath: plan.DockerfilePath, ContextPath: plan.ContextPath,
 		WorkingDirectory: plan.WorkingDirectory, ArtifactPath: plan.ArtifactPath, RuntimeImage: plan.RuntimeImage,
@@ -1773,6 +1774,11 @@ func buildPlanSnapshot(plan model.BuildPlan) workflowBuildPlanSnapshot {
 		Pull: plan.Pull, CacheEnabled: plan.CacheEnabled, BuildArgs: plan.BuildArgs,
 		EnvironmentVariables: plan.EnvironmentVariables, TimeoutSeconds: plan.TimeoutSeconds,
 	}
+	if plan.Kind == model.BuildPlanScript {
+		snapshot.Workspace = true
+		snapshot.RuntimeImage, snapshot.WorkingDirectory = "", "."
+	}
+	return snapshot
 }
 
 func newWorkflowRun(application *model.Application, workflow *model.ReleaseWorkflow, node model.WorkflowNode, trigger, ref, commitSHA, actorID, message string, now time.Time) (*model.PipelineRun, error) {

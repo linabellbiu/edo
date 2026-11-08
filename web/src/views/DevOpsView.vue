@@ -512,7 +512,7 @@ function deploymentKind(record:DeploymentRecord){
  if(kind==='compose_stack')return 'compose'
  return ['docker','compose','kubernetes','script'].includes(kind)?kind:'script'
 }
-function deploymentKindLabel(record:DeploymentRecord){return record.deployment_plan_kind==='compose_stack'?'dockercompose 多镜像':t(`applicationCard.deploymentKind.${deploymentKind(record)}`)}
+function deploymentKindLabel(record:DeploymentRecord){return record.deployment_plan_kind==='compose_stack'?'dockercompose':t(`applicationCard.deploymentKind.${deploymentKind(record)}`)}
 function deploymentInstanceName(record:DeploymentRecord){return record.container_name||record.compose_service||record.workload_name||record.target_name||t('applicationCard.unknownInstance')}
 function deploymentImageLabel(record:DeploymentRecord){return record.image_display||record.image||t('applicationCard.noImage')}
 function deploymentStatus(record:DeploymentRecord):StatusMeta{
@@ -1229,7 +1229,7 @@ async function save(){
    if(!buildForm.name.trim()){message.error('请输入构建方案名称');return}
    if(buildForm.kind==='dockerfile'&&(!buildForm.dockerfile_path.trim()||!buildForm.context_path.trim())){message.error('请填写 Dockerfile 路径和构建上下文');return}
    if(buildForm.kind==='dockerfile'&&buildImageDestination.value==='registry'&&!buildForm.image_registry_id){message.error('请选择镜像仓库');return}
-	   if(buildForm.kind==='script'&&(!buildForm.script.trim()||!buildForm.runtime_image.trim())){message.error('请填写构建脚本和运行镜像');return}
+	   if(buildForm.kind==='script'&&!buildForm.script.trim()){message.error('请填写构建脚本');return}
 	   if(buildForm.kind==='script'&&buildSaveArtifact.value&&!buildForm.artifact_path.trim()){message.error('开启保存产物后，请填写产物路径');return}
    const buildArgs=buildForm.kind==='dockerfile'?parseVariableText(buildArgsText.value,'构建参数'):{values:{},error:''}
    const environmentVariables=buildForm.kind==='script'?parseVariableText(buildEnvironmentText.value,'环境变量'):{values:{},error:''}
@@ -1238,9 +1238,9 @@ async function save(){
    payload={
     ...buildForm,
     dockerfile_path:buildForm.kind==='dockerfile'?buildForm.dockerfile_path:'',
-    working_directory:buildForm.kind==='script'?buildForm.working_directory:'.',
+    working_directory:'.',
 	    artifact_path:buildForm.kind==='script'&&buildSaveArtifact.value?buildForm.artifact_path:'',
-    runtime_image:buildForm.kind==='script'?buildForm.runtime_image:'',
+    runtime_image:'',
     image_registry_id:buildForm.kind==='dockerfile'&&buildImageDestination.value==='registry'?buildForm.image_registry_id:'',
     target_stage:buildForm.kind==='dockerfile'?buildForm.target_stage:'',
     build_args:buildForm.kind==='dockerfile'?buildArgs.values:{},
@@ -2525,20 +2525,18 @@ onBeforeUnmount(()=>{planExecutionDisposed=true;composeContainerController?.abor
   <header><strong>基本信息</strong><small>只需选择构建方式即可使用默认配置。</small></header>
   <div class="form-grid">
    <a-form-item label="名称" required><a-input v-model:value="buildForm.name" placeholder="例如 API 服务构建"/></a-form-item>
-   <a-form-item label="构建方式" required><a-select v-model:value="buildForm.kind" :options="[{value:'dockerfile',label:'Docker 镜像构建'},{value:'script',label:'Shell 脚本构建'}]"/></a-form-item>
+   <a-form-item label="构建方式" required><a-select v-model:value="buildForm.kind" :options="[{value:'dockerfile',label:'Docker 镜像构建'},{value:'script',label:'自定义构建'}]"/></a-form-item>
   </div>
  </section>
  <section class="build-form-section">
-	  <header><strong>{{ buildForm.kind==='dockerfile'?'镜像构建':'Shell 构建' }}</strong><small>{{ buildForm.kind==='dockerfile'?'默认读取仓库根目录 Dockerfile，并将镜像保留在当前构建运行时。':'脚本在已固定 Commit 的隔离检出目录中执行，可按需保存文件制品。' }}</small></header>
+	  <header><strong>{{ buildForm.kind==='dockerfile'?'镜像构建':'自定义构建' }}</strong><small>{{ buildForm.kind==='dockerfile'?'默认读取仓库根目录 Dockerfile，并将镜像保留在当前构建运行时。':'在本次任务的独立工作区执行，使用 EDO 所在环境已有工具链。' }}</small></header>
   <div v-if="buildForm.kind==='dockerfile'" class="form-grid">
    <a-form-item label="Dockerfile 路径" required><a-input v-model:value="buildForm.dockerfile_path" placeholder="Dockerfile"/></a-form-item>
    <a-form-item label="构建上下文" required><a-input v-model:value="buildForm.context_path" placeholder="."/></a-form-item>
   </div>
   <div v-else class="form-grid">
    <a-form-item class="span2" label="构建脚本" required><a-textarea v-model:value="buildForm.script" :rows="8" placeholder="例如：npm ci&#10;npm run build"/></a-form-item>
-	   <a-form-item class="span2" label="运行镜像" required><a-auto-complete v-model:value="buildForm.runtime_image" :options="runtimeImageOptions" placeholder="alpine:3.22"/><small class="field-hint">默认 alpine:3.22，也可输入其他镜像。镜像需包含 /bin/sh，并指定版本 Tag 或 Digest，不能使用 latest。</small></a-form-item>
-	   <a-form-item label="工作目录" required><a-input v-model:value="buildForm.working_directory" placeholder="."/></a-form-item>
-	   <a-form-item label="保存产物"><a-switch v-model:checked="buildSaveArtifact"/><small class="field-hint">关闭时只执行 Shell 构建，不登记文件制品。</small></a-form-item>
+	   <a-form-item label="保存产物"><a-switch v-model:checked="buildSaveArtifact"/><small class="field-hint">关闭时只执行自定义构建，不登记文件制品。</small></a-form-item>
 	   <a-form-item v-if="buildSaveArtifact" class="span2" label="产物路径" required><a-input v-model:value="buildForm.artifact_path" placeholder="例如 dist 或 bin/server"/></a-form-item>
 	   <a-alert v-if="buildSaveArtifact" class="span2" type="info" show-icon message="产物归档由 EDO 自动完成" description="脚本成功后，EDO 会校验产物路径：目录确定性打包为 tar.gz，普通文件保持原格式，然后计算 SHA256 摘要并登记制品；脚本无需自行上传。"/>
 	   <a-alert v-else class="span2" type="warning" show-icon message="本方案不保存文件制品" description="可用于测试、检查或只需执行命令的流水线；若后续存在主机脚本部署任务，保存流水线时会要求开启产物归档。"/>

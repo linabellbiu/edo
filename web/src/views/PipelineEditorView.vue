@@ -105,7 +105,7 @@ const DEFAULT_RUNTIME_IMAGE = 'alpine:3.22'
 const DEFAULT_TAG_PATTERN = 'v*'
 const runtimeImageOptions = ['alpine:3.22', 'node:24-alpine', 'golang:1.26-alpine', 'python:3.14-alpine', 'maven:3.9-eclipse-temurin-21-alpine'].map(value => ({ value }))
 const deploymentKindNames: Record<DeploymentPlanKind, string> = {
-  script: '自定义部署', docker: 'Docker 容器', compose: 'dockercompose 单镜像', compose_stack: 'docker-compose', kubernetes: 'Kubernetes Deployment',
+  script: '自定义部署', docker: 'Docker 容器', compose: 'dockercompose', compose_stack: 'dockercompose', kubernetes: 'Kubernetes Deployment',
 }
 const defaultNotificationTitle = 'EDO｜{{application.name}}｜{{task.name}}｜{{task.status}}'
 const defaultNotificationMessage = [
@@ -339,7 +339,7 @@ function createTaskNode(type: TaskNodeType, definition?: TaskDefinition): Workfl
   if (type === 'manual') config.description = '人工确认后继续执行'
   if (type === 'deploy') {
     const kind=definition?.id==='compose-deploy'?'compose_stack':definition?.id==='kubernetes-deploy'?'kubernetes':'script'
-    if(kind==='compose_stack')config.compose_source={kind:'repository',path:'docker-compose.yaml'}
+    if(kind==='compose_stack')config.compose_source={kind:'repository',path:'compose.yaml'}
     config.deployment_source='inline'
     config.inline_deployment_plan={name:definition?.label||'自定义部署',kind,script:kind==='script'?'set -eu\n# 在这里填写部署命令\n':undefined,compose_yaml:'',timeout_seconds:600,deployment_target:{platform:kind==='kubernetes'?'kubernetes':'ssh',environment_id:'',working_directory:kind==='script'?'/tmp':undefined},execution_config:kind==='kubernetes'?undefined:{deployment_input_version:1,deployment_inputs:[],compose:kind==='compose_stack'?{project_name:'',tag_variable:'${IMAGE_TAG}',use_sudo:false,adopt_existing:false}:undefined}}
   }

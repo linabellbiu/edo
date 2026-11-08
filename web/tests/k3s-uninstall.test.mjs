@@ -24,7 +24,7 @@ function harness({permissions=codes,api={},value=host()}={}){
   const requests=[],mounts=[],unmounts=[],timers=[],clocks=[],listeners=new Map(),storage={project:'project-a'},time={now:Date.now()},granted=vue.reactive(new Set(permissions))
   const auth=vue.reactive({user:{id:'operator',project_id:'project-a',department_id:'department-a',permissions:[...permissions]},canAny(required){return Boolean(this.user)&&required.some(code=>granted.has(code))}})
   const props=vue.reactive({open:false,host:value})
-  const defaults={listK3sUninstallTargets:async()=>[target()],listK3sInstallations:async()=>[],previewK3sUninstallPlan:async()=>plan(),startK3sUninstallation:async()=>task(),getK3sInstallation:async id=>task({id,status:'running'})}
+  const defaults={listK3sUninstallTargets:async()=>[target()],listK3sInstallations:async()=>[],previewK3sUninstallPlan:async()=>plan({expires_at:new Date(time.now+300_000).toISOString()}),startK3sUninstallation:async()=>task(),getK3sInstallation:async id=>task({id,status:'running'})}
   const methods=Object.fromEntries(Object.entries(defaults).map(([name,fn])=>[name,async(...args)=>{requests.push({name,args});return (api[name]??fn)(...args)}]))
   const h=componentHarness('../src/components/K3sUninstallDrawer.vue',{
     props,modules:{vue:{...vue,onMounted:fn=>mounts.push(fn),onBeforeUnmount:fn=>unmounts.push(fn)},'@/stores/auth':{useAuthStore:()=>auth},'@/api/k3s':methods,'@/utils/k3sProvision':helpers,'@/utils/k3sUninstall':uninstall,'@/utils/time':{formatDateTime:String}},

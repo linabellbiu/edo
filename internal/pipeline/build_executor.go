@@ -462,7 +462,7 @@ func (s *Service) executePipelineBuild(ctx context.Context, prepared *buildExecu
 			return nil, err
 		}
 		if artifactPath == "" {
-			s.appendRunLog(ctx, prepared.run.ID, "build", "success", "Shell 构建已完成，本次构建未配置保存文件制品")
+			s.appendRunLog(ctx, prepared.run.ID, "build", "success", "自定义构建已完成，本次构建未配置保存文件制品")
 			return nil, nil
 		}
 		outputPath := result.ArtifactPath
@@ -659,7 +659,8 @@ func (s *Service) executePipelineShell(
 	timeoutSeconds int,
 	stage, outputName, artifactPath, outputDirectory string,
 ) (dockerengine.ScriptContainerResult, error) {
-	if s.scriptRunner == nil {
+	workspaceBuild := prepared.node.Type == model.WorkflowNodeBuild && prepared.plan.Workspace
+	if s.scriptRunner == nil && !workspaceBuild {
 		return dockerengine.ScriptContainerResult{}, ErrPipelineExecutionUnavailable
 	}
 	if strings.TrimSpace(script) == "" || timeoutSeconds < 30 || timeoutSeconds > 7200 ||
@@ -702,6 +703,9 @@ func (s *Service) executePipelineShell(
 		reportPaths = append(reportPaths, config.Paths...)
 	}
 	cacheKey, cacheRoot, cacheOutput := "", "", ""
+	if workspaceBuild {
+		runtimeImage = workspaceBuildCacheIdentity()
+	}
 	if config := prepared.node.Config.Cache; config != nil {
 		if s.artifacts == nil {
 			return dockerengine.ScriptContainerResult{}, ErrPipelineExecutionUnavailable
@@ -747,7 +751,13 @@ func (s *Service) executePipelineShell(
 		return dockerengine.ScriptContainerResult{}, ErrPipelineExecutionConfig
 	}
 	systemEnvironment["EDO_UPSTREAM_ARTIFACTS_JSON"] = upstream
-	result, err := s.scriptRunner.RunScriptContainer(ctx, dockerengine.ScriptContainerInput{
+	run := runWorkspaceBuild
+	if !workspaceBuild {
+		run = s.scriptRunner.RunScriptContainer
+	} else {
+		s.appendRunLog(ctx, prepared.run.ID, stage, "info", "在本次任务的独立工作区执行，使用 EDO 所在环境已有工具链")
+	}
+	result, err := run(ctx, dockerengine.ScriptContainerInput{
 		NamedOutputs: func() []dockerengine.ScriptOutput {
 			if prepared.node.Type != model.WorkflowNodeBuild {
 				return nil

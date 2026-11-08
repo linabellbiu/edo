@@ -91,7 +91,7 @@ test('打开制品绑定所点方案并清空旧应用筛选，上传期间不�
   assert.equal(state.artifactsOpen.value, false)
 })
 
-test('列表按各行方案展示 Dockerfile、脚本目录及制品位置，不使用统一选中方案', () => {
+test('列表按各行方案展示 Dockerfile、自定义构建工作区及制品位置，不使用统一选中方案', () => {
   const { props, state } = harness({ registries: [{ id: 'registry', name: 'Harbor' }] })
   const docker = plan('docker', { dockerfile_path: 'docker/api.Dockerfile', context_path: 'services/api', image_registry_id: 'registry' })
   const script = plan('script', { kind: 'script', script: 'npm ci\n\nnpm run build', working_directory: 'web', artifact_path: 'dist/**' })
@@ -99,7 +99,7 @@ test('列表按各行方案展示 Dockerfile、脚本目录及制品位置，不
   assert.equal(state.buildPlanDirectory(docker), 'services/api')
   assert.equal(state.buildPlanRegistry(docker), 'Harbor')
   assert.equal(state.buildPlanEntry(script), '2 行构建脚本')
-  assert.equal(state.buildPlanDirectory(script), 'web')
+  assert.equal(state.buildPlanDirectory(script), 'EDO 工作区')
   assert.equal(state.buildPlanArtifact(script), 'dist/**')
   assert.equal(state.buildPlanRegistry(script), 'EDO 文件制品存储')
   assert.equal(state.buildPlanArtifact({ ...script, artifact_path: '' }), '不保存制品')

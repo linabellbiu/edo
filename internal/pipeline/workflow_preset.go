@@ -88,7 +88,7 @@ func newDockerPreset(key, name string, compose, kubernetes bool) workflowPresetD
 	description := "使用 Dockerfile 构建 OCI 镜像并部署到 Docker 容器；创建后直接配置镜像仓库、Dockerfile 和自定义部署脚本。"
 	if compose {
 		deployName = "Docker Compose 部署"
-		description = "使用 Dockerfile 构建 OCI 镜像并部署到 Compose 服务；创建后直接配置镜像仓库及 docker-compose.yaml。"
+		description = "使用 Dockerfile 构建 OCI 镜像并部署到 Compose 服务；创建后直接配置镜像仓库及 compose.yaml。"
 	} else if kubernetes {
 		deployName = "Kubernetes 部署"
 		description = "使用 Dockerfile 构建并推送 OCI 镜像，再更新 Kubernetes 工作负载；创建后直接配置镜像仓库及 Kubernetes 部署目标。"
@@ -311,7 +311,7 @@ func buildWorkflowPresetStages(preset workflowPresetDefinition, runtime Workflow
 					node.Config.InlineDeploymentPlan.Script = "set -eu\n# 在这里填写部署命令\n"
 				}
 				if kind == model.DeploymentPlanComposeStack {
-					node.Config.ComposeSource = &model.WorkflowComposeSource{Kind: "repository", Path: "docker-compose.yaml"}
+					node.Config.ComposeSource = &model.WorkflowComposeSource{Kind: "repository", Path: "compose.yaml"}
 					node.Config.InlineDeploymentPlan.ExecutionConfig.Compose = &model.ComposeDeploymentSettings{TagVariable: "${IMAGE_TAG}"}
 				}
 				node.Config.Description = "直接编辑本任务的部署配置"

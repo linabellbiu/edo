@@ -201,7 +201,7 @@ function applicationName(id: string) {
 }
 
 function buildPlanKindLabel(kind: BuildPlan['kind']) {
-  return kind === 'dockerfile' ? 'Dockerfile' : 'Shell 脚本'
+  return kind === 'dockerfile' ? 'Dockerfile' : '自定义构建'
 }
 
 function buildPlanEntry(plan: BuildPlan) {
@@ -211,7 +211,7 @@ function buildPlanEntry(plan: BuildPlan) {
 }
 
 function buildPlanDirectory(plan: BuildPlan) {
-  return plan.kind === 'dockerfile' ? plan.context_path || '.' : plan.working_directory || '.'
+  return plan.kind === 'dockerfile' ? plan.context_path || '.' : 'EDO 工作区'
 }
 
 function buildPlanArtifact(plan: BuildPlan) {

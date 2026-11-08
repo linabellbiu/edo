@@ -31,9 +31,7 @@ function cache(patch:Record<string,unknown>){change({cache:{key:'dependencies',l
    <a-form-item label="构建参数"><a-textarea :value="Object.entries(plan.build_args||{}).map(([k,v])=>`${k}=${v}`).join('\n')" :disabled="disabled" :rows="3" placeholder="每行 KEY=value，例如 NODE_ENV=production" @update:value="update({build_args:Object.fromEntries(String($event).split(/\r?\n/).filter(v=>v.includes('=')).map(v=>[v.slice(0,v.indexOf('=')),v.slice(v.indexOf('=')+1)]))})"/></a-form-item>
   </template>
   <template v-else>
-   <a-form-item label="构建环境" required><a-input :value="plan.runtime_image" :disabled="disabled" placeholder="例如 node:24-alpine" @update:value="update({runtime_image:String($event)})"/></a-form-item>
-   <a-form-item label="构建脚本" required><DeploymentScriptEditor :model-value="plan.script||''" label="构建脚本" :example-text="'set -eu\n# 例如：npm ci && npm run build\n'" kind="script" :disabled="disabled" edit-permission="workflow.update" @update:model-value="update({script:$event})"/></a-form-item>
-   <a-form-item label="工作目录"><a-input :value="plan.working_directory" :disabled="disabled" placeholder=".（仓库根目录）" @update:value="update({working_directory:String($event)})"/></a-form-item>
+   <a-form-item required><DeploymentScriptEditor :model-value="plan.script||''" label="构建脚本" :example-text="'set -eu\n# 例如：npm ci && npm run build\n'" kind="script" :disabled="disabled" edit-permission="workflow.update" @update:model-value="update({script:$event})"><template #label><span>构建脚本 <a-tooltip title="在本次任务的独立工作区执行，使用 EDO 所在环境已有工具链；从仓库根目录开始，需要进入子目录时在脚本中 cd。容器安装 EDO 时，使用 API 容器中的工具。" :trigger="['hover','focus','click']"><button type="button" class="field-help" aria-label="自定义构建执行说明">?</button></a-tooltip></span></template></DeploymentScriptEditor></a-form-item>
    <section class="build-outputs">
     <header><strong>暂存构建物</strong><a-button type="link" :disabled="disabled||outputs.length>=16" @click="change({build_outputs:[...outputs,{name:outputs.length?`BUILD_ARTIFACT_${outputs.length+1}`:'BUILD_ARTIFACT',paths:['./output']}]})"><PlusCircle :size="15"/>添加</a-button></header>
     <a-collapse v-for="(item,index) in outputs" :key="index" :default-active-key="['output']">
@@ -47,7 +45,7 @@ function cache(patch:Record<string,unknown>){change({cache:{key:'dependencies',l
      </a-collapse-panel>
     </a-collapse>
    </section>
-   <a-form-item><template #label><span>构建缓存 <a-tooltip title="按项目、仓库、运行镜像和依赖锁文件隔离缓存；缓存目录不能覆盖已跟踪的源码。关闭缓存不会改变构建产物。" :trigger="['hover','focus','click']"><button type="button" class="field-help" aria-label="构建缓存说明">?</button></a-tooltip></span></template><a-switch :checked="!!node.config.cache" :disabled="disabled" @change="change({cache:$event?{key:'dependencies',lock_files:[],paths:[]}:undefined})"/></a-form-item>
+   <a-form-item><template #label><span>构建缓存 <a-tooltip title="按项目、仓库、EDO 运行平台和依赖锁文件隔离缓存；缓存目录不能覆盖已跟踪的源码。关闭缓存不会改变构建产物。" :trigger="['hover','focus','click']"><button type="button" class="field-help" aria-label="构建缓存说明">?</button></a-tooltip></span></template><a-switch :checked="!!node.config.cache" :disabled="disabled" @change="change({cache:$event?{key:'dependencies',lock_files:[],paths:[]}:undefined})"/></a-form-item>
    <template v-if="node.config.cache">
     <a-form-item label="缓存名称"><a-input :value="node.config.cache.key" :disabled="disabled" placeholder="dependencies" @update:value="cache({key:String($event)})"/></a-form-item>
     <a-form-item label="依赖锁文件"><a-select mode="tags" :value="node.config.cache.lock_files" :disabled="disabled" placeholder="例如 package-lock.json、go.sum" @update:value="cache({lock_files:$event})"/></a-form-item>

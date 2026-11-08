@@ -2,12 +2,12 @@ package pipeline
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 
@@ -126,7 +126,7 @@ func TestBuildExecutionPersistsFrozenPlanWithoutResolvedSecrets(t *testing.T) {
 	}
 	service.ConfigureArtifacts(store)
 	plan, err := service.CreateBuildPlan(ctx, actorID, BuildPlanInput{
-		Name: "密钥持久化脚本构建", Kind: model.BuildPlanScript, Script: "printf public > result.txt",
+		Name: "密钥持久化脚本构建", Kind: model.BuildPlanScript, Script: fmt.Sprintf("if command -v sha256sum >/dev/null 2>&1; then hash() { sha256sum; }; else hash() { shasum -a 256; }; fi\nactual=$(printf '%%s' \"$BUILD_ENV_CANARY\" | hash)\ntest \"${actual%%%% *}\" = '%x'\nactual=$(cat \"$BUILD_FILE_CANARY\" | hash)\ntest \"${actual%%%% *}\" = '%x'\nprintf 'public build output\\n' > result.txt\n", sha256.Sum256([]byte(envValue)), sha256.Sum256([]byte(fileValue))),
 		WorkingDirectory: ".", ArtifactPath: "result.txt", RuntimeImage: model.DefaultRuntimeImage, TimeoutSeconds: 30,
 	})
 	if err != nil {
@@ -173,27 +173,10 @@ func TestBuildExecutionPersistsFrozenPlanWithoutResolvedSecrets(t *testing.T) {
 		t.Fatalf("正常执行未产生排队任务: %v", err)
 	}
 	jobID := run.ExecutionJobID
-	runnerCalls := 0
-	service.scriptRunner = parallelScriptRunner(func(callCtx context.Context, in dockerengine.ScriptContainerInput) (dockerengine.ScriptContainerResult, error) {
-		runnerCalls++
-		if callCtx.Err() != nil || in.Environment["BUILD_ENV_CANARY"] != envValue || in.FileVariables["BUILD_FILE_CANARY"] != fileValue || len(in.FileVariables) != 1 {
-			return dockerengine.ScriptContainerResult{}, errors.New("构建执行器未收到准确的 env/file 密钥")
-		}
-		if in.ArtifactPath != "result.txt" || in.OutputDirectory == "" || in.Image != model.DefaultRuntimeImage {
-			return dockerengine.ScriptContainerResult{}, errors.New("构建执行器缺少正常输出配置")
-		}
-		output := filepath.Join(in.OutputDirectory, "result.txt")
-		if writeErr := os.WriteFile(output, []byte(publicOutput), 0o600); writeErr != nil {
-			return dockerengine.ScriptContainerResult{}, writeErr
-		}
-		return dockerengine.ScriptContainerResult{ArtifactPath: output}, nil
-	})
-	// 只替换外部脚本容器执行；运行、变量冻结和 BuildRun 均由正常服务流程写入。
+	service.scriptRunner = nil
+	// 实际工作区脚本校验注入值摘要，运行、变量冻结和 BuildRun 均走正常服务流程。
 	if err = service.ExecuteBuildTask(ctx, BuildTaskPayload{PipelineRunID: run.ID, WorkflowNodeID: build.ID}, jobID); err != nil {
 		t.Fatalf("正常执行构建任务失败: %v", err)
-	}
-	if runnerCalls != 1 {
-		t.Fatal("构建执行器没有恰好执行一次，无法证明密钥实际注入")
 	}
 	var storedRun model.PipelineRun
 	if err = db.First(&storedRun, "uuid = ?", run.ID).Error; err != nil || storedRun.Status != model.PipelineRunSucceeded || storedRun.ArtifactID == "" {
