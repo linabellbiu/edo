@@ -56,12 +56,12 @@ test('文件来源与脚本统一保存，切换来源清除旧身份',async t=>
  assert.equal(h.props.config.deployment_inputs[0].registry_id,undefined)
  assert.equal(h.props.config.deployment_inputs[0].artifact_node_id,'files')
 })
-test('脚本编辑不要求配置读取权限，自定义变量不能覆盖 IMAGE_TAG',async t=>{
+test('脚本编辑不要求配置读取权限，删除变量输入不清空已有变量',async t=>{
  const h=await harness();t.after(h.stop);h.auth.user.permissions=['workflow.update'];await settle()
  h.state.change({deployment_script:'echo "${IMAGE_TAG}"'});assert.equal(h.props.config.deployment_script,'echo "${IMAGE_TAG}"')
- h.state.updateVariables('APP_ENV=production\nPORT=8080');assert.deepEqual(h.props.config.environment_variables,{APP_ENV:'production',PORT:'8080'})
- h.state.updateVariables('IMAGE_TAG=wrong');assert.match(h.state.variableError.value,/内置变量/)
- assert.equal(h.props.config.environment_variables.IMAGE_TAG,undefined)
+ h.props.config.environment_variables={APP_ENV:'production',PORT:'8080'}
+ h.state.change({deployment_script:'echo ok'})
+ assert.deepEqual(h.props.config.environment_variables,{APP_ENV:'production',PORT:'8080'})
 })
 test('删除额外参数与预览，使用真实脚本编辑器和统一路径',()=>{
  const source=readFileSync(new URL('../src/components/DeploymentConfigurationFields.vue',import.meta.url),'utf8')

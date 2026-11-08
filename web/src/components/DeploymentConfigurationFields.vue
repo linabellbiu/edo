@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { MinusCircle, PlusCircle } from 'lucide-vue-next'
 import client from '@/api/client'
 import { apiErrorMessage } from '@/api/resources'
 import { useAuthStore } from '@/stores/auth'
@@ -42,6 +43,10 @@ onMounted(() => { window.addEventListener('storage', projectChanged); window.add
 onBeforeUnmount(() => { revision++; controller?.abort(); optionRequests.forEach(request => request.abort()); window.removeEventListener('storage', projectChanged); window.removeEventListener('edo:projects-changed', projectChanged) })
 const selected = computed<DeploymentInput[]>(() => props.config.deployment_input_version === 1 ? props.config.deployment_inputs || [] : (props.config.configuration_files || []).map(file => ({ kind: 'configuration', configuration_id: file.id, path: file.path })))
 const configurationHelp = '修改配置正文后，下次重启或重建采用最新内容；需要更新容器环境时会确认重建。修改此处的引用和脚本，要等下一次部署成功后采用。'
+function sourceTitle(input: DeploymentInput, index: number) {
+ if (input.kind === 'registry') return input.image ? `${input.image}${input.tag ? ':' + input.tag : ''}` : '镜像仓库'
+ return input.path || (input.kind === 'configuration' ? configurations.value.find(item => item.id === input.configuration_id)?.name : props.buildNodes?.find(item => item.id === input.artifact_node_id)?.name) || `文件来源 ${index + 1}`
+}
 function change(config: Partial<WorkflowNodeConfig>) {
  if (!canEdit.value) return
  const inputs = config.deployment_inputs || selected.value
@@ -65,25 +70,17 @@ async function registryOptions(index: number, tags: boolean) {
  } catch (cause) { if (!controller.signal.aborted && scope === identity()) state.error = tags ? apiErrorMessage(cause) : '此仓库无法列出镜像，请输入准确镜像名称后选择 Tag。' }
  finally { if (optionRequests.get(index) === controller) state.loading = false }
 }
-const variableText = computed(() => Object.entries(props.config.environment_variables || {}).map(([key, value]) => `${key}=${value}`).join('\n'))
-const variableError = ref('')
-function updateVariables(text: string) {
- const values: Record<string, string> = {}; variableError.value = ''
- for (const line of text.split('\n')) {
-  if (!line.trim()) continue
-  const equals = line.indexOf('='), key = line.slice(0, equals)
-  if (equals < 1 || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(key) || key.startsWith('EDO_') || ['IMAGE_TAG', 'CI', 'PATH', 'HOME', 'TMPDIR', 'SHELL', 'ENV', 'BASH_ENV', 'LD_PRELOAD', 'LD_LIBRARY_PATH', 'IFS'].includes(key.toUpperCase()) || /^(DOCKER_|BUILDX_|BUILDKIT_)/i.test(key) || Object.hasOwn(values, key)) { variableError.value = '每行填写 KEY=value，名称不能重复或覆盖内置变量'; return }
-  values[key] = line.slice(equals + 1)
- }
- change({ environment_variables: values })
-}
 </script>
 <template>
  <section class="deployment-configuration" aria-label="部署文件与脚本">
-  <a-divider orientation="left"><span class="configuration-heading">部署前下载上游产出文件或制品到主机<a-tooltip :title="configurationHelp" :trigger="['hover','focus','click']"><button type="button" class="configuration-help" aria-label="配置文件生效说明">?</button></a-tooltip></span></a-divider>
-  <a-alert v-if="error" :message="error" type="error" show-icon />
-  <div v-for="(input,index) in selected" :key="index" class="input-source-row">
-   <div class="source-heading"><a-form-item label="文件来源"><a-select :value="input.kind" :disabled="!canEdit" :options="[{value:'registry',label:'镜像仓库'},{value:'configuration',label:'配置文件'},{value:'upstream',label:'上游构建产出'}]" :aria-label="`文件来源 ${index+1}`" @update:value="chooseKind(index,$event as DeploymentInput['kind'])" /></a-form-item><a-button danger :disabled="!canEdit" :aria-label="`移除来源 ${index+1}`" @click="removeSource(index)">移除</a-button></div>
+  <section class="deployment-inputs" aria-label="部署前下载上游产出文件或制品到主机">
+   <header class="configuration-heading"><span class="configuration-title">部署前下载上游产出文件或制品到主机</span><a-tooltip :trigger="['hover','focus','click']"><template #title><div class="configuration-tooltip"><p><code>EDO_APP_CONFIG_PATH = ~/edo/{{ applicationName || '应用名称' }}/config</code></p><p>可用 <code>${EDO_APP_CONFIG_PATH}/相对路径</code> 引用生成文件。</p><p>{{ configurationHelp }}</p></div></template><button type="button" class="configuration-help" aria-label="配置目录与生效说明">?</button></a-tooltip><a-button type="link" class="source-add" :disabled="!canEdit||selected.length>=32" aria-label="添加文件来源" @click="change({deployment_inputs:[...selected,{kind:'configuration',configuration_id:'',path:''}]})"><PlusCircle :size="15" />添加</a-button></header>
+   <a-alert v-if="error" :message="error" type="error" show-icon />
+   <div v-if="!selected.length" class="source-empty">未添加文件来源</div>
+   <a-collapse v-for="(input,index) in selected" :key="index" :default-active-key="['source']" class="input-source-card">
+    <a-collapse-panel key="source" :header="sourceTitle(input,index)"><template #extra><a-button type="text" size="small" danger :disabled="!canEdit" :aria-label="`移除来源 ${index+1}`" @click.stop="removeSource(index)"><MinusCircle :size="17" /></a-button></template>
+     <div class="input-source-row">
+   <a-form-item label="文件来源"><a-radio-group :value="input.kind" :disabled="!canEdit" :options="[{value:'registry',label:'镜像仓库'},{value:'configuration',label:'配置文件'},{value:'upstream',label:'上游构建产出'}]" :aria-label="`文件来源 ${index+1}`" @update:value="chooseKind(index,$event as DeploymentInput['kind'])" /></a-form-item>
    <template v-if="input.kind==='registry'">
     <a-form-item label="镜像仓库"><a-select :value="input.registry_id||undefined" :loading="loading" :disabled="!canEdit||!canReadRegistry" :options="registries.map(item=>({value:item.id,label:item.name}))" placeholder="选择镜像仓库" @update:value="chooseRegistry(index,String($event))" /></a-form-item>
     <div class="source-fields"><a-form-item label="镜像"><a-auto-complete :value="input.image" :disabled="!canEdit||!input.registry_id" :options="(optionsByRow[index]?.images||[]).map(value=>({value}))" placeholder="选择或输入命名空间下的镜像" @update:value="chooseImage(index,String($event))" @blur="registryOptions(index,true)" /></a-form-item><a-form-item label="实际 Tag"><a-auto-complete :value="input.tag" :disabled="!canEdit||!input.image" :options="(optionsByRow[index]?.tags||[]).map(value=>({value}))" placeholder="选择或输入实际 Tag" @focus="registryOptions(index,true)" @update:value="update(index,{tag:String($event)})" /></a-form-item></div>
@@ -94,14 +91,13 @@ function updateVariables(text: string) {
     <a-form-item v-else label="上游构建产出"><a-select :value="input.artifact_node_id||undefined" :disabled="!canEdit" :options="(buildNodes||[]).map(item=>({value:item.id,label:item.name}))" placeholder="选择前序已保存文件产物的构建" @update:value="update(index,{artifact_node_id:String($event)})" /></a-form-item>
     <a-form-item label="配置文件路径" :validate-status="input.path&&!validConfigurationPath(input.path)?'error':undefined" :help="input.path&&!validConfigurationPath(input.path)?'只填写相对路径，不能使用绝对路径、~/、.. 或保留目录 .edo':undefined"><a-input :value="input.path" :disabled="!canEdit" addon-before="${EDO_APP_CONFIG_PATH}/" placeholder="例如 settings/app.yaml 或 output.tar.gz" :aria-label="`配置文件路径 ${index+1}`" @update:value="update(index,{path:String($event||'')})" /></a-form-item>
    </template>
-  </div>
-  <a-button :disabled="!canEdit||selected.length>=32" @click="change({deployment_inputs:[...selected,{kind:'configuration',configuration_id:'',path:''}]})">添加文件来源</a-button>
-  <p><code>EDO_APP_CONFIG_PATH = ~/edo/{{ applicationName || '应用名称' }}/config</code></p>
-  <p>可用 <code>${EDO_APP_CONFIG_PATH}/相对路径</code> 引用生成文件。</p>
+     </div>
+    </a-collapse-panel>
+   </a-collapse>
+  </section>
   <a-form-item label="部署脚本"><DeploymentScriptEditor :model-value="config.deployment_script||''" :kind="deploymentPlan?.kind" :disabled="!canEdit" @update:model-value="change({deployment_script:$event})" /><template #help><span>留空使用部署方案原有流程；填写或上传后执行此脚本。支持 <code>${IMAGE_TAG}</code>、<code>${EDO_IMAGE}</code> 和 EDO 内置变量；自定义变量同样使用 <code>${变量名}</code> 引用。</span></template></a-form-item>
-  <a-form-item label="脚本自定义环境变量" :validate-status="variableError?'error':undefined" :help="variableError||'每行 KEY=value；密钥请在上方引用共享变量与密钥。'"><a-textarea :value="variableText" :disabled="!canEdit" :auto-size="{minRows:2,maxRows:8}" wrap="off" placeholder="APP_ENV=production" @update:value="updateVariables(String($event||''))" /></a-form-item>
  </section>
 </template>
 <style scoped>
-.deployment-configuration{display:grid;gap:12px;min-width:0}.deployment-configuration>.ant-btn{justify-self:start}.input-source-row{display:grid;gap:12px;padding-bottom:16px;border-bottom:1px solid var(--edo-border);min-width:0}.source-heading,.source-fields{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:12px;align-items:end}.source-heading{grid-template-columns:minmax(0,1fr) auto}.source-heading>.ant-btn{margin-bottom:0}.input-source-row .ant-form-item{margin:0}.deployment-configuration p{color:var(--edo-muted);font-size:12px;line-height:1.7;margin:0}.configuration-heading{display:inline-flex;align-items:center;gap:8px;white-space:normal;font-size:13px}.configuration-help{display:inline-flex;align-items:center;justify-content:center;width:20px;height:20px;padding:0;border:1px solid var(--edo-border);border-radius:50%;color:var(--edo-muted);background:transparent;font-size:12px;line-height:1;cursor:help;flex-shrink:0}.configuration-help:focus-visible{outline:2px solid var(--edo-primary);outline-offset:3px}@media(max-width:600px){.source-fields{grid-template-columns:minmax(0,1fr)}}
+.deployment-configuration,.deployment-inputs{display:grid;gap:12px;min-width:0}.input-source-row{display:grid;gap:16px;min-width:0}.source-fields{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:12px;align-items:end}.input-source-row .ant-form-item{margin:0}.input-source-row :deep(.ant-radio-group){display:flex;flex-wrap:wrap;gap:6px 0}.input-source-card{border:1px solid var(--edo-border);border-radius:6px;background:var(--edo-bg)}.input-source-card :deep(.ant-collapse-header){align-items:center;padding:8px 12px}.input-source-card :deep(.ant-collapse-header-text){min-width:0;overflow-wrap:anywhere}.input-source-card :deep(.ant-collapse-content){border-top:1px solid var(--edo-border);background:var(--edo-surface)}.source-empty{padding:18px 12px;border:1px solid var(--edo-border);border-radius:6px;color:var(--edo-muted);font-size:12px}.deployment-configuration p{color:var(--edo-muted);font-size:12px;line-height:1.7;margin:0}.configuration-heading{display:flex;align-items:center;gap:6px;white-space:nowrap;font-size:13px;min-width:0}.configuration-title{min-width:0;overflow:hidden;text-overflow:ellipsis}.source-add{margin-left:auto;flex-shrink:0;padding:0 2px}.configuration-tooltip p{margin:0 0 8px;overflow-wrap:anywhere}.configuration-tooltip p:last-child{margin-bottom:0}.configuration-help{display:inline-flex;align-items:center;justify-content:center;width:20px;height:20px;padding:0;border:1px solid var(--edo-border);border-radius:50%;color:var(--edo-muted);background:transparent;font-size:12px;line-height:1;cursor:help;flex-shrink:0}.configuration-help:focus-visible{outline:2px solid var(--edo-primary);outline-offset:3px}@media(max-width:600px){.source-fields{grid-template-columns:minmax(0,1fr)}}@media(max-width:400px){.configuration-heading{font-size:12px;gap:4px}}
 </style>

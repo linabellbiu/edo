@@ -4,16 +4,28 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"testing"
 	"time"
 
+	"edo/internal/deployment"
 	"edo/internal/model"
+	"edo/internal/sshdeploy"
 )
+
+type inlineComposeHomeProbe struct{ calls int }
+
+func (p *inlineComposeHomeProbe) RunHostDeploymentScript(_ context.Context, input sshdeploy.Input) (sshdeploy.Result, error) {
+	p.calls++
+	_, _ = io.WriteString(input.Stdout, "/home/edo-test")
+	return sshdeploy.Result{Started: true}, nil
+}
 
 func TestInlineDeploymentPlansStayInWorkflowAndFreezeExecution(t *testing.T) {
 	for _, kind := range []model.DeploymentPlanKind{model.DeploymentPlanDocker, model.DeploymentPlanCompose, model.DeploymentPlanComposeStack, model.DeploymentPlanScript, model.DeploymentPlanKubernetes} {
 		t.Run(string(kind), func(t *testing.T) {
 			s, db, _, repositoryID := newPipelineTestService(t)
+			homeProbe := &inlineComposeHomeProbe{}
 			ctx := context.Background()
 			buildInput := BuildPlanInput{Name: "自定义方案构建", Kind: model.BuildPlanDockerfile, DockerfilePath: "Dockerfile"}
 			platform := model.DeploymentDocker
@@ -42,6 +54,8 @@ func TestInlineDeploymentPlansStayInWorkflowAndFreezeExecution(t *testing.T) {
 			definition := &model.WorkflowDeploymentPlan{Name: "当前流水线部署", Kind: kind, TimeoutSeconds: 120, Script: "printf original", ComposeYAML: "services:\n  app:\n    restart: unless-stopped\n", ServiceName: "app", DeploymentTarget: &model.DeploymentTarget{Platform: platform, EnvironmentID: targetInput.EnvironmentID, HostID: targetInput.HostID, RuntimeID: targetInput.RuntimeID, WorkingDirectory: targetInput.WorkingDirectory, Namespace: targetInput.Namespace, WorkloadName: targetInput.WorkloadName, ContainerName: targetInput.ContainerName}}
 			if kind == model.DeploymentPlanComposeStack {
 				definition.ComposeYAML = "services:\n  app:\n    image: registry.example.com/apps/inline_compose_stack:${IMAGE_TAG}\n"
+				definition.DeploymentTarget.WorkingDirectory = ""
+				s.deployments = deployment.NewService(db, nil, nil, homeProbe, nil, "", nil)
 			}
 			app, err := s.CreateApplication(ctx, "admin", ApplicationInput{Name: "inline_" + string(kind), RepositoryID: repositoryID, PollIntervalSeconds: 60})
 			if err != nil {
@@ -88,6 +102,9 @@ func TestInlineDeploymentPlansStayInWorkflowAndFreezeExecution(t *testing.T) {
 			planID, targetID := model.InlineDeploymentIdentity(app.Workflow.ID, deployID)
 			if snapshot.DeploymentPlans[deployID].ID != planID || snapshot.DeploymentPlans[deployID].Kind != kind || snapshot.DeploymentTargets[deployID].ID != targetID {
 				t.Fatal("自定义方案未完整冻结为可执行快照")
+			}
+			if kind == model.DeploymentPlanComposeStack && (snapshot.DeploymentTargets[deployID].WorkingDirectory != "/home/edo-test/edo/inline_compose_stack/config" || !snapshot.DeploymentTargets[deployID].ManagedWorkingDirectory || homeProbe.calls != 1 || definition.DeploymentTarget.WorkingDirectory != "") {
+				t.Fatal("自动目录应固定在运行快照中，不能写回方案或变更已有资源")
 			}
 			var plansAfter, targetsAfter int64
 			db.Model(&model.DeploymentPlan{}).Count(&plansAfter)

@@ -42,7 +42,7 @@ test('Compose 页面保存内联正文、Tag 和服务映射，不要求额外�
  assert.equal(request.body.image_tag,'${EDO_GIT_TAG}')
  assert.equal(request.body.compose_file,undefined)
  assert.equal(request.body.env_file,undefined)
- assert.equal(request.body.target.working_directory,'/srv/team-a')
+ assert.equal(request.body.target.working_directory,'')
  assert.equal(request.body.services.length,2)
  assert.equal(request.options.headers['X-EDO-Project-ID'],'project-a')
  assert.equal(h.events.filter(event=>event[0]==='created').length,1)

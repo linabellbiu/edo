@@ -45,7 +45,11 @@ func (s *Service) rollbackPlanTarget(ctx context.Context, source *model.Deployme
 		for _, stage := range workflow.Stages {
 			for _, node := range stage.Tasks {
 				if node.ID == source.WorkflowNodeID && node.Type == model.WorkflowNodeDeploy && node.Config.DeploymentPlanID == "" && node.Config.InlineDeploymentPlan != nil {
-					return s.ResolveInlinePlan(ctx, node.Config.InlineDeploymentPlan, workflow.ID, node.ID)
+					plan, target, err := s.ResolveInlinePlan(ctx, node.Config.InlineDeploymentPlan, workflow.ID, node.ID)
+					if err == nil {
+						restoreManagedComposeDirectory(source, run, target)
+					}
+					return plan, target, err
 				}
 			}
 		}
@@ -59,5 +63,6 @@ func (s *Service) rollbackPlanTarget(ctx context.Context, source *model.Deployme
 	if err := s.db.WithContext(ctx).Where("uuid = ? AND project_id = ? AND department_id = ? AND is_active = ?", plan.DeploymentTargetID, source.ProjectID, source.DepartmentID, true).First(&target).Error; err != nil {
 		return nil, nil, err
 	}
+	restoreManagedComposeDirectory(source, run, &target)
 	return &plan, &target, nil
 }

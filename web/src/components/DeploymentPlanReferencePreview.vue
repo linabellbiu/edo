@@ -11,7 +11,7 @@ const props = defineProps<{ plan: WorkflowDeploymentPlan & { id: string; is_acti
 const auth = useAuthStore()
 const environmentName = ref(''), environmentError = ref(''), loading = ref(false)
 let controller: AbortController | undefined
-const kindNames = { docker: 'Docker 容器', compose: 'DockerCompose 单镜像', compose_stack: 'DockerCompose 多镜像', script: '主机脚本', kubernetes: 'Kubernetes Deployment' }
+const kindNames = { docker: 'Docker 容器', compose: 'dockercompose 单镜像', compose_stack: 'dockercompose 多镜像', script: '主机脚本', kubernetes: 'Kubernetes Deployment' }
 const target = computed(() => props.plan.deployment_target)
 const docker = computed(() => (props.plan.docker_config || {}) as NonNullable<DeploymentCommandPlan['docker_config']>)
 const canReadEnvironment = computed(() => auth.canAny(['deployment.read']))
@@ -48,12 +48,12 @@ onBeforeUnmount(() => controller?.abort())
       <a-form-item label="部署方式"><a-input :value="kindNames[plan.kind]" disabled /></a-form-item>
       <a-form-item label="环境"><a-input :value="environmentLabel" disabled /></a-form-item>
       <a-form-item label="超时（秒）"><a-input :value="plan.timeout_seconds" disabled /></a-form-item>
-      <a-form-item v-if="target?.working_directory" label="部署目录"><a-input :value="target.working_directory" disabled /></a-form-item>
+      <a-form-item v-if="plan.kind === 'script' && target?.working_directory" label="工作目录"><a-input :value="target.working_directory" disabled /></a-form-item>
     </div>
     <a-form-item v-if="plan.description" label="方案说明"><a-textarea :value="plan.description" :auto-size="{ minRows: 1, maxRows: 4 }" disabled /></a-form-item>
     <template v-if="plan.kind === 'compose' || plan.kind === 'compose_stack'">
       <a-form-item v-if="plan.kind === 'compose'" label="目标服务"><a-input :value="plan.service_name" disabled /></a-form-item>
-      <a-form-item label="DockerCompose YAML"><YamlCodeEditor :model-value="plan.compose_yaml || ''" readonly label="部署方案 DockerCompose YAML（只读）" /></a-form-item>
+      <a-form-item label="docker-compose.yaml"><YamlCodeEditor :model-value="plan.compose_yaml || ''" readonly fullscreen label="docker-compose.yaml（只读）" /></a-form-item>
     </template>
     <a-form-item v-else-if="plan.kind === 'script'" label="方案脚本"><a-textarea :value="plan.script" :auto-size="{ minRows: 3, maxRows: 12 }" disabled /></a-form-item>
     <template v-else-if="plan.kind === 'kubernetes'">

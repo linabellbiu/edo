@@ -76,7 +76,7 @@ func normalizeComposeDelivery(input ComposeDeliveryInput) (ComposeDeliveryInput,
 	if input.TagVariable == "" {
 		input.TagVariable = "${IMAGE_TAG}"
 	}
-	if (input.Name != "" && !validResourceName(input.Name)) || !composeProjectPattern.MatchString(input.ProjectName) || input.EnvFile != "" || !path.IsAbs(input.Target.WorkingDirectory) || !validComposeFilePath(input.Target.WorkingDirectory) || len(input.Services) == 0 || len(input.Services) > 32 || input.TimeoutSeconds < 60 || input.TimeoutSeconds > 3600 || len(input.ImageTag) > 512 || !validComposeHealthURL(input.HealthURL) || composeTagName(input.TagVariable) == "" {
+	if (input.Name != "" && !validResourceName(input.Name)) || !composeProjectPattern.MatchString(input.ProjectName) || input.EnvFile != "" || (input.Target.WorkingDirectory != "" && (!path.IsAbs(input.Target.WorkingDirectory) || !validComposeFilePath(input.Target.WorkingDirectory))) || len(input.Services) == 0 || len(input.Services) > 32 || input.TimeoutSeconds < 60 || input.TimeoutSeconds > 3600 || len(input.ImageTag) > 512 || !validComposeHealthURL(input.HealthURL) || composeTagName(input.TagVariable) == "" {
 		return input, ErrInvalidComposeDelivery
 	}
 	doc, err := parseComposeStack(input.ComposeYAML)

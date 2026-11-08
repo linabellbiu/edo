@@ -1,6 +1,6 @@
 export const deliveryZh = {
  defaults:'发布默认方案', defaultsHint:'默认方案按当前项目和部署方式保存。更换默认只影响之后的新建配置。',
- kind:'部署方式', docker:'Docker 容器', compose:'DockerCompose', kubernetes:'Kubernetes', script:'主机脚本',
+ kind:'部署方式', docker:'Docker 容器', compose:'dockercompose', kubernetes:'Kubernetes', script:'主机脚本',
  workflow:'流水线方案', deployment:'部署方案', builtin:'内置默认', save:'保存默认', saved:'默认方案已保存', unavailable:'默认方案已停用或删除，请重新选择。',
  independent:'使用所选方案的通用规则，运行位置由当前应用独立配置。保存后生成可编辑草稿，不立即发布。',
  configure:'配置发布流程', application:'应用', name:'流水线名称', build:'构建方案', environment:'环境', host:'执行主机', cluster:'Kubernetes 集群', namespace:'命名空间', workload:'Deployment 名称', container:'容器名称', directory:'部署目录',
@@ -14,7 +14,7 @@ export const deliveryZh = {
 }
 export const deliveryEn: Record<keyof typeof deliveryZh,string> = {
  defaults:'Delivery defaults', defaultsHint:'Defaults are scoped to this project and deployment type. Changing them affects future configurations.',
- kind:'Deployment type', docker:'Docker container', compose:'DockerCompose', kubernetes:'Kubernetes', script:'Host script',
+ kind:'Deployment type', docker:'Docker container', compose:'dockercompose', kubernetes:'Kubernetes', script:'Host script',
  workflow:'Pipeline template', deployment:'Deployment plan', builtin:'Built-in default', save:'Save defaults', saved:'Defaults saved', unavailable:'A default plan is disabled or deleted. Select another plan.',
  independent:'Reuse the selected rules with an independent destination for this application. Saving creates an editable draft without deploying.',
  configure:'Configure delivery', application:'Application', name:'Pipeline name', build:'Build plan', environment:'Environment', host:'Execution host', cluster:'Kubernetes cluster', namespace:'Namespace', workload:'Deployment name', container:'Container name', directory:'Deployment directory',

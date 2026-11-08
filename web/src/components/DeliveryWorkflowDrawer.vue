@@ -69,8 +69,7 @@ async function create(){
  if(existingCompose.value){
   if(!canCreateCompose.value)return
   if(!composeFields.value?.validate())return
-  if(!form.directory.startsWith('/')||form.directory.split('/').includes('..')){message.error('请输入目标主机上已有项目的绝对部署目录');return}
-  await submit(`/applications/${form.application}/compose-delivery-workflows`,{...composeForm.value,name:form.name,target:{name:'application_compose',platform:'ssh',environment_id:form.environment,host_id:form.host,working_directory:form.directory}})
+  await submit(`/applications/${form.application}/compose-delivery-workflows`,{...composeForm.value,name:form.name,target:{name:'application_compose',platform:'ssh',environment_id:form.environment,host_id:form.host,working_directory:''}})
   return
  }
  const host=hosts.value.find(item=>item.id===form.host)
@@ -90,7 +89,7 @@ watch(()=>props.open,value=>{if(value)composeForm.value=newComposeDeliveryForm()
 <a-alert v-if="currentDefault&&(!currentDefault.workflow_available||!currentDefault.deployment_available)" type="warning" :message="t('delivery.unavailable')" class="hint"/>
 <a-form layout="vertical"><div class="grid">
 <a-form-item v-if="!applicationId" class="wide" :label="t('delivery.application')" required><a-select :aria-label="t('delivery.application')" v-model:value="form.application" :options="applications.map(item=>({value:item.id,label:item.name}))"/></a-form-item>
-<a-form-item :label="t('delivery.kind')"><a-select :aria-label="t('delivery.kind')" v-model:value="form.kind" :options="[...deliveryKinds.map(value=>({value,label:t(`delivery.${value}`)})),{value:'compose_existing',label:'DockerCompose 与 Tag（多镜像）',disabled:!canCreateCompose}]" @change="selectKind"/></a-form-item>
+<a-form-item :label="t('delivery.kind')"><a-select :aria-label="t('delivery.kind')" v-model:value="form.kind" :options="[...deliveryKinds.map(value=>({value,label:t(`delivery.${value}`)})),{value:'compose_existing',label:'dockercompose 与 Tag（多镜像）',disabled:!canCreateCompose}]" @change="selectKind"/></a-form-item>
 <a-form-item :label="t('delivery.name')"><a-input :aria-label="t('delivery.name')" v-model:value="form.name" :maxlength="128"/></a-form-item>
 <a-form-item v-if="!existingCompose" :label="t('delivery.workflow')"><a-select :aria-label="t('delivery.workflow')" v-model:value="form.workflow" :options="workflowOptions"/></a-form-item>
 <a-form-item v-if="!existingCompose" :label="t('delivery.deployment')"><a-select :aria-label="t('delivery.deployment')" v-model:value="form.plan" :options="planOptions"/></a-form-item>
@@ -102,7 +101,7 @@ watch(()=>props.open,value=>{if(value)composeForm.value=newComposeDeliveryForm()
 <template v-if="form.kind==='kubernetes'">
 <a-form-item :label="t('delivery.namespace')" required><a-input :aria-label="t('delivery.namespace')" v-model:value="form.namespace"/></a-form-item><a-form-item :label="t('delivery.workload')" required><a-input :aria-label="t('delivery.workload')" v-model:value="form.workload"/></a-form-item><a-form-item class="wide" :label="t('delivery.container')" required><a-input :aria-label="t('delivery.container')" v-model:value="form.container"/></a-form-item>
 </template>
-<a-form-item v-if="form.kind==='script'||existingCompose" class="wide" :label="t('delivery.directory')" :required="existingCompose"><a-input :aria-label="t('delivery.directory')" v-model:value="form.directory" placeholder="目标主机上的绝对路径"/></a-form-item>
+<a-form-item v-if="form.kind==='script'&&!existingCompose" class="wide" :label="t('delivery.directory')"><a-input :aria-label="t('delivery.directory')" v-model:value="form.directory" placeholder="目标主机上的绝对路径"/></a-form-item>
 </div>
 <a-alert v-if="form.kind==='kubernetes'" type="info" :message="t('delivery.targetHint')" class="hint"/>
 <a-alert v-if="form.kind==='script'" type="warning" :message="t('delivery.scriptHint')" class="hint"/>

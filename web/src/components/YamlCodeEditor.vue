@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { Maximize } from 'lucide-vue-next'
 import { useI18n } from 'vue-i18n'
 import { Compartment, EditorState } from '@codemirror/state'
 import { EditorView, keymap, lineNumbers, highlightActiveLine, highlightActiveLineGutter, drawSelection } from '@codemirror/view'
@@ -11,12 +12,13 @@ import { linter, forceLinting } from '@codemirror/lint'
 import { usePreferencesStore } from '@/stores/preferences'
 import { readKubeYaml, type YamlIssue } from '@/utils/kubernetesYaml'
 
-const props = withDefaults(defineProps<{ modelValue: string; readonly?: boolean; issues?: YamlIssue[]; label?: string }>(), { readonly: false })
+const props = withDefaults(defineProps<{ modelValue: string; readonly?: boolean; issues?: YamlIssue[]; label?: string; fullscreen?: boolean }>(), { readonly: false, fullscreen: false })
 const emit = defineEmits<{ 'update:modelValue': [value: string]; format: [] }>()
 const { t, locale } = useI18n(), preferences = usePreferencesStore(), host = ref<HTMLElement>()
 const appearance = new Compartment(), accessibility = new Compartment()
 const editing = new Compartment()
 const highlighting = new Compartment()
+const fullscreenOpen = ref(false), fullscreenHost = ref<HTMLElement>()
 function highlight() {
   const dark = preferences.theme === 'dark'
   return syntaxHighlighting(HighlightStyle.define([
@@ -55,10 +57,21 @@ watch(() => props.issues, () => { if (editor) forceLinting(editor) })
 watch(() => props.readonly, value => editor?.dispatch({ effects: editing.reconfigure([EditorState.readOnly.of(value), EditorView.editable.of(!value)]) }))
 watch(() => preferences.theme, () => editor?.dispatch({ effects: [appearance.reconfigure(theme()), highlighting.reconfigure(highlight())] }))
 watch([locale, () => props.label], () => { editor?.dispatch({ effects: accessibility.reconfigure(EditorView.contentAttributes.of({ 'aria-label': props.label || t('yamlEditor.label') })) }); if (editor) forceLinting(editor) })
+watch(fullscreenOpen, async open => { await nextTick(); editor?.requestMeasure(); if (open) editor?.focus() })
+watch(() => props.fullscreen, enabled => { if (!enabled) fullscreenOpen.value = false })
 onBeforeUnmount(() => { editor?.destroy(); editor = undefined })
 function focusIssue(issue: YamlIssue) { editor?.dispatch({ selection: { anchor: Math.min(issue.from, editor.state.doc.length) }, scrollIntoView: true }); editor?.focus() }
 defineExpose({ focusIssue })
 </script>
 
-<template><div ref="host" class="yaml-code-editor" /></template>
+<template>
+  <div class="yaml-editor-shell">
+    <div v-if="fullscreen" class="yaml-editor-toolbar"><a-button size="small" :aria-label="`全屏查看或编辑 ${label || 'YAML'}`" @click="fullscreenOpen = true"><Maximize :size="14" />全屏</a-button></div>
+    <Teleport :to="fullscreenHost || 'body'" :disabled="!fullscreenOpen || !fullscreenHost"><div ref="host" class="yaml-code-editor" /></Teleport>
+    <a-modal v-if="fullscreen" v-model:open="fullscreenOpen" :title="label || 'YAML'" :footer="null" :force-render="true" width="100vw" :style="{ top: '0', maxWidth: '100vw', paddingBottom: 0 }" wrap-class-name="yaml-editor-fullscreen-modal"><div ref="fullscreenHost" class="yaml-editor-fullscreen-host" /></a-modal>
+  </div>
+</template>
 <style scoped>.yaml-code-editor{min-width:0;border:1px solid var(--edo-border);border-radius:5px;overflow:hidden}.yaml-code-editor:focus-within{border-color:var(--edo-primary)}</style>
+<style scoped>
+.yaml-editor-shell{min-width:0}.yaml-editor-toolbar{display:flex;justify-content:flex-end;margin-bottom:8px}.yaml-editor-fullscreen-host{height:100%;min-height:0}.yaml-editor-fullscreen-host .yaml-code-editor{height:100%}.yaml-editor-fullscreen-host :deep(.cm-editor){height:100%}.yaml-editor-fullscreen-host :deep(.cm-scroller){min-height:0;max-height:none;height:100%}:global(.yaml-editor-fullscreen-modal .ant-modal-content){height:100vh;height:100dvh;display:flex;flex-direction:column;border-radius:0}:global(.yaml-editor-fullscreen-modal .ant-modal-body){flex:1;min-height:0}
+</style>

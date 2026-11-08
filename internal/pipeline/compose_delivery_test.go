@@ -72,6 +72,9 @@ func TestComposeDeliveryCreatesTwoStageDraftAndSharedImageBuild(t *testing.T) {
 
 func TestComposeDeliveryValidatesInlineYAMLAndTagBindings(t *testing.T) {
 	valid := ComposeDeliveryInput{ProjectName: "my-app", ComposeYAML: "services:\n  api:\n    image: registry.example.com/api:${IMAGE_TAG}\n", Services: []ComposeServiceBuild{{Service: "api", BuildPlanID: "build"}}}
+	if _, err := normalizeComposeDelivery(valid); err != nil {
+		t.Fatalf("新方案应允许自动管理工作目录：%v", err)
+	}
 	valid.Target.WorkingDirectory = "/srv/app"
 	for _, change := range []func(*ComposeDeliveryInput){func(v *ComposeDeliveryInput) { v.ProjectName = "$(id)" }, func(v *ComposeDeliveryInput) { v.ComposeYAML = "services: [" }, func(v *ComposeDeliveryInput) { v.EnvFile = "../prod.env" }, func(v *ComposeDeliveryInput) { v.EnvFile = "settings.env" }, func(v *ComposeDeliveryInput) { v.TagVariable = "EDO_COMMIT_SHA" }, func(v *ComposeDeliveryInput) { v.HealthURL = "https://user:pass@example.com/health" }, func(v *ComposeDeliveryInput) {
 		v.ComposeYAML = "services:\n  api:\n    build: .\n    image: app:${IMAGE_TAG}\n"

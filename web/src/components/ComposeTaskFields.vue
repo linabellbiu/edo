@@ -49,8 +49,8 @@ function updateSettings(patch: Partial<NonNullable<WorkflowNodeConfig['compose']
 <template>
  <a-alert v-if="error" type="warning" :message="error" show-icon/>
   <a-form-item v-if="['docker','compose','compose_stack'].includes(kind)" required :validate-status="!validTagReference(tagReference)?'error':undefined" :help="!validTagReference(tagReference)?'请使用变量引用，例如 ${IMAGE_TAG}':undefined"><template #label><span>镜像 Tag <a-tooltip title="例如 ${IMAGE_TAG}，对应 docker image 中的 ${IMAGE_TAG}；值来自当前流水线本次构建的镜像 Tag。" :trigger="['hover','focus','click']"><button type="button" class="configuration-help" aria-label="镜像 Tag 说明">?</button></a-tooltip></span></template><a-input :value="tagReference" placeholder="${IMAGE_TAG}" aria-label="镜像 Tag" :disabled="disabled" @update:value="updateTag(String($event||''))"/></a-form-item>
- <section v-if="kind==='compose_stack'" class="compose-task-fields" aria-label="DockerCompose 多镜像部署配置">
-  <a-form-item label="DockerCompose 项目名" required><a-input :value="settings.project_name" :disabled="disabled" @update:value="updateSettings({project_name:String($event||'')})"/></a-form-item>
+ <section v-if="kind==='compose_stack'" class="compose-task-fields" aria-label="dockercompose 多镜像部署配置">
+  <a-form-item label="dockercompose 项目名" required><a-input :value="settings.project_name" :disabled="disabled" @update:value="updateSettings({project_name:String($event||'')})"/></a-form-item>
 
   <a-form-item label="健康检查地址（可选）"><a-input :value="settings.health_url" :disabled="disabled" @update:value="updateSettings({health_url:String($event||'')})"/></a-form-item>
   <a-form-item><template #label><span>启动服务（可选） <a-tooltip title="留空执行整个 docker-compose.yaml 项目" :trigger="['hover','focus','click']"><button type="button" class="configuration-help" aria-label="启动服务说明">?</button></a-tooltip></span></template>
@@ -59,7 +59,7 @@ function updateSettings(patch: Partial<NonNullable<WorkflowNodeConfig['compose']
   <a-checkbox :checked="settings.adopt_existing" :disabled="disabled" @change="updateSettings({adopt_existing:$event.target.checked})">接管已有项目，核对原服务与工作目录</a-checkbox>
   <a-checkbox :checked="settings.use_sudo" :disabled="disabled" @change="updateSettings({use_sudo:$event.target.checked})">使用免密码 sudo 执行 Docker</a-checkbox>
  </section>
- <a-alert v-else-if="node.config.compose" type="warning" show-icon message="当前任务含多镜像配置，请选择 DockerCompose 多镜像部署方案。"/>
+ <a-alert v-else-if="node.config.compose" type="warning" show-icon message="当前任务含多镜像配置，请选择 dockercompose 多镜像部署方案。"/>
  <DeploymentConfigurationFields v-if="['docker','compose','compose_stack','script'].includes(kind)" :config="node.config" :build-nodes="buildNodes" :deploymentPlan="deploymentPlan" :applicationID="applicationID" :applicationName="applicationName" :environmentID="environmentID" :disabled="disabled" @change="change"/>
 </template>
 <style scoped>

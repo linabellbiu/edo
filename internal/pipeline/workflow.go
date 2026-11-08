@@ -126,21 +126,22 @@ type workflowDeploymentPlanSnapshot struct {
 }
 
 type workflowDeploymentTargetSnapshot struct {
-	ProjectID        string                   `json:"project_id,omitempty"`
-	ID               string                   `json:"id"`
-	DepartmentID     string                   `json:"department_id,omitempty"`
-	Name             string                   `json:"name"`
-	Platform         model.DeploymentPlatform `json:"platform"`
-	EnvironmentID    string                   `json:"environment_id,omitempty"`
-	HostID           string                   `json:"host_id,omitempty"`
-	Architecture     model.HostArchitecture   `json:"architecture,omitempty"`
-	Architectures    []model.HostArchitecture `json:"architectures,omitempty"`
-	RuntimeID        string                   `json:"runtime_id,omitempty"`
-	WorkingDirectory string                   `json:"working_directory,omitempty"`
-	Namespace        string                   `json:"namespace,omitempty"`
-	WorkloadName     string                   `json:"workload_name,omitempty"`
-	ContainerName    string                   `json:"container_name,omitempty"`
-	RolloutTimeout   int                      `json:"rollout_timeout"`
+	ProjectID               string                   `json:"project_id,omitempty"`
+	ID                      string                   `json:"id"`
+	DepartmentID            string                   `json:"department_id,omitempty"`
+	Name                    string                   `json:"name"`
+	Platform                model.DeploymentPlatform `json:"platform"`
+	EnvironmentID           string                   `json:"environment_id,omitempty"`
+	HostID                  string                   `json:"host_id,omitempty"`
+	Architecture            model.HostArchitecture   `json:"architecture,omitempty"`
+	Architectures           []model.HostArchitecture `json:"architectures,omitempty"`
+	RuntimeID               string                   `json:"runtime_id,omitempty"`
+	WorkingDirectory        string                   `json:"working_directory,omitempty"`
+	ManagedWorkingDirectory bool                     `json:"managed_working_directory,omitempty"`
+	Namespace               string                   `json:"namespace,omitempty"`
+	WorkloadName            string                   `json:"workload_name,omitempty"`
+	ContainerName           string                   `json:"container_name,omitempty"`
+	RolloutTimeout          int                      `json:"rollout_timeout"`
 }
 
 func (s *Service) GetWorkflow(ctx context.Context, applicationID string) (*WorkflowResult, error) {
@@ -1387,6 +1388,7 @@ func (s *Service) newStageResolvedWorkflowRunWithDatabase(
 			case model.WorkflowNodeDeploy:
 				var plan model.DeploymentPlan
 				var target model.DeploymentTarget
+				managedWorkingDirectory := false
 				if current.Config.InlineDeploymentPlan != nil {
 					inlinePlan, inlineTarget, resolveErr := s.resolveInlineDeploymentPlan(ctx, application, workflow.ID, *current, database)
 					if resolveErr != nil {
@@ -1413,6 +1415,13 @@ func (s *Service) newStageResolvedWorkflowRunWithDatabase(
 				}
 				if !available {
 					return nil, ErrInvalidWorkflow
+				}
+				if plan.Kind == model.DeploymentPlanComposeStack && target.WorkingDirectory == "" {
+					directory, directoryErr := s.deployments.ResolveComposeWorkingDirectory(ctx, target, application.Name)
+					if directoryErr != nil {
+						return nil, fmt.Errorf("%w：%s", ErrInvalidWorkflow, directoryErr.Error())
+					}
+					target.WorkingDirectory, managedWorkingDirectory = directory, true
 				}
 				architectures, architectureErr := s.deploymentTargetArchitectures(ctx, database, target)
 				if architectureErr != nil {
@@ -1450,7 +1459,7 @@ func (s *Service) newStageResolvedWorkflowRunWithDatabase(
 				deploymentTargets[current.ID] = workflowDeploymentTargetSnapshot{
 					ID: target.ID, ProjectID: target.ProjectID, DepartmentID: target.DepartmentID, Name: target.Name, Platform: target.Platform,
 					EnvironmentID: target.EnvironmentID, HostID: target.HostID, Architecture: singleTargetArchitecture(architectures), Architectures: architectures, RuntimeID: target.RuntimeID,
-					WorkingDirectory: target.WorkingDirectory, Namespace: target.Namespace,
+					WorkingDirectory: target.WorkingDirectory, ManagedWorkingDirectory: managedWorkingDirectory, Namespace: target.Namespace,
 					WorkloadName: target.WorkloadName, ContainerName: target.ContainerName,
 					RolloutTimeout: target.RolloutTimeout,
 				}
