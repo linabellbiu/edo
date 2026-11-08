@@ -10,6 +10,7 @@ import { apiErrorMessage } from "@/api/resources";
 import PageToolbar from "@/components/PageToolbar.vue";
 import IdentityProvidersView from "@/views/IdentityProvidersView.vue";
 import AssistantSettings from "@/components/AssistantSettings.vue";
+import InterfaceSettings from "@/components/InterfaceSettings.vue";
 import { useAuthStore } from "@/stores/auth";
 import type { BuiltinVariableCatalog, BuiltinVariableDefinition } from "@/types/builtinVariables";
 
@@ -102,6 +103,7 @@ const sections = computed(() => [
   ...(canConfig.value
     ? [
         { key: "general", label: "安全与接入" },
+        { key: "interface", label: "界面设置" },
         { key: "assistant", label: t("assistant.settings") },
       ]
     : []),
@@ -390,7 +392,7 @@ onMounted(() => {
 
 <template>
   <section>
-    <PageToolbar description="管理账户、环境变量、存储目录、日志和登录方式。"
+    <PageToolbar description="管理账户、界面、环境变量、存储目录、日志和登录方式。"
       ><a-button v-if="active === 'general' || active === 'variables' || active === 'logs' || active === 'storage'" :loading="active === 'variables' ? variableLoading : loading" @click="refreshActiveSection"><RefreshCw :size="15" />刷新</a-button></PageToolbar
     >
     <a-segmented :value="active" :options="sections.map((item) => ({ value: item.key, label: item.label }))" class="edo-page-tabs" aria-label="系统设置页面" @change="(value: string) => select(value)" />
@@ -612,6 +614,7 @@ onMounted(() => {
         <footer><a-button danger :disabled="!canExecute || !retention.enabled" :loading="saving === 'cleanup'" @click="cleanup">立即清理</a-button><a-button type="primary" :disabled="!canUpdate" :loading="saving === 'retention'" @click="saveRetention">保存设置</a-button></footer>
       </article>
     </template>
+    <InterfaceSettings v-if="active === 'interface' && canConfig" />
     <AssistantSettings v-if="active === 'assistant' && canConfig" />
     <IdentityProvidersView v-if="active === 'identity'" />
   </section>

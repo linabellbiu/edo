@@ -875,13 +875,13 @@ func validLogRetention(value logRetentionValue) bool {
 		value.AuditLogDays >= 1 && value.AuditLogDays <= 3650
 }
 
-func (s *Service) getSystemBooleanSettings(ctx context.Context, key, label string) (systemBooleanSettings, error) {
+func (s *Service) getSystemBooleanSettings(ctx context.Context, key, label string, defaultEnabled ...bool) (systemBooleanSettings, error) {
 	var item model.Configuration
 	err := s.db.WithContext(ctx).Where(
 		map[string]any{"namespace": systemNamespace, "environment": model.EnvironmentGlobal, "key": key},
 	).First(&item).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
-		return systemBooleanSettings{}, nil
+		return systemBooleanSettings{Enabled: len(defaultEnabled) > 0 && defaultEnabled[0]}, nil
 	}
 	if err != nil {
 		return systemBooleanSettings{}, fmt.Errorf("读取%s设置失败: %w", label, err)

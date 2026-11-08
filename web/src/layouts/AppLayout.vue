@@ -4,7 +4,7 @@ import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
 import { ConfigProvider, Modal } from 'ant-design-vue'
 import {
-  Bell, ChevronDown, ChevronLeft, Command, Expand, Github, Languages, LockKeyhole, LogOut,
+  Bell, ChevronDown, ChevronLeft, Command, Expand, Languages, LockKeyhole, LogOut,
   Maximize2, Menu, Moon, PanelLeftClose, PanelLeftOpen, RefreshCw, Search,
   Pin, Settings, Sun, X,
 } from 'lucide-vue-next'
@@ -16,6 +16,7 @@ import { useTabsStore } from '@/stores/tabs'
 import ProjectSelector from '@/components/ProjectSelector.vue'
 import SidebarNavItem from '@/components/SidebarNavItem.vue'
 import FloatingAssistant from '@/components/FloatingAssistant.vue'
+import GitHubRepositoryLink from '@/components/GitHubRepositoryLink.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -368,7 +369,7 @@ onBeforeUnmount(() => {
           <button class="header-search" type="button" @click="openSearch">
             <Search :size="17" /><span>{{ t('common.search') }}</span><kbd><Command :size="12" /> K</kbd>
           </button>
-          <a-tooltip title="GitHub"><a class="icon-button github-link" href="https://github.com/linabellbiu/edo" target="_blank" rel="noopener noreferrer" :aria-label="t('common.githubRepository')"><Github /></a></a-tooltip>
+          <GitHubRepositoryLink />
           <a-tooltip :title="t(preferences.theme === 'dark' ? 'common.lightTheme' : 'common.darkTheme')"><button class="icon-button" type="button" :aria-label="t(preferences.theme === 'dark' ? 'common.lightTheme' : 'common.darkTheme')" @click="preferences.toggleTheme()"><Sun v-if="preferences.theme === 'dark'" /><Moon v-else /></button></a-tooltip>
           <a-dropdown placement="bottomRight">
             <a-tooltip :title="t('common.language')"><button class="icon-button" type="button" :aria-label="t('common.language')"><Languages /></button></a-tooltip>

@@ -81,6 +81,7 @@ function menuHarness(t) {
     '@/components/ProjectSelector.vue': {__esModule: true, default: {render: () => null}},
     '@/components/SidebarNavItem.vue': {__esModule: true, default: {render: () => null}},
     '@/components/FloatingAssistant.vue': {__esModule: true, default: {render: () => null}},
+    '@/components/GitHubRepositoryLink.vue': {__esModule: true, default: {render: () => null}},
   }, {addEventListener: (name, callback) => listeners.set(name, callback), removeEventListener: name => listeners.delete(name)})
   const root = node('root'), app = renderer.createApp(component)
   for (const name of ['a-tooltip', 'a-dropdown', 'a-menu-item', 'a-menu-divider', 'a-breadcrumb', 'a-breadcrumb-item', 'a-empty', 'a-alert', 'a-button']) app.component(name, pass)

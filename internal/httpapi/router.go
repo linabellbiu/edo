@@ -420,6 +420,9 @@ func NewRouter(deps Dependencies) *gin.Engine {
 
 	configurationAPI := configurationHandler{service: deps.Configurations, logger: deps.Logger}
 	settingsAPI := settingsHandler{service: deps.Configurations, loginLimiter: deps.LoginLimiter, authConfig: deps.AuthConfig, retention: deps.LogRetention, runtimeLogs: deps.RuntimeLogs, repositories: deps.Repositories, artifacts: deps.Artifacts, logger: deps.Logger}
+	// 只返回非敏感的全局显示开关，普通登录用户也需要读取顶部入口状态。
+	protected.GET("/settings/github-logo", settingsAPI.githubLogo)
+	protected.PUT("/settings/github-logo", auditAction(deps.Audits, deps.Logger, "settings.github_logo.update", "settings"), requirePermission(deps.Access, deps.Logger, access.PermissionConfigUpdate), settingsAPI.updateGitHubLogo)
 	protected.GET("/settings/builtin-variables", requireAnyPermission(deps.Access, deps.Logger, access.PermissionConfigRead, "application.read", "workflow.read", "build_plan.read", "deployment_plan.read"), settingsAPI.builtinVariables)
 	protected.GET("/settings/external-git-webhook", requirePermission(deps.Access, deps.Logger, access.PermissionConfigRead), settingsAPI.externalGitWebhook)
 	protected.PUT("/settings/external-git-webhook", auditAction(deps.Audits, deps.Logger, "settings.git_webhook.update", "settings"), requirePermission(deps.Access, deps.Logger, access.PermissionConfigUpdate), settingsAPI.updateExternalGitWebhook)

@@ -62,6 +62,7 @@ function mount(t, {locale = 'zh-CN', theme = 'light', connecting = false} = {}) 
     '@/components/ProjectSelector.vue': {__esModule: true, default: {render: () => null}},
     '@/components/SidebarNavItem.vue': {__esModule: true, default: {render: () => null}},
     '@/components/FloatingAssistant.vue': {__esModule: true, default: {render: () => null}},
+    '@/components/GitHubRepositoryLink.vue': {__esModule: true, default: {render: () => null}},
   }
   const module = {exports: {}}
   new Function('require', 'module', 'exports', 'window', 'document', code)(name => {
