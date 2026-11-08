@@ -1690,6 +1690,7 @@ onBeforeRouteLeave(async () => {
             <button type="button" :class="{ active: propertyTab === 'advanced' }" role="tab" :aria-selected="propertyTab === 'advanced'" @click="propertyTab = 'advanced'">{{ selectedNode.type==='deploy' ? '通知' : '通知及高级配置' }}</button>
           </div>
           <a-form v-if="propertyTab === 'common'" layout="vertical">
+            <h3 v-if="selectedNode.type === 'deploy'" class="task-section-heading"><CircleDot :size="15" aria-hidden="true" />基础信息</h3>
             <a-form-item :label="selectedNode.type === 'trigger' ? '来源名称' : '任务名称'">
               <a-input :value="selectedNode.name" :disabled="!canUpdate" @update:value="updateSelectedNode({ name: String($event) })" />
             </a-form-item>
@@ -1774,6 +1775,7 @@ onBeforeRouteLeave(async () => {
             </template>
 
             <template v-else-if="selectedNode.type === 'deploy'">
+              <h3 class="task-section-heading"><Layers3 :size="15" aria-hidden="true" />任务信息</h3>
               <PipelineDeployFields v-if="selectedNode.config.inline_deployment_plan&&['script','compose_stack','kubernetes'].includes(selectedNode.config.inline_deployment_plan.kind)" :node="selectedNode" :disabled="!canUpdate" :applicationID="applicationID" :applicationName="editorApplication?.name" :branch="sources[0]?.config.branch" :build-nodes="priorBuildTasks(selectedNode.id)" :build-plans="buildPlans" @change="updateSelectedNode({},$event)"/>
               <template v-else-if="selectedNode.config.inline_deployment_plan">
                 <a-form-item label="原部署配置"><span>{{selectedNode.config.inline_deployment_plan.name}}</span><a-button :disabled="!canUpdate" @click="editInlineDeployment">编辑原配置</a-button></a-form-item>
@@ -2060,6 +2062,8 @@ onBeforeRouteLeave(async () => {
 .template-shortcuts small { color: var(--edo-muted); font-size: 10px; }
 .panel-tabs { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); margin: -2px 16px 16px; border: 1px solid var(--edo-border); border-radius: 5px; }
 .panel-tabs.single { grid-template-columns: 1fr; }
+.task-section-heading { display: flex; align-items: center; gap: 8px; margin: 0 -16px 14px; padding: 10px 16px; border-top: 1px solid var(--edo-border); border-bottom: 1px solid var(--edo-border); background: color-mix(in srgb,var(--edo-primary) 6%,var(--edo-surface)); color: var(--edo-text); font-size: 14px; font-weight: 600; }
+.task-section-heading > svg { flex-shrink: 0; color: var(--edo-primary); }
 .panel-tabs span, .panel-tabs button { padding: 7px 8px; border: 0; color: var(--edo-muted); background: transparent; text-align: center; }
 .panel-tabs button { cursor: pointer; }
 .panel-tabs span.active, .panel-tabs button.active { color: var(--edo-primary); box-shadow: inset 0 0 0 1px var(--edo-primary); }
