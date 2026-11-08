@@ -78,6 +78,7 @@ export async function setClusterHosts(clusterID: string, hostIDs: string[]) {
 }
 
 export interface InfrastructureEnvironment {
+  parent_id?: string
   id: string
   name: string
   description: string

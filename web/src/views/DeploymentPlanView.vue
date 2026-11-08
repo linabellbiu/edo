@@ -9,6 +9,7 @@ import client from '@/api/client'
 import DeploymentExecutionFields from '@/components/DeploymentExecutionFields.vue'
 import DeploymentScriptEditor from '@/components/DeploymentScriptEditor.vue'
 import { environmentIDsOf, listEnvironments, listHosts, type InfrastructureEnvironment, type InfrastructureHost } from '@/api/infrastructure'
+import { hostGroupOptions } from '@/utils/hostGroups'
 import { apiErrorMessage, type ResourceRecord } from '@/api/resources'
 import YamlCodeEditor from '@/components/YamlCodeEditor.vue'
 import { readKubeYaml } from '@/utils/kubernetesYaml'
@@ -286,9 +287,7 @@ const environmentByID = computed(() => new Map(environments.value.map(item => [i
 const hostByID = computed(() => new Map(hosts.value.map(item => [item.id, item])))
 const dockerByID = computed(() => new Map(docker.value.filter(item => item.is_active).map(item => [item.id, item])))
 const clusterByID = computed(() => new Map(clusters.value.filter(item => item.is_active).map(item => [item.id, item])))
-const environmentOptions = computed(() => environments.value
-  .filter(environment => environment.is_active)
-  .map(environment => ({ value: environment.id, label: environment.name })))
+const environmentOptions = computed(() => hostGroupOptions(environments.value.filter(environment => environment.is_active)))
 const environmentHosts = computed(() => hosts.value
   .filter(host => host.is_active && environmentIDsOf(host).includes(form.environment_id)))
 const availableKindOptions = computed(() => kindOptions.map(option=>option.value==='compose_stack'&&form.kind==='compose'?{...option,value:'compose' as PlanKind}:option).filter(option=>(!props.inline||!props.inlineKinds||props.inlineKinds.includes(option.value))&&(form.reusable||environmentSupportsKind(option.value))))
@@ -308,8 +307,8 @@ const executionTargetError = computed(() => {
     return form.runtime_id && !clusterByID.value.has(form.runtime_id) ? targetT('deploymentTarget.clusterUnavailable') : ''
   }
   const candidates = executionHosts.value
-  if (!candidates.length) return '当前环境没有可用于所选部署方式的执行主机，请先调整环境配置。'
-  if (candidates.length > 1) return '当前环境有多台可用于所选部署方式的主机，无法唯一确定执行位置，请先调整环境配置。'
+  if (!candidates.length) return '当前主机组没有可用于所选部署方式的执行主机，请先调整主机组配置。'
+  if (candidates.length > 1) return '当前主机组有多台可用于所选部署方式的主机，无法唯一确定执行位置，请先调整主机组配置。'
   return ''
 })
 
@@ -827,14 +826,14 @@ function validate() {
     return form.kind === 'docker' ? validateDockerConfig() : ''
   }
   if (!form.environment_id) return t('environment.deployment.environmentRequired')
-  if (!availableKindOptions.value.some(option => option.value === form.kind)) return '当前环境不支持所选部署方式'
+  if (!availableKindOptions.value.some(option => option.value === form.kind)) return '当前主机组不支持所选部署方式'
   if (executionTargetError.value) return executionTargetError.value
-  if (form.kind === 'script' && !form.host_id) return '当前环境没有唯一可用的脚本执行主机'
+  if (form.kind === 'script' && !form.host_id) return '当前主机组没有唯一可用的脚本执行主机'
   if (form.kind === 'script' && !hostBelongsToEnvironment(form.host_id, form.environment_id)) return t('environment.deployment.membershipInvalid')
   if (form.kind === 'script' && !form.script.trim()) return '请输入部署脚本'
   if (form.kind === 'script' && !validWorkingDirectory(form.working_directory)) return '工作目录必须是规范化绝对路径，或留空使用执行用户主目录'
-  if ((form.kind === 'docker' || form.kind === 'compose') && !form.host_id) return '当前环境没有唯一可用的 Docker 执行主机'
-  if ((form.kind === 'docker' || form.kind === 'compose') && !targetCapabilityMatches(form.kind, form.host_id, form.runtime_id)) return '当前环境的 Docker 能力不可用'
+  if ((form.kind === 'docker' || form.kind === 'compose') && !form.host_id) return '当前主机组没有唯一可用的 Docker 执行主机'
+  if ((form.kind === 'docker' || form.kind === 'compose') && !targetCapabilityMatches(form.kind, form.host_id, form.runtime_id)) return '当前主机组的 Docker 能力不可用'
   if (form.kind === 'docker') {
     const dockerConfigMessage = validateDockerConfig()
     if (dockerConfigMessage) return dockerConfigMessage
@@ -862,11 +861,11 @@ async function testConnection() {
     : executionTargetError.value
       ? executionTargetError.value
       : platform.value !== 'kubernetes' && !form.host_id
-        ? '当前环境没有唯一可用的执行主机'
+        ? '当前主机组没有唯一可用的执行主机'
       : platform.value === 'ssh' && !hostBelongsToEnvironment(form.host_id, form.environment_id)
         ? t('environment.deployment.membershipInvalid')
         : platform.value !== 'ssh' && (!form.runtime_id || !targetCapabilityMatches(form.kind, form.host_id, form.runtime_id))
-          ? platform.value === 'kubernetes' ? targetT('deploymentTarget.clusterPlaceholder') : '请选择当前环境可用的 Docker 主机'
+          ? platform.value === 'kubernetes' ? targetT('deploymentTarget.clusterPlaceholder') : '请选择当前主机组可用的 Docker 主机'
           : ''
   if (validationMessage) {
     message.error(validationMessage)
@@ -1101,7 +1100,7 @@ onBeforeUnmount(() => { disposed = true; resetMutation(); reset(); window.remove
     <a-drawer v-model:open="formOpen" :title="inline?'流水线自定义部署方案':editingID ? '编辑部署方案' : '新建部署方案'" width="min(720px, 100vw)">
       <a-form layout="vertical">
         <div class="form-section">
-          <header><b>1</b><div><strong>方案信息</strong><small>使用能直接辨认用途和环境的名称。</small></div></header>
+          <header><b>1</b><div><strong>方案信息</strong><small>使用能直接辨认用途和主机组的名称。</small></div></header>
           <div class="form-grid">
             <a-form-item class="span-2" label="方案名称" required><a-input v-model:value="form.name" placeholder="例如：生产后端部署" /></a-form-item>
             <a-form-item v-if="!inline" class="span-2" :help="t('delivery.reusableHint')"><a-checkbox v-model:checked="form.reusable" :disabled="Boolean(editingID && plans.find(item=>item.id===editingID)?.deployment_target_id)">{{ t('delivery.reusable') }}</a-checkbox></a-form-item>
@@ -1110,7 +1109,7 @@ onBeforeUnmount(() => { disposed = true; resetMutation(); reset(); window.remove
         </div>
 
         <div v-if="!form.reusable" class="form-section">
-          <header><b>2</b><div><strong>目标环境</strong><small>{{ targetT('deploymentTarget.environmentHint') }}</small></div></header>
+          <header><b>2</b><div><strong>执行主机组</strong><small>{{ targetT('deploymentTarget.environmentHint') }}</small></div></header>
           <a-form-item :label="t('environment.deployment.environment')" required>
             <div class="resource-select">
               <a-select
@@ -1124,20 +1123,20 @@ onBeforeUnmount(() => { disposed = true; resetMutation(); reset(); window.remove
                 <template #option="{ value, label }">
                   <span class="managed-resource-option">
                     <span class="managed-resource-option-label">{{ label }}</span>
-                    <a class="managed-resource-option-view" :href="resourceViewHref('/environments', { environment: String(value) })" target="_blank" rel="noopener noreferrer" @mousedown.stop @click.stop>查看</a>
+                    <a class="managed-resource-option-view" :href="resourceViewHref('/hosts', { group: String(value) })" target="_blank" rel="noopener noreferrer" @mousedown.stop @click.stop>查看</a>
                   </span>
                 </template>
               </a-select>
-              <a-button v-if="auth.canAny(['deployment.create'])" aria-label="创建环境" title="创建环境" @click="router.push('/environments?create=1')"><Plus :size="15" /></a-button>
+              <a-button v-if="auth.canAny(['deployment.create'])" aria-label="创建主机组" title="创建主机组" @click="router.push('/hosts?create_group=1')"><Plus :size="15" /></a-button>
             </div>
           </a-form-item>
-          <div v-if="!canReadEnvironments" class="permission-note">需要发布记录查看权限才能选择环境。</div>
+          <div v-if="!canReadEnvironments" class="permission-note">需要发布记录查看权限才能选择执行主机组。</div>
         </div>
 
         <div class="form-section">
           <header><b>3</b><div><strong>执行方式与配置</strong><small>{{ targetT('deploymentTarget.configurationHint') }}</small></div></header>
-          <a-alert v-if="!form.reusable && !form.environment_id" type="info" show-icon message="请先选择目标环境" :description="targetT('deploymentTarget.chooseEnvironmentHint')" />
-          <a-alert v-else-if="!availableKindOptions.length" type="warning" show-icon message="当前环境没有可用的执行方式" :description="targetT('deploymentTarget.emptyHint')" />
+          <a-alert v-if="!form.reusable && !form.environment_id" type="info" show-icon message="请先选择执行主机组" :description="targetT('deploymentTarget.chooseEnvironmentHint')" />
+          <a-alert v-else-if="!availableKindOptions.length" type="warning" show-icon message="当前主机组没有可用的执行方式" :description="targetT('deploymentTarget.emptyHint')" />
           <a-form-item v-else label="部署方式" required>
             <a-radio-group :value="form.kind" class="kind-picker">
               <a-radio-button v-for="option in availableKindOptions" :key="option.value" :value="option.value" @click.prevent="changeKind(option.value)">
@@ -1188,7 +1187,7 @@ onBeforeUnmount(() => { disposed = true; resetMutation(); reset(); window.remove
                 <a-form-item class="span-2" label="容器名称" required><a-input v-model:value="form.container_name" placeholder="Deployment Pod 模板中的容器名" /></a-form-item>
               </template>
             </div>
-            <div v-if="!form.reusable && (platform === 'kubernetes' ? !canReadRuntimes : !canReadHosts)" class="permission-note">需要主机与集群查看权限才能读取当前环境的执行能力。</div>
+            <div v-if="!form.reusable && (platform === 'kubernetes' ? !canReadRuntimes : !canReadHosts)" class="permission-note">需要主机与集群查看权限才能读取当前主机组的执行能力。</div>
             <template v-if="form.kind === 'docker'">
             <a-alert
               class="artifact-image-notice"

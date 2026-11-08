@@ -17,19 +17,22 @@ import (
 )
 
 var (
-	ErrInvalidEnvironment       = errors.New("环境信息无效")
-	ErrEnvironmentExists        = errors.New("环境名称已存在")
-	ErrEnvironmentNotFound      = errors.New("环境不存在")
-	ErrEnvironmentReferenced    = errors.New("环境仍被启用的部署配置引用，不能停用或删除")
-	ErrHostMembershipReferenced = errors.New("所选主机仍被该环境的部署配置引用，不能移除")
-	ErrHostMembershipRunning    = errors.New("所选主机正在执行该环境的发布，运行结束后才能移除")
-	ErrDeploymentTargetInvalid  = errors.New("调整后的主机无法满足该环境现有部署方案，请保留唯一可用主机或先修改部署方案")
+	ErrInvalidParent            = errors.New("上级主机组无效，不能选择自身、下级或其他项目的主机组")
+	ErrGroupHasChildren         = errors.New("主机组仍有下级分组，请先调整下级分组")
+	ErrInvalidEnvironment       = errors.New("主机组信息无效")
+	ErrEnvironmentExists        = errors.New("主机组名称已存在")
+	ErrEnvironmentNotFound      = errors.New("主机组不存在")
+	ErrEnvironmentReferenced    = errors.New("主机组仍被启用的部署配置引用，不能停用或删除")
+	ErrHostMembershipReferenced = errors.New("所选主机仍被该主机组的部署配置引用，不能移除")
+	ErrHostMembershipRunning    = errors.New("所选主机正在执行该主机组的发布，运行结束后才能移除")
+	ErrDeploymentTargetInvalid  = errors.New("调整后的主机无法满足该主机组现有部署方案，请保留唯一可用主机或先修改部署方案")
 	ErrHostNotFound             = errors.New("所选主机不存在，请刷新后重试")
 )
 
 var environmentNamePattern = regexp.MustCompile(`^[\p{L}\p{N}][\p{L}\p{N}_. -]{0,127}$`)
 
 type Input struct {
+	ParentID    string
 	Name        string
 	Description string
 	// HostIDs 是当前环境包含的完整主机集合。主机可以同时属于多个环境，
@@ -38,6 +41,7 @@ type Input struct {
 }
 
 type ProfileInput struct {
+	ParentID    *string
 	Name        string
 	Description string
 }
@@ -145,6 +149,7 @@ func (s *Service) Create(ctx context.Context, actorID string, input Input) (*Det
 	environment := &model.Environment{
 		ID:          uuid.NewString(),
 		Name:        input.Name,
+		ParentID:    input.ParentID,
 		Description: input.Description,
 		Level:       "", // 旧列仍为 NOT NULL，保留空值以满足约束。
 		IsActive:    true,
@@ -153,6 +158,9 @@ func (s *Service) Create(ctx context.Context, actorID string, input Input) (*Det
 		UpdatedAt:   now,
 	}
 	err = s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := validateParent(tx, environment.ID, input.ParentID); err != nil {
+			return err
+		}
 		if err := ensureHostsExist(tx, input.HostIDs); err != nil {
 			return err
 		}
@@ -163,6 +171,8 @@ func (s *Service) Create(ctx context.Context, actorID string, input Input) (*Det
 	})
 	if err != nil {
 		switch {
+		case errors.Is(err, ErrInvalidParent):
+			return nil, ErrInvalidParent
 		case errors.Is(err, gorm.ErrDuplicatedKey):
 			return nil, ErrEnvironmentExists
 		case errors.Is(err, ErrHostNotFound):
@@ -185,6 +195,9 @@ func (s *Service) Update(ctx context.Context, id string, input Input) (*Detail, 
 	}
 	now := time.Now().UTC()
 	err = s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := validateParent(tx, id, input.ParentID); err != nil {
+			return err
+		}
 		var existing model.Environment
 		if err := tx.First(&existing, "uuid = ?", id).Error; err != nil {
 			return err
@@ -194,6 +207,7 @@ func (s *Service) Update(ctx context.Context, id string, input Input) (*Detail, 
 		}
 		if err := tx.Model(&existing).Updates(map[string]any{
 			"name":        input.Name,
+			"parent_id":   input.ParentID,
 			"description": input.Description,
 			"updated_at":  now,
 		}).Error; err != nil {
@@ -208,6 +222,8 @@ func (s *Service) Update(ctx context.Context, id string, input Input) (*Detail, 
 		switch {
 		case errors.Is(err, gorm.ErrRecordNotFound):
 			return nil, ErrEnvironmentNotFound
+		case errors.Is(err, ErrInvalidParent):
+			return nil, ErrInvalidParent
 		case errors.Is(err, gorm.ErrDuplicatedKey):
 			return nil, ErrEnvironmentExists
 		case errors.Is(err, ErrHostNotFound):
@@ -234,22 +250,35 @@ func (s *Service) UpdateProfile(ctx context.Context, id string, input ProfileInp
 	if err != nil {
 		return nil, err
 	}
-	result := s.db.WithContext(ctx).
-		Model(&model.Environment{}).
-		Where("uuid = ?", id).
-		Updates(map[string]any{
-			"name":        input.Name,
-			"description": input.Description,
-			"updated_at":  time.Now().UTC(),
-		})
-	if result.Error != nil {
-		if errors.Is(result.Error, gorm.ErrDuplicatedKey) {
-			return nil, ErrEnvironmentExists
+	err = s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		updates := map[string]any{"name": input.Name, "description": input.Description, "updated_at": time.Now().UTC()}
+		if input.ParentID != nil {
+			parentID := strings.TrimSpace(*input.ParentID)
+			if err := validateParent(tx, id, parentID); err != nil {
+				return err
+			}
+			updates["parent_id"] = parentID
 		}
-		return nil, fmt.Errorf("更新环境基本信息失败: %w", result.Error)
-	}
-	if result.RowsAffected != 1 {
-		return nil, ErrEnvironmentNotFound
+		result := tx.Model(&model.Environment{}).Where("uuid = ?", id).Updates(updates)
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected != 1 {
+			return ErrEnvironmentNotFound
+		}
+		return nil
+	})
+	if err != nil {
+		switch {
+		case errors.Is(err, gorm.ErrDuplicatedKey):
+			return nil, ErrEnvironmentExists
+		case errors.Is(err, ErrInvalidParent):
+			return nil, ErrInvalidParent
+		case errors.Is(err, ErrEnvironmentNotFound):
+			return nil, ErrEnvironmentNotFound
+		default:
+			return nil, fmt.Errorf("更新主机组基本信息失败: %w", err)
+		}
 	}
 	return s.Get(ctx, id)
 }
@@ -341,9 +370,19 @@ func (s *Service) Remove(ctx context.Context, id string) error {
 		return ErrEnvironmentNotFound
 	}
 	if err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := validateParent(tx, id, ""); err != nil {
+			return err
+		}
 		var existing model.Environment
 		if err := tx.First(&existing, "uuid = ?", id).Error; err != nil {
 			return err
+		}
+		var children int64
+		if err := tx.Model(&model.Environment{}).Where("parent_id = ?", id).Count(&children).Error; err != nil {
+			return err
+		}
+		if children > 0 {
+			return ErrGroupHasChildren
 		}
 		var targetCount int64
 		if err := tx.Model(&model.DeploymentTarget{}).
@@ -367,6 +406,8 @@ func (s *Service) Remove(ctx context.Context, id string) error {
 		return tx.Delete(&existing).Error
 	}); err != nil {
 		switch {
+		case errors.Is(err, ErrGroupHasChildren):
+			return ErrGroupHasChildren
 		case errors.Is(err, gorm.ErrRecordNotFound):
 			return ErrEnvironmentNotFound
 		case errors.Is(err, ErrEnvironmentReferenced):
@@ -436,6 +477,7 @@ func normalizeInput(input Input) (Input, error) {
 	input.Name = profile.Name
 	input.Description = profile.Description
 	input.HostIDs = hostIDs
+	input.ParentID = strings.TrimSpace(input.ParentID)
 	return input, nil
 }
 
@@ -638,4 +680,26 @@ func listHosts(ctx context.Context, db *gorm.DB, environmentID string) ([]model.
 		return nil, fmt.Errorf("查询环境所属主机失败: %w", err)
 	}
 	return hosts, nil
+}
+
+// validateParent 按固定顺序锁定当前可见主机组，防止并发移动形成循环；项目范围由数据库回调检查。
+func validateParent(tx *gorm.DB, id, parentID string) error {
+	var groups []model.Environment
+	if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Order("id ASC").Find(&groups).Error; err != nil {
+		return err
+	}
+	byID := make(map[string]model.Environment, len(groups))
+	for _, group := range groups {
+		byID[group.ID] = group
+	}
+	seen := map[string]bool{id: true}
+	for parentID != "" {
+		parent, ok := byID[parentID]
+		if !ok || seen[parentID] {
+			return ErrInvalidParent
+		}
+		seen[parentID] = true
+		parentID = parent.ParentID
+	}
+	return nil
 }

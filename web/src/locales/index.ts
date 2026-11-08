@@ -22,9 +22,9 @@ export const messages = {
     nodeRoles: kubernetesRolesZh,
     k8sTopology: kubernetesTopologyZh,
 	workspace: workspaceZh,
-    resourceList: { sort:'排序', details: '详情', more: '更多操作', basic: '基本信息', configuration: '配置信息', name: '名称', description: '说明', hosts: '所属主机', hostCount: '主机数量', capabilities: '主机能力', environmentEmpty: '还没有环境', status: '状态', resources: '运行资源', created: '创建时间', updated: '最近更新', close: '关闭', artifacts: '构建制品', workflows: '关联流水线', instances: '部署实例' },
+    resourceList: { sort:'排序', details: '详情', more: '更多操作', basic: '基本信息', configuration: '配置信息', name: '名称', description: '说明', hosts: '所属主机', hostCount: '主机数量', capabilities: '主机能力', environmentEmpty: '还没有主机组', status: '状态', resources: '运行资源', created: '创建时间', updated: '最近更新', close: '关闭', artifacts: '构建制品', workflows: '关联流水线', instances: '部署实例' },
     buildPlanWorkspace: { entry: '构建入口', directory: '执行目录', artifact: '构建产物', storage: '存储位置', architecture: '目标架构', followHost: '自动跟随部署主机', timeout: '构建超时', updated: '最近修改', artifacts: '构建制品', empty: '还没有构建方案' },
-    deploymentList: { description: '配置部署方式、环境和执行参数，流水线部署任务直接选择方案。', environment: '环境', configuration: '部署配置', noEnvironment: '未配置环境', environmentUnavailable: '环境信息不可用', noLocation: '尚未配置运行位置', locationUnavailable: '连接信息不可用', localExecution: '本地执行', directory: '目录：{value}', homeDirectory: '执行用户主目录', savedScript: '执行已保存的部署脚本', service: '服务：{value}', notConfigured: '未配置', composeFile: '内联 dockercompose YAML', workload: 'Deployment：{value}', kubernetesScope: '命名空间：{namespace}；容器：{container}', customCommand: '自定义部署命令', customCommandHint: '通过已保存的命令配置容器', ports: '端口：{value}', noPorts: '未配置端口映射', configCounts: '环境变量：{variables} 个；命名卷：{volumes} 个' },
+    deploymentList: { description: '配置执行主机组和执行参数，流水线部署任务直接选择方案。', environment: '执行主机组', configuration: '部署配置', noEnvironment: '未配置主机组', environmentUnavailable: '主机组信息不可用', noLocation: '尚未配置运行位置', locationUnavailable: '连接信息不可用', localExecution: '本地执行', directory: '目录：{value}', homeDirectory: '执行用户主目录', savedScript: '执行已保存的部署脚本', service: '服务：{value}', notConfigured: '未配置', composeFile: '内联 dockercompose YAML', workload: 'Deployment：{value}', kubernetesScope: '命名空间：{namespace}；容器：{container}', customCommand: '自定义部署命令', customCommandHint: '通过已保存的命令配置容器', ports: '端口：{value}', noPorts: '未配置端口映射', configCounts: '环境变量：{variables} 个；命名卷：{volumes} 个' },
     planList: { hint: '点击记录展开详情，可同时查看多条', total: '共 {count} 条', expand: '展开详情', collapse: '收起详情', status: '状态', actions: '操作', updated: '最近更新', details: '方案详情', deploymentName: '部署方案', releaseName: '发布计划', mode: '执行方式', destination: '运行位置', object: '更新对象', directory: '执行目录', timeout: '最长执行时间', seconds: '{count} 秒', timeoutHint: '超过时间后停止本次部署并标记失败。', descriptionEmpty: '尚未填写说明', deploymentEmpty: '还没有部署方案', enabled: '已启用', disabled: '已停用', incomplete: '待补全', enable: '启用', disable: '停用', edit: '编辑', remove: '删除', applications: '发布应用', applicationOverflow: '另 {count} 个', manualCount: '{count} 个可手动执行' },
     applicationForm: { createRepository: '创建代码仓库', backToApplication: '返回应用', repositoryCreated: '代码仓库已创建并选中' },
     repositoryForm: {
@@ -44,7 +44,7 @@ export const messages = {
     nav: {
       overview: '概览', delivery: '持续交付', applicationsCode: '应用与代码', applications: '应用', repositories: '代码仓库', credentials: '我的令牌',
       buildArtifacts: '构建与制品', buildPlans: '构建方案', registries: '镜像仓库', releaseManagement: '发布管理', deploymentPlans: '部署方案',
-      environments: '环境管理', pipelinePlans: '流水线', releasePlans: '发布计划', pipelineRuns: '流水线运行记录', configurationFiles:'配置', deliveryVariables: '变量与密钥', applicationDatabases:'应用数据库',environmentPolicies:'环境保护',
+      environments: '主机组', pipelinePlans: '流水线', releasePlans: '发布计划', pipelineRuns: '流水线运行记录', configurationFiles:'配置', deliveryVariables: '变量与密钥', applicationDatabases:'应用数据库',environmentPolicies:'主机组保护',
       platform: '平台管理', infrastructure: '基础设施', sqlAudit: 'SQL 审计', domains: '域名解析', hosts: '主机', containers: '主机与集群',
       monitor: '系统监控', tasks: '任务中心', logs: '日志', security: '系统与安全', settings: '系统设置', users: '用户管理', roles: '角色与功能', audit: '审计日志',
     },
@@ -68,23 +68,23 @@ export const messages = {
       message: { nameRequired: '请输入环境名称', created: '环境已创建', detailsUpdated: '环境信息已更新', hostsUpdated: '主机归属已更新' },
       hosts: { sharedDescription: '同一主机可以加入多个环境。' },
       hostPicker: {
-        environmentCount: '已关联 {count} 个环境',
+        environmentCount: '已关联 {count} 个主机组',
         selectionHint: '一个环境可包含多台主机，同一主机也可加入多个环境。',
         portConflictHint: '端口在部署方案中配置，此处不检查端口占用。',
       },
-      hostAssociation: { linked: '关联环境：{names}', countOnly: '已关联 {count} 个环境', none: '尚未关联环境', separator: '、' },
+      hostAssociation: { linked: '所属主机组：{names}', countOnly: '已关联 {count} 个主机组', none: '尚未关联主机组', separator: '、' },
       deployment: {
-        environment: '环境', environmentPlaceholder: '先选择执行环境', environmentRequired: '请选择执行环境',
-        hostPlaceholder: '选择该环境中可以执行部署脚本的主机', membershipInvalid: '所选主机未关联当前环境，请重新选择',
+        environment: '执行主机组', environmentPlaceholder: '选择执行主机组', environmentRequired: '请选择执行主机组',
+        hostPlaceholder: '选择主机组中可以执行部署脚本的主机', membershipInvalid: '所选主机未加入当前主机组，请重新选择',
       },
     },
     pipelineEditor: {
       environment: {
-        label: '环境', placeholder: '选择部署环境', unselected: '未选择环境', create: '创建环境',
-        noPermission: '你没有查看环境的权限，无法配置部署任务。', empty: '还没有可用环境，请先在环境管理中创建并启用环境。',
+        label: '执行主机组', placeholder: '选择执行主机组', unselected: '未选择主机组', create: '创建主机组',
+        noPermission: '你没有查看主机组的权限，无法配置部署任务。', empty: '还没有可用主机组，请先在主机页面创建主机组。',
       },
       deploymentPlan: {
-        label: '部署方案', placeholder: '选择部署方案', chooseEnvironmentFirst: '请先选择环境', unselected: '未选择部署方案', create: '创建部署方案',
+        label: '部署方案', placeholder: '选择部署方案', chooseEnvironmentFirst: '请先选择执行主机组', unselected: '未选择部署方案', create: '创建部署方案',
         empty: '当前环境没有可用的部署方案', hint: '主机脚本和 Docker 方案会按实际主机归属筛选；Kubernetes 集群当前不参与环境归属筛选。',
         runtimePermissionHint: '无查看运行资源权限，Docker 与 Kubernetes 连接状态将在保存时由服务端校验。', runtimeStatusUnavailable: '暂时无法读取 Docker 或 Kubernetes 连接状态，将在保存时再次校验。',
       },
@@ -264,7 +264,7 @@ export const messages = {
 	workspace: workspaceEn,
     resourceList: { sort:'Sort', details: 'Details', more: 'More actions', basic: 'Basic information', configuration: 'Configuration', name: 'Name', description: 'Description', hosts: 'Hosts', hostCount: 'Host count', capabilities: 'Capabilities', environmentEmpty: 'No environments yet', status: 'Status', resources: 'Resources', created: 'Created', updated: 'Last updated', close: 'Close', artifacts: 'Build artifacts', workflows: 'Workflows', instances: 'Deployment instances' },
     buildPlanWorkspace: { entry: 'Build entry', directory: 'Directory', artifact: 'Build output', storage: 'Storage', architecture: 'Architecture', followHost: 'Follow deployment host', timeout: 'Build timeout', updated: 'Last modified', artifacts: 'Artifacts', empty: 'No build plans yet' },
-    deploymentList: { description: 'Configure the deployment method, environment and parameters, then select this plan in a pipeline deployment task.', environment: 'Environment', configuration: 'Deployment configuration', noEnvironment: 'No environment configured', environmentUnavailable: 'Environment unavailable', noLocation: 'No location configured', locationUnavailable: 'Connection details unavailable', localExecution: 'Local execution', directory: 'Directory: {value}', homeDirectory: 'Execution user home', savedScript: 'Run the saved deployment script', service: 'Service: {value}', notConfigured: 'Not configured', composeFile: 'Inline dockercompose YAML', workload: 'Deployment: {value}', kubernetesScope: 'Namespace: {namespace}; container: {container}', customCommand: 'Custom deployment command', customCommandHint: 'Container configured by the saved command', ports: 'Ports: {value}', noPorts: 'No port mappings', configCounts: 'Environment variables: {variables}; named volumes: {volumes}' },
+    deploymentList: { description: 'Configure the deployment method, environment and parameters, then select this plan in a pipeline deployment task.', environment: 'Execution host group', configuration: 'Deployment configuration', noEnvironment: 'No environment configured', environmentUnavailable: 'Environment unavailable', noLocation: 'No location configured', locationUnavailable: 'Connection details unavailable', localExecution: 'Local execution', directory: 'Directory: {value}', homeDirectory: 'Execution user home', savedScript: 'Run the saved deployment script', service: 'Service: {value}', notConfigured: 'Not configured', composeFile: 'Inline dockercompose YAML', workload: 'Deployment: {value}', kubernetesScope: 'Namespace: {namespace}; container: {container}', customCommand: 'Custom deployment command', customCommandHint: 'Container configured by the saved command', ports: 'Ports: {value}', noPorts: 'No port mappings', configCounts: 'Environment variables: {variables}; named volumes: {volumes}' },
     planList: { hint: 'Click a row to expand details; multiple rows can stay open', total: '{count} items', expand: 'Expand details', collapse: 'Collapse details', status: 'Status', actions: 'Actions', updated: 'Last updated', details: 'Plan details', deploymentName: 'Deployment plan', releaseName: 'Release plan', mode: 'Execution mode', destination: 'Location', object: 'Target', directory: 'Working directory', timeout: 'Timeout', seconds: '{count} seconds', timeoutHint: 'The deployment stops and is marked failed after the timeout.', descriptionEmpty: 'No description', deploymentEmpty: 'No deployment plans yet', enabled: 'Enabled', disabled: 'Disabled', incomplete: 'Incomplete', enable: 'Enable', disable: 'Disable', edit: 'Edit', remove: 'Delete', applications: 'Applications', applicationOverflow: '{count} more', manualCount: '{count} ready for manual execution' },
     applicationForm: { createRepository: 'Create repository', backToApplication: 'Back to application', repositoryCreated: 'Repository created and selected' },
     repositoryForm: {
@@ -308,13 +308,13 @@ export const messages = {
       message: { nameRequired: 'Enter an environment name', created: 'Environment created', detailsUpdated: 'Environment details updated', hostsUpdated: 'Host assignments updated' },
       hosts: { sharedDescription: 'A host can belong to multiple environments; environments are logical groups only.' },
       hostPicker: {
-        environmentCount: 'Linked to {count} environments',
+        environmentCount: 'Linked to {count} host groups',
         selectionHint: 'An environment can contain multiple hosts, and a host can belong to multiple environments.',
         portConflictHint: 'Environments do not reserve hosts or validate service ports here; actual ports are determined by deployment configuration and the target runtime.',
       },
-      hostAssociation: { linked: 'Linked environments: {names}', countOnly: 'Linked to {count} environments', none: 'No linked environments', separator: ', ' },
+      hostAssociation: { linked: 'Host groups: {names}', countOnly: 'Linked to {count} host groups', none: 'No host groups', separator: ', ' },
       deployment: {
-        environment: 'Environment', environmentPlaceholder: 'Select an execution environment first', environmentRequired: 'Select an execution environment',
+        environment: 'Execution host group', environmentPlaceholder: 'Select an execution host group', environmentRequired: 'Select an execution host group',
         hostPlaceholder: 'Select a host in this environment that can run deployment scripts', membershipInvalid: 'The selected host is not linked to this environment. Select it again.',
       },
     },

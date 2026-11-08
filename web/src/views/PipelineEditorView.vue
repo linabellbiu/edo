@@ -344,7 +344,7 @@ function createTaskNode(type: TaskNodeType, definition?: TaskDefinition): Workfl
     config.inline_deployment_plan={name:definition?.label||'自定义部署',kind,script:kind==='script'?'set -eu\n# 在这里填写部署命令\n':undefined,compose_yaml:'',timeout_seconds:600,deployment_target:{platform:kind==='kubernetes'?'kubernetes':'ssh',environment_id:'',working_directory:kind==='script'?'/tmp':undefined},execution_config:kind==='kubernetes'?undefined:{deployment_input_version:1,deployment_inputs:[],compose:kind==='compose_stack'?{project_name:'',tag_variable:'${EDO_IMAGE_TAG}',use_sudo:false,adopt_existing:false}:undefined}}
   }
   const node: WorkflowNode = {
-    id: uid(type), type, name: definition?.label || taskMeta[type].label, config,
+    id: uid(type), type, name: definition?.label || (type === 'deploy' ? '自定义部署' : taskMeta[type].label), config,
   }
   if (type === 'shell') environmentVariableTexts[node.id] = ''
   return node

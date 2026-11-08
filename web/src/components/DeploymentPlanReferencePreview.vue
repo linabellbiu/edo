@@ -14,13 +14,12 @@ const registryHost=ref<HTMLElement>()
 const auth = useAuthStore()
 const environmentName = ref(''), environmentError = ref(''), loading = ref(false)
 let controller: AbortController | undefined
-const kindNames = { docker: 'Docker 容器', compose: 'dockercompose', compose_stack: 'dockercompose', script: '主机脚本', kubernetes: 'Kubernetes Deployment' }
 const execution = computed(() => props.plan.execution_config || deploymentExecution(props.legacyConfig || {}))
 const target = computed(() => props.plan.deployment_target)
 const docker = computed(() => (props.plan.docker_config || {}) as NonNullable<DeploymentCommandPlan['docker_config']>)
 const canReadEnvironment = computed(() => auth.canAny(['deployment.read']))
-const environmentLabel = computed(() => !target.value?.environment_id ? '部署时选择环境'
-  : !canReadEnvironment.value ? '无权查看环境' : loading.value ? '加载中…' : environmentError.value ? '环境读取失败' : environmentName.value || '原环境不可用')
+const environmentLabel = computed(() => !target.value?.environment_id ? '部署时选择执行主机组'
+  : !canReadEnvironment.value ? '无权查看主机组' : loading.value ? '加载中…' : environmentError.value ? '主机组读取失败' : environmentName.value || '原主机组不可用')
 const ports = computed(() => (docker.value.port_mappings || []).map(port => `${port.host_ip || '127.0.0.1'}:${port.host_port} → ${port.container_port}/${port.protocol || 'tcp'}`).join('\n'))
 const volumes = computed(() => (docker.value.volume_mounts || []).map(volume => `${volume.source} → ${volume.target}${volume.read_only ? '（只读）' : ''}`).join('\n'))
 const variables = computed(() => Object.keys(docker.value.environment_variables || {}).map(name => `${name}=••••••`).join('\n'))
@@ -48,10 +47,9 @@ onBeforeUnmount(() => controller?.abort())
   <section class="deployment-plan-reference" aria-label="已关联部署方案配置（只读）">
     <a-alert v-if="plan.is_active === false" type="warning" show-icon message="原部署方案已停用，已保留关联。" />
     <a-alert v-if="environmentError" type="warning" show-icon :message="environmentError" />
-    <a-form-item label="部署方式"><a-input :value="kindNames[plan.kind]" disabled /></a-form-item>
     <div ref="registryHost"/>
     <div class="reference-grid">
-      <a-form-item label="环境"><a-input :value="environmentLabel" disabled /></a-form-item>
+      <a-form-item label="执行主机组"><a-input :value="environmentLabel" disabled /></a-form-item>
       <a-form-item v-if="plan.kind === 'script' && target?.working_directory" label="工作目录"><a-input :value="target.working_directory" disabled /></a-form-item>
     </div>
     <a-form-item v-if="plan.description" label="方案说明"><a-textarea :value="plan.description" :auto-size="{ minRows: 1, maxRows: 4 }" disabled /></a-form-item>

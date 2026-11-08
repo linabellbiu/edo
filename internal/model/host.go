@@ -68,8 +68,9 @@ const (
 type Environment struct {
 	RowID       uint64 `gorm:"column:id;primaryKey;autoIncrement" json:"row_id"`
 	ID          string `gorm:"column:uuid;type:varchar(36);not null;uniqueIndex" json:"id"`
-	Name        string `gorm:"type:varchar(128);not null;uniqueIndex:ux_environments_department_name,priority:2;uniqueIndex:ux_environments_project_name,priority:2" json:"name"`
+	Name        string `gorm:"type:varchar(128);not null;uniqueIndex:ux_environments_department_name,priority:2;uniqueIndex:ux_environments_project_name,priority:2;uniqueIndex:ux_host_groups_name" json:"name"`
 	Description string `gorm:"type:varchar(500);not null;default:''" json:"description"`
+	ParentID    string `gorm:"type:varchar(36);not null;default:'';index" json:"parent_id"`
 	// Level 仅保留旧数据库列兼容。环境现在只负责基础设施分组，不再具有安全级别。
 	// Deprecated: 新记录只写空值，旧值不迁移且不再参与业务或通过接口暴露。
 	Level        EnvironmentType `gorm:"type:varchar(16);not null;index" json:"-"`

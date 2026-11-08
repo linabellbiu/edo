@@ -9,6 +9,7 @@ import DeploymentExecutionFields from '@/components/DeploymentExecutionFields.vu
 import DeploymentScriptEditor from '@/components/DeploymentScriptEditor.vue'
 import YamlCodeEditor from '@/components/YamlCodeEditor.vue'
 import {readKubeYaml} from '@/utils/kubernetesYaml'
+import {hostGroupOptions} from '@/utils/hostGroups'
 import type {WorkflowNode,WorkflowNodeConfig,WorkflowDeploymentPlan,DeploymentExecutionConfig,PipelineBuildPlan} from '@/types/pipeline'
 const props=defineProps<{node:WorkflowNode;disabled:boolean;applicationID?:string;applicationName?:string;branch?:string;buildNodes:WorkflowNode[];buildPlans?:PipelineBuildPlan[]}>()
 const emit=defineEmits<{change:[patch:Partial<WorkflowNodeConfig>]}>()
@@ -67,7 +68,7 @@ function compose(patch:Record<string,unknown>){updateExecution({compose:{...sett
 <template>
  <section v-if="plan" class="pipeline-deploy-fields">
   <a-alert v-if="error" type="warning" show-icon :message="error"/>
-  <a-form-item label="部署环境" required><a-select :value="plan.deployment_target?.environment_id||undefined" :disabled="disabled" :options="environments.filter(v=>v.is_active).map(v=>({value:v.id,label:v.name}))" placeholder="选择环境" @update:value="target({environment_id:String($event),host_id:undefined,runtime_id:undefined})"/></a-form-item>
+  <a-form-item label="执行主机组" required><a-select :value="plan.deployment_target?.environment_id||undefined" :disabled="disabled" :options="hostGroupOptions(environments.filter(v=>v.is_active))" placeholder="选择执行主机组" @update:value="target({environment_id:String($event),host_id:undefined,runtime_id:undefined})"/></a-form-item>
   <div ref="registryHost"/>
   <template v-if="plan.kind==='compose_stack'">
    <a-form-item label="compose.yaml 来源" required><a-radio-group :value="sourceKind" :disabled="disabled" :options="[{value:'repository',label:'仓库文件'},{value:'editor',label:'上传 / 编辑'},{value:'configuration',label:'配置文件'},{value:'upstream',label:'上游产物'}]" @update:value="source(String($event))"/></a-form-item>

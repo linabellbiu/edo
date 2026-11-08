@@ -49,17 +49,17 @@ onBeforeUnmount(()=>{disposed=true;revision++;dbForm.password=''})
   </PageToolbar>
   <a-alert v-if="error" type="error" show-icon :message="error"/>
   <div class="vben-card">
-   <a-table v-if="policyMode" bordered :loading="loading" row-key="id" :data-source="policies" :columns="[{title:'环境',key:'environment'},{title:'状态',key:'active'},{title:'允许版本',key:'refs'},{title:'审核',key:'review'},{title:'发布时间（上海）',key:'window'},{title:'操作',key:'actions'}]">
+   <a-table v-if="policyMode" bordered :loading="loading" row-key="id" :data-source="policies" :columns="[{title:'主机组',key:'environment'},{title:'状态',key:'active'},{title:'允许版本',key:'refs'},{title:'审核',key:'review'},{title:'发布时间（上海）',key:'window'},{title:'操作',key:'actions'}]">
     <template #bodyCell="{column,record}"><template v-if="column.key==='environment'">{{label(record.environment_id,environments)}}</template><template v-else-if="column.key==='active'"><a-tag :color="record.is_active?'blue':'default'">{{record.is_active?'已启用':'已关闭'}}</a-tag></template><template v-else-if="column.key==='refs'">{{record.allowed_refs?.join('、')||'不限制'}}</template><template v-else-if="column.key==='review'">{{record.require_approval?`${record.minimum_approvals} 人通过`:'不需要'}}</template><template v-else-if="column.key==='window'">{{record.window_start?`${record.window_start} — ${record.window_end}`:'不限制'}}</template><template v-else-if="column.key==='actions'"><a-button v-if="auth.canAny(['environment_policy.update'])" type="link" @click="editPolicy(record)">编辑</a-button></template></template>
    </a-table>
-   <a-table v-else bordered :loading="loading" row-key="id" :data-source="databases" :scroll="{x:950}" :columns="[{title:'名称',dataIndex:'name'},{title:'应用',key:'application'},{title:'环境',key:'environment'},{title:'类型',dataIndex:'driver'},{title:'连接',key:'connection'},{title:'状态',key:'active'},{title:'操作',key:'actions'}]">
+   <a-table v-else bordered :loading="loading" row-key="id" :data-source="databases" :scroll="{x:950}" :columns="[{title:'名称',dataIndex:'name'},{title:'应用',key:'application'},{title:'主机组',key:'environment'},{title:'类型',dataIndex:'driver'},{title:'连接',key:'connection'},{title:'状态',key:'active'},{title:'操作',key:'actions'}]">
     <template #bodyCell="{column,record}"><template v-if="column.key==='application'">{{label(record.application_id,apps)}}</template><template v-else-if="column.key==='environment'">{{label(record.environment_id,environments)}}</template><template v-else-if="column.key==='connection'">{{record.host}}:{{record.port}} / {{record.database}}</template><template v-else-if="column.key==='active'"><a-tag :color="record.is_active?'green':'default'">{{record.is_active?'已启用':'已停用'}}</a-tag></template><template v-else-if="column.key==='actions'"><a-button type="link" @click="showHistory(record)">变更记录</a-button><a-button v-if="auth.canAny(['application_database.update'])" type="link" @click="editDatabase(record)">编辑</a-button><a-button v-if="auth.canAny(['application_database.delete'])" type="link" danger @click="remove(record)">删除</a-button></template></template>
    </a-table>
   </div>
   <a-drawer v-model:open="open" :title="policyMode?'环境保护':(editingID?'编辑数据库':'添加数据库')" width="min(600px, 100vw)" destroy-on-close @after-open-change="(v:boolean)=>{if(!v)dbForm.password=''}">
    <a-form :model="policyMode?policyForm:dbForm" layout="vertical" @finish="save">
     <template v-if="policyMode">
-     <a-form-item label="环境" name="environment_id" required><a-select v-model:value="policyForm.environment_id" :disabled="!!editingID" :options="environments.filter(e=>!!editingID||!policies.some(p=>p.environment_id===e.id)).map(v=>({value:v.id,label:v.name}))"/></a-form-item>
+     <a-form-item label="主机组" name="environment_id" required><a-select v-model:value="policyForm.environment_id" :disabled="!!editingID" :options="environments.filter(e=>!!editingID||!policies.some(p=>p.environment_id===e.id)).map(v=>({value:v.id,label:v.name}))"/></a-form-item>
      <a-form-item><a-switch v-model:checked="policyForm.is_active"/> 启用环境保护</a-form-item>
      <a-form-item label="允许发布的版本" extra="一行一个，例如 refs/heads/main、refs/tags/v*；留空表示不限制。"><a-textarea v-model:value="policyForm.allowed_refs" :rows="3"/></a-form-item>
      <a-form-item><a-checkbox v-model:checked="policyForm.require_approval">发布前需要指定成员审核</a-checkbox></a-form-item>
@@ -70,7 +70,7 @@ onBeforeUnmount(()=>{disposed=true;revision++;dbForm.password=''})
     <template v-else>
      <a-form-item label="名称" name="name" required><a-input v-model:value="dbForm.name" :maxlength="128"/></a-form-item>
      <a-form-item label="应用" name="application_id" required><a-select v-model:value="dbForm.application_id" :disabled="!!editingID" :options="apps.map(v=>({value:v.id,label:v.name}))"/></a-form-item>
-     <a-form-item label="环境" name="environment_id" required><a-select v-model:value="dbForm.environment_id" :disabled="!!editingID" :options="environments.map(v=>({value:v.id,label:v.name}))"/></a-form-item>
+     <a-form-item label="主机组" name="environment_id" required><a-select v-model:value="dbForm.environment_id" :disabled="!!editingID" :options="environments.map(v=>({value:v.id,label:v.name}))"/></a-form-item>
      <a-form-item label="数据库类型"><a-select v-model:value="dbForm.driver" :disabled="!!editingID" @change="dbForm.port=$event==='mysql'?3306:5432" :options="[{value:'postgres',label:'PostgreSQL'},{value:'mysql',label:'MySQL'}]"/></a-form-item>
      <a-form-item label="地址" name="host" required><a-input v-model:value="dbForm.host" :disabled="!!editingID"/></a-form-item><a-form-item label="端口"><a-input-number v-model:value="dbForm.port" :disabled="!!editingID" :min="1" :max="65535"/></a-form-item>
      <a-form-item label="数据库名" name="database" required><a-input v-model:value="dbForm.database" :disabled="!!editingID"/></a-form-item><a-form-item label="用户名" name="username" required><a-input v-model:value="dbForm.username"/></a-form-item>

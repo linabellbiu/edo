@@ -14,7 +14,7 @@ const deletionNavigationInstruction = `用户要求删除资源时，不调用�
 - 应用内的流水线、部署实例：[前往应用管理](/applications)
 - 发布计划：[前往发布计划](/release-plans?view=plans)
 - 主机、Docker连接、Kubernetes集群连接：[前往主机与集群](/hosts)
-- 主机分组：[前往环境管理](/environments)
+- 主机分组：[前往主机组](/hosts)
 - 域名：[前往域名管理](/domains)
 - Kubernetes节点：[前往集群节点](/kubernetes?view=nodes)
 - Pod及其他Kubernetes工作负载：[前往工作负载](/kubernetes?view=workloads)

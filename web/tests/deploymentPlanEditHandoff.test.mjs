@@ -59,6 +59,7 @@ async function harness(initialPermissions = ['deployment_plan.read', 'deployment
     '@/api/resources': { apiErrorMessage: error => error.message },
     '@/api/infrastructure': { environmentIDsOf: host => host.environment_ids || [], listEnvironments: async () => [], listHosts: async () => [] },
     '@/utils/resourceList': { useResourceList: (...args) => { const state = resourceList.useResourceList(...args); vue.watch(state.detailOpen, value => { if (!value) trace.push('detail-close') }, { flush: 'sync' }); return state } },
+    '@/utils/hostGroups': load(readFileSync(new URL('../src/utils/hostGroups.ts', import.meta.url), 'utf8'), {}),
     '@/utils/time': { formatDateTime: value => value || '—' },
     '@/utils/asyncConfirm': { asyncConfirm: () => assert.fail('交接不能打开写操作确认框') },
     '@/locales/deploymentTarget': { deploymentTargetEn: {}, deploymentTargetZh: {} },

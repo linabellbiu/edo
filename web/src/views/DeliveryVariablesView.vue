@@ -146,17 +146,17 @@ onBeforeUnmount(()=>{disposed=true;generation++;revision++;listController?.abort
   <div class="variables-workspace" :class="{'is-embedded':embedded}">
     <a-alert v-if="!can('read')" type="warning" show-icon :message="scopeMessage"/>
     <template v-else>
-    <PageToolbar :title="configurationFiles?'配置':embedded?'环境配置（变量 / .env）':projectName?`${projectName} · 变量与密钥`:'当前项目 · 变量与密钥'" :description="configurationFiles?'配置按应用和环境管理；部署阶段明确选择后生成文件，保存不会执行部署。':embedded?'保存后自动用于当前应用对应环境的后续部署；保存不会立即发布。密钥不回显。':'共享变量在流水线任务中明确选择引用；应用运行配置可在应用详情中管理。'">
+    <PageToolbar :title="configurationFiles?'配置':embedded?'环境配置（变量 / .env）':projectName?`${projectName} · 变量与密钥`:'当前项目 · 变量与密钥'" :description="configurationFiles?'配置按应用和主机组管理；部署阶段明确选择后生成文件，保存不会执行部署。':embedded?'保存后自动用于当前应用对应主机组的后续部署；保存不会立即发布。密钥不回显。':'共享变量在流水线任务中明确选择引用；应用运行配置可在应用详情中管理。'">
       <a-button :loading="loading" @click="load"><RefreshCw :size="15"/>刷新</a-button>
       <a-button v-if="can('create')" type="primary" @click="edit()"><Plus :size="15"/>{{configurationFiles||embedded?'添加配置':'添加变量'}}</a-button>
     </PageToolbar>
     <a-alert v-if="error" type="error" show-icon :message="error"/>
-    <div v-if="embedded" class="variable-filters"><label class="environment-choice">环境<a-select v-model:value="environmentFilter" aria-label="环境" :options="[{value:'',label:'全部环境（通用配置）'},...environments.map(v=>({value:v.id,label:v.name}))]"/></label><a :href="configurationFiles?'/configuration-files':'/delivery-variables'" target="_blank" rel="noopener">{{configurationFiles?'管理项目配置':'管理项目共享变量'}}</a></div>
+    <div v-if="embedded" class="variable-filters"><label class="environment-choice">主机组<a-select v-model:value="environmentFilter" aria-label="主机组" :options="[{value:'',label:'全部主机组（通用配置）'},...environments.map(v=>({value:v.id,label:v.name}))]"/></label><a :href="configurationFiles?'/configuration-files':'/delivery-variables'" target="_blank" rel="noopener">{{configurationFiles?'管理项目配置':'管理项目共享变量'}}</a></div>
     <div v-else class="variable-filters"><a-input v-model:value="search" placeholder="搜索名称或说明" allow-clear/><a-select v-if="!configurationFiles" v-model:value="usage" :options="[{value:'all',label:'全部用途'},{value:'build',label:'构建与检查'},{value:'deploy',label:'应用运行与部署'}]"/></div>
     <div class="vben-card"><ResourceTable :rows="filtered" :details="false" :columns="columns" :loading="loading">
       <template #cell-name="{row}"><strong>{{embedded&&row.kind==='env_text'?'环境变量（文本）':row.name}}</strong><small class="variable-description">{{row.description}}</small></template>
       <template #cell-usage="{row}">{{row.usage==='build'?'构建与检查':'运行与部署'}}<small class="variable-description">{{variableKindLabel(row.kind as DeliveryVariableKind)}}</small></template>
-      <template #cell-scope="{row}">{{row.application_id?(applicationNames[row.application_id as string]||'指定应用'):'当前项目共享'}} · {{row.environment_id?(environmentNames[row.environment_id as string]||'指定环境'):'全部环境'}}</template>
+      <template #cell-scope="{row}">{{row.application_id?(applicationNames[row.application_id as string]||'指定应用'):'当前项目共享'}} · {{row.environment_id?(environmentNames[row.environment_id as string]||'指定主机组'):'全部主机组'}}</template>
       <template #cell-is_secret="{row}"><a-tag :color="row.is_secret?'gold':'default'">{{row.is_secret?'密钥 · 已隐藏':configurationFiles?'普通配置':'普通变量'}}</a-tag><small v-if="!row.is_secret&&row.kind==='env'" class="variable-description">{{row.value||'空值'}}</small></template>
       <template #cell-is_active="{row}"><a-tag :color="row.is_active?'green':'default'">{{row.is_active?'已启用':'已停用'}}</a-tag><small v-if="row.usage==='deploy'" class="variable-description">{{row.auto_deploy?'部署自动使用':'任务显式引用'}}</small></template>
       <template #actions="{row}"><a-button v-if="configurationFiles" type="link" @click="showHistory(row as Variable)">历史版本</a-button><a-button v-if="can('update')" type="link" @click="edit(row as Variable)">编辑</a-button><a-button v-if="can('delete')" type="link" danger @click="remove(row as Variable)">删除</a-button></template>
@@ -172,7 +172,7 @@ onBeforeUnmount(()=>{disposed=true;generation++;revision++;listController?.abort
           <a-form-item v-if="!configurationFiles&&!embedded" label="用途"><a-select v-model:value="form.usage" :disabled="!!editing" :options="[{value:'build',label:'构建与检查'},{value:'deploy',label:'应用运行与部署'}]"/></a-form-item>
           <a-form-item v-if="embedded" label="应用"><a-input :value="applicationName||applicationId" disabled/></a-form-item>
           <a-form-item v-else label="应用"><a-select v-model:value="form.application_id" :disabled="!!editing" :options="[{value:'',label:'当前项目共享'},...applications.map(v=>({value:v.id,label:v.name}))]"/></a-form-item>
-          <a-form-item label="环境"><a-select v-model:value="form.environment_id" :disabled="!!editing||embedded" :options="[{value:'',label:'全部环境'},...environments.map(v=>({value:v.id,label:v.name}))]"/></a-form-item>
+          <a-form-item label="主机组"><a-select v-model:value="form.environment_id" :disabled="!!editing||embedded" :options="[{value:'',label:'全部主机组'},...environments.map(v=>({value:v.id,label:v.name}))]"/></a-form-item>
         </div>
         <a-form-item v-if="configurationFiles" label="文本格式"><a-select :value="currentFormat" :options="configFormats" :disabled="!!editing" @update:value="form.kind=(`config_${$event}` as DeliveryVariableKind)"/></a-form-item>
         <a-form-item v-else-if="form.usage==='deploy'" label="添加方式">
@@ -183,7 +183,7 @@ onBeforeUnmount(()=>{disposed=true;generation++;revision++;listController?.abort
           </a-radio-group>
         </a-form-item>
         <a-form-item v-else-if="!configurationFiles" label="类型"><a-select v-model:value="form.kind" :disabled="!!editing" :options="[{value:'env',label:'环境变量'},{value:'file',label:'文件变量（构建与检查）'}]"/></a-form-item>
-        <a-form-item v-if="!configurationFiles&&!embedded&&form.application_id&&form.usage==='deploy'"><a-checkbox v-model:checked="form.auto_deploy">自动用于此应用对应环境的后续部署</a-checkbox></a-form-item>
+        <a-form-item v-if="!configurationFiles&&!embedded&&form.application_id&&form.usage==='deploy'"><a-checkbox v-model:checked="form.auto_deploy">自动用于此应用对应主机组的后续部署</a-checkbox></a-form-item>
         <a-form-item><a-checkbox v-model:checked="form.is_secret" :disabled="!!editing?.is_secret">作为密钥加密保存</a-checkbox><a-checkbox v-model:checked="form.is_active">启用</a-checkbox></a-form-item>
         <a-form-item v-if="editing?.is_secret"><a-checkbox v-model:checked="replaceValue">替换已保存的密钥</a-checkbox><a-button v-if="configurationFiles&&draftOriginal===undefined" type="link" :loading="readingOriginal" :disabled="!can('reveal')" @click="readOriginal">{{replaceValue?'读取原文对比':'读取原文编辑'}}</a-button><small v-if="configurationFiles" class="variable-description">{{can('reveal')?'读取原文会记录操作审计。':'读取原文需要独立的“读取正文”权限；仍可直接提交替换内容。'}}</small></a-form-item>
         <a-form-item v-if="configurationFiles&&editing&&replaceValue&&draftOriginal!==undefined"><a-switch v-model:checked="showDraftDiff" aria-label="高亮显示配置修改"/> 高亮显示修改</a-form-item>
@@ -195,7 +195,7 @@ onBeforeUnmount(()=>{disposed=true;generation++;revision++;listController?.abort
         <section v-if="configurationFiles&&replaceValue" class="config-validation" aria-live="polite"><template v-if="configIssues.length"><button v-for="(issue,index) in configIssues" :key="index" type="button" :class="issue.severity" @click="focusConfigIssue(issue)">第 {{issue.line}} 行，第 {{issue.column}} 列：{{issue.message}}</button></template><span v-else>{{currentFormat==='text'?'纯文本：仅检查大小和非法字符':'语法检查通过'}}</span><small v-if="currentFormat==='ini'">INI 检查常见的 [节名称] 和 key=value；方言差异以应用实际解析器为准。</small></section>
         <p v-if="form.usage==='deploy'&&isEnvText" class="variable-description">{{form.kind==='env_file'?'仅用于 dockercompose：部署时自动生成命名文件，为服务添加 env_file 引用。':'dockercompose 部署时自动合并到所有服务的 environment，无需预先在 YAML 声明；同名项使用本次配置。'}}</p>
         <a-form-item label="允许使用的代码版本" extra="一行一个，例如 refs/heads/main、refs/tags/v*；留空表示不限制。"><a-textarea v-model:value="form.protected_refs" :rows="3"/></a-form-item>
-        <a-alert type="info" show-icon :message="configurationFiles?'部署阶段按需选择配置文件并指定配置文件路径；ENV 可自动注入容器环境。':embedded?'应用配置自动注入对应环境的部署；项目共享变量仍在任务中选择引用。运行会固定配置版本。':'共享变量只向明确引用的任务注入；应用自动配置按应用和环境匹配，运行会固定引用的版本。'"/>
+        <a-alert type="info" show-icon :message="configurationFiles?'部署阶段按需选择配置文件并指定配置文件路径；ENV 可自动注入容器环境。':embedded?'应用配置自动注入对应主机组的部署；项目共享变量仍在任务中选择引用。运行会固定配置版本。':'共享变量只向明确引用的任务注入；应用自动配置按应用和主机组匹配，运行会固定引用的版本。'"/>
         <a-button type="primary" html-type="submit" block :loading="saving" :disabled="readingOriginal||!can(editing?'update':'create')" style="margin-top:20px">{{configurationFiles?'保存配置':'保存变量'}}</a-button>
       </a-form>
     </a-drawer>

@@ -404,6 +404,7 @@ var migrations = []migration{
 	{version: "202611080077", up: func(tx *gorm.DB) error {
 		return addColumns(tx, &model.DeploymentPlan{}, []string{"ExecutionConfig"})
 	}},
+	{version: "202611080078", up: migrateHostGroups},
 }
 
 // migrateRepeatableReleasePlanExecutions 取消“一个发布计划只能执行一次”的旧约束，

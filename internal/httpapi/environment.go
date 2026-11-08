@@ -19,14 +19,16 @@ type environmentHandler struct {
 }
 
 type environmentRequest struct {
+	ParentID    string   `json:"parent_id" binding:"max=36"`
 	Name        string   `json:"name" binding:"required,max=128"`
 	Description string   `json:"description" binding:"max=500"`
 	HostIDs     []string `json:"host_ids" binding:"max=100"`
 }
 
 type environmentProfileRequest struct {
-	Name        string `json:"name" binding:"required,max=128"`
-	Description string `json:"description" binding:"max=500"`
+	ParentID    *string `json:"parent_id" binding:"omitempty,max=36"`
+	Name        string  `json:"name" binding:"required,max=128"`
+	Description string  `json:"description" binding:"max=500"`
 }
 
 type environmentHostsRequest struct {
@@ -34,6 +36,7 @@ type environmentHostsRequest struct {
 }
 
 type environmentResponse struct {
+	ParentID    string         `json:"parent_id"`
 	ID          string         `json:"id"`
 	Name        string         `json:"name"`
 	Description string         `json:"description"`
@@ -123,7 +126,7 @@ func (h environmentHandler) updateProfile(c *gin.Context) {
 		return
 	}
 	current, err := h.service.UpdateProfile(c.Request.Context(), c.Param("id"), environmentmanager.ProfileInput{
-		Name: request.Name, Description: request.Description,
+		ParentID: request.ParentID, Name: request.Name, Description: request.Description,
 	})
 	if err != nil {
 		h.writeError(c, "environment_profile_update", err)
@@ -194,6 +197,10 @@ func (h environmentHandler) writeEnvironment(c *gin.Context, current *environmen
 func (h environmentHandler) writeError(c *gin.Context, operation string, err error) {
 	h.logger.Warn("环境操作失败", "operation", operation, "request_id", requestIDFrom(c), "environment_id", c.Param("id"), "err", err)
 	switch {
+	case errors.Is(err, environmentmanager.ErrInvalidParent):
+		writeError(c, http.StatusBadRequest, "invalid_host_group_parent", environmentmanager.ErrInvalidParent.Error())
+	case errors.Is(err, environmentmanager.ErrGroupHasChildren):
+		writeError(c, http.StatusConflict, "host_group_has_children", environmentmanager.ErrGroupHasChildren.Error())
 	case errors.Is(err, environmentmanager.ErrInvalidEnvironment):
 		writeError(c, http.StatusBadRequest, "invalid_environment", environmentmanager.ErrInvalidEnvironment.Error())
 	case errors.Is(err, environmentmanager.ErrEnvironmentExists):
@@ -217,7 +224,7 @@ func (h environmentHandler) writeError(c *gin.Context, operation string, err err
 
 func toEnvironmentInput(request environmentRequest) environmentmanager.Input {
 	return environmentmanager.Input{
-		Name: request.Name, Description: request.Description, HostIDs: request.HostIDs,
+		ParentID: request.ParentID, Name: request.Name, Description: request.Description, HostIDs: request.HostIDs,
 	}
 }
 
@@ -234,7 +241,7 @@ func toEnvironmentResponse(
 		hosts = append(hosts, toHostResponse(hostDetail))
 	}
 	return environmentResponse{
-		ID: detail.Environment.ID, Name: detail.Environment.Name, Description: detail.Environment.Description,
+		ParentID: detail.Environment.ParentID, ID: detail.Environment.ID, Name: detail.Environment.Name, Description: detail.Environment.Description,
 		IsActive: detail.Environment.IsActive, Hosts: hosts,
 		CreatedBy: detail.Environment.CreatedBy,
 		CreatedAt: detail.Environment.CreatedAt, UpdatedAt: detail.Environment.UpdatedAt,

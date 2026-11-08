@@ -22,6 +22,7 @@ import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter, type LocationQueryRaw } from 'vue-router'
 
 import client from '@/api/client'
+import { hostGroupDescendants, hostGroupOptions, hostGroupTree } from '@/utils/hostGroups'
 import {
   capabilityOf,
   environmentIDsOf,
@@ -85,6 +86,8 @@ const relationError = ref('')
 watch(relationClusterID, () => { relationError.value = '' })
 const selectedID = ref('')
 const selectedGroupKey = ref<HostGroupKey>('all')
+const groupQuery = ref('')
+const expandedGroupKeys = ref<string[]>([])
 const searchQuery = ref('')
 const statusFilter = ref<HostStatusFilter>('all')
 const loading = ref(false)
@@ -104,7 +107,7 @@ const groupDrawerOpen = ref(false)
 const groupSaving = ref(false)
 const groupMode = ref<GroupFormMode>('create')
 const editingGroupID = ref('')
-const groupForm = reactive({ name: '', description: '', host_ids: [] as string[] })
+const groupForm = reactive({ parent_id: '', name: '', description: '', host_ids: [] as string[] })
 let statusTimer: number | undefined
 let statusRefreshing = false
 let statusErrorShown = false
@@ -157,7 +160,7 @@ const tableColumns = [
 ]
 
 const selectedEnvironmentSummary = computed(() => {
-  if (!selected.value || !canReadGroups.value) return canReadGroups.value ? '' : '无环境查看权限'
+  if (!selected.value || !canReadGroups.value) return canReadGroups.value ? '' : '无主机组查看权限'
   const environmentIDs = environmentIDsOf(selected.value).filter(id => id !== legacyLocalEnvironmentID)
   const names = environmentIDs
     .map(id => environmentNames.value.get(id))
@@ -187,15 +190,21 @@ const searchAndStatusHosts = computed(() => hosts.value.filter(host => {
 
 const filteredHosts = computed(() => {
   if (!canReadGroups.value || selectedGroupKey.value === 'all') return searchAndStatusHosts.value
-  return searchAndStatusHosts.value.filter(host => environmentIDsOf(host).includes(selectedGroupKey.value))
+  const ids = hostGroupDescendants(hostGroups.value, selectedGroupKey.value)
+  return searchAndStatusHosts.value.filter(host => environmentIDsOf(host).some(id => ids.has(id)))
 })
 
 const { pagination: hostPagination, changePage: changeHostPage } = useResourceList(() => filteredHosts.value)
 
-const visibleEnvironments = computed(() => hostGroups.value.filter(environment => {
-  if (!normalizedSearch.value && statusFilter.value === 'all') return true
-  return groupHostCount(environment.id) > 0 || environment.id === selectedGroupKey.value
-}))
+const groupTree = computed(() => hostGroupTree(hostGroups.value, groupQuery.value))
+const parentGroupOptions = computed(() => [{ value: '', label: '顶层主机组' }, ...hostGroupOptions(hostGroups.value, editingGroupID.value)])
+const expandedGroups = computed(() => groupQuery.value.trim() ? hostGroups.value.map(group => group.id) : expandedGroupKeys.value)
+watch(hostGroups, (groups, previous) => {
+  const existing = new Set((previous || []).map(group => group.id))
+  expandedGroupKeys.value = [...new Set([...expandedGroupKeys.value.filter(id => groups.some(group => group.id === id)), ...groups.filter(group => !existing.has(group.id)).map(group => group.id)])]
+})
+function selectGroupNode(keys: (string | number)[]) { if (keys.length) selectGroup(String(keys[0])) }
+function groupByID(id: string) { return hostGroups.value.find(group => group.id === id) }
 const groupTitle = computed(() => {
   if (groupMode.value === 'details') return `编辑分组“${groupForm.name}”`
   if (groupMode.value === 'hosts') return `调整“${groupForm.name}”的主机`
@@ -307,6 +316,9 @@ async function refresh() {
       selectedGroupKey.value = 'all'
     }
     initialized = true
+    const routeGroup = typeof route.query.group === 'string' ? hostGroups.value.find(group => group.id === route.query.group) : undefined
+    if (routeGroup) { selectedGroupKey.value = routeGroup.id; if (route.query.edit_group === '1' && auth.canAny(['deployment.update'])) editGroup(routeGroup, 'details') }
+    if (route.query.create_group === '1' && canReadGroups.value && auth.canAny(['deployment.create'])) createGroup()
     if (!hostLoadError.value) syncRouteState()
     else detailOpen.value = false
     const error = hostLoadError.value || clusterLoadError.value || environmentLoadError.value
@@ -569,11 +581,12 @@ function selectGroup(key: HostGroupKey) {
 function resetGroupForm() {
   editingGroupID.value = ''
   groupMode.value = 'create'
-  Object.assign(groupForm, { name: '', description: '', host_ids: [] })
+  Object.assign(groupForm, { parent_id: '', name: '', description: '', host_ids: [] })
 }
 
-function createGroup() {
+function createGroup(parentID: unknown = '') {
   resetGroupForm()
+  groupForm.parent_id = typeof parentID === 'string' ? parentID : ''
   groupDrawerOpen.value = true
 }
 
@@ -582,6 +595,7 @@ function editGroup(environment: InfrastructureEnvironment, mode: Exclude<GroupFo
   groupMode.value = mode
   Object.assign(groupForm, {
     name: environment.name,
+    parent_id: environment.parent_id || '',
     description: environment.description || '',
     host_ids: environment.hosts.map(host => host.id),
   })
@@ -599,12 +613,14 @@ async function saveGroup() {
     if (!editingGroupID.value) {
       response = await client.post<{ environment: InfrastructureEnvironment }>('/environments', {
         name: groupForm.name.trim(),
+        parent_id: groupForm.parent_id,
         description: groupForm.description.trim(),
         host_ids: groupForm.host_ids,
       })
     } else if (groupMode.value === 'details') {
       response = await client.patch<{ environment: InfrastructureEnvironment }>(`/environments/${editingGroupID.value}`, {
         name: groupForm.name.trim(),
+        parent_id: groupForm.parent_id,
         description: groupForm.description.trim(),
       })
     } else {
@@ -660,7 +676,7 @@ function handleGroupAction(environment: InfrastructureEnvironment, action: strin
   else if (action === 'hosts') editGroup(environment, 'hosts')
   else if (action === 'toggle') void toggleGroup(environment)
   else if (action === 'delete') removeGroup(environment)
-  else if (action === 'environment') void router.push({ path: '/environments', query: { environment: environment.id } })
+  else if (action === 'child') createGroup(environment.id)
 }
 
 function capabilityName(kind: HostCapabilityKind) {
@@ -767,6 +783,21 @@ onBeforeUnmount(() => {
     <ClusterInventory v-if="activeWorkspace === 'clusters'" :clusters="clusters" :hosts="hosts" :loading="loading" :error="clusterLoadError" :host-error="hostLoadError" @refresh="refresh" @provision="clusterProvisionOpen = true" @host="openDetails" />
 
     <div v-else class="host-workspace vben-card">
+      <aside v-if="canReadGroups" class="host-group-tree" aria-label="主机组">
+        <header><strong>主机组</strong><a-button v-if="auth.canAny(['deployment.create'])" type="text" aria-label="新建主机组" @click="createGroup()"><Plus :size="15" /></a-button></header>
+        <a-input v-model:value="groupQuery" allow-clear placeholder="搜索主机组" aria-label="搜索主机组" />
+        <button type="button" class="all-hosts" :class="{ active: selectedGroupKey === 'all' }" @click="selectGroup('all')"><Server :size="15" />全部主机<span>{{ hosts.length }}</span></button>
+        <a-alert v-if="environmentLoadError" type="error" message="主机组加载失败" />
+        <a-tree v-else block-node :show-line="false" :tree-data="groupTree" :selected-keys="[selectedGroupKey]" :expanded-keys="expandedGroups" :auto-expand-parent="false" @select="selectGroupNode" @expand="expandedGroupKeys = $event.map(String)">
+          <template #title="{ key, title }">
+            <span class="host-group-node"><Folder :size="15" aria-hidden="true"/><span :title="title">{{ title }}</span>
+              <a-button v-if="auth.canAny(['deployment.create'])" type="text" size="small" :aria-label="`为${title}添加下级主机组`" @click.stop="createGroup(String(key))"><Plus :size="13"/></a-button>
+              <a-dropdown v-if="auth.canAny(['deployment.update', 'deployment.delete'])" :trigger="['click']"><a-button type="text" size="small" :aria-label="`${title}主机组操作`" @click.stop><MoreHorizontal :size="14"/></a-button><template #overlay><a-menu @click="groupByID(String(key)) && handleGroupAction(groupByID(String(key))!, String($event.key))"><a-menu-item v-if="auth.canAny(['deployment.update'])" key="details">编辑信息</a-menu-item><a-menu-item v-if="auth.canAny(['deployment.update'])" key="hosts">调整主机</a-menu-item><a-menu-item v-if="auth.canAny(['deployment.delete'])" key="delete" danger>删除主机组</a-menu-item></a-menu></template></a-dropdown>
+            </span>
+          </template>
+        </a-tree>
+        <p v-if="!loading && !environmentLoadError && !groupTree.length" class="muted-text">{{ groupQuery ? '没有匹配的主机组' : '暂无主机组' }}</p>
+      </aside>
       <main class="host-table-panel">
         <a-alert v-if="hostLoadError || environmentLoadError || clusterLoadError" class="inventory-error" type="error" show-icon :message="hostLoadError ? '主机列表加载失败' : clusterLoadError ? '集群关联加载失败' : '主机分组加载失败'" :description="hostLoadError || clusterLoadError || environmentLoadError"><template #action><a-button size="small" @click="refresh">重试</a-button></template></a-alert>
         <header class="table-toolbar">
@@ -775,7 +806,7 @@ onBeforeUnmount(() => {
             <small>显示 {{ filteredHosts.length }} / {{ hosts.length }} 台主机</small>
           </div>
           <div class="table-filters">
-            <label v-if="canReadGroups" class="host-group-filter"><span class="visually-hidden">主机分组</span><select :value="selectedGroupKey" aria-label="主机分组" @change="selectGroup(($event.target as HTMLSelectElement).value)"><option value="all">全部分组</option><option v-for="group in hostGroups" :key="group.id" :value="group.id">{{ group.name }}</option></select></label>
+
             <a-dropdown v-if="selectedGroup && auth.canAny(['deployment.update', 'deployment.delete'])" :trigger="['click']"><a-button size="small">分组操作<MoreHorizontal :size="14" /></a-button><template #overlay><a-menu @click="handleGroupAction(selectedGroup!, String($event.key))"><a-menu-item v-if="auth.canAny(['deployment.update'])" key="details">编辑信息</a-menu-item><a-menu-item v-if="auth.canAny(['deployment.update'])" key="hosts">调整主机</a-menu-item><a-menu-item v-if="auth.canAny(['deployment.update'])" key="toggle">{{ selectedGroup.is_active ? '停用分组' : '启用分组' }}</a-menu-item><a-menu-item v-if="auth.canAny(['deployment.delete'])" key="delete" danger>删除分组</a-menu-item></a-menu></template></a-dropdown>
             <a-input v-model:value="searchQuery" allow-clear placeholder="搜索名称、地址、分组或集群" class="host-search" aria-label="搜索主机">
               <template #prefix><Search :size="15" /></template>
@@ -823,7 +854,7 @@ onBeforeUnmount(() => {
               <HostResourceSummary :host="record" :revision="resourceRevision" />
             </template>
             <template v-else-if="column.key === 'groups'">
-              <span v-if="!canReadGroups" class="muted-text">无环境查看权限</span>
+              <span v-if="!canReadGroups" class="muted-text">无主机组查看权限</span>
               <div v-else-if="groupNamesOf(record).length" class="group-tags">
                 <a-tag v-for="name in groupNamesOf(record)" :key="name">{{ name }}</a-tag>
               </div>
@@ -938,9 +969,10 @@ onBeforeUnmount(() => {
 
     <a-drawer v-model:open="groupDrawerOpen" :title="groupTitle" width="min(620px, 100vw)">
       <a-form layout="vertical">
-        <a-form-item v-if="groupMode !== 'hosts'" label="分组名称" required>
+        <a-form-item v-if="groupMode !== 'hosts'" label="主机组名称" required :extra="'名称全局唯一'">
           <a-input v-model:value="groupForm.name" maxlength="128" placeholder="例如：上海测试、海外生产" />
         </a-form-item>
+        <a-form-item v-if="groupMode !== 'hosts'" label="上级主机组"><a-select v-model:value="groupForm.parent_id" show-search option-filter-prop="label" :options="parentGroupOptions" :disabled="groupSaving" /></a-form-item>
         <a-form-item v-if="groupMode !== 'hosts'" label="分组说明">
           <a-textarea v-model:value="groupForm.description" :rows="3" maxlength="500" placeholder="说明该分组的用途、区域或约束" />
         </a-form-item>
@@ -1017,4 +1049,18 @@ onBeforeUnmount(() => {
 .host-detail-drawer :deep(.resource-detail-content){padding:16px 20px}
 @media(prefers-reduced-motion:reduce){.capability-icons>.capability-shortcut{transition:none}}
 @media(max-width:640px){.host-detail-drawer :deep(.resource-detail-content){padding:12px}}
+</style>
+
+<style scoped>
+.host-workspace:has(.host-group-tree){display:grid;grid-template-columns:250px minmax(0,1fr)}
+.host-group-tree{min-width:0;padding:12px;border-right:1px solid var(--edo-border);background:var(--edo-surface)}
+.host-group-tree>header{display:flex;align-items:center;justify-content:space-between;margin-bottom:10px}
+.host-group-tree>p{padding:12px 4px}.host-group-tree :deep(.ant-tree){margin-top:8px;background:transparent;color:var(--edo-text)}
+.host-group-tree :deep(.ant-tree-node-content-wrapper){min-width:0;padding:2px 4px}
+.host-group-tree :deep(.ant-tree-treenode){width:100%;align-items:center}
+.host-group-tree :deep(.ant-tree-title){display:block}.host-group-tree :deep(.ant-tree-node-selected){background:var(--edo-primary-soft)!important;color:var(--edo-primary)}
+.host-group-node{display:flex;min-width:0;align-items:center;gap:6px}.host-group-node>svg{flex-shrink:0}.host-group-node>span{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.host-group-node :deep(.ant-btn){padding:0 3px;flex-shrink:0}.all-hosts{display:flex;align-items:center;gap:8px;width:100%;margin-top:12px;padding:8px;border:0;border-radius:4px;background:transparent;color:var(--edo-text);text-align:left;cursor:pointer}.all-hosts span{margin-left:auto;color:var(--edo-muted)}.all-hosts.active,.all-hosts:hover{background:var(--edo-primary-soft);color:var(--edo-primary)}.all-hosts:focus-visible{outline:2px solid var(--edo-primary);outline-offset:2px}
+@media(max-width:1000px){.host-workspace:has(.host-group-tree){grid-template-columns:210px minmax(0,1fr)}}
+@media(max-width:720px){.host-workspace:has(.host-group-tree){grid-template-columns:1fr}.host-group-tree{border-right:0;border-bottom:1px solid var(--edo-border);max-height:280px;overflow:auto}}
 </style>
