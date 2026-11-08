@@ -10,6 +10,7 @@ function harness(get){
  const auth=vue.reactive({user:{id:'operator',project_id:'one',permissions:['deployment_plan.read','workflow.update']},canAny(codes){return codes.some(code=>this.user.permissions.includes(code))}})
  const props=vue.reactive({node:{id:'deploy',type:'deploy',config:{deployment_plan_id:'plan',compose:{project_name:'team',tag_variable:'VERSION',use_sudo:false,adopt_existing:true}}},buildNodes:[{id:'build',name:'API'}],disabled:false})
  const component=loadFrontend('../src/components/ComposeTaskFields.vue',{
+  '@/utils/variableReference':loadFrontend('../src/utils/variableReference.ts'),
   vue:{...vue,onBeforeUnmount:fn=>unmounts.push(fn)},'@/stores/auth':{useAuthStore:()=>auth},'@/utils/kubernetesYaml':yamlModule,
   '@/api/resources':{apiErrorMessage:()=> '读取失败'},'@/api/client':{__esModule:true,default:{get:async(path,options)=>{requests.push({path,options});return get?get():{data:{deployment_plans:[{id:'plan',kind:'compose_stack',compose_yaml:'services:\n  api:\n    image: registry.example.com/api:${VERSION}\n  jobs:\n    image: registry.example.com/api:${VERSION}\n'}]}}}}}
  }).default
@@ -40,3 +41,10 @@ test('自定义部署方案直接提供 Compose、环境和命令预览，不要
  await settle();assert.equal(h.state.kind.value,'compose_stack');assert.equal(h.state.environmentID.value,'prod');assert.deepEqual(h.state.services.value,['api']);assert.equal(h.requests.length,reads)
  h.auth.user.permissions=[];await settle();assert.equal(h.state.deploymentPlan.value,undefined)
 })
+
+ test('镜像 Tag 输入使用变量引用，裸变量名保持错误输入，不静默当作变量',async t=>{
+ const h=harness();t.after(h.stop);await settle()
+ assert.equal(h.state.tagReference.value,'${VERSION}')
+ h.state.updateTag('IMAGE_TAG');await settle();assert.equal(h.state.tagReference.value,'IMAGE_TAG')
+ h.state.updateTag('${IMAGE_TAG}');await settle();assert.equal(h.props.node.config.compose.tag_variable,'${IMAGE_TAG}')
+ })

@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { variableReference, validTagReference } from '@/utils/variableReference'
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import client from '@/api/client'
 import DeploymentConfigurationFields from '@/components/DeploymentConfigurationFields.vue'
@@ -33,7 +34,11 @@ watch(identity, async () => {
  } catch (cause) { if (!signal.aborted && revision === request) error.value = apiErrorMessage(cause) }
 }, { immediate: true })
 onBeforeUnmount(() => { request++; controller?.abort() })
-const settings = computed(() => props.node.config.compose || { project_name: '', tag_variable: 'IMAGE_TAG', use_sudo: false, adopt_existing: false })
+const settings = computed(() => props.node.config.compose || { project_name: '', tag_variable: '${IMAGE_TAG}', use_sudo: false, adopt_existing: false })
+const tagReference = ref(variableReference(settings.value.tag_variable))
+watch(() => settings.value.tag_variable, value => { if (value !== tagReference.value) tagReference.value = variableReference(value) })
+watch(() => props.node.id, () => { tagReference.value = variableReference(settings.value.tag_variable) })
+function updateTag(value: string) { tagReference.value = value; updateSettings({ tag_variable: value }) }
 const services = computed(() => Object.keys(readKubeYaml(yaml.value).object?.services || {}).sort())
 function change(config: Partial<WorkflowNodeConfig>) { if (!props.disabled && auth.canAny(['workflow.update'])) emit('change', config) }
 function updateSettings(patch: Partial<NonNullable<WorkflowNodeConfig['compose']>>) {
@@ -45,9 +50,9 @@ function updateSettings(patch: Partial<NonNullable<WorkflowNodeConfig['compose']
  <section v-if="kind==='compose_stack'" class="compose-task-fields" aria-label="DockerCompose 多镜像部署配置">
   <a v-if="!node.config.inline_deployment_plan" :href="`/deployment-plans?plan=${encodeURIComponent(node.config.deployment_plan_id||'')}`" target="_blank" rel="noopener">查看和编辑 DockerCompose 部署方案</a>
   <a-form-item label="DockerCompose 项目名" required><a-input :value="settings.project_name" :disabled="disabled" @update:value="updateSettings({project_name:String($event||'')})"/></a-form-item>
-  <a-form-item label="DockerCompose Tag 变量名" required help="例如 IMAGE_TAG，对应 DockerCompose image 中的 ${IMAGE_TAG}；值来自本次构建产物。"><a-input :value="settings.tag_variable" :disabled="disabled" @update:value="updateSettings({tag_variable:String($event||'')})"/></a-form-item>
+  <a-form-item required :validate-status="!validTagReference(tagReference)?'error':undefined" :help="!validTagReference(tagReference)?'请使用变量引用，例如 ${IMAGE_TAG}':undefined"><template #label><span>镜像 Tag <a-tooltip title="例如 ${IMAGE_TAG}，对应 docker image 中的 ${IMAGE_TAG}；值来自当前流水线本次构建的镜像 Tag。" :trigger="['hover','focus','click']"><button type="button" class="configuration-help" aria-label="镜像 Tag 说明">?</button></a-tooltip></span></template><a-input :value="tagReference" placeholder="${IMAGE_TAG}" aria-label="镜像 Tag" :disabled="disabled" @update:value="updateTag(String($event||''))"/></a-form-item>
   <a-form-item label="健康检查地址（可选）"><a-input :value="settings.health_url" :disabled="disabled" @update:value="updateSettings({health_url:String($event||'')})"/></a-form-item>
-  <a-form-item label="启动服务（可选）" help="留空执行整个 DockerCompose 项目；选择后执行 docker compose up -d 服务名，依赖仍由 DockerCompose 处理。">
+  <a-form-item><template #label><span>启动服务（可选） <a-tooltip title="留空执行整个 docker-compose.yaml 项目" :trigger="['hover','focus','click']"><button type="button" class="configuration-help" aria-label="启动服务说明">?</button></a-tooltip></span></template>
    <a-select mode="multiple" allow-clear :value="settings.services||[]" :disabled="disabled" :options="services.map(value=>({value,label:value}))" placeholder="全部服务" aria-label="启动服务（可选）" @update:value="updateSettings({services:$event as string[]})"/>
   </a-form-item>
   <a-checkbox :checked="settings.adopt_existing" :disabled="disabled" @change="updateSettings({adopt_existing:$event.target.checked})">接管已有项目，核对原服务与工作目录</a-checkbox>
@@ -57,5 +62,5 @@ function updateSettings(patch: Partial<NonNullable<WorkflowNodeConfig['compose']
  <DeploymentConfigurationFields v-if="['docker','compose','compose_stack'].includes(kind)" :config="node.config" :deploymentPlan="deploymentPlan" :applicationID="applicationID" :applicationName="applicationName" :environmentID="environmentID" :disabled="disabled" @change="change"/>
 </template>
 <style scoped>
-.compose-task-fields{display:grid;gap:12px;min-width:0}
+.configuration-help{border:1px solid var(--edo-border);border-radius:50%;background:transparent;color:var(--edo-muted);width:20px;height:20px;padding:0;cursor:help}.configuration-help:focus-visible{outline:2px solid var(--edo-primary);outline-offset:2px}.compose-task-fields{display:grid;gap:12px;min-width:0}
 </style>

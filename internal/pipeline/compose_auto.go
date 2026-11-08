@@ -57,7 +57,7 @@ func autoComposeImages(source string, config model.WorkflowNodeConfig, candidate
 				return config, nil, ErrPipelineExecutionConfig
 			}
 			expanded := os.Expand(template, func(key string) string {
-				if key == config.Compose.TagVariable {
+				if key == composeTagName(config.Compose.TagVariable) {
 					return tagged.Tag()
 				}
 				return variables[key]
@@ -71,7 +71,7 @@ func autoComposeImages(source string, config model.WorkflowNodeConfig, candidate
 			matched = id
 		}
 		if matched == "" {
-			if len(candidates) > 0 && strings.Contains(template, "${"+config.Compose.TagVariable+"}") {
+			if len(candidates) > 0 && strings.Contains(template, "${"+composeTagName(config.Compose.TagVariable)+"}") {
 				return config, nil, ErrPipelineExecutionConfig
 			}
 			continue

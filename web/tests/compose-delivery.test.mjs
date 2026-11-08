@@ -5,7 +5,7 @@ import * as yaml from 'yaml'
 import {loadFrontend} from './acceptanceHarness.mjs'
 
 const yamlModule=loadFrontend('../src/utils/kubernetesYaml.ts', {yaml})
-const forms=loadFrontend('../src/utils/composeDelivery.ts', {'@/utils/kubernetesYaml':yamlModule})
+const forms=loadFrontend('../src/utils/composeDelivery.ts', {'@/utils/kubernetesYaml':yamlModule,'@/utils/variableReference':loadFrontend('../src/utils/variableReference.ts')})
 const settle=async()=>{await vue.nextTick();await new Promise(resolve=>setImmediate(resolve))}
 
 function harness(post){
@@ -71,3 +71,8 @@ test('缺少流水线与部署方案创建权限不能通过向导创建草稿',
  const h=harness();t.after(h.stop);h.auth.user.permissions=[];await h.state.load();fill(h.state);await h.state.create()
  assert.deepEqual(h.requests,[])
 })
+
+ test('镜像 Tag 默认引用当前流水线产物，裸变量名不能通过输入校验',()=>{
+ const form=forms.newComposeDeliveryForm();assert.equal(form.tag_variable,'${IMAGE_TAG}')
+ form.tag_variable='IMAGE_TAG';assert.ok(forms.composeDeliveryErrors(form).tag_variable)
+ })

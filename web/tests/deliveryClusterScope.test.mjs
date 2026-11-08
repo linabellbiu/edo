@@ -17,7 +17,7 @@ function harness() {
     'vue-i18n': { useI18n: () => ({ t: key => key }) },
     '@/api/delivery': { deliveryKinds: ['docker', 'kubernetes', 'script'] },
     '@/api/infrastructure': { environmentIDsOf: host => host.environment_ids || [] },
-    '@/utils/composeDelivery': loadFrontend('../src/utils/composeDelivery.ts', {'@/utils/kubernetesYaml':loadFrontend('../src/utils/kubernetesYaml.ts',{yaml})}),
+    '@/utils/composeDelivery': loadFrontend('../src/utils/composeDelivery.ts', {'@/utils/kubernetesYaml':loadFrontend('../src/utils/kubernetesYaml.ts',{yaml}),'@/utils/variableReference':loadFrontend('../src/utils/variableReference.ts')}),
     '@/stores/auth': {useAuthStore:()=>({canAny:()=>false})},
   }
   const module = { exports: {} }

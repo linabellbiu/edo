@@ -25,7 +25,7 @@ func validComposeNodeShape(config model.WorkflowNodeConfig) bool {
 		return false
 	}
 	if c := config.Compose; c != nil {
-		if len(c.Services) > 64 || len(c.ProjectName) > 128 || len(c.TagVariable) > 128 || len(c.EnvFile) > 1024 || len(c.HealthURL) > 2048 {
+		if len(c.Services) > 64 || len(c.ProjectName) > 128 || len(c.TagVariable) > 131 || len(c.EnvFile) > 1024 || len(c.HealthURL) > 2048 {
 			return false
 		}
 	}
@@ -72,7 +72,7 @@ func validateComposeNode(config model.WorkflowNodeConfig) error {
 		return ErrInvalidComposeDelivery
 	}
 	settings := config.Compose
-	if !composeProjectPattern.MatchString(settings.ProjectName) || !buildVariableNamePattern.MatchString(settings.TagVariable) || strings.HasPrefix(settings.TagVariable, "EDO_") {
+	if !composeProjectPattern.MatchString(settings.ProjectName) || composeTagName(settings.TagVariable) == "" {
 		return ErrInvalidComposeDelivery
 	}
 	if (settings.EnvFile != "" && !validComposeFilePath(settings.EnvFile)) || !validComposeHealthURL(settings.HealthURL) {
@@ -141,7 +141,7 @@ func validateComposeBindingsYAML(value string, config model.WorkflowNodeConfig) 
 			return ErrInvalidComposeDelivery
 		}
 		image, ok := service["image"].(string)
-		if !ok || !strings.Contains(image, "${"+config.Compose.TagVariable+"}") {
+		if !ok || !strings.Contains(image, "${"+composeTagName(config.Compose.TagVariable)+"}") {
 			return ErrInvalidComposeDelivery
 		}
 	}
@@ -251,7 +251,7 @@ func renderComposeStack(value string, config model.WorkflowNodeConfig, images ma
 			return "", "", ErrInvalidComposeDelivery
 		}
 		expanded := os.Expand(template, func(name string) string {
-			if name == config.Compose.TagVariable {
+			if name == composeTagName(config.Compose.TagVariable) {
 				return tag
 			}
 			return variables[name]
@@ -332,7 +332,7 @@ func (s *Service) executeComposeStackDeployment(ctx context.Context, prepared *e
 	prepared.deploymentPlan.Script = script
 	environment := mergeDeploymentVariables(prepared.variables, map[string]string{"EDO_PIPELINE_RUN_ID": prepared.run.ID, "EDO_APPLICATION_ID": prepared.application.ID, "EDO_APPLICATION_NAME": prepared.application.Name, "EDO_GIT_REF": prepared.run.Ref, "EDO_COMMIT_SHA": prepared.run.CommitSHA, "EDO_DEPLOYMENT_TARGET_ID": prepared.target.ID})
 	if tag != "" {
-		environment[prepared.node.Config.Compose.TagVariable] = tag
+		environment[composeTagName(prepared.node.Config.Compose.TagVariable)] = tag
 	}
 	for name, value := range prepared.variableFiles {
 		environment[envtext.TransportKey(name)] = value
