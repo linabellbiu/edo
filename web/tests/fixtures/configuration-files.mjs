@@ -23,7 +23,7 @@ const history = {
   'env-config': ['TOKEN=synthetic-old\nPORT=8080\n', 'TOKEN=synthetic-new\nPORT=9090\n'],
   'yaml-config': ['server:\n  port: 8080\n', 'server:\n  port: 8080\n  mode: development\n', 'server:\n  port: 9090\n  mode: production\n'],
 }
-const plans = ['compose_stack', 'compose', 'docker'].map(kind => ({ id: 'plan-' + kind, kind, timeout_seconds: 600, service_name: 'api', compose_yaml: 'services:\n  api:\n    image: example/api:${IMAGE_TAG}\n', deployment_target: { host_id: 'host', environment_id: 'prod', working_directory: '/srv/example', workload_name: 'example-api' } }))
+const plans = ['compose_stack', 'compose', 'docker', 'script'].map(kind => ({ id: 'plan-' + kind, kind, timeout_seconds: 600, service_name: 'api', compose_yaml: 'services:\n  api:\n    image: example/api:${IMAGE_TAG}\n', deployment_target: { host_id: 'host', environment_id: 'prod', working_directory: '/srv/example', workload_name: 'example-api' } }))
 client.defaults.adapter = async config => {
   let data
   const path = config.url, body = typeof config.data === 'string' ? JSON.parse(config.data) : config.data
@@ -56,7 +56,7 @@ createApp({ setup() {
     h(Button, { onClick() { dark.value = !dark.value; if(preferences.theme!==(dark.value?'dark':'light'))preferences.toggleTheme() } }, () => '切换主题'),
     h(DeliveryVariablesView, { configurationFiles: true, applicationId: 'app', applicationName: '订单应用' }),
     h('h2', '部署阶段'),
-    h('div', { style: 'display:flex;gap:8px;flex-wrap:wrap' }, ['compose_stack', 'compose', 'docker'].map(kind => h(Button, { onClick() { deploymentConfig.value = { ...deploymentConfig.value, deployment_plan_id: 'plan-' + kind, compose: kind === 'compose_stack' ? compose : undefined } } }, () => ({ compose_stack: '多服务 Compose', compose: '单服务 Compose', docker: 'Docker' })[kind]))),
+    h('div', { style: 'display:flex;gap:8px;flex-wrap:wrap' }, ['compose_stack', 'compose', 'docker', 'script'].map(kind => h(Button, { onClick() { deploymentConfig.value = { ...deploymentConfig.value, deployment_plan_id: 'plan-' + kind, compose: kind === 'compose_stack' ? compose : undefined } } }, () => ({ compose_stack: '多服务 Compose', compose: '单服务 Compose', docker: 'Docker', script: 'Shell' })[kind]))),
     h(Form, { layout: 'vertical' }, { default: () => h(ComposeTaskFields, { node: { id: 'deploy', type: 'deploy', config: deploymentConfig.value }, buildNodes: [], applicationID: 'app', applicationName: '订单应用', disabled: false, onChange: patch => { deploymentConfig.value = { ...deploymentConfig.value, ...patch } } }) }),
     h(Button, { onClick() { confirmOpen.value = true } }, () => '打开重启确认'),
     h(ComposeContainerControlModal, { open: confirmOpen.value, deploymentID: 'sample', containerID: 'a'.repeat(64), action: 'restart', 'onUpdate:open': value => { confirmOpen.value = value } }),

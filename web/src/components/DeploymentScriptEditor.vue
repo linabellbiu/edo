@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { Compartment, EditorState } from '@codemirror/state'
-import { EditorView, keymap, lineNumbers, drawSelection, highlightActiveLine, highlightActiveLineGutter } from '@codemirror/view'
+import { EditorView, keymap, lineNumbers, drawSelection, highlightActiveLine, highlightActiveLineGutter, placeholder } from '@codemirror/view'
 import { StreamLanguage, syntaxHighlighting, HighlightStyle, bracketMatching } from '@codemirror/language'
 import { shell } from '@codemirror/legacy-modes/mode/shell'
 import { tags } from '@lezer/highlight'
@@ -12,12 +12,36 @@ import { apiErrorMessage } from '@/api/resources'
 import { useAuthStore } from '@/stores/auth'
 import { usePreferencesStore } from '@/stores/preferences'
 
-const props = defineProps<{ modelValue: string; disabled?: boolean }>()
+const props = defineProps<{ modelValue: string; disabled?: boolean; kind?: string }>()
 const emit = defineEmits<{ 'update:modelValue': [value: string] }>()
 const auth = useAuthStore(), preferences = usePreferencesStore(), host = ref<HTMLElement>(), upload = ref<HTMLInputElement>()
 type Issue = { line: number; column: number; message: string }
 const issues = ref<Issue[]>([]), status = ref(''), error = ref(''), checking = ref(false)
-const editing = new Compartment(), appearance = new Compartment(), highlighting = new Compartment()
+const editing = new Compartment(), appearance = new Compartment(), highlighting = new Compartment(), example = new Compartment()
+const scriptExample = computed(() => {
+  const introduction = '# 示例：按上方路径调整文件名\n# 留空使用原部署流程\n'
+  if (props.kind === 'compose' || props.kind === 'compose_stack') return introduction + [
+    '# 使用 Compose 定义与 ENV 文件',
+    'cd "${EDO_APP_CONFIG_PATH}"',
+    'docker compose \\',
+    '  -f docker-compose.yaml \\',
+    '  --env-file runtime.env up -d',
+    '# 镜像 Tag 使用 ${IMAGE_TAG}',
+  ].join('\n')
+  if (props.kind === 'docker') return introduction + [
+    '# 使用本次流水线镜像与 ENV 文件',
+    'cd "${EDO_APP_CONFIG_PATH}"',
+    'docker run -d \\',
+    '  --name example-app \\',
+    '  --env-file runtime.env \\',
+    '  "${EDO_IMAGE}"',
+  ].join('\n')
+  return introduction + [
+    '# 执行上方下载的部署脚本',
+    'cd "${EDO_APP_CONFIG_PATH}"',
+    'sh ./deploy.sh',
+  ].join('\n')
+})
 let editor: EditorView | undefined, controller: AbortController | undefined, timer: ReturnType<typeof setTimeout> | undefined, revision = 0, disposed = false
 function identity() { return JSON.stringify([auth.user?.id, auth.user?.project_id, auth.user?.permissions, auth.user?.is_superuser, auth.authorizationState, localStorage.getItem('edo.project')]) }
 function canEdit() { return Boolean(auth.user?.id && auth.user?.project_id) && !props.disabled && auth.canAny(['workflow.update']) && auth.user?.project_id === localStorage.getItem('edo.project') }
@@ -81,7 +105,7 @@ async function readUpload(event: Event) {
 }
 onMounted(() => {
   editor = new EditorView({ parent: host.value, state: EditorState.create({ doc: props.modelValue, extensions: [
-    StreamLanguage.define(shell), highlighting.of(highlight()), appearance.of(theme()),
+    StreamLanguage.define(shell), highlighting.of(highlight()), appearance.of(theme()), example.of(placeholder(scriptExample.value)),
     lineNumbers(), lintGutter(), drawSelection(), history(), bracketMatching(), highlightActiveLine(), highlightActiveLineGutter(), keymap.of([...defaultKeymap, ...historyKeymap]),
     EditorView.contentAttributes.of({ 'aria-label': '部署脚本', spellcheck: 'false' }),
     editing.of([EditorState.readOnly.of(!canEdit()), EditorView.editable.of(canEdit())]),
@@ -94,6 +118,7 @@ watch([identity, () => props.disabled], () => {
   editor?.dispatch({ effects: editing.reconfigure([EditorState.readOnly.of(!canEdit()), EditorView.editable.of(canEdit())]) })
 })
 watch(() => preferences.theme, () => editor?.dispatch({ effects: [appearance.reconfigure(theme()), highlighting.reconfigure(highlight())] }))
+watch(scriptExample, value => editor?.dispatch({ effects: example.reconfigure(placeholder(value)) }))
 onBeforeUnmount(() => { disposed = true; revision++; clearTimeout(timer); controller?.abort(); editor?.destroy() })
 function locate(issue: Issue) { if (!editor) return; const line = editor.state.doc.line(Math.min(issue.line, editor.state.doc.lines)); editor.dispatch({ selection: { anchor: Math.min(line.to, line.from + issue.column - 1) }, scrollIntoView: true }); editor.focus() }
 </script>
@@ -105,4 +130,4 @@ function locate(issue: Issue) { if (!editor) return; const line = editor.state.d
   <button v-for="(issue, index) in issues" :key="index" class="script-issue" type="button" @click="locate(issue)">第 {{ issue.line }} 行，第 {{ issue.column }} 列：{{ issue.message }}</button>
  </section>
 </template>
-<style scoped>.deployment-script-editor{display:grid;gap:8px;min-width:0}.script-actions{display:flex;flex-wrap:wrap;gap:8px}.script-code{min-width:0;border:1px solid var(--edo-border);border-radius:5px;overflow:hidden}.script-code:focus-within{border-color:var(--edo-primary)}.deployment-script-editor p{margin:0;color:var(--edo-muted);font-size:12px}.script-issue{text-align:left;color:var(--edo-danger);border:0;background:transparent;cursor:pointer}.script-issue:focus-visible{outline:2px solid var(--edo-primary)}</style>
+<style scoped>.deployment-script-editor{display:grid;gap:8px;min-width:0}.script-actions{display:flex;flex-wrap:wrap;gap:8px}.script-code{min-width:0;border:1px solid var(--edo-border);border-radius:5px;overflow:hidden}.script-code:focus-within{border-color:var(--edo-primary)}.script-code :deep(.cm-placeholder){color:var(--edo-muted);white-space:pre-wrap;overflow-wrap:anywhere}.script-code :deep(.cm-activeLine:has(.cm-placeholder)),.script-code :deep(.cm-editor:has(.cm-placeholder) .cm-activeLineGutter){background:transparent}.deployment-script-editor p{margin:0;color:var(--edo-muted);font-size:12px}.script-issue{text-align:left;color:var(--edo-danger);border:0;background:transparent;cursor:pointer}.script-issue:focus-visible{outline:2px solid var(--edo-primary)}</style>

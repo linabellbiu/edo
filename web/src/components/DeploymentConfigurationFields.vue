@@ -98,7 +98,7 @@ function updateVariables(text: string) {
   <a-button :disabled="!canEdit||selected.length>=32" @click="change({deployment_inputs:[...selected,{kind:'configuration',configuration_id:'',path:''}]})">添加文件来源</a-button>
   <p><code>EDO_APP_CONFIG_PATH = ~/edo/{{ applicationName || '应用名称' }}/config</code></p>
   <p>可用 <code>${EDO_APP_CONFIG_PATH}/相对路径</code> 引用生成文件。</p>
-  <a-form-item label="部署脚本"><DeploymentScriptEditor :model-value="config.deployment_script||''" :disabled="!canEdit" @update:model-value="change({deployment_script:$event})" /><template #help><span>留空使用部署方案原有流程；填写或上传后执行此脚本。支持 <code>${IMAGE_TAG}</code>、<code>${EDO_IMAGE}</code> 和 EDO 内置变量；自定义变量同样使用 <code>${变量名}</code> 引用。</span></template></a-form-item>
+  <a-form-item label="部署脚本"><DeploymentScriptEditor :model-value="config.deployment_script||''" :kind="deploymentPlan?.kind" :disabled="!canEdit" @update:model-value="change({deployment_script:$event})" /><template #help><span>留空使用部署方案原有流程；填写或上传后执行此脚本。支持 <code>${IMAGE_TAG}</code>、<code>${EDO_IMAGE}</code> 和 EDO 内置变量；自定义变量同样使用 <code>${变量名}</code> 引用。</span></template></a-form-item>
   <a-form-item label="脚本自定义环境变量" :validate-status="variableError?'error':undefined" :help="variableError||'每行 KEY=value；密钥请在上方引用共享变量与密钥。'"><a-textarea :value="variableText" :disabled="!canEdit" :auto-size="{minRows:2,maxRows:8}" wrap="off" placeholder="APP_ENV=production" @update:value="updateVariables(String($event||''))" /></a-form-item>
  </section>
 </template>
